@@ -1,0 +1,155 @@
+# 運用
+
+Rokuban の監視・アラート・DB 運用・ストレージ運用・k8s 運用に関する設計指針をまとめる。
+
+## 1. 監視メトリクス
+
+### 録画品質
+
+mirakc の追従品質は EDCB ほどの長期実績がないため、品質メトリクスを継続計測する（[録画エンジン](recording.md) 参照）。
+
+| メトリクス | ソース | 用途 |
+|---|---|---|
+| `recording.failed` 理由別カウンタ | watcher が mirakc SSE から受信。理由は構造化されている: `start-recording-failed` / `io-error` / `pipeline-error` / `need-rescheduling` / `schedule-expired` / `removed-from-epg` | 録画失敗の傾向分析、mirakc 品質の実測 |
+| `recording.record-broken` | watcher が mirakc SSE から受信（理由付き、複数回あり） | 録画中の異常検出 |
+| ドロップ統計（PID 別 continuity counter 不連続 / TEI） | ingest のインラインスキャン。188 バイト境界の TS パケット統計を転送中に読み取り専用で採取（追加 I/O パスゼロ） | EPGStation のドロップログ相当。PID 別サマリを `drop_stats` テーブルに格納し UI で表示 |
+| scrambled カウンタ | ingest のインラインスキャン。`scrambling_control` ビットのカウント | B-CAS/復号障害の検出（後述のアラート対象） |
+
+### ingest
+
+| メトリクス | 説明 |
+|---|---|
+| ingest バイト数・所要時間 | 転送パフォーマンスの監視 |
+| 未 ingest record 総量 | エッジのリングバッファ滞留量。エッジディスク残量と突き合わせてアラートの基礎とする |
+
+ジョブは諦めず再試行し続ける（max attempts で dead-letter にすると record が宙に浮く）。長時間の転送失敗でエッジのリングバッファが溜まり続けるのが唯一の運用リスクであり、このメトリクスで可視化する。
+
+### reconcile
+
+| メトリクス | 説明 |
+|---|---|
+| reconcile 差分数 | desired（reservations）と observed（schedule_sync）の差分。通常はゼロ付近に収束する |
+
+### 開始遅延検出器
+
+録画開始は mirakc に委譲済みで Rokuban 側から防ぐ手段はないが、mirakc 側の未知の不具合への保険として、**「開始時刻を過ぎたのに `recording.started` が観測されない予約」を reconcile ループで検出する**。EPGStation#724（チューナー再接続ハングで開始が 10 分遅延）のような事例に対応する。レベルトリガーの枠内で安価に実装できる。
+
+## 2. アラート設計
+
+### scrambled > 0（B-CAS / 復号障害）
+
+復号が正常なら `scrambling_control` は常にゼロのはず。**scrambled > 0 は放送品質ではなくエッジ環境の異常**（B-CAS カード接触不良・pcscd 死亡・decode-filter 設定漏れ）を意味するので、ドロップ数とは別枠のアラート対象とする。EPGStation ドロップログの scramble 列と同じ役割。
+
+### エッジディスク残量（未 ingest 滞留）
+
+未 ingest record 総量メトリクスとエッジディスク残量を突き合わせてアラートする。回線断・クラウド側障害時に未 ingest の record が溜まり続けるシナリオへの備え（[ストレージ](storage.md) のサイジング指針と対）。
+
+### 大量削除サーキットブレーカー発動
+
+EPG の一時欠損（mirakc 再起動・再スキャン・SI 取得不良）で素朴な ruler は予約を大量に「不要」と判定し、reconciler がそれを mirakc へ忠実に反映（= 一斉 DELETE）してしまう（EPGStation#692 の障害クラス）。
+
+- 1 回の reconcile / ruler パスでの削除数に閾値（例: 対象総数の 20% または絶対数 N）を設け、超えたら削除を実行せず停止してアラート
+- 削除エンジンの物理 unlink についても、ソースを問わず 1 パスの物理削除が閾値（件数 / ライブラリ比率 / 総バイト数、例: 5% or 100 GB）を超えたら停止してアラート
+
+### 開始時刻超過で recording.started 未観測
+
+開始遅延検出器（前述）が異常を検知した場合にアラートを発報する。
+
+## 3. DB 運用
+
+### 輻輳時の隔離
+
+「ユーザー操作で DB が詰まったら録画やエンコードに影響しないか」という懸念への対策。故障モードは常に「収束の遅れ」であり、仕事の喪失ではない:
+
+- **録画は影響を受けない（DB 全停止でも走る）**。スケジュールは mirakc 側の `schedules.json` に永続化済みで、録画実行は mirakc が自律的に行う。DB 輻輳の影響は「新規・変更予約の同期遅延」（reconciler のラグ）のみ
+- **実行中のエンコード・ingest も影響を受けない**。ジョブは claim / complete 時に小さなトランザクション（SKIP LOCKED）で DB を触るだけで、実行中（ffmpeg・転送）は DB に依存しない
+- **ルール評価は UI と同期しない**。ルール編集 API は編集を書いて再評価ジョブを投入するだけで即応答
+
+実装規律:
+
+- **ロール別コネクションプール上限を分ける**。api が全コネクションを食い潰して worker / reconciler が待つ事態を防ぐ
+- **API 系クエリに `statement_timeout`** を設定する
+
+### EPG churn / autovacuum
+
+EPG テーブルは 1 日に何度も大量 upsert されるため、遅くなるとしたら検索ではなく書き込みと autovacuum の追従。対策:
+
+- バッチ upsert
+- GIN fastupdate
+- **テーブル別 autovacuum チューニング**（EPG テーブルに対して `autovacuum_vacuum_scale_factor` を小さく設定する等）
+
+EPG テーブルは 8 日分 + 猶予のローリングウィンドウであり、永遠に太らない。検索性能自体は世帯スケール（数万〜20 万行）では問題にならない。
+
+### Postgres datadir とエンコード scratch の分離
+
+monolith モードでは Postgres のデータディレクトリとエンコードの scratch が同じディスクに載りやすい。実際に競合しやすいのはロックよりディスク I/O であり、**両者を同じディスクに置かない構成を推奨する**。
+
+### バックアップ
+
+保護対象は「ルール・録画履歴・media_assets・ドロップ統計・tombstone・手動オーバーライド」のみ（数 MB）。EPG プロジェクションは mirakc から再構築可能、ジョブキューは一時的。
+
+- **catalog エクスポート**: worker の定期ジョブが、コアデータを JSON でメディアストレージ自身の `catalog/` 配下に書き出す（日次 + 世代保持）。メディアが生き残る障害では catalog も一緒に生き残る。pg_dump に依存しない（distroless イメージに postgres クライアント不要）アプリレベルのエクスポート
+- **pg_dump（推奨・非必須）**: フル忠実度が欲しい場合の日次 pg_dump 構成例をドキュメントに記載する
+- 世帯スケールでは catalog + 任意の pg_dump で十分。WAL アーカイビングは過剰
+
+## 4. ストレージ運用
+
+### 録画バッファのサイジング
+
+録画バッファ（mirakc `recording.basedir`、エッジのローカルディスク）のサイジング指針:
+
+- **容量の支配項は同時録画数ではなく「ingest が詰まったときの滞留分」**。回線断・クラウド側障害時は未 ingest の record が溜まり続ける。推奨値は**「N 日分の全録画を保持できる容量」**（地デジ約 7 GB/時で見積り）
+- **速度要件は絶対帯域ではなくレイテンシ**。書き込みは 1 録画あたり約 2 MB/s（地デジ 17 Mbps）で、同時 8 本でも 16 MB/s に過ぎない。怖いのは他 I/O との競合によるレイテンシスパイクで、ingest pull のサイト単位 1〜2 本キャップはこのための決定でもある
+
+録画バッファの容量アラート（前述の「未 ingest record 総量」メトリクスとエッジディスク残量アラート）とセットで運用する。
+
+### アーカイブの速度要件
+
+アーカイブ（Rokuban のメディアストレージ。ローカル FS / NAS / CSI の S3）は低速で良い:
+
+- **平均スループット >= 1 日の録画総量 / 24 時間**。瞬間的な変動は録画バッファが吸収するので、リアルタイム性は一切要求されない。エンコードの読み出しもバッチなので遅くて良い
+- 唯一レイテンシが人間に見えるのは**再生時のシーク**（S3 + FUSE の range read）。原本削除ポリシーと組み合わせた「視聴は H.265 派生物、原本は消すか S3 の奥」という運用が前提なら実用上問題にならない見込み
+
+### disaster recovery（catalog + rescue）
+
+`rokuban rescue`: ストレージを走査し、
+
+- `catalog/` があれば照合してフルメタデータ（番組情報・ドロップ統計・保持ポリシー）ごと復元
+- catalog にないファイルはディレクトリ規約・ファイル名から推定できる範囲で「素の asset」として登録（UI から見えて再生できる状態に戻す）
+
+実装は `rokuban import epgstation` の in-place 登録機構と同型なので共有する。
+
+既存不変条件の再確認:
+
+- **「放送データのコピーが常に 1 つ以上」は DB 喪失時も維持される**: エッジ record の削除は ingest の DB コミット後 → コミット直後に DB を失ってもファイルはアーカイブに存在し、孤児回収の安全弁が守り、rescue が再登録する
+- cleanup は mirakc の basedir に絶対に触らない（エッジ側削除は ingest の検証済み削除のみ）
+
+## 5. k8s 運用
+
+### worker: KEDA ScaledJob（長時間ジョブ保護）
+
+長時間バッチ（数時間のエンコード / ingest）には Deployment + HPA ではなく **KEDA ScaledJob** を使う。キューアイテムごとに k8s Job を起こす形にすると、**ジョブは完走するまで殺されない** --- スケールインは「新しい Job を起こさない」ことで実現され、実行中の犠牲者選定という問題自体が消える。
+
+River の at-least-once / 冪等性は「殺されても正しい」を保証済みであり、この決定は「殺されても安い」を足すもの。
+
+### Deployment 併用時: SIGTERM drain + pod-deletion-cost
+
+Deployment 型で worker を運用する場合（またはその併用）の定石:
+
+- SIGTERM で **drain**（実行中ジョブは完走、新規 claim 停止）+ 長い `terminationGracePeriodSeconds`
+- busy な worker が `controller.kubernetes.io/pod-deletion-cost` を上げてスケールイン犠牲者から外れる
+
+### シングルトンロール: pg_advisory_lock リーダー選出
+
+ruler / reconciler / watcher はシングルトンロール。`pg_advisory_lock` によるリーダー選出を使う。セッション断で自動解放されるのでフェイルオーバーも自然に付く。k8s の Lease API に依存しないため monolithic mode でも同じコードが動く（[データ層](data.md) 参照）。
+
+### DB 接続失敗: fail-fast + 明示ログ
+
+DB 接続失敗はエラーを握り潰さず fail-fast + 明示ログとする（EPGStation#628 の教訓、crash-only 方針と整合）。
+
+### ネットワーク FS ハング: ジョブストール検知 + 外部 liveness
+
+ネットワーク FS のハング（EPGStation#721）は worker ジョブがストールしうる。対策:
+
+- **ジョブのストール検知**: ingest のタイムアウトは総時間ではなく**ストール検知**（N 秒間無進捗で切断扱い）。総時間タイムアウトは遅い回線の正常な転送を殺す
+- **外部 liveness**: k8s の liveness probe / systemd watchdog を推奨構成に含める
