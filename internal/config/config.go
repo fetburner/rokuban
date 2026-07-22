@@ -36,6 +36,13 @@ type DBConfig struct {
 	SSLMode  string `yaml:"sslmode"`
 }
 
+func (c DBConfig) DSN() string {
+	return fmt.Sprintf(
+		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
+		c.Host, c.Port, c.User, c.Password, c.Database, c.SSLMode,
+	)
+}
+
 type MirakcConfig struct {
 	URL string `yaml:"url" validate:"required"`
 }

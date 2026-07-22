@@ -4,8 +4,6 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
-
-	"github.com/fetburner/rokuban/internal/config"
 )
 
 func newConfigCmd() *cobra.Command {
@@ -24,11 +22,7 @@ func newConfigValidateCmd() *cobra.Command {
 		Use:   "validate",
 		Short: "Validate config file",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			path, err := cmd.Flags().GetString("config")
-			if err != nil {
-				return err
-			}
-			_, err = config.Load(path)
+			_, err := loadConfig(cmd)
 			if err != nil {
 				return err
 			}
