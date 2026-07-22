@@ -13,11 +13,20 @@ services:
       timeout: 3s
       retries: 10
 
-  rokuban:
+  migrate:
     image: rokuban:test
     depends_on:
       postgres:
         condition: service_healthy
+    volumes:
+      - ./config.ci.yml:/config.yml:ro
+    command: ["migrate", "up", "--config", "/config.yml"]
+
+  rokuban:
+    image: rokuban:test
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
     ports:
       - "40773:40773"
     volumes:
