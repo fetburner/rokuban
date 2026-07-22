@@ -1,0 +1,22 @@
+linters:
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - gofmt
+    - goimports
+    - misspell
+    - unconvert
+    - unparam
+    - nilerr
+    - errorlint
+
+linters-settings:
+  goimports:
+    local-prefixes: github.com/fetburner/rokuban
+  errorlint:
+    errorf: true
+    asserts: true
+    comparison: true
