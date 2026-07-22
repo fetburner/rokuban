@@ -29,6 +29,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      # -p 1: DB テストが同一 postgres に対してマイグレーションを実行するためパッケージ直列化
       - run: go test -p 1 ./...
 
   lint:

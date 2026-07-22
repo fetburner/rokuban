@@ -129,7 +129,9 @@ func loadFromString(raw string) (*Config, error) {
 		return nil, fmt.Errorf("expanding variables: %w", err)
 	}
 
+	// defaults() の戻り値にマージすることでデフォルト値を提供する
 	cfg := defaults()
+	// Strict: 未知キーで起動失敗させ、typo を早期検出する
 	if err := yaml.UnmarshalWithOptions([]byte(expanded), &cfg, yaml.Strict()); err != nil {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
