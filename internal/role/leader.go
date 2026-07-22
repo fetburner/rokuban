@@ -15,6 +15,9 @@ func lockKey(name string) int64 {
 	return int64(h.Sum64())
 }
 
+// TryAcquire は pg_try_advisory_lock でシングルトンロールのリーダー選出を行う。
+// advisory lock はセッションレベルなので、Acquire したコネクションを保持し続ける限り
+// ロックが維持される。プロセス死亡時はコネクション切断で自動解放される。
 func TryAcquire(ctx context.Context, pool *pgxpool.Pool, role string) (acquired bool, release func(), err error) {
 	conn, err := pool.Acquire(ctx)
 	if err != nil {
@@ -35,6 +38,7 @@ func TryAcquire(ctx context.Context, pool *pgxpool.Pool, role string) (acquired 
 
 	slog.Info("acquired leader lock", "role", role)
 	release = func() {
+		// pool への Release() だけではセッションが維持されロックが残るため、明示的に unlock する
 		_, _ = conn.Exec(context.Background(), "SELECT pg_advisory_unlock($1)", key)
 		conn.Release()
 	}

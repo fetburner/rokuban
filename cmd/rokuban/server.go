@@ -17,7 +17,8 @@ import (
 )
 
 var (
-	allRoles       = []string{"api", "worker", "ruler", "reconciler", "watcher", "streamer"}
+	allRoles = []string{"api", "worker", "ruler", "reconciler", "watcher", "streamer"}
+	// シングルトンロールは pg_advisory_lock でリーダー選出し、1 プロセスだけが実行する
 	singletonRoles = []string{"ruler", "reconciler", "watcher"}
 )
 

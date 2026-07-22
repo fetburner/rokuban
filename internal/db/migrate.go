@@ -16,6 +16,8 @@ import (
 //go:embed migrations/*.sql
 var migrations embed.FS
 
+// MigrateUp はアプリ (goose) → River の順にマイグレーションを適用する。
+// River は独自のマイグレーション管理 (rivermigrate) を持つため goose とは別系統で実行する。
 func MigrateUp(ctx context.Context, dbURL string) error {
 	if err := runGooseMigration(dbURL, func(db *sql.DB) error {
 		return goose.Up(db, "migrations")
@@ -25,6 +27,7 @@ func MigrateUp(ctx context.Context, dbURL string) error {
 	return runRiverMigration(ctx, dbURL, rivermigrate.DirectionUp)
 }
 
+// MigrateDown は River → アプリ (goose) の順にロールバックする（up の逆順）。
 func MigrateDown(ctx context.Context, dbURL string) error {
 	if err := runRiverMigration(ctx, dbURL, rivermigrate.DirectionDown); err != nil {
 		return err
@@ -66,6 +69,7 @@ func runRiverMigration(ctx context.Context, dbURL string, direction rivermigrate
 		return fmt.Errorf("creating river migrator: %w", err)
 	}
 
+	// River の down はデフォルト 1 ステップだけ戻す。全テーブルを削除するため -1 を指定。
 	var opts *rivermigrate.MigrateOpts
 	if direction == rivermigrate.DirectionDown {
 		opts = &rivermigrate.MigrateOpts{TargetVersion: -1}
