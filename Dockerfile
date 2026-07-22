@@ -1,6 +1,6 @@
 # Stage 1: フロントエンドビルド
 FROM node:22 AS frontend
-RUN corepack enable pnpm
+RUN corepack enable && corepack install -g pnpm@9
 WORKDIR /build/web
 COPY web/package.json web/pnpm-lock.yaml ./
 RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
