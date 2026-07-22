@@ -1,0 +1,9 @@
+db:
+  host: postgres
+  user: rokuban
+  password: rokuban
+  database: rokuban
+mirakc:
+  url: http://localhost:40772
+storage:
+  media_dir: /tmp/media

@@ -1,0 +1,17 @@
+# ffmpeg 入りイメージのビルド例。
+# 公式イメージは ffmpeg を含まない（ライセンス・特許上の理由）。
+# worker / streamer ロールや --all で使う場合はこの Dockerfile でセルフビルドする。
+#
+#   docker build -f Dockerfile.full --build-arg BASE=ghcr.io/fetburner/rokuban:latest -t rokuban-full .
+#
+# HW エンコード（VAAPI / QSV / NVENC）が必要なら、ベースイメージや
+# ffmpeg パッケージを環境に合わせて差し替えること。
+
+ARG BASE=ghcr.io/fetburner/rokuban:latest
+FROM ${BASE}
+USER root
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends ffmpeg
+USER nobody
+ENTRYPOINT ["rokuban"]

@@ -1,0 +1,31 @@
+# CI スモークテスト用。docker compose -f docker-compose.test.yml up --wait で
+# 全サービスの healthcheck が通れば成功。
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: rokuban
+      POSTGRES_PASSWORD: rokuban
+      POSTGRES_DB: rokuban
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rokuban"]
+      interval: 2s
+      timeout: 3s
+      retries: 10
+
+  rokuban:
+    image: rokuban:test
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "40773:40773"
+    volumes:
+      - ./config.ci.yml:/config.yml:ro
+    command: ["server", "--all", "--config", "/config.yml"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:40773/healthz"]
+      start_period: 5s
+      interval: 2s
+      timeout: 3s
+      retries: 15
