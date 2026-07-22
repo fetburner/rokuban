@@ -187,6 +187,25 @@ func TestSPA_FallbackToIndex(t *testing.T) {
 	}
 }
 
+func TestSPA_DirectIndexHTMLNoCache(t *testing.T) {
+	router := NewRouter(nil, newTestDistFS())
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if cc := resp.Header.Get("Cache-Control"); cc != "no-cache" {
+		t.Errorf("Cache-Control = %q, want %q", cc, "no-cache")
+	}
+}
+
 func TestSPA_APITakesPrecedence(t *testing.T) {
 	router := NewRouter(nil, newTestDistFS())
 	srv := httptest.NewServer(router)

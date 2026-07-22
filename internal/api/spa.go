@@ -20,8 +20,11 @@ func NewSPAHandler(distFS fs.FS) http.Handler {
 		if f, err := distFS.Open(path); err == nil {
 			_ = f.Close()
 
-			if strings.HasPrefix(path, "assets/") {
+			switch {
+			case strings.HasPrefix(path, "assets/"):
 				w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+			case path == "index.html":
+				w.Header().Set("Cache-Control", "no-cache")
 			}
 
 			fileServer.ServeHTTP(w, r)
