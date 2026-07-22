@@ -7,7 +7,6 @@ linters:
     - ineffassign
     - staticcheck
     - unused
-    - gofmt
     - misspell
     - unconvert
     - unparam
@@ -19,3 +18,13 @@ linters:
       errorf: true
       asserts: true
       comparison: true
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/fetburner/rokuban
