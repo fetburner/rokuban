@@ -1,30 +1,40 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"embed"
 	"fmt"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
+	"github.com/riverqueue/river/riverdriver/riverpgxv5"
+	"github.com/riverqueue/river/rivermigrate"
 )
 
 //go:embed migrations/*.sql
 var migrations embed.FS
 
-func MigrateUp(dbURL string) error {
-	return runMigration(dbURL, func(db *sql.DB) error {
+func MigrateUp(ctx context.Context, dbURL string) error {
+	if err := runGooseMigration(dbURL, func(db *sql.DB) error {
 		return goose.Up(db, "migrations")
-	})
+	}); err != nil {
+		return err
+	}
+	return runRiverMigration(ctx, dbURL, rivermigrate.DirectionUp)
 }
 
-func MigrateDown(dbURL string) error {
-	return runMigration(dbURL, func(db *sql.DB) error {
+func MigrateDown(ctx context.Context, dbURL string) error {
+	if err := runRiverMigration(ctx, dbURL, rivermigrate.DirectionDown); err != nil {
+		return err
+	}
+	return runGooseMigration(dbURL, func(db *sql.DB) error {
 		return goose.Down(db, "migrations")
 	})
 }
 
-func runMigration(dbURL string, fn func(*sql.DB) error) error {
+func runGooseMigration(dbURL string, fn func(*sql.DB) error) error {
 	goose.SetBaseFS(migrations)
 
 	if err := goose.SetDialect("postgres"); err != nil {
@@ -39,6 +49,30 @@ func runMigration(dbURL string, fn func(*sql.DB) error) error {
 
 	if err := fn(db); err != nil {
 		return fmt.Errorf("running migration: %w", err)
+	}
+
+	return nil
+}
+
+func runRiverMigration(ctx context.Context, dbURL string, direction rivermigrate.Direction) error {
+	pool, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		return fmt.Errorf("opening pool for river migration: %w", err)
+	}
+	defer pool.Close()
+
+	migrator, err := rivermigrate.New(riverpgxv5.New(pool), nil)
+	if err != nil {
+		return fmt.Errorf("creating river migrator: %w", err)
+	}
+
+	var opts *rivermigrate.MigrateOpts
+	if direction == rivermigrate.DirectionDown {
+		opts = &rivermigrate.MigrateOpts{TargetVersion: -1}
+	}
+
+	if _, err := migrator.Migrate(ctx, direction, opts); err != nil {
+		return fmt.Errorf("running river migration: %w", err)
 	}
 
 	return nil

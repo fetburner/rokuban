@@ -19,24 +19,26 @@ func testDatabaseURL(t *testing.T) string {
 
 func TestMigrateUpDown(t *testing.T) {
 	dbURL := testDatabaseURL(t)
+	ctx := context.Background()
 
-	if err := MigrateUp(dbURL); err != nil {
+	if err := MigrateUp(ctx, dbURL); err != nil {
 		t.Fatalf("migrate up: %v", err)
 	}
 
-	if err := MigrateDown(dbURL); err != nil {
+	if err := MigrateDown(ctx, dbURL); err != nil {
 		t.Fatalf("migrate down: %v", err)
 	}
 }
 
 func TestNewPool(t *testing.T) {
 	dbURL := testDatabaseURL(t)
+	ctx := context.Background()
 
-	if err := MigrateUp(dbURL); err != nil {
+	if err := MigrateUp(ctx, dbURL); err != nil {
 		t.Fatalf("migrate up: %v", err)
 	}
 	t.Cleanup(func() {
-		_ = MigrateDown(dbURL)
+		_ = MigrateDown(ctx, dbURL)
 	})
 
 	cfg := config.DBConfig{
@@ -48,7 +50,6 @@ func TestNewPool(t *testing.T) {
 		SSLMode:  "disable",
 	}
 
-	ctx := context.Background()
 	pool, err := NewPool(ctx, cfg)
 	if err != nil {
 		t.Fatalf("NewPool: %v", err)

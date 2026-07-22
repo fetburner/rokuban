@@ -28,7 +28,7 @@ func newMigrateUpCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return db.MigrateUp(cfg.DB.DSN())
+			return db.MigrateUp(cmd.Context(), cfg.DB.DSN())
 		},
 	}
 }
@@ -42,7 +42,7 @@ func newMigrateDownCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return db.MigrateDown(cfg.DB.DSN())
+			return db.MigrateDown(cmd.Context(), cfg.DB.DSN())
 		},
 	}
 }
