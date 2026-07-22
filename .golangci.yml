@@ -1,3 +1,5 @@
+version: "2"
+
 linters:
   enable:
     - errcheck
@@ -13,10 +15,11 @@ linters:
     - nilerr
     - errorlint
 
-linters-settings:
-  goimports:
-    local-prefixes: github.com/fetburner/rokuban
-  errorlint:
-    errorf: true
-    asserts: true
-    comparison: true
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/fetburner/rokuban
+    errorlint:
+      errorf: true
+      asserts: true
+      comparison: true
