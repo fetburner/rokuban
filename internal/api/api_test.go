@@ -5,10 +5,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"testing/fstest"
 )
 
 func TestHealthz(t *testing.T) {
-	router := NewRouter(nil)
+	router := NewRouter(nil, nil)
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -32,7 +33,7 @@ func TestHealthz(t *testing.T) {
 }
 
 func TestGetVersion(t *testing.T) {
-	router := NewRouter(nil)
+	router := NewRouter(nil, nil)
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -56,7 +57,7 @@ func TestGetVersion(t *testing.T) {
 }
 
 func TestAllowedHosts_ValidHost(t *testing.T) {
-	router := NewRouter([]string{"localhost"})
+	router := NewRouter([]string{"localhost"}, nil)
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -78,7 +79,7 @@ func TestAllowedHosts_ValidHost(t *testing.T) {
 }
 
 func TestAllowedHosts_InvalidHost(t *testing.T) {
-	router := NewRouter([]string{"localhost"})
+	router := NewRouter([]string{"localhost"}, nil)
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -100,7 +101,7 @@ func TestAllowedHosts_InvalidHost(t *testing.T) {
 }
 
 func TestAllowedHosts_EmptyAllowsAll(t *testing.T) {
-	router := NewRouter(nil)
+	router := NewRouter(nil, nil)
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -118,5 +119,93 @@ func TestAllowedHosts_EmptyAllowsAll(t *testing.T) {
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want %d (empty allowlist should allow all)", resp.StatusCode, http.StatusOK)
+	}
+}
+
+func newTestDistFS() fstest.MapFS {
+	return fstest.MapFS{
+		"index.html":          {Data: []byte("<html>app</html>")},
+		"assets/index-Ab1.js": {Data: []byte("console.log('app')")},
+	}
+}
+
+func TestSPA_IndexHTML(t *testing.T) {
+	router := NewRouter(nil, newTestDistFS())
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if cc := resp.Header.Get("Cache-Control"); cc != "no-cache" {
+		t.Errorf("Cache-Control = %q, want %q", cc, "no-cache")
+	}
+}
+
+func TestSPA_HashedAssetImmutable(t *testing.T) {
+	router := NewRouter(nil, newTestDistFS())
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/assets/index-Ab1.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	want := "public, max-age=31536000, immutable"
+	if cc := resp.Header.Get("Cache-Control"); cc != want {
+		t.Errorf("Cache-Control = %q, want %q", cc, want)
+	}
+}
+
+func TestSPA_FallbackToIndex(t *testing.T) {
+	router := NewRouter(nil, newTestDistFS())
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/some/client/route")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if cc := resp.Header.Get("Cache-Control"); cc != "no-cache" {
+		t.Errorf("Cache-Control = %q, want %q (SPA fallback)", cc, "no-cache")
+	}
+}
+
+func TestSPA_APITakesPrecedence(t *testing.T) {
+	router := NewRouter(nil, newTestDistFS())
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/healthz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	var body HealthResponse
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if body.Status != "ok" {
+		t.Errorf("API /healthz should still work with SPA enabled, got status=%q", body.Status)
 	}
 }

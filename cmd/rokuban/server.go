@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os/signal"
@@ -16,6 +17,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/role"
 	"github.com/fetburner/rokuban/internal/worker"
+	"github.com/fetburner/rokuban/web"
 )
 
 var (
@@ -73,7 +75,9 @@ func newServerCmd() *cobra.Command {
 			slog.Info("starting server", "roles", activeRoles)
 
 			if slices.Contains(activeRoles, "api") {
-				router := api.NewRouter(cfg.Server.AllowedHosts)
+				// web.DistFS は "dist" サブディレクトリに埋め込まれるため、1 階層下を取り出す
+				distFS, _ := fs.Sub(web.DistFS, "dist")
+				router := api.NewRouter(cfg.Server.AllowedHosts, distFS)
 				srv := &http.Server{Addr: cfg.Server.Listen, Handler: router}
 
 				go func() {
