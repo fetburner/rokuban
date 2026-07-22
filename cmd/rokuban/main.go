@@ -26,6 +26,7 @@ func newRootCmd() *cobra.Command {
 
 	root.AddCommand(newConfigCmd())
 	root.AddCommand(newMigrateCmd())
+	root.AddCommand(newServerCmd())
 
 	return root
 }
