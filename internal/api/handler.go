@@ -2,6 +2,7 @@ package api
 
 import "context"
 
+// version はビルド時に -ldflags で注入する (e.g. -ldflags "-X ...api.version=1.0.0")
 var version = "dev"
 
 type Server struct{}
