@@ -3,15 +3,28 @@ package main
 import (
 	"fmt"
 	"os"
+
+	"github.com/spf13/cobra"
 )
 
 func main() {
-	if err := run(); err != nil {
+	if err := newRootCmd().Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "rokuban: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func run() error {
-	return nil
+func newRootCmd() *cobra.Command {
+	root := &cobra.Command{
+		Use:           "rokuban",
+		Short:         "Cloud-native recording server",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+	}
+
+	root.PersistentFlags().String("config", "config.yml", "path to config file")
+
+	root.AddCommand(newConfigCmd())
+
+	return root
 }
