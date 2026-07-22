@@ -17,10 +17,10 @@ EPGStation の漸進的改善ではなく、ゼロベースで再設計する。
 [エッジ]                       [サーバー / クラウド]
 ┌────────────┐    ┌─────────────────────────────────────────┐
 │ mirakc      │◀──▶│ rokuban（Go、単一バイナリ）                  │
-│ (site A)    │    │  ├ api:        REST + SSE、UI 配信(go:embed)│
-├────────────┤    │  ├ ruler:      EPG差分→ルール評価→予約生成    │
-│ mirakc      │◀──▶│  ├ reconciler: 予約 ⇄ mirakc schedules 同期 │
-│ (site B)    │    │  ├ watcher:    mirakc SSE購読→状態反映       │
+│             │    │  ├ api:        REST + SSE、UI 配信(go:embed)│
+│             │    │  ├ ruler:      EPG差分→ルール評価→予約生成    │
+│             │    │  ├ reconciler: 予約 ⇄ mirakc schedules 同期 │
+│             │    │  ├ watcher:    mirakc SSE購読→状態反映       │
 └────────────┘    │  └ streamer:   ライブ視聴 (mirakc→ffmpeg→HLS)│
    ▲               │ rokuban worker（別イメージ、0〜Nスケール）     │
    │record pull    │  └ ingest / encode / thumbnail / cleanup    │
