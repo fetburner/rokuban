@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os/signal"
 	"slices"
 	"strings"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/fetburner/rokuban/internal/api"
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/role"
 	"github.com/fetburner/rokuban/internal/worker"
@@ -69,6 +71,21 @@ func newServerCmd() *cobra.Command {
 			}
 
 			slog.Info("starting server", "roles", activeRoles)
+
+			if slices.Contains(activeRoles, "api") {
+				router := api.NewRouter(cfg.Server.AllowedHosts)
+				srv := &http.Server{Addr: cfg.Server.Listen, Handler: router}
+
+				go func() {
+					slog.Info("starting http server", "addr", cfg.Server.Listen)
+					if httpErr := srv.ListenAndServe(); httpErr != nil && httpErr != http.ErrServerClosed {
+						slog.Error("http server error", "err", httpErr)
+					}
+				}()
+				defer func() {
+					_ = srv.Shutdown(context.Background())
+				}()
+			}
 
 			if slices.Contains(activeRoles, "worker") {
 				workers := worker.NewWorkers()
