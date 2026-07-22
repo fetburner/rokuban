@@ -35,6 +35,7 @@ func TryAcquire(ctx context.Context, pool *pgxpool.Pool, role string) (acquired 
 
 	slog.Info("acquired leader lock", "role", role)
 	release = func() {
+		_, _ = conn.Exec(context.Background(), "SELECT pg_advisory_unlock($1)", key)
 		conn.Release()
 	}
 	return true, release, nil
