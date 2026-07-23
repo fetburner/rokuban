@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
 	"time"
 
@@ -13,35 +12,14 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/testutil"
 	"github.com/fetburner/rokuban/internal/worker"
 )
 
-func testDatabaseURL(t *testing.T) string {
-	t.Helper()
-	url := os.Getenv("ROKUBAN_TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("ROKUBAN_TEST_DATABASE_URL not set")
-	}
-	return url
-}
-
 func setupTest(t *testing.T) (*Watcher, *pgxpool.Pool) {
 	t.Helper()
-	dbURL := testDatabaseURL(t)
+	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-
-	if err := db.MigrateReset(ctx, dbURL); err != nil {
-		t.Fatalf("reset migration: %v", err)
-	}
-	if err := db.MigrateUp(ctx, dbURL); err != nil {
-		t.Fatalf("migrate up: %v", err)
-	}
-
-	pool, err := pgxpool.New(ctx, dbURL)
-	if err != nil {
-		t.Fatalf("creating pool: %v", err)
-	}
-	t.Cleanup(func() { pool.Close() })
 
 	if _, err := pool.Exec(ctx, "DELETE FROM river_job"); err != nil {
 		t.Fatalf("cleaning river_job: %v", err)
@@ -363,21 +341,8 @@ func TestHandleRecordBroken(t *testing.T) {
 }
 
 func TestReconcile_CatchesMissedRecords(t *testing.T) {
-	dbURL := testDatabaseURL(t)
+	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-
-	if err := db.MigrateReset(ctx, dbURL); err != nil {
-		t.Fatalf("reset: %v", err)
-	}
-	if err := db.MigrateUp(ctx, dbURL); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-
-	pool, err := pgxpool.New(ctx, dbURL)
-	if err != nil {
-		t.Fatalf("pool: %v", err)
-	}
-	defer pool.Close()
 
 	if _, err := pool.Exec(ctx, "DELETE FROM river_job"); err != nil {
 		t.Fatalf("cleaning: %v", err)

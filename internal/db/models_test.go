@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,12 +16,15 @@ func setupTestDB(t *testing.T) *pgxpool.Pool {
 	dbURL := testDatabaseURL(t)
 	ctx := context.Background()
 
+	if err := MigrateReset(ctx, dbURL); err != nil {
+		t.Fatalf("migrate reset: %v", err)
+	}
 	if err := MigrateUp(ctx, dbURL); err != nil {
 		t.Fatalf("migrate up: %v", err)
 	}
 	t.Cleanup(func() {
 		if err := MigrateReset(ctx, dbURL); err != nil {
-			t.Errorf("migrate reset: %v", err)
+			t.Errorf("cleanup migrate reset: %v", err)
 		}
 	})
 
@@ -390,11 +394,11 @@ func TestReservationOptions_EffectiveNilBase(t *testing.T) {
 }
 
 // insertTestRecording は各テスト間で event_id を変えて一意な recording を作る。
-var testEventCounter int
+var testEventCounter atomic.Int32
 
 func insertTestRecording(t *testing.T, pool *pgxpool.Pool) int64 {
 	t.Helper()
-	testEventCounter++
+	eventID := testEventCounter.Add(1)
 	var id int64
 	err := pool.QueryRow(context.Background(),
 		`INSERT INTO recordings (
@@ -402,7 +406,7 @@ func insertTestRecording(t *testing.T, pool *pgxpool.Pool) int64 {
 			service_name, channel_type, channel, title,
 			program_start_at, program_duration_ms, status
 		 ) VALUES ('home','manual',32736,1024,$1,'NHK総合','GR','27','test',now(),1800000,'finished') RETURNING id`,
-		testEventCounter,
+		eventID,
 	).Scan(&id)
 	if err != nil {
 		t.Fatalf("insertTestRecording: %v", err)

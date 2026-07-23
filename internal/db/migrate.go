@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"embed"
 	"fmt"
+	"io/fs"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -19,8 +20,9 @@ var migrations embed.FS
 // MigrateUp はアプリ (goose) → River の順にマイグレーションを適用する。
 // River は独自のマイグレーション管理 (rivermigrate) を持つため goose とは別系統で実行する。
 func MigrateUp(ctx context.Context, dbURL string) error {
-	if err := runGooseMigration(dbURL, func(db *sql.DB) error {
-		return goose.Up(db, "migrations")
+	if err := runGooseMigration(ctx, dbURL, func(ctx context.Context, p *goose.Provider) error {
+		_, err := p.Up(ctx)
+		return err
 	}); err != nil {
 		return err
 	}
@@ -30,23 +32,24 @@ func MigrateUp(ctx context.Context, dbURL string) error {
 // MigrateDown はアプリ (goose) のマイグレーションを 1 ステップ戻す。
 // River スキーマは rivermigrate が独立にバージョン管理しているため触らない。
 func MigrateDown(ctx context.Context, dbURL string) error {
-	return runGooseMigration(dbURL, func(db *sql.DB) error {
-		return goose.Down(db, "migrations")
+	return runGooseMigration(ctx, dbURL, func(ctx context.Context, p *goose.Provider) error {
+		_, err := p.Down(ctx)
+		return err
 	})
 }
 
 // MigrateReset はアプリ (goose) のマイグレーションをすべて巻き戻す。
 func MigrateReset(ctx context.Context, dbURL string) error {
-	return runGooseMigration(dbURL, func(db *sql.DB) error {
-		return goose.DownTo(db, "migrations", 0)
+	return runGooseMigration(ctx, dbURL, func(ctx context.Context, p *goose.Provider) error {
+		_, err := p.DownTo(ctx, 0)
+		return err
 	})
 }
 
-func runGooseMigration(dbURL string, fn func(*sql.DB) error) error {
-	goose.SetBaseFS(migrations)
-
-	if err := goose.SetDialect("postgres"); err != nil {
-		return fmt.Errorf("setting dialect: %w", err)
+func runGooseMigration(ctx context.Context, dbURL string, fn func(context.Context, *goose.Provider) error) error {
+	subFS, err := fs.Sub(migrations, "migrations")
+	if err != nil {
+		return fmt.Errorf("getting migrations sub-FS: %w", err)
 	}
 
 	db, err := sql.Open("pgx", dbURL)
@@ -55,7 +58,12 @@ func runGooseMigration(dbURL string, fn func(*sql.DB) error) error {
 	}
 	defer func() { _ = db.Close() }()
 
-	if err := fn(db); err != nil {
+	provider, err := goose.NewProvider(goose.DialectPostgres, db, subFS)
+	if err != nil {
+		return fmt.Errorf("creating goose provider: %w", err)
+	}
+
+	if err := fn(ctx, provider); err != nil {
 		return fmt.Errorf("running migration: %w", err)
 	}
 

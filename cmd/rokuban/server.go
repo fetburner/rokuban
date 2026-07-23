@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"syscall"
+	"time"
 
 	pgx5 "github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
@@ -63,7 +64,7 @@ func newServerCmd() *cobra.Command {
 			if slices.Contains(roles, "api") {
 				distFS, subErr := fs.Sub(web.DistFS, "dist")
 				if subErr != nil {
-					panic(fmt.Sprintf("embedded dist/ not found: %v", subErr))
+					return fmt.Errorf("embedded dist/ not found: %w", subErr)
 				}
 				router := api.NewRouter(cfg.Server.AllowedHosts, distFS)
 				srv := &http.Server{Addr: cfg.Server.Listen, Handler: router}
@@ -75,9 +76,12 @@ func newServerCmd() *cobra.Command {
 					}
 					return nil
 				})
-				defer func() {
-					_ = srv.Shutdown(context.Background())
-				}()
+				eg.Go(func() error {
+					<-egCtx.Done()
+					shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+					defer shutdownCancel()
+					return srv.Shutdown(shutdownCtx)
+				})
 			}
 
 			// River client（worker と watcher で共有）
@@ -96,7 +100,9 @@ func newServerCmd() *cobra.Command {
 					return fmt.Errorf("starting river client: %w", startErr)
 				}
 				defer func() {
-					_ = riverClient.Stop(context.Background())
+					stopCtx, stopCancel := context.WithTimeout(context.Background(), 30*time.Second)
+					defer stopCancel()
+					_ = riverClient.Stop(stopCtx)
 				}()
 			}
 

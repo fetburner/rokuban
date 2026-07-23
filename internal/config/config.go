@@ -43,7 +43,7 @@ func (c DBConfig) DSN() string {
 }
 
 type MirakcConfig struct {
-	URL string `yaml:"url" validate:"required"`
+	URL string `yaml:"url" validate:"required,url"`
 }
 
 type StorageConfig struct {
@@ -66,8 +66,8 @@ type EncodeProfile struct {
 }
 
 type LogConfig struct {
-	Level  string `yaml:"level"`
-	Format string `yaml:"format"`
+	Level  string `yaml:"level"  validate:"omitempty,oneof=debug info warn error"`
+	Format string `yaml:"format" validate:"omitempty,oneof=json text"`
 }
 
 func defaults() Config {

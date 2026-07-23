@@ -2,41 +2,17 @@ package worker
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 
-	"github.com/fetburner/rokuban/internal/db"
+	"github.com/fetburner/rokuban/internal/testutil"
 )
 
-func testDatabaseURL(t *testing.T) string {
-	t.Helper()
-	url := os.Getenv("ROKUBAN_TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("ROKUBAN_TEST_DATABASE_URL not set")
-	}
-	return url
-}
-
 func TestNoOpJob(t *testing.T) {
-	dbURL := testDatabaseURL(t)
+	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-
-	if err := db.MigrateUp(ctx, dbURL); err != nil {
-		t.Fatalf("migrate up: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = db.MigrateDown(ctx, dbURL)
-	})
-
-	pool, err := pgxpool.New(ctx, dbURL)
-	if err != nil {
-		t.Fatalf("creating pool: %v", err)
-	}
-	defer pool.Close()
 
 	if _, err := pool.Exec(ctx, "DELETE FROM river_job"); err != nil {
 		t.Fatalf("cleaning river_job: %v", err)

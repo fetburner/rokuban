@@ -3,23 +3,15 @@ package role
 import (
 	"context"
 	"fmt"
-	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-)
 
-func testDatabaseURL(t *testing.T) string {
-	t.Helper()
-	url := os.Getenv("ROKUBAN_TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("ROKUBAN_TEST_DATABASE_URL not set")
-	}
-	return url
-}
+	"github.com/fetburner/rokuban/internal/testutil"
+)
 
 var fastConfig = &SingletonConfig{
 	PollInterval:      100 * time.Millisecond,
@@ -27,7 +19,7 @@ var fastConfig = &SingletonConfig{
 }
 
 func TestTryAcquire_Exclusive(t *testing.T) {
-	dbURL := testDatabaseURL(t)
+	dbURL := testutil.DatabaseURL(t)
 	ctx := context.Background()
 
 	pool1, err := pgxpool.New(ctx, dbURL)
@@ -61,7 +53,7 @@ func TestTryAcquire_Exclusive(t *testing.T) {
 }
 
 func TestTryAcquire_ReleaseAndReacquire(t *testing.T) {
-	dbURL := testDatabaseURL(t)
+	dbURL := testutil.DatabaseURL(t)
 	ctx := context.Background()
 
 	pool1, err := pgxpool.New(ctx, dbURL)
@@ -97,7 +89,7 @@ func TestTryAcquire_ReleaseAndReacquire(t *testing.T) {
 }
 
 func TestTryAcquire_DifferentRoles(t *testing.T) {
-	dbURL := testDatabaseURL(t)
+	dbURL := testutil.DatabaseURL(t)
 	ctx := context.Background()
 
 	pool, err := pgxpool.New(ctx, dbURL)
@@ -126,7 +118,7 @@ func TestTryAcquire_DifferentRoles(t *testing.T) {
 }
 
 func TestRunSingleton_ContextCancel(t *testing.T) {
-	dbURL := testDatabaseURL(t)
+	dbURL := testutil.DatabaseURL(t)
 
 	pool, err := pgxpool.New(context.Background(), dbURL)
 	if err != nil {
@@ -166,7 +158,7 @@ func TestRunSingleton_ContextCancel(t *testing.T) {
 }
 
 func TestRunSingleton_Failover(t *testing.T) {
-	dbURL := testDatabaseURL(t)
+	dbURL := testutil.DatabaseURL(t)
 
 	pool1, err := pgxpool.New(context.Background(), dbURL)
 	if err != nil {
@@ -242,7 +234,7 @@ func TestRunSingleton_Failover(t *testing.T) {
 }
 
 func TestRunSingleton_RoleRestart(t *testing.T) {
-	dbURL := testDatabaseURL(t)
+	dbURL := testutil.DatabaseURL(t)
 
 	pool, err := pgxpool.New(context.Background(), dbURL)
 	if err != nil {

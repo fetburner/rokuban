@@ -62,10 +62,14 @@ func (c *Client) Subscribe(ctx context.Context, ch chan<- Event, cfg *SSEConfig)
 	}
 
 	backoff := cfg.InitialBackoff
+	var lastEventID string
 	for {
-		connected, err := c.subscribeOnce(ctx, ch)
+		connected, id, err := c.subscribeOnce(ctx, ch, lastEventID)
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+		if id != "" {
+			lastEventID = id
 		}
 		if connected {
 			backoff = cfg.InitialBackoff
@@ -81,27 +85,31 @@ func (c *Client) Subscribe(ctx context.Context, ch chan<- Event, cfg *SSEConfig)
 	}
 }
 
-func (c *Client) subscribeOnce(ctx context.Context, ch chan<- Event) (bool, error) {
+func (c *Client) subscribeOnce(ctx context.Context, ch chan<- Event, lastEventID string) (bool, string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/events", nil)
 	if err != nil {
-		return false, fmt.Errorf("building request: %w", err)
+		return false, "", fmt.Errorf("building request: %w", err)
 	}
 	req.Header.Set("Accept", "text/event-stream")
+	if lastEventID != "" {
+		req.Header.Set("Last-Event-ID", lastEventID)
+	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return false, fmt.Errorf("connecting to SSE: %w", err)
+		return false, "", fmt.Errorf("connecting to SSE: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return false, fmt.Errorf("SSE endpoint returned %s", resp.Status)
+		return false, "", fmt.Errorf("SSE endpoint returned %s", resp.Status)
 	}
 
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	var eventType string
 	var dataLines []string
+	var currentID string
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -112,7 +120,7 @@ func (c *Client) subscribeOnce(ctx context.Context, ch chan<- Event) (bool, erro
 				select {
 				case ch <- Event{Type: eventType, Data: json.RawMessage(data)}:
 				case <-ctx.Done():
-					return true, ctx.Err()
+					return true, currentID, ctx.Err()
 				}
 			}
 			eventType = ""
@@ -120,15 +128,28 @@ func (c *Client) subscribeOnce(ctx context.Context, ch chan<- Event) (bool, erro
 			continue
 		}
 
+		if strings.HasPrefix(line, ":") {
+			continue
+		}
+
 		if strings.HasPrefix(line, "event:") {
-			eventType = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+			eventType = parseSSEValue(line, "event:")
 		} else if strings.HasPrefix(line, "data:") {
-			dataLines = append(dataLines, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+			dataLines = append(dataLines, parseSSEValue(line, "data:"))
+		} else if strings.HasPrefix(line, "id:") {
+			currentID = parseSSEValue(line, "id:")
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
-		return true, fmt.Errorf("reading SSE stream: %w", err)
+		return true, currentID, fmt.Errorf("reading SSE stream: %w", err)
 	}
-	return true, fmt.Errorf("SSE stream closed by server")
+	return true, currentID, fmt.Errorf("SSE stream closed by server")
+}
+
+// parseSSEValue は SSE 仕様に従いフィールド値を取り出す。
+// コロン直後の最初のスペース 1 文字だけを除去する。
+func parseSSEValue(line, prefix string) string {
+	value := strings.TrimPrefix(line, prefix)
+	return strings.TrimPrefix(value, " ")
 }

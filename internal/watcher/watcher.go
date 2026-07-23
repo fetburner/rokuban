@@ -32,11 +32,12 @@ func defaultConfig() Config {
 }
 
 type Watcher struct {
-	site   string
-	mirakc *mirakc.Client
-	pool   *pgxpool.Pool
-	river  *river.Client[pgx5.Tx]
-	cfg    Config
+	site     string
+	mirakc   *mirakc.Client
+	pool     *pgxpool.Pool
+	river    *river.Client[pgx5.Tx]
+	cfg      Config
+	services []mirakc.Service
 }
 
 func New(site string, mc *mirakc.Client, pool *pgxpool.Pool, rc *river.Client[pgx5.Tx], cfg *Config) *Watcher {
@@ -133,6 +134,13 @@ func (w *Watcher) handleEvent(ctx context.Context, ev mirakc.Event) {
 
 func (w *Watcher) reconcile(ctx context.Context) error {
 	slog.Info("watcher reconcile started")
+
+	if services, err := w.mirakc.ListServices(ctx); err != nil {
+		slog.Error("refreshing service cache", "err", err)
+	} else {
+		w.services = services
+	}
+
 	records, err := w.mirakc.ListRecords(ctx)
 	if err != nil {
 		return fmt.Errorf("listing records: %w", err)
@@ -184,17 +192,17 @@ func (w *Watcher) processRecord(ctx context.Context, record mirakc.Record) error
 		return fmt.Errorf("upserting record_sync: %w", err)
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("committing transaction: %w", err)
-	}
-
 	if record.Recording.Status == "finished" && recordingID != nil {
-		if _, err := w.river.Insert(ctx, worker.IngestJobArgs{
+		if _, err := w.river.InsertTx(ctx, tx, worker.IngestJobArgs{
 			Site:     w.site,
 			RecordID: record.ID,
 		}, nil); err != nil {
-			slog.Error("enqueuing ingest job", "record_id", record.ID, "err", err)
+			return fmt.Errorf("enqueuing ingest job: %w", err)
 		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("committing transaction: %w", err)
 	}
 
 	return nil
@@ -302,13 +310,19 @@ func (w *Watcher) handleRecordingFailed(ctx context.Context, data mirakc.Recordi
 		return fmt.Errorf("finding service: %w", err)
 	}
 
-	reasonJSON, _ := json.Marshal(data.Reason)
+	reasonJSON, err := json.Marshal(data.Reason)
+	if err != nil {
+		return fmt.Errorf("marshalling failed reason: %w", err)
+	}
 	qe := db.QualityEvent{
 		At:     time.Now(),
 		Event:  "recording.failed",
 		Reason: reasonJSON,
 	}
-	qeJSON, _ := json.Marshal([]db.QualityEvent{qe})
+	qeJSON, err := json.Marshal([]db.QualityEvent{qe})
+	if err != nil {
+		return fmt.Errorf("marshalling quality events: %w", err)
+	}
 
 	return q.CreateFailedRecording(ctx, sqlcgen.CreateFailedRecordingParams{
 		ReservationID:     &res.ID,
@@ -351,13 +365,19 @@ func (w *Watcher) handleRecordBroken(ctx context.Context, data mirakc.RecordBrok
 		return nil
 	}
 
-	reasonJSON, _ := json.Marshal(map[string]string{"reason": data.Reason})
+	reasonJSON, err := json.Marshal(map[string]string{"reason": data.Reason})
+	if err != nil {
+		return fmt.Errorf("marshalling broken reason: %w", err)
+	}
 	qe := db.QualityEvent{
 		At:     time.Now(),
 		Event:  "recording.record-broken",
 		Reason: reasonJSON,
 	}
-	qeJSON, _ := json.Marshal([]db.QualityEvent{qe})
+	qeJSON, err := json.Marshal([]db.QualityEvent{qe})
+	if err != nil {
+		return fmt.Errorf("marshalling quality events: %w", err)
+	}
 
 	return q.AppendQualityEvents(ctx, sqlcgen.AppendQualityEventsParams{
 		ID:     *recordingID,
@@ -366,13 +386,16 @@ func (w *Watcher) handleRecordBroken(ctx context.Context, data mirakc.RecordBrok
 }
 
 func (w *Watcher) findService(ctx context.Context, networkID, serviceID int) (*mirakc.Service, error) {
-	services, err := w.mirakc.ListServices(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("listing services: %w", err)
+	if len(w.services) == 0 {
+		services, err := w.mirakc.ListServices(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("listing services: %w", err)
+		}
+		w.services = services
 	}
-	for i, s := range services {
+	for i, s := range w.services {
 		if s.NetworkID == networkID && s.ServiceID == serviceID {
-			return &services[i], nil
+			return &w.services[i], nil
 		}
 	}
 	return nil, fmt.Errorf("service not found: network=%d service=%d", networkID, serviceID)
