@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/drone/envsubst"
 	"github.com/go-playground/validator/v10"
@@ -69,20 +68,6 @@ type EncodeProfile struct {
 type LogConfig struct {
 	Level  string `yaml:"level"`
 	Format string `yaml:"format"`
-}
-
-type Duration struct {
-	time.Duration
-}
-
-func (d *Duration) UnmarshalYAML(b []byte) error {
-	s := string(b)
-	parsed, err := time.ParseDuration(s)
-	if err != nil {
-		return fmt.Errorf("invalid duration %q: %w", s, err)
-	}
-	d.Duration = parsed
-	return nil
 }
 
 func defaults() Config {

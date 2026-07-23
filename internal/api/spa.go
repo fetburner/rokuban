@@ -11,7 +11,7 @@ import (
 // - index.html は常に no-cache（デプロイ直後に最新を返すため）
 // - 存在しないパスはすべて index.html へフォールバック（SPA クライアントルーティング対応）
 func NewSPAHandler(distFS fs.FS) http.Handler {
-	fileServer := http.FileServer(http.FS(distFS))
+	fileServer := http.FileServerFS(distFS)
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/")

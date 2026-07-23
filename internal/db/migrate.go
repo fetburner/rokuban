@@ -27,11 +27,9 @@ func MigrateUp(ctx context.Context, dbURL string) error {
 	return runRiverMigration(ctx, dbURL, rivermigrate.DirectionUp)
 }
 
-// MigrateDown は River → アプリ (goose) の順にロールバックする（up の逆順）。
+// MigrateDown はアプリ (goose) のマイグレーションを 1 ステップ戻す。
+// River スキーマは rivermigrate が独立にバージョン管理しているため触らない。
 func MigrateDown(ctx context.Context, dbURL string) error {
-	if err := runRiverMigration(ctx, dbURL, rivermigrate.DirectionDown); err != nil {
-		return err
-	}
 	return runGooseMigration(dbURL, func(db *sql.DB) error {
 		return goose.Down(db, "migrations")
 	})

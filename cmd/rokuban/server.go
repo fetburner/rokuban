@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -12,6 +13,7 @@ import (
 	"syscall"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/fetburner/rokuban/internal/api"
 	"github.com/fetburner/rokuban/internal/db"
@@ -74,18 +76,23 @@ func newServerCmd() *cobra.Command {
 
 			slog.Info("starting server", "roles", activeRoles)
 
+			eg, egCtx := errgroup.WithContext(ctx)
+
 			if slices.Contains(activeRoles, "api") {
-				// web.DistFS は "dist" サブディレクトリに埋め込まれるため、1 階層下を取り出す
-				distFS, _ := fs.Sub(web.DistFS, "dist")
+				distFS, subErr := fs.Sub(web.DistFS, "dist")
+				if subErr != nil {
+					panic(fmt.Sprintf("embedded dist/ not found: %v", subErr))
+				}
 				router := api.NewRouter(cfg.Server.AllowedHosts, distFS)
 				srv := &http.Server{Addr: cfg.Server.Listen, Handler: router}
 
-				go func() {
+				eg.Go(func() error {
 					slog.Info("starting http server", "addr", cfg.Server.Listen)
-					if httpErr := srv.ListenAndServe(); httpErr != nil && httpErr != http.ErrServerClosed {
-						slog.Error("http server error", "err", httpErr)
+					if httpErr := srv.ListenAndServe(); httpErr != nil && !errors.Is(httpErr, http.ErrServerClosed) {
+						return fmt.Errorf("http server: %w", httpErr)
 					}
-				}()
+					return nil
+				})
 				defer func() {
 					_ = srv.Shutdown(context.Background())
 				}()
@@ -106,9 +113,16 @@ func newServerCmd() *cobra.Command {
 				}()
 			}
 
-			<-ctx.Done()
+			// errgroup はシグナル (ctx cancel) と HTTP サーバー異常終了の両方を待つ。
+			// どちらか先に発生した方で抜ける。
+			eg.Go(func() error {
+				<-egCtx.Done()
+				return nil
+			})
+
+			err = eg.Wait()
 			slog.Info("shutting down")
-			return nil
+			return err
 		},
 	}
 

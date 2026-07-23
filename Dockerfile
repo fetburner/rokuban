@@ -1,6 +1,6 @@
 # Stage 1: フロントエンドビルド
 FROM node:22 AS frontend
-RUN corepack enable && corepack install -g pnpm@9
+RUN corepack enable
 WORKDIR /build/web
 COPY web/package.json web/pnpm-lock.yaml ./
 RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
@@ -18,9 +18,10 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 COPY . .
 COPY --from=frontend /build/web/dist/ web/dist/
 ARG VERSION=dev
+ARG TARGETARCH
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 go build -ldflags "-s -w -X github.com/fetburner/rokuban/internal/api.version=${VERSION}" -o /rokuban ./cmd/rokuban
+    CGO_ENABLED=0 GOARCH=${TARGETARCH} go build -ldflags "-s -w -X github.com/fetburner/rokuban/internal/api.version=${VERSION}" -o /rokuban ./cmd/rokuban
 
 # Stage 3: Debian slim — curl (healthcheck) と ca-certificates を含む
 FROM debian:bookworm-slim

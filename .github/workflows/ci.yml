@@ -31,7 +31,7 @@ jobs:
           go-version-file: go.mod
       - uses: pnpm/action-setup@v4
         with:
-          version: 10
+          package_json_file: web/package.json
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -54,7 +54,7 @@ jobs:
           go-version-file: go.mod
       - uses: pnpm/action-setup@v4
         with:
-          version: 10
+          package_json_file: web/package.json
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -63,6 +63,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
         working-directory: web
       - run: pnpm build
+        working-directory: web
+      - run: pnpm lint
         working-directory: web
       - uses: golangci/golangci-lint-action@v7
         with:
@@ -85,6 +87,9 @@ jobs:
         run: |
           docker compose -f docker-compose.test.yml up --wait --wait-timeout 60
           curl -sf http://localhost:40773/healthz
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose -f docker-compose.test.yml logs
       - name: Cleanup
         if: always()
         run: docker compose -f docker-compose.test.yml down -v
