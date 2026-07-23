@@ -38,7 +38,11 @@ INSERT INTO recordings (
     $13, $14, $15,
     $16, $17,
     'failed', $18
-);
+)
+ON CONFLICT (site, network_id, service_id, event_id) WHERE deleted_at IS NULL
+DO UPDATE SET
+    quality_events = recordings.quality_events || EXCLUDED.quality_events,
+    updated_at = now();
 
 -- name: AppendQualityEvents :exec
 UPDATE recordings

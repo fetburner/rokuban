@@ -340,6 +340,111 @@ func TestHandleRecordBroken(t *testing.T) {
 	}
 }
 
+func TestHandleRecordingFailed_Idempotent(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	if _, err := pool.Exec(ctx, "DELETE FROM river_job"); err != nil {
+		t.Fatalf("cleaning river_job: %v", err)
+	}
+
+	workers := worker.NewWorkers()
+	rc, err := worker.NewClient(pool, workers)
+	if err != nil {
+		t.Fatalf("river client: %v", err)
+	}
+
+	programID := int64(327361024100)
+	resID := createTestReservation(t, pool, programID)
+
+	startAt := mirakc.Milliseconds(time.Now().Add(-1 * time.Hour))
+	duration := int64(3600000)
+	name := "Failed Program"
+
+	schedule := mirakc.Schedule{
+		State: "scheduled",
+		Program: mirakc.Program{
+			ID:        programID,
+			EventID:   100,
+			ServiceID: 1024,
+			NetworkID: 32736,
+			StartAt:   &startAt,
+			Duration:  &duration,
+			IsFree:    true,
+			Name:      &name,
+		},
+	}
+
+	services := []mirakc.Service{
+		{
+			ServiceID: 1024,
+			NetworkID: 32736,
+			Name:      "NHK総合",
+			Channel:   mirakc.ServiceChannel{Type: "GR", Channel: "27"},
+		},
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/recording/schedules/", func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rw).Encode(schedule)
+	})
+	mux.HandleFunc("/api/services", func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rw).Encode(services)
+	})
+	mockServer := httptest.NewServer(mux)
+	defer mockServer.Close()
+
+	mc := mirakc.NewClient(mockServer.URL, nil)
+	w := New(DefaultSite, mc, pool, rc, nil)
+
+	failedData := mirakc.RecordingFailedData{
+		ProgramID: programID,
+		Reason:    mirakc.FailedReason{Type: "tuner-unavailable"},
+	}
+
+	if err := w.handleRecordingFailed(ctx, failedData); err != nil {
+		t.Fatalf("handleRecordingFailed (1st): %v", err)
+	}
+
+	var recCount int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM recordings WHERE reservation_id = $1", resID).Scan(&recCount); err != nil {
+		t.Fatalf("querying recordings: %v", err)
+	}
+	if recCount != 1 {
+		t.Errorf("recording count after 1st call = %d, want 1", recCount)
+	}
+
+	// Call again with same program — should NOT create a duplicate
+	if err := w.handleRecordingFailed(ctx, failedData); err != nil {
+		t.Fatalf("handleRecordingFailed (2nd): %v", err)
+	}
+
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM recordings WHERE reservation_id = $1", resID).Scan(&recCount); err != nil {
+		t.Fatalf("querying recordings: %v", err)
+	}
+	if recCount != 1 {
+		t.Errorf("recording count after 2nd call = %d, want 1 (idempotent)", recCount)
+	}
+
+	// Verify quality_events were merged (2 events appended)
+	var qeJSON json.RawMessage
+	if err := pool.QueryRow(ctx,
+		"SELECT quality_events FROM recordings WHERE reservation_id = $1", resID,
+	).Scan(&qeJSON); err != nil {
+		t.Fatalf("querying quality_events: %v", err)
+	}
+
+	var events []db.QualityEvent
+	if err := json.Unmarshal(qeJSON, &events); err != nil {
+		t.Fatalf("unmarshalling quality_events: %v", err)
+	}
+	if len(events) != 2 {
+		t.Errorf("quality_events count = %d, want 2 (merged from 2 calls)", len(events))
+	}
+}
+
 func TestReconcile_CatchesMissedRecords(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
