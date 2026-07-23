@@ -29,6 +29,7 @@ golangci-lint run       # lint
 | #9 | 設定 | [docs/configuration.md](docs/configuration.md) |
 | #10 | EPGStation トリアージ | — |
 | #11 | 懸念トラッキング | — |
+| #13 | M1 タスク分解（スキーマ v1） | [docs/schema.md](docs/schema.md) |
 
 ### 不変条件
 

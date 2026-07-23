@@ -43,6 +43,8 @@ NOTIFY はコミット時にのみ配送される組み込み pub/sub。各コ�
 
 ## 4. スキーマ設計: desired / observed の分離
 
+具体的なテーブル定義（DDL）は [データベーススキーマ v1](schema.md) 参照。
+
 EPGStation の Reserve テーブルは「予約」「録画中状態」「録画結果」が混在していた。Rokuban では k8s の spec/status と同じ分離をスキーマに刻む:
 
 - `rules` → `reservations` --- desired state。ルール評価の純粋な出力。手動予約も同じテーブルで source が違うだけ
