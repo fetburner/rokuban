@@ -9,6 +9,9 @@ import (
 type Milliseconds time.Time
 
 func (m *Milliseconds) UnmarshalJSON(b []byte) error {
+	if string(b) == "null" {
+		return nil
+	}
 	var ms int64
 	if err := json.Unmarshal(b, &ms); err != nil {
 		return err

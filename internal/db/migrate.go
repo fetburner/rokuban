@@ -35,6 +35,13 @@ func MigrateDown(ctx context.Context, dbURL string) error {
 	})
 }
 
+// MigrateReset はアプリ (goose) のマイグレーションをすべて巻き戻す。
+func MigrateReset(ctx context.Context, dbURL string) error {
+	return runGooseMigration(dbURL, func(db *sql.DB) error {
+		return goose.DownTo(db, "migrations", 0)
+	})
+}
+
 func runGooseMigration(dbURL string, fn func(*sql.DB) error) error {
 	goose.SetBaseFS(migrations)
 

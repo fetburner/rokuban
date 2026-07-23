@@ -24,12 +24,13 @@ type Reservation struct {
 
 // ReservationOptions は reservations.base / overrides の jsonb 構造。
 // jsonb 内は camelCase（Go/JSON 規約）。
+// EncodeProfiles は *[]string: nil=未指定、&[]string{}=エンコードなし override。
 type ReservationOptions struct {
-	Skip           *bool    `json:"skip,omitempty"`
-	Priority       *int     `json:"priority,omitempty"`
-	ContentPath    *string  `json:"contentPath,omitempty"`
-	EncodeProfiles []string `json:"encodeProfiles,omitempty"`
-	KeepOriginal   *string  `json:"keepOriginal,omitempty"`
+	Skip           *bool     `json:"skip,omitempty"`
+	Priority       *int      `json:"priority,omitempty"`
+	ContentPath    *string   `json:"contentPath,omitempty"`
+	EncodeProfiles *[]string `json:"encodeProfiles,omitempty"`
+	KeepOriginal   *string   `json:"keepOriginal,omitempty"`
 }
 
 // Effective は base に overrides をマージした結果を返す。
@@ -42,6 +43,7 @@ func (o *ReservationOptions) Effective(base *ReservationOptions) ReservationOpti
 	}
 	eff := *base
 	if o == nil {
+		eff.EncodeProfiles = cloneStringSlicePtr(eff.EncodeProfiles)
 		return eff
 	}
 	if o.Skip != nil {
@@ -56,10 +58,20 @@ func (o *ReservationOptions) Effective(base *ReservationOptions) ReservationOpti
 	if o.EncodeProfiles != nil {
 		eff.EncodeProfiles = o.EncodeProfiles
 	}
+	eff.EncodeProfiles = cloneStringSlicePtr(eff.EncodeProfiles)
 	if o.KeepOriginal != nil {
 		eff.KeepOriginal = o.KeepOriginal
 	}
 	return eff
+}
+
+func cloneStringSlicePtr(p *[]string) *[]string {
+	if p == nil {
+		return nil
+	}
+	c := make([]string, len(*p))
+	copy(c, *p)
+	return &c
 }
 
 // ScheduleSync は mirakc schedule の観測。

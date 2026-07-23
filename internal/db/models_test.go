@@ -2,9 +2,11 @@ package db
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -17,11 +19,8 @@ func setupTestDB(t *testing.T) *pgxpool.Pool {
 		t.Fatalf("migrate up: %v", err)
 	}
 	t.Cleanup(func() {
-		// goose down を全ステップ実行
-		for range 10 {
-			if err := MigrateDown(ctx, dbURL); err != nil {
-				break
-			}
+		if err := MigrateReset(ctx, dbURL); err != nil {
+			t.Errorf("migrate reset: %v", err)
 		}
 	})
 
@@ -31,6 +30,20 @@ func setupTestDB(t *testing.T) *pgxpool.Pool {
 	}
 	t.Cleanup(pool.Close)
 	return pool
+}
+
+func assertPgError(t *testing.T, err error, sqlstate string) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		t.Fatalf("expected pgconn.PgError, got %T: %v", err, err)
+	}
+	if pgErr.Code != sqlstate {
+		t.Errorf("SQLSTATE = %s, want %s", pgErr.Code, sqlstate)
+	}
 }
 
 func TestSchemaV1_Tables(t *testing.T) {
@@ -107,9 +120,7 @@ func TestSchemaV1_ReservationUniqueSiteProgramID(t *testing.T) {
 		`INSERT INTO reservations (site, program_id, source, title, program_start_at, program_duration_ms)
 		 VALUES ($1, $2, 'manual', '', $3, 0)`,
 		"home", int64(100), now)
-	if err == nil {
-		t.Fatal("expected unique violation for same site+program_id")
-	}
+	assertPgError(t, err, "23505")
 
 	// 別サイトなら同一 program_id で OK
 	_, err = pool.Exec(ctx,
@@ -128,9 +139,7 @@ func TestSchemaV1_ReservationSourceCheck(t *testing.T) {
 	_, err := pool.Exec(ctx,
 		`INSERT INTO reservations (site, program_id, source, title, program_start_at, program_duration_ms)
 		 VALUES ('home', 1, 'invalid', '', now(), 0)`)
-	if err == nil {
-		t.Fatal("expected check violation for invalid source")
-	}
+	assertPgError(t, err, "23514")
 }
 
 func TestSchemaV1_RecordingInsert(t *testing.T) {
@@ -178,9 +187,7 @@ func TestSchemaV1_RecordingChannelTypeCheck(t *testing.T) {
 			service_name, channel_type, channel, title,
 			program_start_at, program_duration_ms, status
 		 ) VALUES ('home','manual',1,1,1,'NHK','CATV','1','test',now(),0,'finished')`)
-	if err == nil {
-		t.Fatal("expected check violation for invalid channel_type 'CATV'")
-	}
+	assertPgError(t, err, "23514")
 }
 
 func TestSchemaV1_MediaAssetProfileKindCheck(t *testing.T) {
@@ -199,9 +206,7 @@ func TestSchemaV1_MediaAssetProfileKindCheck(t *testing.T) {
 	// encoded + profile=NULL: NG
 	_, err = pool.Exec(ctx,
 		`INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes) VALUES ($1, 'encoded', 'test.mp4', 512)`, recID)
-	if err == nil {
-		t.Fatal("expected check violation for encoded with NULL profile")
-	}
+	assertPgError(t, err, "23514")
 
 	// encoded + profile='h265': OK
 	_, err = pool.Exec(ctx,
@@ -215,9 +220,7 @@ func TestSchemaV1_MediaAssetProfileKindCheck(t *testing.T) {
 	_, err = pool.Exec(ctx,
 		`INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes)
 		 VALUES ($1, 'original', 'x', 'test2.m2ts', 1024)`, recID)
-	if err == nil {
-		t.Fatal("expected check violation for original with non-NULL profile")
-	}
+	assertPgError(t, err, "23514")
 }
 
 func TestSchemaV1_MediaAssetUniqueRelPath(t *testing.T) {
@@ -236,9 +239,7 @@ func TestSchemaV1_MediaAssetUniqueRelPath(t *testing.T) {
 	// active なアセットとパスが重複: NG
 	_, err = pool.Exec(ctx,
 		`INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes) VALUES ($1, 'original', 'same/path.m2ts', 2048)`, recID2)
-	if err == nil {
-		t.Fatal("expected unique violation for duplicate active rel_path")
-	}
+	assertPgError(t, err, "23505")
 
 	// deleted にすればパス再利用可
 	_, err = pool.Exec(ctx,
@@ -251,6 +252,26 @@ func TestSchemaV1_MediaAssetUniqueRelPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("should allow path reuse after tombstone: %v", err)
 	}
+}
+
+func TestSchemaV1_MediaAssetUniqueNullsNotDistinct(t *testing.T) {
+	pool := setupTestDB(t)
+	ctx := context.Background()
+	recID := insertTestRecording(t, pool)
+
+	// 1 つ目の original (profile=NULL): OK
+	_, err := pool.Exec(ctx,
+		`INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes)
+		 VALUES ($1, 'original', 'a.m2ts', 1024)`, recID)
+	if err != nil {
+		t.Fatalf("first original: %v", err)
+	}
+
+	// 同一 recording に 2 つ目の original (profile=NULL) は UNIQUE NULLS NOT DISTINCT で拒否
+	_, err = pool.Exec(ctx,
+		`INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes)
+		 VALUES ($1, 'original', 'b.m2ts', 2048)`, recID)
+	assertPgError(t, err, "23505")
 }
 
 func TestSchemaV1_DropStats(t *testing.T) {
@@ -328,10 +349,11 @@ func TestReservationOptions_Effective(t *testing.T) {
 	path := "videos/test.m2ts"
 	keepOrig := "untilEncoded"
 
+	profiles := []string{"h265-1080p"}
 	base := &ReservationOptions{
 		Priority:       &priority1,
 		ContentPath:    &path,
-		EncodeProfiles: []string{"h265-1080p"},
+		EncodeProfiles: &profiles,
 		KeepOriginal:   &keepOrig,
 	}
 	overrides := &ReservationOptions{
@@ -350,7 +372,7 @@ func TestReservationOptions_Effective(t *testing.T) {
 	if eff.ContentPath == nil || *eff.ContentPath != path {
 		t.Error("contentPath should come from base")
 	}
-	if len(eff.EncodeProfiles) != 1 || eff.EncodeProfiles[0] != "h265-1080p" {
+	if eff.EncodeProfiles == nil || len(*eff.EncodeProfiles) != 1 || (*eff.EncodeProfiles)[0] != "h265-1080p" {
 		t.Error("encodeProfiles should come from base")
 	}
 	if eff.KeepOriginal == nil || *eff.KeepOriginal != keepOrig {

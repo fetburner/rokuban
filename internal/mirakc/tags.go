@@ -20,7 +20,7 @@ func ParseReservationTag(tag string) (int64, bool) {
 		return 0, false
 	}
 	id, err := strconv.ParseInt(tag[len(tagPrefix):], 10, 64)
-	if err != nil {
+	if err != nil || id <= 0 {
 		return 0, false
 	}
 	return id, true

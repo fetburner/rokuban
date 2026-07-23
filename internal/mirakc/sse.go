@@ -63,9 +63,12 @@ func (c *Client) Subscribe(ctx context.Context, ch chan<- Event, cfg *SSEConfig)
 
 	backoff := cfg.InitialBackoff
 	for {
-		err := c.subscribeOnce(ctx, ch)
+		connected, err := c.subscribeOnce(ctx, ch)
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+		if connected {
+			backoff = cfg.InitialBackoff
 		}
 		slog.Warn("SSE connection lost, reconnecting", "err", err, "backoff", backoff)
 
@@ -78,24 +81,25 @@ func (c *Client) Subscribe(ctx context.Context, ch chan<- Event, cfg *SSEConfig)
 	}
 }
 
-func (c *Client) subscribeOnce(ctx context.Context, ch chan<- Event) error {
+func (c *Client) subscribeOnce(ctx context.Context, ch chan<- Event) (bool, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/events", nil)
 	if err != nil {
-		return fmt.Errorf("building request: %w", err)
+		return false, fmt.Errorf("building request: %w", err)
 	}
 	req.Header.Set("Accept", "text/event-stream")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("connecting to SSE: %w", err)
+		return false, fmt.Errorf("connecting to SSE: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("SSE endpoint returned %s", resp.Status)
+		return false, fmt.Errorf("SSE endpoint returned %s", resp.Status)
 	}
 
 	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	var eventType string
 	var dataLines []string
 
@@ -108,7 +112,7 @@ func (c *Client) subscribeOnce(ctx context.Context, ch chan<- Event) error {
 				select {
 				case ch <- Event{Type: eventType, Data: json.RawMessage(data)}:
 				case <-ctx.Done():
-					return ctx.Err()
+					return true, ctx.Err()
 				}
 			}
 			eventType = ""
@@ -124,7 +128,7 @@ func (c *Client) subscribeOnce(ctx context.Context, ch chan<- Event) error {
 	}
 
 	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("reading SSE stream: %w", err)
+		return true, fmt.Errorf("reading SSE stream: %w", err)
 	}
-	return fmt.Errorf("SSE stream closed by server")
+	return true, fmt.Errorf("SSE stream closed by server")
 }

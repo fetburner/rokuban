@@ -415,6 +415,16 @@ func TestSubscribeSSE_Reconnect(t *testing.T) {
 	}
 }
 
+func TestMillisecondsNull(t *testing.T) {
+	var ms Milliseconds
+	if err := json.Unmarshal([]byte("null"), &ms); err != nil {
+		t.Fatalf("unmarshal null: %v", err)
+	}
+	if !ms.Time().IsZero() {
+		t.Errorf("expected zero time for null, got %v", ms.Time())
+	}
+}
+
 func TestMilliseconds(t *testing.T) {
 	input := `1700000000000`
 	var ms Milliseconds

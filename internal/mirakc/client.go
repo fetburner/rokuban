@@ -1,11 +1,13 @@
 package mirakc
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 )
 
 // Client は mirakc の Web API クライアント。
@@ -79,7 +81,7 @@ func (c *Client) ListRecords(ctx context.Context) ([]Record, error) {
 // GetRecord は GET /api/recording/records/{id} を呼ぶ。
 func (c *Client) GetRecord(ctx context.Context, id string) (*Record, error) {
 	var r Record
-	if err := c.getJSON(ctx, fmt.Sprintf("/api/recording/records/%s", id), &r); err != nil {
+	if err := c.getJSON(ctx, fmt.Sprintf("/api/recording/records/%s", url.PathEscape(id)), &r); err != nil {
 		return nil, fmt.Errorf("getting record %s: %w", id, err)
 	}
 	return &r, nil
@@ -88,7 +90,7 @@ func (c *Client) GetRecord(ctx context.Context, id string) (*Record, error) {
 // DeleteRecord は DELETE /api/recording/records/{id} を呼ぶ。
 // purge=true の場合、コンテンツファイルも削除する。
 func (c *Client) DeleteRecord(ctx context.Context, id string, purge bool) (*RecordRemovalResult, error) {
-	path := fmt.Sprintf("/api/recording/records/%s", id)
+	path := fmt.Sprintf("/api/recording/records/%s", url.PathEscape(id))
 	if purge {
 		path += "?purge=true"
 	}
@@ -226,12 +228,12 @@ func (c *Client) getJSON(ctx context.Context, path string, out any) error {
 }
 
 func (c *Client) postJSON(ctx context.Context, path string, body any, out any) error {
-	pr, pw := io.Pipe()
-	go func() {
-		_ = pw.CloseWithError(json.NewEncoder(pw).Encode(body))
-	}()
+	data, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("encoding request body: %w", err)
+	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, pr)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(data))
 	if err != nil {
 		return fmt.Errorf("building request: %w", err)
 	}

@@ -17,7 +17,7 @@ func TestParseReservationTag(t *testing.T) {
 		wantOK bool
 	}{
 		{"rokuban:reservation=42", 42, true},
-		{"rokuban:reservation=0", 0, true},
+		{"rokuban:reservation=0", 0, false},
 		{"rokuban:reservation=999999", 999999, true},
 		{"rokuban:reservation=", 0, false},
 		{"rokuban:reservation=abc", 0, false},
