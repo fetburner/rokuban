@@ -141,7 +141,25 @@ Deployment 型で worker を運用する場合（またはその併用）の定�
 
 ### シングルトンロール: pg_advisory_lock リーダー選出
 
-ruler / reconciler / watcher はシングルトンロール。`pg_advisory_lock` によるリーダー選出を使う。セッション断で自動解放されるのでフェイルオーバーも自然に付く。k8s の Lease API に依存しないため monolithic mode でも同じコードが動く（[データ層](data.md) 参照）。
+ruler / reconciler / watcher はシングルトンロール。`pg_try_advisory_lock` による監督ループでリーダー選出を行う:
+
+1. ロールごとに goroutine を立て、`pg_try_advisory_lock` を定期試行（15s + jitter）
+2. 取得したら child context でロール本体を起動
+3. リーダー中はロック専用コネクションに定期 heartbeat（`SELECT 1`、10s 間隔）。失敗 = リーダーシップ喪失とみなし、ロールを停止して取得ループに戻る
+4. セッション断で PG 側ロックが自動解放されるため、待機プロセスが次の poll で取得しフェイルオーバー成立
+
+k8s の Lease API に依存しないため monolithic mode でも同じコードが動く（[データ層](data.md) 参照）。フェイルオーバー遅延は最大 poll 間隔（〜15s）だが、いずれも定期 reconcile 前提のロールなので許容範囲。短時間の split-brain はシングルトンロールの仕事がすべて冪等（レベルトリガー + 冪等原則）であるため安全。
+
+### healthz: liveness のみ
+
+`/healthz` は **liveness probe 専用**。依存サービス（DB・mirakc）の状態は一切チェックせず、プロセスが HTTP を返せる限り常に 200 を返す。
+
+- 不変条件 1「api ロールは mirakc に問い合わせない」により、mirakc チェックは構造的に不可
+- ハイブリッド構成（overview.md）ではクラウド側 api から mirakc に到達できないのが正常状態
+- liveness に依存チェックを入れると「依存ダウン → 全プロセス再起動ループ」になる（liveness probe の定番アンチパターン）
+- DB は起動時に fail-fast で検証済み。ランタイムの DB 断は各ロールがリトライ / クラッシュで対処する（crash-only 原則）
+
+mirakc の健全性は watcher が `observed_at` として DB に記録し、UI / アラートで可視化する。ロードバランサ向けの readiness が必要になったら `/readyz`（DB ping）を別エンドポイントとして追加する。
 
 ### DB 接続失敗: fail-fast + 明示ログ
 

@@ -52,33 +52,11 @@ func newServerCmd() *cobra.Command {
 			}
 			defer pool.Close()
 
-			var releases []func()
-			defer func() {
-				for _, r := range releases {
-					r()
-				}
-			}()
-
-			activeRoles := make([]string, 0, len(roles))
-			for _, r := range roles {
-				if slices.Contains(singletonRoles, r) {
-					acquired, release, lockErr := role.TryAcquire(ctx, pool, r)
-					if lockErr != nil {
-						return lockErr
-					}
-					if !acquired {
-						continue
-					}
-					releases = append(releases, release)
-				}
-				activeRoles = append(activeRoles, r)
-			}
-
-			slog.Info("starting server", "roles", activeRoles)
+			slog.Info("starting server", "roles", roles)
 
 			eg, egCtx := errgroup.WithContext(ctx)
 
-			if slices.Contains(activeRoles, "api") {
+			if slices.Contains(roles, "api") {
 				distFS, subErr := fs.Sub(web.DistFS, "dist")
 				if subErr != nil {
 					panic(fmt.Sprintf("embedded dist/ not found: %v", subErr))
@@ -98,7 +76,7 @@ func newServerCmd() *cobra.Command {
 				}()
 			}
 
-			if slices.Contains(activeRoles, "worker") {
+			if slices.Contains(roles, "worker") {
 				workers := worker.NewWorkers()
 				client, clientErr := worker.NewClient(pool, workers)
 				if clientErr != nil {
@@ -113,8 +91,23 @@ func newServerCmd() *cobra.Command {
 				}()
 			}
 
-			// errgroup はシグナル (ctx cancel) と HTTP サーバー異常終了の両方を待つ。
-			// どちらか先に発生した方で抜ける。
+			// シングルトンロールは監督ループで管理する。
+			// ロック取得を定期試行し、取得後は heartbeat で監視する。
+			for _, r := range roles {
+				if !slices.Contains(singletonRoles, r) {
+					continue
+				}
+				roleName := r
+				eg.Go(func() error {
+					return role.RunSingleton(egCtx, pool, roleName, func(ctx context.Context) error {
+						slog.Info("role started", "role", roleName)
+						<-ctx.Done()
+						slog.Info("role stopped", "role", roleName)
+						return ctx.Err()
+					}, nil)
+				})
+			}
+
 			eg.Go(func() error {
 				<-egCtx.Done()
 				return nil
