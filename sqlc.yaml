@@ -1,0 +1,42 @@
+version: "2"
+sql:
+  - engine: "postgresql"
+    queries: "internal/db/queries"
+    schema: "internal/db/migrations"
+    gen:
+      go:
+        package: "sqlcgen"
+        out: "internal/db/sqlcgen"
+        sql_package: "pgx/v5"
+        overrides:
+          - db_type: "timestamptz"
+            go_type:
+              import: "time"
+              type: "Time"
+            nullable: false
+          - db_type: "timestamptz"
+            go_type:
+              import: "time"
+              type: "Time"
+              pointer: true
+            nullable: true
+          - db_type: "jsonb"
+            go_type:
+              import: "encoding/json"
+              type: "RawMessage"
+            nullable: false
+          - db_type: "jsonb"
+            go_type:
+              import: "encoding/json"
+              type: "RawMessage"
+            nullable: true
+          - db_type: "pg_catalog.int8"
+            go_type:
+              type: "int64"
+              pointer: true
+            nullable: true
+          - db_type: "text"
+            go_type:
+              type: "string"
+              pointer: true
+            nullable: true

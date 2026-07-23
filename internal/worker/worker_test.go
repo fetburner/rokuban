@@ -38,6 +38,10 @@ func TestNoOpJob(t *testing.T) {
 	}
 	defer pool.Close()
 
+	if _, err := pool.Exec(ctx, "DELETE FROM river_job"); err != nil {
+		t.Fatalf("cleaning river_job: %v", err)
+	}
+
 	workers := NewWorkers()
 	client, err := NewClient(pool, workers)
 	if err != nil {

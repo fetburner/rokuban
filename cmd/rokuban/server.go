@@ -12,12 +12,16 @@ import (
 	"strings"
 	"syscall"
 
+	pgx5 "github.com/jackc/pgx/v5"
+	"github.com/riverqueue/river"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/fetburner/rokuban/internal/api"
 	"github.com/fetburner/rokuban/internal/db"
+	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/role"
+	"github.com/fetburner/rokuban/internal/watcher"
 	"github.com/fetburner/rokuban/internal/worker"
 	"github.com/fetburner/rokuban/web"
 )
@@ -76,18 +80,23 @@ func newServerCmd() *cobra.Command {
 				}()
 			}
 
-			if slices.Contains(roles, "worker") {
+			// River client（worker と watcher で共有）
+			var riverClient *river.Client[pgx5.Tx]
+			if slices.Contains(roles, "worker") || slices.Contains(roles, "watcher") {
 				workers := worker.NewWorkers()
-				client, clientErr := worker.NewClient(pool, workers)
+				var clientErr error
+				riverClient, clientErr = worker.NewClient(pool, workers)
 				if clientErr != nil {
 					return clientErr
 				}
+			}
 
-				if startErr := client.Start(ctx); startErr != nil {
+			if slices.Contains(roles, "worker") {
+				if startErr := riverClient.Start(ctx); startErr != nil {
 					return fmt.Errorf("starting river client: %w", startErr)
 				}
 				defer func() {
-					_ = client.Stop(context.Background())
+					_ = riverClient.Stop(context.Background())
 				}()
 			}
 
@@ -99,12 +108,18 @@ func newServerCmd() *cobra.Command {
 				}
 				roleName := r
 				eg.Go(func() error {
-					return role.RunSingleton(egCtx, pool, roleName, func(ctx context.Context) error {
+					roleFunc := func(ctx context.Context) error {
 						slog.Info("role started", "role", roleName)
 						<-ctx.Done()
 						slog.Info("role stopped", "role", roleName)
 						return ctx.Err()
-					}, nil)
+					}
+					if roleName == "watcher" {
+						mc := mirakc.NewClient(cfg.Mirakc.URL, nil)
+						w := watcher.New(watcher.DefaultSite, mc, pool, riverClient, nil)
+						roleFunc = w.Run
+					}
+					return role.RunSingleton(egCtx, pool, roleName, roleFunc, nil)
 				})
 			}
 

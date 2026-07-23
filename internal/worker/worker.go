@@ -12,6 +12,7 @@ import (
 func NewWorkers() *river.Workers {
 	workers := river.NewWorkers()
 	river.AddWorker(workers, &NoOpWorker{})
+	river.AddWorker(workers, &IngestWorker{})
 	return workers
 }
 

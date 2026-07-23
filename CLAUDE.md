@@ -7,6 +7,7 @@ Rokuban（録番）は EPGStation をゼロベースで再設計するクラウ�
 ## ビルド・テスト
 
 ```bash
+sqlc generate           # SQL → Go コード生成
 go build ./...          # ビルド
 go test ./...           # テスト
 golangci-lint run       # lint
