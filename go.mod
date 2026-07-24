@@ -16,6 +16,7 @@ require (
 )
 
 require (
+	github.com/Comcast/gots/v3 v3.0.0 // indirect
 	github.com/apapsch/go-jsonmerge/v2 v2.0.0 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.13 // indirect
