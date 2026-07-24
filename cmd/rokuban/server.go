@@ -21,6 +21,7 @@ import (
 	"github.com/fetburner/rokuban/internal/api"
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/reconciler"
 	"github.com/fetburner/rokuban/internal/role"
 	"github.com/fetburner/rokuban/internal/watcher"
 	"github.com/fetburner/rokuban/internal/worker"
@@ -66,7 +67,7 @@ func newServerCmd() *cobra.Command {
 				if subErr != nil {
 					return fmt.Errorf("embedded dist/ not found: %w", subErr)
 				}
-				router := api.NewRouter(cfg.Server.AllowedHosts, distFS)
+				router := api.NewRouter(cfg.Server.AllowedHosts, distFS, pool)
 				srv := &http.Server{Addr: cfg.Server.Listen, Handler: router}
 
 				eg.Go(func() error {
@@ -120,10 +121,15 @@ func newServerCmd() *cobra.Command {
 						slog.Info("role stopped", "role", roleName)
 						return ctx.Err()
 					}
-					if roleName == "watcher" {
+					switch roleName {
+					case "watcher":
 						mc := mirakc.NewClient(cfg.Mirakc.URL, nil)
 						w := watcher.New(watcher.DefaultSite, mc, pool, riverClient, nil)
 						roleFunc = w.Run
+					case "reconciler":
+						mc := mirakc.NewClient(cfg.Mirakc.URL, nil)
+						rec := reconciler.New(watcher.DefaultSite, mc, pool, nil)
+						roleFunc = rec.Run
 					}
 					return role.RunSingleton(egCtx, pool, roleName, roleFunc, nil)
 				})

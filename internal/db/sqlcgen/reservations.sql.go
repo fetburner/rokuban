@@ -7,7 +7,64 @@ package sqlcgen
 
 import (
 	"context"
+	"encoding/json"
+	"time"
 )
+
+const createManualReservation = `-- name: CreateManualReservation :one
+INSERT INTO reservations (site, program_id, source, overrides, title, program_start_at, program_duration_ms)
+VALUES ($1, $2, 'manual', $3, $4, $5, $6)
+RETURNING id, site, program_id, source, rule_id, state, base, overrides, title, program_start_at, program_duration_ms, created_at, updated_at
+`
+
+type CreateManualReservationParams struct {
+	Site              string
+	ProgramID         int64
+	Overrides         json.RawMessage
+	Title             string
+	ProgramStartAt    time.Time
+	ProgramDurationMs int64
+}
+
+func (q *Queries) CreateManualReservation(ctx context.Context, arg CreateManualReservationParams) (Reservation, error) {
+	row := q.db.QueryRow(ctx, createManualReservation,
+		arg.Site,
+		arg.ProgramID,
+		arg.Overrides,
+		arg.Title,
+		arg.ProgramStartAt,
+		arg.ProgramDurationMs,
+	)
+	var i Reservation
+	err := row.Scan(
+		&i.ID,
+		&i.Site,
+		&i.ProgramID,
+		&i.Source,
+		&i.RuleID,
+		&i.State,
+		&i.Base,
+		&i.Overrides,
+		&i.Title,
+		&i.ProgramStartAt,
+		&i.ProgramDurationMs,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const deleteReservation = `-- name: DeleteReservation :execrows
+DELETE FROM reservations WHERE id = $1
+`
+
+func (q *Queries) DeleteReservation(ctx context.Context, id int64) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteReservation, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
 
 const getReservation = `-- name: GetReservation :one
 SELECT id, rule_id, source FROM reservations
@@ -48,4 +105,120 @@ func (q *Queries) GetReservationBySiteAndProgramID(ctx context.Context, arg GetR
 	var i GetReservationBySiteAndProgramIDRow
 	err := row.Scan(&i.ID, &i.RuleID, &i.Source)
 	return i, err
+}
+
+const getReservationFull = `-- name: GetReservationFull :one
+SELECT id, site, program_id, source, rule_id, state, base, overrides, title, program_start_at, program_duration_ms, created_at, updated_at FROM reservations WHERE id = $1
+`
+
+func (q *Queries) GetReservationFull(ctx context.Context, id int64) (Reservation, error) {
+	row := q.db.QueryRow(ctx, getReservationFull, id)
+	var i Reservation
+	err := row.Scan(
+		&i.ID,
+		&i.Site,
+		&i.ProgramID,
+		&i.Source,
+		&i.RuleID,
+		&i.State,
+		&i.Base,
+		&i.Overrides,
+		&i.Title,
+		&i.ProgramStartAt,
+		&i.ProgramDurationMs,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const listActiveReservationsBySite = `-- name: ListActiveReservationsBySite :many
+SELECT id, site, program_id, source, rule_id, state, base, overrides, title, program_start_at, program_duration_ms, created_at, updated_at FROM reservations
+WHERE site = $1 AND state = 'active'
+ORDER BY program_start_at
+`
+
+func (q *Queries) ListActiveReservationsBySite(ctx context.Context, site string) ([]Reservation, error) {
+	rows, err := q.db.Query(ctx, listActiveReservationsBySite, site)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Reservation
+	for rows.Next() {
+		var i Reservation
+		if err := rows.Scan(
+			&i.ID,
+			&i.Site,
+			&i.ProgramID,
+			&i.Source,
+			&i.RuleID,
+			&i.State,
+			&i.Base,
+			&i.Overrides,
+			&i.Title,
+			&i.ProgramStartAt,
+			&i.ProgramDurationMs,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listReservationsBySite = `-- name: ListReservationsBySite :many
+SELECT id, site, program_id, source, rule_id, state, base, overrides, title, program_start_at, program_duration_ms, created_at, updated_at FROM reservations
+WHERE site = $1
+ORDER BY program_start_at
+`
+
+func (q *Queries) ListReservationsBySite(ctx context.Context, site string) ([]Reservation, error) {
+	rows, err := q.db.Query(ctx, listReservationsBySite, site)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Reservation
+	for rows.Next() {
+		var i Reservation
+		if err := rows.Scan(
+			&i.ID,
+			&i.Site,
+			&i.ProgramID,
+			&i.Source,
+			&i.RuleID,
+			&i.State,
+			&i.Base,
+			&i.Overrides,
+			&i.Title,
+			&i.ProgramStartAt,
+			&i.ProgramDurationMs,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const markReservationOrphaned = `-- name: MarkReservationOrphaned :exec
+UPDATE reservations
+SET state = 'orphaned', updated_at = now()
+WHERE id = $1 AND state = 'active'
+`
+
+func (q *Queries) MarkReservationOrphaned(ctx context.Context, id int64) error {
+	_, err := q.db.Exec(ctx, markReservationOrphaned, id)
+	return err
 }

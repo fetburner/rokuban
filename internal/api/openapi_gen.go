@@ -9,22 +9,113 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/oapi-codegen/runtime"
 )
+
+// Defines values for ReservationSource.
+const (
+	Manual ReservationSource = "manual"
+	Rule   ReservationSource = "rule"
+)
+
+// Valid indicates whether the value is a known member of the ReservationSource enum.
+func (e ReservationSource) Valid() bool {
+	switch e {
+	case Manual:
+		return true
+	case Rule:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ReservationState.
+const (
+	Active   ReservationState = "active"
+	Detached ReservationState = "detached"
+	Orphaned ReservationState = "orphaned"
+)
+
+// Valid indicates whether the value is a known member of the ReservationState enum.
+func (e ReservationState) Valid() bool {
+	switch e {
+	case Active:
+		return true
+	case Detached:
+		return true
+	case Orphaned:
+		return true
+	default:
+		return false
+	}
+}
+
+// CreateReservationRequest defines model for CreateReservationRequest.
+type CreateReservationRequest struct {
+	DurationMs int64     `json:"durationMs"`
+	Priority   *int      `json:"priority,omitempty"`
+	ProgramId  int64     `json:"programId"`
+	StartAt    time.Time `json:"startAt"`
+	Title      string    `json:"title"`
+}
+
+// ErrorResponse defines model for ErrorResponse.
+type ErrorResponse struct {
+	Error string `json:"error"`
+}
 
 // HealthResponse defines model for HealthResponse.
 type HealthResponse struct {
 	Status string `json:"status"`
 }
 
+// Reservation defines model for Reservation.
+type Reservation struct {
+	CreatedAt  time.Time               `json:"createdAt"`
+	DurationMs int64                   `json:"durationMs"`
+	Id         int64                   `json:"id"`
+	Overrides  *map[string]interface{} `json:"overrides,omitempty"`
+	ProgramId  int64                   `json:"programId"`
+	RuleId     *int64                  `json:"ruleId,omitempty"`
+	Source     ReservationSource       `json:"source"`
+	StartAt    time.Time               `json:"startAt"`
+	State      ReservationState        `json:"state"`
+	Title      string                  `json:"title"`
+	UpdatedAt  time.Time               `json:"updatedAt"`
+}
+
+// ReservationSource defines model for Reservation.Source.
+type ReservationSource string
+
+// ReservationState defines model for Reservation.State.
+type ReservationState string
+
 // VersionResponse defines model for VersionResponse.
 type VersionResponse struct {
 	Version string `json:"version"`
 }
 
+// CreateReservationJSONRequestBody defines body for CreateReservation for application/json ContentType.
+type CreateReservationJSONRequestBody = CreateReservationRequest
+
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
+	// ListReservations List reservations
+	// (GET /api/reservations)
+	ListReservations(w http.ResponseWriter, r *http.Request)
+	// CreateReservation Create a manual reservation
+	// (POST /api/reservations)
+	CreateReservation(w http.ResponseWriter, r *http.Request)
+	// DeleteReservation Cancel a reservation
+	// (DELETE /api/reservations/{id})
+	DeleteReservation(w http.ResponseWriter, r *http.Request, id int64)
+	// GetReservation Get a reservation
+	// (GET /api/reservations/{id})
+	GetReservation(w http.ResponseWriter, r *http.Request, id int64)
 	// GetVersion Get server version
 	// (GET /api/version)
 	GetVersion(w http.ResponseWriter, r *http.Request)
@@ -36,6 +127,30 @@ type ServerInterface interface {
 // Unimplemented server implementation that returns http.StatusNotImplemented for each endpoint.
 
 type Unimplemented struct{}
+
+// ListReservations List reservations
+// (GET /api/reservations)
+func (_ Unimplemented) ListReservations(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// CreateReservation Create a manual reservation
+// (POST /api/reservations)
+func (_ Unimplemented) CreateReservation(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// DeleteReservation Cancel a reservation
+// (DELETE /api/reservations/{id})
+func (_ Unimplemented) DeleteReservation(w http.ResponseWriter, r *http.Request, id int64) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// GetReservation Get a reservation
+// (GET /api/reservations/{id})
+func (_ Unimplemented) GetReservation(w http.ResponseWriter, r *http.Request, id int64) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
 
 // GetVersion Get server version
 // (GET /api/version)
@@ -57,6 +172,86 @@ type ServerInterfaceWrapper struct {
 }
 
 type MiddlewareFunc func(http.Handler) http.Handler
+
+// ListReservations operation middleware
+func (siw *ServerInterfaceWrapper) ListReservations(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListReservations(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateReservation operation middleware
+func (siw *ServerInterfaceWrapper) CreateReservation(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateReservation(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DeleteReservation operation middleware
+func (siw *ServerInterfaceWrapper) DeleteReservation(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteReservation(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetReservation operation middleware
+func (siw *ServerInterfaceWrapper) GetReservation(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetReservation(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
 
 // GetVersion operation middleware
 func (siw *ServerInterfaceWrapper) GetVersion(w http.ResponseWriter, r *http.Request) {
@@ -205,8 +400,143 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/api/version", wrapper.GetVersion)
 	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/reservations", wrapper.ListReservations)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/api/reservations", wrapper.CreateReservation)
+	})
+	r.Group(func(r chi.Router) {
+		r.Delete(options.BaseURL+"/api/reservations/{id}", wrapper.DeleteReservation)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/reservations/{id}", wrapper.GetReservation)
+	})
 
 	return r
+}
+
+type ListReservationsRequestObject struct {
+}
+
+type ListReservationsResponseObject interface {
+	VisitListReservationsResponse(w http.ResponseWriter) error
+}
+
+type ListReservations200JSONResponse []Reservation
+
+func (response ListReservations200JSONResponse) VisitListReservationsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateReservationRequestObject struct {
+	Body *CreateReservationJSONRequestBody
+}
+
+type CreateReservationResponseObject interface {
+	VisitCreateReservationResponse(w http.ResponseWriter) error
+}
+
+type CreateReservation201JSONResponse Reservation
+
+func (response CreateReservation201JSONResponse) VisitCreateReservationResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateReservation409JSONResponse ErrorResponse
+
+func (response CreateReservation409JSONResponse) VisitCreateReservationResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeleteReservationRequestObject struct {
+	Id int64 `json:"id"`
+}
+
+type DeleteReservationResponseObject interface {
+	VisitDeleteReservationResponse(w http.ResponseWriter) error
+}
+
+type DeleteReservation204Response struct {
+}
+
+func (response DeleteReservation204Response) VisitDeleteReservationResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type DeleteReservation404JSONResponse ErrorResponse
+
+func (response DeleteReservation404JSONResponse) VisitDeleteReservationResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetReservationRequestObject struct {
+	Id int64 `json:"id"`
+}
+
+type GetReservationResponseObject interface {
+	VisitGetReservationResponse(w http.ResponseWriter) error
+}
+
+type GetReservation200JSONResponse Reservation
+
+func (response GetReservation200JSONResponse) VisitGetReservationResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetReservation404JSONResponse ErrorResponse
+
+func (response GetReservation404JSONResponse) VisitGetReservationResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
 }
 
 type GetVersionRequestObject struct {
@@ -253,6 +583,18 @@ func (response Healthz200JSONResponse) VisitHealthzResponse(w http.ResponseWrite
 
 // StrictServerInterface represents all server handlers.
 type StrictServerInterface interface {
+	// ListReservations List reservations
+	// (GET /api/reservations)
+	ListReservations(ctx context.Context, request ListReservationsRequestObject) (ListReservationsResponseObject, error)
+	// CreateReservation Create a manual reservation
+	// (POST /api/reservations)
+	CreateReservation(ctx context.Context, request CreateReservationRequestObject) (CreateReservationResponseObject, error)
+	// DeleteReservation Cancel a reservation
+	// (DELETE /api/reservations/{id})
+	DeleteReservation(ctx context.Context, request DeleteReservationRequestObject) (DeleteReservationResponseObject, error)
+	// GetReservation Get a reservation
+	// (GET /api/reservations/{id})
+	GetReservation(ctx context.Context, request GetReservationRequestObject) (GetReservationResponseObject, error)
 	// GetVersion Get server version
 	// (GET /api/version)
 	GetVersion(ctx context.Context, request GetVersionRequestObject) (GetVersionResponseObject, error)
@@ -298,6 +640,113 @@ type strictHandler struct {
 	ssi         StrictServerInterface
 	middlewares []StrictMiddlewareFunc
 	options     StrictHTTPServerOptions
+}
+
+// ListReservations operation middleware
+func (sh *strictHandler) ListReservations(w http.ResponseWriter, r *http.Request) {
+	var request ListReservationsRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListReservations(ctx, request.(ListReservationsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListReservations")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListReservationsResponseObject); ok {
+		if err := validResponse.VisitListReservationsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// CreateReservation operation middleware
+func (sh *strictHandler) CreateReservation(w http.ResponseWriter, r *http.Request) {
+	var request CreateReservationRequestObject
+
+	var body CreateReservationJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.CreateReservation(ctx, request.(CreateReservationRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CreateReservation")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(CreateReservationResponseObject); ok {
+		if err := validResponse.VisitCreateReservationResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// DeleteReservation operation middleware
+func (sh *strictHandler) DeleteReservation(w http.ResponseWriter, r *http.Request, id int64) {
+	var request DeleteReservationRequestObject
+
+	request.Id = id
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.DeleteReservation(ctx, request.(DeleteReservationRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "DeleteReservation")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(DeleteReservationResponseObject); ok {
+		if err := validResponse.VisitDeleteReservationResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetReservation operation middleware
+func (sh *strictHandler) GetReservation(w http.ResponseWriter, r *http.Request, id int64) {
+	var request GetReservationRequestObject
+
+	request.Id = id
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetReservation(ctx, request.(GetReservationRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetReservation")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetReservationResponseObject); ok {
+		if err := validResponse.VisitGetReservationResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
 }
 
 // GetVersion operation middleware
