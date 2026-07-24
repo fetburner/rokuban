@@ -24,6 +24,16 @@ func sanitizeComponent(s string, maxLen int) string {
 	return s
 }
 
+func sanitizeContentPath(p string) string {
+	parts := strings.Split(p, "/")
+	for i, part := range parts {
+		parts[i] = sanitizeComponent(part, 0)
+	}
+	result := strings.Join(parts, "/")
+	result = strings.TrimPrefix(result, "/")
+	return result
+}
+
 func generateContentPath(title string, startAt time.Time, serviceID int) string {
 	date := startAt.Format("20060102")
 	timeStr := startAt.Format("150405")

@@ -57,6 +57,50 @@ func TestGenerateContentPath(t *testing.T) {
 	}
 }
 
+func TestSanitizeContentPath(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{"traversal", "../../etc/passwd"},
+		{"absolute", "/root/.ssh/keys"},
+		{"null byte", "ok/title\x00evil.m2ts"},
+		{"normal", "20260724/210000_NHKニュース7_5136.m2ts"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sanitizeContentPath(tt.input)
+			if strings.Contains(got, "..") {
+				t.Errorf("path traversal in sanitizeContentPath(%q): %q", tt.input, got)
+			}
+			if strings.HasPrefix(got, "/") {
+				t.Errorf("absolute path from sanitizeContentPath(%q): %q", tt.input, got)
+			}
+			if strings.ContainsAny(got, "\x00") {
+				t.Errorf("null byte in sanitizeContentPath(%q): %q", tt.input, got)
+			}
+		})
+	}
+}
+
+func TestServiceIDExtraction(t *testing.T) {
+	// programId = networkId * 10_000_000_000 + serviceId * 100_000 + eventId
+	tests := []struct {
+		programID int64
+		wantSID   int
+	}{
+		{100000500011234, 5000}, // networkId=10000, serviceId=5000, eventId=11234
+		{327560512065535, 5120}, // networkId=32756, serviceId=5120, eventId=65535
+		{327360102412345, 1024}, // networkId=32736, serviceId=1024, eventId=12345
+	}
+	for _, tt := range tests {
+		sid := int((tt.programID / 100000) % 100000)
+		if sid != tt.wantSID {
+			t.Errorf("programID=%d: serviceID=%d, want %d", tt.programID, sid, tt.wantSID)
+		}
+	}
+}
+
 func TestGenerateContentPath_NoTraversal(t *testing.T) {
 	malicious := []string{
 		"../../etc/passwd",

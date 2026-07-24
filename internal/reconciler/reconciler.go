@@ -245,10 +245,10 @@ func (r *Reconciler) createSchedule(ctx context.Context, res sqlcgen.Reservation
 		priority = *opts.Priority
 	}
 
-	serviceID := int(res.ProgramID % 100000)
+	serviceID := int((res.ProgramID / 100000) % 100000)
 	contentPath := generateContentPath(res.Title, res.ProgramStartAt, serviceID)
 	if opts.ContentPath != nil && *opts.ContentPath != "" {
-		contentPath = *opts.ContentPath
+		contentPath = sanitizeContentPath(*opts.ContentPath)
 	}
 
 	input := mirakc.ScheduleInput{
