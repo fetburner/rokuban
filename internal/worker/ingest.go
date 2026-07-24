@@ -2,9 +2,29 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
+
+	"github.com/fetburner/rokuban/internal/db"
+	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/tsstat"
+)
+
+const (
+	defaultStallTimeout = 30 * time.Second
+	maxInJobRetries     = 5
+	ingestQueue         = "ingest"
 )
 
 type IngestJobArgs struct {
@@ -16,6 +36,7 @@ func (IngestJobArgs) Kind() string { return "ingest" }
 
 func (IngestJobArgs) InsertOpts() river.InsertOpts {
 	return river.InsertOpts{
+		Queue: ingestQueue,
 		UniqueOpts: river.UniqueOpts{
 			ByArgs: true,
 		},
@@ -24,9 +45,228 @@ func (IngestJobArgs) InsertOpts() river.InsertOpts {
 
 type IngestWorker struct {
 	river.WorkerDefaults[IngestJobArgs]
+	MirakcClient *mirakc.Client
+	Pool         *pgxpool.Pool
+	MediaDir     string
+	StallTimeout time.Duration
 }
 
 func (w *IngestWorker) Work(ctx context.Context, job *river.Job[IngestJobArgs]) error {
-	slog.Info("ingest job placeholder", "site", job.Args.Site, "record_id", job.Args.RecordID)
+	args := job.Args
+	log := slog.With("site", args.Site, "record_id", args.RecordID)
+
+	stallTimeout := w.StallTimeout
+	if stallTimeout == 0 {
+		stallTimeout = defaultStallTimeout
+	}
+
+	recordingID, err := w.lookupRecordingID(ctx, args)
+	if err != nil {
+		return fmt.Errorf("looking up recording_id: %w", err)
+	}
+
+	relPath, err := w.determineRelPath(ctx, args)
+	if err != nil {
+		return fmt.Errorf("determining rel_path: %w", err)
+	}
+
+	fullPath := filepath.Join(w.MediaDir, relPath)
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+		return fmt.Errorf("creating directory %s: %w", filepath.Dir(fullPath), err)
+	}
+
+	f, err := os.Create(fullPath)
+	if err != nil {
+		return fmt.Errorf("creating file %s: %w", fullPath, err)
+	}
+	defer func() { _ = f.Close() }()
+
+	counter := tsstat.NewCounter(f)
+
+	var offset int64
+	for attempt := 0; ; attempt++ {
+		stallCtx, stallCancel := context.WithCancel(ctx)
+
+		body, _, err := w.MirakcClient.StreamRecord(stallCtx, args.RecordID, offset)
+		if err != nil {
+			stallCancel()
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if attempt >= maxInJobRetries {
+				return fmt.Errorf("streaming record (attempt %d): %w", attempt, err)
+			}
+			log.Warn("ingest: stream connect failed, retrying", "attempt", attempt, "err", err)
+			continue
+		}
+
+		timer := time.AfterFunc(stallTimeout, func() { stallCancel() })
+		sr := &stallReader{r: body, timer: timer, d: stallTimeout}
+		n, copyErr := io.Copy(counter, sr)
+		timer.Stop()
+		stallCancel()
+		_ = body.Close()
+
+		offset += n
+
+		if copyErr == nil {
+			break
+		}
+
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
+		if attempt >= maxInJobRetries {
+			return fmt.Errorf("transfer failed after %d retries at offset %d: %w", attempt, offset, copyErr)
+		}
+
+		log.Warn("ingest: transfer interrupted, retrying with Range",
+			"offset", offset, "attempt", attempt, "err", copyErr)
+	}
+
+	expectedLen, err := w.MirakcClient.HeadRecordStream(ctx, args.RecordID)
+	if err != nil {
+		return fmt.Errorf("HEAD record stream: %w", err)
+	}
+	if expectedLen >= 0 && offset != expectedLen {
+		return fmt.Errorf("size mismatch: written=%d expected=%d", offset, expectedLen)
+	}
+
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("closing file: %w", err)
+	}
+
+	log.Info("ingest: transfer complete", "bytes", offset,
+		"drops", counter.TotalDrops(), "errors", counter.TotalErrors(),
+		"scrambled", counter.TotalScrambled())
+
+	if err := w.commit(ctx, recordingID, relPath, offset, counter); err != nil {
+		return fmt.Errorf("committing ingest: %w", err)
+	}
+
+	if _, err := w.MirakcClient.DeleteRecord(ctx, args.RecordID, true); err != nil {
+		log.Error("ingest: failed to delete edge record (committed OK)", "err", err)
+	}
+
 	return nil
+}
+
+func (w *IngestWorker) lookupRecordingID(ctx context.Context, args IngestJobArgs) (int64, error) {
+	q := sqlcgen.New(w.Pool)
+	recID, err := q.GetRecordSyncRecordingID(ctx, sqlcgen.GetRecordSyncRecordingIDParams{
+		Site:     args.Site,
+		RecordID: args.RecordID,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("querying record_sync: %w", err)
+	}
+	if recID == nil {
+		return 0, fmt.Errorf("record_sync (%s, %s) has no recording_id", args.Site, args.RecordID)
+	}
+	return *recID, nil
+}
+
+func (w *IngestWorker) determineRelPath(ctx context.Context, args IngestJobArgs) (string, error) {
+	record, err := w.MirakcClient.GetRecord(ctx, args.RecordID)
+	if err != nil {
+		return "", fmt.Errorf("getting mirakc record: %w", err)
+	}
+	var relPath string
+	if cp := record.Recording.Options.ContentPath; cp != nil && *cp != "" {
+		relPath = *cp
+	} else {
+		relPath = filepath.Base(record.Content.Path)
+	}
+	if err := validateRelPath(w.MediaDir, relPath); err != nil {
+		return "", err
+	}
+	return relPath, nil
+}
+
+func validateRelPath(mediaDir, relPath string) error {
+	absMedia := filepath.Clean(mediaDir)
+	absTarget := filepath.Clean(filepath.Join(mediaDir, relPath))
+	if !strings.HasPrefix(absTarget, absMedia+string(filepath.Separator)) {
+		return fmt.Errorf("rel_path %q escapes media directory", relPath)
+	}
+	return nil
+}
+
+func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath string, size int64, counter *tsstat.Counter) error {
+	tx, err := w.Pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("beginning transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	q := sqlcgen.New(tx)
+
+	assetID, err := q.CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
+		RecordingID: recordingID,
+		Kind:        db.AssetKindOriginal,
+		RelPath:     relPath,
+		SizeBytes:   size,
+	})
+	if err != nil {
+		return fmt.Errorf("inserting media_asset: %w", err)
+	}
+
+	stats := counter.Stats()
+	pids := make([]int, 0, len(stats))
+	for pid := range stats {
+		pids = append(pids, pid)
+	}
+	sort.Ints(pids)
+
+	for _, pid := range pids {
+		s := stats[pid]
+		if err := q.InsertDropStat(ctx, sqlcgen.InsertDropStatParams{
+			MediaAssetID: assetID,
+			Pid:          int32(pid),
+			Packets:      s.Packets,
+			Drops:        s.Drops,
+			Errors:       s.Errors,
+			Scrambled:    s.Scrambled,
+		}); err != nil {
+			return fmt.Errorf("inserting drop_stat for PID %d: %w", pid, err)
+		}
+	}
+
+	if counter.TotalScrambled() > 0 {
+		event := db.QualityEvent{
+			At:    time.Now(),
+			Event: "bcas_anomaly",
+		}
+		evJSON, err := json.Marshal([]db.QualityEvent{event})
+		if err != nil {
+			return fmt.Errorf("marshalling quality event: %w", err)
+		}
+		if err := q.AppendQualityEvents(ctx, sqlcgen.AppendQualityEventsParams{
+			Events: evJSON,
+			ID:     recordingID,
+		}); err != nil {
+			return fmt.Errorf("appending quality event: %w", err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("committing transaction: %w", err)
+	}
+
+	return nil
+}
+
+type stallReader struct {
+	r     io.Reader
+	timer *time.Timer
+	d     time.Duration
+}
+
+func (s *stallReader) Read(p []byte) (int, error) {
+	n, err := s.r.Read(p)
+	if n > 0 {
+		s.timer.Reset(s.d)
+	}
+	return n, err
 }

@@ -18,8 +18,8 @@ func TestNoOpJob(t *testing.T) {
 		t.Fatalf("cleaning river_job: %v", err)
 	}
 
-	workers := NewWorkers()
-	client, err := NewClient(pool, workers)
+	workers := NewWorkers(&IngestDeps{Pool: pool})
+	client, err := NewClient(pool, workers, 2)
 	if err != nil {
 		t.Fatalf("creating client: %v", err)
 	}

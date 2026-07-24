@@ -88,9 +88,14 @@ func newServerCmd() *cobra.Command {
 			// River client（worker と watcher で共有）
 			var riverClient *river.Client[pgx5.Tx]
 			if slices.Contains(roles, "worker") || slices.Contains(roles, "watcher") {
-				workers := worker.NewWorkers()
+				mc := mirakc.NewClient(cfg.Mirakc.URL, nil)
+				workers := worker.NewWorkers(&worker.IngestDeps{
+					MirakcClient: mc,
+					Pool:         pool,
+					MediaDir:     cfg.Storage.MediaDir,
+				})
 				var clientErr error
-				riverClient, clientErr = worker.NewClient(pool, workers)
+				riverClient, clientErr = worker.NewClient(pool, workers, cfg.Ingest.Concurrency)
 				if clientErr != nil {
 					return clientErr
 				}
