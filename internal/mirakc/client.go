@@ -198,6 +198,7 @@ type APIError struct {
 	Body       string
 }
 
+// Error はエラーメッセージを返す。
 func (e *APIError) Error() string {
 	if e.Body != "" {
 		return fmt.Sprintf("mirakc API %s: %s", e.Status, e.Body)

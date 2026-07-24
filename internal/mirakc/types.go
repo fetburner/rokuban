@@ -8,6 +8,7 @@ import (
 // Milliseconds は mirakc の UNIX time (ミリ秒) を time.Time に変換する。
 type Milliseconds time.Time
 
+// UnmarshalJSON は UNIX ミリ秒の JSON 数値を time.Time にデコードする。
 func (m *Milliseconds) UnmarshalJSON(b []byte) error {
 	if string(b) == "null" {
 		return nil
@@ -20,10 +21,12 @@ func (m *Milliseconds) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
+// MarshalJSON は time.Time を UNIX ミリ秒の JSON 数値にエンコードする。
 func (m Milliseconds) MarshalJSON() ([]byte, error) {
 	return json.Marshal(time.Time(m).UnixMilli())
 }
 
+// Time は標準の time.Time に変換する。
 func (m Milliseconds) Time() time.Time {
 	return time.Time(m)
 }

@@ -17,22 +17,27 @@ var version = "dev"
 
 const defaultSite = "default"
 
+// Server は予約 API のハンドラ実装。oapi-codegen の StrictServerInterface を満たす。
 type Server struct {
 	pool *pgxpool.Pool
 }
 
+// NewServer は Server を生成する。
 func NewServer(pool *pgxpool.Pool) *Server {
 	return &Server{pool: pool}
 }
 
+// Healthz はヘルスチェックエンドポイント。
 func (h *Server) Healthz(_ context.Context, _ HealthzRequestObject) (HealthzResponseObject, error) {
 	return Healthz200JSONResponse{Status: "ok"}, nil
 }
 
+// GetVersion はサーバーバージョンを返す。
 func (h *Server) GetVersion(_ context.Context, _ GetVersionRequestObject) (GetVersionResponseObject, error) {
 	return GetVersion200JSONResponse{Version: version}, nil
 }
 
+// ListReservations は予約一覧を返す。
 func (h *Server) ListReservations(ctx context.Context, _ ListReservationsRequestObject) (ListReservationsResponseObject, error) {
 	q := sqlcgen.New(h.pool)
 	rows, err := q.ListReservationsBySite(ctx, defaultSite)
@@ -47,6 +52,7 @@ func (h *Server) ListReservations(ctx context.Context, _ ListReservationsRequest
 	return ListReservations200JSONResponse(result), nil
 }
 
+// CreateReservation は手動予約を作成する。
 func (h *Server) CreateReservation(ctx context.Context, req CreateReservationRequestObject) (CreateReservationResponseObject, error) {
 	overrides := db.ReservationOptions{}
 	if req.Body.Priority != nil {
@@ -78,6 +84,7 @@ func (h *Server) CreateReservation(ctx context.Context, req CreateReservationReq
 	return CreateReservation201JSONResponse(res), nil
 }
 
+// GetReservation は指定 ID の予約を返す。
 func (h *Server) GetReservation(ctx context.Context, req GetReservationRequestObject) (GetReservationResponseObject, error) {
 	q := sqlcgen.New(h.pool)
 	row, err := q.GetReservationFull(ctx, req.Id)
@@ -91,6 +98,7 @@ func (h *Server) GetReservation(ctx context.Context, req GetReservationRequestOb
 	return GetReservation200JSONResponse(res), nil
 }
 
+// DeleteReservation は指定 ID の予約を削除する。
 func (h *Server) DeleteReservation(ctx context.Context, req DeleteReservationRequestObject) (DeleteReservationResponseObject, error) {
 	q := sqlcgen.New(h.pool)
 	n, err := q.DeleteReservation(ctx, req.Id)

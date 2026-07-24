@@ -162,28 +162,42 @@ type QualityEvent struct {
 	Reason json.RawMessage `json:"reason"`
 }
 
-// 定数
-
+// 予約ソース。
 const (
 	SourceRule   = "rule"
 	SourceManual = "manual"
+)
 
+// 予約状態。
+const (
 	ReservationStateActive   = "active"
 	ReservationStateDetached = "detached"
 	ReservationStateOrphaned = "orphaned"
+)
 
+// 録画ステータス。
+const (
 	RecordingStatusRecording = "recording"
 	RecordingStatusFinished  = "finished"
 	RecordingStatusFailed    = "failed"
+)
 
+// メディアアセット種別。
+const (
 	AssetKindOriginal  = "original"
 	AssetKindEncoded   = "encoded"
 	AssetKindThumbnail = "thumbnail"
+)
 
+// メディアアセット状態。
+const (
 	AssetStateActive   = "active"
 	AssetStateDeleting = "deleting"
 	AssetStateDeleted  = "deleted"
+)
 
+// オリジナル保持ポリシー。
+const (
 	KeepOriginalAlways       = "always"
 	KeepOriginalUntilEncoded = "until_encoded"
 )

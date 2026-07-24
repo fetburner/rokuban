@@ -11,6 +11,7 @@ import (
 	"github.com/goccy/go-yaml"
 )
 
+// Config はアプリケーション全体の設定。
 type Config struct {
 	Server  ServerConfig  `yaml:"server"`
 	DB      DBConfig      `yaml:"db"`
@@ -21,11 +22,13 @@ type Config struct {
 	Log     LogConfig     `yaml:"log"`
 }
 
+// ServerConfig は HTTP サーバーの設定。
 type ServerConfig struct {
 	Listen       string   `yaml:"listen"`
 	AllowedHosts []string `yaml:"allowed_hosts"`
 }
 
+// DBConfig は PostgreSQL 接続設定。
 type DBConfig struct {
 	Host     string `yaml:"host"     validate:"required"`
 	Port     int    `yaml:"port"`
@@ -35,6 +38,7 @@ type DBConfig struct {
 	SSLMode  string `yaml:"sslmode"`
 }
 
+// DSN は libpq 形式の接続文字列を返す。
 func (c DBConfig) DSN() string {
 	return fmt.Sprintf(
 		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
@@ -42,29 +46,35 @@ func (c DBConfig) DSN() string {
 	)
 }
 
+// MirakcConfig は mirakc 接続設定。
 type MirakcConfig struct {
 	URL string `yaml:"url" validate:"required,url"`
 }
 
+// StorageConfig はメディアファイルの保存先設定。
 type StorageConfig struct {
 	MediaDir   string `yaml:"media_dir"   validate:"required"`
 	ScratchDir string `yaml:"scratch_dir"`
 }
 
+// IngestConfig は ingest ジョブの設定。
 type IngestConfig struct {
 	Concurrency int `yaml:"concurrency"`
 }
 
+// EncodeConfig はエンコード設定。
 type EncodeConfig struct {
 	FFmpeg   string          `yaml:"ffmpeg"`
 	FFprobe  string          `yaml:"ffprobe"`
 	Profiles []EncodeProfile `yaml:"profiles"`
 }
 
+// EncodeProfile はエンコードプロファイルの定義。
 type EncodeProfile struct {
 	Name string `yaml:"name"`
 }
 
+// LogConfig はログ出力の設定。
 type LogConfig struct {
 	Level  string `yaml:"level"  validate:"omitempty,oneof=debug info warn error"`
 	Format string `yaml:"format" validate:"omitempty,oneof=json text"`
@@ -132,10 +142,12 @@ func loadFromString(raw string) (*Config, error) {
 	return &cfg, nil
 }
 
+// ValidationError は設定バリデーション失敗時のエラー。
 type ValidationError struct {
 	fieldErrors validator.ValidationErrors
 }
 
+// Error は検証エラーのメッセージを返す。
 func (e *ValidationError) Error() string {
 	msgs := make([]string, len(e.fieldErrors))
 	for i, fe := range e.fieldErrors {
@@ -144,6 +156,7 @@ func (e *ValidationError) Error() string {
 	return fmt.Sprintf("config validation failed:\n  - %s", strings.Join(msgs, "\n  - "))
 }
 
+// FieldErrors は個別のフィールドエラーを返す。
 func (e *ValidationError) FieldErrors() validator.ValidationErrors {
 	return e.fieldErrors
 }

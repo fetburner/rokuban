@@ -27,13 +27,16 @@ const (
 	ingestQueue         = "ingest"
 )
 
+// IngestJobArgs は ingest ジョブの引数。mirakc サイトと record ID を指定する。
 type IngestJobArgs struct {
 	Site     string `json:"site"`
 	RecordID string `json:"record_id"`
 }
 
+// Kind は River ジョブの種別名を返す。
 func (IngestJobArgs) Kind() string { return "ingest" }
 
+// InsertOpts は River ジョブの挿入オプションを返す。
 func (IngestJobArgs) InsertOpts() river.InsertOpts {
 	return river.InsertOpts{
 		Queue: ingestQueue,
@@ -43,6 +46,7 @@ func (IngestJobArgs) InsertOpts() river.InsertOpts {
 	}
 }
 
+// IngestWorker は mirakc からの TS ファイル転送を行う River ワーカー。
 type IngestWorker struct {
 	river.WorkerDefaults[IngestJobArgs]
 	MirakcClient *mirakc.Client
@@ -51,6 +55,7 @@ type IngestWorker struct {
 	StallTimeout time.Duration
 }
 
+// Work は ingest ジョブを実行する。ストリーム取得・TS 統計収集・DB コミット・エッジ削除を行う。
 func (w *IngestWorker) Work(ctx context.Context, job *river.Job[IngestJobArgs]) error {
 	args := job.Args
 	log := slog.With("site", args.Site, "record_id", args.RecordID)

@@ -14,6 +14,7 @@ import (
 	"github.com/fetburner/rokuban/internal/mirakc"
 )
 
+// Config は Reconciler の設定。
 type Config struct {
 	ReconcileInterval time.Duration
 	MaxDeletesPerPass int
@@ -28,6 +29,7 @@ func defaultConfig() Config {
 	}
 }
 
+// Reconciler は予約の desired state と mirakc の observed state を定期的に突き合わせる。
 type Reconciler struct {
 	site   string
 	mirakc *mirakc.Client
@@ -35,6 +37,7 @@ type Reconciler struct {
 	cfg    Config
 }
 
+// New は Reconciler を生成する。cfg が nil の場合はデフォルト設定を使う。
 func New(site string, mc *mirakc.Client, pool *pgxpool.Pool, cfg *Config) *Reconciler {
 	c := defaultConfig()
 	if cfg != nil {
@@ -56,6 +59,7 @@ func New(site string, mc *mirakc.Client, pool *pgxpool.Pool, cfg *Config) *Recon
 	}
 }
 
+// Run は reconcile ループを開始し、ctx がキャンセルされるまでブロックする。
 func (r *Reconciler) Run(ctx context.Context) error {
 	if err := r.reconcile(ctx); err != nil {
 		slog.Error("initial reconcile failed", "err", err)

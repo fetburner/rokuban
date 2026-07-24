@@ -11,12 +11,14 @@ import (
 	"github.com/fetburner/rokuban/internal/mirakc"
 )
 
+// IngestDeps は IngestWorker に注入する依存。
 type IngestDeps struct {
 	MirakcClient *mirakc.Client
 	Pool         *pgxpool.Pool
 	MediaDir     string
 }
 
+// NewWorkers は全ワーカーを登録した river.Workers を返す。
 func NewWorkers(deps *IngestDeps) *river.Workers {
 	workers := river.NewWorkers()
 	river.AddWorker(workers, &NoOpWorker{})
@@ -28,6 +30,7 @@ func NewWorkers(deps *IngestDeps) *river.Workers {
 	return workers
 }
 
+// NewClient は River クライアントを生成する。ingestConcurrency で ingest キューの同時実行数を制限する。
 func NewClient(pool *pgxpool.Pool, workers *river.Workers, ingestConcurrency int) (*river.Client[pgx5.Tx], error) {
 	if ingestConcurrency <= 0 {
 		ingestConcurrency = 2

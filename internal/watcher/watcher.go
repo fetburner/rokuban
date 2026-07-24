@@ -19,8 +19,10 @@ import (
 	"github.com/fetburner/rokuban/internal/worker"
 )
 
+// DefaultSite はデフォルトの mirakc サイト名。
 const DefaultSite = "default"
 
+// Config は Watcher の設定。
 type Config struct {
 	ReconcileInterval time.Duration
 }
@@ -31,6 +33,7 @@ func defaultConfig() Config {
 	}
 }
 
+// Watcher は mirakc の SSE イベントを購読し、録画の状態変化を DB に反映する。
 type Watcher struct {
 	site     string
 	mirakc   *mirakc.Client
@@ -40,6 +43,7 @@ type Watcher struct {
 	services []mirakc.Service
 }
 
+// New は Watcher を生成する。cfg が nil の場合はデフォルト設定を使う。
 func New(site string, mc *mirakc.Client, pool *pgxpool.Pool, rc *river.Client[pgx5.Tx], cfg *Config) *Watcher {
 	c := defaultConfig()
 	if cfg != nil {
@@ -56,6 +60,7 @@ func New(site string, mc *mirakc.Client, pool *pgxpool.Pool, rc *river.Client[pg
 	}
 }
 
+// Run は SSE 購読と定期 reconcile を開始し、ctx がキャンセルされるまでブロックする。
 func (w *Watcher) Run(ctx context.Context) error {
 	events := make(chan mirakc.Event, 64)
 	eg, egCtx := errgroup.WithContext(ctx)

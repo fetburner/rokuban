@@ -51,3 +51,4 @@ golangci-lint run       # lint
 - ログは `log/slog`
 - エラーは握り潰さず `fmt.Errorf("...: %w", err)` で文脈付き wrap
 - 各タスクは 1 PR 粒度。着手前に対応 issue の本文とコメントを必ず読む
+- **doc コメント**: エクスポートされた関数・型・メソッド・定数には [Go Doc Comments](https://go.dev/doc/comment) 規約に従った doc コメントを書く。`// FuncName は〜` の形式で主語を識別子名にする。非公開でも他パッケージから呼ばれうる重要な関数には書く
