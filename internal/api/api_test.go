@@ -132,6 +132,7 @@ func newTestDistFS() fstest.MapFS {
 	return fstest.MapFS{
 		"index.html":          {Data: []byte("<html>app</html>")},
 		"assets/index-Ab1.js": {Data: []byte("console.log('app')")},
+		"favicon.svg":         {Data: []byte("<svg/>")},
 	}
 }
 
@@ -199,6 +200,27 @@ func TestSPA_DirectIndexHTMLNoCache(t *testing.T) {
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if cc := resp.Header.Get("Cache-Control"); cc != "no-cache" {
+		t.Errorf("Cache-Control = %q, want %q", cc, "no-cache")
+	}
+}
+
+// public/ 由来のファイルはハッシュを持たないので、差し替えても URL が変わらない。
+// immutable を付けたり無指定にすると古いファビコンが出続ける。
+func TestSPA_UnhashedAssetNoCache(t *testing.T) {
+	router := NewRouter(RouterConfig{DistFS: newTestDistFS()})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/favicon.svg")
 	if err != nil {
 		t.Fatal(err)
 	}

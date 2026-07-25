@@ -227,12 +227,25 @@ mirakc と同じ「接続時に現在状態を再送し、以降差分」とい�
 | SPA フォールバック | 両モードで用意。Go 側は catch-all、S3 側は CloudFront Function rewrite 等 |
 | API パス | 常に相対パス `/api/*` を叩く。S3 配信時は CDN のパスベースルーティングで `/api/*` と `/events` をバックエンド origin へ振り分ける（CORS 不要、実行時コンフィグ注入不要） |
 | SSE の CDN 通過 | タイムアウト・キャッシュ無効化の設定が必要。CDN を迂回して直接バックエンドに繋ぐ選択肢も残す |
-| キャッシュ規約 | ハッシュ付きアセットは `Cache-Control: immutable`、`index.html` は no-cache。go:embed モードでも同じヘッダを付けて挙動を揃える |
+| キャッシュ規約 | ハッシュ付きアセット（`assets/*`）は `Cache-Control: immutable`、**それ以外はすべて no-cache**。go:embed モードでも同じヘッダを付けて挙動を揃える |
 | 後方互換 | UI と API のデプロイタイミングはずれ得るため API は後方互換を保つ。破壊的変更は OpenAPI 生成クライアントの差分として CI で検知 |
+
+### ハッシュを持たないファイルに no-cache を付け忘れない
+
+`index.html` だけでなく `public/` 由来のファイル（`favicon.svg` / `favicon.ico` /
+`apple-touch-icon.png`）もハッシュを持たない。内容が変わってもパスが変わらないので、
+キャッシュ指定を落とすと差し替えが伝わらない。
+
+埋め込んだ FS の `ModTime` はゼロ値なので `http.ServeContent` は `Last-Modified`
+も `ETag` も出せない。`Cache-Control` がなければ検証子もないので、ブラウザの
+ヒューリスティックキャッシュに委ねることになる。**ファビコンを差し替えたのに
+古いものが出続ける**形で効く。
+
+そのため `assets/*` 以外は一律 no-cache にする。
 
 ### 配信経路の整理
 
-go:embed 配信でハッシュ付きアセット immutable + index.html no-cache のヘッダーを正しく付ければ十分。本気の配信最適化は S3+CDN 経路の仕事であり、ここに nginx キャッシュを挟むと配信経路が 3 つになるため行わない（参照: [api.md](api.md) のメディア配信）。
+go:embed 配信でハッシュ付きアセット immutable + それ以外 no-cache のヘッダーを正しく付ければ十分。本気の配信最適化は S3+CDN 経路の仕事であり、ここに nginx キャッシュを挟むと配信経路が 3 つになるため行わない（参照: [api.md](api.md) のメディア配信）。
 
 ## ライブ視聴 --- EPGStation 水準のシンプルな UI
 

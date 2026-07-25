@@ -235,7 +235,7 @@ storage:
 
 ### SPA アセット配信
 
-go:embed 配信でハッシュ付きアセット immutable + index.html no-cache のヘッダーを正しく付ければ十分（参照: [frontend.md](frontend.md)）。本気の配信最適化は S3+CDN 経路の仕事。ここに nginx キャッシュを挟むと配信経路が 3 つになり、テストマトリクスが増える割に得るものがない。
+go:embed 配信でハッシュ付きアセット immutable + それ以外 no-cache のヘッダーを正しく付ければ十分（参照: [frontend.md](frontend.md)）。本気の配信最適化は S3+CDN 経路の仕事。ここに nginx キャッシュを挟むと配信経路が 3 つになり、テストマトリクスが増える割に得るものがない。
 
 ### サービスロゴ
 
