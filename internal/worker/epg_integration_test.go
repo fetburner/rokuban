@@ -91,6 +91,10 @@ func TestIntegration_EpgSync(t *testing.T) {
 	for _, p := range airing {
 		if p.Name != "" {
 			withName++
+		} else {
+			// 影のサブサービス行は投影しない（issue #17 の決定）
+			t.Errorf("program %d on service %d has no name — 影の行が投影されている",
+				p.ProgramID, p.ServiceID)
 		}
 		if len(p.GenreLv1) > 0 {
 			withGenre++
@@ -110,9 +114,6 @@ func TestIntegration_EpgSync(t *testing.T) {
 	}
 	t.Logf("airing programs with name=%d genre=%d video=%d audios=%d extended=%d (of %d)",
 		withName, withGenre, withVideo, withAudios, withExtended, len(airing))
-	if withName == 0 {
-		t.Error("no airing program has a name")
-	}
 	if withVideo == 0 || withAudios == 0 {
 		t.Error("映像・音声属性がまったく投影されていない（UI 完全形が崩れている）")
 	}

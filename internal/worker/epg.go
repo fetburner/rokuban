@@ -178,6 +178,29 @@ func (w *EpgSyncWorker) syncServices(ctx context.Context, q *sqlcgen.Queries, si
 	return projected, nil
 }
 
+// projectable は番組を EPG プロジェクションに載せるかを判定する（issue #17 の決定）。
+//
+// 地上波は 1 物理チャンネルが複数サービス（ＮＨＫ総合１/２ 等）に分かれており、
+// マルチ編成でないときサブサービス側は「同じ eventId で name が null の影の行」として
+// 返ってくる。1 番組が 2〜3 行に重複するので、name を持つ行だけを投影する。
+//
+// 影の行を落としても録れなくなる番組はない。mirakc の録画は
+// `filter-program --sid --eid` でサービス単位に絞るため、影の行を予約しても
+// 得られるものは同じ shared グループの親と同じか空である。逆にマルチ編成の実番組
+// （サブサービスで独立編成される高校野球等）は name を持つのでここを通る。
+//
+// EPGStation は relatedItems を見る isMainProgram() と name チェックの二段で
+// 同じことをしているが、実データ 7139 件で「name があって shared の main でない番組」が
+// 0 件であることを確認したので、name の有無だけで同一の結果になる。
+func projectable(p mirakc.Program) bool {
+	// startAt がない番組は時間軸に置けない
+	if p.StartAt == nil {
+		return false
+	}
+	// 名前のない影の行・リレー枠は画面に描くものがない
+	return p.Name != nil && *p.Name != ""
+}
+
 // syncPrograms は番組を upsert し、投影した件数を返す。
 //
 // params はチャンクごとに組み立てる。全件分をまとめて作ると、パース済みの
@@ -188,8 +211,7 @@ func (w *EpgSyncWorker) syncPrograms(ctx context.Context, q *sqlcgen.Queries, si
 	for chunk := range chunks(programs, epgBatchSize) {
 		params := make([]sqlcgen.UpsertEpgProgramParams, 0, len(chunk))
 		for _, p := range chunk {
-			// startAt がない番組は時間軸に置けないため投影しない。
-			if p.StartAt == nil {
+			if !projectable(p) {
 				continue
 			}
 			startAt := p.StartAt.Time()

@@ -417,9 +417,11 @@ func TestEpgSyncWorker_SkipsUnprojectableRows(t *testing.T) {
 	noDuration := testProgram(32736, 1024, 8, "長さ未定", now.Add(time.Hour), time.Hour)
 	noDuration.Duration = nil
 
+	// 詳細ペイロードが一切ない番組（jsonb が NULL になること）
 	minimal := mirakc.Program{
 		ID: 3273610240007, EventID: 7, ServiceID: 1024, NetworkID: 32736,
 		StartAt: msPtr(now.Add(3 * time.Hour)), Duration: int64Ptr(600000),
+		Name: strPtr("詳細なし"),
 	}
 
 	badService := testService(32738, 2048, 9, "未知の伝送路", "0")
@@ -458,9 +460,9 @@ func TestEpgSyncWorker_SkipsUnprojectableRows(t *testing.T) {
 			}
 		}
 		if p.ProgramID == minimal.ID {
-			// name / description は NOT NULL DEFAULT ''、jsonb 詳細は NULL
-			if p.Name != "" || p.Description != "" {
-				t.Errorf("minimal program name/description = %q / %q, want empty", p.Name, p.Description)
+			// description は NOT NULL DEFAULT ''、jsonb 詳細は NULL
+			if p.Description != "" {
+				t.Errorf("minimal program description = %q, want empty", p.Description)
 			}
 			if p.Extended != nil || p.Genres != nil || p.Video != nil || p.Audios != nil {
 				t.Errorf("minimal program should have NULL jsonb details, got %+v", p)
@@ -469,6 +471,65 @@ func TestEpgSyncWorker_SkipsUnprojectableRows(t *testing.T) {
 				t.Errorf("genre_lv1 = %v, want empty", p.GenreLv1)
 			}
 		}
+	}
+}
+
+// サブサービスの影の行（同じ eventId で name が null）を投影しないこと。
+// マルチ編成の実番組は name を持つので残る（issue #17 の決定）。
+func TestEpgSyncWorker_SkipsShadowSubServicePrograms(t *testing.T) {
+	pool := setupTestPool(t)
+	now := time.Now().Truncate(time.Second)
+
+	// GR/27 に親 1024 とサブ 1025 / 1026。ＮＨＫ総合１/２ 相当の構成。
+	main := testProgram(32736, 1024, 100, "ニュース", now.Add(time.Hour), time.Hour)
+
+	// 同じ eventId・name が null の影の行が 2 サービス分返ってくる
+	shadow1 := testProgram(32736, 1025, 100, "", now.Add(time.Hour), time.Hour)
+	shadow1.Name = nil
+	shadow2 := testProgram(32736, 1026, 100, "", now.Add(time.Hour), time.Hour)
+	shadow2.Name = nil
+
+	// サブサービスの独立編成（マルチ編成）。name を持つので残るべき。
+	multi := testProgram(32736, 1025, 200, "第１０８回全国高校野球選手権香川大会 決勝", now.Add(3*time.Hour), 3*time.Hour)
+
+	// name が空文字のケースも影と同じ扱い
+	emptyName := testProgram(32736, 1026, 300, "", now.Add(7*time.Hour), time.Hour)
+
+	fx := &epgFixture{
+		services: []mirakc.Service{
+			testService(32736, 1024, 1, "ＮＨＫ総合１", "27"),
+			testService(32736, 1025, 1, "ＮＨＫ総合２", "27"),
+			testService(32736, 1026, 1, "ＮＨＫ総合３", "27"),
+		},
+		programs: []mirakc.Program{main, shadow1, shadow2, multi, emptyName},
+	}
+	srv := newEpgServer(t, fx)
+	w := &EpgSyncWorker{MirakcClient: mirakc.NewClient(srv.URL, nil), Pool: pool}
+
+	runEpgSync(t, w)
+
+	programs := allPrograms(t, w)
+	got := make([]int64, len(programs))
+	for i, p := range programs {
+		got[i] = p.ProgramID
+	}
+	want := []int64{main.ID, multi.ID}
+	slices.Sort(want)
+	if !reflect.DeepEqual(got, want) {
+		names := make([]string, len(programs))
+		for i, p := range programs {
+			names[i] = p.Name
+		}
+		t.Errorf("projected ids = %v (%v), want %v (親の実番組とマルチ編成のみ)", got, names, want)
+	}
+
+	// サービスは全件投影する（空列を隠すのは UI の関心事 = S3）
+	services, err := sqlcgen.New(pool).ListEpgServices(context.Background(), testSite)
+	if err != nil {
+		t.Fatalf("ListEpgServices: %v", err)
+	}
+	if len(services) != 3 {
+		t.Errorf("services = %d, want 3 — サービスは影のサブサービスも投影する", len(services))
 	}
 }
 
