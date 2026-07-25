@@ -9,12 +9,14 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/api"
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -64,7 +66,7 @@ func newFixture(t *testing.T, relPath string, writeFile bool) *fixture {
 	seedAsset(t, pool, recordingID, relPath, int64(len(content)))
 
 	r := chi.NewRouter()
-	New(pool, mediaDir).Mount(r)
+	New(pool, Config{MediaDir: mediaDir}).Mount(r)
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
 
@@ -253,7 +255,7 @@ func TestRecordingFile_NoAsset(t *testing.T) {
 	recordingID := seedRecording(t, pool)
 
 	r := chi.NewRouter()
-	New(pool, t.TempDir()).Mount(r)
+	New(pool, Config{MediaDir: t.TempDir()}).Mount(r)
 	srv := httptest.NewServer(r)
 	defer srv.Close()
 
@@ -302,7 +304,7 @@ func TestRecordingFile_DeletedIsNotServed(t *testing.T) {
 			tt.mark(t, pool, recordingID)
 
 			r := chi.NewRouter()
-			New(pool, mediaDir).Mount(r)
+			New(pool, Config{MediaDir: mediaDir}).Mount(r)
 			srv := httptest.NewServer(r)
 			defer srv.Close()
 
@@ -331,7 +333,7 @@ func TestRecordingFile_RejectsPathTraversal(t *testing.T) {
 	seedAsset(t, pool, recordingID, "../secret.txt", 10)
 
 	r := chi.NewRouter()
-	New(pool, mediaDir).Mount(r)
+	New(pool, Config{MediaDir: mediaDir}).Mount(r)
 	srv := httptest.NewServer(r)
 	defer srv.Close()
 
@@ -341,5 +343,134 @@ func TestRecordingFile_RejectsPathTraversal(t *testing.T) {
 	}
 	if bytes.Contains(body, []byte("TOP SECRET")) {
 		t.Error("メディアディレクトリ外のファイルが配信された")
+	}
+}
+
+// HEAD が扱えること。VLC やブラウザはシーク前に HEAD で Content-Length と
+// Accept-Ranges を取るため、405 だとシーク再生に失敗しうる。
+func TestRecordingFile_Head(t *testing.T) {
+	f := newFixture(t, "recording.m2ts", true)
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodHead, f.url(), nil)
+	if err != nil {
+		t.Fatalf("building request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("HEAD: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if cl := resp.Header.Get("Content-Length"); cl != fmt.Sprint(len(f.content)) {
+		t.Errorf("Content-Length = %q, want %d", cl, len(f.content))
+	}
+	if ar := resp.Header.Get("Accept-Ranges"); ar != "bytes" {
+		t.Errorf("Accept-Ranges = %q, want bytes", ar)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if len(body) != 0 {
+		t.Errorf("HEAD should have an empty body, got %d bytes", len(body))
+	}
+}
+
+// AccelLocation を設定するとバイト転送を返さず X-Accel-Redirect を返すこと
+// （認可判定はアプリ、バイト転送は nginx。issue #1 の nginx コメント）。
+func TestRecordingFile_AccelRedirect(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	mediaDir := t.TempDir()
+	content := makeTSData(10)
+	// 番組名由来のファイル名は空白・括弧・日本語を含む
+	relPath := "20260725/160000_３か月でマスターするギター（４）_53256.m2ts"
+	full := filepath.Join(mediaDir, relPath)
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatalf("creating dir: %v", err)
+	}
+	if err := os.WriteFile(full, content, 0o644); err != nil {
+		t.Fatalf("writing fixture: %v", err)
+	}
+
+	recordingID := seedRecording(t, pool)
+	seedAsset(t, pool, recordingID, relPath, int64(len(content)))
+
+	r := chi.NewRouter()
+	New(pool, Config{MediaDir: mediaDir, AccelLocation: "/_media/"}).Mount(r)
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+
+	resp, body := get(t, fmt.Sprintf("%s/api/recordings/%d/file", srv.URL, recordingID), nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	// バイトはアプリから返さない（nginx が internal location から配る）
+	if len(body) != 0 {
+		t.Errorf("body = %d bytes, want 0（バイト転送は nginx の担当）", len(body))
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != contentType {
+		t.Errorf("Content-Type = %q, want %q", ct, contentType)
+	}
+	got := resp.Header.Get("X-Accel-Redirect")
+	if got == "" {
+		t.Fatal("X-Accel-Redirect is empty")
+	}
+	// nginx は値を URI として解釈するのでパス要素はエスケープされている必要がある
+	if strings.ContainsAny(got, " （）") {
+		t.Errorf("X-Accel-Redirect = %q, want URL-escaped path", got)
+	}
+	if !strings.HasPrefix(got, "/_media/20260725/") {
+		t.Errorf("X-Accel-Redirect = %q, want /_media/ prefix", got)
+	}
+}
+
+// AccelLocation が有効でも、メディアディレクトリの外を指す rel_path は
+// ヘッダーを返さないこと（検証前にヘッダーを返すと任意ファイルを配らせられる）。
+func TestRecordingFile_AccelRedirectRejectsTraversal(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	recordingID := seedRecording(t, pool)
+	seedAsset(t, pool, recordingID, "../secret.txt", 10)
+
+	r := chi.NewRouter()
+	New(pool, Config{MediaDir: t.TempDir(), AccelLocation: "/_media/"}).Mount(r)
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+
+	resp, _ := get(t, fmt.Sprintf("%s/api/recordings/%d/file", srv.URL, recordingID), nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+	if got := resp.Header.Get("X-Accel-Redirect"); got != "" {
+		t.Errorf("X-Accel-Redirect = %q, want empty", got)
+	}
+}
+
+// streamer のルートが OpenAPI 生成ルートと共存できること。
+func TestMount_CoexistsWithGeneratedRoutes(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	mediaDir := t.TempDir()
+	content := makeTSData(10)
+	if err := os.WriteFile(filepath.Join(mediaDir, "r.m2ts"), content, 0o644); err != nil {
+		t.Fatalf("writing fixture: %v", err)
+	}
+	recordingID := seedRecording(t, pool)
+	seedAsset(t, pool, recordingID, "r.m2ts", int64(len(content)))
+
+	router := api.NewRouter(api.RouterConfig{
+		Pool:    pool,
+		Mounter: New(pool, Config{MediaDir: mediaDir}),
+	})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	for _, path := range []string{
+		"/api/recordings",
+		fmt.Sprintf("/api/recordings/%d/drop-stats", recordingID),
+		fmt.Sprintf("/api/recordings/%d/file", recordingID),
+	} {
+		resp, _ := get(t, srv.URL+path, nil)
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("GET %s = %d, want 200", path, resp.StatusCode)
+		}
 	}
 }

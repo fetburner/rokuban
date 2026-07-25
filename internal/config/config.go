@@ -57,6 +57,11 @@ type MirakcConfig struct {
 type StorageConfig struct {
 	MediaDir   string `yaml:"media_dir"   validate:"required"`
 	ScratchDir string `yaml:"scratch_dir"`
+
+	// AccelLocation を設定すると録画ファイルの配信を X-Accel-Redirect で
+	// リバースプロキシに委ねる（認可判定はアプリ、バイト転送は nginx）。
+	// 値は nginx の internal location（例: /_media/）。空なら Go が直接配る。
+	AccelLocation string `yaml:"accel_location"`
 }
 
 // IngestConfig は ingest ジョブの設定。

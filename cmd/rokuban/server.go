@@ -92,7 +92,10 @@ func newServerCmd() *cobra.Command {
 
 				// バイト配信は api ではなく streamer の担当（不変条件 1）。
 				if slices.Contains(roles, "streamer") {
-					routerCfg.Mounter = streamer.New(pool, cfg.Storage.MediaDir)
+					routerCfg.Mounter = streamer.New(pool, streamer.Config{
+						MediaDir:      cfg.Storage.MediaDir,
+						AccelLocation: cfg.Storage.AccelLocation,
+					})
 				}
 
 				srv := &http.Server{Addr: cfg.Server.Listen, Handler: api.NewRouter(routerCfg)}

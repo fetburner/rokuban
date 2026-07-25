@@ -106,8 +106,13 @@ Go の `http.ServeContent` は `*os.File` 相手なら sendfile が効き、Rang
 #### 実装（M1-8）
 
 ```
-GET /api/recordings/{id}/file    →  video/MP2T（Range 対応）
+GET  /api/recordings/{id}/file   →  video/MP2T（Range 対応）
+HEAD /api/recordings/{id}/file   →  ヘッダーのみ
 ```
+
+**HEAD も登録する。** VLC やブラウザはシーク前に HEAD で `Content-Length` と
+`Accept-Ranges` を取るため、405 を返すとシーク再生に失敗しうる。
+`http.ServeContent` は HEAD ならヘッダーだけを書くので実装は共通。
 
 **OpenAPI には載せない。** SSE と同じ理由で、生成クライアントは JSON を前提にする
 （`customInstance` が `response.json()` を呼ぶ）ためバイナリ配信では誤った
@@ -135,12 +140,33 @@ ingest と共有し、メディアディレクトリの外を指す `rel_path` �
 変わらないが、ごみ箱からの復元で同じ URL の中身が入れ替わりうるので
 `immutable` は付けない。`Last-Modified` による条件付きリクエストは効く。
 
-### X-Accel-Redirect（オプション）
+**`media_assets.size_bytes` と実ファイルのサイズが違えば WARN で記録する。**
+size_bytes は ingest 時に mirakc の Content-Length と照合した値なので、
+違うならコミット後に改変・切り詰めが起きている。配信自体は続ける
+（ユーザーは録画を見たい）。
 
-意味があるのは **X-Accel-Redirect パターン**（認可判定はアプリ、バイト転送は nginx）。設定フラグ + レスポンスヘッダー 1 個で対応でき、アプリ側コストがほぼゼロなのでオプションとして実装する（Mastodon / GitLab の X-Sendfile 対応と同じ位置づけ）。
+#### X-Accel-Redirect（`storage.accel_location`）
 
-- 録画ファイル配信のみ対象
-- 設定で有効化したときだけヘッダーを返す
+意味があるのは **X-Accel-Redirect パターン**（認可判定はアプリ、バイト転送は nginx）。
+設定フラグ + レスポンスヘッダー 1 個で対応でき、アプリ側コストがほぼゼロなので
+オプションとして実装する（Mastodon / GitLab の X-Sendfile 対応と同じ位置づけ）。
+性能を理由に必要なわけではなく、既に nginx が前段に居る構成で転送を任せられる、
+という位置づけ。
+
+```yaml
+storage:
+  media_dir: /mnt/media
+  accel_location: /_media/     # 空なら Go が直接配る
+```
+
+有効時は本文を返さず `X-Accel-Redirect: /_media/<相対パス>` を返す。nginx 側は
+`internal` な location で `media_dir` を alias する。
+
+- **パス検証を通した後にヘッダーを返す。** 検証前に返すと、細工された `rel_path` で
+  nginx に任意ファイルを配らせられる
+- **値は URI として解釈されるのでパス要素を URL エスケープする。** 番組名由来の
+  ファイル名には空白・括弧・日本語が入る
+- Range の扱いは nginx 側に移る（`Accept-Ranges` も nginx が付ける）
 
 ### ライブ視聴の HLS --- アプリ配信を維持
 

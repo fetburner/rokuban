@@ -49,6 +49,7 @@ mirakc:                          # 必須
 storage:
   media_dir: /mnt/media          # 必須。アーカイブ層 (S3-via-CSI 可)
   scratch_dir: /var/tmp/rokuban  # ローカルスクラッチ
+  accel_location: ""             # X-Accel-Redirect の internal location。空なら Go が直接配る
 
 ingest:
   concurrency: 2                 # mirakc サイトあたり 1-2

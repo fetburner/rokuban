@@ -10,8 +10,11 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -24,20 +27,39 @@ import (
 // contentType は録画原本の Content-Type。mirakc の record stream と揃える。
 const contentType = "video/MP2T"
 
+// Config は Streamer の設定。
+type Config struct {
+	// MediaDir はメディアストレージのルート。
+	MediaDir string
+
+	// AccelLocation が空でなければ X-Accel-Redirect でバイト転送を
+	// リバースプロキシに委ねる（issue #1 の nginx コメント）。
+	//
+	// 認可判定はアプリ、バイト転送は nginx という分担で、アプリ側のコストは
+	// ヘッダー 1 個。値は nginx の internal location（例: /_media/）で、
+	// MediaDir 配下の相対パスを連結した URI を返す。
+	AccelLocation string
+}
+
 // Streamer は録画ファイルを配信する。
 type Streamer struct {
-	pool     *pgxpool.Pool
-	mediaDir string
+	pool *pgxpool.Pool
+	cfg  Config
 }
 
 // New は Streamer を生成する。
-func New(pool *pgxpool.Pool, mediaDir string) *Streamer {
-	return &Streamer{pool: pool, mediaDir: mediaDir}
+func New(pool *pgxpool.Pool, cfg Config) *Streamer {
+	return &Streamer{pool: pool, cfg: cfg}
 }
 
 // Mount はルーターに配信エンドポイントを登録する。
 func (s *Streamer) Mount(r chi.Router) {
-	r.Get("/api/recordings/{id}/file", s.RecordingFile)
+	const path = "/api/recordings/{id}/file"
+	r.Get(path, s.RecordingFile)
+	// HEAD も登録する。VLC やブラウザはシーク前に HEAD で Content-Length と
+	// Accept-Ranges を取るため、405 を返すとシーク再生に失敗しうる。
+	// http.ServeContent は HEAD ならヘッダーだけを書くので実装は共通でよい。
+	r.Head(path, s.RecordingFile)
 }
 
 // RecordingFile は GET /api/recordings/{id}/file を処理する。
@@ -65,11 +87,20 @@ func (s *Streamer) RecordingFile(w http.ResponseWriter, r *http.Request) {
 
 	// rel_path は ingest 時に検証済みだが、配信側でも独立に検証する。
 	// DB に不正な行が入った場合に任意ファイルを読み出させないため。
-	path, err := mediapath.Resolve(s.mediaDir, asset.RelPath)
+	path, err := mediapath.Resolve(s.cfg.MediaDir, asset.RelPath)
 	if err != nil {
 		slog.Error("streamer: rejecting rel_path outside the media directory",
 			"recording_id", id, "rel_path", asset.RelPath, "err", err)
 		http.NotFound(w, r)
+		return
+	}
+
+	// X-Accel-Redirect が有効なら、認可判定だけ済ませてバイト転送は
+	// リバースプロキシに委ねる。Range の扱いも nginx 側になる。
+	// パス検証を通した後に返すのが要点（検証前に返すと任意ファイルを配らせられる）。
+	if s.cfg.AccelLocation != "" {
+		w.Header().Set("Content-Type", contentType)
+		w.Header().Set("X-Accel-Redirect", accelURI(s.cfg.AccelLocation, asset.RelPath))
 		return
 	}
 
@@ -102,6 +133,15 @@ func (s *Streamer) RecordingFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// size_bytes は ingest 時に mirakc の Content-Length と照合した値。
+	// 実ファイルと違うならコミット後に改変・切り詰めが起きている。配信は続けるが
+	// （ユーザーは録画を見たい）不整合として記録する。
+	if info.Size() != asset.SizeBytes {
+		slog.Warn("streamer: file size differs from the committed size",
+			"recording_id", id, "rel_path", asset.RelPath,
+			"committed", asset.SizeBytes, "actual", info.Size())
+	}
+
 	// ServeContent は name から Content-Type を推測しようとするので明示する。
 	w.Header().Set("Content-Type", contentType)
 	// 録画原本は一度書いたら変わらないが、ごみ箱からの復元などで同じ URL の
@@ -110,4 +150,16 @@ func (s *Streamer) RecordingFile(w http.ResponseWriter, r *http.Request) {
 
 	// name は Content-Type 推測にしか使われない。上で明示済みなので空でよい。
 	http.ServeContent(w, r, "", info.ModTime(), f)
+}
+
+// accelURI は X-Accel-Redirect に載せる internal location の URI を組み立てる。
+//
+// nginx は X-Accel-Redirect の値を URI として解釈するため、パス要素は
+// URL エスケープする。番組名由来のファイル名には空白・括弧・日本語が入る。
+func accelURI(location, relPath string) string {
+	segments := strings.Split(filepath.ToSlash(relPath), "/")
+	for i, seg := range segments {
+		segments[i] = url.PathEscape(seg)
+	}
+	return strings.TrimSuffix(location, "/") + "/" + strings.Join(segments, "/")
 }

@@ -49,6 +49,10 @@ func TestLoad_Minimal(t *testing.T) {
 	if cfg.Storage.ScratchDir != "/var/tmp/rokuban" {
 		t.Errorf("storage.scratch_dir = %q, want %q", cfg.Storage.ScratchDir, "/var/tmp/rokuban")
 	}
+	// 既定では Go が直接配る（X-Accel-Redirect なし）
+	if cfg.Storage.AccelLocation != "" {
+		t.Errorf("storage.accel_location = %q, want empty", cfg.Storage.AccelLocation)
+	}
 	if cfg.Ingest.Concurrency != 2 {
 		t.Errorf("ingest.concurrency = %d, want %d", cfg.Ingest.Concurrency, 2)
 	}
@@ -208,6 +212,7 @@ mirakc:
 storage:
   media_dir: /data/media
   scratch_dir: /data/scratch
+  accel_location: /_media/
 ingest:
   concurrency: 4
 epg:
@@ -251,6 +256,9 @@ log:
 	}
 	if cfg.Storage.ScratchDir != "/data/scratch" {
 		t.Errorf("storage.scratch_dir = %q, want %q", cfg.Storage.ScratchDir, "/data/scratch")
+	}
+	if cfg.Storage.AccelLocation != "/_media/" {
+		t.Errorf("storage.accel_location = %q, want %q", cfg.Storage.AccelLocation, "/_media/")
 	}
 	if cfg.Ingest.Concurrency != 4 {
 		t.Errorf("ingest.concurrency = %d, want %d", cfg.Ingest.Concurrency, 4)
