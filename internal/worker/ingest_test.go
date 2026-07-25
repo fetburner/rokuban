@@ -21,6 +21,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 // makeTSData は指定バイト数の 188 バイト境界に揃った TS データを生成する。
@@ -377,21 +378,10 @@ func TestIngestWorker_StallDetection(t *testing.T) {
 
 func strPtr(s string) *string { return &s }
 
-// setupTestPool は DATABASE_URL が設定されていればプールを返し、
-// なければテストをスキップする。
+// setupTestPool はマイグレーション済みのテスト用プールを返す。
 func setupTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
-	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" {
-		t.Skip("DATABASE_URL not set, skipping integration test")
-		return nil
-	}
-	pool, err := pgxpool.New(context.Background(), dsn)
-	if err != nil {
-		t.Fatalf("connecting to database: %v", err)
-	}
-	t.Cleanup(func() { pool.Close() })
-	return pool
+	return testutil.SetupDB(t)
 }
 
 func insertTestRecording(t *testing.T, pool *pgxpool.Pool) int64 {
