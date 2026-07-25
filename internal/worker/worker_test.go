@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -133,5 +135,85 @@ func TestEpgSyncWorker_HasGenerousTimeout(t *testing.T) {
 	got := w.Timeout(nil)
 	if got <= river.JobTimeoutDefault {
 		t.Errorf("Timeout() = %v, want > JobTimeoutDefault (%v)", got, river.JobTimeoutDefault)
+	}
+}
+
+// 完了済みのジョブが一意性の判定に入っていないこと。
+//
+// River の既定（UniqueOptsByStateDefault）は completed を含むため、既定のままだと
+// 一度成功した引数のジョブが二度と投入できなくなる。epg_sync は 10 分間隔の
+// 定期ジョブなので、これに当たると実質ワンショットになる（実際にそうなっていた）。
+func TestInsertOpts_UniqueStatesExcludeFinalized(t *testing.T) {
+	tests := []struct {
+		name string
+		opts river.InsertOpts
+	}{
+		{"epg_sync", EpgSyncArgs{}.InsertOpts()},
+		{"ingest", IngestJobArgs{}.InsertOpts()},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			states := tt.opts.UniqueOpts.ByState
+			if len(states) == 0 {
+				t.Fatal("ByState が空だと River の既定（completed を含む）が使われる")
+			}
+			for _, s := range states {
+				switch s {
+				case rivertype.JobStateCompleted, rivertype.JobStateDiscarded, rivertype.JobStateCancelled:
+					t.Errorf("終了状態 %q が一意性の判定に含まれている", s)
+				}
+			}
+			// 同時実行を防ぐ目的は満たしていること
+			if !slices.Contains(states, rivertype.JobStateRunning) {
+				t.Error("running が含まれていないと同時実行を防げない")
+			}
+		})
+	}
+}
+
+// 定期投入された epg_sync が、前回のジョブが完了した後でも再度投入できること。
+func TestEpgSync_ReinsertableAfterCompletion(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	if _, err := pool.Exec(ctx, "DELETE FROM river_job"); err != nil {
+		t.Fatalf("cleaning river_job: %v", err)
+	}
+
+	workers := NewWorkers(&Deps{Pool: pool})
+	client, err := NewClient(pool, workers, ClientConfig{})
+	if err != nil {
+		t.Fatalf("creating client: %v", err)
+	}
+
+	args := EpgSyncArgs{Site: "default"}
+	first, err := client.Insert(ctx, args, nil)
+	if err != nil {
+		t.Fatalf("inserting first job: %v", err)
+	}
+
+	// 未完了のうちは重複として弾かれる（同時実行を防ぐ）
+	dup, err := client.Insert(ctx, args, nil)
+	if err != nil {
+		t.Fatalf("inserting duplicate: %v", err)
+	}
+	if !dup.UniqueSkippedAsDuplicate {
+		t.Error("未完了のジョブがあるのに重複として弾かれなかった")
+	}
+
+	// 完了させると再度投入できる
+	if _, err := pool.Exec(ctx,
+		"UPDATE river_job SET state = 'completed', finalized_at = now() WHERE id = $1", first.Job.ID,
+	); err != nil {
+		t.Fatalf("marking completed: %v", err)
+	}
+
+	again, err := client.Insert(ctx, args, nil)
+	if err != nil {
+		t.Fatalf("inserting after completion: %v", err)
+	}
+	if again.UniqueSkippedAsDuplicate {
+		t.Error("完了済みのジョブが一意性の判定に残っており、定期ジョブが再投入できない")
 	}
 }

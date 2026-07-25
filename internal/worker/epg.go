@@ -12,6 +12,7 @@ import (
 	"github.com/riverqueue/river"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
 )
 
@@ -45,12 +46,17 @@ type EpgSyncArgs struct {
 func (EpgSyncArgs) Kind() string { return "epg_sync" }
 
 // InsertOpts は River ジョブの挿入オプションを返す。
-// 同一サイトの全量同期が重ならないよう ByArgs で一意化する。
+//
+// 同一サイトの全量同期が重ならないよう ByArgs で一意化するが、ByState は
+// 「まだ終わっていない状態」だけに絞る。River の既定（UniqueOptsByStateDefault）は
+// completed を含むため、既定のままだと一度成功した時点で以降の定期投入がすべて
+// 重複として捨てられ、10 分間隔の定期ジョブが実質ワンショットになる。
 func (EpgSyncArgs) InsertOpts() river.InsertOpts {
 	return river.InsertOpts{
 		Queue: epgQueue,
 		UniqueOpts: river.UniqueOpts{
-			ByArgs: true,
+			ByArgs:  true,
+			ByState: pendingJobStates,
 		},
 	}
 }
@@ -82,6 +88,9 @@ func (w *EpgSyncWorker) Timeout(*river.Job[EpgSyncArgs]) time.Duration {
 func (w *EpgSyncWorker) Work(ctx context.Context, job *river.Job[EpgSyncArgs]) error {
 	site := job.Args.Site
 	log := slog.With("site", site)
+
+	started := time.Now()
+	defer func() { metrics.EpgSyncDuration.Observe(time.Since(started).Seconds()) }()
 
 	q := sqlcgen.New(w.Pool)
 
@@ -162,6 +171,9 @@ func (w *EpgSyncWorker) Work(ctx context.Context, job *river.Job[EpgSyncArgs]) e
 		// クライアントの staleTime 経過後の再取得で収束する。
 		log.Warn("epg sync: notifying clients failed", "err", err)
 	}
+
+	metrics.EpgProgramsProjected.Set(float64(syncedPrograms))
+	metrics.EpgChannelsWithoutPrograms.Set(float64(countChannels(serviceChannels) - len(observedChannels)))
 
 	log.Info("epg sync complete",
 		"services_fetched", len(services),

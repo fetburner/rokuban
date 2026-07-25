@@ -2,10 +2,14 @@ package api
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"testing/fstest"
+
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 func TestHealthz(t *testing.T) {
@@ -226,5 +230,54 @@ func TestSPA_APITakesPrecedence(t *testing.T) {
 	}
 	if body.Status != "ok" {
 		t.Errorf("API /healthz should still work with SPA enabled, got status=%q", body.Status)
+	}
+}
+
+// /metrics は registry を渡したときだけ公開されること。
+func TestMetrics_Endpoint(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "rokuban_test_metric_total",
+		Help: "test",
+	}))
+
+	router := NewRouter(RouterConfig{MetricsRegistry: reg})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/metrics")
+	if err != nil {
+		t.Fatalf("GET /metrics: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("reading body: %v", err)
+	}
+	if !strings.Contains(string(body), "rokuban_test_metric_total") {
+		t.Errorf("body does not contain the registered metric:\n%s", body)
+	}
+	// Prometheus の text exposition format であること
+	if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, "text/plain") {
+		t.Errorf("Content-Type = %q, want text/plain", ct)
+	}
+}
+
+func TestMetrics_DisabledWithoutRegistry(t *testing.T) {
+	router := NewRouter(RouterConfig{})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/metrics")
+	if err != nil {
+		t.Fatalf("GET /metrics: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode == http.StatusOK {
+		t.Error("/metrics should not be registered without a registry")
 	}
 }

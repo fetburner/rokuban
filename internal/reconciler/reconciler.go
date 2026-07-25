@@ -11,6 +11,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
 )
 
@@ -115,6 +116,7 @@ func (r *Reconciler) reconcile(ctx context.Context) error {
 			continue
 		}
 		created++
+		metrics.ReconcileSchedules.WithLabelValues("created").Inc()
 	}
 
 	desiredPrograms := make(map[int64]struct{}, len(reservations))
@@ -134,6 +136,7 @@ func (r *Reconciler) reconcile(ctx context.Context) error {
 	}
 
 	if len(toDelete) > r.cfg.MaxDeletesPerPass {
+		metrics.ReconcileCircuitBreakerTrips.Inc()
 		slog.Error("reconciler: circuit breaker tripped — too many deletes in one pass",
 			"pending_deletes", len(toDelete),
 			"threshold", r.cfg.MaxDeletesPerPass,
@@ -145,6 +148,7 @@ func (r *Reconciler) reconcile(ctx context.Context) error {
 				continue
 			}
 			deleted++
+			metrics.ReconcileSchedules.WithLabelValues("deleted").Inc()
 		}
 	}
 

@@ -15,6 +15,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/worker"
 )
@@ -314,6 +315,12 @@ func (w *Watcher) handleRecordingFailed(ctx context.Context, data mirakc.Recordi
 	if err != nil {
 		return fmt.Errorf("finding service: %w", err)
 	}
+
+	reason := data.Reason.Type
+	if reason == "" {
+		reason = "unknown"
+	}
+	metrics.RecordingsFailed.WithLabelValues(reason).Inc()
 
 	reasonJSON, err := json.Marshal(data.Reason)
 	if err != nil {

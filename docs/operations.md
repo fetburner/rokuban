@@ -4,6 +4,48 @@ Rokuban の監視・アラート・DB 運用・ストレージ運用・k8s 運�
 
 ## 1. 監視メトリクス
 
+### エンドポイント（M1-9）
+
+`GET /metrics` で Prometheus の text exposition format を返す。**ロールに関わらず
+すべてのプロセスが公開する** — worker だけの Pod でも滞留メトリクスを scrape したいため、
+HTTP リスナーは常に 1 本立てる。OpenAPI には載せない（text format であり
+生成クライアントの対象外）。
+
+実装は `internal/metrics`。2 種類を使い分けている。
+
+- **プロセス内カウンタ / ヒストグラム**: そのプロセスで起きた事象を数える。
+  再起動でリセットされるが Prometheus はカウンタのリセットを扱える
+- **DB を引くゲージ**: scrape のたびに真実を DB から取り直す。プロセス内に
+  溜めないので、どのロールが scrape されても同じ値になる。「イベントはヒント、
+  真実はテーブル再読」と同じ考え方
+
+| 実装済みメトリクス | 型 | 対応する下記の項目 |
+|---|---|---|
+| `rokuban_recordings_failed_total{reason}` | Counter | `recording.failed` 理由別 |
+| `rokuban_ingest_dropped_packets_total` | Counter | ドロップ統計（全体の趨勢） |
+| `rokuban_ingest_error_packets_total` | Counter | TEI |
+| `rokuban_ingest_scrambled_packets_total` | Counter | scrambled カウンタ |
+| `rokuban_ingest_bytes_total` | Counter | ingest バイト数 |
+| `rokuban_ingest_duration_seconds` | Histogram | ingest 所要時間 |
+| `rokuban_ingest_jobs_total{result}` | Counter | ingest の成功/失敗件数 |
+| `rokuban_uningested_records{site}` | Gauge（DB） | 未 ingest record 総量（件数） |
+| `rokuban_uningested_record_bytes{site}` | Gauge（DB） | 未 ingest record 総量（バイト） |
+| `rokuban_uningested_backlog_scrape_errors_total{site}` | Counter | 上記の取得失敗 |
+| `rokuban_reconcile_schedules_total{action}` | Counter | reconcile 差分数 |
+| `rokuban_reconcile_circuit_breaker_trips_total` | Counter | 大量削除ブレーカー発動 |
+| `rokuban_epg_sync_duration_seconds` | Histogram | EPG 全量同期の所要 |
+| `rokuban_epg_programs_projected` | Gauge | 直近パスの投影件数 |
+| `rokuban_epg_channels_without_programs` | Gauge | 番組を返さなかったチャンネル数 |
+
+**滞留メトリクスは取得失敗時に 0 を報告しない。** 0 を出すと「滞留なし」と区別できず、
+滞留アラートを黙って無効化してしまう。代わりに専用のエラーカウンタを進める。
+
+PID 別のドロップ内訳はメトリクスにしない（PID × 録画数でカーディナリティが爆発する）。
+`drop_stats` テーブルと `/api/recordings/{id}/drop-stats` で見る。
+
+未実装: 開始遅延検出器（下記）、エッジディスク残量（mirakc 側の値であり
+Rokuban からは観測できない。node_exporter 等で別に取る）。
+
 ### 録画品質
 
 mirakc の追従品質は EDCB ほどの長期実績がないため、品質メトリクスを継続計測する（[録画エンジン](recording.md) 参照）。
@@ -23,6 +65,24 @@ mirakc の追従品質は EDCB ほどの長期実績がないため、品質メ�
 | 未 ingest record 総量 | エッジのリングバッファ滞留量。エッジディスク残量と突き合わせてアラートの基礎とする |
 
 ジョブは諦めず再試行し続ける（max attempts で dead-letter にすると record が宙に浮く）。長時間の転送失敗でエッジのリングバッファが溜まり続けるのが唯一の運用リスクであり、このメトリクスで可視化する。
+
+#### River のジョブ一意性の注意
+
+`UniqueOpts.ByState` は**必ず明示する**。River の既定（`UniqueOptsByStateDefault`）は
+`completed` と `discarded` を含むため、既定のままだと「一度終わった引数のジョブは
+二度と投入できない」になる。定期ジョブ（`epg_sync`）は実質ワンショットになり、
+破棄された ingest も再投入できない。Rokuban は
+`available / pending / retryable / running / scheduled` に限定している
+（同時実行を防ぐのが目的で、処理済みかどうかは DB の状態が真実）。
+
+`unique_states` は**行ごとに保存される** — 一意索引は
+`river_job_state_in_bitmask(unique_states, state)` を条件に持つ。つまり
+**古い設定で投入された行は設定を直しても鍵を占有し続ける**。この設定を変更した際は
+既存の該当ジョブ行を一度削除する必要がある:
+
+```sql
+DELETE FROM river_job WHERE kind = 'epg_sync' AND state = 'completed';
+```
 
 ### reconcile
 

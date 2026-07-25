@@ -17,6 +17,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/mediapath"
+	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/tsstat"
 )
@@ -37,11 +38,18 @@ type IngestJobArgs struct {
 func (IngestJobArgs) Kind() string { return "ingest" }
 
 // InsertOpts は River ジョブの挿入オプションを返す。
+//
+// watcher は record-saved イベントと定期の全量突き合わせの両方から同じ record を
+// 投入しうるので、ByArgs で一意化して二重取り込みを防ぐ。ByState は
+// pendingJobStates に絞る（既定は completed を含むため、一度取り込んだ record を
+// 手動で取り直せなくなる。取り込み済みかどうかは media_assets 行が真実であり、
+// River のジョブ履歴で表現するものではない）。
 func (IngestJobArgs) InsertOpts() river.InsertOpts {
 	return river.InsertOpts{
 		Queue: ingestQueue,
 		UniqueOpts: river.UniqueOpts{
-			ByArgs: true,
+			ByArgs:  true,
+			ByState: pendingJobStates,
 		},
 	}
 }
@@ -71,6 +79,13 @@ func (w *IngestWorker) Timeout(*river.Job[IngestJobArgs]) time.Duration {
 func (w *IngestWorker) Work(ctx context.Context, job *river.Job[IngestJobArgs]) error {
 	args := job.Args
 	log := slog.With("site", args.Site, "record_id", args.RecordID)
+
+	started := time.Now()
+	result := "failure"
+	defer func() {
+		metrics.IngestDuration.Observe(time.Since(started).Seconds())
+		metrics.IngestJobs.WithLabelValues(result).Inc()
+	}()
 
 	stallTimeout := w.StallTimeout
 	if stallTimeout == 0 {
@@ -157,9 +172,17 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[IngestJobArgs]) 
 		"drops", counter.TotalDrops(), "errors", counter.TotalErrors(),
 		"scrambled", counter.TotalScrambled())
 
+	metrics.IngestBytes.Add(float64(offset))
+	metrics.IngestDroppedPackets.Add(float64(counter.TotalDrops()))
+	metrics.IngestErrorPackets.Add(float64(counter.TotalErrors()))
+	metrics.IngestScrambledPackets.Add(float64(counter.TotalScrambled()))
+
 	if err := w.commit(ctx, recordingID, relPath, offset, counter); err != nil {
 		return fmt.Errorf("committing ingest: %w", err)
 	}
+
+	// エッジ record の削除は失敗しても ingest は成功（コミット済み）。
+	result = "success"
 
 	if _, err := w.MirakcClient.DeleteRecord(ctx, args.RecordID, true); err != nil {
 		log.Error("ingest: failed to delete edge record (committed OK)", "err", err)

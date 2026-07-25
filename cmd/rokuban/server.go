@@ -20,6 +20,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/api"
 	"github.com/fetburner/rokuban/internal/db"
+	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/reconciler"
 	"github.com/fetburner/rokuban/internal/role"
@@ -63,12 +64,15 @@ func newServerCmd() *cobra.Command {
 
 			eg, egCtx := errgroup.WithContext(ctx)
 
-			// HTTP を持つロール（api / streamer）は同一プロセスなら 1 つの
-			// リスナーに相乗りする。ロールごとに担当するルートだけを登録する。
-			if slices.Contains(roles, "api") || slices.Contains(roles, "streamer") {
+			// HTTP リスナーはロールに関わらず 1 本立てる。ヘルスチェックと
+			// /metrics はどのロールでも scrape できる必要があるため
+			// （worker だけの Pod でも滞留メトリクスを取りたい）。
+			// SPA・SSE・バイト配信は担当ロールのときだけ登録する。
+			{
 				routerCfg := api.RouterConfig{
-					AllowedHosts: cfg.Server.AllowedHosts,
-					Pool:         pool,
+					AllowedHosts:    cfg.Server.AllowedHosts,
+					Pool:            pool,
+					MetricsRegistry: metrics.NewRegistry(metrics.NewBacklogCollector(pool, watcher.DefaultSite)),
 				}
 
 				if slices.Contains(roles, "api") {

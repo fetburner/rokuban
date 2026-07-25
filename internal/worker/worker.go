@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
+	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/mirakc"
 )
@@ -16,6 +17,25 @@ const (
 	defaultIngestConcurrency = 2
 	defaultEpgSyncInterval   = 10 * time.Minute
 )
+
+// pendingJobStates は「まだ終わっていない」ジョブの状態。
+//
+// UniqueOpts.ByState に渡して、一意化の対象を実行前・実行中に限定する。
+// River の既定（rivertype.UniqueOptsByStateDefault）は completed と discarded を
+// 含むため、既定のままだと「一度成功した引数のジョブは二度と投入できない」に
+// なってしまう。定期ジョブは実質ワンショットになり、失敗して破棄されたジョブも
+// 再投入できない。
+//
+// 同時実行を防ぐのが目的なので、終わったジョブは一意性の判定から外す。
+// 「もう処理済みか」は River のジョブ履歴ではなく DB の状態（media_assets 行の
+// 有無など）が真実である。
+var pendingJobStates = []rivertype.JobState{
+	rivertype.JobStateAvailable,
+	rivertype.JobStatePending,
+	rivertype.JobStateRetryable,
+	rivertype.JobStateRunning,
+	rivertype.JobStateScheduled,
+}
 
 // Deps は各ワーカーに注入する依存。
 type Deps struct {

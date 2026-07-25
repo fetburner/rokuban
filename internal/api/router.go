@@ -6,6 +6,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // RouterConfig は NewRouter の設定。
@@ -27,6 +29,9 @@ type RouterConfig struct {
 	// バイト配信（streamer）を api の外に置いたまま同一プロセスで
 	// 相乗りさせるための口（不変条件 1）。
 	Mounter interface{ Mount(chi.Router) }
+
+	// MetricsRegistry が非 nil なら /metrics で Prometheus メトリクスを公開する。
+	MetricsRegistry *prometheus.Registry
 }
 
 // NewRouter は API エンドポイントと SPA 配信を統合した http.Handler を返す。
@@ -44,6 +49,16 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	// バイト配信も同様に OpenAPI に載せない（生成クライアントは JSON を前提にする）。
 	if cfg.Mounter != nil {
 		cfg.Mounter.Mount(r)
+	}
+
+	// /metrics は Prometheus の text exposition format で、OpenAPI の対象外。
+	// /api/ の下に置かないのは慣習（scrape 設定やリバースプロキシの除外を書きやすい）。
+	if cfg.MetricsRegistry != nil {
+		r.Handle("/metrics", promhttp.HandlerFor(cfg.MetricsRegistry, promhttp.HandlerOpts{
+			// scrape 中のコレクタのエラーはログに出し、500 にはしない。
+			// 一部のメトリクスが取れなくても残りは配る。
+			ErrorHandling: promhttp.ContinueOnError,
+		}))
 	}
 
 	handler := NewServer(cfg.Pool)

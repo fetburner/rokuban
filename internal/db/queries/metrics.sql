@@ -1,0 +1,22 @@
+-- 未 ingest の record（エッジに滞留しているぶん）の件数とバイト数。
+--
+-- 「録画は終わったが Rokuban 側にコミットされていない」もの。回線断や
+-- クラウド側障害で ingest が詰まるとここが増え続け、エッジの録画バッファを
+-- 食い潰す（issue #4 のサイジングコメント）。エッジディスク残量アラートと
+-- 対で使う。
+--
+-- コミット = media_assets 行なので、その不在で判定する。ファイルの有無は見ない
+-- （不変条件 3）。content_length は mirakc の観測値で NULL のこともある。
+-- name: GetUningestedRecordBacklog :one
+SELECT
+    count(*)::bigint                          AS records,
+    COALESCE(sum(rs.content_length), 0)::bigint AS bytes
+FROM record_sync rs
+WHERE rs.site = $1
+  AND rs.status = 'finished'
+  AND NOT EXISTS (
+      SELECT 1 FROM media_assets a
+      WHERE a.recording_id = rs.recording_id
+        AND a.kind = 'original'
+        AND a.state <> 'deleted'
+  );
