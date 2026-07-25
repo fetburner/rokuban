@@ -85,6 +85,41 @@ func (q *Queries) EpgSweepMark(ctx context.Context) (time.Time, error) {
 	return mark, err
 }
 
+const getEpgProgram = `-- name: GetEpgProgram :one
+SELECT site, program_id, network_id, service_id, event_id, start_at, duration_ms, end_at, is_free, name, description, genre_lv1, extended, genres, video, audios, observed_at FROM epg_programs
+WHERE site = $1 AND program_id = $2
+`
+
+type GetEpgProgramParams struct {
+	Site      string
+	ProgramID int64
+}
+
+func (q *Queries) GetEpgProgram(ctx context.Context, arg GetEpgProgramParams) (EpgProgram, error) {
+	row := q.db.QueryRow(ctx, getEpgProgram, arg.Site, arg.ProgramID)
+	var i EpgProgram
+	err := row.Scan(
+		&i.Site,
+		&i.ProgramID,
+		&i.NetworkID,
+		&i.ServiceID,
+		&i.EventID,
+		&i.StartAt,
+		&i.DurationMs,
+		&i.EndAt,
+		&i.IsFree,
+		&i.Name,
+		&i.Description,
+		&i.GenreLv1,
+		&i.Extended,
+		&i.Genres,
+		&i.Video,
+		&i.Audios,
+		&i.ObservedAt,
+	)
+	return i, err
+}
+
 const listEpgPrograms = `-- name: ListEpgPrograms :many
 SELECT site, program_id, network_id, service_id, event_id, start_at, duration_ms, end_at, is_free, name, description, genre_lv1, extended, genres, video, audios, observed_at FROM epg_programs
 WHERE site = $1
@@ -136,6 +171,82 @@ func (q *Queries) ListEpgPrograms(ctx context.Context, arg ListEpgProgramsParams
 			&i.Video,
 			&i.Audios,
 			&i.ObservedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listEpgProgramsForList = `-- name: ListEpgProgramsForList :many
+SELECT site, program_id, network_id, service_id, event_id,
+       start_at, duration_ms, end_at, is_free, name, description, genre_lv1
+FROM epg_programs
+WHERE site = $1
+  AND start_at < $2::timestamptz
+  AND end_at   > $3::timestamptz
+  AND ($4::integer IS NULL OR network_id = $4::integer)
+  AND ($5::integer IS NULL OR service_id = $5::integer)
+ORDER BY start_at, network_id, service_id
+`
+
+type ListEpgProgramsForListParams struct {
+	Site        string
+	WindowEnd   time.Time
+	WindowStart time.Time
+	NetworkID   *int32
+	ServiceID   *int32
+}
+
+type ListEpgProgramsForListRow struct {
+	Site        string
+	ProgramID   int64
+	NetworkID   int32
+	ServiceID   int32
+	EventID     int32
+	StartAt     time.Time
+	DurationMs  int64
+	EndAt       time.Time
+	IsFree      bool
+	Name        string
+	Description string
+	GenreLv1    []int16
+}
+
+// 一覧向けの軽い形。extended / video / audios は返さない（1 行あたり数 KB になり
+// 時間窓を広げたときの転送量が跳ねるため。詳細は GetEpgProgram で取る）。
+func (q *Queries) ListEpgProgramsForList(ctx context.Context, arg ListEpgProgramsForListParams) ([]ListEpgProgramsForListRow, error) {
+	rows, err := q.db.Query(ctx, listEpgProgramsForList,
+		arg.Site,
+		arg.WindowEnd,
+		arg.WindowStart,
+		arg.NetworkID,
+		arg.ServiceID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListEpgProgramsForListRow
+	for rows.Next() {
+		var i ListEpgProgramsForListRow
+		if err := rows.Scan(
+			&i.Site,
+			&i.ProgramID,
+			&i.NetworkID,
+			&i.ServiceID,
+			&i.EventID,
+			&i.StartAt,
+			&i.DurationMs,
+			&i.EndAt,
+			&i.IsFree,
+			&i.Name,
+			&i.Description,
+			&i.GenreLv1,
 		); err != nil {
 			return nil, err
 		}

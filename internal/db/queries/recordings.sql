@@ -44,6 +44,35 @@ DO UPDATE SET
     quality_events = recordings.quality_events || EXCLUDED.quality_events,
     updated_at = now();
 
+-- 録画一覧。原本のサイズと PID 別 drop_stats の合計を同梱する。
+-- PID 別の内訳は行数が多く一覧では使わないので ListRecordingDropStats で別に取る。
+-- name: ListRecordings :many
+SELECT
+    r.*,
+    a.size_bytes                        AS original_size_bytes,
+    COALESCE(d.packets, 0)::bigint      AS drop_packets,
+    COALESCE(d.drops, 0)::bigint        AS drop_drops,
+    COALESCE(d.errors, 0)::bigint       AS drop_errors,
+    COALESCE(d.scrambled, 0)::bigint    AS drop_scrambled
+FROM recordings r
+LEFT JOIN media_assets a
+    ON a.recording_id = r.id AND a.kind = 'original' AND a.state <> 'deleted'
+LEFT JOIN LATERAL (
+    SELECT sum(packets) AS packets, sum(drops) AS drops,
+           sum(errors) AS errors, sum(scrambled) AS scrambled
+    FROM drop_stats
+    WHERE media_asset_id = a.id
+) d ON true
+WHERE r.site = $1 AND r.deleted_at IS NULL
+ORDER BY r.program_start_at DESC, r.id DESC;
+
+-- name: ListRecordingDropStats :many
+SELECT d.pid, d.packets, d.drops, d.errors, d.scrambled
+FROM drop_stats d
+JOIN media_assets a ON a.id = d.media_asset_id
+WHERE a.recording_id = $1 AND a.kind = 'original' AND a.state <> 'deleted'
+ORDER BY d.pid;
+
 -- name: AppendQualityEvents :exec
 UPDATE recordings
 SET quality_events = quality_events || sqlc.arg('events')::jsonb,

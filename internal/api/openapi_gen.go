@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -15,18 +16,81 @@ import (
 	"github.com/oapi-codegen/runtime"
 )
 
+// Defines values for RecordingChannelType.
+const (
+	RecordingChannelTypeBS  RecordingChannelType = "BS"
+	RecordingChannelTypeCS  RecordingChannelType = "CS"
+	RecordingChannelTypeGR  RecordingChannelType = "GR"
+	RecordingChannelTypeSKY RecordingChannelType = "SKY"
+)
+
+// Valid indicates whether the value is a known member of the RecordingChannelType enum.
+func (e RecordingChannelType) Valid() bool {
+	switch e {
+	case RecordingChannelTypeBS:
+		return true
+	case RecordingChannelTypeCS:
+		return true
+	case RecordingChannelTypeGR:
+		return true
+	case RecordingChannelTypeSKY:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for RecordingSource.
+const (
+	RecordingSourceManual RecordingSource = "manual"
+	RecordingSourceRule   RecordingSource = "rule"
+)
+
+// Valid indicates whether the value is a known member of the RecordingSource enum.
+func (e RecordingSource) Valid() bool {
+	switch e {
+	case RecordingSourceManual:
+		return true
+	case RecordingSourceRule:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for RecordingStatus.
+const (
+	RecordingStatusFailed    RecordingStatus = "failed"
+	RecordingStatusFinished  RecordingStatus = "finished"
+	RecordingStatusRecording RecordingStatus = "recording"
+)
+
+// Valid indicates whether the value is a known member of the RecordingStatus enum.
+func (e RecordingStatus) Valid() bool {
+	switch e {
+	case RecordingStatusFailed:
+		return true
+	case RecordingStatusFinished:
+		return true
+	case RecordingStatusRecording:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ReservationSource.
 const (
-	Manual ReservationSource = "manual"
-	Rule   ReservationSource = "rule"
+	ReservationSourceManual ReservationSource = "manual"
+	ReservationSourceRule   ReservationSource = "rule"
 )
 
 // Valid indicates whether the value is a known member of the ReservationSource enum.
 func (e ReservationSource) Valid() bool {
 	switch e {
-	case Manual:
+	case ReservationSourceManual:
 		return true
-	case Rule:
+	case ReservationSourceRule:
 		return true
 	default:
 		return false
@@ -54,6 +118,38 @@ func (e ReservationState) Valid() bool {
 	}
 }
 
+// Defines values for ServiceChannelType.
+const (
+	ServiceChannelTypeBS  ServiceChannelType = "BS"
+	ServiceChannelTypeCS  ServiceChannelType = "CS"
+	ServiceChannelTypeGR  ServiceChannelType = "GR"
+	ServiceChannelTypeSKY ServiceChannelType = "SKY"
+)
+
+// Valid indicates whether the value is a known member of the ServiceChannelType enum.
+func (e ServiceChannelType) Valid() bool {
+	switch e {
+	case ServiceChannelTypeBS:
+		return true
+	case ServiceChannelTypeCS:
+		return true
+	case ServiceChannelTypeGR:
+		return true
+	case ServiceChannelTypeSKY:
+		return true
+	default:
+		return false
+	}
+}
+
+// AudioInfo defines model for AudioInfo.
+type AudioInfo struct {
+	ComponentType int       `json:"componentType"`
+	IsMain        bool      `json:"isMain"`
+	Langs         *[]string `json:"langs,omitempty"`
+	SamplingRate  int       `json:"samplingRate"`
+}
+
 // CreateReservationRequest defines model for CreateReservationRequest.
 type CreateReservationRequest struct {
 	DurationMs int64     `json:"durationMs"`
@@ -63,15 +159,122 @@ type CreateReservationRequest struct {
 	Title      string    `json:"title"`
 }
 
+// DropStat defines model for DropStat.
+type DropStat struct {
+	Drops     int64 `json:"drops"`
+	Errors    int64 `json:"errors"`
+	Packets   int64 `json:"packets"`
+	Pid       int   `json:"pid"`
+	Scrambled int64 `json:"scrambled"`
+}
+
+// DropSummary defines model for DropSummary.
+type DropSummary struct {
+	Drops     int64 `json:"drops"`
+	Errors    int64 `json:"errors"`
+	Packets   int64 `json:"packets"`
+	Scrambled int64 `json:"scrambled"`
+}
+
 // ErrorResponse defines model for ErrorResponse.
 type ErrorResponse struct {
 	Error string `json:"error"`
+}
+
+// Genre defines model for Genre.
+type Genre struct {
+	Lv1 int  `json:"lv1"`
+	Lv2 int  `json:"lv2"`
+	Un1 *int `json:"un1,omitempty"`
+	Un2 *int `json:"un2,omitempty"`
 }
 
 // HealthResponse defines model for HealthResponse.
 type HealthResponse struct {
 	Status string `json:"status"`
 }
+
+// Program defines model for Program.
+type Program struct {
+	Audios      *[]AudioInfo `json:"audios,omitempty"`
+	Description string       `json:"description"`
+	DurationMs  int64        `json:"durationMs"`
+	EndAt       time.Time    `json:"endAt"`
+	EventId     int          `json:"eventId"`
+
+	// Extended 拡張形式イベント（出演者等）
+	Extended     *map[string]string `json:"extended,omitempty"`
+	GenreDetails *[]Genre           `json:"genreDetails,omitempty"`
+
+	// Genres ジャンル絞り込み用の lv1 のみ。詳細は Program.genreDetails
+	Genres    []int      `json:"genres"`
+	IsFree    bool       `json:"isFree"`
+	Name      string     `json:"name"`
+	NetworkId int        `json:"networkId"`
+	ProgramId int64      `json:"programId"`
+	ServiceId int        `json:"serviceId"`
+	StartAt   time.Time  `json:"startAt"`
+	Video     *VideoInfo `json:"video,omitempty"`
+}
+
+// ProgramListItem defines model for ProgramListItem.
+type ProgramListItem struct {
+	Description string    `json:"description"`
+	DurationMs  int64     `json:"durationMs"`
+	EndAt       time.Time `json:"endAt"`
+	EventId     int       `json:"eventId"`
+
+	// Genres ジャンル絞り込み用の lv1 のみ。詳細は Program.genreDetails
+	Genres    []int     `json:"genres"`
+	IsFree    bool      `json:"isFree"`
+	Name      string    `json:"name"`
+	NetworkId int       `json:"networkId"`
+	ProgramId int64     `json:"programId"`
+	ServiceId int       `json:"serviceId"`
+	StartAt   time.Time `json:"startAt"`
+}
+
+// Recording defines model for Recording.
+type Recording struct {
+	Channel     string               `json:"channel"`
+	ChannelType RecordingChannelType `json:"channelType"`
+	CreatedAt   time.Time            `json:"createdAt"`
+	Description *string              `json:"description,omitempty"`
+	DropSummary *DropSummary         `json:"dropSummary,omitempty"`
+	DurationMs  int64                `json:"durationMs"`
+	EndedAt     *time.Time           `json:"endedAt,omitempty"`
+	EventId     int                  `json:"eventId"`
+	Id          int64                `json:"id"`
+	NetworkId   int                  `json:"networkId"`
+
+	// QualityEvents recording.failed / record-broken / bcas_anomaly の履歴
+	QualityEvents *[]map[string]interface{} `json:"qualityEvents,omitempty"`
+	ReservationId *int64                    `json:"reservationId,omitempty"`
+	RuleId        *int64                    `json:"ruleId,omitempty"`
+	ServiceId     int                       `json:"serviceId"`
+	ServiceName   string                    `json:"serviceName"`
+
+	// SizeBytes 原本の実サイズ。ingest 済み（media_assets 行あり）の場合のみ
+	SizeBytes *int64          `json:"sizeBytes,omitempty"`
+	Source    RecordingSource `json:"source"`
+
+	// StartAt 番組の放送開始時刻
+	StartAt time.Time `json:"startAt"`
+
+	// StartedAt 録画の実開始時刻
+	StartedAt *time.Time      `json:"startedAt,omitempty"`
+	Status    RecordingStatus `json:"status"`
+	Title     string          `json:"title"`
+}
+
+// RecordingChannelType defines model for Recording.ChannelType.
+type RecordingChannelType string
+
+// RecordingSource defines model for Recording.Source.
+type RecordingSource string
+
+// RecordingStatus defines model for Recording.Status.
+type RecordingStatus string
 
 // Reservation defines model for Reservation.
 type Reservation struct {
@@ -94,9 +297,42 @@ type ReservationSource string
 // ReservationState defines model for Reservation.State.
 type ReservationState string
 
+// Service defines model for Service.
+type Service struct {
+	Channel            string             `json:"channel"`
+	ChannelType        ServiceChannelType `json:"channelType"`
+	HasLogoData        bool               `json:"hasLogoData"`
+	Name               string             `json:"name"`
+	NetworkId          int                `json:"networkId"`
+	RemoteControlKeyId int                `json:"remoteControlKeyId"`
+	ServiceId          int                `json:"serviceId"`
+}
+
+// ServiceChannelType defines model for Service.ChannelType.
+type ServiceChannelType string
+
 // VersionResponse defines model for VersionResponse.
 type VersionResponse struct {
 	Version string `json:"version"`
+}
+
+// VideoInfo defines model for VideoInfo.
+type VideoInfo struct {
+	ComponentType *int    `json:"componentType,omitempty"`
+	Resolution    *string `json:"resolution,omitempty"`
+	StreamContent *int    `json:"streamContent,omitempty"`
+	Type          *string `json:"type,omitempty"`
+}
+
+// ListProgramsParams defines parameters for ListPrograms.
+type ListProgramsParams struct {
+	// Start 時間窓の開始（この時刻より後に終わる番組が対象）
+	Start time.Time `form:"start" json:"start"`
+
+	// End 時間窓の終了（この時刻より前に始まる番組が対象）。start からの幅は最大 7 日
+	End       time.Time `form:"end" json:"end"`
+	NetworkId *int      `form:"networkId,omitempty" json:"networkId,omitempty"`
+	ServiceId *int      `form:"serviceId,omitempty" json:"serviceId,omitempty"`
 }
 
 // CreateReservationJSONRequestBody defines body for CreateReservation for application/json ContentType.
@@ -104,6 +340,18 @@ type CreateReservationJSONRequestBody = CreateReservationRequest
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
+	// ListPrograms List EPG programs in a time window
+	// (GET /api/programs)
+	ListPrograms(w http.ResponseWriter, r *http.Request, params ListProgramsParams)
+	// GetProgram Get a single EPG program with full detail
+	// (GET /api/programs/{programId})
+	GetProgram(w http.ResponseWriter, r *http.Request, programId int64)
+	// ListRecordings List recordings
+	// (GET /api/recordings)
+	ListRecordings(w http.ResponseWriter, r *http.Request)
+	// ListRecordingDropStats Get per-PID drop statistics for a recording
+	// (GET /api/recordings/{id}/drop-stats)
+	ListRecordingDropStats(w http.ResponseWriter, r *http.Request, id int64)
 	// ListReservations List reservations
 	// (GET /api/reservations)
 	ListReservations(w http.ResponseWriter, r *http.Request)
@@ -116,6 +364,9 @@ type ServerInterface interface {
 	// GetReservation Get a reservation
 	// (GET /api/reservations/{id})
 	GetReservation(w http.ResponseWriter, r *http.Request, id int64)
+	// ListServices List EPG services (channels)
+	// (GET /api/services)
+	ListServices(w http.ResponseWriter, r *http.Request)
 	// GetVersion Get server version
 	// (GET /api/version)
 	GetVersion(w http.ResponseWriter, r *http.Request)
@@ -127,6 +378,30 @@ type ServerInterface interface {
 // Unimplemented server implementation that returns http.StatusNotImplemented for each endpoint.
 
 type Unimplemented struct{}
+
+// ListPrograms List EPG programs in a time window
+// (GET /api/programs)
+func (_ Unimplemented) ListPrograms(w http.ResponseWriter, r *http.Request, params ListProgramsParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// GetProgram Get a single EPG program with full detail
+// (GET /api/programs/{programId})
+func (_ Unimplemented) GetProgram(w http.ResponseWriter, r *http.Request, programId int64) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// ListRecordings List recordings
+// (GET /api/recordings)
+func (_ Unimplemented) ListRecordings(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// ListRecordingDropStats Get per-PID drop statistics for a recording
+// (GET /api/recordings/{id}/drop-stats)
+func (_ Unimplemented) ListRecordingDropStats(w http.ResponseWriter, r *http.Request, id int64) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
 
 // ListReservations List reservations
 // (GET /api/reservations)
@@ -152,6 +427,12 @@ func (_ Unimplemented) GetReservation(w http.ResponseWriter, r *http.Request, id
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// ListServices List EPG services (channels)
+// (GET /api/services)
+func (_ Unimplemented) ListServices(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
 // GetVersion Get server version
 // (GET /api/version)
 func (_ Unimplemented) GetVersion(w http.ResponseWriter, r *http.Request) {
@@ -172,6 +453,144 @@ type ServerInterfaceWrapper struct {
 }
 
 type MiddlewareFunc func(http.Handler) http.Handler
+
+// ListPrograms operation middleware
+func (siw *ServerInterfaceWrapper) ListPrograms(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListProgramsParams
+
+	// ------------- Required query parameter "start" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "start", r.URL.Query(), &params.Start, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "start"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "start", Err: err})
+		}
+		return
+	}
+
+	// ------------- Required query parameter "end" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "end", r.URL.Query(), &params.End, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "end"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "end", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "networkId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "networkId", r.URL.Query(), &params.NetworkId, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "networkId"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "networkId", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "serviceId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "serviceId", r.URL.Query(), &params.ServiceId, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "serviceId"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "serviceId", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListPrograms(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetProgram operation middleware
+func (siw *ServerInterfaceWrapper) GetProgram(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "programId" -------------
+	var programId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "programId", chi.URLParam(r, "programId"), &programId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "programId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetProgram(w, r, programId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListRecordings operation middleware
+func (siw *ServerInterfaceWrapper) ListRecordings(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListRecordings(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListRecordingDropStats operation middleware
+func (siw *ServerInterfaceWrapper) ListRecordingDropStats(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListRecordingDropStats(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
 
 // ListReservations operation middleware
 func (siw *ServerInterfaceWrapper) ListReservations(w http.ResponseWriter, r *http.Request) {
@@ -244,6 +663,20 @@ func (siw *ServerInterfaceWrapper) GetReservation(w http.ResponseWriter, r *http
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetReservation(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListServices operation middleware
+func (siw *ServerInterfaceWrapper) ListServices(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListServices(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -412,8 +845,138 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/api/reservations/{id}", wrapper.GetReservation)
 	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/services", wrapper.ListServices)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/programs", wrapper.ListPrograms)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/programs/{programId}", wrapper.GetProgram)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/recordings", wrapper.ListRecordings)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/recordings/{id}/drop-stats", wrapper.ListRecordingDropStats)
+	})
 
 	return r
+}
+
+type ListProgramsRequestObject struct {
+	Params ListProgramsParams
+}
+
+type ListProgramsResponseObject interface {
+	VisitListProgramsResponse(w http.ResponseWriter) error
+}
+
+type ListPrograms200JSONResponse []ProgramListItem
+
+func (response ListPrograms200JSONResponse) VisitListProgramsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListPrograms400JSONResponse ErrorResponse
+
+func (response ListPrograms400JSONResponse) VisitListProgramsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetProgramRequestObject struct {
+	ProgramId int64 `json:"programId"`
+}
+
+type GetProgramResponseObject interface {
+	VisitGetProgramResponse(w http.ResponseWriter) error
+}
+
+type GetProgram200JSONResponse Program
+
+func (response GetProgram200JSONResponse) VisitGetProgramResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetProgram404JSONResponse ErrorResponse
+
+func (response GetProgram404JSONResponse) VisitGetProgramResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListRecordingsRequestObject struct {
+}
+
+type ListRecordingsResponseObject interface {
+	VisitListRecordingsResponse(w http.ResponseWriter) error
+}
+
+type ListRecordings200JSONResponse []Recording
+
+func (response ListRecordings200JSONResponse) VisitListRecordingsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListRecordingDropStatsRequestObject struct {
+	Id int64 `json:"id"`
+}
+
+type ListRecordingDropStatsResponseObject interface {
+	VisitListRecordingDropStatsResponse(w http.ResponseWriter) error
+}
+
+type ListRecordingDropStats200JSONResponse []DropStat
+
+func (response ListRecordingDropStats200JSONResponse) VisitListRecordingDropStatsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
 }
 
 type ListReservationsRequestObject struct {
@@ -539,6 +1102,27 @@ func (response GetReservation404JSONResponse) VisitGetReservationResponse(w http
 	return err
 }
 
+type ListServicesRequestObject struct {
+}
+
+type ListServicesResponseObject interface {
+	VisitListServicesResponse(w http.ResponseWriter) error
+}
+
+type ListServices200JSONResponse []Service
+
+func (response ListServices200JSONResponse) VisitListServicesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type GetVersionRequestObject struct {
 }
 
@@ -583,6 +1167,18 @@ func (response Healthz200JSONResponse) VisitHealthzResponse(w http.ResponseWrite
 
 // StrictServerInterface represents all server handlers.
 type StrictServerInterface interface {
+	// ListPrograms List EPG programs in a time window
+	// (GET /api/programs)
+	ListPrograms(ctx context.Context, request ListProgramsRequestObject) (ListProgramsResponseObject, error)
+	// GetProgram Get a single EPG program with full detail
+	// (GET /api/programs/{programId})
+	GetProgram(ctx context.Context, request GetProgramRequestObject) (GetProgramResponseObject, error)
+	// ListRecordings List recordings
+	// (GET /api/recordings)
+	ListRecordings(ctx context.Context, request ListRecordingsRequestObject) (ListRecordingsResponseObject, error)
+	// ListRecordingDropStats Get per-PID drop statistics for a recording
+	// (GET /api/recordings/{id}/drop-stats)
+	ListRecordingDropStats(ctx context.Context, request ListRecordingDropStatsRequestObject) (ListRecordingDropStatsResponseObject, error)
 	// ListReservations List reservations
 	// (GET /api/reservations)
 	ListReservations(ctx context.Context, request ListReservationsRequestObject) (ListReservationsResponseObject, error)
@@ -595,6 +1191,9 @@ type StrictServerInterface interface {
 	// GetReservation Get a reservation
 	// (GET /api/reservations/{id})
 	GetReservation(ctx context.Context, request GetReservationRequestObject) (GetReservationResponseObject, error)
+	// ListServices List EPG services (channels)
+	// (GET /api/services)
+	ListServices(ctx context.Context, request ListServicesRequestObject) (ListServicesResponseObject, error)
 	// GetVersion Get server version
 	// (GET /api/version)
 	GetVersion(ctx context.Context, request GetVersionRequestObject) (GetVersionResponseObject, error)
@@ -640,6 +1239,108 @@ type strictHandler struct {
 	ssi         StrictServerInterface
 	middlewares []StrictMiddlewareFunc
 	options     StrictHTTPServerOptions
+}
+
+// ListPrograms operation middleware
+func (sh *strictHandler) ListPrograms(w http.ResponseWriter, r *http.Request, params ListProgramsParams) {
+	var request ListProgramsRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListPrograms(ctx, request.(ListProgramsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListPrograms")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListProgramsResponseObject); ok {
+		if err := validResponse.VisitListProgramsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetProgram operation middleware
+func (sh *strictHandler) GetProgram(w http.ResponseWriter, r *http.Request, programId int64) {
+	var request GetProgramRequestObject
+
+	request.ProgramId = programId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetProgram(ctx, request.(GetProgramRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetProgram")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetProgramResponseObject); ok {
+		if err := validResponse.VisitGetProgramResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListRecordings operation middleware
+func (sh *strictHandler) ListRecordings(w http.ResponseWriter, r *http.Request) {
+	var request ListRecordingsRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListRecordings(ctx, request.(ListRecordingsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListRecordings")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListRecordingsResponseObject); ok {
+		if err := validResponse.VisitListRecordingsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListRecordingDropStats operation middleware
+func (sh *strictHandler) ListRecordingDropStats(w http.ResponseWriter, r *http.Request, id int64) {
+	var request ListRecordingDropStatsRequestObject
+
+	request.Id = id
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListRecordingDropStats(ctx, request.(ListRecordingDropStatsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListRecordingDropStats")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListRecordingDropStatsResponseObject); ok {
+		if err := validResponse.VisitListRecordingDropStatsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
 }
 
 // ListReservations operation middleware
@@ -742,6 +1443,30 @@ func (sh *strictHandler) GetReservation(w http.ResponseWriter, r *http.Request, 
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(GetReservationResponseObject); ok {
 		if err := validResponse.VisitGetReservationResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListServices operation middleware
+func (sh *strictHandler) ListServices(w http.ResponseWriter, r *http.Request) {
+	var request ListServicesRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListServices(ctx, request.(ListServicesRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListServices")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListServicesResponseObject); ok {
+		if err := validResponse.VisitListServicesResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

@@ -164,6 +164,159 @@ func (q *Queries) CreateRecording(ctx context.Context, arg CreateRecordingParams
 	return id, err
 }
 
+const listRecordingDropStats = `-- name: ListRecordingDropStats :many
+SELECT d.pid, d.packets, d.drops, d.errors, d.scrambled
+FROM drop_stats d
+JOIN media_assets a ON a.id = d.media_asset_id
+WHERE a.recording_id = $1 AND a.kind = 'original' AND a.state <> 'deleted'
+ORDER BY d.pid
+`
+
+type ListRecordingDropStatsRow struct {
+	Pid       int32
+	Packets   int64
+	Drops     int64
+	Errors    int64
+	Scrambled int64
+}
+
+func (q *Queries) ListRecordingDropStats(ctx context.Context, recordingID int64) ([]ListRecordingDropStatsRow, error) {
+	rows, err := q.db.Query(ctx, listRecordingDropStats, recordingID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListRecordingDropStatsRow
+	for rows.Next() {
+		var i ListRecordingDropStatsRow
+		if err := rows.Scan(
+			&i.Pid,
+			&i.Packets,
+			&i.Drops,
+			&i.Errors,
+			&i.Scrambled,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRecordings = `-- name: ListRecordings :many
+SELECT
+    r.id, r.reservation_id, r.rule_id, r.source, r.site, r.network_id, r.service_id, r.event_id, r.service_name, r.channel_type, r.channel, r.title, r.description, r.extended, r.genres, r.is_free, r.program_start_at, r.program_duration_ms, r.status, r.started_at, r.ended_at, r.keep_original, r.encode_profiles, r.quality_events, r.deleted_at, r.created_at, r.updated_at,
+    a.size_bytes                        AS original_size_bytes,
+    COALESCE(d.packets, 0)::bigint      AS drop_packets,
+    COALESCE(d.drops, 0)::bigint        AS drop_drops,
+    COALESCE(d.errors, 0)::bigint       AS drop_errors,
+    COALESCE(d.scrambled, 0)::bigint    AS drop_scrambled
+FROM recordings r
+LEFT JOIN media_assets a
+    ON a.recording_id = r.id AND a.kind = 'original' AND a.state <> 'deleted'
+LEFT JOIN LATERAL (
+    SELECT sum(packets) AS packets, sum(drops) AS drops,
+           sum(errors) AS errors, sum(scrambled) AS scrambled
+    FROM drop_stats
+    WHERE media_asset_id = a.id
+) d ON true
+WHERE r.site = $1 AND r.deleted_at IS NULL
+ORDER BY r.program_start_at DESC, r.id DESC
+`
+
+type ListRecordingsRow struct {
+	ID                int64
+	ReservationID     *int64
+	RuleID            *int64
+	Source            string
+	Site              string
+	NetworkID         int32
+	ServiceID         int32
+	EventID           int32
+	ServiceName       string
+	ChannelType       string
+	Channel           string
+	Title             string
+	Description       *string
+	Extended          json.RawMessage
+	Genres            json.RawMessage
+	IsFree            bool
+	ProgramStartAt    time.Time
+	ProgramDurationMs int64
+	Status            string
+	StartedAt         *time.Time
+	EndedAt           *time.Time
+	KeepOriginal      string
+	EncodeProfiles    []string
+	QualityEvents     json.RawMessage
+	DeletedAt         *time.Time
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+	OriginalSizeBytes *int64
+	DropPackets       int64
+	DropDrops         int64
+	DropErrors        int64
+	DropScrambled     int64
+}
+
+// 録画一覧。原本のサイズと PID 別 drop_stats の合計を同梱する。
+// PID 別の内訳は行数が多く一覧では使わないので ListRecordingDropStats で別に取る。
+func (q *Queries) ListRecordings(ctx context.Context, site string) ([]ListRecordingsRow, error) {
+	rows, err := q.db.Query(ctx, listRecordings, site)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListRecordingsRow
+	for rows.Next() {
+		var i ListRecordingsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ReservationID,
+			&i.RuleID,
+			&i.Source,
+			&i.Site,
+			&i.NetworkID,
+			&i.ServiceID,
+			&i.EventID,
+			&i.ServiceName,
+			&i.ChannelType,
+			&i.Channel,
+			&i.Title,
+			&i.Description,
+			&i.Extended,
+			&i.Genres,
+			&i.IsFree,
+			&i.ProgramStartAt,
+			&i.ProgramDurationMs,
+			&i.Status,
+			&i.StartedAt,
+			&i.EndedAt,
+			&i.KeepOriginal,
+			&i.EncodeProfiles,
+			&i.QualityEvents,
+			&i.DeletedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.OriginalSizeBytes,
+			&i.DropPackets,
+			&i.DropDrops,
+			&i.DropErrors,
+			&i.DropScrambled,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const updateRecordingStatus = `-- name: UpdateRecordingStatus :exec
 UPDATE recordings SET
     status     = CASE WHEN status IN ('finished', 'failed') THEN status ELSE $1 END,

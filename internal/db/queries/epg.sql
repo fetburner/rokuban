@@ -81,3 +81,20 @@ WHERE site = $1
   AND (sqlc.narg(network_id)::integer IS NULL OR network_id = sqlc.narg(network_id)::integer)
   AND (sqlc.narg(service_id)::integer IS NULL OR service_id = sqlc.narg(service_id)::integer)
 ORDER BY start_at, network_id, service_id;
+
+-- 一覧向けの軽い形。extended / video / audios は返さない（1 行あたり数 KB になり
+-- 時間窓を広げたときの転送量が跳ねるため。詳細は GetEpgProgram で取る）。
+-- name: ListEpgProgramsForList :many
+SELECT site, program_id, network_id, service_id, event_id,
+       start_at, duration_ms, end_at, is_free, name, description, genre_lv1
+FROM epg_programs
+WHERE site = $1
+  AND start_at < sqlc.arg(window_end)::timestamptz
+  AND end_at   > sqlc.arg(window_start)::timestamptz
+  AND (sqlc.narg(network_id)::integer IS NULL OR network_id = sqlc.narg(network_id)::integer)
+  AND (sqlc.narg(service_id)::integer IS NULL OR service_id = sqlc.narg(service_id)::integer)
+ORDER BY start_at, network_id, service_id;
+
+-- name: GetEpgProgram :one
+SELECT * FROM epg_programs
+WHERE site = $1 AND program_id = $2;

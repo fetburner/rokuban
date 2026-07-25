@@ -102,6 +102,146 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /api/services:
+    get:
+      operationId: listServices
+      summary: List EPG services (channels)
+      description: |
+        EPG プロジェクションのサービス一覧。channelType, remoteControlKeyId, serviceId 順。
+
+        サブサービス（ＮＨＫ総合２ 等）も含む全サービスを返す。マルチ編成のない
+        サブサービスは番組を持たないため、UI は時間窓内に番組があるサービスだけを
+        表示することが期待される（issue #17 の S3）。
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Service"
+
+  /api/programs:
+    get:
+      operationId: listPrograms
+      summary: List EPG programs in a time window
+      description: |
+        指定した時間窓に**一部でも重なる**番組を start_at 昇順で返す
+        （`start_at < end AND end_at > start`）。窓開始前に始まった放送中の番組も含む。
+
+        無限スクロールで窓を継ぎ足す場合、境界をまたぐ番組は隣接する 2 つの窓の
+        両方に現れる。クライアントは programId で重複排除すること。
+
+        ページネーショントークンは持たない。時間窓そのものがカーソルであり、
+        同じ窓は常に同じ完全な結果を返す。
+
+        レスポンスは一覧向けの軽い形で、extended / video / audios は含まない。
+        それらは `GET /api/programs/{programId}` で取得する。
+      parameters:
+        - name: start
+          in: query
+          required: true
+          description: 時間窓の開始（この時刻より後に終わる番組が対象）
+          schema:
+            type: string
+            format: date-time
+        - name: end
+          in: query
+          required: true
+          description: 時間窓の終了（この時刻より前に始まる番組が対象）。start からの幅は最大 7 日
+          schema:
+            type: string
+            format: date-time
+        - name: networkId
+          in: query
+          required: false
+          schema:
+            type: integer
+        - name: serviceId
+          in: query
+          required: false
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ProgramListItem"
+        "400":
+          description: Invalid time window
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/programs/{programId}:
+    parameters:
+      - name: programId
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+    get:
+      operationId: getProgram
+      summary: Get a single EPG program with full detail
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Program"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/recordings:
+    get:
+      operationId: listRecordings
+      summary: List recordings
+      description: |
+        録画履歴。program_start_at の降順。ドロップ統計は PID 別の合計のみを含む。
+        PID 別の内訳は `GET /api/recordings/{id}/drop-stats` で取得する。
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Recording"
+
+  /api/recordings/{id}/drop-stats:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+    get:
+      operationId: listRecordingDropStats
+      summary: Get per-PID drop statistics for a recording
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/DropStat"
+
 components:
   schemas:
     HealthResponse:
@@ -129,6 +269,256 @@ components:
       properties:
         error:
           type: string
+
+    Service:
+      type: object
+      required:
+        - networkId
+        - serviceId
+        - name
+        - channelType
+        - channel
+        - remoteControlKeyId
+        - hasLogoData
+      properties:
+        networkId:
+          type: integer
+        serviceId:
+          type: integer
+        name:
+          type: string
+        channelType:
+          type: string
+          enum: [GR, BS, CS, SKY]
+        channel:
+          type: string
+        remoteControlKeyId:
+          type: integer
+        hasLogoData:
+          type: boolean
+
+    # 一覧向けの軽い形。extended / video / audios は含まない（転送量のため）。
+    ProgramListItem:
+      type: object
+      required:
+        - programId
+        - networkId
+        - serviceId
+        - eventId
+        - startAt
+        - endAt
+        - durationMs
+        - name
+        - description
+        - genres
+        - isFree
+      properties:
+        programId:
+          type: integer
+          format: int64
+        networkId:
+          type: integer
+        serviceId:
+          type: integer
+        eventId:
+          type: integer
+        startAt:
+          type: string
+          format: date-time
+        endAt:
+          type: string
+          format: date-time
+        durationMs:
+          type: integer
+          format: int64
+        name:
+          type: string
+        description:
+          type: string
+        genres:
+          description: ジャンル絞り込み用の lv1 のみ。詳細は Program.genreDetails
+          type: array
+          items:
+            type: integer
+        isFree:
+          type: boolean
+
+    # 詳細。ProgramListItem に UI 完全形のペイロードを足したもの。
+    Program:
+      allOf:
+        - $ref: "#/components/schemas/ProgramListItem"
+        - type: object
+          properties:
+            extended:
+              description: 拡張形式イベント（出演者等）
+              type: object
+              additionalProperties:
+                type: string
+            genreDetails:
+              type: array
+              items:
+                $ref: "#/components/schemas/Genre"
+            video:
+              $ref: "#/components/schemas/VideoInfo"
+            audios:
+              type: array
+              items:
+                $ref: "#/components/schemas/AudioInfo"
+
+    Genre:
+      type: object
+      required: [lv1, lv2]
+      properties:
+        lv1:
+          type: integer
+        lv2:
+          type: integer
+        un1:
+          type: integer
+        un2:
+          type: integer
+
+    VideoInfo:
+      type: object
+      properties:
+        type:
+          type: string
+        resolution:
+          type: string
+        streamContent:
+          type: integer
+        componentType:
+          type: integer
+
+    AudioInfo:
+      type: object
+      required: [componentType, isMain, samplingRate]
+      properties:
+        componentType:
+          type: integer
+        isMain:
+          type: boolean
+        samplingRate:
+          type: integer
+        langs:
+          type: array
+          items:
+            type: string
+
+    Recording:
+      type: object
+      required:
+        - id
+        - source
+        - serviceName
+        - channelType
+        - channel
+        - networkId
+        - serviceId
+        - eventId
+        - title
+        - startAt
+        - durationMs
+        - status
+        - createdAt
+      properties:
+        id:
+          type: integer
+          format: int64
+        reservationId:
+          type: integer
+          format: int64
+        ruleId:
+          type: integer
+          format: int64
+        source:
+          type: string
+          enum: [rule, manual]
+        serviceName:
+          type: string
+        channelType:
+          type: string
+          enum: [GR, BS, CS, SKY]
+        channel:
+          type: string
+        networkId:
+          type: integer
+        serviceId:
+          type: integer
+        eventId:
+          type: integer
+        title:
+          type: string
+        description:
+          type: string
+        startAt:
+          description: 番組の放送開始時刻
+          type: string
+          format: date-time
+        durationMs:
+          type: integer
+          format: int64
+        status:
+          type: string
+          enum: [recording, finished, failed]
+        startedAt:
+          description: 録画の実開始時刻
+          type: string
+          format: date-time
+        endedAt:
+          type: string
+          format: date-time
+        sizeBytes:
+          description: 原本の実サイズ。ingest 済み（media_assets 行あり）の場合のみ
+          type: integer
+          format: int64
+        dropSummary:
+          $ref: "#/components/schemas/DropSummary"
+        qualityEvents:
+          description: recording.failed / record-broken / bcas_anomaly の履歴
+          type: array
+          items:
+            type: object
+        createdAt:
+          type: string
+          format: date-time
+
+    # PID 別 drop_stats の合計。内訳は /api/recordings/{id}/drop-stats。
+    DropSummary:
+      type: object
+      required: [packets, drops, errors, scrambled]
+      properties:
+        packets:
+          type: integer
+          format: int64
+        drops:
+          type: integer
+          format: int64
+        errors:
+          type: integer
+          format: int64
+        scrambled:
+          type: integer
+          format: int64
+
+    DropStat:
+      type: object
+      required: [pid, packets, drops, errors, scrambled]
+      properties:
+        pid:
+          type: integer
+        packets:
+          type: integer
+          format: int64
+        drops:
+          type: integer
+          format: int64
+        errors:
+          type: integer
+          format: int64
+        scrambled:
+          type: integer
+          format: int64
 
     CreateReservationRequest:
       type: object
