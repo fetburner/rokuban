@@ -55,9 +55,16 @@ ON CONFLICT (site, program_id) DO UPDATE SET
     audios      = EXCLUDED.audios,
     observed_at = now();
 
--- name: DeleteStaleEpgPrograms :execrows
+-- mirakc の EPG 収集は物理チャンネル単位（1 回チューニングして collect-eits を回す）なので、
+-- スイープも「今回番組を返したチャンネルに属するサービス」に限定する。
+-- あるチャンネルの収集失敗がそのチャンネルの番組表を消してしまうのを防ぐ。
+-- 呼び出し側が対象サービスを network_id ごとにまとめて 1 回ずつ呼ぶ。
+-- name: DeleteStaleEpgProgramsForServices :execrows
 DELETE FROM epg_programs
-WHERE site = $1 AND observed_at < $2;
+WHERE site = $1
+  AND observed_at < $2
+  AND network_id = $3
+  AND service_id = ANY(sqlc.arg(service_ids)::integer[]);
 
 -- name: PruneEpgPrograms :execrows
 DELETE FROM epg_programs

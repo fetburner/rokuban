@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -89,17 +90,18 @@ func (w *EpgSyncWorker) Work(ctx context.Context, job *river.Job[EpgSyncArgs]) e
 	if err != nil {
 		return fmt.Errorf("listing programs: %w", err)
 	}
-	syncedPrograms, err := w.syncPrograms(ctx, q, site, programs)
+	serviceChannels := serviceChannelIndex(services)
+	syncedPrograms, observedChannels, err := w.syncPrograms(ctx, q, site, programs, serviceChannels)
 	if err != nil {
 		return fmt.Errorf("syncing programs: %w", err)
 	}
 
-	// 空レスポンスでスイープを走らせるとプロジェクション全体が消える。
+	// 空レスポンスでスイープを走らせるとプロジェクションが消える。
 	// mirakc は再起動直後に EPG を読み込み終えておらず空を返しうるため、
 	// その 1 パスで番組表を消し飛ばさないようスイープを見送る。
 	// 削除しなくても次のパスが収束させる（レベルトリガー）。
 	// 大量削除の前で立ち止まる規律は reconciler のサーキットブレーカーと同じ（issue #11）。
-	var staleServices, stalePrograms int64
+	var staleServices int64
 	if syncedServices == 0 {
 		log.Warn("epg sync: mirakc returned no services, skipping service sweep")
 	} else if staleServices, err = q.DeleteStaleEpgServices(ctx, sqlcgen.DeleteStaleEpgServicesParams{
@@ -109,13 +111,19 @@ func (w *EpgSyncWorker) Work(ctx context.Context, job *river.Job[EpgSyncArgs]) e
 		return fmt.Errorf("deleting stale services: %w", err)
 	}
 
-	if syncedPrograms == 0 {
-		log.Warn("epg sync: mirakc returned no projectable programs, skipping program sweep")
-	} else if stalePrograms, err = q.DeleteStaleEpgPrograms(ctx, sqlcgen.DeleteStaleEpgProgramsParams{
-		Site:       site,
-		ObservedAt: mark,
-	}); err != nil {
+	// 番組のスイープはチャンネル単位。mirakc の EPG 収集は物理チャンネルごとに
+	// チューニングして collect-eits を回すため、1 チャンネルの収集失敗
+	// （録画とのチューナー競合・timeout）で番組が返らないことがある。
+	// サイト単位でスイープすると、そのチャンネルの番組表だけが消える。
+	stalePrograms, err := w.sweepPrograms(ctx, q, site, mark, services, serviceChannels, observedChannels)
+	if err != nil {
 		return fmt.Errorf("deleting stale programs: %w", err)
+	}
+	if len(observedChannels) == 0 {
+		log.Warn("epg sync: mirakc returned no projectable programs, skipping program sweep")
+	} else if skipped := countChannels(serviceChannels) - len(observedChannels); skipped > 0 {
+		log.Warn("epg sync: some channels returned no programs, their sweep was skipped",
+			"channels_without_programs", skipped)
 	}
 
 	// ローリングウィンドウ: mirakc が過去番組を保持し続けても、こちらは刈り取る。
@@ -134,6 +142,8 @@ func (w *EpgSyncWorker) Work(ctx context.Context, job *river.Job[EpgSyncArgs]) e
 	log.Info("epg sync complete",
 		"services_fetched", len(services),
 		"services_projected", syncedServices,
+		"channels", countChannels(serviceChannels),
+		"channels_with_programs", len(observedChannels),
 		"programs_fetched", len(programs),
 		"programs_projected", syncedPrograms,
 		"stale_services", staleServices,
@@ -201,18 +211,121 @@ func projectable(p mirakc.Program) bool {
 	return p.Name != nil && *p.Name != ""
 }
 
-// syncPrograms は番組を upsert し、投影した件数を返す。
+// serviceKey は (networkId, serviceId) の組。mirakc の programId や Service.id の
+// 符号化に依存せずサービスを一意に指すための鍵。
+type serviceKey struct {
+	networkID int32
+	serviceID int32
+}
+
+// channelKey は mirakc の物理チャンネル（type + channel）。
+// EPG 収集はこの単位で行われるため、スイープのスコープもこの単位にする。
+type channelKey struct {
+	channelType string
+	channel     string
+}
+
+func keyOfService(s mirakc.Service) serviceKey {
+	return serviceKey{networkID: int32(s.NetworkID), serviceID: int32(s.ServiceID)}
+}
+
+// serviceChannelIndex はサービスから所属チャンネルを引く索引を作る。
+func serviceChannelIndex(services []mirakc.Service) map[serviceKey]channelKey {
+	idx := make(map[serviceKey]channelKey, len(services))
+	for _, s := range services {
+		idx[keyOfService(s)] = channelKey{channelType: s.Channel.Type, channel: s.Channel.Channel}
+	}
+	return idx
+}
+
+// countChannels は索引に現れる物理チャンネル数を返す。
+func countChannels(idx map[serviceKey]channelKey) int {
+	seen := make(map[channelKey]struct{}, len(idx))
+	for _, ch := range idx {
+		seen[ch] = struct{}{}
+	}
+	return len(seen)
+}
+
+// sweepPrograms は「今回番組を返したチャンネル」に属するサービスの stale 行だけを削除する。
+//
+// 対象チャンネルのサービスは番組が 0 件のものも含める。マルチ編成が終わって
+// サブサービスの番組が無くなったとき、その古い行を消せるようにするため
+// （サービス単位でスイープすると、この行がローリングウィンドウまで残ってしまう）。
+//
+// クエリは network_id ごとに分けて呼ぶ。1 つの TS は 1 つの original_network_id を
+// 持つのでチャンネルより粗くならず、可変長の (network_id, service_id) 組を
+// SQL に渡す必要がなくなる。
+func (w *EpgSyncWorker) sweepPrograms(
+	ctx context.Context,
+	q *sqlcgen.Queries,
+	site string,
+	mark time.Time,
+	services []mirakc.Service,
+	serviceChannels map[serviceKey]channelKey,
+	observedChannels map[channelKey]struct{},
+) (int64, error) {
+	if len(observedChannels) == 0 {
+		return 0, nil
+	}
+
+	byNetwork := make(map[int32][]int32)
+	for _, s := range services {
+		key := keyOfService(s)
+		if _, ok := observedChannels[serviceChannels[key]]; !ok {
+			continue
+		}
+		byNetwork[key.networkID] = append(byNetwork[key.networkID], key.serviceID)
+	}
+
+	networks := make([]int32, 0, len(byNetwork))
+	for nid := range byNetwork {
+		networks = append(networks, nid)
+	}
+	slices.Sort(networks)
+
+	var deleted int64
+	for _, nid := range networks {
+		n, err := q.DeleteStaleEpgProgramsForServices(ctx, sqlcgen.DeleteStaleEpgProgramsForServicesParams{
+			Site:       site,
+			ObservedAt: mark,
+			NetworkID:  nid,
+			ServiceIds: byNetwork[nid],
+		})
+		if err != nil {
+			return deleted, fmt.Errorf("network %d: %w", nid, err)
+		}
+		deleted += n
+	}
+	return deleted, nil
+}
+
+// syncPrograms は番組を upsert し、投影した件数と「番組を投影できたチャンネル」を返す。
 //
 // params はチャンクごとに組み立てる。全件分をまとめて作ると、パース済みの
 // []mirakc.Program と再マーシャルした jsonb ペイロードを同時に抱えることになり、
 // 全サービス 8 日分（数万〜十万件 × 数 KB）ではピークメモリが跳ねる。
-func (w *EpgSyncWorker) syncPrograms(ctx context.Context, q *sqlcgen.Queries, site string, programs []mirakc.Program) (int, error) {
+func (w *EpgSyncWorker) syncPrograms(
+	ctx context.Context,
+	q *sqlcgen.Queries,
+	site string,
+	programs []mirakc.Program,
+	serviceChannels map[serviceKey]channelKey,
+) (int, map[channelKey]struct{}, error) {
 	var projected int
+	observed := make(map[channelKey]struct{})
 	for chunk := range chunks(programs, epgBatchSize) {
 		params := make([]sqlcgen.UpsertEpgProgramParams, 0, len(chunk))
+		chunkChannels := make(map[channelKey]struct{})
 		for _, p := range chunk {
 			if !projectable(p) {
 				continue
+			}
+			// 所属チャンネルが分かる番組だけを「そのチャンネルを観測した」根拠にする。
+			// 分からない番組（サービス一覧に無いサービス）は投影はするが、
+			// スイープ対象を導けないので観測には数えない。
+			if ch, known := serviceChannels[serviceKey{networkID: int32(p.NetworkID), serviceID: int32(p.ServiceID)}]; known {
+				chunkChannels[ch] = struct{}{}
 			}
 			startAt := p.StartAt.Time()
 			var durationMs int64
@@ -243,11 +356,16 @@ func (w *EpgSyncWorker) syncPrograms(ctx context.Context, q *sqlcgen.Queries, si
 			continue
 		}
 		if err := execBatch(q.UpsertEpgProgram(ctx, params)); err != nil {
-			return projected, err
+			return projected, observed, err
 		}
 		projected += len(params)
+		// upsert が成功したチャンネルだけを観測済みにする。失敗したチャンネルを
+		// 観測済みにすると、そのチャンネルの古い行を消してしまう。
+		for ch := range chunkChannels {
+			observed[ch] = struct{}{}
+		}
 	}
-	return projected, nil
+	return projected, observed, nil
 }
 
 // genreLv1 はジャンル絞り込みのクエリ軸となる lv1 を重複なしで取り出す。

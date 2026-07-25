@@ -21,18 +21,32 @@ func (q *Queries) CountEpgPrograms(ctx context.Context, site string) (int64, err
 	return count, err
 }
 
-const deleteStaleEpgPrograms = `-- name: DeleteStaleEpgPrograms :execrows
+const deleteStaleEpgProgramsForServices = `-- name: DeleteStaleEpgProgramsForServices :execrows
 DELETE FROM epg_programs
-WHERE site = $1 AND observed_at < $2
+WHERE site = $1
+  AND observed_at < $2
+  AND network_id = $3
+  AND service_id = ANY($4::integer[])
 `
 
-type DeleteStaleEpgProgramsParams struct {
+type DeleteStaleEpgProgramsForServicesParams struct {
 	Site       string
 	ObservedAt time.Time
+	NetworkID  int32
+	ServiceIds []int32
 }
 
-func (q *Queries) DeleteStaleEpgPrograms(ctx context.Context, arg DeleteStaleEpgProgramsParams) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteStaleEpgPrograms, arg.Site, arg.ObservedAt)
+// mirakc の EPG 収集は物理チャンネル単位（1 回チューニングして collect-eits を回す）なので、
+// スイープも「今回番組を返したチャンネルに属するサービス」に限定する。
+// あるチャンネルの収集失敗がそのチャンネルの番組表を消してしまうのを防ぐ。
+// 呼び出し側が対象サービスを network_id ごとにまとめて 1 回ずつ呼ぶ。
+func (q *Queries) DeleteStaleEpgProgramsForServices(ctx context.Context, arg DeleteStaleEpgProgramsForServicesParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteStaleEpgProgramsForServices,
+		arg.Site,
+		arg.ObservedAt,
+		arg.NetworkID,
+		arg.ServiceIds,
+	)
 	if err != nil {
 		return 0, err
 	}

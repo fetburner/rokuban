@@ -346,6 +346,93 @@ func TestEpgSyncWorker_EmptyResponseKeepsProjection(t *testing.T) {
 	}
 }
 
+// mirakc の EPG 収集はチャンネル単位なので、あるチャンネルだけ番組を返さなかった場合は
+// そのチャンネルの番組を消さず、番組を返したチャンネルは通常どおりスイープすること。
+func TestEpgSyncWorker_SweepIsPerChannel(t *testing.T) {
+	pool := setupTestPool(t)
+	now := time.Now().Truncate(time.Second)
+
+	// GR/27 = ＯＨＫ（network 32678、サービス 5168 / 5169）
+	// GR/21 = ＲＳＫ（network 32676、サービス 5152）
+	ohkKeep := testProgram(32678, 5168, 1, "ＯＨＫ 残る番組", now.Add(time.Hour), time.Hour)
+	ohkGone := testProgram(32678, 5168, 2, "ＯＨＫ 消える番組", now.Add(2*time.Hour), time.Hour)
+	rskA := testProgram(32676, 5152, 1, "ＲＳＫ 番組A", now.Add(time.Hour), time.Hour)
+	rskB := testProgram(32676, 5152, 2, "ＲＳＫ 番組B", now.Add(2*time.Hour), time.Hour)
+
+	fx := &epgFixture{
+		services: []mirakc.Service{
+			testService(32678, 5168, 8, "ＯＨＫ", "27"),
+			testService(32678, 5169, 8, "ＯＨＫ サブ", "27"),
+			testService(32676, 5152, 6, "ＲＳＫテレビ", "21"),
+		},
+		programs: []mirakc.Program{ohkKeep, ohkGone, rskA, rskB},
+	}
+	srv := newEpgServer(t, fx)
+	w := &EpgSyncWorker{MirakcClient: mirakc.NewClient(srv.URL, nil), Pool: pool}
+
+	runEpgSync(t, w)
+	if got := len(allPrograms(t, w)); got != 4 {
+		t.Fatalf("after first sync programs = %d, want 4", got)
+	}
+
+	// ＲＳＫ（GR/21）の収集が失敗して番組がまったく返らず、
+	// ＯＨＫ（GR/27）では 1 番組が編成から消えた、という状況
+	fx.programs = []mirakc.Program{ohkKeep}
+	runEpgSync(t, w)
+
+	programs := allPrograms(t, w)
+	got := make([]int64, len(programs))
+	for i, p := range programs {
+		got[i] = p.ProgramID
+	}
+	// ＯＨＫ は観測できたので消える番組がスイープされ、
+	// ＲＳＫ は観測できなかったので 2 件とも残る
+	want := []int64{ohkKeep.ID, rskA.ID, rskB.ID}
+	slices.Sort(want)
+	if !reflect.DeepEqual(got, want) {
+		names := make([]string, len(programs))
+		for i, p := range programs {
+			names[i] = p.Name
+		}
+		t.Errorf("programs = %v (%v), want %v", got, names, want)
+	}
+}
+
+// サブサービスのマルチ編成が終わって番組が 0 件になった場合、
+// 同一チャンネルの他サービスが観測できていれば古い行がスイープされること。
+// （スイープをサービス単位にしてしまうとこの行が残ってしまう）
+func TestEpgSyncWorker_SweepsSubServiceWhenChannelObserved(t *testing.T) {
+	pool := setupTestPool(t)
+	now := time.Now().Truncate(time.Second)
+
+	main := testProgram(32678, 5168, 1, "親サービスの番組", now.Add(time.Hour), time.Hour)
+	multi := testProgram(32678, 5169, 1, "マルチ編成の番組", now.Add(time.Hour), time.Hour)
+
+	fx := &epgFixture{
+		services: []mirakc.Service{
+			testService(32678, 5168, 8, "ＯＨＫ", "27"),
+			testService(32678, 5169, 8, "ＯＨＫ サブ", "27"),
+		},
+		programs: []mirakc.Program{main, multi},
+	}
+	srv := newEpgServer(t, fx)
+	w := &EpgSyncWorker{MirakcClient: mirakc.NewClient(srv.URL, nil), Pool: pool}
+
+	runEpgSync(t, w)
+	if got := len(allPrograms(t, w)); got != 2 {
+		t.Fatalf("after first sync programs = %d, want 2", got)
+	}
+
+	// マルチ編成が終わり、サブサービス側の番組が無くなった
+	fx.programs = []mirakc.Program{main}
+	runEpgSync(t, w)
+
+	programs := allPrograms(t, w)
+	if len(programs) != 1 || programs[0].ProgramID != main.ID {
+		t.Errorf("programs = %+v, want マルチ編成の番組がスイープされて親だけ残る", programs)
+	}
+}
+
 // 投影できる番組が 1 件もない場合もスイープを見送ること
 // （startAt なしばかりが返る異常時に番組表を消さない）。
 func TestEpgSyncWorker_NoProjectableProgramsKeepsProjection(t *testing.T) {
