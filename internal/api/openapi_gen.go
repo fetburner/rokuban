@@ -16,6 +16,30 @@ import (
 	"github.com/oapi-codegen/runtime"
 )
 
+// Defines values for ProgramSearchRequestChannelTypes.
+const (
+	ProgramSearchRequestChannelTypesBS  ProgramSearchRequestChannelTypes = "BS"
+	ProgramSearchRequestChannelTypesCS  ProgramSearchRequestChannelTypes = "CS"
+	ProgramSearchRequestChannelTypesGR  ProgramSearchRequestChannelTypes = "GR"
+	ProgramSearchRequestChannelTypesSKY ProgramSearchRequestChannelTypes = "SKY"
+)
+
+// Valid indicates whether the value is a known member of the ProgramSearchRequestChannelTypes enum.
+func (e ProgramSearchRequestChannelTypes) Valid() bool {
+	switch e {
+	case ProgramSearchRequestChannelTypesBS:
+		return true
+	case ProgramSearchRequestChannelTypesCS:
+		return true
+	case ProgramSearchRequestChannelTypesGR:
+		return true
+	case ProgramSearchRequestChannelTypesSKY:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for RecordingChannelType.
 const (
 	RecordingChannelTypeBS  RecordingChannelType = "BS"
@@ -367,6 +391,28 @@ type ProgramListItem struct {
 	StartAt   time.Time `json:"startAt"`
 }
 
+// ProgramSearchRequest ルール条件の条件部分と同じ形。rulequery.Conditions に写像される。
+// site は省略時 default（現状単一サイト）。
+type ProgramSearchRequest struct {
+	ChannelTypes  *[]ProgramSearchRequestChannelTypes `json:"channelTypes,omitempty"`
+	DurationMaxMs *int64                              `json:"durationMaxMs,omitempty"`
+	DurationMinMs *int64                              `json:"durationMinMs,omitempty"`
+	Genres        *[]int                              `json:"genres,omitempty"`
+	IsFree        *bool                               `json:"isFree,omitempty"`
+	PeriodEndAt   *time.Time                          `json:"periodEndAt,omitempty"`
+	PeriodStartAt *time.Time                          `json:"periodStartAt,omitempty"`
+	Services      *[]RuleService                      `json:"services,omitempty"`
+	Site          *string                             `json:"site,omitempty"`
+
+	// Sites ルールの rule_sites 相当。空 = 評価 site のみ
+	Sites       *[]string         `json:"sites,omitempty"`
+	TextMatches *[]RuleTextMatch  `json:"textMatches,omitempty"`
+	Times       *[]RuleTimeWindow `json:"times,omitempty"`
+}
+
+// ProgramSearchRequestChannelTypes defines model for ProgramSearchRequest.ChannelTypes.
+type ProgramSearchRequestChannelTypes string
+
 // Recording defines model for Recording.
 type Recording struct {
 	Channel     string               `json:"channel"`
@@ -586,6 +632,9 @@ type ListProgramsParams struct {
 	ServiceId *int      `form:"serviceId,omitempty" json:"serviceId,omitempty"`
 }
 
+// SearchProgramsJSONRequestBody defines body for SearchPrograms for application/json ContentType.
+type SearchProgramsJSONRequestBody = ProgramSearchRequest
+
 // CreateReservationJSONRequestBody defines body for CreateReservation for application/json ContentType.
 type CreateReservationJSONRequestBody = CreateReservationRequest
 
@@ -600,6 +649,9 @@ type ServerInterface interface {
 	// ListPrograms List EPG programs in a time window
 	// (GET /api/programs)
 	ListPrograms(w http.ResponseWriter, r *http.Request, params ListProgramsParams)
+	// SearchPrograms Search EPG programs by rule-style conditions
+	// (POST /api/programs/search)
+	SearchPrograms(w http.ResponseWriter, r *http.Request)
 	// GetProgram Get a single EPG program with full detail
 	// (GET /api/programs/{programId})
 	GetProgram(w http.ResponseWriter, r *http.Request, programId int64)
@@ -654,6 +706,12 @@ type Unimplemented struct{}
 // ListPrograms List EPG programs in a time window
 // (GET /api/programs)
 func (_ Unimplemented) ListPrograms(w http.ResponseWriter, r *http.Request, params ListProgramsParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// SearchPrograms Search EPG programs by rule-style conditions
+// (POST /api/programs/search)
+func (_ Unimplemented) SearchPrograms(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -819,6 +877,20 @@ func (siw *ServerInterfaceWrapper) ListPrograms(w http.ResponseWriter, r *http.R
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ListPrograms(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// SearchPrograms operation middleware
+func (siw *ServerInterfaceWrapper) SearchPrograms(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.SearchPrograms(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1272,6 +1344,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Get(options.BaseURL+"/api/services", wrapper.ListServices)
 	})
 	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/api/programs/search", wrapper.SearchPrograms)
+	})
+	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/api/programs", wrapper.ListPrograms)
 	})
 	r.Group(func(r chi.Router) {
@@ -1312,6 +1387,42 @@ func (response ListPrograms200JSONResponse) VisitListProgramsResponse(w http.Res
 type ListPrograms400JSONResponse ErrorResponse
 
 func (response ListPrograms400JSONResponse) VisitListProgramsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SearchProgramsRequestObject struct {
+	Body *SearchProgramsJSONRequestBody
+}
+
+type SearchProgramsResponseObject interface {
+	VisitSearchProgramsResponse(w http.ResponseWriter) error
+}
+
+type SearchPrograms200JSONResponse []int64
+
+func (response SearchPrograms200JSONResponse) VisitSearchProgramsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SearchPrograms400JSONResponse ErrorResponse
+
+func (response SearchPrograms400JSONResponse) VisitSearchProgramsResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response); err != nil {
@@ -1773,6 +1884,9 @@ type StrictServerInterface interface {
 	// ListPrograms List EPG programs in a time window
 	// (GET /api/programs)
 	ListPrograms(ctx context.Context, request ListProgramsRequestObject) (ListProgramsResponseObject, error)
+	// SearchPrograms Search EPG programs by rule-style conditions
+	// (POST /api/programs/search)
+	SearchPrograms(ctx context.Context, request SearchProgramsRequestObject) (SearchProgramsResponseObject, error)
 	// GetProgram Get a single EPG program with full detail
 	// (GET /api/programs/{programId})
 	GetProgram(ctx context.Context, request GetProgramRequestObject) (GetProgramResponseObject, error)
@@ -1878,6 +1992,37 @@ func (sh *strictHandler) ListPrograms(w http.ResponseWriter, r *http.Request, pa
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(ListProgramsResponseObject); ok {
 		if err := validResponse.VisitListProgramsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// SearchPrograms operation middleware
+func (sh *strictHandler) SearchPrograms(w http.ResponseWriter, r *http.Request) {
+	var request SearchProgramsRequestObject
+
+	var body SearchProgramsJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.SearchPrograms(ctx, request.(SearchProgramsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "SearchPrograms")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(SearchProgramsResponseObject); ok {
+		if err := validResponse.VisitSearchProgramsResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

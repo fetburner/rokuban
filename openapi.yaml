@@ -231,6 +231,36 @@ paths:
                 items:
                   $ref: "#/components/schemas/Service"
 
+  /api/programs/search:
+    post:
+      operationId: searchPrograms
+      summary: Search EPG programs by rule-style conditions
+      description: |
+        ルール条件と同じコンパイラ（internal/rulequery）で epg_programs を検索する。
+        ruler 評価と同一の SQL 経路を通る（M2-2）。UI 検索（M2-11）の土台。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProgramSearchRequest"
+      responses:
+        "200":
+          description: OK（programId の昇順）
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: integer
+                  format: int64
+        "400":
+          description: Invalid conditions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /api/programs:
     get:
       operationId: listPrograms
@@ -650,6 +680,64 @@ components:
           format: int64
         priority:
           type: integer
+
+    # --- Program search (M2-2) — 条件形はルールと共有 ---
+
+    ProgramSearchRequest:
+      type: object
+      description: |
+        ルール条件の条件部分と同じ形。rulequery.Conditions に写像される。
+        site は省略時 default（現状単一サイト）。
+      properties:
+        site:
+          type: string
+        isFree:
+          type: boolean
+          nullable: true
+        durationMinMs:
+          type: integer
+          format: int64
+          nullable: true
+        durationMaxMs:
+          type: integer
+          format: int64
+          nullable: true
+        periodStartAt:
+          type: string
+          format: date-time
+          nullable: true
+        periodEndAt:
+          type: string
+          format: date-time
+          nullable: true
+        textMatches:
+          type: array
+          items:
+            $ref: "#/components/schemas/RuleTextMatch"
+        services:
+          type: array
+          items:
+            $ref: "#/components/schemas/RuleService"
+        channelTypes:
+          type: array
+          items:
+            type: string
+            enum: [GR, BS, CS, SKY]
+        genres:
+          type: array
+          items:
+            type: integer
+            minimum: 0
+            maximum: 15
+        times:
+          type: array
+          items:
+            $ref: "#/components/schemas/RuleTimeWindow"
+        sites:
+          type: array
+          items:
+            type: string
+          description: ルールの rule_sites 相当。空 = 評価 site のみ
 
     # --- Rules (M2-1) ---
 
