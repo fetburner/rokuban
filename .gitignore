@@ -1,0 +1,4 @@
+# 実機（mirakc）や実録画データに依存するテストの置き場。
+# 環境依存性が大きく CI では走らせられないため追跡しない（各自のローカルにだけ置く）。
+# 詳細は test/integration/integration.go の doc コメント。
+/test/integration/
