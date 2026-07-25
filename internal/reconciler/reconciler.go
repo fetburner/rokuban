@@ -106,11 +106,13 @@ func (r *Reconciler) reconcile(ctx context.Context) error {
 	}
 
 	var created, deleted int
+	var missing int
 
 	for _, res := range reservations {
 		if _, exists := observedByProgram[res.ProgramID]; exists {
 			continue
 		}
+		missing++
 		if err := r.createSchedule(ctx, res); err != nil {
 			slog.Error("reconciler: creating schedule", "reservation_id", res.ID, "program_id", res.ProgramID, "err", err)
 			continue
@@ -164,10 +166,18 @@ func (r *Reconciler) reconcile(ctx context.Context) error {
 		slog.Error("reconciler: marking orphaned", "err", err)
 	}
 
+	// 差分そのものをゲージで出す。健全なら次のパスでゼロになる。
+	// 作成/削除できずに残った量が知りたいので、実行した件数ではなく検出した件数。
+	metrics.ReconcileLastPass.SetToCurrentTime()
+	metrics.ReconcilePendingDiff.WithLabelValues("create").Set(float64(missing))
+	metrics.ReconcilePendingDiff.WithLabelValues("delete").Set(float64(len(toDelete)))
+
 	slog.Info("reconciler: pass complete",
 		"desired", len(reservations),
 		"observed", len(schedules),
+		"missing", missing,
 		"created", created,
+		"stale", len(toDelete),
 		"deleted", deleted,
 	)
 	return nil

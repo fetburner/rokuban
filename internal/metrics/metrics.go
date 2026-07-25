@@ -68,8 +68,19 @@ var (
 
 // reconciler（M1-4）のメトリクス。
 var (
+	// ReconcilePendingDiff は直近のパスで検出した desired と observed の差分数。
+	//
+	// カウンタ（ReconcileSchedules）と違い、収束すればゼロに戻る。
+	// ゼロに戻らないまま続くのは reconcile が収束できていないということで
+	// （mirakc が作成を拒否し続ける、サーキットブレーカーが削除を止めている等）、
+	// アラートすべきはこちら。
+	ReconcilePendingDiff = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "rokuban_reconcile_pending_diff",
+		Help: "Differences between desired reservations and observed mirakc schedules found in the most recent pass. Converges to zero when healthy.",
+	}, []string{"action"})
+
 	// ReconcileSchedules は mirakc schedule に対する操作の件数。
-	// desired と observed の差分を消した量そのもの。
+	// 実際に差分を消した量。
 	ReconcileSchedules = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "rokuban_reconcile_schedules_total",
 		Help: "mirakc recording schedules created or deleted by the reconciler.",
@@ -81,6 +92,17 @@ var (
 		Name: "rokuban_reconcile_circuit_breaker_trips_total",
 		Help: "Times the bulk-delete circuit breaker stopped a reconcile pass.",
 	})
+
+	// ReconcileLastPass は最後に完走したパスの時刻（UNIX 秒）。
+	//
+	// ゲージは値が凍結するので、ReconcilePendingDiff だけでは
+	// 「収束した」と「reconciler が動いていない」を区別できない。
+	// シングルトンのロックを取れていない・ループが死んでいる場合を
+	// time() - この値 で検出する。
+	ReconcileLastPass = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "rokuban_reconcile_last_pass_timestamp_seconds",
+		Help: "Unix time of the last completed reconcile pass. Use with time() to detect a stalled reconciler.",
+	})
 )
 
 // watcher（M1-3）のメトリクス。
@@ -91,6 +113,13 @@ var (
 	RecordingsFailed = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "rokuban_recordings_failed_total",
 		Help: "Failed recordings by mirakc failure reason.",
+	}, []string{"reason"})
+
+	// RecordsBroken は録画中の異常（record-broken）の理由別件数。
+	// 同じ録画で複数回発生しうる。
+	RecordsBroken = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "rokuban_records_broken_total",
+		Help: "mirakc record-broken events by reason.",
 	}, []string{"reason"})
 )
 
@@ -115,6 +144,17 @@ var (
 		Name: "rokuban_epg_channels_without_programs",
 		Help: "Channels that returned no programs in the most recent EPG sync pass.",
 	})
+
+	// EpgSyncLastSuccess は最後に成功した全量同期の時刻（UNIX 秒）。
+	//
+	// 定期ジョブが投入されなくなっても他のゲージは最後の値のまま残るため、
+	// これがないと「同期が止まっている」ことを検知できない。
+	// 実際に UniqueOpts の設定ミスで定期ジョブがワンショット化していた事故があり、
+	// このメトリクスがあれば気づけた。
+	EpgSyncLastSuccess = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "rokuban_epg_sync_last_success_timestamp_seconds",
+		Help: "Unix time of the last successful full EPG sync. Use with time() to detect a stalled sync job.",
+	})
 )
 
 // NewRegistry は Rokuban のメトリクスを登録した registry を返す。
@@ -135,14 +175,18 @@ func NewRegistry(backlog prometheus.Collector) *prometheus.Registry {
 		IngestErrorPackets,
 		IngestScrambledPackets,
 
+		ReconcilePendingDiff,
 		ReconcileSchedules,
 		ReconcileCircuitBreakerTrips,
+		ReconcileLastPass,
 
 		RecordingsFailed,
+		RecordsBroken,
 
 		EpgSyncDuration,
 		EpgProgramsProjected,
 		EpgChannelsWithoutPrograms,
+		EpgSyncLastSuccess,
 	)
 
 	if backlog != nil {

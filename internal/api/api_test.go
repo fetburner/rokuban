@@ -87,7 +87,9 @@ func TestAllowedHosts_InvalidHost(t *testing.T) {
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
-	req, err := http.NewRequest("GET", srv.URL+"/healthz", nil)
+	// /healthz と /metrics は allowlist を免除しているので、
+	// 検証が効いていることはデータ側のエンドポイントで確かめる。
+	req, err := http.NewRequest("GET", srv.URL+"/api/version", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -279,5 +281,82 @@ func TestMetrics_DisabledWithoutRegistry(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == http.StatusOK {
 		t.Error("/metrics should not be registered without a registry")
+	}
+}
+
+// /metrics と /healthz は Host allowlist を免除すること。
+//
+// 監視基盤は Pod IP やサービス名で叩くため allowlist に載せようがない
+// （IP は動的）。allowlist の内側に置くと k8s の liveness probe と
+// Prometheus の scrape が 400 で落ちる。
+func TestAllowedHosts_InfraPathsAreExempt(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	router := NewRouter(RouterConfig{
+		AllowedHosts:    []string{"rokuban.local"},
+		MetricsRegistry: reg,
+	})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	for _, path := range []string{"/healthz", "/metrics"} {
+		t.Run(path, func(t *testing.T) {
+			req, err := http.NewRequest("GET", srv.URL+path, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Prometheus / kubelet が Pod IP で叩く状況
+			req.Host = "10.42.0.7:40773"
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			if resp.StatusCode != http.StatusOK {
+				t.Errorf("status = %d, want 200（allowlist を免除すべき）", resp.StatusCode)
+			}
+		})
+	}
+
+	// データを扱うエンドポイントは免除しない
+	req, err := http.NewRequest("GET", srv.URL+"/api/version", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "10.42.0.7:40773"
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("/api/version status = %d, want 400（allowlist は効いているべき）", resp.StatusCode)
+	}
+}
+
+// localhost 系は allowlist の設定に関わらず許可すること
+// （docs/configuration.md の記述に合わせる）。
+func TestAllowedHosts_LocalhostAlwaysAllowed(t *testing.T) {
+	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	for _, host := range []string{"localhost", "localhost:40773", "127.0.0.1:40773", "[::1]:40773"} {
+		t.Run(host, func(t *testing.T) {
+			req, err := http.NewRequest("GET", srv.URL+"/api/version", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Host = host
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			if resp.StatusCode != http.StatusOK {
+				t.Errorf("status = %d, want 200", resp.StatusCode)
+			}
+		})
 	}
 }

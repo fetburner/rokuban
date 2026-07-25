@@ -31,12 +31,16 @@ func TestNewRegistry_ExposesRequiredMetrics(t *testing.T) {
 	IngestDroppedPackets.Add(1)
 	IngestErrorPackets.Add(1)
 	IngestScrambledPackets.Add(1)
+	ReconcilePendingDiff.WithLabelValues("create").Set(0)
 	ReconcileSchedules.WithLabelValues("created").Inc()
 	ReconcileCircuitBreakerTrips.Add(1)
+	ReconcileLastPass.SetToCurrentTime()
 	RecordingsFailed.WithLabelValues("need-rescheduling").Inc()
+	RecordsBroken.WithLabelValues("io-error").Inc()
 	EpgSyncDuration.Observe(1)
 	EpgProgramsProjected.Set(1)
 	EpgChannelsWithoutPrograms.Set(0)
+	EpgSyncLastSuccess.SetToCurrentTime()
 
 	families, err := reg.Gather()
 	if err != nil {
@@ -57,12 +61,16 @@ func TestNewRegistry_ExposesRequiredMetrics(t *testing.T) {
 		"rokuban_ingest_dropped_packets_total",
 		"rokuban_ingest_error_packets_total",
 		"rokuban_ingest_scrambled_packets_total",
+		"rokuban_reconcile_pending_diff",
 		"rokuban_reconcile_schedules_total",
 		"rokuban_reconcile_circuit_breaker_trips_total",
+		"rokuban_reconcile_last_pass_timestamp_seconds",
 		"rokuban_recordings_failed_total",
+		"rokuban_records_broken_total",
 		"rokuban_epg_sync_duration_seconds",
 		"rokuban_epg_programs_projected",
 		"rokuban_epg_channels_without_programs",
+		"rokuban_epg_sync_last_success_timestamp_seconds",
 	}
 	for _, name := range required {
 		if !got[name] {

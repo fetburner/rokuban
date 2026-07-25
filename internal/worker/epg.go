@@ -172,6 +172,7 @@ func (w *EpgSyncWorker) Work(ctx context.Context, job *river.Job[EpgSyncArgs]) e
 		log.Warn("epg sync: notifying clients failed", "err", err)
 	}
 
+	metrics.EpgSyncLastSuccess.SetToCurrentTime()
 	metrics.EpgProgramsProjected.Set(float64(syncedPrograms))
 	metrics.EpgChannelsWithoutPrograms.Set(float64(countChannels(serviceChannels) - len(observedChannels)))
 

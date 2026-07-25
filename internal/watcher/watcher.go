@@ -292,6 +292,10 @@ func (w *Watcher) upsertRecordSync(ctx context.Context, q *sqlcgen.Queries, reco
 }
 
 func (w *Watcher) handleRecordingFailed(ctx context.Context, data mirakc.RecordingFailedData) error {
+	// 観測した時点で数える。予約の照会や mirakc への問い合わせより後に置くと、
+	// それらが失敗したときに取りこぼす（物事がうまくいっていないときこそ数えたい）。
+	metrics.RecordingsFailed.WithLabelValues(failureReason(data.Reason)).Inc()
+
 	q := sqlcgen.New(w.pool)
 
 	res, err := q.GetReservationBySiteAndProgramID(ctx, sqlcgen.GetReservationBySiteAndProgramIDParams{
@@ -315,12 +319,6 @@ func (w *Watcher) handleRecordingFailed(ctx context.Context, data mirakc.Recordi
 	if err != nil {
 		return fmt.Errorf("finding service: %w", err)
 	}
-
-	reason := data.Reason.Type
-	if reason == "" {
-		reason = "unknown"
-	}
-	metrics.RecordingsFailed.WithLabelValues(reason).Inc()
 
 	reasonJSON, err := json.Marshal(data.Reason)
 	if err != nil {
@@ -359,6 +357,8 @@ func (w *Watcher) handleRecordingFailed(ctx context.Context, data mirakc.Recordi
 }
 
 func (w *Watcher) handleRecordBroken(ctx context.Context, data mirakc.RecordBrokenData) error {
+	metrics.RecordsBroken.WithLabelValues(brokenReason(data.Reason)).Inc()
+
 	q := sqlcgen.New(w.pool)
 
 	recordingID, err := q.GetRecordSyncRecordingID(ctx, sqlcgen.GetRecordSyncRecordingIDParams{
@@ -471,4 +471,21 @@ func contentPathPtr(path string) *string {
 		return nil
 	}
 	return &path
+}
+
+// failureReason は recording.failed のラベル値を返す。
+// mirakc の FailedReason.type は値域が有界なのでラベルに使える。
+func failureReason(reason mirakc.FailedReason) string {
+	if reason.Type == "" {
+		return "unknown"
+	}
+	return reason.Type
+}
+
+// brokenReason は record-broken のラベル値を返す。
+func brokenReason(reason string) string {
+	if reason == "" {
+		return "unknown"
+	}
+	return reason
 }

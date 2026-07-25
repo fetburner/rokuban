@@ -11,6 +11,12 @@ Rokuban の監視・アラート・DB 運用・ストレージ運用・k8s 運�
 HTTP リスナーは常に 1 本立てる。OpenAPI には載せない（text format であり
 生成クライアントの対象外）。
 
+**`/metrics` と `/healthz` は Host allowlist を免除する。** 監視基盤は Pod IP や
+サービス名で叩くため allowlist に載せようがない（IP は動的）。allowlist の内側に
+置くと k8s の liveness probe と Prometheus の scrape が 400 で落ちる。DNS rebinding が
+守ろうとしているのはブラウザ経由でデータを読み書きされることなので、機密を含まない
+インフラ用エンドポイントを免除しても防壁は薄くならない。
+
 実装は `internal/metrics`。2 種類を使い分けている。
 
 - **プロセス内カウンタ / ヒストグラム**: そのプロセスで起きた事象を数える。
@@ -22,6 +28,7 @@ HTTP リスナーは常に 1 本立てる。OpenAPI には載せない（text fo
 | 実装済みメトリクス | 型 | 対応する下記の項目 |
 |---|---|---|
 | `rokuban_recordings_failed_total{reason}` | Counter | `recording.failed` 理由別 |
+| `rokuban_records_broken_total{reason}` | Counter | `recording.record-broken` 理由別 |
 | `rokuban_ingest_dropped_packets_total` | Counter | ドロップ統計（全体の趨勢） |
 | `rokuban_ingest_error_packets_total` | Counter | TEI |
 | `rokuban_ingest_scrambled_packets_total` | Counter | scrambled カウンタ |
@@ -31,11 +38,29 @@ HTTP リスナーは常に 1 本立てる。OpenAPI には載せない（text fo
 | `rokuban_uningested_records{site}` | Gauge（DB） | 未 ingest record 総量（件数） |
 | `rokuban_uningested_record_bytes{site}` | Gauge（DB） | 未 ingest record 総量（バイト） |
 | `rokuban_uningested_backlog_scrape_errors_total{site}` | Counter | 上記の取得失敗 |
-| `rokuban_reconcile_schedules_total{action}` | Counter | reconcile 差分数 |
+| `rokuban_reconcile_pending_diff{action}` | Gauge | reconcile 差分数（**収束すればゼロ**。アラートはこちら） |
+| `rokuban_reconcile_schedules_total{action}` | Counter | 実際に差分を消した量 |
 | `rokuban_reconcile_circuit_breaker_trips_total` | Counter | 大量削除ブレーカー発動 |
+| `rokuban_reconcile_last_pass_timestamp_seconds` | Gauge | 最後に完走したパスの時刻 |
 | `rokuban_epg_sync_duration_seconds` | Histogram | EPG 全量同期の所要 |
 | `rokuban_epg_programs_projected` | Gauge | 直近パスの投影件数 |
 | `rokuban_epg_channels_without_programs` | Gauge | 番組を返さなかったチャンネル数 |
+| `rokuban_epg_sync_last_success_timestamp_seconds` | Gauge | 最後に成功した同期の時刻 |
+
+**録画失敗は観測した時点で数える。** 予約の照会や mirakc への問い合わせより後に
+置くと、それらが失敗したときに取りこぼす（物事がうまくいっていないときこそ数えたい）。
+
+**`reconcile 差分数` はゲージ。** カウンタ（`..._schedules_total`）は単調増加なので
+「収束しているか」を表せない。ゼロに戻らないまま続くのは reconcile が収束できて
+いないということで（mirakc が作成を拒否し続ける、サーキットブレーカーが削除を
+止めている等）、アラートすべきはゲージ側。
+
+**ゲージには「最後に成功した時刻」を必ず対で持つ。** ゲージは値が凍結するので、
+`pending_diff` や `epg_programs_projected` だけでは「収束した」と「ループが動いて
+いない」を区別できない。シングルトンがロックを取れていない・定期ジョブが投入されなく
+なった場合を `time() - <last_*_timestamp> > 閾値` で検出する。実際に `UniqueOpts` の
+設定ミスで EPG の定期同期がワンショット化していた事故があり、この指標があれば
+気づけた。
 
 **滞留メトリクスは取得失敗時に 0 を報告しない。** 0 を出すと「滞留なし」と区別できず、
 滞留アラートを黙って無効化してしまう。代わりに専用のエラーカウンタを進める。
