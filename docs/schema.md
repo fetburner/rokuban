@@ -454,7 +454,7 @@ EPG プロジェクションが v1 に入らなかった理由: 使い捨てキ�
 
 ## 11. 未決事項（実装前に issue で確定させる）
 
-1. **複数ルールマッチのトレーサビリティ**: `rule_id` は勝者（最高 priority）のみ。マッチした全ルールの記録（issue #2 では「記録してよい」）が必要なら base 内の配列か中間テーブルを M2 で検討
+1. ~~複数ルールマッチのトレーサビリティ~~ → **確定（issue #3 のコメント）**: base 内の配列ではなく中間テーブル `reservation_rule_matches (reservation_id, rule_id)`。「このルールが今どの予約を生んでいるか」の逆引き（ルール削除の影響プレビュー）が要るため。ruler が毎パス書く導出状態なので FK は両側 ON DELETE CASCADE
 2. **`record_sync.recording_id` の NOT NULL 化**: 現設計は外部産 record を NULL で表現する。外部産を track しない（行を作らない）選択肢もある
-3. **drop_stats の PID 名**: EPGStation のドロップログは PID の種別名（映像/音声/PSI）を表示していた。PMT の読み取り統計を足すか、UI は hex PID 表示で始めるか
+3. ~~drop_stats の PID 名~~ → issue #23 で設計中（M2。PAT → PMT の読み取り + component_tag）
 4. **ルールとサイトの対応**（M2 の rules スキーマ）: ルールが対象サイトを指定するのか、全サイトの EPG にマッチするのか。サイト名リネームの扱い（text 参照なので DB 上は追従しない）もここで決める
