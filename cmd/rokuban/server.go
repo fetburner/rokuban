@@ -67,7 +67,17 @@ func newServerCmd() *cobra.Command {
 				if subErr != nil {
 					return fmt.Errorf("embedded dist/ not found: %w", subErr)
 				}
-				router := api.NewRouter(cfg.Server.AllowedHosts, distFS, pool)
+				// SSE のヒント配送。各レプリカが自分で LISTEN するだけなので
+				// レプリカ間の追加基盤は要らない。
+				hub := api.NewEventHub()
+				eg.Go(func() error {
+					if hubErr := hub.Run(egCtx, pool); hubErr != nil && !errors.Is(hubErr, context.Canceled) {
+						return fmt.Errorf("event hub: %w", hubErr)
+					}
+					return nil
+				})
+
+				router := api.NewRouter(cfg.Server.AllowedHosts, distFS, pool, hub)
 				srv := &http.Server{Addr: cfg.Server.Listen, Handler: router}
 
 				eg.Go(func() error {

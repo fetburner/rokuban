@@ -24,6 +24,9 @@ const (
 	// epgBatchSize は 1 回の pgx.Batch に詰める行数。全量で数万〜十万行になるため
 	// 分割してメモリと 1 バッチあたりの所要を抑える。
 	epgBatchSize = 1000
+
+	// epgNotifyTopic は SSE クライアントへ配る番組表更新のトピック名。
+	epgNotifyTopic = "epg"
 )
 
 // validChannelTypes は epg_services.channel_type の CHECK 制約に対応する。
@@ -137,6 +140,15 @@ func (w *EpgSyncWorker) Work(ctx context.Context, job *river.Job[EpgSyncArgs]) e
 	})
 	if err != nil {
 		return fmt.Errorf("pruning aired programs: %w", err)
+	}
+
+	// 番組表が更新されたことをクライアントに知らせる。epg_programs は 1 パスで
+	// 数千行を upsert するためトリガーでは通知が細かすぎるので、
+	// パス完了時に 1 回だけ明示的に送る（migrations/00005_notify.sql のコメント参照）。
+	if err := q.NotifyTopic(ctx, epgNotifyTopic); err != nil {
+		// ヒントの配送失敗は同期の失敗ではない。次のパスか
+		// クライアントの staleTime 経過後の再取得で収束する。
+		log.Warn("epg sync: notifying clients failed", "err", err)
 	}
 
 	log.Info("epg sync complete",

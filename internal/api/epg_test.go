@@ -20,7 +20,7 @@ const rfc3339 = time.RFC3339
 
 func newAPIServer(t *testing.T, pool *pgxpool.Pool) *httptest.Server {
 	t.Helper()
-	srv := httptest.NewServer(NewRouter(nil, nil, pool))
+	srv := httptest.NewServer(NewRouter(nil, nil, pool, nil))
 	t.Cleanup(srv.Close)
 	return srv
 }
