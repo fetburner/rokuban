@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/drone/envsubst"
 	"github.com/go-playground/validator/v10"
@@ -18,6 +19,7 @@ type Config struct {
 	Mirakc  MirakcConfig  `yaml:"mirakc"`
 	Storage StorageConfig `yaml:"storage"`
 	Ingest  IngestConfig  `yaml:"ingest"`
+	Epg     EpgConfig     `yaml:"epg"`
 	Encode  EncodeConfig  `yaml:"encode"`
 	Log     LogConfig     `yaml:"log"`
 }
@@ -62,6 +64,15 @@ type IngestConfig struct {
 	Concurrency int `yaml:"concurrency"`
 }
 
+// EpgConfig は EPG プロジェクションの設定。
+type EpgConfig struct {
+	// SyncInterval は mirakc から EPG を全量取得する間隔。
+	SyncInterval time.Duration `yaml:"sync_interval"`
+
+	// RetentionGrace は放送終了からこの時間が経った番組をローリングウィンドウから刈り取る。
+	RetentionGrace time.Duration `yaml:"retention_grace"`
+}
+
 // EncodeConfig はエンコード設定。
 type EncodeConfig struct {
 	FFmpeg   string          `yaml:"ffmpeg"`
@@ -94,6 +105,10 @@ func defaults() Config {
 		},
 		Ingest: IngestConfig{
 			Concurrency: 2,
+		},
+		Epg: EpgConfig{
+			SyncInterval:   10 * time.Minute,
+			RetentionGrace: 24 * time.Hour,
 		},
 		Encode: EncodeConfig{
 			FFmpeg:  "ffmpeg",

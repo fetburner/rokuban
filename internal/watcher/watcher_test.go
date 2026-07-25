@@ -25,8 +25,8 @@ func setupTest(t *testing.T) (*Watcher, *pgxpool.Pool) {
 		t.Fatalf("cleaning river_job: %v", err)
 	}
 
-	workers := worker.NewWorkers(&worker.IngestDeps{Pool: pool})
-	rc, err := worker.NewClient(pool, workers, 2)
+	workers := worker.NewWorkers(&worker.Deps{Pool: pool})
+	rc, err := worker.NewClient(pool, workers, worker.ClientConfig{IngestConcurrency: 2})
 	if err != nil {
 		t.Fatalf("creating river client: %v", err)
 	}
@@ -348,8 +348,8 @@ func TestHandleRecordingFailed_Idempotent(t *testing.T) {
 		t.Fatalf("cleaning river_job: %v", err)
 	}
 
-	workers := worker.NewWorkers(&worker.IngestDeps{Pool: pool})
-	rc, err := worker.NewClient(pool, workers, 2)
+	workers := worker.NewWorkers(&worker.Deps{Pool: pool})
+	rc, err := worker.NewClient(pool, workers, worker.ClientConfig{IngestConcurrency: 2})
 	if err != nil {
 		t.Fatalf("river client: %v", err)
 	}
@@ -453,8 +453,8 @@ func TestReconcile_CatchesMissedRecords(t *testing.T) {
 		t.Fatalf("cleaning: %v", err)
 	}
 
-	workers := worker.NewWorkers(&worker.IngestDeps{Pool: pool})
-	rc, err := worker.NewClient(pool, workers, 2)
+	workers := worker.NewWorkers(&worker.Deps{Pool: pool})
+	rc, err := worker.NewClient(pool, workers, worker.ClientConfig{IngestConcurrency: 2})
 	if err != nil {
 		t.Fatalf("river client: %v", err)
 	}

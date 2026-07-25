@@ -35,6 +35,11 @@ sql:
               type: "int64"
               pointer: true
             nullable: true
+          - db_type: "pg_catalog.int4"
+            go_type:
+              type: "int32"
+              pointer: true
+            nullable: true
           - db_type: "text"
             go_type:
               type: "string"

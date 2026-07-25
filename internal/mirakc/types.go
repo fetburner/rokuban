@@ -110,6 +110,8 @@ type Program struct {
 	Description *string           `json:"description,omitempty"`
 	Extended    map[string]string `json:"extended,omitempty"`
 	Genres      []Genre           `json:"genres,omitempty"`
+	Video       *VideoInfo        `json:"video,omitempty"`
+	Audios      []AudioInfo       `json:"audios,omitempty"`
 }
 
 // Genre は番組ジャンル。
@@ -118,6 +120,22 @@ type Genre struct {
 	LV2 int `json:"lv2"`
 	UN1 int `json:"un1"`
 	UN2 int `json:"un2"`
+}
+
+// VideoInfo は番組の映像属性。
+type VideoInfo struct {
+	Type          *string `json:"type,omitempty"`
+	Resolution    *string `json:"resolution,omitempty"`
+	StreamContent int     `json:"streamContent"`
+	ComponentType int     `json:"componentType"`
+}
+
+// AudioInfo は番組の音声属性。
+type AudioInfo struct {
+	ComponentType int      `json:"componentType"`
+	IsMain        bool     `json:"isMain"`
+	SamplingRate  int      `json:"samplingRate"`
+	Langs         []string `json:"langs,omitempty"`
 }
 
 // Service は mirakc の MirakurunService 互換。

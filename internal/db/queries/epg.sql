@@ -1,0 +1,76 @@
+-- 全量同期のスイープ基準時刻。observed_at は DB の now() で書かれるため、
+-- 基準時刻もアプリのクロックではなく DB から取る（クロックスキューで
+-- プロジェクション全体を消して再投入する事故を防ぐ）。
+-- name: EpgSweepMark :one
+SELECT now()::timestamptz AS mark;
+
+-- name: UpsertEpgService :batchexec
+INSERT INTO epg_services (
+    site, network_id, service_id, type, logo_id, remote_control_key_id,
+    name, channel_type, channel, has_logo_data, observed_at
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now())
+ON CONFLICT (site, network_id, service_id) DO UPDATE SET
+    type                  = EXCLUDED.type,
+    logo_id               = EXCLUDED.logo_id,
+    remote_control_key_id = EXCLUDED.remote_control_key_id,
+    name                  = EXCLUDED.name,
+    channel_type          = EXCLUDED.channel_type,
+    channel               = EXCLUDED.channel,
+    has_logo_data         = EXCLUDED.has_logo_data,
+    observed_at           = now();
+
+-- name: DeleteStaleEpgServices :execrows
+DELETE FROM epg_services
+WHERE site = $1 AND observed_at < $2;
+
+-- name: ListEpgServices :many
+SELECT * FROM epg_services
+WHERE site = $1
+ORDER BY channel_type, remote_control_key_id, service_id;
+
+-- name: UpsertEpgProgram :batchexec
+INSERT INTO epg_programs (
+    site, program_id, network_id, service_id, event_id,
+    start_at, duration_ms, end_at, is_free,
+    name, description, genre_lv1, extended, genres, video, audios, observed_at
+) VALUES (
+    $1, $2, $3, $4, $5,
+    $6, $7, $8, $9,
+    $10, $11, $12, $13, $14, $15, $16, now()
+)
+ON CONFLICT (site, program_id) DO UPDATE SET
+    network_id  = EXCLUDED.network_id,
+    service_id  = EXCLUDED.service_id,
+    event_id    = EXCLUDED.event_id,
+    start_at    = EXCLUDED.start_at,
+    duration_ms = EXCLUDED.duration_ms,
+    end_at      = EXCLUDED.end_at,
+    is_free     = EXCLUDED.is_free,
+    name        = EXCLUDED.name,
+    description = EXCLUDED.description,
+    genre_lv1   = EXCLUDED.genre_lv1,
+    extended    = EXCLUDED.extended,
+    genres      = EXCLUDED.genres,
+    video       = EXCLUDED.video,
+    audios      = EXCLUDED.audios,
+    observed_at = now();
+
+-- name: DeleteStaleEpgPrograms :execrows
+DELETE FROM epg_programs
+WHERE site = $1 AND observed_at < $2;
+
+-- name: PruneEpgPrograms :execrows
+DELETE FROM epg_programs
+WHERE site = $1 AND end_at < $2;
+
+-- name: CountEpgPrograms :one
+SELECT count(*) FROM epg_programs WHERE site = $1;
+
+-- name: ListEpgPrograms :many
+SELECT * FROM epg_programs
+WHERE site = $1
+  AND start_at < sqlc.arg(window_end)::timestamptz
+  AND end_at   > sqlc.arg(window_start)::timestamptz
+  AND (sqlc.narg(network_id)::integer IS NULL OR network_id = sqlc.narg(network_id)::integer)
+  AND (sqlc.narg(service_id)::integer IS NULL OR service_id = sqlc.narg(service_id)::integer)
+ORDER BY start_at, network_id, service_id;

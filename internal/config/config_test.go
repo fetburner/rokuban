@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func writeConfig(t *testing.T, content string) string {
@@ -50,6 +51,12 @@ func TestLoad_Minimal(t *testing.T) {
 	}
 	if cfg.Ingest.Concurrency != 2 {
 		t.Errorf("ingest.concurrency = %d, want %d", cfg.Ingest.Concurrency, 2)
+	}
+	if cfg.Epg.SyncInterval != 10*time.Minute {
+		t.Errorf("epg.sync_interval = %v, want %v", cfg.Epg.SyncInterval, 10*time.Minute)
+	}
+	if cfg.Epg.RetentionGrace != 24*time.Hour {
+		t.Errorf("epg.retention_grace = %v, want %v", cfg.Epg.RetentionGrace, 24*time.Hour)
 	}
 	if cfg.Encode.FFmpeg != "ffmpeg" {
 		t.Errorf("encode.ffmpeg = %q, want %q", cfg.Encode.FFmpeg, "ffmpeg")
@@ -203,6 +210,9 @@ storage:
   scratch_dir: /data/scratch
 ingest:
   concurrency: 4
+epg:
+  sync_interval: 30m
+  retention_grace: 48h
 encode:
   ffmpeg: /usr/local/bin/ffmpeg
   ffprobe: /usr/local/bin/ffprobe
@@ -244,6 +254,12 @@ log:
 	}
 	if cfg.Ingest.Concurrency != 4 {
 		t.Errorf("ingest.concurrency = %d, want %d", cfg.Ingest.Concurrency, 4)
+	}
+	if cfg.Epg.SyncInterval != 30*time.Minute {
+		t.Errorf("epg.sync_interval = %v, want %v", cfg.Epg.SyncInterval, 30*time.Minute)
+	}
+	if cfg.Epg.RetentionGrace != 48*time.Hour {
+		t.Errorf("epg.retention_grace = %v, want %v", cfg.Epg.RetentionGrace, 48*time.Hour)
 	}
 	if cfg.Encode.FFmpeg != "/usr/local/bin/ffmpeg" {
 		t.Errorf("encode.ffmpeg = %q, want %q", cfg.Encode.FFmpeg, "/usr/local/bin/ffmpeg")

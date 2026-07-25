@@ -18,6 +18,40 @@ type DropStat struct {
 	Scrambled    int64
 }
 
+type EpgProgram struct {
+	Site        string
+	ProgramID   int64
+	NetworkID   int32
+	ServiceID   int32
+	EventID     int32
+	StartAt     time.Time
+	DurationMs  int64
+	EndAt       time.Time
+	IsFree      bool
+	Name        string
+	Description string
+	GenreLv1    []int16
+	Extended    json.RawMessage
+	Genres      json.RawMessage
+	Video       json.RawMessage
+	Audios      json.RawMessage
+	ObservedAt  time.Time
+}
+
+type EpgService struct {
+	Site               string
+	NetworkID          int32
+	ServiceID          int32
+	Type               int32
+	LogoID             int32
+	RemoteControlKeyID int32
+	Name               string
+	ChannelType        string
+	Channel            string
+	HasLogoData        bool
+	ObservedAt         time.Time
+}
+
 type MediaAsset struct {
 	ID          int64
 	RecordingID int64

@@ -315,20 +315,112 @@ CREATE TABLE drop_stats (
 
 mirakc の `FailedReason`（discriminated union）をそのまま格納。
 
-## 9. 後続マイグレーションで追加するテーブル
+## 9. epg_services / epg_programs — EPG プロジェクション（使い捨てキャッシュ）
+
+M1-6 で追加（マイグレーション `00004_epg.sql`）。**真実は常に mirakc**であり、これは
+レベルトリガーでいつでも全量再構築できる使い捨てキャッシュ。永続資産（reservations /
+recordings / media_assets）とは寿命が違うためスキーマ v1 から分離している。
+
+存在理由は不変条件「**api ロールは EPG を含むすべてのデータ読み取りを Postgres だけで
+完結させる**」（issue #3）。api が mirakc に問い合わせるパスを作らないため、プロジェクションは
+**プロダクトが画面に描画するものを全部持つ**（= UI 完全形）。逆に mirakc の運用状態
+（生 EIT/SI、チューナー状態）は入れない。
+
+```sql
+CREATE TABLE epg_services (
+    site                  text    NOT NULL,
+    network_id            integer NOT NULL,
+    service_id            integer NOT NULL,
+    type                  integer NOT NULL,
+    logo_id               integer NOT NULL,
+    remote_control_key_id integer NOT NULL,
+    name                  text    NOT NULL,
+    channel_type          text    NOT NULL CHECK (channel_type IN ('GR', 'BS', 'CS', 'SKY')),
+    channel               text    NOT NULL,
+    has_logo_data         boolean NOT NULL DEFAULT false,
+    observed_at           timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (site, network_id, service_id)
+);
+
+CREATE TABLE epg_programs (
+    site        text    NOT NULL,
+    program_id  bigint  NOT NULL,
+    network_id  integer NOT NULL,
+    service_id  integer NOT NULL,
+    event_id    integer NOT NULL,
+    start_at    timestamptz NOT NULL,
+    duration_ms bigint  NOT NULL,
+    end_at      timestamptz NOT NULL,   -- start_at + duration_ms（同期時にアプリが計算）
+    is_free     boolean NOT NULL DEFAULT true,
+    name        text    NOT NULL DEFAULT '',
+    description text    NOT NULL DEFAULT '',
+    genre_lv1   smallint[] NOT NULL DEFAULT '{}',
+    extended    jsonb,   -- 拡張形式イベント（出演者等）
+    genres      jsonb,   -- lv1 / lv2 / un1 / un2 の全量
+    video       jsonb,   -- 映像属性
+    audios      jsonb,   -- 音声属性
+    observed_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (site, program_id)
+);
+```
+
+- **site を含むキーで切る**: 地上波のチャンネル構成はサイトの地域ごとに異なる
+- **クエリ軸は型付きカラム、詳細は jsonb**: サービス / 時間範囲 / ジャンル / 無料が型付き。
+  `genre_lv1` は絞り込み用に lv1 だけを重複なく取り出した配列（GIN）で、詳細は `genres` jsonb 側
+- **`end_at` は生成列にしない**: `timestamptz + interval` が STABLE（TimeZone 設定に依存）で
+  IMMUTABLE を要求する生成列に使えないため、同期時にアプリが計算して書く
+- **pg_trgm GIN** を `name` / `description` に張る。LIKE だけでなく正規表現マッチ（`~`）も
+  加速するので、M2 の ruler が同じインデックスに乗る（issue #3）
+- **autovacuum を既定より積極的に**: 全量 upsert を繰り返すため churn が大きい
+
+### 同期と有界性
+
+worker ロールの River 定期ジョブ `epg_sync`（既定 10 分間隔、専用キューで同時実行 1）が
+`GET /api/services` と `GET /api/programs` を全量取得して upsert する。差分同期はしない。
+
+1 パスで 2 種類の削除を行う:
+
+| 削除 | 条件 | 意図 |
+|---|---|---|
+| stale スイープ | `observed_at < 基準時刻` | mirakc から消えた行（番組編成変更・サービス削除）を落とす |
+| ローリングウィンドウ | `end_at < 基準時刻 - retention_grace`（既定 24h） | 放送済み番組を刈り取る。**永遠に太らない** |
+
+削除で足を踏み外さないための規律が 2 つある。
+
+- 基準時刻は**アプリのクロックではなく `SELECT now()` で DB から取る**。クロックスキューで
+  基準時刻が全 `observed_at` より後になると、毎パスでプロジェクション全体を消して
+  再投入する churn 事故になる
+- **mirakc が空を返したらスイープを見送る**。再起動直後は EPG を読み込み終えておらず
+  空リストを返しうる。そのままスイープすると番組表が丸ごと消え、次の同期までの数分間
+  UI が空になる。削除しなくても次のパスが収束させる（レベルトリガー）。
+  大量削除の前で立ち止まる規律は reconciler のサーキットブレーカーと同じ（issue #11）
+
+なお `observed_at` には**意図的にインデックスを張っていない**。この列は毎パスで全行が
+更新されるため、インデックスがあると HOT update が一切効かなくなりブロートが悪化する。
+スイープの seq scan より、更新経路を HOT に保つ方が churn の総量では有利。
+
+投影できない行は捨てて同期は続行する（1 行で全体を落とさない）:
+
+- `startAt` がない番組 — 時間軸に置けない
+- `channel_type` が GR/BS/CS/SKY 以外のサービス — CHECK 制約に載らない
+
+予約・録画はこのテーブルに依存しない。予約の GC は `program_start_at + program_duration_ms`
+で判定し（§3）、録画した番組情報は recordings に非正規化スナップショットされる（§5）。
+だから刈り取りが永続資産を壊すことはない。
+
+## 10. 後続マイグレーションで追加するテーブル
 
 v1 には**含めない**が、参照関係を先に固定しておくもの:
 
 | テーブル | マイルストーン | v1 との接続 |
 |---|---|---|
-| `epg_services` / `epg_programs` | M1-6 | 独立（ローリングウィンドウの使い捨てプロジェクション。UI 完全形: 型付きクエリ軸 + jsonb 詳細、pg_trgm GIN）。**site を含むキーで切る**（地上波のチャンネル構成はサイトの地域ごとに異なる） |
 | `rules` | M2 | `reservations.rule_id` / `recordings.rule_id` に FK 制約を追加 |
 | `orphan_files` | 削除エンジン実装時 | 孤児候補の first_seen 記録（DB リストアで削除窓が開き直す安全弁） |
 | サービスロゴ台帳 | M2+ | ファイルは `logos/` 配下、DB は相対パス + ハッシュ |
 
-EPG プロジェクションが v1 に入らない理由: 使い捨てキャッシュであり永続資産と寿命が違う。「最終形で切る」対象は、他の全タスクが依存し、後から変えると痛い**永続資産と desired/observed の骨格**。
+EPG プロジェクションが v1 に入らなかった理由: 使い捨てキャッシュであり永続資産と寿命が違う（§9）。「最終形で切る」対象は、他の全タスクが依存し、後から変えると痛い**永続資産と desired/observed の骨格**。
 
-## 10. 未決事項（実装前に issue で確定させる）
+## 11. 未決事項（実装前に issue で確定させる）
 
 1. **複数ルールマッチのトレーサビリティ**: `rule_id` は勝者（最高 priority）のみ。マッチした全ルールの記録（issue #2 では「記録してよい」）が必要なら base 内の配列か中間テーブルを M2 で検討
 2. **`record_sync.recording_id` の NOT NULL 化**: 現設計は外部産 record を NULL で表現する。外部産を track しない（行を作らない）選択肢もある

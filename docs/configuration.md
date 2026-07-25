@@ -53,6 +53,10 @@ storage:
 ingest:
   concurrency: 2                 # mirakc サイトあたり 1-2
 
+epg:
+  sync_interval: 10m             # mirakc から EPG を全量取得する間隔
+  retention_grace: 24h           # 放送終了からこの時間で番組を刈り取る
+
 encode:
   ffmpeg: ffmpeg                 # 既定は PATH 検索
   ffprobe: ffprobe

@@ -89,13 +89,22 @@ func newServerCmd() *cobra.Command {
 			var riverClient *river.Client[pgx5.Tx]
 			if slices.Contains(roles, "worker") || slices.Contains(roles, "watcher") {
 				mc := mirakc.NewClient(cfg.Mirakc.URL, nil)
-				workers := worker.NewWorkers(&worker.IngestDeps{
-					MirakcClient: mc,
-					Pool:         pool,
-					MediaDir:     cfg.Storage.MediaDir,
+				workers := worker.NewWorkers(&worker.Deps{
+					MirakcClient:      mc,
+					Pool:              pool,
+					MediaDir:          cfg.Storage.MediaDir,
+					EpgRetentionGrace: cfg.Epg.RetentionGrace,
 				})
+				clientCfg := worker.ClientConfig{
+					IngestConcurrency: cfg.Ingest.Concurrency,
+					EpgSyncInterval:   cfg.Epg.SyncInterval,
+				}
+				// EPG 全量同期の定期ジョブは worker 側が投入する（mirakc に触るのは worker）。
+				if slices.Contains(roles, "worker") {
+					clientCfg.EpgSyncSite = watcher.DefaultSite
+				}
 				var clientErr error
-				riverClient, clientErr = worker.NewClient(pool, workers, cfg.Ingest.Concurrency)
+				riverClient, clientErr = worker.NewClient(pool, workers, clientCfg)
 				if clientErr != nil {
 					return clientErr
 				}
