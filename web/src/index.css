@@ -118,6 +118,15 @@
 }
 
 @layer base {
+  :root {
+    /* モバイルのボトムタブが占める高さ。タブ本体（min-h-14 = 3.5rem）に
+       セーフエリアぶんを足す。iOS のホームインジケータと重ならないように
+       env(safe-area-inset-bottom) を使い、Android のジェスチャーナビの
+       下端スワイプ領域から離すため最低 8px を確保する。
+       （index.html の viewport に viewport-fit=cover が必要） */
+    --bottom-nav-inset: max(env(safe-area-inset-bottom), 8px);
+    --bottom-nav-height: calc(3.5rem + var(--bottom-nav-inset));
+  }
   * {
     @apply border-border outline-ring/50;
     }

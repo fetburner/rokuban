@@ -6,16 +6,20 @@
  * OpenAPI spec version: 0.0.1
  */
 import {
+  useMutation,
   useQuery
 } from '@tanstack/react-query';
 import type {
   DataTag,
   DefinedInitialDataOptions,
   DefinedUseQueryResult,
+  MutationFunction,
   QueryClient,
   QueryFunction,
   QueryKey,
   UndefinedInitialDataOptions,
+  UseMutationOptions,
+  UseMutationResult,
   UseQueryOptions,
   UseQueryResult
 } from '@tanstack/react-query';
@@ -28,6 +32,209 @@ export interface HealthResponse {
 export interface VersionResponse {
   version: string;
 }
+
+export interface ErrorResponse {
+  error: string;
+}
+
+export type ServiceChannelType = typeof ServiceChannelType[keyof typeof ServiceChannelType];
+
+
+export const ServiceChannelType = {
+  GR: 'GR',
+  BS: 'BS',
+  CS: 'CS',
+  SKY: 'SKY',
+} as const;
+
+export interface Service {
+  networkId: number;
+  serviceId: number;
+  name: string;
+  channelType: ServiceChannelType;
+  channel: string;
+  remoteControlKeyId: number;
+  hasLogoData: boolean;
+}
+
+export interface ProgramListItem {
+  programId: number;
+  networkId: number;
+  serviceId: number;
+  eventId: number;
+  startAt: string;
+  endAt: string;
+  durationMs: number;
+  name: string;
+  description: string;
+  /** ジャンル絞り込み用の lv1 のみ。詳細は Program.genreDetails */
+  genres: number[];
+  isFree: boolean;
+}
+
+/**
+ * 拡張形式イベント（出演者等）
+ */
+export type ProgramExtended = {[key: string]: string};
+
+export interface Genre {
+  lv1: number;
+  lv2: number;
+  un1?: number;
+  un2?: number;
+}
+
+export interface VideoInfo {
+  type?: string;
+  resolution?: string;
+  streamContent?: number;
+  componentType?: number;
+}
+
+export interface AudioInfo {
+  componentType: number;
+  isMain: boolean;
+  samplingRate: number;
+  langs?: string[];
+}
+
+export type Program = ProgramListItem & {
+  /** 拡張形式イベント（出演者等） */
+  extended?: ProgramExtended;
+  genreDetails?: Genre[];
+  video?: VideoInfo;
+  audios?: AudioInfo[];
+};
+
+export type RecordingSource = typeof RecordingSource[keyof typeof RecordingSource];
+
+
+export const RecordingSource = {
+  rule: 'rule',
+  manual: 'manual',
+} as const;
+
+export type RecordingChannelType = typeof RecordingChannelType[keyof typeof RecordingChannelType];
+
+
+export const RecordingChannelType = {
+  GR: 'GR',
+  BS: 'BS',
+  CS: 'CS',
+  SKY: 'SKY',
+} as const;
+
+export type RecordingStatus = typeof RecordingStatus[keyof typeof RecordingStatus];
+
+
+export const RecordingStatus = {
+  recording: 'recording',
+  finished: 'finished',
+  failed: 'failed',
+} as const;
+
+export type RecordingQualityEventsItem = { [key: string]: unknown };
+
+export interface DropSummary {
+  packets: number;
+  drops: number;
+  errors: number;
+  scrambled: number;
+}
+
+export interface Recording {
+  id: number;
+  reservationId?: number;
+  ruleId?: number;
+  source: RecordingSource;
+  serviceName: string;
+  channelType: RecordingChannelType;
+  channel: string;
+  networkId: number;
+  serviceId: number;
+  eventId: number;
+  title: string;
+  description?: string;
+  /** 番組の放送開始時刻 */
+  startAt: string;
+  durationMs: number;
+  status: RecordingStatus;
+  /** 録画の実開始時刻 */
+  startedAt?: string;
+  endedAt?: string;
+  /** 原本の実サイズ。ingest 済み（media_assets 行あり）の場合のみ */
+  sizeBytes?: number;
+  dropSummary?: DropSummary;
+  /** recording.failed / record-broken / bcas_anomaly の履歴 */
+  qualityEvents?: RecordingQualityEventsItem[];
+  createdAt: string;
+}
+
+export interface DropStat {
+  pid: number;
+  packets: number;
+  drops: number;
+  errors: number;
+  scrambled: number;
+}
+
+export interface CreateReservationRequest {
+  programId: number;
+  title: string;
+  startAt: string;
+  durationMs: number;
+  priority?: number;
+}
+
+export type ReservationSource = typeof ReservationSource[keyof typeof ReservationSource];
+
+
+export const ReservationSource = {
+  rule: 'rule',
+  manual: 'manual',
+} as const;
+
+export type ReservationState = typeof ReservationState[keyof typeof ReservationState];
+
+
+export const ReservationState = {
+  active: 'active',
+  detached: 'detached',
+  orphaned: 'orphaned',
+} as const;
+
+export type ReservationOverrides = { [key: string]: unknown };
+
+export interface Reservation {
+  id: number;
+  programId: number;
+  source: ReservationSource;
+  ruleId?: number;
+  state: ReservationState;
+  overrides?: ReservationOverrides;
+  title: string;
+  startAt: string;
+  durationMs: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type ListProgramsParams = {
+/**
+ * 時間窓の開始（この時刻より後に終わる番組が対象）
+ */
+start: string;
+/**
+ * 時間窓の終了（この時刻より前に始まる番組が対象）。start からの幅は最大 7 日
+ */
+end: string;
+networkId?: number;
+serviceId?: number;
+};
+
+type SecondParameter<T extends (...args: never) => unknown> = Parameters<T>[1];
+
+
 
 const withQueryKey = <T extends object, K>(query: T, queryKey: K): T & { queryKey: K } => {
   const result = { queryKey } as T & { queryKey: K };
@@ -89,16 +296,16 @@ export const getHealthzQueryKey = () => {
     }
 
 
-export const getHealthzQueryOptions = <TData = Awaited<ReturnType<typeof healthz>>, TError = unknown>( options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof healthz>>, TError, TData>>, }
+export const getHealthzQueryOptions = <TData = Awaited<ReturnType<typeof healthz>>, TError = unknown>( options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof healthz>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
 ) => {
 
-const {query: queryOptions} = options ?? {};
+const {query: queryOptions, request: requestOptions} = options ?? {};
 
   const queryKey =  queryOptions?.queryKey ?? getHealthzQueryKey();
 
 
 
-    const queryFn: QueryFunction<Awaited<ReturnType<typeof healthz>>> = ({ signal }) => healthz({ signal });
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof healthz>>> = ({ signal }) => healthz({ signal, ...requestOptions });
 
 
 
@@ -118,7 +325,7 @@ export function useHealthz<TData = Awaited<ReturnType<typeof healthz>>, TError =
           TError,
           Awaited<ReturnType<typeof healthz>>
         > , 'initialData'
-      >, }
+      >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
 export function useHealthz<TData = Awaited<ReturnType<typeof healthz>>, TError = unknown>(
@@ -128,11 +335,11 @@ export function useHealthz<TData = Awaited<ReturnType<typeof healthz>>, TError =
           TError,
           Awaited<ReturnType<typeof healthz>>
         > , 'initialData'
-      >, }
+      >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
 export function useHealthz<TData = Awaited<ReturnType<typeof healthz>>, TError = unknown>(
-  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof healthz>>, TError, TData>>, }
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof healthz>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
 /**
@@ -140,7 +347,7 @@ export function useHealthz<TData = Awaited<ReturnType<typeof healthz>>, TError =
  */
 
 export function useHealthz<TData = Awaited<ReturnType<typeof healthz>>, TError = unknown>(
-  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof healthz>>, TError, TData>>, }
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof healthz>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
 
@@ -202,16 +409,16 @@ export const getGetVersionQueryKey = () => {
     }
 
 
-export const getGetVersionQueryOptions = <TData = Awaited<ReturnType<typeof getVersion>>, TError = unknown>( options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getVersion>>, TError, TData>>, }
+export const getGetVersionQueryOptions = <TData = Awaited<ReturnType<typeof getVersion>>, TError = unknown>( options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getVersion>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
 ) => {
 
-const {query: queryOptions} = options ?? {};
+const {query: queryOptions, request: requestOptions} = options ?? {};
 
   const queryKey =  queryOptions?.queryKey ?? getGetVersionQueryKey();
 
 
 
-    const queryFn: QueryFunction<Awaited<ReturnType<typeof getVersion>>> = ({ signal }) => getVersion({ signal });
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getVersion>>> = ({ signal }) => getVersion({ signal, ...requestOptions });
 
 
 
@@ -231,7 +438,7 @@ export function useGetVersion<TData = Awaited<ReturnType<typeof getVersion>>, TE
           TError,
           Awaited<ReturnType<typeof getVersion>>
         > , 'initialData'
-      >, }
+      >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
 export function useGetVersion<TData = Awaited<ReturnType<typeof getVersion>>, TError = unknown>(
@@ -241,11 +448,11 @@ export function useGetVersion<TData = Awaited<ReturnType<typeof getVersion>>, TE
           TError,
           Awaited<ReturnType<typeof getVersion>>
         > , 'initialData'
-      >, }
+      >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
 export function useGetVersion<TData = Awaited<ReturnType<typeof getVersion>>, TError = unknown>(
-  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getVersion>>, TError, TData>>, }
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getVersion>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
 /**
@@ -253,11 +460,1028 @@ export function useGetVersion<TData = Awaited<ReturnType<typeof getVersion>>, TE
  */
 
 export function useGetVersion<TData = Awaited<ReturnType<typeof getVersion>>, TError = unknown>(
-  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getVersion>>, TError, TData>>, }
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getVersion>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
 
   const queryOptions = getGetVersionQueryOptions(options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export type listReservationsResponse200 = {
+  data: Reservation[]
+  status: 200
+}
+
+export type listReservationsResponseSuccess = (listReservationsResponse200) & {
+  headers: Headers;
+};
+;
+
+export type listReservationsResponse = (listReservationsResponseSuccess)
+
+export const getListReservationsUrl = () => {
+
+
+
+
+  return `/api/reservations`
+}
+
+/**
+ * @summary List reservations
+ */
+export const listReservations = async ( options?: RequestInit): Promise<listReservationsResponse> => {
+
+  return customInstance<listReservationsResponse>(getListReservationsUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getListReservationsQueryKey = () => {
+    return [
+    `/api/reservations`
+    ] as const;
+    }
+
+
+export const getListReservationsQueryOptions = <TData = Awaited<ReturnType<typeof listReservations>>, TError = unknown>( options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listReservations>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getListReservationsQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listReservations>>> = ({ signal }) => listReservations({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listReservations>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type ListReservationsQueryResult = NonNullable<Awaited<ReturnType<typeof listReservations>>>
+export type ListReservationsQueryError = unknown
+
+
+export function useListReservations<TData = Awaited<ReturnType<typeof listReservations>>, TError = unknown>(
+  options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof listReservations>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof listReservations>>,
+          TError,
+          Awaited<ReturnType<typeof listReservations>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useListReservations<TData = Awaited<ReturnType<typeof listReservations>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listReservations>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof listReservations>>,
+          TError,
+          Awaited<ReturnType<typeof listReservations>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useListReservations<TData = Awaited<ReturnType<typeof listReservations>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listReservations>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary List reservations
+ */
+
+export function useListReservations<TData = Awaited<ReturnType<typeof listReservations>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listReservations>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getListReservationsQueryOptions(options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export type createReservationResponse201 = {
+  data: Reservation
+  status: 201
+}
+
+export type createReservationResponse409 = {
+  data: ErrorResponse
+  status: 409
+}
+
+export type createReservationResponseSuccess = (createReservationResponse201) & {
+  headers: Headers;
+};
+export type createReservationResponseError = (createReservationResponse409) & {
+  headers: Headers;
+};
+
+export type createReservationResponse = (createReservationResponseSuccess | createReservationResponseError)
+
+export const getCreateReservationUrl = () => {
+
+
+
+
+  return `/api/reservations`
+}
+
+/**
+ * @summary Create a manual reservation
+ */
+export const createReservation = async (createReservationRequest: CreateReservationRequest, options?: RequestInit): Promise<createReservationResponse> => {
+
+  return customInstance<createReservationResponse>(getCreateReservationUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(createReservationRequest)
+  }
+);}
+
+
+
+
+
+export const getCreateReservationMutationOptions = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createReservation>>, TError,{data: CreateReservationRequest}, TContext>, request?: SecondParameter<typeof customInstance>}
+): UseMutationOptions<Awaited<ReturnType<typeof createReservation>>, TError,{data: CreateReservationRequest}, TContext> => {
+
+const mutationKey = ['createReservation'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof createReservation>>, {data: CreateReservationRequest}> = (props) => {
+          const {data} = props ?? {};
+
+          return  createReservation(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type CreateReservationMutationResult = NonNullable<Awaited<ReturnType<typeof createReservation>>>
+    export type CreateReservationMutationBody = CreateReservationRequest
+    export type CreateReservationMutationError = ErrorResponse
+
+    /**
+ * @summary Create a manual reservation
+ */
+export const useCreateReservation = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createReservation>>, TError,{data: CreateReservationRequest}, TContext>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof createReservation>>,
+        TError,
+        {data: CreateReservationRequest},
+        TContext
+      > => {
+      return useMutation(getCreateReservationMutationOptions(options), queryClient);
+    }
+
+export type getReservationResponse200 = {
+  data: Reservation
+  status: 200
+}
+
+export type getReservationResponse404 = {
+  data: ErrorResponse
+  status: 404
+}
+
+export type getReservationResponseSuccess = (getReservationResponse200) & {
+  headers: Headers;
+};
+export type getReservationResponseError = (getReservationResponse404) & {
+  headers: Headers;
+};
+
+export type getReservationResponse = (getReservationResponseSuccess | getReservationResponseError)
+
+export const getGetReservationUrl = (id: number,) => {
+
+
+
+
+  return `/api/reservations/${id}`
+}
+
+/**
+ * @summary Get a reservation
+ */
+export const getReservation = async (id: number, options?: RequestInit): Promise<getReservationResponse> => {
+
+  return customInstance<getReservationResponse>(getGetReservationUrl(id),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetReservationQueryKey = (id: number,) => {
+    return [
+    `/api/reservations/${id}`
+    ] as const;
+    }
+
+
+export const getGetReservationQueryOptions = <TData = Awaited<ReturnType<typeof getReservation>>, TError = ErrorResponse>(id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getReservation>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetReservationQueryKey(id);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getReservation>>> = ({ signal }) => getReservation(id, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: id !== null && id !== undefined, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getReservation>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type GetReservationQueryResult = NonNullable<Awaited<ReturnType<typeof getReservation>>>
+export type GetReservationQueryError = ErrorResponse
+
+
+export function useGetReservation<TData = Awaited<ReturnType<typeof getReservation>>, TError = ErrorResponse>(
+ id: number, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getReservation>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getReservation>>,
+          TError,
+          Awaited<ReturnType<typeof getReservation>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetReservation<TData = Awaited<ReturnType<typeof getReservation>>, TError = ErrorResponse>(
+ id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getReservation>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getReservation>>,
+          TError,
+          Awaited<ReturnType<typeof getReservation>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetReservation<TData = Awaited<ReturnType<typeof getReservation>>, TError = ErrorResponse>(
+ id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getReservation>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary Get a reservation
+ */
+
+export function useGetReservation<TData = Awaited<ReturnType<typeof getReservation>>, TError = ErrorResponse>(
+ id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getReservation>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getGetReservationQueryOptions(id,options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export type deleteReservationResponse204 = {
+  data: void
+  status: 204
+}
+
+export type deleteReservationResponse404 = {
+  data: ErrorResponse
+  status: 404
+}
+
+export type deleteReservationResponseSuccess = (deleteReservationResponse204) & {
+  headers: Headers;
+};
+export type deleteReservationResponseError = (deleteReservationResponse404) & {
+  headers: Headers;
+};
+
+export type deleteReservationResponse = (deleteReservationResponseSuccess | deleteReservationResponseError)
+
+export const getDeleteReservationUrl = (id: number,) => {
+
+
+
+
+  return `/api/reservations/${id}`
+}
+
+/**
+ * @summary Cancel a reservation
+ */
+export const deleteReservation = async (id: number, options?: RequestInit): Promise<deleteReservationResponse> => {
+
+  return customInstance<deleteReservationResponse>(getDeleteReservationUrl(id),
+  {
+    ...options,
+    method: 'DELETE'
+
+
+  }
+);}
+
+
+
+
+
+export const getDeleteReservationMutationOptions = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteReservation>>, TError,{id: number}, TContext>, request?: SecondParameter<typeof customInstance>}
+): UseMutationOptions<Awaited<ReturnType<typeof deleteReservation>>, TError,{id: number}, TContext> => {
+
+const mutationKey = ['deleteReservation'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof deleteReservation>>, {id: number}> = (props) => {
+          const {id} = props ?? {};
+
+          return  deleteReservation(id,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type DeleteReservationMutationResult = NonNullable<Awaited<ReturnType<typeof deleteReservation>>>
+
+    export type DeleteReservationMutationError = ErrorResponse
+
+    /**
+ * @summary Cancel a reservation
+ */
+export const useDeleteReservation = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteReservation>>, TError,{id: number}, TContext>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof deleteReservation>>,
+        TError,
+        {id: number},
+        TContext
+      > => {
+      return useMutation(getDeleteReservationMutationOptions(options), queryClient);
+    }
+
+export type listServicesResponse200 = {
+  data: Service[]
+  status: 200
+}
+
+export type listServicesResponseSuccess = (listServicesResponse200) & {
+  headers: Headers;
+};
+;
+
+export type listServicesResponse = (listServicesResponseSuccess)
+
+export const getListServicesUrl = () => {
+
+
+
+
+  return `/api/services`
+}
+
+/**
+ * EPG プロジェクションのサービス一覧。channelType, remoteControlKeyId, serviceId 順。
+ *
+ * サブサービス（ＮＨＫ総合２ 等）も含む全サービスを返す。マルチ編成のない
+ * サブサービスは番組を持たないため、UI は時間窓内に番組があるサービスだけを
+ * 表示することが期待される（issue #17 の S3）。
+ * @summary List EPG services (channels)
+ */
+export const listServices = async ( options?: RequestInit): Promise<listServicesResponse> => {
+
+  return customInstance<listServicesResponse>(getListServicesUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getListServicesQueryKey = () => {
+    return [
+    `/api/services`
+    ] as const;
+    }
+
+
+export const getListServicesQueryOptions = <TData = Awaited<ReturnType<typeof listServices>>, TError = unknown>( options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listServices>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getListServicesQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listServices>>> = ({ signal }) => listServices({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listServices>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type ListServicesQueryResult = NonNullable<Awaited<ReturnType<typeof listServices>>>
+export type ListServicesQueryError = unknown
+
+
+export function useListServices<TData = Awaited<ReturnType<typeof listServices>>, TError = unknown>(
+  options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof listServices>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof listServices>>,
+          TError,
+          Awaited<ReturnType<typeof listServices>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useListServices<TData = Awaited<ReturnType<typeof listServices>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listServices>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof listServices>>,
+          TError,
+          Awaited<ReturnType<typeof listServices>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useListServices<TData = Awaited<ReturnType<typeof listServices>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listServices>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary List EPG services (channels)
+ */
+
+export function useListServices<TData = Awaited<ReturnType<typeof listServices>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listServices>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getListServicesQueryOptions(options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export type listProgramsResponse200 = {
+  data: ProgramListItem[]
+  status: 200
+}
+
+export type listProgramsResponse400 = {
+  data: ErrorResponse
+  status: 400
+}
+
+export type listProgramsResponseSuccess = (listProgramsResponse200) & {
+  headers: Headers;
+};
+export type listProgramsResponseError = (listProgramsResponse400) & {
+  headers: Headers;
+};
+
+export type listProgramsResponse = (listProgramsResponseSuccess | listProgramsResponseError)
+
+export const getListProgramsUrl = (params: ListProgramsParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/programs?${stringifiedParams}` : `/api/programs`
+}
+
+/**
+ * 指定した時間窓に**一部でも重なる**番組を start_at 昇順で返す
+ * （`start_at < end AND end_at > start`）。窓開始前に始まった放送中の番組も含む。
+ *
+ * 無限スクロールで窓を継ぎ足す場合、境界をまたぐ番組は隣接する 2 つの窓の
+ * 両方に現れる。クライアントは programId で重複排除すること。
+ *
+ * ページネーショントークンは持たない。時間窓そのものがカーソルであり、
+ * 同じ窓は常に同じ完全な結果を返す。
+ *
+ * レスポンスは一覧向けの軽い形で、extended / video / audios は含まない。
+ * それらは `GET /api/programs/{programId}` で取得する。
+ * @summary List EPG programs in a time window
+ */
+export const listPrograms = async (params: ListProgramsParams, options?: RequestInit): Promise<listProgramsResponse> => {
+
+  return customInstance<listProgramsResponse>(getListProgramsUrl(params),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getListProgramsQueryKey = (params?: ListProgramsParams,) => {
+    return [
+    `/api/programs`, ...(params ? [params] : [])
+    ] as const;
+    }
+
+
+export const getListProgramsQueryOptions = <TData = Awaited<ReturnType<typeof listPrograms>>, TError = ErrorResponse>(params: ListProgramsParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listPrograms>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getListProgramsQueryKey(params);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listPrograms>>> = ({ signal }) => listPrograms(params, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listPrograms>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type ListProgramsQueryResult = NonNullable<Awaited<ReturnType<typeof listPrograms>>>
+export type ListProgramsQueryError = ErrorResponse
+
+
+export function useListPrograms<TData = Awaited<ReturnType<typeof listPrograms>>, TError = ErrorResponse>(
+ params: ListProgramsParams, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof listPrograms>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof listPrograms>>,
+          TError,
+          Awaited<ReturnType<typeof listPrograms>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useListPrograms<TData = Awaited<ReturnType<typeof listPrograms>>, TError = ErrorResponse>(
+ params: ListProgramsParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listPrograms>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof listPrograms>>,
+          TError,
+          Awaited<ReturnType<typeof listPrograms>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useListPrograms<TData = Awaited<ReturnType<typeof listPrograms>>, TError = ErrorResponse>(
+ params: ListProgramsParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listPrograms>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary List EPG programs in a time window
+ */
+
+export function useListPrograms<TData = Awaited<ReturnType<typeof listPrograms>>, TError = ErrorResponse>(
+ params: ListProgramsParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listPrograms>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getListProgramsQueryOptions(params,options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export type getProgramResponse200 = {
+  data: Program
+  status: 200
+}
+
+export type getProgramResponse404 = {
+  data: ErrorResponse
+  status: 404
+}
+
+export type getProgramResponseSuccess = (getProgramResponse200) & {
+  headers: Headers;
+};
+export type getProgramResponseError = (getProgramResponse404) & {
+  headers: Headers;
+};
+
+export type getProgramResponse = (getProgramResponseSuccess | getProgramResponseError)
+
+export const getGetProgramUrl = (programId: number,) => {
+
+
+
+
+  return `/api/programs/${programId}`
+}
+
+/**
+ * @summary Get a single EPG program with full detail
+ */
+export const getProgram = async (programId: number, options?: RequestInit): Promise<getProgramResponse> => {
+
+  return customInstance<getProgramResponse>(getGetProgramUrl(programId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetProgramQueryKey = (programId: number,) => {
+    return [
+    `/api/programs/${programId}`
+    ] as const;
+    }
+
+
+export const getGetProgramQueryOptions = <TData = Awaited<ReturnType<typeof getProgram>>, TError = ErrorResponse>(programId: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getProgram>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetProgramQueryKey(programId);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getProgram>>> = ({ signal }) => getProgram(programId, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: programId !== null && programId !== undefined, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getProgram>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type GetProgramQueryResult = NonNullable<Awaited<ReturnType<typeof getProgram>>>
+export type GetProgramQueryError = ErrorResponse
+
+
+export function useGetProgram<TData = Awaited<ReturnType<typeof getProgram>>, TError = ErrorResponse>(
+ programId: number, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getProgram>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getProgram>>,
+          TError,
+          Awaited<ReturnType<typeof getProgram>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetProgram<TData = Awaited<ReturnType<typeof getProgram>>, TError = ErrorResponse>(
+ programId: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getProgram>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getProgram>>,
+          TError,
+          Awaited<ReturnType<typeof getProgram>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetProgram<TData = Awaited<ReturnType<typeof getProgram>>, TError = ErrorResponse>(
+ programId: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getProgram>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary Get a single EPG program with full detail
+ */
+
+export function useGetProgram<TData = Awaited<ReturnType<typeof getProgram>>, TError = ErrorResponse>(
+ programId: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getProgram>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getGetProgramQueryOptions(programId,options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export type listRecordingsResponse200 = {
+  data: Recording[]
+  status: 200
+}
+
+export type listRecordingsResponseSuccess = (listRecordingsResponse200) & {
+  headers: Headers;
+};
+;
+
+export type listRecordingsResponse = (listRecordingsResponseSuccess)
+
+export const getListRecordingsUrl = () => {
+
+
+
+
+  return `/api/recordings`
+}
+
+/**
+ * 録画履歴。program_start_at の降順。ドロップ統計は PID 別の合計のみを含む。
+ * PID 別の内訳は `GET /api/recordings/{id}/drop-stats` で取得する。
+ * @summary List recordings
+ */
+export const listRecordings = async ( options?: RequestInit): Promise<listRecordingsResponse> => {
+
+  return customInstance<listRecordingsResponse>(getListRecordingsUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getListRecordingsQueryKey = () => {
+    return [
+    `/api/recordings`
+    ] as const;
+    }
+
+
+export const getListRecordingsQueryOptions = <TData = Awaited<ReturnType<typeof listRecordings>>, TError = unknown>( options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRecordings>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getListRecordingsQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listRecordings>>> = ({ signal }) => listRecordings({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listRecordings>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type ListRecordingsQueryResult = NonNullable<Awaited<ReturnType<typeof listRecordings>>>
+export type ListRecordingsQueryError = unknown
+
+
+export function useListRecordings<TData = Awaited<ReturnType<typeof listRecordings>>, TError = unknown>(
+  options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRecordings>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof listRecordings>>,
+          TError,
+          Awaited<ReturnType<typeof listRecordings>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useListRecordings<TData = Awaited<ReturnType<typeof listRecordings>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRecordings>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof listRecordings>>,
+          TError,
+          Awaited<ReturnType<typeof listRecordings>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useListRecordings<TData = Awaited<ReturnType<typeof listRecordings>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRecordings>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary List recordings
+ */
+
+export function useListRecordings<TData = Awaited<ReturnType<typeof listRecordings>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRecordings>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getListRecordingsQueryOptions(options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export type listRecordingDropStatsResponse200 = {
+  data: DropStat[]
+  status: 200
+}
+
+export type listRecordingDropStatsResponseSuccess = (listRecordingDropStatsResponse200) & {
+  headers: Headers;
+};
+;
+
+export type listRecordingDropStatsResponse = (listRecordingDropStatsResponseSuccess)
+
+export const getListRecordingDropStatsUrl = (id: number,) => {
+
+
+
+
+  return `/api/recordings/${id}/drop-stats`
+}
+
+/**
+ * @summary Get per-PID drop statistics for a recording
+ */
+export const listRecordingDropStats = async (id: number, options?: RequestInit): Promise<listRecordingDropStatsResponse> => {
+
+  return customInstance<listRecordingDropStatsResponse>(getListRecordingDropStatsUrl(id),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getListRecordingDropStatsQueryKey = (id: number,) => {
+    return [
+    `/api/recordings/${id}/drop-stats`
+    ] as const;
+    }
+
+
+export const getListRecordingDropStatsQueryOptions = <TData = Awaited<ReturnType<typeof listRecordingDropStats>>, TError = unknown>(id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRecordingDropStats>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getListRecordingDropStatsQueryKey(id);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listRecordingDropStats>>> = ({ signal }) => listRecordingDropStats(id, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: id !== null && id !== undefined, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listRecordingDropStats>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type ListRecordingDropStatsQueryResult = NonNullable<Awaited<ReturnType<typeof listRecordingDropStats>>>
+export type ListRecordingDropStatsQueryError = unknown
+
+
+export function useListRecordingDropStats<TData = Awaited<ReturnType<typeof listRecordingDropStats>>, TError = unknown>(
+ id: number, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRecordingDropStats>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof listRecordingDropStats>>,
+          TError,
+          Awaited<ReturnType<typeof listRecordingDropStats>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useListRecordingDropStats<TData = Awaited<ReturnType<typeof listRecordingDropStats>>, TError = unknown>(
+ id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRecordingDropStats>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof listRecordingDropStats>>,
+          TError,
+          Awaited<ReturnType<typeof listRecordingDropStats>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useListRecordingDropStats<TData = Awaited<ReturnType<typeof listRecordingDropStats>>, TError = unknown>(
+ id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRecordingDropStats>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary Get per-PID drop statistics for a recording
+ */
+
+export function useListRecordingDropStats<TData = Awaited<ReturnType<typeof listRecordingDropStats>>, TError = unknown>(
+ id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRecordingDropStats>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getListRecordingDropStatsQueryOptions(id,options)
 
   const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
 

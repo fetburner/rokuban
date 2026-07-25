@@ -1,18 +1,46 @@
 import { createRootRoute, createRoute, Outlet } from '@tanstack/react-router'
-import { IndexPage } from './pages/index'
+
+import { AppShell } from './components/app-shell'
+import { ProgramsPage } from './pages/programs'
+import { RecordingsPage } from './pages/recordings'
+import { ReservationDetailPage } from './pages/reservation-detail'
+import { ReservationsPage } from './pages/reservations'
 
 const rootRoute = createRootRoute({
   component: () => (
-    <div className="min-h-screen bg-background text-foreground">
+    <AppShell>
       <Outlet />
-    </div>
+    </AppShell>
   ),
 })
 
-const indexRoute = createRoute({
+const programsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/',
-  component: IndexPage,
+  component: ProgramsPage,
 })
 
-export const routeTree = rootRoute.addChildren([indexRoute])
+const reservationsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/reservations',
+  component: ReservationsPage,
+})
+
+const reservationDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/reservations/$reservationId',
+  component: ReservationDetailPage,
+})
+
+const recordingsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/recordings',
+  component: RecordingsPage,
+})
+
+export const routeTree = rootRoute.addChildren([
+  programsRoute,
+  reservationsRoute,
+  reservationDetailRoute,
+  recordingsRoute,
+])
