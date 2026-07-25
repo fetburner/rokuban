@@ -118,6 +118,129 @@ func (e ReservationState) Valid() bool {
 	}
 }
 
+// Defines values for RuleChannelTypes.
+const (
+	RuleChannelTypesBS  RuleChannelTypes = "BS"
+	RuleChannelTypesCS  RuleChannelTypes = "CS"
+	RuleChannelTypesGR  RuleChannelTypes = "GR"
+	RuleChannelTypesSKY RuleChannelTypes = "SKY"
+)
+
+// Valid indicates whether the value is a known member of the RuleChannelTypes enum.
+func (e RuleChannelTypes) Valid() bool {
+	switch e {
+	case RuleChannelTypesBS:
+		return true
+	case RuleChannelTypesCS:
+		return true
+	case RuleChannelTypesGR:
+		return true
+	case RuleChannelTypesSKY:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for RuleKeepOriginal.
+const (
+	RuleKeepOriginalAlways       RuleKeepOriginal = "always"
+	RuleKeepOriginalUntilEncoded RuleKeepOriginal = "until_encoded"
+)
+
+// Valid indicates whether the value is a known member of the RuleKeepOriginal enum.
+func (e RuleKeepOriginal) Valid() bool {
+	switch e {
+	case RuleKeepOriginalAlways:
+		return true
+	case RuleKeepOriginalUntilEncoded:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for RuleInputChannelTypes.
+const (
+	RuleInputChannelTypesBS  RuleInputChannelTypes = "BS"
+	RuleInputChannelTypesCS  RuleInputChannelTypes = "CS"
+	RuleInputChannelTypesGR  RuleInputChannelTypes = "GR"
+	RuleInputChannelTypesSKY RuleInputChannelTypes = "SKY"
+)
+
+// Valid indicates whether the value is a known member of the RuleInputChannelTypes enum.
+func (e RuleInputChannelTypes) Valid() bool {
+	switch e {
+	case RuleInputChannelTypesBS:
+		return true
+	case RuleInputChannelTypesCS:
+		return true
+	case RuleInputChannelTypesGR:
+		return true
+	case RuleInputChannelTypesSKY:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for RuleInputKeepOriginal.
+const (
+	RuleInputKeepOriginalAlways       RuleInputKeepOriginal = "always"
+	RuleInputKeepOriginalUntilEncoded RuleInputKeepOriginal = "until_encoded"
+)
+
+// Valid indicates whether the value is a known member of the RuleInputKeepOriginal enum.
+func (e RuleInputKeepOriginal) Valid() bool {
+	switch e {
+	case RuleInputKeepOriginalAlways:
+		return true
+	case RuleInputKeepOriginalUntilEncoded:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for RuleTextMatchMode.
+const (
+	Keyword RuleTextMatchMode = "keyword"
+	Regex   RuleTextMatchMode = "regex"
+)
+
+// Valid indicates whether the value is a known member of the RuleTextMatchMode enum.
+func (e RuleTextMatchMode) Valid() bool {
+	switch e {
+	case Keyword:
+		return true
+	case Regex:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for RuleTextMatchTarget.
+const (
+	Description RuleTextMatchTarget = "description"
+	Extended    RuleTextMatchTarget = "extended"
+	Name        RuleTextMatchTarget = "name"
+)
+
+// Valid indicates whether the value is a known member of the RuleTextMatchTarget enum.
+func (e RuleTextMatchTarget) Valid() bool {
+	switch e {
+	case Description:
+		return true
+	case Extended:
+		return true
+	case Name:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ServiceChannelType.
 const (
 	ServiceChannelTypeBS  ServiceChannelType = "BS"
@@ -157,6 +280,16 @@ type CreateReservationRequest struct {
 	ProgramId  int64     `json:"programId"`
 	StartAt    time.Time `json:"startAt"`
 	Title      string    `json:"title"`
+}
+
+// DeleteRuleResponse defines model for DeleteRuleResponse.
+type DeleteRuleResponse struct {
+	// DeletedReservations overrides なしで削除した rule 予約の件数
+	DeletedReservations int `json:"deletedReservations"`
+
+	// DetachedReservations overrides 付きで detached 化した件数
+	DetachedReservations int   `json:"detachedReservations"`
+	Id                   int64 `json:"id"`
 }
 
 // DropStat defines model for DropStat.
@@ -297,6 +430,124 @@ type ReservationSource string
 // ReservationState defines model for Reservation.State.
 type ReservationState string
 
+// Rule defines model for Rule.
+type Rule struct {
+	ChannelTypes    *[]RuleChannelTypes `json:"channelTypes,omitempty"`
+	CreatedAt       time.Time           `json:"createdAt"`
+	DedupeEnabled   *bool               `json:"dedupeEnabled,omitempty"`
+	DedupeThreshold *float32            `json:"dedupeThreshold,omitempty"`
+
+	// DedupeWindowSeconds 重複排除の時間窓（秒）。interval の API 表現
+	DedupeWindowSeconds *int64    `json:"dedupeWindowSeconds,omitempty"`
+	Description         *string   `json:"description,omitempty"`
+	DurationMaxMs       *int64    `json:"durationMaxMs,omitempty"`
+	DurationMinMs       *int64    `json:"durationMinMs,omitempty"`
+	Enabled             bool      `json:"enabled"`
+	EncodeProfiles      *[]string `json:"encodeProfiles,omitempty"`
+	FilenameTemplate    *string   `json:"filenameTemplate,omitempty"`
+
+	// Genres genre lv1
+	Genres *[]int `json:"genres,omitempty"`
+	Id     int64  `json:"id"`
+
+	// IsFree null = 問わない
+	IsFree        *bool                   `json:"isFree,omitempty"`
+	KeepOriginal  RuleKeepOriginal        `json:"keepOriginal"`
+	Metadata      *map[string]interface{} `json:"metadata,omitempty"`
+	Name          string                  `json:"name"`
+	PeriodEndAt   *time.Time              `json:"periodEndAt,omitempty"`
+	PeriodStartAt *time.Time              `json:"periodStartAt,omitempty"`
+	Priority      int                     `json:"priority"`
+	Services      *[]RuleService          `json:"services,omitempty"`
+
+	// Sites 空または省略 = 全サイト
+	Sites       *[]string         `json:"sites,omitempty"`
+	TextMatches *[]RuleTextMatch  `json:"textMatches,omitempty"`
+	Times       *[]RuleTimeWindow `json:"times,omitempty"`
+	UpdatedAt   time.Time         `json:"updatedAt"`
+}
+
+// RuleChannelTypes defines model for Rule.ChannelTypes.
+type RuleChannelTypes string
+
+// RuleKeepOriginal defines model for Rule.KeepOriginal.
+type RuleKeepOriginal string
+
+// RuleInput defines model for RuleInput.
+type RuleInput struct {
+	ChannelTypes    *[]RuleInputChannelTypes `json:"channelTypes,omitempty"`
+	DedupeEnabled   *bool                    `json:"dedupeEnabled,omitempty"`
+	DedupeThreshold *float32                 `json:"dedupeThreshold,omitempty"`
+
+	// DedupeWindowSeconds 重複排除の時間窓（秒）。interval の API 表現
+	DedupeWindowSeconds *int64    `json:"dedupeWindowSeconds,omitempty"`
+	Description         *string   `json:"description,omitempty"`
+	DurationMaxMs       *int64    `json:"durationMaxMs,omitempty"`
+	DurationMinMs       *int64    `json:"durationMinMs,omitempty"`
+	Enabled             *bool     `json:"enabled,omitempty"`
+	EncodeProfiles      *[]string `json:"encodeProfiles,omitempty"`
+	FilenameTemplate    *string   `json:"filenameTemplate,omitempty"`
+
+	// Genres genre lv1
+	Genres *[]int `json:"genres,omitempty"`
+
+	// IsFree null = 問わない
+	IsFree        *bool                   `json:"isFree,omitempty"`
+	KeepOriginal  *RuleInputKeepOriginal  `json:"keepOriginal,omitempty"`
+	Metadata      *map[string]interface{} `json:"metadata,omitempty"`
+	Name          string                  `json:"name"`
+	PeriodEndAt   *time.Time              `json:"periodEndAt,omitempty"`
+	PeriodStartAt *time.Time              `json:"periodStartAt,omitempty"`
+	Priority      *int                    `json:"priority,omitempty"`
+	Services      *[]RuleService          `json:"services,omitempty"`
+
+	// Sites 空または省略 = 全サイト
+	Sites       *[]string         `json:"sites,omitempty"`
+	TextMatches *[]RuleTextMatch  `json:"textMatches,omitempty"`
+	Times       *[]RuleTimeWindow `json:"times,omitempty"`
+}
+
+// RuleInputChannelTypes defines model for RuleInput.ChannelTypes.
+type RuleInputChannelTypes string
+
+// RuleInputKeepOriginal defines model for RuleInput.KeepOriginal.
+type RuleInputKeepOriginal string
+
+// RuleService defines model for RuleService.
+type RuleService struct {
+	NetworkId int `json:"networkId"`
+	ServiceId int `json:"serviceId"`
+}
+
+// RuleTextMatch defines model for RuleTextMatch.
+type RuleTextMatch struct {
+	CaseSensitive *bool `json:"caseSensitive,omitempty"`
+
+	// Mode keyword = 部分一致 / regex = POSIX ARE
+	Mode RuleTextMatchMode `json:"mode"`
+
+	// Negate true なら除外条件
+	Negate *bool               `json:"negate,omitempty"`
+	Target RuleTextMatchTarget `json:"target"`
+	Value  string              `json:"value"`
+}
+
+// RuleTextMatchMode keyword = 部分一致 / regex = POSIX ARE
+type RuleTextMatchMode string
+
+// RuleTextMatchTarget defines model for RuleTextMatch.Target.
+type RuleTextMatchTarget string
+
+// RuleTimeWindow defines model for RuleTimeWindow.
+type RuleTimeWindow struct {
+	// EndSec start より小さい場合は翌日跨ぎ
+	EndSec   int `json:"endSec"`
+	StartSec int `json:"startSec"`
+
+	// Weekdays bit0=月 … bit6=日
+	Weekdays int `json:"weekdays"`
+}
+
 // Service defines model for Service.
 type Service struct {
 	Channel            string             `json:"channel"`
@@ -338,6 +589,12 @@ type ListProgramsParams struct {
 // CreateReservationJSONRequestBody defines body for CreateReservation for application/json ContentType.
 type CreateReservationJSONRequestBody = CreateReservationRequest
 
+// CreateRuleJSONRequestBody defines body for CreateRule for application/json ContentType.
+type CreateRuleJSONRequestBody = RuleInput
+
+// UpdateRuleJSONRequestBody defines body for UpdateRule for application/json ContentType.
+type UpdateRuleJSONRequestBody = RuleInput
+
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
 	// ListPrograms List EPG programs in a time window
@@ -364,6 +621,21 @@ type ServerInterface interface {
 	// GetReservation Get a reservation
 	// (GET /api/reservations/{id})
 	GetReservation(w http.ResponseWriter, r *http.Request, id int64)
+	// ListRules List recording rules
+	// (GET /api/rules)
+	ListRules(w http.ResponseWriter, r *http.Request)
+	// CreateRule Create a recording rule
+	// (POST /api/rules)
+	CreateRule(w http.ResponseWriter, r *http.Request)
+	// DeleteRule Delete a recording rule
+	// (DELETE /api/rules/{id})
+	DeleteRule(w http.ResponseWriter, r *http.Request, id int64)
+	// GetRule Get a recording rule
+	// (GET /api/rules/{id})
+	GetRule(w http.ResponseWriter, r *http.Request, id int64)
+	// UpdateRule Update a recording rule
+	// (PATCH /api/rules/{id})
+	UpdateRule(w http.ResponseWriter, r *http.Request, id int64)
 	// ListServices List EPG services (channels)
 	// (GET /api/services)
 	ListServices(w http.ResponseWriter, r *http.Request)
@@ -424,6 +696,36 @@ func (_ Unimplemented) DeleteReservation(w http.ResponseWriter, r *http.Request,
 // GetReservation Get a reservation
 // (GET /api/reservations/{id})
 func (_ Unimplemented) GetReservation(w http.ResponseWriter, r *http.Request, id int64) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// ListRules List recording rules
+// (GET /api/rules)
+func (_ Unimplemented) ListRules(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// CreateRule Create a recording rule
+// (POST /api/rules)
+func (_ Unimplemented) CreateRule(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// DeleteRule Delete a recording rule
+// (DELETE /api/rules/{id})
+func (_ Unimplemented) DeleteRule(w http.ResponseWriter, r *http.Request, id int64) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// GetRule Get a recording rule
+// (GET /api/rules/{id})
+func (_ Unimplemented) GetRule(w http.ResponseWriter, r *http.Request, id int64) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// UpdateRule Update a recording rule
+// (PATCH /api/rules/{id})
+func (_ Unimplemented) UpdateRule(w http.ResponseWriter, r *http.Request, id int64) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -672,6 +974,112 @@ func (siw *ServerInterfaceWrapper) GetReservation(w http.ResponseWriter, r *http
 	handler.ServeHTTP(w, r)
 }
 
+// ListRules operation middleware
+func (siw *ServerInterfaceWrapper) ListRules(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListRules(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateRule operation middleware
+func (siw *ServerInterfaceWrapper) CreateRule(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateRule(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DeleteRule operation middleware
+func (siw *ServerInterfaceWrapper) DeleteRule(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteRule(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetRule operation middleware
+func (siw *ServerInterfaceWrapper) GetRule(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetRule(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UpdateRule operation middleware
+func (siw *ServerInterfaceWrapper) UpdateRule(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UpdateRule(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ListServices operation middleware
 func (siw *ServerInterfaceWrapper) ListServices(w http.ResponseWriter, r *http.Request) {
 
@@ -832,6 +1240,21 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/api/version", wrapper.GetVersion)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/rules", wrapper.ListRules)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/api/rules", wrapper.CreateRule)
+	})
+	r.Group(func(r chi.Router) {
+		r.Delete(options.BaseURL+"/api/rules/{id}", wrapper.DeleteRule)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/rules/{id}", wrapper.GetRule)
+	})
+	r.Group(func(r chi.Router) {
+		r.Patch(options.BaseURL+"/api/rules/{id}", wrapper.UpdateRule)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/api/reservations", wrapper.ListReservations)
@@ -1102,6 +1525,186 @@ func (response GetReservation404JSONResponse) VisitGetReservationResponse(w http
 	return err
 }
 
+type ListRulesRequestObject struct {
+}
+
+type ListRulesResponseObject interface {
+	VisitListRulesResponse(w http.ResponseWriter) error
+}
+
+type ListRules200JSONResponse []Rule
+
+func (response ListRules200JSONResponse) VisitListRulesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateRuleRequestObject struct {
+	Body *CreateRuleJSONRequestBody
+}
+
+type CreateRuleResponseObject interface {
+	VisitCreateRuleResponse(w http.ResponseWriter) error
+}
+
+type CreateRule201JSONResponse Rule
+
+func (response CreateRule201JSONResponse) VisitCreateRuleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateRule400JSONResponse ErrorResponse
+
+func (response CreateRule400JSONResponse) VisitCreateRuleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeleteRuleRequestObject struct {
+	Id int64 `json:"id"`
+}
+
+type DeleteRuleResponseObject interface {
+	VisitDeleteRuleResponse(w http.ResponseWriter) error
+}
+
+type DeleteRule200JSONResponse DeleteRuleResponse
+
+func (response DeleteRule200JSONResponse) VisitDeleteRuleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeleteRule404JSONResponse ErrorResponse
+
+func (response DeleteRule404JSONResponse) VisitDeleteRuleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetRuleRequestObject struct {
+	Id int64 `json:"id"`
+}
+
+type GetRuleResponseObject interface {
+	VisitGetRuleResponse(w http.ResponseWriter) error
+}
+
+type GetRule200JSONResponse Rule
+
+func (response GetRule200JSONResponse) VisitGetRuleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetRule404JSONResponse ErrorResponse
+
+func (response GetRule404JSONResponse) VisitGetRuleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateRuleRequestObject struct {
+	Id   int64 `json:"id"`
+	Body *UpdateRuleJSONRequestBody
+}
+
+type UpdateRuleResponseObject interface {
+	VisitUpdateRuleResponse(w http.ResponseWriter) error
+}
+
+type UpdateRule200JSONResponse Rule
+
+func (response UpdateRule200JSONResponse) VisitUpdateRuleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateRule400JSONResponse ErrorResponse
+
+func (response UpdateRule400JSONResponse) VisitUpdateRuleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateRule404JSONResponse ErrorResponse
+
+func (response UpdateRule404JSONResponse) VisitUpdateRuleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type ListServicesRequestObject struct {
 }
 
@@ -1191,6 +1794,21 @@ type StrictServerInterface interface {
 	// GetReservation Get a reservation
 	// (GET /api/reservations/{id})
 	GetReservation(ctx context.Context, request GetReservationRequestObject) (GetReservationResponseObject, error)
+	// ListRules List recording rules
+	// (GET /api/rules)
+	ListRules(ctx context.Context, request ListRulesRequestObject) (ListRulesResponseObject, error)
+	// CreateRule Create a recording rule
+	// (POST /api/rules)
+	CreateRule(ctx context.Context, request CreateRuleRequestObject) (CreateRuleResponseObject, error)
+	// DeleteRule Delete a recording rule
+	// (DELETE /api/rules/{id})
+	DeleteRule(ctx context.Context, request DeleteRuleRequestObject) (DeleteRuleResponseObject, error)
+	// GetRule Get a recording rule
+	// (GET /api/rules/{id})
+	GetRule(ctx context.Context, request GetRuleRequestObject) (GetRuleResponseObject, error)
+	// UpdateRule Update a recording rule
+	// (PATCH /api/rules/{id})
+	UpdateRule(ctx context.Context, request UpdateRuleRequestObject) (UpdateRuleResponseObject, error)
 	// ListServices List EPG services (channels)
 	// (GET /api/services)
 	ListServices(ctx context.Context, request ListServicesRequestObject) (ListServicesResponseObject, error)
@@ -1443,6 +2061,146 @@ func (sh *strictHandler) GetReservation(w http.ResponseWriter, r *http.Request, 
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(GetReservationResponseObject); ok {
 		if err := validResponse.VisitGetReservationResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListRules operation middleware
+func (sh *strictHandler) ListRules(w http.ResponseWriter, r *http.Request) {
+	var request ListRulesRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListRules(ctx, request.(ListRulesRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListRules")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListRulesResponseObject); ok {
+		if err := validResponse.VisitListRulesResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// CreateRule operation middleware
+func (sh *strictHandler) CreateRule(w http.ResponseWriter, r *http.Request) {
+	var request CreateRuleRequestObject
+
+	var body CreateRuleJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.CreateRule(ctx, request.(CreateRuleRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CreateRule")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(CreateRuleResponseObject); ok {
+		if err := validResponse.VisitCreateRuleResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// DeleteRule operation middleware
+func (sh *strictHandler) DeleteRule(w http.ResponseWriter, r *http.Request, id int64) {
+	var request DeleteRuleRequestObject
+
+	request.Id = id
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.DeleteRule(ctx, request.(DeleteRuleRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "DeleteRule")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(DeleteRuleResponseObject); ok {
+		if err := validResponse.VisitDeleteRuleResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetRule operation middleware
+func (sh *strictHandler) GetRule(w http.ResponseWriter, r *http.Request, id int64) {
+	var request GetRuleRequestObject
+
+	request.Id = id
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetRule(ctx, request.(GetRuleRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetRule")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetRuleResponseObject); ok {
+		if err := validResponse.VisitGetRuleResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// UpdateRule operation middleware
+func (sh *strictHandler) UpdateRule(w http.ResponseWriter, r *http.Request, id int64) {
+	var request UpdateRuleRequestObject
+
+	request.Id = id
+
+	var body UpdateRuleJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.UpdateRule(ctx, request.(UpdateRuleRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "UpdateRule")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(UpdateRuleResponseObject); ok {
+		if err := validResponse.VisitUpdateRuleResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

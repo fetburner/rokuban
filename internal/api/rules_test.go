@@ -1,0 +1,131 @@
+package api
+
+import (
+	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/fetburner/rokuban/internal/testutil"
+)
+
+func TestRulesCRUD(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	router := NewRouter(RouterConfig{Pool: pool})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	// Create
+	body := map[string]any{
+		"name":     "アニメ全録",
+		"priority": 20,
+		"textMatches": []map[string]any{
+			{"target": "name", "mode": "keyword", "value": "アニメ"},
+		},
+		"channelTypes": []string{"BS"},
+		"genres":       []int{7},
+		"sites":        []string{"default"},
+	}
+	raw, _ := json.Marshal(body)
+	resp, err := http.Post(srv.URL+"/api/rules", "application/json", bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create status = %d", resp.StatusCode)
+	}
+	var created Rule
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	if created.Id == 0 || created.Name != "アニメ全録" {
+		t.Fatalf("unexpected create response: %+v", created)
+	}
+	if created.TextMatches == nil || len(*created.TextMatches) != 1 {
+		t.Fatalf("textMatches = %v", created.TextMatches)
+	}
+
+	// List
+	resp, err = http.Get(srv.URL + "/api/rules")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var list []Rule
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("list len = %d", len(list))
+	}
+
+	// Get
+	resp, err = http.Get(srv.URL + "/api/rules/" + itoa(created.Id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("get status = %d", resp.StatusCode)
+	}
+
+	// Invalid regex (unbalanced paren — POSIX ARE 非互換)
+	bad := map[string]any{
+		"name": "bad",
+		"textMatches": []map[string]any{
+			{"target": "name", "mode": "regex", "value": "(unclosed"},
+		},
+	}
+	raw, _ = json.Marshal(bad)
+	resp, err = http.Post(srv.URL+"/api/rules", "application/json", bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid regex status = %d, want 400", resp.StatusCode)
+	}
+
+	// Delete
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/rules/"+itoa(created.Id), nil)
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("delete status = %d", resp.StatusCode)
+	}
+	var del DeleteRuleResponse
+	if err := json.NewDecoder(resp.Body).Decode(&del); err != nil {
+		t.Fatal(err)
+	}
+	if del.Id != created.Id {
+		t.Fatalf("delete id = %d", del.Id)
+	}
+
+	resp, err = http.Get(srv.URL + "/api/rules/" + itoa(created.Id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("get after delete = %d", resp.StatusCode)
+	}
+}
+
+func itoa(n int64) string {
+	if n == 0 {
+		return "0"
+	}
+	var b [20]byte
+	i := len(b)
+	for n > 0 {
+		i--
+		b[i] = byte('0' + n%10)
+		n /= 10
+	}
+	return string(b[i:])
+}

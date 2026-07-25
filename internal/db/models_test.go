@@ -54,7 +54,12 @@ func TestSchemaV1_Tables(t *testing.T) {
 	pool := setupTestDB(t)
 	ctx := context.Background()
 
-	tables := []string{"reservations", "schedule_sync", "recordings", "record_sync", "media_assets", "drop_stats"}
+	tables := []string{
+		"reservations", "schedule_sync", "recordings", "record_sync", "media_assets", "drop_stats",
+		// M2-1
+		"rules", "rule_text_matches", "rule_services", "rule_channel_types",
+		"rule_genres", "rule_times", "rule_sites", "reservation_rule_matches",
+	}
 	for _, table := range tables {
 		var exists bool
 		err := pool.QueryRow(ctx,
