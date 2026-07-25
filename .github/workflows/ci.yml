@@ -42,8 +42,9 @@ jobs:
         working-directory: web
       - run: pnpm build
         working-directory: web
-      # -p 1: DB テストが同一 postgres に対してマイグレーションを実行するためパッケージ直列化
-      - run: go test -p 1 ./...
+      # DB テストは testutil の advisory lock で直列化されるので -p 1 は不要
+      # （internal/db.TestLockKey。docs/runbook.md「開発時のテスト」参照）
+      - run: go test ./...
 
   lint:
     runs-on: ubuntu-latest

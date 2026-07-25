@@ -23,10 +23,18 @@ mirakc:
 storage:
   media_dir: /mnt/media          # アーカイブ層 (S3-via-CSI 可)
   scratch_dir: /var/tmp/rokuban  # ローカルスクラッチ
+  # accel_location: /_media/     # X-Accel-Redirect の internal location。
+                                 # 設定すると録画ファイルのバイト転送を nginx に委ねる。
+                                 # 空なら Go が直接配る（性能上は十分）
 
 # ingest
 ingest:
   concurrency: 2                 # mirakc サイトあたり同時転送数
+
+# EPG プロジェクション
+epg:
+  sync_interval: 10m             # mirakc から EPG を全量取得する間隔
+  retention_grace: 24h           # 放送終了からこの時間で番組を刈り取る
 
 # エンコード
 encode:

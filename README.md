@@ -42,7 +42,31 @@ EPGStation の漸進的改善ではなく、ゼロベースで再設計する。
 | [docs/frontend.md](docs/frontend.md) | フロントエンド |
 | [docs/configuration.md](docs/configuration.md) | 設定 |
 | [docs/operations.md](docs/operations.md) | 運用 |
+| [docs/runbook.md](docs/runbook.md) | シャドー運用 runbook（起動手順・出口基準チェックリスト） |
+
+## 使ってみる
+
+既存の mirakc（EPGStation と共有可）に繋いで動かせる。
+
+```sh
+cp .env.example .env
+$EDITOR .env          # MIRAKC_URL と POSTGRES_PASSWORD は必須
+docker compose up -d
+```
+
+`http://localhost:40773` で UI が開く。手順と確認項目は
+[docs/runbook.md](docs/runbook.md) を参照。
 
 ## ステータス
 
-設計フェーズ。実装はまだ開始していない。
+**M1（録れる）実装中。** 手動予約 → 録画 → ingest → 再生の縦切りが通る。
+
+| マイルストーン | 状態 |
+|---|---|
+| M0 歩く骨格 | 完了 |
+| M1 録れる | 手動予約 API・reconciler・watcher・ingest・EPG プロジェクション・UI・Range 配信・メトリクスまで実装済み |
+| M2 任せられる（ルール録画） | 未着手 |
+| M3 置き換えられる（エンコード・削除エンジン） | 未着手 |
+| M4 広げられる（ロール分割・ライブ視聴） | 未着手 |
+
+ルール録画・エンコード・保持ポリシー・ライブ視聴はまだ入っていない。

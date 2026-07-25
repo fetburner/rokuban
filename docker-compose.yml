@@ -1,0 +1,79 @@
+# シャドー運用用。既存の mirakc（EPGStation と共有）に Rokuban をぶら下げる。
+#
+#   cp .env.example .env    # MIRAKC_URL などを自分の環境に合わせる
+#   docker compose up -d
+#   → http://localhost:40773
+#
+# 手順と出口基準チェックリストは docs/runbook.md を参照。
+#
+# CI のスモークテストは docker-compose.test.yml（mirakc なしで healthcheck だけ見る）。
+
+services:
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-rokuban}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:-rokuban}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      # テスト用 DB も作る。go test ./... がこの postgres を使えるようにするため
+      # （docs/runbook.md の「開発時のテスト」参照）。
+      - ./scripts/init-test-db.sh:/docker-entrypoint-initdb.d/10-init-test-db.sh:ro
+    ports:
+      # ホストから psql / go test で繋ぐため。閉じたい場合はこの 2 行を消す。
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-rokuban}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # マイグレーションは起動前に 1 回だけ走らせる。
+  # rokuban 本体を複数レプリカにしてもマイグレーションが競合しない形にしておく。
+  migrate:
+    image: ${ROKUBAN_IMAGE:-ghcr.io/fetburner/rokuban:latest}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-rokuban}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-rokuban}
+      MIRAKC_URL: ${MIRAKC_URL}
+    volumes:
+      - ./config.compose.yml:/config.yml:ro
+    command: ["migrate", "up", "--config", "/config.yml"]
+
+  rokuban:
+    image: ${ROKUBAN_IMAGE:-ghcr.io/fetburner/rokuban:latest}
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-rokuban}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-rokuban}
+      MIRAKC_URL: ${MIRAKC_URL:?MIRAKC_URL is required}
+      ROKUBAN_ALLOWED_HOSTS: ${ROKUBAN_ALLOWED_HOSTS:-}
+    volumes:
+      - ./config.compose.yml:/config.yml:ro
+      # アーカイブ層。ingest がここに書き、streamer がここから配る。
+      # NAS に置く場合はホスト側のパスに差し替える。
+      - media:/mnt/media
+    ports:
+      - "${ROKUBAN_PORT:-40773}:40773"
+    # M1 は monolith（--all）で動かす。ロール分割デプロイは M4。
+    command: ["server", "--all", "--config", "/config.yml"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:40773/healthz"]
+      start_period: 10s
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  postgres-data:
+  media:

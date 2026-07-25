@@ -1,0 +1,36 @@
+# docker-compose.yml から使う設定。値は環境変数（.env）で与える。
+# 設定キーの網羅的な説明は config.example.yml と docs/configuration.md を参照。
+
+server:
+  listen: ":40773"
+  # 空にすると Host 検証を無効化する。LAN 内から IP で叩く分にはこれでよいが、
+  # リバースプロキシ越しに公開するなら必ずホスト名を入れる（DNS rebinding 対策）。
+  # /healthz と /metrics は設定に関わらず免除される。
+  allowed_hosts: [${ROKUBAN_ALLOWED_HOSTS:-}]
+
+db:
+  host: postgres
+  port: 5432
+  user: ${POSTGRES_USER:-rokuban}
+  password: ${POSTGRES_PASSWORD}
+  database: ${POSTGRES_DB:-rokuban}
+  sslmode: disable
+
+mirakc:
+  url: ${MIRAKC_URL}
+
+storage:
+  media_dir: /mnt/media
+  scratch_dir: /var/tmp/rokuban
+
+ingest:
+  # 同時転送数。エッジのディスク I/O を録画と奪い合わないよう小さく保つ。
+  concurrency: ${ROKUBAN_INGEST_CONCURRENCY:-2}
+
+epg:
+  sync_interval: ${ROKUBAN_EPG_SYNC_INTERVAL:-10m}
+  retention_grace: ${ROKUBAN_EPG_RETENTION_GRACE:-24h}
+
+log:
+  level: ${ROKUBAN_LOG_LEVEL:-info}
+  format: ${ROKUBAN_LOG_FORMAT:-json}
