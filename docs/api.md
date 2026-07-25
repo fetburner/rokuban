@@ -103,6 +103,38 @@ SSE は長寿命接続でありサーバーレスとは相性が悪い。ハイ�
 
 Go の `http.ServeContent` は `*os.File` 相手なら sendfile が効き、Range 対応も標準。家庭サーバーの同時視聴数本でギガビット LAN を飽和させるのに問題はなく、**性能を理由とする nginx 導入は不要**。
 
+#### 実装（M1-8）
+
+```
+GET /api/recordings/{id}/file    →  video/MP2T（Range 対応）
+```
+
+**OpenAPI には載せない。** SSE と同じ理由で、生成クライアントは JSON を前提にする
+（`customInstance` が `response.json()` を呼ぶ）ためバイナリ配信では誤った
+クライアントが生成される。UI は URL を `<video>` の src や保存リンクに直接使い、
+生成フックを経由しない。守るべきスキーマがないので生成物から得るものもない。
+
+**`internal/streamer` の所有物として実装する。** api ロールはファイルシステムに
+依存しない（不変条件 1）ため、バイト転送はロールとして分ける。monolith では
+`api.RouterConfig.Mounter` 経由で同一リスナーに相乗りするが、コードの境界は
+最初から引いてある。`--roles streamer` を指定したときだけ登録される。
+
+**対象は原本（`kind = 'original'`）のみ。** エンコード派生物の配信は M3。
+
+**`rel_path` は配信側でも独立に検証する。** `internal/mediapath.Resolve` を
+ingest と共有し、メディアディレクトリの外を指す `rel_path` は 404 にする。
+書き込み時に検証済みでも、DB に不正な行が入った場合に任意ファイルを
+読み出させないため片側だけでは足りない。
+
+**配らないもの:** ごみ箱に入った録画（`recordings.deleted_at IS NOT NULL`）、
+削除済みアセット（`media_assets.state <> 'active'`）、未 ingest の録画
+（`media_assets` 行なし）。いずれも 404。コミット（DB 行）はあるのに
+ファイルが無い不整合も 404 にしつつ WARN で記録する（孤児回収や外部からの削除）。
+
+**`Cache-Control: private, max-age=0, must-revalidate`。** 原本は一度書いたら
+変わらないが、ごみ箱からの復元で同じ URL の中身が入れ替わりうるので
+`immutable` は付けない。`Last-Modified` による条件付きリクエストは効く。
+
 ### X-Accel-Redirect（オプション）
 
 意味があるのは **X-Accel-Redirect パターン**（認可判定はアプリ、バイト転送は nginx）。設定フラグ + レスポンスヘッダー 1 個で対応でき、アプリ側コストがほぼゼロなのでオプションとして実装する（Mastodon / GitLab の X-Sendfile 対応と同じ位置づけ）。

@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -17,6 +16,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/tsstat"
 )
@@ -82,12 +82,11 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[IngestJobArgs]) 
 		return fmt.Errorf("looking up recording_id: %w", err)
 	}
 
-	relPath, err := w.determineRelPath(ctx, args)
+	relPath, fullPath, err := w.determineRelPath(ctx, args)
 	if err != nil {
 		return fmt.Errorf("determining rel_path: %w", err)
 	}
 
-	fullPath := filepath.Join(w.MediaDir, relPath)
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
 		return fmt.Errorf("creating directory %s: %w", filepath.Dir(fullPath), err)
 	}
@@ -184,30 +183,24 @@ func (w *IngestWorker) lookupRecordingID(ctx context.Context, args IngestJobArgs
 	return *recID, nil
 }
 
-func (w *IngestWorker) determineRelPath(ctx context.Context, args IngestJobArgs) (string, error) {
+// determineRelPath は保存先の相対パスと、それを解決した絶対パスを返す。
+// relPath は mirakc の contentPath 由来なので、メディアディレクトリの外を
+// 指していないことを検証する。
+func (w *IngestWorker) determineRelPath(ctx context.Context, args IngestJobArgs) (relPath, fullPath string, err error) {
 	record, err := w.MirakcClient.GetRecord(ctx, args.RecordID)
 	if err != nil {
-		return "", fmt.Errorf("getting mirakc record: %w", err)
+		return "", "", fmt.Errorf("getting mirakc record: %w", err)
 	}
-	var relPath string
 	if cp := record.Recording.Options.ContentPath; cp != nil && *cp != "" {
 		relPath = *cp
 	} else {
 		relPath = filepath.Base(record.Content.Path)
 	}
-	if err := validateRelPath(w.MediaDir, relPath); err != nil {
-		return "", err
+	fullPath, err = mediapath.Resolve(w.MediaDir, relPath)
+	if err != nil {
+		return "", "", err
 	}
-	return relPath, nil
-}
-
-func validateRelPath(mediaDir, relPath string) error {
-	absMedia := filepath.Clean(mediaDir)
-	absTarget := filepath.Clean(filepath.Join(mediaDir, relPath))
-	if !strings.HasPrefix(absTarget, absMedia+string(filepath.Separator)) {
-		return fmt.Errorf("rel_path %q escapes media directory", relPath)
-	}
-	return nil
+	return relPath, fullPath, nil
 }
 
 func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath string, size int64, counter *tsstat.Counter) error {

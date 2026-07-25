@@ -23,6 +23,7 @@ import (
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/reconciler"
 	"github.com/fetburner/rokuban/internal/role"
+	"github.com/fetburner/rokuban/internal/streamer"
 	"github.com/fetburner/rokuban/internal/watcher"
 	"github.com/fetburner/rokuban/internal/worker"
 	"github.com/fetburner/rokuban/web"
@@ -62,23 +63,39 @@ func newServerCmd() *cobra.Command {
 
 			eg, egCtx := errgroup.WithContext(ctx)
 
-			if slices.Contains(roles, "api") {
-				distFS, subErr := fs.Sub(web.DistFS, "dist")
-				if subErr != nil {
-					return fmt.Errorf("embedded dist/ not found: %w", subErr)
+			// HTTP を持つロール（api / streamer）は同一プロセスなら 1 つの
+			// リスナーに相乗りする。ロールごとに担当するルートだけを登録する。
+			if slices.Contains(roles, "api") || slices.Contains(roles, "streamer") {
+				routerCfg := api.RouterConfig{
+					AllowedHosts: cfg.Server.AllowedHosts,
+					Pool:         pool,
 				}
-				// SSE のヒント配送。各レプリカが自分で LISTEN するだけなので
-				// レプリカ間の追加基盤は要らない。
-				hub := api.NewEventHub()
-				eg.Go(func() error {
-					if hubErr := hub.Run(egCtx, pool); hubErr != nil && !errors.Is(hubErr, context.Canceled) {
-						return fmt.Errorf("event hub: %w", hubErr)
-					}
-					return nil
-				})
 
-				router := api.NewRouter(cfg.Server.AllowedHosts, distFS, pool, hub)
-				srv := &http.Server{Addr: cfg.Server.Listen, Handler: router}
+				if slices.Contains(roles, "api") {
+					distFS, subErr := fs.Sub(web.DistFS, "dist")
+					if subErr != nil {
+						return fmt.Errorf("embedded dist/ not found: %w", subErr)
+					}
+					routerCfg.DistFS = distFS
+
+					// SSE のヒント配送。各レプリカが自分で LISTEN するだけなので
+					// レプリカ間の追加基盤は要らない。
+					hub := api.NewEventHub()
+					routerCfg.Hub = hub
+					eg.Go(func() error {
+						if hubErr := hub.Run(egCtx, pool); hubErr != nil && !errors.Is(hubErr, context.Canceled) {
+							return fmt.Errorf("event hub: %w", hubErr)
+						}
+						return nil
+					})
+				}
+
+				// バイト配信は api ではなく streamer の担当（不変条件 1）。
+				if slices.Contains(roles, "streamer") {
+					routerCfg.Mounter = streamer.New(pool, cfg.Storage.MediaDir)
+				}
+
+				srv := &http.Server{Addr: cfg.Server.Listen, Handler: api.NewRouter(routerCfg)}
 
 				eg.Go(func() error {
 					slog.Info("starting http server", "addr", cfg.Server.Listen)

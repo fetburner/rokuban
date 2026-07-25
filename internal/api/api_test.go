@@ -9,7 +9,7 @@ import (
 )
 
 func TestHealthz(t *testing.T) {
-	router := NewRouter(nil, nil, nil, nil)
+	router := NewRouter(RouterConfig{})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -33,7 +33,7 @@ func TestHealthz(t *testing.T) {
 }
 
 func TestGetVersion(t *testing.T) {
-	router := NewRouter(nil, nil, nil, nil)
+	router := NewRouter(RouterConfig{})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -57,7 +57,7 @@ func TestGetVersion(t *testing.T) {
 }
 
 func TestAllowedHosts_ValidHost(t *testing.T) {
-	router := NewRouter([]string{"localhost"}, nil, nil, nil)
+	router := NewRouter(RouterConfig{AllowedHosts: []string{"localhost"}})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -79,7 +79,7 @@ func TestAllowedHosts_ValidHost(t *testing.T) {
 }
 
 func TestAllowedHosts_InvalidHost(t *testing.T) {
-	router := NewRouter([]string{"localhost"}, nil, nil, nil)
+	router := NewRouter(RouterConfig{AllowedHosts: []string{"localhost"}})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -101,7 +101,7 @@ func TestAllowedHosts_InvalidHost(t *testing.T) {
 }
 
 func TestAllowedHosts_EmptyAllowsAll(t *testing.T) {
-	router := NewRouter(nil, nil, nil, nil)
+	router := NewRouter(RouterConfig{})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -130,7 +130,7 @@ func newTestDistFS() fstest.MapFS {
 }
 
 func TestSPA_IndexHTML(t *testing.T) {
-	router := NewRouter(nil, newTestDistFS(), nil, nil)
+	router := NewRouter(RouterConfig{DistFS: newTestDistFS()})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -149,7 +149,7 @@ func TestSPA_IndexHTML(t *testing.T) {
 }
 
 func TestSPA_HashedAssetImmutable(t *testing.T) {
-	router := NewRouter(nil, newTestDistFS(), nil, nil)
+	router := NewRouter(RouterConfig{DistFS: newTestDistFS()})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -169,7 +169,7 @@ func TestSPA_HashedAssetImmutable(t *testing.T) {
 }
 
 func TestSPA_FallbackToIndex(t *testing.T) {
-	router := NewRouter(nil, newTestDistFS(), nil, nil)
+	router := NewRouter(RouterConfig{DistFS: newTestDistFS()})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -188,7 +188,7 @@ func TestSPA_FallbackToIndex(t *testing.T) {
 }
 
 func TestSPA_DirectIndexHTMLNoCache(t *testing.T) {
-	router := NewRouter(nil, newTestDistFS(), nil, nil)
+	router := NewRouter(RouterConfig{DistFS: newTestDistFS()})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -207,7 +207,7 @@ func TestSPA_DirectIndexHTMLNoCache(t *testing.T) {
 }
 
 func TestSPA_APITakesPrecedence(t *testing.T) {
-	router := NewRouter(nil, newTestDistFS(), nil, nil)
+	router := NewRouter(RouterConfig{DistFS: newTestDistFS()})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 

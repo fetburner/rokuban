@@ -87,7 +87,7 @@ func startHub(t *testing.T, pool *pgxpool.Pool) (*EventHub, *httptest.Server) {
 		<-done
 	})
 
-	srv := httptest.NewServer(NewRouter(nil, nil, pool, hub))
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, Hub: hub}))
 	t.Cleanup(srv.Close)
 	return hub, srv
 }
@@ -177,7 +177,7 @@ func TestEvents_FanOut(t *testing.T) {
 
 // hub が nil なら SSE エンドポイントは登録されない（api ロール以外での構成）。
 func TestEvents_DisabledWithoutHub(t *testing.T) {
-	srv := httptest.NewServer(NewRouter(nil, nil, nil, nil))
+	srv := httptest.NewServer(NewRouter(RouterConfig{}))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/events")

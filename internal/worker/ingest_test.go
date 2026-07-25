@@ -515,31 +515,6 @@ func TestIngestWorker_JobReexecution(t *testing.T) {
 	}
 }
 
-func TestValidateRelPath(t *testing.T) {
-	mediaDir := "/storage/media"
-
-	tests := []struct {
-		name    string
-		relPath string
-		wantErr bool
-	}{
-		{"normal", "2024/01/recording.m2ts", false},
-		{"traversal", "../../etc/passwd", true},
-		{"absolute resolves under media", "/etc/passwd", false},
-		{"dot-dot in middle", "a/../../b", true},
-		{"single component", "recording.m2ts", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := validateRelPath(mediaDir, tt.relPath)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("validateRelPath(%q, %q) error = %v, wantErr %v", mediaDir, tt.relPath, err, tt.wantErr)
-			}
-		})
-	}
-}
-
 // TestStallReader はストールリーダーのタイマーリセット動作をテストする。
 func TestStallReader(t *testing.T) {
 	data := []byte("hello world")

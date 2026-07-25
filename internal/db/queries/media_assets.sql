@@ -17,3 +17,13 @@ SELECT id, reservation_id, rule_id, source, site,
        keep_original, encode_profiles, quality_events,
        deleted_at, created_at, updated_at
 FROM recordings WHERE id = $1;
+
+-- 配信対象の原本を引く。ごみ箱に入った録画・削除済みアセットは配らない。
+-- name: GetOriginalMediaAssetForServing :one
+SELECT a.id, a.rel_path, a.size_bytes, a.updated_at, r.title
+FROM media_assets a
+JOIN recordings r ON r.id = a.recording_id
+WHERE a.recording_id = $1
+  AND a.kind = 'original'
+  AND a.state = 'active'
+  AND r.deleted_at IS NULL;

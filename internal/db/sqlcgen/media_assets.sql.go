@@ -7,6 +7,7 @@ package sqlcgen
 
 import (
 	"context"
+	"time"
 )
 
 const createMediaAsset = `-- name: CreateMediaAsset :one
@@ -34,6 +35,38 @@ func (q *Queries) CreateMediaAsset(ctx context.Context, arg CreateMediaAssetPara
 	var id int64
 	err := row.Scan(&id)
 	return id, err
+}
+
+const getOriginalMediaAssetForServing = `-- name: GetOriginalMediaAssetForServing :one
+SELECT a.id, a.rel_path, a.size_bytes, a.updated_at, r.title
+FROM media_assets a
+JOIN recordings r ON r.id = a.recording_id
+WHERE a.recording_id = $1
+  AND a.kind = 'original'
+  AND a.state = 'active'
+  AND r.deleted_at IS NULL
+`
+
+type GetOriginalMediaAssetForServingRow struct {
+	ID        int64
+	RelPath   string
+	SizeBytes int64
+	UpdatedAt time.Time
+	Title     string
+}
+
+// 配信対象の原本を引く。ごみ箱に入った録画・削除済みアセットは配らない。
+func (q *Queries) GetOriginalMediaAssetForServing(ctx context.Context, recordingID int64) (GetOriginalMediaAssetForServingRow, error) {
+	row := q.db.QueryRow(ctx, getOriginalMediaAssetForServing, recordingID)
+	var i GetOriginalMediaAssetForServingRow
+	err := row.Scan(
+		&i.ID,
+		&i.RelPath,
+		&i.SizeBytes,
+		&i.UpdatedAt,
+		&i.Title,
+	)
+	return i, err
 }
 
 const getRecordingByID = `-- name: GetRecordingByID :one
