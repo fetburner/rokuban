@@ -122,8 +122,29 @@ NID/SID は放送規格のスコープでサイトに依存しないため、地
 `reservations`（desired）と `schedule_sync`（observed: `GET /api/recording/schedules` の観測結果）の差分を POST/DELETE で消す、レベルトリガーの宣言的同期ループ。
 
 - **tags 対応付け**: mirakc schedule の `tags` に Rokuban の reservation id を埋め込む（例: `rokuban:reservation=1234`）。手動で mirakc に入れられた schedule との判別もタグで可能
-- **contentPath 生成**: `recording.basedir` 相対パス必須。ファイル名テンプレートの展開もここで行う
+- **contentPath 生成**: `recording.basedir` 相対パス必須。ファイル名テンプレートの展開もここで行う。生成値は初回のみで、以後は base に固定する（後述の差分反映）
 - **冪等**: 何度落ちても再実行で収束する。時刻精度もプロセス生存性も要求されない
+
+#### 予約オプションの差分反映
+
+reconciler は存在の突き合わせだけでなく、**effective options と `schedule_sync.options`（mirakc の観測結果）の差分も消す**。ruler が base を毎パス再計算する以上、ルール編集で既存予約の effective が変わるため、これは編集 UI の前提ではなく **ruler の前提**である（issue #19）。
+
+**mirakc に schedule の更新 API はない**（`GET` / `POST` / `GET{id}` / `DELETE{id}` の 4 つだけ）。反映は DELETE → POST の再作成になり、その間 schedule が存在しない窓ができる。そのため差分の対象を最小化する。
+
+| フィールド | 差分対象 | 理由 |
+|---|---|---|
+| `priority` | **する** | チューナー調停の優先度。ルール編集・overrides 編集の実質的な唯一の変更対象 |
+| `contentPath` | **しない**（base に固定） | 下記 |
+| `preFilters` / `postFilters` | M3 から | M1/M2 では常に空 |
+| `logFilter` / `tags` | しない | 前者は未使用、後者は reservation id で不変 |
+
+**`contentPath` は初回生成値を base に固定し、以後変更しない。** reconciler は番組名からパスを生成するため、EPG の番組名が変われば生成結果も変わる。これを差分と見なすと **EPG 更新のたびに schedule が消えて作り直される** churn になる。差分書き込みという設計は desired が安定していることを前提として要求する（同率 priority のタイを全順序で潰したのと同じクラスの問題。§3.1）。ファイル名を変えたい場合はユーザーが overrides で明示的に指定する。
+
+再作成のガードは時刻の閾値ではなく状態で判定する: **`schedule_sync.state` が `tracking` / `recording` の予約は触らず、次のパスに持ち越す**。DELETE 成功 → POST 失敗で schedule が消えた場合もレベルトリガーで次パスが再作成するが、その間に開始時刻を越えると取りこぼすため `quality_events` に記録する。
+
+差分対象が `priority` だけであることの帰結として、**再作成が走るのは「ユーザーが優先度を変えたとき」だけ**になる。EPG 更新のたびに走る処理ではないので、この単純なガードで足りる。
+
+**upstream への要望**: `priority` の部分更新 API があれば再作成の窓ごと消える。`RecordingOptions` 全体を差し替える汎用 PUT より通りやすく、mirakc 側が触る内部状態（スケジューラのキュー）も小さい。priority は開始前の schedule に対して mirakc のスケジューラが素直に扱える性質のフィールドでもある（§4.5 のとおり録画開始後は効かない）。#8 に調査メモとして残す。
 
 #### 大量削除サーキットブレーカー
 
