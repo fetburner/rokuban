@@ -449,6 +449,8 @@ v1 には**含めない**が、参照関係を先に固定しておくもの:
 | `rules` | M2 | `reservations.rule_id` / `recordings.rule_id` に FK 制約を追加 |
 | `orphan_files` | 削除エンジン実装時 | 孤児候補の first_seen 記録（DB リストアで削除窓が開き直す安全弁） |
 | サービスロゴ台帳 | M2+ | ファイルは `logos/` 配下、DB は相対パス + ハッシュ |
+| `tuner_sync` | M2 | mirakc の `/api/tuners` の観測（使い捨てプロジェクション）。容量超過の判定に使う。`epg_services` と同型で、`types text[]` に `CHECK (types <@ ARRAY['GR','BS','CS','SKY'])` |
+| `reservations` へのチャンネル列追加 | M2 | `network_id` / `service_id` / `channel_type` / `channel` のスナップショット。容量超過の判定は需要の単位が `(channel_type, channel)` なので必須。使い捨ての EPG 射影への JOIN に頼れない（[データ層](data.md) §6.5） |
 
 EPG プロジェクションが v1 に入らなかった理由: 使い捨てキャッシュであり永続資産と寿命が違う（§9）。「最終形で切る」対象は、他の全タスクが依存し、後から変えると痛い**永続資産と desired/observed の骨格**。
 
