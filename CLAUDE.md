@@ -41,7 +41,7 @@ golangci-lint run       # lint
 3. **コミット = DB 行**。ファイルの存在はコミットではない
 4. **ffmpeg/ffprobe の exec は worker / streamer パッケージのみ**
 5. **レベルトリガー**: イベント（SSE/NOTIFY）はヒント。真実は定期 reconcile が再取得する
-6. **TS のストリーム処理をしない**（ingest 中の読み取り専用統計のみ例外）
+6. **TS のストリーム処理をしない**（ingest 中の読み取り専用統計のみ例外）。統計のための PSI 読み取りは PAT / PMT の `stream_type` までで、**記述子は読まない**（[docs/recording.md](docs/recording.md) §1「例外の境界」）
 7. **mirakc 固有の概念を永続テーブル（rules / media_assets / 履歴）に入れない**
 8. **テストのないタスク完了はない**
 
