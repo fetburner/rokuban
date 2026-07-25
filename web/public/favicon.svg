@@ -1,4 +1,26 @@
+<!-- 高柳健次郎が 1926 年にブラウン管へ映した日本初のテレビ映像「イ」。
+     いろは順の最初の文字（ABC の A に相当）が選ばれた。
+     web/scripts/gen-favicon.mjs の生成物。直接編集しない。
+
+     「イ」の字形は Noto Sans JP Black より。
+     Copyright 2014-2021 Adobe (http://www.adobe.com/).
+     SIL Open Font License 1.1 (http://scripts.sil.org/OFL) -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <rect width="32" height="32" rx="4" fill="#18181b"/>
-  <text x="16" y="23" font-size="20" font-family="system-ui,sans-serif" font-weight="bold" fill="#fafafa" text-anchor="middle">R</text>
+  <rect width="32" height="32" fill="#18181b"/>
+  <rect x="4" y="4" width="24" height="24" fill="#71717a"/>
+  <rect x="4" y="4" width="24" height="1" fill="#fafafa"/>
+  <rect x="4" y="6" width="24" height="1" fill="#fafafa"/>
+  <rect x="4" y="8" width="24" height="1" fill="#fafafa"/>
+  <rect x="4" y="10" width="24" height="1" fill="#fafafa"/>
+  <rect x="4" y="12" width="24" height="1" fill="#fafafa"/>
+  <rect x="4" y="14" width="24" height="1" fill="#fafafa"/>
+  <rect x="4" y="16" width="24" height="1" fill="#fafafa"/>
+  <rect x="4" y="18" width="24" height="1" fill="#fafafa"/>
+  <rect x="4" y="20" width="24" height="1" fill="#fafafa"/>
+  <rect x="4" y="22" width="24" height="1" fill="#fafafa"/>
+  <rect x="4" y="24" width="24" height="1" fill="#fafafa"/>
+  <rect x="4" y="26" width="24" height="1" fill="#fafafa"/>
+  <g fill="#18181b" transform="translate(5.12 4.80) scale(0.02551) translate(0 878) scale(0.1 -0.1)">
+    <path d="M7099 8627 c-150 -171 -614 -640 -819 -828 -531 -487 -1083 -927 -1605 -1281 -515 -349 -1273 -752 -2015 -1071 -736 -315 -1527 -585 -2414 -822 -131 -35 -240 -65 -241 -67 -3 -4 734 -1510 744 -1520 4 -4 97 19 206 53 917 277 1942 685 2911 1159 l264 128 0 -1576 c0 -1484 -5 -1816 -30 -2242 -12 -189 -37 -475 -46 -527 l-6 -33 962 0 c930 0 961 1 955 18 -24 79 -56 333 -76 622 -9 116 -13 848 -16 2457 l-4 2291 173 118 c578 394 1189 862 1723 1319 315 270 765 685 765 706 0 4 -292 287 -649 628 l-649 620 -133 -152z"/>
+  </g>
 </svg>
