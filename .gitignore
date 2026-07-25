@@ -5,3 +5,6 @@
 
 # docker-compose の実値（機微情報を含む）。.env.example を雛形に各自で作る。
 /.env
+
+# ローカル検証用の設定（環境固有の値を含む）
+/dev.local.yml
