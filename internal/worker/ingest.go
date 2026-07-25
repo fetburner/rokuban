@@ -55,6 +55,18 @@ type IngestWorker struct {
 	StallTimeout time.Duration
 }
 
+// Timeout は River の総時間タイムアウトを無効化する。
+//
+// ingest は数百 MB〜数十 GB のバイト転送で、所要時間は録画長と回線速度で決まる。
+// River の既定（JobTimeoutDefault = 1 分）では実際の録画がまず完走しない。
+//
+// 総時間で切らない代わりに、進捗が止まったことを stallReader が検知して打ち切る
+// （StallTimeout）。「タイムアウトは総時間でなくストール検知」という M1-5-2 の
+// 設計はこれが揃って初めて成立する。
+func (w *IngestWorker) Timeout(*river.Job[IngestJobArgs]) time.Duration {
+	return -1
+}
+
 // Work は ingest ジョブを実行する。ストリーム取得・TS 統計収集・DB コミット・エッジ削除を行う。
 func (w *IngestWorker) Work(ctx context.Context, job *river.Job[IngestJobArgs]) error {
 	args := job.Args

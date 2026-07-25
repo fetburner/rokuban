@@ -116,3 +116,22 @@ func TestEpgSyncPeriodicJob(t *testing.T) {
 		t.Fatal("timed out waiting for the periodic epg_sync job")
 	}
 }
+
+// ingest は数百 MB〜数十 GB の転送なので、River の総時間タイムアウト（既定 1 分）が
+// 効いていると実際の録画が完走しない。総時間で切らずストール検知に委ねる設計が
+// 崩れていないことを固定する（実機 687MB の録画がこれで落ちていた）。
+func TestIngestWorker_HasNoTotalTimeout(t *testing.T) {
+	w := &IngestWorker{}
+	if got := w.Timeout(nil); got >= 0 {
+		t.Errorf("Timeout() = %v, want negative (River のタイムアウト無効化)", got)
+	}
+}
+
+// EPG 同期は無制限にはせず、既定より長い上限を置く。
+func TestEpgSyncWorker_HasGenerousTimeout(t *testing.T) {
+	w := &EpgSyncWorker{}
+	got := w.Timeout(nil)
+	if got <= river.JobTimeoutDefault {
+		t.Errorf("Timeout() = %v, want > JobTimeoutDefault (%v)", got, river.JobTimeoutDefault)
+	}
+}
