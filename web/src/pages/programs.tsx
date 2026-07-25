@@ -26,30 +26,60 @@ import { cn } from '@/lib/utils'
  */
 const windowHours = 6
 
-/** 番組リストで一度に遡れる上限。EPG のローリングウィンドウ（8 日）に合わせる。 */
-const maxWindows = (8 * 24) / windowHours
+/** EPG のローリングウィンドウ（8 日）に合わせた、日付選択の選択肢の数。 */
+const selectableDays = 8
 
-function windowAt(step: number): { start: Date; end: Date } {
-  // 「今」ではなく直近の時刻境界を起点にすることで、再取得のたびに
-  // クエリキーが変わって無限に fetch し続けるのを防ぐ。
-  const base = new Date()
-  base.setMinutes(0, 0, 0)
-  const start = new Date(base.getTime() + step * windowHours * 3600_000)
-  const end = new Date(start.getTime() + windowHours * 3600_000)
-  return { start, end }
+/**
+ * dayOrigin は日付選択に対応する時間窓の起点を返す。
+ *
+ * `dayOffset` が null なら「今」（時刻境界に切り捨てる。窓を時刻境界に揃えるため）。
+ * 数値ならその日数だけ先の 0 時。日付を選べば「さらに読み込む」を何度も押さずに
+ * 先の日付へ跳べる。
+ */
+function dayOrigin(dayOffset: number | null): Date {
+  const origin = new Date()
+  if (dayOffset === null) {
+    origin.setMinutes(0, 0, 0)
+    return origin
+  }
+  origin.setDate(origin.getDate() + dayOffset)
+  origin.setHours(0, 0, 0, 0)
+  return origin
+}
+
+/** windowEndOfDay は選択した日の終わり（翌 0 時）を返す。 */
+function endOfSelection(dayOffset: number | null): Date {
+  const origin = dayOrigin(dayOffset)
+  const end = new Date(origin)
+  if (dayOffset === null) {
+    // 「今」は日付をまたいで先まで読めるようにする
+    end.setDate(end.getDate() + selectableDays)
+    end.setHours(0, 0, 0, 0)
+    return end
+  }
+  end.setDate(end.getDate() + 1)
+  return end
 }
 
 export function ProgramsPage() {
   const [serviceFilter, setServiceFilter] = useState<number | null>(null)
+  const [dayOffset, setDayOffset] = useState<number | null>(null)
 
   const services = useListServices()
   const reservations = useListReservations()
 
+  // 起点は state から決める。queryKey に入るので、日付を変えるとページが
+  // 積み直され、キャッシュ済みのページが古い窓のまま再利用されることもない。
+  const originMs = dayOrigin(dayOffset).getTime()
+  const limitMs = endOfSelection(dayOffset).getTime()
+  const maxWindows = Math.max(1, Math.ceil((limitMs - originMs) / (windowHours * 3600_000)))
+
   const query = useInfiniteQuery({
-    queryKey: ['/api/programs', 'infinite', serviceFilter],
+    queryKey: ['/api/programs', 'infinite', serviceFilter, originMs, limitMs],
     initialPageParam: 0,
     queryFn: async ({ pageParam }) => {
-      const { start, end } = windowAt(pageParam)
+      const start = new Date(originMs + pageParam * windowHours * 3600_000)
+      const end = new Date(Math.min(start.getTime() + windowHours * 3600_000, limitMs))
       const res = await listPrograms({
         start: start.toISOString(),
         end: end.toISOString(),
@@ -99,6 +129,7 @@ export function ProgramsPage() {
   return (
     <>
       <PageHeader title="番組">
+        <DayChips selected={dayOffset} onSelect={setDayOffset} />
         <ServiceChips
           services={filterableServices}
           selected={serviceFilter}
@@ -134,6 +165,29 @@ export function ProgramsPage() {
         </div>
       )}
     </>
+  )
+}
+
+function DayChips({
+  selected,
+  onSelect,
+}: {
+  selected: number | null
+  onSelect: (dayOffset: number | null) => void
+}) {
+  const days = Array.from({ length: selectableDays }, (_, offset) => offset)
+
+  return (
+    <div className="flex gap-2 overflow-x-auto px-4 pb-2">
+      <Chip active={selected === null} onClick={() => onSelect(null)}>
+        今
+      </Chip>
+      {days.map((offset) => (
+        <Chip key={offset} active={selected === offset} onClick={() => onSelect(offset)}>
+          {formatDate(dayOrigin(offset).toISOString())}
+        </Chip>
+      ))}
+    </div>
   )
 }
 
@@ -204,11 +258,25 @@ function ProgramList({
   const createReservation = useCreateReservation()
   const deleteReservation = useDeleteReservation()
 
+  // mutation の isPending は全行で共有されるため、操作中の番組だけを覚えておく。
+  // これがないと 1 件予約する間にリスト全行のボタンが無効化される。
+  const [busyProgramIds, setBusyProgramIds] = useState<ReadonlySet<number>>(new Set())
+
+  const setBusy = (programId: number, busy: boolean) => {
+    setBusyProgramIds((current) => {
+      const next = new Set(current)
+      if (busy) next.add(programId)
+      else next.delete(programId)
+      return next
+    })
+  }
+
   const invalidateReservations = () => {
     void queryClient.invalidateQueries({ queryKey: ['/api/reservations'] })
   }
 
-  const cancel = (reservationId: number) => {
+  const cancel = (programId: number, reservationId: number) => {
+    setBusy(programId, true)
     deleteReservation.mutate(
       { id: reservationId },
       {
@@ -217,11 +285,13 @@ function ProgramList({
           toast({ message: '予約を取消しました' })
         },
         onError: () => toast({ message: '予約の取消に失敗しました' }),
+        onSettled: () => setBusy(programId, false),
       },
     )
   }
 
   const reserve = (program: ProgramListItem) => {
+    setBusy(program.programId, true)
     createReservation.mutate(
       {
         data: {
@@ -239,11 +309,15 @@ function ProgramList({
           toast({
             message: `予約しました: ${program.name}`,
             action: reservation
-              ? { label: '取消', onClick: () => cancel(reservation.id) }
+              ? {
+                  label: '取消',
+                  onClick: () => cancel(program.programId, reservation.id),
+                }
               : undefined,
           })
         },
         onError: () => toast({ message: '予約に失敗しました' }),
+        onSettled: () => setBusy(program.programId, false),
       },
     )
   }
@@ -260,8 +334,10 @@ function ProgramList({
 
         return (
           <li key={program.programId}>
+            {/* 日付ヘッダの top は PageHeader が実測して書き出す高さ。
+                ハードコードするとフィルタ行の増減や文字サイズでずれる */}
             {showDateHeader && (
-              <h2 className="sticky top-[6.5rem] z-[5] border-y border-border bg-muted/80 px-4 py-1.5 text-xs font-medium text-muted-foreground backdrop-blur">
+              <h2 className="sticky top-[var(--page-header-height,0px)] z-[5] border-y border-border bg-muted/80 px-4 py-1.5 text-xs font-medium text-muted-foreground backdrop-blur">
                 {formatDate(program.startAt)}
               </h2>
             )}
@@ -269,9 +345,9 @@ function ProgramList({
               program={program}
               serviceName={serviceById.get(program.serviceId)?.name}
               reservationId={reservationId}
-              pending={createReservation.isPending || deleteReservation.isPending}
+              pending={busyProgramIds.has(program.programId)}
               onReserve={() => reserve(program)}
-              onCancel={() => reservationId && cancel(reservationId)}
+              onCancel={() => reservationId && cancel(program.programId, reservationId)}
             />
           </li>
         )
