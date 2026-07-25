@@ -2,6 +2,7 @@ package tsstat
 
 import (
 	"bufio"
+	"bytes"
 	"io"
 
 	"github.com/Comcast/gots/v3/packet"
@@ -22,6 +23,10 @@ type pidTracker struct {
 	lastCC  int
 	hasSeen bool
 	dup     int
+
+	// lastPayload は直前のパケットの payload。CC が直前と同じパケットが来たとき、
+	// 規格が許す重複なのか欠落なのかを見分けるために使う（processPacket 参照）。
+	lastPayload []byte
 }
 
 // Counter は TS ストリームをパケット単位でパースし、
@@ -96,6 +101,7 @@ func findSync(data []byte) int {
 
 func (c *Counter) processPacket(pkt *packet.Packet) {
 	pid := packet.Pid(pkt)
+	// NULL パケットの continuity_counter は意味を持たないので統計から外す。
 	if pkt.IsNull() {
 		return
 	}
@@ -106,42 +112,72 @@ func (c *Counter) processPacket(pkt *packet.Packet) {
 	c.seen[pid] = true
 	c.stats[pid].Packets++
 
-	if pkt.TransportErrorIndicator() {
-		c.stats[pid].Errors++
-		return
+	// transport_scrambling_control は 2 ビットで、00 以外はすべてスクランブル
+	// または未定義値。B-CAS 障害の検知が目的なので 0 以外を異常として数える。
+	if pkt.TransportScramblingControl() != 0 {
+		c.stats[pid].Scrambled++
 	}
 
-	if !packet.ContainsPayload(pkt) {
-		return
-	}
-
-	cc := int(packet.ContinuityCounter(pkt))
 	tr := &c.trackers[pid]
 
+	if pkt.TransportErrorIndicator() {
+		c.stats[pid].Errors++
+		// 伝送エラーのあったパケットの CC は信用できないので、継続性の判定から外して
+		// 次のパケットで基準を取り直す。1 つの破損を drop と error で二重に数えない。
+		tr.hasSeen = false
+		return
+	}
+
+	// discontinuity_indicator が立っていれば CC の不連続は正常なので基準を取り直す。
 	if packet.ContainsAdaptationField(pkt) && adaptationfield.IsDiscontinuous(pkt) {
 		tr.hasSeen = false
 	}
 
+	cc := int(packet.ContinuityCounter(pkt))
+
+	// payload のないパケット（adaptation_field_control が 00 / 10）では
+	// CC は増えない。増えていたら間に payload 付きパケットが欠落している。
+	if !packet.ContainsPayload(pkt) {
+		if tr.hasSeen && cc != tr.lastCC {
+			c.stats[pid].Drops++
+		}
+		tr.lastCC = cc
+		tr.hasSeen = true
+		return
+	}
+
+	payload, err := packet.Payload(pkt)
+	if err != nil {
+		payload = nil
+	}
+
 	if tr.hasSeen {
-		expected := (tr.lastCC + 1) & 0x0F
-		if cc == tr.lastCC {
-			tr.dup++
-			if tr.dup > 1 {
+		switch cc {
+		case tr.lastCC:
+			// 規格は重複パケットを 1 回まで許すが、その payload はビット単位で同一。
+			// payload が違うなら重複ではなく、CC が一周する数（16n-1 個）の欠落。
+			// CC だけを見ていると欠落を重複として飲み込んでしまう。
+			if !bytes.Equal(payload, tr.lastPayload) {
+				tr.dup = 0
 				c.stats[pid].Drops++
+			} else {
+				tr.dup++
+				if tr.dup > 1 {
+					c.stats[pid].Drops++
+				}
 			}
-		} else {
+		case (tr.lastCC + 1) & 0x0F:
+			// 期待どおりの連続
 			tr.dup = 0
-			if cc != expected {
-				c.stats[pid].Drops++
-			}
+		default:
+			tr.dup = 0
+			c.stats[pid].Drops++
 		}
 	}
+
 	tr.lastCC = cc
 	tr.hasSeen = true
-
-	if pkt.TransportScramblingControl() >= 2 {
-		c.stats[pid].Scrambled++
-	}
+	tr.lastPayload = append(tr.lastPayload[:0], payload...)
 }
 
 // Stats は観測された全 PID の統計を返す。

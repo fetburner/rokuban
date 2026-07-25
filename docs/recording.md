@@ -184,7 +184,49 @@ ingest はどのみち record の全バイトをストリームコピーする�
 - transport_error_indicator
 - scrambling_control
 
-Go で 100 行程度の実装。PID 別サマリを media_assets に紐づくテーブルへ格納し、UI で表示する。
+PID 別サマリを media_assets に紐づくテーブルへ格納し、UI で表示する。実装は `internal/tsstat`。
+
+#### 判定の規約（誤検知を出さないために必要なもの）
+
+continuity counter の不連続を数えるだけでは実放送で大量の誤検知が出る。実測した
+既知の良品（NHK 総合、5.3GB / 2841 万パケット）では `discontinuity_indicator` が
+230 回立っていた。以下を守って初めて drop が 0 になる。
+
+| 規約 | 扱い |
+|---|---|
+| NULL パケット（PID 0x1FFF） | CC は意味を持たないので統計対象外 |
+| payload なしパケット（`adaptation_field_control` が `00` / `10`） | CC は増えない。**増えていたら payload 付きパケットの欠落**として数える |
+| `discontinuity_indicator` | CC の不連続は正常。基準を取り直す |
+| CC が直前と同じ + payload が**同一** | 規格が許す重複。1 回までは正常、2 回以上は異常 |
+| CC が直前と同じ + payload が**相違** | 重複ではなく 15 個（16n-1）欠落。CC が一周して直前と一致している |
+| PID の初回パケット | 基準がないので数えない |
+| `transport_error_indicator` | error に数え、**CC の追跡から外す**（後述） |
+| `transport_scrambling_control` | `00` 以外を異常として数える |
+
+**16 の倍数の欠落は原理的に検知できない。** CC は 4 ビットなので、ちょうど 16n 個
+欠落すると CC が期待値と完全に一致し、payload を見ても正常な次のパケットと区別が
+つかない。これは規格上の限界で、他実装も同じ。
+
+#### 検証方法
+
+`internal/tsstat/integration_test.go` が既知の良品に対する差分テストを持つ
+（issue #6 の差分テスト戦略）。`ROKUBAN_TEST_TS_FILE` に別実装で drop / error /
+scrambled がいずれも 0 と確認済みの .m2ts を指すと有効になる。ファイルは巨大かつ
+著作物なのでリポジトリには置かない。
+
+clean なファイルでは「誤検知がないこと」しか確かめられないので、検知側は同じ
+ファイルをストリーム処理中に**メモリ上で**壊して検証する（欠落・TEI・scrambling を
+注入。ディスクに改変コピーは作らない）。
+
+#### [tspacketchk](https://github.com/kaikoma-soft/tspacketchk) との差分
+
+判定ロジックは概ね一致している（重複を payload 比較で見分ける点、payload なし
+パケットの CC を検査する点は同実装から取り入れた）。意図的に違えているのは 1 点:
+
+**TEI パケットの CC を信用しない。** tspacketchk は TEI 時に error を数えつつ CC を
+更新するため、直後のパケットで drop も 1 数える（1 つの破損が error と drop の両方に
+計上される）。Rokuban は TEI 時に継続性の追跡を打ち切り、次のパケットで基準を
+取り直す。破損の実数を二重に数えないことを優先した。
 
 **他の候補との比較**:
 

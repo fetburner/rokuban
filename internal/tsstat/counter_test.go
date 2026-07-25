@@ -47,6 +47,16 @@ func withAdaptationFieldOnly() packetOpt {
 	}
 }
 
+// withPayloadByte は payload 全体を指定バイトで埋める。
+// 重複判定が payload を比較していることを検証するために使う。
+func withPayloadByte(b byte) packetOpt {
+	return func(pkt *[packet.PacketSize]byte) {
+		for i := 4; i < packet.PacketSize; i++ {
+			pkt[i] = b
+		}
+	}
+}
+
 func withDiscontinuity() packetOpt {
 	return func(pkt *[packet.PacketSize]byte) {
 		// adaptation_field_control = 11 (AF + payload)
@@ -224,20 +234,82 @@ func TestCounter_NullPIDIgnored(t *testing.T) {
 	}
 }
 
-func TestCounter_AdaptationFieldOnlyNoCCCheck(t *testing.T) {
+// payload のないパケットでは CC が増えないのが正常。
+func TestCounter_AdaptationFieldOnlyKeepsCC(t *testing.T) {
 	var buf bytes.Buffer
 	c := NewCounter(&buf)
 
-	// PID 0x100: CC 0(payload), CC 5(AF only), CC 1(payload)
-	// AF-only はペイロードなしなので CC チェック対象外。
-	// CC 0 → CC 1 で expected 通り。
+	// PID 0x100: CC 0(payload), CC 0(AF only), CC 1(payload)
+	// AF-only は CC を増やさないので、次の payload 付きが CC 1 で連続している。
 	mustWrite(t, c, makePacket(0x100, 0))
-	mustWrite(t, c, makePacket(0x100, 5, withAdaptationFieldOnly()))
+	mustWrite(t, c, makePacket(0x100, 0, withAdaptationFieldOnly()))
 	mustWrite(t, c, makePacket(0x100, 1))
 
 	stats := c.Stats()
 	if stats[0x100].Drops != 0 {
-		t.Errorf("drops = %d, want 0 (AF-only packet should not affect CC)", stats[0x100].Drops)
+		t.Errorf("drops = %d, want 0 (AF-only packet keeps CC)", stats[0x100].Drops)
+	}
+}
+
+// payload のないパケットで CC が変わっていたら、間に payload 付きパケットが
+// 欠落している。単に読み飛ばすと見逃す（tspacketchk が持つ検査）。
+func TestCounter_AdaptationFieldOnlyWithChangedCCIsDrop(t *testing.T) {
+	var buf bytes.Buffer
+	c := NewCounter(&buf)
+
+	mustWrite(t, c, makePacket(0x100, 0))
+	mustWrite(t, c, makePacket(0x100, 5, withAdaptationFieldOnly()))
+
+	stats := c.Stats()
+	if stats[0x100].Drops != 1 {
+		t.Errorf("drops = %d, want 1 (AF-only packet must not change CC)", stats[0x100].Drops)
+	}
+}
+
+// CC が直前と同じで payload も同一なら規格が許す重複。1 回までは drop にしない。
+func TestCounter_DuplicateWithSamePayloadIsTolerated(t *testing.T) {
+	var buf bytes.Buffer
+	c := NewCounter(&buf)
+
+	dup := makePacket(0x100, 3, withPayloadByte(0xAA))
+	mustWrite(t, c, dup)
+	mustWrite(t, c, dup)
+	mustWrite(t, c, makePacket(0x100, 4, withPayloadByte(0xBB)))
+
+	stats := c.Stats()
+	if stats[0x100].Drops != 0 {
+		t.Errorf("drops = %d, want 0 (規格が許す重複)", stats[0x100].Drops)
+	}
+}
+
+// CC が直前と同じでも payload が違えば重複ではなく、CC が一周する数の欠落。
+// CC だけを見ていると欠落を重複として飲み込んでしまう。
+func TestCounter_SameCCWithDifferentPayloadIsDrop(t *testing.T) {
+	var buf bytes.Buffer
+	c := NewCounter(&buf)
+
+	mustWrite(t, c, makePacket(0x100, 3, withPayloadByte(0xAA)))
+	mustWrite(t, c, makePacket(0x100, 3, withPayloadByte(0xBB)))
+
+	stats := c.Stats()
+	if stats[0x100].Drops != 1 {
+		t.Errorf("drops = %d, want 1 (payload が違うので重複ではない)", stats[0x100].Drops)
+	}
+}
+
+// 重複が 2 回以上続くのは異常。
+func TestCounter_DuplicateBeyondOnceIsDrop(t *testing.T) {
+	var buf bytes.Buffer
+	c := NewCounter(&buf)
+
+	dup := makePacket(0x100, 3, withPayloadByte(0xAA))
+	mustWrite(t, c, dup)
+	mustWrite(t, c, dup)
+	mustWrite(t, c, dup)
+
+	stats := c.Stats()
+	if stats[0x100].Drops != 1 {
+		t.Errorf("drops = %d, want 1 (重複は 1 回まで)", stats[0x100].Drops)
 	}
 }
 
