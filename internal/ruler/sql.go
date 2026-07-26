@@ -1,0 +1,179 @@
+package ruler
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+)
+
+// rulerInputRow は upsertReservationsFromPass に渡す 1 行分の入力。
+// jsonb_to_recordset で受け取るため、フィールド名は SQL 側の列名に合わせた
+// snake_case の json タグを持つ（reservations.base の camelCase 規約とは無関係）。
+//
+// RuleID が nil の行は「勝者ルールなし」（program_intents だけで desired）を表し、
+// SQL 側で base を凍結する（ruler は上書きしない）。
+// HasProjection が false の行は EPG プロジェクションから番組が消えたことを表し、
+// SQL 側でスナップショット列（Title 以下）を無視して現在の行の値を素通しする。
+// このとき Title 等には意味のない値を入れてよい。
+type rulerInputRow struct {
+	ProgramID     int64           `json:"program_id"`
+	RuleID        *int64          `json:"rule_id"`
+	Base          json.RawMessage `json:"base"`
+	HasProjection bool            `json:"has_projection"`
+	Title         string          `json:"title"`
+	StartAt       *time.Time      `json:"start_at"`
+	DurationMs    *int64          `json:"duration_ms"`
+	NetworkID     *int32          `json:"network_id"`
+	ServiceID     *int32          `json:"service_id"`
+	ChannelType   *string         `json:"channel_type"`
+	Channel       *string         `json:"channel"`
+}
+
+// upsertResult は upsertReservationsFromPass が RETURNING する 1 行。
+type upsertResult struct {
+	ID        int64
+	ProgramID int64
+	Created   bool
+}
+
+// upsertReservationsFromPassSQL は全量評価の結果を 1 文で reservations に反映する。
+//
+// sqlc の組み込みアナライザ（実 DB 接続なしのカタログ解析）が
+// jsonb_to_recordset の動的レコード型を解決できず generate に失敗するため
+// （internal/db/queries/ruler.sql のコメント参照）、rulequery パッケージの流儀に
+// 倣ってここに生 SQL として置き、pgx 経由で直接実行する。
+//
+// resolved CTE が base / 番組スナップショット / state / source / rule_id を
+// すべて「新しい値」として解決し、ON CONFLICT ... DO UPDATE ... WHERE の
+// IS DISTINCT FROM で実際に値が変わる行だけ UPDATE する。reservations には
+// SSE 用の行トリガーがあるため、変化のない行を書き直すと NOTIFY が
+// 全行 x 毎パス飛んでしまう（docs/recording.md §3.1「書き込みは差分」）。
+const upsertReservationsFromPassSQL = `
+WITH input AS (
+    SELECT *
+    FROM jsonb_to_recordset($2::jsonb) AS d(
+        program_id      bigint,
+        rule_id         bigint,
+        base            jsonb,
+        has_projection  boolean,
+        title           text,
+        start_at        timestamptz,
+        duration_ms     bigint,
+        network_id      integer,
+        service_id      integer,
+        channel_type    text,
+        channel         text
+    )
+),
+resolved AS (
+    SELECT
+        d.program_id,
+        CASE WHEN d.rule_id IS NOT NULL THEN 'rule' ELSE COALESCE(r.source, 'manual') END AS source,
+        d.rule_id,
+        CASE
+            WHEN r.state = 'orphaned' THEN r.state
+            WHEN d.rule_id IS NOT NULL THEN 'active'
+            WHEN r.rule_id IS NOT NULL THEN 'detached'
+            ELSE COALESCE(r.state, 'active')
+        END AS state,
+        CASE WHEN d.rule_id IS NOT NULL THEN d.base ELSE r.base END AS base,
+        CASE WHEN d.has_projection THEN d.title ELSE r.title END AS title,
+        CASE WHEN d.has_projection THEN d.start_at ELSE r.program_start_at END AS program_start_at,
+        CASE WHEN d.has_projection THEN d.duration_ms ELSE r.program_duration_ms END AS program_duration_ms,
+        CASE WHEN d.has_projection THEN d.network_id ELSE r.network_id END AS network_id,
+        CASE WHEN d.has_projection THEN d.service_id ELSE r.service_id END AS service_id,
+        CASE WHEN d.has_projection THEN d.channel_type ELSE r.channel_type END AS channel_type,
+        CASE WHEN d.has_projection THEN d.channel ELSE r.channel END AS channel
+    FROM input d
+    LEFT JOIN reservations r ON r.site = $1 AND r.program_id = d.program_id
+)
+INSERT INTO reservations (
+    site, program_id, source, rule_id, state, base,
+    title, program_start_at, program_duration_ms,
+    network_id, service_id, channel_type, channel
+)
+SELECT $1, program_id, source, rule_id, state, base,
+       title, program_start_at, program_duration_ms,
+       network_id, service_id, channel_type, channel
+FROM resolved
+ON CONFLICT (site, program_id) DO UPDATE SET
+    source               = EXCLUDED.source,
+    rule_id              = EXCLUDED.rule_id,
+    state                = EXCLUDED.state,
+    base                 = EXCLUDED.base,
+    title                = EXCLUDED.title,
+    program_start_at     = EXCLUDED.program_start_at,
+    program_duration_ms  = EXCLUDED.program_duration_ms,
+    network_id           = EXCLUDED.network_id,
+    service_id           = EXCLUDED.service_id,
+    channel_type         = EXCLUDED.channel_type,
+    channel              = EXCLUDED.channel,
+    updated_at           = now()
+WHERE reservations.source              IS DISTINCT FROM EXCLUDED.source
+   OR reservations.rule_id             IS DISTINCT FROM EXCLUDED.rule_id
+   OR reservations.state               IS DISTINCT FROM EXCLUDED.state
+   OR reservations.base                IS DISTINCT FROM EXCLUDED.base
+   OR reservations.title               IS DISTINCT FROM EXCLUDED.title
+   OR reservations.program_start_at    IS DISTINCT FROM EXCLUDED.program_start_at
+   OR reservations.program_duration_ms IS DISTINCT FROM EXCLUDED.program_duration_ms
+   OR reservations.network_id          IS DISTINCT FROM EXCLUDED.network_id
+   OR reservations.service_id          IS DISTINCT FROM EXCLUDED.service_id
+   OR reservations.channel_type        IS DISTINCT FROM EXCLUDED.channel_type
+   OR reservations.channel             IS DISTINCT FROM EXCLUDED.channel
+RETURNING id, program_id, (xmax = 0) AS created
+`
+
+// upsertReservationsFromPass は 1 サイト分の desired 行を 1 文で反映する。
+// rows が空なら何もしない（jsonb_to_recordset('[]') は 0 行を返すため呼んでも
+// 無害だが、往復を避けるため早期リターンする）。
+func upsertReservationsFromPass(ctx context.Context, tx pgx.Tx, site string, rows []rulerInputRow) ([]upsertResult, error) {
+	if len(rows) == 0 {
+		return nil, nil
+	}
+
+	payload, err := json.Marshal(rows)
+	if err != nil {
+		return nil, fmt.Errorf("marshalling ruler input rows: %w", err)
+	}
+
+	pgRows, err := tx.Query(ctx, upsertReservationsFromPassSQL, site, payload)
+	if err != nil {
+		return nil, fmt.Errorf("upserting reservations: %w", err)
+	}
+	defer pgRows.Close()
+
+	var results []upsertResult
+	for pgRows.Next() {
+		var res upsertResult
+		if err := pgRows.Scan(&res.ID, &res.ProgramID, &res.Created); err != nil {
+			return nil, fmt.Errorf("scanning upsert result: %w", err)
+		}
+		results = append(results, res)
+	}
+	if err := pgRows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating upsert results: %w", err)
+	}
+	return results, nil
+}
+
+// insertReservationRuleMatchesSQL は reservation_rule_matches を集合演算 1 文で追加する。
+// 呼び出し側が対象 reservation_id の既存行を先に削除してから呼ぶ（このテーブルには
+// SSE 用の行トリガーがないため、reservations と違い差分書き込みは要求されない。
+// 「毎パス書き換え」でよい — docs/recording.md §3.1「複数ルール解決」）。
+const insertReservationRuleMatchesSQL = `
+INSERT INTO reservation_rule_matches (reservation_id, rule_id)
+SELECT * FROM unnest($1::bigint[], $2::bigint[])
+`
+
+func insertReservationRuleMatches(ctx context.Context, tx pgx.Tx, reservationIDs, ruleIDs []int64) error {
+	if len(reservationIDs) == 0 {
+		return nil
+	}
+	if _, err := tx.Exec(ctx, insertReservationRuleMatchesSQL, reservationIDs, ruleIDs); err != nil {
+		return fmt.Errorf("inserting reservation_rule_matches: %w", err)
+	}
+	return nil
+}

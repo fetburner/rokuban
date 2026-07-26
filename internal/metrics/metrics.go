@@ -105,6 +105,39 @@ var (
 	})
 )
 
+// ruler（M2-3）のメトリクス。
+var (
+	// RulerPassDuration は 1 パス（全サイト分）の所要。ルール数 x 番組数の
+	// 全量評価だが pg_trgm GIN 込みで秒未満に収まる想定（docs/recording.md §3.1）。
+	RulerPassDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name:    "rokuban_ruler_pass_duration_seconds",
+		Help:    "Duration of a full rule-evaluation pass across all sites.",
+		Buckets: []float64{0.05, 0.1, 0.5, 1, 2, 5, 10, 30, 60},
+	})
+
+	// RulerReservations はルールが作成/更新/削除した予約の件数。
+	// created/updated は差分書き込みで実際に行が変わった件数のみを数える
+	// （変化のない行は IS DISTINCT FROM に弾かれ、ここにも計上されない）。
+	RulerReservations = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "rokuban_ruler_reservations_total",
+		Help: "Reservations created, updated, or deleted by the ruler.",
+	}, []string{"action"})
+
+	// RulerCircuitBreakerTrips は大量削除サーキットブレーカーが作動した回数
+	// （サイト x パスごとに 1 回まで）。0 以外はアラート対象。
+	RulerCircuitBreakerTrips = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "rokuban_ruler_circuit_breaker_trips_total",
+		Help: "Times the bulk-delete circuit breaker stopped a ruler pass for a site.",
+	})
+
+	// RulerLastPass は最後に（全サイトとも）成功したパスの時刻（UNIX 秒）。
+	// reconciler.ReconcileLastPass と同じ理由でゲージの凍結対策として持つ。
+	RulerLastPass = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "rokuban_ruler_last_pass_timestamp_seconds",
+		Help: "Unix time of the last successful ruler pass. Use with time() to detect a stalled ruler.",
+	})
+)
+
 // watcher（M1-3）のメトリクス。
 var (
 	// RecordingsFailed は録画失敗の理由別件数。
@@ -179,6 +212,11 @@ func NewRegistry(backlog prometheus.Collector) *prometheus.Registry {
 		ReconcileSchedules,
 		ReconcileCircuitBreakerTrips,
 		ReconcileLastPass,
+
+		RulerPassDuration,
+		RulerReservations,
+		RulerCircuitBreakerTrips,
+		RulerLastPass,
 
 		RecordingsFailed,
 		RecordsBroken,

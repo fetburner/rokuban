@@ -24,6 +24,7 @@ import (
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/reconciler"
 	"github.com/fetburner/rokuban/internal/role"
+	"github.com/fetburner/rokuban/internal/ruler"
 	"github.com/fetburner/rokuban/internal/streamer"
 	"github.com/fetburner/rokuban/internal/watcher"
 	"github.com/fetburner/rokuban/internal/worker"
@@ -178,6 +179,11 @@ func newServerCmd() *cobra.Command {
 						mc := mirakc.NewClient(cfg.Mirakc.URL, nil)
 						rec := reconciler.New(watcher.DefaultSite, mc, pool, nil)
 						roleFunc = rec.Run
+					case "ruler":
+						// ruler は mirakc に触れない（不変条件 1）。EPG プロジェクションと
+						// reservations/program_intents のみを読み書きする。
+						rul := ruler.New([]string{watcher.DefaultSite}, pool, nil)
+						roleFunc = rul.Run
 					}
 					return role.RunSingleton(egCtx, pool, roleName, roleFunc, nil)
 				})
