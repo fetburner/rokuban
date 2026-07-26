@@ -44,11 +44,12 @@ func (m *mockMirakc) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), 400)
 			return
 		}
+		_, _, eventID := mirakc.SplitProgramID(input.ProgramID)
 		s := mirakc.Schedule{
 			State: "scheduled",
 			Program: mirakc.Program{
 				ID:       input.ProgramID,
-				EventID:  int(input.ProgramID % 100000),
+				EventID:  eventID,
 				Duration: ptrInt64(300000),
 			},
 			Options: input.Options,
@@ -94,12 +95,21 @@ func TestReconciler_CreatesSchedule(t *testing.T) {
 	q := sqlcgen.New(pool)
 
 	startAt := time.Now().Add(1 * time.Hour)
+	// programID=100000500011234 -> networkID=10000, serviceID=5000（contentpath_test.go と同じ値）。
+	// reconciler は予約行のスナップショットのみを見るので、テストのフィクスチャも
+	// スナップショットさせておく必要がある（もう programId からの算術には頼らない）。
+	networkID, serviceID := int32(10000), int32(5000)
+	channelType, channel := "GR", "27"
 	res, err := q.CreateManualReservation(ctx, sqlcgen.CreateManualReservationParams{
 		Site:              "default",
 		ProgramID:         100000500011234,
 		Title:             "テスト番組",
 		ProgramStartAt:    startAt,
 		ProgramDurationMs: 1800000,
+		NetworkID:         &networkID,
+		ServiceID:         &serviceID,
+		ChannelType:       &channelType,
+		Channel:           &channel,
 	})
 	if err != nil {
 		t.Fatalf("creating reservation: %v", err)
@@ -281,5 +291,48 @@ func TestReconciler_SkippedReservationNotScheduled(t *testing.T) {
 	schedules := mock.getSchedules()
 	if len(schedules) != 0 {
 		t.Errorf("skipped reservation should not create schedule, got %d", len(schedules))
+	}
+}
+
+// service_id が NULL の予約（移行前の残骸で、番組が EPG プロジェクションから
+// 既に消えているケース）は、programId からの算術で推測せず、schedule を作らずに
+// スキップすること。
+func TestReconciler_NullServiceIDNotScheduled(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	mock := newMockMirakc()
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+
+	mc := mirakc.NewClient(srv.URL, nil)
+	q := sqlcgen.New(pool)
+
+	startAt := time.Now().Add(1 * time.Hour)
+	// CreateManualReservation に channel snapshot を渡さない = network_id/service_id
+	// などが NULL のまま。移行前の行を模す。
+	if _, err := q.CreateManualReservation(ctx, sqlcgen.CreateManualReservationParams{
+		Site:              "default",
+		ProgramID:         300000500011234,
+		Title:             "移行前の残骸",
+		ProgramStartAt:    startAt,
+		ProgramDurationMs: 1800000,
+	}); err != nil {
+		t.Fatalf("creating reservation: %v", err)
+	}
+
+	rec := reconciler.New("default", mc, pool, &reconciler.Config{
+		ReconcileInterval: time.Hour,
+	})
+
+	runCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	go func() { _ = rec.Run(runCtx) }()
+	time.Sleep(500 * time.Millisecond)
+	cancel()
+
+	schedules := mock.getSchedules()
+	if len(schedules) != 0 {
+		t.Errorf("reservation with NULL service_id should not create a schedule, got %d", len(schedules))
 	}
 }

@@ -134,6 +134,10 @@ type Reservation struct {
 	ProgramDurationMs int64
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
+	NetworkID         *int32
+	ServiceID         *int32
+	ChannelType       *string
+	Channel           *string
 }
 
 type ReservationRuleMatch struct {

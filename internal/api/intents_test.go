@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/fetburner/rokuban/internal/api"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -26,6 +28,12 @@ func TestDeleteReservation_KeepsSkipIntent(t *testing.T) {
 	defer srv.Close()
 
 	const programID int64 = 327360102415397
+	// CreateReservation は EPG プロジェクションからチャンネル識別情報を引くように
+	// なったので、番組がプロジェクションに乗っていないと 400 になる。ここでは
+	// programID=327360102415397（networkID=32736, serviceID=1024, eventID=15397。
+	// internal/mirakc/ids_test.go の実測値と同じ）に対応する行を用意する。
+	insertProgramFixture(t, pool, ctx, programID, 32736, 1024)
+
 	body := `{"programId":327360102415397,"title":"テスト番組",` +
 		`"startAt":"2026-08-01T21:00:00+09:00","durationMs":1800000,"priority":7}`
 
@@ -155,6 +163,33 @@ func intentPriority(t *testing.T, raw []byte) int {
 		return 0
 	}
 	return *m.Priority
+}
+
+// insertProgramFixture は EPG プロジェクションに、指定した programId に対応する
+// サービス・番組の行を用意する。CreateReservation は GetProgramChannelIdentity で
+// このプロジェクションを引くので、テストで手動予約を作るにはこれが必要。
+func insertProgramFixture(t *testing.T, pool *pgxpool.Pool, ctx context.Context, programID int64, networkID, serviceID int) {
+	t.Helper()
+
+	if _, err := pool.Exec(ctx, `
+INSERT INTO epg_services (site, network_id, service_id, type, logo_id, remote_control_key_id, name, channel_type, channel, has_logo_data)
+VALUES ('default', $1, $2, 1, 0, 1, 'テスト局', 'GR', '27', false)
+ON CONFLICT (site, network_id, service_id) DO NOTHING`,
+		networkID, serviceID); err != nil {
+		t.Fatalf("inserting epg_services fixture: %v", err)
+	}
+
+	start := time.Now().Add(24 * time.Hour)
+	end := start.Add(30 * time.Minute)
+	if _, err := pool.Exec(ctx, `
+INSERT INTO epg_programs (
+  site, program_id, network_id, service_id, event_id,
+  start_at, duration_ms, end_at, is_free, name, description, genre_lv1
+) VALUES ('default', $1::bigint, $2, $3, 0, $4::timestamptz, 1800000, $5::timestamptz, true, 'テスト番組', '', '{}'::smallint[])
+ON CONFLICT (site, program_id) DO NOTHING`,
+		programID, networkID, serviceID, start, end); err != nil {
+		t.Fatalf("inserting epg_programs fixture: %v", err)
+	}
 }
 
 func itoa(n int64) string {

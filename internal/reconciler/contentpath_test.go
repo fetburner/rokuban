@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/fetburner/rokuban/internal/mirakc"
 )
 
 func TestSanitizeComponent(t *testing.T) {
@@ -94,7 +96,7 @@ func TestServiceIDExtraction(t *testing.T) {
 		{327360102412345, 1024}, // networkId=32736, serviceId=1024, eventId=12345
 	}
 	for _, tt := range tests {
-		sid := int((tt.programID / 100000) % 100000)
+		_, sid, _ := mirakc.SplitProgramID(tt.programID)
 		if sid != tt.wantSID {
 			t.Errorf("programID=%d: serviceID=%d, want %d", tt.programID, sid, tt.wantSID)
 		}

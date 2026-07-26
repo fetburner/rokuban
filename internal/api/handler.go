@@ -75,6 +75,21 @@ func (h *Server) CreateReservation(ctx context.Context, req CreateReservationReq
 	defer func() { _ = tx.Rollback(ctx) }()
 	q := sqlcgen.New(tx)
 
+	// チャンネル識別情報は EPG プロジェクションから引いてスナップショットする
+	// （サーバー権威。クライアントからは受け取らない）。mirakc の programId
+	// 内部構造への依存を reconciler から消すためのもので、ここで見つからなければ
+	// 予約自体を作れない。
+	identity, err := q.GetProgramChannelIdentity(ctx, sqlcgen.GetProgramChannelIdentityParams{
+		Site:      defaultSite,
+		ProgramID: req.Body.ProgramId,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return CreateReservation400JSONResponse{Error: "program not found in EPG projection"}, nil
+		}
+		return nil, fmt.Errorf("getting program channel identity: %w", err)
+	}
+
 	// 意図が先。導出行は ruler が作り直せるが、意図は誰も再生成できない。
 	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
 		Site:              defaultSite,
@@ -93,6 +108,10 @@ func (h *Server) CreateReservation(ctx context.Context, req CreateReservationReq
 		Title:             req.Body.Title,
 		ProgramStartAt:    req.Body.StartAt,
 		ProgramDurationMs: req.Body.DurationMs,
+		NetworkID:         &identity.NetworkID,
+		ServiceID:         &identity.ServiceID,
+		ChannelType:       &identity.ChannelType,
+		Channel:           &identity.Channel,
 	})
 	if err != nil {
 		var pgErr *pgconn.PgError

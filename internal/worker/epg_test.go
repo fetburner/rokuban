@@ -52,7 +52,7 @@ func int64Ptr(v int64) *int64 { return &v }
 
 func testService(networkID, serviceID, remoteKey int, name, channel string) mirakc.Service {
 	return mirakc.Service{
-		ID:                 int64(networkID)*100000 + int64(serviceID),
+		ID:                 mirakc.ServiceID(networkID, serviceID),
 		ServiceID:          serviceID,
 		NetworkID:          networkID,
 		Type:               1,
@@ -67,7 +67,7 @@ func testService(networkID, serviceID, remoteKey int, name, channel string) mira
 func testProgram(networkID, serviceID, eventID int, name string, start time.Time, dur time.Duration) mirakc.Program {
 	desc := name + "の説明"
 	return mirakc.Program{
-		ID:          int64(networkID)*100000000 + int64(serviceID)*10000 + int64(eventID),
+		ID:          mirakc.ComposeProgramID(networkID, serviceID, eventID),
 		EventID:     eventID,
 		ServiceID:   serviceID,
 		NetworkID:   networkID,

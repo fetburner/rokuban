@@ -7,8 +7,15 @@ SELECT id, rule_id, source FROM reservations
 WHERE site = $1 AND program_id = $2;
 
 -- name: CreateManualReservation :one
-INSERT INTO reservations (site, program_id, source, title, program_start_at, program_duration_ms)
-VALUES ($1, $2, 'manual', $3, $4, $5)
+-- network_id/service_id/channel_type/channel は api がトランザクション内で
+-- GetProgramChannelIdentity から引いた値をスナップショットする（サーバー権威。
+-- クライアントからは受け取らない）。mirakc の programId 内部構造への依存を
+-- reconciler から消すための列。
+INSERT INTO reservations (
+    site, program_id, source, title, program_start_at, program_duration_ms,
+    network_id, service_id, channel_type, channel
+)
+VALUES ($1, $2, 'manual', $3, $4, $5, $6, $7, $8, $9)
 RETURNING *;
 
 -- 予約とユーザー意図を 1 行に合わせて返す。overrides は program_intents 側にあり、

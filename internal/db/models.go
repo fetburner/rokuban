@@ -7,6 +7,12 @@ import (
 )
 
 // Reservation は予約（desired state）。
+//
+// NetworkID/ServiceID/ChannelType/Channel はチャンネル識別情報のスナップショット。
+// api の CreateReservation が EPG プロジェクション（GetProgramChannelIdentity）から
+// 引いて埋める。すべて nullable なのは、移行前（00009_reservation_channel.sql 以前）
+// の行の中に、番組が EPG プロジェクションから既に消えていて埋めようがないものが
+// あるため。NULL は移行前の残骸のみを意味し、新規予約では常に埋まる。
 type Reservation struct {
 	ID                int64           `db:"id"`
 	Site              string          `db:"site"`
@@ -20,6 +26,10 @@ type Reservation struct {
 	ProgramDurationMs int64           `db:"program_duration_ms"`
 	CreatedAt         time.Time       `db:"created_at"`
 	UpdatedAt         time.Time       `db:"updated_at"`
+	NetworkID         *int32          `db:"network_id"`
+	ServiceID         *int32          `db:"service_id"`
+	ChannelType       *string         `db:"channel_type"`
+	Channel           *string         `db:"channel"`
 }
 
 // ReservationOptions は reservations.base / overrides の jsonb 構造。

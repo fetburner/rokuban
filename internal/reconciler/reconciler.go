@@ -264,12 +264,24 @@ func (r *Reconciler) listDesired(ctx context.Context) ([]desiredReservation, err
 func (r *Reconciler) createSchedule(ctx context.Context, d desiredReservation) error {
 	res, opts := d.res, d.opts
 
+	// service_id は予約行にスナップショットされた値のみを使う。mirakc の programId
+	// 内部構造（Mirakurun 互換の ID 合成規則）を割り算して推測することはしない
+	// （不変条件: mirakc 固有の概念を永続テーブルの外で復元しない）。
+	// NULL は移行前の行で、番組が EPG プロジェクションから既に消えていて
+	// 00009_reservation_channel.sql の backfill でも埋められなかった残骸。
+	// 誤った推測で schedule を作るより、同期対象から外してアラートする方が安全。
+	if res.ServiceID == nil {
+		return fmt.Errorf("reservation %d (program %d) has no service_id snapshot; "+
+			"likely a pre-migration row whose program has already fallen out of the EPG projection",
+			res.ID, res.ProgramID)
+	}
+	serviceID := int(*res.ServiceID)
+
 	priority := r.cfg.DefaultPriority
 	if opts.Priority != nil {
 		priority = *opts.Priority
 	}
 
-	serviceID := int((res.ProgramID / 100000) % 100000)
 	contentPath := generateContentPath(res.Title, res.ProgramStartAt, serviceID)
 	if opts.ContentPath != nil && *opts.ContentPath != "" {
 		contentPath = sanitizeContentPath(*opts.ContentPath)

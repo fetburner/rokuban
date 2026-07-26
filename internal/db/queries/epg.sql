@@ -98,3 +98,13 @@ ORDER BY start_at, network_id, service_id;
 -- name: GetEpgProgram :one
 SELECT * FROM epg_programs
 WHERE site = $1 AND program_id = $2;
+
+-- 手動予約の作成時に、予約行へスナップショットするチャンネル識別情報を引く。
+-- mirakc の programId 内部構造への算術（NID*10^10 + SID*10^5 + EID）に頼らず、
+-- EPG プロジェクションを正として引く（api.CreateReservation から使う）。
+-- name: GetProgramChannelIdentity :one
+SELECT s.network_id, s.service_id, s.channel_type, s.channel
+FROM epg_programs p
+JOIN epg_services s
+  ON s.site = p.site AND s.network_id = p.network_id AND s.service_id = p.service_id
+WHERE p.site = $1 AND p.program_id = $2;

@@ -120,6 +120,41 @@ func (q *Queries) GetEpgProgram(ctx context.Context, arg GetEpgProgramParams) (E
 	return i, err
 }
 
+const getProgramChannelIdentity = `-- name: GetProgramChannelIdentity :one
+SELECT s.network_id, s.service_id, s.channel_type, s.channel
+FROM epg_programs p
+JOIN epg_services s
+  ON s.site = p.site AND s.network_id = p.network_id AND s.service_id = p.service_id
+WHERE p.site = $1 AND p.program_id = $2
+`
+
+type GetProgramChannelIdentityParams struct {
+	Site      string
+	ProgramID int64
+}
+
+type GetProgramChannelIdentityRow struct {
+	NetworkID   int32
+	ServiceID   int32
+	ChannelType string
+	Channel     string
+}
+
+// 手動予約の作成時に、予約行へスナップショットするチャンネル識別情報を引く。
+// mirakc の programId 内部構造への算術（NID*10^10 + SID*10^5 + EID）に頼らず、
+// EPG プロジェクションを正として引く（api.CreateReservation から使う）。
+func (q *Queries) GetProgramChannelIdentity(ctx context.Context, arg GetProgramChannelIdentityParams) (GetProgramChannelIdentityRow, error) {
+	row := q.db.QueryRow(ctx, getProgramChannelIdentity, arg.Site, arg.ProgramID)
+	var i GetProgramChannelIdentityRow
+	err := row.Scan(
+		&i.NetworkID,
+		&i.ServiceID,
+		&i.ChannelType,
+		&i.Channel,
+	)
+	return i, err
+}
+
 const listEpgPrograms = `-- name: ListEpgPrograms :many
 SELECT site, program_id, network_id, service_id, event_id, start_at, duration_ms, end_at, is_free, name, description, genre_lv1, extended, genres, video, audios, observed_at FROM epg_programs
 WHERE site = $1

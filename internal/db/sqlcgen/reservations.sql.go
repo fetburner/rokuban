@@ -12,9 +12,12 @@ import (
 )
 
 const createManualReservation = `-- name: CreateManualReservation :one
-INSERT INTO reservations (site, program_id, source, title, program_start_at, program_duration_ms)
-VALUES ($1, $2, 'manual', $3, $4, $5)
-RETURNING id, site, program_id, source, rule_id, state, base, title, program_start_at, program_duration_ms, created_at, updated_at
+INSERT INTO reservations (
+    site, program_id, source, title, program_start_at, program_duration_ms,
+    network_id, service_id, channel_type, channel
+)
+VALUES ($1, $2, 'manual', $3, $4, $5, $6, $7, $8, $9)
+RETURNING id, site, program_id, source, rule_id, state, base, title, program_start_at, program_duration_ms, created_at, updated_at, network_id, service_id, channel_type, channel
 `
 
 type CreateManualReservationParams struct {
@@ -23,8 +26,16 @@ type CreateManualReservationParams struct {
 	Title             string
 	ProgramStartAt    time.Time
 	ProgramDurationMs int64
+	NetworkID         *int32
+	ServiceID         *int32
+	ChannelType       *string
+	Channel           *string
 }
 
+// network_id/service_id/channel_type/channel は api がトランザクション内で
+// GetProgramChannelIdentity から引いた値をスナップショットする（サーバー権威。
+// クライアントからは受け取らない）。mirakc の programId 内部構造への依存を
+// reconciler から消すための列。
 func (q *Queries) CreateManualReservation(ctx context.Context, arg CreateManualReservationParams) (Reservation, error) {
 	row := q.db.QueryRow(ctx, createManualReservation,
 		arg.Site,
@@ -32,6 +43,10 @@ func (q *Queries) CreateManualReservation(ctx context.Context, arg CreateManualR
 		arg.Title,
 		arg.ProgramStartAt,
 		arg.ProgramDurationMs,
+		arg.NetworkID,
+		arg.ServiceID,
+		arg.ChannelType,
+		arg.Channel,
 	)
 	var i Reservation
 	err := row.Scan(
@@ -47,6 +62,10 @@ func (q *Queries) CreateManualReservation(ctx context.Context, arg CreateManualR
 		&i.ProgramDurationMs,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.NetworkID,
+		&i.ServiceID,
+		&i.ChannelType,
+		&i.Channel,
 	)
 	return i, err
 }
@@ -122,7 +141,7 @@ func (q *Queries) GetReservationBySiteAndProgramID(ctx context.Context, arg GetR
 }
 
 const getReservationFull = `-- name: GetReservationFull :one
-SELECT r.id, r.site, r.program_id, r.source, r.rule_id, r.state, r.base, r.title, r.program_start_at, r.program_duration_ms, r.created_at, r.updated_at, i.action AS intent_action, i.overrides AS intent_overrides
+SELECT r.id, r.site, r.program_id, r.source, r.rule_id, r.state, r.base, r.title, r.program_start_at, r.program_duration_ms, r.created_at, r.updated_at, r.network_id, r.service_id, r.channel_type, r.channel, i.action AS intent_action, i.overrides AS intent_overrides
 FROM reservations r
 LEFT JOIN program_intents i ON i.site = r.site AND i.program_id = r.program_id
 WHERE r.id = $1
@@ -152,6 +171,10 @@ func (q *Queries) GetReservationFull(ctx context.Context, id int64) (GetReservat
 		&i.Reservation.ProgramDurationMs,
 		&i.Reservation.CreatedAt,
 		&i.Reservation.UpdatedAt,
+		&i.Reservation.NetworkID,
+		&i.Reservation.ServiceID,
+		&i.Reservation.ChannelType,
+		&i.Reservation.Channel,
 		&i.IntentAction,
 		&i.IntentOverrides,
 	)
@@ -159,7 +182,7 @@ func (q *Queries) GetReservationFull(ctx context.Context, id int64) (GetReservat
 }
 
 const listActiveReservationsBySite = `-- name: ListActiveReservationsBySite :many
-SELECT r.id, r.site, r.program_id, r.source, r.rule_id, r.state, r.base, r.title, r.program_start_at, r.program_duration_ms, r.created_at, r.updated_at, i.action AS intent_action, i.overrides AS intent_overrides
+SELECT r.id, r.site, r.program_id, r.source, r.rule_id, r.state, r.base, r.title, r.program_start_at, r.program_duration_ms, r.created_at, r.updated_at, r.network_id, r.service_id, r.channel_type, r.channel, i.action AS intent_action, i.overrides AS intent_overrides
 FROM reservations r
 LEFT JOIN program_intents i ON i.site = r.site AND i.program_id = r.program_id
 WHERE r.site = $1 AND r.state = 'active'
@@ -194,6 +217,10 @@ func (q *Queries) ListActiveReservationsBySite(ctx context.Context, site string)
 			&i.Reservation.ProgramDurationMs,
 			&i.Reservation.CreatedAt,
 			&i.Reservation.UpdatedAt,
+			&i.Reservation.NetworkID,
+			&i.Reservation.ServiceID,
+			&i.Reservation.ChannelType,
+			&i.Reservation.Channel,
 			&i.IntentAction,
 			&i.IntentOverrides,
 		); err != nil {
@@ -208,7 +235,7 @@ func (q *Queries) ListActiveReservationsBySite(ctx context.Context, site string)
 }
 
 const listReservationsBySite = `-- name: ListReservationsBySite :many
-SELECT r.id, r.site, r.program_id, r.source, r.rule_id, r.state, r.base, r.title, r.program_start_at, r.program_duration_ms, r.created_at, r.updated_at, i.action AS intent_action, i.overrides AS intent_overrides
+SELECT r.id, r.site, r.program_id, r.source, r.rule_id, r.state, r.base, r.title, r.program_start_at, r.program_duration_ms, r.created_at, r.updated_at, r.network_id, r.service_id, r.channel_type, r.channel, i.action AS intent_action, i.overrides AS intent_overrides
 FROM reservations r
 LEFT JOIN program_intents i ON i.site = r.site AND i.program_id = r.program_id
 WHERE r.site = $1
@@ -243,6 +270,10 @@ func (q *Queries) ListReservationsBySite(ctx context.Context, site string) ([]Li
 			&i.Reservation.ProgramDurationMs,
 			&i.Reservation.CreatedAt,
 			&i.Reservation.UpdatedAt,
+			&i.Reservation.NetworkID,
+			&i.Reservation.ServiceID,
+			&i.Reservation.ChannelType,
+			&i.Reservation.Channel,
 			&i.IntentAction,
 			&i.IntentOverrides,
 		); err != nil {

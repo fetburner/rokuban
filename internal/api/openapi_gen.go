@@ -1556,6 +1556,20 @@ func (response CreateReservation201JSONResponse) VisitCreateReservationResponse(
 	return err
 }
 
+type CreateReservation400JSONResponse ErrorResponse
+
+func (response CreateReservation400JSONResponse) VisitCreateReservationResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type CreateReservation409JSONResponse ErrorResponse
 
 func (response CreateReservation409JSONResponse) VisitCreateReservationResponse(w http.ResponseWriter) error {

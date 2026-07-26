@@ -67,6 +67,13 @@ CREATE TABLE reservations (
     program_start_at  timestamptz NOT NULL,
     program_duration_ms bigint NOT NULL,
 
+    -- チャンネル識別のスナップショット（M2 で追加。00009）。
+    -- nullable なのは移行前の行を救えない場合があるためで、新規行は api が必ず埋める
+    network_id        integer,
+    service_id        integer,
+    channel_type      text CHECK (channel_type IS NULL OR channel_type IN ('GR','BS','CS','SKY')),
+    channel           text,
+
     created_at        timestamptz NOT NULL DEFAULT now(),
     updated_at        timestamptz NOT NULL DEFAULT now(),
 
@@ -78,6 +85,15 @@ CREATE INDEX ON reservations (rule_id);
 ```
 
 - 同一の BS/CS 番組が複数サイトの EPG に現れた場合、site が違えば別予約になる（両サイトで録る、が表現可能）。サイト横断の重複排除はルール側の関心事（M2 の履歴ベース重複排除で扱う）
+
+### チャンネル識別はスナップショットする（programId を分解しない）
+
+Mirakurun 互換の programId は `NID*10^10 + SID*10^5 + EID` という合成規則を持つが、**本番コードでこれを逆算してはならない**。mirakc 固有の合成規則への依存になり、同じ情報が API のフィールド（`networkId` / `serviceId` / `eventId`）として素直に手に入るため。
+
+`CreateReservation` が EPG プロジェクション（`epg_programs` ⋈ `epg_services`）から引いて 4 列に焼き付ける。**クライアントからは受け取らない**（サーバー権威）。射影に番組がなければ 400 を返す。
+
+- reconciler の contentPath 生成はこのスナップショットを読む。`service_id` が NULL なら**推測せず schedule を作らない**（誤ったパスで録画するより同期対象から外してアラートする）
+- 容量超過の判定（[データ層](data.md) §6.5）の需要単位が `(channel_type, channel)` なので、使い捨ての EPG 射影への JOIN に頼らずここを読む
 
 ### base / overrides の意味論
 
