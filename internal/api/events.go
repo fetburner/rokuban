@@ -39,11 +39,50 @@ const (
 type EventHub struct {
 	mu      sync.Mutex
 	clients map[chan string]struct{}
+
+	// listening は LISTEN が確立するたびに閉じ直される合図。
+	// NOTIFY は「その時点で LISTEN しているセッション」にしか届かず、後から来た
+	// listener には配送されない。LISTEN 確立前に発行された通知は失われるため、
+	// 通知を期待する側（テストや readiness チェック）が確立を待てるようにする。
+	listeningMu sync.Mutex
+	listening   chan struct{}
 }
 
 // NewEventHub は EventHub を生成する。
 func NewEventHub() *EventHub {
-	return &EventHub{clients: make(map[chan string]struct{})}
+	return &EventHub{
+		clients:   make(map[chan string]struct{}),
+		listening: make(chan struct{}),
+	}
+}
+
+// listeningC は LISTEN 確立で閉じられるチャネルを返す。
+func (h *EventHub) listeningC() chan struct{} {
+	h.listeningMu.Lock()
+	defer h.listeningMu.Unlock()
+	return h.listening
+}
+
+// markListening は LISTEN が確立したことを通知する。
+func (h *EventHub) markListening() {
+	h.listeningMu.Lock()
+	defer h.listeningMu.Unlock()
+	select {
+	case <-h.listening:
+		// 既に閉じている（再接続）
+	default:
+		close(h.listening)
+	}
+}
+
+// waitListening は LISTEN が確立するまで待つ。確立済みなら即座に返る。
+func (h *EventHub) waitListening(ctx context.Context) error {
+	select {
+	case <-h.listeningC():
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // Subscribe はトピックを受け取るチャネルと、購読を解除する関数を返す。
@@ -117,6 +156,7 @@ func (h *EventHub) listenOnce(ctx context.Context, pool *pgxpool.Pool) error {
 		return fmt.Errorf("LISTEN %s: %w", notifyChannel, err)
 	}
 	slog.Info("event hub: listening", "channel", notifyChannel)
+	h.markListening()
 
 	// 通知待ちはブロックするので専用の goroutine に出し、合流は呼び出し側のループで行う。
 	ctx, cancel := context.WithCancel(ctx)

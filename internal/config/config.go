@@ -44,8 +44,21 @@ type DBConfig struct {
 func (c DBConfig) DSN() string {
 	return fmt.Sprintf(
 		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
-		c.Host, c.Port, c.User, c.Password, c.Database, c.SSLMode,
+		quoteDSNValue(c.Host), c.Port, quoteDSNValue(c.User),
+		quoteDSNValue(c.Password), quoteDSNValue(c.Database), quoteDSNValue(c.SSLMode),
 	)
+}
+
+// quoteDSNValue は libpq のキーワード/値形式の値を単一引用符で囲む。
+//
+// 引用しないと空値と空白入りの値が壊れる。たとえば password が空だと
+// `password= dbname=x` となり、libpq は次のトークン（`dbname=x`）を
+// パスワードの値として読んでしまう。結果 dbname が未指定になり、
+// ユーザー名と同名のデータベースへ黙って接続する。
+func quoteDSNValue(v string) string {
+	escaped := strings.ReplaceAll(v, `\`, `\\`)
+	escaped = strings.ReplaceAll(escaped, `'`, `\'`)
+	return "'" + escaped + "'"
 }
 
 // MirakcConfig は mirakc 接続設定。

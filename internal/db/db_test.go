@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -115,14 +116,11 @@ func TestNewPool(t *testing.T) {
 		_ = MigrateDown(ctx, dbURL)
 	})
 
-	cfg := config.DBConfig{
-		Host:     "localhost",
-		Port:     5432,
-		User:     "rokuban",
-		Password: "rokuban",
-		Database: "rokuban_test",
-		SSLMode:  "disable",
-	}
+	// 接続先はハードコードせず、実際に migrate した DB の URL から組む。
+	// ハードコードしていたときは (a) ローカルでロール名が違うと必ず落ち、
+	// (b) パッケージ専用 DB を使うようになった後は schema_info が無い別 DB を
+	// 指してしまって CI でも落ちた。
+	cfg := dbConfigFromURL(t, dbURL)
 
 	pool, err := NewPool(ctx, cfg)
 	if err != nil {
@@ -154,5 +152,36 @@ func TestNewPool_ConnectionFailure(t *testing.T) {
 	_, err := NewPool(ctx, cfg)
 	if err == nil {
 		t.Fatal("expected connection error, got nil")
+	}
+}
+
+// dbConfigFromURL は接続 URL を config.DBConfig に変換する。
+// DBConfig → DSN → プールという経路そのものを検証したいので、URL を直接
+// pgxpool に渡すのではなく DBConfig を経由させる。
+func dbConfigFromURL(t *testing.T, raw string) config.DBConfig {
+	t.Helper()
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("parsing database url: %v", err)
+	}
+	port := 5432
+	if p := u.Port(); p != "" {
+		port, err = strconv.Atoi(p)
+		if err != nil {
+			t.Fatalf("parsing port %q: %v", p, err)
+		}
+	}
+	password, _ := u.User.Password()
+	sslMode := u.Query().Get("sslmode")
+	if sslMode == "" {
+		sslMode = "disable"
+	}
+	return config.DBConfig{
+		Host:     u.Hostname(),
+		Port:     port,
+		User:     u.User.Username(),
+		Password: password,
+		Database: strings.TrimPrefix(u.Path, "/"),
+		SSLMode:  sslMode,
 	}
 }

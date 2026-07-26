@@ -15,18 +15,41 @@ import (
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
-// readSSEEvent は次の SSE イベントの event 名を返す。
-// data 行・retry 行・コメント（keep-alive）行は読み飛ばす。
+// sseTimeout は SSE イベントを待つ上限。
+// 期限なしで読むと、通知を取りこぼしたときにパッケージ全体のタイムアウト
+// （既定 10 分）までハングし、CI が「どのテストが原因か分からない失敗」になる。
+const sseTimeout = 15 * time.Second
+
+// readSSEEvent は次の SSE イベントの event 名を、期限付きで返す。
 func readSSEEvent(t *testing.T, r *bufio.Reader) string {
 	t.Helper()
-	for {
-		line, err := r.ReadString('\n')
-		if err != nil {
-			t.Fatalf("reading SSE stream: %v", err)
+	type result struct {
+		name string
+		err  error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		for {
+			line, err := r.ReadString('\n')
+			if err != nil {
+				ch <- result{err: err}
+				return
+			}
+			if name, ok := strings.CutPrefix(strings.TrimRight(line, "\r\n"), "event: "); ok {
+				ch <- result{name: name}
+				return
+			}
 		}
-		if name, ok := strings.CutPrefix(strings.TrimRight(line, "\r\n"), "event: "); ok {
-			return name
+	}()
+	select {
+	case got := <-ch:
+		if got.err != nil {
+			t.Fatalf("reading SSE stream: %v", got.err)
 		}
+		return got.name
+	case <-time.After(sseTimeout):
+		t.Fatalf("timed out after %s waiting for an SSE event", sseTimeout)
+		return ""
 	}
 }
 
@@ -60,6 +83,21 @@ func openSSE(t *testing.T, url string) *bufio.Reader {
 }
 
 // waitForClients は hub にクライアントが n 個繋がるまで待つ。
+// waitListening は hub の LISTEN 確立を待つ。
+//
+// waitForClients だけでは足りない。あれは SSE クライアントが hub に登録された
+// ことしか保証せず、hub の Postgres LISTEN は別 goroutine で非同期に張られる。
+// LISTEN 前に発行された NOTIFY はどこにも届かないので、通知を期待する前に
+// 確立を待つ必要がある。
+func waitListening(t *testing.T, hub *EventHub) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), sseTimeout)
+	defer cancel()
+	if err := hub.waitListening(ctx); err != nil {
+		t.Fatalf("waiting for hub to LISTEN: %v", err)
+	}
+}
+
 func waitForClients(t *testing.T, hub *EventHub, n int) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -99,6 +137,7 @@ func TestEvents_ReservationTriggersNotify(t *testing.T) {
 
 	reader := openSSE(t, srv.URL)
 	waitForClients(t, hub, 1)
+	waitListening(t, hub)
 
 	// 予約を作ると reservations トピックが届く
 	_, err := sqlcgen.New(pool).CreateManualReservation(context.Background(), sqlcgen.CreateManualReservationParams{
@@ -124,6 +163,7 @@ func TestEvents_RecordingAndMediaAssetTopics(t *testing.T) {
 
 	reader := openSSE(t, srv.URL)
 	waitForClients(t, hub, 1)
+	waitListening(t, hub)
 
 	recordingID := seedRecording(t, pool, "録画", time.Now().Truncate(time.Second), "recording", 1)
 	if got := readSSEEvent(t, reader); got != "recordings" {
@@ -145,6 +185,7 @@ func TestEvents_ExplicitNotify(t *testing.T) {
 
 	reader := openSSE(t, srv.URL)
 	waitForClients(t, hub, 1)
+	waitListening(t, hub)
 
 	if err := sqlcgen.New(pool).NotifyTopic(context.Background(), "epg"); err != nil {
 		t.Fatalf("NotifyTopic: %v", err)
@@ -162,6 +203,7 @@ func TestEvents_FanOut(t *testing.T) {
 	r1 := openSSE(t, srv.URL)
 	r2 := openSSE(t, srv.URL)
 	waitForClients(t, hub, 2)
+	waitListening(t, hub)
 
 	if err := sqlcgen.New(pool).NotifyTopic(context.Background(), "epg"); err != nil {
 		t.Fatalf("NotifyTopic: %v", err)

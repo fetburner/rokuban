@@ -282,3 +282,37 @@ log:
 		t.Errorf("log.format = %q, want %q", cfg.Log.Format, "text")
 	}
 }
+
+// DSN は値を引用しないと空値・空白入りの値で壊れる。
+// 引用がないと `password= dbname=x` となり、libpq は次のトークン（`dbname=x`）を
+// パスワードの値として読む。結果 dbname が未指定になり、ユーザー名と同名の
+// データベースへ黙って接続してしまう（実際にテスト DB でこれを踏んだ）。
+func TestDBConfigDSN_QuotesValues(t *testing.T) {
+	cases := map[string]struct {
+		cfg  DBConfig
+		want string
+	}{
+		"空パスワード": {
+			cfg: DBConfig{Host: "localhost", Port: 5432, User: "u", Password: "",
+				Database: "d", SSLMode: "disable"},
+			want: "host='localhost' port=5432 user='u' password='' dbname='d' sslmode='disable'",
+		},
+		"空白入りパスワード": {
+			cfg: DBConfig{Host: "localhost", Port: 5432, User: "u", Password: "p a s s",
+				Database: "d", SSLMode: "disable"},
+			want: "host='localhost' port=5432 user='u' password='p a s s' dbname='d' sslmode='disable'",
+		},
+		"引用符とバックスラッシュ": {
+			cfg: DBConfig{Host: "localhost", Port: 5432, User: "u", Password: `it's\ok`,
+				Database: "d", SSLMode: "disable"},
+			want: `host='localhost' port=5432 user='u' password='it\'s\\ok' dbname='d' sslmode='disable'`,
+		},
+	}
+	for name, tt := range cases {
+		t.Run(name, func(t *testing.T) {
+			if got := tt.cfg.DSN(); got != tt.want {
+				t.Errorf("DSN() =\n  %s\nwant\n  %s", got, tt.want)
+			}
+		})
+	}
+}
