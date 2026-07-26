@@ -171,6 +171,53 @@ Rokuban と EPGStation の両方に同じ番組の予約が入っていると、
 `rokuban:reservation=` tag のない schedule を触らない）。ディスクとチューナーを
 二重に消費するので、シャドー運用中は片方だけに予約を入れる。
 
+### shadow-diff で予約差分を確認する
+
+M2 の出口基準は「予約差分ゼロ or 全件説明可能」（issue #6 / #24 の M2-14）。
+`rokuban shadow-diff` は Rokuban（DB）と EPGStation（API）の予約集合を programId で
+突き合わせ、差分を標準出力にレポートするサブコマンド。
+
+```sh
+rokuban shadow-diff --config config.yml --epgstation-url http://localhost:8888
+```
+
+出力例（`Both` は件数のみ、`RokubanOnly` / `EPGStationOnly` / `Expected` は明細も出る）:
+
+```
+=== shadow-diff レポート ===
+Both:            12
+RokubanOnly:      1
+EPGStationOnly:   0
+Expected:         3
+
+-- RokubanOnly（説明できない差分。EPGStation 側に対応する予約がない） --
+programId        title       startAt (JST)
+327360102415398  ○○第3話  2026-08-01 22:00:00 JST
+
+-- Expected（allowlist で説明可能な差分） --
+programId        title    startAt (JST)            reason
+327360102415399           2026-08-01 23:00:00 JST  Rokuban 側でこの番組を除外している（program_intents.action = 'skip'）ため、EPGStation 側にのみ存在するのは想定通り
+```
+
+時刻は番組表と同じく JST 固定で表示する（実行環境のローカルタイムゾーンではない）。
+
+**終了コード**: 説明できない差分（`RokubanOnly` か `EPGStationOnly` が 1 件でもある）
+があれば `1`。CI や運用スクリプトから `rokuban shadow-diff ... && echo ok` のように
+`&&` で連ねられる。
+
+以下は allowlist（`Expected` に落ちる、説明可能な差分）:
+
+| 条件 | 理由 |
+|---|---|
+| EPGStation 側が `isTimeSpecified` または `programId` 欠落 | 時刻指定予約は programId を持たず照合できない。Rokuban に時刻指定予約の機能はない（[recording.md §9](recording.md)） |
+| EPGStation 側が `isSkip` | EPGStation 側でユーザーが除外した予約 |
+| EPGStation 側が `isOverlap` | EPGStation の重複排除ロジックで除外された予約 |
+| Rokuban 側が skip 意図（`program_intents.action = 'skip'`） | Rokuban で除外した予約。EPGStation 側にだけ有るのは正常 |
+
+**`isConflict` は allowlist に入らない。** チューナー競合は両者で起きる条件が同じはずで、
+片方だけの予約に現れているなら `EPGStationOnly` / `RokubanOnly` として報告され、
+調査が必要。
+
 ## 詰まったとき
 
 ### `ingest: transfer complete` が出ない
