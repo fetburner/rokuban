@@ -203,6 +203,16 @@ type QualityEvent struct {
 	Reason json.RawMessage `json:"reason"`
 }
 
+// DefaultSite は設定が単一 mirakc のときのサイト名。
+//
+// site は本来設定ファイルで定義するサイト名（[docs/schema.md] §1-5）だが、M1 の設定は
+// 単一 `mirakc:` なので全行が同一サイトになる。多拠点対応（`mirakcs:` リスト）の際に
+// ここを参照している箇所が設定由来の値に切り替わる。
+//
+// mirakc を指すすべてのテーブルが site を持つので、既定値の定義は 1 箇所に置く
+// （api と watcher が別々に "default" を書いていたのを統合した）。
+const DefaultSite = "default"
+
 // 予約ソース。
 const (
 	SourceRule   = "rule"

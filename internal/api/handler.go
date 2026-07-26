@@ -16,7 +16,8 @@ import (
 
 var version = "dev"
 
-const defaultSite = "default"
+// defaultSite は M1 の単一サイト構成でのサイト名。定義は db.DefaultSite（唯一の出所）。
+const defaultSite = db.DefaultSite
 
 // Server は予約 API のハンドラ実装。oapi-codegen の StrictServerInterface を満たす。
 type Server struct {

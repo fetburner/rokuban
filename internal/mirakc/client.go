@@ -6,23 +6,60 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
+	"time"
 )
 
 // Client は mirakc の Web API クライアント。
 // M1-1 のスコープ: schedules CRUD / records list・get・delete / records stream (Range, HEAD) / version。
 type Client struct {
-	baseURL    string
+	baseURL string
+	// httpClient は短命な JSON / HEAD 呼び出し用。全体タイムアウトを持つ。
 	httpClient *http.Client
+	// streamClient は長命な転送（record ストリーム・SSE）用。全体タイムアウトを持たない。
+	streamClient *http.Client
 }
 
+// 短命な呼び出しの全体タイムアウト。ListPrograms は数千件の JSON を返すので
+// 秒単位では足りず、かといって無制限だと mirakc の無応答でループが止まる。
+const shortRequestTimeout = 60 * time.Second
+
+// 接続確立と「最初のバイトが返るまで」の上限。これは**転送時間を制限しない**ので、
+// 長命なストリームにも安全にかけられる。
+const (
+	dialTimeout           = 10 * time.Second
+	responseHeaderTimeout = 30 * time.Second
+)
+
 // NewClient は指定の baseURL に対する mirakc クライアントを作成する。
+//
+// httpClient を渡した場合はストリーミング経路にも同じものを使う（テスト用。
+// タイムアウトの責務は呼び出し側に移る）。nil なら 2 種類のクライアントを組む。
+//
+// **ストリーミングと SSE に全体タイムアウトを付けてはならない。** `http.Client.Timeout`
+// はボディ読み出しまで含めた時間に効くため、687MB の record 転送や常時接続の SSE を
+// 途中で切ってしまう（River のジョブタイムアウトで ingest が死んだのと同じ失敗）。
+// 代わりに接続確立とレスポンスヘッダまでの時間だけを縛り、転送の停滞は
+// ingest 側のストール検知（docs/recording.md §5.3）と ctx で扱う。
 func NewClient(baseURL string, httpClient *http.Client) *Client {
-	if httpClient == nil {
-		httpClient = http.DefaultClient
+	if httpClient != nil {
+		return &Client{baseURL: baseURL, httpClient: httpClient, streamClient: httpClient}
 	}
-	return &Client{baseURL: baseURL, httpClient: httpClient}
+	transport := &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           (&net.Dialer{Timeout: dialTimeout}).DialContext,
+		TLSHandshakeTimeout:   dialTimeout,
+		ResponseHeaderTimeout: responseHeaderTimeout,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConnsPerHost:   4,
+	}
+	return &Client{
+		baseURL:      baseURL,
+		httpClient:   &http.Client{Transport: transport, Timeout: shortRequestTimeout},
+		streamClient: &http.Client{Transport: transport},
+	}
 }
 
 // GetVersion は GET /api/version を呼ぶ。
@@ -131,7 +168,7 @@ func (c *Client) StreamRecord(ctx context.Context, id string, offset int64) (io.
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
 	}
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.streamClient.Do(req)
 	if err != nil {
 		return nil, 0, fmt.Errorf("sending request: %w", err)
 	}

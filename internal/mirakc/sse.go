@@ -95,7 +95,7 @@ func (c *Client) subscribeOnce(ctx context.Context, ch chan<- Event, lastEventID
 		req.Header.Set("Last-Event-ID", lastEventID)
 	}
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.streamClient.Do(req)
 	if err != nil {
 		return false, "", fmt.Errorf("connecting to SSE: %w", err)
 	}

@@ -50,7 +50,6 @@ type Deps struct {
 // NewWorkers は全ワーカーを登録した river.Workers を返す。
 func NewWorkers(deps *Deps) *river.Workers {
 	workers := river.NewWorkers()
-	river.AddWorker(workers, &NoOpWorker{})
 	river.AddWorker(workers, &IngestWorker{
 		MirakcClient: deps.MirakcClient,
 		Pool:         deps.Pool,

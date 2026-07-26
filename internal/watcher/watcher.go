@@ -20,8 +20,8 @@ import (
 	"github.com/fetburner/rokuban/internal/worker"
 )
 
-// DefaultSite はデフォルトの mirakc サイト名。
-const DefaultSite = "default"
+// DefaultSite はデフォルトの mirakc サイト名。定義は db.DefaultSite（唯一の出所）。
+const DefaultSite = db.DefaultSite
 
 // Config は Watcher の設定。
 type Config struct {

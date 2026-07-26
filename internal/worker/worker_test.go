@@ -24,7 +24,12 @@ func TestNoOpJob(t *testing.T) {
 		t.Fatalf("cleaning river_job: %v", err)
 	}
 
+	// River の配線（投入 → 実行 → 完了イベント）だけを確かめるための何もしない
+	// ワーカー。本番の NewWorkers には登録しない（テスト専用のジョブ種別が
+	// 本番のキューに存在してしまうのを避ける）。
 	workers := NewWorkers(&Deps{Pool: pool})
+	river.AddWorker(workers, &noOpWorker{})
+
 	client, err := NewClient(pool, workers, ClientConfig{IngestConcurrency: 2})
 	if err != nil {
 		t.Fatalf("creating client: %v", err)
@@ -44,7 +49,7 @@ func TestNoOpJob(t *testing.T) {
 		<-client.Stopped()
 	}()
 
-	_, err = client.Insert(ctx, NoOpArgs{}, nil)
+	_, err = client.Insert(ctx, noOpArgs{}, nil)
 	if err != nil {
 		t.Fatalf("inserting job: %v", err)
 	}
@@ -217,3 +222,13 @@ func TestEpgSync_ReinsertableAfterCompletion(t *testing.T) {
 		t.Error("完了済みのジョブが一意性の判定に残っており、定期ジョブが再投入できない")
 	}
 }
+
+type noOpArgs struct{}
+
+func (noOpArgs) Kind() string { return "noop" }
+
+type noOpWorker struct {
+	river.WorkerDefaults[noOpArgs]
+}
+
+func (w *noOpWorker) Work(_ context.Context, _ *river.Job[noOpArgs]) error { return nil }
