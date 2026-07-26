@@ -2,6 +2,7 @@ package db
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 )
 
@@ -14,7 +15,6 @@ type Reservation struct {
 	RuleID            *int64          `db:"rule_id"`
 	State             string          `db:"state"`
 	Base              json.RawMessage `db:"base"`
-	Overrides         json.RawMessage `db:"overrides"`
 	Title             string          `db:"title"`
 	ProgramStartAt    time.Time       `db:"program_start_at"`
 	ProgramDurationMs int64           `db:"program_duration_ms"`
@@ -64,6 +64,47 @@ func (o *ReservationOptions) Effective(base *ReservationOptions) ReservationOpti
 	}
 	return eff
 }
+
+// EffectiveOptions は base（ruler の導出結果）と intent（ユーザー意図）から
+// 実効オプションを組む。予約行と program_intents 行の 2 つの jsonb を扱う箇所は
+// すべてここを通し、Unmarshal の失敗を握りつぶさない。
+//
+// intentAction が "skip" のとき skip = true を返す。intent は別表なので
+// base 側の skip を上書きする形になり、jsonb マージに細工を仕込む必要がない。
+func EffectiveOptions(base, intentOverrides []byte, intentAction *string) (ReservationOptions, error) {
+	var b *ReservationOptions
+	if len(base) > 0 {
+		var v ReservationOptions
+		if err := json.Unmarshal(base, &v); err != nil {
+			return ReservationOptions{}, fmt.Errorf("unmarshalling base: %w", err)
+		}
+		b = &v
+	}
+
+	var o *ReservationOptions
+	if len(intentOverrides) > 0 {
+		var v ReservationOptions
+		if err := json.Unmarshal(intentOverrides, &v); err != nil {
+			return ReservationOptions{}, fmt.Errorf("unmarshalling intent overrides: %w", err)
+		}
+		o = &v
+	}
+
+	eff := o.Effective(b)
+	if intentAction != nil && *intentAction == IntentSkip {
+		skip := true
+		eff.Skip = &skip
+	}
+	return eff, nil
+}
+
+// 番組単位のユーザー意図の action。
+const (
+	// IntentRecord は「録れ」。手動予約、およびルール由来予約への上書き。
+	IntentRecord = "record"
+	// IntentSkip は「録るな」。どのルール経由でも一貫して除外される。
+	IntentSkip = "skip"
+)
 
 func cloneStringSlicePtr(p *[]string) *[]string {
 	if p == nil {

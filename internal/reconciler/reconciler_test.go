@@ -97,7 +97,6 @@ func TestReconciler_CreatesSchedule(t *testing.T) {
 	res, err := q.CreateManualReservation(ctx, sqlcgen.CreateManualReservationParams{
 		Site:              "default",
 		ProgramID:         100000500011234,
-		Overrides:         json.RawMessage(`{}`),
 		Title:             "テスト番組",
 		ProgramStartAt:    startAt,
 		ProgramDurationMs: 1800000,
@@ -247,16 +246,26 @@ func TestReconciler_SkippedReservationNotScheduled(t *testing.T) {
 	q := sqlcgen.New(pool)
 
 	startAt := time.Now().Add(1 * time.Hour)
+	// 予約行があっても intent{skip} があれば schedule を作らない。
+	// （通常の取消は行ごと落とすが、ruler が作り直した直後などに両方が
+	// 共存しうるので、reconciler 側でも意図を尊重することを確かめる）
 	_, err := q.CreateManualReservation(ctx, sqlcgen.CreateManualReservationParams{
 		Site:              "default",
 		ProgramID:         200000500011234,
-		Overrides:         json.RawMessage(`{"skip":true}`),
 		Title:             "スキップ番組",
 		ProgramStartAt:    startAt,
 		ProgramDurationMs: 1800000,
 	})
 	if err != nil {
 		t.Fatalf("creating reservation: %v", err)
+	}
+	if _, err := q.SkipProgram(ctx, sqlcgen.SkipProgramParams{
+		Site:              "default",
+		ProgramID:         200000500011234,
+		ProgramStartAt:    startAt,
+		ProgramDurationMs: 1800000,
+	}); err != nil {
+		t.Fatalf("recording skip intent: %v", err)
 	}
 
 	rec := reconciler.New("default", mc, pool, &reconciler.Config{

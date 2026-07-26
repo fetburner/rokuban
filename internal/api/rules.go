@@ -145,14 +145,17 @@ func (h *Server) DeleteRule(ctx context.Context, req DeleteRuleRequestObject) (D
 		return nil, err
 	}
 
+	// 内訳は先に数える（削除後には数えられない）。
+	// 意図のある予約は残り、FK の ON DELETE SET NULL で rule_id が外れて
+	// 実質 manual として動く。意図自体は program_intents にあるので消えない。
 	id := req.Id
-	deleted, err := q.DeleteReservationsByRuleWithoutOverrides(ctx, &id)
+	detached, err := q.CountReservationsByRuleWithIntent(ctx, &id)
+	if err != nil {
+		return nil, fmt.Errorf("counting reservations with intent: %w", err)
+	}
+	deleted, err := q.DeleteReservationsByRuleWithoutIntent(ctx, &id)
 	if err != nil {
 		return nil, fmt.Errorf("deleting pure rule reservations: %w", err)
-	}
-	detached, err := q.DetachReservationsByRule(ctx, &id)
-	if err != nil {
-		return nil, fmt.Errorf("detaching rule reservations: %w", err)
 	}
 	n, err := q.DeleteRule(ctx, req.Id)
 	if err != nil {

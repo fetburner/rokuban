@@ -80,10 +80,10 @@ func TestSchemaV1_ReservationCRUD(t *testing.T) {
 	now := time.Now().Truncate(time.Microsecond)
 	var id int64
 	err := pool.QueryRow(ctx,
-		`INSERT INTO reservations (site, program_id, source, state, overrides, title, program_start_at, program_duration_ms)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		`INSERT INTO reservations (site, program_id, source, state, title, program_start_at, program_duration_ms)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)
 		 RETURNING id`,
-		"home", int64(327360102415397), "manual", "active", `{"priority":1}`, "テスト番組", now, int64(1800000),
+		"home", int64(327360102415397), "manual", "active", "テスト番組", now, int64(1800000),
 	).Scan(&id)
 	if err != nil {
 		t.Fatalf("insert reservation: %v", err)

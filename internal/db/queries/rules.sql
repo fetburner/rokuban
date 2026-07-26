@@ -121,21 +121,26 @@ SELECT count(*)::bigint AS count
 FROM reservations
 WHERE rule_id = sqlc.arg(rule_id);
 
--- name: DeleteReservationsByRuleWithoutOverrides :execrows
--- ルール削除時: overrides のない導出予約を物理削除する
-DELETE FROM reservations
-WHERE rule_id = sqlc.arg(rule_id)
-  AND overrides = '{}'::jsonb;
+-- name: DeleteReservationsByRuleWithoutIntent :execrows
+-- ルール削除時: ユーザー意図のない導出予約を物理削除する。
+-- 意図がある予約は残す（FK の ON DELETE SET NULL で rule_id が外れ、
+-- base が凍結されたまま実質 manual として動く = detached）。
+-- 意図は program_intents にあるので、行を残すこと自体が目的ではない。
+DELETE FROM reservations r
+WHERE r.rule_id = sqlc.arg(rule_id)
+  AND NOT EXISTS (
+      SELECT 1 FROM program_intents i
+      WHERE i.site = r.site AND i.program_id = r.program_id
+  );
 
--- name: DetachReservationsByRule :execrows
--- ルール削除時: overrides 付き予約を detached 化して rule_id を外す
-UPDATE reservations
-SET state      = 'detached',
-    source     = 'manual',
-    rule_id    = NULL,
-    updated_at = now()
-WHERE rule_id = sqlc.arg(rule_id);
-
+-- name: CountReservationsByRuleWithIntent :one
+-- ルール削除時の内訳表示用（detached 化される件数）
+SELECT count(*) FROM reservations r
+WHERE r.rule_id = sqlc.arg(rule_id)
+  AND EXISTS (
+      SELECT 1 FROM program_intents i
+      WHERE i.site = r.site AND i.program_id = r.program_id
+  );
 -- name: ValidateRegexPattern :exec
 -- POSIX ARE としてコンパイルできるか検証する。不正パターンはエラーになる。
 SELECT '' ~ $1;

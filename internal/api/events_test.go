@@ -104,7 +104,6 @@ func TestEvents_ReservationTriggersNotify(t *testing.T) {
 	_, err := sqlcgen.New(pool).CreateManualReservation(context.Background(), sqlcgen.CreateManualReservationParams{
 		Site:              defaultSite,
 		ProgramID:         1,
-		Overrides:         []byte(`{}`),
 		Title:             "テスト番組",
 		ProgramStartAt:    time.Now().Add(time.Hour),
 		ProgramDurationMs: 1800000,

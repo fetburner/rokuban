@@ -108,13 +108,13 @@ func (r *Reconciler) reconcile(ctx context.Context) error {
 	var created, deleted int
 	var missing int
 
-	for _, res := range reservations {
-		if _, exists := observedByProgram[res.ProgramID]; exists {
+	for _, d := range reservations {
+		if _, exists := observedByProgram[d.res.ProgramID]; exists {
 			continue
 		}
 		missing++
-		if err := r.createSchedule(ctx, res); err != nil {
-			slog.Error("reconciler: creating schedule", "reservation_id", res.ID, "program_id", res.ProgramID, "err", err)
+		if err := r.createSchedule(ctx, d); err != nil {
+			slog.Error("reconciler: creating schedule", "reservation_id", d.res.ID, "program_id", d.res.ProgramID, "err", err)
 			continue
 		}
 		created++
@@ -122,8 +122,8 @@ func (r *Reconciler) reconcile(ctx context.Context) error {
 	}
 
 	desiredPrograms := make(map[int64]struct{}, len(reservations))
-	for _, res := range reservations {
-		desiredPrograms[res.ProgramID] = struct{}{}
+	for _, d := range reservations {
+		desiredPrograms[d.res.ProgramID] = struct{}{}
 	}
 
 	var toDelete []int64
@@ -229,34 +229,40 @@ func (r *Reconciler) observeSchedules(ctx context.Context, schedules []mirakc.Sc
 	return nil
 }
 
-func (r *Reconciler) listDesired(ctx context.Context) ([]sqlcgen.Reservation, error) {
+// desiredReservation は予約行と、そこから解決済みの実効オプション。
+// オプションは base（ruler の導出結果）と program_intents（ユーザー意図）の
+// 合成なので、行だけを持ち回さず解決結果と組で扱う。
+type desiredReservation struct {
+	res  sqlcgen.Reservation
+	opts db.ReservationOptions
+}
+
+func (r *Reconciler) listDesired(ctx context.Context) ([]desiredReservation, error) {
 	reservations, err := sqlcgen.New(r.pool).ListActiveReservationsBySite(ctx, r.site)
 	if err != nil {
 		return nil, err
 	}
 
-	var desired []sqlcgen.Reservation
-	for _, res := range reservations {
-		var opts db.ReservationOptions
-		if len(res.Overrides) > 0 {
-			if err := json.Unmarshal(res.Overrides, &opts); err != nil {
-				slog.Error("reconciler: unmarshalling overrides", "reservation_id", res.ID, "err", err)
-				continue
-			}
+	var desired []desiredReservation
+	for _, row := range reservations {
+		opts, err := db.EffectiveOptions(row.Reservation.Base, row.IntentOverrides, row.IntentAction)
+		if err != nil {
+			// 壊れた jsonb で mirakc に既定値の schedule を作ってしまわないよう、
+			// この予約は同期対象から外してアラートする（握りつぶさない）。
+			slog.Error("reconciler: resolving effective options",
+				"reservation_id", row.Reservation.ID, "err", err)
+			continue
 		}
 		if opts.Skip != nil && *opts.Skip {
 			continue
 		}
-		desired = append(desired, res)
+		desired = append(desired, desiredReservation{res: row.Reservation, opts: opts})
 	}
 	return desired, nil
 }
 
-func (r *Reconciler) createSchedule(ctx context.Context, res sqlcgen.Reservation) error {
-	var opts db.ReservationOptions
-	if len(res.Overrides) > 0 {
-		_ = json.Unmarshal(res.Overrides, &opts)
-	}
+func (r *Reconciler) createSchedule(ctx context.Context, d desiredReservation) error {
+	res, opts := d.res, d.opts
 
 	priority := r.cfg.DefaultPriority
 	if opts.Priority != nil {
@@ -292,14 +298,15 @@ func (r *Reconciler) createSchedule(ctx context.Context, res sqlcgen.Reservation
 	return nil
 }
 
-func (r *Reconciler) markOrphaned(ctx context.Context, reservations []sqlcgen.Reservation, schedules []mirakc.Schedule) error {
+func (r *Reconciler) markOrphaned(ctx context.Context, reservations []desiredReservation, schedules []mirakc.Schedule) error {
 	scheduledPrograms := make(map[int64]struct{}, len(schedules))
 	for _, s := range schedules {
 		scheduledPrograms[s.Program.ID] = struct{}{}
 	}
 
 	q := sqlcgen.New(r.pool)
-	for _, res := range reservations {
+	for _, d := range reservations {
+		res := d.res
 		endTime := res.ProgramStartAt.Add(time.Duration(res.ProgramDurationMs) * time.Millisecond)
 		if !endTime.Before(time.Now()) {
 			continue

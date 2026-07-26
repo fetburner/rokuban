@@ -59,10 +59,12 @@ EPGStation の Reserve テーブルは「予約」「録画中状態」「録画
 reservations の行は 2 層に分かれる（詳細は [録画エンジン](recording.md) 参照）:
 
 - **base**: ruler が「ルール x EPG」から計算するフィールド群（priority / エンコードプロファイル / 保持ポリシー / ファイル名等）。**ruler だけが書く**
-- **overrides**: ユーザーが個別予約で上書きしたフィールドのみを持つ jsonb（skip もこの一種 `{"skip": true}`）。**api（ユーザー操作）だけが書く**
+- **overrides**: ユーザーが上書きしたフィールドのみを持つ jsonb。**`program_intents` 表に置き、api（ユーザー操作）だけが書く**（skip は jsonb のキーではなく `action` 列）
 - **effective = base + overrides**。reconciler が mirakc に同期し ingest/encode が参照するのは常に effective
 
-ruler は EPG 更新のたびに base を丸ごと再計算してよい --- overrides に触らないので手動編集は構造的に上書きされない。3-way merge は不要。
+ruler は EPG 更新のたびに base を丸ごと再計算してよい --- **overrides は別表なので構造的に触れない**。3-way merge は不要。
+
+意図を導出行と同じ表に置かないのは、1 行が「ユーザー意図の永続記録」と「ruler の導出結果」を兼ねると昇格・取消の分岐・削除の例外が派生するため（issue #18 の案 A。[録画エンジン](recording.md) §4.2）。
 
 ### mirakc 固有概念の隔離
 

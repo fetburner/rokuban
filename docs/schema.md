@@ -57,9 +57,9 @@ CREATE TABLE reservations (
     state             text   NOT NULL DEFAULT 'active'
                              CHECK (state IN ('active', 'detached', 'orphaned')),
 
-    -- 予約オプション 2 層（issue #2 の base/overrides コメント）
+    -- 予約オプションの導出側（issue #2 の base/overrides コメント）。
+    -- ユーザーの上書きは program_intents 表にあり、この行には載らない（§3.5）
     base              jsonb,                    -- ruler だけが書く。manual では NULL
-    overrides         jsonb  NOT NULL DEFAULT '{}',  -- api（ユーザー操作）だけが書く
 
     -- 番組情報の非正規化（reconciler の contentPath 生成・GC 判定・UI 表示を
     -- EPG プロジェクションの刈り取りと独立させるための最小限のスナップショット）
@@ -81,9 +81,9 @@ CREATE INDEX ON reservations (rule_id);
 
 ### base / overrides の意味論
 
-- **effective = COALESCE(base, '{}') ⊕ overrides**（jsonb の `||`）。reconciler が mirakc へ同期し、ingest / encode が参照するのは常に effective
-- base と overrides は**同形の jsonb ドキュメント**（§8）。ruler は EPG 更新のたびに base を丸ごと再計算してよく、overrides には触らないので手動編集は構造的に上書きされない
-- `skip` も overrides の一種（`{"skip": true}`）。effective で skip = true の予約は**行を保持したまま mirakc schedule を作らない**
+- **effective = COALESCE(base, '{}') ⊕ program_intents.overrides**。reconciler が mirakc へ同期し、ingest / encode が参照するのは常に effective。解決は `db.EffectiveOptions` の 1 箇所に集約し、jsonb の Unmarshal 失敗を握りつぶさない
+- base と overrides は**同形の jsonb ドキュメント**（§8）。ruler は EPG 更新のたびに base を丸ごと再計算してよく、**overrides は別表なので構造的に触れない**
+- **`skip` は overrides のキーではなく `program_intents.action`**。列なので base 側の skip に対する優先順位が明示的に決まる（`action = 'skip'` が勝つ）。skip された番組は**予約行を持たない**
 
 ### state のライフサイクル
 
@@ -103,6 +103,35 @@ CREATE INDEX ON reservations (rule_id);
 | base, state（active/detached 遷移） | ruler（M2〜） |
 | overrides、手動予約の作成・削除 | api |
 | state（orphaned 遷移）、GC | reconciler / ruler の reconcile パス |
+
+## 3.5 program_intents — 番組単位のユーザー意図（永続）
+
+**api だけが書き、ruler は読むだけ**の表。予約（導出）とユーザー意図（永続）を分離する（issue #18 の案 A、[録画エンジン](recording.md) §4.2）。
+
+```sql
+CREATE TABLE program_intents (
+    site       text   NOT NULL,
+    program_id bigint NOT NULL,
+    action     text   NOT NULL CHECK (action IN ('record', 'skip')),
+    overrides  jsonb  NOT NULL DEFAULT '{}',   -- 上書きしたキーのみの疎なドキュメント
+    -- GC 用スナップショット（EPG 射影の刈り取りと独立させる）
+    program_start_at    timestamptz NOT NULL,
+    program_duration_ms bigint      NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (site, program_id)
+);
+
+CREATE INDEX ON program_intents (program_start_at);
+```
+
+- **`action`**: `record`（録れ = 手動予約 / ルール由来予約への上書き）/ `skip`（録るな = 番組単位の除外）。**skip された番組は `reservations` に行を持たない**
+- **書き込み所有権**: api のみ。ruler は base を再計算するだけでこの表に触らない → 手動編集が構造的に上書きされない
+- **GC**: 番組終了後（`program_start_at + duration < now()`）。意図の寿命を放送の寿命に揃える
+- **site スコープ**: 「サイト A では録らない、B では録る」が N 予約の下では意味を持つため（[録画エンジン](recording.md) §3.1）
+- SSE ヒントは `reservations` トピックに寄せる（意図の変更は予約一覧・番組表の両方に現れる）
+
+取消は**無条件に `intent{skip}` を書いて導出行を落とす**。行を消すだけでは「消された行」と「最初から無かった行」が ruler から区別できず、次の全量パスが復活させる。
 
 ## 4. schedule_sync — mirakc schedule の観測（observed state）
 
@@ -281,7 +310,7 @@ CREATE TABLE drop_stats (
 
 ## 8. jsonb ドキュメント形式
 
-### 予約オプション（reservations.base / overrides、同形）
+### 予約オプション（reservations.base / program_intents.overrides、同形）
 
 キーは camelCase（Go の JSON 規約と揃える）。overrides は「ユーザーが上書きしたキーのみ」を持つ疎なドキュメント。
 
@@ -295,7 +324,8 @@ CREATE TABLE drop_stats (
 }
 ```
 
-- M1 では ruler がないため base = NULL、manual 予約の全フィールドが overrides に入る
+- M1 では ruler がないため base = NULL、manual 予約の全フィールドが `program_intents.overrides` に入る
+- `skip` は overrides のキーではなく `program_intents.action` の列（§3.5）
 - 検証はアプリ層（Go の struct へのマッピング）で行う。DB は形を強制しない
 - **命名規則の境界**: jsonb 内は camelCase（Go/JSON 規約）、SQL カラムは snake_case。recordings へのスナップショット時にアプリ層が変換する（例: jsonb の `"keepOriginal": "untilEncoded"` → SQL の `keep_original = 'until_encoded'`）
 
