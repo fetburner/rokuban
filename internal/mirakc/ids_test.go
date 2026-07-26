@@ -77,3 +77,23 @@ func TestServiceID(t *testing.T) {
 		})
 	}
 }
+
+// TestSplitProgramID_RealEPGStationData は実機の EPGStation（v2.10.0）の
+// GET /api/reserves のレスポンスから取った値で分解を検算する。
+//
+// programId から導いた service id が、同じレスポンスの channelId と一致することを
+// 見る。合成規則（NID*10^10 + SID*10^5 + EID / NID*10^5 + SID）が実際の
+// Mirakurun 互換 ID と合っていることの、実データによる裏付け。
+func TestSplitProgramID_RealEPGStationData(t *testing.T) {
+	const (
+		programID = int64(319205324851361)
+		channelID = int64(3192053248)
+	)
+	nid, sid, eid := SplitProgramID(programID)
+	if got := ServiceID(nid, sid); got != channelID {
+		t.Errorf("ServiceID(%d, %d) = %d, want %d (実機の channelId)", nid, sid, got, channelID)
+	}
+	if got := ComposeProgramID(nid, sid, eid); got != programID {
+		t.Errorf("ComposeProgramID(%d, %d, %d) = %d, want %d", nid, sid, eid, got, programID)
+	}
+}

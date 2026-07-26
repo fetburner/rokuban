@@ -173,6 +173,17 @@ Rokuban と EPGStation の両方に同じ番組の予約が入っていると、
 
 ### shadow-diff で予約差分を確認する
 
+
+EPGStation 側の API の形は**実機（v2.10.0）で確認済み**。`GET /api/reserves` は
+`{ reserves: [...], total: n }` を返し、各要素は `programId`（数値の Mirakurun ID）/
+`startAt` / `endAt`（UnixtimeMS）/ `isSkip` / `isConflict` / `isOverlap` /
+`isTimeSpecified` / `ruleId`（ルール由来のみ）を持つ。別バージョンで並走する場合は
+形が変わりうるので、最初に 1 回だけ確かめるとよい。
+
+```sh
+curl -s "$EPGSTATION_URL/api/reserves?type=all&isHalfWidth=false&limit=1&offset=0" | jq
+```
+
 M2 の出口基準は「予約差分ゼロ or 全件説明可能」（issue #6 / #24 の M2-14）。
 `rokuban shadow-diff` は Rokuban（DB）と EPGStation（API）の予約集合を programId で
 突き合わせ、差分を標準出力にレポートするサブコマンド。
