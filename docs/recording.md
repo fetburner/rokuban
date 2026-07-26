@@ -175,7 +175,7 @@ reconciler は存在の突き合わせだけでなく、**effective options と 
 - **1 回の reconcile / ruler パスでの削除数に閾値**（例: 対象総数の 20% または絶対数 N）を設け、超えたら削除を実行せず停止してアラート。手動確認後に再開
 - **ブレーカーが守るのは導出された削除だけ**（ルール x EPG の評価結果の変化）。ユーザーの明示操作（ルール削除 API 等）による削除は対象にしない — 代わりに影響件数の内訳を提示する確認 UI が安全装置になる。明示操作までブレーカーで止めると「削除したのに消えない」という別の説明不能を生む。API が同期的に消した予約行を reconciler が mirakc へ伝搬する際の削除が閾値を踏みうる相互作用は M2-5 の実装論点（issue #24）
 - **不変条件: 録画済みデータ（media_assets）に至る自動削除経路は retention reconcile のみ**。EPG・予約側の状態変化から録画物の削除に到達するパスを作らない
-- programId が EPG から消えた予約は即削除ではなく「orphaned」マークにして猶予を置く（mirakc 自身も removed-from-epg を理由付き failed として通知してくる）
+- programId が EPG から消えた予約は即削除せず猶予を置く（mirakc 自身も removed-from-epg を理由付き failed として通知してくる）。なお実装の `orphaned` state はこの用途ではなく「番組終了後に schedule が観測されなかった」を意味する（[schema.md](schema.md) §3）
 
 ### 3.3 watcher（SSE 購読・状態反映）
 

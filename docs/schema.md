@@ -91,10 +91,18 @@ CREATE INDEX ON reservations (rule_id);
 |---|---|---|
 | `active` | 通常の desired 予約 | — |
 | `detached` | ルールがマッチしなくなったが overrides がある行。base は凍結され、実質 manual として動く（skip 付きなら録画しない detached） | ルール再マッチで base 再計算のうえ `active` に戻る（overrides は無傷） |
-| `orphaned` | programId が EPG から消えた行。即削除せず猶予を置く（EPG フリッカー対策、issue #2） | EPG 復活で `active` へ。番組終了時刻経過で GC |
+| `orphaned` | **番組終了時刻を過ぎたのに mirakc に schedule が観測されなかった行**（= 録画されずに終わった）。即削除せず残して「録れなかった」を説明可能にする | 番組終了時刻経過で GC |
 
 - **行の物理削除（GC）は「番組の終了時刻を過ぎた後」のみ**。`program_start_at + program_duration_ms` で判定できるため EPG テーブルに依存しない
 - overrides のない active 予約がルール・EPG から消えた場合は通常の宣言的動作として削除（ただし大量削除サーキットブレーカーの対象）
+
+`orphaned` の意味は「EPG から消えた」ではない。M1 の実装（`reconciler.markOrphaned`）は
+**番組終了後に schedule が観測されなかった予約**を marking しており、EPG の欠損とは無関係。
+EPG フリッカー対策（issue #2 §3.2）は別の機構（大量削除サーキットブレーカー）が担う。
+
+この意味論のため、`orphaned` は `epg_last_seen_at` のようなタイムスタンプからは導出できない
+（「schedule が観測されなかった」という観測側の情報が必要）。状態機械を導出に寄せる案
+（[issue #18](https://github.com/fetburner/rokuban/issues/18) の案 B）を検討する際の制約になる。
 
 ### 書き込み所有権
 
