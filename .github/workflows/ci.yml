@@ -42,9 +42,10 @@ jobs:
         working-directory: web
       - run: pnpm build
         working-directory: web
-      # DB テストは testutil の advisory lock で直列化されるので -p 1 は不要
-      # （internal/db.TestLockKey。docs/runbook.md「開発時のテスト」参照）
-      - run: go test ./...
+      # DB を使うテストはパッケージごとに専用データベースを作るため（internal/testutil.SetupDB）、
+      # 待ち合わせも踏み合いもなく並行実行できる。-timeout はハングを早期検知するため既定の 10m より短くする。
+      # POSTGRES_USER はこのインスタンスの initdb 時に作られる初期ロールなので CREATE DATABASE 権限を持つ。
+      - run: go test ./... -timeout 5m
 
   lint:
     runs-on: ubuntu-latest

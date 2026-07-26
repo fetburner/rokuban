@@ -2,8 +2,13 @@ package db
 
 import (
 	"context"
+	"fmt"
+	"net/url"
 	"os"
-	"sync/atomic"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -11,57 +16,79 @@ import (
 	"github.com/fetburner/rokuban/internal/config"
 )
 
-// lockHeld はこのプロセスがテスト DB ロックを保持しているかを示す。
-var lockHeld atomic.Bool
+// invalidTestDBNameChar はデータベース識別子に使えない文字（英数と `_` 以外）にマッチする。
+var invalidTestDBNameChar = regexp.MustCompile(`[^A-Za-z0-9_]`)
 
-// testDatabaseURL は ROKUBAN_TEST_DATABASE_URL を返し、テスト用 DB の排他ロックを取る。
-// 未設定なら Skip する。呼び出し元はいずれもマイグレーションを張り替えるため、
-// URL の取得と同時にロックする（testutil.SetupDB と同じ規律。db は testutil を
-// 参照できないためロック処理をここに持つ）。
-func testDatabaseURL(t *testing.T) string {
-	t.Helper()
-	url := os.Getenv("ROKUBAN_TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("ROKUBAN_TEST_DATABASE_URL not set")
-	}
-	lockTestDB(t, url)
-	return url
+// postgresIdentifierMaxBytes は Postgres の識別子長の上限（バイト）。
+const postgresIdentifierMaxBytes = 63
+
+// dbPkgTestDB は db パッケージのテスト専用データベースの状態を保持する。
+// プロセス（db.test バイナリ）につき 1 回だけ用意する。
+var dbPkgTestDB struct {
+	once sync.Once
+	url  string
+	err  error
 }
 
-// lockTestDB はテスト用 DB の排他ロックを取得し、テスト終了時に解放する。
-// advisory lock はセッションレベルなので、コネクションを閉じれば解放される。
-// t.Cleanup は LIFO なので、最初に登録することでマイグレーション後始末の後に解放される。
+// testDatabaseURL は db パッケージのマイグレーションテスト専用データベースの URL を返す。
+// ROKUBAN_TEST_DATABASE_URL が未設定なら Skip する。
 //
-// ロックは毎回別コネクションで取るため再入できない。1 つのテストが testDatabaseURL を
-// 2 回呼ぶと自分自身のロックを待って自己デッドロックするので、同一プロセス内の二重取得は
-// 待たずに落とす。プロセスをまたぐ異常は lock_timeout が拾う。
-func lockTestDB(t *testing.T, dbURL string) {
+// internal/testutil はマイグレーション適用済みのデータベースを前提に db パッケージへ
+// 依存しており、db パッケージのテストから testutil を使うと循環インポートになる。
+// そのため testutil.SetupDB と同じ考え方（テストバイナリ名から導出した専用データベースを
+// 用意する）をここで独自に実装する。ここで作るデータベースは他パッケージのテスト DB とは
+// バイナリ名（db.test）で名前が分かれるため衝突しない。マイグレーション自体を検証する
+// テストなので、testutil のように TRUNCATE では済ませず、各テストが直接
+// MigrateUp / MigrateDown / MigrateReset を呼ぶ。
+func testDatabaseURL(t *testing.T) string {
 	t.Helper()
-	ctx := context.Background()
+	base := os.Getenv("ROKUBAN_TEST_DATABASE_URL")
+	if base == "" {
+		t.Skip("ROKUBAN_TEST_DATABASE_URL not set")
+	}
 
-	if !lockHeld.CompareAndSwap(false, true) {
-		t.Fatal("test db lock is already held by this process: " +
-			"1 つのテストで testDatabaseURL を複数回呼んでいるか、t.Parallel() で並行実行している")
-	}
-	t.Cleanup(func() { lockHeld.Store(false) })
-
-	conn, err := pgx.Connect(ctx, dbURL)
-	if err != nil {
-		t.Fatalf("connecting for test db lock: %v", err)
-	}
-	if _, err := conn.Exec(ctx, "SET lock_timeout = '120s'"); err != nil {
-		_ = conn.Close(ctx)
-		t.Fatalf("setting lock_timeout: %v", err)
-	}
-	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock($1)", TestLockKey); err != nil {
-		_ = conn.Close(ctx)
-		t.Fatalf("acquiring test db lock: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := conn.Close(context.Background()); err != nil {
-			t.Errorf("releasing test db lock: %v", err)
-		}
+	dbPkgTestDB.once.Do(func() {
+		dbPkgTestDB.url, dbPkgTestDB.err = createTestDatabase(context.Background(), base)
 	})
+	if dbPkgTestDB.err != nil {
+		t.Fatalf("preparing test database: %v", dbPkgTestDB.err)
+	}
+	return dbPkgTestDB.url
+}
+
+// createTestDatabase は base の DB へ接続し、db パッケージのテスト専用データベースを
+// DROP → CREATE してその URL を返す。データベース名はプレースホルダで渡せないため、
+// 正規化済みの名前だけを使い pgx.Identifier で引用してから埋め込む。
+func createTestDatabase(ctx context.Context, base string) (string, error) {
+	baseURL, err := url.Parse(base)
+	if err != nil {
+		return "", fmt.Errorf("parsing base database url: %w", err)
+	}
+
+	binary := strings.TrimSuffix(filepath.Base(os.Args[0]), ".test")
+	name := strings.TrimPrefix(baseURL.Path, "/") + "_" + binary
+	name = invalidTestDBNameChar.ReplaceAllString(name, "_")
+	if len(name) > postgresIdentifierMaxBytes {
+		name = name[:postgresIdentifierMaxBytes]
+	}
+	quoted := pgx.Identifier{name}.Sanitize()
+
+	conn, err := pgx.Connect(ctx, base)
+	if err != nil {
+		return "", fmt.Errorf("connecting to base database: %w", err)
+	}
+	defer func() { _ = conn.Close(ctx) }()
+
+	if _, err := conn.Exec(ctx, "DROP DATABASE IF EXISTS "+quoted); err != nil {
+		return "", fmt.Errorf("dropping test database: %w", err)
+	}
+	if _, err := conn.Exec(ctx, "CREATE DATABASE "+quoted); err != nil {
+		return "", fmt.Errorf("creating test database: %w", err)
+	}
+
+	dbURL := *baseURL
+	dbURL.Path = "/" + name
+	return dbURL.String(), nil
 }
 
 func TestMigrateUpDown(t *testing.T) {

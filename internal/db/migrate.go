@@ -17,14 +17,6 @@ import (
 //go:embed migrations/*.sql
 var migrations embed.FS
 
-// TestLockKey はテスト用データベースを排他するための advisory lock キー。
-//
-// テストはデータベースを共有し、各テストが MigrateReset で作り直す。go test ./... は
-// パッケージを並行実行するため、マイグレーションを踏み合わないようこのキーで直列化する。
-// db パッケージに置いているのは、testutil が db を参照する片方向の依存にするため。
-// role パッケージのリーダー選出キー（fnv64a("rokuban:<role>")）とは衝突しない値を使う。
-const TestLockKey int64 = -0x726f6b7562616e
-
 // MigrateUp はアプリ (goose) → River の順にマイグレーションを適用する。
 // River は独自のマイグレーション管理 (rivermigrate) を持つため goose とは別系統で実行する。
 func MigrateUp(ctx context.Context, dbURL string) error {

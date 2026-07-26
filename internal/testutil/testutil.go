@@ -2,8 +2,13 @@ package testutil
 
 import (
 	"context"
+	"fmt"
+	"net/url"
 	"os"
-	"sync/atomic"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -22,33 +27,47 @@ func DatabaseURL(t *testing.T) string {
 	return url
 }
 
-// SetupDB はマイグレーションを適用してプールを返す。テスト終了時に Reset + Close する。
+// invalidDBNameChar はデータベース識別子に使えない文字（英数と `_` 以外）にマッチする。
+var invalidDBNameChar = regexp.MustCompile(`[^A-Za-z0-9_]`)
+
+// postgresIdentifierMaxBytes は Postgres の識別子長の上限（バイト）。
+const postgresIdentifierMaxBytes = 63
+
+// packageTestDB は 1 プロセス（1 テストバイナリ = 1 パッケージ）につき 1 回だけ用意する
+// テスト用データベースの状態を保持する。
+var packageTestDB struct {
+	once sync.Once
+	url  string
+	err  error
+}
+
+// SetupDB はテストパッケージ専用のデータベースに全テーブルを空の状態で用意し、
+// 接続プールを返す。テスト終了時にプールを Close する。
 //
-// テスト用データベースは全パッケージで共有し、各テストが MigrateReset で作り直す。
-// go test ./... はパッケージを並行実行するため、advisory lock で DB を使うテストを
-// 直列化し、別パッケージのマイグレーションを踏み合わないようにする。
+// テスト用データベースはパッケージごとに分ける。go test ./... はパッケージを並行実行
+// するため、全パッケージで 1 つの DB を共有すると advisory lock による直列化が必要になり、
+// 待ち時間が lock_timeout を超えて flaky になっていた。ROKUBAN_TEST_DATABASE_URL から
+// テストバイナリ名で導出した専用データベースを使うことで、待ち合わせなしで並行実行できる。
+//
+// データベースの作成とマイグレーションはプロセスごとに 1 回だけ行い（sync.Once）、
+// 各 SetupDB 呼び出しでは全テーブルを TRUNCATE するだけにして高速化する。
 func SetupDB(t *testing.T) *pgxpool.Pool {
 	t.Helper()
-	dbURL := DatabaseURL(t)
 	ctx := context.Background()
+	base := DatabaseURL(t)
 
-	// ロック解放（コネクション切断）を最初に登録することで、t.Cleanup の LIFO 順により
-	// MigrateReset とプール Close の後に解放される。
-	lockTestDB(t, dbURL)
-
-	if err := db.MigrateReset(ctx, dbURL); err != nil {
-		t.Fatalf("migrate reset: %v", err)
-	}
-	if err := db.MigrateUp(ctx, dbURL); err != nil {
-		t.Fatalf("migrate up: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := db.MigrateReset(ctx, dbURL); err != nil {
-			t.Errorf("cleanup migrate reset: %v", err)
-		}
+	packageTestDB.once.Do(func() {
+		packageTestDB.url, packageTestDB.err = ensurePackageTestDatabase(ctx, base)
 	})
+	if packageTestDB.err != nil {
+		t.Fatalf("preparing package test database: %v", packageTestDB.err)
+	}
 
-	pool, err := pgxpool.New(ctx, dbURL)
+	if err := truncateAllTables(ctx, packageTestDB.url); err != nil {
+		t.Fatalf("truncating tables: %v", err)
+	}
+
+	pool, err := pgxpool.New(ctx, packageTestDB.url)
 	if err != nil {
 		t.Fatalf("creating pool: %v", err)
 	}
@@ -56,46 +75,92 @@ func SetupDB(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
-// setLockTimeout はテスト用 DB のロック待ち上限を設定する。
-// 別パッケージのテストを待つには十分で、異常時は必ず落ちる値にする。
-const setLockTimeout = "SET lock_timeout = '120s'"
-
-// lockHeld はこのプロセスがテスト DB ロックを保持しているかを示す。
-var lockHeld atomic.Bool
-
-// lockTestDB はテスト用 DB の排他ロックを取得し、テスト終了時に解放する。
-// advisory lock はセッションレベルなので、コネクションを閉じれば解放される。
-//
-// ロックは毎回別コネクションで取るため再入できない。1 つのテストが SetupDB を 2 回呼ぶと
-// 自分自身のロックを待って自己デッドロックするので、同一プロセス内の二重取得は待たずに
-// 落とす。プロセスをまたぐ異常は lock_timeout が拾う。
-func lockTestDB(t *testing.T, dbURL string) {
-	t.Helper()
-	ctx := context.Background()
-
-	if !lockHeld.CompareAndSwap(false, true) {
-		t.Fatal("test db lock is already held by this process: " +
-			"1 つのテストで SetupDB を複数回呼んでいるか、t.Parallel() で並行実行している")
+// packageTestDatabaseName は base のデータベース名とテストバイナリ名から、
+// パッケージ固有のデータベース名を決定的に導出する。英数と `_` 以外の文字は `_` に
+// 置換し、Postgres の識別子長 63 バイト制限に収まるよう必要なら切り詰める。
+func packageTestDatabaseName(base *url.URL) string {
+	binary := strings.TrimSuffix(filepath.Base(os.Args[0]), ".test")
+	name := strings.TrimPrefix(base.Path, "/") + "_" + binary
+	name = invalidDBNameChar.ReplaceAllString(name, "_")
+	if len(name) > postgresIdentifierMaxBytes {
+		name = name[:postgresIdentifierMaxBytes]
 	}
-	// 解放フラグを最初に登録することで、t.Cleanup の LIFO 順により
-	// 実際のロック解放（コネクション切断）より後に走る。
-	t.Cleanup(func() { lockHeld.Store(false) })
+	return name
+}
 
+// ensurePackageTestDatabase は base の DB へ接続してパッケージ専用データベースを
+// DROP → CREATE し、マイグレーションを適用したうえで、そのデータベースを指す URL を返す。
+func ensurePackageTestDatabase(ctx context.Context, base string) (string, error) {
+	baseURL, err := url.Parse(base)
+	if err != nil {
+		return "", fmt.Errorf("parsing base database url: %w", err)
+	}
+
+	// データベース名はプレースホルダで渡せないため、正規化済みの名前だけを使い
+	// pgx.Identifier で引用してから埋め込む。
+	name := packageTestDatabaseName(baseURL)
+	quoted := pgx.Identifier{name}.Sanitize()
+
+	conn, err := pgx.Connect(ctx, base)
+	if err != nil {
+		return "", fmt.Errorf("connecting to base database: %w", err)
+	}
+	defer func() { _ = conn.Close(ctx) }()
+
+	if _, err := conn.Exec(ctx, "DROP DATABASE IF EXISTS "+quoted); err != nil {
+		return "", fmt.Errorf("dropping package test database: %w", err)
+	}
+	if _, err := conn.Exec(ctx, "CREATE DATABASE "+quoted); err != nil {
+		return "", fmt.Errorf("creating package test database: %w", err)
+	}
+
+	dbURL := *baseURL
+	dbURL.Path = "/" + name
+	dbURLStr := dbURL.String()
+
+	if err := db.MigrateUp(ctx, dbURLStr); err != nil {
+		return "", fmt.Errorf("migrating package test database: %w", err)
+	}
+	return dbURLStr, nil
+}
+
+// truncateAllTables は public スキーマのユーザーテーブル（goose の管理テーブル
+// goose_db_version を除く）をすべて TRUNCATE し、シーケンスも 1 から振り直す。
+// River のテーブル（river_job など）もマイグレーションで作られる通常のテーブルなので
+// 対象に含まれる。
+func truncateAllTables(ctx context.Context, dbURL string) error {
 	conn, err := pgx.Connect(ctx, dbURL)
 	if err != nil {
-		t.Fatalf("connecting for test db lock: %v", err)
+		return fmt.Errorf("connecting to package test database: %w", err)
 	}
-	if _, err := conn.Exec(ctx, setLockTimeout); err != nil {
-		_ = conn.Close(ctx)
-		t.Fatalf("setting lock_timeout: %v", err)
+	defer func() { _ = conn.Close(ctx) }()
+
+	rows, err := conn.Query(ctx, `
+		SELECT tablename FROM pg_tables
+		WHERE schemaname = 'public' AND tablename <> 'goose_db_version'
+	`)
+	if err != nil {
+		return fmt.Errorf("listing tables: %w", err)
 	}
-	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock($1)", db.TestLockKey); err != nil {
-		_ = conn.Close(ctx)
-		t.Fatalf("acquiring test db lock: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := conn.Close(context.Background()); err != nil {
-			t.Errorf("releasing test db lock: %v", err)
+	defer rows.Close()
+
+	var tables []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return fmt.Errorf("scanning table name: %w", err)
 		}
-	})
+		tables = append(tables, pgx.Identifier{name}.Sanitize())
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterating tables: %w", err)
+	}
+	if len(tables) == 0 {
+		return nil
+	}
+
+	if _, err := conn.Exec(ctx, "TRUNCATE "+strings.Join(tables, ", ")+" RESTART IDENTITY CASCADE"); err != nil {
+		return fmt.Errorf("truncating tables: %w", err)
+	}
+	return nil
 }
