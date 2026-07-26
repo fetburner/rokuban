@@ -191,7 +191,7 @@ func validateRuleInput(ctx context.Context, pool *pgxpool.Pool, in RuleInput) er
 		for _, m := range *in.TextMatches {
 			if m.Mode == Regex && m.Value != "" {
 				if err := q.ValidateRegexPattern(ctx, m.Value); err != nil {
-					return fmt.Errorf("invalid regex %q (POSIX ARE; lookbehind is not supported): %v", m.Value, err)
+					return fmt.Errorf("invalid regex %q (POSIX ARE; lookbehind is not supported): %w", m.Value, err)
 				}
 			}
 		}

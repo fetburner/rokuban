@@ -14,16 +14,16 @@ import (
 // Conditions は 1 ルール分のマッチ条件（フラット AND + negate 付き述語）。
 // 空のスライス / nil ポインタは「問わない」。
 type Conditions struct {
-	IsFree         *bool
-	DurationMinMs  *int64
-	DurationMaxMs  *int64
-	PeriodStartAt  *time.Time
-	PeriodEndAt    *time.Time
-	TextMatches    []TextMatch
-	Services       []ServiceRef
-	ChannelTypes   []string
-	Genres         []int16
-	Times          []TimeWindow
+	IsFree        *bool
+	DurationMinMs *int64
+	DurationMaxMs *int64
+	PeriodStartAt *time.Time
+	PeriodEndAt   *time.Time
+	TextMatches   []TextMatch
+	Services      []ServiceRef
+	ChannelTypes  []string
+	Genres        []int16
+	Times         []TimeWindow
 	// Sites が空なら呼び出し側が渡す site 引数のみで絞る（ルールの「全サイト」）。
 	// 非空なら、そのリストに含まれる site だけが対象（rule_sites）。
 	Sites []string
@@ -214,6 +214,11 @@ func escapeLike(s string) string {
 	return s
 }
 
+// startAtJST は番組開始時刻を JST の壁時計（timestamp）に落とす式。
+// 曜日と時刻の両方で使うため 1 箇所で定義する（同じ式を複数箇所に書き下すと
+// 連結ミスが混入し、生成 SQL を実行しないテストではすり抜ける）。
+const startAtJST = "(p.start_at AT TIME ZONE 'Asia/Tokyo')"
+
 func compileTimeWindow(tw TimeWindow, arg func(any) string) (string, error) {
 	if tw.Weekdays < 1 || tw.Weekdays > 127 {
 		return "", fmt.Errorf("weekdays out of range: %d", tw.Weekdays)
@@ -222,16 +227,12 @@ func compileTimeWindow(tw TimeWindow, arg func(any) string) (string, error) {
 		return "", fmt.Errorf("time seconds out of range")
 	}
 
-	// Postgres isodow: 1=月 … 7=日 → 我々の bit0=月 … bit6=日
-	const tz = "Asia/Tokyo"
-	dowExpr := "(1 << (CASE EXTRACT(ISODOW FROM p.start_at AT" + tz + "\")::int" +
-		" WHEN 7 THEN 6 ELSE EXTRACT(ISODOW FROM p.start_at AT" + tz + "\")::int - 1 END))"
+	// Postgres isodow: 1=月 … 7=日。我々のビットは bit0=月 … bit6=日 なので常に isodow-1。
+	dowExpr := "(1 << (EXTRACT(ISODOW FROM " + startAtJST + ")::int - 1))"
 	weekdayClause := "(" + dowExpr + " & " + arg(tw.Weekdays) + ") <> 0"
 
-	// 時刻は JST のその日の秒
-	secExpr := "(EXTRACT(HOUR FROM p.start_at AT" + tz + "\")::int * 3600" +
-		" + EXTRACT(MINUTE FROM p.start_at AT" + tz + "\")::int * 60" +
-		" + EXTRACT(SECOND FROM p.start_at AT" + tz + "\")::int)"
+	// 時刻は JST の壁時計での「その日の 0 時からの秒」
+	secExpr := "EXTRACT(EPOCH FROM " + startAtJST + "::time)::int"
 	var timeClause string
 	if tw.EndSec >= tw.StartSec {
 		timeClause = secExpr + " >= " + arg(tw.StartSec) + " AND " + secExpr + " < " + arg(tw.EndSec)

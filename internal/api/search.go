@@ -19,14 +19,11 @@ func (h *Server) SearchPrograms(ctx context.Context, req SearchProgramsRequestOb
 		site = *req.Body.Site
 	}
 
-	c, err := conditionsFromSearch(*req.Body)
-	if err != nil {
-		return SearchPrograms400JSONResponse{Error: err.Error()}, nil
-	}
+	c := conditionsFromSearch(*req.Body)
 
 	// 検索 API でも ARE の不正パターンを 400 にする（ルール作成時と同規約）
-	if err := validateSearchRegex(ctx, h, c); err != nil {
-		return SearchPrograms400JSONResponse{Error: err.Error()}, nil
+	if msg := searchRegexError(ctx, h, c); msg != "" {
+		return SearchPrograms400JSONResponse{Error: msg}, nil
 	}
 
 	ids, err := rulequery.MatchProgramIDs(ctx, h.pool, site, c)
@@ -39,7 +36,7 @@ func (h *Server) SearchPrograms(ctx context.Context, req SearchProgramsRequestOb
 	return SearchPrograms200JSONResponse(ids), nil
 }
 
-func conditionsFromSearch(in ProgramSearchRequest) (rulequery.Conditions, error) {
+func conditionsFromSearch(in ProgramSearchRequest) rulequery.Conditions {
 	c := rulequery.Conditions{
 		IsFree:        in.IsFree,
 		DurationMinMs: in.DurationMinMs,
@@ -88,18 +85,21 @@ func conditionsFromSearch(in ProgramSearchRequest) (rulequery.Conditions, error)
 	if in.Sites != nil {
 		c.Sites = append(c.Sites, (*in.Sites)...)
 	}
-	return c, nil
+	return c
 }
 
-func validateSearchRegex(ctx context.Context, h *Server, c rulequery.Conditions) error {
+// searchRegexError は不正な正規表現があればユーザー向けメッセージを返す（なければ空文字）。
+// error ではなくメッセージを返すのは、これが 400 のレスポンス本文になるだけで
+// 呼び出し側に伝播する失敗ではないため（epg.go の windowError と同じ規約）。
+func searchRegexError(ctx context.Context, h *Server, c rulequery.Conditions) string {
 	q := sqlcgen.New(h.pool)
 	for _, m := range c.TextMatches {
 		if m.Mode != "regex" || m.Value == "" {
 			continue
 		}
 		if err := q.ValidateRegexPattern(ctx, m.Value); err != nil {
-			return fmt.Errorf("invalid regex %q (POSIX ARE; lookbehind is not supported): %v", m.Value, err)
+			return fmt.Sprintf("invalid regex %q (POSIX ARE; lookbehind is not supported): %v", m.Value, err)
 		}
 	}
-	return nil
+	return ""
 }
