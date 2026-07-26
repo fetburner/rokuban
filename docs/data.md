@@ -48,17 +48,18 @@ NOTIFY はコミット時にのみ配送される組み込み pub/sub。各コ�
 EPGStation の Reserve テーブルは「予約」「録画中状態」「録画結果」が混在していた。Rokuban では k8s の spec/status と同じ分離をスキーマに刻む:
 
 - `rules` → `reservations` --- desired state。ルール評価の純粋な出力。手動予約も同じテーブルで source が違うだけ
+- `program_intents` --- 番組単位のユーザー意図（録れ / 録るな + 上書き）。**api だけが書き ruler は読むだけ**の永続表。導出行（reservations）とは別に置くことで、ruler が毎パス base を再計算しても意図が失われない
 - `schedule_sync` --- observed state。mirakc 側に実在する schedule の最新観測。reconciler はこの 2 つの差分だけを見る
 - `records` → `media_assets` --- 録画完了後の成果物。相対パス、エンコード派生物、サムネイルを紐付け
 - 予約フィールドは mirakc のモデル（programId + RecordingOptions + tags）に素直に合わせる。「いつか使うかもしれない列」（マージン等）は持たない
 
 予約がどのルールから生まれたかを外部キーで辿れるため、監査・デバッグが SQL で完結する。
 
-### reservations の base / overrides 分離
+### 予約オプションの base / overrides 分離
 
-reservations の行は 2 層に分かれる（詳細は [録画エンジン](recording.md) 参照）:
+予約オプションは 2 層に分かれる。**同じ行の 2 列ではなく、別の表に置く**（詳細は [録画エンジン](recording.md) §4.2）:
 
-- **base**: ruler が「ルール x EPG」から計算するフィールド群（priority / エンコードプロファイル / 保持ポリシー / ファイル名等）。**ruler だけが書く**
+- **base**: ruler が「ルール x EPG」から計算するフィールド群（priority / エンコードプロファイル / 保持ポリシー / ファイル名テンプレート）。`reservations.base` に載り、**ruler だけが書く**
 - **overrides**: ユーザーが上書きしたフィールドのみを持つ jsonb。**`program_intents` 表に置き、api（ユーザー操作）だけが書く**（skip は jsonb のキーではなく `action` 列）
 - **effective = base + overrides**。reconciler が mirakc に同期し ingest/encode が参照するのは常に effective
 

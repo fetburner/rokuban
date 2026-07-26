@@ -31,7 +31,16 @@ M1-2（issue #13）の成果物。設計根拠は issue #2（base/overrides 分�
 
 ```mermaid
 erDiagram
-    rules ||--o{ reservations : "rule_id (M2 で FK)"
+    rules ||--o{ rule_text_matches : "rule_id"
+    rules ||--o{ rule_services : "rule_id"
+    rules ||--o{ rule_channel_types : "rule_id"
+    rules ||--o{ rule_genres : "rule_id"
+    rules ||--o{ rule_times : "rule_id"
+    rules ||--o{ rule_sites : "rule_id"
+    rules ||--o{ reservations : "rule_id (勝者ルール)"
+    rules ||--o{ reservation_rule_matches : "rule_id (全マッチ)"
+    reservations ||--o{ reservation_rule_matches : "reservation_id"
+    program_intents |o--o| reservations : "(site, program_id) で対応"
     reservations ||--o| schedule_sync : "reservation_id (observed)"
     reservations ||--o{ recordings : "reservation_id (snapshot 後は独立)"
     recordings ||--o{ record_sync : "recording_id (observed)"
@@ -39,9 +48,12 @@ erDiagram
     media_assets ||--o{ drop_stats : "media_asset_id"
 ```
 
-- 左側（rules / reservations）= desired、右上（*_sync）= observed、右下（recordings / media_assets / drop_stats）= 永続資産
-- `rules` は M2（ruler）で追加。v1 では `rule_id` カラムだけ確保し FK 制約は M2 のマイグレーションで付ける
-- EPG プロジェクション（`epg_services` / `epg_programs`）は M1-6 で追加（§9）
+- **desired**: `rules` + 子表（ユーザーが書く永続資産）/ `program_intents`（番組単位のユーザー意図。永続）/ `reservations`（ruler が導出）
+- **observed**: `schedule_sync` / `record_sync`（mirakc の観測。短命・使い捨て）
+- **永続資産**: `recordings` / `media_assets` / `drop_stats`
+- `program_intents` と `reservations` は FK ではなく `(site, program_id)` で対応する。**skip された番組は `reservations` に行を持たない**ため、常に 1:1 ではない（§3.5）
+- `reservations.rule_id` は**勝者ルール**のみ。マッチした全ルールは `reservation_rule_matches` に入る
+- `rules` 一式と `program_intents` は M2 で追加（`00006` / `00008`）。EPG プロジェクション（`epg_services` / `epg_programs`）は M1-6（`00004`）、チャンネル列は `00009`
 
 ## 3. reservations — 予約（desired state）
 
@@ -138,9 +150,10 @@ EPG フリッカー対策（issue #2 §3.2）は別の機構（大量削除サ�
 
 | カラム | 書く人 |
 |---|---|
-| base, state（active/detached 遷移） | ruler（M2〜） |
-| overrides、手動予約の作成・削除 | api |
-| state（orphaned 遷移）、GC | reconciler / ruler の reconcile パス |
+| `reservations` の base / チャンネル列 / 番組スナップショット / state（active・detached 遷移） | ruler（M2〜） |
+| `reservations` と `program_intents` の GC（番組終了 + `epg.retention_grace` 経過） | ruler のパス |
+| `program_intents`（action / overrides）、手動予約の作成・取消 | api |
+| state（orphaned 遷移） | reconciler |
 
 ## 3.5 program_intents — 番組単位のユーザー意図（永続）
 
@@ -204,7 +217,7 @@ CREATE INDEX ON schedule_sync (reservation_id);
 CREATE TABLE recordings (
     id                bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     reservation_id    bigint REFERENCES reservations (id) ON DELETE SET NULL,
-    rule_id           bigint,        -- トレーサビリティ。M2 で FK 追加
+    rule_id           bigint,        -- トレーサビリティ。00006 で FK 追加済み
     source            text   NOT NULL CHECK (source IN ('rule', 'manual')),
     site              text   NOT NULL,  -- どのサイトで録画したか（履歴として snapshot）
 
@@ -512,15 +525,24 @@ EPGStation は `relatedItems` を見る `isMainProgram()` と name チェック�
 
 ## 10. 後続マイグレーションで追加するテーブル
 
-v1 には**含めない**が、参照関係を先に固定しておくもの:
+v1 には含めず、後続のマイグレーションで足すもの。参照関係だけ先に固定しておく。
+
+### 追加済み（M2）
+
+| マイグレーション | 内容 |
+|---|---|
+| `00006_rules.sql` | `rules` + 条件の子表 6 つ + `reservation_rule_matches`。`reservations.rule_id` / `recordings.rule_id` に FK を追加。`array_is_canonical_set` 関数 |
+| `00007_epg_search.sql` | `normalize_search_text` 関数と `epg_programs` への式 GIN（全角/半角の吸収。[データ層](data.md) §5） |
+| `00008_program_intents.sql` | `program_intents`。`reservations.overrides` を移設して列を削除（§3.5） |
+| `00009_reservation_channel.sql` | `reservations` にチャンネル識別 4 列（§3） |
+
+### 未実装
 
 | テーブル | マイルストーン | v1 との接続 |
 |---|---|---|
-| `rules` | M2 | `reservations.rule_id` / `recordings.rule_id` に FK 制約を追加 |
-| `orphan_files` | 削除エンジン実装時 | 孤児候補の first_seen 記録（DB リストアで削除窓が開き直す安全弁） |
-| サービスロゴ台帳 | M2+ | ファイルは `logos/` 配下、DB は相対パス + ハッシュ |
-| `tuner_sync` | M2 | mirakc の `/api/tuners` の観測（使い捨てプロジェクション）。容量超過の判定に使う。`epg_services` と同型で、`types text[]` に `CHECK (types <@ ARRAY['GR','BS','CS','SKY'])` |
-| `reservations` へのチャンネル列追加 | M2 | `network_id` / `service_id` / `channel_type` / `channel` のスナップショット。容量超過の判定は需要の単位が `(channel_type, channel)` なので必須。使い捨ての EPG 射影への JOIN に頼れない（[データ層](data.md) §6.5） |
+| `tuner_sync` | M2（M2-10） | mirakc の `/api/tuners` の観測（使い捨てプロジェクション）。容量超過の判定に使う。`epg_services` と同型で、`types text[]` に `CHECK (types <@ ARRAY['GR','BS','CS','SKY'])` |
+| サービスロゴ台帳 | M2（M2-12） | ファイルは `logos/` 配下、DB は相対パス + ハッシュ |
+| `orphan_files` | 削除エンジン実装時（M3） | 孤児候補の first_seen 記録（DB リストアで削除窓が開き直す安全弁） |
 
 EPG プロジェクションが v1 に入らなかった理由: 使い捨てキャッシュであり永続資産と寿命が違う（§9）。「最終形で切る」対象は、他の全タスクが依存し、後から変えると痛い**永続資産と desired/observed の骨格**。
 

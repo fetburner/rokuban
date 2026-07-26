@@ -298,7 +298,7 @@ reservations の行を 2 層に分ける:
 
 意図の寿命は放送の寿命に揃える（番組終了後に GC）。
 
-ruler は EPG 更新のたびに base を丸ごと再計算してよい --- overrides に触らないので手動編集は構造的に上書きされない。3-way merge は不要。ruler（シングルトン）と api が別カラムを書くので競合もない。**ルール側の変更は上書きしていないフィールドにだけ自動伝播する**（ユーザーの直感と一致）。
+ruler は EPG 更新のたびに base を丸ごと再計算してよい --- **overrides は別表（`program_intents`）にあるので構造的に触れない**。3-way merge は不要。ruler（シングルトン）は `reservations` を、api は `program_intents` を書くので競合もない。**ルール側の変更は上書きしていないフィールドにだけ自動伝播する**（ユーザーの直感と一致）。
 
 UI: 上書き中のフィールドにマーカー表示 + フィールド単位/予約単位の「ルールに戻す」（override を消すだけ）。
 
@@ -323,7 +323,7 @@ EPG の変化・ルール編集でルールがマッチしなくなったとき:
 
 ### 4.4 manual 予約との統一
 
-manual 予約は「base を持たず全フィールドが overrides」の縮退形。同一テーブル・同一コードパスで扱う。複数ルールマッチ時（最高 priority ルールが base を供給）も、勝者が入れ替われば base が変わるだけで overrides は生存する。
+manual 予約は「base を持たず、`program_intents` に `action = 'record'` と上書きだけがある」縮退形。ルール由来予約と同一コードパスで扱う。複数ルールマッチ時（最高 priority ルールが base を供給）も、勝者が入れ替われば base が変わるだけで意図は生存する。
 
 source / state は「今、誰が base を供給しているか」の答えに過ぎない: `manual` = 誰もいない（base = NULL）/ `rule` = ルールが毎パス再計算 / `detached` = かつてのルール（凍結された base）。
 
