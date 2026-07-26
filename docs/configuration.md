@@ -56,7 +56,16 @@ ingest:
 
 epg:
   sync_interval: 10m             # mirakc から EPG を全量取得する間隔
-  retention_grace: 24h           # 放送終了からこの時間で番組を刈り取る
+  retention_grace: 24h           # 放送終了からこの時間で番組を刈り取る。
+                                 # ruler の GC（予約と番組単位の意図）も同じ猶予を使う
+
+worker:
+  periodic_jobs: true            # プロセス内で定期ジョブ（epg_sync / ruler_pass）を投入するか。
+                                 # k8s では false にし、CronJob から rokuban enqueue で投入する
+                                 # （River の PeriodicJobs はリーダーだけが投入するため、
+                                 #  KEDA で 0 にスケールすると誰も投入しなくなる。data.md §2）
+  queues: []                     # 引くキューを絞る。空なら全部。
+                                 # ロールを増やさずに「ruler だけ別 Pod」を実現するための knob
 
 encode:
   ffmpeg: ffmpeg                 # 既定は PATH 検索

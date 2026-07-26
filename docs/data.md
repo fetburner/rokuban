@@ -24,7 +24,21 @@
 - ワーカーは `FOR UPDATE SKIP LOCKED` で 1 件確保。複数ワーカーが同時に来ても行ロックで排他され、同一ジョブの二重実行はトランザクション分離の性質として起きない
 - 実行中はリース（ハートビート）を延長。ワーカー死亡（OOM、プリエンプト）はリース切れで検出し、queued に戻す
 - at-least-once なのでジョブは冪等に書く（出力は一時パスに書いて完了時に公開、DB 登録は `ON CONFLICT` で吸収）
-- 常駐シングルトンロール（ruler / reconciler / watcher）は `pg_advisory_lock` によるリーダー選出。セッション断で自動解放されるのでフェイルオーバーも自然に付く。k8s の Lease API に依存しないため monolithic mode でも同じコードが動く
+- 常駐シングルトンロール（reconciler / watcher）は `pg_advisory_lock` によるリーダー選出。セッション断で自動解放されるのでフェイルオーバーも自然に付く。k8s の Lease API に依存しないため monolithic mode でも同じコードが動く
+- **ルール評価（ruler）はシングルトンではなくジョブ**。定期・冪等・DB のみ・重複実行不可という性質が epg_sync と同じなので、River のジョブとして扱い、排他は advisory lock ではなく**ジョブロック + `UniqueOpts`**（args にサイトを含めるためサイト単位。別サイトの並行実行は正常）で担保する。機構が 1 つに減る
+
+### 定期実行の契機はデプロイ形態に委ねる
+
+River の `PeriodicJobs` は**リーダーに選出されたクライアントだけが投入する**。worker を KEDA で 0〜N にするとクライアントが 0 個になり、**誰も定期ジョブを投入しなくなる**。スケールアップのたびに `RunOnStart` が走るのも望ましくない。
+
+そこで定期実行の契機をアプリの外に出せるようにする。
+
+| デプロイ形態 | 定期投入の担い手 |
+|---|---|
+| Docker（monolith） | プロセス内の River `PeriodicJobs`（既定で有効） |
+| k8s | **CronJob が `rokuban enqueue <job>` を叩く**（insert-only クライアントで 1 件投入して即終了） |
+
+`PeriodicJobs` の登録は設定で切れるようにし、k8s では無効にする（両方有効だと二重投入になる。`UniqueOpts` で合流するので害は小さいが意図が曖昧になる）。副次的な利点として、k8s では**何がいつ走るかが CronJob の spec に一元化される**（Go のコードと YAML に散らない）。
 
 ### Redis バックエンド（Sidekiq 系）を採用しない理由
 

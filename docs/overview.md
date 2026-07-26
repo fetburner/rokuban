@@ -53,7 +53,8 @@ nginx は構成図上の「箱」ではなく、推奨デプロイパターン�
 この種の OSS の現実のユーザーの大半はミニ PC や自宅サーバー1台で動かす。マイクロサービス前提の設計はその層を切り捨てる。そこで Loki / Tempo と同じ **monolithic mode / distributed mode** を最初から設計に入れる：
 
 - `rokuban server --all`: 全ロールを1プロセスで（自宅向け、Docker Compose で Postgres と2コンテナ）
-- k8s ではロールごとに Deployment を分割：api は水平スケール、worker はキュー長で 0〜N（KEDA）、ruler/reconciler/watcher はシングルトン（Postgres アドバイザリロックでリーダー選出）
+- k8s ではロールごとに Deployment を分割：api は水平スケール、worker はキュー長で 0〜N（KEDA）、reconciler/watcher はシングルトン（Postgres アドバイザリロックでリーダー選出）
+- **ロールは「プロセスの形」を表し、「どの仕事をするか」は表さない。** キュー駆動で 0〜N の形をした仕事はすべて worker ロールで、どのキューを引くかはデプロイ時のパラメータ。ルール評価（ruler）もこれに含まれる — キューごとにロールを増やすと `ingester` / `encoder` / `thumbnailer` と際限なく増える
 
 コード上はただの modular monolith。**IPC は最初から作らない**ので、EPGStation が抱えた「分離しようにも IPC が剥がせない」問題は構造的に発生しない。
 

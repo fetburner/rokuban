@@ -93,7 +93,15 @@ desired 予約が変わる契機は 3 つあり、EPG の変更はそのうち 1
 
 **ただし書き込みは差分にする。** `reservations` には SSE 用の行トリガーがあるため、毎パス全予約の base を書き直すと NOTIFY が全行 x 毎パス飛び、クライアントの invalidate が鳴り続ける。base が実際に変わった行だけ UPDATE する（`WHERE base IS DISTINCT FROM ...`）。churn と bloat も避けられ、`updated_at` が「base が実際に変わった時刻」という意味を保つ。
 
-起動契機は watcher と同じ形にする。**タイマーによる定期パスが真実**で、EPG 同期の完了とルール編集は投入を早めるヒントに過ぎない。ヒントを落としてもタイマーが拾う。
+起動契機は 3 つあるが、**定期パスが真実**で残り 2 つは投入を早めるヒントに過ぎない。ヒントを落としても定期パスが拾う。
+
+| 契機 | 種別 |
+|---|---|
+| 定期（既定 10 分） | **真実**。デプロイ形態に応じて River `PeriodicJobs` か k8s CronJob が投入する（[データ層](data.md) §2） |
+| ルールの作成 / 更新 / 削除 | ヒント。api がルール書き込みと**同一トランザクションで** `InsertTx` する（dual-write にならない） |
+| EPG 同期の完了 | ヒント。epg_sync ワーカーがパス完了時に投入する |
+
+ヒントは `UniqueOpts{ByArgs, ByState}` で合流する。ルールを連続で編集してもパスは 1 回で足りる。
 
 ##### EPGStation の実績
 
@@ -298,7 +306,7 @@ reservations の行を 2 層に分ける:
 
 意図の寿命は放送の寿命に揃える（番組終了後に GC）。
 
-ruler は EPG 更新のたびに base を丸ごと再計算してよい --- **overrides は別表（`program_intents`）にあるので構造的に触れない**。3-way merge は不要。ruler（シングルトン）は `reservations` を、api は `program_intents` を書くので競合もない。**ルール側の変更は上書きしていないフィールドにだけ自動伝播する**（ユーザーの直感と一致）。
+ruler は EPG 更新のたびに base を丸ごと再計算してよい --- **overrides は別表（`program_intents`）にあるので構造的に触れない**。3-way merge は不要。ruler は `reservations` を、api は `program_intents` を書くので競合もない（ruler のパスはサイト単位で排他。[データ層](data.md) §2）。**ルール側の変更は上書きしていないフィールドにだけ自動伝播する**（ユーザーの直感と一致）。
 
 UI: 上書き中のフィールドにマーカー表示 + フィールド単位/予約単位の「ルールに戻す」（override を消すだけ）。
 
