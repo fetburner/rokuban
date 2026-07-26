@@ -145,6 +145,68 @@ NID/SID は放送規格のスコープでサイトに依存しないため、地
 - **contentPath 生成**: `recording.basedir` 相対パス必須。ファイル名テンプレートの展開もここで行う。生成値は初回のみで、以後は base に固定する（後述の差分反映）
 - **冪等**: 何度落ちても再実行で収束する。時刻精度もプロセス生存性も要求されない
 
+#### ファイル名テンプレート
+
+`filenameTemplate`（予約オプション。§8）は Go の [`text/template`](https://pkg.go.dev/text/template) 記法。reconciler が予約行のスナップショットだけを使って展開し（`internal/contentpath` パッケージ。`internal/reconciler/contentpath.go` の `buildContentPath` から呼ばれる）、拡張子は含まない前提で常に `.m2ts` を付す。未指定・空文字なら従来どおりの固定形式（`YYYYMMDD/HHMMSS_タイトル_サービスID.m2ts`）のまま（後方互換）。
+
+**方針転換の理由**: 当初は EPGStation 互換の `%変数%` 記法で実装していたが、`text/template` に切り替えた。`%変数%` では変数名の誤り（`%TITEL%`）が黙って空文字になり、録画時に警告ログが出るだけで、ユーザーは数週間後にファイル名が崩れて初めて気づく。`text/template` なら**ルール作成/更新時にテンプレートを検証して 400 で弾ける**（`internal/api/rules.go` の `validateRuleInput` が `internal/contentpath.Validate` を呼ぶ。既存の正規表現検証と同じ場所・同じ形）。「未対応の変数は黙って空文字に置換して警告」という妥協した方針そのものが不要になった。
+
+##### 使えるフィールド
+
+`internal/contentpath.Data` の公開フィールドに対応する。
+
+| フィールド | 値 | 出所 |
+|---|---|---|
+| `{{.StartAt}}` | 番組開始時刻（JST の `time.Time`）。`{{.StartAt.Format "2006-01"}}` のように任意の書式を書ける | `program_start_at` |
+| `{{.Year}}` | 4 桁年（JST） | 同 |
+| `{{.ShortYear}}` | 2 桁年（JST） | 同 |
+| `{{.Month}}` `{{.Day}}` `{{.Hour}}` `{{.Min}}` `{{.Sec}}` | 2 桁ゼロ埋め（JST） | 同 |
+| `{{.DOW}}` | 曜日（`日`〜`土`） | 同 |
+| `{{.Title}}` | 番組名（パス成分としてサニタイズ済み） | `reservations.title` |
+| `{{.Channel}}` | 物理チャンネル（同上） | `reservations.channel` |
+| `{{.ServiceID}}` | サービス ID | `reservations.service_id` |
+| `{{.ChannelType}}` | チャンネル種別（同上） | `reservations.channel_type` |
+
+例:
+
+```
+{{.Year}}/{{.Month}}/{{.Title}}_{{.Hour}}{{.Min}}
+```
+
+**非対応**: チャンネル名（EPGStation の `%CHNAME%` 相当）/ mirakc 内部 ID（`%CHID%` 相当）/ EPGStation の番組 ID（`%ID%` 相当）。いずれも予約行のスナップショットだけからは解決できず、mirakc への問い合わせや EPG プロジェクションの JOIN が要る。reconciler は mirakc に触れず（不変条件 1）ファイル I/O 専任という設計に反するため対応しない。`Data` に存在しないフィールドを参照するとテンプレートは無効になり、ルール作成/更新時点で 400 になる（後述）。
+
+##### サニタイズと階層の規約
+
+- `Title` / `Channel` / `ChannelType` は `internal/contentpath.NewData` の時点で `sanitizeComponent` を通した「1 パス成分に収まる」文字列になっている（ただし空文字は空文字のまま）。番組名に `/` が普通に入る（「A/B」等）ため、データ由来の `/` が区切りに昇格することはない
+- **階層を作れるのはテンプレートに書かれた `/`（および `{{.StartAt.Format "2006/01"}}` のようにユーザーが明示的に書いた書式）だけ**
+- **拡張子はテンプレートに含めない**。常に `.m2ts` を付す
+- 展開結果は最後に必ず `internal/contentpath.SanitizeContentPath` を通すため、テンプレート自体に `..` や絶対パスが書かれていてもパストラバーサル・意図しない絶対パスにはならない
+- 時刻は必ず JST で解決する（サーバーのタイムゾーン設定に依存させない）
+
+##### ルール作成時の検証
+
+`text/template` として `Parse` した後、サンプルデータに対して `Execute` まで行って初めて有効と判定する（`{{.Foo}}` のような未知フィールドは `Parse` では素通りし、`Execute` で初めてエラーになるため）。構文エラー・未知フィールドはどちらもルール作成/更新 API で 400 になる。
+
+##### M3: EPGStation からの変換（`rokuban import epgstation`）
+
+EPGStation の `recordedFormat`（`%変数%` 記法）を移行する際は、M3 の `rokuban import epgstation` で以下の変換表に従って `text/template` 記法へ機械的に変換する。
+
+| EPGStation | Rokuban |
+|---|---|
+| `%YEAR%` | `{{.Year}}` |
+| `%SHORTYEAR%` | `{{.ShortYear}}` |
+| `%MONTH%` | `{{.Month}}` |
+| `%DAY%` | `{{.Day}}` |
+| `%HOUR%` | `{{.Hour}}` |
+| `%MIN%` | `{{.Min}}` |
+| `%SEC%` | `{{.Sec}}` |
+| `%DOW%` | `{{.DOW}}` |
+| `%TITLE%` | `{{.Title}}` |
+| `%CH%` | `{{.Channel}}` |
+| `%SID%` | `{{.ServiceID}}` |
+| `%TYPE%` | `{{.ChannelType}}` |
+| `%CHNAME%` / `%CHID%` / `%ID%` | **未対応**（予約行のスナップショットだけからは解決できない。上記「非対応」参照） |
+
 #### 予約オプションの差分反映
 
 reconciler は存在の突き合わせだけでなく、**effective options と `schedule_sync.options`（mirakc の観測結果）の差分も消す**。ruler が base を毎パス再計算する以上、ルール編集で既存予約の effective が変わるため、これは編集 UI の前提ではなく **ruler の前提**である（issue #19）。
@@ -176,6 +238,12 @@ reconciler は存在の突き合わせだけでなく、**effective options と 
 - **ブレーカーが守るのは導出された削除だけ**（ルール x EPG の評価結果の変化）。ユーザーの明示操作（ルール削除 API 等）による削除は対象にしない — 代わりに影響件数の内訳を提示する確認 UI が安全装置になる。明示操作までブレーカーで止めると「削除したのに消えない」という別の説明不能を生む。API が同期的に消した予約行を reconciler が mirakc へ伝搬する際の削除が閾値を踏みうる相互作用は M2-5 の実装論点（issue #24）
 - **不変条件: 録画済みデータ（media_assets）に至る自動削除経路は retention reconcile のみ**。EPG・予約側の状態変化から録画物の削除に到達するパスを作らない
 - programId が EPG から消えた予約は即削除せず猶予を置く（mirakc 自身も removed-from-epg を理由付き failed として通知してくる）。なお実装の `orphaned` state はこの用途ではなく「番組終了後に schedule が観測されなかった」を意味する（[schema.md](schema.md) §3）
+
+#### 番組終了後の GC
+
+`reservations` / `program_intents` の物理削除（GC）は ruler の 1 パス内で、全サイト評価の後に 1 回だけ行う（`internal/ruler/ruler.go` の `runGC`）。対象は `program_start_at + program_duration_ms < now() - 猶予` を満たす行（state を問わない）。猶予には既存の `epg.retention_grace`（既定 24h、EPG プロジェクションのローリングウィンドウと同じ設定）をそのまま流用する。専用の設定項目を増やさず、「EPG から消える」と「予約・意図として GC される」の寿命を揃える。`recordings.reservation_id` は `ON DELETE SET NULL` なので、この削除で録画履歴（recordings/media_assets）が失われることはない。
+
+**GC は大量削除サーキットブレーカー（`MaxDeletesPerPass`）の対象にしない。** ブレーカーが守るのは「ルール x EPG」の評価結果から導出される削除だけで、EPG の一時的な欠損・フリッカーに引きずられて予約を大量に消してしまう事故（上記 EPGStation#692 のクラス）を防ぐためのもの。GC の削除対象は時刻の比較だけで決定的に定まり、EPG の状態には一切左右されない。むしろ reconciler/ruler が長時間停止していた場合、再開後に溜まった期限切れ行を一括で消すのは正常な挙動であり、ここをブレーカーで止めると実害のない削除が積み上がり続けるだけになる。
 
 ### 3.3 watcher（SSE 購読・状態反映）
 

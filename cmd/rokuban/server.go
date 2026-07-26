@@ -182,7 +182,11 @@ func newServerCmd() *cobra.Command {
 					case "ruler":
 						// ruler は mirakc に触れない（不変条件 1）。EPG プロジェクションと
 						// reservations/program_intents のみを読み書きする。
-						rul := ruler.New([]string{watcher.DefaultSite}, pool, nil)
+						// RetentionGrace は epg.retention_grace をそのまま流用する
+						// （番組終了後の GC の猶予。docs/recording.md §3.2）。
+						rul := ruler.New([]string{watcher.DefaultSite}, pool, &ruler.Config{
+							RetentionGrace: cfg.Epg.RetentionGrace,
+						})
 						roleFunc = rul.Run
 					}
 					return role.RunSingleton(egCtx, pool, roleName, roleFunc, nil)

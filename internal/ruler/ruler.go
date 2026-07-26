@@ -35,12 +35,20 @@ type Config struct {
 	// このブレーカーの対象にならない（そちら経由の削除は desired 集合の側で
 	// 最初から除外されるため、ここには現れない）。
 	MaxDeletesPerPass int
+
+	// RetentionGrace は番組終了後、reservations / program_intents を GC するまでの
+	// 猶予（issue #24 M2-3）。epg.retention_grace（EPG プロジェクションのロー
+	// リングウィンドウ）と同じ値を流用する運用を想定しており、既定値も揃えてある。
+	// GC はこのブレーカー（MaxDeletesPerPass）の対象にならない
+	// （runGC のコメント参照）。
+	RetentionGrace time.Duration
 }
 
 func defaultConfig() Config {
 	return Config{
 		PassInterval:      10 * time.Minute,
 		MaxDeletesPerPass: 50,
+		RetentionGrace:    24 * time.Hour,
 	}
 }
 
@@ -67,6 +75,9 @@ func New(sites []string, pool *pgxpool.Pool, cfg *Config) *Ruler {
 		if cfg.MaxDeletesPerPass > 0 {
 			c.MaxDeletesPerPass = cfg.MaxDeletesPerPass
 		}
+		if cfg.RetentionGrace > 0 {
+			c.RetentionGrace = cfg.RetentionGrace
+		}
 	}
 	return &Ruler{sites: sites, pool: pool, cfg: c}
 }
@@ -92,7 +103,8 @@ func (r *Ruler) Run(ctx context.Context) error {
 	}
 }
 
-// RunPass は全サイトに対して全量評価パスを 1 回実行する。
+// RunPass は全サイトに対して全量評価パスを 1 回実行し、続けて番組終了後の GC
+// （runGC）を行う。
 //
 // タイマー（Run）から呼ばれるのが既定の起動契機だが、将来 epg_sync 完了や
 // ルール編集をヒントに前倒しで呼ぶ経路を足せるよう、公開メソッドとして
@@ -100,6 +112,7 @@ func (r *Ruler) Run(ctx context.Context) error {
 //
 // 1 サイトの失敗が他サイトの評価を止めないよう、サイトごとに独立して実行し、
 // 最初のエラーだけを返す（呼び出し側でログ済みのエラーは握り潰さない）。
+// GC は site に従属しない全体操作なので、サイトのループの外で 1 回だけ行う。
 func (r *Ruler) RunPass(ctx context.Context) error {
 	start := time.Now()
 
@@ -111,6 +124,13 @@ func (r *Ruler) RunPass(ctx context.Context) error {
 				firstErr = fmt.Errorf("site %s: %w", site, err)
 			}
 			continue
+		}
+	}
+
+	if err := r.runGC(ctx); err != nil {
+		slog.Error("ruler: GC failed", "err", err)
+		if firstErr == nil {
+			firstErr = fmt.Errorf("gc: %w", err)
 		}
 	}
 
@@ -336,6 +356,46 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 	return nil
 }
 
+// runGC は番組終了 + RetentionGrace 経過の reservations / program_intents を
+// 削除する（issue #24 M2-3、docs/schema.md §3「行の物理削除（GC）は『番組の
+// 終了時刻を過ぎた後』のみ」）。state（active/detached/orphaned）を問わず、
+// site にも従属しない全体操作なので RunPass のサイトループの外から 1 回だけ
+// 呼ばれる。recordings.reservation_id は ON DELETE SET NULL なので、削除しても
+// 録画履歴（recordings/media_assets）は失われない。
+//
+// **サーキットブレーカー（MaxDeletesPerPass）の対象にしない。** ブレーカーが
+// 守るのは「ルール x EPG」の評価結果から導出される削除だけで、EPG の一時的な
+// 欠損・フリッカーに引きずられて予約を大量に消してしまう事故を防ぐためのもの
+// （docs/recording.md §3.2「大量削除サーキットブレーカー」）。GC の削除対象は
+// 時刻の比較だけで決定的に定まり、EPG の状態に左右されない。むしろ
+// reconciler/ruler が長時間停止していた後に溜まった期限切れ行を再開後に
+// 一括で消すのは正常な挙動であり、ここをブレーカーで止めると本来消えるべき
+// 行が積み上がり続けるだけで実害がない削除を止めてしまう。
+func (r *Ruler) runGC(ctx context.Context) error {
+	cutoff := time.Now().Add(-r.cfg.RetentionGrace)
+
+	q := sqlcgen.New(r.pool)
+	deletedReservations, err := q.DeleteEndedReservations(ctx, cutoff)
+	if err != nil {
+		return fmt.Errorf("deleting ended reservations: %w", err)
+	}
+	deletedIntents, err := q.DeleteEndedProgramIntents(ctx, cutoff)
+	if err != nil {
+		return fmt.Errorf("deleting ended program intents: %w", err)
+	}
+
+	metrics.RulerReservations.WithLabelValues("gc").Add(float64(deletedReservations))
+
+	if deletedReservations > 0 || deletedIntents > 0 {
+		slog.Info("ruler: GC complete",
+			"cutoff", cutoff,
+			"deleted_reservations", deletedReservations,
+			"deleted_program_intents", deletedIntents,
+		)
+	}
+	return nil
+}
+
 // stillProjectedSubset は candidates のうち、EPG プロジェクションに現在も番組がある
 // ものだけを返す。空なら問い合わせずに空を返す。
 func (r *Ruler) stillProjectedSubset(ctx context.Context, q *sqlcgen.Queries, site string, candidates []int64) ([]int64, error) {
@@ -409,10 +469,19 @@ func rewriteRuleMatches(ctx context.Context, tx pgx.Tx, site string, allMatches 
 // computeBase は勝者ルールから reservations.base（jsonb）を組む。
 //
 // フィールドは docs/schema.md §8「予約オプション」のうち、勝者ルールから決まる部分
-// （priority / encodeProfiles / keepOriginal）に限る。contentPath は含めない —
-// reconciler が初回生成した値を base に固定する契約になっており（issue #19）、
-// ruler が毎パス書き直すと EPG 更新のたびに mirakc の schedule が作り直される
-// churn を招く。skip も含めない（program_intents.action が担うフィールドで、
+// （priority / encodeProfiles / keepOriginal / filenameTemplate）に限る。
+// **contentPath（展開済みのフルパス）は含めない** — reconciler が初回生成した値を
+// base に固定する契約になっており（issue #19）、ruler が毎パス書き直すと EPG
+// 更新のたびに mirakc の schedule が作り直される churn を招く。
+//
+// filenameTemplate はこれと事情が違う: テンプレート文字列そのものはルール編集
+// でしか変わらず、EPG 更新（番組名・時刻のスナップショット変化）では変化しない。
+// そのため base に載せても contentPath と同じ churn は起きない —
+// 展開（テンプレート文字列 → 実パス）は reconciler の役目のまま変わらない。
+// 空文字なら載せない（base を最小に保ち、既定の固定形式利用時に
+// IS DISTINCT FROM の差分書き込みが空振りしないため）。
+//
+// skip も含めない（program_intents.action が担うフィールドで、
 // base 側で表現すると優先順位の合成に jsonb マージの細工が要る）。
 func computeBase(rule sqlcgen.Rule) (json.RawMessage, error) {
 	priority := int(rule.Priority)
@@ -423,6 +492,10 @@ func computeBase(rule sqlcgen.Rule) (json.RawMessage, error) {
 		Priority:       &priority,
 		KeepOriginal:   &keepOriginal,
 		EncodeProfiles: &profiles,
+	}
+	if rule.FilenameTemplate != "" {
+		filenameTemplate := rule.FilenameTemplate
+		opts.FilenameTemplate = &filenameTemplate
 	}
 	out, err := json.Marshal(opts)
 	if err != nil {

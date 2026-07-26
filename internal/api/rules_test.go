@@ -88,6 +88,51 @@ func TestRulesCRUD(t *testing.T) {
 		t.Fatalf("invalid regex status = %d, want 400", resp.StatusCode)
 	}
 
+	// filenameTemplate: 未知フィールドは 400（text/template の Execute で検出）
+	badTemplate := map[string]any{
+		"name":             "bad-template-field",
+		"filenameTemplate": "{{.NoSuchField}}",
+	}
+	raw, _ = json.Marshal(badTemplate)
+	resp, err = http.Post(srv.URL+"/api/rules", "application/json", bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unknown filenameTemplate field status = %d, want 400", resp.StatusCode)
+	}
+
+	// filenameTemplate: 構文エラー（閉じ忘れ）も 400（text/template の Parse で検出）
+	malformedTemplate := map[string]any{
+		"name":             "bad-template-syntax",
+		"filenameTemplate": "{{.Title",
+	}
+	raw, _ = json.Marshal(malformedTemplate)
+	resp, err = http.Post(srv.URL+"/api/rules", "application/json", bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("malformed filenameTemplate status = %d, want 400", resp.StatusCode)
+	}
+
+	// filenameTemplate: 有効なテンプレートは通る
+	goodTemplate := map[string]any{
+		"name":             "good-template",
+		"filenameTemplate": "{{.Year}}/{{.Month}}/{{.Title}}_{{.Hour}}{{.Min}}",
+	}
+	raw, _ = json.Marshal(goodTemplate)
+	resp, err = http.Post(srv.URL+"/api/rules", "application/json", bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("valid filenameTemplate status = %d, want 201", resp.StatusCode)
+	}
+
 	// Delete
 	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/rules/"+itoa(created.Id), nil)
 	resp, err = http.DefaultClient.Do(req)

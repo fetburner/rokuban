@@ -70,6 +70,24 @@ func (q *Queries) CreateManualReservation(ctx context.Context, arg CreateManualR
 	return i, err
 }
 
+const deleteEndedReservations = `-- name: DeleteEndedReservations :execrows
+DELETE FROM reservations
+WHERE program_start_at + (program_duration_ms * interval '1 millisecond') < $1
+`
+
+// 番組終了後の GC（issue #24 の M2-3、docs/schema.md §3「行の物理削除（GC）は
+// 「番組の終了時刻を過ぎた後」のみ」）。state を問わず（active/detached/orphaned
+// いずれも）終了時刻 + 猶予を過ぎたら削除する。recordings.reservation_id は
+// ON DELETE SET NULL なので、録画履歴（recordings/media_assets）はこの削除の
+// 影響を受けない。
+func (q *Queries) DeleteEndedReservations(ctx context.Context, programStartAt time.Time) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteEndedReservations, programStartAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const deleteReservation = `-- name: DeleteReservation :execrows
 DELETE FROM reservations WHERE id = $1
 `

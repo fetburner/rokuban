@@ -50,3 +50,12 @@ DELETE FROM reservations WHERE site = $1 AND program_id = $2;
 UPDATE reservations
 SET state = 'orphaned', updated_at = now()
 WHERE id = $1 AND state = 'active';
+
+-- 番組終了後の GC（issue #24 の M2-3、docs/schema.md §3「行の物理削除（GC）は
+-- 「番組の終了時刻を過ぎた後」のみ」）。state を問わず（active/detached/orphaned
+-- いずれも）終了時刻 + 猶予を過ぎたら削除する。recordings.reservation_id は
+-- ON DELETE SET NULL なので、録画履歴（recordings/media_assets）はこの削除の
+-- 影響を受けない。
+-- name: DeleteEndedReservations :execrows
+DELETE FROM reservations
+WHERE program_start_at + (program_duration_ms * interval '1 millisecond') < $1;

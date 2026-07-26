@@ -5,85 +5,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fetburner/rokuban/internal/contentpath"
+	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/mirakc"
 )
-
-func TestSanitizeComponent(t *testing.T) {
-	tests := []struct {
-		name   string
-		input  string
-		maxLen int
-		want   string
-	}{
-		{"normal", "hello", 0, "hello"},
-		{"slash", "a/b", 0, "a_b"},
-		{"backslash", `a\b`, 0, "a_b"},
-		{"dotdot", "a..b", 0, "a_b"},
-		{"null byte", "a\x00b", 0, "a_b"},
-		{"control chars", "a\x01\x1fb", 0, "a__b"},
-		{"colon", "title: subtitle", 0, "title_ subtitle"},
-		{"windows reserved", `a*b?c"d<e>f|g`, 0, "a_b_c_d_e_f_g"},
-		{"empty", "", 0, "_"},
-		{"dot only", ".", 0, "_"},
-		{"spaces only", "   ", 0, "_"},
-		{"truncate", "abcdefghij", 5, "abcde"},
-		{"japanese", "NHKニュース7", 0, "NHKニュース7"},
-		{"japanese with slash", "朝/夕ニュース", 0, "朝_夕ニュース"},
-		{"emoji", "🈜特番🈝", 0, "🈜特番🈝"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := sanitizeComponent(tt.input, tt.maxLen)
-			if got != tt.want {
-				t.Errorf("sanitizeComponent(%q, %d) = %q, want %q", tt.input, tt.maxLen, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestGenerateContentPath(t *testing.T) {
-	start := time.Date(2026, 7, 24, 21, 0, 0, 0, time.FixedZone("JST", 9*3600))
-	path := generateContentPath("NHKニュース7", start, 5136)
-
-	if !strings.HasPrefix(path, "20260724/") {
-		t.Errorf("expected date prefix, got %q", path)
-	}
-	if !strings.HasSuffix(path, ".m2ts") {
-		t.Errorf("expected .m2ts suffix, got %q", path)
-	}
-	if !strings.Contains(path, "5136") {
-		t.Errorf("expected serviceID in path, got %q", path)
-	}
-	if strings.Contains(path, "/..") || strings.Contains(path, "../") {
-		t.Errorf("path traversal detected: %q", path)
-	}
-}
-
-func TestSanitizeContentPath(t *testing.T) {
-	tests := []struct {
-		name  string
-		input string
-	}{
-		{"traversal", "../../etc/passwd"},
-		{"absolute", "/root/.ssh/keys"},
-		{"null byte", "ok/title\x00evil.m2ts"},
-		{"normal", "20260724/210000_NHKニュース7_5136.m2ts"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := sanitizeContentPath(tt.input)
-			if strings.Contains(got, "..") {
-				t.Errorf("path traversal in sanitizeContentPath(%q): %q", tt.input, got)
-			}
-			if strings.HasPrefix(got, "/") {
-				t.Errorf("absolute path from sanitizeContentPath(%q): %q", tt.input, got)
-			}
-			if strings.ContainsAny(got, "\x00") {
-				t.Errorf("null byte in sanitizeContentPath(%q): %q", tt.input, got)
-			}
-		})
-	}
-}
 
 func TestServiceIDExtraction(t *testing.T) {
 	// programId = networkId * 10_000_000_000 + serviceId * 100_000 + eventId
@@ -103,27 +28,90 @@ func TestServiceIDExtraction(t *testing.T) {
 	}
 }
 
-func TestGenerateContentPath_NoTraversal(t *testing.T) {
+// TestBuildContentPath_EmptyTemplateUsesFixedFormat は filenameTemplate が
+// 未指定のとき従来の固定形式のままであること（後方互換）を確認する。
+func TestBuildContentPath_EmptyTemplateUsesFixedFormat(t *testing.T) {
+	startAt := time.Date(2026, 7, 24, 21, 0, 0, 0, time.FixedZone("JST", 9*3600))
+	serviceID := int32(5136)
+	res := sqlcgen.Reservation{ID: 1, Title: "NHKニュース7", ProgramStartAt: startAt, ServiceID: &serviceID}
+
+	got, err := buildContentPath(res, "")
+	if err != nil {
+		t.Fatalf("buildContentPath: %v", err)
+	}
+	want := contentpath.GenerateContentPath(res.Title, res.ProgramStartAt, int(serviceID))
+	if got != want {
+		t.Errorf("buildContentPath with empty template = %q, want %q (fixed format)", got, want)
+	}
+	if !strings.HasSuffix(got, ".m2ts") {
+		t.Errorf("expected .m2ts suffix, got %q", got)
+	}
+}
+
+// TestBuildContentPath_TextTemplateExpansion は text/template 記法で各フィールドが
+// 展開され、拡張子が付くことを確認する。
+func TestBuildContentPath_TextTemplateExpansion(t *testing.T) {
+	startAt := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	serviceID := int32(1)
+	res := sqlcgen.Reservation{ID: 1, Title: "t", ProgramStartAt: startAt, ServiceID: &serviceID}
+
+	got, err := buildContentPath(res, "{{.Year}}{{.Month}}{{.Day}}_{{.Title}}")
+	if err != nil {
+		t.Fatalf("buildContentPath: %v", err)
+	}
+	if !strings.HasSuffix(got, ".m2ts") {
+		t.Errorf("expected .m2ts suffix, got %q", got)
+	}
+	if strings.Count(got, ".m2ts") != 1 {
+		t.Errorf("expected exactly one .m2ts suffix, got %q", got)
+	}
+}
+
+// TestBuildContentPath_TitleNoTraversal はタイトル（データ由来）にパス
+// トラバーサル的な文字列が入っても、テンプレート展開結果がトラバーサルや
+// 絶対パス・NUL 文字にならないことを確認する。
+func TestBuildContentPath_TitleNoTraversal(t *testing.T) {
 	malicious := []string{
 		"../../etc/passwd",
 		"/root/.ssh/authorized_keys",
 		"..\\..\\windows\\system32",
 		"title\x00evil",
-		strings.Repeat("a", 200),
+		"foo/../../bar",
 	}
-	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	startAt := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	serviceID := int32(1)
 
 	for _, title := range malicious {
-		path := generateContentPath(title, start, 1)
+		res := sqlcgen.Reservation{ID: 1, Title: title, ProgramStartAt: startAt, ServiceID: &serviceID}
+		path, err := buildContentPath(res, "{{.Title}}")
+		if err != nil {
+			t.Fatalf("buildContentPath(%q): %v", title, err)
+		}
 		if strings.Contains(path, "..") {
 			t.Errorf("path traversal in %q: %q", title, path)
 		}
 		if strings.HasPrefix(path, "/") {
 			t.Errorf("absolute path from %q: %q", title, path)
 		}
-		parts := strings.Split(path, "/")
-		if len(parts) != 2 {
-			t.Errorf("expected exactly 2 path segments from %q: %q", title, path)
+		if strings.ContainsAny(path, "\x00") {
+			t.Errorf("null byte in %q: %q", title, path)
 		}
+	}
+}
+
+// TestBuildContentPath_ErrorPropagation は text/template の構文/実行時エラー
+// （未知フィールド・閉じ忘れ）が buildContentPath からそのまま返ることを
+// 確認する。通常は api の validateRuleInput が作成時点で弾くが、reconciler
+// 側でも推測せずエラーを伝播することを保証する。
+func TestBuildContentPath_ErrorPropagation(t *testing.T) {
+	startAt := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	serviceID := int32(1)
+	res := sqlcgen.Reservation{ID: 1, Title: "t", ProgramStartAt: startAt, ServiceID: &serviceID}
+
+	if _, err := buildContentPath(res, "{{.NoSuchField}}"); err == nil {
+		t.Error("expected error for unknown template field, got nil")
+	}
+	if _, err := buildContentPath(res, "{{.Title"); err == nil {
+		t.Error("expected error for malformed template syntax, got nil")
 	}
 }

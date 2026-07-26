@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/contentpath"
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/metrics"
@@ -275,16 +276,32 @@ func (r *Reconciler) createSchedule(ctx context.Context, d desiredReservation) e
 			"likely a pre-migration row whose program has already fallen out of the EPG projection",
 			res.ID, res.ProgramID)
 	}
-	serviceID := int(*res.ServiceID)
 
 	priority := r.cfg.DefaultPriority
 	if opts.Priority != nil {
 		priority = *opts.Priority
 	}
 
-	contentPath := generateContentPath(res.Title, res.ProgramStartAt, serviceID)
+	// contentPath は filenameTemplate（ruler が base に載せたテンプレート、または
+	// ユーザーの明示的な上書き）があればそれを展開し、なければ従来の固定形式
+	// （buildContentPath 参照）。ContentPath（フルパスの直接指定）が別途あれば
+	// そちらが最終的に勝つ — 展開結果よりユーザーの明示指定を優先する
+	// （db.ReservationOptions のドキュメントコメント参照）。
+	template := ""
+	if opts.FilenameTemplate != nil {
+		template = *opts.FilenameTemplate
+	}
+	contentPath, err := buildContentPath(res, template)
+	if err != nil {
+		// テンプレートが構文的に正しく見えても実行時にエラーになるケース
+		// （通常は api の validateRuleInput が作成時点で弾くので、ここに来るのは
+		// ルール作成後にテンプレート仕様が変わった等の想定外の経路）。推測で
+		// schedule を作らず、同期対象から外してアラートする。
+		return fmt.Errorf("building content path for reservation %d (program %d): %w",
+			res.ID, res.ProgramID, err)
+	}
 	if opts.ContentPath != nil && *opts.ContentPath != "" {
-		contentPath = sanitizeContentPath(*opts.ContentPath)
+		contentPath = contentpath.SanitizeContentPath(*opts.ContentPath)
 	}
 
 	input := mirakc.ScheduleInput{

@@ -35,12 +35,22 @@ type Reservation struct {
 // ReservationOptions は reservations.base / overrides の jsonb 構造。
 // jsonb 内は camelCase（Go/JSON 規約）。
 // EncodeProfiles は *[]string: nil=未指定、&[]string{}=エンコードなし override。
+//
+// FilenameTemplate は rules.filename_template（ruler が base に載せる）または
+// ユーザーの明示的な上書き（program_intents.overrides）由来の Go text/template
+// テンプレート文字列。reconciler が予約行のスナップショットだけから
+// internal/contentpath で展開する（docs/recording.md §3.2）。ルール作成/更新時に
+// internal/contentpath.Validate で構文・実行時エラーを検証し 400 で弾く
+// （internal/api/rules.go の validateRuleInput）。ContentPath（フルパスの直接
+// 指定）とは別物で、両方指定された場合は ContentPath が勝つ
+// （reconciler.createSchedule 参照）。
 type ReservationOptions struct {
-	Skip           *bool     `json:"skip,omitempty"`
-	Priority       *int      `json:"priority,omitempty"`
-	ContentPath    *string   `json:"contentPath,omitempty"`
-	EncodeProfiles *[]string `json:"encodeProfiles,omitempty"`
-	KeepOriginal   *string   `json:"keepOriginal,omitempty"`
+	Skip             *bool     `json:"skip,omitempty"`
+	Priority         *int      `json:"priority,omitempty"`
+	ContentPath      *string   `json:"contentPath,omitempty"`
+	FilenameTemplate *string   `json:"filenameTemplate,omitempty"`
+	EncodeProfiles   *[]string `json:"encodeProfiles,omitempty"`
+	KeepOriginal     *string   `json:"keepOriginal,omitempty"`
 }
 
 // Effective は base に overrides をマージした結果を返す。
@@ -64,6 +74,9 @@ func (o *ReservationOptions) Effective(base *ReservationOptions) ReservationOpti
 	}
 	if o.ContentPath != nil {
 		eff.ContentPath = o.ContentPath
+	}
+	if o.FilenameTemplate != nil {
+		eff.FilenameTemplate = o.FilenameTemplate
 	}
 	if o.EncodeProfiles != nil {
 		eff.EncodeProfiles = o.EncodeProfiles

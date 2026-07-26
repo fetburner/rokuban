@@ -550,3 +550,125 @@ func TestRunPass_RecordsAllRuleMatches(t *testing.T) {
 		t.Errorf("reservation_rule_matches rule_ids = %v, want %v", got, want)
 	}
 }
+
+// insertReservationDirect は reservations 行を ruler を介さず直接作る。
+// GC のテストは「終了時刻 + 猶予」の境界だけを厳密に制御したいので、
+// EPG プロジェクションやルールマッチに頼らず program_start_at/program_duration_ms
+// を狙った値にできるこちらを使う。
+func insertReservationDirect(t *testing.T, pool *pgxpool.Pool, ctx context.Context, programID int64, title string, startAt time.Time) {
+	t.Helper()
+	_, err := pool.Exec(ctx, `
+INSERT INTO reservations (site, program_id, source, title, program_start_at, program_duration_ms)
+VALUES ($1, $2, 'manual', $3, $4, $5)`,
+		testSite, programID, title, startAt, testDurationMs)
+	if err != nil {
+		t.Fatalf("inserting reservation fixture: %v", err)
+	}
+}
+
+func reservationExists(t *testing.T, pool *pgxpool.Pool, ctx context.Context, programID int64) bool {
+	t.Helper()
+	_, ok := getReservation(t, pool, ctx, programID)
+	return ok
+}
+
+// 受け入れ基準 10（GC）: 番組終了 + RetentionGrace 経過の予約と program_intents は
+// GC で削除される。
+func TestRunPass_GC_DeletesEndedPastGrace(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	grace := 1 * time.Hour
+	// 終了時刻（start+duration）が now-1h30m。cutoff = now-grace(1h)。
+	// 終了時刻 < cutoff なので GC 対象。
+	start := time.Now().Add(-90 * time.Minute).Truncate(time.Second)
+	insertReservationDirect(t, pool, ctx, 10001, "終了番組", start)
+
+	q := sqlcgen.New(pool)
+	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
+		Site: testSite, ProgramID: 10001, Action: db.IntentRecord, Overrides: []byte(`{}`),
+		ProgramStartAt: start, ProgramDurationMs: testDurationMs,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	r := ruler.New([]string{testSite}, pool, &ruler.Config{RetentionGrace: grace})
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
+
+	if reservationExists(t, pool, ctx, 10001) {
+		t.Error("reservation past end+grace should have been GC'd")
+	}
+	if _, err := q.GetProgramIntent(ctx, sqlcgen.GetProgramIntentParams{Site: testSite, ProgramID: 10001}); !errors.Is(err, pgx.ErrNoRows) {
+		t.Errorf("program_intents past end+grace should have been GC'd, got err=%v", err)
+	}
+}
+
+// 受け入れ基準 11（GC）: 終了しているが猶予（RetentionGrace）内の予約は残る。
+func TestRunPass_GC_KeepsWithinGrace(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	grace := 1 * time.Hour
+	// 終了時刻（start+duration）が now-10m。cutoff = now-1h。
+	// 終了時刻(-10m) > cutoff(-1h) なので、終了済みだがまだ削除しない。
+	start := time.Now().Add(-40 * time.Minute).Truncate(time.Second)
+	insertReservationDirect(t, pool, ctx, 10002, "終了直後", start)
+
+	r := ruler.New([]string{testSite}, pool, &ruler.Config{RetentionGrace: grace})
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
+
+	if !reservationExists(t, pool, ctx, 10002) {
+		t.Error("reservation within the retention grace period should NOT be GC'd yet")
+	}
+}
+
+// 受け入れ基準 12（GC）: 未終了の予約は残る。
+func TestRunPass_GC_KeepsUnended(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	start := time.Now().Add(24 * time.Hour).Truncate(time.Second)
+	insertReservationDirect(t, pool, ctx, 10003, "未来番組", start)
+
+	r := ruler.New([]string{testSite}, pool, &ruler.Config{RetentionGrace: 1 * time.Hour})
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
+
+	if !reservationExists(t, pool, ctx, 10003) {
+		t.Error("reservation for a program that hasn't ended yet should NOT be GC'd")
+	}
+}
+
+// 受け入れ基準 13（GC）: GC は「ルール x EPG」からの導出削除を守るサーキット
+// ブレーカー（MaxDeletesPerPass）とは独立しており、閾値を超える件数でも実行
+// される。ここに置く予約はどれも EPG プロジェクションを持たないので、通常の
+// 宣言的削除経路には（射影が無い間は凍結されるため）一切現れない —
+// つまり削除が起きるとすれば GC 経由でしかありえない。
+func TestRunPass_GC_IgnoresCircuitBreaker(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	grace := 1 * time.Hour
+	start := time.Now().Add(-90 * time.Minute).Truncate(time.Second)
+
+	const n = 5
+	for i := range n {
+		insertReservationDirect(t, pool, ctx, int64(11000+i), fmt.Sprintf("終了%d", i), start)
+	}
+
+	r := ruler.New([]string{testSite}, pool, &ruler.Config{RetentionGrace: grace, MaxDeletesPerPass: 1})
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
+
+	for i := range n {
+		if reservationExists(t, pool, ctx, int64(11000+i)) {
+			t.Errorf("program %d should have been GC'd even though n=%d exceeds MaxDeletesPerPass=1", i, n)
+		}
+	}
+}

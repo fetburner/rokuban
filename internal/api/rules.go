@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/contentpath"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 )
 
@@ -197,6 +198,12 @@ func validateRuleInput(ctx context.Context, pool *pgxpool.Pool, in RuleInput) er
 					return fmt.Errorf("invalid regex %q (POSIX ARE; lookbehind is not supported): %w", m.Value, err)
 				}
 			}
+		}
+	}
+	if in.FilenameTemplate != nil && *in.FilenameTemplate != "" {
+		if err := contentpath.Validate(*in.FilenameTemplate); err != nil {
+			return fmt.Errorf("invalid filenameTemplate %q (Go text/template; see docs/recording.md §3.2): %w",
+				*in.FilenameTemplate, err)
 		}
 	}
 	return nil
