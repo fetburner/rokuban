@@ -368,9 +368,9 @@ reservations の行を 2 層に分ける:
 
 `skip` は overrides のキーではなく **`program_intents.action`（`record` / `skip`）** という列にする。列なので base 側の skip に対する優先順位が明示的に決まり（`effective.skip = (action = 'skip') OR (意図がなく base.skip)`）、jsonb マージに細工を仕込まなくてよい。M2-6 の重複排除が base に skip を立てても、ユーザーの `record` 意図が勝つ。
 
-意図の寿命は放送の寿命に揃える（番組終了後に GC）。
+意図と上書きの寿命は放送の寿命に揃える（番組終了後に GC）。
 
-ruler は EPG 更新のたびに base を丸ごと再計算してよい --- **overrides は別表（`program_intents`）にあるので構造的に触れない**。3-way merge は不要。ruler は `reservations` を、api は `program_intents` を書くので競合もない（ruler のパスはサイト単位で排他。[データ層](data.md) §2）。**ルール側の変更は上書きしていないフィールドにだけ自動伝播する**（ユーザーの直感と一致）。
+ruler は EPG 更新のたびに base を丸ごと再計算してよい --- **overrides は別表（`program_overrides`）にあるので構造的に触れない**。3-way merge は不要。ruler は `reservations` を、api は `program_intents` / `program_overrides` を書くので競合もない（ruler のパスはサイト単位で排他。[データ層](data.md) §2）。**ルール側の変更は上書きしていないフィールドにだけ自動伝播する**（ユーザーの直感と一致）。
 
 UI: 上書き中のフィールドにマーカー表示 + フィールド単位/予約単位の「ルールに戻す」（override を消すだけ）。
 
@@ -383,28 +383,64 @@ UI: 上書き中のフィールドにマーカー表示 + フィールド単位/
 
 `skip` は PATCH では扱わない（`action` 列が担う）。取消は `DELETE /api/reservations/{id}`。
 
-jsonb のマージは Postgres 側でやる（設定は `overrides || $1::jsonb`、削除は `overrides - $1::text[]`）。read-modify-write の窓を作らないので、2 つの PATCH が同時に来ても片方の変更が消えない。
+マージは **Go 側で `db.ReservationOptions` の型付きフィールドとして行う**。SQL で `overrides || $1::jsonb` / `overrides - $1::text[]` とやらないのは下記「jsonb を許す条件」のため。同時 PATCH の心配は要らない（Rokuban は構造的に単一世帯用アプリで認証機構を持たない。[overview.md](overview.md) §認証）ので、`reservations` 行を `FOR UPDATE` で取るだけで直列化できる。
 
-#### 空になった意図の掃除
+#### overrides は `program_intents` とは別の表に置く（M2-4）
 
-override を消した結果 `overrides` が `{}` になったとき、意図の行をどうするか。ruler の desired 集合が
+意図の表は「録る / 録るな」だけを持ち、パラメータの上書きは `program_overrides` に分ける。
 
 ```
-desired = (ルールにマッチした番組 ∪ intent.action='record') − intent.action='skip'
+program_intents                  program_overrides
+  site, program_id      (PK)       site, program_id      (PK)
+  action  NOT NULL                 overrides  jsonb NOT NULL
+    ('record' | 'skip')            program_start_at, program_duration_ms
+  program_start_at, ...
 ```
 
-である以上、`action='record'` の意図は**ルールとは無関係に予約を存在させる**。したがって:
+**ユーザーが番組について主張しうることは 2 つあり、独立している**: ①録る / 録るな ②パラメータの上書き。1 つの行に同居させると、`action` が NOT NULL であるために **「パラメータだけ上書きした。録る録らないについては意見なし」を表現できない**。priority を 1 つ変えるだけで `action='record'`（= 録れ）を主張させられる。
 
-| 条件 | 挙動 | 理由 |
+その結果、行が空になったとき「この行はもともと何を主張していたのか」が行自身から読めず、`reservations.rule_id`（別表の、しかも直近 ruler パスのスナップショット）に問い合わせる必要が出る。それは次の場合に誤答する:
+
+> 手動予約（`intent{record, {priority:7}}`）に後からルールがマッチして `rule_id` が埋まった状態で「ルールに戻す」を押す → `rule_id IS NOT NULL` なので意図の行が消える → 手動予約だったものが純粋なルール由来になり、その後ルールを編集して外れると**ユーザーの手動予約が消える**。
+
+表を分けると:
+
+| | 1 表だったとき | 分離後 |
 |---|---|---|
-| `reservations.rule_id IS NOT NULL` | **意図の行を DELETE** | `intent{record, {}}` が残るとその予約は実質手動予約として固定され、後でルールを編集して番組が外れても生き残る。「ルールに戻す」の意味と正反対 |
-| `rule_id IS NULL` | `overrides` を `{}` にするだけ（`action='record'` は残す） | その意図が予約の唯一の支え。消すと次の ruler パスで予約自体が消える。priority のリセットで予約が消えるのは明らかな誤り |
+| 「ルールに戻す」 | 掃除規則（`rule_id` で分岐） | **`program_overrides` の行を DELETE するだけ**。`program_intents` に触らないので手動予約が巻き込まれる経路が構造的に存在しない |
+| 意味を持たない行 | CHECK で禁止する必要がある | **表現不可能**（空 = 行が無い） |
+| 何も指定しない `PATCH {}` | 掃除規則が発火して意図を消しうる | 消すものが無いので何も起きない |
+| M2-6 の dedup skip | priority を触っただけで無効化される | 意図の行が無いので `base.skip` が効く。手動予約（`intent{record}` あり）は正しく勝つ |
 
-**判定に `reservations.source`（`manual` / `rule`）を使わない。** 案 A は source による分岐を消すための設計であり、ここで source を持ち出すと分岐が復活する。使うのは「いまルールがこの番組を欲しているか」= `rule_id` である。`rule_id IS NULL` は手動予約と「ルールがマッチしなくなって意図だけで生きている予約」の両方を含むが、どちらも意図が唯一の支えなので同じ扱いでよい。
+**「型階層ではないものに STI を使わない」という判断である。** 区別したいのは①②の presence の直積（4 通りのうち 1 つが禁止）であって、判別子ひとつで決まるサブタイプではない。判別子を無理に立てると、Single Table Inheritance の定番の欠点 --- サブタイプごとの NOT NULL が書けず、整合性がスキーマから CHECK とアプリコードへ逃げる --- がそのまま出る。
 
-この規則の副作用として、**「ルールに戻す」を押した直後にルールがその番組を欲しなくなっていれば予約は消える**。`rule_id` は直近の ruler パスのスナップショットなので、ルールを無効化した直後にリセットするとこれが起きる。これは正しい挙動として受け入れる --- 「ルールに戻す」は文字どおり「ルールに判断を委ねる」であり、ルールが欲しくないなら予約は無くなるのが一貫している。
+#### jsonb を許す条件
 
-ルール由来の予約に初めて override を付けるときは意図の行を `action='record'` で新規作成する。これは「この番組は録る」というユーザー意図の記録として妥当で、M2-6 の重複排除が base に skip を立てても手を入れたユーザーの意図が勝つ（§4.3 の「迷ったら録る側に倒す」）。
+`overrides` に jsonb を許すのは、**それが `program_overrides` 自身のロジックでは一切使われない不透明なペイロードだから**である。予約のパラメータを上書きするためだけに存在し、内容でクエリも制約もしない。
+
+したがって `CHECK (jsonb_strip_nulls(overrides) <> '{}')` のような**内容を検査する制約は置かない**。技術的には可能（`jsonb_strip_nulls` は IMMUTABLE なので CHECK に書けて `{"priority":null}` も弾ける）だが、「クエリはしないが制約はする」という中途半端な状態が一番悪い。**不透明なペイロードなら不透明に扱う。** 同じ理由でマージも SQL ではなく Go 側で型付きに行う。
+
+この規則は他のテーブルの表現も説明する --- **内容でクエリするなら型付き列、Go に渡すだけなら jsonb**:
+
+| 場所 | 表現 | 内容でクエリするか |
+|---|---|---|
+| `rules` | 型付き列 + 子テーブル（#3 の決定） | **する**（ユーザーが編集し UI が一覧・フィルタ） |
+| `reservations.base` | jsonb | しない |
+| `program_overrides.overrides` | jsonb | しない |
+| `recordings.keep_original` / `encode_profiles` | 型付き列 | **する**（プロファイル別の録画一覧） |
+| `schedule_sync.options` | jsonb | しない（mirakc 固有。不変条件 7） |
+
+「オプションの組」を独立したテーブルに正規化はしない。`base` と `overrides` を判別子付きの 1 表に寄せることは上記の STI をやり直すことに等しい（base は完全 / overrides は疎、書き手が ruler / api、寿命も違う）。繰り返し現れる実体はテーブルではなく `db.ReservationOptions` という **Go の型**で、マージ点も `Effective()` の 1 箇所に既に正規化されている。
+
+#### ruler から見た load-bearing な行
+
+```
+desired = (ルールにマッチした番組 − intent.action='skip')
+        ∪ {intent.action='record' の番組}
+        ∪ {program_overrides に行がある番組}
+```
+
+**上書きの行の存在も予約を存在させる。** §4.3「overrides あり → 削除せず detached で保持。意図は番組単位のユーザーの投資」の要求そのもの。`action` が答えているのは「録画するか」、行の存在が答えているのは「この番組にユーザーの投資があるか」で、別の問いなので両立する。
 
 ### 4.3 ライフサイクル: detached・再アタッチ・GC
 
@@ -412,8 +448,23 @@ EPG の変化・ルール編集でルールがマッチしなくなったとき:
 
 | 状態 | 挙動 |
 |---|---|
-| overrides なし | 削除（通常の宣言的動作） |
-| **overrides あり（skip 含む）** | **削除せず detached 状態で保持**。skip 付きなら録画しない detached、skip 以外の overrides なら実質 manual として録画する |
+| 意図も上書きもなし | 削除（通常の宣言的動作） |
+| **意図または上書きがある** | **削除せず detached 状態で保持**。`intent{skip}` なら録画しない detached、それ以外なら実質 manual として録画する |
+
+**`detached` は mirakc への同期対象から外してはならない**（M2-4 で修正）。「実質 manual として録画する」は、reconciler が schedule を作るという意味である。`reconciler.listDesired` が `state = 'active'` で絞っていたため detached の予約は schedule が作られておらず、次の経路で**ユーザーの手動予約が黙って録画されなくなっていた**:
+
+> 手動予約 → たまたまルールがマッチ（`state='active'`, `rule_id` が埋まる）→ そのルールを編集して外す → `state='detached'` → 同期対象から外れる
+
+同期の可否を決めるのは state ではなく **`effective.skip`** である（`listDesired` は既にこれで絞っている）。state で除外してよいのは `orphaned` だけ --- 番組が終了しているので schedule を作る意味がない。
+
+この混乱の原因は `state` が 2 種類の情報を混ぜていることにある:
+
+| 値 | 正体 |
+|---|---|
+| `orphaned` | 番組終了後に schedule が観測されなかったという**独立した観測事実** |
+| `active` / `detached` | `(rule_id, base)` から**導出できる値**（`detached ⟺ rule_id IS NULL AND base IS NOT NULL`） |
+
+導出値を「同期対象か」のフィルタとして使ったのが誤りだった。`active` / `detached` は UI 表示（マーカー）のための派生値として扱う。
 
 重要: **skip のみでも削除しない**。削除すると「EPG の一時不整合で番組消失 → skip ごと行削除 → EPG 回復 → ruler が新規生成 → 除外が外れている」という EPGStation の症状 2 が EPG フリッカー経由で再発する。
 
@@ -427,9 +478,11 @@ EPG の変化・ルール編集でルールがマッチしなくなったとき:
 
 ### 4.4 manual 予約との統一
 
-manual 予約は「base を持たず、`program_intents` に `action = 'record'` と上書きだけがある」縮退形。ルール由来予約と同一コードパスで扱う。複数ルールマッチ時（最高 priority ルールが base を供給）も、勝者が入れ替われば base が変わるだけで意図は生存する。
+manual 予約は「base を持たず、`program_intents` に `action = 'record'` だけがある」縮退形。ルール由来予約と同一コードパスで扱う。複数ルールマッチ時（最高 priority ルールが base を供給）も、勝者が入れ替われば base が変わるだけで意図は生存する。
 
-source / state は「今、誰が base を供給しているか」の答えに過ぎない: `manual` = 誰もいない（base = NULL）/ `rule` = ルールが毎パス再計算 / `detached` = かつてのルール（凍結された base）。
+state は「今、誰が base を供給しているか」の答えに過ぎない: base = NULL なら誰もいない / `active` はルールが毎パス再計算 / `detached` はかつてのルール（凍結された base）。§4.3 のとおりこれは `(rule_id, base)` からの導出値であり、同期の可否を決めるフィルタに使ってはならない。
+
+**`reservations.source` は「今」ではなく「どう作られたか」を答えようとしていて、両方に失敗している。** `internal/ruler/sql.go` は手動予約にルールがマッチすると `source` を `manual` → `rule` に書き換え、ルールが外れても戻さない。下の「昇格は要らない」と矛盾するうえ、`watcher` が `recordings.source` にコピーするため**手動予約した番組の録画履歴が恒久的に「ルール由来」と記録される**（永続資産なので不可逆）。分離後は 2 つの事実が別々に読める --- 「ユーザーが録れと言った」は `program_intents.action='record'`、「いまルールが base を供給している」は `rule_id IS NOT NULL` --- ので `reservations.source` は導出可能になる。列の削除は M2-4 の範囲外（別タスク）。
 
 #### manual 行にルールがマッチしても昇格は要らない
 
