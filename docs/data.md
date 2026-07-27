@@ -25,6 +25,7 @@
 - 実行中はリース（ハートビート）を延長。ワーカー死亡（OOM、プリエンプト）はリース切れで検出し、queued に戻す
 - at-least-once なのでジョブは冪等に書く（出力は一時パスに書いて完了時に公開、DB 登録は `ON CONFLICT` で吸収）
 - 常駐シングルトンロール（watcher）は `pg_advisory_lock` によるリーダー選出。セッション断で自動解放されるのでフェイルオーバーも自然に付く。k8s の Lease API に依存しないため monolithic mode でも同じコードが動く
+  - **watcher の singleton 性は「正しさ」の要件ではない**（M2-16 / M2-18）。`processRecord` が `record_sync` の `(site, record_id)` 行ロックで冪等化されているため（[録画エンジン](recording.md) §3.3「record 処理は並行実行しても壊れない」）、複数の watcher が同一 record を並行処理しても `recordings` は重複しない。watcher が常駐でシングルトンなのは、SSE 購読という「mirakc に N 本のロングポーリング接続を張らない」ための接続数の配慮に過ぎない。真実（レベルトリガーの定期全量突き合わせ）は M2-18 で `record_sweep` ジョブに切り出し済みで、watcher に残っているのは SSE 購読とヒント処理（handleEvent）だけ
 - **ルール評価（ruler）と reconciler はシングルトンではなくジョブ**。定期・冪等・DB のみ（reconciler は mirakc への HTTP を伴うが、パスを跨ぐ接続や状態は持たない）・重複実行不可という性質が epg_sync と同じなので、どちらも River のジョブとして扱い、排他は advisory lock ではなく**ジョブロック + `UniqueOpts`**（args にサイトを含めるためサイト単位。別サイトの並行実行は正常）で担保する。機構が 1 つに減る
 
 ### 定期実行の契機はデプロイ形態に委ねる

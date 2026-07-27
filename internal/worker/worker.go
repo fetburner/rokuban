@@ -75,6 +75,10 @@ func NewWorkers(deps *Deps) *river.Workers {
 		MirakcClient: deps.MirakcClient,
 		Pool:         deps.Pool,
 	})
+	river.AddWorker(workers, &RecordSweepWorker{
+		MirakcClient: deps.MirakcClient,
+		Pool:         deps.Pool,
+	})
 	return workers
 }
 
@@ -90,6 +94,8 @@ func allQueues(ingestConcurrency int) map[string]river.QueueConfig {
 		rulerQueue: {MaxWorkers: 1},
 		// reconciler も ruler と同じ理由（UniqueOpts がサイト単位の排他を担う）で 1 本に絞る。
 		reconcilerQueue: {MaxWorkers: 1},
+		// record_sweep も同じ理由（UniqueOpts がサイト単位の排他を担う）で 1 本に絞る。
+		recordSweepQueue: {MaxWorkers: 1},
 	}
 }
 
@@ -119,8 +125,16 @@ type ClientConfig struct {
 	// ReconcilePassInterval は reconciler 定期パスの間隔。0 なら既定値（30 秒）。
 	ReconcilePassInterval time.Duration
 
-	// PeriodicJobs が false なら、EpgSyncSite / RulerPassSite / ReconcilePassSite が
-	// 設定されていても River の PeriodicJobs を一切登録しない。k8s では false にして、CronJob が
+	// RecordSweepSite が空でない場合、そのサイトの watcher 全量突き合わせ（(c)、
+	// docs/recording.md §3.3）を定期ジョブとして登録する（PeriodicJobs が true のときのみ）。
+	RecordSweepSite string
+
+	// RecordSweepInterval は record_sweep 定期パスの間隔。0 なら既定値（5 分）。
+	RecordSweepInterval time.Duration
+
+	// PeriodicJobs が false なら、EpgSyncSite / RulerPassSite / ReconcilePassSite /
+	// RecordSweepSite が設定されていても River の PeriodicJobs を一切登録しない。
+	// k8s では false にして、CronJob が
 	// `rokuban enqueue` を叩く形に委ねる（docs/data.md §2「定期実行の契機は
 	// デプロイ形態に委ねる」。設定キーは worker.periodic_jobs、既定 true）。
 	PeriodicJobs bool
@@ -203,6 +217,20 @@ func buildRiverConfig(workers *river.Workers, cfg ClientConfig) (*river.Config, 
 				river.PeriodicInterval(interval),
 				func() (river.JobArgs, *river.InsertOpts) {
 					return ReconcilePassArgs{Site: site}, nil
+				},
+				&river.PeriodicJobOpts{RunOnStart: true},
+			))
+		}
+		if cfg.RecordSweepSite != "" {
+			interval := cfg.RecordSweepInterval
+			if interval <= 0 {
+				interval = defaultRecordSweepInterval
+			}
+			site := cfg.RecordSweepSite
+			riverCfg.PeriodicJobs = append(riverCfg.PeriodicJobs, river.NewPeriodicJob(
+				river.PeriodicInterval(interval),
+				func() (river.JobArgs, *river.InsertOpts) {
+					return RecordSweepArgs{Site: site}, nil
 				},
 				&river.PeriodicJobOpts{RunOnStart: true},
 			))

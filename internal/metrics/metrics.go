@@ -154,6 +154,14 @@ var (
 		Name: "rokuban_records_broken_total",
 		Help: "mirakc record-broken events by reason.",
 	}, []string{"reason"})
+
+	// SweepLastPass は最後に成功した record_sweep パス（3 段構えの (c)、
+	// docs/recording.md §3.3）の時刻（UNIX 秒）。ReconcileLastPass / RulerLastPass /
+	// EpgSyncLastSuccess と同じ理由（ゲージの凍結対策）で持つ（M2-18）。
+	SweepLastPass = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "rokuban_sweep_last_pass_timestamp_seconds",
+		Help: "Unix time of the last successful record_sweep pass. Use with time() to detect a stalled sweep.",
+	})
 )
 
 // EPG プロジェクション（M1-6）のメトリクス。
@@ -220,6 +228,7 @@ func NewRegistry(backlog prometheus.Collector) *prometheus.Registry {
 
 		RecordingsFailed,
 		RecordsBroken,
+		SweepLastPass,
 
 		EpgSyncDuration,
 		EpgProgramsProjected,

@@ -17,51 +17,49 @@ import (
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
-	"github.com/fetburner/rokuban/internal/worker"
 )
 
 // DefaultSite はデフォルトの mirakc サイト名。定義は db.DefaultSite（唯一の出所）。
 const DefaultSite = db.DefaultSite
 
-// Config は Watcher の設定。
-type Config struct {
-	ReconcileInterval time.Duration
-}
-
-func defaultConfig() Config {
-	return Config{
-		ReconcileInterval: 5 * time.Minute,
-	}
-}
+// IngestArgsFunc は ingest ジョブの引数（River の JobArgs）を組み立てる関数。
+//
+// 具体型は internal/worker.IngestJobArgs だが、internal/watcher はそれを直接
+// import できない。record_sweep ジョブ（internal/worker.RecordSweepWorker）が
+// このパッケージの Watcher.Sweep を呼ぶため、逆方向に internal/watcher →
+// internal/worker の import を残すと循環インポートになる（M2-18）。
+// そのため呼び出し元（cmd/rokuban と RecordSweepWorker）が具体型を注入する。
+type IngestArgsFunc func(site, recordID string) river.JobArgs
 
 // Watcher は mirakc の SSE イベントを購読し、録画の状態変化を DB に反映する。
 type Watcher struct {
-	site     string
-	mirakc   *mirakc.Client
-	pool     *pgxpool.Pool
-	river    *river.Client[pgx5.Tx]
-	cfg      Config
-	services []mirakc.Service
+	site          string
+	mirakc        *mirakc.Client
+	pool          *pgxpool.Pool
+	river         *river.Client[pgx5.Tx]
+	newIngestArgs IngestArgsFunc
+	services      []mirakc.Service
 }
 
-// New は Watcher を生成する。cfg が nil の場合はデフォルト設定を使う。
-func New(site string, mc *mirakc.Client, pool *pgxpool.Pool, rc *river.Client[pgx5.Tx], cfg *Config) *Watcher {
-	c := defaultConfig()
-	if cfg != nil {
-		if cfg.ReconcileInterval > 0 {
-			c.ReconcileInterval = cfg.ReconcileInterval
-		}
-	}
+// New は Watcher を生成する。newIngestArgs は ingest ジョブの引数を組み立てる関数で、
+// 呼び出し元が internal/worker.NewIngestArgs を渡す想定（IngestArgsFunc のコメント参照）。
+func New(site string, mc *mirakc.Client, pool *pgxpool.Pool, rc *river.Client[pgx5.Tx], newIngestArgs IngestArgsFunc) *Watcher {
 	return &Watcher{
-		site:   site,
-		mirakc: mc,
-		pool:   pool,
-		river:  rc,
-		cfg:    c,
+		site:          site,
+		mirakc:        mc,
+		pool:          pool,
+		river:         rc,
+		newIngestArgs: newIngestArgs,
 	}
 }
 
-// Run は SSE 購読と定期 reconcile を開始し、ctx がキャンセルされるまでブロックする。
+// Run は SSE 購読を開始し、ctx がキャンセルされるまでブロックする。
+//
+// M2-18 で定期の全量突き合わせ（3 段構えの (c)、docs/recording.md §3.3）を
+// record_sweep ジョブ（internal/worker.RecordSweepWorker）に切り出したため、
+// Watcher は SSE 購読と handleEvent だけの常駐になった。真実（レベルトリガー）は
+// ジョブ側にあり、Watcher はヒント源（(a) record-saved の即時反映 / (b) 接続時の
+// 全 record 再送）に徹する。
 func (w *Watcher) Run(ctx context.Context) error {
 	events := make(chan mirakc.Event, 64)
 	eg, egCtx := errgroup.WithContext(ctx)
@@ -78,21 +76,10 @@ func (w *Watcher) Run(ctx context.Context) error {
 }
 
 func (w *Watcher) eventLoop(ctx context.Context, events <-chan mirakc.Event) error {
-	if err := w.reconcile(ctx); err != nil {
-		slog.Error("initial reconcile failed", "err", err)
-	}
-
-	ticker := time.NewTicker(w.cfg.ReconcileInterval)
-	defer ticker.Stop()
-
 	for {
 		select {
 		case ev := <-events:
 			w.handleEvent(ctx, ev)
-		case <-ticker.C:
-			if err := w.reconcile(ctx); err != nil {
-				slog.Error("reconcile failed", "err", err)
-			}
 		case <-ctx.Done():
 			return ctx.Err()
 		}
@@ -138,8 +125,17 @@ func (w *Watcher) handleEvent(ctx context.Context, ev mirakc.Event) {
 	}
 }
 
-func (w *Watcher) reconcile(ctx context.Context) error {
-	slog.Info("watcher reconcile started")
+// Sweep は `GET /api/recording/records` で全 record を取得し、DB（record_sync /
+// recordings）と突き合わせる。3 段構えの (c)（docs/recording.md §3.3）にあたる
+// レベルトリガーの真実で、SSE のヒント（(a)(b)）を取りこぼしても収束させる。
+//
+// M2-18 で record_sweep ジョブ（internal/worker.RecordSweepWorker）から呼ばれる形に
+// 公開メソッドとして切り出した。processRecord は M2-16 で record_sync の
+// (site, record_id) 行ロックにより冪等化されているため、SSE 由来の handleEvent と
+// このメソッドが同一 record を並行処理しても recordings は重複しない
+// （docs/recording.md §3.3「record 処理は並行実行しても壊れない」）。
+func (w *Watcher) Sweep(ctx context.Context) error {
+	slog.Info("watcher sweep started")
 
 	if services, err := w.mirakc.ListServices(ctx); err != nil {
 		slog.Error("refreshing service cache", "err", err)
@@ -153,10 +149,11 @@ func (w *Watcher) reconcile(ctx context.Context) error {
 	}
 	for _, record := range records {
 		if err := w.processRecord(ctx, record); err != nil {
-			slog.Error("reconcile: processing record", "record_id", record.ID, "err", err)
+			slog.Error("sweep: processing record", "record_id", record.ID, "err", err)
 		}
 	}
-	slog.Info("watcher reconcile complete", "records", len(records))
+	slog.Info("watcher sweep complete", "records", len(records))
+	metrics.SweepLastPass.SetToCurrentTime()
 	return nil
 }
 
@@ -206,10 +203,7 @@ func (w *Watcher) processRecord(ctx context.Context, record mirakc.Record) error
 	}
 
 	if record.Recording.Status == "finished" && recordingID != nil {
-		if _, err := w.river.InsertTx(ctx, tx, worker.IngestJobArgs{
-			Site:     w.site,
-			RecordID: record.ID,
-		}, nil); err != nil {
+		if _, err := w.river.InsertTx(ctx, tx, w.newIngestArgs(w.site, record.ID), nil); err != nil {
 			return fmt.Errorf("enqueuing ingest job: %w", err)
 		}
 	}

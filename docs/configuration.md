@@ -60,7 +60,7 @@ epg:
                                  # ruler の GC（予約と番組単位の意図）も同じ猶予を使う
 
 worker:
-  periodic_jobs: true            # プロセス内で定期ジョブ（epg_sync / ruler_pass / reconcile_pass）を投入するか。
+  periodic_jobs: true            # プロセス内で定期ジョブ（epg_sync / ruler_pass / reconcile_pass / record_sweep）を投入するか。
                                  # k8s では false にし、CronJob から rokuban enqueue で投入する
                                  # （River の PeriodicJobs はリーダーだけが投入するため、
                                  #  KEDA で 0 にスケールすると誰も投入しなくなる。data.md §2）

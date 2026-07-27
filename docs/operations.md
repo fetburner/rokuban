@@ -84,17 +84,19 @@ mirakc の追従品質は EDCB ほどの長期実績がないため、品質メ�
 
 ### ジョブ化されたループの監視（M2）
 
-ruler / reconciler は River のジョブになったので、**「ループが止まっている」の検出方法が変わった**。advisory lock が取れているかではなく、**ジョブが投入され完走しているか**を見る。
+ruler / reconciler / record_sweep（watcher の 3 段構えのうち (c) 定期全量突き合わせ。M2-18）は River のジョブになったので、**「ループが止まっている」の検出方法が変わった**。advisory lock が取れているかではなく、**ジョブが投入され完走しているか**を見る。
 
 | 見るもの | 意味 |
 |---|---|
-| `rokuban_*_last_pass_timestamp_seconds` | `time() - この値` が周期を大きく超えたら止まっている |
+| `rokuban_*_last_pass_timestamp_seconds`（`reconcile` / `ruler` / `sweep`） | `time() - この値` が周期を大きく超えたら止まっている |
 | `river_job` の `state='available'` が滞留 | 投入はされているが誰も引いていない（worker が 0 か、キューを引いていない） |
 | `river_job` が増えない | **投入自体が止まっている**。`worker.periodic_jobs: false` なのに CronJob が動いていない、あるいはリーダーが不在 |
 
 3 番目が k8s 特有の落とし穴。`PeriodicJobs` はリーダーだけが投入するので、worker が 0 にスケールすると誰も投入しない（[データ層](data.md) §2）。`rokuban enqueue` を叩く CronJob が設定されているかを最初に疑う。
 
-手動で走らせたいときは `rokuban enqueue <job>`（`epg-sync` / `ruler-pass` / `reconcile-pass`）。既に待機中なら投入せず終了コード 0 を返すので、cron から重ねて叩いても安全。
+手動で走らせたいときは `rokuban enqueue <job>`（`epg-sync` / `ruler-pass` / `reconcile-pass` / `record-sweep`）。既に待機中なら投入せず終了コード 0 を返すので、cron から重ねて叩いても安全。
+
+**record_sweep には ruler / reconciler と違ってヒント経路（前倒し投入）がない**。定期投入だけが契機で、間隔は既定 5 分（`worker.RecordSweepInterval`、旧 watcher の `ReconcileInterval` を継承）。SSE 再接続をヒントにする案は検討したが、`internal/mirakc.Client.Subscribe` が再接続を内部に隠していて呼び出し側に通知できないため見送った（[録画エンジン](recording.md) §3.3「record_sweep の起動契機」）。取りこぼしの実害は SSE の (a)(b) が大半を吸収し、record_sweep は定期パスとして収束させる保険という位置づけなので、5 分間隔で十分と判断している。
 
 ### ruler（M2）
 
@@ -251,7 +253,7 @@ Deployment 型で worker を運用する場合（またはその併用）の定�
 
 ### シングルトンロール: pg_advisory_lock リーダー選出
 
-watcher はシングルトンロール。`pg_try_advisory_lock` による監督ループでリーダー選出を行う（ruler / reconciler はジョブなので対象外。[データ層](data.md) §2）:
+watcher はシングルトンロール。`pg_try_advisory_lock` による監督ループでリーダー選出を行う（ruler / reconciler / record_sweep はジョブなので対象外。[データ層](data.md) §2）。ただし watcher の singleton 性はもはや「正しさ」の要件ではなく、「mirakc に N 本の SSE を張らない」という接続数の配慮に過ぎない（M2-16 で `processRecord` を冪等化済み。[データ層](data.md) §2、[録画エンジン](recording.md) §3.3）:
 
 1. ロールごとに goroutine を立て、`pg_try_advisory_lock` を定期試行（15s + jitter）
 2. 取得したら child context でロール本体を起動

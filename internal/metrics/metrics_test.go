@@ -37,6 +37,7 @@ func TestNewRegistry_ExposesRequiredMetrics(t *testing.T) {
 	ReconcileLastPass.SetToCurrentTime()
 	RecordingsFailed.WithLabelValues("need-rescheduling").Inc()
 	RecordsBroken.WithLabelValues("io-error").Inc()
+	SweepLastPass.SetToCurrentTime()
 	EpgSyncDuration.Observe(1)
 	EpgProgramsProjected.Set(1)
 	EpgChannelsWithoutPrograms.Set(0)
@@ -67,6 +68,7 @@ func TestNewRegistry_ExposesRequiredMetrics(t *testing.T) {
 		"rokuban_reconcile_last_pass_timestamp_seconds",
 		"rokuban_recordings_failed_total",
 		"rokuban_records_broken_total",
+		"rokuban_sweep_last_pass_timestamp_seconds",
 		"rokuban_epg_sync_duration_seconds",
 		"rokuban_epg_programs_projected",
 		"rokuban_epg_channels_without_programs",

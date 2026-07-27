@@ -109,6 +109,28 @@ func TestRunEnqueue_ReconcilePass(t *testing.T) {
 	}
 }
 
+// record-sweep も投入できること（watcher の 3 段構えのうち (c) 定期全量突き合わせを
+// ジョブに切り出したことの確認。issue #24 M2-18）。
+func TestRunEnqueue_RecordSweep(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	var out bytes.Buffer
+	if err := runEnqueue(ctx, pool, "record-sweep", &out); err != nil {
+		t.Fatalf("runEnqueue: %v", err)
+	}
+
+	var count int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM river_job WHERE kind = 'record_sweep'`,
+	).Scan(&count); err != nil {
+		t.Fatalf("counting record_sweep jobs: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("record_sweep job count = %d, want 1", count)
+	}
+}
+
 // 未知のジョブ名はエラーになること。
 func TestRunEnqueue_UnknownJob(t *testing.T) {
 	pool := testutil.SetupDB(t)

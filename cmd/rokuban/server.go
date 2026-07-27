@@ -149,12 +149,13 @@ func newServerCmd() *cobra.Command {
 					PeriodicJobs:      cfg.Worker.PeriodicJobs,
 					Queues:            cfg.Worker.Queues,
 				}
-				// 定期ジョブ（epg_sync / ruler_pass / reconcile_pass）は worker 側が投入する
-				// （mirakc に触るのも各ジョブのヒント経路をまとめるのも worker）。
+				// 定期ジョブ（epg_sync / ruler_pass / reconcile_pass / record_sweep）は
+				// worker 側が投入する（mirakc に触るのも各ジョブのヒント経路をまとめるのも worker）。
 				if slices.Contains(roles, "worker") {
 					clientCfg.EpgSyncSite = watcher.DefaultSite
 					clientCfg.RulerPassSite = watcher.DefaultSite
 					clientCfg.ReconcilePassSite = watcher.DefaultSite
+					clientCfg.RecordSweepSite = watcher.DefaultSite
 				}
 				var clientErr error
 				riverClient, clientErr = worker.NewClient(pool, workers, clientCfg)
@@ -191,7 +192,7 @@ func newServerCmd() *cobra.Command {
 					switch roleName {
 					case "watcher":
 						mc := mirakc.NewClient(cfg.Mirakc.URL, nil)
-						w := watcher.New(watcher.DefaultSite, mc, pool, riverClient, nil)
+						w := watcher.New(watcher.DefaultSite, mc, pool, riverClient, worker.NewIngestArgs)
 						roleFunc = w.Run
 					}
 					return role.RunSingleton(egCtx, pool, roleName, roleFunc, nil)

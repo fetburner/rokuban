@@ -94,7 +94,8 @@ type EpgConfig struct {
 
 // WorkerConfig は worker ロールの River クライアント設定。
 type WorkerConfig struct {
-	// PeriodicJobs はプロセス内で定期ジョブ（epg_sync / ruler_pass）を投入するか。
+	// PeriodicJobs はプロセス内で定期ジョブ（epg_sync / ruler_pass / reconcile_pass /
+	// record_sweep）を投入するか。
 	// k8s では false にし、CronJob から `rokuban enqueue` で投入する。
 	// River の PeriodicJobs はリーダーに選出されたクライアントだけが投入するため、
 	// worker を KEDA で 0 にスケールすると誰も投入しなくなる（docs/data.md §2

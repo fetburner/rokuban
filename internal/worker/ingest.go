@@ -37,6 +37,17 @@ type IngestJobArgs struct {
 // Kind は River ジョブの種別名を返す。
 func (IngestJobArgs) Kind() string { return "ingest" }
 
+// NewIngestArgs は IngestJobArgs を river.JobArgs として組み立てる。
+//
+// internal/watcher.Watcher に IngestJobArgs の具体型を注入するための関数値
+// （watcher.IngestArgsFunc）として使う。internal/watcher は internal/worker に
+// 依存できない（依存すると record_sweep ジョブ経由で循環インポートになる。
+// watcher.IngestArgsFunc のコメント参照）ため、呼び出し元（cmd/rokuban と
+// RecordSweepWorker）がこの関数を渡す。
+func NewIngestArgs(site, recordID string) river.JobArgs {
+	return IngestJobArgs{Site: site, RecordID: recordID}
+}
+
 // InsertOpts は River ジョブの挿入オプションを返す。
 //
 // watcher は record-saved イベントと定期の全量突き合わせの両方から同じ record を

@@ -271,19 +271,33 @@ reconciler は存在の突き合わせだけでなく、**effective options と 
 
 #### 3 段構えの信頼性設計
 
-1. `record-saved` は同一 record に複数回・順序保証なしで飛ぶ → **record id で冪等投入**（River unique job）
-2. watcher ダウン中の取りこぼし → **SSE の接続時全 record 再送**で回復
-3. SSE はあくまでヒント → **定期的な `GET /api/recording/records` 全量取得と DB の突き合わせ**（レベルトリガー）が真実
+| 段 | 内容 | 形（M2-18） |
+|---|---|---|
+| (a) | `record-saved` は同一 record に複数回・順序保証なしで飛ぶ → **record id で冪等投入**（River unique job） | **常駐**（`Watcher.Run` の SSE 購読 + `handleEvent`） |
+| (b) | watcher ダウン中の取りこぼし → **SSE の接続時全 record 再送**で回復 | **常駐**（同上。mirakc 側が接続時に再送する挙動そのもの） |
+| (c) | SSE はあくまでヒント → **定期的な `GET /api/recording/records` 全量取得と DB の突き合わせ**（レベルトリガー）が真実 | **ジョブ**（`internal/worker.RecordSweepWorker`、`record_sweep`。ロジックは `Watcher.Sweep` を呼ぶだけで移植しない） |
 
 この 3 つでエンコード漏れは構造的に起きない。
 
+**真実（レベルトリガー）がジョブで、ヒント源が常駐**という配置になった。ruler / reconciler が「定期パスが真実、作成/更新イベントはヒント」という形をジョブとして持つのと対称で、watcher の (c) も同じ形にはまる。(a)(b) は SSE という長寿命コネクションでしか実現できないヒント経路なので常駐に残る。
+
 #### record 処理は並行実行しても壊れない
 
-`processRecord` は `record_sync` の `(site, record_id)` 行を**先に確保して行ロックを取ってから** `recordings` を作る。同一 record を 2 つの経路（SSE 由来と定期突き合わせ、あるいは 2 プロセス）が同時に処理しても、2 つ目は 1 つ目のコミットを待ってから `recording_id` が埋まっているのを見る。
+`processRecord` は `record_sync` の `(site, record_id)` 行を**先に確保して行ロックを取ってから** `recordings` を作る。同一 record を 2 つの経路（SSE 由来の (a) と record_sweep ジョブの (c)、あるいは 2 プロセス）が同時に処理しても、2 つ目は 1 つ目のコミットを待ってから `recording_id` が埋まっているのを見る。
 
 これがないと両方が「行なし」を見て両方が `createRecording` し、`recordings_unique_active_event`（`00003` の部分ユニークインデックス）違反で片方が失敗する。既にある PK を使うだけなので、`pg_advisory_xact_lock` のような追加の機構は要らない。
 
-この性質があるので **watcher のシングルトン性は「正しさ」の要件ではない**。残っている理由は「mirakc に N 本の SSE を張らない」という接続数の配慮で、壊れるわけではない（ingest ジョブは record id で冪等）。3 段構えの (c) をジョブとして切り出せるのもこの前提による。
+この性質があるので **watcher のシングルトン性は「正しさ」の要件ではない**。残っている理由は「mirakc に N 本の SSE を張らない」という接続数の配慮で、壊れるわけではない（ingest ジョブは record id で冪等）。M2-18 で 3 段構えの (c) を record_sweep ジョブとして実際に切り出せたのはこの前提による（(a) と (c) が並行に走っても `recordings` が重複しないことをテストで固定してある）。
+
+#### record_sweep の起動契機
+
+ruler / reconciler と違い、**起動契機は定期のみ**（ヒントで前倒しする経路を持たない）。
+
+| 契機 | 種別 |
+|---|---|
+| 定期（既定 5 分、旧 watcher の `ReconcileInterval` を継承） | **真実**。デプロイ形態に応じて River `PeriodicJobs` か k8s CronJob（`rokuban enqueue record-sweep`）が投入する（[データ層](data.md) §2） |
+
+ruler / reconciler は「作成・更新イベント」というヒントを同一トランザクションで投入できたが、record_sweep には対応する自然なヒントがない。**最も自然な候補は SSE の再接続**（切れて再接続した = 取りこぼした可能性がある区間ができた合図）だが、`internal/mirakc.Client.Subscribe` は再接続を内部で処理して自動リトライするだけで、呼び出し側（watcher）に再接続を通知する仕組み（コールバック等）を持たない。追加するなら `mirakc.SSEConfig` に `OnReconnect` のようなフックを生やす設計判断が要り、この issue の枠を超えるため、M2-18 では見送って定期投入のみとした（要検討事項として issue に記録）。
 
 #### 品質メタデータ記録
 

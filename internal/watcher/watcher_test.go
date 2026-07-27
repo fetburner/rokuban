@@ -7,16 +7,84 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	pgx5 "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/riverdriver/riverpgxv5"
+	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/testutil"
-	"github.com/fetburner/rokuban/internal/worker"
 )
+
+// testIngestJobArgs は本パッケージのテスト専用 ingest ジョブ引数のスタブ。
+//
+// internal/watcher は internal/worker に依存できない（record_sweep ジョブが
+// internal/worker から Watcher.Sweep を呼ぶため、逆方向に依存すると循環インポートに
+// なる。watcher.go の IngestArgsFunc のコメント参照）。内部テストファイル
+// （本ファイル、package watcher）も同じ制約を受けるため、internal/worker.IngestJobArgs
+// を直接使う代わりに、同じ Kind（"ingest"）と UniqueOpts（ByArgs + 非最終状態限定）を
+// 再現するスタブをここに置く。これにより、同一 record の repeated processRecord で
+// ingest ジョブが重複しないという既存テストの前提が維持される。
+type testIngestJobArgs struct {
+	Site     string `json:"site"`
+	RecordID string `json:"record_id"`
+}
+
+func (testIngestJobArgs) Kind() string { return "ingest" }
+
+func (testIngestJobArgs) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{
+		UniqueOpts: river.UniqueOpts{
+			ByArgs: true,
+			ByState: []rivertype.JobState{
+				rivertype.JobStateAvailable,
+				rivertype.JobStatePending,
+				rivertype.JobStateRetryable,
+				rivertype.JobStateRunning,
+				rivertype.JobStateScheduled,
+			},
+		},
+	}
+}
+
+// testNewIngestArgs は Watcher.New に渡す IngestArgsFunc のテスト実装。
+func testNewIngestArgs(site, recordID string) river.JobArgs {
+	return testIngestJobArgs{Site: site, RecordID: recordID}
+}
+
+// testIngestWorker は testIngestJobArgs 用の no-op ワーカー。このパッケージの
+// テストはジョブを実際に実行しない（river_job テーブルの行を SQL で確認するだけ）が、
+// InsertTx は挿入時点で Kind が Workers バンドルに登録済みであることを要求するため、
+// 何もしないワーカーだけ登録しておく。
+type testIngestWorker struct {
+	river.WorkerDefaults[testIngestJobArgs]
+}
+
+func (testIngestWorker) Work(context.Context, *river.Job[testIngestJobArgs]) error { return nil }
+
+// newTestRiverClient はテスト用の River クライアントを作る。
+//
+// internal/worker.NewClient は使わない（同じ理由で internal/worker を import
+// できないため）。
+func newTestRiverClient(t *testing.T, pool *pgxpool.Pool) *river.Client[pgx5.Tx] {
+	t.Helper()
+	workers := river.NewWorkers()
+	river.AddWorker(workers, &testIngestWorker{})
+	rc, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
+		Queues:  map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: 1}},
+		Workers: workers,
+	})
+	if err != nil {
+		t.Fatalf("creating test river client: %v", err)
+	}
+	return rc
+}
 
 func setupTest(t *testing.T) (*Watcher, *pgxpool.Pool) {
 	t.Helper()
@@ -27,14 +95,10 @@ func setupTest(t *testing.T) (*Watcher, *pgxpool.Pool) {
 		t.Fatalf("cleaning river_job: %v", err)
 	}
 
-	workers := worker.NewWorkers(&worker.Deps{Pool: pool})
-	rc, err := worker.NewClient(pool, workers, worker.ClientConfig{IngestConcurrency: 2})
-	if err != nil {
-		t.Fatalf("creating river client: %v", err)
-	}
+	rc := newTestRiverClient(t, pool)
 
 	mc := mirakc.NewClient("http://unused:40772", nil)
-	w := New(DefaultSite, mc, pool, rc, nil)
+	w := New(DefaultSite, mc, pool, rc, testNewIngestArgs)
 	return w, pool
 }
 
@@ -462,11 +526,7 @@ func TestHandleRecordingFailed_Idempotent(t *testing.T) {
 		t.Fatalf("cleaning river_job: %v", err)
 	}
 
-	workers := worker.NewWorkers(&worker.Deps{Pool: pool})
-	rc, err := worker.NewClient(pool, workers, worker.ClientConfig{IngestConcurrency: 2})
-	if err != nil {
-		t.Fatalf("river client: %v", err)
-	}
+	rc := newTestRiverClient(t, pool)
 
 	programID := int64(327361024100)
 	resID := createTestReservation(t, pool, programID)
@@ -511,7 +571,7 @@ func TestHandleRecordingFailed_Idempotent(t *testing.T) {
 	defer mockServer.Close()
 
 	mc := mirakc.NewClient(mockServer.URL, nil)
-	w := New(DefaultSite, mc, pool, rc, nil)
+	w := New(DefaultSite, mc, pool, rc, testNewIngestArgs)
 
 	failedData := mirakc.RecordingFailedData{
 		ProgramID: programID,
@@ -559,7 +619,7 @@ func TestHandleRecordingFailed_Idempotent(t *testing.T) {
 	}
 }
 
-func TestReconcile_CatchesMissedRecords(t *testing.T) {
+func TestSweep_CatchesMissedRecords(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
@@ -567,11 +627,7 @@ func TestReconcile_CatchesMissedRecords(t *testing.T) {
 		t.Fatalf("cleaning: %v", err)
 	}
 
-	workers := worker.NewWorkers(&worker.Deps{Pool: pool})
-	rc, err := worker.NewClient(pool, workers, worker.ClientConfig{IngestConcurrency: 2})
-	if err != nil {
-		t.Fatalf("river client: %v", err)
-	}
+	rc := newTestRiverClient(t, pool)
 
 	res1ID := createTestReservation(t, pool, 200001)
 	res2ID := createTestReservation(t, pool, 200002)
@@ -610,10 +666,10 @@ func TestReconcile_CatchesMissedRecords(t *testing.T) {
 	defer mockServer.Close()
 
 	mc := mirakc.NewClient(mockServer.URL, nil)
-	w := New(DefaultSite, mc, pool, rc, nil)
+	w := New(DefaultSite, mc, pool, rc, testNewIngestArgs)
 
-	if err := w.reconcile(ctx); err != nil {
-		t.Fatalf("reconcile: %v", err)
+	if err := w.Sweep(ctx); err != nil {
+		t.Fatalf("sweep: %v", err)
 	}
 
 	var syncCount int
@@ -640,22 +696,185 @@ func TestReconcile_CatchesMissedRecords(t *testing.T) {
 		t.Errorf("ingest job count = %d, want 2", jobCount)
 	}
 
-	// Run reconcile again — verify idempotency
-	if err := w.reconcile(ctx); err != nil {
-		t.Fatalf("reconcile (2nd): %v", err)
+	// Run sweep again — verify idempotency
+	if err := w.Sweep(ctx); err != nil {
+		t.Fatalf("sweep (2nd): %v", err)
 	}
 
 	if err := pool.QueryRow(ctx, "SELECT count(*) FROM recordings").Scan(&recCount); err != nil {
 		t.Fatalf("querying recordings: %v", err)
 	}
 	if recCount != 2 {
-		t.Errorf("recordings count after 2nd reconcile = %d, want 2", recCount)
+		t.Errorf("recordings count after 2nd sweep = %d, want 2", recCount)
 	}
 
 	if err := pool.QueryRow(ctx, "SELECT count(*) FROM river_job WHERE kind = 'ingest'").Scan(&jobCount); err != nil {
 		t.Fatalf("querying river_job: %v", err)
 	}
 	if jobCount != 2 {
-		t.Errorf("ingest job count after 2nd reconcile = %d, want 2", jobCount)
+		t.Errorf("ingest job count after 2nd sweep = %d, want 2", jobCount)
+	}
+}
+
+// TestSweepAndHandleEvent_ConcurrentIdempotent は本タスク（M2-18）の核心を検証する。
+// 3 段構え（docs/recording.md §3.3）のうち (a) SSE 由来の handleEvent と (c) 定期の
+// Sweep（record_sweep ジョブから呼ばれる）が同一 record を同時に処理しても、
+// M2-16 で processRecord に入れた record_sync の行ロックにより recordings が
+// 重複しないことを確認する。
+//
+// (a) は record-saved イベントを模して handleEvent 経由で、(c) は Sweep（mirakc の
+// ListRecords 経由）で、それぞれ独立した goroutine から同じ record を同時に叩く。
+// 複数ラウンド実行して、たまたま競合が起きなかっただけの flaky な成功を排除する
+// （TestProcessRecord_ConcurrentIdempotent と同じ考え方）。
+func TestSweepAndHandleEvent_ConcurrentIdempotent(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	if _, err := pool.Exec(ctx, "DELETE FROM river_job"); err != nil {
+		t.Fatalf("cleaning river_job: %v", err)
+	}
+
+	rc := newTestRiverClient(t, pool)
+
+	const rounds = 20
+	for round := 0; round < rounds; round++ {
+		programID := int64(600000 + round)
+		recordID := fmt.Sprintf("record-sweep-vs-event-%03d", round)
+
+		resID := createTestReservation(t, pool, programID)
+		record := testRecord(recordID, programID, resID, "finished")
+		// recordings の (site, network_id, service_id, event_id) 一意制約
+		// （deleted_at IS NULL）に他ラウンドと衝突しないよう event_id をずらす。
+		record.Program.EventID = 900 + round
+
+		mux := http.NewServeMux()
+		// (c) Sweep が使う全量取得エンドポイント。
+		mux.HandleFunc("/api/recording/records", func(rw http.ResponseWriter, r *http.Request) {
+			rw.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(rw).Encode([]mirakc.Record{record})
+		})
+		// (a) handleEvent が record-saved を受けて GetRecord で個別取得するエンドポイント。
+		mux.HandleFunc("/api/recording/records/"+recordID, func(rw http.ResponseWriter, r *http.Request) {
+			rw.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(rw).Encode(record)
+		})
+		// Sweep が呼ぶ ListServices 用のスタブ（未登録だと 404 がログに出るだけで
+		// テスト結果には影響しないが、ノイズを消しておく）。
+		mux.HandleFunc("/api/services", func(rw http.ResponseWriter, r *http.Request) {
+			rw.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(rw).Encode([]mirakc.Service{})
+		})
+		mockServer := httptest.NewServer(mux)
+
+		w := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pool, rc, testNewIngestArgs)
+
+		savedData, err := json.Marshal(mirakc.RecordSavedData{
+			RecordID:        recordID,
+			RecordingStatus: "finished",
+		})
+		if err != nil {
+			t.Fatalf("marshalling record-saved data: %v", err)
+		}
+		ev := mirakc.Event{Type: "recording.record-saved", Data: savedData}
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			// (a) SSE 由来: record-saved イベントを handleEvent 経由で処理する経路。
+			w.handleEvent(ctx, ev)
+		}()
+		go func() {
+			defer wg.Done()
+			// (c) 定期突き合わせ: Sweep が ListRecords 経由で同じ record を処理する経路。
+			if err := w.Sweep(ctx); err != nil {
+				t.Errorf("round %d: Sweep: %v", round, err)
+			}
+		}()
+		wg.Wait()
+		mockServer.Close()
+
+		var recCount int
+		if err := pool.QueryRow(ctx,
+			"SELECT count(*) FROM recordings WHERE reservation_id = $1", resID,
+		).Scan(&recCount); err != nil {
+			t.Fatalf("round %d: querying recordings: %v", round, err)
+		}
+		if recCount != 1 {
+			t.Fatalf("round %d: recording count = %d, want 1 "+
+				"((a) handleEvent と (c) Sweep の並行実行は冪等でなければならない)", round, recCount)
+		}
+
+		var jobCount int
+		if err := pool.QueryRow(ctx,
+			"SELECT count(*) FROM river_job WHERE kind = 'ingest' AND args->>'record_id' = $1", recordID,
+		).Scan(&jobCount); err != nil {
+			t.Fatalf("round %d: querying river_job: %v", round, err)
+		}
+		if jobCount != 1 {
+			t.Errorf("round %d: ingest job count = %d, want 1", round, jobCount)
+		}
+	}
+}
+
+// TestRun_NoAutomaticSweep は watcher が SSE 購読と handleEvent だけの常駐になった
+// こと（M2-18）を確認する。以前は Run 開始時に初回 reconcile を走らせ、以後も
+// タイマーで定期 reconcile していたが、(c) を record_sweep ジョブへ切り出したことで
+// Watcher 自身は `GET /api/recording/records` を一切呼ばなくなったはず。
+func TestRun_NoAutomaticSweep(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if _, err := pool.Exec(ctx, "DELETE FROM river_job"); err != nil {
+		t.Fatalf("cleaning river_job: %v", err)
+	}
+
+	rc := newTestRiverClient(t, pool)
+
+	var recordsCalls, eventsCalls int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/recording/records", func(rw http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&recordsCalls, 1)
+		rw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rw).Encode([]mirakc.Record{})
+	})
+	mux.HandleFunc("/events", func(rw http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&eventsCalls, 1)
+		rw.Header().Set("Content-Type", "text/event-stream")
+		flusher, ok := rw.(http.Flusher)
+		if !ok {
+			t.Fatal("ResponseWriter is not Flusher")
+		}
+		flusher.Flush()
+		<-r.Context().Done()
+	})
+	mockServer := httptest.NewServer(mux)
+	defer mockServer.Close()
+
+	mc := mirakc.NewClient(mockServer.URL, nil)
+	w := New(DefaultSite, mc, pool, rc, testNewIngestArgs)
+
+	runCtx, runCancel := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	go func() { done <- w.Run(runCtx) }()
+
+	// SSE 接続が確立するまで少し待ってから、Run が自発的に全量突き合わせを
+	// 呼んでいないことを確認する。
+	deadline := time.After(500 * time.Millisecond)
+	for atomic.LoadInt32(&eventsCalls) == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for SSE connection")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	runCancel()
+	<-done
+
+	if got := atomic.LoadInt32(&recordsCalls); got != 0 {
+		t.Errorf("GET /api/recording/records call count = %d, want 0 "+
+			"(Watcher.Run は SSE 購読だけの常駐になり、全量突き合わせは record_sweep ジョブの仕事のはず)", got)
 	}
 }
