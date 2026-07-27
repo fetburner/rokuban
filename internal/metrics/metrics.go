@@ -73,24 +73,59 @@ var (
 	// カウンタ（ReconcileSchedules）と違い、収束すればゼロに戻る。
 	// ゼロに戻らないまま続くのは reconcile が収束できていないということで
 	// （mirakc が作成を拒否し続ける、サーキットブレーカーが削除を止めている等）、
-	// アラートすべきはこちら。
+	// アラートすべきはこちら。実行した件数ではなく検出した件数を入れる。
+	//
+	// action:
+	//   - "create" / "delete": 存在の差分
+	//   - "update": 予約オプション（priority / tag）が観測結果と食い違っていて、
+	//     かつ**このパスで反映しようとした**schedule の数。MaxRecreatesPerPass で
+	//     次パスに持ち越した分は含む（数パスで収束するので、持続すれば上限が
+	//     低すぎるというアラートすべき情報になる）
+	//   - "update_deferred": 差分はあるが state の allowlist で**意図的に触らな
+	//     かった**schedule の数。"update" と分けているのは、こちらが収束を待つ
+	//     性質のものではないため — 録画中の番組の priority を変えると、録画が
+	//     終わるまで（数時間）ずっと差分が残る。これを "update" に混ぜると
+	//     「ゼロに戻らない = 異常」というこのゲージの読み方が壊れ、正常な
+	//     ユーザー操作でアラートが鳴る。こちらは非ゼロが正常でありうる
 	ReconcilePendingDiff = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "rokuban_reconcile_pending_diff",
 		Help: "Differences between desired reservations and observed mirakc schedules found in the most recent pass. Converges to zero when healthy.",
 	}, []string{"action"})
 
 	// ReconcileSchedules は mirakc schedule に対する操作の件数。
-	// 実際に差分を消した量。
+	// 実際に差分を消した量。action="recreated" は予約オプション（priority /
+	// tag）の差分反映のための DELETE→POST 再作成が成功した件数
+	// （docs/recording.md §3.2、issue #19）。
 	ReconcileSchedules = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "rokuban_reconcile_schedules_total",
-		Help: "mirakc recording schedules created or deleted by the reconciler.",
+		Help: "mirakc recording schedules created, deleted, or recreated by the reconciler.",
 	}, []string{"action"})
 
 	// ReconcileCircuitBreakerTrips は大量削除サーキットブレーカーが作動した回数。
 	// 0 以外はアラート対象（1 パスの削除が閾値を超えて停止している）。
+	//
+	// 予約オプションの差分反映（再作成）の DELETE はこのブレーカーの対象では
+	// ない（MaxRecreatesPerPass という別のレート制限を持つ。ブレーカーは
+	// 「ルール x EPG から導出された削除」の暴走を止めるためのもので、優先度の
+	// 一括変更のような正当な再作成をここに混ぜると誤作動する。
+	// docs/recording.md §3.2「大量削除サーキットブレーカー」参照）。
 	ReconcileCircuitBreakerTrips = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "rokuban_reconcile_circuit_breaker_trips_total",
 		Help: "Times the bulk-delete circuit breaker stopped a reconcile pass.",
+	})
+
+	// ReconcileScheduleLost は予約オプションの差分反映（再作成）で DELETE には
+	// 成功したが直後の POST が失敗し、schedule が消えたまま残った回数。
+	//
+	// レベルトリガーにより次パスが再作成を試みるが、その間に番組の開始時刻を
+	// 過ぎると取りこぼす。docs/recording.md §3.2 は quality_events への記録を
+	// 想定しているが、quality_events は recordings 行に紐づく列であり、
+	// まだ開始していない番組には recordings 行が存在しないため書き込めない
+	// （internal/reconciler.Reconciler.recreateSchedule のコメント参照）。
+	// 0 以外はアラート対象。
+	ReconcileScheduleLost = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "rokuban_reconcile_schedule_lost_total",
+		Help: "Times a schedule recreate's DELETE succeeded but the following POST failed, leaving the schedule missing until the next pass. Non-zero indicates a recording may be missed before then.",
 	})
 
 	// ReconcileLastPass は最後に完走したパスの時刻（UNIX 秒）。
@@ -219,6 +254,7 @@ func NewRegistry(backlog prometheus.Collector) *prometheus.Registry {
 		ReconcilePendingDiff,
 		ReconcileSchedules,
 		ReconcileCircuitBreakerTrips,
+		ReconcileScheduleLost,
 		ReconcileLastPass,
 
 		RulerPassDuration,
