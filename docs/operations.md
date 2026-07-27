@@ -140,7 +140,15 @@ DELETE FROM river_job WHERE kind = 'epg_sync' AND state = 'completed';
 
 | メトリクス | 説明 |
 |---|---|
-| reconcile 差分数 | desired（reservations）と observed（schedule_sync）の差分。通常はゼロ付近に収束する |
+| `rokuban_reconcile_pending_diff{action="create"\|"delete"}` | desired（reservations）と observed（schedule_sync）の**存在**の差分。通常はゼロ付近に収束する |
+| `rokuban_reconcile_pending_diff{action="update"}` | 予約オプション（priority / tag）の差分のうち、このパスで反映しようとした件数（M2-4）。収束する。**持続する非ゼロはアラート対象** --- mirakc が POST を拒否し続けている、または `MaxRecreatesPerPass` が低すぎる |
+| `rokuban_reconcile_pending_diff{action="update_deferred"}` | 差分はあるが schedule の state が `scheduled` でないため**意図的に触らなかった**件数。**アラートしない** --- 録画中の番組の priority を変えると録画が終わるまで（数時間）非ゼロが続くのが正常。`update` と分けてあるのはこのため（[録画エンジン](recording.md) §3.2「再作成のガード」） |
+| `rokuban_reconcile_schedules_total{action="recreated"}` | 予約オプションの差分反映で DELETE → POST の再作成が成功した件数 |
+| `rokuban_reconcile_schedule_lost_total` | 再作成で **DELETE には成功したが POST が失敗**し、schedule が消えたまま残った回数。**0 以外はアラート対象**。レベルトリガーで次パスが再作成するが、その間に開始時刻を越えると取りこぼす（[録画エンジン](recording.md) §3.2「DELETE 成功 → POST 失敗」） |
+
+`pending_diff` の `update` と `update_deferred` を分けているのは、このゲージの読み方が
+「ゼロに戻らないまま続く = 収束できていない」だからである。**意図的に見送った差分を混ぜると
+正常なユーザー操作でアラートが鳴り、ゲージがアラート不能になる。**
 
 ### 開始遅延検出器
 
