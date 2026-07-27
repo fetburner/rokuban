@@ -171,12 +171,19 @@ func (w *Watcher) processRecord(ctx context.Context, record mirakc.Record) error
 
 	q := sqlcgen.New(tx)
 
-	existingRecordingID, err := q.GetRecordSyncRecordingID(ctx, sqlcgen.GetRecordSyncRecordingIDParams{
-		Site:     w.site,
-		RecordID: record.ID,
+	// record_sync の (site, record_id) 行を先に確保して行ロックを取る（M2-16）。
+	// これにより同一 record を並行処理しても、後発は先発のコミットまで待たされ、
+	// 待った後は recording_id が埋まった状態を見るので recordings の二重作成が起きない。
+	// AcquireRecordSync は行がなければ recording_id = NULL で新規作成するだけで、
+	// 既存行があってもその内容を書き換えない。
+	existingRecordingID, err := q.AcquireRecordSync(ctx, sqlcgen.AcquireRecordSyncParams{
+		Site:      w.site,
+		RecordID:  record.ID,
+		ProgramID: record.Program.ID,
+		Status:    record.Recording.Status,
 	})
-	if err != nil && !errors.Is(err, pgx5.ErrNoRows) {
-		return fmt.Errorf("looking up record_sync: %w", err)
+	if err != nil {
+		return fmt.Errorf("acquiring record_sync: %w", err)
 	}
 
 	var recordingID *int64

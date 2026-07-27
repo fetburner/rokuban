@@ -3,8 +3,10 @@ package watcher
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -294,6 +296,118 @@ func TestProcessRecord_UntaggedRecord(t *testing.T) {
 	}
 
 	// No ingest job
+	var jobCount int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM river_job WHERE kind = 'ingest'").Scan(&jobCount); err != nil {
+		t.Fatalf("querying river_job: %v", err)
+	}
+	if jobCount != 0 {
+		t.Errorf("ingest job count = %d, want 0 for untagged record", jobCount)
+	}
+}
+
+// runConcurrentProcessRecord は同一 record を n 本の goroutine から同時に
+// processRecord へ渡し、全 goroutine の完了を待ってエラーがないことを確認する。
+// M2-16（processRecord の冪等化）の受け入れ基準である「並行実行しても
+// recordings が 1 行しかできない」ことを検証するための土台。
+func runConcurrentProcessRecord(t *testing.T, w *Watcher, record mirakc.Record, n int) {
+	t.Helper()
+	ctx := context.Background()
+
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			errs[i] = w.processRecord(ctx, record)
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("processRecord (goroutine %d): %v", i, err)
+		}
+	}
+}
+
+// TestProcessRecord_ConcurrentIdempotent は M2-16 の受け入れ基準の核心を検証する。
+// 同一 record を多数の goroutine から同時に processRecord して、record_sync の
+// (site, record_id) 行ロック（AcquireRecordSync）による直列化によって recordings
+// が 1 行しか作られないことを確認する。複数ラウンド（record_id を変えて繰り返す）
+// 実行し、たまたま競合が起きなかっただけという flaky な成功を排除する。
+func TestProcessRecord_ConcurrentIdempotent(t *testing.T) {
+	w, pool := setupTest(t)
+	ctx := context.Background()
+
+	const rounds = 30
+	const goroutinesPerRound = 8
+
+	for round := 0; round < rounds; round++ {
+		programID := int64(400000 + round)
+		recordID := fmt.Sprintf("record-concurrent-%03d", round)
+
+		resID := createTestReservation(t, pool, programID)
+		record := testRecord(recordID, programID, resID, "finished")
+		// recordings には (site, network_id, service_id, event_id) の一意制約
+		// （deleted_at IS NULL、00003_recordings_unique_active_event.sql）があるため、
+		// ラウンドごとに event_id を変えて他ラウンドの録画と衝突しないようにする。
+		record.Program.EventID = 500 + round
+
+		runConcurrentProcessRecord(t, w, record, goroutinesPerRound)
+
+		var recCount int
+		if err := pool.QueryRow(ctx,
+			"SELECT count(*) FROM recordings WHERE reservation_id = $1", resID,
+		).Scan(&recCount); err != nil {
+			t.Fatalf("round %d: querying recordings: %v", round, err)
+		}
+		if recCount != 1 {
+			t.Fatalf("round %d: recording count = %d, want 1 (concurrent processRecord must be idempotent)", round, recCount)
+		}
+
+		var jobCount int
+		if err := pool.QueryRow(ctx,
+			"SELECT count(*) FROM river_job WHERE kind = 'ingest' AND args->>'record_id' = $1", recordID,
+		).Scan(&jobCount); err != nil {
+			t.Fatalf("round %d: querying river_job: %v", round, err)
+		}
+		if jobCount != 1 {
+			t.Errorf("round %d: ingest job count = %d, want 1", round, jobCount)
+		}
+	}
+}
+
+// TestProcessRecord_ConcurrentUntaggedRecord は Rokuban 以外が mirakc に入れた
+// tag のない record（record_sync.recording_id が NULL のまま正しい）を並行処理
+// しても、recordings が作られたり record_sync が壊れたりしないことを検証する。
+func TestProcessRecord_ConcurrentUntaggedRecord(t *testing.T) {
+	w, pool := setupTest(t)
+	ctx := context.Background()
+
+	record := testRecord("record-concurrent-notag-001", 400900, 0, "finished")
+	record.Tags = nil
+
+	runConcurrentProcessRecord(t, w, record, 20)
+
+	var recCount int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM recordings").Scan(&recCount); err != nil {
+		t.Fatalf("querying recordings: %v", err)
+	}
+	if recCount != 0 {
+		t.Errorf("recording count = %d, want 0 for untagged record", recCount)
+	}
+
+	var syncRecordingID *int64
+	if err := pool.QueryRow(ctx,
+		"SELECT recording_id FROM record_sync WHERE site = $1 AND record_id = $2",
+		DefaultSite, record.ID).Scan(&syncRecordingID); err != nil {
+		t.Fatalf("querying record_sync: %v", err)
+	}
+	if syncRecordingID != nil {
+		t.Errorf("expected recording_id nil for untagged record, got %d", *syncRecordingID)
+	}
+
 	var jobCount int
 	if err := pool.QueryRow(ctx, "SELECT count(*) FROM river_job WHERE kind = 'ingest'").Scan(&jobCount); err != nil {
 		t.Fatalf("querying river_job: %v", err)

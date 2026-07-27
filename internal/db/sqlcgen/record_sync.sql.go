@@ -10,6 +10,41 @@ import (
 	"encoding/json"
 )
 
+const acquireRecordSync = `-- name: AcquireRecordSync :one
+INSERT INTO record_sync (
+    site, record_id, recording_id, program_id, status, tags, observed_at
+) VALUES ($1, $2, NULL, $3, $4, '{}', now())
+ON CONFLICT (site, record_id) DO UPDATE SET
+    observed_at = record_sync.observed_at
+RETURNING recording_id
+`
+
+type AcquireRecordSyncParams struct {
+	Site      string
+	RecordID  string
+	ProgramID int64
+	Status    string
+}
+
+// (site, record_id) の record_sync 行を確保し、processRecord を直列化するための
+// 行ロックを取る。行がなければ recording_id = NULL で新規作成し、あれば既存の
+// recording_id を返すだけで内容には触れない（PK の ON CONFLICT DO UPDATE が
+// 行ロックを取るために DO UPDATE を使うが、更新対象は自分自身への no-op）。
+// 呼び出し側は返ってきた recording_id が NULL のときだけ recordings 行を作る。
+// 2 つの processRecord が同じ record を同時に処理しても、後発はここで先発の
+// コミットまで待たされ、待った後は recording_id が埋まった状態を見る。
+func (q *Queries) AcquireRecordSync(ctx context.Context, arg AcquireRecordSyncParams) (*int64, error) {
+	row := q.db.QueryRow(ctx, acquireRecordSync,
+		arg.Site,
+		arg.RecordID,
+		arg.ProgramID,
+		arg.Status,
+	)
+	var recording_id *int64
+	err := row.Scan(&recording_id)
+	return recording_id, err
+}
+
 const getRecordSyncRecordingID = `-- name: GetRecordSyncRecordingID :one
 SELECT recording_id FROM record_sync
 WHERE site = $1 AND record_id = $2
