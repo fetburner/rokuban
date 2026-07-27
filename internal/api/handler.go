@@ -13,6 +13,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/worker"
 )
 
 var version = "dev"
@@ -123,6 +124,9 @@ func (h *Server) CreateReservation(ctx context.Context, req CreateReservationReq
 		}
 		return nil, err
 	}
+	if err := h.insertReconcilePassHint(ctx, tx); err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
@@ -178,10 +182,33 @@ func (h *Server) DeleteReservation(ctx context.Context, req DeleteReservationReq
 	if _, err := q.DeleteReservation(ctx, req.Id); err != nil {
 		return nil, err
 	}
+	if err := h.insertReconcilePassHint(ctx, tx); err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
 	return DeleteReservation204Response{}, nil
+}
+
+// insertReconcilePassHint は予約の作成/取消と同一トランザクションで
+// ReconcilePassArgs を InsertTx する（ヒント経路。docs/recording.md §3.2
+// 「予約の作成 / 取消」）。dual-write を避けるため、予約書き込みが失敗すれば
+// このジョブも一緒にロールバックされる。副産物として、予約変更が mirakc へ
+// 反映されるまでの待ち時間が定期パスの間隔（既定 30 秒）から実質即座になる
+// （issue #25 §1）。
+//
+// h.river が nil の場合は何もしない（insertRulerPassHint と同じ理由。
+// RouterConfig.RiverClient のコメント参照）。ReconcilePassArgs.InsertOpts の
+// UniqueOpts{ByArgs, ByState} により、同一サイトのヒントは定期実行に合流する。
+func (h *Server) insertReconcilePassHint(ctx context.Context, tx pgx.Tx) error {
+	if h.river == nil {
+		return nil
+	}
+	if _, err := h.river.InsertTx(ctx, tx, worker.ReconcilePassArgs{Site: defaultSite}, nil); err != nil {
+		return fmt.Errorf("inserting reconcile_pass hint: %w", err)
+	}
+	return nil
 }
 
 // reservationFromRow は予約行とユーザー意図（program_intents）から API 表現を組む。

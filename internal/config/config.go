@@ -101,7 +101,7 @@ type WorkerConfig struct {
 	// 「定期実行の契機はデプロイ形態に委ねる」）。
 	PeriodicJobs bool `yaml:"periodic_jobs"`
 
-	// Queues は引くキューを絞る。空なら全部。ロールを増やさずに「ruler だけ別 Pod」を
+	// Queues は引くキューを絞る。空なら全部。ロールを増やさずに「ruler / reconciler だけ別 Pod」を
 	// 実現するための knob（docs/overview.md「ロールは『プロセスの形』を表し、
 	// 『どの仕事をするか』は表さない」）。未知のキュー名は起動時エラーになる。
 	Queues []string `yaml:"queues"`

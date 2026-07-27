@@ -34,12 +34,11 @@ mirakc に録画を委譲すると（詳細は [recording.md](recording.md) 参�
 ┌────────────┐    ┌─────────────────────────────────────────┐
 │ mirakc      │◀──▶│ rokuban（Go、単一バイナリ）                  │
 │             │    │  ├ api:        REST + SSE、UI 配信(go:embed)│
-│             │    │  ├ ruler:      EPG差分→ルール評価→予約生成    │
-│             │    │  ├ reconciler: 予約 ⇄ mirakc schedules 同期 │
 │             │    │  ├ watcher:    mirakc SSE購読→状態反映       │
 └────────────┘    │  └ streamer:   ライブ視聴 (mirakc→ffmpeg→HLS)│
    ▲               │ rokuban worker（別イメージ、0〜Nスケール）     │
-   │record pull    │  └ ingest / encode / thumbnail / cleanup    │
+   │record pull    │  └ ingest / encode / thumbnail / cleanup /  │
+   │               │    ruler_pass / reconcile_pass / epg_sync   │
    └───────────────├─────────────────────────────────────────┤
                    │ PostgreSQL（唯一のステートフル基盤）           │
                    │ ファイルシステム（クラウドでは CSI で S3）       │
@@ -53,8 +52,8 @@ nginx は構成図上の「箱」ではなく、推奨デプロイパターン�
 この種の OSS の現実のユーザーの大半はミニ PC や自宅サーバー1台で動かす。マイクロサービス前提の設計はその層を切り捨てる。そこで Loki / Tempo と同じ **monolithic mode / distributed mode** を最初から設計に入れる：
 
 - `rokuban server --all`: 全ロールを1プロセスで（自宅向け、Docker Compose で Postgres と2コンテナ）
-- k8s ではロールごとに Deployment を分割：api は水平スケール、worker はキュー長で 0〜N（KEDA）、reconciler/watcher はシングルトン（Postgres アドバイザリロックでリーダー選出）
-- **ロールは「プロセスの形」を表し、「どの仕事をするか」は表さない。** キュー駆動で 0〜N の形をした仕事はすべて worker ロールで、どのキューを引くかはデプロイ時のパラメータ。ルール評価（ruler）もこれに含まれる — キューごとにロールを増やすと `ingester` / `encoder` / `thumbnailer` と際限なく増える
+- k8s ではロールごとに Deployment を分割：api は水平スケール、worker はキュー長で 0〜N（KEDA）、watcher はシングルトン（Postgres アドバイザリロックでリーダー選出）
+- **ロールは「プロセスの形」を表し、「どの仕事をするか」は表さない。** キュー駆動で 0〜N の形をした仕事はすべて worker ロールで、どのキューを引くかはデプロイ時のパラメータ。ルール評価（ruler）と reconciler の同期パスもこれに含まれる — キューごとにロールを増やすと `ingester` / `encoder` / `thumbnailer` と際限なく増える
 
 コード上はただの modular monolith。**IPC は最初から作らない**ので、EPGStation が抱えた「分離しようにも IPC が剥がせない」問題は構造的に発生しない。
 

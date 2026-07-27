@@ -1,3 +1,13 @@
+// Package reconciler は予約（desired）と mirakc の schedules（observed）の差分を
+// POST/DELETE で消す 1 パス評価ロジック。
+//
+// reconciler はシングルトンではなく River のジョブ（internal/worker の
+// ReconcilePassWorker）として実行される。周期的・冪等・パスを跨ぐ状態を持たない
+// （サーキットブレーカーの閾値判定も含め毎パス DB と mirakc から読み直す）という
+// 性質が ruler / epg_sync と同じで、排他は advisory lock ではなくジョブロック +
+// UniqueOpts（サイト単位）で担保する（docs/data.md §2、issue #24 M2-17）。
+// このパッケージは 1 パス分のロジックだけを持ち、いつ・どの契機で呼ぶか
+// （定期実行の起動契機はデプロイ形態に委ねる）は呼び出し側の責務。
 package reconciler
 
 import (
@@ -18,20 +28,19 @@ import (
 
 // Config は Reconciler の設定。
 type Config struct {
-	ReconcileInterval time.Duration
 	MaxDeletesPerPass int
 	DefaultPriority   int
 }
 
 func defaultConfig() Config {
 	return Config{
-		ReconcileInterval: 30 * time.Second,
 		MaxDeletesPerPass: 10,
 		DefaultPriority:   10,
 	}
 }
 
-// Reconciler は予約の desired state と mirakc の observed state を定期的に突き合わせる。
+// Reconciler は予約の desired state と mirakc の observed state を突き合わせる
+// 1 パス評価を行う。
 type Reconciler struct {
 	site   string
 	mirakc *mirakc.Client
@@ -40,12 +49,12 @@ type Reconciler struct {
 }
 
 // New は Reconciler を生成する。cfg が nil の場合はデフォルト設定を使う。
+//
+// 呼び出し元の internal/worker.ReconcilePassWorker はジョブ引数のサイト 1 つに
+// 対して 1 個の Reconciler を作る（ジョブの排他がサイト単位のため）。
 func New(site string, mc *mirakc.Client, pool *pgxpool.Pool, cfg *Config) *Reconciler {
 	c := defaultConfig()
 	if cfg != nil {
-		if cfg.ReconcileInterval > 0 {
-			c.ReconcileInterval = cfg.ReconcileInterval
-		}
 		if cfg.MaxDeletesPerPass > 0 {
 			c.MaxDeletesPerPass = cfg.MaxDeletesPerPass
 		}
@@ -61,28 +70,14 @@ func New(site string, mc *mirakc.Client, pool *pgxpool.Pool, cfg *Config) *Recon
 	}
 }
 
-// Run は reconcile ループを開始し、ctx がキャンセルされるまでブロックする。
-func (r *Reconciler) Run(ctx context.Context) error {
-	if err := r.reconcile(ctx); err != nil {
-		slog.Error("initial reconcile failed", "err", err)
-	}
-
-	ticker := time.NewTicker(r.cfg.ReconcileInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			if err := r.reconcile(ctx); err != nil {
-				slog.Error("reconcile failed", "err", err)
-			}
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
-}
-
-func (r *Reconciler) reconcile(ctx context.Context) error {
+// RunPass は 1 サイトに対して突き合わせパスを 1 回実行する。
+//
+// reconciler はシングルトンではなく River のジョブとして呼ばれる。起動契機は
+// 定期実行（真実）・予約の作成/取消・ruler パスの完了（いずれもヒント）の 3 つが
+// あるが、すべて RunPass を呼ぶ 1 本の経路に合流する（docs/recording.md §3.2）。
+// サーキットブレーカー（MaxDeletesPerPass の判定）はこの呼び出し内で完結し、
+// 前回呼び出しの状態を一切引き継がない。
+func (r *Reconciler) RunPass(ctx context.Context) error {
 	slog.Debug("reconciler: starting pass")
 
 	schedules, err := r.mirakc.ListSchedules(ctx)

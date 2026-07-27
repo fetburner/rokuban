@@ -60,12 +60,12 @@ epg:
                                  # ruler の GC（予約と番組単位の意図）も同じ猶予を使う
 
 worker:
-  periodic_jobs: true            # プロセス内で定期ジョブ（epg_sync / ruler_pass）を投入するか。
+  periodic_jobs: true            # プロセス内で定期ジョブ（epg_sync / ruler_pass / reconcile_pass）を投入するか。
                                  # k8s では false にし、CronJob から rokuban enqueue で投入する
                                  # （River の PeriodicJobs はリーダーだけが投入するため、
                                  #  KEDA で 0 にスケールすると誰も投入しなくなる。data.md §2）
   queues: []                     # 引くキューを絞る。空なら全部。
-                                 # ロールを増やさずに「ruler だけ別 Pod」を実現するための knob
+                                 # ロールを増やさずに「ruler / reconciler だけ別 Pod」を実現するための knob
 
 encode:
   ffmpeg: ffmpeg                 # 既定は PATH 検索
