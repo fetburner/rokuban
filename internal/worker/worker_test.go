@@ -83,6 +83,7 @@ func TestEpgSyncPeriodicJob(t *testing.T) {
 
 	workers := NewWorkers(&Deps{Pool: pool, MirakcClient: mirakc.NewClient(srv.URL, nil)})
 	client, err := NewClient(pool, workers, ClientConfig{
+		PeriodicJobs:    true,
 		EpgSyncSite:     "default",
 		EpgSyncInterval: time.Hour, // RunOnStart で 1 回だけ走らせる
 	})
@@ -124,6 +125,63 @@ func TestEpgSyncPeriodicJob(t *testing.T) {
 	}
 }
 
+// epg_sync のパス完了はヒント経路の 1 つ: RulerPassArgs を投入して評価を早める
+// （docs/recording.md §3.1「EPG 同期の完了」）。
+func TestEpgSyncWorker_EnqueuesRulerPassHint(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	if _, err := pool.Exec(ctx, "DELETE FROM river_job"); err != nil {
+		t.Fatalf("cleaning river_job: %v", err)
+	}
+
+	srv := newEpgServer(t, &epgFixture{})
+
+	workers := NewWorkers(&Deps{Pool: pool, MirakcClient: mirakc.NewClient(srv.URL, nil)})
+	client, err := NewClient(pool, workers, ClientConfig{})
+	if err != nil {
+		t.Fatalf("creating client: %v", err)
+	}
+
+	subscribeCh, subscribeCancel := client.Subscribe(river.EventKindJobCompleted)
+	defer subscribeCancel()
+
+	clientCtx, clientCancel := context.WithCancel(ctx)
+	defer clientCancel()
+
+	if err := client.Start(clientCtx); err != nil {
+		t.Fatalf("starting client: %v", err)
+	}
+	defer func() {
+		clientCancel()
+		<-client.Stopped()
+	}()
+
+	if _, err := client.Insert(ctx, EpgSyncArgs{Site: testSite}, nil); err != nil {
+		t.Fatalf("inserting epg_sync job: %v", err)
+	}
+
+	select {
+	case event := <-subscribeCh:
+		if event.Job.Kind != "epg_sync" {
+			t.Fatalf("job kind = %q, want %q", event.Job.Kind, "epg_sync")
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("timed out waiting for epg_sync job completion")
+	}
+
+	var count int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM river_job WHERE kind = 'ruler_pass' AND (args->>'site') = $1`, testSite,
+	).Scan(&count); err != nil {
+		t.Fatalf("counting ruler_pass jobs: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("ruler_pass job count after epg_sync completion = %d, want 1 "+
+			"(epg_sync 完了時にヒントとして投入されるはず)", count)
+	}
+}
+
 // ingest は数百 MB〜数十 GB の転送なので、River の総時間タイムアウト（既定 1 分）が
 // 効いていると実際の録画が完走しない。総時間で切らずストール検知に委ねる設計が
 // 崩れていないことを固定する（実機 687MB の録画がこれで落ちていた）。
@@ -155,6 +213,7 @@ func TestInsertOpts_UniqueStatesExcludeFinalized(t *testing.T) {
 	}{
 		{"epg_sync", EpgSyncArgs{}.InsertOpts()},
 		{"ingest", IngestJobArgs{}.InsertOpts()},
+		{"ruler_pass", RulerPassArgs{}.InsertOpts()},
 	}
 
 	for _, tt := range tests {
@@ -220,6 +279,230 @@ func TestEpgSync_ReinsertableAfterCompletion(t *testing.T) {
 	}
 	if again.UniqueSkippedAsDuplicate {
 		t.Error("完了済みのジョブが一意性の判定に残っており、定期ジョブが再投入できない")
+	}
+}
+
+// ruler は無制限にはせず、既定より長い上限を置く（rulerPassTimeout のコメント参照）。
+func TestRulerPassWorker_HasGenerousTimeout(t *testing.T) {
+	w := &RulerPassWorker{}
+	got := w.Timeout(nil)
+	if got <= river.JobTimeoutDefault {
+		t.Errorf("Timeout() = %v, want > JobTimeoutDefault (%v)", got, river.JobTimeoutDefault)
+	}
+}
+
+// RulerPassSite を指定すると ruler_pass が定期ジョブとして投入され、
+// 登録済みワーカーが ruler キューで拾うこと（配線の確認）。
+func TestRulerPassPeriodicJob(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	if _, err := pool.Exec(ctx, "DELETE FROM river_job"); err != nil {
+		t.Fatalf("cleaning river_job: %v", err)
+	}
+
+	workers := NewWorkers(&Deps{Pool: pool})
+	client, err := NewClient(pool, workers, ClientConfig{
+		PeriodicJobs:      true,
+		RulerPassSite:     "default",
+		RulerPassInterval: time.Hour, // RunOnStart で 1 回だけ走らせる
+	})
+	if err != nil {
+		t.Fatalf("creating client: %v", err)
+	}
+
+	subscribeCh, subscribeCancel := client.Subscribe(river.EventKindJobCompleted)
+	defer subscribeCancel()
+
+	clientCtx, clientCancel := context.WithCancel(ctx)
+	defer clientCancel()
+
+	if err := client.Start(clientCtx); err != nil {
+		t.Fatalf("starting client: %v", err)
+	}
+	defer func() {
+		clientCancel()
+		<-client.Stopped()
+	}()
+
+	select {
+	case event := <-subscribeCh:
+		if event.Job.Kind != "ruler_pass" {
+			t.Errorf("job kind = %q, want %q", event.Job.Kind, "ruler_pass")
+		}
+		if event.Job.Queue != rulerQueue {
+			t.Errorf("job queue = %q, want %q", event.Job.Queue, rulerQueue)
+		}
+		var args RulerPassArgs
+		if err := json.Unmarshal(event.Job.EncodedArgs, &args); err != nil {
+			t.Fatalf("unmarshalling job args: %v", err)
+		}
+		if args.Site != "default" {
+			t.Errorf("job args site = %q, want %q", args.Site, "default")
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("timed out waiting for the periodic ruler_pass job")
+	}
+}
+
+// ruler_pass ジョブが投入され、実際に実行されて予約が作られること
+// （ロジック自体は internal/ruler でテスト済みなので、ここでは「ジョブとして
+// 呼ばれると本当に動く」という配線だけを確認する）。
+func TestRulerPassWorker_CreatesReservation(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	if _, err := pool.Exec(ctx, "DELETE FROM river_job"); err != nil {
+		t.Fatalf("cleaning river_job: %v", err)
+	}
+
+	const site = "default"
+	const networkID, serviceID int32 = 32736, 1024
+	if _, err := pool.Exec(ctx, `
+INSERT INTO epg_services (site, network_id, service_id, type, logo_id, remote_control_key_id, name, channel_type, channel, has_logo_data)
+VALUES ($1, $2, $3, 1, 0, 1, 'テスト局', 'GR', '27', false)`, site, networkID, serviceID); err != nil {
+		t.Fatalf("inserting epg_services fixture: %v", err)
+	}
+
+	const programID int64 = 1
+	startAt := time.Now().Add(time.Hour)
+	const durationMs int64 = 1800000
+	if _, err := pool.Exec(ctx, `
+INSERT INTO epg_programs (site, program_id, network_id, service_id, event_id, start_at, duration_ms, end_at, is_free, name, description, genre_lv1)
+VALUES ($1, $2, $3, $4, 0, $5, $6, $7, true, 'テスト番組', '', '{}'::smallint[])`,
+		site, programID, networkID, serviceID, startAt, durationMs, startAt.Add(time.Duration(durationMs)*time.Millisecond)); err != nil {
+		t.Fatalf("inserting epg_programs fixture: %v", err)
+	}
+
+	var ruleID int64
+	if err := pool.QueryRow(ctx, `INSERT INTO rules (name, priority) VALUES ('全部録る', 10) RETURNING id`).Scan(&ruleID); err != nil {
+		t.Fatalf("inserting rule fixture: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO rule_text_matches (rule_id, seq, target, mode, value, case_sensitive, negate)
+VALUES ($1, 0, 'name', 'keyword', 'テスト', true, false)`, ruleID); err != nil {
+		t.Fatalf("inserting rule_text_matches fixture: %v", err)
+	}
+
+	workers := NewWorkers(&Deps{Pool: pool})
+	client, err := NewClient(pool, workers, ClientConfig{})
+	if err != nil {
+		t.Fatalf("creating client: %v", err)
+	}
+
+	subscribeCh, subscribeCancel := client.Subscribe(river.EventKindJobCompleted)
+	defer subscribeCancel()
+
+	clientCtx, clientCancel := context.WithCancel(ctx)
+	defer clientCancel()
+
+	if err := client.Start(clientCtx); err != nil {
+		t.Fatalf("starting client: %v", err)
+	}
+	defer func() {
+		clientCancel()
+		<-client.Stopped()
+	}()
+
+	if _, err := client.Insert(ctx, RulerPassArgs{Site: site}, nil); err != nil {
+		t.Fatalf("inserting ruler_pass job: %v", err)
+	}
+
+	select {
+	case event := <-subscribeCh:
+		if event.Job.Kind != "ruler_pass" {
+			t.Fatalf("job kind = %q, want %q", event.Job.Kind, "ruler_pass")
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("timed out waiting for ruler_pass job completion")
+	}
+
+	var count int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM reservations WHERE site = $1 AND program_id = $2`, site, programID,
+	).Scan(&count); err != nil {
+		t.Fatalf("querying reservations: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("reservations count = %d, want 1 (ruler_pass ジョブがルール評価を実行して予約を作ったはず)", count)
+	}
+}
+
+// UniqueOpts による合流: 同じサイトの ruler_pass を 2 回投入すると 1 件しか
+// 作られないこと（docs/data.md §2「排他はジョブロック + UniqueOpts」）。
+func TestRulerPass_DuplicateInsertMerges(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	if _, err := pool.Exec(ctx, "DELETE FROM river_job"); err != nil {
+		t.Fatalf("cleaning river_job: %v", err)
+	}
+
+	workers := NewWorkers(&Deps{Pool: pool})
+	client, err := NewClient(pool, workers, ClientConfig{})
+	if err != nil {
+		t.Fatalf("creating client: %v", err)
+	}
+
+	args := RulerPassArgs{Site: "default"}
+	if _, err := client.Insert(ctx, args, nil); err != nil {
+		t.Fatalf("inserting first job: %v", err)
+	}
+	dup, err := client.Insert(ctx, args, nil)
+	if err != nil {
+		t.Fatalf("inserting duplicate: %v", err)
+	}
+	if !dup.UniqueSkippedAsDuplicate {
+		t.Error("同じサイトの ruler_pass を 2 回投入したのに合流しなかった")
+	}
+
+	var count int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM river_job WHERE kind = 'ruler_pass'`).Scan(&count); err != nil {
+		t.Fatalf("counting river_job rows: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("river_job count for ruler_pass = %d, want 1", count)
+	}
+}
+
+// worker.queues に未知のキュー名を渡すと起動時エラーになること（typo で静かに
+// 何も引かなくなる事故を防ぐ knob。docs/configuration.md の worker.queues）。
+func TestBuildRiverConfig_UnknownQueueErrors(t *testing.T) {
+	_, err := buildRiverConfig(NewWorkers(&Deps{}), ClientConfig{Queues: []string{"bogus"}})
+	if err == nil {
+		t.Fatal("unknown queue のとき error を期待したが nil だった")
+	}
+}
+
+// worker.periodic_jobs: false のとき、EpgSyncSite / RulerPassSite が設定されていても
+// PeriodicJobs が登録されないこと。
+func TestBuildRiverConfig_PeriodicJobsDisabled(t *testing.T) {
+	riverCfg, err := buildRiverConfig(NewWorkers(&Deps{}), ClientConfig{
+		PeriodicJobs:  false,
+		EpgSyncSite:   "default",
+		RulerPassSite: "default",
+	})
+	if err != nil {
+		t.Fatalf("buildRiverConfig: %v", err)
+	}
+	if len(riverCfg.PeriodicJobs) != 0 {
+		t.Errorf("PeriodicJobs = %d 件, want 0 (worker.periodic_jobs=false のとき登録されないこと)",
+			len(riverCfg.PeriodicJobs))
+	}
+}
+
+// worker.periodic_jobs: true なら epg_sync / ruler_pass の両方が登録されること。
+func TestBuildRiverConfig_PeriodicJobsEnabled(t *testing.T) {
+	riverCfg, err := buildRiverConfig(NewWorkers(&Deps{}), ClientConfig{
+		PeriodicJobs:  true,
+		EpgSyncSite:   "default",
+		RulerPassSite: "default",
+	})
+	if err != nil {
+		t.Fatalf("buildRiverConfig: %v", err)
+	}
+	if len(riverCfg.PeriodicJobs) != 2 {
+		t.Errorf("PeriodicJobs = %d 件, want 2 (epg_sync + ruler_pass)", len(riverCfg.PeriodicJobs))
 	}
 }
 

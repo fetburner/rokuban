@@ -8,6 +8,7 @@ import (
 	"slices"
 	"time"
 
+	pgx5 "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 
@@ -170,6 +171,19 @@ func (w *EpgSyncWorker) Work(ctx context.Context, job *river.Job[EpgSyncArgs]) e
 		// ヒントの配送失敗は同期の失敗ではない。次のパスか
 		// クライアントの staleTime 経過後の再取得で収束する。
 		log.Warn("epg sync: notifying clients failed", "err", err)
+	}
+
+	// EPG 同期完了は ruler_pass 起動契機のヒントの 1 つ（docs/recording.md §3.1
+	// 「EPG 同期の完了」）。EPG が変わったら評価を早める。ここでの投入はルール
+	// 書き込みのようなトランザクション整合の要求（dual-write 回避）はなく、
+	// あくまで定期パスを前倒しするヒントなので、同一トランザクションである
+	// 必要はない。river.ClientFromContextSafely でジョブ実行中の Client を
+	// 取り出す（EpgSyncWorker 自身に river.Client を持たせずに済む）。Client が
+	// 取れない場合（単体テストで Work を直接呼ぶ等）は投入せず、次の定期パスに委ねる。
+	if riverClient, clientErr := river.ClientFromContextSafely[pgx5.Tx](ctx); clientErr == nil {
+		if _, insertErr := riverClient.Insert(ctx, RulerPassArgs{Site: site}, nil); insertErr != nil {
+			log.Warn("epg sync: inserting ruler_pass hint failed", "err", insertErr)
+		}
 	}
 
 	metrics.EpgSyncLastSuccess.SetToCurrentTime()

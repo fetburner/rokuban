@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/riverqueue/river"
 
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
@@ -21,12 +22,14 @@ const defaultSite = db.DefaultSite
 
 // Server は予約 API のハンドラ実装。oapi-codegen の StrictServerInterface を満たす。
 type Server struct {
-	pool *pgxpool.Pool
+	pool  *pgxpool.Pool
+	river *river.Client[pgx.Tx]
 }
 
-// NewServer は Server を生成する。
-func NewServer(pool *pgxpool.Pool) *Server {
-	return &Server{pool: pool}
+// NewServer は Server を生成する。riverClient は insert-only の River クライアントで、
+// nil なら ruler_pass ヒントの投入をスキップする（RouterConfig.RiverClient 参照）。
+func NewServer(pool *pgxpool.Pool, riverClient *river.Client[pgx.Tx]) *Server {
+	return &Server{pool: pool, river: riverClient}
 }
 
 // Healthz はヘルスチェックエンドポイント。

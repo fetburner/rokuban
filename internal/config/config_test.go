@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 )
@@ -61,6 +62,12 @@ func TestLoad_Minimal(t *testing.T) {
 	}
 	if cfg.Epg.RetentionGrace != 24*time.Hour {
 		t.Errorf("epg.retention_grace = %v, want %v", cfg.Epg.RetentionGrace, 24*time.Hour)
+	}
+	if !cfg.Worker.PeriodicJobs {
+		t.Error("worker.periodic_jobs の既定値は true (monolith/Docker では既定で有効)")
+	}
+	if len(cfg.Worker.Queues) != 0 {
+		t.Errorf("worker.queues = %v, want empty (既定は全キュー)", cfg.Worker.Queues)
 	}
 	if cfg.Encode.FFmpeg != "ffmpeg" {
 		t.Errorf("encode.ffmpeg = %q, want %q", cfg.Encode.FFmpeg, "ffmpeg")
@@ -218,6 +225,9 @@ ingest:
 epg:
   sync_interval: 30m
   retention_grace: 48h
+worker:
+  periodic_jobs: false
+  queues: [ruler, epg]
 encode:
   ffmpeg: /usr/local/bin/ffmpeg
   ffprobe: /usr/local/bin/ffprobe
@@ -268,6 +278,12 @@ log:
 	}
 	if cfg.Epg.RetentionGrace != 48*time.Hour {
 		t.Errorf("epg.retention_grace = %v, want %v", cfg.Epg.RetentionGrace, 48*time.Hour)
+	}
+	if cfg.Worker.PeriodicJobs {
+		t.Error("worker.periodic_jobs = true, want false")
+	}
+	if want := []string{"ruler", "epg"}; !slices.Equal(cfg.Worker.Queues, want) {
+		t.Errorf("worker.queues = %v, want %v", cfg.Worker.Queues, want)
 	}
 	if cfg.Encode.FFmpeg != "/usr/local/bin/ffmpeg" {
 		t.Errorf("encode.ffmpeg = %q, want %q", cfg.Encode.FFmpeg, "/usr/local/bin/ffmpeg")

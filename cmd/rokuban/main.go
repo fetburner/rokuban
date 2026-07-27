@@ -25,6 +25,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().String("config", "config.yml", "path to config file")
 
 	root.AddCommand(newConfigCmd())
+	root.AddCommand(newEnqueueCmd())
 	root.AddCommand(newMigrateCmd())
 	root.AddCommand(newServerCmd())
 	root.AddCommand(newShadowDiffCmd())

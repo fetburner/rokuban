@@ -24,7 +24,6 @@ import (
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/reconciler"
 	"github.com/fetburner/rokuban/internal/role"
-	"github.com/fetburner/rokuban/internal/ruler"
 	"github.com/fetburner/rokuban/internal/streamer"
 	"github.com/fetburner/rokuban/internal/watcher"
 	"github.com/fetburner/rokuban/internal/worker"
@@ -32,9 +31,12 @@ import (
 )
 
 var (
-	allRoles = []string{"api", "worker", "ruler", "reconciler", "watcher", "streamer"}
-	// シングルトンロールは pg_advisory_lock でリーダー選出し、1 プロセスだけが実行する
-	singletonRoles = []string{"ruler", "reconciler", "watcher"}
+	allRoles = []string{"api", "worker", "reconciler", "watcher", "streamer"}
+	// シングルトンロールは pg_advisory_lock でリーダー選出し、1 プロセスだけが実行する。
+	// ruler はここに含まれない — シングルトンではなく worker が引く River ジョブ
+	// （ruler_pass）になったため（docs/data.md §2、docs/overview.md「ロールは
+	// 『プロセスの形』を表し、『どの仕事をするか』は表さない」）。
+	singletonRoles = []string{"reconciler", "watcher"}
 )
 
 func newServerCmd() *cobra.Command {
@@ -93,6 +95,16 @@ func newServerCmd() *cobra.Command {
 						}
 						return nil
 					})
+
+					// ルール作成/更新/削除のヒントで ruler_pass を投入するための
+					// insert-only クライアント。api は mirakc に問い合わせず ffmpeg も
+					// 実行しない（不変条件）ため、worker.NewWorkers のフルのワーカー群は
+					// 登録しない（InsertTx だけできれば足りる。docs/recording.md §3.1）。
+					apiRiverClient, apiRiverErr := worker.NewInsertOnlyClient(pool)
+					if apiRiverErr != nil {
+						return apiRiverErr
+					}
+					routerCfg.RiverClient = apiRiverClient
 				}
 
 				// バイト配信は api ではなく streamer の担当（不変条件 1）。
@@ -125,18 +137,23 @@ func newServerCmd() *cobra.Command {
 			if slices.Contains(roles, "worker") || slices.Contains(roles, "watcher") {
 				mc := mirakc.NewClient(cfg.Mirakc.URL, nil)
 				workers := worker.NewWorkers(&worker.Deps{
-					MirakcClient:      mc,
-					Pool:              pool,
-					MediaDir:          cfg.Storage.MediaDir,
-					EpgRetentionGrace: cfg.Epg.RetentionGrace,
+					MirakcClient:        mc,
+					Pool:                pool,
+					MediaDir:            cfg.Storage.MediaDir,
+					EpgRetentionGrace:   cfg.Epg.RetentionGrace,
+					RulerRetentionGrace: cfg.Epg.RetentionGrace,
 				})
 				clientCfg := worker.ClientConfig{
 					IngestConcurrency: cfg.Ingest.Concurrency,
 					EpgSyncInterval:   cfg.Epg.SyncInterval,
+					PeriodicJobs:      cfg.Worker.PeriodicJobs,
+					Queues:            cfg.Worker.Queues,
 				}
-				// EPG 全量同期の定期ジョブは worker 側が投入する（mirakc に触るのは worker）。
+				// 定期ジョブ（epg_sync / ruler_pass）は worker 側が投入する
+				// （mirakc に触るのも ruler_pass のヒント経路をまとめるのも worker）。
 				if slices.Contains(roles, "worker") {
 					clientCfg.EpgSyncSite = watcher.DefaultSite
+					clientCfg.RulerPassSite = watcher.DefaultSite
 				}
 				var clientErr error
 				riverClient, clientErr = worker.NewClient(pool, workers, clientCfg)
@@ -179,15 +196,6 @@ func newServerCmd() *cobra.Command {
 						mc := mirakc.NewClient(cfg.Mirakc.URL, nil)
 						rec := reconciler.New(watcher.DefaultSite, mc, pool, nil)
 						roleFunc = rec.Run
-					case "ruler":
-						// ruler は mirakc に触れない（不変条件 1）。EPG プロジェクションと
-						// reservations/program_intents のみを読み書きする。
-						// RetentionGrace は epg.retention_grace をそのまま流用する
-						// （番組終了後の GC の猶予。docs/recording.md §3.2）。
-						rul := ruler.New([]string{watcher.DefaultSite}, pool, &ruler.Config{
-							RetentionGrace: cfg.Epg.RetentionGrace,
-						})
-						roleFunc = rul.Run
 					}
 					return role.RunSingleton(egCtx, pool, roleName, roleFunc, nil)
 				})
@@ -205,7 +213,7 @@ func newServerCmd() *cobra.Command {
 	}
 
 	cmd.Flags().Bool("all", false, "run all roles")
-	cmd.Flags().StringSlice("roles", nil, "roles to run (comma-separated: api,worker,ruler,reconciler,watcher,streamer)")
+	cmd.Flags().StringSlice("roles", nil, "roles to run (comma-separated: api,worker,reconciler,watcher,streamer)")
 	cmd.MarkFlagsMutuallyExclusive("all", "roles")
 	cmd.MarkFlagsOneRequired("all", "roles")
 

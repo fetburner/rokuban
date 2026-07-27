@@ -1,4 +1,10 @@
-// Package ruler はルール評価から reservations.base を導出するシングルトンループ。
+// Package ruler はルール評価から reservations.base を導出する 1 パス評価ロジック。
+//
+// ruler はシングルトンではなく River のジョブ（internal/worker の RulerPassWorker）
+// として実行される。定期・冪等・DB のみ・重複実行不可という性質が epg_sync と同じで、
+// 排他は advisory lock ではなくジョブロック + UniqueOpts（サイト単位）で担保する
+// （docs/data.md §2）。このパッケージは 1 パス分の評価ロジックだけを持ち、いつ・
+// どの契機で呼ぶか（定期実行の起動契機はデプロイ形態に委ねる）は呼び出し側の責務。
 //
 // 1 パスで全ルール x 全射影番組を Postgres の集合演算で評価し（評価は全量）、
 // 実際に値が変わった行だけ書く（書き込みは差分。docs/recording.md §3.1）。
@@ -24,10 +30,6 @@ import (
 
 // Config は Ruler の設定。
 type Config struct {
-	// PassInterval は全量評価パスの周期。タイマーによる定期パスが真実で、
-	// epg_sync 完了やルール編集はヒントに過ぎない（今回は未実装。将来 RunPass を
-	// 前倒しで呼ぶ経路を足せるよう、ここは公開メソッドとして分けてある）。
-	PassInterval time.Duration
 	// MaxDeletesPerPass は 1 サイト・1 パスあたりの削除許容数。超えたら削除を
 	// 一切実行せず、サーキットブレーカーとして停止する（reconciler.Config の
 	// MaxDeletesPerPass と同じ考え方）。ここで守るのは「ルール x EPG」から導出される
@@ -46,13 +48,12 @@ type Config struct {
 
 func defaultConfig() Config {
 	return Config{
-		PassInterval:      10 * time.Minute,
 		MaxDeletesPerPass: 50,
 		RetentionGrace:    24 * time.Hour,
 	}
 }
 
-// Ruler はルール評価 → reservations.base 生成の全量評価ループ。
+// Ruler はルール評価 → reservations.base 生成の 1 パス評価を行う。
 type Ruler struct {
 	sites []string
 	pool  *pgxpool.Pool
@@ -65,13 +66,11 @@ type Ruler struct {
 // 資産で（docs/recording.md §3.1「サイトの扱い」）、rule_sites が空なら全サイト、
 // 非空ならそのサイトのみが対象になる（rulequery.Conditions.Sites 経由）。
 // M1/M2 の設定は単一サイトなので db.DefaultSite 1 つで動くが、複数サイト構成に
-// 備えて引数はスライスにしてある。
+// 備えて引数はスライスにしてある。呼び出し元の internal/worker.RulerPassWorker は
+// ジョブ引数のサイト 1 つだけを渡す（ジョブの排他がサイト単位のため）。
 func New(sites []string, pool *pgxpool.Pool, cfg *Config) *Ruler {
 	c := defaultConfig()
 	if cfg != nil {
-		if cfg.PassInterval > 0 {
-			c.PassInterval = cfg.PassInterval
-		}
 		if cfg.MaxDeletesPerPass > 0 {
 			c.MaxDeletesPerPass = cfg.MaxDeletesPerPass
 		}
@@ -82,33 +81,13 @@ func New(sites []string, pool *pgxpool.Pool, cfg *Config) *Ruler {
 	return &Ruler{sites: sites, pool: pool, cfg: c}
 }
 
-// Run はルール評価ループを開始し、ctx がキャンセルされるまでブロックする。
-func (r *Ruler) Run(ctx context.Context) error {
-	if err := r.RunPass(ctx); err != nil {
-		slog.Error("ruler: initial pass failed", "err", err)
-	}
-
-	ticker := time.NewTicker(r.cfg.PassInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			if err := r.RunPass(ctx); err != nil {
-				slog.Error("ruler: pass failed", "err", err)
-			}
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
-}
-
 // RunPass は全サイトに対して全量評価パスを 1 回実行し、続けて番組終了後の GC
 // （runGC）を行う。
 //
-// タイマー（Run）から呼ばれるのが既定の起動契機だが、将来 epg_sync 完了や
-// ルール編集をヒントに前倒しで呼ぶ経路を足せるよう、公開メソッドとして
-// 独立させてある。
+// ruler はシングルトンではなく River のジョブ（internal/worker の RulerPassWorker）
+// として呼ばれる。起動契機は定期実行（真実）・ルール編集・EPG 同期完了（いずれも
+// ヒント）の 3 つがあるが、すべて RunPass を呼ぶ 1 本の経路に合流する
+// （docs/recording.md §3.1）。
 //
 // 1 サイトの失敗が他サイトの評価を止めないよう、サイトごとに独立して実行し、
 // 最初のエラーだけを返す（呼び出し側でログ済みのエラーは握り潰さない）。

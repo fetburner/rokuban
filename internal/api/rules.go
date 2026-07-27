@@ -14,6 +14,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/contentpath"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/worker"
 )
 
 // ListRules はルール一覧を返す。
@@ -74,6 +75,9 @@ func (h *Server) CreateRule(ctx context.Context, req CreateRuleRequestObject) (C
 	if err := replaceRuleChildren(ctx, q, row.ID, *req.Body); err != nil {
 		return nil, err
 	}
+	if err := h.insertRulerPassHint(ctx, tx); err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
@@ -117,6 +121,9 @@ func (h *Server) UpdateRule(ctx context.Context, req UpdateRuleRequestObject) (U
 		return nil, err
 	}
 	if err := replaceRuleChildren(ctx, q, row.ID, *req.Body); err != nil {
+		return nil, err
+	}
+	if err := h.insertRulerPassHint(ctx, tx); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -165,6 +172,9 @@ func (h *Server) DeleteRule(ctx context.Context, req DeleteRuleRequestObject) (D
 	if n == 0 {
 		return DeleteRule404JSONResponse{Error: "rule not found"}, nil
 	}
+	if err := h.insertRulerPassHint(ctx, tx); err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
@@ -174,6 +184,23 @@ func (h *Server) DeleteRule(ctx context.Context, req DeleteRuleRequestObject) (D
 		DeletedReservations:  int(deleted),
 		DetachedReservations: int(detached),
 	}, nil
+}
+
+// insertRulerPassHint はルール作成/更新/削除と同一トランザクションで RulerPassArgs を
+// InsertTx する（ヒント経路。docs/recording.md §3.1「ルールの作成 / 更新 / 削除」）。
+// dual-write を避けるため、ルール書き込みが失敗すればこのジョブも一緒にロールバックされる。
+//
+// h.river が nil の場合は何もしない（テストや、将来 River を持たない api 構成を許容する
+// ため。RouterConfig.RiverClient のコメント参照）。RulerPassArgs.InsertOpts の
+// UniqueOpts{ByArgs, ByState} により、同一サイトのヒントは定期実行に合流する。
+func (h *Server) insertRulerPassHint(ctx context.Context, tx pgx.Tx) error {
+	if h.river == nil {
+		return nil
+	}
+	if _, err := h.river.InsertTx(ctx, tx, worker.RulerPassArgs{Site: defaultSite}, nil); err != nil {
+		return fmt.Errorf("inserting ruler_pass hint: %w", err)
+	}
+	return nil
 }
 
 func validateRuleInput(ctx context.Context, pool *pgxpool.Pool, in RuleInput) error {

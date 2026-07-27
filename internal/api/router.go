@@ -5,9 +5,11 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	pgx5 "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/riverqueue/river"
 )
 
 // RouterConfig は NewRouter の設定。
@@ -18,6 +20,14 @@ type RouterConfig struct {
 
 	// Pool は REST ハンドラが使う DB プール。
 	Pool *pgxpool.Pool
+
+	// RiverClient が非 nil なら、ルール作成/更新/削除のヒントで RulerPassArgs を
+	// 同一トランザクションで投入する（InsertTx。dual-write を避けるため。
+	// docs/recording.md §3.1「ヒント」）。insert-only で足り、api が worker の
+	// ワーカー群を登録することはない（不変条件: api は mirakc に問い合わせず
+	// ffmpeg も実行しない）。nil なら投入しない（テストや将来のサーバーレス構成で
+	// River を持たない api を許容するため）。
+	RiverClient *river.Client[pgx5.Tx]
 
 	// DistFS が非 nil なら SPA を配信する。
 	DistFS fs.FS
@@ -61,7 +71,7 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		}))
 	}
 
-	handler := NewServer(cfg.Pool)
+	handler := NewServer(cfg.Pool, cfg.RiverClient)
 	strict := NewStrictHandler(handler, nil)
 	HandlerFromMux(strict, r)
 

@@ -20,6 +20,7 @@ type Config struct {
 	Storage StorageConfig `yaml:"storage"`
 	Ingest  IngestConfig  `yaml:"ingest"`
 	Epg     EpgConfig     `yaml:"epg"`
+	Worker  WorkerConfig  `yaml:"worker"`
 	Encode  EncodeConfig  `yaml:"encode"`
 	Log     LogConfig     `yaml:"log"`
 }
@@ -91,6 +92,21 @@ type EpgConfig struct {
 	RetentionGrace time.Duration `yaml:"retention_grace"`
 }
 
+// WorkerConfig は worker ロールの River クライアント設定。
+type WorkerConfig struct {
+	// PeriodicJobs はプロセス内で定期ジョブ（epg_sync / ruler_pass）を投入するか。
+	// k8s では false にし、CronJob から `rokuban enqueue` で投入する。
+	// River の PeriodicJobs はリーダーに選出されたクライアントだけが投入するため、
+	// worker を KEDA で 0 にスケールすると誰も投入しなくなる（docs/data.md §2
+	// 「定期実行の契機はデプロイ形態に委ねる」）。
+	PeriodicJobs bool `yaml:"periodic_jobs"`
+
+	// Queues は引くキューを絞る。空なら全部。ロールを増やさずに「ruler だけ別 Pod」を
+	// 実現するための knob（docs/overview.md「ロールは『プロセスの形』を表し、
+	// 『どの仕事をするか』は表さない」）。未知のキュー名は起動時エラーになる。
+	Queues []string `yaml:"queues"`
+}
+
 // EncodeConfig はエンコード設定。
 type EncodeConfig struct {
 	FFmpeg   string          `yaml:"ffmpeg"`
@@ -127,6 +143,9 @@ func defaults() Config {
 		Epg: EpgConfig{
 			SyncInterval:   10 * time.Minute,
 			RetentionGrace: 24 * time.Hour,
+		},
+		Worker: WorkerConfig{
+			PeriodicJobs: true,
 		},
 		Encode: EncodeConfig{
 			FFmpeg:  "ffmpeg",
