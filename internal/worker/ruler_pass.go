@@ -2,8 +2,10 @@ package worker
 
 import (
 	"context"
+	"log/slog"
 	"time"
 
+	pgx5 "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 
@@ -93,5 +95,21 @@ func (w *RulerPassWorker) Work(ctx context.Context, job *river.Job[RulerPassArgs
 	r := ruler.New([]string{job.Args.Site}, w.Pool, &ruler.Config{
 		RetentionGrace: w.RetentionGrace,
 	})
-	return r.RunPass(ctx)
+	if err := r.RunPass(ctx); err != nil {
+		return err
+	}
+
+	// ruler パスの完了は reconcile_pass 起動契機のヒントの 1 つ（docs/recording.md
+	// §3.2「ruler パスの完了」）。base が変われば mirakc に反映すべき差分が増えるため、
+	// reconcile を早める。epg_sync 完了時の ruler_pass ヒント（epg.go 参照）と同じ形。
+	// トランザクション整合の要求はなく、あくまで定期パスを前倒しするヒントなので、
+	// river.ClientFromContextSafely でジョブ実行中の Client を取り出すだけで足りる。
+	// Client が取れない場合（単体テストで Work を直接呼ぶ等）は投入せず、次の定期パスに委ねる。
+	if riverClient, clientErr := river.ClientFromContextSafely[pgx5.Tx](ctx); clientErr == nil {
+		if _, insertErr := riverClient.Insert(ctx, ReconcilePassArgs{Site: job.Args.Site}, nil); insertErr != nil {
+			slog.Warn("ruler pass: inserting reconcile_pass hint failed", "err", insertErr)
+		}
+	}
+
+	return nil
 }

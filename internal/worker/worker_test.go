@@ -214,6 +214,7 @@ func TestInsertOpts_UniqueStatesExcludeFinalized(t *testing.T) {
 		{"epg_sync", EpgSyncArgs{}.InsertOpts()},
 		{"ingest", IngestJobArgs{}.InsertOpts()},
 		{"ruler_pass", RulerPassArgs{}.InsertOpts()},
+		{"reconcile_pass", ReconcilePassArgs{}.InsertOpts()},
 	}
 
 	for _, tt := range tests {
@@ -474,13 +475,14 @@ func TestBuildRiverConfig_UnknownQueueErrors(t *testing.T) {
 	}
 }
 
-// worker.periodic_jobs: false のとき、EpgSyncSite / RulerPassSite が設定されていても
-// PeriodicJobs が登録されないこと。
+// worker.periodic_jobs: false のとき、EpgSyncSite / RulerPassSite / ReconcilePassSite が
+// 設定されていても PeriodicJobs が登録されないこと。
 func TestBuildRiverConfig_PeriodicJobsDisabled(t *testing.T) {
 	riverCfg, err := buildRiverConfig(NewWorkers(&Deps{}), ClientConfig{
-		PeriodicJobs:  false,
-		EpgSyncSite:   "default",
-		RulerPassSite: "default",
+		PeriodicJobs:      false,
+		EpgSyncSite:       "default",
+		RulerPassSite:     "default",
+		ReconcilePassSite: "default",
 	})
 	if err != nil {
 		t.Fatalf("buildRiverConfig: %v", err)
@@ -491,18 +493,19 @@ func TestBuildRiverConfig_PeriodicJobsDisabled(t *testing.T) {
 	}
 }
 
-// worker.periodic_jobs: true なら epg_sync / ruler_pass の両方が登録されること。
+// worker.periodic_jobs: true なら epg_sync / ruler_pass / reconcile_pass の全部が登録されること。
 func TestBuildRiverConfig_PeriodicJobsEnabled(t *testing.T) {
 	riverCfg, err := buildRiverConfig(NewWorkers(&Deps{}), ClientConfig{
-		PeriodicJobs:  true,
-		EpgSyncSite:   "default",
-		RulerPassSite: "default",
+		PeriodicJobs:      true,
+		EpgSyncSite:       "default",
+		RulerPassSite:     "default",
+		ReconcilePassSite: "default",
 	})
 	if err != nil {
 		t.Fatalf("buildRiverConfig: %v", err)
 	}
-	if len(riverCfg.PeriodicJobs) != 2 {
-		t.Errorf("PeriodicJobs = %d 件, want 2 (epg_sync + ruler_pass)", len(riverCfg.PeriodicJobs))
+	if len(riverCfg.PeriodicJobs) != 3 {
+		t.Errorf("PeriodicJobs = %d 件, want 3 (epg_sync + ruler_pass + reconcile_pass)", len(riverCfg.PeriodicJobs))
 	}
 }
 

@@ -153,6 +153,18 @@ NID/SID は放送規格のスコープでサイトに依存しないため、地
 - **contentPath 生成**: `recording.basedir` 相対パス必須。ファイル名テンプレートの展開もここで行う。生成値は初回のみで、以後は base に固定する（後述の差分反映）
 - **冪等**: 何度落ちても再実行で収束する。時刻精度もプロセス生存性も要求されない
 
+**reconciler はシングルトンではなく ruler と同じ形の River ジョブ**（`internal/worker` の `ReconcilePassWorker`。issue #24 M2-17）。周期的・冪等・パスを跨ぐ状態を持たない（サーキットブレーカーの閾値判定もパスごとに読み直す）という性質が ruler / epg_sync と同じなので、排他は advisory lock ではなくジョブロック + `UniqueOpts`（サイト単位）で担保する（[データ層](data.md) §2）。
+
+起動契機は ruler と同じ形で 3 つあるが、**定期パスが真実**で残り 2 つは投入を早めるヒントに過ぎない。ヒントを落としても定期パスが拾う。
+
+| 契機 | 種別 |
+|---|---|
+| 定期（既定 30 秒） | **真実**。デプロイ形態に応じて River `PeriodicJobs` か k8s CronJob が投入する（[データ層](data.md) §2） |
+| 予約の作成 / 取消 | ヒント。api が予約の書き込みと**同一トランザクションで** `InsertTx` する（dual-write にならない） |
+| ruler パスの完了 | ヒント。ruler_pass ワーカーがパス完了時に投入する（base が変われば mirakc に反映すべき差分が増えるため） |
+
+ヒントは `UniqueOpts{ByArgs, ByState}` で合流する。予約を連続で作成/取消してもパスは 1 回で足りる。副産物として、予約の作成/取消が mirakc へ反映されるまでの待ち時間が最大 30 秒から実質即座になる。
+
 #### ファイル名テンプレート
 
 `filenameTemplate`（予約オプション。§8）は Go の [`text/template`](https://pkg.go.dev/text/template) 記法。reconciler が予約行のスナップショットだけを使って展開し（`internal/contentpath` パッケージ。`internal/reconciler/contentpath.go` の `buildContentPath` から呼ばれる）、拡張子は含まない前提で常に `.m2ts` を付す。未指定・空文字なら従来どおりの固定形式（`YYYYMMDD/HHMMSS_タイトル_サービスID.m2ts`）のまま（後方互換）。

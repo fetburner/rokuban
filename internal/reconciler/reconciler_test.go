@@ -115,15 +115,11 @@ func TestReconciler_CreatesSchedule(t *testing.T) {
 		t.Fatalf("creating reservation: %v", err)
 	}
 
-	rec := reconciler.New("default", mc, pool, &reconciler.Config{
-		ReconcileInterval: time.Hour,
-	})
+	rec := reconciler.New("default", mc, pool, nil)
 
-	runCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	go func() { _ = rec.Run(runCtx) }()
-	time.Sleep(500 * time.Millisecond)
-	cancel()
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
 
 	schedules := mock.getSchedules()
 	if len(schedules) != 1 {
@@ -163,15 +159,12 @@ func TestReconciler_DeletesOrphanedSchedule(t *testing.T) {
 	mc := mirakc.NewClient(srv.URL, nil)
 
 	rec := reconciler.New("default", mc, pool, &reconciler.Config{
-		ReconcileInterval: time.Hour,
 		MaxDeletesPerPass: 10,
 	})
 
-	runCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	go func() { _ = rec.Run(runCtx) }()
-	time.Sleep(500 * time.Millisecond)
-	cancel()
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
 
 	schedules := mock.getSchedules()
 	if len(schedules) != 0 {
@@ -197,15 +190,12 @@ func TestReconciler_CircuitBreaker(t *testing.T) {
 	mc := mirakc.NewClient(srv.URL, nil)
 
 	rec := reconciler.New("default", mc, pool, &reconciler.Config{
-		ReconcileInterval: time.Hour,
 		MaxDeletesPerPass: 5,
 	})
 
-	runCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	go func() { _ = rec.Run(runCtx) }()
-	time.Sleep(500 * time.Millisecond)
-	cancel()
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
 
 	schedules := mock.getSchedules()
 	if len(schedules) != 20 {
@@ -228,15 +218,11 @@ func TestReconciler_IgnoresNonRokubanSchedules(t *testing.T) {
 
 	mc := mirakc.NewClient(srv.URL, nil)
 
-	rec := reconciler.New("default", mc, pool, &reconciler.Config{
-		ReconcileInterval: time.Hour,
-	})
+	rec := reconciler.New("default", mc, pool, nil)
 
-	runCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	go func() { _ = rec.Run(runCtx) }()
-	time.Sleep(500 * time.Millisecond)
-	cancel()
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
 
 	schedules := mock.getSchedules()
 	if len(schedules) != 1 {
@@ -278,15 +264,11 @@ func TestReconciler_SkippedReservationNotScheduled(t *testing.T) {
 		t.Fatalf("recording skip intent: %v", err)
 	}
 
-	rec := reconciler.New("default", mc, pool, &reconciler.Config{
-		ReconcileInterval: time.Hour,
-	})
+	rec := reconciler.New("default", mc, pool, nil)
 
-	runCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	go func() { _ = rec.Run(runCtx) }()
-	time.Sleep(500 * time.Millisecond)
-	cancel()
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
 
 	schedules := mock.getSchedules()
 	if len(schedules) != 0 {
@@ -321,15 +303,11 @@ func TestReconciler_NullServiceIDNotScheduled(t *testing.T) {
 		t.Fatalf("creating reservation: %v", err)
 	}
 
-	rec := reconciler.New("default", mc, pool, &reconciler.Config{
-		ReconcileInterval: time.Hour,
-	})
+	rec := reconciler.New("default", mc, pool, nil)
 
-	runCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	go func() { _ = rec.Run(runCtx) }()
-	time.Sleep(500 * time.Millisecond)
-	cancel()
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
 
 	schedules := mock.getSchedules()
 	if len(schedules) != 0 {

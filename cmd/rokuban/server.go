@@ -22,7 +22,6 @@ import (
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
-	"github.com/fetburner/rokuban/internal/reconciler"
 	"github.com/fetburner/rokuban/internal/role"
 	"github.com/fetburner/rokuban/internal/streamer"
 	"github.com/fetburner/rokuban/internal/watcher"
@@ -31,12 +30,13 @@ import (
 )
 
 var (
-	allRoles = []string{"api", "worker", "reconciler", "watcher", "streamer"}
+	allRoles = []string{"api", "worker", "watcher", "streamer"}
 	// シングルトンロールは pg_advisory_lock でリーダー選出し、1 プロセスだけが実行する。
-	// ruler はここに含まれない — シングルトンではなく worker が引く River ジョブ
-	// （ruler_pass）になったため（docs/data.md §2、docs/overview.md「ロールは
-	// 『プロセスの形』を表し、『どの仕事をするか』は表さない」）。
-	singletonRoles = []string{"reconciler", "watcher"}
+	// ruler / reconciler はここに含まれない — シングルトンではなく worker が引く River
+	// ジョブ（ruler_pass / reconcile_pass）になったため（docs/data.md §2、
+	// docs/overview.md「ロールは『プロセスの形』を表し、『どの仕事をするか』は
+	// 表さない」、issue #24 M2-17）。シングルトンは watcher だけになった。
+	singletonRoles = []string{"watcher"}
 )
 
 func newServerCmd() *cobra.Command {
@@ -149,11 +149,12 @@ func newServerCmd() *cobra.Command {
 					PeriodicJobs:      cfg.Worker.PeriodicJobs,
 					Queues:            cfg.Worker.Queues,
 				}
-				// 定期ジョブ（epg_sync / ruler_pass）は worker 側が投入する
-				// （mirakc に触るのも ruler_pass のヒント経路をまとめるのも worker）。
+				// 定期ジョブ（epg_sync / ruler_pass / reconcile_pass）は worker 側が投入する
+				// （mirakc に触るのも各ジョブのヒント経路をまとめるのも worker）。
 				if slices.Contains(roles, "worker") {
 					clientCfg.EpgSyncSite = watcher.DefaultSite
 					clientCfg.RulerPassSite = watcher.DefaultSite
+					clientCfg.ReconcilePassSite = watcher.DefaultSite
 				}
 				var clientErr error
 				riverClient, clientErr = worker.NewClient(pool, workers, clientCfg)
@@ -192,10 +193,6 @@ func newServerCmd() *cobra.Command {
 						mc := mirakc.NewClient(cfg.Mirakc.URL, nil)
 						w := watcher.New(watcher.DefaultSite, mc, pool, riverClient, nil)
 						roleFunc = w.Run
-					case "reconciler":
-						mc := mirakc.NewClient(cfg.Mirakc.URL, nil)
-						rec := reconciler.New(watcher.DefaultSite, mc, pool, nil)
-						roleFunc = rec.Run
 					}
 					return role.RunSingleton(egCtx, pool, roleName, roleFunc, nil)
 				})
@@ -213,7 +210,7 @@ func newServerCmd() *cobra.Command {
 	}
 
 	cmd.Flags().Bool("all", false, "run all roles")
-	cmd.Flags().StringSlice("roles", nil, "roles to run (comma-separated: api,worker,reconciler,watcher,streamer)")
+	cmd.Flags().StringSlice("roles", nil, "roles to run (comma-separated: api,worker,watcher,streamer)")
 	cmd.MarkFlagsMutuallyExclusive("all", "roles")
 	cmd.MarkFlagsOneRequired("all", "roles")
 

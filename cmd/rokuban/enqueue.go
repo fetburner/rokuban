@@ -17,11 +17,12 @@ import (
 )
 
 // enqueueJobs はユーザー向けジョブ名（ハイフン区切り）から River の JobArgs を組み立てる
-// 関数の索引。ジョブの Kind()（"epg_sync" / "ruler_pass"）とは別に、CLI では
-// 読みやすい名前を使う。
+// 関数の索引。ジョブの Kind()（"epg_sync" / "ruler_pass" / "reconcile_pass"）とは別に、
+// CLI では読みやすい名前を使う。
 var enqueueJobs = map[string]func(site string) river.JobArgs{
-	"epg-sync":   func(site string) river.JobArgs { return worker.EpgSyncArgs{Site: site} },
-	"ruler-pass": func(site string) river.JobArgs { return worker.RulerPassArgs{Site: site} },
+	"epg-sync":       func(site string) river.JobArgs { return worker.EpgSyncArgs{Site: site} },
+	"ruler-pass":     func(site string) river.JobArgs { return worker.RulerPassArgs{Site: site} },
+	"reconcile-pass": func(site string) river.JobArgs { return worker.ReconcilePassArgs{Site: site} },
 }
 
 // newEnqueueCmd は `rokuban enqueue <job>` サブコマンドを作る。

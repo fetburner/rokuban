@@ -71,6 +71,10 @@ func NewWorkers(deps *Deps) *river.Workers {
 		Pool:           deps.Pool,
 		RetentionGrace: deps.RulerRetentionGrace,
 	})
+	river.AddWorker(workers, &ReconcilePassWorker{
+		MirakcClient: deps.MirakcClient,
+		Pool:         deps.Pool,
+	})
 	return workers
 }
 
@@ -84,6 +88,8 @@ func allQueues(ingestConcurrency int) map[string]river.QueueConfig {
 		epgQueue: {MaxWorkers: 1},
 		// サイト単位の排他は UniqueOpts が担うので、こちらも複数ワーカーは要らない。
 		rulerQueue: {MaxWorkers: 1},
+		// reconciler も ruler と同じ理由（UniqueOpts がサイト単位の排他を担う）で 1 本に絞る。
+		reconcilerQueue: {MaxWorkers: 1},
 	}
 }
 
@@ -106,14 +112,21 @@ type ClientConfig struct {
 	// RulerPassInterval は ruler 定期パスの間隔。0 なら既定値。
 	RulerPassInterval time.Duration
 
-	// PeriodicJobs が false なら、EpgSyncSite / RulerPassSite が設定されていても
-	// River の PeriodicJobs を一切登録しない。k8s では false にして、CronJob が
+	// ReconcilePassSite が空でない場合、そのサイトの reconciler 1 パス突き合わせを
+	// 定期ジョブとして登録する（PeriodicJobs が true のときのみ）。
+	ReconcilePassSite string
+
+	// ReconcilePassInterval は reconciler 定期パスの間隔。0 なら既定値（30 秒）。
+	ReconcilePassInterval time.Duration
+
+	// PeriodicJobs が false なら、EpgSyncSite / RulerPassSite / ReconcilePassSite が
+	// 設定されていても River の PeriodicJobs を一切登録しない。k8s では false にして、CronJob が
 	// `rokuban enqueue` を叩く形に委ねる（docs/data.md §2「定期実行の契機は
 	// デプロイ形態に委ねる」。設定キーは worker.periodic_jobs、既定 true）。
 	PeriodicJobs bool
 
 	// Queues は実際に SKIP LOCKED で引くキューを絞り込む。空なら全キューを引く。
-	// ロールを増やさずに「ruler だけ別 Pod」のような構成を実現するための knob
+	// ロールを増やさずに「ruler / reconciler だけ別 Pod」のような構成を実現するための knob
 	// （docs/configuration.md の worker.queues。docs/overview.md「ロールは
 	// 『プロセスの形』を表し、『どの仕事をするか』は表さない」）。
 	// 未知のキュー名が含まれる場合は起動時エラーにする（typo で静かに何も
@@ -176,6 +189,20 @@ func buildRiverConfig(workers *river.Workers, cfg ClientConfig) (*river.Config, 
 				river.PeriodicInterval(interval),
 				func() (river.JobArgs, *river.InsertOpts) {
 					return RulerPassArgs{Site: site}, nil
+				},
+				&river.PeriodicJobOpts{RunOnStart: true},
+			))
+		}
+		if cfg.ReconcilePassSite != "" {
+			interval := cfg.ReconcilePassInterval
+			if interval <= 0 {
+				interval = defaultReconcilePassInterval
+			}
+			site := cfg.ReconcilePassSite
+			riverCfg.PeriodicJobs = append(riverCfg.PeriodicJobs, river.NewPeriodicJob(
+				river.PeriodicInterval(interval),
+				func() (river.JobArgs, *river.InsertOpts) {
+					return ReconcilePassArgs{Site: site}, nil
 				},
 				&river.PeriodicJobOpts{RunOnStart: true},
 			))

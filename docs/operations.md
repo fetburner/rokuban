@@ -237,7 +237,7 @@ Deployment 型で worker を運用する場合（またはその併用）の定�
 
 ### シングルトンロール: pg_advisory_lock リーダー選出
 
-reconciler / watcher はシングルトンロール。`pg_try_advisory_lock` による監督ループでリーダー選出を行う（ruler はジョブなので対象外。[データ層](data.md) §2）:
+watcher はシングルトンロール。`pg_try_advisory_lock` による監督ループでリーダー選出を行う（ruler / reconciler はジョブなので対象外。[データ層](data.md) §2）:
 
 1. ロールごとに goroutine を立て、`pg_try_advisory_lock` を定期試行（15s + jitter）
 2. 取得したら child context でロール本体を起動
