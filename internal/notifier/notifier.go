@@ -1,4 +1,14 @@
-package api
+// Package notifier は Postgres の LISTEN/NOTIFY を購読し、ブラウザ向けの
+// SSE (/api/events) として配り直す notifier ロールを実装する。
+//
+// api ロールはリクエスト/レスポンスに徹し、mirakc にもファイルシステムにも
+// 依存しない（不変条件 1）ため、長寿命接続を張り続ける SSE 配信はこの
+// notifier に分離している（issue #24 M2-19、issue #25 §4）。
+//
+// notifier はシングルトンではない。複数レプリカが立っても各自が Postgres を
+// LISTEN し、自分にぶら下がる SSE クライアントへ配るだけなので、Redis
+// アダプタのような追加の配送基盤は要らない（docs/data.md §3）。
+package notifier
 
 import (
 	"context"
@@ -8,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -34,8 +45,8 @@ const (
 
 // EventHub は Postgres の NOTIFY を購読し、接続中の SSE クライアントへ配る。
 //
-// api レプリカを増やしても、各レプリカが自分で LISTEN するだけなので
-// Redis アダプタのような追加基盤は要らない（issue #5）。
+// notifier レプリカを増やしても、各レプリカが自分で LISTEN するだけなので
+// Redis アダプタのような追加基盤は要らない（issue #5、docs/data.md §3）。
 type EventHub struct {
 	mu      sync.Mutex
 	clients map[chan string]struct{}
@@ -215,6 +226,15 @@ func (h *EventHub) coalesce(ctx context.Context, topics <-chan string, waitErr <
 			return ctx.Err()
 		}
 	}
+}
+
+// Mount は SSE エンドポイント (/api/events) をルーターに登録する。
+//
+// internal/api.RouterConfig.Mounter の口に載せるためのメソッドで、これにより
+// EventHub は streamer と同じ形（api の外で組み立て、同一プロセスなら
+// Mounter 経由で相乗りする）で扱える。
+func (h *EventHub) Mount(r chi.Router) {
+	r.Get("/api/events", eventsHandler(h))
 }
 
 // eventsHandler は SSE (/api/events) を配信する http.Handler を返す。

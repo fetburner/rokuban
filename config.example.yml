@@ -1,7 +1,7 @@
 # Rokuban 設定ファイル
 # ${VAR} で環境変数を参照、${VAR:-default} でデフォルト値指定、$$ でリテラル $ をエスケープ
 
-# HTTP を持つロール (api, streamer) 共通
+# HTTP を持つロール (api, streamer, notifier) 共通
 server:
   listen: ":40773"               # mirakc の 40772 の隣
   allowed_hosts: [rokuban.local] # Host ヘッダー allowlist。空にするとチェック無効（開発用）

@@ -306,6 +306,27 @@ func TestMetrics_DisabledWithoutRegistry(t *testing.T) {
 	}
 }
 
+// api ロール単独（Mounter を持たない構成）では /api/events が生えないこと。
+//
+// SSE 配信は notifier ロールの担当に分離した（M2-19）。api は mirakc にも
+// ファイルシステムにも依存しない純粋なリクエスト/レスポンス層になり、
+// これによって初めて docs/overview.md が既に謳っていた
+// 「api ロールは scale-to-zero 可能」が名実ともに成立する。
+func TestEvents_NotMountedForAPIOnly(t *testing.T) {
+	router := NewRouter(RouterConfig{})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/events")
+	if err != nil {
+		t.Fatalf("GET /api/events: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404 (api ロール単独では /api/events は登録されない)", resp.StatusCode)
+	}
+}
+
 // /metrics と /healthz は Host allowlist を免除すること。
 //
 // 監視基盤は Pod IP やサービス名で叩くため allowlist に載せようがない

@@ -1,4 +1,4 @@
-package api
+package notifier
 
 import (
 	"bufio"
@@ -11,9 +11,14 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/api"
+	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
+
+// defaultSite は単一サイト構成でのサイト名。定義は db.DefaultSite（唯一の出所）。
+const defaultSite = db.DefaultSite
 
 // sseTimeout は SSE イベントを待つ上限。
 // 期限なしで読むと、通知を取りこぼしたときにパッケージ全体のタイムアウト
@@ -110,10 +115,9 @@ func waitForClients(t *testing.T, hub *EventHub, n int) {
 	t.Fatalf("clients = %d, want %d", hub.clientCount(), n)
 }
 
-func startHub(t *testing.T, pool *pgxpool.Pool) (*EventHub, *httptest.Server) {
+// runHub は hub の LISTEN ループを t の生存期間だけ回す。
+func runHub(t *testing.T, hub *EventHub, pool *pgxpool.Pool) {
 	t.Helper()
-	hub := NewEventHub()
-
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
@@ -124,16 +128,75 @@ func startHub(t *testing.T, pool *pgxpool.Pool) (*EventHub, *httptest.Server) {
 		cancel()
 		<-done
 	})
+}
 
-	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, Hub: hub}))
+// startNotifier は notifier 単体（EventHub だけを Mount したルーター）を起動する。
+// notifier ロールが単独プロセスで動くケースに対応するテスト用ヘルパー。
+func startNotifier(t *testing.T, pool *pgxpool.Pool) (*EventHub, *httptest.Server) {
+	t.Helper()
+	hub := NewEventHub()
+	runHub(t, hub, pool)
+
+	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{Mounter: hub}))
 	t.Cleanup(srv.Close)
 	return hub, srv
+}
+
+// seedRecording は notifier のテストに必要な最小限の recordings 行を作る。
+func seedRecording(t *testing.T, pool *pgxpool.Pool, title string, start time.Time, status string, eventID int32) int64 {
+	t.Helper()
+	id, err := sqlcgen.New(pool).CreateRecording(context.Background(), sqlcgen.CreateRecordingParams{
+		Source:            "manual",
+		Site:              defaultSite,
+		NetworkID:         32678,
+		ServiceID:         5168,
+		EventID:           eventID,
+		ServiceName:       "ＯＨＫ",
+		ChannelType:       "GR",
+		Channel:           "27",
+		Title:             title,
+		ProgramStartAt:    start,
+		ProgramDurationMs: (30 * time.Minute).Milliseconds(),
+		Status:            status,
+	})
+	if err != nil {
+		t.Fatalf("seeding recording: %v", err)
+	}
+	return id
+}
+
+// seedIngested は録画に原本 media_asset を付ける（recordings トピックの発火源）。
+func seedIngested(t *testing.T, pool *pgxpool.Pool, recordingID, size int64, stats map[int32][4]int64) {
+	t.Helper()
+	ctx := context.Background()
+	q := sqlcgen.New(pool)
+	assetID, err := q.CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
+		RecordingID: recordingID,
+		Kind:        db.AssetKindOriginal,
+		RelPath:     "test/asset.m2ts",
+		SizeBytes:   size,
+	})
+	if err != nil {
+		t.Fatalf("seeding media_asset: %v", err)
+	}
+	for pid, s := range stats {
+		if err := q.InsertDropStat(ctx, sqlcgen.InsertDropStatParams{
+			MediaAssetID: assetID,
+			Pid:          pid,
+			Packets:      s[0],
+			Drops:        s[1],
+			Errors:       s[2],
+			Scrambled:    s[3],
+		}); err != nil {
+			t.Fatalf("seeding drop_stat: %v", err)
+		}
+	}
 }
 
 // DB の変更がトリガー → NOTIFY → SSE でクライアントに届くこと。
 func TestEvents_ReservationTriggersNotify(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	hub, srv := startHub(t, pool)
+	hub, srv := startNotifier(t, pool)
 
 	reader := openSSE(t, srv.URL)
 	waitForClients(t, hub, 1)
@@ -159,7 +222,7 @@ func TestEvents_ReservationTriggersNotify(t *testing.T) {
 // 録画と media_assets の変更はどちらも recordings トピックになること。
 func TestEvents_RecordingAndMediaAssetTopics(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	hub, srv := startHub(t, pool)
+	hub, srv := startNotifier(t, pool)
 
 	reader := openSSE(t, srv.URL)
 	waitForClients(t, hub, 1)
@@ -181,7 +244,7 @@ func TestEvents_RecordingAndMediaAssetTopics(t *testing.T) {
 // 明示的な pg_notify（EPG 同期ジョブが使う経路）も届くこと。
 func TestEvents_ExplicitNotify(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	hub, srv := startHub(t, pool)
+	hub, srv := startNotifier(t, pool)
 
 	reader := openSSE(t, srv.URL)
 	waitForClients(t, hub, 1)
@@ -198,7 +261,7 @@ func TestEvents_ExplicitNotify(t *testing.T) {
 // 複数クライアントに同じトピックが配られること。
 func TestEvents_FanOut(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	hub, srv := startHub(t, pool)
+	hub, srv := startNotifier(t, pool)
 
 	r1 := openSSE(t, srv.URL)
 	r2 := openSSE(t, srv.URL)
@@ -216,18 +279,33 @@ func TestEvents_FanOut(t *testing.T) {
 	}
 }
 
-// hub が nil なら SSE エンドポイントは登録されない（api ロール以外での構成）。
-func TestEvents_DisabledWithoutHub(t *testing.T) {
-	srv := httptest.NewServer(NewRouter(RouterConfig{}))
-	defer srv.Close()
+// notifier は複数レプリカで動いてもよい（シングルトンではない）。
+//
+// 2 つの独立した EventHub（別々の LISTEN コネクション、別々の SSE クライアント）
+// が同じ NOTIFY を取りこぼさず、それぞれ自分の購読者に配ること。
+// docs/data.md §3 の「各レプリカが自分で LISTEN するだけで Redis アダプタ等の
+// 追加基盤は要らない」を確認する。
+func TestNotifier_MultipleReplicasNotSingleton(t *testing.T) {
+	pool := testutil.SetupDB(t)
 
-	resp, err := http.Get(srv.URL + "/api/events")
-	if err != nil {
-		t.Fatalf("GET /api/events: %v", err)
+	hub1, srv1 := startNotifier(t, pool)
+	hub2, srv2 := startNotifier(t, pool)
+
+	r1 := openSSE(t, srv1.URL)
+	r2 := openSSE(t, srv2.URL)
+	waitForClients(t, hub1, 1)
+	waitForClients(t, hub2, 1)
+	waitListening(t, hub1)
+	waitListening(t, hub2)
+
+	if err := sqlcgen.New(pool).NotifyTopic(context.Background(), "epg"); err != nil {
+		t.Fatalf("NotifyTopic: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode == http.StatusOK {
-		t.Error("SSE endpoint should not be registered without a hub")
+	if got := readSSEEvent(t, r1); got != "epg" {
+		t.Errorf("replica 1 event = %q, want epg", got)
+	}
+	if got := readSSEEvent(t, r2); got != "epg" {
+		t.Errorf("replica 2 event = %q, want epg", got)
 	}
 }
 

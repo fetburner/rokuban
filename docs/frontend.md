@@ -220,7 +220,8 @@ mirakc と同じ「接続時に現在状態を再送し、以降差分」とい�
 
 ### アーキテクチャ上の利点
 
-- api ロールを複数レプリカにしても、SSE は各レプリカが Postgres の NOTIFY を購読して配るだけなので **Redis アダプタのような追加基盤は不要**
+- SSE (`/api/events`) を配るのは api ではなく **notifier ロール**（issue #24 M2-19）。notifier を複数レプリカにしても、各レプリカが Postgres の NOTIFY を購読して配るだけなので **Redis アダプタのような追加基盤は不要**
+- notifier をロールとして分けたことで、api は SSE という長寿命接続を持たなくなり、サーバーレス（scale-to-zero）に本当に載せられるようになった（[overview.md](overview.md)）
 - レベルトリガーにより、SSE 接続断中の変更も stale-time 経過後の REST 再取得で自然回復する
 
 通信設計の詳細は [api.md](api.md) を参照。
@@ -234,8 +235,8 @@ mirakc と同じ「接続時に現在状態を再送し、以降差分」とい�
 | 規約 | 詳細 |
 |---|---|
 | SPA フォールバック | 両モードで用意。Go 側は catch-all、S3 側は CloudFront Function rewrite 等 |
-| API パス | 常に相対パス `/api/*` を叩く。S3 配信時は CDN のパスベースルーティングで `/api/*` と `/events` をバックエンド origin へ振り分ける（CORS 不要、実行時コンフィグ注入不要） |
-| SSE の CDN 通過 | タイムアウト・キャッシュ無効化の設定が必要。CDN を迂回して直接バックエンドに繋ぐ選択肢も残す |
+| API パス | 常に相対パス `/api/*` を叩く。S3 配信時は CDN のパスベースルーティングで `/api/*` をバックエンド origin へ振り分ける（CORS 不要、実行時コンフィグ注入不要） |
+| SSE の振り分け | `/api/events` だけは `/api/*` の中でも例外で、**api（scale-to-zero）ではなく notifier（常駐）へ**ルーティングする。CDN のパスルーティングで最長一致的に `/api/events` を先に notifier origin へ、残りの `/api/*` を api origin へ振り分ける。タイムアウト・キャッシュ無効化の設定も必要。CDN を迂回して notifier に直接繋ぐ選択肢も残す |
 | キャッシュ規約 | ハッシュ付きアセット（`assets/*`）は `Cache-Control: immutable`、**それ以外はすべて no-cache**。go:embed モードでも同じヘッダを付けて挙動を揃える |
 | 後方互換 | UI と API のデプロイタイミングはずれ得るため API は後方互換を保つ。破壊的変更は OpenAPI 生成クライアントの差分として CI で検知 |
 

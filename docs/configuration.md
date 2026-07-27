@@ -31,7 +31,7 @@ Grafana Loki / Tempo の `-config.expand-env` と同じ、**YAML パース前の
 ### リファレンス
 
 ```yaml
-server:                          # HTTP を持つロール (api, streamer) 共通
+server:                          # HTTP を持つロール (api, streamer, notifier) 共通
   listen: ":40773"               # mirakc の 40772 の隣
   allowed_hosts: [rokuban.local] # Host ヘッダー allowlist。localhost 系は常に許可
 

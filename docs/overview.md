@@ -33,7 +33,8 @@ mirakc に録画を委譲すると（詳細は [recording.md](recording.md) 参�
 [エッジ]                       [サーバー / クラウド]
 ┌────────────┐    ┌─────────────────────────────────────────┐
 │ mirakc      │◀──▶│ rokuban（Go、単一バイナリ）                  │
-│             │    │  ├ api:        REST + SSE、UI 配信(go:embed)│
+│             │    │  ├ api:        REST、UI 配信(go:embed)        │
+│             │    │  ├ notifier:   NOTIFY 購読→ブラウザへ SSE 配信 │
 │             │    │  ├ watcher:    mirakc SSE購読→状態反映       │
 └────────────┘    │  └ streamer:   ライブ視聴 (mirakc→ffmpeg→HLS)│
    ▲               │ rokuban worker（別イメージ、0〜Nスケール）     │
@@ -95,14 +96,16 @@ nginx は構成図上の「箱」ではなく、推奨デプロイパターン�
 
 レベルトリガー設計の帰結として、**予約・ルールの作成/編集（書き込み）すら DB-only** である。API は desired state を Postgres に書くだけで、mirakc への同期は reconciler が非同期に収束させる。したがって api ロールはサーバーレス（Cloud Run / Lambda 等）で scale-to-zero 可能であり、これは新要件ではなく既存設計が保証する性質。
 
+**M2-19 でこれが名実ともに成立した。** 以前は SSE (`/api/events`) が api ロールの中にあり、振り分け先が api 自身になっていたため api を scale-to-zero にできないという矛盾があった（issue #24 M2-19、issue #25 §4）。SSE を notifier ロールへ分離したことで、api は mirakc にもファイルシステムにも長寿命接続にも依存しない純粋なリクエスト/レスポンス層になり、scale-to-zero が実際に機能する。
+
 推奨のハイブリッド構成:
 
 ```
-[クラウド]  Postgres (Neon 等) + api (公式イメージ, scale-to-zero) + CDN/Access
+[クラウド]  Postgres (Neon 等) + api (公式イメージ, scale-to-zero) + notifier (常駐) + CDN/Access
 [自宅]      mirakc + reconciler/watcher/worker/streamer (full) — 外向き接続で DB を見る
 ```
 
-自宅サーバーが落ちていても番組表・録画一覧・予約操作ができ（DB に積まれ、復帰後 reconciler が収束）、メディア視聴だけは自宅到達が必要と割り切る。SSE は長寿命接続なのでサーバーレスには乗せず、CDN のパスルーティングで常駐側へ振り分ける。
+自宅サーバーが落ちていても番組表・録画一覧・予約操作ができ（DB に積まれ、復帰後 reconciler が収束）、メディア視聴だけは自宅到達が必要と割り切る。SSE は長寿命接続なのでサーバーレスには乗せず、CDN のパスルーティングで `/api/events` だけ notifier ロールへ振り分ける（詳細: [api.md](api.md)）。notifier は mirakc への到達性を必要としない（Postgres の NOTIFY を配るだけ）ため、クラウド側に常駐プロセスとして置いても自宅側に置いても成立する。
 
 サーバーレスの置き場所の選定、ハイブリッド構成の運用詳細は [operations.md](operations.md) を参照。
 

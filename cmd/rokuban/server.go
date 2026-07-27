@@ -22,6 +22,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/notifier"
 	"github.com/fetburner/rokuban/internal/role"
 	"github.com/fetburner/rokuban/internal/streamer"
 	"github.com/fetburner/rokuban/internal/watcher"
@@ -30,12 +31,15 @@ import (
 )
 
 var (
-	allRoles = []string{"api", "worker", "watcher", "streamer"}
+	allRoles = []string{"api", "worker", "watcher", "streamer", "notifier"}
 	// シングルトンロールは pg_advisory_lock でリーダー選出し、1 プロセスだけが実行する。
 	// ruler / reconciler はここに含まれない — シングルトンではなく worker が引く River
 	// ジョブ（ruler_pass / reconcile_pass）になったため（docs/data.md §2、
 	// docs/overview.md「ロールは『プロセスの形』を表し、『どの仕事をするか』は
-	// 表さない」、issue #24 M2-17）。シングルトンは watcher だけになった。
+	// 表さない」、issue #24 M2-17）。notifier も同じ理由でここに含まれない —
+	// 複数レプリカが各自 LISTEN して自分の SSE クライアントに配るだけなので、
+	// 1 プロセスに絞る必要がない（docs/data.md §3、issue #24 M2-19）。
+	// シングルトンは watcher だけになった。
 	singletonRoles = []string{"watcher"}
 )
 
@@ -85,17 +89,6 @@ func newServerCmd() *cobra.Command {
 					}
 					routerCfg.DistFS = distFS
 
-					// SSE のヒント配送。各レプリカが自分で LISTEN するだけなので
-					// レプリカ間の追加基盤は要らない。
-					hub := api.NewEventHub()
-					routerCfg.Hub = hub
-					eg.Go(func() error {
-						if hubErr := hub.Run(egCtx, pool); hubErr != nil && !errors.Is(hubErr, context.Canceled) {
-							return fmt.Errorf("event hub: %w", hubErr)
-						}
-						return nil
-					})
-
 					// ルール作成/更新/削除のヒントで ruler_pass を投入するための
 					// insert-only クライアント。api は mirakc に問い合わせず ffmpeg も
 					// 実行しない（不変条件）ため、worker.NewWorkers のフルのワーカー群は
@@ -107,12 +100,32 @@ func newServerCmd() *cobra.Command {
 					routerCfg.RiverClient = apiRiverClient
 				}
 
-				// バイト配信は api ではなく streamer の担当（不変条件 1）。
+				// バイト配信は streamer、SSE のヒント配送は notifier の担当
+				// （不変条件 1、issue #24 M2-19）。api はどちらにも依存しない
+				// 純粋なリクエスト/レスポンス層になる。両方を同一プロセスに
+				// 同居させる場合（monolith / --all）は Mounters で束ねる。
+				var mounters api.Mounters
 				if slices.Contains(roles, "streamer") {
-					routerCfg.Mounter = streamer.New(pool, streamer.Config{
+					mounters = append(mounters, streamer.New(pool, streamer.Config{
 						MediaDir:      cfg.Storage.MediaDir,
 						AccelLocation: cfg.Storage.AccelLocation,
+					}))
+				}
+				if slices.Contains(roles, "notifier") {
+					// notifier はシングルトンではない。各レプリカが自分で LISTEN して
+					// 自分にぶら下がる SSE クライアントに配るだけなので、レプリカを
+					// 増やしても Redis アダプタ等の追加基盤は要らない（docs/data.md §3）。
+					hub := notifier.NewEventHub()
+					mounters = append(mounters, hub)
+					eg.Go(func() error {
+						if hubErr := hub.Run(egCtx, pool); hubErr != nil && !errors.Is(hubErr, context.Canceled) {
+							return fmt.Errorf("notifier: %w", hubErr)
+						}
+						return nil
 					})
+				}
+				if len(mounters) > 0 {
+					routerCfg.Mounter = mounters
 				}
 
 				srv := &http.Server{Addr: cfg.Server.Listen, Handler: api.NewRouter(routerCfg)}
@@ -211,7 +224,7 @@ func newServerCmd() *cobra.Command {
 	}
 
 	cmd.Flags().Bool("all", false, "run all roles")
-	cmd.Flags().StringSlice("roles", nil, "roles to run (comma-separated: api,worker,watcher,streamer)")
+	cmd.Flags().StringSlice("roles", nil, "roles to run (comma-separated: api,worker,watcher,streamer,notifier)")
 	cmd.MarkFlagsMutuallyExclusive("all", "roles")
 	cmd.MarkFlagsOneRequired("all", "roles")
 
