@@ -54,7 +54,34 @@ nginx は構成図上の「箱」ではなく、推奨デプロイパターン�
 
 - `rokuban server --all`: 全ロールを1プロセスで（自宅向け、Docker Compose で Postgres と2コンテナ）
 - k8s ではロールごとに Deployment を分割：api は水平スケール、worker はキュー長で 0〜N（KEDA）、watcher はシングルトン（Postgres アドバイザリロックでリーダー選出）
-- **ロールは「プロセスの形」を表し、「どの仕事をするか」は表さない。** キュー駆動で 0〜N の形をした仕事はすべて worker ロールで、どのキューを引くかはデプロイ時のパラメータ。ルール評価（ruler）と reconciler の同期パスもこれに含まれる — キューごとにロールを増やすと `ingester` / `encoder` / `thumbnailer` と際限なく増える
+
+### ロール分類の基準: ソケットを持ち続けるか
+
+**ロールは「プロセスの形」を表し、「どの仕事をするか」は表さない。** そして「形」を決める判定はひとつだけ ---
+**そのプロセスがソケットを持ち続ける必要があるか**。
+
+| ソケット | 形 | ロール | スケール |
+|---|---|---|---|
+| listen し続ける | サーバー | api / notifier / streamer | 水平（api は scale-to-zero 可） |
+| connect し続ける | サーバー（外向き） | watcher（mirakc の SSE） | シングルトン |
+| 持たない | ジョブ | worker | キュー長で 0〜N（KEDA）または CronJob |
+
+この基準を採る理由は、**ソケットの寿命がプロセスの寿命の下限を決めてしまう**こと。接続を張り続ける必要があれば
+そのプロセスは 0 にスケールできず、逆に仕事が始まってから終わるまでで完結するなら 0 にスケールできる。
+デプロイ形態（Deployment か Job か、KEDA でゼロスケールできるか）はここで決まり、これ以外の観点
+（DB を触るか、mirakc を触るか、周期実行か）はデプロイ形態を変えない。
+
+帰結:
+
+- **キュー駆動で 0〜N の形をした仕事はすべて worker ロール。** どのキューを引くかはデプロイ時のパラメータであって
+  ロールではない。ルール評価（ruler）・reconciler の同期パス・watcher の定期全量突き合わせ（record_sweep）も
+  ここに含まれる（issue #24 M2-17 / M2-18）。キューごとにロールを増やすと `ingester` / `encoder` /
+  `thumbnailer` と際限なく増える
+- **周期実行はロールの根拠にならない。** 「定期的に動く」はスケジューラの仕事で、Docker では River の
+  `PeriodicJobs`、k8s では CronJob が投入する。同じジョブ本体が両方から呼ばれる（[data.md](data.md) §2）
+- **SSE を扱うことはロールの根拠になる**（ソケットを持ち続けるので）。ただし SSE だからといって
+  1 つのロールに集約する理由はない --- notifier（ブラウザへ送る）と watcher（mirakc から受ける）は
+  機構が同じでも相手・向き・障害時の影響範囲が無関係なので、別ロールのまま置く（[api.md](api.md) §SSE）
 
 コード上はただの modular monolith。**IPC は最初から作らない**ので、EPGStation が抱えた「分離しようにも IPC が剥がせない」問題は構造的に発生しない。
 
@@ -102,8 +129,21 @@ nginx は構成図上の「箱」ではなく、推奨デプロイパターン�
 
 ```
 [クラウド]  Postgres (Neon 等) + api (公式イメージ, scale-to-zero) + notifier (常駐) + CDN/Access
-[自宅]      mirakc + reconciler/watcher/worker/streamer (full) — 外向き接続で DB を見る
+[自宅]      mirakc + watcher/worker/streamer (full) — 外向き接続で DB を見る
 ```
+
+`worker` が自宅側にあるのは、**キューの置き場所の制約**であってロールの都合ではない。
+
+| キュー | 要求 | 置き場所 |
+|---|---|---|
+| `reconciler` / `epg` / `watcher` | mirakc への到達性 | 自宅側 |
+| `ingest` | mirakc への到達性 + ファイルシステム | 自宅側 |
+| `encode` / `thumbnail` / `cleanup`（M3） | ファイルシステム | 自宅側 |
+| `ruler` | DB のみ | どちらでも |
+
+ロールを増やさずキューの割り当てだけで置き場所が決まるのは、ロールが「プロセスの形」だけを表しているため。
+`worker.queues`（config.yml。空なら全キュー）はデプロイ時のパラメータであり、同じイメージ・同じロール名で
+置き場所ごとに異なるキューを引かせる（[operations.md](operations.md) §5）。
 
 自宅サーバーが落ちていても番組表・録画一覧・予約操作ができ（DB に積まれ、復帰後 reconciler が収束）、メディア視聴だけは自宅到達が必要と割り切る。SSE は長寿命接続なのでサーバーレスには乗せず、CDN のパスルーティングで `/api/events` だけ notifier ロールへ振り分ける（詳細: [api.md](api.md)）。notifier は mirakc への到達性を必要としない（Postgres の NOTIFY を配るだけ）ため、クラウド側に常駐プロセスとして置いても自宅側に置いても成立する。
 

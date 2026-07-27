@@ -240,6 +240,14 @@ func buildRiverConfig(workers *river.Workers, cfg ClientConfig) (*river.Config, 
 	return riverCfg, nil
 }
 
+// AllQueueNames はこのプロセスが知っている全キュー名をソートして返す。
+// worker.queues の設定ミスを報告するためのほか、ロール名との衝突検査
+// （cmd/rokuban の TestAllRoles_ExcludesJobNames）でも使う --- キューを追加したときに
+// 「キュー駆動の仕事をロールに昇格させていないか」の検査対象へ自動的に入るようにするため。
+func AllQueueNames() []string {
+	return sortedQueueNames(allQueues(0))
+}
+
 func sortedQueueNames(m map[string]river.QueueConfig) []string {
 	names := make([]string, 0, len(m))
 	for name := range m {

@@ -1,3 +1,19 @@
+// Package role はシングルトンロールのリーダー選出を提供する。
+//
+// 「ソケットを connect し続ける」形のロール、すなわち watcher（mirakc の SSE を購読し続ける）
+// のためにある。listen する側のロール（api / notifier / streamer）は水平にスケールするので
+// 選出は不要で、ソケットを持たない仕事（ruler / reconciler / record_sweep / ingest / epg_sync）は
+// River のジョブなので排他はジョブロック + UniqueOpts が担保する（docs/data.md §2）。
+//
+// したがって RunSingleton の呼び出し元は cmd/rokuban/server.go の 1 箇所（watcher）だけだが、
+// これは削除の根拠ではない（issue #24 M2-20、docs/operations.md §5）。呼び出し元が 1 つに
+// 減ったのは機構が 1 つに減ったという成果であり、リーダー選出の失敗モード（heartbeat 喪失 /
+// split-brain / フェイルオーバー遅延）を単独でテストできる価値は残る。
+//
+// なお watcher の singleton 性は「正しさ」の要件ではない。processRecord は record_sync の
+// (site, record_id) 行ロックで冪等なので、複数の watcher が同じ record を処理しても recordings は
+// 重複しない（docs/recording.md §3.3）。ここで選出しているのは「mirakc に N 本の SSE を張らない」
+// という接続数の配慮であって、破れても壊れはしない。
 package role
 
 import (

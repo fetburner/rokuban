@@ -262,6 +262,13 @@ watcher はシングルトンロール。`pg_try_advisory_lock` による監督�
 
 k8s の Lease API に依存しないため monolithic mode でも同じコードが動く（[データ層](data.md) 参照）。フェイルオーバー遅延は最大 poll 間隔（〜15s）だが、いずれも定期 reconcile 前提のロールなので許容範囲。短時間の split-brain はシングルトンロールの仕事がすべて冪等（レベルトリガー + 冪等原則）であるため安全。
 
+**`internal/role`（`RunSingleton`）は watcher 専用になったが畳まない**（issue #24 M2-20）。M2-17 / M2-18 で
+ruler / reconciler / record_sweep がジョブになり、利用箇所は `cmd/rokuban/server.go` の 1 箇所だけになった。
+それでも独立したパッケージとして残すのは、**「ソケットを connect し続ける」という形のロールが存在する限り
+必要な機構**であり（[overview.md](overview.md) §ロール分類の基準）、リーダー選出の失敗モード
+（heartbeat 喪失・split-brain・フェイルオーバー遅延）はテストで固定しておく価値が単独である。
+呼び出し元が 1 つであることは、機構の複雑さが 1 つに減ったという成果であって、削除の根拠ではない。
+
 ### healthz: liveness のみ
 
 `/healthz` は **liveness probe 専用**。依存サービス（DB・mirakc）の状態は一切チェックせず、プロセスが HTTP を返せる限り常に 200 を返す。
