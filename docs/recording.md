@@ -277,6 +277,14 @@ reconciler は存在の突き合わせだけでなく、**effective options と 
 
 この 3 つでエンコード漏れは構造的に起きない。
 
+#### record 処理は並行実行しても壊れない
+
+`processRecord` は `record_sync` の `(site, record_id)` 行を**先に確保して行ロックを取ってから** `recordings` を作る。同一 record を 2 つの経路（SSE 由来と定期突き合わせ、あるいは 2 プロセス）が同時に処理しても、2 つ目は 1 つ目のコミットを待ってから `recording_id` が埋まっているのを見る。
+
+これがないと両方が「行なし」を見て両方が `createRecording` し、`recordings_unique_active_event`（`00003` の部分ユニークインデックス）違反で片方が失敗する。既にある PK を使うだけなので、`pg_advisory_xact_lock` のような追加の機構は要らない。
+
+この性質があるので **watcher のシングルトン性は「正しさ」の要件ではない**。残っている理由は「mirakc に N 本の SSE を張らない」という接続数の配慮で、壊れるわけではない（ingest ジョブは record id で冪等）。3 段構えの (c) をジョブとして切り出せるのもこの前提による。
+
 #### 品質メタデータ記録
 
 `recording.record-broken` / `recording.failed` イベントは構造化された品質シグナルとして record に紐づけて DB に記録する（「録画品質の実測」計画の入力）。
