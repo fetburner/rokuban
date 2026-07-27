@@ -82,6 +82,20 @@ mirakc の追従品質は EDCB ほどの長期実績がないため、品質メ�
 | ドロップ統計（PID 別 continuity counter 不連続 / TEI） | ingest のインラインスキャン。188 バイト境界の TS パケット統計を転送中に読み取り専用で採取（追加 I/O パスゼロ） | EPGStation のドロップログ相当。PID 別サマリを `drop_stats` テーブルに格納し UI で表示 |
 | scrambled カウンタ | ingest のインラインスキャン。`scrambling_control` ビットのカウント | B-CAS/復号障害の検出（後述のアラート対象） |
 
+### ジョブ化されたループの監視（M2）
+
+ruler / reconciler は River のジョブになったので、**「ループが止まっている」の検出方法が変わった**。advisory lock が取れているかではなく、**ジョブが投入され完走しているか**を見る。
+
+| 見るもの | 意味 |
+|---|---|
+| `rokuban_*_last_pass_timestamp_seconds` | `time() - この値` が周期を大きく超えたら止まっている |
+| `river_job` の `state='available'` が滞留 | 投入はされているが誰も引いていない（worker が 0 か、キューを引いていない） |
+| `river_job` が増えない | **投入自体が止まっている**。`worker.periodic_jobs: false` なのに CronJob が動いていない、あるいはリーダーが不在 |
+
+3 番目が k8s 特有の落とし穴。`PeriodicJobs` はリーダーだけが投入するので、worker が 0 にスケールすると誰も投入しない（[データ層](data.md) §2）。`rokuban enqueue` を叩く CronJob が設定されているかを最初に疑う。
+
+手動で走らせたいときは `rokuban enqueue <job>`（`epg-sync` / `ruler-pass` / `reconcile-pass`）。既に待機中なら投入せず終了コード 0 を返すので、cron から重ねて叩いても安全。
+
 ### ruler（M2）
 
 | メトリクス | 説明 |

@@ -276,6 +276,18 @@ CREATE INDEX ON recordings (deleted_at) WHERE deleted_at IS NOT NULL;  -- ごみ
 - 物理削除は削除 reconcile ループが `deleted_at + 猶予期間（既定 30 日）` 経過後にアセット単位で実行（§6）
 - 物理削除後も recordings 行と media_assets の tombstone は残る → ごみ箱を空にしても録画履歴・ドロップ統計・重複排除は壊れない
 
+### 同一イベントの重複防止（`00003`）
+
+```sql
+CREATE UNIQUE INDEX recordings_unique_active_event
+    ON recordings (site, network_id, service_id, event_id)
+    WHERE deleted_at IS NULL;
+```
+
+**録画試行の履歴は複数行を許すが、「生きている録画」は 1 イベントにつき 1 つ**。`deleted_at IS NULL` の部分インデックスなので、ごみ箱に入れた後で録り直すことはできる。
+
+この制約があるため、watcher が同一 record を並行処理すると片方が制約違反で失敗する。`processRecord` は `record_sync` の行を先に確保して直列化することでこれを避けている（[録画エンジン](recording.md) §3.3「record 処理は並行実行しても壊れない」）。
+
 ## 6. media_assets — メディアアセット（永続資産）
 
 録画に紐づくファイルの台帳。**この行の存在が「公開済み」の定義**（ストレージ契約ルール 3）。

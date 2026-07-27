@@ -61,7 +61,9 @@ curl -s -X POST http://localhost:40773/api/reservations \
 
 ### 2. reconciler が mirakc に schedule を作るのを待つ
 
-reconciler は 30 秒間隔。ログに出る。
+**予約 API は書き込みと同じトランザクションで reconcile ジョブを投入する**ので、
+通常は待たずに反映される（issue #24 M2-17）。定期パス（30 秒間隔）は取りこぼしを
+拾う保険で、そちらが真実。ログに出る。
 
 ```
 INFO reconciler: created schedule reservation_id=1 program_id=319215325618427 state=scheduled content_path=20260725/160000_..._53256.m2ts
