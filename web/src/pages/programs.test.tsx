@@ -3,7 +3,7 @@ import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { ProgramListItem, Reservation, Service } from '@/api/generated'
+import type { CapacityOverage, ProgramListItem, Reservation, Service } from '@/api/generated'
 import { ToastProvider } from '@/components/toaster'
 import { ProgramsPage } from '@/pages/programs'
 
@@ -87,6 +87,22 @@ function reservation(id: number, programId: number, title: string): Reservation 
   }
 }
 
+/** overage は origin からの時間で超過区間を作る。 */
+function overage(
+  startOffsetHours: number,
+  endOffsetHours: number,
+  options: Partial<CapacityOverage> = {},
+): CapacityOverage {
+  return {
+    site: 'default',
+    startAt: new Date(origin + startOffsetHours * 3_600_000).toISOString(),
+    endAt: new Date(origin + endOffsetHours * 3_600_000).toISOString(),
+    shortfall: 1,
+    jammedTypes: ['BS'],
+    ...options,
+  }
+}
+
 function jsonResponse(body: unknown): Response {
   return new Response(JSON.stringify(body), {
     status: 200,
@@ -95,16 +111,19 @@ function jsonResponse(body: unknown): Response {
 }
 
 /**
- * stubApi は番組・サービス・予約の 3 本を URL で振り分ける。
+ * stubApi は番組・サービス・予約・容量超過を URL で振り分ける。
  *
  * `/api/programs` は時間窓で実際に絞る。窓の幅を無視して全件返すスタブにすると、
  * 「グリッドは 24 時間ぶんを 1 回で取る」という実装の主張をテストが検証できない。
  */
-function stubApi(reservations: Reservation[] = []) {
+function stubApi(reservations: Reservation[] = [], overages: CapacityOverage[] = []) {
   const fetchMock = vi.fn((input: string | URL | Request) => {
     const url = new URL(String(input), 'http://localhost')
     if (url.pathname === '/api/services') return Promise.resolve(jsonResponse(services))
     if (url.pathname === '/api/reservations') return Promise.resolve(jsonResponse(reservations))
+    if (url.pathname === '/api/capacity/overages') {
+      return Promise.resolve(jsonResponse(overages))
+    }
     if (/^\/api\/programs\/\d+\/overlaps$/.test(url.pathname)) {
       return Promise.resolve(jsonResponse({ count: 0, reservations: [] }))
     }
@@ -167,13 +186,30 @@ function renderPage() {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: 0 } },
   })
-  return render(
+  const view = render(
     <QueryClientProvider client={queryClient}>
       <ToastProvider>
         <ProgramsPage />
       </ToastProvider>
     </QueryClientProvider>,
   )
+  return { ...view, queryClient }
+}
+
+/**
+ * overagesSettled は容量超過のクエリが成功し終わるまで待つ。
+ *
+ * 「帯が出ない」ことの確認はこれを通してから行う（クエリが始まる前の
+ * 「まだ何も無い」状態を見て通ってしまうのを防ぐ）。
+ */
+async function overagesSettled(queryClient: QueryClient): Promise<void> {
+  await waitFor(() => {
+    const queries = queryClient
+      .getQueryCache()
+      .findAll({ queryKey: ['/api/capacity/overages'] })
+    expect(queries).not.toHaveLength(0)
+    expect(queries.map((q) => q.state.status)).toEqual(queries.map(() => 'success'))
+  })
 }
 
 describe('ProgramsPage の表示形式', () => {
@@ -307,6 +343,99 @@ describe('ProgramsPage の表示形式', () => {
 
     // 選択した番組がリストの行として現れ、そこから予約できる
     expect(await screen.findByRole('button', { name: '予約' })).toBeInTheDocument()
+  })
+})
+
+describe('ProgramsPage の容量超過の帯', () => {
+  /** showGrid にしてグリッドが出るまで待つ。 */
+  async function openGrid() {
+    expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: '番組表' }))
+    await screen.findByTestId('program-grid')
+  }
+
+  it('超過区間を同時刻の番組セルと同じ位置に描く', async () => {
+    // 1 時間後から 2 時間後（同じ時間帯に soon / alsoSoon がある）
+    stubApi([], [overage(1, 2)])
+    stubMatchMedia(true)
+    renderPage()
+    await openGrid()
+
+    const band = await screen.findByTestId('capacity-band')
+    const cell = document.querySelector<HTMLElement>(`[data-program-id="${soon.programId}"]`)
+    // 帯とセルが同じ spanToPx を通っていることの唯一の観測可能な帰結
+    expect(band.style.top).toBe(cell?.style.top)
+    expect(band.style.height).toBe(cell?.style.height)
+    // 不足本数と詰まった種別まで出す
+    expect(screen.getByText('チューナー不足（BS が 1 本）')).toBeInTheDocument()
+  })
+
+  it('超過区間が無ければ帯を出さない（沈黙を肯定にしない）', async () => {
+    stubApi([], [])
+    stubMatchMedia(true)
+    const { queryClient } = renderPage()
+    await openGrid()
+    await overagesSettled(queryClient)
+
+    expect(screen.queryByTestId('capacity-band')).not.toBeInTheDocument()
+    // 「収まります」「競合なし」に相当する肯定的な表示は出さない
+    expect(screen.queryByText(/チューナー/)).toBeNull()
+  })
+
+  it('グリッドの窓と同じ範囲を問い合わせる', async () => {
+    const fetchMock = stubApi([], [overage(1, 2)])
+    stubMatchMedia(true)
+    const { queryClient } = renderPage()
+    await openGrid()
+    await overagesSettled(queryClient)
+
+    const asked = fetchMock.mock.calls
+      .map((call) => new URL(String(call[0]), 'http://localhost'))
+      .filter((url) => url.pathname === '/api/capacity/overages')
+    // 軸の外の区間を持っていても帯にできないので、窓は軸と一致させる
+    expect(asked.at(-1)?.searchParams.get('start')).toBe(new Date(origin).toISOString())
+    expect(asked.at(-1)?.searchParams.get('end')).toBe(
+      new Date(origin + 24 * 3_600_000).toISOString(),
+    )
+  })
+
+  it('予約すると超過を取り直す（帯は予約集合からの導出値）', async () => {
+    const fetchMock = stubApi([], [])
+    stubMatchMedia(true)
+    const { queryClient } = renderPage()
+    await openGrid()
+    await overagesSettled(queryClient)
+
+    const before = fetchMock.mock.calls.filter(
+      (call) => new URL(String(call[0]), 'http://localhost').pathname === '/api/capacity/overages',
+    ).length
+
+    const cell = document.querySelector(`[data-program-id="${soon.programId}"]`)
+    await userEvent.click(cell as HTMLElement)
+    await userEvent.click(await screen.findByRole('button', { name: '予約' }))
+
+    // 取り直さないと「予約したのに不足が出ない / 消えない」状態が残る
+    await waitFor(() => {
+      const after = fetchMock.mock.calls.filter(
+        (call) =>
+          new URL(String(call[0]), 'http://localhost').pathname === '/api/capacity/overages',
+      ).length
+      expect(after).toBeGreaterThan(before)
+    })
+  })
+
+  it('リストのままなら超過を問い合わせない（帯を描く場所がない）', async () => {
+    const fetchMock = stubApi([], [overage(1, 2)])
+    stubMatchMedia(false)
+    renderPage()
+
+    expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+    await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThan(0))
+
+    const asked = fetchMock.mock.calls
+      .map((call) => new URL(String(call[0]), 'http://localhost'))
+      .filter((url) => url.pathname === '/api/capacity/overages')
+    expect(asked).toHaveLength(0)
   })
 })
 

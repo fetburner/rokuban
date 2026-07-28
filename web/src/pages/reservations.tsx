@@ -1,10 +1,13 @@
 import { Link } from '@tanstack/react-router'
 import { ChevronRight } from 'lucide-react'
+import { useMemo } from 'react'
 
-import { useListReservations, type Reservation } from '@/api/generated'
+import { useListCapacityOverages, useListReservations, type Reservation } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
+import { CapacityShortfallBadge } from '@/components/capacity-shortfall-badge'
 import { EmptyState, ErrorState, ListSkeleton, PageHeader } from '@/components/page'
 import { ReservationSkipBadge } from '@/components/reservation-skip-reason'
+import { coveringWindow, defaultSite } from '@/lib/capacity'
 import { formatDateTime, formatDuration } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
@@ -17,7 +20,22 @@ const stateLabels: Record<Reservation['state'], string> = {
 
 export function ReservationsPage() {
   const query = useListReservations()
-  const reservations = unwrap(query.data) ?? []
+  const reservations = useMemo(() => unwrap(query.data) ?? [], [query.data])
+
+  // 一覧に出ている予約すべてを覆う窓で超過区間を訊く。窓を固定幅にすると、
+  // その外に出た予約のバッジが黙って消える。予約が無ければ問い合わせない
+  // （窓が null。パラメータは必須なので値は入れるが enabled で止める）。
+  const listedWindow = useMemo(() => coveringWindow(reservations), [reservations])
+  const overagesQuery = useListCapacityOverages(
+    {
+      start: new Date(listedWindow?.startMs ?? 0).toISOString(),
+      end: new Date(listedWindow?.endMs ?? 0).toISOString(),
+    },
+    { query: { enabled: listedWindow !== null } },
+  )
+  // 取得の失敗・未完了は「バッジが出ない」に落ちる。元から沈黙は「収まる」ことの
+  // 保証ではないので（docs/data.md §6.5）、予約一覧そのものをエラーにはしない
+  const overages = useMemo(() => unwrap(overagesQuery.data) ?? [], [overagesQuery.data])
 
   return (
     <>
@@ -45,6 +63,15 @@ export function ReservationsPage() {
                     <span className="shrink-0">{formatDuration(r.durationMs)}</span>
                     <StateBadge state={r.state} />
                     <ReservationSkipBadge reservation={r} />
+                    {/* site は行から取れないので単一サイト構成の定数を渡す
+                        （lib/capacity.ts の defaultSite。判定はサイトごとに独立
+                        しているので、多サイト化ではここが差し替え点になる） */}
+                    <CapacityShortfallBadge
+                      overages={overages}
+                      site={defaultSite}
+                      startMs={new Date(r.startAt).getTime()}
+                      endMs={new Date(r.startAt).getTime() + r.durationMs}
+                    />
                   </div>
                 </div>
                 <ChevronRight className="size-4 shrink-0 text-muted-foreground" />

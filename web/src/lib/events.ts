@@ -9,7 +9,10 @@ import { useEffect } from 'react'
  * プッシュの中身を信じて手元の状態を書き換えることはしない。
  */
 const topicQueryKeys: Record<string, string[]> = {
-  reservations: ['/api/reservations'],
+  // 容量超過（チューナー不足）は予約集合からの導出値なので、予約が変わったら
+  // 一緒に取り直す（docs/data.md §6.5）。専用のトピックは無い --- 導出値に
+  // 独自の通知を持たせると、元データと導出値が別々の鮮度で並ぶことになる
+  reservations: ['/api/reservations', '/api/capacity/overages'],
   recordings: ['/api/recordings'],
   epg: ['/api/programs', '/api/services'],
   breakers: ['/api/breakers'],

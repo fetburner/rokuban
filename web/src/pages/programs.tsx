@@ -1,6 +1,7 @@
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 
+import { CapacityBands } from '@/components/capacity-band'
 import { EmptyState, ErrorState, ListSkeleton, PageHeader } from '@/components/page'
 import { ProgramGrid } from '@/components/program-grid'
 import { ProgramRow } from '@/components/program-row'
@@ -10,9 +11,11 @@ import {
   listPrograms,
   useCreateReservation,
   useDeleteReservation,
+  useListCapacityOverages,
   useListPrograms,
   useListReservations,
   useListServices,
+  type CapacityOverage,
   type ProgramListItem,
   type Service,
 } from '@/api/generated'
@@ -134,6 +137,21 @@ export function ProgramsPage() {
     [originMs, gridEndMs],
   )
 
+  // チューナー不足の区間。グリッドの窓と同じ範囲を訊く（帯は軸の上に描かれるので
+  // 軸の外の区間を持っていても使えない）。取得の失敗は帯が出ないだけに留める ---
+  // 帯は補助であって番組表の本体ではなく、しかも沈黙は元から「収まる」ことの保証で
+  // ないので、失敗を「不足していない」と表示するのと同じ意味にはならない
+  // （docs/data.md §6.5）。予約の増減で内容が変わるため、予約の変更でも
+  // invalidate する（useReservationActions / lib/events.ts）。
+  const overagesQuery = useListCapacityOverages(
+    {
+      start: new Date(originMs).toISOString(),
+      end: new Date(gridEndMs).toISOString(),
+    },
+    { query: { enabled: showGrid } },
+  )
+  const overages = useMemo(() => unwrap(overagesQuery.data) ?? [], [overagesQuery.data])
+
   // 窓は開区間なので境界をまたぐ番組が隣接する 2 つの窓に現れる。programId で潰す。
   const programs = useMemo(() => {
     const seen = new Map<number, ProgramListItem>()
@@ -206,6 +224,7 @@ export function ProgramsPage() {
           services={gridServices}
           serviceById={serviceById}
           reservationByProgramId={reservationByProgramId}
+          overages={overages}
           actions={actions}
           // グリッドではサービスが列そのもの（構造）なので、リストと違って
           // サービスの取得失敗を「名前が出ないだけ」に落とせない。列が 0 本の
@@ -286,6 +305,9 @@ function useReservationActions(): ReservationActions {
 
   const invalidateReservations = () => {
     void queryClient.invalidateQueries({ queryKey: ['/api/reservations'] })
+    // 容量超過は予約集合からの導出値なので、予約が増減すれば作り直させる。
+    // 帯を古いまま残すと「予約したのに不足が消えない / 出ない」になる
+    void queryClient.invalidateQueries({ queryKey: ['/api/capacity/overages'] })
   }
 
   const cancel = (programId: number, reservationId: number) => {
@@ -447,6 +469,7 @@ function ProgramGridView({
   services,
   serviceById,
   reservationByProgramId,
+  overages,
   actions,
   isPending,
   isError,
@@ -456,6 +479,8 @@ function ProgramGridView({
   services: Service[]
   serviceById: Map<number, Service>
   reservationByProgramId: Map<number, number>
+  /** チューナーが不足している区間。番組ではなく区間として帯に描く（M2-10）。 */
+  overages: readonly CapacityOverage[]
   actions: ReservationActions
   isPending: boolean
   isError: boolean
@@ -507,6 +532,9 @@ function ProgramGridView({
           reservationByProgramId={reservationByProgramId}
           selectedProgramId={selected?.programId ?? null}
           onSelect={(program) => setSelectedProgramId(program.programId)}
+          // 帯はセルより上・ヘッダより下の層に入る。軸を受け取って同じ
+          // spanToPx を通すので、帯と番組セルは同じ時刻で必ず同じ位置に来る
+          overlay={(gridAxis) => <CapacityBands axis={gridAxis} overages={overages} />}
         />
       </div>
     </div>
