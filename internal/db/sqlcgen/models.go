@@ -11,6 +11,15 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type CircuitBreaker struct {
+	Site      string
+	Name      string
+	TrippedAt time.Time
+	Pending   int32
+	Threshold int32
+	Detail    json.RawMessage
+}
+
 type DropStat struct {
 	MediaAssetID int64
 	Pid          int32

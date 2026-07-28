@@ -66,6 +66,27 @@ var (
 	})
 )
 
+// 大量削除サーキットブレーカー（M2-5）のメトリクス。
+//
+// 既存の *_circuit_breaker_trips_total（カウンタ）は「何回発動したか」を数えるが、
+// **いま止まっているか**は答えられない。ブレーカーは手動で再開するまで止まり
+// 続けるラッチなので（internal/breaker のコメント）、そちらを見るゲージを持つ。
+var (
+	// CircuitBreakerTripped は各ブレーカーが発動中かどうか（1 = 発動中）。
+	//
+	// **1 が続いている間、導出削除は一切実行されない**ので、これは
+	// 「reconcile が収束できていない」ではなく「人間の確認を待っている」を
+	// 意味する。放置すると mirakc 側に不要な schedule が残り続けるため、
+	// 1 になったら（時間ではなく即座に）通知する対象。
+	//
+	// プロセス再起動でゲージは失われるので、各パスの先頭で DB の真実に
+	// 合わせ直す（breaker.ObserveState）。
+	CircuitBreakerTripped = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "rokuban_circuit_breaker_tripped",
+		Help: "1 while a bulk-delete circuit breaker is latched and withholding deletes until manually resumed.",
+	}, []string{"site", "breaker"})
+)
+
 // reconciler（M1-4）のメトリクス。
 var (
 	// ReconcilePendingDiff は直近のパスで検出した desired と observed の差分数。
@@ -250,6 +271,8 @@ func NewRegistry(backlog prometheus.Collector) *prometheus.Registry {
 		IngestDroppedPackets,
 		IngestErrorPackets,
 		IngestScrambledPackets,
+
+		CircuitBreakerTripped,
 
 		ReconcilePendingDiff,
 		ReconcileSchedules,
