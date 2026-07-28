@@ -71,13 +71,18 @@ func (h *Server) ListRecordingDropStats(ctx context.Context, req ListRecordingDr
 
 	result := make([]DropStat, 0, len(rows))
 	for _, d := range rows {
-		result = append(result, DropStat{
+		stat := DropStat{
 			Pid:       int(d.Pid),
 			Packets:   d.Packets,
 			Drops:     d.Drops,
 			Errors:    d.Errors,
 			Scrambled: d.Scrambled,
-		})
+		}
+		// 分類できなかった PID では pidType を省略する（M2-13, issue #24）。
+		if d.PidType != nil && *d.PidType != "" {
+			stat.PidType = d.PidType
+		}
+		result = append(result, stat)
 	}
 	return ListRecordingDropStats200JSONResponse(result), nil
 }

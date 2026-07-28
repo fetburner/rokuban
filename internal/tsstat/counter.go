@@ -17,6 +17,11 @@ type PIDStat struct {
 	Drops     int64
 	Errors    int64
 	Scrambled int64
+
+	// Type は PID の種別（PIDTypeVideo などの定数のいずれか）。
+	// 分類できなかった PID では空文字。空文字を「未分類」という値として
+	// 永続化してはならない（drop_stats.pid_type は NULL にする）。
+	Type string
 }
 
 type pidTracker struct {
@@ -38,11 +43,14 @@ type Counter struct {
 	trackers [maxPID]pidTracker
 	stats    [maxPID]PIDStat
 	seen     [maxPID]bool
+	psi      classifier
 }
 
 // NewCounter は下流 w へ透過しつつ TS 統計を収集する Counter を返す。
 func NewCounter(w io.Writer) *Counter {
-	return &Counter{w: w}
+	c := &Counter{w: w}
+	c.psi.init()
+	return c
 }
 
 // Write は io.Writer を満たす。
@@ -149,6 +157,11 @@ func (c *Counter) processPacket(pkt *packet.Packet) {
 	payload, err := packet.Payload(pkt)
 	if err != nil {
 		payload = nil
+	} else {
+		// PSI の観測は伝送エラーのないパケットに限る（上で TEI は return 済み）。
+		// 監視対象は PAT の PID と PAT が指した PMT の PID だけなので、
+		// 大多数のパケットでは配列 1 回引いて終わる。
+		c.psi.observe(pid, payload, packet.PayloadUnitStartIndicator(pkt))
 	}
 
 	if tr.hasSeen {
@@ -186,10 +199,21 @@ func (c *Counter) Stats() map[int]PIDStat {
 	result := make(map[int]PIDStat)
 	for pid := 0; pid < maxPID; pid++ {
 		if c.seen[pid] {
-			result[pid] = c.stats[pid]
+			s := c.stats[pid]
+			s.Type = c.psi.types[pid]
+			result[pid] = s
 		}
 	}
 	return result
+}
+
+// TypeChanges は PID の種別が途中で変わった回数を返す。
+//
+// PMT は録画中に更新されうる（version 更新、番組の境目での PID 再割り当て）。
+// 分類は最後に見たものを採用するので、変化があったこと自体はこのカウンタでしか
+// 分からない。未分類から分類への最初の確定は変化に数えない。
+func (c *Counter) TypeChanges() int64 {
+	return c.psi.changes
 }
 
 // TotalDrops は全 PID のドロップ合計を返す。

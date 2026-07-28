@@ -67,7 +67,7 @@ WHERE r.site = $1 AND r.deleted_at IS NULL
 ORDER BY r.program_start_at DESC, r.id DESC;
 
 -- name: ListRecordingDropStats :many
-SELECT d.pid, d.packets, d.drops, d.errors, d.scrambled
+SELECT d.pid, d.packets, d.drops, d.errors, d.scrambled, d.pid_type
 FROM drop_stats d
 JOIN media_assets a ON a.id = d.media_asset_id
 WHERE a.recording_id = $1 AND a.kind = 'original' AND a.state <> 'deleted'

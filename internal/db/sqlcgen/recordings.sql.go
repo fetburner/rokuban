@@ -165,7 +165,7 @@ func (q *Queries) CreateRecording(ctx context.Context, arg CreateRecordingParams
 }
 
 const listRecordingDropStats = `-- name: ListRecordingDropStats :many
-SELECT d.pid, d.packets, d.drops, d.errors, d.scrambled
+SELECT d.pid, d.packets, d.drops, d.errors, d.scrambled, d.pid_type
 FROM drop_stats d
 JOIN media_assets a ON a.id = d.media_asset_id
 WHERE a.recording_id = $1 AND a.kind = 'original' AND a.state <> 'deleted'
@@ -178,6 +178,7 @@ type ListRecordingDropStatsRow struct {
 	Drops     int64
 	Errors    int64
 	Scrambled int64
+	PidType   *string
 }
 
 func (q *Queries) ListRecordingDropStats(ctx context.Context, recordingID int64) ([]ListRecordingDropStatsRow, error) {
@@ -195,6 +196,7 @@ func (q *Queries) ListRecordingDropStats(ctx context.Context, recordingID int64)
 			&i.Drops,
 			&i.Errors,
 			&i.Scrambled,
+			&i.PidType,
 		); err != nil {
 			return nil, err
 		}

@@ -117,8 +117,8 @@ func (q *Queries) GetRecordingByID(ctx context.Context, id int64) (Recording, er
 }
 
 const insertDropStat = `-- name: InsertDropStat :exec
-INSERT INTO drop_stats (media_asset_id, pid, packets, drops, errors, scrambled)
-VALUES ($1, $2, $3, $4, $5, $6)
+INSERT INTO drop_stats (media_asset_id, pid, packets, drops, errors, scrambled, pid_type)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 `
 
 type InsertDropStatParams struct {
@@ -128,8 +128,11 @@ type InsertDropStatParams struct {
 	Drops        int64
 	Errors       int64
 	Scrambled    int64
+	PidType      *string
 }
 
+// pid_type は分類できなかった PID では NULL（空文字を入れない）。
+// 値の権威は internal/tsstat（列に CHECK は無い）。
 func (q *Queries) InsertDropStat(ctx context.Context, arg InsertDropStatParams) error {
 	_, err := q.db.Exec(ctx, insertDropStat,
 		arg.MediaAssetID,
@@ -138,6 +141,7 @@ func (q *Queries) InsertDropStat(ctx context.Context, arg InsertDropStatParams) 
 		arg.Drops,
 		arg.Errors,
 		arg.Scrambled,
+		arg.PidType,
 	)
 	return err
 }

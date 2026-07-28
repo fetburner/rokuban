@@ -37,8 +37,9 @@ func seedRecording(t *testing.T, pool *pgxpool.Pool, title string, start time.Ti
 	return id
 }
 
-// seedIngested は録画に原本 media_asset と PID 別 drop_stats を付ける。
-func seedIngested(t *testing.T, pool *pgxpool.Pool, recordingID, size int64, stats map[int32][4]int64) {
+// seedIngested は録画に原本 media_asset と PID 別 drop_stats を付け、
+// 作った原本アセットの ID を返す。
+func seedIngested(t *testing.T, pool *pgxpool.Pool, recordingID, size int64, stats map[int32][4]int64) int64 {
 	t.Helper()
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
@@ -63,6 +64,7 @@ func seedIngested(t *testing.T, pool *pgxpool.Pool, recordingID, size int64, sta
 			t.Fatalf("seeding drop_stat: %v", err)
 		}
 	}
+	return assetID
 }
 
 func TestListRecordings(t *testing.T) {
@@ -207,5 +209,80 @@ func TestListRecordingDropStats(t *testing.T) {
 	}
 	if len(empty) != 0 {
 		t.Errorf("drop stats = %d, want 0", len(empty))
+	}
+}
+
+// PID 種別（M2-13）。値がある行は pidType が付き、無い行では省略される。
+func TestListRecordingDropStats_PIDType(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := newAPIServer(t, pool)
+
+	id := seedRecording(t, pool, "種別あり", time.Now().Truncate(time.Second), "finished", 1)
+	assetID := seedIngested(t, pool, id, 1000, map[int32][4]int64{
+		0x200: {100, 0, 0, 0}, // 種別なし（分類できなかった PID）
+	})
+
+	// api にとって pid_type は素通しの文字列（値の権威は internal/tsstat）。
+	// ここで定数を参照しないのは、この層が値集合を知らないことを表すため。
+	q := sqlcgen.New(pool)
+	typed := map[int32]string{
+		0x000: "pat",
+		0x100: "video",
+		0x110: "audio",
+	}
+	for pid, pidType := range typed {
+		if err := q.InsertDropStat(context.Background(), sqlcgen.InsertDropStatParams{
+			MediaAssetID: assetID,
+			Pid:          pid,
+			Packets:      10,
+			PidType:      &pidType,
+		}); err != nil {
+			t.Fatalf("seeding typed drop_stat: %v", err)
+		}
+	}
+
+	var got []DropStat
+	resp := getJSON(t, fmt.Sprintf("%s/api/recordings/%d/drop-stats", srv.URL, id), &got)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	if len(got) != 4 {
+		t.Fatalf("drop stats = %d, want 4", len(got))
+	}
+
+	byPID := map[int]DropStat{}
+	for _, s := range got {
+		byPID[s.Pid] = s
+	}
+	for pid, wantType := range typed {
+		s, ok := byPID[int(pid)]
+		if !ok {
+			t.Errorf("PID 0x%04x の行が無い", pid)
+			continue
+		}
+		if s.PidType == nil {
+			t.Errorf("PID 0x%04x pidType = nil, want %q", pid, wantType)
+			continue
+		}
+		if *s.PidType != wantType {
+			t.Errorf("PID 0x%04x pidType = %q, want %q", pid, *s.PidType, wantType)
+		}
+	}
+	if s := byPID[0x200]; s.PidType != nil {
+		t.Errorf("分類できなかった PID の pidType = %q, want 省略", *s.PidType)
+	}
+
+	// JSON でもキーが省略されていること（空文字を返してはいけない）
+	var decoded []map[string]any
+	getJSON(t, fmt.Sprintf("%s/api/recordings/%d/drop-stats", srv.URL, id), &decoded)
+	for _, m := range decoded {
+		pid := int(m["pid"].(float64))
+		_, has := m["pidType"]
+		if pid == 0x200 && has {
+			t.Errorf("PID 0x0200 に pidType キーがある: %v", m)
+		}
+		if pid != 0x200 && !has {
+			t.Errorf("PID 0x%04x に pidType キーが無い: %v", pid, m)
+		}
 	}
 }
