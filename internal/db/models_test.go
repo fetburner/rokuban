@@ -80,10 +80,10 @@ func TestSchemaV1_ReservationCRUD(t *testing.T) {
 	now := time.Now().Truncate(time.Microsecond)
 	var id int64
 	err := pool.QueryRow(ctx,
-		`INSERT INTO reservations (site, program_id, source, state, title, program_start_at, program_duration_ms)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7)
+		`INSERT INTO reservations (site, program_id, state, title, program_start_at, program_duration_ms)
+		 VALUES ($1, $2, $3, $4, $5, $6)
 		 RETURNING id`,
-		"home", int64(327360102415397), "manual", "active", "テスト番組", now, int64(1800000),
+		"home", int64(327360102415397), "active", "テスト番組", now, int64(1800000),
 	).Scan(&id)
 	if err != nil {
 		t.Fatalf("insert reservation: %v", err)
@@ -94,9 +94,9 @@ func TestSchemaV1_ReservationCRUD(t *testing.T) {
 
 	var r Reservation
 	err = pool.QueryRow(ctx,
-		`SELECT id, site, program_id, source, state, title, program_start_at, program_duration_ms
+		`SELECT id, site, program_id, state, title, program_start_at, program_duration_ms
 		 FROM reservations WHERE id = $1`, id,
-	).Scan(&r.ID, &r.Site, &r.ProgramID, &r.Source, &r.State, &r.Title, &r.ProgramStartAt, &r.ProgramDurationMs)
+	).Scan(&r.ID, &r.Site, &r.ProgramID, &r.State, &r.Title, &r.ProgramStartAt, &r.ProgramDurationMs)
 	if err != nil {
 		t.Fatalf("select reservation: %v", err)
 	}
@@ -106,9 +106,6 @@ func TestSchemaV1_ReservationCRUD(t *testing.T) {
 	if r.ProgramID != 327360102415397 {
 		t.Errorf("program_id = %d, want 327360102415397", r.ProgramID)
 	}
-	if r.Source != "manual" {
-		t.Errorf("source = %q, want %q", r.Source, "manual")
-	}
 }
 
 func TestSchemaV1_ReservationUniqueSiteProgramID(t *testing.T) {
@@ -117,8 +114,8 @@ func TestSchemaV1_ReservationUniqueSiteProgramID(t *testing.T) {
 	now := time.Now()
 
 	_, err := pool.Exec(ctx,
-		`INSERT INTO reservations (site, program_id, source, title, program_start_at, program_duration_ms)
-		 VALUES ($1, $2, 'manual', '', $3, 0)`,
+		`INSERT INTO reservations (site, program_id, title, program_start_at, program_duration_ms)
+		 VALUES ($1, $2, '', $3, 0)`,
 		"home", int64(100), now)
 	if err != nil {
 		t.Fatalf("first insert: %v", err)
@@ -126,29 +123,19 @@ func TestSchemaV1_ReservationUniqueSiteProgramID(t *testing.T) {
 
 	// 同一 site + program_id は一意制約違反
 	_, err = pool.Exec(ctx,
-		`INSERT INTO reservations (site, program_id, source, title, program_start_at, program_duration_ms)
-		 VALUES ($1, $2, 'manual', '', $3, 0)`,
+		`INSERT INTO reservations (site, program_id, title, program_start_at, program_duration_ms)
+		 VALUES ($1, $2, '', $3, 0)`,
 		"home", int64(100), now)
 	assertPgError(t, err, "23505")
 
 	// 別サイトなら同一 program_id で OK
 	_, err = pool.Exec(ctx,
-		`INSERT INTO reservations (site, program_id, source, title, program_start_at, program_duration_ms)
-		 VALUES ($1, $2, 'manual', '', $3, 0)`,
+		`INSERT INTO reservations (site, program_id, title, program_start_at, program_duration_ms)
+		 VALUES ($1, $2, '', $3, 0)`,
 		"office", int64(100), now)
 	if err != nil {
 		t.Fatalf("different site should allow same program_id: %v", err)
 	}
-}
-
-func TestSchemaV1_ReservationSourceCheck(t *testing.T) {
-	pool := setupTestDB(t)
-	ctx := context.Background()
-
-	_, err := pool.Exec(ctx,
-		`INSERT INTO reservations (site, program_id, source, title, program_start_at, program_duration_ms)
-		 VALUES ('home', 1, 'invalid', '', now(), 0)`)
-	assertPgError(t, err, "23514")
 }
 
 func TestSchemaV1_RecordingInsert(t *testing.T) {

@@ -102,18 +102,92 @@ func setupTest(t *testing.T) (*Watcher, *pgxpool.Pool) {
 	return w, pool
 }
 
+// createTestReservation は reservations 行だけを作る（program_intents には触れない）。
+// このパッケージの大半のテストは recordings.source の値を検証しないので、
+// intent の有無を気にする必要がない場合に使う。source の導出（issue #26）を
+// 検証するテストは createTestReservationWithIntent / createTestReservationWithRule
+// を使う。
 func createTestReservation(t *testing.T, pool *pgxpool.Pool, programID int64) int64 {
 	t.Helper()
 	var id int64
 	err := pool.QueryRow(context.Background(), `
-		INSERT INTO reservations (site, program_id, source, title, program_start_at, program_duration_ms)
-		VALUES ('default', $1, 'manual', 'Test Program', now(), 3600000)
+		INSERT INTO reservations (site, program_id, title, program_start_at, program_duration_ms)
+		VALUES ('default', $1, 'Test Program', now(), 3600000)
 		RETURNING id`, programID,
 	).Scan(&id)
 	if err != nil {
 		t.Fatalf("creating reservation: %v", err)
 	}
 	return id
+}
+
+// createTestRule は最小構成のルールを 1 件作る（reservations.rule_id の FK 先。
+// issue #26 の受け入れ基準検証で「ルールが今マッチしている」ことを模すために使う）。
+func createTestRule(t *testing.T, pool *pgxpool.Pool) int64 {
+	t.Helper()
+	var id int64
+	if err := pool.QueryRow(context.Background(),
+		`INSERT INTO rules (name) VALUES ('テストルール') RETURNING id`).Scan(&id); err != nil {
+		t.Fatalf("creating rule fixture: %v", err)
+	}
+	return id
+}
+
+// createTestReservationWithIntent は reservations 行と、対応する
+// program_intents{action=record} 行を両方作る（手動予約を模す）。ruleID が
+// 非 nil なら rule_id も埋め、「手動予約にルールがマッチ中」の状態を作れる
+// （issue #26 の受け入れ基準 1）。
+func createTestReservationWithIntent(t *testing.T, pool *pgxpool.Pool, programID int64, ruleID *int64) int64 {
+	t.Helper()
+	ctx := context.Background()
+	var id int64
+	err := pool.QueryRow(ctx, `
+		INSERT INTO reservations (site, program_id, rule_id, title, program_start_at, program_duration_ms)
+		VALUES ('default', $1, $2, 'Test Program', now(), 3600000)
+		RETURNING id`, programID, ruleID,
+	).Scan(&id)
+	if err != nil {
+		t.Fatalf("creating reservation: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO program_intents (site, program_id, action, program_start_at, program_duration_ms)
+		VALUES ('default', $1, 'record', now(), 3600000)`, programID,
+	); err != nil {
+		t.Fatalf("creating program_intents fixture: %v", err)
+	}
+	return id
+}
+
+// createTestReservationWithRule は rule_id を持つが program_intents 行を持たない
+// reservations を作る（ルール由来予約を模す。issue #26 の受け入れ基準 2）。
+func createTestReservationWithRule(t *testing.T, pool *pgxpool.Pool, programID int64, ruleID int64) int64 {
+	t.Helper()
+	var id int64
+	err := pool.QueryRow(context.Background(), `
+		INSERT INTO reservations (site, program_id, rule_id, title, program_start_at, program_duration_ms)
+		VALUES ('default', $1, $2, 'Test Program', now(), 3600000)
+		RETURNING id`, programID, ruleID,
+	).Scan(&id)
+	if err != nil {
+		t.Fatalf("creating reservation: %v", err)
+	}
+	return id
+}
+
+// insertProgramOverride は program_overrides に priority の上書きだけを持つ行を作る
+// （program_intents には触れない）。「ルール由来の予約に priority を上書きしただけ」
+// （intent 無し）を模すために使う（issue #26 の受け入れ基準 3。上書きは
+// 「手動予約した」ではない — docs/recording.md §4.4）。
+func insertProgramOverride(t *testing.T, pool *pgxpool.Pool, programID int64, priority int) {
+	t.Helper()
+	_, err := pool.Exec(context.Background(), `
+		INSERT INTO program_overrides (site, program_id, overrides, program_start_at, program_duration_ms)
+		VALUES ('default', $1, $2, now(), 3600000)`,
+		programID, fmt.Sprintf(`{"priority": %d}`, priority),
+	)
+	if err != nil {
+		t.Fatalf("creating program_overrides fixture: %v", err)
+	}
 }
 
 func testRecord(recordID string, programID int64, reservationID int64, status string) mirakc.Record {
@@ -876,5 +950,205 @@ func TestRun_NoAutomaticSweep(t *testing.T) {
 	if got := atomic.LoadInt32(&recordsCalls); got != 0 {
 		t.Errorf("GET /api/recording/records call count = %d, want 0 "+
 			"(Watcher.Run は SSE 購読だけの常駐になり、全量突き合わせは record_sweep ジョブの仕事のはず)", got)
+	}
+}
+
+// getRecordingSource は recordings.source を引く（issue #26 の回帰テスト用）。
+func getRecordingSource(t *testing.T, pool *pgxpool.Pool, reservationID int64) string {
+	t.Helper()
+	var source string
+	if err := pool.QueryRow(context.Background(),
+		"SELECT source FROM recordings WHERE reservation_id = $1", reservationID,
+	).Scan(&source); err != nil {
+		t.Fatalf("querying recordings.source: %v", err)
+	}
+	return source
+}
+
+// TestProcessRecord_ManualReservationWithRuleMatch_SourceManual は issue #26 の
+// 受け入れ基準 1（元のバグの回帰テスト）: 手動予約（program_intents{record} あり）に
+// ルールがマッチして rule_id が埋まっていても、録画の recordings.source は
+// 'manual' のままでなければならない。
+//
+// 修正前の internal/ruler/sql.go は reservations.source を
+// `CASE WHEN d.rule_id IS NOT NULL THEN 'rule' ELSE ... END` で不可逆に
+// 'rule' へ書き換えており、それを watcher がそのまま recordings.source に
+// コピーしていた。修正後は reservations に source 列自体が無く、watcher は
+// 録画時点の program_intents の有無だけを見るため、rule_id が埋まっていても
+// 手動予約の履歴が保たれる。
+func TestProcessRecord_ManualReservationWithRuleMatch_SourceManual(t *testing.T) {
+	w, pool := setupTest(t)
+	ctx := context.Background()
+
+	ruleID := createTestRule(t, pool)
+	programID := int64(700001)
+	resID := createTestReservationWithIntent(t, pool, programID, &ruleID)
+
+	record := testRecord("record-manual-rule-match-001", programID, resID, "finished")
+	if err := w.processRecord(ctx, record); err != nil {
+		t.Fatalf("processRecord: %v", err)
+	}
+
+	if got := getRecordingSource(t, pool, resID); got != db.SourceManual {
+		t.Errorf("recordings.source = %q, want %q "+
+			"(手動予約にルールがマッチしても由来は manual のまま変わらないはず。issue #26)", got, db.SourceManual)
+	}
+}
+
+// TestProcessRecord_RuleReservation_SourceRule は issue #26 の受け入れ基準 2:
+// ルール由来の予約（program_intents 行なし、rule_id あり）を録画すると
+// recordings.source は 'rule' になる。
+func TestProcessRecord_RuleReservation_SourceRule(t *testing.T) {
+	w, pool := setupTest(t)
+	ctx := context.Background()
+
+	ruleID := createTestRule(t, pool)
+	programID := int64(700002)
+	resID := createTestReservationWithRule(t, pool, programID, ruleID)
+
+	record := testRecord("record-rule-001", programID, resID, "finished")
+	if err := w.processRecord(ctx, record); err != nil {
+		t.Fatalf("processRecord: %v", err)
+	}
+
+	if got := getRecordingSource(t, pool, resID); got != db.SourceRule {
+		t.Errorf("recordings.source = %q, want %q", got, db.SourceRule)
+	}
+}
+
+// TestProcessRecord_RuleReservationWithOverrideOnly_SourceRule は issue #26 の
+// 受け入れ基準 3: ルール由来の予約に priority だけを上書きした（program_overrides
+// はあるが program_intents は無い）場合も recordings.source は 'rule' のまま。
+//
+// M2-4（program_overrides 分離）以前は「上書きした」と「手動で録れと言った」を
+// 区別する材料が reservations.rule_id しかなく、この 2 つを取り違えると
+// 上書きしただけの予約が manual に化けてしまう。分離後は program_intents の
+// 有無だけを見るので、上書きの有無に影響されない。
+func TestProcessRecord_RuleReservationWithOverrideOnly_SourceRule(t *testing.T) {
+	w, pool := setupTest(t)
+	ctx := context.Background()
+
+	ruleID := createTestRule(t, pool)
+	programID := int64(700003)
+	resID := createTestReservationWithRule(t, pool, programID, ruleID)
+	insertProgramOverride(t, pool, programID, 5)
+
+	record := testRecord("record-rule-override-001", programID, resID, "finished")
+	if err := w.processRecord(ctx, record); err != nil {
+		t.Fatalf("processRecord: %v", err)
+	}
+
+	if got := getRecordingSource(t, pool, resID); got != db.SourceRule {
+		t.Errorf("recordings.source = %q, want %q "+
+			"(priority の上書きだけでは「手動予約した」にならないはず。issue #26 / M2-4)", got, db.SourceRule)
+	}
+}
+
+// TestHandleRecordingFailed_SourceDerivedFromIntent は handleRecordingFailed
+// （recording.failed イベント経由の失敗記録）でも createRecording と同じ
+// deriveRecordingSource を通ることを確認する。手動予約にルールがマッチしていても
+// 失敗記録の source が manual のままであることを見る。
+func TestHandleRecordingFailed_SourceDerivedFromIntent(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	if _, err := pool.Exec(ctx, "DELETE FROM river_job"); err != nil {
+		t.Fatalf("cleaning river_job: %v", err)
+	}
+	rc := newTestRiverClient(t, pool)
+
+	ruleID := createTestRule(t, pool)
+	programID := int64(700004)
+	resID := createTestReservationWithIntent(t, pool, programID, &ruleID)
+
+	startAt := mirakc.Milliseconds(time.Now().Add(-1 * time.Hour))
+	duration := int64(3600000)
+	name := "Failed Program"
+
+	schedule := mirakc.Schedule{
+		State: "scheduled",
+		Program: mirakc.Program{
+			ID:        programID,
+			EventID:   200,
+			ServiceID: 1024,
+			NetworkID: 32736,
+			StartAt:   &startAt,
+			Duration:  &duration,
+			IsFree:    true,
+			Name:      &name,
+		},
+	}
+	services := []mirakc.Service{
+		{ServiceID: 1024, NetworkID: 32736, Name: "NHK総合", Channel: mirakc.ServiceChannel{Type: "GR", Channel: "27"}},
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/recording/schedules/", func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rw).Encode(schedule)
+	})
+	mux.HandleFunc("/api/services", func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rw).Encode(services)
+	})
+	mockServer := httptest.NewServer(mux)
+	defer mockServer.Close()
+
+	mc := mirakc.NewClient(mockServer.URL, nil)
+	w := New(DefaultSite, mc, pool, rc, testNewIngestArgs)
+
+	failedData := mirakc.RecordingFailedData{
+		ProgramID: programID,
+		Reason:    mirakc.FailedReason{Type: "tuner-unavailable"},
+	}
+	if err := w.handleRecordingFailed(ctx, failedData); err != nil {
+		t.Fatalf("handleRecordingFailed: %v", err)
+	}
+
+	if got := getRecordingSource(t, pool, resID); got != db.SourceManual {
+		t.Errorf("recordings.source = %q, want %q "+
+			"(失敗記録でも手動予約の由来は manual のままのはず)", got, db.SourceManual)
+	}
+}
+
+// TestProcessRecord_MissingReservation_SourceManual は、tag は付いているが予約行が
+// 存在しない record（予約が削除された後に mirakc 側の録画が残っていた等）の
+// source が 'manual' になることを確認する。
+//
+// issue #26 の修正で source を program_intents から導出するようにしたが、
+// 「意図が無ければ rule」と素朴に倒すと**この経路が rule になってしまう**。
+// rule_id は NULL なので `source = 'rule'` かつ `rule_id IS NULL` という矛盾した
+// 組が生まれる。帰属できるルールが無いなら manual に倒すのが正しい
+// （issue #26 以前の実装も source の既定を "manual" にしていた）。
+func TestProcessRecord_MissingReservation_SourceManual(t *testing.T) {
+	w, pool := setupTest(t)
+	ctx := context.Background()
+
+	// 存在しない予約 ID を指す tag を付ける。intent も作らない。
+	const missingReservationID int64 = 987654321
+	programID := int64(700005)
+
+	record := testRecord("record-missing-res-001", programID, missingReservationID, "finished")
+	if err := w.processRecord(ctx, record); err != nil {
+		t.Fatalf("processRecord: %v", err)
+	}
+
+	var source string
+	var ruleID *int64
+	if err := pool.QueryRow(ctx,
+		// recordings は programId を分解して持つ（不変条件 7: mirakc 固有の ID を
+		// 永続テーブルに構造として持ち込まない）ので event_id で引く。
+		"SELECT source, rule_id FROM recordings WHERE site = $1 AND event_id = $2",
+		w.site, 100,
+	).Scan(&source, &ruleID); err != nil {
+		t.Fatalf("querying recordings: %v", err)
+	}
+	if source != db.SourceManual {
+		t.Errorf("recordings.source = %q, want %q "+
+			"（帰属できるルールが無いのに rule と記録すると rule_id IS NULL と矛盾する。issue #26）",
+			source, db.SourceManual)
+	}
+	if ruleID != nil {
+		t.Errorf("recordings.rule_id = %v, want nil", ruleID)
 	}
 }

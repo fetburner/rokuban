@@ -17,7 +17,6 @@ type Reservation struct {
 	ID                int64           `db:"id"`
 	Site              string          `db:"site"`
 	ProgramID         int64           `db:"program_id"`
-	Source            string          `db:"source"`
 	RuleID            *int64          `db:"rule_id"`
 	State             string          `db:"state"`
 	Base              json.RawMessage `db:"base"`
@@ -238,7 +237,11 @@ type QualityEvent struct {
 // （api と watcher が別々に "default" を書いていたのを統合した）。
 const DefaultSite = "default"
 
-// 予約ソース。
+// ソース（rule/manual）。reservations.source 列は issue #26 で削除されたため、
+// 現在このラベルを持つのは recordings.source（録画時点の provenance。
+// internal/watcher が program_intents の有無から都度導出して書く）と、
+// api が予約行を返すときに program_intents から導出する Reservation.source
+// （internal/api/handler.go の reservationFromRow）だけ。
 const (
 	SourceRule   = "rule"
 	SourceManual = "manual"

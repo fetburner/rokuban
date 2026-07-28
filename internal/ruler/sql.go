@@ -46,7 +46,7 @@ type upsertResult struct {
 // （internal/db/queries/ruler.sql のコメント参照）、rulequery パッケージの流儀に
 // 倣ってここに生 SQL として置き、pgx 経由で直接実行する。
 //
-// resolved CTE が base / 番組スナップショット / state / source / rule_id を
+// resolved CTE が base / 番組スナップショット / state / rule_id を
 // すべて「新しい値」として解決し、ON CONFLICT ... DO UPDATE ... WHERE の
 // IS DISTINCT FROM で実際に値が変わる行だけ UPDATE する。reservations には
 // SSE 用の行トリガーがあるため、変化のない行を書き直すと NOTIFY が
@@ -68,10 +68,14 @@ WITH input AS (
         channel         text
     )
 ),
+-- reservations.source は持たない（issue #26 で削除。00012_drop_reservations_source.sql）。
+-- 「手動予約かどうか」は program_intents.action='record' の有無、「いまルールが
+-- base を供給しているか」は rule_id IS NOT NULL で別々に読めるので、ここで
+-- 1 列に合成して書き戻す必要がない。recordings.source（録画時点の provenance）は
+-- internal/watcher が record 処理のたびに program_intents を見て導出する。
 resolved AS (
     SELECT
         d.program_id,
-        CASE WHEN d.rule_id IS NOT NULL THEN 'rule' ELSE COALESCE(r.source, 'manual') END AS source,
         d.rule_id,
         CASE
             WHEN r.state = 'orphaned' THEN r.state
@@ -91,16 +95,15 @@ resolved AS (
     LEFT JOIN reservations r ON r.site = $1 AND r.program_id = d.program_id
 )
 INSERT INTO reservations (
-    site, program_id, source, rule_id, state, base,
+    site, program_id, rule_id, state, base,
     title, program_start_at, program_duration_ms,
     network_id, service_id, channel_type, channel
 )
-SELECT $1, program_id, source, rule_id, state, base,
+SELECT $1, program_id, rule_id, state, base,
        title, program_start_at, program_duration_ms,
        network_id, service_id, channel_type, channel
 FROM resolved
 ON CONFLICT (site, program_id) DO UPDATE SET
-    source               = EXCLUDED.source,
     rule_id              = EXCLUDED.rule_id,
     state                = EXCLUDED.state,
     base                 = EXCLUDED.base,
@@ -112,8 +115,7 @@ ON CONFLICT (site, program_id) DO UPDATE SET
     channel_type         = EXCLUDED.channel_type,
     channel              = EXCLUDED.channel,
     updated_at           = now()
-WHERE reservations.source              IS DISTINCT FROM EXCLUDED.source
-   OR reservations.rule_id             IS DISTINCT FROM EXCLUDED.rule_id
+WHERE reservations.rule_id             IS DISTINCT FROM EXCLUDED.rule_id
    OR reservations.state               IS DISTINCT FROM EXCLUDED.state
    OR reservations.base                IS DISTINCT FROM EXCLUDED.base
    OR reservations.title               IS DISTINCT FROM EXCLUDED.title

@@ -53,7 +53,7 @@ func (h *Server) ListReservations(ctx context.Context, _ ListReservationsRequest
 
 	result := make([]Reservation, 0, len(rows))
 	for _, r := range rows {
-		result = append(result, reservationFromRow(r.Reservation, r.Overrides))
+		result = append(result, reservationFromRow(r.Reservation, r.Overrides, r.IntentAction))
 	}
 	return ListReservations200JSONResponse(result), nil
 }
@@ -147,7 +147,12 @@ func (h *Server) CreateReservation(ctx context.Context, req CreateReservationReq
 		return nil, err
 	}
 
-	res := reservationFromRow(row, overridesJSON)
+	// CreateReservation は直前に program_intents{record} を書いたばかりなので
+	// （上の UpsertProgramIntent 呼び出し）、この予約は常に手動由来である。
+	// row（CreateManualReservation の戻り値）は program_intents を JOIN していない
+	// ため、ここでは静的に db.IntentRecord を渡す。
+	intentAction := db.IntentRecord
+	res := reservationFromRow(row, overridesJSON, &intentAction)
 	return CreateReservation201JSONResponse(res), nil
 }
 
@@ -161,7 +166,7 @@ func (h *Server) GetReservation(ctx context.Context, req GetReservationRequestOb
 		}
 		return nil, err
 	}
-	res := reservationFromRow(row.Reservation, row.Overrides)
+	res := reservationFromRow(row.Reservation, row.Overrides, row.IntentAction)
 	return GetReservation200JSONResponse(res), nil
 }
 
@@ -227,13 +232,27 @@ func (h *Server) insertReconcilePassHint(ctx context.Context, tx pgx.Tx) error {
 	return nil
 }
 
-// reservationFromRow は予約行とユーザーの上書き（program_overrides）から API
-// 表現を組む。overrides は予約行ではなく別表にあるので、両方を受け取る。
-func reservationFromRow(r sqlcgen.Reservation, overrides []byte) Reservation {
+// reservationFromRow は予約行・ユーザーの上書き（program_overrides）・ユーザー意図
+// （program_intents.action）から API 表現を組む。overrides / intentAction は予約行
+// ではなく別表にあるので、まとめて受け取る。
+//
+// source は reservations の列ではなく、intentAction の有無から都度導出する
+// （issue #26）。reservations.source 列は「ユーザーが手動で予約したか」（不可逆な
+// 事実）と「いまルールが base を供給しているか」（rule_id の有無で変わる導出状態）
+// を 1 列に混ぜていたため、手動予約にルールが一度でもマッチすると 'rule' に
+// 書き換わり二度と戻らないバグがあった。rule_id や base の有無ではなく
+// program_intents だけを判定材料にするのはそのため --- そうしないと「手動予約 +
+// ルールがマッチ中」が rule と表示され、同じバグに逆戻りする
+// （docs/recording.md §4.4「manual 行にルールがマッチしても昇格は要らない」）。
+func reservationFromRow(r sqlcgen.Reservation, overrides []byte, intentAction *string) Reservation {
+	source := ReservationSourceRule
+	if intentAction != nil && *intentAction == db.IntentRecord {
+		source = ReservationSourceManual
+	}
 	res := Reservation{
 		Id:         r.ID,
 		ProgramId:  r.ProgramID,
-		Source:     ReservationSource(r.Source),
+		Source:     source,
 		State:      ReservationState(r.State),
 		Title:      r.Title,
 		StartAt:    r.ProgramStartAt,

@@ -567,14 +567,24 @@ type Reservation struct {
 	Overrides  *map[string]interface{} `json:"overrides,omitempty"`
 	ProgramId  int64                   `json:"programId"`
 	RuleId     *int64                  `json:"ruleId,omitempty"`
-	Source     ReservationSource       `json:"source"`
-	StartAt    time.Time               `json:"startAt"`
-	State      ReservationState        `json:"state"`
-	Title      string                  `json:"title"`
-	UpdatedAt  time.Time               `json:"updatedAt"`
+
+	// Source 導出値であり、reservations テーブルの列ではない（issue #26）。
+	// ユーザーが録れと指定した番組（program_intents に action=record の行が
+	// ある）なら manual、無ければ rule。ルールが今まさにこの予約に
+	// base を供給しているか（ruleId の有無）とは無関係で、手動予約に
+	// ルールがマッチしていても manual のまま変わらない。
+	Source    ReservationSource `json:"source"`
+	StartAt   time.Time         `json:"startAt"`
+	State     ReservationState  `json:"state"`
+	Title     string            `json:"title"`
+	UpdatedAt time.Time         `json:"updatedAt"`
 }
 
-// ReservationSource defines model for Reservation.Source.
+// ReservationSource 導出値であり、reservations テーブルの列ではない（issue #26）。
+// ユーザーが録れと指定した番組（program_intents に action=record の行が
+// ある）なら manual、無ければ rule。ルールが今まさにこの予約に
+// base を供給しているか（ruleId の有無）とは無関係で、手動予約に
+// ルールがマッチしていても manual のまま変わらない。
 type ReservationSource string
 
 // ReservationState defines model for Reservation.State.

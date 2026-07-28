@@ -37,26 +37,24 @@ func insertRuleFixture(t *testing.T, pool *pgxpool.Pool, ctx context.Context) in
 }
 
 // insertReservationDirect は reservations 行を直接作る（ruler を経由しない）。
-// ruleID が非 nil なら source='rule' の導出行、nil なら source='manual' の
-// 行として作る。overrides API は program_overrides だけを書くので、reservations
-// 側のセットアップはこの生 SQL で足りる。
+// ruleID の有無で「ルール由来」「手動」を模した行を作るが、program_intents には
+// 触れない（reservations.source 列は issue #26 で削除済み。この直生成では
+// intent が無いため、reservationFromRow 経由の API 表示は常に rule になる）。
+// overrides API は program_overrides だけを書くので、reservations 側の
+// セットアップはこの生 SQL で足りる。
 func insertReservationDirect(t *testing.T, pool *pgxpool.Pool, ctx context.Context, programID int64, ruleID *int64, networkID, serviceID int32) int64 {
 	t.Helper()
-	source := db.SourceManual
-	if ruleID != nil {
-		source = db.SourceRule
-	}
 	start := time.Now().Add(24 * time.Hour)
 	var id int64
 	err := pool.QueryRow(ctx, `
 INSERT INTO reservations (
-  site, program_id, source, rule_id, state, base, title,
+  site, program_id, rule_id, state, base, title,
   program_start_at, program_duration_ms,
   network_id, service_id, channel_type, channel
 ) VALUES (
-  'default', $1, $2, $3, 'active', '{}'::jsonb, 'テスト番組',
-  $4, 1800000, $5, $6, 'GR', '27'
-) RETURNING id`, programID, source, ruleID, start, networkID, serviceID).Scan(&id)
+  'default', $1, $2, 'active', '{}'::jsonb, 'テスト番組',
+  $3, 1800000, $4, $5, 'GR', '27'
+) RETURNING id`, programID, ruleID, start, networkID, serviceID).Scan(&id)
 	if err != nil {
 		t.Fatalf("inserting reservation fixture: %v", err)
 	}
