@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { customInstance } from '@/api/client'
+import { ApiError, customInstance } from '@/api/client'
 
 describe('customInstance', () => {
   afterEach(() => {
@@ -40,5 +40,40 @@ describe('customInstance', () => {
     await expect(customInstance('/api/breakers/unknown/resume', { method: 'POST' })).rejects.toThrow(
       '404',
     )
+  })
+
+  it('非 2xx のエラー本文を捨てない', async () => {
+    // 400 に添えられた理由（ErrorResponse.error）を落とすと、UI は
+    // 「失敗しました」しか言えない。検索の不正な正規表現のように、
+    // 理由が分からないとユーザーが直せない失敗がある
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ error: 'invalid regex "("' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+
+    const error = await customInstance('/api/programs/search', { method: 'POST' }).catch(
+      (e: unknown) => e,
+    )
+
+    expect(error).toBeInstanceOf(ApiError)
+    expect((error as ApiError).status).toBe(400)
+    expect((error as ApiError).body).toEqual({ error: 'invalid regex "("' })
+  })
+
+  it('JSON でないエラー本文でもステータスは伝わる', async () => {
+    // プロキシが返す HTML のエラーページで例外にしてはならない
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValue(new Response('<html>502</html>', { status: 502 }))
+
+    const error = await customInstance('/api/programs/search', { method: 'POST' }).catch(
+      (e: unknown) => e,
+    )
+
+    expect(error).toBeInstanceOf(ApiError)
+    expect((error as ApiError).status).toBe(502)
+    expect((error as ApiError).body).toBeUndefined()
   })
 })
