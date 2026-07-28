@@ -241,3 +241,13 @@ type SchemaInfo struct {
 	Key   string
 	Value string
 }
+
+type TunerSync struct {
+	Site        string
+	TunerIndex  int32
+	Name        string
+	Types       []string
+	IsAvailable bool
+	IsFault     bool
+	ObservedAt  time.Time
+}
