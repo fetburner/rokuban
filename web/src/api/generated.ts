@@ -484,6 +484,17 @@ export type ReservationOverrides = { [key: string]: unknown };
 
 export interface Reservation {
   id: number;
+  /**
+     * この予約がどのサイト（mirakc インスタンス）のものか。`reservations.site`
+     * そのままで、設定ファイルで定義されたサイト名（docs/schema.md §1-5）。
+     *
+     * チューナー容量超過の判定はサイトごとに独立しているため
+     * （docs/data.md §6.5）、予約一覧のバッジはこの値と超過区間の site を
+     * 突き合わせる。M1/M2 は単一サイト構成なので実質 `default` 固定だが、
+     * **クライアントに定数を持たせない**（他サイトの不足を自分の不足として
+     * 出す形で静かに壊れるのを避ける）。
+     */
+  site: string;
   programId: number;
   /**
      * 導出値であり、reservations テーブルの列ではない（issue #26）。

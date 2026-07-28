@@ -75,6 +75,7 @@ const allPrograms = [soon, alsoSoon, later]
 function reservation(id: number, programId: number, title: string): Reservation {
   return {
     id,
+    site: 'default',
     programId,
     source: 'manual',
     state: 'active',

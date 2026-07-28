@@ -19,9 +19,11 @@ function reservation(
   title: string,
   startMinutes: number,
   durationMinutes: number,
+  site = 'default',
 ): Reservation {
   return {
     id,
+    site,
     programId: id * 10,
     source: 'manual',
     state: 'active',
@@ -179,6 +181,19 @@ describe('予約一覧のチューナー不足バッジ', () => {
     expect(within(row('別サイトの時間帯の番組')).queryByText(/チューナー不足/)).toBeNull()
     // 高松側の内訳（GR が 2 本）がどこにも漏れていない
     expect(screen.queryByText(/GR/)).toBeNull()
+  })
+
+  // 上のテストは「site で絞っている」ことしか担保しない。予約自身の site ではなく
+  // 単一サイト前提の定数（'default'）を渡す実装でも、フィクスチャが全部 default
+  // なら通ってしまう。**default 以外のサイトの予約に、同じサイトの不足を当てる**
+  // ケースを置いて、定数を書いた実装で落ちるようにする。
+  it('default 以外のサイトの予約にも自サイトの不足が出る', async () => {
+    renderWith(
+      [reservation(1, '高松の番組', 19 * 60, 60, 'takamatsu')],
+      [overage(19 * 60, 20 * 60, { site: 'takamatsu', shortfall: 2, jammedTypes: ['GR'] })],
+    )
+
+    expect(await screen.findByText('チューナー不足（GR が 2 本）')).toBeInTheDocument()
   })
 
   it('区間の端で接するだけなら出ない', async () => {

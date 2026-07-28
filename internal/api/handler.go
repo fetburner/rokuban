@@ -271,10 +271,14 @@ func reservationFromRow(r sqlcgen.Reservation, overrides []byte, intentAction *s
 		return Reservation{}, fmt.Errorf("resolving effective options for reservation %d: %w", r.ID, err)
 	}
 	res := Reservation{
-		Id:         r.ID,
-		ProgramId:  r.ProgramID,
-		Source:     source,
-		State:      ReservationState(r.State),
+		Id:        r.ID,
+		Site:      r.Site,
+		ProgramId: r.ProgramID,
+		Source:    source,
+		State:     ReservationState(r.State),
+		// site を返すのは容量超過の判定がサイトごとに独立しているため
+		// （docs/data.md §6.5）。クライアントに単一サイト前提の定数を持たせると、
+		// 多サイト化のときに「他サイトの不足を自分の不足として出す」形で静かに壊れる。
 		Skip:       opts.Skip != nil && *opts.Skip,
 		Title:      r.Title,
 		StartAt:    r.ProgramStartAt,

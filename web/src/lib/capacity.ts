@@ -22,17 +22,6 @@
 import type { CapacityOverage } from '@/api/generated'
 import { formatTime } from '@/lib/format'
 
-/**
- * defaultSite は予約が属するサイト（`internal/db.DefaultSite`）。
- *
- * 超過の判定はサイトごとに独立している（docs/data.md §6.5「判定はサイトごとに
- * 独立して行う」）ため交差判定は site を引数に取るが、`GET /api/reservations` は
- * 単一サイト構成（M1/M2）を前提に予約の site を返さない。多サイト化で
- * `Reservation` に site が載ったら、この定数を渡している呼び出し側を差し替える。
- * 定数を交差判定の内側に隠さないのは、サイトを見落とした実装が「他サイトの不足を
- * 自分の予約の不足として出す」形で静かに壊れるため。
- */
-export const defaultSite = 'default'
 
 /** TimeWindow は epoch ms の半開区間 [startMs, endMs)。 */
 export type TimeWindow = {

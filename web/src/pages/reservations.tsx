@@ -7,7 +7,7 @@ import { unwrap } from '@/api/unwrap'
 import { CapacityShortfallBadge } from '@/components/capacity-shortfall-badge'
 import { EmptyState, ErrorState, ListSkeleton, PageHeader } from '@/components/page'
 import { ReservationSkipBadge } from '@/components/reservation-skip-reason'
-import { coveringWindow, defaultSite } from '@/lib/capacity'
+import { coveringWindow } from '@/lib/capacity'
 import { formatDateTime, formatDuration } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
@@ -63,12 +63,11 @@ export function ReservationsPage() {
                     <span className="shrink-0">{formatDuration(r.durationMs)}</span>
                     <StateBadge state={r.state} />
                     <ReservationSkipBadge reservation={r} />
-                    {/* site は行から取れないので単一サイト構成の定数を渡す
-                        （lib/capacity.ts の defaultSite。判定はサイトごとに独立
-                        しているので、多サイト化ではここが差し替え点になる） */}
+                    {/* 判定はサイトごとに独立している（docs/data.md §6.5）ので
+                        予約自身の site を渡す。定数を持たない。 */}
                     <CapacityShortfallBadge
                       overages={overages}
-                      site={defaultSite}
+                      site={r.site}
                       startMs={new Date(r.startAt).getTime()}
                       endMs={new Date(r.startAt).getTime() + r.durationMs}
                     />

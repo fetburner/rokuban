@@ -652,6 +652,16 @@ type Reservation struct {
 	ProgramId       int64                   `json:"programId"`
 	RuleId          *int64                  `json:"ruleId,omitempty"`
 
+	// Site この予約がどのサイト（mirakc インスタンス）のものか。`reservations.site`
+	// そのままで、設定ファイルで定義されたサイト名（docs/schema.md §1-5）。
+	//
+	// チューナー容量超過の判定はサイトごとに独立しているため
+	// （docs/data.md §6.5）、予約一覧のバッジはこの値と超過区間の site を
+	// 突き合わせる。M1/M2 は単一サイト構成なので実質 `default` 固定だが、
+	// **クライアントに定数を持たせない**（他サイトの不足を自分の不足として
+	// 出す形で静かに壊れるのを避ける）。
+	Site string `json:"site"`
+
 	// Skip effective.skip（M2-6, issue #24）。program_intents.action='skip' の
 	// 明示、または意図が無く base.skip（ルールの重複排除判定）が true。
 	// true の間 reconciler は mirakc に同期しないが、予約行自体は
