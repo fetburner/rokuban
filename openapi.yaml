@@ -848,6 +848,13 @@ components:
         scrambled:
           type: integer
           format: int64
+        pidType:
+          description: |
+            PID 種別（M2-13, issue #24）。PMT の stream_type から分類した
+            video / audio、または固定 PSI テーブル名（PAT/CAT/NIT/SDT/EIT/TOT）。
+            記述子は読まないため字幕と文字スーパーは区別しない。分類できなければ省略
+            （PSI 解析の失敗は ingest を失敗させない。docs/recording.md「例外の境界」）
+          type: string
 
     CreateReservationRequest:
       type: object
@@ -1167,6 +1174,7 @@ components:
         - durationMs
         - createdAt
         - updatedAt
+        - skip
       properties:
         id:
           type: integer
@@ -1205,6 +1213,21 @@ components:
         updatedAt:
           type: string
           format: date-time
+        skip:
+          description: |
+            effective.skip（M2-6, issue #24）。program_intents.action='skip' の
+            明示、または意図が無く base.skip（ルールの重複排除判定）が true。
+            true の間 reconciler は mirakc に同期しないが、予約行自体は
+            「なぜ録られていないか」を説明するため残る。
+          type: boolean
+        dedupMatchRecordingId:
+          description: 履歴ベース重複排除でマッチした録画の ID（マッチが無ければ省略）
+          type: integer
+          format: int64
+        dedupSimilarity:
+          description: 上記マッチの pg_trgm 類似度（0.0〜1.0、マッチが無ければ省略）
+          type: number
+          format: float
 
     # --- 予約の重なり警告 (M2-8, issue #24 / #21) ---
     #

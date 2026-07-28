@@ -13,7 +13,7 @@ import (
 
 const listOverlappingReservations = `-- name: ListOverlappingReservations :many
 
-SELECT r.id, r.site, r.program_id, r.rule_id, r.state, r.base, r.title, r.program_start_at, r.program_duration_ms, r.created_at, r.updated_at, r.network_id, r.service_id, r.channel_type, r.channel, i.action AS intent_action, o.overrides AS overrides
+SELECT r.id, r.site, r.program_id, r.rule_id, r.state, r.base, r.title, r.program_start_at, r.program_duration_ms, r.created_at, r.updated_at, r.network_id, r.service_id, r.channel_type, r.channel, r.dedup_match_recording_id, r.dedup_similarity, i.action AS intent_action, o.overrides AS overrides
 FROM reservations r
 LEFT JOIN program_intents i ON i.site = r.site AND i.program_id = r.program_id
 LEFT JOIN program_overrides o ON o.site = r.site AND o.program_id = r.program_id
@@ -78,6 +78,8 @@ func (q *Queries) ListOverlappingReservations(ctx context.Context, arg ListOverl
 			&i.Reservation.ServiceID,
 			&i.Reservation.ChannelType,
 			&i.Reservation.Channel,
+			&i.Reservation.DedupMatchRecordingID,
+			&i.Reservation.DedupSimilarity,
 			&i.IntentAction,
 			&i.Overrides,
 		); err != nil {

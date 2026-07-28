@@ -27,6 +27,7 @@ type DropStat struct {
 	Drops        int64
 	Errors       int64
 	Scrambled    int64
+	PidType      *string
 }
 
 type EpgProgram struct {
@@ -140,21 +141,23 @@ type Recording struct {
 }
 
 type Reservation struct {
-	ID                int64
-	Site              string
-	ProgramID         int64
-	RuleID            *int64
-	State             string
-	Base              json.RawMessage
-	Title             string
-	ProgramStartAt    time.Time
-	ProgramDurationMs int64
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
-	NetworkID         *int32
-	ServiceID         *int32
-	ChannelType       *string
-	Channel           *string
+	ID                    int64
+	Site                  string
+	ProgramID             int64
+	RuleID                *int64
+	State                 string
+	Base                  json.RawMessage
+	Title                 string
+	ProgramStartAt        time.Time
+	ProgramDurationMs     int64
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+	NetworkID             *int32
+	ServiceID             *int32
+	ChannelType           *string
+	Channel               *string
+	DedupMatchRecordingID *int64
+	DedupSimilarity       pgtype.Float4
 }
 
 type ReservationRuleMatch struct {

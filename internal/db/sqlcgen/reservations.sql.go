@@ -17,7 +17,7 @@ INSERT INTO reservations (
     network_id, service_id, channel_type, channel
 )
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-RETURNING id, site, program_id, rule_id, state, base, title, program_start_at, program_duration_ms, created_at, updated_at, network_id, service_id, channel_type, channel
+RETURNING id, site, program_id, rule_id, state, base, title, program_start_at, program_duration_ms, created_at, updated_at, network_id, service_id, channel_type, channel, dedup_match_recording_id, dedup_similarity
 `
 
 type CreateManualReservationParams struct {
@@ -69,6 +69,8 @@ func (q *Queries) CreateManualReservation(ctx context.Context, arg CreateManualR
 		&i.ServiceID,
 		&i.ChannelType,
 		&i.Channel,
+		&i.DedupMatchRecordingID,
+		&i.DedupSimilarity,
 	)
 	return i, err
 }
@@ -160,7 +162,7 @@ func (q *Queries) GetReservationBySiteAndProgramID(ctx context.Context, arg GetR
 }
 
 const getReservationFull = `-- name: GetReservationFull :one
-SELECT r.id, r.site, r.program_id, r.rule_id, r.state, r.base, r.title, r.program_start_at, r.program_duration_ms, r.created_at, r.updated_at, r.network_id, r.service_id, r.channel_type, r.channel, i.action AS intent_action, o.overrides AS overrides
+SELECT r.id, r.site, r.program_id, r.rule_id, r.state, r.base, r.title, r.program_start_at, r.program_duration_ms, r.created_at, r.updated_at, r.network_id, r.service_id, r.channel_type, r.channel, r.dedup_match_recording_id, r.dedup_similarity, i.action AS intent_action, o.overrides AS overrides
 FROM reservations r
 LEFT JOIN program_intents i ON i.site = r.site AND i.program_id = r.program_id
 LEFT JOIN program_overrides o ON o.site = r.site AND o.program_id = r.program_id
@@ -196,6 +198,8 @@ func (q *Queries) GetReservationFull(ctx context.Context, id int64) (GetReservat
 		&i.Reservation.ServiceID,
 		&i.Reservation.ChannelType,
 		&i.Reservation.Channel,
+		&i.Reservation.DedupMatchRecordingID,
+		&i.Reservation.DedupSimilarity,
 		&i.IntentAction,
 		&i.Overrides,
 	)
@@ -203,7 +207,7 @@ func (q *Queries) GetReservationFull(ctx context.Context, id int64) (GetReservat
 }
 
 const listReservationsBySite = `-- name: ListReservationsBySite :many
-SELECT r.id, r.site, r.program_id, r.rule_id, r.state, r.base, r.title, r.program_start_at, r.program_duration_ms, r.created_at, r.updated_at, r.network_id, r.service_id, r.channel_type, r.channel, i.action AS intent_action, o.overrides AS overrides
+SELECT r.id, r.site, r.program_id, r.rule_id, r.state, r.base, r.title, r.program_start_at, r.program_duration_ms, r.created_at, r.updated_at, r.network_id, r.service_id, r.channel_type, r.channel, r.dedup_match_recording_id, r.dedup_similarity, i.action AS intent_action, o.overrides AS overrides
 FROM reservations r
 LEFT JOIN program_intents i ON i.site = r.site AND i.program_id = r.program_id
 LEFT JOIN program_overrides o ON o.site = r.site AND o.program_id = r.program_id
@@ -242,6 +246,8 @@ func (q *Queries) ListReservationsBySite(ctx context.Context, site string) ([]Li
 			&i.Reservation.ServiceID,
 			&i.Reservation.ChannelType,
 			&i.Reservation.Channel,
+			&i.Reservation.DedupMatchRecordingID,
+			&i.Reservation.DedupSimilarity,
 			&i.IntentAction,
 			&i.Overrides,
 		); err != nil {
@@ -256,7 +262,7 @@ func (q *Queries) ListReservationsBySite(ctx context.Context, site string) ([]Li
 }
 
 const listSyncableReservationsBySite = `-- name: ListSyncableReservationsBySite :many
-SELECT r.id, r.site, r.program_id, r.rule_id, r.state, r.base, r.title, r.program_start_at, r.program_duration_ms, r.created_at, r.updated_at, r.network_id, r.service_id, r.channel_type, r.channel, i.action AS intent_action, o.overrides AS overrides
+SELECT r.id, r.site, r.program_id, r.rule_id, r.state, r.base, r.title, r.program_start_at, r.program_duration_ms, r.created_at, r.updated_at, r.network_id, r.service_id, r.channel_type, r.channel, r.dedup_match_recording_id, r.dedup_similarity, i.action AS intent_action, o.overrides AS overrides
 FROM reservations r
 LEFT JOIN program_intents i ON i.site = r.site AND i.program_id = r.program_id
 LEFT JOIN program_overrides o ON o.site = r.site AND o.program_id = r.program_id
@@ -302,6 +308,8 @@ func (q *Queries) ListSyncableReservationsBySite(ctx context.Context, site strin
 			&i.Reservation.ServiceID,
 			&i.Reservation.ChannelType,
 			&i.Reservation.Channel,
+			&i.Reservation.DedupMatchRecordingID,
+			&i.Reservation.DedupSimilarity,
 			&i.IntentAction,
 			&i.Overrides,
 		); err != nil {

@@ -422,11 +422,17 @@ type DeleteRuleResponse struct {
 
 // DropStat defines model for DropStat.
 type DropStat struct {
-	Drops     int64 `json:"drops"`
-	Errors    int64 `json:"errors"`
-	Packets   int64 `json:"packets"`
-	Pid       int   `json:"pid"`
-	Scrambled int64 `json:"scrambled"`
+	Drops   int64 `json:"drops"`
+	Errors  int64 `json:"errors"`
+	Packets int64 `json:"packets"`
+	Pid     int   `json:"pid"`
+
+	// PidType PID 種別（M2-13, issue #24）。PMT の stream_type から分類した
+	// video / audio、または固定 PSI テーブル名（PAT/CAT/NIT/SDT/EIT/TOT）。
+	// 記述子は読まないため字幕と文字スーパーは区別しない。分類できなければ省略
+	// （PSI 解析の失敗は ingest を失敗させない。docs/recording.md「例外の境界」）
+	PidType   *string `json:"pidType,omitempty"`
+	Scrambled int64   `json:"scrambled"`
 }
 
 // DropSummary defines model for DropSummary.
@@ -579,12 +585,24 @@ type RecordingStatus string
 
 // Reservation defines model for Reservation.
 type Reservation struct {
-	CreatedAt  time.Time               `json:"createdAt"`
-	DurationMs int64                   `json:"durationMs"`
-	Id         int64                   `json:"id"`
-	Overrides  *map[string]interface{} `json:"overrides,omitempty"`
-	ProgramId  int64                   `json:"programId"`
-	RuleId     *int64                  `json:"ruleId,omitempty"`
+	CreatedAt time.Time `json:"createdAt"`
+
+	// DedupMatchRecordingId 履歴ベース重複排除でマッチした録画の ID（マッチが無ければ省略）
+	DedupMatchRecordingId *int64 `json:"dedupMatchRecordingId,omitempty"`
+
+	// DedupSimilarity 上記マッチの pg_trgm 類似度（0.0〜1.0、マッチが無ければ省略）
+	DedupSimilarity *float32                `json:"dedupSimilarity,omitempty"`
+	DurationMs      int64                   `json:"durationMs"`
+	Id              int64                   `json:"id"`
+	Overrides       *map[string]interface{} `json:"overrides,omitempty"`
+	ProgramId       int64                   `json:"programId"`
+	RuleId          *int64                  `json:"ruleId,omitempty"`
+
+	// Skip effective.skip（M2-6, issue #24）。program_intents.action='skip' の
+	// 明示、または意図が無く base.skip（ルールの重複排除判定）が true。
+	// true の間 reconciler は mirakc に同期しないが、予約行自体は
+	// 「なぜ録られていないか」を説明するため残る。
+	Skip bool `json:"skip"`
 
 	// Source 導出値であり、reservations テーブルの列ではない（issue #26）。
 	// ユーザーが録れと指定した番組（program_intents に action=record の行が
