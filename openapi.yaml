@@ -1132,6 +1132,12 @@ components:
           type: integer
           format: int64
         source:
+          description: |
+            導出値であり、reservations テーブルの列ではない（issue #26）。
+            ユーザーが録れと指定した番組（program_intents に action=record の行が
+            ある）なら manual、無ければ rule。ルールが今まさにこの予約に
+            base を供給しているか（ruleId の有無）とは無関係で、手動予約に
+            ルールがマッチしていても manual のまま変わらない。
           type: string
           enum: [rule, manual]
         ruleId:

@@ -1,9 +1,9 @@
 -- name: GetReservation :one
-SELECT id, rule_id, source FROM reservations
+SELECT id, rule_id FROM reservations
 WHERE id = $1;
 
 -- name: GetReservationBySiteAndProgramID :one
-SELECT id, rule_id, source FROM reservations
+SELECT id, rule_id FROM reservations
 WHERE site = $1 AND program_id = $2;
 
 -- name: CreateManualReservation :one
@@ -11,11 +11,15 @@ WHERE site = $1 AND program_id = $2;
 -- GetProgramChannelIdentity から引いた値をスナップショットする（サーバー権威。
 -- クライアントからは受け取らない）。mirakc の programId 内部構造への依存を
 -- reconciler から消すための列。
+--
+-- reservations.source は持たない（issue #26 で削除）。この予約が「手動」で
+-- あることは、この呼び出しの直前に api が書く program_intents.action='record'
+-- の行がそのまま表す。
 INSERT INTO reservations (
-    site, program_id, source, title, program_start_at, program_duration_ms,
+    site, program_id, title, program_start_at, program_duration_ms,
     network_id, service_id, channel_type, channel
 )
-VALUES ($1, $2, 'manual', $3, $4, $5, $6, $7, $8, $9)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 RETURNING *;
 
 -- 予約とユーザー意図・上書きを 1 行に合わせて返す。action は program_intents、

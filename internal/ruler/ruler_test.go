@@ -99,11 +99,12 @@ VALUES ($1, 0, 'name', 'keyword', $2, true, false)`, ruleID, keyword)
 }
 
 // reservationRow はテストで確認したい reservations の列だけを持つ。
+// source 列は issue #26 で削除済み（手動/ルール由来の区別は program_intents /
+// rule_id から導出する。本ファイルにはこの列を前提にしたテストを置かない）。
 type reservationRow struct {
 	ID                int64
 	RuleID            *int64
 	State             string
-	Source            string
 	Base              []byte
 	Title             string
 	ProgramStartAt    time.Time
@@ -119,10 +120,10 @@ func getReservation(t *testing.T, pool *pgxpool.Pool, ctx context.Context, progr
 	t.Helper()
 	var r reservationRow
 	err := pool.QueryRow(ctx, `
-SELECT id, rule_id, state, source, base, title, program_start_at, program_duration_ms,
+SELECT id, rule_id, state, base, title, program_start_at, program_duration_ms,
        network_id, service_id, channel_type, channel, updated_at
 FROM reservations WHERE site = $1 AND program_id = $2`, testSite, programID).Scan(
-		&r.ID, &r.RuleID, &r.State, &r.Source, &r.Base, &r.Title, &r.ProgramStartAt, &r.ProgramDurationMs,
+		&r.ID, &r.RuleID, &r.State, &r.Base, &r.Title, &r.ProgramStartAt, &r.ProgramDurationMs,
 		&r.NetworkID, &r.ServiceID, &r.ChannelType, &r.Channel, &r.UpdatedAt,
 	)
 	if err != nil {
@@ -700,8 +701,8 @@ func TestRunPass_RecordsAllRuleMatches(t *testing.T) {
 func insertReservationDirect(t *testing.T, pool *pgxpool.Pool, ctx context.Context, programID int64, title string, startAt time.Time) {
 	t.Helper()
 	_, err := pool.Exec(ctx, `
-INSERT INTO reservations (site, program_id, source, title, program_start_at, program_duration_ms)
-VALUES ($1, $2, 'manual', $3, $4, $5)`,
+INSERT INTO reservations (site, program_id, title, program_start_at, program_duration_ms)
+VALUES ($1, $2, $3, $4, $5)`,
 		testSite, programID, title, startAt, testDurationMs)
 	if err != nil {
 		t.Fatalf("inserting reservation fixture: %v", err)
@@ -1251,5 +1252,84 @@ func TestRunPass_FullEpgOutageFreezeStopsDeletesWithoutTrippingBreaker(t *testin
 	}
 	if _, ok := getRulerDeletesBreaker(t, pool, ctx); ok {
 		t.Error("circuit breaker should NOT trip — the freeze (stillProjectedSubset) already stopped the deletes before the breaker's threshold check")
+	}
+}
+
+// TestRunPass_ManualReservationSurvivesRuleMatchWithoutSourceColumn は issue #26
+// の受け入れ基準 5: ruler の全量パスを回しても、手動予約が「ルール由来」に
+// 化けないことを固定する。
+//
+// reservations.source 列は 00012_drop_reservations_source.sql で削除済みなので、
+// 修正前のバグ（手動予約にルールがマッチすると source が不可逆に 'rule' へ
+// 書き換わる）は列ごと構造的に起こりようがない。このテストは 2 つを固定する:
+//
+//   - (a) reservations テーブルに source 列が存在しないこと。将来「ruler が
+//     rule_id を書くたびに provenance 的な列も更新しておけば便利では」という
+//     形で同じ歪みが紛れ込む変更への防波堤にする。
+//   - (b) 手動予約（program_intents{record}）にルールがマッチして rule_id が
+//     実際に埋まった後も、program_intents.action は RunPass を経て 'record' の
+//     ままであること。「手動である」という事実の唯一の記録先が生き続けている
+//     ことを確認する（TestRunPass_DoesNotWriteProgramIntents と似ているが、
+//     こちらは「ルールが実際にマッチした」状態で確認する点が違う）。
+func TestRunPass_ManualReservationSurvivesRuleMatchWithoutSourceColumn(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	insertService(t, pool, ctx)
+	start := time.Now().Add(24 * time.Hour).Truncate(time.Second)
+	const programID = 1301
+	insertProgram(t, pool, ctx, programID, "手動予約サバイバル", start)
+
+	// 手動予約: 予約行 + intent{record}。ruler が動く前は rule_id はまだ付いていない。
+	q := sqlcgen.New(pool)
+	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
+		Site: testSite, ProgramID: programID, Action: db.IntentRecord,
+		ProgramStartAt: start, ProgramDurationMs: testDurationMs,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	insertReservationDirect(t, pool, ctx, programID, "手動予約サバイバル", start)
+
+	// 後からマッチするルールを用意する（修正前バグの引き金と同じ状況）。
+	ruleID := insertRule(t, pool, ctx, "manual-survivor", 10)
+	insertRuleKeyword(t, pool, ctx, ruleID, "手動予約サバイバル")
+
+	r := ruler.New([]string{testSite}, pool, nil)
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
+
+	// ルールが実際にマッチして rule_id が埋まったことを確認する
+	// （これが起きていなければこのテスト自体が無意味なので前提として確認する）。
+	res, ok := getReservation(t, pool, ctx, programID)
+	if !ok {
+		t.Fatal("reservation should still exist")
+	}
+	if res.RuleID == nil || *res.RuleID != ruleID {
+		t.Fatalf("rule_id = %v, want %d (rule should have matched)", res.RuleID, ruleID)
+	}
+
+	// 核心 (b): program_intents.action は ruler を経ても変わらない。
+	intent, err := q.GetProgramIntent(ctx, sqlcgen.GetProgramIntentParams{Site: testSite, ProgramID: programID})
+	if err != nil {
+		t.Fatalf("program_intents row must survive: %v", err)
+	}
+	if intent.Action != db.IntentRecord {
+		t.Errorf("program_intents.action = %q, want %q "+
+			"(手動である事実はルールマッチでも消えないはず。issue #26)", intent.Action, db.IntentRecord)
+	}
+
+	// 核心 (a): source 列は存在しない（将来の焼き直しへの防波堤）。
+	var exists bool
+	if err := pool.QueryRow(ctx, `
+SELECT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'reservations' AND column_name = 'source'
+)`).Scan(&exists); err != nil {
+		t.Fatal(err)
+	}
+	if exists {
+		t.Error("reservations.source column must not exist (issue #26 removed it; " +
+			"do not reintroduce a derived source-like column on reservations)")
 	}
 }

@@ -143,7 +143,6 @@ type Reservation struct {
 	ID                int64
 	Site              string
 	ProgramID         int64
-	Source            string
 	RuleID            *int64
 	State             string
 	Base              json.RawMessage

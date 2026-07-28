@@ -13,11 +13,11 @@ import (
 
 const createManualReservation = `-- name: CreateManualReservation :one
 INSERT INTO reservations (
-    site, program_id, source, title, program_start_at, program_duration_ms,
+    site, program_id, title, program_start_at, program_duration_ms,
     network_id, service_id, channel_type, channel
 )
-VALUES ($1, $2, 'manual', $3, $4, $5, $6, $7, $8, $9)
-RETURNING id, site, program_id, source, rule_id, state, base, title, program_start_at, program_duration_ms, created_at, updated_at, network_id, service_id, channel_type, channel
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+RETURNING id, site, program_id, rule_id, state, base, title, program_start_at, program_duration_ms, created_at, updated_at, network_id, service_id, channel_type, channel
 `
 
 type CreateManualReservationParams struct {
@@ -36,6 +36,10 @@ type CreateManualReservationParams struct {
 // GetProgramChannelIdentity から引いた値をスナップショットする（サーバー権威。
 // クライアントからは受け取らない）。mirakc の programId 内部構造への依存を
 // reconciler から消すための列。
+//
+// reservations.source は持たない（issue #26 で削除）。この予約が「手動」で
+// あることは、この呼び出しの直前に api が書く program_intents.action='record'
+// の行がそのまま表す。
 func (q *Queries) CreateManualReservation(ctx context.Context, arg CreateManualReservationParams) (Reservation, error) {
 	row := q.db.QueryRow(ctx, createManualReservation,
 		arg.Site,
@@ -53,7 +57,6 @@ func (q *Queries) CreateManualReservation(ctx context.Context, arg CreateManualR
 		&i.ID,
 		&i.Site,
 		&i.ProgramID,
-		&i.Source,
 		&i.RuleID,
 		&i.State,
 		&i.Base,
@@ -118,25 +121,24 @@ func (q *Queries) DeleteReservationBySiteAndProgramID(ctx context.Context, arg D
 }
 
 const getReservation = `-- name: GetReservation :one
-SELECT id, rule_id, source FROM reservations
+SELECT id, rule_id FROM reservations
 WHERE id = $1
 `
 
 type GetReservationRow struct {
 	ID     int64
 	RuleID *int64
-	Source string
 }
 
 func (q *Queries) GetReservation(ctx context.Context, id int64) (GetReservationRow, error) {
 	row := q.db.QueryRow(ctx, getReservation, id)
 	var i GetReservationRow
-	err := row.Scan(&i.ID, &i.RuleID, &i.Source)
+	err := row.Scan(&i.ID, &i.RuleID)
 	return i, err
 }
 
 const getReservationBySiteAndProgramID = `-- name: GetReservationBySiteAndProgramID :one
-SELECT id, rule_id, source FROM reservations
+SELECT id, rule_id FROM reservations
 WHERE site = $1 AND program_id = $2
 `
 
@@ -148,18 +150,17 @@ type GetReservationBySiteAndProgramIDParams struct {
 type GetReservationBySiteAndProgramIDRow struct {
 	ID     int64
 	RuleID *int64
-	Source string
 }
 
 func (q *Queries) GetReservationBySiteAndProgramID(ctx context.Context, arg GetReservationBySiteAndProgramIDParams) (GetReservationBySiteAndProgramIDRow, error) {
 	row := q.db.QueryRow(ctx, getReservationBySiteAndProgramID, arg.Site, arg.ProgramID)
 	var i GetReservationBySiteAndProgramIDRow
-	err := row.Scan(&i.ID, &i.RuleID, &i.Source)
+	err := row.Scan(&i.ID, &i.RuleID)
 	return i, err
 }
 
 const getReservationFull = `-- name: GetReservationFull :one
-SELECT r.id, r.site, r.program_id, r.source, r.rule_id, r.state, r.base, r.title, r.program_start_at, r.program_duration_ms, r.created_at, r.updated_at, r.network_id, r.service_id, r.channel_type, r.channel, i.action AS intent_action, o.overrides AS overrides
+SELECT r.id, r.site, r.program_id, r.rule_id, r.state, r.base, r.title, r.program_start_at, r.program_duration_ms, r.created_at, r.updated_at, r.network_id, r.service_id, r.channel_type, r.channel, i.action AS intent_action, o.overrides AS overrides
 FROM reservations r
 LEFT JOIN program_intents i ON i.site = r.site AND i.program_id = r.program_id
 LEFT JOIN program_overrides o ON o.site = r.site AND o.program_id = r.program_id
@@ -183,7 +184,6 @@ func (q *Queries) GetReservationFull(ctx context.Context, id int64) (GetReservat
 		&i.Reservation.ID,
 		&i.Reservation.Site,
 		&i.Reservation.ProgramID,
-		&i.Reservation.Source,
 		&i.Reservation.RuleID,
 		&i.Reservation.State,
 		&i.Reservation.Base,
@@ -203,7 +203,7 @@ func (q *Queries) GetReservationFull(ctx context.Context, id int64) (GetReservat
 }
 
 const listReservationsBySite = `-- name: ListReservationsBySite :many
-SELECT r.id, r.site, r.program_id, r.source, r.rule_id, r.state, r.base, r.title, r.program_start_at, r.program_duration_ms, r.created_at, r.updated_at, r.network_id, r.service_id, r.channel_type, r.channel, i.action AS intent_action, o.overrides AS overrides
+SELECT r.id, r.site, r.program_id, r.rule_id, r.state, r.base, r.title, r.program_start_at, r.program_duration_ms, r.created_at, r.updated_at, r.network_id, r.service_id, r.channel_type, r.channel, i.action AS intent_action, o.overrides AS overrides
 FROM reservations r
 LEFT JOIN program_intents i ON i.site = r.site AND i.program_id = r.program_id
 LEFT JOIN program_overrides o ON o.site = r.site AND o.program_id = r.program_id
@@ -230,7 +230,6 @@ func (q *Queries) ListReservationsBySite(ctx context.Context, site string) ([]Li
 			&i.Reservation.ID,
 			&i.Reservation.Site,
 			&i.Reservation.ProgramID,
-			&i.Reservation.Source,
 			&i.Reservation.RuleID,
 			&i.Reservation.State,
 			&i.Reservation.Base,
@@ -257,7 +256,7 @@ func (q *Queries) ListReservationsBySite(ctx context.Context, site string) ([]Li
 }
 
 const listSyncableReservationsBySite = `-- name: ListSyncableReservationsBySite :many
-SELECT r.id, r.site, r.program_id, r.source, r.rule_id, r.state, r.base, r.title, r.program_start_at, r.program_duration_ms, r.created_at, r.updated_at, r.network_id, r.service_id, r.channel_type, r.channel, i.action AS intent_action, o.overrides AS overrides
+SELECT r.id, r.site, r.program_id, r.rule_id, r.state, r.base, r.title, r.program_start_at, r.program_duration_ms, r.created_at, r.updated_at, r.network_id, r.service_id, r.channel_type, r.channel, i.action AS intent_action, o.overrides AS overrides
 FROM reservations r
 LEFT JOIN program_intents i ON i.site = r.site AND i.program_id = r.program_id
 LEFT JOIN program_overrides o ON o.site = r.site AND o.program_id = r.program_id
@@ -291,7 +290,6 @@ func (q *Queries) ListSyncableReservationsBySite(ctx context.Context, site strin
 			&i.Reservation.ID,
 			&i.Reservation.Site,
 			&i.Reservation.ProgramID,
-			&i.Reservation.Source,
 			&i.Reservation.RuleID,
 			&i.Reservation.State,
 			&i.Reservation.Base,
