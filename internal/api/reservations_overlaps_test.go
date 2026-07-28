@@ -189,9 +189,9 @@ func TestGetProgramOverlaps_ExcludesSkippedIntent(t *testing.T) {
 	}
 	if _, err := pool.Exec(ctx, `
 INSERT INTO reservations (
-  site, program_id, source, state, title, program_start_at, program_duration_ms,
+  site, program_id, state, title, program_start_at, program_duration_ms,
   network_id, service_id, channel_type, channel
-) VALUES ('default', $1, 'manual', 'active', 'skip された番組', $2, $3, 32678, 5168, 'GR', '27')`,
+) VALUES ('default', $1, 'active', 'skip された番組', $2, $3, 32678, 5168, 'GR', '27')`,
 		skippedProgramID, skippedStart, testProgramDuration.Milliseconds()); err != nil {
 		t.Fatalf("inserting reservation row for skipped program: %v", err)
 	}
