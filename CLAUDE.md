@@ -25,6 +25,10 @@ pnpm exec orval  # openapi.yaml → web/src/api/generated.ts
 
 **`go test ./...` は Postgres を要求する。** `ROKUBAN_TEST_DATABASE_URL` を設定していないと DB を使うテストが落ちる（`internal/testutil` がパッケージごとに DB を作り、テストごとに TRUNCATE する）。ローカルなら `postgres://localhost:5432/postgres?sslmode=disable` で足りる。
 
+**sqlc は式の型を推論しきれないことがある。** `program_start_at + interval '...'` のような
+式に `::timestamptz` を明示しないと `int32` として生成され、`Scan` で必ず落ちる（M2-10 で踏んだ）。
+式を SELECT に置くときは明示キャストを付ける。
+
 **`oapi-codegen` / `golangci-lint` は PATH に無いことがある。**
 
 - `golangci-lint`: `$(go env GOPATH)/bin/golangci-lint`

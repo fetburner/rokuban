@@ -632,6 +632,46 @@ EPGStation は `relatedItems` を見る `isMainProgram()` と name チェック�
 で判定し（§3）、録画した番組情報は recordings に非正規化スナップショットされる（§5）。
 だから刈り取りが永続資産を壊すことはない。
 
+## 9.5 tuner_sync — チューナー射影（使い捨てキャッシュ。M2-10）
+
+M2-10 で追加（`00015_tuner_sync.sql`）。mirakc の `GET /api/tuners` の観測結果で、
+`epg_services` / `epg_programs` と同じ**使い捨てプロジェクション**。真実は常に mirakc 側にあり、
+レベルトリガーでいつでも全量再構築できる。容量超過の判定（[データ層](data.md) §6.5）が使う。
+
+存在理由は不変条件 1（api ロールは mirakc に問い合わせない）。EPGStation のように起動時に
+`/api/tuners` を叩いて in-memory に持つ形は取れない。チューナーの**対応種別が必須**
+（GR 専用チューナーに BS は載らない）なので、本数を設定に手書きする案も成立しない。
+
+```sql
+CREATE TABLE tuner_sync (
+    site          text    NOT NULL,
+    tuner_index   integer NOT NULL,   -- mirakc のレスポンスの index
+    name          text    NOT NULL,
+    types         text[]  NOT NULL CHECK (types <@ ARRAY['GR','BS','CS','SKY']),
+    is_available  boolean NOT NULL,
+    is_fault      boolean NOT NULL,
+    observed_at   timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (site, tuner_index)
+);
+```
+
+- **投影しないもの**: `users` / `isFree` / `isUsing` / `command` / `pid`。**現在の利用者は容量から
+  引かない** --- 一時的な占有であり将来の区間の容量とは無関係で、「見えない消費者は数えない =
+  下界を主張する」性質と一貫する。`internal/mirakc.Tuner` にもこれらのフィールドを持たせない
+  （フィールドがあると投影する経路ができる）
+- **PK は `(site, name)` ではなく `(site, tuner_index)`。** issue #21 は投影列に `index` を挙げて
+  いるのに DDL 案が持たず PK が `name` になっていた不整合を、`index` を採る側で解消した。
+  `name` は運用者が付ける値なので同名が 2 本あると upsert で 1 行に潰れ、`cap(A)` を過少に
+  数えて**警告が過剰に出る方向へ恒久的にずれる**（毎パス上書きされるので自己修復しない）。
+  [データ層](data.md) §6.5 は既知の盲点がすべて「警告を見逃す」方向に偏っていることを設計上の
+  性質として挙げており、これはその性質を崩す。`tuner_index` は並び替えで振り直されるが、
+  毎パス全量再構築するので誤りが残らない
+- `types` に `cardinality > 0` の CHECK は置かない。空配列のチューナーは `cap(A)` に数えられない
+  だけで無害であり、想定外の上流データで同期パス全体を失敗させる方が損。重複・順序の正規化も
+  `cap(A)` が集合の交差判定なので不要（`rules.encode_profiles` のような正規集合チェックは要らない）
+- **行が 1 行も無いサイトでは容量判定が何も主張しない**（[データ層](data.md) §6.5「実装で決めたこと」）。
+  「0 本」と「まだ同期していない」を射影から区別できないため
+
 ## 10. 後続マイグレーションで追加するテーブル
 
 v1 には含めず、後続のマイグレーションで足すもの。参照関係だけ先に固定しておく。
@@ -649,12 +689,12 @@ v1 には含めず、後続のマイグレーションで足すもの。参照�
 | `00012_drop_reservations_source.sql` | `reservations.source` を削除（#26。導出に寄せる） |
 | `00013_dedup_evidence.sql` | `reservations` に重複排除の判定根拠 2 列（M2-6。§3） |
 | `00014_drop_stats_pid_type.sql` | `drop_stats.pid_type`（M2-13。§7） |
+| `00015_tuner_sync.sql` | `tuner_sync`（チューナー射影。M2-10。§9.5） |
 
 ### 未実装
 
 | テーブル | マイルストーン | v1 との接続 |
 |---|---|---|
-| `tuner_sync` | M2（M2-10） | mirakc の `/api/tuners` の観測（使い捨てプロジェクション）。容量超過の判定に使う。`epg_services` と同型で、`types text[]` に `CHECK (types <@ ARRAY['GR','BS','CS','SKY'])` |
 | `orphan_files` | 削除エンジン実装時（M3） | 孤児候補の first_seen 記録（DB リストアで削除窓が開き直す安全弁） |
 
 ### ドロップ（M2-12 サービスロゴ）
