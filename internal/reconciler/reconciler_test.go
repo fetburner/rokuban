@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 
+	"github.com/fetburner/rokuban/internal/breaker"
 	"github.com/fetburner/rokuban/internal/contentpath"
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
@@ -142,6 +143,8 @@ func countInt64(xs []int64, v int64) int {
 
 func ptrInt64(v int64) *int64 { return &v }
 
+func ptrString(v string) *string { return &v }
+
 // createReservation は networkID=10000/serviceID=5000/GR/27 のチャンネル
 // スナップショット（contentpath_test.go と同じ値）を持つ手動予約を作る。
 func createReservation(t *testing.T, ctx context.Context, q *sqlcgen.Queries, programID int64, title string, startAt time.Time) sqlcgen.Reservation {
@@ -246,6 +249,9 @@ func TestReconciler_CreatesSchedule(t *testing.T) {
 	}
 }
 
+// TestReconciler_DeletesOrphanedSchedule は、desired にまだ生きている予約が
+// 残っている状態で（= 全損シグネチャに当たらない）、それとは別の stale な
+// schedule が普通に削除されることを確かめる。
 func TestReconciler_DeletesOrphanedSchedule(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
@@ -260,49 +266,26 @@ func TestReconciler_DeletesOrphanedSchedule(t *testing.T) {
 	defer srv.Close()
 
 	mc := mirakc.NewClient(srv.URL, nil)
+	q := sqlcgen.New(pool)
 
-	rec := reconciler.New("default", mc, pool, &reconciler.Config{
-		MaxDeletesPerPass: 10,
-	})
+	startAt := time.Now().Add(1 * time.Hour)
+	res := createReservation(t, ctx, q, 100000500019700, "生存中の予約", startAt)
 
-	if err := rec.RunPass(ctx); err != nil {
-		t.Fatalf("RunPass: %v", err)
-	}
-
-	schedules := mock.getSchedules()
-	if len(schedules) != 0 {
-		t.Errorf("expected 0 schedules after cleanup, got %d", len(schedules))
-	}
-}
-
-func TestReconciler_CircuitBreaker(t *testing.T) {
-	pool := testutil.SetupDB(t)
-	ctx := context.Background()
-
-	mock := newMockMirakc()
-	for i := int64(1); i <= 20; i++ {
-		mock.schedules[i] = mirakc.Schedule{
-			State:   "scheduled",
-			Program: mirakc.Program{ID: i},
-			Tags:    []string{fmt.Sprintf("rokuban:reservation=%d", i)},
-		}
-	}
-	srv := httptest.NewServer(mock)
-	defer srv.Close()
-
-	mc := mirakc.NewClient(srv.URL, nil)
-
-	rec := reconciler.New("default", mc, pool, &reconciler.Config{
-		MaxDeletesPerPass: 5,
-	})
+	rec := reconciler.New("default", mc, pool, nil)
 
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
 
 	schedules := mock.getSchedules()
-	if len(schedules) != 20 {
-		t.Errorf("circuit breaker should prevent deletion, got %d schedules (expected 20)", len(schedules))
+	if _, ok := schedules[999]; ok {
+		t.Errorf("orphaned schedule should have been deleted, got %v", schedules)
+	}
+	if _, ok := schedules[res.ProgramID]; !ok {
+		t.Error("the still-desired reservation's schedule should have been created")
+	}
+	if len(schedules) != 1 {
+		t.Errorf("expected exactly 1 schedule after cleanup, got %d: %v", len(schedules), schedules)
 	}
 }
 
@@ -320,6 +303,7 @@ func TestReconciler_IgnoresNonRokubanSchedules(t *testing.T) {
 	defer srv.Close()
 
 	mc := mirakc.NewClient(srv.URL, nil)
+	q := sqlcgen.New(pool)
 
 	rec := reconciler.New("default", mc, pool, nil)
 
@@ -330,6 +314,15 @@ func TestReconciler_IgnoresNonRokubanSchedules(t *testing.T) {
 	schedules := mock.getSchedules()
 	if len(schedules) != 1 {
 		t.Errorf("non-rokuban schedule should not be deleted, got %d", len(schedules))
+	}
+
+	// 外部産の schedule は「自分が作ったもの」ではないので、reservations が
+	// 0 件であっても全損シグネチャには当たらない（tag が無いので toDelete
+	// にすら入らない）。
+	if _, err := q.GetCircuitBreaker(ctx, sqlcgen.GetCircuitBreakerParams{
+		Site: "default", Name: breaker.ReconcileTotalLoss,
+	}); err == nil {
+		t.Error("an external (non-tagged) schedule alone should not trip the total-loss breaker")
 	}
 }
 
@@ -783,8 +776,8 @@ func TestReconciler_MaxRecreatesPerPassCarriesOver(t *testing.T) {
 	}
 }
 
-// 再作成の DELETE がサーキットブレーカーの削除数に数えられないこと
-// （MaxDeletesPerPass を小さくしても再作成自体は走ること）。
+// 再作成の DELETE が全損シグネチャのサーキットブレーカーに一切影響しないこと
+// （reservations が生きている間は再作成自体が普通に走ること）。
 func TestReconciler_RecreateDeleteNotCountedByCircuitBreaker(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
@@ -800,7 +793,7 @@ func TestReconciler_RecreateDeleteNotCountedByCircuitBreaker(t *testing.T) {
 	res1 := createReservation(t, ctx, q, 100000500019009, "breaker1", startAt)
 	res2 := createReservation(t, ctx, q, 100000500019209, "breaker2", startAt)
 
-	rec := reconciler.New("default", mc, pool, &reconciler.Config{MaxDeletesPerPass: 1})
+	rec := reconciler.New("default", mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass (create): %v", err)
 	}
@@ -815,16 +808,16 @@ func TestReconciler_RecreateDeleteNotCountedByCircuitBreaker(t *testing.T) {
 	}
 
 	if tripsAfter := promtestutil.ToFloat64(metrics.ReconcileCircuitBreakerTrips); tripsAfter != tripsBefore {
-		t.Errorf("circuit breaker tripped by recreate deletes: before=%v after=%v (MaxDeletesPerPass=1 with 2 recreates)",
+		t.Errorf("circuit breaker tripped by recreate deletes: before=%v after=%v (recreate DELETEs must not be counted by the total-loss breaker)",
 			tripsBefore, tripsAfter)
 	}
 
 	schedules := mock.getSchedules()
 	if got := schedules[res1.ProgramID].Options.Priority; got != 61 {
-		t.Errorf("res1 not recreated despite MaxDeletesPerPass=1: priority=%d, want 61", got)
+		t.Errorf("res1 not recreated: priority=%d, want 61", got)
 	}
 	if got := schedules[res2.ProgramID].Options.Priority; got != 62 {
-		t.Errorf("res2 not recreated despite MaxDeletesPerPass=1: priority=%d, want 62", got)
+		t.Errorf("res2 not recreated: priority=%d, want 62", got)
 	}
 }
 
@@ -995,5 +988,225 @@ func TestReconciler_DetachedSkipReservationNotScheduled(t *testing.T) {
 
 	if _, ok := mock.getSchedules()[res.ProgramID]; ok {
 		t.Error("detached reservation with a skip intent should not get a schedule created")
+	}
+}
+
+// --- 全損シグネチャ・サーキットブレーカー（breaker.ReconcileTotalLoss、issue #24 M2-5）---
+//
+// 件数ベースの MaxDeletesPerPass は撤去した（reconciler からは ruler の導出削除・
+// ユーザーの明示操作・GC のどれで desired が減ったのか区別できず、後の 2 つで
+// 誤発火するだけだったため。docs/recording.md §3.2、issue #2 の M2-5 決定コメント）。
+// 代わりに「desired（reservations）が 1 件もないのに、自分が作った schedule が
+// 観測されている」という全損シグネチャだけを守る。
+
+// 受け入れ基準 1・7: 予約が 1 件もなく、自分の tag が付いた schedule が観測されたら
+// 削除せず発動し、detail に消されようとしていた schedule の抜粋（programId と
+// mirakc から観測した番組名）が入ること。
+func TestReconciler_TotalLossSignatureTripsAndWithholdsDeletes(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	q := sqlcgen.New(pool)
+
+	mock := newMockMirakc()
+	mock.schedules[999] = mirakc.Schedule{
+		State:   "scheduled",
+		Program: mirakc.Program{ID: 999, Name: ptrString("全損番組")},
+		Tags:    []string{"rokuban:reservation=9999"},
+	}
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+
+	mc := mirakc.NewClient(srv.URL, nil)
+	rec := reconciler.New("default", mc, pool, nil)
+
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
+
+	if schedules := mock.getSchedules(); len(schedules) != 1 {
+		t.Errorf("total-loss signature should withhold the delete, got %d schedules: %v", len(schedules), schedules)
+	}
+
+	cb, err := q.GetCircuitBreaker(ctx, sqlcgen.GetCircuitBreakerParams{
+		Site: "default", Name: breaker.ReconcileTotalLoss,
+	})
+	if err != nil {
+		t.Fatalf("expected the total-loss breaker to be tripped, GetCircuitBreaker: %v", err)
+	}
+	if cb.Pending != 1 {
+		t.Errorf("pending = %d, want 1", cb.Pending)
+	}
+
+	var sample breaker.Sample
+	if err := json.Unmarshal(cb.Detail, &sample); err != nil {
+		t.Fatalf("unmarshalling detail: %v", err)
+	}
+	if sample.Total != 1 {
+		t.Errorf("sample.Total = %d, want 1", sample.Total)
+	}
+	if len(sample.Programs) != 1 || sample.Programs[0].ProgramID != 999 {
+		t.Fatalf("sample.Programs = %+v, want a single entry for program 999", sample.Programs)
+	}
+	if sample.Programs[0].Title != "全損番組" {
+		t.Errorf("sample.Programs[0].Title = %q, want %q", sample.Programs[0].Title, "全損番組")
+	}
+}
+
+// 受け入れ基準 2: 予約が 1 件でも残っていれば、削除数がいくら多くても（旧閾値
+// MaxDeletesPerPass=10 を超える 11 件を含めても）削除が実行されること。これが
+// 件数ベースのブレーカーを撤去した理由そのもの — GC・ユーザー操作による正当な
+// 一括削除で誤発火してはならない。
+func TestReconciler_BulkDeleteWithRemainingReservationDoesNotTripBreaker(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	q := sqlcgen.New(pool)
+
+	mock := newMockMirakc()
+
+	// 生き残る予約とその schedule。
+	startAt := time.Now().Add(1 * time.Hour)
+	res := createReservation(t, ctx, q, 100000500019800, "生存", startAt)
+	mock.schedules[res.ProgramID] = mirakc.Schedule{
+		State:   "scheduled",
+		Program: mirakc.Program{ID: res.ProgramID},
+		Tags:    []string{mirakc.ReservationTag(res.ID)},
+	}
+
+	// もう desired にない自分のタグ付き schedule を 11 件（旧閾値 10 を超える）。
+	staleIDs := make([]int64, 0, 11)
+	for i := int64(0); i < 11; i++ {
+		id := int64(100000500019900) + i
+		staleIDs = append(staleIDs, id)
+		mock.schedules[id] = mirakc.Schedule{
+			State:   "scheduled",
+			Program: mirakc.Program{ID: id},
+			Tags:    []string{fmt.Sprintf("rokuban:reservation=%d", 900000+i)},
+		}
+	}
+
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+
+	mc := mirakc.NewClient(srv.URL, nil)
+	rec := reconciler.New("default", mc, pool, nil)
+
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
+
+	schedules := mock.getSchedules()
+	if _, ok := schedules[res.ProgramID]; !ok {
+		t.Error("the surviving reservation's schedule should not be deleted")
+	}
+	for _, id := range staleIDs {
+		if _, ok := schedules[id]; ok {
+			t.Errorf("stale schedule %d should have been deleted despite exceeding the old MaxDeletesPerPass=10 threshold", id)
+		}
+	}
+	if len(schedules) != 1 {
+		t.Errorf("expected only the surviving schedule to remain, got %d: %v", len(schedules), schedules)
+	}
+
+	if _, err := q.GetCircuitBreaker(ctx, sqlcgen.GetCircuitBreakerParams{
+		Site: "default", Name: breaker.ReconcileTotalLoss,
+	}); err == nil {
+		t.Error("the total-loss breaker should not trip when a desired reservation remains")
+	}
+}
+
+// 受け入れ基準 4・5: 発動中は次のパスでも delete が実行されない（ラッチである
+// こと）。全損シグネチャがそのパスでは既に見えなくなっていても（＝予約が復活
+// していても）、ラッチは自動では解けない。加えて、発動中でも新規予約の
+// schedule 作成は続けられること（止めているのは削除だけ）。
+func TestReconciler_TotalLossBreakerLatchesAcrossPasses(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	q := sqlcgen.New(pool)
+
+	mock := newMockMirakc()
+	mock.schedules[999] = mirakc.Schedule{
+		State:   "scheduled",
+		Program: mirakc.Program{ID: 999},
+		Tags:    []string{"rokuban:reservation=9999"},
+	}
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+
+	mc := mirakc.NewClient(srv.URL, nil)
+	rec := reconciler.New("default", mc, pool, nil)
+
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass (1st, trips the breaker): %v", err)
+	}
+	if _, ok := mock.getSchedules()[999]; !ok {
+		t.Fatalf("breaker should have withheld the delete on pass 1")
+	}
+
+	// シグネチャが消えても（予約が復活しても）ラッチは自動で解除されない。
+	startAt := time.Now().Add(1 * time.Hour)
+	newRes := createReservation(t, ctx, q, 100000500020000, "復活後の予約", startAt)
+
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass (2nd, signature cleared but latch should hold): %v", err)
+	}
+
+	schedules := mock.getSchedules()
+	if _, ok := schedules[999]; !ok {
+		t.Error("latch should still withhold the stale schedule's deletion even though " +
+			"the total-loss signature no longer holds this pass")
+	}
+	if _, ok := schedules[newRes.ProgramID]; !ok {
+		t.Error("schedule creation should still happen while the delete-only breaker is latched")
+	}
+}
+
+// 受け入れ基準 6: ResumeCircuitBreaker で行を消した後のパスでは削除が実行され、
+// 収束すること。
+func TestReconciler_ResumeCircuitBreakerConverges(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	q := sqlcgen.New(pool)
+
+	mock := newMockMirakc()
+	mock.schedules[999] = mirakc.Schedule{
+		State:   "scheduled",
+		Program: mirakc.Program{ID: 999},
+		Tags:    []string{"rokuban:reservation=9999"},
+	}
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+
+	mc := mirakc.NewClient(srv.URL, nil)
+	rec := reconciler.New("default", mc, pool, nil)
+
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass (trip): %v", err)
+	}
+	if _, ok := mock.getSchedules()[999]; !ok {
+		t.Fatalf("expected the delete to be withheld before resume")
+	}
+
+	// 人間が確認し、desired 側も正常な状態（予約が 1 件以上ある）に復旧した上で
+	// 手動再開する、という筋書き。
+	startAt := time.Now().Add(1 * time.Hour)
+	newRes := createReservation(t, ctx, q, 100000500020100, "復旧後の予約", startAt)
+
+	rows, err := q.ResumeCircuitBreaker(ctx, sqlcgen.ResumeCircuitBreakerParams{
+		Site: "default", Name: breaker.ReconcileTotalLoss,
+	})
+	if err != nil || rows != 1 {
+		t.Fatalf("ResumeCircuitBreaker: rows=%d err=%v", rows, err)
+	}
+
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass (after resume): %v", err)
+	}
+
+	schedules := mock.getSchedules()
+	if _, ok := schedules[999]; ok {
+		t.Error("the stale schedule should be deleted once the breaker is resumed and a desired reservation exists again")
+	}
+	if _, ok := schedules[newRes.ProgramID]; !ok {
+		t.Error("the recovered reservation's schedule should be created")
 	}
 }

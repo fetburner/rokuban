@@ -3,8 +3,9 @@
 //
 // reconciler はシングルトンではなく River のジョブ（internal/worker の
 // ReconcilePassWorker）として実行される。周期的・冪等・パスを跨ぐ状態を持たない
-// （サーキットブレーカーの閾値判定も含め毎パス DB と mirakc から読み直す）という
-// 性質が ruler / epg_sync と同じで、排他は advisory lock ではなくジョブロック +
+// （サーキットブレーカーの発動状態も含め毎パス DB と mirakc から読み直す。発動の
+// ラッチ自体は internal/breaker が circuit_breakers に持続させる）という性質が
+// ruler / epg_sync と同じで、排他は advisory lock ではなくジョブロック +
 // UniqueOpts（サイト単位）で担保する（docs/data.md §2、issue #24 M2-17）。
 // このパッケージは 1 パス分のロジックだけを持ち、いつ・どの契機で呼ぶか
 // （定期実行の起動契機はデプロイ形態に委ねる）は呼び出し側の責務。
@@ -20,6 +21,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/breaker"
 	"github.com/fetburner/rokuban/internal/contentpath"
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
@@ -29,16 +31,20 @@ import (
 
 // Config は Reconciler の設定。
 type Config struct {
-	MaxDeletesPerPass int
-
 	// MaxRecreatesPerPass は 1 パスで行う予約オプション差分反映の再作成
 	// （DELETE→POST）の上限。ルールの priority を編集するとマッチしている
 	// 全予約が再作成対象になり得るため（N=200 なら 1 パスで 400 回の mirakc
 	// 呼び出し）、上限を設けてレベルトリガーで数パスに分けて収束させる。
 	//
-	// MaxDeletesPerPass（大量削除サーキットブレーカー）とは別物: ブレーカーは
-	// 超えたら「何もしない」回路遮断だが、こちらは単なるレート制限で上限まで
-	// はやって残りを次パスに送る（docs/recording.md §3.2）。
+	// かつて存在した MaxDeletesPerPass（件数ベースの大量削除ブレーカー）とは
+	// 別物で、あちらは撤去した: reconciler が「desired に無い schedule がある」
+	// と判定する経路（ruler の導出削除／ユーザーの明示操作／番組終了後の GC）を
+	// reconciler 自身は区別できず、対象外と定められた後の 2 経路で誤発火する
+	// だけだったため（breaker.ReconcileTotalLoss の doc コメント、
+	// docs/recording.md §3.2、issue #2 の M2-5 決定コメント）。代わりに
+	// 「desired が空なのに自分の schedule が観測される」という全損シグネチャを
+	// breaker.ReconcileTotalLoss で守る。MaxRecreatesPerPass は削除の話ではなく
+	// 単なるレート制限で、上限まではやって残りを次パスに送るだけ。
 	MaxRecreatesPerPass int
 
 	DefaultPriority int
@@ -46,7 +52,6 @@ type Config struct {
 
 func defaultConfig() Config {
 	return Config{
-		MaxDeletesPerPass:   10,
 		MaxRecreatesPerPass: 20,
 		DefaultPriority:     10,
 	}
@@ -68,9 +73,6 @@ type Reconciler struct {
 func New(site string, mc *mirakc.Client, pool *pgxpool.Pool, cfg *Config) *Reconciler {
 	c := defaultConfig()
 	if cfg != nil {
-		if cfg.MaxDeletesPerPass > 0 {
-			c.MaxDeletesPerPass = cfg.MaxDeletesPerPass
-		}
 		if cfg.MaxRecreatesPerPass > 0 {
 			c.MaxRecreatesPerPass = cfg.MaxRecreatesPerPass
 		}
@@ -91,10 +93,25 @@ func New(site string, mc *mirakc.Client, pool *pgxpool.Pool, cfg *Config) *Recon
 // reconciler はシングルトンではなく River のジョブとして呼ばれる。起動契機は
 // 定期実行（真実）・予約の作成/取消・ruler パスの完了（いずれもヒント）の 3 つが
 // あるが、すべて RunPass を呼ぶ 1 本の経路に合流する（docs/recording.md §3.2）。
-// サーキットブレーカー（MaxDeletesPerPass の判定）はこの呼び出し内で完結し、
-// 前回呼び出しの状態を一切引き継がない。
+// 削除の大量発動を守るサーキットブレーカー（breaker.ReconcileTotalLoss）は
+// パスをまたぐラッチとして circuit_breakers に持続する。RunPass 自身（および
+// Reconciler 構造体）は状態を持たないが、パスの先頭で breaker.ObserveState を
+// 呼んで DB の真実に合わせ直し、発動中なら schedule の削除を一切実行しない
+// （作成・再作成は続ける。止めたいのは削除だけ）。
 func (r *Reconciler) RunPass(ctx context.Context) error {
 	slog.Debug("reconciler: starting pass")
+
+	q := sqlcgen.New(r.pool)
+
+	// 発動状態を DB の真実に合わせ直す。判定できない場合も安全側に倒して
+	// 発動中とみなし削除を止める（記録・確認ができないまま削除を続けるのが
+	// 最悪の組み合わせという breaker.Trip のコメントと同じ理由）。
+	tripped, err := breaker.ObserveState(ctx, q, r.site, breaker.ReconcileTotalLoss)
+	if err != nil {
+		slog.Error("reconciler: observing circuit breaker state; withholding deletes to be safe",
+			"breaker", breaker.ReconcileTotalLoss, "err", err)
+		tripped = true
+	}
 
 	schedules, err := r.mirakc.ListSchedules(ctx)
 	if err != nil {
@@ -138,7 +155,7 @@ func (r *Reconciler) RunPass(ctx context.Context) error {
 		desiredPrograms[d.res.ProgramID] = struct{}{}
 	}
 
-	var toDelete []int64
+	var toDelete []mirakc.Schedule
 	for _, s := range schedules {
 		if _, ours := mirakc.FindReservationID(s.Tags); !ours {
 			continue
@@ -146,19 +163,43 @@ func (r *Reconciler) RunPass(ctx context.Context) error {
 		if _, desired := desiredPrograms[s.Program.ID]; desired {
 			continue
 		}
-		toDelete = append(toDelete, s.Program.ID)
+		toDelete = append(toDelete, s)
 	}
 
-	if len(toDelete) > r.cfg.MaxDeletesPerPass {
+	// 全損シグネチャ: desired（reservations）が 1 件もないのに、自分が作った
+	// schedule が観測されている。件数ではなく形で検知する — listDesired が
+	// バグ・障害で空を返したときに自分が作った全 schedule を削除してしまう
+	// 経路だけを捕まえる。GC・ユーザー操作による正当な一括削除は他の予約が
+	// 残るのでここには当たらない（docs/recording.md §3.2、issue #2 の M2-5
+	// 決定コメント）。
+	totalLoss := len(reservations) == 0 && len(toDelete) > 0
+	if totalLoss {
+		// threshold に 0 を渡すのは値の欠落ではない。このブレーカーは件数の
+		// 閾値を持たない（形で検知する）が、「desired が空のときに許される削除数」
+		// はまさに 0 なので、pending = N と threshold = 0 の組は
+		// 「0 件しか許されない状況で N 件消そうとした」と読めて正確である。
+		if err := breaker.Trip(ctx, q, r.site, breaker.ReconcileTotalLoss, 0, totalLossSample(toDelete)); err != nil {
+			slog.Error("reconciler: recording circuit breaker trip", "breaker", breaker.ReconcileTotalLoss, "err", err)
+		}
+		// 記録が失敗した場合も含め、このパスでは削除を実行しない。
+		tripped = true
 		metrics.ReconcileCircuitBreakerTrips.Inc()
-		slog.Error("reconciler: circuit breaker tripped — too many deletes in one pass",
-			"pending_deletes", len(toDelete),
-			"threshold", r.cfg.MaxDeletesPerPass,
-		)
+	}
+
+	if tripped {
+		if !totalLoss {
+			// 全損シグネチャは今パスでは検出していないが、ラッチは自動では
+			// 解けない（手動 ResumeCircuitBreaker のみが解除する）ので削除は
+			// 引き続き止める。
+			slog.Error("reconciler: circuit breaker latched — withholding schedule deletes until manually resumed",
+				"breaker", breaker.ReconcileTotalLoss,
+				"pending_deletes", len(toDelete),
+			)
+		}
 	} else {
-		for _, programID := range toDelete {
-			if err := r.mirakc.DeleteSchedule(ctx, programID); err != nil {
-				slog.Error("reconciler: deleting schedule", "program_id", programID, "err", err)
+		for _, s := range toDelete {
+			if err := r.mirakc.DeleteSchedule(ctx, s.Program.ID); err != nil {
+				slog.Error("reconciler: deleting schedule", "program_id", s.Program.ID, "err", err)
 				continue
 			}
 			deleted++
@@ -168,7 +209,6 @@ func (r *Reconciler) RunPass(ctx context.Context) error {
 
 	recreated, updateDiff, stateGuarded, limitCarriedOver := r.recreateChanged(ctx, reservations, observedByProgram)
 
-	q := sqlcgen.New(r.pool)
 	if err := q.DeleteStaleScheduleSyncs(ctx, sqlcgen.DeleteStaleScheduleSyncsParams{
 		Site:       r.site,
 		ObservedAt: sweepTime,
@@ -218,6 +258,30 @@ func (r *Reconciler) RunPass(ctx context.Context) error {
 		"recreated", recreated,
 	)
 	return nil
+}
+
+// totalLossSample は breaker.ReconcileTotalLoss 発動時の breaker.Sample を組み立てる。
+// title は予約行から引けない（desired が空という状況そのものが全損シグネチャの
+// 前提なので）。mirakc から今パスで返ってきた Schedule.Program.Name を使う —
+// 手動確認する人間が「何が消されようとしていたか」を判別できれば十分で、
+// 予約行への問い合わせは全損の状況では成立しない。breaker.Trip 側で
+// MaxSampleSize を超えた分は切り詰められる。
+func totalLossSample(toDelete []mirakc.Schedule) breaker.Sample {
+	sample := breaker.Sample{
+		Total:    len(toDelete),
+		Programs: make([]breaker.SampleProgram, 0, len(toDelete)),
+	}
+	for _, s := range toDelete {
+		var title string
+		if s.Program.Name != nil {
+			title = *s.Program.Name
+		}
+		sample.Programs = append(sample.Programs, breaker.SampleProgram{
+			ProgramID: s.Program.ID,
+			Title:     title,
+		})
+	}
+	return sample
 }
 
 func (r *Reconciler) observeSchedules(ctx context.Context, schedules []mirakc.Schedule) error {
@@ -467,8 +531,8 @@ func (r *Reconciler) recreateChanged(
 	}
 	updateDiff = len(eligible)
 
-	// MaxRecreatesPerPass はサーキットブレーカー（MaxDeletesPerPass）とは別物の
-	// 単なるレート制限なので、超えた分は諦めずに次パスへ持ち越すだけ。
+	// MaxRecreatesPerPass はサーキットブレーカー（breaker.ReconcileTotalLoss）とは
+	// 別物の単なるレート制限なので、超えた分は諦めずに次パスへ持ち越すだけ。
 	// この再作成の DELETE はサーキットブレーカーの削除数（toDelete）には
 	// 一切数えない — 混ぜるとルールの priority 一括変更でブレーカーが誤作動する。
 	sort.Slice(eligible, func(i, j int) bool { return eligible[i].d.res.ID < eligible[j].d.res.ID })

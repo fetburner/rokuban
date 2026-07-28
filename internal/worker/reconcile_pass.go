@@ -25,8 +25,9 @@ const (
 	//
 	// ruler（rulerPassTimeout、5 分）は mirakc に一切触れない純粋な Postgres 処理だが、
 	// reconciler は mirakc への HTTP を伴う: schedules の全量 GET が 1 回、加えて
-	// desired 集合との差分ぶんの POST（作成）/ DELETE（削除、ただし MaxDeletesPerPass で
-	// 頭打ち）が観測対象の件数に比例して発生する。ネットワーク往復が支配的になりうる点は
+	// desired 集合との差分ぶんの POST（作成）/ DELETE（削除。ただし全損シグネチャの
+	// サーキットブレーカーが発動中はゼロになる）が観測対象の件数に比例して発生する。
+	// ネットワーク往復が支配的になりうる点は
 	// epg_sync（mirakc への GET 2 回 + 応答の Postgres 投影）と同じ性質なので、
 	// epg_sync と同じ既定より長い上限を与える。ingest（Timeout() が -1）とは異なり、
 	// 1 回の HTTP 呼び出しが数百 MB を転送するわけではなく、mirakc 側の応答が
@@ -84,9 +85,12 @@ func (w *ReconcilePassWorker) Timeout(*river.Job[ReconcilePassArgs]) time.Durati
 // Work は reconciler の 1 パス突き合わせを実行する。対象サイトはジョブ引数の 1 サイトのみ
 // （ジョブの排他がサイト単位のため）。
 //
-// reconciler.Reconciler はパスを跨ぐ状態を持たない（サーキットブレーカーの閾値判定も
-// 毎回この呼び出し内で完結する）ため、ジョブごとに毎回新規に生成してよい
-// （issue #24 M2-17、issue #25 §1「サーキットブレーカーの状態はパスを跨がない」）。
+// reconciler.Reconciler 自身はパスを跨ぐ状態を持たないため、ジョブごとに毎回
+// 新規に生成してよい（issue #24 M2-17）。大量削除サーキットブレーカー
+// （breaker.ReconcileTotalLoss）は例外で、発動のラッチは Reconciler 構造体ではなく
+// circuit_breakers テーブルに永続化される（issue #24 M2-5）。RunPass はパスの
+// 先頭でその状態を DB から読み直すので、ここで毎回新規生成しても発動状態は
+// 失われない。
 func (w *ReconcilePassWorker) Work(ctx context.Context, job *river.Job[ReconcilePassArgs]) error {
 	rec := reconciler.New(job.Args.Site, w.MirakcClient, w.Pool, nil)
 	return rec.RunPass(ctx)
