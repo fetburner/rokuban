@@ -15,6 +15,7 @@ import {
 import { apiErrorMessage, unwrap } from '@/api/unwrap'
 import { EmptyState, ErrorState, ListSkeleton, PageHeader, Skeleton } from '@/components/page'
 import { Button } from '@/components/ui/button'
+import { Chip } from '@/components/ui/chip'
 import { Field, Input, Select } from '@/components/ui/field'
 import { formatDateTime, formatDuration } from '@/lib/format'
 import {
@@ -35,7 +36,6 @@ import {
   type TextMatchDraft,
   type TimeWindowDraft,
 } from '@/lib/program-search'
-import { cn } from '@/lib/utils'
 
 /**
  * pageSize は一度に詳細を取りに行く結果の件数。
@@ -696,28 +696,3 @@ function ScalarFields({ draft, onChange }: FieldsProps) {
  * 番組ページのチップ（pages/programs.tsx）と同じ見た目にしてある。共通化は
  * `programs.tsx` を触ることになるので M2-11 では行わない（申し送り）。
  */
-function Chip({
-  active,
-  onClick,
-  children,
-}: {
-  active: boolean
-  onClick: () => void
-  children: React.ReactNode
-}) {
-  return (
-    <button
-      type="button"
-      aria-pressed={active}
-      onClick={onClick}
-      className={cn(
-        'shrink-0 rounded-full border px-3 py-1.5 text-xs transition-colors',
-        active
-          ? 'border-primary bg-primary text-primary-foreground'
-          : 'border-border text-muted-foreground hover:bg-muted',
-      )}
-    >
-      {children}
-    </button>
-  )
-}

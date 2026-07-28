@@ -7,6 +7,7 @@ import { ProgramGrid } from '@/components/program-grid'
 import { ProgramRow } from '@/components/program-row'
 import { useToast } from '@/components/toaster'
 import { Button } from '@/components/ui/button'
+import { Chip } from '@/components/ui/chip'
 import {
   listPrograms,
   useCreateReservation,
@@ -23,7 +24,6 @@ import { unwrap } from '@/api/unwrap'
 import { orderServices, type TimeAxis } from '@/lib/epg-grid'
 import { dayKey, formatDate } from '@/lib/format'
 import { lgMediaQuery, useMediaQuery } from '@/lib/use-media-query'
-import { cn } from '@/lib/utils'
 
 /**
  * windowHours は 1 回のスクロールステップで取得する時間窓の幅。
@@ -426,32 +426,6 @@ function ViewChips({
         番組表
       </Chip>
     </div>
-  )
-}
-
-function Chip({
-  active,
-  onClick,
-  children,
-}: {
-  active: boolean
-  onClick: () => void
-  children: React.ReactNode
-}) {
-  return (
-    <button
-      type="button"
-      aria-pressed={active}
-      onClick={onClick}
-      className={cn(
-        'shrink-0 rounded-full border px-3 py-1.5 text-xs transition-colors',
-        active
-          ? 'border-primary bg-primary text-primary-foreground'
-          : 'border-border text-muted-foreground hover:bg-muted',
-      )}
-    >
-      {children}
-    </button>
   )
 }
 
