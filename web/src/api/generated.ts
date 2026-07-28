@@ -205,10 +205,19 @@ export interface DropStat {
   errors: number;
   scrambled: number;
   /**
-     * PID 種別（M2-13, issue #24）。PMT の stream_type から分類した
-     * video / audio、または固定 PSI テーブル名（PAT/CAT/NIT/SDT/EIT/TOT）。
-     * 記述子は読まないため字幕と文字スーパーは区別しない。分類できなければ省略
-     * （PSI 解析の失敗は ingest を失敗させない。docs/recording.md「例外の境界」）
+     * PID 種別（M2-13, issue #24）。**値はすべて小文字**で、権威は Go 側の定数
+     * （`internal/tsstat`）。enum にしないのは分類の追加をスキーマ変更なしで
+     * できるようにするため（`drop_stats.pid_type` に CHECK を置かないのと同じ理由）。
+     *
+     * - `video` / `audio` --- PMT の stream_type から分類した ES
+     * - `other` --- PMT に載っているが映像でも音声でもない ES（字幕・文字スーパー・
+     *   データ放送はすべてここ。記述子を読まないため字幕と文字スーパーは区別しない）
+     * - `pat` / `cat` / `nit` / `sdt` / `eit` / `tot` --- 固定 PID（静的表。解析不要）
+     * - `pmt` --- PAT が PMT の在り処として指した PID
+     *
+     * **分類できなければ省略する**（PSI 解析の失敗は ingest を失敗させない。
+     * docs/recording.md「例外の境界」）。省略は「分類しなかった」であって
+     * 「該当なし」ではない
      */
   pidType?: string;
 }
