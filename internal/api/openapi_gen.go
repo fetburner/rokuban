@@ -455,6 +455,15 @@ type HealthResponse struct {
 	Status string `json:"status"`
 }
 
+// OverlappingReservation defines model for OverlappingReservation.
+type OverlappingReservation struct {
+	DurationMs int64     `json:"durationMs"`
+	Id         int64     `json:"id"`
+	ProgramId  int64     `json:"programId"`
+	StartAt    time.Time `json:"startAt"`
+	Title      string    `json:"title"`
+}
+
 // Program defines model for Program.
 type Program struct {
 	Audios      *[]AudioInfo `json:"audios,omitempty"`
@@ -493,6 +502,15 @@ type ProgramListItem struct {
 	ProgramId int64     `json:"programId"`
 	ServiceId int       `json:"serviceId"`
 	StartAt   time.Time `json:"startAt"`
+}
+
+// ProgramOverlaps defines model for ProgramOverlaps.
+type ProgramOverlaps struct {
+	// Count 重なっている既存予約の件数（自分自身を除く）
+	Count int `json:"count"`
+
+	// Reservations 内訳。件数だけでなく何と重なっているかをユーザーが判断できるようにする
+	Reservations []OverlappingReservation `json:"reservations"`
 }
 
 // ProgramSearchRequest ルール条件の条件部分と同じ形。rulequery.Conditions に写像される。
@@ -819,6 +837,9 @@ type ServerInterface interface {
 	// GetProgram Get a single EPG program with full detail
 	// (GET /api/programs/{programId})
 	GetProgram(w http.ResponseWriter, r *http.Request, programId int64)
+	// GetProgramOverlaps Count reservations overlapping this program's broadcast time
+	// (GET /api/programs/{programId}/overlaps)
+	GetProgramOverlaps(w http.ResponseWriter, r *http.Request, programId int64)
 	// ListRecordings List recordings
 	// (GET /api/recordings)
 	ListRecordings(w http.ResponseWriter, r *http.Request)
@@ -900,6 +921,12 @@ func (_ Unimplemented) SearchPrograms(w http.ResponseWriter, r *http.Request) {
 // GetProgram Get a single EPG program with full detail
 // (GET /api/programs/{programId})
 func (_ Unimplemented) GetProgram(w http.ResponseWriter, r *http.Request, programId int64) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// GetProgramOverlaps Count reservations overlapping this program's broadcast time
+// (GET /api/programs/{programId}/overlaps)
+func (_ Unimplemented) GetProgramOverlaps(w http.ResponseWriter, r *http.Request, programId int64) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1151,6 +1178,32 @@ func (siw *ServerInterfaceWrapper) GetProgram(w http.ResponseWriter, r *http.Req
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetProgram(w, r, programId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetProgramOverlaps operation middleware
+func (siw *ServerInterfaceWrapper) GetProgramOverlaps(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "programId" -------------
+	var programId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "programId", chi.URLParam(r, "programId"), &programId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "programId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetProgramOverlaps(w, r, programId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1645,6 +1698,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Get(options.BaseURL+"/api/programs/{programId}", wrapper.GetProgram)
 	})
 	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/programs/{programId}/overlaps", wrapper.GetProgramOverlaps)
+	})
+	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/api/recordings", wrapper.ListRecordings)
 	})
 	r.Group(func(r chi.Router) {
@@ -1822,6 +1878,42 @@ func (response GetProgram200JSONResponse) VisitGetProgramResponse(w http.Respons
 type GetProgram404JSONResponse ErrorResponse
 
 func (response GetProgram404JSONResponse) VisitGetProgramResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetProgramOverlapsRequestObject struct {
+	ProgramId int64 `json:"programId"`
+}
+
+type GetProgramOverlapsResponseObject interface {
+	VisitGetProgramOverlapsResponse(w http.ResponseWriter) error
+}
+
+type GetProgramOverlaps200JSONResponse ProgramOverlaps
+
+func (response GetProgramOverlaps200JSONResponse) VisitGetProgramOverlapsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetProgramOverlaps404JSONResponse ErrorResponse
+
+func (response GetProgramOverlaps404JSONResponse) VisitGetProgramOverlapsResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response); err != nil {
@@ -2360,6 +2452,9 @@ type StrictServerInterface interface {
 	// GetProgram Get a single EPG program with full detail
 	// (GET /api/programs/{programId})
 	GetProgram(ctx context.Context, request GetProgramRequestObject) (GetProgramResponseObject, error)
+	// GetProgramOverlaps Count reservations overlapping this program's broadcast time
+	// (GET /api/programs/{programId}/overlaps)
+	GetProgramOverlaps(ctx context.Context, request GetProgramOverlapsRequestObject) (GetProgramOverlapsResponseObject, error)
 	// ListRecordings List recordings
 	// (GET /api/recordings)
 	ListRecordings(ctx context.Context, request ListRecordingsRequestObject) (ListRecordingsResponseObject, error)
@@ -2575,6 +2670,32 @@ func (sh *strictHandler) GetProgram(w http.ResponseWriter, r *http.Request, prog
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(GetProgramResponseObject); ok {
 		if err := validResponse.VisitGetProgramResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetProgramOverlaps operation middleware
+func (sh *strictHandler) GetProgramOverlaps(w http.ResponseWriter, r *http.Request, programId int64) {
+	var request GetProgramOverlapsRequestObject
+
+	request.ProgramId = programId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetProgramOverlaps(ctx, request.(GetProgramOverlapsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetProgramOverlaps")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetProgramOverlapsResponseObject); ok {
+		if err := validResponse.VisitGetProgramOverlapsResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

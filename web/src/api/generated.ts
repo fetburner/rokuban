@@ -445,6 +445,21 @@ export interface Reservation {
   updatedAt: string;
 }
 
+export interface OverlappingReservation {
+  id: number;
+  programId: number;
+  title: string;
+  startAt: string;
+  durationMs: number;
+}
+
+export interface ProgramOverlaps {
+  /** 重なっている既存予約の件数（自分自身を除く） */
+  count: number;
+  /** 内訳。件数だけでなく何と重なっているかをユーザーが判断できるようにする */
+  reservations: OverlappingReservation[];
+}
+
 /**
  * internal/breaker の定数（RulerDeletes / ReconcileTotalLoss）。
  */
@@ -2344,6 +2359,143 @@ export function useGetProgram<TData = Awaited<ReturnType<typeof getProgram>>, TE
  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
 
   const queryOptions = getGetProgramQueryOptions(programId,options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export type getProgramOverlapsResponse200 = {
+  data: ProgramOverlaps
+  status: 200
+}
+
+export type getProgramOverlapsResponse404 = {
+  data: ErrorResponse
+  status: 404
+}
+
+export type getProgramOverlapsResponseSuccess = (getProgramOverlapsResponse200) & {
+  headers: Headers;
+};
+export type getProgramOverlapsResponseError = (getProgramOverlapsResponse404) & {
+  headers: Headers;
+};
+
+export type getProgramOverlapsResponse = (getProgramOverlapsResponseSuccess | getProgramOverlapsResponseError)
+
+export const getGetProgramOverlapsUrl = (programId: number,) => {
+
+
+
+
+  return `/api/programs/${programId}/overlaps`
+}
+
+/**
+ * 指定番組の放送時間帯（EPG プロジェクションから引く）と半開区間で重なる
+ * 既存予約の件数と内訳を返す（`a.start < b.end AND b.start < a.end`。番組表は
+ * 連続しているため、閉区間で判定すると隣接番組がすべて重なりになってしまう）。
+ *
+ * 対象は同じ site の予約のうち、自分自身（同じ programId の予約）を除き、
+ * `state <> 'orphaned'`、実効オプション（`db.EffectiveOptions`）の `skip` が
+ * true でないもの。
+ *
+ * **これは重なりの件数だけを返す。チューナー本数との比較や容量超過の判定は
+ * 行わない**（[issue #21](https://github.com/fetburner/rokuban/issues/21) の
+ * 「案 C」、docs/data.md §6.5 が扱う M2-10 の領分）。`count` が 0 より大きくても
+ * 「録画できない」とは限らず（同一物理チャンネルなら 1 本のチューナーで
+ * 複数番組を賄える）、逆に `count` が 0 でも他サイトや mirakc の他の消費者
+ * （並走 EPGStation・ライブ視聴・EPG 収集）の存在は考慮されていない。
+ * 呼び出し側は件数を「事実」として提示し、勝敗や可否を断定してはならない。
+ *
+ * 番組が EPG プロジェクションに無ければ 404。
+ * @summary Count reservations overlapping this program's broadcast time
+ */
+export const getProgramOverlaps = async (programId: number, options?: RequestInit): Promise<getProgramOverlapsResponse> => {
+
+  return customInstance<getProgramOverlapsResponse>(getGetProgramOverlapsUrl(programId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetProgramOverlapsQueryKey = (programId: number,) => {
+    return [
+    `/api/programs/${programId}/overlaps`
+    ] as const;
+    }
+
+
+export const getGetProgramOverlapsQueryOptions = <TData = Awaited<ReturnType<typeof getProgramOverlaps>>, TError = ErrorResponse>(programId: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getProgramOverlaps>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetProgramOverlapsQueryKey(programId);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getProgramOverlaps>>> = ({ signal }) => getProgramOverlaps(programId, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: programId !== null && programId !== undefined, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getProgramOverlaps>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type GetProgramOverlapsQueryResult = NonNullable<Awaited<ReturnType<typeof getProgramOverlaps>>>
+export type GetProgramOverlapsQueryError = ErrorResponse
+
+
+export function useGetProgramOverlaps<TData = Awaited<ReturnType<typeof getProgramOverlaps>>, TError = ErrorResponse>(
+ programId: number, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getProgramOverlaps>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getProgramOverlaps>>,
+          TError,
+          Awaited<ReturnType<typeof getProgramOverlaps>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetProgramOverlaps<TData = Awaited<ReturnType<typeof getProgramOverlaps>>, TError = ErrorResponse>(
+ programId: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getProgramOverlaps>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getProgramOverlaps>>,
+          TError,
+          Awaited<ReturnType<typeof getProgramOverlaps>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetProgramOverlaps<TData = Awaited<ReturnType<typeof getProgramOverlaps>>, TError = ErrorResponse>(
+ programId: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getProgramOverlaps>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary Count reservations overlapping this program's broadcast time
+ */
+
+export function useGetProgramOverlaps<TData = Awaited<ReturnType<typeof getProgramOverlaps>>, TError = ErrorResponse>(
+ programId: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getProgramOverlaps>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getGetProgramOverlapsQueryOptions(programId,options)
 
   const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
 

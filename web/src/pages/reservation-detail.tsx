@@ -8,6 +8,7 @@ import {
 } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
 import { ErrorState, ListSkeleton } from '@/components/page'
+import { ProgramOverlapWarning } from '@/components/program-overlap-warning'
 import { useToast } from '@/components/toaster'
 import { Button } from '@/components/ui/button'
 import { formatDateTime, formatDuration } from '@/lib/format'
@@ -69,6 +70,11 @@ export function ReservationDetailPage() {
             <p className="mt-1 text-sm text-muted-foreground">
               {formatDateTime(reservation.startAt)} · {formatDuration(reservation.durationMs)}
             </p>
+            {/* この予約が作られたあとで他の予約が増え、重なりが生じることもあるので
+                詳細画面でも常に出す（issue #24 M2-8。件数だけ・断定なし）。 */}
+            <div className="mt-2">
+              <ProgramOverlapWarning programId={reservation.programId} />
+            </div>
           </section>
 
           <Fields title="予約">

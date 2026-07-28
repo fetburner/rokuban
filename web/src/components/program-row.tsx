@@ -3,6 +3,7 @@ import { useState } from 'react'
 
 import { useGetProgram, type ProgramListItem } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
+import { ProgramOverlapWarning } from '@/components/program-overlap-warning'
 import { Button } from '@/components/ui/button'
 import { formatDuration, formatTime, isAiring } from '@/lib/format'
 import { cn } from '@/lib/utils'
@@ -51,6 +52,10 @@ export function ProgramRow({
             <span className="shrink-0">{formatDuration(program.durationMs)}</span>
             {!program.isFree && <span className="shrink-0">有料</span>}
           </div>
+          {/* 予約する前に見せる（issue #24 M2-8）。展開しなくても常に見える位置に置く
+              （予約後に知らせても遅いため）。取消可能な「取消」ボタン側（既に予約済み）
+              では自分自身との重なりしか出ようがないので問い合わせ自体をしない。 */}
+          {!reserved && <ProgramOverlapWarning programId={program.programId} />}
           {expanded && <ProgramDetail program={program} />}
         </div>
         <ChevronDown
