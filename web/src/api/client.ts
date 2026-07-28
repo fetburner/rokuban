@@ -1,3 +1,23 @@
+/**
+ * ApiError は非 2xx のレスポンス。ステータスと**ボディ**を保持する。
+ *
+ * ボディを捨てると、サーバーが 400 に添えた理由（ErrorResponse.error）が
+ * UI に届かない。検索の正規表現のように「書き方が悪い」のか「該当なし」なのかを
+ * ユーザーが区別できないと直せない種類の失敗があるため、ここで運ぶ。
+ * 取り出しは `api/unwrap.ts` の `apiErrorMessage`。
+ */
+export class ApiError extends Error {
+  readonly status: number
+  readonly body: unknown
+
+  constructor(status: number, statusText: string, body: unknown) {
+    super(`${status} ${statusText}`.trimEnd())
+    this.name = 'ApiError'
+    this.status = status
+    this.body = body
+  }
+}
+
 // orval が生成するレスポンス型は { data, status, headers } を持つため、
 // fetch レスポンスをその形に整形して返す
 export const customInstance = async <T>(
@@ -7,7 +27,11 @@ export const customInstance = async <T>(
   const response = await fetch(url, options)
 
   if (!response.ok) {
-    throw new Error(`${response.status} ${response.statusText}`)
+    // JSON でないエラー（プロキシの HTML エラーページ等）もあるので、
+    // 解析の失敗はボディ無しとして扱う。ここで例外にすると
+    // ステータスすら伝わらなくなる。
+    const body = await response.json().catch(() => undefined)
+    throw new ApiError(response.status, response.statusText, body)
   }
 
   // 204 (No Content) はボディを持たない。DELETE や resume 系のエンドポイントが
