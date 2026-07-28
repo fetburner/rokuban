@@ -2,6 +2,7 @@ import { Link, useRouterState } from '@tanstack/react-router'
 import { CalendarClock, ListVideo, Tv } from 'lucide-react'
 import type { ComponentType } from 'react'
 
+import { CircuitBreakerBanner } from '@/components/circuit-breaker-banner'
 import { cn } from '@/lib/utils'
 
 type NavItem = {
@@ -113,6 +114,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     <div className="flex min-h-screen bg-background text-foreground">
       <Sidebar />
       <div className="flex min-w-0 flex-1 flex-col">
+        {/* サーキットブレーカー発動中はどのページでも見えるよう、
+            ルーティングされる children の外・全ページ共通の位置に置く */}
+        <CircuitBreakerBanner />
         {/* ボトムタブに隠れないよう、モバイルでは下に余白を足す */}
         <main className="min-w-0 flex-1 pb-[var(--bottom-nav-height)] md:pb-0">
           {children}
