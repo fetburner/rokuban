@@ -159,7 +159,7 @@ func TestRunPass_DoesNotWriteProgramIntents(t *testing.T) {
 
 	q := sqlcgen.New(pool)
 	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
-		Site: testSite, ProgramID: 1001, Action: db.IntentRecord, Overrides: []byte(`{}`),
+		Site: testSite, ProgramID: 1001, Action: db.IntentRecord,
 		ProgramStartAt: start, ProgramDurationMs: testDurationMs,
 	}); err != nil {
 		t.Fatal(err)
@@ -189,8 +189,100 @@ func TestRunPass_DoesNotWriteProgramIntents(t *testing.T) {
 	if before.Action != after.Action {
 		t.Errorf("program_intents.action changed: %q -> %q", before.Action, after.Action)
 	}
+}
+
+// 受け入れ基準 4: ruler は program_overrides を一切書かない
+// （program_intents と同じ規律。docs/recording.md §4.2「ruler は base だけを書く」）。
+func TestRunPass_DoesNotWriteProgramOverrides(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	insertService(t, pool, ctx)
+	start := time.Now().Add(24 * time.Hour).Truncate(time.Second)
+	insertProgram(t, pool, ctx, 1101, "上書きテスト", start)
+
+	ruleID := insertRule(t, pool, ctx, "override-write-guard", 10)
+	insertRuleKeyword(t, pool, ctx, ruleID, "上書きテスト")
+
+	q := sqlcgen.New(pool)
+	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
+		Site: testSite, ProgramID: 1101, Overrides: []byte(`{"priority":9}`),
+		ProgramStartAt: start, ProgramDurationMs: testDurationMs,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	before, err := q.GetProgramOverrides(ctx, sqlcgen.GetProgramOverridesParams{Site: testSite, ProgramID: 1101})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r := ruler.New([]string{testSite}, pool, nil)
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
+
+	after, err := q.GetProgramOverrides(ctx, sqlcgen.GetProgramOverridesParams{Site: testSite, ProgramID: 1101})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !before.UpdatedAt.Equal(after.UpdatedAt) {
+		t.Errorf("program_overrides.updated_at changed: %v -> %v", before.UpdatedAt, after.UpdatedAt)
+	}
 	if string(before.Overrides) != string(after.Overrides) {
-		t.Errorf("program_intents.overrides changed: %s -> %s", before.Overrides, after.Overrides)
+		t.Errorf("program_overrides.overrides changed: %s -> %s", before.Overrides, after.Overrides)
+	}
+}
+
+// 受け入れ基準 5: program_overrides に行があるだけで、ルールがマッチしなくなった
+// あとも予約が detached として生き残る（削除されない。docs/recording.md §4.2
+// 「ruler から見た load-bearing な行」）。
+func TestRunPass_OverridesAloneKeepReservationDetached(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	insertService(t, pool, ctx)
+	start := time.Now().Add(24 * time.Hour).Truncate(time.Second)
+	insertProgram(t, pool, ctx, 1201, "上書き生存", start)
+
+	ruleID := insertRule(t, pool, ctx, "override-survivor", 10)
+	insertRuleKeyword(t, pool, ctx, ruleID, "上書き生存")
+
+	q := sqlcgen.New(pool)
+	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
+		Site: testSite, ProgramID: 1201, Overrides: []byte(`{"priority":9}`),
+		ProgramStartAt: start, ProgramDurationMs: testDurationMs,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	r := ruler.New([]string{testSite}, pool, nil)
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("initial RunPass: %v", err)
+	}
+	if _, ok := getReservation(t, pool, ctx, 1201); !ok {
+		t.Fatal("reservation should be created initially (rule matches)")
+	}
+
+	// ルールを無効化 → マッチしなくなるが、program_overrides に行があるので
+	// desired から外れない（意図が無くても上書きだけで予約が生き残る）。
+	if _, err := pool.Exec(ctx, `UPDATE rules SET enabled = false WHERE id = $1`, ruleID); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass after disabling rule: %v", err)
+	}
+
+	res, ok := getReservation(t, pool, ctx, 1201)
+	if !ok {
+		t.Fatal("reservation with only program_overrides (no intent) should survive as detached, not be deleted")
+	}
+	if res.RuleID != nil {
+		t.Errorf("rule_id = %v, want nil after detaching", res.RuleID)
+	}
+	if res.State != db.ReservationStateDetached {
+		t.Errorf("state = %q, want %q", res.State, db.ReservationStateDetached)
 	}
 }
 
@@ -417,7 +509,7 @@ func TestRunPass_RuleUnmatch_DeleteVsDetach(t *testing.T) {
 	q := sqlcgen.New(pool)
 	// 7002 には record intent が付いている（例: ユーザーが個別に上書き済み）
 	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
-		Site: testSite, ProgramID: 7002, Action: db.IntentRecord, Overrides: []byte(`{}`),
+		Site: testSite, ProgramID: 7002, Action: db.IntentRecord,
 		ProgramStartAt: start, ProgramDurationMs: testDurationMs,
 	}); err != nil {
 		t.Fatal(err)
@@ -572,8 +664,8 @@ func reservationExists(t *testing.T, pool *pgxpool.Pool, ctx context.Context, pr
 	return ok
 }
 
-// 受け入れ基準 10（GC）: 番組終了 + RetentionGrace 経過の予約と program_intents は
-// GC で削除される。
+// 受け入れ基準 10（GC）: 番組終了 + RetentionGrace 経過の予約・program_intents・
+// program_overrides は GC で削除される（同じ cutoff。docs/schema.md §3.5）。
 func TestRunPass_GC_DeletesEndedPastGrace(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
@@ -586,7 +678,13 @@ func TestRunPass_GC_DeletesEndedPastGrace(t *testing.T) {
 
 	q := sqlcgen.New(pool)
 	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
-		Site: testSite, ProgramID: 10001, Action: db.IntentRecord, Overrides: []byte(`{}`),
+		Site: testSite, ProgramID: 10001, Action: db.IntentRecord,
+		ProgramStartAt: start, ProgramDurationMs: testDurationMs,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
+		Site: testSite, ProgramID: 10001, Overrides: []byte(`{"priority":3}`),
 		ProgramStartAt: start, ProgramDurationMs: testDurationMs,
 	}); err != nil {
 		t.Fatal(err)
@@ -602,6 +700,9 @@ func TestRunPass_GC_DeletesEndedPastGrace(t *testing.T) {
 	}
 	if _, err := q.GetProgramIntent(ctx, sqlcgen.GetProgramIntentParams{Site: testSite, ProgramID: 10001}); !errors.Is(err, pgx.ErrNoRows) {
 		t.Errorf("program_intents past end+grace should have been GC'd, got err=%v", err)
+	}
+	if _, err := q.GetProgramOverrides(ctx, sqlcgen.GetProgramOverridesParams{Site: testSite, ProgramID: 10001}); !errors.Is(err, pgx.ErrNoRows) {
+		t.Errorf("program_overrides past end+grace should have been GC'd, got err=%v", err)
 	}
 }
 

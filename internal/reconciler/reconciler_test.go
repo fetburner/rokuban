@@ -12,9 +12,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/fetburner/rokuban/internal/contentpath"
+	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
@@ -163,19 +165,19 @@ func createReservation(t *testing.T, ctx context.Context, q *sqlcgen.Queries, pr
 	return res
 }
 
-// setPriorityOverride は program_intents.overrides に priority を書き込み、
+// setPriorityOverride は program_overrides.overrides に priority を書き込み、
 // 予約の effective priority を base とは別の値に上書きする
-// （db.EffectiveOptions が base と overrides をマージする経路をそのまま使う）。
+// （db.EffectiveOptions が base と overrides をマージする経路をそのまま使う。
+// overrides は M2-4 で program_intents から program_overrides に分離済み）。
 func setPriorityOverride(t *testing.T, ctx context.Context, q *sqlcgen.Queries, res sqlcgen.Reservation, priority int) {
 	t.Helper()
 	overrides, err := json.Marshal(map[string]int{"priority": priority})
 	if err != nil {
 		t.Fatalf("marshalling overrides: %v", err)
 	}
-	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
+	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
 		Site:              "default",
 		ProgramID:         res.ProgramID,
-		Action:            "record",
 		Overrides:         overrides,
 		ProgramStartAt:    res.ProgramStartAt,
 		ProgramDurationMs: res.ProgramDurationMs,
@@ -883,5 +885,115 @@ func TestReconciler_ScheduleLostOnRecreatePostFailure(t *testing.T) {
 	}
 	if s.Options.Priority != 88 {
 		t.Errorf("recovered schedule priority = %d, want 88", s.Options.Priority)
+	}
+}
+
+// --- detached/orphaned の同期対象判定（M2-4 で修正したバグの回帰テスト）---
+//
+// docs/schema.md §3「state を『mirakc への同期対象か』のフィルタに使っては
+// ならない」、docs/recording.md §4.3。同期の可否を決めるのは effective.skip
+// であり、state で除外してよいのは orphaned だけ。
+
+// setReservationState は state を直接書き換える。ruler を経由せず、reconciler の
+// 同期対象判定だけを state 別に固定したいので生 SQL で任意の state を作る。
+func setReservationState(t *testing.T, ctx context.Context, pool *pgxpool.Pool, id int64, state string) {
+	t.Helper()
+	if _, err := pool.Exec(ctx, `UPDATE reservations SET state = $1 WHERE id = $2`, state, id); err != nil {
+		t.Fatalf("setting reservation state to %q: %v", state, err)
+	}
+}
+
+// 受け入れ基準 14: state='detached' の予約にも schedule が作られる。
+//
+// 旧 ListActiveReservationsBySite は state = 'active' でしか絞っておらず、
+// detached（「実質 manual として動く」はずの状態）の予約が同期対象から
+// 落ちていた。手動予約 → たまたまルールがマッチ（active）→ そのルールを
+// 編集して外す（detached）という経路で、ユーザーの手動予約が黙って
+// 録画されなくなるバグの本体（M2-4 で修正）。
+func TestReconciler_DetachedReservationGetsScheduled(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	mock := newMockMirakc()
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+
+	mc := mirakc.NewClient(srv.URL, nil)
+	q := sqlcgen.New(pool)
+
+	startAt := time.Now().Add(1 * time.Hour)
+	res := createReservation(t, ctx, q, 100000500019200, "detached予約", startAt)
+	setReservationState(t, ctx, pool, res.ID, db.ReservationStateDetached)
+
+	rec := reconciler.New("default", mc, pool, nil)
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
+
+	if _, ok := mock.getSchedules()[res.ProgramID]; !ok {
+		t.Error("detached reservation should still get a schedule created " +
+			"(state must not be used as the sync-target filter; effective.skip decides)")
+	}
+}
+
+// 受け入れ基準 15: state='orphaned' の予約には schedule が作られない
+// （番組終了後に schedule が観測されなかった行なので、作る意味がない）。
+func TestReconciler_OrphanedReservationNotScheduled(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	mock := newMockMirakc()
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+
+	mc := mirakc.NewClient(srv.URL, nil)
+	q := sqlcgen.New(pool)
+
+	startAt := time.Now().Add(1 * time.Hour)
+	res := createReservation(t, ctx, q, 100000500019201, "orphaned予約", startAt)
+	setReservationState(t, ctx, pool, res.ID, db.ReservationStateOrphaned)
+
+	rec := reconciler.New("default", mc, pool, nil)
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
+
+	if _, ok := mock.getSchedules()[res.ProgramID]; ok {
+		t.Error("orphaned reservation should not get a schedule created")
+	}
+}
+
+// 受け入れ基準 16: detached かつ intent{skip} の予約には schedule が作られない
+// （state だけでなく effective.skip が引き続き効くこと）。
+func TestReconciler_DetachedSkipReservationNotScheduled(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	mock := newMockMirakc()
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+
+	mc := mirakc.NewClient(srv.URL, nil)
+	q := sqlcgen.New(pool)
+
+	startAt := time.Now().Add(1 * time.Hour)
+	res := createReservation(t, ctx, q, 100000500019202, "detachedスキップ", startAt)
+	setReservationState(t, ctx, pool, res.ID, db.ReservationStateDetached)
+	if _, err := q.SkipProgram(ctx, sqlcgen.SkipProgramParams{
+		Site:              "default",
+		ProgramID:         res.ProgramID,
+		ProgramStartAt:    res.ProgramStartAt,
+		ProgramDurationMs: res.ProgramDurationMs,
+	}); err != nil {
+		t.Fatalf("recording skip intent: %v", err)
+	}
+
+	rec := reconciler.New("default", mc, pool, nil)
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
+
+	if _, ok := mock.getSchedules()[res.ProgramID]; ok {
+		t.Error("detached reservation with a skip intent should not get a schedule created")
 	}
 }

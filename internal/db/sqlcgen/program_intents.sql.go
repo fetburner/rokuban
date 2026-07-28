@@ -7,7 +7,6 @@ package sqlcgen
 
 import (
 	"context"
-	"encoding/json"
 	"time"
 )
 
@@ -43,7 +42,7 @@ func (q *Queries) DeleteProgramIntent(ctx context.Context, arg DeleteProgramInte
 }
 
 const getProgramIntent = `-- name: GetProgramIntent :one
-SELECT site, program_id, action, overrides, program_start_at, program_duration_ms, created_at, updated_at FROM program_intents WHERE site = $1 AND program_id = $2
+SELECT site, program_id, action, program_start_at, program_duration_ms, created_at, updated_at FROM program_intents WHERE site = $1 AND program_id = $2
 `
 
 type GetProgramIntentParams struct {
@@ -58,7 +57,6 @@ func (q *Queries) GetProgramIntent(ctx context.Context, arg GetProgramIntentPara
 		&i.Site,
 		&i.ProgramID,
 		&i.Action,
-		&i.Overrides,
 		&i.ProgramStartAt,
 		&i.ProgramDurationMs,
 		&i.CreatedAt,
@@ -119,7 +117,7 @@ INSERT INTO program_intents (
 ON CONFLICT (site, program_id) DO UPDATE SET
     action     = 'skip',
     updated_at = now()
-RETURNING site, program_id, action, overrides, program_start_at, program_duration_ms, created_at, updated_at
+RETURNING site, program_id, action, program_start_at, program_duration_ms, created_at, updated_at
 `
 
 type SkipProgramParams struct {
@@ -129,7 +127,7 @@ type SkipProgramParams struct {
 	ProgramDurationMs int64
 }
 
-// 取消（intent{skip}）は既存の overrides を保ったまま action だけを倒す。
+// 取消（intent{skip}）は action だけを倒す。overrides は別表なので触らない。
 // 番組情報のスナップショットは新規作成時のみ必要。
 func (q *Queries) SkipProgram(ctx context.Context, arg SkipProgramParams) (ProgramIntent, error) {
 	row := q.db.QueryRow(ctx, skipProgram,
@@ -143,7 +141,6 @@ func (q *Queries) SkipProgram(ctx context.Context, arg SkipProgramParams) (Progr
 		&i.Site,
 		&i.ProgramID,
 		&i.Action,
-		&i.Overrides,
 		&i.ProgramStartAt,
 		&i.ProgramDurationMs,
 		&i.CreatedAt,
@@ -155,31 +152,31 @@ func (q *Queries) SkipProgram(ctx context.Context, arg SkipProgramParams) (Progr
 const upsertProgramIntent = `-- name: UpsertProgramIntent :one
 
 INSERT INTO program_intents (
-    site, program_id, action, overrides, program_start_at, program_duration_ms
-) VALUES ($1, $2, $3, $4, $5, $6)
+    site, program_id, action, program_start_at, program_duration_ms
+) VALUES ($1, $2, $3, $4, $5)
 ON CONFLICT (site, program_id) DO UPDATE SET
     action     = EXCLUDED.action,
-    overrides  = EXCLUDED.overrides,
     updated_at = now()
-RETURNING site, program_id, action, overrides, program_start_at, program_duration_ms, created_at, updated_at
+RETURNING site, program_id, action, program_start_at, program_duration_ms, created_at, updated_at
 `
 
 type UpsertProgramIntentParams struct {
 	Site              string
 	ProgramID         int64
 	Action            string
-	Overrides         json.RawMessage
 	ProgramStartAt    time.Time
 	ProgramDurationMs int64
 }
 
 // 番組単位のユーザー意図（issue #18 の案 A）。api だけが書き、ruler は読むだけ。
+//
+// overrides（パラメータの上書き）は M2-4（00010）で program_overrides に分離
+// 済み。この表が持つのは action（record/skip）のみ（docs/schema.md §3.5）。
 func (q *Queries) UpsertProgramIntent(ctx context.Context, arg UpsertProgramIntentParams) (ProgramIntent, error) {
 	row := q.db.QueryRow(ctx, upsertProgramIntent,
 		arg.Site,
 		arg.ProgramID,
 		arg.Action,
-		arg.Overrides,
 		arg.ProgramStartAt,
 		arg.ProgramDurationMs,
 	)
@@ -188,7 +185,6 @@ func (q *Queries) UpsertProgramIntent(ctx context.Context, arg UpsertProgramInte
 		&i.Site,
 		&i.ProgramID,
 		&i.Action,
-		&i.Overrides,
 		&i.ProgramStartAt,
 		&i.ProgramDurationMs,
 		&i.CreatedAt,

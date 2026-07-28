@@ -88,9 +88,13 @@ func runShadowDiff(ctx context.Context, q *sqlcgen.Queries, epgClient *epgstatio
 		return shadowdiff.Report{}, fmt.Errorf("listing EPGStation reserves: %w", err)
 	}
 
-	active, err := q.ListActiveReservationsBySite(ctx, site)
+	// ListSyncableReservationsBySite（state <> 'orphaned'）を使う。detached の
+	// 予約も mirakc に schedule が作られる（M2-4 で修正）ため、EPGStation との
+	// 突き合わせ対象にも含めないと detached 予約が偽の EPGStationOnly として
+	// 報告されてしまう。
+	active, err := q.ListSyncableReservationsBySite(ctx, site)
 	if err != nil {
-		return shadowdiff.Report{}, fmt.Errorf("listing rokuban active reservations: %w", err)
+		return shadowdiff.Report{}, fmt.Errorf("listing rokuban reservations: %w", err)
 	}
 
 	skipped, err := q.ListSkippedProgramIntentsBySite(ctx, site)

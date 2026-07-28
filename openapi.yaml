@@ -204,12 +204,89 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+    patch:
+      operationId: updateReservationOverrides
+      summary: Update per-reservation overrides
+      description: |
+        値を書いたフィールドはそのフィールドの override を設定する。`reset`
+        配列に名前を挙げたフィールドは override を削除する（フィールド単位の
+        「ルールに戻す」）。どちらにも現れないフィールドは変更しない。
+
+        `null` で消す形にはしない（`*T` は「キーが無い」と `null` を区別できず、
+        「消す」が「変更しない」に化けて黙って壊れるため。
+        docs/recording.md §4.2「overrides API の形」）。
+
+        同じフィールドを値と `reset` の両方に書いたら 400（意図が不明なので
+        推測しない）。`reset` に未知のフィールド名があっても 400。
+
+        `skip` は overrides のキーではない（`program_intents.action` が担う）ので
+        ここでは扱わない。取消は `DELETE /api/reservations/{id}`。
+
+        override は `program_overrides` 表（`program_intents` とは別表）に持つ。
+        予約単位の「ルールに戻す」は `DELETE /api/reservations/{id}/overrides` で、
+        `program_intents` には一切触れない（docs/recording.md §4.2「overrides は
+        program_intents とは別の表に置く」）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReservationOverridesInput"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Reservation"
+        "400":
+          description: Invalid input
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
     delete:
       operationId: deleteReservation
       summary: Cancel a reservation
       responses:
         "204":
           description: Deleted
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/reservations/{id}/overrides:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+    delete:
+      operationId: resetReservationOverrides
+      summary: Reset all overrides for a reservation (revert to rule)
+      description: |
+        予約単位の「ルールに戻す」。`program_overrides` の行を削除するだけ
+        （`DELETE FROM program_overrides WHERE site = $1 AND program_id = $2`）。
+        `action`（record/skip。`program_intents` 側）は触らない
+        （docs/recording.md §4.2「overrides は program_intents とは別の表に置く」）。
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Reservation"
         "404":
           description: Not found
           content:
@@ -686,6 +763,62 @@ components:
           format: int64
         priority:
           type: integer
+
+    # --- Reservation overrides (M2-4) ---
+
+    ReservationOverridesInput:
+      type: object
+      description: |
+        PATCH /api/reservations/{id} のボディ。値を書いたフィールドは override
+        を設定し、`reset` に名前を挙げたフィールドは override を削除する。
+        どちらにも現れないフィールドは変更しない。同じフィールドを値と
+        `reset` の両方に書いたら 400、`reset` に未知のフィールド名があっても
+        400（docs/recording.md §4.2）。
+      properties:
+        priority:
+          type: integer
+          description: |
+            mirakc の schedule に反映される（reconciler が DELETE + POST で
+            schedule を再作成する）。ただし録画開始後の recorder には
+            効かない可能性が高い（docs/recording.md §4.5）。
+        contentPath:
+          type: string
+          description: |
+            既存の schedule には反映されない。churn を避けるため差分対象外で、
+            初回生成値に固定されるため（docs/recording.md §3.2）。まだ
+            schedule が作られていない予約にだけ効く（docs/recording.md §4.5）。
+        filenameTemplate:
+          type: string
+          description: |
+            Go text/template のテンプレート文字列。既存の schedule には
+            反映されず、まだ schedule が作られていない予約にだけ効く
+            （docs/recording.md §4.5）。
+        keepOriginal:
+          type: string
+          enum: [always, until_encoded]
+          description: |
+            ingest 時に評価されるので、録画開始後の変更でも効く
+            （M3 で消費。docs/recording.md §4.5）。
+        encodeProfiles:
+          type: array
+          items:
+            type: string
+          description: |
+            ingest 時に評価されるので、録画開始後の変更でも効く
+            （M3 で消費。docs/recording.md §4.5）。
+        reset:
+          type: array
+          items:
+            type: string
+            enum:
+              - priority
+              - contentPath
+              - filenameTemplate
+              - keepOriginal
+              - encodeProfiles
+          description: |
+            指定したフィールドの override を削除する（フィールド単位の
+            「ルールに戻す」）。値を書いたフィールドと重複して指定すると 400。
 
     # --- Program search (M2-2) — 条件形はルールと共有 ---
 

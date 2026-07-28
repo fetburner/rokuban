@@ -18,27 +18,46 @@ INSERT INTO reservations (
 VALUES ($1, $2, 'manual', $3, $4, $5, $6, $7, $8, $9)
 RETURNING *;
 
--- 予約とユーザー意図を 1 行に合わせて返す。overrides は program_intents 側にあり、
--- 予約が存在しても意図がない（純粋なルール由来）ことはあるので LEFT JOIN。
+-- 予約とユーザー意図・上書きを 1 行に合わせて返す。action は program_intents、
+-- overrides は program_overrides（M2-4 / 00010 で分離）にあり、予約が存在しても
+-- 意図・上書きのどちらかしかない（あるいはどちらも無い）ことがあるので
+-- 両方 LEFT JOIN する。
 -- name: GetReservationFull :one
-SELECT sqlc.embed(r), i.action AS intent_action, i.overrides AS intent_overrides
+SELECT sqlc.embed(r), i.action AS intent_action, o.overrides AS overrides
 FROM reservations r
 LEFT JOIN program_intents i ON i.site = r.site AND i.program_id = r.program_id
+LEFT JOIN program_overrides o ON o.site = r.site AND o.program_id = r.program_id
 WHERE r.id = $1;
 
 -- name: ListReservationsBySite :many
-SELECT sqlc.embed(r), i.action AS intent_action, i.overrides AS intent_overrides
+SELECT sqlc.embed(r), i.action AS intent_action, o.overrides AS overrides
 FROM reservations r
 LEFT JOIN program_intents i ON i.site = r.site AND i.program_id = r.program_id
+LEFT JOIN program_overrides o ON o.site = r.site AND o.program_id = r.program_id
 WHERE r.site = $1
 ORDER BY r.program_start_at;
 
--- name: ListActiveReservationsBySite :many
-SELECT sqlc.embed(r), i.action AS intent_action, i.overrides AS intent_overrides
+-- reconciler が mirakc へ同期する対象（docs/schema.md §3「state を『mirakc への
+-- 同期対象か』のフィルタに使ってはならない」、docs/recording.md §4.3）。
+-- 同期の可否を決めるのは effective.skip であり、state で除外してよいのは
+-- orphaned だけ（番組が終了しているので schedule を作る意味がない）。
+-- active/detached はどちらも「実質 manual として動く」ことがあるため同期対象に
+-- 含める。旧名 ListActiveReservationsBySite は state='active' でしか絞っておらず
+-- detached の予約に schedule が作られないバグの原因だった（M2-4 で修正）。
+-- name: ListSyncableReservationsBySite :many
+SELECT sqlc.embed(r), i.action AS intent_action, o.overrides AS overrides
 FROM reservations r
 LEFT JOIN program_intents i ON i.site = r.site AND i.program_id = r.program_id
-WHERE r.site = $1 AND r.state = 'active'
+LEFT JOIN program_overrides o ON o.site = r.site AND o.program_id = r.program_id
+WHERE r.site = $1 AND r.state <> 'orphaned'
 ORDER BY r.program_start_at;
+
+-- PATCH /api/reservations/{id} と DELETE .../overrides の直列化のため、予約行を
+-- FOR UPDATE でロックする。Rokuban は構造的に単一世帯用アプリで認証機構を
+-- 持たないため同時 PATCH は事実上起きないが、1 行のロックで足りるので取る
+-- （docs/recording.md §4.2「マージは Go 側で型付きに行う」）。
+-- name: LockReservation :one
+SELECT id FROM reservations WHERE id = $1 FOR UPDATE;
 
 -- name: DeleteReservation :execrows
 DELETE FROM reservations WHERE id = $1;

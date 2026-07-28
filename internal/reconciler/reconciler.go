@@ -267,22 +267,35 @@ func (r *Reconciler) observeSchedules(ctx context.Context, schedules []mirakc.Sc
 }
 
 // desiredReservation は予約行と、そこから解決済みの実効オプション。
-// オプションは base（ruler の導出結果）と program_intents（ユーザー意図）の
-// 合成なので、行だけを持ち回さず解決結果と組で扱う。
+// オプションは base（ruler の導出結果）と program_overrides（ユーザーの上書き）
+// ・program_intents（ユーザーの record/skip 意図）の合成なので、行だけを
+// 持ち回さず解決結果と組で扱う。
 type desiredReservation struct {
 	res  sqlcgen.Reservation
 	opts db.ReservationOptions
 }
 
+// listDesired は mirakc への同期対象を返す。
+//
+// state ではなく effective.skip で絞る（docs/schema.md §3「state を『mirakc への
+// 同期対象か』のフィルタに使ってはならない」、docs/recording.md §4.3）。
+// state で除外してよいのは orphaned だけ（番組終了後に schedule が観測され
+// なかった行で、番組が終わっているので schedule を作る意味がない）。
+// ListSyncableReservationsBySite が state <> 'orphaned' で絞るのはこのため —
+// 旧 ListActiveReservationsBySite は state = 'active' でしか絞っておらず、
+// detached（「実質 manual として動く」はず）の予約に schedule が作られない
+// バグの原因だった: 手動予約 → たまたまルールがマッチ（active, rule_id 付き）
+// → そのルールを編集して外す（detached）→ 同期対象から外れる、という経路で
+// ユーザーの手動予約が黙って録画されなくなっていた（M2-4 で修正）。
 func (r *Reconciler) listDesired(ctx context.Context) ([]desiredReservation, error) {
-	reservations, err := sqlcgen.New(r.pool).ListActiveReservationsBySite(ctx, r.site)
+	reservations, err := sqlcgen.New(r.pool).ListSyncableReservationsBySite(ctx, r.site)
 	if err != nil {
 		return nil, err
 	}
 
 	var desired []desiredReservation
 	for _, row := range reservations {
-		opts, err := db.EffectiveOptions(row.Reservation.Base, row.IntentOverrides, row.IntentAction)
+		opts, err := db.EffectiveOptions(row.Reservation.Base, row.Overrides, row.IntentAction)
 		if err != nil {
 			// 壊れた jsonb で mirakc に既定値の schedule を作ってしまわないよう、
 			// この予約は同期対象から外してアラートする（握りつぶさない）。

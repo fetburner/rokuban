@@ -122,24 +122,42 @@ FROM reservations
 WHERE rule_id = sqlc.arg(rule_id);
 
 -- name: DeleteReservationsByRuleWithoutIntent :execrows
--- ルール削除時: ユーザー意図のない導出予約を物理削除する。
--- 意図がある予約は残す（FK の ON DELETE SET NULL で rule_id が外れ、
--- base が凍結されたまま実質 manual として動く = detached）。
--- 意図は program_intents にあるので、行を残すこと自体が目的ではない。
+-- ルール削除時: ユーザーの投資（program_intents / program_overrides のどちらか）
+-- がない導出予約を物理削除する。投資がある予約は残す（FK の ON DELETE SET NULL
+-- で rule_id が外れ、base が凍結されたまま実質 manual として動く = detached）。
+--
+-- M2-4 で overrides を program_intents から program_overrides に分離したため、
+-- 「ルール由来の予約に PATCH しただけ（program_overrides のみ、program_intents
+-- には行なし）」という状態が構造的にありうる（docs/recording.md §4.2「overrides
+-- は program_intents とは別の表に置く」）。program_intents だけを見ると
+-- この投資を見落として誤って物理削除してしまうため、両方を確認する
+-- （§4.3「意図または上書きがある → 削除せず detached で保持」）。
 DELETE FROM reservations r
 WHERE r.rule_id = sqlc.arg(rule_id)
   AND NOT EXISTS (
       SELECT 1 FROM program_intents i
       WHERE i.site = r.site AND i.program_id = r.program_id
+  )
+  AND NOT EXISTS (
+      SELECT 1 FROM program_overrides o
+      WHERE o.site = r.site AND o.program_id = r.program_id
   );
 
 -- name: CountReservationsByRuleWithIntent :one
--- ルール削除時の内訳表示用（detached 化される件数）
+-- ルール削除時の内訳表示用（detached 化される件数）。上の
+-- DeleteReservationsByRuleWithoutIntent と対になる条件（意図または上書きの
+-- どちらかがある）。
 SELECT count(*) FROM reservations r
 WHERE r.rule_id = sqlc.arg(rule_id)
-  AND EXISTS (
-      SELECT 1 FROM program_intents i
-      WHERE i.site = r.site AND i.program_id = r.program_id
+  AND (
+      EXISTS (
+          SELECT 1 FROM program_intents i
+          WHERE i.site = r.site AND i.program_id = r.program_id
+      )
+      OR EXISTS (
+          SELECT 1 FROM program_overrides o
+          WHERE o.site = r.site AND o.program_id = r.program_id
+      )
   );
 -- name: ValidateRegexPattern :exec
 -- POSIX ARE としてコンパイルできるか検証する。不正パターンはエラーになる。

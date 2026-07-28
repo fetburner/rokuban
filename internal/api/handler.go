@@ -53,15 +53,16 @@ func (h *Server) ListReservations(ctx context.Context, _ ListReservationsRequest
 
 	result := make([]Reservation, 0, len(rows))
 	for _, r := range rows {
-		result = append(result, reservationFromRow(r.Reservation, r.IntentOverrides))
+		result = append(result, reservationFromRow(r.Reservation, r.Overrides))
 	}
 	return ListReservations200JSONResponse(result), nil
 }
 
 // CreateReservation は手動予約を作成する。
 //
-// ユーザー意図（program_intents）と導出行（reservations）を同一トランザクションで書く。
-// 意図だけ書いて ruler のパスを待つ形にはしない（作成が UI に即座に反映されないため）。
+// ユーザー意図（program_intents）・上書き（program_overrides）と導出行
+// （reservations）を同一トランザクションで書く。意図だけ書いて ruler のパスを
+// 待つ形にはしない（作成が UI に即座に反映されないため）。
 func (h *Server) CreateReservation(ctx context.Context, req CreateReservationRequestObject) (CreateReservationResponseObject, error) {
 	overrides := db.ReservationOptions{}
 	if req.Body.Priority != nil {
@@ -95,15 +96,30 @@ func (h *Server) CreateReservation(ctx context.Context, req CreateReservationReq
 	}
 
 	// 意図が先。導出行は ruler が作り直せるが、意図は誰も再生成できない。
+	// action（record/skip）のみを持つ program_intents には overrides は載らない
+	// （M2-4 で program_overrides に分離。docs/recording.md §4.2）。
 	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
 		Site:              defaultSite,
 		ProgramID:         req.Body.ProgramId,
 		Action:            db.IntentRecord,
-		Overrides:         overridesJSON,
 		ProgramStartAt:    req.Body.StartAt,
 		ProgramDurationMs: req.Body.DurationMs,
 	}); err != nil {
 		return nil, fmt.Errorf("upserting program intent: %w", err)
+	}
+
+	// priority 指定があれば上書きとして program_overrides にも書く。空（{}）なら
+	// 行を作らない（「空の上書き = 行が無い」。isEmptyOverridesJSON のコメント参照）。
+	if !isEmptyOverridesJSON(overridesJSON) {
+		if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
+			Site:              defaultSite,
+			ProgramID:         req.Body.ProgramId,
+			Overrides:         overridesJSON,
+			ProgramStartAt:    req.Body.StartAt,
+			ProgramDurationMs: req.Body.DurationMs,
+		}); err != nil {
+			return nil, fmt.Errorf("upserting program overrides: %w", err)
+		}
 	}
 
 	row, err := q.CreateManualReservation(ctx, sqlcgen.CreateManualReservationParams{
@@ -145,7 +161,7 @@ func (h *Server) GetReservation(ctx context.Context, req GetReservationRequestOb
 		}
 		return nil, err
 	}
-	res := reservationFromRow(row.Reservation, row.IntentOverrides)
+	res := reservationFromRow(row.Reservation, row.Overrides)
 	return GetReservation200JSONResponse(res), nil
 }
 
@@ -211,9 +227,9 @@ func (h *Server) insertReconcilePassHint(ctx context.Context, tx pgx.Tx) error {
 	return nil
 }
 
-// reservationFromRow は予約行とユーザー意図（program_intents）から API 表現を組む。
-// overrides は予約行ではなく意図側にあるので、両方を受け取る。
-func reservationFromRow(r sqlcgen.Reservation, intentOverrides []byte) Reservation {
+// reservationFromRow は予約行とユーザーの上書き（program_overrides）から API
+// 表現を組む。overrides は予約行ではなく別表にあるので、両方を受け取る。
+func reservationFromRow(r sqlcgen.Reservation, overrides []byte) Reservation {
 	res := Reservation{
 		Id:         r.ID,
 		ProgramId:  r.ProgramID,
@@ -228,9 +244,9 @@ func reservationFromRow(r sqlcgen.Reservation, intentOverrides []byte) Reservati
 	if r.RuleID != nil {
 		res.RuleId = r.RuleID
 	}
-	if len(intentOverrides) > 0 && string(intentOverrides) != "{}" {
+	if len(overrides) > 0 && string(overrides) != "{}" {
 		var m map[string]interface{}
-		if json.Unmarshal(intentOverrides, &m) == nil && len(m) > 0 {
+		if json.Unmarshal(overrides, &m) == nil && len(m) > 0 {
 			res.Overrides = &m
 		}
 	}

@@ -71,6 +71,15 @@ type ProgramIntent struct {
 	Site              string
 	ProgramID         int64
 	Action            string
+	ProgramStartAt    time.Time
+	ProgramDurationMs int64
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+}
+
+type ProgramOverride struct {
+	Site              string
+	ProgramID         int64
 	Overrides         json.RawMessage
 	ProgramStartAt    time.Time
 	ProgramDurationMs int64

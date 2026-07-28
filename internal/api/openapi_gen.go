@@ -142,6 +142,51 @@ func (e ReservationState) Valid() bool {
 	}
 }
 
+// Defines values for ReservationOverridesInputKeepOriginal.
+const (
+	ReservationOverridesInputKeepOriginalAlways       ReservationOverridesInputKeepOriginal = "always"
+	ReservationOverridesInputKeepOriginalUntilEncoded ReservationOverridesInputKeepOriginal = "until_encoded"
+)
+
+// Valid indicates whether the value is a known member of the ReservationOverridesInputKeepOriginal enum.
+func (e ReservationOverridesInputKeepOriginal) Valid() bool {
+	switch e {
+	case ReservationOverridesInputKeepOriginalAlways:
+		return true
+	case ReservationOverridesInputKeepOriginalUntilEncoded:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ReservationOverridesInputReset.
+const (
+	ContentPath      ReservationOverridesInputReset = "contentPath"
+	EncodeProfiles   ReservationOverridesInputReset = "encodeProfiles"
+	FilenameTemplate ReservationOverridesInputReset = "filenameTemplate"
+	KeepOriginal     ReservationOverridesInputReset = "keepOriginal"
+	Priority         ReservationOverridesInputReset = "priority"
+)
+
+// Valid indicates whether the value is a known member of the ReservationOverridesInputReset enum.
+func (e ReservationOverridesInputReset) Valid() bool {
+	switch e {
+	case ContentPath:
+		return true
+	case EncodeProfiles:
+		return true
+	case FilenameTemplate:
+		return true
+	case KeepOriginal:
+		return true
+	case Priority:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for RuleChannelTypes.
 const (
 	RuleChannelTypesBS  RuleChannelTypes = "BS"
@@ -476,6 +521,47 @@ type ReservationSource string
 // ReservationState defines model for Reservation.State.
 type ReservationState string
 
+// ReservationOverridesInput PATCH /api/reservations/{id} のボディ。値を書いたフィールドは override
+// を設定し、`reset` に名前を挙げたフィールドは override を削除する。
+// どちらにも現れないフィールドは変更しない。同じフィールドを値と
+// `reset` の両方に書いたら 400、`reset` に未知のフィールド名があっても
+// 400（docs/recording.md §4.2）。
+type ReservationOverridesInput struct {
+	// ContentPath 既存の schedule には反映されない。churn を避けるため差分対象外で、
+	// 初回生成値に固定されるため（docs/recording.md §3.2）。まだ
+	// schedule が作られていない予約にだけ効く（docs/recording.md §4.5）。
+	ContentPath *string `json:"contentPath,omitempty"`
+
+	// EncodeProfiles ingest 時に評価されるので、録画開始後の変更でも効く
+	// （M3 で消費。docs/recording.md §4.5）。
+	EncodeProfiles *[]string `json:"encodeProfiles,omitempty"`
+
+	// FilenameTemplate Go text/template のテンプレート文字列。既存の schedule には
+	// 反映されず、まだ schedule が作られていない予約にだけ効く
+	// （docs/recording.md §4.5）。
+	FilenameTemplate *string `json:"filenameTemplate,omitempty"`
+
+	// KeepOriginal ingest 時に評価されるので、録画開始後の変更でも効く
+	// （M3 で消費。docs/recording.md §4.5）。
+	KeepOriginal *ReservationOverridesInputKeepOriginal `json:"keepOriginal,omitempty"`
+
+	// Priority mirakc の schedule に反映される（reconciler が DELETE + POST で
+	// schedule を再作成する）。ただし録画開始後の recorder には
+	// 効かない可能性が高い（docs/recording.md §4.5）。
+	Priority *int `json:"priority,omitempty"`
+
+	// Reset 指定したフィールドの override を削除する（フィールド単位の
+	// 「ルールに戻す」）。値を書いたフィールドと重複して指定すると 400。
+	Reset *[]ReservationOverridesInputReset `json:"reset,omitempty"`
+}
+
+// ReservationOverridesInputKeepOriginal ingest 時に評価されるので、録画開始後の変更でも効く
+// （M3 で消費。docs/recording.md §4.5）。
+type ReservationOverridesInputKeepOriginal string
+
+// ReservationOverridesInputReset defines model for ReservationOverridesInput.Reset.
+type ReservationOverridesInputReset string
+
 // Rule defines model for Rule.
 type Rule struct {
 	ChannelTypes    *[]RuleChannelTypes `json:"channelTypes,omitempty"`
@@ -638,6 +724,9 @@ type SearchProgramsJSONRequestBody = ProgramSearchRequest
 // CreateReservationJSONRequestBody defines body for CreateReservation for application/json ContentType.
 type CreateReservationJSONRequestBody = CreateReservationRequest
 
+// UpdateReservationOverridesJSONRequestBody defines body for UpdateReservationOverrides for application/json ContentType.
+type UpdateReservationOverridesJSONRequestBody = ReservationOverridesInput
+
 // CreateRuleJSONRequestBody defines body for CreateRule for application/json ContentType.
 type CreateRuleJSONRequestBody = RuleInput
 
@@ -673,6 +762,12 @@ type ServerInterface interface {
 	// GetReservation Get a reservation
 	// (GET /api/reservations/{id})
 	GetReservation(w http.ResponseWriter, r *http.Request, id int64)
+	// UpdateReservationOverrides Update per-reservation overrides
+	// (PATCH /api/reservations/{id})
+	UpdateReservationOverrides(w http.ResponseWriter, r *http.Request, id int64)
+	// ResetReservationOverrides Reset all overrides for a reservation (revert to rule)
+	// (DELETE /api/reservations/{id}/overrides)
+	ResetReservationOverrides(w http.ResponseWriter, r *http.Request, id int64)
 	// ListRules List recording rules
 	// (GET /api/rules)
 	ListRules(w http.ResponseWriter, r *http.Request)
@@ -754,6 +849,18 @@ func (_ Unimplemented) DeleteReservation(w http.ResponseWriter, r *http.Request,
 // GetReservation Get a reservation
 // (GET /api/reservations/{id})
 func (_ Unimplemented) GetReservation(w http.ResponseWriter, r *http.Request, id int64) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// UpdateReservationOverrides Update per-reservation overrides
+// (PATCH /api/reservations/{id})
+func (_ Unimplemented) UpdateReservationOverrides(w http.ResponseWriter, r *http.Request, id int64) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// ResetReservationOverrides Reset all overrides for a reservation (revert to rule)
+// (DELETE /api/reservations/{id}/overrides)
+func (_ Unimplemented) ResetReservationOverrides(w http.ResponseWriter, r *http.Request, id int64) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1037,6 +1144,58 @@ func (siw *ServerInterfaceWrapper) GetReservation(w http.ResponseWriter, r *http
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetReservation(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UpdateReservationOverrides operation middleware
+func (siw *ServerInterfaceWrapper) UpdateReservationOverrides(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UpdateReservationOverrides(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ResetReservationOverrides operation middleware
+func (siw *ServerInterfaceWrapper) ResetReservationOverrides(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ResetReservationOverrides(w, r, id)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1339,6 +1498,12 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/api/reservations/{id}", wrapper.GetReservation)
+	})
+	r.Group(func(r chi.Router) {
+		r.Patch(options.BaseURL+"/api/reservations/{id}", wrapper.UpdateReservationOverrides)
+	})
+	r.Group(func(r chi.Router) {
+		r.Delete(options.BaseURL+"/api/reservations/{id}/overrides", wrapper.ResetReservationOverrides)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/api/services", wrapper.ListServices)
@@ -1650,6 +1815,93 @@ func (response GetReservation404JSONResponse) VisitGetReservationResponse(w http
 	return err
 }
 
+type UpdateReservationOverridesRequestObject struct {
+	Id   int64 `json:"id"`
+	Body *UpdateReservationOverridesJSONRequestBody
+}
+
+type UpdateReservationOverridesResponseObject interface {
+	VisitUpdateReservationOverridesResponse(w http.ResponseWriter) error
+}
+
+type UpdateReservationOverrides200JSONResponse Reservation
+
+func (response UpdateReservationOverrides200JSONResponse) VisitUpdateReservationOverridesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateReservationOverrides400JSONResponse ErrorResponse
+
+func (response UpdateReservationOverrides400JSONResponse) VisitUpdateReservationOverridesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateReservationOverrides404JSONResponse ErrorResponse
+
+func (response UpdateReservationOverrides404JSONResponse) VisitUpdateReservationOverridesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ResetReservationOverridesRequestObject struct {
+	Id int64 `json:"id"`
+}
+
+type ResetReservationOverridesResponseObject interface {
+	VisitResetReservationOverridesResponse(w http.ResponseWriter) error
+}
+
+type ResetReservationOverrides200JSONResponse Reservation
+
+func (response ResetReservationOverrides200JSONResponse) VisitResetReservationOverridesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ResetReservationOverrides404JSONResponse ErrorResponse
+
+func (response ResetReservationOverrides404JSONResponse) VisitResetReservationOverridesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type ListRulesRequestObject struct {
 }
 
@@ -1922,6 +2174,12 @@ type StrictServerInterface interface {
 	// GetReservation Get a reservation
 	// (GET /api/reservations/{id})
 	GetReservation(ctx context.Context, request GetReservationRequestObject) (GetReservationResponseObject, error)
+	// UpdateReservationOverrides Update per-reservation overrides
+	// (PATCH /api/reservations/{id})
+	UpdateReservationOverrides(ctx context.Context, request UpdateReservationOverridesRequestObject) (UpdateReservationOverridesResponseObject, error)
+	// ResetReservationOverrides Reset all overrides for a reservation (revert to rule)
+	// (DELETE /api/reservations/{id}/overrides)
+	ResetReservationOverrides(ctx context.Context, request ResetReservationOverridesRequestObject) (ResetReservationOverridesResponseObject, error)
 	// ListRules List recording rules
 	// (GET /api/rules)
 	ListRules(ctx context.Context, request ListRulesRequestObject) (ListRulesResponseObject, error)
@@ -2220,6 +2478,65 @@ func (sh *strictHandler) GetReservation(w http.ResponseWriter, r *http.Request, 
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(GetReservationResponseObject); ok {
 		if err := validResponse.VisitGetReservationResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// UpdateReservationOverrides operation middleware
+func (sh *strictHandler) UpdateReservationOverrides(w http.ResponseWriter, r *http.Request, id int64) {
+	var request UpdateReservationOverridesRequestObject
+
+	request.Id = id
+
+	var body UpdateReservationOverridesJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.UpdateReservationOverrides(ctx, request.(UpdateReservationOverridesRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "UpdateReservationOverrides")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(UpdateReservationOverridesResponseObject); ok {
+		if err := validResponse.VisitUpdateReservationOverridesResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ResetReservationOverrides operation middleware
+func (sh *strictHandler) ResetReservationOverrides(w http.ResponseWriter, r *http.Request, id int64) {
+	var request ResetReservationOverridesRequestObject
+
+	request.Id = id
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ResetReservationOverrides(ctx, request.(ResetReservationOverridesRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ResetReservationOverrides")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ResetReservationOverridesResponseObject); ok {
+		if err := validResponse.VisitResetReservationOverridesResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

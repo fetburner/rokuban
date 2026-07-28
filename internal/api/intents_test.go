@@ -64,12 +64,19 @@ func TestDeleteReservation_KeepsSkipIntent(t *testing.T) {
 	if intent.Action != "record" {
 		t.Errorf("action after create = %q, want record", intent.Action)
 	}
-	// overrides は予約行ではなく意図側に載る
-	if got := intentPriority(t, intent.Overrides); got != 7 {
-		t.Errorf("intent overrides priority = %d, want 7 (%s)", got, intent.Overrides)
+	// overrides は予約行でも program_intents でもなく program_overrides に載る
+	// （M2-4 で分離）。
+	overrides, err := q.GetProgramOverrides(ctx, sqlcgen.GetProgramOverridesParams{
+		Site: "default", ProgramID: programID,
+	})
+	if err != nil {
+		t.Fatalf("overrides after create: %v", err)
+	}
+	if got := overridesPriority(t, overrides.Overrides); got != 7 {
+		t.Errorf("overrides priority = %d, want 7 (%s)", got, overrides.Overrides)
 	}
 	if created.Overrides == nil || created.Overrides["priority"] == nil {
-		t.Errorf("API response should surface overrides from the intent: %+v", created.Overrides)
+		t.Errorf("API response should surface overrides from program_overrides: %+v", created.Overrides)
 	}
 
 	// 取消
@@ -108,9 +115,16 @@ func TestDeleteReservation_KeepsSkipIntent(t *testing.T) {
 	if intent.Action != "skip" {
 		t.Errorf("action after delete = %q, want skip", intent.Action)
 	}
-	// 取消は action を倒すだけで、ユーザーが設定した上書きは保つ
-	if got := intentPriority(t, intent.Overrides); got != 7 {
-		t.Errorf("overrides lost on cancel: priority = %d, want 7 (%s)", got, intent.Overrides)
+	// 取消は program_intents.action を倒すだけで、program_overrides には
+	// 一切触れない（別の軸なので、ユーザーが設定した上書きは保たれる）。
+	overrides, err = q.GetProgramOverrides(ctx, sqlcgen.GetProgramOverridesParams{
+		Site: "default", ProgramID: programID,
+	})
+	if err != nil {
+		t.Fatalf("overrides after delete: %v (DeleteReservation must not touch program_overrides)", err)
+	}
+	if got := overridesPriority(t, overrides.Overrides); got != 7 {
+		t.Errorf("overrides lost on cancel: priority = %d, want 7 (%s)", got, overrides.Overrides)
 	}
 }
 
@@ -127,7 +141,6 @@ func TestDeleteEndedProgramIntents(t *testing.T) {
 			Site:              "default",
 			ProgramID:         int64(9000 + i),
 			Action:            "skip",
-			Overrides:         []byte(`{}`),
 			ProgramStartAt:    st,
 			ProgramDurationMs: 1800000,
 		}); err != nil {
@@ -149,9 +162,9 @@ func TestDeleteEndedProgramIntents(t *testing.T) {
 	}
 }
 
-// intentPriority は overrides の priority を取り出す。
+// overridesPriority は program_overrides.overrides の priority を取り出す。
 // jsonb は Postgres 側で正規化されるので文字列比較はしない。
-func intentPriority(t *testing.T, raw []byte) int {
+func overridesPriority(t *testing.T, raw []byte) int {
 	t.Helper()
 	var m struct {
 		Priority *int `json:"priority"`

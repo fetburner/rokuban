@@ -165,9 +165,23 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 		}
 	}
 
-	// desired = (ルールにマッチした番組 ∪ intent.record) − intent.skip
-	// （docs/recording.md 案 A。program_intents は絶対に書かない — 読むだけ）。
-	desired := make(map[int64]struct{}, len(winner)+len(recordIntent))
+	overrideProgramIDs, err := q.ListProgramOverrideProgramIDsBySite(ctx, site)
+	if err != nil {
+		return fmt.Errorf("listing program overrides: %w", err)
+	}
+
+	// desired = (ルールにマッチした番組 − intent.skip) ∪ intent.record ∪
+	// {program_overrides に行がある番組}（docs/recording.md §4.2「ruler から見た
+	// load-bearing な行」。program_intents / program_overrides は絶対に書かない
+	// — 読むだけ）。
+	//
+	// overrides の存在は skip 意図があっても desired に残す（union の最後に
+	// 足す）。上書きの行の存在も予約を存在させるため（§4.3「意図または上書きが
+	// ある → 削除せず detached で保持」）。skip 側は intent.action='skip' が
+	// effective.skip として引き続き効くので（db.EffectiveOptions）、reconciler は
+	// この行を同期しない。行の存在が答えるのは「この番組にユーザーの投資が
+	// あるか」で、録画するかどうかとは別の問い。
+	desired := make(map[int64]struct{}, len(winner)+len(recordIntent)+len(overrideProgramIDs))
 	for programID := range winner {
 		desired[programID] = struct{}{}
 	}
@@ -176,6 +190,9 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 	}
 	for programID := range skipIntent {
 		delete(desired, programID)
+	}
+	for _, programID := range overrideProgramIDs {
+		desired[programID] = struct{}{}
 	}
 
 	existingProgramIDs, err := q.ListReservationProgramIDsBySite(ctx, site)
@@ -362,14 +379,21 @@ func (r *Ruler) runGC(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("deleting ended program intents: %w", err)
 	}
+	// program_overrides も program_intents と同じ cutoff で GC する。上書きの
+	// 寿命も意図と同様に放送の寿命に揃える（docs/schema.md §3.5）。
+	deletedOverrides, err := q.DeleteEndedProgramOverrides(ctx, cutoff)
+	if err != nil {
+		return fmt.Errorf("deleting ended program overrides: %w", err)
+	}
 
 	metrics.RulerReservations.WithLabelValues("gc").Add(float64(deletedReservations))
 
-	if deletedReservations > 0 || deletedIntents > 0 {
+	if deletedReservations > 0 || deletedIntents > 0 || deletedOverrides > 0 {
 		slog.Info("ruler: GC complete",
 			"cutoff", cutoff,
 			"deleted_reservations", deletedReservations,
 			"deleted_program_intents", deletedIntents,
+			"deleted_program_overrides", deletedOverrides,
 		)
 	}
 	return nil

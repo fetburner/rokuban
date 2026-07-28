@@ -37,7 +37,7 @@ type Reservation struct {
 // EncodeProfiles は *[]string: nil=未指定、&[]string{}=エンコードなし override。
 //
 // FilenameTemplate は rules.filename_template（ruler が base に載せる）または
-// ユーザーの明示的な上書き（program_intents.overrides）由来の Go text/template
+// ユーザーの明示的な上書き（program_overrides.overrides）由来の Go text/template
 // テンプレート文字列。reconciler が予約行のスナップショットだけから
 // internal/contentpath で展開する（docs/recording.md §3.2）。ルール作成/更新時に
 // internal/contentpath.Validate で構文・実行時エラーを検証し 400 で弾く
@@ -88,13 +88,15 @@ func (o *ReservationOptions) Effective(base *ReservationOptions) ReservationOpti
 	return eff
 }
 
-// EffectiveOptions は base（ruler の導出結果）と intent（ユーザー意図）から
-// 実効オプションを組む。予約行と program_intents 行の 2 つの jsonb を扱う箇所は
-// すべてここを通し、Unmarshal の失敗を握りつぶさない。
+// EffectiveOptions は base（ruler の導出結果）と overrides（program_overrides の
+// ユーザー上書き）と intentAction（program_intents.action）から実効オプションを
+// 組む。予約行・program_overrides 行の 2 つの jsonb を扱う箇所はすべてここを
+// 通し、Unmarshal の失敗を握りつぶさない。
 //
-// intentAction が "skip" のとき skip = true を返す。intent は別表なので
-// base 側の skip を上書きする形になり、jsonb マージに細工を仕込む必要がない。
-func EffectiveOptions(base, intentOverrides []byte, intentAction *string) (ReservationOptions, error) {
+// intentAction が "skip" のとき skip = true を返す。action は overrides とは
+// 別表（program_intents）にあるので base 側の skip を上書きする形になり、
+// jsonb マージに細工を仕込む必要がない（docs/recording.md §4.2）。
+func EffectiveOptions(base, overrides []byte, intentAction *string) (ReservationOptions, error) {
 	var b *ReservationOptions
 	if len(base) > 0 {
 		var v ReservationOptions
@@ -105,10 +107,10 @@ func EffectiveOptions(base, intentOverrides []byte, intentAction *string) (Reser
 	}
 
 	var o *ReservationOptions
-	if len(intentOverrides) > 0 {
+	if len(overrides) > 0 {
 		var v ReservationOptions
-		if err := json.Unmarshal(intentOverrides, &v); err != nil {
-			return ReservationOptions{}, fmt.Errorf("unmarshalling intent overrides: %w", err)
+		if err := json.Unmarshal(overrides, &v); err != nil {
+			return ReservationOptions{}, fmt.Errorf("unmarshalling overrides: %w", err)
 		}
 		o = &v
 	}

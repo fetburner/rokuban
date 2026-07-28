@@ -8,6 +8,13 @@ SELECT * FROM rules WHERE enabled = true ORDER BY priority DESC, id ASC;
 -- name: ListProgramIntentActionsBySite :many
 SELECT program_id, action FROM program_intents WHERE site = $1;
 
+-- program_overrides に行があるだけで予約を存在させる（docs/recording.md §4.2
+-- 「ruler から見た load-bearing な行」: desired = (マッチ − skip) ∪ record ∪
+-- {program_overrides に行がある番組}）。ruler は overrides の中身を一切読まない
+-- （不透明なペイロード）ため programId だけを引く。
+-- name: ListProgramOverrideProgramIDsBySite :many
+SELECT program_id FROM program_overrides WHERE site = $1;
+
 -- name: ListReservationProgramIDsBySite :many
 SELECT program_id FROM reservations WHERE site = $1;
 

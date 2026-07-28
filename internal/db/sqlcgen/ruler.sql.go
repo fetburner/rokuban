@@ -158,6 +158,34 @@ func (q *Queries) ListProgramIntentActionsBySite(ctx context.Context, site strin
 	return items, nil
 }
 
+const listProgramOverrideProgramIDsBySite = `-- name: ListProgramOverrideProgramIDsBySite :many
+SELECT program_id FROM program_overrides WHERE site = $1
+`
+
+// program_overrides に行があるだけで予約を存在させる（docs/recording.md §4.2
+// 「ruler から見た load-bearing な行」: desired = (マッチ − skip) ∪ record ∪
+// {program_overrides に行がある番組}）。ruler は overrides の中身を一切読まない
+// （不透明なペイロード）ため programId だけを引く。
+func (q *Queries) ListProgramOverrideProgramIDsBySite(ctx context.Context, site string) ([]int64, error) {
+	rows, err := q.db.Query(ctx, listProgramOverrideProgramIDsBySite, site)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []int64
+	for rows.Next() {
+		var program_id int64
+		if err := rows.Scan(&program_id); err != nil {
+			return nil, err
+		}
+		items = append(items, program_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listProgramSnapshotsBySiteAndProgramIDs = `-- name: ListProgramSnapshotsBySiteAndProgramIDs :many
 SELECT p.program_id, p.name AS title, p.start_at, p.duration_ms,
        s.network_id, s.service_id, s.channel_type, s.channel
