@@ -122,8 +122,14 @@ var (
 		Help: "mirakc recording schedules created, deleted, or recreated by the reconciler.",
 	}, []string{"action"})
 
-	// ReconcileCircuitBreakerTrips は大量削除サーキットブレーカーが作動した回数。
-	// 0 以外はアラート対象（1 パスの削除が閾値を超えて停止している）。
+	// ReconcileCircuitBreakerTrips は reconciler のブレーカーが作動した回数。
+	//
+	// **M2-5 で意味が変わった**（メトリクス名は既存のダッシュボード・アラートを
+	// 壊さないため据え置き）。以前は「1 パスの削除数が閾値を超えた」を数えて
+	// いたが、その件数ベースの判定は誤発火しかしないので撤去した。今は
+	// 「desired が空なのに自分の schedule が観測される」という全損シグネチャ
+	// （breaker.ReconcileTotalLoss）の発動を数える。**件数の閾値ではないので、
+	// 加算されたら本当に異常である。**
 	//
 	// 予約オプションの差分反映（再作成）の DELETE はこのブレーカーの対象では
 	// ない（MaxRecreatesPerPass という別のレート制限を持つ。ブレーカーは
@@ -179,11 +185,17 @@ var (
 		Help: "Reservations created, updated, or deleted by the ruler.",
 	}, []string{"action"})
 
-	// RulerCircuitBreakerTrips は大量削除サーキットブレーカーが作動した回数
-	// （サイト x パスごとに 1 回まで）。0 以外はアラート対象。
+	// RulerCircuitBreakerTrips は大量削除サーキットブレーカーが**発動に遷移した**
+	// 回数（M2-5）。
+	//
+	// M1-4 では「閾値を超えたパスの数」だったが、ラッチになった以降は遷移だけを
+	// 数える。EPG が壊れ続ける間ずっと加算されると rate() が繰り返しの
+	// インシデントに見えてしまい、1 件の障害が長引いているのか何度も起きて
+	// いるのかを区別できなくなる。**いま止まっているか**は
+	// CircuitBreakerTripped ゲージが答える。
 	RulerCircuitBreakerTrips = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "rokuban_ruler_circuit_breaker_trips_total",
-		Help: "Times the bulk-delete circuit breaker stopped a ruler pass for a site.",
+		Help: "Times the bulk-delete circuit breaker transitioned into the tripped state for a ruler site. Use rokuban_circuit_breaker_tripped to see whether it is currently latched.",
 	})
 
 	// RulerLastPass は最後に（全サイトとも）成功したパスの時刻（UNIX 秒）。
