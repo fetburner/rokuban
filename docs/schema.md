@@ -98,6 +98,12 @@ CREATE TABLE reservations (
     channel_type      text CHECK (channel_type IS NULL OR channel_type IN ('GR','BS','CS','SKY')),
     channel           text,
 
+    -- 重複排除の判定根拠（M2-6 で追加。00013）。ruler が毎パス作り直す導出列で、
+    -- base と同じ凍結規則に従う。FK は張らない（後述）
+    dedup_match_recording_id bigint,
+    dedup_similarity         real,
+    CHECK ((dedup_match_recording_id IS NULL) = (dedup_similarity IS NULL)),
+
     created_at        timestamptz NOT NULL DEFAULT now(),
     updated_at        timestamptz NOT NULL DEFAULT now(),
 
@@ -132,6 +138,17 @@ Mirakurun 互換の programId は `NID*10^10 + SID*10^5 + EID` という合成�
 
 - reconciler の contentPath 生成はこのスナップショットを読む。`service_id` が NULL なら**推測せず schedule を作らない**（誤ったパスで録画するより同期対象から外してアラートする）
 - 容量超過の判定（[データ層](data.md) §6.5）の需要単位が `(channel_type, channel)` なので、使い捨ての EPG 射影への JOIN に頼らずここを読む
+
+### 重複排除の根拠に FK を張らない（M2-6）
+
+`dedup_match_recording_id` は `recordings(id)` を指すが **FK を張っていない**。`REFERENCES recordings (id) ON DELETE SET NULL` と上の CHECK は両立しないためである。FK アクションは FK 側の列しか NULL にできないので、参照されている `recordings` 行を物理削除すると `(NULL, 0.87)` という行ができて CHECK に違反し、**DELETE 自体が中断する**（後片付けの機構が安全網に引っかかって削除を不可能にする）。
+
+外すのは FK の方にした。
+
+- 根拠 2 列は ruler が毎パス作り直す導出値（不変条件 9）。参照先が消えても次のパスで両方 NULL に戻るので、**孤立は自己修復する**
+- `recordings.id` は `GENERATED ALWAYS AS IDENTITY` で再利用されないため、孤立した id が別の録画を指すことは構造的に起きない（FK を外して一番怖い失敗モードが無い）
+- §5 の tombstone 契約により、本番では `recordings` 行を物理削除しない。FK が守っているのは起きない事象
+- CHECK は「あってはいけない組み合わせを表現不可能にする」（不変条件 10）を担っている。仕事をしているのはこちら
 
 ### base / overrides の意味論
 
@@ -436,11 +453,20 @@ CREATE TABLE drop_stats (
     drops          bigint  NOT NULL,   -- continuity counter 不連続
     errors         bigint  NOT NULL,   -- transport_error_indicator
     scrambled      bigint  NOT NULL,   -- scrambling_control ≠ 0（> 0 は B-CAS 系異常の別枠アラート）
+    pid_type       text,               -- PID 種別（M2-13、00014）。分類できなければ NULL
     PRIMARY KEY (media_asset_id, pid)
 );
 ```
 
 - ingest ジョブが media_assets のコミットと同一トランザクションで一括 INSERT
+- `pid_type` に CHECK は置かない。値の権威は Go 側（`internal/tsstat` の公開 const）で、
+  `circuit_breakers.name` と同じ理由（分類の追加をマイグレーションなしでできるようにする）。
+  値集合は `video` / `audio` / `other`（PMT に載っているが映像でも音声でもない ES。
+  字幕・文字スーパー・データ放送はすべてここ）/ 固定 PID 名 `pat` `cat` `nit` `sdt` `eit` `tot` /
+  `pmt`（PAT が PMT の在り処として指した PID）。**分類できなかった PID は NULL**（空文字は永続化しない）
+- PMT の更新（version 更新・番組の境目での PID 再割り当て）で同一 PID の分類が変わった場合は
+  **最後に見たものを採用**する。変化の回数は ingest の転送完了ログ（`pid_type_changes`）にだけ残し、
+  列にはしない（導出値であり、統計の正しさに影響しない）
 
 ## 8. jsonb ドキュメント形式
 
@@ -618,6 +644,11 @@ v1 には含めず、後続のマイグレーションで足すもの。参照�
 | `00007_epg_search.sql` | `normalize_search_text` 関数と `epg_programs` への式 GIN（全角/半角の吸収。[データ層](data.md) §5） |
 | `00008_program_intents.sql` | `program_intents`。`reservations.overrides` を移設して列を削除（§3.5） |
 | `00009_reservation_channel.sql` | `reservations` にチャンネル識別 4 列（§3） |
+| `00010_program_overrides.sql` | `program_overrides`（`program_intents` から上書きを分離。§3.5） |
+| `00011_circuit_breakers.sql` | `circuit_breakers`（発動のラッチ。§3.6） |
+| `00012_drop_reservations_source.sql` | `reservations.source` を削除（#26。導出に寄せる） |
+| `00013_dedup_evidence.sql` | `reservations` に重複排除の判定根拠 2 列（M2-6。§3） |
+| `00014_drop_stats_pid_type.sql` | `drop_stats.pid_type`（M2-13。§7） |
 
 ### 未実装
 
@@ -636,5 +667,5 @@ EPG プロジェクションが v1 に入らなかった理由: 使い捨てキ�
 
 1. ~~複数ルールマッチのトレーサビリティ~~ → **確定（issue #3 のコメント）**: base 内の配列ではなく中間テーブル `reservation_rule_matches (reservation_id, rule_id)`。「このルールが今どの予約を生んでいるか」の逆引き（ルール削除の影響プレビュー）が要るため。ruler が毎パス書く導出状態なので FK は両側 ON DELETE CASCADE
 2. **`record_sync.recording_id` の NOT NULL 化**: 現設計は外部産 record を NULL で表現する。外部産を track しない（行を作らない）選択肢もある
-3. ~~drop_stats の PID 名~~ → issue #23 で設計中（M2。PAT → PMT の読み取り + component_tag）
+3. ~~drop_stats の PID 名~~ → **確定（M2-13。[録画エンジン](recording.md) §1「例外の境界」）**: PAT → PMT の `stream_type` までを読み `drop_stats.pid_type` に記録する。**記述子は一切読まないので `component_tag` は使わない**（当初の想定から狭めた）。従って字幕と文字スーパーは区別しない（ARIB では両方 `stream_type = 0x06`）。守るのは映像と音声だけという割り切りで、ARIB 固有の知識がコードに入らない（`stream_type` は ISO/IEC 13818-1 の標準値）
 4. ~~ルールとサイトの対応~~ → **確定（[録画エンジン](recording.md) §3.1「サイトの扱い」）**: ルールはサイトに従属せず、サイトは条件の一次元（`rule_sites` 子テーブル、指定なし = 全サイト）。実体化はマッチした全サイトで N 予約（複数録画 → ドロップ統計で選別する運用を一級とする）。サイト名は安定識別子でリネームは運用作業

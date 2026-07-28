@@ -135,6 +135,26 @@ EPG 更新完了で `reservationManage.updateAll()` を呼び、全手動予約�
 - EPGStation#473 の要望通り、**手動オーバーライド**（この番組を重複扱いにする / しない）を予約・履歴に持たせ、ruler 評価時に参照する
 - 判定に使った根拠（マッチした履歴、類似度）を予約に記録し、UI で「なぜスキップされたか」を説明可能にする
 
+M2-6 で実装した（`internal/ruler/dedupe.go`。候補の集合を jsonb で渡す集合演算 1 文）。判定規約:
+
+| 項目 | 決めたこと |
+|---|---|
+| 比較対象 | **同じ `rule_id` の `recordings` だけ**。「同じルールが同じ番組シリーズを指している」前提に乗る（グローバルな突き合わせはしない） |
+| 状態 | `status = 'finished'` のみ。`recording`（進行中）も `failed` も「録れた」とはみなさない |
+| `deleted_at` | **絞らない。** ごみ箱に入れても物理削除しても行は tombstone として残り、重複排除は機能する契約（[スキーマ](schema.md) §5）。`deleted_at IS NULL` を足すのは書き忘れの修正ではなく契約違反 |
+| 時間窓 | `rules.dedupe_window` が NULL なら**無制限**（`rules` の CHECK は `dedupe_enabled` のとき `dedupe_threshold` だけを要求し window は任意） |
+| 勝者 | `DISTINCT ON (program_id)` で類似度最大の 1 件。tie-break は `recordings.id ASC` |
+
+**自分自身の録画は除外する**（`(network_id, service_id, event_id)` の不一致）。放送済み番組の予約は GC（終了 + `retention_grace`）まで残り、EPG 射影も同じ地平まで番組を保持するので、録画が `finished` になった次のパスで **similarity = 1.0 の自己一致が必ず起きる**。実装中に除外述語を外して再現済み。害は表示だけではない: `effective.skip = true` になると `reconciler.listDesired` から落ち、`markOrphaned` / `detectStartDelays` の入力からも外れるため、**重複排除が無関係な状態機械の DB 状態を変えてしまう**。site は比較に入れない（同一放送は全サイトで同じ programId を持ち、マッチした全サイトで予約を作る N 予約が既定なので、サイト間の共食いも同時に防ぐ必要がある）。
+
+tie-break を決定的にするのは必須で、任意ではない。同じ類似度の録画が複数あるときに勝者が毎パス入れ替わると、base の差分書き込みが発火し続けて NOTIFY が鳴り止まず、mirakc に更新 API がないため reconciler が schedule を DELETE + POST で作り直し続けるフラッピングになる（本節「複数ルール解決」の priority 同率タイと同じクラスの問題）。
+
+**`base.skip` に skip を載せる唯一の経路が重複排除である。** ユーザーの「録るな」は `program_intents.action` が担い、`action = 'record'` が dedup の skip に勝つ合成は `db.EffectiveOptions` の 1 箇所で解く（§4.2）。このとき**根拠 2 列は消さない** — UI が「重複と判定したが録る」と説明できるようにするため。
+
+根拠 2 列（`dedup_match_recording_id` / `dedup_similarity`）は base と同じ凍結規則に従う。ルールが base を供給している間は毎パス作り直し、マッチが無ければ NULL に戻す（前パスの根拠を残さない。不変条件 9）。`rule_id` が外れたら base と一緒に凍結する — base だけ凍結して根拠を消すと「なぜ skip なのか説明できない base」が残るため。FK を張っていないので、参照先の録画が消えた場合もこの毎パスの作り直しが孤立を解消する（[スキーマ](schema.md) §3）。
+
+**類似度検索に trgm GIN は効かない。** `gin_trgm_ops` が加速するのは `%` / `<%` / LIKE / 正規表現で、`similarity()` の関数呼び出しはインデックスに乗らない。`%` は閾値をルール単位ではなく GUC `pg_trgm.similarity_threshold` から読むため `rules.dedupe_threshold` と直接は噛み合わない（前段フィルタにする手順は `internal/ruler/dedupe.go` のコメントに残してある）。家庭用の履歴規模では素の走査で足りるので、隠れたセッション状態を持ち込む前に実測する。
+
 #### サイトの扱い
 
 **ルールはサイトに従属しない**グローバルな永続資産で、rules に site 列はない。サイトは条件の一次元であり、`rule_sites` 子テーブル（指定なし = 全サイト。他の条件テーブルと同じ規約）で絞り込む。site 値は書き込み時に設定のサイトレジストリと照合し、FK は張らない（レジストリは設定ファイルにある — 外部に真実があるものは存在を制約できない）。
@@ -408,6 +428,8 @@ reservations の行を 2 層に分ける:
 | 削除の例外（「overrides があれば消さず detached」） | **不要**。意図は別表なので導出行を消しても失われない |
 
 `skip` は overrides のキーではなく **`program_intents.action`（`record` / `skip`）** という列にする。列なので base 側の skip に対する優先順位が明示的に決まり（`effective.skip = (action = 'skip') OR (意図がなく base.skip)`）、jsonb マージに細工を仕込まなくてよい。M2-6 の重複排除が base に skip を立てても、ユーザーの `record` 意図が勝つ。
+
+> **この式は M2-6 の実装時まで満たされていなかった。** `db.EffectiveOptions` は `action = 'skip'` のときだけ `skip = true` を書いており、`action = 'record'` のときに base 側の skip を打ち消していなかった。base に skip を載せる経路が M2-6 まで存在しなかったので顕在化していなかっただけで、重複排除を入れた瞬間に「重複と判定された番組をユーザーが録れと指定しても録られない」として現れる。**意図があれば `action` が skip を決め切る**（`record` なら false で上書きする）形に直した。`(action = 'skip') OR (意図がなく base.skip)` を素直に読めばこうなる — 導出の式を docs に書いても、実装が片側の分岐しか持たないことはある。
 
 意図と上書きの寿命は放送の寿命に揃える（番組終了後に GC）。
 
