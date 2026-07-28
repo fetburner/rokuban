@@ -170,6 +170,34 @@ export interface Recording {
   createdAt: string;
 }
 
+export type CapacityOverageJammedTypesItem = typeof CapacityOverageJammedTypesItem[keyof typeof CapacityOverageJammedTypesItem];
+
+
+export const CapacityOverageJammedTypesItem = {
+  GR: 'GR',
+  BS: 'BS',
+  CS: 'CS',
+  SKY: 'SKY',
+} as const;
+
+export interface CapacityOverage {
+  /**
+     * 判定はサイトごとに独立して行う。N 予約の決定（docs/recording.md §3.1）に
+     * より予約が site に束縛されるため二部グラフがサイトごとに非連結になり、
+     * Hall の条件を成分ごとに確認すれば十分になる。
+     */
+  site: string;
+  startAt: string;
+  endAt: string;
+  /**
+     * 不足本数。破れた種別部分集合 A の `Σ_{t∈A} d[t] − cap(A)` の最大値。
+     * 1 以上（0 なら超過していないので区間そのものが返らない）
+     */
+  shortfall: number;
+  /** 詰まった種別（Hall 条件を破った部分集合 A）。「BS が 1 本不足」と言うための材料 */
+  jammedTypes: CapacityOverageJammedTypesItem[];
+}
+
 export interface DropStat {
   pid: number;
   packets: number;
@@ -550,6 +578,17 @@ start: string;
 end: string;
 networkId?: number;
 serviceId?: number;
+};
+
+export type ListCapacityOveragesParams = {
+/**
+ * 時間窓の開始（この時刻より後に終わる区間が対象）
+ */
+start: string;
+/**
+ * 時間窓の終了（この時刻より前に始まる区間が対象）
+ */
+end: string;
 };
 
 type SecondParameter<T extends (...args: never) => unknown> = Parameters<T>[1];
@@ -2756,6 +2795,154 @@ export function useListRecordingDropStats<TData = Awaited<ReturnType<typeof list
  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
 
   const queryOptions = getListRecordingDropStatsQueryOptions(id,options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export type listCapacityOveragesResponse200 = {
+  data: CapacityOverage[]
+  status: 200
+}
+
+export type listCapacityOveragesResponse400 = {
+  data: ErrorResponse
+  status: 400
+}
+
+export type listCapacityOveragesResponseSuccess = (listCapacityOveragesResponse200) & {
+  headers: Headers;
+};
+export type listCapacityOveragesResponseError = (listCapacityOveragesResponse400) & {
+  headers: Headers;
+};
+
+export type listCapacityOveragesResponse = (listCapacityOveragesResponseSuccess | listCapacityOveragesResponseError)
+
+export const getListCapacityOveragesUrl = (params: ListCapacityOveragesParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/capacity/overages?${stringifiedParams}` : `/api/capacity/overages`
+}
+
+/**
+ * チューナーが不足している**区間**を結合済みで返す（M2-10、issue #21 /
+ * docs/data.md §6.5）。
+ *
+ * **主張は下界に限る。** 「この区間は超過している」は確実だが、返らなかった
+ * 区間が「収まる」ことは保証しない。Rokuban から見えない消費者（並走する
+ * EPGStation・ライブ視聴・EPG 収集ジョブ）がいるうえ、mirakc の
+ * `excluded_channels` は `/api/tuners` に載らないため、既知の盲点はすべて
+ * 「警告を見逃す」方向に偏っている。**沈黙を「大丈夫」と読ませてはならない。**
+ *
+ * 返すのは区間の性質だけで、**どの番組が負けるかは主張しない**。勝敗を決めるのは
+ * mirakc であり、Rokuban には見えない消費者がいるので予測できない。UI の文言も
+ * 「この予約は競合しています」ではなく「この時間帯はチューナーが不足しています」。
+ *
+ * 需要の単位は予約件数ではなく**異なる物理チャンネル数**（同一物理チャンネルなら
+ * 1 本のチューナーに相乗りできる。副産物としてマルチ編成のサブサービスが
+ * 自然に畳まれる）。数えるのは reconciler が実際に schedule を作る予約だけで、
+ * `effective.skip` が true の行と `state = 'orphaned'` の行は需要にならない。
+ *
+ * 判定は種別部分集合に縮約した Hall 条件（`∀A ⊆ {GR,BS,CS,SKY}:
+ * Σ_{t∈A} d[t] ≤ cap(A)`）。破れた `A` から不足本数と詰まった種別が
+ * 副産物として出るので、`shortfall` / `jammedTypes` で「BS が 1 本不足」まで言える。
+ * @summary List intervals where tuner capacity is exceeded
+ */
+export const listCapacityOverages = async (params: ListCapacityOveragesParams, options?: RequestInit): Promise<listCapacityOveragesResponse> => {
+
+  return customInstance<listCapacityOveragesResponse>(getListCapacityOveragesUrl(params),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getListCapacityOveragesQueryKey = (params?: ListCapacityOveragesParams,) => {
+    return [
+    `/api/capacity/overages`, ...(params ? [params] : [])
+    ] as const;
+    }
+
+
+export const getListCapacityOveragesQueryOptions = <TData = Awaited<ReturnType<typeof listCapacityOverages>>, TError = ErrorResponse>(params: ListCapacityOveragesParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listCapacityOverages>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getListCapacityOveragesQueryKey(params);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listCapacityOverages>>> = ({ signal }) => listCapacityOverages(params, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listCapacityOverages>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type ListCapacityOveragesQueryResult = NonNullable<Awaited<ReturnType<typeof listCapacityOverages>>>
+export type ListCapacityOveragesQueryError = ErrorResponse
+
+
+export function useListCapacityOverages<TData = Awaited<ReturnType<typeof listCapacityOverages>>, TError = ErrorResponse>(
+ params: ListCapacityOveragesParams, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof listCapacityOverages>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof listCapacityOverages>>,
+          TError,
+          Awaited<ReturnType<typeof listCapacityOverages>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useListCapacityOverages<TData = Awaited<ReturnType<typeof listCapacityOverages>>, TError = ErrorResponse>(
+ params: ListCapacityOveragesParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listCapacityOverages>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof listCapacityOverages>>,
+          TError,
+          Awaited<ReturnType<typeof listCapacityOverages>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useListCapacityOverages<TData = Awaited<ReturnType<typeof listCapacityOverages>>, TError = ErrorResponse>(
+ params: ListCapacityOveragesParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listCapacityOverages>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary List intervals where tuner capacity is exceeded
+ */
+
+export function useListCapacityOverages<TData = Awaited<ReturnType<typeof listCapacityOverages>>, TError = ErrorResponse>(
+ params: ListCapacityOveragesParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listCapacityOverages>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getListCapacityOveragesQueryOptions(params,options)
 
   const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
 
