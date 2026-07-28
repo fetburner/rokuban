@@ -426,6 +426,49 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /api/programs/{programId}/overlaps:
+    parameters:
+      - name: programId
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+    get:
+      operationId: getProgramOverlaps
+      summary: Count reservations overlapping this program's broadcast time
+      description: |
+        指定番組の放送時間帯（EPG プロジェクションから引く）と半開区間で重なる
+        既存予約の件数と内訳を返す（`a.start < b.end AND b.start < a.end`。番組表は
+        連続しているため、閉区間で判定すると隣接番組がすべて重なりになってしまう）。
+
+        対象は同じ site の予約のうち、自分自身（同じ programId の予約）を除き、
+        `state <> 'orphaned'`、実効オプション（`db.EffectiveOptions`）の `skip` が
+        true でないもの。
+
+        **これは重なりの件数だけを返す。チューナー本数との比較や容量超過の判定は
+        行わない**（[issue #21](https://github.com/fetburner/rokuban/issues/21) の
+        「案 C」、docs/data.md §6.5 が扱う M2-10 の領分）。`count` が 0 より大きくても
+        「録画できない」とは限らず（同一物理チャンネルなら 1 本のチューナーで
+        複数番組を賄える）、逆に `count` が 0 でも他サイトや mirakc の他の消費者
+        （並走 EPGStation・ライブ視聴・EPG 収集）の存在は考慮されていない。
+        呼び出し側は件数を「事実」として提示し、勝敗や可否を断定してはならない。
+
+        番組が EPG プロジェクションに無ければ 404。
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProgramOverlaps"
+        "404":
+          description: Program not found in EPG projection
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /api/recordings:
     get:
       operationId: listRecordings
@@ -1156,6 +1199,50 @@ components:
         updatedAt:
           type: string
           format: date-time
+
+    # --- 予約の重なり警告 (M2-8, issue #24 / #21) ---
+    #
+    # チューナー本数を見ない「案 C」。件数と内訳だけを返し、勝敗・可否は主張しない
+    # （断定は M2-10 の tuner_sync 射影 + 容量判定の領分。docs/data.md §6.5）。
+
+    ProgramOverlaps:
+      type: object
+      required:
+        - count
+        - reservations
+      properties:
+        count:
+          description: 重なっている既存予約の件数（自分自身を除く）
+          type: integer
+        reservations:
+          description: 内訳。件数だけでなく何と重なっているかをユーザーが判断できるようにする
+          type: array
+          items:
+            $ref: "#/components/schemas/OverlappingReservation"
+
+    OverlappingReservation:
+      type: object
+      required:
+        - id
+        - programId
+        - title
+        - startAt
+        - durationMs
+      properties:
+        id:
+          type: integer
+          format: int64
+        programId:
+          type: integer
+          format: int64
+        title:
+          type: string
+        startAt:
+          type: string
+          format: date-time
+        durationMs:
+          type: integer
+          format: int64
 
     # --- Circuit breakers (M2-5) ---
 
