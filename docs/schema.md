@@ -622,8 +622,11 @@ v1 には含めず、後続のマイグレーションで足すもの。参照�
 | テーブル | マイルストーン | v1 との接続 |
 |---|---|---|
 | `tuner_sync` | M2（M2-10） | mirakc の `/api/tuners` の観測（使い捨てプロジェクション）。容量超過の判定に使う。`epg_services` と同型で、`types text[]` に `CHECK (types <@ ARRAY['GR','BS','CS','SKY'])` |
-| サービスロゴ台帳 | M2（M2-12） | ファイルは `logos/` 配下、DB は相対パス + ハッシュ |
 | `orphan_files` | 削除エンジン実装時（M3） | 孤児候補の first_seen 記録（DB リストアで削除窓が開き直す安全弁） |
+
+### ドロップ（M2-12 サービスロゴ）
+
+mirakc は起動中の局ロゴ抽出をサポートしない（運用者が `mirakc-arib` 等で事前抽出したファイルを `config.yml` に静的登録し、mirakc は `/api/services/{id}/logo` で配るだけ）。Rokuban 側で再取得・ハッシュ管理・自前配信を持つ価値が薄く、見送る（issue #24 のコメント参照）。`epg_services.has_logo_data` / `logo_id` 列は mirakc の `Service` 構造体をそのまま射影しているだけで、これ自体の削除は不要。
 
 EPG プロジェクションが v1 に入らなかった理由: 使い捨てキャッシュであり永続資産と寿命が違う（§9）。「最終形で切る」対象は、他の全タスクが依存し、後から変えると痛い**永続資産と desired/observed の骨格**。
 
