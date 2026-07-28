@@ -43,6 +43,7 @@ HTTP リスナーは常に 1 本立てる。OpenAPI には載せない（text fo
 | `rokuban_reconcile_circuit_breaker_trips_total` | Counter | 全損シグネチャでの発動（M2-5 で意味が変わった。件数の閾値ではない） |
 | `rokuban_circuit_breaker_tripped{site,breaker}` | Gauge | **いま止まっているか**（1 = 発動中）。ラッチなのでアラートはこちら |
 | `rokuban_reconcile_last_pass_timestamp_seconds` | Gauge | 最後に完走したパスの時刻 |
+| `rokuban_reconcile_start_delayed{site}` | Gauge | **開始時刻を過ぎたのに録画が始まっていない予約数**（M2-7）。収束すればゼロに戻る |
 | `rokuban_epg_sync_duration_seconds` | Histogram | EPG 全量同期の所要 |
 | `rokuban_epg_programs_projected` | Gauge | 直近パスの投影件数 |
 | `rokuban_epg_channels_without_programs` | Gauge | 番組を返さなかったチャンネル数 |
@@ -192,7 +193,13 @@ EPG の一時欠損（mirakc 再起動・再スキャン・SI 取得不良）で
 
 ### 開始時刻超過で recording.started 未観測
 
-開始遅延検出器（前述）が異常を検知した場合にアラートを発報する。
+`rokuban_reconcile_start_delayed > 0` でアラートする（M2-7）。**`for` を長く取らないこと** ---
+検出窓が「開始 + 猶予 〜 終了時刻」に限定されているので、番組が終わればゲージは自然にゼロへ戻る。
+待ち時間を番組長より長くすると、短い番組の遅延を一度も通知しないまま取りこぼす。
+
+`rokuban_recordings_failed_total{reason}` が同時に増えているなら mirakc が理由を返しているので
+そちらが一次情報になる。**増えていないのにこのゲージが立つのが最も危険**な状態で、mirakc が
+失敗を報告せずに録画を始めていないことを意味する（EPGStation#724 のクラス）。
 
 ## 3. DB 運用
 
