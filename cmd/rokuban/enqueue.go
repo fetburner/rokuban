@@ -21,6 +21,7 @@ import (
 // CLI では読みやすい名前を使う。
 var enqueueJobs = map[string]func(site string) river.JobArgs{
 	"epg-sync":       func(site string) river.JobArgs { return worker.EpgSyncArgs{Site: site} },
+	"tuner-sync":     func(site string) river.JobArgs { return worker.TunerSyncArgs{Site: site} },
 	"ruler-pass":     func(site string) river.JobArgs { return worker.RulerPassArgs{Site: site} },
 	"reconcile-pass": func(site string) river.JobArgs { return worker.ReconcilePassArgs{Site: site} },
 	"record-sweep":   func(site string) river.JobArgs { return worker.RecordSweepArgs{Site: site} },

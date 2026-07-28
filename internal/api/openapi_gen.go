@@ -16,6 +16,30 @@ import (
 	"github.com/oapi-codegen/runtime"
 )
 
+// Defines values for CapacityOverageJammedTypes.
+const (
+	CapacityOverageJammedTypesBS  CapacityOverageJammedTypes = "BS"
+	CapacityOverageJammedTypesCS  CapacityOverageJammedTypes = "CS"
+	CapacityOverageJammedTypesGR  CapacityOverageJammedTypes = "GR"
+	CapacityOverageJammedTypesSKY CapacityOverageJammedTypes = "SKY"
+)
+
+// Valid indicates whether the value is a known member of the CapacityOverageJammedTypes enum.
+func (e CapacityOverageJammedTypes) Valid() bool {
+	switch e {
+	case CapacityOverageJammedTypesBS:
+		return true
+	case CapacityOverageJammedTypesCS:
+		return true
+	case CapacityOverageJammedTypesGR:
+		return true
+	case CapacityOverageJammedTypesSKY:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for CircuitBreakerName.
 const (
 	ReconcileTotalLoss CircuitBreakerName = "reconcile_total_loss"
@@ -359,6 +383,27 @@ type AudioInfo struct {
 	Langs         *[]string `json:"langs,omitempty"`
 	SamplingRate  int       `json:"samplingRate"`
 }
+
+// CapacityOverage defines model for CapacityOverage.
+type CapacityOverage struct {
+	EndAt time.Time `json:"endAt"`
+
+	// JammedTypes 詰まった種別（Hall 条件を破った部分集合 A）。「BS が 1 本不足」と言うための材料
+	JammedTypes []CapacityOverageJammedTypes `json:"jammedTypes"`
+
+	// Shortfall 不足本数。破れた種別部分集合 A の `Σ_{t∈A} d[t] − cap(A)` の最大値。
+	// 1 以上（0 なら超過していないので区間そのものが返らない）
+	Shortfall int `json:"shortfall"`
+
+	// Site 判定はサイトごとに独立して行う。N 予約の決定（docs/recording.md §3.1）に
+	// より予約が site に束縛されるため二部グラフがサイトごとに非連結になり、
+	// Hall の条件を成分ごとに確認すれば十分になる。
+	Site    string    `json:"site"`
+	StartAt time.Time `json:"startAt"`
+}
+
+// CapacityOverageJammedTypes defines model for CapacityOverage.JammedTypes.
+type CapacityOverageJammedTypes string
 
 // CircuitBreaker 発動中の大量削除サーキットブレーカー 1 件（`circuit_breakers` 行 = 発動中。
 // docs/recording.md §3.2）。
@@ -812,6 +857,15 @@ type VideoInfo struct {
 	Type          *string `json:"type,omitempty"`
 }
 
+// ListCapacityOveragesParams defines parameters for ListCapacityOverages.
+type ListCapacityOveragesParams struct {
+	// Start 時間窓の開始（この時刻より後に終わる区間が対象）
+	Start time.Time `form:"start" json:"start"`
+
+	// End 時間窓の終了（この時刻より前に始まる区間が対象）
+	End time.Time `form:"end" json:"end"`
+}
+
 // ListProgramsParams defines parameters for ListPrograms.
 type ListProgramsParams struct {
 	// Start 時間窓の開始（この時刻より後に終わる番組が対象）
@@ -846,6 +900,9 @@ type ServerInterface interface {
 	// ResumeCircuitBreaker Resume a tripped circuit breaker (manual acknowledgement)
 	// (POST /api/breakers/{name}/resume)
 	ResumeCircuitBreaker(w http.ResponseWriter, r *http.Request, name string)
+	// ListCapacityOverages List intervals where tuner capacity is exceeded
+	// (GET /api/capacity/overages)
+	ListCapacityOverages(w http.ResponseWriter, r *http.Request, params ListCapacityOveragesParams)
 	// ListPrograms List EPG programs in a time window
 	// (GET /api/programs)
 	ListPrograms(w http.ResponseWriter, r *http.Request, params ListProgramsParams)
@@ -921,6 +978,12 @@ func (_ Unimplemented) ListCircuitBreakers(w http.ResponseWriter, r *http.Reques
 // ResumeCircuitBreaker Resume a tripped circuit breaker (manual acknowledgement)
 // (POST /api/breakers/{name}/resume)
 func (_ Unimplemented) ResumeCircuitBreaker(w http.ResponseWriter, r *http.Request, name string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// ListCapacityOverages List intervals where tuner capacity is exceeded
+// (GET /api/capacity/overages)
+func (_ Unimplemented) ListCapacityOverages(w http.ResponseWriter, r *http.Request, params ListCapacityOveragesParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1084,6 +1147,52 @@ func (siw *ServerInterfaceWrapper) ResumeCircuitBreaker(w http.ResponseWriter, r
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ResumeCircuitBreaker(w, r, name)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListCapacityOverages operation middleware
+func (siw *ServerInterfaceWrapper) ListCapacityOverages(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListCapacityOveragesParams
+
+	// ------------- Required query parameter "start" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "start", r.URL.Query(), &params.Start, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "start"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "start", Err: err})
+		}
+		return
+	}
+
+	// ------------- Required query parameter "end" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "end", r.URL.Query(), &params.End, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "end"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "end", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListCapacityOverages(w, r, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1725,6 +1834,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Get(options.BaseURL+"/api/recordings/{id}/drop-stats", wrapper.ListRecordingDropStats)
 	})
 	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/capacity/overages", wrapper.ListCapacityOverages)
+	})
+	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/api/breakers", wrapper.ListCircuitBreakers)
 	})
 	r.Group(func(r chi.Router) {
@@ -1795,6 +1907,42 @@ func (response ResumeCircuitBreaker404JSONResponse) VisitResumeCircuitBreakerRes
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListCapacityOveragesRequestObject struct {
+	Params ListCapacityOveragesParams
+}
+
+type ListCapacityOveragesResponseObject interface {
+	VisitListCapacityOveragesResponse(w http.ResponseWriter) error
+}
+
+type ListCapacityOverages200JSONResponse []CapacityOverage
+
+func (response ListCapacityOverages200JSONResponse) VisitListCapacityOveragesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListCapacityOverages400JSONResponse ErrorResponse
+
+func (response ListCapacityOverages400JSONResponse) VisitListCapacityOveragesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
 	_, err := buf.WriteTo(w)
 	return err
 }
@@ -2461,6 +2609,9 @@ type StrictServerInterface interface {
 	// ResumeCircuitBreaker Resume a tripped circuit breaker (manual acknowledgement)
 	// (POST /api/breakers/{name}/resume)
 	ResumeCircuitBreaker(ctx context.Context, request ResumeCircuitBreakerRequestObject) (ResumeCircuitBreakerResponseObject, error)
+	// ListCapacityOverages List intervals where tuner capacity is exceeded
+	// (GET /api/capacity/overages)
+	ListCapacityOverages(ctx context.Context, request ListCapacityOveragesRequestObject) (ListCapacityOveragesResponseObject, error)
 	// ListPrograms List EPG programs in a time window
 	// (GET /api/programs)
 	ListPrograms(ctx context.Context, request ListProgramsRequestObject) (ListProgramsResponseObject, error)
@@ -2605,6 +2756,32 @@ func (sh *strictHandler) ResumeCircuitBreaker(w http.ResponseWriter, r *http.Req
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(ResumeCircuitBreakerResponseObject); ok {
 		if err := validResponse.VisitResumeCircuitBreakerResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListCapacityOverages operation middleware
+func (sh *strictHandler) ListCapacityOverages(w http.ResponseWriter, r *http.Request, params ListCapacityOveragesParams) {
+	var request ListCapacityOveragesRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListCapacityOverages(ctx, request.(ListCapacityOveragesRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListCapacityOverages")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListCapacityOveragesResponseObject); ok {
+		if err := validResponse.VisitListCapacityOveragesResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

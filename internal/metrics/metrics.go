@@ -285,6 +285,40 @@ var (
 	})
 )
 
+// チューナー射影と容量超過（M2-10、issue #21 / docs/data.md §6.5）のメトリクス。
+var (
+	// TunersProjected は直近の同期で投影したチューナー本数。
+	// EpgProgramsProjected と同じ位置づけ（射影が空になっていないかを見る）。
+	TunersProjected = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "rokuban_tuners_projected",
+		Help: "Tuners projected by the most recent tuner sync pass.",
+	}, []string{"site"})
+
+	// TunerSyncLastSuccess は最後に成功したチューナー全量同期の時刻（UNIX 秒）。
+	// EpgSyncLastSuccess と同じ理由（他のゲージは値が凍結するので、これがないと
+	// 「同期が止まっている」を検知できない）で持つ。
+	TunerSyncLastSuccess = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "rokuban_tuner_sync_last_success_timestamp_seconds",
+		Help: "Unix time of the last successful full tuner sync. Use with time() to detect a stalled sync job.",
+	}, []string{"site"})
+
+	// CapacityOverages はチューナーが不足している区間の数（結合済み、地平線全体）。
+	//
+	// **非ゼロは信頼できるが、ゼロは「大丈夫」を意味しない。** 主張は下界に限る
+	// （見えない消費者と excluded_channels により、既知の盲点はすべて「警告を
+	// 見逃す」方向に偏っている。docs/data.md §6.5）。したがってこれは
+	// 「ゼロに収束すべき異常」ではなく**構成の余裕を眺めるゲージ**であり、
+	// 非ゼロだからといって録画が失敗するとは限らない（勝敗を決めるのは mirakc）。
+	//
+	// site ラベルを持つのは判定がサイトごとに独立だから（N 予約の決定により
+	// 二部グラフがサイトごとに非連結になる。docs/data.md §6.5）。
+	// tuner_sync パスの完了時に、そのサイト分だけを再計算して入れ直す。
+	CapacityOverages = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "rokuban_capacity_overages",
+		Help: "Merged intervals where tuner capacity is exceeded. Non-zero is trustworthy; zero is not a guarantee that everything fits.",
+	}, []string{"site"})
+)
+
 // NewRegistry は Rokuban のメトリクスを登録した registry を返す。
 //
 // backlog が非 nil なら、未 ingest record の滞留量を scrape のたびに DB から
@@ -325,6 +359,10 @@ func NewRegistry(backlog prometheus.Collector) *prometheus.Registry {
 		EpgProgramsProjected,
 		EpgChannelsWithoutPrograms,
 		EpgSyncLastSuccess,
+
+		TunersProjected,
+		TunerSyncLastSuccess,
+		CapacityOverages,
 	)
 
 	if backlog != nil {

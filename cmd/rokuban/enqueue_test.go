@@ -131,6 +131,28 @@ func TestRunEnqueue_RecordSweep(t *testing.T) {
 	}
 }
 
+// tuner-sync も投入できること（チューナー射影を CronJob から回せることの確認。
+// issue #24 M2-10）。
+func TestRunEnqueue_TunerSync(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	var out bytes.Buffer
+	if err := runEnqueue(ctx, pool, "tuner-sync", &out); err != nil {
+		t.Fatalf("runEnqueue: %v", err)
+	}
+
+	var count int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM river_job WHERE kind = 'tuner_sync'`,
+	).Scan(&count); err != nil {
+		t.Fatalf("counting tuner_sync jobs: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("tuner_sync job count = %d, want 1", count)
+	}
+}
+
 // 未知のジョブ名はエラーになること。
 func TestRunEnqueue_UnknownJob(t *testing.T) {
 	pool := testutil.SetupDB(t)

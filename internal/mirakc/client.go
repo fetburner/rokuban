@@ -228,6 +228,19 @@ func (c *Client) ListPrograms(ctx context.Context) ([]Program, error) {
 	return programs, nil
 }
 
+// ListTuners は GET /api/tuners を呼ぶ。
+//
+// 返るのはチューナーの静的な構成（Tuner のコメント参照）。実行時状態は
+// デコードしないので、これを容量判定の「今の空き」として使うことはできない
+// （そもそも引かない。docs/data.md §6.5）。
+func (c *Client) ListTuners(ctx context.Context) ([]Tuner, error) {
+	var tuners []Tuner
+	if err := c.getJSON(ctx, "/api/tuners", &tuners); err != nil {
+		return nil, fmt.Errorf("listing tuners: %w", err)
+	}
+	return tuners, nil
+}
+
 // APIError は mirakc API がエラーステータスを返した場合のエラー。
 type APIError struct {
 	StatusCode int
