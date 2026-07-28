@@ -49,6 +49,18 @@ ruler:
                                  # 1 サイトが同時に抱えるアクティブ予約数を明確に超える値として
                                  # 選んである
 
+# 宣言的同期（reconciler）
+reconciler:
+  start_delay_grace: 3m          # 開始遅延検出器の猶予。「開始時刻 + この時間」を過ぎても
+                                 # recordings.started_at が観測されない予約を検出し、
+                                 # slog.Error と rokuban_reconcile_start_delayed ゲージに出す。
+                                 # 録画開始は mirakc に全面委譲済みで Rokuban からは防げないが、
+                                 # mirakc 側の未知の不具合への保険（EPGStation#724: チューナー
+                                 # 再接続ハングで開始が 10 分遅延した実例あり。docs/recording.md
+                                 # §3.3）。短くすると: 開始直後は mirakc の SSE 到達と watcher の
+                                 # 処理に遅れがあるため、猶予が短すぎると正常な録画開始でも
+                                 # 毎回誤検知してアラートが常時鳴る
+
 # worker ロールの River クライアント
 worker:
   periodic_jobs: true            # プロセス内で定期ジョブ（epg_sync / ruler_pass / reconcile_pass / record_sweep）を投入するか。

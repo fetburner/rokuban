@@ -74,6 +74,11 @@ type ReconcilePassWorker struct {
 	river.WorkerDefaults[ReconcilePassArgs]
 	MirakcClient *mirakc.Client
 	Pool         *pgxpool.Pool
+
+	// StartDelayGrace は開始遅延検出器の猶予（reconciler.Config.StartDelayGrace）。
+	// 0 なら reconciler 側の既定値を使う（config.yml の
+	// reconciler.start_delay_grace から注入される）。
+	StartDelayGrace time.Duration
 }
 
 // Timeout は River の既定（1 分）より長い上限を与える。理由は reconcilePassTimeout の
@@ -92,6 +97,8 @@ func (w *ReconcilePassWorker) Timeout(*river.Job[ReconcilePassArgs]) time.Durati
 // 先頭でその状態を DB から読み直すので、ここで毎回新規生成しても発動状態は
 // 失われない。
 func (w *ReconcilePassWorker) Work(ctx context.Context, job *river.Job[ReconcilePassArgs]) error {
-	rec := reconciler.New(job.Args.Site, w.MirakcClient, w.Pool, nil)
+	rec := reconciler.New(job.Args.Site, w.MirakcClient, w.Pool, &reconciler.Config{
+		StartDelayGrace: w.StartDelayGrace,
+	})
 	return rec.RunPass(ctx)
 }

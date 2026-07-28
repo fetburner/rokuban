@@ -14,16 +14,17 @@ import (
 
 // Config はアプリケーション全体の設定。
 type Config struct {
-	Server  ServerConfig  `yaml:"server"`
-	DB      DBConfig      `yaml:"db"`
-	Mirakc  MirakcConfig  `yaml:"mirakc"`
-	Storage StorageConfig `yaml:"storage"`
-	Ingest  IngestConfig  `yaml:"ingest"`
-	Epg     EpgConfig     `yaml:"epg"`
-	Ruler   RulerConfig   `yaml:"ruler"`
-	Worker  WorkerConfig  `yaml:"worker"`
-	Encode  EncodeConfig  `yaml:"encode"`
-	Log     LogConfig     `yaml:"log"`
+	Server     ServerConfig     `yaml:"server"`
+	DB         DBConfig         `yaml:"db"`
+	Mirakc     MirakcConfig     `yaml:"mirakc"`
+	Storage    StorageConfig    `yaml:"storage"`
+	Ingest     IngestConfig     `yaml:"ingest"`
+	Epg        EpgConfig        `yaml:"epg"`
+	Ruler      RulerConfig      `yaml:"ruler"`
+	Reconciler ReconcilerConfig `yaml:"reconciler"`
+	Worker     WorkerConfig     `yaml:"worker"`
+	Encode     EncodeConfig     `yaml:"encode"`
+	Log        LogConfig        `yaml:"log"`
 }
 
 // ServerConfig は HTTP サーバーの設定。
@@ -101,6 +102,17 @@ type RulerConfig struct {
 	// 手動で再開するまで止まり続ける（ラッチ。issue #24 M2-5）。
 	// 0 なら ruler 側の既定値（50）を使う。
 	MaxDeletesPerPass int `yaml:"max_deletes_per_pass"`
+}
+
+// ReconcilerConfig は reconciler（宣言的同期パス）の設定。
+type ReconcilerConfig struct {
+	// StartDelayGrace は開始遅延検出器（internal/reconciler.Config.StartDelayGrace、
+	// docs/recording.md §3.3「開始遅延検出器」）の猶予。開始時刻からこの時間が
+	// 経っても recordings.started_at が観測されない予約を「開始遅延」として
+	// 検出し、slog.Error とゲージ（rokuban_reconcile_start_delayed）に出す。
+	// mirakc 側の未知の不具合への保険（EPGStation#724 の実例あり）。
+	// 0 なら reconciler 側の既定値（3 分）を使う。
+	StartDelayGrace time.Duration `yaml:"start_delay_grace"`
 }
 
 // WorkerConfig は worker ロールの River クライアント設定。

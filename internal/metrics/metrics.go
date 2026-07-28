@@ -165,6 +165,25 @@ var (
 		Name: "rokuban_reconcile_last_pass_timestamp_seconds",
 		Help: "Unix time of the last completed reconcile pass. Use with time() to detect a stalled reconciler.",
 	})
+
+	// ReconcileStartDelayed は開始遅延検出器（issue #24 M2-7、docs/recording.md
+	// §3.3「開始遅延検出器」）が直近のパスで検出した件数 --- 「開始時刻 + 猶予
+	// （StartDelayGrace）を過ぎたのに recordings.started_at が観測されていない
+	// 予約」の数。録画開始は mirakc に全面委譲済みで Rokuban 側から防ぐ手段は
+	// ないが、EPGStation#724（チューナー再接続ハングで開始が 10 分遅延）の
+	// ような mirakc 側の未知の不具合への保険として検出する。
+	//
+	// ReconcilePendingDiff と同じ理由でカウンタではなくゲージにする:
+	// 「いま何件遅延しているか」が知りたい情報で、mirakc 側の遅延が解消して
+	// recording.started が観測されれば次のパスでゼロに戻る。ゼロに戻らない
+	// まま続くのは異常が解消していないということで、アラートすべきはゲージ側。
+	//
+	// site ラベルを持つのは reconciler がサイト単位のジョブで、複数サイトが
+	// 並行してパスを走らせうるため（CircuitBreakerTripped と同じ理由）。
+	ReconcileStartDelayed = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "rokuban_reconcile_start_delayed",
+		Help: "Reservations whose start time plus grace has passed without an observed recording.started. Converges to zero when healthy.",
+	}, []string{"site"})
 )
 
 // ruler（M2-3）のメトリクス。
@@ -291,6 +310,7 @@ func NewRegistry(backlog prometheus.Collector) *prometheus.Registry {
 		ReconcileCircuitBreakerTrips,
 		ReconcileScheduleLost,
 		ReconcileLastPass,
+		ReconcileStartDelayed,
 
 		RulerPassDuration,
 		RulerReservations,

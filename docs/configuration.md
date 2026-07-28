@@ -65,6 +65,13 @@ ruler:
                                  # 手動で resume するまで止まり続けるラッチで、件数が閾値以下に
                                  # 戻っても自動では解けない（recording.md §3.2「発動はラッチ」）
 
+reconciler:
+  start_delay_grace: 3m          # 開始遅延検出器（recording.md §3.3）の猶予。「開始時刻 +
+                                 # この時間」を過ぎても recordings.started_at が観測されない
+                                 # 予約を検出してアラートする。mirakc 側の未知の不具合への保険
+                                 # （EPGStation#724 の実例あり）。短すぎると開始直後の SSE 到達・
+                                 # watcher 処理の遅れを誤検知する
+
 worker:
   periodic_jobs: true            # プロセス内で定期ジョブ（epg_sync / ruler_pass / reconcile_pass / record_sweep）を投入するか。
                                  # k8s では false にし、CronJob から rokuban enqueue で投入する

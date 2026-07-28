@@ -1210,3 +1210,271 @@ func TestReconciler_ResumeCircuitBreakerConverges(t *testing.T) {
 		t.Error("the recovered reservation's schedule should be created")
 	}
 }
+
+// --- 開始遅延検出器（issue #24 M2-7、docs/recording.md §3.3「開始遅延検出器」）---
+//
+// 「開始時刻 + StartDelayGrace を過ぎたのに recordings.started_at が観測されて
+// いない予約」を rokuban_reconcile_start_delayed ゲージ（{site} ラベル）と
+// slog.Error で検出する。DB に新しい状態は持たせず、毎パス再計算する導出値
+// （不変条件 5: レベルトリガー）。
+
+// createStartedRecording は reservationID に紐づく recordings 行を、
+// 録画開始が観測済み（started_at が埋まっている）状態で作る。watcher が
+// mirakc の record から recordings.started_at を書く経路を模している。
+func createStartedRecording(t *testing.T, ctx context.Context, q *sqlcgen.Queries, reservationID int64, eventID int32, programStartAt, startedAt time.Time) {
+	t.Helper()
+	if _, err := q.CreateRecording(ctx, sqlcgen.CreateRecordingParams{
+		ReservationID:     &reservationID,
+		Source:            "manual",
+		Site:              "default",
+		NetworkID:         10000,
+		ServiceID:         5000,
+		EventID:           eventID,
+		ServiceName:       "テストチャンネル",
+		ChannelType:       "GR",
+		Channel:           "27",
+		Title:             "テスト番組",
+		ProgramStartAt:    programStartAt,
+		ProgramDurationMs: 1800000,
+		Status:            "recording",
+		StartedAt:         &startedAt,
+	}); err != nil {
+		t.Fatalf("creating started recording: %v", err)
+	}
+}
+
+// startDelayGauge は metrics.ReconcileStartDelayed の "default" サイトの現在値を読む。
+func startDelayGauge(t *testing.T) float64 {
+	t.Helper()
+	return promtestutil.ToFloat64(metrics.ReconcileStartDelayed.WithLabelValues("default"))
+}
+
+// 受け入れ条件 1: 開始時刻 + 猶予を過ぎて recordings.started_at が無い予約が
+// 検出されること（観測欠落を注入して検出されること）。ゲージとエラーログの
+// 両方に、予約 ID・programId・題名・経過が出ることを確認する。
+func TestReconciler_DetectsStartDelay(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	mock := newMockMirakc()
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+
+	mc := mirakc.NewClient(srv.URL, nil)
+	q := sqlcgen.New(pool)
+
+	// 開始 10 分前（既定猶予 3 分を過ぎている）、30 分番組なのでまだ終了前。
+	startAt := time.Now().Add(-10 * time.Minute)
+	res := createReservation(t, ctx, q, 100000500030001, "開始遅延番組", startAt)
+
+	var logBuf bytes.Buffer
+	prevLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prevLogger) })
+
+	rec := reconciler.New("default", mc, pool, nil)
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
+
+	if got := startDelayGauge(t); got != 1 {
+		t.Errorf("rokuban_reconcile_start_delayed = %v, want 1", got)
+	}
+
+	logText := logBuf.Bytes()
+	if !bytes.Contains(logText, []byte("level=ERROR")) || !bytes.Contains(logText, []byte("not started")) {
+		t.Errorf("expected an ERROR log about the start delay, got:\n%s", logText)
+	}
+	if !bytes.Contains(logText, []byte(fmt.Sprintf("reservation_id=%d", res.ID))) {
+		t.Errorf("expected the log to include reservation_id=%d, got:\n%s", res.ID, logText)
+	}
+	if !bytes.Contains(logText, []byte(fmt.Sprintf("program_id=%d", res.ProgramID))) {
+		t.Errorf("expected the log to include program_id=%d, got:\n%s", res.ProgramID, logText)
+	}
+	if !bytes.Contains(logText, []byte("開始遅延番組")) {
+		t.Errorf("expected the log to include the program title, got:\n%s", logText)
+	}
+	if !bytes.Contains(logText, []byte("elapsed=")) {
+		t.Errorf("expected the log to include the elapsed time since start, got:\n%s", logText)
+	}
+}
+
+// 受け入れ条件 2: recordings.started_at があれば検出されないこと
+// （正常に始まった録画で騒がない）。
+func TestReconciler_NoStartDelayWhenStarted(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	mock := newMockMirakc()
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+
+	mc := mirakc.NewClient(srv.URL, nil)
+	q := sqlcgen.New(pool)
+
+	startAt := time.Now().Add(-10 * time.Minute)
+	res := createReservation(t, ctx, q, 100000500030002, "正常開始番組", startAt)
+	createStartedRecording(t, ctx, q, res.ID, 30002, startAt, startAt.Add(1*time.Minute))
+
+	rec := reconciler.New("default", mc, pool, nil)
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
+
+	if got := startDelayGauge(t); got != 0 {
+		t.Errorf("rokuban_reconcile_start_delayed = %v, want 0 (recording already started)", got)
+	}
+}
+
+// 受け入れ条件 3: 猶予の内側（開始直後）では検出されないこと（誤検知しない
+// こと。猶予を置いた理由そのもの）。
+func TestReconciler_NoStartDelayWithinGrace(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	mock := newMockMirakc()
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+
+	mc := mirakc.NewClient(srv.URL, nil)
+	q := sqlcgen.New(pool)
+
+	// 既定猶予は 3 分。開始 1 分後はまだ猶予の内側で、SSE 到達・watcher 処理の
+	// 遅れによる誤検知を防ぐ窓に入っている。
+	startAt := time.Now().Add(-1 * time.Minute)
+	createReservation(t, ctx, q, 100000500030003, "開始直後番組", startAt)
+
+	rec := reconciler.New("default", mc, pool, nil)
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
+
+	if got := startDelayGauge(t); got != 0 {
+		t.Errorf("rokuban_reconcile_start_delayed = %v, want 0 (still within StartDelayGrace)", got)
+	}
+}
+
+// 受け入れ条件 4: 番組終了時刻を既に過ぎた予約は検出されないこと
+// （markOrphaned の領分。終わった番組を遅延として報告し続けるとアラートが
+// 鳴り止まなくなる）。
+func TestReconciler_NoStartDelayAfterProgramEnded(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	mock := newMockMirakc()
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+
+	mc := mirakc.NewClient(srv.URL, nil)
+	q := sqlcgen.New(pool)
+
+	// 開始 40 分前・30 分番組なので、終了時刻（開始 30 分後）はとっくに過ぎている。
+	startAt := time.Now().Add(-40 * time.Minute)
+	createReservation(t, ctx, q, 100000500030004, "終了済み番組", startAt)
+
+	rec := reconciler.New("default", mc, pool, nil)
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
+
+	if got := startDelayGauge(t); got != 0 {
+		t.Errorf("rokuban_reconcile_start_delayed = %v, want 0 (program already ended; markOrphaned's territory)", got)
+	}
+}
+
+// 受け入れ条件 5: state = 'orphaned' の予約は検出されないこと（既に
+// 「録れなかった」とマークされている。二重に騒がない）。
+func TestReconciler_NoStartDelayForOrphanedReservation(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	mock := newMockMirakc()
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+
+	mc := mirakc.NewClient(srv.URL, nil)
+	q := sqlcgen.New(pool)
+
+	// 開始時刻 + 猶予を過ぎているが終了前という、本来なら検出される窓。
+	startAt := time.Now().Add(-10 * time.Minute)
+	res := createReservation(t, ctx, q, 100000500030005, "orphaned開始遅延", startAt)
+	setReservationState(t, ctx, pool, res.ID, db.ReservationStateOrphaned)
+
+	rec := reconciler.New("default", mc, pool, nil)
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
+
+	if got := startDelayGauge(t); got != 0 {
+		t.Errorf("rokuban_reconcile_start_delayed = %v, want 0 (orphaned reservations must not be double-reported)", got)
+	}
+}
+
+// 受け入れ条件 6: effective.skip の予約は検出されないこと（録画しない意図
+// なのだから始まらないのが正常）。
+func TestReconciler_NoStartDelayForSkippedReservation(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	mock := newMockMirakc()
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+
+	mc := mirakc.NewClient(srv.URL, nil)
+	q := sqlcgen.New(pool)
+
+	startAt := time.Now().Add(-10 * time.Minute)
+	createReservation(t, ctx, q, 100000500030006, "skip開始遅延", startAt)
+	if _, err := q.SkipProgram(ctx, sqlcgen.SkipProgramParams{
+		Site:              "default",
+		ProgramID:         100000500030006,
+		ProgramStartAt:    startAt,
+		ProgramDurationMs: 1800000,
+	}); err != nil {
+		t.Fatalf("recording skip intent: %v", err)
+	}
+
+	rec := reconciler.New("default", mc, pool, nil)
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
+
+	if got := startDelayGauge(t); got != 0 {
+		t.Errorf("rokuban_reconcile_start_delayed = %v, want 0 (skip intent means not starting is normal)", got)
+	}
+}
+
+// 受け入れ条件 7: ゲージが収束すること（次のパスで started_at が埋まったら
+// ゼロに戻る。カウンタではなくゲージにした理由の検証）。
+func TestReconciler_StartDelayGaugeConverges(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	mock := newMockMirakc()
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+
+	mc := mirakc.NewClient(srv.URL, nil)
+	q := sqlcgen.New(pool)
+
+	startAt := time.Now().Add(-10 * time.Minute)
+	res := createReservation(t, ctx, q, 100000500030007, "収束確認番組", startAt)
+
+	rec := reconciler.New("default", mc, pool, nil)
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass (1st): %v", err)
+	}
+	if got := startDelayGauge(t); got != 1 {
+		t.Fatalf("rokuban_reconcile_start_delayed after pass 1 = %v, want 1", got)
+	}
+
+	// watcher が録画開始を観測した想定で started_at を埋める。
+	createStartedRecording(t, ctx, q, res.ID, 30007, startAt, startAt.Add(4*time.Minute))
+
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass (2nd): %v", err)
+	}
+	if got := startDelayGauge(t); got != 0 {
+		t.Errorf("rokuban_reconcile_start_delayed after pass 2 = %v, want 0 (converges once started_at is observed)", got)
+	}
+}

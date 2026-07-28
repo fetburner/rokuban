@@ -48,12 +48,26 @@ type Config struct {
 	MaxRecreatesPerPass int
 
 	DefaultPriority int
+
+	// StartDelayGrace は開始遅延検出器（issue #24 M2-7、docs/recording.md §3.3
+	// 「開始遅延検出器」）の猶予。「開始時刻 + StartDelayGrace」を過ぎても
+	// recordings.started_at が観測されない予約を検出対象にする。
+	//
+	// 猶予が要る理由: 番組開始の直後は mirakc の SSE イベント到達と watcher の
+	// 処理（GetRecord → recordings 作成/更新のコミット）に遅れがある。猶予が
+	// ゼロだと、正常に開始した録画でも「開始時刻ちょうどにはまだ started_at が
+	// 埋まっていない」を毎回検出してしまい、アラートが常時誤発火する。
+	// EPGStation#724（チューナー再接続ハングで開始が 10 分遅延）のような
+	// 実際の異常と区別するには、正常系の遅れを上回る猶予が要る。
+	// 0 なら既定値（3 分）を使う。
+	StartDelayGrace time.Duration
 }
 
 func defaultConfig() Config {
 	return Config{
 		MaxRecreatesPerPass: 20,
 		DefaultPriority:     10,
+		StartDelayGrace:     3 * time.Minute,
 	}
 }
 
@@ -78,6 +92,9 @@ func New(site string, mc *mirakc.Client, pool *pgxpool.Pool, cfg *Config) *Recon
 		}
 		if cfg.DefaultPriority > 0 {
 			c.DefaultPriority = cfg.DefaultPriority
+		}
+		if cfg.StartDelayGrace > 0 {
+			c.StartDelayGrace = cfg.StartDelayGrace
 		}
 	}
 	return &Reconciler{
@@ -220,6 +237,23 @@ func (r *Reconciler) RunPass(ctx context.Context) error {
 		slog.Error("reconciler: marking orphaned", "err", err)
 	}
 
+	startDelayed, err := r.detectStartDelays(ctx, reservations)
+	if err != nil {
+		slog.Error("reconciler: detecting start delays", "err", err)
+	}
+	for _, d := range startDelayed {
+		slog.Error("reconciler: recording not started past start time + grace",
+			"reservation_id", d.id,
+			"program_id", d.programID,
+			"title", d.title,
+			"elapsed", d.elapsed,
+		)
+	}
+	// DB に新しい状態は持たせない（不変条件 5: レベルトリガー）。毎パス
+	// recordings.started_at から再計算する導出値なので、ゲージだけで表す。
+	// 収束すれば（recording.started が観測されれば）次のパスでゼロに戻る。
+	metrics.ReconcileStartDelayed.WithLabelValues(r.site).Set(float64(len(startDelayed)))
+
 	// 差分そのものをゲージで出す。健全なら次のパスでゼロになる。
 	// 作成/削除/再作成できずに残った量が知りたいので、実行した件数ではなく
 	// 検出した件数（MaxRecreatesPerPass で持ち越した分も含む）。
@@ -256,6 +290,7 @@ func (r *Reconciler) RunPass(ctx context.Context) error {
 		"deleted", deleted,
 		"update_diff", updateDiff,
 		"recreated", recreated,
+		"start_delayed", len(startDelayed),
 	)
 	return nil
 }
@@ -646,4 +681,91 @@ func (r *Reconciler) markOrphaned(ctx context.Context, reservations []desiredRes
 		)
 	}
 	return nil
+}
+
+// startDelayed は開始遅延検出器が検出した 1 件（ログ出力用の要約）。
+type startDelayed struct {
+	id        int64
+	programID int64
+	title     string
+	elapsed   time.Duration
+}
+
+// detectStartDelays は「開始時刻 + StartDelayGrace を過ぎたのに録画開始
+// （recordings.started_at）が観測されていない予約」を検出する（issue #24 M2-7、
+// docs/recording.md §3.3「開始遅延検出器」）。録画開始は mirakc に全面委譲済みで
+// Rokuban 側から防ぐ手段はないが、EPGStation#724（チューナー再接続ハングで
+// 開始が 10 分遅延）のような mirakc 側の未知の不具合への保険として、reconcile
+// の 1 パスの中で毎回検出し直す（不変条件 5: レベルトリガー。DB に新しい状態は
+// 持たせず、呼び出し元がゲージに反映するだけの導出値）。
+//
+// reservations は呼び出し元（RunPass）が listDesired で得た desired 予約
+// リストをそのまま渡す想定で、次の 2 つは既にそこで除外されている。
+//   - effective.skip の予約（listDesired が opts.Skip で絞っている）
+//   - state = 'orphaned' の予約（listDesired の元クエリ ListSyncableReservationsBySite
+//     が state <> 'orphaned' で絞っている）
+//
+// ここではさらに時間窓で絞る: 「開始時刻 + StartDelayGrace < now() < 終了時刻」。
+// 終了時刻を過ぎた予約は markOrphaned の領分であり、ここで検出し続けると
+// 終わった番組についてアラートが鳴り止まなくなる（markOrphaned が拾うのを待つ）。
+//
+// 観測の有無は recordings.started_at で判定する。予約に対応する recordings 行
+// そのものが無い場合（録画が一切観測されていない）も「観測なし」として扱う —
+// ListStartedReservationIDs は渡した予約 ID のうち started_at が埋まっている
+// ものだけを返すので、返らなかった ID がそのまま「観測なし」の集合になる。
+func (r *Reconciler) detectStartDelays(ctx context.Context, reservations []desiredReservation) ([]startDelayed, error) {
+	now := time.Now()
+
+	var candidates []desiredReservation
+	for _, d := range reservations {
+		startAt := d.res.ProgramStartAt
+		endAt := startAt.Add(time.Duration(d.res.ProgramDurationMs) * time.Millisecond)
+		if !now.After(startAt.Add(r.cfg.StartDelayGrace)) {
+			// まだ猶予の内側。開始直後の SSE 到達・watcher 処理の遅れを
+			// 誤検知しないための窓（Config.StartDelayGrace のコメント参照）。
+			continue
+		}
+		if !now.Before(endAt) {
+			// 番組終了後は markOrphaned の領分。ここで拾うと終わった番組を
+			// 遅延として報告し続けてアラートが鳴り止まなくなる。
+			continue
+		}
+		candidates = append(candidates, d)
+	}
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+
+	ids := make([]int64, len(candidates))
+	for i, d := range candidates {
+		ids[i] = d.res.ID
+	}
+
+	started, err := sqlcgen.New(r.pool).ListStartedReservationIDs(ctx, sqlcgen.ListStartedReservationIDsParams{
+		Site:           r.site,
+		ReservationIds: ids,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing started reservation ids: %w", err)
+	}
+	startedSet := make(map[int64]struct{}, len(started))
+	for _, id := range started {
+		if id != nil {
+			startedSet[*id] = struct{}{}
+		}
+	}
+
+	var delayed []startDelayed
+	for _, d := range candidates {
+		if _, ok := startedSet[d.res.ID]; ok {
+			continue
+		}
+		delayed = append(delayed, startDelayed{
+			id:        d.res.ID,
+			programID: d.res.ProgramID,
+			title:     d.res.Title,
+			elapsed:   now.Sub(d.res.ProgramStartAt),
+		})
+	}
+	return delayed, nil
 }
