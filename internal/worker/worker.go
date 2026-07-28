@@ -57,6 +57,11 @@ type Deps struct {
 	// （ruler.max_deletes_per_pass）。0 なら ruler 側の既定値を使う
 	// （docs/recording.md §3.2「大量削除サーキットブレーカー」）。
 	RulerMaxDeletesPerPass int
+
+	// ReconcileStartDelayGrace は開始遅延検出器の猶予
+	// （reconciler.start_delay_grace）。0 なら reconciler 側の既定値を使う
+	// （docs/recording.md §3.3「開始遅延検出器」）。
+	ReconcileStartDelayGrace time.Duration
 }
 
 // NewWorkers は全ワーカーを登録した river.Workers を返す。
@@ -78,8 +83,9 @@ func NewWorkers(deps *Deps) *river.Workers {
 		MaxDeletesPerPass: deps.RulerMaxDeletesPerPass,
 	})
 	river.AddWorker(workers, &ReconcilePassWorker{
-		MirakcClient: deps.MirakcClient,
-		Pool:         deps.Pool,
+		MirakcClient:    deps.MirakcClient,
+		Pool:            deps.Pool,
+		StartDelayGrace: deps.ReconcileStartDelayGrace,
 	})
 	river.AddWorker(workers, &RecordSweepWorker{
 		MirakcClient: deps.MirakcClient,
