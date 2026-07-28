@@ -176,6 +176,13 @@ export interface DropStat {
   drops: number;
   errors: number;
   scrambled: number;
+  /**
+     * PID 種別（M2-13, issue #24）。PMT の stream_type から分類した
+     * video / audio、または固定 PSI テーブル名（PAT/CAT/NIT/SDT/EIT/TOT）。
+     * 記述子は読まないため字幕と文字スーパーは区別しない。分類できなければ省略
+     * （PSI 解析の失敗は ingest を失敗させない。docs/recording.md「例外の境界」）
+     */
+  pidType?: string;
 }
 
 export interface CreateReservationRequest {
@@ -412,6 +419,13 @@ export interface DeleteRuleResponse {
   detachedReservations: number;
 }
 
+/**
+ * 導出値であり、reservations テーブルの列ではない（issue #26）。
+ * ユーザーが録れと指定した番組（program_intents に action=record の行が
+ * ある）なら manual、無ければ rule。ルールが今まさにこの予約に
+ * base を供給しているか（ruleId の有無）とは無関係で、手動予約に
+ * ルールがマッチしていても manual のまま変わらない。
+ */
 export type ReservationSource = typeof ReservationSource[keyof typeof ReservationSource];
 
 
@@ -434,6 +448,13 @@ export type ReservationOverrides = { [key: string]: unknown };
 export interface Reservation {
   id: number;
   programId: number;
+  /**
+     * 導出値であり、reservations テーブルの列ではない（issue #26）。
+     * ユーザーが録れと指定した番組（program_intents に action=record の行が
+     * ある）なら manual、無ければ rule。ルールが今まさにこの予約に
+     * base を供給しているか（ruleId の有無）とは無関係で、手動予約に
+     * ルールがマッチしていても manual のまま変わらない。
+     */
   source: ReservationSource;
   ruleId?: number;
   state: ReservationState;
@@ -443,6 +464,17 @@ export interface Reservation {
   durationMs: number;
   createdAt: string;
   updatedAt: string;
+  /**
+     * effective.skip（M2-6, issue #24）。program_intents.action='skip' の
+     * 明示、または意図が無く base.skip（ルールの重複排除判定）が true。
+     * true の間 reconciler は mirakc に同期しないが、予約行自体は
+     * 「なぜ録られていないか」を説明するため残る。
+     */
+  skip: boolean;
+  /** 履歴ベース重複排除でマッチした録画の ID（マッチが無ければ省略） */
+  dedupMatchRecordingId?: number;
+  /** 上記マッチの pg_trgm 類似度（0.0〜1.0、マッチが無ければ省略） */
+  dedupSimilarity?: number;
 }
 
 export interface OverlappingReservation {
