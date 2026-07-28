@@ -385,6 +385,45 @@ func TestReservationOptions_EffectiveNilBase(t *testing.T) {
 	}
 }
 
+// docs/recording.md §4.2 が定める式は
+// effective.skip = (action = 'skip') OR (意図がなく base.skip)
+// であり、action が record なら base.skip の値に関わらず false になる。
+// M2-6 の重複排除が base.skip を立てても、ユーザーの record 意図が勝つという主張
+// （同 §4.2「M2-6 の dedup skip」）はこの分岐に依存している。
+//
+// intentAction == nil のケースを両方向で押さえているのが要点: 上書きを常に
+// 適用する実装にすると base 由来の skip が効かなくなる（重複排除が機能しなくなる）。
+func TestEffectiveOptions_IntentActionOverridesBaseSkip(t *testing.T) {
+	record := IntentRecord
+	skip := IntentSkip
+	baseSkip := []byte(`{"skip":true,"priority":3}`)
+
+	tests := []struct {
+		name         string
+		base         []byte
+		intentAction *string
+		wantSkip     bool
+	}{
+		{"record intent beats base.skip", baseSkip, &record, false},
+		{"skip intent keeps skip", baseSkip, &skip, true},
+		{"no intent lets base.skip through", baseSkip, nil, true},
+		{"record intent without base", nil, &record, false},
+		{"skip intent without base", nil, &skip, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			eff, err := EffectiveOptions(tt.base, nil, tt.intentAction)
+			if err != nil {
+				t.Fatalf("EffectiveOptions: %v", err)
+			}
+			got := eff.Skip != nil && *eff.Skip
+			if got != tt.wantSkip {
+				t.Errorf("effective skip = %v (Skip=%v), want %v", got, eff.Skip, tt.wantSkip)
+			}
+		})
+	}
+}
+
 // insertTestRecording は各テスト間で event_id を変えて一意な recording を作る。
 var testEventCounter atomic.Int32
 
