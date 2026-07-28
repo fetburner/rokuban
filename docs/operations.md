@@ -40,7 +40,8 @@ HTTP リスナーは常に 1 本立てる。OpenAPI には載せない（text fo
 | `rokuban_uningested_backlog_scrape_errors_total{site}` | Counter | 上記の取得失敗 |
 | `rokuban_reconcile_pending_diff{action}` | Gauge | reconcile 差分数（**収束すればゼロ**。アラートはこちら） |
 | `rokuban_reconcile_schedules_total{action}` | Counter | 実際に差分を消した量 |
-| `rokuban_reconcile_circuit_breaker_trips_total` | Counter | 大量削除ブレーカー発動 |
+| `rokuban_reconcile_circuit_breaker_trips_total` | Counter | 全損シグネチャでの発動（M2-5 で意味が変わった。件数の閾値ではない） |
+| `rokuban_circuit_breaker_tripped{site,breaker}` | Gauge | **いま止まっているか**（1 = 発動中）。ラッチなのでアラートはこちら |
 | `rokuban_reconcile_last_pass_timestamp_seconds` | Gauge | 最後に完走したパスの時刻 |
 | `rokuban_epg_sync_duration_seconds` | Histogram | EPG 全量同期の所要 |
 | `rokuban_epg_programs_projected` | Gauge | 直近パスの投影件数 |
@@ -105,6 +106,7 @@ ruler / reconciler / record_sweep（watcher の 3 段構えのうち (c) 定期�
 | `rokuban_ruler_pass_duration_seconds` | 1 パス（全ルール x 全射影番組）の所要時間。射影が有界なので伸び続けることはない |
 | `rokuban_ruler_reservations_total{action}` | `created` / `updated` / `deleted` / `gc`。**`updated` が毎パス予約数と同じ値で増え続けるなら差分書き込みが効いていない**（[録画エンジン](recording.md) §3.1） |
 | `rokuban_ruler_circuit_breaker_trips_total` | 大量削除で停止した回数。EPG の一時欠損を疑う入口 |
+| `rokuban_circuit_breaker_tripped{breaker="ruler_deletes"}` | **1 の間は導出削除が一切走らない**（手動再開まで止まるラッチ。M2-5）。カウンタと違い「いま止まっているか」に答える |
 | `rokuban_ruler_last_pass_timestamp_seconds` | 最終パス時刻。`time() - この値` でパスが止まっていることを検出する（gauge が凍る問題への対策） |
 
 `deleted` と `gc` は区別する。`deleted` は「ルールがマッチしなくなった」導出削除で**サーキットブレーカーの対象**、`gc` は「番組終了 + 猶予経過」の時間駆動で**対象外**（停止後の再開で大量に消えるのが正常）。
@@ -168,8 +170,25 @@ DELETE FROM river_job WHERE kind = 'epg_sync' AND state = 'completed';
 
 EPG の一時欠損（mirakc 再起動・再スキャン・SI 取得不良）で素朴な ruler は予約を大量に「不要」と判定し、reconciler がそれを mirakc へ忠実に反映（= 一斉 DELETE）してしまう（EPGStation#692 の障害クラス）。
 
-- 1 回の reconcile / ruler パスでの削除数に閾値（例: 対象総数の 20% または絶対数 N）を設け、超えたら削除を実行せず停止してアラート
+- 1 回の ruler パスでの削除数に閾値（`ruler.max_deletes_per_pass`）を設け、超えたら削除を実行せず停止してアラート
 - 削除エンジンの物理 unlink についても、ソースを問わず 1 パスの物理削除が閾値（件数 / ライブラリ比率 / 総バイト数、例: 5% or 100 GB）を超えたら停止してアラート
+
+**アラートは `rokuban_circuit_breaker_tripped{site,breaker}` を見る**（M2-5）。既存の
+`*_circuit_breaker_trips_total` は「何回発動したか」しか答えられないが、ブレーカーは
+**手動で再開するまで止まり続けるラッチ**なので「いま止まっているか」が知りたい情報である。
+
+| ブレーカー | 何を守るか | 発動したら |
+|---|---|---|
+| `ruler_deletes` | ルール x EPG の評価から導出された予約削除 | `GET /api/breakers` の `detail` で消されようとしていた番組を確認 → 正当なら `POST /api/breakers/ruler_deletes/resume` |
+| `reconcile_total_loss` | 「desired が空なのに自分の schedule が観測されている」という全損シグネチャ | DB 接続・`reservations` の中身を確認。**件数の閾値ではない**ので、発動したら本当に異常である |
+
+**1 が続く間、導出削除は一切実行されない。** これは「reconcile が収束できていない」ではなく
+「人間の確認を待っている」を意味する。放置すると mirakc 側に不要な schedule が残り続けるため、
+`for` の待ち時間を長く取らず即座に通知する。
+
+発動中でも**削除以外は動く**（予約の作成・base の更新・schedule の作成・番組終了後の GC）。
+「録画されない」ではなく「消えないものが残る」障害なので、慌てて resume せず `detail` を
+確認してからにする。
 
 ### 開始時刻超過で recording.started 未観測
 

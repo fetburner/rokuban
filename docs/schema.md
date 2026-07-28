@@ -212,6 +212,36 @@ CREATE INDEX ON program_overrides (program_start_at);
 
 `program_start_at` / `program_duration_ms` は `reservations` にも同じ意味・同じ出所で存在し、この分離で 3 箇所目になる。しかも ruler は `reservations` 側だけを延長に追従させるため既にドリフトしている（`epg.retention_grace` の 24h が吸収している）。`program_snapshots` への抽出は別タスク。
 
+## 3.6 circuit_breakers — 大量削除ブレーカーのラッチ（M2-5）
+
+```sql
+CREATE TABLE circuit_breakers (
+    site       text NOT NULL,
+    name       text NOT NULL,              -- internal/breaker の定数（ruler_deletes 等）
+    tripped_at timestamptz NOT NULL DEFAULT now(),
+    pending    integer NOT NULL,            -- 発動時に止めた件数
+    threshold  integer NOT NULL,            -- 発動時の閾値（設定変更で変わるので焼く）
+    detail     jsonb NOT NULL DEFAULT '{}', -- 何が消されようとしていたかの抜粋
+    PRIMARY KEY (site, name)
+);
+```
+
+- **行の存在そのものが「発動中」**。停止していない状態を表す行は無い（§3.5 の
+  `program_overrides` と同じ規律）。再開は行の DELETE
+- **このスキーマで唯一の「導出できない状態」。** 他のテーブルはすべて desired（ユーザーが
+  書く）か observed（再取得できる）か導出結果だが、**誰かが確認したという事実は再取得
+  できない**。レベルトリガー設計の例外として意図的に置く（[録画エンジン](recording.md)
+  §3.2「発動はラッチ」）
+- `tripped_at` は再発動で更新しない。「いつから止まっているか」が運用上の関心事なので、
+  パスごとに現在時刻へ進めてはならない
+- `name` に CHECK を置かない。ブレーカーの追加をマイグレーションなしでできるようにする
+  ため、値の権威は Go 側の定数（`internal/breaker`）。§1「型の規律」の「状態は text +
+  CHECK」の例外だが、これは状態ではなく識別子である
+- `detail` に内容の CHECK を置かない。**手動確認のための材料**であり、ブレーカー自身の
+  ロジックは中身を一切使わない不透明なペイロード（UI が表示するだけ）
+- SSE は専用の `breakers` トピック。既存の reservations / rules / recordings とは
+  関心事が違う（`00005` の「トピック名はテーブル名ではなくクライアントの関心事に揃える」）
+
 ## 4. schedule_sync — mirakc schedule の観測（observed state）
 
 `GET /api/recording/schedules` の全量取得結果をそのまま写像した使い捨てテーブル。reconciler だけが書く。**mirakc の形をしてよい唯一の予約側テーブル**。
