@@ -179,9 +179,13 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[IngestJobArgs]) 
 		return fmt.Errorf("closing file: %w", err)
 	}
 
+	// pid_type_changes > 0 は録画中に PMT が PID を付け替えたということ。
+	// 種別は最後に見たものを採用するので、変化そのものはここにしか残らない
+	// （docs/recording.md §1「例外の境界」）。
 	log.Info("ingest: transfer complete", "bytes", offset,
 		"drops", counter.TotalDrops(), "errors", counter.TotalErrors(),
-		"scrambled", counter.TotalScrambled())
+		"scrambled", counter.TotalScrambled(),
+		"pid_type_changes", counter.TypeChanges())
 
 	metrics.IngestBytes.Add(float64(offset))
 	metrics.IngestDroppedPackets.Add(float64(counter.TotalDrops()))
@@ -265,6 +269,13 @@ func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath st
 
 	for _, pid := range pids {
 		s := stats[pid]
+		// 分類できなかった PID は種別なし（NULL）。空文字を「未分類」という値として
+		// 永続化しない（M2-13, issue #24）。
+		var pidType *string
+		if s.Type != "" {
+			t := s.Type
+			pidType = &t
+		}
 		if err := q.InsertDropStat(ctx, sqlcgen.InsertDropStatParams{
 			MediaAssetID: assetID,
 			Pid:          int32(pid),
@@ -272,6 +283,7 @@ func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath st
 			Drops:        s.Drops,
 			Errors:       s.Errors,
 			Scrambled:    s.Scrambled,
+			PidType:      pidType,
 		}); err != nil {
 			return fmt.Errorf("inserting drop_stat for PID %d: %w", pid, err)
 		}
