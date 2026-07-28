@@ -464,6 +464,70 @@ paths:
                 items:
                   $ref: "#/components/schemas/DropStat"
 
+  /api/breakers:
+    get:
+      operationId: listCircuitBreakers
+      summary: List tripped circuit breakers
+      description: |
+        大量削除サーキットブレーカー（docs/recording.md §3.2）の発動状態。
+        **行の存在 = 発動中**なので、発動していないブレーカーは結果に現れない
+        （すべて停止していなければ空配列）。
+
+        `detail` は発動時に「何が消されようとしていたか」を説明する抜粋で、
+        手動確認の材料（`internal/breaker.Sample` と同じ形。最大 20 件）。
+
+        site はパスに含めない。M1/M2 は単一サイト構成（`db.DefaultSite`）で、
+        将来の多拠点対応でパスに site を加える可能性がある。
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/CircuitBreaker"
+
+  /api/breakers/{name}/resume:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        description: |
+          ブレーカー識別子（`internal/breaker` の定数。`ruler_deletes` /
+          `reconcile_total_loss`）。未知の値は 400。
+        schema:
+          type: string
+    post:
+      operationId: resumeCircuitBreaker
+      summary: Resume a tripped circuit breaker (manual acknowledgement)
+      description: |
+        手動確認後の再開。ブレーカーは人間が確認するまで止まり続けるラッチ
+        （docs/recording.md §3.2）なので、確認が済んだことをこの API で明示する。
+
+        `DELETE /api/breakers/{name}` にしていないのは、運用者から見た操作が
+        「行を削除する」ではなく「**確認したので再開する**」であるため。DB の行が
+        消えるのは実装詳細（`internal/breaker` のラッチが行の存在で表される、という
+        設計の帰結）であり、URL に出す概念ではない。
+
+        site はパスに含めない（`GET /api/breakers` と同じ理由。将来の多拠点対応で
+        パスに site を加える可能性がある）。
+      responses:
+        "204":
+          description: Resumed
+        "400":
+          description: Unknown breaker name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Not tripped (nothing to resume)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
 components:
   schemas:
     HealthResponse:
@@ -1092,3 +1156,67 @@ components:
         updatedAt:
           type: string
           format: date-time
+
+    # --- Circuit breakers (M2-5) ---
+
+    CircuitBreaker:
+      type: object
+      description: |
+        発動中の大量削除サーキットブレーカー 1 件（`circuit_breakers` 行 = 発動中。
+        docs/recording.md §3.2）。
+      required:
+        - site
+        - name
+        - trippedAt
+        - pending
+        - threshold
+        - detail
+      properties:
+        site:
+          type: string
+        name:
+          type: string
+          enum: [ruler_deletes, reconcile_total_loss]
+          description: internal/breaker の定数（RulerDeletes / ReconcileTotalLoss）。
+        trippedAt:
+          type: string
+          format: date-time
+          description: |
+            発動した時刻（最初の発動時刻。再発動で更新されるのは pending /
+            threshold / detail のみ）。
+        pending:
+          type: integer
+          description: 発動時に止めた削除の件数。
+        threshold:
+          type: integer
+          description: 発動時の閾値。
+        detail:
+          $ref: "#/components/schemas/CircuitBreakerSample"
+
+    CircuitBreakerSample:
+      type: object
+      description: |
+        発動時に「何が消されようとしていたか」を説明する抜粋
+        （`internal/breaker.Sample` と同じ形。手動確認の材料）。
+      required:
+        - total
+      properties:
+        total:
+          type: integer
+          description: 止めた削除の総数。
+        programs:
+          type: array
+          description: 先頭いくつかの抜粋（`internal/breaker.MaxSampleSize` 件まで）。
+          items:
+            $ref: "#/components/schemas/CircuitBreakerSampleProgram"
+
+    CircuitBreakerSampleProgram:
+      type: object
+      required:
+        - programId
+      properties:
+        programId:
+          type: integer
+          format: int64
+        title:
+          type: string
