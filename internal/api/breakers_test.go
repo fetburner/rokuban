@@ -1,0 +1,249 @@
+package api_test
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/fetburner/rokuban/internal/api"
+	"github.com/fetburner/rokuban/internal/testutil"
+)
+
+// insertCircuitBreakerFixture は circuit_breakers 行を直接 INSERT する（ruler /
+// reconciler の発動ロジックを経由しない）。行の存在そのものが「発動中」を表す
+// テーブルなので、発動状態はこの直接 INSERT だけで再現できる
+// （internal/db/migrations/00011_circuit_breakers.sql のコメント参照）。
+func insertCircuitBreakerFixture(t *testing.T, pool *pgxpool.Pool, ctx context.Context, name string, pending, threshold int, detail string) {
+	t.Helper()
+	if _, err := pool.Exec(ctx, `
+INSERT INTO circuit_breakers (site, name, pending, threshold, detail)
+VALUES ('default', $1, $2, $3, $4::jsonb)`, name, pending, threshold, detail); err != nil {
+		t.Fatalf("inserting circuit breaker fixture %q: %v", name, err)
+	}
+}
+
+// countCircuitBreakers は circuit_breakers の行数を返す（resume が対象外の行を
+// 巻き込んでいないことの確認に使う）。
+func countCircuitBreakers(t *testing.T, pool *pgxpool.Pool, ctx context.Context) int {
+	t.Helper()
+	var n int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM circuit_breakers`).Scan(&n); err != nil {
+		t.Fatalf("counting circuit breakers: %v", err)
+	}
+	return n
+}
+
+func existsCircuitBreaker(t *testing.T, pool *pgxpool.Pool, ctx context.Context, name string) bool {
+	t.Helper()
+	var n int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM circuit_breakers WHERE site = 'default' AND name = $1`, name).Scan(&n); err != nil {
+		t.Fatalf("checking circuit breaker %q: %v", name, err)
+	}
+	return n > 0
+}
+
+// circuitBreakerResp は GET /api/breakers のレスポンス要素から確認に要る部分だけを持つ。
+type circuitBreakerResp struct {
+	Site      string `json:"site"`
+	Name      string `json:"name"`
+	Pending   int    `json:"pending"`
+	Threshold int    `json:"threshold"`
+	Detail    struct {
+		Total    int `json:"total"`
+		Programs []struct {
+			ProgramID int64  `json:"programId"`
+			Title     string `json:"title"`
+		} `json:"programs"`
+	} `json:"detail"`
+}
+
+// 1. 発動しているブレーカーが一覧に現れ、detail の中身（total と programs）が読める。
+func TestListCircuitBreakers_ReturnsTrippedBreakerWithDetail(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	router := api.NewRouter(api.RouterConfig{Pool: pool})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	detail := `{"total":42,"programs":[{"programId":1234,"title":"テスト番組"}]}`
+	insertCircuitBreakerFixture(t, pool, ctx, "ruler_deletes", 42, 50, detail)
+
+	resp, err := http.Get(srv.URL + "/api/breakers")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	var got []circuitBreakerResp
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len(got) = %d, want 1", len(got))
+	}
+	b := got[0]
+	if b.Site != "default" || b.Name != "ruler_deletes" {
+		t.Errorf("site/name = %q/%q, want default/ruler_deletes", b.Site, b.Name)
+	}
+	if b.Pending != 42 || b.Threshold != 50 {
+		t.Errorf("pending/threshold = %d/%d, want 42/50", b.Pending, b.Threshold)
+	}
+	if b.Detail.Total != 42 {
+		t.Errorf("detail.total = %d, want 42", b.Detail.Total)
+	}
+	if len(b.Detail.Programs) != 1 || b.Detail.Programs[0].ProgramID != 1234 || b.Detail.Programs[0].Title != "テスト番組" {
+		t.Errorf("detail.programs = %+v, want [{1234 テスト番組}]", b.Detail.Programs)
+	}
+}
+
+// 2. 何も発動していなければ空配列（null ではない）が返る。
+func TestListCircuitBreakers_EmptyWhenNoneTripped(t *testing.T) {
+	pool := testutil.SetupDB(t)
+
+	router := api.NewRouter(api.RouterConfig{Pool: pool})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/breakers")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(bodyBytes)
+	if body != "[]\n" && body != "[]" {
+		t.Errorf("body = %q, want literal empty array (not null)", body)
+	}
+
+	var got []circuitBreakerResp
+	if err := json.Unmarshal(bodyBytes, &got); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("len(got) = %d, want 0", len(got))
+	}
+}
+
+// 3. resume で行が消え 204。
+func TestResumeCircuitBreaker_DeletesRowAnd204(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	router := api.NewRouter(api.RouterConfig{Pool: pool})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	insertCircuitBreakerFixture(t, pool, ctx, "ruler_deletes", 10, 50, `{"total":10}`)
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/breakers/ruler_deletes/resume", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", resp.StatusCode)
+	}
+	if existsCircuitBreaker(t, pool, ctx, "ruler_deletes") {
+		t.Error("circuit breaker row still exists after resume")
+	}
+}
+
+// 4. 発動していないブレーカーへの resume は 404。
+func TestResumeCircuitBreaker_404WhenNotTripped(t *testing.T) {
+	pool := testutil.SetupDB(t)
+
+	router := api.NewRouter(api.RouterConfig{Pool: pool})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/breakers/ruler_deletes/resume", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
+// 5. 未知の name への resume は 400。
+func TestResumeCircuitBreaker_400WhenUnknownName(t *testing.T) {
+	pool := testutil.SetupDB(t)
+
+	router := api.NewRouter(api.RouterConfig{Pool: pool})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/breakers/not_a_real_breaker/resume", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+// 6. 複数発動しているとき、resume は指定した 1 つだけを消す（他を巻き込まない）。
+func TestResumeCircuitBreaker_OnlyDeletesTargetedBreaker(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	router := api.NewRouter(api.RouterConfig{Pool: pool})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	insertCircuitBreakerFixture(t, pool, ctx, "ruler_deletes", 10, 50, `{"total":10}`)
+	insertCircuitBreakerFixture(t, pool, ctx, "reconcile_total_loss", 1, 1, `{"total":1}`)
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/breakers/ruler_deletes/resume", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", resp.StatusCode)
+	}
+
+	if existsCircuitBreaker(t, pool, ctx, "ruler_deletes") {
+		t.Error("targeted circuit breaker still exists after resume")
+	}
+	if !existsCircuitBreaker(t, pool, ctx, "reconcile_total_loss") {
+		t.Error("untargeted circuit breaker was deleted (should not be affected)")
+	}
+	if n := countCircuitBreakers(t, pool, ctx); n != 1 {
+		t.Errorf("remaining circuit breaker rows = %d, want 1", n)
+	}
+}

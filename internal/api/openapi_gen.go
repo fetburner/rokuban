@@ -16,6 +16,24 @@ import (
 	"github.com/oapi-codegen/runtime"
 )
 
+// Defines values for CircuitBreakerName.
+const (
+	ReconcileTotalLoss CircuitBreakerName = "reconcile_total_loss"
+	RulerDeletes       CircuitBreakerName = "ruler_deletes"
+)
+
+// Valid indicates whether the value is a known member of the CircuitBreakerName enum.
+func (e CircuitBreakerName) Valid() bool {
+	switch e {
+	case ReconcileTotalLoss:
+		return true
+	case RulerDeletes:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ProgramSearchRequestChannelTypes.
 const (
 	ProgramSearchRequestChannelTypesBS  ProgramSearchRequestChannelTypes = "BS"
@@ -340,6 +358,47 @@ type AudioInfo struct {
 	IsMain        bool      `json:"isMain"`
 	Langs         *[]string `json:"langs,omitempty"`
 	SamplingRate  int       `json:"samplingRate"`
+}
+
+// CircuitBreaker 発動中の大量削除サーキットブレーカー 1 件（`circuit_breakers` 行 = 発動中。
+// docs/recording.md §3.2）。
+type CircuitBreaker struct {
+	// Detail 発動時に「何が消されようとしていたか」を説明する抜粋
+	// （`internal/breaker.Sample` と同じ形。手動確認の材料）。
+	Detail CircuitBreakerSample `json:"detail"`
+
+	// Name internal/breaker の定数（RulerDeletes / ReconcileTotalLoss）。
+	Name CircuitBreakerName `json:"name"`
+
+	// Pending 発動時に止めた削除の件数。
+	Pending int    `json:"pending"`
+	Site    string `json:"site"`
+
+	// Threshold 発動時の閾値。
+	Threshold int `json:"threshold"`
+
+	// TrippedAt 発動した時刻（最初の発動時刻。再発動で更新されるのは pending /
+	// threshold / detail のみ）。
+	TrippedAt time.Time `json:"trippedAt"`
+}
+
+// CircuitBreakerName internal/breaker の定数（RulerDeletes / ReconcileTotalLoss）。
+type CircuitBreakerName string
+
+// CircuitBreakerSample 発動時に「何が消されようとしていたか」を説明する抜粋
+// （`internal/breaker.Sample` と同じ形。手動確認の材料）。
+type CircuitBreakerSample struct {
+	// Programs 先頭いくつかの抜粋（`internal/breaker.MaxSampleSize` 件まで）。
+	Programs *[]CircuitBreakerSampleProgram `json:"programs,omitempty"`
+
+	// Total 止めた削除の総数。
+	Total int `json:"total"`
+}
+
+// CircuitBreakerSampleProgram defines model for CircuitBreakerSampleProgram.
+type CircuitBreakerSampleProgram struct {
+	ProgramId int64   `json:"programId"`
+	Title     *string `json:"title,omitempty"`
 }
 
 // CreateReservationRequest defines model for CreateReservationRequest.
@@ -735,6 +794,12 @@ type UpdateRuleJSONRequestBody = RuleInput
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
+	// ListCircuitBreakers List tripped circuit breakers
+	// (GET /api/breakers)
+	ListCircuitBreakers(w http.ResponseWriter, r *http.Request)
+	// ResumeCircuitBreaker Resume a tripped circuit breaker (manual acknowledgement)
+	// (POST /api/breakers/{name}/resume)
+	ResumeCircuitBreaker(w http.ResponseWriter, r *http.Request, name string)
 	// ListPrograms List EPG programs in a time window
 	// (GET /api/programs)
 	ListPrograms(w http.ResponseWriter, r *http.Request, params ListProgramsParams)
@@ -797,6 +862,18 @@ type ServerInterface interface {
 // Unimplemented server implementation that returns http.StatusNotImplemented for each endpoint.
 
 type Unimplemented struct{}
+
+// ListCircuitBreakers List tripped circuit breakers
+// (GET /api/breakers)
+func (_ Unimplemented) ListCircuitBreakers(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// ResumeCircuitBreaker Resume a tripped circuit breaker (manual acknowledgement)
+// (POST /api/breakers/{name}/resume)
+func (_ Unimplemented) ResumeCircuitBreaker(w http.ResponseWriter, r *http.Request, name string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
 
 // ListPrograms List EPG programs in a time window
 // (GET /api/programs)
@@ -920,6 +997,46 @@ type ServerInterfaceWrapper struct {
 }
 
 type MiddlewareFunc func(http.Handler) http.Handler
+
+// ListCircuitBreakers operation middleware
+func (siw *ServerInterfaceWrapper) ListCircuitBreakers(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListCircuitBreakers(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ResumeCircuitBreaker operation middleware
+func (siw *ServerInterfaceWrapper) ResumeCircuitBreaker(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "name" -------------
+	var name string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "name", chi.URLParam(r, "name"), &name, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "name", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ResumeCircuitBreaker(w, r, name)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
 
 // ListPrograms operation middleware
 func (siw *ServerInterfaceWrapper) ListPrograms(w http.ResponseWriter, r *http.Request) {
@@ -1523,8 +1640,79 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/api/recordings/{id}/drop-stats", wrapper.ListRecordingDropStats)
 	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/breakers", wrapper.ListCircuitBreakers)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/api/breakers/{name}/resume", wrapper.ResumeCircuitBreaker)
+	})
 
 	return r
+}
+
+type ListCircuitBreakersRequestObject struct {
+}
+
+type ListCircuitBreakersResponseObject interface {
+	VisitListCircuitBreakersResponse(w http.ResponseWriter) error
+}
+
+type ListCircuitBreakers200JSONResponse []CircuitBreaker
+
+func (response ListCircuitBreakers200JSONResponse) VisitListCircuitBreakersResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ResumeCircuitBreakerRequestObject struct {
+	Name string `json:"name"`
+}
+
+type ResumeCircuitBreakerResponseObject interface {
+	VisitResumeCircuitBreakerResponse(w http.ResponseWriter) error
+}
+
+type ResumeCircuitBreaker204Response struct {
+}
+
+func (response ResumeCircuitBreaker204Response) VisitResumeCircuitBreakerResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type ResumeCircuitBreaker400JSONResponse ErrorResponse
+
+func (response ResumeCircuitBreaker400JSONResponse) VisitResumeCircuitBreakerResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ResumeCircuitBreaker404JSONResponse ErrorResponse
+
+func (response ResumeCircuitBreaker404JSONResponse) VisitResumeCircuitBreakerResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
 }
 
 type ListProgramsRequestObject struct {
@@ -2147,6 +2335,12 @@ func (response Healthz200JSONResponse) VisitHealthzResponse(w http.ResponseWrite
 
 // StrictServerInterface represents all server handlers.
 type StrictServerInterface interface {
+	// ListCircuitBreakers List tripped circuit breakers
+	// (GET /api/breakers)
+	ListCircuitBreakers(ctx context.Context, request ListCircuitBreakersRequestObject) (ListCircuitBreakersResponseObject, error)
+	// ResumeCircuitBreaker Resume a tripped circuit breaker (manual acknowledgement)
+	// (POST /api/breakers/{name}/resume)
+	ResumeCircuitBreaker(ctx context.Context, request ResumeCircuitBreakerRequestObject) (ResumeCircuitBreakerResponseObject, error)
 	// ListPrograms List EPG programs in a time window
 	// (GET /api/programs)
 	ListPrograms(ctx context.Context, request ListProgramsRequestObject) (ListProgramsResponseObject, error)
@@ -2243,6 +2437,56 @@ type strictHandler struct {
 	ssi         StrictServerInterface
 	middlewares []StrictMiddlewareFunc
 	options     StrictHTTPServerOptions
+}
+
+// ListCircuitBreakers operation middleware
+func (sh *strictHandler) ListCircuitBreakers(w http.ResponseWriter, r *http.Request) {
+	var request ListCircuitBreakersRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListCircuitBreakers(ctx, request.(ListCircuitBreakersRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListCircuitBreakers")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListCircuitBreakersResponseObject); ok {
+		if err := validResponse.VisitListCircuitBreakersResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ResumeCircuitBreaker operation middleware
+func (sh *strictHandler) ResumeCircuitBreaker(w http.ResponseWriter, r *http.Request, name string) {
+	var request ResumeCircuitBreakerRequestObject
+
+	request.Name = name
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ResumeCircuitBreaker(ctx, request.(ResumeCircuitBreakerRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ResumeCircuitBreaker")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ResumeCircuitBreakerResponseObject); ok {
+		if err := validResponse.VisitResumeCircuitBreakerResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
 }
 
 // ListPrograms operation middleware
