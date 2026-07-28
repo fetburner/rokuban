@@ -186,6 +186,232 @@ export interface CreateReservationRequest {
   priority?: number;
 }
 
+/**
+ * ingest 時に評価されるので、録画開始後の変更でも効く
+ * （M3 で消費。docs/recording.md §4.5）。
+ */
+export type ReservationOverridesInputKeepOriginal = typeof ReservationOverridesInputKeepOriginal[keyof typeof ReservationOverridesInputKeepOriginal];
+
+
+export const ReservationOverridesInputKeepOriginal = {
+  always: 'always',
+  until_encoded: 'until_encoded',
+} as const;
+
+export type ReservationOverridesInputResetItem = typeof ReservationOverridesInputResetItem[keyof typeof ReservationOverridesInputResetItem];
+
+
+export const ReservationOverridesInputResetItem = {
+  priority: 'priority',
+  contentPath: 'contentPath',
+  filenameTemplate: 'filenameTemplate',
+  keepOriginal: 'keepOriginal',
+  encodeProfiles: 'encodeProfiles',
+} as const;
+
+/**
+ * PATCH /api/reservations/{id} のボディ。値を書いたフィールドは override
+ * を設定し、`reset` に名前を挙げたフィールドは override を削除する。
+ * どちらにも現れないフィールドは変更しない。同じフィールドを値と
+ * `reset` の両方に書いたら 400、`reset` に未知のフィールド名があっても
+ * 400（docs/recording.md §4.2）。
+ */
+export interface ReservationOverridesInput {
+  /**
+     * mirakc の schedule に反映される（reconciler が DELETE + POST で
+     * schedule を再作成する）。ただし録画開始後の recorder には
+     * 効かない可能性が高い（docs/recording.md §4.5）。
+     */
+  priority?: number;
+  /**
+     * 既存の schedule には反映されない。churn を避けるため差分対象外で、
+     * 初回生成値に固定されるため（docs/recording.md §3.2）。まだ
+     * schedule が作られていない予約にだけ効く（docs/recording.md §4.5）。
+     */
+  contentPath?: string;
+  /**
+     * Go text/template のテンプレート文字列。既存の schedule には
+     * 反映されず、まだ schedule が作られていない予約にだけ効く
+     * （docs/recording.md §4.5）。
+     */
+  filenameTemplate?: string;
+  /**
+     * ingest 時に評価されるので、録画開始後の変更でも効く
+     * （M3 で消費。docs/recording.md §4.5）。
+     */
+  keepOriginal?: ReservationOverridesInputKeepOriginal;
+  /**
+     * ingest 時に評価されるので、録画開始後の変更でも効く
+     * （M3 で消費。docs/recording.md §4.5）。
+     */
+  encodeProfiles?: string[];
+  /**
+     * 指定したフィールドの override を削除する（フィールド単位の
+     * 「ルールに戻す」）。値を書いたフィールドと重複して指定すると 400。
+     */
+  reset?: ReservationOverridesInputResetItem[];
+}
+
+export type ProgramSearchRequestChannelTypesItem = typeof ProgramSearchRequestChannelTypesItem[keyof typeof ProgramSearchRequestChannelTypesItem];
+
+
+export const ProgramSearchRequestChannelTypesItem = {
+  GR: 'GR',
+  BS: 'BS',
+  CS: 'CS',
+  SKY: 'SKY',
+} as const;
+
+export type RuleTextMatchTarget = typeof RuleTextMatchTarget[keyof typeof RuleTextMatchTarget];
+
+
+export const RuleTextMatchTarget = {
+  name: 'name',
+  description: 'description',
+  extended: 'extended',
+} as const;
+
+/**
+ * keyword = 部分一致 / regex = POSIX ARE
+ */
+export type RuleTextMatchMode = typeof RuleTextMatchMode[keyof typeof RuleTextMatchMode];
+
+
+export const RuleTextMatchMode = {
+  keyword: 'keyword',
+  regex: 'regex',
+} as const;
+
+export interface RuleTextMatch {
+  target: RuleTextMatchTarget;
+  /** keyword = 部分一致 / regex = POSIX ARE */
+  mode: RuleTextMatchMode;
+  value: string;
+  caseSensitive?: boolean;
+  /** true なら除外条件 */
+  negate?: boolean;
+}
+
+export interface RuleService {
+  networkId: number;
+  serviceId: number;
+}
+
+export interface RuleTimeWindow {
+  /**
+     * bit0=月 … bit6=日
+     * @minimum 1
+     * @maximum 127
+     */
+  weekdays: number;
+  /**
+     * @minimum 0
+     * @maximum 86400
+     */
+  startSec: number;
+  /**
+     * start より小さい場合は翌日跨ぎ
+     * @minimum 0
+     * @maximum 86400
+     */
+  endSec: number;
+}
+
+/**
+ * ルール条件の条件部分と同じ形。rulequery.Conditions に写像される。
+ * site は省略時 default（現状単一サイト）。
+ */
+export interface ProgramSearchRequest {
+  site?: string;
+  isFree?: boolean | null;
+  durationMinMs?: number | null;
+  durationMaxMs?: number | null;
+  periodStartAt?: string | null;
+  periodEndAt?: string | null;
+  textMatches?: RuleTextMatch[];
+  services?: RuleService[];
+  channelTypes?: ProgramSearchRequestChannelTypesItem[];
+  /**
+     * @items.minimum 0
+     * @items.maximum 15
+     */
+  genres?: number[];
+  times?: RuleTimeWindow[];
+  /** ルールの rule_sites 相当。空 = 評価 site のみ */
+  sites?: string[];
+}
+
+export type RuleInputChannelTypesItem = typeof RuleInputChannelTypesItem[keyof typeof RuleInputChannelTypesItem];
+
+
+export const RuleInputChannelTypesItem = {
+  GR: 'GR',
+  BS: 'BS',
+  CS: 'CS',
+  SKY: 'SKY',
+} as const;
+
+export type RuleInputKeepOriginal = typeof RuleInputKeepOriginal[keyof typeof RuleInputKeepOriginal];
+
+
+export const RuleInputKeepOriginal = {
+  always: 'always',
+  until_encoded: 'until_encoded',
+} as const;
+
+export type RuleInputMetadata = { [key: string]: unknown };
+
+export interface RuleInput {
+  name: string;
+  description?: string;
+  enabled?: boolean;
+  priority?: number;
+  /** null = 問わない */
+  isFree?: boolean | null;
+  durationMinMs?: number | null;
+  durationMaxMs?: number | null;
+  periodStartAt?: string | null;
+  periodEndAt?: string | null;
+  textMatches?: RuleTextMatch[];
+  services?: RuleService[];
+  channelTypes?: RuleInputChannelTypesItem[];
+  /**
+     * genre lv1
+     * @items.minimum 0
+     * @items.maximum 15
+     */
+  genres?: number[];
+  times?: RuleTimeWindow[];
+  /** 空または省略 = 全サイト */
+  sites?: string[];
+  dedupeEnabled?: boolean;
+  dedupeThreshold?: number | null;
+  /** 重複排除の時間窓（秒）。interval の API 表現 */
+  dedupeWindowSeconds?: number | null;
+  keepOriginal?: RuleInputKeepOriginal;
+  encodeProfiles?: string[];
+  filenameTemplate?: string;
+  metadata?: RuleInputMetadata;
+}
+
+export type Rule = RuleInput & {
+  id: number;
+  createdAt: string;
+  updatedAt: string;
+} & Required<Pick<RuleInput & {
+  id: number;
+  createdAt: string;
+  updatedAt: string;
+}, 'enabled' | 'priority' | 'keepOriginal'>>;
+
+export interface DeleteRuleResponse {
+  id: number;
+  /** overrides なしで削除した rule 予約の件数 */
+  deletedReservations: number;
+  /** overrides 付きで detached 化した件数 */
+  detachedReservations: number;
+}
+
 export type ReservationSource = typeof ReservationSource[keyof typeof ReservationSource];
 
 
@@ -217,6 +443,53 @@ export interface Reservation {
   durationMs: number;
   createdAt: string;
   updatedAt: string;
+}
+
+/**
+ * internal/breaker の定数（RulerDeletes / ReconcileTotalLoss）。
+ */
+export type CircuitBreakerName = typeof CircuitBreakerName[keyof typeof CircuitBreakerName];
+
+
+export const CircuitBreakerName = {
+  ruler_deletes: 'ruler_deletes',
+  reconcile_total_loss: 'reconcile_total_loss',
+} as const;
+
+export interface CircuitBreakerSampleProgram {
+  programId: number;
+  title?: string;
+}
+
+/**
+ * 発動時に「何が消されようとしていたか」を説明する抜粋
+ * （`internal/breaker.Sample` と同じ形。手動確認の材料）。
+ */
+export interface CircuitBreakerSample {
+  /** 止めた削除の総数。 */
+  total: number;
+  /** 先頭いくつかの抜粋（`internal/breaker.MaxSampleSize` 件まで）。 */
+  programs?: CircuitBreakerSampleProgram[];
+}
+
+/**
+ * 発動中の大量削除サーキットブレーカー 1 件（`circuit_breakers` 行 = 発動中。
+ * docs/recording.md §3.2）。
+ */
+export interface CircuitBreaker {
+  site: string;
+  /** internal/breaker の定数（RulerDeletes / ReconcileTotalLoss）。 */
+  name: CircuitBreakerName;
+  /**
+     * 発動した時刻（最初の発動時刻。再発動で更新されるのは pending /
+     * threshold / detail のみ）。
+     */
+  trippedAt: string;
+  /** 発動時に止めた削除の件数。 */
+  pending: number;
+  /** 発動時の閾値。 */
+  threshold: number;
+  detail: CircuitBreakerSample;
 }
 
 export type ListProgramsParams = {
@@ -477,6 +750,518 @@ export function useGetVersion<TData = Awaited<ReturnType<typeof getVersion>>, TE
 
 
 
+export type listRulesResponse200 = {
+  data: Rule[]
+  status: 200
+}
+
+export type listRulesResponseSuccess = (listRulesResponse200) & {
+  headers: Headers;
+};
+;
+
+export type listRulesResponse = (listRulesResponseSuccess)
+
+export const getListRulesUrl = () => {
+
+
+
+
+  return `/api/rules`
+}
+
+/**
+ * @summary List recording rules
+ */
+export const listRules = async ( options?: RequestInit): Promise<listRulesResponse> => {
+
+  return customInstance<listRulesResponse>(getListRulesUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getListRulesQueryKey = () => {
+    return [
+    `/api/rules`
+    ] as const;
+    }
+
+
+export const getListRulesQueryOptions = <TData = Awaited<ReturnType<typeof listRules>>, TError = unknown>( options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRules>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getListRulesQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listRules>>> = ({ signal }) => listRules({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listRules>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type ListRulesQueryResult = NonNullable<Awaited<ReturnType<typeof listRules>>>
+export type ListRulesQueryError = unknown
+
+
+export function useListRules<TData = Awaited<ReturnType<typeof listRules>>, TError = unknown>(
+  options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRules>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof listRules>>,
+          TError,
+          Awaited<ReturnType<typeof listRules>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useListRules<TData = Awaited<ReturnType<typeof listRules>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRules>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof listRules>>,
+          TError,
+          Awaited<ReturnType<typeof listRules>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useListRules<TData = Awaited<ReturnType<typeof listRules>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRules>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary List recording rules
+ */
+
+export function useListRules<TData = Awaited<ReturnType<typeof listRules>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRules>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getListRulesQueryOptions(options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export type createRuleResponse201 = {
+  data: Rule
+  status: 201
+}
+
+export type createRuleResponse400 = {
+  data: ErrorResponse
+  status: 400
+}
+
+export type createRuleResponseSuccess = (createRuleResponse201) & {
+  headers: Headers;
+};
+export type createRuleResponseError = (createRuleResponse400) & {
+  headers: Headers;
+};
+
+export type createRuleResponse = (createRuleResponseSuccess | createRuleResponseError)
+
+export const getCreateRuleUrl = () => {
+
+
+
+
+  return `/api/rules`
+}
+
+/**
+ * @summary Create a recording rule
+ */
+export const createRule = async (ruleInput: RuleInput, options?: RequestInit): Promise<createRuleResponse> => {
+
+  return customInstance<createRuleResponse>(getCreateRuleUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(ruleInput)
+  }
+);}
+
+
+
+
+
+export const getCreateRuleMutationOptions = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createRule>>, TError,{data: RuleInput}, TContext>, request?: SecondParameter<typeof customInstance>}
+): UseMutationOptions<Awaited<ReturnType<typeof createRule>>, TError,{data: RuleInput}, TContext> => {
+
+const mutationKey = ['createRule'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof createRule>>, {data: RuleInput}> = (props) => {
+          const {data} = props ?? {};
+
+          return  createRule(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type CreateRuleMutationResult = NonNullable<Awaited<ReturnType<typeof createRule>>>
+    export type CreateRuleMutationBody = RuleInput
+    export type CreateRuleMutationError = ErrorResponse
+
+    /**
+ * @summary Create a recording rule
+ */
+export const useCreateRule = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createRule>>, TError,{data: RuleInput}, TContext>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof createRule>>,
+        TError,
+        {data: RuleInput},
+        TContext
+      > => {
+      return useMutation(getCreateRuleMutationOptions(options), queryClient);
+    }
+
+export type getRuleResponse200 = {
+  data: Rule
+  status: 200
+}
+
+export type getRuleResponse404 = {
+  data: ErrorResponse
+  status: 404
+}
+
+export type getRuleResponseSuccess = (getRuleResponse200) & {
+  headers: Headers;
+};
+export type getRuleResponseError = (getRuleResponse404) & {
+  headers: Headers;
+};
+
+export type getRuleResponse = (getRuleResponseSuccess | getRuleResponseError)
+
+export const getGetRuleUrl = (id: number,) => {
+
+
+
+
+  return `/api/rules/${id}`
+}
+
+/**
+ * @summary Get a recording rule
+ */
+export const getRule = async (id: number, options?: RequestInit): Promise<getRuleResponse> => {
+
+  return customInstance<getRuleResponse>(getGetRuleUrl(id),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetRuleQueryKey = (id: number,) => {
+    return [
+    `/api/rules/${id}`
+    ] as const;
+    }
+
+
+export const getGetRuleQueryOptions = <TData = Awaited<ReturnType<typeof getRule>>, TError = ErrorResponse>(id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getRule>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetRuleQueryKey(id);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getRule>>> = ({ signal }) => getRule(id, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: id !== null && id !== undefined, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getRule>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type GetRuleQueryResult = NonNullable<Awaited<ReturnType<typeof getRule>>>
+export type GetRuleQueryError = ErrorResponse
+
+
+export function useGetRule<TData = Awaited<ReturnType<typeof getRule>>, TError = ErrorResponse>(
+ id: number, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getRule>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getRule>>,
+          TError,
+          Awaited<ReturnType<typeof getRule>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetRule<TData = Awaited<ReturnType<typeof getRule>>, TError = ErrorResponse>(
+ id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getRule>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getRule>>,
+          TError,
+          Awaited<ReturnType<typeof getRule>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetRule<TData = Awaited<ReturnType<typeof getRule>>, TError = ErrorResponse>(
+ id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getRule>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary Get a recording rule
+ */
+
+export function useGetRule<TData = Awaited<ReturnType<typeof getRule>>, TError = ErrorResponse>(
+ id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getRule>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getGetRuleQueryOptions(id,options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export type updateRuleResponse200 = {
+  data: Rule
+  status: 200
+}
+
+export type updateRuleResponse400 = {
+  data: ErrorResponse
+  status: 400
+}
+
+export type updateRuleResponse404 = {
+  data: ErrorResponse
+  status: 404
+}
+
+export type updateRuleResponseSuccess = (updateRuleResponse200) & {
+  headers: Headers;
+};
+export type updateRuleResponseError = (updateRuleResponse400 | updateRuleResponse404) & {
+  headers: Headers;
+};
+
+export type updateRuleResponse = (updateRuleResponseSuccess | updateRuleResponseError)
+
+export const getUpdateRuleUrl = (id: number,) => {
+
+
+
+
+  return `/api/rules/${id}`
+}
+
+/**
+ * @summary Update a recording rule
+ */
+export const updateRule = async (id: number,
+    ruleInput: RuleInput, options?: RequestInit): Promise<updateRuleResponse> => {
+
+  return customInstance<updateRuleResponse>(getUpdateRuleUrl(id),
+  {
+    ...options,
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(ruleInput)
+  }
+);}
+
+
+
+
+
+export const getUpdateRuleMutationOptions = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateRule>>, TError,{id: number;data: RuleInput}, TContext>, request?: SecondParameter<typeof customInstance>}
+): UseMutationOptions<Awaited<ReturnType<typeof updateRule>>, TError,{id: number;data: RuleInput}, TContext> => {
+
+const mutationKey = ['updateRule'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof updateRule>>, {id: number;data: RuleInput}> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  updateRule(id,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type UpdateRuleMutationResult = NonNullable<Awaited<ReturnType<typeof updateRule>>>
+    export type UpdateRuleMutationBody = RuleInput
+    export type UpdateRuleMutationError = ErrorResponse
+
+    /**
+ * @summary Update a recording rule
+ */
+export const useUpdateRule = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateRule>>, TError,{id: number;data: RuleInput}, TContext>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof updateRule>>,
+        TError,
+        {id: number;data: RuleInput},
+        TContext
+      > => {
+      return useMutation(getUpdateRuleMutationOptions(options), queryClient);
+    }
+
+export type deleteRuleResponse200 = {
+  data: DeleteRuleResponse
+  status: 200
+}
+
+export type deleteRuleResponse404 = {
+  data: ErrorResponse
+  status: 404
+}
+
+export type deleteRuleResponseSuccess = (deleteRuleResponse200) & {
+  headers: Headers;
+};
+export type deleteRuleResponseError = (deleteRuleResponse404) & {
+  headers: Headers;
+};
+
+export type deleteRuleResponse = (deleteRuleResponseSuccess | deleteRuleResponseError)
+
+export const getDeleteRuleUrl = (id: number,) => {
+
+
+
+
+  return `/api/rules/${id}`
+}
+
+/**
+ * 導出予約の整理を伴う。overrides のない rule 予約は削除し、
+ * overrides 付きは detached 化して生き残る（recording.md §4.3）。
+ * 応答に影響内訳を載せる。
+ * @summary Delete a recording rule
+ */
+export const deleteRule = async (id: number, options?: RequestInit): Promise<deleteRuleResponse> => {
+
+  return customInstance<deleteRuleResponse>(getDeleteRuleUrl(id),
+  {
+    ...options,
+    method: 'DELETE'
+
+
+  }
+);}
+
+
+
+
+
+export const getDeleteRuleMutationOptions = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteRule>>, TError,{id: number}, TContext>, request?: SecondParameter<typeof customInstance>}
+): UseMutationOptions<Awaited<ReturnType<typeof deleteRule>>, TError,{id: number}, TContext> => {
+
+const mutationKey = ['deleteRule'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof deleteRule>>, {id: number}> = (props) => {
+          const {id} = props ?? {};
+
+          return  deleteRule(id,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type DeleteRuleMutationResult = NonNullable<Awaited<ReturnType<typeof deleteRule>>>
+
+    export type DeleteRuleMutationError = ErrorResponse
+
+    /**
+ * @summary Delete a recording rule
+ */
+export const useDeleteRule = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteRule>>, TError,{id: number}, TContext>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof deleteRule>>,
+        TError,
+        {id: number},
+        TContext
+      > => {
+      return useMutation(getDeleteRuleMutationOptions(options), queryClient);
+    }
+
 export type listReservationsResponse200 = {
   data: Reservation[]
   status: 200
@@ -595,6 +1380,11 @@ export type createReservationResponse201 = {
   status: 201
 }
 
+export type createReservationResponse400 = {
+  data: ErrorResponse
+  status: 400
+}
+
 export type createReservationResponse409 = {
   data: ErrorResponse
   status: 409
@@ -603,7 +1393,7 @@ export type createReservationResponse409 = {
 export type createReservationResponseSuccess = (createReservationResponse201) & {
   headers: Headers;
 };
-export type createReservationResponseError = (createReservationResponse409) & {
+export type createReservationResponseError = (createReservationResponse400 | createReservationResponse409) & {
   headers: Headers;
 };
 
@@ -800,6 +1590,120 @@ export function useGetReservation<TData = Awaited<ReturnType<typeof getReservati
 
 
 
+export type updateReservationOverridesResponse200 = {
+  data: Reservation
+  status: 200
+}
+
+export type updateReservationOverridesResponse400 = {
+  data: ErrorResponse
+  status: 400
+}
+
+export type updateReservationOverridesResponse404 = {
+  data: ErrorResponse
+  status: 404
+}
+
+export type updateReservationOverridesResponseSuccess = (updateReservationOverridesResponse200) & {
+  headers: Headers;
+};
+export type updateReservationOverridesResponseError = (updateReservationOverridesResponse400 | updateReservationOverridesResponse404) & {
+  headers: Headers;
+};
+
+export type updateReservationOverridesResponse = (updateReservationOverridesResponseSuccess | updateReservationOverridesResponseError)
+
+export const getUpdateReservationOverridesUrl = (id: number,) => {
+
+
+
+
+  return `/api/reservations/${id}`
+}
+
+/**
+ * 値を書いたフィールドはそのフィールドの override を設定する。`reset`
+ * 配列に名前を挙げたフィールドは override を削除する（フィールド単位の
+ * 「ルールに戻す」）。どちらにも現れないフィールドは変更しない。
+ *
+ * `null` で消す形にはしない（`*T` は「キーが無い」と `null` を区別できず、
+ * 「消す」が「変更しない」に化けて黙って壊れるため。
+ * docs/recording.md §4.2「overrides API の形」）。
+ *
+ * 同じフィールドを値と `reset` の両方に書いたら 400（意図が不明なので
+ * 推測しない）。`reset` に未知のフィールド名があっても 400。
+ *
+ * `skip` は overrides のキーではない（`program_intents.action` が担う）ので
+ * ここでは扱わない。取消は `DELETE /api/reservations/{id}`。
+ *
+ * override は `program_overrides` 表（`program_intents` とは別表）に持つ。
+ * 予約単位の「ルールに戻す」は `DELETE /api/reservations/{id}/overrides` で、
+ * `program_intents` には一切触れない（docs/recording.md §4.2「overrides は
+ * program_intents とは別の表に置く」）。
+ * @summary Update per-reservation overrides
+ */
+export const updateReservationOverrides = async (id: number,
+    reservationOverridesInput: ReservationOverridesInput, options?: RequestInit): Promise<updateReservationOverridesResponse> => {
+
+  return customInstance<updateReservationOverridesResponse>(getUpdateReservationOverridesUrl(id),
+  {
+    ...options,
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(reservationOverridesInput)
+  }
+);}
+
+
+
+
+
+export const getUpdateReservationOverridesMutationOptions = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateReservationOverrides>>, TError,{id: number;data: ReservationOverridesInput}, TContext>, request?: SecondParameter<typeof customInstance>}
+): UseMutationOptions<Awaited<ReturnType<typeof updateReservationOverrides>>, TError,{id: number;data: ReservationOverridesInput}, TContext> => {
+
+const mutationKey = ['updateReservationOverrides'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof updateReservationOverrides>>, {id: number;data: ReservationOverridesInput}> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  updateReservationOverrides(id,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type UpdateReservationOverridesMutationResult = NonNullable<Awaited<ReturnType<typeof updateReservationOverrides>>>
+    export type UpdateReservationOverridesMutationBody = ReservationOverridesInput
+    export type UpdateReservationOverridesMutationError = ErrorResponse
+
+    /**
+ * @summary Update per-reservation overrides
+ */
+export const useUpdateReservationOverrides = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateReservationOverrides>>, TError,{id: number;data: ReservationOverridesInput}, TContext>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof updateReservationOverrides>>,
+        TError,
+        {id: number;data: ReservationOverridesInput},
+        TContext
+      > => {
+      return useMutation(getUpdateReservationOverridesMutationOptions(options), queryClient);
+    }
+
 export type deleteReservationResponse204 = {
   data: void
   status: 204
@@ -888,6 +1792,100 @@ export const useDeleteReservation = <TError = ErrorResponse,
         TContext
       > => {
       return useMutation(getDeleteReservationMutationOptions(options), queryClient);
+    }
+
+export type resetReservationOverridesResponse200 = {
+  data: Reservation
+  status: 200
+}
+
+export type resetReservationOverridesResponse404 = {
+  data: ErrorResponse
+  status: 404
+}
+
+export type resetReservationOverridesResponseSuccess = (resetReservationOverridesResponse200) & {
+  headers: Headers;
+};
+export type resetReservationOverridesResponseError = (resetReservationOverridesResponse404) & {
+  headers: Headers;
+};
+
+export type resetReservationOverridesResponse = (resetReservationOverridesResponseSuccess | resetReservationOverridesResponseError)
+
+export const getResetReservationOverridesUrl = (id: number,) => {
+
+
+
+
+  return `/api/reservations/${id}/overrides`
+}
+
+/**
+ * 予約単位の「ルールに戻す」。`program_overrides` の行を削除するだけ
+ * （`DELETE FROM program_overrides WHERE site = $1 AND program_id = $2`）。
+ * `action`（record/skip。`program_intents` 側）は触らない
+ * （docs/recording.md §4.2「overrides は program_intents とは別の表に置く」）。
+ * @summary Reset all overrides for a reservation (revert to rule)
+ */
+export const resetReservationOverrides = async (id: number, options?: RequestInit): Promise<resetReservationOverridesResponse> => {
+
+  return customInstance<resetReservationOverridesResponse>(getResetReservationOverridesUrl(id),
+  {
+    ...options,
+    method: 'DELETE'
+
+
+  }
+);}
+
+
+
+
+
+export const getResetReservationOverridesMutationOptions = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof resetReservationOverrides>>, TError,{id: number}, TContext>, request?: SecondParameter<typeof customInstance>}
+): UseMutationOptions<Awaited<ReturnType<typeof resetReservationOverrides>>, TError,{id: number}, TContext> => {
+
+const mutationKey = ['resetReservationOverrides'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof resetReservationOverrides>>, {id: number}> = (props) => {
+          const {id} = props ?? {};
+
+          return  resetReservationOverrides(id,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type ResetReservationOverridesMutationResult = NonNullable<Awaited<ReturnType<typeof resetReservationOverrides>>>
+
+    export type ResetReservationOverridesMutationError = ErrorResponse
+
+    /**
+ * @summary Reset all overrides for a reservation (revert to rule)
+ */
+export const useResetReservationOverrides = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof resetReservationOverrides>>, TError,{id: number}, TContext>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof resetReservationOverrides>>,
+        TError,
+        {id: number},
+        TContext
+      > => {
+      return useMutation(getResetReservationOverridesMutationOptions(options), queryClient);
     }
 
 export type listServicesResponse200 = {
@@ -1007,6 +2005,98 @@ export function useListServices<TData = Awaited<ReturnType<typeof listServices>>
 
 
 
+
+export type searchProgramsResponse200 = {
+  data: number[]
+  status: 200
+}
+
+export type searchProgramsResponse400 = {
+  data: ErrorResponse
+  status: 400
+}
+
+export type searchProgramsResponseSuccess = (searchProgramsResponse200) & {
+  headers: Headers;
+};
+export type searchProgramsResponseError = (searchProgramsResponse400) & {
+  headers: Headers;
+};
+
+export type searchProgramsResponse = (searchProgramsResponseSuccess | searchProgramsResponseError)
+
+export const getSearchProgramsUrl = () => {
+
+
+
+
+  return `/api/programs/search`
+}
+
+/**
+ * ルール条件と同じコンパイラ（internal/rulequery）で epg_programs を検索する。
+ * ruler 評価と同一の SQL 経路を通る（M2-2）。UI 検索（M2-11）の土台。
+ * @summary Search EPG programs by rule-style conditions
+ */
+export const searchPrograms = async (programSearchRequest: ProgramSearchRequest, options?: RequestInit): Promise<searchProgramsResponse> => {
+
+  return customInstance<searchProgramsResponse>(getSearchProgramsUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(programSearchRequest)
+  }
+);}
+
+
+
+
+
+export const getSearchProgramsMutationOptions = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof searchPrograms>>, TError,{data: ProgramSearchRequest}, TContext>, request?: SecondParameter<typeof customInstance>}
+): UseMutationOptions<Awaited<ReturnType<typeof searchPrograms>>, TError,{data: ProgramSearchRequest}, TContext> => {
+
+const mutationKey = ['searchPrograms'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof searchPrograms>>, {data: ProgramSearchRequest}> = (props) => {
+          const {data} = props ?? {};
+
+          return  searchPrograms(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type SearchProgramsMutationResult = NonNullable<Awaited<ReturnType<typeof searchPrograms>>>
+    export type SearchProgramsMutationBody = ProgramSearchRequest
+    export type SearchProgramsMutationError = ErrorResponse
+
+    /**
+ * @summary Search EPG programs by rule-style conditions
+ */
+export const useSearchPrograms = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof searchPrograms>>, TError,{data: ProgramSearchRequest}, TContext>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof searchPrograms>>,
+        TError,
+        {data: ProgramSearchRequest},
+        TContext
+      > => {
+      return useMutation(getSearchProgramsMutationOptions(options), queryClient);
+    }
 
 export type listProgramsResponse200 = {
   data: ProgramListItem[]
@@ -1487,3 +2577,236 @@ export function useListRecordingDropStats<TData = Awaited<ReturnType<typeof list
 
   return withQueryKey(query, queryOptions.queryKey);
 }
+
+
+
+
+
+
+
+export type listCircuitBreakersResponse200 = {
+  data: CircuitBreaker[]
+  status: 200
+}
+
+export type listCircuitBreakersResponseSuccess = (listCircuitBreakersResponse200) & {
+  headers: Headers;
+};
+;
+
+export type listCircuitBreakersResponse = (listCircuitBreakersResponseSuccess)
+
+export const getListCircuitBreakersUrl = () => {
+
+
+
+
+  return `/api/breakers`
+}
+
+/**
+ * 大量削除サーキットブレーカー（docs/recording.md §3.2）の発動状態。
+ * **行の存在 = 発動中**なので、発動していないブレーカーは結果に現れない
+ * （すべて停止していなければ空配列）。
+ *
+ * `detail` は発動時に「何が消されようとしていたか」を説明する抜粋で、
+ * 手動確認の材料（`internal/breaker.Sample` と同じ形。最大 20 件）。
+ *
+ * site はパスに含めない。M1/M2 は単一サイト構成（`db.DefaultSite`）で、
+ * 将来の多拠点対応でパスに site を加える可能性がある。
+ * @summary List tripped circuit breakers
+ */
+export const listCircuitBreakers = async ( options?: RequestInit): Promise<listCircuitBreakersResponse> => {
+
+  return customInstance<listCircuitBreakersResponse>(getListCircuitBreakersUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getListCircuitBreakersQueryKey = () => {
+    return [
+    `/api/breakers`
+    ] as const;
+    }
+
+
+export const getListCircuitBreakersQueryOptions = <TData = Awaited<ReturnType<typeof listCircuitBreakers>>, TError = unknown>( options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listCircuitBreakers>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getListCircuitBreakersQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listCircuitBreakers>>> = ({ signal }) => listCircuitBreakers({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listCircuitBreakers>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type ListCircuitBreakersQueryResult = NonNullable<Awaited<ReturnType<typeof listCircuitBreakers>>>
+export type ListCircuitBreakersQueryError = unknown
+
+
+export function useListCircuitBreakers<TData = Awaited<ReturnType<typeof listCircuitBreakers>>, TError = unknown>(
+  options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof listCircuitBreakers>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof listCircuitBreakers>>,
+          TError,
+          Awaited<ReturnType<typeof listCircuitBreakers>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useListCircuitBreakers<TData = Awaited<ReturnType<typeof listCircuitBreakers>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listCircuitBreakers>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof listCircuitBreakers>>,
+          TError,
+          Awaited<ReturnType<typeof listCircuitBreakers>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useListCircuitBreakers<TData = Awaited<ReturnType<typeof listCircuitBreakers>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listCircuitBreakers>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary List tripped circuit breakers
+ */
+
+export function useListCircuitBreakers<TData = Awaited<ReturnType<typeof listCircuitBreakers>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listCircuitBreakers>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getListCircuitBreakersQueryOptions(options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export type resumeCircuitBreakerResponse204 = {
+  data: void
+  status: 204
+}
+
+export type resumeCircuitBreakerResponse400 = {
+  data: ErrorResponse
+  status: 400
+}
+
+export type resumeCircuitBreakerResponse404 = {
+  data: ErrorResponse
+  status: 404
+}
+
+export type resumeCircuitBreakerResponseSuccess = (resumeCircuitBreakerResponse204) & {
+  headers: Headers;
+};
+export type resumeCircuitBreakerResponseError = (resumeCircuitBreakerResponse400 | resumeCircuitBreakerResponse404) & {
+  headers: Headers;
+};
+
+export type resumeCircuitBreakerResponse = (resumeCircuitBreakerResponseSuccess | resumeCircuitBreakerResponseError)
+
+export const getResumeCircuitBreakerUrl = (name: string,) => {
+
+
+
+
+  return `/api/breakers/${name}/resume`
+}
+
+/**
+ * 手動確認後の再開。ブレーカーは人間が確認するまで止まり続けるラッチ
+ * （docs/recording.md §3.2）なので、確認が済んだことをこの API で明示する。
+ *
+ * `DELETE /api/breakers/{name}` にしていないのは、運用者から見た操作が
+ * 「行を削除する」ではなく「**確認したので再開する**」であるため。DB の行が
+ * 消えるのは実装詳細（`internal/breaker` のラッチが行の存在で表される、という
+ * 設計の帰結）であり、URL に出す概念ではない。
+ *
+ * site はパスに含めない（`GET /api/breakers` と同じ理由。将来の多拠点対応で
+ * パスに site を加える可能性がある）。
+ * @summary Resume a tripped circuit breaker (manual acknowledgement)
+ */
+export const resumeCircuitBreaker = async (name: string, options?: RequestInit): Promise<resumeCircuitBreakerResponse> => {
+
+  return customInstance<resumeCircuitBreakerResponse>(getResumeCircuitBreakerUrl(name),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+);}
+
+
+
+
+
+export const getResumeCircuitBreakerMutationOptions = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof resumeCircuitBreaker>>, TError,{name: string}, TContext>, request?: SecondParameter<typeof customInstance>}
+): UseMutationOptions<Awaited<ReturnType<typeof resumeCircuitBreaker>>, TError,{name: string}, TContext> => {
+
+const mutationKey = ['resumeCircuitBreaker'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof resumeCircuitBreaker>>, {name: string}> = (props) => {
+          const {name} = props ?? {};
+
+          return  resumeCircuitBreaker(name,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type ResumeCircuitBreakerMutationResult = NonNullable<Awaited<ReturnType<typeof resumeCircuitBreaker>>>
+
+    export type ResumeCircuitBreakerMutationError = ErrorResponse
+
+    /**
+ * @summary Resume a tripped circuit breaker (manual acknowledgement)
+ */
+export const useResumeCircuitBreaker = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof resumeCircuitBreaker>>, TError,{name: string}, TContext>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof resumeCircuitBreaker>>,
+        TError,
+        {name: string},
+        TContext
+      > => {
+      return useMutation(getResumeCircuitBreakerMutationOptions(options), queryClient);
+    }

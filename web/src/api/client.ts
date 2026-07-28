@@ -10,6 +10,9 @@ export const customInstance = async <T>(
     throw new Error(`${response.status} ${response.statusText}`)
   }
 
-  const data = await response.json()
+  // 204 (No Content) はボディを持たない。DELETE や resume 系のエンドポイントが
+  // これを返すため、空ボディに response.json() を呼んで例外にしない
+  // （呼ぶと SyntaxError で reject され、成功しているのに onError に落ちる）。
+  const data = response.status === 204 ? undefined : await response.json()
   return { data, status: response.status, headers: response.headers } as T
 }

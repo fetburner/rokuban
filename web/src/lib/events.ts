@@ -12,6 +12,7 @@ const topicQueryKeys: Record<string, string[]> = {
   reservations: ['/api/reservations'],
   recordings: ['/api/recordings'],
   epg: ['/api/programs', '/api/services'],
+  breakers: ['/api/breakers'],
 }
 
 /**
