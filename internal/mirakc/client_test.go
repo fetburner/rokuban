@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -248,6 +249,67 @@ func TestHeadRecordStream(t *testing.T) {
 	}
 	if length != 999999 {
 		t.Errorf("length = %d, want 999999", length)
+	}
+}
+
+// ListTuners は静的な構成（index / name / types / isAvailable / isFault）だけを
+// デコードし、実行時状態（users / isFree / isUsing / command / pid）は型に持たない
+// （issue #21、docs/data.md §6.5）。実機のレスポンスをそのまま流して確認する。
+func TestListTuners(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/tuners" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		if r.Method != http.MethodGet {
+			t.Errorf("unexpected method: %s", r.Method)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `[
+          {"index":0,"name":"PX-S1UD_T1","types":["GR"],
+           "isAvailable":true,"isFault":false,
+           "users":[],"isFree":true,"isUsing":false,"command":null,"pid":null},
+          {"index":1,"name":"PX-W3U4_S1","types":["BS","CS"],
+           "isAvailable":true,"isFault":true,
+           "users":[{"agent":"epgstation","priority":1}],
+           "isFree":false,"isUsing":true,"command":"recdvb","pid":4242}
+        ]`)
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, nil)
+	tuners, err := c.ListTuners(context.Background())
+	if err != nil {
+		t.Fatalf("ListTuners: %v", err)
+	}
+	if len(tuners) != 2 {
+		t.Fatalf("len = %d, want 2", len(tuners))
+	}
+	if tuners[0].Index != 0 || tuners[0].Name != "PX-S1UD_T1" {
+		t.Errorf("tuners[0] = %+v, want index 0 / PX-S1UD_T1", tuners[0])
+	}
+	if len(tuners[0].Types) != 1 || tuners[0].Types[0] != "GR" {
+		t.Errorf("tuners[0].Types = %v, want [GR]", tuners[0].Types)
+	}
+	if !tuners[0].IsAvailable || tuners[0].IsFault {
+		t.Errorf("tuners[0] availability = (%v, %v), want (true, false)", tuners[0].IsAvailable, tuners[0].IsFault)
+	}
+	if !reflect.DeepEqual(tuners[1].Types, []string{"BS", "CS"}) {
+		t.Errorf("tuners[1].Types = %v, want [BS CS]", tuners[1].Types)
+	}
+	if !tuners[1].IsFault {
+		t.Errorf("tuners[1].IsFault = false, want true")
+	}
+
+	// 実行時状態は Tuner 型に載っていない。フィールドを増やすと tuner_sync へ
+	// 投影する経路ができてしまうので、型の形そのものを固定する。
+	fields := reflect.VisibleFields(reflect.TypeOf(Tuner{}))
+	got := make([]string, 0, len(fields))
+	for _, f := range fields {
+		got = append(got, f.Name)
+	}
+	want := []string{"Index", "Name", "Types", "IsAvailable", "IsFault"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Tuner fields = %v, want %v (実行時状態は持たない)", got, want)
 	}
 }
 

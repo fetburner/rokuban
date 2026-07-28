@@ -18,6 +18,14 @@ import (
 const (
 	defaultIngestConcurrency = 2
 	defaultEpgSyncInterval   = 10 * time.Minute
+
+	// defaultTunerSyncInterval はチューナー射影の既定間隔。
+	//
+	// チューナー構成の変更には mirakc の再起動が要るので更新頻度は低くてよく、
+	// EPG 全量同期と同じ 10 分で足りる（issue #21「EPG 全量同期（既定 10 分）と
+	// 同じジョブで投影すれば十分」）。専用の設定キーは設けていない --- 運用者が
+	// 触る理由がないので、設定面を広げない。
+	defaultTunerSyncInterval = 10 * time.Minute
 )
 
 // pendingJobStates は「まだ終わっていない」ジョブの状態。
@@ -77,6 +85,10 @@ func NewWorkers(deps *Deps) *river.Workers {
 		Pool:           deps.Pool,
 		RetentionGrace: deps.EpgRetentionGrace,
 	})
+	river.AddWorker(workers, &TunerSyncWorker{
+		MirakcClient: deps.MirakcClient,
+		Pool:         deps.Pool,
+	})
 	river.AddWorker(workers, &RulerPassWorker{
 		Pool:              deps.Pool,
 		RetentionGrace:    deps.RulerRetentionGrace,
@@ -100,7 +112,8 @@ func allQueues(ingestConcurrency int) map[string]river.QueueConfig {
 	return map[string]river.QueueConfig{
 		river.QueueDefault: {MaxWorkers: 100},
 		ingestQueue:        {MaxWorkers: ingestConcurrency},
-		// 全量同期が重ならないよう 1 本に絞る。
+		// 全量同期が重ならないよう 1 本に絞る。tuner_sync も同じキューを使う
+		// （どちらも使い捨てプロジェクションの全量同期。TunerSyncArgs.InsertOpts 参照）。
 		epgQueue: {MaxWorkers: 1},
 		// サイト単位の排他は UniqueOpts が担うので、こちらも複数ワーカーは要らない。
 		rulerQueue: {MaxWorkers: 1},
@@ -123,6 +136,13 @@ type ClientConfig struct {
 	// EpgSyncInterval は EPG 全量同期の間隔。0 なら既定値。
 	EpgSyncInterval time.Duration
 
+	// TunerSyncSite が空でない場合、そのサイトのチューナー射影を定期ジョブとして
+	// 登録する（PeriodicJobs が true のときのみ）。
+	TunerSyncSite string
+
+	// TunerSyncInterval はチューナー射影の間隔。0 なら既定値（10 分）。
+	TunerSyncInterval time.Duration
+
 	// RulerPassSite が空でない場合、そのサイトの ruler 1 パス評価を定期ジョブとして
 	// 登録する（PeriodicJobs が true のときのみ）。
 	RulerPassSite string
@@ -144,8 +164,9 @@ type ClientConfig struct {
 	// RecordSweepInterval は record_sweep 定期パスの間隔。0 なら既定値（5 分）。
 	RecordSweepInterval time.Duration
 
-	// PeriodicJobs が false なら、EpgSyncSite / RulerPassSite / ReconcilePassSite /
-	// RecordSweepSite が設定されていても River の PeriodicJobs を一切登録しない。
+	// PeriodicJobs が false なら、EpgSyncSite / TunerSyncSite / RulerPassSite /
+	// ReconcilePassSite / RecordSweepSite が設定されていても River の PeriodicJobs を
+	// 一切登録しない。
 	// k8s では false にして、CronJob が
 	// `rokuban enqueue` を叩く形に委ねる（docs/data.md §2「定期実行の契機は
 	// デプロイ形態に委ねる」。設定キーは worker.periodic_jobs、既定 true）。
@@ -201,6 +222,20 @@ func buildRiverConfig(workers *river.Workers, cfg ClientConfig) (*river.Config, 
 				river.PeriodicInterval(interval),
 				func() (river.JobArgs, *river.InsertOpts) {
 					return EpgSyncArgs{Site: site}, nil
+				},
+				&river.PeriodicJobOpts{RunOnStart: true},
+			))
+		}
+		if cfg.TunerSyncSite != "" {
+			interval := cfg.TunerSyncInterval
+			if interval <= 0 {
+				interval = defaultTunerSyncInterval
+			}
+			site := cfg.TunerSyncSite
+			riverCfg.PeriodicJobs = append(riverCfg.PeriodicJobs, river.NewPeriodicJob(
+				river.PeriodicInterval(interval),
+				func() (river.JobArgs, *river.InsertOpts) {
+					return TunerSyncArgs{Site: site}, nil
 				},
 				&river.PeriodicJobOpts{RunOnStart: true},
 			))

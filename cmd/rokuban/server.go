@@ -164,10 +164,12 @@ func newServerCmd() *cobra.Command {
 					PeriodicJobs:      cfg.Worker.PeriodicJobs,
 					Queues:            cfg.Worker.Queues,
 				}
-				// 定期ジョブ（epg_sync / ruler_pass / reconcile_pass / record_sweep）は
-				// worker 側が投入する（mirakc に触るのも各ジョブのヒント経路をまとめるのも worker）。
+				// 定期ジョブ（epg_sync / tuner_sync / ruler_pass / reconcile_pass /
+				// record_sweep）は worker 側が投入する（mirakc に触るのも各ジョブの
+				// ヒント経路をまとめるのも worker）。
 				if slices.Contains(roles, "worker") {
 					clientCfg.EpgSyncSite = watcher.DefaultSite
+					clientCfg.TunerSyncSite = watcher.DefaultSite
 					clientCfg.RulerPassSite = watcher.DefaultSite
 					clientCfg.ReconcilePassSite = watcher.DefaultSite
 					clientCfg.RecordSweepSite = watcher.DefaultSite

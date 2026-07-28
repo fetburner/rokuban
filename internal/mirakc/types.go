@@ -157,6 +157,29 @@ type ServiceChannel struct {
 	Channel string `json:"channel"`
 }
 
+// Tuner は GET /api/tuners の要素（mirakc の MirakurunTuner 互換）。
+//
+// 射影するのは静的な構成（Index / Name / Types / IsAvailable / IsFault）だけで、
+// 実行時状態（users / isFree / isUsing / command / pid）はそもそもデコードしない。
+// **現在の利用者は容量から引かない** --- 一時的な占有であり将来の区間の容量とは
+// 無関係で、「見えない消費者は数えない = 下界を主張する」性質と一貫する
+// （issue #21、docs/data.md §6.5）。フィールドを持たせないことで
+// tuner_sync に混入する経路を作らない（不変条件 10 と同じ姿勢）。
+//
+// Types は mirakc の channelTypes（GR / BS / CS / SKY）。GR 専用チューナーに BS は
+// 載らないので、容量判定（internal/capacity）はここを必ず見る。
+//
+// 既知の限界: mirakc の TunerConfig には excluded_channels（特定チャンネルの除外）が
+// あるが、このレスポンスには含まれない。したがって「種別のみ」が API の許す精度で
+// あり、除外設定があると容量を過大に見積もる（= 警告を見逃す）方向に誤る。
+type Tuner struct {
+	Index       int      `json:"index"`
+	Name        string   `json:"name"`
+	Types       []string `json:"types"`
+	IsAvailable bool     `json:"isAvailable"`
+	IsFault     bool     `json:"isFault"`
+}
+
 // RecordRemovalResult は DELETE /api/recording/records/{id} のレスポンス。
 type RecordRemovalResult struct {
 	RecordRemoved  bool `json:"recordRemoved"`

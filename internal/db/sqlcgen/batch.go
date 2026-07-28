@@ -195,3 +195,68 @@ func (b *UpsertEpgServiceBatchResults) Close() error {
 	b.closed = true
 	return b.br.Close()
 }
+
+const upsertTunerSync = `-- name: UpsertTunerSync :batchexec
+INSERT INTO tuner_sync (
+    site, tuner_index, name, types, is_available, is_fault, observed_at
+) VALUES ($1, $2, $3, $4, $5, $6, now())
+ON CONFLICT (site, tuner_index) DO UPDATE SET
+    name         = EXCLUDED.name,
+    types        = EXCLUDED.types,
+    is_available = EXCLUDED.is_available,
+    is_fault     = EXCLUDED.is_fault,
+    observed_at  = now()
+`
+
+type UpsertTunerSyncBatchResults struct {
+	br     pgx.BatchResults
+	tot    int
+	closed bool
+}
+
+type UpsertTunerSyncParams struct {
+	Site        string
+	TunerIndex  int32
+	Name        string
+	Types       []string
+	IsAvailable bool
+	IsFault     bool
+}
+
+func (q *Queries) UpsertTunerSync(ctx context.Context, arg []UpsertTunerSyncParams) *UpsertTunerSyncBatchResults {
+	batch := &pgx.Batch{}
+	for _, a := range arg {
+		vals := []interface{}{
+			a.Site,
+			a.TunerIndex,
+			a.Name,
+			a.Types,
+			a.IsAvailable,
+			a.IsFault,
+		}
+		batch.Queue(upsertTunerSync, vals...)
+	}
+	br := q.db.SendBatch(ctx, batch)
+	return &UpsertTunerSyncBatchResults{br, len(arg), false}
+}
+
+func (b *UpsertTunerSyncBatchResults) Exec(f func(int, error)) {
+	defer b.br.Close()
+	for t := 0; t < b.tot; t++ {
+		if b.closed {
+			if f != nil {
+				f(t, ErrBatchAlreadyClosed)
+			}
+			continue
+		}
+		_, err := b.br.Exec()
+		if f != nil {
+			f(t, err)
+		}
+	}
+}
+
+func (b *UpsertTunerSyncBatchResults) Close() error {
+	b.closed = true
+	return b.br.Close()
+}

@@ -46,6 +46,9 @@ func TestNewRegistry_ExposesRequiredMetrics(t *testing.T) {
 	EpgProgramsProjected.Set(1)
 	EpgChannelsWithoutPrograms.Set(0)
 	EpgSyncLastSuccess.SetToCurrentTime()
+	TunersProjected.WithLabelValues(testSite).Set(2)
+	TunerSyncLastSuccess.WithLabelValues(testSite).SetToCurrentTime()
+	CapacityOverages.WithLabelValues(testSite).Set(0)
 
 	families, err := reg.Gather()
 	if err != nil {
@@ -79,6 +82,10 @@ func TestNewRegistry_ExposesRequiredMetrics(t *testing.T) {
 		"rokuban_epg_programs_projected",
 		"rokuban_epg_channels_without_programs",
 		"rokuban_epg_sync_last_success_timestamp_seconds",
+		// M2-10: チューナー射影と容量超過
+		"rokuban_tuners_projected",
+		"rokuban_tuner_sync_last_success_timestamp_seconds",
+		"rokuban_capacity_overages",
 	}
 	for _, name := range required {
 		if !got[name] {

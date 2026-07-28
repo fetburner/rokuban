@@ -507,6 +507,63 @@ paths:
                 items:
                   $ref: "#/components/schemas/DropStat"
 
+  /api/capacity/overages:
+    get:
+      operationId: listCapacityOverages
+      summary: List intervals where tuner capacity is exceeded
+      description: |
+        チューナーが不足している**区間**を結合済みで返す（M2-10、issue #21 /
+        docs/data.md §6.5）。
+
+        **主張は下界に限る。** 「この区間は超過している」は確実だが、返らなかった
+        区間が「収まる」ことは保証しない。Rokuban から見えない消費者（並走する
+        EPGStation・ライブ視聴・EPG 収集ジョブ）がいるうえ、mirakc の
+        `excluded_channels` は `/api/tuners` に載らないため、既知の盲点はすべて
+        「警告を見逃す」方向に偏っている。**沈黙を「大丈夫」と読ませてはならない。**
+
+        返すのは区間の性質だけで、**どの番組が負けるかは主張しない**。勝敗を決めるのは
+        mirakc であり、Rokuban には見えない消費者がいるので予測できない。UI の文言も
+        「この予約は競合しています」ではなく「この時間帯はチューナーが不足しています」。
+
+        需要の単位は予約件数ではなく**異なる物理チャンネル数**（同一物理チャンネルなら
+        1 本のチューナーに相乗りできる。副産物としてマルチ編成のサブサービスが
+        自然に畳まれる）。数えるのは reconciler が実際に schedule を作る予約だけで、
+        `effective.skip` が true の行と `state = 'orphaned'` の行は需要にならない。
+
+        判定は種別部分集合に縮約した Hall 条件（`∀A ⊆ {GR,BS,CS,SKY}:
+        Σ_{t∈A} d[t] ≤ cap(A)`）。破れた `A` から不足本数と詰まった種別が
+        副産物として出るので、`shortfall` / `jammedTypes` で「BS が 1 本不足」まで言える。
+      parameters:
+        - name: start
+          in: query
+          required: true
+          description: 時間窓の開始（この時刻より後に終わる区間が対象）
+          schema:
+            type: string
+            format: date-time
+        - name: end
+          in: query
+          required: true
+          description: 時間窓の終了（この時刻より前に始まる区間が対象）
+          schema:
+            type: string
+            format: date-time
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/CapacityOverage"
+        "400":
+          description: 時間窓が不正
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /api/breakers:
     get:
       operationId: listCircuitBreakers
@@ -829,6 +886,37 @@ components:
         scrambled:
           type: integer
           format: int64
+
+    # --- チューナー容量超過 (M2-10, issue #21 / docs/data.md §6.5) ---
+    #
+    # 区間の性質だけを返す。どの番組・どの予約が負けるかは主張しない。
+    CapacityOverage:
+      type: object
+      required: [site, startAt, endAt, shortfall, jammedTypes]
+      properties:
+        site:
+          description: |
+            判定はサイトごとに独立して行う。N 予約の決定（docs/recording.md §3.1）に
+            より予約が site に束縛されるため二部グラフがサイトごとに非連結になり、
+            Hall の条件を成分ごとに確認すれば十分になる。
+          type: string
+        startAt:
+          type: string
+          format: date-time
+        endAt:
+          type: string
+          format: date-time
+        shortfall:
+          description: |
+            不足本数。破れた種別部分集合 A の `Σ_{t∈A} d[t] − cap(A)` の最大値。
+            1 以上（0 なら超過していないので区間そのものが返らない）
+          type: integer
+        jammedTypes:
+          description: 詰まった種別（Hall 条件を破った部分集合 A）。「BS が 1 本不足」と言うための材料
+          type: array
+          items:
+            type: string
+            enum: [GR, BS, CS, SKY]
 
     DropStat:
       type: object
