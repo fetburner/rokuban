@@ -92,9 +92,17 @@ func (o *ReservationOptions) Effective(base *ReservationOptions) ReservationOpti
 // 組む。予約行・program_overrides 行の 2 つの jsonb を扱う箇所はすべてここを
 // 通し、Unmarshal の失敗を握りつぶさない。
 //
-// intentAction が "skip" のとき skip = true を返す。action は overrides とは
-// 別表（program_intents）にあるので base 側の skip を上書きする形になり、
-// jsonb マージに細工を仕込む必要がない（docs/recording.md §4.2）。
+// skip の解決は docs/recording.md §4.2 の式に従う:
+//
+//	effective.skip = (action = 'skip') OR (意図がなく base.skip)
+//
+// つまり**意図があれば action だけが skip を決める**。action = 'record' なら
+// base.skip が true でも false を返す --- M2-6 の重複排除が base に skip を
+// 立てても、ユーザーの「録れ」意図が勝つ（同 §4.2「M2-6 の dedup skip」）。
+// 意図が無いときだけ base / overrides 由来の skip がそのまま効く。
+//
+// action は overrides とは別表（program_intents）にあるので base 側の skip を
+// 上書きする形になり、jsonb マージに細工を仕込む必要がない。
 func EffectiveOptions(base, overrides []byte, intentAction *string) (ReservationOptions, error) {
 	var b *ReservationOptions
 	if len(base) > 0 {
@@ -115,8 +123,11 @@ func EffectiveOptions(base, overrides []byte, intentAction *string) (Reservation
 	}
 
 	eff := o.Effective(b)
-	if intentAction != nil && *intentAction == IntentSkip {
-		skip := true
+	// 意図があれば action が skip を決め切る（record なら false で上書きする）。
+	// ここを *intentAction == IntentSkip のときだけ true を書く形にすると、
+	// action='record' かつ base.skip=true の予約が skip されたままになる。
+	if intentAction != nil {
+		skip := *intentAction == IntentSkip
 		eff.Skip = &skip
 	}
 	return eff, nil

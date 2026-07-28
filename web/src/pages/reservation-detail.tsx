@@ -9,6 +9,7 @@ import {
 import { unwrap } from '@/api/unwrap'
 import { ErrorState, ListSkeleton } from '@/components/page'
 import { ProgramOverlapWarning } from '@/components/program-overlap-warning'
+import { ReservationSkipReason } from '@/components/reservation-skip-reason'
 import { useToast } from '@/components/toaster'
 import { Button } from '@/components/ui/button'
 import { formatDateTime, formatDuration } from '@/lib/format'
@@ -80,6 +81,11 @@ export function ReservationDetailPage() {
           <Fields title="予約">
             <Field label="状態" value={reservation.state} />
             <Field label="種別" value={reservation.source === 'manual' ? '手動' : 'ルール'} />
+            {/* 予約行が残っているのに録画されない状態は、それ自体が説明を要する。
+                重複排除なら根拠（録画 id と類似度）まで出す（issue #24 M2-6）。 */}
+            {reservation.skip && (
+              <Field label="録画" value={<ReservationSkipReason reservation={reservation} />} />
+            )}
             {reservation.ruleId !== undefined && (
               <Field label="ルール" value={`#${reservation.ruleId}`} />
             )}
@@ -136,7 +142,8 @@ function Field({
   note,
 }: {
   label: string
-  value: string
+  /** 文字列だけでなく要素も置ける（重複排除の根拠のように構造を持つ値があるため）。 */
+  value: React.ReactNode
   note?: string
 }) {
   return (

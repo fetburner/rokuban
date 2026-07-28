@@ -254,6 +254,27 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 		snapshotByProgram[s.ProgramID] = s
 	}
 
+	// 重複排除（M2-6）: 勝者ルールが dedupe_enabled な番組について、同じルールで
+	// 既に録れている番組を探す。判定は base の計算より前に済ませる必要がある
+	// （結果が base.skip に載る）。候補は勝者ルールがある番組だけ --- ルールが
+	// base を供給していない予約（手動予約・detached）の base は凍結されるので、
+	// 重複排除の判定対象でもない。
+	var dedupeCandidates []dedupeCandidate
+	for _, programID := range desiredIDs {
+		ruleID, ok := winner[programID]
+		if !ok {
+			continue
+		}
+		if !ruleByID[ruleID].DedupeEnabled {
+			continue
+		}
+		dedupeCandidates = append(dedupeCandidates, dedupeCandidate{ProgramID: programID, RuleID: ruleID})
+	}
+	dedupeMatches, err := evaluateDedupe(ctx, r.pool, site, dedupeCandidates)
+	if err != nil {
+		return fmt.Errorf("evaluating dedupe: %w", err)
+	}
+
 	rows := make([]rulerInputRow, 0, len(desiredIDs))
 	for _, programID := range desiredIDs {
 		snap, hasProjection := snapshotByProgram[programID]
@@ -272,20 +293,35 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 
 		var ruleID *int64
 		var base json.RawMessage
+		var dedupMatchRecordingID *int64
+		var dedupSimilarity *float32
 		if rid, ok := winner[programID]; ok {
 			ridCopy := rid
 			ruleID = &ridCopy
-			base, err = computeBase(ruleByID[rid])
+			// マッチが無ければ（dedupe_enabled=false の場合も含め）両方 nil の
+			// まま = NULL に戻す。前のパスでマッチしていて今回のパスで似た録画が
+			// 無くなったなら、古い根拠を残してはいけない（導出値は毎パス作り直す。
+			// CLAUDE.md 不変条件 9）。
+			match, matched := dedupeMatches[programID]
+			if matched {
+				recordingID := match.RecordingID
+				similarity := match.Similarity
+				dedupMatchRecordingID = &recordingID
+				dedupSimilarity = &similarity
+			}
+			base, err = computeBase(ruleByID[rid], matched)
 			if err != nil {
 				return fmt.Errorf("computing base for rule %d: %w", rid, err)
 			}
 		}
 
 		row := rulerInputRow{
-			ProgramID:     programID,
-			RuleID:        ruleID,
-			Base:          base,
-			HasProjection: hasProjection,
+			ProgramID:             programID,
+			RuleID:                ruleID,
+			Base:                  base,
+			HasProjection:         hasProjection,
+			DedupMatchRecordingID: dedupMatchRecordingID,
+			DedupSimilarity:       dedupSimilarity,
 		}
 		if hasProjection {
 			startAt := snap.StartAt
@@ -553,9 +589,13 @@ func rewriteRuleMatches(ctx context.Context, tx pgx.Tx, site string, allMatches 
 // 空文字なら載せない（base を最小に保ち、既定の固定形式利用時に
 // IS DISTINCT FROM の差分書き込みが空振りしないため）。
 //
-// skip も含めない（program_intents.action が担うフィールドで、
-// base 側で表現すると優先順位の合成に jsonb マージの細工が要る）。
-func computeBase(rule sqlcgen.Rule) (json.RawMessage, error) {
+// **skip を base に載せる唯一の経路が重複排除（dedupeSkip）である。** ユーザーの
+// 「録るな」は program_intents.action が担うフィールドで、base 側で表現すると
+// 優先順位の合成に jsonb マージの細工が要る。逆に重複排除は「ルール x 履歴」から
+// 毎パス導出される値なので base に載るのが正しく、ユーザーの action='record' が
+// これに勝つ合成は db.EffectiveOptions の 1 箇所で解かれる
+// （docs/recording.md §4.2「M2-6 の dedup skip」）。
+func computeBase(rule sqlcgen.Rule, dedupeSkip bool) (json.RawMessage, error) {
 	priority := int(rule.Priority)
 	keepOriginal := rule.KeepOriginal
 	profiles := append([]string(nil), rule.EncodeProfiles...)
@@ -568,6 +608,13 @@ func computeBase(rule sqlcgen.Rule) (json.RawMessage, error) {
 	if rule.FilenameTemplate != "" {
 		filenameTemplate := rule.FilenameTemplate
 		opts.FilenameTemplate = &filenameTemplate
+	}
+	// マッチしなかったときは skip を**載せない**（false を載せない）。base を最小に
+	// 保ち、重複排除を使っていないルールの base が M2-6 前と一致するようにする
+	// （差分書き込みが空振りしない）。
+	if dedupeSkip {
+		skip := true
+		opts.Skip = &skip
 	}
 	out, err := json.Marshal(opts)
 	if err != nil {

@@ -102,18 +102,20 @@ VALUES ($1, 0, 'name', 'keyword', $2, true, false)`, ruleID, keyword)
 // source 列は issue #26 で削除済み（手動/ルール由来の区別は program_intents /
 // rule_id から導出する。本ファイルにはこの列を前提にしたテストを置かない）。
 type reservationRow struct {
-	ID                int64
-	RuleID            *int64
-	State             string
-	Base              []byte
-	Title             string
-	ProgramStartAt    time.Time
-	ProgramDurationMs int64
-	NetworkID         *int32
-	ServiceID         *int32
-	ChannelType       *string
-	Channel           *string
-	UpdatedAt         time.Time
+	ID                    int64
+	RuleID                *int64
+	State                 string
+	Base                  []byte
+	Title                 string
+	ProgramStartAt        time.Time
+	ProgramDurationMs     int64
+	NetworkID             *int32
+	ServiceID             *int32
+	ChannelType           *string
+	Channel               *string
+	DedupMatchRecordingID *int64
+	DedupSimilarity       *float32
+	UpdatedAt             time.Time
 }
 
 func getReservation(t *testing.T, pool *pgxpool.Pool, ctx context.Context, programID int64) (reservationRow, bool) {
@@ -121,10 +123,12 @@ func getReservation(t *testing.T, pool *pgxpool.Pool, ctx context.Context, progr
 	var r reservationRow
 	err := pool.QueryRow(ctx, `
 SELECT id, rule_id, state, base, title, program_start_at, program_duration_ms,
-       network_id, service_id, channel_type, channel, updated_at
+       network_id, service_id, channel_type, channel,
+       dedup_match_recording_id, dedup_similarity, updated_at
 FROM reservations WHERE site = $1 AND program_id = $2`, testSite, programID).Scan(
 		&r.ID, &r.RuleID, &r.State, &r.Base, &r.Title, &r.ProgramStartAt, &r.ProgramDurationMs,
-		&r.NetworkID, &r.ServiceID, &r.ChannelType, &r.Channel, &r.UpdatedAt,
+		&r.NetworkID, &r.ServiceID, &r.ChannelType, &r.Channel,
+		&r.DedupMatchRecordingID, &r.DedupSimilarity, &r.UpdatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

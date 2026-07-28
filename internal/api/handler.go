@@ -53,7 +53,11 @@ func (h *Server) ListReservations(ctx context.Context, _ ListReservationsRequest
 
 	result := make([]Reservation, 0, len(rows))
 	for _, r := range rows {
-		result = append(result, reservationFromRow(r.Reservation, r.Overrides, r.IntentAction))
+		res, err := reservationFromRow(r.Reservation, r.Overrides, r.IntentAction)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, res)
 	}
 	return ListReservations200JSONResponse(result), nil
 }
@@ -152,7 +156,10 @@ func (h *Server) CreateReservation(ctx context.Context, req CreateReservationReq
 	// row（CreateManualReservation の戻り値）は program_intents を JOIN していない
 	// ため、ここでは静的に db.IntentRecord を渡す。
 	intentAction := db.IntentRecord
-	res := reservationFromRow(row, overridesJSON, &intentAction)
+	res, err := reservationFromRow(row, overridesJSON, &intentAction)
+	if err != nil {
+		return nil, err
+	}
 	return CreateReservation201JSONResponse(res), nil
 }
 
@@ -166,7 +173,10 @@ func (h *Server) GetReservation(ctx context.Context, req GetReservationRequestOb
 		}
 		return nil, err
 	}
-	res := reservationFromRow(row.Reservation, row.Overrides, row.IntentAction)
+	res, err := reservationFromRow(row.Reservation, row.Overrides, row.IntentAction)
+	if err != nil {
+		return nil, err
+	}
 	return GetReservation200JSONResponse(res), nil
 }
 
@@ -244,16 +254,28 @@ func (h *Server) insertReconcilePassHint(ctx context.Context, tx pgx.Tx) error {
 // program_intents だけを判定材料にするのはそのため --- そうしないと「手動予約 +
 // ルールがマッチ中」が rule と表示され、同じバグに逆戻りする
 // （docs/recording.md §4.4「manual 行にルールがマッチしても昇格は要らない」）。
-func reservationFromRow(r sqlcgen.Reservation, overrides []byte, intentAction *string) Reservation {
+//
+// skip も列ではなく db.EffectiveOptions の結果（base + overrides + action）である。
+// 壊れた jsonb でエラーを返すのは意図的: skip=false を返して黙って進むと
+// 「mirakc に同期されないのに理由が UI から読めない」という一番説明しにくい状態に
+// なる（docs/schema.md §3「jsonb の Unmarshal 失敗を握りつぶさない」）。
+// dedupMatchRecordingId / dedupSimilarity はその skip の根拠（M2-6）で、
+// ruler が毎パス作り直す導出列をそのまま出す。
+func reservationFromRow(r sqlcgen.Reservation, overrides []byte, intentAction *string) (Reservation, error) {
 	source := ReservationSourceRule
 	if intentAction != nil && *intentAction == db.IntentRecord {
 		source = ReservationSourceManual
+	}
+	opts, err := db.EffectiveOptions(r.Base, overrides, intentAction)
+	if err != nil {
+		return Reservation{}, fmt.Errorf("resolving effective options for reservation %d: %w", r.ID, err)
 	}
 	res := Reservation{
 		Id:         r.ID,
 		ProgramId:  r.ProgramID,
 		Source:     source,
 		State:      ReservationState(r.State),
+		Skip:       opts.Skip != nil && *opts.Skip,
 		Title:      r.Title,
 		StartAt:    r.ProgramStartAt,
 		DurationMs: r.ProgramDurationMs,
@@ -263,11 +285,20 @@ func reservationFromRow(r sqlcgen.Reservation, overrides []byte, intentAction *s
 	if r.RuleID != nil {
 		res.RuleId = r.RuleID
 	}
+	// 2 列は必ず揃って設定/解除される（reservations_dedup_evidence_check）ので、
+	// 片方だけ出る形にはならない。
+	if r.DedupMatchRecordingID != nil {
+		res.DedupMatchRecordingId = r.DedupMatchRecordingID
+	}
+	if r.DedupSimilarity.Valid {
+		similarity := r.DedupSimilarity.Float32
+		res.DedupSimilarity = &similarity
+	}
 	if len(overrides) > 0 && string(overrides) != "{}" {
 		var m map[string]interface{}
 		if json.Unmarshal(overrides, &m) == nil && len(m) > 0 {
 			res.Overrides = &m
 		}
 	}
-	return res
+	return res, nil
 }

@@ -4,6 +4,7 @@ import { ChevronRight } from 'lucide-react'
 import { useListReservations, type Reservation } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
 import { EmptyState, ErrorState, ListSkeleton, PageHeader } from '@/components/page'
+import { ReservationSkipBadge } from '@/components/reservation-skip-reason'
 import { formatDateTime, formatDuration } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
@@ -43,6 +44,7 @@ export function ReservationsPage() {
                     <span className="shrink-0">{formatDateTime(r.startAt)}</span>
                     <span className="shrink-0">{formatDuration(r.durationMs)}</span>
                     <StateBadge state={r.state} />
+                    <ReservationSkipBadge reservation={r} />
                   </div>
                 </div>
                 <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
