@@ -18,18 +18,25 @@ import (
 // HasProjection が false の行は EPG プロジェクションから番組が消えたことを表し、
 // SQL 側でスナップショット列（Title 以下）を無視して現在の行の値を素通しする。
 // このとき Title 等には意味のない値を入れてよい。
+//
+// DedupMatchRecordingID / DedupSimilarity は重複排除の判定根拠（M2-6）。
+// マッチしなければ両方 nil = NULL に戻す（前のパスの根拠を残さない。導出値は
+// 毎パス作り直す --- CLAUDE.md 不変条件 9）。必ず 2 つ揃って設定/解除するので
+// reservations_dedup_evidence_check（両方 NULL か両方非 NULL）を破れない。
 type rulerInputRow struct {
-	ProgramID     int64           `json:"program_id"`
-	RuleID        *int64          `json:"rule_id"`
-	Base          json.RawMessage `json:"base"`
-	HasProjection bool            `json:"has_projection"`
-	Title         string          `json:"title"`
-	StartAt       *time.Time      `json:"start_at"`
-	DurationMs    *int64          `json:"duration_ms"`
-	NetworkID     *int32          `json:"network_id"`
-	ServiceID     *int32          `json:"service_id"`
-	ChannelType   *string         `json:"channel_type"`
-	Channel       *string         `json:"channel"`
+	ProgramID             int64           `json:"program_id"`
+	RuleID                *int64          `json:"rule_id"`
+	Base                  json.RawMessage `json:"base"`
+	HasProjection         bool            `json:"has_projection"`
+	Title                 string          `json:"title"`
+	StartAt               *time.Time      `json:"start_at"`
+	DurationMs            *int64          `json:"duration_ms"`
+	NetworkID             *int32          `json:"network_id"`
+	ServiceID             *int32          `json:"service_id"`
+	ChannelType           *string         `json:"channel_type"`
+	Channel               *string         `json:"channel"`
+	DedupMatchRecordingID *int64          `json:"dedup_match_recording_id"`
+	DedupSimilarity       *float32        `json:"dedup_similarity"`
 }
 
 // upsertResult は upsertReservationsFromPass が RETURNING する 1 行。
@@ -65,7 +72,9 @@ WITH input AS (
         network_id      integer,
         service_id      integer,
         channel_type    text,
-        channel         text
+        channel         text,
+        dedup_match_recording_id bigint,
+        dedup_similarity         real
     )
 ),
 -- reservations.source は持たない（issue #26 で削除。00012_drop_reservations_source.sql）。
@@ -90,18 +99,29 @@ resolved AS (
         CASE WHEN d.has_projection THEN d.network_id ELSE r.network_id END AS network_id,
         CASE WHEN d.has_projection THEN d.service_id ELSE r.service_id END AS service_id,
         CASE WHEN d.has_projection THEN d.channel_type ELSE r.channel_type END AS channel_type,
-        CASE WHEN d.has_projection THEN d.channel ELSE r.channel END AS channel
+        CASE WHEN d.has_projection THEN d.channel ELSE r.channel END AS channel,
+        -- 重複排除の根拠（M2-6）は base と全く同じ凍結ルールに従う: ルールが今
+        -- base を供給しているなら今回の判定結果、供給していない（rule_id が
+        -- 外れた）なら既存行の値をそのまま凍結する。判定したのはそのルールなので、
+        -- base だけ凍結して根拠を消すと「なぜ skip なのか説明できない base」が残る。
+        --
+        -- 2 列が同一の条件で分岐することが reservations_dedup_evidence_check
+        -- （両方 NULL か両方非 NULL）を構造的に破れないことの根拠でもある。
+        CASE WHEN d.rule_id IS NOT NULL THEN d.dedup_match_recording_id ELSE r.dedup_match_recording_id END AS dedup_match_recording_id,
+        CASE WHEN d.rule_id IS NOT NULL THEN d.dedup_similarity ELSE r.dedup_similarity END AS dedup_similarity
     FROM input d
     LEFT JOIN reservations r ON r.site = $1 AND r.program_id = d.program_id
 )
 INSERT INTO reservations (
     site, program_id, rule_id, state, base,
     title, program_start_at, program_duration_ms,
-    network_id, service_id, channel_type, channel
+    network_id, service_id, channel_type, channel,
+    dedup_match_recording_id, dedup_similarity
 )
 SELECT $1, program_id, rule_id, state, base,
        title, program_start_at, program_duration_ms,
-       network_id, service_id, channel_type, channel
+       network_id, service_id, channel_type, channel,
+       dedup_match_recording_id, dedup_similarity
 FROM resolved
 ON CONFLICT (site, program_id) DO UPDATE SET
     rule_id              = EXCLUDED.rule_id,
@@ -114,6 +134,8 @@ ON CONFLICT (site, program_id) DO UPDATE SET
     service_id           = EXCLUDED.service_id,
     channel_type         = EXCLUDED.channel_type,
     channel              = EXCLUDED.channel,
+    dedup_match_recording_id = EXCLUDED.dedup_match_recording_id,
+    dedup_similarity     = EXCLUDED.dedup_similarity,
     updated_at           = now()
 WHERE reservations.rule_id             IS DISTINCT FROM EXCLUDED.rule_id
    OR reservations.state               IS DISTINCT FROM EXCLUDED.state
@@ -125,6 +147,8 @@ WHERE reservations.rule_id             IS DISTINCT FROM EXCLUDED.rule_id
    OR reservations.service_id          IS DISTINCT FROM EXCLUDED.service_id
    OR reservations.channel_type        IS DISTINCT FROM EXCLUDED.channel_type
    OR reservations.channel             IS DISTINCT FROM EXCLUDED.channel
+   OR reservations.dedup_match_recording_id IS DISTINCT FROM EXCLUDED.dedup_match_recording_id
+   OR reservations.dedup_similarity    IS DISTINCT FROM EXCLUDED.dedup_similarity
 RETURNING id, program_id, (xmax = 0) AS created
 `
 

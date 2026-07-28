@@ -99,7 +99,11 @@ func (h *Server) UpdateReservationOverrides(ctx context.Context, req UpdateReser
 		return nil, err
 	}
 
-	return UpdateReservationOverrides200JSONResponse(reservationFromRow(row.Reservation, finalOverrides, row.IntentAction)), nil
+	res, err := reservationFromRow(row.Reservation, finalOverrides, row.IntentAction)
+	if err != nil {
+		return nil, err
+	}
+	return UpdateReservationOverrides200JSONResponse(res), nil
 }
 
 // ResetReservationOverrides は予約単位の「ルールに戻す」
@@ -135,7 +139,11 @@ func (h *Server) ResetReservationOverrides(ctx context.Context, req ResetReserva
 		return nil, err
 	}
 
-	return ResetReservationOverrides200JSONResponse(reservationFromRow(row.Reservation, nil, row.IntentAction)), nil
+	res, err := reservationFromRow(row.Reservation, nil, row.IntentAction)
+	if err != nil {
+		return nil, err
+	}
+	return ResetReservationOverrides200JSONResponse(res), nil
 }
 
 // lockAndGetReservation は予約行を FOR UPDATE でロックしてから GetReservationFull
