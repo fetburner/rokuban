@@ -150,11 +150,12 @@ func newServerCmd() *cobra.Command {
 			if slices.Contains(roles, "worker") || slices.Contains(roles, "watcher") {
 				mc := mirakc.NewClient(cfg.Mirakc.URL, nil)
 				workers := worker.NewWorkers(&worker.Deps{
-					MirakcClient:        mc,
-					Pool:                pool,
-					MediaDir:            cfg.Storage.MediaDir,
-					EpgRetentionGrace:   cfg.Epg.RetentionGrace,
-					RulerRetentionGrace: cfg.Epg.RetentionGrace,
+					MirakcClient:           mc,
+					Pool:                   pool,
+					MediaDir:               cfg.Storage.MediaDir,
+					EpgRetentionGrace:      cfg.Epg.RetentionGrace,
+					RulerRetentionGrace:    cfg.Epg.RetentionGrace,
+					RulerMaxDeletesPerPass: cfg.Ruler.MaxDeletesPerPass,
 				})
 				clientCfg := worker.ClientConfig{
 					IngestConcurrency: cfg.Ingest.Concurrency,

@@ -80,6 +80,11 @@ type RulerPassWorker struct {
 	// 猶予。0 なら ruler 側の既定値を使う（epg.retention_grace をそのまま流用する
 	// 運用を想定。ruler.Config.RetentionGrace のコメント参照）。
 	RetentionGrace time.Duration
+
+	// MaxDeletesPerPass は大量削除サーキットブレーカーの閾値。0 なら ruler 側の
+	// 既定値を使う（config.yml の ruler.max_deletes_per_pass から注入される。
+	// ruler.Config.MaxDeletesPerPass のコメント参照）。
+	MaxDeletesPerPass int
 }
 
 // Timeout は River の既定（1 分）より長い上限を与える。理由は rulerPassTimeout の
@@ -93,7 +98,8 @@ func (w *RulerPassWorker) Timeout(*river.Job[RulerPassArgs]) time.Duration {
 // ここでは常に長さ 1 で渡す）。
 func (w *RulerPassWorker) Work(ctx context.Context, job *river.Job[RulerPassArgs]) error {
 	r := ruler.New([]string{job.Args.Site}, w.Pool, &ruler.Config{
-		RetentionGrace: w.RetentionGrace,
+		RetentionGrace:    w.RetentionGrace,
+		MaxDeletesPerPass: w.MaxDeletesPerPass,
 	})
 	if err := r.RunPass(ctx); err != nil {
 		return err

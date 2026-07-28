@@ -59,6 +59,12 @@ epg:
   retention_grace: 24h           # 放送終了からこの時間で番組を刈り取る。
                                  # ruler の GC（予約と番組単位の意図）も同じ猶予を使う
 
+ruler:
+  max_deletes_per_pass: 50       # 1 サイト・1 パスで実行してよい導出削除数の上限。超えたら
+                                 # 削除を一切実行せず、大量削除サーキットブレーカーとして発動する。
+                                 # 手動で resume するまで止まり続けるラッチで、件数が閾値以下に
+                                 # 戻っても自動では解けない（recording.md §3.2「発動はラッチ」）
+
 worker:
   periodic_jobs: true            # プロセス内で定期ジョブ（epg_sync / ruler_pass / reconcile_pass / record_sweep）を投入するか。
                                  # k8s では false にし、CronJob から rokuban enqueue で投入する
