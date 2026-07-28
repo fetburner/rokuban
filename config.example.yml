@@ -36,6 +36,19 @@ epg:
   sync_interval: 10m             # mirakc から EPG を全量取得する間隔
   retention_grace: 24h           # 放送終了からこの時間で番組を刈り取る
 
+# ルール評価（ruler）
+ruler:
+  max_deletes_per_pass: 50       # 1 サイト・1 パスで実行してよい導出削除数の上限。超えたら
+                                 # 削除を一切実行せず、大量削除サーキットブレーカーとして発動する
+                                 # （手動で POST /api/breakers/ruler_deletes/resume するまで
+                                 #  止まり続けるラッチ。docs/recording.md §3.2）。
+                                 # 下げると: EPG の一時的な欠損やルールの一括編集で発動しやすく
+                                 # なる代わりに、誤判定で一気に失う予約の上限が下がる。
+                                 # 上げると: 発動しにくくなる代わりに、EPGStation#692 のような
+                                 # 障害クラスで一度に失う予約が増える。既定値 50 は、通常運用で
+                                 # 1 サイトが同時に抱えるアクティブ予約数を明確に超える値として
+                                 # 選んである
+
 # worker ロールの River クライアント
 worker:
   periodic_jobs: true            # プロセス内で定期ジョブ（epg_sync / ruler_pass / reconcile_pass / record_sweep）を投入するか。

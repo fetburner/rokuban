@@ -22,6 +22,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/breaker"
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/metrics"
@@ -31,11 +32,16 @@ import (
 // Config は Ruler の設定。
 type Config struct {
 	// MaxDeletesPerPass は 1 サイト・1 パスあたりの削除許容数。超えたら削除を
-	// 一切実行せず、サーキットブレーカーとして停止する（reconciler.Config の
-	// MaxDeletesPerPass と同じ考え方）。ここで守るのは「ルール x EPG」から導出される
-	// 削除だけで、ユーザーの明示操作（DeleteReservation の intent{skip}）は
+	// 一切実行せず、サーキットブレーカーとして停止する。ここで守るのは「ルール x EPG」
+	// から導出される削除だけで、ユーザーの明示操作（DeleteReservation の intent{skip}）は
 	// このブレーカーの対象にならない（そちら経由の削除は desired 集合の側で
 	// 最初から除外されるため、ここには現れない）。
+	//
+	// **発動は internal/breaker によりラッチとして永続化される**（issue #24 M2-5）。
+	// 件数が閾値以下に戻っても自動では解除されず、`POST /api/breakers/ruler_deletes/resume`
+	// による手動再開まで導出削除を止め続ける（docs/recording.md §3.2「発動はラッチ」）。
+	// reconciler 側には同種の閾値はもう無い（撤去済み。同 §3.2「止められる場所は
+	// ruler だけ」）— ここが唯一導出削除を止められる場所になる。
 	MaxDeletesPerPass int
 
 	// RetentionGrace は番組終了後、reservations / program_intents を GC するまでの
@@ -123,6 +129,15 @@ func (r *Ruler) RunPass(ctx context.Context) error {
 // runPassForSite は 1 サイト分の全量評価 + 差分書き込みを行う。
 func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 	q := sqlcgen.New(r.pool)
+
+	// パスの先頭でブレーカーの発動状態を DB の真実に合わせ直す（ゲージはプロセス
+	// 再起動で失われるため。breaker.ObserveState のコメント参照）。true なら
+	// このパスでは導出削除を一切実行しない（下のスイッチの tripped 分岐）。
+	// 作成・更新・base の再計算・GC は止めない — 止めたいのは削除だけ。
+	tripped, err := breaker.ObserveState(ctx, q, site, breaker.RulerDeletes)
+	if err != nil {
+		return fmt.Errorf("observing %s circuit breaker: %w", breaker.RulerDeletes, err)
+	}
 
 	rules, err := q.ListEnabledRules(ctx)
 	if err != nil {
@@ -315,14 +330,38 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 
 	tq := sqlcgen.New(tx)
 	var deleted int64
-	if len(toDelete) > r.cfg.MaxDeletesPerPass {
-		metrics.RulerCircuitBreakerTrips.Inc()
-		slog.Error("ruler: circuit breaker tripped — too many derived deletes in one pass",
-			"site", site,
-			"pending_deletes", len(toDelete),
-			"threshold", r.cfg.MaxDeletesPerPass,
-		)
-	} else if len(toDelete) > 0 {
+	switch {
+	case len(toDelete) > r.cfg.MaxDeletesPerPass:
+		// 閾値超過。tripped が既に true でも Trip を呼び直す — 既に発動中なら
+		// tripped_at は据え置かれたまま pending/detail だけが最新の値に更新される
+		// （TripCircuitBreaker の ON CONFLICT。「いつから止まっているか」を保つ一方、
+		// 手動確認の材料は最新に保つ）。どちらの場合もこの分岐では削除しない。
+		sample, sampleErr := r.buildDeleteSample(ctx, tq, site, toDelete)
+		if sampleErr != nil {
+			return fmt.Errorf("building circuit breaker sample: %w", sampleErr)
+		}
+		// Trip がエラーを返した場合もこの分岐からは削除を実行しない
+		// （記録できないまま削除を続けるのが最悪の組み合わせ。breaker.Trip のコメント）。
+		// tx 内で呼ぶことで、発動の記録と「このパスでは削除しない」を一体に保つ。
+		if tripErr := breaker.Trip(ctx, tq, site, breaker.RulerDeletes, r.cfg.MaxDeletesPerPass, sample); tripErr != nil {
+			return fmt.Errorf("tripping circuit breaker: %w", tripErr)
+		}
+		if !tripped {
+			metrics.RulerCircuitBreakerTrips.Inc()
+		}
+	case tripped:
+		// ラッチ中: 今回の候補数は閾値以下に戻っているが、自動では解除しない
+		// （breaker パッケージのコメント「自動で解けるようにすると『一瞬止まって
+		// 自動復帰した』がアラートに残らない」）。再開は人間が
+		// POST /api/breakers/ruler_deletes/resume を叩くまで待つ。
+		if len(toDelete) > 0 {
+			slog.Warn("ruler: circuit breaker latched — withholding derived deletes until manually resumed",
+				"site", site,
+				"breaker", breaker.RulerDeletes,
+				"pending_deletes", len(toDelete),
+			)
+		}
+	case len(toDelete) > 0:
 		deleted, err = tq.DeleteReservationsBySiteAndProgramIDs(ctx, sqlcgen.DeleteReservationsBySiteAndProgramIDsParams{
 			Site:       site,
 			ProgramIds: toDelete,
@@ -367,6 +406,11 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 // reconciler/ruler が長時間停止していた後に溜まった期限切れ行を再開後に
 // 一括で消すのは正常な挙動であり、ここをブレーカーで止めると本来消えるべき
 // 行が積み上がり続けるだけで実害がない削除を止めてしまう。
+//
+// ブレーカーがラッチ化された（M2-5）後もこれは変わらない: runGC は
+// breaker.ObserveState / IsTripped を一度も呼ばない。runPassForSite の
+// tripped 分岐が止めるのは自分が実行する DeleteReservationsBySiteAndProgramIDs
+// だけで、GC はサイトのループの外・別の関数として独立に動き続ける。
 func (r *Ruler) runGC(ctx context.Context) error {
 	cutoff := time.Now().Add(-r.cfg.RetentionGrace)
 
@@ -397,6 +441,31 @@ func (r *Ruler) runGC(ctx context.Context) error {
 		)
 	}
 	return nil
+}
+
+// buildDeleteSample は発動時に breaker.Trip へ渡す breaker.Sample を組む。
+// Total は toDelete の全件数、Programs は手動確認用の抜粋（先頭 breaker.MaxSampleSize
+// 件のタイトルスナップショット）。件数が多いときこそ発動するので、抜粋の対象を
+// 絞ってから DB に問い合わせる（無駄に大きな IN リストを作らない）。
+func (r *Ruler) buildDeleteSample(ctx context.Context, q *sqlcgen.Queries, site string, toDelete []int64) (breaker.Sample, error) {
+	sampleIDs := toDelete
+	if len(sampleIDs) > breaker.MaxSampleSize {
+		sampleIDs = sampleIDs[:breaker.MaxSampleSize]
+	}
+
+	titles, err := q.ListReservationTitlesBySiteAndProgramIDs(ctx, sqlcgen.ListReservationTitlesBySiteAndProgramIDsParams{
+		Site:       site,
+		ProgramIds: sampleIDs,
+	})
+	if err != nil {
+		return breaker.Sample{}, fmt.Errorf("listing reservation titles for circuit breaker sample: %w", err)
+	}
+
+	programs := make([]breaker.SampleProgram, 0, len(titles))
+	for _, t := range titles {
+		programs = append(programs, breaker.SampleProgram{ProgramID: t.ProgramID, Title: t.Title})
+	}
+	return breaker.Sample{Total: len(toDelete), Programs: programs}, nil
 }
 
 // stillProjectedSubset は candidates のうち、EPG プロジェクションに現在も番組がある

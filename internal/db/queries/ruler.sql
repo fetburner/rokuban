@@ -56,3 +56,11 @@ WHERE site = $1 AND program_id = ANY(sqlc.arg(program_ids)::bigint[]);
 -- name: DeleteReservationRuleMatchesByReservationIDs :exec
 DELETE FROM reservation_rule_matches
 WHERE reservation_id = ANY(sqlc.arg(reservation_ids)::bigint[]);
+
+-- サーキットブレーカー（M2-5）発動時に breaker.Sample へ詰める「何を消そうとしていたか」の
+-- タイトルスナップショットを引く。programId だけでは手動確認する人間が判断できないため
+-- （breaker.SampleProgram.Title のコメント参照）。呼び出し側が対象を
+-- breaker.MaxSampleSize 程度に絞ってから呼ぶ想定なので、ここでは LIMIT を掛けない。
+-- name: ListReservationTitlesBySiteAndProgramIDs :many
+SELECT program_id, title FROM reservations
+WHERE site = $1 AND program_id = ANY(sqlc.arg(program_ids)::bigint[]);

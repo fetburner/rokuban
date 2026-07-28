@@ -52,6 +52,11 @@ type Deps struct {
 	// 猶予。0 なら ruler 側の既定値を使う。epg.retention_grace と同じ値を流用する
 	// 運用を想定している（docs/recording.md §3.2「番組終了後の GC」）。
 	RulerRetentionGrace time.Duration
+
+	// RulerMaxDeletesPerPass は大量削除サーキットブレーカーの閾値
+	// （ruler.max_deletes_per_pass）。0 なら ruler 側の既定値を使う
+	// （docs/recording.md §3.2「大量削除サーキットブレーカー」）。
+	RulerMaxDeletesPerPass int
 }
 
 // NewWorkers は全ワーカーを登録した river.Workers を返す。
@@ -68,8 +73,9 @@ func NewWorkers(deps *Deps) *river.Workers {
 		RetentionGrace: deps.EpgRetentionGrace,
 	})
 	river.AddWorker(workers, &RulerPassWorker{
-		Pool:           deps.Pool,
-		RetentionGrace: deps.RulerRetentionGrace,
+		Pool:              deps.Pool,
+		RetentionGrace:    deps.RulerRetentionGrace,
+		MaxDeletesPerPass: deps.RulerMaxDeletesPerPass,
 	})
 	river.AddWorker(workers, &ReconcilePassWorker{
 		MirakcClient: deps.MirakcClient,

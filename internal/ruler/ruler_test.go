@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/breaker"
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/ruler"
@@ -552,7 +553,17 @@ func TestRunPass_RuleUnmatch_DeleteVsDetach(t *testing.T) {
 }
 
 // 受け入れ基準 8: 1 パスの削除数が閾値を超える場合は削除せずサーキットブレーカーが
-// 発火する。
+// 発火する。M2-5 でこの発火は circuit_breakers への行の永続化になり（M1-4 はパス内
+// 完結でここを検証できなかった）、detail には手動確認用に「何を消そうとしていたか」の
+// 抜粋（programId + title）が入る。
+//
+// このテストは EPG プロジェクションが健全なまま（epg_programs は削除しない）ルールを
+// 無効化する形で候補を作る。射影が生きているので stillProjectedSubset の凍結は働かず、
+// ここで一斉削除を止めているのは大量削除サーキットブレーカーそのものである
+// （EPGStation#692 のうち「ルールの一括編集/無効化で desired が大きく変わる」障害モード）。
+// 射影自体が丸ごと消える障害モード（EPG 全欠損）は
+// TestRunPass_FullEpgOutageFreezeStopsDeletesWithoutTrippingBreaker が別に固定する
+// — 2 つは別の防御が別の障害モードを見ている。
 func TestRunPass_CircuitBreakerBlocksBulkDelete(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
@@ -577,6 +588,9 @@ func TestRunPass_CircuitBreakerBlocksBulkDelete(t *testing.T) {
 			t.Fatalf("program %d should have a reservation before disabling the rule", i)
 		}
 	}
+	if _, ok := getRulerDeletesBreaker(t, pool, ctx); ok {
+		t.Fatal("circuit breaker should not be tripped before the bulk unmatch")
+	}
 
 	// ルール無効化 → n 件が一斉に unmatch。閾値 2 を超えるので削除は止まるはず。
 	if _, err := pool.Exec(ctx, `UPDATE rules SET enabled = false WHERE id = $1`, ruleID); err != nil {
@@ -589,6 +603,42 @@ func TestRunPass_CircuitBreakerBlocksBulkDelete(t *testing.T) {
 	for i := range n {
 		if _, ok := getReservation(t, pool, ctx, int64(8000+i)); !ok {
 			t.Errorf("program %d should NOT be deleted while the circuit breaker is tripped", i)
+		}
+	}
+
+	cb, ok := getRulerDeletesBreaker(t, pool, ctx)
+	if !ok {
+		t.Fatal("circuit_breakers row should exist after tripping (the latch, docs/recording.md §3.2)")
+	}
+	if cb.Pending != n {
+		t.Errorf("circuit_breakers.pending = %d, want %d", cb.Pending, n)
+	}
+	if cb.Threshold != 2 {
+		t.Errorf("circuit_breakers.threshold = %d, want 2", cb.Threshold)
+	}
+
+	sample := decodeSample(t, cb.Detail)
+	if sample.Total != n {
+		t.Errorf("detail.total = %d, want %d", sample.Total, n)
+	}
+	if len(sample.Programs) == 0 {
+		t.Fatal("detail.programs is empty — the manual-review sample is useless without it")
+	}
+	gotTitles := make(map[int64]string, len(sample.Programs))
+	for _, p := range sample.Programs {
+		gotTitles[p.ProgramID] = p.Title
+	}
+	// n=5 は breaker.MaxSampleSize (20) 未満なので、抜粋には全件が入っているはず。
+	for i := range n {
+		programID := int64(8000 + i)
+		wantTitle := fmt.Sprintf("対象%d", i)
+		title, ok := gotTitles[programID]
+		if !ok {
+			t.Errorf("detail.programs is missing programId %d", programID)
+			continue
+		}
+		if title != wantTitle {
+			t.Errorf("detail.programs[%d].title = %q, want %q", programID, title, wantTitle)
 		}
 	}
 }
@@ -662,6 +712,40 @@ func reservationExists(t *testing.T, pool *pgxpool.Pool, ctx context.Context, pr
 	t.Helper()
 	_, ok := getReservation(t, pool, ctx, programID)
 	return ok
+}
+
+// getRulerDeletesBreaker は circuit_breakers から ruler_deletes ブレーカーの行を引く。
+// 発動していなければ ok=false。
+func getRulerDeletesBreaker(t *testing.T, pool *pgxpool.Pool, ctx context.Context) (sqlcgen.CircuitBreaker, bool) {
+	t.Helper()
+	q := sqlcgen.New(pool)
+	cb, err := q.GetCircuitBreaker(ctx, sqlcgen.GetCircuitBreakerParams{Site: testSite, Name: breaker.RulerDeletes})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return sqlcgen.CircuitBreaker{}, false
+		}
+		t.Fatalf("querying circuit_breakers: %v", err)
+	}
+	return cb, true
+}
+
+// decodeSample は circuit_breakers.detail を breaker.Sample にデコードする。
+func decodeSample(t *testing.T, detail []byte) breaker.Sample {
+	t.Helper()
+	var s breaker.Sample
+	if err := json.Unmarshal(detail, &s); err != nil {
+		t.Fatalf("unmarshalling circuit breaker detail %s: %v", detail, err)
+	}
+	return s
+}
+
+// deleteAllEpgPrograms は site の epg_programs を全削除する。mirakc 再起動・
+// 再スキャン中の「EPG 全欠損」を模す（EPGStation#692 の障害クラス）。
+func deleteAllEpgPrograms(t *testing.T, pool *pgxpool.Pool, ctx context.Context) {
+	t.Helper()
+	if _, err := pool.Exec(ctx, `DELETE FROM epg_programs WHERE site = $1`, testSite); err != nil {
+		t.Fatalf("deleting all epg_programs fixtures: %v", err)
+	}
 }
 
 // 受け入れ基準 10（GC）: 番組終了 + RetentionGrace 経過の予約・program_intents・
@@ -771,5 +855,401 @@ func TestRunPass_GC_IgnoresCircuitBreaker(t *testing.T) {
 		if reservationExists(t, pool, ctx, int64(11000+i)) {
 			t.Errorf("program %d should have been GC'd even though n=%d exceeds MaxDeletesPerPass=1", i, n)
 		}
+	}
+}
+
+// 受け入れ基準（M2-5 ラッチ 1/2）: 発動中は、次のパスで削除候補が閾値以下に
+// 戻っても削除されない。M1-4 の骨格はパス内で完結していたのでこの区別が
+// できなかった — ここが M2-5 のラッチ化の核心（自動では解除しない）。
+func TestRunPass_CircuitBreakerLatchBlocksDeleteEvenBelowThreshold(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	insertService(t, pool, ctx)
+	start := time.Now().Add(24 * time.Hour).Truncate(time.Second)
+
+	ruleID := insertRule(t, pool, ctx, "latch", 10)
+	insertRuleKeyword(t, pool, ctx, ruleID, "対象")
+
+	const n = 3
+	for i := range n {
+		insertProgram(t, pool, ctx, int64(20000+i), fmt.Sprintf("対象%d", i), start)
+	}
+
+	r := ruler.New([]string{testSite}, pool, &ruler.Config{MaxDeletesPerPass: 2})
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("initial RunPass: %v", err)
+	}
+
+	// ルール無効化 → 3 件が unmatch。閾値 2 を超えるので発動する。
+	if _, err := pool.Exec(ctx, `UPDATE rules SET enabled = false WHERE id = $1`, ruleID); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass (trip): %v", err)
+	}
+	if _, ok := getRulerDeletesBreaker(t, pool, ctx); !ok {
+		t.Fatal("circuit breaker should be tripped")
+	}
+
+	// 20000 番組にだけ record intent を付ける → 実際の削除候補が 2 件（閾値 2 以下）に
+	// 減る。20000 自身は intent により desired に残るので、そもそも削除候補ではない。
+	q := sqlcgen.New(pool)
+	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
+		Site: testSite, ProgramID: 20000, Action: db.IntentRecord,
+		ProgramStartAt: start, ProgramDurationMs: testDurationMs,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass (still latched, candidates now below threshold): %v", err)
+	}
+
+	// 20001/20002 は実際の削除候補（2 件 <= 閾値 2）だが、ラッチが解けていないので
+	// 削除されない。
+	for i := 1; i < n; i++ {
+		programID := int64(20000 + i)
+		if !reservationExists(t, pool, ctx, programID) {
+			t.Errorf("program %d should NOT be deleted — the circuit breaker is latched even though pending (2) <= threshold (2)", programID)
+		}
+	}
+	if _, ok := getRulerDeletesBreaker(t, pool, ctx); !ok {
+		t.Error("circuit breaker should still be tripped (a latch does not auto-clear when candidates drop)")
+	}
+}
+
+// 受け入れ基準（M2-5 ラッチ 2/2）: 発動中でも削除以外は止まらない。新規予約の
+// 作成・既存予約のスナップショット追従（延長等）は続く（止めるのは導出削除だけ。
+// docs/recording.md §3.2「発動はラッチ」）。
+func TestRunPass_TrippedCircuitBreakerStillCreatesAndUpdatesReservations(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	insertService(t, pool, ctx)
+	start := time.Now().Add(24 * time.Hour).Truncate(time.Second)
+
+	bulkRule := insertRule(t, pool, ctx, "bulk-trigger", 10)
+	insertRuleKeyword(t, pool, ctx, bulkRule, "対象")
+
+	const n = 3
+	for i := range n {
+		insertProgram(t, pool, ctx, int64(21000+i), fmt.Sprintf("対象%d", i), start)
+	}
+
+	// 21000 は record intent で常に desired に残す。ブレーカー発動後にこの番組の
+	// スナップショット追従（延長）が続くことを確認するため。
+	q := sqlcgen.New(pool)
+	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
+		Site: testSite, ProgramID: 21000, Action: db.IntentRecord,
+		ProgramStartAt: start, ProgramDurationMs: testDurationMs,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	r := ruler.New([]string{testSite}, pool, &ruler.Config{MaxDeletesPerPass: 1})
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("initial RunPass: %v", err)
+	}
+
+	// ルール無効化 → 21001/21002 が unmatch（intent の無い 2 件 > 閾値 1）で発動。
+	// 21000 は intent により desired のまま残る。
+	if _, err := pool.Exec(ctx, `UPDATE rules SET enabled = false WHERE id = $1`, bulkRule); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass (trip): %v", err)
+	}
+	if _, ok := getRulerDeletesBreaker(t, pool, ctx); !ok {
+		t.Fatal("circuit breaker should be tripped")
+	}
+	for i := 1; i < n; i++ {
+		if !reservationExists(t, pool, ctx, int64(21000+i)) {
+			t.Fatalf("program %d should be withheld right after tripping", 21000+i)
+		}
+	}
+
+	// 発動中に 21000 の EPG 開始時刻を延長する（更新は止まらないはず）。
+	newStart := start.Add(10 * time.Minute)
+	insertProgram(t, pool, ctx, 21000, "対象0", newStart)
+
+	// 発動中に新しい番組・新しいルールを追加する（作成は止まらないはず）。
+	newRule := insertRule(t, pool, ctx, "new-while-tripped", 10)
+	insertRuleKeyword(t, pool, ctx, newRule, "新規番組")
+	insertProgram(t, pool, ctx, 21100, "新規番組", newStart)
+
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass (while latched): %v", err)
+	}
+
+	res, ok := getReservation(t, pool, ctx, 21000)
+	if !ok {
+		t.Fatal("program 21000 (has record intent) should survive")
+	}
+	if !res.ProgramStartAt.Equal(newStart) {
+		t.Errorf("program 21000 snapshot did not follow the EPG update while the breaker is latched: got %v want %v", res.ProgramStartAt, newStart)
+	}
+	if _, ok := getReservation(t, pool, ctx, 21100); !ok {
+		t.Error("a brand-new reservation should still be created while the circuit breaker is latched")
+	}
+
+	// ブレーカーは相変わらず発動中で、21001/21002 は削除されない。
+	for i := 1; i < n; i++ {
+		if !reservationExists(t, pool, ctx, int64(21000+i)) {
+			t.Errorf("program %d should still be withheld while latched", 21000+i)
+		}
+	}
+}
+
+// 受け入れ基準（M2-5 ラッチ + GC）: ブレーカーが発動中でも、番組終了後の GC
+// （runGC）は独立して動き続ける。GC の削除対象は時刻の比較だけで決定的に定まり
+// EPG の状態に左右されないので、ここまで止めると実害のない削除が積み上がる
+// だけになる（docs/recording.md §3.2「番組終了後の GC」）。
+//
+// TestRunPass_GC_IgnoresCircuitBreaker は「同じパス内」で候補数が閾値を超えても
+// GC が動くことを固定しているのに対し、このテストは「別パスで既に発動済みの
+// ラッチが持ち越された状態」でも GC が動くことを固定する。
+func TestRunPass_GC_RunsWhileCircuitBreakerLatched(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	insertService(t, pool, ctx)
+	start := time.Now().Add(24 * time.Hour).Truncate(time.Second)
+
+	ruleID := insertRule(t, pool, ctx, "gc-latch", 10)
+	insertRuleKeyword(t, pool, ctx, ruleID, "対象")
+
+	const n = 3
+	for i := range n {
+		insertProgram(t, pool, ctx, int64(22000+i), fmt.Sprintf("対象%d", i), start)
+	}
+
+	r := ruler.New([]string{testSite}, pool, &ruler.Config{MaxDeletesPerPass: 1, RetentionGrace: time.Hour})
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("initial RunPass: %v", err)
+	}
+
+	// 一斉 unmatch でブレーカーを発動させる（GC とは無関係に発生させる）。
+	if _, err := pool.Exec(ctx, `UPDATE rules SET enabled = false WHERE id = $1`, ruleID); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass (trip): %v", err)
+	}
+	if _, ok := getRulerDeletesBreaker(t, pool, ctx); !ok {
+		t.Fatal("circuit breaker should be tripped")
+	}
+
+	// 発動中に GC 対象（終了 + 猶予経過）の予約を直接投入する。
+	endedStart := time.Now().Add(-90 * time.Minute).Truncate(time.Second)
+	insertReservationDirect(t, pool, ctx, 22900, "終了済み", endedStart)
+
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass (latched, with a GC-eligible row): %v", err)
+	}
+
+	if reservationExists(t, pool, ctx, 22900) {
+		t.Error("GC-eligible reservation should be deleted even while the circuit breaker is latched")
+	}
+	// ラッチ対象の予約自体はまだ人間の確認待ちのまま残る。
+	for i := range n {
+		if !reservationExists(t, pool, ctx, int64(22000+i)) {
+			t.Errorf("program %d should still be withheld by the latched circuit breaker", 22000+i)
+		}
+	}
+	if _, ok := getRulerDeletesBreaker(t, pool, ctx); !ok {
+		t.Error("circuit breaker should still be latched (GC does not touch it)")
+	}
+}
+
+// 受け入れ基準（M2-5 手動再開で収束）: ResumeCircuitBreaker で行を消すと、次の
+// パスで削除候補が閾値以下であれば実際に削除が実行され、収束する
+// （M2-5 の受け入れ条件「手動再開で収束すること」）。
+func TestRunPass_ResumeCircuitBreakerConverges(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	insertService(t, pool, ctx)
+	start := time.Now().Add(24 * time.Hour).Truncate(time.Second)
+
+	ruleID := insertRule(t, pool, ctx, "resume", 10)
+	insertRuleKeyword(t, pool, ctx, ruleID, "対象")
+
+	const n = 3
+	for i := range n {
+		insertProgram(t, pool, ctx, int64(23000+i), fmt.Sprintf("対象%d", i), start)
+	}
+
+	r := ruler.New([]string{testSite}, pool, &ruler.Config{MaxDeletesPerPass: 2})
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("initial RunPass: %v", err)
+	}
+
+	// 一斉 unmatch → 3 件 > 閾値 2 で発動。
+	if _, err := pool.Exec(ctx, `UPDATE rules SET enabled = false WHERE id = $1`, ruleID); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass (trip): %v", err)
+	}
+	for i := range n {
+		if !reservationExists(t, pool, ctx, int64(23000+i)) {
+			t.Fatalf("program %d should survive the initial trip", 23000+i)
+		}
+	}
+
+	// 手動確認の結果、1 件（23000）だけ record intent を足して残す運用判断をしたと
+	// 仮定する（実運用では detail を見て個別に intent/override を足す、または
+	// 閾値を上げる）。残り 2 件は依然として削除候補だが、これで候補数が
+	// 閾値（2）以下に収まる。
+	q := sqlcgen.New(pool)
+	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
+		Site: testSite, ProgramID: 23000, Action: db.IntentRecord,
+		ProgramStartAt: start, ProgramDurationMs: testDurationMs,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 再開前: ラッチはまだ効いているので、候補が減っても削除は起きない。
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass (still latched): %v", err)
+	}
+	for i := 1; i < n; i++ {
+		if !reservationExists(t, pool, ctx, int64(23000+i)) {
+			t.Fatalf("program %d should still be withheld before resume", 23000+i)
+		}
+	}
+
+	// 手動再開。
+	if _, err := q.ResumeCircuitBreaker(ctx, sqlcgen.ResumeCircuitBreakerParams{Site: testSite, Name: breaker.RulerDeletes}); err != nil {
+		t.Fatalf("ResumeCircuitBreaker: %v", err)
+	}
+	if _, ok := getRulerDeletesBreaker(t, pool, ctx); ok {
+		t.Fatal("circuit_breakers row should be gone after resume")
+	}
+
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass (after resume): %v", err)
+	}
+
+	// 収束: 23000 は intent により生存、23001/23002 は削除される。
+	if !reservationExists(t, pool, ctx, 23000) {
+		t.Error("program 23000 (has a record intent) should survive")
+	}
+	for i := 1; i < n; i++ {
+		if reservationExists(t, pool, ctx, int64(23000+i)) {
+			t.Errorf("program %d should be deleted after resume converges", 23000+i)
+		}
+	}
+	if _, ok := getRulerDeletesBreaker(t, pool, ctx); ok {
+		t.Error("circuit breaker should not re-trip: pending candidates (2) are at the threshold (2), not above it")
+	}
+}
+
+// 受け入れ基準 7（M2-5 ラッチ）: 発動中に候補数が閾値を超え続けても、tripped_at は
+// 最初の発動時刻のまま更新されない（「いつから止まっているか」が運用上の関心事。
+// TripCircuitBreaker の ON CONFLICT。docs/recording.md §3.2）。
+func TestRunPass_CircuitBreakerTrippedAtNotUpdatedOnRepeatedTrip(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	insertService(t, pool, ctx)
+	start := time.Now().Add(24 * time.Hour).Truncate(time.Second)
+
+	ruleID := insertRule(t, pool, ctx, "repeat-trip", 10)
+	insertRuleKeyword(t, pool, ctx, ruleID, "対象")
+
+	const n = 3
+	for i := range n {
+		insertProgram(t, pool, ctx, int64(24000+i), fmt.Sprintf("対象%d", i), start)
+	}
+
+	r := ruler.New([]string{testSite}, pool, &ruler.Config{MaxDeletesPerPass: 1})
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("initial RunPass: %v", err)
+	}
+
+	if _, err := pool.Exec(ctx, `UPDATE rules SET enabled = false WHERE id = $1`, ruleID); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass (first trip): %v", err)
+	}
+	first, ok := getRulerDeletesBreaker(t, pool, ctx)
+	if !ok {
+		t.Fatal("circuit breaker should be tripped")
+	}
+
+	// 候補は 3 件のまま（依然として閾値 1 を超え続ける）なので、次のパスでも
+	// Trip が呼ばれ直す。pending/detail は更新されてよいが、tripped_at は
+	// 据え置かれるはず。
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass (second trip, still over threshold): %v", err)
+	}
+	second, ok := getRulerDeletesBreaker(t, pool, ctx)
+	if !ok {
+		t.Fatal("circuit breaker should still be tripped")
+	}
+
+	if !first.TrippedAt.Equal(second.TrippedAt) {
+		t.Errorf("tripped_at changed on a repeated trip: %v -> %v", first.TrippedAt, second.TrippedAt)
+	}
+	for i := range n {
+		if !reservationExists(t, pool, ctx, int64(24000+i)) {
+			t.Errorf("program %d should still be withheld", 24000+i)
+		}
+	}
+}
+
+// 受け入れ基準（M2-5、EPGStation#692 の障害クラス）: 射影（epg_programs）が
+// 丸ごと消えると、ルールがマッチしなくなった番組は「凍結」
+// （stillProjectedSubset、docs/schema.md「射影にある間は更新、消えたら凍結」）されて
+// 削除候補にすらならない。これは大量削除サーキットブレーカーとは**別の防御**であり、
+// ブレーカーは一度も発動しない（凍結によって toDelete が空になるため）。
+//
+// TestRunPass_CircuitBreakerBlocksBulkDelete は射影が健全なままルールが無効化される
+// 別の障害モードを固定しており、そちらではブレーカーそのものが一斉削除を止めている。
+// 2 つのテストは別々の防御が別々の障害モードを見ていることを示す対になっている。
+func TestRunPass_FullEpgOutageFreezeStopsDeletesWithoutTrippingBreaker(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	insertService(t, pool, ctx)
+	start := time.Now().Add(24 * time.Hour).Truncate(time.Second)
+
+	ruleID := insertRule(t, pool, ctx, "epg-outage", 10)
+	insertRuleKeyword(t, pool, ctx, ruleID, "対象")
+
+	const n = 5
+	for i := range n {
+		insertProgram(t, pool, ctx, int64(25000+i), fmt.Sprintf("対象%d", i), start)
+	}
+
+	// 閾値をわざと小さくしておく: 理屈上はブレーカーが発動しうる状況でも、
+	// 凍結が先に効いて toDelete が空になるので発動しないことを示すため。
+	r := ruler.New([]string{testSite}, pool, &ruler.Config{MaxDeletesPerPass: 1})
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("initial RunPass: %v", err)
+	}
+	for i := range n {
+		if !reservationExists(t, pool, ctx, int64(25000+i)) {
+			t.Fatalf("program %d should have a reservation before the EPG outage", 25000+i)
+		}
+	}
+
+	// mirakc 再起動・再スキャン等による EPG 全欠損を模す。
+	deleteAllEpgPrograms(t, pool, ctx)
+
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass (EPG outage): %v", err)
+	}
+
+	for i := range n {
+		if !reservationExists(t, pool, ctx, int64(25000+i)) {
+			t.Errorf("program %d should survive as frozen, not deleted, during the EPG outage", 25000+i)
+		}
+	}
+	if _, ok := getRulerDeletesBreaker(t, pool, ctx); ok {
+		t.Error("circuit breaker should NOT trip — the freeze (stillProjectedSubset) already stopped the deletes before the breaker's threshold check")
 	}
 }

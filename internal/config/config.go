@@ -20,6 +20,7 @@ type Config struct {
 	Storage StorageConfig `yaml:"storage"`
 	Ingest  IngestConfig  `yaml:"ingest"`
 	Epg     EpgConfig     `yaml:"epg"`
+	Ruler   RulerConfig   `yaml:"ruler"`
 	Worker  WorkerConfig  `yaml:"worker"`
 	Encode  EncodeConfig  `yaml:"encode"`
 	Log     LogConfig     `yaml:"log"`
@@ -90,6 +91,16 @@ type EpgConfig struct {
 
 	// RetentionGrace は放送終了からこの時間が経った番組をローリングウィンドウから刈り取る。
 	RetentionGrace time.Duration `yaml:"retention_grace"`
+}
+
+// RulerConfig は ruler（ルール評価パス）の設定。
+type RulerConfig struct {
+	// MaxDeletesPerPass は 1 サイト・1 パスあたりの導出削除許容数（大量削除サーキット
+	// ブレーカーの閾値。internal/ruler.Config.MaxDeletesPerPass、docs/recording.md
+	// §3.2「大量削除サーキットブレーカー」）。超えたら削除を一切実行せず発動し、
+	// 手動で再開するまで止まり続ける（ラッチ。issue #24 M2-5）。
+	// 0 なら ruler 側の既定値（50）を使う。
+	MaxDeletesPerPass int `yaml:"max_deletes_per_pass"`
 }
 
 // WorkerConfig は worker ロールの River クライアント設定。

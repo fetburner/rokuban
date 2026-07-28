@@ -300,3 +300,42 @@ func (q *Queries) ListReservationProgramIDsBySite(ctx context.Context, site stri
 	}
 	return items, nil
 }
+
+const listReservationTitlesBySiteAndProgramIDs = `-- name: ListReservationTitlesBySiteAndProgramIDs :many
+SELECT program_id, title FROM reservations
+WHERE site = $1 AND program_id = ANY($2::bigint[])
+`
+
+type ListReservationTitlesBySiteAndProgramIDsParams struct {
+	Site       string
+	ProgramIds []int64
+}
+
+type ListReservationTitlesBySiteAndProgramIDsRow struct {
+	ProgramID int64
+	Title     string
+}
+
+// サーキットブレーカー（M2-5）発動時に breaker.Sample へ詰める「何を消そうとしていたか」の
+// タイトルスナップショットを引く。programId だけでは手動確認する人間が判断できないため
+// （breaker.SampleProgram.Title のコメント参照）。呼び出し側が対象を
+// breaker.MaxSampleSize 程度に絞ってから呼ぶ想定なので、ここでは LIMIT を掛けない。
+func (q *Queries) ListReservationTitlesBySiteAndProgramIDs(ctx context.Context, arg ListReservationTitlesBySiteAndProgramIDsParams) ([]ListReservationTitlesBySiteAndProgramIDsRow, error) {
+	rows, err := q.db.Query(ctx, listReservationTitlesBySiteAndProgramIDs, arg.Site, arg.ProgramIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListReservationTitlesBySiteAndProgramIDsRow
+	for rows.Next() {
+		var i ListReservationTitlesBySiteAndProgramIDsRow
+		if err := rows.Scan(&i.ProgramID, &i.Title); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
