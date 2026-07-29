@@ -83,6 +83,11 @@ type StorageConfig struct {
 // IngestConfig は ingest ジョブの設定。
 type IngestConfig struct {
 	Concurrency int `yaml:"concurrency"`
+
+	// StallTimeout は転送中の無進捗検知タイムアウト。進捗がこの時間止まると
+	// 切断扱いにして Range 再開する（River の総時間タイムアウトは無効化している
+	// ため、これが ingest の唯一のタイムアウト）。0 なら worker 側の既定値（30 秒）。
+	StallTimeout time.Duration `yaml:"stall_timeout"`
 }
 
 // EpgConfig は EPG プロジェクションの設定。
@@ -162,7 +167,8 @@ func defaults() Config {
 			ScratchDir: "/var/tmp/rokuban",
 		},
 		Ingest: IngestConfig{
-			Concurrency: 2,
+			Concurrency:  2,
+			StallTimeout: 30 * time.Second,
 		},
 		Epg: EpgConfig{
 			SyncInterval:   10 * time.Minute,

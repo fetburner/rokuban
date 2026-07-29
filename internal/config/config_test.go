@@ -57,6 +57,9 @@ func TestLoad_Minimal(t *testing.T) {
 	if cfg.Ingest.Concurrency != 2 {
 		t.Errorf("ingest.concurrency = %d, want %d", cfg.Ingest.Concurrency, 2)
 	}
+	if cfg.Ingest.StallTimeout != 30*time.Second {
+		t.Errorf("ingest.stall_timeout = %v, want %v", cfg.Ingest.StallTimeout, 30*time.Second)
+	}
 	if cfg.Epg.SyncInterval != 10*time.Minute {
 		t.Errorf("epg.sync_interval = %v, want %v", cfg.Epg.SyncInterval, 10*time.Minute)
 	}
@@ -222,6 +225,7 @@ storage:
   accel_location: /_media/
 ingest:
   concurrency: 4
+  stall_timeout: 2m
 epg:
   sync_interval: 30m
   retention_grace: 48h
@@ -272,6 +276,9 @@ log:
 	}
 	if cfg.Ingest.Concurrency != 4 {
 		t.Errorf("ingest.concurrency = %d, want %d", cfg.Ingest.Concurrency, 4)
+	}
+	if cfg.Ingest.StallTimeout != 2*time.Minute {
+		t.Errorf("ingest.stall_timeout = %v, want %v", cfg.Ingest.StallTimeout, 2*time.Minute)
 	}
 	if cfg.Epg.SyncInterval != 30*time.Minute {
 		t.Errorf("epg.sync_interval = %v, want %v", cfg.Epg.SyncInterval, 30*time.Minute)

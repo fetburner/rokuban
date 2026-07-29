@@ -95,6 +95,16 @@ func (w *IngestWorker) Timeout(*river.Job[IngestJobArgs]) time.Duration {
 	return -1
 }
 
+// resolveStallTimeout は設定された StallTimeout があればそれを、なければ既定の
+// 30 秒を返す。0 は「未設定」とみなし、ingest.stall_timeout を書かない構成でも
+// 既定で動くようにする。
+func (w *IngestWorker) resolveStallTimeout() time.Duration {
+	if w.StallTimeout == 0 {
+		return defaultStallTimeout
+	}
+	return w.StallTimeout
+}
+
 // Work は ingest ジョブを実行する。ストリーム取得・TS 統計収集・DB コミット・エッジ削除を行う。
 func (w *IngestWorker) Work(ctx context.Context, job *river.Job[IngestJobArgs]) error {
 	args := job.Args
@@ -107,10 +117,7 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[IngestJobArgs]) 
 		metrics.IngestJobs.WithLabelValues(result).Inc()
 	}()
 
-	stallTimeout := w.StallTimeout
-	if stallTimeout == 0 {
-		stallTimeout = defaultStallTimeout
-	}
+	stallTimeout := w.resolveStallTimeout()
 
 	recordingID, err := w.lookupRecordingID(ctx, args)
 	if err != nil {

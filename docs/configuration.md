@@ -53,6 +53,10 @@ storage:
 
 ingest:
   concurrency: 2                 # mirakc サイトあたり 1-2
+  stall_timeout: 30s             # 転送中の無進捗検知。この時間バイトが進まないと切断して
+                                 # Range 再開する。River の総時間タイムアウトは無効化している
+                                 # ため、これが ingest の唯一のタイムアウト（recording.md §5.3）。
+                                 # 遅い回線や大きな録画で誤爆する場合は延ばす
 
 epg:
   sync_interval: 10m             # mirakc から EPG を全量取得する間隔

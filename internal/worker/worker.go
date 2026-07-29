@@ -70,6 +70,12 @@ type Deps struct {
 	// （reconciler.start_delay_grace）。0 なら reconciler 側の既定値を使う
 	// （docs/recording.md §3.3「開始遅延検出器」）。
 	ReconcileStartDelayGrace time.Duration
+
+	// IngestStallTimeout は ingest の無進捗検知タイムアウト
+	// （ingest.stall_timeout）。0 なら IngestWorker 側の既定値（30 秒）を使う。
+	// River の総時間タイムアウトは無効化しているため、これが ingest の唯一の
+	// タイムアウトである（docs/recording.md §5.3「層 1」）。
+	IngestStallTimeout time.Duration
 }
 
 // NewWorkers は全ワーカーを登録した river.Workers を返す。
@@ -79,6 +85,7 @@ func NewWorkers(deps *Deps) *river.Workers {
 		MirakcClient: deps.MirakcClient,
 		Pool:         deps.Pool,
 		MediaDir:     deps.MediaDir,
+		StallTimeout: deps.IngestStallTimeout,
 	})
 	river.AddWorker(workers, &EpgSyncWorker{
 		MirakcClient:   deps.MirakcClient,

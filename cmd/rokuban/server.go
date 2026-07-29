@@ -157,6 +157,7 @@ func newServerCmd() *cobra.Command {
 					RulerRetentionGrace:      cfg.Epg.RetentionGrace,
 					RulerMaxDeletesPerPass:   cfg.Ruler.MaxDeletesPerPass,
 					ReconcileStartDelayGrace: cfg.Reconciler.StartDelayGrace,
+					IngestStallTimeout:       cfg.Ingest.StallTimeout,
 				})
 				clientCfg := worker.ClientConfig{
 					IngestConcurrency: cfg.Ingest.Concurrency,
