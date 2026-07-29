@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -26,6 +27,9 @@ import (
 
 // contentType は録画原本の Content-Type。mirakc の record stream と揃える。
 const contentType = "video/MP2T"
+
+// thumbnailContentType はサムネイル JPEG の Content-Type。
+const thumbnailContentType = "image/jpeg"
 
 // Config は Streamer の設定。
 type Config struct {
@@ -60,6 +64,12 @@ func (s *Streamer) Mount(r chi.Router) {
 	// Accept-Ranges を取るため、405 を返すとシーク再生に失敗しうる。
 	// http.ServeContent は HEAD ならヘッダーだけを書くので実装は共通でよい。
 	r.Head(path, s.RecordingFile)
+
+	// サムネイルは openapi に載せない（原本 /file と同じ理由。バイナリ配信で
+	// 生成クライアントが壊れる。issue #66 / docs/api.md）。
+	const thumbPath = "/api/recordings/{id}/thumbnail"
+	r.Get(thumbPath, s.RecordingThumbnail)
+	r.Head(thumbPath, s.RecordingThumbnail)
 }
 
 // RecordingFile は GET /api/recordings/{id}/file を処理する。
@@ -68,7 +78,7 @@ func (s *Streamer) Mount(r chi.Router) {
 // *os.File を渡しているので sendfile が効き、家庭内 LAN を飽和させる用途では
 // nginx を挟む必要がない（docs/api.md）。
 func (s *Streamer) RecordingFile(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	id, err := parseRecordingID(r)
 	if err != nil {
 		http.Error(w, "invalid recording id", http.StatusBadRequest)
 		return
@@ -85,12 +95,48 @@ func (s *Streamer) RecordingFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// rel_path は ingest 時に検証済みだが、配信側でも独立に検証する。
-	// DB に不正な行が入った場合に任意ファイルを読み出させないため。
-	path, err := mediapath.Resolve(s.cfg.MediaDir, asset.RelPath)
+	s.serveAsset(w, r, id, asset.RelPath, asset.SizeBytes, asset.UpdatedAt, contentType)
+}
+
+// RecordingThumbnail は GET /api/recordings/{id}/thumbnail を処理する。
+//
+// kind = 'thumbnail' の active アセットを JPEG で返す。未生成・ごみ箱は 404。
+// openapi には載せない（原本 /file と同じ。docs/api.md）。
+func (s *Streamer) RecordingThumbnail(w http.ResponseWriter, r *http.Request) {
+	id, err := parseRecordingID(r)
+	if err != nil {
+		http.Error(w, "invalid recording id", http.StatusBadRequest)
+		return
+	}
+
+	asset, err := sqlcgen.New(s.pool).GetThumbnailMediaAssetForServing(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			http.NotFound(w, r)
+			return
+		}
+		slog.Error("streamer: looking up thumbnail asset", "recording_id", id, "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	s.serveAsset(w, r, id, asset.RelPath, asset.SizeBytes, asset.UpdatedAt, thumbnailContentType)
+}
+
+func parseRecordingID(r *http.Request) (int64, error) {
+	return strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+}
+
+// serveAsset は rel_path のファイルを Content-Type 付きで配信する。
+// original / thumbnail で共通（Range と X-Accel-Redirect も同じ経路）。
+//
+// rel_path は ingest / thumbnail 時に検証済みだが、配信側でも独立に検証する。
+// DB に不正な行が入った場合に任意ファイルを読み出させないため。
+func (s *Streamer) serveAsset(w http.ResponseWriter, r *http.Request, recordingID int64, relPath string, sizeBytes int64, _ time.Time, contentTypeHeader string) {
+	path, err := mediapath.Resolve(s.cfg.MediaDir, relPath)
 	if err != nil {
 		slog.Error("streamer: rejecting rel_path outside the media directory",
-			"recording_id", id, "rel_path", asset.RelPath, "err", err)
+			"recording_id", recordingID, "rel_path", relPath, "err", err)
 		http.NotFound(w, r)
 		return
 	}
@@ -99,8 +145,8 @@ func (s *Streamer) RecordingFile(w http.ResponseWriter, r *http.Request) {
 	// リバースプロキシに委ねる。Range の扱いも nginx 側になる。
 	// パス検証を通した後に返すのが要点（検証前に返すと任意ファイルを配らせられる）。
 	if s.cfg.AccelLocation != "" {
-		w.Header().Set("Content-Type", contentType)
-		w.Header().Set("X-Accel-Redirect", accelURI(s.cfg.AccelLocation, asset.RelPath))
+		w.Header().Set("Content-Type", contentTypeHeader)
+		w.Header().Set("X-Accel-Redirect", accelURI(s.cfg.AccelLocation, relPath))
 		return
 	}
 
@@ -110,11 +156,11 @@ func (s *Streamer) RecordingFile(w http.ResponseWriter, r *http.Request) {
 		// 外部からの削除で起こりうるので、記録して 404 にする。
 		if errors.Is(err, os.ErrNotExist) {
 			slog.Warn("streamer: media asset row exists but the file is missing",
-				"recording_id", id, "rel_path", asset.RelPath)
+				"recording_id", recordingID, "rel_path", relPath)
 			http.NotFound(w, r)
 			return
 		}
-		slog.Error("streamer: opening media file", "recording_id", id, "err", err)
+		slog.Error("streamer: opening media file", "recording_id", recordingID, "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -122,30 +168,29 @@ func (s *Streamer) RecordingFile(w http.ResponseWriter, r *http.Request) {
 
 	info, err := f.Stat()
 	if err != nil {
-		slog.Error("streamer: stat media file", "recording_id", id, "err", err)
+		slog.Error("streamer: stat media file", "recording_id", recordingID, "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	if info.IsDir() {
 		slog.Error("streamer: rel_path points at a directory",
-			"recording_id", id, "rel_path", asset.RelPath)
+			"recording_id", recordingID, "rel_path", relPath)
 		http.NotFound(w, r)
 		return
 	}
 
-	// size_bytes は ingest 時に mirakc の Content-Length と照合した値。
-	// 実ファイルと違うならコミット後に改変・切り詰めが起きている。配信は続けるが
-	// （ユーザーは録画を見たい）不整合として記録する。
-	if info.Size() != asset.SizeBytes {
+	// size_bytes はコミット時に書いた値。実ファイルと違うならコミット後に
+	// 改変・切り詰めが起きている。配信は続けるが不整合として記録する。
+	if info.Size() != sizeBytes {
 		slog.Warn("streamer: file size differs from the committed size",
-			"recording_id", id, "rel_path", asset.RelPath,
-			"committed", asset.SizeBytes, "actual", info.Size())
+			"recording_id", recordingID, "rel_path", relPath,
+			"committed", sizeBytes, "actual", info.Size())
 	}
 
 	// ServeContent は name から Content-Type を推測しようとするので明示する。
-	w.Header().Set("Content-Type", contentType)
-	// 録画原本は一度書いたら変わらないが、ごみ箱からの復元などで同じ URL の
-	// 中身が入れ替わりうるので immutable は付けない。
+	w.Header().Set("Content-Type", contentTypeHeader)
+	// 一度書いたら変わらないが、ごみ箱からの復元などで同じ URL の中身が
+	// 入れ替わりうるので immutable は付けない。
 	w.Header().Set("Cache-Control", "private, max-age=0, must-revalidate")
 
 	// name は Content-Type 推測にしか使われない。上で明示済みなので空でよい。

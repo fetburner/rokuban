@@ -70,12 +70,27 @@ type GetActiveOriginalMediaAssetRow struct {
 	SizeBytes int64
 }
 
-// encode が読む原本（パスとサイズ）。active のみ。tombstone や未 commit は対象外。
+// encode / thumbnail が読む原本(パスとサイズ)。active のみ。tombstone や未 commit は対象外。
 func (q *Queries) GetActiveOriginalMediaAsset(ctx context.Context, recordingID int64) (GetActiveOriginalMediaAssetRow, error) {
 	row := q.db.QueryRow(ctx, getActiveOriginalMediaAsset, recordingID)
 	var i GetActiveOriginalMediaAssetRow
 	err := row.Scan(&i.ID, &i.RelPath, &i.SizeBytes)
 	return i, err
+}
+
+const getActiveThumbnailMediaAssetID = `-- name: GetActiveThumbnailMediaAssetID :one
+SELECT id FROM media_assets
+WHERE recording_id = $1
+  AND kind = 'thumbnail'
+  AND state = 'active'
+`
+
+// thumbnail の冪等性チェック用。active な thumbnail 行があれば id を返す。
+func (q *Queries) GetActiveThumbnailMediaAssetID(ctx context.Context, recordingID int64) (int64, error) {
+	row := q.db.QueryRow(ctx, getActiveThumbnailMediaAssetID, recordingID)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
 }
 
 const getOriginalMediaAssetForServing = `-- name: GetOriginalMediaAssetForServing :one
@@ -166,6 +181,38 @@ func (q *Queries) GetRecordingByID(ctx context.Context, id int64) (Recording, er
 	return i, err
 }
 
+const getThumbnailMediaAssetForServing = `-- name: GetThumbnailMediaAssetForServing :one
+SELECT a.id, a.rel_path, a.size_bytes, a.updated_at, r.title
+FROM media_assets a
+JOIN recordings r ON r.id = a.recording_id
+WHERE a.recording_id = $1
+  AND a.kind = 'thumbnail'
+  AND a.state = 'active'
+  AND r.deleted_at IS NULL
+`
+
+type GetThumbnailMediaAssetForServingRow struct {
+	ID        int64
+	RelPath   string
+	SizeBytes int64
+	UpdatedAt time.Time
+	Title     string
+}
+
+// 配信対象のサムネイルを引く。ごみ箱・削除済みは配らない（原本と同じ契約）。
+func (q *Queries) GetThumbnailMediaAssetForServing(ctx context.Context, recordingID int64) (GetThumbnailMediaAssetForServingRow, error) {
+	row := q.db.QueryRow(ctx, getThumbnailMediaAssetForServing, recordingID)
+	var i GetThumbnailMediaAssetForServingRow
+	err := row.Scan(
+		&i.ID,
+		&i.RelPath,
+		&i.SizeBytes,
+		&i.UpdatedAt,
+		&i.Title,
+	)
+	return i, err
+}
+
 const insertDropStat = `-- name: InsertDropStat :exec
 INSERT INTO drop_stats (media_asset_id, pid, packets, drops, errors, scrambled, pid_type)
 VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -194,6 +241,72 @@ func (q *Queries) InsertDropStat(ctx context.Context, arg InsertDropStatParams) 
 		arg.PidType,
 	)
 	return err
+}
+
+const insertMediaAssetIfAbsent = `-- name: InsertMediaAssetIfAbsent :one
+INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes)
+VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (recording_id, kind, profile) DO NOTHING
+RETURNING id
+`
+
+type InsertMediaAssetIfAbsentParams struct {
+	RecordingID int64
+	Kind        string
+	Profile     *string
+	RelPath     string
+	SizeBytes   int64
+}
+
+// thumbnail / encode の冪等 INSERT。UNIQUE (recording_id, kind, profile) で競合したら
+// 何もせず id も返さない（呼び出し側が pgx.ErrNoRows を「既にコミット済み」として扱う）。
+// 不変条件 3「コミット = DB 行」。書き手は worker のみ（docs/schema/recordings.md §6）。
+func (q *Queries) InsertMediaAssetIfAbsent(ctx context.Context, arg InsertMediaAssetIfAbsentParams) (int64, error) {
+	row := q.db.QueryRow(ctx, insertMediaAssetIfAbsent,
+		arg.RecordingID,
+		arg.Kind,
+		arg.Profile,
+		arg.RelPath,
+		arg.SizeBytes,
+	)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
+const listRecordingIDsMissingThumbnail = `-- name: ListRecordingIDsMissingThumbnail :many
+SELECT o.recording_id
+FROM media_assets o
+WHERE o.kind = 'original'
+  AND o.state = 'active'
+  AND NOT EXISTS (
+    SELECT 1 FROM media_assets t
+    WHERE t.recording_id = o.recording_id
+      AND t.kind = 'thumbnail'
+      AND t.state = 'active'
+  )
+`
+
+// レベルトリガー投入: original があり active thumbnail が無い recording_id。
+// thumbnail ジョブの desired − observed ギャップを埋める（issue #66）。
+func (q *Queries) ListRecordingIDsMissingThumbnail(ctx context.Context) ([]int64, error) {
+	rows, err := q.db.Query(ctx, listRecordingIDsMissingThumbnail)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []int64
+	for rows.Next() {
+		var recording_id int64
+		if err := rows.Scan(&recording_id); err != nil {
+			return nil, err
+		}
+		items = append(items, recording_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const upsertEncodedMediaAsset = `-- name: UpsertEncodedMediaAsset :one

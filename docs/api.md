@@ -189,8 +189,10 @@ Go の `http.ServeContent` は `*os.File` 相手なら sendfile が効き、Rang
 #### 実装（M1-8）
 
 ```
-GET  /api/recordings/{id}/file   →  video/MP2T（Range 対応）
-HEAD /api/recordings/{id}/file   →  ヘッダーのみ
+GET  /api/recordings/{id}/file        →  video/MP2T（Range 対応）
+HEAD /api/recordings/{id}/file        →  ヘッダーのみ
+GET  /api/recordings/{id}/thumbnail   →  image/jpeg（M3-4）
+HEAD /api/recordings/{id}/thumbnail   →  ヘッダーのみ
 ```
 
 **HEAD も登録する。** VLC やブラウザはシーク前に HEAD で `Content-Length` と
@@ -199,15 +201,17 @@ HEAD /api/recordings/{id}/file   →  ヘッダーのみ
 
 **OpenAPI には載せない。** SSE と同じ理由で、生成クライアントは JSON を前提にする
 （`customInstance` が `response.json()` を呼ぶ）ためバイナリ配信では誤った
-クライアントが生成される。UI は URL を `<video>` の src や保存リンクに直接使い、
-生成フックを経由しない。守るべきスキーマがないので生成物から得るものもない。
+クライアントが生成される。UI は URL を `<video>` の src や `<img>` の src、
+保存リンクに直接使い、生成フックを経由しない。守るべきスキーマがないので
+生成物から得るものもない。
 
 **`internal/streamer` の所有物として実装する。** api ロールはファイルシステムに
 依存しない（不変条件 1）ため、バイト転送はロールとして分ける。monolith では
 `api.RouterConfig.Mounter` 経由で同一リスナーに相乗りするが、コードの境界は
 最初から引いてある。`--roles streamer` を指定したときだけ登録される。
 
-**対象は原本（`kind = 'original'`）のみ。** エンコード派生物の配信は M3。
+**`/file` は原本（`kind = 'original'`）、`/thumbnail` はサムネイル
+（`kind = 'thumbnail'`）。** エンコード派生物の配信は M3-5。
 
 **`rel_path` は配信側でも独立に検証する。** `internal/mediapath.Resolve` を
 ingest と共有し、メディアディレクトリの外を指す `rel_path` は 404 にする。
