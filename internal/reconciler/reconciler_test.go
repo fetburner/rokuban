@@ -991,6 +991,62 @@ func TestReconciler_DetachedSkipReservationNotScheduled(t *testing.T) {
 	}
 }
 
+// getReservationState は現在の reservations.state を直接読む。setReservationState と
+// 対になるヘルパーで、markOrphaned が実際に state を書き換えたかを確認するために使う。
+func getReservationState(t *testing.T, ctx context.Context, pool *pgxpool.Pool, id int64) string {
+	t.Helper()
+	var state string
+	if err := pool.QueryRow(ctx, `SELECT state FROM reservations WHERE id = $1`, id).Scan(&state); err != nil {
+		t.Fatalf("reading reservation state: %v", err)
+	}
+	return state
+}
+
+// 回帰テスト: MarkReservationOrphaned が WHERE id = $1 AND state = 'active' で
+// 絞っていたため、detached の予約は番組終了後も orphaned にならなかった
+// （終了済みの schedule 無し予約が ListSyncableReservationsBySite に state <>
+// 'orphaned' として居座り続け、GC まで desired に残る／schedule が無いので
+// 毎パス createSchedule が終了済み番組へ空振りし続ける）。修正後は
+// state <> 'orphaned' で絞るので、active・detached のどちらの予約も
+// 番組終了 + schedule 観測なしで orphaned になることを確認する。
+func TestReconciler_MarksBothActiveAndDetachedReservationsOrphaned(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	mock := newMockMirakc()
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+
+	mc := mirakc.NewClient(srv.URL, nil)
+	q := sqlcgen.New(pool)
+
+	// 番組は既に終了しており（開始 -2h、30分番組）、mirakc に対応する schedule
+	// も無い（mockMirakc は空で始まる）状態を作る。
+	endedStartAt := time.Now().Add(-2 * time.Hour)
+
+	activeRes := createReservation(t, ctx, q, 100000500019210, "終了済みactive予約", endedStartAt)
+	// createReservation は state='active' で作る想定なのでそのまま使う。
+
+	detachedRes := createReservation(t, ctx, q, 100000500019211, "終了済みdetached予約", endedStartAt)
+	setReservationState(t, ctx, pool, detachedRes.ID, db.ReservationStateDetached)
+
+	rec := reconciler.New("default", mc, pool, nil)
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
+
+	if got := getReservationState(t, ctx, pool, activeRes.ID); got != db.ReservationStateOrphaned {
+		t.Errorf("active reservation state = %q, want %q (ended program with no observed schedule must become orphaned)",
+			got, db.ReservationStateOrphaned)
+	}
+	if got := getReservationState(t, ctx, pool, detachedRes.ID); got != db.ReservationStateOrphaned {
+		t.Errorf("detached reservation state = %q, want %q "+
+			"(detached must not be excluded from orphaning — this was the bug: "+
+			"MarkReservationOrphaned only matched state = 'active')",
+			got, db.ReservationStateOrphaned)
+	}
+}
+
 // --- 全損シグネチャ・サーキットブレーカー（breaker.ReconcileTotalLoss、issue #24 M2-5）---
 //
 // 件数ベースの MaxDeletesPerPass は撤去した（reconciler からは ruler の導出削除・

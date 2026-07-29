@@ -132,7 +132,10 @@ func TestGetProgramOverlaps_ExcludesOrphaned(t *testing.T) {
 
 	orphaned := reserveViaAPI(t, srv.URL, 231, "orphan になる番組", base.Add(30*time.Minute), testProgramDuration.Milliseconds())
 
-	if err := sqlcgen.New(pool).MarkReservationOrphaned(ctx, orphaned.Id); err != nil {
+	// MarkReservationOrphaned は :execrows になった（internal/reconciler の
+	// markOrphaned が実際に更新できた行数をログ出力の可否に使うため）。
+	// この呼び出しは常に対象行があるので rows は捨てて良い。
+	if _, err := sqlcgen.New(pool).MarkReservationOrphaned(ctx, orphaned.Id); err != nil {
 		t.Fatalf("marking reservation orphaned: %v", err)
 	}
 

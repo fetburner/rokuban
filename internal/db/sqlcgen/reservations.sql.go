@@ -338,13 +338,27 @@ func (q *Queries) LockReservation(ctx context.Context, id int64) (int64, error) 
 	return id_2, err
 }
 
-const markReservationOrphaned = `-- name: MarkReservationOrphaned :exec
+const markReservationOrphaned = `-- name: MarkReservationOrphaned :execrows
 UPDATE reservations
 SET state = 'orphaned', updated_at = now()
-WHERE id = $1 AND state = 'active'
+WHERE id = $1 AND state <> 'orphaned'
 `
 
-func (q *Queries) MarkReservationOrphaned(ctx context.Context, id int64) error {
-	_, err := q.db.Exec(ctx, markReservationOrphaned, id)
-	return err
+// 番組終了後に schedule が観測されなかった予約を orphaned にする
+// （reconciler.markOrphaned から呼ばれる）。state = 'active' でしか絞らないと
+// detached の予約が対象から漏れる。docs/schema.md §3「state を『mirakc への
+// 同期対象か』のフィルタに使ってはならない」と同じクラスの誤りで、detached は
+// 「実質 manual として動く」状態（ListSyncableReservationsBySite のコメント
+// 参照）であり、番組が終了して orphaned 化する対象から外れる理由がない。
+// 除外してよいのは既に orphaned な行への再更新だけ（updated_at を無駄に
+// 進めない）なので active/detached の両方を対象にする。
+// :execrows にしてあるのは、呼び出し側（reconciler.markOrphaned）が「実際に
+// 更新できたか」をログ出力の可否に使うため（0 行のときに「marked orphaned」と
+// ログに出ると実態と食い違う）。
+func (q *Queries) MarkReservationOrphaned(ctx context.Context, id int64) (int64, error) {
+	result, err := q.db.Exec(ctx, markReservationOrphaned, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

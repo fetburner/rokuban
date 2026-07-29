@@ -69,10 +69,21 @@ DELETE FROM reservations WHERE id = $1;
 -- name: DeleteReservationBySiteAndProgramID :execrows
 DELETE FROM reservations WHERE site = $1 AND program_id = $2;
 
--- name: MarkReservationOrphaned :exec
+-- 番組終了後に schedule が観測されなかった予約を orphaned にする
+-- （reconciler.markOrphaned から呼ばれる）。state = 'active' でしか絞らないと
+-- detached の予約が対象から漏れる。docs/schema.md §3「state を『mirakc への
+-- 同期対象か』のフィルタに使ってはならない」と同じクラスの誤りで、detached は
+-- 「実質 manual として動く」状態（ListSyncableReservationsBySite のコメント
+-- 参照）であり、番組が終了して orphaned 化する対象から外れる理由がない。
+-- 除外してよいのは既に orphaned な行への再更新だけ（updated_at を無駄に
+-- 進めない）なので active/detached の両方を対象にする。
+-- :execrows にしてあるのは、呼び出し側（reconciler.markOrphaned）が「実際に
+-- 更新できたか」をログ出力の可否に使うため（0 行のときに「marked orphaned」と
+-- ログに出ると実態と食い違う）。
+-- name: MarkReservationOrphaned :execrows
 UPDATE reservations
 SET state = 'orphaned', updated_at = now()
-WHERE id = $1 AND state = 'active';
+WHERE id = $1 AND state <> 'orphaned';
 
 -- 番組終了後の GC（issue #24 の M2-3、docs/schema.md §3「行の物理削除（GC）は
 -- 「番組の終了時刻を過ぎた後」のみ」）。state を問わず（active/detached/orphaned
