@@ -529,6 +529,8 @@ EPG の変化・ルール編集でルールがマッチしなくなったとき:
 
 導出値を「同期対象か」のフィルタとして使ったのが誤りだった。`active` / `detached` は UI 表示（マーカー）のための派生値として扱う。
 
+> **この式も実装では満たされていない**（[#30](https://github.com/fetburner/rokuban/issues/30)。§4.2 の `EffectiveOptions` と同じ現象）。`internal/ruler/sql.go` は式を評価せず、**前パスの `rule_id` を見た遷移**を列に書いている。そのためルールを**編集**して外れた場合は `detached` になるが、ルールを**削除**した場合は FK の `ON DELETE SET NULL` が先に `rule_id` を落とすので `active` のまま固定される —— 同じ「マッチしなくなった」状態が原因によって違う `state` になる。あわせて `MarkReservationOrphaned` に `AND state = 'active'` が残っており、**detached 予約は永久に `orphaned` にならない**（M2-4 では `listDesired` 側だけを直した）。**導出は読むたびに評価する。列に焼くと片側の分岐しか持たない。**
+
 重要: **skip のみでも削除しない**。削除すると「EPG の一時不整合で番組消失 → skip ごと行削除 → EPG 回復 → ruler が新規生成 → 除外が外れている」という EPGStation の症状 2 が EPG フリッカー経由で再発する。
 
 - **再アタッチ**: ルールが再マッチしたら base を再計算して再アタッチ（overrides はそのまま）。EPG がちらついても除外は生き残る

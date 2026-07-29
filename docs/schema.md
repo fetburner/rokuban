@@ -2,7 +2,11 @@
 
 M1-2（issue #13）の成果物。設計根拠は issue #2（base/overrides 分離）、#3（desired/observed 分離・EPG プロジェクション）、#4（削除エンジン・保持ポリシー）、および [データ層](data.md)・[メディアストレージ](storage.md)。
 
-**このスキーマは最終形で切る**（#6 の注意事項）。M1 で使わない列（エンコードプロファイル、保持ポリシー等）も、後続マイルストーンでのスキーマ churn を避けるため v1 に含める。
+**「最終形で切る」（#6 の注意事項）の対象は永続資産に限る。** M1 で使わない列（エンコードプロファイル、保持ポリシー等）も、後続マイルストーンでのスキーマ churn を避けるため v1 に含める —— ただしこれは `recordings` / `media_assets` / `drop_stats` / `rules` の話である。
+
+> **M2 完了後の訂正。** 当初この方針を導出テーブルにも適用したが、逆効果だった。`reservations` は「churn を避けるため」に ruler / reconciler が存在しない時点で列を決めた結果、`00006` / `00008` / `00009` / `00012` / `00013` の**5 本で変更された**（`source` 削除・`overrides` を 2 回移設・チャンネル列追加・dedup 列追加）。一方、本当に最終形で切る価値がある永続資産はほぼ無傷である（変更は `pid_type` 追加 1 件）。
+>
+> churn のコストが非対称だからである。永続資産のマイグレーションはデータ移行を伴って危険だが、**導出テーブルは再構築できるので churn がほぼ無害**（`00008` / `00010` / `00012` はいずれも Down が片道であることを許容して通っている）。導出テーブル（`reservations` / `schedule_sync` / `record_sync` / 射影）の列は、**それを書くコードと同じ PR で決める**（[CLAUDE.md](../CLAUDE.md) 不変条件 11）。
 
 ## 1. 設計原則
 
@@ -20,10 +24,12 @@ M1-2（issue #13）の成果物。設計根拠は issue #2（base/overrides 分�
    - `site` は設定ファイルで定義するサイト名（text）。サイトのレジストリは設定であり、DB に sites テーブルは作らない
    - M1 では設定が単一 `mirakc:` なので全行が同一サイト名になる。`mirakcs:` リスト対応は設定とアプリの変更のみで、マイグレーション不要
    - site を持つのは reservations / schedule_sync / record_sync / recordings（+ M1-6 の EPG プロジェクション）。media_assets / drop_stats は中央ストレージの台帳なので持たない
+   - **ただし「マイグレーション不要」は利益を過大に見せている**（[#31](https://github.com/fetburner/rokuban/issues/31)）。`site` の値は設定由来ですらなく `db.DefaultSite = "default"` のハードコードで、API には site の次元が無い（`openapi.yaml` が 2 箇所で自認）。`programId` は site スコープなので、多拠点化で本当に壊れるのは **API の資源同定とクライアントのキャッシュキー**の方であり、そこは未払いである。原則 10 の「先払いは高い方から」に反しているので、`#29`（意図の宛先変更）に着手する前に方針を決める
 6. **導出値と不可逆な事実を分ける**（CLAUDE.md 不変条件 9。M2-4 / M2-5 で同じ歪みを 3 回踏んで言語化した）
    - 毎パス再計算される値と、二度と再取得できない事実を 1 つの列に同居させると**導出側が事実を上書きする**
    - `program_intents.action`（#18）・`reservations.source`（#26）・`reservations.state`（M2-4）が実例。いずれも実害が出た
    - 新しい列を足すときは「毎パス作り直せるか」を問う。作り直せるなら列にせず導出する
+   - **混同は列だけでなく identity と式にも起きる。** 導出物の id を API の宛先にすると書ける意図が導出側の状態に依存する（[#29](https://github.com/fetburner/rokuban/issues/29)）。導出を式で書いても実装が列に「遷移」を保存すると片側の分岐しか持たない（[#30](https://github.com/fetburner/rokuban/issues/30)）
    - 例外は **`circuit_breakers`**（§3.6）。「誰かが確認した」は再取得できないので、このスキーマで唯一の意図的な非導出状態
 7. **意味を持たない行を作らない**（CLAUDE.md 不変条件 10）
    - **行の存在そのものを主張として使う**。空の上書きは「行が無い」（`program_overrides`）、停止していないブレーカーは「行が無い」（`circuit_breakers`）
@@ -37,6 +43,15 @@ M1-2（issue #13）の成果物。設計根拠は issue #2（base/overrides 分�
    - **jsonb を許すのは「そのテーブル自身のロジックが中身を一切使わない不透明なペイロード」のときだけ**（[録画エンジン](recording.md) §4.2「jsonb を許す条件」）。内容でクエリするなら型付き列
    - 不透明なペイロードには**内容を検査する CHECK も置かない**。「クエリはしないが制約はする」という中途半端な状態を作らない。同じ理由でマージも SQL（`||` / `- keys`）ではなく Go 側で型付きに行う
    - **PostgreSQL 15 以上**を前提とする（`UNIQUE NULLS NOT DISTINCT` が 15 で導入）
+9. **表は行の寿命で割る**（[CLAUDE.md](../CLAUDE.md) 不変条件 12。M2 完了後のレビューで言語化）
+   - **1 表 = 1 つの書き手 = 1 つの寿命。** 原則 6 は列の粒度なので、行に寿命が混ざるケースを網に掛けられない
+   - `reservations` の 1 行には ①ruler の導出出力（寿命 = 1 パス）②番組の事実のスナップショット（寿命 = 放送。§3.5 のとおり 3 表に重複しドリフト中。[#27](https://github.com/fetburner/rokuban/issues/27)）③不可逆な観測（`state = 'orphaned'`。[#28](https://github.com/fetburner/rokuban/issues/28) / [#30](https://github.com/fetburner/rokuban/issues/30)）が同居している
+   - ユーザー意図を導出行から出したのは正しかったが、分割の軸を「予約という概念」に取ったので 2 回に分かれた（#18 → M2-4）。軸を寿命に取れば 1 回で済んだ
+   - 新しい列を足すときは「**この値はこの行と同時に生まれて同時に死ぬか**」を問う。違えば `(site, program_id)` を主キーにした別表にする
+10. **形を固定する前に、その形を決める判定基準を書く**（[CLAUDE.md](../CLAUDE.md) 不変条件 11）
+    - このドキュメント冒頭の「最終形で切る」の訂正がその実例。判定基準（原則 6 / 7）が M2-4 / M2-5 の後に来たので、それまでに固めた `reservations` の列が 5 回変更された
+    - 導出テーブルの列は**書き手のコードと同じ PR で決める**。新しい列を足すときは「これを書くコードは今あるか」を問う
+    - 将来への先払いは**高い方から**。`site` 列は安い方（DB）を先払いして高い方（API の資源同定）が未払いのままで、利益が担保されていない（原則 5 の訂正。[#31](https://github.com/fetburner/rokuban/issues/31)）
 
 ## 2. 全体図
 
@@ -177,6 +192,8 @@ schedule が作られず、**手動予約 → たまたまルールがマッチ 
 `orphaned` の意味は「EPG から消えた」ではない。M1 の実装（`reconciler.markOrphaned`）は
 **番組終了後に schedule が観測されなかった予約**を marking しており、EPG の欠損とは無関係。
 EPG フリッカー対策（issue #2 §3.2）は別の機構（大量削除サーキットブレーカー）が担う。
+
+> **列を残したことで 2 件が再発した**（[#30](https://github.com/fetburner/rokuban/issues/30)）。①ruler は導出の式ではなく**前パスの `rule_id` を見た遷移**を書くので、ルールを**削除**した経路（FK の `ON DELETE SET NULL` が先に `rule_id` を落とす）では `detached` にならず、`DELETE /api/rules/{id}` が返す `detachedReservations` の件数と予約一覧のバッジが一致しない。②`MarkReservationOrphaned` に `AND state = 'active'` が残っているため、**detached 予約は永久に `orphaned` にならない**（M2-4 では `listDesired` 側だけを直した）。どちらも `active` / `detached` を列から外せば消える。
 
 この意味論のため、`orphaned` は `epg_last_seen_at` のようなタイムスタンプからは導出できない
 （「schedule が観測されなかった」という観測側の情報が必要）。状態機械を導出に寄せる案

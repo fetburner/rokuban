@@ -30,6 +30,7 @@
 
 - API パスは常に**相対パス `/api/*`** を使用する。CDN / リバースプロキシ構成で CORS 不要・実行時コンフィグ注入不要とするため
 - 絶対 URL の生成は単一のビルダーに一元化し、`X-Forwarded-Prefix` ないし `public_url` 設定を尊重する（EPGStation#694 の教訓）
+- **site を資源同定に含めるかは未決**（[#31](https://github.com/fetburner/rokuban/issues/31)）。現状パスに site は無く、`db.DefaultSite` のハードコードで単一サイトを前提にしている。ところが `programId` は site スコープ（[スキーマ](schema.md) §1-5）なので、`/api/programs/{programId}` 系は多拠点化した瞬間に意味が定まらない。DB 側には全表に `site` 列があるが、**多拠点化で本当に壊れるのは API のパス構造とクライアントのクエリキー**で、そこが未払いである。宛先を触る変更（[#29](https://github.com/fetburner/rokuban/issues/29)）と同時に決める
 
 ### EPG の読み取り（M1-6 / M1-7）
 
