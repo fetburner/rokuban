@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -11,6 +12,7 @@ import (
 	"sort"
 	"time"
 
+	pgx5 "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 
@@ -26,6 +28,13 @@ const (
 	defaultStallTimeout = 30 * time.Second
 	maxInJobRetries     = 5
 	ingestQueue         = "ingest"
+
+	// connectRetryBaseDelay / connectRetryMaxDelay は StreamRecord への接続が
+	// 失敗したときの指数バックオフの下限・上限。mirakc が即座に refuse する状況
+	// （再起動直後など）で 6 回のリトライを一瞬で使い切らないようにする。
+	// 転送中断（Range 再開）側は stallReader が既に間を置くのでバックオフ不要。
+	connectRetryBaseDelay = 200 * time.Millisecond
+	connectRetryMaxDelay  = 5 * time.Second
 )
 
 // IngestJobArgs は ingest ジョブの引数。mirakc サイトと record ID を指定する。
@@ -108,6 +117,33 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[IngestJobArgs]) 
 		return fmt.Errorf("looking up recording_id: %w", err)
 	}
 
+	// 冪等性チェック：この recording_id の original media_asset が既にコミット
+	// 済みなら転送をやり直さない。エッジ record の削除（下の DeleteRecord）は
+	// 失敗してもログのみで ingest 成功扱いにしている（意図的）ため、mirakc 側に
+	// record が残ったまま 5 分後の record_sweep → watcher.processRecord
+	// （status=finished）経由で同じ record の ingest ジョブが再投入されうる。
+	// pendingJobStates の UniqueOpts は completed を除外するのでこの再投入は
+	// 止まらない。ここで止めないと os.Create がコミット済みファイルを 0
+	// バイトに切り詰めて全量を再ダウンロードし、streamer は不変条件 3
+	// （コミット = DB 行）で既にコミット済みの録画に対して欠けたファイルを
+	// 配ることになる。
+	alreadyCommitted, err := w.hasOriginalMediaAsset(ctx, recordingID)
+	if err != nil {
+		return fmt.Errorf("checking existing media_asset: %w", err)
+	}
+	if alreadyCommitted {
+		log.Info("ingest: media_asset already committed, skipping transfer", "recording_id", recordingID)
+		// 転送は行っていないが、DB からは成功と区別が付かない状態なので
+		// メトリクスも成功として数える。ここでの唯一の残り仕事はエッジ
+		// record の削除（下記）の再試行であり、それが完了すれば ingest の
+		// 目的（コミット済み・record 削除済み）は満たされている。
+		result = "success"
+		if _, err := w.MirakcClient.DeleteRecord(ctx, args.RecordID, true); err != nil {
+			log.Error("ingest: failed to delete edge record (already committed)", "err", err)
+		}
+		return nil
+	}
+
 	relPath, fullPath, err := w.determineRelPath(ctx, args)
 	if err != nil {
 		return fmt.Errorf("determining rel_path: %w", err)
@@ -138,7 +174,13 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[IngestJobArgs]) 
 			if attempt >= maxInJobRetries {
 				return fmt.Errorf("streaming record (attempt %d): %w", attempt, err)
 			}
-			log.Warn("ingest: stream connect failed, retrying", "attempt", attempt, "err", err)
+			delay := connectRetryDelay(attempt)
+			log.Warn("ingest: stream connect failed, retrying", "attempt", attempt, "err", err, "delay", delay)
+			select {
+			case <-time.After(delay):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 			continue
 		}
 
@@ -204,6 +246,30 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[IngestJobArgs]) 
 	}
 
 	return nil
+}
+
+// connectRetryDelay は StreamRecord への接続リトライの待ち時間を指数バックオフで返す。
+// attempt は 0 始まり。connectRetryMaxDelay で頭打ちにする。
+func connectRetryDelay(attempt int) time.Duration {
+	delay := connectRetryBaseDelay << attempt
+	if delay > connectRetryMaxDelay || delay <= 0 {
+		return connectRetryMaxDelay
+	}
+	return delay
+}
+
+// hasOriginalMediaAsset は recordingID に対する kind='original' の media_asset
+// 行が既に存在するかを返す。ingest の冪等性チェックに使う（Work 参照）。
+func (w *IngestWorker) hasOriginalMediaAsset(ctx context.Context, recordingID int64) (bool, error) {
+	q := sqlcgen.New(w.Pool)
+	_, err := q.GetOriginalMediaAssetID(ctx, recordingID)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, pgx5.ErrNoRows) {
+		return false, nil
+	}
+	return false, fmt.Errorf("querying media_assets: %w", err)
 }
 
 func (w *IngestWorker) lookupRecordingID(ctx context.Context, args IngestJobArgs) (int64, error) {

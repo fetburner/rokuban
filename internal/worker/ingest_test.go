@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -512,6 +513,138 @@ func TestIngestWorker_JobReexecution(t *testing.T) {
 	}
 	if string(data[:4]) != string(tsData[:4]) {
 		t.Error("file content does not match expected TS data (truncate may have failed)")
+	}
+}
+
+// TestIngestWorker_SkipsTransferWhenAlreadyCommitted は、エッジ record の削除
+// （DeleteRecord）が失敗して mirakc 側に record が残り、同じジョブ引数で
+// Work が再実行された（record_sweep 経由の再投入を模している）場合の挙動を
+// 確認する。修正前は 2 回目の Work が os.Create でコミット済みファイルを
+// 0 バイトに切り詰めて全量を再転送し、最後に media_assets の unique 制約
+// 違反でエラーになっていた。
+func TestIngestWorker_SkipsTransferWhenAlreadyCommitted(t *testing.T) {
+	tsData := makeTSData(50)
+
+	var streamRequests atomic.Int32
+	var deleteAttempts atomic.Int32
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
+			streamRequests.Add(1)
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsData)))
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(tsData)
+
+		case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsData)))
+			w.WriteHeader(http.StatusOK)
+
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
+			record := mirakc.Record{
+				Recording: mirakc.RecordInfo{
+					Options: mirakc.Options{ContentPath: strPtr("test/reingest.m2ts")},
+				},
+				Content: mirakc.ContentInfo{Path: "/recording/test/reingest.m2ts"},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(record)
+
+		case r.Method == http.MethodDelete:
+			attempt := deleteAttempts.Add(1)
+			if attempt == 1 {
+				// エッジ record の削除が最初に失敗するのを再現する。
+				// ingest 自体はコミット済みなのでこの失敗はログのみで success 扱い
+				// （既存の意図的な挙動）だが、mirakc 側には record が残る。
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
+			result := mirakc.RecordRemovalResult{RecordRemoved: true, ContentRemoved: true}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(result)
+
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	mediaDir := t.TempDir()
+	mc := mirakc.NewClient(srv.URL, nil)
+
+	w := &IngestWorker{
+		MirakcClient: mc,
+		MediaDir:     mediaDir,
+		StallTimeout: 5 * time.Second,
+	}
+
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	w.Pool = pool
+
+	recordingID := insertTestRecording(t, pool)
+	insertTestRecordSync(t, pool, recordingID, "rec-reingest")
+
+	job := &river.Job[IngestJobArgs]{
+		JobRow: &rivertype.JobRow{},
+		Args:   IngestJobArgs{Site: "default", RecordID: "rec-reingest"},
+	}
+
+	// 1 回目: 転送・コミットは成功するが、DeleteRecord は失敗する。
+	if err := w.Work(context.Background(), job); err != nil {
+		t.Fatalf("first Work() error: %v", err)
+	}
+
+	fullPath := filepath.Join(mediaDir, "test", "reingest.m2ts")
+	firstData, err := os.ReadFile(fullPath)
+	if err != nil {
+		t.Fatalf("reading output file after first Work(): %v", err)
+	}
+	if len(firstData) != len(tsData) {
+		t.Fatalf("file size after first Work() = %d, want %d", len(firstData), len(tsData))
+	}
+
+	// record_sweep が「まだ mirakc に record がある」ことを検知して同じジョブ引数を
+	// 再投入したのと同じ状況を、同じ job で Work をもう一度呼ぶことで再現する。
+	if err := w.Work(context.Background(), job); err != nil {
+		t.Fatalf("second Work() error: %v", err) // (a)
+	}
+
+	secondData, err := os.ReadFile(fullPath)
+	if err != nil {
+		t.Fatalf("reading output file after second Work(): %v", err)
+	}
+	if len(secondData) != len(tsData) {
+		// (c) ファイルが切り詰められていない
+		t.Errorf("file size after second Work() = %d, want %d (file must not be truncated)",
+			len(secondData), len(tsData))
+	}
+	if !bytes.Equal(secondData, firstData) {
+		t.Error("file content changed after second Work() (transfer should have been skipped)")
+	}
+
+	if got := streamRequests.Load(); got != 1 {
+		t.Errorf("stream requests = %d, want 1 (second Work() must skip the transfer entirely)", got)
+	}
+
+	var mediaAssetCount int
+	if err := pool.QueryRow(context.Background(),
+		"SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingID,
+	).Scan(&mediaAssetCount); err != nil {
+		t.Fatalf("counting media_assets: %v", err)
+	}
+	if mediaAssetCount != 1 {
+		// (b) media_assets が 1 行のまま
+		t.Errorf("media_assets rows = %d, want 1", mediaAssetCount)
+	}
+
+	if got := deleteAttempts.Load(); got != 2 {
+		// (d) 2 回目でも DeleteRecord が再試行されている
+		t.Errorf("delete attempts = %d, want 2 (edge record deletion must be retried)", got)
 	}
 }
 

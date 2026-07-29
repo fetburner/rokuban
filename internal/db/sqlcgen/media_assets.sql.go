@@ -69,6 +69,22 @@ func (q *Queries) GetOriginalMediaAssetForServing(ctx context.Context, recording
 	return i, err
 }
 
+const getOriginalMediaAssetID = `-- name: GetOriginalMediaAssetID :one
+SELECT id FROM media_assets
+WHERE recording_id = $1 AND kind = 'original'
+`
+
+// ingest の冪等性チェック用。worker/ingest.go の Work は転送を始める前にこれで
+// 「この recording_id の original はもうコミット済みか」を確認する
+// （不変条件 3「コミット = DB 行」。行が無ければまだコミットされていない）。
+// 該当行が無ければ pgx.ErrNoRows を返す。
+func (q *Queries) GetOriginalMediaAssetID(ctx context.Context, recordingID int64) (int64, error) {
+	row := q.db.QueryRow(ctx, getOriginalMediaAssetID, recordingID)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
 const getRecordingByID = `-- name: GetRecordingByID :one
 SELECT id, reservation_id, rule_id, source, site,
        network_id, service_id, event_id, service_name,
