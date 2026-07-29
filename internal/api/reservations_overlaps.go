@@ -59,7 +59,7 @@ func (h *Server) GetProgramOverlaps(ctx context.Context, req GetProgramOverlapsR
 		if err != nil {
 			return nil, fmt.Errorf("resolving effective options for reservation %d: %w", row.Reservation.ID, err)
 		}
-		if eff.Skip != nil && *eff.Skip {
+		if eff.IsSkipped() {
 			continue
 		}
 		overlaps = append(overlaps, OverlappingReservation{

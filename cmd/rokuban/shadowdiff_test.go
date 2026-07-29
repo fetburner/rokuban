@@ -51,14 +51,13 @@ func TestRunShadowDiff_EndToEnd(t *testing.T) {
 	}
 	// programId=5 は base.skip = true（M2-6 の重複排除が立てる想定）を持つ予約。
 	// ruler は base だけを書き reservations 行自体は削除しない設計なので、この
-	// 行は ListSyncableReservationsBySite（state <> 'orphaned'）に残り続ける。
+	// 行は ListReservationsForSyncEvaluation（state <> 'orphaned'）に残り続ける。
 	// reconciler.listDesired が effective.skip として除外して mirakc に同期しない
 	// （＝ Rokuban は実際には録らない）のと同じ判定を runShadowDiff もしないと、
 	// EPGStation 側に対応する予約があるとき Both（一致）に誤分類されてしまう
-	// （見逃しを「一致」だと言い張る、shadow-diff にとって最悪の壊れ方）。
-	// ruler パッケージには触れず、reservations.base を直接書き換えて模す
-	// （internal/reconciler/reconciler_test.go の setReservationState と同じ、
-	// 生 SQL で状態を固定するパターン）。
+	// （見逃しを「一致」だと言い張る、shadow-diff にとって最悪の壊れ方。issue #54
+	// の回帰テスト本体）。ruler パッケージには触れず、reservations.base を
+	// 直接書き換えて模す（生 SQL で状態を固定するパターン）。
 	res5, err := q.CreateManualReservation(ctx, sqlcgen.CreateManualReservationParams{
 		Site: db.DefaultSite, ProgramID: 5, Title: "重複排除された番組",
 		ProgramStartAt: start.Add(5 * time.Hour), ProgramDurationMs: 1800000,

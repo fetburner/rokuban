@@ -59,7 +59,7 @@ type ListCapacityDemandRow struct {
 //     物理チャンネルが分からないので需要に数えられない。数えない側に倒すのは、
 //     既知の盲点をすべて「警告を見逃す」方向に揃えるため（docs/data.md §6.5）
 //   - `effective.skip` は jsonb のマージが要るので Go 側（db.EffectiveOptions）で
-//     判定する。ListOverlappingReservations / ListSyncableReservationsBySite と同じ分担
+//     判定する。ListOverlappingReservations / ListReservationsForSyncEvaluation と同じ分担
 //
 // 地平線（8 日）で切らずに全件返す。予約集合はローリングウィンドウ（ruler の GC）で
 // 既に有界であり、docs/data.md §6.5 は「窓ごとに解かず地平線全体を 1 回解く」を

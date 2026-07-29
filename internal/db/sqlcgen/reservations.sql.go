@@ -261,7 +261,7 @@ func (q *Queries) ListReservationsBySite(ctx context.Context, site string) ([]Li
 	return items, nil
 }
 
-const listSyncableReservationsBySite = `-- name: ListSyncableReservationsBySite :many
+const listReservationsForSyncEvaluation = `-- name: ListReservationsForSyncEvaluation :many
 SELECT r.id, r.site, r.program_id, r.rule_id, r.state, r.base, r.title, r.program_start_at, r.program_duration_ms, r.created_at, r.updated_at, r.network_id, r.service_id, r.channel_type, r.channel, r.dedup_match_recording_id, r.dedup_similarity, i.action AS intent_action, o.overrides AS overrides
 FROM reservations r
 LEFT JOIN program_intents i ON i.site = r.site AND i.program_id = r.program_id
@@ -270,28 +270,39 @@ WHERE r.site = $1 AND r.state <> 'orphaned'
 ORDER BY r.program_start_at
 `
 
-type ListSyncableReservationsBySiteRow struct {
+type ListReservationsForSyncEvaluationRow struct {
 	Reservation  Reservation
 	IntentAction *string
 	Overrides    json.RawMessage
 }
 
-// reconciler が mirakc へ同期する対象（docs/schema.md §3「state を『mirakc への
-// 同期対象か』のフィルタに使ってはならない」、docs/recording.md §4.3）。
-// 同期の可否を決めるのは effective.skip であり、state で除外してよいのは
-// orphaned だけ（番組が終了しているので schedule を作る意味がない）。
-// active/detached はどちらも「実質 manual として動く」ことがあるため同期対象に
-// 含める。旧名 ListActiveReservationsBySite は state='active' でしか絞っておらず
-// detached の予約に schedule が作られないバグの原因だった（M2-4 で修正）。
-func (q *Queries) ListSyncableReservationsBySite(ctx context.Context, site string) ([]ListSyncableReservationsBySiteRow, error) {
-	rows, err := q.db.Query(ctx, listSyncableReservationsBySite, site)
+// 同期対象の「候補」を返すクエリ（issue #54）。ここで絞っているのは
+// state <> 'orphaned' だけで、それ以上のことはしていない。orphaned だけを
+// 除外してよい理由は docs/schema.md §3「state を『mirakc への同期対象か』の
+// フィルタに使ってはならない」、docs/recording.md §4.3: 番組が終了しているので
+// schedule を作る意味がない。active/detached はどちらも「実質 manual として
+// 動く」ことがあるため候補に含める。旧名 ListActiveReservationsBySite は
+// state='active' でしか絞っておらず detached の予約に schedule が作られない
+// バグの原因だった（M2-4 で修正）。
+//
+// **「同期対象か」を最終的に決めるのは effective.skip（base + overrides +
+// program_intents.action の合成）であり、この行だけでは絞り切れていない。**
+// 絞り込みは呼び出し元が db.EvaluateSyncCandidates（internal/db/sync.go）に
+// 通して行う。旧名 ListSyncableReservationsBySite は「もう絞ってある」と
+// 約束してしまっていた。その約束を信じて shadow-diff（cmd/rokuban/shadowdiff.go）
+// の書き手は effective.skip の絞り込みを移植し忘れ、M2-6 の重複排除が
+// base.skip=true を立てた予約を「EPGStation と一致（Both）」と誤報告する
+// 見逃しが M2 の出口基準の測定器に入り込んだ（issue #54）。同じ間違いを
+// 繰り返さないため、クエリ名には「候補」であることだけを約束させる。
+func (q *Queries) ListReservationsForSyncEvaluation(ctx context.Context, site string) ([]ListReservationsForSyncEvaluationRow, error) {
+	rows, err := q.db.Query(ctx, listReservationsForSyncEvaluation, site)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []ListSyncableReservationsBySiteRow
+	var items []ListReservationsForSyncEvaluationRow
 	for rows.Next() {
-		var i ListSyncableReservationsBySiteRow
+		var i ListReservationsForSyncEvaluationRow
 		if err := rows.Scan(
 			&i.Reservation.ID,
 			&i.Reservation.Site,

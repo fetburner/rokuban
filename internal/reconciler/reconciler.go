@@ -380,32 +380,36 @@ type desiredReservation struct {
 // 同期対象か』のフィルタに使ってはならない」、docs/recording.md §4.3）。
 // state で除外してよいのは orphaned だけ（番組終了後に schedule が観測され
 // なかった行で、番組が終わっているので schedule を作る意味がない）。
-// ListSyncableReservationsBySite が state <> 'orphaned' で絞るのはこのため —
+// ListReservationsForSyncEvaluation が state <> 'orphaned' で絞るのはこのため —
 // 旧 ListActiveReservationsBySite は state = 'active' でしか絞っておらず、
 // detached（「実質 manual として動く」はず）の予約に schedule が作られない
 // バグの原因だった: 手動予約 → たまたまルールがマッチ（active, rule_id 付き）
 // → そのルールを編集して外す（detached）→ 同期対象から外れる、という経路で
 // ユーザーの手動予約が黙って録画されなくなっていた（M2-4 で修正）。
+//
+// effective.skip の絞り込みは db.EvaluateSyncCandidates に通す
+// （internal/db/sync.go）。この関数はここ（reconciler.listDesired）と
+// cmd/rokuban/shadowdiff.go の 2 箇所から呼ばれる共通処理で、以前は 2 箇所が
+// 別々に db.EffectiveOptions を呼んでおり、shadow-diff 側が絞り込みの移植を
+// 忘れたことが issue #54 の見逃しの原因だった。
 func (r *Reconciler) listDesired(ctx context.Context) ([]desiredReservation, error) {
-	reservations, err := sqlcgen.New(r.pool).ListSyncableReservationsBySite(ctx, r.site)
+	rows, err := sqlcgen.New(r.pool).ListReservationsForSyncEvaluation(ctx, r.site)
 	if err != nil {
 		return nil, err
 	}
 
 	var desired []desiredReservation
-	for _, row := range reservations {
-		opts, err := db.EffectiveOptions(row.Reservation.Base, row.Overrides, row.IntentAction)
-		if err != nil {
+	for _, c := range db.EvaluateSyncCandidates(rows) {
+		if c.Err != nil {
 			// 壊れた jsonb で mirakc に既定値の schedule を作ってしまわないよう、
 			// この予約は同期対象から外してアラートする（握りつぶさない）。
-			slog.Error("reconciler: resolving effective options",
-				"reservation_id", row.Reservation.ID, "err", err)
+			slog.Error("reconciler: resolving effective options", "err", c.Err)
 			continue
 		}
-		if opts.Skip != nil && *opts.Skip {
+		if c.Skipped {
 			continue
 		}
-		desired = append(desired, desiredReservation{res: row.Reservation, opts: opts})
+		desired = append(desired, desiredReservation{res: c.Reservation, opts: c.Options})
 	}
 	return desired, nil
 }
@@ -708,9 +712,10 @@ type startDelayed struct {
 //
 // reservations は呼び出し元（RunPass）が listDesired で得た desired 予約
 // リストをそのまま渡す想定で、次の 2 つは既にそこで除外されている。
-//   - effective.skip の予約（listDesired が opts.Skip で絞っている）
-//   - state = 'orphaned' の予約（listDesired の元クエリ ListSyncableReservationsBySite
-//     が state <> 'orphaned' で絞っている）
+//   - effective.skip の予約（listDesired が db.EvaluateSyncCandidates の Skipped
+//     で絞っている）
+//   - state = 'orphaned' の予約（listDesired の元クエリ
+//     ListReservationsForSyncEvaluation が state <> 'orphaned' で絞っている）
 //
 // ここではさらに時間窓で絞る: 「開始時刻 + StartDelayGrace < now() < 終了時刻」。
 // 終了時刻を過ぎた予約は markOrphaned の領分であり、ここで検出し続けると

@@ -88,11 +88,21 @@ func runShadowDiff(ctx context.Context, q *sqlcgen.Queries, epgClient *epgstatio
 		return shadowdiff.Report{}, fmt.Errorf("listing EPGStation reserves: %w", err)
 	}
 
-	// ListSyncableReservationsBySite（state <> 'orphaned'）を使う。detached の
+	// ListReservationsForSyncEvaluation（state <> 'orphaned'）を使う。detached の
 	// 予約も mirakc に schedule が作られる（M2-4 で修正）ため、EPGStation との
 	// 突き合わせ対象にも含めないと detached 予約が偽の EPGStationOnly として
 	// 報告されてしまう。
-	active, err := q.ListSyncableReservationsBySite(ctx, site)
+	//
+	// ただしこのクエリは候補を返すだけで、effective.skip による絞り込みは
+	// 含まない（internal/db/queries/reservations.sql のコメント参照）。
+	// db.EvaluateSyncCandidates（reconciler.listDesired と共通）に通して
+	// 各行の skip 判定を得る --- reconciler は skip された予約を除外するが、
+	// shadow-diff は除外せず Skipped フラグとして残す必要がある
+	// （EPGStation 側に対応する予約があるとき Expected に落とすため）。
+	// 以前はこの行のループが Skipped: false を決め打ちしており、M2-6 の
+	// 重複排除が base.skip=true を立てた予約を「EPGStation と一致（Both）」と
+	// 誤報告する見逃しがあった（issue #54）。
+	rows, err := q.ListReservationsForSyncEvaluation(ctx, site)
 	if err != nil {
 		return shadowdiff.Report{}, fmt.Errorf("listing rokuban reservations: %w", err)
 	}
@@ -102,28 +112,20 @@ func runShadowDiff(ctx context.Context, q *sqlcgen.Queries, epgClient *epgstatio
 		return shadowdiff.Report{}, fmt.Errorf("listing rokuban skip intents: %w", err)
 	}
 
-	rokuban := make([]shadowdiff.RokubanReservation, 0, len(active)+len(skipped))
-	// active の各行は base（ruler の導出結果）/ overrides / intent action を
-	// 持つが、Skipped: false を決め打ちしてはいけない。M2-6 の重複排除が
-	// base.skip = true を立てた行は reconciler.listDesired が effective.skip で
-	// 除外し mirakc に同期されない（＝ Rokuban は録らない）ため、ここで
-	// Skipped: false のまま EPGStation 側の同じ番組と突き合わせると「一致」
-	// （Both）や偽の RokubanOnly に誤分類される。reconciler と同じ
-	// db.EffectiveOptions を通して実効の skip を都度評価する（不変条件:
-	// jsonb の Unmarshal 失敗を握りつぶさない。壊れた行を Skipped: false 扱いで
-	// 静かに握りつぶすと見逃しになるので、他の予約行に倣ってエラーを返す）。
-	for _, r := range active {
-		opts, err := db.EffectiveOptions(r.Reservation.Base, r.Overrides, r.IntentAction)
-		if err != nil {
-			return shadowdiff.Report{}, fmt.Errorf(
-				"resolving effective options for reservation %d (program %d): %w",
-				r.Reservation.ID, r.Reservation.ProgramID, err)
+	candidates := db.EvaluateSyncCandidates(rows)
+	rokuban := make([]shadowdiff.RokubanReservation, 0, len(candidates)+len(skipped))
+	for _, c := range candidates {
+		if c.Err != nil {
+			// 壊れた jsonb を Skipped: false 扱いで静かに握りつぶすと見逃しに
+			// なるので、他の予約行に倣ってエラーを返す（不変条件: jsonb の
+			// Unmarshal 失敗を握りつぶさない）。
+			return shadowdiff.Report{}, fmt.Errorf("listing rokuban reservations: %w", c.Err)
 		}
 		rokuban = append(rokuban, shadowdiff.RokubanReservation{
-			ProgramID: r.Reservation.ProgramID,
-			Title:     r.Reservation.Title,
-			StartAt:   r.Reservation.ProgramStartAt,
-			Skipped:   opts.Skip != nil && *opts.Skip,
+			ProgramID: c.Reservation.ProgramID,
+			Title:     c.Reservation.Title,
+			StartAt:   c.Reservation.ProgramStartAt,
+			Skipped:   c.Skipped,
 		})
 	}
 	// ListSkippedProgramIntentsBySite（program_intents.action = 'skip'）由来の
@@ -131,7 +133,7 @@ func runShadowDiff(ctx context.Context, q *sqlcgen.Queries, epgClient *epgstatio
 	// 無い、あるいは program_overrides の行も無い）は ruler.RunPass の desired
 	// 集合から外れて予約行自体が削除される設計なので（internal/ruler/ruler.go
 	// 「desired = (ルールにマッチした番組 − intent.skip) ∪ intent.record ∪
-	// {overrides に行がある番組}」）、上の active ループと同じ programId が
+	// {overrides に行がある番組}」）、上の candidates ループと同じ programId が
 	// 出てくることは通常ない。ごく稀に「skip 意図はあるが overrides の行だけは
 	// 残っている」番組は両方に出うるが、その場合も上のループが同じ理由で
 	// Skipped: true を計算するので分類結果は変わらず無害。
