@@ -58,6 +58,24 @@ func (e CircuitBreakerName) Valid() bool {
 	}
 }
 
+// Defines values for EncodeProfileSummaryContainer.
+const (
+	Mkv EncodeProfileSummaryContainer = "mkv"
+	Mp4 EncodeProfileSummaryContainer = "mp4"
+)
+
+// Valid indicates whether the value is a known member of the EncodeProfileSummaryContainer enum.
+func (e EncodeProfileSummaryContainer) Valid() bool {
+	switch e {
+	case Mkv:
+		return true
+	case Mp4:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ProgramSearchRequestChannelTypes.
 const (
 	ProgramSearchRequestChannelTypesBS  ProgramSearchRequestChannelTypes = "BS"
@@ -496,6 +514,19 @@ type DropSummary struct {
 	Packets   int64 `json:"packets"`
 	Scrambled int64 `json:"scrambled"`
 }
+
+// EncodeProfileSummary defines model for EncodeProfileSummary.
+type EncodeProfileSummary struct {
+	// Container 出力コンテナ（表示用。未注入なら省略）。
+	Container *EncodeProfileSummaryContainer `json:"container,omitempty"`
+
+	// Name ルール / overrides の `encodeProfiles` が参照する名前。
+	// config.encode.profiles[].name と一致する。
+	Name string `json:"name"`
+}
+
+// EncodeProfileSummaryContainer 出力コンテナ（表示用。未注入なら省略）。
+type EncodeProfileSummaryContainer string
 
 // ErrorResponse defines model for ErrorResponse.
 type ErrorResponse struct {
@@ -948,6 +979,9 @@ type ServerInterface interface {
 	// ListCapacityOverages List intervals where tuner capacity is exceeded
 	// (GET /api/capacity/overages)
 	ListCapacityOverages(w http.ResponseWriter, r *http.Request, params ListCapacityOveragesParams)
+	// ListEncodeProfiles List configured encode profile names
+	// (GET /api/encode-profiles)
+	ListEncodeProfiles(w http.ResponseWriter, r *http.Request)
 	// ListPrograms List EPG programs in a time window
 	// (GET /api/programs)
 	ListPrograms(w http.ResponseWriter, r *http.Request, params ListProgramsParams)
@@ -1038,6 +1072,12 @@ func (_ Unimplemented) ResumeCircuitBreaker(w http.ResponseWriter, r *http.Reque
 // ListCapacityOverages List intervals where tuner capacity is exceeded
 // (GET /api/capacity/overages)
 func (_ Unimplemented) ListCapacityOverages(w http.ResponseWriter, r *http.Request, params ListCapacityOveragesParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// ListEncodeProfiles List configured encode profile names
+// (GET /api/encode-profiles)
+func (_ Unimplemented) ListEncodeProfiles(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1265,6 +1305,20 @@ func (siw *ServerInterfaceWrapper) ListCapacityOverages(w http.ResponseWriter, r
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ListCapacityOverages(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListEncodeProfiles operation middleware
+func (siw *ServerInterfaceWrapper) ListEncodeProfiles(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListEncodeProfiles(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1949,6 +2003,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Get(options.BaseURL+"/api/version", wrapper.GetVersion)
 	})
 	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/encode-profiles", wrapper.ListEncodeProfiles)
+	})
+	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/api/rules", wrapper.ListRules)
 	})
 	r.Group(func(r chi.Router) {
@@ -2121,6 +2178,27 @@ func (response ListCapacityOverages400JSONResponse) VisitListCapacityOveragesRes
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListEncodeProfilesRequestObject struct {
+}
+
+type ListEncodeProfilesResponseObject interface {
+	VisitListEncodeProfilesResponse(w http.ResponseWriter) error
+}
+
+type ListEncodeProfiles200JSONResponse []EncodeProfileSummary
+
+func (response ListEncodeProfiles200JSONResponse) VisitListEncodeProfilesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
 	_, err := buf.WriteTo(w)
 	return err
 }
@@ -2895,6 +2973,9 @@ type StrictServerInterface interface {
 	// ListCapacityOverages List intervals where tuner capacity is exceeded
 	// (GET /api/capacity/overages)
 	ListCapacityOverages(ctx context.Context, request ListCapacityOveragesRequestObject) (ListCapacityOveragesResponseObject, error)
+	// ListEncodeProfiles List configured encode profile names
+	// (GET /api/encode-profiles)
+	ListEncodeProfiles(ctx context.Context, request ListEncodeProfilesRequestObject) (ListEncodeProfilesResponseObject, error)
 	// ListPrograms List EPG programs in a time window
 	// (GET /api/programs)
 	ListPrograms(ctx context.Context, request ListProgramsRequestObject) (ListProgramsResponseObject, error)
@@ -3074,6 +3155,30 @@ func (sh *strictHandler) ListCapacityOverages(w http.ResponseWriter, r *http.Req
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(ListCapacityOveragesResponseObject); ok {
 		if err := validResponse.VisitListCapacityOveragesResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListEncodeProfiles operation middleware
+func (sh *strictHandler) ListEncodeProfiles(w http.ResponseWriter, r *http.Request) {
+	var request ListEncodeProfilesRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListEncodeProfiles(ctx, request.(ListEncodeProfilesRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListEncodeProfiles")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListEncodeProfilesResponseObject); ok {
+		if err := validResponse.VisitListEncodeProfilesResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

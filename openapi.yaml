@@ -29,6 +29,26 @@ paths:
               schema:
                 $ref: "#/components/schemas/VersionResponse"
 
+  /api/encode-profiles:
+    get:
+      operationId: listEncodeProfiles
+      summary: List configured encode profile names
+      description: |
+        `config.encode.profiles` に定義されたプロファイルの公開面。UI が
+        ルール / overrides の `encodeProfiles` を選ぶために使う（M3-6 / issue #68）。
+
+        **機微情報は載せない。** ffmpeg のパスや extra_args は出さない。
+        名前（と表示用の container）だけを返す。
+      responses:
+        "200":
+          description: OK（設定順。未定義なら空配列）
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/EncodeProfileSummary"
+
   /api/rules:
     get:
       operationId: listRules
@@ -740,6 +760,24 @@ components:
         version:
           type: string
           example: 0.0.1
+
+    # --- Encode profiles (M3-6 / issue #68) ---
+    #
+    # config.encode.profiles の公開面。ffmpeg パスや extra_args は出さない。
+    EncodeProfileSummary:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          description: |
+            ルール / overrides の `encodeProfiles` が参照する名前。
+            config.encode.profiles[].name と一致する。
+        container:
+          type: string
+          enum: [mp4, mkv]
+          description: |
+            出力コンテナ（表示用。未注入なら省略）。
 
     ErrorResponse:
       type: object

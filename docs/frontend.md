@@ -148,9 +148,11 @@ Android のジェスチャーナビは左右端からの横スワイプが「戻
 その形を最初から避ける。
 
 **機能しないコントロールは置かない。** `encodeProfiles` / `keepOriginal` は
-エンコード worker と削除エンジンが M3 なので、値の表示のみでマイルストーンを併記する。
-M1 では全体が読み取り専用（reconciler が予約オプションの差分を反映しないため、
-編集できても mirakc に伝わらない。[issue #19](https://github.com/fetburner/rokuban/issues/19)）。
+ルール作成/編集と予約 overrides で編集できる（M3-6）。プロファイル一覧は
+`GET /api/encode-profiles`（設定名だけ。機微情報なし）。
+`keepOriginal: until_encoded` はプロファイル空だとクライアントでも止め、API も 400。
+priority など mirakc 差分が必要な項目は reconciler が差分を反映してから編集可能にする
+（[issue #19](https://github.com/fetburner/rokuban/issues/19)）。
 
 ### 容量超過は番組ではなく区間に描く（M2）
 
