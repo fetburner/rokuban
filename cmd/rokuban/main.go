@@ -27,6 +27,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newConfigCmd())
 	root.AddCommand(newEnqueueCmd())
 	root.AddCommand(newMigrateCmd())
+	root.AddCommand(newRescueCmd())
 	root.AddCommand(newServerCmd())
 	root.AddCommand(newShadowDiffCmd())
 

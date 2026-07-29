@@ -25,6 +25,8 @@ var enqueueJobs = map[string]func(site string) river.JobArgs{
 	"ruler-pass":     func(site string) river.JobArgs { return worker.RulerPassArgs{Site: site} },
 	"reconcile-pass": func(site string) river.JobArgs { return worker.ReconcilePassArgs{Site: site} },
 	"record-sweep":   func(site string) river.JobArgs { return worker.RecordSweepArgs{Site: site} },
+	// catalog-export はサイト非依存（site 引数は無視する）。
+	"catalog-export": func(string) river.JobArgs { return worker.CatalogExportArgs{} },
 }
 
 // newEnqueueCmd は `rokuban enqueue <job>` サブコマンドを作る。
