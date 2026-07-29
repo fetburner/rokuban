@@ -68,8 +68,8 @@ notifier は**シングルトンではない**（`cmd/rokuban/server.go` の `si
 
 EPGStation の Reserve テーブルは「予約」「録画中状態」「録画結果」が混在していた。Rokuban では k8s の spec/status と同じ分離をスキーマに刻む:
 
-- `rules` → `reservations` --- desired state。ルール評価の純粋な出力。手動予約も同じテーブルで source が違うだけ
-- `program_intents` --- 番組単位のユーザー意図（録れ / 録るな + 上書き）。**api だけが書き ruler は読むだけ**の永続表。導出行（reservations）とは別に置くことで、ruler が毎パス base を再計算しても意図が失われない
+- `rules` → `reservations` --- desired state。ルール評価の純粋な出力。手動予約もルール由来の予約も同じテーブルに入り、区別は `program_intents.action` の有無から導出する（issue #26）
+- `program_intents` / `program_overrides` --- 番組単位のユーザー意図（録れ / 録るな）とパラメータの上書き。**api だけが書き ruler は読むだけ**の永続表 2 つ。導出行（reservations）とは別に置くことで、ruler が毎パス base を再計算しても意図が失われない
 - `schedule_sync` --- observed state。mirakc 側に実在する schedule の最新観測。reconciler はこの 2 つの差分だけを見る
 - `records` → `media_assets` --- 録画完了後の成果物。相対パス、エンコード派生物、サムネイルを紐付け
 - 予約フィールドは mirakc のモデル（programId + RecordingOptions + tags）に素直に合わせる。「いつか使うかもしれない列」（マージン等）は持たない
@@ -81,7 +81,7 @@ EPGStation の Reserve テーブルは「予約」「録画中状態」「録画
 予約オプションは 2 層に分かれる。**同じ行の 2 列ではなく、別の表に置く**（詳細は [録画エンジン](recording.md) §4.2）:
 
 - **base**: ruler が「ルール x EPG」から計算するフィールド群（priority / エンコードプロファイル / 保持ポリシー / ファイル名テンプレート）。`reservations.base` に載り、**ruler だけが書く**
-- **overrides**: ユーザーが上書きしたフィールドのみを持つ jsonb。**`program_intents` 表に置き、api（ユーザー操作）だけが書く**（skip は jsonb のキーではなく `action` 列）
+- **overrides**: ユーザーが上書きしたフィールドのみを持つ jsonb。**`program_overrides` 表に置き、api（ユーザー操作）だけが書く**（skip は jsonb のキーではなく `program_intents.action` 列）
 - **effective = base + overrides**。reconciler が mirakc に同期し ingest/encode が参照するのは常に effective
 
 ruler は EPG 更新のたびに base を丸ごと再計算してよい --- **overrides は別表なので構造的に触れない**。3-way merge は不要。
@@ -287,7 +287,7 @@ twin vertices の縮約も、実は前提が完全には成り立たない。mir
 
 ### 前提: 予約にチャンネルのスナップショットが要る
 
-需要の単位が `(channel_type, channel)` なので、`reservations` に `network_id` / `service_id` / `channel_type` / `channel` のスナップショット列が必要になる。**使い捨ての EPG 射影への JOIN に頼ると、射影が刈られた/欠損した瞬間に容量判定が壊れる**。録画行への非正規化スナップショット（§6）と同じ規律で、予約時に焼き付ける。
+需要の単位が `(channel_type, channel)` なので、予約側に `network_id` / `service_id` / `channel_type` / `channel` のスナップショット列が必要になる。**使い捨ての EPG 射影への JOIN に頼ると、射影が刈られた/欠損した瞬間に容量判定が壊れる**。録画行への非正規化スナップショット（§6）と同じ規律で、予約時に焼き付ける。この列は `reservations` ではなく `program_snapshots`（Phase 1。[スキーマ](schema.md) §3.7）にあり、`reservations` は `(site, program_id)` の FK で JOIN して読む
 
 既知の盲点: mirakc の `update-schedules` ジョブは周期が分かっているので、cron 設定を取得できれば需要に織り込んで精度を上げられる（API で取得可能かは未確認）。
 

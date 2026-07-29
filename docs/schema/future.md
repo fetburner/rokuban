@@ -16,6 +16,8 @@ v1 には含めず、後続のマイグレーションで足すもの。参照�
 | `00013_dedup_evidence.sql` | `reservations` に重複排除の判定根拠 2 列（M2-6。§3） |
 | `00014_drop_stats_pid_type.sql` | `drop_stats.pid_type`（M2-13。§7） |
 | `00015_tuner_sync.sql` | `tuner_sync`（チューナー射影。M2-10。§9.5） |
+| `00016_dedupe_range_check.sql` | `rules.dedupe_threshold` を `(0, 1]`、`dedupe_window` を `> 0` に制限する CHECK（API・Go に加えた DB 側の値域検査） |
+| `00017_program_snapshots.sql` | Phase 1（#27 / #28 / #30）: `program_snapshots` を抽出し `reservations` / `program_intents` / `program_overrides` から番組の事実の列を落として FK（`ON DELETE CASCADE`）に置き換え、`reservations.state` を `orphaned_at` に置き換え（§3・§3.7） |
 
 ### 未実装
 

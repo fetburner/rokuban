@@ -32,15 +32,15 @@
 
 | フィールド | 値 | 出所 |
 |---|---|---|
-| `{{.StartAt}}` | 番組開始時刻（JST の `time.Time`）。`{{.StartAt.Format "2006-01"}}` のように任意の書式を書ける | `program_start_at` |
+| `{{.StartAt}}` | 番組開始時刻（JST の `time.Time`）。`{{.StartAt.Format "2006-01"}}` のように任意の書式を書ける | `program_snapshots.start_at` |
 | `{{.Year}}` | 4 桁年（JST） | 同 |
 | `{{.ShortYear}}` | 2 桁年（JST） | 同 |
 | `{{.Month}}` `{{.Day}}` `{{.Hour}}` `{{.Min}}` `{{.Sec}}` | 2 桁ゼロ埋め（JST） | 同 |
 | `{{.DOW}}` | 曜日（`日`〜`土`） | 同 |
-| `{{.Title}}` | 番組名（パス成分としてサニタイズ済み） | `reservations.title` |
-| `{{.Channel}}` | 物理チャンネル（同上） | `reservations.channel` |
-| `{{.ServiceID}}` | サービス ID | `reservations.service_id` |
-| `{{.ChannelType}}` | チャンネル種別（同上） | `reservations.channel_type` |
+| `{{.Title}}` | 番組名（パス成分としてサニタイズ済み） | `program_snapshots.title` |
+| `{{.Channel}}` | 物理チャンネル（同上） | `program_snapshots.channel` |
+| `{{.ServiceID}}` | サービス ID | `program_snapshots.service_id` |
+| `{{.ChannelType}}` | チャンネル種別（同上） | `program_snapshots.channel_type` |
 
 例:
 
@@ -179,7 +179,7 @@ M1-4 の骨格はパス内で完結していて、次のパスでは何も覚え
 
 #### 番組終了後の GC
 
-`reservations` / `program_intents` の物理削除（GC）は ruler の 1 パス内で、全サイト評価の後に 1 回だけ行う（`internal/ruler/ruler.go` の `runGC`）。対象は `program_start_at + program_duration_ms < now() - 猶予` を満たす行（state を問わない）。猶予には既存の `epg.retention_grace`（既定 24h、EPG プロジェクションのローリングウィンドウと同じ設定）をそのまま流用する。専用の設定項目を増やさず、「EPG から消える」と「予約・意図として GC される」の寿命を揃える。`recordings.reservation_id` は `ON DELETE SET NULL` なので、この削除で録画履歴（recordings/media_assets）が失われることはない。
+`reservations` / `program_intents` / `program_overrides` の物理削除（GC）は ruler の 1 パス内で、全サイト評価の後に 1 回だけ行う（`internal/ruler/ruler.go` の `runGC`）。Phase 1（#27）以降、実際に DELETE するのは `program_snapshots` の 1 表だけで、対象は `start_at + duration_ms < now() - 猶予` を満たす行（`reservations` の active/detached/orphaned を問わない）。`reservations` / `program_intents` / `program_overrides` はこの表への `(site, program_id)` FK が `ON DELETE CASCADE` なので、スナップショットが消えると 3 表とも一緒に落ちる（移行前は表ごとに別々の DELETE 文があった）。猶予には既存の `epg.retention_grace`（既定 24h、EPG プロジェクションのローリングウィンドウと同じ設定）をそのまま流用する。専用の設定項目を増やさず、「EPG から消える」と「予約・意図として GC される」の寿命を揃える。`recordings.reservation_id` は `ON DELETE SET NULL` なので、この削除で録画履歴（recordings/media_assets）が失われることはない。
 
 **GC は大量削除サーキットブレーカー（`MaxDeletesPerPass`）の対象にしない。** ブレーカーが守るのは「ルール x EPG」の評価結果から導出される削除だけで、EPG の一時的な欠損・フリッカーに引きずられて予約を大量に消してしまう事故（上記 EPGStation#692 のクラス）を防ぐためのもの。GC の削除対象は時刻の比較だけで決定的に定まり、EPG の状態には一切左右されない。むしろ reconciler/ruler が長時間停止していた場合、再開後に溜まった期限切れ行を一括で消すのは正常な挙動であり、ここをブレーカーで止めると実害のない削除が積み上がり続けるだけになる。
 
