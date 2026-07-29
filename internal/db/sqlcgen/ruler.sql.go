@@ -10,20 +10,39 @@ import (
 	"time"
 )
 
-const deleteReservationRuleMatchesByReservationIDs = `-- name: DeleteReservationRuleMatchesByReservationIDs :exec
+const deleteReservationRuleMatchesBySite = `-- name: DeleteReservationRuleMatchesBySite :exec
 DELETE FROM reservation_rule_matches
-WHERE reservation_id = ANY($1::bigint[])
+WHERE reservation_id IN (SELECT id FROM reservations WHERE site = $1)
 `
 
-func (q *Queries) DeleteReservationRuleMatchesByReservationIDs(ctx context.Context, reservationIds []int64) error {
-	_, err := q.db.Exec(ctx, deleteReservationRuleMatchesByReservationIDs, reservationIds)
+// reservation_rule_matches はサイト内の予約に紐づく行を毎パス全消しして入れ直す
+// （insertReservationRuleMatchesSQL のコメント参照。この表には SSE 用の行トリガーが
+// ないので差分書き込みは要求されない）。
+//
+// 対象を「今回マッチした programId」に絞ると、ルールを削除ではなく無効化した
+// （ListEnabledRules から外れる）、あるいはルールの条件を変えてマッチしなくなったが
+// intent/overrides のおかげで予約行自体は生き残っている、という経路で古いマッチ行が
+// 掃除されずに残り続ける（導出表が毎パス作り直されない = CLAUDE.md 不変条件 9 違反。
+// ルール自体の削除は reservation_rule_matches.rule_id の FK CASCADE で救われるので
+// ここでは対象外でよい）。サイト単位の予約に紐づく行を無条件で全消しすることで、
+// 「今回マッチしなかった」を含めて正しく反映する。
+func (q *Queries) DeleteReservationRuleMatchesBySite(ctx context.Context, site string) error {
+	_, err := q.db.Exec(ctx, deleteReservationRuleMatchesBySite, site)
 	return err
 }
 
 const deleteReservationsBySiteAndProgramIDs = `-- name: DeleteReservationsBySiteAndProgramIDs :execrows
 
-DELETE FROM reservations
-WHERE site = $1 AND program_id = ANY($2::bigint[])
+DELETE FROM reservations r
+WHERE r.site = $1 AND r.program_id = ANY($2::bigint[])
+  AND NOT EXISTS (
+      SELECT 1 FROM program_intents i
+      WHERE i.site = r.site AND i.program_id = r.program_id AND i.action = 'record'
+  )
+  AND NOT EXISTS (
+      SELECT 1 FROM program_overrides o
+      WHERE o.site = r.site AND o.program_id = r.program_id
+  )
 `
 
 type DeleteReservationsBySiteAndProgramIDsParams struct {
@@ -39,6 +58,26 @@ type DeleteReservationsBySiteAndProgramIDsParams struct {
 // internal/ruler/sql.go に生 SQL として置き、pgxpool 経由で直接実行する。
 // ルール・program_intents のどちらからも desired でなくなった予約を削除する
 // （導出削除。呼び出し側でサーキットブレーカーの閾値判定を先に行うこと）。
+//
+// toDelete は runPassForSite の先頭（トランザクション外）で ListProgramIntentActionsBySite /
+// ListProgramOverrideProgramIDsBySite / ListReservationProgramIDsBySite を読んでから
+// 計算した集合で、この DELETE 文自体は別のトランザクション（tx）内で後から実行される。
+// その間に api の CreateReservation（program_intents{record} と reservations 行を
+// 1 tx でコミットする）が同じ program_id に対して割り込むと、toDelete は古い読み取りの
+// ままその番組を含んでしまい、作られたばかりの手動予約を削除してしまう
+// （読み順を入れ替えても「計算してから DELETE を実行するまでの窓」は必ず残るため、
+// 読み順の入れ替えでは直らない）。
+//
+// そこでガードを読み取り側ではなく DELETE 文自体の WHERE 句に持たせ、削除の瞬間に
+// load-bearing な行の有無を再評価する（CLAUDE.md 不変条件 9「導出は読むたびに
+// 評価する」を列だけでなく DELETE の対象判定にも適用する）。
+// internal/db/queries/rules.sql の DeleteReservationsByRuleWithoutIntent と同じ形。
+//
+// program_intents 側は action = 'record' に限定する。action を問わずに EXISTS すると
+// action='skip' の予約行（そもそも desired に入らない設計 = issue #18 の案 A）が
+// ここで保護されてしまい、「取消した予約が消えない」リグレッションになる。
+// program_overrides 側は中身を問わず行の存在だけで desired に残る設計
+// （ruler.go の union の最後）なので、action と無関係に EXISTS だけでよい。
 func (q *Queries) DeleteReservationsBySiteAndProgramIDs(ctx context.Context, arg DeleteReservationsBySiteAndProgramIDsParams) (int64, error) {
 	result, err := q.db.Exec(ctx, deleteReservationsBySiteAndProgramIDs, arg.Site, arg.ProgramIds)
 	if err != nil {
