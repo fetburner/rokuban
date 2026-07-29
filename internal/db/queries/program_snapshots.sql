@@ -1,0 +1,85 @@
+-- 番組の事実のスナップショット（#27。00017_program_snapshots.sql）。
+--
+-- reservations / program_intents / program_overrides に 3 重化していた
+-- 「書き込み時点の epg_programs ⋈ epg_services」を 1 表に集約したもの。
+-- 目的は 3 表で同一だった: EPG プロジェクションが使い捨てなので、番組が射影から
+-- 消えても GC 判定と UI 表示が成立し続けるようにすること
+-- （docs/schema.md §3「射影にある間は更新、消えたら凍結」）。
+--
+-- **値の出所は EPG 射影ただ 1 つ。** 書き手は api（予約・意図・上書きの作成時）と
+-- ruler（毎パス）の 2 人だが、両者とも射影から引くので値の権威は割れない。
+-- リクエストボディの値を書いてはならない（#27 の決定。移行前の api は title /
+-- 開始時刻 / 尺をクライアント申告で受けており、それが GC の比較対象だった）。
+
+-- name: UpsertProgramSnapshot :exec
+-- 射影から引いた値で upsert する。「射影にある間は更新」の実装はこの 1 本だけに
+-- なる（移行前は ruler が reservations 側だけを更新しており、intents / overrides
+-- 側が作成時のまま固まってドリフトしていた --- それが #27 の中身）。
+INSERT INTO program_snapshots (
+    site, program_id, title, start_at, duration_ms,
+    network_id, service_id, channel_type, channel
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+ON CONFLICT (site, program_id) DO UPDATE SET
+    title        = EXCLUDED.title,
+    start_at     = EXCLUDED.start_at,
+    duration_ms  = EXCLUDED.duration_ms,
+    network_id   = EXCLUDED.network_id,
+    service_id   = EXCLUDED.service_id,
+    channel_type = EXCLUDED.channel_type,
+    channel      = EXCLUDED.channel,
+    updated_at   = now()
+WHERE program_snapshots.title        IS DISTINCT FROM EXCLUDED.title
+   OR program_snapshots.start_at     IS DISTINCT FROM EXCLUDED.start_at
+   OR program_snapshots.duration_ms  IS DISTINCT FROM EXCLUDED.duration_ms
+   OR program_snapshots.network_id   IS DISTINCT FROM EXCLUDED.network_id
+   OR program_snapshots.service_id   IS DISTINCT FROM EXCLUDED.service_id
+   OR program_snapshots.channel_type IS DISTINCT FROM EXCLUDED.channel_type
+   OR program_snapshots.channel      IS DISTINCT FROM EXCLUDED.channel;
+
+-- name: UpsertProgramSnapshotsFromProjection :execrows
+-- ruler の毎パス更新。射影に今もある番組のスナップショットを一括で追従させる。
+-- 対象を渡された programId に絞るのは、射影全体（数万〜十万行）を毎パス
+-- 書き戻さないため。ここに出てこない programId は「射影から消えた」= 凍結。
+INSERT INTO program_snapshots (
+    site, program_id, title, start_at, duration_ms,
+    network_id, service_id, channel_type, channel
+)
+SELECT $1, p.program_id, p.name, p.start_at, p.duration_ms,
+       s.network_id, s.service_id, s.channel_type, s.channel
+FROM epg_programs p
+JOIN epg_services s
+  ON s.site = p.site AND s.network_id = p.network_id AND s.service_id = p.service_id
+WHERE p.site = $1 AND p.program_id = ANY(sqlc.arg(program_ids)::bigint[])
+ON CONFLICT (site, program_id) DO UPDATE SET
+    title        = EXCLUDED.title,
+    start_at     = EXCLUDED.start_at,
+    duration_ms  = EXCLUDED.duration_ms,
+    network_id   = EXCLUDED.network_id,
+    service_id   = EXCLUDED.service_id,
+    channel_type = EXCLUDED.channel_type,
+    channel      = EXCLUDED.channel,
+    updated_at   = now()
+WHERE program_snapshots.title        IS DISTINCT FROM EXCLUDED.title
+   OR program_snapshots.start_at     IS DISTINCT FROM EXCLUDED.start_at
+   OR program_snapshots.duration_ms  IS DISTINCT FROM EXCLUDED.duration_ms
+   OR program_snapshots.network_id   IS DISTINCT FROM EXCLUDED.network_id
+   OR program_snapshots.service_id   IS DISTINCT FROM EXCLUDED.service_id
+   OR program_snapshots.channel_type IS DISTINCT FROM EXCLUDED.channel_type
+   OR program_snapshots.channel      IS DISTINCT FROM EXCLUDED.channel;
+
+-- name: GetProgramSnapshot :one
+SELECT * FROM program_snapshots WHERE site = $1 AND program_id = $2;
+
+-- name: DeleteEndedProgramSnapshots :execrows
+-- **番組終了後の GC はこの 1 本だけになる。** FK の ON DELETE CASCADE で
+-- reservations / program_intents / program_overrides が一緒に落ちる
+-- （移行前は 3 本の DELETE がそれぞれ別のスナップショット列を見ており、
+-- ドリフトしていたので表ごとに違う時刻で GC していた。#27）。
+--
+-- **この表から行を消す経路をここ 1 本に限ること**（#27 の決定）。他の場所から
+-- 消せるとユーザーの意図を巻き添えにする。特に「参照が 1 つも無いスナップショット
+-- 行を掃除する」規則を足してはならない --- 掃除しないなら害はない（この GC が
+-- 拾う）が、掃除規則は intent の作成とレースする（ruler の導出削除が並行して
+-- 作られた手動予約を消したのと同じ形。#29）。
+DELETE FROM program_snapshots
+WHERE start_at + (duration_ms * interval '1 millisecond') < $1;
