@@ -192,6 +192,24 @@ func TestIngestWorker_HasNoTotalTimeout(t *testing.T) {
 	}
 }
 
+// resolveStallTimeout は「設定あり → 注入値」「設定なし（0）→ 既定 30 秒」の両方向。
+// ingest.stall_timeout を cmd から注入する経路（issue #57）の受け入れ基準。
+func TestIngestWorker_ResolveStallTimeout(t *testing.T) {
+	t.Run("unset uses default", func(t *testing.T) {
+		w := &IngestWorker{}
+		if got := w.resolveStallTimeout(); got != defaultStallTimeout {
+			t.Errorf("resolveStallTimeout() = %v, want default %v", got, defaultStallTimeout)
+		}
+	})
+	t.Run("configured value is used", func(t *testing.T) {
+		want := 2 * time.Minute
+		w := &IngestWorker{StallTimeout: want}
+		if got := w.resolveStallTimeout(); got != want {
+			t.Errorf("resolveStallTimeout() = %v, want %v", got, want)
+		}
+	})
+}
+
 // EPG 同期は無制限にはせず、既定より長い上限を置く。
 func TestEpgSyncWorker_HasGenerousTimeout(t *testing.T) {
 	w := &EpgSyncWorker{}
