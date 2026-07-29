@@ -17,6 +17,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/webhook"
 )
 
 // DefaultSite はデフォルトの mirakc サイト名。定義は db.DefaultSite（唯一の出所）。
@@ -38,18 +39,21 @@ type Watcher struct {
 	pool          *pgxpool.Pool
 	river         *river.Client[pgx5.Tx]
 	newIngestArgs IngestArgsFunc
+	webhook       *webhook.Client
 	services      []mirakc.Service
 }
 
 // New は Watcher を生成する。newIngestArgs は ingest ジョブの引数を組み立てる関数で、
 // 呼び出し元が internal/worker.NewIngestArgs を渡す想定（IngestArgsFunc のコメント参照）。
-func New(site string, mc *mirakc.Client, pool *pgxpool.Pool, rc *river.Client[pgx5.Tx], newIngestArgs IngestArgsFunc) *Watcher {
+// webhook は任意（nil 可）。録画 finished / failed の通知に使う（M3-11）。
+func New(site string, mc *mirakc.Client, pool *pgxpool.Pool, rc *river.Client[pgx5.Tx], newIngestArgs IngestArgsFunc, wh *webhook.Client) *Watcher {
 	return &Watcher{
 		site:          site,
 		mirakc:        mc,
 		pool:          pool,
 		river:         rc,
 		newIngestArgs: newIngestArgs,
+		webhook:       wh,
 	}
 }
 
@@ -184,9 +188,19 @@ func (w *Watcher) processRecord(ctx context.Context, record mirakc.Record) error
 	}
 
 	var recordingID *int64
+	// prevStatus は webhook を「finished への遷移」だけに絞るために取る。
+	// record_sweep が同じ finished record を何度も processRecord しても再通知しない。
+	var prevStatus string
+	var title string
 
 	if existingRecordingID != nil {
 		recordingID = existingRecordingID
+		existing, getErr := q.GetRecordingByID(ctx, *recordingID)
+		if getErr != nil {
+			return fmt.Errorf("loading recording %d: %w", *recordingID, getErr)
+		}
+		prevStatus = existing.Status
+		title = existing.Title
 		if err := w.updateRecordingStatus(ctx, q, *recordingID, record); err != nil {
 			return fmt.Errorf("updating recording status: %w", err)
 		}
@@ -196,6 +210,7 @@ func (w *Watcher) processRecord(ctx context.Context, record mirakc.Record) error
 			return fmt.Errorf("creating recording: %w", createErr)
 		}
 		recordingID = &id
+		title = derefStr(record.Program.Name)
 	}
 
 	if err := w.upsertRecordSync(ctx, q, record, recordingID); err != nil {
@@ -210,6 +225,17 @@ func (w *Watcher) processRecord(ctx context.Context, record mirakc.Record) error
 
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("committing transaction: %w", err)
+	}
+
+	// DB が永続化した後に通知。失敗しても本処理は成功扱い（M3-11）。
+	if recordingID != nil && record.Recording.Status == "finished" && prevStatus != "finished" {
+		w.notify(ctx, webhook.Event{
+			Type:        webhook.EventRecordingFinished,
+			RecordingID: *recordingID,
+			Site:        w.site,
+			Title:       title,
+			Status:      "finished",
+		})
 	}
 
 	return nil
@@ -380,18 +406,23 @@ func (w *Watcher) handleRecordingFailed(ctx context.Context, data mirakc.Recordi
 		return err
 	}
 
-	return q.CreateFailedRecording(ctx, sqlcgen.CreateFailedRecordingParams{
+	title := derefStr(schedule.Program.Name)
+	networkID := int32(schedule.Program.NetworkID)
+	serviceID := int32(schedule.Program.ServiceID)
+	eventID := int32(schedule.Program.EventID)
+
+	if err := q.CreateFailedRecording(ctx, sqlcgen.CreateFailedRecordingParams{
 		ReservationID:     &res.ID,
 		RuleID:            res.RuleID,
 		Source:            source,
 		Site:              w.site,
-		NetworkID:         int32(schedule.Program.NetworkID),
-		ServiceID:         int32(schedule.Program.ServiceID),
-		EventID:           int32(schedule.Program.EventID),
+		NetworkID:         networkID,
+		ServiceID:         serviceID,
+		EventID:           eventID,
 		ServiceName:       service.Name,
 		ChannelType:       service.Channel.Type,
 		Channel:           service.Channel.Channel,
-		Title:             derefStr(schedule.Program.Name),
+		Title:             title,
 		Description:       schedule.Program.Description,
 		Extended:          marshalJSONOrNull(schedule.Program.Extended),
 		Genres:            marshalJSONOrNull(schedule.Program.Genres),
@@ -399,7 +430,41 @@ func (w *Watcher) handleRecordingFailed(ctx context.Context, data mirakc.Recordi
 		ProgramStartAt:    millisToTime(schedule.Program.StartAt),
 		ProgramDurationMs: derefInt64(schedule.Program.Duration),
 		QualityEvents:     qeJSON,
+	}); err != nil {
+		return err
+	}
+
+	// CreateFailedRecording は :exec（ON CONFLICT 更新もあり）なので id は別途引く。
+	// 引けなくても本処理は成功済み。webhook だけ諦める。
+	var recordingID int64
+	if err := w.pool.QueryRow(ctx, `
+		SELECT id FROM recordings
+		WHERE site = $1 AND network_id = $2 AND service_id = $3 AND event_id = $4
+		  AND deleted_at IS NULL
+	`, w.site, networkID, serviceID, eventID).Scan(&recordingID); err != nil {
+		slog.Warn("webhook: looking up failed recording id",
+			"program_id", data.ProgramID, "err", err)
+		return nil
+	}
+	w.notify(ctx, webhook.Event{
+		Type:        webhook.EventRecordingFailed,
+		RecordingID: recordingID,
+		Site:        w.site,
+		Title:       title,
+		Status:      "failed",
 	})
+	return nil
+}
+
+// notify は webhook を送る。失敗はログのみ（本処理を止めない。M3-11）。
+func (w *Watcher) notify(ctx context.Context, ev webhook.Event) {
+	if w.webhook == nil {
+		return
+	}
+	if err := w.webhook.Notify(ctx, ev); err != nil {
+		slog.Error("webhook notify failed",
+			"type", ev.Type, "recording_id", ev.RecordingID, "site", ev.Site, "err", err)
+	}
 }
 
 func (w *Watcher) handleRecordBroken(ctx context.Context, data mirakc.RecordBrokenData) error {
