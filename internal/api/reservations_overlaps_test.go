@@ -118,7 +118,7 @@ func TestGetProgramOverlaps_ExcludesSelf(t *testing.T) {
 	}
 }
 
-// state = 'orphaned' の予約（番組が終了して録れなかったもの）は重なりの
+// orphaned_at が非 NULL の予約（番組が終了して録れなかったもの）は重なりの
 // 相手にならない。
 func TestGetProgramOverlaps_ExcludesOrphaned(t *testing.T) {
 	pool := testutil.SetupDB(t)
@@ -178,24 +178,30 @@ func TestGetProgramOverlaps_ExcludesSkippedIntent(t *testing.T) {
 	seedEpgProgram(t, pool, skippedProgramID, 32678, 5168, 2, "skip された番組", base.Add(30*time.Minute), false)
 
 	skippedStart := base.Add(30 * time.Minute)
+	networkID, serviceID := int32(32678), int32(5168)
+	channelType, channel := "GR", "27"
+	// program_intents / program_overrides / reservations はいずれも
+	// program_snapshots への FK（#27）を持つので、先に upsert しておく。
+	if err := q.UpsertProgramSnapshot(ctx, sqlcgen.UpsertProgramSnapshotParams{
+		Site: defaultSite, ProgramID: skippedProgramID, Title: "skip された番組",
+		StartAt: skippedStart, DurationMs: testProgramDuration.Milliseconds(),
+		NetworkID: &networkID, ServiceID: &serviceID, ChannelType: &channelType, Channel: &channel,
+	}); err != nil {
+		t.Fatalf("upserting program snapshot: %v", err)
+	}
 	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
 		Site: defaultSite, ProgramID: skippedProgramID, Action: "skip",
-		ProgramStartAt: skippedStart, ProgramDurationMs: testProgramDuration.Milliseconds(),
 	}); err != nil {
 		t.Fatalf("upserting skip intent: %v", err)
 	}
 	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
 		Site: defaultSite, ProgramID: skippedProgramID, Overrides: json.RawMessage(`{"priority":9}`),
-		ProgramStartAt: skippedStart, ProgramDurationMs: testProgramDuration.Milliseconds(),
 	}); err != nil {
 		t.Fatalf("upserting program overrides: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `
-INSERT INTO reservations (
-  site, program_id, state, title, program_start_at, program_duration_ms,
-  network_id, service_id, channel_type, channel
-) VALUES ('default', $1, 'active', 'skip された番組', $2, $3, 32678, 5168, 'GR', '27')`,
-		skippedProgramID, skippedStart, testProgramDuration.Milliseconds()); err != nil {
+INSERT INTO reservations (site, program_id) VALUES ('default', $1)`,
+		skippedProgramID); err != nil {
 		t.Fatalf("inserting reservation row for skipped program: %v", err)
 	}
 

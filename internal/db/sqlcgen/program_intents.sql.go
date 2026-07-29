@@ -10,20 +10,6 @@ import (
 	"time"
 )
 
-const deleteEndedProgramIntents = `-- name: DeleteEndedProgramIntents :execrows
-DELETE FROM program_intents
-WHERE program_start_at + (program_duration_ms * interval '1 millisecond') < $1
-`
-
-// 番組終了後の GC。意図の寿命を放送の寿命に揃える。
-func (q *Queries) DeleteEndedProgramIntents(ctx context.Context, programStartAt time.Time) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteEndedProgramIntents, programStartAt)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
 const deleteProgramIntent = `-- name: DeleteProgramIntent :execrows
 DELETE FROM program_intents WHERE site = $1 AND program_id = $2
 `
@@ -42,7 +28,7 @@ func (q *Queries) DeleteProgramIntent(ctx context.Context, arg DeleteProgramInte
 }
 
 const getProgramIntent = `-- name: GetProgramIntent :one
-SELECT site, program_id, action, program_start_at, program_duration_ms, created_at, updated_at FROM program_intents WHERE site = $1 AND program_id = $2
+SELECT site, program_id, action, created_at, updated_at FROM program_intents WHERE site = $1 AND program_id = $2
 `
 
 type GetProgramIntentParams struct {
@@ -57,8 +43,6 @@ func (q *Queries) GetProgramIntent(ctx context.Context, arg GetProgramIntentPara
 		&i.Site,
 		&i.ProgramID,
 		&i.Action,
-		&i.ProgramStartAt,
-		&i.ProgramDurationMs,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -66,25 +50,31 @@ func (q *Queries) GetProgramIntent(ctx context.Context, arg GetProgramIntentPara
 }
 
 const listSkippedProgramIntentsBySite = `-- name: ListSkippedProgramIntentsBySite :many
-SELECT i.program_id, i.program_start_at, i.program_duration_ms, p.name
+
+SELECT i.program_id, s.start_at AS program_start_at, s.duration_ms AS program_duration_ms, s.title AS name
 FROM program_intents i
-LEFT JOIN epg_programs p ON p.site = i.site AND p.program_id = i.program_id
+JOIN program_snapshots s ON s.site = i.site AND s.program_id = i.program_id
 WHERE i.site = $1 AND i.action = 'skip'
-ORDER BY i.program_start_at
+ORDER BY s.start_at
 `
 
 type ListSkippedProgramIntentsBySiteRow struct {
 	ProgramID         int64
 	ProgramStartAt    time.Time
 	ProgramDurationMs int64
-	Name              *string
+	Name              string
 }
 
+// 番組終了後の GC は DeleteEndedProgramSnapshots（internal/db/queries/program_snapshots.sql）
+// 1 本に集約された（#27）。program_intents は program_snapshots への FK が
+// ON DELETE CASCADE なので、program_snapshots 側の行が消えれば一緒に落ちる。
+// 個別の DeleteEndedProgramIntents は撤去した。
 // shadow-diff（M2-14）用。skip 意図は reservations 行を持たないため
 // （案 A の核心。上の UpsertProgramIntent のコメント参照）、EPGStation との
-// 差分照合では program_intents を直接引く必要がある。番組名は表示のためだけに
-// EPG プロジェクションから補う。放送終了間際で epg_programs から刈られていれば
-// NULL のままでよい（照合キーは programId であってタイトルではない）。
+// 差分照合では program_intents を直接引く必要がある。番組の開始時刻・尺・
+// 表示用の題名は program_snapshots から引く（#27 で抽出済み）。FK があるので
+// program_intents の行が存在すれば program_snapshots の行も必ず存在する
+// （INNER JOIN で取りこぼしはない）。
 func (q *Queries) ListSkippedProgramIntentsBySite(ctx context.Context, site string) ([]ListSkippedProgramIntentsBySiteRow, error) {
 	rows, err := q.db.Query(ctx, listSkippedProgramIntentsBySite, site)
 	if err != nil {
@@ -112,37 +102,27 @@ func (q *Queries) ListSkippedProgramIntentsBySite(ctx context.Context, site stri
 
 const skipProgram = `-- name: SkipProgram :one
 INSERT INTO program_intents (
-    site, program_id, action, program_start_at, program_duration_ms
-) VALUES ($1, $2, 'skip', $3, $4)
+    site, program_id, action
+) VALUES ($1, $2, 'skip')
 ON CONFLICT (site, program_id) DO UPDATE SET
     action     = 'skip',
     updated_at = now()
-RETURNING site, program_id, action, program_start_at, program_duration_ms, created_at, updated_at
+RETURNING site, program_id, action, created_at, updated_at
 `
 
 type SkipProgramParams struct {
-	Site              string
-	ProgramID         int64
-	ProgramStartAt    time.Time
-	ProgramDurationMs int64
+	Site      string
+	ProgramID int64
 }
 
 // 取消（intent{skip}）は action だけを倒す。overrides は別表なので触らない。
-// 番組情報のスナップショットは新規作成時のみ必要。
 func (q *Queries) SkipProgram(ctx context.Context, arg SkipProgramParams) (ProgramIntent, error) {
-	row := q.db.QueryRow(ctx, skipProgram,
-		arg.Site,
-		arg.ProgramID,
-		arg.ProgramStartAt,
-		arg.ProgramDurationMs,
-	)
+	row := q.db.QueryRow(ctx, skipProgram, arg.Site, arg.ProgramID)
 	var i ProgramIntent
 	err := row.Scan(
 		&i.Site,
 		&i.ProgramID,
 		&i.Action,
-		&i.ProgramStartAt,
-		&i.ProgramDurationMs,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -152,41 +132,35 @@ func (q *Queries) SkipProgram(ctx context.Context, arg SkipProgramParams) (Progr
 const upsertProgramIntent = `-- name: UpsertProgramIntent :one
 
 INSERT INTO program_intents (
-    site, program_id, action, program_start_at, program_duration_ms
-) VALUES ($1, $2, $3, $4, $5)
+    site, program_id, action
+) VALUES ($1, $2, $3)
 ON CONFLICT (site, program_id) DO UPDATE SET
     action     = EXCLUDED.action,
     updated_at = now()
-RETURNING site, program_id, action, program_start_at, program_duration_ms, created_at, updated_at
+RETURNING site, program_id, action, created_at, updated_at
 `
 
 type UpsertProgramIntentParams struct {
-	Site              string
-	ProgramID         int64
-	Action            string
-	ProgramStartAt    time.Time
-	ProgramDurationMs int64
+	Site      string
+	ProgramID int64
+	Action    string
 }
 
 // 番組単位のユーザー意図（issue #18 の案 A）。api だけが書き、ruler は読むだけ。
 //
 // overrides（パラメータの上書き）は M2-4（00010）で program_overrides に分離
 // 済み。この表が持つのは action（record/skip）のみ（docs/schema.md §3.5）。
+// program_start_at / program_duration_ms は #27 で program_snapshots に抽出され、
+// program_intents からは落ちた。FK (site, program_id) REFERENCES program_snapshots
+// があるので、呼び出し側はこの INSERT より先に program_snapshots の行を
+// upsert しておくこと。
 func (q *Queries) UpsertProgramIntent(ctx context.Context, arg UpsertProgramIntentParams) (ProgramIntent, error) {
-	row := q.db.QueryRow(ctx, upsertProgramIntent,
-		arg.Site,
-		arg.ProgramID,
-		arg.Action,
-		arg.ProgramStartAt,
-		arg.ProgramDurationMs,
-	)
+	row := q.db.QueryRow(ctx, upsertProgramIntent, arg.Site, arg.ProgramID, arg.Action)
 	var i ProgramIntent
 	err := row.Scan(
 		&i.Site,
 		&i.ProgramID,
 		&i.Action,
-		&i.ProgramStartAt,
-		&i.ProgramDurationMs,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)

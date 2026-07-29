@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -53,7 +54,7 @@ func (h *Server) ListReservations(ctx context.Context, _ ListReservationsRequest
 
 	result := make([]Reservation, 0, len(rows))
 	for _, r := range rows {
-		res, err := reservationFromRow(r.Reservation, r.Overrides, r.IntentAction)
+		res, err := reservationFromRow(r.Reservation, r.ProgramSnapshot, r.Overrides, r.IntentAction)
 		if err != nil {
 			return nil, err
 		}
@@ -99,15 +100,47 @@ func (h *Server) CreateReservation(ctx context.Context, req CreateReservationReq
 		return nil, fmt.Errorf("getting program channel identity: %w", err)
 	}
 
+	// 番組の事実のスナップショット（title / 開始時刻 / 尺 / チャンネル識別）は
+	// program_snapshots に抽出された（#27）。reservations / program_intents /
+	// program_overrides はいずれも (site, program_id) の FK でこの行を参照する
+	// ため、この 3 つより先に upsert する。
+	//
+	// title / 開始時刻 / 尺は**この段階では**引き続きリクエストボディの値を使う
+	// （#27 の決定 D2「出所を EPG 射影に固定する」への移行は別タスク。ここで
+	// 先取りすると CreateReservation の挙動が変わってしまう）。チャンネル識別は
+	// 従来どおり EPG プロジェクション（サーバー権威）から埋める。
+	snap := sqlcgen.ProgramSnapshot{
+		Site:        defaultSite,
+		ProgramID:   req.Body.ProgramId,
+		Title:       req.Body.Title,
+		StartAt:     req.Body.StartAt,
+		DurationMs:  req.Body.DurationMs,
+		NetworkID:   &identity.NetworkID,
+		ServiceID:   &identity.ServiceID,
+		ChannelType: &identity.ChannelType,
+		Channel:     &identity.Channel,
+	}
+	if err := q.UpsertProgramSnapshot(ctx, sqlcgen.UpsertProgramSnapshotParams{
+		Site:        snap.Site,
+		ProgramID:   snap.ProgramID,
+		Title:       snap.Title,
+		StartAt:     snap.StartAt,
+		DurationMs:  snap.DurationMs,
+		NetworkID:   snap.NetworkID,
+		ServiceID:   snap.ServiceID,
+		ChannelType: snap.ChannelType,
+		Channel:     snap.Channel,
+	}); err != nil {
+		return nil, fmt.Errorf("upserting program snapshot: %w", err)
+	}
+
 	// 意図が先。導出行は ruler が作り直せるが、意図は誰も再生成できない。
 	// action（record/skip）のみを持つ program_intents には overrides は載らない
 	// （M2-4 で program_overrides に分離。docs/recording.md §4.2）。
 	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
-		Site:              defaultSite,
-		ProgramID:         req.Body.ProgramId,
-		Action:            db.IntentRecord,
-		ProgramStartAt:    req.Body.StartAt,
-		ProgramDurationMs: req.Body.DurationMs,
+		Site:      defaultSite,
+		ProgramID: req.Body.ProgramId,
+		Action:    db.IntentRecord,
 	}); err != nil {
 		return nil, fmt.Errorf("upserting program intent: %w", err)
 	}
@@ -116,26 +149,17 @@ func (h *Server) CreateReservation(ctx context.Context, req CreateReservationReq
 	// 行を作らない（「空の上書き = 行が無い」。isEmptyOverridesJSON のコメント参照）。
 	if !isEmptyOverridesJSON(overridesJSON) {
 		if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
-			Site:              defaultSite,
-			ProgramID:         req.Body.ProgramId,
-			Overrides:         overridesJSON,
-			ProgramStartAt:    req.Body.StartAt,
-			ProgramDurationMs: req.Body.DurationMs,
+			Site:      defaultSite,
+			ProgramID: req.Body.ProgramId,
+			Overrides: overridesJSON,
 		}); err != nil {
 			return nil, fmt.Errorf("upserting program overrides: %w", err)
 		}
 	}
 
 	row, err := q.CreateManualReservation(ctx, sqlcgen.CreateManualReservationParams{
-		Site:              defaultSite,
-		ProgramID:         req.Body.ProgramId,
-		Title:             req.Body.Title,
-		ProgramStartAt:    req.Body.StartAt,
-		ProgramDurationMs: req.Body.DurationMs,
-		NetworkID:         &identity.NetworkID,
-		ServiceID:         &identity.ServiceID,
-		ChannelType:       &identity.ChannelType,
-		Channel:           &identity.Channel,
+		Site:      defaultSite,
+		ProgramID: req.Body.ProgramId,
 	})
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -154,9 +178,10 @@ func (h *Server) CreateReservation(ctx context.Context, req CreateReservationReq
 	// CreateReservation は直前に program_intents{record} を書いたばかりなので
 	// （上の UpsertProgramIntent 呼び出し）、この予約は常に手動由来である。
 	// row（CreateManualReservation の戻り値）は program_intents を JOIN していない
-	// ため、ここでは静的に db.IntentRecord を渡す。
+	// ため、ここでは静的に db.IntentRecord を渡す。snap も同様にこの関数の中で
+	// 組み立てた値をそのまま使う（コミット直後に再度 SELECT する必要がない）。
 	intentAction := db.IntentRecord
-	res, err := reservationFromRow(row, overridesJSON, &intentAction)
+	res, err := reservationFromRow(row, snap, overridesJSON, &intentAction)
 	if err != nil {
 		return nil, err
 	}
@@ -173,7 +198,7 @@ func (h *Server) GetReservation(ctx context.Context, req GetReservationRequestOb
 		}
 		return nil, err
 	}
-	res, err := reservationFromRow(row.Reservation, row.Overrides, row.IntentAction)
+	res, err := reservationFromRow(row.Reservation, row.ProgramSnapshot, row.Overrides, row.IntentAction)
 	if err != nil {
 		return nil, err
 	}
@@ -203,10 +228,8 @@ func (h *Server) DeleteReservation(ctx context.Context, req DeleteReservationReq
 	}
 
 	if _, err := q.SkipProgram(ctx, sqlcgen.SkipProgramParams{
-		Site:              row.Reservation.Site,
-		ProgramID:         row.Reservation.ProgramID,
-		ProgramStartAt:    row.Reservation.ProgramStartAt,
-		ProgramDurationMs: row.Reservation.ProgramDurationMs,
+		Site:      row.Reservation.Site,
+		ProgramID: row.Reservation.ProgramID,
 	}); err != nil {
 		return nil, fmt.Errorf("recording skip intent: %w", err)
 	}
@@ -242,9 +265,36 @@ func (h *Server) insertReconcilePassHint(ctx context.Context, tx pgx.Tx) error {
 	return nil
 }
 
-// reservationFromRow は予約行・ユーザーの上書き（program_overrides）・ユーザー意図
-// （program_intents.action）から API 表現を組む。overrides / intentAction は予約行
-// ではなく別表にあるので、まとめて受け取る。
+// reservationState は Reservation.state を (rule_id, base, orphaned_at) から
+// 導出する。
+//
+// state 列そのものは Phase 1（#27/#28/#30）で reservations から落とされた ---
+// orphaned は不可逆な観測として orphaned_at（reconciler だけが書く）に、
+// active/detached は (rule_id, base) から導出できる値として列を持たないことに
+// した。API レスポンスは 1 バイトも変えないため、ここで毎回計算して返す
+// （CLAUDE.md 不変条件 9「導出値と不可逆な事実を同じ列に載せない」・「導出は
+// 読むたびに評価する」）。
+//
+// #30 症状 1（ルールを削除した経路では detached にならなかった）は、旧実装が
+// この式を SQL の CASE で「前パスの rule_id」を見て遷移として保存していたため
+// に起きた。ここで毎パス評価し直すことで、ルールの削除（FK の ON DELETE
+// SET NULL が rule_id を先に NULL にする経路）でも編集と同じく detached になる。
+func reservationState(ruleID *int64, base json.RawMessage, orphanedAt *time.Time) ReservationState {
+	switch {
+	case orphanedAt != nil:
+		return Orphaned
+	case ruleID == nil && len(base) > 0:
+		return Detached
+	default:
+		return Active
+	}
+}
+
+// reservationFromRow は予約行・番組スナップショット・ユーザーの上書き
+// （program_overrides）・ユーザー意図（program_intents.action）から API 表現を
+// 組む。snapshot / overrides / intentAction は予約行ではなく別表にあるので、
+// まとめて受け取る（#27 で番組の事実のスナップショットが program_snapshots に
+// 抽出された）。
 //
 // source は reservations の列ではなく、intentAction の有無から都度導出する
 // （issue #26）。reservations.source 列は「ユーザーが手動で予約したか」（不可逆な
@@ -261,7 +311,7 @@ func (h *Server) insertReconcilePassHint(ctx context.Context, tx pgx.Tx) error {
 // なる（docs/schema.md §3「jsonb の Unmarshal 失敗を握りつぶさない」）。
 // dedupMatchRecordingId / dedupSimilarity はその skip の根拠（M2-6）で、
 // ruler が毎パス作り直す導出列をそのまま出す。
-func reservationFromRow(r sqlcgen.Reservation, overrides []byte, intentAction *string) (Reservation, error) {
+func reservationFromRow(r sqlcgen.Reservation, snap sqlcgen.ProgramSnapshot, overrides []byte, intentAction *string) (Reservation, error) {
 	source := ReservationSourceRule
 	if intentAction != nil && *intentAction == db.IntentRecord {
 		source = ReservationSourceManual
@@ -275,14 +325,14 @@ func reservationFromRow(r sqlcgen.Reservation, overrides []byte, intentAction *s
 		Site:      r.Site,
 		ProgramId: r.ProgramID,
 		Source:    source,
-		State:     ReservationState(r.State),
+		State:     reservationState(r.RuleID, r.Base, r.OrphanedAt),
 		// site を返すのは容量超過の判定がサイトごとに独立しているため
 		// （docs/data.md §6.5）。クライアントに単一サイト前提の定数を持たせると、
 		// 多サイト化のときに「他サイトの不足を自分の不足として出す」形で静かに壊れる。
 		Skip:       opts.IsSkipped(),
-		Title:      r.Title,
-		StartAt:    r.ProgramStartAt,
-		DurationMs: r.ProgramDurationMs,
+		Title:      snap.Title,
+		StartAt:    snap.StartAt,
+		DurationMs: snap.DurationMs,
 		CreatedAt:  r.CreatedAt,
 		UpdatedAt:  r.UpdatedAt,
 	}

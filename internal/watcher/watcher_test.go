@@ -102,17 +102,33 @@ func setupTest(t *testing.T) (*Watcher, *pgxpool.Pool) {
 	return w, pool
 }
 
-// createTestReservation は reservations 行だけを作る（program_intents には触れない）。
-// このパッケージの大半のテストは recordings.source の値を検証しないので、
-// intent の有無を気にする必要がない場合に使う。source の導出（issue #26）を
-// 検証するテストは createTestReservationWithIntent / createTestReservationWithRule
-// を使う。
+// insertTestProgramSnapshot は program_snapshots 行を作る。#27 で番組の事実の
+// スナップショット（title / 開始時刻 / 尺）が program_snapshots に抽出され、
+// reservations / program_intents / program_overrides への FK が張られたため、
+// このパッケージのフィクスチャはすべてこれを先に呼ぶ。
+func insertTestProgramSnapshot(t *testing.T, pool *pgxpool.Pool, programID int64) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(), `
+		INSERT INTO program_snapshots (site, program_id, title, start_at, duration_ms)
+		VALUES ('default', $1, 'Test Program', now(), 3600000)
+		ON CONFLICT (site, program_id) DO NOTHING`, programID,
+	); err != nil {
+		t.Fatalf("creating program_snapshot fixture: %v", err)
+	}
+}
+
+// createTestReservation は program_snapshots + reservations 行を作る
+// （program_intents には触れない）。このパッケージの大半のテストは
+// recordings.source の値を検証しないので、intent の有無を気にする必要が
+// ない場合に使う。source の導出（issue #26）を検証するテストは
+// createTestReservationWithIntent / createTestReservationWithRule を使う。
 func createTestReservation(t *testing.T, pool *pgxpool.Pool, programID int64) int64 {
 	t.Helper()
+	insertTestProgramSnapshot(t, pool, programID)
 	var id int64
 	err := pool.QueryRow(context.Background(), `
-		INSERT INTO reservations (site, program_id, title, program_start_at, program_duration_ms)
-		VALUES ('default', $1, 'Test Program', now(), 3600000)
+		INSERT INTO reservations (site, program_id)
+		VALUES ('default', $1)
 		RETURNING id`, programID,
 	).Scan(&id)
 	if err != nil {
@@ -140,18 +156,19 @@ func createTestRule(t *testing.T, pool *pgxpool.Pool) int64 {
 func createTestReservationWithIntent(t *testing.T, pool *pgxpool.Pool, programID int64, ruleID *int64) int64 {
 	t.Helper()
 	ctx := context.Background()
+	insertTestProgramSnapshot(t, pool, programID)
 	var id int64
 	err := pool.QueryRow(ctx, `
-		INSERT INTO reservations (site, program_id, rule_id, title, program_start_at, program_duration_ms)
-		VALUES ('default', $1, $2, 'Test Program', now(), 3600000)
+		INSERT INTO reservations (site, program_id, rule_id)
+		VALUES ('default', $1, $2)
 		RETURNING id`, programID, ruleID,
 	).Scan(&id)
 	if err != nil {
 		t.Fatalf("creating reservation: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `
-		INSERT INTO program_intents (site, program_id, action, program_start_at, program_duration_ms)
-		VALUES ('default', $1, 'record', now(), 3600000)`, programID,
+		INSERT INTO program_intents (site, program_id, action)
+		VALUES ('default', $1, 'record')`, programID,
 	); err != nil {
 		t.Fatalf("creating program_intents fixture: %v", err)
 	}
@@ -162,10 +179,11 @@ func createTestReservationWithIntent(t *testing.T, pool *pgxpool.Pool, programID
 // reservations を作る（ルール由来予約を模す。issue #26 の受け入れ基準 2）。
 func createTestReservationWithRule(t *testing.T, pool *pgxpool.Pool, programID int64, ruleID int64) int64 {
 	t.Helper()
+	insertTestProgramSnapshot(t, pool, programID)
 	var id int64
 	err := pool.QueryRow(context.Background(), `
-		INSERT INTO reservations (site, program_id, rule_id, title, program_start_at, program_duration_ms)
-		VALUES ('default', $1, $2, 'Test Program', now(), 3600000)
+		INSERT INTO reservations (site, program_id, rule_id)
+		VALUES ('default', $1, $2)
 		RETURNING id`, programID, ruleID,
 	).Scan(&id)
 	if err != nil {
@@ -180,9 +198,10 @@ func createTestReservationWithRule(t *testing.T, pool *pgxpool.Pool, programID i
 // 「手動予約した」ではない — docs/recording.md §4.4）。
 func insertProgramOverride(t *testing.T, pool *pgxpool.Pool, programID int64, priority int) {
 	t.Helper()
+	insertTestProgramSnapshot(t, pool, programID)
 	_, err := pool.Exec(context.Background(), `
-		INSERT INTO program_overrides (site, program_id, overrides, program_start_at, program_duration_ms)
-		VALUES ('default', $1, $2, now(), 3600000)`,
+		INSERT INTO program_overrides (site, program_id, overrides)
+		VALUES ('default', $1, $2)`,
 		programID, fmt.Sprintf(`{"priority": %d}`, priority),
 	)
 	if err != nil {

@@ -33,13 +33,13 @@ func TestServiceIDExtraction(t *testing.T) {
 func TestBuildContentPath_EmptyTemplateUsesFixedFormat(t *testing.T) {
 	startAt := time.Date(2026, 7, 24, 21, 0, 0, 0, time.FixedZone("JST", 9*3600))
 	serviceID := int32(5136)
-	res := sqlcgen.Reservation{ID: 1, Title: "NHKニュース7", ProgramStartAt: startAt, ServiceID: &serviceID}
+	snap := sqlcgen.ProgramSnapshot{Title: "NHKニュース7", StartAt: startAt, ServiceID: &serviceID}
 
-	got, err := buildContentPath(res, "")
+	got, err := buildContentPath(snap, "")
 	if err != nil {
 		t.Fatalf("buildContentPath: %v", err)
 	}
-	want := contentpath.GenerateContentPath(res.Title, res.ProgramStartAt, int(serviceID))
+	want := contentpath.GenerateContentPath(snap.Title, snap.StartAt, int(serviceID))
 	if got != want {
 		t.Errorf("buildContentPath with empty template = %q, want %q (fixed format)", got, want)
 	}
@@ -53,9 +53,9 @@ func TestBuildContentPath_EmptyTemplateUsesFixedFormat(t *testing.T) {
 func TestBuildContentPath_TextTemplateExpansion(t *testing.T) {
 	startAt := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	serviceID := int32(1)
-	res := sqlcgen.Reservation{ID: 1, Title: "t", ProgramStartAt: startAt, ServiceID: &serviceID}
+	snap := sqlcgen.ProgramSnapshot{Title: "t", StartAt: startAt, ServiceID: &serviceID}
 
-	got, err := buildContentPath(res, "{{.Year}}{{.Month}}{{.Day}}_{{.Title}}")
+	got, err := buildContentPath(snap, "{{.Year}}{{.Month}}{{.Day}}_{{.Title}}")
 	if err != nil {
 		t.Fatalf("buildContentPath: %v", err)
 	}
@@ -82,8 +82,8 @@ func TestBuildContentPath_TitleNoTraversal(t *testing.T) {
 	serviceID := int32(1)
 
 	for _, title := range malicious {
-		res := sqlcgen.Reservation{ID: 1, Title: title, ProgramStartAt: startAt, ServiceID: &serviceID}
-		path, err := buildContentPath(res, "{{.Title}}")
+		snap := sqlcgen.ProgramSnapshot{Title: title, StartAt: startAt, ServiceID: &serviceID}
+		path, err := buildContentPath(snap, "{{.Title}}")
 		if err != nil {
 			t.Fatalf("buildContentPath(%q): %v", title, err)
 		}
@@ -106,12 +106,12 @@ func TestBuildContentPath_TitleNoTraversal(t *testing.T) {
 func TestBuildContentPath_ErrorPropagation(t *testing.T) {
 	startAt := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	serviceID := int32(1)
-	res := sqlcgen.Reservation{ID: 1, Title: "t", ProgramStartAt: startAt, ServiceID: &serviceID}
+	snap := sqlcgen.ProgramSnapshot{Title: "t", StartAt: startAt, ServiceID: &serviceID}
 
-	if _, err := buildContentPath(res, "{{.NoSuchField}}"); err == nil {
+	if _, err := buildContentPath(snap, "{{.NoSuchField}}"); err == nil {
 		t.Error("expected error for unknown template field, got nil")
 	}
-	if _, err := buildContentPath(res, "{{.Title"); err == nil {
+	if _, err := buildContentPath(snap, "{{.Title"); err == nil {
 		t.Error("expected error for malformed template syntax, got nil")
 	}
 }

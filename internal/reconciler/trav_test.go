@@ -14,11 +14,11 @@ func TestBuildContentPath_AdversarialTraversal(t *testing.T) {
 	sid := int32(1024)
 	ch := "27"
 	ct := "GR"
-	base := sqlcgen.Reservation{
-		ProgramStartAt: time.Date(2026, 8, 1, 21, 0, 0, 0, time.FixedZone("JST", 9*3600)),
-		ServiceID:      &sid,
-		Channel:        &ch,
-		ChannelType:    &ct,
+	base := sqlcgen.ProgramSnapshot{
+		StartAt:     time.Date(2026, 8, 1, 21, 0, 0, 0, time.FixedZone("JST", 9*3600)),
+		ServiceID:   &sid,
+		Channel:     &ch,
+		ChannelType: &ct,
 	}
 
 	cases := []struct {
@@ -36,9 +36,9 @@ func TestBuildContentPath_AdversarialTraversal(t *testing.T) {
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
-			res := base
-			res.Title = tt.title
-			got, err := buildContentPath(res, tt.template)
+			snap := base
+			snap.Title = tt.title
+			got, err := buildContentPath(snap, tt.template)
 			if err != nil {
 				t.Fatalf("buildContentPath: %v", err)
 			}
@@ -69,14 +69,13 @@ func TestBuildContentPath_AdversarialTraversal(t *testing.T) {
 // 意図した階層を作れるという規約）。
 func TestBuildContentPath_ExplicitSlashInTemplateCreatesHierarchy(t *testing.T) {
 	sid := int32(1024)
-	res := sqlcgen.Reservation{
-		ID:             1,
-		Title:          "番組",
-		ProgramStartAt: time.Date(2026, 8, 1, 21, 0, 0, 0, time.FixedZone("JST", 9*3600)),
-		ServiceID:      &sid,
+	snap := sqlcgen.ProgramSnapshot{
+		Title:     "番組",
+		StartAt:   time.Date(2026, 8, 1, 21, 0, 0, 0, time.FixedZone("JST", 9*3600)),
+		ServiceID: &sid,
 	}
 
-	got, err := buildContentPath(res, `{{.StartAt.Format "2006/01"}}/{{.Title}}`)
+	got, err := buildContentPath(snap, `{{.StartAt.Format "2006/01"}}/{{.Title}}`)
 	if err != nil {
 		t.Fatalf("buildContentPath: %v", err)
 	}
@@ -94,14 +93,13 @@ func TestBuildContentPath_ExplicitSlashInTemplateCreatesHierarchy(t *testing.T) 
 // 確認する。
 func TestBuildContentPath_TitleSlashDoesNotCreateHierarchy(t *testing.T) {
 	sid := int32(1024)
-	res := sqlcgen.Reservation{
-		ID:             1,
-		Title:          "前編/後編",
-		ProgramStartAt: time.Date(2026, 8, 1, 21, 0, 0, 0, time.FixedZone("JST", 9*3600)),
-		ServiceID:      &sid,
+	snap := sqlcgen.ProgramSnapshot{
+		Title:     "前編/後編",
+		StartAt:   time.Date(2026, 8, 1, 21, 0, 0, 0, time.FixedZone("JST", 9*3600)),
+		ServiceID: &sid,
 	}
 
-	got, err := buildContentPath(res, "{{.Title}}")
+	got, err := buildContentPath(snap, "{{.Title}}")
 	if err != nil {
 		t.Fatalf("buildContentPath: %v", err)
 	}

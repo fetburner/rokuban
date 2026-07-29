@@ -7,7 +7,6 @@ package sqlcgen
 
 import (
 	"context"
-	"time"
 )
 
 const deleteReservationRuleMatchesBySite = `-- name: DeleteReservationRuleMatchesBySite :exec
@@ -225,55 +224,42 @@ func (q *Queries) ListProgramOverrideProgramIDsBySite(ctx context.Context, site 
 	return items, nil
 }
 
-const listProgramSnapshotsBySiteAndProgramIDs = `-- name: ListProgramSnapshotsBySiteAndProgramIDs :many
-SELECT p.program_id, p.name AS title, p.start_at, p.duration_ms,
-       s.network_id, s.service_id, s.channel_type, s.channel
-FROM epg_programs p
-JOIN epg_services s
-  ON s.site = p.site AND s.network_id = p.network_id AND s.service_id = p.service_id
-WHERE p.site = $1 AND p.program_id = ANY($2::bigint[])
+const listProgramSnapshotProgramIDsBySiteAndProgramIDs = `-- name: ListProgramSnapshotProgramIDsBySiteAndProgramIDs :many
+
+SELECT program_id FROM program_snapshots
+WHERE site = $1 AND program_id = ANY($2::bigint[])
 `
 
-type ListProgramSnapshotsBySiteAndProgramIDsParams struct {
+type ListProgramSnapshotProgramIDsBySiteAndProgramIDsParams struct {
 	Site       string
 	ProgramIds []int64
 }
 
-type ListProgramSnapshotsBySiteAndProgramIDsRow struct {
-	ProgramID   int64
-	Title       string
-	StartAt     time.Time
-	DurationMs  int64
-	NetworkID   int32
-	ServiceID   int32
-	ChannelType string
-	Channel     string
-}
-
-// 射影（epg_programs ⋈ epg_services）にまだある desired 番組のスナップショットを
-// 一括取得する。ここに出てこない programId は「射影から消えた」= 凍結対象。
-func (q *Queries) ListProgramSnapshotsBySiteAndProgramIDs(ctx context.Context, arg ListProgramSnapshotsBySiteAndProgramIDsParams) ([]ListProgramSnapshotsBySiteAndProgramIDsRow, error) {
-	rows, err := q.db.Query(ctx, listProgramSnapshotsBySiteAndProgramIDs, arg.Site, arg.ProgramIds)
+// 射影から program_snapshots への追従更新（#27）は
+// internal/db/queries/program_snapshots.sql の UpsertProgramSnapshotsFromProjection
+// 1 本にまとまった。ruler はそれを desiredIDs に対して呼ぶだけで、「射影にある間は
+// 更新、消えたら凍結」を自分で判定しない（射影に無い programId は
+// UpsertProgramSnapshotsFromProjection の JOIN にそもそも出てこないので、
+// 何もせず既存の program_snapshots 行がそのまま凍結される）。
+// 旧 ListProgramSnapshotsBySiteAndProgramIDs（epg_programs ⋈ epg_services を
+// 直接引いて reservations 側の CASE で凍結を判定していたもの）は撤去した。
+// 新規に reservations 行を作れるかどうかの判定に使う。program_snapshots への
+// FK があるため、desired な programId のうち program_snapshots の行を持たない
+// ものは予約行を作れない（射影にもなく、既存の意図・上書き・予約からも
+// スナップショットが作られたことがない = 材料がどこにもない）。
+func (q *Queries) ListProgramSnapshotProgramIDsBySiteAndProgramIDs(ctx context.Context, arg ListProgramSnapshotProgramIDsBySiteAndProgramIDsParams) ([]int64, error) {
+	rows, err := q.db.Query(ctx, listProgramSnapshotProgramIDsBySiteAndProgramIDs, arg.Site, arg.ProgramIds)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []ListProgramSnapshotsBySiteAndProgramIDsRow
+	var items []int64
 	for rows.Next() {
-		var i ListProgramSnapshotsBySiteAndProgramIDsRow
-		if err := rows.Scan(
-			&i.ProgramID,
-			&i.Title,
-			&i.StartAt,
-			&i.DurationMs,
-			&i.NetworkID,
-			&i.ServiceID,
-			&i.ChannelType,
-			&i.Channel,
-		); err != nil {
+		var program_id int64
+		if err := rows.Scan(&program_id); err != nil {
 			return nil, err
 		}
-		items = append(items, i)
+		items = append(items, program_id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -341,7 +327,7 @@ func (q *Queries) ListReservationProgramIDsBySite(ctx context.Context, site stri
 }
 
 const listReservationTitlesBySiteAndProgramIDs = `-- name: ListReservationTitlesBySiteAndProgramIDs :many
-SELECT program_id, title FROM reservations
+SELECT program_id, title FROM program_snapshots
 WHERE site = $1 AND program_id = ANY($2::bigint[])
 `
 
@@ -359,6 +345,9 @@ type ListReservationTitlesBySiteAndProgramIDsRow struct {
 // タイトルスナップショットを引く。programId だけでは手動確認する人間が判断できないため
 // （breaker.SampleProgram.Title のコメント参照）。呼び出し側が対象を
 // breaker.MaxSampleSize 程度に絞ってから呼ぶ想定なので、ここでは LIMIT を掛けない。
+// title は program_snapshots に移設された（#27）。削除候補の programId は
+// 呼び出し時点でまだ reservations 行を持つので、FK により program_snapshots の
+// 行も必ず存在する（reservations との JOIN は不要）。
 func (q *Queries) ListReservationTitlesBySiteAndProgramIDs(ctx context.Context, arg ListReservationTitlesBySiteAndProgramIDsParams) ([]ListReservationTitlesBySiteAndProgramIDsRow, error) {
 	rows, err := q.db.Query(ctx, listReservationTitlesBySiteAndProgramIDs, arg.Site, arg.ProgramIds)
 	if err != nil {

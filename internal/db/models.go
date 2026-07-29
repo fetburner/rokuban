@@ -6,29 +6,29 @@ import (
 	"time"
 )
 
-// Reservation は予約（desired state）。
+// Reservation は予約（ruler の 1 パスの導出出力）。
 //
-// NetworkID/ServiceID/ChannelType/Channel はチャンネル識別情報のスナップショット。
-// api の CreateReservation が EPG プロジェクション（GetProgramChannelIdentity）から
-// 引いて埋める。すべて nullable なのは、移行前（00009_reservation_channel.sql 以前）
-// の行の中に、番組が EPG プロジェクションから既に消えていて埋めようがないものが
-// あるため。NULL は移行前の残骸のみを意味し、新規予約では常に埋まる。
+// Phase 1（#27/#28/#30）で番組の事実のスナップショット（title / 開始時刻 / 尺 /
+// チャンネル識別）は program_snapshots に抽出され、state（active/detached）は
+// (rule_id, base) から導出する値になったため列としては撤去され、orphaned
+// （不可逆な観測）だけが OrphanedAt として残った。sqlcgen.Reservation が
+// canonical な生成型で、この型はテストの可読性のためだけに残っている
+// （CLAUDE.md 不変条件 12「表は行の寿命で割る」: この行に残るのは ruler の
+// 1 パスの出力だけ）。
 type Reservation struct {
-	ID                int64           `db:"id"`
-	Site              string          `db:"site"`
-	ProgramID         int64           `db:"program_id"`
-	RuleID            *int64          `db:"rule_id"`
-	State             string          `db:"state"`
-	Base              json.RawMessage `db:"base"`
-	Title             string          `db:"title"`
-	ProgramStartAt    time.Time       `db:"program_start_at"`
-	ProgramDurationMs int64           `db:"program_duration_ms"`
-	CreatedAt         time.Time       `db:"created_at"`
-	UpdatedAt         time.Time       `db:"updated_at"`
-	NetworkID         *int32          `db:"network_id"`
-	ServiceID         *int32          `db:"service_id"`
-	ChannelType       *string         `db:"channel_type"`
-	Channel           *string         `db:"channel"`
+	ID                    int64           `db:"id"`
+	Site                  string          `db:"site"`
+	ProgramID             int64           `db:"program_id"`
+	RuleID                *int64          `db:"rule_id"`
+	Base                  json.RawMessage `db:"base"`
+	CreatedAt             time.Time       `db:"created_at"`
+	UpdatedAt             time.Time       `db:"updated_at"`
+	DedupMatchRecordingID *int64          `db:"dedup_match_recording_id"`
+	DedupSimilarity       *float32        `db:"dedup_similarity"`
+	// OrphanedAt は番組終了後に schedule が観測されなかったという不可逆な観測
+	// （reconciler.markOrphaned だけが書く）。NULL は「まだ orphan と判定されて
+	// いない」ことを表す。
+	OrphanedAt *time.Time `db:"orphaned_at"`
 }
 
 // ReservationOptions は reservations.base / overrides の jsonb 構造。
@@ -270,7 +270,11 @@ const (
 	SourceManual = "manual"
 )
 
-// 予約状態。
+// 予約状態のラベル。Phase 1（#28/#30）以降、`reservations.state` という列は
+// 存在しない --- active/detached は (rule_id, base) から、orphaned は
+// orphaned_at の有無から、読むたびに導出する（CLAUDE.md 不変条件 9）。
+// この 3 つの文字列定数はテスト・ログでの表記を揃えるためだけに残す
+// （internal/api.ReservationState の値と同じ語彙）。
 const (
 	ReservationStateActive   = "active"
 	ReservationStateDetached = "detached"

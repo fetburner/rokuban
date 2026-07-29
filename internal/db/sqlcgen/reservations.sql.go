@@ -8,89 +8,43 @@ package sqlcgen
 import (
 	"context"
 	"encoding/json"
-	"time"
 )
 
 const createManualReservation = `-- name: CreateManualReservation :one
-INSERT INTO reservations (
-    site, program_id, title, program_start_at, program_duration_ms,
-    network_id, service_id, channel_type, channel
-)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-RETURNING id, site, program_id, rule_id, state, base, title, program_start_at, program_duration_ms, created_at, updated_at, network_id, service_id, channel_type, channel, dedup_match_recording_id, dedup_similarity
+INSERT INTO reservations (site, program_id)
+VALUES ($1, $2)
+RETURNING id, site, program_id, rule_id, base, created_at, updated_at, dedup_match_recording_id, dedup_similarity, orphaned_at
 `
 
 type CreateManualReservationParams struct {
-	Site              string
-	ProgramID         int64
-	Title             string
-	ProgramStartAt    time.Time
-	ProgramDurationMs int64
-	NetworkID         *int32
-	ServiceID         *int32
-	ChannelType       *string
-	Channel           *string
+	Site      string
+	ProgramID int64
 }
 
-// network_id/service_id/channel_type/channel は api がトランザクション内で
-// GetProgramChannelIdentity から引いた値をスナップショットする（サーバー権威。
-// クライアントからは受け取らない）。mirakc の programId 内部構造への依存を
-// reconciler から消すための列。
+// 番組の事実のスナップショット（title / 開始時刻 / 尺 / チャンネル識別）は
+// program_snapshots に抽出された（#27）。FK (site, program_id) REFERENCES
+// program_snapshots があるので、呼び出し側（api.CreateReservation）はこの
+// INSERT より先に program_snapshots の行を upsert しておくこと。
 //
 // reservations.source は持たない（issue #26 で削除）。この予約が「手動」で
 // あることは、この呼び出しの直前に api が書く program_intents.action='record'
 // の行がそのまま表す。
 func (q *Queries) CreateManualReservation(ctx context.Context, arg CreateManualReservationParams) (Reservation, error) {
-	row := q.db.QueryRow(ctx, createManualReservation,
-		arg.Site,
-		arg.ProgramID,
-		arg.Title,
-		arg.ProgramStartAt,
-		arg.ProgramDurationMs,
-		arg.NetworkID,
-		arg.ServiceID,
-		arg.ChannelType,
-		arg.Channel,
-	)
+	row := q.db.QueryRow(ctx, createManualReservation, arg.Site, arg.ProgramID)
 	var i Reservation
 	err := row.Scan(
 		&i.ID,
 		&i.Site,
 		&i.ProgramID,
 		&i.RuleID,
-		&i.State,
 		&i.Base,
-		&i.Title,
-		&i.ProgramStartAt,
-		&i.ProgramDurationMs,
 		&i.CreatedAt,
 		&i.UpdatedAt,
-		&i.NetworkID,
-		&i.ServiceID,
-		&i.ChannelType,
-		&i.Channel,
 		&i.DedupMatchRecordingID,
 		&i.DedupSimilarity,
+		&i.OrphanedAt,
 	)
 	return i, err
-}
-
-const deleteEndedReservations = `-- name: DeleteEndedReservations :execrows
-DELETE FROM reservations
-WHERE program_start_at + (program_duration_ms * interval '1 millisecond') < $1
-`
-
-// 番組終了後の GC（issue #24 の M2-3、docs/schema.md §3「行の物理削除（GC）は
-// 「番組の終了時刻を過ぎた後」のみ」）。state を問わず（active/detached/orphaned
-// いずれも）終了時刻 + 猶予を過ぎたら削除する。recordings.reservation_id は
-// ON DELETE SET NULL なので、録画履歴（recordings/media_assets）はこの削除の
-// 影響を受けない。
-func (q *Queries) DeleteEndedReservations(ctx context.Context, programStartAt time.Time) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteEndedReservations, programStartAt)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
 }
 
 const deleteReservation = `-- name: DeleteReservation :execrows
@@ -162,23 +116,26 @@ func (q *Queries) GetReservationBySiteAndProgramID(ctx context.Context, arg GetR
 }
 
 const getReservationFull = `-- name: GetReservationFull :one
-SELECT r.id, r.site, r.program_id, r.rule_id, r.state, r.base, r.title, r.program_start_at, r.program_duration_ms, r.created_at, r.updated_at, r.network_id, r.service_id, r.channel_type, r.channel, r.dedup_match_recording_id, r.dedup_similarity, i.action AS intent_action, o.overrides AS overrides
+SELECT r.id, r.site, r.program_id, r.rule_id, r.base, r.created_at, r.updated_at, r.dedup_match_recording_id, r.dedup_similarity, r.orphaned_at, s.site, s.program_id, s.title, s.start_at, s.duration_ms, s.network_id, s.service_id, s.channel_type, s.channel, s.updated_at, i.action AS intent_action, o.overrides AS overrides
 FROM reservations r
+JOIN program_snapshots s ON s.site = r.site AND s.program_id = r.program_id
 LEFT JOIN program_intents i ON i.site = r.site AND i.program_id = r.program_id
 LEFT JOIN program_overrides o ON o.site = r.site AND o.program_id = r.program_id
 WHERE r.id = $1
 `
 
 type GetReservationFullRow struct {
-	Reservation  Reservation
-	IntentAction *string
-	Overrides    json.RawMessage
+	Reservation     Reservation
+	ProgramSnapshot ProgramSnapshot
+	IntentAction    *string
+	Overrides       json.RawMessage
 }
 
-// 予約とユーザー意図・上書きを 1 行に合わせて返す。action は program_intents、
-// overrides は program_overrides（M2-4 / 00010 で分離）にあり、予約が存在しても
-// 意図・上書きのどちらかしかない（あるいはどちらも無い）ことがあるので
-// 両方 LEFT JOIN する。
+// 予約とユーザー意図・上書き・番組スナップショットを 1 行に合わせて返す。
+// action は program_intents、overrides は program_overrides（M2-4 / 00010 で分離）
+// にあり、予約が存在しても意図・上書きのどちらかしかない（あるいはどちらも
+// 無い）ことがあるので両方 LEFT JOIN する。番組スナップショットは FK が
+// あるので必ず存在する（INNER JOIN）。
 func (q *Queries) GetReservationFull(ctx context.Context, id int64) (GetReservationFullRow, error) {
 	row := q.db.QueryRow(ctx, getReservationFull, id)
 	var i GetReservationFullRow
@@ -187,19 +144,22 @@ func (q *Queries) GetReservationFull(ctx context.Context, id int64) (GetReservat
 		&i.Reservation.Site,
 		&i.Reservation.ProgramID,
 		&i.Reservation.RuleID,
-		&i.Reservation.State,
 		&i.Reservation.Base,
-		&i.Reservation.Title,
-		&i.Reservation.ProgramStartAt,
-		&i.Reservation.ProgramDurationMs,
 		&i.Reservation.CreatedAt,
 		&i.Reservation.UpdatedAt,
-		&i.Reservation.NetworkID,
-		&i.Reservation.ServiceID,
-		&i.Reservation.ChannelType,
-		&i.Reservation.Channel,
 		&i.Reservation.DedupMatchRecordingID,
 		&i.Reservation.DedupSimilarity,
+		&i.Reservation.OrphanedAt,
+		&i.ProgramSnapshot.Site,
+		&i.ProgramSnapshot.ProgramID,
+		&i.ProgramSnapshot.Title,
+		&i.ProgramSnapshot.StartAt,
+		&i.ProgramSnapshot.DurationMs,
+		&i.ProgramSnapshot.NetworkID,
+		&i.ProgramSnapshot.ServiceID,
+		&i.ProgramSnapshot.ChannelType,
+		&i.ProgramSnapshot.Channel,
+		&i.ProgramSnapshot.UpdatedAt,
 		&i.IntentAction,
 		&i.Overrides,
 	)
@@ -207,18 +167,20 @@ func (q *Queries) GetReservationFull(ctx context.Context, id int64) (GetReservat
 }
 
 const listReservationsBySite = `-- name: ListReservationsBySite :many
-SELECT r.id, r.site, r.program_id, r.rule_id, r.state, r.base, r.title, r.program_start_at, r.program_duration_ms, r.created_at, r.updated_at, r.network_id, r.service_id, r.channel_type, r.channel, r.dedup_match_recording_id, r.dedup_similarity, i.action AS intent_action, o.overrides AS overrides
+SELECT r.id, r.site, r.program_id, r.rule_id, r.base, r.created_at, r.updated_at, r.dedup_match_recording_id, r.dedup_similarity, r.orphaned_at, s.site, s.program_id, s.title, s.start_at, s.duration_ms, s.network_id, s.service_id, s.channel_type, s.channel, s.updated_at, i.action AS intent_action, o.overrides AS overrides
 FROM reservations r
+JOIN program_snapshots s ON s.site = r.site AND s.program_id = r.program_id
 LEFT JOIN program_intents i ON i.site = r.site AND i.program_id = r.program_id
 LEFT JOIN program_overrides o ON o.site = r.site AND o.program_id = r.program_id
 WHERE r.site = $1
-ORDER BY r.program_start_at
+ORDER BY s.start_at
 `
 
 type ListReservationsBySiteRow struct {
-	Reservation  Reservation
-	IntentAction *string
-	Overrides    json.RawMessage
+	Reservation     Reservation
+	ProgramSnapshot ProgramSnapshot
+	IntentAction    *string
+	Overrides       json.RawMessage
 }
 
 func (q *Queries) ListReservationsBySite(ctx context.Context, site string) ([]ListReservationsBySiteRow, error) {
@@ -235,19 +197,22 @@ func (q *Queries) ListReservationsBySite(ctx context.Context, site string) ([]Li
 			&i.Reservation.Site,
 			&i.Reservation.ProgramID,
 			&i.Reservation.RuleID,
-			&i.Reservation.State,
 			&i.Reservation.Base,
-			&i.Reservation.Title,
-			&i.Reservation.ProgramStartAt,
-			&i.Reservation.ProgramDurationMs,
 			&i.Reservation.CreatedAt,
 			&i.Reservation.UpdatedAt,
-			&i.Reservation.NetworkID,
-			&i.Reservation.ServiceID,
-			&i.Reservation.ChannelType,
-			&i.Reservation.Channel,
 			&i.Reservation.DedupMatchRecordingID,
 			&i.Reservation.DedupSimilarity,
+			&i.Reservation.OrphanedAt,
+			&i.ProgramSnapshot.Site,
+			&i.ProgramSnapshot.ProgramID,
+			&i.ProgramSnapshot.Title,
+			&i.ProgramSnapshot.StartAt,
+			&i.ProgramSnapshot.DurationMs,
+			&i.ProgramSnapshot.NetworkID,
+			&i.ProgramSnapshot.ServiceID,
+			&i.ProgramSnapshot.ChannelType,
+			&i.ProgramSnapshot.Channel,
+			&i.ProgramSnapshot.UpdatedAt,
 			&i.IntentAction,
 			&i.Overrides,
 		); err != nil {
@@ -262,28 +227,31 @@ func (q *Queries) ListReservationsBySite(ctx context.Context, site string) ([]Li
 }
 
 const listReservationsForSyncEvaluation = `-- name: ListReservationsForSyncEvaluation :many
-SELECT r.id, r.site, r.program_id, r.rule_id, r.state, r.base, r.title, r.program_start_at, r.program_duration_ms, r.created_at, r.updated_at, r.network_id, r.service_id, r.channel_type, r.channel, r.dedup_match_recording_id, r.dedup_similarity, i.action AS intent_action, o.overrides AS overrides
+SELECT r.id, r.site, r.program_id, r.rule_id, r.base, r.created_at, r.updated_at, r.dedup_match_recording_id, r.dedup_similarity, r.orphaned_at, s.site, s.program_id, s.title, s.start_at, s.duration_ms, s.network_id, s.service_id, s.channel_type, s.channel, s.updated_at, i.action AS intent_action, o.overrides AS overrides
 FROM reservations r
+JOIN program_snapshots s ON s.site = r.site AND s.program_id = r.program_id
 LEFT JOIN program_intents i ON i.site = r.site AND i.program_id = r.program_id
 LEFT JOIN program_overrides o ON o.site = r.site AND o.program_id = r.program_id
-WHERE r.site = $1 AND r.state <> 'orphaned'
-ORDER BY r.program_start_at
+WHERE r.site = $1 AND r.orphaned_at IS NULL
+ORDER BY s.start_at
 `
 
 type ListReservationsForSyncEvaluationRow struct {
-	Reservation  Reservation
-	IntentAction *string
-	Overrides    json.RawMessage
+	Reservation     Reservation
+	ProgramSnapshot ProgramSnapshot
+	IntentAction    *string
+	Overrides       json.RawMessage
 }
 
 // 同期対象の「候補」を返すクエリ（issue #54）。ここで絞っているのは
-// state <> 'orphaned' だけで、それ以上のことはしていない。orphaned だけを
-// 除外してよい理由は docs/schema.md §3「state を『mirakc への同期対象か』の
-// フィルタに使ってはならない」、docs/recording.md §4.3: 番組が終了しているので
-// schedule を作る意味がない。active/detached はどちらも「実質 manual として
-// 動く」ことがあるため候補に含める。旧名 ListActiveReservationsBySite は
-// state='active' でしか絞っておらず detached の予約に schedule が作られない
-// バグの原因だった（M2-4 で修正）。
+// orphaned_at IS NULL だけで、それ以上のことはしていない（#28/#30 で
+// state <> 'orphaned' から置き換え）。orphaned だけを除外してよい理由は
+// docs/schema.md §3「state を『mirakc への同期対象か』のフィルタに使っては
+// ならない」、docs/recording.md §4.3: 番組が終了しているので schedule を
+// 作る意味がない。active/detached はどちらも「実質 manual として動く」ことが
+// あるため候補に含める。旧名 ListActiveReservationsBySite は state='active' で
+// しか絞っておらず detached の予約に schedule が作られないバグの原因だった
+// （M2-4 で修正）。
 //
 // **「同期対象か」を最終的に決めるのは effective.skip（base + overrides +
 // program_intents.action の合成）であり、この行だけでは絞り切れていない。**
@@ -294,6 +262,9 @@ type ListReservationsForSyncEvaluationRow struct {
 // base.skip=true を立てた予約を「EPGStation と一致（Both）」と誤報告する
 // 見逃しが M2 の出口基準の測定器に入り込んだ（issue #54）。同じ間違いを
 // 繰り返さないため、クエリ名には「候補」であることだけを約束させる。
+//
+// 番組の開始時刻・尺（reconciler の開始遅延検出・orphaned 化判定に使う）は
+// program_snapshots に移設された（#27）ので JOIN する。FK があるので必ず存在する。
 func (q *Queries) ListReservationsForSyncEvaluation(ctx context.Context, site string) ([]ListReservationsForSyncEvaluationRow, error) {
 	rows, err := q.db.Query(ctx, listReservationsForSyncEvaluation, site)
 	if err != nil {
@@ -308,19 +279,22 @@ func (q *Queries) ListReservationsForSyncEvaluation(ctx context.Context, site st
 			&i.Reservation.Site,
 			&i.Reservation.ProgramID,
 			&i.Reservation.RuleID,
-			&i.Reservation.State,
 			&i.Reservation.Base,
-			&i.Reservation.Title,
-			&i.Reservation.ProgramStartAt,
-			&i.Reservation.ProgramDurationMs,
 			&i.Reservation.CreatedAt,
 			&i.Reservation.UpdatedAt,
-			&i.Reservation.NetworkID,
-			&i.Reservation.ServiceID,
-			&i.Reservation.ChannelType,
-			&i.Reservation.Channel,
 			&i.Reservation.DedupMatchRecordingID,
 			&i.Reservation.DedupSimilarity,
+			&i.Reservation.OrphanedAt,
+			&i.ProgramSnapshot.Site,
+			&i.ProgramSnapshot.ProgramID,
+			&i.ProgramSnapshot.Title,
+			&i.ProgramSnapshot.StartAt,
+			&i.ProgramSnapshot.DurationMs,
+			&i.ProgramSnapshot.NetworkID,
+			&i.ProgramSnapshot.ServiceID,
+			&i.ProgramSnapshot.ChannelType,
+			&i.ProgramSnapshot.Channel,
+			&i.ProgramSnapshot.UpdatedAt,
 			&i.IntentAction,
 			&i.Overrides,
 		); err != nil {
@@ -351,18 +325,17 @@ func (q *Queries) LockReservation(ctx context.Context, id int64) (int64, error) 
 
 const markReservationOrphaned = `-- name: MarkReservationOrphaned :execrows
 UPDATE reservations
-SET state = 'orphaned', updated_at = now()
-WHERE id = $1 AND state <> 'orphaned'
+SET orphaned_at = now(), updated_at = now()
+WHERE id = $1 AND orphaned_at IS NULL
 `
 
 // 番組終了後に schedule が観測されなかった予約を orphaned にする
-// （reconciler.markOrphaned から呼ばれる）。state = 'active' でしか絞らないと
-// detached の予約が対象から漏れる。docs/schema.md §3「state を『mirakc への
-// 同期対象か』のフィルタに使ってはならない」と同じクラスの誤りで、detached は
-// 「実質 manual として動く」状態（ListSyncableReservationsBySite のコメント
-// 参照）であり、番組が終了して orphaned 化する対象から外れる理由がない。
-// 除外してよいのは既に orphaned な行への再更新だけ（updated_at を無駄に
-// 進めない）なので active/detached の両方を対象にする。
+// （reconciler.markOrphaned から呼ばれる）。かつては state = 'active' でしか
+// 絞らず detached の予約が対象から漏れるバグがあった（#30 症状 2）。
+// orphaned_at は不可逆な観測で、書き手はここ（reconciler）だけ --- ruler は
+// 一切上書きしない（CLAUDE.md 不変条件 9）。除外してよいのは既に orphaned な
+// 行への再更新だけ（updated_at を無駄に進めない）なので active/detached の
+// 両方（= orphaned_at IS NULL の行すべて）を対象にする。
 // :execrows にしてあるのは、呼び出し側（reconciler.markOrphaned）が「実際に
 // 更新できたか」をログ出力の可否に使うため（0 行のときに「marked orphaned」と
 // ログに出ると実態と食い違う）。

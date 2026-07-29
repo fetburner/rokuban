@@ -239,21 +239,6 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 		desiredIDs = append(desiredIDs, id)
 	}
 
-	var snapshots []sqlcgen.ListProgramSnapshotsBySiteAndProgramIDsRow
-	if len(desiredIDs) > 0 {
-		snapshots, err = q.ListProgramSnapshotsBySiteAndProgramIDs(ctx, sqlcgen.ListProgramSnapshotsBySiteAndProgramIDsParams{
-			Site:       site,
-			ProgramIds: desiredIDs,
-		})
-		if err != nil {
-			return fmt.Errorf("listing program snapshots: %w", err)
-		}
-	}
-	snapshotByProgram := make(map[int64]sqlcgen.ListProgramSnapshotsBySiteAndProgramIDsRow, len(snapshots))
-	for _, s := range snapshots {
-		snapshotByProgram[s.ProgramID] = s
-	}
-
 	// 重複排除（M2-6）: 勝者ルールが dedupe_enabled な番組について、同じルールで
 	// 既に録れている番組を探す。判定は base の計算より前に済ませる必要がある
 	// （結果が base.skip に載る）。候補は勝者ルールがある番組だけ --- ルールが
@@ -275,20 +260,56 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 		return fmt.Errorf("evaluating dedupe: %w", err)
 	}
 
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("beginning tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	tq := sqlcgen.New(tx)
+
+	// program_snapshots への追従更新（#27）。「射影にある間は更新、消えたら凍結」を
+	// 担う唯一の書き手がここ。desiredIDs のうち今回射影にまだあるものだけが対象に
+	// なり（UpsertProgramSnapshotsFromProjection 内の epg_programs との JOIN が
+	// 絞る）、射影から消えた programId は何もされず既存の program_snapshots 行が
+	// そのまま凍結される。reservations.program_fkey が program_snapshots を
+	// 参照するため、予約行の upsert より先に実行する必要がある。
+	if len(desiredIDs) > 0 {
+		if _, err := tq.UpsertProgramSnapshotsFromProjection(ctx, sqlcgen.UpsertProgramSnapshotsFromProjectionParams{
+			Site:       site,
+			ProgramIds: desiredIDs,
+		}); err != nil {
+			return fmt.Errorf("upserting program snapshots from projection: %w", err)
+		}
+	}
+
+	// 新規に予約行を作れるのは program_snapshots に行がある programId だけ
+	// （FK）。上の Upsert で射影にあるものは今作られたばかり、無いものは
+	// 既存の意図・上書き・予約から過去に作られたものだけが該当する。
+	var materializable map[int64]struct{}
+	if len(desiredIDs) > 0 {
+		ids, err := tq.ListProgramSnapshotProgramIDsBySiteAndProgramIDs(ctx, sqlcgen.ListProgramSnapshotProgramIDsBySiteAndProgramIDsParams{
+			Site:       site,
+			ProgramIds: desiredIDs,
+		})
+		if err != nil {
+			return fmt.Errorf("checking program snapshot existence: %w", err)
+		}
+		materializable = make(map[int64]struct{}, len(ids))
+		for _, id := range ids {
+			materializable[id] = struct{}{}
+		}
+	}
+
 	rows := make([]rulerInputRow, 0, len(desiredIDs))
 	for _, programID := range desiredIDs {
-		snap, hasProjection := snapshotByProgram[programID]
-		if !hasProjection {
-			if _, exists := existingSet[programID]; !exists {
-				// 射影にもなく既存の予約行もない: スナップショットの材料が
-				// どこにもないので作成できない。program_intents.action=record は
-				// 単独では番組情報を持たないため、ここは待つしかない
-				// （通常は CreateReservation が予約行と intent を同時に作るため
-				// 起きないはずの経路。次のパスで射影が復活すれば拾える）。
-				slog.Warn("ruler: cannot materialize reservation without projection or existing row",
-					"site", site, "program_id", programID)
-				continue
-			}
+		if _, ok := materializable[programID]; !ok {
+			// 射影にも program_snapshots にもスナップショットの材料が無い:
+			// program_intents.action=record は単独では番組情報を持たないため、
+			// ここは待つしかない（通常は CreateReservation が予約行と intent を
+			// 同時に作るため起きないはずの経路。次のパスで射影が復活すれば拾える）。
+			slog.Warn("ruler: cannot materialize reservation without a program snapshot",
+				"site", site, "program_id", programID)
+			continue
 		}
 
 		var ruleID *int64
@@ -315,37 +336,14 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 			}
 		}
 
-		row := rulerInputRow{
+		rows = append(rows, rulerInputRow{
 			ProgramID:             programID,
 			RuleID:                ruleID,
 			Base:                  base,
-			HasProjection:         hasProjection,
 			DedupMatchRecordingID: dedupMatchRecordingID,
 			DedupSimilarity:       dedupSimilarity,
-		}
-		if hasProjection {
-			startAt := snap.StartAt
-			durationMs := snap.DurationMs
-			networkID := snap.NetworkID
-			serviceID := snap.ServiceID
-			channelType := snap.ChannelType
-			channel := snap.Channel
-			row.Title = snap.Title
-			row.StartAt = &startAt
-			row.DurationMs = &durationMs
-			row.NetworkID = &networkID
-			row.ServiceID = &serviceID
-			row.ChannelType = &channelType
-			row.Channel = &channel
-		}
-		rows = append(rows, row)
+		})
 	}
-
-	tx, err := r.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("beginning tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
 
 	results, err := upsertReservationsFromPass(ctx, tx, site, rows)
 	if err != nil {
@@ -364,7 +362,6 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 		return fmt.Errorf("rewriting reservation_rule_matches: %w", err)
 	}
 
-	tq := sqlcgen.New(tx)
 	var deleted int64
 	// newlyTripped: このパスで初めて発動した（tripped が false だった）ことを示す
 	// フラグ。metrics.RulerCircuitBreakerTrips.Inc() は tx.Commit の成否が
@@ -463,30 +460,26 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 func (r *Ruler) runGC(ctx context.Context) error {
 	cutoff := time.Now().Add(-r.cfg.RetentionGrace)
 
+	// #27 で GC は DeleteEndedProgramSnapshots 1 本に集約された。
+	// program_snapshots への FK が ON DELETE CASCADE なので、reservations /
+	// program_intents / program_overrides の 3 表がまとめて落ちる（移行前は
+	// 3 本の DELETE がそれぞれ別のスナップショット列を見ており、ドリフトして
+	// いたので表ごとに違う時刻で GC していた。docs/schema.md §3「行の物理削除
+	// （GC）は『番組の終了時刻を過ぎた後』のみ」）。recordings.reservation_id は
+	// ON DELETE SET NULL なので、録画履歴（recordings/media_assets）はこの
+	// 削除の影響を受けない。
 	q := sqlcgen.New(r.pool)
-	deletedReservations, err := q.DeleteEndedReservations(ctx, cutoff)
+	deletedSnapshots, err := q.DeleteEndedProgramSnapshots(ctx, cutoff)
 	if err != nil {
-		return fmt.Errorf("deleting ended reservations: %w", err)
-	}
-	deletedIntents, err := q.DeleteEndedProgramIntents(ctx, cutoff)
-	if err != nil {
-		return fmt.Errorf("deleting ended program intents: %w", err)
-	}
-	// program_overrides も program_intents と同じ cutoff で GC する。上書きの
-	// 寿命も意図と同様に放送の寿命に揃える（docs/schema.md §3.5）。
-	deletedOverrides, err := q.DeleteEndedProgramOverrides(ctx, cutoff)
-	if err != nil {
-		return fmt.Errorf("deleting ended program overrides: %w", err)
+		return fmt.Errorf("deleting ended program snapshots: %w", err)
 	}
 
-	metrics.RulerReservations.WithLabelValues("gc").Add(float64(deletedReservations))
+	metrics.RulerReservations.WithLabelValues("gc").Add(float64(deletedSnapshots))
 
-	if deletedReservations > 0 || deletedIntents > 0 || deletedOverrides > 0 {
+	if deletedSnapshots > 0 {
 		slog.Info("ruler: GC complete",
 			"cutoff", cutoff,
-			"deleted_reservations", deletedReservations,
-			"deleted_program_intents", deletedIntents,
-			"deleted_program_overrides", deletedOverrides,
+			"deleted_program_snapshots", deletedSnapshots,
 		)
 	}
 	return nil
