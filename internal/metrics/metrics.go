@@ -66,6 +66,23 @@ var (
 	})
 )
 
+// encode（M3-3）のメトリクス。
+var (
+	// EncodeDuration は encode 1 件の所要。録画長とコーデックで決まるため
+	// バケットは秒〜数時間をカバーする。
+	EncodeDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name:    "rokuban_encode_duration_seconds",
+		Help:    "Duration of encode jobs.",
+		Buckets: []float64{1, 5, 15, 30, 60, 120, 300, 600, 1800, 3600, 7200},
+	})
+
+	// EncodeJobs は encode ジョブの結果別の件数。
+	EncodeJobs = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "rokuban_encode_jobs_total",
+		Help: "Encode jobs by result.",
+	}, []string{"result"})
+)
+
 // 大量削除サーキットブレーカー（M2-5）のメトリクス。
 //
 // 既存の *_circuit_breaker_trips_total（カウンタ）は「何回発動したか」を数えるが、
@@ -336,6 +353,9 @@ func NewRegistry(backlog prometheus.Collector) *prometheus.Registry {
 		IngestDroppedPackets,
 		IngestErrorPackets,
 		IngestScrambledPackets,
+
+		EncodeDuration,
+		EncodeJobs,
 
 		CircuitBreakerTripped,
 

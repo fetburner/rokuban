@@ -145,6 +145,9 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[IngestJobArgs]) 
 		// record の削除（下記）の再試行であり、それが完了すれば ingest の
 		// 目的（コミット済み・record 削除済み）は満たされている。
 		result = "success"
+		// 原本があるなら encode の desired−observed も埋める（ヒント。真実は
+		// EnqueueMissingEncodes のレベルトリガー判定。issue #65）。
+		enqueueMissingEncodesFromContext(ctx, w.Pool, recordingID)
 		if _, err := w.MirakcClient.DeleteRecord(ctx, args.RecordID, true); err != nil {
 			log.Error("ingest: failed to delete edge record (already committed)", "err", err)
 		}
@@ -247,6 +250,10 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[IngestJobArgs]) 
 
 	// エッジ record の削除は失敗しても ingest は成功（コミット済み）。
 	result = "success"
+
+	// encode 投入はヒント。desired（encode_profiles）− observed（encoded assets）
+	// を埋めるレベルトリガー（命令的チェーンではない。issue #65）。
+	enqueueMissingEncodesFromContext(ctx, w.Pool, recordingID)
 
 	if _, err := w.MirakcClient.DeleteRecord(ctx, args.RecordID, true); err != nil {
 		log.Error("ingest: failed to delete edge record (committed OK)", "err", err)

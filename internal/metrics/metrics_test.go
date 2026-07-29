@@ -31,6 +31,8 @@ func TestNewRegistry_ExposesRequiredMetrics(t *testing.T) {
 	IngestDroppedPackets.Add(1)
 	IngestErrorPackets.Add(1)
 	IngestScrambledPackets.Add(1)
+	EncodeDuration.Observe(1)
+	EncodeJobs.WithLabelValues("success").Inc()
 	ReconcilePendingDiff.WithLabelValues("create").Set(0)
 	ReconcilePendingDiff.WithLabelValues("update").Set(0)
 	ReconcileSchedules.WithLabelValues("created").Inc()
@@ -69,6 +71,8 @@ func TestNewRegistry_ExposesRequiredMetrics(t *testing.T) {
 		"rokuban_ingest_dropped_packets_total",
 		"rokuban_ingest_error_packets_total",
 		"rokuban_ingest_scrambled_packets_total",
+		"rokuban_encode_duration_seconds",
+		"rokuban_encode_jobs_total",
 		"rokuban_reconcile_pending_diff",
 		"rokuban_reconcile_schedules_total",
 		"rokuban_reconcile_circuit_breaker_trips_total",

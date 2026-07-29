@@ -12,6 +12,7 @@ import (
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 	"github.com/riverqueue/river/rivertype"
 
+	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/webhook"
 )
@@ -53,6 +54,10 @@ type Deps struct {
 	MirakcClient *mirakc.Client
 	Pool         *pgxpool.Pool
 	MediaDir     string
+	ScratchDir   string
+
+	// Encode は構造化エンコードプロファイルと ffmpeg パス（issue #64 / #65）。
+	Encode config.EncodeConfig
 
 	// EpgRetentionGrace は放送済み番組を刈り取るまでの猶予。0 なら既定値。
 	EpgRetentionGrace time.Duration
@@ -92,6 +97,13 @@ func NewWorkers(deps *Deps) *river.Workers {
 		Pool:         deps.Pool,
 		MediaDir:     deps.MediaDir,
 		StallTimeout: deps.IngestStallTimeout,
+	})
+	river.AddWorker(workers, &EncodeWorker{
+		Pool:       deps.Pool,
+		MediaDir:   deps.MediaDir,
+		ScratchDir: deps.ScratchDir,
+		FFmpeg:     deps.Encode.FFmpeg,
+		Profiles:   deps.Encode,
 	})
 	river.AddWorker(workers, &EpgSyncWorker{
 		MirakcClient:   deps.MirakcClient,
