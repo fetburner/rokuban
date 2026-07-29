@@ -75,6 +75,15 @@ func TestLoad_Minimal(t *testing.T) {
 	if cfg.Encode.FFmpeg != "ffmpeg" {
 		t.Errorf("encode.ffmpeg = %q, want %q", cfg.Encode.FFmpeg, "ffmpeg")
 	}
+	if cfg.Webhook.URL != "" {
+		t.Errorf("webhook.url = %q, want empty (no-op by default)", cfg.Webhook.URL)
+	}
+	if cfg.Webhook.Timeout != 5*time.Second {
+		t.Errorf("webhook.timeout = %v, want %v", cfg.Webhook.Timeout, 5*time.Second)
+	}
+	if len(cfg.Webhook.Events) != 0 {
+		t.Errorf("webhook.events = %v, want empty (all known events)", cfg.Webhook.Events)
+	}
 	if cfg.Log.Level != "info" {
 		t.Errorf("log.level = %q, want %q", cfg.Log.Level, "info")
 	}
@@ -238,6 +247,13 @@ encode:
   profiles:
     - name: h264
     - name: h265
+webhook:
+  url: https://hooks.example.com/rokuban
+  secret: s3cret
+  timeout: 10s
+  events:
+    - recording.finished
+    - recording.failed
 log:
   level: debug
   format: text
@@ -297,6 +313,18 @@ log:
 	}
 	if len(cfg.Encode.Profiles) != 2 {
 		t.Errorf("encode.profiles len = %d, want 2", len(cfg.Encode.Profiles))
+	}
+	if cfg.Webhook.URL != "https://hooks.example.com/rokuban" {
+		t.Errorf("webhook.url = %q, want %q", cfg.Webhook.URL, "https://hooks.example.com/rokuban")
+	}
+	if cfg.Webhook.Secret != "s3cret" {
+		t.Errorf("webhook.secret = %q, want %q", cfg.Webhook.Secret, "s3cret")
+	}
+	if cfg.Webhook.Timeout != 10*time.Second {
+		t.Errorf("webhook.timeout = %v, want %v", cfg.Webhook.Timeout, 10*time.Second)
+	}
+	if want := []string{"recording.finished", "recording.failed"}; !slices.Equal(cfg.Webhook.Events, want) {
+		t.Errorf("webhook.events = %v, want %v", cfg.Webhook.Events, want)
 	}
 	if cfg.Log.Level != "debug" {
 		t.Errorf("log.level = %q, want %q", cfg.Log.Level, "debug")
