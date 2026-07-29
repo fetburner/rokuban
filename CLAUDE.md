@@ -62,19 +62,17 @@ pnpm exec orval  # openapi.yaml → web/src/api/generated.ts
 
 タスクの分解・受け入れ基準は GitHub issue 側にある。**親 issue には一覧しか置かない**ので、`gh issue view <親>` でタスク表を見て、**担当タスクのサブ issue だけ読む**。
 
-| マイルストーン | 出口 | 親 issue | タスク |
-|---|---|---|---|
-| M0 歩く骨格 | ✅ 完了 | [#12](https://github.com/fetburner/rokuban/issues/12) | 本文内 |
-| M1 録れる | ✅ 完了 | [#13](https://github.com/fetburner/rokuban/issues/13) | 本文内 |
-| M2 任せられる | 実装 ✅ / 並走 [#52](https://github.com/fetburner/rokuban/issues/52) | [#24](https://github.com/fetburner/rokuban/issues/24) | **M2-1〜M2-20 = #32〜#51**（`#(31+N)` が M2-N） |
-| M3 置き換えられる | 未着手 | 未起票 | [#14](https://github.com/fetburner/rokuban/issues/14) の M3 節（粗粒度） |
-| M4 広げられる | 未着手 | 未起票 | [#14](https://github.com/fetburner/rokuban/issues/14) の M4 節（粗粒度） |
+M0（歩く骨格）・M1（録れる）・M2（任せられる）の実装は完了している。open なのは次だけ。
 
-- 横断: [#14](https://github.com/fetburner/rokuban/issues/14) 粗粒度バックログ（M3 / M4 の唯一の一覧）。移行計画（#6）と懸念トラッキング（#11）は役割を終えて close 済み
-- **`reservations` のスキーマ整理（#27 / #28 / #30）と同期対象判定の述語の集約（#54）は Phase 1 で完了した**（`program_snapshots` への抽出、`state` → `orphaned_at`）。**M3 着手前に決める設計課題として残るのは #29 / #31 / #53**（API と mirakc tag の資源同定。いずれも「導出器が作るキーを宛先にしない」という同じ判断なので同時が安い。**#31 は案 A = 多拠点を取る、で決定済み**）
-  - **これらは元は 1 つの歪みの別々の症状**である ——「`reservations` が ruler の導出出力と API リソースの両方を兼ねている」。修正はいつも同じ手（導出できないものを `(site, program_id)` の別表・別キーに引き剥がす）で、`program_intents`（#18）・`program_overrides`（M2-4）・`program_snapshots` / `orphaned_at`（Phase 1）で 3 回済んでいる
+| | 入口 |
+|---|---|
+| M2 の出口基準の検証（EPGStation と 1〜2 週間並走し、予約差分がゼロ or 全件説明可能） | [#52](https://github.com/fetburner/rokuban/issues/52) |
+| M3（置き換えられる）/ M4（広げられる）の粗粒度バックログ。着手時に親 issue へ分解する | [#14](https://github.com/fetburner/rokuban/issues/14) |
+
+- **M3 着手前に決める設計課題は #29 / #31 / #53**（API と mirakc tag の資源同定。いずれも「導出器が作るキーを宛先にしない」という同じ判断なので同時が安い。**#31 は案 A = 多拠点を取る、で決定済み**）
+  - **3 件は 1 つの歪みの別々の症状**である ——「`reservations` が ruler の導出出力と API リソースの両方を兼ねている」。修正は毎回同じ手（導出できないものを `(site, program_id)` の別表・別キーに引き剥がす）で、`program_intents` / `program_overrides` / `program_snapshots` の 3 回で済ませてきた
   - **#52 の並走中には着手しない。** `reservations` と shadow-diff（出口基準を測る道具そのもの）を触るので、測定の連続性が切れる
-- M3 / M4 の親 issue を起票するときは #24 と #32〜#51 の形式に倣う（親 = 一覧 + 依存関係 + 出口基準、サブ = 詳細 + 受け入れ基準）
+- M3 / M4 の親 issue は「親 = 一覧 + 依存関係 + 出口基準、サブ = 詳細 + 受け入れ基準」の形で起票する
 
 ### ドキュメントと issue の保守
 
@@ -82,7 +80,9 @@ pnpm exec orval  # openapi.yaml → web/src/api/generated.ts
 
 **実装と同時に更新する。** 実装が docs を追い越したらその PR で直す（別タスクにしない）。古い記述は、古いと分かるまで信じられてしまうぶん、無いより悪い。
 
-**終わったら close する。** 完了したタスク・直したバグはその場で close し、「何がどう解決したか」「どの回帰テストが守っているか」を残す。巨大な issue は、残っている項目だけをサブ issue に切り出して親を close する（#6 / #8 / #11 / #18 でそうした）。close しても読めるので、経緯は失われない。
+**終わったら close する。** 完了したタスク・直したバグはその場で close し、「何がどう解決したか」「どの回帰テストが守っているか」を issue 側に残す。巨大な issue は、残っている項目だけをサブ issue に切り出して親を close する。
+
+**close したものへのポインタを索引に残さない。** 「〜は完了した」「〜は close 済み」という報告を資料マップ・タスクマップに書くと、**読んだ人がその issue を見に行ってしまう**。索引に載せるのは「これから読む必要があるもの」だけにする。完了の事実は、それが変えたコードと docs 自身が示している。
 
 **足す前に「これを読まないと判断を誤る人がいるか」を問う。** docs も issue も価値は「必要な節だけを 1 回で読めること」であって量ではない。同じことを docs と issue の両方に書かない。**ただし過去の失敗の記録は消さない** —— 不変条件の実例のように、もう存在しない列の話でも繰り返さないために効いているものがある。消すのは「**現在の実装はこうである**」と読めて、かつ事実でなくなった記述だけ。
 
@@ -151,7 +151,7 @@ pnpm exec orval  # openapi.yaml → web/src/api/generated.ts
 
 #### 12. 表は行の寿命で割る
 
-**1 表 = 1 つの書き手 = 1 つの寿命。** 不変条件 9 は**列**の粒度なので、行に寿命が混ざっているケースを網に掛けられない。この規律の言語化を促したのは `reservations` で、この表の 1 行には 3 つの寿命が同居していた（**Phase 1 で解消済み。#27 / #28 / #30**）:
+**1 表 = 1 つの書き手 = 1 つの寿命。** 不変条件 9 は**列**の粒度なので、行に寿命が混ざっているケースを網に掛けられない。この規律の言語化を促したのは `reservations` で、この表の 1 行には 3 つの寿命が同居していた:
 
 | 同居していたもの | 寿命 | 当時の状態 |
 |---|---|---|
