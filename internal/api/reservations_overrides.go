@@ -72,6 +72,12 @@ func (h *Server) UpdateReservationOverrides(ctx context.Context, req UpdateReser
 	if err != nil {
 		return UpdateReservationOverrides400JSONResponse{Error: err.Error()}, nil
 	}
+	// 未知プロファイル名は overrides でも拒否する（ルールと同じ規律。issue #64）。
+	if req.Body.EncodeProfiles != nil {
+		if err := h.validateEncodeProfiles(*req.Body.EncodeProfiles); err != nil {
+			return UpdateReservationOverrides400JSONResponse{Error: err.Error()}, nil
+		}
+	}
 
 	tx, err := h.pool.Begin(ctx)
 	if err != nil {

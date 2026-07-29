@@ -202,6 +202,27 @@ func (h *Server) insertRulerPassHint(ctx context.Context, tx pgx.Tx) error {
 	return nil
 }
 
+// validateEncodeProfiles は encodeProfiles の各名前が config 定義に存在することを
+// 検査する。ルール保存と予約 overrides の両方で使う（issue #64「ルール / overrides
+// 保存時に未知プロファイル名を拒否」）。
+//
+// h.encodeProfiles が nil のとき（RouterConfig.EncodeProfileNames 未設定 = テストの
+// 部分構成）は名前検証をスキップする。空 map（len=0 だが non-nil）は「プロファイルが
+// 1 つも無い」とみなし、どんな名前も未知として弾く。
+func (h *Server) validateEncodeProfiles(names []string) error {
+	for _, name := range names {
+		if name == "" {
+			return errors.New("encodeProfiles must not contain empty names")
+		}
+		if h.encodeProfiles != nil {
+			if _, ok := h.encodeProfiles[name]; !ok {
+				return fmt.Errorf("unknown encode profile %q", name)
+			}
+		}
+	}
+	return nil
+}
+
 // validateRuleInput はルール create/update の入力を検査する。
 // encodeProfiles の存在検証は h.encodeProfiles（config から注入）を使う。
 // 集合が nil のときは名前検証をスキップする（テストの部分構成）。
@@ -215,18 +236,8 @@ func (h *Server) validateRuleInput(ctx context.Context, in RuleInput) error {
 		}
 	}
 	if in.EncodeProfiles != nil {
-		for _, name := range *in.EncodeProfiles {
-			if name == "" {
-				return errors.New("encodeProfiles must not contain empty names")
-			}
-			// 集合が nil のときは検証スキップ（RouterConfig.EncodeProfileNames 未設定）。
-			// 空 map（len=0 だが non-nil）は「プロファイルが 1 つも無い」とみなし、
-			// どんな名前も未知として 400 にする。
-			if h.encodeProfiles != nil {
-				if _, ok := h.encodeProfiles[name]; !ok {
-					return fmt.Errorf("unknown encode profile %q", name)
-				}
-			}
+		if err := h.validateEncodeProfiles(*in.EncodeProfiles); err != nil {
+			return err
 		}
 	}
 	if in.DedupeEnabled != nil && *in.DedupeEnabled {

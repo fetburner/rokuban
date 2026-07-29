@@ -44,8 +44,8 @@ type RouterConfig struct {
 	MetricsRegistry *prometheus.Registry
 
 	// EncodeProfileNames は config.encode.profiles の名前一覧。
-	// ルール create/update で encodeProfiles に未知名があれば 400 にする（issue #64）。
-	// 空/nil なら名前検証をスキップする（テストの部分構成を許す）。
+	// ルール create/update と予約 overrides で encodeProfiles に未知名があれば 400 にする
+	// （issue #64）。空/nil なら名前検証をスキップする（テストの部分構成を許す）。
 	EncodeProfileNames []string
 }
 
