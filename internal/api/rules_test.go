@@ -174,7 +174,8 @@ func TestRulesCRUD(t *testing.T) {
 		}
 	}
 
-	// dedupeWindowSeconds: 負値は 400、0 は境界として通る。
+	// dedupeWindowSeconds: 0 以下は 400（0 は「時間窓なし」ではなく恒偽。窓なしは
+	// フィールドを省略する）、正値は通る。境界の両側を見る。
 	{
 		body := map[string]any{"name": "dedupe-window-negative", "dedupeWindowSeconds": -1}
 		raw, _ := json.Marshal(body)
@@ -195,8 +196,21 @@ func TestRulesCRUD(t *testing.T) {
 			t.Fatal(err)
 		}
 		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("dedupeWindowSeconds=0 status = %d, want 400 "+
+				"(0 is not \"no window\": it makes the window condition always false)", resp.StatusCode)
+		}
+	}
+	{
+		body := map[string]any{"name": "dedupe-window-positive", "dedupeWindowSeconds": 86400}
+		raw, _ := json.Marshal(body)
+		resp, err := http.Post(srv.URL+"/api/rules", "application/json", bytes.NewReader(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
 		if resp.StatusCode != http.StatusCreated {
-			t.Fatalf("dedupeWindowSeconds=0 status = %d, want 201", resp.StatusCode)
+			t.Fatalf("dedupeWindowSeconds=86400 status = %d, want 201", resp.StatusCode)
 		}
 	}
 

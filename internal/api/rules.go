@@ -229,12 +229,17 @@ func validateRuleInput(ctx context.Context, pool *pgxpool.Pool, in RuleInput) er
 			return fmt.Errorf("dedupeThreshold must be > 0 and <= 1 (similarity() ranges over [0,1]; 0 would match every program and silently stop recording), got %v", v)
 		}
 	}
-	// dedupeWindowSeconds は interval に変換され、
-	// "rec.program_start_at >= now() - c.dedupe_window" の右辺に使われる。負値を許すと
-	// 右辺が未来の時刻になり条件が恒偽になる（重複排除が黙って無効化される）ため負値を弾く。
-	// 0 は「時間窓なし相当」として許容する（危険は恒偽側だけなので片側のみ弾けば足りる）。
-	if in.DedupeWindowSeconds != nil && *in.DedupeWindowSeconds < 0 {
-		return fmt.Errorf("dedupeWindowSeconds must not be negative, got %d", *in.DedupeWindowSeconds)
+	// dedupeWindowSeconds は interval に変換され、internal/ruler/dedupe.go の
+	// "rec.program_start_at >= now() - c.dedupe_window" の右辺に使われる。
+	//
+	// **0 も弾く。** 0 は「時間窓なし」ではない —— 窓なしは NULL（列を省略する）であり、
+	// 0 を入れると条件が "program_start_at >= now()" になって、比較対象が必ず過去の
+	// 放送である以上つねに偽になる。重複排除が黙って無効化されるという、負値とまったく
+	// 同じ失敗モードである（dedupeThreshold の 0 を弾くのと対称）。窓を設けたくない
+	// なら値を送らない。
+	if in.DedupeWindowSeconds != nil && *in.DedupeWindowSeconds <= 0 {
+		return fmt.Errorf("dedupeWindowSeconds must be > 0 (0 is not \"no window\" — omit the field for that; "+
+			"0 makes the window condition always false and silently disables dedupe), got %d", *in.DedupeWindowSeconds)
 	}
 	if in.TextMatches != nil {
 		q := sqlcgen.New(pool)

@@ -1221,11 +1221,12 @@ components:
           type: integer
           format: int64
           nullable: true
-          minimum: 0
+          exclusiveMinimum: 0
           description: |
-            重複排除の時間窓（秒）。interval の API 表現。負値を許すと
-            `program_start_at >= now() - window` が未来の開始時刻を要求する形になり
-            常に偽（重複排除が黙って無効化される）。
+            重複排除の時間窓（秒）。interval の API 表現。省略（null）が「時間窓なし」で、
+            0 はその意味にはならない。0 以下を許すと
+            `program_start_at >= now() - window` が現在以降の開始時刻を要求する形になり、
+            比較対象は必ず過去の放送なので常に偽（重複排除が黙って無効化される）。
         keepOriginal:
           type: string
           enum: [always, until_encoded]

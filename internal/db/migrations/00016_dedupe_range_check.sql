@@ -14,8 +14,11 @@
 --     何にも止められない）
 --   * 1 を超えると恒偽になり、重複排除が黙って無効化される
 -- dedupe_window は "rec.program_start_at >= now() - c.dedupe_window" の
--- 右辺に使われるため、負値を入れると右辺が未来の時刻になり恒偽になる
--- （重複排除が黙って無効化される）。
+-- 右辺に使われるため、0 以下を入れると右辺が現在以降の時刻になり恒偽になる
+-- （比較対象は必ず過去の放送なので、重複排除が黙って無効化される）。
+-- **0 は「時間窓なし」ではない。** 窓なしは NULL（dedupe.go の
+-- "c.dedupe_window IS NULL OR ..." が条件そのものを外す経路）であり、
+-- 0 は閾値 0 と対称の恒偽トラップなので同じく禁止する。
 --
 -- 不変条件 10「あってはいけない組み合わせは CHECK で禁止するより表現不可能に
 -- する方が強い」の理想からは、real / interval という一般の列型ではこの範囲を
@@ -41,17 +44,17 @@ UPDATE rules
 SET dedupe_enabled = false,
     dedupe_window = NULL
 WHERE dedupe_window IS NOT NULL
-  AND dedupe_window < interval '0';
+  AND dedupe_window <= interval '0';
 
 ALTER TABLE rules
     ADD CONSTRAINT rules_dedupe_threshold_range
         CHECK (dedupe_threshold IS NULL
                OR (dedupe_threshold > 0 AND dedupe_threshold <= 1)),
-    ADD CONSTRAINT rules_dedupe_window_nonnegative
-        CHECK (dedupe_window IS NULL OR dedupe_window >= interval '0');
+    ADD CONSTRAINT rules_dedupe_window_positive
+        CHECK (dedupe_window IS NULL OR dedupe_window > interval '0');
 
 -- +goose Down
 
 ALTER TABLE rules
-    DROP CONSTRAINT IF EXISTS rules_dedupe_window_nonnegative,
+    DROP CONSTRAINT IF EXISTS rules_dedupe_window_positive,
     DROP CONSTRAINT IF EXISTS rules_dedupe_threshold_range;

@@ -743,9 +743,10 @@ type Rule struct {
 	// （録画が黙って止まる）。1 を超えると常に偽になり、重複排除が黙って無効化される。
 	DedupeThreshold *float32 `json:"dedupeThreshold,omitempty"`
 
-	// DedupeWindowSeconds 重複排除の時間窓（秒）。interval の API 表現。負値を許すと
-	// `program_start_at >= now() - window` が未来の開始時刻を要求する形になり
-	// 常に偽（重複排除が黙って無効化される）。
+	// DedupeWindowSeconds 重複排除の時間窓（秒）。interval の API 表現。省略（null）が「時間窓なし」で、
+	// 0 はその意味にはならない。0 以下を許すと
+	// `program_start_at >= now() - window` が現在以降の開始時刻を要求する形になり、
+	// 比較対象は必ず過去の放送なので常に偽（重複排除が黙って無効化される）。
 	DedupeWindowSeconds *int64    `json:"dedupeWindowSeconds,omitempty"`
 	Description         *string   `json:"description,omitempty"`
 	DurationMaxMs       *int64    `json:"durationMaxMs,omitempty"`
@@ -792,9 +793,10 @@ type RuleInput struct {
 	// （録画が黙って止まる）。1 を超えると常に偽になり、重複排除が黙って無効化される。
 	DedupeThreshold *float32 `json:"dedupeThreshold,omitempty"`
 
-	// DedupeWindowSeconds 重複排除の時間窓（秒）。interval の API 表現。負値を許すと
-	// `program_start_at >= now() - window` が未来の開始時刻を要求する形になり
-	// 常に偽（重複排除が黙って無効化される）。
+	// DedupeWindowSeconds 重複排除の時間窓（秒）。interval の API 表現。省略（null）が「時間窓なし」で、
+	// 0 はその意味にはならない。0 以下を許すと
+	// `program_start_at >= now() - window` が現在以降の開始時刻を要求する形になり、
+	// 比較対象は必ず過去の放送なので常に偽（重複排除が黙って無効化される）。
 	DedupeWindowSeconds *int64    `json:"dedupeWindowSeconds,omitempty"`
 	Description         *string   `json:"description,omitempty"`
 	DurationMaxMs       *int64    `json:"durationMaxMs,omitempty"`
