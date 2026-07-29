@@ -638,10 +638,15 @@ type Recording struct {
 	Description *string      `json:"description,omitempty"`
 	DropSummary *DropSummary `json:"dropSummary,omitempty"`
 	DurationMs  int64        `json:"durationMs"`
-	EndedAt     *time.Time   `json:"endedAt,omitempty"`
-	EventId     int          `json:"eventId"`
-	Id          int64        `json:"id"`
-	NetworkId   int          `json:"networkId"`
+
+	// EncodedProfiles 再生可能な encoded 派生物のプロファイル名（media_assets の active のみ）。
+	// ブラウザ再生は GET /api/recordings/{id}/file?profile=<name> を使う。
+	// desired（encode_profiles）ではなく observed。空配列は省略可。
+	EncodedProfiles *[]string  `json:"encodedProfiles,omitempty"`
+	EndedAt         *time.Time `json:"endedAt,omitempty"`
+	EventId         int        `json:"eventId"`
+	Id              int64      `json:"id"`
+	NetworkId       int        `json:"networkId"`
 
 	// QualityEvents recording.failed / record-broken / bcas_anomaly の履歴
 	QualityEvents *[]map[string]interface{} `json:"qualityEvents,omitempty"`

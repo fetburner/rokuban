@@ -198,8 +198,8 @@ func TestRecordingFile_FullContent(t *testing.T) {
 	if !bytes.Equal(body, f.content) {
 		t.Errorf("body length = %d, want %d", len(body), len(f.content))
 	}
-	if ct := resp.Header.Get("Content-Type"); ct != contentType {
-		t.Errorf("Content-Type = %q, want %q", ct, contentType)
+	if ct := resp.Header.Get("Content-Type"); ct != contentTypeOriginal {
+		t.Errorf("Content-Type = %q, want %q", ct, contentTypeOriginal)
 	}
 	// VLC がシークするために必須
 	if ar := resp.Header.Get("Accept-Ranges"); ar != "bytes" {
@@ -462,8 +462,8 @@ func TestRecordingFile_AccelRedirect(t *testing.T) {
 	if len(body) != 0 {
 		t.Errorf("body = %d bytes, want 0（バイト転送は nginx の担当）", len(body))
 	}
-	if ct := resp.Header.Get("Content-Type"); ct != contentType {
-		t.Errorf("Content-Type = %q, want %q", ct, contentType)
+	if ct := resp.Header.Get("Content-Type"); ct != contentTypeOriginal {
+		t.Errorf("Content-Type = %q, want %q", ct, contentTypeOriginal)
 	}
 	got := resp.Header.Get("X-Accel-Redirect")
 	if got == "" {
@@ -496,6 +496,162 @@ func TestRecordingFile_AccelRedirectRejectsTraversal(t *testing.T) {
 	}
 	if got := resp.Header.Get("X-Accel-Redirect"); got != "" {
 		t.Errorf("X-Accel-Redirect = %q, want empty", got)
+	}
+}
+
+// seedEncodedAsset は active な encoded 派生物を 1 件コミットする。
+func seedEncodedAsset(t *testing.T, pool *pgxpool.Pool, recordingID int64, profile, relPath string, size int64) int64 {
+	t.Helper()
+	id, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
+		RecordingID: recordingID,
+		Kind:        db.AssetKindEncoded,
+		Profile:     &profile,
+		RelPath:     relPath,
+		SizeBytes:   size,
+	})
+	if err != nil {
+		t.Fatalf("seeding encoded media_asset: %v", err)
+	}
+	return id
+}
+
+// encoded 派生物が ?profile= で配信され、Content-Type が video/mp4 になること。
+func TestRecordingFile_EncodedProfile(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	mediaDir := t.TempDir()
+	content := []byte("fake-mp4-payload-for-browser-playback-0123456789")
+	relPath := "2026/07/recording_h264.mp4"
+	full := filepath.Join(mediaDir, relPath)
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(full, content, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	recordingID := seedRecording(t, pool)
+	// 原本は無くても encoded だけで再生できる（until_encoded 後を想定）
+	seedEncodedAsset(t, pool, recordingID, "h264", relPath, int64(len(content)))
+
+	r := chi.NewRouter()
+	New(pool, Config{MediaDir: mediaDir}).Mount(r)
+	srv := httptest.NewServer(r)
+	t.Cleanup(srv.Close)
+
+	url := fmt.Sprintf("%s/api/recordings/%d/file?profile=h264", srv.URL, recordingID)
+	resp, body := get(t, url, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if !bytes.Equal(body, content) {
+		t.Errorf("body length = %d, want %d", len(body), len(content))
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != contentTypeMP4 {
+		t.Errorf("Content-Type = %q, want %q", ct, contentTypeMP4)
+	}
+	if ar := resp.Header.Get("Accept-Ranges"); ar != "bytes" {
+		t.Errorf("Accept-Ranges = %q, want bytes", ar)
+	}
+
+	// Range も効く
+	resp, body = get(t, url, map[string]string{"Range": "bytes=0-9"})
+	if resp.StatusCode != http.StatusPartialContent {
+		t.Fatalf("range status = %d, want 206", resp.StatusCode)
+	}
+	if !bytes.Equal(body, content[:10]) {
+		t.Errorf("range body = %q, want %q", body, content[:10])
+	}
+}
+
+// 存在しないプロファイル・削除済み encoded・ごみ箱録画は 404。
+func TestRecordingFile_EncodedNotFound(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	mediaDir := t.TempDir()
+	content := []byte("mp4-bytes")
+	relPath := "enc.mp4"
+	if err := os.WriteFile(filepath.Join(mediaDir, relPath), content, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	recordingID := seedRecording(t, pool)
+	seedEncodedAsset(t, pool, recordingID, "h264", relPath, int64(len(content)))
+
+	r := chi.NewRouter()
+	New(pool, Config{MediaDir: mediaDir}).Mount(r)
+	srv := httptest.NewServer(r)
+	t.Cleanup(srv.Close)
+
+	t.Run("未知プロファイル", func(t *testing.T) {
+		resp, _ := get(t, fmt.Sprintf("%s/api/recordings/%d/file?profile=h265", srv.URL, recordingID), nil)
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("status = %d, want 404", resp.StatusCode)
+		}
+	})
+
+	t.Run("アセットが削除済み", func(t *testing.T) {
+		if _, err := pool.Exec(context.Background(),
+			`UPDATE media_assets SET state = 'deleted', deleted_at = now()
+			 WHERE recording_id = $1 AND kind = 'encoded'`, recordingID); err != nil {
+			t.Fatalf("mark deleted: %v", err)
+		}
+		resp, _ := get(t, fmt.Sprintf("%s/api/recordings/%d/file?profile=h264", srv.URL, recordingID), nil)
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("status = %d, want 404", resp.StatusCode)
+		}
+	})
+}
+
+// ごみ箱録画の encoded は配らない（原本と同じ規律）。
+func TestRecordingFile_EncodedDeletedRecording(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	mediaDir := t.TempDir()
+	content := []byte("mp4")
+	if err := os.WriteFile(filepath.Join(mediaDir, "x.mp4"), content, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	recordingID := seedRecording(t, pool)
+	seedEncodedAsset(t, pool, recordingID, "h264", "x.mp4", int64(len(content)))
+	if _, err := pool.Exec(context.Background(),
+		"UPDATE recordings SET deleted_at = now() WHERE id = $1", recordingID); err != nil {
+		t.Fatalf("trash: %v", err)
+	}
+
+	r := chi.NewRouter()
+	New(pool, Config{MediaDir: mediaDir}).Mount(r)
+	srv := httptest.NewServer(r)
+	t.Cleanup(srv.Close)
+
+	resp, _ := get(t, fmt.Sprintf("%s/api/recordings/%d/file?profile=h264", srv.URL, recordingID), nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
+// profile 無しは従来どおり原本。原本が無く encoded だけあっても profile 無しは 404。
+func TestRecordingFile_OriginalVsEncoded(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	mediaDir := t.TempDir()
+	mp4 := []byte("only-encoded")
+	if err := os.WriteFile(filepath.Join(mediaDir, "e.mp4"), mp4, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	recordingID := seedRecording(t, pool)
+	seedEncodedAsset(t, pool, recordingID, "h264", "e.mp4", int64(len(mp4)))
+
+	r := chi.NewRouter()
+	New(pool, Config{MediaDir: mediaDir}).Mount(r)
+	srv := httptest.NewServer(r)
+	t.Cleanup(srv.Close)
+
+	resp, _ := get(t, fmt.Sprintf("%s/api/recordings/%d/file", srv.URL, recordingID), nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("without profile status = %d, want 404 (no original)", resp.StatusCode)
+	}
+	resp, body := get(t, fmt.Sprintf("%s/api/recordings/%d/file?profile=h264", srv.URL, recordingID), nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("with profile status = %d, want 200", resp.StatusCode)
+	}
+	if !bytes.Equal(body, mp4) {
+		t.Errorf("body = %q, want %q", body, mp4)
 	}
 }
 

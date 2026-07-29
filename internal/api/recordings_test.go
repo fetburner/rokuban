@@ -118,6 +118,9 @@ func TestListRecordings(t *testing.T) {
 	if pending.SizeBytes != nil {
 		t.Errorf("un-ingested recording should omit sizeBytes, got %v", pending.SizeBytes)
 	}
+	if pending.EncodedProfiles != nil {
+		t.Errorf("un-ingested recording should omit encodedProfiles, got %v", pending.EncodedProfiles)
+	}
 	if pending.Status != "recording" {
 		t.Errorf("status = %q, want recording", pending.Status)
 	}
@@ -125,6 +128,76 @@ func TestListRecordings(t *testing.T) {
 	// 正常な録画も dropSummary は付く（全 0）
 	if got[0].DropSummary == nil || *got[0].DropSummary != (DropSummary{Packets: 800}) {
 		t.Errorf("clean recording dropSummary = %+v", got[0].DropSummary)
+	}
+}
+
+// ListRecordings は active な encoded プロファイル名を返すこと（ブラウザ再生用）。
+func TestListRecordings_EncodedProfiles(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := newAPIServer(t, pool)
+
+	base := time.Now().Truncate(time.Second)
+	id := seedRecording(t, pool, "encoded あり", base, "finished", 10)
+	seedIngested(t, pool, id, 500, nil)
+
+	h264 := "h264"
+	h265 := "h265"
+	legacy := "legacy"
+	q := sqlcgen.New(pool)
+	if _, err := q.CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
+		RecordingID: id,
+		Kind:        db.AssetKindEncoded,
+		Profile:     &h264,
+		RelPath:     "a_h264.mp4",
+		SizeBytes:   100,
+	}); err != nil {
+		t.Fatalf("seed h264: %v", err)
+	}
+	if _, err := q.CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
+		RecordingID: id,
+		Kind:        db.AssetKindEncoded,
+		Profile:     &h265,
+		RelPath:     "a_h265.mp4",
+		SizeBytes:   80,
+	}); err != nil {
+		t.Fatalf("seed h265: %v", err)
+	}
+	// deleted は載せない
+	if _, err := q.CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
+		RecordingID: id,
+		Kind:        db.AssetKindEncoded,
+		Profile:     &legacy,
+		RelPath:     "a_legacy.mp4",
+		SizeBytes:   10,
+	}); err != nil {
+		t.Fatalf("seed legacy: %v", err)
+	}
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE media_assets SET state = 'deleted', deleted_at = now()
+		 WHERE recording_id = $1 AND profile = 'legacy'`, id); err != nil {
+		t.Fatalf("delete legacy: %v", err)
+	}
+
+	var got []Recording
+	resp := getJSON(t, srv.URL+"/api/recordings", &got)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	var rec *Recording
+	for i := range got {
+		if got[i].Id == id {
+			rec = &got[i]
+			break
+		}
+	}
+	if rec == nil {
+		t.Fatal("recording not found")
+	}
+	if rec.EncodedProfiles == nil {
+		t.Fatal("encodedProfiles is nil")
+	}
+	if len(*rec.EncodedProfiles) != 2 || (*rec.EncodedProfiles)[0] != "h264" || (*rec.EncodedProfiles)[1] != "h265" {
+		t.Errorf("encodedProfiles = %v, want [h264 h265]", *rec.EncodedProfiles)
 	}
 }
 

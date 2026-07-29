@@ -185,6 +185,12 @@ export interface Recording {
   endedAt?: string;
   /** 原本の実サイズ。ingest 済み（media_assets 行あり）の場合のみ */
   sizeBytes?: number;
+  /**
+     * 再生可能な encoded 派生物のプロファイル名（media_assets の active のみ）。
+     * ブラウザ再生は GET /api/recordings/{id}/file?profile=<name> を使う。
+     * desired（encode_profiles）ではなく observed。空配列は省略可。
+     */
+  encodedProfiles?: string[];
   dropSummary?: DropSummary;
   /** recording.failed / record-broken / bcas_anomaly の履歴 */
   qualityEvents?: RecordingQualityEventsItem[];
