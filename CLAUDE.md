@@ -58,7 +58,21 @@ pnpm exec orval  # openapi.yaml → web/src/api/generated.ts
 | [docs/operations.md](docs/operations.md) | ロールと分散デプロイ | 単一 |
 | [docs/runbook.md](docs/runbook.md) | 手動での動作確認手順 | **索引** → `docs/runbook/` |
 
-タスクの分解・受け入れ基準は GitHub issue 側にある（マイルストーンごとの親 issue + タスクごとのサブ issue）。**親 issue には一覧しか置かない**ので、担当タスクのサブ issue だけ読めばよい。粗粒度のバックログは #14、移行計画は #6、懸念トラッキングは #11。
+### タスクマップ
+
+タスクの分解・受け入れ基準は GitHub issue 側にある。**親 issue には一覧しか置かない**ので、`gh issue view <親>` でタスク表を見て、**担当タスクのサブ issue だけ読む**。
+
+| マイルストーン | 出口 | 親 issue | タスク |
+|---|---|---|---|
+| M0 歩く骨格 | ✅ 完了 | [#12](https://github.com/fetburner/rokuban/issues/12) | 本文内 |
+| M1 録れる | ✅ 完了 | [#13](https://github.com/fetburner/rokuban/issues/13) | 本文内 |
+| M2 任せられる | 実装 ✅ / 並走 [#52](https://github.com/fetburner/rokuban/issues/52) | [#24](https://github.com/fetburner/rokuban/issues/24) | **M2-1〜M2-20 = #32〜#51**（`#(31+N)` が M2-N） |
+| M3 置き換えられる | 未着手 | 未起票 | [#14](https://github.com/fetburner/rokuban/issues/14) の M3 節（粗粒度） |
+| M4 広げられる | 未着手 | 未起票 | [#14](https://github.com/fetburner/rokuban/issues/14) の M4 節（粗粒度） |
+
+- 横断: [#6](https://github.com/fetburner/rokuban/issues/6) 移行計画とマイルストーン定義 / [#14](https://github.com/fetburner/rokuban/issues/14) 粗粒度バックログ / [#11](https://github.com/fetburner/rokuban/issues/11) 懸念トラッキング
+- **M3 着手前に決める設計課題**: #27 / #28 / #30（`reservations` のスキーマ整理。3 件まとめて 1 回のマイグレーションが安い）、#29 / #31（API の資源同定。どちらも API のパス構造を触るので同時が安い）
+- M3 / M4 の親 issue を起票するときは #24 と #32〜#51 の形式に倣う（親 = 一覧 + 依存関係 + 出口基準、サブ = 詳細 + 受け入れ基準）
 
 ### 不変条件
 
@@ -141,7 +155,7 @@ pnpm exec orval  # openapi.yaml → web/src/api/generated.ts
 - Go 標準プロジェクトレイアウト（`cmd/` + `internal/`）
 - ログは `log/slog`
 - エラーは握り潰さず `fmt.Errorf("...: %w", err)` で文脈付き wrap
-- 各タスクは 1 PR 粒度。着手前に対応 issue の本文とコメントを必ず読む
+- 各タスクは 1 PR 粒度。着手前に**担当タスクのサブ issue**（本文とコメント）と、そこが参照している doc の節だけを読む。親 issue や他タスクのサブ issue は読まなくてよい（上記「タスクマップ」）
 - **doc コメント**: エクスポートされた関数・型・メソッド・定数には [Go Doc Comments](https://go.dev/doc/comment) 規約に従った doc コメントを書く。`// FuncName は〜` の形式で主語を識別子名にする。非公開でも他パッケージから呼ばれうる重要な関数には書く
 
 ### テスト規律
