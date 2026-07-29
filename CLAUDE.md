@@ -71,7 +71,9 @@ pnpm exec orval  # openapi.yaml → web/src/api/generated.ts
 | M4 広げられる | 未着手 | 未起票 | [#14](https://github.com/fetburner/rokuban/issues/14) の M4 節（粗粒度） |
 
 - 横断: [#6](https://github.com/fetburner/rokuban/issues/6) 移行計画とマイルストーン定義 / [#14](https://github.com/fetburner/rokuban/issues/14) 粗粒度バックログ / [#11](https://github.com/fetburner/rokuban/issues/11) 懸念トラッキング
-- **M3 着手前に決める設計課題**: #27 / #28 / #30（`reservations` のスキーマ整理。3 件まとめて 1 回のマイグレーションが安い）、#29 / #31（API の資源同定。どちらも API のパス構造を触るので同時が安い）
+- **M3 着手前に決める設計課題**: #27 / #28 / #30（`reservations` のスキーマ整理。3 件まとめて 1 回のマイグレーションが安い）、#29 / #31 / #53（API と mirakc tag の資源同定。いずれも「導出器が作るキーを宛先にしない」という同じ判断なので同時が安い。**#31 は案 A = 多拠点を取る、で決定済み**）、#54（同期対象判定の述語の集約。独立に進められるが #28 の後の方が 1 回で済む）
+  - **7 件は 1 つの歪みの別々の症状**である ——「`reservations` が ruler の導出出力と API リソースの両方を兼ねている」。修正はいつも同じ手（導出できないものを `(site, program_id)` の別表・別キーに引き剥がす）で、`program_intents`（#18）と `program_overrides`（M2-4）で 2 回済んでいる
+  - **#52 の並走中には着手しない。** `reservations` と shadow-diff（出口基準を測る道具そのもの）を触るので、測定の連続性が切れる
 - M3 / M4 の親 issue を起票するときは #24 と #32〜#51 の形式に倣う（親 = 一覧 + 依存関係 + 出口基準、サブ = 詳細 + 受け入れ基準）
 
 ### 不変条件
