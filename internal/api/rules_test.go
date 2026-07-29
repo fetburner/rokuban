@@ -133,6 +133,73 @@ func TestRulesCRUD(t *testing.T) {
 		t.Fatalf("valid filenameTemplate status = %d, want 201", resp.StatusCode)
 	}
 
+	// dedupeThreshold: 値域外は 400、境界の両側を確認する。
+	// -0.1 / 0 は下限違反、1.1 は上限違反。0 は "similarity() >= 0" が恒真になり
+	// 録画を黙って止める危険な値なので、境界そのもの（下限側）として弾く対象に含める。
+	for _, tc := range []float64{-0.1, 0} {
+		body := map[string]any{"name": "dedupe-threshold-low", "dedupeEnabled": true, "dedupeThreshold": tc}
+		raw, _ := json.Marshal(body)
+		resp, err := http.Post(srv.URL+"/api/rules", "application/json", bytes.NewReader(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("dedupeThreshold=%v status = %d, want 400", tc, resp.StatusCode)
+		}
+	}
+	{
+		body := map[string]any{"name": "dedupe-threshold-high", "dedupeEnabled": true, "dedupeThreshold": 1.1}
+		raw, _ := json.Marshal(body)
+		resp, err := http.Post(srv.URL+"/api/rules", "application/json", bytes.NewReader(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("dedupeThreshold=1.1 status = %d, want 400", resp.StatusCode)
+		}
+	}
+	// 妥当な値（境界の内側 0.5 と上限ちょうど 1）は通る。
+	for _, tc := range []float64{0.5, 1} {
+		body := map[string]any{"name": "dedupe-threshold-ok", "dedupeEnabled": true, "dedupeThreshold": tc}
+		raw, _ := json.Marshal(body)
+		resp, err := http.Post(srv.URL+"/api/rules", "application/json", bytes.NewReader(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("dedupeThreshold=%v status = %d, want 201", tc, resp.StatusCode)
+		}
+	}
+
+	// dedupeWindowSeconds: 負値は 400、0 は境界として通る。
+	{
+		body := map[string]any{"name": "dedupe-window-negative", "dedupeWindowSeconds": -1}
+		raw, _ := json.Marshal(body)
+		resp, err := http.Post(srv.URL+"/api/rules", "application/json", bytes.NewReader(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("dedupeWindowSeconds=-1 status = %d, want 400", resp.StatusCode)
+		}
+	}
+	{
+		body := map[string]any{"name": "dedupe-window-zero", "dedupeWindowSeconds": 0}
+		raw, _ := json.Marshal(body)
+		resp, err := http.Post(srv.URL+"/api/rules", "application/json", bytes.NewReader(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("dedupeWindowSeconds=0 status = %d, want 201", resp.StatusCode)
+		}
+	}
+
 	// Delete
 	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/rules/"+itoa(created.Id), nil)
 	resp, err = http.DefaultClient.Do(req)

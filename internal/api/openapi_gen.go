@@ -733,12 +733,19 @@ type ReservationOverridesInputReset string
 
 // Rule defines model for Rule.
 type Rule struct {
-	ChannelTypes    *[]RuleChannelTypes `json:"channelTypes,omitempty"`
-	CreatedAt       time.Time           `json:"createdAt"`
-	DedupeEnabled   *bool               `json:"dedupeEnabled,omitempty"`
-	DedupeThreshold *float32            `json:"dedupeThreshold,omitempty"`
+	ChannelTypes  *[]RuleChannelTypes `json:"channelTypes,omitempty"`
+	CreatedAt     time.Time           `json:"createdAt"`
+	DedupeEnabled *bool               `json:"dedupeEnabled,omitempty"`
 
-	// DedupeWindowSeconds 重複排除の時間窓（秒）。interval の API 表現
+	// DedupeThreshold pg_trgm の similarity() と比較する閾値。similarity() の値域は [0, 1] なので
+	// この範囲外は無意味。0 を許すと similarity() >= 0 が常に真になり、finished の
+	// 録画が 1 本でもあれば以降の全番組が重複扱いで黙ってスキップされる
+	// （録画が黙って止まる）。1 を超えると常に偽になり、重複排除が黙って無効化される。
+	DedupeThreshold *float32 `json:"dedupeThreshold,omitempty"`
+
+	// DedupeWindowSeconds 重複排除の時間窓（秒）。interval の API 表現。負値を許すと
+	// `program_start_at >= now() - window` が未来の開始時刻を要求する形になり
+	// 常に偽（重複排除が黙って無効化される）。
 	DedupeWindowSeconds *int64    `json:"dedupeWindowSeconds,omitempty"`
 	Description         *string   `json:"description,omitempty"`
 	DurationMaxMs       *int64    `json:"durationMaxMs,omitempty"`
@@ -776,11 +783,18 @@ type RuleKeepOriginal string
 
 // RuleInput defines model for RuleInput.
 type RuleInput struct {
-	ChannelTypes    *[]RuleInputChannelTypes `json:"channelTypes,omitempty"`
-	DedupeEnabled   *bool                    `json:"dedupeEnabled,omitempty"`
-	DedupeThreshold *float32                 `json:"dedupeThreshold,omitempty"`
+	ChannelTypes  *[]RuleInputChannelTypes `json:"channelTypes,omitempty"`
+	DedupeEnabled *bool                    `json:"dedupeEnabled,omitempty"`
 
-	// DedupeWindowSeconds 重複排除の時間窓（秒）。interval の API 表現
+	// DedupeThreshold pg_trgm の similarity() と比較する閾値。similarity() の値域は [0, 1] なので
+	// この範囲外は無意味。0 を許すと similarity() >= 0 が常に真になり、finished の
+	// 録画が 1 本でもあれば以降の全番組が重複扱いで黙ってスキップされる
+	// （録画が黙って止まる）。1 を超えると常に偽になり、重複排除が黙って無効化される。
+	DedupeThreshold *float32 `json:"dedupeThreshold,omitempty"`
+
+	// DedupeWindowSeconds 重複排除の時間窓（秒）。interval の API 表現。負値を許すと
+	// `program_start_at >= now() - window` が未来の開始時刻を要求する形になり
+	// 常に偽（重複排除が黙って無効化される）。
 	DedupeWindowSeconds *int64    `json:"dedupeWindowSeconds,omitempty"`
 	Description         *string   `json:"description,omitempty"`
 	DurationMaxMs       *int64    `json:"durationMaxMs,omitempty"`
