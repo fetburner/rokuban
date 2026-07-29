@@ -171,11 +171,25 @@ func (h *EventHub) listenOnce(ctx context.Context, pool *pgxpool.Pool) error {
 
 	// 通知待ちはブロックするので専用の goroutine に出し、合流は呼び出し側のループで行う。
 	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+
+	// goroutine が conn.Conn() をまだ触っている間に conn.Release() でコネクションが
+	// プールに返り、別の利用者に渡ってしまう窓を防ぐ。done は goroutine の終了で
+	// 閉じる合図。
+	//
+	// defer は LIFO で実行されるので、ここで登録した defer は上の
+	// `defer conn.Release()` より先に実行される。つまり実行順は
+	// 「cancel() → goroutine の終了を待つ (<-done) → conn.Release()」になり、
+	// Release が呼ばれる時点で goroutine は conn に触れていないことが保証される。
+	done := make(chan struct{})
+	defer func() {
+		cancel()
+		<-done
+	}()
 
 	topics := make(chan string)
 	waitErr := make(chan error, 1)
 	go func() {
+		defer close(done)
 		for {
 			n, err := conn.Conn().WaitForNotification(ctx)
 			if err != nil {
