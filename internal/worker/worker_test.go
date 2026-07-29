@@ -493,6 +493,39 @@ func TestBuildRiverConfig_UnknownQueueErrors(t *testing.T) {
 	}
 }
 
+// encode / thumbnail キューが allQueues に載り、concurrency が独立に効くこと
+// （issue #64。ワーカー本体は M3-3 / M3-4 で、枠だけ先に用意する）。
+func TestBuildRiverConfig_EncodeThumbnailConcurrency(t *testing.T) {
+	riverCfg, err := buildRiverConfig(NewWorkers(&Deps{}), ClientConfig{
+		EncodeConcurrency:    3,
+		ThumbnailConcurrency: 2,
+	})
+	if err != nil {
+		t.Fatalf("buildRiverConfig: %v", err)
+	}
+	if qc, ok := riverCfg.Queues[encodeQueue]; !ok {
+		t.Fatalf("queue %q missing from Queues", encodeQueue)
+	} else if qc.MaxWorkers != 3 {
+		t.Errorf("encode MaxWorkers = %d, want 3", qc.MaxWorkers)
+	}
+	if qc, ok := riverCfg.Queues[thumbnailQueue]; !ok {
+		t.Fatalf("queue %q missing from Queues", thumbnailQueue)
+	} else if qc.MaxWorkers != 2 {
+		t.Errorf("thumbnail MaxWorkers = %d, want 2", qc.MaxWorkers)
+	}
+	// 既定（0）は 1 になる
+	defaults, err := buildRiverConfig(NewWorkers(&Deps{}), ClientConfig{})
+	if err != nil {
+		t.Fatalf("buildRiverConfig defaults: %v", err)
+	}
+	if defaults.Queues[encodeQueue].MaxWorkers != 1 {
+		t.Errorf("default encode MaxWorkers = %d, want 1", defaults.Queues[encodeQueue].MaxWorkers)
+	}
+	if defaults.Queues[thumbnailQueue].MaxWorkers != 1 {
+		t.Errorf("default thumbnail MaxWorkers = %d, want 1", defaults.Queues[thumbnailQueue].MaxWorkers)
+	}
+}
+
 // worker.periodic_jobs: false のとき、EpgSyncSite / RulerPassSite / ReconcilePassSite が
 // 設定されていても PeriodicJobs が登録されないこと。
 func TestBuildRiverConfig_PeriodicJobsDisabled(t *testing.T) {

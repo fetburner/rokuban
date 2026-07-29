@@ -98,6 +98,9 @@ func newServerCmd() *cobra.Command {
 						return apiRiverErr
 					}
 					routerCfg.RiverClient = apiRiverClient
+					// ルール保存時の encodeProfiles 存在検証用（名前集合だけ。
+					// ffmpeg の LookPath はしない。issue #64）。
+					routerCfg.EncodeProfileNames = cfg.Encode.ProfileNames()
 				}
 
 				// バイト配信は streamer、SSE のヒント配送は notifier の担当
@@ -148,6 +151,13 @@ func newServerCmd() *cobra.Command {
 			// River client（worker と watcher で共有）
 			var riverClient *river.Client[pgx5.Tx]
 			if slices.Contains(roles, "worker") || slices.Contains(roles, "watcher") {
+				// ffmpeg/ffprobe の存在検査は worker ロール起動時だけ
+				// （不変条件 4。api-only では呼ばない。issue #64）。
+				if slices.Contains(roles, "worker") {
+					if toolErr := cfg.Encode.ValidateTools(); toolErr != nil {
+						return toolErr
+					}
+				}
 				mc := mirakc.NewClient(cfg.Mirakc.URL, nil)
 				workers := worker.NewWorkers(&worker.Deps{
 					MirakcClient:             mc,
@@ -160,10 +170,12 @@ func newServerCmd() *cobra.Command {
 					IngestStallTimeout:       cfg.Ingest.StallTimeout,
 				})
 				clientCfg := worker.ClientConfig{
-					IngestConcurrency: cfg.Ingest.Concurrency,
-					EpgSyncInterval:   cfg.Epg.SyncInterval,
-					PeriodicJobs:      cfg.Worker.PeriodicJobs,
-					Queues:            cfg.Worker.Queues,
+					IngestConcurrency:    cfg.Ingest.Concurrency,
+					EncodeConcurrency:    cfg.Encode.Concurrency,
+					ThumbnailConcurrency: cfg.Encode.ThumbnailConcurrency,
+					EpgSyncInterval:      cfg.Epg.SyncInterval,
+					PeriodicJobs:         cfg.Worker.PeriodicJobs,
+					Queues:               cfg.Worker.Queues,
 				}
 				// 定期ジョブ（epg_sync / tuner_sync / ruler_pass / reconcile_pass /
 				// record_sweep）は worker 側が投入する（mirakc に触るのも各ジョブの
