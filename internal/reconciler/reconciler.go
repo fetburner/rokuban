@@ -672,8 +672,15 @@ func (r *Reconciler) markOrphaned(ctx context.Context, reservations []desiredRes
 		if _, scheduled := scheduledPrograms[res.ProgramID]; scheduled {
 			continue
 		}
-		if err := q.MarkReservationOrphaned(ctx, res.ID); err != nil {
+		rows, err := q.MarkReservationOrphaned(ctx, res.ID)
+		if err != nil {
 			return fmt.Errorf("marking reservation %d orphaned: %w", res.ID, err)
+		}
+		// :execrows なので実際に更新できた行数が分かる。0 行なら（他パスとの
+		// 競合で既に orphaned になっていた等）ログを出さない —— :exec のままだと
+		// 更新できていなくても「marked orphaned」と出てログが実態と食い違う。
+		if rows == 0 {
+			continue
 		}
 		slog.Info("reconciler: marked reservation orphaned (program ended)",
 			"reservation_id", res.ID,

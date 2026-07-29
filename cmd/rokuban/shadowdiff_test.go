@@ -49,6 +49,27 @@ func TestRunShadowDiff_EndToEnd(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("skipping program 3: %v", err)
 	}
+	// programId=5 は base.skip = true（M2-6 の重複排除が立てる想定）を持つ予約。
+	// ruler は base だけを書き reservations 行自体は削除しない設計なので、この
+	// 行は ListSyncableReservationsBySite（state <> 'orphaned'）に残り続ける。
+	// reconciler.listDesired が effective.skip として除外して mirakc に同期しない
+	// （＝ Rokuban は実際には録らない）のと同じ判定を runShadowDiff もしないと、
+	// EPGStation 側に対応する予約があるとき Both（一致）に誤分類されてしまう
+	// （見逃しを「一致」だと言い張る、shadow-diff にとって最悪の壊れ方）。
+	// ruler パッケージには触れず、reservations.base を直接書き換えて模す
+	// （internal/reconciler/reconciler_test.go の setReservationState と同じ、
+	// 生 SQL で状態を固定するパターン）。
+	res5, err := q.CreateManualReservation(ctx, sqlcgen.CreateManualReservationParams{
+		Site: db.DefaultSite, ProgramID: 5, Title: "重複排除された番組",
+		ProgramStartAt: start.Add(5 * time.Hour), ProgramDurationMs: 1800000,
+	})
+	if err != nil {
+		t.Fatalf("creating reservation 5: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE reservations SET base = $1 WHERE id = $2`,
+		[]byte(`{"skip": true}`), res5.ID); err != nil {
+		t.Fatalf("setting base.skip for reservation 5: %v", err)
+	}
 
 	// EPGStation 側のフィクスチャ
 	reserves := []epgstation.Reserve{
@@ -56,6 +77,7 @@ func TestRunShadowDiff_EndToEnd(t *testing.T) {
 		{ID: 101, ProgramID: int64Ptr(3), Name: "番組3", StartAt: start.Add(2 * time.Hour).UnixMilli(), EndAt: start.Add(2*time.Hour + 30*time.Minute).UnixMilli()},
 		{ID: 102, ProgramID: int64Ptr(4), Name: "番組4", StartAt: start.Add(3 * time.Hour).UnixMilli(), EndAt: start.Add(3*time.Hour + 30*time.Minute).UnixMilli()},
 		{ID: 103, ProgramID: nil, IsTimeSpecified: true, Name: "時刻指定予約", StartAt: start.Add(4 * time.Hour).UnixMilli(), EndAt: start.Add(4*time.Hour + 30*time.Minute).UnixMilli()},
+		{ID: 104, ProgramID: int64Ptr(5), Name: "重複排除された番組", StartAt: start.Add(5 * time.Hour).UnixMilli(), EndAt: start.Add(5*time.Hour + 30*time.Minute).UnixMilli()},
 	}
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -71,8 +93,11 @@ func TestRunShadowDiff_EndToEnd(t *testing.T) {
 		t.Fatalf("runShadowDiff: %v", err)
 	}
 
+	// Both は programId=1 だけ。programId=5 は EPGStation 側にも対応する予約が
+	// あるが base.skip = true なので Both に落ちてはならない（回帰テスト本体）。
 	if len(report.Both) != 1 || report.Both[0].ProgramID != 1 {
-		t.Errorf("Both = %+v, want [programId=1]", report.Both)
+		t.Errorf("Both = %+v, want [programId=1] (programId=5 must not appear here despite "+
+			"having a matching EPGStation reserve — it has base.skip = true)", report.Both)
 	}
 	if len(report.RokubanOnly) != 1 || report.RokubanOnly[0].ProgramID != 2 {
 		t.Errorf("RokubanOnly = %+v, want [programId=2]", report.RokubanOnly)
@@ -80,8 +105,18 @@ func TestRunShadowDiff_EndToEnd(t *testing.T) {
 	if len(report.EPGStationOnly) != 1 || report.EPGStationOnly[0].ProgramID != 4 {
 		t.Errorf("EPGStationOnly = %+v, want [programId=4]", report.EPGStationOnly)
 	}
-	if len(report.Expected) != 2 {
-		t.Fatalf("len(Expected) = %d, want 2 (skip + time-specified): %+v", len(report.Expected), report.Expected)
+	// skip 意図（3）・時刻指定（103）・base.skip（5）の 3 件。
+	if len(report.Expected) != 3 {
+		t.Fatalf("len(Expected) = %d, want 3 (skip intent + time-specified + base.skip): %+v", len(report.Expected), report.Expected)
+	}
+	var sawProgram5InExpected bool
+	for _, item := range report.Expected {
+		if item.ProgramID == 5 {
+			sawProgram5InExpected = true
+		}
+	}
+	if !sawProgram5InExpected {
+		t.Errorf("Expected = %+v, want programId=5 (base.skip) among them", report.Expected)
 	}
 	if !report.HasUnexplained() {
 		t.Error("HasUnexplained() = false, want true (RokubanOnly/EPGStationOnly present)")
@@ -96,7 +131,7 @@ func TestRunShadowDiff_EndToEnd(t *testing.T) {
 	for _, want := range []string{
 		"RokubanOnly:     1",
 		"EPGStationOnly:  1",
-		"Expected:        2",
+		"Expected:        3",
 		"番組2",               // RokubanOnly の題名
 		"番組4",               // EPGStationOnly の題名
 		"時刻指定予約は programId", // allowlist の理由
