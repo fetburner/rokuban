@@ -222,11 +222,14 @@ export interface DropStat {
   pidType?: string;
 }
 
+/**
+ * 番組の事実（title / 開始時刻 / 尺）はサーバーが EPG プロジェクションから
+ * 引く。クライアントからは受け取らない（#27 の決定: 値の出所を射影 1 つに
+ * 固定する）。クライアントが古い番組表を握っていても、GC の比較対象になる
+ * program_snapshots はサーバー権威の値で作られる。
+ */
 export interface CreateReservationRequest {
   programId: number;
-  title: string;
-  startAt: string;
-  durationMs: number;
   priority?: number;
 }
 
