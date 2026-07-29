@@ -41,14 +41,25 @@ LEFT JOIN program_overrides o ON o.site = r.site AND o.program_id = r.program_id
 WHERE r.site = $1
 ORDER BY r.program_start_at;
 
--- reconciler が mirakc へ同期する対象（docs/schema.md §3「state を『mirakc への
--- 同期対象か』のフィルタに使ってはならない」、docs/recording.md §4.3）。
--- 同期の可否を決めるのは effective.skip であり、state で除外してよいのは
--- orphaned だけ（番組が終了しているので schedule を作る意味がない）。
--- active/detached はどちらも「実質 manual として動く」ことがあるため同期対象に
--- 含める。旧名 ListActiveReservationsBySite は state='active' でしか絞っておらず
--- detached の予約に schedule が作られないバグの原因だった（M2-4 で修正）。
--- name: ListSyncableReservationsBySite :many
+-- 同期対象の「候補」を返すクエリ（issue #54）。ここで絞っているのは
+-- state <> 'orphaned' だけで、それ以上のことはしていない。orphaned だけを
+-- 除外してよい理由は docs/schema.md §3「state を『mirakc への同期対象か』の
+-- フィルタに使ってはならない」、docs/recording.md §4.3: 番組が終了しているので
+-- schedule を作る意味がない。active/detached はどちらも「実質 manual として
+-- 動く」ことがあるため候補に含める。旧名 ListActiveReservationsBySite は
+-- state='active' でしか絞っておらず detached の予約に schedule が作られない
+-- バグの原因だった（M2-4 で修正）。
+--
+-- **「同期対象か」を最終的に決めるのは effective.skip（base + overrides +
+-- program_intents.action の合成）であり、この行だけでは絞り切れていない。**
+-- 絞り込みは呼び出し元が db.EvaluateSyncCandidates（internal/db/sync.go）に
+-- 通して行う。旧名 ListSyncableReservationsBySite は「もう絞ってある」と
+-- 約束してしまっていた。その約束を信じて shadow-diff（cmd/rokuban/shadowdiff.go）
+-- の書き手は effective.skip の絞り込みを移植し忘れ、M2-6 の重複排除が
+-- base.skip=true を立てた予約を「EPGStation と一致（Both）」と誤報告する
+-- 見逃しが M2 の出口基準の測定器に入り込んだ（issue #54）。同じ間違いを
+-- 繰り返さないため、クエリ名には「候補」であることだけを約束させる。
+-- name: ListReservationsForSyncEvaluation :many
 SELECT sqlc.embed(r), i.action AS intent_action, o.overrides AS overrides
 FROM reservations r
 LEFT JOIN program_intents i ON i.site = r.site AND i.program_id = r.program_id

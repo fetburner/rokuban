@@ -52,6 +52,18 @@ type ReservationOptions struct {
 	KeepOriginal     *string   `json:"keepOriginal,omitempty"`
 }
 
+// IsSkipped は実効の skip 判定（`opts.Skip != nil && *opts.Skip`）に名前を付けたもの。
+//
+// この 1 行は EffectiveOptions の呼び出し元 5 箇所（internal/reconciler,
+// internal/capacity, internal/api/reservations_overlaps.go, internal/api/handler.go,
+// cmd/rokuban/shadowdiff.go）がそれぞれ書き下していた。式そのものは単純だが、
+// 「skip か」という判断が名前を持たないまま散らばっていたことが issue #54 の
+// 見逃し（クエリ名が絞り込み済みだと嘘をつき、shadow-diff がこの判定を書き忘れた）
+// の土壌になった。
+func (o ReservationOptions) IsSkipped() bool {
+	return o.Skip != nil && *o.Skip
+}
+
 // Effective は base に overrides をマージした結果を返す。
 func (o *ReservationOptions) Effective(base *ReservationOptions) ReservationOptions {
 	if base == nil {

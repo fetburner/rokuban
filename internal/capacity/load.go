@@ -61,7 +61,7 @@ func LoadDemand(ctx context.Context, q *sqlcgen.Queries, site string) ([]Demand,
 		if err != nil {
 			return nil, fmt.Errorf("resolving effective options for a reservation on %s: %w", r.Site, err)
 		}
-		if eff.Skip != nil && *eff.Skip {
+		if eff.IsSkipped() {
 			continue
 		}
 		// SQL の WHERE で NOT NULL を保証しているが、sqlc は nullable な列を
