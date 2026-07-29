@@ -217,6 +217,25 @@ func validateRuleInput(ctx context.Context, pool *pgxpool.Pool, in RuleInput) er
 			return errors.New("dedupeThreshold is required when dedupeEnabled is true")
 		}
 	}
+	// dedupeThreshold は pg_trgm の similarity() と比較される（internal/ruler/dedupe.go の
+	// similarity(rec.title, c.title) >= c.dedupe_threshold）。similarity() の値域は (0, 1] の
+	// 半開区間として扱う: 0 を許すと "similarity() >= 0" が恒真になり、そのルールに finished の
+	// 録画が 1 本でもあれば以降マッチする全番組に base.skip が立って録画が黙って止まる
+	// （サーキットブレーカーは削除しか守らないのでこの経路は何にも止められない）。
+	// 1 を超えると恒偽になり重複排除が黙って無効化される。したがって 0 は許さず、
+	// (0, 1] の範囲だけを許可する。
+	if in.DedupeThreshold != nil {
+		if v := *in.DedupeThreshold; v <= 0 || v > 1 {
+			return fmt.Errorf("dedupeThreshold must be > 0 and <= 1 (similarity() ranges over [0,1]; 0 would match every program and silently stop recording), got %v", v)
+		}
+	}
+	// dedupeWindowSeconds は interval に変換され、
+	// "rec.program_start_at >= now() - c.dedupe_window" の右辺に使われる。負値を許すと
+	// 右辺が未来の時刻になり条件が恒偽になる（重複排除が黙って無効化される）ため負値を弾く。
+	// 0 は「時間窓なし相当」として許容する（危険は恒偽側だけなので片側のみ弾けば足りる）。
+	if in.DedupeWindowSeconds != nil && *in.DedupeWindowSeconds < 0 {
+		return fmt.Errorf("dedupeWindowSeconds must not be negative, got %d", *in.DedupeWindowSeconds)
+	}
 	if in.TextMatches != nil {
 		q := sqlcgen.New(pool)
 		for _, m := range *in.TextMatches {
