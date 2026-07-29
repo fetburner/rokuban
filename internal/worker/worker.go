@@ -13,6 +13,7 @@ import (
 	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/webhook"
 )
 
 const (
@@ -76,6 +77,11 @@ type Deps struct {
 	// River の総時間タイムアウトは無効化しているため、これが ingest の唯一の
 	// タイムアウトである（docs/recording.md §5.3「層 1」）。
 	IngestStallTimeout time.Duration
+
+	// Webhook は録画ライフサイクル通知用クライアント（M3-11）。nil 可。
+	// record_sweep 経由の processRecord でも finished 遷移を通知できるようにする。
+	// encode 完了・削除の発火は後続マイルストーン。
+	Webhook *webhook.Client
 }
 
 // NewWorkers は全ワーカーを登録した river.Workers を返す。
@@ -109,6 +115,7 @@ func NewWorkers(deps *Deps) *river.Workers {
 	river.AddWorker(workers, &RecordSweepWorker{
 		MirakcClient: deps.MirakcClient,
 		Pool:         deps.Pool,
+		Webhook:      deps.Webhook,
 	})
 	return workers
 }

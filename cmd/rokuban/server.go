@@ -26,6 +26,7 @@ import (
 	"github.com/fetburner/rokuban/internal/role"
 	"github.com/fetburner/rokuban/internal/streamer"
 	"github.com/fetburner/rokuban/internal/watcher"
+	"github.com/fetburner/rokuban/internal/webhook"
 	"github.com/fetburner/rokuban/internal/worker"
 	"github.com/fetburner/rokuban/web"
 )
@@ -148,6 +149,10 @@ func newServerCmd() *cobra.Command {
 				})
 			}
 
+			// 汎用 webhook（M3-11）。URL 空なら no-op。worker（record_sweep）と
+			// watcher の両方から同じ Client を使う。
+			webhookClient := webhook.New(cfg.Webhook)
+
 			// River client（worker と watcher で共有）
 			var riverClient *river.Client[pgx5.Tx]
 			if slices.Contains(roles, "worker") || slices.Contains(roles, "watcher") {
@@ -168,6 +173,7 @@ func newServerCmd() *cobra.Command {
 					RulerMaxDeletesPerPass:   cfg.Ruler.MaxDeletesPerPass,
 					ReconcileStartDelayGrace: cfg.Reconciler.StartDelayGrace,
 					IngestStallTimeout:       cfg.Ingest.StallTimeout,
+					Webhook:                  webhookClient,
 				})
 				clientCfg := worker.ClientConfig{
 					IngestConcurrency:    cfg.Ingest.Concurrency,
@@ -227,7 +233,7 @@ func newServerCmd() *cobra.Command {
 					switch roleName {
 					case "watcher":
 						mc := mirakc.NewClient(cfg.Mirakc.URL, nil)
-						w := watcher.New(watcher.DefaultSite, mc, pool, riverClient, worker.NewIngestArgs)
+						w := watcher.New(watcher.DefaultSite, mc, pool, riverClient, worker.NewIngestArgs, webhookClient)
 						roleFunc = w.Run
 					}
 					return role.RunSingleton(egCtx, pool, roleName, roleFunc, nil)

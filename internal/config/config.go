@@ -25,6 +25,7 @@ type Config struct {
 	Reconciler ReconcilerConfig `yaml:"reconciler"`
 	Worker     WorkerConfig     `yaml:"worker"`
 	Encode     EncodeConfig     `yaml:"encode"`
+	Webhook    WebhookConfig    `yaml:"webhook"`
 	Log        LogConfig        `yaml:"log"`
 }
 
@@ -266,6 +267,27 @@ func (c EncodeConfig) validate() error {
 	return nil
 }
 
+// WebhookConfig は外部通知用の単一 HTTP webhook 設定（M3-11）。
+//
+// EPGStation の複数種外部コマンドフックを 1 本の HTTP POST に置き換える。
+// URL が空なら no-op（配送しない）。本処理（ingest / encode 等）は webhook の
+// 成否で止めない（at-least-once の最小配送。失敗はログ）。
+type WebhookConfig struct {
+	// URL は POST 先。空なら webhook を送らない。
+	URL string `yaml:"url"`
+
+	// Secret が非空なら X-Rokuban-Webhook-Secret ヘッダに載せる。
+	// 受け側の共有秘密。URL にクエリで載せない。
+	Secret string `yaml:"secret"`
+
+	// Timeout は 1 回の HTTP 要求のタイムアウト。0 なら 5s。
+	Timeout time.Duration `yaml:"timeout"`
+
+	// Events は配送するイベント type の allowlist。空なら既知の全イベントを有効とみなす。
+	// 例: recording.finished, recording.failed, encode.finished, encode.failed, recording.deleted
+	Events []string `yaml:"events"`
+}
+
 // LogConfig はログ出力の設定。
 type LogConfig struct {
 	Level  string `yaml:"level"  validate:"omitempty,oneof=debug info warn error"`
@@ -300,6 +322,9 @@ func defaults() Config {
 			FFprobe:              "ffprobe",
 			Concurrency:          1,
 			ThumbnailConcurrency: 1,
+		},
+		Webhook: WebhookConfig{
+			Timeout: 5 * time.Second,
 		},
 		Log: LogConfig{
 			Level:  "info",

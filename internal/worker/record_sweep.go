@@ -11,6 +11,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/watcher"
+	"github.com/fetburner/rokuban/internal/webhook"
 )
 
 const (
@@ -82,6 +83,8 @@ type RecordSweepWorker struct {
 	river.WorkerDefaults[RecordSweepArgs]
 	MirakcClient *mirakc.Client
 	Pool         *pgxpool.Pool
+	// Webhook は processRecord 経由の finished 遷移通知に使う（M3-11）。nil 可。
+	Webhook *webhook.Client
 }
 
 // Timeout は River の既定（1 分）より長い上限を与える。理由は recordSweepTimeout の
@@ -105,6 +108,6 @@ func (w *RecordSweepWorker) Work(ctx context.Context, job *river.Job[RecordSweep
 		return fmt.Errorf("getting river client from job context: %w", err)
 	}
 
-	wt := watcher.New(job.Args.Site, w.MirakcClient, w.Pool, riverClient, NewIngestArgs)
+	wt := watcher.New(job.Args.Site, w.MirakcClient, w.Pool, riverClient, NewIngestArgs, w.Webhook)
 	return wt.Sweep(ctx)
 }

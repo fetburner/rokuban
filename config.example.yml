@@ -90,6 +90,19 @@ encode:
   #     preset: medium           # optional
   #     extra_args: []           # 末尾に追加する ffmpeg 引数（自由形式 cmd 全体は禁止）
 
+# 汎用 webhook（EPGStation の複数種外部コマンドを 1 本の HTTP POST に置き換える）
+webhook:
+  url: ""                        # 空なら no-op（送らない）。例: https://hooks.example.com/rokuban
+  secret: ""                     # 非空なら X-Rokuban-Webhook-Secret ヘッダに載せる
+  timeout: 5s                    # 1 回の HTTP 要求タイムアウト。失敗時は同期で 1 回だけ再試行
+  events: []                     # 空なら既知の全イベント有効。絞る例:
+                                 #   - recording.finished
+                                 #   - recording.failed
+                                 #   - encode.finished
+                                 #   - encode.failed
+                                 #   - recording.deleted
+                                 # 本処理（ingest 等）は webhook 成否で止めない
+
 # ログ
 log:
   level: info                    # debug | info | warn | error
