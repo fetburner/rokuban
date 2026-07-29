@@ -1,0 +1,185 @@
+> [recording.md](../recording.md) §3「Rokuban 側のコンポーネント」の一部。ruler は [ruler.md](ruler.md)、watcher は [watcher.md](watcher.md)、reconciler は [reconciler.md](reconciler.md)。
+
+### 3.2 reconciler（宣言的同期）
+
+`reservations`（desired）と `schedule_sync`（observed: `GET /api/recording/schedules` の観測結果）の差分を POST/DELETE で消す、レベルトリガーの宣言的同期ループ。
+
+- **tags 対応付け**: mirakc schedule の `tags` に Rokuban の reservation id を埋め込む（例: `rokuban:reservation=1234`）。手動で mirakc に入れられた schedule との判別もタグで可能
+- **contentPath 生成**: `recording.basedir` 相対パス必須。ファイル名テンプレートの展開もここで行う。生成値は初回のみで、以後は base に固定する（後述の差分反映）
+- **冪等**: 何度落ちても再実行で収束する。時刻精度もプロセス生存性も要求されない
+
+**reconciler はシングルトンではなく ruler と同じ形の River ジョブ**（`internal/worker` の `ReconcilePassWorker`。issue #24 M2-17）。周期的・冪等・パスを跨ぐ状態を持たない（サーキットブレーカーの閾値判定もパスごとに読み直す）という性質が ruler / epg_sync と同じなので、排他は advisory lock ではなくジョブロック + `UniqueOpts`（サイト単位）で担保する（[データ層](../data.md) §2）。
+
+起動契機は ruler と同じ形で 3 つあるが、**定期パスが真実**で残り 2 つは投入を早めるヒントに過ぎない。ヒントを落としても定期パスが拾う。
+
+| 契機 | 種別 |
+|---|---|
+| 定期（既定 30 秒） | **真実**。デプロイ形態に応じて River `PeriodicJobs` か k8s CronJob が投入する（[データ層](../data.md) §2） |
+| 予約の作成 / 取消 | ヒント。api が予約の書き込みと**同一トランザクションで** `InsertTx` する（dual-write にならない） |
+| ruler パスの完了 | ヒント。ruler_pass ワーカーがパス完了時に投入する（base が変われば mirakc に反映すべき差分が増えるため） |
+
+ヒントは `UniqueOpts{ByArgs, ByState}` で合流する。予約を連続で作成/取消してもパスは 1 回で足りる。副産物として、予約の作成/取消が mirakc へ反映されるまでの待ち時間が最大 30 秒から実質即座になる。
+
+#### ファイル名テンプレート
+
+`filenameTemplate`（予約オプション。§8）は Go の [`text/template`](https://pkg.go.dev/text/template) 記法。reconciler が予約行のスナップショットだけを使って展開し（`internal/contentpath` パッケージ。`internal/reconciler/contentpath.go` の `buildContentPath` から呼ばれる）、拡張子は含まない前提で常に `.m2ts` を付す。未指定・空文字なら従来どおりの固定形式（`YYYYMMDD/HHMMSS_タイトル_サービスID.m2ts`）のまま（後方互換）。
+
+**方針転換の理由**: 当初は EPGStation 互換の `%変数%` 記法で実装していたが、`text/template` に切り替えた。`%変数%` では変数名の誤り（`%TITEL%`）が黙って空文字になり、録画時に警告ログが出るだけで、ユーザーは数週間後にファイル名が崩れて初めて気づく。`text/template` なら**ルール作成/更新時にテンプレートを検証して 400 で弾ける**（`internal/api/rules.go` の `validateRuleInput` が `internal/contentpath.Validate` を呼ぶ。既存の正規表現検証と同じ場所・同じ形）。「未対応の変数は黙って空文字に置換して警告」という妥協した方針そのものが不要になった。
+
+##### 使えるフィールド
+
+`internal/contentpath.Data` の公開フィールドに対応する。
+
+| フィールド | 値 | 出所 |
+|---|---|---|
+| `{{.StartAt}}` | 番組開始時刻（JST の `time.Time`）。`{{.StartAt.Format "2006-01"}}` のように任意の書式を書ける | `program_start_at` |
+| `{{.Year}}` | 4 桁年（JST） | 同 |
+| `{{.ShortYear}}` | 2 桁年（JST） | 同 |
+| `{{.Month}}` `{{.Day}}` `{{.Hour}}` `{{.Min}}` `{{.Sec}}` | 2 桁ゼロ埋め（JST） | 同 |
+| `{{.DOW}}` | 曜日（`日`〜`土`） | 同 |
+| `{{.Title}}` | 番組名（パス成分としてサニタイズ済み） | `reservations.title` |
+| `{{.Channel}}` | 物理チャンネル（同上） | `reservations.channel` |
+| `{{.ServiceID}}` | サービス ID | `reservations.service_id` |
+| `{{.ChannelType}}` | チャンネル種別（同上） | `reservations.channel_type` |
+
+例:
+
+```
+{{.Year}}/{{.Month}}/{{.Title}}_{{.Hour}}{{.Min}}
+```
+
+**非対応**: チャンネル名（EPGStation の `%CHNAME%` 相当）/ mirakc 内部 ID（`%CHID%` 相当）/ EPGStation の番組 ID（`%ID%` 相当）。いずれも予約行のスナップショットだけからは解決できず、mirakc への問い合わせや EPG プロジェクションの JOIN が要る。reconciler は mirakc に触れず（不変条件 1）ファイル I/O 専任という設計に反するため対応しない。`Data` に存在しないフィールドを参照するとテンプレートは無効になり、ルール作成/更新時点で 400 になる（後述）。
+
+##### サニタイズと階層の規約
+
+- `Title` / `Channel` / `ChannelType` は `internal/contentpath.NewData` の時点で `sanitizeComponent` を通した「1 パス成分に収まる」文字列になっている（ただし空文字は空文字のまま）。番組名に `/` が普通に入る（「A/B」等）ため、データ由来の `/` が区切りに昇格することはない
+- **階層を作れるのはテンプレートに書かれた `/`（および `{{.StartAt.Format "2006/01"}}` のようにユーザーが明示的に書いた書式）だけ**
+- **拡張子はテンプレートに含めない**。常に `.m2ts` を付す
+- 展開結果は最後に必ず `internal/contentpath.SanitizeContentPath` を通すため、テンプレート自体に `..` や絶対パスが書かれていてもパストラバーサル・意図しない絶対パスにはならない
+- 時刻は必ず JST で解決する（サーバーのタイムゾーン設定に依存させない）
+
+##### ルール作成時の検証
+
+`text/template` として `Parse` した後、サンプルデータに対して `Execute` まで行って初めて有効と判定する（`{{.Foo}}` のような未知フィールドは `Parse` では素通りし、`Execute` で初めてエラーになるため）。構文エラー・未知フィールドはどちらもルール作成/更新 API で 400 になる。
+
+##### M3: EPGStation からの変換（`rokuban import epgstation`）
+
+EPGStation の `recordedFormat`（`%変数%` 記法）を移行する際は、M3 の `rokuban import epgstation` で以下の変換表に従って `text/template` 記法へ機械的に変換する。
+
+| EPGStation | Rokuban |
+|---|---|
+| `%YEAR%` | `{{.Year}}` |
+| `%SHORTYEAR%` | `{{.ShortYear}}` |
+| `%MONTH%` | `{{.Month}}` |
+| `%DAY%` | `{{.Day}}` |
+| `%HOUR%` | `{{.Hour}}` |
+| `%MIN%` | `{{.Min}}` |
+| `%SEC%` | `{{.Sec}}` |
+| `%DOW%` | `{{.DOW}}` |
+| `%TITLE%` | `{{.Title}}` |
+| `%CH%` | `{{.Channel}}` |
+| `%SID%` | `{{.ServiceID}}` |
+| `%TYPE%` | `{{.ChannelType}}` |
+| `%CHNAME%` / `%CHID%` / `%ID%` | **未対応**（予約行のスナップショットだけからは解決できない。上記「非対応」参照） |
+
+#### 予約オプションの差分反映
+
+reconciler は存在の突き合わせだけでなく、**effective options と `schedule_sync.options`（mirakc の観測結果）の差分も消す**。ruler が base を毎パス再計算する以上、ルール編集で既存予約の effective が変わるため、これは編集 UI の前提ではなく **ruler の前提**である（issue #19）。
+
+**mirakc に schedule の更新 API はない**（`GET` / `POST` / `GET{id}` / `DELETE{id}` の 4 つだけ）。反映は DELETE → POST の再作成になり、その間 schedule が存在しない窓ができる。そのため差分の対象を最小化する。
+
+| フィールド | 差分対象 | 理由 |
+|---|---|---|
+| `priority` | **する** | チューナー調停の優先度。ルール編集・overrides 編集の実質的な唯一の変更対象 |
+| `contentPath` | **しない**（base に固定） | 下記 |
+| `preFilters` / `postFilters` | M3 から | M1/M2 では常に空 |
+| `logFilter` | しない | 未使用 |
+| `tags` | **する**（不一致のときだけ） | 下記 |
+
+**`tags` の不一致も再作成の契機にする。** 当初この表は「tags は reservation id で不変」として差分対象から外していたが、これは「同じ予約に対しては不変」であって「同じ番組に対して不変」ではない。予約が削除されて同じ番組に別の予約が作られると、mirakc 側の schedule には**古い `reservation_id` の tag が残る**。tags は ingest が record と予約を突き合わせる経路（`mirakc.FindReservationID`）なので、古い tag のままだと録画が別の予約に紐付く。`priority` が一致していても tag が食い違えば再作成する（issue #19 のコメント）。
+
+**差分の対象にするのは自分が作った schedule だけ。** tag のない schedule（mirakc を直接叩いた・別のツールが作った）は観測はするが触らない。外部が作った schedule と取り合いになるのを避けるためで、既存の DELETE 側と同じ判定（`mirakc.FindReservationID` が false なら対象外）。
+
+**`contentPath` は初回生成値を base に固定し、以後変更しない。** reconciler は番組名からパスを生成するため、EPG の番組名が変われば生成結果も変わる。これを差分と見なすと **EPG 更新のたびに schedule が消えて作り直される** churn になる。差分書き込みという設計は desired が安定していることを前提として要求する（同率 priority のタイを全順序で潰したのと同じクラスの問題。§3.1）。ファイル名を変えたい場合はユーザーが overrides で明示的に指定する。
+
+ただしこの決定には未解決の一貫性の穴がある: **churn の原因は「テンプレートから生成された」パスが EPG の番組名変更で動くことで、ユーザーが `overrides.contentPath` に明示指定した値は動かない**。にもかかわらず現状は両者を区別せず差分対象外にしているため、既存予約の contentPath を上書きしても schedule には反映されない（priority も同時に変えれば道連れで反映される、という一貫性のない挙動になる）。`opts.ContentPath != nil` のときだけ差分対象にする改良が考えられるが、決定を変える話なので M2-4 では実装せず issue #19 のコメントに提起した。
+
+**再作成の POST は observed の `contentPath` を引き継ぐ**（テンプレートから再生成しない）。「差分と見なさない」だけでは priority 変更で再作成するときに何を入れるかが決まらない。再生成すると EPG の番組名が変わっていれば別のパスになり、**priority を変えただけでファイル名が変わる**という副作用になる。引き継げば「初回生成値に固定し以後変更しない」が文字どおり保たれる。引き継ぐ値は自分が書いたものの往復だが、mirakc 側を直接触られていた場合の保険として `SanitizeContentPath` は通す。
+
+#### 再作成のガード
+
+**ガードは時刻の閾値ではなく状態で判定する。しかも blocklist ではなく allowlist にする — `state == "scheduled"` のときだけ再作成する。**
+
+当初の決定は「`tracking` / `recording` の予約は触らない」という blocklist だった。allowlist にした理由は 2 つ（issue #19 のコメント）:
+
+- `rescheduling`（延長追従中）も `finished` / `failed` も、削除して作り直してよい状態ではない
+- mirakc が将来状態を増やしたとき、blocklist は**未知の状態を「触ってよい」側に落とす**。allowlist は安全側に倒れる
+
+state の文字列は `internal/mirakc` に定数として置く（それまでどこにも定数化されていなかった）。持ち越した件数はログに出す — 黙って落とすと「収束しない」の原因が見えなくなる。
+
+#### 1 パスの再作成数に上限を設ける
+
+**ルールの priority を編集すると、マッチしている全予約が再作成対象になる。** N=200 なら 1 パスで 400 回の mirakc 呼び出しになる。当初の「再作成が走るのは『ユーザーが優先度を変えたとき』だけなので、この単純なガードで足りる」という見積もりは**予約単位の編集を想定していて、ルール単位の編集を数えていなかった**。
+
+`MaxRecreatesPerPass`（既定 20）でレート制限し、レベルトリガーで数パスに分けて収束させる。持ち越した件数はログに出す（黙って切り捨てると「全部反映した」ように見える）。
+
+これは `MaxDeletesPerPass`（大量削除サーキットブレーカー）とは**別の機構**である。ブレーカーは「導出された削除」を止めるもので超えたら**何も削除しない**、こちらは単なるレート制限で上限までは実行して残りを次パスに送る。**再作成の DELETE をブレーカーの数に混ぜない** — 混ぜるとルールの priority 一括変更でブレーカーが誤作動する（再作成は desired の消滅ではない）。
+
+#### DELETE 成功 → POST 失敗
+
+schedule が消えたまま次のパスまで残る。レベルトリガーで次パスが再作成するが、その間に開始時刻を越えると取りこぼす。**専用のカウンタメトリクス + `slog.Error`** で観測する。
+
+当初の決定は「`quality_events` に記録する」だったが、**`quality_events` は `recordings` テーブルの列**で、まだ開始していない番組には recordings 行が存在しない。書く先がないので実装できない（issue #19 のコメント）。allowlist のガードにより再作成の対象は `scheduled`（開始まで間がある）だけなので、取りこぼしの窓自体は元々小さい。
+
+**upstream への要望**: `priority` の部分更新 API があれば再作成の窓ごと消える。`RecordingOptions` 全体を差し替える汎用 PUT より通りやすく、mirakc 側が触る内部状態（スケジューラのキュー）も小さい。priority は開始前の schedule に対して mirakc のスケジューラが素直に扱える性質のフィールドでもある（§4.5 のとおり録画開始後は効かない）。#8 に調査メモとして残す。
+
+#### 大量削除サーキットブレーカー
+
+予約は「ルール x EPG」から導出されるため、EPG の一時欠損（mirakc 再起動・再スキャン・SI 取得不良）で素朴な ruler は予約を大量に「不要」と判定し、reconciler がそれを mirakc へ忠実に反映（= 一斉 DELETE）してしまう。EPGStation#692（予約と録画が勝手に消える）はこの障害クラスの実例。
+
+対策:
+
+- **1 回の ruler パスでの削除数に閾値**（`ruler.max_deletes_per_pass`）を設け、超えたら削除を実行せず停止してアラート。手動確認後に再開
+- **ブレーカーが守るのは導出された削除だけ**（ルール x EPG の評価結果の変化）。ユーザーの明示操作（ルール削除 API 等）による削除は対象にしない — 代わりに影響件数の内訳を提示する確認 UI が安全装置になる。明示操作までブレーカーで止めると「削除したのに消えない」という別の説明不能を生む
+- **不変条件: 録画済みデータ（media_assets）に至る自動削除経路は retention reconcile のみ**。EPG・予約側の状態変化から録画物の削除に到達するパスを作らない
+- programId が EPG から消えた予約は即削除せず猶予を置く（mirakc 自身も removed-from-epg を理由付き failed として通知してくる）。なお実装の `orphaned` state はこの用途ではなく「番組終了後に schedule が観測されなかった」を意味する（[schema.md](../schema.md) §3）
+
+##### 止められる場所は ruler だけ（M2-5）
+
+M1-4 では ruler と reconciler の両方に削除件数の閾値を置いていたが、**reconciler 側は誤発火しかしないので撤去した**（issue #2 のコメント）。reconciler が「消すべき schedule」と判断する経路は 3 つあり、reconciler からはどれも「desired に無い schedule がある」で区別できない:
+
+| 経路 | ブレーカーの対象か |
+|---|---|
+| ruler が導出削除した | 対象。**ただし ruler のブレーカーが既に通している** |
+| ユーザーがルールを削除した / 予約を取消した | **対象外**（上記の明文） |
+| 番組終了後の GC が予約行を刈った | **対象外**（下記「番組終了後の GC」） |
+
+つまり設計が対象外と定めた 2 経路で誤発火する。特に GC は「長時間停止していた場合、再開後に溜まった期限切れ行を一括で消すのは正常な挙動」なので閾値を容易に超える。
+
+守る価値もない。**reconciler が DELETE する時点で「録画しない」決定は DB にコミット済み**である（不変条件「コミット = DB 行」）。誤りなら止めるべき場所は ruler で、reconciler で止めるのは「DB に合わせることを拒否する」ことにしかならず、mirakc に不要な schedule を残し続ける。
+
+**ただし全損だけは別のシグネチャで守る。** 件数の閾値を外すと `listDesired` がバグや障害で空を返したときに自分が作った全 schedule を削除する経路が無防備になる。これは件数ではなく形で捕まえる:
+
+```
+desired が空 かつ 自分の tag が付いた schedule が 1 つ以上観測されている → 削除せず発動
+```
+
+GC・ユーザー操作では他の予約が残るので誤発火しない。全損だけを捕まえる（`breaker.ReconcileTotalLoss`）。
+
+##### 発動はラッチ（M2-5）
+
+M1-4 の骨格はパス内で完結していて、次のパスでは何も覚えていなかった。「手動確認後に再開」には**人間が確認するまで止まり続けるラッチ**が必要で、それはプロセスをまたぐ永続状態である（`circuit_breakers` 表。[schema.md](../schema.md) §3.6）。**レベルトリガー設計の中で数少ない導出できない状態** — 誰かが確認したという事実は再取得できない。
+
+- **行の存在そのものが「発動中」**。停止していない状態を表す行は無い。再開は行の DELETE
+- 件数が閾値以下に戻っても**自動では解けない**。EPG が回復して候補がゼロになれば実害はないが、自動復帰させると「一瞬止まって復帰した」がアラートに残らず、EPG が繰り返し欠損する状況を見逃す
+- **止めるのは削除だけ。** 発動中でも予約の作成・base の更新・schedule の作成は続く（レベルトリガーで収束させたい他の差分は止めない）
+- **GC は発動中でも動く**（下記「番組終了後の GC」の理由がそのまま効く）
+- `detail` に「何が消されようとしていたか」の抜粋（最大 20 件の programId と題名）を焼く。**手動確認には対象が見える必要がある**
+- 再開は `POST /api/breakers/{name}/resume`。`DELETE /api/breakers/{name}` にしないのは、運用者から見た操作が「行を削除する」ではなく「確認したので再開する」だから（行が消えるのは実装詳細）
+
+#### 番組終了後の GC
+
+`reservations` / `program_intents` の物理削除（GC）は ruler の 1 パス内で、全サイト評価の後に 1 回だけ行う（`internal/ruler/ruler.go` の `runGC`）。対象は `program_start_at + program_duration_ms < now() - 猶予` を満たす行（state を問わない）。猶予には既存の `epg.retention_grace`（既定 24h、EPG プロジェクションのローリングウィンドウと同じ設定）をそのまま流用する。専用の設定項目を増やさず、「EPG から消える」と「予約・意図として GC される」の寿命を揃える。`recordings.reservation_id` は `ON DELETE SET NULL` なので、この削除で録画履歴（recordings/media_assets）が失われることはない。
+
+**GC は大量削除サーキットブレーカー（`MaxDeletesPerPass`）の対象にしない。** ブレーカーが守るのは「ルール x EPG」の評価結果から導出される削除だけで、EPG の一時的な欠損・フリッカーに引きずられて予約を大量に消してしまう事故（上記 EPGStation#692 のクラス）を防ぐためのもの。GC の削除対象は時刻の比較だけで決定的に定まり、EPG の状態には一切左右されない。むしろ reconciler/ruler が長時間停止していた場合、再開後に溜まった期限切れ行を一括で消すのは正常な挙動であり、ここをブレーカーで止めると実害のない削除が積み上がり続けるだけになる。
+

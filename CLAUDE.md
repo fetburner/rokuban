@@ -37,22 +37,28 @@ pnpm exec orval  # openapi.yaml → web/src/api/generated.ts
 
 ## 設計ドキュメント
 
-実装の根拠はすべて GitHub issue と docs/ に確定済み。実装中に設計判断を変えたくなったら実装せず issue にコメントで提起する。
+**設計の権威は docs/ にある。** 実装中に設計判断を変えたくなったら実装せず issue にコメントで提起する。
+
+**設計 issue（#1〜#5 / #9）は docs/ に一本化して close した。** 同じ内容を issue とdocs で二重に読まないため。経緯を辿りたいときだけ closed issue を見る。
 
 ### 資料マップ
 
-| issue | 内容 | 対応 doc |
+**タスクに関係する doc だけ読む。** 大きい 3 本は索引 + 分割本文になっているので、索引で節を特定してから該当ファイルだけ開く。
+
+| doc | 内容 | 形 |
 |---|---|---|
-| #1 | 全体アーキテクチャ（nginx/認証/イメージ配布/サーバーレス/B-CAS） | [docs/overview.md](docs/overview.md) |
-| #2 | 録画エンジン mirakc（ingest 詳細/ruler 仕様/base-overrides） | [docs/recording.md](docs/recording.md) |
-| #3 | データ層（検索・ルール評価/EPG プロジェクション/DB 輻輳隔離） | [docs/data.md](docs/data.md) |
-| #4 | ストレージ契約（2 階層/削除エンジン） | [docs/storage.md](docs/storage.md) |
-| #5 | フロントエンド | [docs/frontend.md](docs/frontend.md) |
-| #6 | 移行計画とマイルストーン | — |
-| #9 | 設定 | [docs/configuration.md](docs/configuration.md) |
-| #10 | EPGStation トリアージ | — |
-| #11 | 懸念トラッキング | — |
-| #13 | M1 タスク分解（スキーマ v1） | [docs/schema.md](docs/schema.md) |
+| [docs/overview.md](docs/overview.md) | 全体アーキテクチャ（ロール分類/nginx/認証/イメージ配布/サーバーレス/B-CAS） | 単一 |
+| [docs/recording.md](docs/recording.md) | 録画エンジン（ruler/reconciler/watcher/予約モデル/ingest/B-CAS） | **索引** → `docs/recording/` |
+| [docs/schema.md](docs/schema.md) | DB スキーマ v1（設計原則/全テーブル） | **索引** → `docs/schema/` |
+| [docs/data.md](docs/data.md) | データ層（River/NOTIFY/検索・ルール評価/EPG 射影/チューナー射影/輻輳隔離） | 単一 |
+| [docs/api.md](docs/api.md) | API 設計（REST/SSE/メディア配信/認証/プロキシ） | 単一 |
+| [docs/storage.md](docs/storage.md) | ストレージ契約（2 階層/削除エンジン） | 単一 |
+| [docs/frontend.md](docs/frontend.md) | フロントエンド | 単一 |
+| [docs/configuration.md](docs/configuration.md) | 設定 | 単一 |
+| [docs/operations.md](docs/operations.md) | ロールと分散デプロイ | 単一 |
+| [docs/runbook.md](docs/runbook.md) | 手動での動作確認手順 | **索引** → `docs/runbook/` |
+
+タスクの分解・受け入れ基準は GitHub issue 側にある（マイルストーンごとの親 issue + タスクごとのサブ issue）。**親 issue には一覧しか置かない**ので、担当タスクのサブ issue だけ読めばよい。粗粒度のバックログは #14、移行計画は #6、懸念トラッキングは #11。
 
 ### 不変条件
 

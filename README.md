@@ -35,14 +35,17 @@ EPGStation の漸進的改善ではなく、ゼロベースで再設計する。
 | ドキュメント | 内容 |
 |---|---|
 | [docs/overview.md](docs/overview.md) | 全体アーキテクチャ |
-| [docs/recording.md](docs/recording.md) | 録画エンジン |
+| [docs/recording.md](docs/recording.md) | 録画エンジン（索引。本文は `docs/recording/`） |
+| [docs/schema.md](docs/schema.md) | DB スキーマ v1（索引。本文は `docs/schema/`） |
 | [docs/data.md](docs/data.md) | データ層 |
 | [docs/storage.md](docs/storage.md) | メディアストレージ |
 | [docs/api.md](docs/api.md) | API 設計 |
 | [docs/frontend.md](docs/frontend.md) | フロントエンド |
 | [docs/configuration.md](docs/configuration.md) | 設定 |
 | [docs/operations.md](docs/operations.md) | 運用 |
-| [docs/runbook.md](docs/runbook.md) | シャドー運用 runbook（起動手順・出口基準チェックリスト） |
+| [docs/runbook.md](docs/runbook.md) | シャドー運用 runbook（索引。本文は `docs/runbook/`） |
+
+大きい 3 本は索引 + 分割本文になっている。**節番号は分割前のまま**なので、コードコメントの「recording.md §3.2」等は索引の表から該当ファイルを引ける。
 
 ## 使ってみる
 
