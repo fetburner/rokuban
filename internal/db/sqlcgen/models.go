@@ -147,6 +147,7 @@ type Recording struct {
 	DeletedAt         *time.Time
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
+	PurgeAfter        *time.Time
 }
 
 type Reservation struct {

@@ -1,9 +1,11 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
-import { useListRecordingDropStats, type DropStat } from '@/api/generated'
-import { DropStatsTable } from '@/pages/recordings'
+import { useListRecordingDropStats, type DropStat, type Recording } from '@/api/generated'
+import { ToastProvider } from '@/components/toaster'
+import { DropStatsTable, RecordingsPage } from '@/pages/recordings'
 
 /**
  * Harness は DropStatsTable と同じクエリキーを共有する監視用の隣接要素を描画する。
@@ -71,5 +73,72 @@ describe('DropStatsTable', () => {
     renderTable([stat(0x300, 'ecm')])
 
     expect(await screen.findByText('ecm')).toBeInTheDocument()
+  })
+})
+
+const sampleRecording = (overrides: Partial<Recording> = {}): Recording => ({
+  id: 1,
+  source: 'manual',
+  serviceName: 'ＯＨＫ',
+  channelType: 'GR',
+  channel: '27',
+  networkId: 32678,
+  serviceId: 5168,
+  eventId: 1,
+  title: 'ライブラリの録画',
+  startAt: '2026-01-01T12:00:00Z',
+  durationMs: 1_800_000,
+  status: 'finished',
+  createdAt: '2026-01-01T12:30:00Z',
+  ...overrides,
+})
+
+function renderRecordingsPage(fetchImpl: typeof fetch) {
+  globalThis.fetch = fetchImpl as typeof fetch
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: 0 } },
+  })
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <ToastProvider>
+        <RecordingsPage />
+      </ToastProvider>
+    </QueryClientProvider>,
+  )
+}
+
+describe('RecordingsPage trash', () => {
+  it('ライブラリとごみ箱を切り替え、ごみ箱一覧を trash=true で取る', async () => {
+    const user = userEvent.setup()
+    const fetchMock = vi.fn((input: string | URL | Request) => {
+      const url = new URL(String(input), 'http://localhost')
+      const trash = url.searchParams.get('trash') === 'true'
+      const body = trash
+        ? [sampleRecording({ id: 2, title: '捨てた録画', deletedAt: '2026-01-02T00:00:00Z' })]
+        : [sampleRecording()]
+      return Promise.resolve(
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      )
+    })
+
+    renderRecordingsPage(fetchMock as unknown as typeof fetch)
+
+    expect(await screen.findByText('ライブラリの録画')).toBeInTheDocument()
+    expect(screen.queryByText('捨てた録画')).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'ごみ箱' }))
+
+    expect(await screen.findByText('捨てた録画')).toBeInTheDocument()
+    expect(screen.queryByText('ライブラリの録画')).not.toBeInTheDocument()
+
+    // trash=true で呼ばれたことを確認（空成功にしない）
+    const trashCalls = fetchMock.mock.calls.filter((call) => {
+      const url = new URL(String(call[0]), 'http://localhost')
+      return url.pathname === '/api/recordings' && url.searchParams.get('trash') === 'true'
+    })
+    expect(trashCalls.length).toBeGreaterThan(0)
   })
 })

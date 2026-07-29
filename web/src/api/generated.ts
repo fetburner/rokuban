@@ -167,6 +167,11 @@ export interface Recording {
   dropSummary?: DropSummary;
   /** recording.failed / record-broken / bcas_anomaly の履歴 */
   qualityEvents?: RecordingQualityEventsItem[];
+  /**
+     * 論理削除時刻。ごみ箱一覧（`trash=true`）でのみ出現する。
+     * 通常一覧では省略（生きている行は NULL）。
+     */
+  deletedAt?: string;
   createdAt: string;
 }
 
@@ -615,6 +620,13 @@ start: string;
 end: string;
 networkId?: number;
 serviceId?: number;
+};
+
+export type ListRecordingsParams = {
+/**
+ * true のときごみ箱（論理削除済み）を返す
+ */
+trash?: boolean;
 };
 
 export type ListCapacityOveragesParams = {
@@ -2628,22 +2640,33 @@ export type listRecordingsResponseSuccess = (listRecordingsResponse200) & {
 
 export type listRecordingsResponse = (listRecordingsResponseSuccess)
 
-export const getListRecordingsUrl = () => {
+export const getListRecordingsUrl = (params?: ListRecordingsParams,) => {
+  const normalizedParams = new URLSearchParams();
 
+  Object.entries(params || {}).forEach(([key, value]) => {
 
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  });
 
+  const stringifiedParams = normalizedParams.toString();
 
-  return `/api/recordings`
+  return stringifiedParams.length > 0 ? `/api/recordings?${stringifiedParams}` : `/api/recordings`
 }
 
 /**
  * 録画履歴。program_start_at の降順。ドロップ統計は PID 別の合計のみを含む。
  * PID 別の内訳は `GET /api/recordings/{id}/drop-stats` で取得する。
+ *
+ * 既定は生きている録画（`deleted_at IS NULL`）のみ。`trash=true` でごみ箱
+ * （`deleted_at IS NOT NULL`）を返す。物理削除済み tombstone もここに残るが、
+ * ファイルは既に無いことがある（M3-8）。
  * @summary List recordings
  */
-export const listRecordings = async ( options?: RequestInit): Promise<listRecordingsResponse> => {
+export const listRecordings = async (params?: ListRecordingsParams, options?: RequestInit): Promise<listRecordingsResponse> => {
 
-  return customInstance<listRecordingsResponse>(getListRecordingsUrl(),
+  return customInstance<listRecordingsResponse>(getListRecordingsUrl(params),
   {
     ...options,
     method: 'GET'
@@ -2656,23 +2679,23 @@ export const listRecordings = async ( options?: RequestInit): Promise<listRecord
 
 
 
-export const getListRecordingsQueryKey = () => {
+export const getListRecordingsQueryKey = (params?: ListRecordingsParams,) => {
     return [
-    `/api/recordings`
+    `/api/recordings`, ...(params ? [params] : [])
     ] as const;
     }
 
 
-export const getListRecordingsQueryOptions = <TData = Awaited<ReturnType<typeof listRecordings>>, TError = unknown>( options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRecordings>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+export const getListRecordingsQueryOptions = <TData = Awaited<ReturnType<typeof listRecordings>>, TError = unknown>(params?: ListRecordingsParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRecordings>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
 ) => {
 
 const {query: queryOptions, request: requestOptions} = options ?? {};
 
-  const queryKey =  queryOptions?.queryKey ?? getListRecordingsQueryKey();
+  const queryKey =  queryOptions?.queryKey ?? getListRecordingsQueryKey(params);
 
 
 
-    const queryFn: QueryFunction<Awaited<ReturnType<typeof listRecordings>>> = ({ signal }) => listRecordings({ signal, ...requestOptions });
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listRecordings>>> = ({ signal }) => listRecordings(params, { signal, ...requestOptions });
 
 
 
@@ -2686,7 +2709,7 @@ export type ListRecordingsQueryError = unknown
 
 
 export function useListRecordings<TData = Awaited<ReturnType<typeof listRecordings>>, TError = unknown>(
-  options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRecordings>>, TError, TData>> & Pick<
+ params: undefined |  ListRecordingsParams, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRecordings>>, TError, TData>> & Pick<
         DefinedInitialDataOptions<
           Awaited<ReturnType<typeof listRecordings>>,
           TError,
@@ -2696,7 +2719,7 @@ export function useListRecordings<TData = Awaited<ReturnType<typeof listRecordin
  , queryClient?: QueryClient
   ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
 export function useListRecordings<TData = Awaited<ReturnType<typeof listRecordings>>, TError = unknown>(
-  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRecordings>>, TError, TData>> & Pick<
+ params?: ListRecordingsParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRecordings>>, TError, TData>> & Pick<
         UndefinedInitialDataOptions<
           Awaited<ReturnType<typeof listRecordings>>,
           TError,
@@ -2706,7 +2729,7 @@ export function useListRecordings<TData = Awaited<ReturnType<typeof listRecordin
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
 export function useListRecordings<TData = Awaited<ReturnType<typeof listRecordings>>, TError = unknown>(
-  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRecordings>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ params?: ListRecordingsParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRecordings>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
 /**
@@ -2714,11 +2737,11 @@ export function useListRecordings<TData = Awaited<ReturnType<typeof listRecordin
  */
 
 export function useListRecordings<TData = Awaited<ReturnType<typeof listRecordings>>, TError = unknown>(
-  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRecordings>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ params?: ListRecordingsParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRecordings>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
 
-  const queryOptions = getListRecordingsQueryOptions(options)
+  const queryOptions = getListRecordingsQueryOptions(params,options)
 
   const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
 
@@ -2730,6 +2753,290 @@ export function useListRecordings<TData = Awaited<ReturnType<typeof listRecordin
 
 
 
+
+export type deleteRecordingResponse204 = {
+  data: void
+  status: 204
+}
+
+export type deleteRecordingResponse404 = {
+  data: ErrorResponse
+  status: 404
+}
+
+export type deleteRecordingResponseSuccess = (deleteRecordingResponse204) & {
+  headers: Headers;
+};
+export type deleteRecordingResponseError = (deleteRecordingResponse404) & {
+  headers: Headers;
+};
+
+export type deleteRecordingResponse = (deleteRecordingResponseSuccess | deleteRecordingResponseError)
+
+export const getDeleteRecordingUrl = (id: number,) => {
+
+
+
+
+  return `/api/recordings/${id}`
+}
+
+/**
+ * 論理削除。`recordings.deleted_at = now()` を立てるだけ。ファイルには触れない
+ * （docs/storage.md「ごみ箱 = 論理削除」）。既に削除済みなら冪等に 204。
+ * 行が無ければ 404。
+ * @summary Soft-delete a recording (move to trash)
+ */
+export const deleteRecording = async (id: number, options?: RequestInit): Promise<deleteRecordingResponse> => {
+
+  return customInstance<deleteRecordingResponse>(getDeleteRecordingUrl(id),
+  {
+    ...options,
+    method: 'DELETE'
+
+
+  }
+);}
+
+
+
+
+
+export const getDeleteRecordingMutationOptions = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteRecording>>, TError,{id: number}, TContext>, request?: SecondParameter<typeof customInstance>}
+): UseMutationOptions<Awaited<ReturnType<typeof deleteRecording>>, TError,{id: number}, TContext> => {
+
+const mutationKey = ['deleteRecording'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof deleteRecording>>, {id: number}> = (props) => {
+          const {id} = props ?? {};
+
+          return  deleteRecording(id,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type DeleteRecordingMutationResult = NonNullable<Awaited<ReturnType<typeof deleteRecording>>>
+
+    export type DeleteRecordingMutationError = ErrorResponse
+
+    /**
+ * @summary Soft-delete a recording (move to trash)
+ */
+export const useDeleteRecording = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteRecording>>, TError,{id: number}, TContext>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof deleteRecording>>,
+        TError,
+        {id: number},
+        TContext
+      > => {
+      return useMutation(getDeleteRecordingMutationOptions(options), queryClient);
+    }
+
+export type restoreRecordingResponse204 = {
+  data: void
+  status: 204
+}
+
+export type restoreRecordingResponse404 = {
+  data: ErrorResponse
+  status: 404
+}
+
+export type restoreRecordingResponse409 = {
+  data: ErrorResponse
+  status: 409
+}
+
+export type restoreRecordingResponseSuccess = (restoreRecordingResponse204) & {
+  headers: Headers;
+};
+export type restoreRecordingResponseError = (restoreRecordingResponse404 | restoreRecordingResponse409) & {
+  headers: Headers;
+};
+
+export type restoreRecordingResponse = (restoreRecordingResponseSuccess | restoreRecordingResponseError)
+
+export const getRestoreRecordingUrl = (id: number,) => {
+
+
+
+
+  return `/api/recordings/${id}/restore`
+}
+
+/**
+ * `deleted_at` と `purge_after` を消すだけ（ファイル操作ゼロ・即時）。
+ * ごみ箱に入っていない、または行が無い場合は 404。
+ * 同一イベントに生きている録画があると partial unique index で衝突し 409。
+ * @summary Restore a soft-deleted recording from trash
+ */
+export const restoreRecording = async (id: number, options?: RequestInit): Promise<restoreRecordingResponse> => {
+
+  return customInstance<restoreRecordingResponse>(getRestoreRecordingUrl(id),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+);}
+
+
+
+
+
+export const getRestoreRecordingMutationOptions = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof restoreRecording>>, TError,{id: number}, TContext>, request?: SecondParameter<typeof customInstance>}
+): UseMutationOptions<Awaited<ReturnType<typeof restoreRecording>>, TError,{id: number}, TContext> => {
+
+const mutationKey = ['restoreRecording'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof restoreRecording>>, {id: number}> = (props) => {
+          const {id} = props ?? {};
+
+          return  restoreRecording(id,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type RestoreRecordingMutationResult = NonNullable<Awaited<ReturnType<typeof restoreRecording>>>
+
+    export type RestoreRecordingMutationError = ErrorResponse
+
+    /**
+ * @summary Restore a soft-deleted recording from trash
+ */
+export const useRestoreRecording = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof restoreRecording>>, TError,{id: number}, TContext>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof restoreRecording>>,
+        TError,
+        {id: number},
+        TContext
+      > => {
+      return useMutation(getRestoreRecordingMutationOptions(options), queryClient);
+    }
+
+export type purgeRecordingResponse204 = {
+  data: void
+  status: 204
+}
+
+export type purgeRecordingResponse404 = {
+  data: ErrorResponse
+  status: 404
+}
+
+export type purgeRecordingResponseSuccess = (purgeRecordingResponse204) & {
+  headers: Headers;
+};
+export type purgeRecordingResponseError = (purgeRecordingResponse404) & {
+  headers: Headers;
+};
+
+export type purgeRecordingResponse = (purgeRecordingResponseSuccess | purgeRecordingResponseError)
+
+export const getPurgeRecordingUrl = (id: number,) => {
+
+
+
+
+  return `/api/recordings/${id}/purge`
+}
+
+/**
+ * 即時物理削除の要求印。`purge_after = now()` を立て、未 soft-delete なら
+ * `deleted_at` も同時に立てる。**ファイルは消さない**（M3-8 の削除 reconcile
+ * がこの印を拾って unlink する）。既に印が付いていても冪等に 204。
+ * @summary Mark a recording for immediate physical purge
+ */
+export const purgeRecording = async (id: number, options?: RequestInit): Promise<purgeRecordingResponse> => {
+
+  return customInstance<purgeRecordingResponse>(getPurgeRecordingUrl(id),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+);}
+
+
+
+
+
+export const getPurgeRecordingMutationOptions = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof purgeRecording>>, TError,{id: number}, TContext>, request?: SecondParameter<typeof customInstance>}
+): UseMutationOptions<Awaited<ReturnType<typeof purgeRecording>>, TError,{id: number}, TContext> => {
+
+const mutationKey = ['purgeRecording'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof purgeRecording>>, {id: number}> = (props) => {
+          const {id} = props ?? {};
+
+          return  purgeRecording(id,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type PurgeRecordingMutationResult = NonNullable<Awaited<ReturnType<typeof purgeRecording>>>
+
+    export type PurgeRecordingMutationError = ErrorResponse
+
+    /**
+ * @summary Mark a recording for immediate physical purge
+ */
+export const usePurgeRecording = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof purgeRecording>>, TError,{id: number}, TContext>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof purgeRecording>>,
+        TError,
+        {id: number},
+        TContext
+      > => {
+      return useMutation(getPurgeRecordingMutationOptions(options), queryClient);
+    }
 
 export type listRecordingDropStatsResponse200 = {
   data: DropStat[]

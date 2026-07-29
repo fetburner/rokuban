@@ -286,3 +286,208 @@ func TestListRecordingDropStats_PIDType(t *testing.T) {
 		}
 	}
 }
+
+func doRecordingMethod(t *testing.T, method, url string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(method, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	return resp
+}
+
+// soft delete → 通常一覧から消え → ごみ箱に出る → restore → 通常一覧に戻る。
+// ファイル I/O は伴わない（api ロールは DB のみ）。
+func TestRecordingTrash_SoftDeleteRestoreRoundTrip(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := newAPIServer(t, pool)
+
+	base := time.Now().Truncate(time.Second)
+	id := seedRecording(t, pool, "捨てる録画", base, "finished", 10)
+
+	// 通常一覧にいる
+	var list []Recording
+	getJSON(t, srv.URL+"/api/recordings", &list)
+	if len(list) != 1 || list[0].Id != id {
+		t.Fatalf("initial list = %+v, want id=%d", list, id)
+	}
+
+	// soft delete
+	resp := doRecordingMethod(t, http.MethodDelete, fmt.Sprintf("%s/api/recordings/%d", srv.URL, id))
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete status = %d, want 204", resp.StatusCode)
+	}
+
+	// 通常一覧から消える
+	list = nil
+	getJSON(t, srv.URL+"/api/recordings", &list)
+	if len(list) != 0 {
+		t.Fatalf("list after delete = %d, want 0", len(list))
+	}
+
+	// ごみ箱に出る（deletedAt 付き）
+	var trash []Recording
+	getJSON(t, srv.URL+"/api/recordings?trash=true", &trash)
+	if len(trash) != 1 || trash[0].Id != id {
+		t.Fatalf("trash = %+v, want id=%d", trash, id)
+	}
+	if trash[0].DeletedAt == nil {
+		t.Error("trash item should include deletedAt")
+	}
+	if trash[0].Title != "捨てる録画" {
+		t.Errorf("title = %q", trash[0].Title)
+	}
+
+	// restore
+	resp = doRecordingMethod(t, http.MethodPost, fmt.Sprintf("%s/api/recordings/%d/restore", srv.URL, id))
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("restore status = %d, want 204", resp.StatusCode)
+	}
+
+	// 通常一覧に戻る
+	list = nil
+	getJSON(t, srv.URL+"/api/recordings", &list)
+	if len(list) != 1 || list[0].Id != id {
+		t.Fatalf("list after restore = %+v, want id=%d", list, id)
+	}
+	if list[0].DeletedAt != nil {
+		t.Error("restored recording should omit deletedAt")
+	}
+
+	// ごみ箱は空
+	trash = nil
+	getJSON(t, srv.URL+"/api/recordings?trash=true", &trash)
+	if len(trash) != 0 {
+		t.Fatalf("trash after restore = %d, want 0", len(trash))
+	}
+}
+
+// soft delete は冪等。既に削除済みでも 204。存在しない id は 404。
+func TestDeleteRecording_IdempotentAndNotFound(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := newAPIServer(t, pool)
+
+	id := seedRecording(t, pool, "冪等", time.Now().Truncate(time.Second), "finished", 11)
+
+	resp := doRecordingMethod(t, http.MethodDelete, fmt.Sprintf("%s/api/recordings/%d", srv.URL, id))
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("first delete status = %d", resp.StatusCode)
+	}
+	resp = doRecordingMethod(t, http.MethodDelete, fmt.Sprintf("%s/api/recordings/%d", srv.URL, id))
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("second delete status = %d, want 204 (idempotent)", resp.StatusCode)
+	}
+
+	resp = doRecordingMethod(t, http.MethodDelete, fmt.Sprintf("%s/api/recordings/999999", srv.URL))
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("missing delete status = %d, want 404", resp.StatusCode)
+	}
+}
+
+// restore はごみ箱に無い行に対して 404。
+func TestRestoreRecording_NotInTrash(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := newAPIServer(t, pool)
+
+	id := seedRecording(t, pool, "生きている", time.Now().Truncate(time.Second), "finished", 12)
+
+	resp := doRecordingMethod(t, http.MethodPost, fmt.Sprintf("%s/api/recordings/%d/restore", srv.URL, id))
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("restore live status = %d, want 404", resp.StatusCode)
+	}
+
+	resp = doRecordingMethod(t, http.MethodPost, fmt.Sprintf("%s/api/recordings/999999/restore", srv.URL))
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("restore missing status = %d, want 404", resp.StatusCode)
+	}
+}
+
+// purge は purge_after を立て、必要なら soft-delete も兼ねる。ファイルは消さない。
+func TestPurgeRecording_MarksPurgeAfter(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := newAPIServer(t, pool)
+	ctx := context.Background()
+
+	id := seedRecording(t, pool, "即時削除", time.Now().Truncate(time.Second), "finished", 13)
+
+	resp := doRecordingMethod(t, http.MethodPost, fmt.Sprintf("%s/api/recordings/%d/purge", srv.URL, id))
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("purge status = %d, want 204", resp.StatusCode)
+	}
+
+	// DB に deleted_at と purge_after が立っていること（ファイル I/O は無い）
+	var deletedAt, purgeAfter *time.Time
+	err := pool.QueryRow(ctx,
+		`SELECT deleted_at, purge_after FROM recordings WHERE id = $1`, id,
+	).Scan(&deletedAt, &purgeAfter)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if deletedAt == nil {
+		t.Error("purge should also soft-delete (deleted_at set)")
+	}
+	if purgeAfter == nil {
+		t.Error("purge_after should be set")
+	}
+
+	// ごみ箱に出る
+	var trash []Recording
+	getJSON(t, srv.URL+"/api/recordings?trash=true", &trash)
+	if len(trash) != 1 || trash[0].Id != id {
+		t.Fatalf("trash after purge = %+v", trash)
+	}
+
+	// 冪等
+	resp = doRecordingMethod(t, http.MethodPost, fmt.Sprintf("%s/api/recordings/%d/purge", srv.URL, id))
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("second purge status = %d, want 204", resp.StatusCode)
+	}
+
+	// 存在しない
+	resp = doRecordingMethod(t, http.MethodPost, fmt.Sprintf("%s/api/recordings/999999/purge", srv.URL))
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("missing purge status = %d, want 404", resp.StatusCode)
+	}
+
+	// restore で purge_after も消える
+	resp = doRecordingMethod(t, http.MethodPost, fmt.Sprintf("%s/api/recordings/%d/restore", srv.URL, id))
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("restore after purge status = %d", resp.StatusCode)
+	}
+	err = pool.QueryRow(ctx,
+		`SELECT deleted_at, purge_after FROM recordings WHERE id = $1`, id,
+	).Scan(&deletedAt, &purgeAfter)
+	if err != nil {
+		t.Fatalf("query after restore: %v", err)
+	}
+	if deletedAt != nil || purgeAfter != nil {
+		t.Errorf("after restore deleted_at=%v purge_after=%v, want both nil", deletedAt, purgeAfter)
+	}
+}
+
+// restore は同一イベントに生きている録画があると 409。
+func TestRestoreRecording_ConflictWhenActiveExists(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := newAPIServer(t, pool)
+
+	base := time.Now().Truncate(time.Second)
+	// 同じ (site, network, service, event) で 1 本 soft-delete、もう 1 本 active。
+	// seedRecording は eventID を変えるので、ここでは直接 INSERT する。
+	trashed := seedRecording(t, pool, "旧", base.Add(-time.Hour), "finished", 20)
+	resp := doRecordingMethod(t, http.MethodDelete, fmt.Sprintf("%s/api/recordings/%d", srv.URL, trashed))
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete status = %d", resp.StatusCode)
+	}
+	// 同じ event_id で生きている録画を作る（partial unique は deleted_at IS NULL のみ）
+	_ = seedRecording(t, pool, "新", base, "finished", 20)
+
+	resp = doRecordingMethod(t, http.MethodPost, fmt.Sprintf("%s/api/recordings/%d/restore", srv.URL, trashed))
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("restore conflict status = %d, want 409", resp.StatusCode)
+	}
+}

@@ -476,6 +476,18 @@ paths:
       description: |
         録画履歴。program_start_at の降順。ドロップ統計は PID 別の合計のみを含む。
         PID 別の内訳は `GET /api/recordings/{id}/drop-stats` で取得する。
+
+        既定は生きている録画（`deleted_at IS NULL`）のみ。`trash=true` でごみ箱
+        （`deleted_at IS NOT NULL`）を返す。物理削除済み tombstone もここに残るが、
+        ファイルは既に無いことがある（M3-8）。
+      parameters:
+        - name: trash
+          in: query
+          required: false
+          description: true のときごみ箱（論理削除済み）を返す
+          schema:
+            type: boolean
+            default: false
       responses:
         "200":
           description: OK
@@ -485,6 +497,87 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/Recording"
+
+  /api/recordings/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+    delete:
+      operationId: deleteRecording
+      summary: Soft-delete a recording (move to trash)
+      description: |
+        論理削除。`recordings.deleted_at = now()` を立てるだけ。ファイルには触れない
+        （docs/storage.md「ごみ箱 = 論理削除」）。既に削除済みなら冪等に 204。
+        行が無ければ 404。
+      responses:
+        "204":
+          description: Soft-deleted (or already in trash)
+        "404":
+          description: Recording not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/recordings/{id}/restore:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+    post:
+      operationId: restoreRecording
+      summary: Restore a soft-deleted recording from trash
+      description: |
+        `deleted_at` と `purge_after` を消すだけ（ファイル操作ゼロ・即時）。
+        ごみ箱に入っていない、または行が無い場合は 404。
+        同一イベントに生きている録画があると partial unique index で衝突し 409。
+      responses:
+        "204":
+          description: Restored
+        "404":
+          description: Not in trash / not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Active recording already exists for the same event
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/recordings/{id}/purge:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+    post:
+      operationId: purgeRecording
+      summary: Mark a recording for immediate physical purge
+      description: |
+        即時物理削除の要求印。`purge_after = now()` を立て、未 soft-delete なら
+        `deleted_at` も同時に立てる。**ファイルは消さない**（M3-8 の削除 reconcile
+        がこの印を拾って unlink する）。既に印が付いていても冪等に 204。
+      responses:
+        "204":
+          description: Marked for purge
+        "404":
+          description: Recording not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
   /api/recordings/{id}/drop-stats:
     parameters:
@@ -865,6 +958,12 @@ components:
           type: array
           items:
             type: object
+        deletedAt:
+          description: |
+            論理削除時刻。ごみ箱一覧（`trash=true`）でのみ出現する。
+            通常一覧では省略（生きている行は NULL）。
+          type: string
+          format: date-time
         createdAt:
           type: string
           format: date-time
