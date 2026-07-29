@@ -557,6 +557,94 @@ func TestRunPass_RuleUnmatch_DeleteVsDetach(t *testing.T) {
 	}
 }
 
+// 修正 1 の回帰テスト（方向 1/2）: DeleteReservationsBySiteAndProgramIDs は削除の
+// 瞬間に program_intents.action='record' の存在を再評価し、呼び出し側が渡した
+// programId が stale であっても実際には削除しない。
+//
+// runPassForSite は program_intents / program_overrides / 既存 reservations を
+// トランザクション外で読んでから削除対象（toDelete）を計算し、実際の DELETE は
+// 別のトランザクション内で後から実行される。api の CreateReservation
+// （program_intents{record} と reservations 行を 1 tx でコミットする）が、この
+// 読み取りと DELETE 実行の間に同じ program_id へ割り込むと、toDelete は古い
+// 読み取りのままその番組を含んでしまい、作られたばかりの手動予約を削除して
+// しまう。読み順を入れ替えても「計算してから DELETE を実行するまでの窓」は
+// 必ず残るため、直すべきは DELETE 文自体のガードである。
+//
+// このテストは「stale な toDelete に基づいて DELETE が呼ばれた」状況を、実際の
+// 予約行 + その後に着地した intent{record} という形で直接再現する
+// （sqlcgen.DeleteReservationsBySiteAndProgramIDs は runPassForSite の実削除が
+// 使うのと同じクエリなので、ここでの検証はそのまま runPassForSite の保護に
+// 直結する）。
+func TestRunPass_DeleteGuard_RecordIntentBlocksStaleDelete(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	start := time.Now().Add(24 * time.Hour).Truncate(time.Second)
+	const programID = 30001
+	insertReservationDirect(t, pool, ctx, programID, "並行手動予約", start)
+
+	q := sqlcgen.New(pool)
+	// api の CreateReservation が、ruler の読み取りと DELETE 実行の間に割り込んで
+	// 作った手動予約の意図。
+	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
+		Site: testSite, ProgramID: programID, Action: db.IntentRecord,
+		ProgramStartAt: start, ProgramDurationMs: testDurationMs,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// runPassForSite がトランザクション外の古い読み取りに基づいて計算した、
+	// 既に stale になった toDelete を模す。
+	deleted, err := q.DeleteReservationsBySiteAndProgramIDs(ctx, sqlcgen.DeleteReservationsBySiteAndProgramIDsParams{
+		Site:       testSite,
+		ProgramIds: []int64{programID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 0 {
+		t.Errorf("rows deleted = %d, want 0 (a concurrently-created record intent must block the stale delete)", deleted)
+	}
+	if !reservationExists(t, pool, ctx, programID) {
+		t.Error("reservation with a concurrently-created record intent must survive the stale delete")
+	}
+}
+
+// 修正 1 の回帰テスト（方向 2/2、罠の確認）: program_intents の EXISTS を
+// action で絞らずに書くと、action='skip' の予約行（ユーザーが取消した予約）まで
+// 保護されてしまい「取消した予約が消えない」という重大なリグレッションになる
+// （ruler の desired 集合は skip を除外して行そのものを持たせない設計 =
+// issue #18 の案 A）。ガードは action='record' に限定されているべきことを固定する。
+func TestRunPass_DeleteGuard_SkipIntentDoesNotBlockDelete(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	start := time.Now().Add(24 * time.Hour).Truncate(time.Second)
+	const programID = 30002
+	insertReservationDirect(t, pool, ctx, programID, "取消済み", start)
+
+	q := sqlcgen.New(pool)
+	if _, err := q.SkipProgram(ctx, sqlcgen.SkipProgramParams{
+		Site: testSite, ProgramID: programID, ProgramStartAt: start, ProgramDurationMs: testDurationMs,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	deleted, err := q.DeleteReservationsBySiteAndProgramIDs(ctx, sqlcgen.DeleteReservationsBySiteAndProgramIDsParams{
+		Site:       testSite,
+		ProgramIds: []int64{programID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 1 {
+		t.Errorf("rows deleted = %d, want 1 (a skip intent must NOT protect a stale reservation from deletion)", deleted)
+	}
+	if reservationExists(t, pool, ctx, programID) {
+		t.Error("reservation with only a skip intent should have been deleted")
+	}
+}
+
 // 受け入れ基準 8: 1 パスの削除数が閾値を超える場合は削除せずサーキットブレーカーが
 // 発火する。M2-5 でこの発火は circuit_breakers への行の永続化になり（M1-4 はパス内
 // 完結でここを検証できなかった）、detail には手動確認用に「何を消そうとしていたか」の
@@ -645,6 +733,84 @@ func TestRunPass_CircuitBreakerBlocksBulkDelete(t *testing.T) {
 		if title != wantTitle {
 			t.Errorf("detail.programs[%d].title = %q, want %q", programID, title, wantTitle)
 		}
+	}
+}
+
+// ruleMatchCount は reservation_rule_matches のうち reservationID に紐づく行数を返す。
+func ruleMatchCount(t *testing.T, pool *pgxpool.Pool, ctx context.Context, reservationID int64) int {
+	t.Helper()
+	var count int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM reservation_rule_matches WHERE reservation_id = $1`, reservationID,
+	).Scan(&count); err != nil {
+		t.Fatalf("counting reservation_rule_matches: %v", err)
+	}
+	return count
+}
+
+// 修正 2 の回帰テスト: ルールを削除ではなく無効化した（ListEnabledRules から外れる）
+// あとも、reservation_rule_matches の古いマッチ行が掃除されずに残り続けないか。
+//
+// program_overrides を先に足しておくことで、ルール無効化後も予約行自体（reservation_id）は
+// detached として生存させる。修正前の rewriteRuleMatches は「今回マッチした programId」
+// だけを対象に DELETE していたため、ルールが 1 件もマッチしなくなった今回のパスでは
+// programIDs が空になり、この予約に紐づく古いマッチ行が一切触られずに残り続けた
+// （CLAUDE.md 不変条件 9「導出は毎パス作り直す」違反）。ルール自体の削除は FK CASCADE
+// で救われるので対象外だが、無効化はここでしか掃除されない。
+func TestRunPass_RewriteRuleMatches_ClearsStaleMatchAfterRuleDisabled(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	insertService(t, pool, ctx)
+	start := time.Now().Add(24 * time.Hour).Truncate(time.Second)
+	insertProgram(t, pool, ctx, 31001, "マッチ掃除", start)
+
+	ruleID := insertRule(t, pool, ctx, "stale-match", 10)
+	insertRuleKeyword(t, pool, ctx, ruleID, "マッチ掃除")
+
+	// 予約行自体は detached として生存させるための投資（program_overrides）。
+	q := sqlcgen.New(pool)
+	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
+		Site: testSite, ProgramID: 31001, Overrides: []byte(`{"priority":9}`),
+		ProgramStartAt: start, ProgramDurationMs: testDurationMs,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	r := ruler.New([]string{testSite}, pool, nil)
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("initial RunPass: %v", err)
+	}
+	res, ok := getReservation(t, pool, ctx, 31001)
+	if !ok {
+		t.Fatal("reservation should be created initially (rule matches)")
+	}
+	if got := ruleMatchCount(t, pool, ctx, res.ID); got != 1 {
+		t.Fatalf("reservation_rule_matches count before disabling = %d, want 1", got)
+	}
+
+	// ルールを削除ではなく無効化する。
+	if _, err := pool.Exec(ctx, `UPDATE rules SET enabled = false WHERE id = $1`, ruleID); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass after disabling rule: %v", err)
+	}
+
+	res2, ok := getReservation(t, pool, ctx, 31001)
+	if !ok {
+		t.Fatal("reservation with program_overrides should survive as detached, not be deleted")
+	}
+	if res2.RuleID != nil {
+		t.Fatalf("rule_id = %v, want nil after detaching", res2.RuleID)
+	}
+	if res2.ID != res.ID {
+		t.Fatalf("reservation id changed: %d -> %d (test assumption broken: the row must survive, not be recreated)", res.ID, res2.ID)
+	}
+	// 核心: reservation_id は消えていない（生きている）のに、もうマッチしていない
+	// ルールの古い行が残っていないこと。
+	if got := ruleMatchCount(t, pool, ctx, res2.ID); got != 0 {
+		t.Errorf("reservation_rule_matches count after disabling the rule = %d, want 0 (stale match rows must be cleared every pass)", got)
 	}
 }
 

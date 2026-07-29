@@ -366,6 +366,14 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 
 	tq := sqlcgen.New(tx)
 	var deleted int64
+	// newlyTripped: このパスで初めて発動した（tripped が false だった）ことを示す
+	// フラグ。metrics.RulerCircuitBreakerTrips.Inc() は tx.Commit の成否が
+	// まだ分からないこの時点では呼ばない — ここで呼ぶと後段の Commit が失敗した
+	// 場合にカウンタだけ進んでしまう（DB には発動が記録されていないのに
+	// メトリクスだけ発動したことになる）。フラグに持ち越し、Commit 成功後にのみ
+	// Inc する。breaker.Trip 内のゲージ設定は次パスの ObserveState が DB の
+	// 真実に合わせ直すので、ここでは触らなくてよい。
+	var newlyTripped bool
 	switch {
 	case len(toDelete) > r.cfg.MaxDeletesPerPass:
 		// 閾値超過。tripped が既に true でも Trip を呼び直す — 既に発動中なら
@@ -382,9 +390,7 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 		if tripErr := breaker.Trip(ctx, tq, site, breaker.RulerDeletes, r.cfg.MaxDeletesPerPass, sample); tripErr != nil {
 			return fmt.Errorf("tripping circuit breaker: %w", tripErr)
 		}
-		if !tripped {
-			metrics.RulerCircuitBreakerTrips.Inc()
-		}
+		newlyTripped = !tripped
 	case tripped:
 		// ラッチ中: 今回の候補数は閾値以下に戻っているが、自動では解除しない
 		// （breaker パッケージのコメント「自動で解けるようにすると『一瞬止まって
@@ -409,6 +415,13 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("committing tx: %w", err)
+	}
+
+	// Commit が成功して初めて「このパスで実際に発動した」と言えるので、ここで
+	// カウンタを進める（switch 内で直接 Inc すると Commit 失敗時にもカウンタが
+	// 進んでしまう）。
+	if newlyTripped {
+		metrics.RulerCircuitBreakerTrips.Inc()
 	}
 
 	metrics.RulerReservations.WithLabelValues("created").Add(float64(created))
@@ -520,9 +533,21 @@ func (r *Ruler) stillProjectedSubset(ctx context.Context, q *sqlcgen.Queries, si
 // この表に SSE 用の行トリガーはないため、reservations と違い差分書き込みは要求されない
 // （毎パス全部書き直してよい。docs/recording.md §3.1「複数ルール解決」）。
 //
-// 対象は「ルールにマッチし、かつ intent.skip で desired から除外されていない」番組。
+// 削除はサイト単位の全消し（DeleteReservationRuleMatchesBySite）でなければならない。
+// 「今回マッチした programId」だけを対象にすると、ルールを削除ではなく無効化した
+// （ListEnabledRules から外れる）、あるいはルールの条件を変えてマッチしなくなったが
+// intent/overrides のおかげで予約行が生き残っている、という経路で古いマッチ行が
+// 消されずに残り続ける（導出表を毎パス作り直せていない = CLAUDE.md 不変条件 9 違反。
+// ルール自体の削除は FK CASCADE で救われるのでここでは対象外）。
+//
+// 挿入対象は「ルールにマッチし、かつ intent.skip で desired から除外されていない」番組。
 // skip された番組は予約行そのものを持たないため、マッチのトレースを紐づける先がない。
 func rewriteRuleMatches(ctx context.Context, tx pgx.Tx, site string, allMatches map[int64][]int64, skipIntent map[int64]struct{}) error {
+	q := sqlcgen.New(tx)
+	if err := q.DeleteReservationRuleMatchesBySite(ctx, site); err != nil {
+		return fmt.Errorf("deleting old reservation_rule_matches: %w", err)
+	}
+
 	programIDs := make([]int64, 0, len(allMatches))
 	for programID := range allMatches {
 		if _, skipped := skipIntent[programID]; skipped {
@@ -534,7 +559,6 @@ func rewriteRuleMatches(ctx context.Context, tx pgx.Tx, site string, allMatches 
 		return nil
 	}
 
-	q := sqlcgen.New(tx)
 	reservationRows, err := q.ListReservationIDsBySiteAndProgramIDs(ctx, sqlcgen.ListReservationIDsBySiteAndProgramIDsParams{
 		Site:       site,
 		ProgramIds: programIDs,
@@ -544,17 +568,8 @@ func rewriteRuleMatches(ctx context.Context, tx pgx.Tx, site string, allMatches 
 	}
 
 	reservationIDByProgram := make(map[int64]int64, len(reservationRows))
-	reservationIDs := make([]int64, 0, len(reservationRows))
 	for _, row := range reservationRows {
 		reservationIDByProgram[row.ProgramID] = row.ID
-		reservationIDs = append(reservationIDs, row.ID)
-	}
-	if len(reservationIDs) == 0 {
-		return nil
-	}
-
-	if err := q.DeleteReservationRuleMatchesByReservationIDs(ctx, reservationIDs); err != nil {
-		return fmt.Errorf("deleting old reservation_rule_matches: %w", err)
 	}
 
 	var matchReservationIDs, matchRuleIDs []int64
