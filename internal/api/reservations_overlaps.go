@@ -27,7 +27,7 @@ func (h *Server) GetProgramOverlaps(ctx context.Context, req GetProgramOverlapsR
 	q := sqlcgen.New(h.pool)
 
 	// 番組の放送時間は EPG プロジェクションから引く。射影に無ければ判定材料が
-	// 無いので 404（CreateReservation の GetProgramChannelIdentity と同じ姿勢）。
+	// 無いので 404（CreateReservation の GetProgramSnapshotSource と同じ姿勢）。
 	program, err := q.GetEpgProgram(ctx, sqlcgen.GetEpgProgramParams{
 		Site:      defaultSite,
 		ProgramID: req.ProgramId,

@@ -446,13 +446,13 @@ type CircuitBreakerSampleProgram struct {
 	Title     *string `json:"title,omitempty"`
 }
 
-// CreateReservationRequest defines model for CreateReservationRequest.
+// CreateReservationRequest 番組の事実（title / 開始時刻 / 尺）はサーバーが EPG プロジェクションから
+// 引く。クライアントからは受け取らない（#27 の決定: 値の出所を射影 1 つに
+// 固定する）。クライアントが古い番組表を握っていても、GC の比較対象になる
+// program_snapshots はサーバー権威の値で作られる。
 type CreateReservationRequest struct {
-	DurationMs int64     `json:"durationMs"`
-	Priority   *int      `json:"priority,omitempty"`
-	ProgramId  int64     `json:"programId"`
-	StartAt    time.Time `json:"startAt"`
-	Title      string    `json:"title"`
+	Priority  *int  `json:"priority,omitempty"`
+	ProgramId int64 `json:"programId"`
 }
 
 // DeleteRuleResponse defines model for DeleteRuleResponse.

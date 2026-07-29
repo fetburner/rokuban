@@ -36,8 +36,7 @@ func TestDeleteReservation_KeepsSkipIntent(t *testing.T) {
 	// internal/mirakc/ids_test.go の実測値と同じ）に対応する行を用意する。
 	insertProgramFixture(t, pool, ctx, programID, 32736, 1024)
 
-	body := `{"programId":327360102415397,"title":"テスト番組",` +
-		`"startAt":"2026-08-01T21:00:00+09:00","durationMs":1800000,"priority":7}`
+	body := `{"programId":327360102415397,"priority":7}`
 
 	resp, err := http.Post(srv.URL+"/api/reservations", "application/json", strings.NewReader(body))
 	if err != nil {
@@ -193,7 +192,7 @@ func overridesPriority(t *testing.T, raw []byte) int {
 }
 
 // insertProgramFixture は EPG プロジェクションに、指定した programId に対応する
-// サービス・番組の行を用意する。CreateReservation は GetProgramChannelIdentity で
+// サービス・番組の行を用意する。CreateReservation は GetProgramSnapshotSource で
 // このプロジェクションを引くので、テストで手動予約を作るにはこれが必要。
 func insertProgramFixture(t *testing.T, pool *pgxpool.Pool, ctx context.Context, programID int64, networkID, serviceID int) {
 	t.Helper()

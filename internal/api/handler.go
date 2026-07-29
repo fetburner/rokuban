@@ -85,11 +85,14 @@ func (h *Server) CreateReservation(ctx context.Context, req CreateReservationReq
 	defer func() { _ = tx.Rollback(ctx) }()
 	q := sqlcgen.New(tx)
 
-	// チャンネル識別情報は EPG プロジェクションから引いてスナップショットする
-	// （サーバー権威。クライアントからは受け取らない）。mirakc の programId
-	// 内部構造への依存を reconciler から消すためのもので、ここで見つからなければ
-	// 予約自体を作れない。
-	identity, err := q.GetProgramChannelIdentity(ctx, sqlcgen.GetProgramChannelIdentityParams{
+	// 番組の事実（title / 開始時刻 / 尺 / チャンネル識別）はすべて EPG
+	// プロジェクションから引いてスナップショットする（サーバー権威。クライアント
+	// からは受け取らない。#27 の決定「値の出所を射影ただ 1 つに固定する」）。
+	// mirakc の programId 内部構造への依存を reconciler から消す目的に加え、
+	// クライアントが古い番組表を握ったまま予約しても GC の比較対象
+	// （program_snapshots.start_at + duration_ms）がずれないようにする。
+	// ここで見つからなければ予約自体を作れない。
+	source, err := q.GetProgramSnapshotSource(ctx, sqlcgen.GetProgramSnapshotSourceParams{
 		Site:      defaultSite,
 		ProgramID: req.Body.ProgramId,
 	})
@@ -97,28 +100,23 @@ func (h *Server) CreateReservation(ctx context.Context, req CreateReservationReq
 		if errors.Is(err, pgx.ErrNoRows) {
 			return CreateReservation400JSONResponse{Error: "program not found in EPG projection"}, nil
 		}
-		return nil, fmt.Errorf("getting program channel identity: %w", err)
+		return nil, fmt.Errorf("getting program snapshot source: %w", err)
 	}
 
-	// 番組の事実のスナップショット（title / 開始時刻 / 尺 / チャンネル識別）は
-	// program_snapshots に抽出された（#27）。reservations / program_intents /
-	// program_overrides はいずれも (site, program_id) の FK でこの行を参照する
-	// ため、この 3 つより先に upsert する。
-	//
-	// title / 開始時刻 / 尺は**この段階では**引き続きリクエストボディの値を使う
-	// （#27 の決定 D2「出所を EPG 射影に固定する」への移行は別タスク。ここで
-	// 先取りすると CreateReservation の挙動が変わってしまう）。チャンネル識別は
-	// 従来どおり EPG プロジェクション（サーバー権威）から埋める。
+	// 番組の事実のスナップショットは program_snapshots に抽出された（#27）。
+	// reservations / program_intents / program_overrides はいずれも
+	// (site, program_id) の FK でこの行を参照するため、この 3 つより先に
+	// upsert する。
 	snap := sqlcgen.ProgramSnapshot{
 		Site:        defaultSite,
 		ProgramID:   req.Body.ProgramId,
-		Title:       req.Body.Title,
-		StartAt:     req.Body.StartAt,
-		DurationMs:  req.Body.DurationMs,
-		NetworkID:   &identity.NetworkID,
-		ServiceID:   &identity.ServiceID,
-		ChannelType: &identity.ChannelType,
-		Channel:     &identity.Channel,
+		Title:       source.Title,
+		StartAt:     source.StartAt,
+		DurationMs:  source.DurationMs,
+		NetworkID:   &source.NetworkID,
+		ServiceID:   &source.ServiceID,
+		ChannelType: &source.ChannelType,
+		Channel:     &source.Channel,
 	}
 	if err := q.UpsertProgramSnapshot(ctx, sqlcgen.UpsertProgramSnapshotParams{
 		Site:        snap.Site,

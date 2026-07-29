@@ -19,11 +19,12 @@ func overlapsURL(base string, programID int64) string {
 }
 
 // reserveViaAPI は POST /api/reservations で手動予約を作成し、デコードした
-// Reservation を返す（201 でなければ即 Fatal）。
-func reserveViaAPI(t *testing.T, srv string, programID int64, title string, start time.Time, durationMs int64) Reservation {
+// Reservation を返す（201 でなければ即 Fatal）。番組の事実（title / 開始時刻 /
+// 尺）はサーバーが EPG プロジェクションから引く（#27）ので、呼び出し側は事前に
+// seedEpgProgram で対象番組を登録しておくこと。
+func reserveViaAPI(t *testing.T, srv string, programID int64) Reservation {
 	t.Helper()
-	body := fmt.Sprintf(`{"programId":%d,"title":%q,"startAt":%q,"durationMs":%d}`,
-		programID, title, start.Format(time.RFC3339), durationMs)
+	body := fmt.Sprintf(`{"programId":%d}`, programID)
 	resp, err := http.Post(srv+"/api/reservations", "application/json", strings.NewReader(body))
 	if err != nil {
 		t.Fatalf("POST /api/reservations: %v", err)
@@ -52,8 +53,8 @@ func TestGetProgramOverlaps_CountsOverlapping(t *testing.T) {
 	seedEpgProgram(t, pool, 202, 32678, 5168, 3, "重ならない番組", base.Add(-2*time.Hour), false)
 
 	// 対象番組 [00:00,01:00) と重なる予約 [00:30,01:30)、重ならない予約 [-2:00,-1:00) を用意
-	reserveViaAPI(t, srv.URL, 201, "重なる番組", base.Add(30*time.Minute), testProgramDuration.Milliseconds())
-	reserveViaAPI(t, srv.URL, 202, "重ならない番組", base.Add(-2*time.Hour), testProgramDuration.Milliseconds())
+	reserveViaAPI(t, srv.URL, 201)
+	reserveViaAPI(t, srv.URL, 202)
 
 	var got ProgramOverlaps
 	resp := getJSON(t, overlapsURL(srv.URL, 200), &got)
@@ -83,8 +84,8 @@ func TestGetProgramOverlaps_AdjacentProgramNotCounted(t *testing.T) {
 	// 後番組: 開始がちょうど対象番組の終了と同時刻
 	seedEpgProgram(t, pool, 212, 32678, 5168, 3, "後番組", base.Add(testProgramDuration), false)
 
-	reserveViaAPI(t, srv.URL, 211, "前番組", base.Add(-testProgramDuration), testProgramDuration.Milliseconds())
-	reserveViaAPI(t, srv.URL, 212, "後番組", base.Add(testProgramDuration), testProgramDuration.Milliseconds())
+	reserveViaAPI(t, srv.URL, 211)
+	reserveViaAPI(t, srv.URL, 212)
 
 	var got ProgramOverlaps
 	resp := getJSON(t, overlapsURL(srv.URL, 210), &got)
@@ -106,7 +107,7 @@ func TestGetProgramOverlaps_ExcludesSelf(t *testing.T) {
 	seedEpgService(t, pool, 32678, 5168, 8, "テスト局", "27")
 	seedEpgProgram(t, pool, 220, 32678, 5168, 1, "対象番組", base, false)
 
-	reserveViaAPI(t, srv.URL, 220, "対象番組", base, testProgramDuration.Milliseconds())
+	reserveViaAPI(t, srv.URL, 220)
 
 	var got ProgramOverlaps
 	resp := getJSON(t, overlapsURL(srv.URL, 220), &got)
@@ -130,7 +131,7 @@ func TestGetProgramOverlaps_ExcludesOrphaned(t *testing.T) {
 	seedEpgProgram(t, pool, 230, 32678, 5168, 1, "対象番組", base, false)
 	seedEpgProgram(t, pool, 231, 32678, 5168, 2, "orphan になる番組", base.Add(30*time.Minute), false)
 
-	orphaned := reserveViaAPI(t, srv.URL, 231, "orphan になる番組", base.Add(30*time.Minute), testProgramDuration.Milliseconds())
+	orphaned := reserveViaAPI(t, srv.URL, 231)
 
 	// MarkReservationOrphaned は :execrows になった（internal/reconciler の
 	// markOrphaned が実際に更新できた行数をログ出力の可否に使うため）。
@@ -226,7 +227,7 @@ func TestGetProgramOverlaps_ReturnsBreakdown(t *testing.T) {
 	seedEpgProgram(t, pool, 250, 32678, 5168, 1, "対象番組", base, false)
 	seedEpgProgram(t, pool, 251, 32678, 5168, 2, "重なる番組", base.Add(30*time.Minute), false)
 
-	overlapping := reserveViaAPI(t, srv.URL, 251, "重なる番組", base.Add(30*time.Minute), testProgramDuration.Milliseconds())
+	overlapping := reserveViaAPI(t, srv.URL, 251)
 
 	var got ProgramOverlaps
 	resp := getJSON(t, overlapsURL(srv.URL, 250), &got)
