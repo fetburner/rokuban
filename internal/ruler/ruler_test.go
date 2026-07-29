@@ -98,7 +98,14 @@ VALUES ($1, 0, 'name', 'keyword', $2, true, false)`, ruleID, keyword)
 	}
 }
 
-// reservationRow はテストで確認したい reservations の列だけを持つ。
+// reservationRow はテストで確認したい reservations / program_snapshots の列を
+// 合わせ持つ。#27 で番組の事実のスナップショット（title / 開始時刻 / 尺 /
+// チャンネル識別）が program_snapshots に抽出されたため JOIN して読む。
+// State は #28/#30 で reservations から落ちた列で、(rule_id, base, orphaned_at)
+// から deriveTestState が毎回計算する（reservationFromRow と同じ式だが、
+// 同じ実装を呼ばず独立に再実装してある — テストが検証対象と同じ実装を
+// 呼ぶと、その実装のバグをテストが見逃す）。
+//
 // source 列は issue #26 で削除済み（手動/ルール由来の区別は program_intents /
 // rule_id から導出する。本ファイルにはこの列を前提にしたテストを置かない）。
 type reservationRow struct {
@@ -115,20 +122,37 @@ type reservationRow struct {
 	Channel               *string
 	DedupMatchRecordingID *int64
 	DedupSimilarity       *float32
+	OrphanedAt            *time.Time
 	UpdatedAt             time.Time
+}
+
+// deriveTestState は internal/api.reservationState と同じ式（#28/#30 の決定）を
+// 独立に再実装したもの。orphaned_at が非 NULL なら orphaned、rule_id が NULL
+// かつ base が非 NULL なら detached、それ以外は active。
+func deriveTestState(ruleID *int64, base []byte, orphanedAt *time.Time) string {
+	switch {
+	case orphanedAt != nil:
+		return db.ReservationStateOrphaned
+	case ruleID == nil && len(base) > 0:
+		return db.ReservationStateDetached
+	default:
+		return db.ReservationStateActive
+	}
 }
 
 func getReservation(t *testing.T, pool *pgxpool.Pool, ctx context.Context, programID int64) (reservationRow, bool) {
 	t.Helper()
 	var r reservationRow
 	err := pool.QueryRow(ctx, `
-SELECT id, rule_id, state, base, title, program_start_at, program_duration_ms,
-       network_id, service_id, channel_type, channel,
-       dedup_match_recording_id, dedup_similarity, updated_at
-FROM reservations WHERE site = $1 AND program_id = $2`, testSite, programID).Scan(
-		&r.ID, &r.RuleID, &r.State, &r.Base, &r.Title, &r.ProgramStartAt, &r.ProgramDurationMs,
+SELECT r.id, r.rule_id, r.base, s.title, s.start_at, s.duration_ms,
+       s.network_id, s.service_id, s.channel_type, s.channel,
+       r.dedup_match_recording_id, r.dedup_similarity, r.orphaned_at, r.updated_at
+FROM reservations r
+JOIN program_snapshots s ON s.site = r.site AND s.program_id = r.program_id
+WHERE r.site = $1 AND r.program_id = $2`, testSite, programID).Scan(
+		&r.ID, &r.RuleID, &r.Base, &r.Title, &r.ProgramStartAt, &r.ProgramDurationMs,
 		&r.NetworkID, &r.ServiceID, &r.ChannelType, &r.Channel,
-		&r.DedupMatchRecordingID, &r.DedupSimilarity, &r.UpdatedAt,
+		&r.DedupMatchRecordingID, &r.DedupSimilarity, &r.OrphanedAt, &r.UpdatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -136,6 +160,7 @@ FROM reservations WHERE site = $1 AND program_id = $2`, testSite, programID).Sca
 		}
 		t.Fatalf("querying reservation for program %d: %v", programID, err)
 	}
+	r.State = deriveTestState(r.RuleID, r.Base, r.OrphanedAt)
 	return r, true
 }
 
@@ -163,10 +188,12 @@ func TestRunPass_DoesNotWriteProgramIntents(t *testing.T) {
 	ruleID := insertRule(t, pool, ctx, "news", 10)
 	insertRuleKeyword(t, pool, ctx, ruleID, "ニュース")
 
+	// program_intents への FK（#27）を満たすため、ruler が動く前に
+	// program_snapshots 行を用意しておく。
+	insertProgramSnapshotDirect(t, pool, ctx, 1001, "ニュース7", start)
 	q := sqlcgen.New(pool)
 	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
 		Site: testSite, ProgramID: 1001, Action: db.IntentRecord,
-		ProgramStartAt: start, ProgramDurationMs: testDurationMs,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -210,10 +237,12 @@ func TestRunPass_DoesNotWriteProgramOverrides(t *testing.T) {
 	ruleID := insertRule(t, pool, ctx, "override-write-guard", 10)
 	insertRuleKeyword(t, pool, ctx, ruleID, "上書きテスト")
 
+	// program_overrides への FK（#27）を満たすため、ruler が動く前に
+	// program_snapshots 行を用意しておく。
+	insertProgramSnapshotDirect(t, pool, ctx, 1101, "上書きテスト", start)
 	q := sqlcgen.New(pool)
 	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
 		Site: testSite, ProgramID: 1101, Overrides: []byte(`{"priority":9}`),
-		ProgramStartAt: start, ProgramDurationMs: testDurationMs,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -255,10 +284,12 @@ func TestRunPass_OverridesAloneKeepReservationDetached(t *testing.T) {
 	ruleID := insertRule(t, pool, ctx, "override-survivor", 10)
 	insertRuleKeyword(t, pool, ctx, ruleID, "上書き生存")
 
+	// program_overrides への FK（#27）を満たすため、ruler が動く前に
+	// program_snapshots 行を用意しておく。
+	insertProgramSnapshotDirect(t, pool, ctx, 1201, "上書き生存", start)
 	q := sqlcgen.New(pool)
 	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
 		Site: testSite, ProgramID: 1201, Overrides: []byte(`{"priority":9}`),
-		ProgramStartAt: start, ProgramDurationMs: testDurationMs,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -304,9 +335,12 @@ func TestRunPass_SkipIntentPreventsReservation(t *testing.T) {
 	ruleID := insertRule(t, pool, ctx, "movie", 10)
 	insertRuleKeyword(t, pool, ctx, ruleID, "映画")
 
+	// program_intents への FK（#27）を満たすため、ruler が動く前に
+	// program_snapshots 行を用意しておく。
+	insertProgramSnapshotDirect(t, pool, ctx, 2001, "映画スペシャル", start)
 	q := sqlcgen.New(pool)
 	if _, err := q.SkipProgram(ctx, sqlcgen.SkipProgramParams{
-		Site: testSite, ProgramID: 2001, ProgramStartAt: start, ProgramDurationMs: testDurationMs,
+		Site: testSite, ProgramID: 2001,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -512,11 +546,13 @@ func TestRunPass_RuleUnmatch_DeleteVsDetach(t *testing.T) {
 	ruleB := insertRule(t, pool, ctx, "ruleB", 10)
 	insertRuleKeyword(t, pool, ctx, ruleB, "対象B")
 
+	// program_intents への FK（#27）を満たすため、ruler が動く前に
+	// program_snapshots 行を用意しておく。
+	insertProgramSnapshotDirect(t, pool, ctx, 7002, "対象B", start)
 	q := sqlcgen.New(pool)
 	// 7002 には record intent が付いている（例: ユーザーが個別に上書き済み）
 	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
 		Site: testSite, ProgramID: 7002, Action: db.IntentRecord,
-		ProgramStartAt: start, ProgramDurationMs: testDurationMs,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -588,7 +624,6 @@ func TestRunPass_DeleteGuard_RecordIntentBlocksStaleDelete(t *testing.T) {
 	// 作った手動予約の意図。
 	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
 		Site: testSite, ProgramID: programID, Action: db.IntentRecord,
-		ProgramStartAt: start, ProgramDurationMs: testDurationMs,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -625,7 +660,7 @@ func TestRunPass_DeleteGuard_SkipIntentDoesNotBlockDelete(t *testing.T) {
 
 	q := sqlcgen.New(pool)
 	if _, err := q.SkipProgram(ctx, sqlcgen.SkipProgramParams{
-		Site: testSite, ProgramID: programID, ProgramStartAt: start, ProgramDurationMs: testDurationMs,
+		Site: testSite, ProgramID: programID,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -769,10 +804,12 @@ func TestRunPass_RewriteRuleMatches_ClearsStaleMatchAfterRuleDisabled(t *testing
 	insertRuleKeyword(t, pool, ctx, ruleID, "マッチ掃除")
 
 	// 予約行自体は detached として生存させるための投資（program_overrides）。
+	// program_overrides への FK（#27）を満たすため、ruler が動く前に
+	// program_snapshots 行を用意しておく。
+	insertProgramSnapshotDirect(t, pool, ctx, 31001, "マッチ掃除", start)
 	q := sqlcgen.New(pool)
 	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
 		Site: testSite, ProgramID: 31001, Overrides: []byte(`{"priority":9}`),
-		ProgramStartAt: start, ProgramDurationMs: testDurationMs,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -864,16 +901,37 @@ func TestRunPass_RecordsAllRuleMatches(t *testing.T) {
 	}
 }
 
-// insertReservationDirect は reservations 行を ruler を介さず直接作る。
-// GC のテストは「終了時刻 + 猶予」の境界だけを厳密に制御したいので、
-// EPG プロジェクションやルールマッチに頼らず program_start_at/program_duration_ms
-// を狙った値にできるこちらを使う。
+// insertProgramSnapshotDirect は program_snapshots 行だけを直接作る。
+// program_intents / program_overrides への FK（#27）を満たすためだけに使う
+// 軽量ヘルパーで、reservations 行は作らない。api.CreateReservation が
+// トランザクション内で「program_snapshots → program_intents/overrides →
+// reservations」の順に書くのと同じ順序を、意図・上書きだけを単独で用意したい
+// テストのために切り出したもの。
+func insertProgramSnapshotDirect(t *testing.T, pool *pgxpool.Pool, ctx context.Context, programID int64, title string, startAt time.Time) {
+	t.Helper()
+	if _, err := pool.Exec(ctx, `
+INSERT INTO program_snapshots (site, program_id, title, start_at, duration_ms)
+VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (site, program_id) DO UPDATE SET
+  title = EXCLUDED.title, start_at = EXCLUDED.start_at, duration_ms = EXCLUDED.duration_ms`,
+		testSite, programID, title, startAt, testDurationMs); err != nil {
+		t.Fatalf("inserting program_snapshot fixture: %v", err)
+	}
+}
+
+// insertReservationDirect は program_snapshots + reservations 行を ruler を
+// 介さず直接作る。GC のテストは「終了時刻 + 猶予」の境界だけを厳密に制御
+// したいので、EPG プロジェクションやルールマッチに頼らず start_at/duration_ms
+// を狙った値にできるこちらを使う。#27 で番組の事実のスナップショットが
+// program_snapshots に抽出され、reservations への FK が張られたため、
+// 予約行より先に program_snapshots を作る必要がある。
 func insertReservationDirect(t *testing.T, pool *pgxpool.Pool, ctx context.Context, programID int64, title string, startAt time.Time) {
 	t.Helper()
+	insertProgramSnapshotDirect(t, pool, ctx, programID, title, startAt)
 	_, err := pool.Exec(ctx, `
-INSERT INTO reservations (site, program_id, title, program_start_at, program_duration_ms)
-VALUES ($1, $2, $3, $4, $5)`,
-		testSite, programID, title, startAt, testDurationMs)
+INSERT INTO reservations (site, program_id)
+VALUES ($1, $2)`,
+		testSite, programID)
 	if err != nil {
 		t.Fatalf("inserting reservation fixture: %v", err)
 	}
@@ -934,13 +992,11 @@ func TestRunPass_GC_DeletesEndedPastGrace(t *testing.T) {
 	q := sqlcgen.New(pool)
 	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
 		Site: testSite, ProgramID: 10001, Action: db.IntentRecord,
-		ProgramStartAt: start, ProgramDurationMs: testDurationMs,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
 		Site: testSite, ProgramID: 10001, Overrides: []byte(`{"priority":3}`),
-		ProgramStartAt: start, ProgramDurationMs: testDurationMs,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1068,7 +1124,6 @@ func TestRunPass_CircuitBreakerLatchBlocksDeleteEvenBelowThreshold(t *testing.T)
 	q := sqlcgen.New(pool)
 	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
 		Site: testSite, ProgramID: 20000, Action: db.IntentRecord,
-		ProgramStartAt: start, ProgramDurationMs: testDurationMs,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1109,11 +1164,12 @@ func TestRunPass_TrippedCircuitBreakerStillCreatesAndUpdatesReservations(t *test
 	}
 
 	// 21000 は record intent で常に desired に残す。ブレーカー発動後にこの番組の
-	// スナップショット追従（延長）が続くことを確認するため。
+	// スナップショット追従（延長）が続くことを確認するため。program_intents への
+	// FK（#27）を満たすため、ruler が動く前に program_snapshots 行を用意しておく。
+	insertProgramSnapshotDirect(t, pool, ctx, 21000, "対象0", start)
 	q := sqlcgen.New(pool)
 	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
 		Site: testSite, ProgramID: 21000, Action: db.IntentRecord,
-		ProgramStartAt: start, ProgramDurationMs: testDurationMs,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1276,7 +1332,6 @@ func TestRunPass_ResumeCircuitBreakerConverges(t *testing.T) {
 	q := sqlcgen.New(pool)
 	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
 		Site: testSite, ProgramID: 23000, Action: db.IntentRecord,
-		ProgramStartAt: start, ProgramDurationMs: testDurationMs,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1451,14 +1506,15 @@ func TestRunPass_ManualReservationSurvivesRuleMatchWithoutSourceColumn(t *testin
 	insertProgram(t, pool, ctx, programID, "手動予約サバイバル", start)
 
 	// 手動予約: 予約行 + intent{record}。ruler が動く前は rule_id はまだ付いていない。
+	// program_intents への FK があるため、予約行（と、それが作る program_snapshots
+	// 行）を先に作ってから intent を書く（api.CreateReservation と同じ順序）。
+	insertReservationDirect(t, pool, ctx, programID, "手動予約サバイバル", start)
 	q := sqlcgen.New(pool)
 	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
 		Site: testSite, ProgramID: programID, Action: db.IntentRecord,
-		ProgramStartAt: start, ProgramDurationMs: testDurationMs,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	insertReservationDirect(t, pool, ctx, programID, "手動予約サバイバル", start)
 
 	// 後からマッチするルールを用意する（修正前バグの引き金と同じ状況）。
 	ruleID := insertRule(t, pool, ctx, "manual-survivor", 10)

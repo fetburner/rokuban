@@ -13,16 +13,17 @@ import (
 
 const listOverlappingReservations = `-- name: ListOverlappingReservations :many
 
-SELECT r.id, r.site, r.program_id, r.rule_id, r.state, r.base, r.title, r.program_start_at, r.program_duration_ms, r.created_at, r.updated_at, r.network_id, r.service_id, r.channel_type, r.channel, r.dedup_match_recording_id, r.dedup_similarity, i.action AS intent_action, o.overrides AS overrides
+SELECT r.id, r.site, r.program_id, r.rule_id, r.base, r.created_at, r.updated_at, r.dedup_match_recording_id, r.dedup_similarity, r.orphaned_at, s.site, s.program_id, s.title, s.start_at, s.duration_ms, s.network_id, s.service_id, s.channel_type, s.channel, s.updated_at, i.action AS intent_action, o.overrides AS overrides
 FROM reservations r
+JOIN program_snapshots s ON s.site = r.site AND s.program_id = r.program_id
 LEFT JOIN program_intents i ON i.site = r.site AND i.program_id = r.program_id
 LEFT JOIN program_overrides o ON o.site = r.site AND o.program_id = r.program_id
 WHERE r.site = $1
   AND r.program_id <> $2::bigint
-  AND r.state <> 'orphaned'
-  AND r.program_start_at < $3::timestamptz
-  AND r.program_start_at + (r.program_duration_ms * interval '1 millisecond') > $4::timestamptz
-ORDER BY r.program_start_at
+  AND r.orphaned_at IS NULL
+  AND s.start_at < $3::timestamptz
+  AND s.start_at + (s.duration_ms * interval '1 millisecond') > $4::timestamptz
+ORDER BY s.start_at
 `
 
 type ListOverlappingReservationsParams struct {
@@ -33,9 +34,10 @@ type ListOverlappingReservationsParams struct {
 }
 
 type ListOverlappingReservationsRow struct {
-	Reservation  Reservation
-	IntentAction *string
-	Overrides    json.RawMessage
+	Reservation     Reservation
+	ProgramSnapshot ProgramSnapshot
+	IntentAction    *string
+	Overrides       json.RawMessage
 }
 
 // 予約時の重なり警告 (issue #24 M2-8, issue #21 の「案 C」)。
@@ -43,7 +45,10 @@ type ListOverlappingReservationsRow struct {
 // チューナー射影は使わない。同時間帯に既に何件の予約があるかという事実だけを
 // 返す（docs/data.md §6.5 が扱う容量超過判定は M2-10 の領分で、ここでは行わない）。
 // 半開区間 [window_start, window_end) と重なる予約を、自分自身
-// （program_id = target_program_id）を除き、state <> 'orphaned' で絞って返す。
+// （program_id = target_program_id）を除き、orphaned_at IS NULL で絞って返す
+// （#28/#30: state 列は orphaned_at に置き換わった。orphaned でない行を除外して
+// よい理由は state <> 'orphaned' のときと同じ）。番組の開始時刻・尺は
+// program_snapshots に移設された（#27）ので JOIN して引く。
 // 半開区間の判定はここ（SQL）で行うが、effective.skip の判定は Go 側で
 // db.EffectiveOptions を通す（internal/api/reservations_overlaps.go）。
 // program_intents / program_overrides との JOIN は ListReservationsBySite
@@ -67,19 +72,22 @@ func (q *Queries) ListOverlappingReservations(ctx context.Context, arg ListOverl
 			&i.Reservation.Site,
 			&i.Reservation.ProgramID,
 			&i.Reservation.RuleID,
-			&i.Reservation.State,
 			&i.Reservation.Base,
-			&i.Reservation.Title,
-			&i.Reservation.ProgramStartAt,
-			&i.Reservation.ProgramDurationMs,
 			&i.Reservation.CreatedAt,
 			&i.Reservation.UpdatedAt,
-			&i.Reservation.NetworkID,
-			&i.Reservation.ServiceID,
-			&i.Reservation.ChannelType,
-			&i.Reservation.Channel,
 			&i.Reservation.DedupMatchRecordingID,
 			&i.Reservation.DedupSimilarity,
+			&i.Reservation.OrphanedAt,
+			&i.ProgramSnapshot.Site,
+			&i.ProgramSnapshot.ProgramID,
+			&i.ProgramSnapshot.Title,
+			&i.ProgramSnapshot.StartAt,
+			&i.ProgramSnapshot.DurationMs,
+			&i.ProgramSnapshot.NetworkID,
+			&i.ProgramSnapshot.ServiceID,
+			&i.ProgramSnapshot.ChannelType,
+			&i.ProgramSnapshot.Channel,
+			&i.ProgramSnapshot.UpdatedAt,
 			&i.IntentAction,
 			&i.Overrides,
 		); err != nil {

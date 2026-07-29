@@ -222,13 +222,22 @@ func TestTunerSyncWorker_SetsCapacityOverageGauge(t *testing.T) {
 	start := time.Now().Truncate(time.Hour).Add(24 * time.Hour)
 
 	// GR 1 本に対して別チャンネル 2 予約 → 1 区間が超過。
+	// #27 で番組の事実のスナップショットが program_snapshots に抽出され、
+	// reservations への FK が張られたため、予約行より先に program_snapshots を作る。
+	ctx := context.Background()
 	for i, channel := range []string{"27", "25"} {
-		if _, err := pool.Exec(context.Background(), `
-INSERT INTO reservations (
-  site, program_id, state, base, title, program_start_at, program_duration_ms,
+		programID := int64(900 + i)
+		if _, err := pool.Exec(ctx, `
+INSERT INTO program_snapshots (
+  site, program_id, title, start_at, duration_ms,
   network_id, service_id, channel_type, channel
-) VALUES ($1, $2, 'active', '{}', 'ゲージ確認', $3, $4, 32678, 5168, 'GR', $5)`,
-			testSite, int64(900+i), start, time.Hour.Milliseconds(), channel); err != nil {
+) VALUES ($1, $2, 'ゲージ確認', $3, $4, 32678, 5168, 'GR', $5)`,
+			testSite, programID, start, time.Hour.Milliseconds(), channel); err != nil {
+			t.Fatalf("inserting program_snapshot: %v", err)
+		}
+		if _, err := pool.Exec(ctx, `
+INSERT INTO reservations (site, program_id, base) VALUES ($1, $2, '{}')`,
+			testSite, programID); err != nil {
 			t.Fatalf("inserting reservation: %v", err)
 		}
 	}

@@ -27,7 +27,7 @@ func (h *Server) GetProgramOverlaps(ctx context.Context, req GetProgramOverlapsR
 	q := sqlcgen.New(h.pool)
 
 	// 番組の放送時間は EPG プロジェクションから引く。射影に無ければ判定材料が
-	// 無いので 404（CreateReservation の GetProgramChannelIdentity と同じ姿勢）。
+	// 無いので 404（CreateReservation の GetProgramSnapshotSource と同じ姿勢）。
 	program, err := q.GetEpgProgram(ctx, sqlcgen.GetEpgProgramParams{
 		Site:      defaultSite,
 		ProgramID: req.ProgramId,
@@ -51,7 +51,7 @@ func (h *Server) GetProgramOverlaps(ctx context.Context, req GetProgramOverlapsR
 
 	overlaps := make([]OverlappingReservation, 0, len(rows))
 	for _, row := range rows {
-		// state <> 'orphaned' と自分自身の除外は SQL 側で済ませてあるが、
+		// orphaned_at IS NULL と自分自身の除外は SQL 側で済ませてあるが、
 		// effective.skip（program_overrides / program_intents.action='skip' の
 		// 反映）は jsonb のマージが要るため Go 側で db.EffectiveOptions を通す
 		// （不透明な overrides を SQL で読まない、という既存の規律に合わせる）。
@@ -65,9 +65,9 @@ func (h *Server) GetProgramOverlaps(ctx context.Context, req GetProgramOverlapsR
 		overlaps = append(overlaps, OverlappingReservation{
 			Id:         row.Reservation.ID,
 			ProgramId:  row.Reservation.ProgramID,
-			Title:      row.Reservation.Title,
-			StartAt:    row.Reservation.ProgramStartAt,
-			DurationMs: row.Reservation.ProgramDurationMs,
+			Title:      row.ProgramSnapshot.Title,
+			StartAt:    row.ProgramSnapshot.StartAt,
+			DurationMs: row.ProgramSnapshot.DurationMs,
 		})
 	}
 

@@ -365,22 +365,29 @@ func (r *Reconciler) observeSchedules(ctx context.Context, schedules []mirakc.Sc
 	return nil
 }
 
-// desiredReservation は予約行と、そこから解決済みの実効オプション。
-// オプションは base（ruler の導出結果）と program_overrides（ユーザーの上書き）
-// ・program_intents（ユーザーの record/skip 意図）の合成なので、行だけを
-// 持ち回さず解決結果と組で扱う。
+// desiredReservation は予約行・番組スナップショットと、そこから解決済みの
+// 実効オプション。オプションは base（ruler の導出結果）と program_overrides
+// （ユーザーの上書き）・program_intents（ユーザーの record/skip 意図）の合成
+// なので、行だけを持ち回さず解決結果と組で扱う。
+//
+// snap（program_snapshots）を分けて持つのは #27 で番組の事実のスナップショット
+// （title / 開始時刻 / 尺 / チャンネル識別）が reservations から抽出された
+// ため。res（sqlcgen.Reservation）はもう ruler の 1 パスの導出出力だけを持つ
+// （CLAUDE.md 不変条件 12）。
 type desiredReservation struct {
 	res  sqlcgen.Reservation
+	snap sqlcgen.ProgramSnapshot
 	opts db.ReservationOptions
 }
 
 // listDesired は mirakc への同期対象を返す。
 //
-// state ではなく effective.skip で絞る（docs/schema.md §3「state を『mirakc への
-// 同期対象か』のフィルタに使ってはならない」、docs/recording.md §4.3）。
-// state で除外してよいのは orphaned だけ（番組終了後に schedule が観測され
-// なかった行で、番組が終わっているので schedule を作る意味がない）。
-// ListReservationsForSyncEvaluation が state <> 'orphaned' で絞るのはこのため —
+// state（#28/#30 で orphaned_at に置き換わった導出値）ではなく effective.skip で
+// 絞る（docs/schema.md §3「state を『mirakc への同期対象か』のフィルタに使っては
+// ならない」、docs/recording.md §4.3）。除外してよいのは orphaned_at が非 NULL の
+// 行だけ（番組終了後に schedule が観測されなかった行で、番組が終わっているので
+// schedule を作る意味がない）。
+// ListReservationsForSyncEvaluation が orphaned_at IS NULL で絞るのはこのため —
 // 旧 ListActiveReservationsBySite は state = 'active' でしか絞っておらず、
 // detached（「実質 manual として動く」はず）の予約に schedule が作られない
 // バグの原因だった: 手動予約 → たまたまルールがマッチ（active, rule_id 付き）
@@ -409,7 +416,7 @@ func (r *Reconciler) listDesired(ctx context.Context) ([]desiredReservation, err
 		if c.Skipped {
 			continue
 		}
-		desired = append(desired, desiredReservation{res: c.Reservation, opts: c.Options})
+		desired = append(desired, desiredReservation{res: c.Reservation, snap: c.Snapshot, opts: c.Options})
 	}
 	return desired, nil
 }
@@ -431,14 +438,15 @@ func effectivePriority(defaultPriority int, opts db.ReservationOptions) int {
 // observed の contentPath を引き継げなかった場合（nil・空文字）の
 // フォールバック経路としても呼ばれる。
 //
-// service_id は予約行にスナップショットされた値のみを使う。mirakc の programId
-// 内部構造（Mirakurun 互換の ID 合成規則）を割り算して推測することはしない
+// service_id は program_snapshots にスナップショットされた値のみを使う
+// （#27 で reservations から抽出済み）。mirakc の programId 内部構造
+// （Mirakurun 互換の ID 合成規則）を割り算して推測することはしない
 // （不変条件: mirakc 固有の概念を永続テーブルの外で復元しない）。
 // NULL は移行前の行で、番組が EPG プロジェクションから既に消えていて
 // 00009_reservation_channel.sql の backfill でも埋められなかった残骸。
 // 誤った推測で schedule を作るより、同期対象から外してアラートする方が安全。
-func resolveContentPath(res sqlcgen.Reservation, opts db.ReservationOptions) (string, error) {
-	if res.ServiceID == nil {
+func resolveContentPath(res sqlcgen.Reservation, snap sqlcgen.ProgramSnapshot, opts db.ReservationOptions) (string, error) {
+	if snap.ServiceID == nil {
 		return "", fmt.Errorf("reservation %d (program %d) has no service_id snapshot; "+
 			"likely a pre-migration row whose program has already fallen out of the EPG projection",
 			res.ID, res.ProgramID)
@@ -453,7 +461,7 @@ func resolveContentPath(res sqlcgen.Reservation, opts db.ReservationOptions) (st
 	if opts.FilenameTemplate != nil {
 		template = *opts.FilenameTemplate
 	}
-	contentPath, err := buildContentPath(res, template)
+	contentPath, err := buildContentPath(snap, template)
 	if err != nil {
 		// テンプレートが構文的に正しく見えても実行時にエラーになるケース
 		// （通常は api の validateRuleInput が作成時点で弾くので、ここに来るのは
@@ -473,7 +481,7 @@ func (r *Reconciler) createSchedule(ctx context.Context, d desiredReservation) e
 
 	priority := effectivePriority(r.cfg.DefaultPriority, opts)
 
-	contentPath, err := resolveContentPath(res, opts)
+	contentPath, err := resolveContentPath(res, d.snap, opts)
 	if err != nil {
 		return err
 	}
@@ -612,7 +620,7 @@ func (r *Reconciler) recreateSchedule(ctx context.Context, d desiredReservation,
 	if observed.Options.ContentPath != nil && *observed.Options.ContentPath != "" {
 		contentPath = contentpath.SanitizeContentPath(*observed.Options.ContentPath)
 	} else {
-		cp, err := resolveContentPath(res, opts)
+		cp, err := resolveContentPath(res, d.snap, opts)
 		if err != nil {
 			return err
 		}
@@ -669,7 +677,7 @@ func (r *Reconciler) markOrphaned(ctx context.Context, reservations []desiredRes
 	q := sqlcgen.New(r.pool)
 	for _, d := range reservations {
 		res := d.res
-		endTime := res.ProgramStartAt.Add(time.Duration(res.ProgramDurationMs) * time.Millisecond)
+		endTime := d.snap.StartAt.Add(time.Duration(d.snap.DurationMs) * time.Millisecond)
 		if !endTime.Before(time.Now()) {
 			continue
 		}
@@ -714,8 +722,8 @@ type startDelayed struct {
 // リストをそのまま渡す想定で、次の 2 つは既にそこで除外されている。
 //   - effective.skip の予約（listDesired が db.EvaluateSyncCandidates の Skipped
 //     で絞っている）
-//   - state = 'orphaned' の予約（listDesired の元クエリ
-//     ListReservationsForSyncEvaluation が state <> 'orphaned' で絞っている）
+//   - orphaned_at が非 NULL の予約（listDesired の元クエリ
+//     ListReservationsForSyncEvaluation が orphaned_at IS NULL で絞っている）
 //
 // ここではさらに時間窓で絞る: 「開始時刻 + StartDelayGrace < now() < 終了時刻」。
 // 終了時刻を過ぎた予約は markOrphaned の領分であり、ここで検出し続けると
@@ -730,8 +738,8 @@ func (r *Reconciler) detectStartDelays(ctx context.Context, reservations []desir
 
 	var candidates []desiredReservation
 	for _, d := range reservations {
-		startAt := d.res.ProgramStartAt
-		endAt := startAt.Add(time.Duration(d.res.ProgramDurationMs) * time.Millisecond)
+		startAt := d.snap.StartAt
+		endAt := startAt.Add(time.Duration(d.snap.DurationMs) * time.Millisecond)
 		if !now.After(startAt.Add(r.cfg.StartDelayGrace)) {
 			// まだ猶予の内側。開始直後の SSE 到達・watcher 処理の遅れを
 			// 誤検知しないための窓（Config.StartDelayGrace のコメント参照）。
@@ -775,8 +783,8 @@ func (r *Reconciler) detectStartDelays(ctx context.Context, reservations []desir
 		delayed = append(delayed, startDelayed{
 			id:        d.res.ID,
 			programID: d.res.ProgramID,
-			title:     d.res.Title,
-			elapsed:   now.Sub(d.res.ProgramStartAt),
+			title:     d.snap.Title,
+			elapsed:   now.Sub(d.snap.StartAt),
 		})
 	}
 	return delayed, nil

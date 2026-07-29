@@ -7,8 +7,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 )
 
 func setupTestDB(t *testing.T) *pgxpool.Pool {
@@ -73,17 +76,32 @@ func TestSchemaV1_Tables(t *testing.T) {
 	}
 }
 
+// insertTestProgramSnapshot は reservations / program_intents / program_overrides
+// が参照する program_snapshots 行を作る（#27 で追加された FK の前提）。
+func insertTestProgramSnapshot(t *testing.T, pool *pgxpool.Pool, site string, programID int64, startAt time.Time) {
+	t.Helper()
+	_, err := pool.Exec(context.Background(),
+		`INSERT INTO program_snapshots (site, program_id, title, start_at, duration_ms)
+		 VALUES ($1, $2, '', $3, 1800000)`,
+		site, programID, startAt)
+	if err != nil {
+		t.Fatalf("insert program_snapshot: %v", err)
+	}
+}
+
 func TestSchemaV1_ReservationCRUD(t *testing.T) {
 	pool := setupTestDB(t)
 	ctx := context.Background()
 
 	now := time.Now().Truncate(time.Microsecond)
+	insertTestProgramSnapshot(t, pool, "home", 327360102415397, now)
+
 	var id int64
 	err := pool.QueryRow(ctx,
-		`INSERT INTO reservations (site, program_id, state, title, program_start_at, program_duration_ms)
-		 VALUES ($1, $2, $3, $4, $5, $6)
+		`INSERT INTO reservations (site, program_id)
+		 VALUES ($1, $2)
 		 RETURNING id`,
-		"home", int64(327360102415397), "active", "テスト番組", now, int64(1800000),
+		"home", int64(327360102415397),
 	).Scan(&id)
 	if err != nil {
 		t.Fatalf("insert reservation: %v", err)
@@ -94,9 +112,8 @@ func TestSchemaV1_ReservationCRUD(t *testing.T) {
 
 	var r Reservation
 	err = pool.QueryRow(ctx,
-		`SELECT id, site, program_id, state, title, program_start_at, program_duration_ms
-		 FROM reservations WHERE id = $1`, id,
-	).Scan(&r.ID, &r.Site, &r.ProgramID, &r.State, &r.Title, &r.ProgramStartAt, &r.ProgramDurationMs)
+		`SELECT id, site, program_id FROM reservations WHERE id = $1`, id,
+	).Scan(&r.ID, &r.Site, &r.ProgramID)
 	if err != nil {
 		t.Fatalf("select reservation: %v", err)
 	}
@@ -113,26 +130,26 @@ func TestSchemaV1_ReservationUniqueSiteProgramID(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now()
 
+	insertTestProgramSnapshot(t, pool, "home", 100, now)
+	insertTestProgramSnapshot(t, pool, "office", 100, now)
+
 	_, err := pool.Exec(ctx,
-		`INSERT INTO reservations (site, program_id, title, program_start_at, program_duration_ms)
-		 VALUES ($1, $2, '', $3, 0)`,
-		"home", int64(100), now)
+		`INSERT INTO reservations (site, program_id) VALUES ($1, $2)`,
+		"home", int64(100))
 	if err != nil {
 		t.Fatalf("first insert: %v", err)
 	}
 
 	// 同一 site + program_id は一意制約違反
 	_, err = pool.Exec(ctx,
-		`INSERT INTO reservations (site, program_id, title, program_start_at, program_duration_ms)
-		 VALUES ($1, $2, '', $3, 0)`,
-		"home", int64(100), now)
+		`INSERT INTO reservations (site, program_id) VALUES ($1, $2)`,
+		"home", int64(100))
 	assertPgError(t, err, "23505")
 
 	// 別サイトなら同一 program_id で OK
 	_, err = pool.Exec(ctx,
-		`INSERT INTO reservations (site, program_id, title, program_start_at, program_duration_ms)
-		 VALUES ($1, $2, '', $3, 0)`,
-		"office", int64(100), now)
+		`INSERT INTO reservations (site, program_id) VALUES ($1, $2)`,
+		"office", int64(100))
 	if err != nil {
 		t.Fatalf("different site should allow same program_id: %v", err)
 	}
@@ -335,6 +352,104 @@ func TestSchemaV1_RecordSyncFK(t *testing.T) {
 	}
 	if recordingID != nil {
 		t.Errorf("expected NULL recording_id after parent delete, got %d", *recordingID)
+	}
+}
+
+// TestSchemaV1_ProgramSnapshotGCCascadesToReservationIntentAndOverrides は #27 の
+// GC 集約の回帰テスト。旧実装は reservations / program_intents / program_overrides
+// それぞれに DeleteEndedReservations / DeleteEndedProgramIntents /
+// DeleteEndedProgramOverrides という 3 本の GC クエリがあり、しかも 3 表が
+// それぞれ自分のスナップショット列（program_start_at 等）を持っていて既にドリフト
+// していたため、表ごとに違う時刻で GC されうる状態だった。#27 でスナップショット
+// 列を program_snapshots に一本化し、3 本の GC を DeleteEndedProgramSnapshots
+// 1 本（program_snapshots への FK が ON DELETE CASCADE）に統合した。
+//
+// このテストは 1 回の DeleteEndedProgramSnapshots 呼び出しで、終了 + 猶予を
+// 過ぎた番組の reservations / program_intents / program_overrides が同時に
+// CASCADE で落ちることを固定する。反対方向として、別サイトの終わっていない
+// 番組の 3 表が GC されずに残ることも確認する。
+func TestSchemaV1_ProgramSnapshotGCCascadesToReservationIntentAndOverrides(t *testing.T) {
+	pool := setupTestDB(t)
+	ctx := context.Background()
+	q := sqlcgen.New(pool)
+
+	const site = "home"
+	const programID int64 = 555000555015551
+
+	// 番組は既に終了している（開始 -2h、30 分番組なので終了はとっくに過ぎている）。
+	endedStart := time.Now().Add(-2 * time.Hour)
+	if err := q.UpsertProgramSnapshot(ctx, sqlcgen.UpsertProgramSnapshotParams{
+		Site: site, ProgramID: programID, Title: "終了番組",
+		StartAt: endedStart, DurationMs: 1800000,
+	}); err != nil {
+		t.Fatalf("upserting program snapshot: %v", err)
+	}
+	if _, err := q.CreateManualReservation(ctx, sqlcgen.CreateManualReservationParams{
+		Site: site, ProgramID: programID,
+	}); err != nil {
+		t.Fatalf("creating reservation: %v", err)
+	}
+	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
+		Site: site, ProgramID: programID, Action: "record",
+	}); err != nil {
+		t.Fatalf("upserting program intent: %v", err)
+	}
+	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
+		Site: site, ProgramID: programID, Overrides: []byte(`{"priority":5}`),
+	}); err != nil {
+		t.Fatalf("upserting program overrides: %v", err)
+	}
+
+	// 反対方向の対照: 別サイトの、終わっていない番組は GC 対象にならない。
+	const otherSite = "office"
+	const futureProgramID int64 = 555000555025552
+	futureStart := time.Now().Add(2 * time.Hour)
+	if err := q.UpsertProgramSnapshot(ctx, sqlcgen.UpsertProgramSnapshotParams{
+		Site: otherSite, ProgramID: futureProgramID, Title: "未来番組",
+		StartAt: futureStart, DurationMs: 1800000,
+	}); err != nil {
+		t.Fatalf("upserting future program snapshot: %v", err)
+	}
+	if _, err := q.CreateManualReservation(ctx, sqlcgen.CreateManualReservationParams{
+		Site: otherSite, ProgramID: futureProgramID,
+	}); err != nil {
+		t.Fatalf("creating future reservation: %v", err)
+	}
+
+	// 事前確認: 終了番組側の 3 表すべてに行がある。
+	if _, err := q.GetProgramIntent(ctx, sqlcgen.GetProgramIntentParams{Site: site, ProgramID: programID}); err != nil {
+		t.Fatalf("precondition: program_intents row missing: %v", err)
+	}
+	if _, err := q.GetProgramOverrides(ctx, sqlcgen.GetProgramOverridesParams{Site: site, ProgramID: programID}); err != nil {
+		t.Fatalf("precondition: program_overrides row missing: %v", err)
+	}
+	if _, err := q.GetReservationBySiteAndProgramID(ctx, sqlcgen.GetReservationBySiteAndProgramIDParams{Site: site, ProgramID: programID}); err != nil {
+		t.Fatalf("precondition: reservations row missing: %v", err)
+	}
+
+	// 核心: DeleteEndedProgramSnapshots を 1 回呼ぶだけで 3 表が CASCADE で
+	// 一緒に落ちる（#27 の主要な利益）。
+	deleted, err := q.DeleteEndedProgramSnapshots(ctx, time.Now())
+	if err != nil {
+		t.Fatalf("DeleteEndedProgramSnapshots: %v", err)
+	}
+	if deleted != 1 {
+		t.Errorf("deleted program_snapshots = %d, want 1 (only the ended program)", deleted)
+	}
+
+	if _, err := q.GetReservationBySiteAndProgramID(ctx, sqlcgen.GetReservationBySiteAndProgramIDParams{Site: site, ProgramID: programID}); !errors.Is(err, pgx.ErrNoRows) {
+		t.Errorf("reservations row should be gone via CASCADE from program_snapshots, err=%v", err)
+	}
+	if _, err := q.GetProgramIntent(ctx, sqlcgen.GetProgramIntentParams{Site: site, ProgramID: programID}); !errors.Is(err, pgx.ErrNoRows) {
+		t.Errorf("program_intents row should be gone via CASCADE from program_snapshots, err=%v", err)
+	}
+	if _, err := q.GetProgramOverrides(ctx, sqlcgen.GetProgramOverridesParams{Site: site, ProgramID: programID}); !errors.Is(err, pgx.ErrNoRows) {
+		t.Errorf("program_overrides row should be gone via CASCADE from program_snapshots, err=%v", err)
+	}
+
+	// 反対方向: 終わっていない番組の予約は GC されず残る。
+	if _, err := q.GetReservationBySiteAndProgramID(ctx, sqlcgen.GetReservationBySiteAndProgramIDParams{Site: otherSite, ProgramID: futureProgramID}); err != nil {
+		t.Errorf("future reservation should survive GC, err=%v", err)
 	}
 }
 

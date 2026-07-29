@@ -99,7 +99,7 @@ func (h *Server) UpdateReservationOverrides(ctx context.Context, req UpdateReser
 		return nil, err
 	}
 
-	res, err := reservationFromRow(row.Reservation, finalOverrides, row.IntentAction)
+	res, err := reservationFromRow(row.Reservation, row.ProgramSnapshot, finalOverrides, row.IntentAction)
 	if err != nil {
 		return nil, err
 	}
@@ -139,7 +139,7 @@ func (h *Server) ResetReservationOverrides(ctx context.Context, req ResetReserva
 		return nil, err
 	}
 
-	res, err := reservationFromRow(row.Reservation, nil, row.IntentAction)
+	res, err := reservationFromRow(row.Reservation, row.ProgramSnapshot, nil, row.IntentAction)
 	if err != nil {
 		return nil, err
 	}
@@ -207,11 +207,9 @@ func applyOverridesPatch(
 	}
 
 	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
-		Site:              r.Site,
-		ProgramID:         r.ProgramID,
-		Overrides:         finalJSON,
-		ProgramStartAt:    r.ProgramStartAt,
-		ProgramDurationMs: r.ProgramDurationMs,
+		Site:      r.Site,
+		ProgramID: r.ProgramID,
+		Overrides: finalJSON,
 	}); err != nil {
 		return nil, fmt.Errorf("upserting program overrides: %w", err)
 	}

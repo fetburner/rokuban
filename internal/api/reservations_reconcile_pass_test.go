@@ -38,8 +38,7 @@ func TestCreateReservation_EnqueuesReconcilePassHint(t *testing.T) {
 		t.Fatalf("initial reconcile_pass job count = %d, want 0", n)
 	}
 
-	body := `{"programId":500000700031234,"title":"予約ヒントテスト",` +
-		`"startAt":"2026-08-01T21:00:00+09:00","durationMs":1800000}`
+	body := `{"programId":500000700031234}`
 	resp, err := http.Post(srv.URL+"/api/reservations", "application/json", strings.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
@@ -93,8 +92,7 @@ func TestCreateReservation_ProgramNotInProjection_DoesNotEnqueueReconcilePassHin
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
-	body := `{"programId":999888777666555,"title":"存在しない番組",` +
-		`"startAt":"2026-08-01T21:00:00+09:00","durationMs":1800000}`
+	body := `{"programId":999888777666555}`
 	resp, err := http.Post(srv.URL+"/api/reservations", "application/json", strings.NewReader(body))
 	if err != nil {
 		t.Fatal(err)

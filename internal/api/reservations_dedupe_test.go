@@ -67,23 +67,29 @@ func listReservationsDedupeJSON(t *testing.T, srv *httptest.Server) []reservatio
 
 // insertDedupeSkippedReservation は「重複としてスキップされた」予約行を直接作る
 // （ruler を経由しない）。base.skip と根拠 2 列は ruler の出力を模したもの。
+//
+// #27 で番組の事実のスナップショットが program_snapshots に抽出され、
+// reservations への FK が張られたため、予約行より先に program_snapshots を作る。
 func insertDedupeSkippedReservation(
 	t *testing.T, pool *pgxpool.Pool, ctx context.Context,
 	programID int64, ruleID, recordingID int64, similarity float32,
 ) int64 {
 	t.Helper()
 	start := time.Now().Add(24 * time.Hour)
+	if _, err := pool.Exec(ctx, `
+INSERT INTO program_snapshots (site, program_id, title, start_at, duration_ms, network_id, service_id, channel_type, channel)
+VALUES ('default', $1, 'テスト番組', $2, 1800000, 11500, 1150, 'GR', '27')`,
+		programID, start); err != nil {
+		t.Fatalf("inserting program_snapshot fixture: %v", err)
+	}
 	var id int64
 	err := pool.QueryRow(ctx, `
 INSERT INTO reservations (
-  site, program_id, rule_id, state, base, title,
-  program_start_at, program_duration_ms,
-  network_id, service_id, channel_type, channel,
+  site, program_id, rule_id, base,
   dedup_match_recording_id, dedup_similarity
 ) VALUES (
-  'default', $1, $2, 'active', '{"skip":true,"priority":10}'::jsonb, 'テスト番組',
-  $3, 1800000, 11500, 1150, 'GR', '27', $4, $5
-) RETURNING id`, programID, ruleID, start, recordingID, similarity).Scan(&id)
+  'default', $1, $2, '{"skip":true,"priority":10}'::jsonb, $3, $4
+) RETURNING id`, programID, ruleID, recordingID, similarity).Scan(&id)
 	if err != nil {
 		t.Fatalf("inserting dedupe-skipped reservation fixture: %v", err)
 	}
@@ -171,16 +177,8 @@ func TestGetReservation_RecordIntentClearsDedupeSkip(t *testing.T) {
 		t.Fatal("precondition: skip should be true before the record intent")
 	}
 
-	var startAt time.Time
-	var durationMs int64
-	if err := pool.QueryRow(ctx,
-		`SELECT program_start_at, program_duration_ms FROM reservations WHERE id = $1`, resID,
-	).Scan(&startAt, &durationMs); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
 		Site: "default", ProgramID: programID, Action: db.IntentRecord,
-		ProgramStartAt: startAt, ProgramDurationMs: durationMs,
 	}); err != nil {
 		t.Fatalf("seeding intent: %v", err)
 	}
@@ -236,16 +234,8 @@ func TestGetReservation_SkipIntentSetsSkip(t *testing.T) {
 	ruleID := insertRuleFixture(t, pool, ctx)
 	resID := insertReservationDirect(t, pool, ctx, programID, &ruleID, 11500, 1150)
 
-	var startAt time.Time
-	var durationMs int64
-	if err := pool.QueryRow(ctx,
-		`SELECT program_start_at, program_duration_ms FROM reservations WHERE id = $1`, resID,
-	).Scan(&startAt, &durationMs); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
 		Site: "default", ProgramID: programID, Action: db.IntentSkip,
-		ProgramStartAt: startAt, ProgramDurationMs: durationMs,
 	}); err != nil {
 		t.Fatalf("seeding intent: %v", err)
 	}

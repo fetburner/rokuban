@@ -36,25 +36,30 @@ func insertRuleFixture(t *testing.T, pool *pgxpool.Pool, ctx context.Context) in
 	return id
 }
 
-// insertReservationDirect は reservations 行を直接作る（ruler を経由しない）。
-// ruleID の有無で「ルール由来」「手動」を模した行を作るが、program_intents には
-// 触れない（reservations.source 列は issue #26 で削除済み。この直生成では
-// intent が無いため、reservationFromRow 経由の API 表示は常に rule になる）。
-// overrides API は program_overrides だけを書くので、reservations 側の
-// セットアップはこの生 SQL で足りる。
+// insertReservationDirect は program_snapshots + reservations 行を直接作る
+// （ruler を経由しない）。ruleID の有無で「ルール由来」「手動」を模した行を
+// 作るが、program_intents には触れない（reservations.source 列は issue #26 で
+// 削除済み。この直生成では intent が無いため、reservationFromRow 経由の
+// API 表示は常に rule になる）。overrides API は program_overrides だけを
+// 書くので、reservations 側のセットアップはこの生 SQL で足りる。
+//
+// #27 で番組の事実のスナップショット（title / 開始時刻 / 尺 / チャンネル識別）が
+// program_snapshots に抽出され、reservations への FK が張られたため、
+// 予約行より先に program_snapshots を作る。
 func insertReservationDirect(t *testing.T, pool *pgxpool.Pool, ctx context.Context, programID int64, ruleID *int64, networkID, serviceID int32) int64 {
 	t.Helper()
 	start := time.Now().Add(24 * time.Hour)
+	if _, err := pool.Exec(ctx, `
+INSERT INTO program_snapshots (site, program_id, title, start_at, duration_ms, network_id, service_id, channel_type, channel)
+VALUES ('default', $1, 'テスト番組', $2, 1800000, $3, $4, 'GR', '27')`,
+		programID, start, networkID, serviceID); err != nil {
+		t.Fatalf("inserting program_snapshot fixture: %v", err)
+	}
 	var id int64
 	err := pool.QueryRow(ctx, `
-INSERT INTO reservations (
-  site, program_id, rule_id, state, base, title,
-  program_start_at, program_duration_ms,
-  network_id, service_id, channel_type, channel
-) VALUES (
-  'default', $1, $2, 'active', '{}'::jsonb, 'テスト番組',
-  $3, 1800000, $4, $5, 'GR', '27'
-) RETURNING id`, programID, ruleID, start, networkID, serviceID).Scan(&id)
+INSERT INTO reservations (site, program_id, rule_id, base)
+VALUES ('default', $1, $2, '{}'::jsonb)
+RETURNING id`, programID, ruleID).Scan(&id)
 	if err != nil {
 		t.Fatalf("inserting reservation fixture: %v", err)
 	}
@@ -169,23 +174,13 @@ func TestResetReservationOverrides_DoesNotTouchProgramIntents_ManualReservationS
 	// reservation 行 + intent{record}。
 	ruleID := insertRuleFixture(t, pool, ctx)
 	resID := insertReservationDirect(t, pool, ctx, programID, &ruleID, 11500, 1150)
-
-	var startAt time.Time
-	var durationMs int64
-	if err := pool.QueryRow(ctx,
-		`SELECT program_start_at, program_duration_ms FROM reservations WHERE id = $1`, resID,
-	).Scan(&startAt, &durationMs); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
 		Site: "default", ProgramID: programID, Action: db.IntentRecord,
-		ProgramStartAt: startAt, ProgramDurationMs: durationMs,
 	}); err != nil {
 		t.Fatalf("seeding intent: %v", err)
 	}
 	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
 		Site: "default", ProgramID: programID, Overrides: []byte(`{"priority":5}`),
-		ProgramStartAt: startAt, ProgramDurationMs: durationMs,
 	}); err != nil {
 		t.Fatalf("seeding overrides: %v", err)
 	}
@@ -239,17 +234,8 @@ func TestUpdateReservationOverrides_EmptyPatch_DoesNotTouchProgramIntents(t *tes
 	const programID int64 = 1160000116011234
 	ruleID := insertRuleFixture(t, pool, ctx)
 	resID := insertReservationDirect(t, pool, ctx, programID, &ruleID, 11600, 1160)
-
-	var startAt time.Time
-	var durationMs int64
-	if err := pool.QueryRow(ctx,
-		`SELECT program_start_at, program_duration_ms FROM reservations WHERE id = $1`, resID,
-	).Scan(&startAt, &durationMs); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
 		Site: "default", ProgramID: programID, Action: db.IntentRecord,
-		ProgramStartAt: startAt, ProgramDurationMs: durationMs,
 	}); err != nil {
 		t.Fatalf("seeding intent: %v", err)
 	}
@@ -300,19 +286,9 @@ func TestUpdateReservationOverrides_PartialUpdatePreservesOtherFields(t *testing
 	const programID int64 = 1200000120021234
 	ruleID := insertRuleFixture(t, pool, ctx)
 	resID := insertReservationDirect(t, pool, ctx, programID, &ruleID, 12000, 1200)
-
-	var startAt time.Time
-	var durationMs int64
-	if err := pool.QueryRow(ctx,
-		`SELECT program_start_at, program_duration_ms FROM reservations WHERE id = $1`, resID,
-	).Scan(&startAt, &durationMs); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
 		Site: "default", ProgramID: programID,
-		Overrides:         []byte(`{"priority":5,"keepOriginal":"always"}`),
-		ProgramStartAt:    startAt,
-		ProgramDurationMs: durationMs,
+		Overrides: []byte(`{"priority":5,"keepOriginal":"always"}`),
 	}); err != nil {
 		t.Fatalf("seeding overrides: %v", err)
 	}
@@ -347,19 +323,9 @@ func TestUpdateReservationOverrides_ResetRemovesOnlyThatField(t *testing.T) {
 	const programID int64 = 1300000130031234
 	ruleID := insertRuleFixture(t, pool, ctx)
 	resID := insertReservationDirect(t, pool, ctx, programID, &ruleID, 13000, 1300)
-
-	var startAt time.Time
-	var durationMs int64
-	if err := pool.QueryRow(ctx,
-		`SELECT program_start_at, program_duration_ms FROM reservations WHERE id = $1`, resID,
-	).Scan(&startAt, &durationMs); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
 		Site: "default", ProgramID: programID,
-		Overrides:         []byte(`{"priority":5,"keepOriginal":"always"}`),
-		ProgramStartAt:    startAt,
-		ProgramDurationMs: durationMs,
+		Overrides: []byte(`{"priority":5,"keepOriginal":"always"}`),
 	}); err != nil {
 		t.Fatalf("seeding overrides: %v", err)
 	}
@@ -398,19 +364,9 @@ func TestUpdateReservationOverrides_ResetLastField_DeletesOverridesRow(t *testin
 	const programID int64 = 1400000140041234
 	ruleID := insertRuleFixture(t, pool, ctx)
 	resID := insertReservationDirect(t, pool, ctx, programID, &ruleID, 14000, 1400)
-
-	var startAt time.Time
-	var durationMs int64
-	if err := pool.QueryRow(ctx,
-		`SELECT program_start_at, program_duration_ms FROM reservations WHERE id = $1`, resID,
-	).Scan(&startAt, &durationMs); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
 		Site: "default", ProgramID: programID,
-		Overrides:         []byte(`{"priority":5}`),
-		ProgramStartAt:    startAt,
-		ProgramDurationMs: durationMs,
+		Overrides: []byte(`{"priority":5}`),
 	}); err != nil {
 		t.Fatalf("seeding overrides: %v", err)
 	}
@@ -451,19 +407,9 @@ func TestResetReservationOverrides_ClearsAll(t *testing.T) {
 	const programID int64 = 1600000160061234
 	ruleID := insertRuleFixture(t, pool, ctx)
 	resID := insertReservationDirect(t, pool, ctx, programID, &ruleID, 16000, 1600)
-
-	var startAt time.Time
-	var durationMs int64
-	if err := pool.QueryRow(ctx,
-		`SELECT program_start_at, program_duration_ms FROM reservations WHERE id = $1`, resID,
-	).Scan(&startAt, &durationMs); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
 		Site: "default", ProgramID: programID,
-		Overrides:         []byte(`{"priority":5,"keepOriginal":"always"}`),
-		ProgramStartAt:    startAt,
-		ProgramDurationMs: durationMs,
+		Overrides: []byte(`{"priority":5,"keepOriginal":"always"}`),
 	}); err != nil {
 		t.Fatalf("seeding overrides: %v", err)
 	}

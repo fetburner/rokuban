@@ -329,11 +329,10 @@ function useReservationActions(): ReservationActions {
     setBusy(program.programId, true)
     createReservation.mutate(
       {
+        // title / startAt / durationMs はサーバーが EPG プロジェクションから
+        // 引く（#27 の決定）。クライアントからは送らない。
         data: {
           programId: program.programId,
-          title: program.name,
-          startAt: program.startAt,
-          durationMs: program.durationMs,
         },
       },
       {

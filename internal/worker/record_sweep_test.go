@@ -98,16 +98,24 @@ func TestRecordSweepWorker_ProcessesUnsweptRecord(t *testing.T) {
 	networkID, serviceID := int32(32736), int32(1024)
 	channelType, channel := "GR", "27"
 	q := sqlcgen.New(pool)
+	// #27 で番組の事実のスナップショットが program_snapshots に抽出され、
+	// reservations への FK が張られたため、予約行より先に program_snapshots を作る。
+	if err := q.UpsertProgramSnapshot(ctx, sqlcgen.UpsertProgramSnapshotParams{
+		Site:        testSite,
+		ProgramID:   programID,
+		Title:       "record_sweep ワーカーテスト",
+		StartAt:     time.Now().Add(-time.Hour),
+		DurationMs:  1800000,
+		NetworkID:   &networkID,
+		ServiceID:   &serviceID,
+		ChannelType: &channelType,
+		Channel:     &channel,
+	}); err != nil {
+		t.Fatalf("upserting program snapshot fixture: %v", err)
+	}
 	res, err := q.CreateManualReservation(ctx, sqlcgen.CreateManualReservationParams{
-		Site:              testSite,
-		ProgramID:         programID,
-		Title:             "record_sweep ワーカーテスト",
-		ProgramStartAt:    time.Now().Add(-time.Hour),
-		ProgramDurationMs: 1800000,
-		NetworkID:         &networkID,
-		ServiceID:         &serviceID,
-		ChannelType:       &channelType,
-		Channel:           &channel,
+		Site:      testSite,
+		ProgramID: programID,
 	})
 	if err != nil {
 		t.Fatalf("creating reservation fixture: %v", err)

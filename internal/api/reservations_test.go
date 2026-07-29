@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/fetburner/rokuban/internal/api"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -24,8 +25,7 @@ func TestCreateReservation_SnapshotsChannelIdentity(t *testing.T) {
 	const programID int64 = 400000600021234
 	insertProgramFixture(t, pool, ctx, programID, 40000, 6000)
 
-	body := `{"programId":400000600021234,"title":"チャンネルスナップショットテスト",` +
-		`"startAt":"2026-08-01T21:00:00+09:00","durationMs":1800000}`
+	body := `{"programId":400000600021234}`
 	resp, err := http.Post(srv.URL+"/api/reservations", "application/json", strings.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
@@ -35,10 +35,11 @@ func TestCreateReservation_SnapshotsChannelIdentity(t *testing.T) {
 		t.Fatalf("status = %d, want 201", resp.StatusCode)
 	}
 
+	// チャンネル識別のスナップショットは #27 で program_snapshots に抽出された。
 	var networkID, serviceID int
 	var channelType, channel string
 	if err := pool.QueryRow(ctx,
-		`SELECT network_id, service_id, channel_type, channel FROM reservations WHERE site = 'default' AND program_id = $1`,
+		`SELECT network_id, service_id, channel_type, channel FROM program_snapshots WHERE site = 'default' AND program_id = $1`,
 		programID).Scan(&networkID, &serviceID, &channelType, &channel); err != nil {
 		t.Fatalf("querying snapshotted columns: %v", err)
 	}
@@ -47,6 +48,67 @@ func TestCreateReservation_SnapshotsChannelIdentity(t *testing.T) {
 	}
 	if channelType != "GR" || channel != "27" {
 		t.Errorf("channel_type/channel = %q/%q, want GR/27", channelType, channel)
+	}
+}
+
+// CreateReservationRequest からは title / startAt / durationMs が落ちている
+// （#27 の決定「値の出所を EPG 射影ただ 1 つに固定する」。openapi.yaml
+// CreateReservationRequest 参照）。つまりクライアントは番組の事実を送れず、
+// 送っても JSON の余剰フィールドとして無視される。ここでは「リクエストに
+// これらが無くてもスナップショットが EPG プロジェクションの値で正しく埋まる」
+// ことを確認する。
+//
+// これが崩れると、UI が古い番組表を握ったまま予約したときに GC の比較対象
+// （program_snapshots.start_at + duration_ms）がクライアントの申告に引きずられ、
+// ユーザーの skip 意図が早すぎる GC で消えることがあった（#27 が挙げる壊れ方）。
+func TestCreateReservation_SnapshotsProgramFactsFromProjection(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	router := api.NewRouter(api.RouterConfig{Pool: pool})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	const programID int64 = 700000800091234
+	insertProgramFixture(t, pool, ctx, programID, 70000, 8000)
+
+	// 射影に登録されている「真の」番組の事実を先に控えておく。
+	var wantTitle string
+	var wantStart time.Time
+	var wantDuration int64
+	if err := pool.QueryRow(ctx,
+		`SELECT name, start_at, duration_ms FROM epg_programs WHERE site = 'default' AND program_id = $1`,
+		programID).Scan(&wantTitle, &wantStart, &wantDuration); err != nil {
+		t.Fatalf("querying epg_programs fixture: %v", err)
+	}
+
+	body := `{"programId":700000800091234}`
+	resp, err := http.Post(srv.URL+"/api/reservations", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", resp.StatusCode)
+	}
+
+	var gotTitle string
+	var gotStart time.Time
+	var gotDuration int64
+	if err := pool.QueryRow(ctx,
+		`SELECT title, start_at, duration_ms FROM program_snapshots WHERE site = 'default' AND program_id = $1`,
+		programID).Scan(&gotTitle, &gotStart, &gotDuration); err != nil {
+		t.Fatalf("querying program_snapshots: %v", err)
+	}
+
+	if gotTitle != wantTitle {
+		t.Errorf("snapshot title = %q, want %q (from EPG projection)", gotTitle, wantTitle)
+	}
+	if !gotStart.Equal(wantStart) {
+		t.Errorf("snapshot start_at = %v, want %v (from EPG projection)", gotStart, wantStart)
+	}
+	if gotDuration != wantDuration {
+		t.Errorf("snapshot duration_ms = %d, want %d (from EPG projection)", gotDuration, wantDuration)
 	}
 }
 
@@ -60,8 +122,7 @@ func TestCreateReservation_ProgramNotInProjection(t *testing.T) {
 	defer srv.Close()
 
 	const programID int64 = 111222333444555
-	body := `{"programId":111222333444555,"title":"存在しない番組",` +
-		`"startAt":"2026-08-01T21:00:00+09:00","durationMs":1800000}`
+	body := `{"programId":111222333444555}`
 	resp, err := http.Post(srv.URL+"/api/reservations", "application/json", strings.NewReader(body))
 	if err != nil {
 		t.Fatal(err)

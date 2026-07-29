@@ -202,13 +202,23 @@ func TestEvents_ReservationTriggersNotify(t *testing.T) {
 	waitForClients(t, hub, 1)
 	waitListening(t, hub)
 
-	// 予約を作ると reservations トピックが届く
-	_, err := sqlcgen.New(pool).CreateManualReservation(context.Background(), sqlcgen.CreateManualReservationParams{
-		Site:              defaultSite,
-		ProgramID:         1,
-		Title:             "テスト番組",
-		ProgramStartAt:    time.Now().Add(time.Hour),
-		ProgramDurationMs: 1800000,
+	// 予約を作ると reservations トピックが届く。#27 で番組の事実のスナップショットが
+	// program_snapshots に抽出され、reservations への FK が張られたため、
+	// 予約行より先に program_snapshots を作る。
+	q := sqlcgen.New(pool)
+	ctx := context.Background()
+	if err := q.UpsertProgramSnapshot(ctx, sqlcgen.UpsertProgramSnapshotParams{
+		Site:       defaultSite,
+		ProgramID:  1,
+		Title:      "テスト番組",
+		StartAt:    time.Now().Add(time.Hour),
+		DurationMs: 1800000,
+	}); err != nil {
+		t.Fatalf("upserting program snapshot: %v", err)
+	}
+	_, err := q.CreateManualReservation(ctx, sqlcgen.CreateManualReservationParams{
+		Site:      defaultSite,
+		ProgramID: 1,
 	})
 	if err != nil {
 		t.Fatalf("creating reservation: %v", err)
