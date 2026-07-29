@@ -189,7 +189,12 @@ func newServerCmd() *cobra.Command {
 				defer func() {
 					stopCtx, stopCancel := context.WithTimeout(context.Background(), 30*time.Second)
 					defer stopCancel()
-					_ = riverClient.Stop(stopCtx)
+					// shutdown 中は呼び出し元に返す先がない。30 秒のタイムアウトを
+					// 付けている以上「実行中のジョブが終わらずタイムアウトした」は
+					// 起こりうるので、握り潰さずログに残す（issue #58）。
+					if err := riverClient.Stop(stopCtx); err != nil {
+						slog.Error("stopping river client", "err", err)
+					}
 				}()
 			}
 
