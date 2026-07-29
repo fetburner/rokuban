@@ -34,14 +34,24 @@ VALUES ('default', $1, $2, $3, true, false)`, index, fmt.Sprintf("tuner-%d", ind
 	}
 }
 
+// insertCapacityReservation は program_snapshots + reservations 行を作る。
+// #27 で番組の事実のスナップショット（title / 開始時刻 / 尺 / チャンネル識別）が
+// program_snapshots に抽出され、reservations への FK が張られたため、
+// 予約行より先に program_snapshots を作る。
 func insertCapacityReservation(t *testing.T, pool *pgxpool.Pool, programID int64, channelType, channel string, startAt time.Time, duration time.Duration) {
 	t.Helper()
-	if _, err := pool.Exec(context.Background(), `
-INSERT INTO reservations (
-  site, program_id, state, base, title, program_start_at, program_duration_ms,
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `
+INSERT INTO program_snapshots (
+  site, program_id, title, start_at, duration_ms,
   network_id, service_id, channel_type, channel
-) VALUES ('default', $1, 'active', '{}', 'テスト番組', $2, $3, 32678, 5168, $4, $5)`,
+) VALUES ('default', $1, 'テスト番組', $2, $3, 32678, 5168, $4, $5)`,
 		programID, startAt, duration.Milliseconds(), channelType, channel); err != nil {
+		t.Fatalf("inserting program_snapshot row: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO reservations (site, program_id, base) VALUES ('default', $1, '{}')`,
+		programID); err != nil {
 		t.Fatalf("inserting reservation row: %v", err)
 	}
 }
@@ -245,9 +255,10 @@ func TestListCapacityOverages_SamePhysicalChannelSharesOneTuner(t *testing.T) {
 		t.Errorf("overages = %+v, want none (同一物理チャンネルは需要 1)", got)
 	}
 
-	// 反対方向: 1 件を別チャンネルにすれば超過する。
+	// 反対方向: 1 件を別チャンネルにすれば超過する。channel は #27 で
+	// program_snapshots に抽出された。
 	if _, err := pool.Exec(context.Background(),
-		`UPDATE reservations SET channel = '25' WHERE program_id = 102`); err != nil {
+		`UPDATE program_snapshots SET channel = '25' WHERE program_id = 102`); err != nil {
 		t.Fatalf("updating reservation channel: %v", err)
 	}
 	if _, got := getOverages(t, srv.URL, start.Add(-time.Hour), start.Add(2*time.Hour)); len(got) != 1 {

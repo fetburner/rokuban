@@ -158,16 +158,24 @@ func TestReconcilePassWorker_CreatesSchedule(t *testing.T) {
 	channelType, channel := "GR", "27"
 	const programID int64 = 400000600061234
 	q := sqlcgen.New(pool)
+	// #27 で番組の事実のスナップショットが program_snapshots に抽出され、
+	// reservations への FK が張られたため、予約行より先に program_snapshots を作る。
+	if err := q.UpsertProgramSnapshot(ctx, sqlcgen.UpsertProgramSnapshotParams{
+		Site:        testSite,
+		ProgramID:   programID,
+		Title:       "reconcile_pass ワーカーテスト",
+		StartAt:     time.Now().Add(time.Hour),
+		DurationMs:  1800000,
+		NetworkID:   &networkID,
+		ServiceID:   &serviceID,
+		ChannelType: &channelType,
+		Channel:     &channel,
+	}); err != nil {
+		t.Fatalf("upserting program snapshot fixture: %v", err)
+	}
 	if _, err := q.CreateManualReservation(ctx, sqlcgen.CreateManualReservationParams{
-		Site:              testSite,
-		ProgramID:         programID,
-		Title:             "reconcile_pass ワーカーテスト",
-		ProgramStartAt:    time.Now().Add(time.Hour),
-		ProgramDurationMs: 1800000,
-		NetworkID:         &networkID,
-		ServiceID:         &serviceID,
-		ChannelType:       &channelType,
-		Channel:           &channel,
+		Site:      testSite,
+		ProgramID: programID,
 	}); err != nil {
 		t.Fatalf("creating reservation fixture: %v", err)
 	}

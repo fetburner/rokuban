@@ -18,15 +18,22 @@ SELECT program_id FROM program_overrides WHERE site = $1;
 -- name: ListReservationProgramIDsBySite :many
 SELECT program_id FROM reservations WHERE site = $1;
 
--- name: ListProgramSnapshotsBySiteAndProgramIDs :many
--- 射影（epg_programs ⋈ epg_services）にまだある desired 番組のスナップショットを
--- 一括取得する。ここに出てこない programId は「射影から消えた」= 凍結対象。
-SELECT p.program_id, p.name AS title, p.start_at, p.duration_ms,
-       s.network_id, s.service_id, s.channel_type, s.channel
-FROM epg_programs p
-JOIN epg_services s
-  ON s.site = p.site AND s.network_id = p.network_id AND s.service_id = p.service_id
-WHERE p.site = $1 AND p.program_id = ANY(sqlc.arg(program_ids)::bigint[]);
+-- 射影から program_snapshots への追従更新（#27）は
+-- internal/db/queries/program_snapshots.sql の UpsertProgramSnapshotsFromProjection
+-- 1 本にまとまった。ruler はそれを desiredIDs に対して呼ぶだけで、「射影にある間は
+-- 更新、消えたら凍結」を自分で判定しない（射影に無い programId は
+-- UpsertProgramSnapshotsFromProjection の JOIN にそもそも出てこないので、
+-- 何もせず既存の program_snapshots 行がそのまま凍結される）。
+-- 旧 ListProgramSnapshotsBySiteAndProgramIDs（epg_programs ⋈ epg_services を
+-- 直接引いて reservations 側の CASE で凍結を判定していたもの）は撤去した。
+
+-- name: ListProgramSnapshotProgramIDsBySiteAndProgramIDs :many
+-- 新規に reservations 行を作れるかどうかの判定に使う。program_snapshots への
+-- FK があるため、desired な programId のうち program_snapshots の行を持たない
+-- ものは予約行を作れない（射影にもなく、既存の意図・上書き・予約からも
+-- スナップショットが作られたことがない = 材料がどこにもない）。
+SELECT program_id FROM program_snapshots
+WHERE site = $1 AND program_id = ANY(sqlc.arg(program_ids)::bigint[]);
 
 -- UpsertReservationsFromRulerPass と InsertReservationRuleMatches は
 -- jsonb_to_recordset / unnest を使う集合演算 1 文で、sqlc の組み込みアナライザ
@@ -100,6 +107,9 @@ WHERE reservation_id IN (SELECT id FROM reservations WHERE site = $1);
 -- タイトルスナップショットを引く。programId だけでは手動確認する人間が判断できないため
 -- （breaker.SampleProgram.Title のコメント参照）。呼び出し側が対象を
 -- breaker.MaxSampleSize 程度に絞ってから呼ぶ想定なので、ここでは LIMIT を掛けない。
+-- title は program_snapshots に移設された（#27）。削除候補の programId は
+-- 呼び出し時点でまだ reservations 行を持つので、FK により program_snapshots の
+-- 行も必ず存在する（reservations との JOIN は不要）。
 -- name: ListReservationTitlesBySiteAndProgramIDs :many
-SELECT program_id, title FROM reservations
+SELECT program_id, title FROM program_snapshots
 WHERE site = $1 AND program_id = ANY(sqlc.arg(program_ids)::bigint[]);

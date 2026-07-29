@@ -3,12 +3,14 @@ package api_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/api"
@@ -128,7 +130,10 @@ func TestDeleteReservation_KeepsSkipIntent(t *testing.T) {
 	}
 }
 
-// GC は意図の寿命を放送の寿命に揃える。
+// GC は意図の寿命を放送の寿命に揃える。#27 で GC は
+// DeleteEndedProgramSnapshots 1 本に集約された（旧 DeleteEndedProgramIntents は
+// 撤去済み）。program_intents は program_snapshots への FK が ON DELETE CASCADE
+// なので、番組終了 + 猶予経過の program_snapshots 行が消えれば一緒に落ちる。
 func TestDeleteEndedProgramIntents(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
@@ -137,28 +142,37 @@ func TestDeleteEndedProgramIntents(t *testing.T) {
 	past := time.Now().Add(-3 * time.Hour)
 	future := time.Now().Add(3 * time.Hour)
 	for i, st := range []time.Time{past, future} {
+		programID := int64(9000 + i)
+		if err := q.UpsertProgramSnapshot(ctx, sqlcgen.UpsertProgramSnapshotParams{
+			Site: "default", ProgramID: programID, Title: "", StartAt: st, DurationMs: 1800000,
+		}); err != nil {
+			t.Fatal(err)
+		}
 		if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
-			Site:              "default",
-			ProgramID:         int64(9000 + i),
-			Action:            "skip",
-			ProgramStartAt:    st,
-			ProgramDurationMs: 1800000,
+			Site:      "default",
+			ProgramID: programID,
+			Action:    "skip",
 		}); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	deleted, err := q.DeleteEndedProgramIntents(ctx, time.Now())
+	deleted, err := q.DeleteEndedProgramSnapshots(ctx, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if deleted != 1 {
-		t.Errorf("deleted = %d, want 1 (only the ended program)", deleted)
+		t.Errorf("deleted program_snapshots = %d, want 1 (only the ended program)", deleted)
 	}
 	if _, err := q.GetProgramIntent(ctx, sqlcgen.GetProgramIntentParams{
 		Site: "default", ProgramID: 9001,
 	}); err != nil {
 		t.Errorf("future intent should survive GC: %v", err)
+	}
+	if _, err := q.GetProgramIntent(ctx, sqlcgen.GetProgramIntentParams{
+		Site: "default", ProgramID: 9000,
+	}); !errors.Is(err, pgx.ErrNoRows) {
+		t.Errorf("ended intent should be gone via FK CASCADE from program_snapshots, got err=%v", err)
 	}
 }
 

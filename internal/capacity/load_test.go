@@ -24,7 +24,11 @@ VALUES ($1, $2, $3, $4, $5, $6)`, testSite, index, name, types, available, fault
 	}
 }
 
-// seedReservation は reservations に 1 行入れる。base は ruler が載せる導出オプション。
+// seedReservation は program_snapshots と reservations に 1 行ずつ入れる。
+// base は ruler が載せる導出オプション。#27 で番組の事実のスナップショット
+// （title / 開始時刻 / 尺 / チャンネル識別）が program_snapshots に抽出され、
+// #28/#30 で state 列が orphaned_at に置き換わったため、state="orphaned" は
+// orphaned_at を立てる形でシミュレートする。
 func seedReservation(
 	t *testing.T, pool *pgxpool.Pool,
 	programID int64, state, channelType, channel string,
@@ -34,12 +38,24 @@ func seedReservation(
 	if base == "" {
 		base = "{}"
 	}
-	if _, err := pool.Exec(context.Background(), `
-INSERT INTO reservations (
-  site, program_id, state, base, title, program_start_at, program_duration_ms,
-  network_id, service_id, channel_type, channel
-) VALUES ($1, $2, $3, $4, 'テスト番組', $5, $6, 32678, 5168, $7, $8)`,
-		testSite, programID, state, base, startAt, duration.Milliseconds(), channelType, channel); err != nil {
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `
+INSERT INTO program_snapshots (
+  site, program_id, title, start_at, duration_ms, network_id, service_id, channel_type, channel
+) VALUES ($1, $2, 'テスト番組', $3, $4, 32678, 5168, $5, $6)`,
+		testSite, programID, startAt, duration.Milliseconds(), channelType, channel); err != nil {
+		t.Fatalf("inserting program_snapshot row: %v", err)
+	}
+
+	var orphanedAt *time.Time
+	if state == "orphaned" {
+		now := time.Now()
+		orphanedAt = &now
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO reservations (site, program_id, base, orphaned_at)
+VALUES ($1, $2, $3, $4)`,
+		testSite, programID, base, orphanedAt); err != nil {
 		t.Fatalf("inserting reservation row: %v", err)
 	}
 }
@@ -47,10 +63,17 @@ INSERT INTO reservations (
 // seedReservationWithoutChannel は 00009 以前の残骸（チャンネル未設定）を模す。
 func seedReservationWithoutChannel(t *testing.T, pool *pgxpool.Pool, programID int64, startAt time.Time, duration time.Duration) {
 	t.Helper()
-	if _, err := pool.Exec(context.Background(), `
-INSERT INTO reservations (site, program_id, state, base, title, program_start_at, program_duration_ms)
-VALUES ($1, $2, 'active', '{}', '移行前の残骸', $3, $4)`,
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `
+INSERT INTO program_snapshots (site, program_id, title, start_at, duration_ms)
+VALUES ($1, $2, '移行前の残骸', $3, $4)`,
 		testSite, programID, startAt, duration.Milliseconds()); err != nil {
+		t.Fatalf("inserting legacy program_snapshot row: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO reservations (site, program_id, base)
+VALUES ($1, $2, '{}')`,
+		testSite, programID); err != nil {
 		t.Fatalf("inserting legacy reservation row: %v", err)
 	}
 }
@@ -127,7 +150,6 @@ func TestLoad_ExcludesReservationsThatProduceNoSchedule(t *testing.T) {
 				seedReservation(t, pool, 101, "active", "GR", "25", start, duration, "")
 				if _, err := sqlcgen.New(pool).UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
 					Site: testSite, ProgramID: 101, Overrides: json.RawMessage(`{"skip":true}`),
-					ProgramStartAt: start, ProgramDurationMs: duration.Milliseconds(),
 				}); err != nil {
 					t.Fatalf("upserting overrides: %v", err)
 				}
@@ -139,7 +161,6 @@ func TestLoad_ExcludesReservationsThatProduceNoSchedule(t *testing.T) {
 				seedReservation(t, pool, 101, "active", "GR", "25", start, duration, "")
 				if _, err := sqlcgen.New(pool).UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
 					Site: testSite, ProgramID: 101, Action: "skip",
-					ProgramStartAt: start, ProgramDurationMs: duration.Milliseconds(),
 				}); err != nil {
 					t.Fatalf("upserting intent: %v", err)
 				}
@@ -186,7 +207,6 @@ func TestLoad_IntentRecordBeatsBaseSkip(t *testing.T) {
 	seedReservation(t, pool, 101, "active", "GR", "25", start, time.Hour, `{"skip":true}`)
 	if _, err := sqlcgen.New(pool).UpsertProgramIntent(context.Background(), sqlcgen.UpsertProgramIntentParams{
 		Site: testSite, ProgramID: 101, Action: "record",
-		ProgramStartAt: start, ProgramDurationMs: time.Hour.Milliseconds(),
 	}); err != nil {
 		t.Fatalf("upserting intent: %v", err)
 	}

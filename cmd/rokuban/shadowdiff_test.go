@@ -28,30 +28,35 @@ func TestRunShadowDiff_EndToEnd(t *testing.T) {
 
 	start := time.Date(2026, 8, 1, 21, 0, 0, 0, time.UTC)
 
+	// #27 で番組の事実のスナップショットが program_snapshots に抽出され、
+	// reservations / program_intents への FK が張られたため、各 programId の
+	// 予約行・意図より先に program_snapshots を作る。
+	upsertSnapshot(t, ctx, q, 1, "番組1", start)
+	upsertSnapshot(t, ctx, q, 2, "番組2", start.Add(time.Hour))
+	upsertSnapshot(t, ctx, q, 3, "番組3", start.Add(2*time.Hour))
+	upsertSnapshot(t, ctx, q, 5, "重複排除された番組", start.Add(5*time.Hour))
+
 	// Rokuban 側: programId=1 は両方に存在させる（Both）
 	if _, err := q.CreateManualReservation(ctx, sqlcgen.CreateManualReservationParams{
-		Site: db.DefaultSite, ProgramID: 1, Title: "番組1",
-		ProgramStartAt: start, ProgramDurationMs: 1800000,
+		Site: db.DefaultSite, ProgramID: 1,
 	}); err != nil {
 		t.Fatalf("creating reservation 1: %v", err)
 	}
 	// programId=2 は Rokuban だけ（RokubanOnly）
 	if _, err := q.CreateManualReservation(ctx, sqlcgen.CreateManualReservationParams{
-		Site: db.DefaultSite, ProgramID: 2, Title: "番組2",
-		ProgramStartAt: start.Add(time.Hour), ProgramDurationMs: 1800000,
+		Site: db.DefaultSite, ProgramID: 2,
 	}); err != nil {
 		t.Fatalf("creating reservation 2: %v", err)
 	}
 	// programId=3 は Rokuban 側で skip 意図（EPGStation 側にはあるが Expected）
 	if _, err := q.SkipProgram(ctx, sqlcgen.SkipProgramParams{
 		Site: db.DefaultSite, ProgramID: 3,
-		ProgramStartAt: start.Add(2 * time.Hour), ProgramDurationMs: 1800000,
 	}); err != nil {
 		t.Fatalf("skipping program 3: %v", err)
 	}
 	// programId=5 は base.skip = true（M2-6 の重複排除が立てる想定）を持つ予約。
 	// ruler は base だけを書き reservations 行自体は削除しない設計なので、この
-	// 行は ListReservationsForSyncEvaluation（state <> 'orphaned'）に残り続ける。
+	// 行は ListReservationsForSyncEvaluation（orphaned_at IS NULL）に残り続ける。
 	// reconciler.listDesired が effective.skip として除外して mirakc に同期しない
 	// （＝ Rokuban は実際には録らない）のと同じ判定を runShadowDiff もしないと、
 	// EPGStation 側に対応する予約があるとき Both（一致）に誤分類されてしまう
@@ -59,8 +64,7 @@ func TestRunShadowDiff_EndToEnd(t *testing.T) {
 	// の回帰テスト本体）。ruler パッケージには触れず、reservations.base を
 	// 直接書き換えて模す（生 SQL で状態を固定するパターン）。
 	res5, err := q.CreateManualReservation(ctx, sqlcgen.CreateManualReservationParams{
-		Site: db.DefaultSite, ProgramID: 5, Title: "重複排除された番組",
-		ProgramStartAt: start.Add(5 * time.Hour), ProgramDurationMs: 1800000,
+		Site: db.DefaultSite, ProgramID: 5,
 	})
 	if err != nil {
 		t.Fatalf("creating reservation 5: %v", err)
@@ -155,9 +159,9 @@ func TestRunShadowDiff_NoUnexplainedDiff(t *testing.T) {
 	q := sqlcgen.New(pool)
 
 	start := time.Date(2026, 8, 1, 21, 0, 0, 0, time.UTC)
+	upsertSnapshot(t, ctx, q, 1, "番組1", start)
 	if _, err := q.CreateManualReservation(ctx, sqlcgen.CreateManualReservationParams{
-		Site: db.DefaultSite, ProgramID: 1, Title: "番組1",
-		ProgramStartAt: start, ProgramDurationMs: 1800000,
+		Site: db.DefaultSite, ProgramID: 1,
 	}); err != nil {
 		t.Fatalf("creating reservation: %v", err)
 	}
@@ -177,6 +181,23 @@ func TestRunShadowDiff_NoUnexplainedDiff(t *testing.T) {
 	}
 	if report.HasUnexplained() {
 		t.Errorf("HasUnexplained() = true, want false: %+v", report)
+	}
+}
+
+// upsertSnapshot は program_snapshots 行を用意する。#27 で番組の事実の
+// スナップショット（title / 開始時刻 / 尺）が program_snapshots に抽出され、
+// reservations / program_intents への FK が張られたため、このテストの
+// フィクスチャはすべてこれを先に呼ぶ。
+func upsertSnapshot(t *testing.T, ctx context.Context, q *sqlcgen.Queries, programID int64, title string, startAt time.Time) {
+	t.Helper()
+	if err := q.UpsertProgramSnapshot(ctx, sqlcgen.UpsertProgramSnapshotParams{
+		Site:       db.DefaultSite,
+		ProgramID:  programID,
+		Title:      title,
+		StartAt:    startAt,
+		DurationMs: 1800000,
+	}); err != nil {
+		t.Fatalf("upserting program snapshot %d: %v", programID, err)
 	}
 }
 

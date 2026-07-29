@@ -17,7 +17,6 @@ import (
 
 	"github.com/fetburner/rokuban/internal/breaker"
 	"github.com/fetburner/rokuban/internal/contentpath"
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
@@ -147,20 +146,30 @@ func ptrString(v string) *string { return &v }
 
 // createReservation は networkID=10000/serviceID=5000/GR/27 のチャンネル
 // スナップショット（contentpath_test.go と同じ値）を持つ手動予約を作る。
+//
+// #27 で番組の事実のスナップショットは program_snapshots に抽出された。
+// reservations への FK があるため、予約行より先に program_snapshots を upsert
+// する（api.CreateReservation と同じ順序。internal/api/handler.go 参照）。
 func createReservation(t *testing.T, ctx context.Context, q *sqlcgen.Queries, programID int64, title string, startAt time.Time) sqlcgen.Reservation {
 	t.Helper()
 	networkID, serviceID := int32(10000), int32(5000)
 	channelType, channel := "GR", "27"
+	if err := q.UpsertProgramSnapshot(ctx, sqlcgen.UpsertProgramSnapshotParams{
+		Site:        "default",
+		ProgramID:   programID,
+		Title:       title,
+		StartAt:     startAt,
+		DurationMs:  1800000,
+		NetworkID:   &networkID,
+		ServiceID:   &serviceID,
+		ChannelType: &channelType,
+		Channel:     &channel,
+	}); err != nil {
+		t.Fatalf("upserting program snapshot: %v", err)
+	}
 	res, err := q.CreateManualReservation(ctx, sqlcgen.CreateManualReservationParams{
-		Site:              "default",
-		ProgramID:         programID,
-		Title:             title,
-		ProgramStartAt:    startAt,
-		ProgramDurationMs: 1800000,
-		NetworkID:         &networkID,
-		ServiceID:         &serviceID,
-		ChannelType:       &channelType,
-		Channel:           &channel,
+		Site:      "default",
+		ProgramID: programID,
 	})
 	if err != nil {
 		t.Fatalf("creating reservation: %v", err)
@@ -179,11 +188,9 @@ func setPriorityOverride(t *testing.T, ctx context.Context, q *sqlcgen.Queries, 
 		t.Fatalf("marshalling overrides: %v", err)
 	}
 	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
-		Site:              "default",
-		ProgramID:         res.ProgramID,
-		Overrides:         overrides,
-		ProgramStartAt:    res.ProgramStartAt,
-		ProgramDurationMs: res.ProgramDurationMs,
+		Site:      "default",
+		ProgramID: res.ProgramID,
+		Overrides: overrides,
 	}); err != nil {
 		t.Fatalf("setting priority override: %v", err)
 	}
@@ -202,24 +209,10 @@ func TestReconciler_CreatesSchedule(t *testing.T) {
 
 	startAt := time.Now().Add(1 * time.Hour)
 	// programID=100000500011234 -> networkID=10000, serviceID=5000（contentpath_test.go と同じ値）。
-	// reconciler は予約行のスナップショットのみを見るので、テストのフィクスチャも
-	// スナップショットさせておく必要がある（もう programId からの算術には頼らない）。
-	networkID, serviceID := int32(10000), int32(5000)
-	channelType, channel := "GR", "27"
-	res, err := q.CreateManualReservation(ctx, sqlcgen.CreateManualReservationParams{
-		Site:              "default",
-		ProgramID:         100000500011234,
-		Title:             "テスト番組",
-		ProgramStartAt:    startAt,
-		ProgramDurationMs: 1800000,
-		NetworkID:         &networkID,
-		ServiceID:         &serviceID,
-		ChannelType:       &channelType,
-		Channel:           &channel,
-	})
-	if err != nil {
-		t.Fatalf("creating reservation: %v", err)
-	}
+	// reconciler は program_snapshots のスナップショットのみを見るので、テストの
+	// フィクスチャもスナップショットさせておく必要がある（もう programId からの
+	// 算術には頼らない）。
+	res := createReservation(t, ctx, q, 100000500011234, "テスト番組", startAt)
 
 	rec := reconciler.New("default", mc, pool, nil)
 
@@ -341,21 +334,24 @@ func TestReconciler_SkippedReservationNotScheduled(t *testing.T) {
 	// 予約行があっても intent{skip} があれば schedule を作らない。
 	// （通常の取消は行ごと落とすが、ruler が作り直した直後などに両方が
 	// 共存しうるので、reconciler 側でも意図を尊重することを確かめる）
-	_, err := q.CreateManualReservation(ctx, sqlcgen.CreateManualReservationParams{
-		Site:              "default",
-		ProgramID:         200000500011234,
-		Title:             "スキップ番組",
-		ProgramStartAt:    startAt,
-		ProgramDurationMs: 1800000,
-	})
-	if err != nil {
+	if err := q.UpsertProgramSnapshot(ctx, sqlcgen.UpsertProgramSnapshotParams{
+		Site:       "default",
+		ProgramID:  200000500011234,
+		Title:      "スキップ番組",
+		StartAt:    startAt,
+		DurationMs: 1800000,
+	}); err != nil {
+		t.Fatalf("upserting program snapshot: %v", err)
+	}
+	if _, err := q.CreateManualReservation(ctx, sqlcgen.CreateManualReservationParams{
+		Site:      "default",
+		ProgramID: 200000500011234,
+	}); err != nil {
 		t.Fatalf("creating reservation: %v", err)
 	}
 	if _, err := q.SkipProgram(ctx, sqlcgen.SkipProgramParams{
-		Site:              "default",
-		ProgramID:         200000500011234,
-		ProgramStartAt:    startAt,
-		ProgramDurationMs: 1800000,
+		Site:      "default",
+		ProgramID: 200000500011234,
 	}); err != nil {
 		t.Fatalf("recording skip intent: %v", err)
 	}
@@ -387,14 +383,20 @@ func TestReconciler_NullServiceIDNotScheduled(t *testing.T) {
 	q := sqlcgen.New(pool)
 
 	startAt := time.Now().Add(1 * time.Hour)
-	// CreateManualReservation に channel snapshot を渡さない = network_id/service_id
+	// UpsertProgramSnapshot に channel snapshot を渡さない = network_id/service_id
 	// などが NULL のまま。移行前の行を模す。
+	if err := q.UpsertProgramSnapshot(ctx, sqlcgen.UpsertProgramSnapshotParams{
+		Site:       "default",
+		ProgramID:  300000500011234,
+		Title:      "移行前の残骸",
+		StartAt:    startAt,
+		DurationMs: 1800000,
+	}); err != nil {
+		t.Fatalf("upserting program snapshot: %v", err)
+	}
 	if _, err := q.CreateManualReservation(ctx, sqlcgen.CreateManualReservationParams{
-		Site:              "default",
-		ProgramID:         300000500011234,
-		Title:             "移行前の残骸",
-		ProgramStartAt:    startAt,
-		ProgramDurationMs: 1800000,
+		Site:      "default",
+		ProgramID: 300000500011234,
 	}); err != nil {
 		t.Fatalf("creating reservation: %v", err)
 	}
@@ -887,16 +889,28 @@ func TestReconciler_ScheduleLostOnRecreatePostFailure(t *testing.T) {
 // ならない」、docs/recording.md §4.3。同期の可否を決めるのは effective.skip
 // であり、state で除外してよいのは orphaned だけ。
 
-// setReservationState は state を直接書き換える。ruler を経由せず、reconciler の
-// 同期対象判定だけを state 別に固定したいので生 SQL で任意の state を作る。
-func setReservationState(t *testing.T, ctx context.Context, pool *pgxpool.Pool, id int64, state string) {
+// setReservationDetached は ruler を経由せず、reconciler の同期対象判定だけを
+// detached 別に固定するため、detached の導出条件（rule_id IS NULL AND base IS
+// NOT NULL。#28/#30 で state 列が撤去され、この式からの導出になった）を
+// 直接満たす行を生 SQL で作る。
+func setReservationDetached(t *testing.T, ctx context.Context, pool *pgxpool.Pool, id int64) {
 	t.Helper()
-	if _, err := pool.Exec(ctx, `UPDATE reservations SET state = $1 WHERE id = $2`, state, id); err != nil {
-		t.Fatalf("setting reservation state to %q: %v", state, err)
+	if _, err := pool.Exec(ctx, `UPDATE reservations SET rule_id = NULL, base = '{}'::jsonb WHERE id = $1`, id); err != nil {
+		t.Fatalf("setting reservation to detached: %v", err)
 	}
 }
 
-// 受け入れ基準 14: state='detached' の予約にも schedule が作られる。
+// setReservationOrphaned は orphaned_at を直接立てる。reconciler.markOrphaned を
+// 経由せず、同期対象判定だけを orphaned 別に固定したいので生 SQL で書く。
+func setReservationOrphaned(t *testing.T, ctx context.Context, pool *pgxpool.Pool, id int64) {
+	t.Helper()
+	if _, err := pool.Exec(ctx, `UPDATE reservations SET orphaned_at = now() WHERE id = $1`, id); err != nil {
+		t.Fatalf("setting reservation orphaned: %v", err)
+	}
+}
+
+// 受け入れ基準 14: detached（rule_id IS NULL AND base IS NOT NULL）の予約にも
+// schedule が作られる。
 //
 // 旧 ListActiveReservationsBySite は state = 'active' でしか絞っておらず、
 // detached（「実質 manual として動く」はずの状態）の予約が同期対象から
@@ -916,7 +930,7 @@ func TestReconciler_DetachedReservationGetsScheduled(t *testing.T) {
 
 	startAt := time.Now().Add(1 * time.Hour)
 	res := createReservation(t, ctx, q, 100000500019200, "detached予約", startAt)
-	setReservationState(t, ctx, pool, res.ID, db.ReservationStateDetached)
+	setReservationDetached(t, ctx, pool, res.ID)
 
 	rec := reconciler.New("default", mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
@@ -929,7 +943,7 @@ func TestReconciler_DetachedReservationGetsScheduled(t *testing.T) {
 	}
 }
 
-// 受け入れ基準 15: state='orphaned' の予約には schedule が作られない
+// 受け入れ基準 15: orphaned_at が非 NULL の予約には schedule が作られない
 // （番組終了後に schedule が観測されなかった行なので、作る意味がない）。
 func TestReconciler_OrphanedReservationNotScheduled(t *testing.T) {
 	pool := testutil.SetupDB(t)
@@ -944,7 +958,7 @@ func TestReconciler_OrphanedReservationNotScheduled(t *testing.T) {
 
 	startAt := time.Now().Add(1 * time.Hour)
 	res := createReservation(t, ctx, q, 100000500019201, "orphaned予約", startAt)
-	setReservationState(t, ctx, pool, res.ID, db.ReservationStateOrphaned)
+	setReservationOrphaned(t, ctx, pool, res.ID)
 
 	rec := reconciler.New("default", mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
@@ -971,12 +985,10 @@ func TestReconciler_DetachedSkipReservationNotScheduled(t *testing.T) {
 
 	startAt := time.Now().Add(1 * time.Hour)
 	res := createReservation(t, ctx, q, 100000500019202, "detachedスキップ", startAt)
-	setReservationState(t, ctx, pool, res.ID, db.ReservationStateDetached)
+	setReservationDetached(t, ctx, pool, res.ID)
 	if _, err := q.SkipProgram(ctx, sqlcgen.SkipProgramParams{
-		Site:              "default",
-		ProgramID:         res.ProgramID,
-		ProgramStartAt:    res.ProgramStartAt,
-		ProgramDurationMs: res.ProgramDurationMs,
+		Site:      "default",
+		ProgramID: res.ProgramID,
 	}); err != nil {
 		t.Fatalf("recording skip intent: %v", err)
 	}
@@ -991,24 +1003,25 @@ func TestReconciler_DetachedSkipReservationNotScheduled(t *testing.T) {
 	}
 }
 
-// getReservationState は現在の reservations.state を直接読む。setReservationState と
-// 対になるヘルパーで、markOrphaned が実際に state を書き換えたかを確認するために使う。
-func getReservationState(t *testing.T, ctx context.Context, pool *pgxpool.Pool, id int64) string {
+// getReservationOrphanedAt は現在の reservations.orphaned_at を直接読む。
+// setReservationOrphaned と対になるヘルパーで、markOrphaned が実際に
+// orphaned_at を書き換えたかを確認するために使う。
+func getReservationOrphanedAt(t *testing.T, ctx context.Context, pool *pgxpool.Pool, id int64) *time.Time {
 	t.Helper()
-	var state string
-	if err := pool.QueryRow(ctx, `SELECT state FROM reservations WHERE id = $1`, id).Scan(&state); err != nil {
-		t.Fatalf("reading reservation state: %v", err)
+	var orphanedAt *time.Time
+	if err := pool.QueryRow(ctx, `SELECT orphaned_at FROM reservations WHERE id = $1`, id).Scan(&orphanedAt); err != nil {
+		t.Fatalf("reading reservation orphaned_at: %v", err)
 	}
-	return state
+	return orphanedAt
 }
 
 // 回帰テスト: MarkReservationOrphaned が WHERE id = $1 AND state = 'active' で
 // 絞っていたため、detached の予約は番組終了後も orphaned にならなかった
 // （終了済みの schedule 無し予約が ListSyncableReservationsBySite に state <>
 // 'orphaned' として居座り続け、GC まで desired に残る／schedule が無いので
-// 毎パス createSchedule が終了済み番組へ空振りし続ける）。修正後は
-// state <> 'orphaned' で絞るので、active・detached のどちらの予約も
-// 番組終了 + schedule 観測なしで orphaned になることを確認する。
+// 毎パス createSchedule が終了済み番組へ空振りし続ける）。修正後（#28/#30）は
+// orphaned_at IS NULL で絞るので、active・detached のどちらの予約も
+// 番組終了 + schedule 観測なしで orphaned_at が立つことを確認する。
 func TestReconciler_MarksBothActiveAndDetachedReservationsOrphaned(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
@@ -1025,25 +1038,25 @@ func TestReconciler_MarksBothActiveAndDetachedReservationsOrphaned(t *testing.T)
 	endedStartAt := time.Now().Add(-2 * time.Hour)
 
 	activeRes := createReservation(t, ctx, q, 100000500019210, "終了済みactive予約", endedStartAt)
-	// createReservation は state='active' で作る想定なのでそのまま使う。
+	// createReservation は rule_id/base とも NULL の「active」相当で作る想定
+	// なのでそのまま使う。
 
 	detachedRes := createReservation(t, ctx, q, 100000500019211, "終了済みdetached予約", endedStartAt)
-	setReservationState(t, ctx, pool, detachedRes.ID, db.ReservationStateDetached)
+	setReservationDetached(t, ctx, pool, detachedRes.ID)
 
 	rec := reconciler.New("default", mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
 
-	if got := getReservationState(t, ctx, pool, activeRes.ID); got != db.ReservationStateOrphaned {
-		t.Errorf("active reservation state = %q, want %q (ended program with no observed schedule must become orphaned)",
-			got, db.ReservationStateOrphaned)
+	if got := getReservationOrphanedAt(t, ctx, pool, activeRes.ID); got == nil {
+		t.Error("active reservation orphaned_at is nil, want non-nil " +
+			"(ended program with no observed schedule must become orphaned)")
 	}
-	if got := getReservationState(t, ctx, pool, detachedRes.ID); got != db.ReservationStateOrphaned {
-		t.Errorf("detached reservation state = %q, want %q "+
-			"(detached must not be excluded from orphaning — this was the bug: "+
-			"MarkReservationOrphaned only matched state = 'active')",
-			got, db.ReservationStateOrphaned)
+	if got := getReservationOrphanedAt(t, ctx, pool, detachedRes.ID); got == nil {
+		t.Error("detached reservation orphaned_at is nil, want non-nil " +
+			"(detached must not be excluded from orphaning — this was the bug: " +
+			"MarkReservationOrphaned only matched state = 'active')")
 	}
 }
 
@@ -1438,7 +1451,7 @@ func TestReconciler_NoStartDelayAfterProgramEnded(t *testing.T) {
 	}
 }
 
-// 受け入れ条件 5: state = 'orphaned' の予約は検出されないこと（既に
+// 受け入れ条件 5: orphaned_at が非 NULL の予約は検出されないこと（既に
 // 「録れなかった」とマークされている。二重に騒がない）。
 func TestReconciler_NoStartDelayForOrphanedReservation(t *testing.T) {
 	pool := testutil.SetupDB(t)
@@ -1454,7 +1467,7 @@ func TestReconciler_NoStartDelayForOrphanedReservation(t *testing.T) {
 	// 開始時刻 + 猶予を過ぎているが終了前という、本来なら検出される窓。
 	startAt := time.Now().Add(-10 * time.Minute)
 	res := createReservation(t, ctx, q, 100000500030005, "orphaned開始遅延", startAt)
-	setReservationState(t, ctx, pool, res.ID, db.ReservationStateOrphaned)
+	setReservationOrphaned(t, ctx, pool, res.ID)
 
 	rec := reconciler.New("default", mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
@@ -1482,10 +1495,8 @@ func TestReconciler_NoStartDelayForSkippedReservation(t *testing.T) {
 	startAt := time.Now().Add(-10 * time.Minute)
 	createReservation(t, ctx, q, 100000500030006, "skip開始遅延", startAt)
 	if _, err := q.SkipProgram(ctx, sqlcgen.SkipProgramParams{
-		Site:              "default",
-		ProgramID:         100000500030006,
-		ProgramStartAt:    startAt,
-		ProgramDurationMs: 1800000,
+		Site:      "default",
+		ProgramID: 100000500030006,
 	}); err != nil {
 		t.Fatalf("recording skip intent: %v", err)
 	}

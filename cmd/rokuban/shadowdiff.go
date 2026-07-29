@@ -123,8 +123,8 @@ func runShadowDiff(ctx context.Context, q *sqlcgen.Queries, epgClient *epgstatio
 		}
 		rokuban = append(rokuban, shadowdiff.RokubanReservation{
 			ProgramID: c.Reservation.ProgramID,
-			Title:     c.Reservation.Title,
-			StartAt:   c.Reservation.ProgramStartAt,
+			Title:     c.Snapshot.Title,
+			StartAt:   c.Snapshot.StartAt,
 			Skipped:   c.Skipped,
 		})
 	}
@@ -138,13 +138,13 @@ func runShadowDiff(ctx context.Context, q *sqlcgen.Queries, epgClient *epgstatio
 	// 残っている」番組は両方に出うるが、その場合も上のループが同じ理由で
 	// Skipped: true を計算するので分類結果は変わらず無害。
 	for _, s := range skipped {
-		var title string
-		if s.Name != nil {
-			title = *s.Name
-		}
+		// s.Name は program_snapshots.title（#27 で抽出済み）から来ており、FK が
+		// あるので program_intents の行が存在すれば必ず対応する行がある
+		// （もう nil になりえない。旧 epg_programs への LEFT JOIN 時代は
+		// 射影から刈られていれば NULL だった）。
 		rokuban = append(rokuban, shadowdiff.RokubanReservation{
 			ProgramID: s.ProgramID,
-			Title:     title,
+			Title:     s.Name,
 			StartAt:   s.ProgramStartAt,
 			Skipped:   true,
 		})

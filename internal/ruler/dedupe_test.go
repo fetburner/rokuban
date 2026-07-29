@@ -511,11 +511,13 @@ func TestRunPass_DedupeEvidenceFrozenWhenRuleUnmatches(t *testing.T) {
 	f := setupDedupeFixture(t, pool, ctx)
 
 	// 上書きを置いて、ルールが外れても予約行が消えず detached で残るようにする
-	// （docs/recording.md §4.3）。
+	// （docs/recording.md §4.3）。program_overrides への FK（#27）を満たすため、
+	// ruler が動く前に program_snapshots 行を用意しておく。
+	insertProgramSnapshotDirect(t, pool, ctx, f.programID, "再放送テスト 第1話", f.start)
 	if _, err := pool.Exec(ctx, `
-INSERT INTO program_overrides (site, program_id, overrides, program_start_at, program_duration_ms)
-VALUES ($1, $2, '{"priority":7}'::jsonb, $3, $4)`,
-		testSite, f.programID, f.start, testDurationMs); err != nil {
+INSERT INTO program_overrides (site, program_id, overrides)
+VALUES ($1, $2, '{"priority":7}'::jsonb)`,
+		testSite, f.programID); err != nil {
 		t.Fatalf("inserting program_overrides fixture: %v", err)
 	}
 
@@ -584,9 +586,9 @@ func TestRunPass_DedupeRecordIntentWins(t *testing.T) {
 
 	// ユーザーが「録れ」と指定すると base.skip を上書きする。
 	if _, err := pool.Exec(ctx, `
-INSERT INTO program_intents (site, program_id, action, program_start_at, program_duration_ms)
-VALUES ($1, $2, 'record', $3, $4)`,
-		testSite, f.programID, f.start, testDurationMs); err != nil {
+INSERT INTO program_intents (site, program_id, action)
+VALUES ($1, $2, 'record')`,
+		testSite, f.programID); err != nil {
 		t.Fatalf("inserting program_intents fixture: %v", err)
 	}
 	if err := r.RunPass(ctx); err != nil {

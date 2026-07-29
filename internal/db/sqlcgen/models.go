@@ -78,23 +78,32 @@ type MediaAsset struct {
 }
 
 type ProgramIntent struct {
-	Site              string
-	ProgramID         int64
-	Action            string
-	ProgramStartAt    time.Time
-	ProgramDurationMs int64
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
+	Site      string
+	ProgramID int64
+	Action    string
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 type ProgramOverride struct {
-	Site              string
-	ProgramID         int64
-	Overrides         json.RawMessage
-	ProgramStartAt    time.Time
-	ProgramDurationMs int64
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
+	Site      string
+	ProgramID int64
+	Overrides json.RawMessage
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+type ProgramSnapshot struct {
+	Site        string
+	ProgramID   int64
+	Title       string
+	StartAt     time.Time
+	DurationMs  int64
+	NetworkID   *int32
+	ServiceID   *int32
+	ChannelType *string
+	Channel     *string
+	UpdatedAt   time.Time
 }
 
 type RecordSync struct {
@@ -145,19 +154,12 @@ type Reservation struct {
 	Site                  string
 	ProgramID             int64
 	RuleID                *int64
-	State                 string
 	Base                  json.RawMessage
-	Title                 string
-	ProgramStartAt        time.Time
-	ProgramDurationMs     int64
 	CreatedAt             time.Time
 	UpdatedAt             time.Time
-	NetworkID             *int32
-	ServiceID             *int32
-	ChannelType           *string
-	Channel               *string
 	DedupMatchRecordingID *int64
 	DedupSimilarity       pgtype.Float4
+	OrphanedAt            *time.Time
 }
 
 type ReservationRuleMatch struct {

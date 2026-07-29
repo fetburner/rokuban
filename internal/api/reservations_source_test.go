@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/fetburner/rokuban/internal/api"
 	"github.com/fetburner/rokuban/internal/db"
@@ -63,16 +62,8 @@ func TestGetReservation_SourceManualDespiteRuleMatch(t *testing.T) {
 
 	// 手動予約であることを表す program_intents{record} を足す
 	// （このテストの核心: rule_id があっても intent が「手動」を主張する）。
-	var startAt time.Time
-	var durationMs int64
-	if err := pool.QueryRow(ctx,
-		`SELECT program_start_at, program_duration_ms FROM reservations WHERE id = $1`, resID,
-	).Scan(&startAt, &durationMs); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
 		Site: "default", ProgramID: programID, Action: db.IntentRecord,
-		ProgramStartAt: startAt, ProgramDurationMs: durationMs,
 	}); err != nil {
 		t.Fatalf("seeding intent: %v", err)
 	}

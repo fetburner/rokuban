@@ -35,10 +35,11 @@ func TestCreateReservation_SnapshotsChannelIdentity(t *testing.T) {
 		t.Fatalf("status = %d, want 201", resp.StatusCode)
 	}
 
+	// チャンネル識別のスナップショットは #27 で program_snapshots に抽出された。
 	var networkID, serviceID int
 	var channelType, channel string
 	if err := pool.QueryRow(ctx,
-		`SELECT network_id, service_id, channel_type, channel FROM reservations WHERE site = 'default' AND program_id = $1`,
+		`SELECT network_id, service_id, channel_type, channel FROM program_snapshots WHERE site = 'default' AND program_id = $1`,
 		programID).Scan(&networkID, &serviceID, &channelType, &channel); err != nil {
 		t.Fatalf("querying snapshotted columns: %v", err)
 	}
