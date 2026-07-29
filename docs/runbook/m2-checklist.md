@@ -37,7 +37,7 @@ M2 で足した観測のうち、**「出ていない = 大丈夫」と読んで
 ### 既知の未解決事項（誤読しやすいもの）
 
 **`orphaned` は「録れなかった」を意味しないことがある。** `markOrphaned`
-（`internal/reconciler/reconciler.go:659`）の判定は「番組終了時刻を過ぎた」と
+（`internal/reconciler/reconciler.go` の `markOrphaned`）の判定は「番組終了時刻を過ぎた」と
 「mirakc の schedule に観測されない」の 2 つだけで、**`recordings` 行の有無を見ていない**。
 mirakc が録画完了後に schedule を落とすなら、**成功した録画の予約も `orphaned` に
 なりうる**。`docs/schema.md` §3 の定義（録画されずに終わった行）と食い違う。
@@ -53,10 +53,14 @@ mirakc が録画完了後に schedule を落とすなら、**成功した録画�
 
 ```sh
 docker compose exec postgres psql -U rokuban -d rokuban -c \
-  "SELECT r.id, r.program_id, r.title, r.state,
+  "SELECT r.id, r.program_id, s.title, r.orphaned_at,
           (SELECT count(*) FROM recordings rec WHERE rec.reservation_id = r.id) AS recordings
-     FROM reservations r WHERE r.state = 'orphaned' ORDER BY r.program_start_at DESC"
+     FROM reservations r
+     JOIN program_snapshots s ON s.site = r.site AND s.program_id = r.program_id
+    WHERE r.orphaned_at IS NOT NULL ORDER BY s.start_at DESC"
 ```
+
+（`title` / `program_start_at` は Phase 1 で `program_snapshots` に抽出され、`reservations.state` は `orphaned_at` に置き換わった。[スキーマ](../schema.md) §3 / §3.7）
 
 **`pidType` が `other` の音声 PID**（LATM AAC / `stream_type = 0x11`）も同種の
 「誤読しやすい正常」。`gots` の `IsAudioContent()` の値域に従っているだけで、

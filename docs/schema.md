@@ -14,7 +14,7 @@ M1-2（issue #13）の成果物。設計根拠は issue #2（base/overrides 分�
 | 節 | 内容 | ファイル |
 |---|---|---|
 | §1 | **設計原則**（desired/observed 分離 / mirakc 固有概念の隔離 / tombstone / サイトスコープ / 導出値と事実の分離 / 行の寿命 / 型の規律） | [schema/principles.md](schema/principles.md) |
-| §3 §3.5 §3.6 | **desired**: `reservations`（予約）/ `program_intents`・`program_overrides`（ユーザー意図）/ `circuit_breakers`（ブレーカーのラッチ） | [schema/reservations.md](schema/reservations.md) |
+| §3 §3.5 §3.6 §3.7 | **desired**: `reservations`（予約）/ `program_intents`・`program_overrides`（ユーザー意図）/ `circuit_breakers`（ブレーカーのラッチ）/ `program_snapshots`（番組の事実のスナップショット。Phase 1） | [schema/reservations.md](schema/reservations.md) |
 | §4 | **observed**: `schedule_sync`（mirakc schedule の観測） | [schema/schedule-sync.md](schema/schedule-sync.md) |
 | §5 §6 | **永続資産**: `recordings`（録画履歴）/ `media_assets`（メディアアセット台帳） | [schema/recordings.md](schema/recordings.md) |
 | §7 | **observed**: `record_sync`（mirakc record の観測）と `drop_stats` | [schema/record-sync.md](schema/record-sync.md) |
@@ -37,8 +37,9 @@ erDiagram
     rules ||--o{ reservations : "rule_id (勝者ルール)"
     rules ||--o{ reservation_rule_matches : "rule_id (全マッチ)"
     reservations ||--o{ reservation_rule_matches : "reservation_id"
-    program_intents |o--o| reservations : "(site, program_id) で対応"
-    program_overrides |o--o| reservations : "(site, program_id) で対応"
+    program_snapshots ||--o| reservations : "(site, program_id) FK, ON DELETE CASCADE"
+    program_snapshots ||--o| program_intents : "(site, program_id) FK, ON DELETE CASCADE"
+    program_snapshots ||--o| program_overrides : "(site, program_id) FK, ON DELETE CASCADE"
     reservations ||--o| schedule_sync : "reservation_id (observed)"
     reservations ||--o{ recordings : "reservation_id (snapshot 後は独立)"
     recordings ||--o{ record_sync : "recording_id (observed)"
@@ -47,9 +48,10 @@ erDiagram
 ```
 
 - **desired**: `rules` + 子表（ユーザーが書く永続資産）/ `program_intents` + `program_overrides`（番組単位のユーザー意図。永続）/ `reservations`（ruler が導出）
+- **番組の事実のスナップショット**: `program_snapshots`（EPG プロジェクションから複製した、放送の寿命を持つキャッシュ。Phase 1。§3.7）
 - **observed**: `schedule_sync` / `record_sync`（mirakc の観測。短命・使い捨て）
 - **永続資産**: `recordings` / `media_assets` / `drop_stats`
-- `program_intents` / `program_overrides` と `reservations` は FK ではなく `(site, program_id)` で対応する。**skip された番組は `reservations` に行を持たない**ため、常に 1:1 ではない（§3.5）
+- `program_intents` / `program_overrides` と `reservations` は互いに FK では対応しない。三者はいずれも共通の `(site, program_id)` で `program_snapshots` への FK（`ON DELETE CASCADE`）を持つことで結びつく（Phase 1）。**skip された番組は `reservations` に行を持たない**ため、常に 1:1 ではない（§3.5）
 - `reservations.rule_id` は**勝者ルール**のみ。マッチした全ルールは `reservation_rule_matches` に入る
-- `rules` 一式と `program_intents` は M2 で追加（`00006` / `00008`）、`program_overrides` は M2-4 で分離（`00010`）。EPG プロジェクション（`epg_services` / `epg_programs`）は M1-6（`00004`）、チャンネル列は `00009`
+- `rules` 一式と `program_intents` は M2 で追加（`00006` / `00008`）、`program_overrides` は M2-4 で分離（`00010`）。EPG プロジェクション（`epg_services` / `epg_programs`）は M1-6（`00004`）、チャンネル列は `00009`。`program_snapshots` は Phase 1（`00017`）で追加され、同マイグレーションで `reservations.state` が `orphaned_at` に置き換わった
 

@@ -1,8 +1,8 @@
 ## 8. jsonb ドキュメント形式
 
-### 予約オプション（reservations.base / program_intents.overrides、同形）
+### 予約オプション（reservations.base / program_overrides.overrides、同形）
 
-キーは camelCase（Go の JSON 規約と揃える）。overrides は「ユーザーが上書きしたキーのみ」を持つ疎なドキュメント。
+キーは camelCase（Go の JSON 規約と揃える）。overrides は「ユーザーが上書きしたキーのみ」を持つ疎なドキュメント。overrides は M2-4（00010）で `program_intents` から `program_overrides` へ分離済み（§3.5）。
 
 ```jsonc
 {
@@ -15,7 +15,7 @@
 }
 ```
 
-- M1 では ruler がないため base = NULL、manual 予約の全フィールドが `program_intents.overrides` に入る
+- ruler が base を供給しない manual 予約は base = NULL で、全フィールドが `program_overrides.overrides` に入る
 - `skip` は overrides のキーではなく `program_intents.action` の列（§3.5）
 - `filenameTemplate` と `contentPath` は両方指定されうるが、`contentPath`（展開済みのフルパス）が優先される。`filenameTemplate` はルール由来（ruler が base に載せる）かユーザーの明示的な上書きのどちらか
 - 検証はアプリ層（Go の struct へのマッピング）で行う。DB は形を強制しない

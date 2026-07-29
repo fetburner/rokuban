@@ -1,33 +1,19 @@
 ## 3. reservations — 予約（desired state）
 
-ルール評価の純粋な出力。手動予約も同じテーブルで `source` が違うだけ。**M1 では ruler が存在しないため全行が manual（base は NULL、全フィールドが overrides）**。
+ルール評価の純粋な出力。手動予約もルール由来の予約も同じテーブルに入り、区別はテーブルの列ではなく `program_intents.action` の有無から導出する（`action='record'` があれば手動予約。issue #26）。
+
+Phase 1（#27 / #28 / #30）で「導出できないもの」を全て別表・別列に引き剥がした結果、この表に残るのは**ruler の 1 パスの出力**（`rule_id` / `base` / dedup 根拠 2 列）と、**reconciler だけが書く不可逆な観測**（`orphaned_at`）だけになった（CLAUDE.md 不変条件 12「表は行の寿命で割る」）。
 
 ```sql
 CREATE TABLE reservations (
     id                bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     site              text   NOT NULL,          -- 設定ファイル定義のサイト名
     program_id        bigint NOT NULL,          -- mirakc/Mirakurun の programId（site 単位のスコープ）
-    source            text   NOT NULL CHECK (source IN ('rule', 'manual')),
-    rule_id           bigint,                   -- M2 で REFERENCES rules(id) を追加
-    state             text   NOT NULL DEFAULT 'active'
-                             CHECK (state IN ('active', 'detached', 'orphaned')),
+    rule_id           bigint,                   -- 勝者ルール。REFERENCES rules(id) ON DELETE SET NULL
 
     -- 予約オプションの導出側（issue #2 の base/overrides コメント）。
     -- ユーザーの上書きは program_overrides 表にあり、この行には載らない（§3.5）
     base              jsonb,                    -- ruler だけが書く。manual では NULL
-
-    -- 番組情報の非正規化（reconciler の contentPath 生成・GC 判定・UI 表示を
-    -- EPG プロジェクションの刈り取りと独立させるための最小限のスナップショット）
-    title             text   NOT NULL DEFAULT '',
-    program_start_at  timestamptz NOT NULL,
-    program_duration_ms bigint NOT NULL,
-
-    -- チャンネル識別のスナップショット（M2 で追加。00009）。
-    -- nullable なのは移行前の行を救えない場合があるためで、新規行は api が必ず埋める
-    network_id        integer,
-    service_id        integer,
-    channel_type      text CHECK (channel_type IS NULL OR channel_type IN ('GR','BS','CS','SKY')),
-    channel           text,
 
     -- 重複排除の判定根拠（M2-6 で追加。00013）。ruler が毎パス作り直す導出列で、
     -- base と同じ凍結規則に従う。FK は張らない（後述）
@@ -35,40 +21,24 @@ CREATE TABLE reservations (
     dedup_similarity         real,
     CHECK ((dedup_match_recording_id IS NULL) = (dedup_similarity IS NULL)),
 
+    -- 不可逆な観測（Phase 1 で state 列から分離。#28 / #30。00017）。番組終了後に
+    -- mirakc へ schedule が観測されなかったという事実で、書き手は reconciler だけ。
+    -- ruler は一切上書きしない（CLAUDE.md 不変条件 9）
+    orphaned_at       timestamptz,
+
     created_at        timestamptz NOT NULL DEFAULT now(),
     updated_at        timestamptz NOT NULL DEFAULT now(),
 
-    UNIQUE (site, program_id)   -- desired 予約は site x programId につき最大 1 つ。detached にも適用
+    UNIQUE (site, program_id),  -- desired 予約は site x programId につき最大 1 つ
+    FOREIGN KEY (site, program_id) REFERENCES program_snapshots (site, program_id)
+        ON DELETE CASCADE
 );
 
-CREATE INDEX ON reservations (state);
 CREATE INDEX ON reservations (rule_id);
 ```
 
 - 同一の BS/CS 番組が複数サイトの EPG に現れた場合、site が違えば別予約になる（両サイトで録る、が表現可能）。サイト横断の重複排除はルール側の関心事（M2 の履歴ベース重複排除で扱う）
-
-### 番組情報のスナップショットは「射影にある間は更新、消えたら凍結」
-
-`title` / `program_start_at` / `program_duration_ms` / チャンネル 4 列を予約行に持つのは、**EPG プロジェクションが使い捨てだから**。番組が射影から消えても次の 3 つが成立し続ける必要がある。
-
-| 依存するもの | 射影を JOIN する設計だと |
-|---|---|
-| GC 判定（番組終了後のみ削除） | 射影が先に刈られると削除時期が判定できず行が残り続ける |
-| `orphaned` の説明可能性 | 「何の予約だったか」を UI に出せない |
-| contentPath 生成の再現性 | 生成の根拠（題名・時刻・サービス）が失われる |
-
-「ルール由来なら rule_id だけ持てば復元できる」は成立しない。ルールからは番組の事実（題名・時刻・チャンネル）が復元できないので、結局射影に依存する。
-
-**ただし凍結しっぱなしにはしない。** 延長・繰り下げで EPG 側の時刻は変わるので、**射影に番組がある間は ruler が毎パス更新し、消えたときに凍結する**（base と同じ扱い）。凍結しっぱなしだと、容量超過の判定（[データ層](../data.md) §6.5）が予約行の時刻を需要区間として使うため帯がずれる。
-
-### チャンネル識別はスナップショットする（programId を分解しない）
-
-Mirakurun 互換の programId は `NID*10^10 + SID*10^5 + EID` という合成規則を持つが、**本番コードでこれを逆算してはならない**。mirakc 固有の合成規則への依存になり、同じ情報が API のフィールド（`networkId` / `serviceId` / `eventId`）として素直に手に入るため。
-
-`CreateReservation` が EPG プロジェクション（`epg_programs` ⋈ `epg_services`）から引いて 4 列に焼き付ける。**クライアントからは受け取らない**（サーバー権威）。射影に番組がなければ 400 を返す。
-
-- reconciler の contentPath 生成はこのスナップショットを読む。`service_id` が NULL なら**推測せず schedule を作らない**（誤ったパスで録画するより同期対象から外してアラートする）
-- 容量超過の判定（[データ層](../data.md) §6.5）の需要単位が `(channel_type, channel)` なので、使い捨ての EPG 射影への JOIN に頼らずここを読む
+- **番組の事実のスナップショット（title / 開始時刻 / 尺 / チャンネル識別）はこの表にはない。** `(site, program_id)` の FK で参照する `program_snapshots`（§3.7）に抽出された（#27）
 
 ### 重複排除の根拠に FK を張らない（M2-6）
 
@@ -83,46 +53,38 @@ Mirakurun 互換の programId は `NID*10^10 + SID*10^5 + EID` という合成�
 
 ### base / overrides の意味論
 
-- **effective = COALESCE(base, '{}') ⊕ program_overrides.overrides**。reconciler が mirakc へ同期し、ingest / encode が参照するのは常に effective。解決は `db.EffectiveOptions` の 1 箇所に集約し、jsonb の Unmarshal 失敗を握りつぶさない
+- **effective = COALESCE(base, '{}') ⊕ program_overrides.overrides**。reconciler が mirakc へ同期し、ingest / encode が参照するのは常に effective。解決は `db.EffectiveOptions` の 1 箇所に集約し、jsonb の Unmarshal 失敗を握りつぶさない。`db.ReservationOptions.IsSkipped()` が `effective.skip` の判定に名前を付けている
 - base と overrides は**同形の jsonb ドキュメント**（§8）。ruler は EPG 更新のたびに base を丸ごと再計算してよく、**overrides は別表なので構造的に触れない**
 - **`skip` は overrides のキーではなく `program_intents.action`**。列なので base 側の skip に対する優先順位が明示的に決まる（`action = 'skip'` が勝つ）。skip された番組は**予約行を持たない**
 
-### state のライフサイクル
+### active / detached / orphaned は API が都度導出する（Phase 1。#28 / #30）
 
-| state | 意味 | 遷移 |
+`state` という列はもう存在しない。予約の状態は API 層（`internal/api/handler.go` の `reservationState`）が読むたびに `(rule_id, base, orphaned_at)` から計算して返す。
+
+| 値 | 意味 | 導出元 |
 |---|---|---|
-| `active` | 通常の desired 予約 | — |
-| `detached` | ルールがマッチしなくなったが意図または上書きがある行。base は凍結され、実質 manual として動く（`intent{skip}` なら録画しない detached） | ルール再マッチで base 再計算のうえ `active` に戻る（overrides は無傷） |
-| `orphaned` | **番組終了時刻を過ぎたのに mirakc に schedule が観測されなかった行**（= 録画されずに終わった）。即削除せず残して「録れなかった」を説明可能にする | 番組終了時刻経過で GC |
+| `active` | 通常の desired 予約 | `rule_id IS NOT NULL`（または base が無い manual 予約） |
+| `detached` | ルールがマッチしなくなったが意図または上書きがある行。base は凍結され、実質 manual として動く（`intent{skip}` なら録画しない detached） | `rule_id IS NULL AND base IS NOT NULL` |
+| `orphaned` | **番組終了時刻を過ぎたのに mirakc に schedule が観測されなかった行**（= 録画されずに終わった）。即削除せず残して「録れなかった」を説明可能にする | `orphaned_at IS NOT NULL`（不可逆な観測。reconciler だけが書く） |
 
-- **行の物理削除（GC）は「番組の終了時刻を過ぎた後」のみ**。`program_start_at + program_duration_ms` で判定できるため EPG テーブルに依存しない
+- **行の物理削除（GC）は「番組の終了時刻を過ぎた後」のみ**。番組の終了時刻は `program_snapshots.start_at + duration_ms` で判定し（§3.7）、`reservations` は `program_snapshots` への FK が `ON DELETE CASCADE` なのでスナップショットが GC された瞬間に一緒に落ちる（active/detached/orphaned のいずれでも問わない）
 - 意図も上書きもない active 予約がルール・EPG から消えた場合は通常の宣言的動作として削除（ただし大量削除サーキットブレーカーの対象）
+- ルール再マッチで base 再計算のうえ `active` に戻る（overrides は無傷）
 
-**`state` を「mirakc への同期対象か」のフィルタに使ってはならない**（M2-4 で修正）。`active` / `detached` は
-`(rule_id, base)` からの導出値（`detached ⟺ rule_id IS NULL AND base IS NOT NULL`）で、独立した事実ではない。
-同期の可否を決めるのは `effective.skip` であり、state で外してよいのは `orphaned` だけ（番組が終了しているので
-schedule を作る意味がない）。`reconciler.listDesired` が `state = 'active'` で絞っていたため detached の予約に
-schedule が作られず、**手動予約 → たまたまルールがマッチ → そのルールを編集して外す**という経路で
-ユーザーの手動予約が黙って録画されなくなっていた（[録画エンジン](../recording.md) §4.3）。
+**同期対象かのフィルタに使ってよいのは `orphaned_at` だけ**（`ListReservationsForSyncEvaluation` が `orphaned_at IS NULL` で絞る）。`active` / `detached` は UI 表示用の派生値であり、同期の可否を決めるのは `effective.skip` である。かつて `state` 列が両方を兼ねていたため、`reconciler.listDesired` が `state = 'active'` でしか絞らず detached の予約に schedule が作られない、という「手動予約 → たまたまルールがマッチ → そのルールを編集して外す → ユーザーの手動予約が黙って録画されなくなる」不具合があった（M2-4 で修正。[録画エンジン](../recording.md) §4.3）。
 
-`orphaned` の意味は「EPG から消えた」ではない。M1 の実装（`reconciler.markOrphaned`）は
-**番組終了後に schedule が観測されなかった予約**を marking しており、EPG の欠損とは無関係。
-EPG フリッカー対策（issue #2 §3.2）は別の機構（大量削除サーキットブレーカー）が担う。
+> **`state` 列を残したことで、同じクラスの不具合が 2 件再発した**（[#30](https://github.com/fetburner/rokuban/issues/30)）。①ruler は導出の式ではなく**前パスの `rule_id` を見た遷移**を SQL の CASE で書いていたため、ルールを**削除**した経路（FK の `ON DELETE SET NULL` が先に `rule_id` を落とす）では `detached` にならず、`DELETE /api/rules/{id}` が返す `detachedReservations` の件数と予約一覧のバッジが一致しなかった。②`MarkReservationOrphaned` に `AND state = 'active'` が残っていたため、**detached 予約が永久に `orphaned` にならなかった**（M2-4 では `listDesired` 側だけを直した）。**Phase 1 で `state` 列そのものを撤去し、active/detached を読むたびに評価する形にしたことで、この 2 件は構造的に再発しなくなった**（前パスの遷移を保存する列自体が無い）。
 
-> **列を残したことで 2 件が再発した**（[#30](https://github.com/fetburner/rokuban/issues/30)）。①ruler は導出の式ではなく**前パスの `rule_id` を見た遷移**を書くので、ルールを**削除**した経路（FK の `ON DELETE SET NULL` が先に `rule_id` を落とす）では `detached` にならず、`DELETE /api/rules/{id}` が返す `detachedReservations` の件数と予約一覧のバッジが一致しない。②`MarkReservationOrphaned` に `AND state = 'active'` が残っているため、**detached 予約は永久に `orphaned` にならない**（M2-4 では `listDesired` 側だけを直した）。どちらも `active` / `detached` を列から外せば消える。
-
-この意味論のため、`orphaned` は `epg_last_seen_at` のようなタイムスタンプからは導出できない
-（「schedule が観測されなかった」という観測側の情報が必要）。状態機械を導出に寄せる案
-（[issue #18](https://github.com/fetburner/rokuban/issues/18) の案 B）を検討する際の制約になる。
+この意味論のため、`orphaned` は `epg_last_seen_at` のようなタイムスタンプからは導出できない（「schedule が観測されなかった」という観測側の情報が必要）。状態機械を導出に寄せる案（[issue #18](https://github.com/fetburner/rokuban/issues/18) の案 B）を検討する際の制約になる。
 
 ### 書き込み所有権
 
 | カラム | 書く人 |
 |---|---|
-| `reservations` の base / チャンネル列 / 番組スナップショット / state（active・detached 遷移） | ruler（M2〜） |
-| `reservations` / `program_intents` / `program_overrides` の GC（番組終了 + `epg.retention_grace` 経過） | ruler のパス |
+| `reservations` の `base` / `rule_id` / dedup 根拠 2 列 | ruler（毎パス） |
+| `program_snapshots` の GC（番組終了 + `epg.retention_grace` 経過）と、そこからの FK CASCADE による `reservations` / `program_intents` / `program_overrides` の GC | ruler のパス（`runGC`。§3.7） |
 | `program_intents`（action）、`program_overrides`（overrides）、手動予約の作成・取消 | api |
-| state（orphaned 遷移） | reconciler |
+| `reservations.orphaned_at` | reconciler（不可逆な観測。ruler は一切上書きしない） |
 
 ## 3.5 program_intents / program_overrides — 番組単位のユーザー意図（永続）
 
@@ -133,29 +95,24 @@ CREATE TABLE program_intents (
     site       text   NOT NULL,
     program_id bigint NOT NULL,
     action     text   NOT NULL CHECK (action IN ('record', 'skip')),
-    -- GC 用スナップショット（EPG 射影の刈り取りと独立させる）
-    program_start_at    timestamptz NOT NULL,
-    program_duration_ms bigint      NOT NULL,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (site, program_id)
+    PRIMARY KEY (site, program_id),
+    FOREIGN KEY (site, program_id) REFERENCES program_snapshots (site, program_id)
+        ON DELETE CASCADE
 );
-
-CREATE INDEX ON program_intents (program_start_at);
 
 -- パラメータの上書き（M2-4 / 00010 で program_intents から分離）
 CREATE TABLE program_overrides (
     site       text   NOT NULL,
     program_id bigint NOT NULL,
     overrides  jsonb  NOT NULL,   -- 上書きしたキーのみの疎なドキュメント
-    program_start_at    timestamptz NOT NULL,
-    program_duration_ms bigint      NOT NULL,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (site, program_id)
+    PRIMARY KEY (site, program_id),
+    FOREIGN KEY (site, program_id) REFERENCES program_snapshots (site, program_id)
+        ON DELETE CASCADE
 );
-
-CREATE INDEX ON program_overrides (program_start_at);
 ```
 
 **表を 2 つに分けるのは、ユーザーが番組について主張しうる 2 つのことが独立だから**である（①録る / 録るな ②パラメータの上書き）。1 表に同居させると `action NOT NULL` のために「パラメータだけ上書きした。録る録らないについては意見なし」が表現できず、行が空になったときに何を主張していた行かを行自身から読めなくなる。理由と具体的な誤動作は [録画エンジン](../recording.md) §4.2「overrides は `program_intents` とは別の表に置く」。
@@ -163,15 +120,13 @@ CREATE INDEX ON program_overrides (program_start_at);
 - **`action`**: `record`（録れ = 手動予約 / dedup skip の明示的な無効化）/ `skip`（録るな = 番組単位の除外）。**skip された番組は `reservations` に行を持たない**
 - **`overrides` に CHECK を置かない。** `program_overrides` 自身のロジックが内容を一切使わない不透明なペイロードだから jsonb を許している。内容を検査する制約（`jsonb_strip_nulls(overrides) <> '{}'` 等）は技術的には可能だが、「クエリはしないが制約はする」という中途半端な状態を作らない。**空の上書き = 行が無い**で表し、マージも SQL ではなく Go 側で `db.ReservationOptions` の型付きフィールドとして行う
 - **書き込み所有権**: api のみ。ruler は base を再計算するだけでこの 2 表に触らない → 手動編集が構造的に上書きされない
-- **GC**: 番組終了後（`program_start_at + duration < now()`）。意図と上書きの寿命を放送の寿命に揃える
+- **GC**: `program_snapshots` への FK が `ON DELETE CASCADE` なので、番組終了後のスナップショット GC（§3.7）に連動して自動的に落ちる。以前はこの 2 表がそれぞれ独自に `program_start_at` / `program_duration_ms` を持ち、GC の比較対象にしていたが、Phase 1（#27）でこの列を落として `program_snapshots` に一本化した
 - **site スコープ**: 「サイト A では録らない、B では録る」が N 予約の下では意味を持つため（[録画エンジン](../recording.md) §3.1）
 - SSE ヒントはどちらも `reservations` トピックに寄せる（意図の変更は予約一覧・番組表の両方に現れる）
 
 **どちらの表も行の存在が予約を存在させる**（ruler の desired に入る）。`program_overrides` に行があるだけで予約が保たれるのは §4.3「overrides あり → 削除せず detached で保持」の要求。
 
 取消は**無条件に `intent{skip}` を書いて導出行を落とす**。行を消すだけでは「消された行」と「最初から無かった行」が ruler から区別できず、次の全量パスが復活させる。
-
-`program_start_at` / `program_duration_ms` は `reservations` にも同じ意味・同じ出所で存在し、この分離で 3 箇所目になる。しかも ruler は `reservations` 側だけを延長に追従させるため既にドリフトしている（`epg.retention_grace` の 24h が吸収している）。`program_snapshots` への抽出は別タスク。
 
 ## 3.6 circuit_breakers — 大量削除ブレーカーのラッチ（M2-5）
 
@@ -203,3 +158,32 @@ CREATE TABLE circuit_breakers (
 - SSE は専用の `breakers` トピック。既存の reservations / rules / recordings とは
   関心事が違う（`00005` の「トピック名はテーブル名ではなくクライアントの関心事に揃える」）
 
+## 3.7 program_snapshots — 番組の事実のスナップショット（Phase 1。#27）
+
+EPG プロジェクション（§9）は使い捨てキャッシュなので、番組が射影から消えても `reservations` / `program_intents` / `program_overrides` の GC 判定と UI 表示は成立し続けなければならない。この「番組の事実」のスナップショットは元は 3 表（`reservations` / `program_intents` / `program_overrides`）に重複して持たれていたが、書き込み時点がそれぞれ違うため**既にドリフトしていた**（同じ番組について異なる開始時刻が保存され、GC の判定が表ごとに違う時刻を使っていた）。Phase 1（#27）でこの 3 重化を 1 表に集約した。
+
+```sql
+CREATE TABLE program_snapshots (
+    site        text        NOT NULL,
+    program_id  bigint      NOT NULL,
+    title       text        NOT NULL DEFAULT '',
+    start_at    timestamptz NOT NULL,
+    duration_ms bigint      NOT NULL,
+    -- チャンネル識別。00009 以前の残骸を救えず nullable のままの行がありうる
+    network_id   integer,
+    service_id   integer,
+    channel_type text CHECK (channel_type IS NULL OR channel_type IN ('GR', 'BS', 'CS', 'SKY')),
+    channel      text,
+    updated_at  timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (site, program_id)
+);
+```
+
+- **値の出所は EPG プロジェクションただ 1 つ**（#27 の決定）。書き手は api（予約・意図・上書きの作成時。`CreateReservation` が `GetProgramSnapshotSource` で `epg_programs ⋈ epg_services` から引く）と ruler（毎パス、`UpsertProgramSnapshotsFromProjection`）の 2 人だが、両者とも射影から引くので値の権威は割れない。**クライアントからは受け取らない**（サーバー権威。移行前の api は title / 開始時刻 / 尺をリクエストボディから受けており、それが GC の比較対象になっていた）。射影に番組がなければ 400
+- **射影にある間は更新、消えたら凍結。** 延長・繰り下げで EPG 側の時刻は変わるので、射影に番組がある間は毎パス追従し、消えたときに凍結する。凍結しっぱなしにしないのは、GC 判定・容量超過判定（[データ層](../data.md) §6.5）が予約の時刻を需要区間として使うため
+- **チャンネル識別はスナップショットする（programId を分解しない）。** Mirakurun 互換の programId は `NID*10^10 + SID*10^5 + EID` という合成規則を持つが、本番コードでこれを逆算してはならない。`network_id` / `service_id` / `channel_type` / `channel` は API のフィールドから素直に引く
+  - reconciler の contentPath 生成はこのスナップショットを読む。`service_id` が NULL なら**推測せず schedule を作らない**
+  - 容量超過の判定（[データ層](../data.md) §6.5）の需要単位が `(channel_type, channel)` なので、使い捨ての EPG 射影への JOIN に頼らずここを読む
+- **GC はこの表からの 1 本の DELETE に集約された**（`DeleteEndedProgramSnapshots`。条件は `start_at + duration_ms < now() - epg.retention_grace`）。`reservations` / `program_intents` / `program_overrides` はこの表への `(site, program_id)` FK を `ON DELETE CASCADE` で持つので、この 1 本の DELETE で 3 表とも一緒に落ちる。**移行前は 3 本の DELETE がそれぞれ別のスナップショット列を見ており、ドリフトしていたので表ごとに違う時刻で GC していた**（#27 が解消した核心）。`recordings.reservation_id` は `ON DELETE SET NULL` なので、この削除で録画履歴（recordings/media_assets）が失われることはない
+- **この表からの DELETE 経路は GC 1 本に限定すること。** 他の場所から消せると意図を巻き添えにする。特に「参照が 1 つも無いスナップショット行を掃除する」規則を足してはならない --- 掃除しないなら害はない（GC が拾う）が、掃除規則は intent の作成とレースする（ruler の導出削除が並行して作られた手動予約を消したのと同じ形。#29）
+- `recordings` はこの FK の対象外。録画時点のスナップショット（§5）として独立にコピーを持つため、番組終了後に `program_snapshots` が消えても録画履歴には影響しない

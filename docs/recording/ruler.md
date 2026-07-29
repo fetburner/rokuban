@@ -2,7 +2,7 @@
 
 ### 3.1 ruler（ルール評価 → 予約生成）
 
-EPG プロジェクションの番組をルールと突き合わせ、`reservations`（desired state）の base を生成・更新する。手動予約も同じテーブルで source が違うだけ。
+EPG プロジェクションの番組をルールと突き合わせ、`reservations`（desired state）の base を生成・更新する。手動予約もルール由来の予約も同じテーブルに入り、区別は `program_intents.action`（`record` の有無）から導出する（issue #26）。
 
 **ルールエンジンは Rokuban 側に置く**。mirakc はルールベース自動予約をスコープ外と明言しており（contrib にサンプルがある）、まさに「ルール = サーバー、録画エンジン = エッジ」という分割を想定した作りになっている。
 

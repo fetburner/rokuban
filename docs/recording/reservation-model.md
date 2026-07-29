@@ -54,9 +54,10 @@ UI: 上書き中のフィールドにマーカー表示 + フィールド単位/
 program_intents                  program_overrides
   site, program_id      (PK)       site, program_id      (PK)
   action  NOT NULL                 overrides  jsonb NOT NULL
-    ('record' | 'skip')            program_start_at, program_duration_ms
-  program_start_at, ...
+    ('record' | 'skip')
 ```
+
+番組の事実のスナップショット（`program_start_at` 等）はどちらの表にも無い。両者とも `(site, program_id)` の FK（`ON DELETE CASCADE`）で `program_snapshots` を参照する（Phase 1。[スキーマ](../schema.md) §3.7）。
 
 **ユーザーが番組について主張しうることは 2 つあり、独立している**: ①録る / 録るな ②パラメータの上書き。1 つの行に同居させると、`action` が NOT NULL であるために **「パラメータだけ上書きした。録る録らないについては意見なし」を表現できない**。priority を 1 つ変えるだけで `action='record'`（= 録れ）を主張させられる。
 
@@ -127,7 +128,7 @@ EPG の変化・ルール編集でルールがマッチしなくなったとき:
 
 導出値を「同期対象か」のフィルタとして使ったのが誤りだった。`active` / `detached` は UI 表示（マーカー）のための派生値として扱う。
 
-> **この式も実装では満たされていない**（[#30](https://github.com/fetburner/rokuban/issues/30)。§4.2 の `EffectiveOptions` と同じ現象）。`internal/ruler/sql.go` は式を評価せず、**前パスの `rule_id` を見た遷移**を列に書いている。そのためルールを**編集**して外れた場合は `detached` になるが、ルールを**削除**した場合は FK の `ON DELETE SET NULL` が先に `rule_id` を落とすので `active` のまま固定される —— 同じ「マッチしなくなった」状態が原因によって違う `state` になる。あわせて `MarkReservationOrphaned` に `AND state = 'active'` が残っており、**detached 予約は永久に `orphaned` にならない**（M2-4 では `listDesired` 側だけを直した）。**導出は読むたびに評価する。列に焼くと片側の分岐しか持たない。**
+> **この式は当初、実装では満たされていなかった**（[#30](https://github.com/fetburner/rokuban/issues/30)。§4.2 の `EffectiveOptions` と同じ現象）。`internal/ruler/sql.go` は式を評価せず、**前パスの `rule_id` を見た遷移**を `state` 列に書いていた。そのためルールを**編集**して外れた場合は `detached` になるが、ルールを**削除**した場合は FK の `ON DELETE SET NULL` が先に `rule_id` を落とすので `active` のまま固定される —— 同じ「マッチしなくなった」状態が原因によって違う `state` になる不具合だった。あわせて `MarkReservationOrphaned` に `AND state = 'active'` が残っており、**detached 予約が永久に `orphaned` にならない**不具合もあった（M2-4 では `listDesired` 側だけを直した）。**Phase 1（#28 / #30）でこの `state` 列自体を撤去し、`active` / `detached` を API が読むたびに `(rule_id, base)` から計算する形にした**（[スキーマ](../schema.md) §3「active / detached / orphaned は API が都度導出する」）ことで、前パスの遷移を保存する列そのものが無くなり、この 2 件は構造的に再発しなくなった。導出は読むたびに評価するもので、やむなく列に焼くなら両方向のテストが要る、という教訓が残る。
 
 重要: **skip のみでも削除しない**。削除すると「EPG の一時不整合で番組消失 → skip ごと行削除 → EPG 回復 → ruler が新規生成 → 除外が外れている」という EPGStation の症状 2 が EPG フリッカー経由で再発する。
 
@@ -143,9 +144,9 @@ EPG の変化・ルール編集でルールがマッチしなくなったとき:
 
 manual 予約は「base を持たず、`program_intents` に `action = 'record'` だけがある」縮退形。ルール由来予約と同一コードパスで扱う。複数ルールマッチ時（最高 priority ルールが base を供給）も、勝者が入れ替われば base が変わるだけで意図は生存する。
 
-state は「今、誰が base を供給しているか」の答えに過ぎない: base = NULL なら誰もいない / `active` はルールが毎パス再計算 / `detached` はかつてのルール（凍結された base）。§4.3 のとおりこれは `(rule_id, base)` からの導出値であり、同期の可否を決めるフィルタに使ってはならない。
+state は「今、誰が base を供給しているか」の答えに過ぎない: base = NULL なら誰もいない / `active` はルールが毎パス再計算 / `detached` はかつてのルール（凍結された base）。§4.3 のとおりこれは `(rule_id, base)` からの導出値であり、同期の可否を決めるフィルタに使ってはならない（列としては Phase 1 で撤去済み。API が都度計算する）。
 
-**`reservations.source` は「今」ではなく「どう作られたか」を答えようとしていて、両方に失敗している。** `internal/ruler/sql.go` は手動予約にルールがマッチすると `source` を `manual` → `rule` に書き換え、ルールが外れても戻さない。下の「昇格は要らない」と矛盾するうえ、`watcher` が `recordings.source` にコピーするため**手動予約した番組の録画履歴が恒久的に「ルール由来」と記録される**（永続資産なので不可逆）。分離後は 2 つの事実が別々に読める --- 「ユーザーが録れと言った」は `program_intents.action='record'`、「いまルールが base を供給している」は `rule_id IS NOT NULL` --- ので `reservations.source` は導出可能になる。列の削除は M2-4 の範囲外（別タスク）。
+**`reservations.source` はかつて「今」ではなく「どう作られたか」を答えようとしていて、両方に失敗していた。** `internal/ruler/sql.go` は手動予約にルールがマッチすると `source` を `manual` → `rule` に書き換え、ルールが外れても戻さなかった。下の「昇格は要らない」と矛盾するうえ、`watcher` が `recordings.source` にコピーするため**手動予約した番組の録画履歴が恒久的に「ルール由来」と記録される**（永続資産なので不可逆）不具合があった（issue #26）。列を削除した現在は 2 つの事実が別々に読める --- 「ユーザーが録れと言った」は `program_intents.action='record'`、「いまルールが base を供給している」は `rule_id IS NOT NULL` --- ので `source` は API が都度この 2 つから導出して返す。
 
 #### manual 行にルールがマッチしても昇格は要らない
 

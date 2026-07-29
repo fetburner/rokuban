@@ -71,8 +71,8 @@ pnpm exec orval  # openapi.yaml → web/src/api/generated.ts
 | M4 広げられる | 未着手 | 未起票 | [#14](https://github.com/fetburner/rokuban/issues/14) の M4 節（粗粒度） |
 
 - 横断: [#6](https://github.com/fetburner/rokuban/issues/6) 移行計画とマイルストーン定義 / [#14](https://github.com/fetburner/rokuban/issues/14) 粗粒度バックログ / [#11](https://github.com/fetburner/rokuban/issues/11) 懸念トラッキング
-- **M3 着手前に決める設計課題**: #27 / #28 / #30（`reservations` のスキーマ整理。3 件まとめて 1 回のマイグレーションが安い）、#29 / #31 / #53（API と mirakc tag の資源同定。いずれも「導出器が作るキーを宛先にしない」という同じ判断なので同時が安い。**#31 は案 A = 多拠点を取る、で決定済み**）、#54（同期対象判定の述語の集約。独立に進められるが #28 の後の方が 1 回で済む）
-  - **7 件は 1 つの歪みの別々の症状**である ——「`reservations` が ruler の導出出力と API リソースの両方を兼ねている」。修正はいつも同じ手（導出できないものを `(site, program_id)` の別表・別キーに引き剥がす）で、`program_intents`（#18）と `program_overrides`（M2-4）で 2 回済んでいる
+- **`reservations` のスキーマ整理（#27 / #28 / #30）と同期対象判定の述語の集約（#54）は Phase 1 で完了した**（`program_snapshots` への抽出、`state` → `orphaned_at`）。**M3 着手前に決める設計課題として残るのは #29 / #31 / #53**（API と mirakc tag の資源同定。いずれも「導出器が作るキーを宛先にしない」という同じ判断なので同時が安い。**#31 は案 A = 多拠点を取る、で決定済み**）
+  - **これらは元は 1 つの歪みの別々の症状**である ——「`reservations` が ruler の導出出力と API リソースの両方を兼ねている」。修正はいつも同じ手（導出できないものを `(site, program_id)` の別表・別キーに引き剥がす）で、`program_intents`（#18）・`program_overrides`（M2-4）・`program_snapshots` / `orphaned_at`（Phase 1）で 3 回済んでいる
   - **#52 の並走中には着手しない。** `reservations` と shadow-diff（出口基準を測る道具そのもの）を触るので、測定の連続性が切れる
 - M3 / M4 の親 issue を起票するときは #24 と #32〜#51 の形式に倣う（親 = 一覧 + 依存関係 + 出口基準、サブ = 詳細 + 受け入れ基準）
 
@@ -140,13 +140,13 @@ pnpm exec orval  # openapi.yaml → web/src/api/generated.ts
 
 #### 12. 表は行の寿命で割る
 
-**1 表 = 1 つの書き手 = 1 つの寿命。** 不変条件 9 は**列**の粒度なので、行に寿命が混ざっているケースを網に掛けられない。`reservations` の 1 行にはいまも 3 つの寿命が同居している:
+**1 表 = 1 つの書き手 = 1 つの寿命。** 不変条件 9 は**列**の粒度なので、行に寿命が混ざっているケースを網に掛けられない。この規律の言語化を促したのは `reservations` で、この表の 1 行には 3 つの寿命が同居していた（**Phase 1 で解消済み。#27 / #28 / #30**）:
 
-| 同居しているもの | 寿命 | 現状 |
+| 同居していたもの | 寿命 | 当時の状態 |
 |---|---|---|
-| ruler の導出出力（`base` / `rule_id` / dedup 根拠） | ruler の 1 パス | ここだけであるべき |
-| 番組の事実のスナップショット（`title` / `program_start_at` / `program_duration_ms` / チャンネル 4 列） | 放送 | **3 表に重複し、既にドリフトしている**（#27） |
-| 不可逆な観測（`state = 'orphaned'`） | 永続 | **導出値と同じ列にある**（#28 / #30） |
+| ruler の導出出力（`base` / `rule_id` / dedup 根拠） | ruler の 1 パス | ここだけであるべき（現在もここだけ） |
+| 番組の事実のスナップショット（`title` / `program_start_at` / `program_duration_ms` / チャンネル 4 列） | 放送 | 3 表に重複し、既にドリフトしていた（#27）。**Phase 1 で `program_snapshots` に抽出して解消** |
+| 不可逆な観測（`state = 'orphaned'`） | 永続 | 導出値と同じ列にあった（#28 / #30）。**Phase 1 で `orphaned_at` に分離して解消** |
 
 ユーザー意図（`program_intents` / `program_overrides`）を導出行から出したのは正しかったが、**分割の軸を「予約という概念」に取ったので 2 回に分かれた**（#18 → M2-4）。軸を寿命に取れば 1 回で済んだ。
 
