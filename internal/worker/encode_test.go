@@ -2,10 +2,7 @@ package worker
 
 import (
 	"context"
-	"encoding/json"
-	"io"
-	"net/http"
-	"net/http/httptest"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -327,21 +324,7 @@ func TestEncodeWorker_FiresEncodeFinishedWebhook(t *testing.T) {
 	content := []byte("payload-for-webhook-finished-test")
 	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, rel, []string{"h264"}, content)
 
-	var gotEvent webhook.Event
-	var hits int
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits++
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Errorf("reading webhook body: %v", err)
-		}
-		if err := json.Unmarshal(body, &gotEvent); err != nil {
-			t.Errorf("unmarshalling webhook body: %v", err)
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
-
+	rec, client := newWebhookRecorder(t)
 	w := &EncodeWorker{
 		Pool:       pool,
 		MediaDir:   mediaDir,
@@ -356,48 +339,55 @@ func TestEncodeWorker_FiresEncodeFinishedWebhook(t *testing.T) {
 				AudioCodec: "aac",
 			}},
 		},
-		Webhook: webhook.New(config.WebhookConfig{URL: srv.URL}),
+		Webhook: client,
 	}
 
 	job := &river.Job[EncodeJobArgs]{
-		JobRow: &rivertype.JobRow{},
+		JobRow: &rivertype.JobRow{Attempt: 1, MaxAttempts: 25},
 		Args:   EncodeJobArgs{RecordingID: recordingID, Profile: "h264"},
 	}
 	if err := w.Work(context.Background(), job); err != nil {
 		t.Fatalf("Work: %v", err)
 	}
 
-	if hits != 1 {
-		t.Fatalf("webhook hits = %d, want 1", hits)
+	events := rec.received()
+	if len(events) != 1 {
+		t.Fatalf("webhook events = %d, want 1: %+v", len(events), events)
 	}
-	if gotEvent.Type != webhook.EventEncodeFinished {
-		t.Errorf("type = %q, want %q", gotEvent.Type, webhook.EventEncodeFinished)
+	got := events[0]
+	if got.Type != webhook.EventEncodeFinished {
+		t.Errorf("type = %q, want %q", got.Type, webhook.EventEncodeFinished)
 	}
-	if gotEvent.RecordingID != recordingID {
-		t.Errorf("recordingId = %d, want %d", gotEvent.RecordingID, recordingID)
+	if got.RecordingID != recordingID {
+		t.Errorf("recordingId = %d, want %d", got.RecordingID, recordingID)
 	}
-	if gotEvent.Profile != "h264" {
-		t.Errorf("profile = %q, want h264", gotEvent.Profile)
+	if got.Profile != "h264" {
+		t.Errorf("profile = %q, want h264", got.Profile)
 	}
-	if gotEvent.Status != "finished" {
-		t.Errorf("status = %q, want finished", gotEvent.Status)
+	if got.Status != "finished" {
+		t.Errorf("status = %q, want finished", got.Status)
 	}
-	if gotEvent.Title != "encode test" {
-		t.Errorf("title = %q, want %q", gotEvent.Title, "encode test")
+	if got.Title != "encode test" {
+		t.Errorf("title = %q, want %q", got.Title, "encode test")
+	}
+	// attempt は失敗イベント専用（成功は 1 回しか配送されない）。
+	if got.Attempt != 0 || got.MaxAttempts != 0 {
+		t.Errorf("attempt/maxAttempts = %d/%d, want 0/0 on finished", got.Attempt, got.MaxAttempts)
 	}
 
 	// 冪等スキップ（既に active な encoded がある）では再発火しない。
-	hits = 0
+	rec.reset()
 	if err := w.Work(context.Background(), job); err != nil {
 		t.Fatalf("Work() second run: %v", err)
 	}
-	if hits != 0 {
-		t.Errorf("webhook hits on idempotent skip = %d, want 0", hits)
+	if events := rec.received(); len(events) != 0 {
+		t.Errorf("webhook fired on idempotent skip: %+v", events)
 	}
 }
 
 // 失敗時に encode.failed が発火すること。ペイロードの profile はジョブ引数（設定に
-// 存在しない名前でも）そのまま載る。
+// 存在しない名前でも）そのまま載り、River の試行回数も載る（恒久的な失敗では
+// 試行ごとに配送されるので、受け側が最終試行を見分けられるようにする）。
 func TestEncodeWorker_FiresEncodeFailedWebhook(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {
@@ -406,55 +396,71 @@ func TestEncodeWorker_FiresEncodeFailedWebhook(t *testing.T) {
 	mediaDir := t.TempDir()
 	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "x/fail.m2ts", nil, []byte("data"))
 
-	var gotEvent webhook.Event
-	var hits int
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits++
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Errorf("reading webhook body: %v", err)
-		}
-		if err := json.Unmarshal(body, &gotEvent); err != nil {
-			t.Errorf("unmarshalling webhook body: %v", err)
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
-
+	rec, client := newWebhookRecorder(t)
 	w := &EncodeWorker{
 		Pool:     pool,
 		MediaDir: mediaDir,
 		Profiles: config.EncodeConfig{}, // "missing" プロファイルは未定義 → 失敗する
-		Webhook:  webhook.New(config.WebhookConfig{URL: srv.URL}),
+		Webhook:  client,
 	}
 
 	job := &river.Job[EncodeJobArgs]{
-		JobRow: &rivertype.JobRow{},
+		JobRow: &rivertype.JobRow{Attempt: 3, MaxAttempts: 25},
 		Args:   EncodeJobArgs{RecordingID: recordingID, Profile: "missing"},
 	}
 	if err := w.Work(context.Background(), job); err == nil {
 		t.Fatal("expected error for unknown profile")
 	}
 
-	if hits != 1 {
-		t.Fatalf("webhook hits = %d, want 1", hits)
+	events := rec.received()
+	if len(events) != 1 {
+		t.Fatalf("webhook events = %d, want 1: %+v", len(events), events)
 	}
-	if gotEvent.Type != webhook.EventEncodeFailed {
-		t.Errorf("type = %q, want %q", gotEvent.Type, webhook.EventEncodeFailed)
+	got := events[0]
+	if got.Type != webhook.EventEncodeFailed {
+		t.Errorf("type = %q, want %q", got.Type, webhook.EventEncodeFailed)
 	}
-	if gotEvent.RecordingID != recordingID {
-		t.Errorf("recordingId = %d, want %d", gotEvent.RecordingID, recordingID)
+	if got.RecordingID != recordingID {
+		t.Errorf("recordingId = %d, want %d", got.RecordingID, recordingID)
 	}
-	if gotEvent.Profile != "missing" {
-		t.Errorf("profile = %q, want missing", gotEvent.Profile)
+	if got.Profile != "missing" {
+		t.Errorf("profile = %q, want missing", got.Profile)
 	}
-	if gotEvent.Status != "failed" {
-		t.Errorf("status = %q, want failed", gotEvent.Status)
+	if got.Status != "failed" {
+		t.Errorf("status = %q, want failed", got.Status)
+	}
+	if got.Attempt != 3 || got.MaxAttempts != 25 {
+		t.Errorf("attempt/maxAttempts = %d/%d, want 3/25", got.Attempt, got.MaxAttempts)
 	}
 }
 
-// ctx キャンセル（River の停止・タイムアウト）はジョブの失敗ではないので、
-// 通知しない（FiresEncodeFailedWebhook の逆方向）。
+// encode.failed を発火するかの判定（両方向）。Work 越しの ctx キャンセル
+// テストは notify 内の DB 読みも同時に失敗するため、この分岐だけを分離して見る。
+func TestShouldNotifyEncodeFailure(t *testing.T) {
+	boom := errors.New("ffmpeg failed")
+	cases := []struct {
+		name   string
+		err    error
+		ctxErr error
+		want   bool
+	}{
+		{"failure with live ctx", boom, nil, true},
+		{"failure while ctx canceled", boom, context.Canceled, false},
+		{"failure while ctx deadline exceeded", boom, context.DeadlineExceeded, false},
+		{"success", nil, nil, false},
+		{"success while ctx canceled", nil, context.Canceled, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := shouldNotifyEncodeFailure(c.err, c.ctxErr); got != c.want {
+				t.Errorf("shouldNotifyEncodeFailure(%v, %v) = %v, want %v", c.err, c.ctxErr, got, c.want)
+			}
+		})
+	}
+}
+
+// ctx キャンセル（River の停止・タイムアウト）では発火しないこと。判定そのものは
+// TestShouldNotifyEncodeFailure が見る（ここは Work 越しに POST が飛ばないことの確認）。
 func TestEncodeWorker_CtxCanceled_DoesNotFireWebhook(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {
@@ -463,34 +469,28 @@ func TestEncodeWorker_CtxCanceled_DoesNotFireWebhook(t *testing.T) {
 	mediaDir := t.TempDir()
 	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "x/cancel.m2ts", nil, []byte("data"))
 
-	var hits int
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits++
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
-
+	rec, client := newWebhookRecorder(t)
 	w := &EncodeWorker{
 		Pool:     pool,
 		MediaDir: mediaDir,
 		Profiles: config.EncodeConfig{Profiles: []config.EncodeProfile{{
 			Name: "h264", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac",
 		}}},
-		Webhook: webhook.New(config.WebhookConfig{URL: srv.URL}),
+		Webhook: client,
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
 	job := &river.Job[EncodeJobArgs]{
-		JobRow: &rivertype.JobRow{},
+		JobRow: &rivertype.JobRow{Attempt: 1, MaxAttempts: 25},
 		Args:   EncodeJobArgs{RecordingID: recordingID, Profile: "h264"},
 	}
 	if err := w.Work(ctx, job); err == nil {
 		t.Fatal("expected error with canceled ctx")
 	}
-	if hits != 0 {
-		t.Errorf("webhook hits on ctx cancel = %d, want 0", hits)
+	if events := rec.received(); len(events) != 0 {
+		t.Errorf("webhook fired on ctx cancel: %+v", events)
 	}
 }
 

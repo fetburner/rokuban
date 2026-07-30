@@ -82,13 +82,26 @@ func (w *EncodeWorker) Timeout(*river.Job[EncodeJobArgs]) time.Duration {
 
 // Work は encode ジョブを実行する。
 //
-// 失敗パスが複数箇所に散っているため（runEncode 参照）、webhook 発火は
-// ここ 1 箇所に統一する。ctx キャンセル（River の停止・タイムアウト）は
-// ジョブの失敗ではないので通知しない。
+// 失敗パスが複数箇所に散っているため（runEncode 参照）、encode.failed の発火は
+// ここ 1 箇所に集約する（encode.finished は成功地点が 1 つなので runEncode 内で
+// 発火する。冪等スキップでは発火しない）。ctx キャンセル（River の停止・
+// タイムアウト）はジョブの失敗ではないので通知しない。
+//
+// このジョブは River が再試行するので、恒久的に失敗するエンコードでは
+// encode.failed が試行ごとに配送される。受け側が最終試行を見分けられるよう
+// attempt / maxAttempts をペイロードに載せる（M3-11）。
 func (w *EncodeWorker) Work(ctx context.Context, job *river.Job[EncodeJobArgs]) error {
 	err := w.runEncode(ctx, job)
-	if err != nil && ctx.Err() == nil {
-		w.notify(ctx, job.Args.RecordingID, job.Args.Profile, webhook.EventEncodeFailed, "failed")
+	if shouldNotifyEncodeFailure(err, ctx.Err()) {
+		ev := webhook.Event{
+			Type:        webhook.EventEncodeFailed,
+			RecordingID: job.Args.RecordingID,
+			Status:      "failed",
+			Profile:     job.Args.Profile,
+			Attempt:     job.Attempt,
+			MaxAttempts: job.MaxAttempts,
+		}
+		w.notify(ctx, ev)
 	}
 	return err
 }
@@ -219,33 +232,43 @@ func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[EncodeJobAr
 
 	log.Info("encode: committed", "rel_path", relPath, "bytes", size)
 	result = "success"
-	w.notify(ctx, args.RecordingID, args.Profile, webhook.EventEncodeFinished, "finished")
+	w.notify(ctx, webhook.Event{
+		Type:        webhook.EventEncodeFinished,
+		RecordingID: args.RecordingID,
+		Status:      "finished",
+		Profile:     args.Profile,
+	})
 	return nil
 }
 
-// notify は webhook を送る。失敗はログのみ（本処理を止めない。M3-11）。
-func (w *EncodeWorker) notify(ctx context.Context, recordingID int64, profile, eventType, status string) {
+// shouldNotifyEncodeFailure は encode.failed を発火すべきかを返す。ctxErr は
+// runEncode が返った時点の ctx.Err()。
+//
+// ctx キャンセル（River の停止・ジョブタイムアウト）はジョブの失敗ではないので
+// 発火しない。この経路で落とした通知は失われない — ジョブは available に戻り、
+// 次に実行されたときに成功か失敗のどちらかを発火する。
+func shouldNotifyEncodeFailure(err, ctxErr error) bool {
+	return err != nil && ctxErr == nil
+}
+
+// notify は ev に録画のスナップショット（site / title）を足して webhook を送る。
+// 失敗はログのみ（本処理を止めない。M3-11）。
+func (w *EncodeWorker) notify(ctx context.Context, ev webhook.Event) {
 	if w.Webhook == nil {
 		return
 	}
 	q := sqlcgen.New(w.Pool)
-	rec, err := q.GetRecordingByID(ctx, recordingID)
+	rec, err := q.GetRecordingByID(ctx, ev.RecordingID)
 	if err != nil {
 		slog.Warn("webhook: loading recording for encode notify",
-			"recording_id", recordingID, "err", err)
+			"recording_id", ev.RecordingID, "err", err)
 		return
 	}
-	ev := webhook.Event{
-		Type:        eventType,
-		RecordingID: recordingID,
-		Site:        rec.Site,
-		Title:       rec.Title,
-		Status:      status,
-		Profile:     profile,
-	}
+	ev.Site = rec.Site
+	ev.Title = rec.Title
 	if err := w.Webhook.Notify(ctx, ev); err != nil {
 		slog.Error("webhook notify failed",
-			"type", eventType, "recording_id", recordingID, "err", err)
+			"type", ev.Type, "recording_id", ev.RecordingID, "err", err)
 	}
 }
 

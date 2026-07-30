@@ -56,6 +56,12 @@ type Event struct {
 	Status      string    `json:"status,omitempty"`
 	// Profile は encode.finished / encode.failed でのみ使う（config.EncodeProfile.Name）。
 	Profile string `json:"profile,omitempty"`
+	// Attempt / MaxAttempts は encode.failed でのみ使う。エンコード失敗は River が
+	// 再試行するので、同じ失敗が試行ごとに（別の id で）配送される。受け側が
+	// 「最終試行だけ通知する」等を判断できる材料を載せる（issue #73 の
+	// 「(type, recording_id, attempt) で冪等に扱える」）。
+	Attempt     int `json:"attempt,omitempty"`
+	MaxAttempts int `json:"maxAttempts,omitempty"`
 }
 
 // Client は webhook 配送クライアント。
