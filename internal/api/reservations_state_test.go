@@ -115,11 +115,11 @@ func TestGetReservation_DetachedViaRuleEditOrRuleDelete(t *testing.T) {
 		// DeleteReservationsByRuleWithoutIntent）。生き残らせて detached にするため、
 		// PATCH で program_overrides の投資を作っておく
 		// （TestDeleteRule_ReservationWithOnlyOverridesSurvivesDetached と同じ前提）。
-		patchResp := doPatch(t, srv, "/api/reservations/"+itoa(resID), `{"priority":9}`)
-		if patchResp.StatusCode != http.StatusOK {
-			t.Fatalf("seeding overrides patch status = %d, want 200", patchResp.StatusCode)
+		patchResp := doPatch(t, srv, overridesPath(programID), `{"priority":9}`)
+		if patchResp.StatusCode != http.StatusNoContent {
+			t.Fatalf("seeding overrides patch status = %d, want 204", patchResp.StatusCode)
 		}
-		_ = decodeReservation(t, patchResp)
+		_ = patchResp.Body.Close()
 
 		// 反対方向: ルール削除前は detached ではない（対照）。
 		if got := getReservationStateJSON(t, srv, resID); got.State == "detached" {

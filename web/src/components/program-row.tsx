@@ -6,6 +6,7 @@ import { unwrap } from '@/api/unwrap'
 import { ProgramOverlapWarning } from '@/components/program-overlap-warning'
 import { Button } from '@/components/ui/button'
 import { formatDuration, formatTime, isAiring } from '@/lib/format'
+import { DEFAULT_SITE } from '@/lib/site'
 import { cn } from '@/lib/utils'
 
 /**
@@ -17,20 +18,19 @@ import { cn } from '@/lib/utils'
 export function ProgramRow({
   program,
   serviceName,
-  reservationId,
+  reserved,
   pending,
   onReserve,
   onCancel,
 }: {
   program: ProgramListItem
   serviceName?: string
-  reservationId?: number
+  reserved: boolean
   pending: boolean
   onReserve: () => void
   onCancel: () => void
 }) {
   const [expanded, setExpanded] = useState(false)
-  const reserved = reservationId !== undefined
 
   return (
     <div className="flex items-stretch border-b border-border">
@@ -95,7 +95,7 @@ export function ProgramRow({
  * 展開したときに GET /api/programs/{id} で取得する（段階的開示）。
  */
 function ProgramDetail({ program }: { program: ProgramListItem }) {
-  const detail = useGetProgram(program.programId)
+  const detail = useGetProgram(DEFAULT_SITE, program.programId)
   const d = unwrap(detail.data)
 
   return (

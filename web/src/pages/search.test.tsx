@@ -80,9 +80,11 @@ function stubApi() {
   const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input), 'http://localhost')
 
-    if (url.pathname === '/api/services') return Promise.resolve(jsonResponse(services))
+    if (url.pathname === '/api/sites/default/services') {
+      return Promise.resolve(jsonResponse(services))
+    }
 
-    const detail = /^\/api\/programs\/(\d+)$/.exec(url.pathname)
+    const detail = /^\/api\/sites\/default\/programs\/(\d+)$/.exec(url.pathname)
     if (detail) {
       const found = allPrograms.find((p) => p.programId === Number(detail[1]))
       return Promise.resolve(
@@ -90,7 +92,7 @@ function stubApi() {
       )
     }
 
-    if (url.pathname === '/api/programs/search') {
+    if (url.pathname === '/api/sites/default/programs/search') {
       const body = JSON.parse(String(init?.body ?? '{}')) as ProgramSearchRequest
       searchBodies.push(body)
 

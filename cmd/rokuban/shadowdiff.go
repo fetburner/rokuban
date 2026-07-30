@@ -53,7 +53,7 @@ func newShadowDiffCmd() *cobra.Command {
 			}
 			defer pool.Close()
 
-			report, err := runShadowDiff(ctx, sqlcgen.New(pool), epgstation.NewClient(epgstationURL, nil), db.DefaultSite)
+			report, err := runShadowDiff(ctx, sqlcgen.New(pool), epgstation.NewClient(epgstationURL, nil), cfg.Mirakc.Site)
 			if err != nil {
 				return err
 			}

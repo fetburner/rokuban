@@ -18,6 +18,7 @@ import { Button } from '@/components/ui/button'
 import { Chip } from '@/components/ui/chip'
 import { Field, Input, Select } from '@/components/ui/field'
 import { formatDateTime, formatDuration } from '@/lib/format'
+import { DEFAULT_SITE } from '@/lib/site'
 import {
   allWeekdays,
   buildSearchRequest,
@@ -77,7 +78,7 @@ const channelTypes = [
 export function SearchPage() {
   const [draft, setDraft] = useState<SearchDraft>(emptyDraft)
   const [visibleCount, setVisibleCount] = useState(pageSize)
-  const services = useListServices()
+  const services = useListServices(DEFAULT_SITE)
   const search = useSearchPrograms()
 
   const serviceList = useMemo(() => unwrap(services.data) ?? [], [services.data])
@@ -94,7 +95,7 @@ export function SearchPage() {
   const submit = () => {
     if (error !== undefined) return
     setVisibleCount(pageSize)
-    search.mutate({ data: buildSearchRequest(draft) })
+    search.mutate({ site: DEFAULT_SITE, data: buildSearchRequest(draft) })
   }
 
   const ids = unwrap(search.data) ?? []
@@ -228,7 +229,7 @@ function SearchResultList({
   serviceById: Map<number, Service>
 }) {
   const details = useQueries({
-    queries: ids.map((id) => getGetProgramQueryOptions(id)),
+    queries: ids.map((id) => getGetProgramQueryOptions(DEFAULT_SITE, id)),
   })
 
   return (

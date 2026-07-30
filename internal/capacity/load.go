@@ -13,9 +13,10 @@ import (
 // 地平線全体を 1 回解く（窓で切らない。docs/data.md §6.5）。予約集合は ruler の GC で
 // 既に有界なので、範囲検索は結果の上で Intersecting に落とす。
 //
-// site は判定の分割キー。M1/M2 は単一サイト構成なので呼び出し側は db.DefaultSite を
-// 渡すが、Compute 側はサイトごとに独立に判定する形を保っている
-// （N 予約の決定に依存した性質。docs/data.md §6.5「判定はサイトごとに独立して行う」）。
+// site は判定の分割キー。現状の設定（config.mirakc.site）は単一サイトなので
+// 呼び出し側はその 1 つを渡すが、Compute 側はサイトごとに独立に判定する形を
+// 保っている（N 予約の決定に依存した性質。docs/data.md §6.5「判定はサイトごとに
+// 独立して行う」）。
 func Load(ctx context.Context, q *sqlcgen.Queries, site string) ([]Overage, error) {
 	demands, err := LoadDemand(ctx, q, site)
 	if err != nil {

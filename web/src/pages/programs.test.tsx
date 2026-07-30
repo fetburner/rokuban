@@ -111,24 +111,37 @@ function jsonResponse(body: unknown): Response {
   })
 }
 
+function noContentResponse(): Response {
+  return new Response(null, { status: 204 })
+}
+
 /**
  * stubApi は番組・サービス・予約・容量超過を URL で振り分ける。
  *
- * `/api/programs` は時間窓で実際に絞る。窓の幅を無視して全件返すスタブにすると、
- * 「グリッドは 24 時間ぶんを 1 回で取る」という実装の主張をテストが検証できない。
+ * `/api/sites/default/programs` は時間窓で実際に絞る。窓の幅を無視して全件返す
+ * スタブにすると、「グリッドは 24 時間ぶんを 1 回で取る」という実装の主張を
+ * テストが検証できない。
+ *
+ * 予約 / 取消は `PUT /api/sites/default/programs/{id}/intent` を叩く
+ * （issue #29。reservations 行は同期的に作らない）。テストは常に成功させる。
  */
 function stubApi(reservations: Reservation[] = [], overages: CapacityOverage[] = []) {
-  const fetchMock = vi.fn((input: string | URL | Request) => {
+  const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input), 'http://localhost')
-    if (url.pathname === '/api/services') return Promise.resolve(jsonResponse(services))
+    if (url.pathname === '/api/sites/default/services') {
+      return Promise.resolve(jsonResponse(services))
+    }
     if (url.pathname === '/api/reservations') return Promise.resolve(jsonResponse(reservations))
     if (url.pathname === '/api/capacity/overages') {
       return Promise.resolve(jsonResponse(overages))
     }
-    if (/^\/api\/programs\/\d+\/overlaps$/.test(url.pathname)) {
+    if (/^\/api\/sites\/default\/programs\/\d+\/overlaps$/.test(url.pathname)) {
       return Promise.resolve(jsonResponse({ count: 0, reservations: [] }))
     }
-    if (url.pathname === '/api/programs') {
+    if (/^\/api\/sites\/default\/programs\/\d+\/intent$/.test(url.pathname) && init?.method === 'PUT') {
+      return Promise.resolve(noContentResponse())
+    }
+    if (url.pathname === '/api/sites/default/programs') {
       const start = new Date(url.searchParams.get('start') ?? 0).getTime()
       const end = new Date(url.searchParams.get('end') ?? 0).getTime()
       const serviceId = url.searchParams.get('serviceId')
@@ -302,7 +315,9 @@ describe('ProgramsPage の表示形式', () => {
     // 選択がグリッドのクエリにも効いている（serviceId 付きで取りに行く）
     const gridRequests = fetchMock.mock.calls
       .map((call) => new URL(String(call[0]), 'http://localhost'))
-      .filter((url) => url.pathname === '/api/programs' && url.searchParams.has('serviceId'))
+      .filter(
+        (url) => url.pathname === '/api/sites/default/programs' && url.searchParams.has('serviceId'),
+      )
     expect(gridRequests.length).toBeGreaterThan(0)
     expect(gridRequests.at(-1)?.searchParams.get('serviceId')).toBe('1032')
     // 絞り込んだサービスの番組だけが出る

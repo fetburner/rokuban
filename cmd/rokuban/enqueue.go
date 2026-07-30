@@ -12,7 +12,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/fetburner/rokuban/internal/db"
-	"github.com/fetburner/rokuban/internal/watcher"
 	"github.com/fetburner/rokuban/internal/worker"
 )
 
@@ -60,7 +59,7 @@ scheduled）の場合は新規に投入されず合流する。その場合も�
 			}
 			defer pool.Close()
 
-			return runEnqueue(ctx, pool, args[0], cmd.OutOrStdout())
+			return runEnqueue(ctx, pool, args[0], cfg.Mirakc.Site, cmd.OutOrStdout())
 		},
 	}
 
@@ -71,12 +70,11 @@ scheduled）の場合は新規に投入されず合流する。その場合も�
 // 投入する。DB / River とのやりとりをここに閉じ込め、cobra の RunE は薄い配線に
 // とどめる（runShadowDiff と同じ切り出し方）。
 //
-// サイトは既存のサブコマンド（shadow-diff 等）と同じく、M1 の単一サイト構成なので
-// watcher.DefaultSite（= db.DefaultSite）に固定する。
+// サイトは config.mirakc.site（issue #31）から渡される。
 //
 // UniqueOpts による合流で投入されなかった場合も nil を返す（CronJob が失敗扱いに
 // ならないようにするため）。投入されたかどうかは out へのログで分かる。
-func runEnqueue(ctx context.Context, pool *pgxpool.Pool, job string, out io.Writer) error {
+func runEnqueue(ctx context.Context, pool *pgxpool.Pool, job, site string, out io.Writer) error {
 	newArgs, ok := enqueueJobs[job]
 	if !ok {
 		return fmt.Errorf("unknown job: %q (valid: %s)", job, strings.Join(sortedJobNames(), ", "))
@@ -87,7 +85,6 @@ func runEnqueue(ctx context.Context, pool *pgxpool.Pool, job string, out io.Writ
 		return err
 	}
 
-	site := watcher.DefaultSite
 	res, err := client.Insert(ctx, newArgs(site), nil)
 	if err != nil {
 		return fmt.Errorf("inserting job %q: %w", job, err)

@@ -85,6 +85,10 @@ type DeleteReconcileWorker struct {
 	Pool     *pgxpool.Pool
 	MediaDir string
 
+	// Site は config.mirakc.site（issue #31）。サーキットブレーカーのキーに使う。
+	// 空なら db.DefaultSite を使う（テストの部分構成を許す）。
+	Site string
+
 	TrashRetention    time.Duration
 	OrphanMTimeGrace  time.Duration
 	OrphanAge         time.Duration
@@ -98,6 +102,10 @@ func (w *DeleteReconcileWorker) Timeout(*river.Job[DeleteReconcileArgs]) time.Du
 
 // Work は 1 パス分の削除 reconcile を実行する。
 func (w *DeleteReconcileWorker) Work(ctx context.Context, _ *river.Job[DeleteReconcileArgs]) error {
+	site := w.Site
+	if site == "" {
+		site = db.DefaultSite
+	}
 	trashRetention := w.TrashRetention
 	if trashRetention <= 0 {
 		trashRetention = defaultTrashRetention
@@ -119,7 +127,7 @@ func (w *DeleteReconcileWorker) Work(ctx context.Context, _ *river.Job[DeleteRec
 
 	// パスの先頭でブレーカーの発動状態を DB の真実に合わせ直す
 	// （ObserveState のコメント参照。プロセス再起動でゲージが失われるため）。
-	tripped, err := breaker.ObserveState(ctx, q, db.DefaultSite, breaker.DeleteReconcile)
+	tripped, err := breaker.ObserveState(ctx, q, site, breaker.DeleteReconcile)
 	if err != nil {
 		return fmt.Errorf("observing %s circuit breaker: %w", breaker.DeleteReconcile, err)
 	}
@@ -173,7 +181,7 @@ func (w *DeleteReconcileWorker) Work(ctx context.Context, _ *river.Job[DeleteRec
 	total := len(trashRows) + len(untilEncodedRows) + len(agedOrphans)
 	if total > maxPerPass {
 		sample := breaker.Sample{Total: total}
-		if tripErr := breaker.Trip(ctx, q, db.DefaultSite, breaker.DeleteReconcile, maxPerPass, sample); tripErr != nil {
+		if tripErr := breaker.Trip(ctx, q, site, breaker.DeleteReconcile, maxPerPass, sample); tripErr != nil {
 			return fmt.Errorf("tripping circuit breaker: %w", tripErr)
 		}
 		metrics.DeleteReconcileLastPass.SetToCurrentTime()

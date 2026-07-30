@@ -19,7 +19,7 @@ func seedRecording(t *testing.T, pool *pgxpool.Pool, title string, start time.Ti
 	t.Helper()
 	id, err := sqlcgen.New(pool).CreateRecording(context.Background(), sqlcgen.CreateRecordingParams{
 		Source:            "manual",
-		Site:              defaultSite,
+		Site:              db.DefaultSite,
 		NetworkID:         32678,
 		ServiceID:         5168,
 		EventID:           eventID,

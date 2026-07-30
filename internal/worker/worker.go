@@ -56,6 +56,12 @@ type Deps struct {
 	MediaDir     string
 	ScratchDir   string
 
+	// Site は config.mirakc.site（issue #31）。DeleteReconcileWorker のように
+	// site 単位のジョブ引数を持たないが site をキーにする資源（サーキット
+	// ブレーカー）を持つワーカーに注入する。空なら db.DefaultSite を使う
+	// （テストの部分構成を許す）。
+	Site string
+
 	// Encode は構造化エンコードプロファイルと ffmpeg パス（issue #64 / #65）。
 	// worker ロール起動時に ValidateTools 済み（不変条件 4）。
 	Encode config.EncodeConfig
@@ -147,6 +153,7 @@ func NewWorkers(deps *Deps) *river.Workers {
 	river.AddWorker(workers, &DeleteReconcileWorker{
 		Pool:              deps.Pool,
 		MediaDir:          deps.MediaDir,
+		Site:              deps.Site,
 		TrashRetention:    deps.Cleanup.TrashRetention,
 		OrphanMTimeGrace:  deps.Cleanup.OrphanMTimeGrace,
 		OrphanAge:         deps.Cleanup.OrphanAge,

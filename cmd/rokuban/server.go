@@ -80,7 +80,8 @@ func newServerCmd() *cobra.Command {
 				routerCfg := api.RouterConfig{
 					AllowedHosts:    cfg.Server.AllowedHosts,
 					Pool:            pool,
-					MetricsRegistry: metrics.NewRegistry(metrics.NewBacklogCollector(pool, watcher.DefaultSite)),
+					Site:            cfg.Mirakc.Site,
+					MetricsRegistry: metrics.NewRegistry(metrics.NewBacklogCollector(pool, cfg.Mirakc.Site)),
 				}
 
 				if slices.Contains(roles, "api") {
@@ -168,6 +169,7 @@ func newServerCmd() *cobra.Command {
 					MirakcClient:             mc,
 					Pool:                     pool,
 					MediaDir:                 cfg.Storage.MediaDir,
+					Site:                     cfg.Mirakc.Site,
 					ScratchDir:               cfg.Storage.ScratchDir,
 					Encode:                   cfg.Encode,
 					EpgRetentionGrace:        cfg.Epg.RetentionGrace,
@@ -190,11 +192,11 @@ func newServerCmd() *cobra.Command {
 				// record_sweep / catalog_export / delete_reconcile）は worker 側が
 				// 投入する（mirakc に触るのも各ジョブのヒント経路をまとめるのも worker）。
 				if slices.Contains(roles, "worker") {
-					clientCfg.EpgSyncSite = watcher.DefaultSite
-					clientCfg.TunerSyncSite = watcher.DefaultSite
-					clientCfg.RulerPassSite = watcher.DefaultSite
-					clientCfg.ReconcilePassSite = watcher.DefaultSite
-					clientCfg.RecordSweepSite = watcher.DefaultSite
+					clientCfg.EpgSyncSite = cfg.Mirakc.Site
+					clientCfg.TunerSyncSite = cfg.Mirakc.Site
+					clientCfg.RulerPassSite = cfg.Mirakc.Site
+					clientCfg.ReconcilePassSite = cfg.Mirakc.Site
+					clientCfg.RecordSweepSite = cfg.Mirakc.Site
 					clientCfg.CatalogExport = true
 					clientCfg.DeleteReconcile = true
 				}
@@ -238,7 +240,7 @@ func newServerCmd() *cobra.Command {
 					switch roleName {
 					case "watcher":
 						mc := mirakc.NewClient(cfg.Mirakc.URL, nil)
-						w := watcher.New(watcher.DefaultSite, mc, pool, riverClient, worker.NewIngestArgs, webhookClient)
+						w := watcher.New(cfg.Mirakc.Site, mc, pool, riverClient, worker.NewIngestArgs, webhookClient)
 						roleFunc = w.Run
 					}
 					return role.RunSingleton(egCtx, pool, roleName, roleFunc, nil)

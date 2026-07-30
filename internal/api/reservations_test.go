@@ -12,9 +12,9 @@ import (
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
-// CreateReservation はチャンネル識別情報を EPG プロジェクションからスナップショットする
+// PutProgramIntent はチャンネル識別情報を EPG プロジェクションからスナップショットする
 // （mirakc の programId 内部構造への依存を予約行から消すための列。issue #21 の前提でもある）。
-func TestCreateReservation_SnapshotsChannelIdentity(t *testing.T) {
+func TestPutProgramIntent_SnapshotsChannelIdentity(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
@@ -25,14 +25,20 @@ func TestCreateReservation_SnapshotsChannelIdentity(t *testing.T) {
 	const programID int64 = 400000600021234
 	insertProgramFixture(t, pool, ctx, programID, 40000, 6000)
 
-	body := `{"programId":400000600021234}`
-	resp, err := http.Post(srv.URL+"/api/reservations", "application/json", strings.NewReader(body))
+	body := `{"action":"record"}`
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut,
+		srv.URL+"/api/sites/default/programs/400000600021234/intent", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("status = %d, want 201", resp.StatusCode)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", resp.StatusCode)
 	}
 
 	// チャンネル識別のスナップショットは #27 で program_snapshots に抽出された。
@@ -51,17 +57,15 @@ func TestCreateReservation_SnapshotsChannelIdentity(t *testing.T) {
 	}
 }
 
-// CreateReservationRequest からは title / startAt / durationMs が落ちている
-// （#27 の決定「値の出所を EPG 射影ただ 1 つに固定する」。openapi.yaml
-// CreateReservationRequest 参照）。つまりクライアントは番組の事実を送れず、
-// 送っても JSON の余剰フィールドとして無視される。ここでは「リクエストに
-// これらが無くてもスナップショットが EPG プロジェクションの値で正しく埋まる」
-// ことを確認する。
+// ProgramIntentInput には title / startAt / durationMs が無い（#27 の決定「値の出所を
+// EPG 射影ただ 1 つに固定する」。openapi.yaml ProgramIntentInput 参照）。つまりクライアントは
+// 番組の事実を送れない。ここでは「意図を書いてもスナップショットが EPG プロジェクションの
+// 値で正しく埋まる」ことを確認する。
 //
 // これが崩れると、UI が古い番組表を握ったまま予約したときに GC の比較対象
 // （program_snapshots.start_at + duration_ms）がクライアントの申告に引きずられ、
 // ユーザーの skip 意図が早すぎる GC で消えることがあった（#27 が挙げる壊れ方）。
-func TestCreateReservation_SnapshotsProgramFactsFromProjection(t *testing.T) {
+func TestPutProgramIntent_SnapshotsProgramFactsFromProjection(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
@@ -82,14 +86,20 @@ func TestCreateReservation_SnapshotsProgramFactsFromProjection(t *testing.T) {
 		t.Fatalf("querying epg_programs fixture: %v", err)
 	}
 
-	body := `{"programId":700000800091234}`
-	resp, err := http.Post(srv.URL+"/api/reservations", "application/json", strings.NewReader(body))
+	body := `{"action":"record"}`
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut,
+		srv.URL+"/api/sites/default/programs/700000800091234/intent", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("status = %d, want 201", resp.StatusCode)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", resp.StatusCode)
 	}
 
 	var gotTitle string
@@ -113,7 +123,8 @@ func TestCreateReservation_SnapshotsProgramFactsFromProjection(t *testing.T) {
 }
 
 // 番組が EPG プロジェクションに存在しない場合、programId から算術で推測せず 400 を返す。
-func TestCreateReservation_ProgramNotInProjection(t *testing.T) {
+// program_intents / reservations のどちらにも行を作らない。
+func TestPutProgramIntent_ProgramNotInProjection(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
@@ -122,8 +133,14 @@ func TestCreateReservation_ProgramNotInProjection(t *testing.T) {
 	defer srv.Close()
 
 	const programID int64 = 111222333444555
-	body := `{"programId":111222333444555}`
-	resp, err := http.Post(srv.URL+"/api/reservations", "application/json", strings.NewReader(body))
+	body := `{"action":"record"}`
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut,
+		srv.URL+"/api/sites/default/programs/111222333444555/intent", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,5 +157,14 @@ func TestCreateReservation_ProgramNotInProjection(t *testing.T) {
 	}
 	if n != 0 {
 		t.Errorf("reservation rows = %d, want 0 (should not create a row on 400)", n)
+	}
+
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM program_intents WHERE site = 'default' AND program_id = $1`,
+		programID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("program_intents rows = %d, want 0 (should not create a row on 400)", n)
 	}
 }

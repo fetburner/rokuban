@@ -35,16 +35,16 @@ ruler は EPG 更新のたびに base を丸ごと再計算してよい --- **ov
 
 UI: 上書き中のフィールドにマーカー表示 + フィールド単位/予約単位の「ルールに戻す」（override を消すだけ）。
 
-#### overrides API の形（M2-4）
+#### overrides API の形（M2-4 → M3-1 で宛先を `(site, programId)` に変更）
 
-- `PATCH /api/reservations/{id}` --- 値を書いたフィールドは override を設定、`reset` 配列に名前を挙げたフィールドは override を削除、どちらにも現れないフィールドは変更しない
-- `DELETE /api/reservations/{id}/overrides` --- 予約単位の「ルールに戻す」（`action` は触らない）
+- `PATCH /api/sites/{site}/programs/{programId}/overrides` --- 値を書いたフィールドは override を設定、`reset` 配列に名前を挙げたフィールドは override を削除、どちらにも現れないフィールドは変更しない
+- `DELETE /api/sites/{site}/programs/{programId}/overrides` --- 番組単位の「ルールに戻す」（`action` は触らない）
 
 **`null` で消す形にはしない。** Go の `*T`（oapi-codegen が optional に生成する形）は「キーが無い」と「`null`」を区別できないため、null 方式では「消す」が「変更しない」に化けて黙って壊れる。明示的な `reset` 配列なら曖昧さがない。同じフィールドを値と `reset` の両方に書いたら 400（意図が不明なので推測しない）、`reset` に未知のフィールド名があったら 400（タイポを黙って無視しない）。
 
-`skip` は PATCH では扱わない（`action` 列が担う）。取消は `DELETE /api/reservations/{id}`。
+`skip` は PATCH では扱わない（`action` 列が担う）。取消は `PUT /api/sites/{site}/programs/{programId}/intent {action: skip}`（§4.4「取消」参照）。
 
-マージは **Go 側で `db.ReservationOptions` の型付きフィールドとして行う**。SQL で `overrides || $1::jsonb` / `overrides - $1::text[]` とやらないのは下記「jsonb を許す条件」のため。同時 PATCH の心配は要らない（Rokuban は構造的に単一世帯用アプリで認証機構を持たない。[overview.md](../overview.md) §認証）ので、`reservations` 行を `FOR UPDATE` で取るだけで直列化できる。
+マージは **Go 側で `db.ReservationOptions` の型付きフィールドとして行う**。SQL で `overrides || $1::jsonb` / `overrides - $1::text[]` とやらないのは下記「jsonb を許す条件」のため。同時 PATCH の心配は要らない（Rokuban は構造的に単一世帯用アプリで認証機構を持たない。[overview.md](../overview.md) §認証）ので、`program_snapshots` 行（PATCH の前段で必ず upsert する。FK の前提）を UPSERT の行ロックで直列化する。宛先が `reservations` ではなく `(site, programId)` になった（issue #29）ため、もはや `reservations` 行の存在に依存しない。
 
 #### overrides は `program_intents` とは別の表に置く（M2-4）
 
@@ -158,13 +158,15 @@ state は「今、誰が base を供給しているか」の答えに過ぎな�
 
 manual 予約を「その番組 1 つにマッチする自動生成ルール」として表現する統一はしない。rules がワンショットの行で埋まり、ユーザーが書いた永続資産と導出される短命な行の寿命が混ざる。
 
-#### 取消は無条件に「意図を残して導出行を落とす」
+#### 取消は `PUT .../intent {action: skip}`。api は `reservations` に触れない（M3-1）
 
-`intent{skip}` を書き、`reservations` の行を削除する。**行の状態による分岐はない。**
+`PUT /api/sites/{site}/programs/{programId}/intent {action: skip}` は `program_intents` を書くだけで、`reservations` の行は同一トランザクションで削除しない（issue #29 の決定: `reservations` の書き手は ruler だけにする）。行の削除は ruler が次の全量パスで「意図に基づいて desired から除外された」ことを検出して行う（非同期。`insertRulerPassHint` で ruler_pass を即座に投入するので実質秒オーダー。フロントエンドは楽観更新で一覧の見た目を即時反映する）。**行の状態による分岐はない。**
 
-行を消すだけにしてはならない。**消された行と最初から無かった行は ruler から区別できない**（DELETE は「録画するな」という負の意図ごと情報を破壊する）ため、次の全量パスが復活させてしまう。意図が別表に残るので、勝者ルールが入れ替わっても・全ルールがマッチしなくなっても・再アタッチされても、除外は一貫して守られる。
+api が行を直接消さない理由は ruler 側の GC ロジックと同じ: 行を消すだけにしてはならない。**消された行と最初から無かった行は ruler から区別できない**（DELETE は「録画するな」という負の意図ごと情報を破壊する）ため、次の全量パスが復活させてしまう。意図が別表に残るので、勝者ルールが入れ替わっても・全ルールがマッチしなくなっても・再アタッチされても、除外は一貫して守られる。
 
-意図そのものを捨てたい（「この番組についての指定をなかったことにする」）場合は `program_intents` の行を消す。ルールがマッチしていればその後の全量パスで普通のルール予約として作り直される。これは §4.2「空になった意図の掃除」で「ルールに戻す」が `rule_id IS NOT NULL` のときに行を消すのと同じ操作である。
+**旧設計との違い**: M3-1 以前は `DELETE /api/reservations/{id}` が `intent{skip}` の書き込みと `reservations` 行の削除を同一トランザクションで行っていた（即時反映）。これは宛先が `reservations.id`（導出物）だったための構造的な制約（#29 症状 1: 導出行が「無い」ときしか `intent{record}` を書けない）を解消する過程で、書き込みの宛先を `(site, programId)` に変えたことの帰結として無くなった。
+
+意図そのものを捨てたい（「この番組についての指定をなかったことにする」）場合は `DELETE /api/sites/{site}/programs/{programId}/intent` で `program_intents` の行を消す。ルールがマッチしていればその後の全量パスで普通のルール予約として作り直される。これは §4.2「空になった意図の掃除」で「ルールに戻す」が `rule_id IS NOT NULL` のときに行を消すのと同じ操作である。
 
 ### 4.5 録画開始後の編集
 

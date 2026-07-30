@@ -162,6 +162,11 @@ paths:
     get:
       operationId: listReservations
       summary: List reservations
+      description: |
+        導出結果の読み取り専用ビュー（issue #29）。書き込みは
+        `PUT/DELETE /api/sites/{site}/programs/{programId}/intent` と
+        `PATCH/DELETE /api/sites/{site}/programs/{programId}/overrides` で行う
+        —— `reservations` の書き手は ruler だけであり、api はここを一切書かない。
       responses:
         "200":
           description: OK
@@ -171,34 +176,6 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/Reservation"
-    post:
-      operationId: createReservation
-      summary: Create a manual reservation
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/CreateReservationRequest"
-      responses:
-        "201":
-          description: Created
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Reservation"
-        "400":
-          description: Program not found in the EPG projection
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "409":
-          description: Conflict (duplicate programId)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
 
   /api/reservations/{id}:
     parameters:
@@ -211,47 +188,11 @@ paths:
     get:
       operationId: getReservation
       summary: Get a reservation
-      responses:
-        "200":
-          description: OK
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Reservation"
-        "404":
-          description: Not found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-    patch:
-      operationId: updateReservationOverrides
-      summary: Update per-reservation overrides
       description: |
-        値を書いたフィールドはそのフィールドの override を設定する。`reset`
-        配列に名前を挙げたフィールドは override を削除する（フィールド単位の
-        「ルールに戻す」）。どちらにも現れないフィールドは変更しない。
-
-        `null` で消す形にはしない（`*T` は「キーが無い」と `null` を区別できず、
-        「消す」が「変更しない」に化けて黙って壊れるため。
-        docs/recording.md §4.2「overrides API の形」）。
-
-        同じフィールドを値と `reset` の両方に書いたら 400（意図が不明なので
-        推測しない）。`reset` に未知のフィールド名があっても 400。
-
-        `skip` は overrides のキーではない（`program_intents.action` が担う）ので
-        ここでは扱わない。取消は `DELETE /api/reservations/{id}`。
-
-        override は `program_overrides` 表（`program_intents` とは別表）に持つ。
-        予約単位の「ルールに戻す」は `DELETE /api/reservations/{id}/overrides` で、
-        `program_intents` には一切触れない（docs/recording.md §4.2「overrides は
-        program_intents とは別の表に置く」）。
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/ReservationOverridesInput"
+        `reservations.id` は ruler の導出削除・再実体化で変わりうる（寿命が
+        保証されていない。issue #29）。読み取りには使えるが、書き込みの宛先には
+        使わない —— 意図・上書きは `(site, programId)` を自身のキーとする別の
+        エンドポイントに書く。
       responses:
         "200":
           description: OK
@@ -259,24 +200,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Reservation"
-        "400":
-          description: Invalid input
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "404":
-          description: Not found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-    delete:
-      operationId: deleteReservation
-      summary: Cancel a reservation
-      responses:
-        "204":
-          description: Deleted
         "404":
           description: Not found
           content:
@@ -284,37 +207,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
-  /api/reservations/{id}/overrides:
+  /api/sites/{site}/services:
     parameters:
-      - name: id
-        in: path
-        required: true
-        schema:
-          type: integer
-          format: int64
-    delete:
-      operationId: resetReservationOverrides
-      summary: Reset all overrides for a reservation (revert to rule)
-      description: |
-        予約単位の「ルールに戻す」。`program_overrides` の行を削除するだけ
-        （`DELETE FROM program_overrides WHERE site = $1 AND program_id = $2`）。
-        `action`（record/skip。`program_intents` 側）は触らない
-        （docs/recording.md §4.2「overrides は program_intents とは別の表に置く」）。
-      responses:
-        "200":
-          description: OK
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Reservation"
-        "404":
-          description: Not found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-
-  /api/services:
+      - $ref: "#/components/parameters/Site"
     get:
       operationId: listServices
       summary: List EPG services (channels)
@@ -333,14 +228,24 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/Service"
+        "404":
+          description: Unknown site
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
-  /api/programs/search:
+  /api/sites/{site}/programs/search:
+    parameters:
+      - $ref: "#/components/parameters/Site"
     post:
       operationId: searchPrograms
       summary: Search EPG programs by rule-style conditions
       description: |
         ルール条件と同じコンパイラ（internal/rulequery）で epg_programs を検索する。
         ruler 評価と同一の SQL 経路を通る（M2-2）。UI 検索（M2-11）の土台。
+        検索対象のサイトはパスの {site}（評価 site）。`sites` フィールドは
+        ルールの `rule_sites` 相当の条件（マッチ対象の絞り込み）で、これとは別軸。
       requestBody:
         required: true
         content:
@@ -363,8 +268,16 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Unknown site
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
-  /api/programs:
+  /api/sites/{site}/programs:
+    parameters:
+      - $ref: "#/components/parameters/Site"
     get:
       operationId: listPrograms
       summary: List EPG programs in a time window
@@ -379,7 +292,7 @@ paths:
         同じ窓は常に同じ完全な結果を返す。
 
         レスポンスは一覧向けの軽い形で、extended / video / audios は含まない。
-        それらは `GET /api/programs/{programId}` で取得する。
+        それらは `GET /api/sites/{site}/programs/{programId}` で取得する。
       parameters:
         - name: start
           in: query
@@ -420,15 +333,17 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Unknown site
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
-  /api/programs/{programId}:
+  /api/sites/{site}/programs/{programId}:
     parameters:
-      - name: programId
-        in: path
-        required: true
-        schema:
-          type: integer
-          format: int64
+      - $ref: "#/components/parameters/Site"
+      - $ref: "#/components/parameters/ProgramId"
     get:
       operationId: getProgram
       summary: Get a single EPG program with full detail
@@ -446,14 +361,10 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
-  /api/programs/{programId}/overlaps:
+  /api/sites/{site}/programs/{programId}/overlaps:
     parameters:
-      - name: programId
-        in: path
-        required: true
-        schema:
-          type: integer
-          format: int64
+      - $ref: "#/components/parameters/Site"
+      - $ref: "#/components/parameters/ProgramId"
     get:
       operationId: getProgramOverlaps
       summary: Count reservations overlapping this program's broadcast time
@@ -483,7 +394,115 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProgramOverlaps"
         "404":
-          description: Program not found in EPG projection
+          description: Program not found in the EPG projection, or unknown site
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/sites/{site}/programs/{programId}/intent:
+    parameters:
+      - $ref: "#/components/parameters/Site"
+      - $ref: "#/components/parameters/ProgramId"
+    put:
+      operationId: putProgramIntent
+      summary: Assert record/skip intent for a program
+      description: |
+        ユーザー意図（`program_intents`）を `(site, programId)` を自身のキーとして
+        書く（issue #29）。導出行（`reservations`）の有無に依存しないので、
+        `base.skip` が立っている番組にも `action=record` を立てられる
+        （旧 `POST /api/reservations` は導出行が「無い」ときしか書けなかった）。
+
+        意図だけを書き、`reservations` は同一トランザクションで作らない
+        （`reservations` の書き手は ruler だけにする。issue #29 の決定）。
+        `insertRulerPassHint` で ruler_pass を即座に投入するので、実体化は
+        秒オーダー。フロントエンドは楽観更新で一覧に即時反映する。
+
+        番組が EPG プロジェクションに無ければ 400。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProgramIntentInput"
+      responses:
+        "204":
+          description: Recorded
+        "400":
+          description: Program not found in the EPG projection, or invalid action
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      operationId: deleteProgramIntent
+      summary: Clear intent for a program (defer to the rule)
+      description: |
+        `program_intents` の行を削除するだけ（意見なし。純粋にルール由来へ戻す）。
+        取消（「録るな」の明示的な主張）は `PUT .../intent {action: skip}`。
+        こちらは「何も主張しない」状態に戻す操作で、`program_overrides` には
+        一切触れない（別表・別軸。issue #29）。冪等（行が無くても 204）。
+      responses:
+        "204":
+          description: Cleared
+        "400":
+          description: Unknown site
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/sites/{site}/programs/{programId}/overrides:
+    parameters:
+      - $ref: "#/components/parameters/Site"
+      - $ref: "#/components/parameters/ProgramId"
+    patch:
+      operationId: patchProgramOverrides
+      summary: Update per-program overrides
+      description: |
+        値を書いたフィールドはそのフィールドの override を設定する。`reset`
+        配列に名前を挙げたフィールドは override を削除する（フィールド単位の
+        「ルールに戻す」）。どちらにも現れないフィールドは変更しない。
+
+        `null` で消す形にはしない（`*T` は「キーが無い」と `null` を区別できず、
+        「消す」が「変更しない」に化けて黙って壊れるため。
+        docs/recording.md §4.2「overrides API の形」）。
+
+        同じフィールドを値と `reset` の両方に書いたら 400（意図が不明なので
+        推測しない）。`reset` に未知のフィールド名があっても 400。
+
+        `skip` は overrides のキーではない（`program_intents.action` が担う）ので
+        ここでは扱わない。取消は `PUT .../intent {action: skip}`。
+
+        `(site, programId)` を自身のキーとして `program_overrides` を書く
+        （issue #29）。導出行（`reservations`）の有無には依存しない。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProgramOverridesInput"
+      responses:
+        "204":
+          description: Updated
+        "400":
+          description: Invalid input, or program not found in the EPG projection
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      operationId: deleteProgramOverrides
+      summary: Reset all overrides for a program (revert to rule)
+      description: |
+        `program_overrides` の行を削除するだけ。`action`（record/skip。
+        `program_intents` 側）は触らない（別表・別軸。docs/recording.md §4.2
+        「overrides は program_intents とは別の表に置く」）。冪等（行が無くても 204）。
+      responses:
+        "204":
+          description: Cleared
+        "400":
+          description: Unknown site
           content:
             application/json:
               schema:
@@ -742,6 +761,25 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
 
 components:
+  parameters:
+    Site:
+      name: site
+      in: path
+      required: true
+      description: |
+        mirakc インスタンスのサイト名（config.mirakc.site）。programId は
+        インスタンス単位のスコープしか持たないため、この site と組にしないと
+        資源が一意に定まらない（issue #31）。設定と一致しない site は 404。
+      schema:
+        type: string
+    ProgramId:
+      name: programId
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+
   schemas:
     HealthResponse:
       type: object
@@ -1098,32 +1136,31 @@ components:
             「該当なし」ではない
           type: string
 
-    CreateReservationRequest:
+    # --- Program intent (issue #29) ---
+
+    ProgramIntentInput:
       type: object
       description: |
-        番組の事実（title / 開始時刻 / 尺）はサーバーが EPG プロジェクションから
-        引く。クライアントからは受け取らない（#27 の決定: 値の出所を射影 1 つに
-        固定する）。クライアントが古い番組表を握っていても、GC の比較対象になる
-        program_snapshots はサーバー権威の値で作られる。
+        PUT /api/sites/{site}/programs/{programId}/intent のボディ。
+        `record` は「録れ」（手動予約、およびルール由来予約への上書き）。
+        `skip` は「録るな」（どのルール経由でも一貫して除外される）。
       required:
-        - programId
+        - action
       properties:
-        programId:
-          type: integer
-          format: int64
-        priority:
-          type: integer
+        action:
+          type: string
+          enum: [record, skip]
 
-    # --- Reservation overrides (M2-4) ---
+    # --- Program overrides (M2-4 / issue #29) ---
 
-    ReservationOverridesInput:
+    ProgramOverridesInput:
       type: object
       description: |
-        PATCH /api/reservations/{id} のボディ。値を書いたフィールドは override
-        を設定し、`reset` に名前を挙げたフィールドは override を削除する。
-        どちらにも現れないフィールドは変更しない。同じフィールドを値と
-        `reset` の両方に書いたら 400、`reset` に未知のフィールド名があっても
-        400（docs/recording.md §4.2）。
+        PATCH /api/sites/{site}/programs/{programId}/overrides のボディ。
+        値を書いたフィールドは override を設定し、`reset` に名前を挙げた
+        フィールドは override を削除する。どちらにも現れないフィールドは
+        変更しない。同じフィールドを値と `reset` の両方に書いたら 400、
+        `reset` に未知のフィールド名があっても 400（docs/recording.md §4.2）。
       properties:
         priority:
           type: integer
@@ -1176,10 +1213,8 @@ components:
       type: object
       description: |
         ルール条件の条件部分と同じ形。rulequery.Conditions に写像される。
-        site は省略時 default（現状単一サイト）。
+        検索対象のサイトはパスの {site}（POST /api/sites/{site}/programs/search）。
       properties:
-        site:
-          type: string
         isFree:
           type: boolean
           nullable: true

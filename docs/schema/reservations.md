@@ -179,7 +179,7 @@ CREATE TABLE program_snapshots (
 );
 ```
 
-- **値の出所は EPG プロジェクションただ 1 つ**（#27 の決定）。書き手は api（予約・意図・上書きの作成時。`CreateReservation` が `GetProgramSnapshotSource` で `epg_programs ⋈ epg_services` から引く）と ruler（毎パス、`UpsertProgramSnapshotsFromProjection`）の 2 人だが、両者とも射影から引くので値の権威は割れない。**クライアントからは受け取らない**（サーバー権威。移行前の api は title / 開始時刻 / 尺をリクエストボディから受けており、それが GC の比較対象になっていた）。射影に番組がなければ 400
+- **値の出所は EPG プロジェクションただ 1 つ**（#27 の決定）。書き手は api（意図・上書きの作成時。`ensureProgramSnapshot` が `GetProgramSnapshotSource` で `epg_programs ⋈ epg_services` から引く）と ruler（毎パス、`UpsertProgramSnapshotsFromProjection`）の 2 人だが、両者とも射影から引くので値の権威は割れない。**クライアントからは受け取らない**（サーバー権威。移行前の api は title / 開始時刻 / 尺をリクエストボディから受けており、それが GC の比較対象になっていた）。射影に番組がなければ 400
 - **射影にある間は更新、消えたら凍結。** 延長・繰り下げで EPG 側の時刻は変わるので、射影に番組がある間は毎パス追従し、消えたときに凍結する。凍結しっぱなしにしないのは、GC 判定・容量超過判定（[データ層](../data.md) §6.5）が予約の時刻を需要区間として使うため
 - **チャンネル識別はスナップショットする（programId を分解しない）。** Mirakurun 互換の programId は `NID*10^10 + SID*10^5 + EID` という合成規則を持つが、本番コードでこれを逆算してはならない。`network_id` / `service_id` / `channel_type` / `channel` は API のフィールドから素直に引く
   - reconciler の contentPath 生成はこのスナップショットを読む。`service_id` が NULL なら**推測せず schedule を作らない**

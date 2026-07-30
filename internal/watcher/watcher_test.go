@@ -209,7 +209,7 @@ func insertProgramOverride(t *testing.T, pool *pgxpool.Pool, programID int64, pr
 	}
 }
 
-func testRecord(recordID string, programID int64, reservationID int64, status string) mirakc.Record {
+func testRecord(recordID string, programID int64, status string) mirakc.Record {
 	startAt := mirakc.Milliseconds(time.Now().Add(-1 * time.Hour))
 	recStart := mirakc.Milliseconds(time.Now().Add(-1 * time.Hour))
 	duration := int64(3600000)
@@ -231,7 +231,7 @@ func testRecord(recordID string, programID int64, reservationID int64, status st
 			Name:    "NHK総合",
 			Channel: mirakc.ServiceChannel{Type: "GR", Channel: "27"},
 		},
-		Tags: []string{mirakc.ReservationTag(reservationID)},
+		Tags: []string{mirakc.ProgramTag(programID)},
 		Recording: mirakc.RecordInfo{
 			Status:    status,
 			StartTime: recStart,
@@ -254,7 +254,7 @@ func TestProcessRecord_CreateRecordingAndSync(t *testing.T) {
 	ctx := context.Background()
 
 	resID := createTestReservation(t, pool, 327360102415397)
-	record := testRecord("abc123def456", 327360102415397, resID, "finished")
+	record := testRecord("abc123def456", 327360102415397, "finished")
 
 	if err := w.processRecord(ctx, record); err != nil {
 		t.Fatalf("processRecord: %v", err)
@@ -307,8 +307,8 @@ func TestProcessRecord_Idempotent(t *testing.T) {
 	w, pool := setupTest(t)
 	ctx := context.Background()
 
-	resID := createTestReservation(t, pool, 100001)
-	record := testRecord("record-idem-001", 100001, resID, "finished")
+	_ = createTestReservation(t, pool, 100001)
+	record := testRecord("record-idem-001", 100001, "finished")
 
 	for i := 0; i < 3; i++ {
 		if err := w.processRecord(ctx, record); err != nil {
@@ -338,7 +338,7 @@ func TestProcessRecord_StatusProgression(t *testing.T) {
 	ctx := context.Background()
 
 	resID := createTestReservation(t, pool, 100002)
-	record := testRecord("record-prog-001", 100002, resID, "recording")
+	record := testRecord("record-prog-001", 100002, "recording")
 
 	if err := w.processRecord(ctx, record); err != nil {
 		t.Fatalf("processRecord (recording): %v", err)
@@ -398,7 +398,7 @@ func TestProcessRecord_StatusNoDowngrade(t *testing.T) {
 	ctx := context.Background()
 
 	resID := createTestReservation(t, pool, 100003)
-	record := testRecord("record-nodg-001", 100003, resID, "finished")
+	record := testRecord("record-nodg-001", 100003, "finished")
 
 	if err := w.processRecord(ctx, record); err != nil {
 		t.Fatalf("processRecord (finished): %v", err)
@@ -424,7 +424,7 @@ func TestProcessRecord_UntaggedRecord(t *testing.T) {
 	w, pool := setupTest(t)
 	ctx := context.Background()
 
-	record := testRecord("record-notag-001", 100004, 0, "finished")
+	record := testRecord("record-notag-001", 100004, "finished")
 	record.Tags = nil
 
 	if err := w.processRecord(ctx, record); err != nil {
@@ -505,7 +505,7 @@ func TestProcessRecord_ConcurrentIdempotent(t *testing.T) {
 		recordID := fmt.Sprintf("record-concurrent-%03d", round)
 
 		resID := createTestReservation(t, pool, programID)
-		record := testRecord(recordID, programID, resID, "finished")
+		record := testRecord(recordID, programID, "finished")
 		// recordings には (site, network_id, service_id, event_id) の一意制約
 		// （deleted_at IS NULL、00003_recordings_unique_active_event.sql）があるため、
 		// ラウンドごとに event_id を変えて他ラウンドの録画と衝突しないようにする。
@@ -542,7 +542,7 @@ func TestProcessRecord_ConcurrentUntaggedRecord(t *testing.T) {
 	w, pool := setupTest(t)
 	ctx := context.Background()
 
-	record := testRecord("record-concurrent-notag-001", 400900, 0, "finished")
+	record := testRecord("record-concurrent-notag-001", 400900, "finished")
 	record.Tags = nil
 
 	runConcurrentProcessRecord(t, w, record, 20)
@@ -579,7 +579,7 @@ func TestHandleRecordBroken(t *testing.T) {
 	ctx := context.Background()
 
 	resID := createTestReservation(t, pool, 100005)
-	record := testRecord("record-broken-001", 100005, resID, "recording")
+	record := testRecord("record-broken-001", 100005, "recording")
 	if err := w.processRecord(ctx, record); err != nil {
 		t.Fatalf("processRecord: %v", err)
 	}
@@ -722,8 +722,8 @@ func TestSweep_CatchesMissedRecords(t *testing.T) {
 
 	rc := newTestRiverClient(t, pool)
 
-	res1ID := createTestReservation(t, pool, 200001)
-	res2ID := createTestReservation(t, pool, 200002)
+	_ = createTestReservation(t, pool, 200001)
+	_ = createTestReservation(t, pool, 200002)
 
 	startAt := mirakc.Milliseconds(time.Now().Add(-1 * time.Hour))
 	recStart := mirakc.Milliseconds(time.Now().Add(-1 * time.Hour))
@@ -736,7 +736,7 @@ func TestSweep_CatchesMissedRecords(t *testing.T) {
 			ID:        "reconcile-rec-001",
 			Program:   mirakc.Program{ID: 200001, EventID: 1, ServiceID: 1, NetworkID: 1, StartAt: &startAt, Duration: &duration, IsFree: true, Name: &name1},
 			Service:   mirakc.Service{Name: "NHK", Channel: mirakc.ServiceChannel{Type: "GR", Channel: "27"}},
-			Tags:      []string{mirakc.ReservationTag(res1ID)},
+			Tags:      []string{mirakc.ProgramTag(200001)},
 			Recording: mirakc.RecordInfo{Status: "finished", StartTime: recStart},
 			Content:   mirakc.ContentInfo{Path: "test1.m2ts"},
 		},
@@ -744,7 +744,7 @@ func TestSweep_CatchesMissedRecords(t *testing.T) {
 			ID:        "reconcile-rec-002",
 			Program:   mirakc.Program{ID: 200002, EventID: 2, ServiceID: 1, NetworkID: 1, StartAt: &startAt, Duration: &duration, IsFree: true, Name: &name2},
 			Service:   mirakc.Service{Name: "NHK", Channel: mirakc.ServiceChannel{Type: "GR", Channel: "27"}},
-			Tags:      []string{mirakc.ReservationTag(res2ID)},
+			Tags:      []string{mirakc.ProgramTag(200002)},
 			Recording: mirakc.RecordInfo{Status: "finished", StartTime: recStart},
 			Content:   mirakc.ContentInfo{Path: "test2.m2ts"},
 		},
@@ -835,7 +835,7 @@ func TestSweepAndHandleEvent_ConcurrentIdempotent(t *testing.T) {
 		recordID := fmt.Sprintf("record-sweep-vs-event-%03d", round)
 
 		resID := createTestReservation(t, pool, programID)
-		record := testRecord(recordID, programID, resID, "finished")
+		record := testRecord(recordID, programID, "finished")
 		// recordings の (site, network_id, service_id, event_id) 一意制約
 		// （deleted_at IS NULL）に他ラウンドと衝突しないよう event_id をずらす。
 		record.Program.EventID = 900 + round
@@ -1003,7 +1003,7 @@ func TestProcessRecord_ManualReservationWithRuleMatch_SourceManual(t *testing.T)
 	programID := int64(700001)
 	resID := createTestReservationWithIntent(t, pool, programID, &ruleID)
 
-	record := testRecord("record-manual-rule-match-001", programID, resID, "finished")
+	record := testRecord("record-manual-rule-match-001", programID, "finished")
 	if err := w.processRecord(ctx, record); err != nil {
 		t.Fatalf("processRecord: %v", err)
 	}
@@ -1025,7 +1025,7 @@ func TestProcessRecord_RuleReservation_SourceRule(t *testing.T) {
 	programID := int64(700002)
 	resID := createTestReservationWithRule(t, pool, programID, ruleID)
 
-	record := testRecord("record-rule-001", programID, resID, "finished")
+	record := testRecord("record-rule-001", programID, "finished")
 	if err := w.processRecord(ctx, record); err != nil {
 		t.Fatalf("processRecord: %v", err)
 	}
@@ -1052,7 +1052,7 @@ func TestProcessRecord_RuleReservationWithOverrideOnly_SourceRule(t *testing.T) 
 	resID := createTestReservationWithRule(t, pool, programID, ruleID)
 	insertProgramOverride(t, pool, programID, 5)
 
-	record := testRecord("record-rule-override-001", programID, resID, "finished")
+	record := testRecord("record-rule-override-001", programID, "finished")
 	if err := w.processRecord(ctx, record); err != nil {
 		t.Fatalf("processRecord: %v", err)
 	}
@@ -1143,11 +1143,10 @@ func TestProcessRecord_MissingReservation_SourceManual(t *testing.T) {
 	w, pool := setupTest(t)
 	ctx := context.Background()
 
-	// 存在しない予約 ID を指す tag を付ける。intent も作らない。
-	const missingReservationID int64 = 987654321
+	// 存在しない予約を指す番組 tag を付ける。intent も作らない。
 	programID := int64(700005)
 
-	record := testRecord("record-missing-res-001", programID, missingReservationID, "finished")
+	record := testRecord("record-missing-res-001", programID, "finished")
 	if err := w.processRecord(ctx, record); err != nil {
 		t.Fatalf("processRecord: %v", err)
 	}

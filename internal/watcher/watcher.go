@@ -162,7 +162,10 @@ func (w *Watcher) Sweep(ctx context.Context) error {
 }
 
 func (w *Watcher) processRecord(ctx context.Context, record mirakc.Record) error {
-	reservationID, hasTag := mirakc.FindReservationID(record.Tags)
+	// tag は programId しか運ばない（#53）。「自分が予約した record か」は
+	// IsOurs（新旧タグ形式のいずれか）で判定し、reservation の特定は record 自身が
+	// 持つ Program.ID（tag のパースを経由しない、常に正確な値）で行う。
+	ours := mirakc.IsOurs(record.Tags)
 
 	tx, err := w.pool.Begin(ctx)
 	if err != nil {
@@ -204,8 +207,8 @@ func (w *Watcher) processRecord(ctx context.Context, record mirakc.Record) error
 		if err := w.updateRecordingStatus(ctx, q, *recordingID, record); err != nil {
 			return fmt.Errorf("updating recording status: %w", err)
 		}
-	} else if hasTag {
-		id, createErr := w.createRecording(ctx, q, reservationID, record)
+	} else if ours {
+		id, createErr := w.createRecording(ctx, q, record)
 		if createErr != nil {
 			return fmt.Errorf("creating recording: %w", createErr)
 		}
@@ -241,13 +244,16 @@ func (w *Watcher) processRecord(ctx context.Context, record mirakc.Record) error
 	return nil
 }
 
-func (w *Watcher) createRecording(ctx context.Context, q *sqlcgen.Queries, reservationID int64, record mirakc.Record) (int64, error) {
+func (w *Watcher) createRecording(ctx context.Context, q *sqlcgen.Queries, record mirakc.Record) (int64, error) {
 	var resID *int64
 	var ruleID *int64
 
-	res, err := q.GetReservation(ctx, reservationID)
+	res, err := q.GetReservationBySiteAndProgramID(ctx, sqlcgen.GetReservationBySiteAndProgramIDParams{
+		Site:      w.site,
+		ProgramID: record.Program.ID,
+	})
 	if err != nil && !errors.Is(err, pgx5.ErrNoRows) {
-		return 0, fmt.Errorf("looking up reservation %d: %w", reservationID, err)
+		return 0, fmt.Errorf("looking up reservation for program %d: %w", record.Program.ID, err)
 	}
 	if err == nil {
 		resID = &res.ID

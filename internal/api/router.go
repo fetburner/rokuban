@@ -21,6 +21,11 @@ type RouterConfig struct {
 	// Pool は REST ハンドラが使う DB プール。
 	Pool *pgxpool.Pool
 
+	// Site はこのプロセスが担当する mirakc インスタンスのサイト名
+	// （config.mirakc.site が権威。issue #31）。空なら db.DefaultSite を使う
+	// （テストの部分構成を許す）。
+	Site string
+
 	// RiverClient が非 nil なら、ルール作成/更新/削除のヒントで RulerPassArgs を
 	// 同一トランザクションで投入する（InsertTx。dual-write を避けるため。
 	// docs/recording.md §3.1「ヒント」）。insert-only で足り、api が worker の
@@ -99,7 +104,7 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		}))
 	}
 
-	handler := NewServer(cfg.Pool, cfg.RiverClient, cfg.EncodeProfileNames)
+	handler := NewServer(cfg.Pool, cfg.RiverClient, cfg.Site, cfg.EncodeProfileNames)
 	strict := NewStrictHandler(handler, nil)
 	HandlerFromMux(strict, r)
 

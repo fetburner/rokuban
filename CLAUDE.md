@@ -69,10 +69,8 @@ M0（歩く骨格）・M1（録れる）・M2（任せられる）の実装は�
 | M2 の出口基準の検証（EPGStation と 1〜2 週間並走し、予約差分がゼロ or 全件説明可能） | [#52](https://github.com/fetburner/rokuban/issues/52) |
 | M3（置き換えられる）/ M4（広げられる）の粗粒度バックログ。着手時に親 issue へ分解する | [#14](https://github.com/fetburner/rokuban/issues/14) |
 
-- **M3 着手前に決める設計課題は #29 / #31 / #53**（API と mirakc tag の資源同定。いずれも「導出器が作るキーを宛先にしない」という同じ判断なので同時が安い。**#31 は案 A = 多拠点を取る、で決定済み**）
-  - **3 件は 1 つの歪みの別々の症状**である ——「`reservations` が ruler の導出出力と API リソースの両方を兼ねている」。修正は毎回同じ手（導出できないものを `(site, program_id)` の別表・別キーに引き剥がす）で、`program_intents` / `program_overrides` / `program_snapshots` の 3 回で済ませてきた
-  - **#52 の並走中には着手しない。** `reservations` と shadow-diff（出口基準を測る道具そのもの）を触るので、測定の連続性が切れる
 - M3 / M4 の親 issue は「親 = 一覧 + 依存関係 + 出口基準、サブ = 詳細 + 受け入れ基準」の形で起票する
+- **`reservations` と shadow-diff（#52 の出口基準を測る道具そのもの）を触るタスクは、#52 の並走中は着手しない。** 測定の連続性が切れる
 
 ### ドキュメントと issue の保守
 

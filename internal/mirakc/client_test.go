@@ -44,7 +44,7 @@ func TestListSchedules(t *testing.T) {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `[{"state":"scheduled","program":{"id":1,"eventId":1,"serviceId":1,"networkId":1,"isFree":true},"options":{"priority":1},"tags":["rokuban:reservation=42"]}]`)
+		_, _ = fmt.Fprint(w, `[{"state":"scheduled","program":{"id":1,"eventId":1,"serviceId":1,"networkId":1,"isFree":true},"options":{"priority":1},"tags":["program:42"]}]`)
 	}))
 	defer srv.Close()
 
@@ -59,7 +59,7 @@ func TestListSchedules(t *testing.T) {
 	if schedules[0].State != "scheduled" {
 		t.Errorf("state = %q, want %q", schedules[0].State, "scheduled")
 	}
-	id, ok := FindReservationID(schedules[0].Tags)
+	id, ok := FindProgramTag(schedules[0].Tags)
 	if !ok || id != 42 {
 		t.Errorf("reservation id = %d, %v, want 42, true", id, ok)
 	}
@@ -94,7 +94,7 @@ func TestCreateSchedule(t *testing.T) {
 			ContentPath: &contentPath,
 			Priority:    1,
 		},
-		Tags: []string{ReservationTag(42)},
+		Tags: []string{ProgramTag(42)},
 	})
 	if err != nil {
 		t.Fatalf("CreateSchedule: %v", err)

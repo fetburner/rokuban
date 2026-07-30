@@ -30,7 +30,7 @@ func (h *Server) ListCapacityOverages(ctx context.Context, req ListCapacityOvera
 		return ListCapacityOverages400JSONResponse{Error: "end must be after start"}, nil
 	}
 
-	overages, err := capacity.Load(ctx, sqlcgen.New(h.pool), defaultSite)
+	overages, err := capacity.Load(ctx, sqlcgen.New(h.pool), h.site)
 	if err != nil {
 		return nil, fmt.Errorf("computing capacity overages: %w", err)
 	}
