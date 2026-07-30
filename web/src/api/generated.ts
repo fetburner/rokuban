@@ -33,6 +33,27 @@ export interface VersionResponse {
   version: string;
 }
 
+/**
+ * 出力コンテナ（表示用。未注入なら省略）。
+ */
+export type EncodeProfileSummaryContainer = typeof EncodeProfileSummaryContainer[keyof typeof EncodeProfileSummaryContainer];
+
+
+export const EncodeProfileSummaryContainer = {
+  mp4: 'mp4',
+  mkv: 'mkv',
+} as const;
+
+export interface EncodeProfileSummary {
+  /**
+     * ルール / overrides の `encodeProfiles` が参照する名前。
+     * config.encode.profiles[].name と一致する。
+     */
+  name: string;
+  /** 出力コンテナ（表示用。未注入なら省略）。 */
+  container?: EncodeProfileSummaryContainer;
+}
+
 export interface ErrorResponse {
   error: string;
 }
@@ -873,6 +894,124 @@ export function useGetVersion<TData = Awaited<ReturnType<typeof getVersion>>, TE
  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
 
   const queryOptions = getGetVersionQueryOptions(options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export type listEncodeProfilesResponse200 = {
+  data: EncodeProfileSummary[]
+  status: 200
+}
+
+export type listEncodeProfilesResponseSuccess = (listEncodeProfilesResponse200) & {
+  headers: Headers;
+};
+;
+
+export type listEncodeProfilesResponse = (listEncodeProfilesResponseSuccess)
+
+export const getListEncodeProfilesUrl = () => {
+
+
+
+
+  return `/api/encode-profiles`
+}
+
+/**
+ * `config.encode.profiles` に定義されたプロファイルの公開面。UI が
+ * ルール / overrides の `encodeProfiles` を選ぶために使う（M3-6 / issue #68）。
+ *
+ * **機微情報は載せない。** ffmpeg のパスや extra_args は出さない。
+ * 名前（と表示用の container）だけを返す。
+ * @summary List configured encode profile names
+ */
+export const listEncodeProfiles = async ( options?: RequestInit): Promise<listEncodeProfilesResponse> => {
+
+  return customInstance<listEncodeProfilesResponse>(getListEncodeProfilesUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getListEncodeProfilesQueryKey = () => {
+    return [
+    `/api/encode-profiles`
+    ] as const;
+    }
+
+
+export const getListEncodeProfilesQueryOptions = <TData = Awaited<ReturnType<typeof listEncodeProfiles>>, TError = unknown>( options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listEncodeProfiles>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getListEncodeProfilesQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listEncodeProfiles>>> = ({ signal }) => listEncodeProfiles({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listEncodeProfiles>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type ListEncodeProfilesQueryResult = NonNullable<Awaited<ReturnType<typeof listEncodeProfiles>>>
+export type ListEncodeProfilesQueryError = unknown
+
+
+export function useListEncodeProfiles<TData = Awaited<ReturnType<typeof listEncodeProfiles>>, TError = unknown>(
+  options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof listEncodeProfiles>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof listEncodeProfiles>>,
+          TError,
+          Awaited<ReturnType<typeof listEncodeProfiles>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useListEncodeProfiles<TData = Awaited<ReturnType<typeof listEncodeProfiles>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listEncodeProfiles>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof listEncodeProfiles>>,
+          TError,
+          Awaited<ReturnType<typeof listEncodeProfiles>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useListEncodeProfiles<TData = Awaited<ReturnType<typeof listEncodeProfiles>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listEncodeProfiles>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary List configured encode profile names
+ */
+
+export function useListEncodeProfiles<TData = Awaited<ReturnType<typeof listEncodeProfiles>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listEncodeProfiles>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getListEncodeProfilesQueryOptions(options)
 
   const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
 

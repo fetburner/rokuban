@@ -31,23 +31,29 @@ type Server struct {
 	// ルール保存時の encodeProfiles 存在検証に使う（issue #64）。
 	// 空（未注入）なら名前検証をスキップする（テストの部分構成を許す）。
 	encodeProfiles map[string]struct{}
+
+	// encodeProfileNames は定義順の名前一覧（GET /api/encode-profiles 用。issue #68）。
+	encodeProfileNames []string
 }
 
 // NewServer は Server を生成する。riverClient は insert-only の River クライアントで、
 // nil なら ruler_pass ヒントの投入をスキップする（RouterConfig.RiverClient 参照）。
 // encodeProfileNames は config.encode.profiles の名前一覧（未知名の 400 判定用。
-// nil/空なら検証をスキップする）。
+// nil/空なら検証をスキップする）。一覧 API にも同じ順序で載せる。
 func NewServer(pool *pgxpool.Pool, riverClient *river.Client[pgx.Tx], encodeProfileNames []string) *Server {
 	// nil スライス = 検証オフ（テストの部分構成）。空スライス = 定義ゼロで全名が未知。
 	// 本番の server.go は ProfileNames()（常に non-nil）を渡すので検証が常に効く。
 	var profiles map[string]struct{}
+	var names []string
 	if encodeProfileNames != nil {
 		profiles = make(map[string]struct{}, len(encodeProfileNames))
+		names = make([]string, 0, len(encodeProfileNames))
 		for _, n := range encodeProfileNames {
 			profiles[n] = struct{}{}
+			names = append(names, n)
 		}
 	}
-	return &Server{pool: pool, river: riverClient, encodeProfiles: profiles}
+	return &Server{pool: pool, river: riverClient, encodeProfiles: profiles, encodeProfileNames: names}
 }
 
 // Healthz はヘルスチェックエンドポイント。

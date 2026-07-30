@@ -20,6 +20,7 @@ describe('routeTree', () => {
     expect(children.map((route) => route.options.path)).toEqual([
       '/',
       '/search',
+      '/rules',
       '/reservations',
       '/reservations/$reservationId',
       '/recordings',

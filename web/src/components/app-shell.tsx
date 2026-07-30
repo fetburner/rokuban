@@ -1,5 +1,5 @@
 import { Link, useRouterState } from '@tanstack/react-router'
-import { CalendarClock, ListVideo, Search, Tv } from 'lucide-react'
+import { CalendarClock, ListVideo, Search, Settings2, Tv } from 'lucide-react'
 import type { ComponentType } from 'react'
 
 import { CircuitBreakerBanner } from '@/components/circuit-breaker-banner'
@@ -18,6 +18,7 @@ type NavItem = {
 const navItems: NavItem[] = [
   { to: '/', label: '番組', icon: Tv },
   { to: '/search', label: '検索', icon: Search },
+  { to: '/rules', label: 'ルール', icon: Settings2 },
   { to: '/reservations', label: '予約', icon: CalendarClock },
   { to: '/recordings', label: '録画', icon: ListVideo },
 ]

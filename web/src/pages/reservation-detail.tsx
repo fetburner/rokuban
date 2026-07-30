@@ -1,17 +1,31 @@
+import { useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useParams } from '@tanstack/react-router'
 import { ArrowLeft } from 'lucide-react'
+import { useEffect, useState } from 'react'
 
 import {
+  getGetReservationQueryKey,
   useDeleteReservation,
   useGetReservation,
+  useUpdateReservationOverrides,
   type Reservation,
+  type ReservationOverridesInput,
 } from '@/api/generated'
-import { unwrap } from '@/api/unwrap'
+import { apiErrorMessage, unwrap } from '@/api/unwrap'
+import {
+  EncodeSettingsFields,
+  type EncodeSettingsValue,
+} from '@/components/encode-settings-fields'
 import { ErrorState, ListSkeleton } from '@/components/page'
 import { ProgramOverlapWarning } from '@/components/program-overlap-warning'
 import { ReservationSkipReason } from '@/components/reservation-skip-reason'
 import { useToast } from '@/components/toaster'
 import { Button } from '@/components/ui/button'
+import {
+  encodeSettingsError,
+  keepOriginalLabel,
+  type KeepOriginal,
+} from '@/lib/encode-settings'
 import { formatDateTime, formatDuration } from '@/lib/format'
 
 /**
@@ -19,19 +33,20 @@ import { formatDateTime, formatDuration } from '@/lib/format'
  *
  * base（ルールが書く）と overrides（ユーザーが書く）は同形の jsonb なので、
  * ルール由来予約と手動予約を 1 画面で扱える（EPGStation は編集画面が分裂している）。
- * M1 は全予約が manual なので overrides のみが存在する。
  *
- * 編集コントロールは置かない。reconciler が予約オプションの差分を反映しないため、
- * 編集できても mirakc に伝わらない（issue #19）。解決後にここへ差し込む。
+ * encodeProfiles / keepOriginal は M3 で worker が消費するため編集可能
+ * （issue #68）。priority など mirakc 差分が必要な項目は #19 解決後に足す。
  */
 export function ReservationDetailPage() {
   const { reservationId } = useParams({ from: '/reservations/$reservationId' })
   const navigate = useNavigate()
   const toast = useToast()
+  const queryClient = useQueryClient()
 
   const id = Number(reservationId)
   const query = useGetReservation(id)
   const deleteReservation = useDeleteReservation()
+  const updateOverrides = useUpdateReservationOverrides()
 
   const reservation = unwrap(query.data)
 
@@ -44,6 +59,20 @@ export function ReservationDetailPage() {
           void navigate({ to: '/reservations' })
         },
         onError: () => toast({ message: '予約の取消に失敗しました' }),
+      },
+    )
+  }
+
+  const saveEncode = (body: ReservationOverridesInput) => {
+    updateOverrides.mutate(
+      { id, data: body },
+      {
+        onSuccess: () => {
+          toast({ message: 'エンコード設定を更新しました' })
+          void queryClient.invalidateQueries({ queryKey: getGetReservationQueryKey(id) })
+        },
+        onError: (err) =>
+          toast({ message: apiErrorMessage(err) ?? 'エンコード設定の更新に失敗しました' }),
       },
     )
   }
@@ -101,10 +130,14 @@ export function ReservationDetailPage() {
             <Field label="保存先パス" value="自動生成" />
           </Fields>
 
-          <Fields title="エンコードと保持">
-            <Field label="エンコード" value="なし" note="M3" />
-            <Field label="原本の保持" value="常に保持" note="M3" />
-          </Fields>
+          <section>
+            <h3 className="mb-2 text-xs font-medium text-muted-foreground">エンコードと保持</h3>
+            <EncodeOverridesEditor
+              reservation={reservation}
+              isPending={updateOverrides.isPending}
+              onSave={saveEncode}
+            />
+          </section>
 
           <Button
             variant="destructive"
@@ -119,6 +152,110 @@ export function ReservationDetailPage() {
       )}
     </>
   )
+}
+
+/**
+ * EncodeOverridesEditor は予約 overrides の encodeProfiles / keepOriginal を編集する。
+ *
+ * 予約 GET は effective ではなく overrides jsonb だけを返すので、ここに出るのは
+ * 「ユーザーが上書きした値」。未設定なら既定（always / 空）をフォーム初期値にし、
+ * 保存時に PATCH で書く。
+ */
+function EncodeOverridesEditor({
+  reservation,
+  isPending,
+  onSave,
+}: {
+  reservation: Reservation
+  isPending: boolean
+  onSave: (body: ReservationOverridesInput) => void
+}) {
+  const fromOverrides = encodeFromOverrides(reservation)
+  const [value, setValue] = useState<EncodeSettingsValue>(fromOverrides)
+  // サーバー側の overrides が変わったらフォームを同期する（保存後の invalidate など）。
+  useEffect(() => {
+    setValue(encodeFromOverrides(reservation))
+  }, [reservation])
+
+  const error = encodeSettingsError(value.keepOriginal, value.encodeProfiles)
+  const dirty =
+    value.keepOriginal !== fromOverrides.keepOriginal ||
+    !sameStringSet(value.encodeProfiles, fromOverrides.encodeProfiles)
+
+  return (
+    <div className="flex flex-col gap-3 rounded-lg border border-border p-3">
+      <p className="text-xs text-muted-foreground">
+        現在の上書き:{' '}
+        {hasEncodeOverride(reservation)
+          ? `${keepOriginalLabel(fromOverrides.keepOriginal)} / ${
+              fromOverrides.encodeProfiles.length === 0
+                ? 'プロファイルなし'
+                : fromOverrides.encodeProfiles.join(', ')
+            }`
+          : 'なし（ルールまたは既定）'}
+      </p>
+      <EncodeSettingsFields
+        value={value}
+        onChange={setValue}
+        disabled={isPending}
+        note="この予約だけを上書きします。"
+      />
+      <div className="flex flex-wrap gap-2">
+        <Button
+          type="button"
+          size="lg"
+          disabled={!dirty || error !== undefined || isPending}
+          onClick={() =>
+            onSave({
+              keepOriginal: value.keepOriginal,
+              encodeProfiles: value.encodeProfiles,
+            })
+          }
+        >
+          {isPending ? '保存中…' : '上書きを保存'}
+        </Button>
+        {hasEncodeOverride(reservation) && (
+          <Button
+            type="button"
+            variant="outline"
+            size="lg"
+            disabled={isPending}
+            onClick={() =>
+              onSave({
+                reset: ['keepOriginal', 'encodeProfiles'],
+              })
+            }
+          >
+            ルールに戻す
+          </Button>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function encodeFromOverrides(reservation: Reservation): EncodeSettingsValue {
+  const o = reservation.overrides
+  const keepRaw = o?.keepOriginal
+  const keepOriginal: KeepOriginal =
+    keepRaw === 'until_encoded' || keepRaw === 'always' ? keepRaw : 'always'
+  const profilesRaw = o?.encodeProfiles
+  const encodeProfiles = Array.isArray(profilesRaw)
+    ? profilesRaw.filter((p): p is string => typeof p === 'string')
+    : []
+  return { keepOriginal, encodeProfiles }
+}
+
+function hasEncodeOverride(reservation: Reservation): boolean {
+  const o = reservation.overrides
+  if (o === undefined || o === null) return false
+  return o.keepOriginal !== undefined || o.encodeProfiles !== undefined
+}
+
+function sameStringSet(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false
+  const set = new Set(b)
+  return a.every((x) => set.has(x))
 }
 
 /** overrideValue は overrides jsonb から 1 フィールドを文字列で取り出す。 */
