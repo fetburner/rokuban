@@ -97,3 +97,14 @@ WHERE a.recording_id = $1
   AND a.kind = 'thumbnail'
   AND a.state = 'active'
   AND r.deleted_at IS NULL;
+
+-- 配信対象の encoded 派生物を引く（?profile= 付き）。原本と同じ配信規律。
+-- name: GetEncodedMediaAssetForServing :one
+SELECT a.id, a.rel_path, a.size_bytes, a.updated_at, r.title, a.profile
+FROM media_assets a
+JOIN recordings r ON r.id = a.recording_id
+WHERE a.recording_id = $1
+  AND a.kind = 'encoded'
+  AND a.profile = $2
+  AND a.state = 'active'
+  AND r.deleted_at IS NULL;

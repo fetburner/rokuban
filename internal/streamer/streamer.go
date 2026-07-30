@@ -15,7 +15,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -25,8 +24,11 @@ import (
 	"github.com/fetburner/rokuban/internal/mediapath"
 )
 
-// contentType は録画原本の Content-Type。mirakc の record stream と揃える。
-const contentType = "video/MP2T"
+// contentTypeOriginal は録画原本の Content-Type。mirakc の record stream と揃える。
+const contentTypeOriginal = "video/MP2T"
+
+// contentTypeMP4 は encoded 派生物（MP4 progressive）の Content-Type。
+const contentTypeMP4 = "video/mp4"
 
 // thumbnailContentType はサムネイル JPEG の Content-Type。
 const thumbnailContentType = "image/jpeg"
@@ -72,8 +74,17 @@ func (s *Streamer) Mount(r chi.Router) {
 	r.Head(thumbPath, s.RecordingThumbnail)
 }
 
-// RecordingFile は GET /api/recordings/{id}/file を処理する。
+// serveAsset は DB から解決した 1 アセットをディスクから（または X-Accel で）配信する。
+type serveAsset struct {
+	relPath   string
+	sizeBytes int64
+	// contentType は明示する（ServeContent の拡張子推測に頼らない）。
+	contentType string
+}
+
+// RecordingFile は GET/HEAD /api/recordings/{id}/file を処理する。
 //
+// profile クエリが無ければ原本（kind=original）、あれば encoded 派生物。
 // Range・If-Range・If-Modified-Since の扱いは http.ServeContent に任せる。
 // *os.File を渡しているので sendfile が効き、家庭内 LAN を飽和させる用途では
 // nginx を挟む必要がない（docs/api.md）。
@@ -84,18 +95,19 @@ func (s *Streamer) RecordingFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	asset, err := sqlcgen.New(s.pool).GetOriginalMediaAssetForServing(r.Context(), id)
+	profile := strings.TrimSpace(r.URL.Query().Get("profile"))
+	asset, err := s.lookupAsset(r, id, profile)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			http.NotFound(w, r)
 			return
 		}
-		slog.Error("streamer: looking up media asset", "recording_id", id, "err", err)
+		slog.Error("streamer: looking up media asset", "recording_id", id, "profile", profile, "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 
-	s.serveAsset(w, r, id, asset.RelPath, asset.SizeBytes, asset.UpdatedAt, contentType)
+	s.serveAsset(w, r, id, asset)
 }
 
 // RecordingThumbnail は GET /api/recordings/{id}/thumbnail を処理する。
@@ -109,7 +121,7 @@ func (s *Streamer) RecordingThumbnail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	asset, err := sqlcgen.New(s.pool).GetThumbnailMediaAssetForServing(r.Context(), id)
+	row, err := sqlcgen.New(s.pool).GetThumbnailMediaAssetForServing(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			http.NotFound(w, r)
@@ -120,23 +132,27 @@ func (s *Streamer) RecordingThumbnail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.serveAsset(w, r, id, asset.RelPath, asset.SizeBytes, asset.UpdatedAt, thumbnailContentType)
+	s.serveAsset(w, r, id, serveAsset{
+		relPath:     row.RelPath,
+		sizeBytes:   row.SizeBytes,
+		contentType: thumbnailContentType,
+	})
 }
 
 func parseRecordingID(r *http.Request) (int64, error) {
 	return strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 }
 
-// serveAsset は rel_path のファイルを Content-Type 付きで配信する。
-// original / thumbnail で共通（Range と X-Accel-Redirect も同じ経路）。
+// serveAsset は解決済みアセットをディスクから（または X-Accel で）配信する。
+// original / encoded / thumbnail で共通（Range と X-Accel-Redirect も同じ経路）。
 //
-// rel_path は ingest / thumbnail 時に検証済みだが、配信側でも独立に検証する。
+// rel_path は ingest/encode/thumbnail 時に検証済みだが、配信側でも独立に検証する。
 // DB に不正な行が入った場合に任意ファイルを読み出させないため。
-func (s *Streamer) serveAsset(w http.ResponseWriter, r *http.Request, recordingID int64, relPath string, sizeBytes int64, _ time.Time, contentTypeHeader string) {
-	path, err := mediapath.Resolve(s.cfg.MediaDir, relPath)
+func (s *Streamer) serveAsset(w http.ResponseWriter, r *http.Request, recordingID int64, asset serveAsset) {
+	path, err := mediapath.Resolve(s.cfg.MediaDir, asset.relPath)
 	if err != nil {
 		slog.Error("streamer: rejecting rel_path outside the media directory",
-			"recording_id", recordingID, "rel_path", relPath, "err", err)
+			"recording_id", recordingID, "rel_path", asset.relPath, "err", err)
 		http.NotFound(w, r)
 		return
 	}
@@ -145,8 +161,8 @@ func (s *Streamer) serveAsset(w http.ResponseWriter, r *http.Request, recordingI
 	// リバースプロキシに委ねる。Range の扱いも nginx 側になる。
 	// パス検証を通した後に返すのが要点（検証前に返すと任意ファイルを配らせられる）。
 	if s.cfg.AccelLocation != "" {
-		w.Header().Set("Content-Type", contentTypeHeader)
-		w.Header().Set("X-Accel-Redirect", accelURI(s.cfg.AccelLocation, relPath))
+		w.Header().Set("Content-Type", asset.contentType)
+		w.Header().Set("X-Accel-Redirect", accelURI(s.cfg.AccelLocation, asset.relPath))
 		return
 	}
 
@@ -156,7 +172,7 @@ func (s *Streamer) serveAsset(w http.ResponseWriter, r *http.Request, recordingI
 		// 外部からの削除で起こりうるので、記録して 404 にする。
 		if errors.Is(err, os.ErrNotExist) {
 			slog.Warn("streamer: media asset row exists but the file is missing",
-				"recording_id", recordingID, "rel_path", relPath)
+				"recording_id", recordingID, "rel_path", asset.relPath)
 			http.NotFound(w, r)
 			return
 		}
@@ -174,27 +190,74 @@ func (s *Streamer) serveAsset(w http.ResponseWriter, r *http.Request, recordingI
 	}
 	if info.IsDir() {
 		slog.Error("streamer: rel_path points at a directory",
-			"recording_id", recordingID, "rel_path", relPath)
+			"recording_id", recordingID, "rel_path", asset.relPath)
 		http.NotFound(w, r)
 		return
 	}
 
-	// size_bytes はコミット時に書いた値。実ファイルと違うならコミット後に
-	// 改変・切り詰めが起きている。配信は続けるが不整合として記録する。
-	if info.Size() != sizeBytes {
+	// size_bytes は commit 時に照合した値。実ファイルと違うならコミット後に
+	// 改変・切り詰めが起きている。配信は続けるが（ユーザーは録画を見たい）
+	// 不整合として記録する。
+	if info.Size() != asset.sizeBytes {
 		slog.Warn("streamer: file size differs from the committed size",
-			"recording_id", recordingID, "rel_path", relPath,
-			"committed", sizeBytes, "actual", info.Size())
+			"recording_id", recordingID, "rel_path", asset.relPath,
+			"committed", asset.sizeBytes, "actual", info.Size())
 	}
 
 	// ServeContent は name から Content-Type を推測しようとするので明示する。
-	w.Header().Set("Content-Type", contentTypeHeader)
-	// 一度書いたら変わらないが、ごみ箱からの復元などで同じ URL の中身が
-	// 入れ替わりうるので immutable は付けない。
+	w.Header().Set("Content-Type", asset.contentType)
+	// 録画は一度書いたら変わらないが、ごみ箱からの復元などで同じ URL の
+	// 中身が入れ替わりうるので immutable は付けない。
 	w.Header().Set("Cache-Control", "private, max-age=0, must-revalidate")
 
 	// name は Content-Type 推測にしか使われない。上で明示済みなので空でよい。
 	http.ServeContent(w, r, "", info.ModTime(), f)
+}
+
+// lookupAsset は profile の有無で original / encoded を解決する。
+func (s *Streamer) lookupAsset(r *http.Request, recordingID int64, profile string) (serveAsset, error) {
+	q := sqlcgen.New(s.pool)
+	if profile == "" {
+		row, err := q.GetOriginalMediaAssetForServing(r.Context(), recordingID)
+		if err != nil {
+			return serveAsset{}, err
+		}
+		return serveAsset{
+			relPath:     row.RelPath,
+			sizeBytes:   row.SizeBytes,
+			contentType: contentTypeOriginal,
+		}, nil
+	}
+
+	row, err := q.GetEncodedMediaAssetForServing(r.Context(), sqlcgen.GetEncodedMediaAssetForServingParams{
+		RecordingID: recordingID,
+		Profile:     &profile,
+	})
+	if err != nil {
+		return serveAsset{}, err
+	}
+	return serveAsset{
+		relPath:     row.RelPath,
+		sizeBytes:   row.SizeBytes,
+		contentType: contentTypeForPath(row.RelPath),
+	}, nil
+}
+
+// contentTypeForPath は派生物の拡張子から Content-Type を決める。
+// 不明なら application/octet-stream（ブラウザは <video> で拒否する）。
+func contentTypeForPath(relPath string) string {
+	switch strings.ToLower(filepath.Ext(relPath)) {
+	case ".mp4", ".m4v":
+		return contentTypeMP4
+	case ".webm":
+		return "video/webm"
+	case ".mkv":
+		return "video/x-matroska"
+	case ".ts", ".m2ts":
+		return contentTypeOriginal
+	default:
+		return "application/octet-stream"
+	}
 }
 
 // accelURI は X-Accel-Redirect に載せる internal location の URI を組み立てる。

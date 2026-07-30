@@ -12,6 +12,7 @@ import {
   type Recording,
 } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
+import { RecordingPlayer } from '@/components/recording-player'
 import { EmptyState, ErrorState, ListSkeleton, PageHeader } from '@/components/page'
 import { useToast } from '@/components/toaster'
 import {
@@ -208,8 +209,19 @@ function DropBadges({ summary }: { summary: DropSummary }) {
 }
 
 function RecordingDetail({ recording, trash }: { recording: Recording; trash: boolean }) {
+  const encodedProfiles = recording.encodedProfiles ?? []
+  const hasOriginal = recording.sizeBytes !== undefined
+
   return (
     <div className="flex flex-col gap-4 bg-muted/30 px-4 py-3 text-xs">
+      {(encodedProfiles.length > 0 || hasOriginal) && (
+        <RecordingPlayer
+          recordingId={recording.id}
+          encodedProfiles={encodedProfiles}
+          hasOriginal={hasOriginal}
+        />
+      )}
+
       {recording.description && (
         <p className="whitespace-pre-wrap text-muted-foreground">{recording.description}</p>
       )}

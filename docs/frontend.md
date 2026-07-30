@@ -12,7 +12,7 @@ go:embed で単一バイナリに同梱するため、成果物は**静的ファ
 | 状態管理・ルーティング・仮想化 | TanStack Query / Router / Virtual |
 | API クライアント生成 | orval（OpenAPI → 型付きクライアント + TanStack Query フック） |
 | スタイリング + UI コンポーネント | Tailwind + shadcn/ui |
-| 動画再生 | hls.js |
+| 動画再生 | ネイティブ `<video>`（VOD / MP4 progressive）+ hls.js（ライブ、M4） |
 
 ## 決め手
 
@@ -363,6 +363,17 @@ mirakc と同じ「接続時に現在状態を再送し、以降差分」とい�
 ### 配信経路の整理
 
 go:embed 配信でハッシュ付きアセット immutable + それ以外 no-cache のヘッダーを正しく付ければ十分。本気の配信最適化は S3+CDN 経路の仕事であり、ここに nginx キャッシュを挟むと配信経路が 3 つになるため行わない（参照: [api.md](api.md) のメディア配信）。
+
+## 録画のブラウザ再生（M3-5）
+
+**VOD は MP4 progressive + Range。** streamer の `GET /api/recordings/{id}/file?profile=<name>` を
+ネイティブ `<video controls>` の src に渡す。HLS / hls.js は使わない（家庭 LAN の
+オンデマンドではセグメント化のコストに見合わない。決定は [api.md](api.md)）。
+
+- 利用可能なプロファイルは `Recording.encodedProfiles`（active な encoded のみ）。複数なら
+  セレクタ。encoded が無ければプレイヤーは出さず、原本があるときだけ VLC 向けリンクを出す
+- **再生位置は localStorage**（キー: 録画 ID + プロファイル）。サーバー側視聴履歴は作らない（#14 7c）
+- 原本 TS はブラウザでは再生せず、ダウンロード / VLC リンクとして残す
 
 ## ライブ視聴 --- EPGStation 水準のシンプルな UI
 

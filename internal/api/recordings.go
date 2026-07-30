@@ -16,31 +16,32 @@ import (
 // recordingListFields は ListRecordings / ListTrashRecordings が共有する射影。
 // sqlc はクエリごとに別 struct を生成するので、ここで共通化してマッピングする。
 type recordingListFields struct {
-	ID                int64
-	ReservationID     *int64
-	RuleID            *int64
-	Source            string
-	ServiceName       string
-	ChannelType       string
-	Channel           string
-	NetworkID         int32
-	ServiceID         int32
-	EventID           int32
-	Title             string
-	Description       *string
-	ProgramStartAt    time.Time
-	ProgramDurationMs int64
-	Status            string
-	StartedAt         *time.Time
-	EndedAt           *time.Time
-	QualityEvents     json.RawMessage
-	DeletedAt         *time.Time
-	CreatedAt         time.Time
-	OriginalSizeBytes *int64
-	DropPackets       int64
-	DropDrops         int64
-	DropErrors        int64
-	DropScrambled     int64
+	ID                       int64
+	ReservationID            *int64
+	RuleID                   *int64
+	Source                   string
+	ServiceName              string
+	ChannelType              string
+	Channel                  string
+	NetworkID                int32
+	ServiceID                int32
+	EventID                  int32
+	Title                    string
+	Description              *string
+	ProgramStartAt           time.Time
+	ProgramDurationMs        int64
+	Status                   string
+	StartedAt                *time.Time
+	EndedAt                  *time.Time
+	QualityEvents            json.RawMessage
+	DeletedAt                *time.Time
+	CreatedAt                time.Time
+	OriginalSizeBytes        *int64
+	DropPackets              int64
+	DropDrops                int64
+	DropErrors               int64
+	DropScrambled            int64
+	AvailableEncodedProfiles []string
 }
 
 // recordingFromListFields は一覧行を API の Recording に写す。
@@ -79,6 +80,11 @@ func recordingFromListFields(r recordingListFields, includeDeletedAt bool) (Reco
 			Errors:    r.DropErrors,
 			Scrambled: r.DropScrambled,
 		}
+	}
+	// 再生可能な encoded 派生物（observed）。空なら省略（omitempty）。
+	if len(r.AvailableEncodedProfiles) > 0 {
+		profiles := append([]string(nil), r.AvailableEncodedProfiles...)
+		rec.EncodedProfiles = &profiles
 	}
 	if len(r.QualityEvents) > 0 {
 		var events []map[string]any
@@ -141,6 +147,7 @@ func (h *Server) ListRecordings(ctx context.Context, req ListRecordingsRequestOb
 				OriginalSizeBytes: r.OriginalSizeBytes,
 				DropPackets:       r.DropPackets, DropDrops: r.DropDrops,
 				DropErrors: r.DropErrors, DropScrambled: r.DropScrambled,
+				AvailableEncodedProfiles: r.AvailableEncodedProfiles,
 			}, false)
 			if err != nil {
 				return nil, err

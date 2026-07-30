@@ -215,7 +215,17 @@ SELECT
     COALESCE(d.packets, 0)::bigint      AS drop_packets,
     COALESCE(d.drops, 0)::bigint        AS drop_drops,
     COALESCE(d.errors, 0)::bigint       AS drop_errors,
-    COALESCE(d.scrambled, 0)::bigint    AS drop_scrambled
+    COALESCE(d.scrambled, 0)::bigint    AS drop_scrambled,
+    -- ブラウザ再生用。desired（r.encode_profiles）ではなく observed（active encoded）。
+    -- sqlc は array_agg の型を推論しきれないことがあるので text[] に明示キャストする。
+    (
+        SELECT coalesce(array_agg(e.profile ORDER BY e.profile), '{}')::text[]
+        FROM media_assets e
+        WHERE e.recording_id = r.id
+          AND e.kind = 'encoded'
+          AND e.state = 'active'
+          AND e.profile IS NOT NULL
+    ) AS available_encoded_profiles
 FROM recordings r
 LEFT JOIN media_assets a
     ON a.recording_id = r.id AND a.kind = 'original' AND a.state <> 'deleted'
@@ -230,42 +240,44 @@ ORDER BY r.program_start_at DESC, r.id DESC
 `
 
 type ListRecordingsRow struct {
-	ID                int64
-	ReservationID     *int64
-	RuleID            *int64
-	Source            string
-	Site              string
-	NetworkID         int32
-	ServiceID         int32
-	EventID           int32
-	ServiceName       string
-	ChannelType       string
-	Channel           string
-	Title             string
-	Description       *string
-	Extended          json.RawMessage
-	Genres            json.RawMessage
-	IsFree            bool
-	ProgramStartAt    time.Time
-	ProgramDurationMs int64
-	Status            string
-	StartedAt         *time.Time
-	EndedAt           *time.Time
-	KeepOriginal      string
-	EncodeProfiles    []string
-	QualityEvents     json.RawMessage
-	DeletedAt         *time.Time
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
-	PurgeAfter        *time.Time
-	OriginalSizeBytes *int64
-	DropPackets       int64
-	DropDrops         int64
-	DropErrors        int64
-	DropScrambled     int64
+	ID                       int64
+	ReservationID            *int64
+	RuleID                   *int64
+	Source                   string
+	Site                     string
+	NetworkID                int32
+	ServiceID                int32
+	EventID                  int32
+	ServiceName              string
+	ChannelType              string
+	Channel                  string
+	Title                    string
+	Description              *string
+	Extended                 json.RawMessage
+	Genres                   json.RawMessage
+	IsFree                   bool
+	ProgramStartAt           time.Time
+	ProgramDurationMs        int64
+	Status                   string
+	StartedAt                *time.Time
+	EndedAt                  *time.Time
+	KeepOriginal             string
+	EncodeProfiles           []string
+	QualityEvents            json.RawMessage
+	DeletedAt                *time.Time
+	CreatedAt                time.Time
+	UpdatedAt                time.Time
+	PurgeAfter               *time.Time
+	OriginalSizeBytes        *int64
+	DropPackets              int64
+	DropDrops                int64
+	DropErrors               int64
+	DropScrambled            int64
+	AvailableEncodedProfiles []string
 }
 
-// 録画一覧。原本のサイズと PID 別 drop_stats の合計を同梱する。
+// 録画一覧。原本のサイズと PID 別 drop_stats の合計、
+// 再生可能な encoded プロファイル名を同梱する。
 // PID 別の内訳は行数が多く一覧では使わないので ListRecordingDropStats で別に取る。
 func (q *Queries) ListRecordings(ctx context.Context, site string) ([]ListRecordingsRow, error) {
 	rows, err := q.db.Query(ctx, listRecordings, site)
@@ -310,6 +322,7 @@ func (q *Queries) ListRecordings(ctx context.Context, site string) ([]ListRecord
 			&i.DropDrops,
 			&i.DropErrors,
 			&i.DropScrambled,
+			&i.AvailableEncodedProfiles,
 		); err != nil {
 			return nil, err
 		}

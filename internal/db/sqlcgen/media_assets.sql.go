@@ -93,6 +93,46 @@ func (q *Queries) GetActiveThumbnailMediaAssetID(ctx context.Context, recordingI
 	return id, err
 }
 
+const getEncodedMediaAssetForServing = `-- name: GetEncodedMediaAssetForServing :one
+SELECT a.id, a.rel_path, a.size_bytes, a.updated_at, r.title, a.profile
+FROM media_assets a
+JOIN recordings r ON r.id = a.recording_id
+WHERE a.recording_id = $1
+  AND a.kind = 'encoded'
+  AND a.profile = $2
+  AND a.state = 'active'
+  AND r.deleted_at IS NULL
+`
+
+type GetEncodedMediaAssetForServingParams struct {
+	RecordingID int64
+	Profile     *string
+}
+
+type GetEncodedMediaAssetForServingRow struct {
+	ID        int64
+	RelPath   string
+	SizeBytes int64
+	UpdatedAt time.Time
+	Title     string
+	Profile   *string
+}
+
+// 配信対象の encoded 派生物を引く（?profile= 付き）。原本と同じ配信規律。
+func (q *Queries) GetEncodedMediaAssetForServing(ctx context.Context, arg GetEncodedMediaAssetForServingParams) (GetEncodedMediaAssetForServingRow, error) {
+	row := q.db.QueryRow(ctx, getEncodedMediaAssetForServing, arg.RecordingID, arg.Profile)
+	var i GetEncodedMediaAssetForServingRow
+	err := row.Scan(
+		&i.ID,
+		&i.RelPath,
+		&i.SizeBytes,
+		&i.UpdatedAt,
+		&i.Title,
+		&i.Profile,
+	)
+	return i, err
+}
+
 const getOriginalMediaAssetForServing = `-- name: GetOriginalMediaAssetForServing :one
 SELECT a.id, a.rel_path, a.size_bytes, a.updated_at, r.title
 FROM media_assets a

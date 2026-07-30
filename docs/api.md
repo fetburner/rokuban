@@ -186,14 +186,21 @@ Rokuban には長寿命接続が 2 つある --- notifier がブラウザへ送�
 
 Go の `http.ServeContent` は `*os.File` 相手なら sendfile が効き、Range 対応も標準。家庭サーバーの同時視聴数本でギガビット LAN を飽和させるのに問題はなく、**性能を理由とする nginx 導入は不要**。
 
-#### 実装（M1-8）
+#### 実装（M1-8 原本 / M3-5 派生物）
 
 ```
-GET  /api/recordings/{id}/file        →  video/MP2T（Range 対応）
-HEAD /api/recordings/{id}/file        →  ヘッダーのみ
-GET  /api/recordings/{id}/thumbnail   →  image/jpeg（M3-4）
-HEAD /api/recordings/{id}/thumbnail   →  ヘッダーのみ
+GET  /api/recordings/{id}/file              →  video/MP2T（原本、Range 対応）
+HEAD /api/recordings/{id}/file              →  ヘッダーのみ
+GET  /api/recordings/{id}/file?profile=h264 →  video/mp4 等（encoded、Range 対応）
+HEAD /api/recordings/{id}/file?profile=h264 →  ヘッダーのみ
+GET  /api/recordings/{id}/thumbnail         →  image/jpeg（M3-4）
+HEAD /api/recordings/{id}/thumbnail         →  ヘッダーのみ
 ```
+
+**ブラウザ VOD は MP4 progressive + Range とする（HLS ではない）。** 家庭 LAN の
+オンデマンド再生では単一ファイル + `http.ServeContent` の Range が十分で、
+セグメント化・プレイリスト・hls.js のコストに見合わない。ライブ視聴の HLS は
+別経路（下記「ライブ視聴の HLS」）のまま。OpenAPI には載せない方針は原本と同じ。
 
 **HEAD も登録する。** VLC やブラウザはシーク前に HEAD で `Content-Length` と
 `Accept-Ranges` を取るため、405 を返すとシーク再生に失敗しうる。
@@ -203,15 +210,19 @@ HEAD /api/recordings/{id}/thumbnail   →  ヘッダーのみ
 （`customInstance` が `response.json()` を呼ぶ）ためバイナリ配信では誤った
 クライアントが生成される。UI は URL を `<video>` の src や `<img>` の src、
 保存リンクに直接使い、生成フックを経由しない。守るべきスキーマがないので
-生成物から得るものもない。
+生成物から得るものもない。利用可能なプロファイル名は `Recording.encodedProfiles`
+（一覧 API）で返す。
 
 **`internal/streamer` の所有物として実装する。** api ロールはファイルシステムに
 依存しない（不変条件 1）ため、バイト転送はロールとして分ける。monolith では
 `api.RouterConfig.Mounter` 経由で同一リスナーに相乗りするが、コードの境界は
 最初から引いてある。`--roles streamer` を指定したときだけ登録される。
 
-**`/file` は原本（`kind = 'original'`）、`/thumbnail` はサムネイル
-（`kind = 'thumbnail'`）。** エンコード派生物の配信は M3-5。
+**`/file` は `profile` クエリが無いときは原本（`kind = 'original'`）、あるときは
+`kind = 'encoded'` かつそのプロファイル名。`/thumbnail` はサムネイル
+（`kind = 'thumbnail'`）。** ブラウザ UI は encoded を優先し、原本 TS は VLC 等
+向けのダウンロードリンクに残す。原本が `until_encoded` で消えた後も派生物だけで
+再生できる（アセット解決は kind ごとに独立）。
 
 **`rel_path` は配信側でも独立に検証する。** `internal/mediapath.Resolve` を
 ingest と共有し、メディアディレクトリの外を指す `rel_path` は 404 にする。
@@ -220,17 +231,21 @@ ingest と共有し、メディアディレクトリの外を指す `rel_path` �
 
 **配らないもの:** ごみ箱に入った録画（`recordings.deleted_at IS NOT NULL`）、
 削除済みアセット（`media_assets.state <> 'active'`）、未 ingest の録画
-（`media_assets` 行なし）。いずれも 404。コミット（DB 行）はあるのに
-ファイルが無い不整合も 404 にしつつ WARN で記録する（孤児回収や外部からの削除）。
+（指定 kind の `media_assets` 行なし）、存在しないプロファイル。いずれも 404。
+コミット（DB 行）はあるのにファイルが無い不整合も 404 にしつつ WARN で記録する
+（孤児回収や外部からの削除）。
 
 **`Cache-Control: private, max-age=0, must-revalidate`。** 原本は一度書いたら
 変わらないが、ごみ箱からの復元で同じ URL の中身が入れ替わりうるので
 `immutable` は付けない。`Last-Modified` による条件付きリクエストは効く。
 
 **`media_assets.size_bytes` と実ファイルのサイズが違えば WARN で記録する。**
-size_bytes は ingest 時に mirakc の Content-Length と照合した値なので、
+size_bytes は ingest / encode 時に照合した値なので、
 違うならコミット後に改変・切り詰めが起きている。配信自体は続ける
 （ユーザーは録画を見たい）。
+
+**再生位置はサーバーに持たない。** ブラウザの localStorage に録画 ID（+ プロファイル）
+をキーにして保存する（#14 7c / M3-5）。視聴履歴テーブルは作らない。
 
 #### X-Accel-Redirect（`storage.accel_location`）
 

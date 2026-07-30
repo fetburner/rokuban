@@ -989,6 +989,14 @@ components:
           description: 原本の実サイズ。ingest 済み（media_assets 行あり）の場合のみ
           type: integer
           format: int64
+        encodedProfiles:
+          description: |
+            再生可能な encoded 派生物のプロファイル名（media_assets の active のみ）。
+            ブラウザ再生は GET /api/recordings/{id}/file?profile=<name> を使う。
+            desired（encode_profiles）ではなく observed。空配列は省略可。
+          type: array
+          items:
+            type: string
         dropSummary:
           $ref: "#/components/schemas/DropSummary"
         qualityEvents:
