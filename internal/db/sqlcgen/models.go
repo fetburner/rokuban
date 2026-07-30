@@ -77,6 +77,11 @@ type MediaAsset struct {
 	UpdatedAt   time.Time
 }
 
+type OrphanFile struct {
+	RelPath   string
+	FirstSeen time.Time
+}
+
 type ProgramIntent struct {
 	Site      string
 	ProgramID int64

@@ -88,6 +88,9 @@ type Deps struct {
 	// record_sweep 経由の processRecord でも finished 遷移を通知できるようにする。
 	// encode 完了・削除の発火は後続マイルストーン。
 	Webhook *webhook.Client
+
+	// Cleanup は削除 reconcile（M3-8）の猶予・閾値設定。
+	Cleanup config.CleanupConfig
 }
 
 // NewWorkers は全ワーカーを登録した river.Workers を返す。
@@ -140,6 +143,14 @@ func NewWorkers(deps *Deps) *river.Workers {
 		ScratchDir: deps.ScratchDir,
 		FFmpeg:     deps.Encode.FFmpeg,
 		FFprobe:    deps.Encode.FFprobe,
+	})
+	river.AddWorker(workers, &DeleteReconcileWorker{
+		Pool:              deps.Pool,
+		MediaDir:          deps.MediaDir,
+		TrashRetention:    deps.Cleanup.TrashRetention,
+		OrphanMTimeGrace:  deps.Cleanup.OrphanMTimeGrace,
+		OrphanAge:         deps.Cleanup.OrphanAge,
+		MaxDeletesPerPass: deps.Cleanup.MaxDeletesPerPass,
 	})
 	return workers
 }
@@ -232,9 +243,17 @@ type ClientConfig struct {
 	// CatalogExportInterval は catalog エクスポートの間隔。0 なら既定値（24 時間）。
 	CatalogExportInterval time.Duration
 
+	// DeleteReconcile が true なら削除 reconcile（M3-8）を定期ジョブとして登録する
+	// （PeriodicJobs が true のときのみ）。CatalogExport と同じくサイト非依存
+	// （物理ストレージは単一の media_dir）。
+	DeleteReconcile bool
+
+	// DeleteReconcileInterval は削除 reconcile の間隔。0 なら既定値（15 分）。
+	DeleteReconcileInterval time.Duration
+
 	// PeriodicJobs が false なら、EpgSyncSite / TunerSyncSite / RulerPassSite /
-	// ReconcilePassSite / RecordSweepSite / CatalogExport が設定されていても
-	// River の PeriodicJobs を一切登録しない。
+	// ReconcilePassSite / RecordSweepSite / CatalogExport / DeleteReconcile が
+	// 設定されていても River の PeriodicJobs を一切登録しない。
 	// k8s では false にして、CronJob が
 	// `rokuban enqueue` を叩く形に委ねる（docs/data.md §2「定期実行の契機は
 	// デプロイ形態に委ねる」。設定キーは worker.periodic_jobs、既定 true）。
@@ -369,6 +388,19 @@ func buildRiverConfig(workers *river.Workers, cfg ClientConfig) (*river.Config, 
 					return CatalogExportArgs{}, nil
 				},
 				// 起動直後にも 1 回書いておく。日次なので RunOnStart で初回を確保する。
+				&river.PeriodicJobOpts{RunOnStart: true},
+			))
+		}
+		if cfg.DeleteReconcile {
+			interval := cfg.DeleteReconcileInterval
+			if interval <= 0 {
+				interval = defaultDeleteReconcileInterval
+			}
+			riverCfg.PeriodicJobs = append(riverCfg.PeriodicJobs, river.NewPeriodicJob(
+				river.PeriodicInterval(interval),
+				func() (river.JobArgs, *river.InsertOpts) {
+					return DeleteReconcileArgs{}, nil
+				},
 				&river.PeriodicJobOpts{RunOnStart: true},
 			))
 		}

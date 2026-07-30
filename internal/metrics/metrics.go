@@ -352,6 +352,29 @@ var (
 	}, []string{"site"})
 )
 
+// 削除 reconcile（M3-8、docs/storage.md §7）のメトリクス。
+var (
+	// DeleteReconcileDeleted は物理削除したアセット件数。source は
+	// trash / until_encoded / orphan / pending（前パスの deleting 再開）。
+	DeleteReconcileDeleted = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "rokuban_delete_reconcile_deleted_total",
+		Help: "Physically deleted assets by source.",
+	}, []string{"source"})
+
+	// DeleteReconcileBytes は物理削除で解放したバイト数。
+	DeleteReconcileBytes = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "rokuban_delete_reconcile_bytes_total",
+		Help: "Bytes freed by physical deletion, by source.",
+	}, []string{"source"})
+
+	// DeleteReconcileLastPass は最後に成功した削除 reconcile パスの時刻（UNIX 秒）。
+	// EpgSyncLastSuccess と同じ理由（ゲージの凍結対策）で持つ。
+	DeleteReconcileLastPass = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "rokuban_delete_reconcile_last_pass_timestamp_seconds",
+		Help: "Unix time of the last successful delete-reconcile pass. Use with time() to detect a stalled pass.",
+	})
+)
+
 // NewRegistry は Rokuban のメトリクスを登録した registry を返す。
 //
 // backlog が非 nil なら、未 ingest record の滞留量を scrape のたびに DB から
@@ -402,6 +425,10 @@ func NewRegistry(backlog prometheus.Collector) *prometheus.Registry {
 		TunersProjected,
 		TunerSyncLastSuccess,
 		CapacityOverages,
+
+		DeleteReconcileDeleted,
+		DeleteReconcileBytes,
+		DeleteReconcileLastPass,
 	)
 
 	if backlog != nil {

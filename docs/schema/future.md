@@ -18,12 +18,8 @@ v1 には含めず、後続のマイグレーションで足すもの。参照�
 | `00015_tuner_sync.sql` | `tuner_sync`（チューナー射影。M2-10。§9.5） |
 | `00016_dedupe_range_check.sql` | `rules.dedupe_threshold` を `(0, 1]`、`dedupe_window` を `> 0` に制限する CHECK（API・Go に加えた DB 側の値域検査） |
 | `00017_program_snapshots.sql` | Phase 1（#27 / #28 / #30）: `program_snapshots` を抽出し `reservations` / `program_intents` / `program_overrides` から番組の事実の列を落として FK（`ON DELETE CASCADE`）に置き換え、`reservations.state` を `orphaned_at` に置き換え（§3・§3.7） |
+| `00019_orphan_files.sql` | 削除 reconcile（M3-8、issue #70）: `orphan_files`（孤児候補の first_seen 記録。DB リストアで削除窓が開き直す安全弁） |
 
-### 未実装
-
-| テーブル | マイルストーン | v1 との接続 |
-|---|---|---|
-| `orphan_files` | 削除エンジン実装時（M3） | 孤児候補の first_seen 記録（DB リストアで削除窓が開き直す安全弁） |
 
 ### ドロップ（M2-12 サービスロゴ）
 
