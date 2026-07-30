@@ -23,7 +23,9 @@ services:
     command: ["migrate", "up", "--config", "/config.yml"]
 
   rokuban:
-    image: rokuban:test
+    # server --all は worker ロールを含み ffmpeg/ffprobe を要求するため、
+    # ffmpeg 入りの Dockerfile.full イメージで起動する。
+    image: rokuban:test-full
     depends_on:
       migrate:
         condition: service_completed_successfully
