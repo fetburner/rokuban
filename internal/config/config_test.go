@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -74,6 +75,21 @@ func TestLoad_Minimal(t *testing.T) {
 	}
 	if cfg.Encode.FFmpeg != "ffmpeg" {
 		t.Errorf("encode.ffmpeg = %q, want %q", cfg.Encode.FFmpeg, "ffmpeg")
+	}
+	if cfg.Encode.Concurrency != 1 {
+		t.Errorf("encode.concurrency = %d, want 1", cfg.Encode.Concurrency)
+	}
+	if cfg.Encode.ThumbnailConcurrency != 1 {
+		t.Errorf("encode.thumbnail_concurrency = %d, want 1", cfg.Encode.ThumbnailConcurrency)
+	}
+	if cfg.Webhook.URL != "" {
+		t.Errorf("webhook.url = %q, want empty (no-op by default)", cfg.Webhook.URL)
+	}
+	if cfg.Webhook.Timeout != 5*time.Second {
+		t.Errorf("webhook.timeout = %v, want %v", cfg.Webhook.Timeout, 5*time.Second)
+	}
+	if len(cfg.Webhook.Events) != 0 {
+		t.Errorf("webhook.events = %v, want empty (all known events)", cfg.Webhook.Events)
 	}
 	if cfg.Log.Level != "info" {
 		t.Errorf("log.level = %q, want %q", cfg.Log.Level, "info")
@@ -149,6 +165,9 @@ encode:
   ffprobe: ffprobe
   profiles:
     - name: "literal $${NOT_A_VAR}"
+      container: mp4
+      video_codec: libx264
+      audio_codec: aac
 `)
 	cfg, err := Load(path)
 	if err != nil {
@@ -235,9 +254,27 @@ worker:
 encode:
   ffmpeg: /usr/local/bin/ffmpeg
   ffprobe: /usr/local/bin/ffprobe
+  concurrency: 3
+  thumbnail_concurrency: 2
   profiles:
     - name: h264
+      container: mp4
+      video_codec: libx264
+      audio_codec: aac
+      height: 1080
+      crf: 23
+      preset: medium
     - name: h265
+      container: mkv
+      video_codec: libx265
+      audio_codec: aac
+webhook:
+  url: https://hooks.example.com/rokuban
+  secret: s3cret
+  timeout: 10s
+  events:
+    - recording.finished
+    - recording.failed
 log:
   level: debug
   format: text
@@ -295,14 +332,196 @@ log:
 	if cfg.Encode.FFmpeg != "/usr/local/bin/ffmpeg" {
 		t.Errorf("encode.ffmpeg = %q, want %q", cfg.Encode.FFmpeg, "/usr/local/bin/ffmpeg")
 	}
+	if cfg.Encode.Concurrency != 3 {
+		t.Errorf("encode.concurrency = %d, want 3", cfg.Encode.Concurrency)
+	}
+	if cfg.Encode.ThumbnailConcurrency != 2 {
+		t.Errorf("encode.thumbnail_concurrency = %d, want 2", cfg.Encode.ThumbnailConcurrency)
+	}
 	if len(cfg.Encode.Profiles) != 2 {
 		t.Errorf("encode.profiles len = %d, want 2", len(cfg.Encode.Profiles))
+	}
+	p0 := cfg.Encode.Profiles[0]
+	if p0.Name != "h264" || p0.Container != "mp4" || p0.VideoCodec != "libx264" ||
+		p0.AudioCodec != "aac" || p0.Height != 1080 || p0.Preset != "medium" {
+		t.Errorf("profiles[0] = %+v", p0)
+	}
+	if p0.CRF == nil || *p0.CRF != 23 {
+		t.Errorf("profiles[0].crf = %v, want 23", p0.CRF)
+	}
+	if cfg.Webhook.URL != "https://hooks.example.com/rokuban" {
+		t.Errorf("webhook.url = %q, want %q", cfg.Webhook.URL, "https://hooks.example.com/rokuban")
+	}
+	if cfg.Webhook.Secret != "s3cret" {
+		t.Errorf("webhook.secret = %q, want %q", cfg.Webhook.Secret, "s3cret")
+	}
+	if cfg.Webhook.Timeout != 10*time.Second {
+		t.Errorf("webhook.timeout = %v, want %v", cfg.Webhook.Timeout, 10*time.Second)
+	}
+	if want := []string{"recording.finished", "recording.failed"}; !slices.Equal(cfg.Webhook.Events, want) {
+		t.Errorf("webhook.events = %v, want %v", cfg.Webhook.Events, want)
 	}
 	if cfg.Log.Level != "debug" {
 		t.Errorf("log.level = %q, want %q", cfg.Log.Level, "debug")
 	}
 	if cfg.Log.Format != "text" {
 		t.Errorf("log.format = %q, want %q", cfg.Log.Format, "text")
+	}
+}
+
+func TestLoad_EncodeProfileValidation(t *testing.T) {
+	base := `
+db:
+  host: localhost
+  user: rokuban
+  password: secret
+  database: rokuban
+mirakc:
+  url: http://mirakc.local:40772
+storage:
+  media_dir: /mnt/media
+encode:
+  profiles:
+`
+
+	t.Run("duplicate name", func(t *testing.T) {
+		path := writeConfig(t, base+`
+    - name: h264
+      container: mp4
+      video_codec: libx264
+      audio_codec: aac
+    - name: h264
+      container: mkv
+      video_codec: libx265
+      audio_codec: aac
+`)
+		_, err := Load(path)
+		if err == nil {
+			t.Fatal("expected error for duplicate profile name")
+		}
+		if !strings.Contains(err.Error(), "duplicate name") {
+			t.Errorf("error = %v, want mention of duplicate name", err)
+		}
+	})
+
+	t.Run("empty name", func(t *testing.T) {
+		path := writeConfig(t, base+`
+    - name: ""
+      container: mp4
+      video_codec: libx264
+      audio_codec: aac
+`)
+		_, err := Load(path)
+		if err == nil {
+			t.Fatal("expected error for empty profile name")
+		}
+	})
+
+	t.Run("invalid container", func(t *testing.T) {
+		path := writeConfig(t, base+`
+    - name: h264
+      container: ts
+      video_codec: libx264
+      audio_codec: aac
+`)
+		_, err := Load(path)
+		if err == nil {
+			t.Fatal("expected error for invalid container")
+		}
+		if !strings.Contains(err.Error(), "container") {
+			t.Errorf("error = %v, want mention of container", err)
+		}
+	})
+
+	t.Run("missing video_codec", func(t *testing.T) {
+		path := writeConfig(t, base+`
+    - name: h264
+      container: mp4
+      audio_codec: aac
+`)
+		_, err := Load(path)
+		if err == nil {
+			t.Fatal("expected error for missing video_codec")
+		}
+	})
+
+	t.Run("missing audio_codec", func(t *testing.T) {
+		path := writeConfig(t, base+`
+    - name: h264
+      container: mp4
+      video_codec: libx264
+`)
+		_, err := Load(path)
+		if err == nil {
+			t.Fatal("expected error for missing audio_codec")
+		}
+	})
+
+	t.Run("negative height", func(t *testing.T) {
+		path := writeConfig(t, base+`
+    - name: h264
+      container: mp4
+      video_codec: libx264
+      audio_codec: aac
+      height: -1
+`)
+		_, err := Load(path)
+		if err == nil {
+			t.Fatal("expected error for negative height")
+		}
+	})
+
+	t.Run("negative concurrency", func(t *testing.T) {
+		path := writeConfig(t, `
+db:
+  host: localhost
+  user: rokuban
+  password: secret
+  database: rokuban
+mirakc:
+  url: http://mirakc.local:40772
+storage:
+  media_dir: /mnt/media
+encode:
+  concurrency: -1
+`)
+		_, err := Load(path)
+		if err == nil {
+			t.Fatal("expected error for negative concurrency")
+		}
+	})
+}
+
+func TestEncodeConfig_Profile(t *testing.T) {
+	cfg := EncodeConfig{Profiles: []EncodeProfile{
+		{Name: "h264", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac"},
+		{Name: "h265", Container: "mkv", VideoCodec: "libx265", AudioCodec: "aac"},
+	}}
+	p, ok := cfg.Profile("h265")
+	if !ok || p.Name != "h265" {
+		t.Fatalf("Profile(h265) = (%+v, %v), want found", p, ok)
+	}
+	if _, ok := cfg.Profile("missing"); ok {
+		t.Error("Profile(missing) should be not found")
+	}
+	if got := cfg.ProfileNames(); !slices.Equal(got, []string{"h264", "h265"}) {
+		t.Errorf("ProfileNames() = %v, want [h264 h265]", got)
+	}
+}
+
+func TestEncodeConfig_ValidateTools(t *testing.T) {
+	// 存在しないコマンド名は失敗する（LookPath の経路）。
+	// 実在する ffmpeg は環境依存なので「無い方」だけ固定する。
+	cfg := EncodeConfig{
+		FFmpeg:  "rokuban-no-such-ffmpeg-binary",
+		FFprobe: "rokuban-no-such-ffprobe-binary",
+	}
+	err := cfg.ValidateTools()
+	if err == nil {
+		t.Fatal("expected error for missing tools")
+	}
+	if !strings.Contains(err.Error(), "ffmpeg") && !strings.Contains(err.Error(), "ffprobe") {
+		t.Errorf("error = %v, want mention of missing tool", err)
 	}
 }
 

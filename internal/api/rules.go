@@ -10,7 +10,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/contentpath"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
@@ -57,7 +56,7 @@ func (h *Server) CreateRule(ctx context.Context, req CreateRuleRequestObject) (C
 	if req.Body == nil {
 		return CreateRule400JSONResponse{Error: "request body is required"}, nil
 	}
-	if err := validateRuleInput(ctx, h.pool, *req.Body); err != nil {
+	if err := h.validateRuleInput(ctx, *req.Body); err != nil {
 		return CreateRule400JSONResponse{Error: err.Error()}, nil
 	}
 
@@ -94,7 +93,7 @@ func (h *Server) UpdateRule(ctx context.Context, req UpdateRuleRequestObject) (U
 	if req.Body == nil {
 		return UpdateRule400JSONResponse{Error: "request body is required"}, nil
 	}
-	if err := validateRuleInput(ctx, h.pool, *req.Body); err != nil {
+	if err := h.validateRuleInput(ctx, *req.Body); err != nil {
 		return UpdateRule400JSONResponse{Error: err.Error()}, nil
 	}
 
@@ -203,13 +202,42 @@ func (h *Server) insertRulerPassHint(ctx context.Context, tx pgx.Tx) error {
 	return nil
 }
 
-func validateRuleInput(ctx context.Context, pool *pgxpool.Pool, in RuleInput) error {
+// validateEncodeProfiles は encodeProfiles の各名前が config 定義に存在することを
+// 検査する。ルール保存と予約 overrides の両方で使う（issue #64「ルール / overrides
+// 保存時に未知プロファイル名を拒否」）。
+//
+// h.encodeProfiles が nil のとき（RouterConfig.EncodeProfileNames 未設定 = テストの
+// 部分構成）は名前検証をスキップする。空 map（len=0 だが non-nil）は「プロファイルが
+// 1 つも無い」とみなし、どんな名前も未知として弾く。
+func (h *Server) validateEncodeProfiles(names []string) error {
+	for _, name := range names {
+		if name == "" {
+			return errors.New("encodeProfiles must not contain empty names")
+		}
+		if h.encodeProfiles != nil {
+			if _, ok := h.encodeProfiles[name]; !ok {
+				return fmt.Errorf("unknown encode profile %q", name)
+			}
+		}
+	}
+	return nil
+}
+
+// validateRuleInput はルール create/update の入力を検査する。
+// encodeProfiles の存在検証は h.encodeProfiles（config から注入）を使う。
+// 集合が nil のときは名前検証をスキップする（テストの部分構成）。
+func (h *Server) validateRuleInput(ctx context.Context, in RuleInput) error {
 	if strings.TrimSpace(in.Name) == "" {
 		return errors.New("name is required")
 	}
 	if in.KeepOriginal != nil && *in.KeepOriginal == RuleInputKeepOriginalUntilEncoded {
 		if in.EncodeProfiles == nil || len(*in.EncodeProfiles) == 0 {
 			return errors.New("encodeProfiles is required when keepOriginal is until_encoded")
+		}
+	}
+	if in.EncodeProfiles != nil {
+		if err := h.validateEncodeProfiles(*in.EncodeProfiles); err != nil {
+			return err
 		}
 	}
 	if in.DedupeEnabled != nil && *in.DedupeEnabled {
@@ -242,7 +270,7 @@ func validateRuleInput(ctx context.Context, pool *pgxpool.Pool, in RuleInput) er
 			"0 makes the window condition always false and silently disables dedupe), got %d", *in.DedupeWindowSeconds)
 	}
 	if in.TextMatches != nil {
-		q := sqlcgen.New(pool)
+		q := sqlcgen.New(h.pool)
 		for _, m := range *in.TextMatches {
 			if m.Mode == Regex && m.Value != "" {
 				if err := q.ValidateRegexPattern(ctx, m.Value); err != nil {

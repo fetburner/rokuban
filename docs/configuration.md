@@ -85,11 +85,27 @@ worker:
                                  # ロールを増やさずに「ruler / reconciler だけ別 Pod」を実現するための knob
 
 encode:
-  ffmpeg: ffmpeg                 # 既定は PATH 検索
-  ffprobe: ffprobe
+  ffmpeg: ffmpeg                 # 既定は PATH 検索。worker ロール起動時に LookPath で存在検査
+  ffprobe: ffprobe               # （api ロールは呼ばない。不変条件 4）
+  concurrency: 1                 # encode キューの MaxWorkers（ingest とは独立）
+  thumbnail_concurrency: 1       # thumbnail キューの MaxWorkers
   profiles:
-    - name: h264
-      # 構造化プロファイル。詳細は M3 で確定
+    - name: h264                 # ルール / overrides から参照する一意な名前
+      container: mp4             # mp4 | mkv（拡張子と -f）
+      video_codec: libx264
+      audio_codec: aac
+      height: 1080               # 0 or omit = スケールしない
+      crf: 23                    # optional
+      preset: medium             # optional
+      extra_args: []             # 末尾に追加する ffmpeg 引数（自由形式 cmd 全体は禁止）
+
+webhook:                         # 汎用 HTTP webhook（M3-11）。EPGStation の複数種外部コマンドを 1 本に置き換える
+  url: ""                        # 空なら no-op。例: https://hooks.example.com/rokuban
+  secret: ""                     # 非空なら X-Rokuban-Webhook-Secret ヘッダに載せる
+  timeout: 5s                    # 1 回の HTTP 要求タイムアウト。失敗時は同期で 1 回だけ再試行
+  events: []                     # 空なら既知の全イベント有効。絞る例: recording.finished / recording.failed
+                                 # 本処理（ingest / encode 等）は webhook 成否で止めない（at-least-once）
+                                 # ペイロードは JSON。機微情報（絶対パス・credentials）は載せない
 
 log:
   level: info
@@ -121,7 +137,7 @@ log:
 
 **config = デプロイ環境の性質**（そのホスト/クラスタを再構築すると変わるもの）。**DB = 運用中に UI から変えたい意思**（ルール・予約・視聴履歴）。
 
-この原則により**エンコードプロファイルは config 側**に落ちる。プロファイルの実体は「その環境の ffmpeg ビルドと HW (VAAPI/QSV/NVENC) で何ができるか」であり、`ffmpeg` パスと同じデプロイ属性。DB のルールからは名前参照とし、ルール保存時に存在検証（なければ警告）。
+この原則により**エンコードプロファイルは config 側**に落ちる。プロファイルの実体は「その環境の ffmpeg ビルドと HW (VAAPI/QSV/NVENC) で何ができるか」であり、`ffmpeg` パスと同じデプロイ属性。DB のルールからは名前参照とし、ルール保存時に存在検証（なければ **400**）。自由形式の cmd 文字列は採らない（構造化フィールドから worker が引数を組み立てる）。
 
 ## 運用補助
 

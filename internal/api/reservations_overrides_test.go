@@ -478,6 +478,64 @@ func TestUpdateReservationOverrides_UnknownResetField_Returns400(t *testing.T) {
 	_ = resp2.Body.Close()
 }
 
+// config に無い encodeProfiles は overrides でも 400 にする（issue #64）。
+// 既知名が通ることも両方向で確認する。
+func TestUpdateReservationOverrides_UnknownEncodeProfile(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	q := sqlcgen.New(pool)
+
+	router := api.NewRouter(api.RouterConfig{
+		Pool:               pool,
+		EncodeProfileNames: []string{"h264"},
+	})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	const programID int64 = 1850000185081234
+	ruleID := insertRuleFixture(t, pool, ctx)
+	resID := insertReservationDirect(t, pool, ctx, programID, &ruleID, 18500, 1850)
+
+	resp := doPatch(t, srv, "/api/reservations/"+itoa(resID), `{"encodeProfiles":["no-such-profile"]}`)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unknown encode profile status = %d, want 400", resp.StatusCode)
+	}
+	var errBody api.ErrorResponse
+	if err := json.NewDecoder(resp.Body).Decode(&errBody); err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if !strings.Contains(errBody.Error, "unknown encode profile") {
+		t.Errorf("error body = %q, want mention of unknown encode profile", errBody.Error)
+	}
+	if _, err := q.GetProgramOverrides(ctx, sqlcgen.GetProgramOverridesParams{
+		Site: "default", ProgramID: programID,
+	}); !errors.Is(err, pgx.ErrNoRows) {
+		t.Errorf("rejected request created program_overrides, err=%v", err)
+	}
+
+	resp = doPatch(t, srv, "/api/reservations/"+itoa(resID), `{"encodeProfiles":["h264"]}`)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("known encode profile status = %d, want 200", resp.StatusCode)
+	}
+	row, err := q.GetProgramOverrides(ctx, sqlcgen.GetProgramOverridesParams{
+		Site: "default", ProgramID: programID,
+	})
+	if err != nil {
+		t.Fatalf("loading known-profile overrides: %v", err)
+	}
+	var stored struct {
+		EncodeProfiles []string `json:"encodeProfiles"`
+	}
+	if err := json.Unmarshal(row.Overrides, &stored); err != nil {
+		t.Fatalf("unmarshalling stored overrides %s: %v", row.Overrides, err)
+	}
+	if len(stored.EncodeProfiles) != 1 || stored.EncodeProfiles[0] != "h264" {
+		t.Errorf("stored encodeProfiles = %v, want [h264]", stored.EncodeProfiles)
+	}
+}
+
 func TestUpdateReservationOverrides_InvalidFields_Returns400(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
