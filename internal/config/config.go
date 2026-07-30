@@ -26,6 +26,7 @@ type Config struct {
 	Worker     WorkerConfig     `yaml:"worker"`
 	Encode     EncodeConfig     `yaml:"encode"`
 	Webhook    WebhookConfig    `yaml:"webhook"`
+	Cleanup    CleanupConfig    `yaml:"cleanup"`
 	Log        LogConfig        `yaml:"log"`
 }
 
@@ -286,6 +287,29 @@ type WebhookConfig struct {
 	// Events は配送するイベント type の allowlist。空なら既知の全イベントを有効とみなす。
 	// 例: recording.finished, recording.failed, encode.finished, encode.failed, recording.deleted
 	Events []string `yaml:"events"`
+}
+
+// CleanupConfig は削除 reconcile（M3-8、docs/storage.md §7）の設定。
+type CleanupConfig struct {
+	// TrashRetention はごみ箱（recordings.deleted_at）の猶予期間。
+	// 0 なら既定値（30 日）。
+	TrashRetention time.Duration `yaml:"trash_retention"`
+
+	// OrphanMTimeGrace は孤児候補にするまでの mtime 猶予。この時間より新しい
+	// ファイルは孤児候補にしない（正常系の録画→ingest→エンコードは数時間で
+	// 完結するため）。0 なら既定値（7 日）。
+	OrphanMTimeGrace time.Duration `yaml:"orphan_mtime_grace"`
+
+	// OrphanAge は孤児候補が `orphan_files` に記録されてから実削除されるまでの
+	// エイジング期間。DB リストアで first_seen ごと失われるため窓は開き直る。
+	// 0 なら既定値（14 日）。
+	OrphanAge time.Duration `yaml:"orphan_age"`
+
+	// MaxDeletesPerPass は 1 パスで実行してよい物理削除数の上限（一括削除
+	// サーキットブレーカーの閾値。ソースを問わず 1 パス全体の合計に対して働く。
+	// docs/storage.md §7「一括削除サーキットブレーカーはループ全体に 1 つ」）。
+	// 0 なら既定値（100）を使う。
+	MaxDeletesPerPass int `yaml:"max_deletes_per_pass"`
 }
 
 // LogConfig はログ出力の設定。

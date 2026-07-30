@@ -45,6 +45,11 @@ const (
 	// ReconcileTotalLoss は reconciler の「desired が空なのに observed がある」
 	// という全損シグネチャを守る。件数の閾値ではない（理由は Guard のコメント）。
 	ReconcileTotalLoss = "reconcile_total_loss"
+
+	// DeleteReconcile は削除 reconcile（M3-8）の物理 unlink を守る。ごみ箱 /
+	// until_encoded / 孤児回収の 3 ソースをまとめた 1 パス分の削除件数が対象
+	// （docs/storage.md §7「一括削除サーキットブレーカーはループ全体に 1 つ」）。
+	DeleteReconcile = "delete_reconcile"
 )
 
 // Sample は発動時に「何が消されようとしていたか」を説明するためのペイロード。

@@ -107,6 +107,13 @@ webhook:                         # 汎用 HTTP webhook（M3-11）。EPGStation �
                                  # 本処理（ingest / encode 等）は webhook 成否で止めない（at-least-once）
                                  # ペイロードは JSON。機微情報（絶対パス・credentials）は載せない
 
+cleanup:                         # 削除 reconcile（M3-8、storage.md §7）
+  trash_retention: 720h          # ごみ箱（recordings.deleted_at）の猶予。既定 30 日
+  orphan_mtime_grace: 168h       # 孤児候補にするまでの mtime 猶予。既定 7 日
+  orphan_age: 336h               # 孤児候補が実削除されるまでのエイジング期間。既定 14 日
+  max_deletes_per_pass: 100      # 一括削除サーキットブレーカーの閾値。ソースを問わず
+                                 # 1 パス全体の合計に対して働く（ruler と同じラッチ式）
+
 log:
   level: info
   format: json                   # json | text

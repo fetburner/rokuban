@@ -176,6 +176,7 @@ func newServerCmd() *cobra.Command {
 					ReconcileStartDelayGrace: cfg.Reconciler.StartDelayGrace,
 					IngestStallTimeout:       cfg.Ingest.StallTimeout,
 					Webhook:                  webhookClient,
+					Cleanup:                  cfg.Cleanup,
 				})
 				clientCfg := worker.ClientConfig{
 					IngestConcurrency:    cfg.Ingest.Concurrency,
@@ -186,8 +187,8 @@ func newServerCmd() *cobra.Command {
 					Queues:               cfg.Worker.Queues,
 				}
 				// 定期ジョブ（epg_sync / tuner_sync / ruler_pass / reconcile_pass /
-				// record_sweep / catalog_export）は worker 側が投入する（mirakc に触る
-				// のも各ジョブのヒント経路をまとめるのも worker）。
+				// record_sweep / catalog_export / delete_reconcile）は worker 側が
+				// 投入する（mirakc に触るのも各ジョブのヒント経路をまとめるのも worker）。
 				if slices.Contains(roles, "worker") {
 					clientCfg.EpgSyncSite = watcher.DefaultSite
 					clientCfg.TunerSyncSite = watcher.DefaultSite
@@ -195,6 +196,7 @@ func newServerCmd() *cobra.Command {
 					clientCfg.ReconcilePassSite = watcher.DefaultSite
 					clientCfg.RecordSweepSite = watcher.DefaultSite
 					clientCfg.CatalogExport = true
+					clientCfg.DeleteReconcile = true
 				}
 				var clientErr error
 				riverClient, clientErr = worker.NewClient(pool, workers, clientCfg)
