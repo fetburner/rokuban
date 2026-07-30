@@ -11,6 +11,34 @@ RETURNING id;
 SELECT id FROM media_assets
 WHERE recording_id = $1 AND kind = 'original';
 
+-- encode が読む原本（パスとサイズ）。active のみ。tombstone や未 commit は対象外。
+-- name: GetActiveOriginalMediaAsset :one
+SELECT id, rel_path, size_bytes
+FROM media_assets
+WHERE recording_id = $1 AND kind = 'original' AND state = 'active';
+
+-- encode の冪等性チェック。active な encoded が既にあれば ffmpeg を走らせない。
+-- name: GetActiveEncodedMediaAssetID :one
+SELECT id FROM media_assets
+WHERE recording_id = $1
+  AND kind = 'encoded'
+  AND profile = $2
+  AND state = 'active';
+
+-- encode コミット。UNIQUE (recording_id, kind, profile) で冪等。
+-- tombstone（state='deleted'）がある場合は active に戻してパスとサイズを更新する。
+-- 既に active な行がある場合の上書きは worker 側の事前チェックで避ける。
+-- name: UpsertEncodedMediaAsset :one
+INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes)
+VALUES ($1, 'encoded', $2, $3, $4)
+ON CONFLICT (recording_id, kind, profile) DO UPDATE SET
+    rel_path   = EXCLUDED.rel_path,
+    size_bytes = EXCLUDED.size_bytes,
+    state      = 'active',
+    deleted_at = NULL,
+    updated_at = now()
+RETURNING id;
+
 -- pid_type は分類できなかった PID では NULL（空文字を入れない）。
 -- 値の権威は internal/tsstat（列に CHECK は無い）。
 -- name: InsertDropStat :exec

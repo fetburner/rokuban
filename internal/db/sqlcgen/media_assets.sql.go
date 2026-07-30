@@ -37,6 +37,47 @@ func (q *Queries) CreateMediaAsset(ctx context.Context, arg CreateMediaAssetPara
 	return id, err
 }
 
+const getActiveEncodedMediaAssetID = `-- name: GetActiveEncodedMediaAssetID :one
+SELECT id FROM media_assets
+WHERE recording_id = $1
+  AND kind = 'encoded'
+  AND profile = $2
+  AND state = 'active'
+`
+
+type GetActiveEncodedMediaAssetIDParams struct {
+	RecordingID int64
+	Profile     *string
+}
+
+// encode の冪等性チェック。active な encoded が既にあれば ffmpeg を走らせない。
+func (q *Queries) GetActiveEncodedMediaAssetID(ctx context.Context, arg GetActiveEncodedMediaAssetIDParams) (int64, error) {
+	row := q.db.QueryRow(ctx, getActiveEncodedMediaAssetID, arg.RecordingID, arg.Profile)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
+const getActiveOriginalMediaAsset = `-- name: GetActiveOriginalMediaAsset :one
+SELECT id, rel_path, size_bytes
+FROM media_assets
+WHERE recording_id = $1 AND kind = 'original' AND state = 'active'
+`
+
+type GetActiveOriginalMediaAssetRow struct {
+	ID        int64
+	RelPath   string
+	SizeBytes int64
+}
+
+// encode が読む原本（パスとサイズ）。active のみ。tombstone や未 commit は対象外。
+func (q *Queries) GetActiveOriginalMediaAsset(ctx context.Context, recordingID int64) (GetActiveOriginalMediaAssetRow, error) {
+	row := q.db.QueryRow(ctx, getActiveOriginalMediaAsset, recordingID)
+	var i GetActiveOriginalMediaAssetRow
+	err := row.Scan(&i.ID, &i.RelPath, &i.SizeBytes)
+	return i, err
+}
+
 const getOriginalMediaAssetForServing = `-- name: GetOriginalMediaAssetForServing :one
 SELECT a.id, a.rel_path, a.size_bytes, a.updated_at, r.title
 FROM media_assets a
@@ -153,4 +194,38 @@ func (q *Queries) InsertDropStat(ctx context.Context, arg InsertDropStatParams) 
 		arg.PidType,
 	)
 	return err
+}
+
+const upsertEncodedMediaAsset = `-- name: UpsertEncodedMediaAsset :one
+INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes)
+VALUES ($1, 'encoded', $2, $3, $4)
+ON CONFLICT (recording_id, kind, profile) DO UPDATE SET
+    rel_path   = EXCLUDED.rel_path,
+    size_bytes = EXCLUDED.size_bytes,
+    state      = 'active',
+    deleted_at = NULL,
+    updated_at = now()
+RETURNING id
+`
+
+type UpsertEncodedMediaAssetParams struct {
+	RecordingID int64
+	Profile     *string
+	RelPath     string
+	SizeBytes   int64
+}
+
+// encode コミット。UNIQUE (recording_id, kind, profile) で冪等。
+// tombstone（state='deleted'）がある場合は active に戻してパスとサイズを更新する。
+// 既に active な行がある場合の上書きは worker 側の事前チェックで避ける。
+func (q *Queries) UpsertEncodedMediaAsset(ctx context.Context, arg UpsertEncodedMediaAssetParams) (int64, error) {
+	row := q.db.QueryRow(ctx, upsertEncodedMediaAsset,
+		arg.RecordingID,
+		arg.Profile,
+		arg.RelPath,
+		arg.SizeBytes,
+	)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
 }

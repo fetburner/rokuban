@@ -231,6 +231,7 @@ func TestInsertOpts_UniqueStatesExcludeFinalized(t *testing.T) {
 	}{
 		{"epg_sync", EpgSyncArgs{}.InsertOpts()},
 		{"ingest", IngestJobArgs{}.InsertOpts()},
+		{"encode", EncodeJobArgs{}.InsertOpts()},
 		{"ruler_pass", RulerPassArgs{}.InsertOpts()},
 		{"reconcile_pass", ReconcilePassArgs{}.InsertOpts()},
 		{"catalog_export", CatalogExportArgs{}.InsertOpts()},

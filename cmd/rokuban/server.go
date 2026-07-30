@@ -168,6 +168,8 @@ func newServerCmd() *cobra.Command {
 					MirakcClient:             mc,
 					Pool:                     pool,
 					MediaDir:                 cfg.Storage.MediaDir,
+					ScratchDir:               cfg.Storage.ScratchDir,
+					Encode:                   cfg.Encode,
 					EpgRetentionGrace:        cfg.Epg.RetentionGrace,
 					RulerRetentionGrace:      cfg.Epg.RetentionGrace,
 					RulerMaxDeletesPerPass:   cfg.Ruler.MaxDeletesPerPass,
