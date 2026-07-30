@@ -19,6 +19,44 @@ func (q *Queries) DeleteOrphanFile(ctx context.Context, relPath string) error {
 	return err
 }
 
+const getRecordingPurgeState = `-- name: GetRecordingPurgeState :one
+SELECT
+  r.site,
+  r.title,
+  -- 明示キャストが無いと sqlc が型を推論できず interface{} になる。
+  (r.deleted_at IS NOT NULL)::boolean AS trashed,
+  EXISTS (
+    SELECT 1 FROM media_assets a
+    WHERE a.recording_id = r.id AND a.state <> 'deleted'
+  ) AS assets_remaining
+FROM recordings r
+WHERE r.id = $1
+`
+
+type GetRecordingPurgeStateRow struct {
+	Site            string
+	Title           string
+	Trashed         bool
+	AssetsRemaining bool
+}
+
+// recording.deleted（M3-11）の発火判定。「録画そのものが消えた」と言えるのは、
+// ごみ箱に入った（deleted_at IS NOT NULL）録画で、物理削除が終わっていない
+// media_assets が 1 行も残っていないときだけである。判定をアセットの kind に
+// 取ると until_encoded の原本削除（録画は生きている）で誤発火し、逆に原本を
+// 先に消した録画のごみ箱削除では発火しない。
+func (q *Queries) GetRecordingPurgeState(ctx context.Context, id int64) (GetRecordingPurgeStateRow, error) {
+	row := q.db.QueryRow(ctx, getRecordingPurgeState, id)
+	var i GetRecordingPurgeStateRow
+	err := row.Scan(
+		&i.Site,
+		&i.Title,
+		&i.Trashed,
+		&i.AssetsRemaining,
+	)
+	return i, err
+}
+
 const listAgedOrphanFiles = `-- name: ListAgedOrphanFiles :many
 SELECT rel_path FROM orphan_files WHERE first_seen <= $1::timestamptz
 `

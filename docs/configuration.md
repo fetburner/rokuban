@@ -107,7 +107,7 @@ webhook:                         # 汎用 HTTP webhook（M3-11）。EPGStation �
   secret: ""                     # 非空なら X-Rokuban-Webhook-Secret ヘッダに載せる
   timeout: 5s                    # 1 回の HTTP 要求タイムアウト。失敗時は同期で 1 回だけ再試行
   events: []                     # 空なら既知の全イベント有効。絞る例: recording.finished / recording.failed
-                                 # 本処理（ingest / encode 等）は webhook 成否で止めない（at-least-once）
+                                 # 本処理（ingest / encode / 削除 reconcile 等）は webhook 成否で止めない（at-least-once）
                                  # ペイロードは JSON。機微情報（絶対パス・credentials）は載せない
 
 cleanup:                         # 削除 reconcile（M3-8、storage.md §7）
@@ -137,6 +137,37 @@ log:
 ### db は構造化フィールド
 
 `url:` 1 本の DSN ではなく構造化フィールドを採る。パスワードの URL エスケープ事故を避けられる。
+
+### webhook のイベントとペイロード
+
+`webhook.events` の allowlist に書ける type と、共通 envelope（M3-11 / issue #73）。
+
+| type | 発火点 | 追加フィールド |
+|---|---|---|
+| `recording.finished` | watcher（`status` が finished へ遷移したとき 1 回） | — |
+| `recording.failed` | watcher（mirakc の `recording.failed` イベントを受けるごと） | — |
+| `encode.finished` | EncodeWorker（コミット成功時。冪等スキップでは発火しない） | `profile` |
+| `encode.failed` | EncodeWorker（**River の試行ごと**） | `profile` / `attempt` / `maxAttempts` |
+| `recording.deleted` | 削除 reconcile（ごみ箱の録画の**最後のアセット**を物理削除したとき 1 回） | — |
+
+```json
+{
+  "id": "<配送単位の UUID>",
+  "type": "encode.failed",
+  "at": "<RFC3339 UTC>",
+  "recordingId": 1,
+  "site": "default",
+  "title": "番組名",
+  "status": "failed",
+  "profile": "h264",
+  "attempt": 3,
+  "maxAttempts": 25
+}
+```
+
+- **`id` は配送ごとに変わる。** 同じ論理イベントが再送されうるので、受け側の冪等キーには `(type, recordingId, profile, attempt)` を使う。エンコード失敗は River が再試行するため、恒久的な失敗では試行ごとに配送される（最終試行だけ通知したいなら `attempt == maxAttempts` で絞る）
+- **`recording.deleted` は録画の寿命で決まる。** アセットの kind では決めない。`keep_original: until_encoded` の原本削除は「録画が消えた」ではないので発火せず（encoded で再生できる）、逆に原本を先に消してある録画のごみ箱削除では最後のアセットの削除で発火する
+- 絶対パス・credentials は載せない。1 パスの通知に時間上限があり、超過分は捨ててログに件数を残す（削除の進捗を webhook 先に引きずられないため）
 
 ## 規約
 

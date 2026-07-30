@@ -2,16 +2,23 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/breaker"
+	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/webhook"
 )
 
 // seedOriginalAsset は原本の active media_assets 行 + ファイルを 1 件用意する。
@@ -57,6 +64,60 @@ func seedEncodedOrThumbnailAsset(t *testing.T, pool *pgxpool.Pool, mediaDir stri
 		t.Fatalf("seeding %s media_asset: %v", kind, err)
 	}
 	return id
+}
+
+// webhookRecorder は webhook 先の httptest サーバが受け取ったイベントを記録する。
+// ハンドラは別 goroutine で走るので internal/webhook のテストと同じく同期して持つ。
+// encode_test.go からも使う。
+type webhookRecorder struct {
+	mu     sync.Mutex
+	events []webhook.Event
+}
+
+// newWebhookRecorder は記録用サーバを立て、そこへ送る Client を返す。
+func newWebhookRecorder(t *testing.T) (*webhookRecorder, *webhook.Client) {
+	t.Helper()
+	rec := &webhookRecorder{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("reading webhook body: %v", err)
+		}
+		var ev webhook.Event
+		if err := json.Unmarshal(body, &ev); err != nil {
+			t.Errorf("unmarshalling webhook body: %v", err)
+		}
+		rec.mu.Lock()
+		rec.events = append(rec.events, ev)
+		rec.mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+	return rec, webhook.New(config.WebhookConfig{URL: srv.URL})
+}
+
+// received は受信したイベントのコピーを返す。
+func (r *webhookRecorder) received() []webhook.Event {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]webhook.Event(nil), r.events...)
+}
+
+// reset は記録を捨てる（2 パス目だけを見たいとき用）。
+func (r *webhookRecorder) reset() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.events = nil
+}
+
+// markRecordingTrashed は録画をごみ箱に入れ、猶予（既定 30 日）を過ぎた状態にする。
+func markRecordingTrashed(t *testing.T, pool *pgxpool.Pool, recordingID int64) {
+	t.Helper()
+	past := time.Now().Add(-40 * 24 * time.Hour)
+	if _, err := pool.Exec(context.Background(),
+		"UPDATE recordings SET deleted_at = $1 WHERE id = $2", past, recordingID); err != nil {
+		t.Fatalf("marking recording deleted: %v", err)
+	}
 }
 
 func assetState(t *testing.T, pool *pgxpool.Pool, id int64) string {
@@ -151,6 +212,307 @@ func TestDeleteReconcileWorker_PurgeAfterImmediate_Deletes(t *testing.T) {
 
 	if got := assetState(t, pool, assetID); got != "deleted" {
 		t.Errorf("asset state = %q, want deleted (purge_after should bypass retention)", got)
+	}
+}
+
+// ごみ箱の録画を完全削除したら recording.deleted が 1 回だけ発火すること
+// （アセット 3 件を消しても 1 通。発火は録画単位）。
+func TestDeleteReconcileWorker_TrashPurge_FiresRecordingDeletedWebhookOnce(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+	recordingID := insertTestRecording(t, pool)
+
+	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "webhook/original.m2ts", []byte("data"))
+	profile := "h264"
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindEncoded, &profile, "webhook/encoded.mp4", []byte("mp4"))
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindThumbnail, nil, "webhook/thumb.jpg", []byte("jpg"))
+	markRecordingTrashed(t, pool, recordingID)
+
+	rec, client := newWebhookRecorder(t)
+	w := &DeleteReconcileWorker{
+		Pool: pool, MediaDir: mediaDir, TrashRetention: 30 * 24 * time.Hour,
+		Webhook: client,
+	}
+	if err := w.Work(context.Background(), nil); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+
+	if got := assetState(t, pool, assetID); got != "deleted" {
+		t.Fatalf("asset state = %q, want deleted", got)
+	}
+	events := rec.received()
+	if len(events) != 1 {
+		t.Fatalf("webhook events = %d, want 1: %+v", len(events), events)
+	}
+	got := events[0]
+	if got.Type != webhook.EventRecordingDeleted {
+		t.Errorf("type = %q, want %q", got.Type, webhook.EventRecordingDeleted)
+	}
+	if got.RecordingID != recordingID {
+		t.Errorf("recordingId = %d, want %d", got.RecordingID, recordingID)
+	}
+	if got.Status != "deleted" {
+		t.Errorf("status = %q, want deleted", got.Status)
+	}
+	if got.Title != "テスト番組" {
+		t.Errorf("title = %q, want %q", got.Title, "テスト番組")
+	}
+	if got.Profile != "" {
+		t.Errorf("profile = %q, want empty (recording.deleted は録画単位)", got.Profile)
+	}
+}
+
+// 原本を先に消してある録画（until_encoded 済み）をごみ箱経由で完全削除しても
+// recording.deleted が発火すること。発火条件をアセットの kind に取ると、この
+// 経路では原本が既に無いので一度も発火しない。
+func TestDeleteReconcileWorker_TrashPurgeWithoutOriginal_FiresRecordingDeletedWebhook(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+	recordingID := insertTestRecording(t, pool)
+
+	// 原本は until_encoded で既に物理削除済み（行は deleted で残る）。
+	originalID := seedOriginalAsset(t, pool, mediaDir, recordingID, "webhook/gone.m2ts", []byte("data"))
+	if _, err := pool.Exec(context.Background(),
+		"UPDATE media_assets SET state = 'deleted', deleted_at = now() WHERE id = $1", originalID); err != nil {
+		t.Fatalf("marking original deleted: %v", err)
+	}
+	if err := os.Remove(filepath.Join(mediaDir, "webhook", "gone.m2ts")); err != nil {
+		t.Fatalf("removing original file: %v", err)
+	}
+
+	profile := "h264"
+	encodedID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindEncoded, &profile, "webhook/encoded.mp4", []byte("mp4"))
+	markRecordingTrashed(t, pool, recordingID)
+
+	rec, client := newWebhookRecorder(t)
+	w := &DeleteReconcileWorker{
+		Pool: pool, MediaDir: mediaDir, TrashRetention: 30 * 24 * time.Hour,
+		Webhook: client,
+	}
+	if err := w.Work(context.Background(), nil); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+
+	if got := assetState(t, pool, encodedID); got != "deleted" {
+		t.Fatalf("encoded state = %q, want deleted", got)
+	}
+	events := rec.received()
+	if len(events) != 1 {
+		t.Fatalf("webhook events = %d, want 1 (原本が既に無い録画の完全削除): %+v", len(events), events)
+	}
+	if events[0].Type != webhook.EventRecordingDeleted {
+		t.Errorf("type = %q, want %q", events[0].Type, webhook.EventRecordingDeleted)
+	}
+}
+
+// until_encoded の原本削除では recording.deleted を発火しない（録画は生きていて
+// encoded で再生できる。TrashPurge_FiresRecordingDeletedWebhookOnce の逆方向）。
+func TestDeleteReconcileWorker_UntilEncodedOriginalPurge_DoesNotFireRecordingDeletedWebhook(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+	recordingID := insertTestRecording(t, pool)
+
+	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "webhook/until-encoded.m2ts", []byte("data"))
+	profile := "h264"
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindEncoded, &profile, "webhook/ue-encoded.mp4", []byte("mp4"))
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindThumbnail, nil, "webhook/ue-thumb.jpg", []byte("jpg"))
+	if _, err := pool.Exec(context.Background(),
+		"UPDATE recordings SET keep_original = 'until_encoded', encode_profiles = $1 WHERE id = $2",
+		[]string{"h264"}, recordingID); err != nil {
+		t.Fatalf("setting keep_original: %v", err)
+	}
+
+	rec, client := newWebhookRecorder(t)
+	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, Webhook: client}
+	if err := w.Work(context.Background(), nil); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+
+	if got := assetState(t, pool, assetID); got != "deleted" {
+		t.Fatalf("original state = %q, want deleted", got)
+	}
+	if events := rec.received(); len(events) != 0 {
+		t.Errorf("webhook fired for a live recording: %+v", events)
+	}
+}
+
+// 削除の進行中（deleting）にごみ箱から復元された録画では recording.deleted を
+// 発火しない。pending 経路は「既に決めた削除」を続行するので最後のアセットが
+// 消えるが、録画は生きているので「録画が消えた」ではない
+// （TrashPurgeWithoutOriginal_Fires... の逆方向。復元は DB だけを触る
+// = internal/api RestoreRecording なので、この競合は実際に起こりうる）。
+func TestDeleteReconcileWorker_RestoredWhileDeleting_DoesNotFireRecordingDeletedWebhook(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+	recordingID := insertTestRecording(t, pool)
+
+	// 原本 1 件だけ。unlink を 1 パス目だけ失敗させる（中身のあるディレクトリ）。
+	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "webhook/restore/original.m2ts", []byte("data"))
+	assetPath := filepath.Join(mediaDir, "webhook", "restore", "original.m2ts")
+	if err := os.Remove(assetPath); err != nil {
+		t.Fatalf("removing seeded file: %v", err)
+	}
+	if err := os.MkdirAll(assetPath, 0o755); err != nil {
+		t.Fatalf("creating blocking dir: %v", err)
+	}
+	blockerFile := filepath.Join(assetPath, "blocker")
+	if err := os.WriteFile(blockerFile, []byte("x"), 0o644); err != nil {
+		t.Fatalf("creating blocker file: %v", err)
+	}
+	markRecordingTrashed(t, pool, recordingID)
+
+	rec, client := newWebhookRecorder(t)
+	w := &DeleteReconcileWorker{
+		Pool: pool, MediaDir: mediaDir, TrashRetention: 30 * 24 * time.Hour,
+		Webhook: client,
+	}
+	if err := w.Work(context.Background(), nil); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+	if got := assetState(t, pool, assetID); got != "deleting" {
+		t.Fatalf("asset state = %q, want deleting", got)
+	}
+
+	// ここでユーザーがごみ箱から復元する。
+	if _, err := sqlcgen.New(pool).RestoreRecording(context.Background(), recordingID); err != nil {
+		t.Fatalf("restoring recording: %v", err)
+	}
+	if err := os.Remove(blockerFile); err != nil {
+		t.Fatalf("removing blocker file: %v", err)
+	}
+	rec.reset()
+
+	if err := w.Work(context.Background(), nil); err != nil {
+		t.Fatalf("Work() second pass error: %v", err)
+	}
+	if got := assetState(t, pool, assetID); got != "deleted" {
+		t.Fatalf("asset state after second pass = %q, want deleted (pending は決定済みの削除を続行する)", got)
+	}
+	if events := rec.received(); len(events) != 0 {
+		t.Errorf("webhook fired for a restored recording: %+v", events)
+	}
+}
+
+// アセットが 1 件でも消しきれていないうちは発火せず、次パスで最後の 1 件が
+// 消えた時点で発火すること（pending 経路からの発火も兼ねる）。
+func TestDeleteReconcileWorker_TrashPurge_FiresOnlyAfterLastAsset(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+	recordingID := insertTestRecording(t, pool)
+
+	seedOriginalAsset(t, pool, mediaDir, recordingID, "webhook/last/original.m2ts", []byte("data"))
+
+	// unlink を失敗させる: rel_path をファイルではなく、中身のあるディレクトリにする
+	// （os.Remove は空でないディレクトリを消せない）。
+	profile := "h264"
+	blockedID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindEncoded, &profile, "webhook/last/blocked.mp4", []byte("mp4"))
+	blockedPath := filepath.Join(mediaDir, "webhook", "last", "blocked.mp4")
+	if err := os.Remove(blockedPath); err != nil {
+		t.Fatalf("removing seeded file: %v", err)
+	}
+	if err := os.MkdirAll(blockedPath, 0o755); err != nil {
+		t.Fatalf("creating blocking dir: %v", err)
+	}
+	blockerFile := filepath.Join(blockedPath, "blocker")
+	if err := os.WriteFile(blockerFile, []byte("x"), 0o644); err != nil {
+		t.Fatalf("creating blocker file: %v", err)
+	}
+	markRecordingTrashed(t, pool, recordingID)
+
+	rec, client := newWebhookRecorder(t)
+	w := &DeleteReconcileWorker{
+		Pool: pool, MediaDir: mediaDir, TrashRetention: 30 * 24 * time.Hour,
+		Webhook: client,
+	}
+	if err := w.Work(context.Background(), nil); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+
+	if got := assetState(t, pool, blockedID); got != "deleting" {
+		t.Fatalf("blocked asset state = %q, want deleting", got)
+	}
+	if events := rec.received(); len(events) != 0 {
+		t.Fatalf("fired while an asset was still not deleted: %+v", events)
+	}
+
+	// 障害を除けば次パスの pending 経路が拾い直し、そこで初めて発火する。
+	if err := os.Remove(blockerFile); err != nil {
+		t.Fatalf("removing blocker file: %v", err)
+	}
+	rec.reset()
+	if err := w.Work(context.Background(), nil); err != nil {
+		t.Fatalf("Work() second pass error: %v", err)
+	}
+
+	if got := assetState(t, pool, blockedID); got != "deleted" {
+		t.Fatalf("blocked asset state after second pass = %q, want deleted", got)
+	}
+	events := rec.received()
+	if len(events) != 1 {
+		t.Fatalf("webhook events on second pass = %d, want 1: %+v", len(events), events)
+	}
+	if events[0].RecordingID != recordingID {
+		t.Errorf("recordingId = %d, want %d", events[0].RecordingID, recordingID)
+	}
+}
+
+// webhook 先がハングしても削除そのものは完了すること（issue #73 の受け入れ基準
+// 「webhook 先が落ちていても本処理は完了する」の削除 reconcile 版）。
+func TestDeleteReconcileWorker_HangingWebhook_StillDeletes(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+	recordingID := insertTestRecording(t, pool)
+
+	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "webhook/hang.m2ts", []byte("data"))
+	markRecordingTrashed(t, pool, recordingID)
+
+	// クライアント側の timeout を必ず超える程度に応答を遅らせる。上限を切らないと
+	// クライアントが諦めても接続が閉じるまでハンドラが残り、Close が待たされる。
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-time.After(2 * time.Second):
+		}
+	}))
+	defer srv.Close()
+
+	w := &DeleteReconcileWorker{
+		Pool: pool, MediaDir: mediaDir, TrashRetention: 30 * 24 * time.Hour,
+		Webhook: webhook.New(config.WebhookConfig{URL: srv.URL, Timeout: 50 * time.Millisecond}),
+	}
+	if err := w.Work(context.Background(), nil); err != nil {
+		t.Fatalf("Work() error: %v (webhook の失敗で削除パスを落としてはいけない)", err)
+	}
+	if got := assetState(t, pool, assetID); got != "deleted" {
+		t.Errorf("asset state = %q, want deleted", got)
+	}
+}
+
+// 通知の時間予算を使い切ったら残りは捨てる（削除パス全体を webhook で
+// タイムアウトさせないための安全弁）。
+func TestDeleteReconcileWorker_NotifyBudgetExhausted_DropsRemaining(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+	recordingID := insertTestRecording(t, pool)
+	seedOriginalAsset(t, pool, mediaDir, recordingID, "webhook/budget.m2ts", []byte("data"))
+	markRecordingTrashed(t, pool, recordingID)
+	if _, err := pool.Exec(context.Background(),
+		"UPDATE media_assets SET state = 'deleted', deleted_at = now() WHERE recording_id = $1", recordingID); err != nil {
+		t.Fatalf("marking assets deleted: %v", err)
+	}
+
+	rec, client := newWebhookRecorder(t)
+	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, Webhook: client}
+	// 予算 0 = 1 件目から捨てる。予算があれば発火する条件（trashed + アセット無し）は
+	// 揃えてあるので、ここで 0 件なら予算が効いている。
+	w.notifyPurgedRecordings(context.Background(), sqlcgen.New(pool), []int64{recordingID}, 0)
+	if events := rec.received(); len(events) != 0 {
+		t.Errorf("notified despite an exhausted budget: %+v", events)
+	}
+
+	w.notifyPurgedRecordings(context.Background(), sqlcgen.New(pool), []int64{recordingID}, time.Minute)
+	if events := rec.received(); len(events) != 1 {
+		t.Fatalf("webhook events with a budget = %d, want 1: %+v", len(events), events)
 	}
 }
 
