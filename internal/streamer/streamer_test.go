@@ -499,9 +499,10 @@ func TestRecordingFile_AccelRedirectRejectsTraversal(t *testing.T) {
 	}
 }
 
-// seedEncodedAsset は active な encoded 派生物を 1 件コミットする。
-func seedEncodedAsset(t *testing.T, pool *pgxpool.Pool, recordingID int64, profile, relPath string, size int64) int64 {
+// seedEncodedAsset は active な encoded 派生物（プロファイル h264）を 1 件コミットする。
+func seedEncodedAsset(t *testing.T, pool *pgxpool.Pool, recordingID int64, relPath string, size int64) int64 {
 	t.Helper()
+	profile := "h264"
 	id, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
 		RecordingID: recordingID,
 		Kind:        db.AssetKindEncoded,
@@ -531,7 +532,7 @@ func TestRecordingFile_EncodedProfile(t *testing.T) {
 
 	recordingID := seedRecording(t, pool)
 	// 原本は無くても encoded だけで再生できる（until_encoded 後を想定）
-	seedEncodedAsset(t, pool, recordingID, "h264", relPath, int64(len(content)))
+	seedEncodedAsset(t, pool, recordingID, relPath, int64(len(content)))
 
 	r := chi.NewRouter()
 	New(pool, Config{MediaDir: mediaDir}).Mount(r)
@@ -573,7 +574,7 @@ func TestRecordingFile_EncodedNotFound(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 	recordingID := seedRecording(t, pool)
-	seedEncodedAsset(t, pool, recordingID, "h264", relPath, int64(len(content)))
+	seedEncodedAsset(t, pool, recordingID, relPath, int64(len(content)))
 
 	r := chi.NewRouter()
 	New(pool, Config{MediaDir: mediaDir}).Mount(r)
@@ -609,7 +610,7 @@ func TestRecordingFile_EncodedDeletedRecording(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 	recordingID := seedRecording(t, pool)
-	seedEncodedAsset(t, pool, recordingID, "h264", "x.mp4", int64(len(content)))
+	seedEncodedAsset(t, pool, recordingID, "x.mp4", int64(len(content)))
 	if _, err := pool.Exec(context.Background(),
 		"UPDATE recordings SET deleted_at = now() WHERE id = $1", recordingID); err != nil {
 		t.Fatalf("trash: %v", err)
@@ -635,7 +636,7 @@ func TestRecordingFile_OriginalVsEncoded(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 	recordingID := seedRecording(t, pool)
-	seedEncodedAsset(t, pool, recordingID, "h264", "e.mp4", int64(len(mp4)))
+	seedEncodedAsset(t, pool, recordingID, "e.mp4", int64(len(mp4)))
 
 	r := chi.NewRouter()
 	New(pool, Config{MediaDir: mediaDir}).Mount(r)
