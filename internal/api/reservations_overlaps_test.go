@@ -9,41 +9,55 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
-// overlapsURL は GET /api/programs/{programId}/overlaps の URL を組む。
+// overlapsURL は GET /api/sites/{site}/programs/{programId}/overlaps の URL を組む。
 func overlapsURL(base string, programID int64) string {
-	return fmt.Sprintf("%s/api/programs/%d/overlaps", base, programID)
+	return fmt.Sprintf("%s/api/sites/default/programs/%d/overlaps", base, programID)
 }
 
-// reserveViaAPI は POST /api/reservations で手動予約を作成し、デコードした
-// Reservation を返す（201 でなければ即 Fatal）。番組の事実（title / 開始時刻 /
-// 尺）はサーバーが EPG プロジェクションから引く（#27）ので、呼び出し側は事前に
-// seedEpgProgram で対象番組を登録しておくこと。
-func reserveViaAPI(t *testing.T, srv string, programID int64) Reservation {
+// reserveViaAPI は PUT .../intent {action:"record"} で意図を立ててから、ruler が
+// 本来行う reservations 行の実体化を模して直接 1 行 INSERT し、その id を返す
+// （テストでは ruler パスを回さないため）。番組の事実（title / 開始時刻 / 尺）は
+// intent の書き込みが EPG プロジェクションから program_snapshots に写すので、
+// 呼び出し側は事前に seedEpgProgram で対象番組を登録しておくこと。
+func reserveViaAPI(t *testing.T, srv string, pool *pgxpool.Pool, ctx context.Context, programID int64) int64 {
 	t.Helper()
-	body := fmt.Sprintf(`{"programId":%d}`, programID)
-	resp, err := http.Post(srv+"/api/reservations", "application/json", strings.NewReader(body))
+	req, err := http.NewRequest(http.MethodPut,
+		fmt.Sprintf("%s/api/sites/default/programs/%d/intent", srv, programID),
+		strings.NewReader(`{"action":"record"}`))
 	if err != nil {
-		t.Fatalf("POST /api/reservations: %v", err)
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PUT intent for program %d: %v", programID, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("create reservation for program %d: status = %d, want 201", programID, resp.StatusCode)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("put intent for program %d: status = %d, want 204", programID, resp.StatusCode)
 	}
-	var out Reservation
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		t.Fatalf("decoding created reservation: %v", err)
+
+	var id int64
+	if err := pool.QueryRow(ctx, `
+INSERT INTO reservations (site, program_id) VALUES ('default', $1) RETURNING id`,
+		programID).Scan(&id); err != nil {
+		t.Fatalf("inserting reservation fixture for program %d: %v", programID, err)
 	}
-	return out
+	return id
 }
 
 // 重なる予約（同時間帯に別の予約がある）は件数に数え、重ならない予約
 // （時間がずれている）は数えない。
 func TestGetProgramOverlaps_CountsOverlapping(t *testing.T) {
 	pool := testutil.SetupDB(t)
+	ctx := context.Background()
 	srv := newAPIServer(t, pool)
 
 	base := time.Now().Truncate(time.Hour).Add(24 * time.Hour)
@@ -53,8 +67,8 @@ func TestGetProgramOverlaps_CountsOverlapping(t *testing.T) {
 	seedEpgProgram(t, pool, 202, 32678, 5168, 3, "重ならない番組", base.Add(-2*time.Hour), false)
 
 	// 対象番組 [00:00,01:00) と重なる予約 [00:30,01:30)、重ならない予約 [-2:00,-1:00) を用意
-	reserveViaAPI(t, srv.URL, 201)
-	reserveViaAPI(t, srv.URL, 202)
+	reserveViaAPI(t, srv.URL, pool, ctx, 201)
+	reserveViaAPI(t, srv.URL, pool, ctx, 202)
 
 	var got ProgramOverlaps
 	resp := getJSON(t, overlapsURL(srv.URL, 200), &got)
@@ -74,6 +88,7 @@ func TestGetProgramOverlaps_CountsOverlapping(t *testing.T) {
 // （閉区間ではなく半開区間で判定する必要がある核心のテスト）。
 func TestGetProgramOverlaps_AdjacentProgramNotCounted(t *testing.T) {
 	pool := testutil.SetupDB(t)
+	ctx := context.Background()
 	srv := newAPIServer(t, pool)
 
 	base := time.Now().Truncate(time.Hour).Add(24 * time.Hour)
@@ -84,8 +99,8 @@ func TestGetProgramOverlaps_AdjacentProgramNotCounted(t *testing.T) {
 	// 後番組: 開始がちょうど対象番組の終了と同時刻
 	seedEpgProgram(t, pool, 212, 32678, 5168, 3, "後番組", base.Add(testProgramDuration), false)
 
-	reserveViaAPI(t, srv.URL, 211)
-	reserveViaAPI(t, srv.URL, 212)
+	reserveViaAPI(t, srv.URL, pool, ctx, 211)
+	reserveViaAPI(t, srv.URL, pool, ctx, 212)
 
 	var got ProgramOverlaps
 	resp := getJSON(t, overlapsURL(srv.URL, 210), &got)
@@ -101,13 +116,14 @@ func TestGetProgramOverlaps_AdjacentProgramNotCounted(t *testing.T) {
 // 予約済みの場合に「自分と重なっている」と出るのは無意味なので除外する。
 func TestGetProgramOverlaps_ExcludesSelf(t *testing.T) {
 	pool := testutil.SetupDB(t)
+	ctx := context.Background()
 	srv := newAPIServer(t, pool)
 
 	base := time.Now().Truncate(time.Hour).Add(24 * time.Hour)
 	seedEpgService(t, pool, 32678, 5168, 8, "テスト局", "27")
 	seedEpgProgram(t, pool, 220, 32678, 5168, 1, "対象番組", base, false)
 
-	reserveViaAPI(t, srv.URL, 220)
+	reserveViaAPI(t, srv.URL, pool, ctx, 220)
 
 	var got ProgramOverlaps
 	resp := getJSON(t, overlapsURL(srv.URL, 220), &got)
@@ -131,12 +147,12 @@ func TestGetProgramOverlaps_ExcludesOrphaned(t *testing.T) {
 	seedEpgProgram(t, pool, 230, 32678, 5168, 1, "対象番組", base, false)
 	seedEpgProgram(t, pool, 231, 32678, 5168, 2, "orphan になる番組", base.Add(30*time.Minute), false)
 
-	orphaned := reserveViaAPI(t, srv.URL, 231)
+	orphaned := reserveViaAPI(t, srv.URL, pool, ctx, 231)
 
 	// MarkReservationOrphaned は :execrows になった（internal/reconciler の
 	// markOrphaned が実際に更新できた行数をログ出力の可否に使うため）。
 	// この呼び出しは常に対象行があるので rows は捨てて良い。
-	if _, err := sqlcgen.New(pool).MarkReservationOrphaned(ctx, orphaned.Id); err != nil {
+	if _, err := sqlcgen.New(pool).MarkReservationOrphaned(ctx, orphaned); err != nil {
 		t.Fatalf("marking reservation orphaned: %v", err)
 	}
 
@@ -184,19 +200,19 @@ func TestGetProgramOverlaps_ExcludesSkippedIntent(t *testing.T) {
 	// program_intents / program_overrides / reservations はいずれも
 	// program_snapshots への FK（#27）を持つので、先に upsert しておく。
 	if err := q.UpsertProgramSnapshot(ctx, sqlcgen.UpsertProgramSnapshotParams{
-		Site: defaultSite, ProgramID: skippedProgramID, Title: "skip された番組",
+		Site: db.DefaultSite, ProgramID: skippedProgramID, Title: "skip された番組",
 		StartAt: skippedStart, DurationMs: testProgramDuration.Milliseconds(),
 		NetworkID: &networkID, ServiceID: &serviceID, ChannelType: &channelType, Channel: &channel,
 	}); err != nil {
 		t.Fatalf("upserting program snapshot: %v", err)
 	}
 	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
-		Site: defaultSite, ProgramID: skippedProgramID, Action: "skip",
+		Site: db.DefaultSite, ProgramID: skippedProgramID, Action: "skip",
 	}); err != nil {
 		t.Fatalf("upserting skip intent: %v", err)
 	}
 	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
-		Site: defaultSite, ProgramID: skippedProgramID, Overrides: json.RawMessage(`{"priority":9}`),
+		Site: db.DefaultSite, ProgramID: skippedProgramID, Overrides: json.RawMessage(`{"priority":9}`),
 	}); err != nil {
 		t.Fatalf("upserting program overrides: %v", err)
 	}
@@ -220,6 +236,7 @@ INSERT INTO reservations (site, program_id) VALUES ('default', $1)`,
 // 分からずユーザーが判断できない。
 func TestGetProgramOverlaps_ReturnsBreakdown(t *testing.T) {
 	pool := testutil.SetupDB(t)
+	ctx := context.Background()
 	srv := newAPIServer(t, pool)
 
 	base := time.Now().Truncate(time.Hour).Add(24 * time.Hour)
@@ -227,7 +244,7 @@ func TestGetProgramOverlaps_ReturnsBreakdown(t *testing.T) {
 	seedEpgProgram(t, pool, 250, 32678, 5168, 1, "対象番組", base, false)
 	seedEpgProgram(t, pool, 251, 32678, 5168, 2, "重なる番組", base.Add(30*time.Minute), false)
 
-	overlapping := reserveViaAPI(t, srv.URL, 251)
+	overlapping := reserveViaAPI(t, srv.URL, pool, ctx, 251)
 
 	var got ProgramOverlaps
 	resp := getJSON(t, overlapsURL(srv.URL, 250), &got)
@@ -238,8 +255,8 @@ func TestGetProgramOverlaps_ReturnsBreakdown(t *testing.T) {
 		t.Fatalf("reservations = %+v, want 1 entry", got.Reservations)
 	}
 	entry := got.Reservations[0]
-	if entry.Id != overlapping.Id {
-		t.Errorf("id = %d, want %d", entry.Id, overlapping.Id)
+	if entry.Id != overlapping {
+		t.Errorf("id = %d, want %d", entry.Id, overlapping)
 	}
 	if entry.ProgramId != 251 {
 		t.Errorf("programId = %d, want 251", entry.ProgramId)

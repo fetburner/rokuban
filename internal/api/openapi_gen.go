@@ -76,6 +76,69 @@ func (e EncodeProfileSummaryContainer) Valid() bool {
 	}
 }
 
+// Defines values for ProgramIntentInputAction.
+const (
+	Record ProgramIntentInputAction = "record"
+	Skip   ProgramIntentInputAction = "skip"
+)
+
+// Valid indicates whether the value is a known member of the ProgramIntentInputAction enum.
+func (e ProgramIntentInputAction) Valid() bool {
+	switch e {
+	case Record:
+		return true
+	case Skip:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ProgramOverridesInputKeepOriginal.
+const (
+	ProgramOverridesInputKeepOriginalAlways       ProgramOverridesInputKeepOriginal = "always"
+	ProgramOverridesInputKeepOriginalUntilEncoded ProgramOverridesInputKeepOriginal = "until_encoded"
+)
+
+// Valid indicates whether the value is a known member of the ProgramOverridesInputKeepOriginal enum.
+func (e ProgramOverridesInputKeepOriginal) Valid() bool {
+	switch e {
+	case ProgramOverridesInputKeepOriginalAlways:
+		return true
+	case ProgramOverridesInputKeepOriginalUntilEncoded:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ProgramOverridesInputReset.
+const (
+	ContentPath      ProgramOverridesInputReset = "contentPath"
+	EncodeProfiles   ProgramOverridesInputReset = "encodeProfiles"
+	FilenameTemplate ProgramOverridesInputReset = "filenameTemplate"
+	KeepOriginal     ProgramOverridesInputReset = "keepOriginal"
+	Priority         ProgramOverridesInputReset = "priority"
+)
+
+// Valid indicates whether the value is a known member of the ProgramOverridesInputReset enum.
+func (e ProgramOverridesInputReset) Valid() bool {
+	switch e {
+	case ContentPath:
+		return true
+	case EncodeProfiles:
+		return true
+	case FilenameTemplate:
+		return true
+	case KeepOriginal:
+		return true
+	case Priority:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ProgramSearchRequestChannelTypes.
 const (
 	ProgramSearchRequestChannelTypesBS  ProgramSearchRequestChannelTypes = "BS"
@@ -196,51 +259,6 @@ func (e ReservationState) Valid() bool {
 	case Detached:
 		return true
 	case Orphaned:
-		return true
-	default:
-		return false
-	}
-}
-
-// Defines values for ReservationOverridesInputKeepOriginal.
-const (
-	ReservationOverridesInputKeepOriginalAlways       ReservationOverridesInputKeepOriginal = "always"
-	ReservationOverridesInputKeepOriginalUntilEncoded ReservationOverridesInputKeepOriginal = "until_encoded"
-)
-
-// Valid indicates whether the value is a known member of the ReservationOverridesInputKeepOriginal enum.
-func (e ReservationOverridesInputKeepOriginal) Valid() bool {
-	switch e {
-	case ReservationOverridesInputKeepOriginalAlways:
-		return true
-	case ReservationOverridesInputKeepOriginalUntilEncoded:
-		return true
-	default:
-		return false
-	}
-}
-
-// Defines values for ReservationOverridesInputReset.
-const (
-	ContentPath      ReservationOverridesInputReset = "contentPath"
-	EncodeProfiles   ReservationOverridesInputReset = "encodeProfiles"
-	FilenameTemplate ReservationOverridesInputReset = "filenameTemplate"
-	KeepOriginal     ReservationOverridesInputReset = "keepOriginal"
-	Priority         ReservationOverridesInputReset = "priority"
-)
-
-// Valid indicates whether the value is a known member of the ReservationOverridesInputReset enum.
-func (e ReservationOverridesInputReset) Valid() bool {
-	switch e {
-	case ContentPath:
-		return true
-	case EncodeProfiles:
-		return true
-	case FilenameTemplate:
-		return true
-	case KeepOriginal:
-		return true
-	case Priority:
 		return true
 	default:
 		return false
@@ -464,15 +482,6 @@ type CircuitBreakerSampleProgram struct {
 	Title     *string `json:"title,omitempty"`
 }
 
-// CreateReservationRequest 番組の事実（title / 開始時刻 / 尺）はサーバーが EPG プロジェクションから
-// 引く。クライアントからは受け取らない（#27 の決定: 値の出所を射影 1 つに
-// 固定する）。クライアントが古い番組表を握っていても、GC の比較対象になる
-// program_snapshots はサーバー権威の値で作られる。
-type CreateReservationRequest struct {
-	Priority  *int  `json:"priority,omitempty"`
-	ProgramId int64 `json:"programId"`
-}
-
 // DeleteRuleResponse defines model for DeleteRuleResponse.
 type DeleteRuleResponse struct {
 	// DeletedReservations overrides なしで削除した rule 予約の件数
@@ -578,6 +587,16 @@ type Program struct {
 	Video     *VideoInfo `json:"video,omitempty"`
 }
 
+// ProgramIntentInput PUT /api/sites/{site}/programs/{programId}/intent のボディ。
+// `record` は「録れ」（手動予約、およびルール由来予約への上書き）。
+// `skip` は「録るな」（どのルール経由でも一貫して除外される）。
+type ProgramIntentInput struct {
+	Action ProgramIntentInputAction `json:"action"`
+}
+
+// ProgramIntentInputAction defines model for ProgramIntentInput.Action.
+type ProgramIntentInputAction string
+
 // ProgramListItem defines model for ProgramListItem.
 type ProgramListItem struct {
 	Description string    `json:"description"`
@@ -604,8 +623,49 @@ type ProgramOverlaps struct {
 	Reservations []OverlappingReservation `json:"reservations"`
 }
 
+// ProgramOverridesInput PATCH /api/sites/{site}/programs/{programId}/overrides のボディ。
+// 値を書いたフィールドは override を設定し、`reset` に名前を挙げた
+// フィールドは override を削除する。どちらにも現れないフィールドは
+// 変更しない。同じフィールドを値と `reset` の両方に書いたら 400、
+// `reset` に未知のフィールド名があっても 400（docs/recording.md §4.2）。
+type ProgramOverridesInput struct {
+	// ContentPath 既存の schedule には反映されない。churn を避けるため差分対象外で、
+	// 初回生成値に固定されるため（docs/recording.md §3.2）。まだ
+	// schedule が作られていない予約にだけ効く（docs/recording.md §4.5）。
+	ContentPath *string `json:"contentPath,omitempty"`
+
+	// EncodeProfiles ingest 時に評価されるので、録画開始後の変更でも効く
+	// （M3 で消費。docs/recording.md §4.5）。
+	EncodeProfiles *[]string `json:"encodeProfiles,omitempty"`
+
+	// FilenameTemplate Go text/template のテンプレート文字列。既存の schedule には
+	// 反映されず、まだ schedule が作られていない予約にだけ効く
+	// （docs/recording.md §4.5）。
+	FilenameTemplate *string `json:"filenameTemplate,omitempty"`
+
+	// KeepOriginal ingest 時に評価されるので、録画開始後の変更でも効く
+	// （M3 で消費。docs/recording.md §4.5）。
+	KeepOriginal *ProgramOverridesInputKeepOriginal `json:"keepOriginal,omitempty"`
+
+	// Priority mirakc の schedule に反映される（reconciler が DELETE + POST で
+	// schedule を再作成する）。ただし録画開始後の recorder には
+	// 効かない可能性が高い（docs/recording.md §4.5）。
+	Priority *int `json:"priority,omitempty"`
+
+	// Reset 指定したフィールドの override を削除する（フィールド単位の
+	// 「ルールに戻す」）。値を書いたフィールドと重複して指定すると 400。
+	Reset *[]ProgramOverridesInputReset `json:"reset,omitempty"`
+}
+
+// ProgramOverridesInputKeepOriginal ingest 時に評価されるので、録画開始後の変更でも効く
+// （M3 で消費。docs/recording.md §4.5）。
+type ProgramOverridesInputKeepOriginal string
+
+// ProgramOverridesInputReset defines model for ProgramOverridesInput.Reset.
+type ProgramOverridesInputReset string
+
 // ProgramSearchRequest ルール条件の条件部分と同じ形。rulequery.Conditions に写像される。
-// site は省略時 default（現状単一サイト）。
+// 検索対象のサイトはパスの {site}（POST /api/sites/{site}/programs/search）。
 type ProgramSearchRequest struct {
 	ChannelTypes  *[]ProgramSearchRequestChannelTypes `json:"channelTypes,omitempty"`
 	DurationMaxMs *int64                              `json:"durationMaxMs,omitempty"`
@@ -615,7 +675,6 @@ type ProgramSearchRequest struct {
 	PeriodEndAt   *time.Time                          `json:"periodEndAt,omitempty"`
 	PeriodStartAt *time.Time                          `json:"periodStartAt,omitempty"`
 	Services      *[]RuleService                      `json:"services,omitempty"`
-	Site          *string                             `json:"site,omitempty"`
 
 	// Sites ルールの rule_sites 相当。空 = 評価 site のみ
 	Sites       *[]string         `json:"sites,omitempty"`
@@ -729,47 +788,6 @@ type ReservationSource string
 
 // ReservationState defines model for Reservation.State.
 type ReservationState string
-
-// ReservationOverridesInput PATCH /api/reservations/{id} のボディ。値を書いたフィールドは override
-// を設定し、`reset` に名前を挙げたフィールドは override を削除する。
-// どちらにも現れないフィールドは変更しない。同じフィールドを値と
-// `reset` の両方に書いたら 400、`reset` に未知のフィールド名があっても
-// 400（docs/recording.md §4.2）。
-type ReservationOverridesInput struct {
-	// ContentPath 既存の schedule には反映されない。churn を避けるため差分対象外で、
-	// 初回生成値に固定されるため（docs/recording.md §3.2）。まだ
-	// schedule が作られていない予約にだけ効く（docs/recording.md §4.5）。
-	ContentPath *string `json:"contentPath,omitempty"`
-
-	// EncodeProfiles ingest 時に評価されるので、録画開始後の変更でも効く
-	// （M3 で消費。docs/recording.md §4.5）。
-	EncodeProfiles *[]string `json:"encodeProfiles,omitempty"`
-
-	// FilenameTemplate Go text/template のテンプレート文字列。既存の schedule には
-	// 反映されず、まだ schedule が作られていない予約にだけ効く
-	// （docs/recording.md §4.5）。
-	FilenameTemplate *string `json:"filenameTemplate,omitempty"`
-
-	// KeepOriginal ingest 時に評価されるので、録画開始後の変更でも効く
-	// （M3 で消費。docs/recording.md §4.5）。
-	KeepOriginal *ReservationOverridesInputKeepOriginal `json:"keepOriginal,omitempty"`
-
-	// Priority mirakc の schedule に反映される（reconciler が DELETE + POST で
-	// schedule を再作成する）。ただし録画開始後の recorder には
-	// 効かない可能性が高い（docs/recording.md §4.5）。
-	Priority *int `json:"priority,omitempty"`
-
-	// Reset 指定したフィールドの override を削除する（フィールド単位の
-	// 「ルールに戻す」）。値を書いたフィールドと重複して指定すると 400。
-	Reset *[]ReservationOverridesInputReset `json:"reset,omitempty"`
-}
-
-// ReservationOverridesInputKeepOriginal ingest 時に評価されるので、録画開始後の変更でも効く
-// （M3 で消費。docs/recording.md §4.5）。
-type ReservationOverridesInputKeepOriginal string
-
-// ReservationOverridesInputReset defines model for ReservationOverridesInput.Reset.
-type ReservationOverridesInputReset string
 
 // Rule defines model for Rule.
 type Rule struct {
@@ -932,6 +950,12 @@ type VideoInfo struct {
 	Type          *string `json:"type,omitempty"`
 }
 
+// ProgramId defines model for ProgramId.
+type ProgramId = int64
+
+// Site defines model for Site.
+type Site = string
+
 // ListCapacityOveragesParams defines parameters for ListCapacityOverages.
 type ListCapacityOveragesParams struct {
 	// Start 時間窓の開始（この時刻より後に終わる区間が対象）
@@ -939,6 +963,12 @@ type ListCapacityOveragesParams struct {
 
 	// End 時間窓の終了（この時刻より前に始まる区間が対象）
 	End time.Time `form:"end" json:"end"`
+}
+
+// ListRecordingsParams defines parameters for ListRecordings.
+type ListRecordingsParams struct {
+	// Trash true のときごみ箱（論理削除済み）を返す
+	Trash *bool `form:"trash,omitempty" json:"trash,omitempty"`
 }
 
 // ListProgramsParams defines parameters for ListPrograms.
@@ -952,26 +982,20 @@ type ListProgramsParams struct {
 	ServiceId *int      `form:"serviceId,omitempty" json:"serviceId,omitempty"`
 }
 
-// ListRecordingsParams defines parameters for ListRecordings.
-type ListRecordingsParams struct {
-	// Trash true のときごみ箱（論理削除済み）を返す
-	Trash *bool `form:"trash,omitempty" json:"trash,omitempty"`
-}
-
-// SearchProgramsJSONRequestBody defines body for SearchPrograms for application/json ContentType.
-type SearchProgramsJSONRequestBody = ProgramSearchRequest
-
-// CreateReservationJSONRequestBody defines body for CreateReservation for application/json ContentType.
-type CreateReservationJSONRequestBody = CreateReservationRequest
-
-// UpdateReservationOverridesJSONRequestBody defines body for UpdateReservationOverrides for application/json ContentType.
-type UpdateReservationOverridesJSONRequestBody = ReservationOverridesInput
-
 // CreateRuleJSONRequestBody defines body for CreateRule for application/json ContentType.
 type CreateRuleJSONRequestBody = RuleInput
 
 // UpdateRuleJSONRequestBody defines body for UpdateRule for application/json ContentType.
 type UpdateRuleJSONRequestBody = RuleInput
+
+// SearchProgramsJSONRequestBody defines body for SearchPrograms for application/json ContentType.
+type SearchProgramsJSONRequestBody = ProgramSearchRequest
+
+// PutProgramIntentJSONRequestBody defines body for PutProgramIntent for application/json ContentType.
+type PutProgramIntentJSONRequestBody = ProgramIntentInput
+
+// PatchProgramOverridesJSONRequestBody defines body for PatchProgramOverrides for application/json ContentType.
+type PatchProgramOverridesJSONRequestBody = ProgramOverridesInput
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
@@ -987,18 +1011,6 @@ type ServerInterface interface {
 	// ListEncodeProfiles List configured encode profile names
 	// (GET /api/encode-profiles)
 	ListEncodeProfiles(w http.ResponseWriter, r *http.Request)
-	// ListPrograms List EPG programs in a time window
-	// (GET /api/programs)
-	ListPrograms(w http.ResponseWriter, r *http.Request, params ListProgramsParams)
-	// SearchPrograms Search EPG programs by rule-style conditions
-	// (POST /api/programs/search)
-	SearchPrograms(w http.ResponseWriter, r *http.Request)
-	// GetProgram Get a single EPG program with full detail
-	// (GET /api/programs/{programId})
-	GetProgram(w http.ResponseWriter, r *http.Request, programId int64)
-	// GetProgramOverlaps Count reservations overlapping this program's broadcast time
-	// (GET /api/programs/{programId}/overlaps)
-	GetProgramOverlaps(w http.ResponseWriter, r *http.Request, programId int64)
 	// ListRecordings List recordings
 	// (GET /api/recordings)
 	ListRecordings(w http.ResponseWriter, r *http.Request, params ListRecordingsParams)
@@ -1017,21 +1029,9 @@ type ServerInterface interface {
 	// ListReservations List reservations
 	// (GET /api/reservations)
 	ListReservations(w http.ResponseWriter, r *http.Request)
-	// CreateReservation Create a manual reservation
-	// (POST /api/reservations)
-	CreateReservation(w http.ResponseWriter, r *http.Request)
-	// DeleteReservation Cancel a reservation
-	// (DELETE /api/reservations/{id})
-	DeleteReservation(w http.ResponseWriter, r *http.Request, id int64)
 	// GetReservation Get a reservation
 	// (GET /api/reservations/{id})
 	GetReservation(w http.ResponseWriter, r *http.Request, id int64)
-	// UpdateReservationOverrides Update per-reservation overrides
-	// (PATCH /api/reservations/{id})
-	UpdateReservationOverrides(w http.ResponseWriter, r *http.Request, id int64)
-	// ResetReservationOverrides Reset all overrides for a reservation (revert to rule)
-	// (DELETE /api/reservations/{id}/overrides)
-	ResetReservationOverrides(w http.ResponseWriter, r *http.Request, id int64)
 	// ListRules List recording rules
 	// (GET /api/rules)
 	ListRules(w http.ResponseWriter, r *http.Request)
@@ -1047,9 +1047,33 @@ type ServerInterface interface {
 	// UpdateRule Update a recording rule
 	// (PATCH /api/rules/{id})
 	UpdateRule(w http.ResponseWriter, r *http.Request, id int64)
+	// ListPrograms List EPG programs in a time window
+	// (GET /api/sites/{site}/programs)
+	ListPrograms(w http.ResponseWriter, r *http.Request, site Site, params ListProgramsParams)
+	// SearchPrograms Search EPG programs by rule-style conditions
+	// (POST /api/sites/{site}/programs/search)
+	SearchPrograms(w http.ResponseWriter, r *http.Request, site Site)
+	// GetProgram Get a single EPG program with full detail
+	// (GET /api/sites/{site}/programs/{programId})
+	GetProgram(w http.ResponseWriter, r *http.Request, site Site, programId ProgramId)
+	// DeleteProgramIntent Clear intent for a program (defer to the rule)
+	// (DELETE /api/sites/{site}/programs/{programId}/intent)
+	DeleteProgramIntent(w http.ResponseWriter, r *http.Request, site Site, programId ProgramId)
+	// PutProgramIntent Assert record/skip intent for a program
+	// (PUT /api/sites/{site}/programs/{programId}/intent)
+	PutProgramIntent(w http.ResponseWriter, r *http.Request, site Site, programId ProgramId)
+	// GetProgramOverlaps Count reservations overlapping this program's broadcast time
+	// (GET /api/sites/{site}/programs/{programId}/overlaps)
+	GetProgramOverlaps(w http.ResponseWriter, r *http.Request, site Site, programId ProgramId)
+	// DeleteProgramOverrides Reset all overrides for a program (revert to rule)
+	// (DELETE /api/sites/{site}/programs/{programId}/overrides)
+	DeleteProgramOverrides(w http.ResponseWriter, r *http.Request, site Site, programId ProgramId)
+	// PatchProgramOverrides Update per-program overrides
+	// (PATCH /api/sites/{site}/programs/{programId}/overrides)
+	PatchProgramOverrides(w http.ResponseWriter, r *http.Request, site Site, programId ProgramId)
 	// ListServices List EPG services (channels)
-	// (GET /api/services)
-	ListServices(w http.ResponseWriter, r *http.Request)
+	// (GET /api/sites/{site}/services)
+	ListServices(w http.ResponseWriter, r *http.Request, site Site)
 	// GetVersion Get server version
 	// (GET /api/version)
 	GetVersion(w http.ResponseWriter, r *http.Request)
@@ -1083,30 +1107,6 @@ func (_ Unimplemented) ListCapacityOverages(w http.ResponseWriter, r *http.Reque
 // ListEncodeProfiles List configured encode profile names
 // (GET /api/encode-profiles)
 func (_ Unimplemented) ListEncodeProfiles(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusNotImplemented)
-}
-
-// ListPrograms List EPG programs in a time window
-// (GET /api/programs)
-func (_ Unimplemented) ListPrograms(w http.ResponseWriter, r *http.Request, params ListProgramsParams) {
-	w.WriteHeader(http.StatusNotImplemented)
-}
-
-// SearchPrograms Search EPG programs by rule-style conditions
-// (POST /api/programs/search)
-func (_ Unimplemented) SearchPrograms(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusNotImplemented)
-}
-
-// GetProgram Get a single EPG program with full detail
-// (GET /api/programs/{programId})
-func (_ Unimplemented) GetProgram(w http.ResponseWriter, r *http.Request, programId int64) {
-	w.WriteHeader(http.StatusNotImplemented)
-}
-
-// GetProgramOverlaps Count reservations overlapping this program's broadcast time
-// (GET /api/programs/{programId}/overlaps)
-func (_ Unimplemented) GetProgramOverlaps(w http.ResponseWriter, r *http.Request, programId int64) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1146,33 +1146,9 @@ func (_ Unimplemented) ListReservations(w http.ResponseWriter, r *http.Request) 
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// CreateReservation Create a manual reservation
-// (POST /api/reservations)
-func (_ Unimplemented) CreateReservation(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusNotImplemented)
-}
-
-// DeleteReservation Cancel a reservation
-// (DELETE /api/reservations/{id})
-func (_ Unimplemented) DeleteReservation(w http.ResponseWriter, r *http.Request, id int64) {
-	w.WriteHeader(http.StatusNotImplemented)
-}
-
 // GetReservation Get a reservation
 // (GET /api/reservations/{id})
 func (_ Unimplemented) GetReservation(w http.ResponseWriter, r *http.Request, id int64) {
-	w.WriteHeader(http.StatusNotImplemented)
-}
-
-// UpdateReservationOverrides Update per-reservation overrides
-// (PATCH /api/reservations/{id})
-func (_ Unimplemented) UpdateReservationOverrides(w http.ResponseWriter, r *http.Request, id int64) {
-	w.WriteHeader(http.StatusNotImplemented)
-}
-
-// ResetReservationOverrides Reset all overrides for a reservation (revert to rule)
-// (DELETE /api/reservations/{id}/overrides)
-func (_ Unimplemented) ResetReservationOverrides(w http.ResponseWriter, r *http.Request, id int64) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1206,9 +1182,57 @@ func (_ Unimplemented) UpdateRule(w http.ResponseWriter, r *http.Request, id int
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// ListPrograms List EPG programs in a time window
+// (GET /api/sites/{site}/programs)
+func (_ Unimplemented) ListPrograms(w http.ResponseWriter, r *http.Request, site Site, params ListProgramsParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// SearchPrograms Search EPG programs by rule-style conditions
+// (POST /api/sites/{site}/programs/search)
+func (_ Unimplemented) SearchPrograms(w http.ResponseWriter, r *http.Request, site Site) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// GetProgram Get a single EPG program with full detail
+// (GET /api/sites/{site}/programs/{programId})
+func (_ Unimplemented) GetProgram(w http.ResponseWriter, r *http.Request, site Site, programId ProgramId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// DeleteProgramIntent Clear intent for a program (defer to the rule)
+// (DELETE /api/sites/{site}/programs/{programId}/intent)
+func (_ Unimplemented) DeleteProgramIntent(w http.ResponseWriter, r *http.Request, site Site, programId ProgramId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// PutProgramIntent Assert record/skip intent for a program
+// (PUT /api/sites/{site}/programs/{programId}/intent)
+func (_ Unimplemented) PutProgramIntent(w http.ResponseWriter, r *http.Request, site Site, programId ProgramId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// GetProgramOverlaps Count reservations overlapping this program's broadcast time
+// (GET /api/sites/{site}/programs/{programId}/overlaps)
+func (_ Unimplemented) GetProgramOverlaps(w http.ResponseWriter, r *http.Request, site Site, programId ProgramId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// DeleteProgramOverrides Reset all overrides for a program (revert to rule)
+// (DELETE /api/sites/{site}/programs/{programId}/overrides)
+func (_ Unimplemented) DeleteProgramOverrides(w http.ResponseWriter, r *http.Request, site Site, programId ProgramId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// PatchProgramOverrides Update per-program overrides
+// (PATCH /api/sites/{site}/programs/{programId}/overrides)
+func (_ Unimplemented) PatchProgramOverrides(w http.ResponseWriter, r *http.Request, site Site, programId ProgramId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
 // ListServices List EPG services (channels)
-// (GET /api/services)
-func (_ Unimplemented) ListServices(w http.ResponseWriter, r *http.Request) {
+// (GET /api/sites/{site}/services)
+func (_ Unimplemented) ListServices(w http.ResponseWriter, r *http.Request, site Site) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1324,144 +1348,6 @@ func (siw *ServerInterfaceWrapper) ListEncodeProfiles(w http.ResponseWriter, r *
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ListEncodeProfiles(w, r)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
-// ListPrograms operation middleware
-func (siw *ServerInterfaceWrapper) ListPrograms(w http.ResponseWriter, r *http.Request) {
-
-	var err error
-	_ = err
-
-	// Parameter object where we will unmarshal all parameters from the context
-	var params ListProgramsParams
-
-	// ------------- Required query parameter "start" -------------
-
-	err = runtime.BindQueryParameterWithOptions("form", true, true, "start", r.URL.Query(), &params.Start, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
-	if err != nil {
-		var requiredError *runtime.RequiredParameterError
-		if errors.As(err, &requiredError) {
-			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "start"})
-		} else {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "start", Err: err})
-		}
-		return
-	}
-
-	// ------------- Required query parameter "end" -------------
-
-	err = runtime.BindQueryParameterWithOptions("form", true, true, "end", r.URL.Query(), &params.End, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
-	if err != nil {
-		var requiredError *runtime.RequiredParameterError
-		if errors.As(err, &requiredError) {
-			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "end"})
-		} else {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "end", Err: err})
-		}
-		return
-	}
-
-	// ------------- Optional query parameter "networkId" -------------
-
-	err = runtime.BindQueryParameterWithOptions("form", true, false, "networkId", r.URL.Query(), &params.NetworkId, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
-	if err != nil {
-		var requiredError *runtime.RequiredParameterError
-		if errors.As(err, &requiredError) {
-			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "networkId"})
-		} else {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "networkId", Err: err})
-		}
-		return
-	}
-
-	// ------------- Optional query parameter "serviceId" -------------
-
-	err = runtime.BindQueryParameterWithOptions("form", true, false, "serviceId", r.URL.Query(), &params.ServiceId, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
-	if err != nil {
-		var requiredError *runtime.RequiredParameterError
-		if errors.As(err, &requiredError) {
-			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "serviceId"})
-		} else {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "serviceId", Err: err})
-		}
-		return
-	}
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.ListPrograms(w, r, params)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
-// SearchPrograms operation middleware
-func (siw *ServerInterfaceWrapper) SearchPrograms(w http.ResponseWriter, r *http.Request) {
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.SearchPrograms(w, r)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
-// GetProgram operation middleware
-func (siw *ServerInterfaceWrapper) GetProgram(w http.ResponseWriter, r *http.Request) {
-
-	var err error
-	_ = err
-
-	// ------------- Path parameter "programId" -------------
-	var programId int64
-
-	err = runtime.BindStyledParameterWithOptions("simple", "programId", chi.URLParam(r, "programId"), &programId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: r.URL.RawPath == ""})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "programId", Err: err})
-		return
-	}
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.GetProgram(w, r, programId)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
-// GetProgramOverlaps operation middleware
-func (siw *ServerInterfaceWrapper) GetProgramOverlaps(w http.ResponseWriter, r *http.Request) {
-
-	var err error
-	_ = err
-
-	// ------------- Path parameter "programId" -------------
-	var programId int64
-
-	err = runtime.BindStyledParameterWithOptions("simple", "programId", chi.URLParam(r, "programId"), &programId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: r.URL.RawPath == ""})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "programId", Err: err})
-		return
-	}
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.GetProgramOverlaps(w, r, programId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1622,46 +1508,6 @@ func (siw *ServerInterfaceWrapper) ListReservations(w http.ResponseWriter, r *ht
 	handler.ServeHTTP(w, r)
 }
 
-// CreateReservation operation middleware
-func (siw *ServerInterfaceWrapper) CreateReservation(w http.ResponseWriter, r *http.Request) {
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.CreateReservation(w, r)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
-// DeleteReservation operation middleware
-func (siw *ServerInterfaceWrapper) DeleteReservation(w http.ResponseWriter, r *http.Request) {
-
-	var err error
-	_ = err
-
-	// ------------- Path parameter "id" -------------
-	var id int64
-
-	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: r.URL.RawPath == ""})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
-		return
-	}
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.DeleteReservation(w, r, id)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
 // GetReservation operation middleware
 func (siw *ServerInterfaceWrapper) GetReservation(w http.ResponseWriter, r *http.Request) {
 
@@ -1679,58 +1525,6 @@ func (siw *ServerInterfaceWrapper) GetReservation(w http.ResponseWriter, r *http
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetReservation(w, r, id)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
-// UpdateReservationOverrides operation middleware
-func (siw *ServerInterfaceWrapper) UpdateReservationOverrides(w http.ResponseWriter, r *http.Request) {
-
-	var err error
-	_ = err
-
-	// ------------- Path parameter "id" -------------
-	var id int64
-
-	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: r.URL.RawPath == ""})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
-		return
-	}
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.UpdateReservationOverrides(w, r, id)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
-// ResetReservationOverrides operation middleware
-func (siw *ServerInterfaceWrapper) ResetReservationOverrides(w http.ResponseWriter, r *http.Request) {
-
-	var err error
-	_ = err
-
-	// ------------- Path parameter "id" -------------
-	var id int64
-
-	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: r.URL.RawPath == ""})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
-		return
-	}
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.ResetReservationOverrides(w, r, id)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1846,11 +1640,340 @@ func (siw *ServerInterfaceWrapper) UpdateRule(w http.ResponseWriter, r *http.Req
 	handler.ServeHTTP(w, r)
 }
 
+// ListPrograms operation middleware
+func (siw *ServerInterfaceWrapper) ListPrograms(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "site" -------------
+	var site Site
+
+	err = runtime.BindStyledParameterWithOptions("simple", "site", chi.URLParam(r, "site"), &site, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "site", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListProgramsParams
+
+	// ------------- Required query parameter "start" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "start", r.URL.Query(), &params.Start, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "start"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "start", Err: err})
+		}
+		return
+	}
+
+	// ------------- Required query parameter "end" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "end", r.URL.Query(), &params.End, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "end"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "end", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "networkId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "networkId", r.URL.Query(), &params.NetworkId, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "networkId"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "networkId", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "serviceId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "serviceId", r.URL.Query(), &params.ServiceId, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "serviceId"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "serviceId", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListPrograms(w, r, site, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// SearchPrograms operation middleware
+func (siw *ServerInterfaceWrapper) SearchPrograms(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "site" -------------
+	var site Site
+
+	err = runtime.BindStyledParameterWithOptions("simple", "site", chi.URLParam(r, "site"), &site, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "site", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.SearchPrograms(w, r, site)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetProgram operation middleware
+func (siw *ServerInterfaceWrapper) GetProgram(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "site" -------------
+	var site Site
+
+	err = runtime.BindStyledParameterWithOptions("simple", "site", chi.URLParam(r, "site"), &site, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "site", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "programId" -------------
+	var programId ProgramId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "programId", chi.URLParam(r, "programId"), &programId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "programId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetProgram(w, r, site, programId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DeleteProgramIntent operation middleware
+func (siw *ServerInterfaceWrapper) DeleteProgramIntent(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "site" -------------
+	var site Site
+
+	err = runtime.BindStyledParameterWithOptions("simple", "site", chi.URLParam(r, "site"), &site, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "site", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "programId" -------------
+	var programId ProgramId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "programId", chi.URLParam(r, "programId"), &programId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "programId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteProgramIntent(w, r, site, programId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PutProgramIntent operation middleware
+func (siw *ServerInterfaceWrapper) PutProgramIntent(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "site" -------------
+	var site Site
+
+	err = runtime.BindStyledParameterWithOptions("simple", "site", chi.URLParam(r, "site"), &site, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "site", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "programId" -------------
+	var programId ProgramId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "programId", chi.URLParam(r, "programId"), &programId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "programId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PutProgramIntent(w, r, site, programId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetProgramOverlaps operation middleware
+func (siw *ServerInterfaceWrapper) GetProgramOverlaps(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "site" -------------
+	var site Site
+
+	err = runtime.BindStyledParameterWithOptions("simple", "site", chi.URLParam(r, "site"), &site, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "site", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "programId" -------------
+	var programId ProgramId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "programId", chi.URLParam(r, "programId"), &programId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "programId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetProgramOverlaps(w, r, site, programId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DeleteProgramOverrides operation middleware
+func (siw *ServerInterfaceWrapper) DeleteProgramOverrides(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "site" -------------
+	var site Site
+
+	err = runtime.BindStyledParameterWithOptions("simple", "site", chi.URLParam(r, "site"), &site, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "site", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "programId" -------------
+	var programId ProgramId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "programId", chi.URLParam(r, "programId"), &programId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "programId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteProgramOverrides(w, r, site, programId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PatchProgramOverrides operation middleware
+func (siw *ServerInterfaceWrapper) PatchProgramOverrides(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "site" -------------
+	var site Site
+
+	err = runtime.BindStyledParameterWithOptions("simple", "site", chi.URLParam(r, "site"), &site, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "site", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "programId" -------------
+	var programId ProgramId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "programId", chi.URLParam(r, "programId"), &programId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "programId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PatchProgramOverrides(w, r, site, programId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ListServices operation middleware
 func (siw *ServerInterfaceWrapper) ListServices(w http.ResponseWriter, r *http.Request) {
 
+	var err error
+	_ = err
+
+	// ------------- Path parameter "site" -------------
+	var site Site
+
+	err = runtime.BindStyledParameterWithOptions("simple", "site", chi.URLParam(r, "site"), &site, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "site", Err: err})
+		return
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.ListServices(w, r)
+		siw.Handler.ListServices(w, r, site)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -2029,34 +2152,34 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Get(options.BaseURL+"/api/reservations", wrapper.ListReservations)
 	})
 	r.Group(func(r chi.Router) {
-		r.Post(options.BaseURL+"/api/reservations", wrapper.CreateReservation)
-	})
-	r.Group(func(r chi.Router) {
-		r.Delete(options.BaseURL+"/api/reservations/{id}", wrapper.DeleteReservation)
-	})
-	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/api/reservations/{id}", wrapper.GetReservation)
 	})
 	r.Group(func(r chi.Router) {
-		r.Patch(options.BaseURL+"/api/reservations/{id}", wrapper.UpdateReservationOverrides)
+		r.Get(options.BaseURL+"/api/sites/{site}/services", wrapper.ListServices)
 	})
 	r.Group(func(r chi.Router) {
-		r.Delete(options.BaseURL+"/api/reservations/{id}/overrides", wrapper.ResetReservationOverrides)
+		r.Post(options.BaseURL+"/api/sites/{site}/programs/search", wrapper.SearchPrograms)
 	})
 	r.Group(func(r chi.Router) {
-		r.Get(options.BaseURL+"/api/services", wrapper.ListServices)
+		r.Get(options.BaseURL+"/api/sites/{site}/programs", wrapper.ListPrograms)
 	})
 	r.Group(func(r chi.Router) {
-		r.Post(options.BaseURL+"/api/programs/search", wrapper.SearchPrograms)
+		r.Get(options.BaseURL+"/api/sites/{site}/programs/{programId}", wrapper.GetProgram)
 	})
 	r.Group(func(r chi.Router) {
-		r.Get(options.BaseURL+"/api/programs", wrapper.ListPrograms)
+		r.Get(options.BaseURL+"/api/sites/{site}/programs/{programId}/overlaps", wrapper.GetProgramOverlaps)
 	})
 	r.Group(func(r chi.Router) {
-		r.Get(options.BaseURL+"/api/programs/{programId}", wrapper.GetProgram)
+		r.Delete(options.BaseURL+"/api/sites/{site}/programs/{programId}/intent", wrapper.DeleteProgramIntent)
 	})
 	r.Group(func(r chi.Router) {
-		r.Get(options.BaseURL+"/api/programs/{programId}/overlaps", wrapper.GetProgramOverlaps)
+		r.Put(options.BaseURL+"/api/sites/{site}/programs/{programId}/intent", wrapper.PutProgramIntent)
+	})
+	r.Group(func(r chi.Router) {
+		r.Delete(options.BaseURL+"/api/sites/{site}/programs/{programId}/overrides", wrapper.DeleteProgramOverrides)
+	})
+	r.Group(func(r chi.Router) {
+		r.Patch(options.BaseURL+"/api/sites/{site}/programs/{programId}/overrides", wrapper.PatchProgramOverrides)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/api/recordings", wrapper.ListRecordings)
@@ -2204,150 +2327,6 @@ func (response ListEncodeProfiles200JSONResponse) VisitListEncodeProfilesRespons
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(200)
-	_, err := buf.WriteTo(w)
-	return err
-}
-
-type ListProgramsRequestObject struct {
-	Params ListProgramsParams
-}
-
-type ListProgramsResponseObject interface {
-	VisitListProgramsResponse(w http.ResponseWriter) error
-}
-
-type ListPrograms200JSONResponse []ProgramListItem
-
-func (response ListPrograms200JSONResponse) VisitListProgramsResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(200)
-	_, err := buf.WriteTo(w)
-	return err
-}
-
-type ListPrograms400JSONResponse ErrorResponse
-
-func (response ListPrograms400JSONResponse) VisitListProgramsResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(400)
-	_, err := buf.WriteTo(w)
-	return err
-}
-
-type SearchProgramsRequestObject struct {
-	Body *SearchProgramsJSONRequestBody
-}
-
-type SearchProgramsResponseObject interface {
-	VisitSearchProgramsResponse(w http.ResponseWriter) error
-}
-
-type SearchPrograms200JSONResponse []int64
-
-func (response SearchPrograms200JSONResponse) VisitSearchProgramsResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(200)
-	_, err := buf.WriteTo(w)
-	return err
-}
-
-type SearchPrograms400JSONResponse ErrorResponse
-
-func (response SearchPrograms400JSONResponse) VisitSearchProgramsResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(400)
-	_, err := buf.WriteTo(w)
-	return err
-}
-
-type GetProgramRequestObject struct {
-	ProgramId int64 `json:"programId"`
-}
-
-type GetProgramResponseObject interface {
-	VisitGetProgramResponse(w http.ResponseWriter) error
-}
-
-type GetProgram200JSONResponse Program
-
-func (response GetProgram200JSONResponse) VisitGetProgramResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(200)
-	_, err := buf.WriteTo(w)
-	return err
-}
-
-type GetProgram404JSONResponse ErrorResponse
-
-func (response GetProgram404JSONResponse) VisitGetProgramResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(404)
-	_, err := buf.WriteTo(w)
-	return err
-}
-
-type GetProgramOverlapsRequestObject struct {
-	ProgramId int64 `json:"programId"`
-}
-
-type GetProgramOverlapsResponseObject interface {
-	VisitGetProgramOverlapsResponse(w http.ResponseWriter) error
-}
-
-type GetProgramOverlaps200JSONResponse ProgramOverlaps
-
-func (response GetProgramOverlaps200JSONResponse) VisitGetProgramOverlapsResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(200)
-	_, err := buf.WriteTo(w)
-	return err
-}
-
-type GetProgramOverlaps404JSONResponse ErrorResponse
-
-func (response GetProgramOverlaps404JSONResponse) VisitGetProgramOverlapsResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(404)
 	_, err := buf.WriteTo(w)
 	return err
 }
@@ -2521,86 +2500,6 @@ func (response ListReservations200JSONResponse) VisitListReservationsResponse(w 
 	return err
 }
 
-type CreateReservationRequestObject struct {
-	Body *CreateReservationJSONRequestBody
-}
-
-type CreateReservationResponseObject interface {
-	VisitCreateReservationResponse(w http.ResponseWriter) error
-}
-
-type CreateReservation201JSONResponse Reservation
-
-func (response CreateReservation201JSONResponse) VisitCreateReservationResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(201)
-	_, err := buf.WriteTo(w)
-	return err
-}
-
-type CreateReservation400JSONResponse ErrorResponse
-
-func (response CreateReservation400JSONResponse) VisitCreateReservationResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(400)
-	_, err := buf.WriteTo(w)
-	return err
-}
-
-type CreateReservation409JSONResponse ErrorResponse
-
-func (response CreateReservation409JSONResponse) VisitCreateReservationResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(409)
-	_, err := buf.WriteTo(w)
-	return err
-}
-
-type DeleteReservationRequestObject struct {
-	Id int64 `json:"id"`
-}
-
-type DeleteReservationResponseObject interface {
-	VisitDeleteReservationResponse(w http.ResponseWriter) error
-}
-
-type DeleteReservation204Response struct {
-}
-
-func (response DeleteReservation204Response) VisitDeleteReservationResponse(w http.ResponseWriter) error {
-	w.WriteHeader(204)
-	return nil
-}
-
-type DeleteReservation404JSONResponse ErrorResponse
-
-func (response DeleteReservation404JSONResponse) VisitDeleteReservationResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(404)
-	_, err := buf.WriteTo(w)
-	return err
-}
-
 type GetReservationRequestObject struct {
 	Id int64 `json:"id"`
 }
@@ -2626,93 +2525,6 @@ func (response GetReservation200JSONResponse) VisitGetReservationResponse(w http
 type GetReservation404JSONResponse ErrorResponse
 
 func (response GetReservation404JSONResponse) VisitGetReservationResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(404)
-	_, err := buf.WriteTo(w)
-	return err
-}
-
-type UpdateReservationOverridesRequestObject struct {
-	Id   int64 `json:"id"`
-	Body *UpdateReservationOverridesJSONRequestBody
-}
-
-type UpdateReservationOverridesResponseObject interface {
-	VisitUpdateReservationOverridesResponse(w http.ResponseWriter) error
-}
-
-type UpdateReservationOverrides200JSONResponse Reservation
-
-func (response UpdateReservationOverrides200JSONResponse) VisitUpdateReservationOverridesResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(200)
-	_, err := buf.WriteTo(w)
-	return err
-}
-
-type UpdateReservationOverrides400JSONResponse ErrorResponse
-
-func (response UpdateReservationOverrides400JSONResponse) VisitUpdateReservationOverridesResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(400)
-	_, err := buf.WriteTo(w)
-	return err
-}
-
-type UpdateReservationOverrides404JSONResponse ErrorResponse
-
-func (response UpdateReservationOverrides404JSONResponse) VisitUpdateReservationOverridesResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(404)
-	_, err := buf.WriteTo(w)
-	return err
-}
-
-type ResetReservationOverridesRequestObject struct {
-	Id int64 `json:"id"`
-}
-
-type ResetReservationOverridesResponseObject interface {
-	VisitResetReservationOverridesResponse(w http.ResponseWriter) error
-}
-
-type ResetReservationOverrides200JSONResponse Reservation
-
-func (response ResetReservationOverrides200JSONResponse) VisitResetReservationOverridesResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(200)
-	_, err := buf.WriteTo(w)
-	return err
-}
-
-type ResetReservationOverrides404JSONResponse ErrorResponse
-
-func (response ResetReservationOverrides404JSONResponse) VisitResetReservationOverridesResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response); err != nil {
@@ -2904,7 +2716,310 @@ func (response UpdateRule404JSONResponse) VisitUpdateRuleResponse(w http.Respons
 	return err
 }
 
+type ListProgramsRequestObject struct {
+	Site   Site `json:"site"`
+	Params ListProgramsParams
+}
+
+type ListProgramsResponseObject interface {
+	VisitListProgramsResponse(w http.ResponseWriter) error
+}
+
+type ListPrograms200JSONResponse []ProgramListItem
+
+func (response ListPrograms200JSONResponse) VisitListProgramsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListPrograms400JSONResponse ErrorResponse
+
+func (response ListPrograms400JSONResponse) VisitListProgramsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListPrograms404JSONResponse ErrorResponse
+
+func (response ListPrograms404JSONResponse) VisitListProgramsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SearchProgramsRequestObject struct {
+	Site Site `json:"site"`
+	Body *SearchProgramsJSONRequestBody
+}
+
+type SearchProgramsResponseObject interface {
+	VisitSearchProgramsResponse(w http.ResponseWriter) error
+}
+
+type SearchPrograms200JSONResponse []int64
+
+func (response SearchPrograms200JSONResponse) VisitSearchProgramsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SearchPrograms400JSONResponse ErrorResponse
+
+func (response SearchPrograms400JSONResponse) VisitSearchProgramsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SearchPrograms404JSONResponse ErrorResponse
+
+func (response SearchPrograms404JSONResponse) VisitSearchProgramsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetProgramRequestObject struct {
+	Site      Site      `json:"site"`
+	ProgramId ProgramId `json:"programId"`
+}
+
+type GetProgramResponseObject interface {
+	VisitGetProgramResponse(w http.ResponseWriter) error
+}
+
+type GetProgram200JSONResponse Program
+
+func (response GetProgram200JSONResponse) VisitGetProgramResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetProgram404JSONResponse ErrorResponse
+
+func (response GetProgram404JSONResponse) VisitGetProgramResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeleteProgramIntentRequestObject struct {
+	Site      Site      `json:"site"`
+	ProgramId ProgramId `json:"programId"`
+}
+
+type DeleteProgramIntentResponseObject interface {
+	VisitDeleteProgramIntentResponse(w http.ResponseWriter) error
+}
+
+type DeleteProgramIntent204Response struct {
+}
+
+func (response DeleteProgramIntent204Response) VisitDeleteProgramIntentResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type DeleteProgramIntent400JSONResponse ErrorResponse
+
+func (response DeleteProgramIntent400JSONResponse) VisitDeleteProgramIntentResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PutProgramIntentRequestObject struct {
+	Site      Site      `json:"site"`
+	ProgramId ProgramId `json:"programId"`
+	Body      *PutProgramIntentJSONRequestBody
+}
+
+type PutProgramIntentResponseObject interface {
+	VisitPutProgramIntentResponse(w http.ResponseWriter) error
+}
+
+type PutProgramIntent204Response struct {
+}
+
+func (response PutProgramIntent204Response) VisitPutProgramIntentResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type PutProgramIntent400JSONResponse ErrorResponse
+
+func (response PutProgramIntent400JSONResponse) VisitPutProgramIntentResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetProgramOverlapsRequestObject struct {
+	Site      Site      `json:"site"`
+	ProgramId ProgramId `json:"programId"`
+}
+
+type GetProgramOverlapsResponseObject interface {
+	VisitGetProgramOverlapsResponse(w http.ResponseWriter) error
+}
+
+type GetProgramOverlaps200JSONResponse ProgramOverlaps
+
+func (response GetProgramOverlaps200JSONResponse) VisitGetProgramOverlapsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetProgramOverlaps404JSONResponse ErrorResponse
+
+func (response GetProgramOverlaps404JSONResponse) VisitGetProgramOverlapsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeleteProgramOverridesRequestObject struct {
+	Site      Site      `json:"site"`
+	ProgramId ProgramId `json:"programId"`
+}
+
+type DeleteProgramOverridesResponseObject interface {
+	VisitDeleteProgramOverridesResponse(w http.ResponseWriter) error
+}
+
+type DeleteProgramOverrides204Response struct {
+}
+
+func (response DeleteProgramOverrides204Response) VisitDeleteProgramOverridesResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type DeleteProgramOverrides400JSONResponse ErrorResponse
+
+func (response DeleteProgramOverrides400JSONResponse) VisitDeleteProgramOverridesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PatchProgramOverridesRequestObject struct {
+	Site      Site      `json:"site"`
+	ProgramId ProgramId `json:"programId"`
+	Body      *PatchProgramOverridesJSONRequestBody
+}
+
+type PatchProgramOverridesResponseObject interface {
+	VisitPatchProgramOverridesResponse(w http.ResponseWriter) error
+}
+
+type PatchProgramOverrides204Response struct {
+}
+
+func (response PatchProgramOverrides204Response) VisitPatchProgramOverridesResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type PatchProgramOverrides400JSONResponse ErrorResponse
+
+func (response PatchProgramOverrides400JSONResponse) VisitPatchProgramOverridesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type ListServicesRequestObject struct {
+	Site Site `json:"site"`
 }
 
 type ListServicesResponseObject interface {
@@ -2921,6 +3036,20 @@ func (response ListServices200JSONResponse) VisitListServicesResponse(w http.Res
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListServices404JSONResponse ErrorResponse
+
+func (response ListServices404JSONResponse) VisitListServicesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
 	_, err := buf.WriteTo(w)
 	return err
 }
@@ -2981,18 +3110,6 @@ type StrictServerInterface interface {
 	// ListEncodeProfiles List configured encode profile names
 	// (GET /api/encode-profiles)
 	ListEncodeProfiles(ctx context.Context, request ListEncodeProfilesRequestObject) (ListEncodeProfilesResponseObject, error)
-	// ListPrograms List EPG programs in a time window
-	// (GET /api/programs)
-	ListPrograms(ctx context.Context, request ListProgramsRequestObject) (ListProgramsResponseObject, error)
-	// SearchPrograms Search EPG programs by rule-style conditions
-	// (POST /api/programs/search)
-	SearchPrograms(ctx context.Context, request SearchProgramsRequestObject) (SearchProgramsResponseObject, error)
-	// GetProgram Get a single EPG program with full detail
-	// (GET /api/programs/{programId})
-	GetProgram(ctx context.Context, request GetProgramRequestObject) (GetProgramResponseObject, error)
-	// GetProgramOverlaps Count reservations overlapping this program's broadcast time
-	// (GET /api/programs/{programId}/overlaps)
-	GetProgramOverlaps(ctx context.Context, request GetProgramOverlapsRequestObject) (GetProgramOverlapsResponseObject, error)
 	// ListRecordings List recordings
 	// (GET /api/recordings)
 	ListRecordings(ctx context.Context, request ListRecordingsRequestObject) (ListRecordingsResponseObject, error)
@@ -3011,21 +3128,9 @@ type StrictServerInterface interface {
 	// ListReservations List reservations
 	// (GET /api/reservations)
 	ListReservations(ctx context.Context, request ListReservationsRequestObject) (ListReservationsResponseObject, error)
-	// CreateReservation Create a manual reservation
-	// (POST /api/reservations)
-	CreateReservation(ctx context.Context, request CreateReservationRequestObject) (CreateReservationResponseObject, error)
-	// DeleteReservation Cancel a reservation
-	// (DELETE /api/reservations/{id})
-	DeleteReservation(ctx context.Context, request DeleteReservationRequestObject) (DeleteReservationResponseObject, error)
 	// GetReservation Get a reservation
 	// (GET /api/reservations/{id})
 	GetReservation(ctx context.Context, request GetReservationRequestObject) (GetReservationResponseObject, error)
-	// UpdateReservationOverrides Update per-reservation overrides
-	// (PATCH /api/reservations/{id})
-	UpdateReservationOverrides(ctx context.Context, request UpdateReservationOverridesRequestObject) (UpdateReservationOverridesResponseObject, error)
-	// ResetReservationOverrides Reset all overrides for a reservation (revert to rule)
-	// (DELETE /api/reservations/{id}/overrides)
-	ResetReservationOverrides(ctx context.Context, request ResetReservationOverridesRequestObject) (ResetReservationOverridesResponseObject, error)
 	// ListRules List recording rules
 	// (GET /api/rules)
 	ListRules(ctx context.Context, request ListRulesRequestObject) (ListRulesResponseObject, error)
@@ -3041,8 +3146,32 @@ type StrictServerInterface interface {
 	// UpdateRule Update a recording rule
 	// (PATCH /api/rules/{id})
 	UpdateRule(ctx context.Context, request UpdateRuleRequestObject) (UpdateRuleResponseObject, error)
+	// ListPrograms List EPG programs in a time window
+	// (GET /api/sites/{site}/programs)
+	ListPrograms(ctx context.Context, request ListProgramsRequestObject) (ListProgramsResponseObject, error)
+	// SearchPrograms Search EPG programs by rule-style conditions
+	// (POST /api/sites/{site}/programs/search)
+	SearchPrograms(ctx context.Context, request SearchProgramsRequestObject) (SearchProgramsResponseObject, error)
+	// GetProgram Get a single EPG program with full detail
+	// (GET /api/sites/{site}/programs/{programId})
+	GetProgram(ctx context.Context, request GetProgramRequestObject) (GetProgramResponseObject, error)
+	// DeleteProgramIntent Clear intent for a program (defer to the rule)
+	// (DELETE /api/sites/{site}/programs/{programId}/intent)
+	DeleteProgramIntent(ctx context.Context, request DeleteProgramIntentRequestObject) (DeleteProgramIntentResponseObject, error)
+	// PutProgramIntent Assert record/skip intent for a program
+	// (PUT /api/sites/{site}/programs/{programId}/intent)
+	PutProgramIntent(ctx context.Context, request PutProgramIntentRequestObject) (PutProgramIntentResponseObject, error)
+	// GetProgramOverlaps Count reservations overlapping this program's broadcast time
+	// (GET /api/sites/{site}/programs/{programId}/overlaps)
+	GetProgramOverlaps(ctx context.Context, request GetProgramOverlapsRequestObject) (GetProgramOverlapsResponseObject, error)
+	// DeleteProgramOverrides Reset all overrides for a program (revert to rule)
+	// (DELETE /api/sites/{site}/programs/{programId}/overrides)
+	DeleteProgramOverrides(ctx context.Context, request DeleteProgramOverridesRequestObject) (DeleteProgramOverridesResponseObject, error)
+	// PatchProgramOverrides Update per-program overrides
+	// (PATCH /api/sites/{site}/programs/{programId}/overrides)
+	PatchProgramOverrides(ctx context.Context, request PatchProgramOverridesRequestObject) (PatchProgramOverridesResponseObject, error)
 	// ListServices List EPG services (channels)
-	// (GET /api/services)
+	// (GET /api/sites/{site}/services)
 	ListServices(ctx context.Context, request ListServicesRequestObject) (ListServicesResponseObject, error)
 	// GetVersion Get server version
 	// (GET /api/version)
@@ -3184,115 +3313,6 @@ func (sh *strictHandler) ListEncodeProfiles(w http.ResponseWriter, r *http.Reque
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(ListEncodeProfilesResponseObject); ok {
 		if err := validResponse.VisitListEncodeProfilesResponse(w); err != nil {
-			sh.options.ResponseErrorHandlerFunc(w, r, err)
-		}
-	} else if response != nil {
-		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
-	}
-}
-
-// ListPrograms operation middleware
-func (sh *strictHandler) ListPrograms(w http.ResponseWriter, r *http.Request, params ListProgramsParams) {
-	var request ListProgramsRequestObject
-
-	request.Params = params
-
-	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
-		return sh.ssi.ListPrograms(ctx, request.(ListProgramsRequestObject))
-	}
-	for _, middleware := range sh.middlewares {
-		handler = middleware(handler, "ListPrograms")
-	}
-
-	response, err := handler(r.Context(), w, r, request)
-
-	if err != nil {
-		sh.options.ResponseErrorHandlerFunc(w, r, err)
-	} else if validResponse, ok := response.(ListProgramsResponseObject); ok {
-		if err := validResponse.VisitListProgramsResponse(w); err != nil {
-			sh.options.ResponseErrorHandlerFunc(w, r, err)
-		}
-	} else if response != nil {
-		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
-	}
-}
-
-// SearchPrograms operation middleware
-func (sh *strictHandler) SearchPrograms(w http.ResponseWriter, r *http.Request) {
-	var request SearchProgramsRequestObject
-
-	var body SearchProgramsJSONRequestBody
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
-		return
-	}
-	request.Body = &body
-
-	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
-		return sh.ssi.SearchPrograms(ctx, request.(SearchProgramsRequestObject))
-	}
-	for _, middleware := range sh.middlewares {
-		handler = middleware(handler, "SearchPrograms")
-	}
-
-	response, err := handler(r.Context(), w, r, request)
-
-	if err != nil {
-		sh.options.ResponseErrorHandlerFunc(w, r, err)
-	} else if validResponse, ok := response.(SearchProgramsResponseObject); ok {
-		if err := validResponse.VisitSearchProgramsResponse(w); err != nil {
-			sh.options.ResponseErrorHandlerFunc(w, r, err)
-		}
-	} else if response != nil {
-		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
-	}
-}
-
-// GetProgram operation middleware
-func (sh *strictHandler) GetProgram(w http.ResponseWriter, r *http.Request, programId int64) {
-	var request GetProgramRequestObject
-
-	request.ProgramId = programId
-
-	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
-		return sh.ssi.GetProgram(ctx, request.(GetProgramRequestObject))
-	}
-	for _, middleware := range sh.middlewares {
-		handler = middleware(handler, "GetProgram")
-	}
-
-	response, err := handler(r.Context(), w, r, request)
-
-	if err != nil {
-		sh.options.ResponseErrorHandlerFunc(w, r, err)
-	} else if validResponse, ok := response.(GetProgramResponseObject); ok {
-		if err := validResponse.VisitGetProgramResponse(w); err != nil {
-			sh.options.ResponseErrorHandlerFunc(w, r, err)
-		}
-	} else if response != nil {
-		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
-	}
-}
-
-// GetProgramOverlaps operation middleware
-func (sh *strictHandler) GetProgramOverlaps(w http.ResponseWriter, r *http.Request, programId int64) {
-	var request GetProgramOverlapsRequestObject
-
-	request.ProgramId = programId
-
-	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
-		return sh.ssi.GetProgramOverlaps(ctx, request.(GetProgramOverlapsRequestObject))
-	}
-	for _, middleware := range sh.middlewares {
-		handler = middleware(handler, "GetProgramOverlaps")
-	}
-
-	response, err := handler(r.Context(), w, r, request)
-
-	if err != nil {
-		sh.options.ResponseErrorHandlerFunc(w, r, err)
-	} else if validResponse, ok := response.(GetProgramOverlapsResponseObject); ok {
-		if err := validResponse.VisitGetProgramOverlapsResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
@@ -3454,63 +3474,6 @@ func (sh *strictHandler) ListReservations(w http.ResponseWriter, r *http.Request
 	}
 }
 
-// CreateReservation operation middleware
-func (sh *strictHandler) CreateReservation(w http.ResponseWriter, r *http.Request) {
-	var request CreateReservationRequestObject
-
-	var body CreateReservationJSONRequestBody
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
-		return
-	}
-	request.Body = &body
-
-	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
-		return sh.ssi.CreateReservation(ctx, request.(CreateReservationRequestObject))
-	}
-	for _, middleware := range sh.middlewares {
-		handler = middleware(handler, "CreateReservation")
-	}
-
-	response, err := handler(r.Context(), w, r, request)
-
-	if err != nil {
-		sh.options.ResponseErrorHandlerFunc(w, r, err)
-	} else if validResponse, ok := response.(CreateReservationResponseObject); ok {
-		if err := validResponse.VisitCreateReservationResponse(w); err != nil {
-			sh.options.ResponseErrorHandlerFunc(w, r, err)
-		}
-	} else if response != nil {
-		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
-	}
-}
-
-// DeleteReservation operation middleware
-func (sh *strictHandler) DeleteReservation(w http.ResponseWriter, r *http.Request, id int64) {
-	var request DeleteReservationRequestObject
-
-	request.Id = id
-
-	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
-		return sh.ssi.DeleteReservation(ctx, request.(DeleteReservationRequestObject))
-	}
-	for _, middleware := range sh.middlewares {
-		handler = middleware(handler, "DeleteReservation")
-	}
-
-	response, err := handler(r.Context(), w, r, request)
-
-	if err != nil {
-		sh.options.ResponseErrorHandlerFunc(w, r, err)
-	} else if validResponse, ok := response.(DeleteReservationResponseObject); ok {
-		if err := validResponse.VisitDeleteReservationResponse(w); err != nil {
-			sh.options.ResponseErrorHandlerFunc(w, r, err)
-		}
-	} else if response != nil {
-		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
-	}
-}
-
 // GetReservation operation middleware
 func (sh *strictHandler) GetReservation(w http.ResponseWriter, r *http.Request, id int64) {
 	var request GetReservationRequestObject
@@ -3530,65 +3493,6 @@ func (sh *strictHandler) GetReservation(w http.ResponseWriter, r *http.Request, 
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(GetReservationResponseObject); ok {
 		if err := validResponse.VisitGetReservationResponse(w); err != nil {
-			sh.options.ResponseErrorHandlerFunc(w, r, err)
-		}
-	} else if response != nil {
-		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
-	}
-}
-
-// UpdateReservationOverrides operation middleware
-func (sh *strictHandler) UpdateReservationOverrides(w http.ResponseWriter, r *http.Request, id int64) {
-	var request UpdateReservationOverridesRequestObject
-
-	request.Id = id
-
-	var body UpdateReservationOverridesJSONRequestBody
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
-		return
-	}
-	request.Body = &body
-
-	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
-		return sh.ssi.UpdateReservationOverrides(ctx, request.(UpdateReservationOverridesRequestObject))
-	}
-	for _, middleware := range sh.middlewares {
-		handler = middleware(handler, "UpdateReservationOverrides")
-	}
-
-	response, err := handler(r.Context(), w, r, request)
-
-	if err != nil {
-		sh.options.ResponseErrorHandlerFunc(w, r, err)
-	} else if validResponse, ok := response.(UpdateReservationOverridesResponseObject); ok {
-		if err := validResponse.VisitUpdateReservationOverridesResponse(w); err != nil {
-			sh.options.ResponseErrorHandlerFunc(w, r, err)
-		}
-	} else if response != nil {
-		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
-	}
-}
-
-// ResetReservationOverrides operation middleware
-func (sh *strictHandler) ResetReservationOverrides(w http.ResponseWriter, r *http.Request, id int64) {
-	var request ResetReservationOverridesRequestObject
-
-	request.Id = id
-
-	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
-		return sh.ssi.ResetReservationOverrides(ctx, request.(ResetReservationOverridesRequestObject))
-	}
-	for _, middleware := range sh.middlewares {
-		handler = middleware(handler, "ResetReservationOverrides")
-	}
-
-	response, err := handler(r.Context(), w, r, request)
-
-	if err != nil {
-		sh.options.ResponseErrorHandlerFunc(w, r, err)
-	} else if validResponse, ok := response.(ResetReservationOverridesResponseObject); ok {
-		if err := validResponse.VisitResetReservationOverridesResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
@@ -3736,9 +3640,247 @@ func (sh *strictHandler) UpdateRule(w http.ResponseWriter, r *http.Request, id i
 	}
 }
 
+// ListPrograms operation middleware
+func (sh *strictHandler) ListPrograms(w http.ResponseWriter, r *http.Request, site Site, params ListProgramsParams) {
+	var request ListProgramsRequestObject
+
+	request.Site = site
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListPrograms(ctx, request.(ListProgramsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListPrograms")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListProgramsResponseObject); ok {
+		if err := validResponse.VisitListProgramsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// SearchPrograms operation middleware
+func (sh *strictHandler) SearchPrograms(w http.ResponseWriter, r *http.Request, site Site) {
+	var request SearchProgramsRequestObject
+
+	request.Site = site
+
+	var body SearchProgramsJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.SearchPrograms(ctx, request.(SearchProgramsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "SearchPrograms")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(SearchProgramsResponseObject); ok {
+		if err := validResponse.VisitSearchProgramsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetProgram operation middleware
+func (sh *strictHandler) GetProgram(w http.ResponseWriter, r *http.Request, site Site, programId ProgramId) {
+	var request GetProgramRequestObject
+
+	request.Site = site
+	request.ProgramId = programId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetProgram(ctx, request.(GetProgramRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetProgram")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetProgramResponseObject); ok {
+		if err := validResponse.VisitGetProgramResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// DeleteProgramIntent operation middleware
+func (sh *strictHandler) DeleteProgramIntent(w http.ResponseWriter, r *http.Request, site Site, programId ProgramId) {
+	var request DeleteProgramIntentRequestObject
+
+	request.Site = site
+	request.ProgramId = programId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.DeleteProgramIntent(ctx, request.(DeleteProgramIntentRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "DeleteProgramIntent")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(DeleteProgramIntentResponseObject); ok {
+		if err := validResponse.VisitDeleteProgramIntentResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// PutProgramIntent operation middleware
+func (sh *strictHandler) PutProgramIntent(w http.ResponseWriter, r *http.Request, site Site, programId ProgramId) {
+	var request PutProgramIntentRequestObject
+
+	request.Site = site
+	request.ProgramId = programId
+
+	var body PutProgramIntentJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.PutProgramIntent(ctx, request.(PutProgramIntentRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "PutProgramIntent")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(PutProgramIntentResponseObject); ok {
+		if err := validResponse.VisitPutProgramIntentResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetProgramOverlaps operation middleware
+func (sh *strictHandler) GetProgramOverlaps(w http.ResponseWriter, r *http.Request, site Site, programId ProgramId) {
+	var request GetProgramOverlapsRequestObject
+
+	request.Site = site
+	request.ProgramId = programId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetProgramOverlaps(ctx, request.(GetProgramOverlapsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetProgramOverlaps")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetProgramOverlapsResponseObject); ok {
+		if err := validResponse.VisitGetProgramOverlapsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// DeleteProgramOverrides operation middleware
+func (sh *strictHandler) DeleteProgramOverrides(w http.ResponseWriter, r *http.Request, site Site, programId ProgramId) {
+	var request DeleteProgramOverridesRequestObject
+
+	request.Site = site
+	request.ProgramId = programId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.DeleteProgramOverrides(ctx, request.(DeleteProgramOverridesRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "DeleteProgramOverrides")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(DeleteProgramOverridesResponseObject); ok {
+		if err := validResponse.VisitDeleteProgramOverridesResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// PatchProgramOverrides operation middleware
+func (sh *strictHandler) PatchProgramOverrides(w http.ResponseWriter, r *http.Request, site Site, programId ProgramId) {
+	var request PatchProgramOverridesRequestObject
+
+	request.Site = site
+	request.ProgramId = programId
+
+	var body PatchProgramOverridesJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.PatchProgramOverrides(ctx, request.(PatchProgramOverridesRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "PatchProgramOverrides")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(PatchProgramOverridesResponseObject); ok {
+		if err := validResponse.VisitPatchProgramOverridesResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // ListServices operation middleware
-func (sh *strictHandler) ListServices(w http.ResponseWriter, r *http.Request) {
+func (sh *strictHandler) ListServices(w http.ResponseWriter, r *http.Request, site Site) {
 	var request ListServicesRequestObject
+
+	request.Site = site
 
 	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
 		return sh.ssi.ListServices(ctx, request.(ListServicesRequestObject))

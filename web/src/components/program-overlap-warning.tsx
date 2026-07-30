@@ -3,10 +3,11 @@ import { TriangleAlert } from 'lucide-react'
 import { useGetProgramOverlaps } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
 import { formatTime } from '@/lib/format'
+import { DEFAULT_SITE } from '@/lib/site'
 
 /**
  * ProgramOverlapWarning は指定番組の放送時間帯と重なる既存予約の件数と内訳を出す
- * （`GET /api/programs/{programId}/overlaps`、issue #24 M2-8）。
+ * （`GET /api/sites/{site}/programs/{programId}/overlaps`、issue #24 M2-8）。
  *
  * **チューナー本数は見ていない**（issue #21 の「案 C」）。勝敗や容量超過の判定は
  * M2-10（`tuner_sync` 射影 + 容量判定、docs/data.md §6.5）の領分なので、ここでは
@@ -26,7 +27,7 @@ export function ProgramOverlapWarning({
   /** 呼び出し側で問い合わせ自体を止めたい場合に false を渡す（例: 既に予約取消済み）。 */
   enabled?: boolean
 }) {
-  const query = useGetProgramOverlaps(programId, { query: { enabled } })
+  const query = useGetProgramOverlaps(DEFAULT_SITE, programId, { query: { enabled } })
   const overlaps = unwrap(query.data)
 
   if (!overlaps || overlaps.count === 0) return null

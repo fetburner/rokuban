@@ -7,14 +7,17 @@ SELECT id, rule_id FROM reservations
 WHERE site = $1 AND program_id = $2;
 
 -- name: CreateManualReservation :one
+-- テスト用の直接 INSERT ヘルパー。reservations の実運用上の唯一の書き手は
+-- ruler の一括 INSERT（internal/ruler/sql.go）で、api はこの表に一切書かない
+-- （M3-1、issue #29「導出器が作るキーを宛先にしない」の帰結）。
+--
 -- 番組の事実のスナップショット（title / 開始時刻 / 尺 / チャンネル識別）は
 -- program_snapshots に抽出された（#27）。FK (site, program_id) REFERENCES
--- program_snapshots があるので、呼び出し側（api.CreateReservation）はこの
+-- program_snapshots があるので、呼び出し側（テストの fixture）はこの
 -- INSERT より先に program_snapshots の行を upsert しておくこと。
 --
 -- reservations.source は持たない（issue #26 で削除）。この予約が「手動」で
--- あることは、この呼び出しの直前に api が書く program_intents.action='record'
--- の行がそのまま表す。
+-- あることは、program_intents.action='record' の行がそのまま表す。
 INSERT INTO reservations (site, program_id)
 VALUES ($1, $2)
 RETURNING *;
@@ -71,19 +74,6 @@ LEFT JOIN program_intents i ON i.site = r.site AND i.program_id = r.program_id
 LEFT JOIN program_overrides o ON o.site = r.site AND o.program_id = r.program_id
 WHERE r.site = $1 AND r.orphaned_at IS NULL
 ORDER BY s.start_at;
-
--- PATCH /api/reservations/{id} と DELETE .../overrides の直列化のため、予約行を
--- FOR UPDATE でロックする。Rokuban は構造的に単一世帯用アプリで認証機構を
--- 持たないため同時 PATCH は事実上起きないが、1 行のロックで足りるので取る
--- （docs/recording.md §4.2「マージは Go 側で型付きに行う」）。
--- name: LockReservation :one
-SELECT id FROM reservations WHERE id = $1 FOR UPDATE;
-
--- name: DeleteReservation :execrows
-DELETE FROM reservations WHERE id = $1;
-
--- name: DeleteReservationBySiteAndProgramID :execrows
-DELETE FROM reservations WHERE site = $1 AND program_id = $2;
 
 -- 番組終了後に schedule が観測されなかった予約を orphaned にする
 -- （reconciler.markOrphaned から呼ばれる）。かつては state = 'active' でしか

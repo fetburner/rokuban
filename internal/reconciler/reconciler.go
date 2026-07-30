@@ -174,7 +174,7 @@ func (r *Reconciler) RunPass(ctx context.Context) error {
 
 	var toDelete []mirakc.Schedule
 	for _, s := range schedules {
-		if _, ours := mirakc.FindReservationID(s.Tags); !ours {
+		if !mirakc.IsOurs(s.Tags) {
 			continue
 		}
 		if _, desired := desiredPrograms[s.Program.ID]; desired {
@@ -322,12 +322,19 @@ func totalLossSample(toDelete []mirakc.Schedule) breaker.Sample {
 func (r *Reconciler) observeSchedules(ctx context.Context, schedules []mirakc.Schedule) error {
 	q := sqlcgen.New(r.pool)
 	for _, s := range schedules {
-		resID, hasTag := mirakc.FindReservationID(s.Tags)
+		// tag は programId しか運ばない（#53）。reservation の特定は schedule 自身が
+		// 持つ Program.ID（tag のパースを経由しない、常に正確な値）で行う。
+		// IsOurs で「自分が作った schedule か」を確認してから紐付ける —
+		// 外部産の schedule が偶然同じ programId を持っていても reservation_id を
+		// 埋めない。
 		var reservationID *int64
-		if hasTag && resID > 0 {
-			_, err := q.GetReservation(ctx, resID)
+		if mirakc.IsOurs(s.Tags) {
+			res, err := q.GetReservationBySiteAndProgramID(ctx, sqlcgen.GetReservationBySiteAndProgramIDParams{
+				Site:      r.site,
+				ProgramID: s.Program.ID,
+			})
 			if err == nil {
-				reservationID = &resID
+				reservationID = &res.ID
 			}
 		}
 
@@ -492,7 +499,7 @@ func (r *Reconciler) createSchedule(ctx context.Context, d desiredReservation) e
 			ContentPath: &contentPath,
 			Priority:    priority,
 		},
-		Tags: []string{mirakc.ReservationTag(res.ID)},
+		Tags: []string{mirakc.ProgramTag(res.ProgramID)},
 	}
 
 	schedule, err := r.mirakc.CreateSchedule(ctx, input)
@@ -545,8 +552,7 @@ func (r *Reconciler) recreateChanged(
 			// 存在しない = create ループの対象（今パスで新規作成 or 未検出）。
 			continue
 		}
-		tagID, hasTag := mirakc.FindReservationID(s.Tags)
-		if !hasTag {
+		if !mirakc.IsOurs(s.Tags) {
 			// 自分が作った schedule だけ触る。tag のない schedule は外部産で、
 			// 既存の delete ループの ours 判定と揃えてある。
 			continue
@@ -554,11 +560,13 @@ func (r *Reconciler) recreateChanged(
 
 		wantPriority := effectivePriority(r.cfg.DefaultPriority, d.opts)
 		priorityMismatch := s.Options.Priority != wantPriority
-		// tag の不一致（reservation id はあるが別の予約を指している = 古い
-		// programId の使い回し等で紐付けが食い違っている）も再作成の契機にする。
+		// 新形式（program:{programId}）でない tag（旧形式の reservation ベース、
+		// または内容が食い違っている）も再作成の契機にする。旧形式のまま残っている
+		// schedule はこの分岐で新形式に移行する（レベルトリガー。#53 の決定）。
 		// tags は ingest が record と予約を突き合わせるのに使うため、古い tag が
 		// 残ると録画が別の予約に紐付く。
-		tagMismatch := tagID != d.res.ID
+		tagProgramID, hasNewTag := mirakc.FindProgramTag(s.Tags)
+		tagMismatch := !hasNewTag || tagProgramID != d.res.ProgramID
 		if !priorityMismatch && !tagMismatch {
 			continue
 		}
@@ -639,7 +647,7 @@ func (r *Reconciler) recreateSchedule(ctx context.Context, d desiredReservation,
 			ContentPath: &contentPath,
 			Priority:    priority,
 		},
-		Tags: []string{mirakc.ReservationTag(res.ID)},
+		Tags: []string{mirakc.ProgramTag(res.ProgramID)},
 	}
 
 	if _, err := r.mirakc.CreateSchedule(ctx, input); err != nil {

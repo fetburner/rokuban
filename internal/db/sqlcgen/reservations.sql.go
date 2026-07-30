@@ -21,14 +21,17 @@ type CreateManualReservationParams struct {
 	ProgramID int64
 }
 
+// テスト用の直接 INSERT ヘルパー。reservations の実運用上の唯一の書き手は
+// ruler の一括 INSERT（internal/ruler/sql.go）で、api はこの表に一切書かない
+// （M3-1、issue #29「導出器が作るキーを宛先にしない」の帰結）。
+//
 // 番組の事実のスナップショット（title / 開始時刻 / 尺 / チャンネル識別）は
 // program_snapshots に抽出された（#27）。FK (site, program_id) REFERENCES
-// program_snapshots があるので、呼び出し側（api.CreateReservation）はこの
+// program_snapshots があるので、呼び出し側（テストの fixture）はこの
 // INSERT より先に program_snapshots の行を upsert しておくこと。
 //
 // reservations.source は持たない（issue #26 で削除）。この予約が「手動」で
-// あることは、この呼び出しの直前に api が書く program_intents.action='record'
-// の行がそのまま表す。
+// あることは、program_intents.action='record' の行がそのまま表す。
 func (q *Queries) CreateManualReservation(ctx context.Context, arg CreateManualReservationParams) (Reservation, error) {
 	row := q.db.QueryRow(ctx, createManualReservation, arg.Site, arg.ProgramID)
 	var i Reservation
@@ -45,35 +48,6 @@ func (q *Queries) CreateManualReservation(ctx context.Context, arg CreateManualR
 		&i.OrphanedAt,
 	)
 	return i, err
-}
-
-const deleteReservation = `-- name: DeleteReservation :execrows
-DELETE FROM reservations WHERE id = $1
-`
-
-func (q *Queries) DeleteReservation(ctx context.Context, id int64) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteReservation, id)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
-const deleteReservationBySiteAndProgramID = `-- name: DeleteReservationBySiteAndProgramID :execrows
-DELETE FROM reservations WHERE site = $1 AND program_id = $2
-`
-
-type DeleteReservationBySiteAndProgramIDParams struct {
-	Site      string
-	ProgramID int64
-}
-
-func (q *Queries) DeleteReservationBySiteAndProgramID(ctx context.Context, arg DeleteReservationBySiteAndProgramIDParams) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteReservationBySiteAndProgramID, arg.Site, arg.ProgramID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
 }
 
 const getReservation = `-- name: GetReservation :one
@@ -306,21 +280,6 @@ func (q *Queries) ListReservationsForSyncEvaluation(ctx context.Context, site st
 		return nil, err
 	}
 	return items, nil
-}
-
-const lockReservation = `-- name: LockReservation :one
-SELECT id FROM reservations WHERE id = $1 FOR UPDATE
-`
-
-// PATCH /api/reservations/{id} と DELETE .../overrides の直列化のため、予約行を
-// FOR UPDATE でロックする。Rokuban は構造的に単一世帯用アプリで認証機構を
-// 持たないため同時 PATCH は事実上起きないが、1 行のロックで足りるので取る
-// （docs/recording.md §4.2「マージは Go 側で型付きに行う」）。
-func (q *Queries) LockReservation(ctx context.Context, id int64) (int64, error) {
-	row := q.db.QueryRow(ctx, lockReservation, id)
-	var id_2 int64
-	err := row.Scan(&id_2)
-	return id_2, err
 }
 
 const markReservationOrphaned = `-- name: MarkReservationOrphaned :execrows

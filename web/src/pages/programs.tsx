@@ -1,5 +1,5 @@
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
 import { CapacityBands } from '@/components/capacity-band'
 import { EmptyState, ErrorState, ListSkeleton, PageHeader } from '@/components/page'
@@ -10,12 +10,11 @@ import { Button } from '@/components/ui/button'
 import { Chip } from '@/components/ui/chip'
 import {
   listPrograms,
-  useCreateReservation,
-  useDeleteReservation,
   useListCapacityOverages,
   useListPrograms,
   useListReservations,
   useListServices,
+  usePutProgramIntent,
   type CapacityOverage,
   type ProgramListItem,
   type Service,
@@ -23,6 +22,7 @@ import {
 import { unwrap } from '@/api/unwrap'
 import { orderServices, type TimeAxis } from '@/lib/epg-grid'
 import { dayKey, formatDate } from '@/lib/format'
+import { DEFAULT_SITE } from '@/lib/site'
 import { lgMediaQuery, useMediaQuery } from '@/lib/use-media-query'
 
 /**
@@ -91,7 +91,7 @@ export function ProgramsPage() {
   const wideScreen = useMediaQuery(lgMediaQuery)
   const showGrid = wideScreen && view === 'grid'
 
-  const services = useListServices()
+  const services = useListServices(DEFAULT_SITE)
   const reservations = useListReservations()
 
   // 起点は state から決める。queryKey に入るので、日付を変えるとページが
@@ -109,7 +109,7 @@ export function ProgramsPage() {
     queryFn: async ({ pageParam }) => {
       const start = new Date(originMs + pageParam * windowHours * 3600_000)
       const end = new Date(Math.min(start.getTime() + windowHours * 3600_000, limitMs))
-      const res = await listPrograms({
+      const res = await listPrograms(DEFAULT_SITE, {
         start: start.toISOString(),
         end: end.toISOString(),
         ...(serviceFilter === null ? {} : { serviceId: serviceFilter }),
@@ -124,6 +124,7 @@ export function ProgramsPage() {
   // 見分けられないため。
   const gridEndMs = Math.min(originMs + gridWindowHours * 3600_000, limitMs)
   const gridQuery = useListPrograms(
+    DEFAULT_SITE,
     {
       start: new Date(originMs).toISOString(),
       end: new Date(gridEndMs).toISOString(),
@@ -173,11 +174,15 @@ export function ProgramsPage() {
 
   // 予約状態は番組とは別クエリで取り、クライアント側で結合する。
   // 予約は頻繁に変わり番組はほとんど変わらないので、キャッシュの寿命を分ける。
-  // リストとグリッドはこの同じ Map を見るので、表示形式で予約状態がずれない。
-  const reservationByProgramId = useMemo(() => {
-    const map = new Map<number, number>()
-    for (const r of unwrap(reservations.data) ?? []) map.set(r.programId, r.id)
-    return map
+  // リストとグリッドはこの同じ Set を見るので、表示形式で予約状態がずれない。
+  //
+  // 意図（PUT .../intent）は reservations 行を同期的に作らない（issue #29）ので、
+  // サーバーの値だけを見ると予約直後の一覧に反映が数秒遅れる。actions.isReserved
+  // が楽観的な上書きをこの Set の上に重ねる。
+  const serverReservedProgramIds = useMemo(() => {
+    const set = new Set<number>()
+    for (const r of unwrap(reservations.data) ?? []) set.add(r.programId)
+    return set
   }, [reservations.data])
 
   // 番組が 1 件でもあるサービスだけをチップに出す（issue #17 の S3）。
@@ -201,7 +206,7 @@ export function ProgramsPage() {
     )
   }, [gridPrograms, services.data])
 
-  const actions = useReservationActions()
+  const actions = useReservationActions(serverReservedProgramIds)
 
   return (
     <>
@@ -223,7 +228,6 @@ export function ProgramsPage() {
           programs={gridPrograms}
           services={gridServices}
           serviceById={serviceById}
-          reservationByProgramId={reservationByProgramId}
           overages={overages}
           actions={actions}
           // グリッドではサービスが列そのもの（構造）なので、リストと違って
@@ -241,12 +245,7 @@ export function ProgramsPage() {
           ) : programs.length === 0 ? (
             <EmptyState>この時間帯の番組がありません</EmptyState>
           ) : (
-            <ProgramList
-              programs={programs}
-              serviceById={serviceById}
-              reservationByProgramId={reservationByProgramId}
-              actions={actions}
-            />
+            <ProgramList programs={programs} serviceById={serviceById} actions={actions} />
           )}
 
           {query.hasNextPage && !query.isPending && (
@@ -271,8 +270,10 @@ export function ProgramsPage() {
 /** ReservationActions は番組からの予約 / 取消と、番組ごとの実行中状態。 */
 type ReservationActions = {
   reserve: (program: ProgramListItem) => void
-  cancel: (programId: number, reservationId: number) => void
+  cancel: (programId: number) => void
   isBusy: (programId: number) => boolean
+  /** サーバーの値に楽観的な上書きを重ねた「予約済み」集合。 */
+  reservedProgramIds: Set<number>
 }
 
 /**
@@ -282,23 +283,63 @@ type ReservationActions = {
  * （予約の見え方が表示形式で分岐すると、M2-9 の受け入れ条件「リストとグリッドで
  * 予約状態が一致する」がコード上で担保されない）。
  *
- * 楽観的更新はしない。invalidate して REST から取り直す（レベルトリガー）。
+ * 意図（PUT/DELETE .../intent）は reservations 行を同期的に作らない（issue #29
+ * の決定: reservations の書き手は ruler だけにする）。ruler_pass ヒントで実質
+ * 秒オーダーではあるが、invalidate して取り直すだけでは一覧の反映がその間
+ * 遅れる。**楽観的更新**で見た目を即時反映し、サーバー値（serverReservedIds）が
+ * 追いついたら上書きを外す（自己修復。SSE の invalidate で最終的に一致する）。
  */
-function useReservationActions(): ReservationActions {
+function useReservationActions(serverReservedIds: ReadonlySet<number>): ReservationActions {
   const queryClient = useQueryClient()
   const toast = useToast()
-  const createReservation = useCreateReservation()
-  const deleteReservation = useDeleteReservation()
+  const putIntent = usePutProgramIntent()
 
   // mutation の isPending は全行で共有されるため、操作中の番組だけを覚えておく。
   // これがないと 1 件予約する間にリスト全行のボタンが無効化される。
   const [busyProgramIds, setBusyProgramIds] = useState<ReadonlySet<number>>(new Set())
+  // programId → 楽観的に見せたい予約状態（true=予約済み / false=未予約）。
+  const [optimistic, setOptimistic] = useState<ReadonlyMap<number, boolean>>(new Map())
+
+  // サーバー値が楽観的な予想に追いついたら、その上書きは要らなくなる。
+  // 消し忘れると、後でユーザーが手動で戻した変更まで隠れてしまう。
+  useEffect(() => {
+    setOptimistic((current) => {
+      if (current.size === 0) return current
+      let changed = false
+      const next = new Map(current)
+      for (const [programId, want] of current) {
+        if (serverReservedIds.has(programId) === want) {
+          next.delete(programId)
+          changed = true
+        }
+      }
+      return changed ? next : current
+    })
+  }, [serverReservedIds])
+
+  const reservedProgramIds = useMemo(() => {
+    const set = new Set(serverReservedIds)
+    for (const [programId, want] of optimistic) {
+      if (want) set.add(programId)
+      else set.delete(programId)
+    }
+    return set
+  }, [serverReservedIds, optimistic])
 
   const setBusy = (programId: number, busy: boolean) => {
     setBusyProgramIds((current) => {
       const next = new Set(current)
       if (busy) next.add(programId)
       else next.delete(programId)
+      return next
+    })
+  }
+
+  const setOptimisticReserved = (programId: number, reserved: boolean | undefined) => {
+    setOptimistic((current) => {
+      const next = new Map(current)
+      if (reserved === undefined) next.delete(programId)
+      else next.set(programId, reserved)
       return next
     })
   }
@@ -310,16 +351,20 @@ function useReservationActions(): ReservationActions {
     void queryClient.invalidateQueries({ queryKey: ['/api/capacity/overages'] })
   }
 
-  const cancel = (programId: number, reservationId: number) => {
+  const cancel = (programId: number) => {
     setBusy(programId, true)
-    deleteReservation.mutate(
-      { id: reservationId },
+    setOptimisticReserved(programId, false)
+    putIntent.mutate(
+      { site: DEFAULT_SITE, programId, data: { action: 'skip' } },
       {
         onSuccess: () => {
           invalidateReservations()
           toast({ message: '予約を取消しました' })
         },
-        onError: () => toast({ message: '予約の取消に失敗しました' }),
+        onError: () => {
+          toast({ message: '予約の取消に失敗しました' })
+          setOptimisticReserved(programId, undefined)
+        },
         onSettled: () => setBusy(programId, false),
       },
     )
@@ -327,36 +372,33 @@ function useReservationActions(): ReservationActions {
 
   const reserve = (program: ProgramListItem) => {
     setBusy(program.programId, true)
-    createReservation.mutate(
+    setOptimisticReserved(program.programId, true)
+    putIntent.mutate(
+      { site: DEFAULT_SITE, programId: program.programId, data: { action: 'record' } },
       {
-        // title / startAt / durationMs はサーバーが EPG プロジェクションから
-        // 引く（#27 の決定）。クライアントからは送らない。
-        data: {
-          programId: program.programId,
-        },
-      },
-      {
-        onSuccess: (created) => {
+        onSuccess: () => {
           invalidateReservations()
-          const reservation = unwrap(created)
           // 確認ダイアログを挟まない代わりに、直後に取り返せるようにする
           toast({
             message: `予約しました: ${program.name}`,
-            action: reservation
-              ? {
-                  label: '取消',
-                  onClick: () => cancel(program.programId, reservation.id),
-                }
-              : undefined,
+            action: { label: '取消', onClick: () => cancel(program.programId) },
           })
         },
-        onError: () => toast({ message: '予約に失敗しました' }),
+        onError: () => {
+          toast({ message: '予約に失敗しました' })
+          setOptimisticReserved(program.programId, undefined)
+        },
         onSettled: () => setBusy(program.programId, false),
       },
     )
   }
 
-  return { reserve, cancel, isBusy: (programId) => busyProgramIds.has(programId) }
+  return {
+    reserve,
+    cancel,
+    isBusy: (programId) => busyProgramIds.has(programId),
+    reservedProgramIds,
+  }
 }
 
 function DayChips({
@@ -441,7 +483,6 @@ function ProgramGridView({
   programs,
   services,
   serviceById,
-  reservationByProgramId,
   overages,
   actions,
   isPending,
@@ -451,7 +492,6 @@ function ProgramGridView({
   programs: ProgramListItem[]
   services: Service[]
   serviceById: Map<number, Service>
-  reservationByProgramId: Map<number, number>
   /** チューナーが不足している区間。番組ではなく区間として帯に描く（M2-10）。 */
   overages: readonly CapacityOverage[]
   actions: ReservationActions
@@ -468,10 +508,6 @@ function ProgramGridView({
   if (isPending) return <ListSkeleton />
   if (programs.length === 0) return <EmptyState>この時間帯の番組がありません</EmptyState>
 
-  const selectedReservationId = selected
-    ? reservationByProgramId.get(selected.programId)
-    : undefined
-
   return (
     <div
       className="flex flex-col"
@@ -487,13 +523,10 @@ function ProgramGridView({
           <ProgramRow
             program={selected}
             serviceName={serviceById.get(selected.serviceId)?.name}
-            reservationId={selectedReservationId}
+            reserved={actions.reservedProgramIds.has(selected.programId)}
             pending={actions.isBusy(selected.programId)}
             onReserve={() => actions.reserve(selected)}
-            onCancel={() =>
-              selectedReservationId !== undefined &&
-              actions.cancel(selected.programId, selectedReservationId)
-            }
+            onCancel={() => actions.cancel(selected.programId)}
           />
         </div>
       )}
@@ -502,7 +535,7 @@ function ProgramGridView({
           services={services}
           programs={programs}
           axis={axis}
-          reservationByProgramId={reservationByProgramId}
+          reservationByProgramId={actions.reservedProgramIds}
           selectedProgramId={selected?.programId ?? null}
           onSelect={(program) => setSelectedProgramId(program.programId)}
           // 帯はセルより上・ヘッダより下の層に入る。軸を受け取って同じ
@@ -517,12 +550,10 @@ function ProgramGridView({
 function ProgramList({
   programs,
   serviceById,
-  reservationByProgramId,
   actions,
 }: {
   programs: ProgramListItem[]
   serviceById: Map<number, Service>
-  reservationByProgramId: Map<number, number>
   actions: ReservationActions
 }) {
   let lastDay = ''
@@ -533,7 +564,7 @@ function ProgramList({
         const day = dayKey(program.startAt)
         const showDateHeader = day !== lastDay
         lastDay = day
-        const reservationId = reservationByProgramId.get(program.programId)
+        const reserved = actions.reservedProgramIds.has(program.programId)
 
         return (
           <li key={program.programId}>
@@ -547,10 +578,10 @@ function ProgramList({
             <ProgramRow
               program={program}
               serviceName={serviceById.get(program.serviceId)?.name}
-              reservationId={reservationId}
+              reserved={reserved}
               pending={actions.isBusy(program.programId)}
               onReserve={() => actions.reserve(program)}
-              onCancel={() => reservationId && actions.cancel(program.programId, reservationId)}
+              onCancel={() => actions.cancel(program.programId)}
             />
           </li>
         )

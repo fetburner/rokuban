@@ -78,7 +78,7 @@ function renderGrid(overages: CapacityOverage[], programs: ProgramListItem[]) {
       services={[service]}
       programs={programs}
       axis={axis}
-      reservationByProgramId={new Map()}
+      reservationByProgramId={new Set()}
       selectedProgramId={null}
       onSelect={vi.fn()}
       now={at(19 * 60)}
@@ -118,7 +118,7 @@ describe('CapacityBands', () => {
         services={services}
         programs={[program(1, 20 * 60, 60)]}
         axis={axis}
-        reservationByProgramId={new Map()}
+        reservationByProgramId={new Set()}
         selectedProgramId={null}
         onSelect={vi.fn()}
         now={at(19 * 60)}

@@ -41,7 +41,7 @@ catalog が無ければ media_dir を走査し、TS / M2TS / MP4 / MKV / WebM �
 			}
 			defer pool.Close()
 
-			return runRescue(ctx, pool, cfg.Storage.MediaDir, cmd.OutOrStdout())
+			return runRescue(ctx, pool, cfg.Storage.MediaDir, cfg.Mirakc.Site, cmd.OutOrStdout())
 		},
 	}
 	return cmd
@@ -49,8 +49,8 @@ catalog が無ければ media_dir を走査し、TS / M2TS / MP4 / MKV / WebM �
 
 // runRescue は catalog 復元の本体。cobra の RunE は配線に留め、DB / ファイル
 // 操作はここに閉じ込める（runShadowDiff / runEnqueue と同じ切り出し）。
-func runRescue(ctx context.Context, pool *pgxpool.Pool, mediaDir string, out io.Writer) error {
-	result, err := catalog.RescueLatest(ctx, pool, mediaDir, db.DefaultSite)
+func runRescue(ctx context.Context, pool *pgxpool.Pool, mediaDir, site string, out io.Writer) error {
+	result, err := catalog.RescueLatest(ctx, pool, mediaDir, site)
 	if err != nil {
 		return err
 	}

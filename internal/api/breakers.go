@@ -62,8 +62,8 @@ func (h *Server) ListCircuitBreakers(ctx context.Context, _ ListCircuitBreakersR
 // 「再開したつもりが実は別のブレーカーだった／既に再開済みだった」を
 // 黙って成功にしないため。
 //
-// site はパスに含めない。M1/M2 は単一サイト構成なので db.DefaultSite
-// （defaultSite）を使う。
+// site はパスに含めない。ブレーカーは h.site（config.mirakc.site）1 つに対して
+// かかる（issue #31。将来の複数サイト対応でパスに site を加える可能性がある）。
 func (h *Server) ResumeCircuitBreaker(ctx context.Context, req ResumeCircuitBreakerRequestObject) (ResumeCircuitBreakerResponseObject, error) {
 	if !knownCircuitBreakerNames[req.Name] {
 		return ResumeCircuitBreaker400JSONResponse{Error: fmt.Sprintf("unknown circuit breaker %q", req.Name)}, nil
@@ -71,7 +71,7 @@ func (h *Server) ResumeCircuitBreaker(ctx context.Context, req ResumeCircuitBrea
 
 	q := sqlcgen.New(h.pool)
 	n, err := q.ResumeCircuitBreaker(ctx, sqlcgen.ResumeCircuitBreakerParams{
-		Site: defaultSite,
+		Site: h.site,
 		Name: req.Name,
 	})
 	if err != nil {

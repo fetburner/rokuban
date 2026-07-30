@@ -254,33 +254,39 @@ export interface DropStat {
   pidType?: string;
 }
 
+export type ProgramIntentInputAction = typeof ProgramIntentInputAction[keyof typeof ProgramIntentInputAction];
+
+
+export const ProgramIntentInputAction = {
+  record: 'record',
+  skip: 'skip',
+} as const;
+
 /**
- * 番組の事実（title / 開始時刻 / 尺）はサーバーが EPG プロジェクションから
- * 引く。クライアントからは受け取らない（#27 の決定: 値の出所を射影 1 つに
- * 固定する）。クライアントが古い番組表を握っていても、GC の比較対象になる
- * program_snapshots はサーバー権威の値で作られる。
+ * PUT /api/sites/{site}/programs/{programId}/intent のボディ。
+ * `record` は「録れ」（手動予約、およびルール由来予約への上書き）。
+ * `skip` は「録るな」（どのルール経由でも一貫して除外される）。
  */
-export interface CreateReservationRequest {
-  programId: number;
-  priority?: number;
+export interface ProgramIntentInput {
+  action: ProgramIntentInputAction;
 }
 
 /**
  * ingest 時に評価されるので、録画開始後の変更でも効く
  * （M3 で消費。docs/recording.md §4.5）。
  */
-export type ReservationOverridesInputKeepOriginal = typeof ReservationOverridesInputKeepOriginal[keyof typeof ReservationOverridesInputKeepOriginal];
+export type ProgramOverridesInputKeepOriginal = typeof ProgramOverridesInputKeepOriginal[keyof typeof ProgramOverridesInputKeepOriginal];
 
 
-export const ReservationOverridesInputKeepOriginal = {
+export const ProgramOverridesInputKeepOriginal = {
   always: 'always',
   until_encoded: 'until_encoded',
 } as const;
 
-export type ReservationOverridesInputResetItem = typeof ReservationOverridesInputResetItem[keyof typeof ReservationOverridesInputResetItem];
+export type ProgramOverridesInputResetItem = typeof ProgramOverridesInputResetItem[keyof typeof ProgramOverridesInputResetItem];
 
 
-export const ReservationOverridesInputResetItem = {
+export const ProgramOverridesInputResetItem = {
   priority: 'priority',
   contentPath: 'contentPath',
   filenameTemplate: 'filenameTemplate',
@@ -289,13 +295,13 @@ export const ReservationOverridesInputResetItem = {
 } as const;
 
 /**
- * PATCH /api/reservations/{id} のボディ。値を書いたフィールドは override
- * を設定し、`reset` に名前を挙げたフィールドは override を削除する。
- * どちらにも現れないフィールドは変更しない。同じフィールドを値と
- * `reset` の両方に書いたら 400、`reset` に未知のフィールド名があっても
- * 400（docs/recording.md §4.2）。
+ * PATCH /api/sites/{site}/programs/{programId}/overrides のボディ。
+ * 値を書いたフィールドは override を設定し、`reset` に名前を挙げた
+ * フィールドは override を削除する。どちらにも現れないフィールドは
+ * 変更しない。同じフィールドを値と `reset` の両方に書いたら 400、
+ * `reset` に未知のフィールド名があっても 400（docs/recording.md §4.2）。
  */
-export interface ReservationOverridesInput {
+export interface ProgramOverridesInput {
   /**
      * mirakc の schedule に反映される（reconciler が DELETE + POST で
      * schedule を再作成する）。ただし録画開始後の recorder には
@@ -318,7 +324,7 @@ export interface ReservationOverridesInput {
      * ingest 時に評価されるので、録画開始後の変更でも効く
      * （M3 で消費。docs/recording.md §4.5）。
      */
-  keepOriginal?: ReservationOverridesInputKeepOriginal;
+  keepOriginal?: ProgramOverridesInputKeepOriginal;
   /**
      * ingest 時に評価されるので、録画開始後の変更でも効く
      * （M3 で消費。docs/recording.md §4.5）。
@@ -328,7 +334,7 @@ export interface ReservationOverridesInput {
      * 指定したフィールドの override を削除する（フィールド単位の
      * 「ルールに戻す」）。値を書いたフィールドと重複して指定すると 400。
      */
-  reset?: ReservationOverridesInputResetItem[];
+  reset?: ProgramOverridesInputResetItem[];
 }
 
 export type ProgramSearchRequestChannelTypesItem = typeof ProgramSearchRequestChannelTypesItem[keyof typeof ProgramSearchRequestChannelTypesItem];
@@ -398,10 +404,9 @@ export interface RuleTimeWindow {
 
 /**
  * ルール条件の条件部分と同じ形。rulequery.Conditions に写像される。
- * site は省略時 default（現状単一サイト）。
+ * 検索対象のサイトはパスの {site}（POST /api/sites/{site}/programs/search）。
  */
 export interface ProgramSearchRequest {
-  site?: string;
   isFree?: boolean | null;
   durationMinMs?: number | null;
   durationMaxMs?: number | null;
@@ -1563,6 +1568,10 @@ export const getListReservationsUrl = () => {
 }
 
 /**
+ * 導出結果の読み取り専用ビュー（issue #29）。書き込みは
+ * `PUT/DELETE /api/sites/{site}/programs/{programId}/intent` と
+ * `PATCH/DELETE /api/sites/{site}/programs/{programId}/overrides` で行う
+ * —— `reservations` の書き手は ruler だけであり、api はここを一切書かない。
  * @summary List reservations
  */
 export const listReservations = async ( options?: RequestInit): Promise<listReservationsResponse> => {
@@ -1655,101 +1664,6 @@ export function useListReservations<TData = Awaited<ReturnType<typeof listReserv
 
 
 
-export type createReservationResponse201 = {
-  data: Reservation
-  status: 201
-}
-
-export type createReservationResponse400 = {
-  data: ErrorResponse
-  status: 400
-}
-
-export type createReservationResponse409 = {
-  data: ErrorResponse
-  status: 409
-}
-
-export type createReservationResponseSuccess = (createReservationResponse201) & {
-  headers: Headers;
-};
-export type createReservationResponseError = (createReservationResponse400 | createReservationResponse409) & {
-  headers: Headers;
-};
-
-export type createReservationResponse = (createReservationResponseSuccess | createReservationResponseError)
-
-export const getCreateReservationUrl = () => {
-
-
-
-
-  return `/api/reservations`
-}
-
-/**
- * @summary Create a manual reservation
- */
-export const createReservation = async (createReservationRequest: CreateReservationRequest, options?: RequestInit): Promise<createReservationResponse> => {
-
-  return customInstance<createReservationResponse>(getCreateReservationUrl(),
-  {
-    ...options,
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...options?.headers },
-    body: JSON.stringify(createReservationRequest)
-  }
-);}
-
-
-
-
-
-export const getCreateReservationMutationOptions = <TError = ErrorResponse,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createReservation>>, TError,{data: CreateReservationRequest}, TContext>, request?: SecondParameter<typeof customInstance>}
-): UseMutationOptions<Awaited<ReturnType<typeof createReservation>>, TError,{data: CreateReservationRequest}, TContext> => {
-
-const mutationKey = ['createReservation'];
-const {mutation: mutationOptions, request: requestOptions} = options ?
-      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
-      options
-      : {...options, mutation: {...options.mutation, mutationKey}}
-      : {mutation: { mutationKey, }, request: undefined};
-
-
-
-
-      const mutationFn: MutationFunction<Awaited<ReturnType<typeof createReservation>>, {data: CreateReservationRequest}> = (props) => {
-          const {data} = props ?? {};
-
-          return  createReservation(data,requestOptions)
-        }
-
-
-
-
-
-
-  return  { mutationFn, ...mutationOptions }}
-
-    export type CreateReservationMutationResult = NonNullable<Awaited<ReturnType<typeof createReservation>>>
-    export type CreateReservationMutationBody = CreateReservationRequest
-    export type CreateReservationMutationError = ErrorResponse
-
-    /**
- * @summary Create a manual reservation
- */
-export const useCreateReservation = <TError = ErrorResponse,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createReservation>>, TError,{data: CreateReservationRequest}, TContext>, request?: SecondParameter<typeof customInstance>}
- , queryClient?: QueryClient): UseMutationResult<
-        Awaited<ReturnType<typeof createReservation>>,
-        TError,
-        {data: CreateReservationRequest},
-        TContext
-      > => {
-      return useMutation(getCreateReservationMutationOptions(options), queryClient);
-    }
-
 export type getReservationResponse200 = {
   data: Reservation
   status: 200
@@ -1778,6 +1692,10 @@ export const getGetReservationUrl = (id: number,) => {
 }
 
 /**
+ * `reservations.id` は ruler の導出削除・再実体化で変わりうる（寿命が
+ * 保証されていない。issue #29）。読み取りには使えるが、書き込みの宛先には
+ * 使わない —— 意図・上書きは `(site, programId)` を自身のキーとする別の
+ * エンドポイントに書く。
  * @summary Get a reservation
  */
 export const getReservation = async (id: number, options?: RequestInit): Promise<getReservationResponse> => {
@@ -1870,322 +1788,31 @@ export function useGetReservation<TData = Awaited<ReturnType<typeof getReservati
 
 
 
-export type updateReservationOverridesResponse200 = {
-  data: Reservation
-  status: 200
-}
-
-export type updateReservationOverridesResponse400 = {
-  data: ErrorResponse
-  status: 400
-}
-
-export type updateReservationOverridesResponse404 = {
-  data: ErrorResponse
-  status: 404
-}
-
-export type updateReservationOverridesResponseSuccess = (updateReservationOverridesResponse200) & {
-  headers: Headers;
-};
-export type updateReservationOverridesResponseError = (updateReservationOverridesResponse400 | updateReservationOverridesResponse404) & {
-  headers: Headers;
-};
-
-export type updateReservationOverridesResponse = (updateReservationOverridesResponseSuccess | updateReservationOverridesResponseError)
-
-export const getUpdateReservationOverridesUrl = (id: number,) => {
-
-
-
-
-  return `/api/reservations/${id}`
-}
-
-/**
- * 値を書いたフィールドはそのフィールドの override を設定する。`reset`
- * 配列に名前を挙げたフィールドは override を削除する（フィールド単位の
- * 「ルールに戻す」）。どちらにも現れないフィールドは変更しない。
- *
- * `null` で消す形にはしない（`*T` は「キーが無い」と `null` を区別できず、
- * 「消す」が「変更しない」に化けて黙って壊れるため。
- * docs/recording.md §4.2「overrides API の形」）。
- *
- * 同じフィールドを値と `reset` の両方に書いたら 400（意図が不明なので
- * 推測しない）。`reset` に未知のフィールド名があっても 400。
- *
- * `skip` は overrides のキーではない（`program_intents.action` が担う）ので
- * ここでは扱わない。取消は `DELETE /api/reservations/{id}`。
- *
- * override は `program_overrides` 表（`program_intents` とは別表）に持つ。
- * 予約単位の「ルールに戻す」は `DELETE /api/reservations/{id}/overrides` で、
- * `program_intents` には一切触れない（docs/recording.md §4.2「overrides は
- * program_intents とは別の表に置く」）。
- * @summary Update per-reservation overrides
- */
-export const updateReservationOverrides = async (id: number,
-    reservationOverridesInput: ReservationOverridesInput, options?: RequestInit): Promise<updateReservationOverridesResponse> => {
-
-  return customInstance<updateReservationOverridesResponse>(getUpdateReservationOverridesUrl(id),
-  {
-    ...options,
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json', ...options?.headers },
-    body: JSON.stringify(reservationOverridesInput)
-  }
-);}
-
-
-
-
-
-export const getUpdateReservationOverridesMutationOptions = <TError = ErrorResponse,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateReservationOverrides>>, TError,{id: number;data: ReservationOverridesInput}, TContext>, request?: SecondParameter<typeof customInstance>}
-): UseMutationOptions<Awaited<ReturnType<typeof updateReservationOverrides>>, TError,{id: number;data: ReservationOverridesInput}, TContext> => {
-
-const mutationKey = ['updateReservationOverrides'];
-const {mutation: mutationOptions, request: requestOptions} = options ?
-      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
-      options
-      : {...options, mutation: {...options.mutation, mutationKey}}
-      : {mutation: { mutationKey, }, request: undefined};
-
-
-
-
-      const mutationFn: MutationFunction<Awaited<ReturnType<typeof updateReservationOverrides>>, {id: number;data: ReservationOverridesInput}> = (props) => {
-          const {id,data} = props ?? {};
-
-          return  updateReservationOverrides(id,data,requestOptions)
-        }
-
-
-
-
-
-
-  return  { mutationFn, ...mutationOptions }}
-
-    export type UpdateReservationOverridesMutationResult = NonNullable<Awaited<ReturnType<typeof updateReservationOverrides>>>
-    export type UpdateReservationOverridesMutationBody = ReservationOverridesInput
-    export type UpdateReservationOverridesMutationError = ErrorResponse
-
-    /**
- * @summary Update per-reservation overrides
- */
-export const useUpdateReservationOverrides = <TError = ErrorResponse,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateReservationOverrides>>, TError,{id: number;data: ReservationOverridesInput}, TContext>, request?: SecondParameter<typeof customInstance>}
- , queryClient?: QueryClient): UseMutationResult<
-        Awaited<ReturnType<typeof updateReservationOverrides>>,
-        TError,
-        {id: number;data: ReservationOverridesInput},
-        TContext
-      > => {
-      return useMutation(getUpdateReservationOverridesMutationOptions(options), queryClient);
-    }
-
-export type deleteReservationResponse204 = {
-  data: void
-  status: 204
-}
-
-export type deleteReservationResponse404 = {
-  data: ErrorResponse
-  status: 404
-}
-
-export type deleteReservationResponseSuccess = (deleteReservationResponse204) & {
-  headers: Headers;
-};
-export type deleteReservationResponseError = (deleteReservationResponse404) & {
-  headers: Headers;
-};
-
-export type deleteReservationResponse = (deleteReservationResponseSuccess | deleteReservationResponseError)
-
-export const getDeleteReservationUrl = (id: number,) => {
-
-
-
-
-  return `/api/reservations/${id}`
-}
-
-/**
- * @summary Cancel a reservation
- */
-export const deleteReservation = async (id: number, options?: RequestInit): Promise<deleteReservationResponse> => {
-
-  return customInstance<deleteReservationResponse>(getDeleteReservationUrl(id),
-  {
-    ...options,
-    method: 'DELETE'
-
-
-  }
-);}
-
-
-
-
-
-export const getDeleteReservationMutationOptions = <TError = ErrorResponse,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteReservation>>, TError,{id: number}, TContext>, request?: SecondParameter<typeof customInstance>}
-): UseMutationOptions<Awaited<ReturnType<typeof deleteReservation>>, TError,{id: number}, TContext> => {
-
-const mutationKey = ['deleteReservation'];
-const {mutation: mutationOptions, request: requestOptions} = options ?
-      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
-      options
-      : {...options, mutation: {...options.mutation, mutationKey}}
-      : {mutation: { mutationKey, }, request: undefined};
-
-
-
-
-      const mutationFn: MutationFunction<Awaited<ReturnType<typeof deleteReservation>>, {id: number}> = (props) => {
-          const {id} = props ?? {};
-
-          return  deleteReservation(id,requestOptions)
-        }
-
-
-
-
-
-
-  return  { mutationFn, ...mutationOptions }}
-
-    export type DeleteReservationMutationResult = NonNullable<Awaited<ReturnType<typeof deleteReservation>>>
-
-    export type DeleteReservationMutationError = ErrorResponse
-
-    /**
- * @summary Cancel a reservation
- */
-export const useDeleteReservation = <TError = ErrorResponse,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteReservation>>, TError,{id: number}, TContext>, request?: SecondParameter<typeof customInstance>}
- , queryClient?: QueryClient): UseMutationResult<
-        Awaited<ReturnType<typeof deleteReservation>>,
-        TError,
-        {id: number},
-        TContext
-      > => {
-      return useMutation(getDeleteReservationMutationOptions(options), queryClient);
-    }
-
-export type resetReservationOverridesResponse200 = {
-  data: Reservation
-  status: 200
-}
-
-export type resetReservationOverridesResponse404 = {
-  data: ErrorResponse
-  status: 404
-}
-
-export type resetReservationOverridesResponseSuccess = (resetReservationOverridesResponse200) & {
-  headers: Headers;
-};
-export type resetReservationOverridesResponseError = (resetReservationOverridesResponse404) & {
-  headers: Headers;
-};
-
-export type resetReservationOverridesResponse = (resetReservationOverridesResponseSuccess | resetReservationOverridesResponseError)
-
-export const getResetReservationOverridesUrl = (id: number,) => {
-
-
-
-
-  return `/api/reservations/${id}/overrides`
-}
-
-/**
- * 予約単位の「ルールに戻す」。`program_overrides` の行を削除するだけ
- * （`DELETE FROM program_overrides WHERE site = $1 AND program_id = $2`）。
- * `action`（record/skip。`program_intents` 側）は触らない
- * （docs/recording.md §4.2「overrides は program_intents とは別の表に置く」）。
- * @summary Reset all overrides for a reservation (revert to rule)
- */
-export const resetReservationOverrides = async (id: number, options?: RequestInit): Promise<resetReservationOverridesResponse> => {
-
-  return customInstance<resetReservationOverridesResponse>(getResetReservationOverridesUrl(id),
-  {
-    ...options,
-    method: 'DELETE'
-
-
-  }
-);}
-
-
-
-
-
-export const getResetReservationOverridesMutationOptions = <TError = ErrorResponse,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof resetReservationOverrides>>, TError,{id: number}, TContext>, request?: SecondParameter<typeof customInstance>}
-): UseMutationOptions<Awaited<ReturnType<typeof resetReservationOverrides>>, TError,{id: number}, TContext> => {
-
-const mutationKey = ['resetReservationOverrides'];
-const {mutation: mutationOptions, request: requestOptions} = options ?
-      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
-      options
-      : {...options, mutation: {...options.mutation, mutationKey}}
-      : {mutation: { mutationKey, }, request: undefined};
-
-
-
-
-      const mutationFn: MutationFunction<Awaited<ReturnType<typeof resetReservationOverrides>>, {id: number}> = (props) => {
-          const {id} = props ?? {};
-
-          return  resetReservationOverrides(id,requestOptions)
-        }
-
-
-
-
-
-
-  return  { mutationFn, ...mutationOptions }}
-
-    export type ResetReservationOverridesMutationResult = NonNullable<Awaited<ReturnType<typeof resetReservationOverrides>>>
-
-    export type ResetReservationOverridesMutationError = ErrorResponse
-
-    /**
- * @summary Reset all overrides for a reservation (revert to rule)
- */
-export const useResetReservationOverrides = <TError = ErrorResponse,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof resetReservationOverrides>>, TError,{id: number}, TContext>, request?: SecondParameter<typeof customInstance>}
- , queryClient?: QueryClient): UseMutationResult<
-        Awaited<ReturnType<typeof resetReservationOverrides>>,
-        TError,
-        {id: number},
-        TContext
-      > => {
-      return useMutation(getResetReservationOverridesMutationOptions(options), queryClient);
-    }
-
 export type listServicesResponse200 = {
   data: Service[]
   status: 200
 }
 
+export type listServicesResponse404 = {
+  data: ErrorResponse
+  status: 404
+}
+
 export type listServicesResponseSuccess = (listServicesResponse200) & {
   headers: Headers;
 };
-;
+export type listServicesResponseError = (listServicesResponse404) & {
+  headers: Headers;
+};
 
-export type listServicesResponse = (listServicesResponseSuccess)
+export type listServicesResponse = (listServicesResponseSuccess | listServicesResponseError)
 
-export const getListServicesUrl = () => {
-
-
+export const getListServicesUrl = (site: string,) => {
 
 
-  return `/api/services`
+
+
+  return `/api/sites/${site}/services`
 }
 
 /**
@@ -2196,9 +1823,9 @@ export const getListServicesUrl = () => {
  * 表示することが期待される（issue #17 の S3）。
  * @summary List EPG services (channels)
  */
-export const listServices = async ( options?: RequestInit): Promise<listServicesResponse> => {
+export const listServices = async (site: string, options?: RequestInit): Promise<listServicesResponse> => {
 
-  return customInstance<listServicesResponse>(getListServicesUrl(),
+  return customInstance<listServicesResponse>(getListServicesUrl(site),
   {
     ...options,
     method: 'GET'
@@ -2211,37 +1838,37 @@ export const listServices = async ( options?: RequestInit): Promise<listServices
 
 
 
-export const getListServicesQueryKey = () => {
+export const getListServicesQueryKey = (site: string,) => {
     return [
-    `/api/services`
+    `/api/sites/${site}/services`
     ] as const;
     }
 
 
-export const getListServicesQueryOptions = <TData = Awaited<ReturnType<typeof listServices>>, TError = unknown>( options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listServices>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+export const getListServicesQueryOptions = <TData = Awaited<ReturnType<typeof listServices>>, TError = ErrorResponse>(site: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listServices>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
 ) => {
 
 const {query: queryOptions, request: requestOptions} = options ?? {};
 
-  const queryKey =  queryOptions?.queryKey ?? getListServicesQueryKey();
+  const queryKey =  queryOptions?.queryKey ?? getListServicesQueryKey(site);
 
 
 
-    const queryFn: QueryFunction<Awaited<ReturnType<typeof listServices>>> = ({ signal }) => listServices({ signal, ...requestOptions });
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listServices>>> = ({ signal }) => listServices(site, { signal, ...requestOptions });
 
 
 
 
 
-   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listServices>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+   return  { queryKey, queryFn, enabled: site !== null && site !== undefined, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listServices>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
 }
 
 export type ListServicesQueryResult = NonNullable<Awaited<ReturnType<typeof listServices>>>
-export type ListServicesQueryError = unknown
+export type ListServicesQueryError = ErrorResponse
 
 
-export function useListServices<TData = Awaited<ReturnType<typeof listServices>>, TError = unknown>(
-  options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof listServices>>, TError, TData>> & Pick<
+export function useListServices<TData = Awaited<ReturnType<typeof listServices>>, TError = ErrorResponse>(
+ site: string, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof listServices>>, TError, TData>> & Pick<
         DefinedInitialDataOptions<
           Awaited<ReturnType<typeof listServices>>,
           TError,
@@ -2250,8 +1877,8 @@ export function useListServices<TData = Awaited<ReturnType<typeof listServices>>
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
-export function useListServices<TData = Awaited<ReturnType<typeof listServices>>, TError = unknown>(
-  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listServices>>, TError, TData>> & Pick<
+export function useListServices<TData = Awaited<ReturnType<typeof listServices>>, TError = ErrorResponse>(
+ site: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listServices>>, TError, TData>> & Pick<
         UndefinedInitialDataOptions<
           Awaited<ReturnType<typeof listServices>>,
           TError,
@@ -2260,20 +1887,20 @@ export function useListServices<TData = Awaited<ReturnType<typeof listServices>>
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
-export function useListServices<TData = Awaited<ReturnType<typeof listServices>>, TError = unknown>(
-  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listServices>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+export function useListServices<TData = Awaited<ReturnType<typeof listServices>>, TError = ErrorResponse>(
+ site: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listServices>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
 /**
  * @summary List EPG services (channels)
  */
 
-export function useListServices<TData = Awaited<ReturnType<typeof listServices>>, TError = unknown>(
-  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listServices>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+export function useListServices<TData = Awaited<ReturnType<typeof listServices>>, TError = ErrorResponse>(
+ site: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listServices>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
 
-  const queryOptions = getListServicesQueryOptions(options)
+  const queryOptions = getListServicesQueryOptions(site,options)
 
   const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
 
@@ -2296,31 +1923,39 @@ export type searchProgramsResponse400 = {
   status: 400
 }
 
+export type searchProgramsResponse404 = {
+  data: ErrorResponse
+  status: 404
+}
+
 export type searchProgramsResponseSuccess = (searchProgramsResponse200) & {
   headers: Headers;
 };
-export type searchProgramsResponseError = (searchProgramsResponse400) & {
+export type searchProgramsResponseError = (searchProgramsResponse400 | searchProgramsResponse404) & {
   headers: Headers;
 };
 
 export type searchProgramsResponse = (searchProgramsResponseSuccess | searchProgramsResponseError)
 
-export const getSearchProgramsUrl = () => {
+export const getSearchProgramsUrl = (site: string,) => {
 
 
 
 
-  return `/api/programs/search`
+  return `/api/sites/${site}/programs/search`
 }
 
 /**
  * ルール条件と同じコンパイラ（internal/rulequery）で epg_programs を検索する。
  * ruler 評価と同一の SQL 経路を通る（M2-2）。UI 検索（M2-11）の土台。
+ * 検索対象のサイトはパスの {site}（評価 site）。`sites` フィールドは
+ * ルールの `rule_sites` 相当の条件（マッチ対象の絞り込み）で、これとは別軸。
  * @summary Search EPG programs by rule-style conditions
  */
-export const searchPrograms = async (programSearchRequest: ProgramSearchRequest, options?: RequestInit): Promise<searchProgramsResponse> => {
+export const searchPrograms = async (site: string,
+    programSearchRequest: ProgramSearchRequest, options?: RequestInit): Promise<searchProgramsResponse> => {
 
-  return customInstance<searchProgramsResponse>(getSearchProgramsUrl(),
+  return customInstance<searchProgramsResponse>(getSearchProgramsUrl(site),
   {
     ...options,
     method: 'POST',
@@ -2334,8 +1969,8 @@ export const searchPrograms = async (programSearchRequest: ProgramSearchRequest,
 
 
 export const getSearchProgramsMutationOptions = <TError = ErrorResponse,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof searchPrograms>>, TError,{data: ProgramSearchRequest}, TContext>, request?: SecondParameter<typeof customInstance>}
-): UseMutationOptions<Awaited<ReturnType<typeof searchPrograms>>, TError,{data: ProgramSearchRequest}, TContext> => {
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof searchPrograms>>, TError,{site: string;data: ProgramSearchRequest}, TContext>, request?: SecondParameter<typeof customInstance>}
+): UseMutationOptions<Awaited<ReturnType<typeof searchPrograms>>, TError,{site: string;data: ProgramSearchRequest}, TContext> => {
 
 const mutationKey = ['searchPrograms'];
 const {mutation: mutationOptions, request: requestOptions} = options ?
@@ -2347,10 +1982,10 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
 
 
 
-      const mutationFn: MutationFunction<Awaited<ReturnType<typeof searchPrograms>>, {data: ProgramSearchRequest}> = (props) => {
-          const {data} = props ?? {};
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof searchPrograms>>, {site: string;data: ProgramSearchRequest}> = (props) => {
+          const {site,data} = props ?? {};
 
-          return  searchPrograms(data,requestOptions)
+          return  searchPrograms(site,data,requestOptions)
         }
 
 
@@ -2368,11 +2003,11 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
  * @summary Search EPG programs by rule-style conditions
  */
 export const useSearchPrograms = <TError = ErrorResponse,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof searchPrograms>>, TError,{data: ProgramSearchRequest}, TContext>, request?: SecondParameter<typeof customInstance>}
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof searchPrograms>>, TError,{site: string;data: ProgramSearchRequest}, TContext>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient): UseMutationResult<
         Awaited<ReturnType<typeof searchPrograms>>,
         TError,
-        {data: ProgramSearchRequest},
+        {site: string;data: ProgramSearchRequest},
         TContext
       > => {
       return useMutation(getSearchProgramsMutationOptions(options), queryClient);
@@ -2388,16 +2023,22 @@ export type listProgramsResponse400 = {
   status: 400
 }
 
+export type listProgramsResponse404 = {
+  data: ErrorResponse
+  status: 404
+}
+
 export type listProgramsResponseSuccess = (listProgramsResponse200) & {
   headers: Headers;
 };
-export type listProgramsResponseError = (listProgramsResponse400) & {
+export type listProgramsResponseError = (listProgramsResponse400 | listProgramsResponse404) & {
   headers: Headers;
 };
 
 export type listProgramsResponse = (listProgramsResponseSuccess | listProgramsResponseError)
 
-export const getListProgramsUrl = (params: ListProgramsParams,) => {
+export const getListProgramsUrl = (site: string,
+    params: ListProgramsParams,) => {
   const normalizedParams = new URLSearchParams();
 
   Object.entries(params || {}).forEach(([key, value]) => {
@@ -2409,7 +2050,7 @@ export const getListProgramsUrl = (params: ListProgramsParams,) => {
 
   const stringifiedParams = normalizedParams.toString();
 
-  return stringifiedParams.length > 0 ? `/api/programs?${stringifiedParams}` : `/api/programs`
+  return stringifiedParams.length > 0 ? `/api/sites/${site}/programs?${stringifiedParams}` : `/api/sites/${site}/programs`
 }
 
 /**
@@ -2423,12 +2064,13 @@ export const getListProgramsUrl = (params: ListProgramsParams,) => {
  * 同じ窓は常に同じ完全な結果を返す。
  *
  * レスポンスは一覧向けの軽い形で、extended / video / audios は含まない。
- * それらは `GET /api/programs/{programId}` で取得する。
+ * それらは `GET /api/sites/{site}/programs/{programId}` で取得する。
  * @summary List EPG programs in a time window
  */
-export const listPrograms = async (params: ListProgramsParams, options?: RequestInit): Promise<listProgramsResponse> => {
+export const listPrograms = async (site: string,
+    params: ListProgramsParams, options?: RequestInit): Promise<listProgramsResponse> => {
 
-  return customInstance<listProgramsResponse>(getListProgramsUrl(params),
+  return customInstance<listProgramsResponse>(getListProgramsUrl(site,params),
   {
     ...options,
     method: 'GET'
@@ -2441,29 +2083,31 @@ export const listPrograms = async (params: ListProgramsParams, options?: Request
 
 
 
-export const getListProgramsQueryKey = (params?: ListProgramsParams,) => {
+export const getListProgramsQueryKey = (site: string,
+    params?: ListProgramsParams,) => {
     return [
-    `/api/programs`, ...(params ? [params] : [])
+    `/api/sites/${site}/programs`, ...(params ? [params] : [])
     ] as const;
     }
 
 
-export const getListProgramsQueryOptions = <TData = Awaited<ReturnType<typeof listPrograms>>, TError = ErrorResponse>(params: ListProgramsParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listPrograms>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+export const getListProgramsQueryOptions = <TData = Awaited<ReturnType<typeof listPrograms>>, TError = ErrorResponse>(site: string,
+    params: ListProgramsParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listPrograms>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
 ) => {
 
 const {query: queryOptions, request: requestOptions} = options ?? {};
 
-  const queryKey =  queryOptions?.queryKey ?? getListProgramsQueryKey(params);
+  const queryKey =  queryOptions?.queryKey ?? getListProgramsQueryKey(site,params);
 
 
 
-    const queryFn: QueryFunction<Awaited<ReturnType<typeof listPrograms>>> = ({ signal }) => listPrograms(params, { signal, ...requestOptions });
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listPrograms>>> = ({ signal }) => listPrograms(site,params, { signal, ...requestOptions });
 
 
 
 
 
-   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listPrograms>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+   return  { queryKey, queryFn, enabled: site !== null && site !== undefined, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listPrograms>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
 }
 
 export type ListProgramsQueryResult = NonNullable<Awaited<ReturnType<typeof listPrograms>>>
@@ -2471,7 +2115,8 @@ export type ListProgramsQueryError = ErrorResponse
 
 
 export function useListPrograms<TData = Awaited<ReturnType<typeof listPrograms>>, TError = ErrorResponse>(
- params: ListProgramsParams, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof listPrograms>>, TError, TData>> & Pick<
+ site: string,
+    params: ListProgramsParams, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof listPrograms>>, TError, TData>> & Pick<
         DefinedInitialDataOptions<
           Awaited<ReturnType<typeof listPrograms>>,
           TError,
@@ -2481,7 +2126,8 @@ export function useListPrograms<TData = Awaited<ReturnType<typeof listPrograms>>
  , queryClient?: QueryClient
   ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
 export function useListPrograms<TData = Awaited<ReturnType<typeof listPrograms>>, TError = ErrorResponse>(
- params: ListProgramsParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listPrograms>>, TError, TData>> & Pick<
+ site: string,
+    params: ListProgramsParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listPrograms>>, TError, TData>> & Pick<
         UndefinedInitialDataOptions<
           Awaited<ReturnType<typeof listPrograms>>,
           TError,
@@ -2491,7 +2137,8 @@ export function useListPrograms<TData = Awaited<ReturnType<typeof listPrograms>>
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
 export function useListPrograms<TData = Awaited<ReturnType<typeof listPrograms>>, TError = ErrorResponse>(
- params: ListProgramsParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listPrograms>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ site: string,
+    params: ListProgramsParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listPrograms>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
 /**
@@ -2499,11 +2146,12 @@ export function useListPrograms<TData = Awaited<ReturnType<typeof listPrograms>>
  */
 
 export function useListPrograms<TData = Awaited<ReturnType<typeof listPrograms>>, TError = ErrorResponse>(
- params: ListProgramsParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listPrograms>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ site: string,
+    params: ListProgramsParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listPrograms>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
 
-  const queryOptions = getListProgramsQueryOptions(params,options)
+  const queryOptions = getListProgramsQueryOptions(site,params,options)
 
   const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
 
@@ -2535,20 +2183,22 @@ export type getProgramResponseError = (getProgramResponse404) & {
 
 export type getProgramResponse = (getProgramResponseSuccess | getProgramResponseError)
 
-export const getGetProgramUrl = (programId: number,) => {
+export const getGetProgramUrl = (site: string,
+    programId: number,) => {
 
 
 
 
-  return `/api/programs/${programId}`
+  return `/api/sites/${site}/programs/${programId}`
 }
 
 /**
  * @summary Get a single EPG program with full detail
  */
-export const getProgram = async (programId: number, options?: RequestInit): Promise<getProgramResponse> => {
+export const getProgram = async (site: string,
+    programId: number, options?: RequestInit): Promise<getProgramResponse> => {
 
-  return customInstance<getProgramResponse>(getGetProgramUrl(programId),
+  return customInstance<getProgramResponse>(getGetProgramUrl(site,programId),
   {
     ...options,
     method: 'GET'
@@ -2561,29 +2211,31 @@ export const getProgram = async (programId: number, options?: RequestInit): Prom
 
 
 
-export const getGetProgramQueryKey = (programId: number,) => {
+export const getGetProgramQueryKey = (site: string,
+    programId: number,) => {
     return [
-    `/api/programs/${programId}`
+    `/api/sites/${site}/programs/${programId}`
     ] as const;
     }
 
 
-export const getGetProgramQueryOptions = <TData = Awaited<ReturnType<typeof getProgram>>, TError = ErrorResponse>(programId: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getProgram>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+export const getGetProgramQueryOptions = <TData = Awaited<ReturnType<typeof getProgram>>, TError = ErrorResponse>(site: string,
+    programId: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getProgram>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
 ) => {
 
 const {query: queryOptions, request: requestOptions} = options ?? {};
 
-  const queryKey =  queryOptions?.queryKey ?? getGetProgramQueryKey(programId);
+  const queryKey =  queryOptions?.queryKey ?? getGetProgramQueryKey(site,programId);
 
 
 
-    const queryFn: QueryFunction<Awaited<ReturnType<typeof getProgram>>> = ({ signal }) => getProgram(programId, { signal, ...requestOptions });
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getProgram>>> = ({ signal }) => getProgram(site,programId, { signal, ...requestOptions });
 
 
 
 
 
-   return  { queryKey, queryFn, enabled: programId !== null && programId !== undefined, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getProgram>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+   return  { queryKey, queryFn, enabled: site !== null && site !== undefined && programId !== null && programId !== undefined, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getProgram>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
 }
 
 export type GetProgramQueryResult = NonNullable<Awaited<ReturnType<typeof getProgram>>>
@@ -2591,7 +2243,8 @@ export type GetProgramQueryError = ErrorResponse
 
 
 export function useGetProgram<TData = Awaited<ReturnType<typeof getProgram>>, TError = ErrorResponse>(
- programId: number, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getProgram>>, TError, TData>> & Pick<
+ site: string,
+    programId: number, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getProgram>>, TError, TData>> & Pick<
         DefinedInitialDataOptions<
           Awaited<ReturnType<typeof getProgram>>,
           TError,
@@ -2601,7 +2254,8 @@ export function useGetProgram<TData = Awaited<ReturnType<typeof getProgram>>, TE
  , queryClient?: QueryClient
   ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
 export function useGetProgram<TData = Awaited<ReturnType<typeof getProgram>>, TError = ErrorResponse>(
- programId: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getProgram>>, TError, TData>> & Pick<
+ site: string,
+    programId: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getProgram>>, TError, TData>> & Pick<
         UndefinedInitialDataOptions<
           Awaited<ReturnType<typeof getProgram>>,
           TError,
@@ -2611,7 +2265,8 @@ export function useGetProgram<TData = Awaited<ReturnType<typeof getProgram>>, TE
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
 export function useGetProgram<TData = Awaited<ReturnType<typeof getProgram>>, TError = ErrorResponse>(
- programId: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getProgram>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ site: string,
+    programId: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getProgram>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
 /**
@@ -2619,11 +2274,12 @@ export function useGetProgram<TData = Awaited<ReturnType<typeof getProgram>>, TE
  */
 
 export function useGetProgram<TData = Awaited<ReturnType<typeof getProgram>>, TError = ErrorResponse>(
- programId: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getProgram>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ site: string,
+    programId: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getProgram>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
 
-  const queryOptions = getGetProgramQueryOptions(programId,options)
+  const queryOptions = getGetProgramQueryOptions(site,programId,options)
 
   const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
 
@@ -2655,12 +2311,13 @@ export type getProgramOverlapsResponseError = (getProgramOverlapsResponse404) & 
 
 export type getProgramOverlapsResponse = (getProgramOverlapsResponseSuccess | getProgramOverlapsResponseError)
 
-export const getGetProgramOverlapsUrl = (programId: number,) => {
+export const getGetProgramOverlapsUrl = (site: string,
+    programId: number,) => {
 
 
 
 
-  return `/api/programs/${programId}/overlaps`
+  return `/api/sites/${site}/programs/${programId}/overlaps`
 }
 
 /**
@@ -2683,9 +2340,10 @@ export const getGetProgramOverlapsUrl = (programId: number,) => {
  * 番組が EPG プロジェクションに無ければ 404。
  * @summary Count reservations overlapping this program's broadcast time
  */
-export const getProgramOverlaps = async (programId: number, options?: RequestInit): Promise<getProgramOverlapsResponse> => {
+export const getProgramOverlaps = async (site: string,
+    programId: number, options?: RequestInit): Promise<getProgramOverlapsResponse> => {
 
-  return customInstance<getProgramOverlapsResponse>(getGetProgramOverlapsUrl(programId),
+  return customInstance<getProgramOverlapsResponse>(getGetProgramOverlapsUrl(site,programId),
   {
     ...options,
     method: 'GET'
@@ -2698,29 +2356,31 @@ export const getProgramOverlaps = async (programId: number, options?: RequestIni
 
 
 
-export const getGetProgramOverlapsQueryKey = (programId: number,) => {
+export const getGetProgramOverlapsQueryKey = (site: string,
+    programId: number,) => {
     return [
-    `/api/programs/${programId}/overlaps`
+    `/api/sites/${site}/programs/${programId}/overlaps`
     ] as const;
     }
 
 
-export const getGetProgramOverlapsQueryOptions = <TData = Awaited<ReturnType<typeof getProgramOverlaps>>, TError = ErrorResponse>(programId: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getProgramOverlaps>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+export const getGetProgramOverlapsQueryOptions = <TData = Awaited<ReturnType<typeof getProgramOverlaps>>, TError = ErrorResponse>(site: string,
+    programId: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getProgramOverlaps>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
 ) => {
 
 const {query: queryOptions, request: requestOptions} = options ?? {};
 
-  const queryKey =  queryOptions?.queryKey ?? getGetProgramOverlapsQueryKey(programId);
+  const queryKey =  queryOptions?.queryKey ?? getGetProgramOverlapsQueryKey(site,programId);
 
 
 
-    const queryFn: QueryFunction<Awaited<ReturnType<typeof getProgramOverlaps>>> = ({ signal }) => getProgramOverlaps(programId, { signal, ...requestOptions });
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getProgramOverlaps>>> = ({ signal }) => getProgramOverlaps(site,programId, { signal, ...requestOptions });
 
 
 
 
 
-   return  { queryKey, queryFn, enabled: programId !== null && programId !== undefined, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getProgramOverlaps>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+   return  { queryKey, queryFn, enabled: site !== null && site !== undefined && programId !== null && programId !== undefined, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getProgramOverlaps>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
 }
 
 export type GetProgramOverlapsQueryResult = NonNullable<Awaited<ReturnType<typeof getProgramOverlaps>>>
@@ -2728,7 +2388,8 @@ export type GetProgramOverlapsQueryError = ErrorResponse
 
 
 export function useGetProgramOverlaps<TData = Awaited<ReturnType<typeof getProgramOverlaps>>, TError = ErrorResponse>(
- programId: number, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getProgramOverlaps>>, TError, TData>> & Pick<
+ site: string,
+    programId: number, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getProgramOverlaps>>, TError, TData>> & Pick<
         DefinedInitialDataOptions<
           Awaited<ReturnType<typeof getProgramOverlaps>>,
           TError,
@@ -2738,7 +2399,8 @@ export function useGetProgramOverlaps<TData = Awaited<ReturnType<typeof getProgr
  , queryClient?: QueryClient
   ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
 export function useGetProgramOverlaps<TData = Awaited<ReturnType<typeof getProgramOverlaps>>, TError = ErrorResponse>(
- programId: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getProgramOverlaps>>, TError, TData>> & Pick<
+ site: string,
+    programId: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getProgramOverlaps>>, TError, TData>> & Pick<
         UndefinedInitialDataOptions<
           Awaited<ReturnType<typeof getProgramOverlaps>>,
           TError,
@@ -2748,7 +2410,8 @@ export function useGetProgramOverlaps<TData = Awaited<ReturnType<typeof getProgr
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
 export function useGetProgramOverlaps<TData = Awaited<ReturnType<typeof getProgramOverlaps>>, TError = ErrorResponse>(
- programId: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getProgramOverlaps>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ site: string,
+    programId: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getProgramOverlaps>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
 /**
@@ -2756,11 +2419,12 @@ export function useGetProgramOverlaps<TData = Awaited<ReturnType<typeof getProgr
  */
 
 export function useGetProgramOverlaps<TData = Awaited<ReturnType<typeof getProgramOverlaps>>, TError = ErrorResponse>(
- programId: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getProgramOverlaps>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ site: string,
+    programId: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getProgramOverlaps>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
 
-  const queryOptions = getGetProgramOverlapsQueryOptions(programId,options)
+  const queryOptions = getGetProgramOverlapsQueryOptions(site,programId,options)
 
   const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
 
@@ -2772,6 +2436,410 @@ export function useGetProgramOverlaps<TData = Awaited<ReturnType<typeof getProgr
 
 
 
+
+export type putProgramIntentResponse204 = {
+  data: void
+  status: 204
+}
+
+export type putProgramIntentResponse400 = {
+  data: ErrorResponse
+  status: 400
+}
+
+export type putProgramIntentResponseSuccess = (putProgramIntentResponse204) & {
+  headers: Headers;
+};
+export type putProgramIntentResponseError = (putProgramIntentResponse400) & {
+  headers: Headers;
+};
+
+export type putProgramIntentResponse = (putProgramIntentResponseSuccess | putProgramIntentResponseError)
+
+export const getPutProgramIntentUrl = (site: string,
+    programId: number,) => {
+
+
+
+
+  return `/api/sites/${site}/programs/${programId}/intent`
+}
+
+/**
+ * ユーザー意図（`program_intents`）を `(site, programId)` を自身のキーとして
+ * 書く（issue #29）。導出行（`reservations`）の有無に依存しないので、
+ * `base.skip` が立っている番組にも `action=record` を立てられる
+ * （旧 `POST /api/reservations` は導出行が「無い」ときしか書けなかった）。
+ *
+ * 意図だけを書き、`reservations` は同一トランザクションで作らない
+ * （`reservations` の書き手は ruler だけにする。issue #29 の決定）。
+ * `insertRulerPassHint` で ruler_pass を即座に投入するので、実体化は
+ * 秒オーダー。フロントエンドは楽観更新で一覧に即時反映する。
+ *
+ * 番組が EPG プロジェクションに無ければ 400。
+ * @summary Assert record/skip intent for a program
+ */
+export const putProgramIntent = async (site: string,
+    programId: number,
+    programIntentInput: ProgramIntentInput, options?: RequestInit): Promise<putProgramIntentResponse> => {
+
+  return customInstance<putProgramIntentResponse>(getPutProgramIntentUrl(site,programId),
+  {
+    ...options,
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(programIntentInput)
+  }
+);}
+
+
+
+
+
+export const getPutProgramIntentMutationOptions = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof putProgramIntent>>, TError,{site: string;programId: number;data: ProgramIntentInput}, TContext>, request?: SecondParameter<typeof customInstance>}
+): UseMutationOptions<Awaited<ReturnType<typeof putProgramIntent>>, TError,{site: string;programId: number;data: ProgramIntentInput}, TContext> => {
+
+const mutationKey = ['putProgramIntent'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof putProgramIntent>>, {site: string;programId: number;data: ProgramIntentInput}> = (props) => {
+          const {site,programId,data} = props ?? {};
+
+          return  putProgramIntent(site,programId,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type PutProgramIntentMutationResult = NonNullable<Awaited<ReturnType<typeof putProgramIntent>>>
+    export type PutProgramIntentMutationBody = ProgramIntentInput
+    export type PutProgramIntentMutationError = ErrorResponse
+
+    /**
+ * @summary Assert record/skip intent for a program
+ */
+export const usePutProgramIntent = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof putProgramIntent>>, TError,{site: string;programId: number;data: ProgramIntentInput}, TContext>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof putProgramIntent>>,
+        TError,
+        {site: string;programId: number;data: ProgramIntentInput},
+        TContext
+      > => {
+      return useMutation(getPutProgramIntentMutationOptions(options), queryClient);
+    }
+
+export type deleteProgramIntentResponse204 = {
+  data: void
+  status: 204
+}
+
+export type deleteProgramIntentResponse400 = {
+  data: ErrorResponse
+  status: 400
+}
+
+export type deleteProgramIntentResponseSuccess = (deleteProgramIntentResponse204) & {
+  headers: Headers;
+};
+export type deleteProgramIntentResponseError = (deleteProgramIntentResponse400) & {
+  headers: Headers;
+};
+
+export type deleteProgramIntentResponse = (deleteProgramIntentResponseSuccess | deleteProgramIntentResponseError)
+
+export const getDeleteProgramIntentUrl = (site: string,
+    programId: number,) => {
+
+
+
+
+  return `/api/sites/${site}/programs/${programId}/intent`
+}
+
+/**
+ * `program_intents` の行を削除するだけ（意見なし。純粋にルール由来へ戻す）。
+ * 取消（「録るな」の明示的な主張）は `PUT .../intent {action: skip}`。
+ * こちらは「何も主張しない」状態に戻す操作で、`program_overrides` には
+ * 一切触れない（別表・別軸。issue #29）。冪等（行が無くても 204）。
+ * @summary Clear intent for a program (defer to the rule)
+ */
+export const deleteProgramIntent = async (site: string,
+    programId: number, options?: RequestInit): Promise<deleteProgramIntentResponse> => {
+
+  return customInstance<deleteProgramIntentResponse>(getDeleteProgramIntentUrl(site,programId),
+  {
+    ...options,
+    method: 'DELETE'
+
+
+  }
+);}
+
+
+
+
+
+export const getDeleteProgramIntentMutationOptions = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteProgramIntent>>, TError,{site: string;programId: number}, TContext>, request?: SecondParameter<typeof customInstance>}
+): UseMutationOptions<Awaited<ReturnType<typeof deleteProgramIntent>>, TError,{site: string;programId: number}, TContext> => {
+
+const mutationKey = ['deleteProgramIntent'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof deleteProgramIntent>>, {site: string;programId: number}> = (props) => {
+          const {site,programId} = props ?? {};
+
+          return  deleteProgramIntent(site,programId,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type DeleteProgramIntentMutationResult = NonNullable<Awaited<ReturnType<typeof deleteProgramIntent>>>
+
+    export type DeleteProgramIntentMutationError = ErrorResponse
+
+    /**
+ * @summary Clear intent for a program (defer to the rule)
+ */
+export const useDeleteProgramIntent = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteProgramIntent>>, TError,{site: string;programId: number}, TContext>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof deleteProgramIntent>>,
+        TError,
+        {site: string;programId: number},
+        TContext
+      > => {
+      return useMutation(getDeleteProgramIntentMutationOptions(options), queryClient);
+    }
+
+export type patchProgramOverridesResponse204 = {
+  data: void
+  status: 204
+}
+
+export type patchProgramOverridesResponse400 = {
+  data: ErrorResponse
+  status: 400
+}
+
+export type patchProgramOverridesResponseSuccess = (patchProgramOverridesResponse204) & {
+  headers: Headers;
+};
+export type patchProgramOverridesResponseError = (patchProgramOverridesResponse400) & {
+  headers: Headers;
+};
+
+export type patchProgramOverridesResponse = (patchProgramOverridesResponseSuccess | patchProgramOverridesResponseError)
+
+export const getPatchProgramOverridesUrl = (site: string,
+    programId: number,) => {
+
+
+
+
+  return `/api/sites/${site}/programs/${programId}/overrides`
+}
+
+/**
+ * 値を書いたフィールドはそのフィールドの override を設定する。`reset`
+ * 配列に名前を挙げたフィールドは override を削除する（フィールド単位の
+ * 「ルールに戻す」）。どちらにも現れないフィールドは変更しない。
+ *
+ * `null` で消す形にはしない（`*T` は「キーが無い」と `null` を区別できず、
+ * 「消す」が「変更しない」に化けて黙って壊れるため。
+ * docs/recording.md §4.2「overrides API の形」）。
+ *
+ * 同じフィールドを値と `reset` の両方に書いたら 400（意図が不明なので
+ * 推測しない）。`reset` に未知のフィールド名があっても 400。
+ *
+ * `skip` は overrides のキーではない（`program_intents.action` が担う）ので
+ * ここでは扱わない。取消は `PUT .../intent {action: skip}`。
+ *
+ * `(site, programId)` を自身のキーとして `program_overrides` を書く
+ * （issue #29）。導出行（`reservations`）の有無には依存しない。
+ * @summary Update per-program overrides
+ */
+export const patchProgramOverrides = async (site: string,
+    programId: number,
+    programOverridesInput: ProgramOverridesInput, options?: RequestInit): Promise<patchProgramOverridesResponse> => {
+
+  return customInstance<patchProgramOverridesResponse>(getPatchProgramOverridesUrl(site,programId),
+  {
+    ...options,
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(programOverridesInput)
+  }
+);}
+
+
+
+
+
+export const getPatchProgramOverridesMutationOptions = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof patchProgramOverrides>>, TError,{site: string;programId: number;data: ProgramOverridesInput}, TContext>, request?: SecondParameter<typeof customInstance>}
+): UseMutationOptions<Awaited<ReturnType<typeof patchProgramOverrides>>, TError,{site: string;programId: number;data: ProgramOverridesInput}, TContext> => {
+
+const mutationKey = ['patchProgramOverrides'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof patchProgramOverrides>>, {site: string;programId: number;data: ProgramOverridesInput}> = (props) => {
+          const {site,programId,data} = props ?? {};
+
+          return  patchProgramOverrides(site,programId,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type PatchProgramOverridesMutationResult = NonNullable<Awaited<ReturnType<typeof patchProgramOverrides>>>
+    export type PatchProgramOverridesMutationBody = ProgramOverridesInput
+    export type PatchProgramOverridesMutationError = ErrorResponse
+
+    /**
+ * @summary Update per-program overrides
+ */
+export const usePatchProgramOverrides = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof patchProgramOverrides>>, TError,{site: string;programId: number;data: ProgramOverridesInput}, TContext>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof patchProgramOverrides>>,
+        TError,
+        {site: string;programId: number;data: ProgramOverridesInput},
+        TContext
+      > => {
+      return useMutation(getPatchProgramOverridesMutationOptions(options), queryClient);
+    }
+
+export type deleteProgramOverridesResponse204 = {
+  data: void
+  status: 204
+}
+
+export type deleteProgramOverridesResponse400 = {
+  data: ErrorResponse
+  status: 400
+}
+
+export type deleteProgramOverridesResponseSuccess = (deleteProgramOverridesResponse204) & {
+  headers: Headers;
+};
+export type deleteProgramOverridesResponseError = (deleteProgramOverridesResponse400) & {
+  headers: Headers;
+};
+
+export type deleteProgramOverridesResponse = (deleteProgramOverridesResponseSuccess | deleteProgramOverridesResponseError)
+
+export const getDeleteProgramOverridesUrl = (site: string,
+    programId: number,) => {
+
+
+
+
+  return `/api/sites/${site}/programs/${programId}/overrides`
+}
+
+/**
+ * `program_overrides` の行を削除するだけ。`action`（record/skip。
+ * `program_intents` 側）は触らない（別表・別軸。docs/recording.md §4.2
+ * 「overrides は program_intents とは別の表に置く」）。冪等（行が無くても 204）。
+ * @summary Reset all overrides for a program (revert to rule)
+ */
+export const deleteProgramOverrides = async (site: string,
+    programId: number, options?: RequestInit): Promise<deleteProgramOverridesResponse> => {
+
+  return customInstance<deleteProgramOverridesResponse>(getDeleteProgramOverridesUrl(site,programId),
+  {
+    ...options,
+    method: 'DELETE'
+
+
+  }
+);}
+
+
+
+
+
+export const getDeleteProgramOverridesMutationOptions = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteProgramOverrides>>, TError,{site: string;programId: number}, TContext>, request?: SecondParameter<typeof customInstance>}
+): UseMutationOptions<Awaited<ReturnType<typeof deleteProgramOverrides>>, TError,{site: string;programId: number}, TContext> => {
+
+const mutationKey = ['deleteProgramOverrides'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof deleteProgramOverrides>>, {site: string;programId: number}> = (props) => {
+          const {site,programId} = props ?? {};
+
+          return  deleteProgramOverrides(site,programId,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type DeleteProgramOverridesMutationResult = NonNullable<Awaited<ReturnType<typeof deleteProgramOverrides>>>
+
+    export type DeleteProgramOverridesMutationError = ErrorResponse
+
+    /**
+ * @summary Reset all overrides for a program (revert to rule)
+ */
+export const useDeleteProgramOverrides = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteProgramOverrides>>, TError,{site: string;programId: number}, TContext>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof deleteProgramOverrides>>,
+        TError,
+        {site: string;programId: number},
+        TContext
+      > => {
+      return useMutation(getDeleteProgramOverridesMutationOptions(options), queryClient);
+    }
 
 export type listRecordingsResponse200 = {
   data: Recording[]

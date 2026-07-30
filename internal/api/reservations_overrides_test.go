@@ -19,13 +19,6 @@ import (
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
-// reservationResp は overrides API のレスポンスから確認に要る部分だけを持つ。
-type reservationResp struct {
-	Id        int64                  `json:"id"`
-	RuleId    *int64                 `json:"ruleId"`
-	Overrides map[string]interface{} `json:"overrides"`
-}
-
 // insertRuleFixture は最小構成のルールを 1 件作る。
 func insertRuleFixture(t *testing.T, pool *pgxpool.Pool, ctx context.Context) int64 {
 	t.Helper()
@@ -40,8 +33,10 @@ func insertRuleFixture(t *testing.T, pool *pgxpool.Pool, ctx context.Context) in
 // （ruler を経由しない）。ruleID の有無で「ルール由来」「手動」を模した行を
 // 作るが、program_intents には触れない（reservations.source 列は issue #26 で
 // 削除済み。この直生成では intent が無いため、reservationFromRow 経由の
-// API 表示は常に rule になる）。overrides API は program_overrides だけを
-// 書くので、reservations 側のセットアップはこの生 SQL で足りる。
+// API 表示は常に rule になる）。overrides API は (site, programId) を宛先に
+// program_overrides だけを書くので（issue #29）、この関数はもっぱら
+// 「ルール削除時に投資のある予約が detached で残るか」等、reservations 行
+// そのものの生死を確認するテストのための下準備として使う。
 //
 // #27 で番組の事実のスナップショット（title / 開始時刻 / 尺 / チャンネル識別）が
 // program_snapshots に抽出され、reservations への FK が張られたため、
@@ -64,6 +59,10 @@ RETURNING id`, programID, ruleID).Scan(&id)
 		t.Fatalf("inserting reservation fixture: %v", err)
 	}
 	return id
+}
+
+func overridesPath(programID int64) string {
+	return "/api/sites/default/programs/" + itoa(programID) + "/overrides"
 }
 
 func doPatch(t *testing.T, srv *httptest.Server, path, body string) *http.Response {
@@ -93,20 +92,10 @@ func doDelete(t *testing.T, srv *httptest.Server, path string) *http.Response {
 	return resp
 }
 
-func decodeReservation(t *testing.T, resp *http.Response) reservationResp {
-	t.Helper()
-	defer func() { _ = resp.Body.Close() }()
-	var out reservationResp
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		t.Fatalf("decoding response: %v", err)
-	}
-	return out
-}
-
 // 1. ルール由来の予約に PATCH すると program_overrides に行が新規作成される。
 // **program_intents には行ができない**（これが分離の核心。1 表だった頃は
 // action='record' が立っていた。docs/recording.md §4.2）。
-func TestUpdateReservationOverrides_CreatesOverrideForRuleReservation_NotIntent(t *testing.T) {
+func TestPatchProgramOverrides_CreatesOverrideForRuleReservation_NotIntent(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
@@ -117,7 +106,7 @@ func TestUpdateReservationOverrides_CreatesOverrideForRuleReservation_NotIntent(
 
 	const programID int64 = 1100000110011234
 	ruleID := insertRuleFixture(t, pool, ctx)
-	resID := insertReservationDirect(t, pool, ctx, programID, &ruleID, 11000, 1100)
+	insertReservationDirect(t, pool, ctx, programID, &ruleID, 11000, 1100)
 
 	// 事前に意図も上書きも存在しない。
 	if _, err := q.GetProgramIntent(ctx, sqlcgen.GetProgramIntentParams{Site: "default", ProgramID: programID}); !errIsNoRows(err) {
@@ -127,13 +116,10 @@ func TestUpdateReservationOverrides_CreatesOverrideForRuleReservation_NotIntent(
 		t.Fatalf("overrides should not exist before patch, got err=%v", err)
 	}
 
-	resp := doPatch(t, srv, "/api/reservations/"+itoa(resID), `{"priority":7}`)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("patch status = %d, want 200", resp.StatusCode)
-	}
-	got := decodeReservation(t, resp)
-	if got.Overrides == nil || intJSONNumber(t, got.Overrides["priority"]) != 7 {
-		t.Errorf("response overrides = %+v, want priority=7", got.Overrides)
+	resp := doPatch(t, srv, overridesPath(programID), `{"priority":7}`)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("patch status = %d, want 204", resp.StatusCode)
 	}
 
 	overrides, err := q.GetProgramOverrides(ctx, sqlcgen.GetProgramOverridesParams{Site: "default", ProgramID: programID})
@@ -160,7 +146,7 @@ func TestUpdateReservationOverrides_CreatesOverrideForRuleReservation_NotIntent(
 // （docs/recording.md §4.2「overrides は program_intents とは別の表に置く」）。
 // 分離後は DELETE /overrides が program_intents に一切触れないので、
 // この経路は構造的に存在しない。
-func TestResetReservationOverrides_DoesNotTouchProgramIntents_ManualReservationSurvives(t *testing.T) {
+func TestDeleteProgramOverrides_DoesNotTouchProgramIntents_ManualReservationSurvives(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
@@ -185,13 +171,10 @@ func TestResetReservationOverrides_DoesNotTouchProgramIntents_ManualReservationS
 		t.Fatalf("seeding overrides: %v", err)
 	}
 
-	resp := doDelete(t, srv, "/api/reservations/"+itoa(resID)+"/overrides")
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("delete overrides status = %d, want 200", resp.StatusCode)
-	}
-	got := decodeReservation(t, resp)
-	if len(got.Overrides) != 0 {
-		t.Errorf("overrides should be empty, got %+v", got.Overrides)
+	resp := doDelete(t, srv, overridesPath(programID))
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete overrides status = %d, want 204", resp.StatusCode)
 	}
 
 	// program_overrides の行は消える。
@@ -221,7 +204,7 @@ func TestResetReservationOverrides_DoesNotTouchProgramIntents_ManualReservationS
 
 // 3. 何も指定しない PATCH {} が program_intents を変更しない
 // （分離前は掃除規則が発火して意図を消しえた）。
-func TestUpdateReservationOverrides_EmptyPatch_DoesNotTouchProgramIntents(t *testing.T) {
+func TestPatchProgramOverrides_EmptyPatch_DoesNotTouchProgramIntents(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
@@ -233,7 +216,7 @@ func TestUpdateReservationOverrides_EmptyPatch_DoesNotTouchProgramIntents(t *tes
 	// 手動予約 + ルールが後からマッチした状況（rule_id 付き）を再現する。
 	const programID int64 = 1160000116011234
 	ruleID := insertRuleFixture(t, pool, ctx)
-	resID := insertReservationDirect(t, pool, ctx, programID, &ruleID, 11600, 1160)
+	insertReservationDirect(t, pool, ctx, programID, &ruleID, 11600, 1160)
 	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
 		Site: "default", ProgramID: programID, Action: db.IntentRecord,
 	}); err != nil {
@@ -242,11 +225,11 @@ func TestUpdateReservationOverrides_EmptyPatch_DoesNotTouchProgramIntents(t *tes
 
 	for _, body := range []string{`{}`, `{"reset":[]}`} {
 		t.Run(body, func(t *testing.T) {
-			resp := doPatch(t, srv, "/api/reservations/"+itoa(resID), body)
-			if resp.StatusCode != http.StatusOK {
-				t.Errorf("patch %s status = %d, want 200 (empty patch is a harmless no-op)", body, resp.StatusCode)
+			resp := doPatch(t, srv, overridesPath(programID), body)
+			defer func() { _ = resp.Body.Close() }()
+			if resp.StatusCode != http.StatusNoContent {
+				t.Errorf("patch %s status = %d, want 204 (empty patch is a harmless no-op)", body, resp.StatusCode)
 			}
-			_ = decodeReservation(t, resp)
 
 			intent, err := q.GetProgramIntent(ctx, sqlcgen.GetProgramIntentParams{
 				Site: "default", ProgramID: programID,
@@ -274,7 +257,7 @@ func TestUpdateReservationOverrides_EmptyPatch_DoesNotTouchProgramIntents(t *tes
 // テストで固定してある（TestRunPass_GC_DeletesEndedPastGrace）。
 
 // 7. 部分更新（指定していないフィールドの override が保たれる）。
-func TestUpdateReservationOverrides_PartialUpdatePreservesOtherFields(t *testing.T) {
+func TestPatchProgramOverrides_PartialUpdatePreservesOtherFields(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
@@ -285,7 +268,7 @@ func TestUpdateReservationOverrides_PartialUpdatePreservesOtherFields(t *testing
 
 	const programID int64 = 1200000120021234
 	ruleID := insertRuleFixture(t, pool, ctx)
-	resID := insertReservationDirect(t, pool, ctx, programID, &ruleID, 12000, 1200)
+	insertReservationDirect(t, pool, ctx, programID, &ruleID, 12000, 1200)
 	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
 		Site: "default", ProgramID: programID,
 		Overrides: []byte(`{"priority":5,"keepOriginal":"always"}`),
@@ -293,25 +276,31 @@ func TestUpdateReservationOverrides_PartialUpdatePreservesOtherFields(t *testing
 		t.Fatalf("seeding overrides: %v", err)
 	}
 
-	resp := doPatch(t, srv, "/api/reservations/"+itoa(resID), `{"encodeProfiles":["h264"]}`)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("patch status = %d, want 200", resp.StatusCode)
+	resp := doPatch(t, srv, overridesPath(programID), `{"encodeProfiles":["h264"]}`)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("patch status = %d, want 204", resp.StatusCode)
 	}
-	got := decodeReservation(t, resp)
-	if intJSONNumber(t, got.Overrides["priority"]) != 5 {
-		t.Errorf("priority should be preserved, got %+v", got.Overrides)
+
+	overrides, err := q.GetProgramOverrides(ctx, sqlcgen.GetProgramOverridesParams{Site: "default", ProgramID: programID})
+	if err != nil {
+		t.Fatalf("overrides after patch: %v", err)
 	}
-	if got.Overrides["keepOriginal"] != "always" {
-		t.Errorf("keepOriginal should be preserved, got %+v", got.Overrides)
+	got := jsonMap(t, overrides.Overrides)
+	if intJSONNumber(t, got["priority"]) != 5 {
+		t.Errorf("priority should be preserved, got %+v", got)
 	}
-	profiles, ok := got.Overrides["encodeProfiles"].([]interface{})
+	if got["keepOriginal"] != "always" {
+		t.Errorf("keepOriginal should be preserved, got %+v", got)
+	}
+	profiles, ok := got["encodeProfiles"].([]interface{})
 	if !ok || len(profiles) != 1 || profiles[0] != "h264" {
-		t.Errorf("encodeProfiles should be set, got %+v", got.Overrides)
+		t.Errorf("encodeProfiles should be set, got %+v", got)
 	}
 }
 
 // 8. reset でフィールド単位に override が消え、他は残る。
-func TestUpdateReservationOverrides_ResetRemovesOnlyThatField(t *testing.T) {
+func TestPatchProgramOverrides_ResetRemovesOnlyThatField(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
@@ -322,7 +311,7 @@ func TestUpdateReservationOverrides_ResetRemovesOnlyThatField(t *testing.T) {
 
 	const programID int64 = 1300000130031234
 	ruleID := insertRuleFixture(t, pool, ctx)
-	resID := insertReservationDirect(t, pool, ctx, programID, &ruleID, 13000, 1300)
+	insertReservationDirect(t, pool, ctx, programID, &ruleID, 13000, 1300)
 	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
 		Site: "default", ProgramID: programID,
 		Overrides: []byte(`{"priority":5,"keepOriginal":"always"}`),
@@ -330,29 +319,27 @@ func TestUpdateReservationOverrides_ResetRemovesOnlyThatField(t *testing.T) {
 		t.Fatalf("seeding overrides: %v", err)
 	}
 
-	resp := doPatch(t, srv, "/api/reservations/"+itoa(resID), `{"reset":["priority"]}`)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("patch status = %d, want 200", resp.StatusCode)
-	}
-	got := decodeReservation(t, resp)
-	if _, ok := got.Overrides["priority"]; ok {
-		t.Errorf("priority should be reset away, got %+v", got.Overrides)
-	}
-	if got.Overrides["keepOriginal"] != "always" {
-		t.Errorf("keepOriginal should be preserved, got %+v", got.Overrides)
+	resp := doPatch(t, srv, overridesPath(programID), `{"reset":["priority"]}`)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("patch status = %d, want 204", resp.StatusCode)
 	}
 
 	overrides, err := q.GetProgramOverrides(ctx, sqlcgen.GetProgramOverridesParams{Site: "default", ProgramID: programID})
 	if err != nil {
 		t.Fatalf("overrides row should still exist (not empty): %v", err)
 	}
-	if _, ok := jsonMap(t, overrides.Overrides)["priority"]; ok {
-		t.Errorf("stored overrides still has priority: %s", overrides.Overrides)
+	got := jsonMap(t, overrides.Overrides)
+	if _, ok := got["priority"]; ok {
+		t.Errorf("priority should be reset away, got %+v", got)
+	}
+	if got["keepOriginal"] != "always" {
+		t.Errorf("keepOriginal should be preserved, got %+v", got)
 	}
 }
 
 // 9. reset で最後の override が消えたら program_overrides の行自体が消える。
-func TestUpdateReservationOverrides_ResetLastField_DeletesOverridesRow(t *testing.T) {
+func TestPatchProgramOverrides_ResetLastField_DeletesOverridesRow(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
@@ -371,13 +358,10 @@ func TestUpdateReservationOverrides_ResetLastField_DeletesOverridesRow(t *testin
 		t.Fatalf("seeding overrides: %v", err)
 	}
 
-	resp := doPatch(t, srv, "/api/reservations/"+itoa(resID), `{"reset":["priority"]}`)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("patch status = %d, want 200", resp.StatusCode)
-	}
-	got := decodeReservation(t, resp)
-	if len(got.Overrides) != 0 {
-		t.Errorf("overrides should be empty, got %+v", got.Overrides)
+	resp := doPatch(t, srv, overridesPath(programID), `{"reset":["priority"]}`)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("patch status = %d, want 204", resp.StatusCode)
 	}
 
 	if _, err := q.GetProgramOverrides(ctx, sqlcgen.GetProgramOverridesParams{Site: "default", ProgramID: programID}); !errIsNoRows(err) {
@@ -395,7 +379,7 @@ func TestUpdateReservationOverrides_ResetLastField_DeletesOverridesRow(t *testin
 }
 
 // 10. DELETE /overrides が全部消す。
-func TestResetReservationOverrides_ClearsAll(t *testing.T) {
+func TestDeleteProgramOverrides_ClearsAll(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
@@ -406,7 +390,7 @@ func TestResetReservationOverrides_ClearsAll(t *testing.T) {
 
 	const programID int64 = 1600000160061234
 	ruleID := insertRuleFixture(t, pool, ctx)
-	resID := insertReservationDirect(t, pool, ctx, programID, &ruleID, 16000, 1600)
+	insertReservationDirect(t, pool, ctx, programID, &ruleID, 16000, 1600)
 	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
 		Site: "default", ProgramID: programID,
 		Overrides: []byte(`{"priority":5,"keepOriginal":"always"}`),
@@ -414,13 +398,10 @@ func TestResetReservationOverrides_ClearsAll(t *testing.T) {
 		t.Fatalf("seeding overrides: %v", err)
 	}
 
-	resp := doDelete(t, srv, "/api/reservations/"+itoa(resID)+"/overrides")
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("delete overrides status = %d, want 200", resp.StatusCode)
-	}
-	got := decodeReservation(t, resp)
-	if len(got.Overrides) != 0 {
-		t.Errorf("overrides should be empty, got %+v", got.Overrides)
+	resp := doDelete(t, srv, overridesPath(programID))
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete overrides status = %d, want 204", resp.StatusCode)
 	}
 	if _, err := q.GetProgramOverrides(ctx, sqlcgen.GetProgramOverridesParams{Site: "default", ProgramID: programID}); !errIsNoRows(err) {
 		t.Errorf("overrides row should be deleted, err=%v", err)
@@ -429,7 +410,7 @@ func TestResetReservationOverrides_ClearsAll(t *testing.T) {
 
 // 11. 400 群: 値と reset の衝突 / 未知の reset フィールド名 / 不正な keepOriginal /
 // 不正な filenameTemplate / 負の priority。
-func TestUpdateReservationOverrides_ValueAndResetConflict_Returns400(t *testing.T) {
+func TestPatchProgramOverrides_ValueAndResetConflict_Returns400(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
@@ -440,9 +421,9 @@ func TestUpdateReservationOverrides_ValueAndResetConflict_Returns400(t *testing.
 
 	const programID int64 = 1700000170071234
 	ruleID := insertRuleFixture(t, pool, ctx)
-	resID := insertReservationDirect(t, pool, ctx, programID, &ruleID, 17000, 1700)
+	insertReservationDirect(t, pool, ctx, programID, &ruleID, 17000, 1700)
 
-	resp := doPatch(t, srv, "/api/reservations/"+itoa(resID), `{"priority":5,"reset":["priority"]}`)
+	resp := doPatch(t, srv, overridesPath(programID), `{"priority":5,"reset":["priority"]}`)
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", resp.StatusCode)
 	}
@@ -453,7 +434,7 @@ func TestUpdateReservationOverrides_ValueAndResetConflict_Returns400(t *testing.
 	}
 }
 
-func TestUpdateReservationOverrides_UnknownResetField_Returns400(t *testing.T) {
+func TestPatchProgramOverrides_UnknownResetField_Returns400(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
@@ -463,15 +444,15 @@ func TestUpdateReservationOverrides_UnknownResetField_Returns400(t *testing.T) {
 
 	const programID int64 = 1800000180081234
 	ruleID := insertRuleFixture(t, pool, ctx)
-	resID := insertReservationDirect(t, pool, ctx, programID, &ruleID, 18000, 1800)
+	insertReservationDirect(t, pool, ctx, programID, &ruleID, 18000, 1800)
 
-	resp := doPatch(t, srv, "/api/reservations/"+itoa(resID), `{"reset":["skip"]}`)
+	resp := doPatch(t, srv, overridesPath(programID), `{"reset":["skip"]}`)
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400 (skip is not an overrides key)", resp.StatusCode)
 	}
 	_ = resp.Body.Close()
 
-	resp2 := doPatch(t, srv, "/api/reservations/"+itoa(resID), `{"reset":["totallyUnknownField"]}`)
+	resp2 := doPatch(t, srv, overridesPath(programID), `{"reset":["totallyUnknownField"]}`)
 	if resp2.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400 (typo'd field name)", resp2.StatusCode)
 	}
@@ -480,7 +461,7 @@ func TestUpdateReservationOverrides_UnknownResetField_Returns400(t *testing.T) {
 
 // config に無い encodeProfiles は overrides でも 400 にする（issue #64）。
 // 既知名が通ることも両方向で確認する。
-func TestUpdateReservationOverrides_UnknownEncodeProfile(t *testing.T) {
+func TestPatchProgramOverrides_UnknownEncodeProfile(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
@@ -494,9 +475,9 @@ func TestUpdateReservationOverrides_UnknownEncodeProfile(t *testing.T) {
 
 	const programID int64 = 1850000185081234
 	ruleID := insertRuleFixture(t, pool, ctx)
-	resID := insertReservationDirect(t, pool, ctx, programID, &ruleID, 18500, 1850)
+	insertReservationDirect(t, pool, ctx, programID, &ruleID, 18500, 1850)
 
-	resp := doPatch(t, srv, "/api/reservations/"+itoa(resID), `{"encodeProfiles":["no-such-profile"]}`)
+	resp := doPatch(t, srv, overridesPath(programID), `{"encodeProfiles":["no-such-profile"]}`)
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("unknown encode profile status = %d, want 400", resp.StatusCode)
 	}
@@ -514,10 +495,10 @@ func TestUpdateReservationOverrides_UnknownEncodeProfile(t *testing.T) {
 		t.Errorf("rejected request created program_overrides, err=%v", err)
 	}
 
-	resp = doPatch(t, srv, "/api/reservations/"+itoa(resID), `{"encodeProfiles":["h264"]}`)
+	resp = doPatch(t, srv, overridesPath(programID), `{"encodeProfiles":["h264"]}`)
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("known encode profile status = %d, want 200", resp.StatusCode)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("known encode profile status = %d, want 204", resp.StatusCode)
 	}
 	row, err := q.GetProgramOverrides(ctx, sqlcgen.GetProgramOverridesParams{
 		Site: "default", ProgramID: programID,
@@ -536,7 +517,7 @@ func TestUpdateReservationOverrides_UnknownEncodeProfile(t *testing.T) {
 	}
 }
 
-func TestUpdateReservationOverrides_InvalidFields_Returns400(t *testing.T) {
+func TestPatchProgramOverrides_InvalidFields_Returns400(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
@@ -546,52 +527,65 @@ func TestUpdateReservationOverrides_InvalidFields_Returns400(t *testing.T) {
 
 	const programID int64 = 1900000190091234
 	ruleID := insertRuleFixture(t, pool, ctx)
-	resID := insertReservationDirect(t, pool, ctx, programID, &ruleID, 19000, 1900)
+	insertReservationDirect(t, pool, ctx, programID, &ruleID, 19000, 1900)
 
-	resp := doPatch(t, srv, "/api/reservations/"+itoa(resID), `{"keepOriginal":"sometimes"}`)
+	resp := doPatch(t, srv, overridesPath(programID), `{"keepOriginal":"sometimes"}`)
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("invalid keepOriginal: status = %d, want 400", resp.StatusCode)
 	}
 	_ = resp.Body.Close()
 
-	resp2 := doPatch(t, srv, "/api/reservations/"+itoa(resID), `{"filenameTemplate":"{{.NoSuchField}}"}`)
+	resp2 := doPatch(t, srv, overridesPath(programID), `{"filenameTemplate":"{{.NoSuchField}}"}`)
 	if resp2.StatusCode != http.StatusBadRequest {
 		t.Fatalf("invalid filenameTemplate: status = %d, want 400", resp2.StatusCode)
 	}
 	_ = resp2.Body.Close()
 
-	resp3 := doPatch(t, srv, "/api/reservations/"+itoa(resID), `{"priority":-1}`)
+	resp3 := doPatch(t, srv, overridesPath(programID), `{"priority":-1}`)
 	if resp3.StatusCode != http.StatusBadRequest {
 		t.Fatalf("negative priority: status = %d, want 400", resp3.StatusCode)
 	}
 	_ = resp3.Body.Close()
 }
 
-// 12. 存在しない予約への PATCH / DELETE overrides が 404。
-func TestUpdateAndResetReservationOverrides_NotFound(t *testing.T) {
+// 12. programId が EPG プロジェクションに無い PATCH は 400（旧: 存在しない予約への
+// PATCH/DELETE は 404 だったが、宛先が (site, programId) になったことで
+// 「予約の有無」という概念が無くなった。issue #29）。
+// DELETE は行の有無を問わず冪等に 204 を返す（DeleteRecording と同じ規律）。
+func TestPatchProgramOverrides_ProgramNotInProjection_Returns400(t *testing.T) {
 	pool := testutil.SetupDB(t)
 
 	router := api.NewRouter(api.RouterConfig{Pool: pool})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
-	const missingID = 999999
+	const missingProgramID = 999999
 
-	resp := doPatch(t, srv, "/api/reservations/"+itoa(missingID), `{"priority":5}`)
-	if resp.StatusCode != http.StatusNotFound {
-		t.Errorf("patch missing reservation: status = %d, want 404", resp.StatusCode)
+	resp := doPatch(t, srv, overridesPath(missingProgramID), `{"priority":5}`)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("patch for program not in EPG projection: status = %d, want 400", resp.StatusCode)
 	}
 	_ = resp.Body.Close()
+}
 
-	resp2 := doDelete(t, srv, "/api/reservations/"+itoa(missingID)+"/overrides")
-	if resp2.StatusCode != http.StatusNotFound {
-		t.Errorf("delete overrides on missing reservation: status = %d, want 404", resp2.StatusCode)
+func TestDeleteProgramOverrides_NoRow_IsIdempotent(t *testing.T) {
+	pool := testutil.SetupDB(t)
+
+	router := api.NewRouter(api.RouterConfig{Pool: pool})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	const missingProgramID = 999999
+
+	resp := doDelete(t, srv, overridesPath(missingProgramID))
+	if resp.StatusCode != http.StatusNoContent {
+		t.Errorf("delete overrides with no row: status = %d, want 204 (idempotent)", resp.StatusCode)
 	}
-	_ = resp2.Body.Close()
+	_ = resp.Body.Close()
 }
 
 // 13. PATCH の結果が db.EffectiveOptions を通して期待どおりの effective になる。
-func TestUpdateReservationOverrides_EffectiveOptionsRoundTrip(t *testing.T) {
+func TestPatchProgramOverrides_EffectiveOptionsRoundTrip(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
@@ -609,11 +603,11 @@ func TestUpdateReservationOverrides_EffectiveOptionsRoundTrip(t *testing.T) {
 		t.Fatalf("seeding base: %v", err)
 	}
 
-	resp := doPatch(t, srv, "/api/reservations/"+itoa(resID), `{"priority":7}`)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("patch status = %d, want 200", resp.StatusCode)
+	resp := doPatch(t, srv, overridesPath(programID), `{"priority":7}`)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("patch status = %d, want 204", resp.StatusCode)
 	}
-	_ = decodeReservation(t, resp)
+	_ = resp.Body.Close()
 
 	row, err := q.GetReservationFull(ctx, resID)
 	if err != nil {
@@ -655,11 +649,11 @@ func TestDeleteRule_ReservationWithOnlyOverridesSurvivesDetached(t *testing.T) {
 	resID := insertReservationDirect(t, pool, ctx, programID, &ruleID, 19500, 1950)
 
 	// program_overrides のみを作る（program_intents には触れない）。
-	resp := doPatch(t, srv, "/api/reservations/"+itoa(resID), `{"priority":9}`)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("seeding patch status = %d, want 200", resp.StatusCode)
+	resp := doPatch(t, srv, overridesPath(programID), `{"priority":9}`)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("seeding patch status = %d, want 204", resp.StatusCode)
 	}
-	_ = decodeReservation(t, resp)
+	_ = resp.Body.Close()
 	if _, err := q.GetProgramIntent(ctx, sqlcgen.GetProgramIntentParams{Site: "default", ProgramID: programID}); !errIsNoRows(err) {
 		t.Fatalf("test setup: program_intents should not exist, err=%v", err)
 	}

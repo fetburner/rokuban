@@ -230,12 +230,12 @@ func TestReconciler_CreatesSchedule(t *testing.T) {
 		t.Fatal("schedule not found for programID 100000500011234")
 	}
 
-	resID, found := mirakc.FindReservationID(s.Tags)
+	tagProgramID, found := mirakc.FindProgramTag(s.Tags)
 	if !found {
-		t.Fatal("reservation tag not found in schedule tags")
+		t.Fatal("program tag not found in schedule tags")
 	}
-	if resID != res.ID {
-		t.Errorf("tag reservation ID = %d, want %d", resID, res.ID)
+	if tagProgramID != res.ProgramID {
+		t.Errorf("tag program ID = %d, want %d", tagProgramID, res.ProgramID)
 	}
 	if s.Options.ContentPath == nil || *s.Options.ContentPath == "" {
 		t.Error("contentPath is empty")
@@ -463,9 +463,9 @@ func TestReconciler_RecreatesOnPriorityChange(t *testing.T) {
 	if got.Options.Priority != 77 {
 		t.Errorf("priority after recreate = %d, want 77", got.Options.Priority)
 	}
-	resID, found := mirakc.FindReservationID(got.Tags)
-	if !found || resID != res.ID {
-		t.Errorf("tag after recreate = %v, want reservation id %d", got.Tags, res.ID)
+	tagProgramID, found := mirakc.FindProgramTag(got.Tags)
+	if !found || tagProgramID != res.ProgramID {
+		t.Errorf("tag after recreate = %v, want program id %d", got.Tags, res.ProgramID)
 	}
 }
 
@@ -490,7 +490,7 @@ func TestReconciler_RecordingStateNotRecreated(t *testing.T) {
 		State:   mirakc.ScheduleStateRecording,
 		Program: mirakc.Program{ID: res.ProgramID},
 		Options: mirakc.Options{Priority: 5},
-		Tags:    []string{mirakc.ReservationTag(res.ID)},
+		Tags:    []string{mirakc.ProgramTag(res.ProgramID)},
 	}
 
 	rec := reconciler.New("default", mc, pool, nil)
@@ -554,7 +554,7 @@ func TestReconciler_TrackingAndReschedulingStatesNotRecreated(t *testing.T) {
 				State:   state,
 				Program: mirakc.Program{ID: res.ProgramID},
 				Options: mirakc.Options{Priority: 5},
-				Tags:    []string{mirakc.ReservationTag(res.ID)},
+				Tags:    []string{mirakc.ProgramTag(res.ProgramID)},
 			}
 
 			rec := reconciler.New("default", mc, pool, nil)
@@ -670,7 +670,7 @@ func TestReconciler_RecreateOnTagMismatch(t *testing.T) {
 	}
 
 	// priority には触れず、tag だけを別の（実在しない）reservation id に差し替える。
-	staleTag := mirakc.ReservationTag(res.ID + 999999)
+	staleTag := mirakc.ProgramTag(res.ProgramID + 999999)
 	mock.mu.Lock()
 	s := mock.schedules[res.ProgramID]
 	s.Tags = []string{staleTag}
@@ -685,9 +685,9 @@ func TestReconciler_RecreateOnTagMismatch(t *testing.T) {
 		t.Errorf("tag mismatch should trigger exactly 1 delete, got %v", calls)
 	}
 	got := mock.getSchedules()[res.ProgramID]
-	resID, found := mirakc.FindReservationID(got.Tags)
-	if !found || resID != res.ID {
-		t.Errorf("tag after recreate = %v, want reservation id %d", got.Tags, res.ID)
+	tagProgramID, found := mirakc.FindProgramTag(got.Tags)
+	if !found || tagProgramID != res.ProgramID {
+		t.Errorf("tag after recreate = %v, want program id %d", got.Tags, res.ProgramID)
 	}
 }
 
@@ -1138,10 +1138,12 @@ func TestReconciler_BulkDeleteWithRemainingReservationDoesNotTripBreaker(t *test
 	mock.schedules[res.ProgramID] = mirakc.Schedule{
 		State:   "scheduled",
 		Program: mirakc.Program{ID: res.ProgramID},
-		Tags:    []string{mirakc.ReservationTag(res.ID)},
+		Tags:    []string{mirakc.ProgramTag(res.ProgramID)},
 	}
 
 	// もう desired にない自分のタグ付き schedule を 11 件（旧閾値 10 を超える）。
+	// 旧形式のタグのまま（意図的）: IsOurs が新旧どちらの形式も「自分が作った」と
+	// 認識することの回帰確認を兼ねる（#53 の移行方針）。
 	staleIDs := make([]int64, 0, 11)
 	for i := int64(0); i < 11; i++ {
 		id := int64(100000500019900) + i

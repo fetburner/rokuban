@@ -196,7 +196,7 @@ func (h *Server) insertRulerPassHint(ctx context.Context, tx pgx.Tx) error {
 	if h.river == nil {
 		return nil
 	}
-	if _, err := h.river.InsertTx(ctx, tx, worker.RulerPassArgs{Site: defaultSite}, nil); err != nil {
+	if _, err := h.river.InsertTx(ctx, tx, worker.RulerPassArgs{Site: h.site}, nil); err != nil {
 		return fmt.Errorf("inserting ruler_pass hint: %w", err)
 	}
 	return nil

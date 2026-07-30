@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -15,7 +16,7 @@ func TestRunEnqueue_InsertsJob(t *testing.T) {
 	ctx := context.Background()
 
 	var out bytes.Buffer
-	if err := runEnqueue(ctx, pool, "ruler-pass", &out); err != nil {
+	if err := runEnqueue(ctx, pool, "ruler-pass", db.DefaultSite, &out); err != nil {
 		t.Fatalf("runEnqueue: %v", err)
 	}
 
@@ -42,12 +43,12 @@ func TestRunEnqueue_AlreadyPending_SkipsWithoutError(t *testing.T) {
 	ctx := context.Background()
 
 	var first bytes.Buffer
-	if err := runEnqueue(ctx, pool, "ruler-pass", &first); err != nil {
+	if err := runEnqueue(ctx, pool, "ruler-pass", db.DefaultSite, &first); err != nil {
 		t.Fatalf("runEnqueue (first): %v", err)
 	}
 
 	var second bytes.Buffer
-	if err := runEnqueue(ctx, pool, "ruler-pass", &second); err != nil {
+	if err := runEnqueue(ctx, pool, "ruler-pass", db.DefaultSite, &second); err != nil {
 		t.Fatalf("runEnqueue (second) returned error, want nil (合流時も終了コード 0): %v", err)
 	}
 	if !strings.Contains(second.String(), "already pending") {
@@ -72,7 +73,7 @@ func TestRunEnqueue_EpgSync(t *testing.T) {
 	ctx := context.Background()
 
 	var out bytes.Buffer
-	if err := runEnqueue(ctx, pool, "epg-sync", &out); err != nil {
+	if err := runEnqueue(ctx, pool, "epg-sync", db.DefaultSite, &out); err != nil {
 		t.Fatalf("runEnqueue: %v", err)
 	}
 
@@ -94,7 +95,7 @@ func TestRunEnqueue_ReconcilePass(t *testing.T) {
 	ctx := context.Background()
 
 	var out bytes.Buffer
-	if err := runEnqueue(ctx, pool, "reconcile-pass", &out); err != nil {
+	if err := runEnqueue(ctx, pool, "reconcile-pass", db.DefaultSite, &out); err != nil {
 		t.Fatalf("runEnqueue: %v", err)
 	}
 
@@ -116,7 +117,7 @@ func TestRunEnqueue_RecordSweep(t *testing.T) {
 	ctx := context.Background()
 
 	var out bytes.Buffer
-	if err := runEnqueue(ctx, pool, "record-sweep", &out); err != nil {
+	if err := runEnqueue(ctx, pool, "record-sweep", db.DefaultSite, &out); err != nil {
 		t.Fatalf("runEnqueue: %v", err)
 	}
 
@@ -138,7 +139,7 @@ func TestRunEnqueue_TunerSync(t *testing.T) {
 	ctx := context.Background()
 
 	var out bytes.Buffer
-	if err := runEnqueue(ctx, pool, "tuner-sync", &out); err != nil {
+	if err := runEnqueue(ctx, pool, "tuner-sync", db.DefaultSite, &out); err != nil {
 		t.Fatalf("runEnqueue: %v", err)
 	}
 
@@ -159,7 +160,7 @@ func TestRunEnqueue_CatalogExport(t *testing.T) {
 	ctx := context.Background()
 
 	var out bytes.Buffer
-	if err := runEnqueue(ctx, pool, "catalog-export", &out); err != nil {
+	if err := runEnqueue(ctx, pool, "catalog-export", db.DefaultSite, &out); err != nil {
 		t.Fatalf("runEnqueue: %v", err)
 	}
 
@@ -180,7 +181,7 @@ func TestRunEnqueue_UnknownJob(t *testing.T) {
 	ctx := context.Background()
 
 	var out bytes.Buffer
-	if err := runEnqueue(ctx, pool, "no-such-job", &out); err == nil {
+	if err := runEnqueue(ctx, pool, "no-such-job", db.DefaultSite, &out); err == nil {
 		t.Fatal("unknown job のとき error を期待したが nil だった")
 	}
 }

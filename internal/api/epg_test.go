@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -29,7 +30,7 @@ func newAPIServer(t *testing.T, pool *pgxpool.Pool) *httptest.Server {
 func seedEpgService(t *testing.T, pool *pgxpool.Pool, networkID, serviceID, remoteKey int32, name, channel string) {
 	t.Helper()
 	err := sqlcgen.New(pool).UpsertEpgService(context.Background(), []sqlcgen.UpsertEpgServiceParams{{
-		Site:               defaultSite,
+		Site:               db.DefaultSite,
 		NetworkID:          networkID,
 		ServiceID:          serviceID,
 		Type:               1,
@@ -54,7 +55,7 @@ func seedEpgProgram(t *testing.T, pool *pgxpool.Pool, programID int64, networkID
 ) {
 	t.Helper()
 	p := sqlcgen.UpsertEpgProgramParams{
-		Site:        defaultSite,
+		Site:        db.DefaultSite,
 		ProgramID:   programID,
 		NetworkID:   networkID,
 		ServiceID:   serviceID,
@@ -100,7 +101,7 @@ func programsURL(base string, start, end time.Time, extra ...string) string {
 	for i := 0; i+1 < len(extra); i += 2 {
 		q.Set(extra[i], extra[i+1])
 	}
-	return base + "/api/programs?" + q.Encode()
+	return base + "/api/sites/default/programs?" + q.Encode()
 }
 
 func TestListServices(t *testing.T) {
@@ -111,7 +112,7 @@ func TestListServices(t *testing.T) {
 	seedEpgService(t, pool, 32676, 5152, 6, "ＲＳＫテレビ", "21")
 
 	var got []Service
-	resp := getJSON(t, srv.URL+"/api/services", &got)
+	resp := getJSON(t, srv.URL+"/api/sites/default/services", &got)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d", resp.StatusCode)
 	}
@@ -237,7 +238,7 @@ func TestGetProgram(t *testing.T) {
 	seedEpgProgram(t, pool, 43, 32678, 5168, 2, "詳細なし", base.Add(time.Hour), false)
 
 	var got Program
-	resp := getJSON(t, fmt.Sprintf("%s/api/programs/42", srv.URL), &got)
+	resp := getJSON(t, fmt.Sprintf("%s/api/sites/default/programs/42", srv.URL), &got)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d", resp.StatusCode)
 	}
@@ -259,12 +260,12 @@ func TestGetProgram(t *testing.T) {
 
 	// jsonb が NULL の番組は省略される（空オブジェクトを返さない）
 	var bare Program
-	getJSON(t, fmt.Sprintf("%s/api/programs/43", srv.URL), &bare)
+	getJSON(t, fmt.Sprintf("%s/api/sites/default/programs/43", srv.URL), &bare)
 	if bare.Extended != nil || bare.Video != nil || bare.Audios != nil || bare.GenreDetails != nil {
 		t.Errorf("bare program should omit detail payloads, got %+v", bare)
 	}
 
-	resp = getJSON(t, fmt.Sprintf("%s/api/programs/999", srv.URL), nil)
+	resp = getJSON(t, fmt.Sprintf("%s/api/sites/default/programs/999", srv.URL), nil)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("missing program status = %d, want 404", resp.StatusCode)
 	}

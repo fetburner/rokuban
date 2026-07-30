@@ -14,7 +14,9 @@ const topicQueryKeys: Record<string, string[]> = {
   // 独自の通知を持たせると、元データと導出値が別々の鮮度で並ぶことになる
   reservations: ['/api/reservations', '/api/capacity/overages'],
   recordings: ['/api/recordings'],
-  epg: ['/api/programs', '/api/services'],
+  // programs / services / overlaps はすべて /api/sites/{site}/... 配下
+  // （issue #31、M3-1）。
+  epg: ['/api/sites/'],
   breakers: ['/api/breakers'],
 }
 

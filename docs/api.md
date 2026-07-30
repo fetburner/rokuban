@@ -30,7 +30,7 @@
 
 - API パスは常に**相対パス `/api/*`** を使用する。CDN / リバースプロキシ構成で CORS 不要・実行時コンフィグ注入不要とするため
 - 絶対 URL の生成は単一のビルダーに一元化し、`X-Forwarded-Prefix` ないし `public_url` 設定を尊重する（EPGStation#694 の教訓）
-- **site を資源同定に含めるかは未決**（[#31](https://github.com/fetburner/rokuban/issues/31)）。現状パスに site は無く、`db.DefaultSite` のハードコードで単一サイトを前提にしている。ところが `programId` は site スコープ（[スキーマ](schema.md) §1-5）なので、`/api/programs/{programId}` 系は多拠点化した瞬間に意味が定まらない。DB 側には全表に `site` 列があるが、**多拠点化で本当に壊れるのは API のパス構造とクライアントのクエリキー**で、そこが未払いである。宛先を触る変更（[#29](https://github.com/fetburner/rokuban/issues/29)）と同時に決める
+- **site は資源同定に含める**（案 A、M3-1、issue #29 / #31 / #53）。`programId` は site スコープ（[スキーマ](schema.md) §1-5）なので、番組・意図・上書きを指すパスはすべて `/api/sites/{site}/programs/{programId}...` の形を取る。site の権威は `config.mirakc.site`（空なら `"default"`）で、一致しないパスは 404 にする
 
 ### EPG の読み取り（M1-6 / M1-7）
 
@@ -39,7 +39,7 @@
 #### 時間窓がカーソル。ページネーショントークンを持たない
 
 ```
-GET /api/programs?start=&end=&networkId=&serviceId=
+GET /api/sites/{site}/programs?start=&end=&networkId=&serviceId=
 ```
 
 `start` / `end` の窓に**一部でも重なる**番組を `start_at` 昇順で返す
@@ -67,8 +67,8 @@ GET /api/programs?start=&end=&networkId=&serviceId=
 #### 一覧と詳細で形を分ける（段階的開示）
 
 ```
-GET /api/programs        → ProgramListItem[]   軽い形
-GET /api/programs/{id}   → Program            extended / video / audios 込み
+GET /api/sites/{site}/programs              → ProgramListItem[]   軽い形
+GET /api/sites/{site}/programs/{programId}  → Program            extended / video / audios 込み
 ```
 
 `epg_programs` は UI 完全形なので `extended`（出演者等）が数 KB ある。全列返すと

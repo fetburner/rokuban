@@ -106,7 +106,7 @@ func (h *Server) ListRecordings(ctx context.Context, req ListRecordingsRequestOb
 
 	var result []Recording
 	if trash {
-		rows, err := q.ListTrashRecordings(ctx, defaultSite)
+		rows, err := q.ListTrashRecordings(ctx, h.site)
 		if err != nil {
 			return nil, fmt.Errorf("listing trash recordings: %w", err)
 		}
@@ -130,7 +130,7 @@ func (h *Server) ListRecordings(ctx context.Context, req ListRecordingsRequestOb
 			result = append(result, rec)
 		}
 	} else {
-		rows, err := q.ListRecordings(ctx, defaultSite)
+		rows, err := q.ListRecordings(ctx, h.site)
 		if err != nil {
 			return nil, fmt.Errorf("listing recordings: %w", err)
 		}

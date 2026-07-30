@@ -135,7 +135,7 @@ func TestRecordSweepWorker_ProcessesUnsweptRecord(t *testing.T) {
 			StartAt: &startAt, Duration: &duration, IsFree: true, Name: &name,
 		},
 		Service:   mirakc.Service{Name: "テスト局", Channel: mirakc.ServiceChannel{Type: channelType, Channel: channel}},
-		Tags:      []string{mirakc.ReservationTag(resID)},
+		Tags:      []string{mirakc.ProgramTag(programID)},
 		Recording: mirakc.RecordInfo{Status: "finished", StartTime: recStart, EndTime: &endTime},
 		Content:   mirakc.ContentInfo{Path: "test.m2ts"},
 	}

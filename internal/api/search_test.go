@@ -58,7 +58,7 @@ ON CONFLICT (site, program_id) DO NOTHING`,
 		},
 	}
 	raw, _ := json.Marshal(body)
-	resp, err := http.Post(srv.URL+"/api/programs/search", "application/json", bytes.NewReader(raw))
+	resp, err := http.Post(srv.URL+"/api/sites/default/programs/search", "application/json", bytes.NewReader(raw))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ ON CONFLICT (site, program_id) DO NOTHING`,
 		},
 	}
 	raw, _ = json.Marshal(bodyFW)
-	resp, err = http.Post(srv.URL+"/api/programs/search", "application/json", bytes.NewReader(raw))
+	resp, err = http.Post(srv.URL+"/api/sites/default/programs/search", "application/json", bytes.NewReader(raw))
 	if err != nil {
 		t.Fatal(err)
 	}

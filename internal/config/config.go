@@ -70,6 +70,16 @@ func quoteDSNValue(v string) string {
 // MirakcConfig は mirakc 接続設定。
 type MirakcConfig struct {
 	URL string `yaml:"url" validate:"required,url"`
+
+	// Site はこの mirakc インスタンスのサイト名。programId / record id は
+	// mirakc インスタンス単位のスコープしか持たないため、DB の全テーブルと
+	// API のパスがこの名前でスコープされる（docs/schema.md §1-5、issue #31）。
+	// 空なら既定値（"default"）を使う。
+	//
+	// `mirakc:` は単一サイト構成の糖衣で、将来の複数サイト対応
+	// （`mirakcs:` リスト）はここに追加する（docs/configuration.md
+	// 「mirakc は単一オブジェクト」）。
+	Site string `yaml:"site"`
 }
 
 // StorageConfig はメディアファイルの保存先設定。
@@ -326,6 +336,9 @@ func defaults() Config {
 		DB: DBConfig{
 			Port:    5432,
 			SSLMode: "disable",
+		},
+		Mirakc: MirakcConfig{
+			Site: "default",
 		},
 		Storage: StorageConfig{
 			ScratchDir: "/var/tmp/rokuban",

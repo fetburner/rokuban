@@ -14,20 +14,20 @@ import (
 )
 
 // overridesFields は override として扱う全フィールド名（reset で許容する値、
-// および DELETE /api/reservations/{id}/overrides が消す対象）。
+// および DeleteProgramOverrides が消す対象）。
 //
 // skip はここに含めない。overrides のキーではなく program_intents.action が
-// 担うフィールドで、PATCH では扱わない（取消は DELETE /api/reservations/{id}。
-// docs/recording.md §4.2「overrides API の形」）。
+// 担うフィールドで、PATCH では扱わない（取消は
+// PUT .../intent {action: skip}。docs/recording.md §4.2「overrides API の形」）。
 //
 // フィールド名 → db.ReservationOptions の構造体フィールドの対応は、この変数と
 // resetOverridesField（適用側）の 2 箇所だけに集約してある。新しいフィールドを
 // 足すときはこの 2 箇所を揃えて更新すればよい。
-var overridesFields = []ReservationOverridesInputReset{
+var overridesFields = []ProgramOverridesInputReset{
 	Priority, ContentPath, FilenameTemplate, KeepOriginal, EncodeProfiles,
 }
 
-func isKnownOverridesField(f ReservationOverridesInputReset) bool {
+func isKnownOverridesField(f ProgramOverridesInputReset) bool {
 	for _, known := range overridesFields {
 		if f == known {
 			return true
@@ -39,7 +39,7 @@ func isKnownOverridesField(f ReservationOverridesInputReset) bool {
 // resetOverridesField は opts の該当フィールドを nil に戻す（override の削除）。
 // フィールド名 → 構造体フィールドの対応はこの switch に集約する
 // （overridesFields のコメント参照）。
-func resetOverridesField(opts *db.ReservationOptions, f ReservationOverridesInputReset) {
+func resetOverridesField(opts *db.ReservationOptions, f ProgramOverridesInputReset) {
 	switch f {
 	case Priority:
 		opts.Priority = nil
@@ -54,28 +54,34 @@ func resetOverridesField(opts *db.ReservationOptions, f ReservationOverridesInpu
 	}
 }
 
-// UpdateReservationOverrides は override をフィールド単位で部分更新する
-// (PATCH /api/reservations/{id})。値を書いたフィールドは override を設定し、
-// `reset` に名前を挙げたフィールドは override を削除する（フィールド単位の
-// 「ルールに戻す」）。どちらにも現れないフィールドは変更しない
+// PatchProgramOverrides は override をフィールド単位で部分更新する
+// (PATCH /api/sites/{site}/programs/{programId}/overrides)。値を書いたフィールドは
+// override を設定し、`reset` に名前を挙げたフィールドは override を削除する
+// （フィールド単位の「ルールに戻す」）。どちらにも現れないフィールドは変更しない
 // （docs/recording.md §4.2「overrides API の形」）。
 //
 // program_overrides だけを書く。program_intents（action）には一切触れない —
 // これが分離の核心で、ルール由来の予約に PATCH しても手動予約の意図（record/skip）
 // を巻き込む経路が構造的に存在しない（docs/recording.md §4.2「overrides は
 // program_intents とは別の表に置く」）。
-func (h *Server) UpdateReservationOverrides(ctx context.Context, req UpdateReservationOverridesRequestObject) (UpdateReservationOverridesResponseObject, error) {
-	if req.Body == nil {
-		return UpdateReservationOverrides400JSONResponse{Error: "request body is required"}, nil
+//
+// (site, programId) を自身のキーとして書く（issue #29）。導出行（reservations）の
+// 有無には依存しない。
+func (h *Server) PatchProgramOverrides(ctx context.Context, req PatchProgramOverridesRequestObject) (PatchProgramOverridesResponseObject, error) {
+	if req.Site != h.site {
+		return PatchProgramOverrides400JSONResponse{Error: "unknown site"}, nil
 	}
-	setters, resetFields, err := parseReservationOverridesInput(*req.Body)
+	if req.Body == nil {
+		return PatchProgramOverrides400JSONResponse{Error: "request body is required"}, nil
+	}
+	setters, resetFields, err := parseProgramOverridesInput(*req.Body)
 	if err != nil {
-		return UpdateReservationOverrides400JSONResponse{Error: err.Error()}, nil
+		return PatchProgramOverrides400JSONResponse{Error: err.Error()}, nil
 	}
 	// 未知プロファイル名は overrides でも拒否する（ルールと同じ規律。issue #64）。
 	if req.Body.EncodeProfiles != nil {
 		if err := h.validateEncodeProfiles(*req.Body.EncodeProfiles); err != nil {
-			return UpdateReservationOverrides400JSONResponse{Error: err.Error()}, nil
+			return PatchProgramOverrides400JSONResponse{Error: err.Error()}, nil
 		}
 	}
 
@@ -86,37 +92,50 @@ func (h *Server) UpdateReservationOverrides(ctx context.Context, req UpdateReser
 	defer func() { _ = tx.Rollback(ctx) }()
 	q := sqlcgen.New(tx)
 
-	row, err := lockAndGetReservation(ctx, q, req.Id)
-	if err != nil {
+	// program_snapshots の存在を確保しつつ、その UPSERT が同一行の更新ロックを
+	// 保持する（自然な直列化。docs/recording.md §4.2「マージは Go 側で型付きに
+	// 行う」— Rokuban は単一世帯用アプリで同時 PATCH は事実上起きないが、
+	// 安く取れるので取る）。
+	if err := ensureProgramSnapshot(ctx, q, req.Site, req.ProgramId); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return UpdateReservationOverrides404JSONResponse{Error: "reservation not found"}, nil
+			return PatchProgramOverrides400JSONResponse{Error: "program not found in EPG projection"}, nil
 		}
-		return nil, err
+		return nil, fmt.Errorf("ensuring program snapshot: %w", err)
 	}
 
-	finalOverrides, err := applyOverridesPatch(ctx, q, row.Reservation, row.Overrides, setters, resetFields)
-	if err != nil {
+	existing, err := q.GetProgramOverrides(ctx, sqlcgen.GetProgramOverridesParams{
+		Site:      req.Site,
+		ProgramID: req.ProgramId,
+	})
+	var existingJSON json.RawMessage
+	if err == nil {
+		existingJSON = existing.Overrides
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("getting program overrides: %w", err)
+	}
+
+	if err := applyOverridesPatch(ctx, q, req.Site, req.ProgramId, existingJSON, setters, resetFields); err != nil {
 		return nil, err
 	}
-	if err := h.insertReconcilePassHint(ctx, tx); err != nil {
+	if err := h.insertRulerPassHint(ctx, tx); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
-
-	res, err := reservationFromRow(row.Reservation, row.ProgramSnapshot, finalOverrides, row.IntentAction)
-	if err != nil {
-		return nil, err
-	}
-	return UpdateReservationOverrides200JSONResponse(res), nil
+	return PatchProgramOverrides204Response{}, nil
 }
 
-// ResetReservationOverrides は予約単位の「ルールに戻す」
-// (DELETE /api/reservations/{id}/overrides)。program_overrides の行を DELETE
-// するだけで、program_intents（action）には一切触れない
+// DeleteProgramOverrides は「ルールに戻す」
+// (DELETE /api/sites/{site}/programs/{programId}/overrides)。program_overrides の
+// 行を削除するだけで、program_intents（action）には一切触れない
 // （docs/recording.md §4.2「overrides は program_intents とは別の表に置く」）。
-func (h *Server) ResetReservationOverrides(ctx context.Context, req ResetReservationOverridesRequestObject) (ResetReservationOverridesResponseObject, error) {
+// 行が無くても冪等に 204。
+func (h *Server) DeleteProgramOverrides(ctx context.Context, req DeleteProgramOverridesRequestObject) (DeleteProgramOverridesResponseObject, error) {
+	if req.Site != h.site {
+		return DeleteProgramOverrides400JSONResponse{Error: "unknown site"}, nil
+	}
+
 	tx, err := h.pool.Begin(ctx)
 	if err != nil {
 		return nil, err
@@ -124,46 +143,19 @@ func (h *Server) ResetReservationOverrides(ctx context.Context, req ResetReserva
 	defer func() { _ = tx.Rollback(ctx) }()
 	q := sqlcgen.New(tx)
 
-	row, err := lockAndGetReservation(ctx, q, req.Id)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return ResetReservationOverrides404JSONResponse{Error: "reservation not found"}, nil
-		}
-		return nil, err
-	}
-
 	if _, err := q.DeleteProgramOverrides(ctx, sqlcgen.DeleteProgramOverridesParams{
-		Site:      row.Reservation.Site,
-		ProgramID: row.Reservation.ProgramID,
+		Site:      req.Site,
+		ProgramID: req.ProgramId,
 	}); err != nil {
 		return nil, fmt.Errorf("deleting program overrides: %w", err)
 	}
-	if err := h.insertReconcilePassHint(ctx, tx); err != nil {
+	if err := h.insertRulerPassHint(ctx, tx); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
-
-	res, err := reservationFromRow(row.Reservation, row.ProgramSnapshot, nil, row.IntentAction)
-	if err != nil {
-		return nil, err
-	}
-	return ResetReservationOverrides200JSONResponse(res), nil
-}
-
-// lockAndGetReservation は予約行を FOR UPDATE でロックしてから GetReservationFull
-// で全体（base / program_intents.action / program_overrides.overrides）を読む。
-// LEFT JOIN 付きのクエリに直接 FOR UPDATE を書くと「どのテーブルをロックするか」
-// の指定（FOR UPDATE OF）が要って煩雑なため、単一テーブルの FOR UPDATE で
-// 直列化してから改めて full row を読む 2 段構成にしてある
-// （docs/recording.md §4.2「マージは Go 側で型付きに行う」。同時 PATCH は
-// Rokuban が単一世帯用アプリで構造的に起きないので、1 行ロックで足りる）。
-func lockAndGetReservation(ctx context.Context, q *sqlcgen.Queries, id int64) (sqlcgen.GetReservationFullRow, error) {
-	if _, err := q.LockReservation(ctx, id); err != nil {
-		return sqlcgen.GetReservationFullRow{}, err
-	}
-	return q.GetReservationFull(ctx, id)
+	return DeleteProgramOverrides204Response{}, nil
 }
 
 // applyOverridesPatch は既存の program_overrides.overrides（無ければゼロ値）に
@@ -172,22 +164,20 @@ func lockAndGetReservation(ctx context.Context, q *sqlcgen.Queries, id int64) (s
 //
 // 結果が空（{}）になったら program_overrides の行そのものを DELETE する
 // （「空の上書き = 行が無い」。isEmptyOverridesJSON のコメント参照）。空でなければ
-// upsert する。PATCH（フィールド単位の reset）と ResetReservationOverrides
-// （予約単位の全消去、resetFields に全フィールドを渡す形で同じ経路を通せるが、
-// ResetReservationOverrides は DELETE の方が直接的なのでそちらを使う）の
-// どちらからも呼べる共通の適用ロジック。
+// upsert する。
 func applyOverridesPatch(
 	ctx context.Context,
 	q *sqlcgen.Queries,
-	r sqlcgen.Reservation,
+	site string,
+	programID int64,
 	existing json.RawMessage,
 	setters []func(*db.ReservationOptions),
-	resetFields []ReservationOverridesInputReset,
-) (json.RawMessage, error) {
+	resetFields []ProgramOverridesInputReset,
+) error {
 	opts := db.ReservationOptions{}
 	if len(existing) > 0 {
 		if err := json.Unmarshal(existing, &opts); err != nil {
-			return nil, fmt.Errorf("unmarshalling existing overrides: %w", err)
+			return fmt.Errorf("unmarshalling existing overrides: %w", err)
 		}
 	}
 	for _, set := range setters {
@@ -199,27 +189,27 @@ func applyOverridesPatch(
 
 	finalJSON, err := json.Marshal(opts)
 	if err != nil {
-		return nil, fmt.Errorf("marshalling overrides: %w", err)
+		return fmt.Errorf("marshalling overrides: %w", err)
 	}
 
 	if isEmptyOverridesJSON(finalJSON) {
 		if _, err := q.DeleteProgramOverrides(ctx, sqlcgen.DeleteProgramOverridesParams{
-			Site:      r.Site,
-			ProgramID: r.ProgramID,
+			Site:      site,
+			ProgramID: programID,
 		}); err != nil {
-			return nil, fmt.Errorf("deleting emptied program overrides: %w", err)
+			return fmt.Errorf("deleting emptied program overrides: %w", err)
 		}
-		return nil, nil
+		return nil
 	}
 
 	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
-		Site:      r.Site,
-		ProgramID: r.ProgramID,
+		Site:      site,
+		ProgramID: programID,
 		Overrides: finalJSON,
 	}); err != nil {
-		return nil, fmt.Errorf("upserting program overrides: %w", err)
+		return fmt.Errorf("upserting program overrides: %w", err)
 	}
-	return finalJSON, nil
+	return nil
 }
 
 // isEmptyOverridesJSON は jsonb の overrides が実質空（{}）かどうかを判定する。
@@ -234,7 +224,7 @@ func isEmptyOverridesJSON(raw json.RawMessage) bool {
 	return len(m) == 0
 }
 
-// parseReservationOverridesInput は PATCH ボディを検証し、適用する setter 関数
+// parseProgramOverridesInput は PATCH ボディを検証し、適用する setter 関数
 // の列（値を指定したフィールド）と reset するフィールド名の列に変換する。
 //
 // 同じフィールドが値と reset の両方に現れたら 400（意図が不明なので推測しない）、
@@ -242,9 +232,9 @@ func isEmptyOverridesJSON(raw json.RawMessage) bool {
 // filenameTemplate は internal/contentpath.Validate で検証する
 // （internal/api/rules.go の validateRuleInput と同じ流儀）。keepOriginal は
 // enum を検証する。
-func parseReservationOverridesInput(in ReservationOverridesInput) ([]func(*db.ReservationOptions), []ReservationOverridesInputReset, error) {
+func parseProgramOverridesInput(in ProgramOverridesInput) ([]func(*db.ReservationOptions), []ProgramOverridesInputReset, error) {
 	var setters []func(*db.ReservationOptions)
-	setFields := make(map[ReservationOverridesInputReset]struct{}, len(overridesFields))
+	setFields := make(map[ProgramOverridesInputReset]struct{}, len(overridesFields))
 
 	if in.Priority != nil {
 		// mirakc の schedule に渡す調停優先度。負の優先度は意味を持たない。
@@ -284,9 +274,9 @@ func parseReservationOverridesInput(in ReservationOverridesInput) ([]func(*db.Re
 		setFields[EncodeProfiles] = struct{}{}
 	}
 
-	var resetFields []ReservationOverridesInputReset
+	var resetFields []ProgramOverridesInputReset
 	if in.Reset != nil {
-		seen := make(map[ReservationOverridesInputReset]struct{}, len(*in.Reset))
+		seen := make(map[ProgramOverridesInputReset]struct{}, len(*in.Reset))
 		for _, f := range *in.Reset {
 			if !isKnownOverridesField(f) {
 				return nil, nil, fmt.Errorf("unknown reset field %q", f)

@@ -11,10 +11,9 @@
 3. **コミット = DB 行**（不変条件 3）: ファイルの公開は `media_assets` 行の INSERT。rename のアトミック性に依存しない
 4. **tombstone**: 物理削除後もメタデータ行は残す。ドロップ統計・録画履歴・重複排除は削除後も機能する
 5. **サイトスコープ**: mirakc の programId / record id はインスタンス単位のスコープしか持たない。[設定](../configuration.md)（issue #9）は「多拠点が現実化したら `mirakcs:` リストで互換拡張」と定めており、その際のスキーマ波及を避けるため **mirakc を指すすべてのテーブルに `site` 列を最初から持つ**
-   - `site` は設定ファイルで定義するサイト名（text）。サイトのレジストリは設定であり、DB に sites テーブルは作らない
-   - M1 では設定が単一 `mirakc:` なので全行が同一サイト名になる。`mirakcs:` リスト対応は設定とアプリの変更のみで、マイグレーション不要
+   - `site` は設定ファイルで定義するサイト名（`config.mirakc.site`、issue #31。空なら既定値 `"default"`）。サイトのレジストリは設定であり、DB に sites テーブルは作らない
    - site を持つのは reservations / schedule_sync / record_sync / recordings（+ M1-6 の EPG プロジェクション）。media_assets / drop_stats は中央ストレージの台帳なので持たない
-   - **ただし「マイグレーション不要」は利益を過大に見せている**（[#31](https://github.com/fetburner/rokuban/issues/31)）。`site` の値は設定由来ですらなく `db.DefaultSite = "default"` のハードコードで、API には site の次元が無い（`openapi.yaml` が 2 箇所で自認）。`programId` は site スコープなので、多拠点化で本当に壊れるのは **API の資源同定とクライアントのキャッシュキー**の方であり、そこは未払いである。原則 10 の「先払いは高い方から」に反しているので、`#29`（意図の宛先変更）に着手する前に方針を決める
+   - **API の資源同定にも site を持つ**（M3-1、issue #29 / #31 / #53）。`programId` は site スコープなので、`/api/sites/{site}/programs/{programId}` の形で site をパスに含める（案 A。TanStack Query のクエリキー・SSE の invalidate 単位もサイトごとに階層化される）。導出行（`reservations`）は書き込みの宛先にしない —— 意図（`program_intents`）・上書き（`program_overrides`）は `(site, programId)` を自身のキーとして書く。`reservations` の書き手は ruler だけになった
 6. **導出値と不可逆な事実を分ける**（CLAUDE.md 不変条件 9。M2-4 / M2-5 で同じ歪みを 3 回踏んで言語化した）
    - 毎パス再計算される値と、二度と再取得できない事実を 1 つの列に同居させると**導出側が事実を上書きする**
    - `program_intents.action`（#18）・`reservations.source`（#26）・`reservations.state`（M2-4）が実例。いずれも実害が出た
@@ -41,5 +40,5 @@
 10. **形を固定する前に、その形を決める判定基準を書く**（[CLAUDE.md](../../CLAUDE.md) 不変条件 11）
     - このドキュメント冒頭の「最終形で切る」の訂正がその実例。判定基準（原則 6 / 7）が M2-4 / M2-5 の後に来たので、それまでに固めた `reservations` の列が 5 回変更された
     - 導出テーブルの列は**書き手のコードと同じ PR で決める**。新しい列を足すときは「これを書くコードは今あるか」を問う
-    - 将来への先払いは**高い方から**。`site` 列は安い方（DB）を先払いして高い方（API の資源同定）が未払いのままで、利益が担保されていない（原則 5 の訂正。[#31](https://github.com/fetburner/rokuban/issues/31)）
+    - 将来への先払いは**高い方から**。`site` 列（安い方、DB）は v1 から先払いしていたが、API の資源同定（高い方）は M2 完了まで未払いのままだった。M3-1（issue #29 / #31 / #53）で API のパスとクライアントのクエリキーに site を通し、払い切った
 

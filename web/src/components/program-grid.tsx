@@ -86,7 +86,7 @@ export function ProgramGrid({
   services: Service[]
   programs: ProgramListItem[]
   axis: TimeAxis
-  reservationByProgramId: Map<number, number>
+  reservationByProgramId: Set<number>
   selectedProgramId: number | null
   onSelect: (program: ProgramListItem) => void
   /** 現在時刻。省略すると内部の時計を使う（テストから固定するための口）。 */
@@ -297,7 +297,7 @@ function ServiceColumn({
   placed: PlacedProgram<ProgramListItem>[]
   axis: TimeAxis
   timeWindow: { startMs: number; endMs: number }
-  reservationByProgramId: Map<number, number>
+  reservationByProgramId: Set<number>
   selectedProgramId: number | null
   onSelect: (program: ProgramListItem) => void
 }) {

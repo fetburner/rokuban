@@ -4,7 +4,7 @@
 
 `reservations`（desired）と `schedule_sync`（observed: `GET /api/recording/schedules` の観測結果）の差分を POST/DELETE で消す、レベルトリガーの宣言的同期ループ。
 
-- **tags 対応付け**: mirakc schedule の `tags` に Rokuban の reservation id を埋め込む（例: `rokuban:reservation=1234`）。手動で mirakc に入れられた schedule との判別もタグで可能
+- **tags 対応付け**: mirakc schedule の `tags` に programId を埋め込む（例: `program:1234`）。手動で mirakc に入れられた schedule との判別もタグで可能。**M3-1 以前は reservation id を埋めていた**（`rokuban:reservation=1234`）が、`reservations.id` は ruler の導出削除・再実体化で変わりうる不安定な値だったため、EPG にある間ずっと安定な programId に変えた（issue #53「導出器が作るキーを宛先にしない」）。旧形式の schedule は下記「tags の不一致」の再作成でレベルトリガーに新形式へ移行する
 - **contentPath 生成**: `recording.basedir` 相対パス必須。ファイル名テンプレートの展開もここで行う。生成値は初回のみで、以後は base に固定する（後述の差分反映）
 - **冪等**: 何度落ちても再実行で収束する。時刻精度もプロセス生存性も要求されない
 
@@ -96,9 +96,11 @@ reconciler は存在の突き合わせだけでなく、**effective options と 
 | `logFilter` | しない | 未使用 |
 | `tags` | **する**（不一致のときだけ） | 下記 |
 
-**`tags` の不一致も再作成の契機にする。** 当初この表は「tags は reservation id で不変」として差分対象から外していたが、これは「同じ予約に対しては不変」であって「同じ番組に対して不変」ではない。予約が削除されて同じ番組に別の予約が作られると、mirakc 側の schedule には**古い `reservation_id` の tag が残る**。tags は ingest が record と予約を突き合わせる経路（`mirakc.FindReservationID`）なので、古い tag のままだと録画が別の予約に紐付く。`priority` が一致していても tag が食い違えば再作成する（issue #19 のコメント）。
+**`tags` の不一致も再作成の契機にする。** 当初この表は「tags は reservation id で不変」として差分対象から外していたが、これは「同じ予約に対しては不変」であって「同じ番組に対して不変」ではない。予約が削除されて同じ番組に別の予約が作られると、mirakc 側の schedule には**古い `reservation_id` の tag が残る**。tags は ingest が record と予約を突き合わせる経路なので、古い tag のままだと録画が別の予約に紐付く。`priority` が一致していても tag が食い違えば再作成する（issue #19 のコメント）。
 
-**差分の対象にするのは自分が作った schedule だけ。** tag のない schedule（mirakc を直接叩いた・別のツールが作った）は観測はするが触らない。外部が作った schedule と取り合いになるのを避けるためで、既存の DELETE 側と同じ判定（`mirakc.FindReservationID` が false なら対象外）。
+**M3-1 で tag を `program:{programId}` に変えた**（issue #53）ため、この不一致判定は「tags が新形式でない（旧形式のまま、または全く別の値）」に広がった。自分が作った schedule（`mirakc.IsOurs` が true）で、かつ `mirakc.FindProgramTag` の値が desired な `programId` と一致しないものすべてが再作成の対象になる。旧形式の schedule はこの分岐で新形式に移行する（新しい移行コードは書かず、既存の DELETE→POST 機構がレベルトリガーで移行を完了させる）。programId は EPG にある間ずっと安定なので、正しくタグ付けされた schedule が「同じ予約」の生存中に不一致を起こすことはない。
+
+**差分の対象にするのは自分が作った schedule だけ。** tag のない schedule（mirakc を直接叩いた・別のツールが作った）は観測はするが触らない。外部が作った schedule と取り合いになるのを避けるためで、既存の DELETE 側と同じ判定（`mirakc.IsOurs` が false なら対象外。新旧いずれかの形式の tag があれば true）。
 
 **`contentPath` は初回生成値を base に固定し、以後変更しない。** reconciler は番組名からパスを生成するため、EPG の番組名が変われば生成結果も変わる。これを差分と見なすと **EPG 更新のたびに schedule が消えて作り直される** churn になる。差分書き込みという設計は desired が安定していることを前提として要求する（同率 priority のタイを全順序で潰したのと同じクラスの問題。§3.1）。ファイル名を変えたい場合はユーザーが overrides で明示的に指定する。
 

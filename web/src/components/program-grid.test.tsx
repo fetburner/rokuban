@@ -58,7 +58,7 @@ function program(
 function renderGrid({
   services = [service(1024, 'NHK総合')],
   programs = [] as ProgramListItem[],
-  reservations = new Map<number, number>(),
+  reservations = new Set<number>(),
   now = at(19 * 60),
   selectedProgramId = null as number | null,
   onSelect = vi.fn(),
@@ -66,7 +66,7 @@ function renderGrid({
 }: {
   services?: Service[]
   programs?: ProgramListItem[]
-  reservations?: Map<number, number>
+  reservations?: Set<number>
   now?: number
   selectedProgramId?: number | null
   onSelect?: (program: ProgramListItem) => void
@@ -165,7 +165,7 @@ describe('ProgramGrid', () => {
   it('予約済みの番組にだけ予約のマークが出る', () => {
     renderGrid({
       programs: [program(1, 1024, 19 * 60, 60), program(2, 1024, 20 * 60, 60)],
-      reservations: new Map([[1, 77]]),
+      reservations: new Set([1]),
     })
 
     expect(cell(1)).toHaveAttribute('data-reserved', 'true')

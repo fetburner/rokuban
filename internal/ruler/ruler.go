@@ -33,7 +33,7 @@ import (
 type Config struct {
 	// MaxDeletesPerPass は 1 サイト・1 パスあたりの削除許容数。超えたら削除を
 	// 一切実行せず、サーキットブレーカーとして停止する。ここで守るのは「ルール x EPG」
-	// から導出される削除だけで、ユーザーの明示操作（DeleteReservation の intent{skip}）は
+	// から導出される削除だけで、ユーザーの明示操作（PUT .../intent {action:"skip"}）は
 	// このブレーカーの対象にならない（そちら経由の削除は desired 集合の側で
 	// 最初から除外されるため、ここには現れない）。
 	//
@@ -71,9 +71,10 @@ type Ruler struct {
 // sites はルールを評価する対象サイトの一覧。ルールはサイトに従属しないグローバルな
 // 資産で（docs/recording.md §3.1「サイトの扱い」）、rule_sites が空なら全サイト、
 // 非空ならそのサイトのみが対象になる（rulequery.Conditions.Sites 経由）。
-// M1/M2 の設定は単一サイトなので db.DefaultSite 1 つで動くが、複数サイト構成に
-// 備えて引数はスライスにしてある。呼び出し元の internal/worker.RulerPassWorker は
-// ジョブ引数のサイト 1 つだけを渡す（ジョブの排他がサイト単位のため）。
+// 現状の設定（config.mirakc.site）は単一サイトなのでその 1 つで動くが、複数サイト
+// 構成に備えて引数はスライスにしてある。呼び出し元の
+// internal/worker.RulerPassWorker はジョブ引数のサイト 1 つだけを渡す
+// （ジョブの排他がサイト単位のため）。
 func New(sites []string, pool *pgxpool.Pool, cfg *Config) *Ruler {
 	c := defaultConfig()
 	if cfg != nil {

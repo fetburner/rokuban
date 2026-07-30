@@ -99,14 +99,14 @@ ORDER BY start_at, network_id, service_id;
 SELECT * FROM epg_programs
 WHERE site = $1 AND program_id = $2;
 
--- 手動予約の作成時に、予約行へスナップショットする番組の事実（title / 開始時刻 /
--- 尺 / チャンネル識別）を EPG プロジェクションから引く。mirakc の programId
--- 内部構造への算術（NID*10^10 + SID*10^5 + EID）に頼らないのは元々の理由のまま
--- だが、title / start_at / duration_ms も返すのは #27 の決定（「値の出所を EPG
--- 射影ただ 1 つに固定する」）による: 以前はチャンネル識別だけ射影から引き、
--- title / 開始時刻 / 尺はクライアント申告を信じていたため、GC の比較対象
--- （program_snapshots.start_at + duration_ms）がクライアントの古い番組表に
--- 引きずられ得た（api.CreateReservation から使う）。
+-- 意図・上書きの書き込み時に、program_snapshots へスナップショットする番組の事実
+-- （title / 開始時刻 / 尺 / チャンネル識別）を EPG プロジェクションから引く。
+-- mirakc の programId 内部構造への算術（NID*10^10 + SID*10^5 + EID）に頼らないのは
+-- 元々の理由のままだが、title / start_at / duration_ms も返すのは #27 の決定
+-- （「値の出所を EPG 射影ただ 1 つに固定する」）による: 以前はチャンネル識別だけ
+-- 射影から引き、title / 開始時刻 / 尺はクライアント申告を信じていたため、GC の
+-- 比較対象（program_snapshots.start_at + duration_ms）がクライアントの古い番組表に
+-- 引きずられ得た（api.ensureProgramSnapshot から使う）。
 -- name: GetProgramSnapshotSource :one
 SELECT p.name AS title, p.start_at, p.duration_ms,
        s.network_id, s.service_id, s.channel_type, s.channel

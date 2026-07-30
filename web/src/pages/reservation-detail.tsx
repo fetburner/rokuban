@@ -5,11 +5,11 @@ import { useEffect, useState } from 'react'
 
 import {
   getGetReservationQueryKey,
-  useDeleteReservation,
   useGetReservation,
-  useUpdateReservationOverrides,
+  usePatchProgramOverrides,
+  usePutProgramIntent,
+  type ProgramOverridesInput,
   type Reservation,
-  type ReservationOverridesInput,
 } from '@/api/generated'
 import { apiErrorMessage, unwrap } from '@/api/unwrap'
 import {
@@ -45,14 +45,19 @@ export function ReservationDetailPage() {
 
   const id = Number(reservationId)
   const query = useGetReservation(id)
-  const deleteReservation = useDeleteReservation()
-  const updateOverrides = useUpdateReservationOverrides()
+  const putIntent = usePutProgramIntent()
+  const patchOverrides = usePatchProgramOverrides()
 
   const reservation = unwrap(query.data)
 
+  // 取消は (site, programId) を宛先に intent{skip} を書くだけ（issue #29）。
+  // reservations 行には触れない。ruler が次パスで行を落とすまでの間、
+  // 一覧側は楽観更新で見た目を反映する（この画面はナビゲーションで離れるので
+  // 楽観表示は不要）。
   const cancel = () => {
-    deleteReservation.mutate(
-      { id },
+    if (!reservation) return
+    putIntent.mutate(
+      { site: reservation.site, programId: reservation.programId, data: { action: 'skip' } },
       {
         onSuccess: () => {
           toast({ message: '予約を取消しました' })
@@ -63,9 +68,10 @@ export function ReservationDetailPage() {
     )
   }
 
-  const saveEncode = (body: ReservationOverridesInput) => {
-    updateOverrides.mutate(
-      { id, data: body },
+  const saveEncode = (body: ProgramOverridesInput) => {
+    if (!reservation) return
+    patchOverrides.mutate(
+      { site: reservation.site, programId: reservation.programId, data: body },
       {
         onSuccess: () => {
           toast({ message: 'エンコード設定を更新しました' })
@@ -134,7 +140,7 @@ export function ReservationDetailPage() {
             <h3 className="mb-2 text-xs font-medium text-muted-foreground">エンコードと保持</h3>
             <EncodeOverridesEditor
               reservation={reservation}
-              isPending={updateOverrides.isPending}
+              isPending={patchOverrides.isPending}
               onSave={saveEncode}
             />
           </section>
@@ -143,10 +149,10 @@ export function ReservationDetailPage() {
             variant="destructive"
             size="lg"
             className="w-full"
-            disabled={deleteReservation.isPending}
+            disabled={putIntent.isPending}
             onClick={cancel}
           >
-            {deleteReservation.isPending ? '取消中…' : '予約を取消'}
+            {putIntent.isPending ? '取消中…' : '予約を取消'}
           </Button>
         </div>
       )}
@@ -168,7 +174,7 @@ function EncodeOverridesEditor({
 }: {
   reservation: Reservation
   isPending: boolean
-  onSave: (body: ReservationOverridesInput) => void
+  onSave: (body: ProgramOverridesInput) => void
 }) {
   const fromOverrides = encodeFromOverrides(reservation)
   const [value, setValue] = useState<EncodeSettingsValue>(fromOverrides)

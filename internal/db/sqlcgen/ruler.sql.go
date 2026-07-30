@@ -61,11 +61,11 @@ type DeleteReservationsBySiteAndProgramIDsParams struct {
 // toDelete は runPassForSite の先頭（トランザクション外）で ListProgramIntentActionsBySite /
 // ListProgramOverrideProgramIDsBySite / ListReservationProgramIDsBySite を読んでから
 // 計算した集合で、この DELETE 文自体は別のトランザクション（tx）内で後から実行される。
-// その間に api の CreateReservation（program_intents{record} と reservations 行を
-// 1 tx でコミットする）が同じ program_id に対して割り込むと、toDelete は古い読み取りの
-// ままその番組を含んでしまい、作られたばかりの手動予約を削除してしまう
-// （読み順を入れ替えても「計算してから DELETE を実行するまでの窓」は必ず残るため、
-// 読み順の入れ替えでは直らない）。
+// その間に api の PutProgramIntent（program_intents.action='record' をコミットする
+// だけで、reservations には一切触れない）が同じ program_id に意図を立てると、
+// toDelete は古い読み取りのままその番組を含んでしまい、意図が反映される直前だった
+// 既存の予約行を削除してしまう（読み順を入れ替えても「計算してから DELETE を実行する
+// までの窓」は必ず残るため、読み順の入れ替えでは直らない）。
 //
 // そこでガードを読み取り側ではなく DELETE 文自体の WHERE 句に持たせ、削除の瞬間に
 // load-bearing な行の有無を再評価する（CLAUDE.md 不変条件 9「導出は読むたびに

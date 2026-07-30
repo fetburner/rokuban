@@ -18,8 +18,11 @@ import (
 const maxProgramWindow = 7 * 24 * time.Hour
 
 // ListServices は EPG プロジェクションのサービス一覧を返す。
-func (h *Server) ListServices(ctx context.Context, _ ListServicesRequestObject) (ListServicesResponseObject, error) {
-	rows, err := sqlcgen.New(h.pool).ListEpgServices(ctx, defaultSite)
+func (h *Server) ListServices(ctx context.Context, req ListServicesRequestObject) (ListServicesResponseObject, error) {
+	if req.Site != h.site {
+		return ListServices404JSONResponse{Error: "unknown site"}, nil
+	}
+	rows, err := sqlcgen.New(h.pool).ListEpgServices(ctx, h.site)
 	if err != nil {
 		return nil, err
 	}
@@ -41,12 +44,15 @@ func (h *Server) ListServices(ctx context.Context, _ ListServicesRequestObject) 
 
 // ListPrograms は時間窓に一部でも重なる番組を返す。
 func (h *Server) ListPrograms(ctx context.Context, req ListProgramsRequestObject) (ListProgramsResponseObject, error) {
+	if req.Site != h.site {
+		return ListPrograms404JSONResponse{Error: "unknown site"}, nil
+	}
 	if msg := windowError(req.Params.Start, req.Params.End); msg != "" {
 		return ListPrograms400JSONResponse{Error: msg}, nil
 	}
 
 	rows, err := sqlcgen.New(h.pool).ListEpgProgramsForList(ctx, sqlcgen.ListEpgProgramsForListParams{
-		Site:        defaultSite,
+		Site:        h.site,
 		WindowStart: req.Params.Start,
 		WindowEnd:   req.Params.End,
 		NetworkID:   int32Ptr(req.Params.NetworkId),
@@ -77,8 +83,11 @@ func (h *Server) ListPrograms(ctx context.Context, req ListProgramsRequestObject
 
 // GetProgram は 1 番組を UI 完全形（extended / video / audios 込み）で返す。
 func (h *Server) GetProgram(ctx context.Context, req GetProgramRequestObject) (GetProgramResponseObject, error) {
+	if req.Site != h.site {
+		return GetProgram404JSONResponse{Error: "unknown site"}, nil
+	}
 	row, err := sqlcgen.New(h.pool).GetEpgProgram(ctx, sqlcgen.GetEpgProgramParams{
-		Site:      defaultSite,
+		Site:      h.site,
 		ProgramID: req.ProgramId,
 	})
 	if err != nil {
