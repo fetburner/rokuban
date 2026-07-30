@@ -134,6 +134,60 @@ func get(t *testing.T, url string, headers map[string]string) (*http.Response, [
 	return resp, body
 }
 
+func TestRecordingThumbnail_ServesJPEG(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	mediaDir := t.TempDir()
+	jpeg := []byte{0xFF, 0xD8, 0xFF, 0xD9}
+
+	recordingID := seedRecording(t, pool)
+	rel := fmt.Sprintf("thumbnails/%d.jpg", recordingID)
+	full := filepath.Join(mediaDir, rel)
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(full, jpeg, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
+		RecordingID: recordingID,
+		Kind:        db.AssetKindThumbnail,
+		RelPath:     rel,
+		SizeBytes:   int64(len(jpeg)),
+	}); err != nil {
+		t.Fatalf("seed thumbnail: %v", err)
+	}
+
+	r := chi.NewRouter()
+	New(pool, Config{MediaDir: mediaDir}).Mount(r)
+	srv := httptest.NewServer(r)
+	t.Cleanup(srv.Close)
+
+	resp, body := get(t, fmt.Sprintf("%s/api/recordings/%d/thumbnail", srv.URL, recordingID), nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if !bytes.Equal(body, jpeg) {
+		t.Errorf("body = %v, want jpeg", body)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != thumbnailContentType {
+		t.Errorf("Content-Type = %q, want %q", ct, thumbnailContentType)
+	}
+}
+
+func TestRecordingThumbnail_NotFoundWithoutAsset(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	recordingID := seedRecording(t, pool)
+	r := chi.NewRouter()
+	New(pool, Config{MediaDir: t.TempDir()}).Mount(r)
+	srv := httptest.NewServer(r)
+	t.Cleanup(srv.Close)
+
+	resp, _ := get(t, fmt.Sprintf("%s/api/recordings/%d/thumbnail", srv.URL, recordingID), nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
 func TestRecordingFile_FullContent(t *testing.T) {
 	f := newFixture(t, "2026/07/recording.m2ts", true)
 

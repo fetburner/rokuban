@@ -67,6 +67,22 @@ S3 マウント（k8s-csi-s3 の geesefs/s3fs、AWS Mountpoint 等）では以�
 
 派生物（視聴用）だけ速いストレージに置きたくなった場合、originals / derivatives で 2 つのストレージルートを持つ小さな拡張で対応できる。現時点では単一ルートで始め、シークの体感が問題になったら足す（YAGNI）。
 
+## 5.1 サムネイル（M3-4）
+
+録画 1 本につき `kind = 'thumbnail'` の media_asset を 1 つ作る（`UNIQUE (recording_id, kind, profile)`）。
+
+- **投入（レベルトリガー）**: active な original があり active な thumbnail が無いときだけ
+  River `thumbnail` キューへ unique ジョブ（`recording_id`）を積む。ingest コミット後の
+  ヒント投入と、ギャップ埋め（`ListRecordingIDsMissingThumbnail`）の両方で同じ条件を使う。
+  命令的チェーン（「ingest 成功 → 必ず thumbnail」）は採らない
+- **抽出位置（固定ポリシー）**: `seek = min(duration × 10%, 30s)`。duration は
+  ffprobe が読む実ファイル長。取れなければ 0 秒（先頭フレーム）。設定キーは設けない
+- **ストレージ契約**: ffmpeg は `storage.scratch_dir` に JPEG を書き、完成後に
+  メディアへストリームコピー + fsync → `media_assets` INSERT（`ON CONFLICT DO NOTHING`）
+- **相対パス**: `thumbnails/{recording_id}.jpg`（原本の contentPath に依存しない。
+  原本削除後もパスが安定する）
+- **配信**: streamer の `GET /api/recordings/{id}/thumbnail`（openapi 外。api はファイルを開かない）
+
 ## 6. 原本 TS の保持ポリシー
 
 生の放送データは MPEG-2（地デジで約 6〜7 GB/時、BS はさらに大きい）でストレージ効率が悪く、エンコード完了後に原本を削除したいという要件がある。EPGStation の「エンコード後に元ファイル削除」に相当するが、命令的（エンコード完了時に削除を実行）ではなく**宣言的な保持ポリシー + レベルトリガー reconcile** で実現する。

@@ -255,6 +255,15 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[IngestJobArgs]) 
 	// を埋めるレベルトリガー（命令的チェーンではない。issue #65）。
 	enqueueMissingEncodesFromContext(ctx, w.Pool, recordingID)
 
+	// thumbnail 投入はヒント。desired − observed を EnqueueThumbnailIfNeeded が
+	// 判定する（レベルトリガー。命令的チェーンではない。issue #66）。
+	// River クライアントが無いテスト経路では黙ってスキップする。
+	if riverClient, clientErr := river.ClientFromContextSafely[pgx5.Tx](ctx); clientErr == nil {
+		if enqueueErr := EnqueueThumbnailIfNeeded(ctx, w.Pool, riverClient, recordingID); enqueueErr != nil {
+			log.Error("ingest: failed to enqueue thumbnail job", "recording_id", recordingID, "err", enqueueErr)
+		}
+	}
+
 	if _, err := w.MirakcClient.DeleteRecord(ctx, args.RecordID, true); err != nil {
 		log.Error("ingest: failed to delete edge record (committed OK)", "err", err)
 	}

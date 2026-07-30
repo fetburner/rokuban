@@ -109,6 +109,7 @@ function ViewTab({
 
 function RecordingRow({ recording, trash }: { recording: Recording; trash: boolean }) {
   const [expanded, setExpanded] = useState(false)
+  const [thumbFailed, setThumbFailed] = useState(false)
 
   return (
     <div className="border-b border-border">
@@ -118,6 +119,23 @@ function RecordingRow({ recording, trash }: { recording: Recording; trash: boole
         onClick={() => setExpanded((v) => !v)}
         className="flex min-h-14 w-full items-center gap-3 px-4 py-2.5 text-left hover:bg-muted/50"
       >
+        {/*
+          サムネイルは openapi 外の streamer 経路（/api/recordings/{id}/thumbnail）。
+          未生成時は 404 → onError でプレースホルダ。hasThumbnail 列は持たない（M3-4）。
+        */}
+        <div className="size-12 shrink-0 overflow-hidden rounded bg-muted">
+          {!thumbFailed ? (
+            <img
+              src={`/api/recordings/${recording.id}/thumbnail`}
+              alt=""
+              className="size-full object-cover"
+              loading="lazy"
+              onError={() => setThumbFailed(true)}
+            />
+          ) : (
+            <div className="size-full bg-muted" aria-hidden />
+          )}
+        </div>
         <div className="min-w-0 flex-1">
           <div className="truncate text-sm">{recording.title || '（番組名なし）'}</div>
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">

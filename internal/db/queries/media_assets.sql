@@ -3,6 +3,15 @@ INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes)
 VALUES ($1, $2, $3, $4, $5)
 RETURNING id;
 
+-- thumbnail / encode の冪等 INSERT。UNIQUE (recording_id, kind, profile) で競合したら
+-- 何もせず id も返さない（呼び出し側が pgx.ErrNoRows を「既にコミット済み」として扱う）。
+-- 不変条件 3「コミット = DB 行」。書き手は worker のみ（docs/schema/recordings.md §6）。
+-- name: InsertMediaAssetIfAbsent :one
+INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes)
+VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (recording_id, kind, profile) DO NOTHING
+RETURNING id;
+
 -- ingest の冪等性チェック用。worker/ingest.go の Work は転送を始める前にこれで
 -- 「この recording_id の original はもうコミット済みか」を確認する
 -- （不変条件 3「コミット = DB 行」。行が無ければまだコミットされていない）。
@@ -11,7 +20,7 @@ RETURNING id;
 SELECT id FROM media_assets
 WHERE recording_id = $1 AND kind = 'original';
 
--- encode が読む原本（パスとサイズ）。active のみ。tombstone や未 commit は対象外。
+-- encode / thumbnail が読む原本(パスとサイズ)。active のみ。tombstone や未 commit は対象外。
 -- name: GetActiveOriginalMediaAsset :one
 SELECT id, rel_path, size_bytes
 FROM media_assets
@@ -39,6 +48,27 @@ ON CONFLICT (recording_id, kind, profile) DO UPDATE SET
     updated_at = now()
 RETURNING id;
 
+-- thumbnail の冪等性チェック用。active な thumbnail 行があれば id を返す。
+-- name: GetActiveThumbnailMediaAssetID :one
+SELECT id FROM media_assets
+WHERE recording_id = $1
+  AND kind = 'thumbnail'
+  AND state = 'active';
+
+-- レベルトリガー投入: original があり active thumbnail が無い recording_id。
+-- thumbnail ジョブの desired − observed ギャップを埋める（issue #66）。
+-- name: ListRecordingIDsMissingThumbnail :many
+SELECT o.recording_id
+FROM media_assets o
+WHERE o.kind = 'original'
+  AND o.state = 'active'
+  AND NOT EXISTS (
+    SELECT 1 FROM media_assets t
+    WHERE t.recording_id = o.recording_id
+      AND t.kind = 'thumbnail'
+      AND t.state = 'active'
+  );
+
 -- pid_type は分類できなかった PID では NULL（空文字を入れない）。
 -- 値の権威は internal/tsstat（列に CHECK は無い）。
 -- name: InsertDropStat :exec
@@ -55,5 +85,15 @@ FROM media_assets a
 JOIN recordings r ON r.id = a.recording_id
 WHERE a.recording_id = $1
   AND a.kind = 'original'
+  AND a.state = 'active'
+  AND r.deleted_at IS NULL;
+
+-- 配信対象のサムネイルを引く。ごみ箱・削除済みは配らない（原本と同じ契約）。
+-- name: GetThumbnailMediaAssetForServing :one
+SELECT a.id, a.rel_path, a.size_bytes, a.updated_at, r.title
+FROM media_assets a
+JOIN recordings r ON r.id = a.recording_id
+WHERE a.recording_id = $1
+  AND a.kind = 'thumbnail'
   AND a.state = 'active'
   AND r.deleted_at IS NULL;

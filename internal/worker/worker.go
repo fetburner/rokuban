@@ -57,6 +57,7 @@ type Deps struct {
 	ScratchDir   string
 
 	// Encode は構造化エンコードプロファイルと ffmpeg パス（issue #64 / #65）。
+	// worker ロール起動時に ValidateTools 済み（不変条件 4）。
 	Encode config.EncodeConfig
 
 	// EpgRetentionGrace は放送済み番組を刈り取るまでの猶予。0 なら既定値。
@@ -133,13 +134,20 @@ func NewWorkers(deps *Deps) *river.Workers {
 		Pool:     deps.Pool,
 		MediaDir: deps.MediaDir,
 	})
+	river.AddWorker(workers, &ThumbnailWorker{
+		Pool:       deps.Pool,
+		MediaDir:   deps.MediaDir,
+		ScratchDir: deps.ScratchDir,
+		FFmpeg:     deps.Encode.FFmpeg,
+		FFprobe:    deps.Encode.FFprobe,
+	})
 	return workers
 }
 
 const (
 	// encodeQueue はエンコードジョブ専用のキュー名（M3-3 でワーカーを登録する）。
 	encodeQueue = "encode"
-	// thumbnailQueue はサムネイルジョブ専用のキュー名（M3-4 でワーカーを登録する）。
+	// thumbnailQueue はサムネイルジョブ専用のキュー名。
 	thumbnailQueue = "thumbnail"
 
 	defaultEncodeConcurrency    = 1
@@ -162,7 +170,7 @@ func allQueues(ingestConcurrency, encodeConcurrency, thumbnailConcurrency int) m
 		// record_sweep も同じ理由（UniqueOpts がサイト単位の排他を担う）で 1 本に絞る。
 		recordSweepQueue: {MaxWorkers: 1},
 		// encode / thumbnail は CPU 拘束なので ingest とは独立に絞る（EPGStation#531、
-		// issue #64）。ワーカー本体は M3-3 / M3-4。キュー枠だけ先に用意する。
+		// issue #64）。thumbnail ワーカーは M3-4、encode ワーカーは M3-3。
 		encodeQueue:    {MaxWorkers: encodeConcurrency},
 		thumbnailQueue: {MaxWorkers: thumbnailConcurrency},
 	}

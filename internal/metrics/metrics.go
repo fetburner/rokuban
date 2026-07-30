@@ -83,6 +83,22 @@ var (
 	}, []string{"result"})
 )
 
+// thumbnail（M3-4）のメトリクス。
+var (
+	// ThumbnailDuration は thumbnail 1 件の所要（ffmpeg 抽出 + コピー + DB コミット）。
+	ThumbnailDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name:    "rokuban_thumbnail_duration_seconds",
+		Help:    "Duration of thumbnail jobs.",
+		Buckets: []float64{0.1, 0.5, 1, 2, 5, 15, 30, 60, 120},
+	})
+
+	// ThumbnailJobs は thumbnail ジョブの結果別の件数。
+	ThumbnailJobs = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "rokuban_thumbnail_jobs_total",
+		Help: "Thumbnail jobs by result.",
+	}, []string{"result"})
+)
+
 // 大量削除サーキットブレーカー（M2-5）のメトリクス。
 //
 // 既存の *_circuit_breaker_trips_total（カウンタ）は「何回発動したか」を数えるが、
@@ -356,6 +372,9 @@ func NewRegistry(backlog prometheus.Collector) *prometheus.Registry {
 
 		EncodeDuration,
 		EncodeJobs,
+
+		ThumbnailDuration,
+		ThumbnailJobs,
 
 		CircuitBreakerTripped,
 
