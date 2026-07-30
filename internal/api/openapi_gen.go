@@ -600,13 +600,17 @@ type Recording struct {
 	Channel     string               `json:"channel"`
 	ChannelType RecordingChannelType `json:"channelType"`
 	CreatedAt   time.Time            `json:"createdAt"`
-	Description *string              `json:"description,omitempty"`
-	DropSummary *DropSummary         `json:"dropSummary,omitempty"`
-	DurationMs  int64                `json:"durationMs"`
-	EndedAt     *time.Time           `json:"endedAt,omitempty"`
-	EventId     int                  `json:"eventId"`
-	Id          int64                `json:"id"`
-	NetworkId   int                  `json:"networkId"`
+
+	// DeletedAt 論理削除時刻。ごみ箱一覧（`trash=true`）でのみ出現する。
+	// 通常一覧では省略（生きている行は NULL）。
+	DeletedAt   *time.Time   `json:"deletedAt,omitempty"`
+	Description *string      `json:"description,omitempty"`
+	DropSummary *DropSummary `json:"dropSummary,omitempty"`
+	DurationMs  int64        `json:"durationMs"`
+	EndedAt     *time.Time   `json:"endedAt,omitempty"`
+	EventId     int          `json:"eventId"`
+	Id          int64        `json:"id"`
+	NetworkId   int          `json:"networkId"`
 
 	// QualityEvents recording.failed / record-broken / bcas_anomaly の履歴
 	QualityEvents *[]map[string]interface{} `json:"qualityEvents,omitempty"`
@@ -912,6 +916,12 @@ type ListProgramsParams struct {
 	ServiceId *int      `form:"serviceId,omitempty" json:"serviceId,omitempty"`
 }
 
+// ListRecordingsParams defines parameters for ListRecordings.
+type ListRecordingsParams struct {
+	// Trash true のときごみ箱（論理削除済み）を返す
+	Trash *bool `form:"trash,omitempty" json:"trash,omitempty"`
+}
+
 // SearchProgramsJSONRequestBody defines body for SearchPrograms for application/json ContentType.
 type SearchProgramsJSONRequestBody = ProgramSearchRequest
 
@@ -952,10 +962,19 @@ type ServerInterface interface {
 	GetProgramOverlaps(w http.ResponseWriter, r *http.Request, programId int64)
 	// ListRecordings List recordings
 	// (GET /api/recordings)
-	ListRecordings(w http.ResponseWriter, r *http.Request)
+	ListRecordings(w http.ResponseWriter, r *http.Request, params ListRecordingsParams)
+	// DeleteRecording Soft-delete a recording (move to trash)
+	// (DELETE /api/recordings/{id})
+	DeleteRecording(w http.ResponseWriter, r *http.Request, id int64)
 	// ListRecordingDropStats Get per-PID drop statistics for a recording
 	// (GET /api/recordings/{id}/drop-stats)
 	ListRecordingDropStats(w http.ResponseWriter, r *http.Request, id int64)
+	// PurgeRecording Mark a recording for immediate physical purge
+	// (POST /api/recordings/{id}/purge)
+	PurgeRecording(w http.ResponseWriter, r *http.Request, id int64)
+	// RestoreRecording Restore a soft-deleted recording from trash
+	// (POST /api/recordings/{id}/restore)
+	RestoreRecording(w http.ResponseWriter, r *http.Request, id int64)
 	// ListReservations List reservations
 	// (GET /api/reservations)
 	ListReservations(w http.ResponseWriter, r *http.Request)
@@ -1048,13 +1067,31 @@ func (_ Unimplemented) GetProgramOverlaps(w http.ResponseWriter, r *http.Request
 
 // ListRecordings List recordings
 // (GET /api/recordings)
-func (_ Unimplemented) ListRecordings(w http.ResponseWriter, r *http.Request) {
+func (_ Unimplemented) ListRecordings(w http.ResponseWriter, r *http.Request, params ListRecordingsParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// DeleteRecording Soft-delete a recording (move to trash)
+// (DELETE /api/recordings/{id})
+func (_ Unimplemented) DeleteRecording(w http.ResponseWriter, r *http.Request, id int64) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
 // ListRecordingDropStats Get per-PID drop statistics for a recording
 // (GET /api/recordings/{id}/drop-stats)
 func (_ Unimplemented) ListRecordingDropStats(w http.ResponseWriter, r *http.Request, id int64) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// PurgeRecording Mark a recording for immediate physical purge
+// (POST /api/recordings/{id}/purge)
+func (_ Unimplemented) PurgeRecording(w http.ResponseWriter, r *http.Request, id int64) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// RestoreRecording Restore a soft-deleted recording from trash
+// (POST /api/recordings/{id}/restore)
+func (_ Unimplemented) RestoreRecording(w http.ResponseWriter, r *http.Request, id int64) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1378,8 +1415,53 @@ func (siw *ServerInterfaceWrapper) GetProgramOverlaps(w http.ResponseWriter, r *
 // ListRecordings operation middleware
 func (siw *ServerInterfaceWrapper) ListRecordings(w http.ResponseWriter, r *http.Request) {
 
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListRecordingsParams
+
+	// ------------- Optional query parameter "trash" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "trash", r.URL.Query(), &params.Trash, runtime.BindQueryParameterOptions{Type: "boolean", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "trash"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "trash", Err: err})
+		}
+		return
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.ListRecordings(w, r)
+		siw.Handler.ListRecordings(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DeleteRecording operation middleware
+func (siw *ServerInterfaceWrapper) DeleteRecording(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteRecording(w, r, id)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1406,6 +1488,58 @@ func (siw *ServerInterfaceWrapper) ListRecordingDropStats(w http.ResponseWriter,
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ListRecordingDropStats(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PurgeRecording operation middleware
+func (siw *ServerInterfaceWrapper) PurgeRecording(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PurgeRecording(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RestoreRecording operation middleware
+func (siw *ServerInterfaceWrapper) RestoreRecording(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RestoreRecording(w, r, id)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1866,6 +2000,15 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Get(options.BaseURL+"/api/recordings", wrapper.ListRecordings)
 	})
 	r.Group(func(r chi.Router) {
+		r.Delete(options.BaseURL+"/api/recordings/{id}", wrapper.DeleteRecording)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/api/recordings/{id}/restore", wrapper.RestoreRecording)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/api/recordings/{id}/purge", wrapper.PurgeRecording)
+	})
+	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/api/recordings/{id}/drop-stats", wrapper.ListRecordingDropStats)
 	})
 	r.Group(func(r chi.Router) {
@@ -2127,6 +2270,7 @@ func (response GetProgramOverlaps404JSONResponse) VisitGetProgramOverlapsRespons
 }
 
 type ListRecordingsRequestObject struct {
+	Params ListRecordingsParams
 }
 
 type ListRecordingsResponseObject interface {
@@ -2143,6 +2287,36 @@ func (response ListRecordings200JSONResponse) VisitListRecordingsResponse(w http
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeleteRecordingRequestObject struct {
+	Id int64 `json:"id"`
+}
+
+type DeleteRecordingResponseObject interface {
+	VisitDeleteRecordingResponse(w http.ResponseWriter) error
+}
+
+type DeleteRecording204Response struct {
+}
+
+func (response DeleteRecording204Response) VisitDeleteRecordingResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type DeleteRecording404JSONResponse ErrorResponse
+
+func (response DeleteRecording404JSONResponse) VisitDeleteRecordingResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
 	_, err := buf.WriteTo(w)
 	return err
 }
@@ -2165,6 +2339,80 @@ func (response ListRecordingDropStats200JSONResponse) VisitListRecordingDropStat
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PurgeRecordingRequestObject struct {
+	Id int64 `json:"id"`
+}
+
+type PurgeRecordingResponseObject interface {
+	VisitPurgeRecordingResponse(w http.ResponseWriter) error
+}
+
+type PurgeRecording204Response struct {
+}
+
+func (response PurgeRecording204Response) VisitPurgeRecordingResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type PurgeRecording404JSONResponse ErrorResponse
+
+func (response PurgeRecording404JSONResponse) VisitPurgeRecordingResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RestoreRecordingRequestObject struct {
+	Id int64 `json:"id"`
+}
+
+type RestoreRecordingResponseObject interface {
+	VisitRestoreRecordingResponse(w http.ResponseWriter) error
+}
+
+type RestoreRecording204Response struct {
+}
+
+func (response RestoreRecording204Response) VisitRestoreRecordingResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type RestoreRecording404JSONResponse ErrorResponse
+
+func (response RestoreRecording404JSONResponse) VisitRestoreRecordingResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RestoreRecording409JSONResponse ErrorResponse
+
+func (response RestoreRecording409JSONResponse) VisitRestoreRecordingResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(409)
 	_, err := buf.WriteTo(w)
 	return err
 }
@@ -2662,9 +2910,18 @@ type StrictServerInterface interface {
 	// ListRecordings List recordings
 	// (GET /api/recordings)
 	ListRecordings(ctx context.Context, request ListRecordingsRequestObject) (ListRecordingsResponseObject, error)
+	// DeleteRecording Soft-delete a recording (move to trash)
+	// (DELETE /api/recordings/{id})
+	DeleteRecording(ctx context.Context, request DeleteRecordingRequestObject) (DeleteRecordingResponseObject, error)
 	// ListRecordingDropStats Get per-PID drop statistics for a recording
 	// (GET /api/recordings/{id}/drop-stats)
 	ListRecordingDropStats(ctx context.Context, request ListRecordingDropStatsRequestObject) (ListRecordingDropStatsResponseObject, error)
+	// PurgeRecording Mark a recording for immediate physical purge
+	// (POST /api/recordings/{id}/purge)
+	PurgeRecording(ctx context.Context, request PurgeRecordingRequestObject) (PurgeRecordingResponseObject, error)
+	// RestoreRecording Restore a soft-deleted recording from trash
+	// (POST /api/recordings/{id}/restore)
+	RestoreRecording(ctx context.Context, request RestoreRecordingRequestObject) (RestoreRecordingResponseObject, error)
 	// ListReservations List reservations
 	// (GET /api/reservations)
 	ListReservations(ctx context.Context, request ListReservationsRequestObject) (ListReservationsResponseObject, error)
@@ -2934,8 +3191,10 @@ func (sh *strictHandler) GetProgramOverlaps(w http.ResponseWriter, r *http.Reque
 }
 
 // ListRecordings operation middleware
-func (sh *strictHandler) ListRecordings(w http.ResponseWriter, r *http.Request) {
+func (sh *strictHandler) ListRecordings(w http.ResponseWriter, r *http.Request, params ListRecordingsParams) {
 	var request ListRecordingsRequestObject
+
+	request.Params = params
 
 	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
 		return sh.ssi.ListRecordings(ctx, request.(ListRecordingsRequestObject))
@@ -2950,6 +3209,32 @@ func (sh *strictHandler) ListRecordings(w http.ResponseWriter, r *http.Request) 
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(ListRecordingsResponseObject); ok {
 		if err := validResponse.VisitListRecordingsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// DeleteRecording operation middleware
+func (sh *strictHandler) DeleteRecording(w http.ResponseWriter, r *http.Request, id int64) {
+	var request DeleteRecordingRequestObject
+
+	request.Id = id
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.DeleteRecording(ctx, request.(DeleteRecordingRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "DeleteRecording")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(DeleteRecordingResponseObject); ok {
+		if err := validResponse.VisitDeleteRecordingResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
@@ -2976,6 +3261,58 @@ func (sh *strictHandler) ListRecordingDropStats(w http.ResponseWriter, r *http.R
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(ListRecordingDropStatsResponseObject); ok {
 		if err := validResponse.VisitListRecordingDropStatsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// PurgeRecording operation middleware
+func (sh *strictHandler) PurgeRecording(w http.ResponseWriter, r *http.Request, id int64) {
+	var request PurgeRecordingRequestObject
+
+	request.Id = id
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.PurgeRecording(ctx, request.(PurgeRecordingRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "PurgeRecording")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(PurgeRecordingResponseObject); ok {
+		if err := validResponse.VisitPurgeRecordingResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// RestoreRecording operation middleware
+func (sh *strictHandler) RestoreRecording(w http.ResponseWriter, r *http.Request, id int64) {
+	var request RestoreRecordingRequestObject
+
+	request.Id = id
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.RestoreRecording(ctx, request.(RestoreRecordingRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "RestoreRecording")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(RestoreRecordingResponseObject); ok {
+		if err := validResponse.VisitRestoreRecordingResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
