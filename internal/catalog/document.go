@@ -25,49 +25,49 @@ const FilenamePrefix = "catalog-"
 
 // Document は export / rescue で共有する catalog JSON の形。
 type Document struct {
-	Version   int       `json:"version"`
+	Version    int       `json:"version"`
 	ExportedAt time.Time `json:"exportedAt"`
 	// Site は export 時に絞り込んだサイト。空 / omit なら全サイト。
 	Site *string `json:"site,omitempty"`
 
-	Rules              []Rule              `json:"rules"`
-	Recordings         []Recording         `json:"recordings"`
-	MediaAssets        []MediaAsset        `json:"mediaAssets"`
-	DropStats          []DropStat          `json:"dropStats"`
-	ProgramSnapshots   []ProgramSnapshot   `json:"programSnapshots"`
-	ProgramIntents     []ProgramIntent     `json:"programIntents"`
-	ProgramOverrides   []ProgramOverride   `json:"programOverrides"`
+	Rules            []Rule            `json:"rules"`
+	Recordings       []Recording       `json:"recordings"`
+	MediaAssets      []MediaAsset      `json:"mediaAssets"`
+	DropStats        []DropStat        `json:"dropStats"`
+	ProgramSnapshots []ProgramSnapshot `json:"programSnapshots"`
+	ProgramIntents   []ProgramIntent   `json:"programIntents"`
+	ProgramOverrides []ProgramOverride `json:"programOverrides"`
 }
 
 // Rule は rules 本体と子テーブルをまとめた 1 ルール分。
 type Rule struct {
-	ID               int64           `json:"id"`
-	Name             string          `json:"name"`
-	Description      string          `json:"description"`
-	Enabled          bool            `json:"enabled"`
-	Priority         int32           `json:"priority"`
-	IsFree           *bool           `json:"isFree,omitempty"`
-	DurationMinMs    *int64          `json:"durationMinMs,omitempty"`
-	DurationMaxMs    *int64          `json:"durationMaxMs,omitempty"`
-	PeriodStartAt    *time.Time      `json:"periodStartAt,omitempty"`
-	PeriodEndAt      *time.Time      `json:"periodEndAt,omitempty"`
-	DedupeEnabled    bool            `json:"dedupeEnabled"`
-	DedupeThreshold  *float32        `json:"dedupeThreshold,omitempty"`
+	ID              int64      `json:"id"`
+	Name            string     `json:"name"`
+	Description     string     `json:"description"`
+	Enabled         bool       `json:"enabled"`
+	Priority        int32      `json:"priority"`
+	IsFree          *bool      `json:"isFree,omitempty"`
+	DurationMinMs   *int64     `json:"durationMinMs,omitempty"`
+	DurationMaxMs   *int64     `json:"durationMaxMs,omitempty"`
+	PeriodStartAt   *time.Time `json:"periodStartAt,omitempty"`
+	PeriodEndAt     *time.Time `json:"periodEndAt,omitempty"`
+	DedupeEnabled   bool       `json:"dedupeEnabled"`
+	DedupeThreshold *float32   `json:"dedupeThreshold,omitempty"`
 	// DedupeWindowSeconds は dedupe_window を秒に直した値。NULL は時間窓なし。
-	DedupeWindowSeconds *int64       `json:"dedupeWindowSeconds,omitempty"`
-	KeepOriginal     string          `json:"keepOriginal"`
-	EncodeProfiles   []string        `json:"encodeProfiles"`
-	FilenameTemplate string          `json:"filenameTemplate"`
-	Metadata         json.RawMessage `json:"metadata"`
-	CreatedAt        time.Time       `json:"createdAt"`
-	UpdatedAt        time.Time       `json:"updatedAt"`
+	DedupeWindowSeconds *int64          `json:"dedupeWindowSeconds,omitempty"`
+	KeepOriginal        string          `json:"keepOriginal"`
+	EncodeProfiles      []string        `json:"encodeProfiles"`
+	FilenameTemplate    string          `json:"filenameTemplate"`
+	Metadata            json.RawMessage `json:"metadata"`
+	CreatedAt           time.Time       `json:"createdAt"`
+	UpdatedAt           time.Time       `json:"updatedAt"`
 
-	TextMatches  []RuleTextMatch  `json:"textMatches,omitempty"`
-	Services     []RuleService    `json:"services,omitempty"`
-	ChannelTypes []string         `json:"channelTypes,omitempty"`
-	Genres       []int16          `json:"genres,omitempty"`
-	Times        []RuleTime       `json:"times,omitempty"`
-	Sites        []string         `json:"sites,omitempty"`
+	TextMatches  []RuleTextMatch `json:"textMatches,omitempty"`
+	Services     []RuleService   `json:"services,omitempty"`
+	ChannelTypes []string        `json:"channelTypes,omitempty"`
+	Genres       []int16         `json:"genres,omitempty"`
+	Times        []RuleTime      `json:"times,omitempty"`
+	Sites        []string        `json:"sites,omitempty"`
 }
 
 // RuleTextMatch は rule_text_matches の 1 行。
@@ -121,6 +121,7 @@ type Recording struct {
 	EncodeProfiles    []string        `json:"encodeProfiles"`
 	QualityEvents     json.RawMessage `json:"qualityEvents"`
 	DeletedAt         *time.Time      `json:"deletedAt,omitempty"`
+	PurgeAfter        *time.Time      `json:"purgeAfter,omitempty"`
 	CreatedAt         time.Time       `json:"createdAt"`
 	UpdatedAt         time.Time       `json:"updatedAt"`
 }

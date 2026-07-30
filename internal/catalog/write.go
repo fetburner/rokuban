@@ -156,7 +156,7 @@ func Load(path string) (*Document, error) {
 	if err != nil {
 		return nil, fmt.Errorf("opening catalog: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	var doc Document
 	if err := json.NewDecoder(f).Decode(&doc); err != nil {

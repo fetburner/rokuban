@@ -267,6 +267,7 @@ func recordingFromRow(r sqlcgen.Recording) Recording {
 		EncodeProfiles:    nonNilStrings(r.EncodeProfiles),
 		QualityEvents:     r.QualityEvents,
 		DeletedAt:         r.DeletedAt,
+		PurgeAfter:        r.PurgeAfter,
 		CreatedAt:         r.CreatedAt,
 		UpdatedAt:         r.UpdatedAt,
 	}

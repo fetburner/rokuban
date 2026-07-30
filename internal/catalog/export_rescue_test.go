@@ -74,6 +74,14 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateMediaAsset: %v", err)
 	}
+	// M3-7 の tombstone / 即時 purge 意図も catalog で保護する。
+	purgeAt := time.Date(2026, 7, 30, 0, 0, 0, 0, time.UTC)
+	if _, err := pool.Exec(ctx, `
+		UPDATE recordings SET deleted_at = $2, purge_after = $2 WHERE id = $1
+	`, recID, purgeAt); err != nil {
+		t.Fatalf("mark recording purge: %v", err)
+	}
+
 	pidType := "video"
 	if err := q.InsertDropStat(ctx, sqlcgen.InsertDropStatParams{
 		MediaAssetID: assetID,
@@ -113,6 +121,10 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 	}
 	if len(doc.Recordings) != 1 || doc.Recordings[0].ID != recID {
 		t.Fatalf("exported recordings = %+v, want id=%d", doc.Recordings, recID)
+	}
+	if doc.Recordings[0].DeletedAt == nil || doc.Recordings[0].PurgeAfter == nil ||
+		!doc.Recordings[0].PurgeAfter.Equal(purgeAt) {
+		t.Fatalf("exported tombstone deletedAt=%v purgeAfter=%v", doc.Recordings[0].DeletedAt, doc.Recordings[0].PurgeAfter)
 	}
 	if len(doc.MediaAssets) != 1 || doc.MediaAssets[0].ID != assetID {
 		t.Fatalf("exported media_assets = %+v", doc.MediaAssets)
@@ -161,6 +173,14 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 	}
 	if gotRecID != recID || gotTitle != "ニュース" {
 		t.Errorf("recording id/title = %d/%q, want %d/ニュース", gotRecID, gotTitle, recID)
+	}
+	var gotDeletedAt, gotPurgeAfter *time.Time
+	if err := pool.QueryRow(ctx, `SELECT deleted_at, purge_after FROM recordings WHERE id = $1`, recID).
+		Scan(&gotDeletedAt, &gotPurgeAfter); err != nil {
+		t.Fatalf("query recording tombstone: %v", err)
+	}
+	if gotDeletedAt == nil || gotPurgeAfter == nil || !gotPurgeAfter.Equal(purgeAt) {
+		t.Errorf("rescued tombstone deletedAt=%v purgeAfter=%v, want purgeAt=%v", gotDeletedAt, gotPurgeAfter, purgeAt)
 	}
 
 	var gotAssetID, gotSize int64
@@ -225,7 +245,7 @@ func TestExport_SiteFilter(t *testing.T) {
 			NetworkID: 1, ServiceID: 1, EventID: int32(len(site)),
 			ServiceName: "s", ChannelType: "GR", Channel: "1",
 			Title: site, IsFree: true,
-			ProgramStartAt: time.Date(2026, 7, 29, 0, 0, 0, 0, time.UTC),
+			ProgramStartAt:    time.Date(2026, 7, 29, 0, 0, 0, 0, time.UTC),
 			ProgramDurationMs: 60000, Status: "finished",
 		}); err != nil {
 			t.Fatalf("CreateRecording site=%s: %v", site, err)

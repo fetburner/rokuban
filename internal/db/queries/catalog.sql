@@ -217,7 +217,7 @@ INSERT INTO recordings (
     program_start_at, program_duration_ms,
     status, started_at, ended_at,
     keep_original, encode_profiles, quality_events,
-    deleted_at, created_at, updated_at
+    deleted_at, purge_after, created_at, updated_at
 ) OVERRIDING SYSTEM VALUE
 VALUES (
     $1, NULL, $2, $3, $4,
@@ -227,7 +227,7 @@ VALUES (
     $16, $17,
     $18, $19, $20,
     $21, $22, $23,
-    $24, $25, $26
+    $24, $25, $26, $27
 )
 ON CONFLICT (id) DO UPDATE SET
     reservation_id      = NULL,
@@ -254,6 +254,7 @@ ON CONFLICT (id) DO UPDATE SET
     encode_profiles     = EXCLUDED.encode_profiles,
     quality_events      = EXCLUDED.quality_events,
     deleted_at          = EXCLUDED.deleted_at,
+    purge_after         = EXCLUDED.purge_after,
     created_at          = EXCLUDED.created_at,
     updated_at          = EXCLUDED.updated_at;
 

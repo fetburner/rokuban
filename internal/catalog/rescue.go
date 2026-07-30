@@ -25,11 +25,13 @@ type RescueResult struct {
 }
 
 // RescueLatest は media_dir/catalog/ の最新 catalog を読んで DB に冪等 upsert する。
-func RescueLatest(ctx context.Context, pool *pgxpool.Pool, mediaDir string) (*RescueResult, error) {
+// catalog が無ければ media_dir を走査し、認識できる動画ファイルを素の asset として
+// in-place 登録する。どちらの経路もファイル本体はコピー・変更しない。
+func RescueLatest(ctx context.Context, pool *pgxpool.Pool, mediaDir, site string) (*RescueResult, error) {
 	path, err := LatestPath(mediaDir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("no catalog file under %s: %w", Dir(mediaDir), err)
+			return rescueStorage(ctx, pool, mediaDir, site)
 		}
 		return nil, err
 	}
@@ -154,6 +156,7 @@ func applyDocument(ctx context.Context, tx pgx.Tx, doc *Document) (*RescueResult
 			EncodeProfiles:    profiles,
 			QualityEvents:     qe,
 			DeletedAt:         r.DeletedAt,
+			PurgeAfter:        r.PurgeAfter,
 			CreatedAt:         r.CreatedAt,
 			UpdatedAt:         r.UpdatedAt,
 		}); err != nil {

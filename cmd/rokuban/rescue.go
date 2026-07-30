@@ -16,8 +16,8 @@ import (
 //
 // media_dir/catalog/ の最新 catalog JSON を読み、コアメタデータ
 // （rules / recordings / media_assets / drop_stats / program_intents /
-// program_overrides）を DB に冪等 upsert する。catalog が無いファイルからの
-// 素の asset 登録は後続（M3-10 と骨格共有）に回す最小骨格。
+// program_overrides）を DB に冪等 upsert する。catalog が無ければ storage を走査し、
+// 認識できる動画ファイルを素の asset として in-place 登録する。
 func newRescueCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "rescue",
@@ -26,8 +26,8 @@ func newRescueCmd() *cobra.Command {
 media_assets・ドロップ統計・手動意図/上書きを Postgres に冪等 upsert する
 （docs/storage.md §8、災害復旧）。
 
-catalog が無いメディアファイルの「素の asset」登録は未実装（M3-10 と共有予定）。
-再実行しても増殖しない（ON CONFLICT で上書き）。`,
+catalog が無ければ media_dir を走査し、TS / M2TS / MP4 / MKV / WebM を
+既存位置のまま素の asset として登録する。再実行しても増殖しない。`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := loadConfig(cmd)
 			if err != nil {
@@ -50,12 +50,16 @@ catalog が無いメディアファイルの「素の asset」登録は未実装
 // runRescue は catalog 復元の本体。cobra の RunE は配線に留め、DB / ファイル
 // 操作はここに閉じ込める（runShadowDiff / runEnqueue と同じ切り出し）。
 func runRescue(ctx context.Context, pool *pgxpool.Pool, mediaDir string, out io.Writer) error {
-	result, err := catalog.RescueLatest(ctx, pool, mediaDir)
+	result, err := catalog.RescueLatest(ctx, pool, mediaDir, db.DefaultSite)
 	if err != nil {
 		return err
 	}
 
-	_, _ = fmt.Fprintf(out, "rescued from %s\n", result.CatalogPath)
+	if result.CatalogPath == "" {
+		_, _ = fmt.Fprintln(out, "rescued by scanning media_dir (catalog not found)")
+	} else {
+		_, _ = fmt.Fprintf(out, "rescued from %s\n", result.CatalogPath)
+	}
 	_, _ = fmt.Fprintf(out, "  rules:              %d\n", result.Rules)
 	_, _ = fmt.Fprintf(out, "  recordings:         %d\n", result.Recordings)
 	_, _ = fmt.Fprintf(out, "  media_assets:       %d\n", result.MediaAssets)
