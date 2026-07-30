@@ -106,8 +106,9 @@ webhook:                         # 汎用 HTTP webhook（M3-11）。EPGStation �
   url: ""                        # 空なら no-op。例: https://hooks.example.com/rokuban
   secret: ""                     # 非空なら X-Rokuban-Webhook-Secret ヘッダに載せる
   timeout: 5s                    # 1 回の HTTP 要求タイムアウト。失敗時は同期で 1 回だけ再試行
-  events: []                     # 空なら既知の全イベント有効。絞る例: recording.finished / recording.failed
-                                 # 本処理（ingest / encode 等）は webhook 成否で止めない（at-least-once）
+  events: []                     # 空なら既知の全イベント有効（recording.finished/failed, encode.finished/failed,
+                                 # recording.deleted）。絞る例: recording.finished / recording.failed
+                                 # 本処理（ingest / encode / 削除 reconcile 等）は webhook 成否で止めない（at-least-once）
                                  # ペイロードは JSON。機微情報（絶対パス・credentials）は載せない
 
 cleanup:                         # 削除 reconcile（M3-8、storage.md §7）

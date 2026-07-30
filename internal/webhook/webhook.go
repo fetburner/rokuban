@@ -28,7 +28,7 @@ import (
 	"github.com/fetburner/rokuban/internal/config"
 )
 
-// イベント type 定数。encode / deleted は後続マイルストーンで発火する。
+// イベント type 定数。
 const (
 	EventRecordingFinished = "recording.finished"
 	EventRecordingFailed   = "recording.failed"
@@ -54,6 +54,8 @@ type Event struct {
 	Site        string    `json:"site"`
 	Title       string    `json:"title,omitempty"`
 	Status      string    `json:"status,omitempty"`
+	// Profile は encode.finished / encode.failed でのみ使う（config.EncodeProfile.Name）。
+	Profile string `json:"profile,omitempty"`
 }
 
 // Client は webhook 配送クライアント。

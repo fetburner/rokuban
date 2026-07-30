@@ -2,6 +2,10 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -10,8 +14,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/breaker"
+	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/webhook"
 )
 
 // seedOriginalAsset は原本の active media_assets 行 + ファイルを 1 件用意する。
@@ -151,6 +157,101 @@ func TestDeleteReconcileWorker_PurgeAfterImmediate_Deletes(t *testing.T) {
 
 	if got := assetState(t, pool, assetID); got != "deleted" {
 		t.Errorf("asset state = %q, want deleted (purge_after should bypass retention)", got)
+	}
+}
+
+// 原本の物理削除で recording.deleted が発火すること。
+func TestDeleteReconcileWorker_FiresRecordingDeletedWebhook_OnOriginalDelete(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+	recordingID := insertTestRecording(t, pool)
+
+	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "webhook/original.m2ts", []byte("data"))
+	past := time.Now().Add(-40 * 24 * time.Hour)
+	if _, err := pool.Exec(context.Background(),
+		"UPDATE recordings SET deleted_at = $1 WHERE id = $2", past, recordingID); err != nil {
+		t.Fatalf("marking recording deleted: %v", err)
+	}
+
+	var gotEvent webhook.Event
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("reading webhook body: %v", err)
+		}
+		if err := json.Unmarshal(body, &gotEvent); err != nil {
+			t.Errorf("unmarshalling webhook body: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	w := &DeleteReconcileWorker{
+		Pool: pool, MediaDir: mediaDir, TrashRetention: 30 * 24 * time.Hour,
+		Webhook: webhook.New(config.WebhookConfig{URL: srv.URL}),
+	}
+	if err := w.Work(context.Background(), nil); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+
+	if got := assetState(t, pool, assetID); got != "deleted" {
+		t.Fatalf("asset state = %q, want deleted", got)
+	}
+	if hits != 1 {
+		t.Fatalf("webhook hits = %d, want 1", hits)
+	}
+	if gotEvent.Type != webhook.EventRecordingDeleted {
+		t.Errorf("type = %q, want %q", gotEvent.Type, webhook.EventRecordingDeleted)
+	}
+	if gotEvent.RecordingID != recordingID {
+		t.Errorf("recordingId = %d, want %d", gotEvent.RecordingID, recordingID)
+	}
+	if gotEvent.Status != "deleted" {
+		t.Errorf("status = %q, want deleted", gotEvent.Status)
+	}
+	if gotEvent.Title != "テスト番組" {
+		t.Errorf("title = %q, want %q", gotEvent.Title, "テスト番組")
+	}
+}
+
+// encoded/thumbnail だけの削除では recording.deleted を発火しない
+// （FiresRecordingDeletedWebhook_OnOriginalDelete の逆方向。同じ録画の派生物削除を
+// 「録画そのものが消えた」と誤解させないため）。
+func TestDeleteReconcileWorker_EncodedOnlyDelete_DoesNotFireRecordingDeletedWebhook(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+	recordingID := insertTestRecording(t, pool)
+
+	profile := "h264"
+	assetID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindEncoded, &profile, "webhook/encoded.mp4", []byte("data"))
+	past := time.Now().Add(-40 * 24 * time.Hour)
+	if _, err := pool.Exec(context.Background(),
+		"UPDATE recordings SET deleted_at = $1 WHERE id = $2", past, recordingID); err != nil {
+		t.Fatalf("marking recording deleted: %v", err)
+	}
+
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	w := &DeleteReconcileWorker{
+		Pool: pool, MediaDir: mediaDir, TrashRetention: 30 * 24 * time.Hour,
+		Webhook: webhook.New(config.WebhookConfig{URL: srv.URL}),
+	}
+	if err := w.Work(context.Background(), nil); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+
+	if got := assetState(t, pool, assetID); got != "deleted" {
+		t.Fatalf("asset state = %q, want deleted", got)
+	}
+	if hits != 0 {
+		t.Errorf("webhook fired for non-original asset delete, hits = %d, want 0", hits)
 	}
 }
 

@@ -19,6 +19,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/metrics"
+	"github.com/fetburner/rokuban/internal/webhook"
 )
 
 const (
@@ -93,6 +94,9 @@ type DeleteReconcileWorker struct {
 	OrphanMTimeGrace  time.Duration
 	OrphanAge         time.Duration
 	MaxDeletesPerPass int
+
+	// Webhook は録画ライフサイクル通知用クライアント（M3-11）。nil 可。
+	Webhook *webhook.Client
 }
 
 // Timeout は River の既定（1 分）より長い上限を与える。
@@ -140,7 +144,7 @@ func (w *DeleteReconcileWorker) Work(ctx context.Context, _ *river.Job[DeleteRec
 		return fmt.Errorf("listing pending deletes: %w", err)
 	}
 	for _, a := range pending {
-		w.deleteMediaAsset(ctx, q, a.ID, a.RelPath, a.SizeBytes, "pending")
+		w.deleteMediaAsset(ctx, q, a.ID, a.RecordingID, a.RelPath, a.Kind, a.SizeBytes, "pending")
 	}
 
 	// 孤児候補の記録/解除はファイルを消さないので、ブレーカーとは無関係に毎回行う。
@@ -197,10 +201,10 @@ func (w *DeleteReconcileWorker) Work(ctx context.Context, _ *river.Job[DeleteRec
 	}
 
 	for _, a := range trashRows {
-		w.deleteMediaAsset(ctx, q, a.ID, a.RelPath, a.SizeBytes, "trash")
+		w.deleteMediaAsset(ctx, q, a.ID, a.RecordingID, a.RelPath, a.Kind, a.SizeBytes, "trash")
 	}
 	for _, a := range untilEncodedRows {
-		w.deleteMediaAsset(ctx, q, a.ID, a.RelPath, a.SizeBytes, "until_encoded")
+		w.deleteMediaAsset(ctx, q, a.ID, a.RecordingID, a.RelPath, a.Kind, a.SizeBytes, "until_encoded")
 	}
 	for _, relPath := range agedOrphans {
 		w.deleteOrphanFile(q, relPath)
@@ -215,7 +219,7 @@ func (w *DeleteReconcileWorker) Work(ctx context.Context, _ *river.Job[DeleteRec
 // 伝播しない — 1 件の失敗でパス全体を止めると、後続の正常な削除まで巻き込む
 // ため（record_sweep の processRecord と同じ設計判断）。deleting のまま
 // 終わった行は次パスの ListMediaAssetsPendingDelete が拾い直す。
-func (w *DeleteReconcileWorker) deleteMediaAsset(ctx context.Context, q *sqlcgen.Queries, id int64, relPath string, sizeBytes int64, source string) {
+func (w *DeleteReconcileWorker) deleteMediaAsset(ctx context.Context, q *sqlcgen.Queries, id, recordingID int64, relPath, kind string, sizeBytes int64, source string) {
 	log := slog.With("media_asset_id", id, "rel_path", relPath, "source", source)
 
 	// 既に deleting なら 0 行更新（それでよい。pending 経路はこの UPDATE を
@@ -245,6 +249,37 @@ func (w *DeleteReconcileWorker) deleteMediaAsset(ctx context.Context, q *sqlcgen
 	metrics.DeleteReconcileDeleted.WithLabelValues(source).Inc()
 	metrics.DeleteReconcileBytes.WithLabelValues(source).Add(float64(sizeBytes))
 	log.Info("delete_reconcile: deleted asset")
+
+	// recording.deleted は「この録画の原本が消えた」ことを表すので original の
+	// 削除でだけ発火する（同じ録画の encoded/thumbnail は別に消えることがあり、
+	// それぞれで発火すると同じ録画に対して意味の異なる重複通知になる）。
+	if kind == db.AssetKindOriginal {
+		w.notify(ctx, q, recordingID)
+	}
+}
+
+// notify は webhook を送る。失敗はログのみ（本処理を止めない。M3-11）。
+func (w *DeleteReconcileWorker) notify(ctx context.Context, q *sqlcgen.Queries, recordingID int64) {
+	if w.Webhook == nil {
+		return
+	}
+	rec, err := q.GetRecordingByID(ctx, recordingID)
+	if err != nil {
+		slog.Warn("webhook: loading recording for delete notify",
+			"recording_id", recordingID, "err", err)
+		return
+	}
+	ev := webhook.Event{
+		Type:        webhook.EventRecordingDeleted,
+		RecordingID: recordingID,
+		Site:        rec.Site,
+		Title:       rec.Title,
+		Status:      "deleted",
+	}
+	if err := w.Webhook.Notify(ctx, ev); err != nil {
+		slog.Error("webhook notify failed",
+			"type", webhook.EventRecordingDeleted, "recording_id", recordingID, "err", err)
+	}
 }
 
 // hasPendingDerivativeJob は原本を入力とする encode/thumbnail ジョブが

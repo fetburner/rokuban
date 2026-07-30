@@ -24,6 +24,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/metrics"
+	"github.com/fetburner/rokuban/internal/webhook"
 )
 
 // EncodeJobArgs は encode ジョブの引数。録画 1 件 × プロファイル 1 つ。
@@ -65,6 +66,9 @@ type EncodeWorker struct {
 	FFmpeg     string
 	// Profiles は名前解決用。config.EncodeConfig.Profile を使う。
 	Profiles config.EncodeConfig
+
+	// Webhook は録画ライフサイクル通知用クライアント（M3-11）。nil 可。
+	Webhook *webhook.Client
 }
 
 // Timeout は River の総時間タイムアウトを無効化する。
@@ -77,7 +81,20 @@ func (w *EncodeWorker) Timeout(*river.Job[EncodeJobArgs]) time.Duration {
 }
 
 // Work は encode ジョブを実行する。
+//
+// 失敗パスが複数箇所に散っているため（runEncode 参照）、webhook 発火は
+// ここ 1 箇所に統一する。ctx キャンセル（River の停止・タイムアウト）は
+// ジョブの失敗ではないので通知しない。
 func (w *EncodeWorker) Work(ctx context.Context, job *river.Job[EncodeJobArgs]) error {
+	err := w.runEncode(ctx, job)
+	if err != nil && ctx.Err() == nil {
+		w.notify(ctx, job.Args.RecordingID, job.Args.Profile, webhook.EventEncodeFailed, "failed")
+	}
+	return err
+}
+
+// runEncode は encode ジョブの本体。
+func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[EncodeJobArgs]) error {
 	args := job.Args
 	log := slog.With("recording_id", args.RecordingID, "profile", args.Profile)
 
@@ -202,7 +219,34 @@ func (w *EncodeWorker) Work(ctx context.Context, job *river.Job[EncodeJobArgs]) 
 
 	log.Info("encode: committed", "rel_path", relPath, "bytes", size)
 	result = "success"
+	w.notify(ctx, args.RecordingID, args.Profile, webhook.EventEncodeFinished, "finished")
 	return nil
+}
+
+// notify は webhook を送る。失敗はログのみ（本処理を止めない。M3-11）。
+func (w *EncodeWorker) notify(ctx context.Context, recordingID int64, profile, eventType, status string) {
+	if w.Webhook == nil {
+		return
+	}
+	q := sqlcgen.New(w.Pool)
+	rec, err := q.GetRecordingByID(ctx, recordingID)
+	if err != nil {
+		slog.Warn("webhook: loading recording for encode notify",
+			"recording_id", recordingID, "err", err)
+		return
+	}
+	ev := webhook.Event{
+		Type:        eventType,
+		RecordingID: recordingID,
+		Site:        rec.Site,
+		Title:       rec.Title,
+		Status:      status,
+		Profile:     profile,
+	}
+	if err := w.Webhook.Notify(ctx, ev); err != nil {
+		slog.Error("webhook notify failed",
+			"type", eventType, "recording_id", recordingID, "err", err)
+	}
 }
 
 func (w *EncodeWorker) hasActiveEncoded(ctx context.Context, recordingID int64, profile string) (bool, error) {

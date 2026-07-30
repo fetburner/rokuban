@@ -2,6 +2,10 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -17,6 +21,7 @@ import (
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/webhook"
 )
 
 func TestBuildFFmpegArgs(t *testing.T) {
@@ -305,6 +310,187 @@ func TestEncodeWorker_SuccessAndIdempotent(t *testing.T) {
 				t.Errorf("scratch not cleaned: %s still has %d entries", sub, len(infos))
 			}
 		}
+	}
+}
+
+// 成功時に encode.finished が発火し、ペイロードに profile が載ること。
+func TestEncodeWorker_FiresEncodeFinishedWebhook(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	ffmpegPath := installFakeFFmpeg(t)
+
+	mediaDir := t.TempDir()
+	scratchDir := t.TempDir()
+	rel := "20240101/finished.m2ts"
+	content := []byte("payload-for-webhook-finished-test")
+	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, rel, []string{"h264"}, content)
+
+	var gotEvent webhook.Event
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("reading webhook body: %v", err)
+		}
+		if err := json.Unmarshal(body, &gotEvent); err != nil {
+			t.Errorf("unmarshalling webhook body: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	w := &EncodeWorker{
+		Pool:       pool,
+		MediaDir:   mediaDir,
+		ScratchDir: scratchDir,
+		FFmpeg:     ffmpegPath,
+		Profiles: config.EncodeConfig{
+			FFmpeg: ffmpegPath,
+			Profiles: []config.EncodeProfile{{
+				Name:       "h264",
+				Container:  "mp4",
+				VideoCodec: "libx264",
+				AudioCodec: "aac",
+			}},
+		},
+		Webhook: webhook.New(config.WebhookConfig{URL: srv.URL}),
+	}
+
+	job := &river.Job[EncodeJobArgs]{
+		JobRow: &rivertype.JobRow{},
+		Args:   EncodeJobArgs{RecordingID: recordingID, Profile: "h264"},
+	}
+	if err := w.Work(context.Background(), job); err != nil {
+		t.Fatalf("Work: %v", err)
+	}
+
+	if hits != 1 {
+		t.Fatalf("webhook hits = %d, want 1", hits)
+	}
+	if gotEvent.Type != webhook.EventEncodeFinished {
+		t.Errorf("type = %q, want %q", gotEvent.Type, webhook.EventEncodeFinished)
+	}
+	if gotEvent.RecordingID != recordingID {
+		t.Errorf("recordingId = %d, want %d", gotEvent.RecordingID, recordingID)
+	}
+	if gotEvent.Profile != "h264" {
+		t.Errorf("profile = %q, want h264", gotEvent.Profile)
+	}
+	if gotEvent.Status != "finished" {
+		t.Errorf("status = %q, want finished", gotEvent.Status)
+	}
+	if gotEvent.Title != "encode test" {
+		t.Errorf("title = %q, want %q", gotEvent.Title, "encode test")
+	}
+
+	// 冪等スキップ（既に active な encoded がある）では再発火しない。
+	hits = 0
+	if err := w.Work(context.Background(), job); err != nil {
+		t.Fatalf("Work() second run: %v", err)
+	}
+	if hits != 0 {
+		t.Errorf("webhook hits on idempotent skip = %d, want 0", hits)
+	}
+}
+
+// 失敗時に encode.failed が発火すること。ペイロードの profile はジョブ引数（設定に
+// 存在しない名前でも）そのまま載る。
+func TestEncodeWorker_FiresEncodeFailedWebhook(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	mediaDir := t.TempDir()
+	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "x/fail.m2ts", nil, []byte("data"))
+
+	var gotEvent webhook.Event
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("reading webhook body: %v", err)
+		}
+		if err := json.Unmarshal(body, &gotEvent); err != nil {
+			t.Errorf("unmarshalling webhook body: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	w := &EncodeWorker{
+		Pool:     pool,
+		MediaDir: mediaDir,
+		Profiles: config.EncodeConfig{}, // "missing" プロファイルは未定義 → 失敗する
+		Webhook:  webhook.New(config.WebhookConfig{URL: srv.URL}),
+	}
+
+	job := &river.Job[EncodeJobArgs]{
+		JobRow: &rivertype.JobRow{},
+		Args:   EncodeJobArgs{RecordingID: recordingID, Profile: "missing"},
+	}
+	if err := w.Work(context.Background(), job); err == nil {
+		t.Fatal("expected error for unknown profile")
+	}
+
+	if hits != 1 {
+		t.Fatalf("webhook hits = %d, want 1", hits)
+	}
+	if gotEvent.Type != webhook.EventEncodeFailed {
+		t.Errorf("type = %q, want %q", gotEvent.Type, webhook.EventEncodeFailed)
+	}
+	if gotEvent.RecordingID != recordingID {
+		t.Errorf("recordingId = %d, want %d", gotEvent.RecordingID, recordingID)
+	}
+	if gotEvent.Profile != "missing" {
+		t.Errorf("profile = %q, want missing", gotEvent.Profile)
+	}
+	if gotEvent.Status != "failed" {
+		t.Errorf("status = %q, want failed", gotEvent.Status)
+	}
+}
+
+// ctx キャンセル（River の停止・タイムアウト）はジョブの失敗ではないので、
+// 通知しない（FiresEncodeFailedWebhook の逆方向）。
+func TestEncodeWorker_CtxCanceled_DoesNotFireWebhook(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	mediaDir := t.TempDir()
+	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "x/cancel.m2ts", nil, []byte("data"))
+
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	w := &EncodeWorker{
+		Pool:     pool,
+		MediaDir: mediaDir,
+		Profiles: config.EncodeConfig{Profiles: []config.EncodeProfile{{
+			Name: "h264", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac",
+		}}},
+		Webhook: webhook.New(config.WebhookConfig{URL: srv.URL}),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	job := &river.Job[EncodeJobArgs]{
+		JobRow: &rivertype.JobRow{},
+		Args:   EncodeJobArgs{RecordingID: recordingID, Profile: "h264"},
+	}
+	if err := w.Work(ctx, job); err == nil {
+		t.Fatal("expected error with canceled ctx")
+	}
+	if hits != 0 {
+		t.Errorf("webhook hits on ctx cancel = %d, want 0", hits)
 	}
 }
 

@@ -91,8 +91,9 @@ type Deps struct {
 	IngestStallTimeout time.Duration
 
 	// Webhook は録画ライフサイクル通知用クライアント（M3-11）。nil 可。
-	// record_sweep 経由の processRecord でも finished 遷移を通知できるようにする。
-	// encode 完了・削除の発火は後続マイルストーン。
+	// recording.finished/failed は record_sweep 経由の processRecord から、
+	// encode.finished/failed は EncodeWorker から、recording.deleted は
+	// DeleteReconcileWorker から発火する（issue #73）。
 	Webhook *webhook.Client
 
 	// Cleanup は削除 reconcile（M3-8）の猶予・閾値設定。
@@ -114,6 +115,7 @@ func NewWorkers(deps *Deps) *river.Workers {
 		ScratchDir: deps.ScratchDir,
 		FFmpeg:     deps.Encode.FFmpeg,
 		Profiles:   deps.Encode,
+		Webhook:    deps.Webhook,
 	})
 	river.AddWorker(workers, &EpgSyncWorker{
 		MirakcClient:   deps.MirakcClient,
@@ -158,6 +160,7 @@ func NewWorkers(deps *Deps) *river.Workers {
 		OrphanMTimeGrace:  deps.Cleanup.OrphanMTimeGrace,
 		OrphanAge:         deps.Cleanup.OrphanAge,
 		MaxDeletesPerPass: deps.Cleanup.MaxDeletesPerPass,
+		Webhook:           deps.Webhook,
 	})
 	return workers
 }
