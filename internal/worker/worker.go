@@ -117,6 +117,10 @@ func NewWorkers(deps *Deps) *river.Workers {
 		Pool:         deps.Pool,
 		Webhook:      deps.Webhook,
 	})
+	river.AddWorker(workers, &CatalogExportWorker{
+		Pool:     deps.Pool,
+		MediaDir: deps.MediaDir,
+	})
 	return workers
 }
 
@@ -200,9 +204,17 @@ type ClientConfig struct {
 	// RecordSweepInterval は record_sweep 定期パスの間隔。0 なら既定値（5 分）。
 	RecordSweepInterval time.Duration
 
+	// CatalogExport が true なら catalog_export を定期ジョブとして登録する
+	// （PeriodicJobs が true のときのみ）。サイト非依存の災害復旧バックアップなので
+	// サイト引数は不要（docs/storage.md §8）。
+	CatalogExport bool
+
+	// CatalogExportInterval は catalog エクスポートの間隔。0 なら既定値（24 時間）。
+	CatalogExportInterval time.Duration
+
 	// PeriodicJobs が false なら、EpgSyncSite / TunerSyncSite / RulerPassSite /
-	// ReconcilePassSite / RecordSweepSite が設定されていても River の PeriodicJobs を
-	// 一切登録しない。
+	// ReconcilePassSite / RecordSweepSite / CatalogExport が設定されていても
+	// River の PeriodicJobs を一切登録しない。
 	// k8s では false にして、CronJob が
 	// `rokuban enqueue` を叩く形に委ねる（docs/data.md §2「定期実行の契機は
 	// デプロイ形態に委ねる」。設定キーは worker.periodic_jobs、既定 true）。
@@ -323,6 +335,20 @@ func buildRiverConfig(workers *river.Workers, cfg ClientConfig) (*river.Config, 
 				func() (river.JobArgs, *river.InsertOpts) {
 					return RecordSweepArgs{Site: site}, nil
 				},
+				&river.PeriodicJobOpts{RunOnStart: true},
+			))
+		}
+		if cfg.CatalogExport {
+			interval := cfg.CatalogExportInterval
+			if interval <= 0 {
+				interval = defaultCatalogExportInterval
+			}
+			riverCfg.PeriodicJobs = append(riverCfg.PeriodicJobs, river.NewPeriodicJob(
+				river.PeriodicInterval(interval),
+				func() (river.JobArgs, *river.InsertOpts) {
+					return CatalogExportArgs{}, nil
+				},
+				// 起動直後にも 1 回書いておく。日次なので RunOnStart で初回を確保する。
 				&river.PeriodicJobOpts{RunOnStart: true},
 			))
 		}

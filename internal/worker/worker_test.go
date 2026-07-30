@@ -233,6 +233,7 @@ func TestInsertOpts_UniqueStatesExcludeFinalized(t *testing.T) {
 		{"ingest", IngestJobArgs{}.InsertOpts()},
 		{"ruler_pass", RulerPassArgs{}.InsertOpts()},
 		{"reconcile_pass", ReconcilePassArgs{}.InsertOpts()},
+		{"catalog_export", CatalogExportArgs{}.InsertOpts()},
 	}
 
 	for _, tt := range tests {

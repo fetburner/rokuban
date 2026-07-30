@@ -152,9 +152,14 @@ S3 マウント（k8s-csi-s3 の geesefs/s3fs、AWS Mountpoint 等）では以�
 `rokuban rescue`: ストレージを走査し、
 
 - `catalog/` があれば照合してフルメタデータ（番組情報・ドロップ統計・保持ポリシー）ごと復元
-- catalog にないファイルはディレクトリ規約・ファイル名から推定できる範囲で「素の asset」として登録（UI から見えて再生できる状態に戻す）
+- catalog が無ければ TS / M2TS を `original`、MP4 / MKV / WebM を `encoded`
+  （`profile = rescue-<拡張子>`）として、現在位置のまま登録する。タイトルと時刻は
+  ファイル名 / mtime、番組・サービス情報は「metadata unavailable」と明示した素の録画になる
+- `catalog/` 自身、未知拡張子、symlink は走査対象にしない。ファイル本体はコピーも変更もしない
+- 同じ相対パスは安定した合成番組 identity へ写し、再実行しても録画・asset が増殖しない
 
-実装は `rokuban import epgstation` の in-place 登録機構と同型なので共有する。
+登録トランザクションは `internal/inplace` に置き、`rokuban import epgstation` も同じ
+in-place 登録機構を使う。DB 行のコミットが公開であるというストレージ契約は通常 ingest と同じ。
 
 ### Postgres 運用
 

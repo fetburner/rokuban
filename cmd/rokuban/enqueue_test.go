@@ -153,6 +153,27 @@ func TestRunEnqueue_TunerSync(t *testing.T) {
 	}
 }
 
+// catalog-export も投入できること（M3-9 / issue #71）。
+func TestRunEnqueue_CatalogExport(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	var out bytes.Buffer
+	if err := runEnqueue(ctx, pool, "catalog-export", &out); err != nil {
+		t.Fatalf("runEnqueue: %v", err)
+	}
+
+	var count int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM river_job WHERE kind = 'catalog_export'`,
+	).Scan(&count); err != nil {
+		t.Fatalf("counting catalog_export jobs: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("catalog_export job count = %d, want 1", count)
+	}
+}
+
 // 未知のジョブ名はエラーになること。
 func TestRunEnqueue_UnknownJob(t *testing.T) {
 	pool := testutil.SetupDB(t)
