@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -140,5 +140,43 @@ describe('RecordingsPage trash', () => {
       return url.pathname === '/api/recordings' && url.searchParams.get('trash') === 'true'
     })
     expect(trashCalls.length).toBeGreaterThan(0)
+  })
+
+  it('「今すぐ完全削除」は確認ダイアログを挟み、確定するまで purge を呼ばない', async () => {
+    const user = userEvent.setup()
+    const purgeCalls: string[] = []
+    const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input), 'http://localhost')
+      const method = init?.method ?? 'GET'
+      if (url.pathname.startsWith('/api/recordings/') && url.pathname.endsWith('/purge')) {
+        purgeCalls.push(url.pathname)
+        return Promise.resolve(new Response(null, { status: 204 }))
+      }
+      const trash = url.searchParams.get('trash') === 'true'
+      const body =
+        trash && method === 'GET'
+          ? [sampleRecording({ id: 7, title: '捨てた録画', deletedAt: '2026-01-02T00:00:00Z' })]
+          : []
+      return Promise.resolve(
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      )
+    })
+
+    renderRecordingsPage(fetchMock as unknown as typeof fetch)
+
+    await user.click(screen.getByRole('button', { name: 'ごみ箱' }))
+    await user.click(await screen.findByText('捨てた録画'))
+
+    // ボタンを押しただけでは purge は飛ばない（確認を挟む）
+    await user.click(screen.getByRole('button', { name: '今すぐ完全削除' }))
+    expect(purgeCalls).toHaveLength(0)
+
+    // ダイアログの確定ボタンを押して初めて purge が飛ぶ
+    await user.click(await screen.findByRole('button', { name: '完全削除を予約する' }))
+    await waitFor(() => expect(purgeCalls).toHaveLength(1))
+    expect(purgeCalls[0]).toBe('/api/recordings/7/purge')
   })
 })

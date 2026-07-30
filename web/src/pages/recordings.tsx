@@ -14,6 +14,17 @@ import {
 import { unwrap } from '@/api/unwrap'
 import { EmptyState, ErrorState, ListSkeleton, PageHeader } from '@/components/page'
 import { useToast } from '@/components/toaster'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import { formatBytes, formatDateTime, formatDuration } from '@/lib/format'
 import { cn } from '@/lib/utils'
@@ -303,26 +314,42 @@ function RecordingActions({ recordingId, trash }: { recordingId: number; trash: 
       >
         復元
       </Button>
-      <Button
-        type="button"
-        variant="destructive"
-        size="sm"
-        disabled={busy}
-        onClick={() => {
-          purgeRecording.mutate(
-            { id: recordingId },
-            {
-              onSuccess: () => {
-                invalidate()
-                toast({ message: '完全削除を予約しました' })
-              },
-              onError: () => toast({ message: '完全削除の予約に失敗しました' }),
-            },
-          )
-        }}
-      >
-        今すぐ完全削除
-      </Button>
+      <AlertDialog>
+        <AlertDialogTrigger
+          render={
+            <Button type="button" variant="destructive" size="sm" disabled={busy}>
+              今すぐ完全削除
+            </Button>
+          }
+        />
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>今すぐ完全削除しますか？</AlertDialogTitle>
+            <AlertDialogDescription>
+              削除 reconcile がこの録画の原本・派生物・サムネイルを削除します。取り消せません。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>キャンセル</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                purgeRecording.mutate(
+                  { id: recordingId },
+                  {
+                    onSuccess: () => {
+                      invalidate()
+                      toast({ message: '完全削除を予約しました' })
+                    },
+                    onError: () => toast({ message: '完全削除の予約に失敗しました' }),
+                  },
+                )
+              }}
+            >
+              完全削除を予約する
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }
