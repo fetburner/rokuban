@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -239,6 +240,69 @@ func TestRulesCRUD(t *testing.T) {
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("get after delete = %d", resp.StatusCode)
+	}
+}
+
+// encodeProfiles に config に無い名前があると 400 になること（issue #64）。
+// 既知名は通ることも両方向で確認する。
+func TestCreateRule_UnknownEncodeProfile(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	router := NewRouter(RouterConfig{
+		Pool:               pool,
+		EncodeProfileNames: []string{"h264"},
+	})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	// 未知プロファイル → 400
+	body := map[string]any{
+		"name":           "with-unknown-profile",
+		"encodeProfiles": []string{"no-such-profile"},
+	}
+	raw, _ := json.Marshal(body)
+	resp, err := http.Post(srv.URL+"/api/rules", "application/json", bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unknown encode profile status = %d, want 400", resp.StatusCode)
+	}
+	var errBody ErrorResponse
+	if err := json.NewDecoder(resp.Body).Decode(&errBody); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(errBody.Error, "unknown encode profile") {
+		t.Errorf("error body = %q, want mention of unknown encode profile", errBody.Error)
+	}
+
+	// 既知プロファイル → 201
+	okBody := map[string]any{
+		"name":           "with-known-profile",
+		"encodeProfiles": []string{"h264"},
+	}
+	raw, _ = json.Marshal(okBody)
+	resp, err = http.Post(srv.URL+"/api/rules", "application/json", bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("known encode profile status = %d, want 201", resp.StatusCode)
+	}
+
+	// EncodeProfileNames 未注入なら検証スキップ（後方互換・部分構成のテスト）
+	routerNoProfiles := NewRouter(RouterConfig{Pool: pool})
+	srv2 := httptest.NewServer(routerNoProfiles)
+	defer srv2.Close()
+	raw, _ = json.Marshal(body)
+	resp, err = http.Post(srv2.URL+"/api/rules", "application/json", bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("without EncodeProfileNames status = %d, want 201 (validation skipped)", resp.StatusCode)
 	}
 }
 

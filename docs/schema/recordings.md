@@ -41,6 +41,10 @@ CREATE TABLE recordings (
 
     -- ごみ箱（録画単位の論理削除。原本 + 派生物 + サムネイルのグループごと）
     deleted_at        timestamptz,
+    -- 即時物理削除の要求印（M3-7 / 00018）。ファイルは消さない。
+    -- M3-8 の削除 reconcile が `purge_after <= now()` を拾って unlink する。
+    -- 猶予経過による通常 purge とは独立した「前倒し」の合図。
+    purge_after       timestamptz,
 
     created_at        timestamptz NOT NULL DEFAULT now(),
     updated_at        timestamptz NOT NULL DEFAULT now()
@@ -50,6 +54,7 @@ CREATE INDEX ON recordings (reservation_id);
 CREATE INDEX ON recordings (program_start_at DESC);        -- ライブラリ一覧
 CREATE INDEX ON recordings (network_id, service_id, event_id);
 CREATE INDEX ON recordings (deleted_at) WHERE deleted_at IS NOT NULL;  -- ごみ箱ビュー
+CREATE INDEX ON recordings (purge_after) WHERE purge_after IS NOT NULL;  -- 即時 purge
 -- 履歴ベース重複排除（M2-6）は title の trgm 類似度で判定するが、GIN は張っていない。
 -- gin_trgm_ops が加速するのは % / <% / LIKE / 正規表現で、similarity() の関数呼び出しには
 -- 使われない（% の閾値は GUC pg_trgm.similarity_threshold 由来でルール単位の閾値と噛み合わない）。
@@ -61,11 +66,15 @@ CREATE INDEX ON recordings (deleted_at) WHERE deleted_at IS NOT NULL;  -- ごみ
 - `recording.failed` で record が存在しないケース（start-recording-failed 等）→ status = `failed` の行を作り quality_events に理由を記録。**録画されなかった試行も履歴に残る**
 - ingest の完了は recordings の status ではなく **`media_assets` 行の有無**で表現する（コミット = DB 行。冗長な状態カラムを持たない）
 
-### ごみ箱（issue #4 の削除エンジンコメント)
+### ごみ箱（issue #4 の削除エンジンコメント / M3-7 #69）
 
-- UI の削除 = `deleted_at` を立てるだけ。ファイルには触れない。復元 = `deleted_at` を消すだけ
-- 物理削除は削除 reconcile ループが `deleted_at + 猶予期間（既定 30 日）` 経過後にアセット単位で実行（§6）
+- UI の削除 = `deleted_at` を立てるだけ。ファイルには触れない。復元 = `deleted_at`（と `purge_after`）を消すだけ
+- 「今すぐ完全削除」= `purge_after = now()` を立てるだけ（未 soft-delete なら `deleted_at` も同時に立てる）。**ファイルは消さない**
+- 物理削除は削除 reconcile ループ（M3-8）が次のいずれかを拾ってアセット単位で実行する:
+  - `purge_after IS NOT NULL AND purge_after <= now()`（即時要求）
+  - `deleted_at + 猶予期間（既定 30 日）` 経過
 - 物理削除後も recordings 行と media_assets の tombstone は残る → ごみ箱を空にしても録画履歴・ドロップ統計・重複排除は壊れない
+- API: `DELETE /api/recordings/{id}` / `POST .../restore` / `POST .../purge` / `GET /api/recordings?trash=true`
 
 ### 同一イベントの重複防止（`00003`）
 

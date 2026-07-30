@@ -98,7 +98,7 @@ func setupTest(t *testing.T) (*Watcher, *pgxpool.Pool) {
 	rc := newTestRiverClient(t, pool)
 
 	mc := mirakc.NewClient("http://unused:40772", nil)
-	w := New(DefaultSite, mc, pool, rc, testNewIngestArgs)
+	w := New(DefaultSite, mc, pool, rc, testNewIngestArgs, nil)
 	return w, pool
 }
 
@@ -664,7 +664,7 @@ func TestHandleRecordingFailed_Idempotent(t *testing.T) {
 	defer mockServer.Close()
 
 	mc := mirakc.NewClient(mockServer.URL, nil)
-	w := New(DefaultSite, mc, pool, rc, testNewIngestArgs)
+	w := New(DefaultSite, mc, pool, rc, testNewIngestArgs, nil)
 
 	failedData := mirakc.RecordingFailedData{
 		ProgramID: programID,
@@ -759,7 +759,7 @@ func TestSweep_CatchesMissedRecords(t *testing.T) {
 	defer mockServer.Close()
 
 	mc := mirakc.NewClient(mockServer.URL, nil)
-	w := New(DefaultSite, mc, pool, rc, testNewIngestArgs)
+	w := New(DefaultSite, mc, pool, rc, testNewIngestArgs, nil)
 
 	if err := w.Sweep(ctx); err != nil {
 		t.Fatalf("sweep: %v", err)
@@ -859,7 +859,7 @@ func TestSweepAndHandleEvent_ConcurrentIdempotent(t *testing.T) {
 		})
 		mockServer := httptest.NewServer(mux)
 
-		w := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pool, rc, testNewIngestArgs)
+		w := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pool, rc, testNewIngestArgs, nil)
 
 		savedData, err := json.Marshal(mirakc.RecordSavedData{
 			RecordID:        recordID,
@@ -946,7 +946,7 @@ func TestRun_NoAutomaticSweep(t *testing.T) {
 	defer mockServer.Close()
 
 	mc := mirakc.NewClient(mockServer.URL, nil)
-	w := New(DefaultSite, mc, pool, rc, testNewIngestArgs)
+	w := New(DefaultSite, mc, pool, rc, testNewIngestArgs, nil)
 
 	runCtx, runCancel := context.WithCancel(ctx)
 	done := make(chan error, 1)
@@ -1114,7 +1114,7 @@ func TestHandleRecordingFailed_SourceDerivedFromIntent(t *testing.T) {
 	defer mockServer.Close()
 
 	mc := mirakc.NewClient(mockServer.URL, nil)
-	w := New(DefaultSite, mc, pool, rc, testNewIngestArgs)
+	w := New(DefaultSite, mc, pool, rc, testNewIngestArgs, nil)
 
 	failedData := mirakc.RecordingFailedData{
 		ProgramID: programID,
