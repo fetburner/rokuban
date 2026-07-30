@@ -42,6 +42,11 @@ type RouterConfig struct {
 
 	// MetricsRegistry が非 nil なら /metrics で Prometheus メトリクスを公開する。
 	MetricsRegistry *prometheus.Registry
+
+	// EncodeProfileNames は config.encode.profiles の名前一覧。
+	// ルール create/update と予約 overrides で encodeProfiles に未知名があれば 400 にする
+	// （issue #64）。空/nil なら名前検証をスキップする（テストの部分構成を許す）。
+	EncodeProfileNames []string
 }
 
 // Mounter はルーターへ追加のルートを登録する。
@@ -94,7 +99,7 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		}))
 	}
 
-	handler := NewServer(cfg.Pool, cfg.RiverClient)
+	handler := NewServer(cfg.Pool, cfg.RiverClient, cfg.EncodeProfileNames)
 	strict := NewStrictHandler(handler, nil)
 	HandlerFromMux(strict, r)
 

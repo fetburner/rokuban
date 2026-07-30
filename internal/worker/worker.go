@@ -120,9 +120,19 @@ func NewWorkers(deps *Deps) *river.Workers {
 	return workers
 }
 
+const (
+	// encodeQueue はエンコードジョブ専用のキュー名（M3-3 でワーカーを登録する）。
+	encodeQueue = "encode"
+	// thumbnailQueue はサムネイルジョブ専用のキュー名（M3-4 でワーカーを登録する）。
+	thumbnailQueue = "thumbnail"
+
+	defaultEncodeConcurrency    = 1
+	defaultThumbnailConcurrency = 1
+)
+
 // allQueues はこのプロセスが知っている全キューとその設定。worker.queues
 // （ClientConfig.Queues）で絞り込む際の許可リストにもなる。
-func allQueues(ingestConcurrency int) map[string]river.QueueConfig {
+func allQueues(ingestConcurrency, encodeConcurrency, thumbnailConcurrency int) map[string]river.QueueConfig {
 	return map[string]river.QueueConfig{
 		river.QueueDefault: {MaxWorkers: 100},
 		ingestQueue:        {MaxWorkers: ingestConcurrency},
@@ -135,6 +145,10 @@ func allQueues(ingestConcurrency int) map[string]river.QueueConfig {
 		reconcilerQueue: {MaxWorkers: 1},
 		// record_sweep も同じ理由（UniqueOpts がサイト単位の排他を担う）で 1 本に絞る。
 		recordSweepQueue: {MaxWorkers: 1},
+		// encode / thumbnail は CPU 拘束なので ingest とは独立に絞る（EPGStation#531、
+		// issue #64）。ワーカー本体は M3-3 / M3-4。キュー枠だけ先に用意する。
+		encodeQueue:    {MaxWorkers: encodeConcurrency},
+		thumbnailQueue: {MaxWorkers: thumbnailConcurrency},
 	}
 }
 
@@ -142,6 +156,14 @@ func allQueues(ingestConcurrency int) map[string]river.QueueConfig {
 type ClientConfig struct {
 	// IngestConcurrency は ingest キューの同時実行数（サイト単位のキャップ）。0 なら既定値。
 	IngestConcurrency int
+
+	// EncodeConcurrency は encode キューの MaxWorkers。0 なら既定値 1。
+	// encode.concurrency から注入する（issue #64）。
+	EncodeConcurrency int
+
+	// ThumbnailConcurrency は thumbnail キューの MaxWorkers。0 なら既定値 1。
+	// encode.thumbnail_concurrency から注入する（issue #64）。
+	ThumbnailConcurrency int
 
 	// EpgSyncSite が空でない場合、そのサイトの EPG 全量同期を定期ジョブとして登録する
 	// （PeriodicJobs が true のときのみ）。
@@ -204,8 +226,16 @@ func buildRiverConfig(workers *river.Workers, cfg ClientConfig) (*river.Config, 
 	if ingestConcurrency <= 0 {
 		ingestConcurrency = defaultIngestConcurrency
 	}
+	encodeConcurrency := cfg.EncodeConcurrency
+	if encodeConcurrency <= 0 {
+		encodeConcurrency = defaultEncodeConcurrency
+	}
+	thumbnailConcurrency := cfg.ThumbnailConcurrency
+	if thumbnailConcurrency <= 0 {
+		thumbnailConcurrency = defaultThumbnailConcurrency
+	}
 
-	all := allQueues(ingestConcurrency)
+	all := allQueues(ingestConcurrency, encodeConcurrency, thumbnailConcurrency)
 
 	queues := all
 	if len(cfg.Queues) > 0 {
@@ -306,7 +336,7 @@ func buildRiverConfig(workers *river.Workers, cfg ClientConfig) (*river.Config, 
 // （cmd/rokuban の TestAllRoles_ExcludesJobNames）でも使う --- キューを追加したときに
 // 「キュー駆動の仕事をロールに昇格させていないか」の検査対象へ自動的に入るようにするため。
 func AllQueueNames() []string {
-	return sortedQueueNames(allQueues(0))
+	return sortedQueueNames(allQueues(0, 0, 0))
 }
 
 func sortedQueueNames(m map[string]river.QueueConfig) []string {

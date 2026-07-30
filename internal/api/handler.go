@@ -26,12 +26,28 @@ const defaultSite = db.DefaultSite
 type Server struct {
 	pool  *pgxpool.Pool
 	river *river.Client[pgx.Tx]
+
+	// encodeProfiles は config に定義されたエンコードプロファイル名の集合。
+	// ルール保存時の encodeProfiles 存在検証に使う（issue #64）。
+	// 空（未注入）なら名前検証をスキップする（テストの部分構成を許す）。
+	encodeProfiles map[string]struct{}
 }
 
 // NewServer は Server を生成する。riverClient は insert-only の River クライアントで、
 // nil なら ruler_pass ヒントの投入をスキップする（RouterConfig.RiverClient 参照）。
-func NewServer(pool *pgxpool.Pool, riverClient *river.Client[pgx.Tx]) *Server {
-	return &Server{pool: pool, river: riverClient}
+// encodeProfileNames は config.encode.profiles の名前一覧（未知名の 400 判定用。
+// nil/空なら検証をスキップする）。
+func NewServer(pool *pgxpool.Pool, riverClient *river.Client[pgx.Tx], encodeProfileNames []string) *Server {
+	// nil スライス = 検証オフ（テストの部分構成）。空スライス = 定義ゼロで全名が未知。
+	// 本番の server.go は ProfileNames()（常に non-nil）を渡すので検証が常に効く。
+	var profiles map[string]struct{}
+	if encodeProfileNames != nil {
+		profiles = make(map[string]struct{}, len(encodeProfileNames))
+		for _, n := range encodeProfileNames {
+			profiles[n] = struct{}{}
+		}
+	}
+	return &Server{pool: pool, river: riverClient, encodeProfiles: profiles}
 }
 
 // Healthz はヘルスチェックエンドポイント。
