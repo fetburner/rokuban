@@ -54,7 +54,7 @@ type Deps struct {
 	MirakcClient *mirakc.Client
 	Pool         *pgxpool.Pool
 	MediaDir     string
-	ScratchDir string
+	ScratchDir   string
 
 	// Encode は構造化エンコードプロファイルと ffmpeg パス（issue #64 / #65）。
 	// worker ロール起動時に ValidateTools 済み（不変条件 4）。
