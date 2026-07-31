@@ -178,7 +178,9 @@ api が行を直接消さない理由は ruler 側の GC ロジックと同じ: 
 
 UI で「開始後に意味を持つフィールド」を区別表示する。この表は overrides API のフィールド説明（`openapi.yaml`）にも同じ内容を書く --- API だけを見ている利用者が「上書きしたのに反映されない」で詰まらないようにするため。
 
-**なぜ ingest コミット時に凍結するか**: `recordings` は永続資産だが、導出元（`reservations` / `program_overrides` / `program_intents`）は放送終了 + 猶予後に GC される寿命の短い表（CLAUDE.md 不変条件 12「表は行の寿命で割る」）。`recordings.encode_profiles` を「参照」ではなく値のコピーとして持つ（凍結する）しかない理由はここにある --- 導出元に依存させると、番組が EPG から消えて GC された時点で desired が消え、エンコード未完了の録画で原本削除（§6「原本 TS の保持ポリシー」）が止まる／再エンコードが投入できなくなる。凍結する以上どこかの瞬間で確定させる必要があり、`recordings` 行自体は録画開始時（watcher）に作られるが、この表の約束（録画開始後の変更でも効く）を満たせる最後の瞬間が ingest コミットである。詳細は `internal/worker/ingest.go` の `resolveAndSnapshotEncodePolicy` の doc コメントと [ストレージ](../storage.md) §6 を参照。
+**なぜ ingest コミット時に凍結するか**: `recordings` は永続資産だが、導出元（`reservations` / `program_overrides` / `program_intents`）は放送終了 + 猶予後に GC される寿命の短い表（CLAUDE.md 不変条件 12「表は行の寿命で割る」）。`recordings.encode_profiles` を「参照」ではなく値のコピーとして持つ（凍結する）しかない理由はここにある --- 導出元に依存させると、番組が EPG から消えて GC された時点で desired が消え、エンコード未完了の録画で原本削除（[ストレージ](../storage.md) §6「原本 TS の保持ポリシー」）が止まる／再エンコードが投入できなくなる。凍結する以上どこかの瞬間で確定させる必要があり、`recordings` 行自体は録画開始時（watcher）に作られるが、この表の約束（録画開始後の変更でも効く）を満たせる最後の瞬間が ingest コミットである。詳細は `internal/worker/ingest.go` の `resolveAndSnapshotEncodePolicy` の doc コメントと [ストレージ](../storage.md) §6 を参照。
+
+**既に ingest 済みの録画は今回の変更で backfill されない。** 凍結は ingest コミット時の 1 回だけなので、この変更のデプロイ前に ingest が完了した録画は `keep_original = 'always'` / `encode_profiles = '{}'`（列の既定値）のまま残る --- これは凍結設計の正しい帰結であり、バグではない。過去分にも encode を投入したい場合は、対象の録画に対して `EnqueueMissingEncodes`（レベルトリガー）を再実行できるよう、別途 recordings の該当列を手動 UPDATE するか、専用の backfill 手段を検討する（本 issue の範囲外）。
 
 ### 4.6 スコープ外
 

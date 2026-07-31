@@ -272,8 +272,10 @@ export interface ProgramIntentInput {
 }
 
 /**
- * ingest 時に評価されるので、録画開始後の変更でも効く
- * （M3 で消費。docs/recording.md §4.5）。
+ * ingest が原本をコミットする tx の中で recordings に焼かれる瞬間まで
+ * 効く。録画開始後の変更でも、放送終了・ingest 完了より前ならこの
+ * 録画に反映されるが、ingest 完了後の変更はこの録画には反映されない
+ * （docs/recording/reservation-model.md §4.5）。
  */
 export type ProgramOverridesInputKeepOriginal = typeof ProgramOverridesInputKeepOriginal[keyof typeof ProgramOverridesInputKeepOriginal];
 
@@ -321,13 +323,17 @@ export interface ProgramOverridesInput {
      */
   filenameTemplate?: string;
   /**
-     * ingest 時に評価されるので、録画開始後の変更でも効く
-     * （M3 で消費。docs/recording.md §4.5）。
+     * ingest が原本をコミットする tx の中で recordings に焼かれる瞬間まで
+     * 効く。録画開始後の変更でも、放送終了・ingest 完了より前ならこの
+     * 録画に反映されるが、ingest 完了後の変更はこの録画には反映されない
+     * （docs/recording/reservation-model.md §4.5）。
      */
   keepOriginal?: ProgramOverridesInputKeepOriginal;
   /**
-     * ingest 時に評価されるので、録画開始後の変更でも効く
-     * （M3 で消費。docs/recording.md §4.5）。
+     * ingest が原本をコミットする tx の中で recordings に焼かれる瞬間まで
+     * 効く。録画開始後の変更でも、放送終了・ingest 完了より前ならこの
+     * 録画に反映されるが、ingest 完了後の変更はこの録画には反映されない
+     * （docs/recording/reservation-model.md §4.5）。
      */
   encodeProfiles?: string[];
   /**
