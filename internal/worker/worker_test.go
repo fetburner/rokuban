@@ -562,6 +562,31 @@ func TestBuildRiverConfig_PeriodicJobsEnabled(t *testing.T) {
 	}
 }
 
+// RequiresEncodeTools が worker.queues の絞り込みと連動していること
+// （issue #113 決定 C）。既定（空）や encode/thumbnail を明示的に含む場合は
+// ffmpeg/ffprobe 検査が必要、それ以外に絞った場合は不要になる。
+func TestRequiresEncodeTools(t *testing.T) {
+	tests := []struct {
+		name   string
+		queues []string
+		want   bool
+	}{
+		{"empty means all queues, including encode/thumbnail", nil, true},
+		{"explicit encode", []string{encodeQueue}, true},
+		{"explicit thumbnail", []string{thumbnailQueue}, true},
+		{"explicit both", []string{encodeQueue, thumbnailQueue}, true},
+		{"ingest only excludes encode/thumbnail", []string{ingestQueue}, false},
+		{"ruler/reconciler only excludes encode/thumbnail", []string{rulerQueue, reconcilerQueue}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := RequiresEncodeTools(tt.queues); got != tt.want {
+				t.Errorf("RequiresEncodeTools(%v) = %v, want %v", tt.queues, got, tt.want)
+			}
+		})
+	}
+}
+
 type noOpArgs struct{}
 
 func (noOpArgs) Kind() string { return "noop" }

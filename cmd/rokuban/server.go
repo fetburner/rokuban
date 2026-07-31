@@ -154,12 +154,22 @@ func newServerCmd() *cobra.Command {
 			// watcher の両方から同じ Client を使う。
 			webhookClient := webhook.New(cfg.Webhook)
 
-			// River client（worker と watcher で共有）
+			// River client（worker と watcher で共有）。
+			//
+			// ロールがそのプロセスの実行する仕事を決める（issue #113）。
+			// worker ロールが無いプロセスに worker.NewWorkers のフルのワーカー群
+			// （EncodeWorker/ThumbnailWorker を含む）を登録すると、ffmpeg/ffprobe を
+			// 検査しないまま encode/thumbnail ジョブを実行しうる（不変条件 4 違反）。
+			// resolveRiverClientKind がロールから組み立て方を一意に決め、
+			// watcher 単独では api ロールと同じ NewInsertOnlyClient（ingest ジョブの
+			// InsertTx 専用、Workers 登録なし・Start 不可）を使う。
 			var riverClient *river.Client[pgx5.Tx]
-			if slices.Contains(roles, "worker") || slices.Contains(roles, "watcher") {
-				// ffmpeg/ffprobe の存在検査は worker ロール起動時だけ
-				// （不変条件 4。api-only では呼ばない。issue #64）。
-				if slices.Contains(roles, "worker") {
+			switch resolveRiverClientKind(roles) {
+			case riverClientFull:
+				// ffmpeg/ffprobe の存在検査は、実際に encode/thumbnail キューを
+				// 購読するときだけ行う（worker.queues で絞った ingest 専用 Pod 等に
+				// まで ffmpeg を要求しないため。issue #113 決定 C）。
+				if worker.RequiresEncodeTools(cfg.Worker.Queues) {
 					if toolErr := cfg.Encode.ValidateTools(); toolErr != nil {
 						return toolErr
 					}
@@ -187,21 +197,27 @@ func newServerCmd() *cobra.Command {
 					EpgSyncInterval:      cfg.Epg.SyncInterval,
 					PeriodicJobs:         cfg.Worker.PeriodicJobs,
 					Queues:               cfg.Worker.Queues,
-				}
-				// 定期ジョブ（epg_sync / tuner_sync / ruler_pass / reconcile_pass /
-				// record_sweep / catalog_export / delete_reconcile）は worker 側が
-				// 投入する（mirakc に触るのも各ジョブのヒント経路をまとめるのも worker）。
-				if slices.Contains(roles, "worker") {
-					clientCfg.EpgSyncSite = cfg.Mirakc.Site
-					clientCfg.TunerSyncSite = cfg.Mirakc.Site
-					clientCfg.RulerPassSite = cfg.Mirakc.Site
-					clientCfg.ReconcilePassSite = cfg.Mirakc.Site
-					clientCfg.RecordSweepSite = cfg.Mirakc.Site
-					clientCfg.CatalogExport = true
-					clientCfg.DeleteReconcile = true
+					// 定期ジョブ（epg_sync / tuner_sync / ruler_pass / reconcile_pass /
+					// record_sweep / catalog_export / delete_reconcile）は worker 側が
+					// 投入する（mirakc に触るのも各ジョブのヒント経路をまとめるのも
+					// worker。riverClientFull は worker ロールがあるときにしか
+					// 選ばれないので、ここは無条件に設定してよい）。
+					EpgSyncSite:       cfg.Mirakc.Site,
+					TunerSyncSite:     cfg.Mirakc.Site,
+					RulerPassSite:     cfg.Mirakc.Site,
+					ReconcilePassSite: cfg.Mirakc.Site,
+					RecordSweepSite:   cfg.Mirakc.Site,
+					CatalogExport:     true,
+					DeleteReconcile:   true,
 				}
 				var clientErr error
 				riverClient, clientErr = worker.NewClient(pool, workers, clientCfg)
+				if clientErr != nil {
+					return clientErr
+				}
+			case riverClientInsertOnly:
+				var clientErr error
+				riverClient, clientErr = worker.NewInsertOnlyClient(pool)
 				if clientErr != nil {
 					return clientErr
 				}
@@ -285,4 +301,40 @@ func resolveRoles(cmd *cobra.Command) ([]string, error) {
 		}
 	}
 	return roles, nil
+}
+
+// riverClientKind は roles から River クライアントの組み立て方を分類する。
+type riverClientKind int
+
+const (
+	// riverClientNone は worker も watcher も無いプロセス。River クライアントは
+	// 作らない（例: api 単独。api は専用の insert-only クライアントを別途持つ）。
+	riverClientNone riverClientKind = iota
+	// riverClientFull は worker ロールがあるプロセス。worker.NewWorkers の
+	// フルのワーカー群（EncodeWorker/ThumbnailWorker を含む）を登録し、
+	// Start して実際にジョブを実行する。
+	riverClientFull
+	// riverClientInsertOnly は watcher ロールだけがあり worker ロールが無い
+	// プロセス。ingest ジョブの投入（InsertTx）にしか使わないので、
+	// worker.NewInsertOnlyClient と同じ最小構成にする --- ffmpeg/ffprobe に
+	// 依存するワーカーを登録・実行しない（不変条件 4、issue #113）。
+	riverClientInsertOnly
+)
+
+// resolveRiverClientKind はロール集合から riverClientKind を一意に決める。
+//
+// worker ロールが最優先される: worker と watcher を同一プロセスで動かす
+// 構成（monolith / --all）では、watcher の ingest ジョブ投入と worker の
+// ジョブ実行を同じ River クライアントで共有する（既存の挙動を変えない）。
+// worker ロールが無く watcher だけの場合にのみ riverClientInsertOnly を返し、
+// フルのワーカー群が登録されるのを防ぐ。
+func resolveRiverClientKind(roles []string) riverClientKind {
+	switch {
+	case slices.Contains(roles, "worker"):
+		return riverClientFull
+	case slices.Contains(roles, "watcher"):
+		return riverClientInsertOnly
+	default:
+		return riverClientNone
+	}
 }

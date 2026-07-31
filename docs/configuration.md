@@ -84,12 +84,16 @@ worker:
                                  # k8s では false にし、CronJob から rokuban enqueue で投入する
                                  # （River の PeriodicJobs はリーダーだけが投入するため、
                                  #  KEDA で 0 にスケールすると誰も投入しなくなる。data.md §2）
-  queues: []                     # 引くキューを絞る。空なら全部。
-                                 # ロールを増やさずに「ruler / reconciler だけ別 Pod」を実現するための knob
+  queues: []                     # worker ロールが引くキューを絞る。空なら全部。
+                                 # ロールを増やさずに「ruler / reconciler だけ別 Pod」を実現するための knob。
+                                 # worker ロールが無いプロセス（watcher 単独等）はこの設定に関わらず
+                                 # キューを一切引かない（operations.md §ロールとキュー購読、issue #113）
 
 encode:
-  ffmpeg: ffmpeg                 # 既定は PATH 検索。worker ロール起動時に LookPath で存在検査
-  ffprobe: ffprobe               # （api ロールは呼ばない。不変条件 4）
+  ffmpeg: ffmpeg                 # 既定は PATH 検索。worker ロールが encode/thumbnail キューを
+  ffprobe: ffprobe               # 購読するとき（worker.queues が空、または encode/thumbnail を含む
+                                 # とき）だけ LookPath で存在検査する（api ロールは呼ばない。
+                                 # 不変条件 4、issue #113）
   concurrency: 1                 # encode キューの MaxWorkers（ingest とは独立）
   thumbnail_concurrency: 1       # thumbnail キューの MaxWorkers
   profiles:
