@@ -4,6 +4,7 @@ import {
   loadPlaybackPosition,
   recordingFileURL,
   savePlaybackPosition,
+  shouldSavePlaybackPosition,
 } from '@/lib/playback-position'
 import { cn } from '@/lib/utils'
 
@@ -31,6 +32,8 @@ export function RecordingPlayer({
   const videoRef = useRef<HTMLVideoElement>(null)
   // プロファイル切替時に load したあとだけ currentTime を復元する
   const restorePending = useRef(true)
+  // timeupdate 間引き用: 直近に保存した Math.floor(currentTime)。null は未保存
+  const lastSavedSecond = useRef<number | null>(null)
 
   useEffect(() => {
     if (profiles.length === 0) return
@@ -41,6 +44,7 @@ export function RecordingPlayer({
 
   useEffect(() => {
     restorePending.current = true
+    lastSavedSecond.current = null
   }, [recordingId, profile])
 
   if (profiles.length === 0) {
@@ -106,6 +110,9 @@ export function RecordingPlayer({
         }}
         onTimeUpdate={(e) => {
           const v = e.currentTarget
+          // timeupdate は約 4Hz で発火するが保存値は秒単位なので、秒が変わったときだけ書く
+          if (!shouldSavePlaybackPosition(lastSavedSecond.current, v.currentTime)) return
+          lastSavedSecond.current = Math.floor(v.currentTime)
           savePlaybackPosition(recordingId, profile, v.currentTime, v.duration)
         }}
         onPause={(e) => {
