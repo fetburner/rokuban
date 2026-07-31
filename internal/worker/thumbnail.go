@@ -17,7 +17,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/metrics"
@@ -182,20 +181,27 @@ func (w *ThumbnailWorker) Work(ctx context.Context, job *river.Job[ThumbnailJobA
 	return nil
 }
 
+// commit は抽出済みサムネイルを media_assets（kind='thumbnail'）にコミットする。
+//
+// ON CONFLICT DO NOTHING（id を返さず pgx.ErrNoRows で競合を伝える形）は使わない。
+// DO NOTHING が返す ErrNoRows は「既に active な行がある競合」と「tombstone
+// （state='deleted'、過去の完全削除の残骸）との競合」を区別できず、後者まで
+// 成功扱いにすると、ファイルは書き直され続けるのに DB 行は deleted のまま
+// 残り、GetActiveThumbnailMediaAssetID は空を返し続けてレベルトリガーが同じ
+// ジョブを積み直す孤児になる（issue #108）。ErrNoRows を無条件で成功にして
+// よいのは、競合相手の行が active であることが保証できるときだけである。
+//
+// UpsertThumbnailMediaAsset は ON CONFLICT DO UPDATE で tombstone を active に
+// 戻す（encode の UpsertEncodedMediaAsset と同じ形）ため常に行を返し、
+// ErrNoRows の分岐そのものが要らない。
 func (w *ThumbnailWorker) commit(ctx context.Context, recordingID int64, relPath string, size int64) error {
-	_, err := sqlcgen.New(w.Pool).InsertMediaAssetIfAbsent(ctx, sqlcgen.InsertMediaAssetIfAbsentParams{
+	_, err := sqlcgen.New(w.Pool).UpsertThumbnailMediaAsset(ctx, sqlcgen.UpsertThumbnailMediaAssetParams{
 		RecordingID: recordingID,
-		Kind:        db.AssetKindThumbnail,
 		RelPath:     relPath,
 		SizeBytes:   size,
 	})
 	if err != nil {
-		if errors.Is(err, pgx5.ErrNoRows) {
-			// 競合で既に行がある。ファイルは二重書きの残骸になりうるが、
-			// UNIQUE (recording_id, kind, profile) の勝者の行が真実。
-			return nil
-		}
-		return fmt.Errorf("inserting media_asset: %w", err)
+		return fmt.Errorf("upserting media_asset: %w", err)
 	}
 	return nil
 }
@@ -333,11 +339,19 @@ func copyFileFsync(src, dst string) (int64, error) {
 	return n, nil
 }
 
-// EnqueueThumbnailIfNeeded は original があり active thumbnail が無いときだけ
-// unique な thumbnail ジョブを投入する（レベルトリガー。issue #66）。
+// EnqueueThumbnailIfNeeded は original があり active thumbnail が無く、かつ
+// ごみ箱に入っていないときだけ unique な thumbnail ジョブを投入する
+// （レベルトリガー。issue #66）。
 //
-// 既に thumbnail がある・original が無い場合は no-op。River の UniqueOpts が
-// 進行中ジョブの二重投入も吸収する。
+// 既に thumbnail がある・original が無い・ごみ箱（recordings.deleted_at）に
+// 入っている場合は no-op。River の UniqueOpts が進行中ジョブの二重投入も吸収する。
+//
+// ごみ箱チェックは ListRecordingIDsMissingThumbnail（issue #109）と条件を揃える
+// （docs/storage.md §5.1）。呼び出し元は ingest 直後の original コミット後のみ
+// だが、SoftDeleteRecording（internal/db/queries/recordings_trash.sql）に
+// status ガードは無く ingest 進行中の録画もごみ箱に入れられるため、到達しうる
+// 経路として扱う。GetActiveOriginalMediaAsset に続けてもう 1 クエリ増えるが、
+// 既に 2 クエリ投げている経路なので追加コストはほぼゼロ。
 func EnqueueThumbnailIfNeeded(ctx context.Context, pool *pgxpool.Pool, riverClient *river.Client[pgx5.Tx], recordingID int64) error {
 	if riverClient == nil {
 		return fmt.Errorf("river client is nil")
@@ -355,6 +369,15 @@ func EnqueueThumbnailIfNeeded(ctx context.Context, pool *pgxpool.Pool, riverClie
 			return nil
 		}
 		return fmt.Errorf("checking original: %w", err)
+	}
+
+	if rec, err := q.GetRecordingByID(ctx, recordingID); err != nil {
+		if errors.Is(err, pgx5.ErrNoRows) {
+			return nil
+		}
+		return fmt.Errorf("checking recording: %w", err)
+	} else if rec.DeletedAt != nil {
+		return nil
 	}
 
 	if _, err := riverClient.Insert(ctx, ThumbnailJobArgs{RecordingID: recordingID}, nil); err != nil {

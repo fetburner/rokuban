@@ -589,6 +589,97 @@ func TestDeleteReconcileWorker_UntilEncoded_Complete_Deletes(t *testing.T) {
 	}
 }
 
+// dropUntilEncodedRequiresProfilesCheck は 00020 マイグレーションの CHECK 制約
+// （recordings_until_encoded_requires_profiles）を一時的に外す。encode_profiles
+// が空の until_encoded 行は通常この CHECK に阻まれて作れないが、issue #104 の
+// 削除クエリ側ガード（ListUntilEncodedOriginalsToDelete の
+// cardinality(encode_profiles) > 0）は「CHECK に頼らない」独立した防御として
+// 足したものなので、CHECK が無い前提でもそれ単体で原本を守れることを確認する
+// 必要がある。テスト用パッケージ DB は TRUNCATE のみでスキーマは使い回すため、
+// t.Cleanup で必ず元に戻し他のテストに影響しないようにする。
+func dropUntilEncodedRequiresProfilesCheck(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx,
+		"ALTER TABLE recordings DROP CONSTRAINT recordings_until_encoded_requires_profiles"); err != nil {
+		t.Fatalf("dropping check constraint: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx := context.Background()
+		// テスト本体が作った違反行（keep_original='until_encoded' かつ
+		// encode_profiles が空）が残ったままだと ADD CONSTRAINT 自体が失敗する。
+		// 次のテストは TRUNCATE で行ごと消えるが、この関数はその前に走るので
+		// 先に直しておく（00020 マイグレーションの Up が既存行にしているのと
+		// 同じ「安全側に倒す」処理）。
+		if _, err := pool.Exec(cleanupCtx,
+			"UPDATE recordings SET keep_original = 'always' "+
+				"WHERE keep_original = 'until_encoded' AND cardinality(encode_profiles) = 0"); err != nil {
+			t.Fatalf("fixing up rows before restoring check constraint: %v", err)
+		}
+		if _, err := pool.Exec(cleanupCtx,
+			"ALTER TABLE recordings ADD CONSTRAINT recordings_until_encoded_requires_profiles "+
+				"CHECK (keep_original <> 'until_encoded' OR cardinality(encode_profiles) > 0)"); err != nil {
+			t.Fatalf("restoring check constraint: %v", err)
+		}
+	})
+}
+
+// バグの再現ケース（issue #104）: keep_original='until_encoded' かつ
+// encode_profiles='{}' で、望ましい派生物がサムネイルしか無い（= encode_profiles
+// が空なので unnest() が 0 行になり、欠けているプロファイルが「1 つもない」と
+// 恒真判定される）録画は、原本が唯一のコピーである（docs/storage.md §6）にも
+// かかわらず、修正前は削除されてしまっていた。
+func TestDeleteReconcileWorker_UntilEncoded_EmptyProfiles_NotDeleted(t *testing.T) {
+	pool := setupTestPool(t)
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	recordingID := insertTestRecording(t, pool)
+
+	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "orig/empty-profiles.m2ts", []byte("data"))
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindThumbnail, nil, "thumb/empty-profiles.jpg", []byte("jpg"))
+	// encoded アセットは 1 つも無い。encode_profiles も空のまま。
+
+	dropUntilEncodedRequiresProfilesCheck(t, pool)
+	if _, err := pool.Exec(ctx,
+		"UPDATE recordings SET keep_original = 'until_encoded', encode_profiles = '{}' WHERE id = $1",
+		recordingID); err != nil {
+		t.Fatalf("setting keep_original with empty encode_profiles: %v", err)
+	}
+
+	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	if err := w.Work(ctx, nil); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+
+	if got := assetState(t, pool, assetID); got != "active" {
+		t.Errorf("original state = %q, want active "+
+			"(encode_profiles is empty; must not be treated as \"all desired profiles present\")", got)
+	}
+}
+
+// 00020 マイグレーションの CHECK 自体が効いていることの確認（issue #104 の
+// 含むもの 3、CLAUDE.md 不変条件 10「表現不可能にする」）。既定値
+// （keep_original='always', encode_profiles='{}'）はこの CHECK を満たすので、
+// until_encoded に切り替えるときだけプロファイルを要求する形になっているはず。
+// 両方向を確認する: 空プロファイルは拒否され、プロファイルを添えれば通る。
+func TestRecordings_UntilEncodedRequiresProfilesCheck(t *testing.T) {
+	pool := setupTestPool(t)
+	ctx := context.Background()
+	recordingID := insertTestRecording(t, pool)
+
+	if _, err := pool.Exec(ctx,
+		"UPDATE recordings SET keep_original = 'until_encoded', encode_profiles = '{}' WHERE id = $1",
+		recordingID); err == nil {
+		t.Fatal("expected a CHECK violation for until_encoded with empty encode_profiles, got no error")
+	}
+
+	if _, err := pool.Exec(ctx,
+		"UPDATE recordings SET keep_original = 'until_encoded', encode_profiles = $1 WHERE id = $2",
+		[]string{"h264"}, recordingID); err != nil {
+		t.Fatalf("expected until_encoded with a non-empty profile list to be allowed, got error: %v", err)
+	}
+}
+
 // 望ましいプロファイルの一部が欠けている間は原本を消さない（Complete の逆方向）。
 func TestDeleteReconcileWorker_UntilEncoded_MissingProfile_NotDeleted(t *testing.T) {
 	pool := setupTestPool(t)
@@ -749,6 +840,100 @@ func TestDeleteReconcileWorker_UntilEncodedDeletingInterrupted_ResumesOnNextPass
 	}
 	if fileExists(assetPath) {
 		t.Error("original file still exists after resumed deletion, want removed")
+	}
+}
+
+// insertTestRecordingWithEventID は insertTestRecording と同じ内容の録画を、
+// event_id だけ差し替えて作る。recordings_unique_active_event は
+// (site, network_id, service_id, event_id) のアクティブ行（deleted_at IS NULL）に
+// 対する一意制約なので、同一テスト内で複数のアクティブな録画を用意するには
+// event_id を分ける必要がある。
+func insertTestRecordingWithEventID(t *testing.T, pool *pgxpool.Pool, eventID int32) int64 {
+	t.Helper()
+	q := sqlcgen.New(pool)
+	id, err := q.CreateRecording(context.Background(), sqlcgen.CreateRecordingParams{
+		Source:            "manual",
+		Site:              "default",
+		NetworkID:         32736,
+		ServiceID:         1024,
+		EventID:           eventID,
+		ServiceName:       "テストチャンネル",
+		ChannelType:       "GR",
+		Channel:           "27",
+		Title:             "テスト番組",
+		ProgramStartAt:    time.Now(),
+		ProgramDurationMs: 1800000,
+		Status:            "finished",
+	})
+	if err != nil {
+		t.Fatalf("inserting test recording: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(),
+			"DELETE FROM drop_stats WHERE media_asset_id IN (SELECT id FROM media_assets WHERE recording_id = $1)", id)
+		_, _ = pool.Exec(context.Background(), "DELETE FROM media_assets WHERE recording_id = $1", id)
+		_, _ = pool.Exec(context.Background(), "DELETE FROM record_sync WHERE recording_id = $1", id)
+		_, _ = pool.Exec(context.Background(), "DELETE FROM recordings WHERE id = $1", id)
+	})
+	return id
+}
+
+// until_encoded 候補が複数（別々の録画）ある場合、pending なジョブは
+// それを持つ録画だけをブロックし、他の候補の削除を巻き込まないこと
+// （issue #110: pendingDerivativeJobRecordingIDs が候補ごとの recording_id を
+// 正しく対応付けているかの検証。1 件でも pending があれば全候補を一律に
+// ブロックする「broadcast」変異を通してしまうと、1 本の詰まった encode
+// ジョブで無関係な録画の until_encoded 削除まで無言で永久に止まる）。
+func TestDeleteReconcileWorker_UntilEncoded_PendingJobOnOneOfMultipleCandidates_OnlyBlocksThatOne(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+	profile := "h264"
+
+	// recordingA: pending な encode ジョブを持つ。desired なプロファイルは
+	// 揃っているが、別プロファイル（av1）の再エンコードが待機中。
+	recordingA := insertTestRecording(t, pool)
+	assetA := seedOriginalAsset(t, pool, mediaDir, recordingA, "orig/multi-a.m2ts", []byte("data"))
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingA, db.AssetKindEncoded, &profile, "enc/multi-a.mp4", []byte("mp4"))
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingA, db.AssetKindThumbnail, nil, "thumb/multi-a.jpg", []byte("jpg"))
+	if _, err := pool.Exec(context.Background(),
+		"UPDATE recordings SET keep_original = 'until_encoded', encode_profiles = $1 WHERE id = $2",
+		[]string{"h264"}, recordingA); err != nil {
+		t.Fatalf("setting keep_original for recording A: %v", err)
+	}
+
+	// recordingB: 派生物は揃っており、pending なジョブは無い。event_id を
+	// insertTestRecording の既定（1）とずらす —— recordings_unique_active_event は
+	// (site, network_id, service_id, event_id) のアクティブ行に対する一意制約なので、
+	// 同じ event_id で 2 つ目のアクティブな録画を insertTestRecording で作ろうとすると
+	// そのまま衝突する。
+	recordingB := insertTestRecordingWithEventID(t, pool, 2)
+	assetB := seedOriginalAsset(t, pool, mediaDir, recordingB, "orig/multi-b.m2ts", []byte("data"))
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingB, db.AssetKindEncoded, &profile, "enc/multi-b.mp4", []byte("mp4"))
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingB, db.AssetKindThumbnail, nil, "thumb/multi-b.jpg", []byte("jpg"))
+	if _, err := pool.Exec(context.Background(),
+		"UPDATE recordings SET keep_original = 'until_encoded', encode_profiles = $1 WHERE id = $2",
+		[]string{"h264"}, recordingB); err != nil {
+		t.Fatalf("setting keep_original for recording B: %v", err)
+	}
+
+	insertOnly, err := NewInsertOnlyClient(pool)
+	if err != nil {
+		t.Fatalf("creating insert-only client: %v", err)
+	}
+	if _, err := insertOnly.Insert(context.Background(), EncodeJobArgs{RecordingID: recordingA, Profile: "av1"}, nil); err != nil {
+		t.Fatalf("inserting pending encode job for recording A: %v", err)
+	}
+
+	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	if err := w.Work(context.Background(), nil); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+
+	if got := assetState(t, pool, assetA); got != "active" {
+		t.Errorf("recording A original state = %q, want active (pending encode job for recording A)", got)
+	}
+	if got := assetState(t, pool, assetB); got != "deleted" {
+		t.Errorf("recording B original state = %q, want deleted (no pending job for recording B, must not be blocked by A's)", got)
 	}
 }
 

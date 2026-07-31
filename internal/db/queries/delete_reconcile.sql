@@ -197,6 +197,17 @@ LIMIT sqlc.arg('row_limit');
 -- keep_original='until_encoded' で、desired な派生物（全 encode_profiles +
 -- thumbnail）がすべて active でコミット済みの原本。ごみ箱経由の録画は
 -- ListTrashMediaAssetsToDelete 側で扱うのでここでは除外する。
+--
+-- cardinality(r.encode_profiles) > 0 は load-bearing（issue #104）。直後の
+-- NOT EXISTS(unnest(...) ...) は encode_profiles が空配列のとき恒真になる
+-- （unnest('{}') は 0 行なので「望む派生物のうち欠けているものが 1 つもない」が
+-- 無条件に成立する）。プロファイルを持たないルール由来の予約や手動予約が
+-- keep_original='until_encoded' を持つと、サムネイルが 1 枚あるだけで唯一の
+-- コピーである原本が消える（docs/storage.md §6「唯一のコピーを消すパスがない」
+-- への違反）。API 側（program_overrides.go）にも検証を足すが、recordings への
+-- 書き手が将来増えたときに漏れうるのは API 側の検証であって、削除文の WHERE は
+-- 漏れない（CLAUDE.md 不変条件 9「距離を作らざるを得ないなら、適用の側で
+-- 判定条件を再評価する」）。
 -- name: ListUntilEncodedOriginalsToDelete :many
 SELECT a.id, a.recording_id, a.rel_path, a.size_bytes, a.kind
 FROM media_assets a
@@ -205,6 +216,7 @@ WHERE a.state = 'active'
   AND a.kind = 'original'
   AND r.keep_original = 'until_encoded'
   AND r.deleted_at IS NULL
+  AND cardinality(r.encode_profiles) > 0
   AND NOT EXISTS (
     SELECT 1 FROM unnest(r.encode_profiles) AS want(profile)
     WHERE NOT EXISTS (

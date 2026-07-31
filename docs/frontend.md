@@ -151,6 +151,10 @@ Android のジェスチャーナビは左右端からの横スワイプが「戻
 ルール作成/編集と予約 overrides で編集できる（M3-6）。プロファイル一覧は
 `GET /api/encode-profiles`（設定名だけ。機微情報なし）。
 `keepOriginal: until_encoded` はプロファイル空だとクライアントでも止め、API も 400。
+予約 overrides の PATCH は「既存 override + このパッチ + ルールの base」をマージした
+実効値で判定するため、`keepOriginal` だけを送る・`encodeProfiles` だけを reset する
+という 1 リクエストでは見えない組み合わせも実効値としては空プロファイルなら弾かれる
+（issue #104）。
 priority など mirakc 差分が必要な項目は reconciler が差分を反映してから編集可能にする
 （[issue #19](https://github.com/fetburner/rokuban/issues/19)）。
 
@@ -374,6 +378,11 @@ go:embed 配信でハッシュ付きアセット immutable + それ以外 no-cac
   セレクタ。encoded が無ければプレイヤーは出さず、原本があるときだけ VLC 向けリンクを出す
 - **再生位置は localStorage**（キー: 録画 ID + プロファイル）。サーバー側視聴履歴は作らない（#14 7c）
 - 原本 TS はブラウザでは再生せず、ダウンロード / VLC リンクとして残す
+- **ごみ箱ビューではサムネイル・プレイヤー・原本リンクを一切出さない（M3-18）。**
+  配信側（`GetOriginalMediaAssetForServing` 等）は `recordings.deleted_at IS NOT NULL`
+  を 404 にする契約（[api.md](api.md) §メディア配信）なので、出しても必ず 404 になる。
+  復元してから見る運用にする。ごみ箱一覧が `encodedProfiles` を射影しないままなのも
+  同じ理由（プレイヤーを出さないので揃える必要がない）
 
 ## ライブ視聴 --- EPGStation 水準のシンプルな UI
 

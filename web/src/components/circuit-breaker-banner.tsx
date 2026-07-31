@@ -105,7 +105,7 @@ function BreakerRow({ breaker }: { breaker: CircuitBreaker }) {
     // （黙って成功したように見せない。失敗時も必ずトーストを出す）。
     setConfirmOpen(false)
     resume.mutate(
-      { name: breaker.name },
+      { site: breaker.site, name: breaker.name },
       {
         onSuccess: () => {
           toast({ message: `${label}を再開しました` })

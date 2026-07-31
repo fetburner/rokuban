@@ -1,8 +1,8 @@
-// Package inplace registers media files that already live under storage.media_dir.
+// Package inplace は storage.media_dir 配下に既に存在するメディアファイルを登録する。
 //
-// It is shared by disaster-recovery storage scans and external-library imports. It never
-// copies or rewrites bytes: publishing is the transaction that commits recordings and
-// media_assets rows for validated relative paths.
+// ディザスタリカバリのストレージスキャンと外部ライブラリのインポートの両方から共用される。
+// バイト列のコピーや書き換えは一切行わない: 公開とは、検証済みの相対パスに対して recordings と
+// media_assets の行をコミットするトランザクションそのものである。
 package inplace
 
 import (
@@ -22,8 +22,8 @@ import (
 	"github.com/fetburner/rokuban/internal/mediapath"
 )
 
-// Recording describes the durable metadata attached to an in-place asset group.
-// Site and the broadcast identity tuple are the idempotency key.
+// Recording は in-place のアセットグループに紐づく永続メタデータを表す。
+// Site と放送 identity タプルが冪等性キーである。
 type Recording struct {
 	Source            string
 	Site              string
@@ -41,22 +41,22 @@ type Recording struct {
 	EndedAt           *time.Time
 }
 
-// Asset describes one existing file. RelPath is relative to mediaDir.
-// Profile is required exactly when Kind is encoded.
+// Asset は既存の 1 ファイルを表す。RelPath は mediaDir からの相対パスである。
+// Profile は Kind が encoded のときに限り必須である。
 type Asset struct {
 	Kind    string
 	Profile *string
 	RelPath string
 }
 
-// Input is one recording and all existing files that belong to it.
-// Assets must not be empty: a recording without an asset has no recovery meaning.
+// Input は 1 件の recording と、それに属する既存ファイル全てを表す。
+// Assets は空であってはならない: アセットを持たない recording には復旧上の意味がない。
 type Input struct {
 	Recording Recording
 	Assets    []Asset
 }
 
-// Result reports the rows published by Register.
+// Result は Register が公開した行を報告する。
 type Result struct {
 	RecordingID int64
 	AssetIDs    []int64
@@ -69,9 +69,9 @@ type checkedAsset struct {
 	sizeByte int64
 }
 
-// Register validates files under mediaDir and publishes their recording/media_assets rows in
-// one transaction. Repeating the same broadcast identity and asset tuple updates the existing
-// rows instead of creating duplicates.
+// Register は mediaDir 配下のファイルを検証し、その recording/media_assets 行を 1 つの
+// トランザクションで公開する。同じ放送 identity とアセットタプルを繰り返した場合は、
+// 重複を作らず既存行を更新する。
 func Register(ctx context.Context, pool *pgxpool.Pool, mediaDir string, in Input) (*Result, error) {
 	if len(in.Assets) == 0 {
 		return nil, fmt.Errorf("in-place registration requires at least one asset")

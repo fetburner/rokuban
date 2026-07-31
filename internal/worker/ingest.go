@@ -349,6 +349,12 @@ func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath st
 		return fmt.Errorf("inserting media_asset: %w", err)
 	}
 
+	// 原本のコミットと同じ tx で「この録画の望ましい最終状態」を焼く
+	// （issue #103。resolveAndSnapshotEncodePolicy の doc コメント参照）。
+	if err := w.resolveAndSnapshotEncodePolicy(ctx, q, recordingID); err != nil {
+		return fmt.Errorf("snapshotting encode policy: %w", err)
+	}
+
 	stats := counter.Stats()
 	pids := make([]int, 0, len(stats))
 	for pid := range stats {
@@ -400,6 +406,130 @@ func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath st
 	}
 
 	return nil
+}
+
+// resolveAndSnapshotEncodePolicy は recordings.keep_original / encode_profiles に
+// 「この録画の望ましい最終状態」を焼く（issue #103）。呼び出し元の commit が
+// 原本 media_asset の INSERT と同じ tx で呼ぶ。
+//
+// # 凍結か、毎パス再導出（reservations 経由の参照）か
+//
+// 再導出は選べない。導出元（reservations / program_overrides / program_intents）は
+// 放送終了 + 猶予後に GC される寿命の短い表だが、recordings は永続資産
+// （CLAUDE.md 不変条件 12「表は行の寿命で割る」）。導出に依存させると、番組が
+// EPG から消えて GC された時点で desired が空になり、エンコード未完了の録画で
+// 原本削除が止まる／再エンコードが投入できなくなる。導出元が先に死ぬ表の
+// desired を、値のコピーではなく「参照」で持つことはできない。
+//
+// 凍結した 2 列は「この録画の望ましい最終状態」であり、recordings 行と同時に
+// 生まれて同時に死ぬので不変条件 12 には反しない（ruler の 1 パスの出力である
+// reservations.base とは寿命が別）。ただし凍結する以上、凍結より後の
+// override 変更はこの録画には反映されないという境界が生まれる。
+//
+// # 凍結する瞬間
+//
+// recordings 行自体は watcher が録画開始時に作るが、この関数はそこでは呼ばれない。
+// docs/recording/reservation-model.md §4.5 は「encodeProfiles / keepOriginal は
+// 録画開始後の変更でも効く」と約束しており、これを満たせるのは ingest が原本を
+// コミットする瞬間だけ（録画は放送終了後に確定し、ingest はその直後に走る）。
+// 呼び出し元 commit は encode ジョブの投入（EnqueueMissingEncodes）より必ず先に
+// この関数を呼ぶ — 順序が逆だと初回パスで desired が空のまま enqueue され、
+// 実際に投入されるのは次の ingest 再試行（起きるとは限らない）まで遅延する。
+//
+// # 予約行が無い録画
+//
+// 手動で mirakc に起こされた録画等、recordings.reservation_id が NULL の場合は
+// 何もしない。CREATE TABLE の既定値（'always' / '{}'）のまま残る — 参照する
+// 予約が無いので「望ましい最終状態」という概念自体が無い。
+//
+// 予約行はあったが GC 済み（program_snapshots への ON DELETE CASCADE で
+// reservations 自体も落ちている）場合も同様に何もしない。ingest が本来の
+// retention grace を超えて遅延した場合の話で、頻繁には起きない。
+//
+// # 冪等性
+//
+// ingest は再試行される。この関数は毎回同じ入力から同じ値を書くだけの UPDATE
+// で、既存の encoded media_assets の有無を見て分岐しない —— 既に一部の
+// エンコードが完了しているからといって desired を空に戻すような分岐は作らない
+// （issue #103 の「罠」）。
+//
+// # EncodeProfiles の nil
+//
+// db.ReservationOptions.EncodeProfiles は *[]string で nil=未指定 /
+// &[]string{}=「エンコードなし」という明示的な override を区別する
+// （internal/db/models.go の ReservationOptions のコメント）。しかし
+// recordings.encode_profiles は NOT NULL text[] で「未指定」という第三の状態を
+// 表現できないので、ここでは両者を等しく '{}' に潰すと決める。区別が必要な
+// 場面（override の差分表示等）は program_overrides.overrides 自身に当たれば
+// よく、このスナップショットの役目ではない。
+//
+// # keepOriginal='until_encoded' × encodeProfiles=[] のクランプ（issue #104 との整合）
+//
+// rules.keep_original / rules.encode_profiles にはこの組み合わせを禁止する CHECK が
+// あるが、実効値はルール単独では決まらない --- override が `keepOriginal:
+// until_encoded` だけを立て、ルール側の `encodeProfiles` が空（またはルール自体が
+// `keep_original='always'`）というドリフトが EffectiveOptions のマージ結果として
+// 生成されうる。ルールと override はそれぞれ自分の表の中では整合していても、
+// マージ結果の整合は誰も検査していない。
+//
+// recordings.keep_original / encode_profiles にも同じ組み合わせを禁止する CHECK
+// （issue #104、`until_encoded` は encode_profiles が非空であることを要求する）が
+// 入る予定で、そのまま実効値を書くとこの tx が CHECK 違反でロールバックする ---
+// このメソッドは原本 media_asset の INSERT と同一 tx で呼ばれるため、
+// ロールバックは「録画そのものが消失する」に直結する（不変条件 3「コミット =
+// DB 行」）。原本を失うリスクを負ってまで守る価値のある不変ではないので、
+// 書く直前に安全側へ倒す（migration 00020 の UP 文が既存行に対して行う補正と
+// 同じロジック）: 実効的な encode_profiles が空で keepOriginal が
+// 'until_encoded' なら、'always' に倒してから書く。ユーザーの意図
+// （override の値そのもの）は program_overrides 側に残るので失われない ---
+// 失われるのはこの録画のスナップショットにおける効力だけで、次にルールが
+// プロファイルを持てば別の録画では正しく until_encoded になる。
+func (w *IngestWorker) resolveAndSnapshotEncodePolicy(ctx context.Context, q *sqlcgen.Queries, recordingID int64) error {
+	rec, err := q.GetRecordingByID(ctx, recordingID)
+	if err != nil {
+		return fmt.Errorf("loading recording %d: %w", recordingID, err)
+	}
+	if rec.ReservationID == nil {
+		return nil
+	}
+
+	row, err := q.GetReservationEncodePolicy(ctx, *rec.ReservationID)
+	if err != nil {
+		if errors.Is(err, pgx5.ErrNoRows) {
+			return nil
+		}
+		return fmt.Errorf("loading reservation encode policy %d: %w", *rec.ReservationID, err)
+	}
+
+	eff, err := db.EffectiveOptions(row.Reservation.Base, row.Overrides, row.IntentAction)
+	if err != nil {
+		return fmt.Errorf("computing effective options for reservation %d: %w", *rec.ReservationID, err)
+	}
+
+	keepOriginal := "always"
+	if eff.KeepOriginal != nil {
+		keepOriginal = *eff.KeepOriginal
+	}
+	encodeProfiles := []string{}
+	if eff.EncodeProfiles != nil {
+		encodeProfiles = *eff.EncodeProfiles
+	}
+
+	// クランプ（doc コメント「keepOriginal='until_encoded' × encodeProfiles=[] の
+	// クランプ」参照）。ルール単独・override 単独ではそれぞれ禁則を満たしていても、
+	// マージ結果としてこの組み合わせが生成されうる。cardinality(encode_profiles) > 0
+	// を要求する CHECK（issue #104）とここで矛盾すると、このメソッドを呼ぶ tx
+	// （原本 media_asset の INSERT と同一）ごとロールバックし録画が消える
+	// （不変条件 3）ため、書く前に安全側へ倒す。
+	if keepOriginal == "until_encoded" && len(encodeProfiles) == 0 {
+		keepOriginal = "always"
+	}
+
+	return q.SnapshotRecordingEncodePolicy(ctx, sqlcgen.SnapshotRecordingEncodePolicyParams{
+		KeepOriginal:   keepOriginal,
+		EncodeProfiles: encodeProfiles,
+		ID:             recordingID,
+	})
 }
 
 type stallReader struct {

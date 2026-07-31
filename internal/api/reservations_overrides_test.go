@@ -628,6 +628,128 @@ func TestPatchProgramOverrides_EffectiveOptionsRoundTrip(t *testing.T) {
 	}
 }
 
+// 14. keepOriginal/encodeProfiles の実効値検証（issue #104）。
+//
+// バグの再現条件は「プロファイルを持たないルール由来の予約、または手動予約」に
+// keepOriginal=until_encoded だけを立てること。insertReservationDirect は
+// base='{}'（プロファイル無し）で作るため、この 2 テストはどちらもそのまま
+// 再現条件を満たす。リクエスト単体では見えない組み合わせ（reset で
+// encodeProfiles を消す経路）も同じく弾かれることを確認する。
+func TestPatchProgramOverrides_UntilEncodedWithoutProfiles_Returns400(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	q := sqlcgen.New(pool)
+
+	router := api.NewRouter(api.RouterConfig{Pool: pool})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	const programID int64 = 2200000220121234
+	ruleID := insertRuleFixture(t, pool, ctx)
+	insertReservationDirect(t, pool, ctx, programID, &ruleID, 22000, 2200)
+	// base はプロファイル無し（insertReservationDirect の既定 '{}'）。
+
+	resp := doPatch(t, srv, overridesPath(programID), `{"keepOriginal":"until_encoded"}`)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("keepOriginal alone with no profiles anywhere: status = %d, want 400", resp.StatusCode)
+	}
+	var errBody api.ErrorResponse
+	if err := json.NewDecoder(resp.Body).Decode(&errBody); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(errBody.Error, "encodeProfiles") {
+		t.Errorf("error body = %q, want mention of encodeProfiles", errBody.Error)
+	}
+	if _, err := q.GetProgramOverrides(ctx, sqlcgen.GetProgramOverridesParams{
+		Site: "default", ProgramID: programID,
+	}); !errIsNoRows(err) {
+		t.Errorf("rejected request created program_overrides, err=%v", err)
+	}
+}
+
+func TestPatchProgramOverrides_UntilEncodedResetEncodeProfiles_Returns400(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	q := sqlcgen.New(pool)
+
+	router := api.NewRouter(api.RouterConfig{Pool: pool})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	const programID int64 = 2300000230131234
+	ruleID := insertRuleFixture(t, pool, ctx)
+	insertReservationDirect(t, pool, ctx, programID, &ruleID, 23000, 2300)
+	// 既存の override に encodeProfiles を立てておく。単体のリクエストボディだけ
+	// 見ると reset:["encodeProfiles"] は encodeProfiles に触れていないように
+	// 見えるが、マージ後の実効値では消える。
+	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
+		Site: "default", ProgramID: programID,
+		Overrides: []byte(`{"encodeProfiles":["h264"]}`),
+	}); err != nil {
+		t.Fatalf("seeding existing overrides: %v", err)
+	}
+
+	resp := doPatch(t, srv, overridesPath(programID),
+		`{"keepOriginal":"until_encoded","reset":["encodeProfiles"]}`)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("keepOriginal + reset encodeProfiles: status = %d, want 400", resp.StatusCode)
+	}
+
+	// 拒否されたリクエストは既存の override を変えない。
+	row, err := q.GetProgramOverrides(ctx, sqlcgen.GetProgramOverridesParams{
+		Site: "default", ProgramID: programID,
+	})
+	if err != nil {
+		t.Fatalf("existing overrides should survive a rejected patch, err=%v", err)
+	}
+	if !strings.Contains(string(row.Overrides), "h264") {
+		t.Errorf("existing overrides changed: %s", row.Overrides)
+	}
+}
+
+// 反対方向: base がプロファイルを持っていれば、override 側は keepOriginal
+// だけを立てても通る（base を通じて実効値が満たされる）。
+func TestPatchProgramOverrides_UntilEncodedWithProfilesFromBase_Succeeds(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	q := sqlcgen.New(pool)
+
+	router := api.NewRouter(api.RouterConfig{Pool: pool})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	const programID int64 = 2400000240141234
+	ruleID := insertRuleFixture(t, pool, ctx)
+	resID := insertReservationDirect(t, pool, ctx, programID, &ruleID, 24000, 2400)
+	if _, err := pool.Exec(ctx, `UPDATE reservations SET base = $1 WHERE id = $2`,
+		[]byte(`{"encodeProfiles":["h264"]}`), resID); err != nil {
+		t.Fatalf("seeding base with profiles: %v", err)
+	}
+
+	resp := doPatch(t, srv, overridesPath(programID), `{"keepOriginal":"until_encoded"}`)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("keepOriginal alone with profiles from base: status = %d, want 204", resp.StatusCode)
+	}
+
+	row, err := q.GetReservationFull(ctx, resID)
+	if err != nil {
+		t.Fatalf("reloading reservation: %v", err)
+	}
+	eff, err := db.EffectiveOptions(row.Reservation.Base, row.Overrides, row.IntentAction)
+	if err != nil {
+		t.Fatalf("computing effective options: %v", err)
+	}
+	if eff.KeepOriginal == nil || *eff.KeepOriginal != db.KeepOriginalUntilEncoded {
+		t.Errorf("effective keepOriginal = %v, want %q", eff.KeepOriginal, db.KeepOriginalUntilEncoded)
+	}
+	if eff.EncodeProfiles == nil || len(*eff.EncodeProfiles) != 1 || (*eff.EncodeProfiles)[0] != "h264" {
+		t.Errorf("effective encodeProfiles = %v, want [h264] (from base)", eff.EncodeProfiles)
+	}
+}
+
 // 追加で見つけた不整合の回帰テスト: DeleteRule はルール削除時、投資
 // （program_intents または program_overrides）のない導出予約だけを物理削除し、
 // 投資がある予約は detached 化して残す（docs/recording.md §4.3「ルール自体の

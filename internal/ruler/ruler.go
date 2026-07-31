@@ -38,7 +38,8 @@ type Config struct {
 	// 最初から除外されるため、ここには現れない）。
 	//
 	// **発動は internal/breaker によりラッチとして永続化される**（issue #24 M2-5）。
-	// 件数が閾値以下に戻っても自動では解除されず、`POST /api/breakers/ruler_deletes/resume`
+	// 件数が閾値以下に戻っても自動では解除されず、
+	// `POST /api/sites/{site}/breakers/ruler_deletes/resume`
 	// による手動再開まで導出削除を止め続ける（docs/recording.md §3.2「発動はラッチ」）。
 	// reconciler 側には同種の閾値はもう無い（撤去済み。同 §3.2「止められる場所は
 	// ruler だけ」）— ここが唯一導出削除を止められる場所になる。
@@ -393,7 +394,7 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 		// ラッチ中: 今回の候補数は閾値以下に戻っているが、自動では解除しない
 		// （breaker パッケージのコメント「自動で解けるようにすると『一瞬止まって
 		// 自動復帰した』がアラートに残らない」）。再開は人間が
-		// POST /api/breakers/ruler_deletes/resume を叩くまで待つ。
+		// POST /api/sites/{site}/breakers/ruler_deletes/resume を叩くまで待つ。
 		if len(toDelete) > 0 {
 			slog.Warn("ruler: circuit breaker latched — withholding derived deletes until manually resumed",
 				"site", site,

@@ -223,13 +223,17 @@ func (w *DeleteReconcileWorker) Work(ctx context.Context, _ *river.Job[DeleteRec
 	if err != nil {
 		return fmt.Errorf("listing until_encoded originals: %w", err)
 	}
+	candidateRecordingIDs := make([]int64, len(untilEncodedCandidates))
+	for i, r := range untilEncodedCandidates {
+		candidateRecordingIDs[i] = r.RecordingID
+	}
+	pendingRecordingIDs, err := w.pendingDerivativeJobRecordingIDs(ctx, candidateRecordingIDs)
+	if err != nil {
+		return fmt.Errorf("checking pending derivative jobs: %w", err)
+	}
 	untilEncodedRows := make([]sqlcgen.ListUntilEncodedOriginalsToDeleteRow, 0, len(untilEncodedCandidates))
 	for _, r := range untilEncodedCandidates {
-		hasPending, err := w.hasPendingDerivativeJob(ctx, r.RecordingID)
-		if err != nil {
-			return fmt.Errorf("checking pending derivative jobs for recording %d: %w", r.RecordingID, err)
-		}
-		if hasPending {
+		if _, hasPending := pendingRecordingIDs[r.RecordingID]; hasPending {
 			continue
 		}
 		untilEncodedRows = append(untilEncodedRows, r)
@@ -447,21 +451,43 @@ func (w *DeleteReconcileWorker) notifyPurgedRecordings(ctx context.Context, q *s
 	}
 }
 
-// hasPendingDerivativeJob は原本を入力とする encode/thumbnail ジョブが
-// 実行中・再試行待ちでないかを確認する（docs/storage.md §6「原本を入力とする
-// 実行中・再試行中のジョブがない」）。river_job は rivermigrate が管理する
-// テーブルで sqlc のスキーマディレクトリには含まれないため、生 SQL で問い合わせる。
-func (w *DeleteReconcileWorker) hasPendingDerivativeJob(ctx context.Context, recordingID int64) (bool, error) {
+// pendingDerivativeJobRecordingIDs は、渡された録画 id のうち原本を入力とする
+// encode/thumbnail ジョブが実行中・再試行待ちであるものの集合を返す
+// （docs/storage.md §6「原本を入力とする実行中・再試行中のジョブがない」）。
+// river_job は rivermigrate が管理するテーブルで sqlc のスキーマディレクトリ
+// には含まれないため、生 SQL で問い合わせる。
+//
+// until_encoded 候補ごとに 1 クエリ引くと候補数（最大 deleteReconcileRowLimit）
+// 分のラウンドトリップになるため、候補の recording_id をまとめて 1 クエリで
+// 引く（issue #110）。recordingIDs が空なら river_job に問い合わせず nil を返す
+// （空配列を ANY に渡しても結果は空だが、候補が無いパスでクエリを撃たない）。
+func (w *DeleteReconcileWorker) pendingDerivativeJobRecordingIDs(ctx context.Context, recordingIDs []int64) (map[int64]struct{}, error) {
+	if len(recordingIDs) == 0 {
+		return nil, nil
+	}
+	// DISTINCT は付けない。呼び出し側で map に入れて重複を除くので冗長。
 	const query = `
-		SELECT EXISTS (
-			SELECT 1 FROM river_job
-			WHERE kind IN ('encode', 'thumbnail')
-			  AND state IN ('available', 'pending', 'scheduled', 'retryable', 'running')
-			  AND (args ->> 'recording_id')::bigint = $1
-		)`
-	var pending bool
-	if err := w.Pool.QueryRow(ctx, query, recordingID).Scan(&pending); err != nil {
-		return false, err
+		SELECT (args ->> 'recording_id')::bigint
+		FROM river_job
+		WHERE kind IN ('encode', 'thumbnail')
+		  AND state IN ('available', 'pending', 'scheduled', 'retryable', 'running')
+		  AND (args ->> 'recording_id')::bigint = ANY($1)`
+	rows, err := w.Pool.Query(ctx, query, recordingIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	pending := make(map[int64]struct{})
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		pending[id] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return pending, nil
 }

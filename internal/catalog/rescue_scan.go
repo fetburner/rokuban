@@ -15,9 +15,10 @@ import (
 	"github.com/fetburner/rokuban/internal/inplace"
 )
 
-// rescueStorage scans recognizable video files when no catalog survives. Each file becomes one
-// deliberately sparse recording whose known facts are the relative path, filename, size and mtime.
-// `catalog/` is never scanned: catalog generations are metadata, not media assets.
+// rescueStorage は catalog が 1 世代も残っていないときに、認識可能な動画ファイルをスキャンする。
+// 各ファイルは 1 件の recording になり、既知の事実は意図的に相対パス・ファイル名・サイズ・mtime
+// のみに絞られる。`catalog/` は決してスキャンしない: catalog の世代はメタデータであり、
+// media asset ではないため。
 func rescueStorage(ctx context.Context, pool *pgxpool.Pool, mediaDir, site string) (*RescueResult, error) {
 	result := &RescueResult{}
 	catalogDir := filepath.Clean(Dir(mediaDir))
@@ -65,9 +66,9 @@ func rescueStorage(ctx context.Context, pool *pgxpool.Pool, mediaDir, site strin
 				Site:      site,
 				NetworkID: networkID, ServiceID: serviceID, EventID: eventID,
 				ServiceName: "Recovered file (metadata unavailable)",
-				// recordings.channel_type currently has no unknown value. The negative synthetic
-				// identity and explicit service/channel labels prevent this placeholder from being
-				// mistaken for real EPG metadata.
+				// recordings.channel_type には現状 unknown 値が無い。負の synthetic identity と
+				// 明示的な service/channel ラベルにより、このプレースホルダーが実際の EPG
+				// メタデータと誤認されることを防いでいる。
 				ChannelType:    "GR",
 				Channel:        "unknown",
 				Title:          title,
@@ -104,9 +105,9 @@ func rescueAssetKind(name string) (kind string, profile *string, ok bool) {
 	}
 }
 
-// syntheticBroadcastIdentity maps a relative path to a stable negative identity tuple. Real
-// broadcast IDs are non-negative; using 93 hash bits keeps rescued paths separate without adding
-// a second identity table solely for the fallback path.
+// syntheticBroadcastIdentity は相対パスを安定した負の identity タプルへ写像する。実際の
+// 放送 ID は非負であり、93 ビットのハッシュを使うことで、このフォールバック専用の第 2 の
+// identity テーブルを追加せずに rescue されたパス同士を分離できる。
 func syntheticBroadcastIdentity(relPath string) (networkID, serviceID, eventID int32) {
 	sum := sha256.Sum256([]byte(relPath))
 	part := func(offset int) int32 {

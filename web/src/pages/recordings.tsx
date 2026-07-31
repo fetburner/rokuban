@@ -123,9 +123,12 @@ function RecordingRow({ recording, trash }: { recording: Recording; trash: boole
         {/*
           サムネイルは openapi 外の streamer 経路（/api/recordings/{id}/thumbnail）。
           未生成時は 404 → onError でプレースホルダ。hasThumbnail 列は持たない（M3-4）。
+          ごみ箱の録画は配信側が deleted_at IS NOT NULL を 404 にする契約（docs/api.md
+          §メディア配信）なので、そもそもリクエストを出さずプレースホルダ固定にする
+          （M3-18: 未生成と 404 で区別が付かない曖昧さもこれで消える）。
         */}
         <div className="size-12 shrink-0 overflow-hidden rounded bg-muted">
-          {!thumbFailed ? (
+          {!trash && !thumbFailed ? (
             <img
               src={`/api/recordings/${recording.id}/thumbnail`}
               alt=""
@@ -214,7 +217,15 @@ function RecordingDetail({ recording, trash }: { recording: Recording; trash: bo
 
   return (
     <div className="flex flex-col gap-4 bg-muted/30 px-4 py-3 text-xs">
-      {(encodedProfiles.length > 0 || hasOriginal) && (
+      {/*
+        ごみ箱の録画は配信 3 クエリ（GetOriginalMediaAssetForServing 等）が
+        deleted_at IS NOT NULL を 404 にする（docs/api.md §メディア配信）。
+        再生・サムネイル・原本リンクはどれも配信経路を叩くので、ごみ箱では
+        そもそも出さない（M3-18）。復元してから見る。
+        ListTrashRecordings が available_encoded_profiles を射影しないままなのも
+        この理由による（プレイヤーを出さないので揃える必要がない）。
+      */}
+      {!trash && (encodedProfiles.length > 0 || hasOriginal) && (
         <RecordingPlayer
           recordingId={recording.id}
           encodedProfiles={encodedProfiles}
