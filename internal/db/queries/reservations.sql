@@ -2,8 +2,12 @@
 SELECT id, rule_id FROM reservations
 WHERE id = $1;
 
+-- base も返す（issue #104: PatchProgramOverrides が「既存 override + このパッチ +
+-- ルールの base」をマージした実効値を検証するために必要）。既存の呼び出し元
+-- （internal/watcher, internal/reconciler）は ID / RuleID しか見ていないので
+-- 列追加の影響を受けない。
 -- name: GetReservationBySiteAndProgramID :one
-SELECT id, rule_id FROM reservations
+SELECT id, rule_id, base FROM reservations
 WHERE site = $1 AND program_id = $2;
 
 -- name: CreateManualReservation :one

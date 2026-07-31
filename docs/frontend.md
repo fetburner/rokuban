@@ -151,6 +151,10 @@ Android のジェスチャーナビは左右端からの横スワイプが「戻
 ルール作成/編集と予約 overrides で編集できる（M3-6）。プロファイル一覧は
 `GET /api/encode-profiles`（設定名だけ。機微情報なし）。
 `keepOriginal: until_encoded` はプロファイル空だとクライアントでも止め、API も 400。
+予約 overrides の PATCH は「既存 override + このパッチ + ルールの base」をマージした
+実効値で判定するため、`keepOriginal` だけを送る・`encodeProfiles` だけを reset する
+という 1 リクエストでは見えない組み合わせも実効値としては空プロファイルなら弾かれる
+（issue #104）。
 priority など mirakc 差分が必要な項目は reconciler が差分を反映してから編集可能にする
 （[issue #19](https://github.com/fetburner/rokuban/issues/19)）。
 

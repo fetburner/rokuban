@@ -68,7 +68,7 @@ func (q *Queries) GetReservation(ctx context.Context, id int64) (GetReservationR
 }
 
 const getReservationBySiteAndProgramID = `-- name: GetReservationBySiteAndProgramID :one
-SELECT id, rule_id FROM reservations
+SELECT id, rule_id, base FROM reservations
 WHERE site = $1 AND program_id = $2
 `
 
@@ -80,12 +80,17 @@ type GetReservationBySiteAndProgramIDParams struct {
 type GetReservationBySiteAndProgramIDRow struct {
 	ID     int64
 	RuleID *int64
+	Base   json.RawMessage
 }
 
+// base も返す（issue #104: PatchProgramOverrides が「既存 override + このパッチ +
+// ルールの base」をマージした実効値を検証するために必要）。既存の呼び出し元
+// （internal/watcher, internal/reconciler）は ID / RuleID しか見ていないので
+// 列追加の影響を受けない。
 func (q *Queries) GetReservationBySiteAndProgramID(ctx context.Context, arg GetReservationBySiteAndProgramIDParams) (GetReservationBySiteAndProgramIDRow, error) {
 	row := q.db.QueryRow(ctx, getReservationBySiteAndProgramID, arg.Site, arg.ProgramID)
 	var i GetReservationBySiteAndProgramIDRow
-	err := row.Scan(&i.ID, &i.RuleID)
+	err := row.Scan(&i.ID, &i.RuleID, &i.Base)
 	return i, err
 }
 

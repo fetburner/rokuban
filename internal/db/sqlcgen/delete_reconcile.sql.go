@@ -275,14 +275,16 @@ type ListUntilEncodedOriginalsToDeleteRow struct {
 // thumbnail）がすべて active でコミット済みの原本。ごみ箱経由の録画は
 // ListTrashMediaAssetsToDelete 側で扱うのでここでは除外する。
 //
-// cardinality(r.encode_profiles) > 0 は安全弁（issue #103 の「罠」、issue #104 で
-// より広い削除側ガードを別途検討中）。encode_profiles が空だと
-// NOT EXISTS (unnest(...)) が空集合に対して自明に真になり、「全プロファイル
-// 完備」が常に成立してしまう —— 一度も encode していない原本を thumbnail 完備
-// だけで消してしまう経路がここにあった。until_encoded はプロファイル指定が
-// 前提の機能で、API 側もそれを検証している（docs/storage.md §6「エンコード
-// プロファイル未指定のルールでは until_encoded を選択不可」）が、ここでも
-// 前提が崩れたときに削除しない側に倒す。
+// cardinality(r.encode_profiles) > 0 は load-bearing（issue #104）。直後の
+// NOT EXISTS(unnest(...) ...) は encode_profiles が空配列のとき恒真になる
+// （unnest('{}') は 0 行なので「望む派生物のうち欠けているものが 1 つもない」が
+// 無条件に成立する）。プロファイルを持たないルール由来の予約や手動予約が
+// keep_original='until_encoded' を持つと、サムネイルが 1 枚あるだけで唯一の
+// コピーである原本が消える（docs/storage.md §6「唯一のコピーを消すパスがない」
+// への違反）。API 側（program_overrides.go）にも検証を足すが、recordings への
+// 書き手が将来増えたときに漏れうるのは API 側の検証であって、削除文の WHERE は
+// 漏れない（CLAUDE.md 不変条件 9「距離を作らざるを得ないなら、適用の側で
+// 判定条件を再評価する」）。
 func (q *Queries) ListUntilEncodedOriginalsToDelete(ctx context.Context, rowLimit int32) ([]ListUntilEncodedOriginalsToDeleteRow, error) {
 	rows, err := q.db.Query(ctx, listUntilEncodedOriginalsToDelete, rowLimit)
 	if err != nil {
