@@ -80,4 +80,26 @@ describe('RecordingPlayer の timeupdate 間引き', () => {
 
     expect(removeItemSpy).toHaveBeenCalledWith('rokuban:playback:10:h264')
   })
+
+  it('プロファイル切替で間引き状態がリセットされる（旧プロファイルの秒を引きずらない）', () => {
+    const setItemSpy = vi.spyOn(Storage.prototype, 'setItem')
+    const { container } = render(
+      <RecordingPlayer recordingId={11} encodedProfiles={['h264', 'h265']} />,
+    )
+
+    let video = container.querySelector('video')!
+    setMediaProps(video, { currentTime: 10.0, duration: 300 })
+    fireEvent.timeUpdate(video)
+    expect(setItemSpy).toHaveBeenCalledTimes(1)
+
+    // h265 に切り替える（video 要素は key 変更で作り直される）
+    fireEvent.change(container.querySelector('select')!, { target: { value: 'h265' } })
+
+    // 切替後の video で同じ 10 秒台の timeupdate が来ても、リセットされていれば保存する
+    video = container.querySelector('video')!
+    setMediaProps(video, { currentTime: 10.0, duration: 300 })
+    fireEvent.timeUpdate(video)
+
+    expect(setItemSpy).toHaveBeenCalledTimes(2)
+  })
 })

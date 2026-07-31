@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 
 import {
   loadPlaybackPosition,
@@ -65,38 +65,6 @@ describe('shouldSavePlaybackPosition', () => {
   it('秒が変わったら保存する', () => {
     expect(shouldSavePlaybackPosition(10, 11.0)).toBe(true)
     expect(shouldSavePlaybackPosition(10, 9.9)).toBe(true)
-  })
-})
-
-describe('timeupdate 間引きと savePlaybackPosition の結合', () => {
-  it('同一秒内の連続した timeupdate 相当の呼び出しで書き込みが 1 回に収まる', () => {
-    // RecordingPlayer の onTimeUpdate と同じ手順（間引き判定 → 更新 → 保存）を
-    // 4Hz の timeupdate 相当（0.25 秒間隔）でシミュレートする
-    const setItemSpy = vi.spyOn(Storage.prototype, 'setItem')
-    let lastSavedSecond: number | null = null
-    for (const t of [10.0, 10.25, 10.5, 10.75]) {
-      if (shouldSavePlaybackPosition(lastSavedSecond, t)) {
-        lastSavedSecond = Math.floor(t)
-        savePlaybackPosition(7, 'h264', t)
-      }
-    }
-    expect(setItemSpy).toHaveBeenCalledTimes(1)
-    expect(loadPlaybackPosition(7, 'h264')).toBe(10)
-    setItemSpy.mockRestore()
-  })
-
-  it('秒をまたぐと再び保存する', () => {
-    const setItemSpy = vi.spyOn(Storage.prototype, 'setItem')
-    let lastSavedSecond: number | null = null
-    for (const t of [10.0, 10.5, 11.0, 11.5]) {
-      if (shouldSavePlaybackPosition(lastSavedSecond, t)) {
-        lastSavedSecond = Math.floor(t)
-        savePlaybackPosition(7, 'h264', t)
-      }
-    }
-    expect(setItemSpy).toHaveBeenCalledTimes(2)
-    expect(loadPlaybackPosition(7, 'h264')).toBe(11)
-    setItemSpy.mockRestore()
   })
 })
 
