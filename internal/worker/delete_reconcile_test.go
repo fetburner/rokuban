@@ -336,12 +336,16 @@ func TestDeleteReconcileWorker_UntilEncodedOriginalPurge_DoesNotFireRecordingDel
 	}
 }
 
-// 削除の進行中（deleting）にごみ箱から復元された録画では recording.deleted を
-// 発火しない。pending 経路は「既に決めた削除」を続行するので最後のアセットが
-// 消えるが、録画は生きているので「録画が消えた」ではない
-// （TrashPurgeWithoutOriginal_Fires... の逆方向。復元は DB だけを触る
-// = internal/api RestoreRecording なので、この競合は実際に起こりうる）。
-func TestDeleteReconcileWorker_RestoredWhileDeleting_DoesNotFireRecordingDeletedWebhook(t *testing.T) {
+// 削除の進行中（deleting）にごみ箱から復元された録画は、次パスでファイルが
+// 消えない（issue #105）。復元は recordings.deleted_at だけを消す
+// （internal/api RestoreRecording）ので media_assets.state は deleting の
+// まま残る。ここで pending 経路が判定を再評価せず「既に決めた削除」として
+// 無条件に続行すると、「復元しました」と表示された直後にファイルが消える
+// （issue #105 の失敗シナリオそのもの）。ListUnqualifiedDeletingAssets /
+// resolveUnqualifiedDeletingAsset がこの行を active に戻すので、pending
+// 経路には現れずファイルは残る。recording.deleted も発火しない（録画は
+// 生きている）。
+func TestDeleteReconcileWorker_RestoredWhileDeleting_RevertsInsteadOfDeleting(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	recordingID := insertTestRecording(t, pool)
@@ -385,11 +389,53 @@ func TestDeleteReconcileWorker_RestoredWhileDeleting_DoesNotFireRecordingDeleted
 	if err := w.Work(context.Background(), nil); err != nil {
 		t.Fatalf("Work() second pass error: %v", err)
 	}
-	if got := assetState(t, pool, assetID); got != "deleted" {
-		t.Fatalf("asset state after second pass = %q, want deleted (pending は決定済みの削除を続行する)", got)
+	if got := assetState(t, pool, assetID); got != "active" {
+		t.Fatalf("asset state after second pass = %q, want active (restored recordings must not be deleted, issue #105)", got)
+	}
+	if !fileExists(assetPath) {
+		t.Error("file was removed after restore, want kept (issue #105)")
 	}
 	if events := rec.received(); len(events) != 0 {
 		t.Errorf("webhook fired for a restored recording: %+v", events)
+	}
+}
+
+// unlink 自体は成功したが MarkMediaAssetDeleted がコミットされる前にプロセスが
+// 落ち、その間に復元された場合は、active には戻さず deleted を確定する
+// （issue #105 のコードレビューで指摘された狭い窓）。ここで無条件に active へ
+// 戻すと、案 B（復元時に deleting を同期的に active へ戻す）を却下した理由
+// そのもの ——「active なのにファイルが無い行」を作ってしまう。
+func TestDeleteReconcileWorker_UnlinkedButUncommittedThenRestored_FinalizesAsDeleted(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+	recordingID := insertTestRecording(t, pool)
+
+	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "webhook/crash/original.m2ts", []byte("data"))
+	assetPath := filepath.Join(mediaDir, "webhook", "crash", "original.m2ts")
+	markRecordingTrashed(t, pool, recordingID)
+
+	// 前パスで unlink までは成功したがプロセスが落ち、MarkMediaAssetDeleted が
+	// コミットされなかった状態を直接作る（deleting のままファイルだけが無い）。
+	if err := os.Remove(assetPath); err != nil {
+		t.Fatalf("simulating a completed unlink: %v", err)
+	}
+	if _, err := pool.Exec(context.Background(),
+		"UPDATE media_assets SET state = 'deleting' WHERE id = $1", assetID); err != nil {
+		t.Fatalf("marking asset deleting: %v", err)
+	}
+
+	// ここでユーザーがごみ箱から復元する。
+	if _, err := sqlcgen.New(pool).RestoreRecording(context.Background(), recordingID); err != nil {
+		t.Fatalf("restoring recording: %v", err)
+	}
+
+	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, TrashRetention: 30 * 24 * time.Hour}
+	if err := w.Work(context.Background(), nil); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+
+	if got := assetState(t, pool, assetID); got != "deleted" {
+		t.Fatalf("asset state = %q, want deleted (file already gone; reverting to active would create an active row with no file)", got)
 	}
 }
 
@@ -687,7 +733,7 @@ func TestDeleteReconcileWorker_UntilEncoded_MissingThumbnail_NotDeleted(t *testi
 }
 
 // 原本を入力とする encode ジョブが実行待ちの間は、派生物が揃って見えても消さない
-// （storage.md §7 の条件 3）。
+// （storage.md §6 の条件 3）。
 func TestDeleteReconcileWorker_UntilEncoded_PendingEncodeJob_NotDeleted(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
@@ -719,6 +765,81 @@ func TestDeleteReconcileWorker_UntilEncoded_PendingEncodeJob_NotDeleted(t *testi
 
 	if got := assetState(t, pool, assetID); got != "active" {
 		t.Errorf("original state = %q, want active (pending encode job for this recording)", got)
+	}
+}
+
+// until_encoded の原本削除が unlink 失敗で deleting のまま中断しても、録画が
+// 復元されたわけではない（trash とは無関係）ので、次パスで従来どおり削除が
+// 再開される（issue #105。RestoredWhileDeleting_RevertsInsteadOfDeleting の
+// 逆方向 —— 再評価条件を「ごみ箱」だけに書くと、この until_encoded 経路が
+// 永久に deleting のまま止まるので、両方向で固定する）。
+//
+// 2 パス目の直前でサーキットブレーカーを発動させておくのが肝。そうしないと、
+// 「pending 経路が再評価で拾い直す」変異を注入して壊しても、同じパスの
+// 通常経路（ListUntilEncodedOriginalsToDelete、ブレーカー対象）がこの行を
+// active 経由で再度拾って同じ最終状態（deleted・ファイル消滅）に収束してしまい、
+// テストが回帰を検出できない（コードレビューで実証済み）。ブレーカーを
+// 発動させておけば、正しい実装だけがブレーカー免除の pending 経路で削除を
+// 完遂でき、変異を注入した実装は通常経路がブレーカーに止められて
+// active のまま残るので FAIL する。
+func TestDeleteReconcileWorker_UntilEncodedDeletingInterrupted_ResumesOnNextPass(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+	recordingID := insertTestRecording(t, pool)
+
+	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "orig/interrupted.m2ts", []byte("data"))
+	assetPath := filepath.Join(mediaDir, "orig", "interrupted.m2ts")
+	profile := "h264"
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindEncoded, &profile, "enc/interrupted.mp4", []byte("mp4"))
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindThumbnail, nil, "thumb/interrupted.jpg", []byte("jpg"))
+
+	if _, err := pool.Exec(context.Background(),
+		"UPDATE recordings SET keep_original = 'until_encoded', encode_profiles = $1 WHERE id = $2",
+		[]string{"h264"}, recordingID); err != nil {
+		t.Fatalf("setting keep_original: %v", err)
+	}
+
+	// 1 パス目の unlink を失敗させる（中身のあるディレクトリで置き換える）。
+	if err := os.Remove(assetPath); err != nil {
+		t.Fatalf("removing seeded file: %v", err)
+	}
+	if err := os.MkdirAll(assetPath, 0o755); err != nil {
+		t.Fatalf("creating blocking dir: %v", err)
+	}
+	blockerFile := filepath.Join(assetPath, "blocker")
+	if err := os.WriteFile(blockerFile, []byte("x"), 0o644); err != nil {
+		t.Fatalf("creating blocker file: %v", err)
+	}
+
+	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	if err := w.Work(context.Background(), nil); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+	if got := assetState(t, pool, assetID); got != "deleting" {
+		t.Fatalf("asset state = %q, want deleting (unlink blocked)", got)
+	}
+
+	// 障害を取り除く。復元は起きていない —— 録画は生きたまま until_encoded
+	// のポリシーで削除が進行中なだけ。
+	if err := os.Remove(blockerFile); err != nil {
+		t.Fatalf("removing blocker file: %v", err)
+	}
+
+	// ブレーカーを発動させ、通常経路（ブレーカー対象）を完全に止める。
+	// pending 経路（ブレーカー対象外）だけがこの行を削除できる状態にする。
+	q := sqlcgen.New(pool)
+	if err := breaker.Trip(context.Background(), q, db.DefaultSite, breaker.DeleteReconcile, 0, breaker.Sample{Total: 1}); err != nil {
+		t.Fatalf("tripping breaker: %v", err)
+	}
+
+	if err := w.Work(context.Background(), nil); err != nil {
+		t.Fatalf("Work() second pass error: %v", err)
+	}
+	if got := assetState(t, pool, assetID); got != "deleted" {
+		t.Fatalf("asset state after second pass = %q, want deleted (until_encoded deletion should resume via the breaker-exempt pending path, issue #105)", got)
+	}
+	if fileExists(assetPath) {
+		t.Error("original file still exists after resumed deletion, want removed")
 	}
 }
 
@@ -935,10 +1056,17 @@ func TestDeleteReconcileWorker_CircuitBreaker_TripsOnExcess(t *testing.T) {
 
 // 前パスで deleting のまま止まった行は、ブレーカーの発動有無に関わらず再開される
 // （「既に決めた削除」の再実行であり新規の判断ではないため）。
+//
+// ただし issue #105 以降、pending 経路は無条件に再開するのではなく trash /
+// until_encoded の判定を再評価するようになった。この行が「まだ削除して
+// よい」と言えるのは録画がごみ箱の猶予を過ぎているからなので、それを
+// markRecordingTrashed で明示する（無いと resolveUnqualifiedDeletingAsset が
+// active に戻してしまい、このテストの主張が成り立たない）。
 func TestDeleteReconcileWorker_ResumesStuckDeletingRow(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	recordingID := insertTestRecording(t, pool)
+	markRecordingTrashed(t, pool, recordingID)
 
 	relPath := "stuck/deleting.m2ts"
 	full := filepath.Join(mediaDir, filepath.FromSlash(relPath))
@@ -963,7 +1091,7 @@ func TestDeleteReconcileWorker_ResumesStuckDeletingRow(t *testing.T) {
 		t.Fatalf("tripping breaker: %v", err)
 	}
 
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, TrashRetention: 30 * 24 * time.Hour}
 	if err := w.Work(context.Background(), nil); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}

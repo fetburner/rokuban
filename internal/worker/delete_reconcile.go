@@ -153,10 +153,41 @@ func (w *DeleteReconcileWorker) Work(ctx context.Context, _ *river.Job[DeleteRec
 		return fmt.Errorf("observing %s circuit breaker: %w", breaker.DeleteReconcile, err)
 	}
 
-	// 前パスで deleting のまま止まった行を最優先で再開する。これは「既に決めた
+	// trash / until_encoded 双方の判定に使う grace_cutoff を先に確定する。
+	// pending 経路の再評価（後述）もこの値を使うので、以前は trashRows の
+	// 取得直前で計算していたものをここへ引き上げた。
+	trashCutoff := time.Now().Add(-trashRetention)
+
+	// deleting のまま止まっていたが、その後の復元などで trash / until_encoded
+	// どちらの判定にも該当しなくなった行を active に戻す（issue #105）。
+	// ListUnqualifiedDeletingAssets は候補を挙げるだけで書き込まない —— 各行
+	// について resolveUnqualifiedDeletingAsset がファイルの現存を確認してから
+	// active に戻すか deleted を確定するかを選ぶ（ファイルが既に無いのに
+	// active に戻すと「active なのにファイルが無い行」を作ってしまう。これは
+	// 案 B [復元時に deleting を同期的に active へ戻す] を却下した理由と同じ
+	// 罠で、revert 経路自身がこの窓を作らないようにする）。
+	unqualified, err := q.ListUnqualifiedDeletingAssets(ctx, sqlcgen.ListUnqualifiedDeletingAssetsParams{
+		GraceCutoff: trashCutoff,
+		RowLimit:    deleteReconcileRowLimit,
+	})
+	if err != nil {
+		return fmt.Errorf("listing unqualified deleting assets: %w", err)
+	}
+	for _, a := range unqualified {
+		w.resolveUnqualifiedDeletingAsset(ctx, q, a, trashCutoff)
+	}
+
+	// 前パスで deleting のまま止まった行のうち、まだ trash / until_encoded の
+	// いずれかの判定に該当するものを最優先で再開する。これは「既に決めた
 	// 削除」の再実行であり新規の判断ではないため、サーキットブレーカーの対象外
-	// （docs/storage.md §7「どこで落ちても reconcile が拾い直す」）。
-	pending, err := q.ListMediaAssetsPendingDelete(ctx, deleteReconcileRowLimit)
+	// （docs/storage.md §7「どこで落ちても reconcile が拾い直す」）。上の
+	// resolveUnqualifiedDeletingAsset で該当しなくなった行は既に active か
+	// deleted に決着しているので、ここに現れるのは常に判定を再確認できた
+	// ものだけ。
+	pending, err := q.ListMediaAssetsPendingDelete(ctx, sqlcgen.ListMediaAssetsPendingDeleteParams{
+		GraceCutoff: trashCutoff,
+		RowLimit:    deleteReconcileRowLimit,
+	})
 	if err != nil {
 		return fmt.Errorf("listing pending deletes: %w", err)
 	}
@@ -180,7 +211,6 @@ func (w *DeleteReconcileWorker) Work(ctx context.Context, _ *river.Job[DeleteRec
 		return fmt.Errorf("reconciling orphan candidates: %w", err)
 	}
 
-	trashCutoff := time.Now().Add(-trashRetention)
 	trashRows, err := q.ListTrashMediaAssetsToDelete(ctx, sqlcgen.ListTrashMediaAssetsToDeleteParams{
 		GraceCutoff: trashCutoff,
 		RowLimit:    deleteReconcileRowLimit,
@@ -295,6 +325,58 @@ func (w *DeleteReconcileWorker) deleteMediaAsset(ctx context.Context, q *sqlcgen
 	return true
 }
 
+// resolveUnqualifiedDeletingAsset は ListUnqualifiedDeletingAssets が挙げた
+// 1 行（trash / until_encoded のどちらの判定にも該当しなくなった deleting
+// 行）を、ファイルの現存を確認してから active か deleted のどちらかに
+// 決着させる（issue #105）。
+//
+// ファイルがまだ存在すれば、判定条件を RevertMediaAssetToActive の WHERE で
+// 再評価しつつ active に戻す（不変条件 9「適用の瞬間」。ここまでの SELECT →
+// stat の間に別の書き手が recordings 側を書き換えて再度条件を満たすように
+// なっていれば、0 行のまま deleting が保たれ、pending 経路が続行する）。
+//
+// ファイルが既に無ければ（unlink 成功後 MarkMediaAssetDeleted がコミットされる
+// 前にプロセスが落ち、その間に復元された）、active には戻さず deleted を
+// 確定する。ここで無条件に active へ戻すと、案 B（復元時に deleting を
+// 同期的に active へ戻す）を却下した理由そのもの ——「active なのにファイルが
+// 無い行」を作ってしまう。
+func (w *DeleteReconcileWorker) resolveUnqualifiedDeletingAsset(ctx context.Context, q *sqlcgen.Queries, a sqlcgen.ListUnqualifiedDeletingAssetsRow, graceCutoff time.Time) {
+	log := slog.With("media_asset_id", a.ID, "recording_id", a.RecordingID, "rel_path", a.RelPath)
+
+	path, err := mediapath.Resolve(w.MediaDir, a.RelPath)
+	if err != nil {
+		log.Error("delete_reconcile: rejecting rel_path outside the media directory while resolving revert candidate", "err", err)
+		return
+	}
+
+	if _, statErr := os.Stat(path); statErr != nil {
+		if errors.Is(statErr, os.ErrNotExist) {
+			if _, err := q.MarkMediaAssetDeleted(ctx, a.ID); err != nil {
+				log.Error("delete_reconcile: finalizing already-unlinked asset as deleted", "err", err)
+				return
+			}
+			log.Warn("delete_reconcile: file already removed before revert could apply; finalized as deleted instead of reverting to active")
+			return
+		}
+		// stat 自体が失敗（権限など）。存在有無を確定できないので何もせず
+		// deleting のまま残し、次パスで再評価する。
+		log.Error("delete_reconcile: statting revert candidate, leaving deleting for retry", "err", statErr)
+		return
+	}
+
+	n, err := q.RevertMediaAssetToActive(ctx, sqlcgen.RevertMediaAssetToActiveParams{
+		ID:          a.ID,
+		GraceCutoff: graceCutoff,
+	})
+	if err != nil {
+		log.Error("delete_reconcile: reverting asset to active", "err", err)
+		return
+	}
+	if n > 0 {
+		log.Info("delete_reconcile: reverted deleting asset to active (no longer qualifies for deletion)")
+	}
+}
+
 // touchedRecordings はこのパスでアセットを消した録画 id を、重複を除いて
 // 出現順に持つ。map で持つと発火順がパスごとに変わってログが読みにくい。
 type touchedRecordings struct {
@@ -371,7 +453,7 @@ func (w *DeleteReconcileWorker) notifyPurgedRecordings(ctx context.Context, q *s
 
 // pendingDerivativeJobRecordingIDs は、渡された録画 id のうち原本を入力とする
 // encode/thumbnail ジョブが実行中・再試行待ちであるものの集合を返す
-// （docs/storage.md §7「原本を入力とする実行中・再試行中のジョブがない」）。
+// （docs/storage.md §6「原本を入力とする実行中・再試行中のジョブがない」）。
 // river_job は rivermigrate が管理するテーブルで sqlc のスキーマディレクトリ
 // には含まれないため、生 SQL で問い合わせる。
 //
