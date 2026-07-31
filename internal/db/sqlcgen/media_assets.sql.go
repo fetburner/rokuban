@@ -382,3 +382,43 @@ func (q *Queries) UpsertEncodedMediaAsset(ctx context.Context, arg UpsertEncoded
 	err := row.Scan(&id)
 	return id, err
 }
+
+const upsertThumbnailMediaAsset = `-- name: UpsertThumbnailMediaAsset :one
+INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes)
+VALUES ($1, 'thumbnail', $2, $3)
+ON CONFLICT (recording_id, kind, profile) DO UPDATE SET
+    rel_path   = EXCLUDED.rel_path,
+    size_bytes = EXCLUDED.size_bytes,
+    state      = 'active',
+    deleted_at = NULL,
+    updated_at = now()
+RETURNING id
+`
+
+type UpsertThumbnailMediaAssetParams struct {
+	RecordingID int64
+	RelPath     string
+	SizeBytes   int64
+}
+
+// thumbnail コミット。UNIQUE (recording_id, kind, profile) で冪等。
+// tombstone（state='deleted'、過去の完全削除の残骸）がある場合は active に戻して
+// パスとサイズを更新する（UpsertEncodedMediaAsset と同じ形。issue #108）。
+// ON CONFLICT DO NOTHING（InsertMediaAssetIfAbsent）のままだと、tombstone との
+// 競合も新規コミット後の競合も同じ pgx.ErrNoRows で返ってきて区別できず、
+// 呼び出し側が両方を「既にコミット済みで成功」に丸めてしまう。tombstone は
+// ファイルがメディア上に書かれ続ける一方で GetActiveThumbnailMediaAssetID が
+// 空を返し続け、レベルトリガーが同じジョブを積み直す孤児を生む。
+// rel_path は thumbnails/{recording_id}.jpg で recording_id から決定的に導出され、
+// ON CONFLICT のキー (recording_id, kind, profile) と 1 対 1 対応する
+// （他の recording_id の行が同じ rel_path を持つことはない）。そのため
+// tombstone を active に戻しても CREATE UNIQUE INDEX ON media_assets (rel_path)
+// WHERE state <> 'deleted' に別の生きた行が衝突すること（23505）はない。
+// 既に active な行がある場合の上書きは worker 側の事前チェック
+// （GetActiveThumbnailMediaAssetID）で避ける。
+func (q *Queries) UpsertThumbnailMediaAsset(ctx context.Context, arg UpsertThumbnailMediaAssetParams) (int64, error) {
+	row := q.db.QueryRow(ctx, upsertThumbnailMediaAsset, arg.RecordingID, arg.RelPath, arg.SizeBytes)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}

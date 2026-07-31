@@ -215,9 +215,10 @@ func TestThumbnailWorker_SkipsWithoutOriginal(t *testing.T) {
 	}
 }
 
-func TestThumbnailWorker_ONCONFLICTIdempotent(t *testing.T) {
-	// 実行中に別経路で行が着地したケースを模す: Work の先頭チェックは
-	// すり抜け、commit の InsertMediaAssetIfAbsent が ErrNoRows を吸収する。
+func TestThumbnailWorker_CommitUpsertsExistingActiveRow(t *testing.T) {
+	// commit は ON CONFLICT DO UPDATE の UpsertThumbnailMediaAsset を使うため、
+	// 既に active な行がある recording に対して呼んでもエラーにならず
+	// 同じ行を更新する（行数は増えない）。
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -244,34 +245,122 @@ func TestThumbnailWorker_ONCONFLICTIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 先に thumbnail 行を入れておく（Work の skip を迂回するため、
-	// ここでは InsertMediaAssetIfAbsent 単体の挙動を直接確認する）。
+	// 先に active な thumbnail 行を入れておく（別経路で先に着地したケースを模す）。
 	rel := thumbnailRelPath(recordingID)
-	_, err := sqlcgen.New(pool).InsertMediaAssetIfAbsent(context.Background(), sqlcgen.InsertMediaAssetIfAbsentParams{
+	if _, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
 		RecordingID: recordingID,
 		Kind:        db.AssetKindThumbnail,
 		RelPath:     rel,
 		SizeBytes:   int64(len(tinyJPEG)),
-	})
-	if err != nil {
-		t.Fatalf("first insert: %v", err)
+	}); err != nil {
+		t.Fatalf("seed existing thumbnail: %v", err)
 	}
 
-	// 2 回目は DO NOTHING → ErrNoRows。
-	_, err = sqlcgen.New(pool).InsertMediaAssetIfAbsent(context.Background(), sqlcgen.InsertMediaAssetIfAbsentParams{
-		RecordingID: recordingID,
-		Kind:        db.AssetKindThumbnail,
-		RelPath:     "thumbnails/other.jpg",
-		SizeBytes:   1,
-	})
-	if !errors.Is(err, pgx5.ErrNoRows) {
-		t.Fatalf("second insert err = %v, want ErrNoRows", err)
-	}
-
-	// commit 経路も成功する。
+	// commit 経路も成功する（DO UPDATE なので ErrNoRows にならない）。
 	w := &ThumbnailWorker{Pool: pool, MediaDir: mediaDir, ScratchDir: scratchDir}
 	if err := w.commit(context.Background(), recordingID, rel, int64(len(tinyJPEG))); err != nil {
-		t.Fatalf("commit after conflict: %v", err)
+		t.Fatalf("commit over existing active row: %v", err)
+	}
+
+	var n int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM media_assets WHERE recording_id = $1 AND kind = 'thumbnail'`,
+		recordingID,
+	).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("thumbnail rows = %d, want 1 (upsert must not duplicate)", n)
+	}
+}
+
+func TestThumbnailWorker_RevivesTombstone(t *testing.T) {
+	// state='deleted' の tombstone（過去の完全削除の残骸）がある recording に
+	// 対して Work を実行すると、行が active に戻り GetActiveThumbnailMediaAssetID
+	// が引けるようになる（issue #108）。
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+
+	mediaDir := t.TempDir()
+	scratchDir := t.TempDir()
+	recordingID := insertTestRecording(t, pool)
+
+	origRel := "shows/ep3.m2ts"
+	origPath := filepath.Join(mediaDir, filepath.FromSlash(origRel))
+	if err := os.MkdirAll(filepath.Dir(origPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(origPath, []byte("ts"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
+		RecordingID: recordingID,
+		Kind:        db.AssetKindOriginal,
+		RelPath:     origRel,
+		SizeBytes:   2,
+	}); err != nil {
+		t.Fatalf("seed original: %v", err)
+	}
+
+	// tombstone を作る: いったん active な thumbnail 行を作り、削除プロトコル
+	// の最終状態（state='deleted', deleted_at 有り）に直接遷移させる。
+	rel := thumbnailRelPath(recordingID)
+	if _, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
+		RecordingID: recordingID,
+		Kind:        db.AssetKindThumbnail,
+		RelPath:     rel,
+		SizeBytes:   1,
+	}); err != nil {
+		t.Fatalf("seed tombstone: %v", err)
+	}
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE media_assets SET state = 'deleted', deleted_at = now() WHERE recording_id = $1 AND kind = 'thumbnail'`,
+		recordingID,
+	); err != nil {
+		t.Fatalf("marking tombstone deleted: %v", err)
+	}
+
+	// tombstone がある状態では GetActiveThumbnailMediaAssetID は空を返す。
+	if _, err := sqlcgen.New(pool).GetActiveThumbnailMediaAssetID(context.Background(), recordingID); !errors.Is(err, pgx5.ErrNoRows) {
+		t.Fatalf("precondition: active thumbnail err = %v, want ErrNoRows", err)
+	}
+
+	w := &ThumbnailWorker{
+		Pool:       pool,
+		MediaDir:   mediaDir,
+		ScratchDir: scratchDir,
+		runCmd:     fakeThumbnailTools(t, 100.0),
+	}
+
+	job := &river.Job[ThumbnailJobArgs]{
+		JobRow: &rivertype.JobRow{},
+		Args:   ThumbnailJobArgs{RecordingID: recordingID},
+	}
+	if err := w.Work(context.Background(), job); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+
+	// tombstone が active に戻り、GetActiveThumbnailMediaAssetID が引ける。
+	id, err := sqlcgen.New(pool).GetActiveThumbnailMediaAssetID(context.Background(), recordingID)
+	if err != nil {
+		t.Fatalf("thumbnail asset not revived to active: %v", err)
+	}
+	if id == 0 {
+		t.Fatal("thumbnail asset id is 0")
+	}
+
+	// 新規行を積まず、tombstone 行そのものを書き換えている（行は 1 つだけ）。
+	var n int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM media_assets WHERE recording_id = $1 AND kind = 'thumbnail'`,
+		recordingID,
+	).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("thumbnail rows = %d, want 1 (tombstone should be revived, not duplicated)", n)
 	}
 }
 
