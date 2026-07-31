@@ -634,8 +634,10 @@ type ProgramOverridesInput struct {
 	// schedule が作られていない予約にだけ効く（docs/recording.md §4.5）。
 	ContentPath *string `json:"contentPath,omitempty"`
 
-	// EncodeProfiles ingest 時に評価されるので、録画開始後の変更でも効く
-	// （M3 で消費。docs/recording.md §4.5）。
+	// EncodeProfiles ingest が原本をコミットする tx の中で recordings に焼かれる瞬間まで
+	// 効く。録画開始後の変更でも、放送終了・ingest 完了より前ならこの
+	// 録画に反映されるが、ingest 完了後の変更はこの録画には反映されない
+	// （docs/recording/reservation-model.md §4.5）。
 	EncodeProfiles *[]string `json:"encodeProfiles,omitempty"`
 
 	// FilenameTemplate Go text/template のテンプレート文字列。既存の schedule には
@@ -643,8 +645,10 @@ type ProgramOverridesInput struct {
 	// （docs/recording.md §4.5）。
 	FilenameTemplate *string `json:"filenameTemplate,omitempty"`
 
-	// KeepOriginal ingest 時に評価されるので、録画開始後の変更でも効く
-	// （M3 で消費。docs/recording.md §4.5）。
+	// KeepOriginal ingest が原本をコミットする tx の中で recordings に焼かれる瞬間まで
+	// 効く。録画開始後の変更でも、放送終了・ingest 完了より前ならこの
+	// 録画に反映されるが、ingest 完了後の変更はこの録画には反映されない
+	// （docs/recording/reservation-model.md §4.5）。
 	KeepOriginal *ProgramOverridesInputKeepOriginal `json:"keepOriginal,omitempty"`
 
 	// Priority mirakc の schedule に反映される（reconciler が DELETE + POST で
@@ -657,8 +661,10 @@ type ProgramOverridesInput struct {
 	Reset *[]ProgramOverridesInputReset `json:"reset,omitempty"`
 }
 
-// ProgramOverridesInputKeepOriginal ingest 時に評価されるので、録画開始後の変更でも効く
-// （M3 で消費。docs/recording.md §4.5）。
+// ProgramOverridesInputKeepOriginal ingest が原本をコミットする tx の中で recordings に焼かれる瞬間まで
+// 効く。録画開始後の変更でも、放送終了・ingest 完了より前ならこの
+// 録画に反映されるが、ingest 完了後の変更はこの録画には反映されない
+// （docs/recording/reservation-model.md §4.5）。
 type ProgramOverridesInputKeepOriginal string
 
 // ProgramOverridesInputReset defines model for ProgramOverridesInput.Reset.

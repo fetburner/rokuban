@@ -595,6 +595,37 @@ func TestDeleteReconcileWorker_UntilEncoded_MissingThumbnail_NotDeleted(t *testi
 	}
 }
 
+// encode_profiles が空（本来 until_encoded では起こらないはずの組だが、issue #103
+// の凍結処理のバグ等で起こりうる）のとき、原本を消してはならない（issue #103 の
+// 「罠」の安全弁。internal/db/queries/delete_reconcile.sql の
+// ListUntilEncodedOriginalsToDelete が cardinality(r.encode_profiles) > 0 を
+// 要求するようになった前は、NOT EXISTS(unnest(...)) が空集合に対して自明に真になり
+// 「全プロファイル完備」を誤って認めていた）。
+func TestDeleteReconcileWorker_UntilEncoded_EmptyProfiles_NotDeleted(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+	recordingID := insertTestRecording(t, pool)
+
+	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "orig/empty-profiles.m2ts", []byte("data"))
+	// desired な派生物はサムネイルだけ。encode_profiles は意図的に空にする。
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindThumbnail, nil, "thumb/empty-profiles.jpg", []byte("jpg"))
+
+	if _, err := pool.Exec(context.Background(),
+		"UPDATE recordings SET keep_original = 'until_encoded', encode_profiles = $1 WHERE id = $2",
+		[]string{}, recordingID); err != nil {
+		t.Fatalf("setting keep_original: %v", err)
+	}
+
+	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	if err := w.Work(context.Background(), nil); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+
+	if got := assetState(t, pool, assetID); got != "active" {
+		t.Errorf("original state = %q, want active (encode_profiles is empty; one-copy invariant would be violated)", got)
+	}
+}
+
 // 原本を入力とする encode ジョブが実行待ちの間は、派生物が揃って見えても消さない
 // （storage.md §7 の条件 3）。
 func TestDeleteReconcileWorker_UntilEncoded_PendingEncodeJob_NotDeleted(t *testing.T) {

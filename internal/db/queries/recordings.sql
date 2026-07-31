@@ -89,3 +89,15 @@ UPDATE recordings
 SET quality_events = quality_events || sqlc.arg('events')::jsonb,
     updated_at = now()
 WHERE id = sqlc.arg('id');
+
+-- ingest が原本 media_asset のコミットと同じ tx で焼く「この録画の望ましい
+-- 最終状態」（M3-14、issue #103）。凍結する理由・瞬間・冪等性の詳細は
+-- internal/worker/ingest.go の resolveAndSnapshotEncodePolicy の doc コメント参照。
+-- 予約行が無い録画（手動で mirakc に起こされた録画等）は呼び出し側がこのクエリを
+-- 呼ばないので、列は CREATE TABLE の既定値（'always' / '{}'）のまま残る。
+-- name: SnapshotRecordingEncodePolicy :exec
+UPDATE recordings SET
+    keep_original   = sqlc.arg('keep_original'),
+    encode_profiles = sqlc.arg('encode_profiles')::text[],
+    updated_at      = now()
+WHERE id = sqlc.arg('id');
