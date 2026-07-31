@@ -183,8 +183,8 @@ func (w *ThumbnailWorker) Work(ctx context.Context, job *river.Job[ThumbnailJobA
 
 // commit は抽出済みサムネイルを media_assets（kind='thumbnail'）にコミットする。
 //
-// InsertMediaAssetIfAbsent（ON CONFLICT DO NOTHING）は使わない。DO NOTHING が
-// 返す pgx.ErrNoRows は「既に active な行がある競合」と「tombstone
+// ON CONFLICT DO NOTHING（id を返さず pgx.ErrNoRows で競合を伝える形）は使わない。
+// DO NOTHING が返す ErrNoRows は「既に active な行がある競合」と「tombstone
 // （state='deleted'、過去の完全削除の残骸）との競合」を区別できず、後者まで
 // 成功扱いにすると、ファイルは書き直され続けるのに DB 行は deleted のまま
 // 残り、GetActiveThumbnailMediaAssetID は空を返し続けてレベルトリガーが同じ

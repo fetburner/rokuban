@@ -283,37 +283,6 @@ func (q *Queries) InsertDropStat(ctx context.Context, arg InsertDropStatParams) 
 	return err
 }
 
-const insertMediaAssetIfAbsent = `-- name: InsertMediaAssetIfAbsent :one
-INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes)
-VALUES ($1, $2, $3, $4, $5)
-ON CONFLICT (recording_id, kind, profile) DO NOTHING
-RETURNING id
-`
-
-type InsertMediaAssetIfAbsentParams struct {
-	RecordingID int64
-	Kind        string
-	Profile     *string
-	RelPath     string
-	SizeBytes   int64
-}
-
-// thumbnail / encode の冪等 INSERT。UNIQUE (recording_id, kind, profile) で競合したら
-// 何もせず id も返さない（呼び出し側が pgx.ErrNoRows を「既にコミット済み」として扱う）。
-// 不変条件 3「コミット = DB 行」。書き手は worker のみ（docs/schema/recordings.md §6）。
-func (q *Queries) InsertMediaAssetIfAbsent(ctx context.Context, arg InsertMediaAssetIfAbsentParams) (int64, error) {
-	row := q.db.QueryRow(ctx, insertMediaAssetIfAbsent,
-		arg.RecordingID,
-		arg.Kind,
-		arg.Profile,
-		arg.RelPath,
-		arg.SizeBytes,
-	)
-	var id int64
-	err := row.Scan(&id)
-	return id, err
-}
-
 const listRecordingIDsMissingThumbnail = `-- name: ListRecordingIDsMissingThumbnail :many
 SELECT o.recording_id
 FROM media_assets o
@@ -404,8 +373,8 @@ type UpsertThumbnailMediaAssetParams struct {
 // thumbnail コミット。UNIQUE (recording_id, kind, profile) で冪等。
 // tombstone（state='deleted'、過去の完全削除の残骸）がある場合は active に戻して
 // パスとサイズを更新する（UpsertEncodedMediaAsset と同じ形。issue #108）。
-// ON CONFLICT DO NOTHING（InsertMediaAssetIfAbsent）のままだと、tombstone との
-// 競合も新規コミット後の競合も同じ pgx.ErrNoRows で返ってきて区別できず、
+// ON CONFLICT DO NOTHING（id を返さず pgx.ErrNoRows で競合を伝える形）のままだと、
+// tombstone との競合も新規コミット後の競合も同じ ErrNoRows で返ってきて区別できず、
 // 呼び出し側が両方を「既にコミット済みで成功」に丸めてしまう。tombstone は
 // ファイルがメディア上に書かれ続ける一方で GetActiveThumbnailMediaAssetID が
 // 空を返し続け、レベルトリガーが同じジョブを積み直す孤児を生む。

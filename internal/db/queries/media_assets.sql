@@ -3,15 +3,6 @@ INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes)
 VALUES ($1, $2, $3, $4, $5)
 RETURNING id;
 
--- thumbnail / encode の冪等 INSERT。UNIQUE (recording_id, kind, profile) で競合したら
--- 何もせず id も返さない（呼び出し側が pgx.ErrNoRows を「既にコミット済み」として扱う）。
--- 不変条件 3「コミット = DB 行」。書き手は worker のみ（docs/schema/recordings.md §6）。
--- name: InsertMediaAssetIfAbsent :one
-INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes)
-VALUES ($1, $2, $3, $4, $5)
-ON CONFLICT (recording_id, kind, profile) DO NOTHING
-RETURNING id;
-
 -- ingest の冪等性チェック用。worker/ingest.go の Work は転送を始める前にこれで
 -- 「この recording_id の original はもうコミット済みか」を確認する
 -- （不変条件 3「コミット = DB 行」。行が無ければまだコミットされていない）。
@@ -51,8 +42,8 @@ RETURNING id;
 -- thumbnail コミット。UNIQUE (recording_id, kind, profile) で冪等。
 -- tombstone（state='deleted'、過去の完全削除の残骸）がある場合は active に戻して
 -- パスとサイズを更新する（UpsertEncodedMediaAsset と同じ形。issue #108）。
--- ON CONFLICT DO NOTHING（InsertMediaAssetIfAbsent）のままだと、tombstone との
--- 競合も新規コミット後の競合も同じ pgx.ErrNoRows で返ってきて区別できず、
+-- ON CONFLICT DO NOTHING（id を返さず pgx.ErrNoRows で競合を伝える形）のままだと、
+-- tombstone との競合も新規コミット後の競合も同じ ErrNoRows で返ってきて区別できず、
 -- 呼び出し側が両方を「既にコミット済みで成功」に丸めてしまう。tombstone は
 -- ファイルがメディア上に書かれ続ける一方で GetActiveThumbnailMediaAssetID が
 -- 空を返し続け、レベルトリガーが同じジョブを積み直す孤児を生む。
