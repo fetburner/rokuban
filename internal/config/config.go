@@ -66,7 +66,7 @@ type DBConfig struct {
 	// 越しでも壊れないよう pgx の prepared statement キャッシュを無効化する
 	// （DefaultQueryExecMode を QueryExecModeExec にする）。
 	//
-	// **pooler を通せるのは api ロールだけ**（デプロイの契約。docs/operations.md §3）。
+	// **pooler を通せるのは api ロールと streamer ロールだけ**（デプロイの契約。docs/operations.md §3）。
 	// worker（River 内部の LISTEN）/ watcher（advisory lock）/ notifier（LISTEN）は
 	// セッション状態に依存するため transaction pooling 越しでは構造的に壊れる。
 	// db.NewPool はこれらのロールと PoolerCompat=true の組み合わせを起動時エラーにする。

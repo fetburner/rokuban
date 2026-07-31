@@ -51,6 +51,20 @@ func TestBuildPoolConfig_MaxConnsFromRoles(t *testing.T) {
 			want:  minAutoMaxConns,
 		},
 		{
+			// --roles api,api のような重複指定を resolveRoles はそのまま通すため、
+			// db 側で重複除去しないと budget を二重に数えてしまう（issue #90 レビュー）。
+			name:  "duplicate role names are not double-counted",
+			cfg:   testDBConfig(),
+			roles: []string{"api", "api"},
+			want:  10,
+		},
+		{
+			name:  "duplicate role names across a larger set are not double-counted",
+			cfg:   testDBConfig(),
+			roles: []string{"api", "worker", "worker", "api", "watcher"},
+			want:  21, // 10(api) + 8(worker) + 3(watcher), each counted once
+		},
+		{
 			name: "explicit db.max_conns overrides role-derived sizing",
 			cfg: func() config.DBConfig {
 				c := testDBConfig()
@@ -91,6 +105,66 @@ func TestBuildPoolConfig_NoRoles_UsesPgxDefault(t *testing.T) {
 
 	if poolCfg.MaxConns != baseline.MaxConns {
 		t.Errorf("MaxConns = %d, want pgxpool default %d", poolCfg.MaxConns, baseline.MaxConns)
+	}
+}
+
+// TestBuildPoolConfig_ExplicitMaxConnsTooSmall は、明示された db.max_conns が
+// 生存期間中コネクションを専有し続けるロール（watcher の advisory lock /
+// worker・notifier の LISTEN）にとって小さすぎる場合に fail-fast することを確認する
+// （issue #90 レビュー指摘）。専有分だけでプールが埋まると、同じプロセスの他の仕事が
+// 「二度と解放されないコネクション」を待ち続けて無症状にデッドロックする。
+func TestBuildPoolConfig_ExplicitMaxConnsTooSmall(t *testing.T) {
+	cases := []struct {
+		name     string
+		maxConns int
+		roles    []string
+		wantErr  bool
+	}{
+		{name: "api alone: 1 is enough (no dedicated connection)", maxConns: 1, roles: []string{"api"}, wantErr: false},
+		{name: "watcher alone: 1 is too small (advisory lock would starve other work)", maxConns: 1, roles: []string{"watcher"}, wantErr: true},
+		{name: "watcher alone: 2 is enough", maxConns: 2, roles: []string{"watcher"}, wantErr: false},
+		{name: "worker alone: 1 is too small (River's LISTEN conn would starve job claims)", maxConns: 1, roles: []string{"worker"}, wantErr: true},
+		{name: "worker alone: 2 is enough", maxConns: 2, roles: []string{"worker"}, wantErr: false},
+		{name: "notifier alone: 1 is too small (LISTEN conn would starve other work)", maxConns: 1, roles: []string{"notifier"}, wantErr: true},
+		{name: "notifier alone: 2 is enough", maxConns: 2, roles: []string{"notifier"}, wantErr: false},
+		{
+			name:     "watcher+notifier: 2 dedicated conns need at least 3",
+			maxConns: 2,
+			roles:    []string{"watcher", "notifier"},
+			wantErr:  true,
+		},
+		{
+			name:     "watcher+notifier: 3 is enough",
+			maxConns: 3,
+			roles:    []string{"watcher", "notifier"},
+			wantErr:  false,
+		},
+		{
+			name:     "--all: 3 dedicated conns (watcher+worker+notifier) need at least 4",
+			maxConns: 3,
+			roles:    []string{"api", "worker", "watcher", "streamer", "notifier"},
+			wantErr:  true,
+		},
+		{
+			name:     "--all: 4 is enough",
+			maxConns: 4,
+			roles:    []string{"api", "worker", "watcher", "streamer", "notifier"},
+			wantErr:  false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testDBConfig()
+			cfg.MaxConns = tc.maxConns
+			_, err := buildPoolConfig(cfg, tc.roles)
+			if tc.wantErr && err == nil {
+				t.Errorf("buildPoolConfig(max_conns=%d, roles=%v): expected error, got nil", tc.maxConns, tc.roles)
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("buildPoolConfig(max_conns=%d, roles=%v): unexpected error: %v", tc.maxConns, tc.roles, err)
+			}
+		})
 	}
 }
 

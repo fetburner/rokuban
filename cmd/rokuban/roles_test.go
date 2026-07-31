@@ -4,6 +4,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/worker"
 )
 
@@ -88,6 +89,23 @@ func TestResolveRoles_AllCoversEveryRole(t *testing.T) {
 	}
 	if !slices.Equal(roles, allRoles) {
 		t.Errorf("--all resolved to %v, want %v", roles, allRoles)
+	}
+}
+
+// allRoles（この権威）と internal/db.KnownRoles()（プールサイジング budget と
+// pooler_compat fail-fast 判定の権威）は独立に管理されている。両方 unexported の
+// ままだと「一致している」ことをテストできず、M4-6 で新しいロールを allRoles に
+// 足したのに internal/db 側の対応（roleConnBudget のエントリ・
+// poolerIncompatibleRoles に入れるかどうかの判断）を忘れても静かに素通りしてしまう
+// （新ロールは自動的に db.minAutoMaxConns にフォールバックし、pooler_compat の
+// fail-fast も対象外になる。issue #90 レビュー）。
+func TestAllRoles_MatchesDBKnownRoles(t *testing.T) {
+	got := slices.Clone(allRoles)
+	slices.Sort(got)
+	want := db.KnownRoles()
+	if !slices.Equal(got, want) {
+		t.Errorf("allRoles (cmd/rokuban) = %v, db.KnownRoles() (internal/db) = %v; "+
+			"ロールを足したら internal/db の roleConnBudget と poolerIncompatibleRoles も更新すること", got, want)
 	}
 }
 

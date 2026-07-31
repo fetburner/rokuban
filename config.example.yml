@@ -27,8 +27,8 @@ db:
                                  # 適用されない
   # pooler_compat: false         # true にすると PgBouncer / Neon pooler の transaction
                                  # pooling 越しでも壊れないよう prepared statement キャッシュを
-                                 # 無効化する。pooler を通せるのは api ロールだけ —— worker /
-                                 # watcher / notifier と組み合わせると起動時エラーになる
+                                 # 無効化する。pooler を通せるのは api ロールと streamer ロールだけ
+                                 # —— worker / watcher / notifier と組み合わせると起動時エラーになる
                                  # （LISTEN/NOTIFY と advisory lock がセッション状態に
                                  # 依存するため。docs/operations.md §3）
 

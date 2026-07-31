@@ -46,8 +46,8 @@ db:                              # 必須
                                   # ロール別 budget を合計して自動算出する（operations.md §3、issue #90）
   api_statement_timeout: 0s       # api ロールを含むプロセスにだけ適用。0 なら既定値 30s
   pooler_compat: false            # true は PgBouncer/Neon pooler 越しの接続を想定したモード。
-                                  # pooler を通せるのは api ロールだけ（worker/watcher/notifier との
-                                  # 組み合わせは起動時エラー。operations.md §3）
+                                  # pooler を通せるのは api ロールと streamer ロールだけ
+                                  # （worker/watcher/notifier との組み合わせは起動時エラー。operations.md §3）
 
 mirakc:                          # 必須
   url: http://mirakc.local:40772

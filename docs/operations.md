@@ -225,19 +225,26 @@ EPG の一時欠損（mirakc 再起動・再スキャン・SI 取得不良）で
   （`db.api_statement_timeout`、未指定なら 30s）。**api ロールを含むプロセスのプール全体に適用される**
   ため、monolith で api と worker/watcher を同居させると worker 側のクエリにも同じ上限がかかる —
   世帯スケールの通常クエリを十分に上回る値（既定 30s）にしてあるので実害は想定していないが、
-  ロールを分離すれば worker 単独プロセスには一切適用されなくなる
+  ロールを分離すれば worker 単独プロセスには一切適用されなくなる。`statement_timeout` は行ロック待ちにも
+  効く（Postgres は「クエリの実行時間」と「ロック待ちの時間」を区別しない）ため、monolith で
+  `record_sweep` 等が別トランザクションの行ロックを長く待つ状況では statement_timeout で中断されうる。
+  中断されても River が再試行するので致命的ではないが、意図しない再試行が増える兆候として覚えておく
 
-### pooler 越しに置けるのは api ロールだけ
+### pooler 越しに置けるのは api ロールと streamer ロールだけ
 
 `db.pooler_compat: true` は PgBouncer / Neon pooler の **transaction pooling** 越しの接続を想定したモードで、
 pgx の prepared statement キャッシュを無効化する（`DefaultQueryExecMode` を `QueryExecModeExec` にする）。
 
-これはデプロイの契約であり、**pooler を通せるのは api ロールだけ**である。worker（River 内部の
-elector / notifier が使う LISTEN）・watcher（advisory lock によるリーダー選出）・notifier（ブラウザへの
-SSE 配送のための LISTEN）はいずれもセッション状態に依存するため、transaction pooling で物理コネクションが
-要求ごとに入れ替わると構造的に壊れる（[data.md](data.md) §2 / §3）。`internal/db.NewPool` は
-`pooler_compat: true` と worker/watcher/notifier のいずれかのロールの組み合わせを起動時エラーにする
-（fail-fast。streamer は LISTEN も advisory lock も使わないため pooler と組み合わせてよい）。
+これはデプロイの契約であり、**pooler を通せるのは api ロールと streamer ロールだけ**である。
+worker（River の内部機構が使う LISTEN。`notifier.New` で作る 1 個の Listener を leadership の
+elector と job-available 通知が共有しており、elector と notifier がそれぞれ別に 1 本ずつではない。
+`riverqueue/river@v0.40.0/client.go` で確認済み）・watcher（advisory lock によるリーダー選出）・
+notifier（ブラウザへの SSE 配送のための LISTEN）はいずれもセッション状態に依存するため、
+transaction pooling で物理コネクションが要求ごとに入れ替わると構造的に壊れる（[data.md](data.md) §2 / §3）。
+`internal/db.NewPool` は `pooler_compat: true` と worker/watcher/notifier のいずれかのロールの
+組み合わせを起動時エラーにする（fail-fast）。**streamer は LISTEN も advisory lock も長期状態も
+使わない**ため pooler と組み合わせてよい（`internal/streamer` で確認済み。バイト転送も
+X-Accel-Redirect か Go のファイル配信で、DB 接続を保持し続けない）。
 
 ### EPG churn / autovacuum
 
