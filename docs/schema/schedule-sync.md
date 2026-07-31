@@ -7,7 +7,11 @@ CREATE TABLE schedule_sync (
     site           text   NOT NULL,
     program_id     bigint NOT NULL,             -- mirakc schedule のキー（site 単位のスコープ）
     reservation_id bigint REFERENCES reservations (id) ON DELETE SET NULL,
-                                                -- tags の rokuban:reservation=<id> から解決。NULL = 外部産 schedule
+                                                -- tag のパースを経由せず、schedule 自身が持つ program_id で
+                                                -- reservations を (site, program_id) 引きして解決する。ただし
+                                                -- IsOurs(tags) が false（新旧いずれの rokuban tag も無い）なら
+                                                -- 埋めない。NULL = 外部産 schedule。tag 形式の詳細は
+                                                -- [reconciler.md](../recording/reconciler.md)「tags 対応付け」参照
     state          text   NOT NULL,             -- mirakc の状態をそのまま (scheduled/tracking/recording/…)
     options        jsonb  NOT NULL,             -- 観測された RecordingOptions そのまま
     tags           text[] NOT NULL DEFAULT '{}',
