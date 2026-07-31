@@ -8,12 +8,12 @@ describe('customInstance', () => {
   })
 
   it('204 (No Content) をボディなしの成功として扱う', async () => {
-    // POST /api/breakers/{name}/resume はボディなしで 204 を返す。
+    // POST /api/sites/{site}/breakers/{name}/resume はボディなしで 204 を返す。
     // response.json() を無条件に呼ぶと空ボディで SyntaxError になり、
     // 成功しているのに mutation の onError に落ちてしまう（実際に見つけたバグ）。
     globalThis.fetch = vi.fn().mockResolvedValue(new Response(null, { status: 204 }))
 
-    const result = await customInstance('/api/breakers/ruler_deletes/resume', { method: 'POST' })
+    const result = await customInstance('/api/sites/default/breakers/ruler_deletes/resume', { method: 'POST' })
 
     expect(result).toEqual({ data: undefined, status: 204, headers: expect.any(Headers) })
   })
@@ -37,9 +37,9 @@ describe('customInstance', () => {
       new Response(JSON.stringify({ error: 'not tripped' }), { status: 404 }),
     )
 
-    await expect(customInstance('/api/breakers/unknown/resume', { method: 'POST' })).rejects.toThrow(
-      '404',
-    )
+    await expect(
+      customInstance('/api/sites/default/breakers/unknown/resume', { method: 'POST' }),
+    ).rejects.toThrow('404')
   })
 
   it('非 2xx のエラー本文を捨てない', async () => {

@@ -708,8 +708,9 @@ paths:
         `detail` は発動時に「何が消されようとしていたか」を説明する抜粋で、
         手動確認の材料（`internal/breaker.Sample` と同じ形。最大 20 件）。
 
-        site はパスに含めない。M1/M2 は単一サイト構成（`db.DefaultSite`）で、
-        将来の多拠点対応でパスに site を加える可能性がある。
+        site はパスに含めない。全サイトの発動を一望する用途のエンドポイントで、
+        レスポンスの各要素に site フィールドがある（issue #102）。個別の再開は
+        `POST /api/sites/{site}/breakers/{name}/resume`。
       responses:
         "200":
           description: OK
@@ -720,8 +721,9 @@ paths:
                 items:
                   $ref: "#/components/schemas/CircuitBreaker"
 
-  /api/breakers/{name}/resume:
+  /api/sites/{site}/breakers/{name}/resume:
     parameters:
+      - $ref: "#/components/parameters/Site"
       - name: name
         in: path
         required: true
@@ -737,18 +739,20 @@ paths:
         手動確認後の再開。ブレーカーは人間が確認するまで止まり続けるラッチ
         （docs/recording.md §3.2）なので、確認が済んだことをこの API で明示する。
 
-        `DELETE /api/breakers/{name}` にしていないのは、運用者から見た操作が
-        「行を削除する」ではなく「**確認したので再開する**」であるため。DB の行が
-        消えるのは実装詳細（`internal/breaker` のラッチが行の存在で表される、という
-        設計の帰結）であり、URL に出す概念ではない。
+        `DELETE /api/sites/{site}/breakers/{name}` にしていないのは、運用者から
+        見た操作が「行を削除する」ではなく「**確認したので再開する**」であるため。
+        DB の行が消えるのは実装詳細（`internal/breaker` のラッチが行の存在で
+        表される、という設計の帰結）であり、URL に出す概念ではない。
 
-        site はパスに含めない（`GET /api/breakers` と同じ理由。将来の多拠点対応で
-        パスに site を加える可能性がある）。
+        site をパスに含めるのは、資源の PK が `(site, name)` であるため
+        （issue #102）。`GET /api/breakers` はサイト横断の一覧に価値があるので
+        グローバルのまま残すが、再開は行 1 件を特定する操作なので PK と
+        一致させる。
       responses:
         "204":
           description: Resumed
         "400":
-          description: Unknown breaker name
+          description: Unknown site or breaker name
           content:
             application/json:
               schema:
@@ -769,7 +773,10 @@ components:
       description: |
         mirakc インスタンスのサイト名（config.mirakc.site）。programId は
         インスタンス単位のスコープしか持たないため、この site と組にしないと
-        資源が一意に定まらない（issue #31）。設定と一致しない site は 404。
+        資源が一意に定まらない（issue #31）。設定と一致しない site のエラー
+        コードはエンドポイントの HTTP メソッドで決まる —— GET 系は 404、
+        POST/PUT/PATCH/DELETE 系は 400（他の入力検証と同じ扱い。詳細は各
+        エンドポイントの description・レスポンス定義を参照）。
       schema:
         type: string
     ProgramId:

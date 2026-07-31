@@ -148,7 +148,7 @@ describe('CircuitBreakerBanner', () => {
     await waitFor(() => {
       const resumeCall = fetchMock.mock.calls.find(([u]) => String(u).includes('/resume'))
       expect(resumeCall).toBeDefined()
-      expect(String(resumeCall![0])).toBe('/api/breakers/ruler_deletes/resume')
+      expect(String(resumeCall![0])).toBe('/api/sites/default/breakers/ruler_deletes/resume')
       expect(resumeCall![1]).toMatchObject({ method: 'POST' })
     })
 
