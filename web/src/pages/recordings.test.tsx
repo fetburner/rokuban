@@ -212,10 +212,7 @@ describe('RecordingsPage trash', () => {
 
   it('ごみ箱では 404 になるサムネイル・プレイヤー・原本リンクを一切出さない', async () => {
     const user = userEvent.setup()
-    const requestedPaths: string[] = []
-    const fetchMock = vi.fn((input: string | URL | Request) => {
-      const url = new URL(String(input), 'http://localhost')
-      requestedPaths.push(url.pathname + url.search)
+    const fetchMock = vi.fn(() => {
       // encodedProfiles と sizeBytes の両方を持つ、つまりライブラリなら
       // プレイヤーとサムネイルの両方が出る録画を、ごみ箱に入れて返す。
       const body = [
@@ -244,16 +241,13 @@ describe('RecordingsPage trash', () => {
     // （クエリ未解決のうちに queryBy で通ってしまう空虚な成功を避ける）
     await screen.findByText('削除日時')
 
+    // jsdom は <img src> / <video src> を実際の fetch には流さないので、
+    // 検証できるのは DOM 上にこれらの要素が存在しないことまで
+    // （fetch モックへのリクエスト有無では確認できない）。
     expect(screen.queryByRole('region', { name: '再生' })).not.toBeInTheDocument()
     expect(document.querySelector('video')).not.toBeInTheDocument()
     expect(document.querySelector('img')).not.toBeInTheDocument()
     expect(screen.queryByRole('link', { name: 'ダウンロード / VLC' })).not.toBeInTheDocument()
     expect(screen.queryByText('VLC 等で開く')).not.toBeInTheDocument()
-
-    // 404 の温床になる配信系エンドポイントに一切リクエストしていない
-    const mediaRequests = requestedPaths.filter(
-      (p) => p.includes('/thumbnail') || p.includes('/file'),
-    )
-    expect(mediaRequests).toHaveLength(0)
   })
 })
