@@ -28,6 +28,11 @@ var infraPaths = map[string]bool{
 // 認証を持たない LAN アプリでは、悪意あるサイトが DNS rebinding 経由で
 // ブラウザから API を叩ける攻撃を防ぐ唯一の防壁になる。
 // allowedHosts が空の場合はチェックをスキップする（開発用）。
+//
+// リバースプロキシ前段では `Host` がプロキシ自身の値に書き換わり、元の
+// クライアント向け Host は `X-Forwarded-Host` に移る（docs/api.md §リバース
+// プロキシ・フレンドリー要件、issue #89）。そのため `X-Forwarded-Host` が
+// あればそちらを検証対象にし、無ければ従来通り `r.Host` を使う。
 func AllowedHosts(allowedHosts []string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		if len(allowedHosts) == 0 {
@@ -38,7 +43,7 @@ func AllowedHosts(allowedHosts []string) func(http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
-			host := stripPort(r.Host)
+			host := stripPort(forwardedHost(r))
 			if !slices.Contains(allowedHosts, host) && !slices.Contains(alwaysAllowedHosts, host) {
 				http.Error(w, "invalid host", http.StatusBadRequest)
 				return
@@ -46,6 +51,15 @@ func AllowedHosts(allowedHosts []string) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// forwardedHost は Host allowlist 検証に使う Host 値を返す。
+// `X-Forwarded-Host` があればそちらを、無ければ `r.Host` を返す。
+func forwardedHost(r *http.Request) string {
+	if h := r.Header.Get("X-Forwarded-Host"); h != "" {
+		return h
+	}
+	return r.Host
 }
 
 func stripPort(hostport string) string {

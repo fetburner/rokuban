@@ -106,6 +106,85 @@ func TestAllowedHosts_InvalidHost(t *testing.T) {
 	}
 }
 
+// リバースプロキシ前段では Host がプロキシ自身の値に書き換わり、元の
+// クライアント向け Host は X-Forwarded-Host に移る。X-Forwarded-Host が
+// allowlist 内なら、r.Host が allowlist 外（プロキシのホスト名）でも通す
+// （docs/api.md §リバースプロキシ・フレンドリー要件、issue #89）。
+func TestAllowedHosts_ForwardedHostValidPassesEvenIfHostInvalid(t *testing.T) {
+	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	req, err := http.NewRequest("GET", srv.URL+"/api/version", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// r.Host はプロキシ自身のホスト名（allowlist 外）。
+	req.Host = "internal-proxy.example.com"
+	req.Header.Set("X-Forwarded-Host", "rokuban.local")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want %d（X-Forwarded-Host が allowlist 内なら通すべき）", resp.StatusCode, http.StatusOK)
+	}
+}
+
+// X-Forwarded-Host が allowlist 外なら、r.Host の値に関わらず 400 にする。
+// X-Forwarded-Host を無検証で信じると DNS rebinding 対策が無効化される。
+func TestAllowedHosts_ForwardedHostInvalidRejectsEvenIfHostValid(t *testing.T) {
+	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	req, err := http.NewRequest("GET", srv.URL+"/api/version", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// r.Host 自体は allowlist 内だが、X-Forwarded-Host が優先されるべき。
+	req.Host = "rokuban.local"
+	req.Header.Set("X-Forwarded-Host", "evil.example.com")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d（X-Forwarded-Host が allowlist 外なら拒否すべき）", resp.StatusCode, http.StatusBadRequest)
+	}
+}
+
+// X-Forwarded-Host ヘッダーが無いリクエストは従来通り r.Host で検証する
+// （前段にリバースプロキシが居ない直接アクセス構成の回帰確認）。
+func TestAllowedHosts_NoForwardedHostFallsBackToHost(t *testing.T) {
+	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	req, err := http.NewRequest("GET", srv.URL+"/api/version", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "evil.example.com"
+	// X-Forwarded-Host は設定しない。
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d（ヘッダー無しなら r.Host で検証すべき）", resp.StatusCode, http.StatusBadRequest)
+	}
+}
+
 func TestAllowedHosts_EmptyAllowsAll(t *testing.T) {
 	router := NewRouter(RouterConfig{})
 	srv := httptest.NewServer(router)

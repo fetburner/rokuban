@@ -33,7 +33,7 @@ Grafana Loki / Tempo の `-config.expand-env` と同じ、**YAML パース前の
 ```yaml
 server:                          # HTTP を持つロール (api, streamer, notifier) 共通
   listen: ":40773"               # mirakc の 40772 の隣
-  allowed_hosts: [rokuban.local] # Host ヘッダー allowlist。localhost 系は常に許可
+  allowed_hosts: [rokuban.local] # Host ヘッダー allowlist（X-Forwarded-Host があれば優先）。localhost 系は常に許可
 
 db:                              # 必須
   host: postgres
@@ -137,6 +137,14 @@ log:
 多拠点が現実化した場合は Rokuban 側で `mirakcs:` リストを追加し、`mirakc:` 単一形式を要素数 1 の糖衣にすることで互換に拡張できる。ハブ mirakc への集約は採らない（WAN リアルタイム依存 = 録画中の回線瞬断が録画欠損に直結するため）。
 
 `mirakc.site` は DB の全テーブルの `site` 列だけでなく、API の資源同定（`/api/sites/{site}/...`）の権威でもある（M3-1、issue #29 / #31 / #53）。`mirakcs:` リスト化時にここへサイト名を追加していく形を想定しており、API 側の変更は不要（パスは既にサイト名を受け取る形になっている）。
+
+### server.allowed_hosts は X-Forwarded-Host を優先する
+
+`server.allowed_hosts` は Host ヘッダーの allowlist で、アプリ内に残る唯一のセキュリティ機構（DNS rebinding 対策、[api.md](api.md) §認証 帰結3）。localhost 系（`localhost` / `127.0.0.1` / `::1`）は allowlist の設定に関わらず常に許可する。
+
+リバースプロキシ前段では `Host` がプロキシ自身の値（例: コンテナ内部の DNS 名）に書き換わり、元のクライアント向け Host は `X-Forwarded-Host` に移る。**`X-Forwarded-Host` があればそちらを検証対象にし、無ければ `Host` を使う**（M4-1、issue #89）。nginx リファレンス構成では `proxy_set_header X-Forwarded-Host $host;` を設定し、`allowed_hosts` にはブラウザからアクセスする外部ホスト名（例: `rokuban.example.com`）を書く。
+
+`X-Forwarded-For` / `X-Forwarded-Proto` / `X-Forwarded-Prefix` / `public_url` は解釈・設定項目とも持たない。理由は [api.md](api.md) §リバースプロキシ・フレンドリー要件「検討したが実装しないもの」を参照。
 
 ### db は構造化フィールド
 
