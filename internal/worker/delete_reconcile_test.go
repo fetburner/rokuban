@@ -399,6 +399,45 @@ func TestDeleteReconcileWorker_RestoredWhileDeleting_RevertsInsteadOfDeleting(t 
 	}
 }
 
+// unlink 自体は成功したが MarkMediaAssetDeleted がコミットされる前にプロセスが
+// 落ち、その間に復元された場合は、active には戻さず deleted を確定する
+// （issue #105 のコードレビューで指摘された狭い窓）。ここで無条件に active へ
+// 戻すと、案 B（復元時に deleting を同期的に active へ戻す）を却下した理由
+// そのもの ——「active なのにファイルが無い行」を作ってしまう。
+func TestDeleteReconcileWorker_UnlinkedButUncommittedThenRestored_FinalizesAsDeleted(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+	recordingID := insertTestRecording(t, pool)
+
+	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "webhook/crash/original.m2ts", []byte("data"))
+	assetPath := filepath.Join(mediaDir, "webhook", "crash", "original.m2ts")
+	markRecordingTrashed(t, pool, recordingID)
+
+	// 前パスで unlink までは成功したがプロセスが落ち、MarkMediaAssetDeleted が
+	// コミットされなかった状態を直接作る（deleting のままファイルだけが無い）。
+	if err := os.Remove(assetPath); err != nil {
+		t.Fatalf("simulating a completed unlink: %v", err)
+	}
+	if _, err := pool.Exec(context.Background(),
+		"UPDATE media_assets SET state = 'deleting' WHERE id = $1", assetID); err != nil {
+		t.Fatalf("marking asset deleting: %v", err)
+	}
+
+	// ここでユーザーがごみ箱から復元する。
+	if _, err := sqlcgen.New(pool).RestoreRecording(context.Background(), recordingID); err != nil {
+		t.Fatalf("restoring recording: %v", err)
+	}
+
+	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, TrashRetention: 30 * 24 * time.Hour}
+	if err := w.Work(context.Background(), nil); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+
+	if got := assetState(t, pool, assetID); got != "deleted" {
+		t.Fatalf("asset state = %q, want deleted (file already gone; reverting to active would create an active row with no file)", got)
+	}
+}
+
 // アセットが 1 件でも消しきれていないうちは発火せず、次パスで最後の 1 件が
 // 消えた時点で発火すること（pending 経路からの発火も兼ねる）。
 func TestDeleteReconcileWorker_TrashPurge_FiresOnlyAfterLastAsset(t *testing.T) {
@@ -642,6 +681,15 @@ func TestDeleteReconcileWorker_UntilEncoded_PendingEncodeJob_NotDeleted(t *testi
 // 再開される（issue #105。RestoredWhileDeleting_RevertsInsteadOfDeleting の
 // 逆方向 —— 再評価条件を「ごみ箱」だけに書くと、この until_encoded 経路が
 // 永久に deleting のまま止まるので、両方向で固定する）。
+//
+// 2 パス目の直前でサーキットブレーカーを発動させておくのが肝。そうしないと、
+// 「pending 経路が再評価で拾い直す」変異を注入して壊しても、同じパスの
+// 通常経路（ListUntilEncodedOriginalsToDelete、ブレーカー対象）がこの行を
+// active 経由で再度拾って同じ最終状態（deleted・ファイル消滅）に収束してしまい、
+// テストが回帰を検出できない（コードレビューで実証済み）。ブレーカーを
+// 発動させておけば、正しい実装だけがブレーカー免除の pending 経路で削除を
+// 完遂でき、変異を注入した実装は通常経路がブレーカーに止められて
+// active のまま残るので FAIL する。
 func TestDeleteReconcileWorker_UntilEncodedDeletingInterrupted_ResumesOnNextPass(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
@@ -685,11 +733,18 @@ func TestDeleteReconcileWorker_UntilEncodedDeletingInterrupted_ResumesOnNextPass
 		t.Fatalf("removing blocker file: %v", err)
 	}
 
+	// ブレーカーを発動させ、通常経路（ブレーカー対象）を完全に止める。
+	// pending 経路（ブレーカー対象外）だけがこの行を削除できる状態にする。
+	q := sqlcgen.New(pool)
+	if err := breaker.Trip(context.Background(), q, db.DefaultSite, breaker.DeleteReconcile, 0, breaker.Sample{Total: 1}); err != nil {
+		t.Fatalf("tripping breaker: %v", err)
+	}
+
 	if err := w.Work(context.Background(), nil); err != nil {
 		t.Fatalf("Work() second pass error: %v", err)
 	}
 	if got := assetState(t, pool, assetID); got != "deleted" {
-		t.Fatalf("asset state after second pass = %q, want deleted (until_encoded deletion should resume, issue #105)", got)
+		t.Fatalf("asset state after second pass = %q, want deleted (until_encoded deletion should resume via the breaker-exempt pending path, issue #105)", got)
 	}
 	if fileExists(assetPath) {
 		t.Error("original file still exists after resumed deletion, want removed")
