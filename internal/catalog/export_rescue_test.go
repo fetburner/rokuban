@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -282,16 +283,16 @@ func ptrTime(t time.Time) *time.Time { return &t }
 //
 // 手動確認（issue #106 の受け入れ基準）: internal/catalog/export.go の Export から
 // トランザクションを外し、pool.BeginTx を通さず sqlcgen.New(pool) を直接使う旧実装
-// に戻してこのテストを実行すると、このテストは（毎回ではないがタイミング次第で）
-// 失敗し、実際に log から
+// に戻してこのテストを `-count=5` で実行すると 5/5 決定的に失敗し、実際に
 // "media_asset ... references recording ... not present in exported recordings"
-// が観測できることを確認済み。トランザクションを戻すと決定的に通る。
+// が観測できることを確認済み。トランザクションを戻すと `-count=10` で決定的に通る。
 func TestExport_ConcurrentIngestStaysConsistent(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 
 	stop := make(chan struct{})
+	var inserted atomic.Int64
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
@@ -322,6 +323,7 @@ func TestExport_ConcurrentIngestStaysConsistent(t *testing.T) {
 			}); err != nil {
 				return
 			}
+			inserted.Add(1)
 		}
 	}()
 
@@ -349,6 +351,13 @@ func TestExport_ConcurrentIngestStaysConsistent(t *testing.T) {
 	}
 	close(stop)
 	wg.Wait()
+
+	// 競合ゴルーチンが実際に挿入できていなければ、この回帰は何も検証せず
+	// 「無言で成功し続ける」空虚なテストになる（将来 NOT NULL / CHECK が増えて
+	// i=0 から挿入が失敗し続けるケースを想定）。挿入数を検証してそれを防ぐ。
+	if n := inserted.Load(); n < 10 {
+		t.Fatalf("concurrent goroutine only inserted %d recordings, want >= 10 (race window was not exercised)", n)
+	}
 
 	// フルパイプライン: 最後に取れた Document を rescue しても FK 違反が出ないこと。
 	mediaDir := t.TempDir()
