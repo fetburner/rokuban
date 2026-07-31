@@ -773,7 +773,10 @@ components:
       description: |
         mirakc インスタンスのサイト名（config.mirakc.site）。programId は
         インスタンス単位のスコープしか持たないため、この site と組にしないと
-        資源が一意に定まらない（issue #31）。設定と一致しない site は 404。
+        資源が一意に定まらない（issue #31）。設定と一致しない site のエラー
+        コードはエンドポイントの HTTP メソッドで決まる —— GET 系は 404、
+        POST/PUT/PATCH/DELETE 系は 400（他の入力検証と同じ扱い。詳細は各
+        エンドポイントの description・レスポンス定義を参照）。
       schema:
         type: string
     ProgramId:
