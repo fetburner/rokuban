@@ -89,7 +89,9 @@ S3 マウント（k8s-csi-s3 の geesefs/s3fs、AWS Mountpoint 等）では以�
 
 ### 設計
 
-**ルール（または個別予約）が保持ポリシーを持つ**: `keep_original: true / until_encoded`。予約確定時に録画行へスナップショットされ、「この録画の望ましい最終状態は『派生物のみ、原本なし』」という desired state になる。
+**ルール（または個別予約）が保持ポリシーを持つ**: `keepOriginal: always / until_encoded`。実効値（ルールの base + 予約単位の overrides）は `recordings.keep_original` / `recordings.encode_profiles` へスナップショットされ、「この録画の望ましい最終状態は『派生物のみ、原本なし』」という desired state になる（M3-14、issue #103）。
+
+**凍結する瞬間は ingest が原本 media_asset をコミットする tx の中**（`internal/worker/ingest.go` の `resolveAndSnapshotEncodePolicy`）であって、予約確定時でも録画開始時でもない。再導出（reservations 経由で毎回引き直す）は選べない —— 導出元（`reservations` / `program_overrides` / `program_intents`）は放送終了 + 猶予後に GC される寿命の短い表だが、`recordings` は永続資産（CLAUDE.md 不変条件 12「表は行の寿命で割る」）。導出に依存させると、番組が EPG から消えて GC された時点で desired が空になり、エンコード未完了の録画で原本削除が止まる／再エンコードが投入できなくなる。凍結した 2 列は「この録画の望ましい最終状態」であり、`recordings` 行と同時に生まれて同時に死ぬので不変条件 12 には反しない。ただし凍結する以上、**ingest 完了より後の override 変更はその録画には反映されない**という境界が生まれる（[予約モデル](recording/reservation-model.md) §4.5）。
 
 **retention reconcile ループ**（worker の cleanup 系ジョブ）が定期的に走り、次を**すべて**満たす原本アセットを削除する:
 
@@ -103,12 +105,13 @@ S3 マウント（k8s-csi-s3 の geesefs/s3fs、AWS Mountpoint 等）では以�
 
 - **放送データが 0 コピーになる瞬間は構造的に存在しない**。エッジの record 削除は ingest コミット後（[録画エンジン](recording.md) 参照）、原本削除はエンコード検証後。常に 1 コピー以上ある
 - **「唯一のコピーを消す」パスがない**。エンコードが恒久的に失敗すれば条件 2 が満たされず原本は自然に保持され続ける（+ アラート対象）
+- **条件 2 の「全プロファイル完備」は `encode_profiles` が空でないことも要求する**。API はエンコードプロファイル未指定のルールで `until_encoded` を選択不可にしているが（下記「UI / 運用」）、それを回避して `until_encoded` かつ `encode_profiles = '{}'` の組が recordings に焼かれた場合、「全称量化された条件が空集合に対して自明に真になる」ため対策なしでは即座に原本が消える（issue #103 の「罠」）。削除 reconcile のクエリ自身に `cardinality(encode_profiles) > 0` を要求させ、入力側の検証が抜けても構造的に安全側に倒す
 - **削除プロトコルも冪等**: アセット行を deleting にマーク → unlink → deleted にマーク。どこで落ちても reconcile が拾い直し、残骸は孤児クリーンアップが回収
 - **メタデータは tombstone として残す**。ドロップスキャン結果・元サイズ・録画品質は原本削除後も UI で見られる（「ドロップがあったから再放送を待つ」判断は削除後にこそ必要）
 
 ### UI / 運用
 
-- 原本削除後は**再エンコード不可**になるため、ルール設定で明示。デフォルトは安全側の `keep_original: true` とし、ストレージ効率はユーザーの opt-in
+- 原本削除後は**再エンコード不可**になるため、ルール設定で明示。デフォルトは安全側の `keepOriginal: always` とし、ストレージ効率はユーザーの opt-in
 - エンコードプロファイル未指定のルールでは `until_encoded` を選択不可（原本が唯一の視聴可能物）
 - 視聴は常に派生物側（MPEG-2 TS はブラウザ直接再生に不向き）なので、原本削除で失うのは再エンコードの自由度だけ。H.265 で 1/4〜1/10 になるため、これが実質のストレージ戦略になる
 
