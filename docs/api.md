@@ -28,8 +28,8 @@
 
 ### エンドポイント設計の規約
 
-- API パスは常に**相対パス `/api/*`** を使用する。CDN / リバースプロキシ構成で CORS 不要・実行時コンフィグ注入不要とするため
-- 絶対 URL の生成は単一のビルダーに一元化し、`X-Forwarded-Prefix` ないし `public_url` 設定を尊重する（EPGStation#694 の教訓）
+- API パスは常に**ルート相対パス `/api/*`**（ドメインを含まない絶対パス）を使用する。CDN / リバースプロキシ構成で CORS 不要・実行時コンフィグ注入不要とするため
+- **絶対 URL ビルダーは作らない**（M4-1、issue #89）。EPGStation#694 の教訓（絶対 URL 生成が散らばって `X-Forwarded-Prefix` 対応が後から効かなかった）を踏まえて棚卸ししたが、Rokuban には絶対 URL を生成している箇所が現状ゼロ（API・webhook ペイロードともルート相対パスのみ）。無い箇所にビルダーを先回りで作らない（不変条件 11）。必要になった時点で単一ビルダーへ一元化する方針は維持する
 - **site は資源同定に含める**（案 A、M3-1、issue #29 / #31 / #53）。`programId` は site スコープ（[スキーマ](schema.md) §1-5）なので、番組・意図・上書きを指すパスはすべて `/api/sites/{site}/programs/{programId}...` の形を取る。site の権威は `config.mirakc.site`（空なら `"default"`）で、一致しないパスは 404 にする
 
 ### EPG の読み取り（M1-6 / M1-7）
@@ -313,10 +313,15 @@ mirakc は起動中の局ロゴ抽出をサポートせず、運用者が事前�
 
 | 要件 | 詳細 |
 |---|---|
-| `X-Forwarded-*` の解釈 | `X-Forwarded-For` / `X-Forwarded-Proto` / `X-Forwarded-Host` / `X-Forwarded-Prefix` を正しく解釈する |
-| 相対パスの徹底 | API・アセット参照はすべて相対パス。絶対 URL 生成は単一ビルダーに一元化 |
+| `X-Forwarded-Host` の解釈 | Host allowlist（`internal/api.AllowedHosts`）の検証対象を、ヘッダーがあればそちらに切り替える。無ければ `Host` を使う（M4-1、issue #89） |
+| ルート相対パスの徹底 | API・アセット参照はすべてドメインを含まないルート相対パス（`/api/...`） |
 | WebSocket 不使用 | SSE は `proxy_buffering off` だけで通る。WebSocket のアップグレード要件を持ち込まない |
 | SPA フォールバック | Go 側の catch-all で `index.html` を返す |
+
+### 検討したが実装しないもの（M4-1、issue #89）
+
+- **`X-Forwarded-For`**: 解釈しない。Rokuban は認証・レート制限・認可を持たない（本 doc §認証）ため、なりすまされても実害はアクセスログの精度が落ちるだけだが、**そのアクセスログ機構自体が存在しない**（`internal/api` にリクエスト単位のロギングが無い）。出力先の無いヘッダー解釈は意味を持たないコードになる（CLAUDE.md 不変条件 10）。アクセスログを新設する機会があれば、そのとき合わせて検討する
+- **`X-Forwarded-Proto` / `X-Forwarded-Prefix` / `public_url`（絶対 URL ビルダー）**: 実装しない。絶対 URL を生成している箇所を Go 側（`internal/api` / `internal/streamer` / `internal/notifier` / `internal/webhook`）・TS 側（`web/src`）双方で棚卸しした結果ゼロだった。API はすべてルート相対パス `/api/*`（上記「エンドポイント設計の規約」）、webhook のペイロードにも URL は載らない（[configuration.md](configuration.md) §webhook）。ビルダーが要る箇所が無いので作らない（CLAUDE.md 不変条件 11「これを書く/使うコードは今あるか」）。サブパス配信（`X-Forwarded-Prefix`）が必要になる構成が出てきたら、そのときに棚卸しからやり直す
 
 ### 単一バイナリの自己完結は維持
 
