@@ -211,10 +211,33 @@ EPG の一時欠損（mirakc 再起動・再スキャン・SI 取得不良）で
 - **実行中のエンコード・ingest も影響を受けない**。ジョブは claim / complete 時に小さなトランザクション（SKIP LOCKED）で DB を触るだけで、実行中（ffmpeg・転送）は DB に依存しない
 - **ルール評価は UI と同期しない**。ルール編集 API は編集を書いて再評価ジョブを投入するだけで即応答
 
-実装規律:
+実装規律（issue #90 で実装済み）:
 
-- **ロール別コネクションプール上限を分ける**。api が全コネクションを食い潰して worker / reconciler が待つ事態を防ぐ
-- **API 系クエリに `statement_timeout`** を設定する
+- **ロール別コネクションプール上限を分ける**。api が全コネクションを食い潰して worker / reconciler が待つ事態を防ぐ。
+  ただしプロセスは常に 1 個のコネクションプールしか持たない（`cmd/rokuban/server.go` が起動時に 1 回だけ作り、
+  そのプロセスが担う全ロールが共有する）。したがって「ロール別」とは複数プールを作ることではなく、
+  **そのプロセスが担う roles 集合から、そのプロセスが持つ唯一のプールの `MaxConns` を決める**ことを指す
+  （`internal/db.NewPool`）。`db.max_conns` を明示すればそれを使い、未指定ならロールごとの
+  budget（api: 10 / worker: 8 / watcher: 3 / notifier: 3 / streamer: 4。根拠は `internal/db.roleConnBudget` の
+  doc コメント）を roles の分だけ合計する。monolith（`--all`）は全ロール分の合計になる
+- **API 系クエリに `statement_timeout`** を設定する。クエリ単位の context timeout だと「付け忘れた 1 本」が
+  必ず生まれるため、接続の `RuntimeParams`（起動パケットの session default）で一括適用する
+  （`db.api_statement_timeout`、未指定なら 30s）。**api ロールを含むプロセスのプール全体に適用される**
+  ため、monolith で api と worker/watcher を同居させると worker 側のクエリにも同じ上限がかかる —
+  世帯スケールの通常クエリを十分に上回る値（既定 30s）にしてあるので実害は想定していないが、
+  ロールを分離すれば worker 単独プロセスには一切適用されなくなる
+
+### pooler 越しに置けるのは api ロールだけ
+
+`db.pooler_compat: true` は PgBouncer / Neon pooler の **transaction pooling** 越しの接続を想定したモードで、
+pgx の prepared statement キャッシュを無効化する（`DefaultQueryExecMode` を `QueryExecModeExec` にする）。
+
+これはデプロイの契約であり、**pooler を通せるのは api ロールだけ**である。worker（River 内部の
+elector / notifier が使う LISTEN）・watcher（advisory lock によるリーダー選出）・notifier（ブラウザへの
+SSE 配送のための LISTEN）はいずれもセッション状態に依存するため、transaction pooling で物理コネクションが
+要求ごとに入れ替わると構造的に壊れる（[data.md](data.md) §2 / §3）。`internal/db.NewPool` は
+`pooler_compat: true` と worker/watcher/notifier のいずれかのロールの組み合わせを起動時エラーにする
+（fail-fast。streamer は LISTEN も advisory lock も使わないため pooler と組み合わせてよい）。
 
 ### EPG churn / autovacuum
 

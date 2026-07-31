@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -122,7 +124,7 @@ func TestNewPool(t *testing.T) {
 	// 指してしまって CI でも落ちた。
 	cfg := dbConfigFromURL(t, dbURL)
 
-	pool, err := NewPool(ctx, cfg)
+	pool, err := NewPool(ctx, cfg, nil)
 	if err != nil {
 		t.Fatalf("NewPool: %v", err)
 	}
@@ -149,10 +151,87 @@ func TestNewPool_ConnectionFailure(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	_, err := NewPool(ctx, cfg)
+	_, err := NewPool(ctx, cfg, nil)
 	if err == nil {
 		t.Fatal("expected connection error, got nil")
 	}
+}
+
+// TestNewPool_PoolerCompatFailFast_DoesNotDial は pooler_compat と worker ロールの
+// 組み合わせが、実際に DB へ接続を試みる前に（=ホストが到達不能でも即座に）
+// エラーになることを確認する。TryAcquire 相当のチェックが NewPool の先頭で
+// 行われている（buildPoolConfig で pgxpool.NewWithConfig より前に検査する）ことの
+// 回帰テスト。チェックを NewWithConfig の後段に動かすと、到達不能ホストへの接続
+// タイムアウト（数十秒）が発生してこのテストがタイムアウトで落ちる。
+func TestNewPool_PoolerCompatFailFast_DoesNotDial(t *testing.T) {
+	cfg := config.DBConfig{
+		Host:         "10.255.255.1", // ルーティングされない予約アドレス（到達不能を意図）
+		Port:         5432,
+		User:         "u",
+		Password:     "p",
+		Database:     "d",
+		SSLMode:      "disable",
+		PoolerCompat: true,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	_, err := NewPool(ctx, cfg, []string{"worker"})
+	if err == nil {
+		t.Fatal("expected fail-fast error for pooler_compat + worker, got nil")
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("NewPool tried to dial the unreachable host instead of failing fast: %v", err)
+	}
+}
+
+// TestNewPool_APIStatementTimeout_Enforced は db.api_statement_timeout が実際に
+// クエリを打ち切ることを、pg_sleep で意図的に超過させて確認する
+// （CLAUDE.md テスト規律: 設定値を読んだだけのテストにしない）。
+func TestNewPool_APIStatementTimeout_Enforced(t *testing.T) {
+	dbURL := testDatabaseURL(t)
+	ctx := context.Background()
+
+	if err := MigrateUp(ctx, dbURL); err != nil {
+		t.Fatalf("migrate up: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = MigrateDown(ctx, dbURL)
+	})
+
+	cfg := dbConfigFromURL(t, dbURL)
+	cfg.APIStatementTimeout = 200 * time.Millisecond
+
+	t.Run("api role: statement_timeout aborts a slow query", func(t *testing.T) {
+		pool, err := NewPool(ctx, cfg, []string{"api"})
+		if err != nil {
+			t.Fatalf("NewPool: %v", err)
+		}
+		defer pool.Close()
+
+		_, err = pool.Exec(ctx, "SELECT pg_sleep(2)")
+		if err == nil {
+			t.Fatal("expected pg_sleep(2) to be aborted by statement_timeout, got nil error")
+		}
+		if !strings.Contains(err.Error(), "statement timeout") {
+			t.Errorf("error = %v, want it to mention statement timeout", err)
+		}
+	})
+
+	t.Run("no api role: the same slow query is not aborted", func(t *testing.T) {
+		pool, err := NewPool(ctx, cfg, []string{"worker"})
+		if err != nil {
+			t.Fatalf("NewPool: %v", err)
+		}
+		defer pool.Close()
+
+		// api_statement_timeout（200ms）が worker ロールには効かないことを、
+		// それを大きく超える 1 秒の pg_sleep が成功することで確認する。
+		if _, err := pool.Exec(ctx, "SELECT pg_sleep(1)"); err != nil {
+			t.Errorf("pg_sleep(1) should succeed without the api role, got: %v", err)
+		}
+	})
 }
 
 // dbConfigFromURL は接続 URL を config.DBConfig に変換する。

@@ -14,6 +14,23 @@ db:
   password: ${POSTGRES_PASSWORD}
   database: rokuban
   sslmode: disable
+  # max_conns: 20                # このプロセスが持つ唯一のコネクションプールの上限。
+                                 # プロセスは常に 1 個のプールしか持たず全ロールが共有するため、
+                                 # 「ロール別プール上限」はこの 1 個の上限を決めることを指す。
+                                 # 未指定（0）なら、起動時の roles（--all / --roles）から
+                                 # ロールごとの budget（api:10 / worker:8 / watcher:3 /
+                                 # notifier:3 / streamer:4）を合計して自動算出する
+                                 # （docs/operations.md §3「輻輳時の隔離」、issue #90）
+  # api_statement_timeout: 30s   # api ロールを含むプロセスのプールにだけ適用する
+                                 # statement_timeout。未指定（0）なら既定値 30s。
+                                 # api ロールを含まないプロセス（worker/watcher 単独等）には
+                                 # 適用されない
+  # pooler_compat: false         # true にすると PgBouncer / Neon pooler の transaction
+                                 # pooling 越しでも壊れないよう prepared statement キャッシュを
+                                 # 無効化する。pooler を通せるのは api ロールだけ —— worker /
+                                 # watcher / notifier と組み合わせると起動時エラーになる
+                                 # （LISTEN/NOTIFY と advisory lock がセッション状態に
+                                 # 依存するため。docs/operations.md §3）
 
 # mirakc エンドポイント（必須）
 mirakc:

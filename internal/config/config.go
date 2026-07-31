@@ -44,6 +44,33 @@ type DBConfig struct {
 	Password string `yaml:"password" validate:"required"`
 	Database string `yaml:"database" validate:"required"`
 	SSLMode  string `yaml:"sslmode"`
+
+	// MaxConns はこのプロセスが持つ唯一のコネクションプールの上限（issue #90）。
+	// プロセスは常に 1 個のプールしか持たない（全ロールがそれを共有する。
+	// docs/operations.md §3「輻輳時の隔離」）ため、「ロール別プール上限」は
+	// 複数プールを作ることではなく、この 1 個の上限を決めることを指す。
+	// 0（未指定）なら db.NewPool がプロセスの roles 集合から自動算出する。
+	// roles を渡さない単発 CLI コマンド（rescue/enqueue/shadow-diff）では
+	// pgxpool の既定値（max(4, NumCPU)）がそのまま使われる。
+	MaxConns int `yaml:"max_conns" validate:"gte=0"`
+
+	// APIStatementTimeout は api ロールを含むプロセスのプールにだけ適用する
+	// statement_timeout（docs/operations.md §3「API 系クエリに statement_timeout」）。
+	// クエリ単位の context timeout ではなく接続の RuntimeParams で一括適用する
+	// —— クエリ単位だと「付け忘れた 1 本」が必ず生まれるため（issue #90）。
+	// 0（未指定）なら既定値（30s）を使う。api ロールを含まないプロセス
+	// （worker/watcher 単独等）には適用しない。
+	APIStatementTimeout time.Duration `yaml:"api_statement_timeout"`
+
+	// PoolerCompat を true にすると PgBouncer / Neon pooler の transaction pooling
+	// 越しでも壊れないよう pgx の prepared statement キャッシュを無効化する
+	// （DefaultQueryExecMode を QueryExecModeExec にする）。
+	//
+	// **pooler を通せるのは api ロールだけ**（デプロイの契約。docs/operations.md §3）。
+	// worker（River 内部の LISTEN）/ watcher（advisory lock）/ notifier（LISTEN）は
+	// セッション状態に依存するため transaction pooling 越しでは構造的に壊れる。
+	// db.NewPool はこれらのロールと PoolerCompat=true の組み合わせを起動時エラーにする。
+	PoolerCompat bool `yaml:"pooler_compat"`
 }
 
 // DSN は libpq 形式の接続文字列を返す。
