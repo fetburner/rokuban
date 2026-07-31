@@ -71,9 +71,13 @@ S3 マウント（k8s-csi-s3 の geesefs/s3fs、AWS Mountpoint 等）では以�
 
 録画 1 本につき `kind = 'thumbnail'` の media_asset を 1 つ作る（`UNIQUE (recording_id, kind, profile)`）。
 
-- **投入（レベルトリガー）**: active な original があり active な thumbnail が無いときだけ
-  River `thumbnail` キューへ unique ジョブ（`recording_id`）を積む。ingest コミット後の
-  ヒント投入と、ギャップ埋め（`ListRecordingIDsMissingThumbnail`）の両方で同じ条件を使う。
+- **投入（レベルトリガー）**: active な original があり active な thumbnail が無く、
+  かつごみ箱（`recordings.deleted_at IS NOT NULL`）に入っていない録画だけ
+  River `thumbnail` キューへ unique ジョブ（`recording_id`）を積む。ごみ箱の録画を
+  除外するのは、配信側（`GetThumbnailMediaAssetForServing`）が `deleted_at IS NULL`
+  を要求するため、生成しても誰にも配られず猶予期間ぶん ffmpeg を無駄打ちするだけ
+  だから（issue #109）。ingest コミット後のヒント投入と、ギャップ埋め
+  （`ListRecordingIDsMissingThumbnail`）の両方で同じ条件を使う。
   命令的チェーン（「ingest 成功 → 必ず thumbnail」）は採らない
 - **抽出位置（固定ポリシー）**: `seek = min(duration × 10%, 30s)`。duration は
   ffprobe が読む実ファイル長。取れなければ 0 秒（先頭フレーム）。設定キーは設けない

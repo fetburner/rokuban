@@ -328,6 +328,153 @@ func TestEnqueueThumbnailIfNeeded(t *testing.T) {
 	}
 }
 
+// TestEnqueueThumbnailIfNeeded_ExcludesTrash は issue #109 の回帰テスト。
+// SoftDeleteRecording に status ガードは無く、ingest 進行中の録画もごみ箱に
+// 入れられる（internal/db/queries/recordings_trash.sql）。original コミット
+// 直後のヒント投入がその窓を踏んだ場合でも、ごみ箱の録画にはジョブを積まない
+// （ListRecordingIDsMissingThumbnail と条件を揃える。docs/storage.md §5.1）。
+func TestEnqueueThumbnailIfNeeded_ExcludesTrash(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+	q := sqlcgen.New(pool)
+
+	workers := river.NewWorkers()
+	river.AddWorker(workers, &ThumbnailWorker{})
+	client, err := NewClient(pool, workers, ClientConfig{PeriodicJobs: false})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	recordingID := insertTestRecording(t, pool)
+	if _, err := q.CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
+		RecordingID: recordingID,
+		Kind:        db.AssetKindOriginal,
+		RelPath:     "trashed3.m2ts",
+		SizeBytes:   1,
+	}); err != nil {
+		t.Fatalf("seed original: %v", err)
+	}
+	if _, err := q.SoftDeleteRecording(ctx, recordingID); err != nil {
+		t.Fatalf("soft delete: %v", err)
+	}
+
+	if err := EnqueueThumbnailIfNeeded(ctx, pool, client, recordingID); err != nil {
+		t.Fatalf("enqueue for trashed recording: %v", err)
+	}
+
+	var n int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM river_job WHERE kind = 'thumbnail' AND (args->>'recording_id')::bigint = $1`,
+		recordingID,
+	).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("river_job rows for trashed recording = %d, want 0", n)
+	}
+}
+
+// TestListRecordingIDsMissingThumbnail_ExcludesTrash は issue #109 の回帰テスト。
+// ごみ箱（recordings.deleted_at IS NOT NULL）の録画は、original があり
+// thumbnail が無くても投入対象から外れる。生成しても配信側
+// （GetThumbnailMediaAssetForServing）が r.deleted_at IS NULL を要求するため
+// 誰にも配られず、ffmpeg の無駄打ちになるだけだからである。
+func TestListRecordingIDsMissingThumbnail_ExcludesTrash(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	q := sqlcgen.New(pool)
+	ctx := context.Background()
+
+	// insertTestRecording は固定の network/service/event ID を使うため、
+	// deleted_at IS NULL の行が 2 つ同時に存在すると unique partial index
+	// (site, network_id, service_id, event_id) WHERE deleted_at IS NULL に
+	// ぶつかる。先にごみ箱行を作って soft delete してから、生きている行を作る。
+	trashedID := insertTestRecording(t, pool)
+	if _, err := q.CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
+		RecordingID: trashedID,
+		Kind:        db.AssetKindOriginal,
+		RelPath:     "trashed.m2ts",
+		SizeBytes:   1,
+	}); err != nil {
+		t.Fatalf("seed trashed original: %v", err)
+	}
+	if _, err := q.SoftDeleteRecording(ctx, trashedID); err != nil {
+		t.Fatalf("soft delete: %v", err)
+	}
+
+	liveID := insertTestRecording(t, pool)
+	if _, err := q.CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
+		RecordingID: liveID,
+		Kind:        db.AssetKindOriginal,
+		RelPath:     "live.m2ts",
+		SizeBytes:   1,
+	}); err != nil {
+		t.Fatalf("seed live original: %v", err)
+	}
+
+	ids, err := q.ListRecordingIDsMissingThumbnail(ctx)
+	if err != nil {
+		t.Fatalf("ListRecordingIDsMissingThumbnail: %v", err)
+	}
+
+	foundLive := false
+	for _, id := range ids {
+		if id == trashedID {
+			t.Errorf("trashed recording %d must not be in missing-thumbnail list, got %v", trashedID, ids)
+		}
+		if id == liveID {
+			foundLive = true
+		}
+	}
+	if !foundLive {
+		t.Errorf("live recording %d must be in missing-thumbnail list, got %v", liveID, ids)
+	}
+}
+
+// TestEnqueueMissingThumbnails_ExcludesTrash は EnqueueMissingThumbnails（復旧・
+// テスト用の全件投入）でも、ごみ箱の録画にはジョブを積まないことを固定する。
+func TestEnqueueMissingThumbnails_ExcludesTrash(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+	q := sqlcgen.New(pool)
+
+	workers := river.NewWorkers()
+	river.AddWorker(workers, &ThumbnailWorker{})
+	client, err := NewClient(pool, workers, ClientConfig{PeriodicJobs: false})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	trashedID := insertTestRecording(t, pool)
+	if _, err := q.CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
+		RecordingID: trashedID,
+		Kind:        db.AssetKindOriginal,
+		RelPath:     "trashed2.m2ts",
+		SizeBytes:   1,
+	}); err != nil {
+		t.Fatalf("seed trashed original: %v", err)
+	}
+	if _, err := q.SoftDeleteRecording(ctx, trashedID); err != nil {
+		t.Fatalf("soft delete: %v", err)
+	}
+
+	n, err := EnqueueMissingThumbnails(ctx, pool, client)
+	if err != nil {
+		t.Fatalf("EnqueueMissingThumbnails: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("EnqueueMissingThumbnails enqueued %d jobs, want 0 (only the trashed recording is missing a thumbnail)", n)
+	}
+}
+
 // fakeThumbnailTools は ffprobe が durationSec を返し、ffmpeg が tinyJPEG を
 // 出力パスに書くフックを返す。
 func fakeThumbnailTools(t *testing.T, durationSec float64) func(ctx context.Context, name string, args ...string) ([]byte, error) {

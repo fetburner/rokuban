@@ -333,11 +333,19 @@ func copyFileFsync(src, dst string) (int64, error) {
 	return n, nil
 }
 
-// EnqueueThumbnailIfNeeded は original があり active thumbnail が無いときだけ
-// unique な thumbnail ジョブを投入する（レベルトリガー。issue #66）。
+// EnqueueThumbnailIfNeeded は original があり active thumbnail が無く、かつ
+// ごみ箱に入っていないときだけ unique な thumbnail ジョブを投入する
+// （レベルトリガー。issue #66）。
 //
-// 既に thumbnail がある・original が無い場合は no-op。River の UniqueOpts が
-// 進行中ジョブの二重投入も吸収する。
+// 既に thumbnail がある・original が無い・ごみ箱（recordings.deleted_at）に
+// 入っている場合は no-op。River の UniqueOpts が進行中ジョブの二重投入も吸収する。
+//
+// ごみ箱チェックは ListRecordingIDsMissingThumbnail（issue #109）と条件を揃える
+// （docs/storage.md §5.1）。呼び出し元は ingest 直後の original コミット後のみ
+// だが、SoftDeleteRecording（internal/db/queries/recordings_trash.sql）に
+// status ガードは無く ingest 進行中の録画もごみ箱に入れられるため、到達しうる
+// 経路として扱う。GetActiveOriginalMediaAsset に続けてもう 1 クエリ増えるが、
+// 既に 2 クエリ投げている経路なので追加コストはほぼゼロ。
 func EnqueueThumbnailIfNeeded(ctx context.Context, pool *pgxpool.Pool, riverClient *river.Client[pgx5.Tx], recordingID int64) error {
 	if riverClient == nil {
 		return fmt.Errorf("river client is nil")
@@ -355,6 +363,15 @@ func EnqueueThumbnailIfNeeded(ctx context.Context, pool *pgxpool.Pool, riverClie
 			return nil
 		}
 		return fmt.Errorf("checking original: %w", err)
+	}
+
+	if rec, err := q.GetRecordingByID(ctx, recordingID); err != nil {
+		if errors.Is(err, pgx5.ErrNoRows) {
+			return nil
+		}
+		return fmt.Errorf("checking recording: %w", err)
+	} else if rec.DeletedAt != nil {
+		return nil
 	}
 
 	if _, err := riverClient.Insert(ctx, ThumbnailJobArgs{RecordingID: recordingID}, nil); err != nil {
