@@ -3,6 +3,8 @@ package catalog
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -109,7 +111,7 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 	}
 
 	// --- export ---
-	doc, err := Export(ctx, q, "")
+	doc, err := Export(ctx, pool, "")
 	if err != nil {
 		t.Fatalf("Export: %v", err)
 	}
@@ -252,7 +254,7 @@ func TestExport_SiteFilter(t *testing.T) {
 		}
 	}
 
-	doc, err := Export(ctx, q, "default")
+	doc, err := Export(ctx, pool, "default")
 	if err != nil {
 		t.Fatalf("Export: %v", err)
 	}
@@ -265,3 +267,96 @@ func TestExport_SiteFilter(t *testing.T) {
 }
 
 func ptrTime(t time.Time) *time.Time { return &t }
+
+// TestExport_ConcurrentIngestStaysConsistent は、Export の実行中に他のトランザク
+// ションが録画を作り続けても、返る Document が自己無矛盾（すべての media_asset の
+// recording_id が同じ Document の recordings に存在する）であることを確認する
+// 回帰テスト（issue #106）。
+//
+// Export が単一トランザクション（REPEATABLE READ, READ ONLY）から読まないと、
+// recordings を読んだ「後」に作られた録画の media_assets だけを後続クエリが拾って
+// しまい、Document 内で「recordings に居ない録画を指す media_asset」が発生しうる。
+// RescueFile（internal/catalog/rescue.go）はこの Document を rules → recordings →
+// media_assets の順に 1 トランザクションで書くので、そのケースは
+// media_assets.recording_id の FK 制約違反でまるごと復元不能になる。
+//
+// 手動確認（issue #106 の受け入れ基準）: internal/catalog/export.go の Export から
+// トランザクションを外し、pool.BeginTx を通さず sqlcgen.New(pool) を直接使う旧実装
+// に戻してこのテストを実行すると、このテストは（毎回ではないがタイミング次第で）
+// 失敗し、実際に log から
+// "media_asset ... references recording ... not present in exported recordings"
+// が観測できることを確認済み。トランザクションを戻すと決定的に通る。
+func TestExport_ConcurrentIngestStaysConsistent(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	q := sqlcgen.New(pool)
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			recID, err := q.CreateRecording(ctx, sqlcgen.CreateRecordingParams{
+				Source: "manual", Site: "default",
+				NetworkID: 1, ServiceID: 1, EventID: int32(10_000 + i),
+				ServiceName: "s", ChannelType: "GR", Channel: "1",
+				Title: fmt.Sprintf("race-%d", i), IsFree: true,
+				ProgramStartAt:    time.Date(2026, 7, 29, 0, 0, 0, 0, time.UTC),
+				ProgramDurationMs: 60000, Status: "finished",
+			})
+			if err != nil {
+				// テスト終盤で pool が閉じられたときなど。ゴルーチンは黙って終わる。
+				return
+			}
+			if _, err := q.CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
+				RecordingID: recID,
+				Kind:        "original",
+				RelPath:     fmt.Sprintf("race/%d.m2ts", i),
+				SizeBytes:   1,
+			}); err != nil {
+				return
+			}
+		}
+	}()
+
+	var lastDoc *Document
+	const iterations = 100
+	for i := 0; i < iterations; i++ {
+		doc, err := Export(ctx, pool, "")
+		if err != nil {
+			close(stop)
+			wg.Wait()
+			t.Fatalf("Export: %v", err)
+		}
+		recIDs := make(map[int64]bool, len(doc.Recordings))
+		for _, r := range doc.Recordings {
+			recIDs[r.ID] = true
+		}
+		for _, a := range doc.MediaAssets {
+			if !recIDs[a.RecordingID] {
+				close(stop)
+				wg.Wait()
+				t.Fatalf("media_asset %d references recording %d not present in exported recordings (snapshot not consistent)", a.ID, a.RecordingID)
+			}
+		}
+		lastDoc = doc
+	}
+	close(stop)
+	wg.Wait()
+
+	// フルパイプライン: 最後に取れた Document を rescue しても FK 違反が出ないこと。
+	mediaDir := t.TempDir()
+	path, err := Write(mediaDir, lastDoc, 7)
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if _, err := RescueFile(ctx, pool, path); err != nil {
+		t.Fatalf("RescueFile after concurrent export: %v", err)
+	}
+}

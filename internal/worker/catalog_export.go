@@ -10,7 +10,6 @@ import (
 	"github.com/riverqueue/river"
 
 	"github.com/fetburner/rokuban/internal/catalog"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 )
 
 const (
@@ -68,7 +67,7 @@ func (w *CatalogExportWorker) Work(ctx context.Context, job *river.Job[CatalogEx
 		return fmt.Errorf("media dir is empty")
 	}
 
-	doc, err := catalog.Export(ctx, sqlcgen.New(w.Pool), job.Args.Site)
+	doc, err := catalog.Export(ctx, w.Pool, job.Args.Site)
 	if err != nil {
 		return err
 	}
