@@ -166,7 +166,10 @@ func (w *DeleteReconcileWorker) Work(ctx context.Context, _ *river.Job[DeleteRec
 	// active に戻すと「active なのにファイルが無い行」を作ってしまう。これは
 	// 案 B [復元時に deleting を同期的に active へ戻す] を却下した理由と同じ
 	// 罠で、revert 経路自身がこの窓を作らないようにする）。
-	unqualified, err := q.ListUnqualifiedDeletingAssets(ctx, trashCutoff)
+	unqualified, err := q.ListUnqualifiedDeletingAssets(ctx, sqlcgen.ListUnqualifiedDeletingAssetsParams{
+		GraceCutoff: trashCutoff,
+		RowLimit:    deleteReconcileRowLimit,
+	})
 	if err != nil {
 		return fmt.Errorf("listing unqualified deleting assets: %w", err)
 	}
@@ -445,7 +448,7 @@ func (w *DeleteReconcileWorker) notifyPurgedRecordings(ctx context.Context, q *s
 }
 
 // hasPendingDerivativeJob は原本を入力とする encode/thumbnail ジョブが
-// 実行中・再試行待ちでないかを確認する（docs/storage.md §7「原本を入力とする
+// 実行中・再試行待ちでないかを確認する（docs/storage.md §6「原本を入力とする
 // 実行中・再試行中のジョブがない」）。river_job は rivermigrate が管理する
 // テーブルで sqlc のスキーマディレクトリには含まれないため、生 SQL で問い合わせる。
 func (w *DeleteReconcileWorker) hasPendingDerivativeJob(ctx context.Context, recordingID int64) (bool, error) {

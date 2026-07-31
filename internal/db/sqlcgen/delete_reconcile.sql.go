@@ -337,7 +337,14 @@ WHERE a.state = 'deleting'
       )
     )
   )
+ORDER BY a.id
+LIMIT $2
 `
+
+type ListUnqualifiedDeletingAssetsParams struct {
+	GraceCutoff time.Time
+	RowLimit    int32
+}
 
 type ListUnqualifiedDeletingAssetsRow struct {
 	ID          int64
@@ -359,8 +366,8 @@ type ListUnqualifiedDeletingAssetsRow struct {
 // 同期的に active へ戻す）を却下した理由そのもの ——「active なのにファイルが
 // 無い行」を作ってしまう。この SELECT + Go 側の stat + 分岐は、その窓を
 // revert 経路自身に持ち込まないための構成。
-func (q *Queries) ListUnqualifiedDeletingAssets(ctx context.Context, graceCutoff time.Time) ([]ListUnqualifiedDeletingAssetsRow, error) {
-	rows, err := q.db.Query(ctx, listUnqualifiedDeletingAssets, graceCutoff)
+func (q *Queries) ListUnqualifiedDeletingAssets(ctx context.Context, arg ListUnqualifiedDeletingAssetsParams) ([]ListUnqualifiedDeletingAssetsRow, error) {
+	rows, err := q.db.Query(ctx, listUnqualifiedDeletingAssets, arg.GraceCutoff, arg.RowLimit)
 	if err != nil {
 		return nil, err
 	}

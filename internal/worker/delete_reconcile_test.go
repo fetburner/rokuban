@@ -341,9 +341,10 @@ func TestDeleteReconcileWorker_UntilEncodedOriginalPurge_DoesNotFireRecordingDel
 // （internal/api RestoreRecording）ので media_assets.state は deleting の
 // まま残る。ここで pending 経路が判定を再評価せず「既に決めた削除」として
 // 無条件に続行すると、「復元しました」と表示された直後にファイルが消える
-// （issue #105 の失敗シナリオそのもの）。RevertUnqualifiedDeletingAssets が
-// この行を active に戻すので、pending 経路には現れずファイルは残る。
-// recording.deleted も発火しない（録画は生きている）。
+// （issue #105 の失敗シナリオそのもの）。ListUnqualifiedDeletingAssets /
+// resolveUnqualifiedDeletingAsset がこの行を active に戻すので、pending
+// 経路には現れずファイルは残る。recording.deleted も発火しない（録画は
+// 生きている）。
 func TestDeleteReconcileWorker_RestoredWhileDeleting_RevertsInsteadOfDeleting(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
@@ -641,7 +642,7 @@ func TestDeleteReconcileWorker_UntilEncoded_MissingThumbnail_NotDeleted(t *testi
 }
 
 // 原本を入力とする encode ジョブが実行待ちの間は、派生物が揃って見えても消さない
-// （storage.md §7 の条件 3）。
+// （storage.md §6 の条件 3）。
 func TestDeleteReconcileWorker_UntilEncoded_PendingEncodeJob_NotDeleted(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
@@ -874,7 +875,7 @@ func TestDeleteReconcileWorker_CircuitBreaker_TripsOnExcess(t *testing.T) {
 // ただし issue #105 以降、pending 経路は無条件に再開するのではなく trash /
 // until_encoded の判定を再評価するようになった。この行が「まだ削除して
 // よい」と言えるのは録画がごみ箱の猶予を過ぎているからなので、それを
-// markRecordingTrashed で明示する（無いと RevertUnqualifiedDeletingAssets が
+// markRecordingTrashed で明示する（無いと resolveUnqualifiedDeletingAsset が
 // active に戻してしまい、このテストの主張が成り立たない）。
 func TestDeleteReconcileWorker_ResumesStuckDeletingRow(t *testing.T) {
 	pool := setupTestPool(t)

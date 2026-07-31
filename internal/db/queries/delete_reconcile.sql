@@ -122,7 +122,9 @@ WHERE a.state = 'deleting'
         WHERE t.recording_id = r.id AND t.kind = 'thumbnail' AND t.state = 'active'
       )
     )
-  );
+  )
+ORDER BY a.id
+LIMIT sqlc.arg('row_limit');
 
 -- ListUnqualifiedDeletingAssets が挙げた 1 行を active に戻す。ファイルが
 -- まだ存在すると Go 側で確認できたときだけ呼ぶこと。
