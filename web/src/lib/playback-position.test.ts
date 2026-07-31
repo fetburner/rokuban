@@ -5,6 +5,7 @@ import {
   playbackStorageKey,
   recordingFileURL,
   savePlaybackPosition,
+  shouldSavePlaybackPosition,
 } from '@/lib/playback-position'
 
 afterEach(() => {
@@ -46,6 +47,24 @@ describe('load/savePlaybackPosition', () => {
 
   it('未保存は null', () => {
     expect(loadPlaybackPosition(99, 'h264')).toBeNull()
+  })
+})
+
+describe('shouldSavePlaybackPosition', () => {
+  it('未保存（null）からは常に保存する', () => {
+    expect(shouldSavePlaybackPosition(null, 0.4)).toBe(true)
+    expect(shouldSavePlaybackPosition(null, 10.9)).toBe(true)
+  })
+
+  it('同じ秒の間は保存しない', () => {
+    expect(shouldSavePlaybackPosition(10, 10.1)).toBe(false)
+    expect(shouldSavePlaybackPosition(10, 10.5)).toBe(false)
+    expect(shouldSavePlaybackPosition(10, 10.999)).toBe(false)
+  })
+
+  it('秒が変わったら保存する', () => {
+    expect(shouldSavePlaybackPosition(10, 11.0)).toBe(true)
+    expect(shouldSavePlaybackPosition(10, 9.9)).toBe(true)
   })
 })
 
