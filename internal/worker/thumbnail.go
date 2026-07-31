@@ -338,6 +338,11 @@ func copyFileFsync(src, dst string) (int64, error) {
 //
 // 既に thumbnail がある・original が無い場合は no-op。River の UniqueOpts が
 // 進行中ジョブの二重投入も吸収する。
+//
+// ごみ箱（recordings.deleted_at）は ListRecordingIDsMissingThumbnail と揃えて
+// 見ていない（issue #109）。呼び出し元は ingest 直後の original コミット後のみ
+// （その録画がごみ箱に入っているのは矛盾する状態）なので、揃えるコストに見合う
+// 実害が無いと判断した。
 func EnqueueThumbnailIfNeeded(ctx context.Context, pool *pgxpool.Pool, riverClient *river.Client[pgx5.Tx], recordingID int64) error {
 	if riverClient == nil {
 		return fmt.Errorf("river client is nil")
