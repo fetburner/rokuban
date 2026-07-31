@@ -383,8 +383,9 @@ func (w *DeleteReconcileWorker) pendingDerivativeJobRecordingIDs(ctx context.Con
 	if len(recordingIDs) == 0 {
 		return nil, nil
 	}
+	// DISTINCT は付けない。呼び出し側で map に入れて重複を除くので冗長。
 	const query = `
-		SELECT DISTINCT (args ->> 'recording_id')::bigint
+		SELECT (args ->> 'recording_id')::bigint
 		FROM river_job
 		WHERE kind IN ('encode', 'thumbnail')
 		  AND state IN ('available', 'pending', 'scheduled', 'retryable', 'running')
