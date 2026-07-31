@@ -328,6 +328,55 @@ func TestEnqueueThumbnailIfNeeded(t *testing.T) {
 	}
 }
 
+// TestEnqueueThumbnailIfNeeded_ExcludesTrash は issue #109 の回帰テスト。
+// SoftDeleteRecording に status ガードは無く、ingest 進行中の録画もごみ箱に
+// 入れられる（internal/db/queries/recordings_trash.sql）。original コミット
+// 直後のヒント投入がその窓を踏んだ場合でも、ごみ箱の録画にはジョブを積まない
+// （ListRecordingIDsMissingThumbnail と条件を揃える。docs/storage.md §5.1）。
+func TestEnqueueThumbnailIfNeeded_ExcludesTrash(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+	q := sqlcgen.New(pool)
+
+	workers := river.NewWorkers()
+	river.AddWorker(workers, &ThumbnailWorker{})
+	client, err := NewClient(pool, workers, ClientConfig{PeriodicJobs: false})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	recordingID := insertTestRecording(t, pool)
+	if _, err := q.CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
+		RecordingID: recordingID,
+		Kind:        db.AssetKindOriginal,
+		RelPath:     "trashed3.m2ts",
+		SizeBytes:   1,
+	}); err != nil {
+		t.Fatalf("seed original: %v", err)
+	}
+	if _, err := q.SoftDeleteRecording(ctx, recordingID); err != nil {
+		t.Fatalf("soft delete: %v", err)
+	}
+
+	if err := EnqueueThumbnailIfNeeded(ctx, pool, client, recordingID); err != nil {
+		t.Fatalf("enqueue for trashed recording: %v", err)
+	}
+
+	var n int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM river_job WHERE kind = 'thumbnail' AND (args->>'recording_id')::bigint = $1`,
+		recordingID,
+	).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("river_job rows for trashed recording = %d, want 0", n)
+	}
+}
+
 // TestListRecordingIDsMissingThumbnail_ExcludesTrash は issue #109 の回帰テスト。
 // ごみ箱（recordings.deleted_at IS NOT NULL）の録画は、original があり
 // thumbnail が無くても投入対象から外れる。生成しても配信側
