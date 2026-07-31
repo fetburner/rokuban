@@ -17,7 +17,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/metrics"
@@ -182,20 +181,27 @@ func (w *ThumbnailWorker) Work(ctx context.Context, job *river.Job[ThumbnailJobA
 	return nil
 }
 
+// commit は抽出済みサムネイルを media_assets（kind='thumbnail'）にコミットする。
+//
+// ON CONFLICT DO NOTHING（id を返さず pgx.ErrNoRows で競合を伝える形）は使わない。
+// DO NOTHING が返す ErrNoRows は「既に active な行がある競合」と「tombstone
+// （state='deleted'、過去の完全削除の残骸）との競合」を区別できず、後者まで
+// 成功扱いにすると、ファイルは書き直され続けるのに DB 行は deleted のまま
+// 残り、GetActiveThumbnailMediaAssetID は空を返し続けてレベルトリガーが同じ
+// ジョブを積み直す孤児になる（issue #108）。ErrNoRows を無条件で成功にして
+// よいのは、競合相手の行が active であることが保証できるときだけである。
+//
+// UpsertThumbnailMediaAsset は ON CONFLICT DO UPDATE で tombstone を active に
+// 戻す（encode の UpsertEncodedMediaAsset と同じ形）ため常に行を返し、
+// ErrNoRows の分岐そのものが要らない。
 func (w *ThumbnailWorker) commit(ctx context.Context, recordingID int64, relPath string, size int64) error {
-	_, err := sqlcgen.New(w.Pool).InsertMediaAssetIfAbsent(ctx, sqlcgen.InsertMediaAssetIfAbsentParams{
+	_, err := sqlcgen.New(w.Pool).UpsertThumbnailMediaAsset(ctx, sqlcgen.UpsertThumbnailMediaAssetParams{
 		RecordingID: recordingID,
-		Kind:        db.AssetKindThumbnail,
 		RelPath:     relPath,
 		SizeBytes:   size,
 	})
 	if err != nil {
-		if errors.Is(err, pgx5.ErrNoRows) {
-			// 競合で既に行がある。ファイルは二重書きの残骸になりうるが、
-			// UNIQUE (recording_id, kind, profile) の勝者の行が真実。
-			return nil
-		}
-		return fmt.Errorf("inserting media_asset: %w", err)
+		return fmt.Errorf("upserting media_asset: %w", err)
 	}
 	return nil
 }
