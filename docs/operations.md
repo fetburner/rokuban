@@ -219,7 +219,10 @@ EPG の一時欠損（mirakc 再起動・再スキャン・SI 取得不良）で
   **そのプロセスが担う roles 集合から、そのプロセスが持つ唯一のプールの `MaxConns` を決める**ことを指す
   （`internal/db.NewPool`）。`db.max_conns` を明示すればそれを使い、未指定ならロールごとの
   budget（api: 10 / worker: 8 / watcher: 3 / notifier: 3 / streamer: 4。根拠は `internal/db.roleConnBudget` の
-  doc コメント）を roles の分だけ合計する。monolith（`--all`）は全ロール分の合計になる
+  doc コメント）を roles の分だけ合計する。monolith（`--all`）は全ロール分の合計になる。
+  `db.max_conns` を明示指定する場合、watcher/worker/notifier はプロセスの生存期間中コネクションを
+  1 本専有し続ける（advisory lock / River の LISTEN）ため、専有分の合計 + 他の仕事のための余地 1 本を
+  下回ると起動時 fail-fast する（`internal/db.minRequiredConns`）
 - **API 系クエリに `statement_timeout`** を設定する。クエリ単位の context timeout だと「付け忘れた 1 本」が
   必ず生まれるため、接続の `RuntimeParams`（起動パケットの session default）で一括適用する
   （`db.api_statement_timeout`、未指定なら 30s）。**api ロールを含むプロセスのプール全体に適用される**
@@ -245,6 +248,11 @@ transaction pooling で物理コネクションが要求ごとに入れ替わる
 組み合わせを起動時エラーにする（fail-fast）。**streamer は LISTEN も advisory lock も長期状態も
 使わない**ため pooler と組み合わせてよい（`internal/streamer` で確認済み。バイト転送も
 X-Accel-Redirect か Go のファイル配信で、DB 接続を保持し続けない）。
+
+`db.api_statement_timeout` は接続の起動パケット（`RuntimeParams`）で渡すため、PgBouncer の
+`ignore_startup_parameters` 設定次第では接続拒否、または黙って無視される可能性がある。
+`pool.Ping` が失敗すれば起動時に大きく落ちるので気付けるが、api + pooler を組み合わせて
+運用する場合は `ignore_startup_parameters` に `statement_timeout` を含めない設定にしておく。
 
 ### EPG churn / autovacuum
 
