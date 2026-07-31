@@ -272,8 +272,10 @@ export interface ProgramIntentInput {
 }
 
 /**
- * ingest 時に評価されるので、録画開始後の変更でも効く
- * （M3 で消費。docs/recording.md §4.5）。
+ * ingest が原本をコミットする tx の中で recordings に焼かれる瞬間まで
+ * 効く。録画開始後の変更でも、放送終了・ingest 完了より前ならこの
+ * 録画に反映されるが、ingest 完了後の変更はこの録画には反映されない
+ * （docs/recording/reservation-model.md §4.5）。
  */
 export type ProgramOverridesInputKeepOriginal = typeof ProgramOverridesInputKeepOriginal[keyof typeof ProgramOverridesInputKeepOriginal];
 
@@ -321,13 +323,17 @@ export interface ProgramOverridesInput {
      */
   filenameTemplate?: string;
   /**
-     * ingest 時に評価されるので、録画開始後の変更でも効く
-     * （M3 で消費。docs/recording.md §4.5）。
+     * ingest が原本をコミットする tx の中で recordings に焼かれる瞬間まで
+     * 効く。録画開始後の変更でも、放送終了・ingest 完了より前ならこの
+     * 録画に反映されるが、ingest 完了後の変更はこの録画には反映されない
+     * （docs/recording/reservation-model.md §4.5）。
      */
   keepOriginal?: ProgramOverridesInputKeepOriginal;
   /**
-     * ingest 時に評価されるので、録画開始後の変更でも効く
-     * （M3 で消費。docs/recording.md §4.5）。
+     * ingest が原本をコミットする tx の中で recordings に焼かれる瞬間まで
+     * 効く。録画開始後の変更でも、放送終了・ingest 完了より前ならこの
+     * 録画に反映されるが、ingest 完了後の変更はこの録画には反映されない
+     * （docs/recording/reservation-model.md §4.5）。
      */
   encodeProfiles?: string[];
   /**
@@ -3540,8 +3546,9 @@ export const getListCircuitBreakersUrl = () => {
  * `detail` は発動時に「何が消されようとしていたか」を説明する抜粋で、
  * 手動確認の材料（`internal/breaker.Sample` と同じ形。最大 20 件）。
  *
- * site はパスに含めない。M1/M2 は単一サイト構成（`db.DefaultSite`）で、
- * 将来の多拠点対応でパスに site を加える可能性がある。
+ * site はパスに含めない。全サイトの発動を一望する用途のエンドポイントで、
+ * レスポンスの各要素に site フィールドがある（issue #102）。個別の再開は
+ * `POST /api/sites/{site}/breakers/{name}/resume`。
  * @summary List tripped circuit breakers
  */
 export const listCircuitBreakers = async ( options?: RequestInit): Promise<listCircuitBreakersResponse> => {
@@ -3658,30 +3665,34 @@ export type resumeCircuitBreakerResponseError = (resumeCircuitBreakerResponse400
 
 export type resumeCircuitBreakerResponse = (resumeCircuitBreakerResponseSuccess | resumeCircuitBreakerResponseError)
 
-export const getResumeCircuitBreakerUrl = (name: string,) => {
+export const getResumeCircuitBreakerUrl = (site: string,
+    name: string,) => {
 
 
 
 
-  return `/api/breakers/${name}/resume`
+  return `/api/sites/${site}/breakers/${name}/resume`
 }
 
 /**
  * 手動確認後の再開。ブレーカーは人間が確認するまで止まり続けるラッチ
  * （docs/recording.md §3.2）なので、確認が済んだことをこの API で明示する。
  *
- * `DELETE /api/breakers/{name}` にしていないのは、運用者から見た操作が
- * 「行を削除する」ではなく「**確認したので再開する**」であるため。DB の行が
- * 消えるのは実装詳細（`internal/breaker` のラッチが行の存在で表される、という
- * 設計の帰結）であり、URL に出す概念ではない。
+ * `DELETE /api/sites/{site}/breakers/{name}` にしていないのは、運用者から
+ * 見た操作が「行を削除する」ではなく「**確認したので再開する**」であるため。
+ * DB の行が消えるのは実装詳細（`internal/breaker` のラッチが行の存在で
+ * 表される、という設計の帰結）であり、URL に出す概念ではない。
  *
- * site はパスに含めない（`GET /api/breakers` と同じ理由。将来の多拠点対応で
- * パスに site を加える可能性がある）。
+ * site をパスに含めるのは、資源の PK が `(site, name)` であるため
+ * （issue #102）。`GET /api/breakers` はサイト横断の一覧に価値があるので
+ * グローバルのまま残すが、再開は行 1 件を特定する操作なので PK と
+ * 一致させる。
  * @summary Resume a tripped circuit breaker (manual acknowledgement)
  */
-export const resumeCircuitBreaker = async (name: string, options?: RequestInit): Promise<resumeCircuitBreakerResponse> => {
+export const resumeCircuitBreaker = async (site: string,
+    name: string, options?: RequestInit): Promise<resumeCircuitBreakerResponse> => {
 
-  return customInstance<resumeCircuitBreakerResponse>(getResumeCircuitBreakerUrl(name),
+  return customInstance<resumeCircuitBreakerResponse>(getResumeCircuitBreakerUrl(site,name),
   {
     ...options,
     method: 'POST'
@@ -3695,8 +3706,8 @@ export const resumeCircuitBreaker = async (name: string, options?: RequestInit):
 
 
 export const getResumeCircuitBreakerMutationOptions = <TError = ErrorResponse,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof resumeCircuitBreaker>>, TError,{name: string}, TContext>, request?: SecondParameter<typeof customInstance>}
-): UseMutationOptions<Awaited<ReturnType<typeof resumeCircuitBreaker>>, TError,{name: string}, TContext> => {
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof resumeCircuitBreaker>>, TError,{site: string;name: string}, TContext>, request?: SecondParameter<typeof customInstance>}
+): UseMutationOptions<Awaited<ReturnType<typeof resumeCircuitBreaker>>, TError,{site: string;name: string}, TContext> => {
 
 const mutationKey = ['resumeCircuitBreaker'];
 const {mutation: mutationOptions, request: requestOptions} = options ?
@@ -3708,10 +3719,10 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
 
 
 
-      const mutationFn: MutationFunction<Awaited<ReturnType<typeof resumeCircuitBreaker>>, {name: string}> = (props) => {
-          const {name} = props ?? {};
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof resumeCircuitBreaker>>, {site: string;name: string}> = (props) => {
+          const {site,name} = props ?? {};
 
-          return  resumeCircuitBreaker(name,requestOptions)
+          return  resumeCircuitBreaker(site,name,requestOptions)
         }
 
 
@@ -3729,11 +3740,11 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
  * @summary Resume a tripped circuit breaker (manual acknowledgement)
  */
 export const useResumeCircuitBreaker = <TError = ErrorResponse,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof resumeCircuitBreaker>>, TError,{name: string}, TContext>, request?: SecondParameter<typeof customInstance>}
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof resumeCircuitBreaker>>, TError,{site: string;name: string}, TContext>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient): UseMutationResult<
         Awaited<ReturnType<typeof resumeCircuitBreaker>>,
         TError,
-        {name: string},
+        {site: string;name: string},
         TContext
       > => {
       return useMutation(getResumeCircuitBreakerMutationOptions(options), queryClient);

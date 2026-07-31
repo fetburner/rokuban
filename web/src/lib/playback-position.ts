@@ -24,6 +24,20 @@ export function loadPlaybackPosition(recordingId: number, profile: string): numb
   }
 }
 
+/**
+ * shouldSavePlaybackPosition は timeupdate 由来の保存を間引くかどうかを判定する。
+ *
+ * video 要素の timeupdate は約 4Hz で発火するが、保存値は Math.floor(seconds) なので
+ * 同じ秒の間に呼んでも書き込む値は変わらない。setInterval や debounce でタイマーを
+ * 持つ代わりに「Math.floor(seconds) が前回保存時と変わったときだけ書く」を採用した
+ * （実装が単純でタイマー管理が不要。保存頻度は最大で毎秒 1 回に収まる）。
+ *
+ * lastSavedSecond が null（未保存）のときは常に true を返す。
+ */
+export function shouldSavePlaybackPosition(lastSavedSecond: number | null, seconds: number): boolean {
+  return lastSavedSecond === null || Math.floor(seconds) !== lastSavedSecond
+}
+
 /** savePlaybackPosition は秒位置を保存する。終端付近はクリアする。 */
 export function savePlaybackPosition(
   recordingId: number,

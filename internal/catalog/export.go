@@ -5,14 +5,37 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 )
 
 // Export は DB からコアメタデータを集めて Document を組み立てる。
 // site が空なら全サイト。rules はサイト非依存なので常に全件。
-func Export(ctx context.Context, q *sqlcgen.Queries, site string) (*Document, error) {
+//
+// これは単一スナップショットからの読み取りである。recordings を読んだ後に
+// media_assets / drop_stats を読むため、トランザクション無しで発行すると
+// その間に作られた録画のアセットだけが media_assets 側に写り、
+// RescueFile（internal/catalog/rescue.go）が recordings → media_assets の順で
+// 1 トランザクション書き込むときに FK 違反でその世代がまるごと復元不能になる
+// （issue #106）。これを防ぐため、Export は *pgxpool.Pool を受けて内部で
+// REPEATABLE READ / READ ONLY のトランザクションを張る形に固定してある。
+// 呼び出し側が任意の *sqlcgen.Queries を渡せる形にすると tx なしで呼べてしまう
+// ので、シグネチャは緩めない。
+func Export(ctx context.Context, pool *pgxpool.Pool, site string) (*Document, error) {
+	tx, err := pool.BeginTx(ctx, pgx.TxOptions{
+		IsoLevel:   pgx.RepeatableRead,
+		AccessMode: pgx.ReadOnly,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("beginning export tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	q := sqlcgen.New(tx)
+
 	var siteFilter *string
 	if site != "" {
 		siteFilter = &site
@@ -140,6 +163,9 @@ func Export(ctx context.Context, q *sqlcgen.Queries, site string) (*Document, er
 		})
 	}
 
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("committing export tx: %w", err)
+	}
 	return doc, nil
 }
 

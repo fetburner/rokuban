@@ -50,7 +50,8 @@ func (h *Server) ListCircuitBreakers(ctx context.Context, _ ListCircuitBreakersR
 	return ListCircuitBreakers200JSONResponse(result), nil
 }
 
-// ResumeCircuitBreaker は手動確認後の再開 (POST /api/breakers/{name}/resume)。
+// ResumeCircuitBreaker は手動確認後の再開
+// (POST /api/sites/{site}/breakers/{name}/resume)。
 //
 // ブレーカーは人間が確認するまで止まり続けるラッチで、解除は行の DELETE
 // （internal/breaker/breaker.go のコメント参照）。DELETE ではなく POST の
@@ -62,16 +63,22 @@ func (h *Server) ListCircuitBreakers(ctx context.Context, _ ListCircuitBreakersR
 // 「再開したつもりが実は別のブレーカーだった／既に再開済みだった」を
 // 黙って成功にしないため。
 //
-// site はパスに含めない。ブレーカーは h.site（config.mirakc.site）1 つに対して
-// かかる（issue #31。将来の複数サイト対応でパスに site を加える可能性がある）。
+// site はパスに含める。circuit_breakers の PK は (site, name) であり、
+// h.site 固定だと GET /api/breakers（サイト横断で一覧できる）で見えている
+// 他サイトの発動を再開できなかった（issue #102）。h.site 以外の site が
+// 来た場合は 400 —— 現状 1 プロセス 1 site の構成では、他 site の行は
+// このプロセスからは操作できない。
 func (h *Server) ResumeCircuitBreaker(ctx context.Context, req ResumeCircuitBreakerRequestObject) (ResumeCircuitBreakerResponseObject, error) {
+	if req.Site != h.site {
+		return ResumeCircuitBreaker400JSONResponse{Error: fmt.Sprintf("unknown site %q", req.Site)}, nil
+	}
 	if !knownCircuitBreakerNames[req.Name] {
 		return ResumeCircuitBreaker400JSONResponse{Error: fmt.Sprintf("unknown circuit breaker %q", req.Name)}, nil
 	}
 
 	q := sqlcgen.New(h.pool)
 	n, err := q.ResumeCircuitBreaker(ctx, sqlcgen.ResumeCircuitBreakerParams{
-		Site: h.site,
+		Site: req.Site,
 		Name: req.Name,
 	})
 	if err != nil {

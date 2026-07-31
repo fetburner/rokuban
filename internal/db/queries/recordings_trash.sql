@@ -32,7 +32,13 @@ SET deleted_at  = COALESCE(deleted_at, now()),
 WHERE id = $1
 RETURNING id, deleted_at, purge_after;
 
--- ごみ箱一覧。通常 ListRecordings と同じ射影（原本サイズ + drop 合計）で、
+-- ごみ箱一覧。ListRecordings と同じく原本サイズ + drop 合計は載せるが、
+-- available_encoded_profiles（再生可能な encoded プロファイル名）は意図的に
+-- 射影しない。ごみ箱の録画は配信 3 クエリ（GetOriginalMediaAssetForServing /
+-- GetThumbnailMediaAssetForServing / GetEncodedMediaAssetForServing）が
+-- deleted_at IS NOT NULL を理由に必ず 404 にするため、フロントはごみ箱では
+-- サムネイル・RecordingPlayer・原本リンクを一切出さない（M3-18）。出さない
+-- 値をここで揃えても使われないので揃えていない。
 -- deleted_at IS NOT NULL のものだけ。deleted_at 降順（最近捨てたものが上）。
 -- name: ListTrashRecordings :many
 SELECT

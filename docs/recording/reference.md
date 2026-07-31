@@ -10,7 +10,7 @@
     "postFilters": [],
     "logFilter": "info"
   },
-  "tags": ["rokuban:reservation=1234"]
+  "tags": ["program:1234"]
 }
 ```
 
@@ -18,7 +18,7 @@
 - `priority`: チューナー使用優先度（競合時の調停）
 - `preFilters` / `postFilters`: config で定義した名前付きフィルタパイプライン
 - `logFilter`: mirakc-arib のログをコンテンツ横の `<ファイル名>.log` に出力（EPGStation が自前生成していたドロップログの代替。表示用のパース層は必要）
-- `tags`: 自由文字列。Rokuban の reservation id 埋め込みに使う
+- `tags`: 自由文字列。Rokuban は programId 埋め込みに使う（`program:{programId}`。詳細は [reconciler.md](reconciler.md)「tags 対応付け」参照）
 - **開始/終了マージンのオプションは存在しない**。PSI/SI 追従方式ではそもそも不要（時刻ベース録画だからこそマージンが必要だった）
 
 ---
