@@ -180,7 +180,7 @@ EPG の一時欠損（mirakc 再起動・再スキャン・SI 取得不良）で
 
 | ブレーカー | 何を守るか | 発動したら |
 |---|---|---|
-| `ruler_deletes` | ルール x EPG の評価から導出された予約削除 | `GET /api/breakers` の `detail` で消されようとしていた番組を確認 → 正当なら `POST /api/breakers/ruler_deletes/resume` |
+| `ruler_deletes` | ルール x EPG の評価から導出された予約削除 | `GET /api/breakers` の `detail` で消されようとしていた番組を確認 → 正当なら `POST /api/sites/{site}/breakers/ruler_deletes/resume`（`site` は一覧のレスポンスにある値） |
 | `reconcile_total_loss` | 「desired が空なのに自分の schedule が観測されている」という全損シグネチャ | DB 接続・`reservations` の中身を確認。**件数の閾値ではない**ので、発動したら本当に異常である |
 
 **1 が続く間、導出削除は一切実行されない。** これは「reconcile が収束できていない」ではなく

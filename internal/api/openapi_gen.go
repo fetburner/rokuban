@@ -1002,9 +1002,6 @@ type ServerInterface interface {
 	// ListCircuitBreakers List tripped circuit breakers
 	// (GET /api/breakers)
 	ListCircuitBreakers(w http.ResponseWriter, r *http.Request)
-	// ResumeCircuitBreaker Resume a tripped circuit breaker (manual acknowledgement)
-	// (POST /api/breakers/{name}/resume)
-	ResumeCircuitBreaker(w http.ResponseWriter, r *http.Request, name string)
 	// ListCapacityOverages List intervals where tuner capacity is exceeded
 	// (GET /api/capacity/overages)
 	ListCapacityOverages(w http.ResponseWriter, r *http.Request, params ListCapacityOveragesParams)
@@ -1047,6 +1044,9 @@ type ServerInterface interface {
 	// UpdateRule Update a recording rule
 	// (PATCH /api/rules/{id})
 	UpdateRule(w http.ResponseWriter, r *http.Request, id int64)
+	// ResumeCircuitBreaker Resume a tripped circuit breaker (manual acknowledgement)
+	// (POST /api/sites/{site}/breakers/{name}/resume)
+	ResumeCircuitBreaker(w http.ResponseWriter, r *http.Request, site Site, name string)
 	// ListPrograms List EPG programs in a time window
 	// (GET /api/sites/{site}/programs)
 	ListPrograms(w http.ResponseWriter, r *http.Request, site Site, params ListProgramsParams)
@@ -1089,12 +1089,6 @@ type Unimplemented struct{}
 // ListCircuitBreakers List tripped circuit breakers
 // (GET /api/breakers)
 func (_ Unimplemented) ListCircuitBreakers(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusNotImplemented)
-}
-
-// ResumeCircuitBreaker Resume a tripped circuit breaker (manual acknowledgement)
-// (POST /api/breakers/{name}/resume)
-func (_ Unimplemented) ResumeCircuitBreaker(w http.ResponseWriter, r *http.Request, name string) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1182,6 +1176,12 @@ func (_ Unimplemented) UpdateRule(w http.ResponseWriter, r *http.Request, id int
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// ResumeCircuitBreaker Resume a tripped circuit breaker (manual acknowledgement)
+// (POST /api/sites/{site}/breakers/{name}/resume)
+func (_ Unimplemented) ResumeCircuitBreaker(w http.ResponseWriter, r *http.Request, site Site, name string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
 // ListPrograms List EPG programs in a time window
 // (GET /api/sites/{site}/programs)
 func (_ Unimplemented) ListPrograms(w http.ResponseWriter, r *http.Request, site Site, params ListProgramsParams) {
@@ -1262,32 +1262,6 @@ func (siw *ServerInterfaceWrapper) ListCircuitBreakers(w http.ResponseWriter, r 
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ListCircuitBreakers(w, r)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
-// ResumeCircuitBreaker operation middleware
-func (siw *ServerInterfaceWrapper) ResumeCircuitBreaker(w http.ResponseWriter, r *http.Request) {
-
-	var err error
-	_ = err
-
-	// ------------- Path parameter "name" -------------
-	var name string
-
-	err = runtime.BindStyledParameterWithOptions("simple", "name", chi.URLParam(r, "name"), &name, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: r.URL.RawPath == ""})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "name", Err: err})
-		return
-	}
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.ResumeCircuitBreaker(w, r, name)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1631,6 +1605,41 @@ func (siw *ServerInterfaceWrapper) UpdateRule(w http.ResponseWriter, r *http.Req
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.UpdateRule(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ResumeCircuitBreaker operation middleware
+func (siw *ServerInterfaceWrapper) ResumeCircuitBreaker(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "site" -------------
+	var site Site
+
+	err = runtime.BindStyledParameterWithOptions("simple", "site", chi.URLParam(r, "site"), &site, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "site", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "name" -------------
+	var name string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "name", chi.URLParam(r, "name"), &name, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "name", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ResumeCircuitBreaker(w, r, site, name)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -2203,7 +2212,7 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Get(options.BaseURL+"/api/breakers", wrapper.ListCircuitBreakers)
 	})
 	r.Group(func(r chi.Router) {
-		r.Post(options.BaseURL+"/api/breakers/{name}/resume", wrapper.ResumeCircuitBreaker)
+		r.Post(options.BaseURL+"/api/sites/{site}/breakers/{name}/resume", wrapper.ResumeCircuitBreaker)
 	})
 
 	return r
@@ -2226,50 +2235,6 @@ func (response ListCircuitBreakers200JSONResponse) VisitListCircuitBreakersRespo
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(200)
-	_, err := buf.WriteTo(w)
-	return err
-}
-
-type ResumeCircuitBreakerRequestObject struct {
-	Name string `json:"name"`
-}
-
-type ResumeCircuitBreakerResponseObject interface {
-	VisitResumeCircuitBreakerResponse(w http.ResponseWriter) error
-}
-
-type ResumeCircuitBreaker204Response struct {
-}
-
-func (response ResumeCircuitBreaker204Response) VisitResumeCircuitBreakerResponse(w http.ResponseWriter) error {
-	w.WriteHeader(204)
-	return nil
-}
-
-type ResumeCircuitBreaker400JSONResponse ErrorResponse
-
-func (response ResumeCircuitBreaker400JSONResponse) VisitResumeCircuitBreakerResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(400)
-	_, err := buf.WriteTo(w)
-	return err
-}
-
-type ResumeCircuitBreaker404JSONResponse ErrorResponse
-
-func (response ResumeCircuitBreaker404JSONResponse) VisitResumeCircuitBreakerResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(404)
 	_, err := buf.WriteTo(w)
 	return err
 }
@@ -2716,6 +2681,51 @@ func (response UpdateRule404JSONResponse) VisitUpdateRuleResponse(w http.Respons
 	return err
 }
 
+type ResumeCircuitBreakerRequestObject struct {
+	Site Site   `json:"site"`
+	Name string `json:"name"`
+}
+
+type ResumeCircuitBreakerResponseObject interface {
+	VisitResumeCircuitBreakerResponse(w http.ResponseWriter) error
+}
+
+type ResumeCircuitBreaker204Response struct {
+}
+
+func (response ResumeCircuitBreaker204Response) VisitResumeCircuitBreakerResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type ResumeCircuitBreaker400JSONResponse ErrorResponse
+
+func (response ResumeCircuitBreaker400JSONResponse) VisitResumeCircuitBreakerResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ResumeCircuitBreaker404JSONResponse ErrorResponse
+
+func (response ResumeCircuitBreaker404JSONResponse) VisitResumeCircuitBreakerResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type ListProgramsRequestObject struct {
 	Site   Site `json:"site"`
 	Params ListProgramsParams
@@ -3101,9 +3111,6 @@ type StrictServerInterface interface {
 	// ListCircuitBreakers List tripped circuit breakers
 	// (GET /api/breakers)
 	ListCircuitBreakers(ctx context.Context, request ListCircuitBreakersRequestObject) (ListCircuitBreakersResponseObject, error)
-	// ResumeCircuitBreaker Resume a tripped circuit breaker (manual acknowledgement)
-	// (POST /api/breakers/{name}/resume)
-	ResumeCircuitBreaker(ctx context.Context, request ResumeCircuitBreakerRequestObject) (ResumeCircuitBreakerResponseObject, error)
 	// ListCapacityOverages List intervals where tuner capacity is exceeded
 	// (GET /api/capacity/overages)
 	ListCapacityOverages(ctx context.Context, request ListCapacityOveragesRequestObject) (ListCapacityOveragesResponseObject, error)
@@ -3146,6 +3153,9 @@ type StrictServerInterface interface {
 	// UpdateRule Update a recording rule
 	// (PATCH /api/rules/{id})
 	UpdateRule(ctx context.Context, request UpdateRuleRequestObject) (UpdateRuleResponseObject, error)
+	// ResumeCircuitBreaker Resume a tripped circuit breaker (manual acknowledgement)
+	// (POST /api/sites/{site}/breakers/{name}/resume)
+	ResumeCircuitBreaker(ctx context.Context, request ResumeCircuitBreakerRequestObject) (ResumeCircuitBreakerResponseObject, error)
 	// ListPrograms List EPG programs in a time window
 	// (GET /api/sites/{site}/programs)
 	ListPrograms(ctx context.Context, request ListProgramsRequestObject) (ListProgramsResponseObject, error)
@@ -3237,32 +3247,6 @@ func (sh *strictHandler) ListCircuitBreakers(w http.ResponseWriter, r *http.Requ
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(ListCircuitBreakersResponseObject); ok {
 		if err := validResponse.VisitListCircuitBreakersResponse(w); err != nil {
-			sh.options.ResponseErrorHandlerFunc(w, r, err)
-		}
-	} else if response != nil {
-		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
-	}
-}
-
-// ResumeCircuitBreaker operation middleware
-func (sh *strictHandler) ResumeCircuitBreaker(w http.ResponseWriter, r *http.Request, name string) {
-	var request ResumeCircuitBreakerRequestObject
-
-	request.Name = name
-
-	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
-		return sh.ssi.ResumeCircuitBreaker(ctx, request.(ResumeCircuitBreakerRequestObject))
-	}
-	for _, middleware := range sh.middlewares {
-		handler = middleware(handler, "ResumeCircuitBreaker")
-	}
-
-	response, err := handler(r.Context(), w, r, request)
-
-	if err != nil {
-		sh.options.ResponseErrorHandlerFunc(w, r, err)
-	} else if validResponse, ok := response.(ResumeCircuitBreakerResponseObject); ok {
-		if err := validResponse.VisitResumeCircuitBreakerResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
@@ -3633,6 +3617,33 @@ func (sh *strictHandler) UpdateRule(w http.ResponseWriter, r *http.Request, id i
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(UpdateRuleResponseObject); ok {
 		if err := validResponse.VisitUpdateRuleResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ResumeCircuitBreaker operation middleware
+func (sh *strictHandler) ResumeCircuitBreaker(w http.ResponseWriter, r *http.Request, site Site, name string) {
+	var request ResumeCircuitBreakerRequestObject
+
+	request.Site = site
+	request.Name = name
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ResumeCircuitBreaker(ctx, request.(ResumeCircuitBreakerRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ResumeCircuitBreaker")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ResumeCircuitBreakerResponseObject); ok {
+		if err := validResponse.VisitResumeCircuitBreakerResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

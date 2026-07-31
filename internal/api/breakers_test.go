@@ -151,7 +151,7 @@ func TestResumeCircuitBreaker_DeletesRowAnd204(t *testing.T) {
 
 	insertCircuitBreakerFixture(t, pool, ctx, "ruler_deletes", 10, 50, `{"total":10}`)
 
-	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/breakers/ruler_deletes/resume", nil)
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/sites/default/breakers/ruler_deletes/resume", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +176,7 @@ func TestResumeCircuitBreaker_404WhenNotTripped(t *testing.T) {
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
-	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/breakers/ruler_deletes/resume", nil)
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/sites/default/breakers/ruler_deletes/resume", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +198,7 @@ func TestResumeCircuitBreaker_400WhenUnknownName(t *testing.T) {
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
-	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/breakers/not_a_real_breaker/resume", nil)
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/sites/default/breakers/not_a_real_breaker/resume", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +224,7 @@ func TestResumeCircuitBreaker_OnlyDeletesTargetedBreaker(t *testing.T) {
 	insertCircuitBreakerFixture(t, pool, ctx, "ruler_deletes", 10, 50, `{"total":10}`)
 	insertCircuitBreakerFixture(t, pool, ctx, "reconcile_total_loss", 1, 1, `{"total":1}`)
 
-	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/breakers/ruler_deletes/resume", nil)
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/sites/default/breakers/ruler_deletes/resume", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,5 +245,53 @@ func TestResumeCircuitBreaker_OnlyDeletesTargetedBreaker(t *testing.T) {
 	}
 	if n := countCircuitBreakers(t, pool, ctx); n != 1 {
 		t.Errorf("remaining circuit breaker rows = %d, want 1", n)
+	}
+}
+
+// 7. site をパスに含めない場合の資源不一致（issue #102）の回帰確認。
+//
+// circuit_breakers の PK は (site, name) だが、GET /api/breakers はサイト
+// 横断で一覧を返す。resume が h.site 固定だと、一覧に見えている他サイトの
+// 発動を確認済みの運用者が resume を叩いても届かず、見えているものを
+// 再開できなかった。site をパスに通した今は、他サイトを指定すると
+// （このプロセスは 1 site しか持たないため）400 になる —— 少なくとも
+// 「見えているのに再開できないのに 404 で『発動していない』と誤読させる」
+// ことはなくなり、意図が明確な 400 になる。
+func TestResumeCircuitBreaker_400WhenSiteMismatch(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	router := api.NewRouter(api.RouterConfig{Pool: pool})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	// 他サイト（このプロセスの site ではない）の発動を用意する。
+	if _, err := pool.Exec(ctx, `
+INSERT INTO circuit_breakers (site, name, pending, threshold, detail)
+VALUES ('other-site', 'ruler_deletes', 10, 50, '{"total":10}'::jsonb)`); err != nil {
+		t.Fatalf("inserting circuit breaker fixture for other site: %v", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/sites/other-site/breakers/ruler_deletes/resume", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+
+	// 他サイトの行は消えていない（誤って自サイトの条件で別サイトの行を
+	// 触っていないことの確認）。
+	var n int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM circuit_breakers WHERE site = 'other-site' AND name = 'ruler_deletes'`).Scan(&n); err != nil {
+		t.Fatalf("checking other-site circuit breaker: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("other-site circuit breaker row count = %d, want 1 (should be untouched)", n)
 	}
 }
