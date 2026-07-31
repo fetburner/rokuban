@@ -140,9 +140,9 @@ log:
 
 ### server.allowed_hosts は X-Forwarded-Host を優先する
 
-`server.allowed_hosts` は Host ヘッダーの allowlist で、アプリ内に残る唯一のセキュリティ機構（DNS rebinding 対策、[api.md](api.md) §認証 帰結3）。localhost 系（`localhost` / `127.0.0.1` / `::1`）は allowlist の設定に関わらず常に許可する。
+`server.allowed_hosts` は Host ヘッダーの allowlist で、アプリ内に残る唯一のセキュリティ機構（DNS rebinding 対策、[api.md](api.md) §認証 帰結3）。localhost 系（`localhost` / `127.0.0.1` / `::1`）は、**`X-Forwarded-Host` が無く `Host` を直接使っているときに限り**、allowlist の設定に関わらず常に許可する。`X-Forwarded-Host` はクライアント側が自己申告できる値なので、転送値にも同じ緩和を適用すると `X-Forwarded-Host: localhost` で allowlist を素通りできてしまう。
 
-リバースプロキシ前段では `Host` がプロキシ自身の値（例: コンテナ内部の DNS 名）に書き換わり、元のクライアント向け Host は `X-Forwarded-Host` に移る。**`X-Forwarded-Host` があればそちらを検証対象にし、無ければ `Host` を使う**（M4-1、issue #89）。nginx リファレンス構成では `proxy_set_header X-Forwarded-Host $host;` を設定し、`allowed_hosts` にはブラウザからアクセスする外部ホスト名（例: `rokuban.example.com`）を書く。
+リバースプロキシ前段では `Host` がプロキシ自身の値（例: コンテナ内部の DNS 名）に書き換わり、元のクライアント向け Host は `X-Forwarded-Host` に移る。**`X-Forwarded-Host` があればそちらを検証対象にし、無ければ `Host` を使う**（M4-1、issue #89）。nginx リファレンス構成では `proxy_set_header X-Forwarded-Host $host;` を設定し、`allowed_hosts` にはブラウザからアクセスする外部ホスト名（例: `rokuban.example.com`）を書く。**この構成では localhost 系の常時許可は効かなくなるので、nginx 経由で `http://localhost/` を見る運用なら `allowed_hosts` に明示的に列挙する。**
 
 `X-Forwarded-For` / `X-Forwarded-Proto` / `X-Forwarded-Prefix` / `public_url` は解釈・設定項目とも持たない。理由は [api.md](api.md) §リバースプロキシ・フレンドリー要件「検討したが実装しないもの」を参照。
 
