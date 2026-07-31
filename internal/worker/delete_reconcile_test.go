@@ -543,6 +543,97 @@ func TestDeleteReconcileWorker_UntilEncoded_Complete_Deletes(t *testing.T) {
 	}
 }
 
+// dropUntilEncodedRequiresProfilesCheck は 00020 マイグレーションの CHECK 制約
+// （recordings_until_encoded_requires_profiles）を一時的に外す。encode_profiles
+// が空の until_encoded 行は通常この CHECK に阻まれて作れないが、issue #104 の
+// 削除クエリ側ガード（ListUntilEncodedOriginalsToDelete の
+// cardinality(encode_profiles) > 0）は「CHECK に頼らない」独立した防御として
+// 足したものなので、CHECK が無い前提でもそれ単体で原本を守れることを確認する
+// 必要がある。テスト用パッケージ DB は TRUNCATE のみでスキーマは使い回すため、
+// t.Cleanup で必ず元に戻し他のテストに影響しないようにする。
+func dropUntilEncodedRequiresProfilesCheck(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx,
+		"ALTER TABLE recordings DROP CONSTRAINT recordings_until_encoded_requires_profiles"); err != nil {
+		t.Fatalf("dropping check constraint: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx := context.Background()
+		// テスト本体が作った違反行（keep_original='until_encoded' かつ
+		// encode_profiles が空）が残ったままだと ADD CONSTRAINT 自体が失敗する。
+		// 次のテストは TRUNCATE で行ごと消えるが、この関数はその前に走るので
+		// 先に直しておく（00020 マイグレーションの Up が既存行にしているのと
+		// 同じ「安全側に倒す」処理）。
+		if _, err := pool.Exec(cleanupCtx,
+			"UPDATE recordings SET keep_original = 'always' "+
+				"WHERE keep_original = 'until_encoded' AND cardinality(encode_profiles) = 0"); err != nil {
+			t.Fatalf("fixing up rows before restoring check constraint: %v", err)
+		}
+		if _, err := pool.Exec(cleanupCtx,
+			"ALTER TABLE recordings ADD CONSTRAINT recordings_until_encoded_requires_profiles "+
+				"CHECK (keep_original <> 'until_encoded' OR cardinality(encode_profiles) > 0)"); err != nil {
+			t.Fatalf("restoring check constraint: %v", err)
+		}
+	})
+}
+
+// バグの再現ケース（issue #104）: keep_original='until_encoded' かつ
+// encode_profiles='{}' で、望ましい派生物がサムネイルしか無い（= encode_profiles
+// が空なので unnest() が 0 行になり、欠けているプロファイルが「1 つもない」と
+// 恒真判定される）録画は、原本が唯一のコピーである（docs/storage.md §6）にも
+// かかわらず、修正前は削除されてしまっていた。
+func TestDeleteReconcileWorker_UntilEncoded_EmptyProfiles_NotDeleted(t *testing.T) {
+	pool := setupTestPool(t)
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	recordingID := insertTestRecording(t, pool)
+
+	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "orig/empty-profiles.m2ts", []byte("data"))
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindThumbnail, nil, "thumb/empty-profiles.jpg", []byte("jpg"))
+	// encoded アセットは 1 つも無い。encode_profiles も空のまま。
+
+	dropUntilEncodedRequiresProfilesCheck(t, pool)
+	if _, err := pool.Exec(ctx,
+		"UPDATE recordings SET keep_original = 'until_encoded', encode_profiles = '{}' WHERE id = $1",
+		recordingID); err != nil {
+		t.Fatalf("setting keep_original with empty encode_profiles: %v", err)
+	}
+
+	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	if err := w.Work(ctx, nil); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+
+	if got := assetState(t, pool, assetID); got != "active" {
+		t.Errorf("original state = %q, want active "+
+			"(encode_profiles is empty; must not be treated as \"all desired profiles present\")", got)
+	}
+}
+
+// 00020 マイグレーションの CHECK 自体が効いていることの確認（issue #104 の
+// 含むもの 3、CLAUDE.md 不変条件 10「表現不可能にする」）。既定値
+// （keep_original='always', encode_profiles='{}'）はこの CHECK を満たすので、
+// until_encoded に切り替えるときだけプロファイルを要求する形になっているはず。
+// 両方向を確認する: 空プロファイルは拒否され、プロファイルを添えれば通る。
+func TestRecordings_UntilEncodedRequiresProfilesCheck(t *testing.T) {
+	pool := setupTestPool(t)
+	ctx := context.Background()
+	recordingID := insertTestRecording(t, pool)
+
+	if _, err := pool.Exec(ctx,
+		"UPDATE recordings SET keep_original = 'until_encoded', encode_profiles = '{}' WHERE id = $1",
+		recordingID); err == nil {
+		t.Fatal("expected a CHECK violation for until_encoded with empty encode_profiles, got no error")
+	}
+
+	if _, err := pool.Exec(ctx,
+		"UPDATE recordings SET keep_original = 'until_encoded', encode_profiles = $1 WHERE id = $2",
+		[]string{"h264"}, recordingID); err != nil {
+		t.Fatalf("expected until_encoded with a non-empty profile list to be allowed, got error: %v", err)
+	}
+}
+
 // 望ましいプロファイルの一部が欠けている間は原本を消さない（Complete の逆方向）。
 func TestDeleteReconcileWorker_UntilEncoded_MissingProfile_NotDeleted(t *testing.T) {
 	pool := setupTestPool(t)

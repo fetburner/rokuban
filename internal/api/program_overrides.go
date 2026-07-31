@@ -114,7 +114,40 @@ func (h *Server) PatchProgramOverrides(ctx context.Context, req PatchProgramOver
 		return nil, fmt.Errorf("getting program overrides: %w", err)
 	}
 
-	if err := applyOverridesPatch(ctx, q, req.Site, req.ProgramId, existingJSON, setters, resetFields); err != nil {
+	merged, err := mergeOverridesPatch(existingJSON, setters, resetFields)
+	if err != nil {
+		return nil, err
+	}
+
+	// このパッチを適用した後の実効値（既存 override + このパッチ + ルールの base
+	// をマージした結果）で keepOriginal/encodeProfiles の組み合わせを検証する
+	// （issue #104）。リクエスト単体（例えば keepOriginal だけを送る、あるいは
+	// encodeProfiles だけを reset する）では組み合わせが見えないため、リクエスト
+	// 直後の値ではなく必ずマージ後の実効値を見る。base はルール由来予約が
+	// あればそこから、予約がまだ無ければ nil（手動予約相当）として扱う。
+	var baseJSON json.RawMessage
+	if res, err := q.GetReservationBySiteAndProgramID(ctx, sqlcgen.GetReservationBySiteAndProgramIDParams{
+		Site:      req.Site,
+		ProgramID: req.ProgramId,
+	}); err == nil {
+		baseJSON = res.Base
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("getting reservation base: %w", err)
+	}
+
+	mergedJSON, err := json.Marshal(merged)
+	if err != nil {
+		return nil, fmt.Errorf("marshalling merged overrides: %w", err)
+	}
+	eff, err := db.EffectiveOptions(baseJSON, mergedJSON, nil)
+	if err != nil {
+		return nil, fmt.Errorf("computing effective options for validation: %w", err)
+	}
+	if err := validateEffectiveKeepOriginal(eff); err != nil {
+		return PatchProgramOverrides400JSONResponse{Error: err.Error()}, nil
+	}
+
+	if err := persistOverrides(ctx, q, req.Site, req.ProgramId, mergedJSON); err != nil {
 		return nil, err
 	}
 	if err := h.insertRulerPassHint(ctx, tx); err != nil {
@@ -124,6 +157,29 @@ func (h *Server) PatchProgramOverrides(ctx context.Context, req PatchProgramOver
 		return nil, err
 	}
 	return PatchProgramOverrides204Response{}, nil
+}
+
+// validateEffectiveKeepOriginal は実効値（base + overrides をマージした結果）の
+// keepOriginal/encodeProfiles の組み合わせを検証する。
+//
+// keepOriginal='until_encoded' なのに encodeProfiles が空（未指定 or 明示的な
+// 空配列）だと、削除 reconcile の派生物完備判定（ListUntilEncodedOriginalsToDelete）
+// が空配列で恒真になり、サムネイルが 1 枚あるだけで唯一のコピーである原本が
+// 物理削除される（docs/storage.md §6「唯一のコピーを消すパスがない」への違反、
+// issue #104）。rules（internal/api/rules.go の validateRuleInput）・
+// スキーマ（00006_rules.sql の CHECK）と同じ規律を overrides にも揃える。
+func validateEffectiveKeepOriginal(eff db.ReservationOptions) error {
+	if eff.KeepOriginal == nil || *eff.KeepOriginal != db.KeepOriginalUntilEncoded {
+		return nil
+	}
+	if eff.EncodeProfiles == nil || len(*eff.EncodeProfiles) == 0 {
+		return fmt.Errorf(
+			"effective keepOriginal is %q but effective encodeProfiles is empty "+
+				"(after merging with existing overrides and the rule's base); "+
+				"specify encodeProfiles or keep keepOriginal as %q",
+			db.KeepOriginalUntilEncoded, db.KeepOriginalAlways)
+	}
+	return nil
 }
 
 // DeleteProgramOverrides は「ルールに戻す」
@@ -158,26 +214,22 @@ func (h *Server) DeleteProgramOverrides(ctx context.Context, req DeleteProgramOv
 	return DeleteProgramOverrides204Response{}, nil
 }
 
-// applyOverridesPatch は既存の program_overrides.overrides（無ければゼロ値）に
+// mergeOverridesPatch は既存の program_overrides.overrides（無ければゼロ値）に
 // setters（値を指定したフィールド）を適用し、resetFields（reset 指定された
-// フィールド）を nil に戻したうえで書き戻す。
+// フィールド）を nil に戻した結果を返す（副作用なし）。
 //
-// 結果が空（{}）になったら program_overrides の行そのものを DELETE する
-// （「空の上書き = 行が無い」。isEmptyOverridesJSON のコメント参照）。空でなければ
-// upsert する。
-func applyOverridesPatch(
-	ctx context.Context,
-	q *sqlcgen.Queries,
-	site string,
-	programID int64,
+// PatchProgramOverrides は書き込む前にこの結果を base とマージした実効値を
+// 検証する必要がある（issue #104）ため、マージと永続化（persistOverrides）を
+// 分離してある。
+func mergeOverridesPatch(
 	existing json.RawMessage,
 	setters []func(*db.ReservationOptions),
 	resetFields []ProgramOverridesInputReset,
-) error {
+) (db.ReservationOptions, error) {
 	opts := db.ReservationOptions{}
 	if len(existing) > 0 {
 		if err := json.Unmarshal(existing, &opts); err != nil {
-			return fmt.Errorf("unmarshalling existing overrides: %w", err)
+			return db.ReservationOptions{}, fmt.Errorf("unmarshalling existing overrides: %w", err)
 		}
 	}
 	for _, set := range setters {
@@ -186,12 +238,21 @@ func applyOverridesPatch(
 	for _, f := range resetFields {
 		resetOverridesField(&opts, f)
 	}
+	return opts, nil
+}
 
-	finalJSON, err := json.Marshal(opts)
-	if err != nil {
-		return fmt.Errorf("marshalling overrides: %w", err)
-	}
-
+// persistOverrides は mergeOverridesPatch の結果（marshal 済み）を書き戻す。
+//
+// 結果が空（{}）になったら program_overrides の行そのものを DELETE する
+// （「空の上書き = 行が無い」。isEmptyOverridesJSON のコメント参照）。空でなければ
+// upsert する。
+func persistOverrides(
+	ctx context.Context,
+	q *sqlcgen.Queries,
+	site string,
+	programID int64,
+	finalJSON json.RawMessage,
+) error {
 	if isEmptyOverridesJSON(finalJSON) {
 		if _, err := q.DeleteProgramOverrides(ctx, sqlcgen.DeleteProgramOverridesParams{
 			Site:      site,
