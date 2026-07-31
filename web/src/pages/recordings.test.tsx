@@ -179,4 +179,81 @@ describe('RecordingsPage trash', () => {
     await waitFor(() => expect(purgeCalls).toHaveLength(1))
     expect(purgeCalls[0]).toBe('/api/recordings/7/purge')
   })
+
+  it('ライブラリでは派生物・原本があればプレイヤーとサムネイルを出す', async () => {
+    const user = userEvent.setup()
+    const fetchMock = vi.fn(() => {
+      const body = [
+        sampleRecording({
+          id: 3,
+          title: '再生できる録画',
+          encodedProfiles: ['web'],
+          sizeBytes: 1_000_000,
+        }),
+      ]
+      return Promise.resolve(
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      )
+    })
+
+    renderRecordingsPage(fetchMock as unknown as typeof fetch)
+
+    await user.click(await screen.findByText('再生できる録画'))
+
+    // クエリが解決してから見る（非同期の空虚な成功を避ける）
+    expect(await screen.findByRole('region', { name: '再生' })).toBeInTheDocument()
+    expect(document.querySelector('video')).toBeInTheDocument()
+    expect(document.querySelector('img[src="/api/recordings/3/thumbnail"]')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'ダウンロード / VLC' })).toBeInTheDocument()
+  })
+
+  it('ごみ箱では 404 になるサムネイル・プレイヤー・原本リンクを一切出さない', async () => {
+    const user = userEvent.setup()
+    const requestedPaths: string[] = []
+    const fetchMock = vi.fn((input: string | URL | Request) => {
+      const url = new URL(String(input), 'http://localhost')
+      requestedPaths.push(url.pathname + url.search)
+      // encodedProfiles と sizeBytes の両方を持つ、つまりライブラリなら
+      // プレイヤーとサムネイルの両方が出る録画を、ごみ箱に入れて返す。
+      const body = [
+        sampleRecording({
+          id: 9,
+          title: '捨てられた再生可能録画',
+          deletedAt: '2026-01-03T00:00:00Z',
+          encodedProfiles: ['web'],
+          sizeBytes: 1_000_000,
+        }),
+      ]
+      return Promise.resolve(
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      )
+    })
+
+    renderRecordingsPage(fetchMock as unknown as typeof fetch)
+
+    await user.click(screen.getByRole('button', { name: 'ごみ箱' }))
+    await user.click(await screen.findByText('捨てられた再生可能録画'))
+
+    // 展開後の内容（削除日時 dt）が出るまで待ってから「無い」ことを確認する
+    // （クエリ未解決のうちに queryBy で通ってしまう空虚な成功を避ける）
+    await screen.findByText('削除日時')
+
+    expect(screen.queryByRole('region', { name: '再生' })).not.toBeInTheDocument()
+    expect(document.querySelector('video')).not.toBeInTheDocument()
+    expect(document.querySelector('img')).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'ダウンロード / VLC' })).not.toBeInTheDocument()
+    expect(screen.queryByText('VLC 等で開く')).not.toBeInTheDocument()
+
+    // 404 の温床になる配信系エンドポイントに一切リクエストしていない
+    const mediaRequests = requestedPaths.filter(
+      (p) => p.includes('/thumbnail') || p.includes('/file'),
+    )
+    expect(mediaRequests).toHaveLength(0)
+  })
 })

@@ -374,6 +374,11 @@ go:embed 配信でハッシュ付きアセット immutable + それ以外 no-cac
   セレクタ。encoded が無ければプレイヤーは出さず、原本があるときだけ VLC 向けリンクを出す
 - **再生位置は localStorage**（キー: 録画 ID + プロファイル）。サーバー側視聴履歴は作らない（#14 7c）
 - 原本 TS はブラウザでは再生せず、ダウンロード / VLC リンクとして残す
+- **ごみ箱ビューではサムネイル・プレイヤー・原本リンクを一切出さない（M3-18）。**
+  配信側（`GetOriginalMediaAssetForServing` 等）は `recordings.deleted_at IS NOT NULL`
+  を 404 にする契約（[api.md](api.md) §メディア配信）なので、出しても必ず 404 になる。
+  復元してから見る運用にする。ごみ箱一覧が `encodedProfiles` を射影しないままなのも
+  同じ理由（プレイヤーを出さないので揃える必要がない）
 
 ## ライブ視聴 --- EPGStation 水準のシンプルな UI
 
