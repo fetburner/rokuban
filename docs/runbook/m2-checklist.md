@@ -76,7 +76,7 @@ M2 の出口基準は「ルールで録れ、除外・上書きが生き残り�
 
 - [ ] `POST /api/programs/search` の結果と、同じ条件のルールが作る予約の集合が一致する
 - [ ] `POST /api/rules` の後、**ヒント経路で**（10 分待たずに）`ruler: pass complete` が出て予約ができる
-- [ ] その予約が mirakc に `rokuban:reservation=<id>` tag 付きで入り、実際に録画される
+- [ ] その予約が mirakc に `program:{programId}` tag 付きで入り、実際に録画される
 - [ ] ルールを `PATCH` で無効化（`enabled: false`）すると次の ruler パスで予約が消える（ruler は `enabled = true` のルールだけを評価する）
 - [ ] `DELETE /api/rules/{id}` の応答の `deletedReservations` / `detachedReservations` が実際の予約の増減と一致する
 - [ ] 上書きのない予約を `DELETE /api/reservations/{id}` すると**次の ruler パスで復活しない**（`program_intents` に skip が残る）

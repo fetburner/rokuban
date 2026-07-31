@@ -32,9 +32,10 @@ mirakc の `update-schedules` ジョブ（既定 08:21 / 20:21、timeout 10 分�
 ### 二重録画に注意
 
 Rokuban と EPGStation の両方に同じ番組の予約が入っていると、**同じ番組を 2 回録る**
-（tag が違うので互いに相手の schedule を消さない。reconciler は
-`rokuban:reservation=` tag のない schedule を触らない）。ディスクとチューナーを
-二重に消費するので、シャドー運用中は片方だけに予約を入れる。
+（tag が違うので互いに相手の schedule を消さない。reconciler は新旧いずれの
+rokuban tag（`program:{programId}` または旧形式 `rokuban:reservation=<id>`）も
+無い schedule を触らない）。ディスクとチューナーを二重に消費するので、シャドー
+運用中は片方だけに予約を入れる。
 
 ### shadow-diff で予約差分を確認する
 
