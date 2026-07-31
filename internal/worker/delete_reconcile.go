@@ -153,10 +153,34 @@ func (w *DeleteReconcileWorker) Work(ctx context.Context, _ *river.Job[DeleteRec
 		return fmt.Errorf("observing %s circuit breaker: %w", breaker.DeleteReconcile, err)
 	}
 
-	// 前パスで deleting のまま止まった行を最優先で再開する。これは「既に決めた
+	// trash / until_encoded 双方の判定に使う grace_cutoff を先に確定する。
+	// pending 経路の再評価（後述）もこの値を使うので、以前は trashRows の
+	// 取得直前で計算していたものをここへ引き上げた。
+	trashCutoff := time.Now().Add(-trashRetention)
+
+	// deleting のまま止まっていたが、その後の復元などで trash / until_encoded
+	// どちらの判定にも該当しなくなった行を active に戻す（issue #105）。
+	// RevertUnqualifiedDeletingAssets の WHERE 自体が判定条件を再評価するので、
+	// ここでは「戻った」という結果を受け取ってログに残すだけ。
+	reverted, err := q.RevertUnqualifiedDeletingAssets(ctx, trashCutoff)
+	if err != nil {
+		return fmt.Errorf("reverting unqualified deleting assets: %w", err)
+	}
+	for _, a := range reverted {
+		slog.Info("delete_reconcile: reverted deleting asset to active (no longer qualifies for deletion)",
+			"media_asset_id", a.ID, "recording_id", a.RecordingID, "rel_path", a.RelPath)
+	}
+
+	// 前パスで deleting のまま止まった行のうち、まだ trash / until_encoded の
+	// いずれかの判定に該当するものを最優先で再開する。これは「既に決めた
 	// 削除」の再実行であり新規の判断ではないため、サーキットブレーカーの対象外
-	// （docs/storage.md §7「どこで落ちても reconcile が拾い直す」）。
-	pending, err := q.ListMediaAssetsPendingDelete(ctx, deleteReconcileRowLimit)
+	// （docs/storage.md §7「どこで落ちても reconcile が拾い直す」）。上の
+	// RevertUnqualifiedDeletingAssets で該当しなくなった行は既に active に
+	// 戻っているので、ここに現れるのは常に判定を再確認できたものだけ。
+	pending, err := q.ListMediaAssetsPendingDelete(ctx, sqlcgen.ListMediaAssetsPendingDeleteParams{
+		GraceCutoff: trashCutoff,
+		RowLimit:    deleteReconcileRowLimit,
+	})
 	if err != nil {
 		return fmt.Errorf("listing pending deletes: %w", err)
 	}
@@ -180,7 +204,6 @@ func (w *DeleteReconcileWorker) Work(ctx context.Context, _ *river.Job[DeleteRec
 		return fmt.Errorf("reconciling orphan candidates: %w", err)
 	}
 
-	trashCutoff := time.Now().Add(-trashRetention)
 	trashRows, err := q.ListTrashMediaAssetsToDelete(ctx, sqlcgen.ListTrashMediaAssetsToDeleteParams{
 		GraceCutoff: trashCutoff,
 		RowLimit:    deleteReconcileRowLimit,
