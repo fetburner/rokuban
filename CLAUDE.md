@@ -68,10 +68,10 @@ M0（歩く骨格）・M1（録れる）・M2（任せられる）の実装は�
 |---|---|
 | M2 の出口基準の検証（EPGStation と 1〜2 週間並走し、予約差分がゼロ or 全件説明可能） | [#52](https://github.com/fetburner/rokuban/issues/52) |
 | M3 タスク分解: 置き換えられる（エンコード・削除・移行）。サブ #63〜#75 | [#62](https://github.com/fetburner/rokuban/issues/62) |
-| M4（広げられる）の粗粒度バックログ。着手時に親 issue へ分解する | [#14](https://github.com/fetburner/rokuban/issues/14) |
+| M4 タスク分解: 広げられる（ロール分割デプロイ・ライブ視聴・クラウド構成）。サブ #89〜#97 | [#88](https://github.com/fetburner/rokuban/issues/88) |
 
-- M4 の親 issue は「親 = 一覧 + 依存関係 + 出口基準、サブ = 詳細 + 受け入れ基準」の形で起票する（M3 の先例: #62）
 - **`reservations` と shadow-diff（#52 の出口基準を測る道具そのもの）を触るタスクは、#52 の並走中は着手しない。** 測定の連続性が切れる
+- **M4 のライブ視聴（#91）とロール分割マニフェスト（#94）は、[#56](https://github.com/fetburner/rokuban/issues/56)（streamer のセッション親和性）を決めるまで着手しない。** 決めずに分散させると「1 Pod では動くが 2 Pod で再生が切れる」形で運用時にしか出ない壊れ方をする
 
 ### ドキュメントと issue の保守
 
