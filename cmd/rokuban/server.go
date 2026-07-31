@@ -62,7 +62,7 @@ func newServerCmd() *cobra.Command {
 			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
 
-			pool, err := db.NewPool(ctx, cfg.DB)
+			pool, err := db.NewPool(ctx, cfg.DB, roles)
 			if err != nil {
 				return err
 			}

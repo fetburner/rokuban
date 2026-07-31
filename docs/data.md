@@ -301,8 +301,11 @@ twin vertices の縮約も、実は前提が完全には成り立たない。mir
 
 ### 飢餓防止の実装規律
 
-- ロール別にコネクションプール上限を分ける（api が全コネクションを食い潰して worker/reconciler が待つ事態を防ぐ）
-- API 系クエリに `statement_timeout` を設定
+実装済み（issue #90）。詳細と数値の根拠は [operations.md](operations.md) §3「輻輳時の隔離」を参照:
+
+- ロール別にコネクションプール上限を分ける（api が全コネクションを食い潰して worker/reconciler が待つ事態を防ぐ）。
+  プロセスが持つプールは常に 1 個なので、実体は「そのプロセスが担う roles からその 1 個の `MaxConns` を決める」こと
+- API 系クエリに `statement_timeout` を設定（api ロールを含むプロセスのプールにだけ適用）
 
 ### monolith モードの注意
 

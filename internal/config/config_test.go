@@ -198,6 +198,93 @@ log:
 	}
 }
 
+func TestLoad_DBPoolingDefaults(t *testing.T) {
+	path := writeConfig(t, minimalConfig)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.DB.MaxConns != 0 {
+		t.Errorf("db.max_conns = %d, want 0 (auto from roles)", cfg.DB.MaxConns)
+	}
+	if cfg.DB.APIStatementTimeout != 0 {
+		t.Errorf("db.api_statement_timeout = %v, want 0 (built-in default)", cfg.DB.APIStatementTimeout)
+	}
+	if cfg.DB.PoolerCompat {
+		t.Error("db.pooler_compat の既定値は false")
+	}
+}
+
+func TestLoad_DBPoolingOverridden(t *testing.T) {
+	path := writeConfig(t, `
+db:
+  host: localhost
+  user: rokuban
+  password: secret
+  database: rokuban
+  max_conns: 20
+  api_statement_timeout: 15s
+  pooler_compat: true
+mirakc:
+  url: http://mirakc.local:40772
+storage:
+  media_dir: /mnt/media
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.DB.MaxConns != 20 {
+		t.Errorf("db.max_conns = %d, want 20", cfg.DB.MaxConns)
+	}
+	if cfg.DB.APIStatementTimeout != 15*time.Second {
+		t.Errorf("db.api_statement_timeout = %v, want 15s", cfg.DB.APIStatementTimeout)
+	}
+	if !cfg.DB.PoolerCompat {
+		t.Error("db.pooler_compat = false, want true")
+	}
+}
+
+func TestLoad_DBMaxConnsNegative(t *testing.T) {
+	path := writeConfig(t, `
+db:
+  host: localhost
+  user: rokuban
+  password: secret
+  database: rokuban
+  max_conns: -1
+mirakc:
+  url: http://mirakc.local:40772
+storage:
+  media_dir: /mnt/media
+`)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for negative db.max_conns, got nil")
+	}
+}
+
+// db セクション内の typo も strict パースで検出できることを確認する
+// （既存の TestLoad_UnknownKey はトップレベルの typo しか見ていない）。
+func TestLoad_UnknownKey_NestedInDBSection(t *testing.T) {
+	path := writeConfig(t, `
+db:
+  host: localhost
+  user: rokuban
+  password: secret
+  database: rokuban
+  max_cons: 20
+mirakc:
+  url: http://mirakc.local:40772
+storage:
+  media_dir: /mnt/media
+`)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for typo'd db.max_cons, got nil")
+	}
+}
+
 func TestLoad_UnknownKey(t *testing.T) {
 	path := writeConfig(t, `
 db:
