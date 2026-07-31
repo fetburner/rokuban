@@ -2,6 +2,7 @@ package worker
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -427,6 +428,22 @@ func AllQueueNames() []string {
 	return sortedQueueNames(allQueues(0, 0, 0))
 }
 
+// RequiresEncodeTools は、worker.queues の設定でこのプロセスが encode または
+// thumbnail キューを購読するかを返す。空スライスは「全キュー購読」を意味する
+// ので true になる。
+//
+// worker ロール起動時の ffmpeg/ffprobe 存在検査（不変条件 4）をこの購読の
+// 有無に揃えるための判定（issue #113 決定 C）。worker.queues で encode /
+// thumbnail を明示的に外した worker Pod（例: ingest 専用 Pod）まで ffmpeg の
+// 存在を要求しないようにする一方、既定（全キュー購読）や明示的に含めた場合は
+// 引き続き起動時に検査して、ffmpeg 不在環境でジョブの再試行を焼く前に落ちる。
+func RequiresEncodeTools(queues []string) bool {
+	if len(queues) == 0 {
+		return true
+	}
+	return slices.Contains(queues, encodeQueue) || slices.Contains(queues, thumbnailQueue)
+}
+
 func sortedQueueNames(m map[string]river.QueueConfig) []string {
 	names := make([]string, 0, len(m))
 	for name := range m {
@@ -461,6 +478,11 @@ func NewClient(pool *pgxpool.Pool, workers *river.Workers, cfg ClientConfig) (*r
 // NewWorkers が返すフルのワーカー群を登録すると ingest/encode 等まで
 // そのプロセスに紐付いてしまうため、ヒント投入・CronJob 投入に必要な
 // InsertTx / Insert だけができる最小構成にする。
+//
+// watcher ロール単独のプロセスも同じ理由でこれを使う（issue #113）。watcher が
+// River を使うのは ingest ジョブの投入（InsertTx）だけで、worker ロールが無い
+// 限り EncodeWorker/ThumbnailWorker のような ffmpeg/ffprobe に依存するワーカーを
+// 登録・実行してはならない（不変条件 4）。
 func NewInsertOnlyClient(pool *pgxpool.Pool) (*river.Client[pgx5.Tx], error) {
 	client, err := river.NewClient(riverpgxv5.New(pool), &river.Config{})
 	if err != nil {

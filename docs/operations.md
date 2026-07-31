@@ -272,6 +272,32 @@ monolith モードでは Postgres のデータディレクトリとエンコー�
 
 ## 5. k8s 運用
 
+### ロールとキュー購読の関係（issue #113）
+
+**worker ロールだけが River のキューを引く。** 他のロールは、そのプロセスが実際に
+worker ロールを持つかどうかに関わらず、ジョブを実行しない。ロール分割デプロイ
+（M4）で `--roles watcher` のような worker を含まない構成を組んだときに、
+起動時検査が実態より広い安心を与える経路が過去にあったため（issue #113）、
+現在は次の 2 点で構造的に保証している:
+
+1. **watcher 単独プロセスは River クライアントを Start しない**（`--roles worker`
+   を含む場合だけ `river.Client.Start` を呼ぶ）。加えて watcher 単独プロセスは
+   `worker.NewWorkers` のフルのワーカー群（`EncodeWorker` / `ThumbnailWorker` を
+   含む）を登録しない --- api ロールと同じ `worker.NewInsertOnlyClient`（ingest
+   ジョブの `InsertTx` 専用、`Queues` / `Workers` を持たないため `Start` 自体が
+   呼べない構成）を使う。watcher が必要とするのは ingest ジョブの投入だけであり、
+   実行（キューの購読）ではないので、これで用は足りる
+2. **`worker.queues` は worker ロールが引くキューの絞り込みであり、既定（空）は
+   全キュー購読。** worker ロールが無いプロセスはこの設定に関わらずキューを
+   一切引かない（`configuration.md` の `worker.queues`）
+
+ffmpeg/ffprobe の起動時検査（不変条件 4）も、実際に encode/thumbnail キューを
+購読するときだけ行う（`worker.RequiresEncodeTools`）。`worker.queues` で
+encode/thumbnail を明示的に除外した worker Pod（例: ingest 専用 Pod）は ffmpeg
+の存在を要求されない。逆に既定（全キュー購読）や encode/thumbnail を含む設定では
+起動時に LookPath で検査し、無ければ即座に落ちる --- ffmpeg が無い環境で
+encode/thumbnail ジョブが River の再試行を焼き続けてから気付く、という壊れ方を防ぐ。
+
 ### worker: KEDA ScaledJob（長時間ジョブ保護）
 
 長時間バッチ（数時間のエンコード / ingest）には Deployment + HPA ではなく **KEDA ScaledJob** を使う。キューアイテムごとに k8s Job を起こす形にすると、**ジョブは完走するまで殺されない** --- スケールインは「新しい Job を起こさない」ことで実現され、実行中の犠牲者選定という問題自体が消える。
