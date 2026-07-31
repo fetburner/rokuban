@@ -978,6 +978,90 @@ func TestIngestWorker_SnapshotsEncodePolicyFromOverride(t *testing.T) {
 	}
 }
 
+// TestIngestWorker_ClampsUntilEncodedWithEmptyProfiles は issue #104 との相互作用の
+// 回帰テスト: override が keepOriginal=until_encoded だけを立て、encodeProfiles は
+// （ルール側の h264 を明示的に打ち消して）空にした場合、実効値としては
+// until_encoded × 空プロファイルというドリフトが生成される。この組み合わせは
+// recordings.keep_original / encode_profiles への CHECK 制約
+// （cardinality(encode_profiles) > 0、issue #104）に違反するため、そのまま書くと
+// 原本 media_asset の INSERT と同一 tx がロールバックし録画が消失する
+// （不変条件 3「コミット = DB 行」）。resolveAndSnapshotEncodePolicy のクランプで
+// keepOriginal を 'always' に倒して書くことを確認する。
+func TestIngestWorker_ClampsUntilEncodedWithEmptyProfiles(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+	q := sqlcgen.New(pool)
+
+	programID := int64(900000000000003)
+	res := insertProgramSnapshotAndReservation(t, pool, programID, "ドリフト予約番組")
+	setReservationBase(t, pool, res.ID, `{"keepOriginal":"always","encodeProfiles":["h264"]}`)
+
+	overrides, err := json.Marshal(map[string]any{
+		"keepOriginal":   "until_encoded",
+		"encodeProfiles": []string{}, // ルールの h264 を明示的に打ち消す override
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
+		Site:      "default",
+		ProgramID: programID,
+		Overrides: overrides,
+	}); err != nil {
+		t.Fatalf("setting override: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(),
+			"DELETE FROM program_overrides WHERE site = $1 AND program_id = $2", "default", programID)
+	})
+
+	recordingID := insertTestRecordingForReservation(t, pool, res.ID)
+	insertTestRecordSync(t, pool, recordingID, "rec-policy-drift")
+
+	tsData := makeTSData(20)
+	srv := newFullTransferServer(t, tsData, "test/policy-drift.m2ts")
+	mc := mirakc.NewClient(srv.URL, nil)
+
+	w := &IngestWorker{
+		MirakcClient: mc,
+		MediaDir:     t.TempDir(),
+		Pool:         pool,
+		StallTimeout: 5 * time.Second,
+	}
+
+	job := &river.Job[IngestJobArgs]{
+		JobRow: &rivertype.JobRow{},
+		Args:   IngestJobArgs{Site: "default", RecordID: "rec-policy-drift"},
+	}
+
+	workCtx := riverWorkContext(t, pool)
+	if err := w.Work(workCtx, job); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+
+	keepOriginal, profiles := encodePolicyOfRecording(t, pool, recordingID)
+	if keepOriginal != "always" {
+		t.Errorf("keep_original = %q, want always (clamped: effective encodeProfiles is empty)", keepOriginal)
+	}
+	if len(profiles) != 0 {
+		t.Errorf("encode_profiles = %v, want empty", profiles)
+	}
+
+	var jobCount int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM river_job WHERE kind = 'encode' AND (args->>'recording_id')::bigint = $1`,
+		recordingID,
+	).Scan(&jobCount); err != nil {
+		t.Fatal(err)
+	}
+	if jobCount != 0 {
+		t.Errorf("encode jobs = %d, want 0", jobCount)
+	}
+}
+
 // TestIngestWorker_NoReservation_LeavesEncodePolicyDefault は「予約行が無い録画では
 // 既定値のまま・encode ジョブも入らない」を確認する（手動で mirakc に起こされた
 // 録画等、recordings.reservation_id が NULL のケース。insertTestRecording は

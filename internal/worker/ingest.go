@@ -462,6 +462,28 @@ func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath st
 // 表現できないので、ここでは両者を等しく '{}' に潰すと決める。区別が必要な
 // 場面（override の差分表示等）は program_overrides.overrides 自身に当たれば
 // よく、このスナップショットの役目ではない。
+//
+// # keepOriginal='until_encoded' × encodeProfiles=[] のクランプ（issue #104 との整合）
+//
+// rules.keep_original / rules.encode_profiles にはこの組み合わせを禁止する CHECK が
+// あるが、実効値はルール単独では決まらない --- override が `keepOriginal:
+// until_encoded` だけを立て、ルール側の `encodeProfiles` が空（またはルール自体が
+// `keep_original='always'`）というドリフトが EffectiveOptions のマージ結果として
+// 生成されうる。ルールと override はそれぞれ自分の表の中では整合していても、
+// マージ結果の整合は誰も検査していない。
+//
+// recordings.keep_original / encode_profiles にも同じ組み合わせを禁止する CHECK
+// （issue #104、`until_encoded` は encode_profiles が非空であることを要求する）が
+// 入る予定で、そのまま実効値を書くとこの tx が CHECK 違反でロールバックする ---
+// このメソッドは原本 media_asset の INSERT と同一 tx で呼ばれるため、
+// ロールバックは「録画そのものが消失する」に直結する（不変条件 3「コミット =
+// DB 行」）。原本を失うリスクを負ってまで守る価値のある不変ではないので、
+// 書く直前に安全側へ倒す（migration 00020 の UP 文が既存行に対して行う補正と
+// 同じロジック）: 実効的な encode_profiles が空で keepOriginal が
+// 'until_encoded' なら、'always' に倒してから書く。ユーザーの意図
+// （override の値そのもの）は program_overrides 側に残るので失われない ---
+// 失われるのはこの録画のスナップショットにおける効力だけで、次にルールが
+// プロファイルを持てば別の録画では正しく until_encoded になる。
 func (w *IngestWorker) resolveAndSnapshotEncodePolicy(ctx context.Context, q *sqlcgen.Queries, recordingID int64) error {
 	rec, err := q.GetRecordingByID(ctx, recordingID)
 	if err != nil {
@@ -491,6 +513,16 @@ func (w *IngestWorker) resolveAndSnapshotEncodePolicy(ctx context.Context, q *sq
 	encodeProfiles := []string{}
 	if eff.EncodeProfiles != nil {
 		encodeProfiles = *eff.EncodeProfiles
+	}
+
+	// クランプ（doc コメント「keepOriginal='until_encoded' × encodeProfiles=[] の
+	// クランプ」参照）。ルール単独・override 単独ではそれぞれ禁則を満たしていても、
+	// マージ結果としてこの組み合わせが生成されうる。cardinality(encode_profiles) > 0
+	// を要求する CHECK（issue #104）とここで矛盾すると、このメソッドを呼ぶ tx
+	// （原本 media_asset の INSERT と同一）ごとロールバックし録画が消える
+	// （不変条件 3）ため、書く前に安全側へ倒す。
+	if keepOriginal == "until_encoded" && len(encodeProfiles) == 0 {
+		keepOriginal = "always"
 	}
 
 	return q.SnapshotRecordingEncodePolicy(ctx, sqlcgen.SnapshotRecordingEncodePolicyParams{
