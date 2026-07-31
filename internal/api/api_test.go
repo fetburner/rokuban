@@ -185,6 +185,196 @@ func TestAllowedHosts_NoForwardedHostFallsBackToHost(t *testing.T) {
 	}
 }
 
+// 複数プロキシを経由すると X-Forwarded-Host は X-Forwarded-For と同様、
+// 各ホップが自分の見た値をカンマ区切りで追記しうる。ポート付きの値が
+// 先頭に来た場合、net.SplitHostPort が最後のコロンで割るだけだと
+// host="rokuban.local" / port="443, evil.example.com" のように誤分解され、
+// 意図せず通ってしまう（レビュー指摘）。先頭カンマ要素を切り出してから
+// stripPort する実装であることを確認する。
+func TestAllowedHosts_ForwardedHostCommaSeparatedWithPortUsesFirstElement(t *testing.T) {
+	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	req, err := http.NewRequest("GET", srv.URL+"/api/version", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "internal-proxy.example.com"
+	req.Header.Set("X-Forwarded-Host", "rokuban.local:443, evil.example.com")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want %d（先頭要素 rokuban.local:443 が allowlist 内なら通すべき）", resp.StatusCode, http.StatusOK)
+	}
+}
+
+// ポートを含まない場合でも、カンマ区切りの先頭要素が allowlist 内なら通す。
+// レビュー指摘の再現ケース: 修正前の実装は Get() の生値に stripPort を直接
+// 適用していたため、"rokuban.local, evil.example.com"（コロンを含まない）
+// では SplitHostPort が失敗して元の文字列がそのまま比較され、正当な先頭
+// 要素であっても一致せず 400 になっていた（ポートの有無で結果が変わる
+// 一貫性の無さそのもの）。
+func TestAllowedHosts_ForwardedHostCommaSeparatedNoPortUsesFirstElement(t *testing.T) {
+	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	req, err := http.NewRequest("GET", srv.URL+"/api/version", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "internal-proxy.example.com"
+	req.Header.Set("X-Forwarded-Host", "rokuban.local, evil.example.com")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want %d（先頭要素 rokuban.local が allowlist 内なら通すべき）", resp.StatusCode, http.StatusOK)
+	}
+}
+
+// 先頭要素（クライアントに最も近い値）が allowlist 外なら、後続のカンマ要素に
+// allowlist 内の値が含まれていても拒否する。「いずれかの要素が一致すれば通す」
+// という誤った実装（更なる抜け道）になっていないことを確認する。
+func TestAllowedHosts_ForwardedHostCommaSeparatedRejectsWhenFirstElementInvalid(t *testing.T) {
+	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	req, err := http.NewRequest("GET", srv.URL+"/api/version", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "internal-proxy.example.com"
+	req.Header.Set("X-Forwarded-Host", "evil.example.com, rokuban.local")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d（先頭要素 evil.example.com が allowlist 外なら拒否すべき）", resp.StatusCode, http.StatusBadRequest)
+	}
+}
+
+// X-Forwarded-Host が複数のヘッダー行に分かれて送られた場合も、最初の行を
+// 権威として使う（複数行は連結した1つの値と等価に扱う。RFC 9110 §5.3）。
+func TestAllowedHosts_ForwardedHostMultipleHeaderLinesUsesFirstLine(t *testing.T) {
+	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	req, err := http.NewRequest("GET", srv.URL+"/api/version", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "internal-proxy.example.com"
+	req.Header.Add("X-Forwarded-Host", "rokuban.local")
+	req.Header.Add("X-Forwarded-Host", "evil.example.com")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want %d（最初の行 rokuban.local が allowlist 内なら通すべき）", resp.StatusCode, http.StatusOK)
+	}
+}
+
+// 上のテストの行の順序を逆にすると結果も反転すること（最初の行が権威である
+// ことの両方向確認）。
+func TestAllowedHosts_ForwardedHostMultipleHeaderLinesRejectsWhenFirstLineInvalid(t *testing.T) {
+	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	req, err := http.NewRequest("GET", srv.URL+"/api/version", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "internal-proxy.example.com"
+	req.Header.Add("X-Forwarded-Host", "evil.example.com")
+	req.Header.Add("X-Forwarded-Host", "rokuban.local")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d（最初の行 evil.example.com が allowlist 外なら拒否すべき）", resp.StatusCode, http.StatusBadRequest)
+	}
+}
+
+// alwaysAllowedHosts（localhost 系の常時許可）は実際の TCP 接続相手が
+// localhost であることを根拠にした緩和であり、自己申告値である
+// X-Forwarded-Host には適用してはならない。r.Host が allowlist 外でも
+// X-Forwarded-Host: localhost を送るだけで allowlist を素通りできてしまう
+// バグ（レビュー指摘）の回帰を防ぐ。
+func TestAllowedHosts_ForwardedHostLocalhostDoesNotBypassAllowlist(t *testing.T) {
+	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	req, err := http.NewRequest("GET", srv.URL+"/api/version", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// r.Host は allowlist 外（DNS rebinding された攻撃者ドメイン等を想定）。
+	req.Host = "attacker-controlled.example.com"
+	req.Header.Set("X-Forwarded-Host", "localhost")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d（X-Forwarded-Host: localhost が allowlist をバイパスしてはいけない）", resp.StatusCode, http.StatusBadRequest)
+	}
+}
+
+// r.Host が直接 localhost の場合（前段にプロキシが居ない直接アクセス）は
+// 従来通り常時許可する（回帰確認）。
+func TestAllowedHosts_DirectLocalhostStillBypassesAllowlist(t *testing.T) {
+	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	req, err := http.NewRequest("GET", srv.URL+"/api/version", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "localhost"
+	// X-Forwarded-Host は設定しない。
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want %d（r.Host が localhost なら常時許可すべき）", resp.StatusCode, http.StatusOK)
+	}
+}
+
 func TestAllowedHosts_EmptyAllowsAll(t *testing.T) {
 	router := NewRouter(RouterConfig{})
 	srv := httptest.NewServer(router)

@@ -4,7 +4,7 @@
 # HTTP を持つロール (api, streamer, notifier) 共通
 server:
   listen: ":40773"               # mirakc の 40772 の隣
-  allowed_hosts: [rokuban.local] # Host ヘッダー allowlist。空にするとチェック無効（開発用）
+  allowed_hosts: [rokuban.local] # Host ヘッダー allowlist（X-Forwarded-Host があれば優先）。空にするとチェック無効（開発用）
 
 # PostgreSQL 接続情報（必須）
 db:
