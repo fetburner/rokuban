@@ -344,8 +344,14 @@ function CreateRuleForm({
   const navigate = useNavigate()
   const createRule = useCreateRule()
 
+  // フォーク元があっても名前だけはそのまま使わない。`rules.name` に一意制約は
+  // 無い（migrations/00006_rules.sql）ので、同名のルールが 2 本並んで一覧では
+  // 条件の要約でしか見分けられなくなる。バナーで「別のルールになる」と伝えても、
+  // 名前が元のままだとその警告と矛盾した状態が残る。
   const [meta, setMeta] = useState<RuleMetaDraft>(() =>
-    sourceRule ? ruleToMeta(sourceRule) : emptyRuleMeta(),
+    sourceRule
+      ? { ...ruleToMeta(sourceRule), name: `${sourceRule.name} のコピー` }
+      : emptyRuleMeta(),
   )
   // 「全番組が対象になる」ことを理解した上での作成かどうか。条件を追加すれば
   // このチェックは意味を失うが、外れたままでも実害はない（次の保存試行時に

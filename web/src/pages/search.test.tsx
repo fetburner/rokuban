@@ -491,6 +491,22 @@ describe('SearchPage', () => {
       expect(screen.queryByLabelText('テキスト条件 1 の値')).not.toBeInTheDocument()
     })
 
+    it('フォーク元と同名のルールを作らせない', async () => {
+      const { createRuleBodies } = stubApi({ rules: [ruleFixture] })
+      renderPage(['/search?ruleId=7'])
+
+      expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+      await userEvent.click(screen.getByRole('button', { name: 'この条件でルールを作成' }))
+
+      // `rules.name` に一意制約が無いので、名前をそのまま引き継ぐと同名の 2 本が
+      // 一覧に並び、条件の要約でしか見分けられなくなる。
+      expect(screen.getByLabelText('名前')).toHaveValue('ニュースルール のコピー')
+
+      await userEvent.click(screen.getByRole('button', { name: 'ルールを作成' }))
+      await waitFor(() => expect(createRuleBodies).toHaveLength(1))
+      expect(createRuleBodies[0]?.name).toBe('ニュースルール のコピー')
+    })
+
     it('ハイドレーション後にユーザーが条件を編集しても巻き戻らない', async () => {
       const { rules } = stubApi({ rules: [ruleFixture] })
       const { queryClient } = renderPage(['/search?ruleId=7'])
