@@ -34,6 +34,30 @@ describe('routeTree', () => {
     expect(search?.options.component).toBe(SearchPage)
   })
 
+  it('/search の ruleId は不正な値だと undefined に落ちる', () => {
+    // ルール画面 → 検索画面のプレビュー導線（`<Link to="/search" search={{ ruleId }}>`）
+    // の契約。消費側（プレビュー実装）はまだ無いが、双方が互いを見ずに実装
+    // できるようこの検証だけ先に固定する
+    const search = routeTree.children as unknown as {
+      options: {
+        path?: string
+        validateSearch?: (search: Record<string, unknown>) => { ruleId?: number }
+      }
+    }[]
+    const validateSearch = search.find((route) => route.options.path === '/search')?.options
+      .validateSearch
+    if (!validateSearch) throw new Error('/search route に validateSearch が無い')
+
+    expect(validateSearch({ ruleId: 42 })).toEqual({ ruleId: 42 })
+    // URL の生値は文字列で来る（JSON.parse できる数字文字列は router 側で
+    // 既に数値化されるが、それに頼らず文字列でも受けられることを確かめる）
+    expect(validateSearch({ ruleId: '42' })).toEqual({ ruleId: 42 })
+    expect(validateSearch({ ruleId: 'abc' })).toEqual({})
+    expect(validateSearch({ ruleId: Number.NaN })).toEqual({})
+    expect(validateSearch({ ruleId: Number.POSITIVE_INFINITY })).toEqual({})
+    expect(validateSearch({})).toEqual({})
+  })
+
   it('/search を開くと検索画面が出て、主ナビゲーションから辿れる', async () => {
     // jsdom は window.scrollTo を実装していない。ルーターのスクロール復元が
     // 呼ぶため、置いておかないと関係のない例外がログを埋める

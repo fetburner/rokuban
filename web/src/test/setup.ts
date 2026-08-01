@@ -13,11 +13,16 @@ class ResizeObserverStub {
 
 globalThis.ResizeObserver ??= ResizeObserverStub
 
-// jsdom は window.scrollTo を実装していない。TanStack Virtual の
-// useWindowVirtualizer（components/program-list.tsx）が初期位置合わせのために
-// 呼ぶため、no-op スタブを用意する（無いとテストのたびに "Not implemented"
-// エラーが標準エラーに出るだけで、テスト自体は落ちない。ログを汚さないための
-// スタブで、可視判定の正しさ自体は lib/list-virtualization.ts 側で担保する）。
+// jsdom は window.scrollTo を実装していない。呼び手は 2 つある。
+//   - TanStack Virtual の useWindowVirtualizer（components/program-list.tsx）が
+//     初期位置合わせのために呼ぶ
+//   - TanStack Router のスクロール復元がナビゲーションのたびに呼ぶ（ルーターを
+//     使うテスト全般。routes.test.tsx が個別に置いていたスタブをここに集約し、
+//     test/router.tsx の renderInRouter を使うテストにも効かせる）
+// どちらも無いとテストのたびに "Not implemented" が標準エラーに出るだけで
+// テスト自体は落ちないが、無関係な例外でログが埋まる。可視判定の正しさ自体は
+// lib/list-virtualization.ts 側で担保する。
+// jsdom がすでに「投げるだけ」の実装を持っているため `??=` では上書きできない。
 window.scrollTo = (() => {}) as typeof window.scrollTo
 
 // vitest config で test.globals を有効にしていないため、

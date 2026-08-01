@@ -10,19 +10,22 @@ import { cn } from '@/lib/utils'
 export function Chip({
   active,
   onClick,
+  disabled,
   children,
 }: {
   active: boolean
   onClick: () => void
+  disabled?: boolean
   children: React.ReactNode
 }) {
   return (
     <button
       type="button"
       aria-pressed={active}
+      disabled={disabled}
       onClick={onClick}
       className={cn(
-        'shrink-0 rounded-full border px-3 py-1.5 text-xs transition-colors',
+        'shrink-0 rounded-full border px-3 py-1.5 text-xs transition-colors disabled:pointer-events-none disabled:opacity-50',
         active
           ? 'border-primary bg-primary text-primary-foreground'
           : 'border-border text-muted-foreground hover:bg-muted',

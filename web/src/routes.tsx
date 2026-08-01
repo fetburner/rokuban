@@ -22,6 +22,17 @@ const programsRoute = createRoute({
   component: ProgramsPage,
 })
 
+/** SearchPageSearch は `/search` のクエリパラメータ。 */
+export type SearchPageSearch = {
+  /**
+     * 開いたときにルールの条件を下書きへ写す元のルール id（省略可）。
+     * ルール画面が `<Link to="/search" search={{ ruleId }}>` で渡し、検索画面が
+     * `useSearch()` で読む。互いのページを見ずに実装できるよう、消費側の実装
+     * より前にこの型だけ決めておく。
+     */
+  ruleId?: number
+}
+
 /**
  * 検索は番組表とは別のルートに置く。番組表は「EPG を時間軸で眺める」画面だが、
  * 検索は ruler と同じ条件コンパイラを叩く「ルールの条件を試す」画面で、
@@ -30,6 +41,14 @@ const programsRoute = createRoute({
 const searchRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/search',
+  // 不正な値（数値に変換できない・NaN・Infinity）は undefined に落とす。
+  // 存在しないルール id を積んだ壊れたリンクを踏んでも、検索画面は
+  // 「ruleId 指定なし」の通常の検索フォームとして開ける
+  validateSearch: (search: Record<string, unknown>): SearchPageSearch => {
+    const raw = search.ruleId
+    const n = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : NaN
+    return Number.isFinite(n) ? { ruleId: n } : {}
+  },
   component: SearchPage,
 })
 

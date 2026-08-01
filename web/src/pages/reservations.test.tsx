@@ -1,10 +1,10 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { RouterProvider, createMemoryHistory, createRouter } from '@tanstack/react-router'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import type { QueryClient } from '@tanstack/react-query'
+import { screen, waitFor, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { CapacityOverage, Reservation } from '@/api/generated'
-import { routeTree } from '@/routes'
+import { ReservationsPage } from '@/pages/reservations'
+import { renderInRouter } from '@/test/router'
 
 /** 時刻はローカルの 0 時基準で組む（表示に時刻が入るのでタイムゾーンに依存させない）。 */
 const dayStart = new Date(2026, 6, 25, 0, 0, 0, 0)
@@ -84,26 +84,15 @@ function stubApi(reservations: Reservation[], overages: CapacityOverage[]) {
 }
 
 /**
- * renderPage は本物のルートツリーで `/reservations` を描く。
+ * renderPage は `ReservationsPage` をルーターの中で描く。
  *
- * 行は詳細への `Link` を含むので、ルーターごと描かないと href を組めない。
- * 返す queryClient は「クエリが解決し終わった」ことの待ち合わせに使う
- * （バッジが出ないことを確かめるテストが、解決前に通るのを防ぐ）。
+ * 行は詳細への `Link` を含むので、ルーターごと描かないと href を組めない
+ * （`renderInRouter` を参照）。返す queryClient は「クエリが解決し終わった」
+ * ことの待ち合わせに使う（バッジが出ないことを確かめるテストが、解決前に
+ * 通るのを防ぐ）。
  */
 function renderPage() {
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false, staleTime: 0 } },
-  })
-  const router = createRouter({
-    routeTree,
-    history: createMemoryHistory({ initialEntries: ['/reservations'] }),
-  })
-  const view = render(
-    <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} />
-    </QueryClientProvider>,
-  )
-  return { ...view, queryClient }
+  return renderInRouter(<ReservationsPage />, { path: '/reservations' })
 }
 
 function renderWith(reservations: Reservation[], overages: CapacityOverage[]) {

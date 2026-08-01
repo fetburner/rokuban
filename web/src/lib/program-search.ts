@@ -13,10 +13,13 @@
 import type {
   ProgramSearchRequest,
   ProgramSearchRequestChannelTypesItem,
+  Rule,
+  RuleInput,
   RuleTextMatch,
   RuleTextMatchMode,
   RuleTextMatchTarget,
 } from '@/api/generated'
+import { encodeSettingsError, type KeepOriginal } from '@/lib/encode-settings'
 import { genreLabel } from '@/lib/genre'
 
 /** TriState は `boolean | null`（null = 問わない）を UI の 3 値で表す。 */
@@ -250,4 +253,156 @@ export function draftError(draft: SearchDraft): string | undefined {
     return '時間帯の開始と終了には違う時刻を指定してください'
   }
   return undefined
+}
+
+/** RuleMetaDraft はルールの条件以外の部分（フォーム状態）。 */
+export type RuleMetaDraft = {
+  name: string
+  enabled: boolean
+  /** 入力欄の文字列のまま持つ（SearchDraft の数値と同じ流儀） */
+  priority: string
+  keepOriginal: KeepOriginal
+  encodeProfiles: string[]
+}
+
+/** emptyRuleMeta は新規作成時の初期値（priority は '10'、keepOriginal は 'always'）。 */
+export function emptyRuleMeta(): RuleMetaDraft {
+  return {
+    name: '',
+    enabled: true,
+    priority: '10',
+    keepOriginal: 'always',
+    encodeProfiles: [],
+  }
+}
+
+/** ruleToMeta は既存ルールをフォーム状態にする。 */
+export function ruleToMeta(rule: Rule): RuleMetaDraft {
+  return {
+    name: rule.name,
+    enabled: rule.enabled,
+    priority: String(rule.priority),
+    keepOriginal: rule.keepOriginal,
+    encodeProfiles: rule.encodeProfiles ? [...rule.encodeProfiles] : [],
+  }
+}
+
+/**
+ * isoToLocalDateTime は UTC の ISO 8601 を `datetime-local` の値（ローカル壁時計）
+ * にする。`localDateTimeToIso` の逆。
+ *
+ * `date.toISOString().slice(0, 16)` は使わない —— それは UTC の壁時計であって
+ * ローカルではない。年月日時分をローカルのフィールド（`getFullYear` 等）から
+ * 組み立てる必要がある。
+ */
+function isoToLocalDateTime(iso: string): string {
+  const d = new Date(iso)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const year = d.getFullYear()
+  const month = pad(d.getMonth() + 1)
+  const day = pad(d.getDate())
+  const hours = pad(d.getHours())
+  const minutes = pad(d.getMinutes())
+  return `${year}-${month}-${day}T${hours}:${minutes}`
+}
+
+/**
+ * ruleToDraft は既存ルールの条件をフォームの下書きにする（`buildSearchRequest`
+ * の逆）。
+ */
+export function ruleToDraft(rule: Rule): SearchDraft {
+  return {
+    isFree: rule.isFree === true ? 'yes' : rule.isFree === false ? 'no' : 'any',
+    durationMinMinutes:
+      rule.durationMinMs !== undefined && rule.durationMinMs !== null
+        ? String(rule.durationMinMs / 60_000)
+        : '',
+    durationMaxMinutes:
+      rule.durationMaxMs !== undefined && rule.durationMaxMs !== null
+        ? String(rule.durationMaxMs / 60_000)
+        : '',
+    periodStartAt:
+      rule.periodStartAt !== undefined && rule.periodStartAt !== null
+        ? isoToLocalDateTime(rule.periodStartAt)
+        : '',
+    periodEndAt:
+      rule.periodEndAt !== undefined && rule.periodEndAt !== null
+        ? isoToLocalDateTime(rule.periodEndAt)
+        : '',
+    textMatches: (rule.textMatches ?? []).map((m) => ({
+      target: m.target,
+      mode: m.mode,
+      value: m.value,
+      caseSensitive: m.caseSensitive ?? false,
+      negate: m.negate ?? false,
+    })),
+    services: (rule.services ?? []).map((s) => ({
+      networkId: s.networkId,
+      serviceId: s.serviceId,
+    })),
+    channelTypes: (rule.channelTypes ?? []).slice() as ProgramSearchRequestChannelTypesItem[],
+    genres: rule.genres ? [...rule.genres] : [],
+    times: (rule.times ?? []).map((t) => ({
+      weekdays: t.weekdays,
+      startSec: t.startSec,
+      endSec: t.endSec,
+    })),
+  }
+}
+
+/**
+ * buildRuleInput は下書きとメタから `RuleInput` を作る。
+ *
+ * 条件部分は `buildSearchRequest(draft)` をスプレッドするだけで、変換を
+ * 2 箇所に重複させない。
+ *
+ * **`sites` は送らない（空 = 全サイト）。** `ProgramSearchRequest.sites` は
+ * `rule_sites` 相当の別次元で、検索フォーム（`SearchDraft`）は UI にこの次元を
+ * 出していない。UI が出していない次元を検索条件から推測して埋めると、
+ * 「画面で試した条件」と「実際に保存される条件」が食い違う
+ * （試していない次元が黙って決まる）。ただし `preserve` に既存ルールがあり、
+ * それが `sites` を持っているなら引き継ぐ —— UI から編集できないフィールドを
+ * 保存のたびに消してはならない（下の `preserve` の説明を参照）。
+ *
+ * `preserve` に既存ルールを渡すと、UI を持たない項目（`description` /
+ * `dedupeEnabled` / `dedupeThreshold` / `dedupeWindowSeconds` /
+ * `filenameTemplate` / `metadata` / `sites`）を引き継ぐ。渡さない
+ * （新規作成）ときはこれらを一切送らない。
+ */
+export function buildRuleInput(
+  draft: SearchDraft,
+  meta: RuleMetaDraft,
+  preserve?: Rule,
+): RuleInput {
+  const priorityNum = Number(meta.priority)
+  const input: RuleInput = {
+    ...buildSearchRequest(draft),
+    name: meta.name.trim(),
+    enabled: meta.enabled,
+    priority: Number.isFinite(priorityNum) ? priorityNum : 10,
+    keepOriginal: meta.keepOriginal,
+    encodeProfiles: meta.encodeProfiles,
+  }
+
+  if (preserve !== undefined) {
+    if (preserve.description !== undefined) input.description = preserve.description
+    if (preserve.dedupeEnabled !== undefined) input.dedupeEnabled = preserve.dedupeEnabled
+    if (preserve.dedupeThreshold !== undefined) input.dedupeThreshold = preserve.dedupeThreshold
+    if (preserve.dedupeWindowSeconds !== undefined) {
+      input.dedupeWindowSeconds = preserve.dedupeWindowSeconds
+    }
+    if (preserve.filenameTemplate !== undefined) input.filenameTemplate = preserve.filenameTemplate
+    if (preserve.metadata !== undefined) input.metadata = preserve.metadata
+    if (preserve.sites !== undefined) input.sites = preserve.sites
+  }
+
+  return input
+}
+
+/** ruleMetaError は保存してはいけないメタの理由を返す（問題なければ undefined）。 */
+export function ruleMetaError(meta: RuleMetaDraft): string | undefined {
+  if (meta.name.trim() === '') {
+    return '名前は必須です'
+  }
+  return encodeSettingsError(meta.keepOriginal, meta.encodeProfiles)
 }
