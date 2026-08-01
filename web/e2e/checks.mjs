@@ -36,11 +36,18 @@ const currentDay = () =>
  */
 const visibleTopRow = () =>
   page.evaluate(() => {
-    const headerPx = document.querySelector('header')?.getBoundingClientRect().height ?? 0
+    const header = document.querySelector('header')?.getBoundingClientRect()
+    let cutPx = header ? header.bottom : 0
+    // 遡行ボタンが画面上部の帯を占めているときだけ、その下端まで下げる。
+    // 通常フローに置かれて画面外（上）へ流れた場合は数えない ——
+    // 高さを無条件に足すと、実際には見えているのに隠れている扱いの行が出る。
     const button = [...document.querySelectorAll('button')].find((b) =>
       /前を読み込む|を読み込む/.test(b.textContent || ''),
     )
-    const cutPx = headerPx + (button ? button.getBoundingClientRect().height : 0)
+    if (button) {
+      const r = button.getBoundingClientRect()
+      if (r.bottom > cutPx && r.top < cutPx + 8) cutPx = r.bottom
+    }
     for (const el of document.querySelectorAll('li[data-program-id]')) {
       const rect = el.getBoundingClientRect()
       if (rect.top >= cutPx - 4) {
@@ -72,6 +79,11 @@ await page.mouse.wheel(0, 1200)
 await page.waitForTimeout(800)
 
 for (let i = 1; i <= REWINDS; i++) {
+  // 実際の操作に合わせて、押す前にリストの上端まで戻る。遡行ボタンは
+  // 「読み込み済みの先頭まで戻ってきて、その前日も見たくなった」ときにだけ
+  // 使うものなので、画面外のボタンを押しに行く経路は判定しない。
+  await page.evaluate(() => window.scrollTo(0, 0))
+  await page.waitForTimeout(600)
   const before = await visibleTopRow()
   if ((await loadPreviousButton().count()) === 0) {
     log(`  ${i} 回目: ボタンが無い（下限に到達）`)
