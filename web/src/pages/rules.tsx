@@ -1,4 +1,5 @@
 import { useQueryClient } from '@tanstack/react-query'
+import { Link } from '@tanstack/react-router'
 import { useState } from 'react'
 
 import {
@@ -8,32 +9,44 @@ import {
   useListRules,
   useUpdateRule,
   type Rule,
-  type RuleInput,
 } from '@/api/generated'
 import { apiErrorMessage, unwrap } from '@/api/unwrap'
+import { ConditionFields } from '@/components/condition-fields'
 import {
   EncodeSettingsFields,
   type EncodeSettingsValue,
 } from '@/components/encode-settings-fields'
 import { EmptyState, ErrorState, ListSkeleton, PageHeader } from '@/components/page'
+import { summarizeRuleConditions } from '@/components/rule-condition-summary'
 import { useToast } from '@/components/toaster'
 import { Button } from '@/components/ui/button'
 import { Field, Input } from '@/components/ui/field'
+import { keepOriginalLabel, type KeepOriginal } from '@/lib/encode-settings'
 import {
-  encodeSettingsError,
-  keepOriginalLabel,
-  type KeepOriginal,
-} from '@/lib/encode-settings'
+  buildRuleInput,
+  buildSearchRequest,
+  draftError,
+  emptyDraft,
+  emptyRuleMeta,
+  ruleMetaError,
+  ruleToDraft,
+  ruleToMeta,
+  type RuleMetaDraft,
+  type SearchDraft,
+} from '@/lib/program-search'
 import { cn } from '@/lib/utils'
 
 /**
  * RulesPage は録画ルールの一覧と作成・編集。
  *
- * M3-6 の焦点は encodeProfiles / keepOriginal の編集可能化。条件の全次元 UI
- * （検索画面と同等）は検索で試してからルール API で書く運用を当面許容し、
- * ここでは名前・有効/無効・優先度・エンコード設定を編集できる形にする。
- * 既存ルールの更新時は子条件（textMatches 等）をそのまま往復させる
- * （UpdateRule は子テーブル全置換なので落とすと条件が消える）。
+ * 条件（テキスト・サービス・チャンネル種別・ジャンル・時間帯・無料放送・
+ * 放送時間・期間）は検索画面（`/search`）と同じ `ConditionFields` /
+ * `internal/rulequery` を通るので、ここでも全次元を編集できる
+ * （M3-6 の時点では encodeProfiles / keepOriginal だけの編集に留めていたが、
+ * `condition-fields.tsx` / `lib/program-search.ts` の切り出しでルール側にも
+ * 同じ UI を持ち込めるようになった）。`UpdateRule` は子テーブル全置換なので、
+ * UI が持たない項目（description / dedupe* / filenameTemplate / metadata /
+ * sites）は `buildRuleInput` の `preserve` 引数で引き継ぐ。
  */
 export function RulesPage() {
   const query = useListRules()
@@ -94,6 +107,7 @@ export function RulesPage() {
 function RuleRow({ rule, onEdit }: { rule: Rule; onEdit: () => void }) {
   const profiles = rule.encodeProfiles ?? []
   const keep = (rule.keepOriginal ?? 'always') as KeepOriginal
+  const conditions = summarizeRuleConditions(rule)
 
   return (
     <div className="rounded-lg border border-border px-3 py-3">
@@ -107,6 +121,23 @@ function RuleRow({ rule, onEdit }: { rule: Rule; onEdit: () => void }) {
               </span>
             )}
           </div>
+
+          {/* 条件が空 = 全番組にマッチする、という危険な状態を一覧でも
+              見えるようにする（設定を開かないと気付けない事故を防ぐ）。 */}
+          <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-xs">
+            {conditions.length === 0 ? (
+              <span className="font-medium text-amber-600 dark:text-amber-400">
+                条件なし（すべての番組にマッチ）
+              </span>
+            ) : (
+              conditions.map((c, i) => (
+                <span key={i} className="text-muted-foreground">
+                  {c}
+                </span>
+              ))
+            )}
+          </div>
+
           <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
             <span>優先度 {rule.priority}</span>
             <span>{keepOriginalLabel(keep)}</span>
@@ -115,9 +146,18 @@ function RuleRow({ rule, onEdit }: { rule: Rule; onEdit: () => void }) {
             </span>
           </div>
         </div>
-        <Button type="button" variant="outline" size="sm" onClick={onEdit}>
-          編集
-        </Button>
+        <div className="flex shrink-0 flex-col items-end gap-2">
+          <Button type="button" variant="outline" size="sm" onClick={onEdit}>
+            編集
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            render={<Link to="/search" search={{ ruleId: rule.id }} />}
+          >
+            検索で試す
+          </Button>
+        </div>
       </div>
     </div>
   )
@@ -134,61 +174,43 @@ function RuleForm(props: RuleFormProps) {
   const updateRule = useUpdateRule()
   const deleteRule = useDeleteRule()
 
-  const initial = props.mode === 'edit' ? props.rule : undefined
-  const [name, setName] = useState(initial?.name ?? '')
-  const [enabled, setEnabled] = useState(initial?.enabled ?? true)
-  const [priority, setPriority] = useState(String(initial?.priority ?? 10))
-  const [encode, setEncode] = useState<EncodeSettingsValue>({
-    keepOriginal: (initial?.keepOriginal ?? 'always') as KeepOriginal,
-    encodeProfiles: initial?.encodeProfiles ? [...initial.encodeProfiles] : [],
-  })
+  const [draft, setDraft] = useState<SearchDraft>(() =>
+    props.mode === 'edit' ? ruleToDraft(props.rule) : emptyDraft(),
+  )
+  const [meta, setMeta] = useState<RuleMetaDraft>(() =>
+    props.mode === 'edit' ? ruleToMeta(props.rule) : emptyRuleMeta(),
+  )
 
-  const encodeError = encodeSettingsError(encode.keepOriginal, encode.encodeProfiles)
-  const nameError = name.trim() === '' ? '名前は必須です' : undefined
-  const formError = nameError ?? encodeError
+  const encodeValue: EncodeSettingsValue = {
+    keepOriginal: meta.keepOriginal,
+    encodeProfiles: meta.encodeProfiles,
+  }
+  const onEncodeChange = (next: EncodeSettingsValue) =>
+    setMeta((m) => ({ ...m, keepOriginal: next.keepOriginal, encodeProfiles: next.encodeProfiles }))
+
+  const formError = draftError(draft) ?? ruleMetaError(meta)
   const pending = createRule.isPending || updateRule.isPending || deleteRule.isPending
 
   const invalidate = () =>
     queryClient.invalidateQueries({ queryKey: getListRulesQueryKey() })
 
-  const buildInput = (): RuleInput => {
-    const priorityNum = Number(priority)
-    const input: RuleInput = {
-      name: name.trim(),
-      enabled,
-      priority: Number.isFinite(priorityNum) ? priorityNum : 10,
-      keepOriginal: encode.keepOriginal,
-      encodeProfiles: encode.encodeProfiles,
-    }
-    // UpdateRule は子テーブル全置換。編集時は既存の条件を落とさない。
-    if (props.mode === 'edit') {
-      const r = props.rule
-      if (r.description !== undefined) input.description = r.description
-      if (r.isFree !== undefined) input.isFree = r.isFree
-      if (r.durationMinMs !== undefined) input.durationMinMs = r.durationMinMs
-      if (r.durationMaxMs !== undefined) input.durationMaxMs = r.durationMaxMs
-      if (r.periodStartAt !== undefined) input.periodStartAt = r.periodStartAt
-      if (r.periodEndAt !== undefined) input.periodEndAt = r.periodEndAt
-      if (r.textMatches !== undefined) input.textMatches = r.textMatches
-      if (r.services !== undefined) input.services = r.services
-      if (r.channelTypes !== undefined) input.channelTypes = r.channelTypes
-      if (r.genres !== undefined) input.genres = r.genres
-      if (r.times !== undefined) input.times = r.times
-      if (r.sites !== undefined) input.sites = r.sites
-      if (r.dedupeEnabled !== undefined) input.dedupeEnabled = r.dedupeEnabled
-      if (r.dedupeThreshold !== undefined) input.dedupeThreshold = r.dedupeThreshold
-      if (r.dedupeWindowSeconds !== undefined) {
-        input.dedupeWindowSeconds = r.dedupeWindowSeconds
-      }
-      if (r.filenameTemplate !== undefined) input.filenameTemplate = r.filenameTemplate
-      if (r.metadata !== undefined) input.metadata = r.metadata
-    }
-    return input
-  }
-
   const save = () => {
     if (formError !== undefined) return
-    const data = buildInput()
+
+    // 条件が 1 つも無いルールは全番組にマッチする。編集フォームは条件の
+    // どの次元も必須にしていない（何も指定しない = 「絞り込まない」が
+    // 正しい状態でありうる、検索画面と同じ設計）ため、保存を止めるのではなく
+    // 明示的な確認を挟む。既に削除で同じ window.confirm パターンを使っており、
+    // 一覧の要約表示（`summarizeRuleConditions` が空配列 → 警告バッジ）と
+    // 合わせて「見えない事故」にならないよう二重に手当てする。
+    if (Object.keys(buildSearchRequest(draft)).length === 0) {
+      const proceed = window.confirm(
+        '条件を 1 つも指定していません。このまま保存すると、すべての番組が録画対象になります。続けますか？',
+      )
+      if (!proceed) return
+    }
+
+    const data = buildRuleInput(draft, meta, props.mode === 'edit' ? props.rule : undefined)
     if (props.mode === 'create') {
       createRule.mutate(
         { data },
@@ -238,7 +260,7 @@ function RuleForm(props: RuleFormProps) {
   return (
     <form
       aria-label={props.mode === 'create' ? 'ルールを作成' : 'ルールを編集'}
-      className="flex flex-col gap-4 rounded-lg border border-border p-3"
+      className="flex flex-col gap-5 rounded-lg border border-border p-3"
       onSubmit={(e) => {
         e.preventDefault()
         save()
@@ -246,9 +268,9 @@ function RuleForm(props: RuleFormProps) {
     >
       <Field label="名前">
         <Input
-          value={name}
+          value={meta.name}
           disabled={pending}
-          onChange={(e) => setName(e.target.value)}
+          onChange={(e) => setMeta((m) => ({ ...m, name: e.target.value }))}
           placeholder="例: ニュース全部"
           required
         />
@@ -264,9 +286,9 @@ function RuleForm(props: RuleFormProps) {
           <input
             type="checkbox"
             className="size-4 accent-primary"
-            checked={enabled}
+            checked={meta.enabled}
             disabled={pending}
-            onChange={(e) => setEnabled(e.target.checked)}
+            onChange={(e) => setMeta((m) => ({ ...m, enabled: e.target.checked }))}
           />
           有効
         </label>
@@ -274,20 +296,29 @@ function RuleForm(props: RuleFormProps) {
           <Input
             type="number"
             min={0}
-            value={priority}
+            value={meta.priority}
             disabled={pending}
-            onChange={(e) => setPriority(e.target.value)}
+            onChange={(e) => setMeta((m) => ({ ...m, priority: e.target.value }))}
           />
         </Field>
       </div>
 
-      <EncodeSettingsFields value={encode} onChange={setEncode} disabled={pending} />
+      {/* 条件が主役: 名前・有効/優先度は識別のための最小限の項目として上に
+          置き、このフォームの大半は条件編集に使う。エンコード設定はさらに
+          下（録画が決まったあとの後処理という位置づけ）。 */}
+      <div className="flex flex-col gap-4 border-t border-border pt-4">
+        <h2 className="text-sm font-semibold text-foreground">マッチ条件</h2>
+        <ConditionFields draft={draft} onChange={setDraft} disabled={pending} />
+      </div>
 
-      {/* encode 制約の詳細は EncodeSettingsFields 内。ここでは名前必須など
-          フォーム全体の理由だけを出す（同じ文言の role=alert が二重にならないように）。 */}
-      {nameError !== undefined && (
+      <div className="flex flex-col gap-3 border-t border-border pt-4">
+        <h2 className="text-sm font-semibold text-foreground">エンコード設定</h2>
+        <EncodeSettingsFields value={encodeValue} onChange={onEncodeChange} disabled={pending} />
+      </div>
+
+      {formError !== undefined && (
         <p role="alert" className="text-xs text-destructive">
-          {nameError}
+          {formError}
         </p>
       )}
 
