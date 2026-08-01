@@ -6,6 +6,7 @@ import { ChannelPicker } from '@/components/channel-picker'
 import { DayStrip } from '@/components/day-strip'
 import { EmptyState, ErrorState, ListSkeleton, PageHeader } from '@/components/page'
 import { ProgramGrid } from '@/components/program-grid'
+import { ProgramList, type ReservationActions } from '@/components/program-list'
 import { ProgramRow } from '@/components/program-row'
 import { useToast } from '@/components/toaster'
 import { Button } from '@/components/ui/button'
@@ -24,7 +25,6 @@ import {
 import { unwrap } from '@/api/unwrap'
 import { dayOrigin } from '@/lib/day-offset'
 import { orderServices, type TimeAxis } from '@/lib/epg-grid'
-import { dayKey, formatDate } from '@/lib/format'
 import { DEFAULT_SITE } from '@/lib/site'
 import { lgMediaQuery, useMediaQuery } from '@/lib/use-media-query'
 
@@ -292,15 +292,6 @@ export function ProgramsPage() {
   )
 }
 
-/** ReservationActions は番組からの予約 / 取消と、番組ごとの実行中状態。 */
-type ReservationActions = {
-  reserve: (program: ProgramListItem) => void
-  cancel: (programId: number) => void
-  isBusy: (programId: number) => boolean
-  /** サーバーの値に楽観的な上書きを重ねた「予約済み」集合。 */
-  reservedProgramIds: Set<number>
-}
-
 /**
  * useReservationActions は予約 / 取消の実行を組み立てる。
  *
@@ -519,48 +510,5 @@ function ProgramGridView({
         />
       </div>
     </div>
-  )
-}
-
-function ProgramList({
-  programs,
-  serviceById,
-  actions,
-}: {
-  programs: ProgramListItem[]
-  serviceById: Map<number, Service>
-  actions: ReservationActions
-}) {
-  let lastDay = ''
-
-  return (
-    <ul>
-      {programs.map((program) => {
-        const day = dayKey(program.startAt)
-        const showDateHeader = day !== lastDay
-        lastDay = day
-        const reserved = actions.reservedProgramIds.has(program.programId)
-
-        return (
-          <li key={program.programId}>
-            {/* 日付ヘッダの top は PageHeader が実測して書き出す高さ。
-                ハードコードするとフィルタ行の増減や文字サイズでずれる */}
-            {showDateHeader && (
-              <h2 className="sticky top-[var(--page-header-height,0px)] z-[5] border-y border-border bg-muted/80 px-4 py-1.5 text-xs font-medium text-muted-foreground backdrop-blur">
-                {formatDate(program.startAt)}
-              </h2>
-            )}
-            <ProgramRow
-              program={program}
-              serviceName={serviceById.get(program.serviceId)?.name}
-              reserved={reserved}
-              pending={actions.isBusy(program.programId)}
-              onReserve={() => actions.reserve(program)}
-              onCancel={() => actions.cancel(program.programId)}
-            />
-          </li>
-        )
-      })}
-    </ul>
   )
 }
