@@ -1,29 +1,33 @@
 import { dayOrigin } from '@/lib/day-offset'
 import { cn } from '@/lib/utils'
 
-/** 曜日の日本語 1 文字。`Date.getDay()` のインデックス（0=日）に対応する。 */
+/** 曜日の日本語 1 文字。`Date.getDay()` のインデックス(0=日)に対応する。 */
 const weekdayChars = ['日', '月', '火', '水', '木', '金', '土']
 
 /**
- * DayStrip は番組タブの日付選択。
+ * DayStrip は「いま見ている日」の表示 + ジャンプ先の指定。
  *
- * 選択肢は「今」+ `days` 日ぶんで有界（呼び出し側は 8 を渡す）なので、
- * `days + 1` 個を横スクロールなしの等幅グリッドに並べて必ず 1 画面に収める。
- * 横スクロールを避けるのは、単一選択なのに選択中の値が画面外に出て読めなく
- * なることと、画面端からの横スワイプが Android のジェスチャーナビの「戻る」と
- * 衝突すること（`docs/frontend.md`）の 2 つの実害があるため。
+ * 2 つの概念を分けている: `current`（ハイライト。スクロール位置から導出した
+ * 「いま見ている日」）と `onSelect` で伝える「ジャンプ先」（タップした日）。
+ * ジャンプ先を別途表示しない —— ハイライトは常に「いま見ている日」だけを示す
+ * （タップ直後は一致するが、その後リストをスクロールすればハイライトだけが動く）。
+ *
+ * 選択肢は `days` 日ぶんで有界なので、横スクロールなしの等幅グリッドに並べて
+ * 必ず 1 画面に収める。横スクロールを避けるのは、選択中の値が画面外に出て
+ * 読めなくなることと、画面端からの横スワイプが Android のジェスチャーナビの
+ * 「戻る」と衝突すること（`docs/frontend.md`）の 2 つの実害があるため。
  */
 export function DayStrip({
-  selected,
+  current,
   days,
   onSelect,
   now,
 }: {
-  /** 選択中の dayOffset。null は「今」。 */
-  selected: number | null
-  /** 「今」に続けて出す日数。 */
+  /** いま見ている日の offset（ハイライト対象）。スクロール位置から導出する。 */
+  current: number
+  /** 出す日数。 */
   days: number
-  onSelect: (dayOffset: number | null) => void
+  onSelect: (dayOffset: number) => void
   /** テストから現在時刻を固定するための注入口。省略時は内部で `Date.now()`。 */
   now?: number
 }): React.ReactElement {
@@ -34,14 +38,13 @@ export function DayStrip({
       role="group"
       aria-label="日付"
       className="grid gap-1 px-4 pb-2"
-      style={{ gridTemplateColumns: `repeat(${days + 1}, minmax(0, 1fr))` }}
+      style={{ gridTemplateColumns: `repeat(${days}, minmax(0, 1fr))` }}
     >
-      <DayCell dayOffset={null} selected={selected === null} onSelect={onSelect} now={now} />
       {offsets.map((offset) => (
         <DayCell
           key={offset}
           dayOffset={offset}
-          selected={selected === offset}
+          isCurrent={current === offset}
           onSelect={onSelect}
           now={now}
         />
@@ -52,13 +55,13 @@ export function DayStrip({
 
 function DayCell({
   dayOffset,
-  selected,
+  isCurrent,
   onSelect,
   now,
 }: {
-  dayOffset: number | null
-  selected: boolean
-  onSelect: (dayOffset: number | null) => void
+  dayOffset: number
+  isCurrent: boolean
+  onSelect: (dayOffset: number) => void
   now?: number
 }) {
   const date = dayOrigin(dayOffset, now)
@@ -68,36 +71,32 @@ function DayCell({
   return (
     <button
       type="button"
-      aria-pressed={selected}
+      // スクロールで変わる「いま見ている日」は押下状態ではないので aria-pressed
+      // ではなく aria-current="date" を使う。ハイライト中のセルにだけ付ける。
+      aria-current={isCurrent ? 'date' : undefined}
       // 数値だけだと読み上げが「1」になる。完全な形を aria-label に持たせ、
-      // 見える側（2 行 or 「今」の 1 行）は aria-hidden にして二重読みを避ける
+      // 見える側（2 行）は aria-hidden にして二重読みを避ける
       // （components/capacity-shortfall-badge.tsx と同じ手法）。
-      // 「今」は offset 0（今日 0 時〜24 時）ではなく now からのローリング窓なので、
-      // 隣の offset 0 セル（`${dateLabel}`）と区別できる名前にする。
-      aria-label={dayOffset === null ? '今' : dateLabel}
+      aria-label={dateLabel}
       onClick={() => onSelect(dayOffset)}
       className={cn(
         'flex h-11 min-w-0 flex-col items-center justify-center rounded-md border text-xs transition-colors',
-        selected
+        isCurrent
           ? 'border-primary bg-primary text-primary-foreground'
           : 'border-border text-muted-foreground hover:bg-muted',
       )}
     >
-      {dayOffset === null ? (
-        <span aria-hidden="true">今</span>
-      ) : (
-        <span aria-hidden="true" className="flex flex-col items-center leading-tight">
-          <span className="tabular-nums">{date.getDate()}</span>
-          <span
-            className={cn(
-              !selected && weekday === 6 && 'text-blue-600 dark:text-blue-400',
-              !selected && weekday === 0 && 'text-red-600 dark:text-red-400',
-            )}
-          >
-            {weekdayChars[weekday]}
-          </span>
+      <span aria-hidden="true" className="flex flex-col items-center leading-tight">
+        <span className="tabular-nums">{date.getDate()}</span>
+        <span
+          className={cn(
+            !isCurrent && weekday === 6 && 'text-blue-600 dark:text-blue-400',
+            !isCurrent && weekday === 0 && 'text-red-600 dark:text-red-400',
+          )}
+        >
+          {weekdayChars[weekday]}
         </span>
-      )}
+      </span>
     </button>
   )
 }

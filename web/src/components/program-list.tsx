@@ -1,10 +1,11 @@
 import { useWindowVirtualizer } from '@tanstack/react-virtual'
-import { useLayoutEffect, useMemo, useRef } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 
 import type { ProgramListItem, Service } from '@/api/generated'
 import { ProgramRow } from '@/components/program-row'
 import { dayKey, formatDate } from '@/lib/format'
 import { domLayoutMeasurable } from '@/lib/list-virtualization'
+import { visibleDayOffset } from '@/lib/visible-day'
 
 /**
  * ReservationActions は番組からの予約 / 取消と、番組ごとの実行中状態。
@@ -86,15 +87,36 @@ const overscanRows = 8
  * 環境を検出し、計測できない環境では `measureElement` を一切使わず、仮想化その
  * ものをバイパスして全行を通常のフローで描く（`web/src/lib/epg-grid.ts` の
  * `visibleTimeWindow` / `visibleColumnRange` と同じ「未計測なら間引かない」）。
+ *
+ * ## 「いま見ている日」の通知
+ *
+ * `onVisibleDayChange` は `DayStrip` のハイライト用に、可視範囲の先頭の番組が
+ * 属する日を通知する。`virtualizer.range`（スクロール位置と `estimateSize` から
+ * 計算され、`measureElement` の実測とは独立）の `startIndex` を使うので、
+ * `renderAll` 分岐の影響を受けない。導出そのものは `lib/visible-day.ts` の
+ * 純関数（`programs` と先頭インデックスと `now` から dayOffset を返す）に
+ * 切り出してあり、スクロールへの実際の追従（jsdom はレイアウトを計算しないため
+ * 検証できない）とは別にテストする。
  */
 export function ProgramList({
   programs,
   serviceById,
   actions,
+  onVisibleDayChange,
+  now,
 }: {
   programs: ProgramListItem[]
   serviceById: Map<number, Service>
   actions: ReservationActions
+  /**
+   * 可視範囲の先頭の番組が変わるたびに「いま見ている日」の dayOffset を通知する。
+   * `DayStrip` のハイライトはここから来る値を表示するだけで、ジャンプ先
+   * （`dayOffset` state）とは別物 —— スクロールで日をまたいでもジャンプ先は
+   * 変わらない。導出そのものは `lib/visible-day.ts` の純関数に切り出してある。
+   */
+  onVisibleDayChange?: (dayOffset: number) => void
+  /** テストから現在時刻を固定するための注入口。省略時は `Date.now()`。 */
+  now?: number
 }) {
   const listRef = useRef<HTMLUListElement>(null)
 
@@ -143,6 +165,19 @@ export function ProgramList({
     virtualItems.length > 0
       ? Math.max(0, totalSizePx - (virtualItems[virtualItems.length - 1].end - scrollMargin))
       : 0
+
+  // 「いま見ている日」は可視範囲の先頭インデックスから導く（日付ヘッダへの
+  // IntersectionObserver ではない ---
+  // ヘッダは可視範囲外で unmount されるため観測が途切れる）。`virtualizer.range`
+  // は `measureElement` の実測とは独立に計算される（スクロール位置と
+  // `estimateSize` から出す）ので、`renderAll`（jsdom 等の計測できない環境）の
+  // 分岐に関係なく安全に読める。
+  const firstVisibleIndex = virtualizer.range?.startIndex ?? 0
+  useEffect(() => {
+    onVisibleDayChange?.(visibleDayOffset(programs, firstVisibleIndex, now ?? Date.now()))
+    // programs 自体の参照が変わるたび（絞り込み変更・新しい窓の追加）にも
+    // 再評価する。先頭インデックスが同じでも中身の日付が変わりうるため。
+  }, [onVisibleDayChange, programs, firstVisibleIndex, now])
 
   const renderedIndices = renderAll
     ? programs.map((_, index) => index)

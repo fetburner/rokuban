@@ -1,5 +1,5 @@
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import { CapacityBands } from '@/components/capacity-band'
 import { ChannelPicker } from '@/components/channel-picker'
@@ -23,8 +23,11 @@ import {
   type Service,
 } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
+import { shouldAutoLoadNextPage, shouldShowLoadMoreButton } from '@/lib/auto-load'
 import { dayOrigin } from '@/lib/day-offset'
 import { orderServices, type TimeAxis } from '@/lib/epg-grid'
+import { domLayoutMeasurable } from '@/lib/list-virtualization'
+import { scrollAdjustmentForPrepend } from '@/lib/scroll-preservation'
 import { DEFAULT_SITE } from '@/lib/site'
 import { lgMediaQuery, useMediaQuery } from '@/lib/use-media-query'
 
@@ -51,20 +54,6 @@ const gridPxPerHour = 120
 /** ProgramView は番組の表示形式。グリッドは `lg` 以上でのみ選べる。 */
 type ProgramView = 'list' | 'grid'
 
-/** windowEndOfDay は選択した日の終わり（翌 0 時）を返す。 */
-function endOfSelection(dayOffset: number | null): Date {
-  const origin = dayOrigin(dayOffset)
-  const end = new Date(origin)
-  if (dayOffset === null) {
-    // 「今」は日付をまたいで先まで読めるようにする
-    end.setDate(end.getDate() + selectableDays)
-    end.setHours(0, 0, 0, 0)
-    return end
-  }
-  end.setDate(end.getDate() + 1)
-  return end
-}
-
 /**
  * serviceIdParam は選択したサービス集合をサーバーへ渡す配列にする。
  *
@@ -82,8 +71,23 @@ export function ProgramsPage() {
   // 空集合 = すべて表示。初期状態が空なので、これ以外の意味だと初回表示が
   // 空になってしまう。
   const [selectedServiceIds, setSelectedServiceIds] = useState<ReadonlySet<number>>(new Set())
-  const [dayOffset, setDayOffset] = useState<number | null>(null)
+  // dayOffset は「ジャンプ先」（DayStrip をタップして跳ぶ先）。0 以上
+  // selectableDays 未満。0 は今日で、リストは常にここから連続フィードとして
+  // 始まる（`今` という別枠の選択肢は無い）。
+  const [dayOffset, setDayOffset] = useState(0)
+  // visibleDay は「いま見ている日」（ProgramList がスクロール位置から導出して
+  // 通知する）。DayStrip のハイライトはこちらを見る。ジャンプ直後は dayOffset と
+  // 一致するが、その後リストをスクロールすればこちらだけが動く。
+  const [visibleDay, setVisibleDay] = useState(0)
   const [view, setView] = useState<ProgramView>('list')
+
+  // ジャンプ先を選んだら、ハイライトも即座にジャンプ先へ合わせる。ProgramList が
+  // 新しい窓の可視範囲から改めて通知するまでの間、古い日をハイライトし続けない
+  // ようにする。
+  const selectDay = (offset: number) => {
+    setDayOffset(offset)
+    setVisibleDay(offset)
+  }
 
   // グリッドは `lg` 以上でのみ出す。モバイルは常にリストのまま
   // （docs/frontend.md「リストを第一級に置く。グリッドはその上に足す」）。
@@ -94,10 +98,20 @@ export function ProgramsPage() {
   const services = useListServices(DEFAULT_SITE)
   const reservations = useListReservations()
 
-  // 起点は state から決める。queryKey に入るので、日付を変えるとページが
-  // 積み直され、キャッシュ済みのページが古い窓のまま再利用されることもない。
-  const originMs = dayOrigin(dayOffset).getTime()
-  const limitMs = endOfSelection(dayOffset).getTime()
+  // nowMs はこのレンダーの間で一貫させる。起点・上限・下限をそれぞれ別々に
+  // Date.now() を呼んで求めると、ミリ秒単位でずれた「今」が混ざりうる。
+  const nowMs = Date.now()
+  // 起点はジャンプ先（state）から決める。queryKey に入るので、日付を変えると
+  // ページが積み直され、キャッシュ済みのページが古い窓のまま再利用されることもない。
+  const originMs = dayOrigin(dayOffset, nowMs).getTime()
+  // 上限はどの選択でも共通の「EPG のローリングウィンドウの終端」
+  // （8 日先の 0 時）。日付を選んでも 24 時で打ち切らない —— 連続フィードなので、
+  // 選んだ日から先もそのまま読み続けられる。
+  const limitMs = dayOrigin(selectableDays, nowMs).getTime()
+  // 下限は「now を時で切り捨てた時刻」。遡行（前の時間窓の読み込み）はここまで。
+  // サーバーの EPG 保持期間の設定には依存させない —— 放送済み番組の閲覧は
+  // 今回のスコープ外なので、クライアント側で now を不変条件として持つだけで足りる。
+  const lowerBoundMs = dayOrigin(0, nowMs).getTime()
   const maxWindows = Math.max(1, Math.ceil((limitMs - originMs) / (windowHours * 3600_000)))
 
   // サーバー側で絞り込む。ソートするのは Set の反復順が選び方の履歴に依存する
@@ -118,16 +132,28 @@ export function ProgramsPage() {
     // 同時に取りに行かない）。戻ったときはキャッシュがそのまま出る。
     enabled: !showGrid,
     queryFn: async ({ pageParam }) => {
-      const start = new Date(originMs + pageParam * windowHours * 3600_000)
-      const end = new Date(Math.min(start.getTime() + windowHours * 3600_000, limitMs))
+      // pageParam（`step`）は起点からの窓の個数。正は進行方向（先の時間）、
+      // 負は遡行（前の時間）。負の窓の開始は下限（now を時で切り捨てた時刻）で
+      // 打ち切る —— 放送済み番組の閲覧は今回のスコープ外なため。
+      const rawStartMs = originMs + pageParam * windowHours * 3600_000
+      const startMs = Math.max(rawStartMs, lowerBoundMs)
+      const endMs = Math.min(rawStartMs + windowHours * 3600_000, limitMs)
       const res = await listPrograms(DEFAULT_SITE, {
-        start: start.toISOString(),
-        end: end.toISOString(),
+        start: new Date(startMs).toISOString(),
+        end: new Date(endMs).toISOString(),
         serviceId: selectedServiceIdParam,
       })
       return { step: pageParam, programs: unwrap(res) ?? [] }
     },
     getNextPageParam: (last) => (last.step + 1 < maxWindows ? last.step + 1 : undefined),
+    // 遡行は明示的なボタンでのみ行う（ジェスチャにしない。理由は下の
+    // 「前を読み込む」ボタンのコメント参照）。次の 1 窓の生の開始時刻が下限を
+    // 超えている間だけ許す —— 下限ちょうどに達した窓（`queryFn` 側で clamp 済み）
+    // より前は、もう読む内容が無い。
+    getPreviousPageParam: (first) => {
+      const rawStartMs = originMs + first.step * windowHours * 3600_000
+      return rawStartMs > lowerBoundMs ? first.step - 1 : undefined
+    },
   })
 
   // グリッドは 24 時間ぶんを 1 回で取る。リストのような窓の積み上げにしないのは、
@@ -224,6 +250,101 @@ export function ProgramsPage() {
 
   const actions = useReservationActions(serverReservedProgramIds)
 
+  // autoLoadFailed: 直近の自動読み込み（進行方向）が失敗したか。失敗したら
+  // ボタン + エラー表示に落とし、番兵が可視のままでも自動では再試行しない
+  // （さもないと失敗したまま無限にリクエストを投げ続ける）。
+  const [autoLoadFailed, setAutoLoadFailed] = useState(false)
+
+  // クエリの窓（起点・上限・絞り込み）が変わったら新しいセッションとして扱い、
+  // 前の窓での失敗を引きずらない。
+  useEffect(() => {
+    setAutoLoadFailed(false)
+  }, [originMs, limitMs, selectedServiceIdParam])
+
+  useEffect(() => {
+    if (query.isFetchNextPageError) setAutoLoadFailed(true)
+  }, [query.isFetchNextPageError])
+
+  // IntersectionObserver のコールバックは、番兵を張り直さなくても常に最新の
+  // 状態を読めるよう ref 経由で渡す（effect の再生成は showGrid が変わる
+  // ときだけにしたい —— sentinel の DOM 有無が変わるタイミングと合わせる）。
+  const autoLoadStateRef = useRef({
+    hasNextPage: query.hasNextPage,
+    isFetchingNextPage: query.isFetchingNextPage,
+    autoLoadFailed,
+    fetchNextPage: query.fetchNextPage,
+  })
+  useEffect(() => {
+    autoLoadStateRef.current = {
+      hasNextPage: query.hasNextPage,
+      isFetchingNextPage: query.isFetchingNextPage,
+      autoLoadFailed,
+      fetchNextPage: query.fetchNextPage,
+    }
+  })
+
+  const sentinelRef = useRef<HTMLDivElement>(null)
+
+  // 番兵の <div> は一覧が実際に描かれたとき（!isPending && programs.length > 0）
+  // にしか存在しない。データ取得が終わる前に IntersectionObserver を組み立てる
+  // effect（`[showGrid]` だけに依存する形）だと、初回マウント時点では
+  // sentinelRef.current がまだ null で、以後 showGrid が変わらない限り
+  // 二度と組み立て直されない ---
+  // つまり自動読み込みが永遠に発火しない。番兵が実際に DOM にあるかどうかを
+  // 明示的な依存にして、描画されたタイミングで確実に組み立て直す。
+  const sentinelMounted = !showGrid && !query.isPending && programs.length > 0
+
+  useEffect(() => {
+    if (!sentinelMounted) return
+    // 計測できない環境（jsdom 等）では番兵が常時可視と判定されるおそれが
+    // あるので、IntersectionObserver そのものを作らない。この環境では
+    // 「さらに読み込む」ボタンだけを受け皿にする
+    // （`lib/list-virtualization.ts` の `domLayoutMeasurable()`）。
+    if (!domLayoutMeasurable()) return
+    const node = sentinelRef.current
+    if (!node) return
+
+    const observer = new IntersectionObserver((entries) => {
+      const isIntersecting = entries.some((entry) => entry.isIntersecting)
+      const state = autoLoadStateRef.current
+      if (
+        shouldAutoLoadNextPage({
+          isIntersecting,
+          autoLoadAvailable: true,
+          autoLoadFailed: state.autoLoadFailed,
+          hasNextPage: state.hasNextPage,
+          isFetchingNextPage: state.isFetchingNextPage,
+        })
+      ) {
+        void state.fetchNextPage()
+      }
+    })
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [sentinelMounted])
+
+  // 遡行（前の窓の読み込み）はリストの先頭に行を挿入するので、何もしないと
+  // 挿入した高さぶんだけ画面内の内容が下にずれる。挿入前の
+  // `document.documentElement.scrollHeight` を控えておき、挿入後の
+  // `useLayoutEffect` で差分を `scrollTop` に足し戻す。Safari はスクロール
+  // アンカリングを実装していないので、ブラウザ任せにはできない
+  // （Chrome / Firefox だけ動く形にしない）。
+  const pendingScrollAdjustRef = useRef<number | null>(null)
+
+  const loadPrevious = () => {
+    pendingScrollAdjustRef.current = document.documentElement.scrollHeight
+    void query.fetchPreviousPage()
+  }
+
+  useLayoutEffect(() => {
+    const heightBefore = pendingScrollAdjustRef.current
+    if (heightBefore === null) return
+    pendingScrollAdjustRef.current = null
+    const heightAfter = document.documentElement.scrollHeight
+    const delta = scrollAdjustmentForPrepend(heightBefore, heightAfter)
+    if (delta !== 0) window.scrollBy(0, delta)
+  }, [programs])
+
   return (
     <>
       <PageHeader
@@ -244,7 +365,15 @@ export function ProgramsPage() {
           </>
         }
       >
-        <DayStrip selected={dayOffset} days={selectableDays} onSelect={setDayOffset} />
+        {/* current はグリッド表示中はジャンプ先（dayOffset）をそのまま渡す
+            （グリッドは軸が 24 時間固定で、スクロールで日をまたがないため）。
+            リスト表示中はスクロール位置から導出した「いま見ている日」
+            （visibleDay）を渡す。 */}
+        <DayStrip
+          current={showGrid ? dayOffset : visibleDay}
+          days={selectableDays}
+          onSelect={selectDay}
+        />
       </PageHeader>
 
       {showGrid ? (
@@ -263,6 +392,32 @@ export function ProgramsPage() {
         />
       ) : (
         <>
+          {/* 遡行はボタンでのみ行う（上スワイプなどのジェスチャにしない）。
+              理由は 2 つ: (1) Android Chrome の pull-to-refresh がページ最上端
+              でのオーバースクロールを占有しており衝突する（前述「M2 のグリッドで
+              横スワイプによるナビゲーションを使わない」と同じ種類の衝突）、
+              (2) 上方向の自動読み込みは、先頭に差し込んだ直後も番兵が上端付近に
+              残るため境界（now）まで連鎖してしまう。下限に達すると
+              `hasPreviousPage` が false になりボタンごと消える。 */}
+          {query.hasPreviousPage && !query.isPending && (
+            <div className="px-4 pt-4">
+              <Button
+                variant="outline"
+                size="sm"
+                className="w-full"
+                disabled={query.isFetchingPreviousPage}
+                onClick={loadPrevious}
+              >
+                {query.isFetchingPreviousPage ? '読み込み中…' : '前を読み込む'}
+              </Button>
+              {query.isFetchPreviousPageError && (
+                <p className="pt-2 text-center text-sm text-destructive">
+                  前の読み込みに失敗しました
+                </p>
+              )}
+            </div>
+          )}
+
           {query.isError ? (
             <ErrorState>番組の取得に失敗しました</ErrorState>
           ) : query.isPending ? (
@@ -270,11 +425,33 @@ export function ProgramsPage() {
           ) : programs.length === 0 ? (
             <EmptyState>この時間帯の番組がありません</EmptyState>
           ) : (
-            <ProgramList programs={programs} serviceById={serviceById} actions={actions} />
+            <ProgramList
+              programs={programs}
+              serviceById={serviceById}
+              actions={actions}
+              onVisibleDayChange={setVisibleDay}
+              now={nowMs}
+            />
           )}
 
-          {query.hasNextPage && !query.isPending && (
+          {/* 番兵。進行方向の自動読み込み（IntersectionObserver）はこれを見る。
+              計測できない環境では監視対象を作らないだけで、要素自体は無害
+              なので出したままにする。 */}
+          {!query.isPending && programs.length > 0 && (
+            <div ref={sentinelRef} aria-hidden className="h-px" />
+          )}
+
+          {shouldShowLoadMoreButton({
+            hasNextPage: query.hasNextPage,
+            autoLoadAvailable: domLayoutMeasurable(),
+            autoLoadFailed,
+          }) && (
             <div className="px-4 py-6">
+              {query.isFetchNextPageError && (
+                <p className="pb-2 text-center text-sm text-destructive">
+                  続きの取得に失敗しました
+                </p>
+              )}
               <Button
                 variant="outline"
                 size="lg"

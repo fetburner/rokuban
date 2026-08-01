@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { CapacityOverage, ProgramListItem, Reservation, Service } from '@/api/generated'
 import { ToastProvider } from '@/components/toaster'
+import { dayOrigin } from '@/lib/day-offset'
 import { ProgramsPage } from '@/pages/programs'
 
 /**
@@ -74,6 +75,28 @@ const later = program(3, 1024, 8, '深夜ドラマ')
 
 const allPrograms = [soon, alsoSoon, later]
 
+/** programAtAbsolute は絶対時刻を起点にした 1 時間番組を作る（日付ジャンプ・遡行のテスト用）。 */
+function programAtAbsolute(
+  programId: number,
+  serviceId: number,
+  startAtMs: number,
+  name: string,
+): ProgramListItem {
+  return {
+    programId,
+    networkId: 32736,
+    serviceId,
+    eventId: programId,
+    startAt: new Date(startAtMs).toISOString(),
+    endAt: new Date(startAtMs + 3_600_000).toISOString(),
+    durationMs: 3_600_000,
+    name,
+    description: '',
+    genres: [0],
+    isFree: true,
+  }
+}
+
 function reservation(id: number, programId: number, title: string): Reservation {
   return {
     id,
@@ -128,8 +151,19 @@ function noContentResponse(): Response {
  *
  * 予約 / 取消は `PUT /api/sites/default/programs/{id}/intent` を叩く
  * （issue #29。reservations 行は同期的に作らない）。テストは常に成功させる。
+ *
+ * `programs` は絞り込み対象の番組集合（既定は `allPrograms`）。日付ジャンプ・
+ * 遡行のテストは絶対時刻で配置した専用の番組を渡す。`onProgramsCall` は
+ * `/api/sites/default/programs` への何回目の呼び出しかを受け取り、Response を
+ * 返せばそれで応答を差し替える（続きの読み込み失敗のテスト用）。
  */
-function stubApi(reservations: Reservation[] = [], overages: CapacityOverage[] = []) {
+function stubApi(
+  reservations: Reservation[] = [],
+  overages: CapacityOverage[] = [],
+  programs: ProgramListItem[] = allPrograms,
+  onProgramsCall?: (callIndex: number) => Response | undefined,
+) {
+  let programsCallIndex = 0
   const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input), 'http://localhost')
     if (url.pathname === '/api/sites/default/services') {
@@ -146,10 +180,13 @@ function stubApi(reservations: Reservation[] = [], overages: CapacityOverage[] =
       return Promise.resolve(noContentResponse())
     }
     if (url.pathname === '/api/sites/default/programs') {
+      programsCallIndex++
+      const override = onProgramsCall?.(programsCallIndex)
+      if (override) return Promise.resolve(override)
       const start = new Date(url.searchParams.get('start') ?? 0).getTime()
       const end = new Date(url.searchParams.get('end') ?? 0).getTime()
       const serviceIds = url.searchParams.getAll('serviceId').map(Number)
-      const matched = allPrograms.filter(
+      const matched = programs.filter(
         (p) =>
           new Date(p.endAt).getTime() > start &&
           new Date(p.startAt).getTime() < end &&
@@ -466,7 +503,12 @@ describe('ProgramsPage のリスト（回帰）', () => {
     renderPage()
 
     expect(await screen.findByText('ニュース7')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '今' })).toBeInTheDocument()
+    // 「今」という別枠の選択肢は無い。今日のセルが aria-current="date" で
+    // ハイライトされる（ジャンプ先・可視範囲ともに初期値は今日 = offset 0）
+    const dayGroup = screen.getByRole('group', { name: '日付' })
+    const dayButtons = within(dayGroup).getAllByRole('button')
+    expect(dayButtons).toHaveLength(8)
+    expect(dayButtons.filter((b) => b.getAttribute('aria-current') === 'date')).toHaveLength(1)
     expect(screen.getByRole('button', { name: 'チャンネル: すべて' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'さらに読み込む' })).toBeInTheDocument()
   })
@@ -663,5 +705,168 @@ describe('ProgramsPage のチャンネル複数選択', () => {
       expect(columns).toHaveLength(1)
       expect(columns[0]).toHaveAttribute('data-service-id', '1024')
     })
+  })
+})
+
+describe('ProgramsPage の進行方向の無限スクロール', () => {
+  it('計測できない環境（jsdom）では IntersectionObserver を作らず、ボタンだけを受け皿にする', async () => {
+    stubApi()
+    // jsdom には IntersectionObserver が無い。もし実装が `domLayoutMeasurable()`
+    // のガードを外して常に IntersectionObserver を作るようになったら、
+    // ここで検知する（このテストを「壊す」には該当ガードを消せばよい）。
+    const observerCtor = vi.fn(() => ({
+      observe: vi.fn(),
+      unobserve: vi.fn(),
+      disconnect: vi.fn(),
+    }))
+    const original = (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver
+    ;(globalThis as unknown as { IntersectionObserver: unknown }).IntersectionObserver = observerCtor
+
+    try {
+      renderPage()
+      expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+      // 自動が使えない環境なので、ボタンが最初から受け皿として出ている
+      expect(screen.getByRole('button', { name: 'さらに読み込む' })).toBeInTheDocument()
+      expect(observerCtor).not.toHaveBeenCalled()
+    } finally {
+      if (original === undefined) {
+        Reflect.deleteProperty(globalThis, 'IntersectionObserver')
+      } else {
+        ;(globalThis as unknown as { IntersectionObserver: unknown }).IntersectionObserver = original
+      }
+    }
+  })
+
+  it('続きの読み込みが失敗すると、エラー表示のままボタンが残り、自動では再試行しない', async () => {
+    const fetchMock = stubApi([], [], allPrograms, (callIndex) =>
+      callIndex === 2 ? new Response(null, { status: 500 }) : undefined,
+    )
+    renderPage()
+
+    expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'さらに読み込む' }))
+
+    expect(await screen.findByText('続きの取得に失敗しました')).toBeInTheDocument()
+    // 失敗してもボタンは消えない（手動での再試行の受け皿）
+    expect(screen.getByRole('button', { name: 'さらに読み込む' })).toBeInTheDocument()
+
+    const programsCallsAfterFailure = () =>
+      fetchMock.mock.calls.filter(
+        (call) => new URL(String(call[0]), 'http://localhost').pathname === '/api/sites/default/programs',
+      ).length
+    const callsRightAfterFailure = programsCallsAfterFailure()
+
+    // 何もしなくても自動で再試行が走らないこと（QueryClient は retry: false
+    // だが、ここでは「無限にリクエストを投げ続けない」という実装側の約束を
+    // 確認したい）
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    expect(programsCallsAfterFailure()).toBe(callsRightAfterFailure)
+
+    // 自動を止めただけで手動の再試行は生きている
+    await userEvent.click(screen.getByRole('button', { name: 'さらに読み込む' }))
+    await waitFor(() => expect(screen.queryByText('続きの取得に失敗しました')).not.toBeInTheDocument())
+  })
+})
+
+describe('ProgramsPage の遡行（前の時間窓の読み込み）', () => {
+  it('今日（offset 0）のままでは「前を読み込む」ボタンが出ない（起点が既に下限）', async () => {
+    stubApi()
+    renderPage()
+
+    expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '前を読み込む' })).not.toBeInTheDocument()
+  })
+
+  it('先の日付へジャンプすると「前を読み込む」ボタンが出て、押すと前の窓の番組が増える', async () => {
+    const tomorrowMidnightMs = dayOrigin(1).getTime()
+    // 前日深夜（tomorrowMidnight の 1 時間前）は必ず「1 窓遡る」だけで届く
+    // 位置に置く（windowHours は 6 時間なので、6 時間以内なら 1 回で届く）。
+    const lateTonight = programAtAbsolute(201, 1024, tomorrowMidnightMs - 3_600_000, '前日深夜の番組')
+    stubApi([], [], [...allPrograms, lateTonight])
+    renderPage()
+
+    expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+
+    const dayGroup = screen.getByRole('group', { name: '日付' })
+    await userEvent.click(within(dayGroup).getAllByRole('button')[1]) // offset 1 = 明日
+
+    // ジャンプ直後は明日 0 時からの窓なので、前日深夜の番組はまだ見えない
+    await waitFor(() => expect(screen.queryByText('ニュース7')).not.toBeInTheDocument())
+    expect(screen.queryByText('前日深夜の番組')).not.toBeInTheDocument()
+
+    const loadPrevious = await screen.findByRole('button', { name: '前を読み込む' })
+    await userEvent.click(loadPrevious)
+
+    expect(await screen.findByText('前日深夜の番組')).toBeInTheDocument()
+  })
+
+  it('下限（now）まで遡ると「前を読み込む」ボタンが消える', async () => {
+    const nowMs = dayOrigin(0).getTime()
+    const tomorrowMidnightMs = dayOrigin(1).getTime()
+    stubApi()
+    renderPage()
+
+    expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+
+    const dayGroup = screen.getByRole('group', { name: '日付' })
+    await userEvent.click(within(dayGroup).getAllByRole('button')[1]) // offset 1 = 明日
+    await waitFor(() => expect(screen.queryByText('ニュース7')).not.toBeInTheDocument())
+
+    // windowHours（pages/programs.tsx のプライベート定数、6 時間）ぶんずつ
+    // 遡ると下限（now）に達するまでに必要な回数。これを超えて遡ることは無い
+    // （両方向のテスト: 下限に届く前はボタンがあり、届いたら消える）。
+    const windowHoursMs = 6 * 3_600_000
+    const stepsToLowerBound = Math.ceil((tomorrowMidnightMs - nowMs) / windowHoursMs)
+
+    for (let i = 0; i < stepsToLowerBound; i++) {
+      const button = await screen.findByRole('button', { name: '前を読み込む' })
+      await userEvent.click(button)
+      // このクリックの取得が終わってから次のクリックへ進む
+      await waitFor(() => {
+        const stillLoading = screen.queryAllByRole('button', { name: '読み込み中…' })
+        expect(stillLoading).toHaveLength(0)
+      })
+    }
+
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: '前を読み込む' })).not.toBeInTheDocument(),
+    )
+  })
+
+  it('前の窓の挿入でスクロール位置がずれないよう scrollBy で補正する', async () => {
+    const tomorrowMidnightMs = dayOrigin(1).getTime()
+    const lateTonight = programAtAbsolute(202, 1024, tomorrowMidnightMs - 3_600_000, '前日深夜の番組2')
+    stubApi([], [], [...allPrograms, lateTonight])
+    renderPage()
+
+    expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+    const dayGroup = screen.getByRole('group', { name: '日付' })
+    await userEvent.click(within(dayGroup).getAllByRole('button')[1])
+    const loadPrevious = await screen.findByRole('button', { name: '前を読み込む' })
+
+    // jsdom はレイアウトを計算しないため scrollHeight は常に 0。挿入前後で
+    // 値が変わったことをテストが明示的に模して、補正の計算だけを検証する
+    // （実機でのスクロール位置の見た目そのものはここでは検証できない）。
+    //
+    // 読み出しは 2 回だけの前提: 1 回目はクリック直後（`loadPrevious` が
+    // 挿入前の高さを控える瞬間）、2 回目は挿入後（`useLayoutEffect` が差分を
+    // 読む瞬間）。呼び出しのタイミング自体は react-query の解決が act() の
+    // 中で同期的に畳み込まれることがあり得るため、`await` の前後で固定値を
+    // 切り替える書き方だと際どい競合になる。読み出し回数で切り替える方が
+    // 確実。
+    let scrollHeightReadCount = 0
+    Object.defineProperty(document.documentElement, 'scrollHeight', {
+      configurable: true,
+      get: () => (scrollHeightReadCount++ === 0 ? 1000 : 1600),
+    })
+    const scrollBySpy = vi.fn()
+    window.scrollBy = scrollBySpy as unknown as typeof window.scrollBy
+
+    await userEvent.click(loadPrevious)
+    await screen.findByText('前日深夜の番組2')
+
+    expect(scrollBySpy).toHaveBeenCalledWith(0, 600)
+
+    Reflect.deleteProperty(document.documentElement, 'scrollHeight')
   })
 })

@@ -7,58 +7,57 @@ import { DayStrip } from '@/components/day-strip'
 const now = new Date(2026, 7, 1, 10, 0, 0, 0).getTime()
 
 describe('DayStrip', () => {
-  it('days=8 で「今」+ 8 個 = 9 個のボタンが出る', () => {
-    render(<DayStrip selected={null} days={8} onSelect={vi.fn()} now={now} />)
+  it('days=8 で 8 個のボタンが出る（「今」セルは無い）', () => {
+    render(<DayStrip current={0} days={8} onSelect={vi.fn()} now={now} />)
 
-    expect(screen.getAllByRole('button')).toHaveLength(9)
+    expect(screen.getAllByRole('button')).toHaveLength(8)
+    expect(screen.queryByRole('button', { name: '今' })).not.toBeInTheDocument()
   })
 
-  it('selected に対応するボタンだけ aria-pressed="true" になる', () => {
-    render(<DayStrip selected={2} days={8} onSelect={vi.fn()} now={now} />)
+  it('current に対応するセルだけ aria-current="date" になる', () => {
+    render(<DayStrip current={2} days={8} onSelect={vi.fn()} now={now} />)
 
     const buttons = screen.getAllByRole('button')
-    // 0 番目 = 「今」、以降 offset 0..7
-    expect(buttons[0]).toHaveAttribute('aria-pressed', 'false')
-    expect(buttons[1]).toHaveAttribute('aria-pressed', 'false')
-    expect(buttons[3]).toHaveAttribute('aria-pressed', 'true') // offset 2 は index 3
-    expect(buttons.filter((b) => b.getAttribute('aria-pressed') === 'true')).toHaveLength(1)
+    expect(buttons[0]).not.toHaveAttribute('aria-current')
+    expect(buttons[1]).not.toHaveAttribute('aria-current')
+    expect(buttons[2]).toHaveAttribute('aria-current', 'date') // offset 2 は index 2
+    expect(buttons.filter((b) => b.getAttribute('aria-current') === 'date')).toHaveLength(1)
   })
 
-  it('「今」が選択中のときは先頭ボタンだけ aria-pressed="true" になる', () => {
-    render(<DayStrip selected={null} days={8} onSelect={vi.fn()} now={now} />)
+  it('current が 0（今日）でも押下状態の aria-pressed は付かない', () => {
+    render(<DayStrip current={0} days={8} onSelect={vi.fn()} now={now} />)
 
     const buttons = screen.getAllByRole('button')
-    expect(buttons[0]).toHaveAttribute('aria-pressed', 'true')
-    expect(buttons[1]).toHaveAttribute('aria-pressed', 'false')
+    expect(buttons[0]).not.toHaveAttribute('aria-pressed')
+    expect(buttons[0]).toHaveAttribute('aria-current', 'date')
   })
 
-  it('クリックで onSelect が正しい offset で呼ばれる（「今」は null）', () => {
+  it('クリックで onSelect が正しい offset で呼ばれる', () => {
     const onSelect = vi.fn()
-    render(<DayStrip selected={null} days={8} onSelect={onSelect} now={now} />)
+    render(<DayStrip current={0} days={8} onSelect={onSelect} now={now} />)
 
     const buttons = screen.getAllByRole('button')
-    fireEvent.click(buttons[0])
-    expect(onSelect).toHaveBeenLastCalledWith(null)
-
-    fireEvent.click(buttons[3]) // offset 2
+    fireEvent.click(buttons[2]) // offset 2
     expect(onSelect).toHaveBeenLastCalledWith(2)
+
+    fireEvent.click(buttons[0]) // offset 0
+    expect(onSelect).toHaveBeenLastCalledWith(0)
   })
 
   it('aria-label が曜日を含む（数値だけの読み上げにしない）', () => {
-    render(<DayStrip selected={null} days={8} onSelect={vi.fn()} now={now} />)
+    render(<DayStrip current={0} days={8} onSelect={vi.fn()} now={now} />)
 
     const buttons = screen.getAllByRole('button')
-    // now = 2026-08-01（土）。先頭は「今」、次が offset 0 = 8/1(土)、その次が offset 1 = 8/2(日)
-    expect(buttons[0]).toHaveAttribute('aria-label', '今')
-    expect(buttons[1]).toHaveAttribute('aria-label', '8月1日(土)')
-    expect(buttons[2]).toHaveAttribute('aria-label', '8月2日(日)')
+    // now = 2026-08-01（土）。先頭が offset 0 = 8/1(土)、その次が offset 1 = 8/2(日)
+    expect(buttons[0]).toHaveAttribute('aria-label', '8月1日(土)')
+    expect(buttons[1]).toHaveAttribute('aria-label', '8月2日(日)')
   })
 
   it('見える側の数値・曜日は aria-hidden で二重読みを避ける', () => {
-    render(<DayStrip selected={null} days={8} onSelect={vi.fn()} now={now} />)
+    render(<DayStrip current={0} days={8} onSelect={vi.fn()} now={now} />)
 
     const buttons = screen.getAllByRole('button')
-    const hidden = buttons[1].querySelector('[aria-hidden="true"]')
+    const hidden = buttons[0].querySelector('[aria-hidden="true"]')
     expect(hidden).not.toBeNull()
   })
 })

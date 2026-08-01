@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -70,12 +70,22 @@ function stubFetch() {
   ) as unknown as typeof fetch
 }
 
-function renderList(programs: ProgramListItem[], reservationActions = actions()) {
+function renderList(
+  programs: ProgramListItem[],
+  reservationActions = actions(),
+  extra: { onVisibleDayChange?: (dayOffset: number) => void; now?: number } = {},
+) {
   stubFetch()
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={queryClient}>
-      <ProgramList programs={programs} serviceById={services} actions={reservationActions} />
+      <ProgramList
+        programs={programs}
+        serviceById={services}
+        actions={reservationActions}
+        onVisibleDayChange={extra.onVisibleDayChange}
+        now={extra.now}
+      />
     </QueryClientProvider>,
   )
 }
@@ -150,5 +160,25 @@ describe('ProgramList', () => {
     renderList([])
     expect(screen.queryAllByRole('heading', { level: 2 })).toHaveLength(0)
     expect(screen.queryByRole('button', { name: '予約' })).not.toBeInTheDocument()
+  })
+
+  describe('onVisibleDayChange（「いま見ている日」の通知）', () => {
+    it('マウント時に先頭の番組の日で呼ばれる（今日の番組なら 0）', async () => {
+      const onVisibleDayChange = vi.fn()
+      renderList([program(1, 1, '対象番組')], actions(), { onVisibleDayChange, now: dayStart })
+
+      await screen.findByText('対象番組')
+      await waitFor(() => expect(onVisibleDayChange).toHaveBeenCalledWith(0))
+    })
+
+    it('先頭の番組が翌日なら、その offset（1）で呼ばれる（ハードコードされた 0 ではないことの確認）', async () => {
+      const onVisibleDayChange = vi.fn()
+      // 25 時間後 = 翌日
+      const tomorrowProgram = program(2, 25, '翌日の番組')
+      renderList([tomorrowProgram], actions(), { onVisibleDayChange, now: dayStart })
+
+      await screen.findByText('翌日の番組')
+      await waitFor(() => expect(onVisibleDayChange).toHaveBeenCalledWith(1))
+    })
   })
 })
