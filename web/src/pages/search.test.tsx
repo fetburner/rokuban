@@ -15,6 +15,7 @@ const services: Service[] = [
     channel: '27',
     remoteControlKeyId: 1,
     hasLogoData: false,
+    hasPrograms: true,
   },
   {
     networkId: 32737,
@@ -24,6 +25,7 @@ const services: Service[] = [
     channel: '26',
     remoteControlKeyId: 2,
     hasLogoData: false,
+    hasPrograms: true,
   },
 ]
 

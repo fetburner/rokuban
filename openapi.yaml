@@ -315,9 +315,16 @@ paths:
             type: integer
         - name: serviceId
           in: query
+          style: form
+          explode: true
           required: false
+          description: |
+            複数指定可（`?serviceId=1&serviceId=2`）。`?serviceId=1` は 1 要素の配列として
+            解釈されるのでワイヤ上は後方互換。未指定なら絞り込みなし。
           schema:
-            type: integer
+            type: array
+            items:
+              type: integer
       responses:
         "200":
           description: OK
@@ -842,6 +849,7 @@ components:
         - channel
         - remoteControlKeyId
         - hasLogoData
+        - hasPrograms
       properties:
         networkId:
           type: integer
@@ -858,6 +866,14 @@ components:
           type: integer
         hasLogoData:
           type: boolean
+        hasPrograms:
+          type: boolean
+          description: |
+            EPG プロジェクション全体（表示中の時間窓ではない）に、このサービスの番組が
+            1 件でもあるか。マルチ編成のないサブサービスは番組を持たないため false になる。
+            このエンドポイント自体はこのフラグで絞り込まない —— ルールはまだ番組を持たない
+            サービスも参照できる必要があり、絞り込むと「EPG プロジェクションのサービス
+            一覧」という定義に反する構成員を落とすことになる。
 
     # 一覧向けの軽い形。extended / video / audios は含まない（転送量のため）。
     ProgramListItem:

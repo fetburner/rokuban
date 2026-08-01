@@ -33,6 +33,7 @@ const service: Service = {
   channel: '27',
   remoteControlKeyId: 1,
   hasLogoData: false,
+  hasPrograms: true,
 }
 
 function program(programId: number, startMinutes: number, durationMinutes: number): ProgramListItem {

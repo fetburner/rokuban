@@ -237,7 +237,11 @@ WHERE site = $1
   AND start_at < $2::timestamptz
   AND end_at   > $3::timestamptz
   AND ($4::integer IS NULL OR network_id = $4::integer)
-  AND ($5::integer IS NULL OR service_id = $5::integer)
+  AND (
+    $5::integer[] IS NULL
+    OR cardinality($5::integer[]) = 0
+    OR service_id = ANY($5::integer[])
+  )
 ORDER BY start_at, network_id, service_id
 `
 
@@ -246,7 +250,7 @@ type ListEpgProgramsForListParams struct {
 	WindowEnd   time.Time
 	WindowStart time.Time
 	NetworkID   *int32
-	ServiceID   *int32
+	ServiceIds  []int32
 }
 
 type ListEpgProgramsForListRow struct {
@@ -266,13 +270,16 @@ type ListEpgProgramsForListRow struct {
 
 // 一覧向けの軽い形。extended / video / audios は返さない（1 行あたり数 KB になり
 // 時間窓を広げたときの転送量が跳ねるため。詳細は GetEpgProgram で取る）。
+//
+// service_ids は複数指定可（サーバー側のチャンネル絞り込み）。空/NULL なら条件ごと
+// 効かせない（＝絞り込みなし）。呼び出し元は Go 側の未指定を nil スライスとして渡す。
 func (q *Queries) ListEpgProgramsForList(ctx context.Context, arg ListEpgProgramsForListParams) ([]ListEpgProgramsForListRow, error) {
 	rows, err := q.db.Query(ctx, listEpgProgramsForList,
 		arg.Site,
 		arg.WindowEnd,
 		arg.WindowStart,
 		arg.NetworkID,
-		arg.ServiceID,
+		arg.ServiceIds,
 	)
 	if err != nil {
 		return nil, err
@@ -306,20 +313,48 @@ func (q *Queries) ListEpgProgramsForList(ctx context.Context, arg ListEpgProgram
 }
 
 const listEpgServices = `-- name: ListEpgServices :many
-SELECT site, network_id, service_id, type, logo_id, remote_control_key_id, name, channel_type, channel, has_logo_data, observed_at FROM epg_services
-WHERE site = $1
-ORDER BY channel_type, remote_control_key_id, service_id
+SELECT es.site, es.network_id, es.service_id, es.type, es.logo_id, es.remote_control_key_id, es.name, es.channel_type, es.channel, es.has_logo_data, es.observed_at,
+    EXISTS (
+        SELECT 1 FROM epg_programs ep
+        WHERE ep.site = es.site
+          AND ep.network_id = es.network_id
+          AND ep.service_id = es.service_id
+    ) AS has_programs
+FROM epg_services es
+WHERE es.site = $1
+ORDER BY es.channel_type, es.remote_control_key_id, es.service_id
 `
 
-func (q *Queries) ListEpgServices(ctx context.Context, site string) ([]EpgService, error) {
+type ListEpgServicesRow struct {
+	Site               string
+	NetworkID          int32
+	ServiceID          int32
+	Type               int32
+	LogoID             int32
+	RemoteControlKeyID int32
+	Name               string
+	ChannelType        string
+	Channel            string
+	HasLogoData        bool
+	ObservedAt         time.Time
+	HasPrograms        bool
+}
+
+// has_programs は「射影全体で 1 件でも番組を持つか」であり、表示中の時間窓では
+// 判定しない。時間窓に依存させると、フロントのピッカー候補が「ページを読み込む
+// ほど増える」形になり、しかもサーバー側で serviceId 絞り込みをかけたときに
+// 候補が絞り込み結果に連動して縮む（1 局に絞ると他局へ切り替えられなくなる）
+// 問題を再発させる。候補集合を絞り込みから独立させるのがこの列を足す理由
+// そのものなので、判定は射影全体で固定する（docs/frontend.md「番組リスト」）。
+func (q *Queries) ListEpgServices(ctx context.Context, site string) ([]ListEpgServicesRow, error) {
 	rows, err := q.db.Query(ctx, listEpgServices, site)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []EpgService
+	var items []ListEpgServicesRow
 	for rows.Next() {
-		var i EpgService
+		var i ListEpgServicesRow
 		if err := rows.Scan(
 			&i.Site,
 			&i.NetworkID,
@@ -332,6 +367,7 @@ func (q *Queries) ListEpgServices(ctx context.Context, site string) ([]EpgServic
 			&i.Channel,
 			&i.HasLogoData,
 			&i.ObservedAt,
+			&i.HasPrograms,
 		); err != nil {
 			return nil, err
 		}

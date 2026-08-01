@@ -23,10 +23,23 @@ ON CONFLICT (site, network_id, service_id) DO UPDATE SET
 DELETE FROM epg_services
 WHERE site = $1 AND observed_at < $2;
 
+-- has_programs は「射影全体で 1 件でも番組を持つか」であり、表示中の時間窓では
+-- 判定しない。時間窓に依存させると、フロントのピッカー候補が「ページを読み込む
+-- ほど増える」形になり、しかもサーバー側で serviceId 絞り込みをかけたときに
+-- 候補が絞り込み結果に連動して縮む（1 局に絞ると他局へ切り替えられなくなる）
+-- 問題を再発させる。候補集合を絞り込みから独立させるのがこの列を足す理由
+-- そのものなので、判定は射影全体で固定する（docs/frontend.md「番組リスト」）。
 -- name: ListEpgServices :many
-SELECT * FROM epg_services
-WHERE site = $1
-ORDER BY channel_type, remote_control_key_id, service_id;
+SELECT es.*,
+    EXISTS (
+        SELECT 1 FROM epg_programs ep
+        WHERE ep.site = es.site
+          AND ep.network_id = es.network_id
+          AND ep.service_id = es.service_id
+    ) AS has_programs
+FROM epg_services es
+WHERE es.site = $1
+ORDER BY es.channel_type, es.remote_control_key_id, es.service_id;
 
 -- name: UpsertEpgProgram :batchexec
 INSERT INTO epg_programs (
@@ -84,6 +97,9 @@ ORDER BY start_at, network_id, service_id;
 
 -- 一覧向けの軽い形。extended / video / audios は返さない（1 行あたり数 KB になり
 -- 時間窓を広げたときの転送量が跳ねるため。詳細は GetEpgProgram で取る）。
+--
+-- service_ids は複数指定可（サーバー側のチャンネル絞り込み）。空/NULL なら条件ごと
+-- 効かせない（＝絞り込みなし）。呼び出し元は Go 側の未指定を nil スライスとして渡す。
 -- name: ListEpgProgramsForList :many
 SELECT site, program_id, network_id, service_id, event_id,
        start_at, duration_ms, end_at, is_free, name, description, genre_lv1
@@ -92,7 +108,11 @@ WHERE site = $1
   AND start_at < sqlc.arg(window_end)::timestamptz
   AND end_at   > sqlc.arg(window_start)::timestamptz
   AND (sqlc.narg(network_id)::integer IS NULL OR network_id = sqlc.narg(network_id)::integer)
-  AND (sqlc.narg(service_id)::integer IS NULL OR service_id = sqlc.narg(service_id)::integer)
+  AND (
+    sqlc.arg(service_ids)::integer[] IS NULL
+    OR cardinality(sqlc.arg(service_ids)::integer[]) = 0
+    OR service_id = ANY(sqlc.arg(service_ids)::integer[])
+  )
 ORDER BY start_at, network_id, service_id;
 
 -- name: GetEpgProgram :one

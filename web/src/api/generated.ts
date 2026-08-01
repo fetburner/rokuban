@@ -76,6 +76,14 @@ export interface Service {
   channel: string;
   remoteControlKeyId: number;
   hasLogoData: boolean;
+  /**
+     * EPG プロジェクション全体（表示中の時間窓ではない）に、このサービスの番組が
+     * 1 件でもあるか。マルチ編成のないサブサービスは番組を持たないため false になる。
+     * このエンドポイント自体はこのフラグで絞り込まない —— ルールはまだ番組を持たない
+     * サービスも参照できる必要があり、絞り込むと「EPG プロジェクションのサービス
+     * 一覧」という定義に反する構成員を落とすことになる。
+     */
+  hasPrograms: boolean;
 }
 
 export interface ProgramListItem {
@@ -657,7 +665,11 @@ start: string;
  */
 end: string;
 networkId?: number;
-serviceId?: number;
+/**
+ * 複数指定可（`?serviceId=1&serviceId=2`）。`?serviceId=1` は 1 要素の配列として
+ * 解釈されるのでワイヤ上は後方互換。未指定なら絞り込みなし。
+ */
+serviceId?: number[];
 };
 
 export type ListRecordingsParams = {
@@ -2048,6 +2060,14 @@ export const getListProgramsUrl = (site: string,
   const normalizedParams = new URLSearchParams();
 
   Object.entries(params || {}).forEach(([key, value]) => {
+    const explodeParameters = ["serviceId"];
+
+    if (Array.isArray(value) && explodeParameters.includes(key)) {
+      value.forEach((v) => {
+        normalizedParams.append(key, v === null ? 'null' : String(v));
+      });
+      return;
+    }
 
     if (value !== undefined) {
       normalizedParams.append(key, value === null ? 'null' : String(value))

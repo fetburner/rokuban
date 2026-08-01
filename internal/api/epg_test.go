@@ -128,6 +128,40 @@ func TestListServices(t *testing.T) {
 	}
 }
 
+// hasPrograms は射影全体で 1 件でも番組を持つかであり、絞り込み前の全サービス
+// を返す ListServices 自体はこのフラグで行を落とさない（番組ゼロの局も返る）。
+func TestListServices_HasPrograms(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := newAPIServer(t, pool)
+
+	// 5168 は番組を持つ、5152 はサブサービスのように番組を持たない
+	seedEpgService(t, pool, 32678, 5168, 8, "ＯＨＫ", "27")
+	seedEpgService(t, pool, 32676, 5152, 6, "ＲＳＫテレビ", "21")
+	base := time.Now().Truncate(time.Hour)
+	seedEpgProgram(t, pool, 1, 32678, 5168, 1, "OHK番組", base, false)
+
+	var got []Service
+	resp := getJSON(t, srv.URL+"/api/sites/default/services", &got)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	// 番組ゼロのサービスも一覧からは落ちない（射影の正当な構成員のため）
+	if len(got) != 2 {
+		t.Fatalf("services = %d, want 2 (番組ゼロのサービスも返る)", len(got))
+	}
+
+	byServiceID := map[int]Service{}
+	for _, s := range got {
+		byServiceID[s.ServiceId] = s
+	}
+	if !byServiceID[5168].HasPrograms {
+		t.Errorf("service 5168 (has a program) HasPrograms = false, want true")
+	}
+	if byServiceID[5152].HasPrograms {
+		t.Errorf("service 5152 (no programs) HasPrograms = true, want false")
+	}
+}
+
 func TestListPrograms_Window(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	srv := newAPIServer(t, pool)
@@ -178,7 +212,9 @@ func TestListPrograms_ServiceFilter(t *testing.T) {
 	base := time.Now().Truncate(time.Hour)
 	seedEpgProgram(t, pool, 1, 32678, 5168, 1, "OHK", base, false)
 	seedEpgProgram(t, pool, 2, 32676, 5152, 1, "RSK", base, false)
+	seedEpgProgram(t, pool, 3, 32679, 5153, 1, "third", base, false)
 
+	// 単一の serviceId は 1 要素の配列として解釈される（後方互換）
 	var got []ProgramListItem
 	getJSON(t, programsURL(srv.URL, base, base.Add(time.Hour), "serviceId", "5168"), &got)
 	if len(got) != 1 || got[0].Name != "OHK" {
@@ -189,6 +225,24 @@ func TestListPrograms_ServiceFilter(t *testing.T) {
 	getJSON(t, programsURL(srv.URL, base, base.Add(time.Hour), "networkId", "32676"), &got)
 	if len(got) != 1 || got[0].Name != "RSK" {
 		t.Fatalf("network-filtered = %+v, want only RSK", got)
+	}
+
+	// serviceId を 2 つ渡すと両方の番組が返る（third は含まれない）
+	got = nil
+	getJSON(t, programsURL(srv.URL, base, base.Add(time.Hour))+"&serviceId=5168&serviceId=5152", &got)
+	names := map[string]bool{}
+	for _, p := range got {
+		names[p.Name] = true
+	}
+	if len(got) != 2 || !names["OHK"] || !names["RSK"] {
+		t.Fatalf("multi-service-filtered = %+v, want OHK and RSK only", got)
+	}
+
+	// serviceId を渡さないと全件返る
+	got = nil
+	getJSON(t, programsURL(srv.URL, base, base.Add(time.Hour)), &got)
+	if len(got) != 3 {
+		t.Fatalf("unfiltered = %d, want 3", len(got))
 	}
 }
 

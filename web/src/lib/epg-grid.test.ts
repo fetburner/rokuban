@@ -184,6 +184,7 @@ describe('orderServices', () => {
     channel: '27',
     remoteControlKeyId,
     hasLogoData: false,
+    hasPrograms: true,
   })
 
   it('種別 → リモコン番号 → serviceId の全順序で並べる', () => {

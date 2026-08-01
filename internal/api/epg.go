@@ -37,6 +37,7 @@ func (h *Server) ListServices(ctx context.Context, req ListServicesRequestObject
 			Channel:            s.Channel,
 			RemoteControlKeyId: int(s.RemoteControlKeyID),
 			HasLogoData:        s.HasLogoData,
+			HasPrograms:        s.HasPrograms,
 		})
 	}
 	return ListServices200JSONResponse(result), nil
@@ -56,7 +57,7 @@ func (h *Server) ListPrograms(ctx context.Context, req ListProgramsRequestObject
 		WindowStart: req.Params.Start,
 		WindowEnd:   req.Params.End,
 		NetworkID:   int32Ptr(req.Params.NetworkId),
-		ServiceID:   int32Ptr(req.Params.ServiceId),
+		ServiceIds:  int32Slice(req.Params.ServiceId),
 	})
 	if err != nil {
 		return nil, err
@@ -146,6 +147,20 @@ func int32Ptr(v *int) *int32 {
 	}
 	n := int32(*v)
 	return &n
+}
+
+// int32Slice は未指定（nil）を nil スライスのまま通す。ListEpgProgramsForList
+// 側の `service_ids IS NULL` 判定と対応させ、絞り込みなしを素通しさせるため
+// 空スライスへ丸めない。
+func int32Slice(v *[]int) []int32 {
+	if v == nil {
+		return nil
+	}
+	out := make([]int32, len(*v))
+	for i, n := range *v {
+		out[i] = int32(n)
+	}
+	return out
 }
 
 func genreLv1List(lv1 []int16) []int {

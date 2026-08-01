@@ -2,6 +2,8 @@ import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useState } from 'react'
 
 import { CapacityBands } from '@/components/capacity-band'
+import { ChannelPicker } from '@/components/channel-picker'
+import { DayStrip } from '@/components/day-strip'
 import { EmptyState, ErrorState, ListSkeleton, PageHeader } from '@/components/page'
 import { ProgramGrid } from '@/components/program-grid'
 import { ProgramRow } from '@/components/program-row'
@@ -20,6 +22,7 @@ import {
   type Service,
 } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
+import { dayOrigin } from '@/lib/day-offset'
 import { orderServices, type TimeAxis } from '@/lib/epg-grid'
 import { dayKey, formatDate } from '@/lib/format'
 import { DEFAULT_SITE } from '@/lib/site'
@@ -48,24 +51,6 @@ const gridPxPerHour = 120
 /** ProgramView は番組の表示形式。グリッドは `lg` 以上でのみ選べる。 */
 type ProgramView = 'list' | 'grid'
 
-/**
- * dayOrigin は日付選択に対応する時間窓の起点を返す。
- *
- * `dayOffset` が null なら「今」（時刻境界に切り捨てる。窓を時刻境界に揃えるため）。
- * 数値ならその日数だけ先の 0 時。日付を選べば「さらに読み込む」を何度も押さずに
- * 先の日付へ跳べる。
- */
-function dayOrigin(dayOffset: number | null): Date {
-  const origin = new Date()
-  if (dayOffset === null) {
-    origin.setMinutes(0, 0, 0)
-    return origin
-  }
-  origin.setDate(origin.getDate() + dayOffset)
-  origin.setHours(0, 0, 0, 0)
-  return origin
-}
-
 /** windowEndOfDay は選択した日の終わり（翌 0 時）を返す。 */
 function endOfSelection(dayOffset: number | null): Date {
   const origin = dayOrigin(dayOffset)
@@ -80,8 +65,23 @@ function endOfSelection(dayOffset: number | null): Date {
   return end
 }
 
+/**
+ * serviceIdParam は選択したサービス集合をサーバーへ渡す配列にする。
+ *
+ * 空集合は「すべて」なのでキーごと落とす（`undefined` を返す。docs/frontend.md
+ * 「『問わない』次元はリクエストのキーごと落とす」）。ソートするのは、
+ * `Set` の反復順は選び方の履歴に依存するため、そのまま渡すと同じ選択でも
+ * URL / queryKey が変わって無限に再取得されるおそれがあるため。
+ */
+function serviceIdParam(selectedServiceIds: ReadonlySet<number>): number[] | undefined {
+  if (selectedServiceIds.size === 0) return undefined
+  return [...selectedServiceIds].sort((a, b) => a - b)
+}
+
 export function ProgramsPage() {
-  const [serviceFilter, setServiceFilter] = useState<number | null>(null)
+  // 空集合 = すべて表示。初期状態が空なので、これ以外の意味だと初回表示が
+  // 空になってしまう。
+  const [selectedServiceIds, setSelectedServiceIds] = useState<ReadonlySet<number>>(new Set())
   const [dayOffset, setDayOffset] = useState<number | null>(null)
   const [view, setView] = useState<ProgramView>('list')
 
@@ -100,8 +100,19 @@ export function ProgramsPage() {
   const limitMs = endOfSelection(dayOffset).getTime()
   const maxWindows = Math.max(1, Math.ceil((limitMs - originMs) / (windowHours * 3600_000)))
 
+  // サーバー側で絞り込む。ソートするのは Set の反復順が選び方の履歴に依存する
+  // ためで、順序が揺れると同じ選択でも queryKey / URL が変わってしまう
+  // （serviceIdParam 参照）。
+  const selectedServiceIdParam = useMemo(
+    () => serviceIdParam(selectedServiceIds),
+    [selectedServiceIds],
+  )
+
+  // サーバーが選択に応じて絞るようになったので、queryKey にも選択を入れる。
+  // 入れないと別の選択で取得した結果をそのまま再利用してしまう（日付や時間窓と
+  // 同じ「結果を左右するパラメータ」になったため）。
   const query = useInfiniteQuery({
-    queryKey: ['/api/programs', 'infinite', serviceFilter, originMs, limitMs],
+    queryKey: ['/api/programs', 'infinite', originMs, limitMs, selectedServiceIdParam],
     initialPageParam: 0,
     // グリッド表示中はリストの窓を追いかけない（同じ時間帯を 2 つの形で
     // 同時に取りに行かない）。戻ったときはキャッシュがそのまま出る。
@@ -112,7 +123,7 @@ export function ProgramsPage() {
       const res = await listPrograms(DEFAULT_SITE, {
         start: start.toISOString(),
         end: end.toISOString(),
-        ...(serviceFilter === null ? {} : { serviceId: serviceFilter }),
+        serviceId: selectedServiceIdParam,
       })
       return { step: pageParam, programs: unwrap(res) ?? [] }
     },
@@ -128,10 +139,11 @@ export function ProgramsPage() {
     {
       start: new Date(originMs).toISOString(),
       end: new Date(gridEndMs).toISOString(),
-      ...(serviceFilter === null ? {} : { serviceId: serviceFilter }),
+      serviceId: selectedServiceIdParam,
     },
     { query: { enabled: showGrid } },
   )
+  // サーバーが選択済みの serviceId で絞るので、これ以上の適用点は要らない。
   const gridPrograms = useMemo(() => unwrap(gridQuery.data) ?? [], [gridQuery.data])
   const axis = useMemo<TimeAxis>(
     () => ({ startMs: originMs, endMs: gridEndMs, pxPerHour: gridPxPerHour }),
@@ -154,6 +166,7 @@ export function ProgramsPage() {
   const overages = useMemo(() => unwrap(overagesQuery.data) ?? [], [overagesQuery.data])
 
   // 窓は開区間なので境界をまたぐ番組が隣接する 2 つの窓に現れる。programId で潰す。
+  // サーバーが選択済みの serviceId で絞るので、これ以上の適用点は要らない。
   const programs = useMemo(() => {
     const seen = new Map<number, ProgramListItem>()
     for (const page of query.data?.pages ?? []) {
@@ -166,6 +179,9 @@ export function ProgramsPage() {
     )
   }, [query.data])
 
+  // 絞り込む前の全サービスから作る。絞った側（filterableServices）から作ると、
+  // hasPrograms が false の局の番組が来たとき（例えば選択直後にキャッシュが
+  // まだ古い）名前が引けなくなる。
   const serviceById = useMemo(() => {
     const map = new Map<number, Service>()
     for (const s of unwrap(services.data) ?? []) map.set(s.serviceId, s)
@@ -187,14 +203,14 @@ export function ProgramsPage() {
 
   // 番組が 1 件でもあるサービスだけをチップに出す（issue #17 の S3）。
   // マルチ編成のないサブサービスは番組を持たないので自動的に消える。
-  // 判断の材料はいま見ている表示形式の番組（グリッドは 24 時間、リストは積んだ窓）。
-  const visiblePrograms = showGrid ? gridPrograms : programs
-  const filterableServices = useMemo(() => {
-    const withPrograms = new Set(visiblePrograms.map((p) => p.serviceId))
-    return (unwrap(services.data) ?? []).filter(
-      (s) => withPrograms.has(s.serviceId) || s.serviceId === serviceFilter,
-    )
-  }, [visiblePrograms, services.data, serviceFilter])
+  // 判断の材料は `hasPrograms`（EPG プロジェクション全体で 1 件でも番組を
+  // 持つか）で、表示中の番組から推測しない。表示中の番組（サーバー側で
+  // 絞り込んだ後）から導くと、1 局に絞った瞬間に候補がその 1 局だけになり、
+  // 他局へ直接切り替えられなくなる（docs/frontend.md「番組リスト」）。
+  const filterableServices = useMemo(
+    () => (unwrap(services.data) ?? []).filter((s) => s.hasPrograms),
+    [services.data],
+  )
 
   // グリッドの列。番組を 1 つも持たないサービスは列にしない（空の列が数十本
   // 並ぶと、隣り合う番組の同時性が読み取れなくなる）。並び順は全順序なので
@@ -210,16 +226,25 @@ export function ProgramsPage() {
 
   return (
     <>
-      <PageHeader title="番組">
-        <DayChips selected={dayOffset} onSelect={setDayOffset} />
-        <ServiceChips
-          services={filterableServices}
-          selected={serviceFilter}
-          onSelect={setServiceFilter}
-        />
-        {/* 表示形式の切り替えは `lg` 以上でのみ出す。CSS で隠すのではなく
-            出さないのは、モバイルに存在しない選択肢を読み上げさせないため */}
-        {wideScreen && <ViewChips view={view} onSelect={setView} />}
+      <PageHeader
+        title="番組"
+        actions={
+          <>
+            {/* チャンネル絞り込みはグリッド表示中も出したままにする。選択は
+                グリッドの列にも効くので、隠すと解除手段のない 1 列グリッドに
+                なる（docs/frontend.md「番組リスト」）。 */}
+            <ChannelPicker
+              services={filterableServices}
+              selected={selectedServiceIds}
+              onChange={setSelectedServiceIds}
+            />
+            {/* 表示形式の切り替えは `lg` 以上でのみ出す。CSS で隠すのではなく
+                出さないのは、モバイルに存在しない選択肢を読み上げさせないため */}
+            {wideScreen && <ViewChips view={view} onSelect={setView} />}
+          </>
+        }
+      >
+        <DayStrip selected={dayOffset} days={selectableDays} onSelect={setDayOffset} />
       </PageHeader>
 
       {showGrid ? (
@@ -399,56 +424,6 @@ function useReservationActions(serverReservedIds: ReadonlySet<number>): Reservat
     isBusy: (programId) => busyProgramIds.has(programId),
     reservedProgramIds,
   }
-}
-
-function DayChips({
-  selected,
-  onSelect,
-}: {
-  selected: number | null
-  onSelect: (dayOffset: number | null) => void
-}) {
-  const days = Array.from({ length: selectableDays }, (_, offset) => offset)
-
-  return (
-    <div className="flex gap-2 overflow-x-auto px-4 pb-2">
-      <Chip active={selected === null} onClick={() => onSelect(null)}>
-        今
-      </Chip>
-      {days.map((offset) => (
-        <Chip key={offset} active={selected === offset} onClick={() => onSelect(offset)}>
-          {formatDate(dayOrigin(offset).toISOString())}
-        </Chip>
-      ))}
-    </div>
-  )
-}
-
-function ServiceChips({
-  services,
-  selected,
-  onSelect,
-}: {
-  services: Service[]
-  selected: number | null
-  onSelect: (serviceId: number | null) => void
-}) {
-  return (
-    <div className="flex gap-2 overflow-x-auto px-4 pb-3">
-      <Chip active={selected === null} onClick={() => onSelect(null)}>
-        すべて
-      </Chip>
-      {services.map((s) => (
-        <Chip
-          key={`${s.networkId}-${s.serviceId}`}
-          active={selected === s.serviceId}
-          onClick={() => onSelect(s.serviceId)}
-        >
-          {s.name}
-        </Chip>
-      ))}
-    </div>
-  )
 }
 
 function ViewChips({

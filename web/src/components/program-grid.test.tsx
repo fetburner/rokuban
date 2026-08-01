@@ -29,6 +29,7 @@ function service(serviceId: number, name: string): Service {
     channel: '27',
     remoteControlKeyId: 1,
     hasLogoData: false,
+    hasPrograms: true,
   }
 }
 

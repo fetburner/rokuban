@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -29,6 +29,7 @@ const services: Service[] = [
     channel: '27',
     remoteControlKeyId: 1,
     hasLogoData: false,
+    hasPrograms: true,
   },
   {
     networkId: 32737,
@@ -38,6 +39,7 @@ const services: Service[] = [
     channel: '26',
     remoteControlKeyId: 2,
     hasLogoData: false,
+    hasPrograms: true,
   },
 ]
 
@@ -118,9 +120,11 @@ function noContentResponse(): Response {
 /**
  * stubApi は番組・サービス・予約・容量超過を URL で振り分ける。
  *
- * `/api/sites/default/programs` は時間窓で実際に絞る。窓の幅を無視して全件返す
- * スタブにすると、「グリッドは 24 時間ぶんを 1 回で取る」という実装の主張を
- * テストが検証できない。
+ * `/api/sites/default/programs` は時間窓と serviceId で実際に絞る。絞り込みが
+ * サーバー側に移ったので、`serviceId` を無視するスタブにすると「選ぶと他局の
+ * 番組が消える」という実装の主張をテストが検証できない（クライアント側には
+ * もう適用点が無い）。`serviceId` は複数指定可（`getAll`）で、未指定なら
+ * 絞り込みなし。
  *
  * 予約 / 取消は `PUT /api/sites/default/programs/{id}/intent` を叩く
  * （issue #29。reservations 行は同期的に作らない）。テストは常に成功させる。
@@ -144,12 +148,12 @@ function stubApi(reservations: Reservation[] = [], overages: CapacityOverage[] =
     if (url.pathname === '/api/sites/default/programs') {
       const start = new Date(url.searchParams.get('start') ?? 0).getTime()
       const end = new Date(url.searchParams.get('end') ?? 0).getTime()
-      const serviceId = url.searchParams.get('serviceId')
+      const serviceIds = url.searchParams.getAll('serviceId').map(Number)
       const matched = allPrograms.filter(
         (p) =>
           new Date(p.endAt).getTime() > start &&
           new Date(p.startAt).getTime() < end &&
-          (serviceId === null || p.serviceId === Number(serviceId)),
+          (serviceIds.length === 0 || serviceIds.includes(p.serviceId)),
       )
       return Promise.resolve(jsonResponse(matched))
     }
@@ -291,35 +295,36 @@ describe('ProgramsPage の表示形式', () => {
   })
 
   it('日付・サービスの選択は表示形式を切り替えても保持される', async () => {
-    const fetchMock = stubApi()
+    stubApi()
     stubMatchMedia(true)
     renderPage()
 
     expect(await screen.findByText('ニュース7')).toBeInTheDocument()
-    await userEvent.click(screen.getByRole('button', { name: 'NHKEテレ' }))
-    await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'NHKEテレ' })).toHaveAttribute(
-        'aria-pressed',
-        'true',
-      ),
-    )
+    // サービスの選択はポップオーバーの中。開いてから選ぶ
+    await userEvent.click(screen.getByRole('button', { name: 'チャンネル: すべて' }))
+    const dialog = await screen.findByRole('dialog', { name: 'チャンネル' })
+    await userEvent.click(within(dialog).getByText('NHKEテレ'))
+    // 項目を押しただけでは閉じない。Esc で閉じる
+    await userEvent.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+
+    // トリガーに現在値が出ていることで選択を確認する（閉じた状態でも現在値が
+    // 読めることそのものが単一選択のときからの主目的）
+    expect(screen.getByRole('button', { name: 'チャンネル: NHKEテレ' })).toBeInTheDocument()
 
     await userEvent.click(screen.getByRole('button', { name: '番組表' }))
     await screen.findByTestId('program-grid')
 
-    // チップの選択が残っている
-    expect(screen.getByRole('button', { name: 'NHKEテレ' })).toHaveAttribute(
-      'aria-pressed',
-      'true',
-    )
-    // 選択がグリッドのクエリにも効いている（serviceId 付きで取りに行く）
-    const gridRequests = fetchMock.mock.calls
-      .map((call) => new URL(String(call[0]), 'http://localhost'))
-      .filter(
-        (url) => url.pathname === '/api/sites/default/programs' && url.searchParams.has('serviceId'),
-      )
-    expect(gridRequests.length).toBeGreaterThan(0)
-    expect(gridRequests.at(-1)?.searchParams.get('serviceId')).toBe('1032')
+    // トリガーの選択が残っている
+    expect(screen.getByRole('button', { name: 'チャンネル: NHKEテレ' })).toBeInTheDocument()
+    // 選択はサーバーへの問い合わせ（`serviceId`）を経てグリッドの列にも効く。
+    // 実際に `serviceId` が付くことの確認は別テスト
+    // 「チャンネルを選ぶと API に serviceId が付く」の役目
+    await waitFor(() => {
+      const columns = screen.getAllByTestId('program-grid-column')
+      expect(columns).toHaveLength(1)
+      expect(columns[0]).toHaveAttribute('data-service-id', '1032')
+    })
     // 絞り込んだサービスの番組だけが出る
     expect(screen.getByText('手話ニュース')).toBeInTheDocument()
     expect(screen.queryByText('ニュース7')).not.toBeInTheDocument()
@@ -456,14 +461,13 @@ describe('ProgramsPage の容量超過の帯', () => {
 })
 
 describe('ProgramsPage のリスト（回帰）', () => {
-  it('日付チップとサービスチップ、続きの読み込みが従来どおり出る', async () => {
+  it('日付の選択、チャンネル絞り込みのトリガー、続きの読み込みが出る', async () => {
     stubApi()
     renderPage()
 
     expect(await screen.findByText('ニュース7')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '今' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'すべて' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'NHK総合' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'チャンネル: すべて' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'さらに読み込む' })).toBeInTheDocument()
   })
 
@@ -479,5 +483,185 @@ describe('ProgramsPage のリスト（回帰）', () => {
     await userEvent.click(await screen.findByRole('button', { name: 'さらに読み込む' }))
 
     expect(await screen.findByText('深夜ドラマ')).toBeInTheDocument()
+  })
+
+  it('日付の選択肢は横スクロールする容器に入っていない', async () => {
+    stubApi()
+    renderPage()
+
+    expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+    const group = screen.getByRole('group', { name: '日付' })
+    expect(group.className).not.toMatch(/overflow-x-auto/)
+  })
+
+  it('チャンネルを選ぶとトリガーにその名前が出る（項目を押しただけでは閉じない）', async () => {
+    stubApi()
+    renderPage()
+
+    expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'チャンネル: すべて' }))
+    const dialog = await screen.findByRole('dialog', { name: 'チャンネル' })
+    await userEvent.click(within(dialog).getByText('NHK総合'))
+
+    // 項目を押しただけではポップオーバーは閉じない（複数選ぶため）。
+    // 開いたことを確かめたうえで、まだ開いていることを見る。
+    expect(screen.getByRole('dialog', { name: 'チャンネル' })).toBeInTheDocument()
+    // トリガーの表示は開いたままでも即座に更新される
+    expect(screen.getByRole('button', { name: 'チャンネル: NHK総合' })).toBeInTheDocument()
+
+    // 閉じるのは外側クリック / Esc。閉じた状態でも現在値が読める
+    await userEvent.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(screen.getByRole('button', { name: 'チャンネル: NHK総合' })).toBeInTheDocument()
+  })
+
+  it('チャンネル絞り込みのトリガーはリスト表示でもグリッド表示でも存在する', async () => {
+    stubApi()
+    stubMatchMedia(true)
+    renderPage()
+
+    expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'チャンネル: すべて' })).toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('button', { name: '番組表' }))
+    await screen.findByTestId('program-grid')
+
+    expect(screen.getByRole('button', { name: 'チャンネル: すべて' })).toBeInTheDocument()
+  })
+})
+
+describe('ProgramsPage のチャンネル複数選択', () => {
+  it('1 局選ぶと他局の番組が消え、もう 1 局足すと両方の番組が出る', async () => {
+    stubApi()
+    renderPage()
+
+    expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+    expect(screen.getByText('手話ニュース')).toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('button', { name: 'チャンネル: すべて' }))
+    const dialog = await screen.findByRole('dialog', { name: 'チャンネル' })
+    await userEvent.click(within(dialog).getByText('NHK総合'))
+
+    // NHK総合 だけに絞ったので、NHKEテレ の番組（手話ニュース）は消える
+    expect(await screen.findByRole('button', { name: 'チャンネル: NHK総合' })).toBeInTheDocument()
+    expect(screen.queryByText('手話ニュース')).not.toBeInTheDocument()
+    expect(screen.getByText('ニュース7')).toBeInTheDocument()
+
+    // ポップオーバーはまだ開いている（閉じていたら以下の click は要素が
+    // 見つからず失敗する）。閉じずにもう 1 局足す
+    expect(screen.getByRole('dialog', { name: 'チャンネル' })).toBeInTheDocument()
+    await userEvent.click(within(dialog).getByText('NHKEテレ'))
+
+    // 2 局とも選んだので、両方の番組が出る
+    expect(
+      await screen.findByRole('button', { name: 'チャンネル: 2 局を選択中' }),
+    ).toBeInTheDocument()
+    expect(screen.getByText('ニュース7')).toBeInTheDocument()
+    expect(screen.getByText('手話ニュース')).toBeInTheDocument()
+  })
+
+  it('1 局を選んだ状態でもピッカーの候補が減らない（filterableServices の回帰）', async () => {
+    stubApi()
+    renderPage()
+
+    expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'チャンネル: すべて' }))
+    const dialog = await screen.findByRole('dialog', { name: 'チャンネル' })
+    await userEvent.click(within(dialog).getByText('NHK総合'))
+
+    // NHK総合 に絞ると NHKEテレ の番組は一覧から消える
+    expect(await screen.findByRole('button', { name: 'チャンネル: NHK総合' })).toBeInTheDocument()
+    expect(screen.queryByText('手話ニュース')).not.toBeInTheDocument()
+
+    // にもかかわらず、絞り込み候補には NHKEテレ が残ったまま出ている。
+    // 候補は `hasPrograms`（EPG プロジェクション全体で 1 件でも番組を持つか）
+    // から導いており、表示中の（サーバー側で絞り込んだ後の）番組から候補を
+    // 導くと、1 局に絞った瞬間に候補がその 1 局だけになり、他局へ直接
+    // 切り替えられなくなる。この設計では候補が絞り込みから独立しているので
+    // 構造的に守られるが、回帰しないことを確認する意味でテストは残す
+    expect(within(dialog).getByText('NHKEテレ')).toBeInTheDocument()
+  })
+
+  it('「すべて」を押すと選択が空に戻り、全局の番組が出る', async () => {
+    stubApi()
+    renderPage()
+
+    expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'チャンネル: すべて' }))
+    const dialog = await screen.findByRole('dialog', { name: 'チャンネル' })
+    await userEvent.click(within(dialog).getByText('NHK総合'))
+
+    expect(await screen.findByRole('button', { name: 'チャンネル: NHK総合' })).toBeInTheDocument()
+    expect(screen.queryByText('手話ニュース')).not.toBeInTheDocument()
+
+    await userEvent.click(within(dialog).getByText('すべて'))
+
+    expect(await screen.findByRole('button', { name: 'チャンネル: すべて' })).toBeInTheDocument()
+    expect(screen.getByText('ニュース7')).toBeInTheDocument()
+    expect(screen.getByText('手話ニュース')).toBeInTheDocument()
+  })
+
+  it('チャンネルを選ぶと API に serviceId が付く（サーバー側で絞る）', async () => {
+    const fetchMock = stubApi()
+    stubMatchMedia(true)
+    renderPage()
+
+    expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+
+    const callsBeforeSelection = fetchMock.mock.calls.length
+
+    await userEvent.click(screen.getByRole('button', { name: 'チャンネル: すべて' }))
+    const dialog = await screen.findByRole('dialog', { name: 'チャンネル' })
+    await userEvent.click(within(dialog).getByText('NHK総合'))
+
+    expect(await screen.findByRole('button', { name: 'チャンネル: NHK総合' })).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByText('手話ニュース')).not.toBeInTheDocument())
+
+    // グリッドのクエリは選択済みの状態で初めて有効になる。選択を変えてから
+    // グリッドへ切り替える順序にしないと、グリッド側だけ serviceId が
+    // 付かないバグが再発しても、リストのクエリ（選択変更で既に再取得済み）
+    // だけを見ていては気付けない
+    await userEvent.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    await userEvent.click(screen.getByRole('button', { name: '番組表' }))
+    await screen.findByTestId('program-grid')
+
+    // 選択より前のリクエスト（初期表示時の絞り込みなし取得）を含めると
+    // `.every` が必ず失敗するので、選択後のリクエストだけを見る
+    const requestsAfterSelection = fetchMock.mock.calls
+      .slice(callsBeforeSelection)
+      .map((call) => new URL(String(call[0]), 'http://localhost'))
+      .filter((url) => url.pathname === '/api/sites/default/programs')
+    expect(requestsAfterSelection.length).toBeGreaterThan(0)
+    expect(
+      requestsAfterSelection.every((url) => url.searchParams.getAll('serviceId').includes('1024')),
+    ).toBe(true)
+  })
+
+  it('グリッド表示で、選んだ局だけが列になる', async () => {
+    stubApi()
+    stubMatchMedia(true)
+    renderPage()
+
+    expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: '番組表' }))
+    await screen.findByTestId('program-grid')
+
+    // 絞り込み前は両方の局が列になる
+    expect(
+      screen.getAllByTestId('program-grid-column').map((el) => el.getAttribute('data-service-id')),
+    ).toEqual(expect.arrayContaining(['1024', '1032']))
+
+    await userEvent.click(screen.getByRole('button', { name: 'チャンネル: すべて' }))
+    const dialog = await screen.findByRole('dialog', { name: 'チャンネル' })
+    await userEvent.click(within(dialog).getByText('NHK総合'))
+    await userEvent.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+
+    await waitFor(() => {
+      const columns = screen.getAllByTestId('program-grid-column')
+      expect(columns).toHaveLength(1)
+      expect(columns[0]).toHaveAttribute('data-service-id', '1024')
+    })
   })
 })

@@ -45,6 +45,11 @@ GET /api/sites/{site}/programs?start=&end=&networkId=&serviceId=
 `start` / `end` の窓に**一部でも重なる**番組を `start_at` 昇順で返す
 （`start_at < end AND end_at > start`）。窓開始前に始まった放送中の番組も含む。
 
+`serviceId` は**複数指定可**（`?serviceId=1&serviceId=2`。`style: form, explode: true`）。
+`?serviceId=1` は 1 要素の配列として解釈されるので、単一指定はワイヤ上そのまま
+後方互換。未指定なら絞り込みなし。番組リスト UI のチャンネル絞り込みはこの
+パラメータでサーバー側に渡す（[frontend.md](frontend.md) の「番組リスト」）。
+
 トークン方式を採らない理由:
 
 - **データ量が有界** — EPG はローリングウィンドウで、実測 8 日分 2680 件
@@ -63,6 +68,28 @@ GET /api/sites/{site}/programs?start=&end=&networkId=&serviceId=
 無限スクロールは窓を継ぎ足して実現する。窓は開区間なので**境界をまたぐ番組が
 隣接する 2 つの窓の両方に現れる**。クライアントは `programId` で重複排除する
 （OpenAPI の description に明記）。
+
+#### サービス一覧は `hasPrograms` を足すが、それでは絞らない
+
+```
+GET /api/sites/{site}/services → Service[]
+```
+
+`Service.hasPrograms` は、EPG プロジェクション**全体**（表示中の時間窓ではない）に
+そのサービスの番組が 1 件でもあるかを表す。時間窓に依存させないのは、フロントの
+チャンネル絞り込み候補をこのフラグから作るため（[frontend.md](frontend.md)）
+--- 候補が時間窓や絞り込み選択に依存すると、「1 局に絞ると他局へ切り替えられ
+なくなる」「ページを読み込むほど候補が増える」という壊れ方をする。
+
+**このエンドポイント自体は `hasPrograms` で行を絞らない。** 番組を持たない
+サービスも含めて全件返す。理由は 2 つ:
+
+- ルール（[rules.go](../internal/api/rules.go) の `RuleService`）はサービスを
+  参照する。ルール編集画面はまだ無いが、作るときは「いま番組を持っていない局」
+  も選べる必要がある
+- このエンドポイントは「EPG プロジェクションのサービス一覧」であり、射影に
+  居るが番組ゼロのサービスもその定義上の正当な構成員である。絞ると一覧の
+  名前が実体と食い違う
 
 #### 一覧と詳細で形を分ける（段階的開示）
 

@@ -931,13 +931,20 @@ type RuleTimeWindow struct {
 
 // Service defines model for Service.
 type Service struct {
-	Channel            string             `json:"channel"`
-	ChannelType        ServiceChannelType `json:"channelType"`
-	HasLogoData        bool               `json:"hasLogoData"`
-	Name               string             `json:"name"`
-	NetworkId          int                `json:"networkId"`
-	RemoteControlKeyId int                `json:"remoteControlKeyId"`
-	ServiceId          int                `json:"serviceId"`
+	Channel     string             `json:"channel"`
+	ChannelType ServiceChannelType `json:"channelType"`
+	HasLogoData bool               `json:"hasLogoData"`
+
+	// HasPrograms EPG プロジェクション全体（表示中の時間窓ではない）に、このサービスの番組が
+	// 1 件でもあるか。マルチ編成のないサブサービスは番組を持たないため false になる。
+	// このエンドポイント自体はこのフラグで絞り込まない —— ルールはまだ番組を持たない
+	// サービスも参照できる必要があり、絞り込むと「EPG プロジェクションのサービス
+	// 一覧」という定義に反する構成員を落とすことになる。
+	HasPrograms        bool   `json:"hasPrograms"`
+	Name               string `json:"name"`
+	NetworkId          int    `json:"networkId"`
+	RemoteControlKeyId int    `json:"remoteControlKeyId"`
+	ServiceId          int    `json:"serviceId"`
 }
 
 // ServiceChannelType defines model for Service.ChannelType.
@@ -985,7 +992,10 @@ type ListProgramsParams struct {
 	// End 時間窓の終了（この時刻より前に始まる番組が対象）。start からの幅は最大 7 日
 	End       time.Time `form:"end" json:"end"`
 	NetworkId *int      `form:"networkId,omitempty" json:"networkId,omitempty"`
-	ServiceId *int      `form:"serviceId,omitempty" json:"serviceId,omitempty"`
+
+	// ServiceId 複数指定可（`?serviceId=1&serviceId=2`）。`?serviceId=1` は 1 要素の配列として
+	// 解釈されるのでワイヤ上は後方互換。未指定なら絞り込みなし。
+	ServiceId *[]int `form:"serviceId,omitempty" json:"serviceId,omitempty"`
 }
 
 // CreateRuleJSONRequestBody defines body for CreateRule for application/json ContentType.
@@ -1714,7 +1724,7 @@ func (siw *ServerInterfaceWrapper) ListPrograms(w http.ResponseWriter, r *http.R
 
 	// ------------- Optional query parameter "serviceId" -------------
 
-	err = runtime.BindQueryParameterWithOptions("form", true, false, "serviceId", r.URL.Query(), &params.ServiceId, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "serviceId", r.URL.Query(), &params.ServiceId, runtime.BindQueryParameterOptions{Type: "array", Format: ""})
 	if err != nil {
 		var requiredError *runtime.RequiredParameterError
 		if errors.As(err, &requiredError) {
