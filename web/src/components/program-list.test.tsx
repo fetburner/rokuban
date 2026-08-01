@@ -132,7 +132,7 @@ describe('ProgramList', () => {
     expect(document.querySelector('[data-program-id="22"]')).toBeInTheDocument()
   })
 
-  it('日付ヘッダを描画し、top が --page-header-height（+ 遡行ボタンの高さ）を参照する', async () => {
+  it('日付ヘッダを描画し、top が --page-header-height を参照する', async () => {
     // 2 日にまたがる番組を用意して日付境界を作る
     const day1 = program(1, 1, '朝のニュース')
     const day2 = program(2, 30, '深夜の番組') // 30 時間後 = 翌々日相当だが日付は進む
@@ -143,12 +143,10 @@ describe('ProgramList', () => {
     const headers = screen.getAllByRole('heading', { level: 2 })
     expect(headers.length).toBeGreaterThanOrEqual(2)
     for (const header of headers) {
-      // `--load-previous-height` を足しているのは、遡行ボタンが sticky で
-      // 同じ top に居座るときに日付ヘッダを隠さないため（ボタンが無いときは
-      // 未設定 = 0px 相当なので、実質 --page-header-height だけになる）。
-      expect(header.className).toMatch(
-        /top-\[calc\(var\(--page-header-height,0px\)\+var\(--load-previous-height,0px\)\)\]/,
-      )
+      // 「前を読み込む」ボタンは通常フローに戻したので（5 回目の修正）、
+      // sticky な要素は PageHeader だけ --- ボタンぶんの高さを足し込む
+      // `--load-previous-height` はもう無い。
+      expect(header.className).toMatch(/top-\[var\(--page-header-height,0px\)\]/)
     }
     expect(screen.getByText(formatDate(day1.startAt))).toBeInTheDocument()
     expect(screen.getByText(formatDate(day2.startAt))).toBeInTheDocument()
@@ -235,6 +233,20 @@ describe('ProgramList', () => {
       await user.click(button)
 
       expect(onLoadPrevious).toHaveBeenCalledTimes(1)
+    })
+
+    it('ボタンの外枠は通常フローに置かれ、sticky ではない（5 回目の修正で sticky から戻した）', async () => {
+      renderList([program(1, 1, '対象番組')], actions(), { hasPreviousPage: true })
+
+      await screen.findByText('対象番組')
+      const button = screen.getByRole('button', { name: '前を読み込む' })
+      const wrapper = button.parentElement
+      expect(wrapper).not.toBeNull()
+      // sticky・z-index・top はいずれも sticky だったときにだけ増えた指定 ---
+      // 通常フローに戻した現在は無い
+      expect(wrapper?.className).not.toMatch(/sticky/)
+      expect(wrapper?.className).not.toMatch(/z-10/)
+      expect(wrapper?.className).not.toMatch(/top-\[/)
     })
 
     it('isFetchingPreviousPage が true の間はボタンが無効化され、ラベルが「読み込み中…」になる', async () => {

@@ -2,11 +2,31 @@
  * 遡行（前の時間窓の読み込み）の直前に「画面上端に見えている行」を控えるための
  * 純関数だけを置く。
  *
+ * ## 経緯 3: 「前を読み込む」ボタンは通常フローに戻した（5 回目の修正）
+ *
+ * 4 回目の修正では「前を読み込む」ボタンも sticky にして `PageHeader` の直下に
+ * 常時留めていた（下記「経緯 2」の `stickyBottomPx` に `--load-previous-height`
+ * を足していたのはその名残）。sticky にした理由は、画面外のボタンを押すと
+ * 押すためのスクロールが `captureAnchor()` より先に走り、控えるアンカーが
+ * 変わってしまう不具合を避けるためだった。
+ *
+ * この不具合は、アンカー選択を「sticky の下端より下に最初に現れる行」基準に
+ * 直した経緯 2 の修正で構造的に解消済みである。加えて、このボタンを画面外から
+ * 押しに行く経路自体が実在しない --- 特定の日付を見たいならジャンプ先の指定は
+ * `DayStrip` が担うので、遡行ボタンの用途は「読み込み済みの先頭まで戻ってきて、
+ * その前日も見たくなった」の一択であり、戻ってくる操作（スクロール）は常に
+ * クリックより前に完了している。そのため `components/program-list.tsx` の
+ * ボタンは通常のフローに戻し、`--load-previous-height` の書き出しも削除した。
+ * `web/e2e/checks.mjs` もボタンを押す前に明示的にリスト上端まで戻ってから
+ * クリックする（画面外のボタンを押しに行く経路は判定しない）。
+ *
  * ## 経緯 2: 「画面上端」は sticky 要素の裏では成立しない（4 回目の修正で追記）
  *
- * 画面上部には sticky な `PageHeader` と、sticky にした「前を読み込む」ボタンが
- * 居座っており、その下端（`--page-header-height` + `--load-previous-height`。
- * `components/program-list.tsx` 参照）より上はユーザーの目に映らない。
+ * 画面上部には sticky な `PageHeader` が居座っており、その下端
+ * （`--page-header-height`）より上はユーザーの目に映らない（4 回目の修正時点
+ * では sticky にした「前を読み込む」ボタンも同じ帯を占めており
+ * `--load-previous-height` を加算していたが、上記「経緯 3」のとおりボタンは
+ * 5 回目の修正で通常フローへ戻したため、現在この帯は `PageHeader` だけがつくる）。
  * 以前の判定（`getBoundingClientRect().bottom > 0`）は viewport 上端（y=0）だけを
  * 基準にしていたため、sticky の裏に隠れている行（`top` が負でも `bottom` が
  * わずかに 0 を超える行）を「見えている」と誤判定していた。実機で確認したところ、
@@ -15,9 +35,9 @@
  * 別の番組にすり替わっていた。
  *
  * 判定は「sticky の下端より下に最初に現れる行」（`top >= stickyBottomPx`）に
- * 直した。`stickyBottomPx` は実行時に変わる値（フィルタ行の増減やボタンラベルの
- * 折返しで `--page-header-height` / `--load-previous-height` 自体が変わる）なので、
- * `captureAnchor` が呼ばれるたびに CSS 変数から実測する（下記参照）。
+ * 直した。`stickyBottomPx` は実行時に変わる値（フィルタ行の増減で
+ * `--page-header-height` 自体が変わる）なので、`captureAnchor` が呼ばれる
+ * たびに CSS 変数から実測する（下記参照）。
  *
  * 併せて、選んだ行の実際の `top`（キャプチャ時点でどれだけ sticky の下端から
  * 離れて見えていたか）も一緒に控えるようにした（`AnchorSnapshot.topPx`）。
@@ -112,21 +132,24 @@ function cssPixelVar(el: Element, name: string): number {
 }
 
 /**
- * measureStickyBottomPx は、画面上部の sticky 要素の合計高さを実測する。
+ * measureStickyBottomPx は、画面上部の sticky 要素の高さを実測する。
  *
- * `--page-header-height`（`components/page.tsx`）と `--load-previous-height`
- * （`components/program-list.tsx`）はどちらも `<main>`（両者の共通の親）に
- * 書き出されており、子孫にしか継承されない。そのため `document.body` のような
- * 祖先ではなく、リストの行（`<main>` の子孫）を経由して読む必要がある --- 呼び出し
- * 側が実際に見つけた行要素（または `<ul>` 自身）をそのまま渡す。
+ * `--page-header-height`（`components/page.tsx`）は `<main>`（`PageHeader` と
+ * リストの共通の親）に書き出されており、子孫にしか継承されない。そのため
+ * `document.body` のような祖先ではなく、リストの行（`<main>` の子孫）を経由
+ * して読む必要がある --- 呼び出し側が実際に見つけた行要素（または `<ul>`
+ * 自身）をそのまま渡す。
  *
- * フィルタ行の増減やボタンラベルの折返し（「読み込み中…」）で高さ自体が変わる
- * ため、呼ぶたびに実測する（値をキャッシュしない）。`captureAnchor` からのみ
- * 使う（DOM 読み取りの副作用なので単体テスト対象は純関数側の
- * `findAnchorProgramId` に寄せてある。上記コメント参照）。
+ * 以前は「前を読み込む」ボタンも sticky で同じ帯を占めており、その高さ
+ * （`--load-previous-height`）も足し込んでいたが、ボタンは通常フローへ
+ * 戻したため（上記「経緯 3」）現在は `--page-header-height` だけを読む。
+ *
+ * フィルタ行の増減で高さ自体が変わるため、呼ぶたびに実測する（値をキャッシュ
+ * しない）。`captureAnchor` からのみ使う（DOM 読み取りの副作用なので単体
+ * テスト対象は純関数側の `findAnchorProgramId` に寄せてある。上記コメント参照）。
  */
 function measureStickyBottomPx(el: Element): number {
-  return cssPixelVar(el, '--page-header-height') + cssPixelVar(el, '--load-previous-height')
+  return cssPixelVar(el, '--page-header-height')
 }
 
 /** captureAnchor が返す、控えた行の識別と位置。 */

@@ -176,10 +176,10 @@ const overscanRows = 8
  * （4 回目の修正で追加）
  *
  * `virtualizer.scrollToIndex(index, { align: 'start' })` は常に対象行の上端を
- * viewport の **y=0** に揃える。sticky な PageHeader・「前を読み込む」ボタンの
- * 裏に隠れないよう、あるいはキャプチャ時点で実際に見えていた位置（`topPx`。
- * 押した瞬間のスクロール量次第で sticky の下端ぴったりとは限らない）に戻す
- * には、y=0 以外の基準に揃える必要がある。
+ * viewport の **y=0** に揃える。sticky な PageHeader の裏に隠れないよう、
+ * あるいはキャプチャ時点で実際に見えていた位置（`topPx`。押した瞬間の
+ * スクロール量次第で sticky の下端ぴったりとは限らない）に戻すには、
+ * y=0 以外の基準に揃える必要がある。
  *
  * TanStack Virtual はこれを `scrollPaddingStart` オプション（既定 0）で表現する
  * ---
@@ -360,9 +360,9 @@ export const ProgramList = forwardRef<
    *
    * `virtualizer.scrollToIndex(index, { align: 'start' })` は常に viewport の
    * y=0 に揃える（`scrollPaddingStart` オプション、既定 0）。sticky な
-   * PageHeader・「前を読み込む」ボタンの裏に隠れないよう y=0 より下（sticky の
-   * 下端、あるいはキャプチャ時点の実際の位置）に揃えたい場合は、この
-   * `scrollPaddingStart` を一時的に上書きする必要がある。
+   * PageHeader の裏に隠れないよう y=0 より下（sticky の下端、あるいは
+   * キャプチャ時点の実際の位置）に揃えたい場合は、この `scrollPaddingStart`
+   * を一時的に上書きする必要がある。
    *
    * `virtualizer.setOptions()` は React の再レンダーを経由せずに
    * `virtualizer.options` を直接書き換える（`useWindowVirtualizer` の
@@ -514,48 +514,20 @@ export const ProgramList = forwardRef<
     [programs, renderAll, now, alignRowTop],
   )
 
-  // ボタン自身の高さを `--load-previous-height` に書き出す（`components/page.tsx`
-  // の PageHeader と同じパターン）。日付ヘッダの sticky top はこれを
-  // `--page-header-height` に足して使う（下記 JSX 参照）。ハードコードすると
-  // ボタンのラベルが「読み込み中…」に変わったときの幅・折返しでずれる。
-  const loadPreviousRef = useRef<HTMLDivElement>(null)
-  useLayoutEffect(() => {
-    const el = loadPreviousRef.current
-    const parent = el?.parentElement
-    if (!el || !parent) return
-
-    const publish = () => {
-      parent.style.setProperty('--load-previous-height', `${el.offsetHeight}px`)
-    }
-    publish()
-
-    const observer = new ResizeObserver(publish)
-    observer.observe(el)
-    return () => {
-      observer.disconnect()
-      parent.style.removeProperty('--load-previous-height')
-    }
-  }, [hasPreviousPage])
-
   return (
     <>
       {hasPreviousPage && (
-        // sticky にして PageHeader の直下に常時留める。理由はコメント
-        // 「『前を読み込む』ボタンと遡行のアンカー復元」参照 --- 通常フローの
-        // ままだとリストを下へスクロールした状態ではボタンが画面外に出て、
-        // 押すには一旦画面外まで戻ってからクリックする必要がある。この
-        // 「押すために戻る」動作そのものが（実ユーザーの手動スクロールであれ、
-        // Playwright の actionability チェックによる自動スクロールであれ）
-        // captureAnchor() が読む DOM を「実際に見ていた行」から「ボタンを
-        // 押すために戻った先」へすり替えてしまい、以降の scrollToIndex は
-        // その（間違った）行を正しく復元するだけなので気付けない。z-10 は
-        // 同じ top に来る日付ヘッダ（z-[5]）より前面に出すため（ボタンが
-        // 日付ヘッダを隠さないよう、日付ヘッダ側の top をこのボタンの高さぶん
-        // 押し下げてある。下記 JSX の `--load-previous-height` 参照）。
-        <div
-          ref={loadPreviousRef}
-          className="sticky top-[var(--page-header-height,0px)] z-10 bg-background px-4 pb-2 pt-4"
-        >
+        // 通常のフローに置く（5 回目の修正で sticky から戻した。上記 doc
+        // コメント「『前を読み込む』ボタンと遡行のアンカー復元」参照）。
+        // リストを下へスクロールした状態ではボタンは画面外（上）へ流れて
+        // 見えなくなるが、それでよい --- このボタンを使うのは「読み込み済みの
+        // 先頭まで戻ってきて、その前日も見たくなった」ときだけで、画面外から
+        // 押しに行く経路は実在しない（特定の日付を見たいなら日付ストリップで
+        // 跳ぶため）。読み進めている間は見えず、上端まで戻ると現れ、押すと
+        // 1 日ぶんがその下に積まれてボタン自身が画面外へ押し上げられて消える
+        // --- この「消える」こと自体が「読み込まれた」という視覚的フィード
+        // バックになる。
+        <div className="px-4 pb-2 pt-4">
           <Button
             variant="outline"
             size="sm"
@@ -590,13 +562,12 @@ export const ProgramList = forwardRef<
               data-program-id={program.programId}
               ref={renderAll ? undefined : virtualizer.measureElement}
             >
-              {/* 日付ヘッダの top は PageHeader（+ 遡行ボタンが出ているときは
-                  そのぶん）が実測して書き出す高さ。ハードコードするとフィルタ行の
-                  増減や文字サイズ、ボタンのラベル変化でずれる。`--load-previous-height`
-                  はボタンが無いときは未設定（既定 0px）なので、ボタンが無ければ
-                  従来どおり `--page-header-height` だけになる */}
+              {/* 日付ヘッダの top は PageHeader が実測して書き出す高さ。
+                  ハードコードするとフィルタ行の増減や文字サイズでずれる。
+                  「前を読み込む」ボタンは通常のフローに戻したので（5 回目の
+                  修正）、ここに足し込む分はもう無い */}
               {showDateHeader[index] && (
-                <h2 className="sticky top-[calc(var(--page-header-height,0px)+var(--load-previous-height,0px))] z-[5] border-y border-border bg-muted/80 px-4 py-1.5 text-xs font-medium text-muted-foreground backdrop-blur">
+                <h2 className="sticky top-[var(--page-header-height,0px)] z-[5] border-y border-border bg-muted/80 px-4 py-1.5 text-xs font-medium text-muted-foreground backdrop-blur">
                   {formatDate(program.startAt)}
                 </h2>
               )}
