@@ -1,9 +1,35 @@
 import { Link, useRouterState } from '@tanstack/react-router'
-import { CalendarClock, ListVideo, Search, Settings2, Tv } from 'lucide-react'
+import { CalendarClock, ListVideo, Menu, Search, Settings2, Tv } from 'lucide-react'
 import type { ComponentType } from 'react'
+import { useEffect, useState } from 'react'
 
 import { CircuitBreakerBanner } from '@/components/circuit-breaker-banner'
 import { cn } from '@/lib/utils'
+
+/**
+ * サイドバーの畳み状態を持続させる localStorage キー。
+ * `lib/playback-position.ts` の `rokuban:<関心事>:...` という命名に揃える。
+ */
+const SIDEBAR_COLLAPSED_KEY = 'rokuban:sidebar:collapsed'
+
+/** loadSidebarCollapsed は保存済みの畳み状態を返す。無い/読めない場合は false（展開）。 */
+function loadSidebarCollapsed(): boolean {
+  try {
+    return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === '1'
+  } catch {
+    // private mode 等で localStorage が使えない場合は展開扱い
+    return false
+  }
+}
+
+/** saveSidebarCollapsed は畳み状態を保存する。 */
+function saveSidebarCollapsed(collapsed: boolean): void {
+  try {
+    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? '1' : '0')
+  } catch {
+    // ignore
+  }
+}
 
 type NavItem = {
   to: string
@@ -71,17 +97,68 @@ function BottomTabs() {
   )
 }
 
-/** Sidebar はデスクトップ向けの主ナビゲーション。 */
+/**
+ * Sidebar はデスクトップ向けの主ナビゲーション。
+ *
+ * `sticky top-0` + `h-dvh` でビューポートに固定する。`position: fixed` にして
+ * 本文側に手動 margin を持たせる形は取らない —— サイドバーは flex のフローに
+ * 残ったままなので、本文の左オフセットは flex レイアウトが自動で確保する。
+ * 中身（ロゴ行 + ナビ項目）は `flex flex-col` にして、ナビ項目側だけ
+ * `overflow-y-auto` にする。画面が低くて項目が入りきらない場合に、
+ * ロゴ・トグル行を固定したままナビ項目だけ縦スクロールできるようにするため。
+ *
+ * ハンバーガートグルで幅 `w-48`（展開）⟷ `w-[52px]`（アイコンのみのレール）
+ * を切り替える。**完全に隠さない**のは、トグル自体をレールの先頭に常駐させて
+ * どのページからでも展開に戻せるようにするため。
+ * `pages/reservation-detail.tsx` は他ページと違い `components/page.tsx` の
+ * `PageHeader` を使わず独自の `<header>` を持つため、トグルをヘッダー側に
+ * 置く設計だとこのページだけサイドバーを戻す手段が無くなる。ページ側に
+ * 「トグルを置いてもらう」協力を要求しない形として、サイドバー自身に
+ * トグルを持たせている。
+ *
+ * 畳んだ状態でもラベルは DOM から消さず `sr-only` にする。アイコンだけの
+ * 見た目でも `getByRole('link', { name: label })` が引ける（スクリーン
+ * リーダーの読み上げ名も失わない）。マウス向けには `title` を補う。
+ */
 function Sidebar() {
   const pathname = useActivePath()
+  const [collapsed, setCollapsed] = useState(() => loadSidebarCollapsed())
+
+  useEffect(() => {
+    saveSidebarCollapsed(collapsed)
+  }, [collapsed])
+
+  const toggleLabel = collapsed ? 'ナビゲーションを開く' : 'ナビゲーションを畳む'
 
   return (
     <nav
       aria-label="主ナビゲーション"
-      className="hidden w-48 shrink-0 border-r border-border md:flex md:flex-col"
+      className={cn(
+        'sticky top-0 hidden h-dvh shrink-0 flex-col border-r border-border md:flex',
+        collapsed ? 'w-[52px]' : 'w-48',
+      )}
     >
-      <div className="px-4 py-5 text-lg font-semibold tracking-tight">録番</div>
-      <ul className="flex flex-col gap-1 px-2">
+      <div
+        className={cn(
+          'flex shrink-0 items-center gap-2 py-4',
+          collapsed ? 'justify-center px-0' : 'px-3',
+        )}
+      >
+        <button
+          type="button"
+          onClick={() => setCollapsed((v) => !v)}
+          aria-expanded={!collapsed}
+          aria-label={toggleLabel}
+          title={toggleLabel}
+          className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+        >
+          <Menu className="size-5" />
+        </button>
+        {!collapsed && (
+          <span className="truncate text-lg font-semibold tracking-tight">録番</span>
+        )}
+      </div>
+      <ul className="flex flex-1 flex-col gap-1 overflow-y-auto px-2 pb-2">
         {navItems.map(({ to, label, icon: Icon }) => {
           const active = isActive(pathname, to)
           return (
@@ -89,15 +166,17 @@ function Sidebar() {
               <Link
                 to={to}
                 aria-current={active ? 'page' : undefined}
+                title={collapsed ? label : undefined}
                 className={cn(
                   'flex items-center gap-2 rounded-lg px-3 py-2 text-sm transition-colors',
+                  collapsed && 'justify-center px-2',
                   active
                     ? 'bg-muted font-medium text-foreground'
                     : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground',
                 )}
               >
-                <Icon className="size-4" />
-                {label}
+                <Icon className="size-4 shrink-0" />
+                <span className={cn(collapsed && 'sr-only')}>{label}</span>
               </Link>
             </li>
           )
