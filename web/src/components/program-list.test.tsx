@@ -105,6 +105,15 @@ describe('ProgramList', () => {
     expect(screen.getByText('番組 499')).toBeInTheDocument()
   })
 
+  it('各行が data-program-id を持つ（遡行のアンカー位置合わせが DOM から行を再取得するための目印）', async () => {
+    const programs = [program(11, 1, '一つ目'), program(22, 2, '二つ目')]
+    renderList(programs)
+
+    expect(await screen.findByText('一つ目')).toBeInTheDocument()
+    expect(document.querySelector('[data-program-id="11"]')).toBeInTheDocument()
+    expect(document.querySelector('[data-program-id="22"]')).toBeInTheDocument()
+  })
+
   it('日付ヘッダを描画し、top が --page-header-height を参照する', async () => {
     // 2 日にまたがる番組を用意して日付境界を作る
     const day1 = program(1, 1, '朝のニュース')

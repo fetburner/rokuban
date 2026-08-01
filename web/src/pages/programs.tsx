@@ -27,7 +27,12 @@ import { shouldAutoLoadNextPage, shouldShowLoadMoreButton } from '@/lib/auto-loa
 import { dayOrigin } from '@/lib/day-offset'
 import { orderServices, type TimeAxis } from '@/lib/epg-grid'
 import { domLayoutMeasurable } from '@/lib/list-virtualization'
-import { scrollAdjustmentForPrepend } from '@/lib/scroll-preservation'
+import {
+  captureAnchor,
+  locateAnchorTop,
+  scrollAdjustmentToRestoreTop,
+  shouldStopFollowing,
+} from '@/lib/scroll-preservation'
 import { DEFAULT_SITE } from '@/lib/site'
 import { lgMediaQuery, useMediaQuery } from '@/lib/use-media-query'
 
@@ -41,6 +46,14 @@ const windowHours = 6
 
 /** EPG のローリングウィンドウ（8 日）に合わせた、日付選択の選択肢の数。 */
 const selectableDays = 8
+
+/**
+ * 遡行のアンカー位置合わせ（`loadPrevious` 参照）が見積もり→実測の遷移に
+ * 追従し続ける上限。`lib/scroll-preservation.ts` の `shouldStopFollowing`
+ * 参照。どちらか片方だけでは打ち切れないケースがあるため両方持つ。
+ */
+const followMaxCorrections = 10
+const followMaxElapsedMs = 2000
 
 /** グリッドが一度に描く時間の幅。M2-9 の受け入れ条件が「全サービス x 24 時間」。 */
 const gridWindowHours = 24
@@ -324,25 +337,78 @@ export function ProgramsPage() {
   }, [sentinelMounted])
 
   // 遡行（前の窓の読み込み）はリストの先頭に行を挿入するので、何もしないと
-  // 挿入した高さぶんだけ画面内の内容が下にずれる。挿入前の
-  // `document.documentElement.scrollHeight` を控えておき、挿入後の
-  // `useLayoutEffect` で差分を `scrollTop` に足し戻す。Safari はスクロール
-  // アンカリングを実装していないので、ブラウザ任せにはできない
-  // （Chrome / Firefox だけ動く形にしない）。
-  const pendingScrollAdjustRef = useRef<number | null>(null)
+  // 挿入した高さぶんだけ画面内の内容が下にずれる。「画面上端に見えている行」
+  // （アンカー）の viewport 上の位置を挿入前に控えておき、挿入後にその行を
+  // 探して同じ位置へ揃える（`lib/scroll-preservation.ts` 参照。Safari は
+  // スクロールアンカリングを実装していないので、ブラウザ任せにはできない）。
+  const pendingAnchorRef = useRef<{ programId: number; topPx: number } | null>(null)
+  // 見積もり→実測の遷移に追従している間の後始末。次の遡行が重なったとき
+  // （素早い連打）や、このコンポーネントがアンマウントされるときに、前の
+  // 追従ループを確実に止めるために持つ。
+  const stopFollowingRef = useRef<(() => void) | null>(null)
 
   const loadPrevious = () => {
-    pendingScrollAdjustRef.current = document.documentElement.scrollHeight
+    stopFollowingRef.current?.()
+    stopFollowingRef.current = null
+    pendingAnchorRef.current = captureAnchor()
     void query.fetchPreviousPage()
   }
 
   useLayoutEffect(() => {
-    const heightBefore = pendingScrollAdjustRef.current
-    if (heightBefore === null) return
-    pendingScrollAdjustRef.current = null
-    const heightAfter = document.documentElement.scrollHeight
-    const delta = scrollAdjustmentForPrepend(heightBefore, heightAfter)
-    if (delta !== 0) window.scrollBy(0, delta)
+    const anchor = pendingAnchorRef.current
+    if (!anchor) return
+    pendingAnchorRef.current = null
+
+    const startedAtMs = performance.now()
+    let corrections = 0
+    // `observer.disconnect()` の後にコールバックが呼ばれないことは
+    // ResizeObserver の仕様上の保証だが、それに頼り切らず自前でも打ち切り
+    // 済みかを見る（打ち切り後に何らかの経路でもう一度呼ばれても reconcile
+    // 自体が no-op になる）。
+    let stopped = false
+
+    // アンカーの現在位置を測り直し、控えておいた位置（anchor.topPx）へ
+    // scrollBy で揃える。挿入直後の 1 回目はここで同期的に呼ぶ（レイアウトが
+    // 確定した直後の useLayoutEffect のタイミングなので、ペイント前に間に合う）。
+    // その後は見積もり→実測の遷移で行の高さが変わるたびに ResizeObserver 経由で
+    // 呼び直される。
+    const reconcile = () => {
+      if (stopped) return
+      const currentTopPx = locateAnchorTop(anchor.programId)
+      if (currentTopPx !== null) {
+        const delta = scrollAdjustmentToRestoreTop(anchor.topPx, currentTopPx)
+        if (delta !== 0) window.scrollBy(0, delta)
+      }
+      corrections++
+      const elapsedMs = performance.now() - startedAtMs
+      if (
+        currentTopPx === null ||
+        shouldStopFollowing(
+          { corrections, elapsedMs },
+          { maxCorrections: followMaxCorrections, maxElapsedMs: followMaxElapsedMs },
+        )
+      ) {
+        stop()
+      }
+    }
+
+    // rAF による毎フレームのポーリングではなく document.body の
+    // ResizeObserver を選んだ理由は lib/scroll-preservation.ts のコメント
+    // 参照（実測が届くタイミングが不定なので、実際にレイアウトが変化した
+    // ときにだけ動く方が無駄がない）。
+    const observer = new ResizeObserver(reconcile)
+
+    function stop() {
+      stopped = true
+      observer.disconnect()
+      stopFollowingRef.current = null
+    }
+    stopFollowingRef.current = stop
+
+    reconcile()
+    observer.observe(document.body)
+
+    return stop
   }, [programs])
 
   return (

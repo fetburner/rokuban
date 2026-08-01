@@ -5,6 +5,7 @@ import type { ProgramListItem, Service } from '@/api/generated'
 import { ProgramRow } from '@/components/program-row'
 import { dayKey, formatDate } from '@/lib/format'
 import { domLayoutMeasurable } from '@/lib/list-virtualization'
+import { programKeyAt } from '@/lib/program-list-key'
 import { visibleDayOffset } from '@/lib/visible-day'
 
 /**
@@ -78,6 +79,13 @@ const overscanRows = 8
  * `ProgramRow` は展開すると詳細を出す（段階的開示）ので固定高さにできない。
  * 各 `<li>` に `ref={virtualizer.measureElement}` を渡し、実測させる。
  *
+ * 実測値（`itemSizeCache`）は既定では添字（`(index) => index`）で引かれるため、
+ * 遡行（前の時間窓の読み込み）でリスト先頭に行を差し込むと既存の全行の添字が
+ * ずれ、記録済みの実測値が別の番組のものとして使われてしまう。`getItemKey` に
+ * `programKeyAt`（programId ベース）を渡して防いでいる（下記コード参照。
+ * docs/frontend.md「番組リスト」も参照）。
+ *
+
  * ## 計測できない環境（jsdom）では全部描く
  *
  * `measureElement` は `getBoundingClientRect` で高さを読む。jsdom はレイアウト
@@ -142,9 +150,19 @@ export function ProgramList({
     return flags
   }, [programs])
 
+  // getItemKey は programId で計測値（itemSizeCache）を引かせる。既定は
+  // 添字（(index) => index）で、先頭に遡行の行を差し込むと既存の全行の添字が
+  // N ずれ、記録済みの実測値が別の番組のものとして使われてしまう（遡行の
+  // スクロール位置が飛ぶ不具合の原因だった）。`programKeyAt` は単体テストが
+  // 直接呼べるよう名前付きの純関数に切り出してある。他のオプション
+  // （`estimateSize` 等）と同じくレンダーごとに新しい関数を渡す ---
+  // メモ化していないので「programs が変わったのに古い配列を閉じ込めた
+  // 関数が残る」という古さの問題がそもそも起きない（常に最新の
+  // `programs` を閉じている）。
   const virtualizer = useWindowVirtualizer({
     count: programs.length,
     estimateSize: () => estimatedRowHeightPx,
+    getItemKey: (index) => programKeyAt(programs, index),
     overscan: overscanRows,
     scrollMargin: scrollMarginRef.current,
   })
@@ -194,6 +212,11 @@ export function ProgramList({
           <li
             key={program.programId}
             data-index={index}
+            // 遡行のアンカー位置合わせ（pages/programs.tsx / lib/scroll-preservation.ts）が
+            // 「画面上端に見えている行」を挿入後に再度見つけるための目印。
+            // 添字ではなく programId にするのは getItemKey と同じ理由 ---
+            // 先頭への挿入で添字はずれるが programId は行の実体と結びついたまま変わらない。
+            data-program-id={program.programId}
             ref={renderAll ? undefined : virtualizer.measureElement}
           >
             {/* 日付ヘッダの top は PageHeader が実測して書き出す高さ。
