@@ -291,6 +291,7 @@ function RecordingDetail({ recording, trash }: { recording: Recording; trash: bo
  * いずれも DB だけを触り、ファイルは消さない（M3-7）。
  */
 function RecordingActions({ recordingId, trash }: { recordingId: number; trash: boolean }) {
+  const [purgeConfirmOpen, setPurgeConfirmOpen] = useState(false)
   const queryClient = useQueryClient()
   const toast = useToast()
   const deleteRecording = useDeleteRecording()
@@ -355,7 +356,7 @@ function RecordingActions({ recordingId, trash }: { recordingId: number; trash: 
       >
         復元
       </Button>
-      <AlertDialog>
+      <AlertDialog open={purgeConfirmOpen} onOpenChange={setPurgeConfirmOpen}>
         <AlertDialogTrigger
           render={
             <Button type="button" variant="destructive" size="sm" disabled={busy}>
@@ -374,6 +375,9 @@ function RecordingActions({ recordingId, trash }: { recordingId: number; trash: 
             <AlertDialogCancel>キャンセル</AlertDialogCancel>
             <AlertDialogAction
               onClick={() => {
+                // AlertDialogAction は AlertDialogCancel と違い Close ラッパーではないので
+                // クリックしても自動では閉じない。成否に関わらずここで明示的に閉じる。
+                setPurgeConfirmOpen(false)
                 purgeRecording.mutate(
                   { id: recordingId },
                   {

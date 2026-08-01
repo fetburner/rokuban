@@ -178,6 +178,11 @@ describe('RecordingsPage trash', () => {
     await user.click(await screen.findByRole('button', { name: '完全削除を予約する' }))
     await waitFor(() => expect(purgeCalls).toHaveLength(1))
     expect(purgeCalls[0]).toBe('/api/recordings/7/purge')
+
+    // 確定後はダイアログが閉じる（開いたまま残らない）
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: '完全削除を予約する' })).not.toBeInTheDocument(),
+    )
   })
 
   it('ライブラリでは派生物・原本があればプレイヤーとサムネイルを出す', async () => {
