@@ -304,12 +304,12 @@ describe('RulesPage 条件編集', () => {
     expect(screen.getByText('番組名に「ニュース」を含む')).toBeInTheDocument()
   })
 
-  it('「検索で試す」リンクが /search?ruleId=<id> を指す', async () => {
+  it('「検索しながら編集」リンクが /search?ruleId=<id> を指す', async () => {
     stubApi([ruleWithConditions])
     renderPage()
 
     await screen.findByText('平日ニュース')
-    const link = screen.getByRole('link', { name: '検索で試す' })
+    const link = screen.getByRole('link', { name: '検索しながら編集' })
     expect(link).toHaveAttribute('href', '/search?ruleId=2')
   })
 })

@@ -4,11 +4,13 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 import {
   getGetProgramQueryOptions,
+  getGetRuleQueryKey,
   getListRulesQueryKey,
   useCreateRule,
   useGetRule,
   useListServices,
   useSearchPrograms,
+  useUpdateRule,
   type ProgramListItem,
   type Rule,
   type Service,
@@ -56,10 +58,12 @@ const pageSize = 30
  *
  * この画面は 2 方向で `rules` と繋がる（M2-11 の続き）:
  * - この条件をそのまま `POST /api/rules` に送って新しいルールを作る（下の
- *   `CreateRuleSection`）
+ *   `CreateRuleSection`）。`?ruleId` を伴わない通常の検索からの経路
  * - `?ruleId=N` で開くと、そのルールの条件を下書きに写して自動検索する
- *   （下の `RuleSourceBanner` とハイドレーション effect）。ここでの編集は
- *   `ruleId` のルールを一切変更しない — 保存すれば別の新しいルールになる
+ *   （下の `RuleSourceBanner` とハイドレーション effect）。マッチする番組を見ながら
+ *   条件を詰められるこの画面が実質のルール編集画面になるため、保存の主動作は
+ *   `PATCH /api/rules/{id}` による**上書き**にしている（下の `RuleEditSection`）。
+ *   元のルールを残したまま別のルールとして保存する経路も副動作として残す
  *
  * 結果は表示のみ（予約操作を持たない）。理由は下の `SearchResultRow` を参照。
  */
@@ -171,7 +175,21 @@ export function SearchPage() {
         </div>
       </form>
 
-      <CreateRuleSection draft={draft} draftError={error} sourceRule={sourceRule} />
+      {ruleId !== undefined ? (
+        // ruleId のルールがまだ読み込めていない間（読み込み中 / 404 / 失敗）は
+        // 保存 UI を出さない。バナー側が状態を伝えているので、ここで
+        // 空の下書きに対する「新規作成」フォームを一瞬見せて紛らわしくしない。
+        sourceRule !== undefined && (
+          <RuleEditSection
+            key={sourceRule.id}
+            draft={draft}
+            draftError={error}
+            sourceRule={sourceRule}
+          />
+        )
+      ) : (
+        <CreateRuleSection draft={draft} draftError={error} />
+      )}
 
       {search.isIdle ? (
         // 「まだ検索していない」と「0 件」は別の事実。同じ文言にすると
@@ -260,7 +278,7 @@ function RuleSourceBanner({
   return (
     <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-muted/40 px-4 py-2 text-xs">
       <span>
-        ルール「{rule.name}」の条件を表示中です。ここでの変更はこのルールを更新しません。保存すると別の新しいルールが作成されます。
+        ルール「{rule.name}」の条件を編集中です。「ルールを上書き保存」で保存すると、このルール自体が書き換わります。元のルールを残したい場合は「別の新しいルールとして保存」を使ってください。
       </span>
       <Button type="button" variant="outline" size="sm" render={<Link to="/rules" />}>
         ルール一覧に戻る
@@ -273,16 +291,16 @@ function RuleSourceBanner({
  * CreateRuleSection は「この条件でルールを作成」の入口。
  *
  * 折りたたみ式にしているのは、条件を試しているだけのユーザー（この画面の主用途）
- * にメタ情報の入力欄を常時見せないため。
+ * にメタ情報の入力欄を常時見せないため。`?ruleId=N` から開いたときの保存
+ * （上書き / 別ルールとして保存）は `RuleEditSection` が担うので、ここは
+ * `ruleId` を伴わない通常の検索専用（新規作成のみ）。
  */
 function CreateRuleSection({
   draft,
   draftError: draftHasError,
-  sourceRule,
 }: {
   draft: SearchDraft
   draftError: string | undefined
-  sourceRule: Rule | undefined
 }) {
   const [open, setOpen] = useState(false)
 
@@ -308,7 +326,6 @@ function CreateRuleSection({
       <CreateRuleForm
         draft={draft}
         draftHasError={draftHasError !== undefined}
-        sourceRule={sourceRule}
         onCancel={() => setOpen(false)}
         onDone={() => setOpen(false)}
       />
@@ -318,24 +335,19 @@ function CreateRuleSection({
 
 /**
  * CreateRuleForm は条件以外のメタ情報（名前・有効・優先度・エンコード設定）を
- * 入力して `POST /api/rules` に送る。
- *
- * `sourceRule` が渡っているとき（`?ruleId=N` から開いた場合）は、名前・有効・
- * 優先度・エンコード設定の初期値と、UI を持たない項目（sites 等）をそのルールから
- * 引き継ぐ（`buildRuleInput` の `preserve`）。単なる検索条件からの推測ではなく
- * 実在するルールの値なので、不変条件 10 が禁じる「試していない次元を黙って
- * 埋める」には当たらない —— ユーザーが実際に開いたルールをフォークしている。
+ * 入力して `POST /api/rules` に送る。`?ruleId` を伴わない通常の検索からのみ
+ * 使われる（既存ルールのフォークは `RuleEditSection` の「別の新しいルールとして
+ * 保存」に一本化した）ので、`preserve` は渡さない — UI を持たない項目
+ * （`sites` 等）を推測して埋めることはしない。
  */
 function CreateRuleForm({
   draft,
   draftHasError,
-  sourceRule,
   onCancel,
   onDone,
 }: {
   draft: SearchDraft
   draftHasError: boolean
-  sourceRule: Rule | undefined
   onCancel: () => void
   onDone: () => void
 }) {
@@ -344,18 +356,10 @@ function CreateRuleForm({
   const navigate = useNavigate()
   const createRule = useCreateRule()
 
-  // フォーク元があっても名前だけはそのまま使わない。`rules.name` に一意制約は
-  // 無い（migrations/00006_rules.sql）ので、同名のルールが 2 本並んで一覧では
-  // 条件の要約でしか見分けられなくなる。バナーで「別のルールになる」と伝えても、
-  // 名前が元のままだとその警告と矛盾した状態が残る。
-  const [meta, setMeta] = useState<RuleMetaDraft>(() =>
-    sourceRule
-      ? { ...ruleToMeta(sourceRule), name: `${sourceRule.name} のコピー` }
-      : emptyRuleMeta(),
-  )
+  const [meta, setMeta] = useState<RuleMetaDraft>(emptyRuleMeta)
   // 「全番組が対象になる」ことを理解した上での作成かどうか。条件を追加すれば
-  // このチェックは意味を失うが、外れたままでも実害はない（次の保存試行時に
-  // 改めて noConditions を評価するだけ）。
+  // このチェックは意味を失うが、外れたままでも実害はない(次の保存試行時に
+  // 改めて noConditions を評価するだけ)。
   const [confirmedEmpty, setConfirmedEmpty] = useState(false)
 
   const metaError = ruleMetaError(meta)
@@ -369,7 +373,7 @@ function CreateRuleForm({
 
   const save = () => {
     if (blocked) return
-    const input = buildRuleInput(draft, meta, sourceRule)
+    const input = buildRuleInput(draft, meta)
     createRule.mutate(
       { data: input },
       {
@@ -474,6 +478,233 @@ function CreateRuleForm({
         <Button type="button" variant="outline" size="lg" disabled={pending} onClick={onCancel}>
           キャンセル
         </Button>
+      </div>
+    </form>
+  )
+}
+
+/**
+ * RuleEditSection は `?ruleId=N` で開いたときの保存 UI。
+ *
+ * `CreateRuleSection` と違って折りたたまない —— ユーザーは「試している」の
+ * ではなく、既にあるルールを編集する目的でこの画面を開いている（マッチする
+ * 番組を見ながら条件を詰められるこの画面が実質のルール編集画面になる、という
+ * 判断）。`key={sourceRule.id}` を親で付けているので、`ruleId` を切り替えて
+ * 別のルールを開き直したときはこのコンポーネントごと作り直され、下の
+ * `RuleEditForm` の `meta` / `confirmedEmpty` が古いルールの値のまま残らない。
+ */
+function RuleEditSection({
+  draft,
+  draftError: draftHasError,
+  sourceRule,
+}: {
+  draft: SearchDraft
+  draftError: string | undefined
+  sourceRule: Rule
+}) {
+  return (
+    <div className="border-b border-border px-4 py-4">
+      <RuleEditForm draft={draft} draftHasError={draftHasError !== undefined} sourceRule={sourceRule} />
+    </div>
+  )
+}
+
+/**
+ * RuleEditForm は `?ruleId=N` で開いたルールの保存本体。
+ *
+ * 主動作は **上書き保存**（`PATCH /api/rules/{id}`）。`UpdateRule` は子テーブル
+ * 全置換なので、UI を持たない項目（`description` / `dedupe*` /
+ * `filenameTemplate` / `metadata` / `sites`）を `buildRuleInput` の `preserve`
+ * で必ず引き継ぐ —— 落とすとユーザーの設定が黙って消える。
+ *
+ * 副動作は「別の新しいルールとして保存」（`POST /api/rules`）。元のルールを
+ * 下敷きに別のルールを作れる経路を残す。押し間違いを防ぐため、主動作
+ * （`type="submit"`、既定の見た目）と副動作（`type="button"`、`outline`）で
+ * 見た目を変え、副動作の脇に「元のルールは変更されません」と明示する。
+ *
+ * 保存後は `/rules` へ遷移しない —— 条件を詰め直す作業の途中で画面が飛ぶと
+ * 作業が切れる。`getListRulesQueryKey()` とこのルール自身のクエリ
+ * （`getGetRuleQueryKey`）の両方を invalidate し、一覧とバナー双方の表示を
+ * 最新化する。
+ */
+function RuleEditForm({
+  draft,
+  draftHasError,
+  sourceRule,
+}: {
+  draft: SearchDraft
+  draftHasError: boolean
+  sourceRule: Rule
+}) {
+  const toast = useToast()
+  const queryClient = useQueryClient()
+  const updateRule = useUpdateRule()
+  const createRule = useCreateRule()
+
+  // 上書き保存が既定の動作なので、名前欄の初期値は元のルール名そのまま
+  // （`〜 のコピー` を付けない）。フォークではなく編集だからである。
+  const [meta, setMeta] = useState<RuleMetaDraft>(() => ruleToMeta(sourceRule))
+  // 「全番組が対象になる」ことを理解した上での保存かどうか。上書き・別ルール
+  // 保存のどちらにも効く（両方とも「保存すると全番組が対象になる」という
+  // 同じ危険を持つため）。
+  const [confirmedEmpty, setConfirmedEmpty] = useState(false)
+
+  const metaError = ruleMetaError(meta)
+  const request = buildSearchRequest(draft)
+  const noConditions = Object.keys(request).length === 0
+  const hasPeriod = draft.periodStartAt !== '' || draft.periodEndAt !== ''
+  const pending = updateRule.isPending || createRule.isPending
+
+  const blocked =
+    draftHasError || metaError !== undefined || (noConditions && !confirmedEmpty) || pending
+
+  const overwrite = () => {
+    if (blocked) return
+    // preserve に sourceRule を渡す。渡し忘れると UI を持たない項目
+    // （description / dedupe* / filenameTemplate / metadata / sites）が
+    // `UpdateRule` の子テーブル全置換で黙って消える。
+    const input = buildRuleInput(draft, meta, sourceRule)
+    updateRule.mutate(
+      { id: sourceRule.id, data: input },
+      {
+        onSuccess: () => {
+          toast({ message: `ルール「${meta.name.trim()}」を上書き保存しました` })
+          void queryClient.invalidateQueries({ queryKey: getListRulesQueryKey() })
+          void queryClient.invalidateQueries({ queryKey: getGetRuleQueryKey(sourceRule.id) })
+          // /rules へは遷移しない。条件を詰め直す作業の途中なので、画面が
+          // 飛ぶと作業が切れる。
+        },
+        onError: (err) => toast({ message: apiErrorMessage(err) ?? 'ルールの更新に失敗しました' }),
+      },
+    )
+  }
+
+  const saveAsNew = () => {
+    if (blocked) return
+    // `rules.name` に一意制約は無い（migrations/00006_rules.sql）ので、名前を
+    // そのまま引き継ぐと一覧に同名の 2 本が並び、条件の要約でしか見分けられ
+    // なくなる。押した時点で名前が元のルールと同じままなら `〜 のコピー` を
+    // 付ける。名前欄そのものは書き換えない（上書き保存に戻ったときに元の名前
+    // のままであってほしいため）。ユーザーが既に名前を変えているなら、
+    // その意図（別の名前を選んだ）を尊重してそのまま使う。
+    const trimmed = meta.name.trim()
+    const name = trimmed === sourceRule.name.trim() ? `${trimmed} のコピー` : trimmed
+    const input = buildRuleInput(draft, { ...meta, name }, sourceRule)
+    createRule.mutate(
+      { data: input },
+      {
+        onSuccess: () => {
+          toast({ message: `「${name}」として新しいルールを保存しました` })
+          void queryClient.invalidateQueries({ queryKey: getListRulesQueryKey() })
+        },
+        onError: (err) => toast({ message: apiErrorMessage(err) ?? 'ルールの作成に失敗しました' }),
+      },
+    )
+  }
+
+  return (
+    <form
+      aria-label="ルールの条件を編集"
+      className="flex flex-col gap-4 rounded-lg border border-border p-3"
+      onSubmit={(e) => {
+        e.preventDefault()
+        overwrite()
+      }}
+    >
+      {hasPeriod && (
+        <p className="text-xs text-amber-700 dark:text-amber-500">
+          期間を指定したまま保存すると、ルールの恒久的な期間制限になります。「いまだけ絞り込みたい」
+          場合は、上の条件フォームで期間を空にしてから保存してください。
+        </p>
+      )}
+
+      {noConditions && (
+        <div className="flex flex-col gap-2 rounded-lg border border-destructive/40 bg-destructive/5 p-2.5">
+          <p role="alert" className="text-xs text-destructive">
+            条件を 1 つも指定していません。このまま保存すると、放送されるすべての番組が対象になります。
+          </p>
+          <label className="flex items-center gap-2 text-xs text-foreground">
+            <input
+              type="checkbox"
+              className="size-4 accent-primary"
+              checked={confirmedEmpty}
+              disabled={pending}
+              onChange={(e) => setConfirmedEmpty(e.target.checked)}
+            />
+            すべての番組が対象になることを理解した上で保存します
+          </label>
+        </div>
+      )}
+
+      <Field label="名前">
+        <Input
+          value={meta.name}
+          disabled={pending}
+          onChange={(e) => setMeta((m) => ({ ...m, name: e.target.value }))}
+          placeholder="例: ニュース全部"
+          required
+        />
+      </Field>
+
+      <div className="flex flex-wrap items-center gap-4">
+        <label
+          className={cn(
+            'flex items-center gap-2 text-sm',
+            pending && 'pointer-events-none opacity-50',
+          )}
+        >
+          <input
+            type="checkbox"
+            className="size-4 accent-primary"
+            checked={meta.enabled}
+            disabled={pending}
+            onChange={(e) => setMeta((m) => ({ ...m, enabled: e.target.checked }))}
+          />
+          有効
+        </label>
+        <Field label="優先度" className="w-28">
+          <Input
+            type="number"
+            min={0}
+            value={meta.priority}
+            disabled={pending}
+            onChange={(e) => setMeta((m) => ({ ...m, priority: e.target.value }))}
+          />
+        </Field>
+      </div>
+
+      <EncodeSettingsFields
+        value={{ keepOriginal: meta.keepOriginal, encodeProfiles: meta.encodeProfiles }}
+        onChange={(next) => setMeta((m) => ({ ...m, ...next }))}
+        disabled={pending}
+      />
+
+      {metaError !== undefined && (
+        <p role="alert" className="text-xs text-destructive">
+          {metaError}
+        </p>
+      )}
+
+      <div className="flex flex-col gap-2 border-t border-border pt-3">
+        <div className="flex flex-wrap gap-2">
+          <Button type="submit" size="lg" disabled={blocked}>
+            {updateRule.isPending ? '上書き保存中…' : 'ルールを上書き保存'}
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="lg"
+            disabled={blocked}
+            onClick={saveAsNew}
+          >
+            {createRule.isPending ? '保存中…' : '別の新しいルールとして保存'}
+          </Button>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          「ルールを上書き保存」はルール「{sourceRule.name}」自体を書き換えます。元のルールを
+          残したまま試したい場合は「別の新しいルールとして保存」を使ってください（元のルールは
+          変更されません）。
+        </p>
       </div>
     </form>
   )

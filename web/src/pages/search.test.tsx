@@ -57,15 +57,27 @@ const allPrograms = [...filler, news, drama]
 /**
  * ruleFixture は `?ruleId=7` で開くルール。条件は `news`（'ニュース7'）だけに
  * 当たるキーワード 1 つ（ハイドレーション後の自動検索が正しく動くことの検証用）。
+ *
+ * `description` / `dedupe*` / `filenameTemplate` / `metadata` / `sites` は
+ * どれも `ConditionFields` に UI が無い項目。上書き保存で `buildRuleInput` の
+ * `preserve` が効いていることを確認する（＝ `PATCH` の本文からこれらが
+ * 落ちていないこと）ため、あえて意味のある値を入れておく。
  */
 const ruleFixture: Rule = {
   id: 7,
   name: 'ニュースルール',
+  description: 'ニュース番組をまとめて録画する',
   enabled: true,
   priority: 20,
   keepOriginal: 'always',
   encodeProfiles: [],
   textMatches: [{ target: 'name', mode: 'keyword', value: 'ニュース' }],
+  dedupeEnabled: true,
+  dedupeThreshold: 0.8,
+  dedupeWindowSeconds: 86_400,
+  filenameTemplate: '{title}_{startAt}',
+  metadata: { note: 'テスト用メタデータ' },
+  sites: ['default'],
   createdAt: new Date(origin).toISOString(),
   updatedAt: new Date(origin).toISOString(),
 }
@@ -92,13 +104,16 @@ function jsonResponse(body: unknown, status = 200): Response {
  * 通ってしまう）。そこでキーワード・ジャンル・サービス・無料の 4 次元だけ
  * ミニ実装し、不正な正規表現はサーバーと同じ 400 を返す。
  *
- * `rules` はルール API（`GET /api/rules/{id}` / `POST /api/rules`）のスタブが
- * 参照する初期データ。作成したルールはここに積まれる（`createRuleBodies` で
- * リクエスト本体そのものも検証できる）。
+ * `rules` はルール API（`GET /api/rules/{id}` / `POST /api/rules` /
+ * `PATCH /api/rules/{id}`）のスタブが参照する初期データ。作成・上書きした
+ * ルールはここに積まれる（`createRuleBodies` / `updateRuleBodies` で
+ * リクエスト本体そのものも検証できる）。`PATCH` は `rules` 配列も更新するので、
+ * 同じテスト内で連続保存したときの挙動（例: 上書き後に再取得した内容）も追える。
  */
 function stubApi(options?: { rules?: Rule[] }) {
   const searchBodies: ProgramSearchRequest[] = []
   const createRuleBodies: RuleInput[] = []
+  const updateRuleBodies: { id: number; data: RuleInput }[] = []
   const rules = options?.rules ? [...options.rules] : []
 
   const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
@@ -119,6 +134,22 @@ function stubApi(options?: { rules?: Rule[] }) {
       return Promise.resolve(
         found ? jsonResponse(found) : jsonResponse({ error: 'rule not found' }, 404),
       )
+    }
+
+    if (ruleDetail && method === 'PATCH') {
+      const id = Number(ruleDetail[1])
+      const idx = rules.findIndex((r) => r.id === id)
+      if (idx === -1) return Promise.resolve(jsonResponse({ error: 'rule not found' }, 404))
+      const body = JSON.parse(String(init?.body ?? '{}')) as RuleInput
+      updateRuleBodies.push({ id, data: body })
+      const updated: Rule = {
+        ...rules[idx],
+        ...body,
+        id,
+        updatedAt: new Date().toISOString(),
+      }
+      rules[idx] = updated
+      return Promise.resolve(jsonResponse(updated))
     }
 
     if (url.pathname === '/api/rules' && method === 'POST') {
@@ -189,7 +220,7 @@ function stubApi(options?: { rules?: Rule[] }) {
   })
 
   globalThis.fetch = fetchMock as unknown as typeof fetch
-  return { fetchMock, searchBodies, createRuleBodies, rules }
+  return { fetchMock, searchBodies, createRuleBodies, updateRuleBodies, rules }
 }
 
 /**
@@ -473,7 +504,7 @@ describe('SearchPage', () => {
       stubApi({ rules: [ruleFixture] })
       renderPage(['/search?ruleId=7'])
 
-      expect(await screen.findByText(/ニュースルール」の条件を表示中/)).toBeInTheDocument()
+      expect(await screen.findByText(/ニュースルール」の条件を編集中/)).toBeInTheDocument()
       expect(screen.getByRole('link', { name: 'ルール一覧に戻る' })).toBeInTheDocument()
 
       // ユーザーが検索ボタンを押さなくても自動実行される
@@ -491,20 +522,81 @@ describe('SearchPage', () => {
       expect(screen.queryByLabelText('テキスト条件 1 の値')).not.toBeInTheDocument()
     })
 
-    it('フォーク元と同名のルールを作らせない', async () => {
-      const { createRuleBodies } = stubApi({ rules: [ruleFixture] })
+    it('条件を変更して上書き保存すると PATCH に変更後の条件が乗り、画面に留まる（核心）', async () => {
+      const { updateRuleBodies, createRuleBodies } = stubApi({ rules: [ruleFixture] })
+      const { router } = renderPage(['/search?ruleId=7'])
+
+      expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+      expect(
+        screen.getByRole('form', { name: 'ルールの条件を編集' }),
+      ).toBeInTheDocument()
+
+      // ハイドレートされた条件（'ニュース'）を書き換える。上書き保存は
+      // このフォームの下書き（画面に見えている値）をそのまま送るべきで、
+      // 元のルールの条件をそのまま再送ってはならない。
+      const input = screen.getByLabelText('テキスト条件 1 の値')
+      await userEvent.clear(input)
+      await userEvent.type(input, '深夜')
+
+      await userEvent.click(screen.getByRole('button', { name: 'ルールを上書き保存' }))
+
+      await waitFor(() => expect(updateRuleBodies).toHaveLength(1))
+      expect(updateRuleBodies[0]?.id).toBe(7)
+      expect(updateRuleBodies[0]?.data).toMatchObject({
+        name: 'ニュースルール',
+        textMatches: [{ target: 'name', mode: 'keyword', value: '深夜' }],
+      })
+      expect(
+        await screen.findByText('ルール「ニュースルール」を上書き保存しました'),
+      ).toBeInTheDocument()
+
+      // 別の新しいルールとして保存する副動作は呼んでいない
+      expect(createRuleBodies).toHaveLength(0)
+
+      // /rules へは遷移せず、この画面（フォームごと）に留まる。条件を詰め直す
+      // 作業の途中で画面が飛ぶと作業が切れるため。
+      expect(router.state.location.pathname).toBe('/search')
+      expect(
+        screen.getByRole('form', { name: 'ルールの条件を編集' }),
+      ).toBeInTheDocument()
+    })
+
+    it('上書き保存で UI を持たない項目が落ちない（description / dedupe* / filenameTemplate / metadata / sites）', async () => {
+      const { updateRuleBodies } = stubApi({ rules: [ruleFixture] })
       renderPage(['/search?ruleId=7'])
 
       expect(await screen.findByText('ニュース7')).toBeInTheDocument()
-      await userEvent.click(screen.getByRole('button', { name: 'この条件でルールを作成' }))
+      await userEvent.click(screen.getByRole('button', { name: 'ルールを上書き保存' }))
+
+      // `preserve` が効いていないと、条件編集 UI に出ていないこれらの項目が
+      // 黙って消える（`UpdateRule` は子テーブル全置換のため）。
+      await waitFor(() => expect(updateRuleBodies).toHaveLength(1))
+      expect(updateRuleBodies[0]?.data).toMatchObject({
+        description: 'ニュース番組をまとめて録画する',
+        dedupeEnabled: true,
+        dedupeThreshold: 0.8,
+        dedupeWindowSeconds: 86_400,
+        filenameTemplate: '{title}_{startAt}',
+        metadata: { note: 'テスト用メタデータ' },
+        sites: ['default'],
+      })
+    })
+
+    it('別の新しいルールとして保存（副動作）は POST を呼び、元のルールと同名にならない', async () => {
+      const { createRuleBodies, updateRuleBodies } = stubApi({ rules: [ruleFixture] })
+      renderPage(['/search?ruleId=7'])
+
+      expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+      await userEvent.click(screen.getByRole('button', { name: '別の新しいルールとして保存' }))
 
       // `rules.name` に一意制約が無いので、名前をそのまま引き継ぐと同名の 2 本が
       // 一覧に並び、条件の要約でしか見分けられなくなる。
-      expect(screen.getByLabelText('名前')).toHaveValue('ニュースルール のコピー')
-
-      await userEvent.click(screen.getByRole('button', { name: 'ルールを作成' }))
       await waitFor(() => expect(createRuleBodies).toHaveLength(1))
       expect(createRuleBodies[0]?.name).toBe('ニュースルール のコピー')
+      expect(createRuleBodies[0]?.name).not.toBe(ruleFixture.name)
+
+      // 副動作であって主動作（上書き）を兼ねない
+      expect(updateRuleBodies).toHaveLength(0)
     })
 
     it('ハイドレーション後にユーザーが条件を編集しても巻き戻らない', async () => {

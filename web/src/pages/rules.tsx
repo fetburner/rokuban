@@ -47,6 +47,11 @@ import { cn } from '@/lib/utils'
  * 同じ UI を持ち込めるようになった）。`UpdateRule` は子テーブル全置換なので、
  * UI が持たない項目（description / dedupe* / filenameTemplate / metadata /
  * sites）は `buildRuleInput` の `preserve` 引数で引き継ぐ。
+ *
+ * 各行の「検索しながら編集」（`/search?ruleId=N`）からも同じルールを上書き
+ * 保存できる。導出ロジックが割り込む余地は無い純粋な「ユーザーの同期的な
+ * 編集」同士なので、2 画面を同時に開いても単に最後に保存した方が勝つ
+ * （docs/frontend.md「検索とルールは同じ条件 UI を双方向に共有する」）。
  */
 export function RulesPage() {
   const query = useListRules()
@@ -155,7 +160,7 @@ function RuleRow({ rule, onEdit }: { rule: Rule; onEdit: () => void }) {
             size="sm"
             render={<Link to="/search" search={{ ruleId: rule.id }} />}
           >
-            検索で試す
+            検索しながら編集
           </Button>
         </div>
       </div>
