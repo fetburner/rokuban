@@ -1,10 +1,10 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
-import type { Program, ProgramSearchRequest, Service } from '@/api/generated'
+import type { Program, ProgramSearchRequest, Rule, RuleInput, Service } from '@/api/generated'
 import { SearchPage } from '@/pages/search'
+import { renderInRouter } from '@/test/router'
 
 const services: Service[] = [
   {
@@ -55,6 +55,22 @@ const drama = program(101, 1032, '深夜ドラマ')
 const allPrograms = [...filler, news, drama]
 
 /**
+ * ruleFixture は `?ruleId=7` で開くルール。条件は `news`（'ニュース7'）だけに
+ * 当たるキーワード 1 つ（ハイドレーション後の自動検索が正しく動くことの検証用）。
+ */
+const ruleFixture: Rule = {
+  id: 7,
+  name: 'ニュースルール',
+  enabled: true,
+  priority: 20,
+  keepOriginal: 'always',
+  encodeProfiles: [],
+  textMatches: [{ target: 'name', mode: 'keyword', value: 'ニュース' }],
+  createdAt: new Date(origin).toISOString(),
+  updatedAt: new Date(origin).toISOString(),
+}
+
+/**
  * invalidRegexMessage はサーバーが不正な ARE に付ける 400 の本文
  * （internal/api/search.go の `searchRegexError` と同じ形）。
  */
@@ -75,15 +91,50 @@ function jsonResponse(body: unknown, status = 200): Response {
  * という画面の主張をテストが検証できない（フォームが値をリクエストに載せていなくても
  * 通ってしまう）。そこでキーワード・ジャンル・サービス・無料の 4 次元だけ
  * ミニ実装し、不正な正規表現はサーバーと同じ 400 を返す。
+ *
+ * `rules` はルール API（`GET /api/rules/{id}` / `POST /api/rules`）のスタブが
+ * 参照する初期データ。作成したルールはここに積まれる（`createRuleBodies` で
+ * リクエスト本体そのものも検証できる）。
  */
-function stubApi() {
+function stubApi(options?: { rules?: Rule[] }) {
   const searchBodies: ProgramSearchRequest[] = []
+  const createRuleBodies: RuleInput[] = []
+  const rules = options?.rules ? [...options.rules] : []
 
   const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input), 'http://localhost')
+    const method = init?.method ?? 'GET'
 
     if (url.pathname === '/api/sites/default/services') {
       return Promise.resolve(jsonResponse(services))
+    }
+
+    if (url.pathname === '/api/encode-profiles') {
+      return Promise.resolve(jsonResponse([]))
+    }
+
+    const ruleDetail = /^\/api\/rules\/(\d+)$/.exec(url.pathname)
+    if (ruleDetail && method === 'GET') {
+      const found = rules.find((r) => r.id === Number(ruleDetail[1]))
+      return Promise.resolve(
+        found ? jsonResponse(found) : jsonResponse({ error: 'rule not found' }, 404),
+      )
+    }
+
+    if (url.pathname === '/api/rules' && method === 'POST') {
+      const body = JSON.parse(String(init?.body ?? '{}')) as RuleInput
+      createRuleBodies.push(body)
+      const created: Rule = {
+        ...body,
+        id: 900 + createRuleBodies.length,
+        enabled: body.enabled ?? true,
+        priority: body.priority ?? 10,
+        keepOriginal: body.keepOriginal ?? 'always',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }
+      rules.push(created)
+      return Promise.resolve(jsonResponse(created, 201))
     }
 
     const detail = /^\/api\/sites\/default\/programs\/(\d+)$/.exec(url.pathname)
@@ -138,23 +189,28 @@ function stubApi() {
   })
 
   globalThis.fetch = fetchMock as unknown as typeof fetch
-  return { fetchMock, searchBodies }
+  return { fetchMock, searchBodies, createRuleBodies, rules }
 }
 
-function renderPage() {
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false, staleTime: 0 }, mutations: { retry: false } },
-  })
-  return render(
-    <QueryClientProvider client={queryClient}>
-      <SearchPage />
-    </QueryClientProvider>,
-  )
+/**
+ * renderPage は SearchPage をルーター（+ QueryClient + ToastProvider）の中で描く。
+ * `useSearch` / `useNavigate` はルーターの外では描けないため、既存テストも含めて
+ * すべて `renderInRouter` 経由にする。
+ */
+function renderPage(initialEntries: string[] = ['/search']) {
+  return renderInRouter(<SearchPage />, { path: '/search', initialEntries })
 }
 
-/** addKeyword はテキスト条件を 1 つ足して値を入れる。 */
+/**
+ * addKeyword はテキスト条件を 1 つ足して値を入れる。
+ *
+ * ルーター経由の描画（`renderInRouter`）は初回マッチの解決が非同期なので、
+ * `render` 直後の同期 `getByRole` は「まだ何も描かれていない」瞬間を掴みうる。
+ * ここで `findByRole` にしておけば、呼び出し側で毎回 `findByRole` を先に
+ * 挟まなくても安全に使える。
+ */
 async function addKeyword(value: string, mode: '正規表現' | 'キーワード' = 'キーワード') {
-  await userEvent.click(screen.getByRole('button', { name: '条件を追加' }))
+  await userEvent.click(await screen.findByRole('button', { name: '条件を追加' }))
   if (mode === '正規表現') {
     await userEvent.selectOptions(screen.getByLabelText('テキスト条件 1 のモード'), '正規表現')
   }
@@ -334,5 +390,135 @@ describe('SearchPage', () => {
     expect(screen.getByText('条件を指定して検索してください')).toBeInTheDocument()
     expect(screen.queryByText('ニュース7')).not.toBeInTheDocument()
     expect(screen.queryByLabelText('テキスト条件 1 の値')).not.toBeInTheDocument()
+  })
+
+  describe('この条件でルールを作成', () => {
+    it('テキスト・ジャンル・時間帯の条件を落とさずに RuleInput にする（核心）', async () => {
+      const { createRuleBodies } = stubApi()
+      renderPage()
+
+      expect(await screen.findByRole('button', { name: 'NHK総合' })).toBeInTheDocument()
+
+      await addKeyword('ニュース')
+      await userEvent.click(screen.getByRole('button', { name: 'ドラマ' }))
+
+      await userEvent.click(screen.getByRole('button', { name: '時間帯を追加' }))
+      fireEvent.change(screen.getByLabelText('時間帯 1 の終了'), { target: { value: '23:00' } })
+      await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
+
+      await userEvent.click(screen.getByRole('button', { name: 'この条件でルールを作成' }))
+      await userEvent.type(screen.getByLabelText('名前'), 'テストルール')
+      await userEvent.click(screen.getByRole('button', { name: 'ルールを作成' }))
+
+      await waitFor(() => expect(createRuleBodies).toHaveLength(1))
+      expect(createRuleBodies[0]).toEqual({
+        name: 'テストルール',
+        enabled: true,
+        priority: 10,
+        keepOriginal: 'always',
+        encodeProfiles: [],
+        textMatches: [{ target: 'name', mode: 'keyword', value: 'ニュース' }],
+        genres: [3],
+        times: [{ weekdays: 127, startSec: 0, endSec: 82_800 }],
+      })
+      expect(await screen.findByText('ルールを作成しました')).toBeInTheDocument()
+    })
+
+    it('名前が空だと保存できない', async () => {
+      stubApi()
+      renderPage()
+
+      expect(await screen.findByRole('button', { name: 'NHK総合' })).toBeInTheDocument()
+      await addKeyword('ニュース')
+      await userEvent.click(screen.getByRole('button', { name: 'この条件でルールを作成' }))
+
+      expect(screen.getByRole('button', { name: 'ルールを作成' })).toBeDisabled()
+      expect(screen.getByText('名前は必須です')).toBeInTheDocument()
+
+      await userEvent.type(screen.getByLabelText('名前'), 'テスト')
+      expect(screen.getByRole('button', { name: 'ルールを作成' })).not.toBeDisabled()
+    })
+
+    it('条件を1つも指定していない状態での保存は確認チェックを挟む', async () => {
+      const { createRuleBodies } = stubApi()
+      renderPage()
+
+      expect(await screen.findByRole('button', { name: 'NHK総合' })).toBeInTheDocument()
+      // 条件を何も足さずに開く（emptyDraft は draftError を持たないのでボタンは押せる）
+      await userEvent.click(screen.getByRole('button', { name: 'この条件でルールを作成' }))
+      await userEvent.type(screen.getByLabelText('名前'), 'なんでも')
+
+      expect(screen.getByText(/条件を 1 つも指定していません/)).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'ルールを作成' })).toBeDisabled()
+
+      await userEvent.click(
+        screen.getByRole('checkbox', { name: /すべての番組が対象になることを理解した上で作成します/ }),
+      )
+      expect(screen.getByRole('button', { name: 'ルールを作成' })).not.toBeDisabled()
+
+      await userEvent.click(screen.getByRole('button', { name: 'ルールを作成' }))
+      await waitFor(() => expect(createRuleBodies).toHaveLength(1))
+      expect(createRuleBodies[0]).toEqual({
+        name: 'なんでも',
+        enabled: true,
+        priority: 10,
+        keepOriginal: 'always',
+        encodeProfiles: [],
+      })
+    })
+  })
+
+  describe('?ruleId=N で既存ルールの条件を開く', () => {
+    it('条件が復元され、検索が自動実行される', async () => {
+      stubApi({ rules: [ruleFixture] })
+      renderPage(['/search?ruleId=7'])
+
+      expect(await screen.findByText(/ニュースルール」の条件を表示中/)).toBeInTheDocument()
+      expect(screen.getByRole('link', { name: 'ルール一覧に戻る' })).toBeInTheDocument()
+
+      // ユーザーが検索ボタンを押さなくても自動実行される
+      expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+      expect(screen.getByLabelText('テキスト条件 1 の値')).toHaveValue('ニュース')
+    })
+
+    it('存在しない ruleId では無言の空白にせず 404 と分かる表示をする', async () => {
+      stubApi({ rules: [] })
+      renderPage(['/search?ruleId=999'])
+
+      expect(await screen.findByText(/ルール #999 が見つかりません/)).toBeInTheDocument()
+      // 見つからない以上、条件フォームは空のまま（存在しないルールの条件を
+      // 捏造しない）
+      expect(screen.queryByLabelText('テキスト条件 1 の値')).not.toBeInTheDocument()
+    })
+
+    it('ハイドレーション後にユーザーが条件を編集しても巻き戻らない', async () => {
+      const { rules } = stubApi({ rules: [ruleFixture] })
+      const { queryClient } = renderPage(['/search?ruleId=7'])
+
+      expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+      const input = screen.getByLabelText('テキスト条件 1 の値')
+      expect(input).toHaveValue('ニュース')
+
+      await userEvent.clear(input)
+      await userEvent.type(input, '深夜')
+      expect(screen.getByLabelText('テキスト条件 1 の値')).toHaveValue('深夜')
+
+      // サーバー側でルールの内容が変わったあとに再フェッチされても（＝
+      // sourceRule の参照が変わっても）、同じ ruleId を一度ハイドレートした
+      // あとは上書きしない（ref ガードの回帰テスト）。内容を変えずに
+      // invalidate するだけだと React Query の structural sharing で
+      // sourceRule の参照が変わらず、effect の依存 [ruleId, sourceRule] 自体が
+      // 動かないため、ガードを壊しても検知できない空虚な成功になる。
+      // 実際に内容を変えてから再フェッチさせて初めて意味のある回帰テストになる。
+      rules[0] = {
+        ...rules[0],
+        textMatches: [{ target: 'name', mode: 'keyword', value: 'サーバー側で変更' }],
+      }
+      await act(async () => {
+        await queryClient.invalidateQueries()
+      })
+
+      expect(screen.getByLabelText('テキスト条件 1 の値')).toHaveValue('深夜')
+    })
   })
 })
