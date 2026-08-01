@@ -19,3 +19,19 @@ import type { ProgramListItem } from '@/api/generated'
 export function programKeyAt(programs: readonly ProgramListItem[], index: number): number {
   return programs[index].programId
 }
+
+/**
+ * findProgramIndex は、指定した `programId` の現在の添字を返す。
+ *
+ * 遡行のアンカー位置合わせ（`components/program-list.tsx`）が使う ---
+ * 「前を読み込む」を押す前に控えた programId から、先頭への挿入で行われた
+ * 番組配列に対する現在の添字を引き直し、`virtualizer.scrollToIndex` に渡す。
+ * 見つからなければ `null`（呼び出し側は何もしない）。
+ */
+export function findProgramIndex(
+  programs: readonly ProgramListItem[],
+  programId: number,
+): number | null {
+  const index = programs.findIndex((program) => program.programId === programId)
+  return index === -1 ? null : index
+}

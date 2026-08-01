@@ -1,10 +1,15 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { createRef } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { ProgramListItem, Service } from '@/api/generated'
-import { ProgramList, type ReservationActions } from '@/components/program-list'
+import {
+  ProgramList,
+  type ProgramListHandle,
+  type ReservationActions,
+} from '@/components/program-list'
 import { formatDate } from '@/lib/format'
 
 const dayStart = new Date(2026, 6, 25, 0, 0, 0, 0).getTime()
@@ -73,18 +78,29 @@ function stubFetch() {
 function renderList(
   programs: ProgramListItem[],
   reservationActions = actions(),
-  extra: { onVisibleDayChange?: (dayOffset: number) => void; now?: number } = {},
+  extra: {
+    onVisibleDayChange?: (dayOffset: number) => void
+    now?: number
+    hasPreviousPage?: boolean
+    isFetchingPreviousPage?: boolean
+    onLoadPrevious?: () => void
+    ref?: React.RefObject<ProgramListHandle | null>
+  } = {},
 ) {
   stubFetch()
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={queryClient}>
       <ProgramList
+        ref={extra.ref}
         programs={programs}
         serviceById={services}
         actions={reservationActions}
         onVisibleDayChange={extra.onVisibleDayChange}
         now={extra.now}
+        hasPreviousPage={extra.hasPreviousPage ?? false}
+        isFetchingPreviousPage={extra.isFetchingPreviousPage ?? false}
+        onLoadPrevious={extra.onLoadPrevious ?? vi.fn()}
       />
     </QueryClientProvider>,
   )
@@ -114,7 +130,7 @@ describe('ProgramList', () => {
     expect(document.querySelector('[data-program-id="22"]')).toBeInTheDocument()
   })
 
-  it('日付ヘッダを描画し、top が --page-header-height を参照する', async () => {
+  it('日付ヘッダを描画し、top が --page-header-height（+ 遡行ボタンの高さ）を参照する', async () => {
     // 2 日にまたがる番組を用意して日付境界を作る
     const day1 = program(1, 1, '朝のニュース')
     const day2 = program(2, 30, '深夜の番組') // 30 時間後 = 翌々日相当だが日付は進む
@@ -125,7 +141,12 @@ describe('ProgramList', () => {
     const headers = screen.getAllByRole('heading', { level: 2 })
     expect(headers.length).toBeGreaterThanOrEqual(2)
     for (const header of headers) {
-      expect(header.className).toMatch(/top-\[var\(--page-header-height,0px\)\]/)
+      // `--load-previous-height` を足しているのは、遡行ボタンが sticky で
+      // 同じ top に居座るときに日付ヘッダを隠さないため（ボタンが無いときは
+      // 未設定 = 0px 相当なので、実質 --page-header-height だけになる）。
+      expect(header.className).toMatch(
+        /top-\[calc\(var\(--page-header-height,0px\)\+var\(--load-previous-height,0px\)\)\]/,
+      )
     }
     expect(screen.getByText(formatDate(day1.startAt))).toBeInTheDocument()
     expect(screen.getByText(formatDate(day2.startAt))).toBeInTheDocument()
@@ -188,6 +209,65 @@ describe('ProgramList', () => {
 
       await screen.findByText('翌日の番組')
       await waitFor(() => expect(onVisibleDayChange).toHaveBeenCalledWith(1))
+    })
+  })
+
+  describe('遡行（「前を読み込む」ボタン。3 回目の修正で ProgramList 自身が持つ）', () => {
+    it('hasPreviousPage が false ならボタンを出さない', async () => {
+      renderList([program(1, 1, '対象番組')], actions(), { hasPreviousPage: false })
+
+      await screen.findByText('対象番組')
+      expect(screen.queryByRole('button', { name: '前を読み込む' })).not.toBeInTheDocument()
+    })
+
+    it('hasPreviousPage が true ならボタンを出し、押すと onLoadPrevious が呼ばれる', async () => {
+      const onLoadPrevious = vi.fn()
+      const user = userEvent.setup()
+      renderList([program(1, 1, '対象番組')], actions(), {
+        hasPreviousPage: true,
+        onLoadPrevious,
+      })
+
+      await screen.findByText('対象番組')
+      const button = screen.getByRole('button', { name: '前を読み込む' })
+      await user.click(button)
+
+      expect(onLoadPrevious).toHaveBeenCalledTimes(1)
+    })
+
+    it('isFetchingPreviousPage が true の間はボタンが無効化され、ラベルが「読み込み中…」になる', async () => {
+      renderList([program(1, 1, '対象番組')], actions(), {
+        hasPreviousPage: true,
+        isFetchingPreviousPage: true,
+      })
+
+      await screen.findByText('対象番組')
+      const button = await screen.findByRole('button', { name: '読み込み中…' })
+      expect(button).toBeDisabled()
+      // 通常時のラベルには戻っていない（対照）
+      expect(screen.queryByRole('button', { name: '前を読み込む' })).not.toBeInTheDocument()
+    })
+  })
+
+  describe('ProgramListHandle（3 回目の修正: 既にジャンプ先の日を再タップしたときの復帰）', () => {
+    it('ref から scrollToDayOffset を呼べる（見つかる／見つからない、どちらも例外を投げない）', async () => {
+      const ref = createRef<ProgramListHandle>()
+      const programs = [program(1, 1, '今日の番組'), program(2, 25, '翌日の番組')]
+      renderList(programs, actions(), { ref, now: dayStart })
+
+      await screen.findByText('今日の番組')
+      expect(ref.current).not.toBeNull()
+
+      // jsdom は DOM のレイアウトを計算できないため（domLayoutMeasurable() が
+      // false）、ProgramList は仮想化をバイパスしており scrollToIndex は
+      // 呼ばれない（実際にスクロール位置が揃うかどうかは実機でしか確認できない。
+      // components/program-list.tsx の doc コメント参照）。ここで確認できるのは
+      // 「見つかる添字（offset 1 = 翌日の番組がある）」「見つからない添字
+      // （offset 5 = その日の番組が無い）」のどちらを渡しても例外を投げず
+      // 安全に呼べること --- 対応する純関数側の両方向は
+      // `lib/visible-day.test.ts` の `firstIndexForDayOffset` で検証済み。
+      expect(() => ref.current?.scrollToDayOffset(1)).not.toThrow()
+      expect(() => ref.current?.scrollToDayOffset(5)).not.toThrow()
     })
   })
 })

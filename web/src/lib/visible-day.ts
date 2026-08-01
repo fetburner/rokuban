@@ -38,3 +38,37 @@ export function visibleDayOffset(
   )
   return Math.max(0, diffDays)
 }
+
+/**
+ * firstIndexForDayOffset は `visibleDayOffset` と対になる向きの関数。
+ * `dayOffset`（暦日、`DayStrip` が渡すジャンプ先）に一致する暦日を持つ、
+ * 先頭から見て最初の番組の添字を返す。
+ *
+ * 日付ストリップで**既にジャンプ先になっている日**をもう一度タップしたときに使う
+ * ---
+ * `dayOffset`（state）が変わらないので `setDayOffset` は再レンダーを起こさず、
+ * クエリもスクロールも動かない。しかしユーザーはスクロールでその日から離れた
+ * 場所を見ていることがあるので、タップは「読み込み済みなら、その日の先頭へ
+ * scrollToIndex する」を意味する必要がある（`components/program-list.tsx` の
+ * `ProgramListHandle.scrollToDayOffset`）。
+ *
+ * 比較は `visibleDayOffset` と同じ基準（暦日、ローカルタイム）。該当する番組が
+ * 1 件も無ければ（まだ読み込んでいない日、など）`null` を返す ---
+ * 呼び出し側はその場合 `scrollToIndex` を試みない。
+ */
+export function firstIndexForDayOffset(
+  programs: readonly { startAt: string }[],
+  dayOffset: number,
+  now: number,
+): number | null {
+  const startOfToday = new Date(now)
+  startOfToday.setHours(0, 0, 0, 0)
+  const targetDayStartMs = startOfToday.getTime() + dayOffset * 86_400_000
+
+  for (let index = 0; index < programs.length; index++) {
+    const startOfProgramDay = new Date(programs[index].startAt)
+    startOfProgramDay.setHours(0, 0, 0, 0)
+    if (startOfProgramDay.getTime() === targetDayStartMs) return index
+  }
+  return null
+}

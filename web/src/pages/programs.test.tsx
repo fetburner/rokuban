@@ -840,71 +840,23 @@ describe('ProgramsPage の遡行（前の時間窓の読み込み）', () => {
   })
 
   /**
-   * rectFor は `getBoundingClientRect` のテスト用の戻り値（`top` / `bottom` 以外は
-   * 未使用なので値に意味はない）。
+   * 3 回目の修正で、遡行のスクロール位置復元は DOM アンカー（`document.querySelector`
+   * で挿入後に同じ行を探し直す方式）から、`ProgramList`（仮想化を持つコンポーネント）
+   * 内部の `virtualizer.scrollToIndex` に置き換えた（`components/program-list.tsx`
+   * のコメント参照）。DOM アンカー方式は、先頭への挿入直後にアンカーだった行が
+   * 仮想化のオーバースキャン外へ弾き出されて DOM から消えるため機能しなかった
+   * （実機で確認済み）。
+   *
+   * `scrollToIndex` の実効果（実際にスクロール位置が揃うか）は jsdom では検証
+   * できない（レイアウトエンジンを持たないため、可視範囲バイパス
+   * （`domLayoutMeasurable()` が false）の分岐に入り、`ProgramList` はこの環境では
+   * そもそも `scrollToIndex` を呼ばない）。ここでは統合テストとして安全に確認できる
+   * 範囲 --- 挿入前のリストが空（アンカーが 1 件も取れない）場合でもクラッシュせず
+   * 前の窓の番組が増えること --- だけを見る。「控えた programId から新しい添字を
+   * 引く」部分自体は `lib/program-list-key.test.ts` の `findProgramIndex` で
+   * 純関数として両方向（見つかる／見つからない）をテスト済み。
    */
-  function rectFor(topPx: number, bottomPx: number): DOMRect {
-    return {
-      top: topPx,
-      bottom: bottomPx,
-      left: 0,
-      right: 0,
-      width: 0,
-      height: bottomPx - topPx,
-      x: 0,
-      y: topPx,
-      toJSON: () => ({}),
-    } as DOMRect
-  }
-
-  it('前の窓の挿入でアンカー行の位置がずれないよう scrollBy で補正する（programId で同じ行を追従する）', async () => {
-    // day offset 2（明後日）へジャンプする。offset 1（明日）は「今日」の
-    // 固定オフセット番組（`soon` / `alsoSoon` = 現在時刻 + 1 時間、`later` = + 8
-    // 時間）と、実行時刻によっては窓が重なりうる（例えば現在が 23 時台だと
-    // `soon` の時刻がちょうど明日 0 時と一致する）。offset 2 ならどの実行時刻
-    // でも重ならない。
-    const dayAfter2Ms = dayOrigin(2).getTime()
-    // 遡行先（day2 の最初の窓）にも 1 件番組を置く。ここが「画面上端に見えている行」
-    // （アンカー）になる。これが無いと（=遡行前のリストが空だと）アンカーが取れず
-    // 補正そのものが起きない、という別の分岐を確認してしまう。
-    const anchorProgram = programAtAbsolute(301, 1024, dayAfter2Ms + 3_600_000, '深夜1時台の番組')
-    const lateTonight = programAtAbsolute(302, 1024, dayAfter2Ms - 3_600_000, '前日深夜の番組2')
-    stubApi([], [], [...allPrograms, anchorProgram, lateTonight])
-    renderPage()
-
-    expect(await screen.findByText('ニュース7')).toBeInTheDocument()
-    const dayGroup = screen.getByRole('group', { name: '日付' })
-    await userEvent.click(within(dayGroup).getAllByRole('button')[2])
-
-    // アンカー行が実在することを確認してから、その DOM ノードの
-    // getBoundingClientRect を差し替える。jsdom は常に 0 を返すため、実機での
-    // 「見積もり→実測の遷移」を模して before/after で異なる値を返させる。
-    const anchorEl = await screen.findByText('深夜1時台の番組')
-    const anchorLi = anchorEl.closest('[data-program-id="301"]')
-    expect(anchorLi).not.toBeNull()
-
-    let rectReadCount = 0
-    anchorLi!.getBoundingClientRect = vi.fn(() =>
-      // 1 回目 = loadPrevious がクリック時に控える「挿入前」の位置。
-      // 2 回目以降 = 挿入後、useLayoutEffect の reconcile が読み直す位置。
-      rectReadCount++ === 0 ? rectFor(100, 140) : rectFor(700, 740),
-    )
-
-    const scrollBySpy = vi.fn()
-    window.scrollBy = scrollBySpy as unknown as typeof window.scrollBy
-
-    const loadPrevious = await screen.findByRole('button', { name: '前を読み込む' })
-    await userEvent.click(loadPrevious)
-    await screen.findByText('前日深夜の番組2')
-
-    // アンカー行（programId 301）は挿入で 100 → 700 に押し下げられたので、
-    // 600 だけ下にスクロールして視覚上の位置を戻す
-    expect(scrollBySpy).toHaveBeenCalledWith(0, 600)
-  })
-
-  it('遡行前のリストが空ならアンカーが取れず、補正（scrollBy）を試みない', async () => {
-    // 「今日（offset 0）のままでは...」のテストと同じ構図: 遡行先の最初の窓には
-    // 何も無いので ProgramList 自体がマウントされず、アンカーとなる行が存在しない。
+  it('挿入前のリストが空（アンカーが取れない）状態で「前を読み込む」を押しても、前の窓の番組が増える', async () => {
     // offset 1 ではなく 2（明後日）にするのは、上のテストと同じ理由
     // （`allPrograms` の固定オフセットとの窓の重なりを実行時刻によらず避けるため）。
     const dayAfter2Ms = dayOrigin(2).getTime()
@@ -914,84 +866,50 @@ describe('ProgramsPage の遡行（前の時間窓の読み込み）', () => {
 
     expect(await screen.findByText('ニュース7')).toBeInTheDocument()
     const dayGroup = screen.getByRole('group', { name: '日付' })
-    await userEvent.click(within(dayGroup).getAllByRole('button')[2])
+    await userEvent.click(within(dayGroup).getAllByRole('button')[2]) // offset 2 = 明後日
     await waitFor(() => expect(screen.queryByText('ニュース7')).not.toBeInTheDocument())
     // アンカーになりうる行が無いこと（空のリスト）を確認したうえで進める
     expect(document.querySelector('[data-program-id]')).not.toBeInTheDocument()
-
-    const scrollBySpy = vi.fn()
-    window.scrollBy = scrollBySpy as unknown as typeof window.scrollBy
+    // 空でも「この時間帯の番組がありません」とボタンが両方出る
+    expect(screen.getByText('この時間帯の番組がありません')).toBeInTheDocument()
 
     const loadPrevious = await screen.findByRole('button', { name: '前を読み込む' })
     await userEvent.click(loadPrevious)
-    await screen.findByText('前日深夜の番組3')
 
-    expect(scrollBySpy).not.toHaveBeenCalled()
+    expect(await screen.findByText('前日深夜の番組3')).toBeInTheDocument()
   })
+})
 
-  it('見積もり→実測の遷移への追従は無限に続かず、補正回数の上限で打ち切る', async () => {
-    // offset 2 を使う理由は上のテストと同じ（`allPrograms` の固定オフセットとの
-    // 窓の重なりを実行時刻によらず避けるため）。
-    const dayAfter2Ms = dayOrigin(2).getTime()
-    const anchorProgram = programAtAbsolute(304, 1024, dayAfter2Ms + 3_600_000, '深夜1時台の番組2')
-    const lateTonight = programAtAbsolute(305, 1024, dayAfter2Ms - 3_600_000, '前日深夜の番組4')
-    stubApi([], [], [...allPrograms, anchorProgram, lateTonight])
+describe('ProgramsPage の日付ジャンプ（先頭の窓に重なる前日の番組を出さない。3 回目の修正）', () => {
+  it('ジャンプ先の窓と重なって返ってきた前日の番組をリストの先頭に出さず、ハイライトもジャンプ先の日のまま', async () => {
+    // offset 1 ではなく 2（明後日）にする理由は他の遡行テストと同じ
+    // （`allPrograms` の固定オフセットとの窓の重なりを実行時刻によらず避けるため）。
+    const targetOriginMs = dayOrigin(2).getTime()
+    // API は問い合わせた時間窓に重なる番組を返す。この番組は前日 23:30 開始・
+    // ジャンプ先 0:30 終了で、ジャンプ直後の最初の窓（明後日 0 時〜6 時）にも
+    // 重なって返ってくる --- 実機で踏んだ不具合そのものの構図。
+    const overlapping = programAtAbsolute(
+      210,
+      1024,
+      targetOriginMs - 1_800_000,
+      '前日からの重なり番組',
+    )
+    // 区別のため、実際にジャンプ先の日に始まる番組も置く
+    const insideWindow = programAtAbsolute(211, 1024, targetOriginMs + 1_800_000, '窓内の番組')
+    stubApi([], [], [...allPrograms, overlapping, insideWindow])
     renderPage()
 
     expect(await screen.findByText('ニュース7')).toBeInTheDocument()
     const dayGroup = screen.getByRole('group', { name: '日付' })
-    await userEvent.click(within(dayGroup).getAllByRole('button')[2])
+    await userEvent.click(within(dayGroup).getAllByRole('button')[2]) // offset 2 = 明後日
 
-    const anchorEl = await screen.findByText('深夜1時台の番組2')
-    const anchorLi = anchorEl.closest('[data-program-id="304"]')
-    expect(anchorLi).not.toBeNull()
+    // 重なり番組は出ない。窓内の番組は出る
+    expect(await screen.findByText('窓内の番組')).toBeInTheDocument()
+    expect(screen.queryByText('前日からの重なり番組')).not.toBeInTheDocument()
 
-    // 実測が届き続ける状況を模す: 呼ぶたびに top が動き続ける（安定しない）
-    let rectReadCount = 0
-    anchorLi!.getBoundingClientRect = vi.fn(() => rectFor(100 + rectReadCount++ * 10, 140))
-
-    const scrollBySpy = vi.fn()
-    window.scrollBy = scrollBySpy as unknown as typeof window.scrollBy
-
-    // ResizeObserver を、observe() 直後とその後何度も明示的に発火できる
-    // コントロール可能なスタブに差し替える（既定の ResizeObserverStub は
-    // no-op なので、追従ループが「打ち切られること」自体を検証できない）。
-    const callbacks: Array<() => void> = []
-    class ControllableResizeObserver {
-      constructor(callback: () => void) {
-        callbacks.push(callback)
-      }
-      observe(): void {}
-      unobserve(): void {}
-      disconnect(): void {}
-    }
-    const originalResizeObserver = globalThis.ResizeObserver
-    globalThis.ResizeObserver =
-      ControllableResizeObserver as unknown as typeof ResizeObserver
-
-    try {
-      const loadPrevious = await screen.findByRole('button', { name: '前を読み込む' })
-      await userEvent.click(loadPrevious)
-      await screen.findByText('前日深夜の番組4')
-
-      // 挿入直後の同期的な 1 回ぶん、scrollBy が呼ばれている
-      const callsAfterInsert = scrollBySpy.mock.calls.length
-      expect(callsAfterInsert).toBeGreaterThan(0)
-
-      // ResizeObserver の再発火を何度も模す。上限（followMaxCorrections）を
-      // 大きく超える回数を投げても、それ以上は scrollBy が呼ばれない
-      // （無限に追従し続けない）ことを確認する
-      for (let i = 0; i < 50; i++) {
-        for (const callback of callbacks) callback()
-      }
-
-      const totalCalls = scrollBySpy.mock.calls.length
-      // 上限（10 回, pages/programs.tsx の followMaxCorrections）を大きく
-      // 下回る呼び出し回数で頭打ちになっていること
-      expect(totalCalls).toBeLessThan(15)
-      expect(totalCalls).toBeGreaterThanOrEqual(callsAfterInsert)
-    } finally {
-      globalThis.ResizeObserver = originalResizeObserver
-    }
+    // ハイライトはジャンプ先の日のまま（重なり番組の日である前日にずれない）
+    await waitFor(() =>
+      expect(within(dayGroup).getAllByRole('button')[2]).toHaveAttribute('aria-current', 'date'),
+    )
   })
 })

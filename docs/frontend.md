@@ -133,6 +133,18 @@ Android のジェスチャーナビは左右端からの横スワイプが「戻
 - 常に「今」から始まる連続フィード（`pages/programs.tsx`）。上限はどの日付を
   選んでも共通の「EPG のローリングウィンドウの終端」（8 日先の 0 時）で、
   24 時で打ち切らない。sticky 日付ヘッダで日付境界を示す
+- **API が返す番組を無条件にリストの先頭へ出さない。** API は問い合わせた時間窓に
+  **重なる**番組を返す（`start_at < window_end AND end_at > window_start`）ため、
+  読み込んだ最も手前の窓の開始時刻（`listStartMs`）より前に始まった番組（＝まだ
+  読み込んでいない前の窓との重なりで一緒に返ってきた番組）がリストの先頭に混ざる。
+  これを見せたままにすると、日付ヘッダと「いま見ている日」の導出（どちらも
+  リストの先頭の番組から日を決める）が両方とも前日を指してしまう不具合を実機で
+  確認した（3 回目の修正）。`lib/program-list-window.ts` の `filterProgramsFromListStart`
+  で `pages/programs.tsx` 側が絞ってから `ProgramList` へ渡す。ただし
+  `listStartMs` が遡行の下限（now を時で切り捨てた時刻）と一致するとき
+  （＝今日を見ている、または遡行が下限まで達したとき）は絞り込まない ---
+  単純に切ると放送中の番組（起点は時刻境界なので、開始が起点より前になりうる）
+  まで消えてしまうため
 - **仮想化は TanStack Virtual（`useWindowVirtualizer`）を使う**
   （`components/program-list.tsx`）。グリッドが自前実装を選んだ理由（縦軸が
   連続量で番組セルが目盛りをまたぐ区間なので、行の並びを前提とする仮想化
@@ -211,40 +223,99 @@ Android のジェスチャーナビは左右端からの横スワイプが「戻
 - **遡行の下限は「now を時で切り捨てた時刻」。** 放送済み番組の閲覧は
   スコープ外。サーバーの EPG 保持期間の設定には依存させない（クライアント側で
   now を不変条件として持つだけで足りる）。下限に達したらボタンを出さない
-- **先頭への挿入はスクロール位置がずれる。補正は「アンカー要素の位置合わせ」で行う
-  （`pages/programs.tsx` / `lib/scroll-preservation.ts`）。** 遡行の直前に
-  「画面上端に見えている行」の `programId` と `getBoundingClientRect().top` を
-  控え、挿入後に同じ `programId` の行を DOM から探して現在の `top` との差分だけ
-  `window.scrollBy` する。Safari はスクロールアンカリングを実装していないので、
-  ブラウザ任せにはできない（Chrome / Firefox だけ動く形にしない）。
-  以前は挿入前後の `document.documentElement.scrollHeight` の差分を使っていたが、
-  2 つの理由でアンカー方式に置き換えた: (1) 差し込んだ行は挿入直後の時点では
-  まだ実測されておらず見積もり高さ（`estimatedRowHeightPx`）でしかなく、実測は
-  行ごとの `ResizeObserver`（`measureElement`）経由で**その後**届いて総高さが
-  変わり、一度きりの差分補正では見積もり→実測の遷移を捉えられなかった。
-  (2) 高さの差分はリスト全体の高さを見るため、遡行中に進行方向の自動読み込みが
-  同時に走ると下側に追加された高さまで差分に含めて過補正していた。
-  アンカー要素 1 つの位置だけを比較する方式は、リストの下側で何が起きても
-  影響を受けない
+- **先頭への挿入はスクロール位置がずれる。補正は「アンカーの programId から
+  仮想化ライブラリ上の添字を引き直し、`virtualizer.scrollToIndex` を呼ぶ」方式で
+  行う（`components/program-list.tsx`）。** 「前を読み込む」ボタンは
+  `ProgramList` 自身が持つ（仮想化を持つコンポーネントに復元へ必要な情報
+  ---
+  添字・計測値・`virtualizer` そのもの --- を全部揃えるため。`pages/programs.tsx`
+  は `hasPreviousPage` / `isFetchingPreviousPage` / `onLoadPrevious` を props で
+  渡すだけ）。手順: (1) ボタンを押した瞬間、`captureAnchor()`
+  （`lib/scroll-preservation.ts`）で「画面上端に見えている行」の `programId` を
+  読む（まだ何も挿入されていないので実際にレイアウトされている DOM を安全に
+  読める）。(2) `onLoadPrevious()` を呼ぶ。(3) `programs` の更新を検知したら、
+  控えた `programId` から `findProgramIndex`（`lib/program-list-key.ts`）で
+  **挿入後の添字**を引き直し、`virtualizer.scrollToIndex(newIndex, { align:
+  'start' })` を呼ぶ。Safari はスクロールアンカリングを実装していないので、
+  ブラウザ任せにはできない
+- **なぜ「挿入後に同じ行を DOM から探して `getBoundingClientRect` で測り直す」
+  方式（2 回目の修正）ではなく、これ（3 回目の修正）に置き換えたか。**
+  仮想化と**構造的に両立しなかった**。差し込む量は 6 時間ぶん・約 79 番組・
+  約 5700px で、オーバースキャン（8 行 ≒ 576px）を大きく超える。先頭に挿入した
+  瞬間、アンカーだった行はオーバースキャンの外へ弾き出されて DOM から消える。
+  消えた要素は `document.querySelector` で見つからないので `null` が返り、
+  補正（`window.scrollBy`）は一度も呼ばれない ---
+  「スクロール位置が変わらないまま可視範囲だけ再計算され、同じ位置に別の
+  （新しく差し込まれた過去の）番組が来る」形で壊れていた（実機で確認済み）。
+  `scrollToIndex` は仮想化ライブラリ自身が持つ座標系（見積もり→実測の遷移も
+  含めて）を使うので、対象の行が現在 DOM に存在するかどうかに依存しない ---
+  **見えなくなった行を追いかける代わりに、ライブラリの座標系に乗る**のが
+  2 回目の失敗から得た教訓。さらに 1 回前（1 回目の修正）は挿入前後の
+  `document.documentElement.scrollHeight` の差分を `scrollBy` に渡す方式
+  だったが、これも 2 つの理由で早々に置き換えられていた: 差し込んだ行は挿入
+  直後の時点ではまだ実測されておらず見積もり高さでしかなく実測は非同期に届く
+  こと、高さの差分はリスト全体を見るため遡行中に進行方向の自動読み込みが
+  同時に走ると過補正すること
 - **アンカーは添字ではなく `programId` で引き直す。** 仮想化の
   `getItemKey`（`components/program-list.tsx`。既定は `(index) => index`）も
   同じ理由で `programId` にしてある --- 先頭への挿入で既存の全行の添字がずれ、
   添字キーのままだと TanStack Virtual の実測キャッシュ（`itemSizeCache`）が
   別の番組の値を引き継いでしまい、総高さと各行のオフセットが狂う
-- **見積もり→実測の遷移には `document.body` の `ResizeObserver` で追従し、
-  補正回数と経過時間の上限で打ち切る。** 実測が行ごとに不定回数届くため、
-  挿入直後の 1 回の補正だけでは足りない。`document.body` のサイズ変化（＝行の
-  高さが見積もりから実測に変わって総高さが動いたこと）のたびにアンカーの
-  `top` を測り直して再補正する。rAF による毎フレームのポーリングではなく
-  `ResizeObserver` にしたのは、レイアウトが実際に変化したときにだけ動けば
-  十分で、無条件にポーリングし続ける無駄がないため。無限に追従し続けない
-  よう、`shouldStopFollowing`（`lib/scroll-preservation.ts`）で補正回数か
-  経過時間のどちらかが上限に達したら打ち切る
-- **実機確認待ち:** 番兵の実際の発火・アンカー位置合わせの見た目（jsdom は
-  `getBoundingClientRect` が常に 0 を返すレイアウトを計算しない環境なので、
-  実際に位置が揃うかどうかは検証できない）・「いま見ている日」のスクロール
-  追従は自動テストで検証できない（純関数の導出ロジック自体はテスト済み）。
-  グリッドの「受け入れは実機で行う」と同じ扱い
+- `align: 'start'` なので、ボタンを押した時点で行の途中を見ていた場合は最大
+  1 行ぶんずれることがあるが、許容する（以前は数時間ずれていた）
+- **「前を読み込む」ボタンは sticky にして `PageHeader` の直下へ常時留める
+  （`components/program-list.tsx`）。** 通常フローのままだと、リストを下へ
+  スクロールした状態ではボタンが画面外に出る。ボタンを押すには一旦画面外
+  （ボタンの位置）まで戻ってからクリックする必要があり、この「押すために
+  戻る」動作そのもの（実ユーザーの手動スクロールであれ、Playwright の
+  actionability チェックによる自動スクロールであれ）が `captureAnchor()`
+  の読む DOM を「実際に見ていた行」から「ボタンを押すために戻った先」へ
+  すり替えてしまう。以降の `scrollToIndex` はその（間違った）行を正しく
+  復元するだけなので、症状だけ見ると「`scrollToIndex` の着地点がオーバー
+  スキャン行数ぶんずれる」ように見えた（3 回目の修正の当初の誤診断）が、
+  実際に計測すると `scrollToIndex` 自体は毎回正しい添字に着地しており、
+  ずれの正体は**アンカーの取り違え**だった。ボタンを sticky にしてスクロール
+  なしで押せるようにしたことで解消した。sticky にすると同じ `top` に来る
+  日付ヘッダ（`z-[5]`）と重なるため、ボタンは `z-10` で前面に出しつつ、
+  ボタン自身の高さを `--load-previous-height` に実測して書き出し、日付
+  ヘッダの `top` に `calc(var(--page-header-height,0px) +
+  var(--load-previous-height,0px))` として足し込んで隠さないようにしてある
+  （ボタンが無いときは未設定 = 0px 相当なので従来どおり）
+- **`scrollMargin`（`<ul>` の `offsetTop`）は ref ではなく state で持つ。**
+  遡行ボタンの有無で `<ul>` の `offsetTop` 自体が動くため、`hasPreviousPage`
+  が変わるたびに測り直す必要がある。ref の更新は再レンダーを起こさないので、
+  測り直しても仮想化オプションへの反映が次の（別の理由での）再レンダーまで
+  遅れてしまう。state なら `useLayoutEffect` 内の `setState` がペイント前に
+  同じコミットで反映されるので、ユーザーに古い値が見えない
+- **実機確認待ち:** 番兵の実際の発火・`scrollToIndex` によるスクロール位置合わせの
+  見た目（jsdom は `getBoundingClientRect` が常に 0 を返すレイアウトを計算しない
+  環境なので、`ProgramList` はこの環境では仮想化そのものをバイパスし
+  `scrollToIndex` を呼ばない。実際に位置が揃うかどうかは検証できない）・
+  「いま見ている日」のスクロール追従は自動テストで検証できない（純関数の導出
+  ロジック自体はテスト済み）。グリッドの「受け入れは実機で行う」と同じ扱い
+
+#### 「既にジャンプ先になっている日」の再タップ
+
+`DayStrip` のタップは `dayOffset`（state）を書き換えて跳ぶ、で足りると思われて
+いたが、**タップした日が既に `dayOffset` と同じ場合**が抜けていた
+（実機で確認した不具合。3 回目の修正）。`setDayOffset(同じ値)` は React が
+再レンダーの理由にしないため、クエリもスクロールも一切動かない。ユーザーは
+遡行後にスクロールで「いま見ている日」（`visibleDay`）がジャンプ先から離れて
+いることがあり、その状態での再タップは「その日の先頭へ戻る」ことを期待して
+いるので、`dayOffset` が変わらなくても何かしら起きる必要がある。
+
+- **タップは常にその日へ移動する意味を持つ。** `dayOffset` と一致する場合は
+  クエリの起点を付け替えず、**読み込み済みの `programs` の中からその日の
+  先頭へ `scrollToIndex` する**（`components/program-list.tsx` の
+  `ProgramListHandle.scrollToDayOffset`。② の遡行アンカー復元と同じ
+  `virtualizer.scrollToIndex` の機構）。対象の添字は `lib/visible-day.ts` の
+  `firstIndexForDayOffset`（「可視範囲の先頭 → dayOffset」を導く
+  `visibleDayOffset` と対になる、逆向きの純関数）で引く。見つからなければ
+  （まだ読み込んでいない日）何もしない
+- `ProgramList` は `forwardRef` + `useImperativeHandle` で `ref` 経由の命令的 API
+  （`ProgramListHandle`）を公開する。`pages/programs.tsx` はこの `ref` を
+  `selectDay` から呼ぶだけで、`dayOffset` を書き換えるかどうかの分岐は
+  `selectDay` 側が持つ
 
 ### 段階的開示
 

@@ -1,12 +1,16 @@
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { CapacityBands } from '@/components/capacity-band'
 import { ChannelPicker } from '@/components/channel-picker'
 import { DayStrip } from '@/components/day-strip'
 import { EmptyState, ErrorState, ListSkeleton, PageHeader } from '@/components/page'
 import { ProgramGrid } from '@/components/program-grid'
-import { ProgramList, type ReservationActions } from '@/components/program-list'
+import {
+  ProgramList,
+  type ProgramListHandle,
+  type ReservationActions,
+} from '@/components/program-list'
 import { ProgramRow } from '@/components/program-row'
 import { useToast } from '@/components/toaster'
 import { Button } from '@/components/ui/button'
@@ -27,12 +31,7 @@ import { shouldAutoLoadNextPage, shouldShowLoadMoreButton } from '@/lib/auto-loa
 import { dayOrigin } from '@/lib/day-offset'
 import { orderServices, type TimeAxis } from '@/lib/epg-grid'
 import { domLayoutMeasurable } from '@/lib/list-virtualization'
-import {
-  captureAnchor,
-  locateAnchorTop,
-  scrollAdjustmentToRestoreTop,
-  shouldStopFollowing,
-} from '@/lib/scroll-preservation'
+import { filterProgramsFromListStart } from '@/lib/program-list-window'
 import { DEFAULT_SITE } from '@/lib/site'
 import { lgMediaQuery, useMediaQuery } from '@/lib/use-media-query'
 
@@ -46,14 +45,6 @@ const windowHours = 6
 
 /** EPG のローリングウィンドウ（8 日）に合わせた、日付選択の選択肢の数。 */
 const selectableDays = 8
-
-/**
- * 遡行のアンカー位置合わせ（`loadPrevious` 参照）が見積もり→実測の遷移に
- * 追従し続ける上限。`lib/scroll-preservation.ts` の `shouldStopFollowing`
- * 参照。どちらか片方だけでは打ち切れないケースがあるため両方持つ。
- */
-const followMaxCorrections = 10
-const followMaxElapsedMs = 2000
 
 /** グリッドが一度に描く時間の幅。M2-9 の受け入れ条件が「全サービス x 24 時間」。 */
 const gridWindowHours = 24
@@ -94,10 +85,30 @@ export function ProgramsPage() {
   const [visibleDay, setVisibleDay] = useState(0)
   const [view, setView] = useState<ProgramView>('list')
 
+  // ProgramList への命令的 API（`components/program-list.tsx` の
+  // `ProgramListHandle`）。「既にジャンプ先になっている日」を再タップしたときに
+  // `scrollToDayOffset` を呼ぶために持つ。詳細は `selectDay` のコメント参照。
+  const programListRef = useRef<ProgramListHandle>(null)
+
   // ジャンプ先を選んだら、ハイライトも即座にジャンプ先へ合わせる。ProgramList が
   // 新しい窓の可視範囲から改めて通知するまでの間、古い日をハイライトし続けない
   // ようにする。
+  //
+  // 既に `dayOffset` と同じ日をタップした場合は特別扱いする ---
+  // `setDayOffset(同じ値)` は React が再レンダーの理由にしないため、クエリも
+  // ProgramList への再マウントも起きず、素通しにすると「押しても無反応」に
+  // なる（実機で確認した不具合）。ユーザーはスクロールでその日から離れた場所
+  // （`visibleDay` が別の日）を見ていることがあるので、再タップは「読み込み
+  // 済みならその日の先頭へ戻る」ことを意味する必要がある。読み込み済みかは
+  // `ProgramList` 側（`programs` を持っている）でしか判定できないので、
+  // `scrollToDayOffset`（ref 経由）に委ねる ---
+  // 見つからなければ ProgramList 側が何もしない。
   const selectDay = (offset: number) => {
+    if (offset === dayOffset) {
+      setVisibleDay(offset)
+      programListRef.current?.scrollToDayOffset(offset)
+      return
+    }
     setDayOffset(offset)
     setVisibleDay(offset)
   }
@@ -218,6 +229,28 @@ export function ProgramsPage() {
     )
   }, [query.data])
 
+  // listStartMs は「読み込み済みの最も小さい step の窓の開始時刻を下限（now を
+  // 時で切り捨てた時刻）で clamp したもの」。`query.data.pages` は
+  // fetchPreviousPage で先頭に追加されるので、常に pages[0] が最小の step
+  // （最も手前に読み込んだ窓）になる。
+  const listStartMs = useMemo(() => {
+    const firstStep = query.data?.pages[0]?.step ?? 0
+    const rawFirstStartMs = originMs + firstStep * windowHours * 3600_000
+    return Math.max(rawFirstStartMs, lowerBoundMs)
+  }, [query.data, originMs, lowerBoundMs])
+
+  // API は問い合わせた時間窓に重なる番組を返す（`start_at < window_end AND
+  // end_at > window_start`）ため、先頭の窓の開始時刻より前に始まった番組
+  // （＝まだ読み込んでいない前の窓との重なり）がリストの先頭に混ざる。これを
+  // 見せたままだと日付ヘッダと「いま見ている日」がどちらも前日を指す（実機で
+  // 確認済みの不具合）。`listStartMs` が下限と一致するとき（＝今日を見ている、
+  // または遡行が下限まで達したとき）は例外的に絞り込まない ---
+  // 放送中の番組を隠さないため。判定は `lib/program-list-window.ts` の純関数。
+  const visiblePrograms = useMemo(
+    () => filterProgramsFromListStart(programs, listStartMs, lowerBoundMs),
+    [programs, listStartMs, lowerBoundMs],
+  )
+
   // 絞り込む前の全サービスから作る。絞った側（filterableServices）から作ると、
   // hasPrograms が false の局の番組が来たとき（例えば選択直後にキャッシュが
   // まだ古い）名前が引けなくなる。
@@ -298,14 +331,14 @@ export function ProgramsPage() {
 
   const sentinelRef = useRef<HTMLDivElement>(null)
 
-  // 番兵の <div> は一覧が実際に描かれたとき（!isPending && programs.length > 0）
-  // にしか存在しない。データ取得が終わる前に IntersectionObserver を組み立てる
-  // effect（`[showGrid]` だけに依存する形）だと、初回マウント時点では
+  // 番兵の <div> は一覧が実際に描かれたとき（!isPending && visiblePrograms.length
+  // > 0）にしか存在しない。データ取得が終わる前に IntersectionObserver を
+  // 組み立てる effect（`[showGrid]` だけに依存する形）だと、初回マウント時点では
   // sentinelRef.current がまだ null で、以後 showGrid が変わらない限り
   // 二度と組み立て直されない ---
   // つまり自動読み込みが永遠に発火しない。番兵が実際に DOM にあるかどうかを
   // 明示的な依存にして、描画されたタイミングで確実に組み立て直す。
-  const sentinelMounted = !showGrid && !query.isPending && programs.length > 0
+  const sentinelMounted = !showGrid && !query.isPending && visiblePrograms.length > 0
 
   useEffect(() => {
     if (!sentinelMounted) return
@@ -336,80 +369,18 @@ export function ProgramsPage() {
     return () => observer.disconnect()
   }, [sentinelMounted])
 
-  // 遡行（前の窓の読み込み）はリストの先頭に行を挿入するので、何もしないと
-  // 挿入した高さぶんだけ画面内の内容が下にずれる。「画面上端に見えている行」
-  // （アンカー）の viewport 上の位置を挿入前に控えておき、挿入後にその行を
-  // 探して同じ位置へ揃える（`lib/scroll-preservation.ts` 参照。Safari は
-  // スクロールアンカリングを実装していないので、ブラウザ任せにはできない）。
-  const pendingAnchorRef = useRef<{ programId: number; topPx: number } | null>(null)
-  // 見積もり→実測の遷移に追従している間の後始末。次の遡行が重なったとき
-  // （素早い連打）や、このコンポーネントがアンマウントされるときに、前の
-  // 追従ループを確実に止めるために持つ。
-  const stopFollowingRef = useRef<(() => void) | null>(null)
-
+  // 遡行（前の窓の読み込み）は `query.fetchPreviousPage()` を呼ぶだけ。
+  // 先頭への挿入でスクロール位置がずれないようにする補正（アンカーの位置
+  // 合わせ）は `ProgramList`（`components/program-list.tsx`）側が
+  // `hasPreviousPage` / `onLoadPrevious` 経由で持つ ---
+  // 復元に必要な情報（仮想化の添字・計測値・`virtualizer`）が全部そちらに
+  // あるため。以前はここ（`pages/programs.tsx`）に DOM アンカーを
+  // `document.querySelector` で挿入後に再取得する方式を置いていたが、
+  // 仮想化の可視範囲の再計算でアンカー要素が DOM から消えてしまい機能しな
+  // かった（`lib/scroll-preservation.ts` のコメント参照）。
   const loadPrevious = () => {
-    stopFollowingRef.current?.()
-    stopFollowingRef.current = null
-    pendingAnchorRef.current = captureAnchor()
     void query.fetchPreviousPage()
   }
-
-  useLayoutEffect(() => {
-    const anchor = pendingAnchorRef.current
-    if (!anchor) return
-    pendingAnchorRef.current = null
-
-    const startedAtMs = performance.now()
-    let corrections = 0
-    // `observer.disconnect()` の後にコールバックが呼ばれないことは
-    // ResizeObserver の仕様上の保証だが、それに頼り切らず自前でも打ち切り
-    // 済みかを見る（打ち切り後に何らかの経路でもう一度呼ばれても reconcile
-    // 自体が no-op になる）。
-    let stopped = false
-
-    // アンカーの現在位置を測り直し、控えておいた位置（anchor.topPx）へ
-    // scrollBy で揃える。挿入直後の 1 回目はここで同期的に呼ぶ（レイアウトが
-    // 確定した直後の useLayoutEffect のタイミングなので、ペイント前に間に合う）。
-    // その後は見積もり→実測の遷移で行の高さが変わるたびに ResizeObserver 経由で
-    // 呼び直される。
-    const reconcile = () => {
-      if (stopped) return
-      const currentTopPx = locateAnchorTop(anchor.programId)
-      if (currentTopPx !== null) {
-        const delta = scrollAdjustmentToRestoreTop(anchor.topPx, currentTopPx)
-        if (delta !== 0) window.scrollBy(0, delta)
-      }
-      corrections++
-      const elapsedMs = performance.now() - startedAtMs
-      if (
-        currentTopPx === null ||
-        shouldStopFollowing(
-          { corrections, elapsedMs },
-          { maxCorrections: followMaxCorrections, maxElapsedMs: followMaxElapsedMs },
-        )
-      ) {
-        stop()
-      }
-    }
-
-    // rAF による毎フレームのポーリングではなく document.body の
-    // ResizeObserver を選んだ理由は lib/scroll-preservation.ts のコメント
-    // 参照（実測が届くタイミングが不定なので、実際にレイアウトが変化した
-    // ときにだけ動く方が無駄がない）。
-    const observer = new ResizeObserver(reconcile)
-
-    function stop() {
-      stopped = true
-      observer.disconnect()
-      stopFollowingRef.current = null
-    }
-    stopFollowingRef.current = stop
-
-    reconcile()
-    observer.observe(document.body)
-
-    return stop
-  }, [programs])
 
   return (
     <>
@@ -458,52 +429,49 @@ export function ProgramsPage() {
         />
       ) : (
         <>
-          {/* 遡行はボタンでのみ行う（上スワイプなどのジェスチャにしない）。
-              理由は 2 つ: (1) Android Chrome の pull-to-refresh がページ最上端
-              でのオーバースクロールを占有しており衝突する（前述「M2 のグリッドで
-              横スワイプによるナビゲーションを使わない」と同じ種類の衝突）、
-              (2) 上方向の自動読み込みは、先頭に差し込んだ直後も番兵が上端付近に
-              残るため境界（now）まで連鎖してしまう。下限に達すると
-              `hasPreviousPage` が false になりボタンごと消える。 */}
-          {query.hasPreviousPage && !query.isPending && (
-            <div className="px-4 pt-4">
-              <Button
-                variant="outline"
-                size="sm"
-                className="w-full"
-                disabled={query.isFetchingPreviousPage}
-                onClick={loadPrevious}
-              >
-                {query.isFetchingPreviousPage ? '読み込み中…' : '前を読み込む'}
-              </Button>
-              {query.isFetchPreviousPageError && (
-                <p className="pt-2 text-center text-sm text-destructive">
-                  前の読み込みに失敗しました
-                </p>
-              )}
-            </div>
-          )}
-
           {query.isError ? (
             <ErrorState>番組の取得に失敗しました</ErrorState>
           ) : query.isPending ? (
             <ListSkeleton />
-          ) : programs.length === 0 ? (
-            <EmptyState>この時間帯の番組がありません</EmptyState>
           ) : (
-            <ProgramList
-              programs={programs}
-              serviceById={serviceById}
-              actions={actions}
-              onVisibleDayChange={setVisibleDay}
-              now={nowMs}
-            />
+            <>
+              {/* 遡行の失敗表示。ボタン自体は ProgramList 側（下記）が持つが、
+                  失敗の有無は query から直接分かるのでここに残す。 */}
+              {query.isFetchPreviousPageError && (
+                <p className="px-4 pt-4 text-center text-sm text-destructive">
+                  前の読み込みに失敗しました
+                </p>
+              )}
+              {visiblePrograms.length === 0 && (
+                <EmptyState>この時間帯の番組がありません</EmptyState>
+              )}
+              {/* 遡行はボタンでのみ行う（上スワイプなどのジェスチャにしない）。
+                  理由は 2 つ: (1) Android Chrome の pull-to-refresh がページ最上端
+                  でのオーバースクロールを占有しており衝突する（前述「M2 のグリッドで
+                  横スワイプによるナビゲーションを使わない」と同じ種類の衝突）、
+                  (2) 上方向の自動読み込みは、先頭に差し込んだ直後も番兵が上端付近に
+                  残るため境界（now）まで連鎖してしまう。下限に達すると
+                  `hasPreviousPage` が false になりボタンごと消える。
+                  ボタン自体とその押下時のスクロール位置復元は `ProgramList`
+                  （仮想化を持っているコンポーネント）に移してある。 */}
+              <ProgramList
+                ref={programListRef}
+                programs={visiblePrograms}
+                serviceById={serviceById}
+                actions={actions}
+                onVisibleDayChange={setVisibleDay}
+                now={nowMs}
+                hasPreviousPage={query.hasPreviousPage}
+                isFetchingPreviousPage={query.isFetchingPreviousPage}
+                onLoadPrevious={loadPrevious}
+              />
+            </>
           )}
 
           {/* 番兵。進行方向の自動読み込み（IntersectionObserver）はこれを見る。
               計測できない環境では監視対象を作らないだけで、要素自体は無害
               なので出したままにする。 */}
-          {!query.isPending && programs.length > 0 && (
+          {!query.isPending && visiblePrograms.length > 0 && (
             <div ref={sentinelRef} aria-hidden className="h-px" />
           )}
 

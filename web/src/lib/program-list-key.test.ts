@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { ProgramListItem } from '@/api/generated'
-import { programKeyAt } from '@/lib/program-list-key'
+import { findProgramIndex, programKeyAt } from '@/lib/program-list-key'
 
 /** program は最小限のフィールドだけ埋めた `ProgramListItem`。programKeyAt は programId しか見ない。 */
 function program(programId: number): ProgramListItem {
@@ -54,5 +54,24 @@ describe('programKeyAt（仮想化の getItemKey）', () => {
     // 実測値を programId 99 の行のものとして扱ってしまう、というのがこの
     // バグの実体
     expect(indexBasedKey(1)).not.toBe(programKeyAt(after, 1))
+  })
+})
+
+describe('findProgramIndex（遡行アンカーの新しい添字を引く）', () => {
+  it('先頭に差し込まれた後でも、控えておいた programId から新しい添字を引ける', () => {
+    const before = [program(10), program(20), program(30)]
+    // 遡行で先頭に 1 件差し込まれた状態を模す
+    const after = [program(99), ...before]
+
+    // 差し込み前に控えた「programId 10 の行」は、差し込み後は添字 1 に移動している
+    expect(findProgramIndex(after, 10)).toBe(1)
+    expect(findProgramIndex(after, 20)).toBe(2)
+    expect(findProgramIndex(after, 30)).toBe(3)
+  })
+
+  it('対照: 控えた programId が新しい配列に存在しない場合は null を返す（呼び出し側は何もしない）', () => {
+    const after = [program(99), program(10), program(20)]
+
+    expect(findProgramIndex(after, 404)).toBeNull()
   })
 })

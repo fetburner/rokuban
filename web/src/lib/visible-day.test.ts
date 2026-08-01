@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { visibleDayOffset } from '@/lib/visible-day'
+import { firstIndexForDayOffset, visibleDayOffset } from '@/lib/visible-day'
 
 const now = new Date(2026, 7, 1, 10, 0, 0, 0).getTime() // 2026-08-01 10:00
 
@@ -41,5 +41,33 @@ describe('visibleDayOffset', () => {
   it('now より前の番組（時計のずれ等）が先頭に来ても 0 未満にはならない', () => {
     const programs = [programAt(-2)]
     expect(visibleDayOffset(programs, 0, now)).toBe(0)
+  })
+})
+
+describe('firstIndexForDayOffset（visibleDayOffset と対になる向き）', () => {
+  it('指定した dayOffset の暦日に一致する最初の番組の添字を返す', () => {
+    const programs = [programAt(0, 23), programAt(1, 0), programAt(1, 1), programAt(2, 5)]
+    expect(firstIndexForDayOffset(programs, 1, now)).toBe(1)
+    expect(firstIndexForDayOffset(programs, 2, now)).toBe(3)
+  })
+
+  it('先頭に一致しても、複数候補があれば「最初」の添字を返す', () => {
+    const programs = [programAt(0, 1), programAt(0, 2), programAt(1, 0)]
+    expect(firstIndexForDayOffset(programs, 0, now)).toBe(0)
+  })
+
+  it('対照: visibleDayOffset で得た offset を firstIndexForDayOffset に渡すと同じ番組の添字に戻る', () => {
+    const programs = [programAt(0, 23), programAt(1, 0), programAt(1, 1)]
+    const offset = visibleDayOffset(programs, 2, now)
+    expect(firstIndexForDayOffset(programs, offset, now)).toBe(1)
+  })
+
+  it('該当する暦日の番組が 1 件も無ければ null を返す（まだ読み込んでいない日）', () => {
+    const programs = [programAt(0), programAt(1)]
+    expect(firstIndexForDayOffset(programs, 5, now)).toBeNull()
+  })
+
+  it('番組が 0 件でも null を返す', () => {
+    expect(firstIndexForDayOffset([], 0, now)).toBeNull()
   })
 })
