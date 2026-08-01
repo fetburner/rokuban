@@ -9,7 +9,9 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "vitest run",
+    "e2e": "node e2e/checks.mjs",
+    "e2e:diagnose": "node e2e/diagnose.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.6.0",
@@ -48,6 +50,7 @@
     "tailwindcss": "^4.3.3",
     "typescript": "~6.0.2",
     "vite": "^7.3.6",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.10",
+    "playwright": "^1.56.0"
   }
 }
