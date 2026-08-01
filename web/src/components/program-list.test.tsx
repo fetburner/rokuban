@@ -83,6 +83,7 @@ function renderList(
     now?: number
     hasPreviousPage?: boolean
     isFetchingPreviousPage?: boolean
+    previousDateLabel?: string | null
     onLoadPrevious?: () => void
     ref?: React.RefObject<ProgramListHandle | null>
   } = {},
@@ -100,6 +101,7 @@ function renderList(
         now={extra.now}
         hasPreviousPage={extra.hasPreviousPage ?? false}
         isFetchingPreviousPage={extra.isFetchingPreviousPage ?? false}
+        previousDateLabel={extra.previousDateLabel ?? null}
         onLoadPrevious={extra.onLoadPrevious ?? vi.fn()}
       />
     </QueryClientProvider>,
@@ -246,6 +248,28 @@ describe('ProgramList', () => {
       expect(button).toBeDisabled()
       // 通常時のラベルには戻っていない（対照）
       expect(screen.queryByRole('button', { name: '前を読み込む' })).not.toBeInTheDocument()
+    })
+
+    it('previousDateLabel が渡されているとき、ボタンのラベルにその日付を出す（押す前に何が起きるか分かるように）', async () => {
+      renderList([program(1, 1, '対象番組')], actions(), {
+        hasPreviousPage: true,
+        previousDateLabel: '8/5(水)',
+      })
+
+      await screen.findByText('対象番組')
+      expect(screen.getByRole('button', { name: '前を読み込む（8/5(水)）' })).toBeInTheDocument()
+      // 日付なしの汎用ラベルには戻っていない（対照）
+      expect(screen.queryByRole('button', { name: '前を読み込む' })).not.toBeInTheDocument()
+    })
+
+    it('previousDateLabel が null のとき（本来は hasPreviousPage と同時に決まるはずだが、念のため）、日付なしの汎用ラベルにフォールバックする', async () => {
+      renderList([program(1, 1, '対象番組')], actions(), {
+        hasPreviousPage: true,
+        previousDateLabel: null,
+      })
+
+      await screen.findByText('対象番組')
+      expect(screen.getByRole('button', { name: '前を読み込む' })).toBeInTheDocument()
     })
   })
 

@@ -1,6 +1,7 @@
 import { useWindowVirtualizer } from '@tanstack/react-virtual'
 import {
   forwardRef,
+  useCallback,
   useEffect,
   useImperativeHandle,
   useLayoutEffect,
@@ -15,7 +16,7 @@ import { ProgramRow } from '@/components/program-row'
 import { dayKey, formatDate } from '@/lib/format'
 import { domLayoutMeasurable } from '@/lib/list-virtualization'
 import { findProgramIndex, programKeyAt } from '@/lib/program-list-key'
-import { captureAnchor } from '@/lib/scroll-preservation'
+import { captureAnchor, type AnchorSnapshot } from '@/lib/scroll-preservation'
 import { firstIndexForDayOffset, visibleDayOffset } from '@/lib/visible-day'
 
 /**
@@ -150,12 +151,14 @@ const overscanRows = 8
  *
  * 手順:
  * 1. ボタンを押した瞬間、`captureAnchor()`（`lib/scroll-preservation.ts`）で
- *    「画面上端に見えている行」の programId を読み、ref に控える。この時点では
- *    まだ何も挿入されていないので、実際にレイアウトされている DOM を安全に読める
+ *    「sticky 要素の下端より下に見えている行」の { programId, topPx }（その時点の
+ *    画面上の位置）を読み、ref に控える。この時点ではまだ何も挿入されていない
+ *    ので、実際にレイアウトされている DOM を安全に読める
  * 2. `onLoadPrevious()` を呼ぶ（`fetchPreviousPage()`。先頭に新しい窓が積まれる）
  * 3. `programs` が変わったら（挿入完了）、控えた programId から
  *    `findProgramIndex`（`lib/program-list-key.ts`）で**挿入後の添字**を引き直し、
- *    `virtualizer.scrollToIndex(newIndex, { align: 'start' })` を呼ぶ
+ *    `alignRowTop(newIndex, topPx)`（下記）でその行を「元々見えていた画面上の
+ *    位置」に戻す
  *
  * 以前は手順 3 を「同じ programId の行を DOM から再度探して top を測り直す」
  * 方式（`locateAnchorTop` + `window.scrollBy`）でやっていたが、これは**仮想化と
@@ -165,15 +168,75 @@ const overscanRows = 8
  * 見つからないので `null` が返り、`window.scrollBy` は一度も呼ばれず、
  * 「スクロール位置が変わらないまま可視範囲だけ再計算され、同じ位置に別の番組が
  * 来る」形で壊れていた（実機で確認済み。詳細は `lib/scroll-preservation.ts` の
- * コメント）。`scrollToIndex` は仮想化ライブラリ自身が持つ座標系（見積もり→実測の
- * 遷移も含めて）を使うので、対象の行が現在 DOM に存在するかどうかに依存しない。
+ * コメント）。`virtualizer.scrollToIndex` は仮想化ライブラリ自身が持つ座標系
+ * （見積もり→実測の遷移も含めて）を使うので、対象の行が現在 DOM に存在するか
+ * どうかに依存しない。
  *
- * `align: 'start'` なので、押した時点で行の途中を見ていた場合は最大 1 行ぶん
- * ずれることがあるが、許容する（以前は数時間ずれていた）。
+ * ## `alignRowTop`: `scrollToIndex` を「y=0 以外」に揃えるための薄いラッパー
+ * （4 回目の修正で追加）
+ *
+ * `virtualizer.scrollToIndex(index, { align: 'start' })` は常に対象行の上端を
+ * viewport の **y=0** に揃える。sticky な PageHeader・「前を読み込む」ボタンの
+ * 裏に隠れないよう、あるいはキャプチャ時点で実際に見えていた位置（`topPx`。
+ * 押した瞬間のスクロール量次第で sticky の下端ぴったりとは限らない）に戻す
+ * には、y=0 以外の基準に揃える必要がある。
+ *
+ * TanStack Virtual はこれを `scrollPaddingStart` オプション（既定 0）で表現する
+ * ---
+ * `align: 'start'` は実際には「y=`scrollPaddingStart`」に揃える。`alignRowTop`
+ * は呼び出しのたびにこれを一時的に上書きしてから `scrollToIndex` を呼ぶ薄い
+ * ラッパーで、`scrollPaddingStartRef`（`virtualizer` に渡すオプションの一部。
+ * ref なので値を変えても再レンダー不要）と `virtualizer.setOptions()`
+ * （React の再レンダーを経由せず `virtualizer.options` を直接書き換える）の
+ * 両方を同時に更新する。
+ *
+ * **なぜ両方を更新する必要があるか**: 最初 `window.scrollTo` で y=0 から
+ * `topPx` だけずらす方式を試したが、実機で確認すると **次のフレームで静かに
+ * y=0 側へ戻ってしまった**。`scrollToIndex` は「対象行の上端を揃え続ける」
+ * ことを内部状態（`scrollState`）に保存し、実測値が出揃うまで数フレームかけて
+ * `getOffsetForIndex(index, align)` を再評価・再スクロールする
+ * （`reconcileScroll`。見積もり→実測の遷移を追従するための仕組みで、これ自体は
+ * 有用 --- 外すと今度は逆に、挿入した約 70 行ぶんの見積もり誤差がそのまま
+ * スクロール位置のズレとして残ってしまうことも実機で確認した）。この
+ * 再評価は `this.options.scrollPaddingStart`（＝react-virtual アダプタが
+ * 次の再レンダーのたびに `useWindowVirtualizer` の呼び出し引数で
+ * 上書きし直す値）を見るので、`virtualizer.setOptions()` だけを直接呼んで
+ * その場をしのいでも、次の再レンダー（`window.dispatchEvent` が起こす
+ * 同期的な再描画を含む）で `scrollPaddingStartRef.current` の値に巻き戻されて
+ * しまう。ref と `setOptions` の両方を同時に更新することで、初回のジャンプも
+ * 後続フレームの再評価も一貫して同じ基準（y=`topPx`）を使い続けるようにした。
+ *
+ * `scrollToDayOffset`（下記）でこの ref を明示的に 0 へ戻しているのは、直前の
+ * 遡行操作が残した非 0 の値に、無関係な別の操作が引きずられないようにするため。
  *
  * 計測できない環境（`renderAll`）では仮想化そのものをバイパスしているので
- * `scrollToIndex` を呼ばない —— 呼んでも対応する意味がなく、実機でしか効果を
+ * `alignRowTop` を呼ばない —— 呼んでも対応する意味がなく、実機でしか効果を
  * 確認できないことに変わりはない。
+ *
+ * ## フレーム跳ね: 補正は「描画前」だけでは足りない（4 回目の修正で追記）
+ *
+ * `useLayoutEffect` は DOM 変更のコミット後・ペイント前に走るので、ここで
+ * スクロール位置を補正すれば「一度描画されてから跳ねる」ことは無いはずに見える。
+ * しかし実機で計測すると、挿入直後の 1 フレームだけ大きく（実測 400px 超）跳ねて
+ * いた。原因は `window.scrollTo()` が `window.scrollY` を同期的に更新する一方、
+ * `virtualizer` が可視範囲の計算に使う内部スクロール位置（`getVirtualItems()` が
+ * 使う座標）は、ブラウザの 'scroll' イベント（`window.scrollTo` に対して非同期に
+ * 発火する。早くても次のフレーム）を受けてはじめて更新される点にある ---
+ * つまり `useLayoutEffect` 自体はペイント前でも、その中で呼ぶ `window.scrollTo`
+ * は「ブラウザの scrollY を進める」ことと「`virtualizer` に新しい scrollY を
+ * 教える」ことの間に非同期の間隙を持つ。この間隙のせいで、次のフレームの描画は
+ * 「新しい scrollY のまま、まだ古い（差し込み前の見積もりサイズに基づく）
+ * paddingTop で描かれた」状態になり、これが 1 フレームだけの跳ねとして見える。
+ *
+ * 対処は、`window.scrollTo` の直後に `window.dispatchEvent(new Event('scroll'))`
+ * で同期的に 'scroll' イベントを発火させること。ブラウザが自発的に発火する
+ * 'scroll' イベントは非同期だが、`dispatchEvent` で自分から発火させれば
+ * イベントリスナー（`virtualizer` が登録している）はその場で同期的に呼ばれる。
+ * リスナーは発火時点の実際の `window.scrollY`（既に `window.scrollTo` で更新
+ * 済み）を読むので、`virtualizer` の内部状態はペイント前（このレイアウト
+ * エフェクトが完了する前）に正しい scrollY へ追いつく。react-virtual の
+ * アダプタはこの更新を `flushSync` で即時コミットする（`useFlushSync`
+ * オプション、既定 true）ので、ペイントに間に合う。
  *
  * ## `ProgramListHandle`（「既にジャンプ先の日」を再タップしたときの復帰）
  *
@@ -203,6 +266,20 @@ export const ProgramList = forwardRef<
     hasPreviousPage: boolean
     /** 遡行の取得中か。ボタンを無効化し、ラベルを「読み込み中…」に変える。 */
     isFetchingPreviousPage: boolean
+    /**
+     * 次に「前を読み込む」で取得する日付（`lib/previous-day-window.ts` の
+     * `previousDayWindow` から `pages/programs.tsx` が算出し、
+     * `lib/format.ts` の `formatDate` で整形した文字列。例:「8/5(水)」）。
+     * ボタンのラベルに「前を読み込む（8/5(水)）」の形で出す（押す前に何が
+     * 起きるか分かるように）。「前を読み込む」という語自体は残す ---
+     * ここを削ると、ボタンを正規表現 `/前を読み込む/` で探す既存の実機検証
+     * スクリプトが見つけられなくなる。
+     *
+     * `hasPreviousPage` が true なのに `null` のときは日付を省いたラベルに
+     * フォールバックする（本来は同じ入力から出るので同時に起きないはずだが、
+     * フォールバックを用意して壊れ方を穏やかにする）。
+     */
+    previousDateLabel: string | null
     /** ボタンを押したときに呼ぶ（`fetchPreviousPage()` の実行は呼び出し側の責務）。 */
     onLoadPrevious: () => void
   }
@@ -215,6 +292,7 @@ export const ProgramList = forwardRef<
     now,
     hasPreviousPage,
     isFetchingPreviousPage,
+    previousDateLabel,
     onLoadPrevious,
   },
   ref,
@@ -260,13 +338,56 @@ export const ProgramList = forwardRef<
   // メモ化していないので「programs が変わったのに古い配列を閉じ込めた
   // 関数が残る」という古さの問題がそもそも起きない（常に最新の
   // `programs` を閉じている）。
+  // scrollToIndex/scrollToDayOffset が「行の上端を viewport のどこに揃えるか」
+  // （`align: 'start'` の基準点）を都度切り替えるための ref。詳細は下記
+  // `alignRowTop` のコメント参照。ref なのは、値を変えても再レンダーで
+  // `virtualizer` を作り直す必要がなく（`setOptions` で直接反映する）、
+  // 状態として保持する意味が無いため。
+  const scrollPaddingStartRef = useRef(0)
+
   const virtualizer = useWindowVirtualizer({
     count: programs.length,
     estimateSize: () => estimatedRowHeightPx,
     getItemKey: (index) => programKeyAt(programs, index),
     overscan: overscanRows,
     scrollMargin,
+    scrollPaddingStart: scrollPaddingStartRef.current,
   })
+
+  /**
+   * alignRowTop は、`index` の行を viewport の `paddingTopPx` の位置（上端から
+   * その px だけ下）に揃えてスクロールする。
+   *
+   * `virtualizer.scrollToIndex(index, { align: 'start' })` は常に viewport の
+   * y=0 に揃える（`scrollPaddingStart` オプション、既定 0）。sticky な
+   * PageHeader・「前を読み込む」ボタンの裏に隠れないよう y=0 より下（sticky の
+   * 下端、あるいはキャプチャ時点の実際の位置）に揃えたい場合は、この
+   * `scrollPaddingStart` を一時的に上書きする必要がある。
+   *
+   * `virtualizer.setOptions()` は React の再レンダーを経由せずに
+   * `virtualizer.options` を直接書き換える（`useWindowVirtualizer` の
+   * アダプタは次の再レンダーで `scrollPaddingStartRef.current` を読み直して
+   * 上書きするので、ref も同時に更新して整合させる）。こうしておかないと、
+   * `scrollToIndex` 自身の初回ジャンプは正しくても、後続フレームで走る内部の
+   * 再評価（見積もり→実測の遷移を追従する仕組み。`reconcileScroll`）が
+   * 「常に y=0」に基づいて再計算し、揃えた位置を y=0 側へ引き戻してしまう
+   * （実機で確認済み）。`scrollPaddingStart` は `reconcileScroll` が呼ぶのと
+   * 同じ `getOffsetForIndex` から参照されるので、ここで揃えておけば
+   * 後続フレームの再評価も同じ基準（y=`paddingTopPx`）を使い続ける。
+   *
+   * `useCallback` にしてあるのは、依存する効果（下記の遡行アンカー復元・
+   * `ProgramListHandle.scrollToDayOffset`）の依存配列にこの関数自体を含めても
+   * `virtualizer`（安定した参照。`useWindowVirtualizer` 内部で `useState` に
+   * 保持され、マウント後は変わらない）が変わらない限り毎回作り直されないため。
+   */
+  const alignRowTop = useCallback(
+    (index: number, paddingTopPx: number) => {
+      scrollPaddingStartRef.current = paddingTopPx
+      virtualizer.setOptions({ ...virtualizer.options, scrollPaddingStart: paddingTopPx })
+      virtualizer.scrollToIndex(index, { align: 'start' })
+    },
+    [virtualizer],
+  )
 
   // 計測できない環境では仮想化そのものをバイパスする。`measureElement` を
   // 呼ばない（呼ぶと全行が高さ 0 に潰れて可視範囲の計算が壊れる。上記コメント
@@ -301,31 +422,71 @@ export const ProgramList = forwardRef<
     ? programs.map((_, index) => index)
     : virtualItems.map((item) => item.index)
 
-  // 遡行のアンカー復元。ボタンを押した時点の programId を控えておき（DOM 挿入前
-  // なので安全に読める）、`programs` の更新（挿入完了）を検知したら仮想化ライブラリ
-  // 上の新しい添字を引いて `scrollToIndex` する。上記コメント「『前を読み込む』
-  // ボタンと遡行のアンカー復元」参照。
-  const pendingAnchorProgramIdRef = useRef<number | null>(null)
+  // 遡行のアンカー復元。ボタンを押した時点の { programId, topPx } を控えておき
+  // （DOM 挿入前なので安全に読める）、`programs` の更新（挿入完了）を検知したら
+  // 仮想化ライブラリ上の新しい添字を引いて `scrollToIndex` する。上記コメント
+  // 「『前を読み込む』ボタンと遡行のアンカー復元」参照。
+  const pendingAnchorRef = useRef<AnchorSnapshot | null>(null)
 
   const handleLoadPrevious = () => {
-    pendingAnchorProgramIdRef.current = captureAnchor()
+    pendingAnchorRef.current = captureAnchor()
     onLoadPrevious()
   }
 
   useLayoutEffect(() => {
-    const programId = pendingAnchorProgramIdRef.current
-    if (programId === null) return
-    pendingAnchorProgramIdRef.current = null
+    const anchor = pendingAnchorRef.current
+    if (anchor === null) return
+    pendingAnchorRef.current = null
     // 計測できない環境では仮想化そのものをバイパスしているので、その座標系に
     // 乗る scrollToIndex を呼んでも意味がない（上記コメント参照）。
     if (renderAll) return
-    const newIndex = findProgramIndex(programs, programId)
+    const newIndex = findProgramIndex(programs, anchor.programId)
     if (newIndex === null) return
-    virtualizer.scrollToIndex(newIndex, { align: 'start' })
-    // ペンディング（pendingAnchorProgramIdRef）が無ければ最初の行で早期リターン
-    // するだけなので、`renderAll` / `virtualizer` が毎レンダー作り直されて
+
+    // 対象の行を、キャプチャ時点で実際に見えていた画面上の位置
+    // （`anchor.topPx`。sticky の下端に隠れることも、押した瞬間のスクロール量も
+    // 反映済み。`lib/scroll-preservation.ts` の `captureAnchor` 参照）へ揃える。
+    // `alignRowTop`（上記コメント参照）を使うことで、`virtualizer` 内部の
+    // 「見積もり→実測の遷移を追従する」仕組み（`reconcileScroll`）も同じ基準
+    // （y=`anchor.topPx`）で後続フレームの再評価を行い続ける ---
+    // 単に `scrollToIndex` の後で `window.scrollTo` によるズレ補正を別途行う
+    // 方式だと、この仕組みが「常に y=0」に基づいて再評価し、補正を打ち消して
+    // y=0 側へ引き戻してしまうことを実機で確認した。
+    alignRowTop(newIndex, anchor.topPx)
+
+    // `virtualizer` が可視範囲の計算に使う内部スクロール位置は、ブラウザの
+    // 'scroll' イベント（`window.scrollTo` に対して非同期に発火する）を受けて
+    // はじめて更新される。このイベントが実際に届くのは早くても次のフレームなので、
+    // ここまでを `window.scrollTo` だけで済ませると「行を差し込んだ直後の
+    // 1 フレームだけ、新しい scrollY のまま古い描画（差し込み前の見積もり
+    // サイズに基づく paddingTop）が見える」瞬間が残ってしまう ---
+    // `useLayoutEffect` はペイント前に走るが、`window.scrollTo` 自体が内部的に
+    // 非同期（'scroll' イベント経由）なので、「描画前に補正する」だけでは
+    // 1 フレーム漏れる。ここで同期的に 'scroll' イベントを発火させることで、
+    // ペイント前（このレイアウトエフェクトが完了する前）に補正後の描画を確定させる
+    // （実機で 1 フレームだけ大きく跳ねるのを確認し、これで消えることも確認した）。
+    window.dispatchEvent(new Event('scroll'))
+
+    // 1 回目の `alignRowTop` は、挿入された約 70 行のうち大半がまだ一度も
+    // 実測されていない（`estimateSize` の見積もりのまま）時点での計算なので、
+    // 実際の描画位置とは数百 px ズレることがある。上の `dispatchEvent` が
+    // 引き起こす再描画で、その付近の行が実測されキャッシュが更新されるので、
+    // 同じ操作をもう一度行うと今度は更新済みのキャッシュを使って計算し直され、
+    // 実際の位置によく一致する。ここで直さないと、次のアニメーションフレームで
+    // ライブラリ内部の再評価（`reconcileScroll`）が同じ補正をして「1 フレームだけ
+    // 大きく跳ねてから直る」という、直したかった症状がそのまま残ってしまう
+    // （実機で確認: 1 回目だけだと 1 フレーム分の跳ねが残り、2 回目を足すと消えた。
+    // 3 回目を試しても scrollY は変わらなかった --- 2 回目の時点で使った
+    // キャッシュが、対象行の周辺として既に安定していたということ）。
+    // 「安定するまで」ではなく固定 2 回（`requestAnimationFrame` 等を使わない、
+    // 同期的な決め打ちの手順）にしてあるのは、jsdom で検証できない自前の
+    // 追従ループを作らないため。
+    alignRowTop(newIndex, anchor.topPx)
+    window.dispatchEvent(new Event('scroll'))
+    // ペンディング（pendingAnchorRef）が無ければ最初の行で早期リターンするだけ
+    // なので、`renderAll` / `virtualizer` / `alignRowTop` が毎レンダー作り直されて
     // この effect が programs 以外の理由でも走ることになっても無害。
-  }, [programs, renderAll, virtualizer])
+  }, [programs, renderAll, virtualizer, alignRowTop])
 
   // `ProgramListHandle`。上記 doc コメント「ProgramListHandle（『既にジャンプ先の
   // 日』を再タップしたときの復帰）」参照。findProgramIndex ベースの遡行アンカー
@@ -343,10 +504,14 @@ export const ProgramList = forwardRef<
         if (renderAll) return
         const index = firstIndexForDayOffset(programs, dayOffset, now ?? Date.now())
         if (index === null) return
-        virtualizer.scrollToIndex(index, { align: 'start' })
+        // y=0 に揃える（`paddingTopPx=0`）。遡行のアンカー復元（上記）が
+        // `scrollPaddingStartRef` を非 0 のまま残すことがあるので、この
+        // 呼び出しでは明示的に 0 を指定して上書きする ---
+        // 直前の遡行操作の値に引きずられないようにするため。
+        alignRowTop(index, 0)
       },
     }),
-    [programs, renderAll, virtualizer, now],
+    [programs, renderAll, now, alignRowTop],
   )
 
   // ボタン自身の高さを `--load-previous-height` に書き出す（`components/page.tsx`
@@ -398,7 +563,11 @@ export const ProgramList = forwardRef<
             disabled={isFetchingPreviousPage}
             onClick={handleLoadPrevious}
           >
-            {isFetchingPreviousPage ? '読み込み中…' : '前を読み込む'}
+            {isFetchingPreviousPage
+              ? '読み込み中…'
+              : previousDateLabel
+                ? `前を読み込む（${previousDateLabel}）`
+                : '前を読み込む'}
           </Button>
         </div>
       )}

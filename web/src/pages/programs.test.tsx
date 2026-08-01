@@ -783,8 +783,9 @@ describe('ProgramsPage の遡行（前の時間窓の読み込み）', () => {
     // うる（現在が 23 時台だとちょうど一致する）。offset 2 ならどの実行時刻でも
     // 重ならない。
     const targetOriginMs = dayOrigin(2).getTime()
-    // 前日深夜（targetOrigin の 1 時間前）は必ず「1 窓遡る」だけで届く
-    // 位置に置く（windowHours は 6 時間なので、6 時間以内なら 1 回で届く）。
+    // 前日深夜（targetOrigin の 1 時間前）は必ず「1 回押す」だけで届く位置に
+    // 置く（遡行は 1 暦日＝前日 0 時〜当日 0 時ぶんを 1 回で読むので、24 時間
+    // 以内なら 1 回で届く。`lib/previous-day-window.ts`）。
     const lateTonight = programAtAbsolute(201, 1024, targetOriginMs - 3_600_000, '前日深夜の番組')
     stubApi([], [], [...allPrograms, lateTonight])
     renderPage()
@@ -798,7 +799,10 @@ describe('ProgramsPage の遡行（前の時間窓の読み込み）', () => {
     await waitFor(() => expect(screen.queryByText('ニュース7')).not.toBeInTheDocument())
     expect(screen.queryByText('前日深夜の番組')).not.toBeInTheDocument()
 
-    const loadPrevious = await screen.findByRole('button', { name: '前を読み込む' })
+    // ボタンのラベルには読み込む日付が入る（`lib/previous-day-window.ts` +
+    // `lib/format.ts` の `formatDate`）ので、日付部分は問わない正規表現で探す。
+    // 正確な日付ラベルの形式そのものは `program-list.test.tsx` 側で確認済み。
+    const loadPrevious = await screen.findByRole('button', { name: /^前を読み込む（.+）$/ })
     await userEvent.click(loadPrevious)
 
     expect(await screen.findByText('前日深夜の番組')).toBeInTheDocument()
@@ -807,8 +811,6 @@ describe('ProgramsPage の遡行（前の時間窓の読み込み）', () => {
   it('下限（now）まで遡ると「前を読み込む」ボタンが消える', async () => {
     // offset 1 ではなく 2 にする理由は上のテストと同じ（`allPrograms` の
     // 固定オフセットとの窓の重なりを実行時刻によらず避けるため）。
-    const nowMs = dayOrigin(0).getTime()
-    const targetOriginMs = dayOrigin(2).getTime()
     stubApi()
     renderPage()
 
@@ -818,14 +820,15 @@ describe('ProgramsPage の遡行（前の時間窓の読み込み）', () => {
     await userEvent.click(within(dayGroup).getAllByRole('button')[2]) // offset 2 = 明後日
     await waitFor(() => expect(screen.queryByText('ニュース7')).not.toBeInTheDocument())
 
-    // windowHours（pages/programs.tsx のプライベート定数、6 時間）ぶんずつ
-    // 遡ると下限（now）に達するまでに必要な回数。これを超えて遡ることは無い
+    // 遡行は 1 回につき 1 暦日ぶん進む（`previousDayWindow`）。明後日 0 時から
+    // 下限（now）に達するまでは、選んだ日数ぶん（ここでは 2 = 明後日）押せば
+    // 必ず届く --- 1 回目で明日 0 時、2 回目で当日 0 時（下限より前になるので
+    // 下限で clamp）に達し、下限ちょうどになった時点で次の前page は無くなる
     // （両方向のテスト: 下限に届く前はボタンがあり、届いたら消える）。
-    const windowHoursMs = 6 * 3_600_000
-    const stepsToLowerBound = Math.ceil((targetOriginMs - nowMs) / windowHoursMs)
+    const stepsToLowerBound = 2
 
     for (let i = 0; i < stepsToLowerBound; i++) {
-      const button = await screen.findByRole('button', { name: '前を読み込む' })
+      const button = await screen.findByRole('button', { name: /^前を読み込む（.+）$/ })
       await userEvent.click(button)
       // このクリックの取得が終わってから次のクリックへ進む
       await waitFor(() => {
@@ -835,7 +838,7 @@ describe('ProgramsPage の遡行（前の時間窓の読み込み）', () => {
     }
 
     await waitFor(() =>
-      expect(screen.queryByRole('button', { name: '前を読み込む' })).not.toBeInTheDocument(),
+      expect(screen.queryByRole('button', { name: /^前を読み込む（.+）$/ })).not.toBeInTheDocument(),
     )
   })
 
@@ -873,7 +876,7 @@ describe('ProgramsPage の遡行（前の時間窓の読み込み）', () => {
     // 空でも「この時間帯の番組がありません」とボタンが両方出る
     expect(screen.getByText('この時間帯の番組がありません')).toBeInTheDocument()
 
-    const loadPrevious = await screen.findByRole('button', { name: '前を読み込む' })
+    const loadPrevious = await screen.findByRole('button', { name: /^前を読み込む（.+）$/ })
     await userEvent.click(loadPrevious)
 
     expect(await screen.findByText('前日深夜の番組3')).toBeInTheDocument()

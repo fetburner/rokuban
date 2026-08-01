@@ -223,20 +223,41 @@ Android のジェスチャーナビは左右端からの横スワイプが「戻
 - **遡行の下限は「now を時で切り捨てた時刻」。** 放送済み番組の閲覧は
   スコープ外。サーバーの EPG 保持期間の設定には依存させない（クライアント側で
   now を不変条件として持つだけで足りる）。下限に達したらボタンを出さない
+- **遡行は 1 暦日（前日 0 時〜当日 0 時）単位で読む（4 回目の修正）。進行方向
+  （先の時間・自動読み込み）は 6 時間ぶんずつ（`windowHours`）のまま変えて
+  いない。** 理由は日付ヘッダの帯（下記「先頭行の帯が遡行のたびに増減する」
+  参照）で、境界を暦日に揃えないと帯の増減でスクロール位置がずれる。進行方向は
+  増分読み込みとして機能しているだけで日付ヘッダの帯とは無関係なので 6 時間の
+  ままにしてある。`pages/programs.tsx` の `useInfiniteQuery` は pageParam /
+  ページの形を `{ startMs, endMs }`（取得した半開区間そのもの）にしてあり、
+  `step` のような抽象的なカーソルにしていない --- 進行方向は
+  `windowHours` 幅、遡行は 1 暦日幅と、2 方向で窓の刻み方が異なるため、
+  共通の「窓の個数」では表現できない。次に遡って読む窓は
+  `lib/previous-day-window.ts` の `previousDayWindow`（純関数。前日 0 時が
+  下限より前になる場合は下限で打ち切り、それでも下限に達していれば `null`
+  を返して呼び出し側がボタンを消す）が決める
+- **「前を読み込む」ボタンのラベルに読み込む日付を出す
+  （「前を読み込む（8/5(水)）」の形。`pages/programs.tsx` が `previousDayWindow`
+  の結果を `lib/format.ts` の `formatDate` で整形し、`ProgramList` の
+  `previousDateLabel` prop に渡す）。** 押す前に何が起きるか（どの日が
+  増えるか）分かるようにするため。「前を読み込む」という語自体は残す ---
+  実機検証で使うスクリプト群がボタンを正規表現 `/前を読み込む/` で探しており、
+  ここを削ると見つけられなくなる
 - **先頭への挿入はスクロール位置がずれる。補正は「アンカーの programId から
-  仮想化ライブラリ上の添字を引き直し、`virtualizer.scrollToIndex` を呼ぶ」方式で
-  行う（`components/program-list.tsx`）。** 「前を読み込む」ボタンは
-  `ProgramList` 自身が持つ（仮想化を持つコンポーネントに復元へ必要な情報
-  ---
+  仮想化ライブラリ上の添字を引き直し、`alignRowTop` を呼ぶ」方式で行う
+  （`components/program-list.tsx`）。** 「前を読み込む」ボタンは `ProgramList`
+  自身が持つ（仮想化を持つコンポーネントに復元へ必要な情報 ---
   添字・計測値・`virtualizer` そのもの --- を全部揃えるため。`pages/programs.tsx`
-  は `hasPreviousPage` / `isFetchingPreviousPage` / `onLoadPrevious` を props で
-  渡すだけ）。手順: (1) ボタンを押した瞬間、`captureAnchor()`
-  （`lib/scroll-preservation.ts`）で「画面上端に見えている行」の `programId` を
-  読む（まだ何も挿入されていないので実際にレイアウトされている DOM を安全に
-  読める）。(2) `onLoadPrevious()` を呼ぶ。(3) `programs` の更新を検知したら、
-  控えた `programId` から `findProgramIndex`（`lib/program-list-key.ts`）で
-  **挿入後の添字**を引き直し、`virtualizer.scrollToIndex(newIndex, { align:
-  'start' })` を呼ぶ。Safari はスクロールアンカリングを実装していないので、
+  は `hasPreviousPage` / `isFetchingPreviousPage` / `previousDateLabel` /
+  `onLoadPrevious` を props で渡すだけ）。手順: (1) ボタンを押した瞬間、
+  `captureAnchor()`（`lib/scroll-preservation.ts`）で「**sticky 要素の下端より
+  下に見えている**行」の `{ programId, topPx }`（その時点で画面上のどこに
+  見えていたか）を読む（まだ何も挿入されていないので実際にレイアウトされて
+  いる DOM を安全に読める）。(2) `onLoadPrevious()` を呼ぶ。(3) `programs` の
+  更新を検知したら、控えた `programId` から `findProgramIndex`
+  （`lib/program-list-key.ts`）で**挿入後の添字**を引き直し、
+  `alignRowTop(newIndex, topPx)` を呼んでその行を「元々見えていた画面上の
+  位置」に戻す。Safari はスクロールアンカリングを実装していないので、
   ブラウザ任せにはできない
 - **なぜ「挿入後に同じ行を DOM から探して `getBoundingClientRect` で測り直す」
   方式（2 回目の修正）ではなく、これ（3 回目の修正）に置き換えたか。**
@@ -247,8 +268,10 @@ Android のジェスチャーナビは左右端からの横スワイプが「戻
   補正（`window.scrollBy`）は一度も呼ばれない ---
   「スクロール位置が変わらないまま可視範囲だけ再計算され、同じ位置に別の
   （新しく差し込まれた過去の）番組が来る」形で壊れていた（実機で確認済み）。
-  `scrollToIndex` は仮想化ライブラリ自身が持つ座標系（見積もり→実測の遷移も
-  含めて）を使うので、対象の行が現在 DOM に存在するかどうかに依存しない ---
+  `scrollToIndex`（後述の理由で 4 回目の修正では直接は使わず `alignRowTop` に
+  包んだが、内部で呼んでいる仕組みは変わらない）は仮想化ライブラリ自身が持つ
+  座標系（見積もり→実測の遷移も含めて）を使うので、対象の行が現在 DOM に
+  存在するかどうかに依存しない ---
   **見えなくなった行を追いかける代わりに、ライブラリの座標系に乗る**のが
   2 回目の失敗から得た教訓。さらに 1 回前（1 回目の修正）は挿入前後の
   `document.documentElement.scrollHeight` の差分を `scrollBy` に渡す方式
@@ -261,8 +284,53 @@ Android のジェスチャーナビは左右端からの横スワイプが「戻
   同じ理由で `programId` にしてある --- 先頭への挿入で既存の全行の添字がずれ、
   添字キーのままだと TanStack Virtual の実測キャッシュ（`itemSizeCache`）が
   別の番組の値を引き継いでしまい、総高さと各行のオフセットが狂う
-- `align: 'start'` なので、ボタンを押した時点で行の途中を見ていた場合は最大
-  1 行ぶんずれることがあるが、許容する（以前は数時間ずれていた）
+- **アンカーは「sticky 要素の下端より下に見えている行」を選ぶ（4 回目の修正。
+  `lib/scroll-preservation.ts` の `findAnchorProgramId`）。** 画面上部には
+  sticky な `PageHeader` と、sticky にした「前を読み込む」ボタンが居座って
+  おり、以前の判定（`getBoundingClientRect().bottom > 0`）は viewport 上端
+  （y=0）だけを基準にしていたため、sticky の裏に隠れている行（`top` が負でも
+  `bottom` がわずかに 0 を超える行）を「見えている」と誤判定していた。実機で
+  確認したところ、復元後にユーザーが実際に見る先頭行が別の番組にすり替わって
+  いた。判定は `top >= stickyBottomPx`（sticky の下端より下に上端が完全に
+  出ている）に直した。`stickyBottomPx` は `--page-header-height` +
+  `--load-previous-height`（`components/page.tsx` / `components/
+  program-list.tsx` が実測して書き出す CSS 変数）から実測する --- どちらも
+  フィルタ行の増減やボタンラベルの折返しで変わりうる値なので、`captureAnchor`
+  が呼ばれるたびに読み直す
+- **復元は「y=0 に揃える」のではなく、キャプチャ時点の実際の画面上の位置
+  （`topPx`）に戻す（4 回目の修正）。** `virtualizer.scrollToIndex(index,
+  { align: 'start' })` は常に行の上端を viewport の y=0 に揃えるだけで、
+  sticky の裏に隠れることも、押した瞬間にどれだけスクロールしていたか
+  （sticky の下端ぴったりとは限らない）も考慮しない。固定の sticky 高さへ
+  揃える方式では、押した瞬間のスクロール量次第で許容ズレを超えることを実機で
+  確認したため、実測した `topPx` をそのまま使う。以前の「`align: 'start'`
+  なので最大 1 行ぶんずれることがあるが許容する」という記述（3 回目の修正）は
+  もう正確ではない --- 4 回目の修正でこの誤差そのものを解消した
+- **`scrollToIndex` を直接使わず `alignRowTop`（`components/
+  program-list.tsx`）に包んだ理由（4 回目の修正）。** `scrollToIndex` は
+  「対象行の上端を viewport の y=0 に揃え続ける」ことを内部状態
+  （`scrollState`）に保存し、実測値が出揃うまで数フレームかけて
+  `getOffsetForIndex` を再評価・再スクロールする（TanStack Virtual の
+  `reconcileScroll`。見積もり→実測の遷移を追従するための仕組みで、これ自体は
+  有用 --- 外すと挿入した数十〜数百行ぶんの見積もり誤差がそのままスクロール
+  位置のズレとして残ることも実機で確認した）。この再評価は常に「y=0 に揃える」
+  ことを目指すため、「`topPx` の分だけ y=0 からずらす」という上記の補正と
+  競合し、次のフレームで補正を打ち消して y=0 側へ引き戻してしまう（実機で
+  確認: 補正直後は正しい位置に見えるが、数フレーム後に静かに y=0 側へ戻って
+  いた）。TanStack Virtual の `scrollPaddingStart` オプション（既定 0）は
+  実際には `align: 'start'` の基準点そのもの（`y=scrollPaddingStart` に揃える）
+  なので、`alignRowTop` はこれを `topPx` に一時的に上書きしてから
+  `scrollToIndex` を呼ぶ薄いラッパーにした。`reconcileScroll` は同じ
+  `getOffsetForIndex`（`scrollPaddingStart` を見る）を使って再評価するので、
+  後続フレームの再評価も同じ基準（y=`topPx`）を使い続けるようになる。
+  `virtualizer.setOptions()`（React の再レンダーを経由せず `virtualizer.
+  options` を直接書き換える）と、`useWindowVirtualizer` に渡す
+  `scrollPaddingStart` の元になる ref の両方を同時に更新する必要がある ---
+  react-virtual のアダプタは**次の再レンダーのたびに** `useWindowVirtualizer`
+  の呼び出し引数で `this.options` を上書きし直すため、ref を更新しないまま
+  `setOptions()` だけ呼んでも次の再レンダーで巻き戻る。`scrollToDayOffset`
+  （後述）はこの ref を明示的に 0 へ戻してから呼ぶ --- 直前の遡行操作が残した
+  非 0 の値に、無関係な別の操作が引きずられないようにするため
 - **「前を読み込む」ボタンは sticky にして `PageHeader` の直下へ常時留める
   （`components/program-list.tsx`）。** 通常フローのままだと、リストを下へ
   スクロールした状態ではボタンが画面外に出る。ボタンを押すには一旦画面外
@@ -281,18 +349,58 @@ Android のジェスチャーナビは左右端からの横スワイプが「戻
   ヘッダの `top` に `calc(var(--page-header-height,0px) +
   var(--load-previous-height,0px))` として足し込んで隠さないようにしてある
   （ボタンが無いときは未設定 = 0px 相当なので従来どおり）
+- **先頭行の帯が遡行のたびに増減し、位置がずれる（4 回目の修正で解消）。**
+  日付ヘッダの帯は「直前の番組と暦日が変わったか」で決まり（`showDateHeader`。
+  直前の番組を表す `lastDay` の初期値が空文字列なので、**リストの先頭行には
+  必ず帯が付く**）、遡行で差し込む窓の境界が暦日の境界（0 時）でないと、
+  それまで先頭だった行（同じ日の続きになる）が帯を失って高さが変わり、下の
+  内容がずれる（実機で「日付の帯のぶん位置がずれる」不具合として確認済み）。
+  フレーム跳ねの補正（下記）とアンカー選択（上記）を直しても、この帯の
+  増減そのものは別の原因なので両方直す必要があった --- 遡行の境界を常に暦日
+  にする（上記「遡行は 1 暦日単位」）ことで、この帯の増減が構造的に起きなく
+  なった
+- **押下直後に 1 フレームだけ大きく跳ねる（4 回目の修正で解消）。**
+  `useLayoutEffect` は DOM 変更のコミット後・ペイント前に走るので、そこで
+  スクロール位置を補正すれば「一度描画されてから跳ねる」ことは無いはずに
+  見えるが、実機で計測すると挿入直後の 1 フレームだけ大きく（実測 400px 超）
+  跳ねていた。原因は `window.scrollTo()` が `window.scrollY` を同期的に
+  更新する一方、`virtualizer` が可視範囲の計算に使う内部スクロール位置
+  （`getVirtualItems()` が使う座標）は、ブラウザの 'scroll' イベント
+  （`window.scrollTo` に対して非同期に発火する。早くても次のフレーム）を
+  受けてはじめて更新される点にある --- `useLayoutEffect` 自体はペイント前でも、
+  その中で呼ぶ `window.scrollTo`（`alignRowTop` 経由の `scrollToIndex` も
+  内部では同じ）は「ブラウザの scrollY を進める」ことと「`virtualizer` に
+  新しい scrollY を教える」ことの間に非同期の間隙を持つ。対処は
+  `window.dispatchEvent(new Event('scroll'))` で同期的に 'scroll' イベントを
+  発火させること --- ブラウザが自発的に発火する 'scroll' イベントは非同期だが、
+  `dispatchEvent` で自分から発火させればイベントリスナー（`virtualizer` が
+  登録している）はその場で同期的に呼ばれ、発火時点の実際の `window.scrollY`
+  （既に更新済み）を読む。react-virtual のアダプタはこの更新を `flushSync`
+  で即時コミットする（`useFlushSync` オプション、既定 true）ので、ペイントに
+  間に合う。**`alignRowTop` は挿入後に 2 回呼ぶ**（`window.dispatchEvent` を
+  挟んで）。1 回目は挿入された数十〜数百行の大半がまだ一度も実測されていない
+  （`estimateSize` の見積もりのまま）時点での計算なので実際の描画位置とは
+  数百 px ズレることがあるが、1 回目の `dispatchEvent` が引き起こす再描画で
+  その付近の行が実測されキャッシュが更新されるため、2 回目は更新済みの
+  キャッシュで計算し直されて実際の位置によく一致する（実機で確認: 1 回目
+  だけだと 1 フレーム分の跳ねが残り、2 回目を足すと消えた。3 回目を試しても
+  scrollY は変わらなかった）。「安定するまで」ではなく固定 2 回（jsdom で
+  検証できない自前の追従ループを作らない）にしてある
 - **`scrollMargin`（`<ul>` の `offsetTop`）は ref ではなく state で持つ。**
   遡行ボタンの有無で `<ul>` の `offsetTop` 自体が動くため、`hasPreviousPage`
   が変わるたびに測り直す必要がある。ref の更新は再レンダーを起こさないので、
   測り直しても仮想化オプションへの反映が次の（別の理由での）再レンダーまで
   遅れてしまう。state なら `useLayoutEffect` 内の `setState` がペイント前に
   同じコミットで反映されるので、ユーザーに古い値が見えない
-- **実機確認待ち:** 番兵の実際の発火・`scrollToIndex` によるスクロール位置合わせの
-  見た目（jsdom は `getBoundingClientRect` が常に 0 を返すレイアウトを計算しない
+- **フレーム単位の跳ね・スクロール位置合わせの見た目自体は、jsdom では検証
+  できない。** `getBoundingClientRect` が常に 0 を返しレイアウトを計算しない
   環境なので、`ProgramList` はこの環境では仮想化そのものをバイパスし
-  `scrollToIndex` を呼ばない。実際に位置が揃うかどうかは検証できない）・
-  「いま見ている日」のスクロール追従は自動テストで検証できない（純関数の導出
-  ロジック自体はテスト済み）。グリッドの「受け入れは実機で行う」と同じ扱い
+  `alignRowTop` を呼ばない。実機（Playwright を使った実ブラウザでの計測）で
+  判定している。「いま見ている日」のスクロール追従も同様に自動テストでは
+  検証できない（純関数の導出ロジック自体はテスト済み）。グリッドの
+  「受け入れは実機で行う」と同じ扱い。アンカー選択の判定
+  （`findAnchorProgramId`）自体は純関数として両方向（sticky の裏の行を
+  選ばないこと / 下に出ている行を選ぶこと）テスト済み
 
 #### 「既にジャンプ先になっている日」の再タップ
 

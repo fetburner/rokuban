@@ -30,16 +30,26 @@ import { unwrap } from '@/api/unwrap'
 import { shouldAutoLoadNextPage, shouldShowLoadMoreButton } from '@/lib/auto-load'
 import { dayOrigin } from '@/lib/day-offset'
 import { orderServices, type TimeAxis } from '@/lib/epg-grid'
+import { formatDate } from '@/lib/format'
 import { domLayoutMeasurable } from '@/lib/list-virtualization'
 import { filterProgramsFromListStart } from '@/lib/program-list-window'
+import { previousDayWindow } from '@/lib/previous-day-window'
 import { DEFAULT_SITE } from '@/lib/site'
 import { lgMediaQuery, useMediaQuery } from '@/lib/use-media-query'
 
 /**
- * windowHours は 1 回のスクロールステップで取得する時間窓の幅。
+ * windowHours は、進行方向（下スクロールでの自動読み込み・「さらに読み込む」）
+ * の 1 回のスクロールステップで取得する時間窓の幅。
  *
  * API はページネーショントークンを持たず、時間窓そのものがカーソルになる。
  * 「次のページ」= 前回の end を start にした次の窓。
+ *
+ * **遡行（「前を読み込む」）はこの定数を使わない** ---
+ * 1 暦日（前日 0 時〜当日 0 時）単位で読む（`lib/previous-day-window.ts` の
+ * `previousDayWindow`）。理由は同ファイルの doc コメント参照（日付ヘッダの
+ * 帯の増減による位置ずれを、境界を暦日に揃えることで構造的に防ぐため）。
+ * 進行方向は増分読み込みとして機能しているだけで日付ヘッダの帯とは無関係
+ * なので、6 時間のまま変えていない。
  */
 const windowHours = 6
 
@@ -136,7 +146,6 @@ export function ProgramsPage() {
   // サーバーの EPG 保持期間の設定には依存させない —— 放送済み番組の閲覧は
   // 今回のスコープ外なので、クライアント側で now を不変条件として持つだけで足りる。
   const lowerBoundMs = dayOrigin(0, nowMs).getTime()
-  const maxWindows = Math.max(1, Math.ceil((limitMs - originMs) / (windowHours * 3600_000)))
 
   // サーバー側で絞り込む。ソートするのは Set の反復順が選び方の履歴に依存する
   // ためで、順序が揺れると同じ選択でも queryKey / URL が変わってしまう
@@ -149,35 +158,43 @@ export function ProgramsPage() {
   // サーバーが選択に応じて絞るようになったので、queryKey にも選択を入れる。
   // 入れないと別の選択で取得した結果をそのまま再利用してしまう（日付や時間窓と
   // 同じ「結果を左右するパラメータ」になったため）。
+  //
+  // pageParam / ページの形は「取得した半開区間 [startMs, endMs)」そのもの
+  // （`step` のような抽象的なカーソルにしない）。進行方向（`getNextPageParam`）は
+  // 常に `windowHours` 幅、遡行（`getPreviousPageParam`）は 1 暦日幅と、
+  // 2 方向で窓の刻み方が異なる（`windowHours` の doc コメント参照）ため、
+  // 共通の「窓の個数」では表現できない。
   const query = useInfiniteQuery({
     queryKey: ['/api/programs', 'infinite', originMs, limitMs, selectedServiceIdParam],
-    initialPageParam: 0,
+    initialPageParam: {
+      startMs: originMs,
+      endMs: Math.min(originMs + windowHours * 3600_000, limitMs),
+    },
     // グリッド表示中はリストの窓を追いかけない（同じ時間帯を 2 つの形で
     // 同時に取りに行かない）。戻ったときはキャッシュがそのまま出る。
     enabled: !showGrid,
     queryFn: async ({ pageParam }) => {
-      // pageParam（`step`）は起点からの窓の個数。正は進行方向（先の時間）、
-      // 負は遡行（前の時間）。負の窓の開始は下限（now を時で切り捨てた時刻）で
-      // 打ち切る —— 放送済み番組の閲覧は今回のスコープ外なため。
-      const rawStartMs = originMs + pageParam * windowHours * 3600_000
-      const startMs = Math.max(rawStartMs, lowerBoundMs)
-      const endMs = Math.min(rawStartMs + windowHours * 3600_000, limitMs)
+      const { startMs, endMs } = pageParam
       const res = await listPrograms(DEFAULT_SITE, {
         start: new Date(startMs).toISOString(),
         end: new Date(endMs).toISOString(),
         serviceId: selectedServiceIdParam,
       })
-      return { step: pageParam, programs: unwrap(res) ?? [] }
+      return { startMs, endMs, programs: unwrap(res) ?? [] }
     },
-    getNextPageParam: (last) => (last.step + 1 < maxWindows ? last.step + 1 : undefined),
+    // 進行方向は windowHours（6 時間）ぶんずつ。上限（EPG のローリングウィンドウの
+    // 終端）に達したら打ち切る。
+    getNextPageParam: (last) => {
+      if (last.endMs >= limitMs) return undefined
+      const startMs = last.endMs
+      return { startMs, endMs: Math.min(startMs + windowHours * 3600_000, limitMs) }
+    },
     // 遡行は明示的なボタンでのみ行う（ジェスチャにしない。理由は下の
-    // 「前を読み込む」ボタンのコメント参照）。次の 1 窓の生の開始時刻が下限を
-    // 超えている間だけ許す —— 下限ちょうどに達した窓（`queryFn` 側で clamp 済み）
-    // より前は、もう読む内容が無い。
-    getPreviousPageParam: (first) => {
-      const rawStartMs = originMs + first.step * windowHours * 3600_000
-      return rawStartMs > lowerBoundMs ? first.step - 1 : undefined
-    },
+    // 「前を読み込む」ボタンのコメント参照）。1 暦日（前日 0 時〜当日 0 時）
+    // ぶんを 1 回で読む（`lib/previous-day-window.ts`）。下限（now を時で
+    // 切り捨てた時刻）に達していたら `undefined`（`previousDayWindow` が
+    // `null` を返す）でボタンごと消える。
+    getPreviousPageParam: (first) => previousDayWindow(first.startMs, lowerBoundMs) ?? undefined,
   })
 
   // グリッドは 24 時間ぶんを 1 回で取る。リストのような窓の積み上げにしないのは、
@@ -229,15 +246,30 @@ export function ProgramsPage() {
     )
   }, [query.data])
 
-  // listStartMs は「読み込み済みの最も小さい step の窓の開始時刻を下限（now を
-  // 時で切り捨てた時刻）で clamp したもの」。`query.data.pages` は
-  // fetchPreviousPage で先頭に追加されるので、常に pages[0] が最小の step
-  // （最も手前に読み込んだ窓）になる。
+  // listStartMs は「読み込み済みの最も手前の窓の開始時刻を下限（now を時で
+  // 切り捨てた時刻）で clamp したもの」。`query.data.pages` は
+  // fetchPreviousPage で先頭に追加されるので、常に pages[0] が最も手前
+  // （最小の startMs）の窓になる。`pages[0].startMs` は `queryFn` が返す
+  // 時点で既に下限で clamp 済み（`previousDayWindow` 参照）だが、まだ
+  // 一度も遡行していない（`pages` が無い）ときの `originMs` フォールバックは
+  // clamp されていないことがある（`dayOffset` が 0 のとき `originMs` は
+  // 既に下限と一致するので実質無害だが、意図を明示するため残す）。
   const listStartMs = useMemo(() => {
-    const firstStep = query.data?.pages[0]?.step ?? 0
-    const rawFirstStartMs = originMs + firstStep * windowHours * 3600_000
+    const rawFirstStartMs = query.data?.pages[0]?.startMs ?? originMs
     return Math.max(rawFirstStartMs, lowerBoundMs)
   }, [query.data, originMs, lowerBoundMs])
+
+  // 「前を読み込む」を押すと次に取得される窓（ボタンのラベルに日付を出す
+  // ため。`query.hasPreviousPage`/`isFetchingPreviousPage` と同じ
+  // `previousDayWindow` を入力に使うので、両者が指す「次の窓があるか」は
+  // 常に一致する）。
+  const previousWindow = useMemo(
+    () => previousDayWindow(listStartMs, lowerBoundMs),
+    [listStartMs, lowerBoundMs],
+  )
+  const previousDateLabel = previousWindow
+    ? formatDate(new Date(previousWindow.startMs).toISOString())
+    : null
 
   // API は問い合わせた時間窓に重なる番組を返す（`start_at < window_end AND
   // end_at > window_start`）ため、先頭の窓の開始時刻より前に始まった番組
@@ -463,6 +495,7 @@ export function ProgramsPage() {
                 now={nowMs}
                 hasPreviousPage={query.hasPreviousPage}
                 isFetchingPreviousPage={query.isFetchingPreviousPage}
+                previousDateLabel={previousDateLabel}
                 onLoadPrevious={loadPrevious}
               />
             </>
