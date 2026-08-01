@@ -135,8 +135,16 @@ export function ChannelPicker({
         <ChevronDown className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
       </PopoverPrimitive.Trigger>
       <PopoverPrimitive.Portal>
+        {/* positionMethod は既定の 'absolute' ではなく 'fixed' にする。トリガーは
+            sticky な PageHeader の中にあってスクロールしても動かないのに、
+            'absolute' のポップアップはドキュメントと一緒に動く。この食い違いを
+            ライブラリは毎スクロール JS で transform を打ち直して補正するが、
+            実機のスクロールはコンポジタ側で先に動くため補正が 1 フレーム以上
+            遅れ、メニューが上下に引っ張られて見える。'fixed' ならビューポート
+            基準になり、トリガーと同じ動き（= 動かない）になるので補正自体が要らない。 */}
         <PopoverPrimitive.Positioner
           className="z-50 outline-none"
+          positionMethod="fixed"
           side="bottom"
           align="start"
           sideOffset={6}
