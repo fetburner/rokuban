@@ -85,6 +85,11 @@ type RecordSweepWorker struct {
 	Pool         *pgxpool.Pool
 	// Webhook は processRecord 経由の finished 遷移通知に使う（M3-11）。nil 可。
 	Webhook *webhook.Client
+
+	// Site はこのワーカープロセス自身の site（config.mirakc.site）。Work は
+	// これと job.Args.Site を verifySite で照合してから mirakc に触る
+	// （issue #139）。空なら db.DefaultSite に解決する（verifySite 参照）。
+	Site string
 }
 
 // Timeout は River の既定（1 分）より長い上限を与える。理由は recordSweepTimeout の
@@ -103,6 +108,14 @@ func (w *RecordSweepWorker) Timeout(*river.Job[RecordSweepArgs]) time.Duration {
 // 取り出す。Worker の Work() 内では必ず取得できる（River のドキュメント通り、
 // ここで失敗することはない）。
 func (w *RecordSweepWorker) Work(ctx context.Context, job *river.Job[RecordSweepArgs]) error {
+	// mirakc インスタンスはサイトスコープ。他サイトのジョブをこのプロセスの
+	// mirakc に投げると、`GET /api/recording/records` の全量取得から他インスタンスの
+	// record をこのサイトの recording として processRecord が取り込みうる
+	// （issue #139）。watcher.New/Sweep より前に照合する。
+	if err := verifySite(w.Site, job.Args.Site, recordSweepQueue); err != nil {
+		return err
+	}
+
 	riverClient, err := river.ClientFromContextSafely[pgx5.Tx](ctx)
 	if err != nil {
 		return fmt.Errorf("getting river client from job context: %w", err)

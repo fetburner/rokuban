@@ -50,6 +50,15 @@ func (CatalogExportArgs) InsertOpts() river.InsertOpts {
 
 // CatalogExportWorker はコアメタデータを media_dir/catalog/ に JSON で書き出す
 // River ワーカー（docs/storage.md §8、issue #71）。
+//
+// site 照合ガード（issue #139）は不要と判断: mirakc には触れない（DB 読み取りと
+// FS 書き出しのみ）。CatalogExportArgs.Site は「どのサイトの行をエクスポート
+// するか」という DB クエリの絞り込みであって、mirakc インスタンスの選択ではない
+// ため、他サイトの worker がこのジョブを掴んでも「他インスタンスの id を投げる」
+// 形の壊れ方が起きない。物理ストレージも DeleteReconcileWorker と同じく site に
+// 従属しない単一の MediaDir（CatalogExportArgs のコメント参照）。ただし
+// catalog.Export(ctx, pool, site) 自身が site 引数を検証しないエントリポイントで
+// あることは、CLAUDE.md の横断調査（internal/catalog）が別途扱う。
 type CatalogExportWorker struct {
 	river.WorkerDefaults[CatalogExportArgs]
 	Pool     *pgxpool.Pool

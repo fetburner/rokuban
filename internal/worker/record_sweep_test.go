@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -254,4 +255,122 @@ func newRecordSweepStub(t *testing.T, records []mirakc.Record) *httptest.Server 
 		_ = json.NewEncoder(rw).Encode([]mirakc.Service{})
 	})
 	return httptest.NewServer(mux)
+}
+
+// TestRecordSweepWorker_SiteMismatch は、job.Args.Site がワーカー自身の site
+// （Deps.Site 経由の w.Site）と一致しないジョブが mirakc に一切触れずに
+// fail-fast することを確認する（issue #139）。スタブは 200 を返す（弱い
+// テストにしないため。issue #139 のテスト規律）。RecordSweepWorker.Work は
+// river.ClientFromContextSafely でジョブ実行コンテキストから River クライアント
+// を取り出すため、他のワーカーのように w.Work を直接呼べず、実際に
+// client.Insert → client.Start でジョブとして実行させる必要がある。
+func TestRecordSweepWorker_SiteMismatch(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	if _, err := pool.Exec(ctx, "DELETE FROM river_job"); err != nil {
+		t.Fatalf("cleaning river_job: %v", err)
+	}
+
+	var requests atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/recording/records", func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rw).Encode([]mirakc.Record{})
+	})
+	mux.HandleFunc("/api/services", func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rw).Encode([]mirakc.Service{})
+	})
+	countingSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		mux.ServeHTTP(w, r)
+	}))
+	defer countingSrv.Close()
+
+	// このプロセスは site-a の mirakc を向いている。
+	workers := NewWorkers(&Deps{Pool: pool, MirakcClient: mirakc.NewClient(countingSrv.URL, nil), Site: "site-a"})
+	client, err := NewClient(pool, workers, ClientConfig{})
+	if err != nil {
+		t.Fatalf("creating client: %v", err)
+	}
+
+	subscribeCh, subscribeCancel := client.Subscribe(river.EventKindJobFailed)
+	defer subscribeCancel()
+
+	clientCtx, clientCancel := context.WithCancel(ctx)
+	defer clientCancel()
+
+	if err := client.Start(clientCtx); err != nil {
+		t.Fatalf("starting client: %v", err)
+	}
+	defer func() {
+		clientCancel()
+		<-client.Stopped()
+	}()
+
+	if _, err := client.Insert(ctx, RecordSweepArgs{Site: "site-b"}, nil); err != nil {
+		t.Fatalf("inserting record_sweep job: %v", err)
+	}
+
+	select {
+	case event := <-subscribeCh:
+		if event.Job.Kind != "record_sweep" {
+			t.Fatalf("job kind = %q, want %q", event.Job.Kind, "record_sweep")
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("timed out waiting for record_sweep job failure")
+	}
+
+	if got := requests.Load(); got != 0 {
+		t.Errorf("mirakc received %d requests, want 0 (guard must fail before touching mirakc)", got)
+	}
+}
+
+// TestRecordSweepWorker_SiteMatch は、args.Site が一致するジョブは従来どおり
+// 処理されることを確認する（TestRecordSweepWorker_SiteMismatch と対になる
+// 両方向の確認）。
+func TestRecordSweepWorker_SiteMatch(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	if _, err := pool.Exec(ctx, "DELETE FROM river_job"); err != nil {
+		t.Fatalf("cleaning river_job: %v", err)
+	}
+
+	srv := newRecordSweepStub(t, nil)
+	defer srv.Close()
+
+	workers := NewWorkers(&Deps{Pool: pool, MirakcClient: mirakc.NewClient(srv.URL, nil), Site: "site-a"})
+	client, err := NewClient(pool, workers, ClientConfig{})
+	if err != nil {
+		t.Fatalf("creating client: %v", err)
+	}
+
+	subscribeCh, subscribeCancel := client.Subscribe(river.EventKindJobCompleted)
+	defer subscribeCancel()
+
+	clientCtx, clientCancel := context.WithCancel(ctx)
+	defer clientCancel()
+
+	if err := client.Start(clientCtx); err != nil {
+		t.Fatalf("starting client: %v", err)
+	}
+	defer func() {
+		clientCancel()
+		<-client.Stopped()
+	}()
+
+	if _, err := client.Insert(ctx, RecordSweepArgs{Site: "site-a"}, nil); err != nil {
+		t.Fatalf("inserting record_sweep job: %v", err)
+	}
+
+	select {
+	case event := <-subscribeCh:
+		if event.Job.Kind != "record_sweep" {
+			t.Fatalf("job kind = %q, want %q", event.Job.Kind, "record_sweep")
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("timed out waiting for record_sweep job completion")
+	}
 }

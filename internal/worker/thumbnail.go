@@ -63,6 +63,11 @@ func (ThumbnailJobArgs) InsertOpts() river.InsertOpts {
 //
 // ストレージ契約: scratch に ffmpeg 出力 → メディアへストリームコピー + fsync →
 // DB 行 INSERT（公開の定義は rename ではなく DB。docs/storage.md §3）。
+//
+// site 照合ガード（issue #139）は不要と判断: EncodeWorker と同じ理由
+// （ThumbnailJobArgs は recording_id のみで site を持たず、原本読み取りは
+// mediapath.Resolve 経由の単一 MediaDir、mirakc には触れない）。EncodeWorker
+// の doc コメント参照。
 type ThumbnailWorker struct {
 	river.WorkerDefaults[ThumbnailJobArgs]
 

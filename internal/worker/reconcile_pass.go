@@ -79,6 +79,11 @@ type ReconcilePassWorker struct {
 	// 0 なら reconciler 側の既定値を使う（config.yml の
 	// reconciler.start_delay_grace から注入される）。
 	StartDelayGrace time.Duration
+
+	// Site はこのワーカープロセス自身の site（config.mirakc.site）。Work は
+	// これと job.Args.Site を verifySite で照合してから mirakc に触る
+	// （issue #139）。空なら db.DefaultSite に解決する（verifySite 参照）。
+	Site string
 }
 
 // Timeout は River の既定（1 分）より長い上限を与える。理由は reconcilePassTimeout の
@@ -97,6 +102,13 @@ func (w *ReconcilePassWorker) Timeout(*river.Job[ReconcilePassArgs]) time.Durati
 // 先頭でその状態を DB から読み直すので、ここで毎回新規生成しても発動状態は
 // 失われない。
 func (w *ReconcilePassWorker) Work(ctx context.Context, job *river.Job[ReconcilePassArgs]) error {
+	// mirakc インスタンスはサイトスコープ。他サイトのジョブをこのプロセスの
+	// mirakc に投げると、別インスタンスの schedules をこのサイトの予約として
+	// 作成/削除しうる（issue #139）。reconciler.New/RunPass より前に照合する。
+	if err := verifySite(w.Site, job.Args.Site, reconcilerQueue); err != nil {
+		return err
+	}
+
 	rec := reconciler.New(job.Args.Site, w.MirakcClient, w.Pool, &reconciler.Config{
 		StartDelayGrace: w.StartDelayGrace,
 	})

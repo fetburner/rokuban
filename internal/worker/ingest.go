@@ -81,6 +81,11 @@ type IngestWorker struct {
 	Pool         *pgxpool.Pool
 	MediaDir     string
 	StallTimeout time.Duration
+
+	// Site はこのワーカープロセス自身の site（config.mirakc.site）。Work は
+	// これと args.Site を verifySite で照合してから mirakc/FS に触る
+	// （issue #139）。空なら db.DefaultSite に解決する（verifySite 参照）。
+	Site string
 }
 
 // Timeout は River の総時間タイムアウトを無効化する。
@@ -116,6 +121,14 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[IngestJobArgs]) 
 		metrics.IngestDuration.Observe(time.Since(started).Seconds())
 		metrics.IngestJobs.WithLabelValues(result).Inc()
 	}()
+
+	// mirakc の record id はインスタンススコープ。他サイトのジョブをこの
+	// プロセスの mirakc に投げると、別番組をこの recording としてコミットしうる
+	// （issue #139）。DB 参照（lookupRecordingID）や mirakc/FS への一切の
+	// アクセスより前に照合する。
+	if err := verifySite(w.Site, args.Site, ingestQueue); err != nil {
+		return err
+	}
 
 	stallTimeout := w.resolveStallTimeout()
 

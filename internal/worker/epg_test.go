@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"slices"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -732,6 +733,72 @@ func TestListEpgPrograms_WindowAndServiceFilter(t *testing.T) {
 		if r.ServiceID != 1024 {
 			t.Errorf("service filter leaked service_id = %d", r.ServiceID)
 		}
+	}
+}
+
+// TestEpgSyncWorker_SiteMismatch は、job.Args.Site がワーカー自身の site
+// （w.Site）と一致しないジョブが mirakc に一切触れずに fail-fast することを
+// 確認する（issue #139）。モックは 200 を返す（弱いテストにしないため。
+// issue #139 のテスト規律）。
+func TestEpgSyncWorker_SiteMismatch(t *testing.T) {
+	pool := setupTestPool(t)
+
+	var requests atomic.Int32
+	fx := &epgFixture{
+		services: []mirakc.Service{testService(32736, 1024, 1, "ＮＨＫ総合", "27")},
+		programs: []mirakc.Program{testProgram(32736, 1024, 1, "番組A", time.Now().Add(time.Hour), time.Hour)},
+	}
+	countingSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/services":
+			_ = json.NewEncoder(w).Encode(fx.services)
+		case "/api/programs":
+			_ = json.NewEncoder(w).Encode(fx.programs)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer countingSrv.Close()
+
+	// このワーカープロセスは site-a の mirakc を向いている。
+	w := &EpgSyncWorker{MirakcClient: mirakc.NewClient(countingSrv.URL, nil), Pool: pool, Site: "site-a"}
+
+	job := &river.Job[EpgSyncArgs]{JobRow: &rivertype.JobRow{}, Args: EpgSyncArgs{Site: "site-b"}}
+	err := w.Work(context.Background(), job)
+	if err == nil {
+		t.Fatal("Work() error = nil, want error for site mismatch (site-a worker handling a site-b job)")
+	}
+	if got := requests.Load(); got != 0 {
+		t.Errorf("mirakc received %d requests, want 0 (guard must fail before touching mirakc): err=%v", got, err)
+	}
+}
+
+// TestEpgSyncWorker_SiteMatch は、args.Site が一致するジョブは従来どおり処理
+// されることを確認する（TestEpgSyncWorker_SiteMismatch と対になる両方向の確認）。
+func TestEpgSyncWorker_SiteMatch(t *testing.T) {
+	pool := setupTestPool(t)
+
+	fx := &epgFixture{
+		services: []mirakc.Service{testService(32736, 1024, 1, "ＮＨＫ総合", "27")},
+		programs: []mirakc.Program{testProgram(32736, 1024, 1, "番組A", time.Now().Add(time.Hour), time.Hour)},
+	}
+	srv := newEpgServer(t, fx)
+
+	w := &EpgSyncWorker{MirakcClient: mirakc.NewClient(srv.URL, nil), Pool: pool, Site: "site-a"}
+
+	job := &river.Job[EpgSyncArgs]{JobRow: &rivertype.JobRow{}, Args: EpgSyncArgs{Site: "site-a"}}
+	if err := w.Work(context.Background(), job); err != nil {
+		t.Fatalf("Work() error = %v, want nil for matching site", err)
+	}
+
+	services, err := sqlcgen.New(pool).ListEpgServices(context.Background(), "site-a")
+	if err != nil {
+		t.Fatalf("ListEpgServices: %v", err)
+	}
+	if len(services) != 1 {
+		t.Errorf("services projected for site-a = %d, want 1", len(services))
 	}
 }
 

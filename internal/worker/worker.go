@@ -14,6 +14,7 @@ import (
 	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/config"
+	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/webhook"
 )
@@ -50,6 +51,41 @@ var pendingJobStates = []rivertype.JobState{
 	rivertype.JobStateScheduled,
 }
 
+// verifySite は、mirakc かファイルシステムに触るワーカーが処理しようとしている
+// ジョブの site（jobSite）が、そのワーカープロセス自身の site（workerSite、
+// config.mirakc.site）と一致するかを検査する fail-fast ガード（issue #139）。
+//
+// mirakc の record id / programId はインスタンススコープであり、DB の site 列は
+// そのスコープの境界を表現するために存在する（issue #31、docs/schema.md
+// §1-5）。River のキュー名は site で修飾されていない（根治は #138 が決める）ため、
+// 多サイト構成では site A の worker が site B のジョブを掴みうる。掴んだまま
+// mirakc/FS に触れると、A の mirakc に B の id を投げて A の別番組を B の
+// recording としてコミットしうる（不変条件 3「コミット = DB 行」への違反。
+// 詳細は issue #139 本文）。
+//
+// workerSite が空文字列（Deps.Site 未注入。単体テストの部分構成を含む）の場合は
+// db.DefaultSite に解決してから比較する — DeleteReconcileWorker.Site と同じ
+// 解決規則で、単一サイト構成でこのガードを追加してもテスト・運用のどちらも
+// 壊れないようにする。
+//
+// 呼び出し側は mirakc/FS に触れる**前**（最初の HTTP 呼び出し・os.Create 等より
+// 前）に呼ぶこと。合わないジョブは即座に失敗させ、再試行は River に委ねる
+// （同じジョブが必ず自サイトの worker に回る保証はないが、他サイトの worker が
+// いずれ拾う。うるさいが安全 --- issue #139 本文の「id が自サイトに存在しない」
+// ケースと同じ扱いに揃う）。
+func verifySite(workerSite, jobSite, queue string) error {
+	site := workerSite
+	if site == "" {
+		site = db.DefaultSite
+	}
+	if jobSite != site {
+		return fmt.Errorf(
+			"%s: job site %q does not match this worker's site %q, refusing before touching mirakc/FS (issue #139)",
+			queue, jobSite, site)
+	}
+	return nil
+}
+
 // Deps は各ワーカーに注入する依存。
 type Deps struct {
 	MirakcClient *mirakc.Client
@@ -57,10 +93,14 @@ type Deps struct {
 	MediaDir     string
 	ScratchDir   string
 
-	// Site は config.mirakc.site（issue #31）。DeleteReconcileWorker のように
-	// site 単位のジョブ引数を持たないが site をキーにする資源（サーキット
-	// ブレーカー）を持つワーカーに注入する。空なら db.DefaultSite を使う
-	// （テストの部分構成を許す）。
+	// Site は config.mirakc.site（issue #31）。用途は 2 つ:
+	//  1. mirakc/FS に触るワーカー（Ingest / EpgSync / TunerSync / ReconcilePass /
+	//     RecordSweep）が、自分が処理するジョブの args.Site と自分自身の site を
+	//     照合する fail-fast ガード（issue #139、verifySite）。
+	//  2. DeleteReconcileWorker のように site 単位のジョブ引数を持たないが
+	//     site をキーにする資源（サーキットブレーカー）を持つワーカーへの注入。
+	// 空なら db.DefaultSite を使う（テストの部分構成を許す。verifySite・
+	// DeleteReconcileWorker.Work のどちらも同じ解決規則）。
 	Site string
 
 	// Encode は構造化エンコードプロファイルと ffmpeg パス（issue #64 / #65）。
@@ -109,6 +149,7 @@ func NewWorkers(deps *Deps) *river.Workers {
 		Pool:         deps.Pool,
 		MediaDir:     deps.MediaDir,
 		StallTimeout: deps.IngestStallTimeout,
+		Site:         deps.Site,
 	})
 	river.AddWorker(workers, &EncodeWorker{
 		Pool:       deps.Pool,
@@ -122,10 +163,12 @@ func NewWorkers(deps *Deps) *river.Workers {
 		MirakcClient:   deps.MirakcClient,
 		Pool:           deps.Pool,
 		RetentionGrace: deps.EpgRetentionGrace,
+		Site:           deps.Site,
 	})
 	river.AddWorker(workers, &TunerSyncWorker{
 		MirakcClient: deps.MirakcClient,
 		Pool:         deps.Pool,
+		Site:         deps.Site,
 	})
 	river.AddWorker(workers, &RulerPassWorker{
 		Pool:              deps.Pool,
@@ -136,11 +179,13 @@ func NewWorkers(deps *Deps) *river.Workers {
 		MirakcClient:    deps.MirakcClient,
 		Pool:            deps.Pool,
 		StartDelayGrace: deps.ReconcileStartDelayGrace,
+		Site:            deps.Site,
 	})
 	river.AddWorker(workers, &RecordSweepWorker{
 		MirakcClient: deps.MirakcClient,
 		Pool:         deps.Pool,
 		Webhook:      deps.Webhook,
+		Site:         deps.Site,
 	})
 	river.AddWorker(workers, &CatalogExportWorker{
 		Pool:     deps.Pool,

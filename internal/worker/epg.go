@@ -73,6 +73,11 @@ type EpgSyncWorker struct {
 
 	// RetentionGrace は end_at がこの時間より前の番組を刈り取る猶予。0 なら既定値。
 	RetentionGrace time.Duration
+
+	// Site はこのワーカープロセス自身の site（config.mirakc.site）。Work は
+	// これと job.Args.Site を verifySite で照合してから mirakc に触る
+	// （issue #139）。空なら db.DefaultSite に解決する（verifySite 参照）。
+	Site string
 }
 
 // Timeout は River の既定（1 分）より長い上限を与える。
@@ -92,6 +97,13 @@ func (w *EpgSyncWorker) Work(ctx context.Context, job *river.Job[EpgSyncArgs]) e
 
 	started := time.Now()
 	defer func() { metrics.EpgSyncDuration.Observe(time.Since(started).Seconds()) }()
+
+	// mirakc インスタンスはサイトスコープ。他サイトのジョブをこのプロセスの
+	// mirakc に投げると、別インスタンスの EPG をこのサイトの投影として書きうる
+	// （issue #139）。ListServices/ListPrograms より前に照合する。
+	if err := verifySite(w.Site, site, epgQueue); err != nil {
+		return err
+	}
 
 	q := sqlcgen.New(w.Pool)
 

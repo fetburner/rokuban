@@ -72,6 +72,14 @@ func (RulerPassArgs) InsertOpts() river.InsertOpts {
 // ロジックは internal/ruler にそのまま置いてあり、ここでは呼び出すだけ
 // （ロジックの移植はしない）。ruler は mirakc に触れない（不変条件 1）ので、
 // このワーカーが持つ依存は Pool と RetentionGrace だけで足りる。
+//
+// # site 照合ガード（issue #139）は不要と判断
+//
+// 他サイトの worker が args.Site の異なる ruler_pass ジョブを掴んでも、触るのは
+// この site の DB 行（reservations 等）だけで、mirakc にも FS にも触れない。
+// 「A の mirakc に B の id を投げる」形の壊れ方（issue #139 本文）が原理的に
+// 起きないので、verifySite は導入していない（「まだ書いていないだけ」ではなく
+// 不要と判断した結果）。
 type RulerPassWorker struct {
 	river.WorkerDefaults[RulerPassArgs]
 	Pool *pgxpool.Pool
