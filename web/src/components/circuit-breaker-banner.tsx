@@ -101,9 +101,9 @@ function BreakerRow({ breaker }: { breaker: CircuitBreaker }) {
   const isExcerpt = total > programs.length
 
   const handleConfirm = () => {
-    // 実行を確定させてからダイアログを閉じる。結果はトーストで伝える
-    // （黙って成功したように見せない。失敗時も必ずトーストを出す）。
-    setConfirmOpen(false)
+    // ダイアログは AlertDialogAction（AlertDialogPrimitive.Close ラップ）が
+    // クリックで自動的に閉じる。ここでは実行の確定のみ行う。結果はトーストで
+    // 伝える（黙って成功したように見せない。失敗時も必ずトーストを出す）。
     resume.mutate(
       { site: breaker.site, name: breaker.name },
       {

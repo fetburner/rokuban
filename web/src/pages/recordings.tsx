@@ -375,9 +375,8 @@ function RecordingActions({ recordingId, trash }: { recordingId: number; trash: 
             <AlertDialogCancel>キャンセル</AlertDialogCancel>
             <AlertDialogAction
               onClick={() => {
-                // AlertDialogAction は AlertDialogCancel と違い Close ラッパーではないので
-                // クリックしても自動では閉じない。成否に関わらずここで明示的に閉じる。
-                setPurgeConfirmOpen(false)
+                // ダイアログは AlertDialogAction（AlertDialogPrimitive.Close ラップ）が
+                // クリックで自動的に閉じるので、ここでは実行の確定のみ行う。
                 purgeRecording.mutate(
                   { id: recordingId },
                   {

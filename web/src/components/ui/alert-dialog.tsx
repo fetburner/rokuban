@@ -4,6 +4,13 @@ import { AlertDialog as AlertDialogPrimitive } from "@base-ui/react/alert-dialog
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 
+// NOTE(rokuban): このファイルは shadcn の vendored ファイル（components.json 管理下）
+// だが、以下は shadcn CLI での再取得では復元されない、base-ui 版に合わせた手動変更。
+// `AlertDialogAction` は本家 shadcn/Radix と異なり `AlertDialogPrimitive.Action`
+// （クリックで自動的に閉じる）を持たないため、`AlertDialogCancel` と同様
+// `AlertDialogPrimitive.Close` でラップしている（issue #131）。再取得する場合は
+// この差分を復元すること。
+
 function AlertDialog({ ...props }: AlertDialogPrimitive.Root.Props) {
   return <AlertDialogPrimitive.Root data-slot="alert-dialog" {...props} />
 }
@@ -141,12 +148,16 @@ function AlertDialogDescription({
 
 function AlertDialogAction({
   className,
+  variant,
+  size,
   ...props
-}: React.ComponentProps<typeof Button>) {
+}: AlertDialogPrimitive.Close.Props &
+  Pick<React.ComponentProps<typeof Button>, "variant" | "size">) {
   return (
-    <Button
+    <AlertDialogPrimitive.Close
       data-slot="alert-dialog-action"
       className={cn(className)}
+      render={<Button variant={variant} size={size} />}
       {...props}
     />
   )
