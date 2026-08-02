@@ -336,6 +336,87 @@ encode/thumbnail を明示的に除外した worker Pod（例: ingest 専用 Pod
 起動時に LookPath で検査し、無ければ即座に落ちる --- ffmpeg が無い環境で
 encode/thumbnail ジョブが River の再試行を焼き続けてから気付く、という壊れ方を防ぐ。
 
+### streamer のスケール（issue #56）
+
+**streamer は録画配信（VOD・サムネイル）とライブ視聴の両方を担うが、置き場所も
+スケールの仕方も別である。**ロールは分けない --- ロールを決めるのは「ソケットを
+持ち続けるか」だけで、mirakc を触るかどうかは判定軸に入らない
+（[overview.md](overview.md) §ロール分類の基準）。同じロール・同じバイナリで、
+デプロイのパラメータだけが違う（`worker.queues` でキューごとに置き場所が決まるのと
+同じ構造）。
+
+| | 置き場所 | レプリカ | 前段 | イメージ |
+|---|---|---|---|---|
+| 録画配信 / サムネイル | メディアストレージの隣 | 水平（N） | 素の round-robin | 公式（ffmpeg 不要） |
+| ライブ視聴 | mirakc の隣（サイトごと） | 既定 1 | `(site, serviceId)` の consistent hash | `Dockerfile.full` |
+
+#### 録画配信はセッション親和性を必要としない
+
+録画配信は完全にステートレスで（DB からアセットを解決して `http.ServeContent` で
+配るだけ。`internal/streamer`）、貼り付けるべき状態が無い。**sticky を Service /
+Ingress に書かない。**書くと、数 GB の Range 読みという最も分散させたい経路で
+分散が効かなくなる。X-Accel-Redirect でバイト転送を前段に委ねる構成とも噛み合わない。
+
+アーカイブは単一である（§4 / [storage.md](storage.md) §5 の 2 階層。録画バッファは
+サイトごとのエッジ、アーカイブは 1 つ）。したがって**複数サイト構成でも録画配信の
+Pod は site 非依存**で、どの Pod でもどの録画を配れる。`recordings.id` は surrogate
+なのでサイト間で曖昧にならず、URL に site を持つ必要もない（issue #31）。
+
+再生中に Pod が落ちてもクライアントは Range で再接続して継続する。決めるべきは
+`terminationGracePeriodSeconds` を進行中の転送を打ち切らない長さにすることだけ。
+
+#### ライブ視聴は mirakc の隣、シャード鍵は serviceId
+
+生 TS は 17 Mbps 連続なので WAN に出さない。**トランスコードは mirakc と同じサイトで
+行い、HLS になったものだけがサイトの外に出る。**
+
+セッションを Pod に貼り付ける代わりに、**前段で `(site, serviceId)` の consistent
+hash によって振る**。この鍵は既に資源同定の中にある（M3-1 で決めた
+`/api/sites/{site}/services/{serviceId}/...`。[api.md](api.md) §ライブ視聴の HLS）
+ので、レプリカを増やしても URL もクライアントも変わらない。
+
+- **cookie による affinity は使わない。**外部プレイヤー（VLC 等）は cookie を
+  持たない / OSS nginx に `sticky cookie` が無い（nginx-plus の機能）/
+  ingress-nginx の既定 `affinity-mode: balanced` はスケール時に**生きている Pod
+  からもクライアントを剥がす**
+- **同じチャンネルの視聴者は同じ Pod に落ちる**ので、ffmpeg 1 本・チューナー 1 本を
+  共有する。チューナーは録画と取り合う唯一の共有資源なので、これは偶然の利益ではなく
+  鍵を `serviceId` に取る理由そのもの
+- **Pod が落ちても、ハッシュの担当が移っても自己修復する。**視聴者の再要求が新しい
+  Pod に落ちてそこで ffmpeg が起き、旧 Pod は要求が来なくなるので idle GC が
+  チューナーを解放する。クライアント側にセッションの概念が無いので、見えるのは
+  再バッファリングだけ
+
+#### 既定を 1 にする根拠と、増やす判定基準
+
+**既定は replicas=1。**天井は Pod の CPU ではなく**サイトのチューナー数**である
+（ライブ 1 本がチューナー 1 本を占有し、残りが録画に使われる）。1 サイトのチューナー
+数ぶんのトランスコードが 1 Pod に収まる間は、増やす理由が無い。
+
+収まらなくなったら **replica を増やし、前段に `(site, serviceId)` の consistent hash
+を設定するだけでよい。**URL・クライアント・API は変わらない。この可逆性を保つために
+実装側で守るのは次の 3 点:
+
+1. **プレイリスト / セグメントの URL を固定深さにする。**前段が 1 つの nginx 変数で
+   鍵を取り出せる形にする。OSS nginx なら
+   `map $uri $live_key { ~^/api/sites/(?<s>[^/]+)/services/(?<sv>[^/]+)/live/ "$s/$sv"; }`
+   → `hash $live_key consistent;`。可変長パスやクエリ文字列に鍵を置くと書けない
+   （ingress-nginx の `upstream-hash-by` で同じキャプチャがどう書けるかは M4-6 で
+   実機確認する）
+2. **同時セッション上限はプロセスローカルであることを前提にする。**グローバルな
+   天井はチューナー数であり、その裁定者は mirakc である。「アプリが握る唯一の
+   グローバル上限」を作ると、レプリカを増やした瞬間に嘘になる
+3. **セッション数のメトリクスは per-process gauge にする。**Prometheus 側で sum
+   する。1 Pod の値を全体として読む UI を作らない
+
+#### ライブのセグメントを録画バッファと同じディスクに置かない
+
+エッジの録画バッファ（mirakc `recording.basedir`）は「I/O 飽和 = ドロップ直結」で、
+要求は絶対帯域ではなくレイテンシである（§4）。ライブの HLS セグメント書き出しが同じ
+ディスクに乗ると、**視聴が録画を壊す。**セグメントは数 MB × 数本なので tmpfs
+（k8s なら `emptyDir: {medium: Memory}`）で足りる。Postgres datadir とエンコード
+scratch を分ける指針（§3）と同じ系列の規則。
+
 ### worker: KEDA ScaledJob（長時間ジョブ保護）
 
 長時間バッチ（数時間のエンコード / ingest）には Deployment + HPA ではなく **KEDA ScaledJob** を使う。キューアイテムごとに k8s Job を起こす形にすると、**ジョブは完走するまで殺されない** --- スケールインは「新しい Job を起こさない」ことで実現され、実行中の犠牲者選定という問題自体が消える。
