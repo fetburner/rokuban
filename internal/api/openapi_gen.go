@@ -207,6 +207,7 @@ func (e RecordingSource) Valid() bool {
 
 // Defines values for RecordingStatus.
 const (
+	RecordingStatusCanceled  RecordingStatus = "canceled"
 	RecordingStatusFailed    RecordingStatus = "failed"
 	RecordingStatusFinished  RecordingStatus = "finished"
 	RecordingStatusRecording RecordingStatus = "recording"
@@ -215,6 +216,8 @@ const (
 // Valid indicates whether the value is a known member of the RecordingStatus enum.
 func (e RecordingStatus) Valid() bool {
 	switch e {
+	case RecordingStatusCanceled:
+		return true
 	case RecordingStatusFailed:
 		return true
 	case RecordingStatusFinished:

@@ -159,6 +159,7 @@ export type RecordingStatus = typeof RecordingStatus[keyof typeof RecordingStatu
 export const RecordingStatus = {
   recording: 'recording',
   finished: 'finished',
+  canceled: 'canceled',
   failed: 'failed',
 } as const;
 

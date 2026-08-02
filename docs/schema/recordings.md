@@ -25,8 +25,8 @@ CREATE TABLE recordings (
     program_start_at  timestamptz NOT NULL,
     program_duration_ms bigint NOT NULL,
 
-    -- 録画実行の結果
-    status            text NOT NULL CHECK (status IN ('recording', 'finished', 'failed')),
+    -- 録画実行の結果（mirakc の recording.status。詳細は下記「status の権威」）
+    status            text NOT NULL CHECK (status IN ('recording', 'finished', 'canceled', 'failed')),
     started_at        timestamptz,               -- 実際の録画開始（record の startTime）
     ended_at          timestamptz,
 
@@ -65,6 +65,16 @@ CREATE INDEX ON recordings (purge_after) WHERE purge_after IS NOT NULL;  -- 即�
 - watcher が mirakc record を初観測（SSE または全量突き合わせ）→ record の program / service ペイロードからスナップショットして INSERT、`record_sync` 行から参照
 - `recording.failed` で record が存在しないケース（start-recording-failed 等）→ status = `failed` の行を作り quality_events に理由を記録。**録画されなかった試行も履歴に残る**
 - ingest の完了は recordings の status ではなく **`media_assets` 行の有無**で表現する（コミット = DB 行。冗長な状態カラムを持たない）
+
+### status の権威（issue #130）
+
+**`status` の権威は「mirakc が報告したレコードの状態」であって、「Rokuban から見た録画の帰結」ではない。** 値は mirakc の `GET /api/recording/records` の `recording.status` をそのまま転記したもので、4 値（`recording` / `finished` / `canceled` / `failed`）で閉じている（mirakc-core の `RecordingStatus` が 4 バリアントの網羅的 enum であることをソースで確認済み。issue #130）。
+
+- `canceled` は**取消**（録画開始後にスケジュールが削除される等）で、`failed`（**失敗**）とは別の事実。`canceled` を `failed` に丸めると録画一覧が「失敗した」と嘘をつくので、独立した 4 値目として持つ
+- **これは不変条件 7「mirakc 固有の概念を永続テーブルに入れない」の違反ではない。** 既存 3 値（`recording`/`finished`/`failed`）はもともと mirakc の語彙であり、`canceled` の追加はその踏襲。不変条件 7 が禁じるのは mirakc の内部 ID・タグ形式・スケジュール状態（`RecordingScheduleState` 等）のような実装詳細に紐づく構造の持ち込みで、録画結果の語彙（成功/失敗/取消）はドメインの外部仕様として妥当な粒度
+- **未知の値（mirakc が将来値を追加した場合）は 5 値目を足さず `failed` に丸める。** `internal/watcher.normalizeRecordingStatus` が正規化し、生の値は `record_sync.status`（CHECK 無し）にそのまま残るので観測は失われない。丸めるのは「分かっている 2 つの事実を潰す」`canceled`→`failed` の丸めとは異なり、「何が起きたか分からない」という状態そのものが事実であるケースなので、粗い `failed` への集約を許容している。次に mirakc が値を足したら `internal/watcher` の ERROR ログを起点にこの CHECK と `openapi.yaml` の enum を更新すること
+
+**#98 との関係:** #98 は「schedule が一度も作られなかった予約」について Rokuban 自身の観測（never-scheduled）を `recordings` に残すことを検討しているが、それは上記の権威（mirakc が報告した状態）とは別の事実である。#98 を実装する際にこの列へ混ぜないこと —— 別列にするか、この列の意味自体を作り直すかは #98 側で決める。
 
 ### ごみ箱（issue #4 の削除エンジンコメント / M3-7 #69）
 

@@ -360,7 +360,7 @@ func (q *Queries) SnapshotRecordingEncodePolicy(ctx context.Context, arg Snapsho
 
 const updateRecordingStatus = `-- name: UpdateRecordingStatus :exec
 UPDATE recordings SET
-    status     = CASE WHEN status IN ('finished', 'failed') THEN status ELSE $1 END,
+    status     = CASE WHEN status IN ('finished', 'failed', 'canceled') THEN status ELSE $1 END,
     started_at = COALESCE(started_at, $2),
     ended_at   = CASE WHEN $3::timestamptz IS NOT NULL THEN $3 ELSE ended_at END,
     updated_at = now()
@@ -374,6 +374,10 @@ type UpdateRecordingStatusParams struct {
 	ID        int64
 }
 
+// status は 'finished' / 'failed' / 'canceled' に達したら降格させない
+// （out-of-order な 'recording' イベントが後から来ても上書きしない。
+// 'canceled' は録画が再開しない取消なので他の 2 つと同じ終端として扱う。
+// issue #130）。
 func (q *Queries) UpdateRecordingStatus(ctx context.Context, arg UpdateRecordingStatusParams) error {
 	_, err := q.db.Exec(ctx, updateRecordingStatus,
 		arg.NewStatus,

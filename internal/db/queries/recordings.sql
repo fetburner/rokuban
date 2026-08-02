@@ -16,8 +16,12 @@ INSERT INTO recordings (
 ) RETURNING id;
 
 -- name: UpdateRecordingStatus :exec
+-- status は 'finished' / 'failed' / 'canceled' に達したら降格させない
+-- （out-of-order な 'recording' イベントが後から来ても上書きしない。
+-- 'canceled' は録画が再開しない取消なので他の 2 つと同じ終端として扱う。
+-- issue #130）。
 UPDATE recordings SET
-    status     = CASE WHEN status IN ('finished', 'failed') THEN status ELSE sqlc.arg('new_status') END,
+    status     = CASE WHEN status IN ('finished', 'failed', 'canceled') THEN status ELSE sqlc.arg('new_status') END,
     started_at = COALESCE(started_at, sqlc.arg('started_at')),
     ended_at   = CASE WHEN sqlc.narg('ended_at')::timestamptz IS NOT NULL THEN sqlc.narg('ended_at') ELSE ended_at END,
     updated_at = now()
