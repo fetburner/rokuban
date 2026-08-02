@@ -1170,3 +1170,107 @@ func TestProcessRecord_MissingReservation_SourceManual(t *testing.T) {
 		t.Errorf("recordings.rule_id = %v, want nil", ruleID)
 	}
 }
+
+// TestProcessRecord_StatusValues は issue #130 の受け入れ基準の核心:
+// mirakc が返しうる recording.status の 4 値（recording/finished/canceled/failed）
+// すべてで processRecord がエラーを返さず、決定的な結果になることを固定する。
+//
+// canceled はこのテストが書かれる前は recordings_status_check（旧 3 値）
+// 違反でトランザクション全体がロールバックし、record_sync にも観測が残らない
+// まま毎パス再試行され続けていた（#130 本体のバグ）。このテストは
+// recordings_status_check を 00021 の 4 値から 3 値に戻すと canceled のケースで
+// 落ちることを確認済み（報告参照。意図的に実装を壊して確認する、CLAUDE.md
+// テスト規律）。
+//
+// 5 つ目のケース（未知の値）は「無限リトライにならない」ことを固定する
+// （#130「含むもの 4」）。mirakc が将来値を追加した場合を模した架空の値
+// "rescheduling" を使う（これは実際には mirakc の別概念
+// RecordingScheduleState の値であり、RecordInfo.Status には現れない。
+// 「未知の値の例」として issue 本文が挙げているのと同じ値）。
+func TestProcessRecord_StatusValues(t *testing.T) {
+	tests := []struct {
+		name          string
+		mirakcStatus  string
+		wantRecStatus string // 正規化後、recordings.status に入るはずの値
+		wantIngestJob bool
+	}{
+		{name: "recording", mirakcStatus: "recording", wantRecStatus: "recording", wantIngestJob: false},
+		{name: "finished", mirakcStatus: "finished", wantRecStatus: "finished", wantIngestJob: true},
+		{name: "canceled", mirakcStatus: "canceled", wantRecStatus: "canceled", wantIngestJob: false},
+		{name: "failed", mirakcStatus: "failed", wantRecStatus: "failed", wantIngestJob: false},
+		{
+			name:          "unknown status does not infinite-retry",
+			mirakcStatus:  "rescheduling",
+			wantRecStatus: "failed", // normalizeRecordingStatus の丸め先。理由は同関数の doc コメント参照
+			wantIngestJob: false,
+		},
+	}
+
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w, pool := setupTest(t)
+			ctx := context.Background()
+
+			programID := int64(800000 + i)
+			recordID := fmt.Sprintf("record-status-%02d", i)
+			createTestReservation(t, pool, programID)
+			record := testRecord(recordID, programID, tt.mirakcStatus)
+
+			if err := w.processRecord(ctx, record); err != nil {
+				t.Fatalf("processRecord: %v (status %q が CHECK 違反等でエラーになってはいけない)",
+					err, tt.mirakcStatus)
+			}
+
+			// record_sync は mirakc の生の値をそのまま保持しなければならない
+			// （CHECK が無い列。docs/schema/record-sync.md「mirakc の
+			// recordingStatus そのまま」）。未知の値でもここで観測が残ることが
+			// 「無限リトライにならない」の土台になる。
+			var syncStatus string
+			var syncRecordingID *int64
+			if err := pool.QueryRow(ctx,
+				"SELECT status, recording_id FROM record_sync WHERE site = $1 AND record_id = $2",
+				DefaultSite, recordID,
+			).Scan(&syncStatus, &syncRecordingID); err != nil {
+				t.Fatalf("querying record_sync: %v", err)
+			}
+			if syncStatus != tt.mirakcStatus {
+				t.Errorf("record_sync.status = %q, want %q (mirakc の生の値がそのまま残るはず)",
+					syncStatus, tt.mirakcStatus)
+			}
+			if syncRecordingID == nil {
+				t.Fatal("record_sync.recording_id is nil (recordings 行が作られていない)")
+			}
+
+			var recStatus string
+			if err := pool.QueryRow(ctx,
+				"SELECT status FROM recordings WHERE id = $1", *syncRecordingID,
+			).Scan(&recStatus); err != nil {
+				t.Fatalf("querying recordings: %v", err)
+			}
+			if recStatus != tt.wantRecStatus {
+				t.Errorf("recordings.status = %q, want %q", recStatus, tt.wantRecStatus)
+			}
+
+			// 2 回目の processRecord も同じ結果を返し続けること（再試行しても
+			// 状態が安定していることの確認。#130 のバグは「毎回失敗し続ける」
+			// 形だったので、2 回目もエラーにならないことを見ておく）。
+			if err := w.processRecord(ctx, record); err != nil {
+				t.Fatalf("processRecord (2nd call): %v", err)
+			}
+
+			var jobCount int
+			if err := pool.QueryRow(ctx,
+				"SELECT count(*) FROM river_job WHERE kind = 'ingest' AND args->>'record_id' = $1", recordID,
+			).Scan(&jobCount); err != nil {
+				t.Fatalf("querying river_job: %v", err)
+			}
+			wantJobCount := 0
+			if tt.wantIngestJob {
+				wantJobCount = 1
+			}
+			if jobCount != wantJobCount {
+				t.Errorf("ingest job count = %d, want %d", jobCount, wantJobCount)
+			}
+		})
+	}
+}

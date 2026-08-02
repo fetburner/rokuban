@@ -33,6 +33,7 @@ import { cn } from '@/lib/utils'
 const statusLabels: Record<Recording['status'], string> = {
   recording: '録画中',
   finished: '完了',
+  canceled: '取消',
   failed: '失敗',
 }
 

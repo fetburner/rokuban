@@ -284,10 +284,35 @@ const (
 	ReservationStateOrphaned = "orphaned"
 )
 
-// 録画ステータス。
+// 録画ステータス。mirakc の RecordInfo.Status（GET /api/recording/records の
+// recording.status）をそのまま持つ 4 値で、recordings_status_check
+// （00002_schema_v1.sql → 00021_recordings_status_canceled.sql で 4 値化）と一致する。
+//
+// **これは mirakc 固有の語彙だが、不変条件 7「mirakc 固有の概念を永続テーブルに
+// 入れない」の違反ではない。** 既存 3 値（recording/finished/failed）は元から
+// mirakc の語彙であり、canceled はその踏襲（新規の違反ではない）。不変条件 7 が
+// 禁じているのは mirakc の内部 ID・タグ形式・スケジュール状態
+// （RecordingScheduleState 等）のような、mirakc の実装詳細に紐づく構造を持ち込む
+// ことで、録画結果の語彙（成功/失敗/取消）はドメインの外部仕様として妥当な粒度
+// （issue #130 のコメント参照）。
+//
+// **status の権威は「mirakc が報告したレコードの状態」であって、「Rokuban から
+// 見た録画の帰結」ではない。** #98（schedule が一度も作られなかった予約を
+// 「録れなかった」行として recordings に残すことの検討）はこの列に
+// Rokuban 自身の観測（never-scheduled）を書こうとしているが、それは今の
+// status の権威とは別の事実である。#98 を実装する人はここを混ぜないこと
+// （別列にするか、この列の意味を作り直すかを #98 側で決める。docs/schema/
+// recordings.md の「status の権威」を参照）。
+//
+// **未知の値（mirakc が将来値を追加した場合）はここに追加しない。**
+// internal/watcher.normalizeRecordingStatus が CHECK 違反による永久リトライを
+// 避けるため 'failed' に丸め、生の値は record_sync.status（CHECK 無し）に
+// そのまま残る。次に mirakc が値を足したときはそちらのログを見て本 const と
+// CHECK を更新すること。
 const (
 	RecordingStatusRecording = "recording"
 	RecordingStatusFinished  = "finished"
+	RecordingStatusCanceled  = "canceled"
 	RecordingStatusFailed    = "failed"
 )
 
