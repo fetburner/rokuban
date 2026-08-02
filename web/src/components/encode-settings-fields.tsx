@@ -1,21 +1,27 @@
+import { useEffect, useState } from 'react'
+
 import {
   useListEncodeProfiles,
   type EncodeProfileSummary,
+  type ProgramOverridesInput,
+  type ReservationOverrides,
 } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
+import { Button } from '@/components/ui/button'
 import { Field, Select } from '@/components/ui/field'
 import {
   encodeSettingsError,
+  encodeSettingsValueFromOverrides,
+  hasEncodeOverride,
   keepOriginalLabel,
+  sameEncodeSettingsValue,
   toggleProfile,
+  type EncodeSettingsValue,
   type KeepOriginal,
 } from '@/lib/encode-settings'
 import { cn } from '@/lib/utils'
 
-export type EncodeSettingsValue = {
-  keepOriginal: KeepOriginal
-  encodeProfiles: string[]
-}
+export type { EncodeSettingsValue }
 
 type EncodeSettingsFieldsProps = {
   value: EncodeSettingsValue
@@ -96,6 +102,91 @@ export function EncodeSettingsFields({
           {error}
         </p>
       )}
+    </div>
+  )
+}
+
+/**
+ * EncodeOverridesEditor は 1 番組ぶんの overrides（encodeProfiles / keepOriginal）
+ * を編集して `PATCH .../overrides` に送る。
+ *
+ * `Reservation` 型には依存しない（`(site, programId)` は呼び出し側が
+ * `onSave` の中で知っていればよく、ここでは overrides の現在値だけを受け取る）
+ * ---
+ * 予約詳細画面（既存の予約）だけでなく、番組表からの「予約」導線
+ * （まだ予約行が無い番組）でも同じ編集フォームを使うため（issue #132）。
+ *
+ * `overrides` が未設定（`undefined` / `null`）なら「上書きなし」の表示・
+ * 初期値になる。
+ */
+export function EncodeOverridesEditor({
+  overrides,
+  isPending,
+  onSave,
+}: {
+  overrides: ReservationOverrides | null | undefined
+  isPending: boolean
+  onSave: (body: ProgramOverridesInput) => void
+}) {
+  const fromOverrides = encodeSettingsValueFromOverrides(overrides)
+  const [value, setValue] = useState<EncodeSettingsValue>(fromOverrides)
+  // サーバー側の overrides が変わったらフォームを同期する（保存後の invalidate など）。
+  useEffect(() => {
+    setValue(encodeSettingsValueFromOverrides(overrides))
+  }, [overrides])
+
+  const error = encodeSettingsError(value.keepOriginal, value.encodeProfiles)
+  const dirty = !sameEncodeSettingsValue(value, fromOverrides)
+  const currentlyOverridden = hasEncodeOverride(overrides)
+
+  return (
+    <div className="flex flex-col gap-3 rounded-lg border border-border p-3">
+      <p className="text-xs text-muted-foreground">
+        現在の上書き:{' '}
+        {currentlyOverridden
+          ? `${keepOriginalLabel(fromOverrides.keepOriginal)} / ${
+              fromOverrides.encodeProfiles.length === 0
+                ? 'プロファイルなし'
+                : fromOverrides.encodeProfiles.join(', ')
+            }`
+          : 'なし（ルールまたは既定）'}
+      </p>
+      <EncodeSettingsFields
+        value={value}
+        onChange={setValue}
+        disabled={isPending}
+        note="この予約だけを上書きします。"
+      />
+      <div className="flex flex-wrap gap-2">
+        <Button
+          type="button"
+          size="lg"
+          disabled={!dirty || error !== undefined || isPending}
+          onClick={() =>
+            onSave({
+              keepOriginal: value.keepOriginal,
+              encodeProfiles: value.encodeProfiles,
+            })
+          }
+        >
+          {isPending ? '保存中…' : '上書きを保存'}
+        </Button>
+        {currentlyOverridden && (
+          <Button
+            type="button"
+            variant="outline"
+            size="lg"
+            disabled={isPending}
+            onClick={() =>
+              onSave({
+                reset: ['keepOriginal', 'encodeProfiles'],
+              })
+            }
+          >
+            ルールに戻す
+          </Button>
+        )}
+      </div>
     </div>
   )
 }

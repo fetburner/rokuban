@@ -21,12 +21,14 @@ import {
   useListPrograms,
   useListReservations,
   useListServices,
+  usePatchProgramOverrides,
   usePutProgramIntent,
   type CapacityOverage,
   type ProgramListItem,
+  type ProgramOverridesInput,
   type Service,
 } from '@/api/generated'
-import { unwrap } from '@/api/unwrap'
+import { apiErrorMessage, unwrap } from '@/api/unwrap'
 import { shouldAutoLoadNextPage, shouldShowLoadMoreButton } from '@/lib/auto-load'
 import { dayOrigin } from '@/lib/day-offset'
 import { orderServices, type TimeAxis } from '@/lib/epg-grid'
@@ -548,11 +550,18 @@ export function ProgramsPage() {
  * 秒オーダーではあるが、invalidate して取り直すだけでは一覧の反映がその間
  * 遅れる。**楽観的更新**で見た目を即時反映し、サーバー値（serverReservedIds）が
  * 追いついたら上書きを外す（自己修復。SSE の invalidate で最終的に一致する）。
+ *
+ * `reserve` は `overrides` を受け取ると intent の PUT に続けて
+ * overrides の PATCH も呼ぶ（issue #132）。#29 の決定どおり intent の
+ * ボディは `action` のみのまま変えず、overrides は別リクエストにする ---
+ * ただし UI からは「予約」ボタン 1 回の操作に見える。overrides の PATCH が
+ * 失敗しても予約自体（intent）は成立しているので、その旨を分けてトーストで示す。
  */
 function useReservationActions(serverReservedIds: ReadonlySet<number>): ReservationActions {
   const queryClient = useQueryClient()
   const toast = useToast()
   const putIntent = usePutProgramIntent()
+  const patchOverrides = usePatchProgramOverrides()
 
   // mutation の isPending は全行で共有されるため、操作中の番組だけを覚えておく。
   // これがないと 1 件予約する間にリスト全行のボタンが無効化される。
@@ -630,27 +639,62 @@ function useReservationActions(serverReservedIds: ReadonlySet<number>): Reservat
     )
   }
 
-  const reserve = (program: ProgramListItem) => {
+  // 予約作成（PUT .../intent）自体は action のみのまま変更しない（issue #29 の
+  // 決定）。overrides は別 PATCH のまま呼ぶが、ProgramRow の展開パネルで
+  // encodeProfiles / keepOriginal を触っていなければ overrides は
+  // `undefined` で渡ってくるので、この場合は PATCH 自体を呼ばない ---
+  // 呼ぶと「既定のまま」という意味の無い override 行を作ってしまう
+  // （不変条件 10）。UI 上は「予約」ボタン 1 回の操作に見せる（issue #132）。
+  const reserve = (program: ProgramListItem, overrides?: ProgramOverridesInput) => {
     setBusy(program.programId, true)
     setOptimisticReserved(program.programId, true)
-    putIntent.mutate(
-      { site: DEFAULT_SITE, programId: program.programId, data: { action: 'record' } },
-      {
-        onSuccess: () => {
-          invalidateReservations()
+    void (async () => {
+      try {
+        await putIntent.mutateAsync({
+          site: DEFAULT_SITE,
+          programId: program.programId,
+          data: { action: 'record' },
+        })
+        invalidateReservations()
+
+        if (overrides === undefined) {
           // 確認ダイアログを挟まない代わりに、直後に取り返せるようにする
           toast({
             message: `予約しました: ${program.name}`,
             action: { label: '取消', onClick: () => cancel(program.programId) },
           })
-        },
-        onError: () => {
-          toast({ message: '予約に失敗しました' })
-          setOptimisticReserved(program.programId, undefined)
-        },
-        onSettled: () => setBusy(program.programId, false),
-      },
-    )
+          return
+        }
+
+        // overrides の PATCH は `program_snapshots (site, programId)` への FK を
+        // 要求する。EPG プロジェクションに無い番組（想定上は起こりにくいが、
+        // ここに来る時点で番組表に出ているので通常は満たされる）だと 400 になり
+        // うるので、予約自体の成功とは切り離してハンドルする ---
+        // 予約は成立しているので「予約に失敗しました」にはしない。
+        try {
+          await patchOverrides.mutateAsync({
+            site: DEFAULT_SITE,
+            programId: program.programId,
+            data: overrides,
+          })
+          toast({
+            message: `予約しました（エンコード設定つき）: ${program.name}`,
+            action: { label: '取消', onClick: () => cancel(program.programId) },
+          })
+        } catch (err) {
+          toast({
+            message: `予約はできましたが、エンコード設定の保存に失敗しました: ${
+              apiErrorMessage(err) ?? '不明なエラー'
+            }`,
+          })
+        }
+      } catch {
+        toast({ message: '予約に失敗しました' })
+        setOptimisticReserved(program.programId, undefined)
+      } finally {
+        setBusy(program.programId, false)
+      }
+    })()
   }
 
   return {
@@ -730,12 +774,17 @@ function ProgramGridView({
     >
       {selected && (
         <div className="shrink-0 border-b border-border bg-card">
+          {/* key を選択中の programId にする --- 番組を選び直しても同じ木の
+              位置なのでコンポーネントは再マウントされず、`ProgramRow` が
+              持つエンコード設定の下書き（issue #132）が前に選んでいた
+              番組のまま残ってしまう。key で強制的に作り直す。 */}
           <ProgramRow
+            key={selected.programId}
             program={selected}
             serviceName={serviceById.get(selected.serviceId)?.name}
             reserved={actions.reservedProgramIds.has(selected.programId)}
             pending={actions.isBusy(selected.programId)}
-            onReserve={() => actions.reserve(selected)}
+            onReserve={(overrides) => actions.reserve(selected, overrides)}
             onCancel={() => actions.cancel(selected.programId)}
           />
         </div>
