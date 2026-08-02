@@ -253,7 +253,11 @@ func (r *Reconciler) RunPass(ctx context.Context) error {
 		slog.Error("reconciler: cleaning stale schedule_syncs", "err", err)
 	}
 
-	if err := r.markOrphaned(ctx, reservations, schedules); err != nil {
+	// now は作成ループと同じ瞬間を渡す（同じ式だけでなく同じ材料にする）。
+	// 別々に time.Now() を取ると、パス実行中に終了時刻を跨いだ番組が
+	// 「作成ループでは未終了 → POST」かつ「markOrphaned では終了 → orphaned」に
+	// なり、収束はするが issue #134 が消したい failed 行がちょうど 1 件出る。
+	if err := r.markOrphaned(ctx, reservations, schedules, now); err != nil {
 		slog.Error("reconciler: marking orphaned", "err", err)
 	}
 
@@ -733,19 +737,21 @@ func (r *Reconciler) recreateSchedule(ctx context.Context, d desiredReservation,
 }
 
 // markOrphaned は「番組終了後に schedule が観測されなかった」予約の
-// orphaned_at を埋める。終了判定は programEnded（RunPass の作成ループと共有）
+// orphaned_at を埋める。now は RunPass の作成ループが使ったものをそのまま
+// 受け取る —— 判定式だけでなく判定の瞬間まで揃える（別々に取ると、パス中に
+// 終了時刻を跨いだ番組が POST されたうえで同じパスで orphaned になる）。
+// 終了判定は programEnded（RunPass の作成ループと共有）
 // で、schedule の非観測は今パスで observeSchedules した schedules をそのまま
 // 使う。境界がここと作成ループでずれると、同じ予約が「作らない」と「まだ
 // orphaned にしない」の間に落ちて mirakc への POST を撃ち続けるので、
 // programEnded 以外の場所で終了判定を書き下さないこと（issue #134）。
-func (r *Reconciler) markOrphaned(ctx context.Context, reservations []desiredReservation, schedules []mirakc.Schedule) error {
+func (r *Reconciler) markOrphaned(ctx context.Context, reservations []desiredReservation, schedules []mirakc.Schedule, now time.Time) error {
 	scheduledPrograms := make(map[int64]struct{}, len(schedules))
 	for _, s := range schedules {
 		scheduledPrograms[s.Program.ID] = struct{}{}
 	}
 
 	q := sqlcgen.New(r.pool)
-	now := time.Now()
 	for _, d := range reservations {
 		res := d.res
 		if !programEnded(d.snap, now) {
