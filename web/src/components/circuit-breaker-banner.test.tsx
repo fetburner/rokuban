@@ -153,6 +153,12 @@ describe('CircuitBreakerBanner', () => {
     })
 
     expect(await screen.findByText(/再開しました/)).toBeInTheDocument()
+
+    // 確定後はダイアログが閉じる。呼び出し側は個別のクローズ処理を持たず
+    // AlertDialogAction（Close ラップ）に任せているので、ここで固定する（#131）。
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: '再開する' })).not.toBeInTheDocument(),
+    )
   })
 
   it('再開が失敗したときエラーが表示される（黙って成功に見せない）', async () => {

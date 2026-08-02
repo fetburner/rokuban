@@ -183,6 +183,11 @@ describe('RecordingsPage trash', () => {
     await waitFor(() =>
       expect(screen.queryByRole('button', { name: '完全削除を予約する' })).not.toBeInTheDocument(),
     )
+
+    // ダイアログが自動で閉じても mutate のコールバックは走る（黙って成功したように
+    // 見せない）。AlertDialogAction を Close ラップにした #131 で、閉じるのが先に
+    // 走ってトーストが出なくなる形の回帰を防ぐ。
+    expect(await screen.findByText(/完全削除を予約しました/)).toBeInTheDocument()
   })
 
   it('ライブラリでは派生物・原本があればプレイヤーとサムネイルを出す', async () => {
