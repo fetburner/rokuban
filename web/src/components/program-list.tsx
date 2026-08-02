@@ -10,7 +10,7 @@ import {
   useState,
 } from 'react'
 
-import type { ProgramListItem, Service } from '@/api/generated'
+import type { ProgramListItem, ProgramOverridesInput, Service } from '@/api/generated'
 import { Button } from '@/components/ui/button'
 import { ProgramRow } from '@/components/program-row'
 import { dayKey, formatDate } from '@/lib/format'
@@ -30,9 +30,14 @@ import { firstIndexForDayOffset, visibleDayOffset } from '@/lib/visible-day'
  * 差分をこの切り出しで最小にするため —— `ProgramList` が要求する形を
  * `programs.tsx` からエクスポートさせると、`ProgramList` を切り出したこの変更が
  * 共有ファイル側にも export の追加という差分を生む。
+ *
+ * `reserve` の第 2 引数（`overrides`）は issue #132 で足した ---
+ * `ProgramRow` の展開パネルで encodeProfiles / keepOriginal を既定から
+ * 変えていれば、そのまま overrides の PATCH ボディとして渡ってくる。
+ * 既定のままなら `undefined`（overrides の PATCH は呼ばない）。
  */
 export type ReservationActions = {
-  reserve: (program: ProgramListItem) => void
+  reserve: (program: ProgramListItem, overrides?: ProgramOverridesInput) => void
   cancel: (programId: number) => void
   isBusy: (programId: number) => boolean
   /** サーバーの値に楽観的な上書きを重ねた「予約済み」集合。 */
@@ -576,7 +581,7 @@ export const ProgramList = forwardRef<
                 serviceName={serviceById.get(program.serviceId)?.name}
                 reserved={reserved}
                 pending={actions.isBusy(program.programId)}
-                onReserve={() => actions.reserve(program)}
+                onReserve={(overrides) => actions.reserve(program, overrides)}
                 onCancel={() => actions.cancel(program.programId)}
               />
             </li>

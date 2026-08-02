@@ -140,6 +140,21 @@ function noContentResponse(): Response {
   return new Response(null, { status: 204 })
 }
 
+function errorResponse(status: number, message: string): Response {
+  return new Response(JSON.stringify({ error: message }), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
+
+/**
+ * encodeProfiles は「番組表からの予約でエンコード設定を指定する」テスト
+ * （issue #132）が使うプロファイル一覧のスタブ。`GET /api/encode-profiles` は
+ * `EncodeSettingsFields` が予約前の番組行を展開すると必ず叩くため、
+ * それを含む全テストで解決できる必要がある。
+ */
+const encodeProfiles = [{ name: 'h264', container: 'mp4' as const }]
+
 /**
  * stubApi は番組・サービス・予約・容量超過を URL で振り分ける。
  *
@@ -156,12 +171,17 @@ function noContentResponse(): Response {
  * 遡行のテストは絶対時刻で配置した専用の番組を渡す。`onProgramsCall` は
  * `/api/sites/default/programs` への何回目の呼び出しかを受け取り、Response を
  * 返せばそれで応答を差し替える（続きの読み込み失敗のテスト用）。
+ *
+ * `overridesPatchResponse` は `PATCH /api/sites/default/programs/{id}/overrides`
+ * の応答を差し替える（issue #132 の「PATCH が失敗しても予約は成立する」テスト用）。
+ * 未指定なら常に 204。
  */
 function stubApi(
   reservations: Reservation[] = [],
   overages: CapacityOverage[] = [],
   programs: ProgramListItem[] = allPrograms,
   onProgramsCall?: (callIndex: number) => Response | undefined,
+  overridesPatchResponse?: () => Response,
 ) {
   let programsCallIndex = 0
   const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
@@ -173,11 +193,29 @@ function stubApi(
     if (url.pathname === '/api/capacity/overages') {
       return Promise.resolve(jsonResponse(overages))
     }
+    if (url.pathname === '/api/encode-profiles') {
+      return Promise.resolve(jsonResponse(encodeProfiles))
+    }
     if (/^\/api\/sites\/default\/programs\/\d+\/overlaps$/.test(url.pathname)) {
       return Promise.resolve(jsonResponse({ count: 0, reservations: [] }))
     }
+    // 行を展開すると ProgramDetail（program-row.tsx）が単体取得を叩く
+    // （段階的開示。issue #132 のテストで行を展開するので必要になった）。
+    const singleProgramMatch = /^\/api\/sites\/default\/programs\/(\d+)$/.exec(url.pathname)
+    if (singleProgramMatch) {
+      const found = programs.find((p) => p.programId === Number(singleProgramMatch[1]))
+      return Promise.resolve(
+        found ? jsonResponse(found) : new Response(null, { status: 404 }),
+      )
+    }
     if (/^\/api\/sites\/default\/programs\/\d+\/intent$/.test(url.pathname) && init?.method === 'PUT') {
       return Promise.resolve(noContentResponse())
+    }
+    if (
+      /^\/api\/sites\/default\/programs\/\d+\/overrides$/.test(url.pathname) &&
+      init?.method === 'PATCH'
+    ) {
+      return Promise.resolve(overridesPatchResponse?.() ?? noContentResponse())
     }
     if (url.pathname === '/api/sites/default/programs') {
       programsCallIndex++
@@ -914,5 +952,144 @@ describe('ProgramsPage の日付ジャンプ（先頭の窓に重なる前日の
     await waitFor(() =>
       expect(within(dayGroup).getAllByRole('button')[2]).toHaveAttribute('aria-current', 'date'),
     )
+  })
+})
+
+/**
+ * 番組表から「予約」する際に encodeProfiles / keepOriginal を指定できることの
+ * 回帰テスト（issue #132）。
+ *
+ * 予約詳細画面（reservation-detail.tsx）へ遷移しなくても、番組表の行を展開
+ * するだけで overrides を編集できることと、その値が「予約」ボタン 1 回の
+ * 操作で intent の PUT と overrides の PATCH の両方に正しく渡ることを見る。
+ * ダイアログの開閉・見た目の可視性は jsdom では測れない領域なので、e2e 側
+ * （`web/e2e/`）の担当（issue コメント参照）。ここで固定するのは
+ * fetch に飛んだ引数までとする。
+ *
+ * 各テストは `stubApi([], [], [soon])` で番組を 1 件に絞る --- 複数番組が
+ * 並ぶと行ごとに同じ accessible name（「予約」）のボタンが並び、どの行を
+ * 押したか一意に決められなくなるため。
+ */
+describe('ProgramsPage から予約時にエンコード設定を指定できる（issue #132）', () => {
+  it('行を展開すると、まだ予約されていない番組にもエンコード設定欄が出る（予約詳細画面へ遷移しない）', async () => {
+    stubApi([], [], [soon])
+    renderPage()
+
+    const title = await screen.findByText('ニュース7')
+    await userEvent.click(title)
+
+    expect(await screen.findByText('エンコードプロファイル')).toBeInTheDocument()
+    expect(await screen.findByRole('checkbox', { name: /h264/ })).toBeInTheDocument()
+    // 「予約」を押すまで反映されない、という注意も出す（保存だけで録画される
+    // という誤解を避ける。issue #132 の罠）
+    expect(
+      screen.getByText(/「予約」を押した時点で反映されます/),
+    ).toBeInTheDocument()
+  })
+
+  it('展開しても既定のまま予約すると、overrides の PATCH は送らない（意味の無い override 行を作らない。CLAUDE.md 不変条件 10）', async () => {
+    const fetchMock = stubApi([], [], [soon])
+    renderPage()
+
+    const title = await screen.findByText('ニュース7')
+    await userEvent.click(title) // 展開するが設定は既定のまま変えない
+    await screen.findByText('エンコードプロファイル')
+
+    await userEvent.click(screen.getByRole('button', { name: '予約' }))
+
+    // intent の PUT が飛ぶのを待ってから、overrides の PATCH が無いことを見る
+    // （クエリが解決する前に判定すると空虚な成功になるため、成功を先に待つ）
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some(
+          (call) =>
+            new URL(String(call[0]), 'http://localhost').pathname ===
+              `/api/sites/default/programs/${soon.programId}/intent` &&
+            (call[1] as RequestInit | undefined)?.method === 'PUT',
+        ),
+      ).toBe(true)
+    })
+
+    expect(
+      fetchMock.mock.calls.some((call) =>
+        new URL(String(call[0]), 'http://localhost').pathname.endsWith('/overrides'),
+      ),
+    ).toBe(false)
+  })
+
+  it('エンコード設定を変えてから予約すると、intent の PUT と overrides の PATCH が正しい引数で両方飛ぶ', async () => {
+    const fetchMock = stubApi([], [], [soon])
+    renderPage()
+
+    const title = await screen.findByText('ニュース7')
+    await userEvent.click(title)
+
+    const checkbox = await screen.findByRole('checkbox', { name: /h264/ })
+    await userEvent.click(checkbox)
+
+    await userEvent.click(screen.getByRole('button', { name: '予約' }))
+
+    const overridesUrl = `/api/sites/default/programs/${soon.programId}/overrides`
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some(
+          (call) => new URL(String(call[0]), 'http://localhost').pathname === overridesUrl,
+        ),
+      ).toBe(true)
+    })
+
+    const overridesCall = fetchMock.mock.calls.find(
+      (call) => new URL(String(call[0]), 'http://localhost').pathname === overridesUrl,
+    )
+    const overridesInit = overridesCall?.[1] as RequestInit
+    expect(overridesInit.method).toBe('PATCH')
+    expect(JSON.parse(String(overridesInit.body))).toEqual({
+      keepOriginal: 'always',
+      encodeProfiles: ['h264'],
+    })
+
+    // 予約作成（PUT .../intent）自体は action のみのまま変更しない（issue #29
+    // の決定を維持。overrides は別リクエストのまま）
+    const intentCall = fetchMock.mock.calls.find(
+      (call) =>
+        new URL(String(call[0]), 'http://localhost').pathname ===
+          `/api/sites/default/programs/${soon.programId}/intent` &&
+        (call[1] as RequestInit | undefined)?.method === 'PUT',
+    )
+    expect(intentCall).toBeDefined()
+    const intentInit = intentCall?.[1] as RequestInit
+    expect(JSON.parse(String(intentInit.body))).toEqual({
+      action: 'record',
+    })
+  })
+
+  it('overrides の PATCH が失敗しても、予約（intent）自体は成立している', async () => {
+    const fetchMock = stubApi([], [], [soon], undefined, () =>
+      errorResponse(400, 'program not found in the EPG projection'),
+    )
+    renderPage()
+
+    const title = await screen.findByText('ニュース7')
+    await userEvent.click(title)
+
+    const checkbox = await screen.findByRole('checkbox', { name: /h264/ })
+    await userEvent.click(checkbox)
+    await userEvent.click(screen.getByRole('button', { name: '予約' }))
+
+    // 予約に失敗した、ではなくエンコード設定の保存にだけ失敗したと分けて示す
+    expect(await screen.findByText(/エンコード設定の保存に失敗しました/)).toBeInTheDocument()
+    expect(screen.queryByText('予約に失敗しました')).not.toBeInTheDocument()
+
+    // それでも intent の PUT は届いている（予約自体は成立する）
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some(
+          (call) =>
+            new URL(String(call[0]), 'http://localhost').pathname ===
+              `/api/sites/default/programs/${soon.programId}/intent` &&
+            (call[1] as RequestInit | undefined)?.method === 'PUT',
+        ),
+      ).toBe(true)
+    })
   })
 })
