@@ -6,10 +6,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/mirakc"
@@ -316,5 +318,61 @@ func TestRulerPassWorker_EnqueuesReconcilePassHint(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("reconcile_pass job count after ruler_pass completion = %d, want 1 "+
 			"(ruler_pass 完了時にヒントとして投入されるはず)", count)
+	}
+}
+
+// TestReconcilePassWorker_SiteMismatch は、job.Args.Site がワーカー自身の site
+// （w.Site）と一致しないジョブが mirakc に一切触れずに fail-fast することを
+// 確認する（issue #139）。scheduleStub は 200 を返す（弱いテストにしないため。
+// issue #139 のテスト規律）。reconciler.RunPass はデスクトップ側の予約が
+// 0 件でも常に GET /api/recording/schedules を行う（reconciler.go の RunPass
+// 実装）ため、DB は空のままでよい。
+func TestReconcilePassWorker_SiteMismatch(t *testing.T) {
+	pool := testutil.SetupDB(t)
+
+	var requests atomic.Int32
+	stub := newScheduleStub()
+	countingSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		stub.ServeHTTP(w, r)
+	}))
+	defer countingSrv.Close()
+
+	// このワーカープロセスは site-a の mirakc を向いている。
+	w := &ReconcilePassWorker{
+		MirakcClient: mirakc.NewClient(countingSrv.URL, nil),
+		Pool:         pool,
+		Site:         "site-a",
+	}
+
+	job := &river.Job[ReconcilePassArgs]{JobRow: &rivertype.JobRow{}, Args: ReconcilePassArgs{Site: "site-b"}}
+	err := w.Work(context.Background(), job)
+	if err == nil {
+		t.Fatal("Work() error = nil, want error for site mismatch (site-a worker handling a site-b job)")
+	}
+	if got := requests.Load(); got != 0 {
+		t.Errorf("mirakc received %d requests, want 0 (guard must fail before touching mirakc): err=%v", got, err)
+	}
+}
+
+// TestReconcilePassWorker_SiteMatch は、args.Site が一致するジョブは従来どおり
+// 処理されることを確認する（TestReconcilePassWorker_SiteMismatch と対になる
+// 両方向の確認）。
+func TestReconcilePassWorker_SiteMatch(t *testing.T) {
+	pool := testutil.SetupDB(t)
+
+	stub := newScheduleStub()
+	srv := httptest.NewServer(stub)
+	defer srv.Close()
+
+	w := &ReconcilePassWorker{
+		MirakcClient: mirakc.NewClient(srv.URL, nil),
+		Pool:         pool,
+		Site:         "site-a",
+	}
+
+	job := &river.Job[ReconcilePassArgs]{JobRow: &rivertype.JobRow{}, Args: ReconcilePassArgs{Site: "site-a"}}
+	if err := w.Work(context.Background(), job); err != nil {
+		t.Fatalf("Work() error = %v, want nil for matching site", err)
 	}
 }

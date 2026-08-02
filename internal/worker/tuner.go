@@ -59,6 +59,14 @@ type TunerSyncWorker struct {
 	river.WorkerDefaults[TunerSyncArgs]
 	MirakcClient *mirakc.Client
 	Pool         *pgxpool.Pool
+
+	// Site はこのワーカープロセス自身の site（config.mirakc.site）。Work は
+	// これと job.Args.Site を verifySite で照合してから mirakc に触る
+	// （issue #139）。TunerSyncArgs は EpgSyncArgs と同じ epg キューを使う
+	// 「使い捨てプロジェクションの全量同期」で、mirakc への ListTuners を伴う
+	// ため EpgSyncWorker と同じ理由でガードが要る。空なら db.DefaultSite に
+	// 解決する（verifySite 参照）。
+	Site string
 }
 
 // Timeout は River の既定（1 分）と同じ上限を明示する。
@@ -71,6 +79,13 @@ func (w *TunerSyncWorker) Timeout(*river.Job[TunerSyncArgs]) time.Duration {
 func (w *TunerSyncWorker) Work(ctx context.Context, job *river.Job[TunerSyncArgs]) error {
 	site := job.Args.Site
 	log := slog.With("site", site)
+
+	// mirakc インスタンスはサイトスコープ。他サイトのジョブをこのプロセスの
+	// mirakc に投げると、別インスタンスのチューナー構成をこのサイトの投影として
+	// 書きうる（issue #139）。ListTuners より前に照合する。
+	if err := verifySite(w.Site, site, epgQueue); err != nil {
+		return err
+	}
 
 	q := sqlcgen.New(w.Pool)
 

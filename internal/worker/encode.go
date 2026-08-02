@@ -58,6 +58,16 @@ func (EncodeJobArgs) InsertOpts() river.InsertOpts {
 //  3. 進捗は ffmpeg -progress pipe:1（stderr スクレイピング禁止）
 //  4. 成功時のみ scratch → media へストリームコピー + fsync → media_assets INSERT
 //  5. 失敗時はコミット行を残さず、scratch は best-effort で掃除
+//
+// # site 照合ガード（issue #139）は不要と判断
+//
+// EncodeJobArgs は recording_id + profile のみで site を持たない。エンコードは
+// 原本 media_asset（mediapath.Resolve で解決する単一の MediaDir 配下）を読んで
+// FS に書くだけで mirakc には一切触れない（不変条件 4「ffmpeg/ffprobe の exec は
+// worker / streamer パッケージのみ」であって mirakc 呼び出しではない）。
+// アーカイブは複数サイト構成でも単一（site に従属しない。docs/storage.md）ため、
+// 他サイトの worker が拾っても mediapath.Resolve が解決する先は変わらず、
+// 「別インスタンスの id を投げる」形の壊れ方が起きない。
 type EncodeWorker struct {
 	river.WorkerDefaults[EncodeJobArgs]
 	Pool       *pgxpool.Pool

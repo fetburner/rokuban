@@ -121,6 +121,152 @@ func TestIngestWorker_FullTransfer(t *testing.T) {
 	}
 }
 
+// TestIngestWorker_SiteMismatch は、args.Site がワーカー自身の site
+// （w.Site、config.mirakc.site 相当）と一致しないジョブを、mirakc に一切
+// 触れずに fail-fast することを確認する（issue #139）。
+//
+// モックは何を投げても 200 を返す --- 「args.Site を無視する実装でも mirakc が
+// 404 を返せば落ちる」形の弱いテストにしないため（issue #139 のテスト規律）。
+// record_sync / recordings は「site-b」側で実際に存在する体で用意する
+// （lookupRecordingID がここで成功してしまうと、ガードを外したときに
+// GetRecord まで進んで初めてモックへ到達する、という現実の壊れ方を再現できる）。
+func TestIngestWorker_SiteMismatch(t *testing.T) {
+	var requests atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(makeTSData(1))
+		case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
+			record := mirakc.Record{
+				Recording: mirakc.RecordInfo{Options: mirakc.Options{ContentPath: strPtr("mismatch/recording.m2ts")}},
+				Content:   mirakc.ContentInfo{Path: "/recording/mismatch/recording.m2ts"},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(record)
+		case r.Method == http.MethodDelete:
+			result := mirakc.RecordRemovalResult{RecordRemoved: true, ContentRemoved: true}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(result)
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer srv.Close()
+
+	mediaDir := t.TempDir()
+	mc := mirakc.NewClient(srv.URL, nil)
+
+	// このワーカープロセスは site-a の mirakc を向いている。
+	w := &IngestWorker{
+		MirakcClient: mc,
+		MediaDir:     mediaDir,
+		StallTimeout: 5 * time.Second,
+		Site:         "site-a",
+	}
+
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	w.Pool = pool
+
+	// site-b 側では実在する record_sync / recordings（site-b の watcher が
+	// 実際に作った行という想定）。
+	recordingID := insertTestRecordingForSite(t, pool, "site-b", 20240101)
+	insertTestRecordSyncForSite(t, pool, "site-b", recordingID, "rec-mismatch", 327361024000099)
+
+	job := &river.Job[IngestJobArgs]{
+		JobRow: &rivertype.JobRow{},
+		Args:   IngestJobArgs{Site: "site-b", RecordID: "rec-mismatch"},
+	}
+
+	err := w.Work(context.Background(), job)
+	if err == nil {
+		t.Fatal("Work() error = nil, want error for site mismatch (site-a worker handling a site-b job)")
+	}
+	if got := requests.Load(); got != 0 {
+		t.Errorf("mirakc received %d requests, want 0 (guard must fail before touching mirakc): err=%v", got, err)
+	}
+}
+
+// TestIngestWorker_SiteMatch は、args.Site がワーカー自身の site と一致する
+// ジョブは従来どおり処理されることを確認する（TestIngestWorker_SiteMismatch と
+// 対になる、両方向の確認。CLAUDE.md テスト規律「分岐を直したら両方向で確認する」）。
+func TestIngestWorker_SiteMatch(t *testing.T) {
+	tsData := makeTSData(20)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsData)))
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(tsData)
+		case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsData)))
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
+			record := mirakc.Record{
+				Recording: mirakc.RecordInfo{Options: mirakc.Options{ContentPath: strPtr("match/recording.m2ts")}},
+				Content:   mirakc.ContentInfo{Path: "/recording/match/recording.m2ts"},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(record)
+		case r.Method == http.MethodDelete:
+			result := mirakc.RecordRemovalResult{RecordRemoved: true, ContentRemoved: true}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(result)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	mediaDir := t.TempDir()
+	mc := mirakc.NewClient(srv.URL, nil)
+
+	w := &IngestWorker{
+		MirakcClient: mc,
+		MediaDir:     mediaDir,
+		StallTimeout: 5 * time.Second,
+		Site:         "site-a",
+	}
+
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	w.Pool = pool
+
+	recordingID := insertTestRecordingForSite(t, pool, "site-a", 20240102)
+	insertTestRecordSyncForSite(t, pool, "site-a", recordingID, "rec-match", 327361024000098)
+
+	job := &river.Job[IngestJobArgs]{
+		JobRow: &rivertype.JobRow{},
+		Args:   IngestJobArgs{Site: "site-a", RecordID: "rec-match"},
+	}
+
+	if err := w.Work(context.Background(), job); err != nil {
+		t.Fatalf("Work() error = %v, want nil for matching site", err)
+	}
+
+	fullPath := filepath.Join(mediaDir, "match", "recording.m2ts")
+	data, err := os.ReadFile(fullPath)
+	if err != nil {
+		t.Fatalf("reading output file: %v", err)
+	}
+	if len(data) != len(tsData) {
+		t.Errorf("file size = %d, want %d", len(data), len(tsData))
+	}
+}
+
 func TestIngestWorker_MidTransferDisconnect(t *testing.T) {
 	tsData := makeTSData(100)
 	cutoff := 50 * 188
@@ -429,6 +575,58 @@ func insertTestRecordSync(t *testing.T, pool *pgxpool.Pool, recordingID int64, r
 		Tags:        []string{},
 	}); err != nil {
 		t.Fatalf("inserting test record_sync: %v", err)
+	}
+}
+
+// insertTestRecordingForSite は insertTestRecording の site 指定版。
+// TestIngestWorker_SiteMismatch / TestIngestWorker_SiteMatch のように、
+// ワーカー自身の site と異なる（あるいは異なる想定の）site の下で recordings
+// 行が実在する状況を再現するために使う。eventID は他のテストの固定値
+// （event_id=1）と衝突しないよう呼び出し側で変えてもらう。
+func insertTestRecordingForSite(t *testing.T, pool *pgxpool.Pool, site string, eventID int32) int64 {
+	t.Helper()
+	q := sqlcgen.New(pool)
+	id, err := q.CreateRecording(context.Background(), sqlcgen.CreateRecordingParams{
+		Source:            "manual",
+		Site:              site,
+		NetworkID:         32736,
+		ServiceID:         1024,
+		EventID:           eventID,
+		ServiceName:       "テストチャンネル",
+		ChannelType:       "GR",
+		Channel:           "27",
+		Title:             "テスト番組",
+		ProgramStartAt:    time.Now(),
+		ProgramDurationMs: 1800000,
+		Status:            "finished",
+	})
+	if err != nil {
+		t.Fatalf("inserting test recording (site=%s): %v", site, err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(),
+			"DELETE FROM drop_stats WHERE media_asset_id IN (SELECT id FROM media_assets WHERE recording_id = $1)", id)
+		_, _ = pool.Exec(context.Background(), "DELETE FROM media_assets WHERE recording_id = $1", id)
+		_, _ = pool.Exec(context.Background(), "DELETE FROM record_sync WHERE recording_id = $1", id)
+		_, _ = pool.Exec(context.Background(), "DELETE FROM recordings WHERE id = $1", id)
+	})
+	return id
+}
+
+// insertTestRecordSyncForSite は insertTestRecordSync の site / programID 指定版
+// （insertTestRecordingForSite と対で使う）。
+func insertTestRecordSyncForSite(t *testing.T, pool *pgxpool.Pool, site string, recordingID int64, recordID string, programID int64) {
+	t.Helper()
+	q := sqlcgen.New(pool)
+	if err := q.UpsertRecordSync(context.Background(), sqlcgen.UpsertRecordSyncParams{
+		Site:        site,
+		RecordID:    recordID,
+		RecordingID: &recordingID,
+		ProgramID:   programID,
+		Status:      "finished",
+		Tags:        []string{},
+	}); err != nil {
+		t.Fatalf("inserting test record_sync (site=%s): %v", site, err)
 	}
 }
 

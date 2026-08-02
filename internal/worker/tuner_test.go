@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -323,5 +324,69 @@ func TestTunerSyncPeriodicJob(t *testing.T) {
 
 	if rows := allTuners(t, pool); len(rows) != 1 {
 		t.Errorf("tuner_sync rows = %+v, want 1 after the periodic job ran", rows)
+	}
+}
+
+// TestTunerSyncWorker_SiteMismatch は、job.Args.Site がワーカー自身の site
+// （w.Site）と一致しないジョブが mirakc に一切触れずに fail-fast することを
+// 確認する（issue #139）。tuner_sync は epg_sync と同じ epg キューを使う
+// 「使い捨てプロジェクションの全量同期」で、同じくガード対象（TunerSyncWorker
+// の doc コメント参照）。モックは 200 を返す（弱いテストにしないため。issue
+// #139 のテスト規律）。
+func TestTunerSyncWorker_SiteMismatch(t *testing.T) {
+	pool := setupTestPool(t)
+
+	var requests atomic.Int32
+	fx := &tunerFixture{tuners: []mirakc.Tuner{
+		{Index: 0, Name: "PX-S1UD_T1", Types: []string{"GR"}, IsAvailable: true},
+	}}
+	countingSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if r.URL.Path != "/api/tuners" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(fx.tuners)
+	}))
+	defer countingSrv.Close()
+
+	// このワーカープロセスは site-a の mirakc を向いている。
+	w := &TunerSyncWorker{MirakcClient: mirakc.NewClient(countingSrv.URL, nil), Pool: pool, Site: "site-a"}
+
+	job := &river.Job[TunerSyncArgs]{JobRow: &rivertype.JobRow{}, Args: TunerSyncArgs{Site: "site-b"}}
+	err := w.Work(context.Background(), job)
+	if err == nil {
+		t.Fatal("Work() error = nil, want error for site mismatch (site-a worker handling a site-b job)")
+	}
+	if got := requests.Load(); got != 0 {
+		t.Errorf("mirakc received %d requests, want 0 (guard must fail before touching mirakc): err=%v", got, err)
+	}
+}
+
+// TestTunerSyncWorker_SiteMatch は、args.Site が一致するジョブは従来どおり
+// 処理されることを確認する（TestTunerSyncWorker_SiteMismatch と対になる
+// 両方向の確認）。
+func TestTunerSyncWorker_SiteMatch(t *testing.T) {
+	pool := setupTestPool(t)
+
+	fx := &tunerFixture{tuners: []mirakc.Tuner{
+		{Index: 0, Name: "PX-S1UD_T1", Types: []string{"GR"}, IsAvailable: true},
+	}}
+	srv := newTunerServer(t, fx)
+
+	w := &TunerSyncWorker{MirakcClient: mirakc.NewClient(srv.URL, nil), Pool: pool, Site: "site-a"}
+
+	job := &river.Job[TunerSyncArgs]{JobRow: &rivertype.JobRow{}, Args: TunerSyncArgs{Site: "site-a"}}
+	if err := w.Work(context.Background(), job); err != nil {
+		t.Fatalf("Work() error = %v, want nil for matching site", err)
+	}
+
+	rows, err := sqlcgen.New(pool).ListTunerSync(context.Background(), "site-a")
+	if err != nil {
+		t.Fatalf("ListTunerSync: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Errorf("tuner_sync rows for site-a = %d, want 1", len(rows))
 	}
 }

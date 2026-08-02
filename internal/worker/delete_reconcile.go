@@ -98,6 +98,13 @@ func (DeleteReconcileArgs) InsertOpts() river.InsertOpts {
 //
 // mirakc の basedir には一切触れない（不変条件。ここで扱うのは Rokuban 自身の
 // MediaDir 配下のファイルのみ）。
+//
+// site 照合ガード（issue #139）は不要と判断: DeleteReconcileArgs は site を
+// 持たない（DeleteReconcileArgs のコメント参照。物理ストレージは site に
+// 従属しない単一の MediaDir）。mirakc にも触れないので、他サイトの worker が
+// 拾っても「他インスタンスの id を投げる」形の壊れ方が起きない。Site
+// フィールドはジョブ引数の照合用ではなく、サーキットブレーカーのキー用途
+// （下記コメント）。
 type DeleteReconcileWorker struct {
 	river.WorkerDefaults[DeleteReconcileArgs]
 	Pool     *pgxpool.Pool
