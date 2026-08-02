@@ -71,7 +71,7 @@ M0（歩く骨格）・M1（録れる）・M2（任せられる）の実装は�
 | M4 タスク分解: 広げられる（ロール分割デプロイ・ライブ視聴・クラウド構成）。サブ #89〜#97 | [#88](https://github.com/fetburner/rokuban/issues/88) |
 
 - **`reservations` と shadow-diff（#52 の出口基準を測る道具そのもの）を触るタスクは、#52 の並走中は着手しない。** 測定の連続性が切れる
-- **M4 のライブ視聴（#91）とロール分割マニフェスト（#94）は、[#56](https://github.com/fetburner/rokuban/issues/56)（streamer のセッション親和性）を決めるまで着手しない。** 決めずに分散させると「1 Pod では動くが 2 Pod で再生が切れる」形で運用時にしか出ない壊れ方をする
+- **streamer のスケールとライブ視聴の資源同定は [docs/operations.md](docs/operations.md) §5「streamer のスケール」と [docs/api.md](docs/api.md) §ライブ視聴の HLS に決まっている。** sticky は使わない / ライブの URL にセッション ID を置かない / 既定 replicas=1 は可逆にする、の 3 点。触るタスク（#91 / #94）は実装前にこの 2 節を読む
 
 ### タスク分解と issue
 
