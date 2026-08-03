@@ -46,6 +46,10 @@ CREATE TABLE program_snapshots (
     -- チャンネル識別。移行前の reservations と同じく nullable
     -- （00009 の backfill でも埋められなかった残骸がありうる。
     -- reconciler は service_id が NULL の予約を意図的に schedule 化しない）。
+    --
+    -- 追記（issue #101。00026）: この nullable 理由は行の寿命
+    -- （放送 + epg.retention_grace）と書き込み経路（INNER JOIN のみ）により
+    -- 失効し、00026 でこの 4 列を含む 6 列すべてを NOT NULL 化した。
     network_id   integer,
     service_id   integer,
     channel_type text,

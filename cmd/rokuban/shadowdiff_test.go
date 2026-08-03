@@ -192,11 +192,17 @@ func TestRunShadowDiff_NoUnexplainedDiff(t *testing.T) {
 func upsertSnapshot(t *testing.T, ctx context.Context, q *sqlcgen.Queries, programID int64, title string, startAt time.Time) {
 	t.Helper()
 	if err := q.UpsertProgramSnapshot(ctx, sqlcgen.UpsertProgramSnapshotParams{
-		Site:       db.DefaultSite,
-		ProgramID:  programID,
-		Title:      title,
-		StartAt:    startAt,
-		DurationMs: 1800000,
+		Site:        db.DefaultSite,
+		ProgramID:   programID,
+		Title:       title,
+		StartAt:     startAt,
+		DurationMs:  1800000,
+		NetworkID:   32736,
+		ServiceID:   1024,
+		ChannelType: "GR",
+		Channel:     "27",
+		EventID:     int32(programID % 100000),
+		ServiceName: "テスト局",
 	}); err != nil {
 		t.Fatalf("upserting program snapshot %d: %v", programID, err)
 	}

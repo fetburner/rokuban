@@ -21,6 +21,11 @@
 -- 本番コードから追放した依存そのもの。EPG 射影の epg_programs.event_id /
 -- epg_services.name から他の列と同じ経路で引く。
 --
+-- 追記（issue #101。00026）: 下の 2 列が nullable な理由（移行時に backfill
+-- できなかった行がありうる）は行の寿命（放送 + epg.retention_grace）と
+-- 書き込み経路（INNER JOIN のみ）により失効し、00026 で他のチャンネル識別
+-- 4 列と合わせて NOT NULL 化した。
+--
 -- +goose Up
 ALTER TABLE program_snapshots
     ADD COLUMN event_id     integer,

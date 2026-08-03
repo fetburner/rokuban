@@ -3,6 +3,7 @@ package catalog
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 
 	"github.com/jackc/pgx/v5"
@@ -22,6 +23,15 @@ type RescueResult struct {
 	ProgramSnapshots int
 	ProgramIntents   int
 	ProgramOverrides int
+
+	// SkippedProgramSnapshots は識別子を持たない（#101 / 00026 より前に export
+	// された）ために復元をスキップした program_snapshots の件数。0 でない場合は
+	// 依存する program_intents / program_overrides も落ちている
+	// （SkippedProgramIntents / SkippedProgramOverrides）。黙って落とさず
+	// 呼び出し側が報告できるように数える。
+	SkippedProgramSnapshots int
+	SkippedProgramIntents   int
+	SkippedProgramOverrides int
 }
 
 // RescueLatest は media_dir/catalog/ の最新 catalog を読んで DB に冪等 upsert する。
@@ -67,9 +77,20 @@ func RescueFile(ctx context.Context, pool *pgxpool.Pool, path string) (*RescueRe
 	return result, nil
 }
 
+// snapshotKey は program_snapshots の主キー（site, program_id）。復元をスキップした
+// スナップショットに紐づく program_intents / program_overrides を落とすのに使う。
+type snapshotKey struct {
+	site      string
+	programID int64
+}
+
 func applyDocument(ctx context.Context, tx pgx.Tx, doc *Document) (*RescueResult, error) {
 	q := sqlcgen.New(tx)
 	res := &RescueResult{}
+	// 識別子を持たない（#101 / 00026 より前の）program_snapshots をスキップした
+	// キーの集合。FK 先を失う program_intents / program_overrides を連動して
+	// 落とすために使う。
+	skippedSnapshots := map[snapshotKey]struct{}{}
 
 	for _, rule := range doc.Rules {
 		if err := upsertRule(ctx, q, rule); err != nil {
@@ -79,18 +100,45 @@ func applyDocument(ctx context.Context, tx pgx.Tx, doc *Document) (*RescueResult
 	}
 
 	for _, s := range doc.ProgramSnapshots {
+		// program_snapshots のチャンネル・イベント識別 6 列は issue #101（00026）で
+		// NOT NULL 化されたが、catalog document 自体は DB より寿命が長い
+		// バックアップファイルなので、00026 より前に export された古い
+		// ダンプは依然 nil を持ちうる（document.go の ProgramSnapshot コメント参照）。
+		//
+		// **この行だけスキップして続行する。エラーで rescue 全体を止めない。**
+		// program_snapshots は放送 + epg.retention_grace（既定 24h）で GC される
+		// 導出テーブルであり、識別子を持たないほど古いダンプの行は復元しても
+		// 次の GC で消える。一方 rescue が守るべきものは永続資産
+		// （recordings / media_assets / drop_stats / rules）で、それらはこの
+		// ループより後に復元される。1 行の導出データのために災害復旧そのものを
+		// 止めるのは釣り合わない。
+		//
+		// program_intents / program_overrides は program_snapshots への FK を
+		// 持つので、スキップした (site, program_id) に紐づくものは後続の
+		// ループでも落とす（FK 違反で 1 トランザクション全体が壊れるのを防ぐ）。
+		// 落とした件数は RescueResult に数えて呼び出し側が報告できるようにする
+		// （黙って切り捨てない）。
+		if s.NetworkID == nil || s.ServiceID == nil || s.ChannelType == nil ||
+			s.Channel == nil || s.EventID == nil || s.ServiceName == nil {
+			slog.Warn("rescue: skipping program_snapshot without channel/event identity "+
+				"(catalog dump predates issue #101)",
+				"site", s.Site, "program_id", s.ProgramID)
+			skippedSnapshots[snapshotKey{site: s.Site, programID: s.ProgramID}] = struct{}{}
+			res.SkippedProgramSnapshots++
+			continue
+		}
 		if err := q.CatalogUpsertProgramSnapshot(ctx, sqlcgen.CatalogUpsertProgramSnapshotParams{
 			Site:        s.Site,
 			ProgramID:   s.ProgramID,
 			Title:       s.Title,
 			StartAt:     s.StartAt,
 			DurationMs:  s.DurationMs,
-			NetworkID:   s.NetworkID,
-			ServiceID:   s.ServiceID,
-			ChannelType: s.ChannelType,
-			Channel:     s.Channel,
-			EventID:     s.EventID,
-			ServiceName: s.ServiceName,
+			NetworkID:   *s.NetworkID,
+			ServiceID:   *s.ServiceID,
+			ChannelType: *s.ChannelType,
+			Channel:     *s.Channel,
+			EventID:     *s.EventID,
+			ServiceName: *s.ServiceName,
 			UpdatedAt:   s.UpdatedAt,
 		}); err != nil {
 			return nil, fmt.Errorf("upserting program_snapshot %s/%d: %w", s.Site, s.ProgramID, err)
@@ -99,6 +147,13 @@ func applyDocument(ctx context.Context, tx pgx.Tx, doc *Document) (*RescueResult
 	}
 
 	for _, i := range doc.ProgramIntents {
+		// FK 先の program_snapshots をスキップしたものは一緒に落とす（上記参照）。
+		if _, skipped := skippedSnapshots[snapshotKey{site: i.Site, programID: i.ProgramID}]; skipped {
+			slog.Warn("rescue: skipping program_intent whose program_snapshot was skipped",
+				"site", i.Site, "program_id", i.ProgramID)
+			res.SkippedProgramIntents++
+			continue
+		}
 		if err := q.CatalogUpsertProgramIntent(ctx, sqlcgen.CatalogUpsertProgramIntentParams{
 			Site:      i.Site,
 			ProgramID: i.ProgramID,
@@ -112,6 +167,13 @@ func applyDocument(ctx context.Context, tx pgx.Tx, doc *Document) (*RescueResult
 	}
 
 	for _, o := range doc.ProgramOverrides {
+		// FK 先の program_snapshots をスキップしたものは一緒に落とす（上記参照）。
+		if _, skipped := skippedSnapshots[snapshotKey{site: o.Site, programID: o.ProgramID}]; skipped {
+			slog.Warn("rescue: skipping program_override whose program_snapshot was skipped",
+				"site", o.Site, "program_id", o.ProgramID)
+			res.SkippedProgramOverrides++
+			continue
+		}
 		if err := q.CatalogUpsertProgramOverride(ctx, sqlcgen.CatalogUpsertProgramOverrideParams{
 			Site:      o.Site,
 			ProgramID: o.ProgramID,

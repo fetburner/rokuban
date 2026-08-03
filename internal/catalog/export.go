@@ -119,18 +119,24 @@ func Export(ctx context.Context, pool *pgxpool.Pool, site string) (*Document, er
 	}
 	doc.ProgramSnapshots = make([]ProgramSnapshot, 0, len(snaps))
 	for _, s := range snaps {
+		// program_snapshots のチャンネル・イベント識別 6 列は issue #101
+		// （00026）で NOT NULL 化されたが、Document 側の ProgramSnapshot は
+		// ポインタのままにしてある（catalog.ProgramSnapshot のコメント参照:
+		// 00026 より前に作られた catalog ダンプを rescue するときの後方互換のため）。
+		// ここでは DB から読んだ非 NULL の値のアドレスを取るだけ
+		// （Go 1.22+ はループ変数がイテレーションごとに新しいので安全）。
 		doc.ProgramSnapshots = append(doc.ProgramSnapshots, ProgramSnapshot{
 			Site:        s.Site,
 			ProgramID:   s.ProgramID,
 			Title:       s.Title,
 			StartAt:     s.StartAt,
 			DurationMs:  s.DurationMs,
-			NetworkID:   s.NetworkID,
-			ServiceID:   s.ServiceID,
-			ChannelType: s.ChannelType,
-			Channel:     s.Channel,
-			EventID:     s.EventID,
-			ServiceName: s.ServiceName,
+			NetworkID:   &s.NetworkID,
+			ServiceID:   &s.ServiceID,
+			ChannelType: &s.ChannelType,
+			Channel:     &s.Channel,
+			EventID:     &s.EventID,
+			ServiceName: &s.ServiceName,
 			UpdatedAt:   s.UpdatedAt,
 		})
 	}

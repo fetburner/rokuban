@@ -66,16 +66,14 @@ func LoadDemand(ctx context.Context, q *sqlcgen.Queries, site string) ([]Demand,
 		if eff.IsSkipped() {
 			continue
 		}
-		// SQL の WHERE で NOT NULL を保証しているが、sqlc は nullable な列を
-		// ポインタで生成するのでここでも落とす（クエリの条件が緩んだときに
-		// nil デリファレンスで落ちるより、需要に数えない方が安全側）。
-		if r.ChannelType == nil || r.Channel == nil {
-			continue
-		}
+		// program_snapshots のチャンネル識別列は issue #101（00026）で
+		// NOT NULL 化された。NULL を仮定した nil ガードはここにあったが、
+		// その状態自体が表現不可能になったため落とした（起きない状態のための
+		// 分岐を残さない）。
 		demands = append(demands, Demand{
 			Site:        r.Site,
-			ChannelType: *r.ChannelType,
-			Channel:     *r.Channel,
+			ChannelType: r.ChannelType,
+			Channel:     r.Channel,
 			StartAt:     r.ProgramStartAt,
 			EndAt:       r.ProgramEndAt,
 		})

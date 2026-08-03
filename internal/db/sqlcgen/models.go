@@ -104,13 +104,13 @@ type ProgramSnapshot struct {
 	Title       string
 	StartAt     time.Time
 	DurationMs  int64
-	NetworkID   *int32
-	ServiceID   *int32
-	ChannelType *string
-	Channel     *string
+	NetworkID   int32
+	ServiceID   int32
+	ChannelType string
+	Channel     string
 	UpdatedAt   time.Time
-	EventID     *int32
-	ServiceName *string
+	EventID     int32
+	ServiceName string
 }
 
 type RecordSync struct {

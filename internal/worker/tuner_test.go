@@ -231,9 +231,9 @@ func TestTunerSyncWorker_SetsCapacityOverageGauge(t *testing.T) {
 		if _, err := pool.Exec(ctx, `
 INSERT INTO program_snapshots (
   site, program_id, title, start_at, duration_ms,
-  network_id, service_id, channel_type, channel
-) VALUES ($1, $2, 'ゲージ確認', $3, $4, 32678, 5168, 'GR', $5)`,
-			testSite, programID, start, time.Hour.Milliseconds(), channel); err != nil {
+  network_id, service_id, channel_type, channel, event_id, service_name
+) VALUES ($1, $2, 'ゲージ確認', $3, $4, 32678, 5168, 'GR', $5, $6, 'テスト局')`,
+			testSite, programID, start, time.Hour.Milliseconds(), channel, int32(programID)); err != nil {
 			t.Fatalf("inserting program_snapshot: %v", err)
 		}
 		if _, err := pool.Exec(ctx, `

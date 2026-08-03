@@ -58,11 +58,17 @@ func TestSetupDBPoolerCompat_ComplexQueries(t *testing.T) {
 	t.Run("basic SELECT (no extended-protocol-specific feature)", func(t *testing.T) {
 		programID := int64(1001)
 		if err := q.UpsertProgramSnapshot(ctx, sqlcgen.UpsertProgramSnapshotParams{
-			Site:       site,
-			ProgramID:  programID,
-			Title:      "テスト番組",
-			StartAt:    now,
-			DurationMs: 1800000,
+			Site:        site,
+			ProgramID:   programID,
+			Title:       "テスト番組",
+			StartAt:     now,
+			DurationMs:  1800000,
+			NetworkID:   32736,
+			ServiceID:   1024,
+			ChannelType: "GR",
+			Channel:     "27",
+			EventID:     int32(programID),
+			ServiceName: "テスト局",
 		}); err != nil {
 			t.Fatalf("UpsertProgramSnapshot: %v", err)
 		}
@@ -79,11 +85,17 @@ func TestSetupDBPoolerCompat_ComplexQueries(t *testing.T) {
 	t.Run("jsonb column round-trip", func(t *testing.T) {
 		programID := int64(1002)
 		if err := q.UpsertProgramSnapshot(ctx, sqlcgen.UpsertProgramSnapshotParams{
-			Site:       site,
-			ProgramID:  programID,
-			Title:      "jsonb テスト番組",
-			StartAt:    now,
-			DurationMs: 1800000,
+			Site:        site,
+			ProgramID:   programID,
+			Title:       "jsonb テスト番組",
+			StartAt:     now,
+			DurationMs:  1800000,
+			NetworkID:   32736,
+			ServiceID:   1024,
+			ChannelType: "GR",
+			Channel:     "27",
+			EventID:     int32(programID),
+			ServiceName: "テスト局",
 		}); err != nil {
 			t.Fatalf("UpsertProgramSnapshot: %v", err)
 		}
@@ -112,11 +124,17 @@ func TestSetupDBPoolerCompat_ComplexQueries(t *testing.T) {
 		ids := []int64{2001, 2002, 2003}
 		for _, id := range ids {
 			if err := q.UpsertProgramSnapshot(ctx, sqlcgen.UpsertProgramSnapshotParams{
-				Site:       site,
-				ProgramID:  id,
-				Title:      "配列パラメータテスト",
-				StartAt:    now,
-				DurationMs: 1800000,
+				Site:        site,
+				ProgramID:   id,
+				Title:       "配列パラメータテスト",
+				StartAt:     now,
+				DurationMs:  1800000,
+				NetworkID:   32736,
+				ServiceID:   1024,
+				ChannelType: "GR",
+				Channel:     "27",
+				EventID:     int32(id),
+				ServiceName: "テスト局",
 			}); err != nil {
 				t.Fatalf("UpsertProgramSnapshot(%d): %v", id, err)
 			}

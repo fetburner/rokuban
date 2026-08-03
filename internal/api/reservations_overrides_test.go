@@ -45,9 +45,12 @@ func insertReservationDirect(t *testing.T, pool *pgxpool.Pool, ctx context.Conte
 	t.Helper()
 	start := time.Now().Add(24 * time.Hour)
 	if _, err := pool.Exec(ctx, `
-INSERT INTO program_snapshots (site, program_id, title, start_at, duration_ms, network_id, service_id, channel_type, channel)
-VALUES ('default', $1, 'テスト番組', $2, 1800000, $3, $4, 'GR', '27')`,
-		programID, start, networkID, serviceID); err != nil {
+INSERT INTO program_snapshots (
+  site, program_id, title, start_at, duration_ms,
+  network_id, service_id, channel_type, channel, event_id, service_name
+)
+VALUES ('default', $1, 'テスト番組', $2, 1800000, $3, $4, 'GR', '27', $5, 'テスト局')`,
+		programID, start, networkID, serviceID, int32(programID%100000)); err != nil {
 		t.Fatalf("inserting program_snapshot fixture: %v", err)
 	}
 	var id int64

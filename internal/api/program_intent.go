@@ -42,12 +42,12 @@ func ensureProgramSnapshot(ctx context.Context, q *sqlcgen.Queries, site string,
 		Title:       source.Title,
 		StartAt:     source.StartAt,
 		DurationMs:  source.DurationMs,
-		NetworkID:   &source.NetworkID,
-		ServiceID:   &source.ServiceID,
-		ChannelType: &source.ChannelType,
-		Channel:     &source.Channel,
-		EventID:     &source.EventID,
-		ServiceName: &source.ServiceName,
+		NetworkID:   source.NetworkID,
+		ServiceID:   source.ServiceID,
+		ChannelType: source.ChannelType,
+		Channel:     source.Channel,
+		EventID:     source.EventID,
+		ServiceName: source.ServiceName,
 	}); err != nil {
 		return fmt.Errorf("upserting program snapshot: %w", err)
 	}

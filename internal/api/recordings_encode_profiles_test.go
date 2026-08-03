@@ -51,10 +51,13 @@ func seedReservationForTest(t *testing.T, pool *pgxpool.Pool, programID int64) i
 	t.Helper()
 	ctx := context.Background()
 	if _, err := pool.Exec(ctx, `
-		INSERT INTO program_snapshots (site, program_id, start_at, duration_ms)
-		VALUES ($1, $2, now(), 1800000)
+		INSERT INTO program_snapshots (
+			site, program_id, start_at, duration_ms,
+			network_id, service_id, channel_type, channel, event_id, service_name
+		)
+		VALUES ($1, $2, now(), 1800000, 32736, 1024, 'GR', '27', $3, 'テスト局')
 		ON CONFLICT (site, program_id) DO NOTHING`,
-		db.DefaultSite, programID,
+		db.DefaultSite, programID, int32(programID%100000),
 	); err != nil {
 		t.Fatalf("seeding program_snapshot: %v", err)
 	}

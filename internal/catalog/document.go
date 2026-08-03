@@ -168,6 +168,14 @@ type DropStat struct {
 // ときの識別（network_id, service_id, event_id）と表示名に使うため、
 // 他のチャンネル識別列と同様に catalog の往復で失ってはならない。
 // 古い世代の catalog には存在しないので omitempty（nil = 未対応 or 移行前）。
+//
+// **チャンネル・イベント識別 6 列はポインタのまま残す。** DB 側の
+// program_snapshots は issue #101（00026）でこの 6 列を NOT NULL 化したが、
+// catalog document は DB より寿命が長い（ディスク上のバックアップファイルは
+// マイグレーションを追いかけない）。00026 より前に export された古い
+// catalog ダンプを rescue する経路では nil がありうるため、この Document 型
+// 自体は緩いままにする（applyDocument が nil を安全側でスキップする。
+// internal/catalog/rescue.go 参照）。
 type ProgramSnapshot struct {
 	Site        string    `json:"site"`
 	ProgramID   int64     `json:"programId"`

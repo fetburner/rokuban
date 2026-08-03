@@ -16,9 +16,9 @@ func TestBuildContentPath_AdversarialTraversal(t *testing.T) {
 	ct := "GR"
 	base := sqlcgen.ProgramSnapshot{
 		StartAt:     time.Date(2026, 8, 1, 21, 0, 0, 0, time.FixedZone("JST", 9*3600)),
-		ServiceID:   &sid,
-		Channel:     &ch,
-		ChannelType: &ct,
+		ServiceID:   sid,
+		Channel:     ch,
+		ChannelType: ct,
 	}
 
 	cases := []struct {
@@ -72,7 +72,7 @@ func TestBuildContentPath_ExplicitSlashInTemplateCreatesHierarchy(t *testing.T) 
 	snap := sqlcgen.ProgramSnapshot{
 		Title:     "番組",
 		StartAt:   time.Date(2026, 8, 1, 21, 0, 0, 0, time.FixedZone("JST", 9*3600)),
-		ServiceID: &sid,
+		ServiceID: sid,
 	}
 
 	got, err := buildContentPath(snap, `{{.StartAt.Format "2006/01"}}/{{.Title}}`)
@@ -96,7 +96,7 @@ func TestBuildContentPath_TitleSlashDoesNotCreateHierarchy(t *testing.T) {
 	snap := sqlcgen.ProgramSnapshot{
 		Title:     "前編/後編",
 		StartAt:   time.Date(2026, 8, 1, 21, 0, 0, 0, time.FixedZone("JST", 9*3600)),
-		ServiceID: &sid,
+		ServiceID: sid,
 	}
 
 	got, err := buildContentPath(snap, "{{.Title}}")

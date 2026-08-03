@@ -82,23 +82,12 @@ INSERT INTO recordings (
 	}
 }
 
-// seedReservationWithoutChannel は 00009 以前の残骸（チャンネル未設定）を模す。
-func seedReservationWithoutChannel(t *testing.T, pool *pgxpool.Pool, programID int64, startAt time.Time, duration time.Duration) {
-	t.Helper()
-	ctx := context.Background()
-	if _, err := pool.Exec(ctx, `
-INSERT INTO program_snapshots (site, program_id, title, start_at, duration_ms)
-VALUES ($1, $2, '移行前の残骸', $3, $4)`,
-		testSite, programID, startAt, duration.Milliseconds()); err != nil {
-		t.Fatalf("inserting legacy program_snapshot row: %v", err)
-	}
-	if _, err := pool.Exec(ctx, `
-INSERT INTO reservations (site, program_id, base)
-VALUES ($1, $2, '{}')`,
-		testSite, programID); err != nil {
-		t.Fatalf("inserting legacy reservation row: %v", err)
-	}
-}
+// seedReservationWithoutChannel（00009 以前の残骸＝チャンネル未設定を模す
+// ヘルパー）は issue #101（00026）で program_snapshots のチャンネル・イベント
+// 識別 6 列が NOT NULL 化されたことで削除した。この状態自体が DB レベルで
+// 表現不可能になったため（INSERT が 23502 で落ちる）。NOT NULL が実際に
+// 効いていることの回帰テストは internal/db/models_test.go の
+// TestSchemaV1_ProgramSnapshotChannelIdentityNotNull にある。
 
 func loadOverages(t *testing.T, pool *pgxpool.Pool) []Overage {
 	t.Helper()
@@ -192,18 +181,12 @@ func TestLoad_ExcludesReservationsThatProduceNoSchedule(t *testing.T) {
 				}
 			},
 		},
-		{
-			// 注意: この 1 件だけは**二重の防御の組み合わせ**を見ている。
-			// SQL の `channel_type IS NOT NULL` と Go 側の nil チェックは
-			// どちらか片方でも成り立つので、片方を外してもこの subtest は通る
-			// （両方外すと落ちる）。Go 側の nil チェックは sqlc が nullable な列を
-			// *string で返す以上どうしても必要で、SQL 側の絞りはクエリを
-			// 「需要になる行だけを返すもの」として自己完結させるために残している。
-			name: "チャンネルスナップショットが無い（00009 以前の残骸）",
-			seed: func(t *testing.T, pool *pgxpool.Pool, start time.Time) {
-				seedReservationWithoutChannel(t, pool, 101, start, duration)
-			},
-		},
+		// 「チャンネルスナップショットが無い（00009 以前の残骸）」というケースは
+		// issue #101（00026）で program_snapshots のチャンネル識別列が NOT NULL
+		// 化されたことで削除した。この状態自体が表現不可能になったため
+		// （INSERT が 23502 で落ちる。NOT NULL の回帰テストは
+		// internal/db/models_test.go の
+		// TestSchemaV1_ProgramSnapshotChannelIdentityNotNull にある）。
 	}
 
 	for _, tc := range tests {
