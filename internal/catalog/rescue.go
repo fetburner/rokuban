@@ -157,6 +157,7 @@ func applyDocument(ctx context.Context, tx pgx.Tx, doc *Document) (*RescueResult
 			QualityEvents:     qe,
 			DeletedAt:         r.DeletedAt,
 			PurgeAfter:        r.PurgeAfter,
+			SupersededAt:      r.SupersededAt,
 			CreatedAt:         r.CreatedAt,
 			UpdatedAt:         r.UpdatedAt,
 		}); err != nil {

@@ -294,6 +294,7 @@ func recordingFromRow(r sqlcgen.Recording) Recording {
 		QualityEvents:     r.QualityEvents,
 		DeletedAt:         r.DeletedAt,
 		PurgeAfter:        r.PurgeAfter,
+		SupersededAt:      r.SupersededAt,
 		CreatedAt:         r.CreatedAt,
 		UpdatedAt:         r.UpdatedAt,
 	}

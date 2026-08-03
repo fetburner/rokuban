@@ -44,7 +44,7 @@ INSERT INTO recordings (
     $16, $17,
     'failed', $18
 )
-ON CONFLICT (site, network_id, service_id, event_id) WHERE deleted_at IS NULL
+ON CONFLICT (site, network_id, service_id, event_id) WHERE deleted_at IS NULL AND superseded_at IS NULL
 DO UPDATE SET
     quality_events = recordings.quality_events || EXCLUDED.quality_events,
     updated_at = now()
@@ -71,6 +71,12 @@ type CreateFailedRecordingParams struct {
 	QualityEvents     json.RawMessage
 }
 
+// ON CONFLICT の述語は recordings_unique_active_event（00023 で
+// `AND superseded_at IS NULL` を追加済み）と一字一句一致させる必要がある
+// （Postgres は ON CONFLICT の対象インデックスを述語込みで照合するため、
+// ずれると「there is no unique or exclusion constraint matching」で落ちる）。
+// 一致させておくことで、この INSERT が狙う相手は常に「生きている」行
+// （superseded 済みの過去の failed 行ではない）になる。
 func (q *Queries) CreateFailedRecording(ctx context.Context, arg CreateFailedRecordingParams) error {
 	_, err := q.db.Exec(ctx, createFailedRecording,
 		arg.ReservationID,
@@ -210,7 +216,7 @@ func (q *Queries) ListRecordingDropStats(ctx context.Context, recordingID int64)
 
 const listRecordings = `-- name: ListRecordings :many
 SELECT
-    r.id, r.reservation_id, r.rule_id, r.source, r.site, r.network_id, r.service_id, r.event_id, r.service_name, r.channel_type, r.channel, r.title, r.description, r.extended, r.genres, r.is_free, r.program_start_at, r.program_duration_ms, r.status, r.started_at, r.ended_at, r.keep_original, r.encode_profiles, r.quality_events, r.deleted_at, r.created_at, r.updated_at, r.purge_after,
+    r.id, r.reservation_id, r.rule_id, r.source, r.site, r.network_id, r.service_id, r.event_id, r.service_name, r.channel_type, r.channel, r.title, r.description, r.extended, r.genres, r.is_free, r.program_start_at, r.program_duration_ms, r.status, r.started_at, r.ended_at, r.keep_original, r.encode_profiles, r.quality_events, r.deleted_at, r.created_at, r.updated_at, r.purge_after, r.superseded_at,
     a.size_bytes                        AS original_size_bytes,
     COALESCE(d.packets, 0)::bigint      AS drop_packets,
     COALESCE(d.drops, 0)::bigint        AS drop_drops,
@@ -268,6 +274,7 @@ type ListRecordingsRow struct {
 	CreatedAt                time.Time
 	UpdatedAt                time.Time
 	PurgeAfter               *time.Time
+	SupersededAt             *time.Time
 	OriginalSizeBytes        *int64
 	DropPackets              int64
 	DropDrops                int64
@@ -317,6 +324,7 @@ func (q *Queries) ListRecordings(ctx context.Context, site string) ([]ListRecord
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.PurgeAfter,
+			&i.SupersededAt,
 			&i.OriginalSizeBytes,
 			&i.DropPackets,
 			&i.DropDrops,
@@ -356,6 +364,78 @@ type SnapshotRecordingEncodePolicyParams struct {
 func (q *Queries) SnapshotRecordingEncodePolicy(ctx context.Context, arg SnapshotRecordingEncodePolicyParams) error {
 	_, err := q.db.Exec(ctx, snapshotRecordingEncodePolicy, arg.KeepOriginal, arg.EncodeProfiles, arg.ID)
 	return err
+}
+
+const supersedeFailedRecording = `-- name: SupersedeFailedRecording :execrows
+UPDATE recordings
+SET superseded_at = now(), updated_at = now()
+WHERE site = $1
+  AND network_id = $2
+  AND service_id = $3
+  AND event_id = $4
+  AND deleted_at IS NULL AND superseded_at IS NULL AND status = 'failed'
+`
+
+type SupersedeFailedRecordingParams struct {
+	Site      string
+	NetworkID int32
+	ServiceID int32
+	EventID   int32
+}
+
+// 「本物の record が推論に必ず勝つ」（issue #98 の決定、issue #129 症状 2 が最初の
+// 適用）の前段: 同一 active-event (site, network_id, service_id, event_id) に
+// status='failed' の行が「生きて」（deleted_at IS NULL AND superseded_at IS NULL、
+// 00023 で追加した recordings_unique_active_event の述語）残っていれば、
+// superseded_at を立てて枠を明け渡させる。呼び出し側（internal/watcher の
+// createRecording）はこのクエリを CreateRecording の直前に同じトランザクション内で
+// 呼ぶ。
+//
+// **1 つの WITH 句にまとめて CreateRecording 側の INSERT と一体化させなかった。**
+// 最初はその形（1 クエリで完結させる CTE）で書いたが、Postgres の WITH 内の
+// データ変更文は「主クエリと同時並行に実行され、順序は不定」（PostgreSQL
+// documentation, `WITH` Queries (Common Table Expressions)）で、この CTE を
+// 主 INSERT が参照していない（RETURNING id を読み捨てるだけ）ため、実際に
+// INSERT が一意制約違反で失敗するケースを手元のテストで確認した
+// （TestProcessRecord_SupersedesFailedRecording が最初に落ちた形。「実装を
+// 壊すと落ちることを確認する」の逆側の学びとして残す）。2 つの独立した
+// 文（この UPDATE を先に確定させてから次の INSERT を発行）に分けることで、
+// 同一トランザクション内でコマンドカウンタが進み、後続の INSERT が
+// 確実に更新後の索引状態を見る。
+//
+// superseded_at は「この行が active-event の枠を明け渡した」という不可逆な事実
+// だけを持つ列で、ユーザーのごみ箱操作を表す deleted_at とは別物にした
+// （不変条件 9: 2 つの事実を同じ列に同居させない。deleted_at を流用すると
+// ごみ箱ビュー・GC がユーザー操作でない行をユーザー操作と誤読する）。
+//
+// WHERE status = 'failed' に絞っているので、'recording'/'finished'/'canceled' の
+// 生きている行は巻き込まない —— それらと衝突する INSERT は素の一意制約違反として
+// 従来どおりエラーになる（同一イベントの本物の重複 record を黙って追い出すのは
+// このクエリの責務ではない）。
+//
+// media_assets を持つ failed 行（途中まで録れて failed になった行）でも扱いは同じ:
+// superseded にするだけで media_assets.recording_id は書き換えない。ファイルの
+// 所有者は superseded になった旧 recordings 行のままで、物理削除は媒体削除
+// reconcile が recordings.deleted_at を見て判断するので、superseded だけでは
+// 何も物理的に消えない（internal/watcher の
+// TestProcessRecord_SupersedesFailedRecordingWithMediaAsset で固定）。
+//
+// 対象の failed 行が無ければ 0 行のまま何もしない。record_sweep 等が同一 record を
+// 再処理しても、processRecord は record_sync の行ロックで 2 回目以降
+// createRecording 自体を呼ばない（internal/watcher/watcher.go の AcquireRecordSync
+// 参照）ので、このクエリも 2 回目以降は呼ばれず、superseded_at が二重に進んだり
+// 行が重複したりしない。
+func (q *Queries) SupersedeFailedRecording(ctx context.Context, arg SupersedeFailedRecordingParams) (int64, error) {
+	result, err := q.db.Exec(ctx, supersedeFailedRecording,
+		arg.Site,
+		arg.NetworkID,
+		arg.ServiceID,
+		arg.EventID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const updateRecordingStatus = `-- name: UpdateRecordingStatus :exec
