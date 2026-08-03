@@ -234,23 +234,42 @@ WHERE a.state = 'active'
 ORDER BY a.id
 LIMIT sqlc.arg('row_limit');
 
--- recording.deleted（M3-11）の発火判定。「録画そのものが消えた」と言えるのは、
--- ごみ箱に入った（deleted_at IS NOT NULL）録画で、物理削除が終わっていない
--- media_assets が 1 行も残っていないときだけである。判定をアセットの kind に
--- 取ると until_encoded の原本削除（録画は生きている）で誤発火し、逆に原本を
--- 先に消した録画のごみ箱削除では発火しない。
--- name: GetRecordingPurgeState :one
-SELECT
-  r.site,
-  r.title,
-  -- 明示キャストが無いと sqlc が型を推論できず interface{} になる。
-  (r.deleted_at IS NOT NULL)::boolean AS trashed,
-  EXISTS (
+-- 「完全削除が完了した」という不可逆な事実を確定する（issue #135）。
+--
+-- 削除 reconcile のパス末尾（trash / until_encoded / pending 経路すべてが
+-- 物理 unlink を終えた後）で 1 回だけ呼ぶ。ごみ箱条件は
+-- ListTrashMediaAssetsToDelete と同じ (purge_after <= now() OR deleted_at <=
+-- grace_cutoff) を再掲する —— purge_after だけを条件にすると、30 日猶予
+-- 超過の経路（purge_after が NULL のまま完全削除に到達する）を拾い損なう。
+--
+-- recordings を起点に引く（media_assets を起点にすると、アセットを 1 行も
+-- 持ったことがない録画が NOT EXISTS の対象になりようがなく、永久に拾えない。
+-- issue #135 の実測 id 6/7/10/86 がこのケース）。判定は「state <> 'deleted'
+-- の media_assets が 1 行もない」であって「media_assets が 0 行」ではない
+-- （NOT EXISTS は両方を等しく真にするので実装上は同じ式になるが、意図は
+-- 前者 —— deleting は「消えた」に数えない。deleting はまだ unlink 待ちで、
+-- issue #105 の経路で active に戻りうる）。
+--
+-- purged_at IS NULL を条件にも RETURNING にも使うことで、同じ録画を複数パスで
+-- 数え直さない（冪等）。呼び出し側はこの結果をそのまま recording.deleted の
+-- 発火対象にできる —— この WHERE が「発火してよい」の判定そのものであり、
+-- 通知の瞬間に別途 EXISTS を計算して捨てる必要がない（旧 GetRecordingPurgeState
+-- はこの計算を通知直前に行って結果を保存しなかったため、対象になる録画の
+-- 集合そのものが存在しないという根本原因を残していた）。
+-- name: MarkPurgedRecordings :many
+UPDATE recordings r
+SET purged_at = now(), updated_at = now()
+WHERE r.purged_at IS NULL
+  AND r.deleted_at IS NOT NULL
+  AND (
+    (r.purge_after IS NOT NULL AND r.purge_after <= now())
+    OR r.deleted_at <= sqlc.arg('grace_cutoff')::timestamptz
+  )
+  AND NOT EXISTS (
     SELECT 1 FROM media_assets a
     WHERE a.recording_id = r.id AND a.state <> 'deleted'
-  ) AS assets_remaining
-FROM recordings r
-WHERE r.id = $1;
+  )
+RETURNING r.id, r.site, r.title;
 
 -- name: MarkMediaAssetDeleting :execrows
 UPDATE media_assets SET state = 'deleting', updated_at = now()

@@ -152,6 +152,7 @@ S3 マウント（k8s-csi-s3 の geesefs/s3fs、AWS Mountpoint 等）では以�
 - ごみ箱ビュー = `deleted_at IS NOT NULL` の一覧。**復元は `deleted_at` を消すだけ**（ファイル操作ゼロ・即時）。「今すぐ完全削除」も個別/一括で可能
 - 物理的な隔離ディレクトリへの移動はしない（FUSE-S3 では数十 GB の rename がコピーになる。論理削除なら I/O ゼロで同じ猶予が得られる）
 - 物理削除後も tombstone は残る → ドロップ統計・録画履歴は消えず、**ごみ箱を空にしても再放送重複排除は壊れない**
+- **`recordings.purged_at`（issue #135）は「完全削除が完了した」不可逆な事実を持つ列。** 削除 reconcile がパス末尾で、ごみ箱条件を満たしかつ物理削除が終わっていない `media_assets` が 1 行も残っていない録画に一度だけ立てる。tombstone は上の行のとおり残り続けるが、ごみ箱ビュー（`ListTrashRecordings`）は `purged_at IS NULL` も要求するので、purge が完了した録画はごみ箱一覧には出ない。「`media_assets` に未削除行が 0」を毎パス導出する案は採らない —— アセットを一度も持ったことがない録画ではこの条件が purge 前から真であり、「消した」と「元から無い」を区別できないため（CLAUDE.md 不変条件 9）
 - 将来オプション: ごみ箱サイズの UI 表示 + 空き容量逼迫時に猶予期間前でも古い順に purge する容量トリガー。初期実装は期間ベースのみ
 - **復元と物理削除の競合（issue #105）**: `media_assets.state = 'deleting'` は unlink 待ちの間しか続かない一時状態で、復元は `recordings.deleted_at` しか消さないため、unlink が失敗して `deleting` のまま次パスに持ち越されると「復元したのに次パスで消える」窓ができうる。前パスの `deleting` 行を拾い直す経路（`ListMediaAssetsPendingDelete`）は無条件に unlink へ進むのではなく、trash 猶予超過 / until_encoded 派生物完備の判定を**適用の瞬間に再評価**する。該当しなくなった行は `ListUnqualifiedDeletingAssets` で候補として挙げ、`resolveUnqualifiedDeletingAsset` がファイルの現存を `stat` で確認したうえで、まだ存在すれば `active` に戻し、既に無ければ（unlink 成功後 `MarkMediaAssetDeleted` のコミット前にプロセスが落ちていた場合）`active` には戻さず `deleted` を確定する——ここで無条件に `active` へ戻すと、復元 API 側で `deleting → active` を即時に書き換える方式（案 B）を採らなかった理由そのもの、「`active` なのにファイルが無い行」を revert 経路自身が作ってしまうため
 

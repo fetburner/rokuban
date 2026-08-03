@@ -154,6 +154,7 @@ type Recording struct {
 	UpdatedAt         time.Time
 	PurgeAfter        *time.Time
 	SupersededAt      *time.Time
+	PurgedAt          *time.Time
 }
 
 type Reservation struct {

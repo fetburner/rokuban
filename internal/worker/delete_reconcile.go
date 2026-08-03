@@ -198,19 +198,20 @@ func (w *DeleteReconcileWorker) Work(ctx context.Context, _ *river.Job[DeleteRec
 	if err != nil {
 		return fmt.Errorf("listing pending deletes: %w", err)
 	}
-	// アセットを 1 つでも消した録画は recording.deleted の発火候補。実際に
-	// 発火するかは録画の寿命で決まる（notifyPurgedRecordings 参照）。発火は
+	// purgedRecordings は、このパスの末尾で MarkPurgedRecordings が purged_at を
+	// 押した録画の集合（notifyPurgedRecordings が読む。issue #135）。発火は
 	// 削除がすべて終わってから行うので、ブレーカー発動や途中の error で
-	// 早期 return する経路も取りこぼさないよう defer で締める。
-	var touched touchedRecordings
-	defer func() { w.notifyPurgedRecordings(ctx, q, touched.ids, deleteReconcileNotifyBudget) }()
+	// 早期 return する経路も取りこぼさないよう defer で締める —— ただし
+	// early return する経路では purgedRecordings は空のままで、それでよい
+	// （新しく完全削除が完了した録画が無いということなので、発火対象も無く、
+	// 次パスに委ねる）。
+	var purgedRecordings []sqlcgen.MarkPurgedRecordingsRow
+	defer func() { w.notifyPurgedRecordings(ctx, purgedRecordings, deleteReconcileNotifyBudget) }()
 
 	for _, a := range pending {
-		if w.deleteMediaAsset(ctx, q, deleteTarget{
+		w.deleteMediaAsset(ctx, q, deleteTarget{
 			ID: a.ID, RecordingID: a.RecordingID, RelPath: a.RelPath, SizeBytes: a.SizeBytes,
-		}, "pending") {
-			touched.add(a.RecordingID)
-		}
+		}, "pending")
 	}
 
 	// 孤児候補の記録/解除はファイルを消さないので、ブレーカーとは無関係に毎回行う。
@@ -270,22 +271,29 @@ func (w *DeleteReconcileWorker) Work(ctx context.Context, _ *river.Job[DeleteRec
 	}
 
 	for _, a := range trashRows {
-		if w.deleteMediaAsset(ctx, q, deleteTarget{
+		w.deleteMediaAsset(ctx, q, deleteTarget{
 			ID: a.ID, RecordingID: a.RecordingID, RelPath: a.RelPath, SizeBytes: a.SizeBytes,
-		}, "trash") {
-			touched.add(a.RecordingID)
-		}
+		}, "trash")
 	}
 	for _, a := range untilEncodedRows {
-		if w.deleteMediaAsset(ctx, q, deleteTarget{
+		w.deleteMediaAsset(ctx, q, deleteTarget{
 			ID: a.ID, RecordingID: a.RecordingID, RelPath: a.RelPath, SizeBytes: a.SizeBytes,
-		}, "until_encoded") {
-			touched.add(a.RecordingID)
-		}
+		}, "until_encoded")
 	}
 	for _, relPath := range agedOrphans {
 		w.deleteOrphanFile(q, relPath)
 	}
+
+	// パスの末尾で「完全削除が完了した」という不可逆な事実を確定する
+	// （issue #135、MarkPurgedRecordings のコメント参照）。ここより前の
+	// pending / trash / until_encoded の 3 ループがすべて物理 unlink を終えた
+	// 後でなければならない —— 先頭で押すと同じパスで消したアセットが
+	// 反映されず、判定が 1 パス遅れる。
+	purged, err := q.MarkPurgedRecordings(ctx, trashCutoff)
+	if err != nil {
+		return fmt.Errorf("marking purged recordings: %w", err)
+	}
+	purgedRecordings = purged
 
 	metrics.DeleteReconcileLastPass.SetToCurrentTime()
 	return nil
@@ -297,39 +305,39 @@ func (w *DeleteReconcileWorker) Work(ctx context.Context, _ *river.Job[DeleteRec
 // ため（record_sweep の processRecord と同じ設計判断）。deleting のまま
 // 終わった行は次パスの ListMediaAssetsPendingDelete が拾い直す。
 //
-// 戻り値は deleted まで到達したかどうか（呼び出し側が recording.deleted の
-// 発火候補を集めるのに使う）。
-func (w *DeleteReconcileWorker) deleteMediaAsset(ctx context.Context, q *sqlcgen.Queries, t deleteTarget, source string) bool {
+// 「録画そのものが消えたか」の判定は呼び出し元ではなく MarkPurgedRecordings
+// が録画単位・パス末尾で行う（issue #135）ため、ここでは deleted まで到達
+// したかどうかを戻さない。
+func (w *DeleteReconcileWorker) deleteMediaAsset(ctx context.Context, q *sqlcgen.Queries, t deleteTarget, source string) {
 	log := slog.With("media_asset_id", t.ID, "rel_path", t.RelPath, "source", source)
 
 	// 既に deleting なら 0 行更新（それでよい。pending 経路はこの UPDATE を
 	// スキップしても問題ない冪等な no-op）。active からの遷移だけを記録する。
 	if _, err := q.MarkMediaAssetDeleting(ctx, t.ID); err != nil {
 		log.Error("delete_reconcile: marking asset deleting", "err", err)
-		return false
+		return
 	}
 
 	path, err := mediapath.Resolve(w.MediaDir, t.RelPath)
 	if err != nil {
 		log.Error("delete_reconcile: rejecting rel_path outside the media directory", "err", err)
-		return false
+		return
 	}
 
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		// unlink 失敗。行は deleting のまま残し、次パスで再試行する。
 		log.Error("delete_reconcile: removing file", "err", err)
-		return false
+		return
 	}
 
 	if _, err := q.MarkMediaAssetDeleted(ctx, t.ID); err != nil {
 		log.Error("delete_reconcile: marking asset deleted", "err", err)
-		return false
+		return
 	}
 
 	metrics.DeleteReconcileDeleted.WithLabelValues(source).Inc()
 	metrics.DeleteReconcileBytes.WithLabelValues(source).Add(float64(t.SizeBytes))
 	log.Info("delete_reconcile: deleted asset")
-	return true
 }
 
 // resolveUnqualifiedDeletingAsset は ListUnqualifiedDeletingAssets が挙げた
@@ -384,76 +392,50 @@ func (w *DeleteReconcileWorker) resolveUnqualifiedDeletingAsset(ctx context.Cont
 	}
 }
 
-// touchedRecordings はこのパスでアセットを消した録画 id を、重複を除いて
-// 出現順に持つ。map で持つと発火順がパスごとに変わってログが読みにくい。
-type touchedRecordings struct {
-	ids  []int64
-	seen map[int64]struct{}
-}
-
-func (t *touchedRecordings) add(id int64) {
-	if t.seen == nil {
-		t.seen = make(map[int64]struct{})
-	}
-	if _, ok := t.seen[id]; ok {
-		return
-	}
-	t.seen[id] = struct{}{}
-	t.ids = append(t.ids, id)
-}
-
 // notifyPurgedRecordings は「録画そのものが消えた」録画について
-// recording.deleted を発火する（M3-11）。失敗はログのみ（本処理を止めない）。
+// recording.deleted を発火する（M3-11、issue #135）。失敗はログのみ
+// （本処理を止めない）。
 //
-// 発火条件はアセットの kind ではなく録画の寿命で決める（GetRecordingPurgeState
-// のコメント参照）。判定を kind='original' に取ると、until_encoded で原本だけを
-// 消した生きている録画で誤発火し、逆に原本を先に消した録画をごみ箱経由で
-// 完全削除したときには一度も発火しない。
+// 発火対象は purged（引数の purged）そのものであり、ここで改めて「録画が
+// 消えたか」を計算し直すことはしない。その計算は MarkPurgedRecordings の
+// WHERE で 1 回だけ行われ、結果は purged_at として永続化済みである
+// （旧実装は同じ計算を通知の一瞬だけ行って結果を捨てていたため、アセットを
+// 1 行も持たない録画では「消した」と「元から無い」を区別できず、一度も
+// 発火しなかった）。
 //
-// 1 パスで最後のアセットを消した録画についてのみ発火するので、同じ録画で
-// 繰り返し発火することはない（次パスではもう消すアセットが無い）。アセットを
-// 1 行も持たない録画は削除対象が無く、このパスの候補にも入らない。
-func (w *DeleteReconcileWorker) notifyPurgedRecordings(ctx context.Context, q *sqlcgen.Queries, recordingIDs []int64, budget time.Duration) {
-	if w.Webhook == nil || len(recordingIDs) == 0 {
+// purged は MarkPurgedRecordings が WHERE purged_at IS NULL で選んだ集合
+// なので、同じ録画で二度発火することはない（次パスでは同じ行が候補に
+// 上がらない）。
+func (w *DeleteReconcileWorker) notifyPurgedRecordings(ctx context.Context, purged []sqlcgen.MarkPurgedRecordingsRow, budget time.Duration) {
+	if w.Webhook == nil || len(purged) == 0 {
 		return
 	}
 	// POST だけに時間上限を与える（DB 読みは親 ctx のまま）。
 	notifyCtx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 
-	for i, id := range recordingIDs {
+	for i, r := range purged {
 		// 捨てた件数は必ずログに残す（黙って打ち切ると「全件通知した」と読めてしまう）。
 		if err := ctx.Err(); err != nil {
 			slog.Warn("delete_reconcile: pass context done, dropping notifications",
-				"dropped", len(recordingIDs)-i, "err", err)
+				"dropped", len(purged)-i, "err", err)
 			return
 		}
 		if notifyCtx.Err() != nil {
 			slog.Warn("delete_reconcile: webhook budget exhausted, dropping notifications",
-				"budget", budget, "dropped", len(recordingIDs)-i)
+				"budget", budget, "dropped", len(purged)-i)
 			return
-		}
-		state, err := q.GetRecordingPurgeState(ctx, id)
-		if err != nil {
-			slog.Warn("webhook: loading recording for delete notify",
-				"recording_id", id, "err", err)
-			continue
-		}
-		if !state.Trashed || state.AssetsRemaining {
-			// 生きている録画の原本削除（until_encoded）、または同じ録画の
-			// 残りのアセットがまだ消えていない。まだ「録画が消えた」ではない。
-			continue
 		}
 		ev := webhook.Event{
 			Type:        webhook.EventRecordingDeleted,
-			RecordingID: id,
-			Site:        state.Site,
-			Title:       state.Title,
+			RecordingID: r.ID,
+			Site:        r.Site,
+			Title:       r.Title,
 			Status:      "deleted",
 		}
 		if err := w.Webhook.Notify(notifyCtx, ev); err != nil {
 			slog.Error("webhook notify failed",
-				"type", webhook.EventRecordingDeleted, "recording_id", id, "err", err)
+				"type", webhook.EventRecordingDeleted, "recording_id", r.ID, "err", err)
 		}
 	}
 }

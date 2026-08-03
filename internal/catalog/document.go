@@ -127,8 +127,13 @@ type Recording struct {
 	// どちらも live に戻り、recordings_unique_active_event に衝突して復旧が
 	// 落ちる。古い世代のカタログには存在しないので omitempty（nil = live）。
 	SupersededAt *time.Time `json:"supersededAt,omitempty"`
-	CreatedAt    time.Time  `json:"createdAt"`
-	UpdatedAt    time.Time  `json:"updatedAt"`
+	// PurgedAt は「完全削除が完了した」不可逆な事実（issue #135）。落とすと
+	// rescue 後にごみ箱ビュー（purged_at IS NULL を要求）が purge 済みの
+	// tombstone を再び蘇らせてしまう。古い世代のカタログには存在しないので
+	// omitempty（nil = 未 purge）。
+	PurgedAt  *time.Time `json:"purgedAt,omitempty"`
+	CreatedAt time.Time  `json:"createdAt"`
+	UpdatedAt time.Time  `json:"updatedAt"`
 }
 
 // MediaAsset は media_assets の 1 行。
