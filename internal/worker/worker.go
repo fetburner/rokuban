@@ -159,6 +159,9 @@ func NewWorkers(deps *Deps) *river.Workers {
 		Profiles:   deps.Encode,
 		Webhook:    deps.Webhook,
 	})
+	river.AddWorker(workers, &EncodeEnqueueHintWorker{
+		Pool: deps.Pool,
+	})
 	river.AddWorker(workers, &EpgSyncWorker{
 		MirakcClient:   deps.MirakcClient,
 		Pool:           deps.Pool,

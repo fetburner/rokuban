@@ -162,3 +162,21 @@ UPDATE recordings SET
     encode_profiles = sqlc.arg('encode_profiles')::text[],
     updated_at      = now()
 WHERE id = sqlc.arg('id');
+
+-- 凍結の例外としての事後追加（issue #133、docs/storage.md §6「原本 TS の
+-- 保持ポリシー」・docs/recording/reservation-model.md §4.5「録画開始後の編集」）。
+-- **追加専用**（union + dedup）。全置換にすると、ユーザーが既存のプロファイル
+-- 指定を誤って消せてしまう（keep_original='until_encoded' のまま
+-- encode_profiles を空にする事故。CHECK 制約
+-- recordings_until_encoded_requires_profiles には守られるが、意図しない
+-- プロファイル消失そのものは防げない）。呼び出し側（api）は原本削除済み
+-- （GetActiveOriginalMediaAsset が ErrNoRows）を先に検査して 409 にすること
+-- --- このクエリ自体は原本の有無を見ない。
+-- name: AppendRecordingEncodeProfiles :exec
+UPDATE recordings SET
+    encode_profiles = (
+        SELECT coalesce(array_agg(DISTINCT p ORDER BY p), '{}')
+        FROM unnest(encode_profiles || sqlc.arg('profiles')::text[]) AS p
+    ),
+    updated_at = now()
+WHERE id = sqlc.arg('id');

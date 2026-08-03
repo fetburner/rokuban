@@ -3,7 +3,12 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
-import { useListRecordingDropStats, type DropStat, type Recording } from '@/api/generated'
+import {
+  useListRecordingDropStats,
+  type DropStat,
+  type EncodeProfileSummary,
+  type Recording,
+} from '@/api/generated'
 import { ToastProvider } from '@/components/toaster'
 import { DropStatsTable, RecordingsPage } from '@/pages/recordings'
 
@@ -259,5 +264,177 @@ describe('RecordingsPage trash', () => {
     expect(document.querySelector('img')).not.toBeInTheDocument()
     expect(screen.queryByRole('link', { name: 'ダウンロード / VLC' })).not.toBeInTheDocument()
     expect(screen.queryByText('VLC 等で開く')).not.toBeInTheDocument()
+  })
+})
+
+// 事後追加のエンコード依頼（issue #133、凍結の例外。docs/storage.md §6「凍結の
+// 例外: 事後追加」）。RecordingActions に足した AddEncodeProfilesAction の
+// 判定分岐 --- 原本の有無 / 追加済みの除外 / 送信 / ごみ箱で出さない、をそれぞれ
+// 固定する。
+describe('AddEncodeProfilesAction', () => {
+  function makeFetchMock({
+    recording,
+    profiles,
+    onAddEncodeProfiles,
+  }: {
+    recording: Recording
+    profiles: EncodeProfileSummary[]
+    onAddEncodeProfiles?: (id: number, body: unknown) => void
+  }) {
+    return vi.fn((input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input), 'http://localhost')
+      const method = init?.method ?? 'GET'
+
+      if (url.pathname === '/api/encode-profiles' && method === 'GET') {
+        return Promise.resolve(
+          new Response(JSON.stringify(profiles), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        )
+      }
+      const addMatch = /^\/api\/recordings\/(\d+)\/encode-profiles$/.exec(url.pathname)
+      if (addMatch && method === 'POST') {
+        const body: unknown = init?.body ? JSON.parse(String(init.body)) : undefined
+        onAddEncodeProfiles?.(Number(addMatch[1]), body)
+        return Promise.resolve(new Response(null, { status: 204 }))
+      }
+      if (url.pathname === '/api/recordings' && method === 'GET') {
+        const trash = url.searchParams.get('trash') === 'true'
+        return Promise.resolve(
+          new Response(JSON.stringify(trash ? [] : [recording]), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        )
+      }
+      return Promise.resolve(new Response('not found', { status: 404 }))
+    })
+  }
+
+  it('encodeProfiles（desired）にあるものは選択肢から外し「追加済み」に出す', async () => {
+    const user = userEvent.setup()
+    const recording = sampleRecording({
+      id: 11,
+      title: '一部追加済み',
+      sizeBytes: 1_000_000,
+      encodeProfiles: ['h264'],
+    })
+    const fetchMock = makeFetchMock({
+      recording,
+      profiles: [{ name: 'h264' }, { name: 'h265' }],
+    })
+    renderRecordingsPage(fetchMock as unknown as typeof fetch)
+
+    await user.click(await screen.findByText('一部追加済み'))
+
+    expect(await screen.findByText('事後エンコードの追加')).toBeInTheDocument()
+    expect(screen.getByText('追加済み: h264')).toBeInTheDocument()
+    // 既に追加済みの h264 はチェックボックスとして選ばせない（二重依頼に見せない）。
+    expect(screen.queryByRole('checkbox', { name: 'h264' })).not.toBeInTheDocument()
+    expect(screen.getByRole('checkbox', { name: 'h265' })).toBeInTheDocument()
+  })
+
+  it('全プロファイルが追加済みなら、選択肢もボタンも出さず案内だけ出す', async () => {
+    const user = userEvent.setup()
+    const recording = sampleRecording({
+      id: 15,
+      title: '全部追加済み',
+      sizeBytes: 1_000_000,
+      encodeProfiles: ['h264'],
+    })
+    const fetchMock = makeFetchMock({ recording, profiles: [{ name: 'h264' }] })
+    renderRecordingsPage(fetchMock as unknown as typeof fetch)
+
+    await user.click(await screen.findByText('全部追加済み'))
+
+    expect(await screen.findByText('すべてのエンコードプロファイルが追加済みです。')).toBeInTheDocument()
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: '追加エンコードを依頼' }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('選択したプロファイルを POST し、成功したらトーストを出して選択を空に戻す', async () => {
+    const user = userEvent.setup()
+    const recording = sampleRecording({
+      id: 12,
+      title: '追加できる録画',
+      sizeBytes: 500,
+      encodeProfiles: [],
+    })
+    const addCalls: unknown[] = []
+    const fetchMock = makeFetchMock({
+      recording,
+      profiles: [{ name: 'h264' }],
+      onAddEncodeProfiles: (id, body) => addCalls.push({ id, body }),
+    })
+    renderRecordingsPage(fetchMock as unknown as typeof fetch)
+
+    await user.click(await screen.findByText('追加できる録画'))
+    await user.click(await screen.findByRole('checkbox', { name: 'h264' }))
+    await user.click(screen.getByRole('button', { name: '追加エンコードを依頼' }))
+
+    await waitFor(() => expect(addCalls).toHaveLength(1))
+    expect(addCalls[0]).toEqual({ id: 12, body: { profiles: ['h264'] } })
+    expect(await screen.findByText('エンコードを依頼しました')).toBeInTheDocument()
+  })
+
+  it('原本削除済み（sizeBytes 省略）では追加できない旨を出し、チェックボックスを出さない', async () => {
+    const user = userEvent.setup()
+    // sizeBytes を指定しない = 原本削除済み（recordingFromListFields の射影と同じ）。
+    const recording = sampleRecording({ id: 13, title: '原本削除済み', encodeProfiles: [] })
+    const fetchMock = makeFetchMock({ recording, profiles: [{ name: 'h264' }] })
+    renderRecordingsPage(fetchMock as unknown as typeof fetch)
+
+    await user.click(await screen.findByText('原本削除済み'))
+
+    expect(
+      await screen.findByText('原本が削除済みのため、追加のエンコードは依頼できません。'),
+    ).toBeInTheDocument()
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument()
+  })
+
+  it('ごみ箱では追加エンコードのコントロールを一切出さない', async () => {
+    const user = userEvent.setup()
+    const recording = sampleRecording({
+      id: 14,
+      title: '捨てた録画・エンコード確認',
+      deletedAt: '2026-01-05T00:00:00Z',
+      sizeBytes: 500,
+      encodeProfiles: [],
+    })
+    const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input), 'http://localhost')
+      const method = init?.method ?? 'GET'
+      if (url.pathname === '/api/encode-profiles') {
+        return Promise.resolve(
+          new Response(JSON.stringify([{ name: 'h264' }]), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        )
+      }
+      if (url.pathname === '/api/recordings' && method === 'GET') {
+        const trash = url.searchParams.get('trash') === 'true'
+        return Promise.resolve(
+          new Response(JSON.stringify(trash ? [recording] : []), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        )
+      }
+      return Promise.resolve(new Response('not found', { status: 404 }))
+    })
+    renderRecordingsPage(fetchMock as unknown as typeof fetch)
+
+    await user.click(screen.getByRole('button', { name: 'ごみ箱' }))
+    await user.click(await screen.findByText('捨てた録画・エンコード確認'))
+
+    // 展開後の内容（削除日時）が出るまで待ってから「無い」ことを確認する
+    // （クエリ未解決のうちに queryBy で通ってしまう空虚な成功を避ける）
+    await screen.findByText('削除日時')
+    expect(screen.queryByText('事後エンコードの追加')).not.toBeInTheDocument()
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument()
   })
 })

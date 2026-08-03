@@ -625,6 +625,59 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /api/recordings/{id}/encode-profiles:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+    post:
+      operationId: addRecordingEncodeProfiles
+      summary: Request additional encode profiles for an already-ingested recording
+      description: |
+        `recordings.encode_profiles` は ingest 完了時に一度だけ焼き込まれる凍結値
+        だが（docs/storage.md §6「原本 TS の保持ポリシー」）、ユーザー起点の事後
+        追加だけは凍結の例外として認める（issue #133）。**追加専用**（union +
+        dedup）で書き、全置換にはしない --- 誤って他プロファイルの指定を消す事故を
+        避けるため。
+
+        原本が既に削除済み（`keep_original=until_encoded` でエンコード完了後に
+        原本削除 reconcile が消した等）の録画には 409 を返す。この場合
+        `EnqueueMissingEncodes` は黙って no-op になるため、api 層で明示的に
+        検査してサイレントな失敗にしない。
+
+        既に完了済み/pending のプロファイル名を再指定してもエラーにはならず
+        （River の UniqueOpts が二重投入を防ぐ）、冪等に 204 を返す。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AddEncodeProfilesInput"
+      responses:
+        "204":
+          description: Accepted（不足分の encode ジョブを投入した）
+        "400":
+          description: Empty profiles array, or unknown profile name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Recording not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Original media asset already deleted; cannot add encode profiles
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /api/recordings/{id}/drop-stats:
     parameters:
       - name: id
@@ -830,6 +883,27 @@ components:
           enum: [mp4, mkv]
           description: |
             出力コンテナ（表示用。未注入なら省略）。
+
+    # --- 事後追加のエンコード依頼（issue #133） ---
+    #
+    # recordings.encode_profiles は ingest 完了時に一度だけ焼き込まれる凍結値だが
+    # （docs/storage.md §6「原本 TS の保持ポリシー」）、ユーザー起点の事後追加だけは
+    # 凍結の例外として認める。POST /api/recordings/{id}/encode-profiles のボディ。
+    AddEncodeProfilesInput:
+      type: object
+      required:
+        - profiles
+      properties:
+        profiles:
+          type: array
+          minItems: 1
+          items:
+            type: string
+          description: |
+            追加したいエンコードプロファイル名（config.encode.profiles に定義された
+            名前のみ許可。未知名は 400）。既存の recordings.encode_profiles には
+            **追加専用**（union + dedup）で書かれ、全置換にはならない --- 既存の
+            指定を消す事故を避けるため。空配列は 400。
 
     ErrorResponse:
       type: object
@@ -1055,6 +1129,18 @@ components:
             再生可能な encoded 派生物のプロファイル名（media_assets の active のみ）。
             ブラウザ再生は GET /api/recordings/{id}/file?profile=<name> を使う。
             desired（encode_profiles）ではなく observed。空配列は省略可。
+          type: array
+          items:
+            type: string
+        encodeProfiles:
+          description: |
+            凍結された「望ましい」エンコードプロファイル一覧（desired。
+            recordings.encode_profiles）。ingest 完了時に一度だけ焼き込まれ、以後は
+            `POST /api/recordings/{id}/encode-profiles` による事後追加（凍結の例外。
+            docs/storage.md §6「原本 TS の保持ポリシー」）でのみ増える。
+            `encodedProfiles`（observed、再生可能なもの）とは異なり、まだ完了して
+            いない pending なジョブのプロファイルも含む --- UI が「追加済み」を
+            判定するのに使う。空配列は省略可。
           type: array
           items:
             type: string

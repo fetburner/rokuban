@@ -28,6 +28,35 @@ func (q *Queries) AppendQualityEvents(ctx context.Context, arg AppendQualityEven
 	return err
 }
 
+const appendRecordingEncodeProfiles = `-- name: AppendRecordingEncodeProfiles :exec
+UPDATE recordings SET
+    encode_profiles = (
+        SELECT coalesce(array_agg(DISTINCT p ORDER BY p), '{}')
+        FROM unnest(encode_profiles || $1::text[]) AS p
+    ),
+    updated_at = now()
+WHERE id = $2
+`
+
+type AppendRecordingEncodeProfilesParams struct {
+	Profiles []string
+	ID       int64
+}
+
+// 凍結の例外としての事後追加（issue #133、docs/storage.md §6「原本 TS の
+// 保持ポリシー」・docs/recording/reservation-model.md §4.5「録画開始後の編集」）。
+// **追加専用**（union + dedup）。全置換にすると、ユーザーが既存のプロファイル
+// 指定を誤って消せてしまう（keep_original='until_encoded' のまま
+// encode_profiles を空にする事故。CHECK 制約
+// recordings_until_encoded_requires_profiles には守られるが、意図しない
+// プロファイル消失そのものは防げない）。呼び出し側（api）は原本削除済み
+// （GetActiveOriginalMediaAsset が ErrNoRows）を先に検査して 409 にすること
+// --- このクエリ自体は原本の有無を見ない。
+func (q *Queries) AppendRecordingEncodeProfiles(ctx context.Context, arg AppendRecordingEncodeProfilesParams) error {
+	_, err := q.db.Exec(ctx, appendRecordingEncodeProfiles, arg.Profiles, arg.ID)
+	return err
+}
+
 const createFailedRecording = `-- name: CreateFailedRecording :exec
 INSERT INTO recordings (
     reservation_id, rule_id, source, site,
