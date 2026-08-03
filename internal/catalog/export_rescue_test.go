@@ -296,6 +296,10 @@ func TestExport_ConcurrentIngestStaysConsistent(t *testing.T) {
 
 	stop := make(chan struct{})
 	var inserted atomic.Int64
+	// 挿入が失敗した理由を捨てない。飲み込むと「挿入数が足りない」ときに
+	// 「CI で飢餓しただけ」と「制約違反で i=0 から失敗している」を区別できない
+	// （下の自己チェックが本来検出したい後者が、前者に埋もれる）。
+	var insertErr atomic.Pointer[error]
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
@@ -315,7 +319,8 @@ func TestExport_ConcurrentIngestStaysConsistent(t *testing.T) {
 				ProgramDurationMs: 60000, Status: "finished",
 			})
 			if err != nil {
-				// テスト終盤で pool が閉じられたときなど。ゴルーチンは黙って終わる。
+				// テスト終盤で pool が閉じられたときなど。理由は記録して終わる。
+				insertErr.CompareAndSwap(nil, &err)
 				return
 			}
 			if _, err := q.CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
@@ -324,6 +329,7 @@ func TestExport_ConcurrentIngestStaysConsistent(t *testing.T) {
 				RelPath:     fmt.Sprintf("race/%d.m2ts", i),
 				SizeBytes:   1,
 			}); err != nil {
+				insertErr.CompareAndSwap(nil, &err)
 				return
 			}
 			inserted.Add(1)
@@ -332,7 +338,24 @@ func TestExport_ConcurrentIngestStaysConsistent(t *testing.T) {
 
 	var lastDoc *Document
 	const iterations = 100
-	for i := 0; i < iterations; i++ {
+	// 競合ゴルーチンが最低 minInserts 件を入れるまでは Export を回し続ける。
+	// 固定回数だけ回して後から挿入数を検証する形だと、コア数の少ない CI では
+	// ゴルーチンが飢餓して「レース窓を踏めなかった」で落ちる（実際に落ちた）。
+	// 一貫性の検証は毎イテレーション行われるので、回す回数を伸ばしても
+	// テストの意味は変わらない。deadline は「挿入が本当に失敗し続けている」
+	// ケースを無限ループにしないための上限。
+	const minInserts = 10
+	deadline := time.Now().Add(60 * time.Second)
+	for i := 0; i < iterations || inserted.Load() < minInserts; i++ {
+		if time.Now().After(deadline) {
+			break
+		}
+		// ゴルーチンが挿入エラーで死んでいるなら待っても増えない。すぐ抜けて
+		// 下の自己チェックにその理由を報告させる（制約違反で挿入が失敗し続ける
+		// ケースを 60 秒待たずに落とす）。
+		if i >= iterations && insertErr.Load() != nil {
+			break
+		}
 		doc, err := Export(ctx, pool, "")
 		if err != nil {
 			close(stop)
@@ -358,8 +381,13 @@ func TestExport_ConcurrentIngestStaysConsistent(t *testing.T) {
 	// 競合ゴルーチンが実際に挿入できていなければ、この回帰は何も検証せず
 	// 「無言で成功し続ける」空虚なテストになる（将来 NOT NULL / CHECK が増えて
 	// i=0 から挿入が失敗し続けるケースを想定）。挿入数を検証してそれを防ぐ。
-	if n := inserted.Load(); n < 10 {
-		t.Fatalf("concurrent goroutine only inserted %d recordings, want >= 10 (race window was not exercised)", n)
+	if n := inserted.Load(); n < minInserts {
+		reason := "理由不明（競合ゴルーチンはエラーを報告していない）"
+		if p := insertErr.Load(); p != nil {
+			reason = (*p).Error()
+		}
+		t.Fatalf("concurrent goroutine only inserted %d recordings, want >= %d "+
+			"(race window was not exercised): %s", n, minInserts, reason)
 	}
 
 	// フルパイプライン: 最後に取れた Document を rescue しても FK 違反が出ないこと。
