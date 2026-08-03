@@ -64,9 +64,19 @@ const reservationsRoute = createRoute({
   component: ReservationsPage,
 })
 
+/**
+ * 予約詳細のディープリンクは `(site, programId)` を宛先にする（issue #99）。
+ *
+ * `reservations.id` は ruler の導出削除・再実体化（EPG フリッカー・ルール編集）
+ * で変わりうる不安定な値なので、旧 `/reservations/$reservationId` を宛先に
+ * ブックマーク・共有した URL は、予約が再実体化されると 404 になっていた。
+ * `(site, programId)` は `UNIQUE (site, program_id)` があるキーなので、
+ * 予約行が作り直されても同じ URL で引ける
+ * （`GET /api/sites/{site}/programs/{programId}/reservation`）。
+ */
 const reservationDetailRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: '/reservations/$reservationId',
+  path: '/reservations/$site/$programId',
   component: ReservationDetailPage,
 })
 

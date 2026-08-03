@@ -3,8 +3,8 @@ import { Link, useNavigate, useParams } from '@tanstack/react-router'
 import { ArrowLeft } from 'lucide-react'
 
 import {
-  getGetReservationQueryKey,
-  useGetReservation,
+  getGetProgramReservationQueryKey,
+  useGetProgramReservation,
   usePatchProgramOverrides,
   usePutProgramIntent,
   type ProgramOverridesInput,
@@ -27,15 +27,21 @@ import { formatDateTime, formatDuration } from '@/lib/format'
  *
  * encodeProfiles / keepOriginal は M3 で worker が消費するため編集可能
  * （issue #68）。priority など mirakc 差分が必要な項目は #19 解決後に足す。
+ *
+ * ルートとクエリは `(site, programId)` を宛先にする（issue #99）。
+ * `reservations.id` は ruler の導出削除・再実体化で変わりうる不安定な値なので、
+ * それを URL・クエリキーに使うとブックマーク・共有した URL やキャッシュが
+ * 予約の再実体化で無効になる。`GET /api/sites/{site}/programs/{programId}/reservation`
+ * は `UNIQUE (site, program_id)` をキーにするので、id が変わっても同じ URL で引ける。
  */
 export function ReservationDetailPage() {
-  const { reservationId } = useParams({ from: '/reservations/$reservationId' })
+  const { site, programId } = useParams({ from: '/reservations/$site/$programId' })
   const navigate = useNavigate()
   const toast = useToast()
   const queryClient = useQueryClient()
 
-  const id = Number(reservationId)
-  const query = useGetReservation(id)
+  const programIdNum = Number(programId)
+  const query = useGetProgramReservation(site, programIdNum)
   const putIntent = usePutProgramIntent()
   const patchOverrides = usePatchProgramOverrides()
 
@@ -66,7 +72,9 @@ export function ReservationDetailPage() {
       {
         onSuccess: () => {
           toast({ message: 'エンコード設定を更新しました' })
-          void queryClient.invalidateQueries({ queryKey: getGetReservationQueryKey(id) })
+          void queryClient.invalidateQueries({
+            queryKey: getGetProgramReservationQueryKey(site, programIdNum),
+          })
         },
         onError: (err) =>
           toast({ message: apiErrorMessage(err) ?? 'エンコード設定の更新に失敗しました' }),

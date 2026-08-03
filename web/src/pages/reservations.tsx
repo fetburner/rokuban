@@ -52,8 +52,8 @@ export function ReservationsPage() {
           {reservations.map((r) => (
             <li key={r.id}>
               <Link
-                to="/reservations/$reservationId"
-                params={{ reservationId: String(r.id) }}
+                to="/reservations/$site/$programId"
+                params={{ site: r.site, programId: String(r.programId) }}
                 className="flex min-h-14 items-center gap-3 border-b border-border px-4 py-2.5 hover:bg-muted/50"
               >
                 <div className="min-w-0 flex-1">

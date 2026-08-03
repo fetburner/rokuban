@@ -1733,10 +1733,20 @@ export const getGetReservationUrl = (id: number,) => {
 
 /**
  * `reservations.id` は ruler の導出削除・再実体化で変わりうる（寿命が
- * 保証されていない。issue #29）。読み取りには使えるが、書き込みの宛先には
- * 使わない —— 意図・上書きは `(site, programId)` を自身のキーとする別の
- * エンドポイントに書く。
- * @summary Get a reservation
+ * 保証されていない。issue #29）。書き込みの宛先には使わない —— 意図・上書きは
+ * `(site, programId)` を自身のキーとする別のエンドポイントに書く。
+ *
+ * **恒久的な資源同定（ブックマーク・ディープリンク・クライアントのキャッシュ
+ * キー）にも使わない。** 予約行が再実体化されると同じ番組でも id が変わり、
+ * この id を宛先にした URL・クエリキャッシュは 404 / 無効化される
+ * （issue #99）。そのための読み取りは
+ * `GET /api/sites/{site}/programs/{programId}/reservation` を使う。
+ *
+ * この id 経由の読み取りは、呼び出し側が既に一覧などから id を手にしていて
+ * 同じ操作の中で使う（`GET /api/reservations` の各要素を直後に詳細取得する
+ * 等）用途のために残す —— その用途では id が変わる窓（ruler の 1 パス）を
+ * 跨がないため不安定性の影響を受けない。
+ * @summary Get a reservation by its (unstable) derived id
  */
 export const getReservation = async (id: number, options?: RequestInit): Promise<getReservationResponse> => {
 
@@ -1807,7 +1817,7 @@ export function useGetReservation<TData = Awaited<ReturnType<typeof getReservati
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
 /**
- * @summary Get a reservation
+ * @summary Get a reservation by its (unstable) derived id
  */
 
 export function useGetReservation<TData = Awaited<ReturnType<typeof getReservation>>, TError = ErrorResponse>(
@@ -1816,6 +1826,149 @@ export function useGetReservation<TData = Awaited<ReturnType<typeof getReservati
  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
 
   const queryOptions = getGetReservationQueryOptions(id,options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export type getProgramReservationResponse200 = {
+  data: Reservation
+  status: 200
+}
+
+export type getProgramReservationResponse404 = {
+  data: ErrorResponse
+  status: 404
+}
+
+export type getProgramReservationResponseSuccess = (getProgramReservationResponse200) & {
+  headers: Headers;
+};
+export type getProgramReservationResponseError = (getProgramReservationResponse404) & {
+  headers: Headers;
+};
+
+export type getProgramReservationResponse = (getProgramReservationResponseSuccess | getProgramReservationResponseError)
+
+export const getGetProgramReservationUrl = (site: string,
+    programId: number,) => {
+
+
+
+
+  return `/api/sites/${site}/programs/${programId}/reservation`
+}
+
+/**
+ * `(site, programId)` を宛先に予約を読む（issue #99）。書き込み側
+ * （`PUT/DELETE .../intent`、`PATCH/DELETE .../overrides`）は M3-1（issue #29）で
+ * 既にこのキーに寄っていたが、読み取り（`GET /api/reservations/{id}`・UI の
+ * ディープリンク・クエリキャッシュ）は `reservations.id` という ruler の
+ * 導出削除・再実体化で変わりうる不安定な値のままだった。
+ *
+ * `UNIQUE (site, program_id)` が既に張られているため、このキーで一意に
+ * 予約が定まる。予約行が再実体化されて `id` が変わっても、この URL・
+ * クエリキーは変わらない —— ブックマーク・共有した URL、TanStack Query の
+ * クエリキャッシュが再実体化を生き延びる（#98 で recordings.reservation_id /
+ * 放送イベントの識別について踏んだのと同じ形の identity の問題。CLAUDE.md
+ * 不変条件 9「導出器が作るキーを宛先にしない」）。
+ *
+ * 指定した番組に対する予約が無ければ 404（`reservations` に行が無い、
+ * または site が設定と一致しない）。
+ * @summary Get the reservation for a program, keyed by (site, programId)
+ */
+export const getProgramReservation = async (site: string,
+    programId: number, options?: RequestInit): Promise<getProgramReservationResponse> => {
+
+  return customInstance<getProgramReservationResponse>(getGetProgramReservationUrl(site,programId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetProgramReservationQueryKey = (site: string,
+    programId: number,) => {
+    return [
+    `/api/sites/${site}/programs/${programId}/reservation`
+    ] as const;
+    }
+
+
+export const getGetProgramReservationQueryOptions = <TData = Awaited<ReturnType<typeof getProgramReservation>>, TError = ErrorResponse>(site: string,
+    programId: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getProgramReservation>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetProgramReservationQueryKey(site,programId);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getProgramReservation>>> = ({ signal }) => getProgramReservation(site,programId, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: site !== null && site !== undefined && programId !== null && programId !== undefined, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getProgramReservation>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type GetProgramReservationQueryResult = NonNullable<Awaited<ReturnType<typeof getProgramReservation>>>
+export type GetProgramReservationQueryError = ErrorResponse
+
+
+export function useGetProgramReservation<TData = Awaited<ReturnType<typeof getProgramReservation>>, TError = ErrorResponse>(
+ site: string,
+    programId: number, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getProgramReservation>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getProgramReservation>>,
+          TError,
+          Awaited<ReturnType<typeof getProgramReservation>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetProgramReservation<TData = Awaited<ReturnType<typeof getProgramReservation>>, TError = ErrorResponse>(
+ site: string,
+    programId: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getProgramReservation>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getProgramReservation>>,
+          TError,
+          Awaited<ReturnType<typeof getProgramReservation>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetProgramReservation<TData = Awaited<ReturnType<typeof getProgramReservation>>, TError = ErrorResponse>(
+ site: string,
+    programId: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getProgramReservation>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary Get the reservation for a program, keyed by (site, programId)
+ */
+
+export function useGetProgramReservation<TData = Awaited<ReturnType<typeof getProgramReservation>>, TError = ErrorResponse>(
+ site: string,
+    programId: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getProgramReservation>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getGetProgramReservationQueryOptions(site,programId,options)
 
   const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
 
