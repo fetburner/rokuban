@@ -23,10 +23,17 @@ import (
 func insertProgramSnapshotFixture(t *testing.T, pool *pgxpool.Pool, ctx context.Context, programID int64, networkID, serviceID int32) {
 	t.Helper()
 	start := time.Now().Add(24 * time.Hour)
+	// 識別 6 列はすべて NOT NULL（issue #101 / 00026）。event_id / service_name を
+	// 落とすと 23502 で落ちる —— このフィクスチャは #99（PR #147）で追加され、
+	// #101（PR #150）が NOT NULL 化を入れた。互いのブランチでは緑で、マージ後に
+	// 初めて落ちた（CLAUDE.md §並行作業「git が競合と見なさない意味的な競合」の
+	// テストフィクスチャの生 SQL の実例）。
 	if _, err := pool.Exec(ctx, `
-INSERT INTO program_snapshots (site, program_id, title, start_at, duration_ms, network_id, service_id, channel_type, channel)
-VALUES ('default', $1, 'テスト番組', $2, 1800000, $3, $4, 'GR', '27')`,
-		programID, start, networkID, serviceID); err != nil {
+INSERT INTO program_snapshots (
+    site, program_id, title, start_at, duration_ms,
+    network_id, service_id, channel_type, channel, event_id, service_name
+) VALUES ('default', $1, 'テスト番組', $2, 1800000, $3, $4, 'GR', '27', $5, 'テスト局')`,
+		programID, start, networkID, serviceID, int32(programID%100000)); err != nil {
 		t.Fatalf("inserting program_snapshot fixture: %v", err)
 	}
 }
