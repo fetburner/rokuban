@@ -28,7 +28,26 @@ JOIN program_snapshots s ON s.site = r.site AND s.program_id = r.program_id
 LEFT JOIN program_intents i ON i.site = r.site AND i.program_id = r.program_id
 LEFT JOIN program_overrides o ON o.site = r.site AND o.program_id = r.program_id
 WHERE r.site = $1
-  AND r.orphaned_at IS NULL
+  AND NOT EXISTS (
+      SELECT 1 FROM recordings rec
+      -- 宛先のキーは**放送イベント**であって予約 id ではない。
+      -- reservations.id は ruler の導出削除・再実体化で変わる不安定な値で
+      -- （#53 が mirakc の tag を program:{programId} に移した理由。#99 も同じ）、
+      -- recordings.reservation_id は ON DELETE SET NULL である。予約 id で
+      -- 引くと、EPG フリッカーやルール編集で予約行が作り直された瞬間に
+      -- 「never-scheduled 行が無い」ことになり、終了済み予約が毎パス desired に
+      -- 戻り続ける（CLAUDE.md 不変条件 9 の identity: 導出器が作るキーを
+      -- 宛先にしない）。
+      WHERE rec.site = r.site
+        AND rec.network_id = s.network_id
+        AND rec.service_id = s.service_id
+        AND rec.event_id = s.event_id
+        AND rec.status = 'failed'
+        AND EXISTS (
+            SELECT 1 FROM jsonb_array_elements(rec.quality_events) qe
+            WHERE qe->>'event' = 'recording.never-scheduled'
+        )
+  )
   AND s.channel_type IS NOT NULL
   AND s.channel IS NOT NULL
 ORDER BY s.start_at
@@ -53,9 +72,16 @@ type ListCapacityDemandRow struct {
 // 予約時に焼き付けたスナップショット列（00009_reservation_channel.sql）を読む。
 //
 // 絞り込みの分担:
-//   - `orphaned_at IS NULL`: 番組が終了して schedule を作る意味がない行を落とす
-//     （#28/#30 で state <> 'orphaned' から置き換え）。これ以上のフィルタに
-//     使ってはならない（docs/schema.md §3。active / detached はどちらも同期対象）
+//   - never-scheduled 除外: reconciler が「番組終了かつ schedule 非観測」と
+//     一度判定して recordings に never-scheduled 行を作った予約は、以後
+//     schedule を作らない（= 需要にならない）ので落とす。旧実装は
+//     orphaned_at IS NULL で絞っていたが、#98 でこの列を廃止し recordings の
+//     試行行に置き換えた。ListReservationsForSyncEvaluation
+//     （internal/db/queries/reservations.sql）と全く同じ述語 ---
+//     status='failed' 全般ではなく never-scheduled マーカーだけを見る理由も
+//     同所のコメント参照（mirakc 由来の途中失敗からの再試行経路を壊さない
+//     ため）。これ以上のフィルタに使ってはならない（docs/schema.md §3。
+//     active / detached はどちらも同期対象）
 //   - `channel_type IS NOT NULL AND channel IS NOT NULL`: 00009 以前の残骸は
 //     物理チャンネルが分からないので需要に数えられない。数えない側に倒すのは、
 //     既知の盲点をすべて「警告を見逃す」方向に揃えるため（docs/data.md §6.5）

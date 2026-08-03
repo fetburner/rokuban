@@ -34,7 +34,9 @@
    - **PostgreSQL 15 以上**を前提とする（`UNIQUE NULLS NOT DISTINCT` が 15 で導入）
 9. **表は行の寿命で割る**（[CLAUDE.md](../../CLAUDE.md) 不変条件 12。M2 完了後のレビューで言語化）
    - **1 表 = 1 つの書き手 = 1 つの寿命。** 原則 6 は列の粒度なので、行に寿命が混ざるケースを網に掛けられない
-   - `reservations` の 1 行には**かつて** ①ruler の導出出力（寿命 = 1 パス）②番組の事実のスナップショット（寿命 = 放送。3 表に重複しドリフト中だった。[#27](https://github.com/fetburner/rokuban/issues/27)）③不可逆な観測（`state = 'orphaned'`。[#28](https://github.com/fetburner/rokuban/issues/28) / [#30](https://github.com/fetburner/rokuban/issues/30)）が同居していた。**Phase 1 で②を `program_snapshots`（§3.7）に、③を `orphaned_at` に分離し、`reservations` には①だけが残っている**
+   - `reservations` の 1 行には**かつて** ①ruler の導出出力（寿命 = 1 パス）②番組の事実のスナップショット（寿命 = 放送。3 表に重複しドリフト中だった。[#27](https://github.com/fetburner/rokuban/issues/27)）③不可逆な観測（`state = 'orphaned'`。[#28](https://github.com/fetburner/rokuban/issues/28) / [#30](https://github.com/fetburner/rokuban/issues/30)）が同居していた。**Phase 1 で②を `program_snapshots`（§3.7）に、③を専用列 `orphaned_at` に分離したが、③はこの時点でもまだ `reservations` の中に残っていた**（列は分かれても表は同じ）。**issue #98 で③を `recordings` の試行行に移設し、`orphaned_at` 列自体を廃止したことで、`reservations` にはようやく①だけが残った**
+   - Phase 1 だけでは「表は行の寿命で割る」が完成しなかったことは、原則そのものへの反証ではなく、**「別の列に分離する」と「別の表に出す」を混同すると原則を守ったつもりで守れていない**ことの実例として残す
+
    - ユーザー意図を導出行から出したのは正しかったが、分割の軸を「予約という概念」に取ったので 2 回に分かれた（#18 → M2-4）。軸を寿命に取れば 1 回で済んだ
    - 新しい列を足すときは「**この値はこの行と同時に生まれて同時に死ぬか**」を問う。違えば `(site, program_id)` を主キーにした別表にする
 10. **形を固定する前に、その形を決める判定基準を書く**（[CLAUDE.md](../../CLAUDE.md) 不変条件 11）

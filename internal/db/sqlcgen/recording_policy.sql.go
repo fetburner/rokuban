@@ -11,7 +11,7 @@ import (
 )
 
 const getReservationEncodePolicy = `-- name: GetReservationEncodePolicy :one
-SELECT r.id, r.site, r.program_id, r.rule_id, r.base, r.created_at, r.updated_at, r.dedup_match_recording_id, r.dedup_similarity, r.orphaned_at, i.action AS intent_action, o.overrides AS overrides
+SELECT r.id, r.site, r.program_id, r.rule_id, r.base, r.created_at, r.updated_at, r.dedup_match_recording_id, r.dedup_similarity, i.action AS intent_action, o.overrides AS overrides
 FROM reservations r
 LEFT JOIN program_intents   i ON i.site = r.site AND i.program_id = r.program_id
 LEFT JOIN program_overrides o ON o.site = r.site AND o.program_id = r.program_id
@@ -47,7 +47,6 @@ func (q *Queries) GetReservationEncodePolicy(ctx context.Context, id int64) (Get
 		&i.Reservation.UpdatedAt,
 		&i.Reservation.DedupMatchRecordingID,
 		&i.Reservation.DedupSimilarity,
-		&i.Reservation.OrphanedAt,
 		&i.IntentAction,
 		&i.Overrides,
 	)

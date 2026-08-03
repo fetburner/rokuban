@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -80,7 +79,7 @@ func (h *Server) ListReservations(ctx context.Context, _ ListReservationsRequest
 
 	result := make([]Reservation, 0, len(rows))
 	for _, r := range rows {
-		res, err := reservationFromRow(r.Reservation, r.ProgramSnapshot, r.Overrides, r.IntentAction)
+		res, err := reservationFromRow(r.Reservation, r.ProgramSnapshot, r.Overrides, r.IntentAction, r.NeverRecorded)
 		if err != nil {
 			return nil, err
 		}
@@ -99,30 +98,33 @@ func (h *Server) GetReservation(ctx context.Context, req GetReservationRequestOb
 		}
 		return nil, err
 	}
-	res, err := reservationFromRow(row.Reservation, row.ProgramSnapshot, row.Overrides, row.IntentAction)
+	res, err := reservationFromRow(row.Reservation, row.ProgramSnapshot, row.Overrides, row.IntentAction, row.NeverRecorded)
 	if err != nil {
 		return nil, err
 	}
 	return GetReservation200JSONResponse(res), nil
 }
 
-// reservationState は Reservation.state を (rule_id, base, orphaned_at) から
+// reservationState は Reservation.state を (rule_id, base, neverRecorded) から
 // 導出する。
 //
 // state 列そのものは Phase 1（#27/#28/#30）で reservations から落とされた ---
-// orphaned は不可逆な観測として orphaned_at（reconciler だけが書く）に、
 // active/detached は (rule_id, base) から導出できる値として列を持たないことに
-// した。API レスポンスは 1 バイトも変えないため、ここで毎回計算して返す
-// （CLAUDE.md 不変条件 9「導出値と不可逆な事実を同じ列に載せない」・「導出は
-// 読むたびに評価する」）。
+// した。orphaned は一度 orphaned_at（reconciler だけが書く不可逆な観測）を
+// 経たが、issue #98 で orphaned_at 自体も廃止され、「この予約に
+// status='failed' の recordings 行が存在するか」という EXISTS 判定
+// （neverRecorded。呼び出し元がクエリの never_recorded 列から受け取る）に
+// 置き換わった。API レスポンスは 1 バイトも変えないため、ここで毎回計算して
+// 返す（CLAUDE.md 不変条件 9「導出値と不可逆な事実を同じ列に載せない」・
+// 「導出は読むたびに評価する」）。
 //
 // #30 症状 1（ルールを削除した経路では detached にならなかった）は、旧実装が
 // この式を SQL の CASE で「前パスの rule_id」を見て遷移として保存していたため
 // に起きた。ここで毎パス評価し直すことで、ルールの削除（FK の ON DELETE
 // SET NULL が rule_id を先に NULL にする経路）でも編集と同じく detached になる。
-func reservationState(ruleID *int64, base json.RawMessage, orphanedAt *time.Time) ReservationState {
+func reservationState(ruleID *int64, base json.RawMessage, neverRecorded bool) ReservationState {
 	switch {
-	case orphanedAt != nil:
+	case neverRecorded:
 		return Orphaned
 	case ruleID == nil && len(base) > 0:
 		return Detached
@@ -152,7 +154,11 @@ func reservationState(ruleID *int64, base json.RawMessage, orphanedAt *time.Time
 // なる（docs/schema.md §3「jsonb の Unmarshal 失敗を握りつぶさない」）。
 // dedupMatchRecordingId / dedupSimilarity はその skip の根拠（M2-6）で、
 // ruler が毎パス作り直す導出列をそのまま出す。
-func reservationFromRow(r sqlcgen.Reservation, snap sqlcgen.ProgramSnapshot, overrides []byte, intentAction *string) (Reservation, error) {
+//
+// neverRecorded は呼び出し元のクエリ（GetReservationFull / ListReservationsBySite）
+// が EXISTS で計算した「この予約に status='failed' の recordings 行があるか」
+// （issue #98。reservationState のコメント参照）。
+func reservationFromRow(r sqlcgen.Reservation, snap sqlcgen.ProgramSnapshot, overrides []byte, intentAction *string, neverRecorded bool) (Reservation, error) {
 	source := ReservationSourceRule
 	if intentAction != nil && *intentAction == db.IntentRecord {
 		source = ReservationSourceManual
@@ -166,7 +172,7 @@ func reservationFromRow(r sqlcgen.Reservation, snap sqlcgen.ProgramSnapshot, ove
 		Site:      r.Site,
 		ProgramId: r.ProgramID,
 		Source:    source,
-		State:     reservationState(r.RuleID, r.Base, r.OrphanedAt),
+		State:     reservationState(r.RuleID, r.Base, neverRecorded),
 		// site を返すのは容量超過の判定がサイトごとに独立しているため
 		// （docs/data.md §6.5）。クライアントに単一サイト前提の定数を持たせると、
 		// 多サイト化のときに「他サイトの不足を自分の不足として出す」形で静かに壊れる。

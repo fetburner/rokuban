@@ -21,7 +21,7 @@ const (
 	defaultReconcilePassInterval = 30 * time.Second
 
 	// reconcilePassTimeout は 1 パス（存在の突き合わせ + オプション差分反映 + GC 相当の
-	// orphaned マーキング）全体の上限。
+	// never-scheduled 記録）全体の上限。
 	//
 	// ruler（rulerPassTimeout、5 分）は mirakc に一切触れない純粋な Postgres 処理だが、
 	// reconciler は mirakc への HTTP を伴う: schedules の全量 GET が 1 回、加えて

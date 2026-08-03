@@ -90,7 +90,8 @@ func runShadowDiff(ctx context.Context, q *sqlcgen.Queries, epgClient *epgstatio
 		return shadowdiff.Report{}, fmt.Errorf("listing EPGStation reserves: %w", err)
 	}
 
-	// ListReservationsForSyncEvaluation（state <> 'orphaned'）を使う。detached の
+	// ListReservationsForSyncEvaluation（never-scheduled 除外。issue #98 で
+	// state <> 'orphaned' から置き換わった）を使う。detached の
 	// 予約も mirakc に schedule が作られる（M2-4 で修正）ため、EPGStation との
 	// 突き合わせ対象にも含めないと detached 予約が偽の EPGStationOnly として
 	// 報告されてしまう。

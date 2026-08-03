@@ -122,7 +122,8 @@ func (q *Queries) GetEpgProgram(ctx context.Context, arg GetEpgProgramParams) (E
 
 const getProgramSnapshotSource = `-- name: GetProgramSnapshotSource :one
 SELECT p.name AS title, p.start_at, p.duration_ms,
-       s.network_id, s.service_id, s.channel_type, s.channel
+       s.network_id, s.service_id, s.channel_type, s.channel,
+       p.event_id, s.name AS service_name
 FROM epg_programs p
 JOIN epg_services s
   ON s.site = p.site AND s.network_id = p.network_id AND s.service_id = p.service_id
@@ -142,6 +143,8 @@ type GetProgramSnapshotSourceRow struct {
 	ServiceID   int32
 	ChannelType string
 	Channel     string
+	EventID     int32
+	ServiceName string
 }
 
 // 意図・上書きの書き込み時に、program_snapshots へスナップショットする番組の事実
@@ -152,6 +155,9 @@ type GetProgramSnapshotSourceRow struct {
 // 射影から引き、title / 開始時刻 / 尺はクライアント申告を信じていたため、GC の
 // 比較対象（program_snapshots.start_at + duration_ms）がクライアントの古い番組表に
 // 引きずられ得た（api.ensureProgramSnapshot から使う）。
+// event_id / s.name (service_name) は issue #98 で追加した参照 --- program_snapshots
+// 側の event_id / service_name 列（00025）を埋めるのに使う。他のチャンネル識別列と
+// 同じ経路（射影から直接引く。mirakc の programId 分解には頼らない）。
 func (q *Queries) GetProgramSnapshotSource(ctx context.Context, arg GetProgramSnapshotSourceParams) (GetProgramSnapshotSourceRow, error) {
 	row := q.db.QueryRow(ctx, getProgramSnapshotSource, arg.Site, arg.ProgramID)
 	var i GetProgramSnapshotSourceRow
@@ -163,6 +169,8 @@ func (q *Queries) GetProgramSnapshotSource(ctx context.Context, arg GetProgramSn
 		&i.ServiceID,
 		&i.ChannelType,
 		&i.Channel,
+		&i.EventID,
+		&i.ServiceName,
 	)
 	return i, err
 }

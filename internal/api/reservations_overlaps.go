@@ -54,7 +54,7 @@ func (h *Server) GetProgramOverlaps(ctx context.Context, req GetProgramOverlapsR
 
 	overlaps := make([]OverlappingReservation, 0, len(rows))
 	for _, row := range rows {
-		// orphaned_at IS NULL と自分自身の除外は SQL 側で済ませてあるが、
+		// never-scheduled 除外（issue #98）と自分自身の除外は SQL 側で済ませてあるが、
 		// effective.skip（program_overrides / program_intents.action='skip' の
 		// 反映）は jsonb のマージが要るため Go 側で db.EffectiveOptions を通す
 		// （不透明な overrides を SQL で読まない、という既存の規律に合わせる）。

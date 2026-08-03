@@ -162,6 +162,12 @@ type DropStat struct {
 }
 
 // ProgramSnapshot は program_snapshots の 1 行（意図・上書きの FK 先）。
+//
+// EventID / ServiceName は issue #98 で追加された列（00025）。
+// reconciler.recordNeverScheduled が recordings の never-scheduled 行を作る
+// ときの識別（network_id, service_id, event_id）と表示名に使うため、
+// 他のチャンネル識別列と同様に catalog の往復で失ってはならない。
+// 古い世代の catalog には存在しないので omitempty（nil = 未対応 or 移行前）。
 type ProgramSnapshot struct {
 	Site        string    `json:"site"`
 	ProgramID   int64     `json:"programId"`
@@ -172,6 +178,8 @@ type ProgramSnapshot struct {
 	ServiceID   *int32    `json:"serviceId,omitempty"`
 	ChannelType *string   `json:"channelType,omitempty"`
 	Channel     *string   `json:"channel,omitempty"`
+	EventID     *int32    `json:"eventId,omitempty"`
+	ServiceName *string   `json:"serviceName,omitempty"`
 	UpdatedAt   time.Time `json:"updatedAt"`
 }
 

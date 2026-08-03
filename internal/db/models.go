@@ -10,11 +10,13 @@ import (
 //
 // Phase 1（#27/#28/#30）で番組の事実のスナップショット（title / 開始時刻 / 尺 /
 // チャンネル識別）は program_snapshots に抽出され、state（active/detached）は
-// (rule_id, base) から導出する値になったため列としては撤去され、orphaned
-// （不可逆な観測）だけが OrphanedAt として残った。sqlcgen.Reservation が
-// canonical な生成型で、この型はテストの可読性のためだけに残っている
-// （CLAUDE.md 不変条件 12「表は行の寿命で割る」: この行に残るのは ruler の
-// 1 パスの出力だけ）。
+// (rule_id, base) から導出する値になったため列としては撤去された。「番組終了後に
+// schedule が観測されなかった」という不可逆な観測は一時 orphaned_at 列を経て
+// （Phase 1）、issue #98 で recordings の試行行（status='failed' +
+// quality_events に recording.never-scheduled）に移設され、orphaned_at 列
+// 自体も落ちた（00025）。sqlcgen.Reservation が canonical な生成型で、この型は
+// テストの可読性のためだけに残っている（CLAUDE.md 不変条件 12「表は行の寿命で
+// 割る」: この行に残るのは ruler の 1 パスの出力だけになった）。
 type Reservation struct {
 	ID                    int64           `db:"id"`
 	Site                  string          `db:"site"`
@@ -25,10 +27,6 @@ type Reservation struct {
 	UpdatedAt             time.Time       `db:"updated_at"`
 	DedupMatchRecordingID *int64          `db:"dedup_match_recording_id"`
 	DedupSimilarity       *float32        `db:"dedup_similarity"`
-	// OrphanedAt は番組終了後に schedule が観測されなかったという不可逆な観測
-	// （reconciler.markOrphaned だけが書く）。NULL は「まだ orphan と判定されて
-	// いない」ことを表す。
-	OrphanedAt *time.Time `db:"orphaned_at"`
 }
 
 // ReservationOptions は reservations.base / overrides の jsonb 構造。
@@ -253,6 +251,15 @@ type QualityEvent struct {
 	Reason json.RawMessage `json:"reason"`
 }
 
+// QualityEventNeverScheduled は quality_events.event の値（issue #98）。
+// reconciler.recordNeverScheduled が「番組終了時点で捕獲の試みが一度も記録
+// されなかった」ことを示すために書く。status を 5 値目に増やさず、失敗の
+// 理由を quality_events の管轄に留める決定（docs/schema/recordings.md「status
+// の権威」）の具体的な値。SQL 側（internal/db/queries/reservations.sql の
+// ListReservationsForSyncEvaluation 等）もこの文字列をリテラルで参照するので、
+// 変更する場合は両方揃えること。
+const QualityEventNeverScheduled = "recording.never-scheduled"
+
 // DefaultSite は設定が単一 mirakc のときのサイト名。
 //
 // site は本来設定ファイルで定義するサイト名（[docs/schema.md] §1-5）だが、M1 の設定は
@@ -274,10 +281,13 @@ const (
 )
 
 // 予約状態のラベル。Phase 1（#28/#30）以降、`reservations.state` という列は
-// 存在しない --- active/detached は (rule_id, base) から、orphaned は
-// orphaned_at の有無から、読むたびに導出する（CLAUDE.md 不変条件 9）。
-// この 3 つの文字列定数はテスト・ログでの表記を揃えるためだけに残す
-// （internal/api.ReservationState の値と同じ語彙）。
+// 存在しない --- active/detached は (rule_id, base) から読むたびに導出する
+// （CLAUDE.md 不変条件 9）。orphaned はさらに issue #98 で orphaned_at 列
+// （Phase 1 で state から分離した不可逆な観測）自体が無くなり、「この予約に
+// status='failed' の recordings 行が存在するか」の EXISTS 判定に置き換わった
+// （internal/db/queries/reservations.sql の GetReservationFull / api.handler.go
+// の reservationState）。この 3 つの文字列定数はテスト・ログでの表記を
+// 揃えるためだけに残す（internal/api.ReservationState の値と同じ語彙）。
 const (
 	ReservationStateActive   = "active"
 	ReservationStateDetached = "detached"

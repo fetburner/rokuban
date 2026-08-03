@@ -56,7 +56,8 @@ func TestRunShadowDiff_EndToEnd(t *testing.T) {
 	}
 	// programId=5 は base.skip = true（M2-6 の重複排除が立てる想定）を持つ予約。
 	// ruler は base だけを書き reservations 行自体は削除しない設計なので、この
-	// 行は ListReservationsForSyncEvaluation（orphaned_at IS NULL）に残り続ける。
+	// 行は ListReservationsForSyncEvaluation（never-scheduled 除外。issue #98 で
+	// orphaned_at IS NULL から置き換わった）に残り続ける。
 	// reconciler.listDesired が effective.skip として除外して mirakc に同期しない
 	// （＝ Rokuban は実際には録らない）のと同じ判定を runShadowDiff もしないと、
 	// EPGStation 側に対応する予約があるとき Both（一致）に誤分類されてしまう

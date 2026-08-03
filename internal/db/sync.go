@@ -9,18 +9,20 @@ import (
 // SyncCandidate は ListReservationsForSyncEvaluation の 1 行を、そこから解決した
 // 実効オプションと skip 判定に組み合わせたもの。
 //
-// クエリ名が約束するのは「同期対象の候補（orphaned_at IS NULL）」までで、
-// effective.skip による絞り込みは含まない。以前はこの 2 段目を呼び出し元が
-// 自前で db.EffectiveOptions を呼んで書いており、shadow-diff がその移植を
-// 忘れたことで、Rokuban が録らない予約を EPGStation と「一致」と誤報告する
-// 見逃しが起きた（issue #54）。この型と EvaluateSyncCandidates が 2 段目を
-// 1 か所にまとめる。
+// クエリ名が約束するのは「同期対象の候補」までで、effective.skip による
+// 絞り込みは含まない。以前はこの 2 段目を呼び出し元が自前で
+// db.EffectiveOptions を呼んで書いており、shadow-diff がその移植を忘れたことで、
+// Rokuban が録らない予約を EPGStation と「一致」と誤報告する見逃しが起きた
+// （issue #54）。この型と EvaluateSyncCandidates が 2 段目を 1 か所にまとめる。
 //
 // Reservation と Snapshot を分けて持つのは #27 で番組の事実のスナップショット
 // （title / 開始時刻 / 尺 / チャンネル識別）が reservations から program_snapshots
 // に抽出されたため。sqlcgen.Reservation はもう ruler の 1 パスの導出出力
-// （id / site / program_id / rule_id / base / dedup 根拠 / orphaned_at /
-// timestamps）だけを持つ（CLAUDE.md 不変条件 12）。
+// （id / site / program_id / rule_id / base / dedup 根拠 / timestamps）だけを
+// 持つ（CLAUDE.md 不変条件 12）。「番組終了後に schedule が観測されなかった」
+// という観測は一時 orphaned_at 列を経たが、issue #98 で recordings の
+// 試行行に移設され orphaned_at 自体も廃止された。この型はもともと
+// orphaned_at を読んでいなかったので影響を受けない。
 type SyncCandidate struct {
 	// Reservation は予約行そのもの。
 	Reservation sqlcgen.Reservation
@@ -43,7 +45,8 @@ type SyncCandidate struct {
 // db.EffectiveOptions に通し、(予約行, スナップショット, 実効オプション, skip 判定)
 // の組にして返す。
 //
-// SQL 側は orphaned_at IS NULL までしか絞っていない（同期対象の「候補」）。
+// SQL 側は「候補」までしか絞っていない（issue #98 で never-scheduled
+// 除外に置き換わった。internal/db/queries/reservations.sql のコメント参照）。
 // 「同期対象か」を最終的に決める effective.skip の絞り込みは、呼び出し元が
 // この関数の結果の Skipped で行う。呼び出し元が素の
 // ListReservationsForSyncEvaluation の結果だけを見て自前で絞り込みを再実装すると、

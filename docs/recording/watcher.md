@@ -45,7 +45,7 @@ ruler / reconciler は「作成・更新イベント」というヒントを同�
 実装（M2-7、`reconciler.detectStartDelays`）:
 
 - 観測の有無は **`recordings.started_at`** で見る（watcher が mirakc の record から書く）。`recordings` 行そのものが無い場合も「観測なし」
-- **検出窓は `開始時刻 + 猶予 < now() < 終了時刻`。** 終了時刻を過ぎた予約は `markOrphaned` の領分で、ここで拾い続けると**終わった番組についてアラートが鳴り止まなくなる**。開始遅延は「まだ間に合う可能性がある」時間帯の話である
+- **検出窓は `開始時刻 + 猶予 < now() < 終了時刻`。** 終了時刻を過ぎた予約は `recordNeverScheduled`（issue #98。旧 `markOrphaned`）の領分で、ここで拾い続けると**終わった番組についてアラートが鳴り止まなくなる**。開始遅延は「まだ間に合う可能性がある」時間帯の話である
 - 猶予（`reconciler.start_delay_grace`、既定 3 分）は開始直後の SSE 到達と watcher 処理の遅れを誤検知しないためのもの。ゼロにすると毎回誤検知する
 - `effective.skip` の予約と `orphaned` は対象外（前者は始まらないのが正常、後者は既に「録れなかった」とマークされている）
 - **DB に新しい状態を持たせない。** 毎パス再計算できる導出値なので `rokuban_reconcile_start_delayed{site}` ゲージ 1 つで表す（不変条件 5）。`quality_events` には書かない --- それは `recordings` の列で、録画が始まっていない番組には行が無いことがある（§3.2「DELETE 成功 → POST 失敗」と同じ制約）

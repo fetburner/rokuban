@@ -53,6 +53,30 @@ INSERT INTO reservations (site, program_id) VALUES ('default', $1) RETURNING id`
 	return id
 }
 
+// seedNeverScheduledRecording は reconciler.recordNeverScheduled（issue #98）が
+// 実際に書く recordings 行を模す --- status='failed' + quality_events に
+// recording.never-scheduled のマーカー。GetProgramOverlaps 等、この行の
+// 存在に依存する API 層の挙動を確認するための直接 INSERT（reconciler パスは
+// 回さない）。
+func seedNeverScheduledRecording(
+	t *testing.T, pool *pgxpool.Pool, ctx context.Context,
+	reservationID int64, site string, networkID, serviceID, eventID int32,
+	serviceName, channelType, channel, title string,
+	startAt time.Time, duration time.Duration,
+) {
+	t.Helper()
+	qe := fmt.Sprintf(`[{"at":%q,"event":"recording.never-scheduled","reason":{}}]`, time.Now().Format(time.RFC3339Nano))
+	if _, err := pool.Exec(ctx, `
+INSERT INTO recordings (
+    reservation_id, source, site, network_id, service_id, event_id, service_name,
+    channel_type, channel, title, program_start_at, program_duration_ms, status, quality_events
+) VALUES ($1, 'manual', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'failed', $12::jsonb)`,
+		reservationID, site, networkID, serviceID, eventID, serviceName, channelType, channel, title,
+		startAt, duration.Milliseconds(), qe); err != nil {
+		t.Fatalf("seeding never-scheduled recording: %v", err)
+	}
+}
+
 // 重なる予約（同時間帯に別の予約がある）は件数に数え、重ならない予約
 // （時間がずれている）は数えない。
 func TestGetProgramOverlaps_CountsOverlapping(t *testing.T) {
@@ -135,9 +159,16 @@ func TestGetProgramOverlaps_ExcludesSelf(t *testing.T) {
 	}
 }
 
-// orphaned_at が非 NULL の予約（番組が終了して録れなかったもの）は重なりの
-// 相手にならない。
-func TestGetProgramOverlaps_ExcludesOrphaned(t *testing.T) {
+// 予約に紐づく never-scheduled の recordings 行（issue #98。「番組終了時点で
+// 捕獲の試みが一度も記録されなかった」という reconciler 自身の観測）がある
+// 予約は重なりの相手にならない。
+//
+// 旧テスト（TestGetProgramOverlaps_ExcludesOrphaned）は reservations.orphaned_at
+// を直接 UPDATE して「orphaned」を模していたが、#98 でその列自体が廃止され、
+// 観測は recordings の試行行に移った。ここでは reconciler.recordNeverScheduled
+// が実際に書く形（status='failed' + quality_events に
+// recording.never-scheduled）をそのまま模す。
+func TestGetProgramOverlaps_ExcludesNeverScheduled(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	srv := newAPIServer(t, pool)
@@ -145,16 +176,10 @@ func TestGetProgramOverlaps_ExcludesOrphaned(t *testing.T) {
 	base := time.Now().Truncate(time.Hour).Add(24 * time.Hour)
 	seedEpgService(t, pool, 32678, 5168, 8, "テスト局", "27")
 	seedEpgProgram(t, pool, 230, 32678, 5168, 1, "対象番組", base, false)
-	seedEpgProgram(t, pool, 231, 32678, 5168, 2, "orphan になる番組", base.Add(30*time.Minute), false)
+	seedEpgProgram(t, pool, 231, 32678, 5168, 2, "never-scheduled になる番組", base.Add(30*time.Minute), false)
 
-	orphaned := reserveViaAPI(t, srv.URL, pool, ctx, 231)
-
-	// MarkReservationOrphaned は :execrows になった（internal/reconciler の
-	// markOrphaned が実際に更新できた行数をログ出力の可否に使うため）。
-	// この呼び出しは常に対象行があるので rows は捨てて良い。
-	if _, err := sqlcgen.New(pool).MarkReservationOrphaned(ctx, orphaned); err != nil {
-		t.Fatalf("marking reservation orphaned: %v", err)
-	}
+	neverScheduledResID := reserveViaAPI(t, srv.URL, pool, ctx, 231)
+	seedNeverScheduledRecording(t, pool, ctx, neverScheduledResID, "default", 32678, 5168, 2, "テスト局", "GR", "27", "never-scheduled になる番組", base.Add(30*time.Minute), time.Hour)
 
 	var got ProgramOverlaps
 	resp := getJSON(t, overlapsURL(srv.URL, 230), &got)
@@ -162,7 +187,7 @@ func TestGetProgramOverlaps_ExcludesOrphaned(t *testing.T) {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
 	if got.Count != 0 {
-		t.Errorf("count = %d, want 0 (orphaned な予約は数えない): %+v", got.Count, got.Reservations)
+		t.Errorf("count = %d, want 0 (never-scheduled な予約は数えない): %+v", got.Count, got.Reservations)
 	}
 }
 

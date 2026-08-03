@@ -26,37 +26,59 @@ VALUES ($1, $2, $3, $4, $5, $6)`, testSite, index, name, types, available, fault
 
 // seedReservation は program_snapshots と reservations に 1 行ずつ入れる。
 // base は ruler が載せる導出オプション。#27 で番組の事実のスナップショット
-// （title / 開始時刻 / 尺 / チャンネル識別）が program_snapshots に抽出され、
-// #28/#30 で state 列が orphaned_at に置き換わったため、state="orphaned" は
-// orphaned_at を立てる形でシミュレートする。
+// （title / 開始時刻 / 尺 / チャンネル識別）が program_snapshots に抽出された。
+//
+// event_id は他のテスト（TestLoad_ExcludesReservationsThatProduceNoSchedule の
+// 「番組が終了済み」ケース）が seedNeverScheduledRecording で recordings 行を
+// 作れるように、programID の下 5 桁から機械的に割り当てる（本番コードでの
+// programId 分解は禁止だが、テストフィクスチャの一意な ID 割り当てとしてのみ
+// 使う。internal/reconciler の createReservation ヘルパと同じ流儀）。
+// 返り値は作成した reservations.id。
 func seedReservation(
 	t *testing.T, pool *pgxpool.Pool,
-	programID int64, state, channelType, channel string,
+	programID int64, channelType, channel string,
 	startAt time.Time, duration time.Duration, base string,
-) {
+) int64 {
 	t.Helper()
 	if base == "" {
 		base = "{}"
 	}
 	ctx := context.Background()
+	eventID := int32(programID % 100000)
 	if _, err := pool.Exec(ctx, `
 INSERT INTO program_snapshots (
-  site, program_id, title, start_at, duration_ms, network_id, service_id, channel_type, channel
-) VALUES ($1, $2, 'テスト番組', $3, $4, 32678, 5168, $5, $6)`,
-		testSite, programID, startAt, duration.Milliseconds(), channelType, channel); err != nil {
+  site, program_id, title, start_at, duration_ms, network_id, service_id, channel_type, channel,
+  event_id, service_name
+) VALUES ($1, $2, 'テスト番組', $3, $4, 32678, 5168, $5, $6, $7, 'テスト局')`,
+		testSite, programID, startAt, duration.Milliseconds(), channelType, channel, eventID); err != nil {
 		t.Fatalf("inserting program_snapshot row: %v", err)
 	}
 
-	var orphanedAt *time.Time
-	if state == "orphaned" {
-		now := time.Now()
-		orphanedAt = &now
-	}
-	if _, err := pool.Exec(ctx, `
-INSERT INTO reservations (site, program_id, base, orphaned_at)
-VALUES ($1, $2, $3, $4)`,
-		testSite, programID, base, orphanedAt); err != nil {
+	var id int64
+	if err := pool.QueryRow(ctx, `
+INSERT INTO reservations (site, program_id, base)
+VALUES ($1, $2, $3) RETURNING id`,
+		testSite, programID, base).Scan(&id); err != nil {
 		t.Fatalf("inserting reservation row: %v", err)
+	}
+	return id
+}
+
+// seedNeverScheduledRecording は reconciler.recordNeverScheduled（issue #98）が
+// 実際に書く recordings 行を模す --- status='failed' + quality_events に
+// recording.never-scheduled のマーカー。ListCapacityDemand がこの行の存在を
+// 「schedule を作らない予約」として除外することを確認するための直接 INSERT。
+func seedNeverScheduledRecording(t *testing.T, pool *pgxpool.Pool, reservationID int64, networkID, serviceID, eventID int32) {
+	t.Helper()
+	ctx := context.Background()
+	qe := `[{"at":"2026-01-01T00:00:00Z","event":"recording.never-scheduled","reason":{}}]`
+	if _, err := pool.Exec(ctx, `
+INSERT INTO recordings (
+    reservation_id, source, site, network_id, service_id, event_id, service_name,
+    channel_type, channel, title, program_start_at, program_duration_ms, status, quality_events
+) VALUES ($1, 'manual', $2, $3, $4, $5, 'テスト局', 'GR', '25', 'テスト番組', now(), 1800000, 'failed', $6::jsonb)`,
+		reservationID, testSite, networkID, serviceID, eventID, qe); err != nil {
+		t.Fatalf("seeding never-scheduled recording: %v", err)
 	}
 }
 
@@ -94,8 +116,8 @@ func TestLoad_ReportsOverage(t *testing.T) {
 	start := time.Now().Truncate(time.Hour).Add(24 * time.Hour)
 
 	seedTuner(t, pool, 0, "PX-S1UD_T1", []string{"GR"}, true, false)
-	seedReservation(t, pool, 100, "active", "GR", "27", start, time.Hour, "")
-	seedReservation(t, pool, 101, "active", "GR", "25", start, time.Hour, "")
+	seedReservation(t, pool, 100, "GR", "27", start, time.Hour, "")
+	seedReservation(t, pool, 101, "GR", "25", start, time.Hour, "")
 
 	overages := loadOverages(t, pool)
 	if len(overages) != 1 {
@@ -133,21 +155,25 @@ func TestLoad_ExcludesReservationsThatProduceNoSchedule(t *testing.T) {
 		seed func(t *testing.T, pool *pgxpool.Pool, start time.Time)
 	}{
 		{
-			name: "state = orphaned",
+			// 旧「state = orphaned」ケース。issue #98 で orphaned_at 列が
+			// 廃止されたため、reconciler.recordNeverScheduled が実際に書く形
+			// （recordings に never-scheduled 行がある）で模す。
+			name: "never-scheduled の recordings 行がある",
 			seed: func(t *testing.T, pool *pgxpool.Pool, start time.Time) {
-				seedReservation(t, pool, 101, "orphaned", "GR", "25", start, duration, "")
+				resID := seedReservation(t, pool, 101, "GR", "25", start, duration, "")
+				seedNeverScheduledRecording(t, pool, resID, 32678, 5168, int32(101%100000))
 			},
 		},
 		{
 			name: "base.skip = true",
 			seed: func(t *testing.T, pool *pgxpool.Pool, start time.Time) {
-				seedReservation(t, pool, 101, "active", "GR", "25", start, duration, `{"skip":true}`)
+				seedReservation(t, pool, 101, "GR", "25", start, duration, `{"skip":true}`)
 			},
 		},
 		{
 			name: "overrides.skip = true",
 			seed: func(t *testing.T, pool *pgxpool.Pool, start time.Time) {
-				seedReservation(t, pool, 101, "active", "GR", "25", start, duration, "")
+				seedReservation(t, pool, 101, "GR", "25", start, duration, "")
 				if _, err := sqlcgen.New(pool).UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
 					Site: testSite, ProgramID: 101, Overrides: json.RawMessage(`{"skip":true}`),
 				}); err != nil {
@@ -158,7 +184,7 @@ func TestLoad_ExcludesReservationsThatProduceNoSchedule(t *testing.T) {
 		{
 			name: "intent action = skip",
 			seed: func(t *testing.T, pool *pgxpool.Pool, start time.Time) {
-				seedReservation(t, pool, 101, "active", "GR", "25", start, duration, "")
+				seedReservation(t, pool, 101, "GR", "25", start, duration, "")
 				if _, err := sqlcgen.New(pool).UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
 					Site: testSite, ProgramID: 101, Action: "skip",
 				}); err != nil {
@@ -186,7 +212,7 @@ func TestLoad_ExcludesReservationsThatProduceNoSchedule(t *testing.T) {
 			start := time.Now().Truncate(time.Hour).Add(24 * time.Hour)
 
 			seedTuner(t, pool, 0, "PX-S1UD_T1", []string{"GR"}, true, false)
-			seedReservation(t, pool, 100, "active", "GR", "27", start, duration, "")
+			seedReservation(t, pool, 100, "GR", "27", start, duration, "")
 			tc.seed(t, pool, start)
 
 			if overages := loadOverages(t, pool); len(overages) != 0 {
@@ -203,8 +229,8 @@ func TestLoad_IntentRecordBeatsBaseSkip(t *testing.T) {
 	start := time.Now().Truncate(time.Hour).Add(24 * time.Hour)
 
 	seedTuner(t, pool, 0, "PX-S1UD_T1", []string{"GR"}, true, false)
-	seedReservation(t, pool, 100, "active", "GR", "27", start, time.Hour, "")
-	seedReservation(t, pool, 101, "active", "GR", "25", start, time.Hour, `{"skip":true}`)
+	seedReservation(t, pool, 100, "GR", "27", start, time.Hour, "")
+	seedReservation(t, pool, 101, "GR", "25", start, time.Hour, `{"skip":true}`)
 	if _, err := sqlcgen.New(pool).UpsertProgramIntent(context.Background(), sqlcgen.UpsertProgramIntentParams{
 		Site: testSite, ProgramID: 101, Action: "record",
 	}); err != nil {
@@ -234,8 +260,8 @@ func TestLoad_TunerHealthFromProjection(t *testing.T) {
 
 			seedTuner(t, pool, 0, "PX-S1UD_T1", []string{"GR"}, true, false)
 			seedTuner(t, pool, 1, "PX-S1UD_T2", []string{"GR"}, tc.available, tc.fault)
-			seedReservation(t, pool, 100, "active", "GR", "27", start, time.Hour, "")
-			seedReservation(t, pool, 101, "active", "GR", "25", start, time.Hour, "")
+			seedReservation(t, pool, 100, "GR", "27", start, time.Hour, "")
+			seedReservation(t, pool, 101, "GR", "25", start, time.Hour, "")
 
 			if got := loadOverages(t, pool); len(got) != tc.wantOverages {
 				t.Errorf("overages = %+v, want %d", got, tc.wantOverages)
@@ -249,8 +275,8 @@ func TestLoad_NoClaimWithoutTunerProjection(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	start := time.Now().Truncate(time.Hour).Add(24 * time.Hour)
 
-	seedReservation(t, pool, 100, "active", "GR", "27", start, time.Hour, "")
-	seedReservation(t, pool, 101, "active", "GR", "25", start, time.Hour, "")
+	seedReservation(t, pool, 100, "GR", "27", start, time.Hour, "")
+	seedReservation(t, pool, 101, "GR", "25", start, time.Hour, "")
 
 	if overages := loadOverages(t, pool); len(overages) != 0 {
 		t.Errorf("overages = %+v, want none (tuner_sync が空なら判定しない)", overages)
@@ -272,8 +298,8 @@ func TestLoad_ReductionThroughProjection(t *testing.T) {
 
 	seedTuner(t, pool, 0, "PX-S1UD_T1", []string{"GR"}, true, false)
 	seedTuner(t, pool, 1, "PX-W3U4_T1", []string{"GR", "BS"}, true, false)
-	seedReservation(t, pool, 100, "active", "GR", "27", start, time.Hour, "")
-	seedReservation(t, pool, 101, "active", "BS", "BS15_0", start, time.Hour, "")
+	seedReservation(t, pool, 100, "GR", "27", start, time.Hour, "")
+	seedReservation(t, pool, 101, "BS", "BS15_0", start, time.Hour, "")
 
 	// GR 1 + BS 1 は収まる（T2→BS, T1→GR）。
 	if overages := loadOverages(t, pool); len(overages) != 0 {
@@ -281,7 +307,7 @@ func TestLoad_ReductionThroughProjection(t *testing.T) {
 	}
 
 	// BS を 1 つ足すと {BS} が破れる。
-	seedReservation(t, pool, 102, "active", "BS", "BS03_1", start, time.Hour, "")
+	seedReservation(t, pool, 102, "BS", "BS03_1", start, time.Hour, "")
 	overages := loadOverages(t, pool)
 	if len(overages) != 1 {
 		t.Fatalf("overages = %+v, want 1", overages)
@@ -302,8 +328,8 @@ func TestLoad_DemandWindowFromDuration(t *testing.T) {
 
 	seedTuner(t, pool, 0, "PX-S1UD_T1", []string{"GR"}, true, false)
 	// 27ch は 60 分、25ch は 30 分遅れて 60 分。重なりは 30..60 分。
-	seedReservation(t, pool, 100, "active", "GR", "27", start, time.Hour, "")
-	seedReservation(t, pool, 101, "active", "GR", "25", start.Add(30*time.Minute), time.Hour, "")
+	seedReservation(t, pool, 100, "GR", "27", start, time.Hour, "")
+	seedReservation(t, pool, 101, "GR", "25", start.Add(30*time.Minute), time.Hour, "")
 
 	overages := loadOverages(t, pool)
 	if len(overages) != 1 {

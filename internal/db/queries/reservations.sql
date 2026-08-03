@@ -31,16 +31,62 @@ RETURNING *;
 -- にあり、予約が存在しても意図・上書きのどちらかしかない（あるいはどちらも
 -- 無い）ことがあるので両方 LEFT JOIN する。番組スナップショットは FK が
 -- あるので必ず存在する（INNER JOIN）。
+--
+-- never_recorded は issue #98 で orphaned_at の代わりに導出する列（読むたびに
+-- 評価。CLAUDE.md 不変条件 9）。
+--
+-- 述語は 3 つの条件の積で、それぞれ理由が違う:
+--
+--   1. **放送イベントで引く**（予約 id ではない）。reservations.id は ruler の
+--      導出削除・再実体化で変わる不安定な値で、recordings.reservation_id は
+--      ON DELETE SET NULL。予約 id で引くと予約が作り直された瞬間に表示が
+--      「録れた」に戻る（不変条件 9 の identity。#53 / #99 と同じ話）
+--   2. **never-scheduled マーカーに限る**。mirakc 由来の途中失敗
+--      （handleRecordingFailed が作る failed 行）まで含めると、放送中の番組が
+--      mirakc の再スケジュール待ちの間に「録れなかった」と表示される ---
+--      旧 orphaned_at は「番組終了かつ schedule 非観測」でしか立たなかったので
+--      これは退行にあたる。失敗そのものは録画一覧（recordings）に見えている
+--   3. **live な行に限る**（deleted_at / superseded_at が NULL）。後から本物の
+--      record が着地すると never-scheduled 行は supersede される（#129 /
+--      #143 の「本物の record が推論に必ず勝つ」）ので、この条件があるだけで
+--      「録れたのに orphaned のまま」（#59）が構造的に消える
 -- name: GetReservationFull :one
-SELECT sqlc.embed(r), sqlc.embed(s), i.action AS intent_action, o.overrides AS overrides
+SELECT sqlc.embed(r), sqlc.embed(s), i.action AS intent_action, o.overrides AS overrides,
+       EXISTS (
+           SELECT 1 FROM recordings rec
+           WHERE rec.site = r.site
+             AND rec.network_id = s.network_id
+             AND rec.service_id = s.service_id
+             AND rec.event_id = s.event_id
+             AND rec.status = 'failed'
+             AND rec.deleted_at IS NULL AND rec.superseded_at IS NULL
+             AND EXISTS (
+                 SELECT 1 FROM jsonb_array_elements(rec.quality_events) qe
+                 WHERE qe->>'event' = 'recording.never-scheduled'
+             )
+       ) AS never_recorded
 FROM reservations r
 JOIN program_snapshots s ON s.site = r.site AND s.program_id = r.program_id
 LEFT JOIN program_intents i ON i.site = r.site AND i.program_id = r.program_id
 LEFT JOIN program_overrides o ON o.site = r.site AND o.program_id = r.program_id
 WHERE r.id = $1;
 
+-- never_recorded は GetReservationFull と同じ導出（コメント参照）。
 -- name: ListReservationsBySite :many
-SELECT sqlc.embed(r), sqlc.embed(s), i.action AS intent_action, o.overrides AS overrides
+SELECT sqlc.embed(r), sqlc.embed(s), i.action AS intent_action, o.overrides AS overrides,
+       EXISTS (
+           SELECT 1 FROM recordings rec
+           WHERE rec.site = r.site
+             AND rec.network_id = s.network_id
+             AND rec.service_id = s.service_id
+             AND rec.event_id = s.event_id
+             AND rec.status = 'failed'
+             AND rec.deleted_at IS NULL AND rec.superseded_at IS NULL
+             AND EXISTS (
+                 SELECT 1 FROM jsonb_array_elements(rec.quality_events) qe
+                 WHERE qe->>'event' = 'recording.never-scheduled'
+             )
+       ) AS never_recorded
 FROM reservations r
 JOIN program_snapshots s ON s.site = r.site AND s.program_id = r.program_id
 LEFT JOIN program_intents i ON i.site = r.site AND i.program_id = r.program_id
@@ -48,51 +94,75 @@ LEFT JOIN program_overrides o ON o.site = r.site AND o.program_id = r.program_id
 WHERE r.site = $1
 ORDER BY s.start_at;
 
--- 同期対象の「候補」を返すクエリ（issue #54）。ここで絞っているのは
--- orphaned_at IS NULL だけで、それ以上のことはしていない（#28/#30 で
--- state <> 'orphaned' から置き換え）。orphaned だけを除外してよい理由は
--- docs/schema.md §3「state を『mirakc への同期対象か』のフィルタに使っては
--- ならない」、docs/recording.md §4.3: 番組が終了しているので schedule を
--- 作る意味がない。active/detached はどちらも「実質 manual として動く」ことが
--- あるため候補に含める。旧名 ListActiveReservationsBySite は state='active' で
--- しか絞っておらず detached の予約に schedule が作られないバグの原因だった
--- （M2-4 で修正）。
+-- 同期対象の「候補」を返すクエリ（issue #54）。
 --
--- **「同期対象か」を最終的に決めるのは effective.skip（base + overrides +
--- program_intents.action の合成）であり、この行だけでは絞り切れていない。**
--- 絞り込みは呼び出し元が db.EvaluateSyncCandidates（internal/db/sync.go）に
--- 通して行う。旧名 ListSyncableReservationsBySite は「もう絞ってある」と
--- 約束してしまっていた。その約束を信じて shadow-diff（cmd/rokuban/shadowdiff.go）
--- の書き手は effective.skip の絞り込みを移植し忘れ、M2-6 の重複排除が
--- base.skip=true を立てた予約を「EPGStation と一致（Both）」と誤報告する
--- 見逃しが M2 の出口基準の測定器に入り込んだ（issue #54）。同じ間違いを
--- 繰り返さないため、クエリ名には「候補」であることだけを約束させる。
+-- **除外条件は issue #98 で orphaned_at IS NULL から書き換えた。** 旧実装は
+-- reconciler.markOrphaned が「番組終了後に schedule が観測されなかった」
+-- という不可逆な観測を reservations.orphaned_at という列に直接書いており、
+-- それを次パス以降の除外フィルタに使っていた。#98 の決定でこの観測は
+-- recordings の試行行（status='failed' + quality_events に
+-- recording.never-scheduled）に移設され、orphaned_at 列自体が無くなった
+-- （00025）。
 --
--- 番組の開始時刻・尺（reconciler の開始遅延検出・orphaned 化判定に使う）は
--- program_snapshots に移設された（#27）ので JOIN する。FK があるので必ず存在する。
+-- 除外条件を「その予約に既に never-scheduled の recordings 行がある」に
+-- 置き換える。never-scheduled という特定の quality_events マーカーだけを
+-- 見て、status='failed' の行全般では絞らないのが要点 ---
+-- handleRecordingFailed（internal/watcher）が作る「録画開始後に mirakc が
+-- 失敗を報告した」failed 行まで含めて除外すると、mirakc が schedule を
+-- 消した後にレコンサイラが再作成を試みる既存の再試行経路（#98 とは無関係の
+-- 挙動）を壊してしまう。never-scheduled は「番組終了かつ schedule 非観測」
+-- でしか作られない一方向の事実なので、これだけを除外条件にすれば
+-- 再試行経路には触れない。
+--
+-- 「番組が既に終了しているか」で直接絞らない（now() との比較にしない）
+-- 理由: reconciler.programEnded が実際の POST/文言判定を毎パス評価し直す
+-- ので、ここでの事前絞り込みは効率のためだけに存在してよい。だが
+-- now() 比較を SQL に持ち込むと、固定時刻を使うテスト（過去に書かれた
+-- fixture が「将来」のつもりで書いた日時が実行時点で過去になっている等。
+-- cmd/rokuban/shadowdiff_test.go で実例あり）が経過時間に依存して壊れる。
+-- recordings の存在という「reconciler 自身が過去に書いた事実」を条件にすれば
+-- テストの実行時刻に依存しない（reconciler が実際に never-scheduled 行を
+-- 作らない限り除外されない）。
+--
+-- 旧名 ListSyncableReservationsBySite は「もう絞ってある」と約束してしまって
+-- いた。その約束を信じて shadow-diff（cmd/rokuban/shadowdiff.go）の書き手は
+-- effective.skip の絞り込みを移植し忘れ、M2-6 の重複排除が base.skip=true を
+-- 立てた予約を「EPGStation と一致（Both）」と誤報告する見逃しが M2 の出口
+-- 基準の測定器に入り込んだ（issue #54）。「同期対象か」を最終的に決めるのは
+-- effective.skip（base + overrides + program_intents.action の合成）であり、
+-- この行だけでは絞り切れていない。絞り込みは呼び出し元が
+-- db.EvaluateSyncCandidates（internal/db/sync.go）に通して行う。
+--
+-- 番組の開始時刻・尺（reconciler の開始遅延検出に使う）は program_snapshots に
+-- 移設された（#27）ので JOIN する。FK があるので必ず存在する。
 -- name: ListReservationsForSyncEvaluation :many
 SELECT sqlc.embed(r), sqlc.embed(s), i.action AS intent_action, o.overrides AS overrides
 FROM reservations r
 JOIN program_snapshots s ON s.site = r.site AND s.program_id = r.program_id
 LEFT JOIN program_intents i ON i.site = r.site AND i.program_id = r.program_id
 LEFT JOIN program_overrides o ON o.site = r.site AND o.program_id = r.program_id
-WHERE r.site = $1 AND r.orphaned_at IS NULL
+WHERE r.site = $1
+  AND NOT EXISTS (
+      SELECT 1 FROM recordings rec
+      -- 宛先のキーは**放送イベント**であって予約 id ではない。
+      -- reservations.id は ruler の導出削除・再実体化で変わる不安定な値で
+      -- （#53 が mirakc の tag を program:{programId} に移した理由。#99 も同じ）、
+      -- recordings.reservation_id は ON DELETE SET NULL である。予約 id で
+      -- 引くと、EPG フリッカーやルール編集で予約行が作り直された瞬間に
+      -- 「never-scheduled 行が無い」ことになり、終了済み予約が毎パス desired に
+      -- 戻り続ける（CLAUDE.md 不変条件 9 の identity: 導出器が作るキーを
+      -- 宛先にしない）。
+      WHERE rec.site = r.site
+        AND rec.network_id = s.network_id
+        AND rec.service_id = s.service_id
+        AND rec.event_id = s.event_id
+        AND rec.status = 'failed'
+        AND EXISTS (
+            SELECT 1 FROM jsonb_array_elements(rec.quality_events) qe
+            WHERE qe->>'event' = 'recording.never-scheduled'
+        )
+  )
 ORDER BY s.start_at;
-
--- 番組終了後に schedule が観測されなかった予約を orphaned にする
--- （reconciler.markOrphaned から呼ばれる）。かつては state = 'active' でしか
--- 絞らず detached の予約が対象から漏れるバグがあった（#30 症状 2）。
--- orphaned_at は不可逆な観測で、書き手はここ（reconciler）だけ --- ruler は
--- 一切上書きしない（CLAUDE.md 不変条件 9）。除外してよいのは既に orphaned な
--- 行への再更新だけ（updated_at を無駄に進めない）なので active/detached の
--- 両方（= orphaned_at IS NULL の行すべて）を対象にする。
--- :execrows にしてあるのは、呼び出し側（reconciler.markOrphaned）が「実際に
--- 更新できたか」をログ出力の可否に使うため（0 行のときに「marked orphaned」と
--- ログに出ると実態と食い違う）。
--- name: MarkReservationOrphaned :execrows
-UPDATE reservations
-SET orphaned_at = now(), updated_at = now()
-WHERE id = $1 AND orphaned_at IS NULL;
 
 -- 番組終了後の GC は DeleteEndedProgramSnapshots（internal/db/queries/program_snapshots.sql）
 -- 1 本に集約された（#27）。reservations は program_snapshots への FK が

@@ -58,10 +58,11 @@ type upsertResult struct {
 // state 列が reservations から抽出・撤去されたため、resolved CTE から
 // state の CASE（前パスの rule_id を見ていたため、ルールを削除した経路では
 // detached に決して遷移しなかった #30 症状 1 の本体）と has_projection による
-// 分岐が両方消えた。orphaned_at は reconciler だけが書く不可逆な観測なので、
-// この upsert の INSERT/UPDATE 列に含めない（ruler は一切上書きしない。
-// INSERT 時は列指定していないので NULL のデフォルトが入り、UPDATE 時は
-// SET 句に無いので既存値がそのまま残る）。
+// 分岐が両方消えた。「番組終了後に schedule が観測されなかった」という観測は
+// 一時 reservations.orphaned_at（reconciler だけが書く不可逆な観測）を経たが、
+// issue #98 で recordings の試行行に移設され orphaned_at 列自体も廃止された。
+// ruler はこの観測に一切関与しない（recordings にも一切書かない）ので、
+// この upsert の INSERT/UPDATE 列にはそもそも登場しない。
 const upsertReservationsFromPassSQL = `
 WITH input AS (
     SELECT *

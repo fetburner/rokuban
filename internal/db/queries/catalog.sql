@@ -171,13 +171,16 @@ INSERT INTO rule_sites (rule_id, site)
 VALUES ($1, $2)
 ON CONFLICT (rule_id, site) DO NOTHING;
 
+-- event_id / service_name は issue #98 で追加（00025）。never-scheduled 行
+-- （recordings）の識別・表示名に使うので、他のチャンネル識別列と同じく
+-- catalog の往復（export/rescue）で失ってはならない。
 -- name: CatalogUpsertProgramSnapshot :exec
 INSERT INTO program_snapshots (
     site, program_id, title, start_at, duration_ms,
-    network_id, service_id, channel_type, channel, updated_at
+    network_id, service_id, channel_type, channel, event_id, service_name, updated_at
 ) VALUES (
     $1, $2, $3, $4, $5,
-    $6, $7, $8, $9, $10
+    $6, $7, $8, $9, $10, $11, $12
 )
 ON CONFLICT (site, program_id) DO UPDATE SET
     title        = EXCLUDED.title,
@@ -187,6 +190,8 @@ ON CONFLICT (site, program_id) DO UPDATE SET
     service_id   = EXCLUDED.service_id,
     channel_type = EXCLUDED.channel_type,
     channel      = EXCLUDED.channel,
+    event_id     = EXCLUDED.event_id,
+    service_name = EXCLUDED.service_name,
     updated_at   = EXCLUDED.updated_at;
 
 -- name: CatalogUpsertProgramIntent :exec

@@ -165,10 +165,11 @@ func (r *Reconciler) RunPass(ctx context.Context) error {
 			// need-rescheduling で数秒後に failed にするだけで、recordings に
 			// content_length=0 の failed 行が残るだけ（issue #134 の実測:
 			// record_sync 46 件中 41 件が failed）。この予約は本パスの
-			// markOrphaned が orphaned_at を埋める（同じ programEnded 判定を
-			// 使うので食い違わない）ので、次パス以降は listDesired
-			// （ListReservationsForSyncEvaluation の orphaned_at IS NULL 絞り
-			// 込み）から外れて二度と create ループの対象にならない。
+			// recordNeverScheduled が recordings に never-scheduled 行を作る
+			// （同じ programEnded 判定を使うので食い違わない）ので、次パス
+			// 以降は listDesired（ListReservationsForSyncEvaluation の
+			// never-scheduled 除外）から外れて二度と create ループの対象に
+			// ならない（issue #98。旧実装は orphaned_at IS NULL で絞っていた）。
 			//
 			// stateGuarded / limitCarriedOver は複数パスにまたがって残留し
 			// うる持ち越しなので ReconcilePendingDiff で監視する価値があるが、
@@ -255,10 +256,11 @@ func (r *Reconciler) RunPass(ctx context.Context) error {
 
 	// now は作成ループと同じ瞬間を渡す（同じ式だけでなく同じ材料にする）。
 	// 別々に time.Now() を取ると、パス実行中に終了時刻を跨いだ番組が
-	// 「作成ループでは未終了 → POST」かつ「markOrphaned では終了 → orphaned」に
-	// なり、収束はするが issue #134 が消したい failed 行がちょうど 1 件出る。
-	if err := r.markOrphaned(ctx, reservations, schedules, now); err != nil {
-		slog.Error("reconciler: marking orphaned", "err", err)
+	// 「作成ループでは未終了 → POST」かつ「recordNeverScheduled では終了 →
+	// never-scheduled 行を作成」になり、収束はするが issue #134 が消したい
+	// failed 行がちょうど 1 件出る。
+	if err := r.recordNeverScheduled(ctx, reservations, schedules, now); err != nil {
+		slog.Error("reconciler: recording never-scheduled outcome", "err", err)
 	}
 
 	startDelayed, err := r.detectStartDelays(ctx, reservations)
@@ -426,12 +428,13 @@ type desiredReservation struct {
 
 // listDesired は mirakc への同期対象を返す。
 //
-// state（#28/#30 で orphaned_at に置き換わった導出値）ではなく effective.skip で
-// 絞る（docs/schema.md §3「state を『mirakc への同期対象か』のフィルタに使っては
-// ならない」、docs/recording.md §4.3）。除外してよいのは orphaned_at が非 NULL の
-// 行だけ（番組終了後に schedule が観測されなかった行で、番組が終わっているので
-// schedule を作る意味がない）。
-// ListReservationsForSyncEvaluation が orphaned_at IS NULL で絞るのはこのため —
+// state（#28/#30 で orphaned_at に、issue #98 で recordings の存在に置き換わった
+// 導出値）ではなく effective.skip で絞る（docs/schema.md §3「state を『mirakc
+// への同期対象か』のフィルタに使ってはならない」、docs/recording.md §4.3）。
+// 除外してよいのは「この予約について既に never-scheduled の recordings 行が
+// ある」行だけ（番組終了後に schedule が観測されなかったと既に判定済みで、
+// 番組が終わっているので schedule を作る意味がない）。
+// ListReservationsForSyncEvaluation がこの条件で絞るのはこのため —
 // 旧 ListActiveReservationsBySite は state = 'active' でしか絞っておらず、
 // detached（「実質 manual として動く」はず）の予約に schedule が作られない
 // バグの原因だった: 手動予約 → たまたまルールがマッチ（active, rule_id 付き）
@@ -736,16 +739,36 @@ func (r *Reconciler) recreateSchedule(ctx context.Context, d desiredReservation,
 	return nil
 }
 
-// markOrphaned は「番組終了後に schedule が観測されなかった」予約の
-// orphaned_at を埋める。now は RunPass の作成ループが使ったものをそのまま
-// 受け取る —— 判定式だけでなく判定の瞬間まで揃える（別々に取ると、パス中に
-// 終了時刻を跨いだ番組が POST されたうえで同じパスで orphaned になる）。
-// 終了判定は programEnded（RunPass の作成ループと共有）
-// で、schedule の非観測は今パスで observeSchedules した schedules をそのまま
-// 使う。境界がここと作成ループでずれると、同じ予約が「作らない」と「まだ
-// orphaned にしない」の間に落ちて mirakc への POST を撃ち続けるので、
-// programEnded 以外の場所で終了判定を書き下さないこと（issue #134）。
-func (r *Reconciler) markOrphaned(ctx context.Context, reservations []desiredReservation, schedules []mirakc.Schedule, now time.Time) error {
+// recordNeverScheduled は「番組終了後に schedule が観測されなかった」予約に
+// ついて、recordings に never-scheduled の試行行を作る（issue #98 の決定）。
+// reservations.orphaned_at という不可逆な列は廃止し、この観測は recordings の
+// 恒久行として持つ（CLAUDE.md 不変条件 12「表は行の寿命で割る」）。
+//
+// now は RunPass の作成ループが使ったものをそのまま受け取る —— 判定式だけで
+// なく判定の瞬間まで揃える（別々に取ると、パス中に終了時刻を跨いだ番組が
+// POST されたうえで同じパスで never-scheduled 行が作られる）。終了判定は
+// programEnded（RunPass の作成ループと共有）で、schedule の非観測は今パスで
+// observeSchedules した schedules をそのまま使う。境界がここと作成ループで
+// ずれると、同じ予約が「作らない」と「まだ never-scheduled にしない」の間に
+// 落ちて mirakc への POST を撃ち続けるので、programEnded 以外の場所で終了
+// 判定を書き下さないこと（issue #134）。
+//
+// 冪等性（CLAUDE.md 不変条件 5: レベルトリガー）は 2 重に担保される:
+//
+//  1. CreateNeverScheduledRecording 自身が ON CONFLICT ... DO NOTHING で、
+//     同一 active-event に既に生きている recordings 行（前パスで作った
+//     never-scheduled 行、または本物の record）があれば何もしない
+//  2. 前パスで作った never-scheduled 行がある予約は、次パスの
+//     ListReservationsForSyncEvaluation（listDesired の元クエリ）で既に
+//     除外されるので、reservations 自体がこの関数に渡ってこない
+//
+// (1) は「本物の record が推論に必ず勝つ」規則（issue #129 症状 2）の
+// 適用でもあり、これが #59（markOrphaned が recordings を見ないので成功
+// 録画も orphaned 扱いになる）を解消する ---
+// 書き込み条件が「その放送イベントに生きている recordings 行が無いこと」に
+// なり、条件を満たさなければ索引（recordings_unique_active_event）が
+// 二重に弾く。
+func (r *Reconciler) recordNeverScheduled(ctx context.Context, reservations []desiredReservation, schedules []mirakc.Schedule, now time.Time) error {
 	scheduledPrograms := make(map[int64]struct{}, len(schedules))
 	for _, s := range schedules {
 		scheduledPrograms[s.Program.ID] = struct{}{}
@@ -753,29 +776,97 @@ func (r *Reconciler) markOrphaned(ctx context.Context, reservations []desiredRes
 
 	q := sqlcgen.New(r.pool)
 	for _, d := range reservations {
-		res := d.res
-		if !programEnded(d.snap, now) {
+		res, snap := d.res, d.snap
+		if !programEnded(snap, now) {
 			continue
 		}
 		if _, scheduled := scheduledPrograms[res.ProgramID]; scheduled {
 			continue
 		}
-		rows, err := q.MarkReservationOrphaned(ctx, res.ID)
-		if err != nil {
-			return fmt.Errorf("marking reservation %d orphaned: %w", res.ID, err)
+
+		// チャンネル識別（network_id/service_id/event_id/channel_type/
+		// channel/service_name）が欠けている行は 00009 以前の残骸、または
+		// event_id/service_name が未対応だった頃（issue #98 より前）の
+		// program_snapshots 行。誤った推測で recordings 行を作るより、
+		// 同期対象から外してアラートする方が安全（resolveContentPath の
+		// service_id nil 判定と同じ安全側の判断）。
+		if snap.NetworkID == nil || snap.ServiceID == nil || snap.EventID == nil ||
+			snap.ChannelType == nil || snap.Channel == nil || snap.ServiceName == nil {
+			slog.Error("reconciler: cannot record never-scheduled outcome; program snapshot is missing channel identity",
+				"reservation_id", res.ID, "program_id", res.ProgramID)
+			continue
 		}
-		// :execrows なので実際に更新できた行数が分かる。0 行なら（他パスとの
-		// 競合で既に orphaned になっていた等）ログを出さない —— :exec のままだと
-		// 更新できていなくても「marked orphaned」と出てログが実態と食い違う。
+
+		source, err := db.DeriveRecordingSource(ctx, q, r.site, res.ProgramID, true)
+		if err != nil {
+			slog.Error("reconciler: deriving recording source for never-scheduled outcome",
+				"reservation_id", res.ID, "program_id", res.ProgramID, "err", err)
+			continue
+		}
+
+		qeJSON, err := neverScheduledQualityEvents(now, snap)
+		if err != nil {
+			slog.Error("reconciler: marshalling never-scheduled quality event",
+				"reservation_id", res.ID, "program_id", res.ProgramID, "err", err)
+			continue
+		}
+
+		rows, err := q.CreateNeverScheduledRecording(ctx, sqlcgen.CreateNeverScheduledRecordingParams{
+			ReservationID:     &res.ID,
+			RuleID:            res.RuleID,
+			Source:            source,
+			Site:              r.site,
+			NetworkID:         *snap.NetworkID,
+			ServiceID:         *snap.ServiceID,
+			EventID:           *snap.EventID,
+			ServiceName:       *snap.ServiceName,
+			ChannelType:       *snap.ChannelType,
+			Channel:           *snap.Channel,
+			Title:             snap.Title,
+			ProgramStartAt:    snap.StartAt,
+			ProgramDurationMs: snap.DurationMs,
+			QualityEvents:     qeJSON,
+		})
+		if err != nil {
+			return fmt.Errorf("recording never-scheduled outcome for reservation %d: %w", res.ID, err)
+		}
+		// :execrows なので実際に INSERT できたか（1）か、ON CONFLICT で
+		// 何もしなかったか（0）が分かる。0 行なら（他パスとの競合で既に
+		// 記録済み、または本物の record が先にその枠を占有している）ログを
+		// 出さない —— 出すと実態と食い違う。
 		if rows == 0 {
 			continue
 		}
-		slog.Info("reconciler: marked reservation orphaned (program ended)",
+		slog.Info("reconciler: recorded never-scheduled outcome (program ended without an observed schedule)",
 			"reservation_id", res.ID,
 			"program_id", res.ProgramID,
 		)
 	}
 	return nil
+}
+
+// neverScheduledQualityEvents は recordNeverScheduled が書く quality_events の
+// JSON 配列（要素 1 つ）を組み立てる。理由の内訳に番組の終了時刻を含めるのは
+// 「なぜ録れなかったかを説明可能にする」という docs/schema.md §5 の要求
+// （手動確認する人間が判断材料を持てるように）。
+func neverScheduledQualityEvents(now time.Time, snap sqlcgen.ProgramSnapshot) (json.RawMessage, error) {
+	programEndedAt := snap.StartAt.Add(time.Duration(snap.DurationMs) * time.Millisecond)
+	reason, err := json.Marshal(map[string]any{
+		"programEndedAt": programEndedAt,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshalling reason: %w", err)
+	}
+	qe := db.QualityEvent{
+		At:     now,
+		Event:  db.QualityEventNeverScheduled,
+		Reason: reason,
+	}
+	qeJSON, err := json.Marshal([]db.QualityEvent{qe})
+	if err != nil {
+		return nil, fmt.Errorf("marshalling quality events: %w", err)
+	}
+	return qeJSON, nil
 }
 
 // startDelayed は開始遅延検出器が検出した 1 件（ログ出力用の要約）。
