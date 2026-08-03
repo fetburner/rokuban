@@ -265,14 +265,32 @@ func (w *Watcher) createRecording(ctx context.Context, q *sqlcgen.Queries, recor
 		return 0, err
 	}
 
+	networkID := int32(record.Program.NetworkID)
+	serviceID := int32(record.Program.ServiceID)
+	eventID := int32(record.Program.EventID)
+
+	// 「本物の record が推論に必ず勝つ」（issue #98 の決定、issue #129 症状 2）:
+	// 同一 active-event に status='failed' の行が生きたまま残っていれば、続く
+	// CreateRecording の INSERT より前に superseded にして枠を明け渡させる。
+	// SupersedeFailedRecording / CreateRecording の doc コメント参照（1 つの
+	// クエリに詰め込まず 2 つの文に分けている理由も同所）。
+	if _, err := q.SupersedeFailedRecording(ctx, sqlcgen.SupersedeFailedRecordingParams{
+		Site:      w.site,
+		NetworkID: networkID,
+		ServiceID: serviceID,
+		EventID:   eventID,
+	}); err != nil {
+		return 0, fmt.Errorf("superseding failed recording for program %d: %w", record.Program.ID, err)
+	}
+
 	id, err := q.CreateRecording(ctx, sqlcgen.CreateRecordingParams{
 		ReservationID:     resID,
 		RuleID:            ruleID,
 		Source:            source,
 		Site:              w.site,
-		NetworkID:         int32(record.Program.NetworkID),
-		ServiceID:         int32(record.Program.ServiceID),
-		EventID:           int32(record.Program.EventID),
+		NetworkID:         networkID,
+		ServiceID:         serviceID,
+		EventID:           eventID,
 		ServiceName:       record.Service.Name,
 		ChannelType:       record.Service.Channel.Type,
 		Channel:           record.Service.Channel.Channel,
@@ -488,11 +506,18 @@ func (w *Watcher) handleRecordingFailed(ctx context.Context, data mirakc.Recordi
 
 	// CreateFailedRecording は :exec（ON CONFLICT 更新もあり）なので id は別途引く。
 	// 引けなくても本処理は成功済み。webhook だけ諦める。
+	//
+	// superseded_at IS NULL も条件に入れる（issue #129 症状 2）。CreateRecording が
+	// 同一 active-event の failed 行を superseded にした後も、その行は deleted_at が
+	// NULL のまま履歴として残るため、deleted_at だけで絞ると superseded 済みの
+	// 過去の failed 行と、いま CreateFailedRecording が更新した「生きている」行の
+	// 2 行がヒットしうる（ORDER BY が無いと QueryRow はどちらを返すか不定）。
+	// ON CONFLICT の対象（生きている行）と同じ述語に揃えることで一意に定まる。
 	var recordingID int64
 	if err := w.pool.QueryRow(ctx, `
 		SELECT id FROM recordings
 		WHERE site = $1 AND network_id = $2 AND service_id = $3 AND event_id = $4
-		  AND deleted_at IS NULL
+		  AND deleted_at IS NULL AND superseded_at IS NULL
 	`, w.site, networkID, serviceID, eventID).Scan(&recordingID); err != nil {
 		slog.Warn("webhook: looking up failed recording id",
 			"program_id", data.ProgramID, "err", err)

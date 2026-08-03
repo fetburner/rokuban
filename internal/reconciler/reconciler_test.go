@@ -1060,6 +1060,154 @@ func TestReconciler_MarksBothActiveAndDetachedReservationsOrphaned(t *testing.T)
 	}
 }
 
+// --- 作成ループの終了済み番組ガード（issue #134）---
+//
+// reconciler の作成ループは終了済み番組の予約にも createSchedule を呼んでいた
+// ため、mirakc が数秒で need-rescheduling として failed にし、recordings に
+// content_length=0 の failed 行を量産していた（実測: record_sync 46 件中 41
+// 件が failed）。ガードは markOrphaned と同じ式・同じ材料
+// （program_snapshots の StartAt + DurationMs と now の比較）を使う
+// programEnded で行い、境界（終了時刻ちょうどは「終了していない」側）も
+// markOrphaned に揃える。
+
+// 受け入れ基準: 終了時刻を過ぎた番組の予約には POST /api/recording/schedules
+// が呼ばれず、同じパスでその予約の orphaned_at が埋まること。
+func TestReconciler_EndedProgramNotScheduled(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	mock := newMockMirakc()
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+
+	mc := mirakc.NewClient(srv.URL, nil)
+	q := sqlcgen.New(pool)
+
+	// 開始 -2h、30分番組 → 終了は 90 分前。mirakc に対応する schedule も無い
+	// （mockMirakc は空で始まる）ので、ガードが無ければ create ループが
+	// createSchedule を呼ぶはずの状況を作る。
+	endedStartAt := time.Now().Add(-2 * time.Hour)
+	res := createReservation(t, ctx, q, 100000500019220, "終了済み番組", endedStartAt)
+
+	rec := reconciler.New("default", mc, pool, nil)
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
+
+	if n := countInt64(mock.getPostCalls(), res.ProgramID); n != 0 {
+		t.Errorf("POST /api/recording/schedules called %d times for an ended program, want 0", n)
+	}
+	if _, ok := mock.getSchedules()[res.ProgramID]; ok {
+		t.Error("ended program should not get a schedule created")
+	}
+	if got := getReservationOrphanedAt(t, ctx, pool, res.ID); got == nil {
+		t.Error("orphaned_at is nil, want non-nil " +
+			"(the same pass's markOrphaned must mark the ended reservation orphaned, " +
+			"using the same programEnded predicate as the create-loop guard)")
+	}
+}
+
+// 受け入れ基準（反転）: 放送中の番組・未来の番組では従来どおり POST される
+// こと。ガードの条件は「終了済み」だけで「開始済み」ではない —— mirakc は
+// 放送中の番組の schedule を受け付けて途中から録る（issue #134 の実測:
+// 23:10 開始の番組を 23:16:39 に予約 → 正常に録画継続、426MB 到達）。
+// 「開始済み」で切ると、ユーザーが放送中の番組を予約する経路が黙って壊れる。
+func TestReconciler_BroadcastingProgramStillScheduled(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	mock := newMockMirakc()
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+
+	mc := mirakc.NewClient(srv.URL, nil)
+	q := sqlcgen.New(pool)
+
+	// 開始 6 分前、30 分番組 → まだ 24 分残っている「放送中」の状態。
+	broadcastingStartAt := time.Now().Add(-6 * time.Minute)
+	res := createReservation(t, ctx, q, 100000500019221, "放送中番組", broadcastingStartAt)
+
+	rec := reconciler.New("default", mc, pool, nil)
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
+
+	if n := countInt64(mock.getPostCalls(), res.ProgramID); n != 1 {
+		t.Errorf("POST /api/recording/schedules called %d times for a broadcasting program, want 1", n)
+	}
+	if _, ok := mock.getSchedules()[res.ProgramID]; !ok {
+		t.Error("broadcasting program should still get a schedule created")
+	}
+	if got := getReservationOrphanedAt(t, ctx, pool, res.ID); got != nil {
+		t.Errorf("orphaned_at = %v, want nil (program is still broadcasting)", *got)
+	}
+}
+
+// 未来の番組（開始前）でも同様に POST されることを確認する
+// （TestReconciler_CreatesSchedule と重複する観点だが、この節の反転テストと
+// して programEnded ガードの境界を明示するために置く）。
+func TestReconciler_FutureProgramStillScheduled(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	mock := newMockMirakc()
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+
+	mc := mirakc.NewClient(srv.URL, nil)
+	q := sqlcgen.New(pool)
+
+	futureStartAt := time.Now().Add(1 * time.Hour)
+	res := createReservation(t, ctx, q, 100000500019222, "未来の番組", futureStartAt)
+
+	rec := reconciler.New("default", mc, pool, nil)
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
+
+	if n := countInt64(mock.getPostCalls(), res.ProgramID); n != 1 {
+		t.Errorf("POST /api/recording/schedules called %d times for a future program, want 1", n)
+	}
+	if got := getReservationOrphanedAt(t, ctx, pool, res.ID); got != nil {
+		t.Errorf("orphaned_at = %v, want nil (program has not started yet)", *got)
+	}
+}
+
+// スキップ件数のログ（stateGuarded / limitCarriedOver と同じ扱い）が出ること。
+func TestReconciler_LogsEndedProgramSkipCount(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	mock := newMockMirakc()
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+
+	mc := mirakc.NewClient(srv.URL, nil)
+	q := sqlcgen.New(pool)
+
+	endedStartAt := time.Now().Add(-2 * time.Hour)
+	createReservation(t, ctx, q, 100000500019223, "終了済み番組（ログ確認）", endedStartAt)
+
+	rec := reconciler.New("default", mc, pool, nil)
+
+	var logBuf bytes.Buffer
+	prevLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prevLogger) })
+
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
+
+	logText := logBuf.Bytes()
+	if !bytes.Contains(logText, []byte("level=INFO")) || !bytes.Contains(logText, []byte("program already ended")) {
+		t.Errorf("expected an INFO log about skipped ended-program create candidates, got:\n%s", logText)
+	}
+	if !bytes.Contains(logText, []byte("count=1")) {
+		t.Errorf("expected the skip log to report count=1, got:\n%s", logText)
+	}
+}
+
 // --- 全損シグネチャ・サーキットブレーカー（breaker.ReconcileTotalLoss、issue #24 M2-5）---
 //
 // 件数ベースの MaxDeletesPerPass は撤去した（reconciler からは ruler の導出削除・

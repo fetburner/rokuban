@@ -209,6 +209,53 @@ func insertProgramOverride(t *testing.T, pool *pgxpool.Pool, programID int64, pr
 	}
 }
 
+// insertTestFailedRecording は指定した active-event スロット（site, network_id,
+// service_id, event_id）に直接 status='failed' の recordings 行を作る
+// （issue #129 症状 2: この行が recordings_unique_active_event の枠を占有した
+// まま残っている状態を再現するのが目的で、handleRecordingFailed 経由の作られ方
+// 自体は TestHandleRecordingFailed_Idempotent 等で別に検証済み）。
+func insertTestFailedRecording(t *testing.T, pool *pgxpool.Pool, site string, reservationID *int64, networkID, serviceID, eventID int32) int64 {
+	t.Helper()
+	var id int64
+	err := pool.QueryRow(context.Background(), `
+		INSERT INTO recordings (
+			reservation_id, source, site,
+			network_id, service_id, event_id, service_name,
+			channel_type, channel, title,
+			is_free, program_start_at, program_duration_ms,
+			status
+		) VALUES (
+			$1, 'manual', $2,
+			$3, $4, $5, 'NHK総合',
+			'GR', '27', 'Failed Attempt',
+			true, now() - interval '1 hour', 180000,
+			'failed'
+		) RETURNING id`,
+		reservationID, site, networkID, serviceID, eventID,
+	).Scan(&id)
+	if err != nil {
+		t.Fatalf("creating failed recording fixture: %v", err)
+	}
+	return id
+}
+
+// insertTestMediaAsset は recordingID に紐づく original media_asset 行を 1 つ作る
+// （途中まで録れて failed になった行が実ファイルを持つケースを模す）。
+func insertTestMediaAsset(t *testing.T, pool *pgxpool.Pool, recordingID int64) int64 {
+	t.Helper()
+	var id int64
+	err := pool.QueryRow(context.Background(), `
+		INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes)
+		VALUES ($1, 'original', $2, 12345)
+		RETURNING id`,
+		recordingID, fmt.Sprintf("test/failed-%d.m2ts", recordingID),
+	).Scan(&id)
+	if err != nil {
+		t.Fatalf("creating media_asset fixture: %v", err)
+	}
+	return id
+}
+
 func testRecord(recordID string, programID int64, status string) mirakc.Record {
 	startAt := mirakc.Milliseconds(time.Now().Add(-1 * time.Hour))
 	recStart := mirakc.Milliseconds(time.Now().Add(-1 * time.Hour))
@@ -417,6 +464,297 @@ func TestProcessRecord_StatusNoDowngrade(t *testing.T) {
 	}
 	if recStatus != "finished" {
 		t.Errorf("recordings.status = %q, want %q (should not downgrade)", recStatus, "finished")
+	}
+}
+
+// TestProcessRecord_SupersedesFailedRecording は issue #129 症状 2 の本体を固定する:
+// 同一 active-event (site, network_id, service_id, event_id) に status='failed' の
+// 行が既に recordings_unique_active_event の枠を占有していても、後から来た成功
+// record が一意制約違反で弾かれず recordings 行として作られ、ingest ジョブが
+// 起動すること。
+//
+// このテストは CreateRecording の supersede CTE（internal/db/queries/recordings.sql）
+// を素の INSERT に戻すと、processRecord が「creating recording: ... duplicate key
+// value violates unique constraint "recordings_unique_active_event"」で失敗して
+// 落ちることを確認済み（報告参照）。
+func TestProcessRecord_SupersedesFailedRecording(t *testing.T) {
+	w, pool := setupTest(t)
+	ctx := context.Background()
+
+	programID := int64(750001)
+	resID := createTestReservation(t, pool, programID)
+
+	record := testRecord("record-supersede-001", programID, "finished")
+	failedID := insertTestFailedRecording(t, pool, DefaultSite, &resID,
+		int32(record.Program.NetworkID), int32(record.Program.ServiceID), int32(record.Program.EventID))
+
+	if err := w.processRecord(ctx, record); err != nil {
+		t.Fatalf("processRecord: %v (成功 record が failed 行の一意制約に阻まれてはいけない。issue #129 症状 2)", err)
+	}
+
+	// 新しい recordings 行が作られ、ingest が起動していること。
+	var syncRecordingID *int64
+	if err := pool.QueryRow(ctx,
+		"SELECT recording_id FROM record_sync WHERE site = $1 AND record_id = $2",
+		DefaultSite, record.ID,
+	).Scan(&syncRecordingID); err != nil {
+		t.Fatalf("querying record_sync: %v", err)
+	}
+	if syncRecordingID == nil {
+		t.Fatal("record_sync.recording_id is nil (新しい recordings 行が作られていない)")
+	}
+	if *syncRecordingID == failedID {
+		t.Fatalf("new recording id (%d) == failed recording id (%d), want distinct rows (supersede しつつ新規行を作るはず)",
+			*syncRecordingID, failedID)
+	}
+
+	var newStatus string
+	var newSupersededAt *time.Time
+	if err := pool.QueryRow(ctx,
+		"SELECT status, superseded_at FROM recordings WHERE id = $1", *syncRecordingID,
+	).Scan(&newStatus, &newSupersededAt); err != nil {
+		t.Fatalf("querying new recording: %v", err)
+	}
+	if newStatus != "finished" {
+		t.Errorf("new recording status = %q, want %q", newStatus, "finished")
+	}
+	if newSupersededAt != nil {
+		t.Errorf("new recording superseded_at = %v, want nil", newSupersededAt)
+	}
+
+	var jobCount int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM river_job WHERE kind = 'ingest'").Scan(&jobCount); err != nil {
+		t.Fatalf("querying river_job: %v", err)
+	}
+	if jobCount != 1 {
+		t.Errorf("ingest job count = %d, want 1 (成功 record を取り込む ingest が起動するはず)", jobCount)
+	}
+
+	// 失敗の履歴が失われていないこと（CLAUDE.md 不変条件 3 / docs/schema §5
+	// 「録画されなかった試行も履歴に残る」）: 行は消えず、superseded_at だけが
+	// 立ち、deleted_at はユーザー操作を表す列なので触れない。
+	var failedDeletedAt, failedSupersededAt *time.Time
+	var failedStatus string
+	if err := pool.QueryRow(ctx,
+		"SELECT status, deleted_at, superseded_at FROM recordings WHERE id = $1", failedID,
+	).Scan(&failedStatus, &failedDeletedAt, &failedSupersededAt); err != nil {
+		t.Fatalf("querying failed recording after supersede: %v", err)
+	}
+	if failedStatus != "failed" {
+		t.Errorf("failed recording status = %q, want %q (履歴は書き換えないはず)", failedStatus, "failed")
+	}
+	if failedDeletedAt != nil {
+		t.Errorf("failed recording deleted_at = %v, want nil (ユーザーが消したわけではない)", failedDeletedAt)
+	}
+	if failedSupersededAt == nil {
+		t.Error("failed recording superseded_at is nil, want non-nil (active-event の枠を明け渡したはず)")
+	}
+
+	// 両方とも deleted_at IS NULL のまま残るので、履歴としては 2 行見える。
+	var totalCount int
+	if err := pool.QueryRow(ctx,
+		"SELECT count(*) FROM recordings WHERE site = $1 AND network_id = $2 AND service_id = $3 AND event_id = $4",
+		DefaultSite, record.Program.NetworkID, record.Program.ServiceID, record.Program.EventID,
+	).Scan(&totalCount); err != nil {
+		t.Fatalf("querying recordings by event: %v", err)
+	}
+	if totalCount != 2 {
+		t.Errorf("recordings count for event = %d, want 2 (failed 行 + 新しい成功行が両方履歴に残るはず)", totalCount)
+	}
+}
+
+// TestProcessRecord_SupersedesFailedRecordingWithMediaAsset は判断基準 2
+// （media_assets を持つ failed 行を巻き込まないこと）を固定する。途中まで録れて
+// failed になった行（media_assets 行を持つ）が supersede されても、そのアセットの
+// recording_id は書き換わらない —— ファイルの所有者は superseded になった旧
+// recordings 行のまま。superseded にするだけでは media_assets 側の状態
+// （state / rel_path）も一切変更しない。物理削除するかどうかは削除 reconcile が
+// 別途 recordings.deleted_at を見て判断するので、この PR の範囲では対象外。
+func TestProcessRecord_SupersedesFailedRecordingWithMediaAsset(t *testing.T) {
+	w, pool := setupTest(t)
+	ctx := context.Background()
+
+	programID := int64(750002)
+	resID := createTestReservation(t, pool, programID)
+
+	record := testRecord("record-supersede-media-001", programID, "finished")
+	failedID := insertTestFailedRecording(t, pool, DefaultSite, &resID,
+		int32(record.Program.NetworkID), int32(record.Program.ServiceID), int32(record.Program.EventID))
+	assetID := insertTestMediaAsset(t, pool, failedID)
+
+	if err := w.processRecord(ctx, record); err != nil {
+		t.Fatalf("processRecord: %v (media_assets を持つ failed 行があっても成功 record は取り込めるはず)", err)
+	}
+
+	var syncRecordingID *int64
+	if err := pool.QueryRow(ctx,
+		"SELECT recording_id FROM record_sync WHERE site = $1 AND record_id = $2",
+		DefaultSite, record.ID,
+	).Scan(&syncRecordingID); err != nil {
+		t.Fatalf("querying record_sync: %v", err)
+	}
+	if syncRecordingID == nil {
+		t.Fatal("record_sync.recording_id is nil")
+	}
+
+	// media_asset は動かない: recording_id は failed 行のまま、行の状態も変わらない。
+	var assetRecordingID int64
+	var assetState string
+	var assetDeletedAt *time.Time
+	if err := pool.QueryRow(ctx,
+		"SELECT recording_id, state, deleted_at FROM media_assets WHERE id = $1", assetID,
+	).Scan(&assetRecordingID, &assetState, &assetDeletedAt); err != nil {
+		t.Fatalf("querying media_asset after supersede: %v", err)
+	}
+	if assetRecordingID != failedID {
+		t.Errorf("media_asset.recording_id = %d, want %d (superseded 後もファイルの所有者は旧 failed 行のまま)",
+			assetRecordingID, failedID)
+	}
+	if assetState != "active" {
+		t.Errorf("media_asset.state = %q, want %q (supersede は media_assets の状態を変えないはず)", assetState, "active")
+	}
+	if assetDeletedAt != nil {
+		t.Errorf("media_asset.deleted_at = %v, want nil (supersede はファイルを物理削除しないはず)", assetDeletedAt)
+	}
+
+	// 新しい recording 行に media_asset が誤って付け替えられていないこと。
+	var assetCountForNew int
+	if err := pool.QueryRow(ctx,
+		"SELECT count(*) FROM media_assets WHERE recording_id = $1", *syncRecordingID,
+	).Scan(&assetCountForNew); err != nil {
+		t.Fatalf("querying media_assets for new recording: %v", err)
+	}
+	if assetCountForNew != 0 {
+		t.Errorf("media_assets count for new recording = %d, want 0 (ingest がまだ何も作っていないはず)", assetCountForNew)
+	}
+}
+
+// TestProcessRecord_SupersedeIsIdempotentAcrossReprocessing は判断基準 3
+// （べき等性）を固定する: record_sweep が同じ record を再処理しても、supersede
+// および recordings 行の作成が繰り返されない。processRecord は record_sync の
+// (site, record_id) 行ロックで 2 回目以降 createRecording 自体を呼ばないので
+// （AcquireRecordSync が既存 recording_id を返す）、CreateRecording の supersede
+// CTE も 2 回目は実行されないはず。
+func TestProcessRecord_SupersedeIsIdempotentAcrossReprocessing(t *testing.T) {
+	w, pool := setupTest(t)
+	ctx := context.Background()
+
+	programID := int64(750003)
+	resID := createTestReservation(t, pool, programID)
+
+	record := testRecord("record-supersede-idem-001", programID, "finished")
+	failedID := insertTestFailedRecording(t, pool, DefaultSite, &resID,
+		int32(record.Program.NetworkID), int32(record.Program.ServiceID), int32(record.Program.EventID))
+
+	for i := 0; i < 3; i++ {
+		if err := w.processRecord(ctx, record); err != nil {
+			t.Fatalf("processRecord (iteration %d): %v", i, err)
+		}
+	}
+
+	var totalCount int
+	if err := pool.QueryRow(ctx,
+		"SELECT count(*) FROM recordings WHERE site = $1 AND network_id = $2 AND service_id = $3 AND event_id = $4",
+		DefaultSite, record.Program.NetworkID, record.Program.ServiceID, record.Program.EventID,
+	).Scan(&totalCount); err != nil {
+		t.Fatalf("querying recordings by event: %v", err)
+	}
+	if totalCount != 2 {
+		t.Errorf("recordings count for event after 3x processRecord = %d, want 2 "+
+			"(failed 行 1 + 成功行 1 のまま増減しないはず)", totalCount)
+	}
+
+	var jobCount int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM river_job WHERE kind = 'ingest'").Scan(&jobCount); err != nil {
+		t.Fatalf("querying river_job: %v", err)
+	}
+	if jobCount != 1 {
+		t.Errorf("ingest job count = %d, want 1 (3 回処理しても ingest は 1 回だけ)", jobCount)
+	}
+
+	var failedSupersededAt *time.Time
+	if err := pool.QueryRow(ctx,
+		"SELECT superseded_at FROM recordings WHERE id = $1", failedID,
+	).Scan(&failedSupersededAt); err != nil {
+		t.Fatalf("querying failed recording: %v", err)
+	}
+	if failedSupersededAt == nil {
+		t.Error("failed recording superseded_at is nil, want non-nil")
+	}
+}
+
+// TestProcessRecord_DoesNotSupersedeLivingNonFailedRecording は supersede の
+// 境界を固定する: 同一 active-event に「生きている」（deleted_at IS NULL かつ
+// superseded_at IS NULL）行が既にあっても、それが status='failed' でなければ
+// supersede しない。'finished'/'recording' 等の本物の重複を黙って追い出すのは
+// このクエリの責務ではなく、素の一意制約違反として従来どおりエラーになるはず
+// （internal/db/queries/recordings.sql の CreateRecording の doc コメント参照）。
+func TestProcessRecord_DoesNotSupersedeLivingNonFailedRecording(t *testing.T) {
+	w, pool := setupTest(t)
+	ctx := context.Background()
+
+	programID := int64(750004)
+	resID := createTestReservation(t, pool, programID)
+
+	record := testRecord("record-no-supersede-001", programID, "finished")
+	// 直接 'finished' な生きている行を同じスロットに作る（すでに録れている本物の
+	// 重複を模す。failed ではないので supersede 対象にならないはず）。
+	var livingID int64
+	err := pool.QueryRow(ctx, `
+		INSERT INTO recordings (
+			reservation_id, source, site,
+			network_id, service_id, event_id, service_name,
+			channel_type, channel, title,
+			is_free, program_start_at, program_duration_ms,
+			status
+		) VALUES (
+			$1, 'manual', $2,
+			$3, $4, $5, 'NHK総合',
+			'GR', '27', 'Already Finished',
+			true, now() - interval '1 hour', 180000,
+			'finished'
+		) RETURNING id`,
+		resID, DefaultSite, record.Program.NetworkID, record.Program.ServiceID, record.Program.EventID,
+	).Scan(&livingID)
+	if err != nil {
+		t.Fatalf("creating living finished recording fixture: %v", err)
+	}
+
+	if err := w.processRecord(ctx, record); err == nil {
+		t.Fatal("processRecord: want error (finished な生きている行と衝突するはずで、supersede されてはいけない)")
+	}
+
+	var totalCount int
+	if err := pool.QueryRow(ctx,
+		"SELECT count(*) FROM recordings WHERE site = $1 AND network_id = $2 AND service_id = $3 AND event_id = $4",
+		DefaultSite, record.Program.NetworkID, record.Program.ServiceID, record.Program.EventID,
+	).Scan(&totalCount); err != nil {
+		t.Fatalf("querying recordings by event: %v", err)
+	}
+	if totalCount != 1 {
+		t.Errorf("recordings count for event = %d, want 1 (衝突した INSERT はロールバックされ、新しい行は残らないはず)", totalCount)
+	}
+
+	var livingSupersededAt *time.Time
+	if err := pool.QueryRow(ctx,
+		"SELECT superseded_at FROM recordings WHERE id = $1", livingID,
+	).Scan(&livingSupersededAt); err != nil {
+		t.Fatalf("querying living recording: %v", err)
+	}
+	if livingSupersededAt != nil {
+		t.Errorf("living recording superseded_at = %v, want nil (status='finished' は supersede 対象外)", livingSupersededAt)
+	}
+
+	// record_sync も tx ロールバックで残らないはず（AcquireRecordSync が同じ tx 内）。
+	var syncCount int
+	if err := pool.QueryRow(ctx,
+		"SELECT count(*) FROM record_sync WHERE site = $1 AND record_id = $2",
+		DefaultSite, record.ID,
+	).Scan(&syncCount); err != nil {
+		t.Fatalf("querying record_sync: %v", err)
+	}
+	if syncCount != 0 {
+		t.Errorf("record_sync count = %d, want 0 (tx がロールバックされたはず)", syncCount)
 	}
 }
 

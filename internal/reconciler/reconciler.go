@@ -153,9 +153,29 @@ func (r *Reconciler) RunPass(ctx context.Context) error {
 
 	var created, deleted int
 	var missing int
+	var endGuarded int
 
+	now := time.Now()
 	for _, d := range reservations {
 		if _, exists := observedByProgram[d.res.ProgramID]; exists {
+			continue
+		}
+		if programEnded(d.snap, now) {
+			// 番組はもう終わっている。POST しても mirakc は
+			// need-rescheduling で数秒後に failed にするだけで、recordings に
+			// content_length=0 の failed 行が残るだけ（issue #134 の実測:
+			// record_sync 46 件中 41 件が failed）。この予約は本パスの
+			// markOrphaned が orphaned_at を埋める（同じ programEnded 判定を
+			// 使うので食い違わない）ので、次パス以降は listDesired
+			// （ListReservationsForSyncEvaluation の orphaned_at IS NULL 絞り
+			// 込み）から外れて二度と create ループの対象にならない。
+			//
+			// stateGuarded / limitCarriedOver は複数パスにまたがって残留し
+			// うる持ち越しなので ReconcilePendingDiff で監視する価値があるが、
+			// これは 1 パス限りで自己解消するのでゲージには混ぜない
+			// （ログでの観測で足りると判断した。理由は下の Info ログの
+			// コメント参照）。
+			endGuarded++
 			continue
 		}
 		missing++
@@ -233,7 +253,11 @@ func (r *Reconciler) RunPass(ctx context.Context) error {
 		slog.Error("reconciler: cleaning stale schedule_syncs", "err", err)
 	}
 
-	if err := r.markOrphaned(ctx, reservations, schedules); err != nil {
+	// now は作成ループと同じ瞬間を渡す（同じ式だけでなく同じ材料にする）。
+	// 別々に time.Now() を取ると、パス実行中に終了時刻を跨いだ番組が
+	// 「作成ループでは未終了 → POST」かつ「markOrphaned では終了 → orphaned」に
+	// なり、収束はするが issue #134 が消したい failed 行がちょうど 1 件出る。
+	if err := r.markOrphaned(ctx, reservations, schedules, now); err != nil {
 		slog.Error("reconciler: marking orphaned", "err", err)
 	}
 
@@ -278,6 +302,19 @@ func (r *Reconciler) RunPass(ctx context.Context) error {
 		slog.Info("reconciler: recreate candidates deferred to next pass (MaxRecreatesPerPass)",
 			"count", limitCarriedOver,
 			"max_recreates_per_pass", r.cfg.MaxRecreatesPerPass,
+		)
+	}
+	// stateGuarded / limitCarriedOver と同じ扱いで、黙って落とさずログに出す。
+	// メトリクスは増やさない — 上2つは複数パスにまたがって残留しうる持ち越し
+	// （録画中は priority 変更が反映されないまま残る、MaxRecreatesPerPass で
+	// 溢れた分が次パスに送られる）だからゲージで監視する価値があるのに対し、
+	// endGuarded は本パスの markOrphaned が同じ判定式で orphaned_at を埋める
+	// ので、次パスには同じ予約が二度と現れない（1 パスで自己解消する）。
+	// ReconcilePendingDiff の「create」ゲージに混ぜると、埋まらない別の理由
+	// （mirakc 障害等）と区別できなくなる。
+	if endGuarded > 0 {
+		slog.Info("reconciler: create candidates skipped (program already ended)",
+			"count", endGuarded,
 		)
 	}
 
@@ -426,6 +463,29 @@ func (r *Reconciler) listDesired(ctx context.Context) ([]desiredReservation, err
 		desired = append(desired, desiredReservation{res: c.Reservation, snap: c.Snapshot, opts: c.Options})
 	}
 	return desired, nil
+}
+
+// programEnded は予約に対応する番組がもう終了しているかどうかを判定する
+// （program_snapshots のスナップショットのみが材料 —— 番組は終了後に
+// epg_programs から消えうるので EPG 射影は見ない）。RunPass の作成ループと
+// markOrphaned の両方から呼ばれる必要があるため、この 1 箇所に抽出してある。
+// 同じ式を 2 箇所に書き下すと、片方だけ境界を直してもう片方を直し忘れる
+// 事故が起きる（issue #134）。実際、作成ループだけ境界がずれると
+// 「作らない」（作成ループ）と「まだ orphaned にしない」（markOrphaned）が
+// 食い違い、同じ予約が毎パス作成対象のまま残って mirakc への POST を撃ち
+// 続ける —— この抽出前より悪化する組み合わせなので、境界は 1 箇所でしか
+// 定義しない。
+//
+// 終了時刻ちょうど（endTime == now）は「終了していない」側に倒す
+// （markOrphaned が元々持っていた `!endTime.Before(now)` を素直に反転した
+// だけで、境界を動かしていない）。進行中の番組への POST は止めない —— mirakc
+// は放送中の番組の schedule を受け付けて途中から録る（issue #134 の実測:
+// 23:10 開始の番組を 23:16:39 に予約しても正常に録画継続、426MB 到達）。
+// ガードの対象は「終了済み」だけで、「開始済み」で切ると放送中の番組を
+// 予約する経路が黙って壊れる。
+func programEnded(snap sqlcgen.ProgramSnapshot, now time.Time) bool {
+	endTime := snap.StartAt.Add(time.Duration(snap.DurationMs) * time.Millisecond)
+	return endTime.Before(now)
 }
 
 // effectivePriority は mirakc に送る priority を決める: opts.Priority が
@@ -676,7 +736,16 @@ func (r *Reconciler) recreateSchedule(ctx context.Context, d desiredReservation,
 	return nil
 }
 
-func (r *Reconciler) markOrphaned(ctx context.Context, reservations []desiredReservation, schedules []mirakc.Schedule) error {
+// markOrphaned は「番組終了後に schedule が観測されなかった」予約の
+// orphaned_at を埋める。now は RunPass の作成ループが使ったものをそのまま
+// 受け取る —— 判定式だけでなく判定の瞬間まで揃える（別々に取ると、パス中に
+// 終了時刻を跨いだ番組が POST されたうえで同じパスで orphaned になる）。
+// 終了判定は programEnded（RunPass の作成ループと共有）
+// で、schedule の非観測は今パスで observeSchedules した schedules をそのまま
+// 使う。境界がここと作成ループでずれると、同じ予約が「作らない」と「まだ
+// orphaned にしない」の間に落ちて mirakc への POST を撃ち続けるので、
+// programEnded 以外の場所で終了判定を書き下さないこと（issue #134）。
+func (r *Reconciler) markOrphaned(ctx context.Context, reservations []desiredReservation, schedules []mirakc.Schedule, now time.Time) error {
 	scheduledPrograms := make(map[int64]struct{}, len(schedules))
 	for _, s := range schedules {
 		scheduledPrograms[s.Program.ID] = struct{}{}
@@ -685,8 +754,7 @@ func (r *Reconciler) markOrphaned(ctx context.Context, reservations []desiredRes
 	q := sqlcgen.New(r.pool)
 	for _, d := range reservations {
 		res := d.res
-		endTime := d.snap.StartAt.Add(time.Duration(d.snap.DurationMs) * time.Millisecond)
-		if !endTime.Before(time.Now()) {
+		if !programEnded(d.snap, now) {
 			continue
 		}
 		if _, scheduled := scheduledPrograms[res.ProgramID]; scheduled {
