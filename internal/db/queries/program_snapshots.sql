@@ -15,10 +15,15 @@
 -- 射影から引いた値で upsert する。「射影にある間は更新」の実装はこの 1 本だけに
 -- なる（移行前は ruler が reservations 側だけを更新しており、intents / overrides
 -- 側が作成時のまま固まってドリフトしていた --- それが #27 の中身）。
+--
+-- event_id / service_name は issue #98 で追加（00025）。never-scheduled 行
+-- （reconciler.recordNeverScheduled が recordings に作る試行行）の識別
+-- （network_id, service_id, event_id）と表示名に使う。他のチャンネル識別列と
+-- 同じく EPG 射影から引き、mirakc の programId 内部構造は割り算しない。
 INSERT INTO program_snapshots (
     site, program_id, title, start_at, duration_ms,
-    network_id, service_id, channel_type, channel
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    network_id, service_id, channel_type, channel, event_id, service_name
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 ON CONFLICT (site, program_id) DO UPDATE SET
     title        = EXCLUDED.title,
     start_at     = EXCLUDED.start_at,
@@ -27,6 +32,8 @@ ON CONFLICT (site, program_id) DO UPDATE SET
     service_id   = EXCLUDED.service_id,
     channel_type = EXCLUDED.channel_type,
     channel      = EXCLUDED.channel,
+    event_id     = EXCLUDED.event_id,
+    service_name = EXCLUDED.service_name,
     updated_at   = now()
 WHERE program_snapshots.title        IS DISTINCT FROM EXCLUDED.title
    OR program_snapshots.start_at     IS DISTINCT FROM EXCLUDED.start_at
@@ -34,7 +41,9 @@ WHERE program_snapshots.title        IS DISTINCT FROM EXCLUDED.title
    OR program_snapshots.network_id   IS DISTINCT FROM EXCLUDED.network_id
    OR program_snapshots.service_id   IS DISTINCT FROM EXCLUDED.service_id
    OR program_snapshots.channel_type IS DISTINCT FROM EXCLUDED.channel_type
-   OR program_snapshots.channel      IS DISTINCT FROM EXCLUDED.channel;
+   OR program_snapshots.channel      IS DISTINCT FROM EXCLUDED.channel
+   OR program_snapshots.event_id     IS DISTINCT FROM EXCLUDED.event_id
+   OR program_snapshots.service_name IS DISTINCT FROM EXCLUDED.service_name;
 
 -- name: UpsertProgramSnapshotsFromProjection :execrows
 -- ruler の毎パス更新。射影に今もある番組のスナップショットを一括で追従させる。
@@ -42,10 +51,10 @@ WHERE program_snapshots.title        IS DISTINCT FROM EXCLUDED.title
 -- 書き戻さないため。ここに出てこない programId は「射影から消えた」= 凍結。
 INSERT INTO program_snapshots (
     site, program_id, title, start_at, duration_ms,
-    network_id, service_id, channel_type, channel
+    network_id, service_id, channel_type, channel, event_id, service_name
 )
 SELECT $1, p.program_id, p.name, p.start_at, p.duration_ms,
-       s.network_id, s.service_id, s.channel_type, s.channel
+       s.network_id, s.service_id, s.channel_type, s.channel, p.event_id, s.name
 FROM epg_programs p
 JOIN epg_services s
   ON s.site = p.site AND s.network_id = p.network_id AND s.service_id = p.service_id
@@ -58,6 +67,8 @@ ON CONFLICT (site, program_id) DO UPDATE SET
     service_id   = EXCLUDED.service_id,
     channel_type = EXCLUDED.channel_type,
     channel      = EXCLUDED.channel,
+    event_id     = EXCLUDED.event_id,
+    service_name = EXCLUDED.service_name,
     updated_at   = now()
 WHERE program_snapshots.title        IS DISTINCT FROM EXCLUDED.title
    OR program_snapshots.start_at     IS DISTINCT FROM EXCLUDED.start_at
@@ -65,7 +76,9 @@ WHERE program_snapshots.title        IS DISTINCT FROM EXCLUDED.title
    OR program_snapshots.network_id   IS DISTINCT FROM EXCLUDED.network_id
    OR program_snapshots.service_id   IS DISTINCT FROM EXCLUDED.service_id
    OR program_snapshots.channel_type IS DISTINCT FROM EXCLUDED.channel_type
-   OR program_snapshots.channel      IS DISTINCT FROM EXCLUDED.channel;
+   OR program_snapshots.channel      IS DISTINCT FROM EXCLUDED.channel
+   OR program_snapshots.event_id     IS DISTINCT FROM EXCLUDED.event_id
+   OR program_snapshots.service_name IS DISTINCT FROM EXCLUDED.service_name;
 
 -- name: GetProgramSnapshot :one
 SELECT * FROM program_snapshots WHERE site = $1 AND program_id = $2;

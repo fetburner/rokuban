@@ -129,6 +129,8 @@ func Export(ctx context.Context, pool *pgxpool.Pool, site string) (*Document, er
 			ServiceID:   s.ServiceID,
 			ChannelType: s.ChannelType,
 			Channel:     s.Channel,
+			EventID:     s.EventID,
+			ServiceName: s.ServiceName,
 			UpdatedAt:   s.UpdatedAt,
 		})
 	}

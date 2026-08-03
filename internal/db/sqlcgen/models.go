@@ -109,6 +109,8 @@ type ProgramSnapshot struct {
 	ChannelType *string
 	Channel     *string
 	UpdatedAt   time.Time
+	EventID     *int32
+	ServiceName *string
 }
 
 type RecordSync struct {
@@ -166,7 +168,6 @@ type Reservation struct {
 	UpdatedAt             time.Time
 	DedupMatchRecordingID *int64
 	DedupSimilarity       pgtype.Float4
-	OrphanedAt            *time.Time
 }
 
 type ReservationRuleMatch struct {

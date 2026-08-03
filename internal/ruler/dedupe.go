@@ -56,8 +56,9 @@ type dedupeMatch struct {
 // 放送済みの番組の予約は GC（終了 + retention_grace）まで残るので、録画が finished に
 // なった次のパスで similarity = 1.0 の自己一致が必ず起きる。そうなると UI が
 // 「録画済みの番組」を「重複としてスキップ」と説明するうえ、effective.skip = true に
-// なることで reconciler.markOrphaned / detectStartDelays の入力（listDesired の出力）
-// からも外れてしまい、**重複排除が無関係な状態機械の DB 状態を変える**。
+// なることで reconciler.recordNeverScheduled / detectStartDelays の入力
+// （listDesired の出力）からも外れてしまい、**重複排除が無関係な状態機械の
+// DB 状態を変える**。
 // site は比較に入れない --- 同一放送は全サイトで同じ programId を持ち、マッチした
 // 全サイトで予約を作る N 予約が既定（docs/recording.md §3.1「サイトの扱い」）なので、
 // サイト間の共食いも同時に防ぐ必要がある。

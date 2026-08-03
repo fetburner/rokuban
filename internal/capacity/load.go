@@ -42,8 +42,9 @@ func Load(ctx context.Context, q *sqlcgen.Queries, site string) ([]Overage, erro
 
 // LoadDemand は需要になる予約だけを読み出す。
 //
-// SQL 側で state <> 'orphaned' とチャンネルスナップショットの有無を絞り、
-// effective.skip はここ（Go 側）で db.EffectiveOptions を通して判定する ---
+// SQL 側で never-scheduled 除外（issue #98。旧 state <> 'orphaned'）と
+// チャンネルスナップショットの有無を絞り、effective.skip はここ（Go 側）で
+// db.EffectiveOptions を通して判定する ---
 // base / overrides の jsonb マージと program_intents.action の解決が要るため
 // （不透明な overrides を SQL で読まない、という既存の規律。
 // internal/api/reservations_overlaps.go と同じ分担）。

@@ -441,7 +441,8 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 
 // runGC は番組終了 + RetentionGrace 経過の reservations / program_intents を
 // 削除する（issue #24 M2-3、docs/schema.md §3「行の物理削除（GC）は『番組の
-// 終了時刻を過ぎた後』のみ」）。state（active/detached/orphaned）を問わず、
+// 終了時刻を過ぎた後』のみ」）。state（active/detached。orphaned は issue #98
+// で recordings 側の観測になったため、この GC はそもそも関知しない）を問わず、
 // site にも従属しない全体操作なので RunPass のサイトループの外から 1 回だけ
 // 呼ばれる。recordings.reservation_id は ON DELETE SET NULL なので、削除しても
 // 録画履歴（recordings/media_assets）は失われない。

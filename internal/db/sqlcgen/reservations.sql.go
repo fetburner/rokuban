@@ -13,7 +13,7 @@ import (
 const createManualReservation = `-- name: CreateManualReservation :one
 INSERT INTO reservations (site, program_id)
 VALUES ($1, $2)
-RETURNING id, site, program_id, rule_id, base, created_at, updated_at, dedup_match_recording_id, dedup_similarity, orphaned_at
+RETURNING id, site, program_id, rule_id, base, created_at, updated_at, dedup_match_recording_id, dedup_similarity
 `
 
 type CreateManualReservationParams struct {
@@ -45,7 +45,6 @@ func (q *Queries) CreateManualReservation(ctx context.Context, arg CreateManualR
 		&i.UpdatedAt,
 		&i.DedupMatchRecordingID,
 		&i.DedupSimilarity,
-		&i.OrphanedAt,
 	)
 	return i, err
 }
@@ -95,7 +94,11 @@ func (q *Queries) GetReservationBySiteAndProgramID(ctx context.Context, arg GetR
 }
 
 const getReservationFull = `-- name: GetReservationFull :one
-SELECT r.id, r.site, r.program_id, r.rule_id, r.base, r.created_at, r.updated_at, r.dedup_match_recording_id, r.dedup_similarity, r.orphaned_at, s.site, s.program_id, s.title, s.start_at, s.duration_ms, s.network_id, s.service_id, s.channel_type, s.channel, s.updated_at, i.action AS intent_action, o.overrides AS overrides
+SELECT r.id, r.site, r.program_id, r.rule_id, r.base, r.created_at, r.updated_at, r.dedup_match_recording_id, r.dedup_similarity, s.site, s.program_id, s.title, s.start_at, s.duration_ms, s.network_id, s.service_id, s.channel_type, s.channel, s.updated_at, s.event_id, s.service_name, i.action AS intent_action, o.overrides AS overrides,
+       EXISTS (
+           SELECT 1 FROM recordings rec
+           WHERE rec.reservation_id = r.id AND rec.status = 'failed'
+       ) AS never_recorded
 FROM reservations r
 JOIN program_snapshots s ON s.site = r.site AND s.program_id = r.program_id
 LEFT JOIN program_intents i ON i.site = r.site AND i.program_id = r.program_id
@@ -108,6 +111,7 @@ type GetReservationFullRow struct {
 	ProgramSnapshot ProgramSnapshot
 	IntentAction    *string
 	Overrides       json.RawMessage
+	NeverRecorded   bool
 }
 
 // 予約とユーザー意図・上書き・番組スナップショットを 1 行に合わせて返す。
@@ -115,6 +119,13 @@ type GetReservationFullRow struct {
 // にあり、予約が存在しても意図・上書きのどちらかしかない（あるいはどちらも
 // 無い）ことがあるので両方 LEFT JOIN する。番組スナップショットは FK が
 // あるので必ず存在する（INNER JOIN）。
+//
+// never_recorded は issue #98 で orphaned_at の代わりに導出する列（読むたびに
+// 評価。CLAUDE.md 不変条件 9）。「この予約に紐づく status='failed' の
+// recordings 行が存在するか」を都度 EXISTS で問う --- reconciler が番組終了時に
+// 作る never-scheduled 行（recording.never-scheduled）も、mirakc 由来の
+// 途中失敗（handleRecordingFailed が作る行）も区別せず「録れなかった」の
+// 表示に使ってよい（api.reservationState のコメント参照）。
 func (q *Queries) GetReservationFull(ctx context.Context, id int64) (GetReservationFullRow, error) {
 	row := q.db.QueryRow(ctx, getReservationFull, id)
 	var i GetReservationFullRow
@@ -128,7 +139,6 @@ func (q *Queries) GetReservationFull(ctx context.Context, id int64) (GetReservat
 		&i.Reservation.UpdatedAt,
 		&i.Reservation.DedupMatchRecordingID,
 		&i.Reservation.DedupSimilarity,
-		&i.Reservation.OrphanedAt,
 		&i.ProgramSnapshot.Site,
 		&i.ProgramSnapshot.ProgramID,
 		&i.ProgramSnapshot.Title,
@@ -139,14 +149,21 @@ func (q *Queries) GetReservationFull(ctx context.Context, id int64) (GetReservat
 		&i.ProgramSnapshot.ChannelType,
 		&i.ProgramSnapshot.Channel,
 		&i.ProgramSnapshot.UpdatedAt,
+		&i.ProgramSnapshot.EventID,
+		&i.ProgramSnapshot.ServiceName,
 		&i.IntentAction,
 		&i.Overrides,
+		&i.NeverRecorded,
 	)
 	return i, err
 }
 
 const listReservationsBySite = `-- name: ListReservationsBySite :many
-SELECT r.id, r.site, r.program_id, r.rule_id, r.base, r.created_at, r.updated_at, r.dedup_match_recording_id, r.dedup_similarity, r.orphaned_at, s.site, s.program_id, s.title, s.start_at, s.duration_ms, s.network_id, s.service_id, s.channel_type, s.channel, s.updated_at, i.action AS intent_action, o.overrides AS overrides
+SELECT r.id, r.site, r.program_id, r.rule_id, r.base, r.created_at, r.updated_at, r.dedup_match_recording_id, r.dedup_similarity, s.site, s.program_id, s.title, s.start_at, s.duration_ms, s.network_id, s.service_id, s.channel_type, s.channel, s.updated_at, s.event_id, s.service_name, i.action AS intent_action, o.overrides AS overrides,
+       EXISTS (
+           SELECT 1 FROM recordings rec
+           WHERE rec.reservation_id = r.id AND rec.status = 'failed'
+       ) AS never_recorded
 FROM reservations r
 JOIN program_snapshots s ON s.site = r.site AND s.program_id = r.program_id
 LEFT JOIN program_intents i ON i.site = r.site AND i.program_id = r.program_id
@@ -160,8 +177,10 @@ type ListReservationsBySiteRow struct {
 	ProgramSnapshot ProgramSnapshot
 	IntentAction    *string
 	Overrides       json.RawMessage
+	NeverRecorded   bool
 }
 
+// never_recorded は GetReservationFull と同じ導出（コメント参照）。
 func (q *Queries) ListReservationsBySite(ctx context.Context, site string) ([]ListReservationsBySiteRow, error) {
 	rows, err := q.db.Query(ctx, listReservationsBySite, site)
 	if err != nil {
@@ -181,7 +200,6 @@ func (q *Queries) ListReservationsBySite(ctx context.Context, site string) ([]Li
 			&i.Reservation.UpdatedAt,
 			&i.Reservation.DedupMatchRecordingID,
 			&i.Reservation.DedupSimilarity,
-			&i.Reservation.OrphanedAt,
 			&i.ProgramSnapshot.Site,
 			&i.ProgramSnapshot.ProgramID,
 			&i.ProgramSnapshot.Title,
@@ -192,8 +210,11 @@ func (q *Queries) ListReservationsBySite(ctx context.Context, site string) ([]Li
 			&i.ProgramSnapshot.ChannelType,
 			&i.ProgramSnapshot.Channel,
 			&i.ProgramSnapshot.UpdatedAt,
+			&i.ProgramSnapshot.EventID,
+			&i.ProgramSnapshot.ServiceName,
 			&i.IntentAction,
 			&i.Overrides,
+			&i.NeverRecorded,
 		); err != nil {
 			return nil, err
 		}
@@ -206,12 +227,21 @@ func (q *Queries) ListReservationsBySite(ctx context.Context, site string) ([]Li
 }
 
 const listReservationsForSyncEvaluation = `-- name: ListReservationsForSyncEvaluation :many
-SELECT r.id, r.site, r.program_id, r.rule_id, r.base, r.created_at, r.updated_at, r.dedup_match_recording_id, r.dedup_similarity, r.orphaned_at, s.site, s.program_id, s.title, s.start_at, s.duration_ms, s.network_id, s.service_id, s.channel_type, s.channel, s.updated_at, i.action AS intent_action, o.overrides AS overrides
+SELECT r.id, r.site, r.program_id, r.rule_id, r.base, r.created_at, r.updated_at, r.dedup_match_recording_id, r.dedup_similarity, s.site, s.program_id, s.title, s.start_at, s.duration_ms, s.network_id, s.service_id, s.channel_type, s.channel, s.updated_at, s.event_id, s.service_name, i.action AS intent_action, o.overrides AS overrides
 FROM reservations r
 JOIN program_snapshots s ON s.site = r.site AND s.program_id = r.program_id
 LEFT JOIN program_intents i ON i.site = r.site AND i.program_id = r.program_id
 LEFT JOIN program_overrides o ON o.site = r.site AND o.program_id = r.program_id
-WHERE r.site = $1 AND r.orphaned_at IS NULL
+WHERE r.site = $1
+  AND NOT EXISTS (
+      SELECT 1 FROM recordings rec
+      WHERE rec.reservation_id = r.id
+        AND rec.status = 'failed'
+        AND EXISTS (
+            SELECT 1 FROM jsonb_array_elements(rec.quality_events) qe
+            WHERE qe->>'event' = 'recording.never-scheduled'
+        )
+  )
 ORDER BY s.start_at
 `
 
@@ -222,28 +252,47 @@ type ListReservationsForSyncEvaluationRow struct {
 	Overrides       json.RawMessage
 }
 
-// 同期対象の「候補」を返すクエリ（issue #54）。ここで絞っているのは
-// orphaned_at IS NULL だけで、それ以上のことはしていない（#28/#30 で
-// state <> 'orphaned' から置き換え）。orphaned だけを除外してよい理由は
-// docs/schema.md §3「state を『mirakc への同期対象か』のフィルタに使っては
-// ならない」、docs/recording.md §4.3: 番組が終了しているので schedule を
-// 作る意味がない。active/detached はどちらも「実質 manual として動く」ことが
-// あるため候補に含める。旧名 ListActiveReservationsBySite は state='active' で
-// しか絞っておらず detached の予約に schedule が作られないバグの原因だった
-// （M2-4 で修正）。
+// 同期対象の「候補」を返すクエリ（issue #54）。
 //
-// **「同期対象か」を最終的に決めるのは effective.skip（base + overrides +
-// program_intents.action の合成）であり、この行だけでは絞り切れていない。**
-// 絞り込みは呼び出し元が db.EvaluateSyncCandidates（internal/db/sync.go）に
-// 通して行う。旧名 ListSyncableReservationsBySite は「もう絞ってある」と
-// 約束してしまっていた。その約束を信じて shadow-diff（cmd/rokuban/shadowdiff.go）
-// の書き手は effective.skip の絞り込みを移植し忘れ、M2-6 の重複排除が
-// base.skip=true を立てた予約を「EPGStation と一致（Both）」と誤報告する
-// 見逃しが M2 の出口基準の測定器に入り込んだ（issue #54）。同じ間違いを
-// 繰り返さないため、クエリ名には「候補」であることだけを約束させる。
+// **除外条件は issue #98 で orphaned_at IS NULL から書き換えた。** 旧実装は
+// reconciler.markOrphaned が「番組終了後に schedule が観測されなかった」
+// という不可逆な観測を reservations.orphaned_at という列に直接書いており、
+// それを次パス以降の除外フィルタに使っていた。#98 の決定でこの観測は
+// recordings の試行行（status='failed' + quality_events に
+// recording.never-scheduled）に移設され、orphaned_at 列自体が無くなった
+// （00025）。
 //
-// 番組の開始時刻・尺（reconciler の開始遅延検出・orphaned 化判定に使う）は
-// program_snapshots に移設された（#27）ので JOIN する。FK があるので必ず存在する。
+// 除外条件を「その予約に既に never-scheduled の recordings 行がある」に
+// 置き換える。never-scheduled という特定の quality_events マーカーだけを
+// 見て、status='failed' の行全般では絞らないのが要点 ---
+// handleRecordingFailed（internal/watcher）が作る「録画開始後に mirakc が
+// 失敗を報告した」failed 行まで含めて除外すると、mirakc が schedule を
+// 消した後にレコンサイラが再作成を試みる既存の再試行経路（#98 とは無関係の
+// 挙動）を壊してしまう。never-scheduled は「番組終了かつ schedule 非観測」
+// でしか作られない一方向の事実なので、これだけを除外条件にすれば
+// 再試行経路には触れない。
+//
+// 「番組が既に終了しているか」で直接絞らない（now() との比較にしない）
+// 理由: reconciler.programEnded が実際の POST/文言判定を毎パス評価し直す
+// ので、ここでの事前絞り込みは効率のためだけに存在してよい。だが
+// now() 比較を SQL に持ち込むと、固定時刻を使うテスト（過去に書かれた
+// fixture が「将来」のつもりで書いた日時が実行時点で過去になっている等。
+// cmd/rokuban/shadowdiff_test.go で実例あり）が経過時間に依存して壊れる。
+// recordings の存在という「reconciler 自身が過去に書いた事実」を条件にすれば
+// テストの実行時刻に依存しない（reconciler が実際に never-scheduled 行を
+// 作らない限り除外されない）。
+//
+// 旧名 ListSyncableReservationsBySite は「もう絞ってある」と約束してしまって
+// いた。その約束を信じて shadow-diff（cmd/rokuban/shadowdiff.go）の書き手は
+// effective.skip の絞り込みを移植し忘れ、M2-6 の重複排除が base.skip=true を
+// 立てた予約を「EPGStation と一致（Both）」と誤報告する見逃しが M2 の出口
+// 基準の測定器に入り込んだ（issue #54）。「同期対象か」を最終的に決めるのは
+// effective.skip（base + overrides + program_intents.action の合成）であり、
+// この行だけでは絞り切れていない。絞り込みは呼び出し元が
+// db.EvaluateSyncCandidates（internal/db/sync.go）に通して行う。
+//
+// 番組の開始時刻・尺（reconciler の開始遅延検出に使う）は program_snapshots に
+// 移設された（#27）ので JOIN する。FK があるので必ず存在する。
 func (q *Queries) ListReservationsForSyncEvaluation(ctx context.Context, site string) ([]ListReservationsForSyncEvaluationRow, error) {
 	rows, err := q.db.Query(ctx, listReservationsForSyncEvaluation, site)
 	if err != nil {
@@ -263,7 +312,6 @@ func (q *Queries) ListReservationsForSyncEvaluation(ctx context.Context, site st
 			&i.Reservation.UpdatedAt,
 			&i.Reservation.DedupMatchRecordingID,
 			&i.Reservation.DedupSimilarity,
-			&i.Reservation.OrphanedAt,
 			&i.ProgramSnapshot.Site,
 			&i.ProgramSnapshot.ProgramID,
 			&i.ProgramSnapshot.Title,
@@ -274,6 +322,8 @@ func (q *Queries) ListReservationsForSyncEvaluation(ctx context.Context, site st
 			&i.ProgramSnapshot.ChannelType,
 			&i.ProgramSnapshot.Channel,
 			&i.ProgramSnapshot.UpdatedAt,
+			&i.ProgramSnapshot.EventID,
+			&i.ProgramSnapshot.ServiceName,
 			&i.IntentAction,
 			&i.Overrides,
 		); err != nil {
@@ -285,28 +335,4 @@ func (q *Queries) ListReservationsForSyncEvaluation(ctx context.Context, site st
 		return nil, err
 	}
 	return items, nil
-}
-
-const markReservationOrphaned = `-- name: MarkReservationOrphaned :execrows
-UPDATE reservations
-SET orphaned_at = now(), updated_at = now()
-WHERE id = $1 AND orphaned_at IS NULL
-`
-
-// 番組終了後に schedule が観測されなかった予約を orphaned にする
-// （reconciler.markOrphaned から呼ばれる）。かつては state = 'active' でしか
-// 絞らず detached の予約が対象から漏れるバグがあった（#30 症状 2）。
-// orphaned_at は不可逆な観測で、書き手はここ（reconciler）だけ --- ruler は
-// 一切上書きしない（CLAUDE.md 不変条件 9）。除外してよいのは既に orphaned な
-// 行への再更新だけ（updated_at を無駄に進めない）なので active/detached の
-// 両方（= orphaned_at IS NULL の行すべて）を対象にする。
-// :execrows にしてあるのは、呼び出し側（reconciler.markOrphaned）が「実際に
-// 更新できたか」をログ出力の可否に使うため（0 行のときに「marked orphaned」と
-// ログに出ると実態と食い違う）。
-func (q *Queries) MarkReservationOrphaned(ctx context.Context, id int64) (int64, error) {
-	result, err := q.db.Exec(ctx, markReservationOrphaned, id)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
 }

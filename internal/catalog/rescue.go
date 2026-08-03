@@ -89,6 +89,8 @@ func applyDocument(ctx context.Context, tx pgx.Tx, doc *Document) (*RescueResult
 			ServiceID:   s.ServiceID,
 			ChannelType: s.ChannelType,
 			Channel:     s.Channel,
+			EventID:     s.EventID,
+			ServiceName: s.ServiceName,
 			UpdatedAt:   s.UpdatedAt,
 		}); err != nil {
 			return nil, fmt.Errorf("upserting program_snapshot %s/%d: %w", s.Site, s.ProgramID, err)

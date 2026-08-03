@@ -260,7 +260,7 @@ func (w *Watcher) createRecording(ctx context.Context, q *sqlcgen.Queries, recor
 		ruleID = res.RuleID
 	}
 
-	source, err := w.deriveRecordingSource(ctx, q, record.Program.ID, resID != nil)
+	source, err := db.DeriveRecordingSource(ctx, q, w.site, record.Program.ID, resID != nil)
 	if err != nil {
 		return 0, err
 	}
@@ -354,41 +354,6 @@ func normalizeRecordingStatus(recordID, raw string) string {
 	return db.RecordingStatusFailed
 }
 
-// deriveRecordingSource は recordings.source を決める（issue #26）。
-//
-// reservations.source は「ユーザーが手動で予約したか」（不可逆な歴史的事実）と
-// 「いまルールが base を供給しているか」（毎パス変わる導出状態）という 2 つの
-// 独立した事実を 1 列に載せていたため、手動予約にルールが一度でもマッチすると
-// 二度と 'manual' に戻らない不可逆な歪みがあった（同列は 00012 で削除済み）。
-//
-// 録画時点の program_intents に action='record' の行があるかどうかだけを見る。
-// intent は放送終了まで生きているので録画時点では必ず参照でき、この行の有無が
-// 「ユーザーが録れと言ったか」の唯一の真実である。program_overrides（priority 等の
-// 上書き）は M2-4 で intent と分離されているため、「ルール由来の予約に上書きを
-// 足しただけ」では intent 行が存在せず、正しく 'rule' のままになる
-// （docs/recording.md §4.4「manual 行にルールがマッチしても昇格は要らない」）。
-//
-// hasReservation は予約行が引けたかどうか。**意図が無いときの既定値**を分ける
-// ために必要になる。予約行が無い record（tag は付いているが予約が既に削除
-// されている等）を 'rule' と記録するのは誤りで、`source = 'rule'` かつ
-// `rule_id IS NULL` という矛盾した組になってしまう。帰属できるルールが無いなら
-// 「人間が手で起こした録画」として 'manual' に倒す（issue #26 以前の実装が
-// `source := "manual"` を既定にしていたのと同じ判断）。
-func (w *Watcher) deriveRecordingSource(ctx context.Context, q *sqlcgen.Queries, programID int64, hasReservation bool) (string, error) {
-	intent, err := q.GetProgramIntent(ctx, sqlcgen.GetProgramIntentParams{Site: w.site, ProgramID: programID})
-	switch {
-	case err == nil && intent.Action == db.IntentRecord:
-		// ユーザーが「録れ」と言った。ルールもマッチしていても変わらない。
-		return db.SourceManual, nil
-	case err != nil && !errors.Is(err, pgx5.ErrNoRows):
-		return "", fmt.Errorf("looking up program intent for program %d: %w", programID, err)
-	}
-	if !hasReservation {
-		return db.SourceManual, nil
-	}
-	return db.SourceRule, nil
-}
-
 func (w *Watcher) updateRecordingStatus(ctx context.Context, q *sqlcgen.Queries, recordingID int64, record mirakc.Record) error {
 	return q.UpdateRecordingStatus(ctx, sqlcgen.UpdateRecordingStatusParams{
 		ID:        recordingID,
@@ -471,7 +436,7 @@ func (w *Watcher) handleRecordingFailed(ctx context.Context, data mirakc.Recordi
 
 	// handleRecordingFailed は予約が無ければ上で早期 return しているので、
 	// ここに到達した時点で予約は必ず存在する。
-	source, err := w.deriveRecordingSource(ctx, q, data.ProgramID, true)
+	source, err := db.DeriveRecordingSource(ctx, q, w.site, data.ProgramID, true)
 	if err != nil {
 		return err
 	}

@@ -101,10 +101,13 @@ VALUES ($1, 0, 'name', 'keyword', $2, true, false)`, ruleID, keyword)
 // reservationRow はテストで確認したい reservations / program_snapshots の列を
 // 合わせ持つ。#27 で番組の事実のスナップショット（title / 開始時刻 / 尺 /
 // チャンネル識別）が program_snapshots に抽出されたため JOIN して読む。
-// State は #28/#30 で reservations から落ちた列で、(rule_id, base, orphaned_at)
-// から deriveTestState が毎回計算する（reservationFromRow と同じ式だが、
-// 同じ実装を呼ばず独立に再実装してある — テストが検証対象と同じ実装を
-// 呼ぶと、その実装のバグをテストが見逃す）。
+// State は #28/#30 で reservations から落ちた列で、(rule_id, base) から
+// deriveTestState が毎回計算する（reservationFromRow と同じ式だが、同じ
+// 実装を呼ばず独立に再実装してある — テストが検証対象と同じ実装を呼ぶと、
+// その実装のバグをテストが見逃す）。orphaned は issue #98 で recordings の
+// 存在から導出する値になったが、ruler は recordings に一切関与しない
+// （書きも読みもしない）ので、ruler パッケージのテストは orphaned を
+// 判定材料にしない（active/detached の 2 値だけで足りる）。
 //
 // source 列は issue #26 で削除済み（手動/ルール由来の区別は program_intents /
 // rule_id から導出する。本ファイルにはこの列を前提にしたテストを置かない）。
@@ -122,17 +125,16 @@ type reservationRow struct {
 	Channel               *string
 	DedupMatchRecordingID *int64
 	DedupSimilarity       *float32
-	OrphanedAt            *time.Time
 	UpdatedAt             time.Time
 }
 
-// deriveTestState は internal/api.reservationState と同じ式（#28/#30 の決定）を
-// 独立に再実装したもの。orphaned_at が非 NULL なら orphaned、rule_id が NULL
-// かつ base が非 NULL なら detached、それ以外は active。
-func deriveTestState(ruleID *int64, base []byte, orphanedAt *time.Time) string {
+// deriveTestState は internal/api.reservationState の active/detached 分岐
+// （#28/#30 の決定）を独立に再実装したもの。rule_id が NULL かつ base が非
+// NULL なら detached、それ以外は active。orphaned は含めない（上記コメント
+// 参照 --- ruler のテストは recordings を作らないので、この関数が orphaned
+// を返す状況が実際に起こらない）。
+func deriveTestState(ruleID *int64, base []byte) string {
 	switch {
-	case orphanedAt != nil:
-		return db.ReservationStateOrphaned
 	case ruleID == nil && len(base) > 0:
 		return db.ReservationStateDetached
 	default:
@@ -146,13 +148,13 @@ func getReservation(t *testing.T, pool *pgxpool.Pool, ctx context.Context, progr
 	err := pool.QueryRow(ctx, `
 SELECT r.id, r.rule_id, r.base, s.title, s.start_at, s.duration_ms,
        s.network_id, s.service_id, s.channel_type, s.channel,
-       r.dedup_match_recording_id, r.dedup_similarity, r.orphaned_at, r.updated_at
+       r.dedup_match_recording_id, r.dedup_similarity, r.updated_at
 FROM reservations r
 JOIN program_snapshots s ON s.site = r.site AND s.program_id = r.program_id
 WHERE r.site = $1 AND r.program_id = $2`, testSite, programID).Scan(
 		&r.ID, &r.RuleID, &r.Base, &r.Title, &r.ProgramStartAt, &r.ProgramDurationMs,
 		&r.NetworkID, &r.ServiceID, &r.ChannelType, &r.Channel,
-		&r.DedupMatchRecordingID, &r.DedupSimilarity, &r.OrphanedAt, &r.UpdatedAt,
+		&r.DedupMatchRecordingID, &r.DedupSimilarity, &r.UpdatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -160,7 +162,7 @@ WHERE r.site = $1 AND r.program_id = $2`, testSite, programID).Scan(
 		}
 		t.Fatalf("querying reservation for program %d: %v", programID, err)
 	}
-	r.State = deriveTestState(r.RuleID, r.Base, r.OrphanedAt)
+	r.State = deriveTestState(r.RuleID, r.Base)
 	return r, true
 }
 

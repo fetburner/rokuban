@@ -1,7 +1,8 @@
 -- 開始遅延検出器（issue #24 M2-7、docs/recording.md §3.3「開始遅延検出器」）。
 --
 -- reconciler.detectStartDelays は listDesired が返した desired 予約
--- （effective.skip 済み除外、state <> 'orphaned' 済み除外）のうち「開始時刻 +
+-- （effective.skip 済み除外、never-scheduled 済み除外。issue #98 で
+-- state <> 'orphaned' から置き換わった）のうち「開始時刻 +
 -- 猶予 < now() < 終了時刻」の窓にある予約 ID をここに渡し、その中で
 -- recordings.started_at が埋まっている（= watcher が mirakc の record から
 -- 観測済み）予約 ID だけを引く。渡した ID からここで返った ID を除いた差集合が

@@ -335,7 +335,7 @@ func (q *Queries) CatalogListProgramOverrides(ctx context.Context, site *string)
 }
 
 const catalogListProgramSnapshots = `-- name: CatalogListProgramSnapshots :many
-SELECT s.site, s.program_id, s.title, s.start_at, s.duration_ms, s.network_id, s.service_id, s.channel_type, s.channel, s.updated_at
+SELECT s.site, s.program_id, s.title, s.start_at, s.duration_ms, s.network_id, s.service_id, s.channel_type, s.channel, s.updated_at, s.event_id, s.service_name
 FROM program_snapshots s
 WHERE ($1::text IS NULL OR s.site = $1)
   AND (
@@ -372,6 +372,8 @@ func (q *Queries) CatalogListProgramSnapshots(ctx context.Context, site *string)
 			&i.ChannelType,
 			&i.Channel,
 			&i.UpdatedAt,
+			&i.EventID,
+			&i.ServiceName,
 		); err != nil {
 			return nil, err
 		}
@@ -834,10 +836,10 @@ func (q *Queries) CatalogUpsertProgramOverride(ctx context.Context, arg CatalogU
 const catalogUpsertProgramSnapshot = `-- name: CatalogUpsertProgramSnapshot :exec
 INSERT INTO program_snapshots (
     site, program_id, title, start_at, duration_ms,
-    network_id, service_id, channel_type, channel, updated_at
+    network_id, service_id, channel_type, channel, event_id, service_name, updated_at
 ) VALUES (
     $1, $2, $3, $4, $5,
-    $6, $7, $8, $9, $10
+    $6, $7, $8, $9, $10, $11, $12
 )
 ON CONFLICT (site, program_id) DO UPDATE SET
     title        = EXCLUDED.title,
@@ -847,6 +849,8 @@ ON CONFLICT (site, program_id) DO UPDATE SET
     service_id   = EXCLUDED.service_id,
     channel_type = EXCLUDED.channel_type,
     channel      = EXCLUDED.channel,
+    event_id     = EXCLUDED.event_id,
+    service_name = EXCLUDED.service_name,
     updated_at   = EXCLUDED.updated_at
 `
 
@@ -860,9 +864,14 @@ type CatalogUpsertProgramSnapshotParams struct {
 	ServiceID   *int32
 	ChannelType *string
 	Channel     *string
+	EventID     *int32
+	ServiceName *string
 	UpdatedAt   time.Time
 }
 
+// event_id / service_name は issue #98 で追加（00025）。never-scheduled 行
+// （recordings）の識別・表示名に使うので、他のチャンネル識別列と同じく
+// catalog の往復（export/rescue）で失ってはならない。
 func (q *Queries) CatalogUpsertProgramSnapshot(ctx context.Context, arg CatalogUpsertProgramSnapshotParams) error {
 	_, err := q.db.Exec(ctx, catalogUpsertProgramSnapshot,
 		arg.Site,
@@ -874,6 +883,8 @@ func (q *Queries) CatalogUpsertProgramSnapshot(ctx context.Context, arg CatalogU
 		arg.ServiceID,
 		arg.ChannelType,
 		arg.Channel,
+		arg.EventID,
+		arg.ServiceName,
 		arg.UpdatedAt,
 	)
 	return err
