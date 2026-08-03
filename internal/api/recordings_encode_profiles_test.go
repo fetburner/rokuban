@@ -275,6 +275,47 @@ func TestAddRecordingEncodeProfiles_OriginalDeleted_Returns409(t *testing.T) {
 	}
 }
 
+// 原本が deleting（unlink 待ち）の録画も 409。
+//
+// 一覧の射影（ListRecordings の LEFT JOIN）は `a.state <> 'deleted'` なので
+// deleting の原本でも sizeBytes が付き、UI は「原本あり」と見てボタンを出す。
+// 一方サーバーの判定は GetActiveOriginalMediaAsset（`state = 'active'`）なので
+// ここに落ちる。**この非対称を意図された振る舞いとして固定する** ---
+// deleting の原本に対してエンコードを走らせてはいけない（unlink 中のファイルを
+// 読む）ので、409 にして UI にエラーを見せるのが正しい。判定を
+// `state <> 'deleted'` に緩めるとこのテストが落ちる。
+func TestAddRecordingEncodeProfiles_OriginalDeleting_Returns409(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	riverClient, err := worker.NewInsertOnlyClient(pool)
+	if err != nil {
+		t.Fatalf("creating insert-only river client: %v", err)
+	}
+	router := NewRouter(RouterConfig{
+		Pool:               pool,
+		RiverClient:        riverClient,
+		EncodeProfileNames: []string{"h264"},
+	})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	id := seedRecording(t, pool, "原本 unlink 待ち", time.Now().Truncate(time.Second), "finished", 204)
+	seedIngested(t, pool, id, 500, nil)
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE media_assets SET state = 'deleting'
+		 WHERE recording_id = $1 AND kind = 'original'`, id,
+	); err != nil {
+		t.Fatalf("marking original deleting: %v", err)
+	}
+
+	resp := postEncodeProfiles(t, encodeProfilesURL(srv.URL, id), []string{"h264"})
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("status = %d, want 409（deleting の原本でエンコードを走らせてはいけない）", resp.StatusCode)
+	}
+	if got := getRecordingEncodeProfiles(t, pool, id); len(got) != 0 {
+		t.Errorf("encode_profiles after 409 = %v, want unchanged (empty)", got)
+	}
+}
+
 // 存在しない録画 ID には 404。
 func TestAddRecordingEncodeProfiles_NotFound(t *testing.T) {
 	pool := testutil.SetupDB(t)

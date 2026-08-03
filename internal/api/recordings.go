@@ -262,8 +262,12 @@ func (h *Server) AddRecordingEncodeProfiles(ctx context.Context, req AddRecordin
 	// なるため、サイレントな失敗にしないよう api 層で先に検査する）。
 	if _, err := q.GetActiveOriginalMediaAsset(ctx, req.Id); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
+			// 「削除済み」に限らず deleting（unlink 待ち）も含む --- 一覧の射影は
+			// state <> 'deleted' なので UI 側は deleting を「原本あり」と見て
+			// ボタンを出しうる（issue #105 の経路で active に戻ることもある）。
+			// その場合ここに落ちるので、文言は両方を含む形にする。
 			return AddRecordingEncodeProfiles409JSONResponse{
-				Error: "original media asset already deleted; cannot add encode profiles",
+				Error: "no encodable original media asset (deleted or being deleted); cannot add encode profiles",
 			}, nil
 		}
 		return nil, fmt.Errorf("loading original media asset for recording %d: %w", req.Id, err)
