@@ -122,8 +122,13 @@ type Recording struct {
 	QualityEvents     json.RawMessage `json:"qualityEvents"`
 	DeletedAt         *time.Time      `json:"deletedAt,omitempty"`
 	PurgeAfter        *time.Time      `json:"purgeAfter,omitempty"`
-	CreatedAt         time.Time       `json:"createdAt"`
-	UpdatedAt         time.Time       `json:"updatedAt"`
+	// SupersededAt は「この行が active-event の枠を明け渡した」不可逆な事実
+	// （issue #129 症状 2）。落とすと rescue 側で superseded 行と生きている行が
+	// どちらも live に戻り、recordings_unique_active_event に衝突して復旧が
+	// 落ちる。古い世代のカタログには存在しないので omitempty（nil = live）。
+	SupersededAt *time.Time `json:"supersededAt,omitempty"`
+	CreatedAt    time.Time  `json:"createdAt"`
+	UpdatedAt    time.Time  `json:"updatedAt"`
 }
 
 // MediaAsset は media_assets の 1 行。

@@ -888,7 +888,7 @@ INSERT INTO recordings (
     program_start_at, program_duration_ms,
     status, started_at, ended_at,
     keep_original, encode_profiles, quality_events,
-    deleted_at, purge_after, created_at, updated_at
+    deleted_at, purge_after, superseded_at, created_at, updated_at
 ) OVERRIDING SYSTEM VALUE
 VALUES (
     $1, NULL, $2, $3, $4,
@@ -898,7 +898,7 @@ VALUES (
     $16, $17,
     $18, $19, $20,
     $21, $22, $23,
-    $24, $25, $26, $27
+    $24, $25, $26, $27, $28
 )
 ON CONFLICT (id) DO UPDATE SET
     reservation_id      = NULL,
@@ -926,6 +926,9 @@ ON CONFLICT (id) DO UPDATE SET
     quality_events      = EXCLUDED.quality_events,
     deleted_at          = EXCLUDED.deleted_at,
     purge_after         = EXCLUDED.purge_after,
+    -- superseded_at を落とすと、復旧時に superseded 行が live に戻って
+    -- recordings_unique_active_event に衝突する（issue #129 症状 2）。
+    superseded_at       = EXCLUDED.superseded_at,
     created_at          = EXCLUDED.created_at,
     updated_at          = EXCLUDED.updated_at
 `
@@ -956,6 +959,7 @@ type CatalogUpsertRecordingParams struct {
 	QualityEvents     json.RawMessage
 	DeletedAt         *time.Time
 	PurgeAfter        *time.Time
+	SupersededAt      *time.Time
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
 }
@@ -988,6 +992,7 @@ func (q *Queries) CatalogUpsertRecording(ctx context.Context, arg CatalogUpsertR
 		arg.QualityEvents,
 		arg.DeletedAt,
 		arg.PurgeAfter,
+		arg.SupersededAt,
 		arg.CreatedAt,
 		arg.UpdatedAt,
 	)
