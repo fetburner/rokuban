@@ -25,7 +25,18 @@ WHERE r.site = $1
   AND r.program_id <> sqlc.arg(target_program_id)::bigint
   AND NOT EXISTS (
       SELECT 1 FROM recordings rec
-      WHERE rec.reservation_id = r.id
+      -- 宛先のキーは**放送イベント**であって予約 id ではない。
+      -- reservations.id は ruler の導出削除・再実体化で変わる不安定な値で
+      -- （#53 が mirakc の tag を program:{programId} に移した理由。#99 も同じ）、
+      -- recordings.reservation_id は ON DELETE SET NULL である。予約 id で
+      -- 引くと、EPG フリッカーやルール編集で予約行が作り直された瞬間に
+      -- 「never-scheduled 行が無い」ことになり、終了済み予約が毎パス desired に
+      -- 戻り続ける（CLAUDE.md 不変条件 9 の identity: 導出器が作るキーを
+      -- 宛先にしない）。
+      WHERE rec.site = r.site
+        AND rec.network_id = s.network_id
+        AND rec.service_id = s.service_id
+        AND rec.event_id = s.event_id
         AND rec.status = 'failed'
         AND EXISTS (
             SELECT 1 FROM jsonb_array_elements(rec.quality_events) qe

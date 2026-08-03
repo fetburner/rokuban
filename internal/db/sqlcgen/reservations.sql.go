@@ -97,7 +97,16 @@ const getReservationFull = `-- name: GetReservationFull :one
 SELECT r.id, r.site, r.program_id, r.rule_id, r.base, r.created_at, r.updated_at, r.dedup_match_recording_id, r.dedup_similarity, s.site, s.program_id, s.title, s.start_at, s.duration_ms, s.network_id, s.service_id, s.channel_type, s.channel, s.updated_at, s.event_id, s.service_name, i.action AS intent_action, o.overrides AS overrides,
        EXISTS (
            SELECT 1 FROM recordings rec
-           WHERE rec.reservation_id = r.id AND rec.status = 'failed'
+           WHERE rec.site = r.site
+             AND rec.network_id = s.network_id
+             AND rec.service_id = s.service_id
+             AND rec.event_id = s.event_id
+             AND rec.status = 'failed'
+             AND rec.deleted_at IS NULL AND rec.superseded_at IS NULL
+             AND EXISTS (
+                 SELECT 1 FROM jsonb_array_elements(rec.quality_events) qe
+                 WHERE qe->>'event' = 'recording.never-scheduled'
+             )
        ) AS never_recorded
 FROM reservations r
 JOIN program_snapshots s ON s.site = r.site AND s.program_id = r.program_id
@@ -121,11 +130,23 @@ type GetReservationFullRow struct {
 // あるので必ず存在する（INNER JOIN）。
 //
 // never_recorded は issue #98 で orphaned_at の代わりに導出する列（読むたびに
-// 評価。CLAUDE.md 不変条件 9）。「この予約に紐づく status='failed' の
-// recordings 行が存在するか」を都度 EXISTS で問う --- reconciler が番組終了時に
-// 作る never-scheduled 行（recording.never-scheduled）も、mirakc 由来の
-// 途中失敗（handleRecordingFailed が作る行）も区別せず「録れなかった」の
-// 表示に使ってよい（api.reservationState のコメント参照）。
+// 評価。CLAUDE.md 不変条件 9）。
+//
+// 述語は 3 つの条件の積で、それぞれ理由が違う:
+//
+//  1. **放送イベントで引く**（予約 id ではない）。reservations.id は ruler の
+//     導出削除・再実体化で変わる不安定な値で、recordings.reservation_id は
+//     ON DELETE SET NULL。予約 id で引くと予約が作り直された瞬間に表示が
+//     「録れた」に戻る（不変条件 9 の identity。#53 / #99 と同じ話）
+//  2. **never-scheduled マーカーに限る**。mirakc 由来の途中失敗
+//     （handleRecordingFailed が作る failed 行）まで含めると、放送中の番組が
+//     mirakc の再スケジュール待ちの間に「録れなかった」と表示される ---
+//     旧 orphaned_at は「番組終了かつ schedule 非観測」でしか立たなかったので
+//     これは退行にあたる。失敗そのものは録画一覧（recordings）に見えている
+//  3. **live な行に限る**（deleted_at / superseded_at が NULL）。後から本物の
+//     record が着地すると never-scheduled 行は supersede される（#129 /
+//     #143 の「本物の record が推論に必ず勝つ」）ので、この条件があるだけで
+//     「録れたのに orphaned のまま」（#59）が構造的に消える
 func (q *Queries) GetReservationFull(ctx context.Context, id int64) (GetReservationFullRow, error) {
 	row := q.db.QueryRow(ctx, getReservationFull, id)
 	var i GetReservationFullRow
@@ -162,7 +183,16 @@ const listReservationsBySite = `-- name: ListReservationsBySite :many
 SELECT r.id, r.site, r.program_id, r.rule_id, r.base, r.created_at, r.updated_at, r.dedup_match_recording_id, r.dedup_similarity, s.site, s.program_id, s.title, s.start_at, s.duration_ms, s.network_id, s.service_id, s.channel_type, s.channel, s.updated_at, s.event_id, s.service_name, i.action AS intent_action, o.overrides AS overrides,
        EXISTS (
            SELECT 1 FROM recordings rec
-           WHERE rec.reservation_id = r.id AND rec.status = 'failed'
+           WHERE rec.site = r.site
+             AND rec.network_id = s.network_id
+             AND rec.service_id = s.service_id
+             AND rec.event_id = s.event_id
+             AND rec.status = 'failed'
+             AND rec.deleted_at IS NULL AND rec.superseded_at IS NULL
+             AND EXISTS (
+                 SELECT 1 FROM jsonb_array_elements(rec.quality_events) qe
+                 WHERE qe->>'event' = 'recording.never-scheduled'
+             )
        ) AS never_recorded
 FROM reservations r
 JOIN program_snapshots s ON s.site = r.site AND s.program_id = r.program_id
@@ -235,7 +265,18 @@ LEFT JOIN program_overrides o ON o.site = r.site AND o.program_id = r.program_id
 WHERE r.site = $1
   AND NOT EXISTS (
       SELECT 1 FROM recordings rec
-      WHERE rec.reservation_id = r.id
+      -- 宛先のキーは**放送イベント**であって予約 id ではない。
+      -- reservations.id は ruler の導出削除・再実体化で変わる不安定な値で
+      -- （#53 が mirakc の tag を program:{programId} に移した理由。#99 も同じ）、
+      -- recordings.reservation_id は ON DELETE SET NULL である。予約 id で
+      -- 引くと、EPG フリッカーやルール編集で予約行が作り直された瞬間に
+      -- 「never-scheduled 行が無い」ことになり、終了済み予約が毎パス desired に
+      -- 戻り続ける（CLAUDE.md 不変条件 9 の identity: 導出器が作るキーを
+      -- 宛先にしない）。
+      WHERE rec.site = r.site
+        AND rec.network_id = s.network_id
+        AND rec.service_id = s.service_id
+        AND rec.event_id = s.event_id
         AND rec.status = 'failed'
         AND EXISTS (
             SELECT 1 FROM jsonb_array_elements(rec.quality_events) qe
