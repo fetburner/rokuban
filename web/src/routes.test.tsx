@@ -22,7 +22,7 @@ describe('routeTree', () => {
       '/search',
       '/rules',
       '/reservations',
-      '/reservations/$reservationId',
+      '/reservations/$site/$programId',
       '/recordings',
     ])
   })

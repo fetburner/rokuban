@@ -1069,7 +1069,7 @@ type ServerInterface interface {
 	// ListReservations List reservations
 	// (GET /api/reservations)
 	ListReservations(w http.ResponseWriter, r *http.Request)
-	// GetReservation Get a reservation
+	// GetReservation Get a reservation by its (unstable) derived id
 	// (GET /api/reservations/{id})
 	GetReservation(w http.ResponseWriter, r *http.Request, id int64)
 	// ListRules List recording rules
@@ -1114,6 +1114,9 @@ type ServerInterface interface {
 	// PatchProgramOverrides Update per-program overrides
 	// (PATCH /api/sites/{site}/programs/{programId}/overrides)
 	PatchProgramOverrides(w http.ResponseWriter, r *http.Request, site Site, programId ProgramId)
+	// GetProgramReservation Get the reservation for a program, keyed by (site, programId)
+	// (GET /api/sites/{site}/programs/{programId}/reservation)
+	GetProgramReservation(w http.ResponseWriter, r *http.Request, site Site, programId ProgramId)
 	// ListServices List EPG services (channels)
 	// (GET /api/sites/{site}/services)
 	ListServices(w http.ResponseWriter, r *http.Request, site Site)
@@ -1189,7 +1192,7 @@ func (_ Unimplemented) ListReservations(w http.ResponseWriter, r *http.Request) 
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// GetReservation Get a reservation
+// GetReservation Get a reservation by its (unstable) derived id
 // (GET /api/reservations/{id})
 func (_ Unimplemented) GetReservation(w http.ResponseWriter, r *http.Request, id int64) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -1276,6 +1279,12 @@ func (_ Unimplemented) DeleteProgramOverrides(w http.ResponseWriter, r *http.Req
 // PatchProgramOverrides Update per-program overrides
 // (PATCH /api/sites/{site}/programs/{programId}/overrides)
 func (_ Unimplemented) PatchProgramOverrides(w http.ResponseWriter, r *http.Request, site Site, programId ProgramId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// GetProgramReservation Get the reservation for a program, keyed by (site, programId)
+// (GET /api/sites/{site}/programs/{programId}/reservation)
+func (_ Unimplemented) GetProgramReservation(w http.ResponseWriter, r *http.Request, site Site, programId ProgramId) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -2041,6 +2050,41 @@ func (siw *ServerInterfaceWrapper) PatchProgramOverrides(w http.ResponseWriter, 
 	handler.ServeHTTP(w, r)
 }
 
+// GetProgramReservation operation middleware
+func (siw *ServerInterfaceWrapper) GetProgramReservation(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "site" -------------
+	var site Site
+
+	err = runtime.BindStyledParameterWithOptions("simple", "site", chi.URLParam(r, "site"), &site, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "site", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "programId" -------------
+	var programId ProgramId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "programId", chi.URLParam(r, "programId"), &programId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "programId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetProgramReservation(w, r, site, programId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ListServices operation middleware
 func (siw *ServerInterfaceWrapper) ListServices(w http.ResponseWriter, r *http.Request) {
 
@@ -2237,6 +2281,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/api/reservations/{id}", wrapper.GetReservation)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/sites/{site}/programs/{programId}/reservation", wrapper.GetProgramReservation)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/api/sites/{site}/services", wrapper.ListServices)
@@ -3165,6 +3212,43 @@ func (response PatchProgramOverrides400JSONResponse) VisitPatchProgramOverridesR
 	return err
 }
 
+type GetProgramReservationRequestObject struct {
+	Site      Site      `json:"site"`
+	ProgramId ProgramId `json:"programId"`
+}
+
+type GetProgramReservationResponseObject interface {
+	VisitGetProgramReservationResponse(w http.ResponseWriter) error
+}
+
+type GetProgramReservation200JSONResponse Reservation
+
+func (response GetProgramReservation200JSONResponse) VisitGetProgramReservationResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetProgramReservation404JSONResponse ErrorResponse
+
+func (response GetProgramReservation404JSONResponse) VisitGetProgramReservationResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type ListServicesRequestObject struct {
 	Site Site `json:"site"`
 }
@@ -3275,7 +3359,7 @@ type StrictServerInterface interface {
 	// ListReservations List reservations
 	// (GET /api/reservations)
 	ListReservations(ctx context.Context, request ListReservationsRequestObject) (ListReservationsResponseObject, error)
-	// GetReservation Get a reservation
+	// GetReservation Get a reservation by its (unstable) derived id
 	// (GET /api/reservations/{id})
 	GetReservation(ctx context.Context, request GetReservationRequestObject) (GetReservationResponseObject, error)
 	// ListRules List recording rules
@@ -3320,6 +3404,9 @@ type StrictServerInterface interface {
 	// PatchProgramOverrides Update per-program overrides
 	// (PATCH /api/sites/{site}/programs/{programId}/overrides)
 	PatchProgramOverrides(ctx context.Context, request PatchProgramOverridesRequestObject) (PatchProgramOverridesResponseObject, error)
+	// GetProgramReservation Get the reservation for a program, keyed by (site, programId)
+	// (GET /api/sites/{site}/programs/{programId}/reservation)
+	GetProgramReservation(ctx context.Context, request GetProgramReservationRequestObject) (GetProgramReservationResponseObject, error)
 	// ListServices List EPG services (channels)
 	// (GET /api/sites/{site}/services)
 	ListServices(ctx context.Context, request ListServicesRequestObject) (ListServicesResponseObject, error)
@@ -4053,6 +4140,33 @@ func (sh *strictHandler) PatchProgramOverrides(w http.ResponseWriter, r *http.Re
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(PatchProgramOverridesResponseObject); ok {
 		if err := validResponse.VisitPatchProgramOverridesResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetProgramReservation operation middleware
+func (sh *strictHandler) GetProgramReservation(w http.ResponseWriter, r *http.Request, site Site, programId ProgramId) {
+	var request GetProgramReservationRequestObject
+
+	request.Site = site
+	request.ProgramId = programId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetProgramReservation(ctx, request.(GetProgramReservationRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetProgramReservation")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetProgramReservationResponseObject); ok {
+		if err := validResponse.VisitGetProgramReservationResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

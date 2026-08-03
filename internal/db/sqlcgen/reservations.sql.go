@@ -179,6 +179,80 @@ func (q *Queries) GetReservationFull(ctx context.Context, id int64) (GetReservat
 	return i, err
 }
 
+const getReservationFullBySiteAndProgramID = `-- name: GetReservationFullBySiteAndProgramID :one
+SELECT r.id, r.site, r.program_id, r.rule_id, r.base, r.created_at, r.updated_at, r.dedup_match_recording_id, r.dedup_similarity, s.site, s.program_id, s.title, s.start_at, s.duration_ms, s.network_id, s.service_id, s.channel_type, s.channel, s.updated_at, s.event_id, s.service_name, i.action AS intent_action, o.overrides AS overrides,
+       EXISTS (
+           SELECT 1 FROM recordings rec
+           WHERE rec.site = r.site
+             AND rec.network_id = s.network_id
+             AND rec.service_id = s.service_id
+             AND rec.event_id = s.event_id
+             AND rec.status = 'failed'
+             AND rec.deleted_at IS NULL AND rec.superseded_at IS NULL
+             AND EXISTS (
+                 SELECT 1 FROM jsonb_array_elements(rec.quality_events) qe
+                 WHERE qe->>'event' = 'recording.never-scheduled'
+             )
+       ) AS never_recorded
+FROM reservations r
+JOIN program_snapshots s ON s.site = r.site AND s.program_id = r.program_id
+LEFT JOIN program_intents i ON i.site = r.site AND i.program_id = r.program_id
+LEFT JOIN program_overrides o ON o.site = r.site AND o.program_id = r.program_id
+WHERE r.site = $1 AND r.program_id = $2
+`
+
+type GetReservationFullBySiteAndProgramIDParams struct {
+	Site      string
+	ProgramID int64
+}
+
+type GetReservationFullBySiteAndProgramIDRow struct {
+	Reservation     Reservation
+	ProgramSnapshot ProgramSnapshot
+	IntentAction    *string
+	Overrides       json.RawMessage
+	NeverRecorded   bool
+}
+
+// GetReservationFull と同じ形だが、宛先を r.id ではなく (site, program_id) にする
+// (issue #99)。書き込み側（program_intents / program_overrides、issue #29）は
+// 既にこのキーに寄っていたが、読み取り（GET /api/reservations/{id}・UI の
+// ディープリンク・クエリキャッシュ）は reservations.id という ruler の導出削除・
+// 再実体化で変わりうる不安定な値のままだった。UNIQUE (site, program_id) が
+// 既にあるのでキーとして成立する（#53 が mirakc の tag を program:{programId} に
+// 変えたのと同じ論法）。never_recorded の導出は GetReservationFull と同じ。
+func (q *Queries) GetReservationFullBySiteAndProgramID(ctx context.Context, arg GetReservationFullBySiteAndProgramIDParams) (GetReservationFullBySiteAndProgramIDRow, error) {
+	row := q.db.QueryRow(ctx, getReservationFullBySiteAndProgramID, arg.Site, arg.ProgramID)
+	var i GetReservationFullBySiteAndProgramIDRow
+	err := row.Scan(
+		&i.Reservation.ID,
+		&i.Reservation.Site,
+		&i.Reservation.ProgramID,
+		&i.Reservation.RuleID,
+		&i.Reservation.Base,
+		&i.Reservation.CreatedAt,
+		&i.Reservation.UpdatedAt,
+		&i.Reservation.DedupMatchRecordingID,
+		&i.Reservation.DedupSimilarity,
+		&i.ProgramSnapshot.Site,
+		&i.ProgramSnapshot.ProgramID,
+		&i.ProgramSnapshot.Title,
+		&i.ProgramSnapshot.StartAt,
+		&i.ProgramSnapshot.DurationMs,
+		&i.ProgramSnapshot.NetworkID,
+		&i.ProgramSnapshot.ServiceID,
+		&i.ProgramSnapshot.ChannelType,
+		&i.ProgramSnapshot.Channel,
+		&i.ProgramSnapshot.UpdatedAt,
+		&i.ProgramSnapshot.EventID,
+		&i.ProgramSnapshot.ServiceName,
+		&i.IntentAction,
+		&i.Overrides,
+		&i.NeverRecorded,
+	)
+	return i, err
+}
+
 const listReservationsBySite = `-- name: ListReservationsBySite :many
 SELECT r.id, r.site, r.program_id, r.rule_id, r.base, r.created_at, r.updated_at, r.dedup_match_recording_id, r.dedup_similarity, s.site, s.program_id, s.title, s.start_at, s.duration_ms, s.network_id, s.service_id, s.channel_type, s.channel, s.updated_at, s.event_id, s.service_name, i.action AS intent_action, o.overrides AS overrides,
        EXISTS (

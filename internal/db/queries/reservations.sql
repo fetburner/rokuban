@@ -71,6 +71,34 @@ LEFT JOIN program_intents i ON i.site = r.site AND i.program_id = r.program_id
 LEFT JOIN program_overrides o ON o.site = r.site AND o.program_id = r.program_id
 WHERE r.id = $1;
 
+-- GetReservationFull と同じ形だが、宛先を r.id ではなく (site, program_id) にする
+-- (issue #99)。書き込み側（program_intents / program_overrides、issue #29）は
+-- 既にこのキーに寄っていたが、読み取り（GET /api/reservations/{id}・UI の
+-- ディープリンク・クエリキャッシュ）は reservations.id という ruler の導出削除・
+-- 再実体化で変わりうる不安定な値のままだった。UNIQUE (site, program_id) が
+-- 既にあるのでキーとして成立する（#53 が mirakc の tag を program:{programId} に
+-- 変えたのと同じ論法）。never_recorded の導出は GetReservationFull と同じ。
+-- name: GetReservationFullBySiteAndProgramID :one
+SELECT sqlc.embed(r), sqlc.embed(s), i.action AS intent_action, o.overrides AS overrides,
+       EXISTS (
+           SELECT 1 FROM recordings rec
+           WHERE rec.site = r.site
+             AND rec.network_id = s.network_id
+             AND rec.service_id = s.service_id
+             AND rec.event_id = s.event_id
+             AND rec.status = 'failed'
+             AND rec.deleted_at IS NULL AND rec.superseded_at IS NULL
+             AND EXISTS (
+                 SELECT 1 FROM jsonb_array_elements(rec.quality_events) qe
+                 WHERE qe->>'event' = 'recording.never-scheduled'
+             )
+       ) AS never_recorded
+FROM reservations r
+JOIN program_snapshots s ON s.site = r.site AND s.program_id = r.program_id
+LEFT JOIN program_intents i ON i.site = r.site AND i.program_id = r.program_id
+LEFT JOIN program_overrides o ON o.site = r.site AND o.program_id = r.program_id
+WHERE r.site = $1 AND r.program_id = $2;
+
 -- never_recorded は GetReservationFull と同じ導出（コメント参照）。
 -- name: ListReservationsBySite :many
 SELECT sqlc.embed(r), sqlc.embed(s), i.action AS intent_action, o.overrides AS overrides,
