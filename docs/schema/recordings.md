@@ -39,6 +39,13 @@ CREATE TABLE recordings (
     -- mirakc の reason を jsonb のまま保持し、構造化カラムにはしない（不変条件 7）
     quality_events    jsonb NOT NULL DEFAULT '[]',
 
+    -- 「本物の record が推論に必ず勝つ」（issue #98 の決定、issue #129 症状 2）で
+    -- 追加。この行が同一 active-event の枠を明け渡した不可逆な事実だけを持つ
+    -- （§「同一イベントの重複防止」参照）。ユーザーの「ごみ箱送り」を表す
+    -- deleted_at とは別列（不変条件 9: 2 つの異なる「消える理由」を同じ列に
+    -- 混ぜない）。
+    superseded_at     timestamptz,
+
     -- ごみ箱（録画単位の論理削除。原本 + 派生物 + サムネイルのグループごと）
     deleted_at        timestamptz,
     -- 即時物理削除の要求印（M3-7 / 00018）。ファイルは消さない。
@@ -64,6 +71,7 @@ CREATE INDEX ON recordings (purge_after) WHERE purge_after IS NOT NULL;  -- 即�
 
 - watcher が mirakc record を初観測（SSE または全量突き合わせ）→ record の program / service ペイロードからスナップショットして INSERT、`record_sync` 行から参照
 - `recording.failed` で record が存在しないケース（start-recording-failed 等）→ status = `failed` の行を作り quality_events に理由を記録。**録画されなかった試行も履歴に残る**
+- 同一 active-event に上記の failed 行が既にある状態で、後から成功 record が初観測されたとき → failed 行を supersede してから新しい行を INSERT する（下記「同一イベントの重複防止」の `superseded_at` 参照。issue #129 症状 2）
 - ingest の完了は recordings の status ではなく **`media_assets` 行の有無**で表現する（コミット = DB 行。冗長な状態カラムを持たない）
 
 ### status の権威（issue #130）
@@ -86,17 +94,30 @@ CREATE INDEX ON recordings (purge_after) WHERE purge_after IS NOT NULL;  -- 即�
 - 物理削除後も recordings 行と media_assets の tombstone は残る → ごみ箱を空にしても録画履歴・ドロップ統計・重複排除は壊れない
 - API: `DELETE /api/recordings/{id}` / `POST .../restore` / `POST .../purge` / `GET /api/recordings?trash=true`
 
-### 同一イベントの重複防止（`00003`）
+### 同一イベントの重複防止（`00003` / `00023`）
 
 ```sql
 CREATE UNIQUE INDEX recordings_unique_active_event
     ON recordings (site, network_id, service_id, event_id)
-    WHERE deleted_at IS NULL;
+    WHERE deleted_at IS NULL AND superseded_at IS NULL;
 ```
 
-**録画試行の履歴は複数行を許すが、「生きている録画」は 1 イベントにつき 1 つ**。`deleted_at IS NULL` の部分インデックスなので、ごみ箱に入れた後で録り直すことはできる。
+**録画試行の履歴は複数行を許すが、「生きている録画」は 1 イベントにつき 1 つ**。`deleted_at IS NULL AND superseded_at IS NULL` の部分インデックスなので、ごみ箱に入れた後で録り直すこともできるし（`deleted_at`）、後述の supersede で枠を明け渡した後で本物の record が録り直すこともできる（`superseded_at`）。
 
 この制約があるため、watcher が同一 record を並行処理すると片方が制約違反で失敗する。`processRecord` は `record_sync` の行を先に確保して直列化することでこれを避けている（[録画エンジン](../recording.md) §3.3「record 処理は並行実行しても壊れない」）。
+
+INSERT で `ON CONFLICT` を使うクエリ（`CreateFailedRecording` / `UpsertInPlaceRecording`）は、この索引と述語を一字一句一致させる必要がある。ずれると Postgres が「there is no unique or exclusion constraint matching the ON CONFLICT specification」で落ちる。
+
+#### `superseded_at`: 本物の record が推論に必ず勝つ（issue #98 / #129 症状 2）
+
+`need-rescheduling` 等で `status='failed'` の行がこの枠を占有したまま残っているところに、mirakc が同一 active-event を後で録り直して成功 record を報告することがある（delayed broadcast、mirakc 側の手動再録画等）。この成功 record は無条件で枠を得られなければならない —— 「本物の record が推論に必ず勝つ」という規則の最初の適用がこれで、`recordings` に将来入る推論由来の行（#98 で検討中。まだ存在しない）にも同じ規則が及ぶ。
+
+watcher の `createRecording`（`internal/watcher/watcher.go`）は `CreateRecording` の直前に `SupersedeFailedRecording`（`internal/db/queries/recordings.sql`）を呼び、同一 active-event に生きている（`deleted_at IS NULL AND superseded_at IS NULL`）`status='failed'` の行があれば `superseded_at = now()` を立てて枠を明け渡させる。この 2 つは意図的に別々の SQL 文にしてある —— 1 つの `WITH` 句にまとめると、Postgres は「`WITH` 内のデータ変更文は主クエリと同時並行に実行され順序不定」であるため、UPDATE が INSERT より先に確定する保証がなく、実機のテストで実際に一意制約違反を起こすことを確認した。
+
+- `status='failed'` の行だけを対象にする。`'recording'`/`'finished'`/`'canceled'` の生きている行と衝突する INSERT は、本当の重複 record（要調査対象の異常）として素の一意制約違反のまま従来どおりエラーにする
+- `media_assets` を持つ failed 行（途中まで録れて failed になった行）でも扱いは同じ: superseded にするだけで `media_assets.recording_id` は書き換えない。ファイルの所有者は superseded になった旧 `recordings` 行のままで、物理削除は削除 reconcile が `recordings.deleted_at` を見て判断するため、superseded だけでは何も物理的に消えない
+- 冪等: `processRecord` は `record_sync` の `(site, record_id)` 行ロックで、同一 record の 2 回目以降は `createRecording` 自体を呼ばない（[録画エンジン](../recording.md) §3.3）ので、`superseded_at` が二重に進んだり行が重複したりしない
+- superseded にした行は `deleted_at` を立てない（ユーザーが消したわけではない）ので、録画一覧には失敗した旧行と成功した新行の両方が履歴として残り続ける
 
 ## 6. media_assets — メディアアセット（永続資産）
 

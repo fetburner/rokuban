@@ -153,6 +153,7 @@ type Recording struct {
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
 	PurgeAfter        *time.Time
+	SupersededAt      *time.Time
 }
 
 type Reservation struct {
