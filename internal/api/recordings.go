@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/worker"
 )
 
 // recordingListFields は ListRecordings / ListTrashRecordings が共有する射影。
@@ -42,6 +43,10 @@ type recordingListFields struct {
 	DropErrors               int64
 	DropScrambled            int64
 	AvailableEncodedProfiles []string
+	// EncodeProfiles は凍結された desired 一覧（recordings.encode_profiles）。
+	// AvailableEncodedProfiles（observed、active のみ）とは異なり、pending な
+	// ジョブのプロファイルも含む。事後追加（issue #133）で増える唯一の経路。
+	EncodeProfiles []string
 }
 
 // recordingFromListFields は一覧行を API の Recording に写す。
@@ -86,6 +91,12 @@ func recordingFromListFields(r recordingListFields, includeDeletedAt bool) (Reco
 		profiles := append([]string(nil), r.AvailableEncodedProfiles...)
 		rec.EncodedProfiles = &profiles
 	}
+	// 凍結された desired 一覧。空なら省略（omitempty）。UI が「追加済み」を
+	// 判定するのに使う（issue #133）。
+	if len(r.EncodeProfiles) > 0 {
+		profiles := append([]string(nil), r.EncodeProfiles...)
+		rec.EncodeProfiles = &profiles
+	}
 	if len(r.QualityEvents) > 0 {
 		var events []map[string]any
 		if err := json.Unmarshal(r.QualityEvents, &events); err != nil {
@@ -123,6 +134,7 @@ func (h *Server) ListRecordings(ctx context.Context, req ListRecordingsRequestOb
 				OriginalSizeBytes: r.OriginalSizeBytes,
 				DropPackets:       r.DropPackets, DropDrops: r.DropDrops,
 				DropErrors: r.DropErrors, DropScrambled: r.DropScrambled,
+				EncodeProfiles: r.EncodeProfiles,
 			}, true)
 			if err != nil {
 				return nil, err
@@ -148,6 +160,7 @@ func (h *Server) ListRecordings(ctx context.Context, req ListRecordingsRequestOb
 				DropPackets:       r.DropPackets, DropDrops: r.DropDrops,
 				DropErrors: r.DropErrors, DropScrambled: r.DropScrambled,
 				AvailableEncodedProfiles: r.AvailableEncodedProfiles,
+				EncodeProfiles:           r.EncodeProfiles,
 			}, false)
 			if err != nil {
 				return nil, err
@@ -203,6 +216,89 @@ func (h *Server) PurgeRecording(ctx context.Context, req PurgeRecordingRequestOb
 		return nil, fmt.Errorf("marking recording %d for purge: %w", req.Id, err)
 	}
 	return PurgeRecording204Response{}, nil
+}
+
+// AddRecordingEncodeProfiles は凍結済み encode_profiles への「事後追加」（issue
+// #133、凍結の例外。docs/storage.md §6「原本 TS の保持ポリシー」・
+// docs/recording/reservation-model.md §4.5「録画開始後の編集」）。
+//
+// AppendRecordingEncodeProfiles で追加専用（union + dedup）に書き、全置換は
+// しない --- 誤って他プロファイルの指定を消す事故を避けるため（issue #133
+// 「決めること 3」）。
+//
+// 原本が既に削除済み（GetActiveOriginalMediaAsset が ErrNoRows）なら 409 を返す。
+// EnqueueMissingEncodes は単体だとこのケースで黙って return するため
+// （サイレント no-op）、ここで明示的に検査する。
+//
+// encode_profiles の更新と encode_enqueue_hint ジョブの投入は同一トランザクション
+// で行う（insertEncodeEnqueueHint。rules.go の insertRulerPassHint と同じ
+// パターン）。実際の encode ジョブ投入（EnqueueMissingEncodes）は
+// EncodeEnqueueHintWorker が worker ロール側で行う（internal/worker/encode.go の
+// EncodeEnqueueHintArgs の doc コメント参照 --- api → worker の結合パターンを
+// ヒントジョブ経由に揃える判断の理由）。
+func (h *Server) AddRecordingEncodeProfiles(ctx context.Context, req AddRecordingEncodeProfilesRequestObject) (AddRecordingEncodeProfilesResponseObject, error) {
+	if req.Body == nil || len(req.Body.Profiles) == 0 {
+		return AddRecordingEncodeProfiles400JSONResponse{Error: "profiles must not be empty"}, nil
+	}
+	if err := h.validateEncodeProfiles(req.Body.Profiles); err != nil {
+		return AddRecordingEncodeProfiles400JSONResponse{Error: err.Error()}, nil
+	}
+
+	tx, err := h.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	q := sqlcgen.New(tx)
+	if _, err := q.GetRecordingByID(ctx, req.Id); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return AddRecordingEncodeProfiles404JSONResponse{Error: "recording not found"}, nil
+		}
+		return nil, fmt.Errorf("loading recording %d: %w", req.Id, err)
+	}
+
+	// 原本削除済みなら 409（罠: EnqueueMissingEncodes 単体はここで黙って no-op に
+	// なるため、サイレントな失敗にしないよう api 層で先に検査する）。
+	if _, err := q.GetActiveOriginalMediaAsset(ctx, req.Id); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return AddRecordingEncodeProfiles409JSONResponse{
+				Error: "original media asset already deleted; cannot add encode profiles",
+			}, nil
+		}
+		return nil, fmt.Errorf("loading original media asset for recording %d: %w", req.Id, err)
+	}
+
+	if err := q.AppendRecordingEncodeProfiles(ctx, sqlcgen.AppendRecordingEncodeProfilesParams{
+		ID:       req.Id,
+		Profiles: req.Body.Profiles,
+	}); err != nil {
+		return nil, fmt.Errorf("appending encode profiles for recording %d: %w", req.Id, err)
+	}
+	if err := h.insertEncodeEnqueueHint(ctx, tx, req.Id); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return AddRecordingEncodeProfiles204Response{}, nil
+}
+
+// insertEncodeEnqueueHint は AddRecordingEncodeProfiles と同一トランザクションで
+// EncodeEnqueueHintArgs を InsertTx する（ヒント経路。rules.go の
+// insertRulerPassHint と同じパターン）。dual-write を避けるため、
+// encode_profiles の更新が失敗すればこのジョブも一緒にロールバックされる。
+//
+// h.river が nil の場合は何もしない（insertRulerPassHint と同じ理由。テストや、
+// 将来 River を持たない api 構成を許容するため）。
+func (h *Server) insertEncodeEnqueueHint(ctx context.Context, tx pgx.Tx, recordingID int64) error {
+	if h.river == nil {
+		return nil
+	}
+	if _, err := h.river.InsertTx(ctx, tx, worker.EncodeEnqueueHintArgs{RecordingID: recordingID}, nil); err != nil {
+		return fmt.Errorf("inserting encode_enqueue_hint: %w", err)
+	}
+	return nil
 }
 
 // ListRecordingDropStats は録画の PID 別ドロップ統計を返す。

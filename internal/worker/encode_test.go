@@ -577,3 +577,128 @@ func TestEncodeJobArgs_InsertOptsQueue(t *testing.T) {
 		t.Error("UniqueOpts.ByArgs should be true")
 	}
 }
+
+// EncodeEnqueueHintArgs（issue #133 の事後追加ヒントジョブ）は encode キューと
+// pending 状態での ByArgs 一意化を使うこと。
+func TestEncodeEnqueueHintArgs_InsertOptsQueue(t *testing.T) {
+	opts := EncodeEnqueueHintArgs{}.InsertOpts()
+	if opts.Queue != encodeQueue {
+		t.Errorf("Queue = %q, want %q", opts.Queue, encodeQueue)
+	}
+	if !opts.UniqueOpts.ByArgs {
+		t.Error("UniqueOpts.ByArgs should be true")
+	}
+}
+
+// river.ClientFromContextSafely が失敗する ctx（River の外から Work を直接呼んだ
+// 場合）では、ruler_pass 完了時の reconcile_pass ヒントのように黙って何もしない
+// のではなくエラーを返すこと。このジョブ自体の主目的が「encode ジョブを実際に
+// 投入すること」であるため、client が無いことをサイレントな no-op にすると
+// ユーザーの事後追加依頼が消えてしまう（EncodeEnqueueHintWorker.Work の doc
+// コメント参照）。
+func TestEncodeEnqueueHintWorker_Work_WithoutClient_Errors(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	w := &EncodeEnqueueHintWorker{Pool: pool}
+	job := &river.Job[EncodeEnqueueHintArgs]{
+		JobRow: &rivertype.JobRow{Attempt: 1, MaxAttempts: 25},
+		Args:   EncodeEnqueueHintArgs{RecordingID: 999999},
+	}
+	if err := w.Work(context.Background(), job); err == nil {
+		t.Fatal("expected error when no river client is attached to ctx, got nil")
+	}
+}
+
+// EncodeEnqueueHintWorker は EncodeEnqueueHintArgs ジョブを実際の River クライアント
+// 経由で処理すると、EnqueueMissingEncodes を呼んで desired（recordings.encode_profiles）
+// − observed（active encoded media_assets）の差分を encode ジョブとして投入すること。
+// 既に active encoded な h264 は再投入せず h265 だけが投入されることまで見る（issue
+// #133 の受け入れ「予約が無い録画で事後追加が成功し、encode_profiles に反映されて
+// encode ジョブが投入されること」の worker 側の裏付け --- api 側は
+// internal/api/recordings_encode_profiles_test.go が見る）。
+func TestEncodeEnqueueHintWorker_EnqueuesMissingEncodes(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	if _, err := pool.Exec(context.Background(), "DELETE FROM river_job"); err != nil {
+		t.Fatal(err)
+	}
+
+	mediaDir := t.TempDir()
+	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "hint/a.m2ts",
+		[]string{"h264", "h265"}, []byte("payload"))
+
+	h264 := "h264"
+	q := sqlcgen.New(pool)
+	if _, err := q.CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
+		RecordingID: recordingID,
+		Kind:        db.AssetKindEncoded,
+		Profile:     &h264,
+		RelPath:     "hint/a_h264.mp4",
+		SizeBytes:   1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	workers := NewWorkers(&Deps{Pool: pool})
+	client, err := NewClient(pool, workers, ClientConfig{})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	subscribeCh, subscribeCancel := client.Subscribe(river.EventKindJobCompleted)
+	defer subscribeCancel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := client.Start(ctx); err != nil {
+		t.Fatalf("starting client: %v", err)
+	}
+	defer func() {
+		cancel()
+		<-client.Stopped()
+	}()
+
+	if _, err := client.Insert(context.Background(), EncodeEnqueueHintArgs{RecordingID: recordingID}, nil); err != nil {
+		t.Fatalf("inserting encode_enqueue_hint job: %v", err)
+	}
+
+	deadline := time.After(20 * time.Second)
+	for {
+		select {
+		case event := <-subscribeCh:
+			if event.Job.Kind == "encode_enqueue_hint" {
+				goto hintCompleted
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for encode_enqueue_hint completion")
+		}
+	}
+hintCompleted:
+
+	var profiles []string
+	rows, err := pool.Query(context.Background(),
+		`SELECT args->>'profile' FROM river_job WHERE kind = 'encode' AND (args->>'recording_id')::bigint = $1`,
+		recordingID,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			t.Fatal(err)
+		}
+		profiles = append(profiles, p)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(profiles, []string{"h265"}) {
+		t.Errorf("enqueued profiles = %v, want [h265] (h264 は既に active encoded なので投入されない)", profiles)
+	}
+}

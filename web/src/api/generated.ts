@@ -54,6 +54,17 @@ export interface EncodeProfileSummary {
   container?: EncodeProfileSummaryContainer;
 }
 
+export interface AddEncodeProfilesInput {
+  /**
+     * 追加したいエンコードプロファイル名（config.encode.profiles に定義された
+     * 名前のみ許可。未知名は 400）。既存の recordings.encode_profiles には
+     * **追加専用**（union + dedup）で書かれ、全置換にはならない --- 既存の
+     * 指定を消す事故を避けるため。空配列は 400。
+     * @minItems 1
+     */
+  profiles: string[];
+}
+
 export interface ErrorResponse {
   error: string;
 }
@@ -200,6 +211,16 @@ export interface Recording {
      * desired（encode_profiles）ではなく observed。空配列は省略可。
      */
   encodedProfiles?: string[];
+  /**
+     * 凍結された「望ましい」エンコードプロファイル一覧（desired。
+     * recordings.encode_profiles）。ingest 完了時に一度だけ焼き込まれ、以後は
+     * `POST /api/recordings/{id}/encode-profiles` による事後追加（凍結の例外。
+     * docs/storage.md §6「原本 TS の保持ポリシー」）でのみ増える。
+     * `encodedProfiles`（observed、再生可能なもの）とは異なり、まだ完了して
+     * いない pending なジョブのプロファイルも含む --- UI が「追加済み」を
+     * 判定するのに使う。空配列は省略可。
+     */
+  encodeProfiles?: string[];
   dropSummary?: DropSummary;
   /** recording.failed / record-broken / bcas_anomaly の履歴 */
   qualityEvents?: RecordingQualityEventsItem[];
@@ -3276,6 +3297,120 @@ export const usePurgeRecording = <TError = ErrorResponse,
         TContext
       > => {
       return useMutation(getPurgeRecordingMutationOptions(options), queryClient);
+    }
+
+export type addRecordingEncodeProfilesResponse204 = {
+  data: void
+  status: 204
+}
+
+export type addRecordingEncodeProfilesResponse400 = {
+  data: ErrorResponse
+  status: 400
+}
+
+export type addRecordingEncodeProfilesResponse404 = {
+  data: ErrorResponse
+  status: 404
+}
+
+export type addRecordingEncodeProfilesResponse409 = {
+  data: ErrorResponse
+  status: 409
+}
+
+export type addRecordingEncodeProfilesResponseSuccess = (addRecordingEncodeProfilesResponse204) & {
+  headers: Headers;
+};
+export type addRecordingEncodeProfilesResponseError = (addRecordingEncodeProfilesResponse400 | addRecordingEncodeProfilesResponse404 | addRecordingEncodeProfilesResponse409) & {
+  headers: Headers;
+};
+
+export type addRecordingEncodeProfilesResponse = (addRecordingEncodeProfilesResponseSuccess | addRecordingEncodeProfilesResponseError)
+
+export const getAddRecordingEncodeProfilesUrl = (id: number,) => {
+
+
+
+
+  return `/api/recordings/${id}/encode-profiles`
+}
+
+/**
+ * `recordings.encode_profiles` は ingest 完了時に一度だけ焼き込まれる凍結値
+ * だが（docs/storage.md §6「原本 TS の保持ポリシー」）、ユーザー起点の事後
+ * 追加だけは凍結の例外として認める（issue #133）。**追加専用**（union +
+ * dedup）で書き、全置換にはしない --- 誤って他プロファイルの指定を消す事故を
+ * 避けるため。
+ *
+ * 原本が既に削除済み（`keep_original=until_encoded` でエンコード完了後に
+ * 原本削除 reconcile が消した等）の録画には 409 を返す。この場合
+ * `EnqueueMissingEncodes` は黙って no-op になるため、api 層で明示的に
+ * 検査してサイレントな失敗にしない。
+ *
+ * 既に完了済み/pending のプロファイル名を再指定してもエラーにはならず
+ * （River の UniqueOpts が二重投入を防ぐ）、冪等に 204 を返す。
+ * @summary Request additional encode profiles for an already-ingested recording
+ */
+export const addRecordingEncodeProfiles = async (id: number,
+    addEncodeProfilesInput: AddEncodeProfilesInput, options?: RequestInit): Promise<addRecordingEncodeProfilesResponse> => {
+
+  return customInstance<addRecordingEncodeProfilesResponse>(getAddRecordingEncodeProfilesUrl(id),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(addEncodeProfilesInput)
+  }
+);}
+
+
+
+
+
+export const getAddRecordingEncodeProfilesMutationOptions = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof addRecordingEncodeProfiles>>, TError,{id: number;data: AddEncodeProfilesInput}, TContext>, request?: SecondParameter<typeof customInstance>}
+): UseMutationOptions<Awaited<ReturnType<typeof addRecordingEncodeProfiles>>, TError,{id: number;data: AddEncodeProfilesInput}, TContext> => {
+
+const mutationKey = ['addRecordingEncodeProfiles'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof addRecordingEncodeProfiles>>, {id: number;data: AddEncodeProfilesInput}> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  addRecordingEncodeProfiles(id,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type AddRecordingEncodeProfilesMutationResult = NonNullable<Awaited<ReturnType<typeof addRecordingEncodeProfiles>>>
+    export type AddRecordingEncodeProfilesMutationBody = AddEncodeProfilesInput
+    export type AddRecordingEncodeProfilesMutationError = ErrorResponse
+
+    /**
+ * @summary Request additional encode profiles for an already-ingested recording
+ */
+export const useAddRecordingEncodeProfiles = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof addRecordingEncodeProfiles>>, TError,{id: number;data: AddEncodeProfilesInput}, TContext>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof addRecordingEncodeProfiles>>,
+        TError,
+        {id: number;data: AddEncodeProfilesInput},
+        TContext
+      > => {
+      return useMutation(getAddRecordingEncodeProfilesMutationOptions(options), queryClient);
     }
 
 export type listRecordingDropStatsResponse200 = {

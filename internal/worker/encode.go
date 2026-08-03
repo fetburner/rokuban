@@ -584,3 +584,63 @@ func enqueueMissingEncodesFromContext(ctx context.Context, pool *pgxpool.Pool, r
 			"recording_id", recordingID, "err", err)
 	}
 }
+
+// EncodeEnqueueHintArgs は事後追加されたエンコードプロファイルを反映するヒント
+// ジョブの引数（issue #133、凍結の例外としての事後追加。docs/storage.md §6
+// 「原本 TS の保持ポリシー」）。api の POST /api/recordings/{id}/encode-profiles
+// が recordings.encode_profiles の UPDATE と同一トランザクションで InsertTx する
+// （internal/api/recordings.go の insertEncodeEnqueueHint。rules.go の
+// insertRulerPassHint と同じヒント経路のパターン）。
+//
+// # ヒント経由にした理由（api → worker の結合パターンの一貫性）
+//
+// EnqueueMissingEncodes 自体は ffmpeg を exec しない（DB 読み取りと River Insert
+// のみ）ため、api ハンドラから直接呼んでも不変条件 4（ffmpeg/ffprobe の exec は
+// worker/streamer のみ）には反しない。それでも api → worker の既存の結合パターン
+// （RulerPassArgs、rules.go の insertRulerPassHint）に揃えてヒントジョブ経由にした
+// --- 「recordings.encode_profiles の更新」と「不足分の encode ジョブ投入」を
+// api ハンドラの 1 関数に同居させず、後者の実行を常に worker ロールの中で完結
+// させるため（一貫性。api が worker の実行ロジックを直接呼ぶ経路を増やさない）。
+type EncodeEnqueueHintArgs struct {
+	RecordingID int64 `json:"recording_id"`
+}
+
+// Kind は River ジョブの種別名を返す。
+func (EncodeEnqueueHintArgs) Kind() string { return "encode_enqueue_hint" }
+
+// InsertOpts は encode キューと UniqueOpts を返す。recording_id 単位で pending 中の
+// ヒントに合流させる（同じ録画への連続した追加依頼が重複ジョブを積まないように。
+// RulerPassArgs / EncodeJobArgs と同じ ByArgs + ByState の形）。
+func (EncodeEnqueueHintArgs) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{
+		Queue: encodeQueue,
+		UniqueOpts: river.UniqueOpts{
+			ByArgs:  true,
+			ByState: pendingJobStates,
+		},
+	}
+}
+
+// EncodeEnqueueHintWorker は EncodeEnqueueHintArgs を受けて EnqueueMissingEncodes
+// を呼ぶだけの薄いワーカー。ロジックは持たない（EnqueueMissingEncodes にそのまま
+// 委譲する。レベルトリガーなので呼び出しが遅れても・重複しても収束する）。
+type EncodeEnqueueHintWorker struct {
+	river.WorkerDefaults[EncodeEnqueueHintArgs]
+	Pool *pgxpool.Pool
+}
+
+// Work は EnqueueMissingEncodes を呼び、recordings.encode_profiles（desired）と
+// active encoded media_assets（observed）の差分を埋める encode ジョブを投入する。
+//
+// river.ClientFromContextSafely でジョブ実行中の Client を取り出す。取れない
+// （単体テストで Work を直接呼んだ等）場合はエラーを返して失敗させる ---
+// ruler_pass 完了時の reconcile_pass ヒント（ruler_pass.go）とは異なり、この
+// ジョブ自体の主目的が「encode ジョブを実際に投入すること」であるため、client が
+// 無いからと黙って何もしないとユーザーの事後追加依頼がサイレントに消える。
+func (w *EncodeEnqueueHintWorker) Work(ctx context.Context, job *river.Job[EncodeEnqueueHintArgs]) error {
+	client, err := river.ClientFromContextSafely[pgx5.Tx](ctx)
+	if err != nil {
+		return fmt.Errorf("encode enqueue hint: getting river client: %w", err)
+	}
+	return EnqueueMissingEncodes(ctx, client, w.Pool, job.Args.RecordingID)
+}

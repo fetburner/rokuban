@@ -415,6 +415,15 @@ func (e ServiceChannelType) Valid() bool {
 	}
 }
 
+// AddEncodeProfilesInput defines model for AddEncodeProfilesInput.
+type AddEncodeProfilesInput struct {
+	// Profiles 追加したいエンコードプロファイル名（config.encode.profiles に定義された
+	// 名前のみ許可。未知名は 400）。既存の recordings.encode_profiles には
+	// **追加専用**（union + dedup）で書かれ、全置換にはならない --- 既存の
+	// 指定を消す事故を避けるため。空配列は 400。
+	Profiles []string `json:"profiles"`
+}
+
 // AudioInfo defines model for AudioInfo.
 type AudioInfo struct {
 	ComponentType int       `json:"componentType"`
@@ -706,6 +715,15 @@ type Recording struct {
 	Description *string      `json:"description,omitempty"`
 	DropSummary *DropSummary `json:"dropSummary,omitempty"`
 	DurationMs  int64        `json:"durationMs"`
+
+	// EncodeProfiles 凍結された「望ましい」エンコードプロファイル一覧（desired。
+	// recordings.encode_profiles）。ingest 完了時に一度だけ焼き込まれ、以後は
+	// `POST /api/recordings/{id}/encode-profiles` による事後追加（凍結の例外。
+	// docs/storage.md §6「原本 TS の保持ポリシー」）でのみ増える。
+	// `encodedProfiles`（observed、再生可能なもの）とは異なり、まだ完了して
+	// いない pending なジョブのプロファイルも含む --- UI が「追加済み」を
+	// 判定するのに使う。空配列は省略可。
+	EncodeProfiles *[]string `json:"encodeProfiles,omitempty"`
 
 	// EncodedProfiles 再生可能な encoded 派生物のプロファイル名（media_assets の active のみ）。
 	// ブラウザ再生は GET /api/recordings/{id}/file?profile=<name> を使う。
@@ -1001,6 +1019,9 @@ type ListProgramsParams struct {
 	ServiceId *[]int `form:"serviceId,omitempty" json:"serviceId,omitempty"`
 }
 
+// AddRecordingEncodeProfilesJSONRequestBody defines body for AddRecordingEncodeProfiles for application/json ContentType.
+type AddRecordingEncodeProfilesJSONRequestBody = AddEncodeProfilesInput
+
 // CreateRuleJSONRequestBody defines body for CreateRule for application/json ContentType.
 type CreateRuleJSONRequestBody = RuleInput
 
@@ -1036,6 +1057,9 @@ type ServerInterface interface {
 	// ListRecordingDropStats Get per-PID drop statistics for a recording
 	// (GET /api/recordings/{id}/drop-stats)
 	ListRecordingDropStats(w http.ResponseWriter, r *http.Request, id int64)
+	// AddRecordingEncodeProfiles Request additional encode profiles for an already-ingested recording
+	// (POST /api/recordings/{id}/encode-profiles)
+	AddRecordingEncodeProfiles(w http.ResponseWriter, r *http.Request, id int64)
 	// PurgeRecording Mark a recording for immediate physical purge
 	// (POST /api/recordings/{id}/purge)
 	PurgeRecording(w http.ResponseWriter, r *http.Request, id int64)
@@ -1138,6 +1162,12 @@ func (_ Unimplemented) DeleteRecording(w http.ResponseWriter, r *http.Request, i
 // ListRecordingDropStats Get per-PID drop statistics for a recording
 // (GET /api/recordings/{id}/drop-stats)
 func (_ Unimplemented) ListRecordingDropStats(w http.ResponseWriter, r *http.Request, id int64) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// AddRecordingEncodeProfiles Request additional encode profiles for an already-ingested recording
+// (POST /api/recordings/{id}/encode-profiles)
+func (_ Unimplemented) AddRecordingEncodeProfiles(w http.ResponseWriter, r *http.Request, id int64) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1426,6 +1456,32 @@ func (siw *ServerInterfaceWrapper) ListRecordingDropStats(w http.ResponseWriter,
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ListRecordingDropStats(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// AddRecordingEncodeProfiles operation middleware
+func (siw *ServerInterfaceWrapper) AddRecordingEncodeProfiles(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.AddRecordingEncodeProfiles(w, r, id)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -2222,6 +2278,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Post(options.BaseURL+"/api/recordings/{id}/purge", wrapper.PurgeRecording)
 	})
 	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/api/recordings/{id}/encode-profiles", wrapper.AddRecordingEncodeProfiles)
+	})
+	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/api/recordings/{id}/drop-stats", wrapper.ListRecordingDropStats)
 	})
 	r.Group(func(r chi.Router) {
@@ -2385,6 +2444,65 @@ func (response ListRecordingDropStats200JSONResponse) VisitListRecordingDropStat
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AddRecordingEncodeProfilesRequestObject struct {
+	Id   int64 `json:"id"`
+	Body *AddRecordingEncodeProfilesJSONRequestBody
+}
+
+type AddRecordingEncodeProfilesResponseObject interface {
+	VisitAddRecordingEncodeProfilesResponse(w http.ResponseWriter) error
+}
+
+type AddRecordingEncodeProfiles204Response struct {
+}
+
+func (response AddRecordingEncodeProfiles204Response) VisitAddRecordingEncodeProfilesResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type AddRecordingEncodeProfiles400JSONResponse ErrorResponse
+
+func (response AddRecordingEncodeProfiles400JSONResponse) VisitAddRecordingEncodeProfilesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AddRecordingEncodeProfiles404JSONResponse ErrorResponse
+
+func (response AddRecordingEncodeProfiles404JSONResponse) VisitAddRecordingEncodeProfilesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AddRecordingEncodeProfiles409JSONResponse ErrorResponse
+
+func (response AddRecordingEncodeProfiles409JSONResponse) VisitAddRecordingEncodeProfilesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(409)
 	_, err := buf.WriteTo(w)
 	return err
 }
@@ -3145,6 +3263,9 @@ type StrictServerInterface interface {
 	// ListRecordingDropStats Get per-PID drop statistics for a recording
 	// (GET /api/recordings/{id}/drop-stats)
 	ListRecordingDropStats(ctx context.Context, request ListRecordingDropStatsRequestObject) (ListRecordingDropStatsResponseObject, error)
+	// AddRecordingEncodeProfiles Request additional encode profiles for an already-ingested recording
+	// (POST /api/recordings/{id}/encode-profiles)
+	AddRecordingEncodeProfiles(ctx context.Context, request AddRecordingEncodeProfilesRequestObject) (AddRecordingEncodeProfilesResponseObject, error)
 	// PurgeRecording Mark a recording for immediate physical purge
 	// (POST /api/recordings/{id}/purge)
 	PurgeRecording(ctx context.Context, request PurgeRecordingRequestObject) (PurgeRecordingResponseObject, error)
@@ -3394,6 +3515,39 @@ func (sh *strictHandler) ListRecordingDropStats(w http.ResponseWriter, r *http.R
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(ListRecordingDropStatsResponseObject); ok {
 		if err := validResponse.VisitListRecordingDropStatsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// AddRecordingEncodeProfiles operation middleware
+func (sh *strictHandler) AddRecordingEncodeProfiles(w http.ResponseWriter, r *http.Request, id int64) {
+	var request AddRecordingEncodeProfilesRequestObject
+
+	request.Id = id
+
+	var body AddRecordingEncodeProfilesJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.AddRecordingEncodeProfiles(ctx, request.(AddRecordingEncodeProfilesRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "AddRecordingEncodeProfiles")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(AddRecordingEncodeProfilesResponseObject); ok {
+		if err := validResponse.VisitAddRecordingEncodeProfilesResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

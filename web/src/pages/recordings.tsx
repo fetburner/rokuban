@@ -3,7 +3,9 @@ import { ChevronDown, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 
 import {
+  useAddRecordingEncodeProfiles,
   useDeleteRecording,
+  useListEncodeProfiles,
   useListRecordingDropStats,
   useListRecordings,
   usePurgeRecording,
@@ -11,7 +13,7 @@ import {
   type DropSummary,
   type Recording,
 } from '@/api/generated'
-import { unwrap } from '@/api/unwrap'
+import { apiErrorMessage, unwrap } from '@/api/unwrap'
 import { RecordingPlayer } from '@/components/recording-player'
 import { EmptyState, ErrorState, ListSkeleton, PageHeader } from '@/components/page'
 import { useToast } from '@/components/toaster'
@@ -282,16 +284,17 @@ function RecordingDetail({ recording, trash }: { recording: Recording; trash: bo
       {/* PID 別の内訳は行数が多いので、モバイルで横スクロールさせずここに畳む */}
       {recording.dropSummary && <DropStatsTable recordingId={recording.id} />}
 
-      <RecordingActions recordingId={recording.id} trash={trash} />
+      <RecordingActions recording={recording} trash={trash} />
     </div>
   )
 }
 
 /**
- * RecordingActions は論理削除 / 復元 / 即時 purge 印。
- * いずれも DB だけを触り、ファイルは消さない（M3-7）。
+ * RecordingActions は論理削除 / 復元 / 即時 purge 印 + 追加エンコードの依頼。
+ * 削除系はいずれも DB だけを触り、ファイルは消さない（M3-7）。
  */
-function RecordingActions({ recordingId, trash }: { recordingId: number; trash: boolean }) {
+function RecordingActions({ recording, trash }: { recording: Recording; trash: boolean }) {
+  const recordingId = recording.id
   const [purgeConfirmOpen, setPurgeConfirmOpen] = useState(false)
   const queryClient = useQueryClient()
   const toast = useToast()
@@ -309,28 +312,36 @@ function RecordingActions({ recordingId, trash }: { recordingId: number; trash: 
 
   if (!trash) {
     return (
-      <div className="flex flex-wrap gap-2">
-        <Button
-          type="button"
-          variant="destructive"
-          size="sm"
-          disabled={busy}
-          onClick={() => {
-            deleteRecording.mutate(
-              { id: recordingId },
-              {
-                onSuccess: () => {
-                  invalidate()
-                  toast({ message: 'ごみ箱に移しました' })
+      <div className="flex flex-col gap-2">
+        <div className="flex flex-wrap gap-2">
+          <Button
+            type="button"
+            variant="destructive"
+            size="sm"
+            disabled={busy}
+            onClick={() => {
+              deleteRecording.mutate(
+                { id: recordingId },
+                {
+                  onSuccess: () => {
+                    invalidate()
+                    toast({ message: 'ごみ箱に移しました' })
+                  },
+                  onError: () => toast({ message: '削除に失敗しました' }),
                 },
-                onError: () => toast({ message: '削除に失敗しました' }),
-              },
-            )
-          }}
-        >
-          <Trash2 data-icon="inline-start" />
-          ごみ箱へ
-        </Button>
+              )
+            }}
+          >
+            <Trash2 data-icon="inline-start" />
+            ごみ箱へ
+          </Button>
+        </div>
+        {/*
+          事後追加は凍結の例外（issue #133、docs/storage.md §6「凍結の例外:
+          事後追加」）。ごみ箱に入った録画は削除 reconcile 対象なので出さない
+          （下の trash 分岐と同じ理由）。
+        */}
+        <AddEncodeProfilesAction recording={recording} />
       </div>
     )
   }
@@ -395,6 +406,115 @@ function RecordingActions({ recordingId, trash }: { recordingId: number; trash: 
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+    </div>
+  )
+}
+
+/**
+ * AddEncodeProfilesAction は録画完了後に事後的にエンコードを追加依頼するボタン
+ * （issue #133、凍結の例外。docs/storage.md §6「凍結の例外: 事後追加」）。
+ *
+ * `GET /api/encode-profiles` の一覧から、この録画の `encodeProfiles`（凍結された
+ * desired。pending なジョブのぶんも含む）に無いものだけを選択肢にする ---
+ * 既に追加済み/完了済みのプロファイルを選ばせない（罠: `UniqueOpts` が二重投入を
+ * 黙って握りつぶすため、UI 側で「追加済み」を出して二重依頼に見せない）。
+ *
+ * 原本削除済みの録画は `sizeBytes` が省略される（`recordingFromListFields` の
+ * 射影。`OriginalSizeBytes` が無い = 原本 media_asset が active でない）ので、
+ * それをボタンを出す/出さないの判定にそのまま使う --- サーバー側の 409 判定
+ * （`GetActiveOriginalMediaAsset`）と同じ条件を UI 側でも先読みし、押しても
+ * 必ず失敗するボタンを表示しない。
+ */
+function AddEncodeProfilesAction({ recording }: { recording: Recording }) {
+  const hasOriginal = recording.sizeBytes !== undefined
+  const profilesQuery = useListEncodeProfiles()
+  const profiles = unwrap(profilesQuery.data) ?? []
+  const alreadyRequested = recording.encodeProfiles ?? []
+  const alreadyRequestedSet = new Set(alreadyRequested)
+  const addable = profiles.filter((p) => !alreadyRequestedSet.has(p.name))
+  const [selected, setSelected] = useState<string[]>([])
+  const queryClient = useQueryClient()
+  const toast = useToast()
+  const addProfiles = useAddRecordingEncodeProfiles()
+
+  if (!hasOriginal) {
+    return (
+      <p className="text-xs text-muted-foreground">
+        原本が削除済みのため、追加のエンコードは依頼できません。
+      </p>
+    )
+  }
+  if (profilesQuery.isError) {
+    return <p className="text-xs text-destructive">プロファイル一覧の取得に失敗しました</p>
+  }
+  if (profilesQuery.isPending || profiles.length === 0) {
+    // 取得中、または設定にプロファイルが無い場合は何も出さない
+    // （EncodeSettingsFields と違い、こちらは無くても他の操作に支障が無い）。
+    return null
+  }
+
+  return (
+    <div className="flex flex-col gap-2 rounded-lg border border-border p-2">
+      <span className="text-xs text-muted-foreground">事後エンコードの追加</span>
+      {alreadyRequested.length > 0 && (
+        <p className="text-xs text-muted-foreground">追加済み: {alreadyRequested.join(', ')}</p>
+      )}
+      {addable.length === 0 ? (
+        <p className="text-xs text-muted-foreground">
+          すべてのエンコードプロファイルが追加済みです。
+        </p>
+      ) : (
+        <>
+          <ul
+            role="group"
+            aria-label="追加するエンコードプロファイル"
+            className="flex flex-col gap-1"
+          >
+            {addable.map((p) => {
+              const checked = selected.includes(p.name)
+              return (
+                <li key={p.name}>
+                  <label className="flex min-h-8 cursor-pointer items-center gap-2 text-sm text-foreground">
+                    <input
+                      type="checkbox"
+                      className="size-4 accent-primary"
+                      checked={checked}
+                      disabled={addProfiles.isPending}
+                      onChange={() =>
+                        setSelected((s) =>
+                          checked ? s.filter((n) => n !== p.name) : [...s, p.name],
+                        )
+                      }
+                    />
+                    <span>{p.name}</span>
+                  </label>
+                </li>
+              )
+            })}
+          </ul>
+          <Button
+            type="button"
+            size="sm"
+            disabled={selected.length === 0 || addProfiles.isPending}
+            onClick={() => {
+              addProfiles.mutate(
+                { id: recording.id, data: { profiles: selected } },
+                {
+                  onSuccess: () => {
+                    setSelected([])
+                    void queryClient.invalidateQueries({ queryKey: ['/api/recordings'] })
+                    toast({ message: 'エンコードを依頼しました' })
+                  },
+                  onError: (err) =>
+                    toast({ message: apiErrorMessage(err) ?? 'エンコードの依頼に失敗しました' }),
+                },
+              )
+            }}
+          >
+            {addProfiles.isPending ? '依頼中…' : '追加エンコードを依頼'}
+          </Button>
+        </>
+      )}
     </div>
   )
 }

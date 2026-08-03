@@ -119,6 +119,15 @@ S3 マウント（k8s-csi-s3 の geesefs/s3fs、AWS Mountpoint 等）では以�
 - エンコードプロファイル未指定のルールでは `until_encoded` を選択不可（原本が唯一の視聴可能物）
 - 視聴は常に派生物側（MPEG-2 TS はブラウザ直接再生に不向き）なので、原本削除で失うのは再エンコードの自由度だけ。H.265 で 1/4〜1/10 になるため、これが実質のストレージ戦略になる
 
+### 凍結の例外: 事後追加（issue #133）
+
+`recordings.encode_profiles` は ingest 完了時に一度だけ焼き込まれる凍結値だが、**ユーザー起点の追加方向の書き換えだけは凍結の例外として認める**。予約が無い録画（mirakc に直接起こされた手動録画等）は `encode_profiles = '{}'` のまま永久に凍結されエンコードを依頼する手段が無かった問題と、録画完了後に「もう1つプロファイルを足したい」という要求に応える。
+
+- **範囲は追加のみ**。`POST /api/recordings/{id}/encode-profiles`（`internal/api/recordings.go` の `AddRecordingEncodeProfiles`）は `AppendRecordingEncodeProfiles`（`internal/db/queries/recordings.sql`）で union + dedup にしか書けない。全置換にすると、ユーザーが誤って既存のプロファイル指定を消す事故につながるため、その経路自体を用意しない
+- **原本削除済みなら不可**。`GetActiveOriginalMediaAsset` が `ErrNoRows` の録画（`until_encoded` でエンコード完了後に原本が削除された等）には 409 を返す。`EnqueueMissingEncodes` はこのケースで黙って no-op になる（原本が無ければ何もしない設計。上記「安全性」参照）ため、サイレントな失敗にしないよう api 層で明示的に検査する
+- **実行経路**: api がトランザクション内で `encode_profiles` を更新し、同一トランザクションで `EncodeEnqueueHintArgs`（ヒントジョブ）を投入する。実際の `EnqueueMissingEncodes` 呼び出し（desired − observed の差分を埋める encode ジョブの投入）は worker ロール側の `EncodeEnqueueHintWorker` が行う（既存の hint job パターン。`rules.go` の `insertRulerPassHint` と同型）。詳細は `internal/worker/encode.go` の `EncodeEnqueueHintArgs` の doc コメント参照
+- この例外を経ても「ingest 完了時点で確定した最終状態」という #103 の設計そのものは変わらない —— 削除・変更方向の書き換えは今も無い
+
 ## 7. 削除エンジン
 
 ### 物理削除は 1 本の reconcile ループに統一
