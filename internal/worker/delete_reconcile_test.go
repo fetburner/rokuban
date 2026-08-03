@@ -135,6 +135,35 @@ func fileExists(path string) bool {
 	return err == nil
 }
 
+// purgedAt はある録画の recordings.purged_at を返す（issue #135）。
+func purgedAt(t *testing.T, pool *pgxpool.Pool, recordingID int64) *time.Time {
+	t.Helper()
+	var v *time.Time
+	if err := pool.QueryRow(context.Background(),
+		"SELECT purged_at FROM recordings WHERE id = $1", recordingID).Scan(&v); err != nil {
+		t.Fatalf("querying purged_at: %v", err)
+	}
+	return v
+}
+
+// inTrash は ListTrashRecordings（api が「ごみ箱は空です」判定に使う一覧そのもの）
+// に指定した録画 id が含まれるかを返す。ここで直接クエリを引くことで、
+// api パッケージを経由せずに「ごみ箱ビューから見えるか」を検証する
+// （issue #135 の受け入れ「完全削除が完了した録画がごみ箱一覧に出ない」）。
+func inTrash(t *testing.T, pool *pgxpool.Pool, recordingID int64) bool {
+	t.Helper()
+	rows, err := sqlcgen.New(pool).ListTrashRecordings(context.Background(), db.DefaultSite)
+	if err != nil {
+		t.Fatalf("ListTrashRecordings: %v", err)
+	}
+	for _, r := range rows {
+		if r.ID == recordingID {
+			return true
+		}
+	}
+	return false
+}
+
 // ごみ箱の猶予を過ぎた録画の原本は物理削除され、行は deleted に遷移する。
 func TestDeleteReconcileWorker_TrashPastRetention_Deletes(t *testing.T) {
 	pool := setupTestPool(t)
@@ -160,6 +189,13 @@ func TestDeleteReconcileWorker_TrashPastRetention_Deletes(t *testing.T) {
 	}
 	if fileExists(fullPath) {
 		t.Error("file still exists on disk, want removed")
+	}
+	// issue #135: 完全削除が完了したので purged_at が立ち、ごみ箱一覧から消える。
+	if got := purgedAt(t, pool, recordingID); got == nil {
+		t.Error("purged_at not set after the last asset was deleted")
+	}
+	if inTrash(t, pool, recordingID) {
+		t.Error("recording still present in ListTrashRecordings, want absent (purge complete)")
 	}
 }
 
@@ -189,6 +225,14 @@ func TestDeleteReconcileWorker_TrashWithinRetention_NotDeleted(t *testing.T) {
 	if !fileExists(fullPath) {
 		t.Error("file was removed, want kept (within retention)")
 	}
+	// 反転（issue #135 の受け入れ「purge 前はごみ箱に出続ける」）: まだ完全削除が
+	// 終わっていないので purged_at は立たず、ごみ箱一覧にも出続ける。
+	if got := purgedAt(t, pool, recordingID); got != nil {
+		t.Errorf("purged_at = %v, want nil (asset not yet deleted)", got)
+	}
+	if !inTrash(t, pool, recordingID) {
+		t.Error("recording missing from ListTrashRecordings, want present (purge not complete)")
+	}
 }
 
 // purge_after は猶予期間を無視して即時削除する。
@@ -212,6 +256,106 @@ func TestDeleteReconcileWorker_PurgeAfterImmediate_Deletes(t *testing.T) {
 
 	if got := assetState(t, pool, assetID); got != "deleted" {
 		t.Errorf("asset state = %q, want deleted (purge_after should bypass retention)", got)
+	}
+}
+
+// issue #135 の実測で一番分かりにくかったケース: media_assets を 1 行も
+// 持たない録画（status='failed' で ingest まで到達しなかった行など）に
+// 「今すぐ完全削除」を要求すると、消す対象が無いので観測できる変化が一切
+// 起きず、GC が永久に始まらないように見えていた。MarkPurgedRecordings は
+// recordings を起点に引く（NOT EXISTS は 0 行に対しても恒真）ので、この
+// ケースでも 1 パス目で purged_at が立ち、recording.deleted も 1 回だけ発火し、
+// ごみ箱一覧から消えるべき。
+func TestDeleteReconcileWorker_ZeroAssetRecording_PurgeMarksAndFiresWebhookOnce(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+	recordingID := insertTestRecording(t, pool)
+	// media_assets は 1 行も作らない。
+
+	now := time.Now()
+	if _, err := pool.Exec(context.Background(),
+		"UPDATE recordings SET deleted_at = $1, purge_after = $1 WHERE id = $2", now, recordingID); err != nil {
+		t.Fatalf("marking recording for immediate purge: %v", err)
+	}
+
+	// 前提確認: purge 前はごみ箱に見えているはず（アセットが無くても
+	// 除外条件を「残っているアセットがある録画だけ」にしていないことの事前チェック）。
+	if !inTrash(t, pool, recordingID) {
+		t.Fatal("recording should be visible in trash before purge completes")
+	}
+
+	rec, client := newWebhookRecorder(t)
+	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, Webhook: client}
+	if err := w.Work(context.Background(), nil); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+
+	if got := purgedAt(t, pool, recordingID); got == nil {
+		t.Fatal("purged_at not set for a recording with zero media_assets")
+	}
+	if inTrash(t, pool, recordingID) {
+		t.Error("zero-asset recording still present in ListTrashRecordings after purge")
+	}
+	events := rec.received()
+	if len(events) != 1 {
+		t.Fatalf("webhook events = %d, want 1 (zero-asset recording): %+v", len(events), events)
+	}
+	if events[0].RecordingID != recordingID {
+		t.Errorf("recordingId = %d, want %d", events[0].RecordingID, recordingID)
+	}
+	if events[0].Type != webhook.EventRecordingDeleted {
+		t.Errorf("type = %q, want %q", events[0].Type, webhook.EventRecordingDeleted)
+	}
+
+	// 2 パス目では既に purged_at が立っているので二度と候補に上がらず、
+	// webhook も再発火しない（冪等）。
+	rec.reset()
+	if err := w.Work(context.Background(), nil); err != nil {
+		t.Fatalf("Work() second pass error: %v", err)
+	}
+	if events := rec.received(); len(events) != 0 {
+		t.Errorf("webhook fired again on the second pass: %+v", events)
+	}
+}
+
+// deleting のまま止まっている間（unlink 未完了）は、たとえごみ箱の猶予を
+// 過ぎていても purged_at を立てない。判定は「state <> 'deleted' の
+// media_assets が 0 行」なので、deleting は「消えた」に数えない
+// （issue #135 の罠。TestDeleteReconcileWorker_TrashPastRetention_Deletes の
+// 反転）。
+func TestDeleteReconcileWorker_DeletingAssetStuck_StaysInTrash(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+	recordingID := insertTestRecording(t, pool)
+
+	// unlink を失敗させる: rel_path を空でないディレクトリに置き換える。
+	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "purged/stuck.m2ts", []byte("data"))
+	assetPath := filepath.Join(mediaDir, "purged", "stuck.m2ts")
+	if err := os.Remove(assetPath); err != nil {
+		t.Fatalf("removing seeded file: %v", err)
+	}
+	if err := os.MkdirAll(assetPath, 0o755); err != nil {
+		t.Fatalf("creating blocking dir: %v", err)
+	}
+	blockerFile := filepath.Join(assetPath, "blocker")
+	if err := os.WriteFile(blockerFile, []byte("x"), 0o644); err != nil {
+		t.Fatalf("creating blocker file: %v", err)
+	}
+	markRecordingTrashed(t, pool, recordingID)
+
+	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, TrashRetention: 30 * 24 * time.Hour}
+	if err := w.Work(context.Background(), nil); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+
+	if got := assetState(t, pool, assetID); got != "deleting" {
+		t.Fatalf("asset state = %q, want deleting (unlink blocked)", got)
+	}
+	if got := purgedAt(t, pool, recordingID); got != nil {
+		t.Errorf("purged_at = %v, want nil (an asset is still stuck in deleting)", got)
+	}
+	if !inTrash(t, pool, recordingID) {
+		t.Error("recording missing from ListTrashRecordings while an asset is still deleting")
 	}
 }
 
@@ -549,14 +693,18 @@ func TestDeleteReconcileWorker_NotifyBudgetExhausted_DropsRemaining(t *testing.T
 
 	rec, client := newWebhookRecorder(t)
 	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, Webhook: client}
-	// 予算 0 = 1 件目から捨てる。予算があれば発火する条件（trashed + アセット無し）は
-	// 揃えてあるので、ここで 0 件なら予算が効いている。
-	w.notifyPurgedRecordings(context.Background(), sqlcgen.New(pool), []int64{recordingID}, 0)
+	// notifyPurgedRecordings はもう「発火してよいか」を計算し直さない
+	// （issue #135 —— それを MarkPurgedRecordings に一本化したのがこの issue の
+	// 主旨）。ここでは渡した集合がそのまま発火対象になることを前提に、予算
+	// だけを検証する。
+	purged := []sqlcgen.MarkPurgedRecordingsRow{{ID: recordingID, Site: "default", Title: "テスト番組"}}
+	// 予算 0 = 1 件目から捨てる。
+	w.notifyPurgedRecordings(context.Background(), purged, 0)
 	if events := rec.received(); len(events) != 0 {
 		t.Errorf("notified despite an exhausted budget: %+v", events)
 	}
 
-	w.notifyPurgedRecordings(context.Background(), sqlcgen.New(pool), []int64{recordingID}, time.Minute)
+	w.notifyPurgedRecordings(context.Background(), purged, time.Minute)
 	if events := rec.received(); len(events) != 1 {
 		t.Fatalf("webhook events with a budget = %d, want 1: %+v", len(events), events)
 	}

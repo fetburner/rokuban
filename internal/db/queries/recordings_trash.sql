@@ -13,12 +13,16 @@ RETURNING id, deleted_at;
 -- 復元。ごみ箱に入っている行だけを対象にする。
 -- deleted_at と purge_after の両方を消す（即時 purge 印も取り消す）。
 -- 同一イベントに生きている録画がある場合は unique partial index で 23505。
+-- purged_at が立っている行（完全削除が完了した tombstone、issue #135）は
+-- 対象外 —— WHERE に条件を足して 0 行にし、既存の 404 経路に落とす。
+-- ファイルは二度と戻らないので、それをライブラリに戻すと「再生できない
+-- 録画」が並んでしまう。
 -- name: RestoreRecording :one
 UPDATE recordings
 SET deleted_at  = NULL,
     purge_after = NULL,
     updated_at  = now()
-WHERE id = $1 AND deleted_at IS NOT NULL
+WHERE id = $1 AND deleted_at IS NOT NULL AND purged_at IS NULL
 RETURNING id;
 
 -- 即時物理削除の要求。ファイルは消さない。
@@ -40,6 +44,14 @@ RETURNING id, deleted_at, purge_after;
 -- サムネイル・RecordingPlayer・原本リンクを一切出さない（M3-18）。出さない
 -- 値をここで揃えても使われないので揃えていない。
 -- deleted_at IS NOT NULL のものだけ。deleted_at 降順（最近捨てたものが上）。
+--
+-- purged_at IS NULL を条件に足す（issue #135）。完全削除が完了した録画
+-- （delete_reconcile の MarkPurgedRecordings が purged_at を立てた録画）は
+-- tombstone として recordings に残り続けるが、ユーザーに見せるものではない
+-- （docs/storage.md §7・§8）。除外の根拠は「アセットが無い」ではなく「purge が
+-- 完了した」であることに注意 —— 除外条件を「残っているアセットがある録画
+-- だけ」にすると、status='failed' でアセットが 0 行の録画が purge 前から
+-- ごみ箱に出なくなってしまう。
 -- name: ListTrashRecordings :many
 SELECT
     r.*,
@@ -57,5 +69,5 @@ LEFT JOIN LATERAL (
     FROM drop_stats
     WHERE media_asset_id = a.id
 ) d ON true
-WHERE r.site = $1 AND r.deleted_at IS NOT NULL
+WHERE r.site = $1 AND r.deleted_at IS NOT NULL AND r.purged_at IS NULL
 ORDER BY r.deleted_at DESC, r.id DESC;

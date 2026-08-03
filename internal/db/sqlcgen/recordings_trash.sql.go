@@ -13,7 +13,7 @@ import (
 
 const listTrashRecordings = `-- name: ListTrashRecordings :many
 SELECT
-    r.id, r.reservation_id, r.rule_id, r.source, r.site, r.network_id, r.service_id, r.event_id, r.service_name, r.channel_type, r.channel, r.title, r.description, r.extended, r.genres, r.is_free, r.program_start_at, r.program_duration_ms, r.status, r.started_at, r.ended_at, r.keep_original, r.encode_profiles, r.quality_events, r.deleted_at, r.created_at, r.updated_at, r.purge_after, r.superseded_at,
+    r.id, r.reservation_id, r.rule_id, r.source, r.site, r.network_id, r.service_id, r.event_id, r.service_name, r.channel_type, r.channel, r.title, r.description, r.extended, r.genres, r.is_free, r.program_start_at, r.program_duration_ms, r.status, r.started_at, r.ended_at, r.keep_original, r.encode_profiles, r.quality_events, r.deleted_at, r.created_at, r.updated_at, r.purge_after, r.superseded_at, r.purged_at,
     a.size_bytes                        AS original_size_bytes,
     COALESCE(d.packets, 0)::bigint      AS drop_packets,
     COALESCE(d.drops, 0)::bigint        AS drop_drops,
@@ -28,7 +28,7 @@ LEFT JOIN LATERAL (
     FROM drop_stats
     WHERE media_asset_id = a.id
 ) d ON true
-WHERE r.site = $1 AND r.deleted_at IS NOT NULL
+WHERE r.site = $1 AND r.deleted_at IS NOT NULL AND r.purged_at IS NULL
 ORDER BY r.deleted_at DESC, r.id DESC
 `
 
@@ -62,6 +62,7 @@ type ListTrashRecordingsRow struct {
 	UpdatedAt         time.Time
 	PurgeAfter        *time.Time
 	SupersededAt      *time.Time
+	PurgedAt          *time.Time
 	OriginalSizeBytes *int64
 	DropPackets       int64
 	DropDrops         int64
@@ -77,6 +78,14 @@ type ListTrashRecordingsRow struct {
 // サムネイル・RecordingPlayer・原本リンクを一切出さない（M3-18）。出さない
 // 値をここで揃えても使われないので揃えていない。
 // deleted_at IS NOT NULL のものだけ。deleted_at 降順（最近捨てたものが上）。
+//
+// purged_at IS NULL を条件に足す（issue #135）。完全削除が完了した録画
+// （delete_reconcile の MarkPurgedRecordings が purged_at を立てた録画）は
+// tombstone として recordings に残り続けるが、ユーザーに見せるものではない
+// （docs/storage.md §7・§8）。除外の根拠は「アセットが無い」ではなく「purge が
+// 完了した」であることに注意 —— 除外条件を「残っているアセットがある録画
+// だけ」にすると、status='failed' でアセットが 0 行の録画が purge 前から
+// ごみ箱に出なくなってしまう。
 func (q *Queries) ListTrashRecordings(ctx context.Context, site string) ([]ListTrashRecordingsRow, error) {
 	rows, err := q.db.Query(ctx, listTrashRecordings, site)
 	if err != nil {
@@ -116,6 +125,7 @@ func (q *Queries) ListTrashRecordings(ctx context.Context, site string) ([]ListT
 			&i.UpdatedAt,
 			&i.PurgeAfter,
 			&i.SupersededAt,
+			&i.PurgedAt,
 			&i.OriginalSizeBytes,
 			&i.DropPackets,
 			&i.DropDrops,
@@ -162,13 +172,17 @@ UPDATE recordings
 SET deleted_at  = NULL,
     purge_after = NULL,
     updated_at  = now()
-WHERE id = $1 AND deleted_at IS NOT NULL
+WHERE id = $1 AND deleted_at IS NOT NULL AND purged_at IS NULL
 RETURNING id
 `
 
 // 復元。ごみ箱に入っている行だけを対象にする。
 // deleted_at と purge_after の両方を消す（即時 purge 印も取り消す）。
 // 同一イベントに生きている録画がある場合は unique partial index で 23505。
+// purged_at が立っている行（完全削除が完了した tombstone、issue #135）は
+// 対象外 —— WHERE に条件を足して 0 行にし、既存の 404 経路に落とす。
+// ファイルは二度と戻らないので、それをライブラリに戻すと「再生できない
+// 録画」が並んでしまう。
 func (q *Queries) RestoreRecording(ctx context.Context, id int64) (int64, error) {
 	row := q.db.QueryRow(ctx, restoreRecording, id)
 	var id_2 int64

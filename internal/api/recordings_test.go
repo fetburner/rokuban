@@ -564,3 +564,59 @@ func TestRestoreRecording_ConflictWhenActiveExists(t *testing.T) {
 		t.Fatalf("restore conflict status = %d, want 409", resp.StatusCode)
 	}
 }
+
+// purged_at が立った録画（完全削除が完了した tombstone、issue #135）は
+// restore できない。ファイルが二度と戻らない録画をライブラリに戻すと
+// 「再生できない録画」が並んでしまうため。RestoreRecording クエリの
+// WHERE に purged_at IS NULL を足して 0 行にし、既存の 404 経路に落とす。
+// また、GET /api/recordings?trash=true にも出ない（ListTrashRecordings も
+// purged_at IS NULL を要求する）。
+func TestRestoreRecording_PurgedNotFound(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := newAPIServer(t, pool)
+	ctx := context.Background()
+
+	id := seedRecording(t, pool, "完全削除済み", time.Now().Truncate(time.Second), "finished", 21)
+
+	resp := doRecordingMethod(t, http.MethodDelete, fmt.Sprintf("%s/api/recordings/%d", srv.URL, id))
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete status = %d, want 204", resp.StatusCode)
+	}
+
+	// 完全削除が完了した状態を直接作る（実際の delete_reconcile の
+	// MarkPurgedRecordings が押すのと同じ列。ワーカーの往復は
+	// internal/worker 側のテストで検証済みなので、ここでは api 層の
+	// 振る舞いだけを見る）。
+	if _, err := pool.Exec(ctx,
+		"UPDATE recordings SET purged_at = now() WHERE id = $1", id); err != nil {
+		t.Fatalf("marking purged: %v", err)
+	}
+
+	// ごみ箱一覧にはもう出ない。
+	var trash []Recording
+	getJSON(t, srv.URL+"/api/recordings?trash=true", &trash)
+	if len(trash) != 0 {
+		t.Fatalf("trash after purge = %+v, want empty", trash)
+	}
+
+	// restore は 404（既存の「ごみ箱に無い」経路と同じレスポンス）。
+	resp = doRecordingMethod(t, http.MethodPost, fmt.Sprintf("%s/api/recordings/%d/restore", srv.URL, id))
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("restore purged status = %d, want 404", resp.StatusCode)
+	}
+
+	// deleted_at 自体は消えていない（tombstone として残り続ける。
+	// docs/storage.md §7「物理削除後も tombstone は残る」）。
+	var deletedAt, purgedAtVal *time.Time
+	if err := pool.QueryRow(ctx,
+		"SELECT deleted_at, purged_at FROM recordings WHERE id = $1", id,
+	).Scan(&deletedAt, &purgedAtVal); err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if deletedAt == nil {
+		t.Error("deleted_at should remain set on a purged tombstone")
+	}
+	if purgedAtVal == nil {
+		t.Error("purged_at should remain set (restore must not have cleared it)")
+	}
+}

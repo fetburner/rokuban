@@ -217,7 +217,7 @@ INSERT INTO recordings (
     program_start_at, program_duration_ms,
     status, started_at, ended_at,
     keep_original, encode_profiles, quality_events,
-    deleted_at, purge_after, superseded_at, created_at, updated_at
+    deleted_at, purge_after, superseded_at, purged_at, created_at, updated_at
 ) OVERRIDING SYSTEM VALUE
 VALUES (
     $1, NULL, $2, $3, $4,
@@ -227,7 +227,7 @@ VALUES (
     $16, $17,
     $18, $19, $20,
     $21, $22, $23,
-    $24, $25, $26, $27, $28
+    $24, $25, $26, $27, $28, $29
 )
 ON CONFLICT (id) DO UPDATE SET
     reservation_id      = NULL,
@@ -258,6 +258,10 @@ ON CONFLICT (id) DO UPDATE SET
     -- superseded_at を落とすと、復旧時に superseded 行が live に戻って
     -- recordings_unique_active_event に衝突する（issue #129 症状 2）。
     superseded_at       = EXCLUDED.superseded_at,
+    -- purged_at を落とすと、purge 済みの tombstone がごみ箱ビューに再び
+    -- 出てしまう（issue #135。ListTrashRecordings は purged_at IS NULL を
+    -- 要求する）。
+    purged_at           = EXCLUDED.purged_at,
     created_at          = EXCLUDED.created_at,
     updated_at          = EXCLUDED.updated_at;
 

@@ -147,6 +147,35 @@ describe('RecordingsPage trash', () => {
     expect(trashCalls.length).toBeGreaterThan(0)
   })
 
+  // issue #135: 完全削除（purge）が完了した録画は purged_at IS NULL の条件で
+  // ListTrashRecordings から外れるので、API は空配列を返す。この「ごみ箱の
+  // 中身が全部 purge 済みで 0 件」という経路は、この修正が入るまで実際に
+  // 踏まれたことが無かった（それまでは purge してもごみ箱に残り続けるバグが
+  // あったため）。目視ではなくここで固定する。
+  it('ごみ箱の GET が空配列を返すと「ごみ箱は空です」を出す', async () => {
+    const user = userEvent.setup()
+    const fetchMock = vi.fn((input: string | URL | Request) => {
+      const url = new URL(String(input), 'http://localhost')
+      const trash = url.searchParams.get('trash') === 'true'
+      const body = trash ? [] : [sampleRecording()]
+      return Promise.resolve(
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      )
+    })
+
+    renderRecordingsPage(fetchMock as unknown as typeof fetch)
+
+    expect(await screen.findByText('ライブラリの録画')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'ごみ箱' }))
+
+    expect(await screen.findByText('ごみ箱は空です')).toBeInTheDocument()
+    expect(screen.queryByText('ライブラリの録画')).not.toBeInTheDocument()
+  })
+
   it('「今すぐ完全削除」は確認ダイアログを挟み、確定するまで purge を呼ばない', async () => {
     const user = userEvent.setup()
     const purgeCalls: string[] = []
