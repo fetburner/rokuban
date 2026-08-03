@@ -912,8 +912,11 @@ func TestRunPass_RecordsAllRuleMatches(t *testing.T) {
 func insertProgramSnapshotDirect(t *testing.T, pool *pgxpool.Pool, ctx context.Context, programID int64, title string, startAt time.Time) {
 	t.Helper()
 	if _, err := pool.Exec(ctx, `
-INSERT INTO program_snapshots (site, program_id, title, start_at, duration_ms)
-VALUES ($1, $2, $3, $4, $5)
+INSERT INTO program_snapshots (
+  site, program_id, title, start_at, duration_ms,
+  network_id, service_id, channel_type, channel, event_id, service_name
+)
+VALUES ($1, $2, $3, $4, $5, 32736, 1024, 'GR', '27', 1, 'テスト局')
 ON CONFLICT (site, program_id) DO UPDATE SET
   title = EXCLUDED.title, start_at = EXCLUDED.start_at, duration_ms = EXCLUDED.duration_ms`,
 		testSite, programID, title, startAt, testDurationMs); err != nil {

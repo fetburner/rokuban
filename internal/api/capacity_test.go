@@ -44,9 +44,9 @@ func insertCapacityReservation(t *testing.T, pool *pgxpool.Pool, programID int64
 	if _, err := pool.Exec(ctx, `
 INSERT INTO program_snapshots (
   site, program_id, title, start_at, duration_ms,
-  network_id, service_id, channel_type, channel
-) VALUES ('default', $1, 'テスト番組', $2, $3, 32678, 5168, $4, $5)`,
-		programID, startAt, duration.Milliseconds(), channelType, channel); err != nil {
+  network_id, service_id, channel_type, channel, event_id, service_name
+) VALUES ('default', $1, 'テスト番組', $2, $3, 32678, 5168, $4, $5, $6, 'テスト局')`,
+		programID, startAt, duration.Milliseconds(), channelType, channel, int32(programID%100000)); err != nil {
 		t.Fatalf("inserting program_snapshot row: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `

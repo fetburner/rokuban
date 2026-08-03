@@ -48,15 +48,13 @@ WHERE r.site = $1
             WHERE qe->>'event' = 'recording.never-scheduled'
         )
   )
-  AND s.channel_type IS NOT NULL
-  AND s.channel IS NOT NULL
 ORDER BY s.start_at
 `
 
 type ListCapacityDemandRow struct {
 	Site           string
-	ChannelType    *string
-	Channel        *string
+	ChannelType    string
+	Channel        string
 	ProgramStartAt time.Time
 	ProgramEndAt   time.Time
 	Base           json.RawMessage
@@ -82,9 +80,12 @@ type ListCapacityDemandRow struct {
 //     同所のコメント参照（mirakc 由来の途中失敗からの再試行経路を壊さない
 //     ため）。これ以上のフィルタに使ってはならない（docs/schema.md §3。
 //     active / detached はどちらも同期対象）
-//   - `channel_type IS NOT NULL AND channel IS NOT NULL`: 00009 以前の残骸は
-//     物理チャンネルが分からないので需要に数えられない。数えない側に倒すのは、
-//     既知の盲点をすべて「警告を見逃す」方向に揃えるため（docs/data.md §6.5）
+//   - `channel_type IS NOT NULL AND channel IS NOT NULL` という絞り込みはかつて
+//     ここにあった（00009 以前の残骸は物理チャンネルが分からないので需要に
+//     数えられない、という安全側の判断）。issue #101（00026）で
+//     program_snapshots のチャンネル・イベント識別 6 列が NOT NULL 化され、
+//     その状態自体が表現不可能になったため落とした（起きない状態のための
+//     分岐を残さない）
 //   - `effective.skip` は jsonb のマージが要るので Go 側（db.EffectiveOptions）で
 //     判定する。ListOverlappingReservations / ListReservationsForSyncEvaluation と同じ分担
 //

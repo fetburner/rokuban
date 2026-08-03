@@ -107,10 +107,10 @@ func TestRecordSweepWorker_ProcessesUnsweptRecord(t *testing.T) {
 		Title:       "record_sweep ワーカーテスト",
 		StartAt:     time.Now().Add(-time.Hour),
 		DurationMs:  1800000,
-		NetworkID:   &networkID,
-		ServiceID:   &serviceID,
-		ChannelType: &channelType,
-		Channel:     &channel,
+		NetworkID:   networkID,
+		ServiceID:   serviceID,
+		ChannelType: channelType,
+		Channel:     channel,
 	}); err != nil {
 		t.Fatalf("upserting program snapshot fixture: %v", err)
 	}

@@ -100,8 +100,11 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 
 	// program_snapshots + intent（FK のため snapshot が先）。
 	if _, err := pool.Exec(ctx, `
-		INSERT INTO program_snapshots (site, program_id, title, start_at, duration_ms)
-		VALUES ('default', 999001, '手動', '2026-07-30T01:00:00Z', 3600000)
+		INSERT INTO program_snapshots (
+			site, program_id, title, start_at, duration_ms,
+			network_id, service_id, channel_type, channel, event_id, service_name
+		)
+		VALUES ('default', 999001, '手動', '2026-07-30T01:00:00Z', 3600000, 32736, 1025, 'GR', '28', 200, 'NHK総合')
 	`); err != nil {
 		t.Fatalf("insert program_snapshots: %v", err)
 	}

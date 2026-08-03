@@ -106,11 +106,18 @@ func setupTest(t *testing.T) (*Watcher, *pgxpool.Pool) {
 // スナップショット（title / 開始時刻 / 尺）が program_snapshots に抽出され、
 // reservations / program_intents / program_overrides への FK が張られたため、
 // このパッケージのフィクスチャはすべてこれを先に呼ぶ。
+//
+// チャンネル・イベント識別 6 列は issue #101（00026）で NOT NULL 化された。
+// このパッケージのテストは recordings.source 等の導出を見るだけでチャンネル
+// 識別自体は検証しないので、固定のダミー値で足りる。
 func insertTestProgramSnapshot(t *testing.T, pool *pgxpool.Pool, programID int64) {
 	t.Helper()
 	if _, err := pool.Exec(context.Background(), `
-		INSERT INTO program_snapshots (site, program_id, title, start_at, duration_ms)
-		VALUES ('default', $1, 'Test Program', now(), 3600000)
+		INSERT INTO program_snapshots (
+			site, program_id, title, start_at, duration_ms,
+			network_id, service_id, channel_type, channel, event_id, service_name
+		)
+		VALUES ('default', $1, 'Test Program', now(), 3600000, 32736, 1024, 'GR', '27', 1, 'テスト局')
 		ON CONFLICT (site, program_id) DO NOTHING`, programID,
 	); err != nil {
 		t.Fatalf("creating program_snapshot fixture: %v", err)

@@ -96,12 +96,12 @@ type UpsertProgramSnapshotParams struct {
 	Title       string
 	StartAt     time.Time
 	DurationMs  int64
-	NetworkID   *int32
-	ServiceID   *int32
-	ChannelType *string
-	Channel     *string
-	EventID     *int32
-	ServiceName *string
+	NetworkID   int32
+	ServiceID   int32
+	ChannelType string
+	Channel     string
+	EventID     int32
+	ServiceName string
 }
 
 // 番組の事実のスナップショット（#27。00017_program_snapshots.sql）。

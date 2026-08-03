@@ -79,18 +79,37 @@ func applyDocument(ctx context.Context, tx pgx.Tx, doc *Document) (*RescueResult
 	}
 
 	for _, s := range doc.ProgramSnapshots {
+		// program_snapshots のチャンネル・イベント識別 6 列は issue #101（00026）で
+		// NOT NULL 化されたが、catalog document 自体は DB より寿命が長い
+		// バックアップファイルなので、00026 より前に export された古い
+		// ダンプは依然 nil を持ちうる（document.go の ProgramSnapshot コメント参照）。
+		//
+		// この行だけスキップして続行することはしない ---
+		// program_intents / program_overrides は program_snapshots への FK を
+		// 持つ（ON DELETE CASCADE）ので、この行を落とすと後続の該当
+		// intent/override の upsert が FK 違反で失敗し、
+		// applyDocument 全体がロールバックされる中途半端な失敗になる。
+		// 1 トランザクションで全部かゼロかにするため、ここで即座にエラーを
+		// 返してユーザーに古いダンプであることを説明する。
+		if s.NetworkID == nil || s.ServiceID == nil || s.ChannelType == nil ||
+			s.Channel == nil || s.EventID == nil || s.ServiceName == nil {
+			return nil, fmt.Errorf(
+				"program_snapshot %s/%d has no channel/event identity; "+
+					"this catalog dump predates issue #101 (00026) and cannot be rescued as-is",
+				s.Site, s.ProgramID)
+		}
 		if err := q.CatalogUpsertProgramSnapshot(ctx, sqlcgen.CatalogUpsertProgramSnapshotParams{
 			Site:        s.Site,
 			ProgramID:   s.ProgramID,
 			Title:       s.Title,
 			StartAt:     s.StartAt,
 			DurationMs:  s.DurationMs,
-			NetworkID:   s.NetworkID,
-			ServiceID:   s.ServiceID,
-			ChannelType: s.ChannelType,
-			Channel:     s.Channel,
-			EventID:     s.EventID,
-			ServiceName: s.ServiceName,
+			NetworkID:   *s.NetworkID,
+			ServiceID:   *s.ServiceID,
+			ChannelType: *s.ChannelType,
+			Channel:     *s.Channel,
+			EventID:     *s.EventID,
+			ServiceName: *s.ServiceName,
 			UpdatedAt:   s.UpdatedAt,
 		}); err != nil {
 			return nil, fmt.Errorf("upserting program_snapshot %s/%d: %w", s.Site, s.ProgramID, err)

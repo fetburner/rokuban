@@ -512,16 +512,13 @@ func effectivePriority(defaultPriority int, opts db.ReservationOptions) int {
 // （#27 で reservations から抽出済み）。mirakc の programId 内部構造
 // （Mirakurun 互換の ID 合成規則）を割り算して推測することはしない
 // （不変条件: mirakc 固有の概念を永続テーブルの外で復元しない）。
-// NULL は移行前の行で、番組が EPG プロジェクションから既に消えていて
-// 00009_reservation_channel.sql の backfill でも埋められなかった残骸。
-// 誤った推測で schedule を作るより、同期対象から外してアラートする方が安全。
+//
+// service_id が無い（推測せず schedule を作らない）という分岐はかつて
+// ここにあったが、issue #101（00026）で program_snapshots のチャンネル・
+// イベント識別 6 列が NOT NULL 化されたことで、この分岐が守っていた
+// 「00009 以前の残骸で service_id が NULL」という状態自体が表現不可能に
+// なったため落とした（起きない状態のための分岐を残さない）。
 func resolveContentPath(res sqlcgen.Reservation, snap sqlcgen.ProgramSnapshot, opts db.ReservationOptions) (string, error) {
-	if snap.ServiceID == nil {
-		return "", fmt.Errorf("reservation %d (program %d) has no service_id snapshot; "+
-			"likely a pre-migration row whose program has already fallen out of the EPG projection",
-			res.ID, res.ProgramID)
-	}
-
 	// contentPath は filenameTemplate（ruler が base に載せたテンプレート、または
 	// ユーザーの明示的な上書き）があればそれを展開し、なければ従来の固定形式
 	// （buildContentPath 参照）。ContentPath（フルパスの直接指定）が別途あれば
@@ -785,17 +782,11 @@ func (r *Reconciler) recordNeverScheduled(ctx context.Context, reservations []de
 		}
 
 		// チャンネル識別（network_id/service_id/event_id/channel_type/
-		// channel/service_name）が欠けている行は 00009 以前の残骸、または
-		// event_id/service_name が未対応だった頃（issue #98 より前）の
-		// program_snapshots 行。誤った推測で recordings 行を作るより、
-		// 同期対象から外してアラートする方が安全（resolveContentPath の
-		// service_id nil 判定と同じ安全側の判断）。
-		if snap.NetworkID == nil || snap.ServiceID == nil || snap.EventID == nil ||
-			snap.ChannelType == nil || snap.Channel == nil || snap.ServiceName == nil {
-			slog.Error("reconciler: cannot record never-scheduled outcome; program snapshot is missing channel identity",
-				"reservation_id", res.ID, "program_id", res.ProgramID)
-			continue
-		}
+		// channel/service_name）が欠けている行を弾く分岐はかつてここにあった
+		// （00009 以前の残骸、または event_id/service_name が未対応だった頃
+		// （issue #98 より前）の program_snapshots 行を想定）。issue #101
+		// （00026）でこの 6 列が NOT NULL 化され、その状態自体が表現不可能に
+		// なったため落とした（起きない状態のための分岐を残さない）。
 
 		source, err := db.DeriveRecordingSource(ctx, q, r.site, res.ProgramID, true)
 		if err != nil {
@@ -816,12 +807,12 @@ func (r *Reconciler) recordNeverScheduled(ctx context.Context, reservations []de
 			RuleID:            res.RuleID,
 			Source:            source,
 			Site:              r.site,
-			NetworkID:         *snap.NetworkID,
-			ServiceID:         *snap.ServiceID,
-			EventID:           *snap.EventID,
-			ServiceName:       *snap.ServiceName,
-			ChannelType:       *snap.ChannelType,
-			Channel:           *snap.Channel,
+			NetworkID:         snap.NetworkID,
+			ServiceID:         snap.ServiceID,
+			EventID:           snap.EventID,
+			ServiceName:       snap.ServiceName,
+			ChannelType:       snap.ChannelType,
+			Channel:           snap.Channel,
 			Title:             snap.Title,
 			ProgramStartAt:    snap.StartAt,
 			ProgramDurationMs: snap.DurationMs,

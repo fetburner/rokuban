@@ -944,11 +944,17 @@ func insertProgramSnapshotAndReservation(t *testing.T, pool *pgxpool.Pool, progr
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 	if err := q.UpsertProgramSnapshot(ctx, sqlcgen.UpsertProgramSnapshotParams{
-		Site:       "default",
-		ProgramID:  programID,
-		Title:      title,
-		StartAt:    time.Now(),
-		DurationMs: 1800000,
+		Site:        "default",
+		ProgramID:   programID,
+		Title:       title,
+		StartAt:     time.Now(),
+		DurationMs:  1800000,
+		NetworkID:   32736,
+		ServiceID:   1024,
+		ChannelType: "GR",
+		Channel:     "27",
+		EventID:     int32(programID % 100000),
+		ServiceName: "テスト局",
 	}); err != nil {
 		t.Fatalf("upserting program snapshot: %v", err)
 	}

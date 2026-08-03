@@ -172,12 +172,12 @@ func createReservation(t *testing.T, ctx context.Context, q *sqlcgen.Queries, pr
 		Title:       title,
 		StartAt:     startAt,
 		DurationMs:  1800000,
-		NetworkID:   &networkID,
-		ServiceID:   &serviceID,
-		ChannelType: &channelType,
-		Channel:     &channel,
-		EventID:     &eventID,
-		ServiceName: &serviceName,
+		NetworkID:   networkID,
+		ServiceID:   serviceID,
+		ChannelType: channelType,
+		Channel:     channel,
+		EventID:     eventID,
+		ServiceName: serviceName,
 	}); err != nil {
 		t.Fatalf("upserting program snapshot: %v", err)
 	}
@@ -349,11 +349,17 @@ func TestReconciler_SkippedReservationNotScheduled(t *testing.T) {
 	// （通常の取消は行ごと落とすが、ruler が作り直した直後などに両方が
 	// 共存しうるので、reconciler 側でも意図を尊重することを確かめる）
 	if err := q.UpsertProgramSnapshot(ctx, sqlcgen.UpsertProgramSnapshotParams{
-		Site:       "default",
-		ProgramID:  200000500011234,
-		Title:      "スキップ番組",
-		StartAt:    startAt,
-		DurationMs: 1800000,
+		Site:        "default",
+		ProgramID:   200000500011234,
+		Title:       "スキップ番組",
+		StartAt:     startAt,
+		DurationMs:  1800000,
+		NetworkID:   32736,
+		ServiceID:   1024,
+		ChannelType: "GR",
+		Channel:     "27",
+		EventID:     1,
+		ServiceName: "テスト局",
 	}); err != nil {
 		t.Fatalf("upserting program snapshot: %v", err)
 	}
@@ -382,50 +388,19 @@ func TestReconciler_SkippedReservationNotScheduled(t *testing.T) {
 	}
 }
 
-// service_id が NULL の予約（移行前の残骸で、番組が EPG プロジェクションから
-// 既に消えているケース）は、programId からの算術で推測せず、schedule を作らずに
-// スキップすること。
-func TestReconciler_NullServiceIDNotScheduled(t *testing.T) {
-	pool := testutil.SetupDB(t)
-	ctx := context.Background()
-
-	mock := newMockMirakc()
-	srv := httptest.NewServer(mock)
-	defer srv.Close()
-
-	mc := mirakc.NewClient(srv.URL, nil)
-	q := sqlcgen.New(pool)
-
-	startAt := time.Now().Add(1 * time.Hour)
-	// UpsertProgramSnapshot に channel snapshot を渡さない = network_id/service_id
-	// などが NULL のまま。移行前の行を模す。
-	if err := q.UpsertProgramSnapshot(ctx, sqlcgen.UpsertProgramSnapshotParams{
-		Site:       "default",
-		ProgramID:  300000500011234,
-		Title:      "移行前の残骸",
-		StartAt:    startAt,
-		DurationMs: 1800000,
-	}); err != nil {
-		t.Fatalf("upserting program snapshot: %v", err)
-	}
-	if _, err := q.CreateManualReservation(ctx, sqlcgen.CreateManualReservationParams{
-		Site:      "default",
-		ProgramID: 300000500011234,
-	}); err != nil {
-		t.Fatalf("creating reservation: %v", err)
-	}
-
-	rec := reconciler.New("default", mc, pool, nil)
-
-	if err := rec.RunPass(ctx); err != nil {
-		t.Fatalf("RunPass: %v", err)
-	}
-
-	schedules := mock.getSchedules()
-	if len(schedules) != 0 {
-		t.Errorf("reservation with NULL service_id should not create a schedule, got %d", len(schedules))
-	}
-}
+// TestReconciler_NullServiceIDNotScheduled（service_id が NULL の予約を
+// 推測せずスキップする回帰テスト）は issue #101（00026）で
+// program_snapshots のチャンネル・イベント識別 6 列が NOT NULL 化されたことで
+// 削除した。この状態（UpsertProgramSnapshot に channel snapshot を渡さず
+// network_id 等が NULL のまま作る）自体が DB レベルで表現不可能になったため
+// （INSERT が 23502 で落ちる）。
+//
+// resolveContentPath / recordNeverScheduled がこの分岐を落とした後も
+// 通常の識別子を使う経路が従来どおり動くことは、このファイルの他のテスト
+// （TestReconciler_RecreatesOnPriorityChange 等、createReservation ヘルパーで
+// 6 列すべてを埋めている）が回帰テストとして機能し続ける。
+// NOT NULL が実際に効いていることの回帰テストは internal/db/models_test.go の
+// TestSchemaV1_ProgramSnapshotChannelIdentityNotNull にある。
 
 // --- 予約オプションの差分反映（issue #19、docs/recording.md §3.2）---
 

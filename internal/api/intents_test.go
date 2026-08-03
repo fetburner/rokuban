@@ -148,6 +148,8 @@ func TestDeleteEndedProgramIntents(t *testing.T) {
 		programID := int64(9000 + i)
 		if err := q.UpsertProgramSnapshot(ctx, sqlcgen.UpsertProgramSnapshotParams{
 			Site: "default", ProgramID: programID, Title: "", StartAt: st, DurationMs: 1800000,
+			NetworkID: 32736, ServiceID: 1024, ChannelType: "GR", Channel: "27",
+			EventID: int32(programID), ServiceName: "テスト局",
 		}); err != nil {
 			t.Fatal(err)
 		}

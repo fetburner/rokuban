@@ -208,11 +208,17 @@ func TestEvents_ReservationTriggersNotify(t *testing.T) {
 	q := sqlcgen.New(pool)
 	ctx := context.Background()
 	if err := q.UpsertProgramSnapshot(ctx, sqlcgen.UpsertProgramSnapshotParams{
-		Site:       defaultSite,
-		ProgramID:  1,
-		Title:      "テスト番組",
-		StartAt:    time.Now().Add(time.Hour),
-		DurationMs: 1800000,
+		Site:        defaultSite,
+		ProgramID:   1,
+		Title:       "テスト番組",
+		StartAt:     time.Now().Add(time.Hour),
+		DurationMs:  1800000,
+		NetworkID:   32736,
+		ServiceID:   1024,
+		ChannelType: "GR",
+		Channel:     "27",
+		EventID:     1,
+		ServiceName: "テスト局",
 	}); err != nil {
 		t.Fatalf("upserting program snapshot: %v", err)
 	}

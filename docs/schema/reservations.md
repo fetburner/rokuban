@@ -167,16 +167,13 @@ CREATE TABLE program_snapshots (
     title       text        NOT NULL DEFAULT '',
     start_at    timestamptz NOT NULL,
     duration_ms bigint      NOT NULL,
-    -- チャンネル識別。00009 以前の残骸を救えず nullable のままの行がありうる
-    network_id   integer,
-    service_id   integer,
-    channel_type text CHECK (channel_type IS NULL OR channel_type IN ('GR', 'BS', 'CS', 'SKY')),
-    channel      text,
-    -- 放送イベント識別・表示名（issue #98。00025）。network_id 等と同じく
-    -- nullable --- 00025 より前に作られた行や、射影から既に消えていて
-    -- backfill できなかった行がありうる
-    event_id     integer,
-    service_name text,
+    -- チャンネル・放送イベント識別（issue #101。00026 で NOT NULL 化）。
+    network_id   integer NOT NULL,
+    service_id   integer NOT NULL,
+    channel_type text    NOT NULL CHECK (channel_type IN ('GR', 'BS', 'CS', 'SKY')),
+    channel      text    NOT NULL,
+    event_id     integer NOT NULL,
+    service_name text    NOT NULL,
     updated_at  timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (site, program_id)
 );
@@ -185,9 +182,10 @@ CREATE TABLE program_snapshots (
 - **値の出所は EPG プロジェクションただ 1 つ**（#27 の決定）。書き手は api（意図・上書きの作成時。`ensureProgramSnapshot` が `GetProgramSnapshotSource` で `epg_programs ⋈ epg_services` から引く）と ruler（毎パス、`UpsertProgramSnapshotsFromProjection`）の 2 人だが、両者とも射影から引くので値の権威は割れない。**クライアントからは受け取らない**（サーバー権威。移行前の api は title / 開始時刻 / 尺をリクエストボディから受けており、それが GC の比較対象になっていた）。射影に番組がなければ 400
 - **射影にある間は更新、消えたら凍結。** 延長・繰り下げで EPG 側の時刻は変わるので、射影に番組がある間は毎パス追従し、消えたときに凍結する。凍結しっぱなしにしないのは、GC 判定・容量超過判定（[データ層](../data.md) §6.5）が予約の時刻を需要区間として使うため
 - **チャンネル識別はスナップショットする（programId を分解しない）。** Mirakurun 互換の programId は `NID*10^10 + SID*10^5 + EID` という合成規則を持つが、本番コードでこれを逆算してはならない。`network_id` / `service_id` / `channel_type` / `channel` は API のフィールドから素直に引く
-  - reconciler の contentPath 生成はこのスナップショットを読む。`service_id` が NULL なら**推測せず schedule を作らない**
+  - reconciler の contentPath 生成はこのスナップショットを読む
   - 容量超過の判定（[データ層](../data.md) §6.5）の需要単位が `(channel_type, channel)` なので、使い捨ての EPG 射影への JOIN に頼らずここを読む
-- **`event_id` / `service_name` も同じ経路でスナップショットする（issue #98）。** `reconciler.recordNeverScheduled` が `recordings` に never-scheduled の試行行（§5「行の作られ方」）を作るとき、放送イベントの識別 `(network_id, service_id, event_id)` と表示名 `service_name` が要る。`event_id` は他のチャンネル識別列と同様に `epg_programs.event_id` から素直に引き、**programId を分解して逆算しない**（00009 が本番コードから追放した依存そのもの）。どちらか一方でも NULL なら `recordNeverScheduled` は試行行を作らず同期対象から外してアラートする（`resolveContentPath` の `service_id` NULL 判定と同じ安全側の判断）
+- **`event_id` / `service_name` も同じ経路でスナップショットする（issue #98）。** `reconciler.recordNeverScheduled` が `recordings` に never-scheduled の試行行（§5「行の作られ方」）を作るとき、放送イベントの識別 `(network_id, service_id, event_id)` と表示名 `service_name` が要る。`event_id` は他のチャンネル識別列と同様に `epg_programs.event_id` から素直に引き、**programId を分解して逆算しない**（00009 が本番コードから追放した依存そのもの）
+- **チャンネル・放送イベント識別 6 列は NOT NULL（issue #101。00026）。** 元々は「00009 以前の残骸を救えず nullable のままの行がありうる」（4 列。#27）「射影から既に消えていて backfill できなかった行がありうる」（`event_id` / `service_name` の 2 列。#98）という理由で nullable だったが、この表の行寿命（放送 + `epg.retention_grace`）により移行時の残骸はとっくに GC 済みで、新規書き込みの 2 経路（`GetProgramSnapshotSource` / `UpsertProgramSnapshotsFromProjection`）はどちらも `epg_programs` / `epg_services` への INNER JOIN で NULL を書けない。00026 が NULL 行を DELETE してから 6 列を NOT NULL 化した。reconciler 側の「NULL なら推測せず schedule を作らない/試行行を作らない」という分岐（`resolveContentPath` / `recordNeverScheduled`）もこの状態が表現不可能になったことで削除している
 - **GC はこの表からの 1 本の DELETE に集約された**（`DeleteEndedProgramSnapshots`。条件は `start_at + duration_ms < now() - epg.retention_grace`）。`reservations` / `program_intents` / `program_overrides` はこの表への `(site, program_id)` FK を `ON DELETE CASCADE` で持つので、この 1 本の DELETE で 3 表とも一緒に落ちる。**移行前は 3 本の DELETE がそれぞれ別のスナップショット列を見ており、ドリフトしていたので表ごとに違う時刻で GC していた**（#27 が解消した核心）。`recordings.reservation_id` は `ON DELETE SET NULL` なので、この削除で録画履歴（recordings/media_assets）が失われることはない
 - **この表からの DELETE 経路は GC 1 本に限定すること。** 他の場所から消せると意図を巻き添えにする。特に「参照が 1 つも無いスナップショット行を掃除する」規則を足してはならない --- 掃除しないなら害はない（GC が拾う）が、掃除規則は intent の作成とレースする（ruler の導出削除が並行して作られた手動予約を消したのと同じ形。#29）
 - `recordings` はこの FK の対象外。録画時点のスナップショット（§5）として独立にコピーを持つため、番組終了後に `program_snapshots` が消えても録画履歴には影響しない

@@ -227,7 +227,7 @@ func TestGetProgramOverlaps_ExcludesSkippedIntent(t *testing.T) {
 	if err := q.UpsertProgramSnapshot(ctx, sqlcgen.UpsertProgramSnapshotParams{
 		Site: db.DefaultSite, ProgramID: skippedProgramID, Title: "skip された番組",
 		StartAt: skippedStart, DurationMs: testProgramDuration.Milliseconds(),
-		NetworkID: &networkID, ServiceID: &serviceID, ChannelType: &channelType, Channel: &channel,
+		NetworkID: networkID, ServiceID: serviceID, ChannelType: channelType, Channel: channel,
 	}); err != nil {
 		t.Fatalf("upserting program snapshot: %v", err)
 	}
