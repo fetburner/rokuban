@@ -13,15 +13,17 @@ import (
 
 const listTrashRecordings = `-- name: ListTrashRecordings :many
 SELECT
-    r.id, r.rule_id, r.source, r.site, r.network_id, r.service_id, r.event_id, r.service_name, r.channel_type, r.channel, r.title, r.description, r.extended, r.genres, r.is_free, r.program_start_at, r.program_duration_ms, r.status, r.started_at, r.ended_at, r.keep_original, r.encode_profiles, r.quality_events, r.deleted_at, r.created_at, r.updated_at, r.purge_after, r.superseded_at, r.purged_at,
+    r.id, r.reservation_id, r.rule_id, r.source, r.site, r.network_id, r.service_id, r.event_id, r.service_name, r.channel_type, r.channel, r.title, r.description, r.extended, r.genres, r.is_free, r.program_start_at, r.program_duration_ms, r.status, r.started_at, r.ended_at, r.quality_events, r.deleted_at, r.created_at, r.updated_at, r.purge_after, r.superseded_at, r.purged_at,
     a.size_bytes                        AS original_size_bytes,
     COALESCE(d.packets, 0)::bigint      AS drop_packets,
     COALESCE(d.drops, 0)::bigint        AS drop_drops,
     COALESCE(d.errors, 0)::bigint       AS drop_errors,
-    COALESCE(d.scrambled, 0)::bigint    AS drop_scrambled
+    COALESCE(d.scrambled, 0)::bigint    AS drop_scrambled,
+    COALESCE(p.encode_profiles, '{}')::text[] AS encode_profiles
 FROM recordings r
 LEFT JOIN media_assets a
     ON a.recording_id = r.id AND a.kind = 'original' AND a.state <> 'deleted'
+LEFT JOIN recording_encode_policy p ON p.recording_id = r.id
 LEFT JOIN LATERAL (
     SELECT sum(packets) AS packets, sum(drops) AS drops,
            sum(errors) AS errors, sum(scrambled) AS scrambled
@@ -34,6 +36,7 @@ ORDER BY r.deleted_at DESC, r.id DESC
 
 type ListTrashRecordingsRow struct {
 	ID                int64
+	ReservationID     *int64
 	RuleID            *int64
 	Source            string
 	Site              string
@@ -53,8 +56,6 @@ type ListTrashRecordingsRow struct {
 	Status            string
 	StartedAt         *time.Time
 	EndedAt           *time.Time
-	KeepOriginal      string
-	EncodeProfiles    []string
 	QualityEvents     json.RawMessage
 	DeletedAt         *time.Time
 	CreatedAt         time.Time
@@ -67,6 +68,7 @@ type ListTrashRecordingsRow struct {
 	DropDrops         int64
 	DropErrors        int64
 	DropScrambled     int64
+	EncodeProfiles    []string
 }
 
 // ごみ箱一覧。ListRecordings と同じく原本サイズ + drop 合計は載せるが、
@@ -85,6 +87,9 @@ type ListTrashRecordingsRow struct {
 // 完了した」であることに注意 —— 除外条件を「残っているアセットがある録画
 // だけ」にすると、status='failed' でアセットが 0 行の録画が purge 前から
 // ごみ箱に出なくなってしまう。
+// encode_profiles は issue #159 で recording_encode_policy 衛星表に切り出された
+// ため r.* には含まれない（internal/db/queries/recordings.sql の ListRecordings
+// コメント参照。表示上「未凍結」と「空として凍結」は区別しない）。
 func (q *Queries) ListTrashRecordings(ctx context.Context, site string) ([]ListTrashRecordingsRow, error) {
 	rows, err := q.db.Query(ctx, listTrashRecordings, site)
 	if err != nil {
@@ -96,6 +101,7 @@ func (q *Queries) ListTrashRecordings(ctx context.Context, site string) ([]ListT
 		var i ListTrashRecordingsRow
 		if err := rows.Scan(
 			&i.ID,
+			&i.ReservationID,
 			&i.RuleID,
 			&i.Source,
 			&i.Site,
@@ -115,8 +121,6 @@ func (q *Queries) ListTrashRecordings(ctx context.Context, site string) ([]ListT
 			&i.Status,
 			&i.StartedAt,
 			&i.EndedAt,
-			&i.KeepOriginal,
-			&i.EncodeProfiles,
 			&i.QualityEvents,
 			&i.DeletedAt,
 			&i.CreatedAt,
@@ -129,6 +133,7 @@ func (q *Queries) ListTrashRecordings(ctx context.Context, site string) ([]ListT
 			&i.DropDrops,
 			&i.DropErrors,
 			&i.DropScrambled,
+			&i.EncodeProfiles,
 		); err != nil {
 			return nil, err
 		}

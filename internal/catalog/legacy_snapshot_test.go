@@ -56,7 +56,7 @@ func TestRescue_SkipsPreIssue101SnapshotButRestoresDurableAssets(t *testing.T) {
 				ServiceName: "NHK総合", ChannelType: "GR", Channel: "27",
 				Title: "災害復旧で守るべき録画", IsFree: true,
 				ProgramStartAt: time.Now().Add(-2 * time.Hour), ProgramDurationMs: 1800000,
-				Status: "finished", KeepOriginal: "always",
+				Status:    "finished",
 				CreatedAt: time.Now(), UpdatedAt: time.Now(),
 			},
 		},

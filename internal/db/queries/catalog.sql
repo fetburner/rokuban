@@ -34,6 +34,16 @@ SELECT * FROM recordings
 WHERE sqlc.narg('site')::text IS NULL OR site = sqlc.narg('site')
 ORDER BY id;
 
+-- recording_encode_policy 衛星表（issue #159）。行が無い録画は未凍結（省略）で
+-- 正しい --- rescue 側もこのリストに現れなかった recordings.id には何も書かない
+-- ので、「凍結済み」と「未凍結」の区別がそのまま往復する。
+-- name: CatalogListRecordingEncodePolicies :many
+SELECT p.*
+FROM recording_encode_policy p
+JOIN recordings r ON r.id = p.recording_id
+WHERE sqlc.narg('site')::text IS NULL OR r.site = sqlc.narg('site')
+ORDER BY p.recording_id;
+
 -- name: CatalogListMediaAssets :many
 SELECT a.*
 FROM media_assets a
@@ -212,6 +222,9 @@ ON CONFLICT (site, program_id) DO UPDATE SET
     created_at = EXCLUDED.created_at,
     updated_at = EXCLUDED.updated_at;
 
+-- keep_original / encode_profiles は issue #159 で recording_encode_policy
+-- 衛星表に切り出されたので、この INSERT には含まれない
+-- （CatalogUpsertRecordingEncodePolicy 参照）。
 -- name: CatalogUpsertRecording :exec
 INSERT INTO recordings (
     id, rule_id, source, site,
@@ -220,7 +233,7 @@ INSERT INTO recordings (
     extended, genres, is_free,
     program_start_at, program_duration_ms,
     status, started_at, ended_at,
-    keep_original, encode_profiles, quality_events,
+    quality_events,
     deleted_at, purge_after, superseded_at, purged_at, created_at, updated_at
 ) OVERRIDING SYSTEM VALUE
 VALUES (
@@ -230,8 +243,8 @@ VALUES (
     $13, $14, $15,
     $16, $17,
     $18, $19, $20,
-    $21, $22, $23,
-    $24, $25, $26, $27, $28, $29
+    $21,
+    $22, $23, $24, $25, $26, $27
 )
 ON CONFLICT (id) DO UPDATE SET
     rule_id             = EXCLUDED.rule_id,
@@ -253,8 +266,6 @@ ON CONFLICT (id) DO UPDATE SET
     status              = EXCLUDED.status,
     started_at          = EXCLUDED.started_at,
     ended_at            = EXCLUDED.ended_at,
-    keep_original       = EXCLUDED.keep_original,
-    encode_profiles     = EXCLUDED.encode_profiles,
     quality_events      = EXCLUDED.quality_events,
     deleted_at          = EXCLUDED.deleted_at,
     purge_after         = EXCLUDED.purge_after,
@@ -267,6 +278,21 @@ ON CONFLICT (id) DO UPDATE SET
     purged_at           = EXCLUDED.purged_at,
     created_at          = EXCLUDED.created_at,
     updated_at          = EXCLUDED.updated_at;
+
+-- recording_encode_policy 衛星表の rescue（issue #159）。凍結 = 行の INSERT
+-- という意味論を rescue でも保つ --- doc.RecordingEncodePolicies に載っている
+-- （= export 時点で凍結済みだった）録画だけ upsert する。載っていない録画には
+-- 何もしない（recordings 側の upsert より後に呼ぶので、行が無い = 未凍結と
+-- いう意味論のまま復元される）。
+-- name: CatalogUpsertRecordingEncodePolicy :exec
+INSERT INTO recording_encode_policy (
+    recording_id, keep_original, encode_profiles, created_at, updated_at
+) VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (recording_id) DO UPDATE SET
+    keep_original   = EXCLUDED.keep_original,
+    encode_profiles = EXCLUDED.encode_profiles,
+    created_at      = EXCLUDED.created_at,
+    updated_at      = EXCLUDED.updated_at;
 
 -- name: CatalogUpsertMediaAsset :exec
 INSERT INTO media_assets (

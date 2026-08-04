@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertest"
@@ -1040,14 +1041,25 @@ func riverWorkContext(t *testing.T, pool *pgxpool.Pool) context.Context {
 	return rivertest.WorkContext(context.Background(), client)
 }
 
+// encodePolicyOfRecording は recording_encode_policy 衛星表（issue #159）を読む。
+// 行が無い（未凍結）場合は既定値 "always" / [] を返す --- resolveAndSnapshotEncodePolicy
+// が解決に失敗した場合や、予約が無く一度も呼ばれない場合はこの表に行自体が
+// 作られない（不変条件 10「意味を持たない行を作らない」）。既存テストの
+// アサーションはいずれも「凍結されなかった＝既定値のまま」を確認する意図なので、
+// この関数がその意図をそのまま表す。
 func encodePolicyOfRecording(t *testing.T, pool *pgxpool.Pool, recordingID int64) (keepOriginal string, profiles []string) {
 	t.Helper()
-	if err := pool.QueryRow(context.Background(),
-		"SELECT keep_original, encode_profiles FROM recordings WHERE id = $1", recordingID,
-	).Scan(&keepOriginal, &profiles); err != nil {
-		t.Fatalf("querying recording encode policy: %v", err)
+	err := pool.QueryRow(context.Background(),
+		"SELECT keep_original, encode_profiles FROM recording_encode_policy WHERE recording_id = $1", recordingID,
+	).Scan(&keepOriginal, &profiles)
+	if err == nil {
+		return keepOriginal, profiles
 	}
-	return keepOriginal, profiles
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "always", []string{}
+	}
+	t.Fatalf("querying recording encode policy: %v", err)
+	return "", nil
 }
 
 func countEncodeJobs(t *testing.T, pool *pgxpool.Pool, recordingID int64, profile string) int {
@@ -1484,11 +1496,13 @@ func TestIngestWorker_LogsWarnWhenRuleSourceReservationUnresolvable(t *testing.T
 		}
 	}
 
-	// 解決に失敗したので凍結せず既定値のまま(この関数の主張の対象ではないが、
-	// 「ログは出たが desired が誤って書かれた」を排除するために確認する)。
+	// 解決に失敗しても凍結自体はスキップしない（issue #159。resolveAndSnapshotEncodePolicy
+	// の doc コメント「解決に失敗しても凍結する」参照）ので既定値で凍結されるはず
+	// （この関数の主張の対象ではないが、「ログは出たが desired が誤って書かれた」を
+	// 排除するために確認する）。
 	keepOriginal, profiles := encodePolicyOfRecording(t, pool, recordingID)
 	if keepOriginal != "always" || len(profiles) != 0 {
-		t.Errorf("keep_original/encode_profiles = %q/%v, want always/[] (unresolved, defaults unchanged)", keepOriginal, profiles)
+		t.Errorf("keep_original/encode_profiles = %q/%v, want always/[] (unresolved, frozen to defaults)", keepOriginal, profiles)
 	}
 }
 

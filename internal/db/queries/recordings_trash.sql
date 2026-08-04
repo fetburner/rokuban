@@ -52,6 +52,9 @@ RETURNING id, deleted_at, purge_after;
 -- 完了した」であることに注意 —— 除外条件を「残っているアセットがある録画
 -- だけ」にすると、status='failed' でアセットが 0 行の録画が purge 前から
 -- ごみ箱に出なくなってしまう。
+-- encode_profiles は issue #159 で recording_encode_policy 衛星表に切り出された
+-- ため r.* には含まれない（internal/db/queries/recordings.sql の ListRecordings
+-- コメント参照。表示上「未凍結」と「空として凍結」は区別しない）。
 -- name: ListTrashRecordings :many
 SELECT
     r.*,
@@ -59,10 +62,12 @@ SELECT
     COALESCE(d.packets, 0)::bigint      AS drop_packets,
     COALESCE(d.drops, 0)::bigint        AS drop_drops,
     COALESCE(d.errors, 0)::bigint       AS drop_errors,
-    COALESCE(d.scrambled, 0)::bigint    AS drop_scrambled
+    COALESCE(d.scrambled, 0)::bigint    AS drop_scrambled,
+    COALESCE(p.encode_profiles, '{}')::text[] AS encode_profiles
 FROM recordings r
 LEFT JOIN media_assets a
     ON a.recording_id = r.id AND a.kind = 'original' AND a.state <> 'deleted'
+LEFT JOIN recording_encode_policy p ON p.recording_id = r.id
 LEFT JOIN LATERAL (
     SELECT sum(packets) AS packets, sum(drops) AS drops,
            sum(errors) AS errors, sum(scrambled) AS scrambled

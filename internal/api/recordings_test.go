@@ -39,6 +39,14 @@ func seedRecording(t *testing.T, pool *pgxpool.Pool, title string, start time.Ti
 
 // seedIngested は録画に原本 media_asset と PID 別 drop_stats を付け、
 // 作った原本アセットの ID を返す。
+//
+// 実運用の ingest（internal/worker/ingest.go の commit）は原本 media_asset の
+// INSERT と同一 tx で recording_encode_policy を必ず凍結する（issue #159。
+// 解決に失敗しても既定値で凍結する。resolveAndSnapshotEncodePolicy の doc
+// コメント参照）。この関数は本物の ingest ワーカーを経由しないテスト用
+// フィクスチャなので、同じ事後条件（原本コミット済みなら凍結済み）を
+// 手で再現しておく --- これを怠ると、seedIngested 後に事後追加 API
+// （AddRecordingEncodeProfiles）を呼ぶテストが「行が無い」で 500 になる。
 func seedIngested(t *testing.T, pool *pgxpool.Pool, recordingID, size int64, stats map[int32][4]int64) int64 {
 	t.Helper()
 	ctx := context.Background()
@@ -51,6 +59,11 @@ func seedIngested(t *testing.T, pool *pgxpool.Pool, recordingID, size int64, sta
 	})
 	if err != nil {
 		t.Fatalf("seeding media_asset: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles)
+		 VALUES ($1, 'always', '{}')`, recordingID); err != nil {
+		t.Fatalf("seeding recording_encode_policy: %v", err)
 	}
 	for pid, s := range stats {
 		if err := q.InsertDropStat(ctx, sqlcgen.InsertDropStatParams{

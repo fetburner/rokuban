@@ -111,6 +111,32 @@ func (r *webhookRecorder) reset() {
 	r.events = nil
 }
 
+// markRecordingUntilEncoded は recording_encode_policy 衛星表（issue #159）に
+// keep_original='until_encoded' の行を作る/上書きするテスト用フィクスチャ。
+// ingest の resolveAndSnapshotEncodePolicy が原本コミットと同一 tx で凍結する
+// 内容を模す（reservations.sql は #52 並走中につき、この目的のためだけの
+// 書き込みクエリを新設しない。CLAUDE.md 同種の規律）。このファイルの呼び出し元は
+// すべて until_encoded 腕の削除判定を確認するテストなので keep_original を
+// パラメータにしない（unparam）。本番の凍結は ON CONFLICT を持たない素の
+// INSERT だが（1 録画につき 1 回しか呼ばれない前提）、ここはテストの都合上
+// 何度でも呼べるように upsert にしてある。
+func markRecordingUntilEncoded(t *testing.T, pool *pgxpool.Pool, recordingID int64, profiles []string) {
+	t.Helper()
+	if profiles == nil {
+		profiles = []string{}
+	}
+	if _, err := pool.Exec(context.Background(),
+		`INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles)
+		 VALUES ($1, 'until_encoded', $2)
+		 ON CONFLICT (recording_id) DO UPDATE SET
+		   keep_original   = EXCLUDED.keep_original,
+		   encode_profiles = EXCLUDED.encode_profiles,
+		   updated_at      = now()`,
+		recordingID, profiles); err != nil {
+		t.Fatalf("setting recording_encode_policy: %v", err)
+	}
+}
+
 // markRecordingTrashed は録画をごみ箱に入れ、猶予（既定 30 日）を過ぎた状態にする。
 func markRecordingTrashed(t *testing.T, pool *pgxpool.Pool, recordingID int64) {
 	t.Helper()
@@ -461,11 +487,7 @@ func TestDeleteReconcileWorker_UntilEncodedOriginalPurge_DoesNotFireRecordingDel
 	profile := "h264"
 	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindEncoded, &profile, "webhook/ue-encoded.mp4", []byte("mp4"))
 	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindThumbnail, nil, "webhook/ue-thumb.jpg", []byte("jpg"))
-	if _, err := pool.Exec(context.Background(),
-		"UPDATE recordings SET keep_original = 'until_encoded', encode_profiles = $1 WHERE id = $2",
-		[]string{"h264"}, recordingID); err != nil {
-		t.Fatalf("setting keep_original: %v", err)
-	}
+	markRecordingUntilEncoded(t, pool, recordingID, []string{"h264"})
 
 	rec, client := newWebhookRecorder(t)
 	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, Webhook: client}
@@ -722,11 +744,7 @@ func TestDeleteReconcileWorker_UntilEncoded_Complete_Deletes(t *testing.T) {
 	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindEncoded, &profile, "enc/complete.mp4", []byte("mp4"))
 	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindThumbnail, nil, "thumb/complete.jpg", []byte("jpg"))
 
-	if _, err := pool.Exec(context.Background(),
-		"UPDATE recordings SET keep_original = 'until_encoded', encode_profiles = $1 WHERE id = $2",
-		[]string{"h264"}, recordingID); err != nil {
-		t.Fatalf("setting keep_original: %v", err)
-	}
+	markRecordingUntilEncoded(t, pool, recordingID, []string{"h264"})
 
 	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
 	if err := w.Work(context.Background(), nil); err != nil {
@@ -738,10 +756,10 @@ func TestDeleteReconcileWorker_UntilEncoded_Complete_Deletes(t *testing.T) {
 	}
 }
 
-// dropUntilEncodedRequiresProfilesCheck は 00020 マイグレーションの CHECK 制約
-// （recordings_until_encoded_requires_profiles）を一時的に外す。encode_profiles
-// が空の until_encoded 行は通常この CHECK に阻まれて作れないが、issue #104 の
-// 削除クエリ側ガード（ListUntilEncodedOriginalsToDelete の
+// dropUntilEncodedRequiresProfilesCheck は recording_encode_policy（issue #159。
+// 00020 から移設した CHECK 制約）の CHECK 制約を一時的に外す。encode_profiles が
+// 空の until_encoded 行は通常この CHECK に阻まれて作れないが、issue #104 の
+// 削除クエリ側ガード（until_encoded_deletable_originals view の
 // cardinality(encode_profiles) > 0）は「CHECK に頼らない」独立した防御として
 // 足したものなので、CHECK が無い前提でもそれ単体で原本を守れることを確認する
 // 必要がある。テスト用パッケージ DB は TRUNCATE のみでスキーマは使い回すため、
@@ -750,7 +768,7 @@ func dropUntilEncodedRequiresProfilesCheck(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	ctx := context.Background()
 	if _, err := pool.Exec(ctx,
-		"ALTER TABLE recordings DROP CONSTRAINT recordings_until_encoded_requires_profiles"); err != nil {
+		"ALTER TABLE recording_encode_policy DROP CONSTRAINT recording_encode_policy_check"); err != nil {
 		t.Fatalf("dropping check constraint: %v", err)
 	}
 	t.Cleanup(func() {
@@ -761,12 +779,12 @@ func dropUntilEncodedRequiresProfilesCheck(t *testing.T, pool *pgxpool.Pool) {
 		// 先に直しておく（00020 マイグレーションの Up が既存行にしているのと
 		// 同じ「安全側に倒す」処理）。
 		if _, err := pool.Exec(cleanupCtx,
-			"UPDATE recordings SET keep_original = 'always' "+
+			"UPDATE recording_encode_policy SET keep_original = 'always' "+
 				"WHERE keep_original = 'until_encoded' AND cardinality(encode_profiles) = 0"); err != nil {
 			t.Fatalf("fixing up rows before restoring check constraint: %v", err)
 		}
 		if _, err := pool.Exec(cleanupCtx,
-			"ALTER TABLE recordings ADD CONSTRAINT recordings_until_encoded_requires_profiles "+
+			"ALTER TABLE recording_encode_policy ADD CONSTRAINT recording_encode_policy_check "+
 				"CHECK (keep_original <> 'until_encoded' OR cardinality(encode_profiles) > 0)"); err != nil {
 			t.Fatalf("restoring check constraint: %v", err)
 		}
@@ -790,7 +808,7 @@ func TestDeleteReconcileWorker_UntilEncoded_EmptyProfiles_NotDeleted(t *testing.
 
 	dropUntilEncodedRequiresProfilesCheck(t, pool)
 	if _, err := pool.Exec(ctx,
-		"UPDATE recordings SET keep_original = 'until_encoded', encode_profiles = '{}' WHERE id = $1",
+		"INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles) VALUES ($1, 'until_encoded', '{}')",
 		recordingID); err != nil {
 		t.Fatalf("setting keep_original with empty encode_profiles: %v", err)
 	}
@@ -806,25 +824,25 @@ func TestDeleteReconcileWorker_UntilEncoded_EmptyProfiles_NotDeleted(t *testing.
 	}
 }
 
-// 00020 マイグレーションの CHECK 自体が効いていることの確認（issue #104 の
-// 含むもの 3、CLAUDE.md 不変条件 10「表現不可能にする」）。既定値
-// （keep_original='always', encode_profiles='{}'）はこの CHECK を満たすので、
-// until_encoded に切り替えるときだけプロファイルを要求する形になっているはず。
-// 両方向を確認する: 空プロファイルは拒否され、プロファイルを添えれば通る。
-func TestRecordings_UntilEncodedRequiresProfilesCheck(t *testing.T) {
+// recording_encode_policy の CHECK 自体が効いていることの確認（issue #104 の
+// 含むもの 3、CLAUDE.md 不変条件 10「表現不可能にする」。00020 から issue #159 で
+// この衛星表へ移設）。until_encoded に切り替えるときだけプロファイルを要求する
+// 形になっているはず。両方向を確認する: 空プロファイルは拒否され、プロファイルを
+// 添えれば通る。
+func TestRecordingEncodePolicy_UntilEncodedRequiresProfilesCheck(t *testing.T) {
 	pool := setupTestPool(t)
 	ctx := context.Background()
 	recordingID := insertTestRecording(t, pool)
 
 	if _, err := pool.Exec(ctx,
-		"UPDATE recordings SET keep_original = 'until_encoded', encode_profiles = '{}' WHERE id = $1",
+		"INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles) VALUES ($1, 'until_encoded', '{}')",
 		recordingID); err == nil {
 		t.Fatal("expected a CHECK violation for until_encoded with empty encode_profiles, got no error")
 	}
 
 	if _, err := pool.Exec(ctx,
-		"UPDATE recordings SET keep_original = 'until_encoded', encode_profiles = $1 WHERE id = $2",
-		[]string{"h264"}, recordingID); err != nil {
+		"INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles) VALUES ($1, 'until_encoded', $2)",
+		recordingID, []string{"h264"}); err != nil {
 		t.Fatalf("expected until_encoded with a non-empty profile list to be allowed, got error: %v", err)
 	}
 }
@@ -839,11 +857,7 @@ func TestDeleteReconcileWorker_UntilEncoded_MissingProfile_NotDeleted(t *testing
 	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindThumbnail, nil, "thumb/missing-profile.jpg", []byte("jpg"))
 	// h264 プロファイルは望ましいが未生成のまま。
 
-	if _, err := pool.Exec(context.Background(),
-		"UPDATE recordings SET keep_original = 'until_encoded', encode_profiles = $1 WHERE id = $2",
-		[]string{"h264"}, recordingID); err != nil {
-		t.Fatalf("setting keep_original: %v", err)
-	}
+	markRecordingUntilEncoded(t, pool, recordingID, []string{"h264"})
 
 	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
 	if err := w.Work(context.Background(), nil); err != nil {
@@ -865,11 +879,7 @@ func TestDeleteReconcileWorker_UntilEncoded_MissingThumbnail_NotDeleted(t *testi
 	profile := "h264"
 	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindEncoded, &profile, "enc/missing-thumb.mp4", []byte("mp4"))
 
-	if _, err := pool.Exec(context.Background(),
-		"UPDATE recordings SET keep_original = 'until_encoded', encode_profiles = $1 WHERE id = $2",
-		[]string{"h264"}, recordingID); err != nil {
-		t.Fatalf("setting keep_original: %v", err)
-	}
+	markRecordingUntilEncoded(t, pool, recordingID, []string{"h264"})
 
 	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
 	if err := w.Work(context.Background(), nil); err != nil {
@@ -893,11 +903,7 @@ func TestDeleteReconcileWorker_UntilEncoded_PendingEncodeJob_NotDeleted(t *testi
 	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindEncoded, &profile, "enc/pending-job.mp4", []byte("mp4"))
 	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindThumbnail, nil, "thumb/pending-job.jpg", []byte("jpg"))
 
-	if _, err := pool.Exec(context.Background(),
-		"UPDATE recordings SET keep_original = 'until_encoded', encode_profiles = $1 WHERE id = $2",
-		[]string{"h264"}, recordingID); err != nil {
-		t.Fatalf("setting keep_original: %v", err)
-	}
+	markRecordingUntilEncoded(t, pool, recordingID, []string{"h264"})
 
 	insertOnly, err := NewInsertOnlyClient(pool)
 	if err != nil {
@@ -942,11 +948,7 @@ func TestDeleteReconcileWorker_UntilEncodedDeletingInterrupted_ResumesOnNextPass
 	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindEncoded, &profile, "enc/interrupted.mp4", []byte("mp4"))
 	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindThumbnail, nil, "thumb/interrupted.jpg", []byte("jpg"))
 
-	if _, err := pool.Exec(context.Background(),
-		"UPDATE recordings SET keep_original = 'until_encoded', encode_profiles = $1 WHERE id = $2",
-		[]string{"h264"}, recordingID); err != nil {
-		t.Fatalf("setting keep_original: %v", err)
-	}
+	markRecordingUntilEncoded(t, pool, recordingID, []string{"h264"})
 
 	// 1 パス目の unlink を失敗させる（中身のあるディレクトリで置き換える）。
 	if err := os.Remove(assetPath); err != nil {
@@ -1010,11 +1012,7 @@ func TestDeleteReconcileWorker_UntilEncodedUnqualifiedWhileDeleting_RevertsToAct
 	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindEncoded, &profile, "enc/unqualify.mp4", []byte("mp4"))
 	thumbID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindThumbnail, nil, "thumb/unqualify.jpg", []byte("jpg"))
 
-	if _, err := pool.Exec(ctx,
-		"UPDATE recordings SET keep_original = 'until_encoded', encode_profiles = $1 WHERE id = $2",
-		[]string{"h264"}, recordingID); err != nil {
-		t.Fatalf("setting keep_original: %v", err)
-	}
+	markRecordingUntilEncoded(t, pool, recordingID, []string{"h264"})
 
 	// 前パスで active → deleting へ遷移させた（unlink はまだ）状態を直接作る。
 	// この時点では派生物が揃っており、遷移は正しい判断だった。
@@ -1136,11 +1134,7 @@ func TestDeleteReconcileWorker_UntilEncoded_PendingJobOnOneOfMultipleCandidates_
 	assetA := seedOriginalAsset(t, pool, mediaDir, recordingA, "orig/multi-a.m2ts", []byte("data"))
 	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingA, db.AssetKindEncoded, &profile, "enc/multi-a.mp4", []byte("mp4"))
 	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingA, db.AssetKindThumbnail, nil, "thumb/multi-a.jpg", []byte("jpg"))
-	if _, err := pool.Exec(context.Background(),
-		"UPDATE recordings SET keep_original = 'until_encoded', encode_profiles = $1 WHERE id = $2",
-		[]string{"h264"}, recordingA); err != nil {
-		t.Fatalf("setting keep_original for recording A: %v", err)
-	}
+	markRecordingUntilEncoded(t, pool, recordingA, []string{"h264"})
 
 	// recordingB: 派生物は揃っており、pending なジョブは無い。event_id を
 	// insertTestRecording の既定（1）とずらす —— recordings_unique_active_event は
@@ -1151,11 +1145,7 @@ func TestDeleteReconcileWorker_UntilEncoded_PendingJobOnOneOfMultipleCandidates_
 	assetB := seedOriginalAsset(t, pool, mediaDir, recordingB, "orig/multi-b.m2ts", []byte("data"))
 	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingB, db.AssetKindEncoded, &profile, "enc/multi-b.mp4", []byte("mp4"))
 	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingB, db.AssetKindThumbnail, nil, "thumb/multi-b.jpg", []byte("jpg"))
-	if _, err := pool.Exec(context.Background(),
-		"UPDATE recordings SET keep_original = 'until_encoded', encode_profiles = $1 WHERE id = $2",
-		[]string{"h264"}, recordingB); err != nil {
-		t.Fatalf("setting keep_original for recording B: %v", err)
-	}
+	markRecordingUntilEncoded(t, pool, recordingB, []string{"h264"})
 
 	insertOnly, err := NewInsertOnlyClient(pool)
 	if err != nil {

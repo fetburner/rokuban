@@ -15,14 +15,15 @@ import (
 
 // RescueResult は rescue で復元した件数のサマリ。
 type RescueResult struct {
-	CatalogPath      string
-	Rules            int
-	Recordings       int
-	MediaAssets      int
-	DropStats        int
-	ProgramSnapshots int
-	ProgramIntents   int
-	ProgramOverrides int
+	CatalogPath             string
+	Rules                   int
+	Recordings              int
+	RecordingEncodePolicies int
+	MediaAssets             int
+	DropStats               int
+	ProgramSnapshots        int
+	ProgramIntents          int
+	ProgramOverrides        int
 
 	// SkippedProgramSnapshots は識別子を持たない（#101 / 00026 より前に export
 	// された）ために復元をスキップした program_snapshots の件数。0 でない場合は
@@ -187,10 +188,6 @@ func applyDocument(ctx context.Context, tx pgx.Tx, doc *Document) (*RescueResult
 	}
 
 	for _, r := range doc.Recordings {
-		profiles := r.EncodeProfiles
-		if profiles == nil {
-			profiles = []string{}
-		}
 		qe := r.QualityEvents
 		if len(qe) == 0 {
 			qe = []byte("[]")
@@ -216,8 +213,6 @@ func applyDocument(ctx context.Context, tx pgx.Tx, doc *Document) (*RescueResult
 			Status:            r.Status,
 			StartedAt:         r.StartedAt,
 			EndedAt:           r.EndedAt,
-			KeepOriginal:      r.KeepOriginal,
-			EncodeProfiles:    profiles,
 			QualityEvents:     qe,
 			DeletedAt:         r.DeletedAt,
 			PurgeAfter:        r.PurgeAfter,
@@ -229,6 +224,27 @@ func applyDocument(ctx context.Context, tx pgx.Tx, doc *Document) (*RescueResult
 			return nil, fmt.Errorf("upserting recording %d: %w", r.ID, err)
 		}
 		res.Recordings++
+	}
+
+	// recording_encode_policy（issue #159）は recordings への FK を持つので
+	// recordings の upsert より後に書く。doc.RecordingEncodePolicies に
+	// 載っていない録画には何も書かない --- 「未凍結」は行の不在そのものが
+	// 意味を持つ（不変条件 10）ので、既定値の行で埋めると凍結済みと誤認する。
+	for _, p := range doc.RecordingEncodePolicies {
+		profiles := p.EncodeProfiles
+		if profiles == nil {
+			profiles = []string{}
+		}
+		if err := q.CatalogUpsertRecordingEncodePolicy(ctx, sqlcgen.CatalogUpsertRecordingEncodePolicyParams{
+			RecordingID:    p.RecordingID,
+			KeepOriginal:   p.KeepOriginal,
+			EncodeProfiles: profiles,
+			CreatedAt:      p.CreatedAt,
+			UpdatedAt:      p.UpdatedAt,
+		}); err != nil {
+			return nil, fmt.Errorf("upserting recording_encode_policy %d: %w", p.RecordingID, err)
+		}
+		res.RecordingEncodePolicies++
 	}
 
 	for _, a := range doc.MediaAssets {

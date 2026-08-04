@@ -30,13 +30,14 @@ type Document struct {
 	// Site は export 時に絞り込んだサイト。空 / omit なら全サイト。
 	Site *string `json:"site,omitempty"`
 
-	Rules            []Rule            `json:"rules"`
-	Recordings       []Recording       `json:"recordings"`
-	MediaAssets      []MediaAsset      `json:"mediaAssets"`
-	DropStats        []DropStat        `json:"dropStats"`
-	ProgramSnapshots []ProgramSnapshot `json:"programSnapshots"`
-	ProgramIntents   []ProgramIntent   `json:"programIntents"`
-	ProgramOverrides []ProgramOverride `json:"programOverrides"`
+	Rules                   []Rule                  `json:"rules"`
+	Recordings              []Recording             `json:"recordings"`
+	RecordingEncodePolicies []RecordingEncodePolicy `json:"recordingEncodePolicies"`
+	MediaAssets             []MediaAsset            `json:"mediaAssets"`
+	DropStats               []DropStat              `json:"dropStats"`
+	ProgramSnapshots        []ProgramSnapshot       `json:"programSnapshots"`
+	ProgramIntents          []ProgramIntent         `json:"programIntents"`
+	ProgramOverrides        []ProgramOverride       `json:"programOverrides"`
 }
 
 // Rule は rules 本体と子テーブルをまとめた 1 ルール分。
@@ -119,8 +120,6 @@ type Recording struct {
 	Status            string          `json:"status"`
 	StartedAt         *time.Time      `json:"startedAt,omitempty"`
 	EndedAt           *time.Time      `json:"endedAt,omitempty"`
-	KeepOriginal      string          `json:"keepOriginal"`
-	EncodeProfiles    []string        `json:"encodeProfiles"`
 	QualityEvents     json.RawMessage `json:"qualityEvents"`
 	DeletedAt         *time.Time      `json:"deletedAt,omitempty"`
 	PurgeAfter        *time.Time      `json:"purgeAfter,omitempty"`
@@ -136,6 +135,21 @@ type Recording struct {
 	PurgedAt  *time.Time `json:"purgedAt,omitempty"`
 	CreatedAt time.Time  `json:"createdAt"`
 	UpdatedAt time.Time  `json:"updatedAt"`
+}
+
+// RecordingEncodePolicy は recording_encode_policy の 1 行（issue #159。凍結済み
+// 「この録画の望ましい最終状態」）。
+//
+// **行の有無そのものが意味を持つ**（不変条件 10）。この録画の RecordingID が
+// Document.RecordingEncodePolicies に載っていなければ「未凍結」であり、rescue は
+// それを既定値の行で埋めない（Recording と違い、載っていない録画には何も
+// upsert しない。internal/catalog/rescue.go 参照）。
+type RecordingEncodePolicy struct {
+	RecordingID    int64     `json:"recordingId"`
+	KeepOriginal   string    `json:"keepOriginal"`
+	EncodeProfiles []string  `json:"encodeProfiles"`
+	CreatedAt      time.Time `json:"createdAt"`
+	UpdatedAt      time.Time `json:"updatedAt"`
 }
 
 // MediaAsset は media_assets の 1 行。

@@ -271,11 +271,23 @@ func (h *Server) AddRecordingEncodeProfiles(ctx context.Context, req AddRecordin
 		return nil, fmt.Errorf("loading original media asset for recording %d: %w", req.Id, err)
 	}
 
-	if err := q.AppendRecordingEncodeProfiles(ctx, sqlcgen.AppendRecordingEncodeProfilesParams{
+	// :execrows --- recording_encode_policy（issue #159）に行が無い（未凍結）
+	// ケースをここで検出する。原本が active（直前の GetActiveOriginalMediaAsset）
+	// なら resolveAndSnapshotEncodePolicy が原本コミットと同一 tx で必ず行を
+	// 作っているはずなので、0 行は不変条件違反 --- 黙って no-op にすると
+	// ユーザーの事後追加依頼がサイレントに消える（issue #133 が問題にした症状と
+	// 同型）。
+	rows, err := q.AppendRecordingEncodeProfiles(ctx, sqlcgen.AppendRecordingEncodeProfilesParams{
 		ID:       req.Id,
 		Profiles: req.Body.Profiles,
-	}); err != nil {
+	})
+	if err != nil {
 		return nil, fmt.Errorf("appending encode profiles for recording %d: %w", req.Id, err)
+	}
+	if rows == 0 {
+		return nil, fmt.Errorf(
+			"appending encode profiles for recording %d: no recording_encode_policy row "+
+				"despite an active original media asset (invariant violation)", req.Id)
 	}
 	if err := h.insertEncodeEnqueueHint(ctx, tx, req.Id); err != nil {
 		return nil, err

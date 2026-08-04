@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 
@@ -77,15 +79,26 @@ func seedReservationForTest(t *testing.T, pool *pgxpool.Pool, programID int64) i
 	return id
 }
 
+// getRecordingEncodeProfiles は recording_encode_policy 衛星表（issue #159）を
+// 読む。行が無い（未凍結。原本 media_asset がまだコミットされていない）場合は
+// 空のプロファイル一覧を返す --- このテストファイルの呼び出し元はいずれも
+// seedIngested 後（原本コミット後。resolveAndSnapshotEncodePolicy が既定値でも
+// 必ず凍結する。internal/worker/ingest.go 参照）に呼ぶので、実運用では行が
+// 見つかるはずだが、防御的に nil スキャンにはしない。
 func getRecordingEncodeProfiles(t *testing.T, pool *pgxpool.Pool, id int64) []string {
 	t.Helper()
 	var profiles []string
-	if err := pool.QueryRow(context.Background(),
-		`SELECT encode_profiles FROM recordings WHERE id = $1`, id,
-	).Scan(&profiles); err != nil {
-		t.Fatalf("loading encode_profiles for recording %d: %v", id, err)
+	err := pool.QueryRow(context.Background(),
+		`SELECT encode_profiles FROM recording_encode_policy WHERE recording_id = $1`, id,
+	).Scan(&profiles)
+	if err == nil {
+		return profiles
 	}
-	return profiles
+	if errors.Is(err, pgx.ErrNoRows) {
+		return []string{}
+	}
+	t.Fatalf("loading encode_profiles for recording %d: %v", id, err)
+	return nil
 }
 
 func countEncodeEnqueueHintJobs(t *testing.T, pool *pgxpool.Pool) int {

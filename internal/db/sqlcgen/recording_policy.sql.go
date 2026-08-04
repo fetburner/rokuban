@@ -35,10 +35,11 @@ type GetReservationEncodePolicyByEventRow struct {
 	Overrides    json.RawMessage
 }
 
-// ingest が recordings.keep_original / encode_profiles を焼くために読む実効オプション
-// （M3-14、issue #103）。reservations.sql は #52（M2 出口基準の並走）の間は触らない
-// 方針のため、読み取り専用のこのクエリを新規ファイルに切る
-// （CLAUDE.md「クエリファイルは新規に切る」）。
+// ingest が recording_encode_policy 衛星表（issue #159。旧 recordings.keep_original /
+// encode_profiles）を焼くために読む実効オプション（M3-14、issue #103）。
+// reservations.sql は #52（M2 出口基準の並走）の間は触らない方針のため、
+// 読み取り専用のこのクエリを新規ファイルに切る（CLAUDE.md「クエリファイルは
+// 新規に切る」）。
 //
 // reservations.sql の GetReservationFull と似ているが、program_snapshots は
 // 「どの予約を引くか」を決める結合キーとしてだけ使う。番組の事実のスナップ

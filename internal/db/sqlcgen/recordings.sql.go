@@ -28,14 +28,14 @@ func (q *Queries) AppendQualityEvents(ctx context.Context, arg AppendQualityEven
 	return err
 }
 
-const appendRecordingEncodeProfiles = `-- name: AppendRecordingEncodeProfiles :exec
-UPDATE recordings SET
+const appendRecordingEncodeProfiles = `-- name: AppendRecordingEncodeProfiles :execrows
+UPDATE recording_encode_policy SET
     encode_profiles = (
         SELECT coalesce(array_agg(DISTINCT p ORDER BY p), '{}')
         FROM unnest(encode_profiles || $1::text[]) AS p
     ),
     updated_at = now()
-WHERE id = $2
+WHERE recording_id = $2
 `
 
 type AppendRecordingEncodeProfilesParams struct {
@@ -47,31 +47,38 @@ type AppendRecordingEncodeProfilesParams struct {
 // 保持ポリシー」・docs/recording/reservation-model.md §4.5「録画開始後の編集」）。
 // **追加専用**（union + dedup）。全置換にすると、ユーザーが既存のプロファイル
 // 指定を誤って消せてしまう（keep_original='until_encoded' のまま
-// encode_profiles を空にする事故。CHECK 制約
-// recordings_until_encoded_requires_profiles には守られるが、意図しない
+// encode_profiles を空にする事故。CHECK 制約は守られるが、意図しない
 // プロファイル消失そのものは防げない）。呼び出し側（api）は原本削除済み
 // （GetActiveOriginalMediaAsset が ErrNoRows）を先に検査して 409 にすること
 // --- このクエリ自体は原本の有無を見ない。
-func (q *Queries) AppendRecordingEncodeProfiles(ctx context.Context, arg AppendRecordingEncodeProfilesParams) error {
-	_, err := q.db.Exec(ctx, appendRecordingEncodeProfiles, arg.Profiles, arg.ID)
-	return err
+//
+// :execrows にしてある --- 行が無い（未凍結）ケースをここで検出する。原本が
+// active（呼び出し側の事前検査を通過済み）なら resolveAndSnapshotEncodePolicy が
+// 同一 tx で必ず行を作っているはずで、0 行は不変条件違反（呼び出し側が
+// エラーにする）。
+func (q *Queries) AppendRecordingEncodeProfiles(ctx context.Context, arg AppendRecordingEncodeProfilesParams) (int64, error) {
+	result, err := q.db.Exec(ctx, appendRecordingEncodeProfiles, arg.Profiles, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const createFailedRecording = `-- name: CreateFailedRecording :exec
 INSERT INTO recordings (
-    rule_id, source, site,
+    reservation_id, rule_id, source, site,
     network_id, service_id, event_id, service_name,
     channel_type, channel, title, description,
     extended, genres, is_free,
     program_start_at, program_duration_ms,
     status, quality_events
 ) VALUES (
-    $1, $2, $3,
-    $4, $5, $6, $7,
-    $8, $9, $10, $11,
-    $12, $13, $14,
-    $15, $16,
-    'failed', $17
+    $1, $2, $3, $4,
+    $5, $6, $7, $8,
+    $9, $10, $11, $12,
+    $13, $14, $15,
+    $16, $17,
+    'failed', $18
 )
 ON CONFLICT (site, network_id, service_id, event_id) WHERE deleted_at IS NULL AND superseded_at IS NULL
 DO UPDATE SET
@@ -80,6 +87,7 @@ DO UPDATE SET
 `
 
 type CreateFailedRecordingParams struct {
+	ReservationID     *int64
 	RuleID            *int64
 	Source            string
 	Site              string
@@ -107,6 +115,7 @@ type CreateFailedRecordingParams struct {
 // （superseded 済みの過去の failed 行ではない）になる。
 func (q *Queries) CreateFailedRecording(ctx context.Context, arg CreateFailedRecordingParams) error {
 	_, err := q.db.Exec(ctx, createFailedRecording,
+		arg.ReservationID,
 		arg.RuleID,
 		arg.Source,
 		arg.Site,
@@ -130,23 +139,24 @@ func (q *Queries) CreateFailedRecording(ctx context.Context, arg CreateFailedRec
 
 const createNeverScheduledRecording = `-- name: CreateNeverScheduledRecording :execrows
 INSERT INTO recordings (
-    rule_id, source, site,
+    reservation_id, rule_id, source, site,
     network_id, service_id, event_id, service_name,
     channel_type, channel, title,
     program_start_at, program_duration_ms,
     status, quality_events
 ) VALUES (
-    $1, $2, $3,
-    $4, $5, $6, $7,
-    $8, $9, $10,
-    $11, $12,
-    'failed', $13
+    $1, $2, $3, $4,
+    $5, $6, $7, $8,
+    $9, $10, $11,
+    $12, $13,
+    'failed', $14
 )
 ON CONFLICT (site, network_id, service_id, event_id) WHERE deleted_at IS NULL AND superseded_at IS NULL
 DO NOTHING
 `
 
 type CreateNeverScheduledRecordingParams struct {
+	ReservationID     *int64
 	RuleID            *int64
 	Source            string
 	Site              string
@@ -189,6 +199,7 @@ type CreateNeverScheduledRecordingParams struct {
 // 猶予期間中は毎パス quality_events の配列が伸び続けてしまう）。
 func (q *Queries) CreateNeverScheduledRecording(ctx context.Context, arg CreateNeverScheduledRecordingParams) (int64, error) {
 	result, err := q.db.Exec(ctx, createNeverScheduledRecording,
+		arg.ReservationID,
 		arg.RuleID,
 		arg.Source,
 		arg.Site,
@@ -211,23 +222,24 @@ func (q *Queries) CreateNeverScheduledRecording(ctx context.Context, arg CreateN
 
 const createRecording = `-- name: CreateRecording :one
 INSERT INTO recordings (
-    rule_id, source, site,
+    reservation_id, rule_id, source, site,
     network_id, service_id, event_id, service_name,
     channel_type, channel, title, description,
     extended, genres, is_free,
     program_start_at, program_duration_ms,
     status, started_at, ended_at
 ) VALUES (
-    $1, $2, $3,
-    $4, $5, $6, $7,
-    $8, $9, $10, $11,
-    $12, $13, $14,
-    $15, $16,
-    $17, $18, $19
+    $1, $2, $3, $4,
+    $5, $6, $7, $8,
+    $9, $10, $11, $12,
+    $13, $14, $15,
+    $16, $17,
+    $18, $19, $20
 ) RETURNING id
 `
 
 type CreateRecordingParams struct {
+	ReservationID     *int64
 	RuleID            *int64
 	Source            string
 	Site              string
@@ -251,6 +263,7 @@ type CreateRecordingParams struct {
 
 func (q *Queries) CreateRecording(ctx context.Context, arg CreateRecordingParams) (int64, error) {
 	row := q.db.QueryRow(ctx, createRecording,
+		arg.ReservationID,
 		arg.RuleID,
 		arg.Source,
 		arg.Site,
@@ -274,6 +287,55 @@ func (q *Queries) CreateRecording(ctx context.Context, arg CreateRecordingParams
 	var id int64
 	err := row.Scan(&id)
 	return id, err
+}
+
+const freezeRecordingEncodePolicy = `-- name: FreezeRecordingEncodePolicy :exec
+INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles)
+VALUES ($1, $2, $3::text[])
+`
+
+type FreezeRecordingEncodePolicyParams struct {
+	RecordingID    int64
+	KeepOriginal   string
+	EncodeProfiles []string
+}
+
+// ingest が原本 media_asset のコミットと同じ tx で焼く「この録画の望ましい
+// 最終状態」（M3-14、issue #103）。issue #159 で recording_encode_policy 衛星表に
+// 切り出されたため、凍結 = この行の INSERT（不変条件 3「コミット = DB 行」・
+// 不変条件 10「意味を持たない行を作らない」: 行が無い = 未凍結、行がある =
+// 凍結済み。既定値との区別不能が構造的に消える）。ON CONFLICT を付けない ---
+// 呼び出し元 internal/worker/ingest.go の resolveAndSnapshotEncodePolicy は
+// CreateMediaAsset（同じく ON CONFLICT 無しの INSERT）と同一 tx から 1 回だけ
+// 呼ばれる（Work が転送開始前に GetOriginalMediaAssetID で冪等性チェックする
+// ため、この tx 自体が録画ごとに 1 回しか実行されない）。凍結する理由・瞬間・
+// 冪等性の詳細は resolveAndSnapshotEncodePolicy の doc コメント参照。
+// 予約行が無い録画（手動で mirakc に起こされた録画等）は呼び出し側がこのクエリを
+// 呼ばないので、行自体が作られず未凍結のまま残る。
+func (q *Queries) FreezeRecordingEncodePolicy(ctx context.Context, arg FreezeRecordingEncodePolicyParams) error {
+	_, err := q.db.Exec(ctx, freezeRecordingEncodePolicy, arg.RecordingID, arg.KeepOriginal, arg.EncodeProfiles)
+	return err
+}
+
+const getRecordingEncodePolicy = `-- name: GetRecordingEncodePolicy :one
+SELECT keep_original, encode_profiles FROM recording_encode_policy WHERE recording_id = $1
+`
+
+type GetRecordingEncodePolicyRow struct {
+	KeepOriginal   string
+	EncodeProfiles []string
+}
+
+// EnqueueMissingEncodes（internal/worker/encode.go）が desired
+// （recording_encode_policy.encode_profiles）を読むためのクエリ。行が無い
+// （未凍結）録画は pgx.ErrNoRows になるので、呼び出し側は「エンコード対象の
+// プロファイルが無い」と同じに扱う（keep_original='always' と同じ扱い。
+// docs/storage.md §6）。
+func (q *Queries) GetRecordingEncodePolicy(ctx context.Context, recordingID int64) (GetRecordingEncodePolicyRow, error) {
+	row := q.db.QueryRow(ctx, getRecordingEncodePolicy, recordingID)
+	var i GetRecordingEncodePolicyRow
+	err := row.Scan(&i.KeepOriginal, &i.EncodeProfiles)
+	return i, err
 }
 
 const listRecordingDropStats = `-- name: ListRecordingDropStats :many
@@ -322,13 +384,14 @@ func (q *Queries) ListRecordingDropStats(ctx context.Context, recordingID int64)
 
 const listRecordings = `-- name: ListRecordings :many
 SELECT
-    r.id, r.rule_id, r.source, r.site, r.network_id, r.service_id, r.event_id, r.service_name, r.channel_type, r.channel, r.title, r.description, r.extended, r.genres, r.is_free, r.program_start_at, r.program_duration_ms, r.status, r.started_at, r.ended_at, r.keep_original, r.encode_profiles, r.quality_events, r.deleted_at, r.created_at, r.updated_at, r.purge_after, r.superseded_at, r.purged_at,
+    r.id, r.reservation_id, r.rule_id, r.source, r.site, r.network_id, r.service_id, r.event_id, r.service_name, r.channel_type, r.channel, r.title, r.description, r.extended, r.genres, r.is_free, r.program_start_at, r.program_duration_ms, r.status, r.started_at, r.ended_at, r.quality_events, r.deleted_at, r.created_at, r.updated_at, r.purge_after, r.superseded_at, r.purged_at,
     a.size_bytes                        AS original_size_bytes,
     COALESCE(d.packets, 0)::bigint      AS drop_packets,
     COALESCE(d.drops, 0)::bigint        AS drop_drops,
     COALESCE(d.errors, 0)::bigint       AS drop_errors,
     COALESCE(d.scrambled, 0)::bigint    AS drop_scrambled,
-    -- ブラウザ再生用。desired（r.encode_profiles）ではなく observed（active encoded）。
+    COALESCE(p.encode_profiles, '{}')::text[] AS encode_profiles,
+    -- ブラウザ再生用。desired（p.encode_profiles）ではなく observed（active encoded）。
     -- sqlc は array_agg の型を推論しきれないことがあるので text[] に明示キャストする。
     (
         SELECT coalesce(array_agg(e.profile ORDER BY e.profile), '{}')::text[]
@@ -341,6 +404,7 @@ SELECT
 FROM recordings r
 LEFT JOIN media_assets a
     ON a.recording_id = r.id AND a.kind = 'original' AND a.state <> 'deleted'
+LEFT JOIN recording_encode_policy p ON p.recording_id = r.id
 LEFT JOIN LATERAL (
     SELECT sum(packets) AS packets, sum(drops) AS drops,
            sum(errors) AS errors, sum(scrambled) AS scrambled
@@ -353,6 +417,7 @@ ORDER BY r.program_start_at DESC, r.id DESC
 
 type ListRecordingsRow struct {
 	ID                       int64
+	ReservationID            *int64
 	RuleID                   *int64
 	Source                   string
 	Site                     string
@@ -372,8 +437,6 @@ type ListRecordingsRow struct {
 	Status                   string
 	StartedAt                *time.Time
 	EndedAt                  *time.Time
-	KeepOriginal             string
-	EncodeProfiles           []string
 	QualityEvents            json.RawMessage
 	DeletedAt                *time.Time
 	CreatedAt                time.Time
@@ -386,12 +449,20 @@ type ListRecordingsRow struct {
 	DropDrops                int64
 	DropErrors               int64
 	DropScrambled            int64
+	EncodeProfiles           []string
 	AvailableEncodedProfiles []string
 }
 
 // 録画一覧。原本のサイズと PID 別 drop_stats の合計、
 // 再生可能な encoded プロファイル名を同梱する。
 // PID 別の内訳は行数が多く一覧では使わないので ListRecordingDropStats で別に取る。
+//
+// encode_profiles は issue #159 で recording_encode_policy 衛星表に切り出された
+// ため r.* には含まれない。LEFT JOIN（policy 行が無い = 未凍結の録画も一覧に
+// 出す必要がある）で引き、COALESCE で '{}' に落とす --- 一覧表示は「凍結された
+// 空配列」と「未凍結」を区別する必要がないので、ここでは両者を同じ表示（省略）に
+// 潰してよい（区別が要る箇所は削除エンジンの until_encoded_deletable_originals
+// 側で、そこは JOIN のみで「行が無ければ対象外」を書いている）。
 func (q *Queries) ListRecordings(ctx context.Context, site string) ([]ListRecordingsRow, error) {
 	rows, err := q.db.Query(ctx, listRecordings, site)
 	if err != nil {
@@ -403,6 +474,7 @@ func (q *Queries) ListRecordings(ctx context.Context, site string) ([]ListRecord
 		var i ListRecordingsRow
 		if err := rows.Scan(
 			&i.ID,
+			&i.ReservationID,
 			&i.RuleID,
 			&i.Source,
 			&i.Site,
@@ -422,8 +494,6 @@ func (q *Queries) ListRecordings(ctx context.Context, site string) ([]ListRecord
 			&i.Status,
 			&i.StartedAt,
 			&i.EndedAt,
-			&i.KeepOriginal,
-			&i.EncodeProfiles,
 			&i.QualityEvents,
 			&i.DeletedAt,
 			&i.CreatedAt,
@@ -436,6 +506,7 @@ func (q *Queries) ListRecordings(ctx context.Context, site string) ([]ListRecord
 			&i.DropDrops,
 			&i.DropErrors,
 			&i.DropScrambled,
+			&i.EncodeProfiles,
 			&i.AvailableEncodedProfiles,
 		); err != nil {
 			return nil, err
@@ -446,30 +517,6 @@ func (q *Queries) ListRecordings(ctx context.Context, site string) ([]ListRecord
 		return nil, err
 	}
 	return items, nil
-}
-
-const snapshotRecordingEncodePolicy = `-- name: SnapshotRecordingEncodePolicy :exec
-UPDATE recordings SET
-    keep_original   = $1,
-    encode_profiles = $2::text[],
-    updated_at      = now()
-WHERE id = $3
-`
-
-type SnapshotRecordingEncodePolicyParams struct {
-	KeepOriginal   string
-	EncodeProfiles []string
-	ID             int64
-}
-
-// ingest が原本 media_asset のコミットと同じ tx で焼く「この録画の望ましい
-// 最終状態」（M3-14、issue #103）。凍結する理由・瞬間・冪等性の詳細は
-// internal/worker/ingest.go の resolveAndSnapshotEncodePolicy の doc コメント参照。
-// 予約行が無い録画（手動で mirakc に起こされた録画等）は呼び出し側がこのクエリを
-// 呼ばないので、列は CREATE TABLE の既定値（'always' / '{}'）のまま残る。
-func (q *Queries) SnapshotRecordingEncodePolicy(ctx context.Context, arg SnapshotRecordingEncodePolicyParams) error {
-	_, err := q.db.Exec(ctx, snapshotRecordingEncodePolicy, arg.KeepOriginal, arg.EncodeProfiles, arg.ID)
-	return err
 }
 
 const supersedeFailedRecording = `-- name: SupersedeFailedRecording :execrows
