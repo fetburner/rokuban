@@ -5,15 +5,21 @@
 -- name: ListEnabledRules :many
 SELECT * FROM rules WHERE enabled = true ORDER BY priority DESC, id ASC;
 
+-- ruler は skip 意図の除外にだけこのクエリを使う。record 側（「この番組に
+-- ユーザーの投資があるか」の一部）は program_investments view に一本化した
+-- ため ListProgramInvestmentProgramIDsBySite（下記）から引く（#162）。
 -- name: ListProgramIntentActionsBySite :many
 SELECT program_id, action FROM program_intents WHERE site = $1;
 
--- program_overrides に行があるだけで予約を存在させる（docs/recording.md §4.2
--- 「ruler から見た load-bearing な行」: desired = (マッチ − skip) ∪ record ∪
--- {program_overrides に行がある番組}）。ruler は overrides の中身を一切読まない
--- （不透明なペイロード）ため programId だけを引く。
--- name: ListProgramOverrideProgramIDsBySite :many
-SELECT program_id FROM program_overrides WHERE site = $1;
+-- 「この番組にユーザーの投資があるか」（program_intents の action='record' 行 ∪
+-- program_overrides の行）は program_investments view（#162。
+-- internal/db/migrations/00027_program_investments_view.sql）に一本化した。
+-- ruler は record 意図の中身も overrides の中身も一切読まない（不透明な
+-- ペイロード）ため programId だけを引く（docs/recording.md §4.2「ruler から
+-- 見た load-bearing な行」: desired = (マッチ − skip) ∪ record ∪
+-- {program_overrides に行がある番組}）。
+-- name: ListProgramInvestmentProgramIDsBySite :many
+SELECT program_id FROM program_investments WHERE site = $1;
 
 -- name: ListReservationProgramIDsBySite :many
 SELECT program_id FROM reservations WHERE site = $1;
@@ -47,7 +53,7 @@ WHERE site = $1 AND program_id = ANY(sqlc.arg(program_ids)::bigint[]);
 -- （導出削除。呼び出し側でサーキットブレーカーの閾値判定を先に行うこと）。
 --
 -- toDelete は runPassForSite の先頭（トランザクション外）で ListProgramIntentActionsBySite /
--- ListProgramOverrideProgramIDsBySite / ListReservationProgramIDsBySite を読んでから
+-- ListProgramInvestmentProgramIDsBySite / ListReservationProgramIDsBySite を読んでから
 -- 計算した集合で、この DELETE 文自体は別のトランザクション（tx）内で後から実行される。
 -- その間に api の PutProgramIntent（program_intents.action='record' をコミットする
 -- だけで、reservations には一切触れない）が同じ program_id に意図を立てると、

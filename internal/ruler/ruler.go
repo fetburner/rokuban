@@ -167,48 +167,50 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 		}
 	}
 
+	// skip 意図だけをここで読む。「record 意図または overrides の行がある」は
+	// program_investments view（#162）に一本化したので、record 側は
+	// ListProgramInvestmentProgramIDsBySite から引く（下記）。
 	intents, err := q.ListProgramIntentActionsBySite(ctx, site)
 	if err != nil {
 		return fmt.Errorf("listing program intents: %w", err)
 	}
-	recordIntent := make(map[int64]struct{})
 	skipIntent := make(map[int64]struct{})
 	for _, in := range intents {
-		switch in.Action {
-		case db.IntentRecord:
-			recordIntent[in.ProgramID] = struct{}{}
-		case db.IntentSkip:
+		if in.Action == db.IntentSkip {
 			skipIntent[in.ProgramID] = struct{}{}
 		}
 	}
 
-	overrideProgramIDs, err := q.ListProgramOverrideProgramIDsBySite(ctx, site)
+	// 「この番組にユーザーの投資があるか」（record 意図 ∪ overrides の行）は
+	// program_investments view（#162）から引く。ruler は overrides の中身も
+	// record 意図の中身も一切読まないので programId だけを取る。
+	investmentProgramIDs, err := q.ListProgramInvestmentProgramIDsBySite(ctx, site)
 	if err != nil {
-		return fmt.Errorf("listing program overrides: %w", err)
+		return fmt.Errorf("listing program investments: %w", err)
 	}
 
-	// desired = (ルールにマッチした番組 − intent.skip) ∪ intent.record ∪
-	// {program_overrides に行がある番組}（docs/recording.md §4.2「ruler から見た
-	// load-bearing な行」。program_intents / program_overrides は絶対に書かない
-	// — 読むだけ）。
+	// desired = (ルールにマッチした番組 − intent.skip) ∪ program_investments
+	// （docs/recording.md §4.2「ruler から見た load-bearing な行」。
+	// program_intents / program_overrides は絶対に書かない — 読むだけ）。
 	//
-	// overrides の存在は skip 意図があっても desired に残す（union の最後に
-	// 足す）。上書きの行の存在も予約を存在させるため（§4.3「意図または上書きが
-	// ある → 削除せず detached で保持」）。skip 側は intent.action='skip' が
+	// investment（record 意図 ∪ overrides）は skip を引いた後の winner に
+	// 無条件で足す。順序を入れ替えても record 側の結果は変わらない ---
+	// `program_intents` は (site, program_id) に 1 行しか持てないため
+	// action='record' と action='skip' は同じ番組で排他であり、winner から
+	// skip を引く操作は record 側の投資に触れない。overrides 側は skip と
+	// 独立に存在できるが、investment に無条件で足すことで「skip 意図があっても
+	// overrides は desired に残す」（§4.3「record 意図または上書きがある →
+	// 削除せず detached で保持」）を満たす。skip 側は intent.action='skip' が
 	// effective.skip として引き続き効くので（db.EffectiveOptions）、reconciler は
 	// この行を同期しない。行の存在が答えるのは「この番組にユーザーの投資が
 	// あるか」で、録画するかどうかとは別の問い。
-	desired := make(map[int64]struct{}, len(winner)+len(recordIntent)+len(overrideProgramIDs))
+	desired := make(map[int64]struct{}, len(winner)+len(investmentProgramIDs))
 	for programID := range winner {
-		desired[programID] = struct{}{}
+		if _, skipped := skipIntent[programID]; !skipped {
+			desired[programID] = struct{}{}
+		}
 	}
-	for programID := range recordIntent {
-		desired[programID] = struct{}{}
-	}
-	for programID := range skipIntent {
-		delete(desired, programID)
-	}
-	for _, programID := range overrideProgramIDs {
+	for _, programID := range investmentProgramIDs {
 		desired[programID] = struct{}{}
 	}
 

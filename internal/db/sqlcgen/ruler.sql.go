@@ -55,7 +55,7 @@ type DeleteReservationsBySiteAndProgramIDsParams struct {
 // （導出削除。呼び出し側でサーキットブレーカーの閾値判定を先に行うこと）。
 //
 // toDelete は runPassForSite の先頭（トランザクション外）で ListProgramIntentActionsBySite /
-// ListProgramOverrideProgramIDsBySite / ListReservationProgramIDsBySite を読んでから
+// ListProgramInvestmentProgramIDsBySite / ListReservationProgramIDsBySite を読んでから
 // 計算した集合で、この DELETE 文自体は別のトランザクション（tx）内で後から実行される。
 // その間に api の PutProgramIntent（program_intents.action='record' をコミットする
 // だけで、reservations には一切触れない）が同じ program_id に意図を立てると、
@@ -171,6 +171,9 @@ type ListProgramIntentActionsBySiteRow struct {
 	Action    string
 }
 
+// ruler は skip 意図の除外にだけこのクエリを使う。record 側（「この番組に
+// ユーザーの投資があるか」の一部）は program_investments view に一本化した
+// ため ListProgramInvestmentProgramIDsBySite（下記）から引く（#162）。
 func (q *Queries) ListProgramIntentActionsBySite(ctx context.Context, site string) ([]ListProgramIntentActionsBySiteRow, error) {
 	rows, err := q.db.Query(ctx, listProgramIntentActionsBySite, site)
 	if err != nil {
@@ -191,16 +194,19 @@ func (q *Queries) ListProgramIntentActionsBySite(ctx context.Context, site strin
 	return items, nil
 }
 
-const listProgramOverrideProgramIDsBySite = `-- name: ListProgramOverrideProgramIDsBySite :many
-SELECT program_id FROM program_overrides WHERE site = $1
+const listProgramInvestmentProgramIDsBySite = `-- name: ListProgramInvestmentProgramIDsBySite :many
+SELECT program_id FROM program_investments WHERE site = $1
 `
 
-// program_overrides に行があるだけで予約を存在させる（docs/recording.md §4.2
-// 「ruler から見た load-bearing な行」: desired = (マッチ − skip) ∪ record ∪
-// {program_overrides に行がある番組}）。ruler は overrides の中身を一切読まない
-// （不透明なペイロード）ため programId だけを引く。
-func (q *Queries) ListProgramOverrideProgramIDsBySite(ctx context.Context, site string) ([]int64, error) {
-	rows, err := q.db.Query(ctx, listProgramOverrideProgramIDsBySite, site)
+// 「この番組にユーザーの投資があるか」（program_intents の action='record' 行 ∪
+// program_overrides の行）は program_investments view（#162。
+// internal/db/migrations/00027_program_investments_view.sql）に一本化した。
+// ruler は record 意図の中身も overrides の中身も一切読まない（不透明な
+// ペイロード）ため programId だけを引く（docs/recording.md §4.2「ruler から
+// 見た load-bearing な行」: desired = (マッチ − skip) ∪ record ∪
+// {program_overrides に行がある番組}）。
+func (q *Queries) ListProgramInvestmentProgramIDsBySite(ctx context.Context, site string) ([]int64, error) {
+	rows, err := q.db.Query(ctx, listProgramInvestmentProgramIDsBySite, site)
 	if err != nil {
 		return nil, err
 	}

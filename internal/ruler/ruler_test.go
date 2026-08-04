@@ -357,6 +357,50 @@ func TestRunPass_SkipIntentPreventsReservation(t *testing.T) {
 	}
 }
 
+// 回帰テスト（#162）: desired の union を program_investments view 1 本の
+// クエリに統合したリファクタが保つべき性質。intent{skip} と overrides が同じ
+// 番組に同時にあっても、overrides の存在が skip 意図に優先して予約行を
+// desired に残す（§4.3「意図または上書きがある → 削除せず detached で保持」）。
+// program_intents.action='record' と 'skip' は同じ行を取り合うため record 側は
+// 構造的に skip と排他だが、overrides は skip と独立に存在できるので、
+// investment（record ∪ overrides）全体を skip で引いてはならない --- skip を
+// 引くのは winner（ルールにマッチした番組）側だけでよい。もし誤って
+// investment 全体から skip を引く実装に戻すと、この番組は desired から落ち、
+// 予約行が消える。
+func TestRunPass_SkipIntentWithOverrideSurvivesViaOverride(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	insertService(t, pool, ctx)
+	start := time.Now().Add(24 * time.Hour).Truncate(time.Second)
+	insertProgram(t, pool, ctx, 2011, "スキップと上書き併存", start)
+
+	// この番組はどのルールにもマッチさせない（winner から意図的に外す）。
+	// program_intents / program_overrides への FK（#27）を満たすため、
+	// ruler が動く前に program_snapshots 行を用意しておく。
+	insertProgramSnapshotDirect(t, pool, ctx, 2011, "スキップと上書き併存", start)
+	q := sqlcgen.New(pool)
+	if _, err := q.SkipProgram(ctx, sqlcgen.SkipProgramParams{
+		Site: testSite, ProgramID: 2011,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
+		Site: testSite, ProgramID: 2011, Overrides: []byte(`{"priority":9}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	r := ruler.New([]string{testSite}, pool, nil)
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
+
+	if _, ok := getReservation(t, pool, ctx, 2011); !ok {
+		t.Error("reservation should survive via program_overrides even though intent{skip} is also set on the same program")
+	}
+}
+
 // 受け入れ基準 3: 全量パスを 2 回連続で回しても 2 回目に UPDATE が発生しない
 // （差分書き込みの検証。updated_at で見る）。
 func TestRunPass_SecondPassIsNoOp(t *testing.T) {

@@ -147,7 +147,7 @@ WHERE r.rule_id = sqlc.arg(rule_id)
 -- name: CountReservationsByRuleWithIntent :one
 -- ルール削除時の内訳表示用（detached 化される件数）。上の
 -- DeleteReservationsByRuleWithoutIntent と対になる条件（program_investments に
--- 含まれる = 意図または上書きのどちらかがある）。
+-- 含まれる = record 意図または上書きがある）。
 SELECT count(*) FROM reservations r
 WHERE r.rule_id = sqlc.arg(rule_id)
   AND EXISTS (
