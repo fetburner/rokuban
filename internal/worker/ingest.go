@@ -468,17 +468,23 @@ func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath st
 //
 // program_snapshots は放送後 GC される寿命の短い表（docs/storage.md §6）だが、
 // ingest は録画終了直後（GC の猶予期間より十分前）に走るので、この GC 前提は
-// 通常経路では効かない。JOIN が失敗するのは次の 2 通りで、どちらも
-// 「凍結せず何もしない」が正しい挙動だが、区別してログに残す:
+// 通常経路では効かない。
 //
-//   - 予約が最初から存在しない録画（手動で mirakc に起こされた録画等）。
-//     recordings.source が 'manual' で日常的に起きるので警告しない。
-//     CREATE TABLE の既定値（'always' / '{}'）のまま残る
-//   - recordings.source が 'rule'（作成時点で予約が存在した）にもかかわらず
-//     解決できない場合。GC が想定より早く走った、または予約が恒久的に
-//     削除された場合で、頻繁には起きないはず。黙って return せず
-//     slog.Warn で識別子（site/network_id/service_id/event_id）と
-//     recordingID を残す —— この関数が対処すべき「引けなかった」の実例
+// recordings.source（internal/db/recording_source.go の DeriveRecordingSource）
+// は「引けなかった」の異常度を判定する軸として使えない: 'rule' は「作成時点で
+// 予約があり、かつ program_intents.action='record' の行が無かった」を意味する
+// ので、'rule' で JOIN が失敗するのは常に異常系（GC が想定より早く走った、
+// または予約が恒久的に削除された）。しかし 'manual' は「intent が
+// action='record' だった（予約の有無に関わらず）」と「そもそも予約が最初から
+// 無かった（手動で mirakc に起こされた録画等、日常的）」の 2 つの独立した
+// 経路を 1 つの値に潰している（同ファイルのコメント参照）ため、'manual' の
+// JOIN 失敗が異常かどうかはこの列だけからは判別できない —— 前者（ユーザーが
+// 手動予約して encodeProfiles を指定した録画）で解決に失敗すると、まさに
+// issue #149 が問題にした「静かにエンコードされない」が残る。区別できない
+// 以上、どちらの source でも黙って return せず識別子
+// （site/network_id/service_id/event_id）と recordingID をログに残す。
+// 'rule' は slog.Warn（常に異常）、'manual' は slog.Info（日常的なケースと
+// 異常なケースが混在するため騒がしくしない）に分ける。
 //
 // # 冪等性
 //
@@ -532,19 +538,23 @@ func (w *IngestWorker) resolveAndSnapshotEncodePolicy(ctx context.Context, q *sq
 	})
 	if err != nil {
 		if errors.Is(err, pgx5.ErrNoRows) {
-			// recordings.source == 'rule' は作成時点で予約が存在したことを意味する
-			// （internal/watcher.createRecording が resID の有無から導く。
-			// internal/db/recording_source.go の DeriveRecordingSource 参照）ので、
-			// ここで引けないのは異常系（GC が早すぎた、または予約が恒久的に削除
-			// された）。'manual' は予約が最初から無い日常的なケースなので警告しない
-			// （doc コメント「予約をどのキーで引くか」参照）。
+			// source='rule' は常に異常系（doc コメント「予約をどのキーで引くか」
+			// 参照）なので Warn、source='manual' は日常的なケース（予約が最初から
+			// 無い）と異常なケース（intent action='record' だったが予約が
+			// 恒久的に削除された）が混在するので Info に落とす。どちらの source
+			// でも黙って return しない —— 判別できないことをログの欠落で
+			// 埋め合わせない。
+			logArgs := []any{
+				"recording_id", recordingID,
+				"site", rec.Site,
+				"network_id", rec.NetworkID,
+				"service_id", rec.ServiceID,
+				"event_id", rec.EventID,
+			}
 			if rec.Source == db.SourceRule {
-				slog.Warn("encode policy: reservation not found via broadcast event key",
-					"recording_id", recordingID,
-					"site", rec.Site,
-					"network_id", rec.NetworkID,
-					"service_id", rec.ServiceID,
-					"event_id", rec.EventID)
+				slog.Warn("encode policy: reservation not found via broadcast event key", logArgs...)
+			} else {
+				slog.Info("encode policy: reservation not found via broadcast event key", logArgs...)
 			}
 			return nil
 		}

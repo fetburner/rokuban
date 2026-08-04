@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1418,5 +1419,147 @@ func TestIngestWorker_SnapshotsEncodePolicy_SurvivesReservationRematerialization
 
 	if got := countEncodeJobs(t, pool, recordingID, "h265"); got != 1 {
 		t.Errorf("encode jobs for h265 = %d, want 1", got)
+	}
+}
+
+// TestIngestWorker_LogsWarnWhenRuleSourceReservationUnresolvable は
+// source='rule'（DeriveRecordingSource が「作成時点で予約があり、intent
+// action='record' の行は無かった」ことを保証する）の録画で放送イベントキーの
+// JOIN が失敗する異常系を再現し、slog.Warn に識別子が残ることを確認する
+// （レビュー指摘: internal/worker/ingest.go:539-547 の「引けなかった」を黙って
+// return nil にしない、の rule 側）。
+func TestIngestWorker_LogsWarnWhenRuleSourceReservationUnresolvable(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+
+	programID := int64(900000000000005)
+	res := insertProgramSnapshotAndReservation(t, pool, programID, "恒久削除予約番組")
+	recordingID := insertTestRecordingForReservation(t, pool, res.ID, programID)
+	insertTestRecordSync(t, pool, recordingID, "rec-policy-rule-gone")
+
+	// GC が想定より早く走った、または予約が恒久的に削除された場合を模す
+	// （再実体化しない。TestIngestWorker_SnapshotsEncodePolicy_SurvivesReservationRematerialization
+	// と異なり、これが正常経路には無い異常系であることが本テストの前提）。
+	if _, err := pool.Exec(ctx, `DELETE FROM reservations WHERE id = $1`, res.ID); err != nil {
+		t.Fatalf("deleting reservation: %v", err)
+	}
+
+	tsData := makeTSData(20)
+	srv := newFullTransferServer(t, tsData, "test/policy-rule-gone.m2ts")
+	mc := mirakc.NewClient(srv.URL, nil)
+
+	w := &IngestWorker{
+		MirakcClient: mc,
+		MediaDir:     t.TempDir(),
+		Pool:         pool,
+		StallTimeout: 5 * time.Second,
+	}
+
+	job := &river.Job[IngestJobArgs]{
+		JobRow: &rivertype.JobRow{},
+		Args:   IngestJobArgs{Site: "default", RecordID: "rec-policy-rule-gone"},
+	}
+
+	var logBuf bytes.Buffer
+	prevLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prevLogger) })
+
+	workCtx := riverWorkContext(t, pool)
+	if err := w.Work(workCtx, job); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+
+	logText := logBuf.String()
+	if !strings.Contains(logText, "level=WARN") {
+		t.Errorf("expected a WARN log for source=rule reservation unresolvable, got:\n%s", logText)
+	}
+	if !strings.Contains(logText, "reservation not found via broadcast event key") {
+		t.Errorf("expected log message to mention the unresolved lookup, got:\n%s", logText)
+	}
+	for _, want := range []string{
+		fmt.Sprintf("recording_id=%d", recordingID),
+		"network_id=32736",
+		"service_id=1024",
+	} {
+		if !strings.Contains(logText, want) {
+			t.Errorf("expected log to contain identifier %q, got:\n%s", want, logText)
+		}
+	}
+
+	// 解決に失敗したので凍結せず既定値のまま(この関数の主張の対象ではないが、
+	// 「ログは出たが desired が誤って書かれた」を排除するために確認する)。
+	keepOriginal, profiles := encodePolicyOfRecording(t, pool, recordingID)
+	if keepOriginal != "always" || len(profiles) != 0 {
+		t.Errorf("keep_original/encode_profiles = %q/%v, want always/[] (unresolved, defaults unchanged)", keepOriginal, profiles)
+	}
+}
+
+// TestIngestWorker_LogsInfoWhenManualSourceReservationUnresolvable は
+// source='manual' の録画で JOIN が失敗した場合でも「引けなかった」が必ず
+// ログに残ることを確認する（レビュー指摘: DeriveRecordingSource
+// (internal/db/recording_source.go) は intent action='record' があれば予約の
+// 有無に関わらず 'manual' を返すため、rec.Source == db.SourceRule だけを見る
+// 判定では「ユーザーが手動予約して encodeProfiles を指定した録画」で解決に
+// 失敗したときだけログが一切出ず、issue #149 が問題にした症状がそのまま
+// 残っていた）。
+//
+// このテストは「予約がそもそも存在しない日常的な manual 録画」
+// （insertTestRecording と同じ形。TestIngestWorker_NoReservation_LeavesEncodePolicyDefault
+// が既に確認している）を使って再現する —— DeriveRecordingSource は
+// intent 由来の 'manual' と予約皆無の 'manual' を区別できないので、
+// このケースでもログが出ることが「manual を判定軸にしない」ことの直接的な
+// 証拠になる。修正前の実装（rec.Source == db.SourceRule のときだけ警告）では
+// このテストは一切ログが出ずに落ちる。
+func TestIngestWorker_LogsInfoWhenManualSourceReservationUnresolvable(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+
+	recordingID := insertTestRecording(t, pool)
+	insertTestRecordSync(t, pool, recordingID, "rec-policy-manual-unresolved")
+
+	tsData := makeTSData(20)
+	srv := newFullTransferServer(t, tsData, "test/policy-manual-unresolved.m2ts")
+	mc := mirakc.NewClient(srv.URL, nil)
+
+	w := &IngestWorker{
+		MirakcClient: mc,
+		MediaDir:     t.TempDir(),
+		Pool:         pool,
+		StallTimeout: 5 * time.Second,
+	}
+
+	job := &river.Job[IngestJobArgs]{
+		JobRow: &rivertype.JobRow{},
+		Args:   IngestJobArgs{Site: "default", RecordID: "rec-policy-manual-unresolved"},
+	}
+
+	var logBuf bytes.Buffer
+	prevLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prevLogger) })
+
+	workCtx := riverWorkContext(t, pool)
+	if err := w.Work(workCtx, job); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+
+	logText := logBuf.String()
+	if !strings.Contains(logText, "level=INFO") {
+		t.Errorf("expected an INFO log for source=manual reservation unresolvable, got:\n%s", logText)
+	}
+	if !strings.Contains(logText, "reservation not found via broadcast event key") {
+		t.Errorf("expected log message to mention the unresolved lookup, got:\n%s", logText)
+	}
+	if !strings.Contains(logText, fmt.Sprintf("recording_id=%d", recordingID)) {
+		t.Errorf("expected log to contain recording_id=%d, got:\n%s", recordingID, logText)
+	}
+	if strings.Contains(logText, "level=WARN") {
+		t.Errorf("source=manual unresolved reservation must not be logged at WARN (mixes the daily case with the anomalous one), got:\n%s", logText)
 	}
 }
