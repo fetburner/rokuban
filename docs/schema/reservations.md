@@ -4,7 +4,8 @@
 
 Phase 1（#27 / #28 / #30）で「導出できないもの」を全て別表・別列に引き剥がした結果、この表に残るのは**ruler の 1 パスの出力**（`rule_id` / `base` / dedup 根拠 2 列）だけになった（CLAUDE.md 不変条件 12「表は行の寿命で割る」）。Phase 1 では不可逆な観測（`orphaned_at`）がまだ残っていたが、issue #98 でこれも `recordings` の試行行（§5「行の作られ方」）に移設され、`reservations` は文字どおり「ruler の 1 パスの出力」だけになった --- **導出の書き手は ruler ただ 1 人**になったことで、不変条件 12「1 表 = 1 つの書き手 = 1 つの寿命」がほぼ成立する。
 
-例外が 1 つだけある: `DELETE /api/rules/{id}`（ルール削除）は、ユーザーの投資（`program_investments`）がない予約行をルール削除と同一トランザクションで同期削除する。同期でなければならない理由は [reservation-model.md](../recording/reservation-model.md) §4.3「ルール削除の UX」の内訳返却の要求（削除 API は削除 N 件・detached M 件の内訳を返すが、その件数は削除と同一 tx で数えないと確定しない）。明示操作は同期・ブレーカー対象外という既存の線（不変条件 5「レベルトリガー」の例外の側）に乗るための設計であり、1 表に書き手が 2 人いる形（不変条件 12 の兆候）だが、両者の DELETE 文はいずれも WHERE で `program_investments`（intent / overrides）を**適用の瞬間に再評価**するため、並行して着地する手動予約を踏み潰す窓（issue #29 が問題にした窓）は生じない。
+例外が 1 つだけある: `DELETE /api/rules/{id}`（ルール削除）は、ユーザーの投資（`program_investments`）がない予約行をルール削除と同一トランザクションで同期削除する。同期を選んだ理由は [reservation-model.md](../recording/reservation-model.md) §4.4「取消は `PUT .../intent {action: skip}`。api は `reservations` に触れない（M3-1）」に詳しい ---
+非同期化（削除前 COUNT だけ返し実削除は ruler の次パスに委ねる案）も検討したが、「削除 API は成功を返したのに一覧にまだ残っている」窓が生まれ、その削除が [reconciler](../recording/reconciler.md) §3.2「大量削除サーキットブレーカー」の導出削除カウントに合流してしまうため却下した（明示操作はこのブレーカーの対象外という既存の線に同期削除のまま乗せる）。1 表に書き手が 2 人いる形（不変条件 12 の兆候）だが、両者の DELETE 文はいずれも WHERE で `program_investments`（intent / overrides）を**適用の瞬間に再評価**するため、並行して着地する手動予約を踏み潰す窓（issue #29 が問題にした窓）は生じない。
 
 ```sql
 CREATE TABLE reservations (
@@ -80,9 +81,12 @@ CREATE INDEX ON reservations (rule_id);
 
 | カラム | 書く人 |
 |---|---|
-| `reservations` の `base` / `rule_id` / dedup 根拠 2 列 | ruler（毎パス） |
+| `reservations` の `base` / `rule_id` / dedup 根拠 2 列（INSERT/UPDATE） | ruler（毎パス） |
+| `reservations` の DELETE（ルール削除時、`program_investments` に行が無い予約のみ） | api（`DeleteRule`。上記の例外） |
 | `program_snapshots` の GC（番組終了 + `epg.retention_grace` 経過）と、そこからの FK CASCADE による `reservations` / `program_intents` / `program_overrides` の GC | ruler のパス（`runGC`。§3.7） |
-| `program_intents`（action）、`program_overrides`（overrides）、手動予約の作成・取消 | api |
+| `program_intents`（action）、`program_overrides`（overrides） | api |
+
+api は `reservations` に INSERT/UPDATE しない。手動予約は `program_intents` に `action='record'` を書くだけで、行自体は次の ruler パスが `program_investments`（本節下「program_investments」）を desired に含めることで生成する（[reservation-model.md](../recording/reservation-model.md) §4.4）。
 
 `reservations` に不可逆な観測を書く列はもう無い（issue #98 で `orphaned_at` を廃止。§5「行の作られ方」の `recordings` が代わりにこの観測を持つ）。
 
