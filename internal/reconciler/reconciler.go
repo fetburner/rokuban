@@ -863,17 +863,29 @@ type startDelayed struct {
 // リストをそのまま渡す想定で、次の 2 つは既にそこで除外されている。
 //   - effective.skip の予約（listDesired が db.EvaluateSyncCandidates の Skipped
 //     で絞っている）
-//   - orphaned_at が非 NULL の予約（listDesired の元クエリ
-//     ListReservationsForSyncEvaluation が orphaned_at IS NULL で絞っている）
+//   - 既に never-scheduled と判定された予約（listDesired の元クエリ
+//     ListReservationsForSyncEvaluation が、番組終了後に schedule が一度も
+//     観測されなかったことを示す never-scheduled recordings 行の NOT EXISTS で
+//     絞っている。旧 orphaned_at 列は issue #98 / マイグレーション 00025 で廃止済み）
 //
 // ここではさらに時間窓で絞る: 「開始時刻 + StartDelayGrace < now() < 終了時刻」。
-// 終了時刻を過ぎた予約は markOrphaned の領分であり、ここで検出し続けると
-// 終わった番組についてアラートが鳴り止まなくなる（markOrphaned が拾うのを待つ）。
+// 終了時刻を過ぎた予約は recordNeverScheduled の領分であり、ここで検出し続けると
+// 終わった番組についてアラートが鳴り止まなくなる（recordNeverScheduled が拾うのを待つ）。
 //
-// 観測の有無は recordings.started_at で判定する。予約に対応する recordings 行
-// そのものが無い場合（録画が一切観測されていない）も「観測なし」として扱う —
-// ListStartedReservationIDs は渡した予約 ID のうち started_at が埋まっている
-// ものだけを返すので、返らなかった ID がそのまま「観測なし」の集合になる。
+// 観測の有無は recordings.started_at で判定する。判定の宛先キーは予約 id ではなく
+// 放送イベント (network_id, service_id, event_id) —— reservations.id は ruler の
+// 導出削除・再実体化で変わる不安定な値で、recordings.reservation_id は
+// ON DELETE SET NULL である。予約 id で引くと、録画中に EPG フリッカーやルール
+// 編集で予約行が作り直された瞬間に started 済み recordings 行が見つからなくなり、
+// 検出窓の間毎パス開始遅延を誤検知する（CLAUDE.md 不変条件 9 の identity。
+// #29 / #53 / #98 / #99 / #149 と同じ族、internal/db/queries/start_delay.sql 参照）。
+// desiredReservation は listDesired が program_snapshots を JOIN 済みで得た結果
+// なので、放送イベントキーは既に手元にある。
+//
+// 予約に対応する recordings 行そのものが無い場合（録画が一切観測されていない）も
+// 「観測なし」として扱う —— ListStartedBroadcastEventKeys は渡したキーのうち
+// started_at が埋まっているものだけを返すので、返らなかったキーがそのまま
+// 「観測なし」の集合になる。
 func (r *Reconciler) detectStartDelays(ctx context.Context, reservations []desiredReservation) ([]startDelayed, error) {
 	now := time.Now()
 
@@ -887,7 +899,7 @@ func (r *Reconciler) detectStartDelays(ctx context.Context, reservations []desir
 			continue
 		}
 		if !now.Before(endAt) {
-			// 番組終了後は markOrphaned の領分。ここで拾うと終わった番組を
+			// 番組終了後は recordNeverScheduled の領分。ここで拾うと終わった番組を
 			// 遅延として報告し続けてアラートが鳴り止まなくなる。
 			continue
 		}
@@ -897,28 +909,38 @@ func (r *Reconciler) detectStartDelays(ctx context.Context, reservations []desir
 		return nil, nil
 	}
 
-	ids := make([]int64, len(candidates))
+	networkIDs := make([]int32, len(candidates))
+	serviceIDs := make([]int32, len(candidates))
+	eventIDs := make([]int32, len(candidates))
 	for i, d := range candidates {
-		ids[i] = d.res.ID
+		networkIDs[i] = d.snap.NetworkID
+		serviceIDs[i] = d.snap.ServiceID
+		eventIDs[i] = d.snap.EventID
 	}
 
-	started, err := sqlcgen.New(r.pool).ListStartedReservationIDs(ctx, sqlcgen.ListStartedReservationIDsParams{
-		Site:           r.site,
-		ReservationIds: ids,
+	started, err := sqlcgen.New(r.pool).ListStartedBroadcastEventKeys(ctx, sqlcgen.ListStartedBroadcastEventKeysParams{
+		Site:       r.site,
+		NetworkIds: networkIDs,
+		ServiceIds: serviceIDs,
+		EventIds:   eventIDs,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("listing started reservation ids: %w", err)
+		return nil, fmt.Errorf("listing started broadcast event keys: %w", err)
 	}
-	startedSet := make(map[int64]struct{}, len(started))
-	for _, id := range started {
-		if id != nil {
-			startedSet[*id] = struct{}{}
-		}
+	type broadcastEventKey struct {
+		networkID int32
+		serviceID int32
+		eventID   int32
+	}
+	startedSet := make(map[broadcastEventKey]struct{}, len(started))
+	for _, k := range started {
+		startedSet[broadcastEventKey{networkID: k.NetworkID, serviceID: k.ServiceID, eventID: k.EventID}] = struct{}{}
 	}
 
 	var delayed []startDelayed
 	for _, d := range candidates {
-		if _, ok := startedSet[d.res.ID]; ok {
+		key := broadcastEventKey{networkID: d.snap.NetworkID, serviceID: d.snap.ServiceID, eventID: d.snap.EventID}
+		if _, ok := startedSet[key]; ok {
 			continue
 		}
 		delayed = append(delayed, startDelayed{
