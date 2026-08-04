@@ -2106,3 +2106,46 @@ func TestReconciler_StartDelayStillDetectedAfterReservationRematerializationWith
 		t.Errorf("rokuban_reconcile_start_delayed = %v, want 1 —— 再実体化を跨いでも、本当に未開始の予約は検出され続けるべき", got)
 	}
 }
+
+// 放送イベントキーの照合そのものが効いていることの確認（issue #152 レビュー
+// 指摘）。上の 2 本は「recordings 行が 1 行も無い」状態しか作らないため、
+// ListStartedBroadcastEventKeys が (network_id, service_id, event_id) の
+// タプルで照合せず「サイト内に started な recordings が 1 行でもあれば
+// 全予約の検出を抑止する」という壊れ方をしても緑のまま通ってしまう。
+// 同一サイト・同一サービスの異なる 2 イベントを検出窓に置き、一方は開始
+// 観測済み・他方は未観測にして、抑止が予約ごとに正しく効くこと
+// （ゲージが 1 = 未観測の 1 件だけが検出される。0 なら過剰抑止、2 なら
+// 逆に開始済みも誤検知）を確認する。
+func TestReconciler_StartDelaySuppressionMatchesBroadcastEventKeyPerReservation(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	mock := newMockMirakc()
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+
+	mc := mirakc.NewClient(srv.URL, nil)
+	q := sqlcgen.New(pool)
+
+	startAt := time.Now().Add(-10 * time.Minute)
+
+	// 予約 A: 開始が観測済み（recordings 行あり）。抑止されるべき。
+	programIDStarted := int64(100000500030010)
+	eventIDStarted := int32(30010)
+	resStarted := createReservation(t, ctx, q, programIDStarted, "開始観測済み番組", startAt)
+	createStartedRecording(t, ctx, q, resStarted.ID, eventIDStarted, startAt, startAt.Add(1*time.Minute))
+
+	// 予約 B: 同一サイト・同一サービスの別イベントで、recordings 行なし。
+	// 検出されるべき。
+	programIDUnstarted := int64(100000500030011)
+	resUnstarted := createReservation(t, ctx, q, programIDUnstarted, "未観測番組", startAt)
+
+	rec := reconciler.New("default", mc, pool, nil)
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
+
+	if got := startDelayGauge(t); got != 1 {
+		t.Errorf("rokuban_reconcile_start_delayed = %v, want 1 —— %d（開始観測済み）は抑止され、%d（未観測）だけが検出されるべき", got, resStarted.ID, resUnstarted.ID)
+	}
+}
