@@ -2,7 +2,7 @@
 
 **録画試行の永続履歴**。成功だけでなく失敗（`recording.failed`）も行として残す — 「録画品質の実測」（issue #2）と再放送待ち判断の入力になる。番組情報は mirakc record / schedule の program ペイロードから**非正規化スナップショット**し、EPG テーブルにも mirakc にも依存せず自己完結する。
 
-**recordings に新しく列を足すときの基準は「試行の帰結の観測だけを持つ脊椎であること」**（[CLAUDE.md](../../CLAUDE.md) 不変条件 13。#156）。`media_assets`（下記 §6）はこの表を `recording_id` で指す衛星表 —— 判定基準・境界は [principles.md](principles.md) §9 参照。**これは既存の全列がこの基準を満たしていることを意味しない。** `keep_original` / `encode_profiles`（下記 CREATE TABLE 内、ingest worker が書く予約オプションの効力スナップショット）はこの基準を遡って適用すれば衛星に出すべき列だが、まだ切り出されておらず、切り出しは #159 が持っている。
+**recordings に新しく列を足すときの基準は「試行の帰結の観測だけを持つ脊椎であること」**（[CLAUDE.md](../../CLAUDE.md) 不変条件 13。#156）。`media_assets`（下記 §6）はこの表を `recording_id` で指す衛星表 —— 判定基準・境界は [principles.md](principles.md) §9 参照。**これは既存の全列がこの基準を満たしていることを意味しない。** `keep_original` / `encode_profiles`（下記 CREATE TABLE 内、予約オプションの効力スナップショット。ingest worker が凍結し api が追記する）はこの基準を遡って適用すれば衛星に出すべき列だが、まだ切り出されておらず、切り出しは #159 が持っている。
 
 ```sql
 CREATE TABLE recordings (
