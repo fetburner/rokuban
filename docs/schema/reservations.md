@@ -62,7 +62,7 @@ CREATE INDEX ON reservations (rule_id);
 |---|---|---|
 | `active` | 通常の desired 予約 | `rule_id IS NOT NULL`（または base が無い manual 予約） |
 | `detached` | ルールがマッチしなくなったが `record` 意図または上書きがある行（= `program_investments` view に行がある。issue #162）。base は凍結され、実質 manual として動く（`intent{skip}` なら録画しない detached） | `rule_id IS NULL AND base IS NOT NULL` |
-| `orphaned` | **この予約について捕獲の試みが一度も記録されなかった行**。即削除せず残して「録れなかった」を説明可能にする | `EXISTS (SELECT 1 FROM recordings rec WHERE (rec.network_id, rec.service_id, rec.event_id) = 放送イベント AND rec.status = 'failed' AND rec.deleted_at IS NULL AND rec.superseded_at IS NULL AND quality_events に recording.never-scheduled マーカーがある)` |
+| `orphaned` | **観測が無いこと自体ではなく、「捕獲が一度も行われなかった」という事実を記録した `recordings` 行が存在すること**が根拠。即削除せず残して「録れなかった」を説明可能にする | `EXISTS (SELECT 1 FROM recordings rec WHERE rec.site = r.site AND (rec.network_id, rec.service_id, rec.event_id) = 放送イベント AND rec.status = 'failed' AND rec.deleted_at IS NULL AND rec.superseded_at IS NULL AND quality_events に recording.never-scheduled マーカーがある)` |
 
 - **行の物理削除（GC）は「番組の終了時刻を過ぎた後」のみ**。番組の終了時刻は `program_snapshots.start_at + duration_ms` で判定し（§3.7）、`reservations` は `program_snapshots` への FK が `ON DELETE CASCADE` なのでスナップショットが GC された瞬間に一緒に落ちる（active/detached/orphaned のいずれでも問わない）。`recordings` は `program_snapshots` への FK を持たないので、GC された後も orphaned だったという記録は `recordings` 側に残り続ける（§5「行の作られ方」）
 - 意図も上書きもない active 予約がルール・EPG から消えた場合は通常の宣言的動作として削除（ただし大量削除サーキットブレーカーの対象）
