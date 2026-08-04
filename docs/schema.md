@@ -50,7 +50,7 @@ erDiagram
 - **番組の事実のスナップショット**: `program_snapshots`（EPG プロジェクションから複製した、放送の寿命を持つキャッシュ。Phase 1。§3.7）
 - **observed**: `schedule_sync` / `record_sync`（mirakc の観測。短命・使い捨て）
 - **永続資産**: `recordings` / `media_assets` / `drop_stats`
-- `program_intents` / `program_overrides` と `reservations` は互いに FK では対応しない。三者はいずれも共通の `(site, program_id)` で `program_snapshots` への FK（`ON DELETE CASCADE`）を持つことで結びつく（Phase 1）。**skip された番組は `reservations` に行を持たない**ため、常に 1:1 ではない（§3.5）
+- `program_intents` / `program_overrides` と `reservations` は互いに FK では対応しない。三者はいずれも共通の `(site, program_id)` で `program_snapshots` への FK（`ON DELETE CASCADE`）を持つことで結びつく（Phase 1）。**意図が skip で、かつ上書きが無い番組は `reservations` に行を持たない**（overrides があれば skip でも行は残る。detached として保持。§3.5）ため、常に 1:1 ではない
 - `reservations.rule_id` は**勝者ルール**のみ。マッチした全ルールは `reservation_rule_matches` に入る
 - `rules` 一式と `program_intents` は M2 で追加（`00006` / `00008`）、`program_overrides` は M2-4 で分離（`00010`）。EPG プロジェクション（`epg_services` / `epg_programs`）は M1-6（`00004`）、チャンネル列は `00009`。`program_snapshots` は Phase 1（`00017`）で追加され、同マイグレーションで `reservations.state` が `orphaned_at` に置き換わった。`orphaned_at` はさらに issue #98（`00025`）で `recordings` の試行行に移設され、廃止された（[reservations.md](schema/reservations.md) §3）
 
