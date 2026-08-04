@@ -31,7 +31,7 @@ reservations の行を 2 層に分ける:
 
 意図と上書きの寿命は放送の寿命に揃える（番組終了後に GC）。
 
-ruler は EPG 更新のたびに base を丸ごと再計算してよい --- **overrides は別表（`program_overrides`）にあるので構造的に触れない**。3-way merge は不要。ruler は `reservations` を、api は `program_intents` / `program_overrides` を書くので競合もない（ruler のパスはサイト単位で排他。[データ層](../data.md) §2）。api が `reservations` を書くのはルール削除 API の同期削除 1 本だけで、そこも WHERE の NOT EXISTS を適用の瞬間に再評価するので競合しない（§4.4）。**ルール側の変更は上書きしていないフィールドにだけ自動伝播する**（ユーザーの直感と一致）。
+ruler は EPG 更新のたびに base を丸ごと再計算してよい --- **overrides は別表（`program_overrides`）にあるので構造的に触れない**。3-way merge は不要。ruler は `reservations` を、api は `program_intents` / `program_overrides` を書くので競合もない（ruler のパスはサイト単位で排他。[データ層](../data.md) §2）。api が `reservations` を書くのはルール削除 API の同期削除 1 本だけで、そこも WHERE の NOT EXISTS を適用の瞬間に再評価するため、#29 が問題にした窓（並行して着地する手動予約を踏み潰す）は生じない（ruler はルール一覧と desired を tx の外で読み tx 内で書くため、ルール削除と同時走行したパスが `rule_id` の FK 制約で失敗し再試行になる形自体は残る。§4.4）。**ルール側の変更は上書きしていないフィールドにだけ自動伝播する**（ユーザーの直感と一致）。
 
 UI: 上書き中のフィールドにマーカー表示 + フィールド単位/予約単位の「ルールに戻す」（override を消すだけ）。
 

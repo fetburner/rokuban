@@ -57,8 +57,10 @@ func ensureProgramSnapshot(ctx context.Context, q *sqlcgen.Queries, site string,
 // PutProgramIntent はユーザー意図（record/skip）を (site, programId) を自身の
 // キーとして書く (PUT /api/sites/{site}/programs/{programId}/intent、issue #29)。
 //
-// reservations には一切触れない —— 導出行は ruler だけが書く。ruler_pass ヒントを
-// 入れて実体化を早めるが、同一トランザクションで reservations を作らない
+// PutProgramIntent は reservations に触れない。導出の書き手は ruler で、
+// 例外はルール削除 API の同期削除 1 本（docs/schema/reservations.md
+// §3「書き込み所有権」）。ruler_pass ヒントを入れて実体化を早めるが、
+// 同一トランザクションで reservations を作らない
 // （#29 の決定: 作成の即時反映は UI の楽観更新で満たす）。
 func (h *Server) PutProgramIntent(ctx context.Context, req PutProgramIntentRequestObject) (PutProgramIntentResponseObject, error) {
 	if req.Site != h.site {
