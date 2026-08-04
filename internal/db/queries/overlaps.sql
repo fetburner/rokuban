@@ -12,9 +12,12 @@
 -- program_overrides との JOIN は ListReservationsBySite
 -- (internal/db/queries/reservations.sql) と同じ形。
 --
--- never-scheduled 除外の述語は ListReservationsForSyncEvaluation /
--- ListCapacityDemand と一字一句揃える（issue #98 で orphaned_at IS NULL から
--- 置き換え。理由は internal/db/queries/reservations.sql のコメント参照）。
+-- never-scheduled 除外の述語は never_scheduled_events view（issue #157。
+-- internal/db/migrations/00030_never_scheduled_events_view.sql）に一本化した
+-- --- ListReservationsForSyncEvaluation
+-- (internal/db/queries/reservations.sql) / ListCapacityDemand
+-- (internal/db/queries/capacity.sql) と全く同じ NOT EXISTS になる。
+-- 理由は internal/db/queries/reservations.sql のコメント参照。
 -- name: ListOverlappingReservations :many
 SELECT sqlc.embed(r), sqlc.embed(s), i.action AS intent_action, o.overrides AS overrides
 FROM reservations r
@@ -24,7 +27,7 @@ LEFT JOIN program_overrides o ON o.site = r.site AND o.program_id = r.program_id
 WHERE r.site = $1
   AND r.program_id <> sqlc.arg(target_program_id)::bigint
   AND NOT EXISTS (
-      SELECT 1 FROM recordings rec
+      SELECT 1 FROM never_scheduled_events nse
       -- 宛先のキーは**放送イベント**であって予約 id ではない。
       -- reservations.id は ruler の導出削除・再実体化で変わる不安定な値で
       -- （#53 が mirakc の tag を program:{programId} に移した理由。#99 も同じ）、
@@ -33,15 +36,10 @@ WHERE r.site = $1
       -- 「never-scheduled 行が無い」ことになり、終了済み予約が毎パス desired に
       -- 戻り続ける（CLAUDE.md 不変条件 9 の identity: 導出器が作るキーを
       -- 宛先にしない）。
-      WHERE rec.site = r.site
-        AND rec.network_id = s.network_id
-        AND rec.service_id = s.service_id
-        AND rec.event_id = s.event_id
-        AND rec.status = 'failed'
-        AND EXISTS (
-            SELECT 1 FROM jsonb_array_elements(rec.quality_events) qe
-            WHERE qe->>'event' = 'recording.never-scheduled'
-        )
+      WHERE nse.site = r.site
+        AND nse.network_id = s.network_id
+        AND nse.service_id = s.service_id
+        AND nse.event_id = s.event_id
   )
   AND s.start_at < sqlc.arg(window_end)::timestamptz
   AND s.start_at + (s.duration_ms * interval '1 millisecond') > sqlc.arg(window_start)::timestamptz

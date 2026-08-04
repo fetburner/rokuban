@@ -77,6 +77,15 @@ type MediaAsset struct {
 	UpdatedAt   time.Time
 }
 
+type NeverScheduledEvent struct {
+	Site         string
+	NetworkID    int32
+	ServiceID    int32
+	EventID      int32
+	DeletedAt    *time.Time
+	SupersededAt *time.Time
+}
+
 type OrphanFile struct {
 	RelPath   string
 	FirstSeen time.Time
