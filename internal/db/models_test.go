@@ -735,20 +735,30 @@ func TestMigration00027_DropsScheduleSyncReservationID(t *testing.T) {
 		t.Errorf("schedule_sync.state = %q, want %q", stateAfter, "scheduled")
 	}
 
-	// 反対方向の確認: 削除した索引を DROP INDEX IF EXISTS で参照しているだけの
-	// はずなので、列が無い状態で reservations 側を DELETE しても schedule_sync
-	// は（かつての ON DELETE SET NULL の FK 経由ではなく）無関係に残る。
-	if _, err := pool.Exec(ctx, `DELETE FROM reservations WHERE site = $1 AND program_id = $2`, site, programID); err != nil {
-		t.Fatalf("deleting reservation: %v", err)
-	}
-	var scheduleSyncExists bool
+	// 反対方向の確認: 列と一緒に FK・索引そのものも落ちていることを
+	// pg_constraint / pg_indexes で直接見る（DELETE 後に行が残ることは
+	// ON DELETE SET NULL の FK があっても成立するので、それ自体は FK 消滅の
+	// 証拠にならない）。
+	var fkExistsAfter bool
 	if err := pool.QueryRow(ctx,
-		`SELECT EXISTS (SELECT 1 FROM schedule_sync WHERE site = $1 AND program_id = $2)`, site, programID,
-	).Scan(&scheduleSyncExists); err != nil {
-		t.Fatalf("checking schedule_sync survives reservation deletion: %v", err)
+		`SELECT EXISTS (SELECT 1 FROM pg_constraint
+		 WHERE conrelid = 'schedule_sync'::regclass AND contype = 'f')`,
+	).Scan(&fkExistsAfter); err != nil {
+		t.Fatalf("checking FK exists after 00027: %v", err)
 	}
-	if !scheduleSyncExists {
-		t.Error("schedule_sync row should survive reservation deletion now that the FK is gone")
+	if fkExistsAfter {
+		t.Error("schedule_sync should have no FK constraints after 00027")
+	}
+
+	var indexExistsAfter bool
+	if err := pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM pg_indexes
+		 WHERE indexname = 'schedule_sync_reservation_id_idx')`,
+	).Scan(&indexExistsAfter); err != nil {
+		t.Fatalf("checking index exists after 00027: %v", err)
+	}
+	if indexExistsAfter {
+		t.Error("schedule_sync_reservation_id_idx should have been dropped by 00027")
 	}
 }
 
