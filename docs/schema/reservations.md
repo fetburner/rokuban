@@ -61,7 +61,7 @@ CREATE INDEX ON reservations (rule_id);
 | 値 | 意味 | 導出元 |
 |---|---|---|
 | `active` | 通常の desired 予約 | `rule_id IS NOT NULL`（または base が無い manual 予約） |
-| `detached` | ルールがマッチしなくなったが意図または上書きがある行。base は凍結され、実質 manual として動く（`intent{skip}` なら録画しない detached） | `rule_id IS NULL AND base IS NOT NULL` |
+| `detached` | ルールがマッチしなくなったが `record` 意図または上書きがある行（= `program_investments` view に行がある。issue #162）。base は凍結され、実質 manual として動く（`intent{skip}` なら録画しない detached） | `rule_id IS NULL AND base IS NOT NULL` |
 | `orphaned` | **この予約について捕獲の試みが失敗した（一度も schedule が作られなかった、または途中で失敗した）行**。即削除せず残して「録れなかった」を説明可能にする | `EXISTS (SELECT 1 FROM recordings WHERE reservation_id = r.id AND status = 'failed')` |
 
 - **行の物理削除（GC）は「番組の終了時刻を過ぎた後」のみ**。番組の終了時刻は `program_snapshots.start_at + duration_ms` で判定し（§3.7）、`reservations` は `program_snapshots` への FK が `ON DELETE CASCADE` なのでスナップショットが GC された瞬間に一緒に落ちる（active/detached/orphaned のいずれでも問わない）。`recordings` は `program_snapshots` への FK を持たないので、GC された後も orphaned だったという記録は `recordings` 側に残り続ける（§5「行の作られ方」）
@@ -122,9 +122,20 @@ CREATE TABLE program_overrides (
 - **site スコープ**: 「サイト A では録らない、B では録る」が N 予約の下では意味を持つため（[録画エンジン](../recording.md) §3.1）
 - SSE ヒントはどちらも `reservations` トピックに寄せる（意図の変更は予約一覧・番組表の両方に現れる）
 
-**どちらの表も行の存在が予約を存在させる**（ruler の desired に入る）。`program_overrides` に行があるだけで予約が保たれるのは §4.3「overrides あり → 削除せず detached で保持」の要求。
+**どちらの表も行の存在が予約を存在させる**（ruler の desired に入る）。ただし `program_intents` については `action = 'record'` の行に限る --- `action = 'skip'` の行は逆に予約を desired から外す側（§3「skip された番組は予約行を持たない」）なので、行の存在で予約を保つのは `program_overrides` と同じ意味にならない。`program_overrides` に行があるだけで予約が保たれるのは §4.3「overrides あり → 削除せず detached で保持」の要求。この 2 条件（`record` 意図 ∪ overrides）は `program_investments` view（issue #162）が 1 箇所にまとめて定義している。
 
 取消は**無条件に `intent{skip}` を書いて導出行を落とす**。行を消すだけでは「消された行」と「最初から無かった行」が ruler から区別できず、次の全量パスが復活させる。
+
+### program_investments — 「この番組にユーザーの投資があるか」の一級述語（issue #162）
+
+```sql
+CREATE VIEW program_investments AS
+SELECT site, program_id FROM program_intents WHERE action = 'record'
+UNION
+SELECT site, program_id FROM program_overrides;
+```
+
+削除ガード（ruler の導出削除・`DeleteRule` の detached 判定）と desired の union の第 2・3 項が同じ述語を指すのに、view 化前は 4 箇所に散在し 2 つの形（`program_intents` を `action` で絞るかどうか）が併存していた。パラメータを持たない集合演算なので view で足りる。定義を変えると 4 箇所の消費者すべてのテストが落ちる。
 
 ## 3.6 circuit_breakers — 大量削除ブレーカーのラッチ（M2-5）
 

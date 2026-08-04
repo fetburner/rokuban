@@ -5,15 +5,21 @@
 -- name: ListEnabledRules :many
 SELECT * FROM rules WHERE enabled = true ORDER BY priority DESC, id ASC;
 
+-- ruler は skip 意図の除外にだけこのクエリを使う。record 側（「この番組に
+-- ユーザーの投資があるか」の一部）は program_investments view に一本化した
+-- ため ListProgramInvestmentProgramIDsBySite（下記）から引く（#162）。
 -- name: ListProgramIntentActionsBySite :many
 SELECT program_id, action FROM program_intents WHERE site = $1;
 
--- program_overrides に行があるだけで予約を存在させる（docs/recording.md §4.2
--- 「ruler から見た load-bearing な行」: desired = (マッチ − skip) ∪ record ∪
--- {program_overrides に行がある番組}）。ruler は overrides の中身を一切読まない
--- （不透明なペイロード）ため programId だけを引く。
--- name: ListProgramOverrideProgramIDsBySite :many
-SELECT program_id FROM program_overrides WHERE site = $1;
+-- 「この番組にユーザーの投資があるか」（program_intents の action='record' 行 ∪
+-- program_overrides の行）は program_investments view（#162。
+-- internal/db/migrations/00027_program_investments_view.sql）に一本化した。
+-- ruler は record 意図の中身も overrides の中身も一切読まない（不透明な
+-- ペイロード）ため programId だけを引く（docs/recording.md §4.2「ruler から
+-- 見た load-bearing な行」: desired = (マッチ − skip) ∪ record ∪
+-- {program_overrides に行がある番組}）。
+-- name: ListProgramInvestmentProgramIDsBySite :many
+SELECT program_id FROM program_investments WHERE site = $1;
 
 -- name: ListReservationProgramIDsBySite :many
 SELECT program_id FROM reservations WHERE site = $1;
@@ -47,7 +53,7 @@ WHERE site = $1 AND program_id = ANY(sqlc.arg(program_ids)::bigint[]);
 -- （導出削除。呼び出し側でサーキットブレーカーの閾値判定を先に行うこと）。
 --
 -- toDelete は runPassForSite の先頭（トランザクション外）で ListProgramIntentActionsBySite /
--- ListProgramOverrideProgramIDsBySite / ListReservationProgramIDsBySite を読んでから
+-- ListProgramInvestmentProgramIDsBySite / ListReservationProgramIDsBySite を読んでから
 -- 計算した集合で、この DELETE 文自体は別のトランザクション（tx）内で後から実行される。
 -- その間に api の PutProgramIntent（program_intents.action='record' をコミットする
 -- だけで、reservations には一切触れない）が同じ program_id に意図を立てると、
@@ -60,20 +66,15 @@ WHERE site = $1 AND program_id = ANY(sqlc.arg(program_ids)::bigint[]);
 -- 評価する」を列だけでなく DELETE の対象判定にも適用する）。
 -- internal/db/queries/rules.sql の DeleteReservationsByRuleWithoutIntent と同じ形。
 --
--- program_intents 側は action = 'record' に限定する。action を問わずに EXISTS すると
--- action='skip' の予約行（そもそも desired に入らない設計 = issue #18 の案 A）が
--- ここで保護されてしまい、「取消した予約が消えない」リグレッションになる。
--- program_overrides 側は中身を問わず行の存在だけで desired に残る設計
--- （ruler.go の union の最後）なので、action と無関係に EXISTS だけでよい。
+-- 「この番組にユーザーの投資があるか」という述語は program_investments view
+-- （program_intents の action='record' 行 ∪ program_overrides の行）に一本化した
+-- （#162）。view は実行時にインライン展開されるため、ガードが「削除の瞬間に
+-- 再評価する」性質は変わらない。
 DELETE FROM reservations r
 WHERE r.site = $1 AND r.program_id = ANY(sqlc.arg(program_ids)::bigint[])
   AND NOT EXISTS (
-      SELECT 1 FROM program_intents i
-      WHERE i.site = r.site AND i.program_id = r.program_id AND i.action = 'record'
-  )
-  AND NOT EXISTS (
-      SELECT 1 FROM program_overrides o
-      WHERE o.site = r.site AND o.program_id = r.program_id
+      SELECT 1 FROM program_investments v
+      WHERE v.site = r.site AND v.program_id = r.program_id
   );
 
 -- name: ListReservationIDsBySiteAndProgramIDs :many

@@ -90,6 +90,11 @@ type ProgramIntent struct {
 	UpdatedAt time.Time
 }
 
+type ProgramInvestment struct {
+	Site      string
+	ProgramID int64
+}
+
 type ProgramOverride struct {
 	Site      string
 	ProgramID int64
