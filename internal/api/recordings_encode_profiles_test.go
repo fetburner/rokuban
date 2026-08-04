@@ -41,12 +41,15 @@ func encodeProfilesURL(base string, id int64) string {
 }
 
 // seedReservationForTest は reservations に最小限の行を直接 INSERT する。
-// recordings.reservation_id が参照する FK を満たすためだけに使う --- Phase 1
-// （#27/#28/#30）以降 reservations は ruler の 1 パスの出力（id, site, program_id,
-// rule_id, base, dedup 根拠 2 列, timestamps）だけを持つ導出テーブルで、番組の
-// 事実は program_snapshots 側の責務。reservations.program_id は
-// program_snapshots (site, program_id) への FK（reservations_program_fkey）を
-// 持つため、先に program_snapshots 行を用意する。
+// 「予約がある録画」のシナリオ（TestAddRecordingEncodeProfiles_WithReservation_Success）
+// を作るためだけに使う --- recordings.reservation_id は issue #158 で列自体を
+// 落としたので、この呼び出しはもう FK を満たすためではない（recordings と
+// reservations の間に直接の結合キーは無い）。Phase 1（#27/#28/#30）以降
+// reservations は ruler の 1 パスの出力（id, site, program_id, rule_id, base,
+// dedup 根拠 2 列, timestamps）だけを持つ導出テーブルで、番組の事実は
+// program_snapshots 側の責務。reservations.program_id は program_snapshots
+// (site, program_id) への FK（reservations_program_fkey）を持つため、先に
+// program_snapshots 行を用意する。
 func seedReservationForTest(t *testing.T, pool *pgxpool.Pool, programID int64) int64 {
 	t.Helper()
 	ctx := context.Background()
@@ -178,10 +181,9 @@ func TestAddRecordingEncodeProfiles_WithReservation_Success(t *testing.T) {
 	defer srv.Close()
 
 	base := time.Now().Truncate(time.Second)
-	reservationID := seedReservationForTest(t, pool, 5001)
+	seedReservationForTest(t, pool, 5001)
 
 	id, err := sqlcgen.New(pool).CreateRecording(context.Background(), sqlcgen.CreateRecordingParams{
-		ReservationID:     &reservationID,
 		Source:            "rule",
 		Site:              db.DefaultSite,
 		NetworkID:         32678,

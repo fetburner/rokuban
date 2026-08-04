@@ -790,7 +790,6 @@ func (r *Reconciler) recordNeverScheduled(ctx context.Context, reservations []de
 		}
 
 		rows, err := q.CreateNeverScheduledRecording(ctx, sqlcgen.CreateNeverScheduledRecordingParams{
-			ReservationID:     &res.ID,
 			RuleID:            res.RuleID,
 			Source:            source,
 			Site:              r.site,

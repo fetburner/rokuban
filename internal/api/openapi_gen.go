@@ -736,7 +736,6 @@ type Recording struct {
 
 	// QualityEvents recording.failed / record-broken / bcas_anomaly の履歴
 	QualityEvents *[]map[string]interface{} `json:"qualityEvents,omitempty"`
-	ReservationId *int64                    `json:"reservationId,omitempty"`
 	RuleId        *int64                    `json:"ruleId,omitempty"`
 	ServiceId     int                       `json:"serviceId"`
 	ServiceName   string                    `json:"serviceName"`

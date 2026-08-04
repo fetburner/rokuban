@@ -95,7 +95,9 @@ type RuleTime struct {
 }
 
 // Recording は recordings の 1 行（tombstone 含む）。
-// reservation_id は導出物なので export しない（rescue 時は常に NULL）。
+// recordings.reservation_id は元々「導出物なので export しない」として
+// 常に NULL で rescue していたが、issue #158 で列自体を落としたので、
+// この構造体にはそもそも存在しない。
 type Recording struct {
 	ID                int64           `json:"id"`
 	RuleID            *int64          `json:"ruleId,omitempty"`

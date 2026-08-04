@@ -142,7 +142,6 @@ type RecordSync struct {
 
 type Recording struct {
 	ID                int64
-	ReservationID     *int64
 	RuleID            *int64
 	Source            string
 	Site              string

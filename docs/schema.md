@@ -40,7 +40,6 @@ erDiagram
     program_snapshots ||--o| reservations : "(site, program_id) FK, ON DELETE CASCADE"
     program_snapshots ||--o| program_intents : "(site, program_id) FK, ON DELETE CASCADE"
     program_snapshots ||--o| program_overrides : "(site, program_id) FK, ON DELETE CASCADE"
-    reservations ||--o{ recordings : "reservation_id (snapshot 後は独立)"
     recordings ||--o{ record_sync : "recording_id (observed)"
     recordings ||--o{ media_assets : "recording_id"
     media_assets ||--o{ drop_stats : "media_asset_id"

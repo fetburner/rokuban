@@ -7,7 +7,6 @@
 ```sql
 CREATE TABLE recordings (
     id                bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    reservation_id    bigint REFERENCES reservations (id) ON DELETE SET NULL,
     rule_id           bigint,        -- トレーサビリティ。00006 で FK 追加済み
     source            text   NOT NULL CHECK (source IN ('rule', 'manual')),
     site              text   NOT NULL,  -- どのサイトで録画したか（履歴として snapshot）
@@ -70,7 +69,6 @@ CREATE TABLE recordings (
     updated_at        timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE INDEX ON recordings (reservation_id);
 CREATE INDEX ON recordings (program_start_at DESC);        -- ライブラリ一覧
 CREATE INDEX ON recordings (network_id, service_id, event_id);
 CREATE INDEX ON recordings (deleted_at) WHERE deleted_at IS NOT NULL;  -- ごみ箱ビュー
@@ -99,7 +97,7 @@ CREATE INDEX ON recordings (purged_at) WHERE purged_at IS NULL;  -- ごみ箱一
 - **`status` に 5 値目（`never-scheduled` 等）を足さない（issue #98 の決定）。** このスキーマでは「失敗の種別」はもともと `quality_events` の管轄で、`status` は粗い帰結だけを持つ（mirakc 由来の失敗も理由は `status` ではなく `quality_events` にある）。never-scheduled は失敗の**理由**なので、`status='failed'` + `quality_events` に `recording.never-scheduled` が既存の型に合致する。`canceled` を独立させた論法（「分かっている 2 つの事実を同じ値に潰すと一覧が嘘をつく」）の再演に見えるが違う --- 区別（mirakc 由来かreconciler由来か、そしてその理由）は quality_events に保存されるので嘘にならない
 - never-scheduled 行は「`media_assets` を 1 行も持たない録画」になる。ユーザーがこれをごみ箱送り（`deleted_at` を立てる）にした場合でも、`media_assets` が 0 行なら `MarkPurgedRecordings`（issue #135 / 00024）の `NOT EXISTS` 判定は空集合で自明に真になり、正しく完全削除の対象として扱われる（[storage.md](../storage.md) §7 参照）
 
-**never-scheduled 行の識別:** `reservation_id` で特定の予約に紐づく（`reservations` GC 後は `ON DELETE SET NULL` で `NULL` になる）ほか、`quality_events` の配列要素に `event = "recording.never-scheduled"` を持つことで機械的に判別できる（`internal/db.QualityEventNeverScheduled`）。API の `orphaned` 表示（`GetReservationFull` の `never_recorded`）と `ListReservationsForSyncEvaluation` 等の同期除外は、`never_scheduled_events` VIEW（`00030`、issue #157）が定義する核（`status='failed'` + このマーカー）を共有する。差は表示側だけが持つ live 限定（`deleted_at` / `superseded_at` が NULL）で、同期除外はこれを見ない —— mirakc 由来の途中失敗からの再試行を妨げないためで、意図的な差である（[reservations.md](reservations.md) §3 参照）。
+**never-scheduled 行の識別:** `quality_events` の配列要素に `event = "recording.never-scheduled"` を持つことで機械的に判別できる（`internal/db.QualityEventNeverScheduled`）。API の `orphaned` 表示（`GetReservationFull` の `never_recorded`）と `ListReservationsForSyncEvaluation` 等の同期除外は、`never_scheduled_events` VIEW（`00030`、issue #157）が定義する核（`status='failed'` + このマーカー）を共有する。差は表示側だけが持つ live 限定（`deleted_at` / `superseded_at` が NULL）で、同期除外はこれを見ない —— mirakc 由来の途中失敗からの再試行を妨げないためで、意図的な差である（[reservations.md](reservations.md) §3 参照）。特定の予約に紐づけたい読者（表示・エンコード方針の解決等）は放送イベントキー `(site, network_id, service_id, event_id)` で `program_snapshots` 経由に `reservations` を引く —— `reservation_id` 列（`reservations.id` を宛先にした FK、`ON DELETE SET NULL`）は、ruler の導出削除・再実体化のたびに不安定な `reservations.id` を追いかけ続けるバグを 6 回生んだ（`#29`/`#53`/`#98`/`#99`/`#149`/`#152`。[CLAUDE.md](../../CLAUDE.md) 不変条件 9「identity」）ため、issue #158 で列自体を削除した。
 
 ### ごみ箱（issue #4 の削除エンジンコメント / M3-7 #69）
 

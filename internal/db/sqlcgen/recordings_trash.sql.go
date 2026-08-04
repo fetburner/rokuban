@@ -13,7 +13,7 @@ import (
 
 const listTrashRecordings = `-- name: ListTrashRecordings :many
 SELECT
-    r.id, r.reservation_id, r.rule_id, r.source, r.site, r.network_id, r.service_id, r.event_id, r.service_name, r.channel_type, r.channel, r.title, r.description, r.extended, r.genres, r.is_free, r.program_start_at, r.program_duration_ms, r.status, r.started_at, r.ended_at, r.keep_original, r.encode_profiles, r.quality_events, r.deleted_at, r.created_at, r.updated_at, r.purge_after, r.superseded_at, r.purged_at,
+    r.id, r.rule_id, r.source, r.site, r.network_id, r.service_id, r.event_id, r.service_name, r.channel_type, r.channel, r.title, r.description, r.extended, r.genres, r.is_free, r.program_start_at, r.program_duration_ms, r.status, r.started_at, r.ended_at, r.keep_original, r.encode_profiles, r.quality_events, r.deleted_at, r.created_at, r.updated_at, r.purge_after, r.superseded_at, r.purged_at,
     a.size_bytes                        AS original_size_bytes,
     COALESCE(d.packets, 0)::bigint      AS drop_packets,
     COALESCE(d.drops, 0)::bigint        AS drop_drops,
@@ -34,7 +34,6 @@ ORDER BY r.deleted_at DESC, r.id DESC
 
 type ListTrashRecordingsRow struct {
 	ID                int64
-	ReservationID     *int64
 	RuleID            *int64
 	Source            string
 	Site              string
@@ -97,7 +96,6 @@ func (q *Queries) ListTrashRecordings(ctx context.Context, site string) ([]ListT
 		var i ListTrashRecordingsRow
 		if err := rows.Scan(
 			&i.ID,
-			&i.ReservationID,
 			&i.RuleID,
 			&i.Source,
 			&i.Site,

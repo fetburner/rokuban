@@ -129,19 +129,15 @@ func insertTestProgramSnapshot(t *testing.T, pool *pgxpool.Pool, programID int64
 // recordings.source の値を検証しないので、intent の有無を気にする必要が
 // ない場合に使う。source の導出（issue #26）を検証するテストは
 // createTestReservationWithIntent / createTestReservationWithRule を使う。
-func createTestReservation(t *testing.T, pool *pgxpool.Pool, programID int64) int64 {
+func createTestReservation(t *testing.T, pool *pgxpool.Pool, programID int64) {
 	t.Helper()
 	insertTestProgramSnapshot(t, pool, programID)
-	var id int64
-	err := pool.QueryRow(context.Background(), `
+	if _, err := pool.Exec(context.Background(), `
 		INSERT INTO reservations (site, program_id)
-		VALUES ('default', $1)
-		RETURNING id`, programID,
-	).Scan(&id)
-	if err != nil {
+		VALUES ('default', $1)`, programID,
+	); err != nil {
 		t.Fatalf("creating reservation: %v", err)
 	}
-	return id
 }
 
 // createTestRule は最小構成のルールを 1 件作る（reservations.rule_id の FK 先。
@@ -160,17 +156,14 @@ func createTestRule(t *testing.T, pool *pgxpool.Pool) int64 {
 // program_intents{action=record} 行を両方作る（手動予約を模す）。ruleID が
 // 非 nil なら rule_id も埋め、「手動予約にルールがマッチ中」の状態を作れる
 // （issue #26 の受け入れ基準 1）。
-func createTestReservationWithIntent(t *testing.T, pool *pgxpool.Pool, programID int64, ruleID *int64) int64 {
+func createTestReservationWithIntent(t *testing.T, pool *pgxpool.Pool, programID int64, ruleID *int64) {
 	t.Helper()
 	ctx := context.Background()
 	insertTestProgramSnapshot(t, pool, programID)
-	var id int64
-	err := pool.QueryRow(ctx, `
+	if _, err := pool.Exec(ctx, `
 		INSERT INTO reservations (site, program_id, rule_id)
-		VALUES ('default', $1, $2)
-		RETURNING id`, programID, ruleID,
-	).Scan(&id)
-	if err != nil {
+		VALUES ('default', $1, $2)`, programID, ruleID,
+	); err != nil {
 		t.Fatalf("creating reservation: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `
@@ -179,24 +172,19 @@ func createTestReservationWithIntent(t *testing.T, pool *pgxpool.Pool, programID
 	); err != nil {
 		t.Fatalf("creating program_intents fixture: %v", err)
 	}
-	return id
 }
 
 // createTestReservationWithRule は rule_id を持つが program_intents 行を持たない
 // reservations を作る（ルール由来予約を模す。issue #26 の受け入れ基準 2）。
-func createTestReservationWithRule(t *testing.T, pool *pgxpool.Pool, programID int64, ruleID int64) int64 {
+func createTestReservationWithRule(t *testing.T, pool *pgxpool.Pool, programID int64, ruleID int64) {
 	t.Helper()
 	insertTestProgramSnapshot(t, pool, programID)
-	var id int64
-	err := pool.QueryRow(context.Background(), `
+	if _, err := pool.Exec(context.Background(), `
 		INSERT INTO reservations (site, program_id, rule_id)
-		VALUES ('default', $1, $2)
-		RETURNING id`, programID, ruleID,
-	).Scan(&id)
-	if err != nil {
+		VALUES ('default', $1, $2)`, programID, ruleID,
+	); err != nil {
 		t.Fatalf("creating reservation: %v", err)
 	}
-	return id
 }
 
 // insertProgramOverride は program_overrides に priority の上書きだけを持つ行を作る
@@ -221,24 +209,24 @@ func insertProgramOverride(t *testing.T, pool *pgxpool.Pool, programID int64, pr
 // （issue #129 症状 2: この行が recordings_unique_active_event の枠を占有した
 // まま残っている状態を再現するのが目的で、handleRecordingFailed 経由の作られ方
 // 自体は TestHandleRecordingFailed_Idempotent 等で別に検証済み）。
-func insertTestFailedRecording(t *testing.T, pool *pgxpool.Pool, site string, reservationID *int64, networkID, serviceID, eventID int32) int64 {
+func insertTestFailedRecording(t *testing.T, pool *pgxpool.Pool, site string, networkID, serviceID, eventID int32) int64 {
 	t.Helper()
 	var id int64
 	err := pool.QueryRow(context.Background(), `
 		INSERT INTO recordings (
-			reservation_id, source, site,
+			source, site,
 			network_id, service_id, event_id, service_name,
 			channel_type, channel, title,
 			is_free, program_start_at, program_duration_ms,
 			status
 		) VALUES (
-			$1, 'manual', $2,
-			$3, $4, $5, 'NHK総合',
+			'manual', $1,
+			$2, $3, $4, 'NHK総合',
 			'GR', '27', 'Failed Attempt',
 			true, now() - interval '1 hour', 180000,
 			'failed'
 		) RETURNING id`,
-		reservationID, site, networkID, serviceID, eventID,
+		site, networkID, serviceID, eventID,
 	).Scan(&id)
 	if err != nil {
 		t.Fatalf("creating failed recording fixture: %v", err)
@@ -307,7 +295,7 @@ func TestProcessRecord_CreateRecordingAndSync(t *testing.T) {
 	w, pool := setupTest(t)
 	ctx := context.Background()
 
-	resID := createTestReservation(t, pool, 327360102415397)
+	createTestReservation(t, pool, 327360102415397)
 	record := testRecord("abc123def456", 327360102415397, "finished")
 
 	if err := w.processRecord(ctx, record); err != nil {
@@ -332,18 +320,14 @@ func TestProcessRecord_CreateRecordingAndSync(t *testing.T) {
 
 	// Verify recordings
 	var recStatus string
-	var recReservationID *int64
 	err = pool.QueryRow(ctx,
-		"SELECT status, reservation_id FROM recordings WHERE id = $1", *syncRecordingID,
-	).Scan(&recStatus, &recReservationID)
+		"SELECT status FROM recordings WHERE id = $1", *syncRecordingID,
+	).Scan(&recStatus)
 	if err != nil {
 		t.Fatalf("querying recordings: %v", err)
 	}
 	if recStatus != "finished" {
 		t.Errorf("recordings.status = %q, want %q", recStatus, "finished")
-	}
-	if recReservationID == nil || *recReservationID != resID {
-		t.Errorf("recordings.reservation_id = %v, want %d", recReservationID, resID)
 	}
 
 	// Verify ingest job
@@ -361,7 +345,7 @@ func TestProcessRecord_Idempotent(t *testing.T) {
 	w, pool := setupTest(t)
 	ctx := context.Background()
 
-	_ = createTestReservation(t, pool, 100001)
+	createTestReservation(t, pool, 100001)
 	record := testRecord("record-idem-001", 100001, "finished")
 
 	for i := 0; i < 3; i++ {
@@ -391,7 +375,7 @@ func TestProcessRecord_StatusProgression(t *testing.T) {
 	w, pool := setupTest(t)
 	ctx := context.Background()
 
-	resID := createTestReservation(t, pool, 100002)
+	createTestReservation(t, pool, 100002)
 	record := testRecord("record-prog-001", 100002, "recording")
 
 	if err := w.processRecord(ctx, record); err != nil {
@@ -408,7 +392,7 @@ func TestProcessRecord_StatusProgression(t *testing.T) {
 	}
 
 	var recStatus string
-	if err := pool.QueryRow(ctx, "SELECT status FROM recordings WHERE reservation_id = $1", resID).Scan(&recStatus); err != nil {
+	if err := pool.QueryRow(ctx, "SELECT status FROM recordings").Scan(&recStatus); err != nil {
 		t.Fatalf("querying recordings: %v", err)
 	}
 	if recStatus != "recording" {
@@ -423,7 +407,7 @@ func TestProcessRecord_StatusProgression(t *testing.T) {
 		t.Fatalf("processRecord (finished): %v", err)
 	}
 
-	if err := pool.QueryRow(ctx, "SELECT status FROM recordings WHERE reservation_id = $1", resID).Scan(&recStatus); err != nil {
+	if err := pool.QueryRow(ctx, "SELECT status FROM recordings").Scan(&recStatus); err != nil {
 		t.Fatalf("querying recordings: %v", err)
 	}
 	if recStatus != "finished" {
@@ -451,7 +435,7 @@ func TestProcessRecord_StatusNoDowngrade(t *testing.T) {
 	w, pool := setupTest(t)
 	ctx := context.Background()
 
-	resID := createTestReservation(t, pool, 100003)
+	createTestReservation(t, pool, 100003)
 	record := testRecord("record-nodg-001", 100003, "finished")
 
 	if err := w.processRecord(ctx, record); err != nil {
@@ -466,7 +450,7 @@ func TestProcessRecord_StatusNoDowngrade(t *testing.T) {
 	}
 
 	var recStatus string
-	if err := pool.QueryRow(ctx, "SELECT status FROM recordings WHERE reservation_id = $1", resID).Scan(&recStatus); err != nil {
+	if err := pool.QueryRow(ctx, "SELECT status FROM recordings").Scan(&recStatus); err != nil {
 		t.Fatalf("querying recordings: %v", err)
 	}
 	if recStatus != "finished" {
@@ -489,10 +473,10 @@ func TestProcessRecord_SupersedesFailedRecording(t *testing.T) {
 	ctx := context.Background()
 
 	programID := int64(750001)
-	resID := createTestReservation(t, pool, programID)
+	createTestReservation(t, pool, programID)
 
 	record := testRecord("record-supersede-001", programID, "finished")
-	failedID := insertTestFailedRecording(t, pool, DefaultSite, &resID,
+	failedID := insertTestFailedRecording(t, pool, DefaultSite,
 		int32(record.Program.NetworkID), int32(record.Program.ServiceID), int32(record.Program.EventID))
 
 	if err := w.processRecord(ctx, record); err != nil {
@@ -582,10 +566,10 @@ func TestProcessRecord_SupersedesFailedRecordingWithMediaAsset(t *testing.T) {
 	ctx := context.Background()
 
 	programID := int64(750002)
-	resID := createTestReservation(t, pool, programID)
+	createTestReservation(t, pool, programID)
 
 	record := testRecord("record-supersede-media-001", programID, "finished")
-	failedID := insertTestFailedRecording(t, pool, DefaultSite, &resID,
+	failedID := insertTestFailedRecording(t, pool, DefaultSite,
 		int32(record.Program.NetworkID), int32(record.Program.ServiceID), int32(record.Program.EventID))
 	assetID := insertTestMediaAsset(t, pool, failedID)
 
@@ -647,10 +631,10 @@ func TestProcessRecord_SupersedeIsIdempotentAcrossReprocessing(t *testing.T) {
 	ctx := context.Background()
 
 	programID := int64(750003)
-	resID := createTestReservation(t, pool, programID)
+	createTestReservation(t, pool, programID)
 
 	record := testRecord("record-supersede-idem-001", programID, "finished")
-	failedID := insertTestFailedRecording(t, pool, DefaultSite, &resID,
+	failedID := insertTestFailedRecording(t, pool, DefaultSite,
 		int32(record.Program.NetworkID), int32(record.Program.ServiceID), int32(record.Program.EventID))
 
 	for i := 0; i < 3; i++ {
@@ -701,7 +685,7 @@ func TestProcessRecord_DoesNotSupersedeLivingNonFailedRecording(t *testing.T) {
 	ctx := context.Background()
 
 	programID := int64(750004)
-	resID := createTestReservation(t, pool, programID)
+	createTestReservation(t, pool, programID)
 
 	record := testRecord("record-no-supersede-001", programID, "finished")
 	// 直接 'finished' な生きている行を同じスロットに作る（すでに録れている本物の
@@ -709,19 +693,19 @@ func TestProcessRecord_DoesNotSupersedeLivingNonFailedRecording(t *testing.T) {
 	var livingID int64
 	err := pool.QueryRow(ctx, `
 		INSERT INTO recordings (
-			reservation_id, source, site,
+			source, site,
 			network_id, service_id, event_id, service_name,
 			channel_type, channel, title,
 			is_free, program_start_at, program_duration_ms,
 			status
 		) VALUES (
-			$1, 'manual', $2,
-			$3, $4, $5, 'NHK総合',
+			'manual', $1,
+			$2, $3, $4, 'NHK総合',
 			'GR', '27', 'Already Finished',
 			true, now() - interval '1 hour', 180000,
 			'finished'
 		) RETURNING id`,
-		resID, DefaultSite, record.Program.NetworkID, record.Program.ServiceID, record.Program.EventID,
+		DefaultSite, record.Program.NetworkID, record.Program.ServiceID, record.Program.EventID,
 	).Scan(&livingID)
 	if err != nil {
 		t.Fatalf("creating living finished recording fixture: %v", err)
@@ -849,18 +833,21 @@ func TestProcessRecord_ConcurrentIdempotent(t *testing.T) {
 		programID := int64(400000 + round)
 		recordID := fmt.Sprintf("record-concurrent-%03d", round)
 
-		resID := createTestReservation(t, pool, programID)
+		createTestReservation(t, pool, programID)
 		record := testRecord(recordID, programID, "finished")
 		// recordings には (site, network_id, service_id, event_id) の一意制約
 		// （deleted_at IS NULL、00003_recordings_unique_active_event.sql）があるため、
 		// ラウンドごとに event_id を変えて他ラウンドの録画と衝突しないようにする。
+		// 同じキーをこのアサーションの絞り込みにも使う（recordings.reservation_id
+		// は #158 で列自体を落とした）。
 		record.Program.EventID = 500 + round
 
 		runConcurrentProcessRecord(t, w, record, goroutinesPerRound)
 
 		var recCount int
 		if err := pool.QueryRow(ctx,
-			"SELECT count(*) FROM recordings WHERE reservation_id = $1", resID,
+			"SELECT count(*) FROM recordings WHERE network_id = $1 AND service_id = $2 AND event_id = $3",
+			record.Program.NetworkID, record.Program.ServiceID, record.Program.EventID,
 		).Scan(&recCount); err != nil {
 			t.Fatalf("round %d: querying recordings: %v", round, err)
 		}
@@ -923,7 +910,7 @@ func TestHandleRecordBroken(t *testing.T) {
 	w, pool := setupTest(t)
 	ctx := context.Background()
 
-	resID := createTestReservation(t, pool, 100005)
+	createTestReservation(t, pool, 100005)
 	record := testRecord("record-broken-001", 100005, "recording")
 	if err := w.processRecord(ctx, record); err != nil {
 		t.Fatalf("processRecord: %v", err)
@@ -938,7 +925,7 @@ func TestHandleRecordBroken(t *testing.T) {
 
 	var qeJSON json.RawMessage
 	err := pool.QueryRow(ctx,
-		"SELECT quality_events FROM recordings WHERE reservation_id = $1", resID,
+		"SELECT quality_events FROM recordings",
 	).Scan(&qeJSON)
 	if err != nil {
 		t.Fatalf("querying quality_events: %v", err)
@@ -967,7 +954,7 @@ func TestHandleRecordingFailed_Idempotent(t *testing.T) {
 	rc := newTestRiverClient(t, pool)
 
 	programID := int64(327361024100)
-	resID := createTestReservation(t, pool, programID)
+	createTestReservation(t, pool, programID)
 
 	startAt := mirakc.Milliseconds(time.Now().Add(-1 * time.Hour))
 	duration := int64(3600000)
@@ -1021,7 +1008,7 @@ func TestHandleRecordingFailed_Idempotent(t *testing.T) {
 	}
 
 	var recCount int
-	if err := pool.QueryRow(ctx, "SELECT count(*) FROM recordings WHERE reservation_id = $1", resID).Scan(&recCount); err != nil {
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM recordings").Scan(&recCount); err != nil {
 		t.Fatalf("querying recordings: %v", err)
 	}
 	if recCount != 1 {
@@ -1033,7 +1020,7 @@ func TestHandleRecordingFailed_Idempotent(t *testing.T) {
 		t.Fatalf("handleRecordingFailed (2nd): %v", err)
 	}
 
-	if err := pool.QueryRow(ctx, "SELECT count(*) FROM recordings WHERE reservation_id = $1", resID).Scan(&recCount); err != nil {
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM recordings").Scan(&recCount); err != nil {
 		t.Fatalf("querying recordings: %v", err)
 	}
 	if recCount != 1 {
@@ -1043,7 +1030,7 @@ func TestHandleRecordingFailed_Idempotent(t *testing.T) {
 	// Verify quality_events were merged (2 events appended)
 	var qeJSON json.RawMessage
 	if err := pool.QueryRow(ctx,
-		"SELECT quality_events FROM recordings WHERE reservation_id = $1", resID,
+		"SELECT quality_events FROM recordings",
 	).Scan(&qeJSON); err != nil {
 		t.Fatalf("querying quality_events: %v", err)
 	}
@@ -1067,8 +1054,8 @@ func TestSweep_CatchesMissedRecords(t *testing.T) {
 
 	rc := newTestRiverClient(t, pool)
 
-	_ = createTestReservation(t, pool, 200001)
-	_ = createTestReservation(t, pool, 200002)
+	createTestReservation(t, pool, 200001)
+	createTestReservation(t, pool, 200002)
 
 	startAt := mirakc.Milliseconds(time.Now().Add(-1 * time.Hour))
 	recStart := mirakc.Milliseconds(time.Now().Add(-1 * time.Hour))
@@ -1179,10 +1166,12 @@ func TestSweepAndHandleEvent_ConcurrentIdempotent(t *testing.T) {
 		programID := int64(600000 + round)
 		recordID := fmt.Sprintf("record-sweep-vs-event-%03d", round)
 
-		resID := createTestReservation(t, pool, programID)
+		createTestReservation(t, pool, programID)
 		record := testRecord(recordID, programID, "finished")
 		// recordings の (site, network_id, service_id, event_id) 一意制約
 		// （deleted_at IS NULL）に他ラウンドと衝突しないよう event_id をずらす。
+		// 同じキーをこのアサーションの絞り込みにも使う（recordings.reservation_id
+		// は #158 で列自体を落とした）。
 		record.Program.EventID = 900 + round
 
 		mux := http.NewServeMux()
@@ -1234,7 +1223,8 @@ func TestSweepAndHandleEvent_ConcurrentIdempotent(t *testing.T) {
 
 		var recCount int
 		if err := pool.QueryRow(ctx,
-			"SELECT count(*) FROM recordings WHERE reservation_id = $1", resID,
+			"SELECT count(*) FROM recordings WHERE network_id = $1 AND service_id = $2 AND event_id = $3",
+			record.Program.NetworkID, record.Program.ServiceID, record.Program.EventID,
 		).Scan(&recCount); err != nil {
 			t.Fatalf("round %d: querying recordings: %v", round, err)
 		}
@@ -1318,11 +1308,13 @@ func TestRun_NoAutomaticSweep(t *testing.T) {
 }
 
 // getRecordingSource は recordings.source を引く（issue #26 の回帰テスト用）。
-func getRecordingSource(t *testing.T, pool *pgxpool.Pool, reservationID int64) string {
+// 呼び出し元はいずれも 1 テストにつき recordings 行が 1 つしかできない構成
+// なので絞り込みは不要（recordings.reservation_id は #158 で列自体を落とした）。
+func getRecordingSource(t *testing.T, pool *pgxpool.Pool) string {
 	t.Helper()
 	var source string
 	if err := pool.QueryRow(context.Background(),
-		"SELECT source FROM recordings WHERE reservation_id = $1", reservationID,
+		"SELECT source FROM recordings",
 	).Scan(&source); err != nil {
 		t.Fatalf("querying recordings.source: %v", err)
 	}
@@ -1346,14 +1338,14 @@ func TestProcessRecord_ManualReservationWithRuleMatch_SourceManual(t *testing.T)
 
 	ruleID := createTestRule(t, pool)
 	programID := int64(700001)
-	resID := createTestReservationWithIntent(t, pool, programID, &ruleID)
+	createTestReservationWithIntent(t, pool, programID, &ruleID)
 
 	record := testRecord("record-manual-rule-match-001", programID, "finished")
 	if err := w.processRecord(ctx, record); err != nil {
 		t.Fatalf("processRecord: %v", err)
 	}
 
-	if got := getRecordingSource(t, pool, resID); got != db.SourceManual {
+	if got := getRecordingSource(t, pool); got != db.SourceManual {
 		t.Errorf("recordings.source = %q, want %q "+
 			"(手動予約にルールがマッチしても由来は manual のまま変わらないはず。issue #26)", got, db.SourceManual)
 	}
@@ -1368,14 +1360,14 @@ func TestProcessRecord_RuleReservation_SourceRule(t *testing.T) {
 
 	ruleID := createTestRule(t, pool)
 	programID := int64(700002)
-	resID := createTestReservationWithRule(t, pool, programID, ruleID)
+	createTestReservationWithRule(t, pool, programID, ruleID)
 
 	record := testRecord("record-rule-001", programID, "finished")
 	if err := w.processRecord(ctx, record); err != nil {
 		t.Fatalf("processRecord: %v", err)
 	}
 
-	if got := getRecordingSource(t, pool, resID); got != db.SourceRule {
+	if got := getRecordingSource(t, pool); got != db.SourceRule {
 		t.Errorf("recordings.source = %q, want %q", got, db.SourceRule)
 	}
 }
@@ -1394,7 +1386,7 @@ func TestProcessRecord_RuleReservationWithOverrideOnly_SourceRule(t *testing.T) 
 
 	ruleID := createTestRule(t, pool)
 	programID := int64(700003)
-	resID := createTestReservationWithRule(t, pool, programID, ruleID)
+	createTestReservationWithRule(t, pool, programID, ruleID)
 	insertProgramOverride(t, pool, programID, 5)
 
 	record := testRecord("record-rule-override-001", programID, "finished")
@@ -1402,7 +1394,7 @@ func TestProcessRecord_RuleReservationWithOverrideOnly_SourceRule(t *testing.T) 
 		t.Fatalf("processRecord: %v", err)
 	}
 
-	if got := getRecordingSource(t, pool, resID); got != db.SourceRule {
+	if got := getRecordingSource(t, pool); got != db.SourceRule {
 		t.Errorf("recordings.source = %q, want %q "+
 			"(priority の上書きだけでは「手動予約した」にならないはず。issue #26 / M2-4)", got, db.SourceRule)
 	}
@@ -1423,7 +1415,7 @@ func TestHandleRecordingFailed_SourceDerivedFromIntent(t *testing.T) {
 
 	ruleID := createTestRule(t, pool)
 	programID := int64(700004)
-	resID := createTestReservationWithIntent(t, pool, programID, &ruleID)
+	createTestReservationWithIntent(t, pool, programID, &ruleID)
 
 	startAt := mirakc.Milliseconds(time.Now().Add(-1 * time.Hour))
 	duration := int64(3600000)
@@ -1469,7 +1461,7 @@ func TestHandleRecordingFailed_SourceDerivedFromIntent(t *testing.T) {
 		t.Fatalf("handleRecordingFailed: %v", err)
 	}
 
-	if got := getRecordingSource(t, pool, resID); got != db.SourceManual {
+	if got := getRecordingSource(t, pool); got != db.SourceManual {
 		t.Errorf("recordings.source = %q, want %q "+
 			"(失敗記録でも手動予約の由来は manual のままのはず)", got, db.SourceManual)
 	}

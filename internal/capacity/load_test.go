@@ -33,12 +33,11 @@ VALUES ($1, $2, $3, $4, $5, $6)`, testSite, index, name, types, available, fault
 // 作れるように、programID の下 5 桁から機械的に割り当てる（本番コードでの
 // programId 分解は禁止だが、テストフィクスチャの一意な ID 割り当てとしてのみ
 // 使う。internal/reconciler の createReservation ヘルパと同じ流儀）。
-// 返り値は作成した reservations.id。
 func seedReservation(
 	t *testing.T, pool *pgxpool.Pool,
 	programID int64, channelType, channel string,
 	startAt time.Time, duration time.Duration, base string,
-) int64 {
+) {
 	t.Helper()
 	if base == "" {
 		base = "{}"
@@ -54,30 +53,28 @@ INSERT INTO program_snapshots (
 		t.Fatalf("inserting program_snapshot row: %v", err)
 	}
 
-	var id int64
-	if err := pool.QueryRow(ctx, `
+	if _, err := pool.Exec(ctx, `
 INSERT INTO reservations (site, program_id, base)
-VALUES ($1, $2, $3) RETURNING id`,
-		testSite, programID, base).Scan(&id); err != nil {
+VALUES ($1, $2, $3)`,
+		testSite, programID, base); err != nil {
 		t.Fatalf("inserting reservation row: %v", err)
 	}
-	return id
 }
 
 // seedNeverScheduledRecording は reconciler.recordNeverScheduled（issue #98）が
 // 実際に書く recordings 行を模す --- status='failed' + quality_events に
 // recording.never-scheduled のマーカー。ListCapacityDemand がこの行の存在を
 // 「schedule を作らない予約」として除外することを確認するための直接 INSERT。
-func seedNeverScheduledRecording(t *testing.T, pool *pgxpool.Pool, reservationID int64, networkID, serviceID, eventID int32) {
+func seedNeverScheduledRecording(t *testing.T, pool *pgxpool.Pool, networkID, serviceID, eventID int32) {
 	t.Helper()
 	ctx := context.Background()
 	qe := `[{"at":"2026-01-01T00:00:00Z","event":"recording.never-scheduled","reason":{}}]`
 	if _, err := pool.Exec(ctx, `
 INSERT INTO recordings (
-    reservation_id, source, site, network_id, service_id, event_id, service_name,
+    source, site, network_id, service_id, event_id, service_name,
     channel_type, channel, title, program_start_at, program_duration_ms, status, quality_events
-) VALUES ($1, 'manual', $2, $3, $4, $5, 'テスト局', 'GR', '25', 'テスト番組', now(), 1800000, 'failed', $6::jsonb)`,
-		reservationID, testSite, networkID, serviceID, eventID, qe); err != nil {
+) VALUES ('manual', $1, $2, $3, $4, 'テスト局', 'GR', '25', 'テスト番組', now(), 1800000, 'failed', $5::jsonb)`,
+		testSite, networkID, serviceID, eventID, qe); err != nil {
 		t.Fatalf("seeding never-scheduled recording: %v", err)
 	}
 }
@@ -187,8 +184,8 @@ func TestLoad_ExcludesReservationsThatProduceNoSchedule(t *testing.T) {
 			// （recordings に never-scheduled 行がある）で模す。
 			name: "never-scheduled の recordings 行がある",
 			seed: func(t *testing.T, pool *pgxpool.Pool, start time.Time) {
-				resID := seedReservation(t, pool, 101, "GR", "25", start, duration, "")
-				seedNeverScheduledRecording(t, pool, resID, 32678, 5168, int32(101%100000))
+				seedReservation(t, pool, 101, "GR", "25", start, duration, "")
+				seedNeverScheduledRecording(t, pool, 32678, 5168, int32(101%100000))
 			},
 		},
 		{

@@ -284,7 +284,6 @@ func (w *Watcher) createRecording(ctx context.Context, q *sqlcgen.Queries, recor
 	}
 
 	id, err := q.CreateRecording(ctx, sqlcgen.CreateRecordingParams{
-		ReservationID:     resID,
 		RuleID:            ruleID,
 		Source:            source,
 		Site:              w.site,
@@ -447,7 +446,6 @@ func (w *Watcher) handleRecordingFailed(ctx context.Context, data mirakc.Recordi
 	eventID := int32(schedule.Program.EventID)
 
 	if err := q.CreateFailedRecording(ctx, sqlcgen.CreateFailedRecordingParams{
-		ReservationID:     &res.ID,
 		RuleID:            res.RuleID,
 		Source:            source,
 		Site:              w.site,

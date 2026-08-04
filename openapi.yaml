@@ -1124,9 +1124,6 @@ components:
         id:
           type: integer
           format: int64
-        reservationId:
-          type: integer
-          format: int64
         ruleId:
           type: integer
           format: int64

@@ -46,8 +46,9 @@ type GetReservationEncodePolicyByEventRow struct {
 // overrides）を扱う箇所は db.EffectiveOptions を通す（CLAUDE.md 不変条件
 // 9/12 の教訓）。呼び出し側（internal/worker/ingest.go）の責務。
 //
-// 宛先は recordings.reservation_id（bigint FK、ON DELETE SET NULL）ではなく
-// 放送イベントキー (site, network_id, service_id, event_id) --- recordings が
+// 宛先は recordings.reservation_id（bigint FK、ON DELETE SET NULL だった。
+// issue #158 で列自体を削除済み）ではなく放送イベントキー
+// (site, network_id, service_id, event_id) --- recordings が
 // 生まれたときから凍結して持つ列で、ruler の導出削除・再実体化で
 // reservations.id が変わっても値が変わらない（issue #149。CLAUDE.md 不変条件
 // 9「identity」: reservations.id は導出器 ruler が作るキーなので、FK 経由の
