@@ -16,6 +16,6 @@ CREATE TABLE schedule_sync (
 ```
 
 - 全量同期はサイト単位に、upsert + 「今回観測されなかった行の削除」を 1 トランザクションで行う（あるサイトへの疎通断が他サイトの観測を消さない）
-- **削除対象の軸は `mirakc.IsOurs(tags)` である。** `IsOurs` が false（新旧いずれの rokuban tag も無い = 外部産）の schedule だけを触らない（[reconciler.md](../recording/reconciler.md)「tags 対応付け」）。かつて存在した `reservation_id` 列を落とした経緯は [00027_schedule_sync_drop_reservation_id.sql](../../internal/db/migrations/00027_schedule_sync_drop_reservation_id.sql) 参照
+- **削除対象の軸は `mirakc.IsOurs(tags)` である。** `IsOurs` が false（新旧いずれの rokuban tag も無い = 外部産）の schedule だけを触らない（[reconciler.md](../recording/reconciler.md)「tags 対応付け」）。かつて存在した `reservation_id` 列を落とした経緯は [00028_schedule_sync_drop_reservation_id.sql](../../internal/db/migrations/00028_schedule_sync_drop_reservation_id.sql) 参照
 - mirakc の enum（state / failedReason）は text / jsonb のまま持ち、CHECK は付けない — mirakc 側の追加に追従するため
 

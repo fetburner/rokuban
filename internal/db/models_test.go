@@ -634,10 +634,10 @@ func TestSchemaV1_ProgramSnapshotGCCascadesToReservationIntentAndOverrides(t *te
 	}
 }
 
-// TestMigration00027_DropsScheduleSyncReservationID は issue #148: 書き手は
+// TestMigration00028_DropsScheduleSyncReservationID は issue #148: 書き手は
 // いるが読み手が本番コードに 1 つも無かった schedule_sync.reservation_id
-// （と、その FK・索引）が 00027 で確実に落ちることを見る。
-func TestMigration00027_DropsScheduleSyncReservationID(t *testing.T) {
+// （と、その FK・索引）が 00028 で確実に落ちることを見る。
+func TestMigration00028_DropsScheduleSyncReservationID(t *testing.T) {
 	dbURL := testDatabaseURL(t)
 	ctx := context.Background()
 
@@ -665,7 +665,7 @@ func TestMigration00027_DropsScheduleSyncReservationID(t *testing.T) {
 		t.Fatalf("creating goose provider: %v", err)
 	}
 
-	// 00026 まで適用（00027 適用前、reservation_id 列がまだある状態）。
+	// 00026 まで適用（00028 適用前、reservation_id 列がまだある状態）。
 	if _, err := provider.UpTo(ctx, 26); err != nil {
 		t.Fatalf("migrating up to 00026: %v", err)
 	}
@@ -703,15 +703,15 @@ func TestMigration00027_DropsScheduleSyncReservationID(t *testing.T) {
 		`SELECT EXISTS (SELECT 1 FROM information_schema.columns
 		 WHERE table_name = 'schedule_sync' AND column_name = 'reservation_id')`,
 	).Scan(&columnExistsBefore); err != nil {
-		t.Fatalf("checking column exists before 00027: %v", err)
+		t.Fatalf("checking column exists before 00028: %v", err)
 	}
 	if !columnExistsBefore {
-		t.Fatal("precondition: schedule_sync.reservation_id should exist before 00027")
+		t.Fatal("precondition: schedule_sync.reservation_id should exist before 00028")
 	}
 
-	// 00027 を適用: 列（と FK・索引）が落ちる。行自体は他の列を保ったまま残る。
-	if _, err := provider.UpTo(ctx, 27); err != nil {
-		t.Fatalf("migrating up to 00027: %v", err)
+	// 00028 を適用: 列（と FK・索引）が落ちる。行自体は他の列を保ったまま残る。
+	if _, err := provider.UpTo(ctx, 28); err != nil {
+		t.Fatalf("migrating up to 00028: %v", err)
 	}
 
 	var columnExistsAfter bool
@@ -719,10 +719,10 @@ func TestMigration00027_DropsScheduleSyncReservationID(t *testing.T) {
 		`SELECT EXISTS (SELECT 1 FROM information_schema.columns
 		 WHERE table_name = 'schedule_sync' AND column_name = 'reservation_id')`,
 	).Scan(&columnExistsAfter); err != nil {
-		t.Fatalf("checking column exists after 00027: %v", err)
+		t.Fatalf("checking column exists after 00028: %v", err)
 	}
 	if columnExistsAfter {
-		t.Error("schedule_sync.reservation_id should have been dropped by 00027")
+		t.Error("schedule_sync.reservation_id should have been dropped by 00028")
 	}
 
 	var stateAfter string
@@ -744,10 +744,10 @@ func TestMigration00027_DropsScheduleSyncReservationID(t *testing.T) {
 		`SELECT EXISTS (SELECT 1 FROM pg_constraint
 		 WHERE conrelid = 'schedule_sync'::regclass AND contype = 'f')`,
 	).Scan(&fkExistsAfter); err != nil {
-		t.Fatalf("checking FK exists after 00027: %v", err)
+		t.Fatalf("checking FK exists after 00028: %v", err)
 	}
 	if fkExistsAfter {
-		t.Error("schedule_sync should have no FK constraints after 00027")
+		t.Error("schedule_sync should have no FK constraints after 00028")
 	}
 
 	var indexExistsAfter bool
@@ -755,10 +755,10 @@ func TestMigration00027_DropsScheduleSyncReservationID(t *testing.T) {
 		`SELECT EXISTS (SELECT 1 FROM pg_indexes
 		 WHERE indexname = 'schedule_sync_reservation_id_idx')`,
 	).Scan(&indexExistsAfter); err != nil {
-		t.Fatalf("checking index exists after 00027: %v", err)
+		t.Fatalf("checking index exists after 00028: %v", err)
 	}
 	if indexExistsAfter {
-		t.Error("schedule_sync_reservation_id_idx should have been dropped by 00027")
+		t.Error("schedule_sync_reservation_id_idx should have been dropped by 00028")
 	}
 }
 
