@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -986,7 +987,15 @@ func setReservationBase(t *testing.T, pool *pgxpool.Pool, reservationID int64, b
 
 // insertTestRecordingForReservation は reservationID にリンクした録画行を作る
 // （watcher.createRecording が録画開始時に reservation_id を埋めるのと同じ状態）。
-func insertTestRecordingForReservation(t *testing.T, pool *pgxpool.Pool, reservationID int64) int64 {
+//
+// programID は insertProgramSnapshotAndReservation に渡したものと同じ値を渡す。
+// resolveAndSnapshotEncodePolicy（issue #149 以降）は recordings.reservation_id
+// ではなく放送イベントキー (site, network_id, service_id, event_id) で予約を
+// 引くので、この録画の event_id は program_snapshots 側の event_id
+// （insertProgramSnapshotAndReservation が programID % 100000 から作る）と
+// 一致させる必要がある --- ここが一致しなければ「予約が引けなかった」側に
+// 落ちて、reservation_id が指す予約とは無関係な結果になる。
+func insertTestRecordingForReservation(t *testing.T, pool *pgxpool.Pool, reservationID int64, programID int64) int64 {
 	t.Helper()
 	q := sqlcgen.New(pool)
 	id, err := q.CreateRecording(context.Background(), sqlcgen.CreateRecordingParams{
@@ -995,7 +1004,7 @@ func insertTestRecordingForReservation(t *testing.T, pool *pgxpool.Pool, reserva
 		Site:              "default",
 		NetworkID:         32736,
 		ServiceID:         1024,
-		EventID:           int32(time.Now().UnixNano() % 1_000_000_000), // 衝突回避
+		EventID:           int32(programID % 100000), // program_snapshots の event_id と一致させる
 		ServiceName:       "テストチャンネル",
 		ChannelType:       "GR",
 		Channel:           "27",
@@ -1069,7 +1078,7 @@ func TestIngestWorker_SnapshotsEncodePolicyFromRuleBase(t *testing.T) {
 	res := insertProgramSnapshotAndReservation(t, pool, programID, "ルール予約番組")
 	setReservationBase(t, pool, res.ID, `{"keepOriginal":"until_encoded","encodeProfiles":["h265"]}`)
 
-	recordingID := insertTestRecordingForReservation(t, pool, res.ID)
+	recordingID := insertTestRecordingForReservation(t, pool, res.ID, programID)
 	insertTestRecordSync(t, pool, recordingID, "rec-policy-base")
 
 	tsData := makeTSData(20)
@@ -1142,7 +1151,7 @@ func TestIngestWorker_SnapshotsEncodePolicyFromOverride(t *testing.T) {
 			"DELETE FROM program_overrides WHERE site = $1 AND program_id = $2", "default", programID)
 	})
 
-	recordingID := insertTestRecordingForReservation(t, pool, res.ID)
+	recordingID := insertTestRecordingForReservation(t, pool, res.ID, programID)
 	insertTestRecordSync(t, pool, recordingID, "rec-policy-override")
 
 	tsData := makeTSData(20)
@@ -1222,7 +1231,7 @@ func TestIngestWorker_ClampsUntilEncodedWithEmptyProfiles(t *testing.T) {
 			"DELETE FROM program_overrides WHERE site = $1 AND program_id = $2", "default", programID)
 	})
 
-	recordingID := insertTestRecordingForReservation(t, pool, res.ID)
+	recordingID := insertTestRecordingForReservation(t, pool, res.ID, programID)
 	insertTestRecordSync(t, pool, recordingID, "rec-policy-drift")
 
 	tsData := makeTSData(20)
@@ -1317,5 +1326,240 @@ func TestIngestWorker_NoReservation_LeavesEncodePolicyDefault(t *testing.T) {
 	}
 	if jobCount != 0 {
 		t.Errorf("encode jobs = %d, want 0", jobCount)
+	}
+}
+
+// TestIngestWorker_SnapshotsEncodePolicy_SurvivesReservationRematerialization は
+// issue #149 の受け入れ基準「予約の再実体化を跨いでもエンコード方針が焼き込まれる」
+// を確認する。
+//
+// ruler は EPG フリッカー・ルール編集・dedup で予約を導出削除・再実体化し、
+// reservations.id が変わる（#53 / #98 / #99 と同じ族。CLAUDE.md 不変条件 9
+// 「identity」の 5 例目）。録画開始時に watcher が焼いた
+// recordings.reservation_id は FK の ON DELETE SET NULL で NULL に落ちるので、
+// 旧実装（reservation_id を宛先に GetReservationEncodePolicy を引く）は
+// 「予約が無い」と誤認して encode policy を凍結し損なう。
+//
+// internal/reconciler/never_scheduled_identity_test.go の
+// TestReconciler_NeverScheduledExclusionSurvivesRematerialization と同じ模し方
+// （DELETE してから CreateManualReservation で作り直す。id が変わることも
+// 明示的に確認する）。
+func TestIngestWorker_SnapshotsEncodePolicy_SurvivesReservationRematerialization(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+	q := sqlcgen.New(pool)
+
+	programID := int64(900000000000004)
+	res := insertProgramSnapshotAndReservation(t, pool, programID, "再実体化予約番組")
+	setReservationBase(t, pool, res.ID, `{"keepOriginal":"until_encoded","encodeProfiles":["h265"]}`)
+
+	// watcher.createRecording が録画開始時に reservation_id を埋めた状態を模す。
+	recordingID := insertTestRecordingForReservation(t, pool, res.ID, programID)
+	insertTestRecordSync(t, pool, recordingID, "rec-policy-rematerialized")
+
+	// ruler の導出削除 → 再実体化を模す（同じ番組・新しい id）。この DELETE で
+	// recordings.reservation_id は ON DELETE SET NULL により NULL に落ちる ---
+	// これが旧実装の穴（黙って return nil）を再現する引き金。
+	if _, err := pool.Exec(ctx, `DELETE FROM reservations WHERE id = $1`, res.ID); err != nil {
+		t.Fatalf("deleting reservation: %v", err)
+	}
+	res2, err := q.CreateManualReservation(ctx, sqlcgen.CreateManualReservationParams{
+		Site: "default", ProgramID: programID,
+	})
+	if err != nil {
+		t.Fatalf("re-materializing reservation: %v", err)
+	}
+	if res2.ID == res.ID {
+		t.Fatalf("再実体化で id が変わっていない（テストの前提が崩れている）")
+	}
+	// ruler は再実体化のたびに射影から base を書き直す。テストではその 1 パスを
+	// 模して同じ base を新しい行に立て直す（setReservationBase 参照）。
+	setReservationBase(t, pool, res2.ID, `{"keepOriginal":"until_encoded","encodeProfiles":["h265"]}`)
+
+	var reservationIDAfterDelete *int64
+	if err := pool.QueryRow(ctx, "SELECT reservation_id FROM recordings WHERE id = $1", recordingID).
+		Scan(&reservationIDAfterDelete); err != nil {
+		t.Fatalf("querying recordings.reservation_id: %v", err)
+	}
+	if reservationIDAfterDelete != nil {
+		t.Fatalf("precondition: recordings.reservation_id = %v, want nil (ON DELETE SET NULL のはず)", *reservationIDAfterDelete)
+	}
+
+	tsData := makeTSData(20)
+	srv := newFullTransferServer(t, tsData, "test/policy-rematerialized.m2ts")
+	mc := mirakc.NewClient(srv.URL, nil)
+
+	w := &IngestWorker{
+		MirakcClient: mc,
+		MediaDir:     t.TempDir(),
+		Pool:         pool,
+		StallTimeout: 5 * time.Second,
+	}
+
+	job := &river.Job[IngestJobArgs]{
+		JobRow: &rivertype.JobRow{},
+		Args:   IngestJobArgs{Site: "default", RecordID: "rec-policy-rematerialized"},
+	}
+
+	workCtx := riverWorkContext(t, pool)
+	if err := w.Work(workCtx, job); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+
+	keepOriginal, profiles := encodePolicyOfRecording(t, pool, recordingID)
+	if keepOriginal != "until_encoded" {
+		t.Errorf("keep_original = %q, want until_encoded (予約の再実体化を跨いで解決できているはず)", keepOriginal)
+	}
+	if !slices.Equal(profiles, []string{"h265"}) {
+		t.Errorf("encode_profiles = %v, want [h265] (予約の再実体化を跨いで解決できているはず)", profiles)
+	}
+
+	if got := countEncodeJobs(t, pool, recordingID, "h265"); got != 1 {
+		t.Errorf("encode jobs for h265 = %d, want 1", got)
+	}
+}
+
+// TestIngestWorker_LogsWarnWhenRuleSourceReservationUnresolvable は
+// source='rule'（DeriveRecordingSource が「作成時点で予約があり、intent
+// action='record' の行は無かった」ことを保証する）の録画で放送イベントキーの
+// JOIN が失敗する異常系を再現し、slog.Warn に識別子が残ることを確認する
+// （レビュー指摘: internal/worker/ingest.go:539-547 の「引けなかった」を黙って
+// return nil にしない、の rule 側）。
+func TestIngestWorker_LogsWarnWhenRuleSourceReservationUnresolvable(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+
+	programID := int64(900000000000005)
+	res := insertProgramSnapshotAndReservation(t, pool, programID, "恒久削除予約番組")
+	recordingID := insertTestRecordingForReservation(t, pool, res.ID, programID)
+	insertTestRecordSync(t, pool, recordingID, "rec-policy-rule-gone")
+
+	// GC が想定より早く走った、または予約が恒久的に削除された場合を模す
+	// （再実体化しない。TestIngestWorker_SnapshotsEncodePolicy_SurvivesReservationRematerialization
+	// と異なり、これが正常経路には無い異常系であることが本テストの前提）。
+	if _, err := pool.Exec(ctx, `DELETE FROM reservations WHERE id = $1`, res.ID); err != nil {
+		t.Fatalf("deleting reservation: %v", err)
+	}
+
+	tsData := makeTSData(20)
+	srv := newFullTransferServer(t, tsData, "test/policy-rule-gone.m2ts")
+	mc := mirakc.NewClient(srv.URL, nil)
+
+	w := &IngestWorker{
+		MirakcClient: mc,
+		MediaDir:     t.TempDir(),
+		Pool:         pool,
+		StallTimeout: 5 * time.Second,
+	}
+
+	job := &river.Job[IngestJobArgs]{
+		JobRow: &rivertype.JobRow{},
+		Args:   IngestJobArgs{Site: "default", RecordID: "rec-policy-rule-gone"},
+	}
+
+	var logBuf bytes.Buffer
+	prevLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prevLogger) })
+
+	workCtx := riverWorkContext(t, pool)
+	if err := w.Work(workCtx, job); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+
+	logText := logBuf.String()
+	if !strings.Contains(logText, "level=WARN") {
+		t.Errorf("expected a WARN log for source=rule reservation unresolvable, got:\n%s", logText)
+	}
+	if !strings.Contains(logText, "reservation not found via broadcast event key") {
+		t.Errorf("expected log message to mention the unresolved lookup, got:\n%s", logText)
+	}
+	for _, want := range []string{
+		fmt.Sprintf("recording_id=%d", recordingID),
+		"network_id=32736",
+		"service_id=1024",
+	} {
+		if !strings.Contains(logText, want) {
+			t.Errorf("expected log to contain identifier %q, got:\n%s", want, logText)
+		}
+	}
+
+	// 解決に失敗したので凍結せず既定値のまま(この関数の主張の対象ではないが、
+	// 「ログは出たが desired が誤って書かれた」を排除するために確認する)。
+	keepOriginal, profiles := encodePolicyOfRecording(t, pool, recordingID)
+	if keepOriginal != "always" || len(profiles) != 0 {
+		t.Errorf("keep_original/encode_profiles = %q/%v, want always/[] (unresolved, defaults unchanged)", keepOriginal, profiles)
+	}
+}
+
+// TestIngestWorker_LogsInfoWhenManualSourceReservationUnresolvable は
+// source='manual' の録画で JOIN が失敗した場合でも「引けなかった」が必ず
+// ログに残ることを確認する（レビュー指摘: DeriveRecordingSource
+// (internal/db/recording_source.go) は intent action='record' があれば予約の
+// 有無に関わらず 'manual' を返すため、rec.Source == db.SourceRule だけを見る
+// 判定では「ユーザーが手動予約して encodeProfiles を指定した録画」で解決に
+// 失敗したときだけログが一切出ず、issue #149 が問題にした症状がそのまま
+// 残っていた）。
+//
+// このテストは「予約がそもそも存在しない日常的な manual 録画」
+// （insertTestRecording と同じ形。TestIngestWorker_NoReservation_LeavesEncodePolicyDefault
+// が既に確認している）を使って再現する —— DeriveRecordingSource は
+// intent 由来の 'manual' と予約皆無の 'manual' を区別できないので、
+// このケースでもログが出ることが「manual を判定軸にしない」ことの直接的な
+// 証拠になる。修正前の実装（rec.Source == db.SourceRule のときだけ警告）では
+// このテストは一切ログが出ずに落ちる。
+func TestIngestWorker_LogsInfoWhenManualSourceReservationUnresolvable(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+
+	recordingID := insertTestRecording(t, pool)
+	insertTestRecordSync(t, pool, recordingID, "rec-policy-manual-unresolved")
+
+	tsData := makeTSData(20)
+	srv := newFullTransferServer(t, tsData, "test/policy-manual-unresolved.m2ts")
+	mc := mirakc.NewClient(srv.URL, nil)
+
+	w := &IngestWorker{
+		MirakcClient: mc,
+		MediaDir:     t.TempDir(),
+		Pool:         pool,
+		StallTimeout: 5 * time.Second,
+	}
+
+	job := &river.Job[IngestJobArgs]{
+		JobRow: &rivertype.JobRow{},
+		Args:   IngestJobArgs{Site: "default", RecordID: "rec-policy-manual-unresolved"},
+	}
+
+	var logBuf bytes.Buffer
+	prevLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prevLogger) })
+
+	workCtx := riverWorkContext(t, pool)
+	if err := w.Work(workCtx, job); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+
+	logText := logBuf.String()
+	if !strings.Contains(logText, "level=INFO") {
+		t.Errorf("expected an INFO log for source=manual reservation unresolvable, got:\n%s", logText)
+	}
+	if !strings.Contains(logText, "reservation not found via broadcast event key") {
+		t.Errorf("expected log message to mention the unresolved lookup, got:\n%s", logText)
+	}
+	if !strings.Contains(logText, fmt.Sprintf("recording_id=%d", recordingID)) {
+		t.Errorf("expected log to contain recording_id=%d, got:\n%s", recordingID, logText)
+	}
+	if strings.Contains(logText, "level=WARN") {
+		t.Errorf("source=manual unresolved reservation must not be logged at WARN (mixes the daily case with the anomalous one), got:\n%s", logText)
 	}
 }
