@@ -169,7 +169,8 @@ func (r *Reconciler) RunPass(ctx context.Context) error {
 			// （同じ programEnded 判定を使うので食い違わない）ので、次パス
 			// 以降は listDesired（ListReservationsForSyncEvaluation の
 			// never-scheduled 除外）から外れて二度と create ループの対象に
-			// ならない（issue #98。旧実装は orphaned_at IS NULL で絞っていた）。
+			// ならない（issue #98。issue #98 より前の実装は orphaned_at IS NULL
+			// で絞っていた）。
 			//
 			// stateGuarded / limitCarriedOver は複数パスにまたがって残留し
 			// うる持ち越しなので ReconcilePendingDiff で監視する価値があるが、
@@ -412,8 +413,9 @@ type desiredReservation struct {
 
 // listDesired は mirakc への同期対象を返す。
 //
-// state（#28/#30 で orphaned_at に、issue #98 で recordings の存在に置き換わった
-// 導出値）ではなく effective.skip で絞る（docs/schema.md §3「state を『mirakc
+// state（過去に存在した列。#28/#30 で orphaned_at に、issue #98 で recordings の
+// 存在に置き換わって現在は削除済みの導出値）ではなく effective.skip で絞る
+// （docs/schema.md §3「state を『mirakc
 // への同期対象か』のフィルタに使ってはならない」、docs/recording.md §4.3）。
 // 除外してよいのは「この予約について既に never-scheduled の recordings 行が
 // ある」行だけ（番組終了後に schedule が観測されなかったと既に判定済みで、

@@ -118,7 +118,7 @@ pull 完了後に書き込みバイト数を HEAD の Content-Length と照合 �
 
 このヒントを落としたときの回復範囲は限定的である。**エッジ record の削除（`DeleteRecord`。上記「層 3」）が成功すれば、そのエッジ record は record_sweep から二度と見えなくなり、ingest ジョブは再 Work されない** —— ヒント投入の失敗と `DeleteRecord` の成功が両方起きると、そのヒントは失われたままになる。回復が効くのは、エッジ record が何らかの理由でまだ残っている場合（`DeleteRecord` 自体が失敗した、あるいは冪等性チェック「コミット済みなら転送をやり直さない」の分岐で record_sweep が同じ finished record を再度 ingest ジョブとして投入した場合）に限る。そのときは `EnqueueMissingEncodes` が desired（`recordings.encode_profiles`）− observed（コミットされた `encoded` 種別の `media_assets`）を埋めるレベルトリガーとして同じヒントを再度投入する（不変条件 5）。
 
-現状、ingest 後のヒント以外にこの差分を定期的に埋めるループは無い（`EnqueueMissingEncodes` の呼び出し元は ingest 完了時のヒントと `POST /api/recordings/{id}/encode-profiles` の `EncodeEnqueueHint` だけで、「将来の reconcile ループ」はまだ実装されていない）。
+現状、ingest 後のヒント以外にこの差分を定期的に埋めるループは無い（`EnqueueMissingEncodes` の呼び出し元は ingest 完了時のヒントと `POST /api/recordings/{id}/encode-profiles` の `EncodeEnqueueHint` だけで、「将来の reconcile ループ」はまだ実装されていない）。この穴（ヒント投入の失敗とエッジ record 削除の成功が両方起きると、そのヒントは失われたままになる）は [#163](https://github.com/fetburner/rokuban/issues/163) で追跡する。
 
 ---
 
