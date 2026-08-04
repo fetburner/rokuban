@@ -2,6 +2,8 @@
 
 **録画試行の永続履歴**。成功だけでなく失敗（`recording.failed`）も行として残す — 「録画品質の実測」（issue #2）と再放送待ち判断の入力になる。番組情報は mirakc record / schedule の program ペイロードから**非正規化スナップショット**し、EPG テーブルにも mirakc にも依存せず自己完結する。
 
+**recordings 本体は「試行の帰結の観測」だけを持つ脊椎**（[CLAUDE.md](../../CLAUDE.md) 不変条件 13。#156）。`media_assets`（下記 §6）はこの表を `recording_id` で指す衛星表 —— 判定基準・境界の詳細は [principles.md](principles.md) §9 参照。
+
 ```sql
 CREATE TABLE recordings (
     id                bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
