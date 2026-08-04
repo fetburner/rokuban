@@ -13,7 +13,7 @@
 5. **サイトスコープ**: mirakc の programId / record id はインスタンス単位のスコープしか持たない。[設定](../configuration.md)（issue #9）は「多拠点が現実化したら `mirakcs:` リストで互換拡張」と定めており、その際のスキーマ波及を避けるため **mirakc を指すすべてのテーブルに `site` 列を最初から持つ**
    - `site` は設定ファイルで定義するサイト名（`config.mirakc.site`、issue #31。空なら既定値 `"default"`）。サイトのレジストリは設定であり、DB に sites テーブルは作らない
    - site を持つのは reservations / schedule_sync / record_sync / recordings（+ M1-6 の EPG プロジェクション）。media_assets / drop_stats は中央ストレージの台帳なので持たない
-   - **API の資源同定にも site を持つ**（M3-1、issue #29 / #31 / #53）。`programId` は site スコープなので、`/api/sites/{site}/programs/{programId}` の形で site をパスに含める（案 A。TanStack Query のクエリキー・SSE の invalidate 単位もサイトごとに階層化される）。導出行（`reservations`）は書き込みの宛先にしない —— 意図（`program_intents`）・上書き（`program_overrides`）は `(site, programId)` を自身のキーとして書く。`reservations` の書き手は ruler だけになった
+   - **API の資源同定にも site を持つ**（M3-1、issue #29 / #31 / #53）。`programId` は site スコープなので、`/api/sites/{site}/programs/{programId}` の形で site をパスに含める（案 A。TanStack Query のクエリキー・SSE の invalidate 単位もサイトごとに階層化される）。導出行（`reservations`）は書き込みの宛先にしない —— 意図（`program_intents`）・上書き（`program_overrides`）は `(site, programId)` を自身のキーとして書く。`reservations` の導出の書き手は ruler だけ（例外はルール削除 API の同期削除 1 本。[reservations.md](reservations.md) §3 冒頭）
 6. **導出値と不可逆な事実を分ける**（CLAUDE.md 不変条件 9。M2-4 / M2-5 で同じ歪みを 3 回踏んで言語化した）
    - 毎パス再計算される値と、二度と再取得できない事実を 1 つの列に同居させると**導出側が事実を上書きする**
    - `program_intents.action`（#18）・`reservations.source`（#26）・`reservations.state`（M2-4）が実例。いずれも実害が出た
