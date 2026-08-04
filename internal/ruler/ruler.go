@@ -33,12 +33,19 @@ import (
 type Config struct {
 	// MaxDeletesPerPass は 1 サイト・1 パスあたりの削除許容数。超えたら削除を
 	// 一切実行せず、サーキットブレーカーとして停止する。ここで守るのは「ルール x EPG」
-	// から導出される削除で、intent skip（PUT .../intent {action:"skip"}）由来の
-	// 削除も同じ toDelete に混ざってカウントされ、ラッチ中は他の導出削除と同様に
-	// 保留される。既存の予約行がある番組に skip を立てると、その行は desired
-	// 集合から外れて削除候補に現れるため、EPG フリッカー由来の削除と区別しない
-	// （issue #154）。録画そのものは effective.skip が listDesired から除外して
-	// 防ぐので、ラッチ中に予約一覧の行が残っても録画は実行されない。
+	// から導出される削除だが、実装はカウント対象を toDelete（既存予約のうち
+	// desired = (winner − skip 意図) ∪ investment から外れた行）で判定するだけで、
+	// desired から外れた理由が EPG の一時欠損かユーザーの明示操作かを区別しない。
+	// そのため次のようなユーザー操作も同じ toDelete に混ざってカウントされ、
+	// ラッチ中は他の導出削除と同様に保留される（非網羅）:
+	//   - 既存予約がある番組に intent skip（PUT .../intent {action:"skip"}）を立てる
+	//   - 勝者ルールを削除する、またはマッチしなくなるよう編集する
+	//   - record 意図も勝者ルールも無く、最後の investment だった overrides を消す
+	//     （DELETE .../overrides、または全フィールドを reset する PATCH。
+	//     internal/api/program_overrides.go の persistOverrides が空になった
+	//     行を DELETE する）
+	// 録画そのものは effective.skip が listDesired から除外して防ぐので、
+	// ラッチ中に予約一覧の行が残っても録画は実行されない。
 	//
 	// **発動は internal/breaker によりラッチとして永続化される**（issue #24 M2-5）。
 	// 件数が閾値以下に戻っても自動では解除されず、
