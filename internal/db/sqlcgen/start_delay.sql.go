@@ -49,7 +49,7 @@ type ListStartedBroadcastEventKeysRow struct {
 // **宛先のキーは放送イベントであって予約 id ではない**（issue #152。
 // CLAUDE.md 不変条件 9 の identity、#29 / #53 / #98 / #99 / #149 と同じ族の
 // 6 例目）。reservations.id は ruler の導出削除・再実体化で変わる不安定な値で、
-// recordings.reservation_id は ON DELETE SET NULL である。予約 id で引くと、
+// recordings.reservation_id（issue #158 で列自体を削除済み）は当時 ON DELETE SET NULL だった。予約 id で引くと、
 // 録画中に EPG フリッカーやルール編集で予約行が作り直された瞬間に「started 済み
 // recordings 行が見つからない」ことになり、検出窓（開始 + 猶予 〜 終了）の間
 // 毎パス開始遅延を誤検知する。detectStartDelays の入力（listDesired の出力）は

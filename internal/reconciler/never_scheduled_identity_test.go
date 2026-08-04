@@ -16,12 +16,12 @@ import (
 //
 // reservations.id は ruler の導出削除・再実体化で変わりうる不安定な値
 // （#53 が mirakc の tag を program:{programId} に移した理由。#99 も同じ話）で、
-// recordings.reservation_id は ON DELETE SET NULL である。除外条件を
-// reservation_id で引くと、EPG フリッカーやルール編集で予約行が作り直された
-// 瞬間に「never-scheduled 行が無い」ことになり、終了済み予約が毎パス desired に
-// 戻り続ける（容量需要にも数え続ける）。宛先のキーは放送イベント
-// (site, network_id, service_id, event_id) でなければならない（不変条件 9 の
-// identity: 導出器が作るキーを宛先にしない）。
+// recordings.reservation_id は当時 ON DELETE SET NULL だった（issue #158 で
+// 列自体を削除済み）。除外条件を予約 id で引くと、EPG フリッカーやルール編集で
+// 予約行が作り直された瞬間に「never-scheduled 行が無い」ことになり、終了済み
+// 予約が毎パス desired に戻り続ける（容量需要にも数え続ける）。宛先のキーは
+// 放送イベント (site, network_id, service_id, event_id) でなければならない
+// （不変条件 9 の identity: 導出器が作るキーを宛先にしない）。
 func TestReconciler_NeverScheduledExclusionSurvivesRematerialization(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
@@ -102,14 +102,14 @@ func TestReservation_MidRecordingFailureIsNotOrphanedDisplay(t *testing.T) {
 	// handleRecordingFailed が作る形の failed 行（never-scheduled マーカーは無い）。
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO recordings (
-			reservation_id, source, site, network_id, service_id, event_id,
+			source, site, network_id, service_id, event_id,
 			service_name, channel_type, channel, title, is_free,
 			program_start_at, program_duration_ms, status, quality_events
-		) VALUES ($1, 'manual', 'default', 10000, 5000, $2,
+		) VALUES ('manual', 'default', 10000, 5000, $1,
 			'テスト局', 'GR', '27', '放送中の番組', true,
 			now(), 1800000, 'failed',
 			'[{"event":"recording.failed","reason":"need-rescheduling"}]'::jsonb)
-	`, res.ID, int32(700002%100000)); err != nil {
+	`, int32(700002%100000)); err != nil {
 		t.Fatalf("inserting mid-recording failure: %v", err)
 	}
 

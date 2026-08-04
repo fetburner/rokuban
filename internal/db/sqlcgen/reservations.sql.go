@@ -136,9 +136,10 @@ type GetReservationFullRow struct {
 // 述語は 3 つの条件の積で、それぞれ理由が違う:
 //
 //  1. **放送イベントで引く**（予約 id ではない）。reservations.id は ruler の
-//     導出削除・再実体化で変わる不安定な値で、recordings.reservation_id は
-//     ON DELETE SET NULL。予約 id で引くと予約が作り直された瞬間に表示が
-//     「録れた」に戻る（不変条件 9 の identity。#53 / #99 と同じ話）
+//     導出削除・再実体化で変わる不安定な値で、recordings.reservation_id
+//     （issue #158 で列自体を削除済み）は当時 ON DELETE SET NULL だった。
+//     予約 id で引くと予約が作り直された瞬間に表示が「録れた」に戻る
+//     （不変条件 9 の identity。#53 / #99 と同じ話）
 //  2. **never-scheduled マーカーに限る**。mirakc 由来の途中失敗
 //     （handleRecordingFailed が作る failed 行）まで含めると、放送中の番組が
 //     mirakc の再スケジュール待ちの間に「録れなかった」と表示される ---
@@ -338,7 +339,7 @@ WHERE r.site = $1
       -- 宛先のキーは**放送イベント**であって予約 id ではない。
       -- reservations.id は ruler の導出削除・再実体化で変わる不安定な値で
       -- （#53 が mirakc の tag を program:{programId} に移した理由。#99 も同じ）、
-      -- recordings.reservation_id は ON DELETE SET NULL である。予約 id で
+      -- recordings.reservation_id（issue #158 で列自体を削除済み）は当時 ON DELETE SET NULL だった。予約 id で
       -- 引くと、EPG フリッカーやルール編集で予約行が作り直された瞬間に
       -- 「never-scheduled 行が無い」ことになり、終了済み予約が毎パス desired に
       -- 戻り続ける（CLAUDE.md 不変条件 9 の identity: 導出器が作るキーを

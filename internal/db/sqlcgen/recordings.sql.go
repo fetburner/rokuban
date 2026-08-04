@@ -59,19 +59,19 @@ func (q *Queries) AppendRecordingEncodeProfiles(ctx context.Context, arg AppendR
 
 const createFailedRecording = `-- name: CreateFailedRecording :exec
 INSERT INTO recordings (
-    reservation_id, rule_id, source, site,
+    rule_id, source, site,
     network_id, service_id, event_id, service_name,
     channel_type, channel, title, description,
     extended, genres, is_free,
     program_start_at, program_duration_ms,
     status, quality_events
 ) VALUES (
-    $1, $2, $3, $4,
-    $5, $6, $7, $8,
-    $9, $10, $11, $12,
-    $13, $14, $15,
-    $16, $17,
-    'failed', $18
+    $1, $2, $3,
+    $4, $5, $6, $7,
+    $8, $9, $10, $11,
+    $12, $13, $14,
+    $15, $16,
+    'failed', $17
 )
 ON CONFLICT (site, network_id, service_id, event_id) WHERE deleted_at IS NULL AND superseded_at IS NULL
 DO UPDATE SET
@@ -80,7 +80,6 @@ DO UPDATE SET
 `
 
 type CreateFailedRecordingParams struct {
-	ReservationID     *int64
 	RuleID            *int64
 	Source            string
 	Site              string
@@ -108,7 +107,6 @@ type CreateFailedRecordingParams struct {
 // （superseded 済みの過去の failed 行ではない）になる。
 func (q *Queries) CreateFailedRecording(ctx context.Context, arg CreateFailedRecordingParams) error {
 	_, err := q.db.Exec(ctx, createFailedRecording,
-		arg.ReservationID,
 		arg.RuleID,
 		arg.Source,
 		arg.Site,
@@ -132,24 +130,23 @@ func (q *Queries) CreateFailedRecording(ctx context.Context, arg CreateFailedRec
 
 const createNeverScheduledRecording = `-- name: CreateNeverScheduledRecording :execrows
 INSERT INTO recordings (
-    reservation_id, rule_id, source, site,
+    rule_id, source, site,
     network_id, service_id, event_id, service_name,
     channel_type, channel, title,
     program_start_at, program_duration_ms,
     status, quality_events
 ) VALUES (
-    $1, $2, $3, $4,
-    $5, $6, $7, $8,
-    $9, $10, $11,
-    $12, $13,
-    'failed', $14
+    $1, $2, $3,
+    $4, $5, $6, $7,
+    $8, $9, $10,
+    $11, $12,
+    'failed', $13
 )
 ON CONFLICT (site, network_id, service_id, event_id) WHERE deleted_at IS NULL AND superseded_at IS NULL
 DO NOTHING
 `
 
 type CreateNeverScheduledRecordingParams struct {
-	ReservationID     *int64
 	RuleID            *int64
 	Source            string
 	Site              string
@@ -192,7 +189,6 @@ type CreateNeverScheduledRecordingParams struct {
 // 猶予期間中は毎パス quality_events の配列が伸び続けてしまう）。
 func (q *Queries) CreateNeverScheduledRecording(ctx context.Context, arg CreateNeverScheduledRecordingParams) (int64, error) {
 	result, err := q.db.Exec(ctx, createNeverScheduledRecording,
-		arg.ReservationID,
 		arg.RuleID,
 		arg.Source,
 		arg.Site,
@@ -215,24 +211,23 @@ func (q *Queries) CreateNeverScheduledRecording(ctx context.Context, arg CreateN
 
 const createRecording = `-- name: CreateRecording :one
 INSERT INTO recordings (
-    reservation_id, rule_id, source, site,
+    rule_id, source, site,
     network_id, service_id, event_id, service_name,
     channel_type, channel, title, description,
     extended, genres, is_free,
     program_start_at, program_duration_ms,
     status, started_at, ended_at
 ) VALUES (
-    $1, $2, $3, $4,
-    $5, $6, $7, $8,
-    $9, $10, $11, $12,
-    $13, $14, $15,
-    $16, $17,
-    $18, $19, $20
+    $1, $2, $3,
+    $4, $5, $6, $7,
+    $8, $9, $10, $11,
+    $12, $13, $14,
+    $15, $16,
+    $17, $18, $19
 ) RETURNING id
 `
 
 type CreateRecordingParams struct {
-	ReservationID     *int64
 	RuleID            *int64
 	Source            string
 	Site              string
@@ -256,7 +251,6 @@ type CreateRecordingParams struct {
 
 func (q *Queries) CreateRecording(ctx context.Context, arg CreateRecordingParams) (int64, error) {
 	row := q.db.QueryRow(ctx, createRecording,
-		arg.ReservationID,
 		arg.RuleID,
 		arg.Source,
 		arg.Site,
@@ -328,7 +322,7 @@ func (q *Queries) ListRecordingDropStats(ctx context.Context, recordingID int64)
 
 const listRecordings = `-- name: ListRecordings :many
 SELECT
-    r.id, r.reservation_id, r.rule_id, r.source, r.site, r.network_id, r.service_id, r.event_id, r.service_name, r.channel_type, r.channel, r.title, r.description, r.extended, r.genres, r.is_free, r.program_start_at, r.program_duration_ms, r.status, r.started_at, r.ended_at, r.keep_original, r.encode_profiles, r.quality_events, r.deleted_at, r.created_at, r.updated_at, r.purge_after, r.superseded_at, r.purged_at,
+    r.id, r.rule_id, r.source, r.site, r.network_id, r.service_id, r.event_id, r.service_name, r.channel_type, r.channel, r.title, r.description, r.extended, r.genres, r.is_free, r.program_start_at, r.program_duration_ms, r.status, r.started_at, r.ended_at, r.keep_original, r.encode_profiles, r.quality_events, r.deleted_at, r.created_at, r.updated_at, r.purge_after, r.superseded_at, r.purged_at,
     a.size_bytes                        AS original_size_bytes,
     COALESCE(d.packets, 0)::bigint      AS drop_packets,
     COALESCE(d.drops, 0)::bigint        AS drop_drops,
@@ -359,7 +353,6 @@ ORDER BY r.program_start_at DESC, r.id DESC
 
 type ListRecordingsRow struct {
 	ID                       int64
-	ReservationID            *int64
 	RuleID                   *int64
 	Source                   string
 	Site                     string
@@ -410,7 +403,6 @@ func (q *Queries) ListRecordings(ctx context.Context, site string) ([]ListRecord
 		var i ListRecordingsRow
 		if err := rows.Scan(
 			&i.ID,
-			&i.ReservationID,
 			&i.RuleID,
 			&i.Source,
 			&i.Site,

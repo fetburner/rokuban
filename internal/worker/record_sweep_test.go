@@ -114,14 +114,12 @@ func TestRecordSweepWorker_ProcessesUnsweptRecord(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("upserting program snapshot fixture: %v", err)
 	}
-	res, err := q.CreateManualReservation(ctx, sqlcgen.CreateManualReservationParams{
+	if _, err := q.CreateManualReservation(ctx, sqlcgen.CreateManualReservationParams{
 		Site:      testSite,
 		ProgramID: programID,
-	})
-	if err != nil {
+	}); err != nil {
 		t.Fatalf("creating reservation fixture: %v", err)
 	}
-	resID := res.ID
 
 	startAt := mirakc.Milliseconds(time.Now().Add(-time.Hour))
 	recStart := mirakc.Milliseconds(time.Now().Add(-time.Hour))
@@ -182,7 +180,7 @@ func TestRecordSweepWorker_ProcessesUnsweptRecord(t *testing.T) {
 
 	var recCount int
 	if err := pool.QueryRow(ctx,
-		"SELECT count(*) FROM recordings WHERE reservation_id = $1", resID,
+		"SELECT count(*) FROM recordings",
 	).Scan(&recCount); err != nil {
 		t.Fatalf("querying recordings: %v", err)
 	}

@@ -41,12 +41,15 @@ func encodeProfilesURL(base string, id int64) string {
 }
 
 // seedReservationForTest は reservations に最小限の行を直接 INSERT する。
-// recordings.reservation_id が参照する FK を満たすためだけに使う --- Phase 1
-// （#27/#28/#30）以降 reservations は ruler の 1 パスの出力（id, site, program_id,
-// rule_id, base, dedup 根拠 2 列, timestamps）だけを持つ導出テーブルで、番組の
-// 事実は program_snapshots 側の責務。reservations.program_id は
-// program_snapshots (site, program_id) への FK（reservations_program_fkey）を
-// 持つため、先に program_snapshots 行を用意する。
+// 「予約がある録画」のシナリオ（TestAddRecordingEncodeProfiles_WithReservation_Success）
+// を作るためだけに使う --- recordings.reservation_id は issue #158 で列自体を
+// 落としたので、この呼び出しはもう FK を満たすためではない（recordings と
+// reservations の間に直接の結合キーは無い）。Phase 1（#27/#28/#30）以降
+// reservations は ruler の 1 パスの出力（id, site, program_id, rule_id, base,
+// dedup 根拠 2 列, timestamps）だけを持つ導出テーブルで、番組の事実は
+// program_snapshots 側の責務。reservations.program_id は program_snapshots
+// (site, program_id) への FK（reservations_program_fkey）を持つため、先に
+// program_snapshots 行を用意する。
 func seedReservationForTest(t *testing.T, pool *pgxpool.Pool, programID int64) int64 {
 	t.Helper()
 	ctx := context.Background()
@@ -178,16 +181,20 @@ func TestAddRecordingEncodeProfiles_WithReservation_Success(t *testing.T) {
 	defer srv.Close()
 
 	base := time.Now().Truncate(time.Second)
-	reservationID := seedReservationForTest(t, pool, 5001)
+	seedReservationForTest(t, pool, 5001)
 
+	// NetworkID/ServiceID/EventID は seedReservationForTest が用意した
+	// program_snapshots 行（32736, 1024, event_id=5001）と一致させる。
+	// recordings.reservation_id は issue #158 で列自体を落としたので、
+	// 予約と録画を結ぶのは放送イベントキーだけである --- キーを一致させないと
+	// 「予約がある録画」を再現できず、NoReservation 版と実質同一のケースになる。
 	id, err := sqlcgen.New(pool).CreateRecording(context.Background(), sqlcgen.CreateRecordingParams{
-		ReservationID:     &reservationID,
 		Source:            "rule",
 		Site:              db.DefaultSite,
-		NetworkID:         32678,
-		ServiceID:         5168,
+		NetworkID:         32736,
+		ServiceID:         1024,
 		EventID:           5001,
-		ServiceName:       "ＯＨＫ",
+		ServiceName:       "テスト局",
 		ChannelType:       "GR",
 		Channel:           "27",
 		Title:             "予約あり",
@@ -199,6 +206,29 @@ func TestAddRecordingEncodeProfiles_WithReservation_Success(t *testing.T) {
 		t.Fatalf("seeding recording with reservation: %v", err)
 	}
 	seedIngested(t, pool, id, 500, nil)
+
+	// 「予約がある録画」を実際に再現できているかを、recordings と reservations を
+	// つなぐ唯一の経路である放送イベントキー (site, network_id, service_id,
+	// event_id) 経由で確認する。recordings.reservation_id は issue #158 で
+	// 落ちたので、この到達性を確認しないと NoReservation 版と実質同一のケースを
+	// 「予約あり」だと誤認したまま通ってしまう。作った recording 自身の列から
+	// キーを読み直す（呼び出し側で決め打ちの値と比較すると、CreateRecording への
+	// 引数を書き間違えても検出できない）。
+	var site string
+	var networkID, serviceID, eventID int32
+	if err := pool.QueryRow(context.Background(),
+		`SELECT site, network_id, service_id, event_id FROM recordings WHERE id = $1`, id,
+	).Scan(&site, &networkID, &serviceID, &eventID); err != nil {
+		t.Fatalf("loading broadcast event key for recording %d: %v", id, err)
+	}
+	if _, err := sqlcgen.New(pool).GetReservationEncodePolicyByEvent(context.Background(), sqlcgen.GetReservationEncodePolicyByEventParams{
+		Site:      site,
+		NetworkID: networkID,
+		ServiceID: serviceID,
+		EventID:   eventID,
+	}); err != nil {
+		t.Fatalf("recording is not reachable from the seeded reservation via broadcast event key: %v", err)
+	}
 
 	resp := postEncodeProfiles(t, encodeProfilesURL(srv.URL, id), []string{"h264"})
 	if resp.StatusCode != http.StatusNoContent {

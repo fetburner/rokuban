@@ -906,45 +906,52 @@ func seedNeverScheduledRecording(t *testing.T, ctx context.Context, pool *pgxpoo
 	qe := `[{"at":"2026-01-01T00:00:00Z","event":"recording.never-scheduled","reason":{}}]`
 	if _, err := pool.Exec(ctx, `
 INSERT INTO recordings (
-    reservation_id, source, site, network_id, service_id, event_id, service_name,
+    source, site, network_id, service_id, event_id, service_name,
     channel_type, channel, title, program_start_at, program_duration_ms, status, quality_events
-) VALUES ($1, 'manual', 'default', 10000, 5000, $2, 'テスト局', 'GR', '27', 'テスト番組', now(), 1800000, 'failed', $3::jsonb)`,
-		res.ID, eventID, qe); err != nil {
+) VALUES ('manual', 'default', 10000, 5000, $1, 'テスト局', 'GR', '27', 'テスト番組', now(), 1800000, 'failed', $2::jsonb)`,
+		eventID, qe); err != nil {
 		t.Fatalf("seeding never-scheduled recording: %v", err)
 	}
 }
 
-// hasNeverScheduledRecording は指定の reservation に never-scheduled の
-// recordings 行があるかどうかを返す（reconciler.recordNeverScheduled が実際に
-// 書いたかどうかの確認に使う。never_scheduled_events VIEW（00030）と同じ
-// 判定を reservation_id で引く --- 意図的に別の識別子を使うのでこの生 SQL
-// 自体は VIEW に置き換えない）。
-func hasNeverScheduledRecording(t *testing.T, ctx context.Context, pool *pgxpool.Pool, reservationID int64) bool {
+// hasNeverScheduledRecording は指定の reservation に対応する放送イベント
+// (site, network_id, service_id, event_id) に never-scheduled の recordings
+// 行があるかどうかを返す（reconciler.recordNeverScheduled が実際に書いたか
+// どうかの確認に使う。internal/db/queries/reservations.sql の never-scheduled
+// 除外述語と同じ判定）。recordings.reservation_id は issue #158 で列自体を
+// 落としたので、createReservation と同じ規約（networkID=10000/serviceID=5000、
+// event_id=programID%100000。上記コメント参照）で放送イベントキーを組み立てて引く。
+func hasNeverScheduledRecording(t *testing.T, ctx context.Context, pool *pgxpool.Pool, res sqlcgen.Reservation) bool {
 	t.Helper()
 	var exists bool
 	if err := pool.QueryRow(ctx, `
 SELECT EXISTS (
     SELECT 1 FROM recordings rec
-    WHERE rec.reservation_id = $1
+    WHERE rec.site = 'default' AND rec.network_id = 10000 AND rec.service_id = 5000
+      AND rec.event_id = $1
       AND rec.status = 'failed'
       AND EXISTS (
           SELECT 1 FROM jsonb_array_elements(rec.quality_events) qe
           WHERE qe->>'event' = 'recording.never-scheduled'
       )
-)`, reservationID).Scan(&exists); err != nil {
+)`, res.ProgramID%100000).Scan(&exists); err != nil {
 		t.Fatalf("checking never-scheduled recording: %v", err)
 	}
 	return exists
 }
 
-// countRecordingsForReservation は指定の reservation に紐づく recordings 行数を
-// 返す。冪等性（同じパスを 2 回回しても 2 行目を作らないこと。CLAUDE.md
-// 不変条件 5）の確認に使う。
-func countRecordingsForReservation(t *testing.T, ctx context.Context, pool *pgxpool.Pool, reservationID int64) int {
+// countRecordingsForReservation は指定の reservation に対応する放送イベントに
+// 紐づく recordings 行数を返す。冪等性（同じパスを 2 回回しても 2 行目を
+// 作らないこと。CLAUDE.md 不変条件 5）の確認に使う。hasNeverScheduledRecording
+// と同じ理由で放送イベントキー経由に引く（recordings.reservation_id は
+// issue #158 で列自体を落とした）。
+func countRecordingsForReservation(t *testing.T, ctx context.Context, pool *pgxpool.Pool, res sqlcgen.Reservation) int {
 	t.Helper()
 	var n int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM recordings WHERE reservation_id = $1`, reservationID).Scan(&n); err != nil {
-		t.Fatalf("counting recordings for reservation %d: %v", reservationID, err)
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM recordings WHERE site = 'default' AND network_id = 10000 AND service_id = 5000 AND event_id = $1`,
+		res.ProgramID%100000).Scan(&n); err != nil {
+		t.Fatalf("counting recordings for program %d: %v", res.ProgramID, err)
 	}
 	return n
 }
@@ -1079,11 +1086,11 @@ func TestReconciler_RecordsNeverScheduledForBothActiveAndDetachedReservations(t 
 		t.Fatalf("RunPass: %v", err)
 	}
 
-	if !hasNeverScheduledRecording(t, ctx, pool, activeRes.ID) {
+	if !hasNeverScheduledRecording(t, ctx, pool, activeRes) {
 		t.Error("active reservation has no never-scheduled recording, want one " +
 			"(ended program with no observed schedule must produce a never-scheduled recording)")
 	}
-	if !hasNeverScheduledRecording(t, ctx, pool, detachedRes.ID) {
+	if !hasNeverScheduledRecording(t, ctx, pool, detachedRes) {
 		t.Error("detached reservation has no never-scheduled recording, want one " +
 			"(detached must not be excluded — this was the #30 症状 2 bug: " +
 			"MarkReservationOrphaned only matched state = 'active')")
@@ -1131,7 +1138,7 @@ func TestReconciler_EndedProgramNotScheduled(t *testing.T) {
 	if _, ok := mock.getSchedules()[res.ProgramID]; ok {
 		t.Error("ended program should not get a schedule created")
 	}
-	if !hasNeverScheduledRecording(t, ctx, pool, res.ID) {
+	if !hasNeverScheduledRecording(t, ctx, pool, res) {
 		t.Error("no never-scheduled recording found, want one " +
 			"(the same pass's recordNeverScheduled must record the ended reservation as never-scheduled, " +
 			"using the same programEnded predicate as the create-loop guard)")
@@ -1169,7 +1176,7 @@ func TestReconciler_BroadcastingProgramStillScheduled(t *testing.T) {
 	if _, ok := mock.getSchedules()[res.ProgramID]; !ok {
 		t.Error("broadcasting program should still get a schedule created")
 	}
-	if hasNeverScheduledRecording(t, ctx, pool, res.ID) {
+	if hasNeverScheduledRecording(t, ctx, pool, res) {
 		t.Error("unexpected never-scheduled recording (program is still broadcasting)")
 	}
 }
@@ -1199,7 +1206,7 @@ func TestReconciler_FutureProgramStillScheduled(t *testing.T) {
 	if n := countInt64(mock.getPostCalls(), res.ProgramID); n != 1 {
 		t.Errorf("POST /api/recording/schedules called %d times for a future program, want 1", n)
 	}
-	if hasNeverScheduledRecording(t, ctx, pool, res.ID) {
+	if hasNeverScheduledRecording(t, ctx, pool, res) {
 		t.Error("unexpected never-scheduled recording (program has not started yet)")
 	}
 }
@@ -1228,14 +1235,14 @@ func TestReconciler_NeverScheduledRecordingIsIdempotentAcrossPasses(t *testing.T
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass (1st): %v", err)
 	}
-	if got := countRecordingsForReservation(t, ctx, pool, res.ID); got != 1 {
+	if got := countRecordingsForReservation(t, ctx, pool, res); got != 1 {
 		t.Fatalf("recordings count after 1st pass = %d, want 1", got)
 	}
 
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass (2nd): %v", err)
 	}
-	if got := countRecordingsForReservation(t, ctx, pool, res.ID); got != 1 {
+	if got := countRecordingsForReservation(t, ctx, pool, res); got != 1 {
 		t.Errorf("recordings count after 2nd pass = %d, want 1 (2 回目のパスで 2 行目を作ってはならない)", got)
 	}
 }
@@ -1259,7 +1266,6 @@ func TestCreateNeverScheduledRecording_IdempotentOnDirectRetry(t *testing.T) {
 	res := createReservation(t, ctx, q, 100000500019240, "直接冪等性確認", startAt)
 
 	params := sqlcgen.CreateNeverScheduledRecordingParams{
-		ReservationID:     &res.ID,
 		Source:            db.SourceManual,
 		Site:              "default",
 		NetworkID:         10000,
@@ -1280,7 +1286,7 @@ func TestCreateNeverScheduledRecording_IdempotentOnDirectRetry(t *testing.T) {
 		t.Fatalf("2nd CreateNeverScheduledRecording: %v", err)
 	}
 
-	if got := countRecordingsForReservation(t, ctx, pool, res.ID); got != 1 {
+	if got := countRecordingsForReservation(t, ctx, pool, res); got != 1 {
 		t.Errorf("recordings count after 2 identical calls = %d, want 1 "+
 			"(ON CONFLICT ... DO NOTHING must make the 2nd call a no-op)", got)
 	}
@@ -1316,13 +1322,13 @@ func TestReconciler_SuccessfulRecordingPreventsNeverScheduled(t *testing.T) {
 	var recordingID int64
 	if err := pool.QueryRow(ctx, `
 INSERT INTO recordings (
-    reservation_id, source, site, network_id, service_id, event_id, service_name,
+    source, site, network_id, service_id, event_id, service_name,
     channel_type, channel, title, program_start_at, program_duration_ms, status,
     started_at, ended_at
-) VALUES ($1, 'manual', 'default', 10000, 5000, $2, 'テスト局', 'GR', '27', '成功済み録画の予約',
-    $3::timestamptz, 1800000, 'finished', $3::timestamptz, $3::timestamptz + interval '30 minutes')
+) VALUES ('manual', 'default', 10000, 5000, $1, 'テスト局', 'GR', '27', '成功済み録画の予約',
+    $2::timestamptz, 1800000, 'finished', $2::timestamptz, $2::timestamptz + interval '30 minutes')
 RETURNING id`,
-		res.ID, eventID, endedStartAt).Scan(&recordingID); err != nil {
+		eventID, endedStartAt).Scan(&recordingID); err != nil {
 		t.Fatalf("seeding successful recording: %v", err)
 	}
 
@@ -1331,7 +1337,7 @@ RETURNING id`,
 		t.Fatalf("RunPass: %v", err)
 	}
 
-	if got := countRecordingsForReservation(t, ctx, pool, res.ID); got != 1 {
+	if got := countRecordingsForReservation(t, ctx, pool, res); got != 1 {
 		t.Errorf("recordings count = %d, want 1 (a never-scheduled row must not be created "+
 			"alongside an already-successful recording — this is #59)", got)
 	}
@@ -1347,7 +1353,8 @@ RETURNING id`,
 // 受け入れ基準（#98 帰結 2 の解消）: ルールを削除して予約行が導出削除されても
 // （FK の ON DELETE SET NULL を経由せず、api.DeleteReservationsByRuleWithoutIntent
 // のような物理削除を経路として想定）、never-scheduled の recordings 行は
-// 残る --- recordings.reservation_id は ON DELETE SET NULL であって
+// 残る --- recordings は reservations への FK を一切持たない（issue #158 で
+// reservation_id 列自体を削除済み。それ以前は ON DELETE SET NULL だった）ので
 // recordings 行自体は消えない（docs/schema.md §3.7「recordings はこの FK の
 // 対象外」）。ここでは reservations 行を直接 DELETE して同じ経路を再現する
 // （rule 削除の API を経由しなくても、reservations の削除経路はすべてこの
@@ -1370,7 +1377,7 @@ func TestReconciler_NeverScheduledRecordingSurvivesReservationDeletion(t *testin
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
-	if !hasNeverScheduledRecording(t, ctx, pool, res.ID) {
+	if !hasNeverScheduledRecording(t, ctx, pool, res) {
 		t.Fatalf("precondition: never-scheduled recording must exist before deleting the reservation")
 	}
 
@@ -1389,14 +1396,6 @@ func TestReconciler_NeverScheduledRecordingSurvivesReservationDeletion(t *testin
 	if count != 1 {
 		t.Errorf("recordings count after reservation deletion = %d, want 1 "+
 			"(the never-scheduled recording must survive the derived deletion of its reservation)", count)
-	}
-	var reservationID *int64
-	if err := pool.QueryRow(ctx, `SELECT reservation_id FROM recordings WHERE site = 'default' AND network_id = 10000 AND service_id = 5000 AND event_id = $1`,
-		res.ProgramID%100000).Scan(&reservationID); err != nil {
-		t.Fatalf("reading recording reservation_id: %v", err)
-	}
-	if reservationID != nil {
-		t.Errorf("recording.reservation_id = %v, want nil (ON DELETE SET NULL)", *reservationID)
 	}
 }
 
@@ -1424,7 +1423,7 @@ func TestReconciler_NeverScheduledRecordingSurvivesProgramSnapshotGC(t *testing.
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
-	if !hasNeverScheduledRecording(t, ctx, pool, res.ID) {
+	if !hasNeverScheduledRecording(t, ctx, pool, res) {
 		t.Fatalf("precondition: never-scheduled recording must exist before GC")
 	}
 
@@ -1752,13 +1751,16 @@ func TestReconciler_ResumeCircuitBreakerConverges(t *testing.T) {
 // slog.Error で検出する。DB に新しい状態は持たせず、毎パス再計算する導出値
 // （不変条件 5: レベルトリガー）。
 
-// createStartedRecording は reservationID に紐づく recordings 行を、
-// 録画開始が観測済み（started_at が埋まっている）状態で作る。watcher が
-// mirakc の record から recordings.started_at を書く経路を模している。
-func createStartedRecording(t *testing.T, ctx context.Context, q *sqlcgen.Queries, reservationID int64, eventID int32, programStartAt, startedAt time.Time) {
+// createStartedRecording は指定の放送イベントキー (network_id=10000,
+// service_id=5000, eventID) に、録画開始が観測済み（started_at が埋まっている）
+// 状態の recordings 行を作る。watcher が mirakc の record から
+// recordings.started_at を書く経路を模している。recordings.reservation_id は
+// issue #158 で列自体を落としたので、この行と予約を結びつける材料は
+// event_id しかない（呼び出し側は createReservation と同じ規約で eventID を
+// 選ぶことで対応関係を保つ）。
+func createStartedRecording(t *testing.T, ctx context.Context, q *sqlcgen.Queries, eventID int32, programStartAt, startedAt time.Time) {
 	t.Helper()
 	if _, err := q.CreateRecording(ctx, sqlcgen.CreateRecordingParams{
-		ReservationID:     &reservationID,
 		Source:            "manual",
 		Site:              "default",
 		NetworkID:         10000,
@@ -1847,8 +1849,8 @@ func TestReconciler_NoStartDelayWhenStarted(t *testing.T) {
 	q := sqlcgen.New(pool)
 
 	startAt := time.Now().Add(-10 * time.Minute)
-	res := createReservation(t, ctx, q, 100000500030002, "正常開始番組", startAt)
-	createStartedRecording(t, ctx, q, res.ID, 30002, startAt, startAt.Add(1*time.Minute))
+	createReservation(t, ctx, q, 100000500030002, "正常開始番組", startAt)
+	createStartedRecording(t, ctx, q, 30002, startAt, startAt.Add(1*time.Minute))
 
 	rec := reconciler.New("default", mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
@@ -1991,7 +1993,7 @@ func TestReconciler_StartDelayGaugeConverges(t *testing.T) {
 	q := sqlcgen.New(pool)
 
 	startAt := time.Now().Add(-10 * time.Minute)
-	res := createReservation(t, ctx, q, 100000500030007, "収束確認番組", startAt)
+	createReservation(t, ctx, q, 100000500030007, "収束確認番組", startAt)
 
 	rec := reconciler.New("default", mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
@@ -2002,7 +2004,7 @@ func TestReconciler_StartDelayGaugeConverges(t *testing.T) {
 	}
 
 	// watcher が録画開始を観測した想定で started_at を埋める。
-	createStartedRecording(t, ctx, q, res.ID, 30007, startAt, startAt.Add(4*time.Minute))
+	createStartedRecording(t, ctx, q, 30007, startAt, startAt.Add(4*time.Minute))
 
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass (2nd): %v", err)
@@ -2014,12 +2016,12 @@ func TestReconciler_StartDelayGaugeConverges(t *testing.T) {
 
 // 受け入れ条件 8（issue #152）: 録画中に予約が導出削除・再実体化されて
 // reservations.id が変わっても、既に観測済みの開始が引き続き「開始済み」と
-// 判定されること（放送イベントキーで引くべき。予約 id で引くと
-// recordings.reservation_id が ON DELETE SET NULL で切れ、検出窓の間毎パス
-// 開始遅延を誤検知する。CLAUDE.md 不変条件 9 の identity、#29 / #53 / #98 /
-// #99 / #149 と同じ族）。internal/reconciler/never_scheduled_identity_test.go の
-// 「DELETE してから CreateManualReservation で作り直す」パターンで再実体化を
-// 模す。
+// 判定されること（放送イベントキーで引くべき。予約 id で引くと、当時
+// ON DELETE SET NULL だった recordings.reservation_id（issue #158 で列自体を
+// 削除済み）が切れ、検出窓の間毎パス開始遅延を誤検知する。CLAUDE.md 不変条件
+// 9 の identity、#29 / #53 / #98 / #99 / #149 と同じ族）。
+// internal/reconciler/never_scheduled_identity_test.go の「DELETE してから
+// CreateManualReservation で作り直す」パターンで再実体化を模す。
 func TestReconciler_NoStartDelayFalsePositiveAfterReservationRematerialization(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
@@ -2037,11 +2039,11 @@ func TestReconciler_NoStartDelayFalsePositiveAfterReservationRematerialization(t
 	eventID := int32(30008)
 	res := createReservation(t, ctx, q, programID, "再実体化後も開始済み番組", startAt)
 
-	// watcher が録画開始を観測した想定（旧 reservation_id = res.ID を指す）。
-	createStartedRecording(t, ctx, q, res.ID, eventID, startAt, startAt.Add(1*time.Minute))
+	// watcher が録画開始を観測した想定（放送イベントキーで結びつく。
+	// recordings.reservation_id という結合キー自体を issue #158 で削除済み）。
+	createStartedRecording(t, ctx, q, eventID, startAt, startAt.Add(1*time.Minute))
 
-	// ruler の導出削除 → 再実体化を模す（同じ番組・新しい id。
-	// recordings.reservation_id は ON DELETE SET NULL で NULL に落ちる）。
+	// ruler の導出削除 → 再実体化を模す（同じ番組・新しい id）。
 	if _, err := pool.Exec(ctx, `DELETE FROM reservations WHERE id = $1`, res.ID); err != nil {
 		t.Fatalf("deleting reservation: %v", err)
 	}
@@ -2133,7 +2135,7 @@ func TestReconciler_StartDelaySuppressionMatchesBroadcastEventKeyPerReservation(
 	programIDStarted := int64(100000500030010)
 	eventIDStarted := int32(30010)
 	resStarted := createReservation(t, ctx, q, programIDStarted, "開始観測済み番組", startAt)
-	createStartedRecording(t, ctx, q, resStarted.ID, eventIDStarted, startAt, startAt.Add(1*time.Minute))
+	createStartedRecording(t, ctx, q, eventIDStarted, startAt, startAt.Add(1*time.Minute))
 
 	// 予約 B: 同一サイト・同一サービスの別イベントで、recordings 行なし。
 	// 検出されるべき。

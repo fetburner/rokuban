@@ -446,8 +446,9 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 // 終了時刻を過ぎた後』のみ」）。state（active/detached。orphaned は issue #98
 // で recordings 側の観測になったため、この GC はそもそも関知しない）を問わず、
 // site にも従属しない全体操作なので RunPass のサイトループの外から 1 回だけ
-// 呼ばれる。recordings.reservation_id は ON DELETE SET NULL なので、削除しても
-// 録画履歴（recordings/media_assets）は失われない。
+// 呼ばれる。recordings.reservation_id は当時 ON DELETE SET NULL だった
+// （issue #158 で列自体を削除済み）ので、削除しても録画履歴
+// （recordings/media_assets）は失われない。
 //
 // **サーキットブレーカー（MaxDeletesPerPass）の対象にしない。** ブレーカーが
 // 守るのは「ルール x EPG」の評価結果から導出される削除だけで、EPG の一時的な
@@ -471,8 +472,8 @@ func (r *Ruler) runGC(ctx context.Context) error {
 	// 3 本の DELETE がそれぞれ別のスナップショット列を見ており、ドリフトして
 	// いたので表ごとに違う時刻で GC していた。docs/schema.md §3「行の物理削除
 	// （GC）は『番組の終了時刻を過ぎた後』のみ」）。recordings.reservation_id は
-	// ON DELETE SET NULL なので、録画履歴（recordings/media_assets）はこの
-	// 削除の影響を受けない。
+	// 当時 ON DELETE SET NULL だった（issue #158 で列自体を削除済み）ので、
+	// 録画履歴（recordings/media_assets）はこの削除の影響を受けない。
 	q := sqlcgen.New(r.pool)
 	deletedSnapshots, err := q.DeleteEndedProgramSnapshots(ctx, cutoff)
 	if err != nil {

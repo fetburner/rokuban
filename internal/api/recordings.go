@@ -18,7 +18,6 @@ import (
 // sqlc はクエリごとに別 struct を生成するので、ここで共通化してマッピングする。
 type recordingListFields struct {
 	ID                       int64
-	ReservationID            *int64
 	RuleID                   *int64
 	Source                   string
 	ServiceName              string
@@ -53,25 +52,24 @@ type recordingListFields struct {
 // includeDeletedAt が true のときだけ deletedAt を載せる（ごみ箱一覧向け）。
 func recordingFromListFields(r recordingListFields, includeDeletedAt bool) (Recording, error) {
 	rec := Recording{
-		Id:            r.ID,
-		ReservationId: r.ReservationID,
-		RuleId:        r.RuleID,
-		Source:        RecordingSource(r.Source),
-		ServiceName:   r.ServiceName,
-		ChannelType:   RecordingChannelType(r.ChannelType),
-		Channel:       r.Channel,
-		NetworkId:     int(r.NetworkID),
-		ServiceId:     int(r.ServiceID),
-		EventId:       int(r.EventID),
-		Title:         r.Title,
-		Description:   r.Description,
-		StartAt:       r.ProgramStartAt,
-		DurationMs:    r.ProgramDurationMs,
-		Status:        RecordingStatus(r.Status),
-		StartedAt:     r.StartedAt,
-		EndedAt:       r.EndedAt,
-		SizeBytes:     r.OriginalSizeBytes,
-		CreatedAt:     r.CreatedAt,
+		Id:          r.ID,
+		RuleId:      r.RuleID,
+		Source:      RecordingSource(r.Source),
+		ServiceName: r.ServiceName,
+		ChannelType: RecordingChannelType(r.ChannelType),
+		Channel:     r.Channel,
+		NetworkId:   int(r.NetworkID),
+		ServiceId:   int(r.ServiceID),
+		EventId:     int(r.EventID),
+		Title:       r.Title,
+		Description: r.Description,
+		StartAt:     r.ProgramStartAt,
+		DurationMs:  r.ProgramDurationMs,
+		Status:      RecordingStatus(r.Status),
+		StartedAt:   r.StartedAt,
+		EndedAt:     r.EndedAt,
+		SizeBytes:   r.OriginalSizeBytes,
+		CreatedAt:   r.CreatedAt,
 	}
 	if includeDeletedAt {
 		rec.DeletedAt = r.DeletedAt
@@ -124,7 +122,7 @@ func (h *Server) ListRecordings(ctx context.Context, req ListRecordingsRequestOb
 		result = make([]Recording, 0, len(rows))
 		for _, r := range rows {
 			rec, err := recordingFromListFields(recordingListFields{
-				ID: r.ID, ReservationID: r.ReservationID, RuleID: r.RuleID,
+				ID: r.ID, RuleID: r.RuleID,
 				Source: r.Source, ServiceName: r.ServiceName, ChannelType: r.ChannelType,
 				Channel: r.Channel, NetworkID: r.NetworkID, ServiceID: r.ServiceID,
 				EventID: r.EventID, Title: r.Title, Description: r.Description,
@@ -149,7 +147,7 @@ func (h *Server) ListRecordings(ctx context.Context, req ListRecordingsRequestOb
 		result = make([]Recording, 0, len(rows))
 		for _, r := range rows {
 			rec, err := recordingFromListFields(recordingListFields{
-				ID: r.ID, ReservationID: r.ReservationID, RuleID: r.RuleID,
+				ID: r.ID, RuleID: r.RuleID,
 				Source: r.Source, ServiceName: r.ServiceName, ChannelType: r.ChannelType,
 				Channel: r.Channel, NetworkID: r.NetworkID, ServiceID: r.ServiceID,
 				EventID: r.EventID, Title: r.Title, Description: r.Description,

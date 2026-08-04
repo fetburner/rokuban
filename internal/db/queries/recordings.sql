@@ -76,36 +76,36 @@ WHERE site = sqlc.arg('site')
 -- 猶予期間中は毎パス quality_events の配列が伸び続けてしまう）。
 -- name: CreateNeverScheduledRecording :execrows
 INSERT INTO recordings (
-    reservation_id, rule_id, source, site,
+    rule_id, source, site,
     network_id, service_id, event_id, service_name,
     channel_type, channel, title,
     program_start_at, program_duration_ms,
     status, quality_events
 ) VALUES (
-    $1, $2, $3, $4,
-    $5, $6, $7, $8,
-    $9, $10, $11,
-    $12, $13,
-    'failed', $14
+    $1, $2, $3,
+    $4, $5, $6, $7,
+    $8, $9, $10,
+    $11, $12,
+    'failed', $13
 )
 ON CONFLICT (site, network_id, service_id, event_id) WHERE deleted_at IS NULL AND superseded_at IS NULL
 DO NOTHING;
 
 -- name: CreateRecording :one
 INSERT INTO recordings (
-    reservation_id, rule_id, source, site,
+    rule_id, source, site,
     network_id, service_id, event_id, service_name,
     channel_type, channel, title, description,
     extended, genres, is_free,
     program_start_at, program_duration_ms,
     status, started_at, ended_at
 ) VALUES (
-    $1, $2, $3, $4,
-    $5, $6, $7, $8,
-    $9, $10, $11, $12,
-    $13, $14, $15,
-    $16, $17,
-    $18, $19, $20
+    $1, $2, $3,
+    $4, $5, $6, $7,
+    $8, $9, $10, $11,
+    $12, $13, $14,
+    $15, $16,
+    $17, $18, $19
 ) RETURNING id;
 
 -- name: UpdateRecordingStatus :exec
@@ -128,19 +128,19 @@ WHERE id = sqlc.arg('id');
 -- （superseded 済みの過去の failed 行ではない）になる。
 -- name: CreateFailedRecording :exec
 INSERT INTO recordings (
-    reservation_id, rule_id, source, site,
+    rule_id, source, site,
     network_id, service_id, event_id, service_name,
     channel_type, channel, title, description,
     extended, genres, is_free,
     program_start_at, program_duration_ms,
     status, quality_events
 ) VALUES (
-    $1, $2, $3, $4,
-    $5, $6, $7, $8,
-    $9, $10, $11, $12,
-    $13, $14, $15,
-    $16, $17,
-    'failed', $18
+    $1, $2, $3,
+    $4, $5, $6, $7,
+    $8, $9, $10, $11,
+    $12, $13, $14,
+    $15, $16,
+    'failed', $17
 )
 ON CONFLICT (site, network_id, service_id, event_id) WHERE deleted_at IS NULL AND superseded_at IS NULL
 DO UPDATE SET

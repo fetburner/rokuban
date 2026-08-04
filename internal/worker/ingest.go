@@ -451,8 +451,9 @@ func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath st
 //
 // # 予約をどのキーで引くか（issue #149）
 //
-// recordings.reservation_id（bigint FK、ON DELETE SET NULL）は宛先にしない。
-// ruler は EPG フリッカー・ルール編集・dedup で予約を導出削除・再実体化し、
+// recordings.reservation_id（bigint FK、ON DELETE SET NULL。issue #158 で
+// 列自体を削除済み）は宛先にしない。ruler は EPG フリッカー・ルール編集・dedup
+// で予約を導出削除・再実体化し、
 // そのたびに reservations.id が変わる（#53 / #98 / #99 が繰り返し踏んでいる
 // 族。CLAUDE.md 不変条件 9「identity」の 5 例目）。録画開始から ingest 完了
 // までの窓（番組の尺ぶん、数時間）でこれが 1 回でも起きると FK が NULL に

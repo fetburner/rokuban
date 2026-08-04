@@ -212,10 +212,9 @@ ON CONFLICT (site, program_id) DO UPDATE SET
     created_at = EXCLUDED.created_at,
     updated_at = EXCLUDED.updated_at;
 
--- reservation_id は reservations を export しないので常に NULL で入れる。
 -- name: CatalogUpsertRecording :exec
 INSERT INTO recordings (
-    id, reservation_id, rule_id, source, site,
+    id, rule_id, source, site,
     network_id, service_id, event_id, service_name,
     channel_type, channel, title, description,
     extended, genres, is_free,
@@ -225,7 +224,7 @@ INSERT INTO recordings (
     deleted_at, purge_after, superseded_at, purged_at, created_at, updated_at
 ) OVERRIDING SYSTEM VALUE
 VALUES (
-    $1, NULL, $2, $3, $4,
+    $1, $2, $3, $4,
     $5, $6, $7, $8,
     $9, $10, $11, $12,
     $13, $14, $15,
@@ -235,7 +234,6 @@ VALUES (
     $24, $25, $26, $27, $28, $29
 )
 ON CONFLICT (id) DO UPDATE SET
-    reservation_id      = NULL,
     rule_id             = EXCLUDED.rule_id,
     source              = EXCLUDED.source,
     site                = EXCLUDED.site,

@@ -185,7 +185,6 @@ export interface DropSummary {
 
 export interface Recording {
   id: number;
-  reservationId?: number;
   ruleId?: number;
   source: RecordingSource;
   serviceName: string;

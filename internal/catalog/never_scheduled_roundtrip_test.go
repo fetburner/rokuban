@@ -40,9 +40,9 @@ func TestExportRescue_PreservesNeverScheduledRecording(t *testing.T) {
 		t.Fatalf("marshalling quality_events: %v", err)
 	}
 
-	// reservation_id は export しない（catalog.Recording のコメント参照）ので、
-	// この試行行が「予約が既に GC された後の never-scheduled 行」であることも
-	// 模せる --- ReservationID を渡さず (nil) に作る。
+	// recordings.reservation_id は issue #158 で列自体を落としたので、この試行行を
+	// 予約と結びつける材料は存在しない --- 「予約が既に GC された後の
+	// never-scheduled 行」であることも自然に模せる。
 	rows, err := q.CreateNeverScheduledRecording(ctx, sqlcgen.CreateNeverScheduledRecordingParams{
 		Source:            "rule",
 		Site:              "default",

@@ -176,9 +176,14 @@ type ScheduleSync struct {
 }
 
 // Recording は録画履歴（永続資産）。
+//
+// reservation_id 列は issue #158 で落ちた --- reservations.id は ruler の
+// 導出削除・再実体化で変わる不安定な値で、この列を宛先にした結合は #29 / #53 /
+// #98 / #99 / #149 / #152 と 6 回同じ形のバグを生んだ（CLAUDE.md 不変条件 9
+// 「identity」）。残っていた読者（表示用コピー）も放送イベントキー経由に
+// 置き換えたので列自体を落とした。
 type Recording struct {
 	ID                int64           `db:"id"`
-	ReservationID     *int64          `db:"reservation_id"`
 	RuleID            *int64          `db:"rule_id"`
 	Source            string          `db:"source"`
 	Site              string          `db:"site"`

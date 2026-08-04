@@ -762,6 +762,149 @@ func TestMigration00028_DropsScheduleSyncReservationID(t *testing.T) {
 	}
 }
 
+// TestMigration00031_DropsRecordingsReservationID は issue #158: reservations.id
+// を宛先にした結合キーである recordings.reservation_id（と、その FK・索引）が
+// 00031 で確実に落ちること、かつ既存の recordings 行が他の列を保ったまま残る
+// ことを見る（CLAUDE.md 不変条件 9「identity」・10「意味を持たない行を作らない」
+// の実例。#29/#53/#98/#99/#149/#152 と同じ族の根絶）。
+//
+// TestMigration00028_DropsScheduleSyncReservationID と同じ形（migrate up to
+// N-1 → 生 SQL で列を埋めた行を作る → 前提を確認 → up to N → 列・FK・索引が
+// 消えて行は残ることを確認）。
+func TestMigration00031_DropsRecordingsReservationID(t *testing.T) {
+	dbURL := testDatabaseURL(t)
+	ctx := context.Background()
+
+	if err := MigrateReset(ctx, dbURL); err != nil {
+		t.Fatalf("migrate reset: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := MigrateReset(ctx, dbURL); err != nil {
+			t.Errorf("cleanup migrate reset: %v", err)
+		}
+	})
+
+	subFS, err := fs.Sub(migrations, "migrations")
+	if err != nil {
+		t.Fatalf("getting migrations sub-FS: %v", err)
+	}
+	sqlDB, err := sql.Open("pgx", dbURL)
+	if err != nil {
+		t.Fatalf("opening database: %v", err)
+	}
+	defer func() { _ = sqlDB.Close() }()
+
+	provider, err := goose.NewProvider(goose.DialectPostgres, sqlDB, subFS)
+	if err != nil {
+		t.Fatalf("creating goose provider: %v", err)
+	}
+
+	// 00030 まで適用（00031 適用前、reservation_id 列がまだある状態）。
+	if _, err := provider.UpTo(ctx, 30); err != nil {
+		t.Fatalf("migrating up to 00030: %v", err)
+	}
+
+	pool, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("connecting pool: %v", err)
+	}
+	defer pool.Close()
+
+	const site = "home"
+	const programID int64 = 314159265
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO program_snapshots (
+			site, program_id, title, start_at, duration_ms,
+			network_id, service_id, channel_type, channel, event_id, service_name
+		)
+		VALUES ($1, $2, '', now(), 1800000, 32736, 1024, 'GR', '27', 1, 'テスト局')`,
+		site, programID); err != nil {
+		t.Fatalf("inserting program_snapshot: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO reservations (site, program_id) VALUES ($1, $2)`, site, programID); err != nil {
+		t.Fatalf("inserting reservation: %v", err)
+	}
+	var recordingID int64
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO recordings (
+			reservation_id, source, site, network_id, service_id, event_id, service_name,
+			channel_type, channel, title, program_start_at, program_duration_ms, status
+		)
+		SELECT r.id, 'manual', $1, 32736, 1024, 1, 'テスト局', 'GR', '27', '', now(), 1800000, 'finished'
+		FROM reservations r WHERE r.site = $1 AND r.program_id = $2
+		RETURNING id`,
+		site, programID).Scan(&recordingID); err != nil {
+		t.Fatalf("inserting recording row with reservation_id set: %v", err)
+	}
+
+	var columnExistsBefore bool
+	if err := pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM information_schema.columns
+		 WHERE table_name = 'recordings' AND column_name = 'reservation_id')`,
+	).Scan(&columnExistsBefore); err != nil {
+		t.Fatalf("checking column exists before 00031: %v", err)
+	}
+	if !columnExistsBefore {
+		t.Fatal("precondition: recordings.reservation_id should exist before 00031")
+	}
+
+	// 00031 を適用: 列（と FK・索引）が落ちる。行自体は他の列を保ったまま残る。
+	if _, err := provider.UpTo(ctx, 31); err != nil {
+		t.Fatalf("migrating up to 00031: %v", err)
+	}
+
+	var columnExistsAfter bool
+	if err := pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM information_schema.columns
+		 WHERE table_name = 'recordings' AND column_name = 'reservation_id')`,
+	).Scan(&columnExistsAfter); err != nil {
+		t.Fatalf("checking column exists after 00031: %v", err)
+	}
+	if columnExistsAfter {
+		t.Error("recordings.reservation_id should have been dropped by 00031")
+	}
+
+	var statusAfter string
+	if err := pool.QueryRow(ctx,
+		`SELECT status FROM recordings WHERE id = $1`, recordingID,
+	).Scan(&statusAfter); err != nil {
+		t.Fatalf("recording row should survive the column drop: %v", err)
+	}
+	if statusAfter != "finished" {
+		t.Errorf("recordings.status = %q, want %q", statusAfter, "finished")
+	}
+
+	// 反対方向の確認: 列と一緒に reservation_id 側の FK・索引そのものも
+	// 落ちていることを pg_constraint / pg_indexes で直接見る。recordings は
+	// rule_id → rules への FK（00006）を別に持つので、「FK が 1 つも無い」では
+	// なく reservation_id を参照する FK が無いことを見る。
+	var reservationFKExistsAfter bool
+	if err := pool.QueryRow(ctx,
+		`SELECT EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = 'recordings'::regclass AND contype = 'f'
+			  AND pg_get_constraintdef(oid) LIKE '%reservation_id%'
+		)`,
+	).Scan(&reservationFKExistsAfter); err != nil {
+		t.Fatalf("checking reservation_id FK exists after 00031: %v", err)
+	}
+	if reservationFKExistsAfter {
+		t.Error("recordings should have no reservation_id FK constraint after 00031")
+	}
+
+	var indexExistsAfter bool
+	if err := pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM pg_indexes
+		 WHERE indexname = 'recordings_reservation_id_idx')`,
+	).Scan(&indexExistsAfter); err != nil {
+		t.Fatalf("checking index exists after 00031: %v", err)
+	}
+	if indexExistsAfter {
+		t.Error("recordings_reservation_id_idx should have been dropped by 00031")
+	}
+}
+
 func TestReservationOptions_Effective(t *testing.T) {
 	priority1 := 1
 	priority2 := 2
