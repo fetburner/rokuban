@@ -659,10 +659,11 @@ func (r *Reconciler) recreateChanged(
 func (r *Reconciler) recreateSchedule(ctx context.Context, d desiredReservation, observed mirakc.Schedule) error {
 	res, opts := d.res, d.opts
 
-	// contentPath は初回生成値を base に固定し、以後変更しない
-	// （docs/recording.md §3.2）。再作成では contentPath をテンプレートから
-	// 再生成せず、observed（= 自分が過去に書いた値が往復してきたもの）を
-	// そのまま使う。再生成すると EPG の番組名変更が priority 変更の副作用として
+	// contentPath は observed の contentPath を引き継いで固定する
+	// （base に書き戻す経路は無い。docs/recording/reconciler.md §「予約オプションの
+	// 差分反映」）。再作成では contentPath をテンプレートから再生成せず、
+	// observed（= 自分が過去に書いた値が往復してきたもの）をそのまま使う。
+	// 再生成すると EPG の番組名変更が priority 変更の副作用として
 	// ファイル名を変えてしまう。SanitizeContentPath を通すのは、mirakc 側を
 	// 直接触られていた場合の保険（安いので）。
 	//

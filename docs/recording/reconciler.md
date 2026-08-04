@@ -92,7 +92,7 @@ reconciler は存在の突き合わせだけでなく、**effective options と 
 | フィールド | 差分対象 | 理由 |
 |---|---|---|
 | `priority` | **する** | チューナー調停の優先度。ルール編集・overrides 編集の実質的な唯一の変更対象 |
-| `contentPath` | **しない**（base に固定） | 下記 |
+| `contentPath` | **しない**（observed の contentPath を引き継ぐ） | 下記 |
 | `preFilters` / `postFilters` | M3 から | M1/M2 では常に空 |
 | `logFilter` | しない | 未使用 |
 | `tags` | **する**（不一致のときだけ） | 下記 |

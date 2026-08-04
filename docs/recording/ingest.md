@@ -114,7 +114,11 @@ pull 完了後に書き込みバイト数を HEAD の Content-Length と照合 �
 
 ### 5.5 ingest 完了後のフロー
 
-**#65 で設計変更済み。同一トランザクションでの投入はしない。** `media_assets` のコミット**後**に、ベストエフォートのヒントとしてエンコードジョブを投入する（`IngestWorker.Work` → `EnqueueMissingEncodes`。`ingest.go` の `enqueueMissingEncodesFromContext` 呼び出し）。投入に失敗してもログのみで、コミット済みの ingest は巻き戻さない。信頼性を担保するのは投入の再試行ではなく、desired（`recordings.encode_profiles`）− observed（コミットされた `encoded` 種別の `media_assets`）を埋めるレベルトリガー（不変条件 5）で、ヒントを落としても、原本がコミット済みの録画に対して ingest ジョブが再度 Work される経路（上記「冪等性: コミット済みなら転送をやり直さない」の分岐、あるいは record_sweep が同じ finished record を再投入する経路。§5.3 参照）が同じヒントを再度投入する。
+**#65 で設計変更済み。同一トランザクションでの投入はしない。** `media_assets` のコミット**後**に、ベストエフォートのヒントとしてエンコードジョブを投入する（`IngestWorker.Work` → `EnqueueMissingEncodes`。`ingest.go` の `enqueueMissingEncodesFromContext` 呼び出し）。投入に失敗してもログのみで、コミット済みの ingest は巻き戻さない。
+
+このヒントを落としたときの回復範囲は限定的である。**エッジ record の削除（`DeleteRecord`。上記「層 3」）が成功すれば、そのエッジ record は record_sweep から二度と見えなくなり、ingest ジョブは再 Work されない** —— ヒント投入の失敗と `DeleteRecord` の成功が両方起きると、そのヒントは失われたままになる。回復が効くのは、エッジ record が何らかの理由でまだ残っている場合（`DeleteRecord` 自体が失敗した、あるいは冪等性チェック「コミット済みなら転送をやり直さない」の分岐で record_sweep が同じ finished record を再度 ingest ジョブとして投入した場合）に限る。そのときは `EnqueueMissingEncodes` が desired（`recordings.encode_profiles`）− observed（コミットされた `encoded` 種別の `media_assets`）を埋めるレベルトリガーとして同じヒントを再度投入する（不変条件 5）。
+
+現状、ingest 後のヒント以外にこの差分を定期的に埋めるループは無い（`EnqueueMissingEncodes` の呼び出し元は ingest 完了時のヒントと `POST /api/recordings/{id}/encode-profiles` の `EncodeEnqueueHint` だけで、「将来の reconcile ループ」はまだ実装されていない）。
 
 ---
 
