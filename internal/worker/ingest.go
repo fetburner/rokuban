@@ -449,15 +449,36 @@ func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath st
 // この関数を呼ぶ — 順序が逆だと初回パスで desired が空のまま enqueue され、
 // 実際に投入されるのは次の ingest 再試行（起きるとは限らない）まで遅延する。
 //
-// # 予約行が無い録画
+// # 予約をどのキーで引くか（issue #149）
 //
-// 手動で mirakc に起こされた録画等、recordings.reservation_id が NULL の場合は
-// 何もしない。CREATE TABLE の既定値（'always' / '{}'）のまま残る — 参照する
-// 予約が無いので「望ましい最終状態」という概念自体が無い。
+// recordings.reservation_id（bigint FK、ON DELETE SET NULL）は宛先にしない。
+// ruler は EPG フリッカー・ルール編集・dedup で予約を導出削除・再実体化し、
+// そのたびに reservations.id が変わる（#53 / #98 / #99 が繰り返し踏んでいる
+// 族。CLAUDE.md 不変条件 9「identity」の 5 例目）。録画開始から ingest 完了
+// までの窓（番組の尺ぶん、数時間）でこれが 1 回でも起きると FK が NULL に
+// 落ち、「予約が無い」と誤認して encode policy を凍結し損なう —— ログにも
+// 出ないので気付かれない。
 //
-// 予約行はあったが GC 済み（program_snapshots への ON DELETE CASCADE で
-// reservations 自体も落ちている）場合も同様に何もしない。ingest が本来の
-// retention grace を超えて遅延した場合の話で、頻繁には起きない。
+// 代わりに放送イベントキー (site, network_id, service_id, event_id) で引く。
+// recordings はこの 4 列を録画開始時から凍結して持つ（導出器が作るキーでは
+// ない）ので、予約の再実体化を跨いでも変わらない。GetReservationEncodePolicyByEvent
+// は program_snapshots で (network_id, service_id, event_id) → program_id を
+// 引いてから reservations を program_id で結合する
+// （internal/db/queries/recording_policy.sql）。
+//
+// program_snapshots は放送後 GC される寿命の短い表（docs/storage.md §6）だが、
+// ingest は録画終了直後（GC の猶予期間より十分前）に走るので、この GC 前提は
+// 通常経路では効かない。JOIN が失敗するのは次の 2 通りで、どちらも
+// 「凍結せず何もしない」が正しい挙動だが、区別してログに残す:
+//
+//   - 予約が最初から存在しない録画（手動で mirakc に起こされた録画等）。
+//     recordings.source が 'manual' で日常的に起きるので警告しない。
+//     CREATE TABLE の既定値（'always' / '{}'）のまま残る
+//   - recordings.source が 'rule'（作成時点で予約が存在した）にもかかわらず
+//     解決できない場合。GC が想定より早く走った、または予約が恒久的に
+//     削除された場合で、頻繁には起きないはず。黙って return せず
+//     slog.Warn で識別子（site/network_id/service_id/event_id）と
+//     recordingID を残す —— この関数が対処すべき「引けなかった」の実例
 //
 // # 冪等性
 //
@@ -502,21 +523,38 @@ func (w *IngestWorker) resolveAndSnapshotEncodePolicy(ctx context.Context, q *sq
 	if err != nil {
 		return fmt.Errorf("loading recording %d: %w", recordingID, err)
 	}
-	if rec.ReservationID == nil {
-		return nil
-	}
 
-	row, err := q.GetReservationEncodePolicy(ctx, *rec.ReservationID)
+	row, err := q.GetReservationEncodePolicyByEvent(ctx, sqlcgen.GetReservationEncodePolicyByEventParams{
+		Site:      rec.Site,
+		NetworkID: rec.NetworkID,
+		ServiceID: rec.ServiceID,
+		EventID:   rec.EventID,
+	})
 	if err != nil {
 		if errors.Is(err, pgx5.ErrNoRows) {
+			// recordings.source == 'rule' は作成時点で予約が存在したことを意味する
+			// （internal/watcher.createRecording が resID の有無から導く。
+			// internal/db/recording_source.go の DeriveRecordingSource 参照）ので、
+			// ここで引けないのは異常系（GC が早すぎた、または予約が恒久的に削除
+			// された）。'manual' は予約が最初から無い日常的なケースなので警告しない
+			// （doc コメント「予約をどのキーで引くか」参照）。
+			if rec.Source == db.SourceRule {
+				slog.Warn("encode policy: reservation not found via broadcast event key",
+					"recording_id", recordingID,
+					"site", rec.Site,
+					"network_id", rec.NetworkID,
+					"service_id", rec.ServiceID,
+					"event_id", rec.EventID)
+			}
 			return nil
 		}
-		return fmt.Errorf("loading reservation encode policy %d: %w", *rec.ReservationID, err)
+		return fmt.Errorf("loading reservation encode policy for recording %d (site=%s network_id=%d service_id=%d event_id=%d): %w",
+			recordingID, rec.Site, rec.NetworkID, rec.ServiceID, rec.EventID, err)
 	}
 
 	eff, err := db.EffectiveOptions(row.Reservation.Base, row.Overrides, row.IntentAction)
 	if err != nil {
-		return fmt.Errorf("computing effective options for reservation %d: %w", *rec.ReservationID, err)
+		return fmt.Errorf("computing effective options for reservation %d: %w", row.Reservation.ID, err)
 	}
 
 	keepOriginal := "always"

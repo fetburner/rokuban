@@ -986,7 +986,15 @@ func setReservationBase(t *testing.T, pool *pgxpool.Pool, reservationID int64, b
 
 // insertTestRecordingForReservation は reservationID にリンクした録画行を作る
 // （watcher.createRecording が録画開始時に reservation_id を埋めるのと同じ状態）。
-func insertTestRecordingForReservation(t *testing.T, pool *pgxpool.Pool, reservationID int64) int64 {
+//
+// programID は insertProgramSnapshotAndReservation に渡したものと同じ値を渡す。
+// resolveAndSnapshotEncodePolicy（issue #149 以降）は recordings.reservation_id
+// ではなく放送イベントキー (site, network_id, service_id, event_id) で予約を
+// 引くので、この録画の event_id は program_snapshots 側の event_id
+// （insertProgramSnapshotAndReservation が programID % 100000 から作る）と
+// 一致させる必要がある --- ここが一致しなければ「予約が引けなかった」側に
+// 落ちて、reservation_id が指す予約とは無関係な結果になる。
+func insertTestRecordingForReservation(t *testing.T, pool *pgxpool.Pool, reservationID int64, programID int64) int64 {
 	t.Helper()
 	q := sqlcgen.New(pool)
 	id, err := q.CreateRecording(context.Background(), sqlcgen.CreateRecordingParams{
@@ -995,7 +1003,7 @@ func insertTestRecordingForReservation(t *testing.T, pool *pgxpool.Pool, reserva
 		Site:              "default",
 		NetworkID:         32736,
 		ServiceID:         1024,
-		EventID:           int32(time.Now().UnixNano() % 1_000_000_000), // 衝突回避
+		EventID:           int32(programID % 100000), // program_snapshots の event_id と一致させる
 		ServiceName:       "テストチャンネル",
 		ChannelType:       "GR",
 		Channel:           "27",
@@ -1069,7 +1077,7 @@ func TestIngestWorker_SnapshotsEncodePolicyFromRuleBase(t *testing.T) {
 	res := insertProgramSnapshotAndReservation(t, pool, programID, "ルール予約番組")
 	setReservationBase(t, pool, res.ID, `{"keepOriginal":"until_encoded","encodeProfiles":["h265"]}`)
 
-	recordingID := insertTestRecordingForReservation(t, pool, res.ID)
+	recordingID := insertTestRecordingForReservation(t, pool, res.ID, programID)
 	insertTestRecordSync(t, pool, recordingID, "rec-policy-base")
 
 	tsData := makeTSData(20)
@@ -1142,7 +1150,7 @@ func TestIngestWorker_SnapshotsEncodePolicyFromOverride(t *testing.T) {
 			"DELETE FROM program_overrides WHERE site = $1 AND program_id = $2", "default", programID)
 	})
 
-	recordingID := insertTestRecordingForReservation(t, pool, res.ID)
+	recordingID := insertTestRecordingForReservation(t, pool, res.ID, programID)
 	insertTestRecordSync(t, pool, recordingID, "rec-policy-override")
 
 	tsData := makeTSData(20)
@@ -1222,7 +1230,7 @@ func TestIngestWorker_ClampsUntilEncodedWithEmptyProfiles(t *testing.T) {
 			"DELETE FROM program_overrides WHERE site = $1 AND program_id = $2", "default", programID)
 	})
 
-	recordingID := insertTestRecordingForReservation(t, pool, res.ID)
+	recordingID := insertTestRecordingForReservation(t, pool, res.ID, programID)
 	insertTestRecordSync(t, pool, recordingID, "rec-policy-drift")
 
 	tsData := makeTSData(20)
@@ -1317,5 +1325,98 @@ func TestIngestWorker_NoReservation_LeavesEncodePolicyDefault(t *testing.T) {
 	}
 	if jobCount != 0 {
 		t.Errorf("encode jobs = %d, want 0", jobCount)
+	}
+}
+
+// TestIngestWorker_SnapshotsEncodePolicy_SurvivesReservationRematerialization は
+// issue #149 の受け入れ基準「予約の再実体化を跨いでもエンコード方針が焼き込まれる」
+// を確認する。
+//
+// ruler は EPG フリッカー・ルール編集・dedup で予約を導出削除・再実体化し、
+// reservations.id が変わる（#53 / #98 / #99 と同じ族。CLAUDE.md 不変条件 9
+// 「identity」の 5 例目）。録画開始時に watcher が焼いた
+// recordings.reservation_id は FK の ON DELETE SET NULL で NULL に落ちるので、
+// 旧実装（reservation_id を宛先に GetReservationEncodePolicy を引く）は
+// 「予約が無い」と誤認して encode policy を凍結し損なう。
+//
+// internal/reconciler/never_scheduled_identity_test.go の
+// TestReconciler_NeverScheduledExclusionSurvivesRematerialization と同じ模し方
+// （DELETE してから CreateManualReservation で作り直す。id が変わることも
+// 明示的に確認する）。
+func TestIngestWorker_SnapshotsEncodePolicy_SurvivesReservationRematerialization(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+	q := sqlcgen.New(pool)
+
+	programID := int64(900000000000004)
+	res := insertProgramSnapshotAndReservation(t, pool, programID, "再実体化予約番組")
+	setReservationBase(t, pool, res.ID, `{"keepOriginal":"until_encoded","encodeProfiles":["h265"]}`)
+
+	// watcher.createRecording が録画開始時に reservation_id を埋めた状態を模す。
+	recordingID := insertTestRecordingForReservation(t, pool, res.ID, programID)
+	insertTestRecordSync(t, pool, recordingID, "rec-policy-rematerialized")
+
+	// ruler の導出削除 → 再実体化を模す（同じ番組・新しい id）。この DELETE で
+	// recordings.reservation_id は ON DELETE SET NULL により NULL に落ちる ---
+	// これが旧実装の穴（黙って return nil）を再現する引き金。
+	if _, err := pool.Exec(ctx, `DELETE FROM reservations WHERE id = $1`, res.ID); err != nil {
+		t.Fatalf("deleting reservation: %v", err)
+	}
+	res2, err := q.CreateManualReservation(ctx, sqlcgen.CreateManualReservationParams{
+		Site: "default", ProgramID: programID,
+	})
+	if err != nil {
+		t.Fatalf("re-materializing reservation: %v", err)
+	}
+	if res2.ID == res.ID {
+		t.Fatalf("再実体化で id が変わっていない（テストの前提が崩れている）")
+	}
+	// ruler は再実体化のたびに射影から base を書き直す。テストではその 1 パスを
+	// 模して同じ base を新しい行に立て直す（setReservationBase 参照）。
+	setReservationBase(t, pool, res2.ID, `{"keepOriginal":"until_encoded","encodeProfiles":["h265"]}`)
+
+	var reservationIDAfterDelete *int64
+	if err := pool.QueryRow(ctx, "SELECT reservation_id FROM recordings WHERE id = $1", recordingID).
+		Scan(&reservationIDAfterDelete); err != nil {
+		t.Fatalf("querying recordings.reservation_id: %v", err)
+	}
+	if reservationIDAfterDelete != nil {
+		t.Fatalf("precondition: recordings.reservation_id = %v, want nil (ON DELETE SET NULL のはず)", *reservationIDAfterDelete)
+	}
+
+	tsData := makeTSData(20)
+	srv := newFullTransferServer(t, tsData, "test/policy-rematerialized.m2ts")
+	mc := mirakc.NewClient(srv.URL, nil)
+
+	w := &IngestWorker{
+		MirakcClient: mc,
+		MediaDir:     t.TempDir(),
+		Pool:         pool,
+		StallTimeout: 5 * time.Second,
+	}
+
+	job := &river.Job[IngestJobArgs]{
+		JobRow: &rivertype.JobRow{},
+		Args:   IngestJobArgs{Site: "default", RecordID: "rec-policy-rematerialized"},
+	}
+
+	workCtx := riverWorkContext(t, pool)
+	if err := w.Work(workCtx, job); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+
+	keepOriginal, profiles := encodePolicyOfRecording(t, pool, recordingID)
+	if keepOriginal != "until_encoded" {
+		t.Errorf("keep_original = %q, want until_encoded (予約の再実体化を跨いで解決できているはず)", keepOriginal)
+	}
+	if !slices.Equal(profiles, []string{"h265"}) {
+		t.Errorf("encode_profiles = %v, want [h265] (予約の再実体化を跨いで解決できているはず)", profiles)
+	}
+
+	if got := countEncodeJobs(t, pool, recordingID, "h265"); got != 1 {
+		t.Errorf("encode jobs for h265 = %d, want 1", got)
 	}
 }
