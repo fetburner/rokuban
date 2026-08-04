@@ -186,7 +186,7 @@ $ gh issue create --template sub-issue --title 'M5-1 ...' --label area:worker
 
 不変条件 12 の寿命チェック（「この値はこの行と同時に生まれて同時に死ぬか」）は**永続表に対して盲目**になる。永続表はどんな列を足しても「表自体が永続なので列も永続」で自明に真が返り、網に掛からない。`recordings` が書き手 5 人（watcher / reconciler / ingest worker / api / delete reconcile）まで増えても 12 だけでは止まらなかった理由がこれ（#156）。
 
-**recordings 本体は「試行の帰結の観測」だけを持つ脊椎。別のループが書く状態は `recording_id` を FK に持つ衛星表に置く。** `media_assets` / `drop_stats` がこの形の実例で、それぞれ自分の書き手（worker）と自分の状態機械を持つ永続の衛星表である。
+**recordings 本体は「試行の帰結の観測」だけを持つ脊椎。別のループが書く状態は `recording_id` を FK に持つ衛星表に置く。** `media_assets` がこの形の実例で、自分の書き手（ingest / encode / thumbnail の各 worker）と自分の状態機械（`active`→`deleting`→`deleted`）を持つ永続の衛星表である。`drop_stats` は `media_asset_id` で `media_assets` を指す「衛星の衛星」で、`recordings` を直接 FK で指してはおらず、状態機械も持たない（`media_assets` をコミットする ingest と同一トランザクションで追記されるだけ）。
 
 チェック: 永続表に列を足すとき「**この列を書くループは既存の書き手か**」を問う。新しいループが書くなら、その表の列にせず `recording_id`（等の対象行 FK）を持つ衛星表にする。
 
