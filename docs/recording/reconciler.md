@@ -5,7 +5,7 @@
 `reservations`（desired）と `schedule_sync`（observed: `GET /api/recording/schedules` の観測結果）の差分を POST/DELETE で消す、レベルトリガーの宣言的同期ループ。
 
 - **tags 対応付け**: mirakc schedule の `tags` に programId を埋め込む（例: `program:1234`）。手動で mirakc に入れられた schedule との判別もタグで可能。**M3-1 以前は reservation id を埋めていた**（`rokuban:reservation=1234`）が、`reservations.id` は ruler の導出削除・再実体化で変わりうる不安定な値だったため、EPG にある間ずっと安定な programId に変えた（issue #53「導出器が作るキーを宛先にしない」）。旧形式の schedule は下記「tags の不一致」の再作成でレベルトリガーに新形式へ移行する
-- **contentPath 生成**: `recording.basedir` 相対パス必須。ファイル名テンプレートの展開もここで行う。生成値は初回のみで、以後は base に固定する（後述の差分反映）
+- **contentPath 生成**: `recording.basedir` 相対パス必須。ファイル名テンプレートの展開もここで行う。生成はテンプレートから初回作成時のみ行い、以後の再作成（後述の差分反映）は observed（mirakc に登録済みの schedule）の contentPath を引き継ぐことで実質固定される（`reservations.base` に生成値を書き戻すコードは無い）
 - **冪等**: 何度落ちても再実行で収束する。時刻精度もプロセス生存性も要求されない
 - **終了済み番組は作らない**: 番組の終了時刻（`program_snapshots.start_at + duration_ms`）を過ぎた予約には `POST` しない。放置すると mirakc が数秒で `need-rescheduling` として failed にし、`recordings` に content_length=0 の failed 行を量産する（issue #134）。判定は下記「番組終了後の GC」とは別物の、never-scheduled の試行行の記録（`recordNeverScheduled`。issue #98）と同じ式・同じ材料を使う——ずらすと同じ予約が毎パス作成対象のまま残って POST を撃ち続ける
 
@@ -103,7 +103,7 @@ reconciler は存在の突き合わせだけでなく、**effective options と 
 
 **差分の対象にするのは自分が作った schedule だけ。** tag のない schedule（mirakc を直接叩いた・別のツールが作った）は観測はするが触らない。外部が作った schedule と取り合いになるのを避けるためで、既存の DELETE 側と同じ判定（`mirakc.IsOurs` が false なら対象外。新旧いずれかの形式の tag があれば true）。
 
-**`contentPath` は初回生成値を base に固定し、以後変更しない。** reconciler は番組名からパスを生成するため、EPG の番組名が変われば生成結果も変わる。これを差分と見なすと **EPG 更新のたびに schedule が消えて作り直される** churn になる。差分書き込みという設計は desired が安定していることを前提として要求する（同率 priority のタイを全順序で潰したのと同じクラスの問題。§3.1）。ファイル名を変えたい場合はユーザーが overrides で明示的に指定する。
+**`contentPath` は初回生成値を固定し、以後変更しない。** ただし固定の実体は `reservations.base` への書き戻しではない —— `base` / `reservations` の列に contentPath を焼く書き手は存在しない。実際に固定を実現しているのは、再作成時に observed の contentPath を引き継ぐこと（`internal/reconciler/reconciler.go` の `recreateSchedule`。下記「再作成の POST は observed の contentPath を引き継ぐ」参照）で、schedule が mirakc 側で外部に削除されて observed が無くなった場合（EPG が一度消えて再実体化した等）は、次パスがテンプレートから新規生成する通常の作成として扱われる —— 「固定」は「同一 schedule の再作成の間」だけ有効な機構上の性質であり、schedule 自体が消えて張り直された場合には及ばない。reconciler は番組名からパスを生成するため、EPG の番組名が変われば生成結果も変わる。これを差分と見なすと **EPG 更新のたびに schedule が消えて作り直される** churn になる。差分書き込みという設計は desired が安定していることを前提として要求する（同率 priority のタイを全順序で潰したのと同じクラスの問題。§3.1）。ファイル名を変えたい場合はユーザーが overrides で明示的に指定する。
 
 ただしこの決定には未解決の一貫性の穴がある: **churn の原因は「テンプレートから生成された」パスが EPG の番組名変更で動くことで、ユーザーが `overrides.contentPath` に明示指定した値は動かない**。にもかかわらず現状は両者を区別せず差分対象外にしているため、既存予約の contentPath を上書きしても schedule には反映されない（priority も同時に変えれば道連れで反映される、という一貫性のない挙動になる）。`opts.ContentPath != nil` のときだけ差分対象にする改良が考えられるが、決定を変える話なので M2-4 では実装せず issue #19 のコメントに提起した。
 

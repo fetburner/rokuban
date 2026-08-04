@@ -310,8 +310,9 @@ func (r *Reconciler) RunPass(ctx context.Context) error {
 	// メトリクスは増やさない — 上2つは複数パスにまたがって残留しうる持ち越し
 	// （録画中は priority 変更が反映されないまま残る、MaxRecreatesPerPass で
 	// 溢れた分が次パスに送られる）だからゲージで監視する価値があるのに対し、
-	// endGuarded は本パスの markOrphaned が同じ判定式で orphaned_at を埋める
-	// ので、次パスには同じ予約が二度と現れない（1 パスで自己解消する）。
+	// endGuarded は本パスの recordNeverScheduled（旧 markOrphaned）が同じ
+	// 判定式で recordings に never-scheduled 行を作るので、次パスには同じ
+	// 予約が二度と現れない（1 パスで自己解消する）。
 	// ReconcilePendingDiff の「create」ゲージに混ぜると、埋まらない別の理由
 	// （mirakc 障害等）と区別できなくなる。
 	if endGuarded > 0 {
@@ -454,17 +455,17 @@ func (r *Reconciler) listDesired(ctx context.Context) ([]desiredReservation, err
 // programEnded は予約に対応する番組がもう終了しているかどうかを判定する
 // （program_snapshots のスナップショットのみが材料 —— 番組は終了後に
 // epg_programs から消えうるので EPG 射影は見ない）。RunPass の作成ループと
-// markOrphaned の両方から呼ばれる必要があるため、この 1 箇所に抽出してある。
-// 同じ式を 2 箇所に書き下すと、片方だけ境界を直してもう片方を直し忘れる
-// 事故が起きる（issue #134）。実際、作成ループだけ境界がずれると
-// 「作らない」（作成ループ）と「まだ orphaned にしない」（markOrphaned）が
-// 食い違い、同じ予約が毎パス作成対象のまま残って mirakc への POST を撃ち
-// 続ける —— この抽出前より悪化する組み合わせなので、境界は 1 箇所でしか
-// 定義しない。
+// recordNeverScheduled（旧 markOrphaned）の両方から呼ばれる必要があるため、
+// この 1 箇所に抽出してある。同じ式を 2 箇所に書き下すと、片方だけ境界を
+// 直してもう片方を直し忘れる事故が起きる（issue #134）。実際、作成ループ
+// だけ境界がずれると「作らない」（作成ループ）と「まだ never-scheduled
+// にしない」（recordNeverScheduled）が食い違い、同じ予約が毎パス作成対象の
+// まま残って mirakc への POST を撃ち続ける —— この抽出前より悪化する
+// 組み合わせなので、境界は 1 箇所でしか定義しない。
 //
 // 終了時刻ちょうど（endTime == now）は「終了していない」側に倒す
-// （markOrphaned が元々持っていた `!endTime.Before(now)` を素直に反転した
-// だけで、境界を動かしていない）。進行中の番組への POST は止めない —— mirakc
+// （抽出前の markOrphaned が元々持っていた `!endTime.Before(now)` を素直に
+// 反転しただけで、境界を動かしていない）。進行中の番組への POST は止めない —— mirakc
 // は放送中の番組の schedule を受け付けて途中から録る（issue #134 の実測:
 // 23:10 開始の番組を 23:16:39 に予約しても正常に録画継続、426MB 到達）。
 // ガードの対象は「終了済み」だけで、「開始済み」で切ると放送中の番組を
@@ -743,7 +744,7 @@ func (r *Reconciler) recreateSchedule(ctx context.Context, d desiredReservation,
 //     除外されるので、reservations 自体がこの関数に渡ってこない
 //
 // (1) は「本物の record が推論に必ず勝つ」規則（issue #129 症状 2）の
-// 適用でもあり、これが #59（markOrphaned が recordings を見ないので成功
+// 適用でもあり、これが #59（旧 markOrphaned が recordings を見ないので成功
 // 録画も orphaned 扱いになる）を解消する ---
 // 書き込み条件が「その放送イベントに生きている recordings 行が無いこと」に
 // なり、条件を満たさなければ索引（recordings_unique_active_event）が

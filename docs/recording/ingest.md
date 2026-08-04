@@ -95,9 +95,9 @@ River の at-least-once + 指数バックオフ。**ゼロから作り直す**�
 
 #### 層 3: 完全性検証とコミット
 
-pull 完了後に書き込みバイト数を HEAD の Content-Length と照合 → 一致で `media_assets` コミット（コミット = DB 行。部分ファイルは孤児として cleanup が回収）→ **mirakc 側の record 削除はコミット後のみ**。どこで落ちても最悪「もう一度 pull」で、データ喪失は構造的に起きない。
+pull 完了後に書き込みバイト数を HEAD の Content-Length と照合 → 一致で `media_assets` コミット（コミット = DB 行。部分ファイルは孤児として cleanup が回収）→ **mirakc 側の record 削除はコミット後のみ**。**HEAD が長さを返さない場合（`Content-Length` 不明）はこの照合をスキップしてそのままコミットする**（`ingest.go` の `expectedLen >= 0` ガード）。どこで落ちても最悪「もう一度 pull」で、データ喪失は構造的に起きない。
 
-運用上の唯一のリスクは**長時間の転送失敗でエッジのリングバッファが溜まり続ける**こと。ジョブは諦めず再試行し続け（max attempts で dead-letter にすると record が宙に浮く）、「未 ingest の record 総量」をメトリクス化してエッジのディスク残量と突き合わせてアラートする（[storage.md](../storage.md) のサイジング指針参照）。
+運用上の唯一のリスクは**長時間の転送失敗でエッジのリングバッファが溜まり続ける**こと。`IngestWorker` 自体は River の既定の試行上限のままで、上限に達すると discard（dead-letter）されうる。それでも record が宙に浮かないのは、mirakc 側の record がコミット成功後にしか削除されない（上記のとおり）ため: discard された後も record_sweep（5 分周期の定期全量突き合わせ。[watcher.md](watcher.md) §3.3 の (c)）が同じ finished record を見つけ、`processRecord` が同一トランザクションで ingest ジョブを再投入し続けるからである。「未 ingest の record 総量」をメトリクス化してエッジのディスク残量と突き合わせてアラートする（[storage.md](../storage.md) のサイジング指針参照）。
 
 #### 冪等性: コミット済みなら転送をやり直さない
 
@@ -114,7 +114,7 @@ pull 完了後に書き込みバイト数を HEAD の Content-Length と照合 �
 
 ### 5.5 ingest 完了後のフロー
 
-ingest 完了時に**同一トランザクションで**エンコードジョブを River に投入。信頼性は River の at-least-once + 冪等性で担保される。
+**#65 で設計変更済み。同一トランザクションでの投入はしない。** `media_assets` のコミット**後**に、ベストエフォートのヒントとしてエンコードジョブを投入する（`IngestWorker.Work` → `EnqueueMissingEncodes`。`ingest.go` の `enqueueMissingEncodesFromContext` 呼び出し）。投入に失敗してもログのみで、コミット済みの ingest は巻き戻さない。信頼性を担保するのは投入の再試行ではなく、desired（`recordings.encode_profiles`）− observed（コミットされた `encoded` 種別の `media_assets`）を埋めるレベルトリガー（不変条件 5）で、ヒントを落としても、原本がコミット済みの録画に対して ingest ジョブが再度 Work される経路（上記「冪等性: コミット済みなら転送をやり直さない」の分岐、あるいは record_sweep が同じ finished record を再投入する経路。§5.3 参照）が同じヒントを再度投入する。
 
 ---
 

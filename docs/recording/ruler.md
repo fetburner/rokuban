@@ -68,7 +68,7 @@ EPG 更新完了で `reservationManage.updateAll()` を呼び、全手動予約�
 #### 重複排除（再放送スキップ）
 
 - EPGStation#704 の教訓: 囲み文字（:heavy_multiplication_x::heavy_multiplication_x:等）を一律除去する正規化は「前編/後編」の区別まで消して誤判定する。**記号除去 + 完全一致ではなく、pg_trgm の類似度ベース**で設計する（閾値はルール単位で調整可能に）
-- EPGStation#473 の要望通り、**手動オーバーライド**（この番組を重複扱いにする / しない）を予約・履歴に持たせ、ruler 評価時に参照する
+- EPGStation#473 の要望通り、**手動オーバーライド**（この番組を重複扱いにする / しない）を ruler 評価時に参照する。**予約側は実装済み**: `program_intents.action = 'record'` が dedup の `base.skip` を上書きする合成が `db.EffectiveOptions` にある（下記「`base.skip` に skip を載せる唯一の経路が重複排除である」参照）。**履歴（`recordings`）側に手動オーバーライドを持たせる方は未実装**（この行は実装前の方針であり、現時点で `recordings` に判定根拠を書く経路は無い）
 - 判定に使った根拠（マッチした履歴、類似度）を予約に記録し、UI で「なぜスキップされたか」を説明可能にする
 
 M2-6 で実装した（`internal/ruler/dedupe.go`。候補の集合を jsonb で渡す集合演算 1 文）。判定規約:

@@ -56,19 +56,19 @@ CREATE INDEX ON reservations (rule_id);
 
 ### active / detached / orphaned は API が都度導出する（Phase 1。#28 / #30）
 
-`state` という列はもう存在しない。予約の状態は API 層（`internal/api/handler.go` の `reservationState`）が読むたびに計算して返すが、issue #98 で材料が変わった: `active` / `detached` は引き続き `(rule_id, base)` から、`orphaned` は `orphaned_at` 列（Phase 1）ではなく **「この予約に `status='failed'` の `recordings` 行が存在するか」という EXISTS 判定**（`GetReservationFull` / `ListReservationsBySite` の `never_recorded` 列）から導出する。
+`state` という列はもう存在しない。予約の状態は API 層（`internal/api/handler.go` の `reservationState`）が読むたびに計算して返すが、issue #98 で材料が変わった: `active` / `detached` は引き続き `(rule_id, base)` から、`orphaned` は `orphaned_at` 列（Phase 1）ではなく **「この予約の放送イベントに、生きている `recording.never-scheduled` の `recordings` 行が存在するか」という EXISTS 判定**（`GetReservationFull` / `ListReservationsBySite` の `never_recorded` 列）から導出する。予約 id ではなく放送イベント `(site, network_id, service_id, event_id)` で結合するのは、`reservations.id` が ruler の導出削除・再実体化で変わる不安定な値だから（不変条件 9 の identity。`internal/db/queries/reservations.sql:40-52` のコメントが権威）。
 
 | 値 | 意味 | 導出元 |
 |---|---|---|
 | `active` | 通常の desired 予約 | `rule_id IS NOT NULL`（または base が無い manual 予約） |
 | `detached` | ルールがマッチしなくなったが `record` 意図または上書きがある行（= `program_investments` view に行がある。issue #162）。base は凍結され、実質 manual として動く（`intent{skip}` なら録画しない detached） | `rule_id IS NULL AND base IS NOT NULL` |
-| `orphaned` | **この予約について捕獲の試みが失敗した（一度も schedule が作られなかった、または途中で失敗した）行**。即削除せず残して「録れなかった」を説明可能にする | `EXISTS (SELECT 1 FROM recordings WHERE reservation_id = r.id AND status = 'failed')` |
+| `orphaned` | **この予約について捕獲の試みが一度も記録されなかった行**。即削除せず残して「録れなかった」を説明可能にする | `EXISTS (SELECT 1 FROM recordings rec WHERE (rec.network_id, rec.service_id, rec.event_id) = 放送イベント AND rec.status = 'failed' AND rec.deleted_at IS NULL AND rec.superseded_at IS NULL AND quality_events に recording.never-scheduled マーカーがある)` |
 
 - **行の物理削除（GC）は「番組の終了時刻を過ぎた後」のみ**。番組の終了時刻は `program_snapshots.start_at + duration_ms` で判定し（§3.7）、`reservations` は `program_snapshots` への FK が `ON DELETE CASCADE` なのでスナップショットが GC された瞬間に一緒に落ちる（active/detached/orphaned のいずれでも問わない）。`recordings` は `program_snapshots` への FK を持たないので、GC された後も orphaned だったという記録は `recordings` 側に残り続ける（§5「行の作られ方」）
 - 意図も上書きもない active 予約がルール・EPG から消えた場合は通常の宣言的動作として削除（ただし大量削除サーキットブレーカーの対象）
 - ルール再マッチで base 再計算のうえ `active` に戻る（overrides は無傷）
 
-**同期対象かのフィルタに使ってよいのは「この予約に never-scheduled の `recordings` 行が無いこと」だけ**（`ListReservationsForSyncEvaluation` が絞る。issue #98 で `orphaned_at IS NULL` から置き換わった。API 表示用の `never_recorded` より狭い述語であることに注意 --- 同期除外は「一度も schedule が作られなかった」という `recording.never-scheduled` マーカーだけを見て、mirakc 由来の途中失敗（`recording.failed`）までは除外しない。理由は下記コラム参照）。`active` / `detached` は UI 表示用の派生値であり、同期の可否を決めるのは `effective.skip` である。かつて `state` 列が両方を兼ねていたため、`reconciler.listDesired` が `state = 'active'` でしか絞らず detached の予約に schedule が作られない、という「手動予約 → たまたまルールがマッチ → そのルールを編集して外す → ユーザーの手動予約が黙って録画されなくなる」不具合があった（M2-4 で修正。[録画エンジン](../recording.md) §4.3）。
+**同期対象かのフィルタに使ってよいのは「この予約に never-scheduled の `recordings` 行が無いこと」だけ**（`ListReservationsForSyncEvaluation` が絞る。issue #98 で `orphaned_at IS NULL` から置き換わった）。この述語は API 表示用の `never_recorded` と 1 点だけ異なる --- 表示側（`GetReservationFull` / `ListReservationsBySite`）は `deleted_at IS NULL AND superseded_at IS NULL`（生きている行）まで絞るが、同期除外側はこの制限を持たない。マーカー自体（「一度も schedule が作られなかった」という `recording.never-scheduled` だけを見て、mirakc 由来の途中失敗である `recording.failed` 全般までは除外しない）は両者で共通。理由は下記コラム参照。`active` / `detached` は UI 表示用の派生値であり、同期の可否を決めるのは `effective.skip` である。かつて `state` 列が両方を兼ねていたため、`reconciler.listDesired` が `state = 'active'` でしか絞らず detached の予約に schedule が作られない、という「手動予約 → たまたまルールがマッチ → そのルールを編集して外す → ユーザーの手動予約が黙って録画されなくなる」不具合があった（M2-4 で修正。[録画エンジン](../recording.md) §4.3）。
 
 > **`state` 列を残したことで、同じクラスの不具合が 2 件再発した**（[#30](https://github.com/fetburner/rokuban/issues/30)）。①ruler は導出の式ではなく**前パスの `rule_id` を見た遷移**を SQL の CASE で書いていたため、ルールを**削除**した経路（FK の `ON DELETE SET NULL` が先に `rule_id` を落とす）では `detached` にならず、`DELETE /api/rules/{id}` が返す `detachedReservations` の件数と予約一覧のバッジが一致しなかった。②`MarkReservationOrphaned` に `AND state = 'active'` が残っていたため、**detached 予約が永久に `orphaned` にならなかった**（M2-4 では `listDesired` 側だけを直した）。**Phase 1 で `state` 列そのものを撤去し、active/detached を読むたびに評価する形にしたことで、この 2 件は構造的に再発しなくなった**（前パスの遷移を保存する列自体が無い）。`orphaned` も issue #98 で `orphaned_at` 列自体を廃したことで同じ形の再発余地が構造的に無くなった。
 
