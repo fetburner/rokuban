@@ -591,9 +591,12 @@ func rewriteRuleMatches(ctx context.Context, tx pgx.Tx, site string, allMatches 
 //
 // フィールドは docs/schema.md §8「予約オプション」のうち、勝者ルールから決まる部分
 // （priority / encodeProfiles / keepOriginal / filenameTemplate）に限る。
-// **contentPath（展開済みのフルパス）は含めない** — reconciler が初回生成した値を
-// base に固定する契約になっており（issue #19）、ruler が毎パス書き直すと EPG
-// 更新のたびに mirakc の schedule が作り直される churn を招く。
+// **contentPath（展開済みのフルパス）は含めない** — reconciler は再作成時に
+// observed（mirakc に登録済みの schedule）の contentPath を引き継いで固定する
+// （`reservations.base` には書き戻さない。docs/recording/reconciler.md
+// §「予約オプションの差分反映」）。ruler が base に contentPath を持たせて毎パス
+// 書き直すと、この固定を素通りして EPG 更新のたびに mirakc の schedule が
+// 作り直される churn を招く。
 //
 // filenameTemplate はこれと事情が違う: テンプレート文字列そのものはルール編集
 // でしか変わらず、EPG 更新（番組名・時刻のスナップショット変化）では変化しない。

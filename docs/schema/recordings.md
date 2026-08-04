@@ -36,6 +36,11 @@ CREATE TABLE recordings (
     keep_original     text NOT NULL DEFAULT 'always'
                            CHECK (keep_original IN ('always', 'until_encoded')),
     encode_profiles   text[] NOT NULL DEFAULT '{}',   -- 設定ファイル定義のプロファイル名
+    -- until_encoded を選ぶならプロファイルを最低 1 つ添える（issue #104 / 00020）。
+    -- 無ければ削除 reconcile の派生物完備判定が空配列で恒真になり、原本が唯一の
+    -- コピーのまま物理削除されうる（不変条件 10「あってはいけない組み合わせを
+    -- 表現不可能にする」）
+    CHECK (keep_original <> 'until_encoded' OR cardinality(encode_profiles) > 0),
 
     -- 品質イベントログ（recording.failed / record-broken の理由。§8 参照）
     -- mirakc の reason を jsonb のまま保持し、構造化カラムにはしない（不変条件 7）
@@ -54,6 +59,12 @@ CREATE TABLE recordings (
     -- M3-8 の削除 reconcile が `purge_after <= now()` を拾って unlink する。
     -- 猶予経過による通常 purge とは独立した「前倒し」の合図。
     purge_after       timestamptz,
+    -- 「完全削除が完了した」不可逆な事実（issue #135 / 00024）。削除 reconcile が
+    -- パス末尾で、ごみ箱条件を満たしかつ物理削除待ちの media_assets が 1 行も
+    -- 残っていない録画に一度だけ立てる。ごみ箱ビュー（ListTrashRecordings）は
+    -- この列も IS NULL であることを要求するので、purge が完了した録画は
+    -- ごみ箱一覧から外れる（[storage.md](../storage.md) §7）
+    purged_at         timestamptz,
 
     created_at        timestamptz NOT NULL DEFAULT now(),
     updated_at        timestamptz NOT NULL DEFAULT now()
@@ -64,6 +75,7 @@ CREATE INDEX ON recordings (program_start_at DESC);        -- ライブラリ一
 CREATE INDEX ON recordings (network_id, service_id, event_id);
 CREATE INDEX ON recordings (deleted_at) WHERE deleted_at IS NOT NULL;  -- ごみ箱ビュー
 CREATE INDEX ON recordings (purge_after) WHERE purge_after IS NOT NULL;  -- 即時 purge
+CREATE INDEX ON recordings (purged_at) WHERE purged_at IS NULL;  -- ごみ箱一覧の絞り込み
 -- 履歴ベース重複排除（M2-6）は title の trgm 類似度で判定するが、GIN は張っていない。
 -- gin_trgm_ops が加速するのは % / <% / LIKE / 正規表現で、similarity() の関数呼び出しには
 -- 使われない（% の閾値は GUC pg_trgm.similarity_threshold 由来でルール単位の閾値と噛み合わない）。
@@ -85,9 +97,9 @@ CREATE INDEX ON recordings (purge_after) WHERE purge_after IS NOT NULL;  -- 即�
 - **これは不変条件 7「mirakc 固有の概念を永続テーブルに入れない」の違反ではない。** 既存 3 値（`recording`/`finished`/`failed`）はもともと mirakc の語彙であり、`canceled` の追加はその踏襲。不変条件 7 が禁じるのは mirakc の内部 ID・タグ形式・スケジュール状態（`RecordingScheduleState` 等）のような実装詳細に紐づく構造の持ち込みで、録画結果の語彙（成功/失敗/取消）はドメインの外部仕様として妥当な粒度
 - **未知の値（mirakc が将来値を追加した場合）は 5 値目を足さず `failed` に丸める。** `internal/watcher.normalizeRecordingStatus` が正規化し、生の値は `record_sync.status`（CHECK 無し）にそのまま残るので観測は失われない。丸めるのは「分かっている 2 つの事実を潰す」`canceled`→`failed` の丸めとは異なり、「何が起きたか分からない」という状態そのものが事実であるケースなので、粗い `failed` への集約を許容している。次に mirakc が値を足したら `internal/watcher` の ERROR ログを起点にこの CHECK と `openapi.yaml` の enum を更新すること
 - **`status` に 5 値目（`never-scheduled` 等）を足さない（issue #98 の決定）。** このスキーマでは「失敗の種別」はもともと `quality_events` の管轄で、`status` は粗い帰結だけを持つ（mirakc 由来の失敗も理由は `status` ではなく `quality_events` にある）。never-scheduled は失敗の**理由**なので、`status='failed'` + `quality_events` に `recording.never-scheduled` が既存の型に合致する。`canceled` を独立させた論法（「分かっている 2 つの事実を同じ値に潰すと一覧が嘘をつく」）の再演に見えるが違う --- 区別（mirakc 由来かreconciler由来か、そしてその理由）は quality_events に保存されるので嘘にならない
-- never-scheduled 行は「`media_assets` を 1 行も持たない録画」になる。この形の録画がごみ箱から正しく扱われることは #135（`purged_at`）の関心事で、この PR では触らない
+- never-scheduled 行は「`media_assets` を 1 行も持たない録画」になる。ユーザーがこれをごみ箱送り（`deleted_at` を立てる）にした場合でも、`media_assets` が 0 行なら `MarkPurgedRecordings`（issue #135 / 00024）の `NOT EXISTS` 判定は空集合で自明に真になり、正しく完全削除の対象として扱われる（[storage.md](../storage.md) §7 参照）
 
-**never-scheduled 行の識別:** `reservation_id` で特定の予約に紐づく（`reservations` GC 後は `ON DELETE SET NULL` で `NULL` になる）ほか、`quality_events` の配列要素に `event = "recording.never-scheduled"` を持つことで機械的に判別できる（`internal/db.QualityEventNeverScheduled`）。API の `orphaned` 表示（`GetReservationFull` の `never_recorded`）はこのマーカーまで絞らず「`status='failed'` の行が存在するか」だけを見るが、`ListReservationsForSyncEvaluation` 等の同期除外は mirakc 由来の途中失敗からの再試行を妨げないよう `recording.never-scheduled` マーカーだけに絞る（[reservations.md](reservations.md) §3 参照）。
+**never-scheduled 行の識別:** `reservation_id` で特定の予約に紐づく（`reservations` GC 後は `ON DELETE SET NULL` で `NULL` になる）ほか、`quality_events` の配列要素に `event = "recording.never-scheduled"` を持つことで機械的に判別できる（`internal/db.QualityEventNeverScheduled`）。API の `orphaned` 表示（`GetReservationFull` の `never_recorded`）も `ListReservationsForSyncEvaluation` 等の同期除外も、この `recording.never-scheduled` マーカーだけに絞る（mirakc 由来の途中失敗からの再試行を妨げないため。マーカーの絞り込みは両者で共通）。両者の違いは生きている行への限定の有無だけ: 表示側は `deleted_at IS NULL AND superseded_at IS NULL` まで絞るが、同期除外側はこの制限を持たない（[reservations.md](reservations.md) §3 参照）。
 
 ### ごみ箱（issue #4 の削除エンジンコメント / M3-7 #69）
 

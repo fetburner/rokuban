@@ -52,23 +52,23 @@ CREATE INDEX ON reservations (rule_id);
 
 - **effective = COALESCE(base, '{}') ⊕ program_overrides.overrides**。reconciler が mirakc へ同期し、ingest / encode が参照するのは常に effective。解決は `db.EffectiveOptions` の 1 箇所に集約し、jsonb の Unmarshal 失敗を握りつぶさない。`db.ReservationOptions.IsSkipped()` が `effective.skip` の判定に名前を付けている
 - base と overrides は**同形の jsonb ドキュメント**（§8）。ruler は EPG 更新のたびに base を丸ごと再計算してよく、**overrides は別表なので構造的に触れない**
-- **`skip` は overrides のキーではなく `program_intents.action`**。列なので base 側の skip に対する優先順位が明示的に決まる（`action = 'skip'` が勝つ）。skip された番組は**予約行を持たない**
+- **`skip` は overrides のキーではなく `program_intents.action`**。列なので base 側の skip に対する優先順位が明示的に決まる（`action = 'skip'` が勝つ）。**意図が skip で、かつ上書きが無い**番組は予約行を持たない（overrides があれば skip でも行は残る。下記「program_investments」参照）
 
 ### active / detached / orphaned は API が都度導出する（Phase 1。#28 / #30）
 
-`state` という列はもう存在しない。予約の状態は API 層（`internal/api/handler.go` の `reservationState`）が読むたびに計算して返すが、issue #98 で材料が変わった: `active` / `detached` は引き続き `(rule_id, base)` から、`orphaned` は `orphaned_at` 列（Phase 1）ではなく **「この予約に `status='failed'` の `recordings` 行が存在するか」という EXISTS 判定**（`GetReservationFull` / `ListReservationsBySite` の `never_recorded` 列）から導出する。
+`state` という列はもう存在しない。予約の状態は API 層（`internal/api/handler.go` の `reservationState`）が読むたびに計算して返すが、issue #98 で材料が変わった: `active` / `detached` は引き続き `(rule_id, base)` から、`orphaned` は `orphaned_at` 列（Phase 1）ではなく **「この予約の放送イベントに、生きている `recording.never-scheduled` の `recordings` 行が存在するか」という EXISTS 判定**（`GetReservationFull` / `ListReservationsBySite` の `never_recorded` 列）から導出する。予約 id ではなく放送イベント `(site, network_id, service_id, event_id)` で結合するのは、`reservations.id` が ruler の導出削除・再実体化で変わる不安定な値だから（不変条件 9 の identity。`internal/db/queries/reservations.sql:40-52` のコメントが権威）。
 
 | 値 | 意味 | 導出元 |
 |---|---|---|
 | `active` | 通常の desired 予約 | `rule_id IS NOT NULL`（または base が無い manual 予約） |
 | `detached` | ルールがマッチしなくなったが `record` 意図または上書きがある行（= `program_investments` view に行がある。issue #162）。base は凍結され、実質 manual として動く（`intent{skip}` なら録画しない detached） | `rule_id IS NULL AND base IS NOT NULL` |
-| `orphaned` | **この予約について捕獲の試みが失敗した（一度も schedule が作られなかった、または途中で失敗した）行**。即削除せず残して「録れなかった」を説明可能にする | `EXISTS (SELECT 1 FROM recordings WHERE reservation_id = r.id AND status = 'failed')` |
+| `orphaned` | **観測が無いこと自体ではなく、「捕獲が一度も行われなかった」という事実を記録した `recordings` 行が存在すること**が根拠。即削除せず残して「録れなかった」を説明可能にする | `EXISTS (SELECT 1 FROM recordings rec WHERE rec.site = r.site AND (rec.network_id, rec.service_id, rec.event_id) = 放送イベント AND rec.status = 'failed' AND rec.deleted_at IS NULL AND rec.superseded_at IS NULL AND quality_events に recording.never-scheduled マーカーがある)` |
 
 - **行の物理削除（GC）は「番組の終了時刻を過ぎた後」のみ**。番組の終了時刻は `program_snapshots.start_at + duration_ms` で判定し（§3.7）、`reservations` は `program_snapshots` への FK が `ON DELETE CASCADE` なのでスナップショットが GC された瞬間に一緒に落ちる（active/detached/orphaned のいずれでも問わない）。`recordings` は `program_snapshots` への FK を持たないので、GC された後も orphaned だったという記録は `recordings` 側に残り続ける（§5「行の作られ方」）
 - 意図も上書きもない active 予約がルール・EPG から消えた場合は通常の宣言的動作として削除（ただし大量削除サーキットブレーカーの対象）
 - ルール再マッチで base 再計算のうえ `active` に戻る（overrides は無傷）
 
-**同期対象かのフィルタに使ってよいのは「この予約に never-scheduled の `recordings` 行が無いこと」だけ**（`ListReservationsForSyncEvaluation` が絞る。issue #98 で `orphaned_at IS NULL` から置き換わった。API 表示用の `never_recorded` より狭い述語であることに注意 --- 同期除外は「一度も schedule が作られなかった」という `recording.never-scheduled` マーカーだけを見て、mirakc 由来の途中失敗（`recording.failed`）までは除外しない。理由は下記コラム参照）。`active` / `detached` は UI 表示用の派生値であり、同期の可否を決めるのは `effective.skip` である。かつて `state` 列が両方を兼ねていたため、`reconciler.listDesired` が `state = 'active'` でしか絞らず detached の予約に schedule が作られない、という「手動予約 → たまたまルールがマッチ → そのルールを編集して外す → ユーザーの手動予約が黙って録画されなくなる」不具合があった（M2-4 で修正。[録画エンジン](../recording.md) §4.3）。
+**同期対象かのフィルタに使ってよいのは「この予約に never-scheduled の `recordings` 行が無いこと」だけ**（`ListReservationsForSyncEvaluation` が絞る。issue #98 で `orphaned_at IS NULL` から置き換わった）。この述語は API 表示用の `never_recorded` と 1 点だけ異なる --- 表示側（`GetReservationFull` / `ListReservationsBySite`）は `deleted_at IS NULL AND superseded_at IS NULL`（生きている行）まで絞るが、同期除外側はこの制限を持たない。マーカー自体（「一度も schedule が作られなかった」という `recording.never-scheduled` だけを見て、mirakc 由来の途中失敗である `recording.failed` 全般までは除外しない）は両者で共通。理由は下記コラム参照。`active` / `detached` は UI 表示用の派生値であり、同期の可否を決めるのは `effective.skip` である。かつて `state` 列が両方を兼ねていたため、`reconciler.listDesired` が `state = 'active'` でしか絞らず detached の予約に schedule が作られない、という「手動予約 → たまたまルールがマッチ → そのルールを編集して外す → ユーザーの手動予約が黙って録画されなくなる」不具合があった（M2-4 で修正。[録画エンジン](../recording.md) §4.3）。
 
 > **`state` 列を残したことで、同じクラスの不具合が 2 件再発した**（[#30](https://github.com/fetburner/rokuban/issues/30)）。①ruler は導出の式ではなく**前パスの `rule_id` を見た遷移**を SQL の CASE で書いていたため、ルールを**削除**した経路（FK の `ON DELETE SET NULL` が先に `rule_id` を落とす）では `detached` にならず、`DELETE /api/rules/{id}` が返す `detachedReservations` の件数と予約一覧のバッジが一致しなかった。②`MarkReservationOrphaned` に `AND state = 'active'` が残っていたため、**detached 予約が永久に `orphaned` にならなかった**（M2-4 では `listDesired` 側だけを直した）。**Phase 1 で `state` 列そのものを撤去し、active/detached を読むたびに評価する形にしたことで、この 2 件は構造的に再発しなくなった**（前パスの遷移を保存する列自体が無い）。`orphaned` も issue #98 で `orphaned_at` 列自体を廃したことで同じ形の再発余地が構造的に無くなった。
 
@@ -115,14 +115,14 @@ CREATE TABLE program_overrides (
 
 **表を 2 つに分けるのは、ユーザーが番組について主張しうる 2 つのことが独立だから**である（①録る / 録るな ②パラメータの上書き）。1 表に同居させると `action NOT NULL` のために「パラメータだけ上書きした。録る録らないについては意見なし」が表現できず、行が空になったときに何を主張していた行かを行自身から読めなくなる。理由と具体的な誤動作は [録画エンジン](../recording.md) §4.2「overrides は `program_intents` とは別の表に置く」。
 
-- **`action`**: `record`（録れ = 手動予約 / dedup skip の明示的な無効化）/ `skip`（録るな = 番組単位の除外）。**skip された番組は `reservations` に行を持たない**
+- **`action`**: `record`（録れ = 手動予約 / dedup skip の明示的な無効化）/ `skip`（録るな = 番組単位の除外）。**意図が skip で、かつ上書きが無い番組は `reservations` に行を持たない**（overrides があれば skip でも行は残る。下記「program_investments」参照）
 - **`overrides` に CHECK を置かない。** `program_overrides` 自身のロジックが内容を一切使わない不透明なペイロードだから jsonb を許している。内容を検査する制約（`jsonb_strip_nulls(overrides) <> '{}'` 等）は技術的には可能だが、「クエリはしないが制約はする」という中途半端な状態を作らない。**空の上書き = 行が無い**で表し、マージも SQL ではなく Go 側で `db.ReservationOptions` の型付きフィールドとして行う
 - **書き込み所有権**: api のみ。ruler は base を再計算するだけでこの 2 表に触らない → 手動編集が構造的に上書きされない
 - **GC**: `program_snapshots` への FK が `ON DELETE CASCADE` なので、番組終了後のスナップショット GC（§3.7）に連動して自動的に落ちる。以前はこの 2 表がそれぞれ独自に `program_start_at` / `program_duration_ms` を持ち、GC の比較対象にしていたが、Phase 1（#27）でこの列を落として `program_snapshots` に一本化した
 - **site スコープ**: 「サイト A では録らない、B では録る」が N 予約の下では意味を持つため（[録画エンジン](../recording.md) §3.1）
 - SSE ヒントはどちらも `reservations` トピックに寄せる（意図の変更は予約一覧・番組表の両方に現れる）
 
-**どちらの表も行の存在が予約を存在させる**（ruler の desired に入る）。ただし `program_intents` については `action = 'record'` の行に限る --- `action = 'skip'` の行は逆に予約を desired から外す側（§3「skip された番組は予約行を持たない」）なので、行の存在で予約を保つのは `program_overrides` と同じ意味にならない。`program_overrides` に行があるだけで予約が保たれるのは §4.3「overrides あり → 削除せず detached で保持」の要求。この 2 条件（`record` 意図 ∪ overrides）は `program_investments` view（issue #162）が 1 箇所にまとめて定義している。
+**どちらの表も行の存在が予約を存在させる**（ruler の desired に入る）。ただし `program_intents` については `action = 'record'` の行に限る --- `action = 'skip'` の行は単独では逆に予約を desired から外す側（§3「意図が skip で、かつ上書きが無い番組は予約行を持たない」）なので、行の存在で予約を保つのは `program_overrides` と同じ意味にならない。`program_overrides` に行があるだけで予約が保たれるのは §4.3「overrides あり → 削除せず detached で保持」の要求。この 2 条件（`record` 意図 ∪ overrides）は `program_investments` view（issue #162）が 1 箇所にまとめて定義している。
 
 取消は**無条件に `intent{skip}` を書いて導出行を落とす**。行を消すだけでは「消された行」と「最初から無かった行」が ruler から区別できず、次の全量パスが復活させる。
 
