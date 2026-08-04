@@ -61,7 +61,7 @@ CREATE INDEX ON reservations (rule_id);
 | 値 | 意味 | 導出元 |
 |---|---|---|
 | `active` | 通常の desired 予約 | `rule_id IS NOT NULL`（または base が無い manual 予約） |
-| `detached` | ルールがマッチしなくなったが `record` 意図または上書きがある行（= `program_investments` view に行がある。issue #162）。base は凍結され、実質 manual として動く | `rule_id IS NULL AND base IS NOT NULL` |
+| `detached` | ルールがマッチしなくなったが `record` 意図または上書きがある行（= `program_investments` view に行がある。issue #162）。base は凍結され、実質 manual として動く（`intent{skip}` なら録画しない detached） | `rule_id IS NULL AND base IS NOT NULL` |
 | `orphaned` | **この予約について捕獲の試みが失敗した（一度も schedule が作られなかった、または途中で失敗した）行**。即削除せず残して「録れなかった」を説明可能にする | `EXISTS (SELECT 1 FROM recordings WHERE reservation_id = r.id AND status = 'failed')` |
 
 - **行の物理削除（GC）は「番組の終了時刻を過ぎた後」のみ**。番組の終了時刻は `program_snapshots.start_at + duration_ms` で判定し（§3.7）、`reservations` は `program_snapshots` への FK が `ON DELETE CASCADE` なのでスナップショットが GC された瞬間に一緒に落ちる（active/detached/orphaned のいずれでも問わない）。`recordings` は `program_snapshots` への FK を持たないので、GC された後も orphaned だったという記録は `recordings` 側に残り続ける（§5「行の作られ方」）

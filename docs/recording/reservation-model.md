@@ -111,7 +111,7 @@ EPG の変化・ルール編集でルールがマッチしなくなったとき:
 | 状態 | 挙動 |
 |---|---|
 | `record` 意図も上書きもなし（`intent{skip}` のみ、または意図・上書きが一切ない） | 削除（通常の宣言的動作） |
-| **`record` 意図または上書きがある（= `program_investments` view に行がある。#162）** | **削除せず detached 状態で保持**。`intent{record}` があるので実質 manual として録画する |
+| **`record` 意図または上書きがある（= `program_investments` view に行がある。#162）** | **削除せず detached 状態で保持**。`intent{skip}` があれば録画しない detached、それ以外は実質 manual として録画する |
 
 **`detached` は mirakc への同期対象から外してはならない**（M2-4 で修正）。「実質 manual として録画する」は、reconciler が schedule を作るという意味である。`reconciler.listDesired` が `state = 'active'` で絞っていたため detached の予約は schedule が作られておらず、次の経路で**ユーザーの手動予約が黙って録画されなくなっていた**:
 
