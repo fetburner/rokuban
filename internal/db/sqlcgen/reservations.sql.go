@@ -21,9 +21,15 @@ type CreateManualReservationParams struct {
 	ProgramID int64
 }
 
-// テスト用の直接 INSERT ヘルパー。reservations の実運用上の唯一の書き手は
-// ruler の一括 INSERT（internal/ruler/sql.go）で、api はこの表に一切書かない
-// （M3-1、issue #29「導出器が作るキーを宛先にしない」の帰結）。
+// テスト用の直接 INSERT ヘルパー。reservations の実運用上の書き手は
+// ruler の一括 INSERT（internal/ruler/sql.go）で、api はこの表に INSERT を
+// 一切書かない（M3-1、issue #29「導出器が作るキーを宛先にしない」の帰結）。
+// 例外は DELETE のみ: DeleteRule がルール削除と同一 tx で
+// DeleteReservationsByRuleWithoutIntent（rules.sql）を実行する。明示操作は
+// 同期・ブレーカー対象外という既存の線に乗るための例外で、WHERE が
+// program_investments を適用の瞬間に再評価するので #29 の窓は生じない
+// （docs/recording/reservation-model.md §4.4「取消は `PUT .../intent {action:
+// skip}`。api は `reservations` に触れない（M3-1）」に追記した例外）。
 //
 // 番組の事実のスナップショット（title / 開始時刻 / 尺 / チャンネル識別）は
 // program_snapshots に抽出された（#27）。FK (site, program_id) REFERENCES

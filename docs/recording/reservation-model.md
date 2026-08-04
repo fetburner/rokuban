@@ -31,7 +31,7 @@ reservations の行を 2 層に分ける:
 
 意図と上書きの寿命は放送の寿命に揃える（番組終了後に GC）。
 
-ruler は EPG 更新のたびに base を丸ごと再計算してよい --- **overrides は別表（`program_overrides`）にあるので構造的に触れない**。3-way merge は不要。ruler は `reservations` を、api は `program_intents` / `program_overrides` を書くので競合もない（ruler のパスはサイト単位で排他。[データ層](../data.md) §2）。**ルール側の変更は上書きしていないフィールドにだけ自動伝播する**（ユーザーの直感と一致）。
+ruler は EPG 更新のたびに base を丸ごと再計算してよい --- **overrides は別表（`program_overrides`）にあるので構造的に触れない**。3-way merge は不要。ruler は `reservations` を、api は `program_intents` / `program_overrides` を書くので競合もない（ruler のパスはサイト単位で排他。[データ層](../data.md) §2）。api が `reservations` を書くのはルール削除 API の同期削除 1 本だけで、そこも WHERE の NOT EXISTS を適用の瞬間に再評価するので競合しない（§4.4）。**ルール側の変更は上書きしていないフィールドにだけ自動伝播する**（ユーザーの直感と一致）。
 
 UI: 上書き中のフィールドにマーカー表示 + フィールド単位/予約単位の「ルールに戻す」（override を消すだけ）。
 
@@ -161,7 +161,9 @@ manual 予約を「その番組 1 つにマッチする自動生成ルール」�
 
 #### 取消は `PUT .../intent {action: skip}`。api は `reservations` に触れない（M3-1）
 
-`PUT /api/sites/{site}/programs/{programId}/intent {action: skip}` は `program_intents` を書くだけで、`reservations` の行は同一トランザクションで削除しない（issue #29 の決定: `reservations` の書き手は ruler だけにする）。行の削除は ruler が次の全量パスで「意図に基づいて desired から除外された」ことを検出して行う（非同期。`insertRulerPassHint` で ruler_pass を即座に投入するので実質秒オーダー。フロントエンドは楽観更新で一覧の見た目を即時反映する）。**行の状態による分岐はない。**
+`PUT /api/sites/{site}/programs/{programId}/intent {action: skip}` は `program_intents` を書くだけで、`reservations` の行は同一トランザクションで削除しない（issue #29 の決定: 導出行 `reservations` の書き手は ruler だけにする）。行の削除は ruler が次の全量パスで「意図に基づいて desired から除外された」ことを検出して行う（非同期。`insertRulerPassHint` で ruler_pass を即座に投入するので実質秒オーダー。フロントエンドは楽観更新で一覧の見た目を即時反映する）。**行の状態による分岐はない。**
+
+この「ruler だけ」の原則には例外が 1 つある。`DELETE /api/rules/{id}`（§4.3「ルール削除の UX」）はルール削除と同一 tx で `reservations` を直接 DELETE する（`internal/api/rules.go` の `DeleteRule` → `DeleteReservationsByRuleWithoutIntent`）。これは実装の手抜きではなく、§4.3「削除 API は内訳（削除 N 件・detached M 件）を返す」という要求の帰結である --- 内訳の件数は削除と同一 tx で数えないと確定しない。取消 API（本節）を非同期にできるのは「削除される」の一択で内訳を持たないためで、ルール削除は「削除される予約」と「detached で残る予約」の 2 通りを同時に確定して返す必要があるぶん、非同期化できない。明示操作は同期・ブレーカー対象外という既存の線（§3.6「大量削除サーキットブレーカー」が明示操作を対象にしない理由と同じ側）に乗るための例外であり、1 つの表に書き手が 2 人いる形（CLAUDE.md 不変条件 12 の兆候）だが、`DeleteReservationsByRuleWithoutIntent` の WHERE 句は `program_investments`（intent / overrides）を DELETE 実行の瞬間に再評価するため、issue #29 が問題にした「適用の瞬間の窓」（並行して着地する手動予約を踏み潰す）はここでは生じない。詳細は `internal/db/queries/rules.sql` の同クエリのコメント参照。
 
 api が行を直接消さない理由は ruler 側の GC ロジックと同じ: 行を消すだけにしてはならない。**消された行と最初から無かった行は ruler から区別できない**（DELETE は「録画するな」という負の意図ごと情報を破壊する）ため、次の全量パスが復活させてしまう。意図が別表に残るので、勝者ルールが入れ替わっても・全ルールがマッチしなくなっても・再アタッチされても、除外は一貫して守られる。
 
