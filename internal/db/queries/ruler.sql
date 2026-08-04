@@ -60,20 +60,15 @@ WHERE site = $1 AND program_id = ANY(sqlc.arg(program_ids)::bigint[]);
 -- 評価する」を列だけでなく DELETE の対象判定にも適用する）。
 -- internal/db/queries/rules.sql の DeleteReservationsByRuleWithoutIntent と同じ形。
 --
--- program_intents 側は action = 'record' に限定する。action を問わずに EXISTS すると
--- action='skip' の予約行（そもそも desired に入らない設計 = issue #18 の案 A）が
--- ここで保護されてしまい、「取消した予約が消えない」リグレッションになる。
--- program_overrides 側は中身を問わず行の存在だけで desired に残る設計
--- （ruler.go の union の最後）なので、action と無関係に EXISTS だけでよい。
+-- 「この番組にユーザーの投資があるか」という述語は program_investments view
+-- （program_intents の action='record' 行 ∪ program_overrides の行）に一本化した
+-- （#162）。view は実行時にインライン展開されるため、ガードが「削除の瞬間に
+-- 再評価する」性質は変わらない。
 DELETE FROM reservations r
 WHERE r.site = $1 AND r.program_id = ANY(sqlc.arg(program_ids)::bigint[])
   AND NOT EXISTS (
-      SELECT 1 FROM program_intents i
-      WHERE i.site = r.site AND i.program_id = r.program_id AND i.action = 'record'
-  )
-  AND NOT EXISTS (
-      SELECT 1 FROM program_overrides o
-      WHERE o.site = r.site AND o.program_id = r.program_id
+      SELECT 1 FROM program_investments v
+      WHERE v.site = r.site AND v.program_id = r.program_id
   );
 
 -- name: ListReservationIDsBySiteAndProgramIDs :many

@@ -29,21 +29,15 @@ func (q *Queries) CountReservationsByRuleID(ctx context.Context, ruleID *int64) 
 const countReservationsByRuleWithIntent = `-- name: CountReservationsByRuleWithIntent :one
 SELECT count(*) FROM reservations r
 WHERE r.rule_id = $1
-  AND (
-      EXISTS (
-          SELECT 1 FROM program_intents i
-          WHERE i.site = r.site AND i.program_id = r.program_id
-      )
-      OR EXISTS (
-          SELECT 1 FROM program_overrides o
-          WHERE o.site = r.site AND o.program_id = r.program_id
-      )
+  AND EXISTS (
+      SELECT 1 FROM program_investments v
+      WHERE v.site = r.site AND v.program_id = r.program_id
   )
 `
 
 // ルール削除時の内訳表示用（detached 化される件数）。上の
-// DeleteReservationsByRuleWithoutIntent と対になる条件（意図または上書きの
-// どちらかがある）。
+// DeleteReservationsByRuleWithoutIntent と対になる条件（program_investments に
+// 含まれる = 意図または上書きのどちらかがある）。
 func (q *Queries) CountReservationsByRuleWithIntent(ctx context.Context, ruleID *int64) (int64, error) {
 	row := q.db.QueryRow(ctx, countReservationsByRuleWithIntent, ruleID)
 	var count int64
@@ -133,25 +127,26 @@ const deleteReservationsByRuleWithoutIntent = `-- name: DeleteReservationsByRule
 DELETE FROM reservations r
 WHERE r.rule_id = $1
   AND NOT EXISTS (
-      SELECT 1 FROM program_intents i
-      WHERE i.site = r.site AND i.program_id = r.program_id
-  )
-  AND NOT EXISTS (
-      SELECT 1 FROM program_overrides o
-      WHERE o.site = r.site AND o.program_id = r.program_id
+      SELECT 1 FROM program_investments v
+      WHERE v.site = r.site AND v.program_id = r.program_id
   )
 `
 
-// ルール削除時: ユーザーの投資（program_intents / program_overrides のどちらか）
-// がない導出予約を物理削除する。投資がある予約は残す（FK の ON DELETE SET NULL
-// で rule_id が外れ、base が凍結されたまま実質 manual として動く = detached）。
+// ルール削除時: ユーザーの投資（program_investments view。program_intents の
+// action='record' 行 ∪ program_overrides の行）がない導出予約を物理削除する。
+// 投資がある予約は残す（FK の ON DELETE SET NULL で rule_id が外れ、base が
+// 凍結されたまま実質 manual として動く = detached）。
 //
-// M2-4 で overrides を program_intents から program_overrides に分離したため、
-// 「ルール由来の予約に PATCH しただけ（program_overrides のみ、program_intents
-// には行なし）」という状態が構造的にありうる（docs/recording.md §4.2「overrides
-// は program_intents とは別の表に置く」）。program_intents だけを見ると
-// この投資を見落として誤って物理削除してしまうため、両方を確認する
-// （§4.3「意図または上書きがある → 削除せず detached で保持」）。
+// program_intents 側は action = 'record' に限定する（#162。ruler.sql の
+// DeleteReservationsBySiteAndProgramIDs と同じ理由づけ）。action を限定しないと
+// intent{skip} だけの予約行が「detached として残る」と数えられるが、直後の
+// ruler パス（DeleteRule が同一 tx でヒントを投入するので数秒後）で
+// program_investments に含まれない行として導出削除され、内訳表示が
+// 数秒で消える行を「detached になった」と数える不整合を生む。
+//
+// program_overrides 側は中身を問わず行の存在だけで desired/detached に残る設計
+// （docs/recording/reservation-model.md §4.2「ruler から見た load-bearing な行」）
+// なので、action と無関係に program_investments に含まれる。
 func (q *Queries) DeleteReservationsByRuleWithoutIntent(ctx context.Context, ruleID *int64) (int64, error) {
 	result, err := q.db.Exec(ctx, deleteReservationsByRuleWithoutIntent, ruleID)
 	if err != nil {

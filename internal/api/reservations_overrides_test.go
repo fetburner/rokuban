@@ -799,6 +799,105 @@ func TestDeleteRule_ReservationWithOnlyOverridesSurvivesDetached(t *testing.T) {
 	}
 }
 
+// 回帰テスト（#162）: ルール削除時の投資判定を program_investments view
+// （program_intents の action='record' 行 ∪ program_overrides の行）に揃えた。
+// 揃える前は program_intents の存在だけを見ており action を限定しなかったため、
+// intent{skip} だけの予約（そもそも desired に入らない = ruler.sql の導出削除
+// ガードと同じ理由づけ）が detached として残ると数えられてしまい、直後の
+// ruler パスで導出削除される数秒だけの行を「detached になった」と数える
+// 不整合があった。揃えた後は削除側に数えられ、行も同一トランザクションで消える。
+func TestDeleteRule_ReservationWithOnlySkipIntentIsDeleted(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	router := api.NewRouter(api.RouterConfig{Pool: pool})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	const programID int64 = 1960000196091234
+	ruleID := insertRuleFixture(t, pool, ctx)
+	resID := insertReservationDirect(t, pool, ctx, programID, &ruleID, 19600, 1960)
+
+	// program_intents に action='skip' だけを作る（program_overrides には触れない）。
+	if _, err := pool.Exec(ctx, `
+INSERT INTO program_intents (site, program_id, action) VALUES ('default', $1, 'skip')`,
+		programID); err != nil {
+		t.Fatalf("seeding skip intent: %v", err)
+	}
+
+	delResp := doDelete(t, srv, "/api/rules/"+itoa(ruleID))
+	if delResp.StatusCode != http.StatusOK {
+		t.Fatalf("delete rule status = %d, want 200", delResp.StatusCode)
+	}
+	var del api.DeleteRuleResponse
+	if err := json.NewDecoder(delResp.Body).Decode(&del); err != nil {
+		t.Fatal(err)
+	}
+	_ = delResp.Body.Close()
+	if del.DeletedReservations != 1 || del.DetachedReservations != 0 {
+		t.Errorf("deletedReservations=%d detachedReservations=%d, want 1/0 "+
+			"(a reservation with only an intent{skip} row is not a user investment "+
+			"and must be physically deleted, not detached)",
+			del.DeletedReservations, del.DetachedReservations)
+	}
+
+	var n int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM reservations WHERE id = $1`, resID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("reservation row count = %d, want 0 "+
+			"(a reservation with only an intent{skip} row must be deleted alongside the rule, "+
+			"not kept as detached)", n)
+	}
+}
+
+// 反対方向（#162）: program_intents に action='record' がある予約は
+// program_investments に含まれるので、ルール削除後も detached で残る。
+func TestDeleteRule_ReservationWithOnlyRecordIntentSurvivesDetached(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	router := api.NewRouter(api.RouterConfig{Pool: pool})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	const programID int64 = 1970000197091234
+	ruleID := insertRuleFixture(t, pool, ctx)
+	resID := insertReservationDirect(t, pool, ctx, programID, &ruleID, 19700, 1970)
+
+	if _, err := pool.Exec(ctx, `
+INSERT INTO program_intents (site, program_id, action) VALUES ('default', $1, 'record')`,
+		programID); err != nil {
+		t.Fatalf("seeding record intent: %v", err)
+	}
+
+	delResp := doDelete(t, srv, "/api/rules/"+itoa(ruleID))
+	if delResp.StatusCode != http.StatusOK {
+		t.Fatalf("delete rule status = %d, want 200", delResp.StatusCode)
+	}
+	var del api.DeleteRuleResponse
+	if err := json.NewDecoder(delResp.Body).Decode(&del); err != nil {
+		t.Fatal(err)
+	}
+	_ = delResp.Body.Close()
+	if del.DeletedReservations != 0 || del.DetachedReservations != 1 {
+		t.Errorf("deletedReservations=%d detachedReservations=%d, want 0/1 "+
+			"(a reservation with an intent{record} row is a user investment and "+
+			"must survive rule deletion as detached)",
+			del.DeletedReservations, del.DetachedReservations)
+	}
+
+	var n int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM reservations WHERE id = $1`, resID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("reservation row count = %d, want 1 "+
+			"(a reservation with an intent{record} row must survive rule deletion, not be deleted)", n)
+	}
+}
+
 func errIsNoRows(err error) bool {
 	return errors.Is(err, pgx.ErrNoRows)
 }
