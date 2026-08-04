@@ -2135,7 +2135,7 @@ func TestReconciler_StartDelaySuppressionMatchesBroadcastEventKeyPerReservation(
 	programIDStarted := int64(100000500030010)
 	eventIDStarted := int32(30010)
 	resStarted := createReservation(t, ctx, q, programIDStarted, "開始観測済み番組", startAt)
-	createStartedRecording(t, ctx, q, resStarted.ID, eventIDStarted, startAt, startAt.Add(1*time.Minute))
+	createStartedRecording(t, ctx, q, eventIDStarted, startAt, startAt.Add(1*time.Minute))
 
 	// 予約 B: 同一サイト・同一サービスの別イベントで、recordings 行なし。
 	// 検出されるべき。

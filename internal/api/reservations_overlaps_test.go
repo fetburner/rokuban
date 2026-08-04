@@ -206,15 +206,15 @@ func TestGetProgramOverlaps_MidRecordingFailureNotExcluded(t *testing.T) {
 	seedEpgProgram(t, pool, 240, 32679, 5169, 3, "対象番組2", base, false)
 	seedEpgProgram(t, pool, 241, 32679, 5169, 4, "放送中に失敗した番組", base.Add(30*time.Minute), false)
 
-	failedResID := reserveViaAPI(t, srv.URL, pool, ctx, 241)
+	reserveViaAPI(t, srv.URL, pool, ctx, 241)
 	// handleRecordingFailed が作る形の failed 行（never-scheduled マーカーは無い）。
 	if _, err := pool.Exec(ctx, `
 INSERT INTO recordings (
-    reservation_id, source, site, network_id, service_id, event_id, service_name,
+    source, site, network_id, service_id, event_id, service_name,
     channel_type, channel, title, program_start_at, program_duration_ms, status, quality_events
-) VALUES ($1, 'manual', 'default', 32679, 5169, 4, 'テスト局', 'GR', '27', '放送中に失敗した番組', $2, $3, 'failed',
+) VALUES ('manual', 'default', 32679, 5169, 4, 'テスト局', 'GR', '27', '放送中に失敗した番組', $1, $2, 'failed',
     '[{"event":"recording.failed","reason":"need-rescheduling"}]'::jsonb)`,
-		failedResID, base.Add(30*time.Minute), time.Hour.Milliseconds()); err != nil {
+		base.Add(30*time.Minute), time.Hour.Milliseconds()); err != nil {
 		t.Fatalf("seeding mid-recording failure: %v", err)
 	}
 

@@ -84,16 +84,16 @@ INSERT INTO recordings (
 // この行の存在で予約を需要から除外してはならないことを確認するための直接
 // INSERT（issue #157: never_scheduled_events view の述語が status='failed'
 // 全般に緩んでいないかの回帰確認）。
-func seedMidRecordingFailure(t *testing.T, pool *pgxpool.Pool, reservationID int64, networkID, serviceID, eventID int32) {
+func seedMidRecordingFailure(t *testing.T, pool *pgxpool.Pool, networkID, serviceID, eventID int32) {
 	t.Helper()
 	ctx := context.Background()
 	qe := `[{"event":"recording.failed","reason":"need-rescheduling"}]`
 	if _, err := pool.Exec(ctx, `
 INSERT INTO recordings (
-    reservation_id, source, site, network_id, service_id, event_id, service_name,
+    source, site, network_id, service_id, event_id, service_name,
     channel_type, channel, title, program_start_at, program_duration_ms, status, quality_events
-) VALUES ($1, 'manual', $2, $3, $4, $5, 'テスト局', 'GR', '25', 'テスト番組', now(), 1800000, 'failed', $6::jsonb)`,
-		reservationID, testSite, networkID, serviceID, eventID, qe); err != nil {
+) VALUES ('manual', $1, $2, $3, $4, 'テスト局', 'GR', '25', 'テスト番組', now(), 1800000, 'failed', $5::jsonb)`,
+		testSite, networkID, serviceID, eventID, qe); err != nil {
 		t.Fatalf("seeding mid-recording failure: %v", err)
 	}
 }
@@ -108,8 +108,8 @@ func TestLoad_MidRecordingFailureNotExcluded(t *testing.T) {
 
 	seedTuner(t, pool, 0, "PX-S1UD_T1", []string{"GR"}, true, false)
 	seedReservation(t, pool, 100, "GR", "27", start, duration, "")
-	resID := seedReservation(t, pool, 101, "GR", "25", start, duration, "")
-	seedMidRecordingFailure(t, pool, resID, 32678, 5168, int32(101%100000))
+	seedReservation(t, pool, 101, "GR", "25", start, duration, "")
+	seedMidRecordingFailure(t, pool, 32678, 5168, int32(101%100000))
 
 	overages := loadOverages(t, pool)
 	if len(overages) != 1 {
