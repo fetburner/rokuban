@@ -10,11 +10,11 @@
 -- 放送イベントキー (site, network_id, service_id, event_id) 経由（前者は
 -- program_snapshots を介して reservations.program_id に結合、後者は
 -- program_snapshots が持つ同キーを直接引く）に置き換えた。残る読者は
--- internal/api/recordings.go の表示用コピーだけで、これも本 issue で
--- 同じキー経由に置き換える（Recording API からは reservationId を削除し、
--- ソースは openapi.yaml/生成物側で表現する）。internal/db/queries/catalog.sql
--- の import は元から reservation_id を NULL 固定で書いており
--- （「導出物なので export しない」と明記済み）、この変更の影響を受けない。
+-- internal/api/recordings.go の表示用コピーだけで、web/ 側に参照が無いことを
+-- 確認したうえで openapi.yaml の Recording.reservationId ごと削除した（置き換え
+-- ではなく廃止。予約→録画の表示紐付けという機能自体を落としている）。
+-- internal/db/queries/catalog.sql の import は元から reservation_id を NULL 固定で
+-- 書いており（「導出物なので export しない」と明記済み）、この変更の影響を受けない。
 --
 -- 列が存在する限り「便利な結合キー」としての引力を持ち続け、7 例目を防ぐ
 -- のはレビューの運になる。列自体を落として間違いを表現不可能にする

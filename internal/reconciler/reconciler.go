@@ -877,8 +877,8 @@ type startDelayed struct {
 //
 // 観測の有無は recordings.started_at で判定する。判定の宛先キーは予約 id ではなく
 // 放送イベント (network_id, service_id, event_id) —— reservations.id は ruler の
-// 導出削除・再実体化で変わる不安定な値で、recordings.reservation_id は
-// ON DELETE SET NULL である。予約 id で引くと、録画中に EPG フリッカーやルール
+// 導出削除・再実体化で変わる不安定な値で、recordings.reservation_id（issue #158 で
+// 列自体を削除済み）は当時 ON DELETE SET NULL だった。予約 id で引くと、録画中に EPG フリッカーやルール
 // 編集で予約行が作り直された瞬間に started 済み recordings 行が見つからなくなり、
 // 検出窓の間毎パス開始遅延を誤検知する（CLAUDE.md 不変条件 9 の identity。
 // #29 / #53 / #98 / #99 / #149 と同じ族、internal/db/queries/start_delay.sql 参照）。
