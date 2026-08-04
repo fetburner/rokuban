@@ -243,14 +243,13 @@ type RuleTime struct {
 }
 
 type ScheduleSync struct {
-	Site          string
-	ProgramID     int64
-	ReservationID *int64
-	State         string
-	Options       json.RawMessage
-	Tags          []string
-	FailedReason  json.RawMessage
-	ObservedAt    time.Time
+	Site         string
+	ProgramID    int64
+	State        string
+	Options      json.RawMessage
+	Tags         []string
+	FailedReason json.RawMessage
+	ObservedAt   time.Time
 }
 
 type SchemaInfo struct {

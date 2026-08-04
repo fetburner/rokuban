@@ -634,6 +634,124 @@ func TestSchemaV1_ProgramSnapshotGCCascadesToReservationIntentAndOverrides(t *te
 	}
 }
 
+// TestMigration00027_DropsScheduleSyncReservationID は issue #148: 書き手は
+// いるが読み手が本番コードに 1 つも無かった schedule_sync.reservation_id
+// （と、その FK・索引）が 00027 で確実に落ちることを見る。
+func TestMigration00027_DropsScheduleSyncReservationID(t *testing.T) {
+	dbURL := testDatabaseURL(t)
+	ctx := context.Background()
+
+	if err := MigrateReset(ctx, dbURL); err != nil {
+		t.Fatalf("migrate reset: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := MigrateReset(ctx, dbURL); err != nil {
+			t.Errorf("cleanup migrate reset: %v", err)
+		}
+	})
+
+	subFS, err := fs.Sub(migrations, "migrations")
+	if err != nil {
+		t.Fatalf("getting migrations sub-FS: %v", err)
+	}
+	sqlDB, err := sql.Open("pgx", dbURL)
+	if err != nil {
+		t.Fatalf("opening database: %v", err)
+	}
+	defer func() { _ = sqlDB.Close() }()
+
+	provider, err := goose.NewProvider(goose.DialectPostgres, sqlDB, subFS)
+	if err != nil {
+		t.Fatalf("creating goose provider: %v", err)
+	}
+
+	// 00026 まで適用（00027 適用前、reservation_id 列がまだある状態）。
+	if _, err := provider.UpTo(ctx, 26); err != nil {
+		t.Fatalf("migrating up to 00026: %v", err)
+	}
+
+	pool, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("connecting pool: %v", err)
+	}
+	defer pool.Close()
+
+	const site = "home"
+	const programID int64 = 271828182
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO program_snapshots (
+			site, program_id, title, start_at, duration_ms,
+			network_id, service_id, channel_type, channel, event_id, service_name
+		)
+		VALUES ($1, $2, '', now(), 1800000, 32736, 1024, 'GR', '27', 1, 'テスト局')`,
+		site, programID); err != nil {
+		t.Fatalf("inserting program_snapshot: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO reservations (site, program_id) VALUES ($1, $2)`, site, programID); err != nil {
+		t.Fatalf("inserting reservation: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO schedule_sync (site, program_id, reservation_id, state, options)
+		SELECT $1, $2, id, 'scheduled', '{}'::jsonb FROM reservations WHERE site = $1 AND program_id = $2`,
+		site, programID); err != nil {
+		t.Fatalf("inserting schedule_sync row with reservation_id set: %v", err)
+	}
+
+	var columnExistsBefore bool
+	if err := pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM information_schema.columns
+		 WHERE table_name = 'schedule_sync' AND column_name = 'reservation_id')`,
+	).Scan(&columnExistsBefore); err != nil {
+		t.Fatalf("checking column exists before 00027: %v", err)
+	}
+	if !columnExistsBefore {
+		t.Fatal("precondition: schedule_sync.reservation_id should exist before 00027")
+	}
+
+	// 00027 を適用: 列（と FK・索引）が落ちる。行自体は他の列を保ったまま残る。
+	if _, err := provider.UpTo(ctx, 27); err != nil {
+		t.Fatalf("migrating up to 00027: %v", err)
+	}
+
+	var columnExistsAfter bool
+	if err := pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM information_schema.columns
+		 WHERE table_name = 'schedule_sync' AND column_name = 'reservation_id')`,
+	).Scan(&columnExistsAfter); err != nil {
+		t.Fatalf("checking column exists after 00027: %v", err)
+	}
+	if columnExistsAfter {
+		t.Error("schedule_sync.reservation_id should have been dropped by 00027")
+	}
+
+	var stateAfter string
+	if err := pool.QueryRow(ctx,
+		`SELECT state FROM schedule_sync WHERE site = $1 AND program_id = $2`, site, programID,
+	).Scan(&stateAfter); err != nil {
+		t.Fatalf("schedule_sync row should survive the column drop: %v", err)
+	}
+	if stateAfter != "scheduled" {
+		t.Errorf("schedule_sync.state = %q, want %q", stateAfter, "scheduled")
+	}
+
+	// 反対方向の確認: 削除した索引を DROP INDEX IF EXISTS で参照しているだけの
+	// はずなので、列が無い状態で reservations 側を DELETE しても schedule_sync
+	// は（かつての ON DELETE SET NULL の FK 経由ではなく）無関係に残る。
+	if _, err := pool.Exec(ctx, `DELETE FROM reservations WHERE site = $1 AND program_id = $2`, site, programID); err != nil {
+		t.Fatalf("deleting reservation: %v", err)
+	}
+	var scheduleSyncExists bool
+	if err := pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM schedule_sync WHERE site = $1 AND program_id = $2)`, site, programID,
+	).Scan(&scheduleSyncExists); err != nil {
+		t.Fatalf("checking schedule_sync survives reservation deletion: %v", err)
+	}
+	if !scheduleSyncExists {
+		t.Error("schedule_sync row should survive reservation deletion now that the FK is gone")
+	}
+}
+
 func TestReservationOptions_Effective(t *testing.T) {
 	priority1 := 1
 	priority2 := 2

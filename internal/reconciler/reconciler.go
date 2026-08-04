@@ -361,22 +361,6 @@ func totalLossSample(toDelete []mirakc.Schedule) breaker.Sample {
 func (r *Reconciler) observeSchedules(ctx context.Context, schedules []mirakc.Schedule) error {
 	q := sqlcgen.New(r.pool)
 	for _, s := range schedules {
-		// tag は programId しか運ばない（#53）。reservation の特定は schedule 自身が
-		// 持つ Program.ID（tag のパースを経由しない、常に正確な値）で行う。
-		// IsOurs で「自分が作った schedule か」を確認してから紐付ける —
-		// 外部産の schedule が偶然同じ programId を持っていても reservation_id を
-		// 埋めない。
-		var reservationID *int64
-		if mirakc.IsOurs(s.Tags) {
-			res, err := q.GetReservationBySiteAndProgramID(ctx, sqlcgen.GetReservationBySiteAndProgramIDParams{
-				Site:      r.site,
-				ProgramID: s.Program.ID,
-			})
-			if err == nil {
-				reservationID = &res.ID
-			}
-		}
-
 		optionsJSON, err := json.Marshal(s.Options)
 		if err != nil {
 			return fmt.Errorf("marshalling options: %w", err)
@@ -397,13 +381,12 @@ func (r *Reconciler) observeSchedules(ctx context.Context, schedules []mirakc.Sc
 		}
 
 		if err := q.UpsertScheduleSync(ctx, sqlcgen.UpsertScheduleSyncParams{
-			Site:          r.site,
-			ProgramID:     s.Program.ID,
-			ReservationID: reservationID,
-			State:         s.State,
-			Options:       optionsJSON,
-			Tags:          tags,
-			FailedReason:  failedReasonJSON,
+			Site:         r.site,
+			ProgramID:    s.Program.ID,
+			State:        s.State,
+			Options:      optionsJSON,
+			Tags:         tags,
+			FailedReason: failedReasonJSON,
 		}); err != nil {
 			return fmt.Errorf("upserting schedule_sync for program %d: %w", s.Program.ID, err)
 		}
