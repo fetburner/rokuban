@@ -38,13 +38,15 @@ type Config struct {
 	//
 	// かつて存在した MaxDeletesPerPass（件数ベースの大量削除ブレーカー）とは
 	// 別物で、あちらは撤去した: reconciler が「desired に無い schedule がある」
-	// と判定する経路（ruler の導出削除／ユーザーの明示操作／番組終了後の GC）を
-	// reconciler 自身は区別できず、対象外と定められた後の 2 経路で誤発火する
+	// と判定する経路を reconciler 自身は区別できず、ruler のブレーカー対象外の
+	// 2 経路（ルール削除 API による直接 DELETE／番組終了後の GC）で誤発火する
 	// だけだったため（breaker.ReconcileTotalLoss の doc コメント、
-	// docs/recording.md §3.2、issue #2 の M2-5 決定コメント）。代わりに
-	// 「desired が空なのに自分の schedule が観測される」という全損シグネチャを
-	// breaker.ReconcileTotalLoss で守る。MaxRecreatesPerPass は削除の話ではなく
-	// 単なるレート制限で、上限まではやって残りを次パスに送るだけ。
+	// docs/recording.md §3.2「止められる場所は ruler だけ」、issue #2 の M2-5
+	// 決定コメント）。desired から外れる形の明示操作（intent skip 等）は ruler
+	// の toDelete 経由で既にブレーカー対象。代わりに「desired が空なのに自分の
+	// schedule が観測される」という全損シグネチャを breaker.ReconcileTotalLoss
+	// で守る。MaxRecreatesPerPass は削除の話ではなく単なるレート制限で、上限
+	// まではやって残りを次パスに送るだけ。
 	MaxRecreatesPerPass int
 
 	DefaultPriority int
