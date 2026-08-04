@@ -161,15 +161,18 @@ func cloneStringSlicePtr(p *[]string) *[]string {
 }
 
 // ScheduleSync は mirakc schedule の観測。
+//
+// reservation_id 列は issue #148 で落ちた --- 書き手（reconciler の
+// observeSchedules）はいたが読み手が本番コードに 1 つも無かった（CLAUDE.md
+// 不変条件 10「意味を持たない行を作らない」）。
 type ScheduleSync struct {
-	Site          string          `db:"site"`
-	ProgramID     int64           `db:"program_id"`
-	ReservationID *int64          `db:"reservation_id"`
-	State         string          `db:"state"`
-	Options       json.RawMessage `db:"options"`
-	Tags          []string        `db:"tags"`
-	FailedReason  json.RawMessage `db:"failed_reason"`
-	ObservedAt    time.Time       `db:"observed_at"`
+	Site         string          `db:"site"`
+	ProgramID    int64           `db:"program_id"`
+	State        string          `db:"state"`
+	Options      json.RawMessage `db:"options"`
+	Tags         []string        `db:"tags"`
+	FailedReason json.RawMessage `db:"failed_reason"`
+	ObservedAt   time.Time       `db:"observed_at"`
 }
 
 // Recording は録画履歴（永続資産）。
