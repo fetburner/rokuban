@@ -38,14 +38,28 @@ type Config struct {
 	// desired から外れた理由が EPG の一時欠損かユーザーの明示操作かを区別しない。
 	// そのため次のようなユーザー操作も同じ toDelete に混ざってカウントされ、
 	// ラッチ中は他の導出削除と同様に保留される（非網羅）:
-	//   - 既存予約がある番組に intent skip（PUT .../intent {action:"skip"}）を立てる
+	//   - 既存予約がある番組に intent skip（PUT .../intent {action:"skip"}）を立てる、
+	//     または intent をクリアする（DELETE .../intent、internal/api/program_intent.go
+	//     の DeleteProgramIntent）。ただし削除候補に現れるのは、その番組に他の
+	//     investment（overrides 等）が残っておらず（残っていれば desired が union で
+	//     救い、DELETE 文自体の NOT EXISTS(program_investments) ガードでも救われる）、
+	//     かつ EPG 射影にまだ番組がある（消えていれば stillProjectedSubset が
+	//     凍結する）場合に限る
 	//   - 勝者ルールを削除する、またはマッチしなくなるよう編集する
 	//   - record 意図も勝者ルールも無く、最後の investment だった overrides を消す
 	//     （DELETE .../overrides、または全フィールドを reset する PATCH。
 	//     internal/api/program_overrides.go の persistOverrides が空になった
 	//     行を DELETE する）
-	// 録画そのものは effective.skip が listDesired から除外して防ぐので、
-	// ラッチ中に予約一覧の行が残っても録画は実行されない。
+	//
+	// 実害は経路によって異なる。intent skip は intent.action='skip' により
+	// effective.skip を立てるため、ラッチ中に予約行が残っても listDesired
+	// （db.EvaluateSyncCandidates の Skipped）が同期対象から除外し、録画そのものは
+	// 防がれる（実害は予約一覧の表示上の残留のみ。
+	// TestReconciler_SkippedReservationNotScheduled が固定）。intent クリアは
+	// この限りではない —— program_intents の行を消すだけで effective.skip を
+	// 立てないため、ラッチ中に残る予約行は listDesired から除外されず、既存
+	// schedule も消えず、番組は録画され続ける。この経路の扱い（録画も止めるか、
+	// 導出削除の対象から外すか、現状のまま許容するか）は未決（issue #154）。
 	//
 	// **発動は internal/breaker によりラッチとして永続化される**（issue #24 M2-5）。
 	// 件数が閾値以下に戻っても自動では解除されず、

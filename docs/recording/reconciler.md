@@ -143,7 +143,8 @@ schedule が消えたまま次のパスまで残る。レベルトリガーで�
 対策:
 
 - **1 回の ruler パスでの削除数に閾値**（`ruler.max_deletes_per_pass`）を設け、超えたら削除を実行せず停止してアラート。手動確認後に再開
-- **ブレーカーが数えるのは `toDelete`（既存予約のうち desired から外れた行）で、外れた理由が EPG の一時欠損かユーザーの明示操作かを区別しない。** desired は「(ルール勝者 − intent skip) ∪ investment（record 意図 ∪ overrides）」から導出されるため、ルールの削除・編集で勝者が変わる／intent skip を立てる／record 意図も勝者ルールも無く最後の investment だった overrides を消す（`DELETE .../overrides`、または全フィールドを reset する `PATCH`）といったユーザーの明示操作も同じ `toDelete` に混ざり、ラッチ中は他の導出削除と同様にカウント・保留される（非網羅）。区別しないのは単純さを優先した設計判断で、代わりに影響件数の内訳を提示する確認 UI が安全装置になる。録画そのものは `effective.skip` が `listDesired` から別途除外して防ぐため、ラッチ中に予約一覧の行が残っても実害は表示上の残留に限られる
+- **ブレーカーが数えるのは `toDelete`（既存予約のうち desired から外れた行）で、外れた理由が EPG の一時欠損かユーザーの明示操作かを区別しない。** desired は「(ルール勝者 − intent skip) ∪ investment（record 意図 ∪ overrides）」から導出されるため、ルールの削除・編集で勝者が変わる／intent skip を立てる／intent をクリアする（`DELETE .../intent`）／record 意図も勝者ルールも無く最後の investment だった overrides を消す（`DELETE .../overrides`、または全フィールドを reset する `PATCH`）といったユーザーの明示操作も同じ `toDelete` に混ざり、ラッチ中は他の導出削除と同様にカウント・保留される（非網羅）。ただし intent skip / intent クリアが削除候補に現れるのは、その番組に他の investment（overrides 等）が残っておらず（残っていれば desired が union で救い、DELETE 文自体の `NOT EXISTS (program_investments)` ガードでも救われる）、かつ EPG 射影にまだ番組がある（消えていれば `stillProjectedSubset` が凍結する）場合に限る。区別しないのは単純さを優先した設計判断で、代わりに影響件数の内訳を提示する確認 UI が安全装置になる
+- **実害は経路によって異なる。** intent skip は `intent.action='skip'` により `effective.skip` を立てるため、ラッチ中に予約行が残っても `listDesired`（`db.EvaluateSyncCandidates` の `Skipped`）が同期対象から除外し、録画そのものは防がれる（実害は予約一覧の表示上の残留のみ。`TestReconciler_SkippedReservationNotScheduled` が固定）。**intent クリア（`DELETE .../intent`）はこの限りではない** —— `program_intents` の行を消すだけで `effective.skip` を立てないため、ラッチ中に残る予約行は `listDesired` から除外されず、既存 schedule も消えず、番組は録画され続ける。この経路の扱い（録画も止めるか、導出削除の対象から外すか、現状のまま許容するか）は未決（issue #154）
 - **不変条件: 録画済みデータ（media_assets）に至る自動削除経路は retention reconcile のみ**。EPG・予約側の状態変化から録画物の削除に到達するパスを作らない
 - programId が EPG から消えた予約は即削除せず猶予を置く（mirakc 自身も removed-from-epg を理由付き failed として通知してくる）。なお実装の `orphaned` state はこの用途ではなく「番組終了後に schedule が観測されなかった」を意味し、issue #98 以降は `recordings` に never-scheduled 行が存在するかどうかから読むたびに導出する（[schema.md](../schema.md) §3）
 
@@ -154,7 +155,7 @@ M1-4 では ruler と reconciler の両方に削除件数の閾値を置いて�
 | 経路 | ruler の `MaxDeletesPerPass` の対象か |
 |---|---|
 | ruler が EPG の変化から導出削除した | 対象。ruler のブレーカーが既に通している |
-| ユーザーの明示操作（ルールの削除・編集で勝者が変わる、intent skip、最後の investment だった overrides の削除など）で desired から外れた | 対象。上記「大量削除サーキットブレーカー」のとおり区別せず同じ `toDelete` に混ざる |
+| ユーザーの明示操作（ルールの削除・編集で勝者が変わる、intent skip、intent クリア、最後の investment だった overrides の削除など）で desired から外れた | 対象。上記「大量削除サーキットブレーカー」のとおり区別せず同じ `toDelete` に混ざる |
 | 番組終了後の GC が予約行を刈った | **対象外**。GC は `runGC` という別経路で `runPassForSite` の `toDelete` を通らない（下記「番組終了後の GC」） |
 
 reconciler から見える 3 経路のうち 2 つは ruler のブレーカーで既に止められており、残る GC は時刻の比較だけで決定的に定まるためそもそも止める必要がない。reconciler にもう一段ブレーカーを置くと、この区別ができないまま GC の正常な一括削除（「長時間停止していた場合、再開後に溜まった期限切れ行を一括で消す」）にも誤発火する。
