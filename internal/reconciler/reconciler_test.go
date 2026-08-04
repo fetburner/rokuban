@@ -1524,11 +1524,12 @@ func TestReconciler_LogsEndedProgramSkipCount(t *testing.T) {
 
 // --- 全損シグネチャ・サーキットブレーカー（breaker.ReconcileTotalLoss、issue #24 M2-5）---
 //
-// 件数ベースの MaxDeletesPerPass は撤去した（reconciler からは ruler の導出削除・
-// ユーザーの明示操作・GC のどれで desired が減ったのか区別できず、後の 2 つで
-// 誤発火するだけだったため。docs/recording.md §3.2、issue #2 の M2-5 決定コメント）。
-// 代わりに「desired（reservations）が 1 件もないのに、自分が作った schedule が
-// 観測されている」という全損シグネチャだけを守る。
+// 件数ベースの MaxDeletesPerPass は撤去した（reconciler からは desired が減った
+// 経路を区別できず、ruler のブレーカー対象外の 2 経路 — ルール削除 API による
+// 直接 DELETE と番組終了後の GC — で誤発火するだけだったため。
+// docs/recording.md §3.2「止められる場所は ruler だけ」、issue #2 の M2-5
+// 決定コメント）。代わりに「desired（reservations）が 1 件もないのに、自分が
+// 作った schedule が観測されている」という全損シグネチャだけを守る。
 
 // 受け入れ基準 1・7: 予約が 1 件もなく、自分の tag が付いた schedule が観測されたら
 // 削除せず発動し、detail に消されようとしていた schedule の抜粋（programId と

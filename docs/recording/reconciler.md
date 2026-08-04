@@ -155,11 +155,11 @@ M1-4 では ruler と reconciler の両方に削除件数の閾値を置いて�
 | 経路 | ruler の `MaxDeletesPerPass` の対象か |
 |---|---|
 | ruler が EPG の変化から導出削除した | 対象。ruler のブレーカーが既に通している |
-| ユーザーの明示操作のうち intent 経由（intent skip、intent クリア、最後の investment だった overrides の削除、ルール**編集**で勝者が変わるなど）で desired から外れた | 対象。上記「大量削除サーキットブレーカー」のとおり区別せず同じ `toDelete` に混ざる |
+| ユーザーの明示操作で desired から外れた（intent skip、intent クリア、最後の investment だった overrides の削除、ルール**編集**で勝者が変わるなど） | 対象。上記「大量削除サーキットブレーカー」のとおり区別せず同じ `toDelete` に混ざる |
 | ユーザーの明示操作のうちルール**削除**（`DeleteRule`） | **対象外**。API ハンドラ（`internal/api/rules.go`）が同一トランザクションで `reservations` を直接 DELETE し、ruler の `toDelete` も `MaxDeletesPerPass` も経由しない |
 | 番組終了後の GC が予約行を刈った | **対象外**。GC は `runGC` という別経路で `runPassForSite` の `toDelete` を通らない（下記「番組終了後の GC」） |
 
-ruler のブレーカーが通しているのは EPG 由来の導出削除と intent 経由の明示操作で、**ルール削除と GC はブレーカーの外にある**。reconciler から見ると、この 2 経路以外は「ruler が既に処理して DB にコミット済み」の状態でしか観測されない。reconciler にもう一段ブレーカーを置いても、desired に無い schedule があるという観測だけではこの区別ができず、ルール削除の一括処理（内訳を提示する確認 UI で安全性を担保済み）と GC の正常な一括削除（「長時間停止していた場合、再開後に溜まった期限切れ行を一括で消す」）に誤発火するだけだった。
+ruler のブレーカーが通しているのは EPG 由来の導出削除と、desired から外れる形の明示操作で、**ルール削除と GC はブレーカーの外にある**。reconciler から見ると、この 2 経路以外は「ruler が既に処理して DB にコミット済み」の状態でしか観測されない。reconciler にもう一段ブレーカーを置いても、desired に無い schedule があるという観測だけではこの区別ができず、ルール削除の一括処理（内訳を提示する確認 UI で安全性を担保済み）と GC の正常な一括削除（「長時間停止していた場合、再開後に溜まった期限切れ行を一括で消す」）に誤発火するだけだった。
 
 守る価値もない。**reconciler が DELETE する時点で「録画しない」決定は DB にコミット済み**である（不変条件「コミット = DB 行」）。誤りなら止めるべき場所は ruler で、reconciler で止めるのは「DB に合わせることを拒否する」ことにしかならず、mirakc に不要な schedule を残し続ける。
 
