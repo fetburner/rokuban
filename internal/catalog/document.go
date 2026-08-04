@@ -123,6 +123,20 @@ type Recording struct {
 	QualityEvents     json.RawMessage `json:"qualityEvents"`
 	DeletedAt         *time.Time      `json:"deletedAt,omitempty"`
 	PurgeAfter        *time.Time      `json:"purgeAfter,omitempty"`
+	// KeepOriginalLegacy / EncodeProfilesLegacy: issue #159 より前は
+	// recordings.keep_original / recordings.encode_profiles だった旧列。
+	// 現在は RecordingEncodePolicy（recording_encode_policy 衛星表）に切り出した
+	// ため、新しい export はこの 2 フィールドを書かない（常に nil で omit
+	// される）。#159 より前に export された古いダンプは "keepOriginal" /
+	// "encodeProfiles" キーを常に持つので、rescue 側はこれが non-nil であることを
+	// 「旧ダンプである」判定に使い、migration 00030 backfill と同じ基準（原本
+	// media_asset の有無。列の値そのものは使わない）でこのダンプ内の
+	// doc.MediaAssets から recording_encode_policy 行を復元する
+	// （internal/catalog/rescue.go 参照）。落とすと旧ダンプの rescue で凍結済み
+	// ポリシーが黙って失われる（削除エンジンが対象外になり、事後追加は
+	// 既定値 'always' で上書きされる）。
+	KeepOriginalLegacy   *string  `json:"keepOriginal,omitempty"`
+	EncodeProfilesLegacy []string `json:"encodeProfiles,omitempty"`
 	// SupersededAt は「この行が active-event の枠を明け渡した」不可逆な事実
 	// （issue #129 症状 2）。落とすと rescue 側で superseded 行と生きている行が
 	// どちらも live に戻り、recordings_unique_active_event に衝突して復旧が

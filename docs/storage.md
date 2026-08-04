@@ -93,9 +93,9 @@ S3 マウント（k8s-csi-s3 の geesefs/s3fs、AWS Mountpoint 等）では以�
 
 ### 設計
 
-**ルール（または個別予約）が保持ポリシーを持つ**: `keepOriginal: always / until_encoded`。実効値（ルールの base + 予約単位の overrides）は `recordings.keep_original` / `recordings.encode_profiles` へスナップショットされ、「この録画の望ましい最終状態は『派生物のみ、原本なし』」という desired state になる（M3-14、issue #103）。
+**ルール（または個別予約）が保持ポリシーを持つ**: `keepOriginal: always / until_encoded`。実効値（ルールの base + 予約単位の overrides）は `recording_encode_policy.keep_original` / `recording_encode_policy.encode_profiles` へスナップショットされ、「この録画の望ましい最終状態は『派生物のみ、原本なし』」という desired state になる（M3-14、issue #103）。`recording_encode_policy` は `recordings` を `recording_id` で指す衛星表で、行の存在そのものが「凍結済み」を意味する（issue #159。[schema/recordings.md](schema/recordings.md) 参照）。
 
-**凍結する瞬間は ingest が原本 media_asset をコミットする tx の中**（`internal/worker/ingest.go` の `resolveAndSnapshotEncodePolicy`）であって、予約確定時でも録画開始時でもない。再導出（reservations 経由で毎回引き直す）は選べない —— 導出元（`reservations` / `program_overrides` / `program_intents`）は放送終了 + 猶予後に GC される寿命の短い表だが、`recordings` は永続資産（CLAUDE.md 不変条件 12「表は行の寿命で割る」）。導出に依存させると、番組が EPG から消えて GC された時点で desired が空になり、エンコード未完了の録画で原本削除が止まる／再エンコードが投入できなくなる。凍結した 2 列は「この録画の望ましい最終状態」であり、`recordings` 行と同時に生まれて同時に死ぬので不変条件 12 には反しない。ただし凍結する以上、**ingest 完了より後の override 変更はその録画には反映されない**という境界が生まれる（[予約モデル](recording/reservation-model.md) §4.5）。
+**凍結する瞬間は ingest が原本 media_asset をコミットする tx の中**（`internal/worker/ingest.go` の `resolveAndSnapshotEncodePolicy`）であって、予約確定時でも録画開始時でもない。再導出（reservations 経由で毎回引き直す）は選べない —— 導出元（`reservations` / `program_overrides` / `program_intents`）は放送終了 + 猶予後に GC される寿命の短い表だが、`recordings` は永続資産（CLAUDE.md 不変条件 12「表は行の寿命で割る」）。導出に依存させると、番組が EPG から消えて GC された時点で desired が空になり、エンコード未完了の録画で原本削除が止まる／再エンコードが投入できなくなる。凍結した `recording_encode_policy` の行は「この録画の望ましい最終状態」であり、`recordings` 行と同時に生まれて同時に死ぬので不変条件 12 には反しない（衛星表として別テーブルに置くことは「行の寿命が同じ」であることと矛盾しない。不変条件 13 参照）。ただし凍結する以上、**ingest 完了より後の override 変更はその録画には反映されない**という境界が生まれる（[予約モデル](recording/reservation-model.md) §4.5）。
 
 **予約をどのキーで引くか（issue #149）**: `resolveAndSnapshotEncodePolicy` は予約を `recordings.reservation_id`（bigint FK、`ON DELETE SET NULL`。issue #158 で列自体を削除済み）ではなく、放送イベントキー `(site, network_id, service_id, event_id)` で引く。`reservations.id` は ruler の導出削除・再実体化（EPG フリッカー、ルール編集、dedup）で変わりうる不安定な値（CLAUDE.md 不変条件 9「identity」、#53 / #98 / #99 と同じ族）で、録画開始から ingest 完了までの窓（番組の尺ぶん、数時間）でこれが起きると FK が NULL に落ち、旧実装は「予約が無い」と誤認して encode policy を凍結し損なっていた（ログにも出ない）。放送イベントキーは `recordings` が録画開始時から凍結して持つ列（導出器が作るキーではない）なので、予約の再実体化を跨いでも変わらない。
 
@@ -115,7 +115,7 @@ S3 マウント（k8s-csi-s3 の geesefs/s3fs、AWS Mountpoint 等）では以�
 
 - **放送データが 0 コピーになる瞬間は構造的に存在しない**。エッジの record 削除は ingest コミット後（[録画エンジン](recording.md) 参照）、原本削除はエンコード検証後。常に 1 コピー以上ある
 - **「唯一のコピーを消す」パスがない**。エンコードが恒久的に失敗すれば条件 2 が満たされず原本は自然に保持され続ける（+ アラート対象）
-- **条件 2 の「全プロファイル完備」は `encode_profiles` が空でないことも要求する**。API はエンコードプロファイル未指定のルールで `until_encoded` を選択不可にしているが（下記「UI / 運用」）、それを回避して `until_encoded` かつ `encode_profiles = '{}'` の組が recordings に焼かれた場合、「全称量化された条件が空集合に対して自明に真になる」ため対策なしでは即座に原本が消える（issue #103 の「罠」）。`cardinality(encode_profiles) > 0` を要求するガードは、削除 reconcile が until_encoded 腕を消費する箇所ごとに手で複製するのではなく、名前付き述語 `until_encoded_deletable_originals`（view。§7 参照）の定義 1 箇所に置く。これにより、入力側の検証が抜けても、この view を参照するすべての経路（入口・前パスの拾い直し・否定形の判定）に構造的に効く（issue #160。以前は複製の 1 つにこのガードが漏れていた）
+- **条件 2 の「全プロファイル完備」は `encode_profiles` が空でないことも要求する**。API はエンコードプロファイル未指定のルールで `until_encoded` を選択不可にしているが（下記「UI / 運用」）、それを回避して `until_encoded` かつ `encode_profiles = '{}'` の組が `recording_encode_policy` に焼かれた場合、「全称量化された条件が空集合に対して自明に真になる」ため対策なしでは即座に原本が消える（issue #103 の「罠」）。`cardinality(encode_profiles) > 0` を要求するガード（CHECK と同じ条件を `recording_encode_policy` テーブル自身の CHECK にも持つ。issue #159）は、削除 reconcile が until_encoded 腕を消費する箇所ごとに手で複製するのではなく、名前付き述語 `until_encoded_deletable_originals`（view。§7 参照）の定義 1 箇所に置く。これにより、入力側の検証が抜けても、この view を参照するすべての経路（入口・前パスの拾い直し・否定形の判定）に構造的に効く（issue #160。以前は複製の 1 つにこのガードが漏れていた）
 - **削除プロトコルも冪等**: アセット行を deleting にマーク → unlink → deleted にマーク。どこで落ちても reconcile が拾い直し、残骸は孤児クリーンアップが回収
 - **メタデータは tombstone として残す**。ドロップスキャン結果・元サイズ・録画品質は原本削除後も UI で見られる（「ドロップがあったから再放送を待つ」判断は削除後にこそ必要）
 
@@ -127,10 +127,11 @@ S3 マウント（k8s-csi-s3 の geesefs/s3fs、AWS Mountpoint 等）では以�
 
 ### 凍結の例外: 事後追加（issue #133）
 
-`recordings.encode_profiles` は ingest 完了時に一度だけ焼き込まれる凍結値だが、**ユーザー起点の追加方向の書き換えだけは凍結の例外として認める**。予約が無い録画（mirakc に直接起こされた手動録画等）は `encode_profiles = '{}'` のまま永久に凍結されエンコードを依頼する手段が無かった問題と、録画完了後に「もう1つプロファイルを足したい」という要求に応える。
+`recording_encode_policy.encode_profiles` は ingest 完了時に一度だけ焼き込まれる凍結値だが、**ユーザー起点の追加方向の書き換えだけは凍結の例外として認める**。予約が無い録画（mirakc に直接起こされた手動録画等）は `encode_profiles = '{}'` のまま永久に凍結されエンコードを依頼する手段が無かった問題と、録画完了後に「もう1つプロファイルを足したい」という要求に応える。
 
 - **範囲は追加のみ**。`POST /api/recordings/{id}/encode-profiles`（`internal/api/recordings.go` の `AddRecordingEncodeProfiles`）は `AppendRecordingEncodeProfiles`（`internal/db/queries/recordings.sql`）で union + dedup にしか書けない。全置換にすると、ユーザーが誤って既存のプロファイル指定を消す事故につながるため、その経路自体を用意しない
 - **原本削除済みなら不可**。`GetActiveOriginalMediaAsset` が `ErrNoRows` の録画（`until_encoded` でエンコード完了後に原本が削除された等）には 409 を返す。`EnqueueMissingEncodes` はこのケースで黙って no-op になる（原本が無ければ何もしない設計。上記「安全性」参照）ため、サイレントな失敗にしないよう api 層で明示的に検査する
+- **`recording_encode_policy` に行が無い（未凍結）録画でも、原本が active なら追加できる**。`internal/inplace.Register`（災害復旧。カタログを 1 世代も持たない状態からのストレージ再スキャン）が作る原本は `internal/worker/ingest.go` の `resolveAndSnapshotEncodePolicy` を経由しないため、`recording_encode_policy` 行が無いまま原本だけが active な録画が存在しうる（issue #159 レビューで発見）。`AppendRecordingEncodeProfiles` は `INSERT ... ON CONFLICT (recording_id) DO UPDATE` で書くので、行が無ければ「原本が active = 凍結済みとみなす」を適用して `keep_original = 'always'`（安全側の既定値）で新規に凍結し、行があれば `encode_profiles` だけ追記する。行の有無をここで判定してエラーにする経路は持たない —— 原本削除済みなら手前の `GetActiveOriginalMediaAsset` の 409 検査で既に止まっているため、この INSERT に到達する時点で「原本 active」は保証されている
 - **実行経路**: api がトランザクション内で `encode_profiles` を更新し、同一トランザクションで `EncodeEnqueueHintArgs`（ヒントジョブ）を投入する。実際の `EnqueueMissingEncodes` 呼び出し（desired − observed の差分を埋める encode ジョブの投入）は worker ロール側の `EncodeEnqueueHintWorker` が行う（既存の hint job パターン。`rules.go` の `insertRulerPassHint` と同型）。詳細は `internal/worker/encode.go` の `EncodeEnqueueHintArgs` の doc コメント参照
 - この例外を経ても「ingest 完了時点で確定した最終状態」という #103 の設計そのものは変わらない —— 削除・変更方向の書き換えは今も無い
 

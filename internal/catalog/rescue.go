@@ -33,6 +33,11 @@ type RescueResult struct {
 	SkippedProgramSnapshots int
 	SkippedProgramIntents   int
 	SkippedProgramOverrides int
+
+	// RestoredLegacyEncodePolicies は #159 より前に export された catalog ダンプ
+	// （Recording.KeepOriginalLegacy が non-nil）から復元した recording_encode_policy
+	// の件数。RecordingEncodePolicies にも含まれる（内訳として別に数える）。
+	RestoredLegacyEncodePolicies int
 }
 
 // RescueLatest は media_dir/catalog/ の最新 catalog を読んで DB に冪等 upsert する。
@@ -230,6 +235,7 @@ func applyDocument(ctx context.Context, tx pgx.Tx, doc *Document) (*RescueResult
 	// recordings の upsert より後に書く。doc.RecordingEncodePolicies に
 	// 載っていない録画には何も書かない --- 「未凍結」は行の不在そのものが
 	// 意味を持つ（不変条件 10）ので、既定値の行で埋めると凍結済みと誤認する。
+	explicitPolicies := map[int64]struct{}{}
 	for _, p := range doc.RecordingEncodePolicies {
 		profiles := p.EncodeProfiles
 		if profiles == nil {
@@ -245,6 +251,51 @@ func applyDocument(ctx context.Context, tx pgx.Tx, doc *Document) (*RescueResult
 			return nil, fmt.Errorf("upserting recording_encode_policy %d: %w", p.RecordingID, err)
 		}
 		res.RecordingEncodePolicies++
+		explicitPolicies[p.RecordingID] = struct{}{}
+	}
+
+	// #159 より前に export された catalog ダンプ（doc.RecordingEncodePolicies が
+	// 空。旧列 recordings.keep_original / encode_profiles の値が
+	// Recording.KeepOriginalLegacy / EncodeProfilesLegacy に残っている。
+	// document.go 参照）を rescue するときの後方互換。何もしないと、この
+	// ダンプの全録画で凍結済みポリシーが黙って失われる
+	// （削除エンジンが対象外になり、EnqueueMissingEncodes が no-op になり、
+	// 事後追加 API が既定値 'always' で上書きする）。
+	//
+	// migration 00030 backfill と同じ基準（原本 media_asset の有無で「凍結済みか」
+	// を判定する。列の値そのものは使わない。不変条件 9）を、DB ではなく
+	// このダンプ自身の doc.MediaAssets に対して適用する。
+	originalAssetRecordingIDs := map[int64]struct{}{}
+	for _, a := range doc.MediaAssets {
+		if a.Kind == "original" {
+			originalAssetRecordingIDs[a.RecordingID] = struct{}{}
+		}
+	}
+	for _, r := range doc.Recordings {
+		if _, ok := explicitPolicies[r.ID]; ok {
+			continue // 新しいダンプで既に明示的な行がある
+		}
+		if r.KeepOriginalLegacy == nil {
+			continue // 新しいダンプ（#159 以降）。旧列自体が無い
+		}
+		if _, hasOriginal := originalAssetRecordingIDs[r.ID]; !hasOriginal {
+			continue // 未凍結（原本が無い）。既定値の行で埋めない
+		}
+		profiles := r.EncodeProfilesLegacy
+		if profiles == nil {
+			profiles = []string{}
+		}
+		if err := q.CatalogUpsertRecordingEncodePolicy(ctx, sqlcgen.CatalogUpsertRecordingEncodePolicyParams{
+			RecordingID:    r.ID,
+			KeepOriginal:   *r.KeepOriginalLegacy,
+			EncodeProfiles: profiles,
+			CreatedAt:      r.CreatedAt,
+			UpdatedAt:      r.UpdatedAt,
+		}); err != nil {
+			return nil, fmt.Errorf("restoring legacy recording_encode_policy %d: %w", r.ID, err)
+		}
+		res.RecordingEncodePolicies++
+		res.RestoredLegacyEncodePolicies++
 	}
 
 	for _, a := range doc.MediaAssets {

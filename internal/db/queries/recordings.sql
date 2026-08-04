@@ -240,15 +240,26 @@ SELECT keep_original, encode_profiles FROM recording_encode_policy WHERE recordi
 -- （GetActiveOriginalMediaAsset が ErrNoRows）を先に検査して 409 にすること
 -- --- このクエリ自体は原本の有無を見ない。
 --
--- :execrows にしてある --- 行が無い（未凍結）ケースをここで検出する。原本が
--- active（呼び出し側の事前検査を通過済み）なら resolveAndSnapshotEncodePolicy が
--- 同一 tx で必ず行を作っているはずで、0 行は不変条件違反（呼び出し側が
--- エラーにする）。
--- name: AppendRecordingEncodeProfiles :execrows
-UPDATE recording_encode_policy SET
+-- ON CONFLICT (recording_id) DO UPDATE にしてある --- 行が無い（未凍結）
+-- ケースを INSERT で埋める。resolveAndSnapshotEncodePolicy（ingest）を経由
+-- しない原本（internal/inplace.Register の災害復旧経路。issue #159 レビューで
+-- 発見）は recording_encode_policy 行を作らないため、「原本が active なら
+-- 行が必ずある」は不変条件ではない。ここで 0 行をエラーにすると、原本ありの
+-- 録画への事後追加依頼そのものが失敗する（issue #133 が解こうとした問題の
+-- 再発）。行が無い場合は「原本が active = この録画は凍結済みとみなす」を
+-- 適用し、keep_original は既定値 'always'（recordings 旧列の既定値と同じ、
+-- 安全側）で新規に凍結する。既存行がある場合は encode_profiles だけ
+-- union + dedup で追記し、keep_original は変更しない。
+-- name: AppendRecordingEncodeProfiles :exec
+INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles)
+VALUES (
+    sqlc.arg('id'),
+    'always',
+    (SELECT coalesce(array_agg(DISTINCT p ORDER BY p), '{}') FROM unnest(sqlc.arg('profiles')::text[]) AS p)
+)
+ON CONFLICT (recording_id) DO UPDATE SET
     encode_profiles = (
         SELECT coalesce(array_agg(DISTINCT p ORDER BY p), '{}')
-        FROM unnest(encode_profiles || sqlc.arg('profiles')::text[]) AS p
+        FROM unnest(recording_encode_policy.encode_profiles || excluded.encode_profiles) AS p
     ),
-    updated_at = now()
-WHERE recording_id = sqlc.arg('id');
+    updated_at = now();

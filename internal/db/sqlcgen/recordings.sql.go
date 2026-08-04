@@ -28,19 +28,24 @@ func (q *Queries) AppendQualityEvents(ctx context.Context, arg AppendQualityEven
 	return err
 }
 
-const appendRecordingEncodeProfiles = `-- name: AppendRecordingEncodeProfiles :execrows
-UPDATE recording_encode_policy SET
+const appendRecordingEncodeProfiles = `-- name: AppendRecordingEncodeProfiles :exec
+INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles)
+VALUES (
+    $1,
+    'always',
+    (SELECT coalesce(array_agg(DISTINCT p ORDER BY p), '{}') FROM unnest($2::text[]) AS p)
+)
+ON CONFLICT (recording_id) DO UPDATE SET
     encode_profiles = (
         SELECT coalesce(array_agg(DISTINCT p ORDER BY p), '{}')
-        FROM unnest(encode_profiles || $1::text[]) AS p
+        FROM unnest(recording_encode_policy.encode_profiles || excluded.encode_profiles) AS p
     ),
     updated_at = now()
-WHERE recording_id = $2
 `
 
 type AppendRecordingEncodeProfilesParams struct {
-	Profiles []string
 	ID       int64
+	Profiles []string
 }
 
 // 凍結の例外としての事後追加（issue #133、docs/storage.md §6「原本 TS の
@@ -52,16 +57,19 @@ type AppendRecordingEncodeProfilesParams struct {
 // （GetActiveOriginalMediaAsset が ErrNoRows）を先に検査して 409 にすること
 // --- このクエリ自体は原本の有無を見ない。
 //
-// :execrows にしてある --- 行が無い（未凍結）ケースをここで検出する。原本が
-// active（呼び出し側の事前検査を通過済み）なら resolveAndSnapshotEncodePolicy が
-// 同一 tx で必ず行を作っているはずで、0 行は不変条件違反（呼び出し側が
-// エラーにする）。
-func (q *Queries) AppendRecordingEncodeProfiles(ctx context.Context, arg AppendRecordingEncodeProfilesParams) (int64, error) {
-	result, err := q.db.Exec(ctx, appendRecordingEncodeProfiles, arg.Profiles, arg.ID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
+// ON CONFLICT (recording_id) DO UPDATE にしてある --- 行が無い（未凍結）
+// ケースを INSERT で埋める。resolveAndSnapshotEncodePolicy（ingest）を経由
+// しない原本（internal/inplace.Register の災害復旧経路。issue #159 レビューで
+// 発見）は recording_encode_policy 行を作らないため、「原本が active なら
+// 行が必ずある」は不変条件ではない。ここで 0 行をエラーにすると、原本ありの
+// 録画への事後追加依頼そのものが失敗する（issue #133 が解こうとした問題の
+// 再発）。行が無い場合は「原本が active = この録画は凍結済みとみなす」を
+// 適用し、keep_original は既定値 'always'（recordings 旧列の既定値と同じ、
+// 安全側）で新規に凍結する。既存行がある場合は encode_profiles だけ
+// union + dedup で追記し、keep_original は変更しない。
+func (q *Queries) AppendRecordingEncodeProfiles(ctx context.Context, arg AppendRecordingEncodeProfilesParams) error {
+	_, err := q.db.Exec(ctx, appendRecordingEncodeProfiles, arg.ID, arg.Profiles)
+	return err
 }
 
 const createFailedRecording = `-- name: CreateFailedRecording :exec
@@ -310,8 +318,13 @@ type FreezeRecordingEncodePolicyParams struct {
 // 呼ばれる（Work が転送開始前に GetOriginalMediaAssetID で冪等性チェックする
 // ため、この tx 自体が録画ごとに 1 回しか実行されない）。凍結する理由・瞬間・
 // 冪等性の詳細は resolveAndSnapshotEncodePolicy の doc コメント参照。
-// 予約行が無い録画（手動で mirakc に起こされた録画等）は呼び出し側がこのクエリを
-// 呼ばないので、行自体が作られず未凍結のまま残る。
+// 予約が解決できない録画（手動で mirakc に起こされた録画・GC 済みの GetReservationEncodePolicyByEvent
+// 失敗等）でも呼び出し側は既定値（'always' / '{}'）でこのクエリを呼ぶ ---
+// 凍結自体はスキップしない（原本 media_asset の有無で「凍結済みか」を判定する
+// backfill の基準、および issue #133 の事後追加が「行が既にある」ことを前提に
+// できることの両方を守るため。resolveAndSnapshotEncodePolicy の doc コメント
+// 「解決に失敗しても凍結する」参照）。行が無いのは原本がまだコミットされて
+// いない（ingest 未完了）ときだけ。
 func (q *Queries) FreezeRecordingEncodePolicy(ctx context.Context, arg FreezeRecordingEncodePolicyParams) error {
 	_, err := q.db.Exec(ctx, freezeRecordingEncodePolicy, arg.RecordingID, arg.KeepOriginal, arg.EncodeProfiles)
 	return err
