@@ -402,12 +402,21 @@ Android のジェスチャーナビは左右端からの横スワイプが「戻
   だけだと 1 フレーム分の跳ねが残り、2 回目を足すと消えた。3 回目を試しても
   scrollY は変わらなかった）。「安定するまで」ではなく固定 2 回（jsdom で
   検証できない自前の追従ループを作らない）にしてある
-- **`scrollMargin`（`<ul>` の `offsetTop`）は ref ではなく state で持つ。**
+- **`scrollMargin`（`<ul>` の `offsetTop`）は state ではなく ref +
+  `virtualizer.setOptions()` で持つ（#141 で state → ref に直した）。**
   遡行ボタンの有無で `<ul>` の `offsetTop` 自体が動くため、`hasPreviousPage`
-  が変わるたびに測り直す必要がある。ref の更新は再レンダーを起こさないので、
-  測り直しても仮想化オプションへの反映が次の（別の理由での）再レンダーまで
-  遅れてしまう。state なら `useLayoutEffect` 内の `setState` がペイント前に
-  同じコミットで反映されるので、ユーザーに古い値が見えない
+  が変わるたびに測り直す必要がある。以前は state にしていた ---
+  「`useLayoutEffect` 内の `setState` はペイント前に同じコミットで反映
+  されるので、ユーザーに古い値が見えない」という想定だった。しかし
+  実機ではこの想定が破れる: 遡行が下限に達して「前を読み込む」ボタンが
+  消える（`hasPreviousPage` が変わる）のと、遡行アンカー復元の
+  `useLayoutEffect` が**同じコミットで**走ると、後者は宣言順で先に実行
+  される `setScrollMargin` の `setState` がまだ反映されていない古い
+  `scrollMargin` を見て `scrollToIndex` してしまい、ボタン高さ（52px）分
+  ずれた 1 フレームが実際に描画された（#141 で実機計測）。ref +
+  `virtualizer.setOptions()` にすると測定直後の同期的な 1 手で
+  `virtualizer` 内部の値まで揃うため、この「古い値を見るコミット」が
+  そもそも起きない
 - **フレーム単位の跳ね・スクロール位置合わせの見た目自体は、jsdom では検証
   できない。** `getBoundingClientRect` が常に 0 を返しレイアウトを計算しない
   環境なので、`ProgramList` はこの環境では仮想化そのものをバイパスし

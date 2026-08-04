@@ -7,7 +7,6 @@ import {
   useLayoutEffect,
   useMemo,
   useRef,
-  useState,
 } from 'react'
 
 import type { ProgramListItem, ProgramOverridesInput, Service } from '@/api/generated'
@@ -309,16 +308,34 @@ export const ProgramList = forwardRef<
   // window スクロール向けの標準的な使い方: https://tanstack.com/virtual の
   // Window Virtualizer 例）。
   //
-  // ref ではなく state にしてあるのは、`hasPreviousPage` が変わる（遡行ボタンが
-  // 現れる/消える）と `<ul>` の `offsetTop` 自体が動くため。ref だとここで
-  // 再計測しても仮想化オプションへの反映が次の（別の理由での）再レンダーまで
-  // 遅れてしまう（ref の更新自体は再レンダーを起こさない）。state なら
-  // `useLayoutEffect` 内の `setState` がペイント前に同じコミットで
-  // 反映されるので、ユーザーには古い値が一切見えない。
-  const [scrollMargin, setScrollMargin] = useState(0)
-  useLayoutEffect(() => {
-    setScrollMargin(listRef.current?.offsetTop ?? 0)
-  }, [hasPreviousPage])
+  // ## なぜ state ではなく ref か（issue #141 で state → ref に直した）
+  //
+  // 以前は state にしていた --- 「`useLayoutEffect` 内の `setState` はペイント前に
+  // 同じコミットで反映されるので、ユーザーには古い値が一切見えない」という想定
+  // だった。しかし実機で「3 回目の遡行だけ 97px のフレーム跳ねが出る」不具合が
+  // 見つかり、原因がこの想定の破れだった ---
+  //
+  // 遡行が下限に達して「前を読み込む」ボタンが消える（`hasPreviousPage` が
+  // false になる）のと、遡行のアンカー復元（下記 `useLayoutEffect`、`programs` の
+  // 変更で走る）が**同じコミット**で起きると、後者の effect は前者の
+  // `setScrollMargin` がまだ反映されていない、**この render の `setOptions`
+  // で古い** `scrollMargin` を適用されたままの `virtualizer`（インスタンス
+  // 自体は `useWindowVirtualizer` 内部の `useState` に保持されマウント後は
+  // 変わらない。下記 `alignRowTop` の doc コメント参照）を使って `alignRowTop` →
+  // `scrollToIndex` → `dispatchEvent('scroll')` を呼ぶ。この `dispatchEvent` は
+  // `virtualizer` 内部の scroll リスナーを同期的に発火させ、`flushSync` で
+  // 即座に再コミットする（`alignRowTop` の doc コメント参照）が、その再コミットは
+  // **まだ処理されていない `setScrollMargin` の更新より先に** 走ってしまう ---
+  // 結果、ボタン分の高さ（実測 52px）だけ `paddingTopPx` の計算がずれた 1 フレームが
+  // 実際に描画される（診断用スクリプトで `hasButton` が false に変わった直後の
+  // フレームだけ跳ねの値が変わることを確認済み。フレーム跳ねの実測: 通常 45px →
+  // このケースだけ 97px。差の 52px は消えたボタン分の高さと一致する）。
+  //
+  // ref にして `virtualizer.setOptions()` で直接反映すれば（`scrollPaddingStartRef`
+  // / `alignRowTop` と同じ形）、React の再レンダーを待たずに測定直後の同期的な
+  // 1 手で `virtualizer` 内部の値まで揃うため、この「古い値を見るコミット」が
+  // そもそも起きない。
+  const scrollMarginRef = useRef(0)
 
   // 日付ヘッダは「直前の番組」との比較で決まる。仮想化で可視範囲だけを
   // 描いても判定がずれないよう、日付境界は表示中の部分集合ではなく
@@ -355,9 +372,26 @@ export const ProgramList = forwardRef<
     estimateSize: () => estimatedRowHeightPx,
     getItemKey: (index) => programKeyAt(programs, index),
     overscan: overscanRows,
-    scrollMargin,
+    scrollMargin: scrollMarginRef.current,
     scrollPaddingStart: scrollPaddingStartRef.current,
   })
+
+  // `scrollMarginRef` の実測・反映。`hasPreviousPage` が変わって「前を読み込む」
+  // ボタンが現れる/消えると `<ul>` の `offsetTop` 自体が動くので、都度測り直す。
+  //
+  // このコミット内で完了させる必要がある --- 下記の遡行アンカー復元の
+  // `useLayoutEffect` は、`hasPreviousPage` と `programs` が同じコミットで
+  // 変わったとき（遡行が下限に達してボタンが消える瞬間）に自分自身も走り、
+  // その内部で `virtualizer` の `scrollMargin` を読む。この effect を先に
+  // （宣言順が早い = 同じコミットのレイアウトフェーズで先に実行される）
+  // 完了させておくことで、遡行アンカー復元側が常に最新の値を見られるようにする
+  // （上記 `scrollMarginRef` の doc コメント参照）。
+  useLayoutEffect(() => {
+    const measured = listRef.current?.offsetTop ?? 0
+    if (measured === scrollMarginRef.current) return
+    scrollMarginRef.current = measured
+    virtualizer.setOptions({ ...virtualizer.options, scrollMargin: measured })
+  }, [hasPreviousPage, virtualizer])
 
   /**
    * alignRowTop は、`index` の行を viewport の `paddingTopPx` の位置（上端から
@@ -404,10 +438,13 @@ export const ProgramList = forwardRef<
   const totalSizePx = renderAll ? 0 : virtualizer.getTotalSize()
 
   const paddingTopPx =
-    virtualItems.length > 0 ? Math.max(0, virtualItems[0].start - scrollMargin) : 0
+    virtualItems.length > 0 ? Math.max(0, virtualItems[0].start - scrollMarginRef.current) : 0
   const paddingBottomPx =
     virtualItems.length > 0
-      ? Math.max(0, totalSizePx - (virtualItems[virtualItems.length - 1].end - scrollMargin))
+      ? Math.max(
+          0,
+          totalSizePx - (virtualItems[virtualItems.length - 1].end - scrollMarginRef.current),
+        )
       : 0
 
   // 「いま見ている日」は可視範囲の先頭インデックスから導く（日付ヘッダへの
