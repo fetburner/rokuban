@@ -85,6 +85,15 @@ for (let i = 1; i <= REWINDS; i++) {
   await page.evaluate(() => window.scrollTo(0, 0))
   await page.waitForTimeout(600)
   const before = await visibleTopRow()
+  if (before === null) {
+    // sticky の裏より下に見えている行が 1 つも無い ---
+    // 多くは E2E_DAY_INDEX が指す日に番組データが無く、リストが空であること。
+    // 実装の不具合ではなく判定の前提が満たされていないので、素の TypeError
+    // （`before.id` 参照）で落とすのではなく判定不能として明示的に終える。
+    log(`  ${i} 回目: 判定不能（見えている行が無い。E2E_DAY_INDEX=${DAY_INDEX} の日に番組データが無いかもしれません）`)
+    ng.push(`② ${i} 回目は判定不能（見えている行が無い。E2E_DAY_INDEX の日に番組データが無いかもしれません）`)
+    break
+  }
   if ((await loadPreviousButton().count()) === 0) {
     log(`  ${i} 回目: ボタンが無い（下限に到達）`)
     break
