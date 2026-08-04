@@ -415,8 +415,8 @@ type desiredReservation struct {
 //
 // state（過去に存在した列。#28/#30 で orphaned_at に、issue #98 で recordings の
 // 存在に置き換わって現在は削除済みの導出値）ではなく effective.skip で絞る
-// （docs/schema.md §3「state を『mirakc
-// への同期対象か』のフィルタに使ってはならない」、docs/recording.md §4.3）。
+// （docs/schema.md §3「state を『mirakc への同期対象か』のフィルタに
+// 使ってはならない」、docs/recording.md §4.3）。
 // 除外してよいのは「この予約について既に never-scheduled の recordings 行が
 // ある」行だけ（番組終了後に schedule が観測されなかったと既に判定済みで、
 // 番組が終わっているので schedule を作る意味がない）。
