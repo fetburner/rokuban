@@ -98,37 +98,14 @@ const listMediaAssetsPendingDelete = `-- name: ListMediaAssetsPendingDelete :man
 
 SELECT a.id, a.recording_id, a.rel_path, a.size_bytes, a.kind
 FROM media_assets a
-JOIN recordings r ON r.id = a.recording_id
 WHERE a.state = 'deleting'
   AND (
-    -- ごみ箱の猶予超過、または「今すぐ完全削除」（ListTrashMediaAssetsToDelete と同条件）
-    (
-      r.deleted_at IS NOT NULL
-      AND (
-        (r.purge_after IS NOT NULL AND r.purge_after <= now())
-        OR r.deleted_at <= $1::timestamptz
-      )
+    EXISTS (
+      SELECT 1 FROM trash_deletable_recordings($1::timestamptz) t
+      WHERE t.recording_id = a.recording_id
     )
-    OR
-    -- until_encoded の派生物完備（ListUntilEncodedOriginalsToDelete と同条件）
-    (
-      a.kind = 'original'
-      AND r.keep_original = 'until_encoded'
-      AND r.deleted_at IS NULL
-      AND NOT EXISTS (
-        SELECT 1 FROM unnest(r.encode_profiles) AS want(profile)
-        WHERE NOT EXISTS (
-          SELECT 1 FROM media_assets e
-          WHERE e.recording_id = r.id
-            AND e.kind = 'encoded'
-            AND e.state = 'active'
-            AND e.profile = want.profile
-        )
-      )
-      AND EXISTS (
-        SELECT 1 FROM media_assets t
-        WHERE t.recording_id = r.id AND t.kind = 'thumbnail' AND t.state = 'active'
-      )
+    OR EXISTS (
+      SELECT 1 FROM until_encoded_deletable_originals v WHERE v.asset_id = a.id
     )
   )
 ORDER BY a.id
@@ -153,18 +130,24 @@ type ListMediaAssetsPendingDeleteRow struct {
 //
 // 削除プロトコルは冪等: active → deleting → deleted。deleting のまま
 // プロセスが落ちても ListMediaAssetsPendingDelete が次パスで拾い直す。
+//
+// 「このアセットは消してよいか」の 2 つの腕（ごみ箱の猶予超過 or 今すぐ
+// purge / until_encoded の派生物完備）は、いずれもスキーマ側の名前付き述語
+// （00029_delete_reconcile_predicates.sql）を参照する。until_encoded 腕は
+// view `until_encoded_deletable_originals`、ごみ箱腕は set-returning 関数
+// `trash_deletable_recordings(grace_cutoff)`。この 2 つが唯一の定義であり、
+// 以下の 5 クエリはすべてこれらへの参照であって複製ではない（issue #160）。
 // 前パスで deleting にマークしたまま unlink できずに終わった行を拾い直す。
 //
-// WHERE は ListTrashMediaAssetsToDelete / ListUntilEncodedOriginalsToDelete の
-// 条件 1・2（docs/storage.md §6: ①ポリシーが until_encoded ②desired な
-// 派生物が揃っている）を再掲する（issue #105）。deleting は「再計算できる
-// 決定」であって不可逆な事実ではないため、pending 経路は「既に決めた削除の
-// 再実行だから無条件に信じてよい」とはできない —— ごみ箱からの復元は
-// recordings.deleted_at だけを消す（RestoreRecording）ので、deleting の
-// 間に復元されると media_assets 側は取り残されたまま unlink される
-// （不変条件 9「適用の瞬間」。ruler が toDelete を tx 外で計算していたのと
-// 同型の距離）。ここで判定条件を再評価し、該当しなくなった行は
-// ListUnqualifiedDeletingAssets / RevertMediaAssetToActive が active に戻す。
+// WHERE の 2 つの EXISTS は名前付き述語（上記）への参照であって複製ではない
+// （issue #160）。deleting は「再計算できる決定」であって不可逆な事実では
+// ないため、pending 経路は「既に決めた削除の再実行だから無条件に信じて
+// よい」とはできない —— ごみ箱からの復元は recordings.deleted_at だけを
+// 消す（RestoreRecording）ので、deleting の間に復元されると media_assets
+// 側は取り残されたまま unlink される（不変条件 9「適用の瞬間」。ruler が
+// toDelete を tx の外で計算していたのと同型の距離）。ここで判定条件を
+// 再評価し、該当しなくなった行は ListUnqualifiedDeletingAssets /
+// RevertMediaAssetToActive が active に戻す。
 //
 // 意図的に再評価しない条件: docs/storage.md §6 の条件 3（原本を入力とする
 // 実行中・再試行中のジョブがない）は hasPendingDerivativeJob が Go 側で
@@ -214,13 +197,9 @@ func (q *Queries) ListMediaAssetsPendingDelete(ctx context.Context, arg ListMedi
 const listTrashMediaAssetsToDelete = `-- name: ListTrashMediaAssetsToDelete :many
 SELECT a.id, a.recording_id, a.rel_path, a.size_bytes, a.kind
 FROM media_assets a
-JOIN recordings r ON r.id = a.recording_id
+JOIN trash_deletable_recordings($1::timestamptz) t
+    ON t.recording_id = a.recording_id
 WHERE a.state = 'active'
-  AND r.deleted_at IS NOT NULL
-  AND (
-    (r.purge_after IS NOT NULL AND r.purge_after <= now())
-    OR r.deleted_at <= $1::timestamptz
-  )
 ORDER BY a.id
 LIMIT $2
 `
@@ -238,7 +217,8 @@ type ListTrashMediaAssetsToDeleteRow struct {
 	Kind        string
 }
 
-// ごみ箱の猶予超過、または「今すぐ完全削除」（purge_after）の対象。
+// ごみ箱の猶予超過、または「今すぐ完全削除」（purge_after）の対象
+// （名前付き述語 trash_deletable_recordings への参照。issue #160）。
 func (q *Queries) ListTrashMediaAssetsToDelete(ctx context.Context, arg ListTrashMediaAssetsToDeleteParams) ([]ListTrashMediaAssetsToDeleteRow, error) {
 	rows, err := q.db.Query(ctx, listTrashMediaAssetsToDelete, arg.GraceCutoff, arg.RowLimit)
 	if err != nil {
@@ -268,36 +248,13 @@ func (q *Queries) ListTrashMediaAssetsToDelete(ctx context.Context, arg ListTras
 const listUnqualifiedDeletingAssets = `-- name: ListUnqualifiedDeletingAssets :many
 SELECT a.id, a.recording_id, a.rel_path
 FROM media_assets a
-JOIN recordings r ON r.id = a.recording_id
 WHERE a.state = 'deleting'
-  AND NOT (
-    (
-      r.deleted_at IS NOT NULL
-      AND (
-        (r.purge_after IS NOT NULL AND r.purge_after <= now())
-        OR r.deleted_at <= $1::timestamptz
-      )
-    )
-    OR
-    (
-      a.kind = 'original'
-      AND r.keep_original = 'until_encoded'
-      AND r.deleted_at IS NULL
-      AND NOT EXISTS (
-        SELECT 1 FROM unnest(r.encode_profiles) AS want(profile)
-        WHERE NOT EXISTS (
-          SELECT 1 FROM media_assets e
-          WHERE e.recording_id = r.id
-            AND e.kind = 'encoded'
-            AND e.state = 'active'
-            AND e.profile = want.profile
-        )
-      )
-      AND EXISTS (
-        SELECT 1 FROM media_assets t
-        WHERE t.recording_id = r.id AND t.kind = 'thumbnail' AND t.state = 'active'
-      )
-    )
+  AND NOT EXISTS (
+    SELECT 1 FROM trash_deletable_recordings($1::timestamptz) t
+    WHERE t.recording_id = a.recording_id
+  )
+  AND NOT EXISTS (
+    SELECT 1 FROM until_encoded_deletable_originals v WHERE v.asset_id = a.id
   )
 ORDER BY a.id
 LIMIT $2
@@ -316,8 +273,9 @@ type ListUnqualifiedDeletingAssetsRow struct {
 
 // deleting のまま止まっていて、上の 2 条件のどちらにも該当しなくなった行の
 // 候補を挙げる（issue #105）。判定条件は ListMediaAssetsPendingDelete の
-// WHERE をそのまま否定したもの。ここではまだ書き込まない —— 呼び出し側が
-// 各行についてファイルの現存を確認してから、次のいずれかを選ぶ:
+// WHERE をそのまま否定したもの（名前付き述語への NOT EXISTS なので、否定形を
+// 手で保守する必要がない。issue #160）。ここではまだ書き込まない ——
+// 呼び出し側が各行についてファイルの現存を確認してから、次のいずれかを選ぶ:
 //
 //	a. ファイルがまだ存在する → RevertMediaAssetToActive で active に戻す
 //	b. ファイルが既に無い（unlink 成功後 MarkMediaAssetDeleted が
@@ -349,29 +307,10 @@ func (q *Queries) ListUnqualifiedDeletingAssets(ctx context.Context, arg ListUnq
 }
 
 const listUntilEncodedOriginalsToDelete = `-- name: ListUntilEncodedOriginalsToDelete :many
-SELECT a.id, a.recording_id, a.rel_path, a.size_bytes, a.kind
-FROM media_assets a
-JOIN recordings r ON r.id = a.recording_id
-WHERE a.state = 'active'
-  AND a.kind = 'original'
-  AND r.keep_original = 'until_encoded'
-  AND r.deleted_at IS NULL
-  AND cardinality(r.encode_profiles) > 0
-  AND NOT EXISTS (
-    SELECT 1 FROM unnest(r.encode_profiles) AS want(profile)
-    WHERE NOT EXISTS (
-      SELECT 1 FROM media_assets e
-      WHERE e.recording_id = r.id
-        AND e.kind = 'encoded'
-        AND e.state = 'active'
-        AND e.profile = want.profile
-    )
-  )
-  AND EXISTS (
-    SELECT 1 FROM media_assets t
-    WHERE t.recording_id = r.id AND t.kind = 'thumbnail' AND t.state = 'active'
-  )
-ORDER BY a.id
+SELECT v.asset_id AS id, v.recording_id, v.rel_path, v.size_bytes, 'original'::text AS kind
+FROM until_encoded_deletable_originals v
+WHERE v.state = 'active'
+ORDER BY v.asset_id
 LIMIT $1
 `
 
@@ -384,19 +323,10 @@ type ListUntilEncodedOriginalsToDeleteRow struct {
 }
 
 // keep_original='until_encoded' で、desired な派生物（全 encode_profiles +
-// thumbnail）がすべて active でコミット済みの原本。ごみ箱経由の録画は
-// ListTrashMediaAssetsToDelete 側で扱うのでここでは除外する。
-//
-// cardinality(r.encode_profiles) > 0 は load-bearing（issue #104）。直後の
-// NOT EXISTS(unnest(...) ...) は encode_profiles が空配列のとき恒真になる
-// （unnest('{}') は 0 行なので「望む派生物のうち欠けているものが 1 つもない」が
-// 無条件に成立する）。プロファイルを持たないルール由来の予約や手動予約が
-// keep_original='until_encoded' を持つと、サムネイルが 1 枚あるだけで唯一の
-// コピーである原本が消える（docs/storage.md §6「唯一のコピーを消すパスがない」
-// への違反）。API 側（program_overrides.go）にも検証を足すが、recordings への
-// 書き手が将来増えたときに漏れうるのは API 側の検証であって、削除文の WHERE は
-// 漏れない（CLAUDE.md 不変条件 9「距離を作らざるを得ないなら、適用の側で
-// 判定条件を再評価する」）。
+// thumbnail）がすべて active でコミット済みの原本（名前付き述語
+// until_encoded_deletable_originals への参照。issue #160）。ごみ箱経由の
+// 録画は ListTrashMediaAssetsToDelete 側で扱うのでここでは除外する
+// （view 自身が r.deleted_at IS NULL を要求している）。
 func (q *Queries) ListUntilEncodedOriginalsToDelete(ctx context.Context, rowLimit int32) ([]ListUntilEncodedOriginalsToDeleteRow, error) {
 	rows, err := q.db.Query(ctx, listUntilEncodedOriginalsToDelete, rowLimit)
 	if err != nil {
@@ -453,10 +383,9 @@ const markPurgedRecordings = `-- name: MarkPurgedRecordings :many
 UPDATE recordings r
 SET purged_at = now(), updated_at = now()
 WHERE r.purged_at IS NULL
-  AND r.deleted_at IS NOT NULL
-  AND (
-    (r.purge_after IS NOT NULL AND r.purge_after <= now())
-    OR r.deleted_at <= $1::timestamptz
+  AND EXISTS (
+    SELECT 1 FROM trash_deletable_recordings($1::timestamptz) t
+    WHERE t.recording_id = r.id
   )
   AND NOT EXISTS (
     SELECT 1 FROM media_assets a
@@ -474,10 +403,10 @@ type MarkPurgedRecordingsRow struct {
 // 「完全削除が完了した」という不可逆な事実を確定する（issue #135）。
 //
 // 削除 reconcile のパス末尾（trash / until_encoded / pending 経路すべてが
-// 物理 unlink を終えた後）で 1 回だけ呼ぶ。ごみ箱条件は
-// ListTrashMediaAssetsToDelete と同じ (purge_after <= now() OR deleted_at <=
-// grace_cutoff) を再掲する —— purge_after だけを条件にすると、30 日猶予
-// 超過の経路（purge_after が NULL のまま完全削除に到達する）を拾い損なう。
+// 物理 unlink を終えた後）で 1 回だけ呼ぶ。ごみ箱条件は名前付き述語
+// trash_deletable_recordings への参照（issue #160）。purge_after だけを
+// 条件にすると、30 日猶予超過の経路（purge_after が NULL のまま完全削除に
+// 到達する）を拾い損なう —— この区別は述語の定義側に集約されている。
 //
 // recordings を起点に引く（media_assets を起点にすると、アセットを 1 行も
 // 持ったことがない録画が NOT EXISTS の対象になりようがなく、永久に拾えない。
@@ -516,38 +445,14 @@ func (q *Queries) MarkPurgedRecordings(ctx context.Context, graceCutoff time.Tim
 const revertMediaAssetToActive = `-- name: RevertMediaAssetToActive :execrows
 UPDATE media_assets a
 SET state = 'active', updated_at = now()
-FROM recordings r
 WHERE a.id = $1
-  AND a.recording_id = r.id
   AND a.state = 'deleting'
-  AND NOT (
-    (
-      r.deleted_at IS NOT NULL
-      AND (
-        (r.purge_after IS NOT NULL AND r.purge_after <= now())
-        OR r.deleted_at <= $2::timestamptz
-      )
-    )
-    OR
-    (
-      a.kind = 'original'
-      AND r.keep_original = 'until_encoded'
-      AND r.deleted_at IS NULL
-      AND NOT EXISTS (
-        SELECT 1 FROM unnest(r.encode_profiles) AS want(profile)
-        WHERE NOT EXISTS (
-          SELECT 1 FROM media_assets e
-          WHERE e.recording_id = r.id
-            AND e.kind = 'encoded'
-            AND e.state = 'active'
-            AND e.profile = want.profile
-        )
-      )
-      AND EXISTS (
-        SELECT 1 FROM media_assets t
-        WHERE t.recording_id = r.id AND t.kind = 'thumbnail' AND t.state = 'active'
-      )
-    )
+  AND NOT EXISTS (
+    SELECT 1 FROM trash_deletable_recordings($2::timestamptz) t
+    WHERE t.recording_id = a.recording_id
+  )
+  AND NOT EXISTS (
+    SELECT 1 FROM until_encoded_deletable_originals v WHERE v.asset_id = a.id
   )
 `
 
@@ -559,12 +464,13 @@ type RevertMediaAssetToActiveParams struct {
 // ListUnqualifiedDeletingAssets が挙げた 1 行を active に戻す。ファイルが
 // まだ存在すると Go 側で確認できたときだけ呼ぶこと。
 //
-// WHERE に同じ判定条件を再度埋め込み、事前の SELECT の結果（真偽値）を
-// 受け渡さずこの UPDATE 自体の瞬間に再評価する（不変条件 9「適用の瞬間」）。
-// SELECT から数行の Go コードを挟むだけの短い窓だが、その間に別の書き手
-// （RestoreRecording・encode_profiles 変更 API 等）が recordings 側を
-// 書き換えて再度条件を満たすようになっていれば、ここで 0 行になり
-// active には戻らない（= 正しく deleting のまま残り、pending 経路が続行する）。
+// WHERE に同じ判定条件（名前付き述語、issue #160）を再度埋め込み、事前の
+// SELECT の結果（真偽値）を受け渡さずこの UPDATE 自体の瞬間に再評価する
+// （不変条件 9「適用の瞬間」）。SELECT から数行の Go コードを挟むだけの短い
+// 窓だが、その間に別の書き手（RestoreRecording・encode_profiles 変更 API 等）
+// が recordings 側を書き換えて再度条件を満たすようになっていれば、ここで
+// 0 行になり active には戻らない（= 正しく deleting のまま残り、pending
+// 経路が続行する）。
 //
 // ここで active に戻すのは deleting → active の遷移のみで、進行中の unlink
 // とは競合しない: このワーカー自身が media_assets.state の唯一の書き手

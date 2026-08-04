@@ -115,7 +115,7 @@ S3 マウント（k8s-csi-s3 の geesefs/s3fs、AWS Mountpoint 等）では以�
 
 - **放送データが 0 コピーになる瞬間は構造的に存在しない**。エッジの record 削除は ingest コミット後（[録画エンジン](recording.md) 参照）、原本削除はエンコード検証後。常に 1 コピー以上ある
 - **「唯一のコピーを消す」パスがない**。エンコードが恒久的に失敗すれば条件 2 が満たされず原本は自然に保持され続ける（+ アラート対象）
-- **条件 2 の「全プロファイル完備」は `encode_profiles` が空でないことも要求する**。API はエンコードプロファイル未指定のルールで `until_encoded` を選択不可にしているが（下記「UI / 運用」）、それを回避して `until_encoded` かつ `encode_profiles = '{}'` の組が recordings に焼かれた場合、「全称量化された条件が空集合に対して自明に真になる」ため対策なしでは即座に原本が消える（issue #103 の「罠」）。削除 reconcile のクエリ自身に `cardinality(encode_profiles) > 0` を要求させ、入力側の検証が抜けても構造的に安全側に倒す
+- **条件 2 の「全プロファイル完備」は `encode_profiles` が空でないことも要求する**。API はエンコードプロファイル未指定のルールで `until_encoded` を選択不可にしているが（下記「UI / 運用」）、それを回避して `until_encoded` かつ `encode_profiles = '{}'` の組が recordings に焼かれた場合、「全称量化された条件が空集合に対して自明に真になる」ため対策なしでは即座に原本が消える（issue #103 の「罠」）。`cardinality(encode_profiles) > 0` を要求するガードは、削除 reconcile が until_encoded 腕を消費する箇所ごとに手で複製するのではなく、名前付き述語 `until_encoded_deletable_originals`（view。§7 参照）の定義 1 箇所に置く。これにより、入力側の検証が抜けても、この view を参照するすべての経路（入口・前パスの拾い直し・否定形の判定）に構造的に効く（issue #160。以前は複製の 1 つにこのガードが漏れていた）
 - **削除プロトコルも冪等**: アセット行を deleting にマーク → unlink → deleted にマーク。どこで落ちても reconcile が拾い直し、残骸は孤児クリーンアップが回収
 - **メタデータは tombstone として残す**。ドロップスキャン結果・元サイズ・録画品質は原本削除後も UI で見られる（「ドロップがあったから再放送を待つ」判断は削除後にこそ必要）
 
@@ -148,6 +148,16 @@ S3 マウント（k8s-csi-s3 の geesefs/s3fs、AWS Mountpoint 等）では以�
 
 **一括削除サーキットブレーカーはループ全体に 1 つ**: ソースを問わず 1 パスの物理削除が閾値（件数 / ライブラリ比率 / 総バイト数、例: 5% or 100 GB）を超えたら停止してアラート。
 
+### 削除可否の述語に名前を与える（issue #160）
+
+「このアセットは消してよいか」は、ごみ箱腕（猶予超過 or 今すぐ purge）と until_encoded 腕（派生物完備）の 2 つで、`internal/db/queries/delete_reconcile.sql` の 5 クエリ（入口 2 つ・前パスの拾い直し・否定形 2 つ）がこれを消費する。以前はこの 2 腕を 5 クエリに手で複製しており、issue #104 の `cardinality(encode_profiles) > 0` ガードが複製の 1 つ（入口）にしか入らずドリフトした。
+
+いずれの腕もスキーマ側に名前を与え、5 クエリはそこへの参照にする（`internal/db/migrations/00029_delete_reconcile_predicates.sql`）:
+
+- **until_encoded 腕**: パラメータを取らないので view `until_encoded_deletable_originals` にする
+- **ごみ箱腕**: `grace_cutoff` がパラメータなので view には畳めず、set-returning SQL 関数 `trash_deletable_recordings(grace_cutoff)` にする
+- 否定形（`ListUnqualifiedDeletingAssets` / `RevertMediaAssetToActive`）は、この 2 つの述語への `NOT EXISTS` で書く。手で「同条件を再掲」するコメントを揃える義務が無くなる
+
 ### 不変条件の修正
 
 従来の「DB にないファイル = 孤児 = 削除対象」は、暗黙に「DB は常にファイルより新しい」を仮定しており、**DB リストアはこの仮定を壊す唯一の正規操作**。契約を「孤児に見えることは削除の必要条件であって十分条件ではない」に修正する。
@@ -160,7 +170,7 @@ S3 マウント（k8s-csi-s3 の geesefs/s3fs、AWS Mountpoint 等）では以�
 - 物理削除後も tombstone は残る → ドロップ統計・録画履歴は消えず、**ごみ箱を空にしても再放送重複排除は壊れない**
 - **`recordings.purged_at`（issue #135）は「完全削除が完了した」不可逆な事実を持つ列。** 削除 reconcile がパス末尾で、ごみ箱条件を満たしかつ物理削除が終わっていない `media_assets` が 1 行も残っていない録画に一度だけ立てる。tombstone は上の行のとおり残り続けるが、ごみ箱ビュー（`ListTrashRecordings`）は `purged_at IS NULL` も要求するので、purge が完了した録画はごみ箱一覧には出ない。「`media_assets` に未削除行が 0」を毎パス導出する案は採らない —— アセットを一度も持ったことがない録画ではこの条件が purge 前から真であり、「消した」と「元から無い」を区別できないため（CLAUDE.md 不変条件 9）
 - 将来オプション: ごみ箱サイズの UI 表示 + 空き容量逼迫時に猶予期間前でも古い順に purge する容量トリガー。初期実装は期間ベースのみ
-- **復元と物理削除の競合（issue #105）**: `media_assets.state = 'deleting'` は unlink 待ちの間しか続かない一時状態で、復元は `recordings.deleted_at` しか消さないため、unlink が失敗して `deleting` のまま次パスに持ち越されると「復元したのに次パスで消える」窓ができうる。前パスの `deleting` 行を拾い直す経路（`ListMediaAssetsPendingDelete`）は無条件に unlink へ進むのではなく、trash 猶予超過 / until_encoded 派生物完備の判定を**適用の瞬間に再評価**する。該当しなくなった行は `ListUnqualifiedDeletingAssets` で候補として挙げ、`resolveUnqualifiedDeletingAsset` がファイルの現存を `stat` で確認したうえで、まだ存在すれば `active` に戻し、既に無ければ（unlink 成功後 `MarkMediaAssetDeleted` のコミット前にプロセスが落ちていた場合）`active` には戻さず `deleted` を確定する——ここで無条件に `active` へ戻すと、復元 API 側で `deleting → active` を即時に書き換える方式（案 B）を採らなかった理由そのもの、「`active` なのにファイルが無い行」を revert 経路自身が作ってしまうため
+- **復元と物理削除の競合（issue #105）**: `media_assets.state = 'deleting'` は unlink 待ちの間しか続かない一時状態で、復元は `recordings.deleted_at` しか消さないため、unlink が失敗して `deleting` のまま次パスに持ち越されると「復元したのに次パスで消える」窓ができうる。前パスの `deleting` 行を拾い直す経路（`ListMediaAssetsPendingDelete`）は無条件に unlink へ進むのではなく、trash 猶予超過 / until_encoded 派生物完備の判定（上記「削除可否の述語に名前を与える」の 2 つの名前付き述語）を**適用の瞬間に再評価**する。該当しなくなった行は `ListUnqualifiedDeletingAssets`（この 2 述語への `NOT EXISTS`）で候補として挙げ、`resolveUnqualifiedDeletingAsset` がファイルの現存を `stat` で確認したうえで、まだ存在すれば `active` に戻し、既に無ければ（unlink 成功後 `MarkMediaAssetDeleted` のコミット前にプロセスが落ちていた場合）`active` には戻さず `deleted` を確定する——ここで無条件に `active` へ戻すと、復元 API 側で `deleting → active` を即時に書き換える方式（案 B）を採らなかった理由そのもの、「`active` なのにファイルが無い行」を revert 経路自身が作ってしまうため
 
 ### 孤児回収の 3 重の安全弁
 
