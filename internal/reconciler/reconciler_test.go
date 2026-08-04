@@ -2010,3 +2010,98 @@ func TestReconciler_StartDelayGaugeConverges(t *testing.T) {
 		t.Errorf("rokuban_reconcile_start_delayed after pass 2 = %v, want 0 (converges once started_at is observed)", got)
 	}
 }
+
+// 受け入れ条件 8（issue #152）: 録画中に予約が導出削除・再実体化されて
+// reservations.id が変わっても、既に観測済みの開始が引き続き「開始済み」と
+// 判定されること（放送イベントキーで引くべき。予約 id で引くと
+// recordings.reservation_id が ON DELETE SET NULL で切れ、検出窓の間毎パス
+// 開始遅延を誤検知する。CLAUDE.md 不変条件 9 の identity、#29 / #53 / #98 /
+// #99 / #149 と同じ族）。internal/reconciler/never_scheduled_identity_test.go の
+// 「DELETE してから CreateManualReservation で作り直す」パターンで再実体化を
+// 模す。
+func TestReconciler_NoStartDelayFalsePositiveAfterReservationRematerialization(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	mock := newMockMirakc()
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+
+	mc := mirakc.NewClient(srv.URL, nil)
+	q := sqlcgen.New(pool)
+
+	// 開始時刻 + 猶予を過ぎているが終了前という、開始遅延検出器の対象窓。
+	startAt := time.Now().Add(-10 * time.Minute)
+	programID := int64(100000500030008)
+	eventID := int32(30008)
+	res := createReservation(t, ctx, q, programID, "再実体化後も開始済み番組", startAt)
+
+	// watcher が録画開始を観測した想定（旧 reservation_id = res.ID を指す）。
+	createStartedRecording(t, ctx, q, res.ID, eventID, startAt, startAt.Add(1*time.Minute))
+
+	// ruler の導出削除 → 再実体化を模す（同じ番組・新しい id。
+	// recordings.reservation_id は ON DELETE SET NULL で NULL に落ちる）。
+	if _, err := pool.Exec(ctx, `DELETE FROM reservations WHERE id = $1`, res.ID); err != nil {
+		t.Fatalf("deleting reservation: %v", err)
+	}
+	res2, err := q.CreateManualReservation(ctx, sqlcgen.CreateManualReservationParams{
+		Site: "default", ProgramID: programID,
+	})
+	if err != nil {
+		t.Fatalf("re-materializing reservation: %v", err)
+	}
+	if res2.ID == res.ID {
+		t.Fatalf("再実体化で id が変わっていない（テストの前提が崩れている）")
+	}
+
+	rec := reconciler.New("default", mc, pool, nil)
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
+
+	if got := startDelayGauge(t); got != 0 {
+		t.Errorf("rokuban_reconcile_start_delayed = %v, want 0 —— 開始観測が予約 id に依存していると、再実体化後の新しい id では届かず誤検知する", got)
+	}
+}
+
+// 受け入れ条件 8 の反転（issue #152）: 予約が再実体化された後でも、本当に
+// 開始が観測されていない予約は引き続き検出されること（放送イベントキーへの
+// 置き換えが検出そのものを壊していないことの確認）。
+func TestReconciler_StartDelayStillDetectedAfterReservationRematerializationWithoutRecording(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	mock := newMockMirakc()
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+
+	mc := mirakc.NewClient(srv.URL, nil)
+	q := sqlcgen.New(pool)
+
+	startAt := time.Now().Add(-10 * time.Minute)
+	programID := int64(100000500030009)
+	res := createReservation(t, ctx, q, programID, "再実体化後も未開始番組", startAt)
+
+	// 録画開始は一度も観測されていない状態で再実体化する。
+	if _, err := pool.Exec(ctx, `DELETE FROM reservations WHERE id = $1`, res.ID); err != nil {
+		t.Fatalf("deleting reservation: %v", err)
+	}
+	res2, err := q.CreateManualReservation(ctx, sqlcgen.CreateManualReservationParams{
+		Site: "default", ProgramID: programID,
+	})
+	if err != nil {
+		t.Fatalf("re-materializing reservation: %v", err)
+	}
+	if res2.ID == res.ID {
+		t.Fatalf("再実体化で id が変わっていない（テストの前提が崩れている）")
+	}
+
+	rec := reconciler.New("default", mc, pool, nil)
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
+
+	if got := startDelayGauge(t); got != 1 {
+		t.Errorf("rokuban_reconcile_start_delayed = %v, want 1 —— 再実体化を跨いでも、本当に未開始の予約は検出され続けるべき", got)
+	}
+}
