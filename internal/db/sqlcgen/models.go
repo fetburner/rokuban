@@ -266,3 +266,11 @@ type TunerSync struct {
 	IsFault     bool
 	ObservedAt  time.Time
 }
+
+type UntilEncodedDeletableOriginal struct {
+	AssetID     int64
+	RecordingID int64
+	RelPath     string
+	SizeBytes   int64
+	State       string
+}

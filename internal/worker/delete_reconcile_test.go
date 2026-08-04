@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -988,6 +989,98 @@ func TestDeleteReconcileWorker_UntilEncodedDeletingInterrupted_ResumesOnNextPass
 	}
 	if fileExists(assetPath) {
 		t.Error("original file still exists after resumed deletion, want removed")
+	}
+}
+
+// until_encoded 腕の否定形（deleting のまま止まっている行が、その後の変化で
+// 派生物完備の条件を満たさなくなった）を active に戻す経路（issue #105 の
+// 否定形。RestoredWhileDeleting_RevertsInsteadOfDeleting は trash 腕しか
+// 検証していなかった）。issue #160 で否定形を手保守の NOT(...) から名前付き
+// 述語（until_encoded_deletable_originals）への NOT EXISTS に統一したので、
+// この経路が正しく動くことを until_encoded 側でも固定する。
+func TestDeleteReconcileWorker_UntilEncodedUnqualifiedWhileDeleting_RevertsToActive(t *testing.T) {
+	pool := setupTestPool(t)
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	recordingID := insertTestRecording(t, pool)
+
+	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "orig/unqualify.m2ts", []byte("data"))
+	assetPath := filepath.Join(mediaDir, "orig", "unqualify.m2ts")
+	profile := "h264"
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindEncoded, &profile, "enc/unqualify.mp4", []byte("mp4"))
+	thumbID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindThumbnail, nil, "thumb/unqualify.jpg", []byte("jpg"))
+
+	if _, err := pool.Exec(ctx,
+		"UPDATE recordings SET keep_original = 'until_encoded', encode_profiles = $1 WHERE id = $2",
+		[]string{"h264"}, recordingID); err != nil {
+		t.Fatalf("setting keep_original: %v", err)
+	}
+
+	// 前パスで active → deleting へ遷移させた（unlink はまだ）状態を直接作る。
+	// この時点では派生物が揃っており、遷移は正しい判断だった。
+	if _, err := pool.Exec(ctx,
+		"UPDATE media_assets SET state = 'deleting' WHERE id = $1", assetID); err != nil {
+		t.Fatalf("marking original deleting: %v", err)
+	}
+
+	// その後サムネイルが失われる（記録・ファイルとも）。もう
+	// until_encoded_deletable_originals の述語を満たさない。
+	if _, err := pool.Exec(ctx, "DELETE FROM media_assets WHERE id = $1", thumbID); err != nil {
+		t.Fatalf("removing thumbnail asset row: %v", err)
+	}
+
+	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	if err := w.Work(ctx, nil); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+
+	if got := assetState(t, pool, assetID); got != "active" {
+		t.Fatalf("original state = %q, want active "+
+			"(thumbnail no longer active; until_encoded predicate no longer qualifies this asset for deletion, issue #160)", got)
+	}
+	if !fileExists(assetPath) {
+		t.Error("original file was removed even though the until_encoded predicate no longer qualifies it for deletion")
+	}
+}
+
+// delete_reconcile.sql の 5 クエリが、削除可否の 2 腕（ごみ箱 / until_encoded）
+// を名前付き述語（00029_delete_reconcile_predicates.sql の view / 関数）への
+// 参照に統一していることの静的チェック（issue #160）。生の predicate テキスト
+// （キー列や cardinality ガード）がクエリファイルに再度インライン化されると、
+// このテストが機械的に検出する —— 「〜と同条件」というコメントで揃える
+// 義務が復活していないかどうかも合わせて見る。
+func TestDeleteReconcileQueries_ReferenceNamedPredicatesNotDuplicatedText(t *testing.T) {
+	src, err := os.ReadFile(filepath.Join("..", "db", "queries", "delete_reconcile.sql"))
+	if err != nil {
+		t.Fatalf("reading delete_reconcile.sql: %v", err)
+	}
+	text := string(src)
+
+	// 生の predicate（列参照込み）が再インライン化されていないこと。
+	for _, needle := range []string{
+		"r.keep_original",
+		"cardinality(r.encode_profiles)",
+		"r.purge_after",
+		"r.deleted_at IS NOT NULL",
+	} {
+		if strings.Contains(text, needle) {
+			t.Errorf("delete_reconcile.sql contains %q; the predicate should live only in the named view/function (00027 migration), not be re-inlined into a consumer query", needle)
+		}
+	}
+
+	// 「同条件」を手で揃える必要があった旧コメントが復活していないこと。
+	for _, needle := range []string{"と同条件", "同条件を再掲"} {
+		if strings.Contains(text, needle) {
+			t.Errorf("delete_reconcile.sql still has a %q comment; naming the predicate should have removed the need to keep duplicate WHERE clauses in sync", needle)
+		}
+	}
+
+	// 5 つの消費クエリすべてが名前付き述語を参照していること。
+	if got := strings.Count(text, "until_encoded_deletable_originals"); got < 5 {
+		t.Errorf("delete_reconcile.sql references until_encoded_deletable_originals %d times, want at least 5 (all 5 consumer queries named in issue #160)", got)
+	}
+	if got := strings.Count(text, "trash_deletable_recordings"); got < 5 {
+		t.Errorf("delete_reconcile.sql references trash_deletable_recordings %d times, want at least 5 (all 5 consumer queries named in issue #160)", got)
 	}
 }
 
