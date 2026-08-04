@@ -318,8 +318,10 @@ export const ProgramList = forwardRef<
   // 遡行が下限に達して「前を読み込む」ボタンが消える（`hasPreviousPage` が
   // false になる）のと、遡行のアンカー復元（下記 `useLayoutEffect`、`programs` の
   // 変更で走る）が**同じコミット**で起きると、後者の effect は前者の
-  // `setScrollMargin` がまだ反映されていない**古い** `scrollMargin` を閉じた
-  // `virtualizer`（この render で作られたもの）を使って `alignRowTop` →
+  // `setScrollMargin` がまだ反映されていない、**この render の `setOptions`
+  // で古い** `scrollMargin` を適用されたままの `virtualizer`（インスタンス
+  // 自体は `useWindowVirtualizer` 内部の `useState` に保持されマウント後は
+  // 変わらない。下記 `alignRowTop` の doc コメント参照）を使って `alignRowTop` →
   // `scrollToIndex` → `dispatchEvent('scroll')` を呼ぶ。この `dispatchEvent` は
   // `virtualizer` 内部の scroll リスナーを同期的に発火させ、`flushSync` で
   // 即座に再コミットする（`alignRowTop` の doc コメント参照）が、その再コミットは
