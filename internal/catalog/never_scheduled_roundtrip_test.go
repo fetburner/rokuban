@@ -117,20 +117,14 @@ SELECT EXISTS (
 		t.Errorf("rescued quality_events does not contain the never-scheduled marker: %s", qualityEvents)
 	}
 
-	// 往復後も ListReservationsForSyncEvaluation の never-scheduled 除外述語
-	// （internal/db/queries/reservations.sql）と一致する形で検出できることを
-	// 確認する --- ここが壊れると、rescue 後に同じ予約が desired へ復活して
-	// POST を再送してしまう（issue #134 の再発）。
+	// 往復後も never_scheduled_events VIEW（00030）で検出できることを確認する
+	// --- ここが壊れると、rescue 後に同じ予約が desired へ復活して POST を
+	// 再送してしまう（issue #134 の再発）。
 	var matchesExclusionPredicate bool
 	if err := pool.QueryRow(ctx, `
 SELECT EXISTS (
-    SELECT 1 FROM recordings rec
-    WHERE rec.site = 'default' AND rec.network_id = 32736 AND rec.service_id = 1024 AND rec.event_id = 300
-      AND rec.status = 'failed'
-      AND EXISTS (
-          SELECT 1 FROM jsonb_array_elements(rec.quality_events) qe
-          WHERE qe->>'event' = 'recording.never-scheduled'
-      )
+    SELECT 1 FROM never_scheduled_events
+    WHERE site = 'default' AND network_id = 32736 AND service_id = 1024 AND event_id = 300
 )`).Scan(&matchesExclusionPredicate); err != nil {
 		t.Fatalf("checking exclusion predicate: %v", err)
 	}

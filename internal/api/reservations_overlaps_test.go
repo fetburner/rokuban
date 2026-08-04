@@ -191,6 +191,43 @@ func TestGetProgramOverlaps_ExcludesNeverScheduled(t *testing.T) {
 	}
 }
 
+// 放送中の mirakc 由来の失敗（never-scheduled マーカー無し）は同期除外の対象
+// にならないので、重なり判定でも数える（issue #157 の回帰確認: 述語を
+// never_scheduled_events view に一本化しても status='failed' 全般に緩んで
+// いないか。TestGetProgramOverlaps_ExcludesNeverScheduled と対になる
+// 反転テスト）。
+func TestGetProgramOverlaps_MidRecordingFailureNotExcluded(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	srv := newAPIServer(t, pool)
+
+	base := time.Now().Truncate(time.Hour).Add(24 * time.Hour)
+	seedEpgService(t, pool, 32679, 5169, 9, "テスト局", "27")
+	seedEpgProgram(t, pool, 240, 32679, 5169, 3, "対象番組2", base, false)
+	seedEpgProgram(t, pool, 241, 32679, 5169, 4, "放送中に失敗した番組", base.Add(30*time.Minute), false)
+
+	failedResID := reserveViaAPI(t, srv.URL, pool, ctx, 241)
+	// handleRecordingFailed が作る形の failed 行（never-scheduled マーカーは無い）。
+	if _, err := pool.Exec(ctx, `
+INSERT INTO recordings (
+    reservation_id, source, site, network_id, service_id, event_id, service_name,
+    channel_type, channel, title, program_start_at, program_duration_ms, status, quality_events
+) VALUES ($1, 'manual', 'default', 32679, 5169, 4, 'テスト局', 'GR', '27', '放送中に失敗した番組', $2, $3, 'failed',
+    '[{"event":"recording.failed","reason":"need-rescheduling"}]'::jsonb)`,
+		failedResID, base.Add(30*time.Minute), time.Hour.Milliseconds()); err != nil {
+		t.Fatalf("seeding mid-recording failure: %v", err)
+	}
+
+	var got ProgramOverlaps
+	resp := getJSON(t, overlapsURL(srv.URL, 240), &got)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if got.Count != 1 {
+		t.Errorf("count = %d, want 1 (never-scheduled マーカー無しの failed 行は除外してはいけない): %+v", got.Count, got.Reservations)
+	}
+}
+
 // effective.skip が true の予約は重なりに数えない。
 //
 // 到達可能性の確認: DeleteReservation は program_intents.action='skip' を書いて

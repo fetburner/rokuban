@@ -82,6 +82,44 @@ INSERT INTO recordings (
 	}
 }
 
+// seedMidRecordingFailure は handleRecordingFailed（internal/watcher）が作る形の
+// failed 行を模す --- never-scheduled マーカーは無い。ListCapacityDemand が
+// この行の存在で予約を需要から除外してはならないことを確認するための直接
+// INSERT（issue #157: never_scheduled_events view の述語が status='failed'
+// 全般に緩んでいないかの回帰確認）。
+func seedMidRecordingFailure(t *testing.T, pool *pgxpool.Pool, reservationID int64, networkID, serviceID, eventID int32) {
+	t.Helper()
+	ctx := context.Background()
+	qe := `[{"event":"recording.failed","reason":"need-rescheduling"}]`
+	if _, err := pool.Exec(ctx, `
+INSERT INTO recordings (
+    reservation_id, source, site, network_id, service_id, event_id, service_name,
+    channel_type, channel, title, program_start_at, program_duration_ms, status, quality_events
+) VALUES ($1, 'manual', $2, $3, $4, $5, 'テスト局', 'GR', '25', 'テスト番組', now(), 1800000, 'failed', $6::jsonb)`,
+		reservationID, testSite, networkID, serviceID, eventID, qe); err != nil {
+		t.Fatalf("seeding mid-recording failure: %v", err)
+	}
+}
+
+// 放送中の mirakc 由来の失敗（never-scheduled マーカー無し）は需要から除外
+// しない（issue #157 の回帰確認。TestLoad_ExcludesReservationsThatProduceNoSchedule
+// の「never-scheduled の recordings 行がある」ケースと対になる反転テスト）。
+func TestLoad_MidRecordingFailureNotExcluded(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	start := time.Now().Truncate(time.Hour).Add(24 * time.Hour)
+	duration := time.Hour
+
+	seedTuner(t, pool, 0, "PX-S1UD_T1", []string{"GR"}, true, false)
+	seedReservation(t, pool, 100, "GR", "27", start, duration, "")
+	resID := seedReservation(t, pool, 101, "GR", "25", start, duration, "")
+	seedMidRecordingFailure(t, pool, resID, 32678, 5168, int32(101%100000))
+
+	overages := loadOverages(t, pool)
+	if len(overages) != 1 {
+		t.Fatalf("overages = %+v, want 1 (never-scheduled マーカー無しの failed 行は需要から除外してはいけない)", overages)
+	}
+}
+
 // seedReservationWithoutChannel（00009 以前の残骸＝チャンネル未設定を模す
 // ヘルパー）は issue #101（00026）で program_snapshots のチャンネル・イベント
 // 識別 6 列が NOT NULL 化されたことで削除した。この状態自体が DB レベルで

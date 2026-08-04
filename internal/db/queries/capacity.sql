@@ -10,8 +10,10 @@
 --     一度判定して recordings に never-scheduled 行を作った予約は、以後
 --     schedule を作らない（= 需要にならない）ので落とす。旧実装は
 --     orphaned_at IS NULL で絞っていたが、#98 でこの列を廃止し recordings の
---     試行行に置き換えた。ListReservationsForSyncEvaluation
---     （internal/db/queries/reservations.sql）と全く同じ述語 ---
+--     試行行に置き換えた。述語自体は never_scheduled_events view
+--     （issue #157。internal/db/migrations/00030_never_scheduled_events_view.sql）
+--     に一本化し、ListReservationsForSyncEvaluation
+--     （internal/db/queries/reservations.sql）と全く同じ NOT EXISTS になる ---
 --     status='failed' 全般ではなく never-scheduled マーカーだけを見る理由も
 --     同所のコメント参照（mirakc 由来の途中失敗からの再試行経路を壊さない
 --     ため）。これ以上のフィルタに使ってはならない（docs/schema.md §3。
@@ -50,7 +52,7 @@ LEFT JOIN program_intents i ON i.site = r.site AND i.program_id = r.program_id
 LEFT JOIN program_overrides o ON o.site = r.site AND o.program_id = r.program_id
 WHERE r.site = $1
   AND NOT EXISTS (
-      SELECT 1 FROM recordings rec
+      SELECT 1 FROM never_scheduled_events nse
       -- 宛先のキーは**放送イベント**であって予約 id ではない。
       -- reservations.id は ruler の導出削除・再実体化で変わる不安定な値で
       -- （#53 が mirakc の tag を program:{programId} に移した理由。#99 も同じ）、
@@ -59,14 +61,9 @@ WHERE r.site = $1
       -- 「never-scheduled 行が無い」ことになり、終了済み予約が毎パス desired に
       -- 戻り続ける（CLAUDE.md 不変条件 9 の identity: 導出器が作るキーを
       -- 宛先にしない）。
-      WHERE rec.site = r.site
-        AND rec.network_id = s.network_id
-        AND rec.service_id = s.service_id
-        AND rec.event_id = s.event_id
-        AND rec.status = 'failed'
-        AND EXISTS (
-            SELECT 1 FROM jsonb_array_elements(rec.quality_events) qe
-            WHERE qe->>'event' = 'recording.never-scheduled'
-        )
+      WHERE nse.site = r.site
+        AND nse.network_id = s.network_id
+        AND nse.service_id = s.service_id
+        AND nse.event_id = s.event_id
   )
 ORDER BY s.start_at;

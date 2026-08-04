@@ -50,20 +50,20 @@ RETURNING *;
 --      record が着地すると never-scheduled 行は supersede される（#129 /
 --      #143 の「本物の record が推論に必ず勝つ」）ので、この条件があるだけで
 --      「録れたのに orphaned のまま」（#59）が構造的に消える
+--
+-- 1 と 2 は never_scheduled_events VIEW（00030、issue #157）が定義する核で、
+-- 同期除外 3 本（ListReservationsForSyncEvaluation / ListOverlappingReservations
+-- / ListCapacityDemand）と共有する。3 の live 限定は表示側だけが VIEW の列に
+-- 対して追加する --- 意図的な差なので VIEW の中に畳み込まない。
 -- name: GetReservationFull :one
 SELECT sqlc.embed(r), sqlc.embed(s), i.action AS intent_action, o.overrides AS overrides,
        EXISTS (
-           SELECT 1 FROM recordings rec
-           WHERE rec.site = r.site
-             AND rec.network_id = s.network_id
-             AND rec.service_id = s.service_id
-             AND rec.event_id = s.event_id
-             AND rec.status = 'failed'
-             AND rec.deleted_at IS NULL AND rec.superseded_at IS NULL
-             AND EXISTS (
-                 SELECT 1 FROM jsonb_array_elements(rec.quality_events) qe
-                 WHERE qe->>'event' = 'recording.never-scheduled'
-             )
+           SELECT 1 FROM never_scheduled_events nse
+           WHERE nse.site = r.site
+             AND nse.network_id = s.network_id
+             AND nse.service_id = s.service_id
+             AND nse.event_id = s.event_id
+             AND nse.deleted_at IS NULL AND nse.superseded_at IS NULL
        ) AS never_recorded
 FROM reservations r
 JOIN program_snapshots s ON s.site = r.site AND s.program_id = r.program_id
@@ -81,17 +81,12 @@ WHERE r.id = $1;
 -- name: GetReservationFullBySiteAndProgramID :one
 SELECT sqlc.embed(r), sqlc.embed(s), i.action AS intent_action, o.overrides AS overrides,
        EXISTS (
-           SELECT 1 FROM recordings rec
-           WHERE rec.site = r.site
-             AND rec.network_id = s.network_id
-             AND rec.service_id = s.service_id
-             AND rec.event_id = s.event_id
-             AND rec.status = 'failed'
-             AND rec.deleted_at IS NULL AND rec.superseded_at IS NULL
-             AND EXISTS (
-                 SELECT 1 FROM jsonb_array_elements(rec.quality_events) qe
-                 WHERE qe->>'event' = 'recording.never-scheduled'
-             )
+           SELECT 1 FROM never_scheduled_events nse
+           WHERE nse.site = r.site
+             AND nse.network_id = s.network_id
+             AND nse.service_id = s.service_id
+             AND nse.event_id = s.event_id
+             AND nse.deleted_at IS NULL AND nse.superseded_at IS NULL
        ) AS never_recorded
 FROM reservations r
 JOIN program_snapshots s ON s.site = r.site AND s.program_id = r.program_id
@@ -103,17 +98,12 @@ WHERE r.site = $1 AND r.program_id = $2;
 -- name: ListReservationsBySite :many
 SELECT sqlc.embed(r), sqlc.embed(s), i.action AS intent_action, o.overrides AS overrides,
        EXISTS (
-           SELECT 1 FROM recordings rec
-           WHERE rec.site = r.site
-             AND rec.network_id = s.network_id
-             AND rec.service_id = s.service_id
-             AND rec.event_id = s.event_id
-             AND rec.status = 'failed'
-             AND rec.deleted_at IS NULL AND rec.superseded_at IS NULL
-             AND EXISTS (
-                 SELECT 1 FROM jsonb_array_elements(rec.quality_events) qe
-                 WHERE qe->>'event' = 'recording.never-scheduled'
-             )
+           SELECT 1 FROM never_scheduled_events nse
+           WHERE nse.site = r.site
+             AND nse.network_id = s.network_id
+             AND nse.service_id = s.service_id
+             AND nse.event_id = s.event_id
+             AND nse.deleted_at IS NULL AND nse.superseded_at IS NULL
        ) AS never_recorded
 FROM reservations r
 JOIN program_snapshots s ON s.site = r.site AND s.program_id = r.program_id
@@ -132,7 +122,7 @@ ORDER BY s.start_at;
 -- recording.never-scheduled）に移設され、orphaned_at 列自体が無くなった
 -- （00025）。
 --
--- 除外条件を「その予約に既に never-scheduled の recordings 行がある」に
+-- 除外条件を「その放送イベントに既に never-scheduled の recordings 行がある」に
 -- 置き換える。never-scheduled という特定の quality_events マーカーだけを
 -- 見て、status='failed' の行全般では絞らないのが要点 ---
 -- handleRecordingFailed（internal/watcher）が作る「録画開始後に mirakc が
@@ -163,6 +153,17 @@ ORDER BY s.start_at;
 --
 -- 番組の開始時刻・尺（reconciler の開始遅延検出に使う）は program_snapshots に
 -- 移設された（#27）ので JOIN する。FK があるので必ず存在する。
+--
+-- never-scheduled 除外の述語は never_scheduled_events view（issue #157。
+-- internal/db/migrations/00030_never_scheduled_events_view.sql）に一本化した
+-- ---
+-- overlaps.sql の ListOverlappingReservations / capacity.sql の
+-- ListCapacityDemand と全く同じ NOT EXISTS になる。view はこの述語の live
+-- 限定を持たない（deleted_at / superseded_at は列としてのみ出す）。表示用の
+-- never_recorded（このファイルの GetReservationFull 等）が live 限定
+-- （deleted_at IS NULL AND superseded_at IS NULL）を持つ意図的に別の述語
+-- であることと対比すること --- 同期除外は一度 never-scheduled と判定された
+-- 放送イベントを、その後 recordings 行が supersede されても対象に戻さない。
 -- name: ListReservationsForSyncEvaluation :many
 SELECT sqlc.embed(r), sqlc.embed(s), i.action AS intent_action, o.overrides AS overrides
 FROM reservations r
@@ -171,7 +172,7 @@ LEFT JOIN program_intents i ON i.site = r.site AND i.program_id = r.program_id
 LEFT JOIN program_overrides o ON o.site = r.site AND o.program_id = r.program_id
 WHERE r.site = $1
   AND NOT EXISTS (
-      SELECT 1 FROM recordings rec
+      SELECT 1 FROM never_scheduled_events nse
       -- 宛先のキーは**放送イベント**であって予約 id ではない。
       -- reservations.id は ruler の導出削除・再実体化で変わる不安定な値で
       -- （#53 が mirakc の tag を program:{programId} に移した理由。#99 も同じ）、
@@ -180,15 +181,10 @@ WHERE r.site = $1
       -- 「never-scheduled 行が無い」ことになり、終了済み予約が毎パス desired に
       -- 戻り続ける（CLAUDE.md 不変条件 9 の identity: 導出器が作るキーを
       -- 宛先にしない）。
-      WHERE rec.site = r.site
-        AND rec.network_id = s.network_id
-        AND rec.service_id = s.service_id
-        AND rec.event_id = s.event_id
-        AND rec.status = 'failed'
-        AND EXISTS (
-            SELECT 1 FROM jsonb_array_elements(rec.quality_events) qe
-            WHERE qe->>'event' = 'recording.never-scheduled'
-        )
+      WHERE nse.site = r.site
+        AND nse.network_id = s.network_id
+        AND nse.service_id = s.service_id
+        AND nse.event_id = s.event_id
   )
 ORDER BY s.start_at;
 

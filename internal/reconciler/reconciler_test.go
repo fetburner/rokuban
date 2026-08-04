@@ -916,8 +916,9 @@ INSERT INTO recordings (
 
 // hasNeverScheduledRecording は指定の reservation に never-scheduled の
 // recordings 行があるかどうかを返す（reconciler.recordNeverScheduled が実際に
-// 書いたかどうかの確認に使う。internal/db/queries/reservations.sql の
-// never-scheduled 除外述語と同じ判定）。
+// 書いたかどうかの確認に使う。never_scheduled_events VIEW（00030）と同じ
+// 判定を reservation_id で引く --- 意図的に別の識別子を使うのでこの生 SQL
+// 自体は VIEW に置き換えない）。
 func hasNeverScheduledRecording(t *testing.T, ctx context.Context, pool *pgxpool.Pool, reservationID int64) bool {
 	t.Helper()
 	var exists bool
