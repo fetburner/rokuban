@@ -385,8 +385,45 @@ func (q *Queries) CatalogListProgramSnapshots(ctx context.Context, site *string)
 	return items, nil
 }
 
+const catalogListRecordingEncodePolicies = `-- name: CatalogListRecordingEncodePolicies :many
+SELECT p.recording_id, p.keep_original, p.encode_profiles, p.created_at, p.updated_at
+FROM recording_encode_policy p
+JOIN recordings r ON r.id = p.recording_id
+WHERE $1::text IS NULL OR r.site = $1
+ORDER BY p.recording_id
+`
+
+// recording_encode_policy 衛星表（issue #159）。行が無い録画は未凍結（省略）で
+// 正しい --- rescue 側もこのリストに現れなかった recordings.id には何も書かない
+// ので、「凍結済み」と「未凍結」の区別がそのまま往復する。
+func (q *Queries) CatalogListRecordingEncodePolicies(ctx context.Context, site *string) ([]RecordingEncodePolicy, error) {
+	rows, err := q.db.Query(ctx, catalogListRecordingEncodePolicies, site)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []RecordingEncodePolicy
+	for rows.Next() {
+		var i RecordingEncodePolicy
+		if err := rows.Scan(
+			&i.RecordingID,
+			&i.KeepOriginal,
+			&i.EncodeProfiles,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const catalogListRecordings = `-- name: CatalogListRecordings :many
-SELECT id, rule_id, source, site, network_id, service_id, event_id, service_name, channel_type, channel, title, description, extended, genres, is_free, program_start_at, program_duration_ms, status, started_at, ended_at, keep_original, encode_profiles, quality_events, deleted_at, created_at, updated_at, purge_after, superseded_at, purged_at FROM recordings
+SELECT id, rule_id, source, site, network_id, service_id, event_id, service_name, channel_type, channel, title, description, extended, genres, is_free, program_start_at, program_duration_ms, status, started_at, ended_at, quality_events, deleted_at, created_at, updated_at, purge_after, superseded_at, purged_at FROM recordings
 WHERE $1::text IS NULL OR site = $1
 ORDER BY id
 `
@@ -422,8 +459,6 @@ func (q *Queries) CatalogListRecordings(ctx context.Context, site *string) ([]Re
 			&i.Status,
 			&i.StartedAt,
 			&i.EndedAt,
-			&i.KeepOriginal,
-			&i.EncodeProfiles,
 			&i.QualityEvents,
 			&i.DeletedAt,
 			&i.CreatedAt,
@@ -898,7 +933,7 @@ INSERT INTO recordings (
     extended, genres, is_free,
     program_start_at, program_duration_ms,
     status, started_at, ended_at,
-    keep_original, encode_profiles, quality_events,
+    quality_events,
     deleted_at, purge_after, superseded_at, purged_at, created_at, updated_at
 ) OVERRIDING SYSTEM VALUE
 VALUES (
@@ -908,8 +943,8 @@ VALUES (
     $13, $14, $15,
     $16, $17,
     $18, $19, $20,
-    $21, $22, $23,
-    $24, $25, $26, $27, $28, $29
+    $21,
+    $22, $23, $24, $25, $26, $27
 )
 ON CONFLICT (id) DO UPDATE SET
     rule_id             = EXCLUDED.rule_id,
@@ -931,8 +966,6 @@ ON CONFLICT (id) DO UPDATE SET
     status              = EXCLUDED.status,
     started_at          = EXCLUDED.started_at,
     ended_at            = EXCLUDED.ended_at,
-    keep_original       = EXCLUDED.keep_original,
-    encode_profiles     = EXCLUDED.encode_profiles,
     quality_events      = EXCLUDED.quality_events,
     deleted_at          = EXCLUDED.deleted_at,
     purge_after         = EXCLUDED.purge_after,
@@ -968,8 +1001,6 @@ type CatalogUpsertRecordingParams struct {
 	Status            string
 	StartedAt         *time.Time
 	EndedAt           *time.Time
-	KeepOriginal      string
-	EncodeProfiles    []string
 	QualityEvents     json.RawMessage
 	DeletedAt         *time.Time
 	PurgeAfter        *time.Time
@@ -979,6 +1010,9 @@ type CatalogUpsertRecordingParams struct {
 	UpdatedAt         time.Time
 }
 
+// keep_original / encode_profiles は issue #159 で recording_encode_policy
+// 衛星表に切り出されたので、この INSERT には含まれない
+// （CatalogUpsertRecordingEncodePolicy 参照）。
 func (q *Queries) CatalogUpsertRecording(ctx context.Context, arg CatalogUpsertRecordingParams) error {
 	_, err := q.db.Exec(ctx, catalogUpsertRecording,
 		arg.ID,
@@ -1001,13 +1035,46 @@ func (q *Queries) CatalogUpsertRecording(ctx context.Context, arg CatalogUpsertR
 		arg.Status,
 		arg.StartedAt,
 		arg.EndedAt,
-		arg.KeepOriginal,
-		arg.EncodeProfiles,
 		arg.QualityEvents,
 		arg.DeletedAt,
 		arg.PurgeAfter,
 		arg.SupersededAt,
 		arg.PurgedAt,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+	)
+	return err
+}
+
+const catalogUpsertRecordingEncodePolicy = `-- name: CatalogUpsertRecordingEncodePolicy :exec
+INSERT INTO recording_encode_policy (
+    recording_id, keep_original, encode_profiles, created_at, updated_at
+) VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (recording_id) DO UPDATE SET
+    keep_original   = EXCLUDED.keep_original,
+    encode_profiles = EXCLUDED.encode_profiles,
+    created_at      = EXCLUDED.created_at,
+    updated_at      = EXCLUDED.updated_at
+`
+
+type CatalogUpsertRecordingEncodePolicyParams struct {
+	RecordingID    int64
+	KeepOriginal   string
+	EncodeProfiles []string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
+// recording_encode_policy 衛星表の rescue（issue #159）。凍結 = 行の INSERT
+// という意味論を rescue でも保つ --- doc.RecordingEncodePolicies に載っている
+// （= export 時点で凍結済みだった）録画だけ upsert する。載っていない録画には
+// 何もしない（recordings 側の upsert より後に呼ぶので、行が無い = 未凍結と
+// いう意味論のまま復元される）。
+func (q *Queries) CatalogUpsertRecordingEncodePolicy(ctx context.Context, arg CatalogUpsertRecordingEncodePolicyParams) error {
+	_, err := q.db.Exec(ctx, catalogUpsertRecordingEncodePolicy,
+		arg.RecordingID,
+		arg.KeepOriginal,
+		arg.EncodeProfiles,
 		arg.CreatedAt,
 		arg.UpdatedAt,
 	)

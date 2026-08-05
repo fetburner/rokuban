@@ -87,6 +87,21 @@ func Export(ctx context.Context, pool *pgxpool.Pool, site string) (*Document, er
 		doc.Recordings = append(doc.Recordings, recordingFromRow(r))
 	}
 
+	encodePolicies, err := q.CatalogListRecordingEncodePolicies(ctx, siteFilter)
+	if err != nil {
+		return nil, fmt.Errorf("listing recording_encode_policy: %w", err)
+	}
+	doc.RecordingEncodePolicies = make([]RecordingEncodePolicy, 0, len(encodePolicies))
+	for _, p := range encodePolicies {
+		doc.RecordingEncodePolicies = append(doc.RecordingEncodePolicies, RecordingEncodePolicy{
+			RecordingID:    p.RecordingID,
+			KeepOriginal:   p.KeepOriginal,
+			EncodeProfiles: nonNilStrings(p.EncodeProfiles),
+			CreatedAt:      p.CreatedAt,
+			UpdatedAt:      p.UpdatedAt,
+		})
+	}
+
 	assets, err := q.CatalogListMediaAssets(ctx, siteFilter)
 	if err != nil {
 		return nil, fmt.Errorf("listing media_assets: %w", err)
@@ -297,8 +312,6 @@ func recordingFromRow(r sqlcgen.Recording) Recording {
 		Status:            r.Status,
 		StartedAt:         r.StartedAt,
 		EndedAt:           r.EndedAt,
-		KeepOriginal:      r.KeepOriginal,
-		EncodeProfiles:    nonNilStrings(r.EncodeProfiles),
 		QualityEvents:     r.QualityEvents,
 		DeletedAt:         r.DeletedAt,
 		PurgeAfter:        r.PurgeAfter,

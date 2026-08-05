@@ -178,9 +178,13 @@ func seedRecordingWithOriginal(t *testing.T, pool *pgxpool.Pool, mediaDir, relPa
 		t.Fatalf("CreateRecording: %v", err)
 	}
 	if len(profiles) > 0 {
+		// recording_encode_policy 衛星表（issue #159）。keep_original は
+		// EnqueueMissingEncodes（このファイルがテストする対象）が見ないので
+		// 'always' で十分 --- desired プロファイルの有無だけがテストの関心。
 		if _, err := pool.Exec(context.Background(),
-			`UPDATE recordings SET encode_profiles = $2 WHERE id = $1`, id, profiles); err != nil {
-			t.Fatalf("set encode_profiles: %v", err)
+			`INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles)
+			 VALUES ($1, 'always', $2)`, id, profiles); err != nil {
+			t.Fatalf("seeding recording_encode_policy: %v", err)
 		}
 	}
 	full, err := filepath.Abs(filepath.Join(mediaDir, filepath.FromSlash(relPath)))

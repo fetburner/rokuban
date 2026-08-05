@@ -222,7 +222,11 @@ func (h *Server) PurgeRecording(ctx context.Context, req PurgeRecordingRequestOb
 //
 // AppendRecordingEncodeProfiles で追加専用（union + dedup）に書き、全置換は
 // しない --- 誤って他プロファイルの指定を消す事故を避けるため（issue #133
-// 「決めること 3」）。
+// 「決めること 3」）。recording_encode_policy（issue #159）に行が無い（未凍結）
+// 録画（internal/inplace.Register 経由で作られた原本など、ingest の
+// resolveAndSnapshotEncodePolicy を通らなかったもの）でも、原本が active なら
+// このクエリが既定値 'always' で行を新規に作る --- 「原本が active なのに
+// 事後追加ができない」という issue #133 が解いた問題の再発を避けるため。
 //
 // 原本が既に削除済み（GetActiveOriginalMediaAsset が ErrNoRows）なら 409 を返す。
 // EnqueueMissingEncodes は単体だとこのケースで黙って return するため
@@ -271,6 +275,10 @@ func (h *Server) AddRecordingEncodeProfiles(ctx context.Context, req AddRecordin
 		return nil, fmt.Errorf("loading original media asset for recording %d: %w", req.Id, err)
 	}
 
+	// recording_encode_policy（issue #159）に行が無い（未凍結）録画への事後
+	// 追加は、AppendRecordingEncodeProfiles 自体が「原本が active = 凍結済みと
+	// みなす」既定値 'always' で行を作る（internal/inplace.Register 経由の原本は
+	// resolveAndSnapshotEncodePolicy を通らないため行が無いことがある）。
 	if err := q.AppendRecordingEncodeProfiles(ctx, sqlcgen.AppendRecordingEncodeProfilesParams{
 		ID:       req.Id,
 		Profiles: req.Body.Profiles,

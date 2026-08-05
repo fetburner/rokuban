@@ -161,8 +161,6 @@ type Recording struct {
 	Status            string
 	StartedAt         *time.Time
 	EndedAt           *time.Time
-	KeepOriginal      string
-	EncodeProfiles    []string
 	QualityEvents     json.RawMessage
 	DeletedAt         *time.Time
 	CreatedAt         time.Time
@@ -170,6 +168,14 @@ type Recording struct {
 	PurgeAfter        *time.Time
 	SupersededAt      *time.Time
 	PurgedAt          *time.Time
+}
+
+type RecordingEncodePolicy struct {
+	RecordingID    int64
+	KeepOriginal   string
+	EncodeProfiles []string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }
 
 type Reservation struct {

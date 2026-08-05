@@ -421,23 +421,29 @@ func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath st
 	return nil
 }
 
-// resolveAndSnapshotEncodePolicy は recordings.keep_original / encode_profiles に
-// 「この録画の望ましい最終状態」を焼く（issue #103）。呼び出し元の commit が
-// 原本 media_asset の INSERT と同じ tx で呼ぶ。
+// resolveAndSnapshotEncodePolicy は「この録画の望ましい最終状態」を凍結する
+// （issue #103）。issue #159 で recordings.keep_original / encode_profiles から
+// 衛星表 recording_encode_policy に切り出されたため、凍結 = この関数が呼ぶ
+// FreezeRecordingEncodePolicy による当該表への行 INSERT である（不変条件 3
+// 「コミット = DB 行」・不変条件 10「意味を持たない行を作らない」: 行が無い =
+// 未凍結、行がある = 凍結済み）。呼び出し元の commit が原本 media_asset の
+// INSERT と同じ tx で呼ぶ。
 //
 // # 凍結か、毎パス再導出（reservations 経由の参照）か
 //
 // 再導出は選べない。導出元（reservations / program_overrides / program_intents）は
-// 放送終了 + 猶予後に GC される寿命の短い表だが、recordings は永続資産
-// （CLAUDE.md 不変条件 12「表は行の寿命で割る」）。導出に依存させると、番組が
-// EPG から消えて GC された時点で desired が空になり、エンコード未完了の録画で
-// 原本削除が止まる／再エンコードが投入できなくなる。導出元が先に死ぬ表の
-// desired を、値のコピーではなく「参照」で持つことはできない。
+// 放送終了 + 猶予後に GC される寿命の短い表だが、recordings（と衛星表
+// recording_encode_policy）は永続資産（CLAUDE.md 不変条件 12「表は行の寿命で
+// 割る」）。導出に依存させると、番組が EPG から消えて GC された時点で desired が
+// 空になり、エンコード未完了の録画で原本削除が止まる／再エンコードが投入
+// できなくなる。導出元が先に死ぬ表の desired を、値のコピーではなく「参照」で
+// 持つことはできない。
 //
-// 凍結した 2 列は「この録画の望ましい最終状態」であり、recordings 行と同時に
-// 生まれて同時に死ぬので不変条件 12 には反しない（ruler の 1 パスの出力である
-// reservations.base とは寿命が別）。ただし凍結する以上、凍結より後の
-// override 変更はこの録画には反映されないという境界が生まれる。
+// 凍結した値は「この録画の望ましい最終状態」であり、recording_encode_policy 行は
+// recordings 行と同時に生まれて同時に死ぬ（PRIMARY KEY = recordings への FK）ので
+// 不変条件 12 には反しない（ruler の 1 パスの出力である reservations.base とは
+// 寿命が別）。ただし凍結する以上、凍結より後の override 変更はこの録画には
+// 反映されないという境界が生まれる。
 //
 // # 凍結する瞬間
 //
@@ -487,22 +493,42 @@ func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath st
 // 'rule' は slog.Warn（常に異常）、'manual' は slog.Info（日常的なケースと
 // 異常なケースが混在するため騒がしくしない）に分ける。
 //
+// # 解決に失敗しても凍結する（issue #159）
+//
+// GetReservationEncodePolicyByEvent が pgx.ErrNoRows を返した場合でも、
+// FreezeRecordingEncodePolicy は既定値（keepOriginal='always',
+// encodeProfiles=[]）で必ず呼ぶ --- 凍結そのものをスキップしない。旧実装
+// （recordings.keep_original / encode_profiles が列だった頃）はここで書かずに
+// return していたが、それでも列は CREATE TABLE の既定値のまま残っていたので
+// 実質的には「常に凍結されている」のと同じだった。衛星表 recording_encode_policy
+// は行が無ければ既定値をどこにも持たないので、ここで書かないと 2 つの契約が
+// 破れる: (1) migration 00032 の backfill は「原本 media_asset を持つ録画は
+// 凍結済み」を基準にしており、ingest 完了後もこの基準を保つ必要がある、
+// (2) issue #133 の事後追加（AppendRecordingEncodeProfiles）は「行が既にある」
+// ことを前提に書けるようになった（doc コメント冒頭参照）ので、予約が無い
+// 録画（手動で mirakc に起こされた録画等、日常的なケース）にも行が無ければ
+// 追加できなくなってしまう。
+//
 // # 冪等性
 //
-// ingest は再試行される。この関数は毎回同じ入力から同じ値を書くだけの UPDATE
+// ingest は再試行される。この関数は毎回同じ入力から同じ値を書くだけの INSERT
 // で、既存の encoded media_assets の有無を見て分岐しない —— 既に一部の
 // エンコードが完了しているからといって desired を空に戻すような分岐は作らない
-// （issue #103 の「罠」）。
+// （issue #103 の「罠」）。FreezeRecordingEncodePolicy は ON CONFLICT を持たない
+// 素の INSERT だが、これは「1 度しか呼ばれない」という別の不変（Work が転送
+// 開始前に GetOriginalMediaAssetID で冪等性チェックするため、この tx 自体が
+// 録画ごとに 1 回しか実行されない）に依っている。CreateMediaAsset（原本の
+// INSERT）と同じ前提を共有する。
 //
 // # EncodeProfiles の nil
 //
 // db.ReservationOptions.EncodeProfiles は *[]string で nil=未指定 /
 // &[]string{}=「エンコードなし」という明示的な override を区別する
 // （internal/db/models.go の ReservationOptions のコメント）。しかし
-// recordings.encode_profiles は NOT NULL text[] で「未指定」という第三の状態を
-// 表現できないので、ここでは両者を等しく '{}' に潰すと決める。区別が必要な
-// 場面（override の差分表示等）は program_overrides.overrides 自身に当たれば
-// よく、このスナップショットの役目ではない。
+// recording_encode_policy.encode_profiles は NOT NULL text[] で「未指定」という
+// 第三の状態を表現できないので、ここでは両者を等しく '{}' に潰すと決める。
+// 区別が必要な場面（override の差分表示等）は program_overrides.overrides
+// 自身に当たればよく、このスナップショットの役目ではない。
 //
 // # keepOriginal='until_encoded' × encodeProfiles=[] のクランプ（issue #104 との整合）
 //
@@ -513,16 +539,15 @@ func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath st
 // 生成されうる。ルールと override はそれぞれ自分の表の中では整合していても、
 // マージ結果の整合は誰も検査していない。
 //
-// recordings.keep_original / encode_profiles にも同じ組み合わせを禁止する CHECK
-// （issue #104、`until_encoded` は encode_profiles が非空であることを要求する）が
-// 入る予定で、そのまま実効値を書くとこの tx が CHECK 違反でロールバックする ---
-// このメソッドは原本 media_asset の INSERT と同一 tx で呼ばれるため、
-// ロールバックは「録画そのものが消失する」に直結する（不変条件 3「コミット =
-// DB 行」）。原本を失うリスクを負ってまで守る価値のある不変ではないので、
-// 書く直前に安全側へ倒す（migration 00020 の UP 文が既存行に対して行う補正と
-// 同じロジック）: 実効的な encode_profiles が空で keepOriginal が
-// 'until_encoded' なら、'always' に倒してから書く。ユーザーの意図
-// （override の値そのもの）は program_overrides 側に残るので失われない ---
+// recording_encode_policy にも同じ組み合わせを禁止する CHECK（issue #104、
+// `until_encoded` は encode_profiles が非空であることを要求する。issue #159 で
+// 00020 から移設）があり、そのまま実効値を書くとこの tx が CHECK 違反で
+// ロールバックする --- このメソッドは原本 media_asset の INSERT と同一 tx で
+// 呼ばれるため、ロールバックは「録画そのものが消失する」に直結する（不変条件 3
+// 「コミット = DB 行」）。原本を失うリスクを負ってまで守る価値のある不変では
+// ないので、書く直前に安全側へ倒す: 実効的な encode_profiles が空で
+// keepOriginal が 'until_encoded' なら、'always' に倒してから書く。ユーザーの
+// 意図（override の値そのもの）は program_overrides 側に残るので失われない ---
 // 失われるのはこの録画のスナップショットにおける効力だけで、次にルールが
 // プロファイルを持てば別の録画では正しく until_encoded になる。
 func (w *IngestWorker) resolveAndSnapshotEncodePolicy(ctx context.Context, q *sqlcgen.Queries, recordingID int64) error {
@@ -537,44 +562,48 @@ func (w *IngestWorker) resolveAndSnapshotEncodePolicy(ctx context.Context, q *sq
 		ServiceID: rec.ServiceID,
 		EventID:   rec.EventID,
 	})
-	if err != nil {
-		if errors.Is(err, pgx5.ErrNoRows) {
-			// source='rule' は常に異常系（doc コメント「予約をどのキーで引くか」
-			// 参照）なので Warn、source='manual' は日常的なケース（予約が最初から
-			// 無い）と異常なケース（intent action='record' だったが予約が
-			// 恒久的に削除された）が混在するので Info に落とす。どちらの source
-			// でも黙って return しない —— 判別できないことをログの欠落で
-			// 埋め合わせない。
-			logArgs := []any{
-				"recording_id", recordingID,
-				"site", rec.Site,
-				"network_id", rec.NetworkID,
-				"service_id", rec.ServiceID,
-				"event_id", rec.EventID,
-			}
-			if rec.Source == db.SourceRule {
-				slog.Warn("encode policy: reservation not found via broadcast event key", logArgs...)
-			} else {
-				slog.Info("encode policy: reservation not found via broadcast event key", logArgs...)
-			}
-			return nil
-		}
-		return fmt.Errorf("loading reservation encode policy for recording %d (site=%s network_id=%d service_id=%d event_id=%d): %w",
-			recordingID, rec.Site, rec.NetworkID, rec.ServiceID, rec.EventID, err)
-	}
-
-	eff, err := db.EffectiveOptions(row.Reservation.Base, row.Overrides, row.IntentAction)
-	if err != nil {
-		return fmt.Errorf("computing effective options for reservation %d: %w", row.Reservation.ID, err)
-	}
-
+	// 解決に失敗しても凍結自体はスキップしない（issue #159。doc コメント
+	// 「解決失敗時も凍結する」参照）。既定値（'always' / '{}'）で凍結する ---
+	// 何も INSERT しないと、原本 media_asset の有無で「凍結済みか」を判定する
+	// 不変条件（migration 00032 の backfill と同じ基準）が破れ、かつ issue #133
+	// の事後追加（AppendRecordingEncodeProfiles）が「行が既にある」ことを前提に
+	// できなくなる。
 	keepOriginal := "always"
-	if eff.KeepOriginal != nil {
-		keepOriginal = *eff.KeepOriginal
-	}
 	encodeProfiles := []string{}
-	if eff.EncodeProfiles != nil {
-		encodeProfiles = *eff.EncodeProfiles
+	if err != nil {
+		if !errors.Is(err, pgx5.ErrNoRows) {
+			return fmt.Errorf("loading reservation encode policy for recording %d (site=%s network_id=%d service_id=%d event_id=%d): %w",
+				recordingID, rec.Site, rec.NetworkID, rec.ServiceID, rec.EventID, err)
+		}
+		// source='rule' は常に異常系（doc コメント「予約をどのキーで引くか」
+		// 参照）なので Warn、source='manual' は日常的なケース（予約が最初から
+		// 無い）と異常なケース（intent action='record' だったが予約が
+		// 恒久的に削除された）が混在するので Info に落とす。どちらの source
+		// でも黙って return しない —— 判別できないことをログの欠落で
+		// 埋め合わせない。
+		logArgs := []any{
+			"recording_id", recordingID,
+			"site", rec.Site,
+			"network_id", rec.NetworkID,
+			"service_id", rec.ServiceID,
+			"event_id", rec.EventID,
+		}
+		if rec.Source == db.SourceRule {
+			slog.Warn("encode policy: reservation not found via broadcast event key; freezing defaults", logArgs...)
+		} else {
+			slog.Info("encode policy: reservation not found via broadcast event key; freezing defaults", logArgs...)
+		}
+	} else {
+		eff, err := db.EffectiveOptions(row.Reservation.Base, row.Overrides, row.IntentAction)
+		if err != nil {
+			return fmt.Errorf("computing effective options for reservation %d: %w", row.Reservation.ID, err)
+		}
+		if eff.KeepOriginal != nil {
+			keepOriginal = *eff.KeepOriginal
+		}
+		if eff.EncodeProfiles != nil {
+			encodeProfiles = *eff.EncodeProfiles
+		}
 	}
 
 	// クランプ（doc コメント「keepOriginal='until_encoded' × encodeProfiles=[] の
@@ -587,10 +616,10 @@ func (w *IngestWorker) resolveAndSnapshotEncodePolicy(ctx context.Context, q *sq
 		keepOriginal = "always"
 	}
 
-	return q.SnapshotRecordingEncodePolicy(ctx, sqlcgen.SnapshotRecordingEncodePolicyParams{
+	return q.FreezeRecordingEncodePolicy(ctx, sqlcgen.FreezeRecordingEncodePolicyParams{
+		RecordingID:    recordingID,
 		KeepOriginal:   keepOriginal,
 		EncodeProfiles: encodeProfiles,
-		ID:             recordingID,
 	})
 }
 

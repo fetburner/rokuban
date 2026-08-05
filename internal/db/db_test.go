@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -15,6 +16,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/pressly/goose/v3"
 
 	"github.com/fetburner/rokuban/internal/config"
 )
@@ -104,6 +107,178 @@ func TestMigrateUpDown(t *testing.T) {
 
 	if err := MigrateDown(ctx, dbURL); err != nil {
 		t.Fatalf("migrate down: %v", err)
+	}
+}
+
+// recordingEncodePolicyMigrationVersion は 00032_recording_encode_policy.sql の
+// goose バージョン番号。ファイル名の連番プレフィックスと一致させる（ずれたら
+// このテストがすぐ壊れて気付ける）。
+const recordingEncodePolicyMigrationVersion = 32
+
+// TestMigrateUp_RecordingEncodePolicyBackfill は issue #159 の 00032 マイグレーション
+// の backfill を検証する。goose で 00029 まで適用した「移設前」のスキーマ
+// （recordings.keep_original / encode_profiles が列として存在する）にフィクスチャを
+// 直接書き込み、00032 を適用した後の recording_encode_policy の行の有無・値を確認する。
+//
+// backfill の判定基準は「原本 media_asset（kind='original'）を持つか」であって
+// 列の値そのものではない（既定値のままでも原本があれば凍結済みとして row を作る。
+// 00032 のコメント参照）。3 ケースで両方向を確認する:
+//
+//   - A: 原本あり + 列が既定値（'always'/'{}'）→ 行ができ、値は既定値のまま
+//   - B: 原本あり + 列が非既定値（'until_encoded'/['h265']）→ 行ができ、値も引き継がれる
+//   - C: 原本なし（列は既定値のまま。never-scheduled 等）→ 行はできない
+//
+// Down も確認する: recording_encode_policy から recordings へ書き戻り、
+// 衛星表は消える。
+func TestMigrateUp_RecordingEncodePolicyBackfill(t *testing.T) {
+	dbURL := testDatabaseURL(t)
+	ctx := context.Background()
+
+	if err := MigrateReset(ctx, dbURL); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = MigrateReset(context.Background(), dbURL)
+	})
+
+	// --- 00029 まで（衛星表が無い「移設前」のスキーマ）を適用 ---
+	if err := runGooseMigration(ctx, dbURL, func(ctx context.Context, p *goose.Provider) error {
+		_, err := p.UpTo(ctx, recordingEncodePolicyMigrationVersion-1)
+		return err
+	}); err != nil {
+		t.Fatalf("migrating up to version %d: %v", recordingEncodePolicyMigrationVersion-1, err)
+	}
+
+	pool, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("connecting pool: %v", err)
+	}
+	defer pool.Close()
+
+	insertLegacyRecording := func(eventID int32, keepOriginal string, encodeProfiles []string) int64 {
+		t.Helper()
+		var id int64
+		if err := pool.QueryRow(ctx, `
+			INSERT INTO recordings (
+				source, site, network_id, service_id, event_id, service_name,
+				channel_type, channel, title, program_start_at, program_duration_ms,
+				status, keep_original, encode_profiles
+			) VALUES (
+				'manual', 'default', 32736, 1024, $1, 'テスト局',
+				'GR', '27', 'backfill-test', now(), 1800000,
+				'finished', $2, $3
+			) RETURNING id`,
+			eventID, keepOriginal, encodeProfiles,
+		).Scan(&id); err != nil {
+			t.Fatalf("inserting legacy recording: %v", err)
+		}
+		return id
+	}
+	insertOriginalAsset := func(recordingID int64, relPath string) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes)
+			VALUES ($1, 'original', $2, 1)`, recordingID, relPath); err != nil {
+			t.Fatalf("inserting legacy media_asset: %v", err)
+		}
+	}
+
+	// A: 原本あり + 既定値。
+	recA := insertLegacyRecording(1, "always", []string{})
+	insertOriginalAsset(recA, "a.m2ts")
+
+	// B: 原本あり + 非既定値。
+	recB := insertLegacyRecording(2, "until_encoded", []string{"h265"})
+	insertOriginalAsset(recB, "b.m2ts")
+
+	// C: 原本なし（既定値のまま。ingest 未完了 / never-scheduled 相当）。
+	recC := insertLegacyRecording(3, "always", []string{})
+
+	// --- 00032 を適用（backfill を含む） ---
+	if err := runGooseMigration(ctx, dbURL, func(ctx context.Context, p *goose.Provider) error {
+		_, err := p.UpTo(ctx, recordingEncodePolicyMigrationVersion)
+		return err
+	}); err != nil {
+		t.Fatalf("migrating up to version %d: %v", recordingEncodePolicyMigrationVersion, err)
+	}
+
+	type policyRow struct {
+		KeepOriginal   string
+		EncodeProfiles []string
+	}
+	queryPolicy := func(recordingID int64) (policyRow, bool) {
+		t.Helper()
+		var row policyRow
+		err := pool.QueryRow(ctx,
+			"SELECT keep_original, encode_profiles FROM recording_encode_policy WHERE recording_id = $1",
+			recordingID,
+		).Scan(&row.KeepOriginal, &row.EncodeProfiles)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return policyRow{}, false
+		}
+		if err != nil {
+			t.Fatalf("querying recording_encode_policy for %d: %v", recordingID, err)
+		}
+		return row, true
+	}
+
+	if row, ok := queryPolicy(recA); !ok {
+		t.Errorf("recording A (original present, default values): expected a backfilled row, found none")
+	} else if row.KeepOriginal != "always" || len(row.EncodeProfiles) != 0 {
+		t.Errorf("recording A backfilled row = %+v, want always/[]", row)
+	}
+
+	if row, ok := queryPolicy(recB); !ok {
+		t.Errorf("recording B (original present, non-default values): expected a backfilled row, found none")
+	} else if row.KeepOriginal != "until_encoded" || !slices.Equal(row.EncodeProfiles, []string{"h265"}) {
+		t.Errorf("recording B backfilled row = %+v, want until_encoded/[h265]", row)
+	}
+
+	if _, ok := queryPolicy(recC); ok {
+		t.Errorf("recording C (no original media_asset): expected no row, but one was backfilled " +
+			"(backfill must key off media_assets presence, not column defaults)")
+	}
+
+	// recordings から列が落ちていること。
+	var colCount int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM information_schema.columns
+		WHERE table_name = 'recordings' AND column_name IN ('keep_original', 'encode_profiles')
+	`).Scan(&colCount); err != nil {
+		t.Fatalf("querying information_schema.columns: %v", err)
+	}
+	if colCount != 0 {
+		t.Errorf("recordings still has keep_original/encode_profiles columns after migration 00032 (count=%d)", colCount)
+	}
+
+	// --- Down: recordings へ書き戻り、衛星表が消えること ---
+	if err := runGooseMigration(ctx, dbURL, func(ctx context.Context, p *goose.Provider) error {
+		_, err := p.DownTo(ctx, recordingEncodePolicyMigrationVersion-1)
+		return err
+	}); err != nil {
+		t.Fatalf("migrating down to version %d: %v", recordingEncodePolicyMigrationVersion-1, err)
+	}
+
+	var gotKeepOriginal string
+	var gotEncodeProfiles []string
+	if err := pool.QueryRow(ctx,
+		"SELECT keep_original, encode_profiles FROM recordings WHERE id = $1", recB,
+	).Scan(&gotKeepOriginal, &gotEncodeProfiles); err != nil {
+		t.Fatalf("querying recordings after down migration: %v", err)
+	}
+	if gotKeepOriginal != "until_encoded" || !slices.Equal(gotEncodeProfiles, []string{"h265"}) {
+		t.Errorf("recordings.keep_original/encode_profiles after down = %q/%v, want until_encoded/[h265]",
+			gotKeepOriginal, gotEncodeProfiles)
+	}
+
+	var satelliteExists bool
+	if err := pool.QueryRow(ctx,
+		"SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'recording_encode_policy')",
+	).Scan(&satelliteExists); err != nil {
+		t.Fatalf("checking recording_encode_policy existence: %v", err)
+	}
+	if satelliteExists {
+		t.Errorf("recording_encode_policy table still exists after down migration")
 	}
 }
 

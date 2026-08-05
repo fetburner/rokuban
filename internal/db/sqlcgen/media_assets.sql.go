@@ -182,7 +182,7 @@ func (q *Queries) GetOriginalMediaAssetID(ctx context.Context, recordingID int64
 }
 
 const getRecordingByID = `-- name: GetRecordingByID :one
-SELECT id, rule_id, source, site, network_id, service_id, event_id, service_name, channel_type, channel, title, description, extended, genres, is_free, program_start_at, program_duration_ms, status, started_at, ended_at, keep_original, encode_profiles, quality_events, deleted_at, created_at, updated_at, purge_after, superseded_at, purged_at FROM recordings WHERE id = $1
+SELECT id, rule_id, source, site, network_id, service_id, event_id, service_name, channel_type, channel, title, description, extended, genres, is_free, program_start_at, program_duration_ms, status, started_at, ended_at, quality_events, deleted_at, created_at, updated_at, purge_after, superseded_at, purged_at FROM recordings WHERE id = $1
 `
 
 func (q *Queries) GetRecordingByID(ctx context.Context, id int64) (Recording, error) {
@@ -209,8 +209,6 @@ func (q *Queries) GetRecordingByID(ctx context.Context, id int64) (Recording, er
 		&i.Status,
 		&i.StartedAt,
 		&i.EndedAt,
-		&i.KeepOriginal,
-		&i.EncodeProfiles,
 		&i.QualityEvents,
 		&i.DeletedAt,
 		&i.CreatedAt,

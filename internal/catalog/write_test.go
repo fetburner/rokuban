@@ -20,7 +20,6 @@ func TestWriteAndLatest(t *testing.T) {
 			ServiceName: "NHKG", ChannelType: "GR", Channel: "27",
 			Title: "test", ProgramStartAt: time.Date(2026, 7, 30, 1, 0, 0, 0, time.UTC),
 			ProgramDurationMs: 1800000, Status: "finished",
-			KeepOriginal: "always", EncodeProfiles: []string{},
 			QualityEvents: json.RawMessage(`[]`),
 			CreatedAt:     time.Date(2026, 7, 30, 1, 0, 0, 0, time.UTC),
 			UpdatedAt:     time.Date(2026, 7, 30, 2, 0, 0, 0, time.UTC),

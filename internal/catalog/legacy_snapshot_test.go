@@ -56,7 +56,7 @@ func TestRescue_SkipsPreIssue101SnapshotButRestoresDurableAssets(t *testing.T) {
 				ServiceName: "NHK総合", ChannelType: "GR", Channel: "27",
 				Title: "災害復旧で守るべき録画", IsFree: true,
 				ProgramStartAt: time.Now().Add(-2 * time.Hour), ProgramDurationMs: 1800000,
-				Status: "finished", KeepOriginal: "always",
+				Status:    "finished",
 				CreatedAt: time.Now(), UpdatedAt: time.Now(),
 			},
 		},
@@ -138,3 +138,107 @@ func TestRescue_AcceptsSnapshotWithChannelIdentity(t *testing.T) {
 		t.Errorf("ProgramSnapshots rescued = %d, want 1", result.ProgramSnapshots)
 	}
 }
+
+// TestRescue_RestoresLegacyEncodePolicyFromPreIssue159Dump は issue #159 より前に
+// export された catalog ダンプ（recordings.keep_original / encode_profiles が
+// まだ列だった頃。doc.RecordingEncodePolicies は空で、旧列の値は
+// Recording.KeepOriginalLegacy / EncodeProfilesLegacy に残る。document.go
+// 参照）を rescue すると、原本 media_asset を持つ（= ingest が完了していた）
+// 録画については recording_encode_policy 行が復元されることを確認する。
+//
+// 対応する MediaAsset（kind="original"）が無い録画（旧列は既定値のまま残る、
+// 未凍結だった録画）は行を復元しない --- migration 00032 backfill と同じ基準
+// （原本 media_asset の有無。列の値そのものは判定に使わない。CLAUDE.md
+// 不変条件 9）を、DB ではなくダンプ自身の doc.MediaAssets に対して適用する。
+//
+// 直す前の実装（Recording から KeepOriginalLegacy / EncodeProfilesLegacy を
+// 削っただけ）はこの往復で凍結済みポリシーを黙って失っていた ---
+// 削除エンジンが対象外になり、EnqueueMissingEncodes が no-op になり、事後追加
+// API が既定値 'always' で上書きする（issue #159 レビューで指摘）。
+func TestRescue_RestoresLegacyEncodePolicyFromPreIssue159Dump(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	frozenKeepOriginal := "until_encoded"
+	base := time.Now().Add(-2 * time.Hour)
+
+	doc := &Document{
+		Version:    Version,
+		ExportedAt: time.Now().UTC(),
+		Recordings: []Recording{
+			{
+				// 原本ありの録画（旧 export では凍結済みだった）。
+				ID: 9001, Source: "manual", Site: "default",
+				NetworkID: 32736, ServiceID: 1024, EventID: 901,
+				ServiceName: "NHK総合", ChannelType: "GR", Channel: "27",
+				Title: "旧ダンプ・凍結済み", IsFree: true,
+				ProgramStartAt: base, ProgramDurationMs: 1800000,
+				Status:               "finished",
+				KeepOriginalLegacy:   &frozenKeepOriginal,
+				EncodeProfilesLegacy: []string{"h265"},
+				CreatedAt:            base, UpdatedAt: base,
+			},
+			{
+				// 原本なしの録画（旧 export では未凍結。旧列は既定値 'always' / []
+				// のまま残っていた --- 凍結設計の正しい帰結でありバグではない）。
+				ID: 9002, Source: "manual", Site: "default",
+				NetworkID: 32736, ServiceID: 1024, EventID: 902,
+				ServiceName: "NHK総合", ChannelType: "GR", Channel: "27",
+				Title: "旧ダンプ・未凍結", IsFree: true,
+				ProgramStartAt: base, ProgramDurationMs: 1800000,
+				Status:               "recording",
+				KeepOriginalLegacy:   ptrString("always"),
+				EncodeProfilesLegacy: nil,
+				CreatedAt:            base, UpdatedAt: base,
+			},
+		},
+		MediaAssets: []MediaAsset{
+			{
+				ID: 9101, RecordingID: 9001, Kind: "original",
+				RelPath: "20260101/090000_旧ダンプ・凍結済み_1024.m2ts", SizeBytes: 1_000_000,
+				State: "active", CreatedAt: base, UpdatedAt: base,
+			},
+		},
+	}
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	result, err := applyDocument(ctx, tx, doc)
+	if err != nil {
+		t.Fatalf("applyDocument: %v", err)
+	}
+	if result.Recordings != 2 {
+		t.Fatalf("Recordings = %d, want 2", result.Recordings)
+	}
+	if result.RestoredLegacyEncodePolicies != 1 {
+		t.Errorf("RestoredLegacyEncodePolicies = %d, want 1 (only the recording with an original media_asset)", result.RestoredLegacyEncodePolicies)
+	}
+
+	var keepOriginal string
+	var profiles []string
+	err = tx.QueryRow(ctx,
+		`SELECT keep_original, encode_profiles FROM recording_encode_policy WHERE recording_id = $1`, 9001,
+	).Scan(&keepOriginal, &profiles)
+	if err != nil {
+		t.Fatalf("querying restored recording_encode_policy for 9001: %v", err)
+	}
+	if keepOriginal != "until_encoded" || len(profiles) != 1 || profiles[0] != "h265" {
+		t.Errorf("recording_encode_policy for 9001 = (%q, %v), want (until_encoded, [h265])", keepOriginal, profiles)
+	}
+
+	var count int
+	if err := tx.QueryRow(ctx,
+		`SELECT count(*) FROM recording_encode_policy WHERE recording_id = $1`, 9002,
+	).Scan(&count); err != nil {
+		t.Fatalf("counting recording_encode_policy rows for 9002: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("recording_encode_policy rows for 9002 (no original media_asset) = %d, want 0 (未凍結のまま埋めない)", count)
+	}
+}
+
+func ptrString(s string) *string { return &s }

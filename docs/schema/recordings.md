@@ -2,7 +2,7 @@
 
 **録画試行の永続履歴**。成功だけでなく失敗（`recording.failed`）も行として残す — 「録画品質の実測」（issue #2）と再放送待ち判断の入力になる。番組情報は mirakc record / schedule の program ペイロードから**非正規化スナップショット**し、EPG テーブルにも mirakc にも依存せず自己完結する。
 
-**recordings に新しく列を足すときの基準は「試行の帰結の観測だけを持つ脊椎であること」**（[CLAUDE.md](../../CLAUDE.md) 不変条件 13。#156）。`media_assets`（下記 §6）はこの表を `recording_id` で指す衛星表 —— 判定基準・境界は [principles.md](principles.md) §9 参照。**これは既存の全列がこの基準を満たしていることを意味しない。** `keep_original` / `encode_profiles`（下記 CREATE TABLE 内、予約オプションの効力スナップショット。ingest worker が凍結し api が追記する）はこの基準を遡って適用すれば衛星に出すべき列だが、まだ切り出されておらず、切り出しは #159 が持っている。
+**recordings に新しく列を足すときの基準は「試行の帰結の観測だけを持つ脊椎であること」**（[CLAUDE.md](../../CLAUDE.md) 不変条件 13。#156）。`media_assets`（下記 §6）はこの表を `recording_id` で指す衛星表 —— 判定基準・境界は [principles.md](principles.md) §9 参照。`keep_original` / `encode_profiles`（予約オプションの効力スナップショット。ingest worker が凍結し api が追記する）も同じ基準で衛星表 `recording_encode_policy` に切り出した（#159。下記「recording_encode_policy — 原本保持ポリシーの凍結」参照）。書き手が脊椎（watcher / reconciler）ではなく別の状態機械（ingest worker の凍結・api の事後追加）である列は recordings 本体に残さない。
 
 ```sql
 CREATE TABLE recordings (
@@ -30,16 +30,6 @@ CREATE TABLE recordings (
     status            text NOT NULL CHECK (status IN ('recording', 'finished', 'canceled', 'failed')),
     started_at        timestamptz,               -- 実際の録画開始（record の startTime）
     ended_at          timestamptz,
-
-    -- 予約オプションの効力スナップショット（ingest / retention reconcile が参照）
-    keep_original     text NOT NULL DEFAULT 'always'
-                           CHECK (keep_original IN ('always', 'until_encoded')),
-    encode_profiles   text[] NOT NULL DEFAULT '{}',   -- 設定ファイル定義のプロファイル名
-    -- until_encoded を選ぶならプロファイルを最低 1 つ添える（issue #104 / 00020）。
-    -- 無ければ削除 reconcile の派生物完備判定が空配列で恒真になり、原本が唯一の
-    -- コピーのまま物理削除されうる（不変条件 10「あってはいけない組み合わせを
-    -- 表現不可能にする」）
-    CHECK (keep_original <> 'until_encoded' OR cardinality(encode_profiles) > 0),
 
     -- 品質イベントログ（recording.failed / record-broken の理由。§8 参照）
     -- mirakc の reason を jsonb のまま保持し、構造化カラムにはしない（不変条件 7）
@@ -133,6 +123,26 @@ watcher の `createRecording`（`internal/watcher/watcher.go`）は `CreateRecor
 - `media_assets` を持つ failed 行（途中まで録れて failed になった行）でも扱いは同じ: superseded にするだけで `media_assets.recording_id` は書き換えない。ファイルの所有者は superseded になった旧 `recordings` 行のままで、物理削除は削除 reconcile が `recordings.deleted_at` を見て判断するため、superseded だけでは何も物理的に消えない
 - 冪等: `processRecord` は `record_sync` の `(site, record_id)` 行ロックで、同一 record の 2 回目以降は `createRecording` 自体を呼ばない（[録画エンジン](../recording.md) §3.3）ので、`superseded_at` が二重に進んだり行が重複したりしない
 - superseded にした行は `deleted_at` を立てない（ユーザーが消したわけではない）ので、録画一覧には失敗した旧行と成功した新行の両方が履歴として残り続ける
+
+### recording_encode_policy — 原本保持ポリシーの凍結（衛星表。issue #159）
+
+`keep_original` / `encode_profiles`（予約オプションの効力スナップショット）は recordings 本体から `recording_id` で指す衛星表 `recording_encode_policy` に持つ。
+
+```sql
+CREATE TABLE recording_encode_policy (
+    recording_id    bigint PRIMARY KEY REFERENCES recordings (id),
+    keep_original   text   NOT NULL CHECK (keep_original IN ('always', 'until_encoded')),
+    encode_profiles text[] NOT NULL,
+    CHECK (keep_original <> 'until_encoded' OR cardinality(encode_profiles) > 0),
+    created_at      timestamptz NOT NULL DEFAULT now(),
+    updated_at      timestamptz NOT NULL DEFAULT now()
+);
+```
+
+- **行の存在そのものが「凍結済み」を意味する**（CLAUDE.md 不変条件 10）。凍結前はこの録画に対応する行が無く、`keep_original NOT NULL DEFAULT 'always'` のような列の既定値では「まだ凍結されていない」と「空として凍結された」を区別できなかった（recordings 本体にあった旧列の問題そのもの）。凍結後の行は空プロファイルであっても必ず INSERT される（`encode_profiles = '{}'` の行が存在しうる）
+- **書き手は脊椎（watcher / reconciler）ではない**。ingest worker（`internal/worker/ingest.go` の `resolveAndSnapshotEncodePolicy`）が原本 media_asset をコミットする tx の中で凍結し、api（`POST /api/recordings/{id}/encode-profiles`、issue #133）が追記方向にのみ書き換える。詳細は [storage.md](../storage.md) §6「原本 TS の保持ポリシー」参照
+- **`recording_id` は `recordings.id`（脊椎の PK）への FK で、`recordings` と同時に生まれて同時に死ぬ**（CLAUDE.md 不変条件 12「表は行の寿命で割る」）。until_encoded の CHECK（`00020` から移設）は空プロファイルの until_encoded を表現不可能にする
+- backfill（`00030`）は原本削除エンジンの view `until_encoded_deletable_originals` が参照する JOIN 先をこの表に付け替えた際に、原本 media_asset（`kind = 'original'`）の有無で「凍結済みかどうか」を判定して行を作った（列の値そのものは判定に使わない。CLAUDE.md 不変条件 9）
 
 ## 6. media_assets — メディアアセット（永続資産）
 

@@ -77,6 +77,29 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateMediaAsset: %v", err)
 	}
+
+	// recording_encode_policy 衛星表（issue #159）。凍結済み（ingest が INSERT
+	// した状態を模す。resolveAndSnapshotEncodePolicy 相当）。
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles)
+		VALUES ($1, 'until_encoded', ARRAY['h265'])
+	`, recID); err != nil {
+		t.Fatalf("seeding recording_encode_policy: %v", err)
+	}
+
+	// 未凍結の録画（原本 media_asset を持たない）。行が無いことがそのまま
+	// 往復すること（不変条件 10「意味を持たない行を作らない」）を確認する対照群。
+	unfrozenRecID, err := q.CreateRecording(ctx, sqlcgen.CreateRecordingParams{
+		Source: "manual", Site: "default",
+		NetworkID: 32736, ServiceID: 1024, EventID: 101,
+		ServiceName: "NHK総合", ChannelType: "GR", Channel: "27",
+		Title: "未凍結", IsFree: true,
+		ProgramStartAt:    time.Date(2026, 7, 29, 13, 0, 0, 0, time.UTC),
+		ProgramDurationMs: 1800000, Status: "recording",
+	})
+	if err != nil {
+		t.Fatalf("CreateRecording (unfrozen): %v", err)
+	}
 	// M3-7 の tombstone / 即時 purge 意図も catalog で保護する。
 	purgeAt := time.Date(2026, 7, 30, 0, 0, 0, 0, time.UTC)
 	if _, err := pool.Exec(ctx, `
@@ -125,12 +148,21 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 	if len(doc.Rules[0].TextMatches) != 1 {
 		t.Errorf("exported text matches = %d, want 1", len(doc.Rules[0].TextMatches))
 	}
-	if len(doc.Recordings) != 1 || doc.Recordings[0].ID != recID {
-		t.Fatalf("exported recordings = %+v, want id=%d", doc.Recordings, recID)
+	if len(doc.Recordings) != 2 {
+		t.Fatalf("exported recordings = %+v, want 2 (frozen + unfrozen)", doc.Recordings)
 	}
-	if doc.Recordings[0].DeletedAt == nil || doc.Recordings[0].PurgeAfter == nil ||
-		!doc.Recordings[0].PurgeAfter.Equal(purgeAt) {
-		t.Fatalf("exported tombstone deletedAt=%v purgeAfter=%v", doc.Recordings[0].DeletedAt, doc.Recordings[0].PurgeAfter)
+	var frozen *Recording
+	for i := range doc.Recordings {
+		if doc.Recordings[i].ID == recID {
+			frozen = &doc.Recordings[i]
+		}
+	}
+	if frozen == nil {
+		t.Fatalf("exported recordings = %+v, want id=%d present", doc.Recordings, recID)
+	}
+	if frozen.DeletedAt == nil || frozen.PurgeAfter == nil ||
+		!frozen.PurgeAfter.Equal(purgeAt) {
+		t.Fatalf("exported tombstone deletedAt=%v purgeAfter=%v", frozen.DeletedAt, frozen.PurgeAfter)
 	}
 	if len(doc.MediaAssets) != 1 || doc.MediaAssets[0].ID != assetID {
 		t.Fatalf("exported media_assets = %+v", doc.MediaAssets)
@@ -140,6 +172,19 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 	}
 	if len(doc.ProgramIntents) != 1 {
 		t.Fatalf("exported program_intents = %d, want 1", len(doc.ProgramIntents))
+	}
+	// recording_encode_policy（issue #159）: 凍結済みの recID だけが載り、
+	// 未凍結の unfrozenRecID は載らない（行の有無そのものが意味を持つ。
+	// 不変条件 10）。
+	if len(doc.RecordingEncodePolicies) != 1 {
+		t.Fatalf("exported recording_encode_policies = %+v, want exactly 1 (unfrozen recording must not appear)",
+			doc.RecordingEncodePolicies)
+	}
+	p := doc.RecordingEncodePolicies[0]
+	if p.RecordingID != recID || p.KeepOriginal != "until_encoded" ||
+		len(p.EncodeProfiles) != 1 || p.EncodeProfiles[0] != "h265" {
+		t.Fatalf("exported recording_encode_policy = %+v, want recordingId=%d keepOriginal=until_encoded profiles=[h265]",
+			p, recID)
 	}
 
 	mediaDir := t.TempDir()
@@ -163,9 +208,13 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RescueFile: %v", err)
 	}
-	if result.Rules != 1 || result.Recordings != 1 || result.MediaAssets != 1 || result.DropStats != 1 {
+	if result.Rules != 1 || result.Recordings != 2 || result.MediaAssets != 1 || result.DropStats != 1 {
 		t.Fatalf("rescue counts: rules=%d rec=%d assets=%d drops=%d",
 			result.Rules, result.Recordings, result.MediaAssets, result.DropStats)
+	}
+	if result.RecordingEncodePolicies != 1 {
+		t.Fatalf("rescue recording_encode_policies = %d, want 1 (unfrozen recording must not gain a row)",
+			result.RecordingEncodePolicies)
 	}
 	if result.ProgramIntents != 1 || result.ProgramSnapshots != 1 {
 		t.Fatalf("rescue intents=%d snaps=%d", result.ProgramIntents, result.ProgramSnapshots)
@@ -174,11 +223,34 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 	// IDs preserved.
 	var gotTitle string
 	var gotRecID int64
-	if err := pool.QueryRow(ctx, `SELECT id, title FROM recordings`).Scan(&gotRecID, &gotTitle); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT id, title FROM recordings WHERE id = $1`, recID).
+		Scan(&gotRecID, &gotTitle); err != nil {
 		t.Fatalf("query recordings: %v", err)
 	}
 	if gotRecID != recID || gotTitle != "ニュース" {
 		t.Errorf("recording id/title = %d/%q, want %d/ニュース", gotRecID, gotTitle, recID)
+	}
+
+	// recording_encode_policy が値そのまま復元され、未凍結の録画には行が
+	// 作られていないこと。
+	var gotKeepOriginal string
+	var gotProfiles []string
+	if err := pool.QueryRow(ctx,
+		`SELECT keep_original, encode_profiles FROM recording_encode_policy WHERE recording_id = $1`, recID,
+	).Scan(&gotKeepOriginal, &gotProfiles); err != nil {
+		t.Fatalf("query recording_encode_policy: %v", err)
+	}
+	if gotKeepOriginal != "until_encoded" || len(gotProfiles) != 1 || gotProfiles[0] != "h265" {
+		t.Errorf("rescued recording_encode_policy = %q/%v, want until_encoded/[h265]", gotKeepOriginal, gotProfiles)
+	}
+	var unfrozenPolicyCount int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM recording_encode_policy WHERE recording_id = $1`, unfrozenRecID,
+	).Scan(&unfrozenPolicyCount); err != nil {
+		t.Fatalf("query recording_encode_policy for unfrozen: %v", err)
+	}
+	if unfrozenPolicyCount != 0 {
+		t.Errorf("unfrozen recording gained a recording_encode_policy row (count=%d), want 0", unfrozenPolicyCount)
 	}
 	var gotDeletedAt, gotPurgeAfter *time.Time
 	if err := pool.QueryRow(ctx, `SELECT deleted_at, purge_after FROM recordings WHERE id = $1`, recID).
@@ -220,15 +292,25 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RescueFile second: %v", err)
 	}
-	if result2.Recordings != 1 {
-		t.Errorf("second rescue recordings = %d, want 1", result2.Recordings)
+	if result2.Recordings != 2 {
+		t.Errorf("second rescue recordings = %d, want 2", result2.Recordings)
+	}
+	if result2.RecordingEncodePolicies != 1 {
+		t.Errorf("second rescue recording_encode_policies = %d, want 1 (増殖しない)", result2.RecordingEncodePolicies)
 	}
 	var recCount int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM recordings`).Scan(&recCount); err != nil {
 		t.Fatal(err)
 	}
-	if recCount != 1 {
-		t.Errorf("recordings after second rescue = %d, want 1 (増殖しない)", recCount)
+	if recCount != 2 {
+		t.Errorf("recordings after second rescue = %d, want 2 (増殖しない)", recCount)
+	}
+	var policyCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM recording_encode_policy`).Scan(&policyCount); err != nil {
+		t.Fatal(err)
+	}
+	if policyCount != 1 {
+		t.Errorf("recording_encode_policy after second rescue = %d, want 1 (増殖しない)", policyCount)
 	}
 	var assetCount int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM media_assets`).Scan(&assetCount); err != nil {

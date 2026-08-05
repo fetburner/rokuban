@@ -30,13 +30,14 @@ type Document struct {
 	// Site は export 時に絞り込んだサイト。空 / omit なら全サイト。
 	Site *string `json:"site,omitempty"`
 
-	Rules            []Rule            `json:"rules"`
-	Recordings       []Recording       `json:"recordings"`
-	MediaAssets      []MediaAsset      `json:"mediaAssets"`
-	DropStats        []DropStat        `json:"dropStats"`
-	ProgramSnapshots []ProgramSnapshot `json:"programSnapshots"`
-	ProgramIntents   []ProgramIntent   `json:"programIntents"`
-	ProgramOverrides []ProgramOverride `json:"programOverrides"`
+	Rules                   []Rule                  `json:"rules"`
+	Recordings              []Recording             `json:"recordings"`
+	RecordingEncodePolicies []RecordingEncodePolicy `json:"recordingEncodePolicies"`
+	MediaAssets             []MediaAsset            `json:"mediaAssets"`
+	DropStats               []DropStat              `json:"dropStats"`
+	ProgramSnapshots        []ProgramSnapshot       `json:"programSnapshots"`
+	ProgramIntents          []ProgramIntent         `json:"programIntents"`
+	ProgramOverrides        []ProgramOverride       `json:"programOverrides"`
 }
 
 // Rule は rules 本体と子テーブルをまとめた 1 ルール分。
@@ -119,11 +120,23 @@ type Recording struct {
 	Status            string          `json:"status"`
 	StartedAt         *time.Time      `json:"startedAt,omitempty"`
 	EndedAt           *time.Time      `json:"endedAt,omitempty"`
-	KeepOriginal      string          `json:"keepOriginal"`
-	EncodeProfiles    []string        `json:"encodeProfiles"`
 	QualityEvents     json.RawMessage `json:"qualityEvents"`
 	DeletedAt         *time.Time      `json:"deletedAt,omitempty"`
 	PurgeAfter        *time.Time      `json:"purgeAfter,omitempty"`
+	// KeepOriginalLegacy / EncodeProfilesLegacy: issue #159 より前は
+	// recordings.keep_original / recordings.encode_profiles だった旧列。
+	// 現在は RecordingEncodePolicy（recording_encode_policy 衛星表）に切り出した
+	// ため、新しい export はこの 2 フィールドを書かない（常に nil で omit
+	// される）。#159 より前に export された古いダンプは "keepOriginal" /
+	// "encodeProfiles" キーを常に持つので、rescue 側はこれが non-nil であることを
+	// 「旧ダンプである」判定に使い、migration 00032 backfill と同じ基準（原本
+	// media_asset の有無。列の値そのものは使わない）でこのダンプ内の
+	// doc.MediaAssets から recording_encode_policy 行を復元する
+	// （internal/catalog/rescue.go 参照）。落とすと旧ダンプの rescue で凍結済み
+	// ポリシーが黙って失われる（削除エンジンが対象外になり、事後追加は
+	// 既定値 'always' で上書きされる）。
+	KeepOriginalLegacy   *string  `json:"keepOriginal,omitempty"`
+	EncodeProfilesLegacy []string `json:"encodeProfiles,omitempty"`
 	// SupersededAt は「この行が active-event の枠を明け渡した」不可逆な事実
 	// （issue #129 症状 2）。落とすと rescue 側で superseded 行と生きている行が
 	// どちらも live に戻り、recordings_unique_active_event に衝突して復旧が
@@ -136,6 +149,21 @@ type Recording struct {
 	PurgedAt  *time.Time `json:"purgedAt,omitempty"`
 	CreatedAt time.Time  `json:"createdAt"`
 	UpdatedAt time.Time  `json:"updatedAt"`
+}
+
+// RecordingEncodePolicy は recording_encode_policy の 1 行（issue #159。凍結済み
+// 「この録画の望ましい最終状態」）。
+//
+// **行の有無そのものが意味を持つ**（不変条件 10）。この録画の RecordingID が
+// Document.RecordingEncodePolicies に載っていなければ「未凍結」であり、rescue は
+// それを既定値の行で埋めない（Recording と違い、載っていない録画には何も
+// upsert しない。internal/catalog/rescue.go 参照）。
+type RecordingEncodePolicy struct {
+	RecordingID    int64     `json:"recordingId"`
+	KeepOriginal   string    `json:"keepOriginal"`
+	EncodeProfiles []string  `json:"encodeProfiles"`
+	CreatedAt      time.Time `json:"createdAt"`
+	UpdatedAt      time.Time `json:"updatedAt"`
 }
 
 // MediaAsset は media_assets の 1 行。

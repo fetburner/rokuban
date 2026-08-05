@@ -518,7 +518,7 @@ type JobInserter interface {
 	Insert(ctx context.Context, args river.JobArgs, opts *river.InsertOpts) (*rivertype.JobInsertResult, error)
 }
 
-// EnqueueMissingEncodes は desired（recordings.encode_profiles）− observed
+// EnqueueMissingEncodes は desired（recording_encode_policy.encode_profiles。issue #159）− observed
 // （active encoded media_assets）の差分を埋める encode ジョブを投入する。
 //
 // レベルトリガー: 呼び出し側は「いつでも」呼んでよい。既に asset があるプロファイル
@@ -538,15 +538,24 @@ func EnqueueMissingEncodes(ctx context.Context, inserter JobInserter, pool *pgxp
 		return fmt.Errorf("loading original for encode enqueue: %w", err)
 	}
 
-	rec, err := q.GetRecordingByID(ctx, recordingID)
+	// desired（issue #159。recording_encode_policy 衛星表）。行が無い
+	// （未凍結）は「エンコード対象のプロファイルが無い」と同じに扱う ---
+	// ここに来る時点で原本は active（上のチェック）なので、通常は
+	// resolveAndSnapshotEncodePolicy が同一 tx で行を作っているはずだが、
+	// ingest 完了直後の競合（EncodeEnqueueHintArgs のヒントが原本コミットの
+	// 直後に走る等）を黙って落とさないよう ErrNoRows も no-op で許容する。
+	policy, err := q.GetRecordingEncodePolicy(ctx, recordingID)
 	if err != nil {
-		return fmt.Errorf("loading recording %d: %w", recordingID, err)
+		if errors.Is(err, pgx5.ErrNoRows) {
+			return nil
+		}
+		return fmt.Errorf("loading recording encode policy %d: %w", recordingID, err)
 	}
-	if len(rec.EncodeProfiles) == 0 {
+	if len(policy.EncodeProfiles) == 0 {
 		return nil
 	}
 
-	for _, name := range rec.EncodeProfiles {
+	for _, name := range policy.EncodeProfiles {
 		if name == "" {
 			continue
 		}
@@ -588,7 +597,7 @@ func enqueueMissingEncodesFromContext(ctx context.Context, pool *pgxpool.Pool, r
 // EncodeEnqueueHintArgs は事後追加されたエンコードプロファイルを反映するヒント
 // ジョブの引数（issue #133、凍結の例外としての事後追加。docs/storage.md §6
 // 「原本 TS の保持ポリシー」）。api の POST /api/recordings/{id}/encode-profiles
-// が recordings.encode_profiles の UPDATE と同一トランザクションで InsertTx する
+// が recording_encode_policy.encode_profiles の UPDATE と同一トランザクションで InsertTx する
 // （internal/api/recordings.go の insertEncodeEnqueueHint。rules.go の
 // insertRulerPassHint と同じヒント経路のパターン）。
 //
@@ -598,7 +607,7 @@ func enqueueMissingEncodesFromContext(ctx context.Context, pool *pgxpool.Pool, r
 // のみ）ため、api ハンドラから直接呼んでも不変条件 4（ffmpeg/ffprobe の exec は
 // worker/streamer のみ）には反しない。それでも api → worker の既存の結合パターン
 // （RulerPassArgs、rules.go の insertRulerPassHint）に揃えてヒントジョブ経由にした
-// --- 「recordings.encode_profiles の更新」と「不足分の encode ジョブ投入」を
+// --- 「recording_encode_policy.encode_profiles の更新」と「不足分の encode ジョブ投入」を
 // api ハンドラの 1 関数に同居させず、後者の実行を常に worker ロールの中で完結
 // させるため（一貫性。api が worker の実行ロジックを直接呼ぶ経路を増やさない）。
 type EncodeEnqueueHintArgs struct {
@@ -629,7 +638,7 @@ type EncodeEnqueueHintWorker struct {
 	Pool *pgxpool.Pool
 }
 
-// Work は EnqueueMissingEncodes を呼び、recordings.encode_profiles（desired）と
+// Work は EnqueueMissingEncodes を呼び、recording_encode_policy.encode_profiles（desired）と
 // active encoded media_assets（observed）の差分を埋める encode ジョブを投入する。
 //
 // river.ClientFromContextSafely でジョブ実行中の Client を取り出す。取れない

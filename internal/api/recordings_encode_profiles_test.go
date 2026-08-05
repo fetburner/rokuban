@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 
@@ -77,15 +79,26 @@ func seedReservationForTest(t *testing.T, pool *pgxpool.Pool, programID int64) i
 	return id
 }
 
+// getRecordingEncodeProfiles は recording_encode_policy 衛星表（issue #159）を
+// 読む。行が無い（未凍結。原本 media_asset がまだコミットされていない）場合は
+// 空のプロファイル一覧を返す --- このテストファイルの呼び出し元はいずれも
+// seedIngested 後（原本コミット後。resolveAndSnapshotEncodePolicy が既定値でも
+// 必ず凍結する。internal/worker/ingest.go 参照）に呼ぶので、実運用では行が
+// 見つかるはずだが、防御的に nil スキャンにはしない。
 func getRecordingEncodeProfiles(t *testing.T, pool *pgxpool.Pool, id int64) []string {
 	t.Helper()
 	var profiles []string
-	if err := pool.QueryRow(context.Background(),
-		`SELECT encode_profiles FROM recordings WHERE id = $1`, id,
-	).Scan(&profiles); err != nil {
-		t.Fatalf("loading encode_profiles for recording %d: %v", id, err)
+	err := pool.QueryRow(context.Background(),
+		`SELECT encode_profiles FROM recording_encode_policy WHERE recording_id = $1`, id,
+	).Scan(&profiles)
+	if err == nil {
+		return profiles
 	}
-	return profiles
+	if errors.Is(err, pgx.ErrNoRows) {
+		return []string{}
+	}
+	t.Fatalf("loading encode_profiles for recording %d: %v", id, err)
+	return nil
 }
 
 func countEncodeEnqueueHintJobs(t *testing.T, pool *pgxpool.Pool) int {
@@ -236,6 +249,70 @@ func TestAddRecordingEncodeProfiles_WithReservation_Success(t *testing.T) {
 	}
 	if got := getRecordingEncodeProfiles(t, pool, id); !slices.Equal(got, []string{"h264"}) {
 		t.Errorf("encode_profiles = %v, want [h264]", got)
+	}
+	if n := countEncodeEnqueueHintJobs(t, pool); n != 1 {
+		t.Fatalf("encode_enqueue_hint job count = %d, want 1", n)
+	}
+}
+
+// recording_encode_policy に行が無い（未凍結）まま原本 media_asset だけが
+// active な録画（internal/inplace.Register → internal/catalog/rescue_scan.go
+// の rescueStorage、catalog を 1 世代も持たない状態からの災害復旧が作る形。
+// resolveAndSnapshotEncodePolicy を経由しないので凍結されない）への事後追加が
+// 204 で成功すること（issue #159 レビューで見つかった回帰）。
+//
+// 直す前の実装（AppendRecordingEncodeProfiles が :execrows の UPDATE で
+// rows == 0 をエラーにする）はこの形で 500 を返していた --- 原本ありの録画に
+// 事後追加できない、という issue #133 が解こうとした問題そのものが再発していた。
+// AppendRecordingEncodeProfiles を ON CONFLICT の INSERT にしたことで、
+// 「原本が active = 凍結済みとみなす」を適用し既定値 keep_original='always' で
+// 行を新規に作りながら追記する。
+func TestAddRecordingEncodeProfiles_NoPolicyRowButOriginalActive_Returns204(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	riverClient, err := worker.NewInsertOnlyClient(pool)
+	if err != nil {
+		t.Fatalf("creating insert-only river client: %v", err)
+	}
+	router := NewRouter(RouterConfig{
+		Pool:               pool,
+		RiverClient:        riverClient,
+		EncodeProfileNames: []string{"h264"},
+	})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	id := seedRecording(t, pool, "災害復旧で復元", time.Now().Truncate(time.Second), "finished", 301)
+	// seedIngested は使わない --- あれは recording_encode_policy 行も一緒に
+	// 作ってしまう（実運用の ingest を模したフィクスチャなので）。ここでは
+	// inplace.Register が実際に作る形（原本 media_asset のみ、policy 行なし）を
+	// 直接再現する。
+	if _, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
+		RecordingID: id,
+		Kind:        db.AssetKindOriginal,
+		RelPath:     fmt.Sprintf("test/%d.m2ts", id),
+		SizeBytes:   1000,
+	}); err != nil {
+		t.Fatalf("seeding media_asset without recording_encode_policy: %v", err)
+	}
+	if got := getRecordingEncodeProfiles(t, pool, id); len(got) != 0 {
+		t.Fatalf("initial encode_profiles = %v, want empty (no policy row yet)", got)
+	}
+
+	resp := postEncodeProfiles(t, encodeProfilesURL(srv.URL, id), []string{"h264"})
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", resp.StatusCode)
+	}
+	if got := getRecordingEncodeProfiles(t, pool, id); !slices.Equal(got, []string{"h264"}) {
+		t.Errorf("encode_profiles = %v, want [h264]", got)
+	}
+	var keepOriginal string
+	if err := pool.QueryRow(context.Background(),
+		`SELECT keep_original FROM recording_encode_policy WHERE recording_id = $1`, id,
+	).Scan(&keepOriginal); err != nil {
+		t.Fatalf("loading keep_original for recording %d: %v", id, err)
+	}
+	if keepOriginal != "always" {
+		t.Errorf("keep_original = %q, want always (safe default for freshly-created policy row)", keepOriginal)
 	}
 	if n := countEncodeEnqueueHintJobs(t, pool); n != 1 {
 		t.Fatalf("encode_enqueue_hint job count = %d, want 1", n)

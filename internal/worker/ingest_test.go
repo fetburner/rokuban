@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertest"
@@ -1040,14 +1041,42 @@ func riverWorkContext(t *testing.T, pool *pgxpool.Pool) context.Context {
 	return rivertest.WorkContext(context.Background(), client)
 }
 
+// encodePolicyOfRecording は recording_encode_policy 衛星表（issue #159）を読む。
+// 行が無い（未凍結）場合は既定値 "always" / [] を返す --- resolveAndSnapshotEncodePolicy
+// が解決に失敗した場合や、予約が無く一度も呼ばれない場合はこの表に行自体が
+// 作られない（不変条件 10「意味を持たない行を作らない」）。既存テストの
+// アサーションはいずれも「凍結されなかった＝既定値のまま」を確認する意図なので、
+// この関数がその意図をそのまま表す。
 func encodePolicyOfRecording(t *testing.T, pool *pgxpool.Pool, recordingID int64) (keepOriginal string, profiles []string) {
 	t.Helper()
-	if err := pool.QueryRow(context.Background(),
-		"SELECT keep_original, encode_profiles FROM recordings WHERE id = $1", recordingID,
-	).Scan(&keepOriginal, &profiles); err != nil {
-		t.Fatalf("querying recording encode policy: %v", err)
+	err := pool.QueryRow(context.Background(),
+		"SELECT keep_original, encode_profiles FROM recording_encode_policy WHERE recording_id = $1", recordingID,
+	).Scan(&keepOriginal, &profiles)
+	if err == nil {
+		return keepOriginal, profiles
 	}
-	return keepOriginal, profiles
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "always", []string{}
+	}
+	t.Fatalf("querying recording encode policy: %v", err)
+	return "", nil
+}
+
+// encodePolicyRowExists は recording_encode_policy に行そのものがあるかを見る。
+// encodePolicyOfRecording は ErrNoRows を既定値に潰すため「行がある + 既定値」と
+// 「行が無い」を区別できない --- resolveAndSnapshotEncodePolicy が解決に失敗
+// しても凍結する（issue #159 の中心的な設計判断。doc コメント「解決に失敗しても
+// 凍結する」参照）ことを確認するテストは、この関数で行の有無そのものを見る
+// 必要がある。
+func encodePolicyRowExists(t *testing.T, pool *pgxpool.Pool, recordingID int64) bool {
+	t.Helper()
+	var count int
+	if err := pool.QueryRow(context.Background(),
+		"SELECT count(*) FROM recording_encode_policy WHERE recording_id = $1", recordingID,
+	).Scan(&count); err != nil {
+		t.Fatalf("counting recording encode policy rows: %v", err)
+	}
+	return count == 1
 }
 
 func countEncodeJobs(t *testing.T, pool *pgxpool.Pool, recordingID int64, profile string) int {
@@ -1484,11 +1513,22 @@ func TestIngestWorker_LogsWarnWhenRuleSourceReservationUnresolvable(t *testing.T
 		}
 	}
 
-	// 解決に失敗したので凍結せず既定値のまま(この関数の主張の対象ではないが、
-	// 「ログは出たが desired が誤って書かれた」を排除するために確認する)。
+	// 解決に失敗しても凍結自体はスキップしない（issue #159。resolveAndSnapshotEncodePolicy
+	// の doc コメント「解決に失敗しても凍結する」参照）ので既定値で凍結されるはず
+	// （この関数の主張の対象ではないが、「ログは出たが desired が誤って書かれた」を
+	// 排除するために確認する）。
+	//
+	// encodePolicyRowExists で行そのものの有無を確認する --- encodePolicyOfRecording
+	// は ErrNoRows を既定値に潰すため、旧実装（ErrNoRows で return nil して凍結を
+	// スキップする）に戻しても値の比較だけでは検出できない。行が無いと migration
+	// 00032 backfill の判定基準（原本 media_asset の有無）と issue #133 の事後追加
+	// （AppendRecordingEncodeProfiles が「行が既にある」前提で書けること）が破れる。
+	if !encodePolicyRowExists(t, pool, recordingID) {
+		t.Fatalf("recording_encode_policy row missing for recording %d; resolveAndSnapshotEncodePolicy must freeze defaults even when the lookup fails", recordingID)
+	}
 	keepOriginal, profiles := encodePolicyOfRecording(t, pool, recordingID)
 	if keepOriginal != "always" || len(profiles) != 0 {
-		t.Errorf("keep_original/encode_profiles = %q/%v, want always/[] (unresolved, defaults unchanged)", keepOriginal, profiles)
+		t.Errorf("keep_original/encode_profiles = %q/%v, want always/[] (unresolved, frozen to defaults)", keepOriginal, profiles)
 	}
 }
 
@@ -1555,5 +1595,15 @@ func TestIngestWorker_LogsInfoWhenManualSourceReservationUnresolvable(t *testing
 	}
 	if strings.Contains(logText, "level=WARN") {
 		t.Errorf("source=manual unresolved reservation must not be logged at WARN (mixes the daily case with the anomalous one), got:\n%s", logText)
+	}
+
+	// source='rule' の対応テストと同じ理由で、行の有無そのものを確認する
+	// （encodePolicyOfRecording は ErrNoRows を既定値に潰すため使えない）。
+	if !encodePolicyRowExists(t, pool, recordingID) {
+		t.Fatalf("recording_encode_policy row missing for recording %d; resolveAndSnapshotEncodePolicy must freeze defaults even when the lookup fails", recordingID)
+	}
+	keepOriginal, profiles := encodePolicyOfRecording(t, pool, recordingID)
+	if keepOriginal != "always" || len(profiles) != 0 {
+		t.Errorf("keep_original/encode_profiles = %q/%v, want always/[] (unresolved, frozen to defaults)", keepOriginal, profiles)
 	}
 }

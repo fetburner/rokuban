@@ -89,7 +89,7 @@ program_intents                  program_overrides
 | `rules` | 型付き列 + 子テーブル（#3 の決定） | **する**（ユーザーが編集し UI が一覧・フィルタ） |
 | `reservations.base` | jsonb | しない |
 | `program_overrides.overrides` | jsonb | しない |
-| `recordings.keep_original` / `encode_profiles` | 型付き列 | **する**（プロファイル別の録画一覧） |
+| `recording_encode_policy.keep_original` / `encode_profiles`（`recordings` を指す衛星表。issue #159） | 型付き列 | **する**（プロファイル別の録画一覧） |
 | `schedule_sync.options` | jsonb | しない（mirakc 固有。不変条件 7） |
 
 「オプションの組」を独立したテーブルに正規化はしない。`base` と `overrides` を判別子付きの 1 表に寄せることは上記の STI をやり直すことに等しい（base は完全 / overrides は疎、書き手が ruler / api、寿命も違う）。繰り返し現れる実体はテーブルではなく `db.ReservationOptions` という **Go の型**で、マージ点も `Effective()` の 1 箇所に既に正規化されている。
@@ -177,15 +177,15 @@ api が行を直接消さない理由は ruler 側の GC ロジックと同じ: 
 |---|---|
 | `priority` | reconciler が DELETE + POST で schedule を再作成して反映（§3.2）。**録画開始後の recorder には効かない可能性が高い** |
 | `contentPath` / `filenameTemplate` | **既存の schedule には反映されない**（contentPath は churn を避けるため差分対象外で、初回生成値に固定される。§3.2）。まだ schedule が作られていない予約にだけ効く |
-| `encodeProfiles` / `keepOriginal` | **ingest が原本 media_asset をコミットする tx の中で `recordings.keep_original` / `recordings.encode_profiles` に焼かれる瞬間まで効く**（M3-14、issue #103）。録画開始後の変更でも、放送終了・ingest 完了より前ならこの録画に反映される。**ingest 完了後の変更はこの録画には反映されない**（次にルールがマッチする別の録画には反映される） |
+| `encodeProfiles` / `keepOriginal` | **ingest が原本 media_asset をコミットする tx の中で `recording_encode_policy` 行の INSERT（issue #159。`recording_encode_policy.keep_original` / `encode_profiles`）として焼かれる瞬間まで効く**（M3-14、issue #103）。録画開始後の変更でも、放送終了・ingest 完了より前ならこの録画に反映される。**ingest 完了後の変更はこの録画には反映されない**（次にルールがマッチする別の録画には反映される） |
 
 UI で「開始後に意味を持つフィールド」を区別表示する。この表は overrides API のフィールド説明（`openapi.yaml`）にも同じ内容を書く --- API だけを見ている利用者が「上書きしたのに反映されない」で詰まらないようにするため。
 
-**凍結の例外としての事後追加（issue #133）**: 上記の凍結後は `encodeProfiles` の変更（overrides 経由）はこの録画には反映されないのが原則だが、ユーザー起点の `POST /api/recordings/{id}/encode-profiles` による追加専用の書き換えだけは例外として認める。overrides / rule_id を経由せず `recordings.encode_profiles` に直接 union + dedup で書くため、既存の指定を消す経路は無い。原本削除済み（`until_encoded` でエンコード完了後に削除済み等）の録画には 409 を返し、追加を拒否する。適用範囲・実装経路の詳細は [ストレージ](../storage.md) §6「凍結の例外: 事後追加」参照。
+**凍結の例外としての事後追加（issue #133）**: 上記の凍結後は `encodeProfiles` の変更（overrides 経由）はこの録画には反映されないのが原則だが、ユーザー起点の `POST /api/recordings/{id}/encode-profiles` による追加専用の書き換えだけは例外として認める。overrides / rule_id を経由せず `recording_encode_policy.encode_profiles` に直接 union + dedup で書くため、既存の指定を消す経路は無い。原本削除済み（`until_encoded` でエンコード完了後に削除済み等）の録画には 409 を返し、追加を拒否する。適用範囲・実装経路の詳細は [ストレージ](../storage.md) §6「凍結の例外: 事後追加」参照。
 
-**なぜ ingest コミット時に凍結するか**: `recordings` は永続資産だが、導出元（`reservations` / `program_overrides` / `program_intents`）は放送終了 + 猶予後に GC される寿命の短い表（CLAUDE.md 不変条件 12「表は行の寿命で割る」）。`recordings.encode_profiles` を「参照」ではなく値のコピーとして持つ（凍結する）しかない理由はここにある --- 導出元に依存させると、番組が EPG から消えて GC された時点で desired が消え、エンコード未完了の録画で原本削除（[ストレージ](../storage.md) §6「原本 TS の保持ポリシー」）が止まる／再エンコードが投入できなくなる。凍結する以上どこかの瞬間で確定させる必要があり、`recordings` 行自体は録画開始時（watcher）に作られるが、この表の約束（録画開始後の変更でも効く）を満たせる最後の瞬間が ingest コミットである。詳細は `internal/worker/ingest.go` の `resolveAndSnapshotEncodePolicy` の doc コメントと [ストレージ](../storage.md) §6 を参照。
+**なぜ ingest コミット時に凍結するか**: `recordings` は永続資産だが、導出元（`reservations` / `program_overrides` / `program_intents`）は放送終了 + 猶予後に GC される寿命の短い表（CLAUDE.md 不変条件 12「表は行の寿命で割る」）。`encodeProfiles` を「参照」ではなく値のコピーとして持つ（凍結する）しかない理由はここにある --- 導出元に依存させると、番組が EPG から消えて GC された時点で desired が消え、エンコード未完了の録画で原本削除（[ストレージ](../storage.md) §6「原本 TS の保持ポリシー」）が止まる／再エンコードが投入できなくなる。凍結する以上どこかの瞬間で確定させる必要があり、`recordings` 行自体は録画開始時（watcher）に作られるが、この表の約束（録画開始後の変更でも効く）を満たせる最後の瞬間が ingest コミットである。詳細は `internal/worker/ingest.go` の `resolveAndSnapshotEncodePolicy` の doc コメントと [ストレージ](../storage.md) §6 を参照。
 
-**既に ingest 済みの録画は今回の変更で backfill されない。** 凍結は ingest コミット時の 1 回だけなので、この変更のデプロイ前に ingest が完了した録画は `keep_original = 'always'` / `encode_profiles = '{}'`（列の既定値）のまま残る --- これは凍結設計の正しい帰結であり、バグではない。過去分にも encode を投入したい場合は、上記「凍結の例外としての事後追加」（`POST /api/recordings/{id}/encode-profiles`）で個別に追加できる。ただし追加専用（不足分をユーザーが都度指定する）であり、`keep_original` の変更や一括自動 backfill は提供しない。
+**行の存在そのものが「凍結済み」を意味する（issue #159）。** `keep_original` / `encode_profiles` は `recordings` 本体の列ではなく衛星表 `recording_encode_policy` の行として持つ（[schema/recordings.md](../schema/recordings.md) 参照）。この移行に合わせた migration `00030` の backfill は、原本 media_asset を持つ（= ingest が完了している）すべての録画に旧列の値のままの行を作るので、**この PR のデプロイ時点で ingest 済みの録画も含めて「凍結済みなのに列が既定値のままで区別できない」という非対称は構造的に消える** --- 旧設計では「デプロイ前に ingest が完了した録画は列の既定値のまま残る（凍結済みなのか未凍結なのか区別できない）」という非対称が存在したが、衛星表化そのものがこの区別を可能にしたため、現在この非対称は存在しない。一方、`internal/inplace.Register`（災害復旧のストレージ再スキャン）が作る原本は `resolveAndSnapshotEncodePolicy` を経由しないため、依然として行が無いまま原本だけが active な録画になりうる。この録画への事後追加（`POST /api/recordings/{id}/encode-profiles`）は「原本が active = 凍結済みとみなす」を適用して既定値 `keep_original = 'always'` で行を新規に作る（[ストレージ](../storage.md) §6「凍結の例外: 事後追加」参照）。過去分にも encode を投入したい場合は、上記「凍結の例外としての事後追加」で個別に追加できる。ただし追加専用（不足分をユーザーが都度指定する）であり、`keep_original` の変更や一括自動 backfill は提供しない。
 
 ### 4.6 スコープ外
 
