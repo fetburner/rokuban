@@ -62,9 +62,10 @@ VALUES ($1, $2, $3)`,
 }
 
 // seedNeverScheduledRecording は reconciler.recordNeverScheduled（issue #98）が
-// 実際に書く recordings 行を模す --- status='failed' + quality_events に
-// recording.never-scheduled のマーカー。ListCapacityDemand がこの行の存在を
-// 「schedule を作らない予約」として除外することを確認するための直接 INSERT。
+// 実際に書く recordings 行を模す --- status='failed' + never_scheduled = true。
+// quality_events の recording.never-scheduled マーカーは内訳ログとして併存
+// する（issue #161）。ListCapacityDemand がこの行の存在を「schedule を作らない
+// 予約」として除外することを確認するための直接 INSERT。
 func seedNeverScheduledRecording(t *testing.T, pool *pgxpool.Pool, networkID, serviceID, eventID int32) {
 	t.Helper()
 	ctx := context.Background()
@@ -72,8 +73,9 @@ func seedNeverScheduledRecording(t *testing.T, pool *pgxpool.Pool, networkID, se
 	if _, err := pool.Exec(ctx, `
 INSERT INTO recordings (
     source, site, network_id, service_id, event_id, service_name,
-    channel_type, channel, title, program_start_at, program_duration_ms, status, quality_events
-) VALUES ('manual', $1, $2, $3, $4, 'テスト局', 'GR', '25', 'テスト番組', now(), 1800000, 'failed', $5::jsonb)`,
+    channel_type, channel, title, program_start_at, program_duration_ms,
+    status, quality_events, never_scheduled
+) VALUES ('manual', $1, $2, $3, $4, 'テスト局', 'GR', '25', 'テスト番組', now(), 1800000, 'failed', $5::jsonb, true)`,
 		testSite, networkID, serviceID, eventID, qe); err != nil {
 		t.Fatalf("seeding never-scheduled recording: %v", err)
 	}

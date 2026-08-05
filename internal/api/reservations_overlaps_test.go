@@ -54,10 +54,10 @@ INSERT INTO reservations (site, program_id) VALUES ('default', $1) RETURNING id`
 }
 
 // seedNeverScheduledRecording は reconciler.recordNeverScheduled（issue #98）が
-// 実際に書く recordings 行を模す --- status='failed' + quality_events に
-// recording.never-scheduled のマーカー。GetProgramOverlaps 等、この行の
-// 存在に依存する API 層の挙動を確認するための直接 INSERT（reconciler パスは
-// 回さない）。
+// 実際に書く recordings 行を模す --- status='failed' + never_scheduled = true。
+// quality_events の recording.never-scheduled マーカーは内訳ログとして併存
+// する（issue #161）。GetProgramOverlaps 等、この行の存在に依存する API 層の
+// 挙動を確認するための直接 INSERT（reconciler パスは回さない）。
 func seedNeverScheduledRecording(
 	t *testing.T, pool *pgxpool.Pool, ctx context.Context,
 	site string, networkID, serviceID, eventID int32,
@@ -69,8 +69,9 @@ func seedNeverScheduledRecording(
 	if _, err := pool.Exec(ctx, `
 INSERT INTO recordings (
     source, site, network_id, service_id, event_id, service_name,
-    channel_type, channel, title, program_start_at, program_duration_ms, status, quality_events
-) VALUES ('manual', $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'failed', $11::jsonb)`,
+    channel_type, channel, title, program_start_at, program_duration_ms,
+    status, quality_events, never_scheduled
+) VALUES ('manual', $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'failed', $11::jsonb, true)`,
 		site, networkID, serviceID, eventID, serviceName, channelType, channel, title,
 		startAt, duration.Milliseconds(), qe); err != nil {
 		t.Fatalf("seeding never-scheduled recording: %v", err)

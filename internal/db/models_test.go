@@ -905,6 +905,140 @@ func TestMigration00031_DropsRecordingsReservationID(t *testing.T) {
 	}
 }
 
+// TestMigration00033_BackfillsNeverScheduledFromQualityEventsMarker は issue #161
+// の決定（案 A: never-scheduled 行の識別を quality_events の jsonb マーカーから
+// 型付き列 recordings.never_scheduled に昇格する）の backfill を確認する。
+//
+// 00030 まで（never_scheduled 列が無く、never_scheduled_events VIEW が
+// jsonb_array_elements で判定していた状態）で、旧 reconciler がまさに書いていた
+// 形の recordings 行（マーカー付き failed 行）と、mirakc 由来の途中失敗
+// （マーカー無し failed 行。同期の再試行経路を壊さないよう除外対象にしては
+// ならない）の 2 つを仕込み、00033 適用後に前者だけ never_scheduled = true に
+// なり、両者とも never_scheduled_events VIEW の判定が変わらないことを確認する
+// （両方向: マーカー付きは変換される / マーカー無しは変換されない）。
+func TestMigration00033_BackfillsNeverScheduledFromQualityEventsMarker(t *testing.T) {
+	dbURL := testDatabaseURL(t)
+	ctx := context.Background()
+
+	if err := MigrateReset(ctx, dbURL); err != nil {
+		t.Fatalf("migrate reset: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := MigrateReset(ctx, dbURL); err != nil {
+			t.Errorf("cleanup migrate reset: %v", err)
+		}
+	})
+
+	subFS, err := fs.Sub(migrations, "migrations")
+	if err != nil {
+		t.Fatalf("getting migrations sub-FS: %v", err)
+	}
+	sqlDB, err := sql.Open("pgx", dbURL)
+	if err != nil {
+		t.Fatalf("opening database: %v", err)
+	}
+	defer func() { _ = sqlDB.Close() }()
+
+	provider, err := goose.NewProvider(goose.DialectPostgres, sqlDB, subFS)
+	if err != nil {
+		t.Fatalf("creating goose provider: %v", err)
+	}
+
+	// 00030 まで適用（00033 適用前、never_scheduled 列がまだ無い状態）。
+	if _, err := provider.UpTo(ctx, 30); err != nil {
+		t.Fatalf("migrating up to 00030: %v", err)
+	}
+
+	pool, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("connecting pool: %v", err)
+	}
+	defer pool.Close()
+
+	const site = "home"
+	const neverScheduledEventID int32 = 501
+	const midFailureEventID int32 = 502
+
+	// reconciler.recordNeverScheduled（issue #98）がかつて書いていた形そのもの:
+	// status='failed' + quality_events に recording.never-scheduled マーカー。
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO recordings (
+			source, site, network_id, service_id, event_id, service_name,
+			channel_type, channel, title, program_start_at, program_duration_ms,
+			status, quality_events
+		) VALUES (
+			'manual', $1, 32736, 1024, $2, 'テスト局',
+			'GR', '27', 'never-scheduled になった番組', now(), 1800000,
+			'failed', '[{"at":"2026-01-01T00:00:00Z","event":"recording.never-scheduled","reason":{}}]'::jsonb
+		)`, site, neverScheduledEventID); err != nil {
+		t.Fatalf("inserting legacy never-scheduled marker row: %v", err)
+	}
+
+	// handleRecordingFailed（internal/watcher）が作る、mirakc 由来の途中失敗。
+	// マーカーは無い --- これが変換されると再試行経路を壊す（#98 のコメント参照）。
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO recordings (
+			source, site, network_id, service_id, event_id, service_name,
+			channel_type, channel, title, program_start_at, program_duration_ms,
+			status, quality_events
+		) VALUES (
+			'manual', $1, 32736, 1024, $2, 'テスト局',
+			'GR', '27', '途中失敗した番組', now(), 1800000,
+			'failed', '[{"at":"2026-01-01T00:00:00Z","event":"recording.failed","reason":{}}]'::jsonb
+		)`, site, midFailureEventID); err != nil {
+		t.Fatalf("inserting mid-recording-failure row: %v", err)
+	}
+
+	// 00031 / 00032 を経由して 00033 を適用: 列追加 + backfill + VIEW の
+	// 列ベースへの置き換え。途中の 2 本は recordings.reservation_id の削除と
+	// recording_encode_policy 衛星表の作成で、この fixture の意味には影響しない。
+	if _, err := provider.UpTo(ctx, 33); err != nil {
+		t.Fatalf("migrating up to 00033: %v", err)
+	}
+
+	var neverScheduledFlag, midFailureFlag bool
+	if err := pool.QueryRow(ctx,
+		`SELECT never_scheduled FROM recordings WHERE site = $1 AND event_id = $2`,
+		site, neverScheduledEventID,
+	).Scan(&neverScheduledFlag); err != nil {
+		t.Fatalf("querying never_scheduled for marker row: %v", err)
+	}
+	if !neverScheduledFlag {
+		t.Error("backfill should have set never_scheduled = true for the row with the recording.never-scheduled marker")
+	}
+	if err := pool.QueryRow(ctx,
+		`SELECT never_scheduled FROM recordings WHERE site = $1 AND event_id = $2`,
+		site, midFailureEventID,
+	).Scan(&midFailureFlag); err != nil {
+		t.Fatalf("querying never_scheduled for mid-failure row: %v", err)
+	}
+	if midFailureFlag {
+		t.Error("backfill must not set never_scheduled = true for a mid-recording failure without the marker (would break the mirakc retry path)")
+	}
+
+	// never_scheduled_events VIEW は列ベースに置き換わった後も同じ判定結果を
+	// 返す（消費側の 3 クエリ・表示用 never_recorded に影響が波及しないこと）。
+	var neverScheduledMatches, midFailureMatches bool
+	if err := pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM never_scheduled_events WHERE site = $1 AND network_id = 32736 AND service_id = 1024 AND event_id = $2)`,
+		site, neverScheduledEventID,
+	).Scan(&neverScheduledMatches); err != nil {
+		t.Fatalf("checking never_scheduled_events for marker row: %v", err)
+	}
+	if !neverScheduledMatches {
+		t.Error("never_scheduled_events should match the backfilled never-scheduled row")
+	}
+	if err := pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM never_scheduled_events WHERE site = $1 AND network_id = 32736 AND service_id = 1024 AND event_id = $2)`,
+		site, midFailureEventID,
+	).Scan(&midFailureMatches); err != nil {
+		t.Fatalf("checking never_scheduled_events for mid-failure row: %v", err)
+	}
+	if midFailureMatches {
+		t.Error("never_scheduled_events must not match a mid-recording failure without the marker")
+	}
+}
+
 func TestReservationOptions_Effective(t *testing.T) {
 	priority1 := 1
 	priority2 := 2

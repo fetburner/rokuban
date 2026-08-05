@@ -893,8 +893,9 @@ func setReservationDetached(t *testing.T, ctx context.Context, pool *pgxpool.Poo
 }
 
 // seedNeverScheduledRecording は reconciler.recordNeverScheduled を経由せず、
-// その関数が書く recordings 行（status='failed' + quality_events に
-// recording.never-scheduled のマーカー）を直接 INSERT する。
+// その関数が書く recordings 行（status='failed' + never_scheduled = true。
+// quality_events の recording.never-scheduled マーカーは内訳ログとして併存
+// する。issue #161）を直接 INSERT する。
 // ListReservationsForSyncEvaluation の never-scheduled 除外の判定だけを
 // 単体で固定したいテストで使う（旧 setReservationOrphaned の置き換え）。
 // createReservation と同じ規約（networkID=10000/serviceID=5000、event_id =
@@ -907,8 +908,9 @@ func seedNeverScheduledRecording(t *testing.T, ctx context.Context, pool *pgxpoo
 	if _, err := pool.Exec(ctx, `
 INSERT INTO recordings (
     source, site, network_id, service_id, event_id, service_name,
-    channel_type, channel, title, program_start_at, program_duration_ms, status, quality_events
-) VALUES ('manual', 'default', 10000, 5000, $1, 'テスト局', 'GR', '27', 'テスト番組', now(), 1800000, 'failed', $2::jsonb)`,
+    channel_type, channel, title, program_start_at, program_duration_ms,
+    status, quality_events, never_scheduled
+) VALUES ('manual', 'default', 10000, 5000, $1, 'テスト局', 'GR', '27', 'テスト番組', now(), 1800000, 'failed', $2::jsonb, true)`,
 		eventID, qe); err != nil {
 		t.Fatalf("seeding never-scheduled recording: %v", err)
 	}
@@ -930,10 +932,7 @@ SELECT EXISTS (
     WHERE rec.site = 'default' AND rec.network_id = 10000 AND rec.service_id = 5000
       AND rec.event_id = $1
       AND rec.status = 'failed'
-      AND EXISTS (
-          SELECT 1 FROM jsonb_array_elements(rec.quality_events) qe
-          WHERE qe->>'event' = 'recording.never-scheduled'
-      )
+      AND rec.never_scheduled
 )`, res.ProgramID%100000).Scan(&exists); err != nil {
 		t.Fatalf("checking never-scheduled recording: %v", err)
 	}

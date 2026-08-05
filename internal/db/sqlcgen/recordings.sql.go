@@ -91,7 +91,7 @@ INSERT INTO recordings (
 ON CONFLICT (site, network_id, service_id, event_id) WHERE deleted_at IS NULL AND superseded_at IS NULL
 DO UPDATE SET
     quality_events = recordings.quality_events || EXCLUDED.quality_events,
-    updated_at = now()
+    updated_at     = now()
 `
 
 type CreateFailedRecordingParams struct {
@@ -120,6 +120,18 @@ type CreateFailedRecordingParams struct {
 // ずれると「there is no unique or exclusion constraint matching」で落ちる）。
 // 一致させておくことで、この INSERT が狙う相手は常に「生きている」行
 // （superseded 済みの過去の failed 行ではない）になる。
+// ON CONFLICT の相手が前パスの never-scheduled 行（never_scheduled = true）で
+// あることもありうる（reconciler が「schedule 非観測」と判定した後に、mirakc
+// が実は録画を試みて failed を報告してくるケース）。**この経路で
+// never_scheduled を false に落とさない**（issue #161 のレビューで一度入れて
+// 削除した。#161 が求めていたのは quality_events マーカーの型付き列への
+// 昇格だけで、「in-place 更新で never_scheduled をリセットする」という本番
+// 挙動の変更は範囲外 --- 旧 jsonb 版でもマーカーは `||` で追記されるだけで
+// 判定は true のまま変わらなかった。リセットは
+// CreateNeverScheduledRecording の ON CONFLICT DO NOTHING と対で「二度と
+// 復帰しない」除外の意味論を崩し、reconciler.go の endGuarded が前提にする
+// 「1 パスで自己解消し、以後 listDesired から二度と戻らない」を壊す。
+// 挙動を変えるならこの PR ではなく別 issue で決定を取る）。
 func (q *Queries) CreateFailedRecording(ctx context.Context, arg CreateFailedRecordingParams) error {
 	_, err := q.db.Exec(ctx, createFailedRecording,
 		arg.RuleID,
@@ -149,13 +161,13 @@ INSERT INTO recordings (
     network_id, service_id, event_id, service_name,
     channel_type, channel, title,
     program_start_at, program_duration_ms,
-    status, quality_events
+    status, quality_events, never_scheduled
 ) VALUES (
     $1, $2, $3,
     $4, $5, $6, $7,
     $8, $9, $10,
     $11, $12,
-    'failed', $13
+    'failed', $13, true
 )
 ON CONFLICT (site, network_id, service_id, event_id) WHERE deleted_at IS NULL AND superseded_at IS NULL
 DO NOTHING
@@ -202,6 +214,10 @@ type CreateNeverScheduledRecordingParams struct {
 // reconciler が毎パス同じ内容を送るだけなので、DO NOTHING で「初回だけ書く」
 // 意味論にする方が正確（CreateFailedRecording の DO UPDATE を流用すると、
 // 猶予期間中は毎パス quality_events の配列が伸び続けてしまう）。
+//
+// never_scheduled（issue #161、00033）は quality_events のマーカーを型付き列に
+// 昇格したもので、この INSERT だけが true を書く。quality_events のマーカー
+// 自体は内訳ログとして引き続き積む（消さない）。
 func (q *Queries) CreateNeverScheduledRecording(ctx context.Context, arg CreateNeverScheduledRecordingParams) (int64, error) {
 	result, err := q.db.Exec(ctx, createNeverScheduledRecording,
 		arg.RuleID,
@@ -391,7 +407,7 @@ func (q *Queries) ListRecordingDropStats(ctx context.Context, recordingID int64)
 
 const listRecordings = `-- name: ListRecordings :many
 SELECT
-    r.id, r.rule_id, r.source, r.site, r.network_id, r.service_id, r.event_id, r.service_name, r.channel_type, r.channel, r.title, r.description, r.extended, r.genres, r.is_free, r.program_start_at, r.program_duration_ms, r.status, r.started_at, r.ended_at, r.quality_events, r.deleted_at, r.created_at, r.updated_at, r.purge_after, r.superseded_at, r.purged_at,
+    r.id, r.rule_id, r.source, r.site, r.network_id, r.service_id, r.event_id, r.service_name, r.channel_type, r.channel, r.title, r.description, r.extended, r.genres, r.is_free, r.program_start_at, r.program_duration_ms, r.status, r.started_at, r.ended_at, r.quality_events, r.deleted_at, r.created_at, r.updated_at, r.purge_after, r.superseded_at, r.purged_at, r.never_scheduled,
     a.size_bytes                        AS original_size_bytes,
     COALESCE(d.packets, 0)::bigint      AS drop_packets,
     COALESCE(d.drops, 0)::bigint        AS drop_drops,
@@ -450,6 +466,7 @@ type ListRecordingsRow struct {
 	PurgeAfter               *time.Time
 	SupersededAt             *time.Time
 	PurgedAt                 *time.Time
+	NeverScheduled           bool
 	OriginalSizeBytes        *int64
 	DropPackets              int64
 	DropDrops                int64
@@ -506,6 +523,7 @@ func (q *Queries) ListRecordings(ctx context.Context, site string) ([]ListRecord
 			&i.PurgeAfter,
 			&i.SupersededAt,
 			&i.PurgedAt,
+			&i.NeverScheduled,
 			&i.OriginalSizeBytes,
 			&i.DropPackets,
 			&i.DropDrops,
