@@ -262,7 +262,7 @@ func applyDocument(ctx context.Context, tx pgx.Tx, doc *Document) (*RescueResult
 	// （削除エンジンが対象外になり、EnqueueMissingEncodes が no-op になり、
 	// 事後追加 API が既定値 'always' で上書きする）。
 	//
-	// migration 00030 backfill と同じ基準（原本 media_asset の有無で「凍結済みか」
+	// migration 00032 backfill と同じ基準（原本 media_asset の有無で「凍結済みか」
 	// を判定する。列の値そのものは使わない。不変条件 9）を、DB ではなく
 	// このダンプ自身の doc.MediaAssets に対して適用する。
 	originalAssetRecordingIDs := map[int64]struct{}{}

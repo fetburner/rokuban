@@ -147,7 +147,7 @@ func TestRescue_AcceptsSnapshotWithChannelIdentity(t *testing.T) {
 // 録画については recording_encode_policy 行が復元されることを確認する。
 //
 // 対応する MediaAsset（kind="original"）が無い録画（旧列は既定値のまま残る、
-// 未凍結だった録画）は行を復元しない --- migration 00030 backfill と同じ基準
+// 未凍結だった録画）は行を復元しない --- migration 00032 backfill と同じ基準
 // （原本 media_asset の有無。列の値そのものは判定に使わない。CLAUDE.md
 // 不変条件 9）を、DB ではなくダンプ自身の doc.MediaAssets に対して適用する。
 //

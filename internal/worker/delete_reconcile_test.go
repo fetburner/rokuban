@@ -270,9 +270,11 @@ func TestDeleteReconcileWorker_PurgeAfterImmediate_Deletes(t *testing.T) {
 
 	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "purge/now.m2ts", []byte("data"))
 
-	now := time.Now()
+	// SQL 側は DB の now() と比較する。Docker VM とホストの時計が数十 ms
+	// ずれても確実に「今すぐ」の側へ入るよう、安全に過去の時刻を使う。
+	purgeAt := time.Now().Add(-time.Hour)
 	if _, err := pool.Exec(context.Background(),
-		"UPDATE recordings SET deleted_at = $1, purge_after = $1 WHERE id = $2", now, recordingID); err != nil {
+		"UPDATE recordings SET deleted_at = $1, purge_after = $1 WHERE id = $2", purgeAt, recordingID); err != nil {
 		t.Fatalf("marking recording for immediate purge: %v", err)
 	}
 
@@ -299,9 +301,11 @@ func TestDeleteReconcileWorker_ZeroAssetRecording_PurgeMarksAndFiresWebhookOnce(
 	recordingID := insertTestRecording(t, pool)
 	// media_assets は 1 行も作らない。
 
-	now := time.Now()
+	// SQL 側は DB の now() と比較する。Docker VM とホストの時計が数十 ms
+	// ずれても確実に「今すぐ」の側へ入るよう、安全に過去の時刻を使う。
+	purgeAt := time.Now().Add(-time.Hour)
 	if _, err := pool.Exec(context.Background(),
-		"UPDATE recordings SET deleted_at = $1, purge_after = $1 WHERE id = $2", now, recordingID); err != nil {
+		"UPDATE recordings SET deleted_at = $1, purge_after = $1 WHERE id = $2", purgeAt, recordingID); err != nil {
 		t.Fatalf("marking recording for immediate purge: %v", err)
 	}
 

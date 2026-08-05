@@ -502,7 +502,7 @@ func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath st
 // return していたが、それでも列は CREATE TABLE の既定値のまま残っていたので
 // 実質的には「常に凍結されている」のと同じだった。衛星表 recording_encode_policy
 // は行が無ければ既定値をどこにも持たないので、ここで書かないと 2 つの契約が
-// 破れる: (1) migration 00030 の backfill は「原本 media_asset を持つ録画は
+// 破れる: (1) migration 00032 の backfill は「原本 media_asset を持つ録画は
 // 凍結済み」を基準にしており、ingest 完了後もこの基準を保つ必要がある、
 // (2) issue #133 の事後追加（AppendRecordingEncodeProfiles）は「行が既にある」
 // ことを前提に書けるようになった（doc コメント冒頭参照）ので、予約が無い
@@ -565,7 +565,7 @@ func (w *IngestWorker) resolveAndSnapshotEncodePolicy(ctx context.Context, q *sq
 	// 解決に失敗しても凍結自体はスキップしない（issue #159。doc コメント
 	// 「解決失敗時も凍結する」参照）。既定値（'always' / '{}'）で凍結する ---
 	// 何も INSERT しないと、原本 media_asset の有無で「凍結済みか」を判定する
-	// 不変条件（migration 00030 の backfill と同じ基準）が破れ、かつ issue #133
+	// 不変条件（migration 00032 の backfill と同じ基準）が破れ、かつ issue #133
 	// の事後追加（AppendRecordingEncodeProfiles）が「行が既にある」ことを前提に
 	// できなくなる。
 	keepOriginal := "always"

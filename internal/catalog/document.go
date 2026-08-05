@@ -129,7 +129,7 @@ type Recording struct {
 	// ため、新しい export はこの 2 フィールドを書かない（常に nil で omit
 	// される）。#159 より前に export された古いダンプは "keepOriginal" /
 	// "encodeProfiles" キーを常に持つので、rescue 側はこれが non-nil であることを
-	// 「旧ダンプである」判定に使い、migration 00030 backfill と同じ基準（原本
+	// 「旧ダンプである」判定に使い、migration 00032 backfill と同じ基準（原本
 	// media_asset の有無。列の値そのものは使わない）でこのダンプ内の
 	// doc.MediaAssets から recording_encode_policy 行を復元する
 	// （internal/catalog/rescue.go 参照）。落とすと旧ダンプの rescue で凍結済み

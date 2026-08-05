@@ -110,19 +110,19 @@ func TestMigrateUpDown(t *testing.T) {
 	}
 }
 
-// recordingEncodePolicyMigrationVersion は 00030_recording_encode_policy.sql の
+// recordingEncodePolicyMigrationVersion は 00032_recording_encode_policy.sql の
 // goose バージョン番号。ファイル名の連番プレフィックスと一致させる（ずれたら
 // このテストがすぐ壊れて気付ける）。
-const recordingEncodePolicyMigrationVersion = 30
+const recordingEncodePolicyMigrationVersion = 32
 
-// TestMigrateUp_RecordingEncodePolicyBackfill は issue #159 の 00030 マイグレーション
+// TestMigrateUp_RecordingEncodePolicyBackfill は issue #159 の 00032 マイグレーション
 // の backfill を検証する。goose で 00029 まで適用した「移設前」のスキーマ
 // （recordings.keep_original / encode_profiles が列として存在する）にフィクスチャを
-// 直接書き込み、00030 を適用した後の recording_encode_policy の行の有無・値を確認する。
+// 直接書き込み、00032 を適用した後の recording_encode_policy の行の有無・値を確認する。
 //
 // backfill の判定基準は「原本 media_asset（kind='original'）を持つか」であって
 // 列の値そのものではない（既定値のままでも原本があれば凍結済みとして row を作る。
-// 00030 のコメント参照）。3 ケースで両方向を確認する:
+// 00032 のコメント参照）。3 ケースで両方向を確認する:
 //
 //   - A: 原本あり + 列が既定値（'always'/'{}'）→ 行ができ、値は既定値のまま
 //   - B: 原本あり + 列が非既定値（'until_encoded'/['h265']）→ 行ができ、値も引き継がれる
@@ -194,7 +194,7 @@ func TestMigrateUp_RecordingEncodePolicyBackfill(t *testing.T) {
 	// C: 原本なし（既定値のまま。ingest 未完了 / never-scheduled 相当）。
 	recC := insertLegacyRecording(3, "always", []string{})
 
-	// --- 00030 を適用（backfill を含む） ---
+	// --- 00032 を適用（backfill を含む） ---
 	if err := runGooseMigration(ctx, dbURL, func(ctx context.Context, p *goose.Provider) error {
 		_, err := p.UpTo(ctx, recordingEncodePolicyMigrationVersion)
 		return err
@@ -248,7 +248,7 @@ func TestMigrateUp_RecordingEncodePolicyBackfill(t *testing.T) {
 		t.Fatalf("querying information_schema.columns: %v", err)
 	}
 	if colCount != 0 {
-		t.Errorf("recordings still has keep_original/encode_profiles columns after migration 00030 (count=%d)", colCount)
+		t.Errorf("recordings still has keep_original/encode_profiles columns after migration 00032 (count=%d)", colCount)
 	}
 
 	// --- Down: recordings へ書き戻り、衛星表が消えること ---
