@@ -74,19 +74,23 @@ WHERE site = sqlc.arg('site')
 -- reconciler が毎パス同じ内容を送るだけなので、DO NOTHING で「初回だけ書く」
 -- 意味論にする方が正確（CreateFailedRecording の DO UPDATE を流用すると、
 -- 猶予期間中は毎パス quality_events の配列が伸び続けてしまう）。
+--
+-- never_scheduled（issue #161、00033）は quality_events のマーカーを型付き列に
+-- 昇格したもので、この INSERT だけが true を書く。quality_events のマーカー
+-- 自体は内訳ログとして引き続き積む（消さない）。
 -- name: CreateNeverScheduledRecording :execrows
 INSERT INTO recordings (
     rule_id, source, site,
     network_id, service_id, event_id, service_name,
     channel_type, channel, title,
     program_start_at, program_duration_ms,
-    status, quality_events
+    status, quality_events, never_scheduled
 ) VALUES (
     $1, $2, $3,
     $4, $5, $6, $7,
     $8, $9, $10,
     $11, $12,
-    'failed', $13
+    'failed', $13, true
 )
 ON CONFLICT (site, network_id, service_id, event_id) WHERE deleted_at IS NULL AND superseded_at IS NULL
 DO NOTHING;
@@ -142,10 +146,22 @@ INSERT INTO recordings (
     $15, $16,
     'failed', $17
 )
+-- ON CONFLICT の相手が前パスの never-scheduled 行（never_scheduled = true）で
+-- あることもありうる（reconciler が「schedule 非観測」と判定した後に、mirakc
+-- が実は録画を試みて failed を報告してくるケース）。**この経路で
+-- never_scheduled を false に落とさない**（issue #161 のレビューで一度入れて
+-- 削除した。#161 が求めていたのは quality_events マーカーの型付き列への
+-- 昇格だけで、「in-place 更新で never_scheduled をリセットする」という本番
+-- 挙動の変更は範囲外 --- 旧 jsonb 版でもマーカーは `||` で追記されるだけで
+-- 判定は true のまま変わらなかった。リセットは
+-- CreateNeverScheduledRecording の ON CONFLICT DO NOTHING と対で「二度と
+-- 復帰しない」除外の意味論を崩し、reconciler.go の endGuarded が前提にする
+-- 「1 パスで自己解消し、以後 listDesired から二度と戻らない」を壊す。
+-- 挙動を変えるならこの PR ではなく別 issue で決定を取る）。
 ON CONFLICT (site, network_id, service_id, event_id) WHERE deleted_at IS NULL AND superseded_at IS NULL
 DO UPDATE SET
     quality_events = recordings.quality_events || EXCLUDED.quality_events,
-    updated_at = now();
+    updated_at     = now();
 
 -- 録画一覧。原本のサイズと PID 別 drop_stats の合計、
 -- 再生可能な encoded プロファイル名を同梱する。

@@ -121,8 +121,21 @@ type Recording struct {
 	StartedAt         *time.Time      `json:"startedAt,omitempty"`
 	EndedAt           *time.Time      `json:"endedAt,omitempty"`
 	QualityEvents     json.RawMessage `json:"qualityEvents"`
-	DeletedAt         *time.Time      `json:"deletedAt,omitempty"`
-	PurgeAfter        *time.Time      `json:"purgeAfter,omitempty"`
+	// NeverScheduled は quality_events の recording.never-scheduled マーカーを
+	// 型付き列に昇格したもの（issue #161、00033）。落とすと rescue 後に
+	// never_scheduled_events VIEW（この列が核）がこの行を検出できなくなり、
+	// 同期除外・容量判定・重なり判定から漏れて POST を再送してしまう
+	// （issue #134 の再発。#143 が同じ形の教訓を supersededAt について残している）。
+	// 00033 より前に export された古い世代のカタログにはこのフィールド自体が
+	// 無いので、rescue 時は常にゼロ値 false で読める。**rescue 側
+	// （internal/catalog/rescue.go の applyDocument）はこの値をそのまま
+	// 書かず、quality_events のマーカーから導出した値との OR を取る** ---
+	// 古い世代のダンプは never-scheduled の事実を quality_events にしか
+	// 持たないため、フィールドが無いことを「never-scheduled でない」と
+	// 読み違えると同じ POST 再送の再発が古いダンプの rescue でだけ起きる。
+	NeverScheduled bool       `json:"neverScheduled,omitempty"`
+	DeletedAt      *time.Time `json:"deletedAt,omitempty"`
+	PurgeAfter     *time.Time `json:"purgeAfter,omitempty"`
 	// KeepOriginalLegacy / EncodeProfilesLegacy: issue #159 より前は
 	// recordings.keep_original / recordings.encode_profiles だった旧列。
 	// 現在は RecordingEncodePolicy（recording_encode_policy 衛星表）に切り出した

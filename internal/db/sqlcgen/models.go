@@ -168,6 +168,7 @@ type Recording struct {
 	PurgeAfter        *time.Time
 	SupersededAt      *time.Time
 	PurgedAt          *time.Time
+	NeverScheduled    bool
 }
 
 type RecordingEncodePolicy struct {

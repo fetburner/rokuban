@@ -11,15 +11,16 @@ import (
 )
 
 // TestExportRescue_PreservesNeverScheduledRecording は issue #98 の never-scheduled
-// 行（recordings.status='failed' + quality_events に recording.never-scheduled）
+// 行（recordings.status='failed' + never_scheduled = true。quality_events の
+// recording.never-scheduled マーカーは内訳ログとして併存する。issue #161）
 // が catalog の export/rescue を往復しても復元できることを確認する。
 //
 // #143 のレビューで申し送りされた教訓（recordings の「行の見え方を変える」変更は
 // catalog の往復を必ず確認する。superseded_at が CatalogUpsertRecording の
-// 列リストから漏れていて rescue が一意索引違反で落ちていた）を踏まえ、この PR
-// では recordings に新しい列を追加していない（既存の status/quality_events の
-// 組み合わせで表現している）ので、往復の失敗要因になりうるのは quality_events
-// の内容が正しく保存されるかどうかだけである。
+// 列リストから漏れていて rescue が一意索引違反で落ちていた）は issue #161 でも
+// 再現した --- never_scheduled 列を CatalogUpsertRecording の列リストに足し
+// 忘れると、rescue 後は常に false になり、この関数末尾の
+// never_scheduled_events VIEW 検証が最初に落ちる形で踏んだ。
 func TestExportRescue_PreservesNeverScheduledRecording(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
