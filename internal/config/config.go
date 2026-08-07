@@ -214,8 +214,15 @@ func (c Config) validateMirakcRegistry() error {
 			}
 			seen[s.Site] = true
 
-			if verr := vld.Var(s.URL, "required,url"); verr != nil {
-				errs = append(errs, fmt.Sprintf("%s.url: %v", label, verr))
+			switch {
+			case s.URL == "":
+				errs = append(errs, fmt.Sprintf("%s.url is required", label))
+			case vld.Var(s.URL, "url") != nil:
+				// vld.Var の戻り値（validator.ValidationErrors）をそのまま %v で
+				// 出すと "Key: '' Error:Field validation for '' failed on the
+				// 'url' tag" のような読めない生出力になる（issue #183 のレビュー
+				// 指摘）。ここでは合否だけ使い、メッセージは自前で組む。
+				errs = append(errs, fmt.Sprintf("%s.url %q is not a valid URL", label, s.URL))
 			}
 		}
 	}

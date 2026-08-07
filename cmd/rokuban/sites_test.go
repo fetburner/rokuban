@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/fetburner/rokuban/internal/config"
+	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -75,6 +76,23 @@ func TestResolveSiteBinding_ExplicitSite_BindsToThatSite(t *testing.T) {
 	}
 }
 
+// --sites tokyo,tokyo のような重複指定は 1 サイトに畳む。畳まずに 2 要素として
+// 束縛すると、watcher/worker ロールが「2 サイト束縛」という紛らわしいエラーで
+// 落ちてしまう（issue #183 のレビュー指摘）。
+func TestResolveSiteBinding_DuplicateNames_AreFolded(t *testing.T) {
+	cmd := newSitesTestCmd(t)
+	if err := cmd.Flags().Set(siteFlagName, "tokyo,tokyo"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	bound, err := resolveSiteBinding(cmd, []config.MirakcSite{tokyo, takamatsu})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(bound) != 1 || bound[0] != tokyo {
+		t.Errorf("bound = %+v, want [tokyo] (folded)", bound)
+	}
+}
+
 func TestResolveSiteBinding_UnknownSite_IsError(t *testing.T) {
 	cmd := newSitesTestCmd(t)
 	if err := cmd.Flags().Set(siteFlagName, "osaka"); err != nil {
@@ -94,19 +112,35 @@ func TestValidateSiteBinding(t *testing.T) {
 		name    string
 		roles   []string
 		bound   []config.MirakcSite
+		queues  []string
 		wantErr bool
 	}{
-		{"watcher with exactly one site is fine", []string{"watcher"}, []config.MirakcSite{tokyo}, false},
-		{"watcher with zero sites is an error", []string{"watcher"}, nil, true},
-		{"watcher with two sites is an error", []string{"watcher"}, []config.MirakcSite{tokyo, takamatsu}, true},
-		{"worker with zero sites is fine (central, site非依存 queues)", []string{"worker"}, nil, false},
-		{"worker with one site is fine", []string{"worker"}, []config.MirakcSite{tokyo}, false},
-		{"worker with two sites is an error", []string{"worker"}, []config.MirakcSite{tokyo, takamatsu}, true},
-		{"api alone with two sites is fine (api doesn't need a single site)", []string{"api"}, []config.MirakcSite{tokyo, takamatsu}, false},
+		{"watcher with exactly one site is fine", []string{"watcher"}, []config.MirakcSite{tokyo}, nil, false},
+		{"watcher with zero sites is an error", []string{"watcher"}, nil, nil, true},
+		{"watcher with two sites is an error", []string{"watcher"}, []config.MirakcSite{tokyo, takamatsu}, nil, true},
+		{
+			"worker with zero sites and default (all) queues is an error " +
+				"(ingest/epg/ruler/reconciler/watcher would get an unresolvable empty site)",
+			[]string{"worker"}, nil, nil, true,
+		},
+		{
+			"worker with zero sites and queues including ingest is an error",
+			[]string{"worker"}, nil, []string{"ingest", "encode"}, true,
+		},
+		{
+			"worker with zero sites and queues restricted to site-independent ones is fine",
+			[]string{"worker"}, nil, []string{"encode", "thumbnail"}, false,
+		},
+		{"worker with one site and default queues is fine", []string{"worker"}, []config.MirakcSite{tokyo}, nil, false},
+		{"worker with two sites is an error", []string{"worker"}, []config.MirakcSite{tokyo, takamatsu}, nil, true},
+		{
+			"api alone with two sites is fine (api doesn't need a single site)",
+			[]string{"api"}, []config.MirakcSite{tokyo, takamatsu}, nil, false,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateSiteBinding(tt.roles, tt.bound)
+			err := validateSiteBinding(tt.roles, tt.bound, tt.queues)
 			if tt.wantErr && err == nil {
 				t.Error("expected error, got nil")
 			}
@@ -189,6 +223,63 @@ func TestNewBoundBacklogCollector(t *testing.T) {
 		}
 		if !found {
 			t.Error("rokuban_uningested_records not found in gathered metrics")
+		}
+	})
+}
+
+// TestNewBoundBacklogCollector_ThroughNewRegistry は server.go が実際に組む配線
+// （newBoundBacklogCollector の戻り値を直接 metrics.NewRegistry に渡す）を
+// エンドツーエンドで再現する。
+//
+// これは「具体型 nil を interface 引数に渡すと非 nil interface になる」という Go の
+// 罠を回帰させないための独立したテストである。newBoundBacklogCollector が
+// `*metrics.BacklogCollector`（具体型）を返す実装に戻ると、ここで
+// `metrics.NewRegistry` に渡した瞬間に型情報付きの非 nil interface 値になり、
+// `internal/metrics/metrics.go` の `if backlog != nil` が真になって
+// `prometheus.Registry.Register` が nil レシーバーの `Describe` を呼び panic する
+// （`--sites=` で起動した実バイナリで踏んだ実例。issue #183 のレビュー指摘）。
+// 前段の TestNewBoundBacklogCollector は戻り値をローカル変数（すでに
+// prometheus.Collector 型）で `!= nil` 比較するだけなので、関数の戻り値の型
+// そのものが具体型に戻る回帰を捕まえられない。ここは必ず metrics.NewRegistry を
+// 経由させることで、型の選択そのものを検証する。
+func TestNewBoundBacklogCollector_ThroughNewRegistry(t *testing.T) {
+	pool := testutil.SetupDB(t)
+
+	hasBacklogSeries := func(t *testing.T, reg *prometheus.Registry) bool {
+		t.Helper()
+		families, err := reg.Gather()
+		if err != nil {
+			t.Fatalf("Gather: %v", err)
+		}
+		for _, f := range families {
+			if f.GetName() == "rokuban_uningested_records" {
+				return true
+			}
+		}
+		return false
+	}
+
+	t.Run("unbound process: NewRegistry+Gather does not panic and has no backlog series", func(t *testing.T) {
+		backlog := newBoundBacklogCollector(pool, nil)
+		reg := metrics.NewRegistry(backlog) // 具体型 nil が漏れていればここで panic する
+		if hasBacklogSeries(t, reg) {
+			t.Error("unbound process should not expose rokuban_uningested_records")
+		}
+	})
+
+	t.Run("two bound sites: NewRegistry+Gather does not panic and has no backlog series", func(t *testing.T) {
+		backlog := newBoundBacklogCollector(pool, []config.MirakcSite{tokyo, takamatsu})
+		reg := metrics.NewRegistry(backlog)
+		if hasBacklogSeries(t, reg) {
+			t.Error("ambiguous (2-site) binding should not expose rokuban_uningested_records")
+		}
+	})
+
+	t.Run("exactly one bound site: NewRegistry+Gather exposes the backlog series", func(t *testing.T) {
+		backlog := newBoundBacklogCollector(pool, []config.MirakcSite{tokyo})
+		reg := metrics.NewRegistry(backlog)
+		if !hasBacklogSeries(t, reg) {
+			t.Error("single-site binding should expose rokuban_uningested_records")
 		}
 	})
 }

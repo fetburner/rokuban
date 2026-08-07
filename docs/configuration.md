@@ -198,13 +198,13 @@ log:
 
 ### 必須キー
 
-最小 3 つ: `db`（資格情報）・`mirakc.url`・`storage.media_dir`。残りは全部デフォルトを持ち、最小構成は 10 行程度に収まる。
+最小 3 つ: `db`（資格情報）・`mirakc.url` または `mirakcs`（どちらか一方。下記「複数サイト」参照）・`storage.media_dir`。残りは全部デフォルトを持ち、最小構成は 10 行程度に収まる。
 
 ### mirakc は単一オブジェクト
 
-`mirakc` はリストではなく単一オブジェクトとする。複数 mirakc を許すと programId のスコープが mirakc 単位になり、予約・EPG 射影・ingest の全スキーマに「どの mirakc か」が波及する。チューナー集約は mirakc 自身のリモートチューナー機能で賄えるため、単一サイトなら Rokuban 側は 1 エンドポイントで足りる。ハブ mirakc への集約は採らない（WAN リアルタイム依存 = 録画中の回線瞬断が録画欠損に直結するため）。
+`mirakc` は（複数サイト用の `mirakcs:` を使わない限り）単一オブジェクトとする。複数 mirakc を許すと programId のスコープが mirakc 単位になり、予約・EPG 射影・ingest の全スキーマに「どの mirakc か」が波及する。チューナー集約は mirakc 自身のリモートチューナー機能で賄えるため、単一サイトなら Rokuban 側は 1 エンドポイントで足りる。ハブ mirakc への集約は採らない（WAN リアルタイム依存 = 録画中の回線瞬断が録画欠損に直結するため）。
 
-`mirakc.site` は DB の全テーブルの `site` 列だけでなく、API の資源同定（`/api/sites/{site}/...`）の権威でもある（M3-1、issue #29 / #31 / #53）。
+`mirakc.site` は DB の全テーブルの `site` 列だけでなく、API の資源同定（`/api/sites/{site}/...`）の権威でもある（M3-1、issue #29 / #31 / #53）。**省略時の既定値は `"default"` だが、`site: ""` と明示すると起動エラーになる**（下記の site 名の構文制約が空文字列を許さないため。issue #183 M4-11 で `mirakcs:` レジストリを導入した際に、単一オブジェクト形式にも同じ制約を揃えた。従来は空文字列も黙って許容されていた）。
 
 #### 複数サイト: `mirakcs:` レジストリ（issue #183 M4-11）
 
@@ -221,8 +221,8 @@ log:
 
 - 未指定でレジストリが 1 要素ならその 1 つに束縛する。未指定でレジストリが 2 要素以上なら起動エラー（暗黙に「全部」にしない）
 - `--sites=`（明示的な空）は束縛なし = 中央プロセス
-- `--sites tokyo` は tokyo に束縛する
-- `watcher` ロールは 1 プロセス 1 サイトのループしか持たないため、束縛サイト数がちょうど 1 でなければ起動エラーになる。`worker` ロールは今のところ site 単位の仕事と site 非依存の仕事が同居しており（`worker.Deps.Site` / `worker.ClientConfig` の各 `*Site` フィールドがいずれも単一文字列のため）、0 または 1 サイトの束縛は許すが 2 サイト以上は起動エラーになる。**1 プロセスが N サイトの watcher / worker のループを回す形は書き手がまだいないので決めない**（不変条件 11）
+- `--sites tokyo` は tokyo に束縛する。`--sites tokyo,tokyo` のような重複は 1 つに畳む（束縛数の判定が紛らわしいエラーにならないようにするため）
+- `watcher` ロールは 1 プロセス 1 サイトのループしか持たないため、束縛サイト数がちょうど 1 でなければ起動エラーになる。`worker` ロールは今のところ site 単位の仕事（ingest/epg/ruler/reconciler/watcher キュー）と site 非依存の仕事（encode/thumbnail/catalog_export/delete_reconcile キュー）が同居しており（`worker.Deps.Site` / `worker.ClientConfig` の各 `*Site` フィールドがいずれも単一文字列のため）、2 サイト以上の束縛は起動エラーになる。**0 サイト（中央プロセス）の束縛は `worker.queues` を encode/thumbnail 等の site 非依存キューに絞ったときだけ許す** --- `worker.queues` が空（既定=全キュー）のまま、または ingest/epg/ruler/reconciler/watcher のいずれかを含んだまま 0 サイトで起動すると、届く site 単位のジョブが空文字列 site と一致せず全滅して再試行し続けるだけになるため起動エラーにする。**1 プロセスが N サイトの watcher / worker のループを回す形は書き手がまだいないので決めない**（不変条件 11）
 - `enqueue` サブコマンドは `--site` で投入先を選ぶ（未指定かつレジストリ 1 要素ならその 1 つ、2 要素以上なら必須）。M4-6 の CronJob がサイトごとに投入するため
 - `rescue` / `shadow-diff` は単一サイト用のまま。`mirakcs:` が 2 要素以上の構成では明示的なエラーで落ちる（多サイトでの意味論を決める書き手がまだいないため）
 

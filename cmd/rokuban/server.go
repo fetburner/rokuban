@@ -66,7 +66,7 @@ func newServerCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := validateSiteBinding(roles, bound); err != nil {
+			if err := validateSiteBinding(roles, bound, cfg.Worker.Queues); err != nil {
 				return err
 			}
 			// boundSite は「ちょうど 1 サイトに束縛されている」場合だけ非ゼロ値になる。

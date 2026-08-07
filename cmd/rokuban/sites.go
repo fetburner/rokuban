@@ -6,10 +6,12 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/spf13/cobra"
 
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/metrics"
+	"github.com/fetburner/rokuban/internal/worker"
 )
 
 // siteFlagName は `server` サブコマンドのプロセス束縛フラグ名。config キーには
@@ -28,6 +30,8 @@ const siteFlagName = "sites"
 //   - `--sites=`（明示的な空文字列。pflag の StringSlice は空文字列を長さ 0 の
 //     スライスとして扱う）→ 束縛なし（中央プロセス）
 //   - `--sites tokyo` 等 → 指定された名前がレジストリに存在する場合に限りそれらに束縛
+//     （同じ名前の重複指定は 1 つに畳む。`--sites tokyo,tokyo` が「2 サイト束縛」
+//     という紛らわしいエラーにならないようにするため）
 //
 // **「未指定」と「明示的な空」を区別する必要がある**（issue #183 の「罠」）。
 // pflag の StringSlice はどちらも長さ 0 のスライスになるため、Changed() で判定する。
@@ -62,7 +66,11 @@ func resolveSiteBinding(cmd *cobra.Command, registry []config.MirakcSite) ([]con
 		byName[s.Site] = s
 	}
 
+	// 同じ名前が複数回渡された場合は 1 つに畳む（`--sites tokyo,tokyo` が
+	// 「2 サイト束縛」という紛らわしいエラーにならないようにするため。
+	// issue #183 のレビュー指摘）。
 	bound := make([]config.MirakcSite, 0, len(names))
+	seen := make(map[string]bool, len(names))
 	var unknown []string
 	for _, n := range names {
 		s, ok := byName[n]
@@ -70,6 +78,10 @@ func resolveSiteBinding(cmd *cobra.Command, registry []config.MirakcSite) ([]con
 			unknown = append(unknown, n)
 			continue
 		}
+		if seen[n] {
+			continue
+		}
+		seen[n] = true
 		bound = append(bound, s)
 	}
 	if len(unknown) > 0 {
@@ -87,7 +99,8 @@ func registryNames(registry []config.MirakcSite) []string {
 	return names
 }
 
-// validateSiteBinding は束縛サイト数とロール集合の組み合わせを検査する。
+// validateSiteBinding は束縛サイト数・ロール集合・worker.queues の組み合わせを
+// 検査する。
 //
 // **watcher** は mirakc への長期接続を 1 つだけ持つループで、record id /
 // schedule が mirakc インスタンス単位のスコープしか持たないため、0 サイト
@@ -96,21 +109,34 @@ func registryNames(registry []config.MirakcSite) []string {
 // ちょうど 1 サイトへの束縛だけを許す。
 //
 // **worker** は今のところ site 単位の仕事（ingest/epg/ruler/reconcile/record_sweep）
-// と site 非依存の仕事（encode/thumbnail/delete_reconcile）が同一ロールに同居して
-// おり（M4-13/M4-14 で分離される予定。issue #183 はそれを含まない）、
-// worker.Deps.Site / worker.ClientConfig の各 *Site フィールドがいずれも単一の
-// 文字列であるため、2 サイト以上には束縛できない。0 サイト（中央プロセス）は
-// worker.queues を encode/thumbnail 等の site 非依存キューに絞ることで既に成立する
-// （各 *Site フィールドは空文字列のままになり、site 単位の定期ジョブ登録が
-// 自然に無効化される。worker.ClientConfig のフィールドコメント参照）ので許す。
-func validateSiteBinding(roles []string, bound []config.MirakcSite) error {
+// と site 非依存の仕事（encode/thumbnail/delete_reconcile/catalog_export）が
+// 同一ロールに同居しており（M4-13/M4-14 で分離される予定。issue #183 はそれを
+// 含まない）、worker.Deps.Site / worker.ClientConfig の各 *Site フィールドが
+// いずれも単一の文字列であるため、2 サイト以上には束縛できない。
+//
+// 0 サイト（中央プロセス）は無条件には許さない --- `worker.RequiresSiteBinding`
+// が true（`worker.queues` が空、または ingest/epg/ruler/reconciler/watcher の
+// いずれかを含む）なら、届く site 単位のジョブが Deps.Site="" と一致せず
+// 全滅して再試行し続けるだけの構成になるので起動エラーにする。0 サイトの worker を
+// 許すのは `worker.queues` を encode/thumbnail 等の site 非依存キューに絞った
+// ときだけ（各 *ClientConfig.*Site フィールドは空文字列のままになり、site 単位の
+// 定期ジョブ登録は自然に無効化される。worker.ClientConfig のフィールドコメント参照）。
+func validateSiteBinding(roles []string, bound []config.MirakcSite, queues []string) error {
 	if slices.Contains(roles, "watcher") && len(bound) != 1 {
 		return fmt.Errorf("--sites: watcher role requires exactly one bound site, got %d "+
 			"(running N-site watcher loops in a single process is not implemented; issue #183)", len(bound))
 	}
-	if slices.Contains(roles, "worker") && len(bound) >= 2 {
-		return fmt.Errorf("--sites: %d sites bound, but worker role supports at most one bound site "+
-			"(worker.Deps.Site and worker.ClientConfig's *Site fields are single strings; issue #183)", len(bound))
+	if slices.Contains(roles, "worker") {
+		if len(bound) >= 2 {
+			return fmt.Errorf("--sites: %d sites bound, but worker role supports at most one bound site "+
+				"(worker.Deps.Site and worker.ClientConfig's *Site fields are single strings; issue #183)", len(bound))
+		}
+		if len(bound) == 0 && worker.RequiresSiteBinding(queues) {
+			return fmt.Errorf("--sites: worker role is unbound (central process) but worker.queues %v "+
+				"still includes site-bound queues (or is empty, meaning all queues); "+
+				"restrict worker.queues to site-independent queues (encode/thumbnail/catalog_export/"+
+				"delete_reconcile) or bind to exactly one site with --sites", queues)
+		}
 	}
 	return nil
 }
@@ -142,7 +168,17 @@ func requireSingleSite(registry []config.MirakcSite, cmdName string) (config.Mir
 // プロセスや 2 サイト以上に束縛されたプロセスでは「このサイト」が定まらないので
 // 登録しない --- 登録すると担当していないサイトの系列を出してしまう
 // （issue #183 の受け入れ基準）。
-func newBoundBacklogCollector(pool *pgxpool.Pool, bound []config.MirakcSite) *metrics.BacklogCollector {
+//
+// **戻り値の型は具体型 `*metrics.BacklogCollector` ではなく
+// `prometheus.Collector`（インターフェース）にする。** 具体型のまま nil を返すと、
+// 呼び出し側でその値をインターフェース引数（`metrics.NewRegistry` の
+// `backlog prometheus.Collector`）に渡した瞬間、型情報付きの非 nil インターフェース
+// 値になってしまう（Go の典型的な「具体型 nil を interface に入れると nil でなくなる」
+// 罠）。`internal/metrics/metrics.go` の `if backlog != nil` はその非 nil
+// インターフェース値を真と判定し、`Register` が nil レシーバの `Describe` を呼んで
+// panic する。ここで真の nil インターフェースを返すことで、呼び出し側の
+// `!= nil` 判定が正しく機能する。
+func newBoundBacklogCollector(pool *pgxpool.Pool, bound []config.MirakcSite) prometheus.Collector {
 	if len(bound) != 1 {
 		return nil
 	}

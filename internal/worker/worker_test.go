@@ -587,6 +587,35 @@ func TestRequiresEncodeTools(t *testing.T) {
 	}
 }
 
+// RequiresSiteBinding は cmd/rokuban が「worker ロールを 0 サイト束縛
+// （issue #183 M4-11 の --sites=）で起動してよいか」を判定する唯一の材料。
+// ここが誤ると、site 単位のジョブ（ingest/epg/ruler/reconciler/watcher）を
+// 引く worker が空文字列 site のまま起動し、届いたジョブの site と一致せず
+// 全滅して再試行し続ける（ログにも出ない）。
+func TestRequiresSiteBinding(t *testing.T) {
+	tests := []struct {
+		name   string
+		queues []string
+		want   bool
+	}{
+		{"empty means all queues, including site-bound ones", nil, true},
+		{"explicit ingest", []string{ingestQueue}, true},
+		{"explicit epg", []string{epgQueue}, true},
+		{"explicit ruler", []string{rulerQueue}, true},
+		{"explicit reconciler", []string{reconcilerQueue}, true},
+		{"explicit watcher (record_sweep)", []string{recordSweepQueue}, true},
+		{"encode/thumbnail only excludes site-bound queues", []string{encodeQueue, thumbnailQueue}, false},
+		{"encode/thumbnail plus one site-bound queue still requires binding", []string{encodeQueue, ingestQueue}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := RequiresSiteBinding(tt.queues); got != tt.want {
+				t.Errorf("RequiresSiteBinding(%v) = %v, want %v", tt.queues, got, tt.want)
+			}
+		})
+	}
+}
+
 type noOpArgs struct{}
 
 func (noOpArgs) Kind() string { return "noop" }
