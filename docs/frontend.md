@@ -808,7 +808,7 @@ validateSearch(...))`）、`validateSearch` の戻り値を「生の（未検証
 { ruleId: n } : {}`）を使っており、無効な `ruleId`（`?ruleId=abc` 等）を渡すと同じ
 経路で漏れることを PR #193 のレビューで確認した（`{ ruleId: "abc" }` が
 `useSearch()` にそのまま届く）。**本 PR では `/search` 自体は直していない**
-（触るファイルの目安に無いため）。[issue #195](https://github.com/fetburner/rokuban/issues/195)
+（触るファイルの目安に無いため）。[issue #194](https://github.com/fetburner/rokuban/issues/194)
 に切った --- M4-4（#92、`/live` が同じ関数形を使う場合はそちらも含める）と
 合わせて 1 本で直す。
 
