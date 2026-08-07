@@ -252,6 +252,63 @@ func TestHeadRecordStream(t *testing.T) {
 	}
 }
 
+func TestStreamService(t *testing.T) {
+	content := strings.Repeat("T", 500)
+	var gotPriority string
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path + "?" + r.URL.RawQuery
+		gotPriority = r.Header.Get("X-Mirakurun-Priority")
+		w.Header().Set("Content-Type", "video/MP2T")
+		_, _ = fmt.Fprint(w, content)
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, nil)
+	body, err := c.StreamService(context.Background(), 1024, 3)
+	if err != nil {
+		t.Fatalf("StreamService: %v", err)
+	}
+	defer func() { _ = body.Close() }()
+
+	if gotPath != "/api/services/1024/stream?decode=1" {
+		t.Errorf("path+query = %q, want decode=1 on the services/{id}/stream path", gotPath)
+	}
+	if gotPriority != "3" {
+		t.Errorf("X-Mirakurun-Priority = %q, want %q", gotPriority, "3")
+	}
+	data, err := io.ReadAll(body)
+	if err != nil {
+		t.Fatalf("reading body: %v", err)
+	}
+	if string(data) != content {
+		t.Errorf("body = %q, want %q", data, content)
+	}
+}
+
+// StreamService はチューナー枯渇等の mirakc 側エラーを APIError として素通しする。
+// 呼び出し側（streamer）がこれを見て 503 とメトリクス reason="upstream_error" に変換する。
+func TestStreamService_UpstreamError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = fmt.Fprint(w, "no tuner available")
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, nil)
+	_, err := c.StreamService(context.Background(), 1024, 3)
+	if err == nil {
+		t.Fatal("StreamService: want error, got nil")
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("err = %v, want *APIError", err)
+	}
+	if apiErr.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("StatusCode = %d, want %d", apiErr.StatusCode, http.StatusServiceUnavailable)
+	}
+}
+
 // ListTuners は静的な構成（index / name / types / isAvailable / isFault）だけを
 // デコードし、実行時状態（users / isFree / isUsing / command / pid）は型に持たない
 // （issue #21、docs/data.md §6.5）。実機のレスポンスをそのまま流して確認する。

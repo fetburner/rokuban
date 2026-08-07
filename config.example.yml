@@ -108,6 +108,30 @@ encode:
   #     preset: medium           # optional
   #     extra_args: []           # 末尾に追加する ffmpeg 引数（自由形式 cmd 全体は禁止）
 
+# ライブ視聴（streamer ロールのみ使う。issue #91）
+live:
+  enabled: false                 # true のときだけライブのルートを登録し、ffmpeg の
+                                 # LookPath 検査も行う。公式イメージ（ffmpeg 無し）で
+                                 # streamer ロールを起動する構成を壊さないための既定 false
+  # ffmpeg: ffmpeg                # 既定は PATH 検索
+  # segment_dir: /dev/shm/rokuban-live  # HLS セグメント/プレイリストの書き出し先。
+                                 # 録画バッファとは別ディスク（tmpfs 前提）
+  # max_sessions: 4                # このプロセスの同時ライブセッション数上限
+                                 # （プロセスローカル。グローバルな天井はチューナー数）
+  # idle_timeout: 30s              # サービス単位の idle GC 猶予
+  # tuner_priority: 1              # mirakc への X-Mirakurun-Priority。ruler の schedule
+                                 # 既定 priority（10）より低く保ち、チューナー枯渇時に
+                                 # 録画側を勝たせる
+  # profiles:
+  #   - name: h264                 # `?profile=` から参照する名前
+  #     video_codec: libx264       # ISDB-T の映像は MPEG-2 なのでブラウザの HLS 経路
+                                 #   向けに H.264 へ変換する
+  #     audio_codec: aac
+  #     height: 720               # 0 or omit = スケールしない
+  #     preset: veryfast          # optional
+  #     segment_seconds: 2        # 0 なら既定値 2
+  #     playlist_size: 6          # 0 なら既定値 6
+
 # 汎用 webhook（EPGStation の複数種外部コマンドを 1 本の HTTP POST に置き換える）
 webhook:
   url: ""                        # 空なら no-op（送らない）。例: https://hooks.example.com/rokuban

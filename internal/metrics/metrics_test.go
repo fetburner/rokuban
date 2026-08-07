@@ -51,6 +51,9 @@ func TestNewRegistry_ExposesRequiredMetrics(t *testing.T) {
 	TunersProjected.WithLabelValues(testSite).Set(2)
 	TunerSyncLastSuccess.WithLabelValues(testSite).SetToCurrentTime()
 	CapacityOverages.WithLabelValues(testSite).Set(0)
+	LiveActiveSessions.Set(0)
+	LiveSessionStartFailures.WithLabelValues("session_limit").Inc()
+	LiveIdleGCReclaimed.Add(1)
 
 	families, err := reg.Gather()
 	if err != nil {
@@ -90,6 +93,10 @@ func TestNewRegistry_ExposesRequiredMetrics(t *testing.T) {
 		"rokuban_tuners_projected",
 		"rokuban_tuner_sync_last_success_timestamp_seconds",
 		"rokuban_capacity_overages",
+		// issue #91: ライブ視聴
+		"rokuban_live_active_sessions",
+		"rokuban_live_session_start_failures_total",
+		"rokuban_live_idle_gc_reclaimed_total",
 	}
 	for _, name := range required {
 		if !got[name] {

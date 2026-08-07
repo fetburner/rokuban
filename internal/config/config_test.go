@@ -579,6 +579,160 @@ encode:
 	})
 }
 
+func TestLoad_Live(t *testing.T) {
+	base := `
+db:
+  host: localhost
+  user: rokuban
+  password: secret
+  database: rokuban
+mirakc:
+  url: http://mirakc.local:40772
+storage:
+  media_dir: /mnt/media
+`
+
+	t.Run("disabled by default", func(t *testing.T) {
+		path := writeConfig(t, base)
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cfg.Live.Enabled {
+			t.Error("live.enabled should default to false")
+		}
+		// enabled=false のときは profiles が空でも segment_dir が無くても
+		// 検証で落ちない（公式イメージで streamer を起動する構成を壊さない）。
+		if len(cfg.Live.Profiles) != 0 {
+			t.Errorf("live.profiles = %v, want empty", cfg.Live.Profiles)
+		}
+	})
+
+	t.Run("enabled applies defaults", func(t *testing.T) {
+		path := writeConfig(t, base+`
+live:
+  enabled: true
+  segment_dir: /dev/shm/rokuban-live
+  profiles:
+    - name: h264
+      video_codec: libx264
+      audio_codec: aac
+`)
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cfg.Live.FFmpeg != "ffmpeg" {
+			t.Errorf("live.ffmpeg = %q, want %q", cfg.Live.FFmpeg, "ffmpeg")
+		}
+		if cfg.Live.MaxSessions != 4 {
+			t.Errorf("live.max_sessions = %d, want 4", cfg.Live.MaxSessions)
+		}
+		if cfg.Live.IdleTimeout != 30*time.Second {
+			t.Errorf("live.idle_timeout = %v, want 30s", cfg.Live.IdleTimeout)
+		}
+		if cfg.Live.TunerPriority != 1 {
+			t.Errorf("live.tuner_priority = %d, want 1", cfg.Live.TunerPriority)
+		}
+		if len(cfg.Live.Profiles) != 1 {
+			t.Fatalf("live.profiles len = %d, want 1", len(cfg.Live.Profiles))
+		}
+		p := cfg.Live.Profiles[0]
+		if p.SegmentSeconds != 2 {
+			t.Errorf("profiles[0].segment_seconds = %d, want 2", p.SegmentSeconds)
+		}
+		if p.PlaylistSize != 6 {
+			t.Errorf("profiles[0].playlist_size = %d, want 6", p.PlaylistSize)
+		}
+	})
+
+	t.Run("enabled requires profiles", func(t *testing.T) {
+		path := writeConfig(t, base+`
+live:
+  enabled: true
+  segment_dir: /dev/shm/rokuban-live
+`)
+		_, err := Load(path)
+		if err == nil {
+			t.Fatal("expected error: live.enabled without profiles")
+		}
+		if !strings.Contains(err.Error(), "profiles") {
+			t.Errorf("error = %v, want mention of profiles", err)
+		}
+	})
+
+	t.Run("enabled requires segment_dir", func(t *testing.T) {
+		path := writeConfig(t, base+`
+live:
+  enabled: true
+  profiles:
+    - name: h264
+      video_codec: libx264
+      audio_codec: aac
+`)
+		_, err := Load(path)
+		if err == nil {
+			t.Fatal("expected error: live.enabled without segment_dir")
+		}
+		if !strings.Contains(err.Error(), "segment_dir") {
+			t.Errorf("error = %v, want mention of segment_dir", err)
+		}
+	})
+
+	t.Run("rejects unsafe profile name", func(t *testing.T) {
+		path := writeConfig(t, base+`
+live:
+  enabled: true
+  segment_dir: /dev/shm/rokuban-live
+  profiles:
+    - name: "../etc"
+      video_codec: libx264
+      audio_codec: aac
+`)
+		_, err := Load(path)
+		if err == nil {
+			t.Fatal("expected error: unsafe profile name")
+		}
+	})
+
+	t.Run("rejects duplicate profile name", func(t *testing.T) {
+		path := writeConfig(t, base+`
+live:
+  enabled: true
+  segment_dir: /dev/shm/rokuban-live
+  profiles:
+    - name: h264
+      video_codec: libx264
+      audio_codec: aac
+    - name: h264
+      video_codec: libx265
+      audio_codec: aac
+`)
+		_, err := Load(path)
+		if err == nil {
+			t.Fatal("expected error: duplicate profile name")
+		}
+		if !strings.Contains(err.Error(), "duplicate name") {
+			t.Errorf("error = %v, want mention of duplicate name", err)
+		}
+	})
+
+	t.Run("rejects missing video_codec", func(t *testing.T) {
+		path := writeConfig(t, base+`
+live:
+  enabled: true
+  segment_dir: /dev/shm/rokuban-live
+  profiles:
+    - name: h264
+      audio_codec: aac
+`)
+		_, err := Load(path)
+		if err == nil {
+			t.Fatal("expected error: missing video_codec")
+		}
+	})
+}
+
 func TestEncodeConfig_Profile(t *testing.T) {
 	cfg := EncodeConfig{Profiles: []EncodeProfile{
 		{Name: "h264", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac"},
@@ -609,6 +763,30 @@ func TestEncodeConfig_ValidateTools(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "ffmpeg") && !strings.Contains(err.Error(), "ffprobe") {
 		t.Errorf("error = %v, want mention of missing tool", err)
+	}
+}
+
+func TestLiveConfig_Profile(t *testing.T) {
+	cfg := LiveConfig{Profiles: []LiveProfile{
+		{Name: "h264", VideoCodec: "libx264", AudioCodec: "aac"},
+		{Name: "h264low", VideoCodec: "libx264", AudioCodec: "aac", Height: 480},
+	}}
+	p, ok := cfg.Profile("h264low")
+	if !ok || p.Height != 480 {
+		t.Fatalf("Profile(h264low) = (%+v, %v), want found with height 480", p, ok)
+	}
+	if _, ok := cfg.Profile("missing"); ok {
+		t.Error("Profile(missing) should be not found")
+	}
+	if got := cfg.ProfileNames(); !slices.Equal(got, []string{"h264", "h264low"}) {
+		t.Errorf("ProfileNames() = %v, want [h264 h264low]", got)
+	}
+}
+
+func TestLiveConfig_ValidateTools(t *testing.T) {
+	cfg := LiveConfig{FFmpeg: "rokuban-no-such-ffmpeg-binary"}
+	if err := cfg.ValidateTools(); err == nil {
+		t.Fatal("expected error for missing ffmpeg")
 	}
 }
 
