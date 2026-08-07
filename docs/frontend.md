@@ -792,17 +792,25 @@ EPGStation にある「録画済みの検索」に対応する機能だが、`/s
 ### TanStack Router の `validateSearch` は無効な値を「省略」しても消えない
 
 `parseRecordingsSearch` は非 strict モード（既定）の TanStack Router で使われる。
-このモードは `validateSearch` の戻り値を「生の（未検証の） `location.search` に
-`Object.assign` で上書きする」形で合成する（`matchRoutesLightweight` の
-`accumulatedSearch`）。**戻り値からキーを省略すると `Object.assign` はそのキーを
-上書きしない**ので、生の不正な値（`?status=bogus` の文字列そのもの等）が
+このモードは実際のルートマッチでも（`matchRoutesInternal`。`@tanstack/router-core`
+の `router.js` 内、`preMatchSearch = { ...parentSearch, ...strictSearch }` ---
+`parentSearch` は生の未検証の値）、ビルドロケーション用の軽量マッチでも
+（`matchRoutesLightweight` の `accumulatedSearch`。`Object.assign(accumulatedSearch,
+validateSearch(...))`）、`validateSearch` の戻り値を「生の（未検証の）
+`location.search` の上に重ねる」形で合成する。**戻り値からキーを省略すると、その
+キーは上書きされない**ので、生の不正な値（`?status=bogus` の文字列そのもの等）が
 「検証済みのつもり」の結果へそのまま残って漏れる --- 実機で確認済み（壊れた URL の
 不正な値がチップにそのまま出た）。対策は**落とした次元も `undefined` を明示的に
-代入する**（キーを省略しない）。`{ ...x, k: undefined }` は `Object.assign` から見ると
-実際に上書きになるため、これで確実に消える。`/search` の `ruleId` も同じ非 strict
-モードの下で同じ関数形（`Number.isFinite(n) ? { ruleId: n } : {}`）を使っており、
-無効な `ruleId` を渡すと同じ経路で漏れる可能性がある（本タスクでは `/search` 自体は
-直していない。触るファイルの目安に無いため）。
+代入する**（キーを省略しない）。`{ ...x, k: undefined }` はどちらの合成方式で見ても
+実際に上書きになるため、これで確実に消える。
+
+`/search` の `ruleId` も同じ非 strict モードの下で同じ関数形（`Number.isFinite(n) ?
+{ ruleId: n } : {}`）を使っており、無効な `ruleId`（`?ruleId=abc` 等）を渡すと同じ
+経路で漏れることを PR #193 のレビューで確認した（`{ ruleId: "abc" }` が
+`useSearch()` にそのまま届く）。**本 PR では `/search` 自体は直していない**
+（触るファイルの目安に無いため）。[issue #195](https://github.com/fetburner/rokuban/issues/195)
+に切った --- M4-4（#92、`/live` が同じ関数形を使う場合はそちらも含める）と
+合わせて 1 本で直す。
 
 ### 一覧は自前で組んだ `useInfiniteQuery`
 

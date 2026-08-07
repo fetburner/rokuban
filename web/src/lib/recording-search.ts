@@ -21,6 +21,7 @@ import {
   type ListRecordingsParams,
   type Service,
 } from '@/api/generated'
+import { formatDateTime } from '@/lib/format'
 import { genreCodeLabel } from '@/lib/program-search'
 
 /** RecordingsPageSearch は `/recordings` の URL クエリパラメータ（検証済み）。 */
@@ -98,9 +99,15 @@ function parseEnum<T extends string>(raw: unknown, allowed: readonly T[]): T | u
   return typeof raw === 'string' && (allowed as readonly string[]).includes(raw) ? (raw as T) : undefined
 }
 
+/**
+ * parseRuleId は `ruleId` を整数として受け取る。`rules.id` は `bigint` PK
+ * （`RuleId` は Go 側 `int64` にバインドされる）なので、`1.5` のような非整数は
+ * サーバーへ送ると 400 になる。`Number.isFinite` だけでは非整数を通してしまう
+ * ため `Number.isInteger` も見る。
+ */
 function parseRuleId(raw: unknown): number | undefined {
   const n = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : NaN
-  return Number.isFinite(n) ? n : undefined
+  return Number.isFinite(n) && Number.isInteger(n) ? n : undefined
 }
 
 /** parseIsoDate は日時として解釈できる文字列を ISO 8601（UTC）へ正規化する。 */
@@ -120,14 +127,17 @@ function parseIsoDate(raw: unknown): string | undefined {
  * 踏んでも画面は開く。
  *
  * **落とした次元は `undefined` を明示的に代入する（キーを省略しない）。**
- * TanStack Router は `validateSearch` の戻り値を「生の（未検証の）location.search
- * に `Object.assign` で上書きする」形で合成する（デフォルトの非 strict モード。
- * `matchRoutesLightweight` の `accumulatedSearch`）。戻り値からキーを省略すると
- * `Object.assign` はそのキーを上書きせず、生の不正な値（`status=bogus` の
- * 文字列そのもの等）が検証済みのつもりの結果へ漏れて残る。`{ ...x, k: undefined }`
- * は `Object.assign` で見ても実際に上書きになるため、無効な値を確実に消すには
- * 明示的な `undefined` 代入が要る（実機で確認済み。省略する形だと壊れた URL の
- * 不正な値がチップにそのまま出た）。
+ * TanStack Router の既定（非 strict）モードは、実際のルートマッチ
+ * （`matchRoutesInternal`。`@tanstack/router-core` の `router.js` 内、
+ * `preMatchSearch = { ...parentSearch, ...strictSearch }`）でも、
+ * ビルドロケーション用の軽量マッチ（`matchRoutesLightweight` の
+ * `accumulatedSearch`。`Object.assign(accumulatedSearch, validateSearch(...))`）
+ * でも、**`validateSearch` の戻り値を「生の（未検証の） `location.search` の上に
+ * 重ねる」形で合成する**。戻り値からキーを省略すると、そのキーは上書きされず
+ * 生の不正な値（`status=bogus` の文字列そのもの等）が検証済みのつもりの結果へ
+ * 漏れて残る（実機で確認済み。省略する形だと壊れた URL の不正な値がチップにそのまま
+ * 出た）。`{ ...x, k: undefined }` はどちらの合成方式で見ても実際に上書きになる
+ * ので、無効な値を確実に消すには明示的な `undefined` 代入が要る。
  */
 export function parseRecordingsSearch(search: Record<string, unknown>): RecordingsPageSearch {
   return {
@@ -224,6 +234,20 @@ export type RecordingsFilterChip = {
 }
 
 /**
+ * periodLabel は期間チップの表示文字列。`期間指定` のような値の読めないラベルに
+ * しない --- チップを見るだけで何を絞っているか分かる必要がある（レビューで
+ * 指摘。issue #137）。片方だけの指定は「〜」を開いたままにする。
+ */
+function periodLabel(from: string | undefined, to: string | undefined): string {
+  if (from !== undefined && to !== undefined) {
+    return `${formatDateTime(from)} 〜 ${formatDateTime(to)}`
+  }
+  if (from !== undefined) return `${formatDateTime(from)} 〜`
+  if (to !== undefined) return `〜 ${formatDateTime(to)}`
+  return ''
+}
+
+/**
  * describeRecordingsFilters は適用中の条件をチップの一覧にする。
  *
  * 配列条件（ジャンル・チャンネル）は値ごとに 1 チップ（個別に外せる）、
@@ -287,7 +311,7 @@ export function describeRecordingsFilters(
   if (search.from !== undefined || search.to !== undefined) {
     chips.push({
       key: 'period',
-      label: '期間指定',
+      label: `期間: ${periodLabel(search.from, search.to)}`,
       clear: (s) => ({ ...s, from: undefined, to: undefined }),
     })
   }

@@ -213,4 +213,28 @@ describe('RecordingFilters 絞り込みパネル', () => {
 
     await waitFor(() => expect(getCurrent().serviceId).toEqual([1024]))
   })
+
+  // from/to は純関数（isoToLocalDateTimeInput / localDateTimeInputToIso）は
+  // 別途テスト済みだが、入力欄を実際に操作して search に乗る経路（genre /
+  // serviceId には既にある）が無かったので足す。
+  it('期間の入力欄を操作すると from/to が ISO 8601（UTC）で反映される', async () => {
+    const user = userEvent.setup()
+    const { getCurrent } = renderFilters()
+
+    await user.click(screen.getByRole('button', { name: /絞り込み/ }))
+    const panel = await screen.findByRole('dialog', { name: '絞り込み' })
+
+    const fromInput = within(panel).getByLabelText('開始日時')
+    fireEvent.change(fromInput, { target: { value: '2026-01-15T09:30' } })
+    await waitFor(() => expect(getCurrent().from).toBeDefined())
+    expect(new Date(getCurrent().from as string).getFullYear()).toBe(2026)
+
+    const toInput = within(panel).getByLabelText('終了日時')
+    fireEvent.change(toInput, { target: { value: '2026-01-16T00:00' } })
+    await waitFor(() => expect(getCurrent().to).toBeDefined())
+
+    // 空欄に戻すと undefined に戻る（キーを undefined 以外の値のまま残さない）。
+    fireEvent.change(fromInput, { target: { value: '' } })
+    await waitFor(() => expect(getCurrent().from).toBeUndefined())
+  })
 })

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { Service } from '@/api/generated'
+import { formatDateTime } from '@/lib/format'
 import {
   buildListRecordingsParams,
   clearRecordingsFilters,
@@ -74,6 +75,14 @@ describe('parseRecordingsSearch', () => {
 
   it('genre がすべて範囲外なら genre キー自体を作らない（空配列を作らない）', () => {
     expect(parseRecordingsSearch({ genre: [99, -1] })).toEqual({})
+  })
+
+  // rules.id は bigint（Go 側 int64 バインド）なので、非整数を送ると 400 になる。
+  // Number.isFinite だけでは 1.5 を通してしまうので Number.isInteger も見る。
+  it('非整数の ruleId は落とす', () => {
+    expect(parseRecordingsSearch({ ruleId: 1.5 })).toEqual({})
+    expect(parseRecordingsSearch({ ruleId: '1.5' })).toEqual({})
+    expect(parseRecordingsSearch({ ruleId: 5 })).toEqual({ ruleId: 5 })
   })
 
   it('from/to は解釈できる日時なら ISO 8601（UTC）へ正規化する', () => {
@@ -227,6 +236,24 @@ describe('describeRecordingsFilters', () => {
     expect(chips.map((c) => c.key)).toEqual(['status', 'source', 'ruleId', 'period'])
     expect(chips.find((c) => c.key === 'status')?.label).toBe('状態: 失敗')
     expect(chips.find((c) => c.key === 'ruleId')?.label).toBe('ルール #7')
+    // 「期間指定」のような値の読めないラベルにしない --- チップだけで何を
+    // 絞っているか分かる必要がある（レビューで指摘）。
+    expect(chips.find((c) => c.key === 'period')?.label).toBe(
+      `期間: ${formatDateTime('2026-01-01T00:00:00Z')} 〜`,
+    )
+  })
+
+  it('期間チップは from/to 両方あれば範囲を、片方だけなら開いた側を「〜」で示す', () => {
+    const both = describeRecordingsFilters(
+      { from: '2026-01-01T00:00:00Z', to: '2026-01-02T00:00:00Z' },
+      services,
+    )
+    expect(both[0].label).toBe(
+      `期間: ${formatDateTime('2026-01-01T00:00:00Z')} 〜 ${formatDateTime('2026-01-02T00:00:00Z')}`,
+    )
+
+    const toOnly = describeRecordingsFilters({ to: '2026-01-02T00:00:00Z' }, services)
+    expect(toOnly[0].label).toBe(`期間: 〜 ${formatDateTime('2026-01-02T00:00:00Z')}`)
   })
 
   it('期間チップを外すと from と to が両方消える', () => {

@@ -423,6 +423,50 @@ describe('RecordingsPage 検索条件', () => {
     }
   })
 
+  // issue #137 の罠: 「キーワードの 1 文字ごとに push すると戻るボタンが使えなく
+  // なる。replace を使う」。debounce の確定（キーワード）とチップ操作の両方が
+  // history を積まないことを、実際の history の長さで固定する --- トーストや
+  // 表示結果だけでは push/replace の違いは見えない。
+  it('debounce の確定・チップ操作はいずれも履歴を積まない（push ではなく replace）', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+      createFakeRecordingsServer({
+        library: [sampleRecording({ title: 'ニュース7', status: 'finished' })],
+      })
+
+      const { router } = renderPage()
+      await screen.findByText('ニュース7')
+      const lengthAfterInitialLoad = router.history.length
+
+      const input = screen.getByRole('searchbox', { name: '番組名・説明で検索' })
+      await user.type(input, 'ニ')
+      await vi.advanceTimersByTimeAsync(300)
+      await waitFor(() => expect(router.state.location.search).toMatchObject({ q: 'ニ' }))
+      expect(router.history.length).toBe(lengthAfterInitialLoad)
+
+      // 続けて別のキーワードに確定させる（debounce をもう 1 サイクル回す）。
+      // push だとここで history が積まれてしまう。
+      await user.clear(input)
+      await user.type(input, 'ドラマ')
+      await vi.advanceTimersByTimeAsync(300)
+      await waitFor(() => expect(router.state.location.search).toMatchObject({ q: 'ドラマ' }))
+      expect(router.history.length).toBe(lengthAfterInitialLoad)
+
+      // チップ操作（絞り込みパネルの状態チップ）も同様。
+      await user.click(screen.getByRole('button', { name: /絞り込み/ }))
+      const panel = await screen.findByRole('dialog', { name: '絞り込み' })
+      const statusGroup = within(panel).getByRole('group', { name: '状態' })
+      await user.click(within(statusGroup).getByRole('button', { name: '完了' }))
+      await waitFor(() =>
+        expect(router.state.location.search).toMatchObject({ status: 'finished' }),
+      )
+      expect(router.history.length).toBe(lengthAfterInitialLoad)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('絞り込みパネルの状態チップが status を反映し、チップから外せる', async () => {
     const user = userEvent.setup()
     const server = createFakeRecordingsServer({
@@ -530,14 +574,36 @@ describe('RecordingsPage 検索条件', () => {
   })
 
   it('不正な検索パラメータは落として開く（例外にしない）', async () => {
-    createFakeRecordingsServer({ library: [sampleRecording()] })
+    const server = createFakeRecordingsServer({ library: [sampleRecording()] })
 
     renderPage('/recordings?status=bogus&genre=99&genre=1&ruleId=abc&order=sideways')
 
-    expect(await screen.findByText('ライブラリの録画')).toBeInTheDocument()
     // 有効な genre（1）だけが残ってチップになる。他は「その条件なし」に落ちる。
-    expect(screen.getByText('ジャンル: スポーツ')).toBeInTheDocument()
+    expect(await screen.findByText('ジャンル: スポーツ')).toBeInTheDocument()
     expect(screen.queryByText(/状態:/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/ルール #/)).not.toBeInTheDocument()
+
+    // 「その条件なし」に落ちたことをチップの有無だけで確認すると、fake server 側の
+    // 絞り込み（status が残っていれば該当 0 件になり、そもそも一覧の描画が別の理由で
+    // 失敗しているだけに見える）に依存してしまう。実際に送られたリクエストの
+    // クエリパラメータを直接見て、無効な次元がサーバーに渡っていないことを固定する。
+    await waitFor(() => expect(recordingsRequests(server.fetchMock).length).toBeGreaterThan(0))
+    const last = recordingsRequests(server.fetchMock).at(-1)
+    expect(last?.searchParams.get('status')).toBeNull()
+    expect(last?.searchParams.getAll('genre')).toEqual(['1'])
+    expect(last?.searchParams.get('ruleId')).toBeNull()
+    expect(last?.searchParams.get('order')).toBeNull()
+  })
+
+  it('小数の ruleId は落とす（?ruleId=1.5 が recordings.ruleId int64 バインドで 400 にならないように）', async () => {
+    const server = createFakeRecordingsServer({ library: [sampleRecording()] })
+
+    renderPage('/recordings?ruleId=1.5')
+
+    await waitFor(() => expect(recordingsRequests(server.fetchMock).length).toBeGreaterThan(0))
+    const last = recordingsRequests(server.fetchMock).at(-1)
+    expect(last?.searchParams.get('ruleId')).toBeNull()
+    expect(screen.queryByText(/ルール #/)).not.toBeInTheDocument()
   })
 })
 
