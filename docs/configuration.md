@@ -112,6 +112,61 @@ encode:
       preset: medium             # optional
       extra_args: []             # 末尾に追加する ffmpeg 引数（自由形式 cmd 全体は禁止）
 
+live:                            # ライブ視聴（M4-3、issue #91）。streamer ロールのみ使う
+  enabled: false                 # true のときだけライブのルートを登録し、ffmpeg の
+                                 # LookPath 検査も行う。false（既定）なら公式イメージ
+                                 # （ffmpeg 無し）で streamer を起動する構成
+                                 # （録画配信 / サムネイルのみ）を壊さない（不変条件 4）
+  ffmpeg: ffmpeg                 # 既定は PATH 検索
+  segment_dir: /dev/shm/rokuban-live  # HLS セグメント/プレイリストの書き出し先。
+                                 # **既定値を持たない --- enabled: true なら必須**
+                                 # （空だと起動時エラー。適当なローカルパスへ黙って
+                                 # フォールバックしない）。録画バッファ（mirakc
+                                 # recording.basedir）とは別ディスク（tmpfs 前提。
+                                 # k8s なら emptyDir: {medium: Memory}）。起動時
+                                 # （HTTP リスナーが立つ前）にこのディレクトリ全体を
+                                 # 掃く --- tmpfs はノード再起動でしか消えないため、
+                                 # 前回プロセスの残骸（SIGKILL 等で SIGTERM の
+                                 # 後始末が効かなかった場合）が残っていても毎起動で
+                                 # 必ず消える。**複数プロセス / 複数レプリカで共有し
+                                 # ない。** 起動時の掃除は「自分がこのパスの唯一の
+                                 # 書き手である」という前提に立っており、共有すると
+                                 # 後発の起動が先発の生きているセッションディレクトリ
+                                 # を消してしまう（視聴は一度途切れるが、次のプレイ
+                                 # リスト要求で新しいセッションが起きて自己修復する）
+  max_sessions: 4                # このプロセスが同時に持てるライブセッション（≒ ffmpeg
+                                 # プロセス）数。**プロセスローカルな上限であり、
+                                 # グローバルな天井（チューナー数、mirakc が裁定）では
+                                 # ない**（operations.md §5「既定を 1 にする根拠」）
+  idle_timeout: 30s              # サービス単位の idle GC 猶予。この時間セグメント要求が
+                                 # 来なければ ffmpeg を止める（クライアント 1 人ごとの
+                                 # 生存は追わない）
+  tuner_priority: 1              # mirakc への X-Mirakurun-Priority。ruler が生成する
+                                 # schedule の既定 priority（10）より低く保つことで、
+                                 # チューナー枯渇時に録画側を常に勝たせる
+                                 # （recording.md §2「チューナー調停」）。**Rokuban は
+                                 # この不等式を強制しない** --- ルールの priority は
+                                 # DB 側（rules.priority、既定 10）でユーザーが自由に
+                                 # 変えられ、ライブ側の live.tuner_priority は config
+                                 # 側なので、両者を跨いで比較検証する権威がどちらにも
+                                 # 無い。ユーザーがルールの priority を 0 や 1 まで
+                                 # 下げると、この既定値のままではライブが録画に勝って
+                                 # しまう。運用者が両方の値を意識して選ぶ前提とする
+  profiles:                     # 空配列は不可（enabled: true なら 1 つ以上必須）。
+                                 # encode.profiles とは別の構造体 --- HLS はセグメント長・
+                                 # プレイリスト長という VOD には無い制約を持つ
+    - name: h264                 # `?profile=` から参照する一意な名前。英数字・
+                                 # ハイフン・アンダースコアのみ（セグメントファイル名の
+                                 # 接頭辞に使うため）
+      video_codec: libx264       # ISDB-T の映像は MPEG-2 でブラウザの HLS 経路では
+                                 # 事実上再生できないため、H.264 への変換が前提
+      audio_codec: aac
+      height: 720                # 0 or omit = スケールしない
+      preset: veryfast           # optional
+      segment_seconds: 2         # 0 なら既定値 2
+      playlist_size: 6           # 0 なら既定値 6
+      extra_args: []             # 末尾に追加する ffmpeg 引数
+
 webhook:                         # 汎用 HTTP webhook（M3-11）。EPGStation の複数種外部コマンドを 1 本に置き換える
   url: ""                        # 空なら no-op。例: https://hooks.example.com/rokuban
   secret: ""                     # 非空なら X-Rokuban-Webhook-Secret ヘッダに載せる

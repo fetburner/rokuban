@@ -375,6 +375,53 @@ var (
 	})
 )
 
+// ライブ視聴（HLS streamer、issue #91）のメトリクス。
+var (
+	// LiveActiveSessions はこのプロセスが現在持っているライブセッション（≒ ffmpeg
+	// プロセス）数。
+	//
+	// **per-process gauge。** グローバルな天井はチューナー数で裁定者は mirakc
+	// であり、この値を全体像として読む UI を作らない（docs/operations.md §5
+	// 「既定を 1 にする根拠と、増やす判定基準」）。全体を見たいときは Prometheus 側で
+	// sum する。
+	LiveActiveSessions = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "rokuban_live_active_sessions",
+		Help: "Live-viewing sessions (ffmpeg processes) currently held by this process. Per-process; sum across replicas in Prometheus for the whole picture.",
+	})
+
+	// LiveSessionStartFailures はライブセッションの開始に失敗した回数の理由別件数。
+	//
+	// reason:
+	//   - "session_limit": このプロセスの同時セッション上限（live.max_sessions、
+	//     プロセスローカル）に達していた
+	//   - "upstream_error": mirakc への stream 要求が失敗した（チューナー枯渇を含む）
+	//   - "ffmpeg_error": ffmpeg の起動に失敗した
+	LiveSessionStartFailures = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "rokuban_live_session_start_failures_total",
+		Help: "Live-viewing session start failures by reason (session_limit, upstream_error, ffmpeg_error).",
+	}, []string{"reason"})
+
+	// LiveIdleGCReclaimed は idle GC が回収した（クライアントが離れて ffmpeg を
+	// 止めた）ライブセッションの累計件数。
+	LiveIdleGCReclaimed = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "rokuban_live_idle_gc_reclaimed_total",
+		Help: "Live-viewing sessions stopped by the idle GC because no segment request arrived within the idle timeout.",
+	})
+
+	// LiveIdleGCLastPass は最後に完走した idle GC パスの時刻（UNIX 秒）。
+	//
+	// DeleteReconcileLastPass / EpgSyncLastSuccess と同じ理由（ゲージの凍結対策。
+	// docs/operations.md の「ゲージには最後に成功した時刻を対で持つ」規律）。
+	// LiveActiveSessions は idle GC ループが止まっても直近の値のまま凍結するため、
+	// それだけでは「セッションが本当にゼロになった」のか「GC ループが死んでいて
+	// チューナーを解放できていない」のかを区別できない。time() - この値 で
+	// idle GC の停止を検出する。
+	LiveIdleGCLastPass = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "rokuban_live_idle_gc_last_pass_timestamp_seconds",
+		Help: "Unix time of the last completed live idle-GC pass. Use with time() to detect a stalled idle GC (which would leave tuners unreleased).",
+	})
+)
+
 // NewRegistry は Rokuban のメトリクスを登録した registry を返す。
 //
 // backlog が非 nil なら、未 ingest record の滞留量を scrape のたびに DB から
@@ -429,6 +476,11 @@ func NewRegistry(backlog prometheus.Collector) *prometheus.Registry {
 		DeleteReconcileDeleted,
 		DeleteReconcileBytes,
 		DeleteReconcileLastPass,
+
+		LiveActiveSessions,
+		LiveSessionStartFailures,
+		LiveIdleGCReclaimed,
+		LiveIdleGCLastPass,
 	)
 
 	if backlog != nil {

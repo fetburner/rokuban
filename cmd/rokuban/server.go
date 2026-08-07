@@ -115,6 +115,45 @@ func newServerCmd() *cobra.Command {
 						MediaDir:      cfg.Storage.MediaDir,
 						AccelLocation: cfg.Storage.AccelLocation,
 					}))
+
+					// ライブ視聴（issue #91）。live.enabled が true のときだけ ffmpeg の
+					// LookPath 検査を行う --- 公式イメージ（ffmpeg 無し）で streamer を
+					// 起動する構成（録画配信 / サムネイルのみ）を壊さない
+					// （不変条件 4、cfg.Encode.ValidateTools の条件付き検査と同じ形）。
+					if cfg.Live.Enabled {
+						if toolErr := cfg.Live.ValidateTools(); toolErr != nil {
+							return toolErr
+						}
+
+						liveProfiles := make([]streamer.LiveProfile, 0, len(cfg.Live.Profiles))
+						for _, p := range cfg.Live.Profiles {
+							liveProfiles = append(liveProfiles, streamer.LiveProfile{
+								Name:           p.Name,
+								VideoCodec:     p.VideoCodec,
+								AudioCodec:     p.AudioCodec,
+								Height:         p.Height,
+								Preset:         p.Preset,
+								SegmentSeconds: p.SegmentSeconds,
+								PlaylistSize:   p.PlaylistSize,
+								ExtraArgs:      p.ExtraArgs,
+							})
+						}
+						liveMirakcClient := mirakc.NewClient(cfg.Mirakc.URL, nil)
+						liveStreamer := streamer.NewLive(liveMirakcClient, cfg.Mirakc.Site, streamer.LiveConfig{
+							Enabled:       true,
+							FFmpeg:        cfg.Live.FFmpeg,
+							SegmentDir:    cfg.Live.SegmentDir,
+							MaxSessions:   cfg.Live.MaxSessions,
+							IdleTimeout:   cfg.Live.IdleTimeout,
+							TunerPriority: cfg.Live.TunerPriority,
+							Profiles:      liveProfiles,
+						})
+						mounters = append(mounters, liveStreamer)
+						// idle GC ループ。ctx（egCtx）が終わったら全セッションを止めて
+						// mirakc の接続を閉じる（チューナー解放。crash-only の唯一の
+						// 例外の後始末。docs/overview.md §crash-only）。
+						eg.Go(func() error { return liveStreamer.Run(egCtx) })
+					}
 				}
 				if slices.Contains(roles, "notifier") {
 					// notifier はシングルトンではない。各レプリカが自分で LISTEN して

@@ -330,6 +330,58 @@ storage:
 同じサービスを別プロファイルで見たときに 2 つの Pod に割れ、チューナーを 2 本掴む。
 1 つの Pod の中で 1 チューナーから複数プロファイルを出す。
 
+#### 実装（M4-3、issue #91、`internal/streamer`）
+
+```
+GET /api/sites/{site}/services/{serviceId}/live/playlist.m3u8[?profile=<name>]
+      → application/vnd.apple.mpegurl
+GET /api/sites/{site}/services/{serviceId}/live/segments/{name}
+      → video/mp2t
+```
+
+- **DB を引かない。**`serviceId` は検証せずそのまま mirakc の
+  `GET /api/services/{id}/stream?decode=1` に渡す（不明な id は mirakc が拒否する）。
+  ライブセッションはインメモリの使い捨てで、認可はリバースプロキシ委譲、同時上限も
+  プロセスローカルなので、DB を引く理由が無い（issue #91 の着手前コメント参照）
+- **トランスコードは必須。**ISDB-T 地上波の映像は MPEG-2 で、ブラウザの HLS 経路
+  （hls.js/MSE）は事実上再生できない。mirakc フィルタ + `-c copy` では受信端末を
+  満たせないため、ffmpeg で H.264/AAC に変換する（`live.profiles`、
+  [configuration.md](configuration.md) 参照）
+- **`profile` クエリが空なら `live.profiles` の先頭を既定として使う。**セグメント
+  URL 自体は `?profile=` を持たない --- ffmpeg が書き出すファイル名にプロファイル名を
+  接頭辞として焼くため、プレイリストが指す相対パスだけで一意に解決できる
+- **1 サービス = 1 ffmpeg プロセス = mirakc の 1 チューナー。**設定済みの全プロファイルを
+  1 回の ffmpeg 起動で同時に出す（見られていないプロファイルの CPU も使うトレードオフ
+  はあるが、プロファイルを跨いだ ffmpeg の使い分けを実装しない分シンプルになる）
+- **チューナー調停は mirakc のリクエスト優先度に一元化する。**ライブの GET には
+  `live.tuner_priority`（既定 1）を `X-Mirakurun-Priority` に載せる。ruler が生成する
+  schedule の既定 priority（10）より低く保つことで、チューナー枯渇時に mirakc が
+  録画側を常に勝たせる（[recording.md](recording/delegation.md) §2「チューナー調停」）。
+  予約表を見て拒否する案は採らない --- streamer が予約エンジンに依存し、mirakc 固有の
+  優先度概念を永続テーブルに持ち込む誘惑を生む（不変条件 7）。**`live.tuner_priority <
+  rules.priority` を Rokuban は強制しない。** 前者は config、後者は DB でユーザーが
+  自由に変えられる値で、両者を跨いで検証する権威がどちらの層にも無い（config は
+  デプロイ環境の性質、DB は運用中の意思。[configuration.md](configuration.md) §config
+  と DB の境界）。ルールの priority を既定 10 未満まで下げると、この既定値のままでは
+  ライブが録画に勝ってしまう --- 運用者が両方の値を意識して選ぶ前提とする
+- **同時セッション上限（`live.max_sessions`）はプロセスローカル。**超えた要求・
+  mirakc 側のチューナー枯渇はいずれも既存セッションを壊さずに 503 を返す
+  （エラーの本文はプレーンテキスト。OpenAPI 対象外のため生成クライアントの契約は無い）
+- **idle GC はサービス単位。**セグメント要求（プレイリスト取得も含む）ごとに
+  last-access を更新し、`live.idle_timeout` の間要求が来なければ ffmpeg と mirakc への
+  接続を止める。クライアント 1 人ごとの生存は追わない
+- **セグメントは `live.segment_dir`（tmpfs 前提）に書く。**録画バッファとは別ディスク
+  （[operations.md](operations.md) §5「ライブのセグメントを録画バッファと同じディスクに
+  置かない」）。プロセス終了（`--all`/`--roles streamer` の SIGTERM）時は idle GC と同じ
+  経路で全セッションを止め、ディレクトリも削除する。**tmpfs はノード再起動でしか
+  消えない**（k8s の `emptyDir: {medium: Memory}` はコンテナ / Pod の再起動をまたいで
+  残る）ため、SIGKILL によるクラッシュ（SIGTERM が効かない）の後始末はそれだけでは
+  終わらない --- 起動時（`NewLive`、HTTP リスナーが立つ前）に `live.segment_dir` 全体を
+  掃くことで、前回プロセスの残骸を毎起動で必ず消す
+- **ffmpeg の LookPath 検査は `live.enabled: true` のときだけ行う。**公式イメージ
+  （ffmpeg 無し）で streamer ロールを起動する構成（録画配信 / サムネイルのみ）を
+  壊さない
+
 ### SPA アセット配信
 
 go:embed 配信でハッシュ付きアセット immutable + それ以外 no-cache のヘッダーを正しく付ければ十分（参照: [frontend.md](frontend.md)）。本気の配信最適化は S3+CDN 経路の仕事。ここに nginx キャッシュを挟むと配信経路が 3 つになり、テストマトリクスが増える割に得るものがない。

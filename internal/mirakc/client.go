@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"time"
 )
 
@@ -208,6 +209,41 @@ func (c *Client) HeadRecordStream(ctx context.Context, id string) (int64, error)
 	}
 
 	return resp.ContentLength, nil
+}
+
+// StreamService は GET /api/services/{id}/stream を呼ぶ（ライブ視聴、issue #91）。
+//
+// **decode=1 を常に付ける。** mirakc は 1.0.30 未満で decode クエリ無指定だと復号しない
+// 非互換があった。明示することでバージョン差に依存しない。
+//
+// priority は X-Mirakurun-Priority ヘッダに載せる。mirakc はこれと schedule
+// options.priority を同じ優先度スケールで扱ってチューナーを調停する
+// （docs/recording/delegation.md §2「チューナー調停」）。ライブは録画より低い
+// priority を渡し、チューナー枯渇時に録画側が常に勝つようにする（呼び出し側の
+// 責務。streamer.LiveConfig.TunerPriority が既定 1、ruler の schedule 既定 priority は 10）。
+//
+// StreamRecord と同じ規約で、返す ReadCloser は呼び出し側が Close する。
+// streamClient を使うため全体タイムアウトが無く、ライブの間ずっと張り続けられる
+// （不変条件 2: mirakc とのやりとりは常に API）。
+func (c *Client) StreamService(ctx context.Context, serviceID int64, priority int) (io.ReadCloser, error) {
+	path := fmt.Sprintf("/api/services/%d/stream?decode=1", serviceID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
+	if err != nil {
+		return nil, fmt.Errorf("building request: %w", err)
+	}
+	req.Header.Set("X-Mirakurun-Priority", strconv.Itoa(priority))
+
+	resp, err := c.streamClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("sending request: %w", err)
+	}
+
+	if err := checkStatus(resp, http.StatusOK); err != nil {
+		_ = resp.Body.Close()
+		return nil, err
+	}
+
+	return resp.Body, nil
 }
 
 // ListServices は GET /api/services を呼ぶ。
