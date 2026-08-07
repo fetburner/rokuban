@@ -59,10 +59,16 @@ export function PageHeader({
   )
 }
 
-/** EmptyState はデータが 0 件のときの表示。 */
+/**
+ * EmptyState はデータが 0 件のときの表示。
+ *
+ * `<div>` にする（`<p>` にしない）。issue #137 で「条件をクリア」ボタンのような
+ * ブロック要素を子に持つ呼び出し側が出てきたため --- `<p>` の中に `<div>` /
+ * 別の `<p>` を置くと無効な HTML になり、React が hydration エラーの警告を出す。
+ */
 export function EmptyState({ children }: { children: React.ReactNode }) {
   return (
-    <p className="px-4 py-12 text-center text-sm text-muted-foreground">{children}</p>
+    <div className="px-4 py-12 text-center text-sm text-muted-foreground">{children}</div>
   )
 }
 

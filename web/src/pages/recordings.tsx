@@ -1,19 +1,22 @@
-import { useQueryClient } from '@tanstack/react-query'
+import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query'
+import { useSearch as useRouteSearch, useNavigate } from '@tanstack/react-router'
 import { ChevronDown, Trash2 } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import {
+  getListRecordingsQueryKey,
+  listRecordings,
   useAddRecordingEncodeProfiles,
   useDeleteRecording,
   useListEncodeProfiles,
   useListRecordingDropStats,
-  useListRecordings,
   usePurgeRecording,
   useRestoreRecording,
   type DropSummary,
   type Recording,
 } from '@/api/generated'
 import { apiErrorMessage, unwrap } from '@/api/unwrap'
+import { RecordingFilters } from '@/components/recording-filters'
 import { RecordingPlayer } from '@/components/recording-player'
 import { EmptyState, ErrorState, ListSkeleton, PageHeader } from '@/components/page'
 import { useToast } from '@/components/toaster'
@@ -29,32 +32,134 @@ import {
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
+import { shouldAutoLoadNextPage, shouldShowLoadMoreButton } from '@/lib/auto-load'
 import { formatBytes, formatDateTime, formatDuration } from '@/lib/format'
+import { domLayoutMeasurable } from '@/lib/list-virtualization'
+import {
+  buildListRecordingsParams,
+  clearRecordingsFilters,
+  hasAnyRecordingsCondition,
+  sourceLabels,
+  statusLabels,
+  type RecordingsPageSearch,
+} from '@/lib/recording-search'
 import { cn } from '@/lib/utils'
 
-const statusLabels: Record<Recording['status'], string> = {
-  recording: '録画中',
-  finished: '完了',
-  canceled: '取消',
-  failed: '失敗',
-}
+/** pageSize は 1 回のフェッチで取る件数（API の既定と同じ）。 */
+const pageSize = 50
+
+type RecordingsPageParam = { before?: string; beforeId?: number }
 
 type ViewMode = 'library' | 'trash'
 
 export function RecordingsPage() {
   const [mode, setMode] = useState<ViewMode>('library')
   const trash = mode === 'trash'
-  // params を渡すと queryKey に trash が入り、ライブラリとごみ箱が別キャッシュになる。
-  //
-  // limit は API の上限（200）を明示的に渡す。M3-24（#136）で GET /api/recordings
-  // にキーセットページングが入り、limit の既定が 50 になった。この画面はまだ
-  // ページング UI を持たず（M3-25 で useInfiniteQuery に置き換える予定）、返った
-  // 配列を全部描画する形のままなので、limit を渡さないと録画が 50 件を超える
-  // ユーザーのライブラリ・ごみ箱が黙って 50 件で頭打ちになり「消えた」ように
-  // 見える（PR #187 レビュー M4）。M3-25 でページング UI に置き換えたら、この
-  // 固定 limit は不要になる。
-  const query = useListRecordings({ trash, limit: 200 })
-  const recordings = unwrap(query.data) ?? []
+
+  // 検索条件は URL に載せる（リロード・共有・戻るで同じ結果になる。
+  // docs/frontend.md「録画検索は /recordings に同居する」）。タブ（ライブラリ /
+  // ごみ箱）は条件と直交する別の軸なので URL には載せず、ここでは component
+  // state のまま持つ。
+  const search = useRouteSearch({ from: '/recordings' })
+  const navigate = useNavigate()
+  const updateSearch = (updater: (prev: RecordingsPageSearch) => RecordingsPageSearch) => {
+    // debounce（キーワード）・チップの個別解除のどちらも history を汚さないよう
+    // 常に replace で書く（docs/frontend.md「debounce と URL 同期で履歴を汚さない」）。
+    void navigate({ to: '/recordings', search: updater, replace: true })
+  }
+
+  const listParams = useMemo(
+    () => ({ ...buildListRecordingsParams(search, trash), limit: pageSize }),
+    [search, trash],
+  )
+  const hasConditions = hasAnyRecordingsCondition(search)
+
+  const query = useInfiniteQuery({
+    // getListRecordingsQueryKey は先頭要素が '/api/recordings' になるキーを返すので、
+    // RecordingActions の invalidateQueries({ queryKey: ['/api/recordings'] })
+    // （前方一致）がここにも効く。カーソル（before/beforeId）はキーに含めない ---
+    // 同じ絞り込みの中でページを積んでいくのが useInfiniteQuery の前提であり、
+    // カーソルをキーに入れるとページごとに別クエリになってしまう。
+    queryKey: getListRecordingsQueryKey(listParams),
+    queryFn: ({ pageParam }: { pageParam: RecordingsPageParam }) =>
+      listRecordings({ ...listParams, ...pageParam }),
+    initialPageParam: {} as RecordingsPageParam,
+    getNextPageParam: (lastPage) => {
+      const data = unwrap(lastPage) ?? []
+      if (data.length < pageSize) return undefined
+      const last = data[data.length - 1]
+      return { before: last.startAt, beforeId: last.id }
+    },
+  })
+
+  const recordings = useMemo(
+    () => query.data?.pages.flatMap((page) => unwrap(page) ?? []) ?? [],
+    [query.data],
+  )
+
+  // autoLoadFailed: 直近の自動読み込みが失敗したか。失敗したらボタン + エラー
+  // 表示に落とし、番兵が可視のままでも自動では再試行しない（さもないと失敗した
+  // まま無限にリクエストを投げ続ける。pages/programs.tsx と同じ規律）。
+  const [autoLoadFailed, setAutoLoadFailed] = useState(false)
+  const paramsKey = JSON.stringify(listParams)
+  useEffect(() => {
+    setAutoLoadFailed(false)
+  }, [paramsKey])
+  useEffect(() => {
+    if (query.isFetchNextPageError) setAutoLoadFailed(true)
+  }, [query.isFetchNextPageError])
+
+  const autoLoadStateRef = useRef({
+    hasNextPage: query.hasNextPage,
+    isFetchingNextPage: query.isFetchingNextPage,
+    autoLoadFailed,
+    fetchNextPage: query.fetchNextPage,
+  })
+  useEffect(() => {
+    autoLoadStateRef.current = {
+      hasNextPage: query.hasNextPage,
+      isFetchingNextPage: query.isFetchingNextPage,
+      autoLoadFailed,
+      fetchNextPage: query.fetchNextPage,
+    }
+  })
+
+  const sentinelRef = useRef<HTMLDivElement>(null)
+  const sentinelMounted = !query.isPending && recordings.length > 0
+
+  useEffect(() => {
+    if (!sentinelMounted) return
+    // 計測できない環境（jsdom 等）では番兵が常時可視と判定されるおそれがあるので
+    // IntersectionObserver 自体を作らない。この環境ではボタンだけが受け皿になる
+    // （lib/list-virtualization.ts の domLayoutMeasurable）。
+    if (!domLayoutMeasurable()) return
+    const node = sentinelRef.current
+    if (!node) return
+
+    const observer = new IntersectionObserver((entries) => {
+      const isIntersecting = entries.some((entry) => entry.isIntersecting)
+      const state = autoLoadStateRef.current
+      if (
+        shouldAutoLoadNextPage({
+          isIntersecting,
+          autoLoadAvailable: true,
+          autoLoadFailed: state.autoLoadFailed,
+          hasNextPage: state.hasNextPage,
+          isFetchingNextPage: state.isFetchingNextPage,
+        })
+      ) {
+        void state.fetchNextPage()
+      }
+    })
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [sentinelMounted])
+
+  const showLoadMoreButton = shouldShowLoadMoreButton({
+    hasNextPage: query.hasNextPage,
+    autoLoadAvailable: domLayoutMeasurable(),
+    autoLoadFailed,
+  })
 
   return (
     <>
@@ -71,24 +176,75 @@ export function RecordingsPage() {
             label="ごみ箱"
           />
         </div>
+        <RecordingFilters search={search} onChange={updateSearch} />
       </PageHeader>
 
       {query.isError ? (
         <ErrorState>
-          {trash ? 'ごみ箱の取得に失敗しました' : '録画の取得に失敗しました'}
+          {apiErrorMessage(query.error) ??
+            (trash ? 'ごみ箱の取得に失敗しました' : '録画の取得に失敗しました')}
         </ErrorState>
       ) : query.isPending ? (
         <ListSkeleton />
       ) : recordings.length === 0 ? (
-        <EmptyState>{trash ? 'ごみ箱は空です' : '録画がありません'}</EmptyState>
+        // 「条件に一致しない」と「まだ何も録れていない」は別の事実。同じ文言だと
+        // 後者を誤読させる（issue #137 の罠）。
+        <EmptyState>
+          {hasConditions ? (
+            <div className="flex flex-col items-center gap-3">
+              <p>条件に一致する録画がありません</p>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => updateSearch(clearRecordingsFilters)}
+              >
+                条件をクリア
+              </Button>
+            </div>
+          ) : trash ? (
+            'ごみ箱は空です'
+          ) : (
+            '録画がありません'
+          )}
+        </EmptyState>
       ) : (
-        <ul>
-          {recordings.map((r) => (
-            <li key={r.id}>
-              <RecordingRow recording={r} trash={trash} />
-            </li>
-          ))}
-        </ul>
+        <>
+          <ul>
+            {recordings.map((r) => (
+              <li key={r.id}>
+                <RecordingRow recording={r} trash={trash} />
+              </li>
+            ))}
+          </ul>
+
+          {/* 番兵。進行方向の自動読み込み（IntersectionObserver）はこれを見る。
+              計測できない環境では観測されず、ボタンだけが受け皿になる。 */}
+          <div ref={sentinelRef} aria-hidden className="h-px" />
+
+          {query.isFetchingNextPage && (
+            <p className="px-4 py-3 text-center text-xs text-muted-foreground">読み込み中…</p>
+          )}
+
+          {showLoadMoreButton && (
+            <div className="px-4 py-4">
+              {autoLoadFailed && (
+                <p role="alert" className="mb-2 text-center text-xs text-destructive">
+                  {apiErrorMessage(query.error) ?? '続きの読み込みに失敗しました'}
+                </p>
+              )}
+              <Button
+                type="button"
+                variant="outline"
+                size="lg"
+                className="w-full"
+                onClick={() => void query.fetchNextPage()}
+              >
+                さらに読み込む
+              </Button>
+            </div>
+          )}
+        </>
       )}
     </>
   )
@@ -266,7 +422,7 @@ function RecordingDetail({ recording, trash }: { recording: Recording; trash: bo
           </>
         )}
         <dt className="text-muted-foreground">種別</dt>
-        <dd>{recording.source === 'manual' ? '手動' : 'ルール'}</dd>
+        <dd>{sourceLabels[recording.source]}</dd>
         {trash && recording.deletedAt && (
           <>
             <dt className="text-muted-foreground">削除日時</dt>

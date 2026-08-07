@@ -1,6 +1,7 @@
 import { createRootRoute, createRoute, Outlet } from '@tanstack/react-router'
 
 import { AppShell } from './components/app-shell'
+import { parseRecordingsSearch, type RecordingsPageSearch } from './lib/recording-search'
 import { ProgramsPage } from './pages/programs'
 import { RecordingsPage } from './pages/recordings'
 import { ReservationDetailPage } from './pages/reservation-detail'
@@ -80,9 +81,17 @@ const reservationDetailRoute = createRoute({
   component: ReservationDetailPage,
 })
 
+/**
+ * 録画検索は `/recordings` に同居する（別ルートにしない。issue #137）。
+ * 条件は URL に載せ、リロード・共有・戻るで同じ結果になるようにする。
+ * 不正な値は `/search` の `ruleId` と同じ流儀で落とし、壊れたリンクを踏んでも
+ * 「その条件なし」で開ける（`lib/recording-search.ts` の `parseRecordingsSearch`）。
+ */
 const recordingsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/recordings',
+  validateSearch: (search: Record<string, unknown>): RecordingsPageSearch =>
+    parseRecordingsSearch(search),
   component: RecordingsPage,
 })
 

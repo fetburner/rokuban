@@ -162,6 +162,16 @@ function RuleRow({ rule, onEdit }: { rule: Rule; onEdit: () => void }) {
           >
             検索しながら編集
           </Button>
+          {/* このルール由来の録画だけに絞った /recordings への導線（issue #137）。
+              条件モデルは検索（ProgramSearchRequest）と共有しないので、遷移先は
+              /search ではなく /recordings?ruleId=N になる。 */}
+          <Button
+            variant="ghost"
+            size="sm"
+            render={<Link to="/recordings" search={{ ruleId: rule.id }} />}
+          >
+            このルールの録画
+          </Button>
         </div>
       </div>
     </div>
