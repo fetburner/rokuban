@@ -107,64 +107,22 @@ func recordingFromListFields(r recordingListFields, includeDeletedAt bool) (Reco
 	return rec, nil
 }
 
-// ListRecordings は録画履歴を新しい順に返す。
-// trash=true のときごみ箱（deleted_at IS NOT NULL）を返す。
+// ListRecordings は録画履歴を絞り込み + キーセットページングで返す（既定は
+// program_start_at 降順。issue #136）。trash=true のときごみ箱
+// （deleted_at IS NOT NULL）を返す。trash と各絞り込み条件は直交する。
+//
+// 動的 WHERE ビルダ（buildRecordingsQuery / queryRecordings、recordings_query.go）
+// を使う。sqlc の静的クエリにしない理由はそちらのコメント参照（trgm 式 GIN が
+// 汎用プランで使われなくなることを避けるため）。
 func (h *Server) ListRecordings(ctx context.Context, req ListRecordingsRequestObject) (ListRecordingsResponseObject, error) {
-	trash := req.Params.Trash != nil && *req.Params.Trash
-	q := sqlcgen.New(h.pool)
+	f, errMsg := recordingsFilterFromParams(req.Params)
+	if errMsg != "" {
+		return ListRecordings400JSONResponse{Error: errMsg}, nil
+	}
 
-	var result []Recording
-	if trash {
-		rows, err := q.ListTrashRecordings(ctx, h.site)
-		if err != nil {
-			return nil, fmt.Errorf("listing trash recordings: %w", err)
-		}
-		result = make([]Recording, 0, len(rows))
-		for _, r := range rows {
-			rec, err := recordingFromListFields(recordingListFields{
-				ID: r.ID, RuleID: r.RuleID,
-				Source: r.Source, ServiceName: r.ServiceName, ChannelType: r.ChannelType,
-				Channel: r.Channel, NetworkID: r.NetworkID, ServiceID: r.ServiceID,
-				EventID: r.EventID, Title: r.Title, Description: r.Description,
-				ProgramStartAt: r.ProgramStartAt, ProgramDurationMs: r.ProgramDurationMs,
-				Status: r.Status, StartedAt: r.StartedAt, EndedAt: r.EndedAt,
-				QualityEvents: r.QualityEvents, DeletedAt: r.DeletedAt, CreatedAt: r.CreatedAt,
-				OriginalSizeBytes: r.OriginalSizeBytes,
-				DropPackets:       r.DropPackets, DropDrops: r.DropDrops,
-				DropErrors: r.DropErrors, DropScrambled: r.DropScrambled,
-				EncodeProfiles: r.EncodeProfiles,
-			}, true)
-			if err != nil {
-				return nil, err
-			}
-			result = append(result, rec)
-		}
-	} else {
-		rows, err := q.ListRecordings(ctx, h.site)
-		if err != nil {
-			return nil, fmt.Errorf("listing recordings: %w", err)
-		}
-		result = make([]Recording, 0, len(rows))
-		for _, r := range rows {
-			rec, err := recordingFromListFields(recordingListFields{
-				ID: r.ID, RuleID: r.RuleID,
-				Source: r.Source, ServiceName: r.ServiceName, ChannelType: r.ChannelType,
-				Channel: r.Channel, NetworkID: r.NetworkID, ServiceID: r.ServiceID,
-				EventID: r.EventID, Title: r.Title, Description: r.Description,
-				ProgramStartAt: r.ProgramStartAt, ProgramDurationMs: r.ProgramDurationMs,
-				Status: r.Status, StartedAt: r.StartedAt, EndedAt: r.EndedAt,
-				QualityEvents: r.QualityEvents, DeletedAt: r.DeletedAt, CreatedAt: r.CreatedAt,
-				OriginalSizeBytes: r.OriginalSizeBytes,
-				DropPackets:       r.DropPackets, DropDrops: r.DropDrops,
-				DropErrors: r.DropErrors, DropScrambled: r.DropScrambled,
-				AvailableEncodedProfiles: r.AvailableEncodedProfiles,
-				EncodeProfiles:           r.EncodeProfiles,
-			}, false)
-			if err != nil {
-				return nil, err
-			}
-			result = append(result, rec)
-		}
+	result, err := queryRecordings(ctx, h.pool, h.site, f)
+	if err != nil {
+		return nil, fmt.Errorf("listing recordings: %w", err)
 	}
 	return ListRecordings200JSONResponse(result), nil
 }

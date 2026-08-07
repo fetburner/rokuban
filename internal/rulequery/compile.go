@@ -167,16 +167,7 @@ func compileTextMatch(m TextMatch, arg func(any) string) (string, error) {
 	var clause string
 	switch m.Mode {
 	case "keyword":
-		// 部分一致。非 case_sensitive は normalize_search_text（全角→半角 + lower）を
-		// 両辺にかけて、検索 UI と ruler が同じ揺れ吸収を共有する。
-		// pg_trgm の式 GIN が normalize_search_text(name) に乗っている。
-		if m.CaseSensitive {
-			pat := "%" + escapeLike(m.Value) + "%"
-			clause = rawCol + " LIKE " + arg(pat) + " ESCAPE '\\'"
-		} else {
-			normCol := "normalize_search_text(" + rawCol + ")"
-			clause = normCol + " LIKE ('%' || normalize_search_text(" + arg(m.Value) + ") || '%')"
-		}
+		clause = KeywordClause(rawCol, m.Value, m.CaseSensitive, arg)
 	case "regex":
 		// 正規表現はユーザーが書いたパターンの意味を壊さないよう、列は生のまま。
 		if m.CaseSensitive {
@@ -191,6 +182,25 @@ func compileTextMatch(m TextMatch, arg func(any) string) (string, error) {
 		return "NOT (" + clause + ")", nil
 	}
 	return clause, nil
+}
+
+// KeywordClause は列 col への部分一致（LIKE '%value%'）を組む。
+//
+// ruler の compileTextMatch と録画検索（internal/api の recordings_query.go、
+// issue #136）が共有する。共有するのはこの正規化方言だけで、テーブルや列名マップは
+// 持たない --- 呼び出し側が列名（epg_programs なら "p.name"、recordings なら
+// "r.title" 等）を渡す（docs/data.md §5「録画検索は rulequery を共有しない」）。
+//
+// caseSensitive が false なら normalize_search_text（全角→半角 + lower）を
+// 両辺にかけて全角/半角の揺れを吸収する。pg_trgm の式 GIN が
+// normalize_search_text(col) に乗っていれば、この形のまま加速される。
+func KeywordClause(col string, value string, caseSensitive bool, arg func(any) string) string {
+	if caseSensitive {
+		pat := "%" + escapeLike(value) + "%"
+		return col + " LIKE " + arg(pat) + " ESCAPE '\\'"
+	}
+	normCol := "normalize_search_text(" + col + ")"
+	return normCol + " LIKE ('%' || normalize_search_text(" + arg(value) + ") || '%')"
 }
 
 func textTargetColumn(target string) (string, error) {

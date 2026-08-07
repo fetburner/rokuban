@@ -695,10 +695,99 @@ serviceId?: number[];
 
 export type ListRecordingsParams = {
 /**
+ * キーワード（部分一致）。qTarget が対象列を決める
+ */
+q?: string;
+qTarget?: ListRecordingsQTarget;
+/**
+ * genre_lv1（ジャンル大分類）との重なり。複数指定可
+ * @items.minimum 0
+ * @items.maximum 15
+ */
+genre?: number[];
+channelType?: ListRecordingsChannelTypeItem[];
+serviceId?: number[];
+/**
+ * recordings.status の CHECK と一致させた 4 値（'canceled' は 00021 で
+ * CHECK に追加済み）。
+ */
+status?: ListRecordingsStatus;
+source?: ListRecordingsSource;
+/**
+ * 特定ルール由来の録画に絞る
+ */
+ruleId?: number;
+/**
+ * program_start_at がこの時刻以上
+ */
+from?: string;
+/**
+ * program_start_at がこの時刻未満
+ */
+to?: string;
+order?: ListRecordingsOrder;
+/**
  * true のときごみ箱（論理削除済み）を返す
  */
 trash?: boolean;
+/**
+ * @minimum 1
+ * @maximum 200
+ */
+limit?: number;
+/**
+ * キーセットカーソル。前ページ最後の要素の startAt。beforeId と対で使う
+ */
+before?: string;
+/**
+ * キーセットカーソル。前ページ最後の要素の id。before と対で使う
+ */
+beforeId?: number;
 };
+
+export type ListRecordingsQTarget = typeof ListRecordingsQTarget[keyof typeof ListRecordingsQTarget];
+
+
+export const ListRecordingsQTarget = {
+  title: 'title',
+  titleDescription: 'titleDescription',
+} as const;
+
+export type ListRecordingsChannelTypeItem = typeof ListRecordingsChannelTypeItem[keyof typeof ListRecordingsChannelTypeItem];
+
+
+export const ListRecordingsChannelTypeItem = {
+  GR: 'GR',
+  BS: 'BS',
+  CS: 'CS',
+  SKY: 'SKY',
+} as const;
+
+export type ListRecordingsStatus = typeof ListRecordingsStatus[keyof typeof ListRecordingsStatus];
+
+
+export const ListRecordingsStatus = {
+  recording: 'recording',
+  finished: 'finished',
+  canceled: 'canceled',
+  failed: 'failed',
+} as const;
+
+export type ListRecordingsSource = typeof ListRecordingsSource[keyof typeof ListRecordingsSource];
+
+
+export const ListRecordingsSource = {
+  rule: 'rule',
+  manual: 'manual',
+} as const;
+
+export type ListRecordingsOrder = typeof ListRecordingsOrder[keyof typeof ListRecordingsOrder];
+
+
+export const ListRecordingsOrder = {
+  desc: 'desc',
+  asc: 'asc',
+} as const;
 
 export type ListCapacityOveragesParams = {
 /**
@@ -3046,17 +3135,32 @@ export type listRecordingsResponse200 = {
   status: 200
 }
 
+export type listRecordingsResponse400 = {
+  data: ErrorResponse
+  status: 400
+}
+
 export type listRecordingsResponseSuccess = (listRecordingsResponse200) & {
   headers: Headers;
 };
-;
+export type listRecordingsResponseError = (listRecordingsResponse400) & {
+  headers: Headers;
+};
 
-export type listRecordingsResponse = (listRecordingsResponseSuccess)
+export type listRecordingsResponse = (listRecordingsResponseSuccess | listRecordingsResponseError)
 
 export const getListRecordingsUrl = (params?: ListRecordingsParams,) => {
   const normalizedParams = new URLSearchParams();
 
   Object.entries(params || {}).forEach(([key, value]) => {
+    const explodeParameters = ["genre","channelType","serviceId"];
+
+    if (Array.isArray(value) && explodeParameters.includes(key)) {
+      value.forEach((v) => {
+        normalizedParams.append(key, v === null ? 'null' : String(v));
+      });
+      return;
+    }
 
     if (value !== undefined) {
       normalizedParams.append(key, value === null ? 'null' : String(value))
@@ -3069,12 +3173,49 @@ export const getListRecordingsUrl = (params?: ListRecordingsParams,) => {
 }
 
 /**
- * 録画履歴。program_start_at の降順。ドロップ統計は PID 別の合計のみを含む。
- * PID 別の内訳は `GET /api/recordings/{id}/drop-stats` で取得する。
+ * 録画履歴。既定は program_start_at 降順（`order=asc` で昇順）。ドロップ統計は
+ * PID 別の合計のみを含む。PID 別の内訳は `GET /api/recordings/{id}/drop-stats`
+ * で取得する。
  *
  * 既定は生きている録画（`deleted_at IS NULL`）のみ。`trash=true` でごみ箱
- * （`deleted_at IS NOT NULL`）を返す。物理削除済み tombstone もここに残るが、
- * ファイルは既に無いことがある（M3-8）。
+ * （`deleted_at IS NOT NULL AND purged_at IS NULL`）を返す。完全削除
+ * （purge）が完了した tombstone（`purged_at` が立った行、issue #135）は
+ * ファイルが既に無いため、ごみ箱にも通常一覧にも出ない。`trash` と各
+ * 絞り込み条件は直交する --- `trash=true` でも条件は同じように効く。
+ *
+ * ## 絞り込み
+ *
+ * - `q` はキーワードの部分一致。`qTarget`（既定 `titleDescription`）で対象を
+ *   `title` 単体に絞れる。全角/半角の揺れは `normalize_search_text` で吸収する
+ *   （docs/data.md §5）。`/search`（EPG 検索）と同じ正規化方言を使うが、
+ *   エンジン（`internal/rulequery`）は共有しない --- 理由は docs/data.md §5
+ *   「録画検索は rulequery を共有しない」
+ * - `genre` は `genre_lv1`（ジャンル大分類。`genres` から生成列で導出）との
+ *   重なりで絞る（複数指定は OR）
+ * - `channelType` / `serviceId` は複数指定可（`style: form, explode: true`。
+ *   `?serviceId=1&serviceId=2`）
+ * - `status` / `source` / `ruleId` は録画自身の観測・出自での絞り込み
+ * - `from` / `to` は `program_start_at` の範囲（`from` 以上 `to` 未満）
+ *
+ * 不正な値（enum に一致しない `status`/`source`/`qTarget`/`channelType`/
+ * `order`、ドメイン外の `genre`）は無視・切り詰めせず 400 にする。
+ *
+ * ## ページング（キーセット）
+ *
+ * トークンを発行しない。返った配列の**最後の要素**の `startAt` / `id` を、
+ * 次のリクエストの `before` / `beforeId` にそのまま渡す（EPG の時間窓カーソル
+ * --- 本ファイル「時間窓がカーソル」--- と同じ思想だが、録画は有界に増え続ける
+ * ため境界は時間窓ではなく `(program_start_at, id)` の複合キーになる。同一
+ * `program_start_at` の録画（同時刻開始の別チャンネル）が普通に発生するため、
+ * `id` を tie-breaker にしないとページ跨ぎで重複・欠落が出る）。`before` /
+ * `beforeId` は両方揃って初めて有効（片方だけの指定は 400）。`order=asc` では
+ * カーソルの不等号を反転する。総件数は返さない（別クエリが要り、キーセットの
+ * 利点を打ち消すため。必要になったら別 issue）。`limit` の既定は 50、上限は
+ * 200（超えると 400）。
+ *
+ * `trash=true` でもカーソル軸は `program_start_at` のまま（旧
+ * `ListTrashRecordings` の `deleted_at` 降順からの意図的な変更。理由は
+ * docs/api.md「録画一覧: 絞り込み + キーセットページング」参照）。
  * @summary List recordings
  */
 export const listRecordings = async (params?: ListRecordingsParams, options?: RequestInit): Promise<listRecordingsResponse> => {
@@ -3099,7 +3240,7 @@ export const getListRecordingsQueryKey = (params?: ListRecordingsParams,) => {
     }
 
 
-export const getListRecordingsQueryOptions = <TData = Awaited<ReturnType<typeof listRecordings>>, TError = unknown>(params?: ListRecordingsParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRecordings>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+export const getListRecordingsQueryOptions = <TData = Awaited<ReturnType<typeof listRecordings>>, TError = ErrorResponse>(params?: ListRecordingsParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRecordings>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
 ) => {
 
 const {query: queryOptions, request: requestOptions} = options ?? {};
@@ -3118,10 +3259,10 @@ const {query: queryOptions, request: requestOptions} = options ?? {};
 }
 
 export type ListRecordingsQueryResult = NonNullable<Awaited<ReturnType<typeof listRecordings>>>
-export type ListRecordingsQueryError = unknown
+export type ListRecordingsQueryError = ErrorResponse
 
 
-export function useListRecordings<TData = Awaited<ReturnType<typeof listRecordings>>, TError = unknown>(
+export function useListRecordings<TData = Awaited<ReturnType<typeof listRecordings>>, TError = ErrorResponse>(
  params: undefined |  ListRecordingsParams, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRecordings>>, TError, TData>> & Pick<
         DefinedInitialDataOptions<
           Awaited<ReturnType<typeof listRecordings>>,
@@ -3131,7 +3272,7 @@ export function useListRecordings<TData = Awaited<ReturnType<typeof listRecordin
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
-export function useListRecordings<TData = Awaited<ReturnType<typeof listRecordings>>, TError = unknown>(
+export function useListRecordings<TData = Awaited<ReturnType<typeof listRecordings>>, TError = ErrorResponse>(
  params?: ListRecordingsParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRecordings>>, TError, TData>> & Pick<
         UndefinedInitialDataOptions<
           Awaited<ReturnType<typeof listRecordings>>,
@@ -3141,7 +3282,7 @@ export function useListRecordings<TData = Awaited<ReturnType<typeof listRecordin
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
-export function useListRecordings<TData = Awaited<ReturnType<typeof listRecordings>>, TError = unknown>(
+export function useListRecordings<TData = Awaited<ReturnType<typeof listRecordings>>, TError = ErrorResponse>(
  params?: ListRecordingsParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRecordings>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
@@ -3149,7 +3290,7 @@ export function useListRecordings<TData = Awaited<ReturnType<typeof listRecordin
  * @summary List recordings
  */
 
-export function useListRecordings<TData = Awaited<ReturnType<typeof listRecordings>>, TError = unknown>(
+export function useListRecordings<TData = Awaited<ReturnType<typeof listRecordings>>, TError = ErrorResponse>(
  params?: ListRecordingsParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRecordings>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {

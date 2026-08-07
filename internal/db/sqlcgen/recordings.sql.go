@@ -407,7 +407,7 @@ func (q *Queries) ListRecordingDropStats(ctx context.Context, recordingID int64)
 
 const listRecordings = `-- name: ListRecordings :many
 SELECT
-    r.id, r.rule_id, r.source, r.site, r.network_id, r.service_id, r.event_id, r.service_name, r.channel_type, r.channel, r.title, r.description, r.extended, r.genres, r.is_free, r.program_start_at, r.program_duration_ms, r.status, r.started_at, r.ended_at, r.quality_events, r.deleted_at, r.created_at, r.updated_at, r.purge_after, r.superseded_at, r.purged_at, r.never_scheduled,
+    r.id, r.rule_id, r.source, r.site, r.network_id, r.service_id, r.event_id, r.service_name, r.channel_type, r.channel, r.title, r.description, r.extended, r.genres, r.is_free, r.program_start_at, r.program_duration_ms, r.status, r.started_at, r.ended_at, r.quality_events, r.deleted_at, r.created_at, r.updated_at, r.purge_after, r.superseded_at, r.purged_at, r.never_scheduled, r.genre_lv1,
     a.size_bytes                        AS original_size_bytes,
     COALESCE(d.packets, 0)::bigint      AS drop_packets,
     COALESCE(d.drops, 0)::bigint        AS drop_drops,
@@ -467,6 +467,7 @@ type ListRecordingsRow struct {
 	SupersededAt             *time.Time
 	PurgedAt                 *time.Time
 	NeverScheduled           bool
+	GenreLv1                 []int16
 	OriginalSizeBytes        *int64
 	DropPackets              int64
 	DropDrops                int64
@@ -486,6 +487,16 @@ type ListRecordingsRow struct {
 // 空配列」と「未凍結」を区別する必要がないので、ここでは両者を同じ表示（省略）に
 // 潰してよい（区別が要る箇所は削除エンジンの until_encoded_deletable_originals
 // 側で、そこは JOIN のみで「行が無ければ対象外」を書いている）。
+//
+// 罠（PR #187 レビュー M4/O2 相当）: GET /api/recordings は M3-24（issue #136）
+// 以降このクエリを呼ばない --- internal/api/recordings_query.go の動的 WHERE
+// ビルダが同じ射影・同じ基底述語（r.site = $1 AND r.deleted_at IS NULL）を
+// 再現している。呼び出し側は Go のテストにも残っていない（sqlcgen.Queries の
+// ListRecordings を呼ぶ箇所はゼロ）ため、このクエリは現状完全に死んでいる。
+// ListTrashRecordings（recordings_trash.sql）と違い、internal/worker 側の
+// テストフィクスチャからも呼ばれていない。一覧の射影を直したいときはここでは
+// なく recordings_query.go の buildRecordingsQuery / queryRecordings を直すこと
+// --- ここだけ直しても GET /api/recordings には反映されない。
 func (q *Queries) ListRecordings(ctx context.Context, site string) ([]ListRecordingsRow, error) {
 	rows, err := q.db.Query(ctx, listRecordings, site)
 	if err != nil {
@@ -524,6 +535,7 @@ func (q *Queries) ListRecordings(ctx context.Context, site string) ([]ListRecord
 			&i.SupersededAt,
 			&i.PurgedAt,
 			&i.NeverScheduled,
+			&i.GenreLv1,
 			&i.OriginalSizeBytes,
 			&i.DropPackets,
 			&i.DropDrops,

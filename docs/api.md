@@ -120,6 +120,84 @@ UI は行を展開したときに詳細を取る。
   invalidate することになる。分けておけば予約クエリだけ捨てれば済む
 - 予約は数十件なのでクライアント結合は Map 1 つで済む
 
+### 録画一覧: 絞り込み + キーセットページング（M3-24）
+
+```
+GET /api/recordings?q=&qTarget=&genre=&channelType=&serviceId=&status=&source=&ruleId=&from=&to=&order=&trash=&limit=&before=&beforeId=
+```
+
+レスポンスは `Recording[]` のまま変えない（ページオブジェクトに包まない・総件数も
+返さない）。次ページのカーソルは**返った配列の最後の要素の `startAt` / `id`** から
+そのまま導出できるので、専用のトークンを発行しない。総件数を返すには別クエリが要り、
+キーセットページングの利点（「何ページ目か」を数えない）を打ち消すため、必要になったら
+別 issue で検討する。
+
+- **`q` / `qTarget`**: キーワードの部分一致。`qTarget=title`（既定
+  `titleDescription`）で対象列を絞れる。全角/半角の揺れは `normalize_search_text`
+  （[data.md](data.md) §5）で吸収するが、**エンジン（`internal/rulequery`）は
+  `/search`（EPG 検索）と共有しない**。理由は [data.md](data.md) §5「録画検索は
+  rulequery を共有しない」
+- **`genre`**: `genre_lv1`（ジャンル大分類。`recordings.genres` から生成列で導出）
+  との重なり。複数指定は OR
+- **`channelType` / `serviceId`**: 複数指定可（`style: form, explode: true`。
+  EPG の `serviceId` と同じ規約）
+- **`status` / `source` / `ruleId`**: 録画自身の観測・出自での絞り込み。`status` は
+  `recordings.status` の CHECK と一致させた 4 値（`recording` / `finished` /
+  `canceled` / `failed`）
+- **`from` / `to`**: `program_start_at` の範囲（`from` 以上 `to` 未満）
+- **`trash`**: 既存のごみ箱切り替え。`true` で `deleted_at IS NOT NULL AND
+  purged_at IS NULL` を返す（`purged_at` が立った tombstone --- 完全削除が完了
+  した録画、issue #135 --- はごみ箱にも一覧にも出ない）。**各絞り込み条件と
+  直交する** --- `trash=true` でも `q` 等の条件は同じように効く
+- **`limit`**: 既定 50、上限 200。超えると 400
+- **`before` / `beforeId`**: 次節参照
+
+**`trash=true` の並び順を `program_start_at` 降順に統一した（旧 `deleted_at`
+降順からの意図的な変更、PR #187 レビュー M4）。** 旧 `ListTrashRecordings`
+（`internal/db/queries/recordings_trash.sql`）は `deleted_at DESC, id DESC`
+（「最近捨てたものが上」）だったが、本タスクで一覧・ごみ箱を 1 つのキーセット
+契約に統一するにあたり、`trash` によってカーソル軸が変わる形は採らなかった
+--- `before` / `beforeId` の意味が `trash` の値に依存すると、同じパラメータ名で
+違う軸を指すことになり API 契約として破綻する（1 エンドポイントの前提が
+`trash` という別のフラグの値で変わるのは、不変条件 11 が求める「形を固定する
+前に判定基準を書く」の裏側で、形をモード分岐させる代償の方が大きいと判断した）。
+ごみ箱 UI で「最近捨てたものが上」が要る場合は、フロント側で `deletedAt` により
+再ソートする（1 ページ内なら安価。ページを跨いだ再ソートが要るなら別途検討）。
+
+#### キーセットは `(program_start_at, id)` の複合で割る
+
+同一 `program_start_at` の録画（同時刻開始の別チャンネル）は普通に発生するため、
+`program_start_at` 単独をカーソルにするとページ跨ぎで重複・欠落が出る。`id` を
+tie-breaker にした複合キーで割ることで、`order=desc`（既定）/ `asc` のどちらでも
+全順序が安定する。`before` / `beforeId` は両方揃って初めて有効（片方だけの指定は
+400）。
+
+EPG の「時間窓がカーソル」（本ファイル前掲）と思想は同じ（トークンを発行せず、
+返り値そのものから次の問い合わせを構成できる）だが、EPG はローリングウィンドウで
+有界なのに対し録画は有界に増え続けるため、境界を時間窓ではなく複合キーにしている。
+
+#### 動的 WHERE ビルダ（sqlc の静的クエリにしない）
+
+`internal/api/recordings_query.go` が `internal/rulequery.Compile` と同じ
+`arg` クロージャ方式で WHERE を組む。sqlc の 1 querytext に `($n IS NULL OR ...)`
+形で全軸を詰め込むと、`q` のような選択条件でも汎用プランに落ちて
+`recordings_title_trgm` / `recordings_description_trgm`（式 GIN、
+`internal/db/migrations/00034_recordings_search.sql`）が使われないことがある。
+条件が実際に指定されたときだけ節を足す形にすることで、Postgres が最初に立てる
+プランは常に具体的になる。
+
+**これだけでは片方の劣化しか塞げない。** pgx の既定 `QueryExecModeCacheStatement`
+は SQL テキストごとに named prepared statement を作ってキャッシュし、
+Postgres 自身がその statement を 6 回目以降 custom plan から generic plan に
+切り替えることがある（PostgreSQL の PREPARE のプラン選択規則。generic plan は
+bind 値を見ないため trgm 式 GIN が選ばれない可能性がある）。これは動的 WHERE
+ビルダが解決する「汎用述語（`$n IS NULL OR ...`）による劣化」とは別の劣化経路
+なので、`queryRecordings` はこの経路だけ `pgx.QueryExecModeExec`
+（unnamed statement で毎回明示的に再計画）を指定して別途塞いでいる。この経路は
+絞り込みの組み合わせごとに SQL テキスト自体が変わるため、そもそも named
+statement のキャッシュが効く場面が少ない（キャッシュを維持するコストに対して
+利益が薄い）。
+
 ## SSE (`/api/events`) --- ヒント配送、状態の真実は REST から再取得
 
 サーバー → クライアントの一方向プッシュ。役割は**「どのデータが変わったか」のヒント配送だけ**。
