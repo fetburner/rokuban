@@ -15,6 +15,7 @@
 package streamer
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -126,11 +127,24 @@ type LiveStreamer struct {
 // NewLive は LiveStreamer を生成する。cfg.Enabled が false なら Mount は
 // 何も登録しない（ffmpeg 無しの公式イメージで streamer ロールを起動する構成を
 // 壊さない。issue #91 の決定 2）。
+//
+// **cfg.SegmentDir を掃く（crash-only の後始末）。** ライブセッションは
+// このプロセスが唯一の書き手であり使い捨てなので、前回プロセスの残骸
+// （tmpfs はコンテナ再起動をまたいで残る --- ノード再起動でなければ消えない。
+// docs/api.md の従来の記述はここが誤りだった。レビューで指摘）が残っていても
+// 安全に消してよい。HTTP リスナーが立つ前（Mount 前）に同期的に行うことで、
+// 起動直後に飛んできたリクエストが作ったセッションのディレクトリを
+// 後から誤って掃除してしまう競合を避ける。
 func NewLive(mirakcClient *mirakc.Client, site string, cfg LiveConfig) *LiveStreamer {
 	return newLiveStreamer(mirakcClient, site, cfg)
 }
 
 func newLiveStreamer(client mirakcLiveClient, site string, cfg LiveConfig) *LiveStreamer {
+	if cfg.Enabled && cfg.SegmentDir != "" {
+		if err := os.RemoveAll(cfg.SegmentDir); err != nil {
+			slog.Warn("streamer: sweeping stale live segment dir at startup", "dir", cfg.SegmentDir, "err", err)
+		}
+	}
 	return &LiveStreamer{
 		mirakc:   client,
 		site:     site,
@@ -203,7 +217,8 @@ func (ls *LiveStreamer) Playlist(w http.ResponseWriter, r *http.Request) {
 	s.touch()
 
 	playlistPath := filepath.Join(s.dir, profile.Name+".m3u8")
-	if !waitForFile(r.Context(), playlistPath, playlistStartupTimeout) {
+	content, ok := waitForPlaylist(r.Context(), playlistPath, playlistStartupTimeout)
+	if !ok {
 		slog.Error("streamer: live playlist did not appear in time",
 			"service_id", serviceID, "profile", profile.Name, "dir", s.dir)
 		http.Error(w, "live stream did not start in time", http.StatusGatewayTimeout)
@@ -211,9 +226,12 @@ func (ls *LiveStreamer) Playlist(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+	w.Header().Set("Content-Length", strconv.Itoa(len(content)))
 	// ライブは毎回内容が変わるので immutable もキャッシュも不可。
 	w.Header().Set("Cache-Control", "no-store")
-	http.ServeFile(w, r, playlistPath)
+	// waitForPlaylist が読んだ内容をそのまま返す（http.ServeFile で再度開くと、
+	// -hls_flags temp_file の rename と競合する窓が理論上もう 1 つ増える）。
+	_, _ = w.Write(content)
 }
 
 // segmentNamePattern はセグメントファイル名として許す文字集合。
@@ -245,6 +263,23 @@ func (ls *LiveStreamer) Segment(w http.ResponseWriter, r *http.Request) {
 		// idle GC で回収済み、または未開始。hls.js はプレイリストを再取得しにいき、
 		// そこで新しいセッションが起きる（レベルトリガーと同じ形。セッション ID を
 		// 持たないので「詰む」経路が無い。docs/api.md §ライブ視聴の HLS）。
+		http.NotFound(w, r)
+		return
+	}
+
+	// **s.ready を待つまで s.dir を読まない。** マップに入っていても起動処理
+	// （runSession）がまだ s.dir を書いていない可能性があり、同期無しで読むと
+	// データ競合になる（レビューで指摘）。通常は起こらない
+	// （クライアントはプレイリストで ready 待ちを経てからでないとセグメント名を
+	// 知り得ない）が、起動が異常に遅い・クライアントが古いセグメント名を
+	// 使い回す等の窓を防御的に塞ぐ。
+	select {
+	case <-s.ready:
+	case <-r.Context().Done():
+		return
+	}
+	if s.startErr != nil {
+		// 起動失敗（すぐ map から外れるはずだが、その直前の窓を防御的に処理する）。
 		http.NotFound(w, r)
 		return
 	}
@@ -285,20 +320,27 @@ func writeSessionError(w http.ResponseWriter, err error) {
 	}
 }
 
-// waitForFile は path が出現するまでポーリングする。タイムアウトまたは ctx の
-// キャンセルで false を返す。
-func waitForFile(ctx context.Context, path string, timeout time.Duration) bool {
+// waitForPlaylist は path に有効な HLS プレイリストが書かれるまでポーリングし、
+// 読めたらその内容を返す。タイムアウトまたは ctx のキャンセルで ok=false を返す。
+//
+// **存在だけでなく内容も見る。** `os.Stat` の成否だけを見ると、ffmpeg が
+// `-hls_flags temp_file` を使わずに（あるいは偽 ffmpeg がアトミックでない書き方を
+// していて）ファイルへ直接書き込み中の途中の内容を配ってしまう窓がある
+// （レビューで発見。CI が確率的に flaky になった原因）。少なくとも 1 本の
+// セグメントを指す `#EXTINF` 行が現れるまで待つことで、書き込み途中の空/不完全な
+// 内容を配らない。
+func waitForPlaylist(ctx context.Context, path string, timeout time.Duration) ([]byte, bool) {
 	deadline := time.Now().Add(timeout)
 	for {
-		if _, err := os.Stat(path); err == nil {
-			return true
+		if data, err := os.ReadFile(path); err == nil && bytes.Contains(data, []byte("#EXTINF")) {
+			return data, true
 		}
 		if time.Now().After(deadline) {
-			return false
+			return nil, false
 		}
 		select {
 		case <-ctx.Done():
-			return false
+			return nil, false
 		case <-time.After(playlistPollInterval):
 		}
 	}
@@ -455,8 +497,15 @@ func (ls *LiveStreamer) runSession(ctx context.Context, s *liveSession) {
 	args := BuildLiveFFmpegArgs(ls.cfg.Profiles, dir)
 	cmd := exec.CommandContext(ctx, ls.cfg.FFmpeg, args...)
 	cmd.Stdin = body
-	var stderr strings.Builder
-	cmd.Stderr = &stderr
+	stderr := newCappedWriter(stderrCap)
+	cmd.Stderr = stderr
+	// ctx がキャンセルされてプロセスを kill した後、I/O をコピーするゴルーチン
+	// （cmd.Stdin 用の内部パイプ）が終わるまで Wait は最大この時間だけ待つ。
+	// ffmpeg が孫プロセスを fork していて標準入出力の fd を握ったまま残ると
+	// （通常は起きないが）、Wait が無期限にブロックしうる。stop() は
+	// idle GC / shutdown から呼ばれるので、ここが詰まるとチューナー解放も
+	// 詰まる --- 上限を設けて必ず前に進めるようにする。
+	cmd.WaitDelay = 5 * time.Second
 
 	if err := cmd.Start(); err != nil {
 		s.startErr = fmt.Errorf("starting live ffmpeg: %w", err)
@@ -480,7 +529,15 @@ func (ls *LiveStreamer) runSession(ctx context.Context, s *liveSession) {
 
 // reapIdle は idle timeout を超えたセッションを止める。「クライアント 1 人ごとの
 // 生存」ではなく**サービス単位**（docs/api.md §ライブ視聴の HLS）。
+//
+// **パスの完走を `LiveIdleGCLastPass` に必ず記録する**（何も回収しなかった場合を
+// 含む）。docs/operations.md の「ゲージには最後に成功した時刻を対で持つ」規律
+// ---LiveActiveSessions だけでは、idle GC ループ自体が死んでいて「セッション数が
+// 変わっていない」のか「本当に GC 対象が無かった」のかを区別できない
+// （レビューで指摘。issue #91 の受け入れ条件）。
 func (ls *LiveStreamer) reapIdle() {
+	defer metrics.LiveIdleGCLastPass.SetToCurrentTime()
+
 	now := time.Now()
 	ls.mu.Lock()
 	var idle []*liveSession
@@ -494,18 +551,32 @@ func (ls *LiveStreamer) reapIdle() {
 	}
 	ls.mu.Unlock()
 
+	if len(idle) == 0 {
+		return
+	}
+
+	// 並行に stop() する。直列だと 1 本の ffmpeg が kill に応答しない（ハング
+	// した子プロセス等）と、他の回収可能なセッションまで足止めされる。
+	var wg sync.WaitGroup
 	for _, s := range idle {
-		slog.Info("streamer: live session idle, stopping", "service_id", s.serviceID)
-		s.stop()
-		metrics.LiveIdleGCReclaimed.Inc()
+		wg.Add(1)
+		go func(s *liveSession) {
+			defer wg.Done()
+			slog.Info("streamer: live session idle, stopping", "service_id", s.serviceID)
+			s.stop()
+			metrics.LiveIdleGCReclaimed.Inc()
+		}(s)
 	}
-	if len(idle) > 0 {
-		metrics.LiveActiveSessions.Set(float64(ls.sessionCount()))
-	}
+	wg.Wait()
+
+	metrics.LiveActiveSessions.Set(float64(ls.sessionCount()))
 }
 
 // shutdown はプロセス停止時に呼ぶ。新規セッションの受付を止め、既存の全セッションを
 // 止めて mirakc の接続を閉じる（チューナー解放）。
+//
+// reapIdle と同じ理由で並行に stop() する（1 本が詰まっても他のチューナー解放を
+// 遅らせない。SIGTERM の drain 猶予は有限）。
 func (ls *LiveStreamer) shutdown() {
 	ls.mu.Lock()
 	ls.closed = true
@@ -515,9 +586,51 @@ func (ls *LiveStreamer) shutdown() {
 	}
 	ls.mu.Unlock()
 
+	var wg sync.WaitGroup
 	for _, s := range sessions {
-		s.stop()
+		wg.Add(1)
+		go func(s *liveSession) {
+			defer wg.Done()
+			s.stop()
+		}(s)
 	}
+	wg.Wait()
+}
+
+// stderrCap は ffmpeg の stderr から保持する末尾バイト数。encode.go の
+// strings.Builder と違い、ライブの ffmpeg はセッションの生存中（数時間〜）ずっと
+// 動くため、無制限バッファはエラーが出続けるとメモリを消費し続ける
+// （レビューで指摘）。診断に十分な量だけ末尾を保持する。
+const stderrCap = 8 * 1024
+
+// cappedWriter は末尾 max バイトだけを保持する io.Writer（スレッドセーフ）。
+type cappedWriter struct {
+	mu  sync.Mutex
+	buf []byte
+	max int
+}
+
+func newCappedWriter(max int) *cappedWriter {
+	return &cappedWriter{max: max}
+}
+
+// Write は io.Writer を満たす。常に (len(p), nil) を返す（バッファへの追記は
+// 失敗しない）。
+func (w *cappedWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.buf = append(w.buf, p...)
+	if len(w.buf) > w.max {
+		w.buf = w.buf[len(w.buf)-w.max:]
+	}
+	return len(p), nil
+}
+
+// String は現在保持している内容を返す。
+func (w *cappedWriter) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return string(w.buf)
 }
 
 // BuildLiveFFmpegArgs は設定済みの全プロファイルを 1 回の ffmpeg 起動で HLS に
@@ -556,6 +669,15 @@ func BuildLiveFFmpegArgs(profiles []LiveProfile, dir string) []string {
 			// 書き込み途中のファイルを読むことがない。
 			"-hls_flags", "delete_segments+temp_file",
 			"-hls_segment_filename", filepath.Join(dir, "segments", p.Name+"_seg%05d.ts"),
+			// hls_base_url: プレイリストの各セグメント行に付ける接頭辞。
+			// **これが無いと ffmpeg は basename だけを書く**（実機で確認済み）。
+			// HLS クライアントはプレイリスト自身の URL 基準で相対解決するため、
+			// basename のままだと `.../live/h264_seg00001.ts` を要求してしまい、
+			// このサーバーが実際に配信するルート（`.../live/segments/{name}`）と
+			// 食い違って 404 になる。`-hls_segment_filename` が書き込む物理パス
+			// （`segments/` サブディレクトリ）と、プレイリストが指す論理 URI を
+			// 一致させるための必須フラグ（issue #91 のレビューで発見）。
+			"-hls_base_url", "segments/",
 			filepath.Join(dir, p.Name+".m3u8"),
 		)
 	}

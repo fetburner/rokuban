@@ -54,6 +54,7 @@ func TestNewRegistry_ExposesRequiredMetrics(t *testing.T) {
 	LiveActiveSessions.Set(0)
 	LiveSessionStartFailures.WithLabelValues("session_limit").Inc()
 	LiveIdleGCReclaimed.Add(1)
+	LiveIdleGCLastPass.SetToCurrentTime()
 
 	families, err := reg.Gather()
 	if err != nil {
@@ -97,6 +98,7 @@ func TestNewRegistry_ExposesRequiredMetrics(t *testing.T) {
 		"rokuban_live_active_sessions",
 		"rokuban_live_session_start_failures_total",
 		"rokuban_live_idle_gc_reclaimed_total",
+		"rokuban_live_idle_gc_last_pass_timestamp_seconds",
 	}
 	for _, name := range required {
 		if !got[name] {

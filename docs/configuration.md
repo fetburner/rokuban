@@ -119,8 +119,16 @@ live:                            # ライブ視聴（M4-3、issue #91）。strea
                                  # （録画配信 / サムネイルのみ）を壊さない（不変条件 4）
   ffmpeg: ffmpeg                 # 既定は PATH 検索
   segment_dir: /dev/shm/rokuban-live  # HLS セグメント/プレイリストの書き出し先。
-                                 # 録画バッファ（mirakc recording.basedir）とは別ディスク
-                                 # （tmpfs 前提。k8s なら emptyDir: {medium: Memory}）
+                                 # **既定値を持たない --- enabled: true なら必須**
+                                 # （空だと起動時エラー。適当なローカルパスへ黙って
+                                 # フォールバックしない）。録画バッファ（mirakc
+                                 # recording.basedir）とは別ディスク（tmpfs 前提。
+                                 # k8s なら emptyDir: {medium: Memory}）。起動時
+                                 # （HTTP リスナーが立つ前）にこのディレクトリ全体を
+                                 # 掃く --- tmpfs はノード再起動でしか消えないため、
+                                 # 前回プロセスの残骸（SIGKILL 等で SIGTERM の
+                                 # 後始末が効かなかった場合）が残っていても毎起動で
+                                 # 必ず消える
   max_sessions: 4                # このプロセスが同時に持てるライブセッション（≒ ffmpeg
                                  # プロセス）数。**プロセスローカルな上限であり、
                                  # グローバルな天井（チューナー数、mirakc が裁定）では
@@ -131,7 +139,14 @@ live:                            # ライブ視聴（M4-3、issue #91）。strea
   tuner_priority: 1              # mirakc への X-Mirakurun-Priority。ruler が生成する
                                  # schedule の既定 priority（10）より低く保つことで、
                                  # チューナー枯渇時に録画側を常に勝たせる
-                                 # （recording.md §2「チューナー調停」）
+                                 # （recording.md §2「チューナー調停」）。**Rokuban は
+                                 # この不等式を強制しない** --- ルールの priority は
+                                 # DB 側（rules.priority、既定 10）でユーザーが自由に
+                                 # 変えられ、ライブ側の live.tuner_priority は config
+                                 # 側なので、両者を跨いで比較検証する権威がどちらにも
+                                 # 無い。ユーザーがルールの priority を 0 や 1 まで
+                                 # 下げると、この既定値のままではライブが録画に勝って
+                                 # しまう。運用者が両方の値を意識して選ぶ前提とする
   profiles:                     # 空配列は不可（enabled: true なら 1 つ以上必須）。
                                  # encode.profiles とは別の構造体 --- HLS はセグメント長・
                                  # プレイリスト長という VOD には無い制約を持つ

@@ -766,23 +766,6 @@ func TestEncodeConfig_ValidateTools(t *testing.T) {
 	}
 }
 
-func TestLiveConfig_Profile(t *testing.T) {
-	cfg := LiveConfig{Profiles: []LiveProfile{
-		{Name: "h264", VideoCodec: "libx264", AudioCodec: "aac"},
-		{Name: "h264low", VideoCodec: "libx264", AudioCodec: "aac", Height: 480},
-	}}
-	p, ok := cfg.Profile("h264low")
-	if !ok || p.Height != 480 {
-		t.Fatalf("Profile(h264low) = (%+v, %v), want found with height 480", p, ok)
-	}
-	if _, ok := cfg.Profile("missing"); ok {
-		t.Error("Profile(missing) should be not found")
-	}
-	if got := cfg.ProfileNames(); !slices.Equal(got, []string{"h264", "h264low"}) {
-		t.Errorf("ProfileNames() = %v, want [h264 h264low]", got)
-	}
-}
-
 func TestLiveConfig_ValidateTools(t *testing.T) {
 	cfg := LiveConfig{FFmpeg: "rokuban-no-such-ffmpeg-binary"}
 	if err := cfg.ValidateTools(); err == nil {

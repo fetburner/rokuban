@@ -347,6 +347,12 @@ type LiveConfig struct {
 	// ruler が生成する schedule の既定 priority（10）より低く保つことで、チューナー
 	// 枯渇時に mirakc が録画側を常に勝たせる（docs/recording/delegation.md §2
 	// 「チューナー調停」、issue #91 の決定コメント）。0 なら既定値（1）。
+	//
+	// **`TunerPriority < rules.priority` はここでは検証しない。** 前者は config
+	// （この構造体）、後者は DB（ユーザーが自由に編集できる）で、両者を跨いで
+	// 検証する権威がどちらの層にも無い。ルールの priority を既定 10 未満に下げる
+	// 運用では、この既定値のままだとライブが録画に勝つ（docs/api.md §ライブ視聴の
+	// HLS §実装 参照）。
 	TunerPriority int `yaml:"tuner_priority" validate:"gte=0"`
 
 	Profiles []LiveProfile `yaml:"profiles"`
@@ -384,25 +390,6 @@ type LiveProfile struct {
 
 	// ExtraArgs は組み立てた ffmpeg 引数の末尾に追加する引数（任意）。
 	ExtraArgs []string `yaml:"extra_args"`
-}
-
-// Profile は name に一致するプロファイルを返す。見つからなければ ok=false。
-func (c LiveConfig) Profile(name string) (LiveProfile, bool) {
-	for _, p := range c.Profiles {
-		if p.Name == name {
-			return p, true
-		}
-	}
-	return LiveProfile{}, false
-}
-
-// ProfileNames は定義済みプロファイル名を定義順で返す。
-func (c LiveConfig) ProfileNames() []string {
-	names := make([]string, 0, len(c.Profiles))
-	for _, p := range c.Profiles {
-		names = append(names, p.Name)
-	}
-	return names
 }
 
 // ValidateTools は ffmpeg が PATH（または絶対パス）で解決できることを検査する。

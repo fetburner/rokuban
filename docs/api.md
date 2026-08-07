@@ -358,7 +358,12 @@ GET /api/sites/{site}/services/{serviceId}/live/segments/{name}
   schedule の既定 priority（10）より低く保つことで、チューナー枯渇時に mirakc が
   録画側を常に勝たせる（[recording.md](recording/delegation.md) §2「チューナー調停」）。
   予約表を見て拒否する案は採らない --- streamer が予約エンジンに依存し、mirakc 固有の
-  優先度概念を永続テーブルに持ち込む誘惑を生む（不変条件 7）
+  優先度概念を永続テーブルに持ち込む誘惑を生む（不変条件 7）。**`live.tuner_priority <
+  rules.priority` を Rokuban は強制しない。** 前者は config、後者は DB でユーザーが
+  自由に変えられる値で、両者を跨いで検証する権威がどちらの層にも無い（config は
+  デプロイ環境の性質、DB は運用中の意思。[configuration.md](configuration.md) §config
+  と DB の境界）。ルールの priority を既定 10 未満まで下げると、この既定値のままでは
+  ライブが録画に勝ってしまう --- 運用者が両方の値を意識して選ぶ前提とする
 - **同時セッション上限（`live.max_sessions`）はプロセスローカル。**超えた要求・
   mirakc 側のチューナー枯渇はいずれも既存セッションを壊さずに 503 を返す
   （エラーの本文はプレーンテキスト。OpenAPI 対象外のため生成クライアントの契約は無い）
@@ -368,8 +373,11 @@ GET /api/sites/{site}/services/{serviceId}/live/segments/{name}
 - **セグメントは `live.segment_dir`（tmpfs 前提）に書く。**録画バッファとは別ディスク
   （[operations.md](operations.md) §5「ライブのセグメントを録画バッファと同じディスクに
   置かない」）。プロセス終了（`--all`/`--roles streamer` の SIGTERM）時は idle GC と同じ
-  経路で全セッションを止め、ディレクトリも削除する --- crash 時は tmpfs 自体が消える
-  ため残骸は残らない
+  経路で全セッションを止め、ディレクトリも削除する。**tmpfs はノード再起動でしか
+  消えない**（k8s の `emptyDir: {medium: Memory}` はコンテナ / Pod の再起動をまたいで
+  残る）ため、SIGKILL によるクラッシュ（SIGTERM が効かない）の後始末はそれだけでは
+  終わらない --- 起動時（`NewLive`、HTTP リスナーが立つ前）に `live.segment_dir` 全体を
+  掃くことで、前回プロセスの残骸を毎起動で必ず消す
 - **ffmpeg の LookPath 検査は `live.enabled: true` のときだけ行う。**公式イメージ
   （ffmpeg 無し）で streamer ロールを起動する構成（録画配信 / サムネイルのみ）を
   壊さない

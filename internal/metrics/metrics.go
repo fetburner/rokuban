@@ -407,6 +407,19 @@ var (
 		Name: "rokuban_live_idle_gc_reclaimed_total",
 		Help: "Live-viewing sessions stopped by the idle GC because no segment request arrived within the idle timeout.",
 	})
+
+	// LiveIdleGCLastPass は最後に完走した idle GC パスの時刻（UNIX 秒）。
+	//
+	// DeleteReconcileLastPass / EpgSyncLastSuccess と同じ理由（ゲージの凍結対策。
+	// docs/operations.md の「ゲージには最後に成功した時刻を対で持つ」規律）。
+	// LiveActiveSessions は idle GC ループが止まっても直近の値のまま凍結するため、
+	// それだけでは「セッションが本当にゼロになった」のか「GC ループが死んでいて
+	// チューナーを解放できていない」のかを区別できない。time() - この値 で
+	// idle GC の停止を検出する。
+	LiveIdleGCLastPass = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "rokuban_live_idle_gc_last_pass_timestamp_seconds",
+		Help: "Unix time of the last completed live idle-GC pass. Use with time() to detect a stalled idle GC (which would leave tuners unreleased).",
+	})
 )
 
 // NewRegistry は Rokuban のメトリクスを登録した registry を返す。
@@ -467,6 +480,7 @@ func NewRegistry(backlog prometheus.Collector) *prometheus.Registry {
 		LiveActiveSessions,
 		LiveSessionStartFailures,
 		LiveIdleGCReclaimed,
+		LiveIdleGCLastPass,
 	)
 
 	if backlog != nil {
