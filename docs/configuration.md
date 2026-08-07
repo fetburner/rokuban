@@ -49,11 +49,20 @@ db:                              # 必須
                                   # pooler を通せるのは api ロールと streamer ロールだけ
                                   # （worker/watcher/notifier との組み合わせは起動時エラー。operations.md §3）
 
-mirakc:                          # 必須
+mirakc:                          # `mirakcs:` との排他（下記）。どちらか一方が必須
   url: http://mirakc.local:40772
   site: default                  # 省略時 "default"。このインスタンスのサイト名
                                  # （DB の全テーブルと API のパス /api/sites/{site}/...
                                  # をスコープする。issue #31）
+
+# 複数 mirakc（issue #183 M4-11）。`mirakc:` の代わりにこちらを使う。
+# `mirakc:` は `mirakcs:` の 1 要素と等価に解決される糖衣なので、両方を同時に
+# 書くと起動エラーになる（どちらが勝つかを覚えさせない）。
+# mirakcs:
+#   - site: tokyo
+#     url: http://mirakc-tokyo:40772
+#   - site: takamatsu
+#     url: http://mirakc-takamatsu:40772
 
 storage:
   media_dir: /mnt/media          # 必須。アーカイブ層 (S3-via-CSI 可)
@@ -193,11 +202,31 @@ log:
 
 ### mirakc は単一オブジェクト
 
-`mirakc` はリストではなく単一オブジェクトとする。複数 mirakc を許すと programId のスコープが mirakc 単位になり、予約・EPG 射影・ingest の全スキーマに「どの mirakc か」が波及する。チューナー集約は mirakc 自身のリモートチューナー機能で賄えるため、Rokuban 側は 1 エンドポイントで足りる。
+`mirakc` はリストではなく単一オブジェクトとする。複数 mirakc を許すと programId のスコープが mirakc 単位になり、予約・EPG 射影・ingest の全スキーマに「どの mirakc か」が波及する。チューナー集約は mirakc 自身のリモートチューナー機能で賄えるため、単一サイトなら Rokuban 側は 1 エンドポイントで足りる。ハブ mirakc への集約は採らない（WAN リアルタイム依存 = 録画中の回線瞬断が録画欠損に直結するため）。
 
-多拠点が現実化した場合は Rokuban 側で `mirakcs:` リストを追加し、`mirakc:` 単一形式を要素数 1 の糖衣にすることで互換に拡張できる。ハブ mirakc への集約は採らない（WAN リアルタイム依存 = 録画中の回線瞬断が録画欠損に直結するため）。
+`mirakc.site` は DB の全テーブルの `site` 列だけでなく、API の資源同定（`/api/sites/{site}/...`）の権威でもある（M3-1、issue #29 / #31 / #53）。
 
-`mirakc.site` は DB の全テーブルの `site` 列だけでなく、API の資源同定（`/api/sites/{site}/...`）の権威でもある（M3-1、issue #29 / #31 / #53）。`mirakcs:` リスト化時にここへサイト名を追加していく形を想定しており、API 側の変更は不要（パスは既にサイト名を受け取る形になっている）。
+#### 複数サイト: `mirakcs:` レジストリ（issue #183 M4-11）
+
+多拠点構成では `mirakc:` の代わりに `mirakcs:` （`{site, url}` の配列）を書く。`mirakc: {url, site}` は `mirakcs: [{site, url}]` の 1 要素と等価に解決される糖衣で、**両方を同時に書くと起動エラー**になる（どちらが勝つかを覚えさせない）。
+
+- **`mirakcs:` の要素は `site` と `url` の 2 つだけ。** `storage` / `worker` / `ingest` 等のチューニング値は要素に入れない。アーカイブは単一（`media_assets` に site 列が無い）であり、`worker.queues` 等はデプロイ時のパラメータであって site の属性ではない。site ごとのチューニング値は、それを読むコードができたときに足す（不変条件 11）
+- **site 名の構文制約**: `^[a-z0-9]([_-]?[a-z0-9])*$`、64 文字以内。**River のキュー名の制約と同一で、緩めない** --- キュー名を site で修飾する将来（M4-13）を site 名が弾くことになるため
+- **予約名**: `catalog` と `thumbnails` は使えない。将来 `rel_path` に `{site}/` を前置すると（M4-14）、この 2 つと衝突する site 名は削除 reconcile の孤児回収と rescue スキャンの走査対象から外れてしまう
+- レジストリ内の site 名の重複も不可。違反はすべて起動エラーとして全件列挙される（規約 4）
+
+**多サイトでどのロールがどのプロセスに乗るかは [docs/overview.md](overview.md) の役割分類に決定済み**（#138）: site に縛られるのは「mirakc に到達する必要がある仕事」（watcher / ingest / reconciler / epg / record_sweep / ライブ streamer）だけで、DB もアーカイブも単一なので、api / notifier / 録画配信 streamer / ruler / encode / thumbnail / 削除 reconcile は site 非依存の中央プロセスになる。
+
+**プロセスがどのサイトに束縛されるかは `server` サブコマンドの `--sites` フラグで表す。config キーにはしない**（下記「やらないこと」の CLI フラグ方針に反しない --- `--all` / ロール選択と同じ「起動形態」の軸）。
+
+- 未指定でレジストリが 1 要素ならその 1 つに束縛する。未指定でレジストリが 2 要素以上なら起動エラー（暗黙に「全部」にしない）
+- `--sites=`（明示的な空）は束縛なし = 中央プロセス
+- `--sites tokyo` は tokyo に束縛する
+- `watcher` ロールは 1 プロセス 1 サイトのループしか持たないため、束縛サイト数がちょうど 1 でなければ起動エラーになる。`worker` ロールは今のところ site 単位の仕事と site 非依存の仕事が同居しており（`worker.Deps.Site` / `worker.ClientConfig` の各 `*Site` フィールドがいずれも単一文字列のため）、0 または 1 サイトの束縛は許すが 2 サイト以上は起動エラーになる。**1 プロセスが N サイトの watcher / worker のループを回す形は書き手がまだいないので決めない**（不変条件 11）
+- `enqueue` サブコマンドは `--site` で投入先を選ぶ（未指定かつレジストリ 1 要素ならその 1 つ、2 要素以上なら必須）。M4-6 の CronJob がサイトごとに投入するため
+- `rescue` / `shadow-diff` は単一サイト用のまま。`mirakcs:` が 2 要素以上の構成では明示的なエラーで落ちる（多サイトでの意味論を決める書き手がまだいないため）
+
+api の site 検査（サイトの存在確認や API パスの site スコープの強制）・River キュー名の site 修飾・`rel_path` の site 名前空間はこのタスクの対象外（それぞれ別 issue）。
 
 ### server.allowed_hosts は X-Forwarded-Host を優先する
 

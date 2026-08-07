@@ -19,6 +19,7 @@ type Config struct {
 	Server     ServerConfig     `yaml:"server"`
 	DB         DBConfig         `yaml:"db"`
 	Mirakc     MirakcConfig     `yaml:"mirakc"`
+	Mirakcs    []MirakcSite     `yaml:"mirakcs"`
 	Storage    StorageConfig    `yaml:"storage"`
 	Ingest     IngestConfig     `yaml:"ingest"`
 	Epg        EpgConfig        `yaml:"epg"`
@@ -96,19 +97,133 @@ func quoteDSNValue(v string) string {
 	return "'" + escaped + "'"
 }
 
-// MirakcConfig は mirakc 接続設定。
+// MirakcConfig は mirakc 接続設定（単一サイト構成の糖衣）。
+//
+// `mirakc: {url, site}` は `mirakcs: [{site, url}]` の 1 要素と等価に解決される
+// （Config.Registry）。**`mirakc:` と `mirakcs:` の同時指定は起動エラー**
+// （Config.validateMirakcRegistry、どちらが勝つかを覚えさせない。issue #183 M4-11）。
+//
+// **URL に `required` は付けない。** `mirakcs:` を使う構成では `mirakc:` を
+// 書かないため、struct タグの required は無条件に走ってしまい、正しい構成を
+// 起動失敗させる（issue #183 の「罠」）。required 相当の検査は
+// validateMirakcRegistry が「どちらか一方は必須」という形で行う。
 type MirakcConfig struct {
-	URL string `yaml:"url" validate:"required,url"`
+	URL string `yaml:"url"`
 
 	// Site はこの mirakc インスタンスのサイト名。programId / record id は
 	// mirakc インスタンス単位のスコープしか持たないため、DB の全テーブルと
 	// API のパスがこの名前でスコープされる（docs/schema.md §1-5、issue #31）。
 	// 空なら既定値（"default"）を使う。
-	//
-	// `mirakc:` は単一サイト構成の糖衣で、将来の複数サイト対応
-	// （`mirakcs:` リスト）はここに追加する（docs/configuration.md
-	// 「mirakc は単一オブジェクト」）。
 	Site string `yaml:"site"`
+}
+
+// MirakcSite は `mirakcs:` レジストリの 1 要素。site 名と URL の 2 つだけを持つ。
+//
+// **storage / worker / ingest 等のチューニング値は要素に入れない。** アーカイブは
+// 単一（`media_assets` に site 列が無い。internal/db/migrations/00002_schema_v1.sql）
+// であり、`worker.queues` / `worker.periodic_jobs` 等はデプロイ時のパラメータで
+// あって site の属性ではない。site ごとのチューニング値は、それを読むコードが
+// できたときに足す（不変条件 11: 形を固定する前に判定基準を書く。issue #183 M4-11）。
+type MirakcSite struct {
+	Site string `yaml:"site"`
+	URL  string `yaml:"url"`
+}
+
+// Registry はこの Config が指す mirakc サイトの一覧を返す。
+//
+// `mirakcs:` が非空ならそれをそのまま返す。空なら `mirakc:` を 1 要素のレジストリ
+// として解決する（`mirakc.url` が空なら Mirakc も未設定と見なし、空のレジストリを
+// 返す）。両方が同時に非空になるケースは Load が起動エラーにするので、Load を
+// 経た Config では実質どちらか一方だけが反映される。
+func (c Config) Registry() []MirakcSite {
+	if len(c.Mirakcs) > 0 {
+		return c.Mirakcs
+	}
+	if c.Mirakc.URL == "" {
+		return nil
+	}
+	return []MirakcSite{{Site: c.Mirakc.Site, URL: c.Mirakc.URL}}
+}
+
+// mirakcSiteNamePattern は site 名の構文制約。
+//
+// **River のキュー名の制約（`validateQueueName`、river@v0.40.0/client.go:2335）
+// と同一で、緩めない。** M4-13 がキュー名を `ingest_<site>` の形に site で修飾する
+// ため、ここを緩めると M4-13 が site 名をキュー名として弾くことになる
+// （issue #183 の「罠」）。
+var mirakcSiteNamePattern = regexp.MustCompile(`^[a-z0-9]([_-]?[a-z0-9])*$`)
+
+// mirakcSiteNameMaxLen は site 名の最大長（River のキュー名制約と同一。上記参照）。
+const mirakcSiteNameMaxLen = 64
+
+// reservedSiteNames は実在する予約ディレクトリと衝突する site 名。
+//
+// `catalog/`（internal/catalog.Subdir）は削除 reconcile の孤児回収
+// （internal/worker/delete_reconcile.go の walkMediaFiles）と rescue スキャン
+// （internal/catalog/rescue_scan.go）が SkipDir する対象で、`thumbnails/` は
+// サムネイルの名前空間（internal/worker/thumbnail.go）。M4-14 が `rel_path` に
+// `{site}/` を前置するようになると、この 2 つと衝突する site 名はそのサイトの
+// 原本が孤児回収からも rescue からも見えなくなる（issue #183 の「罠」）。
+var reservedSiteNames = map[string]bool{
+	"catalog":    true,
+	"thumbnails": true,
+}
+
+// validateSiteName は site 名の構文制約・上限長・予約名を検査する。
+// 見つかった問題を全件返す（規約 4: エラーは全件列挙）。
+func validateSiteName(name string) []string {
+	var errs []string
+	if !mirakcSiteNamePattern.MatchString(name) {
+		errs = append(errs, fmt.Sprintf("site name %q must match %s", name, mirakcSiteNamePattern.String()))
+	}
+	if len(name) > mirakcSiteNameMaxLen {
+		errs = append(errs, fmt.Sprintf("site name %q exceeds %d characters", name, mirakcSiteNameMaxLen))
+	}
+	if reservedSiteNames[name] {
+		errs = append(errs, fmt.Sprintf("site name %q is reserved", name))
+	}
+	return errs
+}
+
+// validateMirakcRegistry は `mirakc:`/`mirakcs:` の相互排他、site 名の構文制約・
+// 予約名・重複、各要素の url を検査する。見つかった問題を全件列挙して返す
+// （規約 4）。問題が無ければ nil を返す。
+func (c Config) validateMirakcRegistry() error {
+	mirakcSet := c.Mirakc.URL != ""
+	mirakcsSet := len(c.Mirakcs) > 0
+
+	var errs []string
+	switch {
+	case mirakcSet && mirakcsSet:
+		errs = append(errs, "mirakc and mirakcs must not both be set (mirakc is sugar for a one-element mirakcs)")
+	case !mirakcSet && !mirakcsSet:
+		errs = append(errs, "one of mirakc.url or mirakcs is required")
+	default:
+		registry := c.Registry()
+		seen := make(map[string]bool, len(registry))
+		for i, s := range registry {
+			label := "mirakc"
+			if mirakcsSet {
+				label = fmt.Sprintf("mirakcs[%d]", i)
+			}
+			for _, e := range validateSiteName(s.Site) {
+				errs = append(errs, fmt.Sprintf("%s: %s", label, e))
+			}
+			if s.Site != "" && seen[s.Site] {
+				errs = append(errs, fmt.Sprintf("%s: duplicate site %q", label, s.Site))
+			}
+			seen[s.Site] = true
+
+			if verr := vld.Var(s.URL, "required,url"); verr != nil {
+				errs = append(errs, fmt.Sprintf("%s.url: %v", label, verr))
+			}
+		}
+	}
+
+	if len(errs) == 0 {
+		return nil
+	}
+	return fmt.Errorf("mirakc registry validation failed:\n  - %s", strings.Join(errs, "\n  - "))
 }
 
 // StorageConfig はメディアファイルの保存先設定。
@@ -608,6 +723,13 @@ func loadFromString(raw string) (*Config, error) {
 			return nil, &ValidationError{fieldErrors: ve}
 		}
 		return nil, fmt.Errorf("validating config: %w", err)
+	}
+
+	// mirakc:/mirakcs: の相互排他・site 名の構文制約・予約名・重複・url を検査する
+	// （MirakcConfig.URL には validate:"required" タグを付けていないため、ここで
+	// 明示的に検査する。issue #183 の「罠」）。
+	if err := cfg.validateMirakcRegistry(); err != nil {
+		return nil, err
 	}
 
 	// 0 / 未設定は既定 1 に寄せてからプロファイル定義を検査する。

@@ -45,6 +45,15 @@ func newShadowDiffCmd() *cobra.Command {
 				return err
 			}
 
+			// shadow-diff は単一サイト用のまま（issue #183 の「含むもの」7）。
+			// EPGStation 側も site ごとに分かれるのかを含め、多サイトでの意味論を
+			// 決める書き手がまだいないので、mirakcs が 2 要素以上なら形を決めずに
+			// 明示的なエラーで落とす（不変条件 11）。
+			site, err := requireSingleSite(cfg.Registry(), "shadow-diff")
+			if err != nil {
+				return err
+			}
+
 			ctx := cmd.Context()
 
 			// 単発 CLI コマンドは特定のロールを担わないので roles は渡さない
@@ -55,7 +64,7 @@ func newShadowDiffCmd() *cobra.Command {
 			}
 			defer pool.Close()
 
-			report, err := runShadowDiff(ctx, sqlcgen.New(pool), epgstation.NewClient(epgstationURL, nil), cfg.Mirakc.Site)
+			report, err := runShadowDiff(ctx, sqlcgen.New(pool), epgstation.NewClient(epgstationURL, nil), site.Site)
 			if err != nil {
 				return err
 			}

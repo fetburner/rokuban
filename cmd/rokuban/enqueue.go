@@ -52,6 +52,14 @@ scheduled）の場合は新規に投入されず合流する。その場合も�
 				return err
 			}
 
+			// M4-6 の CronJob がサイトごとに投入するため、--site で対象サイトを
+			// 選べる（issue #183 の「含むもの」6）。未指定かつレジストリが 1 要素
+			// ならその 1 つ、2 要素以上なら --site が必須。
+			site, err := resolveEnqueueSite(cmd, cfg.Registry())
+			if err != nil {
+				return err
+			}
+
 			ctx := cmd.Context()
 			// 単発 CLI コマンドは特定のロールを担わないので roles は渡さない
 			// （pgxpool の既定の MaxConns がそのまま使われる。issue #90）。
@@ -61,9 +69,11 @@ scheduled）の場合は新規に投入されず合流する。その場合も�
 			}
 			defer pool.Close()
 
-			return runEnqueue(ctx, pool, args[0], cfg.Mirakc.Site, cmd.OutOrStdout())
+			return runEnqueue(ctx, pool, args[0], site, cmd.OutOrStdout())
 		},
 	}
+
+	cmd.Flags().String("site", "", "対象サイト名（省略時: レジストリが 1 要素ならその 1 つ、2 要素以上なら必須）")
 
 	return cmd
 }
@@ -72,7 +82,8 @@ scheduled）の場合は新規に投入されず合流する。その場合も�
 // 投入する。DB / River とのやりとりをここに閉じ込め、cobra の RunE は薄い配線に
 // とどめる（runShadowDiff と同じ切り出し方）。
 //
-// サイトは config.mirakc.site（issue #31）から渡される。
+// サイトは --site（未指定時はレジストリの唯一のサイト）から渡される
+// （issue #183 M4-11。config.mirakc.site 固定だった旧挙動から変更）。
 //
 // UniqueOpts による合流で投入されなかった場合も nil を返す（CronJob が失敗扱いに
 // ならないようにするため）。投入されたかどうかは out へのログで分かる。
