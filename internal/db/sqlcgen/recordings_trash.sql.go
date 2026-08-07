@@ -91,6 +91,16 @@ type ListTrashRecordingsRow struct {
 // encode_profiles は issue #159 で recording_encode_policy 衛星表に切り出された
 // ため r.* には含まれない（internal/db/queries/recordings.sql の ListRecordings
 // コメント参照。表示上「未凍結」と「空として凍結」は区別しない）。
+//
+// 罠（PR #187 レビュー M4）: GET /api/recordings?trash=true は M3-24（issue
+// #136）以降このクエリを使わない --- internal/api/recordings_query.go の動的
+// WHERE ビルダが同じ WHERE 述語（deleted_at IS NOT NULL AND purged_at IS NULL）
+// を再現しつつ、ORDER BY は他の絞り込み軸と 1 つのキーセット契約に統一するため
+// `program_start_at DESC, id DESC` を使う（このクエリの `deleted_at DESC, id
+// DESC` とは異なる並び順。docs/api.md「録画一覧: 絞り込み + キーセットページ
+// ング」参照）。このクエリ自体は削除していない（sqlc 生成物・将来の直接利用の
+// 参考実装として残すが、GET /api/recordings の実装を変えたい場合はここではなく
+// recordings_query.go を直す）。
 func (q *Queries) ListTrashRecordings(ctx context.Context, site string) ([]ListTrashRecordingsRow, error) {
 	rows, err := q.db.Query(ctx, listTrashRecordings, site)
 	if err != nil {

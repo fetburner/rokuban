@@ -147,6 +147,35 @@ describe('RecordingsPage trash', () => {
     expect(trashCalls.length).toBeGreaterThan(0)
   })
 
+  // M3-24（#136）で GET /api/recordings の limit 既定が 50 になった。
+  // この画面はまだページング UI を持たず（M3-25 で置き換え予定）、返った配列を
+  // 全部描画するので、limit を明示しないと 50 件を超えるライブラリ・ごみ箱が
+  // 黙って頭打ちになる（PR #187 レビュー M4）。明示的に渡していることを固定する。
+  it('limit を明示的に渡す（既定 50 での黙った頭打ちを避ける）', async () => {
+    const fetchMock = vi.fn((_input: string | URL | Request) =>
+      Promise.resolve(
+        new Response(JSON.stringify([sampleRecording()]), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      ),
+    )
+
+    renderRecordingsPage(fetchMock as unknown as typeof fetch)
+
+    expect(await screen.findByText('ライブラリの録画')).toBeInTheDocument()
+
+    const calls = fetchMock.mock.calls.filter((call) => {
+      const url = new URL(String(call[0]), 'http://localhost')
+      return url.pathname === '/api/recordings'
+    })
+    expect(calls.length).toBeGreaterThan(0)
+    for (const call of calls) {
+      const url = new URL(String(call[0]), 'http://localhost')
+      expect(url.searchParams.get('limit')).toBe('200')
+    }
+  })
+
   // issue #135: 完全削除（purge）が完了した録画は purged_at IS NULL の条件で
   // ListTrashRecordings から外れるので、API は空配列を返す。この「ごみ箱の
   // 中身が全部 purge 済みで 0 件」という経路は、この修正が入るまで実際に

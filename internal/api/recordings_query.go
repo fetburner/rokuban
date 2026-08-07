@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/rulequery"
@@ -50,15 +51,28 @@ const (
 	maxRecordingsLimit     = 200
 )
 
+// genreLv1Min / genreLv1Max は genre_lv1 のドメイン（rule_genres.genre_lv1 の
+// CHECK と同じ、00006_rules.sql / 00034_recordings_search.sql の genre_lv1_of
+// 参照）。範囲外の genre クエリパラメータは黙って 0 件に落とさず 400 にする
+// （PR #187 レビュー O4）。
+const (
+	genreLv1Min = 0
+	genreLv1Max = 15
+)
+
 // recordingsFilterFromParams は ListRecordingsParams（openapi_gen.go の生成型）を
 // recordingsFilter に変換する。不正な入力（before/beforeId が片方だけ、limit が
-// 範囲外）はエラーメッセージを返す（空文字なら妥当）。400 の本文を捨てない規約
-// （CLAUDE.md）に従い、ListRecordings ハンドラがこれをそのまま
-// ListRecordings400JSONResponse.Error に載せる。
+// 範囲外、enum に一致しない qTarget/channelType/status/source/order、
+// ドメイン外の genre）はエラーメッセージを返す（空文字なら妥当）。
+//
+// enum は無視して黙って既定値や 0 件に落とさない（issue #136 の罠「黙って 0 件
+// にしない」・400 の本文を捨てない規約、CLAUDE.md）。生成型が持つ Valid() を
+// 使う（oapi-codegen が enum ごとに生成する）。ListRecordings ハンドラがこの
+// 戻り値をそのまま ListRecordings400JSONResponse.Error に載せる。
 func recordingsFilterFromParams(p ListRecordingsParams) (recordingsFilter, string) {
 	f := recordingsFilter{
 		Trash:    p.Trash != nil && *p.Trash,
-		SortDesc: p.Order == nil || *p.Order != Asc,
+		SortDesc: true, // 既定 desc。p.Order を検証した後に確定する
 		Limit:    defaultRecordingsLimit,
 		RuleID:   p.RuleId,
 		From:     p.From,
@@ -66,23 +80,48 @@ func recordingsFilterFromParams(p ListRecordingsParams) (recordingsFilter, strin
 		Before:   p.Before,
 		BeforeID: p.BeforeId,
 	}
+	if p.Order != nil {
+		if !p.Order.Valid() {
+			return recordingsFilter{}, fmt.Sprintf("invalid order %q (want asc or desc)", *p.Order)
+		}
+		f.SortDesc = *p.Order != Asc
+	}
 	if p.Q != nil {
 		f.Q = *p.Q
 	}
 	if p.QTarget != nil {
+		if !p.QTarget.Valid() {
+			return recordingsFilter{}, fmt.Sprintf("invalid qTarget %q (want title or titleDescription)", *p.QTarget)
+		}
 		f.QTarget = *p.QTarget
 	}
 	if p.Genre != nil {
+		for _, g := range *p.Genre {
+			if g < genreLv1Min || g > genreLv1Max {
+				return recordingsFilter{}, fmt.Sprintf("genre must be between %d and %d, got %d", genreLv1Min, genreLv1Max, g)
+			}
+		}
 		f.Genres = int16SliceFromInts(*p.Genre)
 	}
 	if p.ChannelType != nil {
+		for _, ct := range *p.ChannelType {
+			if !ct.Valid() {
+				return recordingsFilter{}, fmt.Sprintf("invalid channelType %q (want GR, BS, CS or SKY)", ct)
+			}
+		}
 		f.ChannelTypes = channelTypeStrings(*p.ChannelType)
 	}
 	f.ServiceIDs = int32Slice(p.ServiceId)
 	if p.Status != nil {
+		if !p.Status.Valid() {
+			return recordingsFilter{}, fmt.Sprintf("invalid status %q", *p.Status)
+		}
 		f.Status = *p.Status
 	}
 	if p.Source != nil {
+		if !p.Source.Valid() {
+			return recordingsFilter{}, fmt.Sprintf("invalid source %q (want rule or manual)", *p.Source)
+		}
 		f.Source = *p.Source
 	}
 	if p.Limit != nil {
@@ -99,7 +138,8 @@ func recordingsFilterFromParams(p ListRecordingsParams) (recordingsFilter, strin
 }
 
 // int16SliceFromInts は openapi の genre（[]int）を genre_lv1 の smallint[] 引数に
-// 変換する。
+// 変換する。呼び出し側（recordingsFilterFromParams）が範囲を検証済みであること
+// が前提。
 func int16SliceFromInts(vs []int) []int16 {
 	out := make([]int16, len(vs))
 	for i, v := range vs {
@@ -160,9 +200,17 @@ func buildRecordingsQuery(site string, f recordingsFilter) (string, []any, error
 	}
 
 	// q は条件が実際にあるときだけ節を足す（"$n IS NULL OR ..." 形にしない）。
-	// これにより常に具体的なプランになり、trgm 式 GIN
+	// これにより Postgres が最初に立てるプランは常に具体的になり、trgm 式 GIN
 	// （recordings_title_trgm / recordings_description_trgm、00034）が
 	// 汎用プランに落ちて使われなくなることを避ける（issue #136 の「罠」）。
+	//
+	// これだけでは不十分（PR #187 レビュー O1）: pgx の既定
+	// QueryExecModeCacheStatement は SQL テキストを prepared statement として
+	// キャッシュし、Postgres 自身が「同じ statement を 6 回目以降 custom plan
+	// でなく generic plan で評価する」（PREPARE/EXECUTE の既定挙動）。同じ
+	// フィルタ組み合わせ（= 同じ SQL テキスト）に異なる値の `q` が 6 回以上
+	// 来ると、trgm 式 GIN が効かない generic plan に落ちうる
+	// （queryRecordings が QueryExecModeExec を強制する理由）。
 	if f.Q != "" {
 		switch f.QTarget {
 		case Title:
@@ -268,13 +316,28 @@ LIMIT ` + limitPlaceholder
 // （recordings_title_trgm 等、00034）を使わないことがあるため（issue #136 の
 // 「罠」）。buildRecordingsQuery は条件が実際にあるときだけ節を足すので、そもそも
 // 1 つの静的クエリ文字列に収まらない。
+//
+// pgx.QueryExecModeExec を明示するのは、pgx の既定 QueryExecModeCacheStatement
+// が SQL テキストごとに named prepared statement を作ってキャッシュし、
+// Postgres 自身がその named statement を 6 回目以降 custom plan（実際の bind
+// 値に基づく見積り）から generic plan（値を見ない平均的な見積り）に切り替える
+// ことがあるため（PostgreSQL の PREPARE のプラン選択規則）。generic plan では
+// trgm 式 GIN が選ばれない可能性がある。加えて、この経路は絞り込みの組み合わせ
+// ごとに SQL テキスト自体が変わるので、そもそも named statement のキャッシュ
+// が効く場面が少ない（キャッシュを維持するコストに対して利益が薄い）。
+// QueryExecModeExec は unnamed statement で毎回明示的に再計画させるので、
+// この切り替えが原理的に起こらない（PR #187 レビュー O1。手元の再現では
+// normalize_search_text 越しの LIKE 選択率がリテラル依存で変わらず、
+// cache_statement のままでも 6 回超の実行でプラン崩壊は再現しなかったが、
+// Postgres のプラン選択規則自体は既定動作として存在するため、依存しない形に
+// 倒す）。
 func queryRecordings(ctx context.Context, pool *pgxpool.Pool, site string, f recordingsFilter) ([]Recording, error) {
 	sql, args, err := buildRecordingsQuery(site, f)
 	if err != nil {
 		return nil, err
 	}
 
-	rows, err := pool.Query(ctx, sql, args...)
+	rows, err := pool.Query(ctx, sql, append([]any{pgx.QueryExecModeExec}, args...)...)
 	if err != nil {
 		return nil, fmt.Errorf("querying recordings: %w", err)
 	}

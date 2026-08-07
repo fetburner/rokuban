@@ -314,64 +314,92 @@ func TestListRecordings_TrashOrthogonal(t *testing.T) {
 // キーセットページングは (program_start_at, id) の複合で割る。同一
 // program_start_at の行（同時刻開始の別チャンネル）を含めても、ページを
 // 辿った結果は重複も欠落も出ない。desc / asc 両方向で確認する。
+//
+// レビュー（PR #187 M2）: タイ群を 1 組だけ・limit=2 固定で置くと、そのタイ群が
+// 「ページ境界の内側」に来るかどうかは並び順（desc/asc）とタイ群の位置の
+// 組み合わせで決まってしまい、**片方向だけ壊れて他方向は通る**ケースが
+// 再現した（タイ群を後ろにずらすと逆に asc が通って desc が落ちる）。
+// つまり「desc と asc を両方走らせる」だけでは、たまたま境界がタイ群の
+// 外側に来た方向を「通った」と誤読しうる。ここでは (a) タイ群を先頭寄り・
+// 末尾寄りの 2 組置き、(b) limit を 1（境界が全行間に来る）・2・3 の
+// 複数で回し、(c) 単一ページ大 limit で取った正解の並び順（asc は挿入順、
+// desc はその逆順 --- 挿入を program_start_at 昇順・id 昇順で行っているため
+// 一致する）と**位置まで含めて**一致することを確認する。これにより
+// タイ群の位置に依存しない検証になる。
 func TestListRecordings_KeysetPagination_DuplicateStartAt(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	srv := newAPIServer(t, pool)
 	base := time.Now().Truncate(time.Second)
 
-	// 5 件のうち 2 件を同一 program_start_at にする。
-	wantIDs := map[int64]bool{}
-	wantIDs[seedRecordingFull(t, pool, seedRecordingOpts{title: "a", start: base, status: "finished", eventID: 1})] = true
-	wantIDs[seedRecordingFull(t, pool, seedRecordingOpts{title: "b", start: base.Add(time.Minute), status: "finished", eventID: 2, serviceID: 1})] = true
-	wantIDs[seedRecordingFull(t, pool, seedRecordingOpts{title: "c", start: base.Add(time.Minute), status: "finished", eventID: 3, serviceID: 2})] = true
-	wantIDs[seedRecordingFull(t, pool, seedRecordingOpts{title: "d", start: base.Add(2 * time.Minute), status: "finished", eventID: 4})] = true
-	wantIDs[seedRecordingFull(t, pool, seedRecordingOpts{title: "e", start: base.Add(3 * time.Minute), status: "finished", eventID: 5})] = true
+	// asc の正解順（program_start_at 昇順・タイは id 昇順）をそのまま記録する。
+	// 挿入順を program_start_at 昇順・id 昇順に揺れなく揃えているので、
+	// wantAsc はここでの挿入順そのものになる。
+	var wantAsc []int64
+	seed := func(title string, start time.Time, eventID int32) {
+		id := seedRecordingFull(t, pool, seedRecordingOpts{title: title, start: start, status: "finished", eventID: eventID})
+		wantAsc = append(wantAsc, id)
+	}
+	seed("a", base, 1)                   // 単独
+	seed("b1", base.Add(time.Minute), 2) // 先頭寄りのタイ群
+	seed("b2", base.Add(time.Minute), 3)
+	seed("c", base.Add(2*time.Minute), 4)  // 単独
+	seed("d1", base.Add(3*time.Minute), 5) // 末尾寄りのタイ群
+	seed("d2", base.Add(3*time.Minute), 6)
+	seed("e", base.Add(4*time.Minute), 7) // 単独
+
+	wantDesc := make([]int64, len(wantAsc))
+	for i, id := range wantAsc {
+		wantDesc[len(wantAsc)-1-i] = id
+	}
 
 	for _, order := range []string{"desc", "asc"} {
-		t.Run(order, func(t *testing.T) {
-			seen := map[int64]int{}
-			var ids []int64
-			before, beforeID := "", ""
-			for page := 0; page < 10; page++ {
-				params := url.Values{"limit": {"2"}, "order": {order}}
-				if before != "" {
-					params.Set("before", before)
-					params.Set("beforeId", beforeID)
+		want := wantDesc
+		if order == "asc" {
+			want = wantAsc
+		}
+		for _, limit := range []int{1, 2, 3} {
+			t.Run(fmt.Sprintf("%s_limit%d", order, limit), func(t *testing.T) {
+				var ids []int64
+				before, beforeID := "", ""
+				for page := 0; page < 20; page++ {
+					params := url.Values{"limit": {fmt.Sprint(limit)}, "order": {order}}
+					if before != "" {
+						params.Set("before", before)
+						params.Set("beforeId", beforeID)
+					}
+					var got []Recording
+					resp := getJSON(t, recordingsURL(srv.URL, params), &got)
+					if resp.StatusCode != http.StatusOK {
+						t.Fatalf("page %d status = %d", page, resp.StatusCode)
+					}
+					if len(got) == 0 {
+						break
+					}
+					for _, r := range got {
+						ids = append(ids, r.Id)
+					}
+					last := got[len(got)-1]
+					before = last.StartAt.Format(rfc3339)
+					beforeID = fmt.Sprint(last.Id)
 				}
-				var got []Recording
-				resp := getJSON(t, recordingsURL(srv.URL, params), &got)
-				if resp.StatusCode != http.StatusOK {
-					t.Fatalf("page %d status = %d", page, resp.StatusCode)
+				if !equalInt64Slices(ids, want) {
+					t.Fatalf("order=%s limit=%d got %v, want %v (exact order, 重複・欠落・順序入れ替わりのいずれも不可)", order, limit, ids, want)
 				}
-				if len(got) == 0 {
-					break
-				}
-				for _, r := range got {
-					seen[r.Id]++
-					ids = append(ids, r.Id)
-				}
-				last := got[len(got)-1]
-				before = last.StartAt.Format(rfc3339)
-				beforeID = fmt.Sprint(last.Id)
-			}
-			if len(ids) != len(wantIDs) {
-				t.Fatalf("order=%s got %d ids across pages (%v), want %d", order, len(ids), ids, len(wantIDs))
-			}
-			for id, count := range seen {
-				if !wantIDs[id] {
-					t.Errorf("order=%s unexpected id %d", order, id)
-				}
-				if count != 1 {
-					t.Errorf("order=%s id %d appeared %d times, want 1 (重複)", order, id, count)
-				}
-			}
-			for id := range wantIDs {
-				if seen[id] == 0 {
-					t.Errorf("order=%s id %d missing across pages (欠落)", order, id)
-				}
-			}
-		})
+			})
+		}
 	}
+}
+
+func equalInt64Slices(a, b []int64) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // 入力検証: before / beforeId は両方揃って初めて有効。limit は 1..200。
@@ -387,6 +415,16 @@ func TestListRecordings_ValidationErrors(t *testing.T) {
 		{"beforeId without before", url.Values{"beforeId": {"1"}}},
 		{"limit zero", url.Values{"limit": {"0"}}},
 		{"limit too large", url.Values{"limit": {"201"}}},
+		// 罠（issue #136）「黙って 0 件にしない」: enum に一致しない値や
+		// ドメイン外の genre は無視・切り詰めせず 400 にする（PR #187 レビュー O4）。
+		{"invalid status", url.Values{"status": {"bogus"}}},
+		{"invalid source", url.Values{"source": {"bogus"}}},
+		{"invalid qTarget", url.Values{"qTarget": {"bogus"}}},
+		{"invalid channelType", url.Values{"channelType": {"XX"}}},
+		{"invalid order (wrong case)", url.Values{"order": {"ASC"}}},
+		{"genre above domain max", url.Values{"genre": {"16"}}},
+		{"genre negative", url.Values{"genre": {"-1"}}},
+		{"genre wraps int16 if not validated", url.Values{"genre": {"32768"}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -409,6 +447,29 @@ func TestListRecordings_ValidationErrors(t *testing.T) {
 		resp := getJSON(t, recordingsURL(srv.URL, url.Values{"limit": {limit}}), nil)
 		if resp.StatusCode != http.StatusOK {
 			t.Errorf("limit=%s status = %d, want 200", limit, resp.StatusCode)
+		}
+	}
+
+	// genre の境界（0, 15）と正しい enum 値は通る
+	for _, genre := range []string{"0", "15"} {
+		resp := getJSON(t, recordingsURL(srv.URL, url.Values{"genre": {genre}}), nil)
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("genre=%s status = %d, want 200", genre, resp.StatusCode)
+		}
+	}
+	for _, tt := range []struct {
+		name   string
+		params url.Values
+	}{
+		{"status", url.Values{"status": {"finished"}}},
+		{"source", url.Values{"source": {"manual"}}},
+		{"qTarget", url.Values{"qTarget": {"title"}}},
+		{"channelType", url.Values{"channelType": {"GR"}}},
+		{"order", url.Values{"order": {"asc"}}},
+	} {
+		resp := getJSON(t, recordingsURL(srv.URL, tt.params), nil)
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("%s valid value status = %d, want 200", tt.name, resp.StatusCode)
 		}
 	}
 }

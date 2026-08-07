@@ -34,12 +34,33 @@ CREATE INDEX recordings_description_trgm
 -- marshalJSONOrNull 経由なので型を仮定できない）でも INSERT を落とさないよう、
 -- jsonb_typeof と正規表現で守る --- ここで落ちると録画の記録そのものが失敗する
 -- （不可逆な事実の喪失）。
+--
+-- 罠 1（PR #187 レビュー M1）: `jsonb_typeof(g) = 'array'` を
+-- `jsonb_array_elements(g)` と同じ WHERE に並べるのはプラン依存 --- Postgres が
+-- 述語の評価順序を保証しないため、非配列 g でも jsonb_array_elements が先に
+-- 評価されてエラーになりうる（実測でこの形は落ちなかったが、表現として閉じて
+-- いない）。CASE で FROM 句自体を空配列に閉じ込め、jsonb_array_elements には
+-- 常に配列しか渡らないようにする。
+--
+-- 罠 2（PR #187 レビュー M1）: `(e->>'lv1') ~ '^[0-9]+$'` は桁数を見ないため
+-- `40000` のような smallint 範囲外の整数も正規表現を通過し、直後の
+-- `::smallint` キャストで INSERT ごと失敗する（= 録画行が作られない不可逆な
+-- 事実の喪失）。genre_lv1 のドメインは rule_genres.genre_lv1（00006_rules.sql、
+-- `CHECK (genre_lv1 BETWEEN 0 AND 15)`）で 0..15 と決まっているので、
+-- smallint へキャストする前に `::numeric` で範囲を確認して閉じる
+-- （numeric はオーバーフローしないので、桁数がいくつでも安全に比較できる）。
+-- 範囲外の lv1 はエラーにせず黙って無視する --- ここでの目的は「検索用に使える
+-- ジャンル大分類だけを集める」ことで、genres 自体（不可逆な事実）は別に無傷で
+-- 保持されるため、真実を捨てるわけではない。
 CREATE FUNCTION genre_lv1_of(g jsonb) RETURNS smallint[]
 IMMUTABLE LANGUAGE sql AS $$
   SELECT coalesce(
     (SELECT array_agg(DISTINCT (e->>'lv1')::smallint ORDER BY (e->>'lv1')::smallint)
-     FROM jsonb_array_elements(g) e
-     WHERE jsonb_typeof(g) = 'array' AND (e->>'lv1') ~ '^[0-9]+$'),
+     FROM jsonb_array_elements(
+       CASE WHEN jsonb_typeof(g) = 'array' THEN g ELSE '[]'::jsonb END
+     ) e
+     WHERE (e->>'lv1') ~ '^[0-9]+$'
+       AND (e->>'lv1')::numeric BETWEEN 0 AND 15),
     '{}')::smallint[]
 $$;
 
@@ -47,6 +68,12 @@ $$;
 -- 変えても既存行は再計算されないので、式を変えるなら同じマイグレーションで
 -- 再計算（generated column は直接 UPDATE できないため DROP COLUMN → ADD COLUMN
 -- のやり直しになる）を書くこと。
+--
+-- 運用ノート（PR #187 レビュー O6）: この ALTER TABLE は全行を書き換えるため
+-- ACCESS EXCLUSIVE ロックで recordings への読み書きを止める。直後の 3 本の
+-- CREATE INDEX も非 CONCURRENTLY なので同様に書き込みをブロックする。
+-- 既存のマイグレーション（00020 等）と同じ流儀であり、録画テーブルの行数が
+-- 世帯スケール（docs/data.md §5「規模感」）である前提では許容範囲。
 ALTER TABLE recordings ADD COLUMN genre_lv1 smallint[]
   GENERATED ALWAYS AS (genre_lv1_of(genres)) STORED;
 

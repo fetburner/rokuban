@@ -572,9 +572,10 @@ paths:
         で取得する。
 
         既定は生きている録画（`deleted_at IS NULL`）のみ。`trash=true` でごみ箱
-        （`deleted_at IS NOT NULL`）を返す。物理削除済み tombstone もここに残るが、
-        ファイルは既に無いことがある（M3-8）。`trash` と各絞り込み条件は直交する
-        --- `trash=true` でも条件は同じように効く。
+        （`deleted_at IS NOT NULL AND purged_at IS NULL`）を返す。完全削除
+        （purge）が完了した tombstone（`purged_at` が立った行、issue #135）は
+        ファイルが既に無いため、ごみ箱にも通常一覧にも出ない。`trash` と各
+        絞り込み条件は直交する --- `trash=true` でも条件は同じように効く。
 
         ## 絞り込み
 
@@ -590,6 +591,9 @@ paths:
         - `status` / `source` / `ruleId` は録画自身の観測・出自での絞り込み
         - `from` / `to` は `program_start_at` の範囲（`from` 以上 `to` 未満）
 
+        不正な値（enum に一致しない `status`/`source`/`qTarget`/`channelType`/
+        `order`、ドメイン外の `genre`）は無視・切り詰めせず 400 にする。
+
         ## ページング（キーセット）
 
         トークンを発行しない。返った配列の**最後の要素**の `startAt` / `id` を、
@@ -600,7 +604,12 @@ paths:
         `id` を tie-breaker にしないとページ跨ぎで重複・欠落が出る）。`before` /
         `beforeId` は両方揃って初めて有効（片方だけの指定は 400）。`order=asc` では
         カーソルの不等号を反転する。総件数は返さない（別クエリが要り、キーセットの
-        利点を打ち消すため。必要になったら別 issue）。
+        利点を打ち消すため。必要になったら別 issue）。`limit` の既定は 50、上限は
+        200（超えると 400）。
+
+        `trash=true` でもカーソル軸は `program_start_at` のまま（旧
+        `ListTrashRecordings` の `deleted_at` 降順からの意図的な変更。理由は
+        docs/api.md「録画一覧: 絞り込み + キーセットページング」参照）。
       parameters:
         - name: q
           in: query

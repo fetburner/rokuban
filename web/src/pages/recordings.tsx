@@ -44,8 +44,16 @@ type ViewMode = 'library' | 'trash'
 export function RecordingsPage() {
   const [mode, setMode] = useState<ViewMode>('library')
   const trash = mode === 'trash'
-  // params を渡すと queryKey に trash が入り、ライブラリとごみ箱が別キャッシュになる
-  const query = useListRecordings({ trash })
+  // params を渡すと queryKey に trash が入り、ライブラリとごみ箱が別キャッシュになる。
+  //
+  // limit は API の上限（200）を明示的に渡す。M3-24（#136）で GET /api/recordings
+  // にキーセットページングが入り、limit の既定が 50 になった。この画面はまだ
+  // ページング UI を持たず（M3-25 で useInfiniteQuery に置き換える予定）、返った
+  // 配列を全部描画する形のままなので、limit を渡さないと録画が 50 件を超える
+  // ユーザーのライブラリ・ごみ箱が黙って 50 件で頭打ちになり「消えた」ように
+  // 見える（PR #187 レビュー M4）。M3-25 でページング UI に置き換えたら、この
+  // 固定 limit は不要になる。
+  const query = useListRecordings({ trash, limit: 200 })
   const recordings = unwrap(query.data) ?? []
 
   return (
