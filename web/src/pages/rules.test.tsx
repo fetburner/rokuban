@@ -312,4 +312,15 @@ describe('RulesPage 条件編集', () => {
     const link = screen.getByRole('link', { name: '検索しながら編集' })
     expect(link).toHaveAttribute('href', '/search?ruleId=2')
   })
+
+  // issue #137: ルールから、そのルール由来の録画だけに絞った一覧への導線。
+  // 条件モデルを検索と共有しないため、遷移先は /search ではなく /recordings。
+  it('「このルールの録画」リンクが /recordings?ruleId=<id> を指す', async () => {
+    stubApi([ruleWithConditions])
+    renderPage()
+
+    await screen.findByText('平日ニュース')
+    const link = screen.getByRole('link', { name: 'このルールの録画' })
+    expect(link).toHaveAttribute('href', '/recordings?ruleId=2')
+  })
 })

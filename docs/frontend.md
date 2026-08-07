@@ -752,6 +752,100 @@ go:embed 配信でハッシュ付きアセット immutable + それ以外 no-cac
   復元してから見る運用にする。ごみ箱一覧が `encodedProfiles` を射影しないままなのも
   同じ理由（プレイヤーを出さないので揃える必要がない）
 
+## 録画検索は `/recordings` に同居する（M3-25）
+
+EPGStation にある「録画済みの検索」に対応する機能だが、`/search`（EPG 検索。M2-11）
+とは**別ルートにしない**。録画検索は録画一覧そのものの絞り込みであり、`/search` を
+独立ルートにした理由（「番組表は EPG を時間軸で眺める画面、検索は ruler と同じ条件
+コンパイラを叩く別の問いの画面」）が録画には当てはまらない --- 録画一覧に検索専用の
+別画面を作ると、絞り込み結果と一覧が別画面になり「絞り込んだ録画をそのまま操作
+（削除・復元・エンコード追加）する」という主用途が 2 画面に分裂する。
+
+**`/search` と条件モデルを共有しない。** `ProgramSearchRequest`（`internal/rulequery`
+を通る EPG 検索・ルール条件）と `GET /api/recordings` の絞り込みは別のクエリで、
+フィールドの意味も重ならない（録画検索の `status` / `source` は録画の観測・出自、
+`/search` にはそもそも無い次元）。あちらの条件をこちらに持ってくる導線（相互流用）も
+作らない --- 両者は別の問いに答えている。
+
+### 条件は URL に持つ。`lib/recording-search.ts` に純関数として集約する
+
+`RecordingsPageSearch`（型）・`parseRecordingsSearch`（`validateSearch`）・
+`buildListRecordingsParams`（→ API クエリ）・`describeRecordingsFilters`
+（→ 適用中の条件チップ）・`clearRecordingsFilters` はすべてここに置く。
+`lib/program-search.ts`（`/search` の下書き）とは意図的に分離している ---
+条件モデルを共有しないので、変換ロジックを共有する理由も無い。
+
+- **タブ（ライブラリ / ごみ箱）は条件と直交する別の軸なので URL に載せない。**
+  `pages/recordings.tsx` の component state のまま持つ。タブを切り替えても
+  `RecordingsPageSearch` はそのまま渡るので、条件は自動的に保持される
+- **チャンネル種別（`channelType`）・`qTarget` は UI に出さない。** チャンネルは
+  個々のサービスを選べる `<ChannelPicker>`（`serviceId`）の方が細かく絞れ、
+  種別だけの選択肢を並列に置く理由が無い。`qTarget` も UI 案（issue #137）に
+  無い次元で、出しても検証できないコントロールを増やすだけ（「機能しない
+  コントロールは置かない」の逆）。パラメータ自体は `ListRecordingsParams` に
+  残るので、共有 URL に手で `qTarget=title` を足す使い方は塞がない
+- **キーワードはチップにしない。** 検索欄自体が値を表示しているので、消すのは
+  入力欄の編集で足りる。配列条件（ジャンル・チャンネル）は値ごとに 1 チップ
+  （個別に外せる）、スカラー条件（状態・種別・期間・ルール）は次元ごとに
+  1 チップにする
+
+### TanStack Router の `validateSearch` は無効な値を「省略」しても消えない
+
+`parseRecordingsSearch` は非 strict モード（既定）の TanStack Router で使われる。
+このモードは実際のルートマッチでも（`matchRoutesInternal`。`@tanstack/router-core`
+の `router.js` 内、`preMatchSearch = { ...parentSearch, ...strictSearch }` ---
+`parentSearch` は生の未検証の値）、ビルドロケーション用の軽量マッチでも
+（`matchRoutesLightweight` の `accumulatedSearch`。`Object.assign(accumulatedSearch,
+validateSearch(...))`）、`validateSearch` の戻り値を「生の（未検証の）
+`location.search` の上に重ねる」形で合成する。**戻り値からキーを省略すると、その
+キーは上書きされない**ので、生の不正な値（`?status=bogus` の文字列そのもの等）が
+「検証済みのつもり」の結果へそのまま残って漏れる --- 実機で確認済み（壊れた URL の
+不正な値がチップにそのまま出た）。対策は**落とした次元も `undefined` を明示的に
+代入する**（キーを省略しない）。`{ ...x, k: undefined }` はどちらの合成方式で見ても
+実際に上書きになるため、これで確実に消える。
+
+`/search` の `ruleId` も同じ非 strict モードの下で同じ関数形（`Number.isFinite(n) ?
+{ ruleId: n } : {}`）を使っており、無効な `ruleId`（`?ruleId=abc` 等）を渡すと同じ
+経路で漏れることを PR #193 のレビューで確認した（`{ ruleId: "abc" }` が
+`useSearch()` にそのまま届く）。**本 PR では `/search` 自体は直していない**
+（触るファイルの目安に無いため）。[issue #194](https://github.com/fetburner/rokuban/issues/194)
+に切った --- M4-4（#92、`/live` が同じ関数形を使う場合はそちらも含める）と
+合わせて 1 本で直す。
+
+### 一覧は自前で組んだ `useInfiniteQuery`
+
+orval は無限クエリのフックを生成しない（生成されるのは単発の `useQuery` ラッパーの
+み）ので、生成された `listRecordings` 関数を `@tanstack/react-query` の
+`useInfiniteQuery` に自分で渡す。`queryKey` は `getListRecordingsQueryKey(絞り込み +
+limit)`（カーソル `before` / `beforeId` を含めない）にする --- 同じ絞り込みの中で
+ページを積んでいくのが `useInfiniteQuery` の前提であり、カーソルを含めるとページ
+ごとに別クエリになってしまう。先頭要素が `'/api/recordings'` になる形は保たれるので、
+`RecordingActions` の `invalidateQueries({ queryKey: ['/api/recordings'] })`（前方
+一致）が変わらず効く。
+
+進行方向の読み込み（番兵 + IntersectionObserver、失敗後はボタンへ落とす
+`lib/auto-load.ts` の `shouldAutoLoadNextPage` / `shouldShowLoadMoreButton`、
+計測できない環境の判定 `lib/list-virtualization.ts` の `domLayoutMeasurable`）は
+`pages/programs.tsx` と同じ部品を再利用する。録画一覧はグリッドのような座標系を
+持たないリストなので仮想化はしていない。
+
+**M3-24（#136）の繋ぎの固定 `limit: 200` はここで外した。** `useInfiniteQuery` に
+置き換えたので、既定ページサイズ（50）で継ぎ足す形になり、固定 `limit` を渡す必要が
+無くなった。
+
+### 0 件の文言は条件の有無で分ける
+
+録画一覧に「未検索」の状態は無い（条件ゼロ = 全件が正しい。`/search` の
+「未検索と 0 件を別状態にする」規律はここには持ち込まない）。ただし 0 件の文言は
+分ける --- 条件があるとき「条件に一致する録画がありません」+ 条件をクリアする
+導線、条件が無いときだけ「録画がありません」（ごみ箱タブでは「ごみ箱は空です」）。
+取り違えると「まだ何も録れていない」と誤読させる。
+
+`components/page.tsx` の `EmptyState` は `<p>` ではなく `<div>` で包む（このタスクで
+変更）。条件クリアのボタンを子に持つ呼び出し側が出てきたため --- `<p>` の中に
+ブロック要素（`<div>` / 別の `<p>`）を置くと無効な HTML になり、React が hydration
+エラーの警告を出す。
+
 ## ライブ視聴 --- EPGStation 水準のシンプルな UI
 
 リッチな視聴体験（ハードウェアトランスコード、低遅延、コメント連携）は KonomiTV が既に高水準で解決しており、そこに張り合わない。同じ mirakc を共有すれば KonomiTV との共存も可能（チューナーは優先度調停で録画が勝つ）。
