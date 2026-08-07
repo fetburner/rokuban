@@ -33,12 +33,13 @@ describe('livePlaylistURL', () => {
 })
 
 describe('supportsNativeHls', () => {
-  it('probably は true', () => {
+  it('probably は true（Safari 相当）', () => {
     expect(supportsNativeHls(() => 'probably')).toBe(true)
   })
 
-  it('maybe は true', () => {
-    expect(supportsNativeHls(() => 'maybe')).toBe(true)
+  it('maybe は false（実 Chrome が返す値。web/e2e/live.mjs で実機確認済み。' +
+    'trueにすると Chrome が video.src に m3u8 を直接渡され再生できない）', () => {
+    expect(supportsNativeHls(() => 'maybe')).toBe(false)
   })
 
   it('空文字は false（未対応。jsdom の既定値でもある）', () => {
@@ -162,5 +163,27 @@ describe('probeLivePlaylist', () => {
       ok: false,
       error: { kind: 'unreachable' },
     })
+  })
+
+  it('signal を渡すと fetch に伝わり、中断は unreachable に丸めず再 throw する', async () => {
+    const fetchMock = vi.fn((_url: string, init?: RequestInit) => {
+      const signal = init?.signal
+      return new Promise<Response>((_resolve, reject) => {
+        signal?.addEventListener('abort', () => {
+          reject(new DOMException('aborted', 'AbortError'))
+        })
+      })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const controller = new AbortController()
+    const promise = probeLivePlaylist('/x', controller.signal)
+    controller.abort()
+
+    await expect(promise).rejects.toThrow(
+      expect.objectContaining({ name: 'AbortError' }),
+    )
+    // fetch 自身にも signal が渡っている（呼び出し側だけが中断を握っているのではない）
+    expect(fetchMock).toHaveBeenCalledWith('/x', { signal: controller.signal })
   })
 })

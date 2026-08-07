@@ -42,6 +42,10 @@ export function LivePlayer({ site, serviceId, className }: LivePlayerProps) {
 
   useEffect(() => {
     let cancelled = false
+    // 切り替え・破棄が起きたら probe の fetch 自体を中断する。
+    // `playlistStartupTimeout`（streamer 側、15 秒）ぶん in-flight のまま
+    // 残さないため（レビュー #190 の指摘）。
+    const controller = new AbortController()
     // effect の設定時点で 1 回だけ読む。cleanup で `videoRef.current` を直接
     // 読むと「クリーンアップが走る時点でもまだ同じノードを指しているか」が
     // 保証できない（react-hooks/exhaustive-deps が指摘する形）ため、同じ
@@ -53,7 +57,15 @@ export function LivePlayer({ site, serviceId, className }: LivePlayerProps) {
     const url = livePlaylistURL(site, serviceId)
 
     async function start() {
-      const probe = await probeLivePlaylist(url)
+      let probe: Awaited<ReturnType<typeof probeLivePlaylist>>
+      try {
+        probe = await probeLivePlaylist(url, controller.signal)
+      } catch (err) {
+        // 中断（チャンネル切り替え・破棄）は無視する。エラー表示にはしない ---
+        // 単に「もう見たいものが変わった」だけで、失敗ではない
+        if (err instanceof DOMException && err.name === 'AbortError') return
+        throw err
+      }
       if (cancelled) return
       if (!probe.ok) {
         setError(probe.error)
@@ -81,6 +93,11 @@ export function LivePlayer({ site, serviceId, className }: LivePlayerProps) {
         hlsRef.current = hls
         hls.on(Hls.Events.ERROR, (_event, data) => {
           if (!data.fatal || cancelled) return
+          // fatal のまま放置すると hls.js が内部でリトライを続け、エラー画面の
+          // 裏でセグメント要求が続く（= idle GC も効かない。レビュー #190 の
+          // 指摘）。表示するエラーは「壊れて止まった」なので、実際に止める
+          hls.destroy()
+          hlsRef.current = null
           setError({ kind: 'other', status: 0, message: 'ライブ再生中にエラーが発生しました' })
         })
         hls.loadSource(url)
@@ -93,6 +110,7 @@ export function LivePlayer({ site, serviceId, className }: LivePlayerProps) {
 
     return () => {
       cancelled = true
+      controller.abort()
       hlsRef.current?.destroy()
       hlsRef.current = null
       if (video) {
@@ -154,6 +172,13 @@ function LiveErrorMessage({ error }: { error: LiveLoadError }) {
     return (
       <div className="text-sm text-destructive">
         <p>いま視聴できません（チューナー不足または同時視聴数の上限）。</p>
+        {/* 待てば直ることが読めないと「壊れている」と誤解される（レビュー #190 の
+            指摘）。直前まで別のチャンネルを見ていた場合は、そのセッションの
+            idle GC（既定 30 秒）待ちである可能性が高い */}
+        <p className="text-muted-foreground">
+          チャンネルを切り替えた直後は、前のチャンネルの解放待ちの可能性があります。
+          30 秒ほど待って再読み込みしてください。
+        </p>
         {error.message !== '' && <p className="text-muted-foreground">{error.message}</p>}
       </div>
     )

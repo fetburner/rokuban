@@ -49,6 +49,24 @@ E2E_URL=http://localhost:40775 pnpm e2e
 pnpm e2e:diagnose
 ```
 
+### ライブ視聴（`live.mjs`）
+
+番組リストと違い、**mirakc も実チューナーも要らない** --- HLS プレイリスト/
+セグメントは `page.route` でブラウザ側から丸ごと差し替える。動的 import
+（hls.js のバンドル分割）・MSE への実再生・チャンネル切替時の cleanup は
+jsdom で原理的に測れず、`vi.mock` によるフェイクの配線検査（Vitest）だけでは
+「配線が呼ばれること」までしか見えない。手順は
+[docs/runbook/live.md](../../docs/runbook/live.md) §②。
+
+```sh
+E2E_LIVE_SERVICE_A=9001 E2E_LIVE_SERVICE_B=9002 pnpm e2e:live
+```
+
+**この判定手段が実際に本番相当の回帰（`supportsNativeHls` が実 Chrome の
+`canPlayType` の戻り値 `'maybe'` を誤ってネイティブ対応と判定し、Chrome が
+サイレントに再生できなくなる）を発見した。** 詳細は
+[docs/frontend.md](../../docs/frontend.md) §実機確認について（M4-4）。
+
 ## CI では回さない
 
 実サーバーと実 mirakc のデータに依存するため、CI には載せない。**ローカルでの受け入れ確認**の

@@ -22,13 +22,23 @@ export function livePlaylistURL(site: string, serviceId: number, profile?: strin
 /**
  * supportsNativeHls は `<video>` がネイティブに HLS を再生できるかを判定する（Safari）。
  *
+ * **`'probably'` だけを対応と見なす。`'maybe'` は対応の印にならない。** 実 Chrome
+ * （bundled Chromium だけでなく `channel: 'chrome'` の本物でも同様）は
+ * `canPlayType('application/vnd.apple.mpegurl')` に対して `'maybe'` を返すが、
+ * Chrome はネイティブ HLS を再生できない（`web/e2e/live.mjs` で実機検証中に発見:
+ * この判定を `'probably' || 'maybe'` にしたまま初回リリースしていたら、
+ * Chrome ユーザー全員が `video.src` に m3u8 を直接渡されて再生できないまま
+ * 沈黙して壊れていた）。`'maybe'` は仕様上「分からないが試す価値はある」という
+ * 弱い返答で、Chrome は未知の MIME タイプに対して楽観的に `'maybe'` を返す
+ * だけであり、実際に再生できるかとは無関係。Safari は m3u8 を特別扱いしていて
+ * `'probably'` を返す（対応表明の強い返答）ので、これだけで見分けられる。
+ *
  * `canPlayType` を注入で受け取るのは、実際の `HTMLVideoElement.canPlayType` は
  * jsdom で常に `''` を返す（未実装）ため、テストから振る舞いを差し替えられるように
  * するため。
  */
 export function supportsNativeHls(canPlayType: (type: string) => string): boolean {
-  const result = canPlayType('application/vnd.apple.mpegurl')
-  return result === 'probably' || result === 'maybe'
+  return canPlayType('application/vnd.apple.mpegurl') === 'probably'
 }
 
 /**
@@ -113,11 +123,20 @@ export type LivePlaylistProbeResult = { ok: true } | { ok: false; error: LiveLoa
  * 渡す。この GET 自体もセグメント要求と同じ経路（`internal/streamer` のアプリ配信）を
  * 通るので、idle GC の last-access 更新にも自然に乗る。
  */
-export async function probeLivePlaylist(url: string): Promise<LivePlaylistProbeResult> {
+export async function probeLivePlaylist(
+  url: string,
+  signal?: AbortSignal,
+): Promise<LivePlaylistProbeResult> {
   let response: Response
   try {
-    response = await fetch(url)
-  } catch {
+    response = await fetch(url, { signal })
+  } catch (err) {
+    // 呼び出し側が明示的に中断した場合（チャンネル切り替え・破棄）はそのまま
+    // 再 throw する --- 呼び出し側は `cancelled` フラグで結果を捨てるので、
+    // ここで「到達できない」と誤分類してもいずれ捨てられるが、意図的な中断を
+    // ネットワーク障害と同じ形で返すのは紛らわしい。中断は呼び出し側の
+    // AbortController が起点なので、その意図をそのまま伝える
+    if (err instanceof DOMException && err.name === 'AbortError') throw err
     return { ok: false, error: classifyLiveLoadError({ kind: 'network' }) }
   }
   if (response.ok) return { ok: true }

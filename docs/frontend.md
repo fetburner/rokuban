@@ -909,23 +909,100 @@ hls.js へ URL を渡す前に 1 回取得して成否を確認する。この G
 
 **チャンネル切り替えは idle GC に任せる。明示的にセッションを閉じる API が無い**
 （M4-3 が配るのは `GET .../live/playlist.m3u8` と `GET .../live/segments/{name}`
-のみ）ため、実質これ以外の選択肢がない。`LivePlayer` はチャンネル切り替え
-（`serviceId` prop の変化）を effect の cleanup で検知し、hls.js の `destroy()` /
-`<video>` の `src` 解除を即座に行って**それ以上そのサービスへのセグメント要求を
-出さない**ところまでは保証する。ただしサーバー側のチューナー開放は
-`live.idle_timeout` 経過まで遅延する（チューナー数が少ない環境では、切り替え
-直後の数十秒は前後 2 チャンネル分のチューナーが同時に掴まれる）。この制約は
-M4-3 側の設計として既に受容されている（[overview.md](overview.md)
-§ライブ視聴の HLS「idle GC はサービス単位」）ため、M4-4（UI のみ）の範囲で
-サーバー側に即時解放 API を新設することはしない。
+のみ）ため、実質これ以外の選択肢がない（サーバー側の即時解放 API は
+[issue #191](https://github.com/fetburner/rokuban/issues/191) へ切り出し済みで、
+このタスク（UI のみ）の範囲外）。`LivePlayer` はチャンネル切り替え（`serviceId`
+prop の変化）を effect の cleanup で検知し、probe の in-flight `fetch` を
+`AbortController` で中断、hls.js の `destroy()` / `<video>` の `src` 解除を
+即座に行って**それ以上そのサービスへのセグメント要求を出さない**ところまでは
+保証する。
 
-**テストは状態遷移とエラー表示に絞る。** jsdom はレイアウト・実再生のいずれも
-測れないため、`components/live-player.test.tsx` は `fetch` をモックして
-probe の成否とエラー分類ごとの表示・再読み込み・チャンネル切り替え時の
-`fetch` 再実行だけを見る。純関数（URL 組み立て・エラー分類・初期チャンネル
-選択・時間窓）は `lib/live.test.ts` に切り出してテストする。**実際のブラウザ
-再生・実機での idle GC 動作（セグメント要求が止まると streamer 側で ffmpeg が
-止まること）は実 mirakc / 実チューナーが無い開発環境では確認していない** ---
-`docs/runbook.md` の受け入れ確認は実機（ISDB-T チューナー + mirakc）を要する
-ため、このタスクでは単体テストと `pnpm build` の成功までを担保し、実機確認は
-未実施のまま PR に明記した。
+**実配値は `live.idle_timeout` 既定 30 秒 / `live.max_sessions` 既定 4 / GC 周期
+`idle_timeout / 2` = 15 秒（`internal/config/config.go` / `internal/streamer/live.go`）。**
+セッションは最終アクセスから**30〜45 秒**生き残る。クライアント側がセグメント
+要求を止めても、この間サーバー側のチューナーは掴まれたまま。ザッピングに
+デバウンスを入れていない場合、掴まれる本数は「前後 2 チャンネル分」ではなく
+**30 秒以内にザップした本数ぶん、`max_sessions` まで**（既定なら 5 局ザップで
+5 局目が 503 `too many concurrent live sessions on this process`、チューナー
+本数がそれより少ない環境ではさらに手前で mirakc 側の枯渇により 503
+`live stream unavailable` になる）。issue #92 の「チューナー数が少ない環境で
+何が見えるかを含めて判断する」への回答としてこの値をそのまま UI 側の緩和に
+反映した:
+
+- **チャンネル切り替えを `channelSwitchDebounceMs`（400ms。`pages/live.tsx`）
+  だけデバウンスする。** チャンネル一覧のハイライト（`pendingServiceId`）は
+  クリックへ即座に反応するが、実際のナビゲーション（= `LivePlayer` への
+  `serviceId` 反映 = probe / セッション開始）はデバウンス窓の間に別のチャンネル
+  が押されなければ実行する latest-wins。連続してザップしても、**通り過ぎた
+  チャンネルの分だけセッションが積まれない**（idle GC の遅延自体は変えない ---
+  実際に選んで留まったチャンネルの前セッションは今までと同様 30〜45 秒残る）
+- **503（`capacity`）のエラー文言に「30 秒ほど待って再読み込み」という具体的な
+  案内を付けた（`LiveErrorMessage`）。** 待てば直ることが読めないと、ユーザーは
+  「壊れている」と誤解して繰り返しリロード/再訪問し、状況を悪化させる
+
+**テストの範囲を正確に書く。** jsdom はレイアウト・実再生のいずれも測れないため、
+`components/live-player.test.tsx` は 3 層に分けてある:
+
+1. `fetch` をモックして probe の成否とエラー分類ごとの表示・再読み込み・
+   チャンネル切り替え時の `fetch` 再実行・in-flight `fetch` の中断
+   （`AbortController.abort()` が呼ばれること）を見る
+2. `vi.mock('hls.js', ...)` で hls.js 自体をフェイクに差し替え、**hls.js 経路
+   （ネイティブ HLS 非対応。Chrome / Firefox 相当）の呼び出しの配線**
+   （動的 import 後に `loadSource` / `attachMedia` が呼ばれる、fatal エラーで
+   `destroy` が呼ばれる、切り替え・破棄で古いインスタンスが `destroy` される）
+   を見る。**当初のレビュー（#190）まではこの層が無く、`supportsNativeHls` を
+   常に `true` に固定しても・cleanup を丸ごと削除しても既存テストが全部
+   通っていた** --- Chrome / Firefox が実際に通る経路が単体テストで一度も
+   検証されていなかった。上記の分岐・削除はいずれもこの層のテストが
+   `waitFor` のタイムアウトとして落ちることを確認済み
+3. 純関数（URL 組み立て・エラー分類・初期チャンネル選択・時間窓・
+   `probeLivePlaylist` の中断伝播）は `lib/live.test.ts` に切り出してテストする
+
+ただし 2 は**フェイクの配線が正しく呼ばれること**の検査であり、hls.js の
+「動的 import が本当に別バンドルチャンクとして届く」ことや「実際に MSE へ
+セグメントを投入して再生が進む」ことは検証していない。この 2 点と、
+「チャンネル切り替え後に旧 `serviceId` へのセグメント要求が実際に 0 件になる」
+（= 保証の実効性そのもの）は `web/e2e/live.mjs` が実ブラウザ・実 hls.js で担う
+（後述「実機確認について」）。
+
+### 実機確認について（M4-4）
+
+**`web/e2e/live.mjs`（詳細は [docs/runbook/live.md](runbook/live.md) §②）で
+実ブラウザ・実 hls.js による確認を行った。** mirakc も実チューナーも要らない ---
+HLS プレイリスト/セグメントは Playwright の `page.route` でブラウザ側から
+差し替え、streamer は「サービス一覧を返す」以外の実仕事をしない。判定した
+5 点（すべて合格を確認済み）:
+
+1. hls.js の動的 import チャンク（`assets/hls-*.js`）が実際に要求される
+2. MSE がアタッチされる（`video.src` が `blob:` になる）
+3. **実 Chrome**（`channel: 'chrome'`）で `video.play()` 後に `currentTime` が
+   進み、`videoWidth > 0`（bundled Chromium は H.264/AAC 非対応のため
+   `channel: 'chrome'` が必須。ローカルの Google Chrome が無い環境では
+   「未測定」として報告し NG にはしない）
+4. チャンネル切替後（チャンネル一覧のリンクをクリックするクライアントサイド
+   ナビゲーション。`page.goto` によるフルナビゲーションでは cleanup を通らず
+   判定が成立しないため使わない）、旧チャンネルへのセグメント要求が 0 件になる
+5. 503（本文つき）でエラー文言が出て、再読み込みで復帰する
+
+**この手段が実際に本番相当の回帰を発見した。** `supportsNativeHls` は当初
+`canPlayType('application/vnd.apple.mpegurl')` の戻り値が `'probably'` か
+`'maybe'` のいずれかであればネイティブ HLS 対応と判定していたが、実 Chrome
+（bundled Chromium だけでなく `channel: 'chrome'` の本物でも同様）はこの
+MIME タイプに `'maybe'` を返す --- Chrome はネイティブ HLS を再生できないにも
+関わらず、である。この状態でリリースしていたら、**Chrome ユーザー全員が
+`video.src` に m3u8 を直接渡され、hls.js を一切経由せず沈黙して再生できな
+かった。** jsdom によるユニットテストはこの分岐を一度も実行していなかった
+（`canPlayType` が jsdom では常に `''` を返すため、`'probably' || 'maybe'` の
+どちらの分岐にも入らず、テストは「常に hls.js 経路」を見ていた）。判定を
+`'probably'` のみに直し、`web/e2e/live.mjs` で実 Chrome から再検証して合格を
+確認した。
+
+**未解決の限界:**
+
+- ①（実 mirakc / 実チューナーでの idle GC・録画優先度調停・実 ISDB-T
+  トランスコードの遅延・音ズレ・画質）は、この開発環境に ISDB-T チューナーも
+  mirakc も無いため確認していない。`docs/runbook/live.md` §①に手順を残した
+  （実行できる形にはなっているが、このタスクでは実行していない）
+- CI では `web/e2e/live.mjs` を回さない（`web/e2e/checks.mjs` と同じ理由。
+  実 Chrome チャンネルと ffmpeg という新しい依存を CI イメージに足す判断は
+  このタスクの範囲外とした）

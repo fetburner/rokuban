@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RouterProvider, createMemoryHistory, createRouter } from '@tanstack/react-router'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -135,9 +135,14 @@ describe('LivePage', () => {
 
     // 番組を持つ先頭（サービス 2）が選ばれる
     expect(await screen.findByText('放送中の番組')).toBeInTheDocument()
-    const currentLinks = screen
+    // チャンネル一覧（`nav[aria-label="チャンネル一覧"]`）の中だけを見る ---
+    // AppShell の主ナビゲーションも「ライブ」の項目に `aria-current="page"` を
+    // 付けている（いま /live を開いているため）ので、document 全体から探すと
+    // 別の意味の "current" と衝突する
+    const channelNav = screen.getByRole('navigation', { name: 'チャンネル一覧' })
+    const currentLinks = within(channelNav)
       .getAllByRole('link')
-      .filter((el) => el.getAttribute('aria-current') === 'true')
+      .filter((el) => el.getAttribute('aria-current') === 'page')
     expect(currentLinks).toHaveLength(1)
     expect(currentLinks[0]).toHaveTextContent('メインサービス')
   })
@@ -201,5 +206,69 @@ describe('LivePage', () => {
       expect(await screen.findByText('B の番組')).toBeInTheDocument()
     })
     expect(screen.queryByText('A の番組')).not.toBeInTheDocument()
+  })
+
+  it('ハイライトは即座に切り替わるが、実際のナビゲーションはデバウンスする', async () => {
+    const user = userEvent.setup()
+    stubFetch({
+      services: [
+        service({ serviceId: 10, name: 'チャンネル A' }),
+        service({ serviceId: 20, name: 'チャンネル B' }),
+      ],
+      programsByServiceId: {
+        10: [program({ serviceId: 10, name: 'A の番組' })],
+        20: [program({ serviceId: 20, name: 'B の番組' })],
+      },
+    })
+    renderLive()
+    await screen.findByText('A の番組')
+
+    await user.click(screen.getByRole('link', { name: /チャンネル B/ }))
+
+    // ハイライトは即座に B へ移る
+    expect(screen.getByRole('link', { name: /チャンネル B/ })).toHaveAttribute(
+      'aria-current',
+      'page',
+    )
+    // が、デバウンス（400ms）中はまだ A を見ている（probe / セッションを
+    // まだ起こしていない）
+    expect(screen.getByText('A の番組')).toBeInTheDocument()
+
+    await waitFor(() => expect(screen.getByText('B の番組')).toBeInTheDocument())
+  })
+
+  it('デバウンス中に別チャンネルへ切り替えると、通り過ぎたチャンネルへは一度も遷移しない', async () => {
+    const user = userEvent.setup()
+    stubFetch({
+      services: [
+        service({ serviceId: 10, name: 'チャンネル A' }),
+        service({ serviceId: 20, name: 'チャンネル B' }),
+        service({ serviceId: 30, name: 'チャンネル C' }),
+      ],
+      programsByServiceId: {
+        10: [program({ serviceId: 10, name: 'A の番組' })],
+        20: [program({ serviceId: 20, name: 'B の番組' })],
+        30: [program({ serviceId: 30, name: 'C の番組' })],
+      },
+    })
+    renderLive()
+    await screen.findByText('A の番組')
+
+    // B → C とデバウンス幅（400ms）内に連続でザップする
+    await user.click(screen.getByRole('link', { name: /チャンネル B/ }))
+    await user.click(screen.getByRole('link', { name: /チャンネル C/ }))
+
+    await waitFor(() => expect(screen.getByText('C の番組')).toBeInTheDocument())
+
+    // B の「いま放送中」問い合わせが一度も発生していない
+    // （= B 向けの LivePlayer / probe も一度も起きていない）ことを、
+    // fetch 呼び出しの実績から確認する
+    const calls = (globalThis.fetch as unknown as { mock: { calls: [string][] } }).mock.calls
+    const queriedServiceIds = calls
+      .map(([url]) => new URL(url, 'http://localhost'))
+      .filter((u) => u.pathname === '/api/sites/default/programs')
+      .map((u) => u.searchParams.get('serviceId'))
+    expect(queriedServiceIds).not.toContain('20')
+    expect(queriedServiceIds).toContain('30')
   })
 })
