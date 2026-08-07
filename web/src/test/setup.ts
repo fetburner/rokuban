@@ -25,6 +25,11 @@ globalThis.ResizeObserver ??= ResizeObserverStub
 // jsdom がすでに「投げるだけ」の実装を持っているため `??=` では上書きできない。
 window.scrollTo = (() => {}) as typeof window.scrollTo
 
+// jsdom は HTMLMediaElement.prototype.load を実装していない。LivePlayer
+// （components/live-player.tsx）が破棄時に呼ぶ（次のチャンネルへセグメント要求が
+// 残らないようにするため）。window.scrollTo と同じ理由でスタブする。
+HTMLMediaElement.prototype.load = function (this: HTMLMediaElement) {}
+
 // vitest config で test.globals を有効にしていないため、
 // @testing-library/react の自動クリーンアップ検出（グローバル afterEach の有無）
 // が働かない。前のテストの DOM がそのまま残ると screen クエリが複数要素に

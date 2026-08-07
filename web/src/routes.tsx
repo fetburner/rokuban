@@ -2,6 +2,7 @@ import { createRootRoute, createRoute, Outlet } from '@tanstack/react-router'
 
 import { AppShell } from './components/app-shell'
 import { parseRecordingsSearch, type RecordingsPageSearch } from './lib/recording-search'
+import { LivePage } from './pages/live'
 import { ProgramsPage } from './pages/programs'
 import { RecordingsPage } from './pages/recordings'
 import { ReservationDetailPage } from './pages/reservation-detail'
@@ -95,6 +96,30 @@ const recordingsRoute = createRoute({
   component: RecordingsPage,
 })
 
+/** LivePageSearch は `/live` のクエリパラメータ。 */
+export type LivePageSearch = {
+  /** 視聴中のチャンネル（省略時は番組を持つ先頭のサービスに落ちる。`lib/live.ts` の `pickInitialServiceId`）。 */
+  serviceId?: number
+}
+
+/**
+ * ライブ視聴は独立したルートに置く（issue #92 の着手時コメント）。番組表グリッド
+ * は `lg` 以上でしか出ない（`docs/frontend.md`「リストを第一級に置く」）ため、
+ * グリッドの「いま」から入る形にすると入口がモバイルとデスクトップで割れる。
+ */
+const liveRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/live',
+  // searchRoute の ruleId と同じ規律: 壊れた/古いリンクを踏んでも「チャンネル
+  // 指定なし」の通常表示（先頭チャンネル）に落ちる
+  validateSearch: (search: Record<string, unknown>): LivePageSearch => {
+    const raw = search.serviceId
+    const n = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : NaN
+    return Number.isInteger(n) && n > 0 ? { serviceId: n } : {}
+  },
+  component: LivePage,
+})
+
 export const routeTree = rootRoute.addChildren([
   programsRoute,
   searchRoute,
@@ -102,4 +127,5 @@ export const routeTree = rootRoute.addChildren([
   reservationsRoute,
   reservationDetailRoute,
   recordingsRoute,
+  liveRoute,
 ])

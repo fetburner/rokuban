@@ -1,5 +1,5 @@
 import { Link, useRouterState } from '@tanstack/react-router'
-import { CalendarClock, ListVideo, Menu, Search, Settings2, Tv } from 'lucide-react'
+import { CalendarClock, ListVideo, Menu, Radio, Search, Settings2, Tv } from 'lucide-react'
 import type { ComponentType } from 'react'
 import { useEffect, useState } from 'react'
 
@@ -47,6 +47,7 @@ const navItems: NavItem[] = [
   { to: '/rules', label: 'ルール', icon: Settings2 },
   { to: '/reservations', label: '予約', icon: CalendarClock },
   { to: '/recordings', label: '録画', icon: ListVideo },
+  { to: '/live', label: 'ライブ', icon: Radio },
 ]
 
 function useActivePath(): string {

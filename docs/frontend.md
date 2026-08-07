@@ -12,7 +12,7 @@ go:embed で単一バイナリに同梱するため、成果物は**静的ファ
 | 状態管理・ルーティング・仮想化 | TanStack Query / Router / Virtual |
 | API クライアント生成 | orval（OpenAPI → 型付きクライアント + TanStack Query フック） |
 | スタイリング + UI コンポーネント | Tailwind + shadcn/ui |
-| 動画再生 | ネイティブ `<video>`（VOD / MP4 progressive）+ hls.js（ライブ、M4） |
+| 動画再生 | ネイティブ `<video>`（VOD / MP4 progressive）+ hls.js（ライブ。ライブ視聴画面のみ動的 import。バンドルは別チャンク） |
 
 ## 決め手
 
@@ -861,3 +861,71 @@ Rokuban 自体のライブ視聴は「チャンネル一覧から選んでブラ
 
 - **ライブ視聴セッションは意図的に in-memory**。落ちたらクライアント再接続で済む使い捨て状態であり、「すべての状態を Postgres に」の原則の明示的な例外（参照: [overview.md](overview.md) の crash-only 設計原則）
 - 「クライアントがいなくなったら ffmpeg を止める」idle GC が必要。セグメント要求がアプリを通ることで last-access の更新がタダで手に入る（参照: [api.md](api.md) のライブ HLS 配信）
+
+### フロントエンド実装（M4-4、issue #92）
+
+**独立したルート `/live` を持つ。** 番組表グリッドの「いま」から入る形は、グリッド自体が
+`lg` 以上でしか出ない（上記「リストを第一級に置く。グリッドはその上に足す」）ため、
+モバイルからの入口を別に用意する必要が生じ結局 2 箇所になる。`/live` は
+チャンネル一覧（`GET /api/sites/{site}/services`）+ プレイヤー + いま放送中の番組
+（既存 EPG API の時間窓クエリ。専用 API は足していない）という 1 画面で構成する
+（`pages/live.tsx`）。選択中のチャンネルは `?serviceId=` に持つ（`pages/search.tsx`
+の `?ruleId` と同じ形。`routes.tsx` の `validateSearch` が不正な値を空へ落とす）。
+チャンネル一覧のリンクは `replace` にし、ザッピングでブラウザ履歴が積み上がらない
+ようにする。
+
+**プロファイル（画質）を選ぶ UI は持たない。** `live.profiles` を列挙する API が
+無い（`GET /api/sites/{site}/services/{serviceId}/live/playlist.m3u8` は OpenAPI
+対象外なので設定名の一覧を返す仕組みも無い）ため、選択肢を出すと「機能しない
+コントロール」になる。既定プロファイル（サーバー側の `live.profiles` 先頭）に
+固定し、画質切り替えは将来 `live.profiles` の一覧 API ができてから足す。
+
+**hls.js はライブ視聴画面だけ動的 import する（`components/live-player.tsx`）。**
+Safari はネイティブ HLS 再生ができる（`video.canPlayType('application/vnd.apple.mpegurl')`）
+のでそちらを使い、hls.js の読み込み自体をスキップする。Chrome / Firefox は
+`await import('hls.js')` で読み込む。`pnpm build` の出力で hls.js が
+`assets/hls-*.js`（約 520 KB）として独立チャンクに分かれ、他画面のバンドル
+（`assets/index-*.js`）には乗らないことを確認済み。
+
+**再生前に `probeLivePlaylist`（`lib/live.ts`）でプレイリストを 1 回 `fetch` する。**
+`<video>` の `error` イベント・hls.js のエラーイベントはいずれも HTTP ステータスや
+本文を運ばない。両方の再生経路で同じエラー表示を出すため、実際に `<video>` /
+hls.js へ URL を渡す前に 1 回取得して成否を確認する。この GET 自体もセグメント
+要求と同じ経路（streamer のアプリ配信）を通るので、idle GC の last-access 更新にも
+自然に乗る。
+
+**エラーは 3 種に分類する（`classifyLiveLoadError`）。**
+
+- `unreachable`（`fetch` 自体が reject）: streamer に到達できない。ハイブリッド
+  構成では自宅側が落ちているだけの正常状態でありうる（[overview.md](overview.md)
+  §サーバーレスデプロイ）ため、destructive な赤ではなく中立の文言にする
+- `capacity`（503）: 同時セッション上限 / チューナー枯渇 / シャットダウン中の
+  いずれか。本文（プレーンテキスト）はいずれも「今は無理なので後で試す」という
+  同じ対応を要求するので UI 側の分岐は 1 つにまとめ、本文はそのまま見せる
+  （「エラーの本文も UI まで運ぶ」と同じ規律）
+- `other`: 想定外のステータス。本文をそのまま見せる
+
+いずれも再読み込みボタンで `probeLivePlaylist` からやり直せる。
+
+**チャンネル切り替えは idle GC に任せる。明示的にセッションを閉じる API が無い**
+（M4-3 が配るのは `GET .../live/playlist.m3u8` と `GET .../live/segments/{name}`
+のみ）ため、実質これ以外の選択肢がない。`LivePlayer` はチャンネル切り替え
+（`serviceId` prop の変化）を effect の cleanup で検知し、hls.js の `destroy()` /
+`<video>` の `src` 解除を即座に行って**それ以上そのサービスへのセグメント要求を
+出さない**ところまでは保証する。ただしサーバー側のチューナー開放は
+`live.idle_timeout` 経過まで遅延する（チューナー数が少ない環境では、切り替え
+直後の数十秒は前後 2 チャンネル分のチューナーが同時に掴まれる）。この制約は
+M4-3 側の設計として既に受容されている（[overview.md](overview.md)
+§ライブ視聴の HLS「idle GC はサービス単位」）ため、M4-4（UI のみ）の範囲で
+サーバー側に即時解放 API を新設することはしない。
+
+**テストは状態遷移とエラー表示に絞る。** jsdom はレイアウト・実再生のいずれも
+測れないため、`components/live-player.test.tsx` は `fetch` をモックして
+probe の成否とエラー分類ごとの表示・再読み込み・チャンネル切り替え時の
+`fetch` 再実行だけを見る。純関数（URL 組み立て・エラー分類・初期チャンネル
+選択・時間窓）は `lib/live.test.ts` に切り出してテストする。**実際のブラウザ
+再生・実機での idle GC 動作（セグメント要求が止まると streamer 側で ffmpeg が
+止まること）は実 mirakc / 実チューナーが無い開発環境では確認していない** ---
+`docs/runbook.md` の受け入れ確認は実機（ISDB-T チューナー + mirakc）を要する
+ため、このタスクでは単体テストと `pnpm build` の成功までを担保し、実機確認は
+未実施のまま PR に明記した。
