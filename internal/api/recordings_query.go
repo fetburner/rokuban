@@ -320,17 +320,26 @@ LIMIT ` + limitPlaceholder
 // pgx.QueryExecModeExec を明示するのは、pgx の既定 QueryExecModeCacheStatement
 // が SQL テキストごとに named prepared statement を作ってキャッシュし、
 // Postgres 自身がその named statement を 6 回目以降 custom plan（実際の bind
-// 値に基づく見積り）から generic plan（値を見ない平均的な見積り）に切り替える
-// ことがあるため（PostgreSQL の PREPARE のプラン選択規則）。generic plan では
-// trgm 式 GIN が選ばれない可能性がある。加えて、この経路は絞り込みの組み合わせ
-// ごとに SQL テキスト自体が変わるので、そもそも named statement のキャッシュ
-// が効く場面が少ない（キャッシュを維持するコストに対して利益が薄い）。
-// QueryExecModeExec は unnamed statement で毎回明示的に再計画させるので、
-// この切り替えが原理的に起こらない（PR #187 レビュー O1。手元の再現では
-// normalize_search_text 越しの LIKE 選択率がリテラル依存で変わらず、
-// cache_statement のままでも 6 回超の実行でプラン崩壊は再現しなかったが、
-// Postgres のプラン選択規則自体は既定動作として存在するため、依存しない形に
-// 倒す）。
+// 値に基づく見積り）から generic plan（bind 値を見ない既定選択率での見積り）に
+// 切り替えるため（PostgreSQL の PREPARE のプラン選択規則）。generic plan では
+// bind 値が分からず trgm 式 GIN を選べないため、既定選択率のまま非選択的な
+// インデックス（recordings_program_start_at_id_idx 等）を全走査するプランに
+// 倒れる。加えて、この経路は絞り込みの組み合わせごとに SQL テキスト自体が
+// 変わるので、そもそも named statement のキャッシュが効く場面が少ない
+// （キャッシュを維持するコストに対して利益が薄い）。QueryExecModeExec は
+// unnamed statement で毎回明示的に再計画させるので、この切り替えが原理的に
+// 起こらない（PR #187 レビュー O1）。
+//
+// 80,001 行・同一接続で 12 回実行して実測した結果、6 回目で崖が来ることを
+// 確認済み（named statement 数はログの `named stmts` 列。0 のままなら
+// QueryExecModeExec が効いている）:
+//
+//	QueryExecModeExec   per-exec: [1.8ms 0.7 0.7 0.7 0.7 0.6 0.7 0.6 0.7 0.7 0.7 0.7]   named stmts=0
+//	default(cache_stmt) per-exec: [5.0ms 3.8 3.8 3.3 3.2 | 323.9ms 286.8 295.6 288.1 289.7 285.9 287.6]  named stmts=1
+//
+// 0.7ms → 290ms（約 400 倍）の崖。この保護を「保険」として外すと、絞り込みの
+// 組み合わせが少ない環境（同じ SQL テキストが 6 回を超えて再利用される）で
+// この崖に落ちる。
 func queryRecordings(ctx context.Context, pool *pgxpool.Pool, site string, f recordingsFilter) ([]Recording, error) {
 	sql, args, err := buildRecordingsQuery(site, f)
 	if err != nil {

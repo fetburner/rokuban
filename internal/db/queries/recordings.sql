@@ -173,6 +173,16 @@ DO UPDATE SET
 -- 空配列」と「未凍結」を区別する必要がないので、ここでは両者を同じ表示（省略）に
 -- 潰してよい（区別が要る箇所は削除エンジンの until_encoded_deletable_originals
 -- 側で、そこは JOIN のみで「行が無ければ対象外」を書いている）。
+--
+-- 罠（PR #187 レビュー M4/O2 相当）: GET /api/recordings は M3-24（issue #136）
+-- 以降このクエリを呼ばない --- internal/api/recordings_query.go の動的 WHERE
+-- ビルダが同じ射影・同じ基底述語（r.site = $1 AND r.deleted_at IS NULL）を
+-- 再現している。呼び出し側は Go のテストにも残っていない（sqlcgen.Queries の
+-- ListRecordings を呼ぶ箇所はゼロ）ため、このクエリは現状完全に死んでいる。
+-- ListTrashRecordings（recordings_trash.sql）と違い、internal/worker 側の
+-- テストフィクスチャからも呼ばれていない。一覧の射影を直したいときはここでは
+-- なく recordings_query.go の buildRecordingsQuery / queryRecordings を直すこと
+-- --- ここだけ直しても GET /api/recordings には反映されない。
 -- name: ListRecordings :many
 SELECT
     r.*,
