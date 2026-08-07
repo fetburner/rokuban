@@ -120,6 +120,56 @@ UI は行を展開したときに詳細を取る。
   invalidate することになる。分けておけば予約クエリだけ捨てれば済む
 - 予約は数十件なのでクライアント結合は Map 1 つで済む
 
+### 録画一覧: 絞り込み + キーセットページング（M3-24）
+
+```
+GET /api/recordings?q=&qTarget=&genre=&channelType=&serviceId=&status=&source=&ruleId=&from=&to=&order=&trash=&limit=&before=&beforeId=
+```
+
+レスポンスは `Recording[]` のまま変えない（ページオブジェクトに包まない・総件数も
+返さない）。次ページのカーソルは**返った配列の最後の要素の `startAt` / `id`** から
+そのまま導出できるので、専用のトークンを発行しない。総件数を返すには別クエリが要り、
+キーセットページングの利点（「何ページ目か」を数えない）を打ち消すため、必要になったら
+別 issue で検討する。
+
+- **`q` / `qTarget`**: キーワードの部分一致。`qTarget=title`（既定
+  `titleDescription`）で対象列を絞れる。全角/半角の揺れは `normalize_search_text`
+  （[data.md](data.md) §5）で吸収するが、**エンジン（`internal/rulequery`）は
+  `/search`（EPG 検索）と共有しない**。理由は [data.md](data.md) §5「録画検索は
+  rulequery を共有しない」
+- **`genre`**: `genre_lv1`（ジャンル大分類。`recordings.genres` から生成列で導出）
+  との重なり。複数指定は OR
+- **`channelType` / `serviceId`**: 複数指定可（`style: form, explode: true`。
+  EPG の `serviceId` と同じ規約）
+- **`status` / `source` / `ruleId`**: 録画自身の観測・出自での絞り込み。`status` は
+  `recordings.status` の CHECK と一致させた 4 値（`recording` / `finished` /
+  `canceled` / `failed`）
+- **`from` / `to`**: `program_start_at` の範囲（`from` 以上 `to` 未満）
+- **`trash`**: 既存のごみ箱切り替え（`true` で `deleted_at IS NOT NULL`）。**各絞り込み
+  条件と直交する** --- `trash=true` でも `q` 等の条件は同じように効く
+
+#### キーセットは `(program_start_at, id)` の複合で割る
+
+同一 `program_start_at` の録画（同時刻開始の別チャンネル）は普通に発生するため、
+`program_start_at` 単独をカーソルにするとページ跨ぎで重複・欠落が出る。`id` を
+tie-breaker にした複合キーで割ることで、`order=desc`（既定）/ `asc` のどちらでも
+全順序が安定する。`before` / `beforeId` は両方揃って初めて有効（片方だけの指定は
+400）。
+
+EPG の「時間窓がカーソル」（本ファイル前掲）と思想は同じ（トークンを発行せず、
+返り値そのものから次の問い合わせを構成できる）だが、EPG はローリングウィンドウで
+有界なのに対し録画は有界に増え続けるため、境界を時間窓ではなく複合キーにしている。
+
+#### 動的 WHERE ビルダ（sqlc の静的クエリにしない）
+
+`internal/api/recordings_query.go` が `internal/rulequery.Compile` と同じ
+`arg` クロージャ方式で WHERE を組む。sqlc の 1 querytext に `($n IS NULL OR ...)`
+形で全軸を詰め込むと、`q` のような選択条件でも汎用プランに落ちて
+`recordings_title_trgm` / `recordings_description_trgm`（式 GIN、
+`internal/db/migrations/00034_recordings_search.sql`）が使われないことがある。
+条件が実際に指定されたときだけ節を足す形にすることで、常に具体的なプランを
+Postgres に渡す。
+
 ## SSE (`/api/events`) --- ヒント配送、状態の真実は REST から再取得
 
 サーバー → クライアントの一方向プッシュ。役割は**「どのデータが変わったか」のヒント配送だけ**。

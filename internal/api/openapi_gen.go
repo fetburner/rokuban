@@ -415,6 +415,108 @@ func (e ServiceChannelType) Valid() bool {
 	}
 }
 
+// Defines values for ListRecordingsParamsQTarget.
+const (
+	Title            ListRecordingsParamsQTarget = "title"
+	TitleDescription ListRecordingsParamsQTarget = "titleDescription"
+)
+
+// Valid indicates whether the value is a known member of the ListRecordingsParamsQTarget enum.
+func (e ListRecordingsParamsQTarget) Valid() bool {
+	switch e {
+	case Title:
+		return true
+	case TitleDescription:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ListRecordingsParamsChannelType.
+const (
+	ListRecordingsParamsChannelTypeBS  ListRecordingsParamsChannelType = "BS"
+	ListRecordingsParamsChannelTypeCS  ListRecordingsParamsChannelType = "CS"
+	ListRecordingsParamsChannelTypeGR  ListRecordingsParamsChannelType = "GR"
+	ListRecordingsParamsChannelTypeSKY ListRecordingsParamsChannelType = "SKY"
+)
+
+// Valid indicates whether the value is a known member of the ListRecordingsParamsChannelType enum.
+func (e ListRecordingsParamsChannelType) Valid() bool {
+	switch e {
+	case ListRecordingsParamsChannelTypeBS:
+		return true
+	case ListRecordingsParamsChannelTypeCS:
+		return true
+	case ListRecordingsParamsChannelTypeGR:
+		return true
+	case ListRecordingsParamsChannelTypeSKY:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ListRecordingsParamsStatus.
+const (
+	ListRecordingsParamsStatusCanceled  ListRecordingsParamsStatus = "canceled"
+	ListRecordingsParamsStatusFailed    ListRecordingsParamsStatus = "failed"
+	ListRecordingsParamsStatusFinished  ListRecordingsParamsStatus = "finished"
+	ListRecordingsParamsStatusRecording ListRecordingsParamsStatus = "recording"
+)
+
+// Valid indicates whether the value is a known member of the ListRecordingsParamsStatus enum.
+func (e ListRecordingsParamsStatus) Valid() bool {
+	switch e {
+	case ListRecordingsParamsStatusCanceled:
+		return true
+	case ListRecordingsParamsStatusFailed:
+		return true
+	case ListRecordingsParamsStatusFinished:
+		return true
+	case ListRecordingsParamsStatusRecording:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ListRecordingsParamsSource.
+const (
+	ListRecordingsParamsSourceManual ListRecordingsParamsSource = "manual"
+	ListRecordingsParamsSourceRule   ListRecordingsParamsSource = "rule"
+)
+
+// Valid indicates whether the value is a known member of the ListRecordingsParamsSource enum.
+func (e ListRecordingsParamsSource) Valid() bool {
+	switch e {
+	case ListRecordingsParamsSourceManual:
+		return true
+	case ListRecordingsParamsSourceRule:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ListRecordingsParamsOrder.
+const (
+	Asc  ListRecordingsParamsOrder = "asc"
+	Desc ListRecordingsParamsOrder = "desc"
+)
+
+// Valid indicates whether the value is a known member of the ListRecordingsParamsOrder enum.
+func (e ListRecordingsParamsOrder) Valid() bool {
+	switch e {
+	case Asc:
+		return true
+	case Desc:
+		return true
+	default:
+		return false
+	}
+}
+
 // AddEncodeProfilesInput defines model for AddEncodeProfilesInput.
 type AddEncodeProfilesInput struct {
 	// Profiles 追加したいエンコードプロファイル名（config.encode.profiles に定義された
@@ -1000,9 +1102,55 @@ type ListCapacityOveragesParams struct {
 
 // ListRecordingsParams defines parameters for ListRecordings.
 type ListRecordingsParams struct {
+	// Q キーワード（部分一致）。qTarget が対象列を決める
+	Q       *string                      `form:"q,omitempty" json:"q,omitempty"`
+	QTarget *ListRecordingsParamsQTarget `form:"qTarget,omitempty" json:"qTarget,omitempty"`
+
+	// Genre genre_lv1（ジャンル大分類）との重なり。複数指定可
+	Genre       *[]int                             `form:"genre,omitempty" json:"genre,omitempty"`
+	ChannelType *[]ListRecordingsParamsChannelType `form:"channelType,omitempty" json:"channelType,omitempty"`
+	ServiceId   *[]int                             `form:"serviceId,omitempty" json:"serviceId,omitempty"`
+
+	// Status recordings.status の CHECK と一致させた 4 値（'canceled' は 00021 で
+	// CHECK に追加済み）。
+	Status *ListRecordingsParamsStatus `form:"status,omitempty" json:"status,omitempty"`
+	Source *ListRecordingsParamsSource `form:"source,omitempty" json:"source,omitempty"`
+
+	// RuleId 特定ルール由来の録画に絞る
+	RuleId *int64 `form:"ruleId,omitempty" json:"ruleId,omitempty"`
+
+	// From program_start_at がこの時刻以上
+	From *time.Time `form:"from,omitempty" json:"from,omitempty"`
+
+	// To program_start_at がこの時刻未満
+	To    *time.Time                 `form:"to,omitempty" json:"to,omitempty"`
+	Order *ListRecordingsParamsOrder `form:"order,omitempty" json:"order,omitempty"`
+
 	// Trash true のときごみ箱（論理削除済み）を返す
 	Trash *bool `form:"trash,omitempty" json:"trash,omitempty"`
+	Limit *int  `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Before キーセットカーソル。前ページ最後の要素の startAt。beforeId と対で使う
+	Before *time.Time `form:"before,omitempty" json:"before,omitempty"`
+
+	// BeforeId キーセットカーソル。前ページ最後の要素の id。before と対で使う
+	BeforeId *int64 `form:"beforeId,omitempty" json:"beforeId,omitempty"`
 }
+
+// ListRecordingsParamsQTarget defines parameters for ListRecordings.
+type ListRecordingsParamsQTarget string
+
+// ListRecordingsParamsChannelType defines parameters for ListRecordings.
+type ListRecordingsParamsChannelType string
+
+// ListRecordingsParamsStatus defines parameters for ListRecordings.
+type ListRecordingsParamsStatus string
+
+// ListRecordingsParamsSource defines parameters for ListRecordings.
+type ListRecordingsParamsSource string
+
+// ListRecordingsParamsOrder defines parameters for ListRecordings.
+type ListRecordingsParamsOrder string
 
 // ListProgramsParams defines parameters for ListPrograms.
 type ListProgramsParams struct {
@@ -1397,6 +1545,149 @@ func (siw *ServerInterfaceWrapper) ListRecordings(w http.ResponseWriter, r *http
 	// Parameter object where we will unmarshal all parameters from the context
 	var params ListRecordingsParams
 
+	// ------------- Optional query parameter "q" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "q", r.URL.Query(), &params.Q, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "q"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "q", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "qTarget" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "qTarget", r.URL.Query(), &params.QTarget, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "qTarget"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "qTarget", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "genre" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "genre", r.URL.Query(), &params.Genre, runtime.BindQueryParameterOptions{Type: "array", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "genre"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "genre", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "channelType" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "channelType", r.URL.Query(), &params.ChannelType, runtime.BindQueryParameterOptions{Type: "array", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "channelType"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "channelType", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "serviceId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "serviceId", r.URL.Query(), &params.ServiceId, runtime.BindQueryParameterOptions{Type: "array", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "serviceId"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "serviceId", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "status" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "status", r.URL.Query(), &params.Status, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "status"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "status", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "source" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "source", r.URL.Query(), &params.Source, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "source"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "source", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "ruleId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "ruleId", r.URL.Query(), &params.RuleId, runtime.BindQueryParameterOptions{Type: "integer", Format: "int64"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "ruleId"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "ruleId", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "from" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "from", r.URL.Query(), &params.From, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "from"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "from", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "to" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "to", r.URL.Query(), &params.To, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "to"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "to", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "order" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "order", r.URL.Query(), &params.Order, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "order"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "order", Err: err})
+		}
+		return
+	}
+
 	// ------------- Optional query parameter "trash" -------------
 
 	err = runtime.BindQueryParameterWithOptions("form", true, false, "trash", r.URL.Query(), &params.Trash, runtime.BindQueryParameterOptions{Type: "boolean", Format: ""})
@@ -1406,6 +1697,45 @@ func (siw *ServerInterfaceWrapper) ListRecordings(w http.ResponseWriter, r *http
 			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "trash"})
 		} else {
 			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "trash", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", r.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "limit"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "before" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "before", r.URL.Query(), &params.Before, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "before"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "before", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "beforeId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "beforeId", r.URL.Query(), &params.BeforeId, runtime.BindQueryParameterOptions{Type: "integer", Format: "int64"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "beforeId"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "beforeId", Err: err})
 		}
 		return
 	}
@@ -2438,6 +2768,20 @@ func (response ListRecordings200JSONResponse) VisitListRecordingsResponse(w http
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListRecordings400JSONResponse ErrorResponse
+
+func (response ListRecordings400JSONResponse) VisitListRecordingsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
 	_, err := buf.WriteTo(w)
 	return err
 }

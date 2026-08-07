@@ -169,6 +169,7 @@ type Recording struct {
 	SupersededAt      *time.Time
 	PurgedAt          *time.Time
 	NeverScheduled    bool
+	GenreLv1          []int16
 }
 
 type RecordingEncodePolicy struct {
