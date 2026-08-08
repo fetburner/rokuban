@@ -3,8 +3,11 @@ package api_test
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +19,24 @@ import (
 	"github.com/fetburner/rokuban/internal/testutil"
 	"github.com/fetburner/rokuban/internal/worker"
 )
+
+// getJSONForTest は GET して 200 なら body を out にデコードする（epg_test.go の
+// getJSON と同じ形。あちらは package api、こちらは package api_test なので
+// 共有できず、この 1 ファイル内だけの複製として持つ）。
+func getJSONForTest(t *testing.T, url string, out any) *http.Response {
+	t.Helper()
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatalf("GET %s: %v", url, err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	if out != nil && resp.StatusCode == http.StatusOK {
+		if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+			t.Fatalf("decoding %s: %v", url, err)
+		}
+	}
+	return resp
+}
 
 // GET /api/sites はレジストリを定義順のまま返す。
 func TestListSites_ReturnsConfiguredRegistry(t *testing.T) {
@@ -101,6 +122,16 @@ ON CONFLICT (site, program_id) DO NOTHING`,
 // 1 要素の既存テストはこの壊れ方を検出できない（h.site を 1 つに固定しても
 // その 1 つに対しては常に一致するため）。この述語を `req.Site != h.site` に
 // 戻すとこのテストは falls over（2 つ目のサイトが軒並み unknown site になる）。
+//
+// **もう 1 つ別の罠も同じ fixture で狙う。** site 検査（`knownSite`）を通した
+// 後、`epg.go` / `search.go` / `reservations_overlaps.go` は検査済みの
+// `req.Site` を EPG プロジェクションへの問い合わせ引数に**そのまま**渡す
+// 必要がある。もしここで（h.site のような）固定の 1 値を使っていたら、
+// 検査自体は通るのに実際には別サイトのデータを読んでしまう ---
+// ステータスコードだけを見るテストではこの壊れ方を検出できないため、
+// 各エンドポイントの**レスポンス本体**を site ごとに区別できる形で確認する
+// （programId を site ごとに変えてあるので、取り違えれば 404 か別サイトの
+// programId が返る）。
 func TestMultiSiteRegistry_HandlesAllRegisteredSites(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
@@ -112,32 +143,105 @@ func TestMultiSiteRegistry_HandlesAllRegisteredSites(t *testing.T) {
 		programIDTokyo int64 = 100000000000001
 		programIDOsaka int64 = 200000000000002
 	)
+	// insertProgramFixtureForSite が焼き込む放送時刻（now + 24h、30 分番組）に
+	// 実際に重なる窓で問い合わせる。2020 年のような過去窓だと常に空配列が返り、
+	// 「site を取り違えて別サイトの空プロジェクションを読んだ」場合と
+	// 「正しく自サイトを読んだが単に一致が無い」場合を区別できない。
+	// url.QueryEscape が要る --- RFC3339 のタイムゾーンオフセットの "+" を
+	// エスケープしないと、クエリ文字列中で空白として解釈され「不正な日時」
+	// 400 になる（time.Now() がローカルタイム = +09:00 を返す環境で踏む）。
+	windowStart := url.QueryEscape(time.Now().Add(23 * time.Hour).Format(time.RFC3339))
+	windowEnd := url.QueryEscape(time.Now().Add(26 * time.Hour).Format(time.RFC3339))
+
 	insertProgramFixtureForSite(t, pool, ctx, "tokyo", programIDTokyo, 10001, 20001)
 	insertProgramFixtureForSite(t, pool, ctx, "osaka", programIDOsaka, 10002, 20002)
+	// GetProgramReservation は reservations 行を読む。ruler を経由しないと
+	// PutProgramIntent だけでは行が作られない（reservations の書き手は ruler
+	// だけ、issue #29）ため、この確認のためだけに直接作る。
+	insertReservationFixtureForSite(t, pool, ctx, "tokyo", programIDTokyo, 10001, 20001)
+	insertReservationFixtureForSite(t, pool, ctx, "osaka", programIDOsaka, 10002, 20002)
 
 	registered := []struct {
-		site      string
-		programID int64
+		site           string
+		programID      string // pathで使う文字列
+		otherProgramID string // 取り違え検出用（自サイトに存在しないはずの id）
 	}{
-		{"tokyo", programIDTokyo},
-		{"osaka", programIDOsaka},
+		{"tokyo", itoa(programIDTokyo), itoa(programIDOsaka)},
+		{"osaka", itoa(programIDOsaka), itoa(programIDTokyo)},
 	}
 	for _, r := range registered {
 		t.Run("registered/"+r.site, func(t *testing.T) {
-			// GET .../programs（読み取り系。unknown なら 404）
-			resp, err := http.Get(srv.URL + "/api/sites/" + r.site + "/programs?start=2020-01-01T00:00:00Z&end=2020-01-02T00:00:00Z")
+			// GET .../programs は自サイトの programId だけを返す（他サイトの
+			// programId が混ざる／返らないことの両方を見る）。
+			var programs []api.ProgramListItem
+			presp := getJSONForTest(t, srv.URL+"/api/sites/"+r.site+"/programs?start="+windowStart+"&end="+windowEnd, &programs)
+			if presp.StatusCode != http.StatusOK {
+				t.Fatalf("GET .../programs status = %d, want 200", presp.StatusCode)
+			}
+			ids := make([]string, 0, len(programs))
+			for _, p := range programs {
+				ids = append(ids, itoa(p.ProgramId))
+			}
+			if !slices.Contains(ids, r.programID) {
+				t.Errorf("GET .../programs (site=%s) = %v, want to contain %s", r.site, ids, r.programID)
+			}
+			if slices.Contains(ids, r.otherProgramID) {
+				t.Errorf("GET .../programs (site=%s) = %v, must not contain other site's %s", r.site, ids, r.otherProgramID)
+			}
+
+			// GET .../programs/{programId} 単体取得（site を取り違えると
+			// 「別サイトのプロジェクションに存在しない」404 になる）。
+			var program api.Program
+			gresp := getJSONForTest(t, srv.URL+"/api/sites/"+r.site+"/programs/"+r.programID, &program)
+			if gresp.StatusCode != http.StatusOK {
+				t.Fatalf("GET .../programs/%s (site=%s) status = %d, want 200", r.programID, r.site, gresp.StatusCode)
+			}
+			if itoa(program.ProgramId) != r.programID {
+				t.Errorf("GET .../programs/%s (site=%s) returned programId=%d", r.programID, r.site, program.ProgramId)
+			}
+
+			// POST .../programs/search（条件なし = 全件マッチ）も自サイトの
+			// programId だけを返す。
+			var searchIDs []int64
+			sresp, err := http.Post(srv.URL+"/api/sites/"+r.site+"/programs/search", "application/json", strings.NewReader(`{}`))
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer func() { _ = resp.Body.Close() }()
-			if resp.StatusCode != http.StatusOK {
-				t.Errorf("GET .../programs status = %d, want 200", resp.StatusCode)
+			defer func() { _ = sresp.Body.Close() }()
+			if sresp.StatusCode != http.StatusOK {
+				t.Fatalf("POST .../programs/search (site=%s) status = %d, want 200", r.site, sresp.StatusCode)
+			}
+			if err := json.NewDecoder(sresp.Body).Decode(&searchIDs); err != nil {
+				t.Fatal(err)
+			}
+			searchIDStrs := make([]string, 0, len(searchIDs))
+			for _, id := range searchIDs {
+				searchIDStrs = append(searchIDStrs, itoa(id))
+			}
+			if !slices.Contains(searchIDStrs, r.programID) {
+				t.Errorf("POST .../programs/search (site=%s) = %v, want to contain %s", r.site, searchIDStrs, r.programID)
+			}
+			if slices.Contains(searchIDStrs, r.otherProgramID) {
+				t.Errorf("POST .../programs/search (site=%s) = %v, must not contain other site's %s", r.site, searchIDStrs, r.otherProgramID)
+			}
+
+			// GET .../programs/{programId}/overlaps は EPG プロジェクションから
+			// 放送時間を引く（reservations_overlaps.go）。site を取り違えると
+			// 「program not found in EPG projection」404 になる。
+			oresp, err := http.Get(srv.URL + "/api/sites/" + r.site + "/programs/" + r.programID + "/overlaps")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = oresp.Body.Close() }()
+			if oresp.StatusCode != http.StatusOK {
+				body, _ := io.ReadAll(oresp.Body)
+				t.Fatalf("GET .../overlaps (site=%s) status = %d, want 200 (body=%s)", r.site, oresp.StatusCode, body)
 			}
 
 			// PUT .../intent（書き込み系。unknown なら 400）。既知の site なら
 			// program fixture が通っているので 204。
 			req, err := http.NewRequest(http.MethodPut,
-				srv.URL+"/api/sites/"+r.site+"/programs/"+itoa(r.programID)+"/intent",
+				srv.URL+"/api/sites/"+r.site+"/programs/"+r.programID+"/intent",
 				strings.NewReader(`{"action":"record"}`))
 			if err != nil {
 				t.Fatal(err)
@@ -154,19 +258,30 @@ func TestMultiSiteRegistry_HandlesAllRegisteredSites(t *testing.T) {
 
 			// PATCH .../overrides（書き込み系）
 			oreq, err := http.NewRequest(http.MethodPatch,
-				srv.URL+"/api/sites/"+r.site+"/programs/"+itoa(r.programID)+"/overrides",
+				srv.URL+"/api/sites/"+r.site+"/programs/"+r.programID+"/overrides",
 				strings.NewReader(`{"priority":5}`))
 			if err != nil {
 				t.Fatal(err)
 			}
 			oreq.Header.Set("Content-Type", "application/json")
-			oresp, err := http.DefaultClient.Do(oreq)
+			opresp, err := http.DefaultClient.Do(oreq)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer func() { _ = oresp.Body.Close() }()
-			if oresp.StatusCode != http.StatusNoContent {
-				t.Errorf("PATCH .../overrides status = %d, want 204", oresp.StatusCode)
+			defer func() { _ = opresp.Body.Close() }()
+			if opresp.StatusCode != http.StatusNoContent {
+				t.Errorf("PATCH .../overrides status = %d, want 204", opresp.StatusCode)
+			}
+
+			// GET .../programs/{programId}/reservation は (site, programId) を
+			// 宛先に引く（issue #99）。取り違えると「予約が無い」404 になる。
+			var reservation api.Reservation
+			rresp := getJSONForTest(t, srv.URL+"/api/sites/"+r.site+"/programs/"+r.programID+"/reservation", &reservation)
+			if rresp.StatusCode != http.StatusOK {
+				t.Fatalf("GET .../reservation (site=%s) status = %d, want 200", r.site, rresp.StatusCode)
+			}
+			if reservation.Site != r.site {
+				t.Errorf("GET .../reservation (site=%s) returned reservation.Site=%q", r.site, reservation.Site)
 			}
 
 			// POST .../breakers/{name}/resume（書き込み系。既知の site だが

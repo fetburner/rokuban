@@ -179,7 +179,7 @@ func reservationState(ruleID *int64, base json.RawMessage, neverRecorded bool) R
 // dedupMatchRecordingId / dedupSimilarity はその skip の根拠（M2-6）で、
 // ruler が毎パス作り直す導出列をそのまま出す。
 //
-// neverRecorded は呼び出し元のクエリ（GetReservationFull / ListReservationsBySite）
+// neverRecorded は呼び出し元のクエリ（GetReservationFull / ListReservationsFull）
 // が EXISTS で計算した「この予約に status='failed' の recordings 行があるか」
 // （issue #98。reservationState のコメント参照）。
 func reservationFromRow(r sqlcgen.Reservation, snap sqlcgen.ProgramSnapshot, overrides []byte, intentAction *string, neverRecorded bool) (Reservation, error) {

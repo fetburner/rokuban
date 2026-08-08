@@ -218,15 +218,6 @@ func (h *Server) insertRulerPassHint(ctx context.Context, tx pgx.Tx, site string
 	return nil
 }
 
-// insertRulerPassHintsForRuleSites はルールが対象とする各サイトに ruler_pass ヒントを
-// 投入する（issue #184 M4-12「含むもの」3）。sites は rule_sites から読んだ対象一覧で、
-// 空（指定なし = 全サイト）なら h.siteNames（レジストリの全 site）に展開する
-// （00006_rules.sql の rule_sites コメント「指定なし = 全サイト」と同じ規約）。
-//
-// api は site に束縛されない（不変条件 1）ため、1 プロセスがレジストリの全サイトに
-// ヒントを投入できる。呼び出し元（CreateRule/UpdateRule）はルールの子表書き込みと
-// 同一トランザクションで呼ぶこと。DeleteRule は rule_sites が ON DELETE CASCADE で
-// 消える前に対象サイトを読んでおく必要がある。
 // ruleTargetSites は rule_sites から対象サイト名の一覧を読む。空（指定なし）は
 // そのまま空スライスで返す --- 「全サイト」への展開は呼び出し元
 // （insertRulerPassHintsForRuleSites）の責務にする。
@@ -242,6 +233,15 @@ func ruleTargetSites(ctx context.Context, q *sqlcgen.Queries, ruleID int64) ([]s
 	return sites, nil
 }
 
+// insertRulerPassHintsForRuleSites はルールが対象とする各サイトに ruler_pass ヒントを
+// 投入する（issue #184 M4-12「含むもの」3）。sites は rule_sites から読んだ対象一覧で、
+// 空（指定なし = 全サイト）なら h.siteNames（レジストリの全 site）に展開する
+// （00006_rules.sql の rule_sites コメント「指定なし = 全サイト」と同じ規約）。
+//
+// api は site に束縛されない（不変条件 1）ため、1 プロセスがレジストリの全サイトに
+// ヒントを投入できる。呼び出し元（CreateRule/UpdateRule）はルールの子表書き込みと
+// 同一トランザクションで呼ぶこと。DeleteRule は rule_sites が ON DELETE CASCADE で
+// 消える前に対象サイトを読んでおく必要がある。
 func (h *Server) insertRulerPassHintsForRuleSites(ctx context.Context, tx pgx.Tx, sites []string) error {
 	if len(sites) == 0 {
 		sites = h.siteNames
