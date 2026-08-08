@@ -65,7 +65,18 @@ export function RecordingsPage() {
   const updateSearch = (updater: (prev: RecordingsPageSearch) => RecordingsPageSearch) => {
     // debounce（キーワード）・チップの個別解除のどちらも history を汚さないよう
     // 常に replace で書く（docs/frontend.md「debounce と URL 同期で履歴を汚さない」）。
-    void navigate({ to: '/recordings', search: updater, replace: true })
+    //
+    // **updater の引数は「全ルートの search を合成した型」で来る**（TanStack Router
+    // の `ParamsReducerFn`）。`/live` が同じ名前の `serviceId` を単数（`number`）で
+    // 持つため、合成後は `number | number[]` になり `RecordingsPageSearch` に
+    // そのままは代入できない。この関数が呼ばれるのは `/recordings` に居るときだけ
+    // で、そのとき実際に入っているのは `parseRecordingsSearch` が検証した形なので、
+    // ここで絞ってから updater に渡す
+    void navigate({
+      to: '/recordings',
+      search: (prev) => updater(prev as RecordingsPageSearch),
+      replace: true,
+    })
   }
 
   const listParams = useMemo(

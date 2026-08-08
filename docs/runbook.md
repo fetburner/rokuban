@@ -13,6 +13,7 @@
 | [runbook/shadow.md](runbook/shadow.md) | EPGStation との並走 —— チューナー競合、二重録画の回避、`shadow-diff` の読み方 |
 | [runbook/troubleshooting.md](runbook/troubleshooting.md) | 詰まったとき（症状別） |
 | [runbook/testing.md](runbook/testing.md) | 開発時のテスト |
+| [runbook/live.md](runbook/live.md) | **ライブ視聴（M4-3 / M4-4）** —— idle GC・実再生の確認（実 mirakc 要）とブラウザ側配線の確認（`web/e2e/live.mjs`。mirakc 不要） |
 
 | 段 | 確認すること |
 |---|---|

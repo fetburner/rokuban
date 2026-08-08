@@ -12,7 +12,7 @@ go:embed で単一バイナリに同梱するため、成果物は**静的ファ
 | 状態管理・ルーティング・仮想化 | TanStack Query / Router / Virtual |
 | API クライアント生成 | orval（OpenAPI → 型付きクライアント + TanStack Query フック） |
 | スタイリング + UI コンポーネント | Tailwind + shadcn/ui |
-| 動画再生 | ネイティブ `<video>`（VOD / MP4 progressive）+ hls.js（ライブ、M4） |
+| 動画再生 | ネイティブ `<video>`（VOD / MP4 progressive）+ hls.js（ライブ。ライブ視聴画面のみ動的 import。バンドルは別チャンク） |
 
 ## 決め手
 
@@ -807,10 +807,11 @@ validateSearch(...))`）、`validateSearch` の戻り値を「生の（未検証
 `/search` の `ruleId` も同じ非 strict モードの下で同じ関数形（`Number.isFinite(n) ?
 { ruleId: n } : {}`）を使っており、無効な `ruleId`（`?ruleId=abc` 等）を渡すと同じ
 経路で漏れることを PR #193 のレビューで確認した（`{ ruleId: "abc" }` が
-`useSearch()` にそのまま届く）。**本 PR では `/search` 自体は直していない**
-（触るファイルの目安に無いため）。[issue #194](https://github.com/fetburner/rokuban/issues/194)
-に切った --- M4-4（#92、`/live` が同じ関数形を使う場合はそちらも含める）と
-合わせて 1 本で直す。
+`useSearch()` にそのまま届く）。**`/live` の `serviceId` は M4-4（#92）で
+`{ serviceId: ... ?? undefined }` の形に揃えた**（同じ PR で `routes.tsx` を
+触るため。`routes.test.tsx` が `router.state.matches` の `search` を直接見て
+固定している）。`/search` の `ruleId` と `parseRuleId` の非整数は
+[issue #194](https://github.com/fetburner/rokuban/issues/194) に残っている。
 
 ### 一覧は自前で組んだ `useInfiniteQuery`
 
@@ -861,3 +862,253 @@ Rokuban 自体のライブ視聴は「チャンネル一覧から選んでブラ
 
 - **ライブ視聴セッションは意図的に in-memory**。落ちたらクライアント再接続で済む使い捨て状態であり、「すべての状態を Postgres に」の原則の明示的な例外（参照: [overview.md](overview.md) の crash-only 設計原則）
 - 「クライアントがいなくなったら ffmpeg を止める」idle GC が必要。セグメント要求がアプリを通ることで last-access の更新がタダで手に入る（参照: [api.md](api.md) のライブ HLS 配信）
+
+### フロントエンド実装（M4-4、issue #92）
+
+**独立したルート `/live` を持つ。** 番組表グリッドの「いま」から入る形は、グリッド自体が
+`lg` 以上でしか出ない（上記「リストを第一級に置く。グリッドはその上に足す」）ため、
+モバイルからの入口を別に用意する必要が生じ結局 2 箇所になる。`/live` は
+チャンネル一覧（`GET /api/sites/{site}/services`）+ プレイヤー + いま放送中の番組
+（既存 EPG API の時間窓クエリ。専用 API は足していない）という 1 画面で構成する
+（`pages/live.tsx`）。選択中のチャンネルは `?serviceId=` に持つ（`routes.tsx` の
+`validateSearch` が不正な値に `undefined` を**明示代入**して落とす。省略では
+消えない --- 上記「`validateSearch` は無効な値を『省略』しても消えない」）。
+チャンネル一覧のリンクは `replace` にし、ザッピングでブラウザ履歴が積み上がらない
+ようにする。
+
+**プロファイル（画質）を選ぶ UI は持たない。** `live.profiles` を列挙する API が
+無い（`GET /api/sites/{site}/services/{serviceId}/live/playlist.m3u8` は OpenAPI
+対象外なので設定名の一覧を返す仕組みも無い）ため、選択肢を出すと「機能しない
+コントロール」になる。既定プロファイル（サーバー側の `live.profiles` 先頭）に
+固定し、画質切り替えは将来 `live.profiles` の一覧 API ができてから足す。
+
+**hls.js はライブ視聴画面だけ動的 import する（`components/live-player.tsx`）。**
+`pnpm build` の出力で hls.js が `assets/hls-*.js`（約 520 KB）として独立チャンクに
+分かれ、他画面のバンドル（`assets/index-*.js`）には乗らないことを確認済み。
+
+**再生経路は 3 段の梯子で選ぶ。各段は「実際に確かめた能力」で選ぶ。**
+
+1. `<video>` が**プレイリストとセグメントの両方**を再生できる → ネイティブ HLS
+   （hls.js は import すらしない）
+2. hls.js が動く（`Hls.isSupported()`。MSE / ManagedMediaSource がある）→ hls.js
+3. どちらも駄目だが `<video>` が m3u8 の MIME に支持を表明する → ネイティブへ
+   最後の望みを託す（`claimsHlsPlaylistSupport`）。ここに来るのは MSE も
+   ManagedMediaSource も無いブラウザ（iOS 17.1 未満の iPhone Safari）だけで、
+   「非対応です」と断じるとネイティブなら完璧に再生できる端末を締め出す
+
+**1 段目でセグメントの MIME（`video/mp2t`）まで問うのが要点。** プレイリストの
+MIME（`application/vnd.apple.mpegurl`）に対する `canPlayType` の戻り値では
+Safari と Chrome を区別できない --- Playwright の 3 エンジンで実測した値:
+
+| `canPlayType` の引数 | WebKit 605.1.15 | Chromium 151 | Chrome 151 | Firefox 153 |
+|---|---|---|---|---|
+| `application/vnd.apple.mpegurl` | `maybe` | `maybe` | `maybe` | `''` |
+| `application/x-mpegURL` | `maybe` | `maybe` | `maybe` | `''` |
+| 上記 + `; codecs="avc1.42E01E,mp4a.40.2"` | `probably` | `probably` | `probably` | `''` |
+| **`video/mp2t`** | **`maybe`** | **`''`** | **`''`** | **`''`** |
+
+戻り値を決めているのは **codecs パラメータの有無であってエンジンの違いではない**
+（HTML 仕様が「codecs を許す type について、それが無いなら `probably` を返すべき
+でない」と定めているため。hls.js 公式 README のパターンが `=== 'probably'` では
+なく真偽値チェックなのも同じ理由）。一方 `video/mp2t` --- streamer が実際に
+セグメントに付けている Content-Type --- を demux できるのは WebKit だけで、
+Chromium / Firefox はできない（hls.js が TS を fMP4 へ remux してから MSE に
+載せるのはこのため）。つまりこの問いは「このブラウザは**我々が配るもの**を
+そのまま再生できるか」という能力そのものへの問いであり、エンジンの同定でも
+拡張子への態度でもない。判定は `web/e2e/live.mjs` の⑥が実ブラウザで固定する。
+
+**再生前に `probeLivePlaylist`（`lib/live.ts`）でプレイリストを 1 回 `fetch` する。**
+`<video>` の `error` イベント・hls.js のエラーイベントはいずれも HTTP ステータスや
+本文を運ばない。両方の再生経路で同じエラー表示を出すため、実際に `<video>` /
+hls.js へ URL を渡す前に 1 回取得して成否を確認する。この GET 自体もセグメント
+要求と同じ経路（streamer のアプリ配信）を通るので、idle GC の last-access 更新にも
+自然に乗る。
+
+**probe は HTTP 層しか見ないので、メディア層の失敗は `<video>` のイベントで拾う
+（`watchNativeMedia`。ネイティブ経路のみ）。** プレイリストが 200 で返ってもセグメントが
+壊れていれば再生は始まらない。ここを聴かないと**永久に止まった黒いプレイヤー**に
+なる（文言も読み込み表示も再読み込みボタンも出ない）--- レビュー #190 の 3 回目の
+指摘で、WebKit で実測された症状である。聴く種類は同じ実測から決めた（プレイリスト
+200 のまま、セグメントだけを 3 通りに壊して WebKit で観測）:
+
+| 壊し方 | `<video>` が出すもの | `video.error` |
+|---|---|---|
+| セグメントが 404 | `error`（再生中なら `waiting` も） | code 3 `Media failed to decode` |
+| セグメントが応答しない | `progress` → `stalled`（3.6 秒後） | null |
+| プレイリストの中身が壊れている | `progress` → `stalled`（3.6 秒後） | null |
+
+したがって **`error` だけでは足りない**（下 2 つは `error` を出さない）。一方
+`stalled` / `waiting` を即座に失敗と見なすのも誤りで、正常なライブでもバッファ枯れで
+出る。**`error` は即時、`stalled` / `waiting` は `nativeStallTimeoutMs`（12 秒。
+`stalled` が出るのが途絶から 3 秒後、セグメント長が 2 秒なので、正常なら 3 セグメント
+以上落ちないと到達しない）の猶予つき**にし、猶予中に `playing` / `canplay` /
+`timeupdate` / `pause` が来たら回復と見なして捨てる。hls.js 経路には張らない
+（`Hls.Events.ERROR` が同じ役目を持ち、MSE のバッファ制御で `waiting` が正常に
+何度も出るため誤検知になる）。
+
+**一時停止中は猶予を張らない。ただし「一度でも再生が始まった後」に限る。** WebKit は
+`pause()` した瞬間にも `stalled` を出す（フェッチを止めるため）が配信は正常で、しかも
+解除イベントは一時停止中には来ないので、放置すると**正常な配信に必ずエラー画面が出て
+`<video>` が invisible になる**（実測: playing@0.0 → pause@2.3 → stalled@2.3 →
+12 秒後にエラー表示）。一方、抑止条件を `paused` だけにすると**まだ再生を押していない
+窓まで塞がる** --- `<video>` に `autoPlay` は無いので読み込み直後は常に
+`paused === true` であり、そこで無応答が起きると届くイベントは `paused=true` の
+`stalled` だけ（20 秒待っても error も waiting も来ない）で、猶予が一度も張られず
+永久に黒いままになる。そこで `playing` を一度でも観測したかを持ち、
+**`hasStarted && paused` のときだけ抑止する**。再開後に配信が死んだままなら
+`waiting` が再送されるので張り直される（実測: pause@6.05s → play@12.05s →
+waiting@12.05s）。
+
+判定手段: `live-player.test.tsx` の「ネイティブ経路のメディア失敗」6 件（`error` で
+出る / 猶予経過で出る / 猶予中の `playing` で出さない / 一時停止中の `stalled` で
+出さない / 猶予中の `pause` で出さない / **再生前**の `stalled` では出す /
+再開後に復帰していなければ再び出す）と「hls.js 経路では stalled を拾わない」1 件、
+`web/e2e/live.mjs` ⑦（実 WebKit。404 と無応答の両方でエラー表示 + 再読み込みが
+出ること。⑦は `play()` を呼ばないので、上の「再生前の窓を塞がない」ことも同時に
+見ている）。**一時停止の抑止そのものをブラウザで機械判定する手段は無い** ---
+e2e は一時停止を一度も作らないので、そこは jsdom のテストと手動測定が根拠である。**覆えているのは probe 通過後のメディア層だけで、HTTP 層（streamer 不在 /
+503 / プレイリスト 404）は従来どおり probe 側が押さえている。**
+
+**エラーは 3 種に分類する（`classifyLiveLoadError`）。**
+
+- `unreachable`（`fetch` 自体が reject）: streamer に到達できない。ハイブリッド
+  構成では自宅側が落ちているだけの正常状態でありうる（[overview.md](overview.md)
+  §サーバーレスデプロイ）ため、destructive な赤ではなく中立の文言にする
+- `capacity`（503）: 同時セッション上限 / チューナー枯渇 / シャットダウン中の
+  いずれか。本文（プレーンテキスト）はいずれも「今は無理なので後で試す」という
+  同じ対応を要求するので UI 側の分岐は 1 つにまとめ、本文はそのまま見せる
+  （「エラーの本文も UI まで運ぶ」と同じ規律）
+- `other`: 想定外のステータス。本文をそのまま見せる
+
+いずれも再読み込みボタンで `probeLivePlaylist` からやり直せる。
+
+**チャンネル切り替えは idle GC に任せる。明示的にセッションを閉じる API が無い**
+（M4-3 が配るのは `GET .../live/playlist.m3u8` と `GET .../live/segments/{name}`
+のみ）ため、実質これ以外の選択肢がない（サーバー側の即時解放 API は
+[issue #191](https://github.com/fetburner/rokuban/issues/191) へ切り出し済みで、
+このタスク（UI のみ）の範囲外）。`LivePlayer` はチャンネル切り替え（`serviceId`
+prop の変化）を effect の cleanup で検知し、probe の in-flight `fetch` を
+`AbortController` で中断、hls.js の `destroy()` / `<video>` の `src` 解除を
+即座に行って**それ以上そのサービスへのセグメント要求を出さない**ところまでは
+保証する。
+
+**実配値は `live.idle_timeout` 既定 30 秒 / `live.max_sessions` 既定 4 / GC 周期
+`idle_timeout / 2` = 15 秒（`internal/config/config.go` / `internal/streamer/live.go`）。**
+セッションは最終アクセスから**30〜45 秒**生き残る。クライアント側がセグメント
+要求を止めても、この間サーバー側のチューナーは掴まれたまま。ザッピングに
+デバウンスを入れていない場合、掴まれる本数は「前後 2 チャンネル分」ではなく
+**30 秒以内にザップした本数ぶん、`max_sessions` まで**（既定なら 5 局ザップで
+5 局目が 503 `too many concurrent live sessions on this process`、チューナー
+本数がそれより少ない環境ではさらに手前で mirakc 側の枯渇により 503
+`live stream unavailable` になる）。issue #92 の「チューナー数が少ない環境で
+何が見えるかを含めて判断する」への回答としてこの値をそのまま UI 側の緩和に
+反映した:
+
+- **チャンネル切り替えを `channelSwitchDebounceMs`（400ms。`pages/live.tsx`）
+  だけデバウンスする。** チャンネル一覧のハイライト（`pendingServiceId`）は
+  クリックへ即座に反応するが、実際のナビゲーション（= `LivePlayer` への
+  `serviceId` 反映 = probe / セッション開始）はデバウンス窓の間に別のチャンネル
+  が押されなければ実行する latest-wins。連続してザップしても、**通り過ぎた
+  チャンネルの分だけセッションが積まれない**（idle GC の遅延自体は変えない ---
+  実際に選んで留まったチャンネルの前セッションは今までと同様 30〜45 秒残る）
+- **503（`capacity`）のエラー文言に「30 秒ほど待って再読み込み」という具体的な
+  案内を付けた（`LiveErrorMessage`）。** 待てば直ることが読めないと、ユーザーは
+  「壊れている」と誤解して繰り返しリロード/再訪問し、状況を悪化させる
+
+**テストの範囲を正確に書く。** jsdom はレイアウト・実再生のいずれも測れないため、
+`components/live-player.test.tsx` は 3 層に分けてある:
+
+1. `fetch` をモックして probe の成否とエラー分類ごとの表示・再読み込み・
+   チャンネル切り替え時の `fetch` 再実行・in-flight `fetch` の中断
+   （`AbortController.abort()` が呼ばれること）を見る
+2. `vi.mock('hls.js', ...)` で hls.js 自体をフェイクに差し替え、**hls.js 経路
+   （ネイティブ HLS 非対応。Chrome / Firefox 相当）の呼び出しの配線**
+   （動的 import 後に `loadSource` / `attachMedia` が呼ばれる、fatal エラーで
+   `destroy` が呼ばれる、切り替え・破棄で古いインスタンスが `destroy` される）
+   を見る。**当初のレビュー（#190）まではこの層が無く、`supportsNativeHls` を
+   常に `true` に固定しても・cleanup を丸ごと削除しても既存テストが全部
+   通っていた** --- Chrome / Firefox が実際に通る経路が単体テストで一度も
+   検証されていなかった。上記の分岐・削除はいずれもこの層のテストが
+   `waitFor` のタイムアウトとして落ちることを確認済み
+3. 純関数（URL 組み立て・エラー分類・初期チャンネル選択・時間窓・
+   `probeLivePlaylist` の中断伝播）は `lib/live.test.ts` に切り出してテストする
+
+ただし 2 は**フェイクの配線が正しく呼ばれること**の検査であり、hls.js の
+「動的 import が本当に別バンドルチャンクとして届く」ことや「実際に MSE へ
+セグメントを投入して再生が進む」ことは検証していない。この 2 点と、
+「チャンネル切り替え後に旧 `serviceId` へのセグメント要求が実際に 0 件になる」
+（= 保証の実効性そのもの）は `web/e2e/live.mjs` が実ブラウザ・実 hls.js で担う
+（後述「実機確認について」）。
+
+### 実機確認について（M4-4）
+
+**`web/e2e/live.mjs`（詳細は [docs/runbook/live.md](runbook/live.md) §②）で
+実ブラウザ・実 hls.js による確認を行った。** mirakc も実チューナーも要らない ---
+HLS プレイリスト/セグメントは Playwright の `page.route` でブラウザ側から
+差し替え、streamer は「サービス一覧を返す」以外の実仕事をしない。判定した
+7 点（すべて合格を確認済み）:
+
+1. hls.js の動的 import チャンク（`assets/hls-*.js`）が実際に要求される
+2. MSE がアタッチされる（`video.currentSrc` が `blob:` になる。`src` だけを見ると
+   取り逃がす --- hls.js は `sourceopen` 後に object URL を revoke するので
+   `src` の `blob:` は短命で、WebKit では 4 秒後に `src` が空・`currentSrc` にだけ
+   残っていた）
+3. **実 Chrome**（`channel: 'chrome'`）で `video.play()` 後に `currentTime` が
+   進み、`videoWidth > 0`（bundled Chromium は H.264/AAC 非対応のため
+   `channel: 'chrome'` が必須。ローカルの Google Chrome が無い環境では
+   「未測定」として報告し NG にはしない）
+4. チャンネル切替後（チャンネル一覧のリンクをクリックするクライアントサイド
+   ナビゲーション。`page.goto` によるフルナビゲーションでは cleanup を通らず
+   判定が成立しないため使わない）、旧チャンネルへのセグメント要求が 0 件になる
+5. 503（本文つき）でエラー文言が出て、再読み込みで復帰する
+6. **WebKit（Safari 相当）でネイティブ HLS 経路に入る**: `assets/hls-*.js` を
+   読み込まない・`<video>` に m3u8 の URL がそのまま渡る・そのまま再生が進む
+   （実測: `currentTime` 0.00 → 2.83、`videoWidth` 640、`readyState` 4）
+7. **ネイティブ経路のメディア失敗が画面に出る**（WebKit）: プレイリストは 200 だが
+   セグメントが 404 / 無応答のとき、エラー表示と `再読み込み` が出る（上記
+   `watchNativeMedia`。壊れ方で出るイベントが違うので 2 通りとも見る）
+
+**この手段が本番相当の回帰を 2 件発見した。うち 1 件は、最初の修正そのものが
+生んだものだった。**
+
+1. `supportsNativeHls` は当初 `canPlayType('application/vnd.apple.mpegurl')` の
+   戻り値が `'probably'` か `'maybe'` のいずれかであればネイティブ HLS 対応と
+   判定していたが、実 Chrome（`channel: 'chrome'` の本物でも）はこの MIME
+   タイプに `'maybe'` を返す。この状態でリリースしていたら、**Chrome ユーザー
+   全員が `video.src` に m3u8 を直接渡され、hls.js を一切経由せず沈黙して再生
+   できなかった。** jsdom によるユニットテストはこの分岐を一度も実行して
+   いなかった（`canPlayType` が jsdom では常に `''` を返すため）
+2. その修正（`'probably'` のみを対応と見なす）は、**どの実ブラウザでも false を
+   返した。** 上表のとおり 3 エンジンとも codecs 無しの m3u8 には `'maybe'` しか
+   返さないので、ネイティブ分岐は到達不能になり、**Safari も hls.js 経路に
+   落ちていた**（macOS では機能的には壊れない --- MSE があるので hls.js が動く。
+   実害は 523 KB の不要なダウンロードと、docs に「Safari はネイティブを使う」と
+   書きながらそうなっていない虚偽記載。**iPhone Safari は危険**で、
+   `window.MediaSource` を持たない iOS 17.1 未満では `Hls.isSupported()` が
+   false になり「このブラウザはライブ視聴（HLS）に対応していません」が出る ---
+   ネイティブなら完璧に再生できる端末で、である）。**このとき①〜⑤ は
+   Chromium 系しか回していなかったので e2e は緑のままだった。** WebKit を足した
+   ⑥が、issue #92 の決定 1（Safari では hls.js を読ませない）を初めて機械判定
+   できる形にしたもので、この回帰は⑥を足すと NG になることを確認してから直した
+
+このとき、ユニットテスト側にも同じ盲点があった。`expect(supportsNativeHls(() =>
+'probably')).toBe(true)` は通っていたが、**`'probably'` を返す実ブラウザは
+存在しない**ので、実在しない入力についての主張であり何も守っていなかった。
+現在は `lib/live.test.ts` が実測値の表（エンジンごとの戻り値）を入力にしている。
+
+**未解決の限界:**
+
+- ①（実 mirakc / 実チューナーでの idle GC・録画優先度調停・実 ISDB-T
+  トランスコードの遅延・音ズレ・画質）は、この開発環境に ISDB-T チューナーも
+  mirakc も無いため確認していない。`docs/runbook/live.md` §①に手順を残した
+  （実行できる形にはなっているが、このタスクでは実行していない）
+- **iOS 実機（iPhone Safari）は誰も確認していない。** 再生経路の判定は macOS の
+  WebKit / Chromium / Chrome / Firefox で実測して固定したが、iOS の
+  `canPlayType('video/mp2t')` が macOS の WebKit と同じ `'maybe'` を返す保証は
+  無い。違っていた場合、iOS は hls.js 経路へ落ちる（17.1 以降は
+  ManagedMediaSource で再生できる。それ未満は上記 3 段目の最後の砦で
+  `<video>` に直接渡る）。`docs/runbook/live.md` §①に確認項目を足した ---
+  **この判定が正しいかは結局そこでしか確定しない**
+- CI では `web/e2e/live.mjs` を回さない（`web/e2e/checks.mjs` と同じ理由。
+  実 Chrome チャンネルと ffmpeg という新しい依存を CI イメージに足す判断は
+  このタスクの範囲外とした）

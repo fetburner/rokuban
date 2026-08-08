@@ -2,6 +2,7 @@ import { createRootRoute, createRoute, Outlet } from '@tanstack/react-router'
 
 import { AppShell } from './components/app-shell'
 import { parseRecordingsSearch, type RecordingsPageSearch } from './lib/recording-search'
+import { LivePage } from './pages/live'
 import { ProgramsPage } from './pages/programs'
 import { RecordingsPage } from './pages/recordings'
 import { ReservationDetailPage } from './pages/reservation-detail'
@@ -95,6 +96,39 @@ const recordingsRoute = createRoute({
   component: RecordingsPage,
 })
 
+/** LivePageSearch は `/live` のクエリパラメータ。 */
+export type LivePageSearch = {
+  /** 視聴中のチャンネル（省略時は番組を持つ先頭のサービスに落ちる。`lib/live.ts` の `pickInitialServiceId`）。 */
+  serviceId?: number
+}
+
+/**
+ * ライブ視聴は独立したルートに置く（issue #92 の着手時コメント）。番組表グリッド
+ * は `lg` 以上でしか出ない（`docs/frontend.md`「リストを第一級に置く」）ため、
+ * グリッドの「いま」から入る形にすると入口がモバイルとデスクトップで割れる。
+ */
+const liveRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/live',
+  // 壊れた/古いリンクを踏んでも「チャンネル指定なし」の通常表示（先頭チャンネル）
+  // に落ちる。
+  //
+  // **落とす次元にも `undefined` を明示代入する**（`parseRecordingsSearch` と
+  // 同じ形。issue #194）。TanStack Router は非 strict モードで
+  // `{ ...生の location.search, ...validateSearch の戻り値 }` の順に合成するので、
+  // キーを省略すると生の値（`/live?serviceId=abc` なら文字列 `"abc"`）がそのまま
+  // 残り、`LivePageSearch` の `serviceId?: number` という型が実行時に嘘になる。
+  // いまの唯一の読者（`pickInitialServiceId`）は厳密比較なので実害は無いが、
+  // `serviceId` を `livePlaylistURL` に直接渡す読者が 1 人増えた瞬間に
+  // `/api/.../services/abc/live/playlist.m3u8` が飛ぶ
+  validateSearch: (search: Record<string, unknown>): LivePageSearch => {
+    const raw = search.serviceId
+    const n = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : NaN
+    return { serviceId: Number.isInteger(n) && n > 0 ? n : undefined }
+  },
+  component: LivePage,
+})
+
 export const routeTree = rootRoute.addChildren([
   programsRoute,
   searchRoute,
@@ -102,4 +136,5 @@ export const routeTree = rootRoute.addChildren([
   reservationsRoute,
   reservationDetailRoute,
   recordingsRoute,
+  liveRoute,
 ])

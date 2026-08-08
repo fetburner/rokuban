@@ -24,7 +24,7 @@
 
 ```sh
 pnpm install
-pnpm exec playwright install chromium
+pnpm exec playwright install chromium webkit  # webkit は live.mjs の⑥に要る
 ```
 
 サーバーを起動しておく（`go:embed` なので **web を変更したらバイナリを作り直す**こと。
@@ -48,6 +48,31 @@ E2E_URL=http://localhost:40775 pnpm e2e
 ```sh
 pnpm e2e:diagnose
 ```
+
+### ライブ視聴（`live.mjs`）
+
+番組リストと違い、**mirakc も実チューナーも要らない** --- HLS プレイリスト/
+セグメントは `page.route` でブラウザ側から丸ごと差し替える。動的 import
+（hls.js のバンドル分割）・MSE への実再生・チャンネル切替時の cleanup は
+jsdom で原理的に測れず、`vi.mock` によるフェイクの配線検査（Vitest）だけでは
+「配線が呼ばれること」までしか見えない。手順は
+[docs/runbook/live.md](../../docs/runbook/live.md) §②。
+
+```sh
+E2E_LIVE_SERVICE_A=9001 E2E_LIVE_SERVICE_B=9002 pnpm e2e:live
+```
+
+**この判定手段が実際に本番相当の回帰を 2 件発見した。**
+
+1. `supportsNativeHls` が実 Chrome の `canPlayType` の戻り値 `'maybe'` を誤って
+   ネイティブ対応と判定し、Chrome がサイレントに再生できなくなる
+2. **その修正（`'probably'` のみを対応と見なす）がどの実ブラウザでも false に
+   なり、Safari までが hls.js 経路に落ちる。** この回帰は①〜⑤（Chromium 系
+   だけ）では検出できず、**e2e 緑のまま通った** --- 「実ブラウザで測っている」
+   ことは「壊れる側のブラウザで測っている」ことを意味しない。⑥（WebKit）を
+   足して初めて機械判定できるようになった
+
+詳細は [docs/frontend.md](../../docs/frontend.md) §実機確認について（M4-4）。
 
 ## CI では回さない
 
