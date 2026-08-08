@@ -807,10 +807,11 @@ validateSearch(...))`）、`validateSearch` の戻り値を「生の（未検証
 `/search` の `ruleId` も同じ非 strict モードの下で同じ関数形（`Number.isFinite(n) ?
 { ruleId: n } : {}`）を使っており、無効な `ruleId`（`?ruleId=abc` 等）を渡すと同じ
 経路で漏れることを PR #193 のレビューで確認した（`{ ruleId: "abc" }` が
-`useSearch()` にそのまま届く）。**本 PR では `/search` 自体は直していない**
-（触るファイルの目安に無いため）。[issue #194](https://github.com/fetburner/rokuban/issues/194)
-に切った --- M4-4（#92、`/live` が同じ関数形を使う場合はそちらも含める）と
-合わせて 1 本で直す。
+`useSearch()` にそのまま届く）。**`/live` の `serviceId` は M4-4（#92）で
+`{ serviceId: ... ?? undefined }` の形に揃えた**（同じ PR で `routes.tsx` を
+触るため。`routes.test.tsx` が `router.state.matches` の `search` を直接見て
+固定している）。`/search` の `ruleId` と `parseRuleId` の非整数は
+[issue #194](https://github.com/fetburner/rokuban/issues/194) に残っている。
 
 ### 一覧は自前で組んだ `useInfiniteQuery`
 
@@ -869,8 +870,9 @@ Rokuban 自体のライブ視聴は「チャンネル一覧から選んでブラ
 モバイルからの入口を別に用意する必要が生じ結局 2 箇所になる。`/live` は
 チャンネル一覧（`GET /api/sites/{site}/services`）+ プレイヤー + いま放送中の番組
 （既存 EPG API の時間窓クエリ。専用 API は足していない）という 1 画面で構成する
-（`pages/live.tsx`）。選択中のチャンネルは `?serviceId=` に持つ（`pages/search.tsx`
-の `?ruleId` と同じ形。`routes.tsx` の `validateSearch` が不正な値を空へ落とす）。
+（`pages/live.tsx`）。選択中のチャンネルは `?serviceId=` に持つ（`routes.tsx` の
+`validateSearch` が不正な値に `undefined` を**明示代入**して落とす。省略では
+消えない --- 上記「`validateSearch` は無効な値を『省略』しても消えない」）。
 チャンネル一覧のリンクは `replace` にし、ザッピングでブラウザ履歴が積み上がらない
 ようにする。
 
@@ -881,11 +883,39 @@ Rokuban 自体のライブ視聴は「チャンネル一覧から選んでブラ
 固定し、画質切り替えは将来 `live.profiles` の一覧 API ができてから足す。
 
 **hls.js はライブ視聴画面だけ動的 import する（`components/live-player.tsx`）。**
-Safari はネイティブ HLS 再生ができる（`video.canPlayType('application/vnd.apple.mpegurl')`）
-のでそちらを使い、hls.js の読み込み自体をスキップする。Chrome / Firefox は
-`await import('hls.js')` で読み込む。`pnpm build` の出力で hls.js が
-`assets/hls-*.js`（約 520 KB）として独立チャンクに分かれ、他画面のバンドル
-（`assets/index-*.js`）には乗らないことを確認済み。
+`pnpm build` の出力で hls.js が `assets/hls-*.js`（約 520 KB）として独立チャンクに
+分かれ、他画面のバンドル（`assets/index-*.js`）には乗らないことを確認済み。
+
+**再生経路は 3 段の梯子で選ぶ。各段は「実際に確かめた能力」で選ぶ。**
+
+1. `<video>` が**プレイリストとセグメントの両方**を再生できる → ネイティブ HLS
+   （hls.js は import すらしない）
+2. hls.js が動く（`Hls.isSupported()`。MSE / ManagedMediaSource がある）→ hls.js
+3. どちらも駄目だが `<video>` が m3u8 の MIME に支持を表明する → ネイティブへ
+   最後の望みを託す（`claimsHlsPlaylistSupport`）。ここに来るのは MSE も
+   ManagedMediaSource も無いブラウザ（iOS 17.1 未満の iPhone Safari）だけで、
+   「非対応です」と断じるとネイティブなら完璧に再生できる端末を締め出す
+
+**1 段目でセグメントの MIME（`video/mp2t`）まで問うのが要点。** プレイリストの
+MIME（`application/vnd.apple.mpegurl`）に対する `canPlayType` の戻り値では
+Safari と Chrome を区別できない --- Playwright の 3 エンジンで実測した値:
+
+| `canPlayType` の引数 | WebKit 605.1.15 | Chromium 151 | Chrome 151 | Firefox 153 |
+|---|---|---|---|---|
+| `application/vnd.apple.mpegurl` | `maybe` | `maybe` | `maybe` | `''` |
+| `application/x-mpegURL` | `maybe` | `maybe` | `maybe` | `''` |
+| 上記 + `; codecs="avc1.42E01E,mp4a.40.2"` | `probably` | `probably` | `probably` | `''` |
+| **`video/mp2t`** | **`maybe`** | **`''`** | **`''`** | **`''`** |
+
+戻り値を決めているのは **codecs パラメータの有無であってエンジンの違いではない**
+（HTML 仕様が「codecs を許す type について、それが無いなら `probably` を返すべき
+でない」と定めているため。hls.js 公式 README のパターンが `=== 'probably'` では
+なく真偽値チェックなのも同じ理由）。一方 `video/mp2t` --- streamer が実際に
+セグメントに付けている Content-Type --- を demux できるのは WebKit だけで、
+Chromium / Firefox はできない（hls.js が TS を fMP4 へ remux してから MSE に
+載せるのはこのため）。つまりこの問いは「このブラウザは**我々が配るもの**を
+そのまま再生できるか」という能力そのものへの問いであり、エンジンの同定でも
+拡張子への態度でもない。判定は `web/e2e/live.mjs` の⑥が実ブラウザで固定する。
 
 **再生前に `probeLivePlaylist`（`lib/live.ts`）でプレイリストを 1 回 `fetch` する。**
 `<video>` の `error` イベント・hls.js のエラーイベントはいずれも HTTP ステータスや
@@ -971,10 +1001,13 @@ prop の変化）を effect の cleanup で検知し、probe の in-flight `fetc
 実ブラウザ・実 hls.js による確認を行った。** mirakc も実チューナーも要らない ---
 HLS プレイリスト/セグメントは Playwright の `page.route` でブラウザ側から
 差し替え、streamer は「サービス一覧を返す」以外の実仕事をしない。判定した
-5 点（すべて合格を確認済み）:
+6 点（すべて合格を確認済み）:
 
 1. hls.js の動的 import チャンク（`assets/hls-*.js`）が実際に要求される
-2. MSE がアタッチされる（`video.src` が `blob:` になる）
+2. MSE がアタッチされる（`video.currentSrc` が `blob:` になる。`src` だけを見ると
+   取り逃がす --- hls.js は `sourceopen` 後に object URL を revoke するので
+   `src` の `blob:` は短命で、WebKit では 4 秒後に `src` が空・`currentSrc` にだけ
+   残っていた）
 3. **実 Chrome**（`channel: 'chrome'`）で `video.play()` 後に `currentTime` が
    進み、`videoWidth > 0`（bundled Chromium は H.264/AAC 非対応のため
    `channel: 'chrome'` が必須。ローカルの Google Chrome が無い環境では
@@ -983,19 +1016,37 @@ HLS プレイリスト/セグメントは Playwright の `page.route` でブラ�
    ナビゲーション。`page.goto` によるフルナビゲーションでは cleanup を通らず
    判定が成立しないため使わない）、旧チャンネルへのセグメント要求が 0 件になる
 5. 503（本文つき）でエラー文言が出て、再読み込みで復帰する
+6. **WebKit（Safari 相当）でネイティブ HLS 経路に入る**: `assets/hls-*.js` を
+   読み込まない・`<video>` に m3u8 の URL がそのまま渡る・そのまま再生が進む
+   （実測: `currentTime` 0.00 → 2.83、`videoWidth` 640、`readyState` 4）
 
-**この手段が実際に本番相当の回帰を発見した。** `supportsNativeHls` は当初
-`canPlayType('application/vnd.apple.mpegurl')` の戻り値が `'probably'` か
-`'maybe'` のいずれかであればネイティブ HLS 対応と判定していたが、実 Chrome
-（bundled Chromium だけでなく `channel: 'chrome'` の本物でも同様）はこの
-MIME タイプに `'maybe'` を返す --- Chrome はネイティブ HLS を再生できないにも
-関わらず、である。この状態でリリースしていたら、**Chrome ユーザー全員が
-`video.src` に m3u8 を直接渡され、hls.js を一切経由せず沈黙して再生できな
-かった。** jsdom によるユニットテストはこの分岐を一度も実行していなかった
-（`canPlayType` が jsdom では常に `''` を返すため、`'probably' || 'maybe'` の
-どちらの分岐にも入らず、テストは「常に hls.js 経路」を見ていた）。判定を
-`'probably'` のみに直し、`web/e2e/live.mjs` で実 Chrome から再検証して合格を
-確認した。
+**この手段が本番相当の回帰を 2 件発見した。うち 1 件は、最初の修正そのものが
+生んだものだった。**
+
+1. `supportsNativeHls` は当初 `canPlayType('application/vnd.apple.mpegurl')` の
+   戻り値が `'probably'` か `'maybe'` のいずれかであればネイティブ HLS 対応と
+   判定していたが、実 Chrome（`channel: 'chrome'` の本物でも）はこの MIME
+   タイプに `'maybe'` を返す。この状態でリリースしていたら、**Chrome ユーザー
+   全員が `video.src` に m3u8 を直接渡され、hls.js を一切経由せず沈黙して再生
+   できなかった。** jsdom によるユニットテストはこの分岐を一度も実行して
+   いなかった（`canPlayType` が jsdom では常に `''` を返すため）
+2. その修正（`'probably'` のみを対応と見なす）は、**どの実ブラウザでも false を
+   返した。** 上表のとおり 3 エンジンとも codecs 無しの m3u8 には `'maybe'` しか
+   返さないので、ネイティブ分岐は到達不能になり、**Safari も hls.js 経路に
+   落ちていた**（macOS では機能的には壊れない --- MSE があるので hls.js が動く。
+   実害は 523 KB の不要なダウンロードと、docs に「Safari はネイティブを使う」と
+   書きながらそうなっていない虚偽記載。**iPhone Safari は危険**で、
+   `window.MediaSource` を持たない iOS 17.1 未満では `Hls.isSupported()` が
+   false になり「このブラウザはライブ視聴（HLS）に対応していません」が出る ---
+   ネイティブなら完璧に再生できる端末で、である）。**このとき①〜⑤ は
+   Chromium 系しか回していなかったので e2e は緑のままだった。** WebKit を足した
+   ⑥が、issue #92 の決定 1（Safari では hls.js を読ませない）を初めて機械判定
+   できる形にしたもので、この回帰は⑥を足すと NG になることを確認してから直した
+
+このとき、ユニットテスト側にも同じ盲点があった。`expect(supportsNativeHls(() =>
+'probably')).toBe(true)` は通っていたが、**`'probably'` を返す実ブラウザは
+存在しない**ので、実在しない入力についての主張であり何も守っていなかった。
+現在は `lib/live.test.ts` が実測値の表（エンジンごとの戻り値）を入力にしている。
 
 **未解決の限界:**
 
@@ -1003,6 +1054,13 @@ MIME タイプに `'maybe'` を返す --- Chrome はネイティブ HLS を再�
   トランスコードの遅延・音ズレ・画質）は、この開発環境に ISDB-T チューナーも
   mirakc も無いため確認していない。`docs/runbook/live.md` §①に手順を残した
   （実行できる形にはなっているが、このタスクでは実行していない）
+- **iOS 実機（iPhone Safari）は誰も確認していない。** 再生経路の判定は macOS の
+  WebKit / Chromium / Chrome / Firefox で実測して固定したが、iOS の
+  `canPlayType('video/mp2t')` が macOS の WebKit と同じ `'maybe'` を返す保証は
+  無い。違っていた場合、iOS は hls.js 経路へ落ちる（17.1 以降は
+  ManagedMediaSource で再生できる。それ未満は上記 3 段目の最後の砦で
+  `<video>` に直接渡る）。`docs/runbook/live.md` §①に確認項目を足した ---
+  **この判定が正しいかは結局そこでしか確定しない**
 - CI では `web/e2e/live.mjs` を回さない（`web/e2e/checks.mjs` と同じ理由。
   実 Chrome チャンネルと ffmpeg という新しい依存を CI イメージに足す判断は
   このタスクの範囲外とした）

@@ -20,7 +20,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { chromium } from 'playwright'
+import { chromium, webkit } from 'playwright'
 
 const BASE_URL = process.env.E2E_URL ?? 'http://localhost:40773'
 const SITE = process.env.E2E_LIVE_SITE ?? 'default'
@@ -110,6 +110,37 @@ function ensureFixture() {
 
 /** segmentDelayMs はセグメント応答に足す遅延。 */
 const segmentDelayMs = 400
+
+/**
+ * mseAttached はブラウザ側で評価する述語（MSE がアタッチされたか）。
+ *
+ * **`video.src` だけを見てはいけない。** hls.js は `sourceopen` の後に
+ * object URL を `revokeObjectURL` するため `src` の `blob:` は短命で、
+ * WebKit では 4 秒後には `src` が空・`currentSrc` にだけ `blob:` が残っていた
+ * （レビュー #190 の指摘）。実際に読み込まれた資源を指す `currentSrc` を主に見る。
+ */
+const mseAttached = () => {
+  const v = document.querySelector('video')
+  if (!v) return false
+  return v.currentSrc.startsWith('blob:') || v.src.startsWith('blob:')
+}
+
+/**
+ * nativeSrcAssigned はブラウザ側で評価する述語（`<video>` に URL が直接
+ * 渡されたか = ネイティブ HLS 経路に入ったか）。
+ */
+const nativeSrcAssigned = () => {
+  const v = document.querySelector('video')
+  if (!v) return false
+  return v.currentSrc.includes('.m3u8') || v.src.includes('.m3u8')
+}
+
+/** playerDecided は再生経路が決まった（どちらかの分岐に入った）ことを表す。 */
+const playerDecided = () => {
+  const v = document.querySelector('video')
+  if (!v) return false
+  return v.currentSrc !== '' || v.src !== ''
+}
 
 /**
  * mockLiveRoutes は `.../live/playlist.m3u8` と `.../live/segments/*` を
@@ -205,18 +236,18 @@ async function runChromiumChecks(browser) {
   log('\n=== ② MSE のアタッチ ===')
   let attachedBlob = false
   try {
-    await page.waitForFunction(
-      () => document.querySelector('video')?.src.startsWith('blob:'),
-      undefined,
-      { timeout: 10000 },
-    )
+    await page.waitForFunction(mseAttached, undefined, { timeout: 10000 })
     attachedBlob = true
   } catch {
     attachedBlob = false
   }
-  const videoSrc = await page.evaluate(() => document.querySelector('video')?.src ?? '')
-  log(`  video.src = ${videoSrc.slice(0, 40)}...`)
-  if (!attachedBlob) ng.push('② video.src が blob: にならない（MSE がアタッチされていない）')
+  const videoSrc = await page.evaluate(
+    () => document.querySelector('video')?.currentSrc ?? '',
+  )
+  log(`  video.currentSrc = ${videoSrc.slice(0, 40)}...`)
+  if (!attachedBlob) {
+    ng.push('② video.currentSrc / src のどちらも blob: にならない（MSE がアタッチされていない）')
+  }
 
   // --- ④ チャンネル切り替え後、旧 serviceId へのセグメント要求が 0 件 ---
   log('\n=== ④ チャンネル切り替え時のセグメント要求の停止 ===')
@@ -286,17 +317,13 @@ async function runChromiumChecks(browser) {
     await retryButton.click()
     let recovered = false
     try {
-      await page.waitForFunction(
-        () => document.querySelector('video')?.src.startsWith('blob:'),
-        undefined,
-        { timeout: 10000 },
-      )
+      await page.waitForFunction(mseAttached, undefined, { timeout: 10000 })
       recovered = true
     } catch {
       recovered = false
     }
     log(`  再読み込みで復帰した: ${recovered ? 'YES' : 'NO'}`)
-    if (!recovered) ng.push('⑤ 再読み込みを押しても復帰しない（video.src が blob: にならない）')
+    if (!recovered) ng.push('⑤ 再読み込みを押しても復帰しない（MSE がアタッチされない）')
   }
 }
 
@@ -320,11 +347,7 @@ if (hasFixture) {
       const chromePage = await chromeBrowser.newPage({ viewport: { width: 960, height: 640 } })
       await mockLiveRoutes(chromePage, { playlist: 'ok' })
       await chromePage.goto(`${BASE_URL}/live?serviceId=${SERVICE_A}`, { waitUntil: 'networkidle' })
-      await chromePage.waitForFunction(
-        () => document.querySelector('video')?.src.startsWith('blob:'),
-        undefined,
-        { timeout: 15000 },
-      )
+      await chromePage.waitForFunction(mseAttached, undefined, { timeout: 15000 })
       await chromePage.evaluate(() => document.querySelector('video').play())
       const before = await chromePage.evaluate(() => ({
         t: document.querySelector('video').currentTime,
@@ -349,6 +372,87 @@ if (hasFixture) {
     } finally {
       await chromeBrowser.close()
     }
+  }
+}
+
+if (hasFixture) {
+  // --- ⑥ WebKit（Safari 相当）はネイティブ HLS 経路に入る ---
+  //
+  // **この判定が無かったために、Safari が hls.js 経路へ落ちる変更が e2e 緑のまま
+  // 通った**（レビュー #190 の 2 回目の指摘）。①〜⑤ は Chromium 系しか回して
+  // いないので、「Safari ではネイティブを使い hls.js を読み込まない」という決定
+  // （issue #92 の着手時コメント 1）は一度も機械判定されていなかった。
+  //
+  // WebKit は `<video>` が MPEG-2 TS を demux できる唯一のエンジンなので、
+  // フィクスチャ（H.264/AAC in TS）をそのまま再生できる --- 実再生まで見る。
+  log('\n=== ⑥ WebKit（Safari 相当）のネイティブ HLS 経路 ===')
+  const webkitBrowser = await webkit.launch()
+  try {
+    const page = await webkitBrowser.newPage({ viewport: { width: 960, height: 640 } })
+    const requestLog = []
+    page.on('request', (req) => requestLog.push(req.url()))
+    await mockLiveRoutes(page, { playlist: 'ok' })
+    await page.goto(`${BASE_URL}/live?serviceId=${SERVICE_A}`, { waitUntil: 'networkidle' })
+
+    // 経路が決まる（どちらかの分岐が `<video>` に何かを渡す）まで待つ。
+    // ここで待たずに数えると「まだ hls.js を要求していないだけ」を
+    // 「要求しなかった」と誤って合格にする（非同期の空虚な成功）
+    let decided = true
+    try {
+      await page.waitForFunction(playerDecided, undefined, { timeout: 15000 })
+    } catch {
+      decided = false
+    }
+
+    const src = await page.evaluate(() => {
+      const v = document.querySelector('video')
+      return { src: v?.src ?? '', currentSrc: v?.currentSrc ?? '' }
+    })
+    log(`  video.src = ${src.src.slice(0, 60)}`)
+    log(`  video.currentSrc = ${src.currentSrc.slice(0, 60)}`)
+
+    if (!decided) {
+      ng.push('⑥ WebKit で再生経路が決まらない（video に src も currentSrc も入らない）')
+    }
+
+    // 判定 1: hls.js の動的 import チャンクを読み込まない（決定 1 の実体）
+    const loadedHlsChunk = requestLog.some((u) => /\/assets\/hls-.*\.js(\?.*)?$/.test(u))
+    log(`  assets/hls-*.js への要求: ${loadedHlsChunk ? 'あり' : 'なし'}`)
+    if (loadedHlsChunk) {
+      ng.push(
+        '⑥ WebKit が hls.js のチャンク（約 520 KB）を読み込んだ。' +
+          'ネイティブ HLS 分岐に入っていない（issue #92 の決定 1 が成立していない）',
+      )
+    }
+
+    // 判定 2: `<video>` に m3u8 の URL がそのまま渡っている
+    const wentNative = await page.evaluate(nativeSrcAssigned)
+    log(`  video に m3u8 の URL が渡っている: ${wentNative ? 'YES' : 'NO'}`)
+    if (!wentNative) {
+      ng.push('⑥ WebKit で video.src / currentSrc が m3u8 にならない（ネイティブ経路に入っていない）')
+    }
+
+    // 判定 3: ネイティブのまま実際に再生が進む（WebKit は TS を demux できる）
+    try {
+      await page.evaluate(() => document.querySelector('video').play())
+      const before = await page.evaluate(() => document.querySelector('video').currentTime)
+      await page.waitForTimeout(3000)
+      const after = await page.evaluate(() => ({
+        t: document.querySelector('video').currentTime,
+        w: document.querySelector('video').videoWidth,
+        r: document.querySelector('video').readyState,
+      }))
+      log(`  currentTime: ${before.toFixed(2)} → ${after.t.toFixed(2)}`)
+      log(`  videoWidth: ${after.w}, readyState: ${after.r}`)
+      if (!(after.t > before)) ng.push('⑥ WebKit で 3 秒待っても currentTime が進まない')
+      if (!(after.w > 0)) ng.push('⑥ WebKit で videoWidth が 0（映像がデコードされていない）')
+    } catch (err) {
+      ng.push(`⑥ WebKit の実再生の検証中に例外が発生した: ${err.message}`)
+    }
+  } catch (err) {
+    ng.push(`⑥ の検証中に例外が発生した: ${err.message}`)
+  } finally {
+    await webkitBrowser.close()
   }
 }
 

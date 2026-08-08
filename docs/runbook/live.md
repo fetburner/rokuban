@@ -17,7 +17,20 @@ docker compose exec rokuban rokuban server --roles all --config /config.yml
 ```
 
 1. ブラウザで `/live` を開き、チャンネルを選ぶ。数秒で再生が始まる
-2. 別ターミナルでメトリクスを見る:
+2. **iPhone の Safari で `/live` を開いて再生できることを確認する（未実施）。**
+   iPhone は `window.MediaSource` を持たない（`ManagedMediaSource` のみ。iPad と
+   違う）ため、**ネイティブ HLS 経路に入れないと iOS 17.1 未満では
+   「このブラウザはライブ視聴（HLS）に対応していません」になる**。再生経路の
+   判定（`supportsNativeHls`）は macOS の WebKit / Chromium / Chrome / Firefox
+   では実測して固定してある（`web/e2e/live.mjs` の⑥）が、**iOS 実機は誰も
+   確認していない** --- `canPlayType('video/mp2t')` の戻り値が macOS の WebKit と
+   同じ `'maybe'` である保証は無く、違っていた場合は hls.js 経路へ落ちる
+   （iOS 17.1 以降なら ManagedMediaSource で再生できるが、それ未満では
+   `claimsHlsPlaylistSupport` の最後の砦で `<video>` に直接渡る形になる）。
+   確認できる人が実機で開いて、①再生できること ②開発者ツールで
+   `assets/hls-*.js` を読み込んでいないこと（読み込んでいたらネイティブ分岐に
+   入れていない）を見る
+3. 別ターミナルでメトリクスを見る:
 
    ```sh
    curl -s http://localhost:40773/metrics | grep rokuban_live
@@ -27,11 +40,11 @@ docker compose exec rokuban rokuban server --roles all --config /config.yml
    ```
 
    再生中は `rokuban_live_active_sessions` が `1`（見ているチャンネル数）になる
-3. ブラウザのタブを閉じる（または別チャンネルへ切り替える）。セグメント要求が
+4. ブラウザのタブを閉じる（または別チャンネルへ切り替える）。セグメント要求が
    止まってから **30〜45 秒**（`live.idle_timeout` 既定 30 秒 + GC 周期
    `idle_timeout/2` = 15 秒ぶんの遅れ）で `rokuban_live_active_sessions` が
    `0` に戻り、`rokuban_live_idle_gc_reclaimed_total` が `1` 増える
-4. チューナー本数が少ない環境で複数チャンネルを連続でザップすると、
+5. チューナー本数が少ない環境で複数チャンネルを連続でザップすると、
    `live.max_sessions`（既定 4）に達した時点で 503
    `too many concurrent live sessions on this process` が、チューナー自体が
    枯渇した場合は 503 `live stream unavailable` が返る（画面には
@@ -72,29 +85,51 @@ go build -o /tmp/rokuban ./cmd/rokuban
 E2E_LIVE_SERVICE_A=9001 E2E_LIVE_SERVICE_B=9002 node web/e2e/live.mjs
 ```
 
-判定する 5 点（詳細はスクリプト冒頭のコメント）:
+ブラウザは初回だけ取得する（**WebKit も要る**。⑥がそれでしか測れない）。
+
+```sh
+pnpm exec playwright install chromium webkit
+```
+
+判定する 6 点（詳細はスクリプト冒頭のコメント）:
 
 1. hls.js の動的 import チャンク（`assets/hls-*.js`）が実際に要求される
-2. MSE がアタッチされる（`video.src` が `blob:` になる）
+2. MSE がアタッチされる（`video.currentSrc` が `blob:` になる。`src` は
+   hls.js が `sourceopen` 後に object URL を revoke するので短命であり、
+   これだけを見ると取り逃がす）
 3. **実 Chrome のみ**（`channel: 'chrome'`。bundled Chromium は H.264/AAC 非対応）:
    `video.play()` 後に `currentTime` が進み、`videoWidth > 0`
 4. チャンネル切替後、旧チャンネルへのセグメント要求が 0 件になる
    （`LivePlayer` の effect cleanup が実際に効いていることの検証）
 5. 503（本文つき）でエラー文言が出て、再読み込みで復帰する
+6. **WebKit（Safari 相当）でネイティブ HLS 経路に入る**: `assets/hls-*.js` を
+   **読み込まない**・`<video>` に m3u8 の URL がそのまま渡る・そのまま再生が
+   進む（`currentTime` が進み `videoWidth > 0`。WebKit は `<video>` が MPEG-2 TS
+   を demux できる唯一のエンジンなので、フィクスチャをネイティブに再生できる）
 
 初回実行は ffmpeg で固定フィクスチャ（testsrc + sine を H.264/AAC でエンコード
 した 40 秒ぶん）を生成し `os.tmpdir()` にキャッシュする（`E2E_LIVE_REBUILD_FIXTURE=1`
 で強制再生成）。**ffmpeg が無い環境・Chrome が無い環境では、その判定だけを
 「未測定」として報告し（NG にはしない）残りは続行する。**
 
-**この手段が実際に発見した回帰**: `supportsNativeHls`（`lib/live.ts`）が
-`canPlayType('application/vnd.apple.mpegurl')` の戻り値 `'maybe'` も対応と
-見なしていたところ、実 Chrome（bundled Chromium だけでなく `channel: 'chrome'`
-の本物でも）はこの MIME タイプに `'maybe'` を返す（対応の印ではなく「分から
-ないが試す価値はある」という楽観的な既定応答）。修正前のままリリースしていたら、
-Chrome ユーザー全員が `video.src` に m3u8 を直接渡され、hls.js を一切経由せず
-沈黙して再生できなかった。ユニットテスト（jsdom）はこの分岐を一度も実行して
-いなかった --- `canPlayType` が jsdom では常に `''` を返すため。
+**この手段が実際に発見した回帰（2 件）**:
+
+1. `supportsNativeHls`（`lib/live.ts`）が
+   `canPlayType('application/vnd.apple.mpegurl')` の戻り値 `'maybe'` も対応と
+   見なしていた。実 Chrome（bundled Chromium だけでなく `channel: 'chrome'` の
+   本物でも）はこの MIME タイプに `'maybe'` を返す。そのままリリースしていたら
+   Chrome ユーザー全員が `video.src` に m3u8 を直接渡され、hls.js を一切経由せず
+   沈黙して再生できなかった。ユニットテスト（jsdom）はこの分岐を一度も実行して
+   いなかった --- `canPlayType` が jsdom では常に `''` を返すため
+2. その修正（`'probably'` のみを対応と見なす）が**どの実ブラウザでも false**に
+   なっていた。3 エンジンとも codecs 無しの m3u8 には `'maybe'` しか返さず、
+   codecs 付きなら 3 エンジンとも `'probably'` を返す --- 戻り値を決めているのは
+   codecs の有無であってエンジンではない。**①〜⑤ が Chromium 系しか回して
+   いなかったので、この回帰は e2e 緑のまま通った。**⑥（WebKit）を足して初めて
+   機械判定できるようになった。判定は「プレイリストとセグメントの両方の
+   Content-Type を `<video>` が再生できるか」（`video/mp2t` を demux できるのは
+   WebKit だけ）に置き換えてある。詳細は
+   [docs/frontend.md](../frontend.md) §実機確認について（M4-4）
 
 ### CI では回さない
 

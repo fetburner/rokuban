@@ -20,6 +20,11 @@ import { LivePlayer } from '@/components/live-player'
  */
 const hlsMockState = vi.hoisted(() => ({
   instances: [] as FakeHls[],
+  // supported はフェイクの `Hls.isSupported()` の戻り値。false にすると
+  // 「MSE も ManagedMediaSource も無いブラウザ」（iOS 17.1 未満の iPhone Safari）を
+  // 模擬できる。実 hls.js は jsdom でも常に false を返すが、それだと hls.js 経路
+  // 自体が一度も走らないので既定は true にしておく
+  supported: true,
 }))
 
 type FakeHls = {
@@ -32,7 +37,7 @@ type FakeHls = {
 vi.mock('hls.js', () => {
   class FakeHlsImpl {
     static Events = { ERROR: 'hlsError' }
-    static isSupported = () => true
+    static isSupported = () => hlsMockState.supported
     on = vi.fn()
     loadSource = vi.fn()
     attachMedia = vi.fn()
@@ -64,6 +69,7 @@ afterEach(() => {
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
   hlsMockState.instances.length = 0
+  hlsMockState.supported = true
 })
 
 describe('LivePlayer の状態遷移', () => {
@@ -133,19 +139,42 @@ describe('LivePlayer の状態遷移', () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
   })
 
-  it('ネイティブ HLS 対応（Safari 相当）なら video.src に直接プレイリスト URL を渡す', async () => {
+  it('WebKit（Safari 相当）の実測値なら video.src に直接プレイリスト URL を渡し、hls.js を import しない', async () => {
     const { resolve } = deferredFetch()
     render(<LivePlayer site="default" serviceId={1024} />)
 
     const video = document.querySelector('video')!
-    // probe が解決する前に canPlayType を差し替える（Safari 相当）
-    vi.spyOn(video, 'canPlayType').mockReturnValue('probably')
+    // probe が解決する前に canPlayType を差し替える。**値は WebKit の実測値**
+    // （lib/live.ts の supportsNativeHls の表）。`'probably'` を返す実ブラウザは
+    // 無いので、そこで模擬すると実在しない状況をテストすることになる
+    vi.spyOn(video, 'canPlayType').mockImplementation((type) =>
+      type === 'application/vnd.apple.mpegurl' || type === 'video/mp2t' ? 'maybe' : '',
+    )
 
     resolve(new Response('', { status: 200 }))
 
     await waitFor(() => expect(screen.queryByText('読み込み中…')).not.toBeInTheDocument())
     expect(video.src).toContain('/api/sites/default/services/1024/live/playlist.m3u8')
     expect(screen.queryByRole('button', { name: '再読み込み' })).not.toBeInTheDocument()
+    // ネイティブ分岐では hls.js を import すらしない（約 520 KB を読ませない）
+    expect(hlsMockState.instances).toHaveLength(0)
+  })
+
+  it('Chrome の実測値では hls.js 経路に入る（video.src に m3u8 を渡さない）', async () => {
+    const { resolve } = deferredFetch()
+    render(<LivePlayer site="default" serviceId={1024} />)
+
+    const video = document.querySelector('video')!
+    // Chrome / Chromium はプレイリストの MIME に WebKit と同じ 'maybe' を返すが、
+    // セグメント（video/mp2t）は空文字。ここが両者を分ける唯一の点
+    vi.spyOn(video, 'canPlayType').mockImplementation((type) =>
+      type === 'application/vnd.apple.mpegurl' ? 'maybe' : '',
+    )
+
+    resolve(new Response('', { status: 200 }))
+
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+    expect(video.src).toBe('')
   })
 
   it('serviceId が変わると新しい URL で probe をやり直す', async () => {
@@ -261,6 +290,45 @@ describe('LivePlayer の状態遷移', () => {
       unmount()
 
       expect(hls.destroy).toHaveBeenCalledTimes(1)
+    })
+
+    it('Hls.isSupported() が false でも m3u8 に支持があれば video.src へ渡す（MSE の無い iPhone Safari 相当）', async () => {
+      // iOS 17.1 未満の iPhone Safari は `window.MediaSource` を持たない
+      // （ManagedMediaSource も無い）ので `Hls.isSupported()` が false になる。
+      // ここで「非対応」と断じると、**ネイティブなら完璧に再生できる端末**に
+      // エラーを出すことになる（レビュー #190 の 2 回目の指摘）。
+      // canPlayType は m3u8 にだけ支持を表明する形にして、rung 1（ネイティブ）を
+      // 通り抜けて rung 3（最後の砦）に落ちる経路を作る
+      hlsMockState.supported = false
+      const { resolve } = deferredFetch()
+      render(<LivePlayer site="default" serviceId={1024} />)
+
+      const video = document.querySelector('video')!
+      vi.spyOn(video, 'canPlayType').mockImplementation((type) =>
+        type === 'application/vnd.apple.mpegurl' ? 'maybe' : '',
+      )
+
+      resolve(new Response('', { status: 200 }))
+
+      await waitFor(() =>
+        expect(video.src).toContain('/api/sites/default/services/1024/live/playlist.m3u8'),
+      )
+      expect(
+        screen.queryByText('このブラウザはライブ視聴（HLS）に対応していません'),
+      ).not.toBeInTheDocument()
+      expect(screen.queryByText('読み込み中…')).not.toBeInTheDocument()
+    })
+
+    it('Hls.isSupported() が false で m3u8 にも支持が無ければ非対応を表示する', async () => {
+      hlsMockState.supported = false
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
+      // jsdom の canPlayType は既定で '' を返す（= どの MIME にも支持が無い）
+      render(<LivePlayer site="default" serviceId={1024} />)
+
+      expect(
+        await screen.findByText('このブラウザはライブ視聴（HLS）に対応していません'),
+      ).toBeInTheDocument()
+      expect(document.querySelector('video')!.src).toBe('')
     })
 
     it('serviceId が変わると古い hls インスタンスが destroy され、新しいインスタンスが作られる', async () => {

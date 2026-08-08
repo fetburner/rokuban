@@ -110,12 +110,21 @@ export type LivePageSearch = {
 const liveRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/live',
-  // searchRoute の ruleId と同じ規律: 壊れた/古いリンクを踏んでも「チャンネル
-  // 指定なし」の通常表示（先頭チャンネル）に落ちる
+  // 壊れた/古いリンクを踏んでも「チャンネル指定なし」の通常表示（先頭チャンネル）
+  // に落ちる。
+  //
+  // **落とす次元にも `undefined` を明示代入する**（`parseRecordingsSearch` と
+  // 同じ形。issue #194）。TanStack Router は非 strict モードで
+  // `{ ...生の location.search, ...validateSearch の戻り値 }` の順に合成するので、
+  // キーを省略すると生の値（`/live?serviceId=abc` なら文字列 `"abc"`）がそのまま
+  // 残り、`LivePageSearch` の `serviceId?: number` という型が実行時に嘘になる。
+  // いまの唯一の読者（`pickInitialServiceId`）は厳密比較なので実害は無いが、
+  // `serviceId` を `livePlaylistURL` に直接渡す読者が 1 人増えた瞬間に
+  // `/api/.../services/abc/live/playlist.m3u8` が飛ぶ
   validateSearch: (search: Record<string, unknown>): LivePageSearch => {
     const raw = search.serviceId
     const n = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : NaN
-    return Number.isInteger(n) && n > 0 ? { serviceId: n } : {}
+    return { serviceId: Number.isInteger(n) && n > 0 ? n : undefined }
   },
   component: LivePage,
 })

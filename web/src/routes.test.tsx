@@ -59,6 +59,43 @@ describe('routeTree', () => {
     expect(validateSearch({})).toEqual({})
   })
 
+  it('/live?serviceId=abc は useSearch の戻り値に文字列を残さない', async () => {
+    // **`validateSearch` を直接呼ぶだけでは検出できない。** TanStack Router は
+    // 非 strict モードで `{ ...生の location.search, ...validateSearch の戻り値 }`
+    // の順に合成するので、`validateSearch` が**キーを省略**すると生の値
+    // （文字列 "abc"）がそのまま残る。`LivePageSearch` は `serviceId?: number` と
+    // 宣言しているので、これは型が実行時に嘘をついている状態になる（issue #194）。
+    // 落とす次元にも undefined を明示代入して初めて消える
+    const router = createRouter({
+      routeTree,
+      history: createMemoryHistory({ initialEntries: ['/live?serviceId=abc'] }),
+    })
+    await router.load()
+
+    const search = router.state.matches.at(-1)!.search as { serviceId?: unknown }
+    expect(search.serviceId).toBeUndefined()
+    // 正しい値は通る（両方向を見る）
+    const ok = createRouter({
+      routeTree,
+      history: createMemoryHistory({ initialEntries: ['/live?serviceId=1024'] }),
+    })
+    await ok.load()
+    expect((ok.state.matches.at(-1)!.search as { serviceId?: unknown }).serviceId).toBe(1024)
+  })
+
+  it('/live の serviceId は非整数・0 以下も落とす', async () => {
+    for (const raw of ['1.5', '0', '-1', 'Infinity']) {
+      const router = createRouter({
+        routeTree,
+        history: createMemoryHistory({ initialEntries: [`/live?serviceId=${raw}`] }),
+      })
+      await router.load()
+      expect((router.state.matches.at(-1)!.search as { serviceId?: unknown }).serviceId).toBe(
+        undefined,
+      )
+    }
+  })
+
   it('/search を開くと検索画面が出て、主ナビゲーションから辿れる', async () => {
     // jsdom は window.scrollTo を実装していない。ルーターのスクロール復元が
     // 呼ぶため、置いておかないと関係のない例外がログを埋める

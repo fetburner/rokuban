@@ -20,25 +20,68 @@ export function livePlaylistURL(site: string, serviceId: number, profile?: strin
 }
 
 /**
- * supportsNativeHls は `<video>` がネイティブに HLS を再生できるかを判定する（Safari）。
+ * livePlaylistMimeType は streamer がプレイリストに付ける Content-Type
+ * （`internal/streamer/live.go`）。
+ */
+const livePlaylistMimeType = 'application/vnd.apple.mpegurl'
+
+/**
+ * liveSegmentMimeType は streamer がセグメントに付ける Content-Type
+ * （`internal/streamer/live.go`。ffmpeg の HLS マルチプレクサが吐く MPEG-2 TS）。
+ */
+const liveSegmentMimeType = 'video/mp2t'
+
+/**
+ * supportsNativeHls は `<video>` が **streamer が実際に配るもの**をネイティブに
+ * 再生できるかを判定する。プレイリストの MIME とセグメントの MIME の両方を問う。
  *
- * **`'probably'` だけを対応と見なす。`'maybe'` は対応の印にならない。** 実 Chrome
- * （bundled Chromium だけでなく `channel: 'chrome'` の本物でも同様）は
- * `canPlayType('application/vnd.apple.mpegurl')` に対して `'maybe'` を返すが、
- * Chrome はネイティブ HLS を再生できない（`web/e2e/live.mjs` で実機検証中に発見:
- * この判定を `'probably' || 'maybe'` にしたまま初回リリースしていたら、
- * Chrome ユーザー全員が `video.src` に m3u8 を直接渡されて再生できないまま
- * 沈黙して壊れていた）。`'maybe'` は仕様上「分からないが試す価値はある」という
- * 弱い返答で、Chrome は未知の MIME タイプに対して楽観的に `'maybe'` を返す
- * だけであり、実際に再生できるかとは無関係。Safari は m3u8 を特別扱いしていて
- * `'probably'` を返す（対応表明の強い返答）ので、これだけで見分けられる。
+ * **プレイリストの MIME だけでは Safari と Chrome を区別できない。** Playwright の
+ * 3 エンジンで実測した値（`web/e2e/live.mjs` の⑥が同じことを実ブラウザで固定する）:
+ *
+ * | canPlayType の引数 | WebKit 605.1.15 | Chromium 151 | Chrome 151 | Firefox 153 |
+ * |---|---|---|---|---|
+ * | `application/vnd.apple.mpegurl` | `maybe` | `maybe` | `maybe` | `''` |
+ * | `application/x-mpegURL` | `maybe` | `maybe` | `maybe` | `''` |
+ * | 上記 + `; codecs="avc1.42E01E,mp4a.40.2"` | `probably` | `probably` | `probably` | `''` |
+ * | **`video/mp2t`** | **`maybe`** | **`''`** | **`''`** | **`''`** |
+ *
+ * つまり m3u8 の MIME に対する戻り値を決めているのは **codecs パラメータの有無で
+ * あってエンジンの違いではない**（HTML 仕様は「codecs を許す type について、それが
+ * 無いなら `probably` を返すべきでない」と定めており、3 エンジンともそれに従って
+ * いるだけ）。`'probably'` のみを対応と見なす形（レビュー #190 の 1 回目の修正）は
+ * **どの実ブラウザでも false を返し、ネイティブ分岐が一度も成立しない**。逆に
+ * `'maybe'` も対応と見なす形（初版）は Chrome を誤ってネイティブ分岐へ送る。
+ * m3u8 の MIME をどう読んでも、この 2 つのどちらかにしかならない。
+ *
+ * **見分けているのはセグメントの container である。** Chromium / Firefox の
+ * `<video>` は MPEG-2 TS を demux できない（hls.js が TS を fMP4 へ remux してから
+ * MSE に載せるのはこのため）が、WebKit はできる。streamer が配るセグメントは
+ * `video/mp2t` そのものなので、この問いは「このブラウザは我々が配るものを
+ * そのまま再生できるか」という能力そのものへの問いになっている --- エンジンの
+ * 同定でも、m3u8 という拡張子への態度でもない。
  *
  * `canPlayType` を注入で受け取るのは、実際の `HTMLVideoElement.canPlayType` は
  * jsdom で常に `''` を返す（未実装）ため、テストから振る舞いを差し替えられるように
  * するため。
  */
 export function supportsNativeHls(canPlayType: (type: string) => string): boolean {
-  return canPlayType('application/vnd.apple.mpegurl') === 'probably'
+  return canPlayType(livePlaylistMimeType) !== '' && canPlayType(liveSegmentMimeType) !== ''
+}
+
+/**
+ * claimsHlsPlaylistSupport は `<video>` が HLS プレイリストの MIME に何らかの
+ * 支持を表明するかだけを見る（`supportsNativeHls` より弱い問い）。
+ *
+ * **これ単独をネイティブ分岐の条件にしてはならない**（Chrome も真になる。上記の表）。
+ * 使ってよいのは `Hls.isSupported()` が false と分かった後の**最後の砦**としてだけ
+ * である --- MSE も ManagedMediaSource も無いブラウザは hls.js では絶対に再生
+ * できないので、そこで `<video>` に直接渡して駄目でも失うものが無い。逆に
+ * `supportsNativeHls` が（例えば iOS の `video/mp2t` に対する戻り値が macOS と
+ * 違って）取りこぼした場合に、ネイティブで完璧に再生できる端末へ
+ * 「このブラウザは HLS に対応していません」と表示してしまう事故を防ぐ。
+ */
+export function claimsHlsPlaylistSupport(canPlayType: (type: string) => string): boolean {
+  return canPlayType(livePlaylistMimeType) !== ''
 }
 
 /**

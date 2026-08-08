@@ -1,7 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 
 import type { LiveLoadError } from '@/lib/live'
-import { livePlaylistURL, probeLivePlaylist, supportsNativeHls } from '@/lib/live'
+import {
+  claimsHlsPlaylistSupport,
+  livePlaylistURL,
+  probeLivePlaylist,
+  supportsNativeHls,
+} from '@/lib/live'
 import { cn } from '@/lib/utils'
 
 /** HlsLike は hls.js の型を静的 import せずに使うための最小限の形。 */
@@ -75,12 +80,33 @@ export function LivePlayer({ site, serviceId, className }: LivePlayerProps) {
 
       if (!video) return
 
-      if (supportsNativeHls(video.canPlayType.bind(video))) {
+      const canPlayType = video.canPlayType.bind(video)
+
+      // 再生経路は 3 段の梯子で選ぶ。**各段は「実際に確かめた能力」で選ばれる**
+      // （レビュー #190 の 2 回目の指摘。それまでは m3u8 の MIME への戻り値だけを
+      // 見ていたが、あれはどの実ブラウザでも Safari と Chrome を区別しない）:
+      //
+      //   1. `<video>` がプレイリストもセグメント（`video/mp2t`）も再生できる
+      //      → ネイティブ。hls.js は import すらしない（約 520 KB を読ませない）
+      //   2. hls.js が動く（MSE / ManagedMediaSource がある）→ hls.js
+      //   3. どちらも駄目だが `<video>` が m3u8 に支持を表明する → ネイティブへ
+      //      最後の望みを託す（`lib/live.ts` の `claimsHlsPlaylistSupport`）
+      if (supportsNativeHls(canPlayType)) {
         video.src = url
       } else {
         const { default: Hls } = await import('hls.js')
         if (cancelled) return
         if (!Hls.isSupported()) {
+          // MSE も ManagedMediaSource も無い（iOS 17.1 未満の iPhone Safari が
+          // これに当たる）。hls.js では原理的に再生できないので、`<video>` 自身が
+          // m3u8 に支持を表明しているならそちらへ渡す --- 駄目でも `<video>` の
+          // error イベントに落ちるだけで、失うものは無い。ここを「非対応」と
+          // 断じると、ネイティブなら完璧に再生できる端末を締め出す
+          if (claimsHlsPlaylistSupport(canPlayType)) {
+            video.src = url
+            setLoading(false)
+            return
+          }
           setError({
             kind: 'other',
             status: 0,

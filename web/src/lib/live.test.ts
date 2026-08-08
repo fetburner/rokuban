@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { Service } from '@/api/generated'
 import {
+  claimsHlsPlaylistSupport,
   classifyLiveLoadError,
   currentProgramWindow,
   livePlaylistURL,
@@ -32,18 +33,64 @@ describe('livePlaylistURL', () => {
   })
 })
 
+/**
+ * measuredCanPlayType は Playwright の各エンジンで**実測した** `canPlayType` の
+ * 戻り値（`web/e2e/live.mjs` の⑥が実ブラウザ上で同じ値を突き合わせ続ける）。
+ *
+ * **実ブラウザが実際に返す値だけでテストする。** レビュー #190 の 1 回目の修正は
+ * `canPlayType('application/vnd.apple.mpegurl') === 'probably'` を要求していたが、
+ * codecs 無しでこの値を返す実ブラウザは 1 つも無い（3 エンジンとも `'maybe'`）ので、
+ * 「`'probably'` なら true」というテストは**どのブラウザでも起こらない入力**に
+ * ついての主張であり、ネイティブ分岐が全ブラウザで到達不能になったことを
+ * 通してしまった。ここでは表そのものを入力にする。
+ */
+const measuredCanPlayType: Record<string, Record<string, string>> = {
+  // WebKit 605.1.15（UA は Version/26.5 Safari/605.1.15）
+  webkit: { 'application/vnd.apple.mpegurl': 'maybe', 'video/mp2t': 'maybe' },
+  // Playwright 同梱 Chromium 151
+  chromium: { 'application/vnd.apple.mpegurl': 'maybe', 'video/mp2t': '' },
+  // channel: 'chrome' の実 Google Chrome 151
+  chrome: { 'application/vnd.apple.mpegurl': 'maybe', 'video/mp2t': '' },
+  // Firefox 153
+  firefox: { 'application/vnd.apple.mpegurl': '', 'video/mp2t': '' },
+  // jsdom（`HTMLMediaElement.canPlayType` 未実装。常に空文字）
+  jsdom: {},
+}
+
+function canPlayTypeOf(engine: string): (type: string) => string {
+  return (type) => measuredCanPlayType[engine]?.[type] ?? ''
+}
+
 describe('supportsNativeHls', () => {
-  it('probably は true（Safari 相当）', () => {
-    expect(supportsNativeHls(() => 'probably')).toBe(true)
+  it('WebKit だけが true（セグメントの video/mp2t を demux できるのは WebKit だけ）', () => {
+    expect(supportsNativeHls(canPlayTypeOf('webkit'))).toBe(true)
   })
 
-  it('maybe は false（実 Chrome が返す値。web/e2e/live.mjs で実機確認済み。' +
-    'trueにすると Chrome が video.src に m3u8 を直接渡され再生できない）', () => {
-    expect(supportsNativeHls(() => 'maybe')).toBe(false)
-  })
+  it.each(['chromium', 'chrome', 'firefox', 'jsdom'])(
+    '%s は false（true にすると video.src に m3u8 を直接渡され、沈黙して再生できない）',
+    (engine) => {
+      expect(supportsNativeHls(canPlayTypeOf(engine))).toBe(false)
+    },
+  )
 
-  it('空文字は false（未対応。jsdom の既定値でもある）', () => {
-    expect(supportsNativeHls(() => '')).toBe(false)
+  it('プレイリストの MIME だけでは Chrome と区別できない（実測値。判定に使わない根拠）', () => {
+    const playlistOnly = (engine: string) =>
+      canPlayTypeOf(engine)('application/vnd.apple.mpegurl')
+    expect(playlistOnly('webkit')).toBe(playlistOnly('chrome'))
+    expect(playlistOnly('webkit')).toBe(playlistOnly('chromium'))
+  })
+})
+
+describe('claimsHlsPlaylistSupport', () => {
+  it.each(['webkit', 'chromium', 'chrome'])(
+    '%s は true（この弱い問いだけでネイティブ分岐を選んではならない）',
+    (engine) => {
+      expect(claimsHlsPlaylistSupport(canPlayTypeOf(engine))).toBe(true)
+    },
+  )
+
+  it.each(['firefox', 'jsdom'])('%s は false', (engine) => {
+    expect(claimsHlsPlaylistSupport(canPlayTypeOf(engine))).toBe(false)
   })
 })
 
