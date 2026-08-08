@@ -326,6 +326,38 @@ func (w *IngestWorker) lookupRecordingID(ctx context.Context, args IngestJobArgs
 // determineRelPath は保存先の相対パスと、それを解決した絶対パスを返す。
 // relPath は mirakc の contentPath 由来なので、メディアディレクトリの外を
 // 指していないことを検証する。
+//
+// 返す relPath には `{site}/` を前置する（issue #186 M4-14）。アーカイブ
+// （media_assets）は site 列を持たず単一だが、contentPath は mirakc インスタンス
+// スコープの名前なので、2 サイトが同じ contentPath で録ると同じ実ファイルを
+// 取り合う（DB は一意索引で片方の commit を落とすが、実ファイルは先に書いた方が
+// 上書きされて壊れる）。ingest は原本 rel_path の唯一の書き手なので、ここで
+// 前置すれば入力（contentPath の有無や形）に関わらず名前空間が保たれる —
+// reconciler の contentPath 生成（mirakc 側の録画バッファ）や運用者の
+// filename_template（ユーザーが書ける）に前置を委ねると、Rokuban 以外が作った
+// record や旧いテンプレートの record で名前空間が破れる。
+//
+// 前置に使うのは args.Site（w.Site ではない）。Work は determineRelPath を呼ぶ
+// 前に verifySite（internal/worker/worker.go）で args.Site が w.Site（空なら
+// db.DefaultSite）と一致することを検査済みなので値としては同じだが、
+// verifySite は w.Site="" のときに args.Site="" を通さない（正規化後の
+// "default" と比較して弾く）ため、verifySite を通過した args.Site は常に
+// 非空・正規化済みである。w.Site を使うと単体テストの部分構成
+// （w.Site 未設定）で同じ正規化をここで再実装する必要がある。
+//
+// `{site}/` は site 名の構文制約・予約名検査（internal/config.validateSiteName、
+// issue #183 M4-11）に依存する安全前提の上に成立している。特に `catalog` /
+// `thumbnails` が予約名なのは、`catalog/` が削除 reconcile の孤児回収
+// （internal/worker/delete_reconcile.go の walkMediaFiles）と rescue スキャン
+// （internal/catalog/rescue_scan.go）が SkipDir する対象で、`thumbnails/` が
+// サムネイルの名前空間（internal/worker/thumbnail.go）だから。この 2 つと
+// 衝突する site 名を許すと、そのサイトの原本が孤児回収・rescue の両方から
+// 永久に見えなくなる。
+//
+// 前置前に ingest 済みの既存行は移行しない（マイグレーションを書かない）。
+// 新規 ingest 分だけ `{site}/` が付き、ディスク上は前置あり/なしが混在する。
+// rel_path をパースする読者はいない（rescueAssetKind は拡張子しか見ない）ので
+// 混在は無害。
 func (w *IngestWorker) determineRelPath(ctx context.Context, args IngestJobArgs) (relPath, fullPath string, err error) {
 	record, err := w.MirakcClient.GetRecord(ctx, args.RecordID)
 	if err != nil {
@@ -336,6 +368,10 @@ func (w *IngestWorker) determineRelPath(ctx context.Context, args IngestJobArgs)
 	} else {
 		relPath = filepath.Base(record.Content.Path)
 	}
+	// rel_path のパス区切りは DB 上で '/' 規約（internal/worker/encode.go の
+	// EncodedRelPath 参照）。args.Site は site 名の構文制約で '/' を含み得ない
+	// ので単純な文字列結合で足りる。
+	relPath = args.Site + "/" + relPath
 	fullPath, err = mediapath.Resolve(w.MediaDir, relPath)
 	if err != nil {
 		return "", "", err

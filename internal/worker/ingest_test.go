@@ -109,7 +109,8 @@ func TestIngestWorker_FullTransfer(t *testing.T) {
 		t.Fatalf("Work() error: %v", err)
 	}
 
-	fullPath := filepath.Join(mediaDir, "test", "recording.m2ts")
+	// rel_path には args.Site（ここでは "default"）が前置される（issue #186 M4-14）。
+	fullPath := filepath.Join(mediaDir, "default", "test", "recording.m2ts")
 	data, err := os.ReadFile(fullPath)
 	if err != nil {
 		t.Fatalf("reading output file: %v", err)
@@ -259,7 +260,8 @@ func TestIngestWorker_SiteMatch(t *testing.T) {
 		t.Fatalf("Work() error = %v, want nil for matching site", err)
 	}
 
-	fullPath := filepath.Join(mediaDir, "match", "recording.m2ts")
+	// rel_path には args.Site（ここでは "site-a"）が前置される（issue #186 M4-14）。
+	fullPath := filepath.Join(mediaDir, "site-a", "match", "recording.m2ts")
 	data, err := os.ReadFile(fullPath)
 	if err != nil {
 		t.Fatalf("reading output file: %v", err)
@@ -354,7 +356,8 @@ func TestIngestWorker_MidTransferDisconnect(t *testing.T) {
 		t.Fatalf("Work() error: %v", err)
 	}
 
-	fullPath := filepath.Join(mediaDir, "test", "partial.m2ts")
+	// rel_path には args.Site（ここでは "default"）が前置される（issue #186 M4-14）。
+	fullPath := filepath.Join(mediaDir, "default", "test", "partial.m2ts")
 	data, err := os.ReadFile(fullPath)
 	if err != nil {
 		t.Fatalf("reading output file: %v", err)
@@ -517,7 +520,8 @@ func TestIngestWorker_StallDetection(t *testing.T) {
 		t.Fatalf("Work() error: %v", err)
 	}
 
-	fullPath := filepath.Join(mediaDir, "test", "stall.m2ts")
+	// rel_path には args.Site（ここでは "default"）が前置される（issue #186 M4-14）。
+	fullPath := filepath.Join(mediaDir, "default", "test", "stall.m2ts")
 	data, err := os.ReadFile(fullPath)
 	if err != nil {
 		t.Fatalf("reading output file: %v", err)
@@ -680,7 +684,8 @@ func TestIngestWorker_JobReexecution(t *testing.T) {
 	recordingID := insertTestRecording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-reexec")
 
-	fullPath := filepath.Join(mediaDir, "test", "reexec.m2ts")
+	// rel_path には args.Site（ここでは "default"）が前置される（issue #186 M4-14）。
+	fullPath := filepath.Join(mediaDir, "default", "test", "reexec.m2ts")
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -801,7 +806,8 @@ func TestIngestWorker_SkipsTransferWhenAlreadyCommitted(t *testing.T) {
 		t.Fatalf("first Work() error: %v", err)
 	}
 
-	fullPath := filepath.Join(mediaDir, "test", "reingest.m2ts")
+	// rel_path には args.Site（ここでは "default"）が前置される（issue #186 M4-14）。
+	fullPath := filepath.Join(mediaDir, "default", "test", "reingest.m2ts")
 	firstData, err := os.ReadFile(fullPath)
 	if err != nil {
 		t.Fatalf("reading output file after first Work(): %v", err)
@@ -1605,5 +1611,242 @@ func TestIngestWorker_LogsInfoWhenManualSourceReservationUnresolvable(t *testing
 	keepOriginal, profiles := encodePolicyOfRecording(t, pool, recordingID)
 	if keepOriginal != "always" || len(profiles) != 0 {
 		t.Errorf("keep_original/encode_profiles = %q/%v, want always/[] (unresolved, frozen to defaults)", keepOriginal, profiles)
+	}
+}
+
+// mirakcRecordServer は determineRelPath 系のテスト用に、固定の contentPath /
+// content.Path を返す mirakc モックを立てる。ストリーム・削除エンドポイントは
+// 常に成功する（このファイル内の他テストと同じ最小構成）。
+func mirakcRecordServer(t *testing.T, tsData []byte, contentPath *string, contentFilePath string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsData)))
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(tsData)
+		case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsData)))
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
+			record := mirakc.Record{
+				Recording: mirakc.RecordInfo{Options: mirakc.Options{ContentPath: contentPath}},
+				Content:   mirakc.ContentInfo{Path: contentFilePath},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(record)
+		case r.Method == http.MethodDelete:
+			result := mirakc.RecordRemovalResult{RecordRemoved: true, ContentRemoved: true}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(result)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestIngestWorker_RelPathPrefixedWithSite は、issue #186 (M4-14) 受け入れの
+// 1 項目目を固定する: site "tokyo" の worker が ingest した原本の
+// media_assets.rel_path が "tokyo/" で始まり、実ファイルがその下に置かれる
+// （contentPath に階層があってもその下に入る）。
+//
+// determineRelPath の "relPath = args.Site + "/" + relPath" を削って
+// "relPath = relPath"（前置なし）に戻すと、rel_path が "20240101/prog.m2ts" の
+// ままになりこのテストは失敗する（アサーション失敗。ビルドは通る）。
+func TestIngestWorker_RelPathPrefixedWithSite(t *testing.T) {
+	tsData := makeTSData(10)
+	srv := mirakcRecordServer(t, tsData, strPtr("20240101/prog.m2ts"), "/recording/20240101/prog.m2ts")
+
+	mediaDir := t.TempDir()
+	mc := mirakc.NewClient(srv.URL, nil)
+
+	w := &IngestWorker{
+		MirakcClient: mc,
+		MediaDir:     mediaDir,
+		StallTimeout: 5 * time.Second,
+		Site:         "tokyo",
+	}
+
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	w.Pool = pool
+
+	recordingID := insertTestRecordingForSite(t, pool, "tokyo", 101)
+	insertTestRecordSyncForSite(t, pool, "tokyo", recordingID, "rec-tokyo", 327361024000101)
+
+	job := &river.Job[IngestJobArgs]{
+		JobRow: &rivertype.JobRow{},
+		Args:   IngestJobArgs{Site: "tokyo", RecordID: "rec-tokyo"},
+	}
+	if err := w.Work(context.Background(), job); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+
+	q := sqlcgen.New(pool)
+	asset, err := q.GetActiveOriginalMediaAsset(context.Background(), recordingID)
+	if err != nil {
+		t.Fatalf("GetActiveOriginalMediaAsset: %v", err)
+	}
+	const wantRelPath = "tokyo/20240101/prog.m2ts"
+	if asset.RelPath != wantRelPath {
+		t.Errorf("media_assets.rel_path = %q, want %q (site prefix missing)", asset.RelPath, wantRelPath)
+	}
+
+	fullPath := filepath.Join(mediaDir, "tokyo", "20240101", "prog.m2ts")
+	if _, err := os.Stat(fullPath); err != nil {
+		t.Errorf("expected file at %s (site-prefixed dir): %v", fullPath, err)
+	}
+}
+
+// TestIngestWorker_RelPathPrefixedWithSite_FallbackContentPath は受け入れの
+// 2 項目目を固定する: mirakc の contentPath が空で filepath.Base(record.Content.Path)
+// にフォールバックする経路でも "{site}/" が前置される。
+func TestIngestWorker_RelPathPrefixedWithSite_FallbackContentPath(t *testing.T) {
+	tsData := makeTSData(10)
+	// ContentPath を nil にしてフォールバック経路を通す。
+	srv := mirakcRecordServer(t, tsData, nil, "/recording/fallback/plain.m2ts")
+
+	mediaDir := t.TempDir()
+	mc := mirakc.NewClient(srv.URL, nil)
+
+	w := &IngestWorker{
+		MirakcClient: mc,
+		MediaDir:     mediaDir,
+		StallTimeout: 5 * time.Second,
+		Site:         "tokyo",
+	}
+
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	w.Pool = pool
+
+	recordingID := insertTestRecordingForSite(t, pool, "tokyo", 102)
+	insertTestRecordSyncForSite(t, pool, "tokyo", recordingID, "rec-tokyo-fallback", 327361024000102)
+
+	job := &river.Job[IngestJobArgs]{
+		JobRow: &rivertype.JobRow{},
+		Args:   IngestJobArgs{Site: "tokyo", RecordID: "rec-tokyo-fallback"},
+	}
+	if err := w.Work(context.Background(), job); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+
+	q := sqlcgen.New(pool)
+	asset, err := q.GetActiveOriginalMediaAsset(context.Background(), recordingID)
+	if err != nil {
+		t.Fatalf("GetActiveOriginalMediaAsset: %v", err)
+	}
+	// フォールバックは filepath.Base なので階層は失われ "plain.m2ts" だけが残る。
+	// そこに "tokyo/" が前置される。
+	const wantRelPath = "tokyo/plain.m2ts"
+	if asset.RelPath != wantRelPath {
+		t.Errorf("media_assets.rel_path = %q, want %q (site prefix missing on fallback path)", asset.RelPath, wantRelPath)
+	}
+}
+
+// TestIngestWorker_TwoSitesSameContentPath_DoNotCollide は受け入れの 3 項目目
+// （罠の核心）を固定する: 同じ contentPath を持つ 2 サイトの record を ingest
+// しても、rel_path の site 前置で実ファイルが別々になり両方が commit できる。
+//
+// 反転確認: determineRelPath の前置（"relPath = args.Site + "/" + relPath"）を
+// 削ると、2 回目の Work() が media_assets の一意索引違反
+// （CREATE UNIQUE INDEX ON media_assets (rel_path) WHERE state <> 'deleted'）で
+// 失敗し、このテストは "second Work() error" で落ちる。実際に前置行を削って
+// 確認済み（PR 本文参照）。
+func TestIngestWorker_TwoSitesSameContentPath_DoNotCollide(t *testing.T) {
+	tsDataA := makeTSData(10)
+	tsDataB := makeTSData(20)
+	const sharedContentPath = "shared/recording.m2ts"
+
+	srvA := mirakcRecordServer(t, tsDataA, strPtr(sharedContentPath), "/recording/"+sharedContentPath)
+	srvB := mirakcRecordServer(t, tsDataB, strPtr(sharedContentPath), "/recording/"+sharedContentPath)
+
+	mediaDir := t.TempDir()
+
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+
+	recordingIDA := insertTestRecordingForSite(t, pool, "site-a", 201)
+	insertTestRecordSyncForSite(t, pool, "site-a", recordingIDA, "rec-collide-a", 327361024000201)
+	recordingIDB := insertTestRecordingForSite(t, pool, "site-b", 202)
+	insertTestRecordSyncForSite(t, pool, "site-b", recordingIDB, "rec-collide-b", 327361024000202)
+
+	wA := &IngestWorker{
+		MirakcClient: mirakc.NewClient(srvA.URL, nil),
+		Pool:         pool,
+		MediaDir:     mediaDir,
+		StallTimeout: 5 * time.Second,
+		Site:         "site-a",
+	}
+	wB := &IngestWorker{
+		MirakcClient: mirakc.NewClient(srvB.URL, nil),
+		Pool:         pool,
+		MediaDir:     mediaDir,
+		StallTimeout: 5 * time.Second,
+		Site:         "site-b",
+	}
+
+	jobA := &river.Job[IngestJobArgs]{
+		JobRow: &rivertype.JobRow{},
+		Args:   IngestJobArgs{Site: "site-a", RecordID: "rec-collide-a"},
+	}
+	jobB := &river.Job[IngestJobArgs]{
+		JobRow: &rivertype.JobRow{},
+		Args:   IngestJobArgs{Site: "site-b", RecordID: "rec-collide-b"},
+	}
+
+	if err := wA.Work(context.Background(), jobA); err != nil {
+		t.Fatalf("first Work() (site-a) error: %v", err)
+	}
+	if err := wB.Work(context.Background(), jobB); err != nil {
+		t.Fatalf("second Work() (site-b) error: %v (site prefix likely missing, colliding on rel_path %q)", err, sharedContentPath)
+	}
+
+	pathA := filepath.Join(mediaDir, "site-a", "shared", "recording.m2ts")
+	pathB := filepath.Join(mediaDir, "site-b", "shared", "recording.m2ts")
+
+	dataA, err := os.ReadFile(pathA)
+	if err != nil {
+		t.Fatalf("reading site-a output file: %v", err)
+	}
+	if len(dataA) != len(tsDataA) {
+		t.Errorf("site-a file size = %d, want %d", len(dataA), len(tsDataA))
+	}
+
+	dataB, err := os.ReadFile(pathB)
+	if err != nil {
+		t.Fatalf("reading site-b output file: %v", err)
+	}
+	if len(dataB) != len(tsDataB) {
+		t.Errorf("site-b file size = %d, want %d", len(dataB), len(tsDataB))
+	}
+
+	q := sqlcgen.New(pool)
+	assetA, err := q.GetActiveOriginalMediaAsset(context.Background(), recordingIDA)
+	if err != nil {
+		t.Fatalf("GetActiveOriginalMediaAsset(site-a): %v", err)
+	}
+	assetB, err := q.GetActiveOriginalMediaAsset(context.Background(), recordingIDB)
+	if err != nil {
+		t.Fatalf("GetActiveOriginalMediaAsset(site-b): %v", err)
+	}
+	if assetA.RelPath == assetB.RelPath {
+		t.Errorf("both sites committed the same rel_path %q; site prefix must make them distinct", assetA.RelPath)
+	}
+	if assetA.RelPath != "site-a/"+sharedContentPath {
+		t.Errorf("site-a rel_path = %q, want %q", assetA.RelPath, "site-a/"+sharedContentPath)
+	}
+	if assetB.RelPath != "site-b/"+sharedContentPath {
+		t.Errorf("site-b rel_path = %q, want %q", assetB.RelPath, "site-b/"+sharedContentPath)
 	}
 }

@@ -67,6 +67,16 @@ S3 マウント（k8s-csi-s3 の geesefs/s3fs、AWS Mountpoint 等）では以�
 
 派生物（視聴用）だけ速いストレージに置きたくなった場合、originals / derivatives で 2 つのストレージルートを持つ小さな拡張で対応できる。現時点では単一ルートで始め、シークの体感が問題になったら足す（YAGNI）。
 
+### rel_path の名前空間（issue #186 M4-14）
+
+アーカイブ（`media_assets`）は `site` 列を持たず単一だが、原本の `rel_path` は mirakc の contentPath 由来でサイトスコープの名前である。2 サイトが同じ contentPath で録ると同じ実ファイルを取り合う（DB は `rel_path` の一意索引で片方の commit を落とすが、実ファイルは先に書いた方が上書きされて壊れる）ため、**原本は `{site}/` を前置する**。
+
+- **前置するのは ingest（`internal/worker/ingest.go` の `determineRelPath`）であって、contentPath テンプレートではない。** ingest は原本 `rel_path` の唯一の書き手なので、ここで前置すれば入力（reconciler が生成する contentPath の形や、ユーザーが書く `filename_template` の内容）に関わらず名前空間が保たれる
+- **site 名は `catalog` / `thumbnails` を使えない**（`internal/config` の予約名検査）。`catalog/` は削除 reconcile の孤児回収と rescue スキャンが SkipDir する予約ディレクトリ、`thumbnails/` はサムネイルの名前空間で、前置する site 名がこの 2 つと衝突すると、そのサイトの原本が孤児回収からも rescue からも永久に見えなくなる
+- **サムネイルは `thumbnails/{recording_id}.jpg` のまま**（§5.1）。原本の contentPath に依存しないので `{site}/` 前置の影響を受けない（構造的に衝突しない）
+- **派生物は原本の dir を引き継ぐので自動的に前置される**（`EncodedRelPath`、§6 参照。原本が `tokyo/20240101/....m2ts` なら派生物は `tokyo/20240101/...._h264.mp4` になる）
+- **前置前に ingest 済みの既存行は移行しない。** 新規 ingest 分だけ `{site}/` が付き、ディスク上は前置あり/なしが混在する。`rel_path` をパースする読者がいない（rescue の資産種別判定は拡張子しか見ない）ため、混在は無害
+
 ## 5.1 サムネイル（M3-4）
 
 録画 1 本につき `kind = 'thumbnail'` の media_asset を 1 つ作る（`UNIQUE (recording_id, kind, profile)`）。

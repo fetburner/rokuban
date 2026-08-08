@@ -102,6 +102,19 @@ func TestEncodedRelPath(t *testing.T) {
 		t.Errorf("EncodedRelPath = %q, want %q", got, want)
 	}
 
+	// issue #186 (M4-14) 受け入れ「前置された原本から生成した派生物の rel_path が
+	// {site}/ を引き継ぐ」を固定する。EncodedRelPath 自身には変更を入れていない
+	// （pathDirSlash/pathBaseSlash が最後の "/" だけで dir/base を切るので、
+	// dir が 1 階層でも 2 階層でも同じロジックで前置が引き継がれる）。
+	got, err = EncodedRelPath("tokyo/20240101/120000_title_1024.m2ts", "h264", "mp4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = "tokyo/20240101/120000_title_1024_h264.mp4"
+	if got != want {
+		t.Errorf("EncodedRelPath (site-prefixed original) = %q, want %q", got, want)
+	}
+
 	// プロファイル名の ".." や "/" はパスに持ち込まない。
 	got, err = EncodedRelPath("a.m2ts", "foo/../bar", "mkv")
 	if err != nil {
