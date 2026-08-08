@@ -361,14 +361,15 @@ func (w *IngestWorker) lookupRecordingID(ctx context.Context, args IngestJobArgs
 // （w.Site 未設定）で同じ正規化をここで再実装する必要がある。
 //
 // contentPath / Content.Path がどちらも空だと relPath が "."（カレント
-// ディレクトリ）になり、前置後は "sites/{site}/." → mediapath.Resolve が
-// 単に "{media_dir}/sites/{site}" を返してしまう（"." は Join/Clean で消える）。
-// 前置前はこの縮退値がメディアディレクトリの外を指さないため素通りし、
-// 「通常ファイルの代わりにディレクトリが作られる」という壊れ方をしていた
-// （前置により初めて顕在化した。前置前は relPath="." がそのまま
-// mediapath.Resolve に渡り "path escapes the media directory" で明示的に
-// 弾かれていたが、前置後は "sites/{site}" 自体が正当なパスに見えるため通る）。
-// 前置前に弾く（下記）。
+// ディレクトリ）になる。前置前はこの relPath="." がそのまま mediapath.Resolve
+// に渡り "path escapes the media directory" で明示的に弾かれていた。前置後は
+// "sites/{site}/." が Join/Clean で "." が消えて "sites/{site}" という一見
+// 正当なパスになり Resolve を通ってしまう。すると os.Create が
+// "{media_dir}/sites/{site}" を*通常ファイル*として作ってしまい、以後その
+// site 配下に別の contentPath を書こうとする ingest が全て MkdirAll で
+// "not a directory" になる（前置によって初めて顕在化する壊れ方。前置前は
+// Resolve の明示的なエラーで止まっていたので発生しなかった）。前置前に弾く
+// （下記）。
 //
 // `sites/{site}/` は site 名の構文制約（internal/config.validateSiteName、
 // issue #183 M4-11）に依存する安全前提の上に成立している --- site 名に "/" が

@@ -212,7 +212,7 @@ log:
 
 - **`mirakcs:` の要素は `site` と `url` の 2 つだけ。** `storage` / `worker` / `ingest` 等のチューニング値は要素に入れない。アーカイブは単一（`media_assets` に site 列が無い）であり、`worker.queues` 等はデプロイ時のパラメータであって site の属性ではない。site ごとのチューニング値は、それを読むコードができたときに足す（不変条件 11）
 - **site 名の構文制約**: `^[a-z0-9]([_-]?[a-z0-9])*$`、64 文字以内。**River のキュー名の制約と同一で、緩めない** --- キュー名を site で修飾する将来（M4-13）を site 名が弾くことになるため
-- **予約名**: `catalog` と `thumbnails` は使えない。導入時（M4-11）の根拠は「`rel_path` に `{site}/` を前置すると、この 2 つと衝突する site 名は削除 reconcile の孤児回収と rescue スキャンの走査対象から外れてしまう」だったが、実装された M4-14 の前置は `sites/{site}/`（site 名の前に固定の `sites/` を挟む形。理由は [docs/storage.md](storage.md) §5「rel_path の名前空間」）になったため、site 名がトップレベルの `catalog/` / `thumbnails/` と直接衝突することは無くなり、この根拠は成立しなくなった。制約自体はコード上に残したままにしている（緩めるかどうかは issue #186 のコメントで提起した判断待ち）
+- **予約名**: `catalog` と `thumbnails` は site 名にできない。M4-11 導入時の根拠は「`rel_path` に `{site}/` を前置すると、この 2 つと衝突する site 名は削除 reconcile の孤児回収と rescue スキャンの走査対象から外れてしまう」だったが、実装された M4-14 の前置は `sites/{site}/`（site 名の前に固定の `sites/` を挟む形。[docs/storage.md](storage.md) §5「rel_path の名前空間」参照）になったため、site 名はトップレベルの `catalog/` / `thumbnails/` と直接衝突しなくなり、パス衝突というこの根拠は成立しなくなった。**ただし禁止自体は残している** --- 緩めても得られる自由度（`catalog` / `thumbnails` を site 名にしたい運用要求は無い）が、緩めるコスト（`internal/config` のバリデーション・テストの変更）に見合わないため（issue #186 のコメントで結論済み）。これはトップレベルディレクトリ名の予約（`catalog/` / `thumbnails/` / `sites/` の 3 つ。今も load-bearing）とは別の話で、docs/storage.md §5 で分けて説明している
 - レジストリ内の site 名の重複も不可。違反はすべて起動エラーとして全件列挙される（規約 4）
 
 **多サイトでどのロールがどのプロセスに乗るかは [docs/overview.md](overview.md) の役割分類に決定済み**（#138）: site に縛られるのは「mirakc に到達する必要がある仕事」（watcher / ingest / reconciler / epg / record_sweep / ライブ streamer）だけで、DB もアーカイブも単一なので、api / notifier / 録画配信 streamer / ruler / encode / thumbnail / 削除 reconcile は site 非依存の中央プロセスになる。

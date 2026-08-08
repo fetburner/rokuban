@@ -77,7 +77,9 @@ S3 マウント（k8s-csi-s3 の geesefs/s3fs、AWS Mountpoint 等）では以�
 - **サムネイルは `thumbnails/{recording_id}.jpg` のまま**（§5.1）。原本の contentPath に依存しないので `sites/` 前置の影響を受けない（構造的に衝突しない）
 - **派生物は原本の dir を引き継ぐので自動的に前置される**（`EncodedRelPath`、§6 参照。原本が `sites/tokyo/20240101/....m2ts` なら派生物は `sites/tokyo/20240101/...._h264.mp4` になる）
 - **前置前に ingest 済みの既存行は移行しない。** 新規 ingest 分だけ `sites/{site}/` が付き、ディスク上は前置あり/なしが混在する。`rel_path` をパースする読者がいない（rescue の資産種別判定は拡張子しか見ない）ため混在は無害 --- ただし、これは「既存行が `sites/` から始まっていない」という上記の前提の上に成り立つ断定であり、`sites/` 自体を先頭成分に使っていた既存の `filename_template` があれば話は別（`sites/` は `catalog/` / `thumbnails/` と同じ「新設の予約ディレクトリが過去の運用と衝突しないことを祈る」という一般的なトレードオフを負っている）
-- **site 名の予約名（`catalog` / `thumbnails`）の根拠は変わった。** 当初案（`{site}/` を先頭成分にする）では、site 名がこの 2 つと一致すると `catalog/` / `thumbnails/` という予約ディレクトリと直接衝突する、というのが禁止の理由だった。`sites/` を挟んだことで site 名は常に `sites/{site}/...` に閉じ込められ、トップレベルの `catalog/` / `thumbnails/` とは構造的に衝突しなくなったため、この理由は成立しなくなった。この制約は現時点ではコード上に残したままにしている（緩めるかどうかは実装ではなく issue #186 のコメントで提起した判断待ち）
+- **2 種類の予約を分けて理解する。** どちらも `internal/config` にコードがあるが、根拠が違う:
+  1. **トップレベルディレクトリ名の予約**（`catalog` / `thumbnails` / `sites` の 3 つ）。これは**今も load-bearing**: `catalog/` は削除 reconcile の孤児回収と rescue スキャンが SkipDir する対象、`thumbnails/` はサムネイルの名前空間、`sites/` は本節の原本の名前空間。この 3 つのいずれかを一般のディレクトリ名として使うと実際に壊れるので、この予約は外せない
+  2. **site 名としての `catalog` / `thumbnails` の禁止**（`internal/config.reservedSiteNames`）。M4-11 導入時の根拠は「`{site}/` を先頭成分にする前提で、site 名がこの 2 つと一致するとトップレベル予約ディレクトリと直接衝突する」だったが、`sites/` を挟んだことで site 名は常に `sites/{site}/...` に閉じ込められ、トップレベルの `catalog/` / `thumbnails/` とは構造的に衝突しなくなった。**この禁止を残しているのはパス衝突を防ぐためではなく、緩めても得られる自由度（`catalog` / `thumbnails` を site 名にしたい運用要求は無い）が、緩めるコスト（`internal/config` のバリデーション・テストの変更）に見合わないため。** `sites` 自体を site 名にすることは禁止する必要がない（`sites/sites/...` になるだけで衝突しない。issue #186 のコメント参照）
 
 ## 5.1 サムネイル（M3-4）
 
