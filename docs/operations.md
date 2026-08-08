@@ -139,6 +139,16 @@ ruler / reconciler / record_sweep（watcher の 3 段構えのうち (c) 定期�
 DELETE FROM river_job WHERE kind = 'epg_sync' AND state = 'completed';
 ```
 
+**`UniqueOpts.ByQueue` も明示する（既定 `false`）。** 既定では一意キーが
+kind + args だけで組み立てられ、Queue を含まない（`ByArgs` と `ByQueue` は独立の
+軸）。site 単位のキュー（`ingest` / `epg` / `reconciler` / `watcher`）と `cleanup`
+（issue #185 M4-13）の `InsertOpts` は `ByQueue: true` を立てている ---
+**キュー名を変える（リネーム・site 修飾の追加）だけで、Queue を一意キーに
+含めていないと旧キューの残骸が新キューへの Insert を `UniqueSkippedAsDuplicate`
+として黙って塞ぐ**（エラーを返さないのでログにも出ない）。トラブルシュート手順は
+[runbook/troubleshooting.md](runbook/troubleshooting.md) 「M4-13 デプロイ直後、
+旧キューの残骸が `river_job` に残っている」を参照。
+
 ### reconcile
 
 | メトリクス | 説明 |

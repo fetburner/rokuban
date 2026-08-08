@@ -1,8 +1,10 @@
 package worker
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -259,6 +261,40 @@ func TestInsertOpts_UniqueStatesExcludeFinalized(t *testing.T) {
 	}
 }
 
+// site 単位のキュー（ingest/epg/reconciler/watcher。tuner_sync は epg キューを
+// 共有）と cleanup（delete_reconcile/catalog_export）は UniqueOpts.ByQueue: true
+// を立てていること。ruler は対象外（キュー名を変えていないので不要。
+// physicalQueueName のコメント参照）。
+//
+// 立てないと、キュー名を変える（今回の site 修飾・cleanup への移設）だけで
+// 旧キューの残骸が新キューへの Insert を UniqueSkippedAsDuplicate として
+// 黙って塞ぐ（pendingJobStates 直後の doc コメント、issue #185 のレビュー
+// 指摘）。この 1 つのテーブルにまとめておくことで、7 種のうち 1 つでも
+// ByQueue を書き忘れたときに検出漏れが起きないようにする。
+func TestInsertOpts_ByQueueForRenamedQueues(t *testing.T) {
+	tests := []struct {
+		name string
+		opts river.InsertOpts
+		want bool
+	}{
+		{"ingest", IngestJobArgs{}.InsertOpts(), true},
+		{"epg_sync", EpgSyncArgs{}.InsertOpts(), true},
+		{"tuner_sync", TunerSyncArgs{}.InsertOpts(), true},
+		{"reconcile_pass", ReconcilePassArgs{}.InsertOpts(), true},
+		{"record_sweep", RecordSweepArgs{}.InsertOpts(), true},
+		{"delete_reconcile", DeleteReconcileArgs{}.InsertOpts(), true},
+		{"catalog_export", CatalogExportArgs{}.InsertOpts(), true},
+		{"ruler_pass (queue name unchanged, not required)", RulerPassArgs{}.InsertOpts(), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.opts.UniqueOpts.ByQueue; got != tt.want {
+				t.Errorf("UniqueOpts.ByQueue = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 // 定期投入された epg_sync が、前回のジョブが完了した後でも再度投入できること。
 func TestEpgSync_ReinsertableAfterCompletion(t *testing.T) {
 	pool := testutil.SetupDB(t)
@@ -497,6 +533,38 @@ func TestBuildRiverConfig_UnknownQueueErrors(t *testing.T) {
 	}
 }
 
+// buildRiverConfig が実際に購読する物理キュー名の集合を起動時ログに出すこと
+// （issue #185 の「罠」: 全キュー購読（既定）は「全部購読しているつもりで
+// 実は site 束縛キューを引いていない」を起動時に伝える手段が要る）。
+//
+// このテストが検出すべき変異: buildRiverConfig からログ出力そのものを削除する、
+// または queues の代わりに空リストや別の値をログに渡す。いずれも
+// ログバッファに期待した物理名（"ingest_tokyo" 等）が現れなくなり、
+// strings.Contains のアサーションが落ちる。実際に注入して確認済み
+// （PR 本文の失敗出力を参照）。
+func TestBuildRiverConfig_LogsSubscribedQueues(t *testing.T) {
+	var logBuf bytes.Buffer
+	prevLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prevLogger) })
+
+	if _, err := buildRiverConfig(NewWorkers(&Deps{}), ClientConfig{BoundSite: "tokyo"}); err != nil {
+		t.Fatalf("buildRiverConfig: %v", err)
+	}
+
+	logged := logBuf.String()
+	for _, want := range []string{"ingest_tokyo", "epg_tokyo", "reconciler_tokyo", "watcher_tokyo", "cleanup", "ruler"} {
+		if !strings.Contains(logged, want) {
+			t.Errorf("log output does not mention %q; log:\n%s", want, logged)
+		}
+	}
+	// site 束縛の値そのものも出ていること（「中央プロセスで既定のまま起動して
+	// 実は何も引いていない」を区別できるようにするため）。
+	if !strings.Contains(logged, "bound_site=tokyo") {
+		t.Errorf("log output does not mention bound_site=tokyo; log:\n%s", logged)
+	}
+}
+
 // encode / thumbnail キューが allQueues に載り、concurrency が独立に効くこと
 // （issue #64。ワーカー本体は M3-3 / M3-4 で、枠だけ先に用意する）。
 func TestBuildRiverConfig_EncodeThumbnailConcurrency(t *testing.T) {
@@ -664,6 +732,9 @@ func TestQualifyQueueName(t *testing.T) {
 
 // physicalQueueName は siteBoundQueueNames に含まれる論理名だけ修飾し、
 // それ以外（ruler/encode/thumbnail/cleanup/default）はそのまま通す。
+// want はすべてリテラルで書く（logical と同じ定数を want にも使うと、
+// 「qualify しない」ケースは定数の値が何であっても常に一致してしまい、
+// 意図した論理名そのものが正しいかを確認しない。issue #185 のレビュー指摘）。
 func TestPhysicalQueueName(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -675,11 +746,11 @@ func TestPhysicalQueueName(t *testing.T) {
 		{"epg gets qualified", epgQueue, "tokyo", "epg_tokyo"},
 		{"reconciler gets qualified", reconcilerQueue, "tokyo", "reconciler_tokyo"},
 		{"watcher (record_sweep) gets qualified", recordSweepQueue, "tokyo", "watcher_tokyo"},
-		{"ruler is NOT qualified (site-independent, issue #185)", rulerQueue, "tokyo", rulerQueue},
-		{"encode is NOT qualified", encodeQueue, "tokyo", encodeQueue},
-		{"thumbnail is NOT qualified", thumbnailQueue, "tokyo", thumbnailQueue},
-		{"cleanup is NOT qualified", cleanupQueue, "tokyo", cleanupQueue},
-		{"default is NOT qualified", river.QueueDefault, "tokyo", river.QueueDefault},
+		{"ruler is NOT qualified (site-independent, issue #185)", rulerQueue, "tokyo", "ruler"},
+		{"encode is NOT qualified", encodeQueue, "tokyo", "encode"},
+		{"thumbnail is NOT qualified", thumbnailQueue, "tokyo", "thumbnail"},
+		{"cleanup is NOT qualified", cleanupQueue, "tokyo", "cleanup"},
+		{"default is NOT qualified", river.QueueDefault, "tokyo", "default"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

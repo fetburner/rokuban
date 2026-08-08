@@ -80,15 +80,18 @@ func (DeleteReconcileArgs) Kind() string { return "delete_reconcile" }
 // 同一引数の同時実行を UniqueOpts で防ぐ。ByState は pendingJobStates に絞る
 // （completed を含めると定期ジョブが実質ワンショットになる）。
 //
-// Queue は cleanupQueue（issue #185 M4-13。以前は river.QueueDefault だった）。
-// site 非依存の物理削除系ジョブ専用のキューに分けることで、`worker.queues` を
-// 指定しないサイト側 worker（既定は全キュー購読）が中央の削除 reconcile まで
-// 掴んでしまう経路を塞ぐ（cleanupQueue のコメント参照）。
+// Queue は cleanupQueue（issue #185 M4-13。以前は river.QueueDefault だった。
+// `worker.queues` を明示的に絞れば除外できるようになった、というだけで既定
+// 購読からは除外されない。cleanupQueue のコメント参照）。
+//
+// ByQueue: uniqueByQueue の理由は pendingJobStates 直後の doc コメント参照
+// （river.QueueDefault → cleanup への移設自体がキュー名変更なので、同じ問題を踏む）。
 func (DeleteReconcileArgs) InsertOpts() river.InsertOpts {
 	return river.InsertOpts{
 		Queue: cleanupQueue,
 		UniqueOpts: river.UniqueOpts{
 			ByArgs:  true,
+			ByQueue: uniqueByQueue,
 			ByState: pendingJobStates,
 		},
 	}
@@ -107,40 +110,37 @@ func (DeleteReconcileArgs) InsertOpts() river.InsertOpts {
 // site 照合ガード（issue #139）は不要と判断: DeleteReconcileArgs は site を
 // 持たない（DeleteReconcileArgs のコメント参照。物理ストレージは site に
 // 従属しない単一の MediaDir）。mirakc にも触れないので、他サイトの worker が
-// 拾っても「他インスタンスの id を投げる」形の壊れ方が起きない。Site
-// フィールドはジョブ引数の照合用ではなく、サーキットブレーカーのキー用途
-// （下記コメント）。
+// 拾っても「他インスタンスの id を投げる」形の壊れ方が起きない。
+//
+// # サーキットブレーカーのキーは常に db.DefaultSite（Site フィールドを持たない理由）
+//
+// このワーカーは `Site` フィールドを持たない（issue #185 M4-13 のレビューで削除。
+// 以前は `Deps.Site`（束縛サイト）を受け取り、空文字列なら db.DefaultSite に
+// フォールバックしていた）。cleanup キューは site 非依存の仕事を運ぶが、
+// **どの worker がジョブを掴むかは site 束縛の有無に関わらない** ---
+// `mirakcs: [tokyo, takamatsu]` の既定構成（0 束縛の中央プロセスを使わない
+// 構成）でも、tokyo に束縛された worker と takamatsu に束縛された worker の
+// どちらもこのキューを購読でき、`Deps.Site` をそのまま使うと**どちらが先に
+// 掴むかでサーキットブレーカーの site 列が tokyo になるか takamatsu になるか
+// 変わってしまう**。1 つの site 非依存の懸念（delete_reconcile の一括削除数）が
+// 複数の site 列の下に分散して現れるのは、不変条件 12「表は行の寿命で割る」の
+// 精神にも反する（この行の寿命は「delete_reconcile というジョブ種別」であって
+// 「たまたま処理した worker の束縛サイト」ではない）。
+//
+// したがって `Deps.Site` を一切参照せず、常に db.DefaultSite
+// （"default"）をキーにする。これにより対になる api ロールの
+// `POST /api/sites/{site}/breakers/{name}/resume`（internal/api/breakers.go）の
+// `h.site`（`cfg.Mirakc.Site`。`mirakcs:` レジストリ経由の束縛サイトではなく、
+// 単一 `mirakc:` オブジェクトの値）と常に一致する: `config.defaults()` が
+// `cfg.Mirakc.Site` を常に "default" に既定し、`mirakc:` / `mirakcs:` の同時
+// 指定は起動エラーなので、`mirakcs:` を使う構成でも `mirakc.site` は書かれず
+// 既定値のまま残る。api ロールの site 非依存化（issue #184 M4-12）が終わったら
+// この決定を読み直すこと --- そのときは「site 非依存の仕事のブレーカーをどう
+// 見せるか」を api 側で決め直せる。
 type DeleteReconcileWorker struct {
 	river.WorkerDefaults[DeleteReconcileArgs]
 	Pool     *pgxpool.Pool
 	MediaDir string
-
-	// Site はサーキットブレーカーのキーに使う（issue #31）。空なら db.DefaultSite
-	// （"default"）を使う。
-	//
-	// # 中央（0 サイト束縛）の cleanup worker では db.DefaultSite が「唯一の選択」になる
-	//
-	// issue #185 M4-13 で delete_reconcile は site 非依存の cleanup キューに移った
-	// ため、中央プロセス（`--sites=`、issue #183 M4-11）でも動かせるようになった。
-	// 中央プロセスでは boundSite が無く Site="" になるので、この決定は
-	// 「db.DefaultSite に解決する（現状維持）」を選んだ:
-	//
-	//   - 対になる api ロールの `POST /api/sites/{site}/breakers/{name}/resume`
-	//     （internal/api/breakers.go）は `req.Site != h.site` を要求し、h.site は
-	//     `cfg.Mirakc.Site`（`mirakcs:` レジストリ経由の束縛サイトではない、単一
-	//     `mirakc:` オブジェクトの値）。この値は config.defaults() が常に
-	//     "default" を既定にする（`mirakc:` / `mirakcs:` の同時指定は起動エラー
-	//     なので、`mirakcs:` を使う構成では `mirakc.site` は書かれず既定値のまま
-	//     残る）。したがって db.DefaultSite に解決する限り、`mirakcs: [tokyo,
-	//     takamatsu]` のように登録に "default" が無い構成でも、api 側の h.site と
-	//     常に一致し続ける --- 新しい不一致は生まれない
-	//   - `mirakcs:` レジストリの実際のサイト名（tokyo 等）でキーする案は、api が
-	//     まだ site 非依存化されていない（issue #184 M4-12 が対象）ため
-	//     h.site と一致する保証がなく、むしろ resume を新たに壊しうる
-	//   - api ロールの site 非依存化（M4-12）が終わったら、この決定を読み直す
-	//     こと --- そのときは「サイト非依存の仕事のブレーカーをどう見せるか」を
-	//     api 側で決め直せる
-	Site string
 
 	TrashRetention    time.Duration
 	OrphanMTimeGrace  time.Duration
@@ -158,10 +158,10 @@ func (w *DeleteReconcileWorker) Timeout(*river.Job[DeleteReconcileArgs]) time.Du
 
 // Work は 1 パス分の削除 reconcile を実行する。
 func (w *DeleteReconcileWorker) Work(ctx context.Context, _ *river.Job[DeleteReconcileArgs]) error {
-	site := w.Site
-	if site == "" {
-		site = db.DefaultSite
-	}
+	// site は常に db.DefaultSite（DeleteReconcileWorker の doc コメント参照 ---
+	// このジョブはどの束縛サイトの worker が掴んでも同じ 1 つのブレーカーとして
+	// 扱う）。
+	site := db.DefaultSite
 	trashRetention := w.TrashRetention
 	if trashRetention <= 0 {
 		trashRetention = defaultTrashRetention
