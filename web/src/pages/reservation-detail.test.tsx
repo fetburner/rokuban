@@ -44,6 +44,8 @@ function stubFetch(reservationOf: (site: string, programId: number) => Reservati
   const fetchMock = vi.fn((input: string | URL | Request) => {
     const url = new URL(String(input), 'http://localhost')
     if (url.pathname === '/api/breakers') return Promise.resolve(jsonResponse([]))
+    // SiteGate（routes.tsx）が全ルートの手前で待つ（issue #184 M4-12）。
+    if (url.pathname === '/api/sites') return Promise.resolve(jsonResponse(['default']))
 
     const reservationMatch = /^\/api\/sites\/([^/]+)\/programs\/(\d+)\/reservation$/.exec(
       url.pathname,

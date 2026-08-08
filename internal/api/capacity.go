@@ -19,6 +19,10 @@ import (
 // 不変条件 1 のとおり mirakc には問い合わせない。チューナーの本数と対応種別は
 // worker が投影した tuner_sync（使い捨てプロジェクション）から読む。
 //
+// api は site に束縛されない（不変条件 1）ため、全サイトの超過区間を返す
+// （issue #184 M4-12）。判定は internal/capacity.Compute が site ごとに独立に
+// 行うので、全サイト分をまとめて読んでもサイト間の需要は混ざらない。
+//
 // 地平線全体を 1 回解いてから窓で切る（窓ごとに解かない。docs/data.md §6.5）。
 // 予約集合は ruler の GC でローリングウィンドウに有界なので、8 日分の走査は
 // 数十マイクロ秒のオーダーに収まる。キャッシュは入れていない --- 入れる場合は
@@ -30,7 +34,7 @@ func (h *Server) ListCapacityOverages(ctx context.Context, req ListCapacityOvera
 		return ListCapacityOverages400JSONResponse{Error: "end must be after start"}, nil
 	}
 
-	overages, err := capacity.Load(ctx, sqlcgen.New(h.pool), h.site)
+	overages, err := capacity.LoadAllSites(ctx, sqlcgen.New(h.pool))
 	if err != nil {
 		return nil, fmt.Errorf("computing capacity overages: %w", err)
 	}

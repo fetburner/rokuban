@@ -24,7 +24,7 @@ import (
 // 連続しているため、閉区間で判定すると前後の番組がすべて重なりとして数えられて
 // しまう。
 func (h *Server) GetProgramOverlaps(ctx context.Context, req GetProgramOverlapsRequestObject) (GetProgramOverlapsResponseObject, error) {
-	if req.Site != h.site {
+	if !h.knownSite(req.Site) {
 		return GetProgramOverlaps404JSONResponse{Error: "unknown site"}, nil
 	}
 	q := sqlcgen.New(h.pool)
@@ -32,7 +32,7 @@ func (h *Server) GetProgramOverlaps(ctx context.Context, req GetProgramOverlapsR
 	// 番組の放送時間は EPG プロジェクションから引く。射影に無ければ判定材料が
 	// 無いので 404。
 	program, err := q.GetEpgProgram(ctx, sqlcgen.GetEpgProgramParams{
-		Site:      h.site,
+		Site:      req.Site,
 		ProgramID: req.ProgramId,
 	})
 	if err != nil {
@@ -43,7 +43,7 @@ func (h *Server) GetProgramOverlaps(ctx context.Context, req GetProgramOverlapsR
 	}
 
 	rows, err := q.ListOverlappingReservations(ctx, sqlcgen.ListOverlappingReservationsParams{
-		Site:            h.site,
+		Site:            req.Site,
 		TargetProgramID: req.ProgramId,
 		WindowStart:     program.StartAt,
 		WindowEnd:       program.EndAt,

@@ -12,7 +12,7 @@ import { unwrap } from '@/api/unwrap'
 import { Button } from '@/components/ui/button'
 import { Chip } from '@/components/ui/chip'
 import { Field, Input, Select } from '@/components/ui/field'
-import { DEFAULT_SITE } from '@/lib/site'
+import { useCurrentSite } from '@/lib/site'
 import {
   allWeekdays,
   genreCodeLabel,
@@ -66,7 +66,8 @@ type FieldsProps = {
  * input / select / Chip / Button に伝播する。
  */
 export function ConditionFields({ draft, onChange, disabled }: FieldsProps): React.ReactElement {
-  const services = useListServices(DEFAULT_SITE)
+  const site = useCurrentSite()
+  const services = useListServices(site)
   const serviceList = useMemo(() => unwrap(services.data) ?? [], [services.data])
 
   return (

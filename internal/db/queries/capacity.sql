@@ -67,3 +67,32 @@ WHERE r.site = $1
         AND nse.event_id = s.event_id
   )
 ORDER BY s.start_at;
+
+-- ListCapacityDemand と同じ絞り込みだが site で絞らない全サイト版。
+-- GET /api/capacity/overages が使う（issue #184 M4-12）。判定はサイトごとに
+-- 独立に行われる（internal/capacity.Compute が r.site で group する）ので、
+-- ここで全サイト分の需要をまとめて返してもサイト間の需要は混ざらない。
+-- worker/tuner.go の定期ジョブは束縛サイト 1 つ分だけを扱えばよいので
+-- ListCapacityDemand（site 絞り込みあり）を使い続ける。
+-- name: ListCapacityDemandAllSites :many
+SELECT
+    r.site,
+    s.channel_type,
+    s.channel,
+    s.start_at AS program_start_at,
+    (s.start_at + (s.duration_ms * interval '1 millisecond'))::timestamptz AS program_end_at,
+    r.base,
+    i.action    AS intent_action,
+    o.overrides AS overrides
+FROM reservations r
+JOIN program_snapshots s ON s.site = r.site AND s.program_id = r.program_id
+LEFT JOIN program_intents i ON i.site = r.site AND i.program_id = r.program_id
+LEFT JOIN program_overrides o ON o.site = r.site AND o.program_id = r.program_id
+WHERE NOT EXISTS (
+      SELECT 1 FROM never_scheduled_events nse
+      WHERE nse.site = r.site
+        AND nse.network_id = s.network_id
+        AND nse.service_id = s.service_id
+        AND nse.event_id = s.event_id
+  )
+ORDER BY r.site, s.start_at;

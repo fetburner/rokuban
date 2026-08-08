@@ -8,7 +8,7 @@ import { LivePlayer } from '@/components/live-player'
 import { currentProgramWindow, pickInitialServiceId } from '@/lib/live'
 import { orderServices } from '@/lib/epg-grid'
 import { formatTime, isAiring } from '@/lib/format'
-import { DEFAULT_SITE } from '@/lib/site'
+import { useCurrentSite } from '@/lib/site'
 import { cn } from '@/lib/utils'
 
 /**
@@ -85,7 +85,8 @@ function groupByChannelType(ordered: readonly Service[]): ChannelGroup[] {
  * 下記 `selectChannel` 参照）。
  */
 export function LivePage() {
-  const services = useListServices(DEFAULT_SITE)
+  const site = useCurrentSite()
+  const services = useListServices(site)
   const routeSearch = useRouteSearch({ from: '/live' })
   const navigate = useNavigate()
 
@@ -140,7 +141,7 @@ export function LivePage() {
 
   const window_ = currentProgramWindow(nowMs)
   const nowPlayingQuery = useListPrograms(
-    DEFAULT_SITE,
+    site,
     { start: window_.start, end: window_.end, serviceId: selectedServiceId !== undefined ? [selectedServiceId] : undefined },
     { query: { enabled: selectedServiceId !== undefined } },
   )
@@ -166,7 +167,7 @@ export function LivePage() {
       ) : (
         <div className="flex flex-col gap-4 p-4 lg:flex-row lg:items-start">
           <div className="flex min-w-0 flex-1 flex-col gap-2">
-            <LivePlayer site={DEFAULT_SITE} serviceId={selectedService.serviceId} />
+            <LivePlayer site={site} serviceId={selectedService.serviceId} />
             <div>
               <p className="font-medium">{selectedService.name}</p>
               {nowPlaying ? (

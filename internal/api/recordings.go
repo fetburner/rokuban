@@ -18,6 +18,7 @@ import (
 // sqlc はクエリごとに別 struct を生成するので、ここで共通化してマッピングする。
 type recordingListFields struct {
 	ID                       int64
+	Site                     string
 	RuleID                   *int64
 	Source                   string
 	ServiceName              string
@@ -53,6 +54,7 @@ type recordingListFields struct {
 func recordingFromListFields(r recordingListFields, includeDeletedAt bool) (Recording, error) {
 	rec := Recording{
 		Id:          r.ID,
+		Site:        r.Site,
 		RuleId:      r.RuleID,
 		Source:      RecordingSource(r.Source),
 		ServiceName: r.ServiceName,
@@ -114,13 +116,16 @@ func recordingFromListFields(r recordingListFields, includeDeletedAt bool) (Reco
 // 動的 WHERE ビルダ（buildRecordingsQuery / queryRecordings、recordings_query.go）
 // を使う。sqlc の静的クエリにしない理由はそちらのコメント参照（trgm 式 GIN が
 // 汎用プランで使われなくなることを避けるため）。
+//
+// api は site に束縛されない（不変条件 1）ため、全サイトの録画を返す
+// （issue #184 M4-12）。各要素の Site で区別する。
 func (h *Server) ListRecordings(ctx context.Context, req ListRecordingsRequestObject) (ListRecordingsResponseObject, error) {
 	f, errMsg := recordingsFilterFromParams(req.Params)
 	if errMsg != "" {
 		return ListRecordings400JSONResponse{Error: errMsg}, nil
 	}
 
-	result, err := queryRecordings(ctx, h.pool, h.site, f)
+	result, err := queryRecordings(ctx, h.pool, f)
 	if err != nil {
 		return nil, fmt.Errorf("listing recordings: %w", err)
 	}

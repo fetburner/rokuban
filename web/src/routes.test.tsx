@@ -103,7 +103,10 @@ describe('routeTree', () => {
 
     globalThis.fetch = vi.fn((input: string | URL | Request) => {
       const url = new URL(String(input), 'http://localhost')
-      const body = url.pathname === '/api/breakers' ? [] : []
+      // SiteGate（routes.tsx）が全ルートの手前で GET /api/sites を待つ
+      // （issue #184 M4-12）。空配列を返すと「利用可能なサイトがありません」に
+      // 落ちて検索フォームまで辿り着けないため、他のパスとは別に応答する。
+      const body = url.pathname === '/api/sites' ? ['default'] : []
       return Promise.resolve(
         new Response(JSON.stringify(body), {
           status: 200,

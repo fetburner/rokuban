@@ -68,7 +68,7 @@ func resetOverridesField(opts *db.ReservationOptions, f ProgramOverridesInputRes
 // (site, programId) を自身のキーとして書く（issue #29）。導出行（reservations）の
 // 有無には依存しない。
 func (h *Server) PatchProgramOverrides(ctx context.Context, req PatchProgramOverridesRequestObject) (PatchProgramOverridesResponseObject, error) {
-	if req.Site != h.site {
+	if !h.knownSite(req.Site) {
 		return PatchProgramOverrides400JSONResponse{Error: "unknown site"}, nil
 	}
 	if req.Body == nil {
@@ -150,7 +150,7 @@ func (h *Server) PatchProgramOverrides(ctx context.Context, req PatchProgramOver
 	if err := persistOverrides(ctx, q, req.Site, req.ProgramId, mergedJSON); err != nil {
 		return nil, err
 	}
-	if err := h.insertRulerPassHint(ctx, tx); err != nil {
+	if err := h.insertRulerPassHint(ctx, tx, req.Site); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -188,7 +188,7 @@ func validateEffectiveKeepOriginal(eff db.ReservationOptions) error {
 // （docs/recording.md §4.2「overrides は program_intents とは別の表に置く」）。
 // 行が無くても冪等に 204。
 func (h *Server) DeleteProgramOverrides(ctx context.Context, req DeleteProgramOverridesRequestObject) (DeleteProgramOverridesResponseObject, error) {
-	if req.Site != h.site {
+	if !h.knownSite(req.Site) {
 		return DeleteProgramOverrides400JSONResponse{Error: "unknown site"}, nil
 	}
 
@@ -205,7 +205,7 @@ func (h *Server) DeleteProgramOverrides(ctx context.Context, req DeleteProgramOv
 	}); err != nil {
 		return nil, fmt.Errorf("deleting program overrides: %w", err)
 	}
-	if err := h.insertRulerPassHint(ctx, tx); err != nil {
+	if err := h.insertRulerPassHint(ctx, tx, req.Site); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {

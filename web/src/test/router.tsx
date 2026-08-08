@@ -9,6 +9,16 @@ import {
 import { render } from '@testing-library/react'
 
 import { ToastProvider } from '@/components/toaster'
+import { SiteContext } from '@/lib/site'
+
+/**
+ * testSite は renderInRouter が既定で `<SiteContext>` に注入する値。実アプリの
+ * `<SiteGate>`（`GET /api/sites` を解決してから注入する）は経由しない ---
+ * ページ・コンポーネントのテストがサイト一覧のフェッチ完了を待つ必要を
+ * 無くすため（CLAUDE.md テスト規律「非同期の空虚な成功に注意する」。
+ * `lib/site.ts` の `SiteContext` のコメントも参照）。
+ */
+export const testSite = 'default'
 
 /**
  * renderInRouter は任意の要素をルーター（+ QueryClient + ToastProvider）の
@@ -29,12 +39,13 @@ import { ToastProvider } from '@/components/toaster'
  */
 export function renderInRouter(
   ui: React.ReactElement,
-  options?: { path?: string; initialEntries?: string[]; queryClient?: QueryClient },
+  options?: { path?: string; initialEntries?: string[]; queryClient?: QueryClient; site?: string },
 ) {
   const path = options?.path ?? '/'
   const queryClient =
     options?.queryClient ??
     new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 } } })
+  const site = options?.site ?? testSite
 
   const rootRoute = createRootRoute()
   const route = createRoute({
@@ -52,8 +63,10 @@ export function renderInRouter(
   const view = render(
     <QueryClientProvider client={queryClient}>
       <ToastProvider>
-        {/* 型はアプリ本体の routeTree で登録されるため、ここでは構造だけ見る */}
-        <RouterProvider router={router as never} />
+        <SiteContext value={site}>
+          {/* 型はアプリ本体の routeTree で登録されるため、ここでは構造だけ見る */}
+          <RouterProvider router={router as never} />
+        </SiteContext>
       </ToastProvider>
     </QueryClientProvider>,
   )

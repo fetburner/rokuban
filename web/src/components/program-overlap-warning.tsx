@@ -3,7 +3,6 @@ import { TriangleAlert } from 'lucide-react'
 import { useGetProgramOverlaps } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
 import { formatTime } from '@/lib/format'
-import { DEFAULT_SITE } from '@/lib/site'
 
 /**
  * ProgramOverlapWarning は指定番組の放送時間帯と重なる既存予約の件数と内訳を出す
@@ -18,16 +17,24 @@ import { DEFAULT_SITE } from '@/lib/site'
  * 予約後に知らせても遅いので、予約ボタンの近くに常時（展開操作なしで）表示する
  * 想定（`ProgramRow` / `ReservationDetailPage` から呼ぶ）。0 件のときは何も
  * 描画しない（`CircuitBreakerBanner` と同じ「余計な枠を出さない」流儀）。
+ *
+ * `site` は呼び出し側に必須で渡させる（内部で `useCurrentSite()` を引かない）。
+ * `ReservationDetailPage`（`/reservations/$site/$programId`）は URL の `$site`
+ * が対象を決める資源同定であり、UI が対象とする「現在の site」（`SiteGate` が
+ * 配る値）と一致するとは限らない --- 一致させると、対象サイト以外の予約詳細を
+ * 開いたときに常に別サイトの重なりを問い合わせてしまう（issue #184 M4-12）。
  */
 export function ProgramOverlapWarning({
+  site,
   programId,
   enabled = true,
 }: {
+  site: string
   programId: number
   /** 呼び出し側で問い合わせ自体を止めたい場合に false を渡す（例: 既に予約取消済み）。 */
   enabled?: boolean
 }) {
-  const query = useGetProgramOverlaps(DEFAULT_SITE, programId, { query: { enabled } })
+  const query = useGetProgramOverlaps(site, programId, { query: { enabled } })
   const overlaps = unwrap(query.data)
 
   if (!overlaps || overlaps.count === 0) return null

@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Service } from '@/api/generated'
 import { RecordingFilters } from '@/components/recording-filters'
 import { emptyRecordingsSearch, type RecordingsPageSearch } from '@/lib/recording-search'
+import { SiteContext } from '@/lib/site'
 
 function service(overrides: Partial<Service> = {}): Service {
   return {
@@ -68,7 +69,9 @@ function renderFilters(
 
   render(
     <QueryClientProvider client={queryClient}>
-      <Harness />
+      <SiteContext value="default">
+        <Harness />
+      </SiteContext>
     </QueryClientProvider>,
   )
 

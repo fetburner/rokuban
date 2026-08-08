@@ -30,7 +30,7 @@
 
 - API パスは常に**ルート相対パス `/api/*`**（ドメインを含まない絶対パス）を使用する。CDN / リバースプロキシ構成で CORS 不要・実行時コンフィグ注入不要とするため
 - **絶対 URL ビルダーは作らない**（M4-1、issue #89）。EPGStation#694 の教訓（絶対 URL 生成が散らばって `X-Forwarded-Prefix` 対応が後から効かなかった）を踏まえて棚卸ししたが、Rokuban には絶対 URL を生成している箇所が現状ゼロ（API・webhook ペイロードともルート相対パスのみ）。無い箇所にビルダーを先回りで作らない（不変条件 11）。必要になった時点で単一ビルダーへ一元化する方針は維持する
-- **site は資源同定に含める**（案 A、M3-1、issue #29 / #31 / #53）。`programId` は site スコープ（[スキーマ](schema.md) §1-5）なので、番組・意図・上書きを指すパスはすべて `/api/sites/{site}/programs/{programId}...` の形を取る。site の権威は `config.mirakc.site`（空なら `"default"`）で、一致しないパスは 404 にする
+- **site は資源同定に含める**（案 A、M3-1、issue #29 / #31 / #53）。`programId` は site スコープ（[スキーマ](schema.md) §1-5）なので、番組・意図・上書きを指すパスはすべて `/api/sites/{site}/programs/{programId}...` の形を取る。**api プロセス自身はどの site にも束縛されない**（不変条件 1: mirakc にもファイルシステムにも依存しない）。権威は `config.mirakc`/`mirakcs` レジストリに site が存在するかで、1 プロセスがレジストリの全 site を処理できる（issue #184 M4-12）。レジストリに無い site を指定すると、読み取り系（GET）は 404、書き込み系（POST/PUT/PATCH/DELETE）は 400 を返す。存在する site の一覧は `GET /api/sites`（mirakc の URL は含まない）で取得できる
 
 ### EPG の読み取り（M1-6 / M1-7）
 
@@ -151,6 +151,12 @@ GET /api/recordings?q=&qTarget=&genre=&channelType=&serviceId=&status=&source=&r
   直交する** --- `trash=true` でも `q` 等の条件は同じように効く
 - **`limit`**: 既定 50、上限 200。超えると 400
 - **`before` / `beforeId`**: 次節参照
+
+**site では絞らない。** api は不変条件 1 により site に束縛されないため、
+`GET /api/recordings` は全サイトの録画を返す（issue #184 M4-12）。各要素の
+`site` フィールドで区別する。`?site=` のような絞り込みパラメータは、それを
+欲しがる呼び出し元ができるまで足さない（不変条件 11）。`GET /api/reservations`
+/ `GET /api/capacity/overages` も同じ形（全サイトを返し、各要素が `site` を持つ）。
 
 **`trash=true` の並び順を `program_start_at` 降順に統一した（旧 `deleted_at`
 降順からの意図的な変更、PR #187 レビュー M4）。** 旧 `ListTrashRecordings`

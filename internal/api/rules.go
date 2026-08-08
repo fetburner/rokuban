@@ -74,7 +74,11 @@ func (h *Server) CreateRule(ctx context.Context, req CreateRuleRequestObject) (C
 	if err := replaceRuleChildren(ctx, q, row.ID, *req.Body); err != nil {
 		return nil, err
 	}
-	if err := h.insertRulerPassHint(ctx, tx); err != nil {
+	sites, err := ruleTargetSites(ctx, q, row.ID)
+	if err != nil {
+		return nil, err
+	}
+	if err := h.insertRulerPassHintsForRuleSites(ctx, tx, sites); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -122,7 +126,11 @@ func (h *Server) UpdateRule(ctx context.Context, req UpdateRuleRequestObject) (U
 	if err := replaceRuleChildren(ctx, q, row.ID, *req.Body); err != nil {
 		return nil, err
 	}
-	if err := h.insertRulerPassHint(ctx, tx); err != nil {
+	sites, err := ruleTargetSites(ctx, q, row.ID)
+	if err != nil {
+		return nil, err
+	}
+	if err := h.insertRulerPassHintsForRuleSites(ctx, tx, sites); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -152,6 +160,13 @@ func (h *Server) DeleteRule(ctx context.Context, req DeleteRuleRequestObject) (D
 		return nil, err
 	}
 
+	// 対象サイトも先に読む（rule_sites は rules への ON DELETE CASCADE。
+	// DeleteRule の後では読めない。00006_rules.sql）。
+	sites, err := ruleTargetSites(ctx, q, req.Id)
+	if err != nil {
+		return nil, err
+	}
+
 	// 内訳は先に数える（削除後には数えられない）。
 	// record 意図または上書きのある予約は残り、FK の ON DELETE SET NULL で
 	// rule_id が外れて実質 manual として動く。意図自体は program_intents に
@@ -172,7 +187,7 @@ func (h *Server) DeleteRule(ctx context.Context, req DeleteRuleRequestObject) (D
 	if n == 0 {
 		return DeleteRule404JSONResponse{Error: "rule not found"}, nil
 	}
-	if err := h.insertRulerPassHint(ctx, tx); err != nil {
+	if err := h.insertRulerPassHintsForRuleSites(ctx, tx, sites); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -186,19 +201,55 @@ func (h *Server) DeleteRule(ctx context.Context, req DeleteRuleRequestObject) (D
 	}, nil
 }
 
-// insertRulerPassHint はルール作成/更新/削除と同一トランザクションで RulerPassArgs を
+// insertRulerPassHint は指定した site の RulerPassArgs を同一トランザクションで
 // InsertTx する（ヒント経路。docs/recording.md §3.1「ルールの作成 / 更新 / 削除」）。
-// dual-write を避けるため、ルール書き込みが失敗すればこのジョブも一緒にロールバックされる。
+// dual-write を避けるため、書き込みが失敗すればこのジョブも一緒にロールバックされる。
 //
 // h.river が nil の場合は何もしない（テストや、将来 River を持たない api 構成を許容する
 // ため。RouterConfig.RiverClient のコメント参照）。RulerPassArgs.InsertOpts の
 // UniqueOpts{ByArgs, ByState} により、同一サイトのヒントは定期実行に合流する。
-func (h *Server) insertRulerPassHint(ctx context.Context, tx pgx.Tx) error {
+func (h *Server) insertRulerPassHint(ctx context.Context, tx pgx.Tx, site string) error {
 	if h.river == nil {
 		return nil
 	}
-	if _, err := h.river.InsertTx(ctx, tx, worker.RulerPassArgs{Site: h.site}, nil); err != nil {
-		return fmt.Errorf("inserting ruler_pass hint: %w", err)
+	if _, err := h.river.InsertTx(ctx, tx, worker.RulerPassArgs{Site: site}, nil); err != nil {
+		return fmt.Errorf("inserting ruler_pass hint for site %s: %w", site, err)
+	}
+	return nil
+}
+
+// insertRulerPassHintsForRuleSites はルールが対象とする各サイトに ruler_pass ヒントを
+// 投入する（issue #184 M4-12「含むもの」3）。sites は rule_sites から読んだ対象一覧で、
+// 空（指定なし = 全サイト）なら h.siteNames（レジストリの全 site）に展開する
+// （00006_rules.sql の rule_sites コメント「指定なし = 全サイト」と同じ規約）。
+//
+// api は site に束縛されない（不変条件 1）ため、1 プロセスがレジストリの全サイトに
+// ヒントを投入できる。呼び出し元（CreateRule/UpdateRule）はルールの子表書き込みと
+// 同一トランザクションで呼ぶこと。DeleteRule は rule_sites が ON DELETE CASCADE で
+// 消える前に対象サイトを読んでおく必要がある。
+// ruleTargetSites は rule_sites から対象サイト名の一覧を読む。空（指定なし）は
+// そのまま空スライスで返す --- 「全サイト」への展開は呼び出し元
+// （insertRulerPassHintsForRuleSites）の責務にする。
+func ruleTargetSites(ctx context.Context, q *sqlcgen.Queries, ruleID int64) ([]string, error) {
+	rows, err := q.ListRuleSites(ctx, ruleID)
+	if err != nil {
+		return nil, fmt.Errorf("listing rule sites for rule %d: %w", ruleID, err)
+	}
+	sites := make([]string, 0, len(rows))
+	for _, r := range rows {
+		sites = append(sites, r.Site)
+	}
+	return sites, nil
+}
+
+func (h *Server) insertRulerPassHintsForRuleSites(ctx context.Context, tx pgx.Tx, sites []string) error {
+	if len(sites) == 0 {
+		sites = h.siteNames
+	}
+	for _, site := range sites {
+		if err := h.insertRulerPassHint(ctx, tx, site); err != nil {
+			return err
+		}
 	}
 	return nil
 }

@@ -102,7 +102,12 @@ LEFT JOIN program_overrides o ON o.site = r.site AND o.program_id = r.program_id
 WHERE r.site = $1 AND r.program_id = $2;
 
 -- never_recorded は GetReservationFull と同じ導出（コメント参照）。
--- name: ListReservationsBySite :many
+--
+-- GET /api/reservations は全サイトを返す（issue #184 M4-12。api は不変条件 1 に
+-- より site に束縛されないため、site 絞り込みは持たない）。並び順は site をまず
+-- 揃えて start_at にする --- site 単体の ORDER BY start_at だと複数サイトの行が
+-- 入り交じり、同一サイト内の時系列を読み取りにくい。
+-- name: ListReservationsFull :many
 SELECT sqlc.embed(r), sqlc.embed(s), i.action AS intent_action, o.overrides AS overrides,
        EXISTS (
            SELECT 1 FROM never_scheduled_events nse
@@ -116,8 +121,7 @@ FROM reservations r
 JOIN program_snapshots s ON s.site = r.site AND s.program_id = r.program_id
 LEFT JOIN program_intents i ON i.site = r.site AND i.program_id = r.program_id
 LEFT JOIN program_overrides o ON o.site = r.site AND o.program_id = r.program_id
-WHERE r.site = $1
-ORDER BY s.start_at;
+ORDER BY r.site, s.start_at;
 
 -- 同期対象の「候補」を返すクエリ（issue #54）。
 --

@@ -64,12 +64,12 @@ func (h *Server) ListCircuitBreakers(ctx context.Context, _ ListCircuitBreakersR
 // 黙って成功にしないため。
 //
 // site はパスに含める。circuit_breakers の PK は (site, name) であり、
-// h.site 固定だと GET /api/breakers（サイト横断で一覧できる）で見えている
-// 他サイトの発動を再開できなかった（issue #102）。h.site 以外の site が
-// 来た場合は 400 —— 現状 1 プロセス 1 site の構成では、他 site の行は
-// このプロセスからは操作できない。
+// site 固定だと GET /api/breakers（サイト横断で一覧できる）で見えている
+// 他サイトの発動を再開できなかった（issue #102）。api は不変条件 1 によりどの
+// site にも束縛されないので、レジストリに無い site が来た場合だけ 400 にする
+// （issue #184 M4-12。レジストリの全 site をこのプロセスから操作できる）。
 func (h *Server) ResumeCircuitBreaker(ctx context.Context, req ResumeCircuitBreakerRequestObject) (ResumeCircuitBreakerResponseObject, error) {
-	if req.Site != h.site {
+	if !h.knownSite(req.Site) {
 		return ResumeCircuitBreaker400JSONResponse{Error: fmt.Sprintf("unknown site %q", req.Site)}, nil
 	}
 	if !knownCircuitBreakerNames[req.Name] {

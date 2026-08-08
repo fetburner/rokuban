@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { CapacityOverage, ProgramListItem, Reservation, Service } from '@/api/generated'
 import { ToastProvider } from '@/components/toaster'
 import { dayOrigin } from '@/lib/day-offset'
+import { SiteContext } from '@/lib/site'
 import { ProgramsPage } from '@/pages/programs'
 
 /**
@@ -282,7 +283,9 @@ function renderPage() {
   const view = render(
     <QueryClientProvider client={queryClient}>
       <ToastProvider>
-        <ProgramsPage />
+        <SiteContext value="default">
+          <ProgramsPage />
+        </SiteContext>
       </ToastProvider>
     </QueryClientProvider>,
   )

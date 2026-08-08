@@ -21,10 +21,16 @@ type Server struct {
 	pool  *pgxpool.Pool
 	river *river.Client[pgx.Tx]
 
-	// site はこのプロセスが担当する mirakc インスタンスのサイト名（config.mirakc.site
-	// が権威。issue #31）。API のパスパラメータ {site} がこれと一致しない要求は
-	// 404 にする（存在しないサイトの資源として扱う）。
-	site string
+	// sites はこのプロセスが応答してよい mirakc サイト名の集合（メンバーシップ判定用。
+	// knownSite 参照）。api は不変条件 1（mirakc にもファイルシステムにも依存しない）
+	// によりどの site にも束縛されないので、権威は「config.mirakc/mirakcs レジストリに
+	// 存在するか」であり、1 プロセスがレジストリの全 site を処理できる
+	// （issue #184 M4-12。旧実装は起動時の config.mirakc.site 1 つに固定していた）。
+	sites map[string]struct{}
+
+	// siteNames は sites の定義順一覧（GET /api/sites の応答、ルールが対象 site を
+	// 指定しなかったときの既定の投入先。issue #184）。
+	siteNames []string
 
 	// encodeProfiles は config に定義されたエンコードプロファイル名の集合。
 	// ルール保存時の encodeProfiles 存在検証に使う（issue #64）。
@@ -37,12 +43,18 @@ type Server struct {
 
 // NewServer は Server を生成する。riverClient は insert-only の River クライアントで、
 // nil なら ruler_pass ヒントの投入をスキップする（RouterConfig.RiverClient 参照）。
-// site が空なら db.DefaultSite を使う（テストの部分構成を許す）。
+// sites が空なら db.DefaultSite の 1 要素とみなす（テストの部分構成を許す。既存の
+// 「site が空なら db.DefaultSite」規約を集合に持ち上げただけで新しい規約ではない）。
 // encodeProfileNames は config.encode.profiles の名前一覧（未知名の 400 判定用。
 // nil/空なら検証をスキップする）。一覧 API にも同じ順序で載せる。
-func NewServer(pool *pgxpool.Pool, riverClient *river.Client[pgx.Tx], site string, encodeProfileNames []string) *Server {
-	if site == "" {
-		site = db.DefaultSite
+func NewServer(pool *pgxpool.Pool, riverClient *river.Client[pgx.Tx], sites []string, encodeProfileNames []string) *Server {
+	siteNames := sites
+	if len(siteNames) == 0 {
+		siteNames = []string{db.DefaultSite}
+	}
+	siteSet := make(map[string]struct{}, len(siteNames))
+	for _, s := range siteNames {
+		siteSet[s] = struct{}{}
 	}
 	// nil スライス = 検証オフ（テストの部分構成）。空スライス = 定義ゼロで全名が未知。
 	// 本番の server.go は ProfileNames()（常に non-nil）を渡すので検証が常に効く。
@@ -56,7 +68,18 @@ func NewServer(pool *pgxpool.Pool, riverClient *river.Client[pgx.Tx], site strin
 			names = append(names, n)
 		}
 	}
-	return &Server{pool: pool, river: riverClient, site: site, encodeProfiles: profiles, encodeProfileNames: names}
+	return &Server{
+		pool: pool, river: riverClient,
+		sites: siteSet, siteNames: siteNames,
+		encodeProfiles: profiles, encodeProfileNames: names,
+	}
+}
+
+// knownSite は site がこのプロセスの応答対象レジストリに存在するかを返す。
+// パスパラメータ {site} の検証はすべてこれを通す（issue #184 M4-12）。
+func (h *Server) knownSite(site string) bool {
+	_, ok := h.sites[site]
+	return ok
 }
 
 // Healthz はヘルスチェックエンドポイント。
@@ -70,9 +93,10 @@ func (h *Server) GetVersion(_ context.Context, _ GetVersionRequestObject) (GetVe
 }
 
 // ListReservations は予約一覧を返す。導出行の読み取り専用ビュー（issue #29）。
+// 全サイトの予約を返す（issue #184 M4-12）。各要素の Site で区別する。
 func (h *Server) ListReservations(ctx context.Context, _ ListReservationsRequestObject) (ListReservationsResponseObject, error) {
 	q := sqlcgen.New(h.pool)
-	rows, err := q.ListReservationsBySite(ctx, h.site)
+	rows, err := q.ListReservationsFull(ctx)
 	if err != nil {
 		return nil, err
 	}

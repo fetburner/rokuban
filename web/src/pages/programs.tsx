@@ -36,7 +36,7 @@ import { formatDate } from '@/lib/format'
 import { domLayoutMeasurable } from '@/lib/list-virtualization'
 import { filterProgramsFromListStart } from '@/lib/program-list-window'
 import { previousDayWindow } from '@/lib/previous-day-window'
-import { DEFAULT_SITE } from '@/lib/site'
+import { useCurrentSite } from '@/lib/site'
 import { lgMediaQuery, useMediaQuery } from '@/lib/use-media-query'
 
 /**
@@ -84,6 +84,7 @@ function serviceIdParam(selectedServiceIds: ReadonlySet<number>): number[] | und
 }
 
 export function ProgramsPage() {
+  const site = useCurrentSite()
   // 空集合 = すべて表示。初期状態が空なので、これ以外の意味だと初回表示が
   // 空になってしまう。
   const [selectedServiceIds, setSelectedServiceIds] = useState<ReadonlySet<number>>(new Set())
@@ -131,7 +132,7 @@ export function ProgramsPage() {
   const wideScreen = useMediaQuery(lgMediaQuery)
   const showGrid = wideScreen && view === 'grid'
 
-  const services = useListServices(DEFAULT_SITE)
+  const services = useListServices(site)
   const reservations = useListReservations()
 
   // nowMs はこのレンダーの間で一貫させる。起点・上限・下限をそれぞれ別々に
@@ -177,7 +178,7 @@ export function ProgramsPage() {
     enabled: !showGrid,
     queryFn: async ({ pageParam }) => {
       const { startMs, endMs } = pageParam
-      const res = await listPrograms(DEFAULT_SITE, {
+      const res = await listPrograms(site, {
         start: new Date(startMs).toISOString(),
         end: new Date(endMs).toISOString(),
         serviceId: selectedServiceIdParam,
@@ -204,7 +205,7 @@ export function ProgramsPage() {
   // 見分けられないため。
   const gridEndMs = Math.min(originMs + gridWindowHours * 3600_000, limitMs)
   const gridQuery = useListPrograms(
-    DEFAULT_SITE,
+    site,
     {
       start: new Date(originMs).toISOString(),
       end: new Date(gridEndMs).toISOString(),
@@ -558,6 +559,7 @@ export function ProgramsPage() {
  * 失敗しても予約自体（intent）は成立しているので、その旨を分けてトーストで示す。
  */
 function useReservationActions(serverReservedIds: ReadonlySet<number>): ReservationActions {
+  const site = useCurrentSite()
   const queryClient = useQueryClient()
   const toast = useToast()
   const putIntent = usePutProgramIntent()
@@ -624,7 +626,7 @@ function useReservationActions(serverReservedIds: ReadonlySet<number>): Reservat
     setBusy(programId, true)
     setOptimisticReserved(programId, false)
     putIntent.mutate(
-      { site: DEFAULT_SITE, programId, data: { action: 'skip' } },
+      { site, programId, data: { action: 'skip' } },
       {
         onSuccess: () => {
           invalidateReservations()
@@ -651,7 +653,7 @@ function useReservationActions(serverReservedIds: ReadonlySet<number>): Reservat
     void (async () => {
       try {
         await putIntent.mutateAsync({
-          site: DEFAULT_SITE,
+          site,
           programId: program.programId,
           data: { action: 'record' },
         })
@@ -673,7 +675,7 @@ function useReservationActions(serverReservedIds: ReadonlySet<number>): Reservat
         // 予約は成立しているので「予約に失敗しました」にはしない。
         try {
           await patchOverrides.mutateAsync({
-            site: DEFAULT_SITE,
+            site,
             programId: program.programId,
             data: overrides,
           })

@@ -119,9 +119,11 @@ func newServerCmd() *cobra.Command {
 				routerCfg := api.RouterConfig{
 					AllowedHosts: cfg.Server.AllowedHosts,
 					Pool:         pool,
-					// api ロールを site 非依存にするのは M4-12。このタスクでは今の値
-					// のまま（issue #183 の「含むもの」5）。
-					Site:            cfg.Mirakc.Site,
+					// api は不変条件 1（mirakc にもファイルシステムにも依存しない）に
+					// より site に束縛されない。boundSite ではなくレジストリ全体を渡す
+					// ことで、1 プロセスがレジストリの全 site を処理できる
+					// （issue #184 M4-12）。
+					Sites:           registryNames(cfg.Registry()),
 					MetricsRegistry: metrics.NewRegistry(backlog),
 				}
 

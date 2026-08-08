@@ -69,6 +69,42 @@ func (q *Queries) ListTunerSync(ctx context.Context, site string) ([]TunerSync, 
 	return items, nil
 }
 
+const listTunerSyncAllSites = `-- name: ListTunerSyncAllSites :many
+SELECT site, tuner_index, name, types, is_available, is_fault, observed_at FROM tuner_sync
+ORDER BY site, tuner_index
+`
+
+// ListTunerSync と同じだが site で絞らない全サイト版。GET /api/capacity/overages
+// （internal/capacity.LoadAllSites）が使う（issue #184 M4-12）。worker/tuner.go の
+// 定期ジョブは束縛サイト 1 つ分だけを扱えばよいので ListTunerSync を使い続ける。
+func (q *Queries) ListTunerSyncAllSites(ctx context.Context) ([]TunerSync, error) {
+	rows, err := q.db.Query(ctx, listTunerSyncAllSites)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []TunerSync
+	for rows.Next() {
+		var i TunerSync
+		if err := rows.Scan(
+			&i.Site,
+			&i.TunerIndex,
+			&i.Name,
+			&i.Types,
+			&i.IsAvailable,
+			&i.IsFault,
+			&i.ObservedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const tunerSweepMark = `-- name: TunerSweepMark :one
 
 SELECT now()::timestamptz AS mark

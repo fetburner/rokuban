@@ -185,6 +185,12 @@ export interface DropSummary {
 
 export interface Recording {
   id: number;
+  /**
+     * この録画がどのサイト（mirakc インスタンス）のものか。`recordings.site`
+     * そのまま。`GET /api/recordings` は全サイトの録画を返すため
+     * （issue #184 M4-12）、クライアントはこの値で区別する。
+     */
+  site: string;
   ruleId?: number;
   source: RecordingSource;
   serviceName: string;
@@ -1045,6 +1051,126 @@ export function useGetVersion<TData = Awaited<ReturnType<typeof getVersion>>, TE
 
 
 
+export type listSitesResponse200 = {
+  data: string[]
+  status: 200
+}
+
+export type listSitesResponseSuccess = (listSitesResponse200) & {
+  headers: Headers;
+};
+;
+
+export type listSitesResponse = (listSitesResponseSuccess)
+
+export const getListSitesUrl = () => {
+
+
+
+
+  return `/api/sites`
+}
+
+/**
+ * `config.mirakc`/`mirakcs` レジストリの公開面（issue #184 M4-12）。api は
+ * site に束縛されない（不変条件 1）ため、フロントが正しい `{site}` を
+ * パスに埋めるにはこの一覧が要る（旧 `web/src/lib/site.ts` の
+ * `DEFAULT_SITE` 決め打ちを撤去する対応）。
+ *
+ * **機微情報は載せない。** mirakc の URL は返さない（site 名の配列のみ。
+ * `GET /api/encode-profiles` が ffmpeg のパス等を出さないのと同じ規律）。
+ * @summary List the mirakc sites this deployment knows about
+ */
+export const listSites = async ( options?: RequestInit): Promise<listSitesResponse> => {
+
+  return customInstance<listSitesResponse>(getListSitesUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getListSitesQueryKey = () => {
+    return [
+    `/api/sites`
+    ] as const;
+    }
+
+
+export const getListSitesQueryOptions = <TData = Awaited<ReturnType<typeof listSites>>, TError = unknown>( options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listSites>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getListSitesQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listSites>>> = ({ signal }) => listSites({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listSites>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type ListSitesQueryResult = NonNullable<Awaited<ReturnType<typeof listSites>>>
+export type ListSitesQueryError = unknown
+
+
+export function useListSites<TData = Awaited<ReturnType<typeof listSites>>, TError = unknown>(
+  options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof listSites>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof listSites>>,
+          TError,
+          Awaited<ReturnType<typeof listSites>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useListSites<TData = Awaited<ReturnType<typeof listSites>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listSites>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof listSites>>,
+          TError,
+          Awaited<ReturnType<typeof listSites>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useListSites<TData = Awaited<ReturnType<typeof listSites>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listSites>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary List the mirakc sites this deployment knows about
+ */
+
+export function useListSites<TData = Awaited<ReturnType<typeof listSites>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listSites>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getListSitesQueryOptions(options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
 export type listEncodeProfilesResponse200 = {
   data: EncodeProfileSummary[]
   status: 200
@@ -1700,6 +1826,9 @@ export const getListReservationsUrl = () => {
  * `PUT/DELETE /api/sites/{site}/programs/{programId}/intent` と
  * `PATCH/DELETE /api/sites/{site}/programs/{programId}/overrides` で行う
  * —— `reservations` の書き手は ruler だけであり、api はここを一切書かない。
+ *
+ * **全サイトの予約を返す**（issue #184 M4-12）。各要素の `site` で区別する。
+ * 絞り込みパラメータは持たない（不変条件 11: 必要になった時点で足す）。
  * @summary List reservations
  */
 export const listReservations = async ( options?: RequestInit): Promise<listReservationsResponse> => {
@@ -3216,6 +3345,10 @@ export const getListRecordingsUrl = (params?: ListRecordingsParams,) => {
  * `trash=true` でもカーソル軸は `program_start_at` のまま（旧
  * `ListTrashRecordings` の `deleted_at` 降順からの意図的な変更。理由は
  * docs/api.md「録画一覧: 絞り込み + キーセットページング」参照）。
+ *
+ * **全サイトの録画を返す**（issue #184 M4-12）。`site` での絞り込み
+ * パラメータは持たない（不変条件 11: 必要になった時点で足す）。各要素の
+ * `site` フィールドで区別する。
  * @summary List recordings
  */
 export const listRecordings = async (params?: ListRecordingsParams, options?: RequestInit): Promise<listRecordingsResponse> => {
@@ -3875,6 +4008,9 @@ export const getListCapacityOveragesUrl = (params: ListCapacityOveragesParams,) 
  * 判定は種別部分集合に縮約した Hall 条件（`∀A ⊆ {GR,BS,CS,SKY}:
  * Σ_{t∈A} d[t] ≤ cap(A)`）。破れた `A` から不足本数と詰まった種別が
  * 副産物として出るので、`shortfall` / `jammedTypes` で「BS が 1 本不足」まで言える。
+ *
+ * 判定はサイトごとに独立に行われ、**全サイトの超過区間を返す**
+ * （issue #184 M4-12）。各要素の `site` で区別する。
  * @summary List intervals where tuner capacity is exceeded
  */
 export const listCapacityOverages = async (params: ListCapacityOveragesParams, options?: RequestInit): Promise<listCapacityOveragesResponse> => {

@@ -11,7 +11,7 @@ import (
 // SearchPrograms はルール条件と同じコンパイラで EPG を検索する（M2-2）。
 // ruler 評価（MatchProgramIDs）と同一経路。
 func (h *Server) SearchPrograms(ctx context.Context, req SearchProgramsRequestObject) (SearchProgramsResponseObject, error) {
-	if req.Site != h.site {
+	if !h.knownSite(req.Site) {
 		return SearchPrograms404JSONResponse{Error: "unknown site"}, nil
 	}
 	if req.Body == nil {
@@ -25,7 +25,7 @@ func (h *Server) SearchPrograms(ctx context.Context, req SearchProgramsRequestOb
 		return SearchPrograms400JSONResponse{Error: msg}, nil
 	}
 
-	ids, err := rulequery.MatchProgramIDs(ctx, h.pool, h.site, c)
+	ids, err := rulequery.MatchProgramIDs(ctx, h.pool, req.Site, c)
 	if err != nil {
 		return nil, err
 	}

@@ -37,3 +37,10 @@ WHERE site = $1 AND observed_at < $2;
 SELECT * FROM tuner_sync
 WHERE site = $1
 ORDER BY tuner_index;
+
+-- ListTunerSync と同じだが site で絞らない全サイト版。GET /api/capacity/overages
+-- （internal/capacity.LoadAllSites）が使う（issue #184 M4-12）。worker/tuner.go の
+-- 定期ジョブは束縛サイト 1 つ分だけを扱えばよいので ListTunerSync を使い続ける。
+-- name: ListTunerSyncAllSites :many
+SELECT * FROM tuner_sync
+ORDER BY site, tuner_index;

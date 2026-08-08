@@ -29,6 +29,28 @@ paths:
               schema:
                 $ref: "#/components/schemas/VersionResponse"
 
+  /api/sites:
+    get:
+      operationId: listSites
+      summary: List the mirakc sites this deployment knows about
+      description: |
+        `config.mirakc`/`mirakcs` レジストリの公開面（issue #184 M4-12）。api は
+        site に束縛されない（不変条件 1）ため、フロントが正しい `{site}` を
+        パスに埋めるにはこの一覧が要る（旧 `web/src/lib/site.ts` の
+        `DEFAULT_SITE` 決め打ちを撤去する対応）。
+
+        **機微情報は載せない。** mirakc の URL は返さない（site 名の配列のみ。
+        `GET /api/encode-profiles` が ffmpeg のパス等を出さないのと同じ規律）。
+      responses:
+        "200":
+          description: OK（レジストリの定義順）
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+
   /api/encode-profiles:
     get:
       operationId: listEncodeProfiles
@@ -167,6 +189,9 @@ paths:
         `PUT/DELETE /api/sites/{site}/programs/{programId}/intent` と
         `PATCH/DELETE /api/sites/{site}/programs/{programId}/overrides` で行う
         —— `reservations` の書き手は ruler だけであり、api はここを一切書かない。
+
+        **全サイトの予約を返す**（issue #184 M4-12）。各要素の `site` で区別する。
+        絞り込みパラメータは持たない（不変条件 11: 必要になった時点で足す）。
       responses:
         "200":
           description: OK
@@ -610,6 +635,10 @@ paths:
         `trash=true` でもカーソル軸は `program_start_at` のまま（旧
         `ListTrashRecordings` の `deleted_at` 降順からの意図的な変更。理由は
         docs/api.md「録画一覧: 絞り込み + キーセットページング」参照）。
+
+        **全サイトの録画を返す**（issue #184 M4-12）。`site` での絞り込み
+        パラメータは持たない（不変条件 11: 必要になった時点で足す）。各要素の
+        `site` フィールドで区別する。
       parameters:
         - name: q
           in: query
@@ -926,6 +955,9 @@ paths:
         判定は種別部分集合に縮約した Hall 条件（`∀A ⊆ {GR,BS,CS,SKY}:
         Σ_{t∈A} d[t] ≤ cap(A)`）。破れた `A` から不足本数と詰まった種別が
         副産物として出るので、`shortfall` / `jammedTypes` で「BS が 1 本不足」まで言える。
+
+        判定はサイトごとに独立に行われ、**全サイトの超過区間を返す**
+        （issue #184 M4-12）。各要素の `site` で区別する。
       parameters:
         - name: start
           in: query
@@ -1032,12 +1064,16 @@ components:
       in: path
       required: true
       description: |
-        mirakc インスタンスのサイト名（config.mirakc.site）。programId は
-        インスタンス単位のスコープしか持たないため、この site と組にしないと
-        資源が一意に定まらない（issue #31）。設定と一致しない site のエラー
-        コードはエンドポイントの HTTP メソッドで決まる —— GET 系は 404、
-        POST/PUT/PATCH/DELETE 系は 400（他の入力検証と同じ扱い。詳細は各
-        エンドポイントの description・レスポンス定義を参照）。
+        mirakc インスタンスのサイト名。programId はインスタンス単位のスコープ
+        しか持たないため、この site と組にしないと資源が一意に定まらない
+        （issue #31）。api プロセス自身は特定の site に束縛されない
+        （不変条件 1: mirakc にもファイルシステムにも依存しない）ので、権威は
+        「`config.mirakc`/`mirakcs` レジストリに存在するか」であり、1 プロセスが
+        レジストリの全 site を処理できる（issue #184 M4-12）。レジストリに無い
+        site のエラーコードはエンドポイントの HTTP メソッドで決まる —— GET 系は
+        404、POST/PUT/PATCH/DELETE 系は 400（他の入力検証と同じ扱い。詳細は各
+        エンドポイントの description・レスポンス定義を参照）。存在する site の
+        一覧は `GET /api/sites` で取得できる。
       schema:
         type: string
     ProgramId:
@@ -1262,6 +1298,7 @@ components:
       type: object
       required:
         - id
+        - site
         - source
         - serviceName
         - channelType
@@ -1278,6 +1315,12 @@ components:
         id:
           type: integer
           format: int64
+        site:
+          description: |
+            この録画がどのサイト（mirakc インスタンス）のものか。`recordings.site`
+            そのまま。`GET /api/recordings` は全サイトの録画を返すため
+            （issue #184 M4-12）、クライアントはこの値で区別する。
+          type: string
         ruleId:
           type: integer
           format: int64
