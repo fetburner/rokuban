@@ -102,7 +102,12 @@ worker:
   queues: []                     # worker ロールが引くキューを絞る。空なら全部。
                                  # ロールを増やさずに「ruler / reconciler だけ別 Pod」を実現するための knob。
                                  # worker ロールが無いプロセス（watcher 単独等）はこの設定に関わらず
-                                 # キューを一切引かない（operations.md §ロールとキュー購読、issue #113）
+                                 # キューを一切引かない（operations.md §ロールとキュー購読、issue #113）。
+                                 # ここに書くのは論理名（ingest / epg / ruler / reconciler / watcher /
+                                 # encode / thumbnail / cleanup / default）のまま --- プロセスが自分の
+                                 # 束縛サイト（--sites）で site 単位のキューを実際の物理名
+                                 # （`ingest_tokyo` 等）に展開する。サイトごとに ConfigMap を分けずに
+                                 # 済ませるための設計（issue #185 M4-13）
 
 encode:
   ffmpeg: ffmpeg                 # 既定は PATH 検索。worker ロールが encode/thumbnail キューを
@@ -211,7 +216,7 @@ log:
 多拠点構成では `mirakc:` の代わりに `mirakcs:` （`{site, url}` の配列）を書く。`mirakc: {url, site}` は `mirakcs: [{site, url}]` の 1 要素と等価に解決される糖衣で、**両方を同時に書くと起動エラー**になる（どちらが勝つかを覚えさせない）。
 
 - **`mirakcs:` の要素は `site` と `url` の 2 つだけ。** `storage` / `worker` / `ingest` 等のチューニング値は要素に入れない。アーカイブは単一（`media_assets` に site 列が無い）であり、`worker.queues` 等はデプロイ時のパラメータであって site の属性ではない。site ごとのチューニング値は、それを読むコードができたときに足す（不変条件 11）
-- **site 名の構文制約**: `^[a-z0-9]([_-]?[a-z0-9])*$`、64 文字以内。**River のキュー名の制約と同一で、緩めない** --- キュー名を site で修飾する将来（M4-13）を site 名が弾くことになるため
+- **site 名の構文制約**: `^[a-z0-9]([_-]?[a-z0-9])*$`、64 文字以内。**River のキュー名の制約と同一で、緩めない** --- キュー名を site で修飾する（issue #185 M4-13）ため、緩めると site 名がキュー名として弾かれる。ただし 64 文字はキュー名の prefix（例: `reconciler_`、11 文字）を見込んでいないため、修飾後に River の上限を超える長さの site は `--sites` の起動時検査（`worker.ValidateSiteForQueueNames`）で別途弾く。**この検査は束縛した site と `enqueue --site` にしか効かない** --- レジストリに載っているだけで束縛されていない site 名は検査対象外（未検証。`internal/config.mirakcSiteNameMaxLen` を締める案は issue #185 のコメントで提起した）
 - **予約名**: `catalog` と `thumbnails` は site 名にできない。M4-11 導入時の根拠は「`rel_path` に `{site}/` を前置すると、この 2 つと衝突する site 名は削除 reconcile の孤児回収と rescue スキャンの走査対象から外れてしまう」だったが、実装された M4-14 の前置は `sites/{site}/`（site 名の前に固定の `sites/` を挟む形。[docs/storage.md](storage.md) §5「rel_path の名前空間」参照）になったため、site 名はトップレベルの `catalog/` / `thumbnails/` と直接衝突しなくなり、パス衝突というこの根拠は成立しなくなった。**ただし禁止自体は残している** --- 緩めても得られる自由度（`catalog` / `thumbnails` を site 名にしたい運用要求は無い）が、緩めるコスト（`internal/config` のバリデーション・テストの変更）に見合わないため（issue #186 のコメントで結論済み）。これはトップレベルディレクトリ名の予約（`catalog/` / `thumbnails/` / `sites/` の 3 つ。今も load-bearing）とは別の話で、docs/storage.md §5 で分けて説明している
 - レジストリ内の site 名の重複も不可。違反はすべて起動エラーとして全件列挙される（規約 4）
 
@@ -222,11 +227,12 @@ log:
 - 未指定でレジストリが 1 要素ならその 1 つに束縛する。未指定でレジストリが 2 要素以上なら起動エラー（暗黙に「全部」にしない）
 - `--sites=`（明示的な空）は束縛なし = 中央プロセス
 - `--sites tokyo` は tokyo に束縛する。`--sites tokyo,tokyo` のような重複は 1 つに畳む（束縛数の判定が紛らわしいエラーにならないようにするため）
-- `watcher` ロールは 1 プロセス 1 サイトのループしか持たないため、束縛サイト数がちょうど 1 でなければ起動エラーになる。`worker` ロールは今のところ site 単位の仕事（ingest/epg/ruler/reconciler/watcher キュー）と site 非依存の仕事（encode/thumbnail/default キュー。`catalog_export` / `delete_reconcile` はどちらもジョブ種別で、キューとしては `default` に乗る）が同居しており（`worker.Deps.Site` / `worker.ClientConfig` の各 `*Site` フィールドがいずれも単一文字列のため）、2 サイト以上の束縛は起動エラーになる。**0 サイト（中央プロセス）の束縛は `worker.queues` を encode/thumbnail/default 等の site 非依存キューに絞ったときだけ許す** --- `worker.queues` が空（既定=全キュー）のまま、または ingest/epg/ruler/reconciler/watcher のいずれかを含んだまま 0 サイトで起動すると、届く site 単位のジョブが空文字列 site と一致せず全滅して再試行し続けるだけになるため起動エラーにする。**1 プロセスが N サイトの watcher / worker のループを回す形は書き手がまだいないので決めない**（不変条件 11）
+- `watcher` ロールは 1 プロセス 1 サイトのループしか持たないため、束縛サイト数がちょうど 1 でなければ起動エラーになる。watcher の advisory lock のキーも束縛サイトで修飾される（`watcher:<site>`）ので、2 サイトそれぞれに 1 プロセスずつ立てれば両方が自分の mirakc の SSE を購読する（issue #185 M4-13）
+- `worker` ロールは今のところ site 単位の仕事（`ingest`/`epg`/`reconciler`/`watcher` キュー。キュー名は束縛サイトで `<論理名>_<site>` に修飾される）と site 非依存の仕事（`ruler`/`encode`/`thumbnail`/`cleanup`/`default` キュー。`catalog_export` / `delete_reconcile` はどちらもジョブ種別で、キューとしては `cleanup` に乗る。issue #185 M4-13）が同居しており（`worker.Deps.Site` / `worker.ClientConfig` の各 `*Site` フィールドがいずれも単一文字列のため）、2 サイト以上の束縛は起動エラーになる。**0 サイト（中央プロセス）の束縛は `worker.queues` を ruler/encode/thumbnail/cleanup/default 等の site 非依存キューに絞ったときだけ許す** --- `worker.queues` が空（既定=全キュー）のまま、または ingest/epg/reconciler/watcher のいずれかを含んだまま 0 サイトで起動すると、届く site 単位のジョブが空文字列 site と一致せず全滅して再試行し続けるだけになるため起動エラーにする。**1 プロセスが N サイトの watcher / worker のループを回す形は書き手がまだいないので決めない**（不変条件 11）
 - `enqueue` サブコマンドは `--site` で投入先を選ぶ（未指定かつレジストリ 1 要素ならその 1 つ、2 要素以上なら必須）。M4-6 の CronJob がサイトごとに投入するため
 - `rescue` / `shadow-diff` は単一サイト用のまま。`mirakcs:` が 2 要素以上の構成では明示的なエラーで落ちる（多サイトでの意味論を決める書き手がまだいないため）
 
-api の site 検査（サイトの存在確認や API パスの site スコープの強制）・River キュー名の site 修飾はこのタスクの対象外（それぞれ別 issue）。`rel_path` の site 名前空間は M4-14（issue #186）で実装済み --- 詳細は [docs/storage.md](storage.md) §5「rel_path の名前空間」参照。
+api の site 検査（サイトの存在確認や API パスの site スコープの強制）は issue #184（M4-12）の対象外項目として残っている。`rel_path` の site 名前空間は M4-14（issue #186）で、River キュー名の site 修飾は issue #185（M4-13、本 doc の上記）でそれぞれ実装済み。
 
 ### server.allowed_hosts は X-Forwarded-Host を優先する
 

@@ -64,11 +64,22 @@ func NewIngestArgs(site, recordID string) river.JobArgs {
 // pendingJobStates に絞る（既定は completed を含むため、一度取り込んだ record を
 // 手動で取り直せなくなる。取り込み済みかどうかは media_assets 行が真実であり、
 // River のジョブ履歴で表現するものではない）。
-func (IngestJobArgs) InsertOpts() river.InsertOpts {
+//
+// Queue は a.Site で修飾する（physicalQueueName、issue #185 M4-13）。ingest は
+// mirakc への到達性を要する site 単位の仕事なので、多サイト構成で site A の
+// worker が site B の ingest ジョブを掴まないよう、キュー選択の時点で分離する
+// （verifySite は届いた後の多重防御。qualifyQueueName のコメント参照 --- 必ず
+// physicalQueueName を経由し、直接 qualifyQueueName を呼ばない）。
+//
+// ByQueue: uniqueByQueue を立てる理由は pendingJobStates 直後の doc コメント
+// 参照（キュー名の変更が一意キーに影響しないと、旧キューの残骸が新キューへの
+// insert を黙って塞ぐ）。
+func (a IngestJobArgs) InsertOpts() river.InsertOpts {
 	return river.InsertOpts{
-		Queue: ingestQueue,
+		Queue: physicalQueueName(ingestQueue, a.Site),
 		UniqueOpts: river.UniqueOpts{
 			ByArgs:  true,
+			ByQueue: uniqueByQueue,
 			ByState: pendingJobStates,
 		},
 	}

@@ -139,6 +139,16 @@ ruler / reconciler / record_sweep（watcher の 3 段構えのうち (c) 定期�
 DELETE FROM river_job WHERE kind = 'epg_sync' AND state = 'completed';
 ```
 
+**`UniqueOpts.ByQueue` も明示する（既定 `false`）。** 既定では一意キーが
+kind + args だけで組み立てられ、Queue を含まない（`ByArgs` と `ByQueue` は独立の
+軸）。site 単位のキュー（`ingest` / `epg` / `reconciler` / `watcher`）と `cleanup`
+（issue #185 M4-13）の `InsertOpts` は `ByQueue: true` を立てている ---
+**キュー名を変える（リネーム・site 修飾の追加）だけで、Queue を一意キーに
+含めていないと旧キューの残骸が新キューへの Insert を `UniqueSkippedAsDuplicate`
+として黙って塞ぐ**（エラーを返さないのでログにも出ない）。トラブルシュート手順は
+[runbook/troubleshooting.md](runbook/troubleshooting.md) 「M4-13 デプロイ直後、
+旧キューの残骸が `river_job` に残っている」を参照。
+
 ### reconcile
 
 | メトリクス | 説明 |
@@ -336,6 +346,22 @@ encode/thumbnail を明示的に除外した worker Pod（例: ingest 専用 Pod
 起動時に LookPath で検査し、無ければ即座に落ちる --- ffmpeg が無い環境で
 encode/thumbnail ジョブが River の再試行を焼き続けてから気付く、という壊れ方を防ぐ。
 
+**`worker.queues` に書く名前は論理名（unqualified）である。** KEDA のスケーラが
+引くキュー名は物理名に修飾される場合がある: mirakc への到達性を要する site 単位の
+キュー（`ingest` / `epg`（`tuner_sync` も同じ）/ `reconciler` / `watcher`）だけ、
+プロセスが束縛されているサイト名で `<論理名>_<site>`（例: `ingest_tokyo`）に
+修飾される（issue #185 M4-13）。`ruler` / `encode` / `thumbnail` / `cleanup`
+（`delete_reconcile` / `catalog_export` のキュー）/ `default` は site に依存しないので
+修飾されない（[overview.md](overview.md) のキュー配置表）。修飾は `worker.queues` の
+設定値・未知キューのエラーメッセージのどちらにも現れない --- 設定・エラー文言は
+常に論理名のままで、実際にキューを引くプロセス（KEDA のスケーラ定義や Prometheus の
+`river_job` メトリクス等）だけが物理名を見る。
+
+0 サイト束縛（中央プロセス、issue #183 M4-11 の `--sites=`）の worker は
+site 単位のキューを一切購読できない（`worker.RequiresSiteBinding` が起動時に
+強制する）。中央プロセスで動かせるのは `ruler` / `encode` / `thumbnail` /
+`cleanup` / `default` に `worker.queues` を絞った構成だけである。
+
 ### streamer のスケール（issue #56）
 
 **streamer は録画配信（VOD・サムネイル）とライブ視聴の両方を担うが、置き場所も
@@ -439,6 +465,8 @@ Deployment 型で worker を運用する場合（またはその併用）の定�
 ### シングルトンロール: pg_advisory_lock リーダー選出
 
 watcher はシングルトンロール。`pg_try_advisory_lock` による監督ループでリーダー選出を行う（ruler / reconciler / record_sweep はジョブなので対象外。[データ層](data.md) §2）。ただし watcher の singleton 性はもはや「正しさ」の要件ではなく、「mirakc に N 本の SSE を張らない」という接続数の配慮に過ぎない（M2-16 で `processRecord` を冪等化済み。[データ層](data.md) §2、[録画エンジン](recording.md) §3.3）:
+
+**watcher はサイトごとに 1。** advisory lock のキーはロール名だけでなく束縛サイトも含む（`watcher:<site>`、issue #185 M4-13）。多サイト構成で 2 サイトの watcher プロセスを立てると、両方が自分のサイトのロックを取得して両方の mirakc の SSE を購読する --- 同じロックキーだと片方が「role already held by another process」で待機に入り、負けた側の mirakc の SSE を誰も購読しなくなる（ログ上は正常に見えるので気付きにくい）。同一サイトで 2 プロセス立てた場合は従来どおり片方だけが動く。
 
 1. ロールごとに goroutine を立て、`pg_try_advisory_lock` を定期試行（15s + jitter）
 2. 取得したら child context でロール本体を起動

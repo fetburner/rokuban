@@ -32,18 +32,24 @@ func (TunerSyncArgs) Kind() string { return "tuner_sync" }
 
 // InsertOpts は River ジョブの挿入オプションを返す。
 //
-// キューは epg_sync と同じ epg。どちらも「使い捨てプロジェクションの全量同期」で
-// 性質が同じであり、MaxWorkers 1 が既に重なりを防いでいる。チューナー構成の変更は
+// キューは epg_sync と同じ epg（a.Site で修飾。physicalQueueName、issue #185
+// M4-13。必ず physicalQueueName を経由する --- qualifyQueueName のコメント参照）。
+// どちらも「使い捨てプロジェクションの全量同期」で性質が同じであり、
+// MaxWorkers 1 が既に重なりを防いでいる。チューナー構成の変更は
 // mirakc の再起動を要するので更新頻度は低くてよく、EPG 同期の後ろで待たされても
 // 実害がない（キューを増やすと worker.queues の設定面が広がる分だけ損）。
+// EpgSyncArgs.InsertOpts と同じ修飾規則を使うこと --- 片方だけ修飾すると
+// MaxWorkers: 1 による同時実行の抑制が site 単位に分かれて崩れる。
 //
 // ByState を pendingJobStates に絞る理由は EpgSyncArgs.InsertOpts と同じ
 // （River の既定は completed を含むため、定期ジョブが実質ワンショットになる）。
-func (TunerSyncArgs) InsertOpts() river.InsertOpts {
+// ByQueue: uniqueByQueue の理由は pendingJobStates 直後の doc コメント参照。
+func (a TunerSyncArgs) InsertOpts() river.InsertOpts {
 	return river.InsertOpts{
-		Queue: epgQueue,
+		Queue: physicalQueueName(epgQueue, a.Site),
 		UniqueOpts: river.UniqueOpts{
 			ByArgs:  true,
+			ByQueue: uniqueByQueue,
 			ByState: pendingJobStates,
 		},
 	}

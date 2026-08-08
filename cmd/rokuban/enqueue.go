@@ -59,6 +59,12 @@ scheduled）の場合は新規に投入されず合流する。その場合も�
 			if err != nil {
 				return err
 			}
+			// site 名を site 単位のキューに修飾したときに River の 64 文字上限を
+			// 超えないことを検証する（cmd/rokuban/server.go の同種の検査と同じ理由。
+			// issue #185 の「罠」）。
+			if err := worker.ValidateSiteForQueueNames(site); err != nil {
+				return err
+			}
 
 			ctx := cmd.Context()
 			// 単発 CLI コマンドは特定のロールを担わないので roles は渡さない

@@ -52,11 +52,20 @@ func (EpgSyncArgs) Kind() string { return "epg_sync" }
 // 「まだ終わっていない状態」だけに絞る。River の既定（UniqueOptsByStateDefault）は
 // completed を含むため、既定のままだと一度成功した時点で以降の定期投入がすべて
 // 重複として捨てられ、10 分間隔の定期ジョブが実質ワンショットになる。
-func (EpgSyncArgs) InsertOpts() river.InsertOpts {
+//
+// Queue は a.Site で修飾する（physicalQueueName、issue #185 M4-13。必ず
+// physicalQueueName を経由する --- qualifyQueueName のコメント参照）。
+// tuner_sync も同じ epg キューを共有しているので、TunerSyncArgs.InsertOpts も
+// 同じ規則で修飾する（片方だけ修飾すると MaxWorkers: 1 による同時実行の抑制が
+// site 単位に分かれて崩れる）。
+//
+// ByQueue: uniqueByQueue の理由は pendingJobStates 直後の doc コメント参照。
+func (a EpgSyncArgs) InsertOpts() river.InsertOpts {
 	return river.InsertOpts{
-		Queue: epgQueue,
+		Queue: physicalQueueName(epgQueue, a.Site),
 		UniqueOpts: river.UniqueOpts{
 			ByArgs:  true,
+			ByQueue: uniqueByQueue,
 			ByState: pendingJobStates,
 		},
 	}

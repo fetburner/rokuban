@@ -308,8 +308,9 @@ func TestTunerSyncPeriodicJob(t *testing.T) {
 		if event.Job.Kind != "tuner_sync" {
 			t.Errorf("job kind = %q, want %q", event.Job.Kind, "tuner_sync")
 		}
-		if event.Job.Queue != epgQueue {
-			t.Errorf("job queue = %q, want %q", event.Job.Queue, epgQueue)
+		wantQueue := qualifyQueueName(epgQueue, testSite)
+		if event.Job.Queue != wantQueue {
+			t.Errorf("job queue = %q, want %q", event.Job.Queue, wantQueue)
 		}
 		var args TunerSyncArgs
 		if err := json.Unmarshal(event.Job.EncodedArgs, &args); err != nil {

@@ -1450,17 +1450,31 @@ func TestDeleteReconcileWorker_HasGenerousTimeout(t *testing.T) {
 
 // Kind / InsertOpts の形。UniqueOpts が無いと定期ジョブが実質ワンショット化する
 // 事故（worker.go の pendingJobStates コメント参照）を防ぐための確認。
+//
+// Queue の期待値はリテラル "cleanup" で書く（cleanupQueue 定数と比較すると、
+// 実装も同じ定数を参照しているだけなので、定数の値が何であっても常に一致して
+// しまい何も主張しない。issue #185 のレビュー指摘）。
 func TestDeleteReconcileArgs_KindAndQueue(t *testing.T) {
 	args := DeleteReconcileArgs{}
 	if args.Kind() != "delete_reconcile" {
 		t.Errorf("Kind = %q", args.Kind())
 	}
 	opts := args.InsertOpts()
+	if opts.Queue != "cleanup" {
+		t.Errorf("Queue = %q, want %q", opts.Queue, "cleanup")
+	}
 	if !opts.UniqueOpts.ByArgs {
 		t.Error("ByArgs should be true")
 	}
 	if len(opts.UniqueOpts.ByState) == 0 {
 		t.Error("ByState should be set to pendingJobStates (completed を含めると定期ジョブがワンショット化する)")
+	}
+	// ByQueue が立っていること（issue #185 レビュー: キュー名の変更が一意キーに
+	// 影響しないと、旧キュー（river.QueueDefault）の残骸が新キュー（cleanup）への
+	// insert を UniqueSkippedAsDuplicate として黙って塞ぐ。pendingJobStates
+	// 直後の doc コメント参照）。
+	if !opts.UniqueOpts.ByQueue {
+		t.Error("ByQueue should be true (キュー名変更が一意キーに影響しないと旧キューの残骸が新キューへの insert を塞ぐ)")
 	}
 }
 

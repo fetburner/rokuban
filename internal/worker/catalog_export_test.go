@@ -91,17 +91,29 @@ func TestBuildRiverConfig_CatalogExportPeriodic(t *testing.T) {
 }
 
 // Kind / InsertOpts の形。
+//
+// Queue の期待値はリテラル "cleanup" で書く（cleanupQueue 定数と比較すると、
+// InsertOpts の実装も同じ定数を参照しているだけなので、定数の値が何であっても
+// 常に一致してしまい何も主張しない。docs/overview.md のキュー配置表が
+// 約束している実際の名前と一致するかを確認したい）。
 func TestCatalogExportArgs_KindAndQueue(t *testing.T) {
 	args := CatalogExportArgs{}
 	if args.Kind() != "catalog_export" {
 		t.Errorf("Kind = %q", args.Kind())
 	}
 	opts := args.InsertOpts()
-	if opts.Queue != river.QueueDefault {
-		t.Errorf("Queue = %q, want default", opts.Queue)
+	if opts.Queue != "cleanup" {
+		t.Errorf("Queue = %q, want %q", opts.Queue, "cleanup")
 	}
 	// UniqueOpts が設定されていること（空 args の同時実行を防ぐ）。
 	if !opts.UniqueOpts.ByArgs {
 		t.Error("ByArgs should be true")
+	}
+	// ByQueue が立っていること（issue #185 レビュー: キュー名の変更が一意キーに
+	// 影響しないと、旧キュー（river.QueueDefault）の残骸が新キュー（cleanup）への
+	// insert を UniqueSkippedAsDuplicate として黙って塞ぐ。pendingJobStates
+	// 直後の doc コメント参照）。
+	if !opts.UniqueOpts.ByQueue {
+		t.Error("ByQueue should be true (キュー名変更が一意キーに影響しないと旧キューの残骸が新キューへの insert を塞ぐ)")
 	}
 }

@@ -2,6 +2,7 @@ package worker
 
 import (
 	"fmt"
+	"log/slog"
 	"slices"
 	"sort"
 	"strings"
@@ -51,22 +52,70 @@ var pendingJobStates = []rivertype.JobState{
 	rivertype.JobStateScheduled,
 }
 
+// site 単位のキュー（ingest/epg/reconciler/watcher）と cleanup（delete_reconcile /
+// catalog_export）の各 InsertOpts は UniqueOpts.ByQueue: true を立てる
+// （issue #185 M4-13 のレビューで判明。river@v0.40.0/insert_opts.go:171-175 の
+// ByQueue の doc コメント参照）。
+//
+// # なぜ必要か
+//
+// River の UniqueOpts は既定で ByQueue: false であり、そのとき一意キーは
+// kind + args（ByArgs 有効時）**だけ**で組み立てられ、Queue を含まない
+// （internal/dbunique/db_unique.go の鍵組み立て）。このリポジトリの site 単位
+// ジョブは元々すべて UniqueOpts{ByArgs: true, ByState: pendingJobStates} だった
+// ため、ByQueue を立てない限り、**キュー名を変えても一意キーは変わらない**。
+//
+// この PR がキュー名を `ingest` → `ingest_<site>` 等に修飾した結果、デプロイ後に
+// 旧キューへ挿入された行（同じ kind + args）が unique_key を占有し続け、新しい
+// 修飾済みキューへの Insert が `UniqueSkippedAsDuplicate` として**エラーを返さず
+// 黙って**合流してしまう。個々のジョブが retryable のまま残ると、その args
+// （site + record_id 等）は二度と新キューへ入れず、レベルトリガーの再投入
+// （record_sweep 等）も同じ args に合流するだけで前進しない。
+//
+// ByQueue: true にすると一意キーに Queue が加わるため、キュー名が変われば
+// 別のジョブとして扱われる。今回のような**将来のキュー名変更（リネーム・
+// 修飾規則の変更）に対する一般的な保険**として、site 単位のキュー全部と
+// cleanup（delete_reconcile / catalog_export、river.QueueDefault → cleanup の
+// 移設が同じ問題を踏む）に適用する。
+//
+// **これは今回の移行そのものも救う。** 旧キューの行の unique_key は
+// 変わらない（kind + args から作られたまま）が、ByQueue: true の下で作られる
+// 新しい鍵は kind + args + queue から作られるので**別ハッシュになり衝突しない**。
+// レビューで 6 ジョブ種すべてについて実測した --- 旧形式の残骸がある状態でも
+// 新キューへの Insert は skipped=false で通る（対照として、旧形式の再 Insert は
+// skipped=true で dedup されるので、残骸が旧鍵を占有していること自体は確認済み）。
+//
+// したがって旧キューの残骸の掃除は**滞留メトリクスの衛生のためであって、
+// 再投入のブロック解除のためではない**。手順は docs/runbook/troubleshooting.md
+// 「M4-13 デプロイ直後、旧キューの残骸が `river_job` に残っている（issue #185）」を参照。
+//
+// ruler / encode / thumbnail は今回のキュー名変更の対象外（ruler は
+// site 非依存のまま "ruler" 固定、encode/thumbnail も変更していない）ので、
+// ByQueue を追加する必要はない --- 追加しても害はないが、対象外のキューまで
+// 変更すると「なぜここは変えたのか」の説明が必要になる範囲が広がるだけで
+// 何の保険にもならない。
+const uniqueByQueue = true
+
 // verifySite は、mirakc かファイルシステムに触るワーカーが処理しようとしている
 // ジョブの site（jobSite）が、そのワーカープロセス自身の site（workerSite、
 // config.mirakc.site）と一致するかを検査する fail-fast ガード（issue #139）。
 //
 // mirakc の record id / programId はインスタンススコープであり、DB の site 列は
 // そのスコープの境界を表現するために存在する（issue #31、docs/schema.md
-// §1-5）。River のキュー名は site で修飾されていない（根治は #138 が決める）ため、
-// 多サイト構成では site A の worker が site B のジョブを掴みうる。掴んだまま
-// mirakc/FS に触れると、A の mirakc に B の id を投げて A の別番組を B の
-// recording としてコミットしうる（不変条件 3「コミット = DB 行」への違反。
-// 詳細は issue #139 本文）。
+// §1-5）。**一次防御はキュー選択そのもの**: site 単位のキュー（ingest/epg/
+// reconciler/watcher）は物理名を site で修飾する（qualifyQueueName、issue #185
+// M4-13）ため、site A の worker は site B 向けのジョブを購読すら
+// しない（cmd/rokuban.validateSiteBinding が worker.queues とサイト束縛の
+// 組み合わせも検査する）。verifySite はその後ろに立つ**二次防御**で、キュー選択が
+// 正しくてもジョブの Args.Site 自体が壊れている経路（手で INSERT した / 将来の
+// ヒント投入のバグ / River の一意性判定が旧キューの残骸と合流して args だけが
+// 別サイトのまま挿入された、等）を捕まえる。掴んだまま mirakc/FS に触れると、
+// A の mirakc に B の id を投げて A の別番組を B の recording としてコミットし
+// うる（不変条件 3「コミット = DB 行」への違反。詳細は issue #139 本文）。
 //
 // workerSite が空文字列（Deps.Site 未注入。単体テストの部分構成を含む）の場合は
-// db.DefaultSite に解決してから比較する — DeleteReconcileWorker.Site と同じ
-// 解決規則で、単一サイト構成でこのガードを追加してもテスト・運用のどちらも
-// 壊れないようにする。
+// db.DefaultSite に解決してから比較する。単一サイト構成でこのガードを追加しても
+// テスト・運用のどちらも壊れないようにするための規約。
 //
 // 呼び出し側は mirakc/FS に触れる**前**（最初の HTTP 呼び出し・os.Create 等より
 // 前）に呼ぶこと。合わないジョブは即座に失敗させ、再試行は River に委ねる
@@ -204,7 +253,6 @@ func NewWorkers(deps *Deps) *river.Workers {
 	river.AddWorker(workers, &DeleteReconcileWorker{
 		Pool:              deps.Pool,
 		MediaDir:          deps.MediaDir,
-		Site:              deps.Site,
 		TrashRetention:    deps.Cleanup.TrashRetention,
 		OrphanMTimeGrace:  deps.Cleanup.OrphanMTimeGrace,
 		OrphanAge:         deps.Cleanup.OrphanAge,
@@ -219,13 +267,133 @@ const (
 	encodeQueue = "encode"
 	// thumbnailQueue はサムネイルジョブ専用のキュー名。
 	thumbnailQueue = "thumbnail"
+	// cleanupQueue は物理削除系ジョブ（delete_reconcile / catalog_export）専用の
+	// キュー名（issue #185 M4-13）。両方ともアーカイブ（単一の MediaDir）にしか
+	// 触れず site には依存しないため、修飾しない（siteBoundQueueNames に入れない。
+	// allQueues のコメント参照）。以前は river.QueueDefault に同居していた。
+	// docs/overview.md のキュー配置表が M3 の時点で既にこの名前を約束していた。
+	//
+	// **`worker.queues` を明示的に絞れば cleanup だけを除外できるようになった
+	// という意味であり、既定（`worker.queues` 未指定 = 全キュー購読）のサイト側
+	// worker が cleanup を掴まなくなったわけではない。** `worker.queues` が空の
+	// 場合、allQueues の全論理名（cleanup を含む）が対象になり、site 束縛の
+	// 有無に関わらずすべて購読される --- 実際、site 束縛 worker が
+	// `worker.queues` を書かずに起動すると、自分の site 単位のキューに加えて
+	// `cleanup` も `default` も `ruler` も購読する（実バイナリ検証で確認済み。
+	// issue #185 の PR コメント参照）。「既定で cleanup を掴まないようにする」
+	// には site 束縛 worker の既定購読集合から cleanup を外す変更が要るが、
+	// それは単一サイト構成（唯一の worker が束縛 worker）で delete_reconcile が
+	// 誰にも走らなくなるので単純にはできない。設計判断が必要なため、実装せず
+	// issue #185 のコメントに提起した。
+	cleanupQueue = "cleanup"
 
 	defaultEncodeConcurrency    = 1
 	defaultThumbnailConcurrency = 1
+	// defaultCleanupConcurrency は cleanup キューの MaxWorkers。delete_reconcile と
+	// catalog_export はそれぞれ UniqueOpts{ByArgs} で自分自身の重複実行を防ぐので、
+	// 「両方が同時に 1 本ずつ走れる」ぶんだけ確保すれば足り、それ以上に増やす理由がない。
+	defaultCleanupConcurrency = 2
+
+	// riverQueueNameMaxLen は River のキュー名の最大長
+	// （river@v0.40.0/client.go:2335,2337-2348、validateQueueName）。
+	// 修飾後のキュー名（qualifyQueueName）はこの上限を超えられない。
+	riverQueueNameMaxLen = 64
 )
 
-// allQueues はこのプロセスが知っている全キューとその設定。worker.queues
-// （ClientConfig.Queues）で絞り込む際の許可リストにもなる。
+// siteBoundQueueNames は mirakc への到達を必要とする、site 単位のキューの
+// **論理**（unqualified）名。ingest（watcher が発見した record の取り込み）・
+// epg（EPG 全量同期。tuner_sync も同じキューを使う）・reconciler（宣言的同期
+// パス）・watcher（record_sweep。recordSweepQueue の実体はこの名前）の 4 つ。
+//
+// この 1 つの変数が 2 つの役目を持つ（意図的に単一の変数に統一している ---
+// 分けると M4-11 が M4-13 に申し送った罠を再現する。issue #185 のコメント参照）:
+//  1. qualifyQueueName で物理キュー名（`<base>_<site>`）に展開する対象の判定
+//     （physicalQueueName）
+//  2. worker ロールを 0 サイト束縛（中央プロセス）で起動してよいかの判定
+//     （RequiresSiteBinding、cmd/rokuban.validateSiteBinding が使う）
+//
+// **ruler はここに入らない。** ruler は mirakc に一切触れない（不変条件 1）
+// DB のみの仕事で、キュー名も修飾しない（#138 の決定、issue #185 の「含むもの」1
+// の表）。0 サイト束縛の中央 worker が ruler キューを購読しても、届く
+// ruler_pass ジョブは args.Site が指す DB 行だけを触るので安全に処理できる
+// （RulerPassWorker のコメント「site 照合ガードは不要と判断」）。M4-11 時点では
+// 保守的に ruler も site-bound 扱いにしていたが、#138 の決定表（site 軸:
+// 非依存）に合わせてここで外す。
+//
+// 対照的に site 非依存のキューは river.QueueDefault・ruler・encode・thumbnail・
+// cleanup の 5 つ（アーカイブとエンコードプロファイルは単一で、site の属性を
+// 持たない。ruler は DB のみ）。
+var siteBoundQueueNames = []string{ingestQueue, epgQueue, reconcilerQueue, recordSweepQueue}
+
+// qualifyQueueName は site 単位のキューの物理名を組み立てる下請け
+// （issue #185 M4-13）。区切り文字は `_`。site が空文字列なら db.DefaultSite に
+// 解決する --- verifySite と同じ規約で、単体テストの部分構成（Site 未設定の
+// JobArgs や ClientConfig.BoundSite 未設定）でも決定的な名前になる。
+//
+// **直接呼ばない。** base が siteBoundQueueNames に含まれるかどうかの判定を
+// 呼び出し側に委ねると、判定を書き忘れた場所だけ「site で修飾しない」という
+// 別の意味論になり、insert 側と subscribe 側の 2 か所で判定がズレる余地が生まれる
+// （issue #185 のレビューで発見: 当初 InsertOpts はこの関数を直接呼び、
+// allQueues/buildRiverConfig の購読側だけが physicalQueueName で門番していた。
+// その状態で siteBoundQueueNames から要素を 1 つ外すと、insert 側は今まで通り
+// 修飾済みキュー名を書き込み、subscribe 側だけが非修飾名に切り替わるという
+// 「挿入先と購読先が食い違う」壊れ方をした）。**必ず physicalQueueName を経由
+// する**（InsertOpts も buildRiverConfig もこの 1 系統だけを通る）。
+func qualifyQueueName(base, site string) string {
+	if site == "" {
+		site = db.DefaultSite
+	}
+	return base + "_" + site
+}
+
+// physicalQueueName は論理キュー名（worker.queues の設定値、AllQueueNames が
+// 返す名前、各 JobArgs.InsertOpts が使うキュー定数）から、このプロセスが実際に
+// River へ Insert/購読する物理キュー名を返す。siteBoundQueueNames に含まれる
+// 論理名だけ qualifyQueueName で site 修飾し、それ以外
+// （ruler/encode/thumbnail/cleanup/default）はそのまま返す。
+//
+// **insert 側（各 JobArgs.InsertOpts）と subscribe 側（buildRiverConfig）の
+// 両方がこの関数を経由する。** 単一の関数に統一しているのは、site 単位の
+// キュー集合（siteBoundQueueNames）の定義を 1 か所にし、insert 側と subscribe
+// 側で別々に判定してズレる経路を構造的に無くすため（qualifyQueueName のコメント
+// 参照）。
+func physicalQueueName(logical, boundSite string) string {
+	if !slices.Contains(siteBoundQueueNames, logical) {
+		return logical
+	}
+	return qualifyQueueName(logical, boundSite)
+}
+
+// ValidateSiteForQueueNames は、site を site 単位のキューに修飾したときに
+// River のキュー名の上限（riverQueueNameMaxLen、64 文字）を超えないことを検査する
+// （issue #185 の「罠」: `mirakcSiteNameMaxLen`（internal/config、64）は
+// このキュー修飾を見込んでいないため、`reconciler_` のような長い prefix が付く分だけ
+// 実質の上限は site 名の側で 64 より短くなる。この差分をここで検証する）。
+//
+// cmd/rokuban が --sites で束縛した各サイト、および `rokuban enqueue --site` で
+// 指定されたサイトについて、起動時 / 投入前に呼ぶ。
+func ValidateSiteForQueueNames(site string) error {
+	for _, base := range siteBoundQueueNames {
+		name := qualifyQueueName(base, site)
+		if len(name) > riverQueueNameMaxLen {
+			return fmt.Errorf(
+				"site %q: queue name %q (%d chars) would exceed River's %d character limit "+
+					"once site-qualified (issue #185); shorten the site name",
+				site, name, len(name), riverQueueNameMaxLen)
+		}
+	}
+	return nil
+}
+
+// allQueues はこのプロセスが知っている全キューの**論理**（unqualified）名とその
+// 設定。worker.queues（ClientConfig.Queues）で絞り込む際の許可リストになり、
+// AllQueueNames / RequiresEncodeTools / RequiresSiteBinding もこの論理名の
+// 集合に対して判定する --- worker.queues の設定値・エラーメッセージのいずれも
+// 論理名のままにするため（issue #185 の「罠」「エラーメッセージも論理名で出す」）。
+//
+// site 単位のキュー（siteBoundQueueNames）を実際に Insert/購読するときの物理名
+// （`<base>_<site>`）への展開は physicalQueueName が担う。buildRiverConfig が
+// river.Config.Queues を組み立てる直前にこの展開を行う。
 func allQueues(ingestConcurrency, encodeConcurrency, thumbnailConcurrency int) map[string]river.QueueConfig {
 	return map[string]river.QueueConfig{
 		river.QueueDefault: {MaxWorkers: 100},
@@ -243,11 +411,26 @@ func allQueues(ingestConcurrency, encodeConcurrency, thumbnailConcurrency int) m
 		// issue #64）。thumbnail ワーカーは M3-4、encode ワーカーは M3-3。
 		encodeQueue:    {MaxWorkers: encodeConcurrency},
 		thumbnailQueue: {MaxWorkers: thumbnailConcurrency},
+		// delete_reconcile / catalog_export 用（issue #185 M4-13。cleanupQueue のコメント参照）。
+		cleanupQueue: {MaxWorkers: defaultCleanupConcurrency},
 	}
 }
 
 // ClientConfig は River クライアントの設定。
 type ClientConfig struct {
+	// BoundSite はこのプロセスが束縛されている単一の mirakc サイト名
+	// （cmd/rokuban が --sites から解決する。空文字列は 0 サイト束縛（中央プロセス）
+	// を意味する。issue #183 M4-11 / #185 M4-13）。
+	//
+	// siteBoundQueueNames に含まれる論理キュー（ingest/epg/reconciler/watcher）を
+	// 実際に Insert/購読する際の物理名（`<base>_<site>`）を組み立てるのに使う
+	// （physicalQueueName、buildRiverConfig）。空文字列は qualifyQueueName が
+	// db.DefaultSite に解決する --- 0 サイト束縛の worker がこれらのキューを
+	// 要求しないことは cmd/rokuban.validateSiteBinding が起動時に強制するので、
+	// ここで実際に "" が site-bound キューの qualify に使われるのは
+	// テストの部分構成（BoundSite 未設定）だけである。
+	BoundSite string
+
 	// IngestConcurrency は ingest キューの同時実行数（サイト単位のキャップ）。0 なら既定値。
 	IngestConcurrency int
 
@@ -345,6 +528,9 @@ func buildRiverConfig(workers *river.Workers, cfg ClientConfig) (*river.Config, 
 		thumbnailConcurrency = defaultThumbnailConcurrency
 	}
 
+	// all / queues は論理（unqualified）名で組み立てる --- worker.queues の設定値・
+	// 未知キューのエラーメッセージのいずれも論理名のままにするため
+	// （issue #185 の「罠」「エラーメッセージも論理名で出す」。allQueues のコメント参照）。
 	all := allQueues(ingestConcurrency, encodeConcurrency, thumbnailConcurrency)
 
 	queues := all
@@ -360,8 +546,23 @@ func buildRiverConfig(workers *river.Workers, cfg ClientConfig) (*river.Config, 
 		}
 	}
 
+	// river.Config.Queues は実際に SKIP LOCKED で引く物理キュー名でなければならない。
+	// ここで初めて論理名から物理名（`<base>_<site>`）に展開する（physicalQueueName）。
+	physicalQueues := make(map[string]river.QueueConfig, len(queues))
+	for name, qc := range queues {
+		physicalQueues[physicalQueueName(name, cfg.BoundSite)] = qc
+	}
+
+	// 実際に SKIP LOCKED で引く物理キュー名の集合をログに出す（issue #185 の
+	// 「罠」: 全キュー購読（既定）は「全部購読しているつもりで実は site 束縛
+	// キューを引いていない」を起動時に伝える手段が要る。KEDA のスケーラ定義を
+	// 合わせる運用者と、「ジョブが available のまま動かない」を調べる人が
+	// 最初に見る情報になる）。
+	slog.Info("worker: subscribing to queues",
+		"queues", sortedQueueNames(physicalQueues), "bound_site", cfg.BoundSite)
+
 	riverCfg := &river.Config{
-		Queues:  queues,
+		Queues:  physicalQueues,
 		Workers: workers,
 	}
 
@@ -492,28 +693,19 @@ func RequiresEncodeTools(queues []string) bool {
 	return slices.Contains(queues, encodeQueue) || slices.Contains(queues, thumbnailQueue)
 }
 
-// siteBoundQueueNames は mirakc への到達を必要とする、site 単位のキュー名。
-// ingest（watcher が発見した record の取り込み）・epg（EPG 全量同期。tuner_sync も
-// 同じキューを使う）・ruler（ルール評価パス）・reconciler（宣言的同期パス）・
-// watcher（record_sweep。recordSweepQueue の実体はこの名前）。
-//
-// 対照的に site 非依存のキューは river.QueueDefault（catalog_export /
-// delete_reconcile）・encode・thumbnail の 3 つ（アーカイブとエンコードプロファイル
-// は単一で、site の属性を持たない）。
-var siteBoundQueueNames = []string{ingestQueue, epgQueue, rulerQueue, reconcilerQueue, recordSweepQueue}
-
 // RequiresSiteBinding は、worker.queues の設定でこのプロセスが site 単位のキュー
-// （ingest/epg/ruler/reconciler/watcher）のいずれかを購読するかを返す。空スライスは
-// 「全キュー購読」を意味するので true になる。
+// （ingest/epg/reconciler/watcher。siteBoundQueueNames 参照）のいずれかを購読するかを
+// 返す。空スライスは「全キュー購読」を意味するので true になる。
 //
 // RequiresEncodeTools と対になる判定で、worker ロールを 0 サイト束縛（中央プロセス、
 // issue #183 M4-11 の `--sites=`）で起動できるかを決める。site 単位のキューを購読する
 // worker は mirakc へのアクセス（Deps.MirakcClient）と site 単位のジョブ照合
 // （internal/worker/worker.go の verifySite）を必要とし、束縛サイトが無いと
 // 空文字列 site として処理され、届いたジョブの site と一致しないため全滅して
-// 再試行し続ける。encode/thumbnail/delete_reconcile/catalog_export だけに絞った
-// worker（worker.queues でそれ以外を明示的に外した構成）は site 非依存なので
-// 0 サイト束縛でも安全に動く。
+// 再試行し続ける。ruler/encode/thumbnail/cleanup/default だけに絞った worker
+// （worker.queues でそれ以外を明示的に外した構成）は site 非依存なので
+// 0 サイト束縛でも安全に動く（ruler が site 非依存である理由は
+// siteBoundQueueNames のコメント参照）。
 func RequiresSiteBinding(queues []string) bool {
 	if len(queues) == 0 {
 		return true

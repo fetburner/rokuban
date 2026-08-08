@@ -27,6 +27,63 @@ docker compose exec postgres psql -U rokuban -d rokuban -c \
 
 `rokuban_epg_sync_last_success_timestamp_seconds` が更新され続けているかで監視できる。
 
+### M4-13 デプロイ直後、旧キューの残骸が `river_job` に残っている（issue #185）
+
+**実測（このリリースノートを書くために実バイナリで確認済み。手順は下記）**:
+site 単位のキュー名を修飾する変更（`ingest` → `ingest_<site>` 等。
+[運用](../operations.md) の「`worker.queues` に書く名前は論理名」参照）と
+`delete_reconcile` / `catalog_export` の `default` → `cleanup` への移設は、
+デプロイ前に投入済みだった旧キューの行を新キューへ自動移行しない。
+
+**現在のコード（`UniqueOpts.ByQueue: true`、`internal/worker/worker.go` の
+`uniqueByQueue`）では、旧キューの残骸があっても新しいジョブの投入自体は
+ブロックされない** --- 一意キーがキュー名を含むため、旧キュー（キューを含まない
+鍵）と新キュー（キューを含む鍵）は別のハッシュになり衝突しない。実際に
+確認した挙動:
+
+```console
+$ rokuban enqueue reconcile-pass --site tokyo   # 旧バイナリで投入（旧キュー "reconciler"）
+inserted job "reconcile-pass" (id=1) for site "tokyo"
+
+$ rokuban enqueue reconcile-pass --site tokyo   # 新バイナリで同じ args を再投入
+inserted job "reconcile-pass" (id=3) for site "tokyo"   # 別行として作られる。スキップされない
+```
+
+```sql
+SELECT id, kind, queue, state FROM river_job ORDER BY id;
+--  id |      kind      |      queue       |   state
+-- ----+----------------+------------------+-----------
+--   1 | reconcile_pass | reconciler       | available   ← 旧キューの残骸（誰も引かない）
+--   3 | reconcile_pass | reconciler_tokyo | available   ← 新キュー。worker が正しく引く
+```
+
+**それでも掃除は推奨する。** 旧キューの残骸（上の `id=1`）はどの worker も
+購読しないキューに永久に残り、`state='available'` のまま滞留メトリクス
+（River のキュー長ダッシュボード等）を汚し続ける。デプロイ後に 1 回だけ
+次を実行する（`pendingJobStates` と同じ 5 状態すべてを対象にする。
+`available`/`scheduled`/`retryable` だけでは `pending`/`running` の残骸を
+取りこぼす）:
+
+```sh
+docker compose exec postgres psql -U rokuban -d rokuban -c \
+  "DELETE FROM river_job
+     WHERE state IN ('available', 'pending', 'retryable', 'running', 'scheduled')
+       AND (
+         queue IN ('ingest', 'epg', 'reconciler', 'watcher')
+         OR (queue = 'default' AND kind IN ('delete_reconcile', 'catalog_export'))
+       )"
+```
+
+**`worker.queues` に `default` を含めない中央 cleanup worker（例:
+`queues: [cleanup]`）を運用する構成では、`default` キューの残骸
+（旧 `delete_reconcile` / `catalog_export`）はどの worker も購読しないままに
+なる。** `queue = 'default'` の分岐を上の DELETE から省略しないこと ---
+「`default` は引き続き購読対象なので掃除不要」という判断は、`default` を
+含む `worker.queues` を書いている構成にしか当てはまらない。
+
+上のコマンドを実際に実行して `id=1` の行が消え、`id=3` だけが残ることを
+確認済み（このリリースノートの検証手順）。
+
 ### 番組リストが空
 
 ```sh

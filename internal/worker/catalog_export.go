@@ -38,11 +38,18 @@ func (CatalogExportArgs) Kind() string { return "catalog_export" }
 //
 // 同一引数の同時実行を UniqueOpts で防ぐ。ByState は pendingJobStates に絞る
 // （completed を含めると定期ジョブが実質ワンショットになる）。
+//
+// Queue は cleanupQueue（issue #185 M4-13。以前は river.QueueDefault だった）。
+// delete_reconcile と同じ理由（cleanupQueue のコメント参照）。
+//
+// ByQueue: uniqueByQueue の理由は pendingJobStates 直後の doc コメント参照
+// （river.QueueDefault → cleanup への移設自体がキュー名変更なので、同じ問題を踏む）。
 func (CatalogExportArgs) InsertOpts() river.InsertOpts {
 	return river.InsertOpts{
-		Queue: river.QueueDefault,
+		Queue: cleanupQueue,
 		UniqueOpts: river.UniqueOpts{
 			ByArgs:  true,
+			ByQueue: uniqueByQueue,
 			ByState: pendingJobStates,
 		},
 	}

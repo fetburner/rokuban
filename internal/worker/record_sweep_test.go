@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/mirakc"
@@ -67,8 +68,9 @@ func TestRecordSweepPeriodicJob(t *testing.T) {
 		if event.Job.Kind != "record_sweep" {
 			t.Errorf("job kind = %q, want %q", event.Job.Kind, "record_sweep")
 		}
-		if event.Job.Queue != recordSweepQueue {
-			t.Errorf("job queue = %q, want %q", event.Job.Queue, recordSweepQueue)
+		wantQueue := qualifyQueueName(recordSweepQueue, testSite)
+		if event.Job.Queue != wantQueue {
+			t.Errorf("job queue = %q, want %q", event.Job.Queue, wantQueue)
 		}
 		var args RecordSweepArgs
 		if err := json.Unmarshal(event.Job.EncodedArgs, &args); err != nil {
@@ -262,7 +264,13 @@ func newRecordSweepStub(t *testing.T, records []mirakc.Record) *httptest.Server 
 // river.ClientFromContextSafely でジョブ実行コンテキストから River クライアント
 // を取り出すため、他のワーカーのように w.Work を直接呼べず、実際に
 // client.Insert → client.Start でジョブとして実行させる必要がある。
-func TestRecordSweepWorker_SiteMismatch(t *testing.T) {
+// TestRecordSweepWorker_SiteMismatch_NeverDequeued は queue 修飾（issue #185
+// M4-13）による一次防御を確認する: site-a に束縛された worker は watcher_site-a
+// しか購読しないので、site-b 向けの record_sweep ジョブ（watcher_site-b に乗る）は
+// 一度も掴まれない。verifySite（issue #139）は二次防御であり、ここでは
+// キュー選択の時点で分離できていることを、モックへのリクエスト 0 件だけでなく
+// 「ジョブが available のまま残る」ことで確認する（issue #185 の受け入れ基準）。
+func TestRecordSweepWorker_SiteMismatch_NeverDequeued(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
@@ -286,15 +294,12 @@ func TestRecordSweepWorker_SiteMismatch(t *testing.T) {
 	}))
 	defer countingSrv.Close()
 
-	// このプロセスは site-a の mirakc を向いている。
+	// このプロセスは site-a に束縛されている: watcher_site-a しか購読しない。
 	workers := NewWorkers(&Deps{Pool: pool, MirakcClient: mirakc.NewClient(countingSrv.URL, nil), Site: "site-a"})
-	client, err := NewClient(pool, workers, ClientConfig{})
+	client, err := NewClient(pool, workers, ClientConfig{BoundSite: "site-a"})
 	if err != nil {
 		t.Fatalf("creating client: %v", err)
 	}
-
-	subscribeCh, subscribeCancel := client.Subscribe(river.EventKindJobFailed)
-	defer subscribeCancel()
 
 	clientCtx, clientCancel := context.WithCancel(ctx)
 	defer clientCancel()
@@ -307,27 +312,69 @@ func TestRecordSweepWorker_SiteMismatch(t *testing.T) {
 		<-client.Stopped()
 	}()
 
-	if _, err := client.Insert(ctx, RecordSweepArgs{Site: "site-b"}, nil); err != nil {
+	res, err := client.Insert(ctx, RecordSweepArgs{Site: "site-b"}, nil)
+	if err != nil {
 		t.Fatalf("inserting record_sweep job: %v", err)
 	}
-
-	select {
-	case event := <-subscribeCh:
-		if event.Job.Kind != "record_sweep" {
-			t.Fatalf("job kind = %q, want %q", event.Job.Kind, "record_sweep")
-		}
-	case <-time.After(20 * time.Second):
-		t.Fatal("timed out waiting for record_sweep job failure")
+	wantQueue := qualifyQueueName(recordSweepQueue, "site-b")
+	if res.Job.Queue != wantQueue {
+		t.Fatalf("job queue = %q, want %q", res.Job.Queue, wantQueue)
 	}
 
+	// この worker は watcher_site-b を購読していないので、しばらく待っても
+	// dequeue されないはず。掴まれてしまえば mirakc への要求が発生するので、
+	// 要求が来ないことも合わせて確認する。
+	time.Sleep(2 * time.Second)
+
+	var state string
+	if err := pool.QueryRow(ctx, "SELECT state FROM river_job WHERE id = $1", res.Job.ID).Scan(&state); err != nil {
+		t.Fatalf("querying job state: %v", err)
+	}
+	if state != string(rivertype.JobStateAvailable) {
+		t.Errorf("job state = %q, want %q (site-b の worker がいないので dequeue されないはず)",
+			state, rivertype.JobStateAvailable)
+	}
 	if got := requests.Load(); got != 0 {
-		t.Errorf("mirakc received %d requests, want 0 (guard must fail before touching mirakc)", got)
+		t.Errorf("mirakc received %d requests, want 0 (job must never be dequeued by the site-a worker)", got)
+	}
+}
+
+// TestRecordSweepWorker_VerifySiteDirect は verifySite（issue #139）を Work() へ
+// 直接呼び出して確認する二次防御のテスト（epg_test.go の
+// TestEpgSyncWorker_SiteMismatch / reconcile_pass_test.go の
+// TestReconcilePassWorker_SiteMismatch と同じ形）。queue 修飾（一次防御。
+// TestRecordSweepWorker_SiteMismatch_NeverDequeued）を素通りしてしまうケース
+// （手で INSERT した / 将来のヒント投入のバグで queue と args.Site がずれた場合）
+// への保険が効いていることを、queue 選択を経由せずに固定する。
+func TestRecordSweepWorker_VerifySiteDirect(t *testing.T) {
+	pool := testutil.SetupDB(t)
+
+	var requests atomic.Int32
+	countingSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer countingSrv.Close()
+
+	w := &RecordSweepWorker{
+		MirakcClient: mirakc.NewClient(countingSrv.URL, nil),
+		Pool:         pool,
+		Site:         "site-a",
+	}
+
+	job := &river.Job[RecordSweepArgs]{JobRow: &rivertype.JobRow{}, Args: RecordSweepArgs{Site: "site-b"}}
+	err := w.Work(context.Background(), job)
+	if err == nil {
+		t.Fatal("Work() error = nil, want error for site mismatch (site-a worker handling a site-b job)")
+	}
+	if got := requests.Load(); got != 0 {
+		t.Errorf("mirakc received %d requests, want 0 (guard must fail before touching mirakc): err=%v", got, err)
 	}
 }
 
 // TestRecordSweepWorker_SiteMatch は、args.Site が一致するジョブは従来どおり
-// 処理されることを確認する（TestRecordSweepWorker_SiteMismatch と対になる
-// 両方向の確認）。
+// 処理されることを確認する（TestRecordSweepWorker_SiteMismatch_NeverDequeued /
+// TestRecordSweepWorker_VerifySiteDirect と対になる両方向の確認）。
 func TestRecordSweepWorker_SiteMatch(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
@@ -340,7 +387,7 @@ func TestRecordSweepWorker_SiteMatch(t *testing.T) {
 	defer srv.Close()
 
 	workers := NewWorkers(&Deps{Pool: pool, MirakcClient: mirakc.NewClient(srv.URL, nil), Site: "site-a"})
-	client, err := NewClient(pool, workers, ClientConfig{})
+	client, err := NewClient(pool, workers, ClientConfig{BoundSite: "site-a"})
 	if err != nil {
 		t.Fatalf("creating client: %v", err)
 	}
