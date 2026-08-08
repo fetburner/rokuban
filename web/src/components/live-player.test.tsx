@@ -1,8 +1,8 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { LivePlayer } from '@/components/live-player'
+import { LivePlayer, nativeStallTimeoutMs } from '@/components/live-player'
 
 /**
  * hls.js 経路（Safari 以外のネイティブ HLS 非対応ブラウザ）の内部呼び出しを
@@ -66,6 +66,7 @@ function deferredFetch() {
 }
 
 afterEach(() => {
+  vi.useRealTimers()
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
   hlsMockState.instances.length = 0
@@ -175,6 +176,76 @@ describe('LivePlayer の状態遷移', () => {
 
     await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
     expect(video.src).toBe('')
+  })
+
+  /**
+   * ネイティブ HLS 経路（WebKit 相当）まで進めて `<video>` を返す。
+   *
+   * **probe は 200 で通る。壊れているのはメディア層だけ**という状況を作るための
+   * 足場（`web/e2e/live.mjs` ⑦が実 WebKit で見ているのと同じ状況）。
+   */
+  async function renderNativePath() {
+    const { resolve } = deferredFetch()
+    render(<LivePlayer site="default" serviceId={1024} />)
+    const video = document.querySelector('video')!
+    vi.spyOn(video, 'canPlayType').mockImplementation((type) =>
+      type === 'application/vnd.apple.mpegurl' || type === 'video/mp2t' ? 'maybe' : '',
+    )
+    resolve(new Response('', { status: 200 }))
+    await waitFor(() => expect(video.src).toContain('playlist.m3u8'))
+    return video
+  }
+
+  describe('ネイティブ経路のメディア失敗（probe は 200 だが再生できない）', () => {
+    // ここが無いと、ネイティブ経路の失敗は**永久に止まった黒いプレイヤー**に
+    // なる（文言も読み込み表示も再読み込みボタンも出ない。レビュー #190 の
+    // 3 回目の指摘で WebKit で実測された症状）。聴くイベントの選択は同じ実測に
+    // 基づく: セグメント 404 は `error`、セグメントが応答しない / プレイリストの
+    // 中身が壊れている場合は `error` が出ず `stalled` だけが出る
+
+    it('error イベントでエラー表示と再読み込みボタンを出す', async () => {
+      const video = await renderNativePath()
+
+      await act(async () => {
+        video.dispatchEvent(new Event('error'))
+      })
+
+      expect(await screen.findByText(/映像データを読み込めません/)).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: '再読み込み' })).toBeInTheDocument()
+    })
+
+    it('stalled のまま猶予が過ぎるとエラー表示を出す（error が出ない壊れ方）', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      const video = await renderNativePath()
+
+      await act(async () => {
+        video.dispatchEvent(new Event('stalled'))
+      })
+      // 猶予の間はまだエラーにしない（ライブは正常時にも一時的に止まる）
+      expect(screen.queryByText(/映像データが途絶えました/)).not.toBeInTheDocument()
+
+      await act(async () => {
+        vi.advanceTimersByTime(nativeStallTimeoutMs)
+      })
+
+      expect(screen.getByText(/映像データが途絶えました/)).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: '再読み込み' })).toBeInTheDocument()
+    })
+
+    it('猶予中に playing が来れば回復と見なしてエラーにしない（逆向き）', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      const video = await renderNativePath()
+
+      await act(async () => {
+        video.dispatchEvent(new Event('stalled'))
+        vi.advanceTimersByTime(nativeStallTimeoutMs / 2)
+        video.dispatchEvent(new Event('playing'))
+        vi.advanceTimersByTime(nativeStallTimeoutMs * 2)
+      })
+
+      expect(screen.queryByText(/映像データが途絶えました/)).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: '再読み込み' })).not.toBeInTheDocument()
+    })
   })
 
   it('serviceId が変わると新しい URL で probe をやり直す', async () => {
@@ -329,6 +400,26 @@ describe('LivePlayer の状態遷移', () => {
         await screen.findByText('このブラウザはライブ視聴（HLS）に対応していません'),
       ).toBeInTheDocument()
       expect(document.querySelector('video')!.src).toBe('')
+    })
+
+    it('hls.js 経路では stalled を拾わない（MSE のバッファ制御で正常時にも出るため）', async () => {
+      // ネイティブ経路のメディア監視を hls.js 経路にも張ると、正常な再生中の
+      // バッファ待ちを「途絶えた」と誤検知する。**張らないこと**を固定する
+      // （変異: `watchNativeMedia(video)` を hls.js 分岐にも足すとこのテストが落ちる）
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
+      render(<LivePlayer site="default" serviceId={1024} />)
+
+      await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+      const video = document.querySelector('video')!
+
+      await act(async () => {
+        video.dispatchEvent(new Event('stalled'))
+        vi.advanceTimersByTime(nativeStallTimeoutMs * 2)
+      })
+
+      expect(screen.queryByText(/映像データが途絶えました/)).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: '再読み込み' })).not.toBeInTheDocument()
     })
 
     it('serviceId が変わると古い hls インスタンスが destroy され、新しいインスタンスが作られる', async () => {

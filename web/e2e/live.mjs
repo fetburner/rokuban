@@ -176,6 +176,16 @@ async function mockLiveRoutes(page, mode) {
   })
 
   await page.route('**/live/segments/*', async (route) => {
+    // mode.segments でメディア層だけを壊せる（⑦。プレイリストは 200 のまま
+    // なので probe は通り、失敗はメディア層にしか現れない）
+    if (mode.segments === '404') {
+      await route.fulfill({ status: 404, contentType: 'text/plain', body: 'not found' })
+      return
+    }
+    if (mode.segments === 'hang') {
+      // 応答しない。WebKit は 3 秒データが来ないと `stalled` を出す（HTML 仕様）
+      return
+    }
     const u = new URL(route.request().url())
     const name = u.pathname.split('/').pop()
     const file = path.join(SEGMENTS_DIR, name)
@@ -446,6 +456,14 @@ if (hasFixture) {
       log(`  videoWidth: ${after.w}, readyState: ${after.r}`)
       if (!(after.t > before)) ng.push('⑥ WebKit で 3 秒待っても currentTime が進まない')
       if (!(after.w > 0)) ng.push('⑥ WebKit で videoWidth が 0（映像がデコードされていない）')
+
+      // **ネイティブ経路のチャンネル切替はここでは判定しない。** 一度足して
+      // みたが、どう壊しても落ちなかったので外した（落ちない判定は何も判定して
+      // いない。CLAUDE.md「テスト規律」）。理由は測って分かった --- 切替時は
+      // 同じ `<video>` に新しい `src` が入るので、それ自体が旧チャンネルの
+      // メディア資源を破棄する。cleanup の `removeAttribute('src')` を
+      // 無効化しても旧チャンネルへの要求は 0 件のままだった（cleanup が効くのは
+      // 画面を離れるときで、それはドキュメントごと消えるので測れない）
     } catch (err) {
       ng.push(`⑥ WebKit の実再生の検証中に例外が発生した: ${err.message}`)
     }
@@ -453,6 +471,62 @@ if (hasFixture) {
     ng.push(`⑥ の検証中に例外が発生した: ${err.message}`)
   } finally {
     await webkitBrowser.close()
+  }
+}
+
+if (hasFixture) {
+  // --- ⑦ ネイティブ経路で「probe は 200 だがメディアが死んでいる」ときの失敗表面 ---
+  //
+  // probe（`fetch` によるプレイリストの事前取得）は HTTP 層しか見ないので、
+  // プレイリストが 200 でセグメントが壊れている状況は素通りする。ここを
+  // `<video>` のイベントで拾えていないと、**永久に止まった黒いプレイヤー**に
+  // なる（文言も読み込み表示も再読み込みボタンも出ない）。レビュー #190 の
+  // 3 回目の指摘で実測された症状そのものを判定にする。
+  //
+  // 2 通り試すのは、実測で**壊れ方によって出るイベントが違った**ため:
+  //   404  → `error` が出る（`video.error` は code 3）
+  //   応答なし → `error` は出ず `stalled` だけが出る（3.6 秒後）
+  // 片方だけ見ると、もう片方を落とす実装変更を通してしまう
+  log('\n=== ⑦ ネイティブ経路のメディア失敗（WebKit） ===')
+  for (const [label, segments, timeout] of [
+    ['セグメントが 404', '404', 20000],
+    ['セグメントが応答しない', 'hang', 30000],
+  ]) {
+    const browser = await webkit.launch()
+    try {
+      const page = await browser.newPage({ viewport: { width: 960, height: 640 } })
+      await mockLiveRoutes(page, { playlist: 'ok', segments })
+      await page.goto(`${BASE_URL}/live?serviceId=${SERVICE_A}`, { waitUntil: 'domcontentloaded' })
+
+      let shown = false
+      try {
+        await page.getByText('ライブ視聴でエラーが発生しました。').waitFor({ timeout })
+        await page.getByRole('button', { name: '再読み込み' }).waitFor({ timeout: 5000 })
+        shown = true
+      } catch {
+        shown = false
+      }
+      const detail = await page.evaluate(() => {
+        const v = document.querySelector('video')
+        return {
+          text: document.body.innerText.replace(/\s+/g, ' ').slice(0, 160),
+          readyState: v?.readyState ?? -1,
+          err: v?.error ? v.error.code : null,
+        }
+      })
+      log(`  ${label}: エラー表示 + 再読み込み = ${shown ? 'YES' : 'NO'}`)
+      log(`    readyState=${detail.readyState} video.error=${detail.err}`)
+      if (!shown) {
+        ng.push(
+          `⑦ ${label}のとき、エラー表示も再読み込みボタンも出ない` +
+            `（永久に止まった黒いプレイヤーになる）。画面のテキスト: ${detail.text}`,
+        )
+      }
+    } catch (err) {
+      ng.push(`⑦ ${label}の検証中に例外が発生した: ${err.message}`)
+    } finally {
+      await browser.close()
+    }
   }
 }
 

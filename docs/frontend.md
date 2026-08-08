@@ -924,6 +924,33 @@ hls.js へ URL を渡す前に 1 回取得して成否を確認する。この G
 要求と同じ経路（streamer のアプリ配信）を通るので、idle GC の last-access 更新にも
 自然に乗る。
 
+**probe は HTTP 層しか見ないので、メディア層の失敗は `<video>` のイベントで拾う
+（`watchNativeMedia`。ネイティブ経路のみ）。** プレイリストが 200 で返ってもセグメントが
+壊れていれば再生は始まらない。ここを聴かないと**永久に止まった黒いプレイヤー**に
+なる（文言も読み込み表示も再読み込みボタンも出ない）--- レビュー #190 の 3 回目の
+指摘で、WebKit で実測された症状である。聴く種類は同じ実測から決めた（プレイリスト
+200 のまま、セグメントだけを 3 通りに壊して WebKit で観測）:
+
+| 壊し方 | `<video>` が出すもの | `video.error` |
+|---|---|---|
+| セグメントが 404 | `error`（再生中なら `waiting` も） | code 3 `Media failed to decode` |
+| セグメントが応答しない | `progress` → `stalled`（3.6 秒後） | null |
+| プレイリストの中身が壊れている | `progress` → `stalled`（3.6 秒後） | null |
+
+したがって **`error` だけでは足りない**（下 2 つは `error` を出さない）。一方
+`stalled` / `waiting` を即座に失敗と見なすのも誤りで、正常なライブでもバッファ枯れで
+出る。**`error` は即時、`stalled` / `waiting` は `nativeStallTimeoutMs`（12 秒。
+`stalled` が出るのが途絶から 3 秒後、セグメント長が 2 秒なので、正常なら 3 セグメント
+以上落ちないと到達しない）の猶予つき**にし、猶予中に `playing` / `canplay` /
+`timeupdate` が来たら回復と見なして捨てる。hls.js 経路には張らない（`Hls.Events.ERROR`
+が同じ役目を持ち、MSE のバッファ制御で `waiting` が正常に何度も出るため誤検知になる）。
+
+判定手段: `live-player.test.tsx` の「ネイティブ経路のメディア失敗」3 件（`error` で出る /
+猶予経過で出る / 猶予中の `playing` で出さない）と「hls.js 経路では stalled を拾わない」
+1 件、`web/e2e/live.mjs` ⑦（実 WebKit。404 と無応答の両方でエラー表示 + 再読み込みが
+出ること）。**覆えているのは probe 通過後のメディア層だけで、HTTP 層（streamer 不在 /
+503 / プレイリスト 404）は従来どおり probe 側が押さえている。**
+
 **エラーは 3 種に分類する（`classifyLiveLoadError`）。**
 
 - `unreachable`（`fetch` 自体が reject）: streamer に到達できない。ハイブリッド
@@ -1001,7 +1028,7 @@ prop の変化）を effect の cleanup で検知し、probe の in-flight `fetc
 実ブラウザ・実 hls.js による確認を行った。** mirakc も実チューナーも要らない ---
 HLS プレイリスト/セグメントは Playwright の `page.route` でブラウザ側から
 差し替え、streamer は「サービス一覧を返す」以外の実仕事をしない。判定した
-6 点（すべて合格を確認済み）:
+7 点（すべて合格を確認済み）:
 
 1. hls.js の動的 import チャンク（`assets/hls-*.js`）が実際に要求される
 2. MSE がアタッチされる（`video.currentSrc` が `blob:` になる。`src` だけを見ると
@@ -1019,6 +1046,9 @@ HLS プレイリスト/セグメントは Playwright の `page.route` でブラ�
 6. **WebKit（Safari 相当）でネイティブ HLS 経路に入る**: `assets/hls-*.js` を
    読み込まない・`<video>` に m3u8 の URL がそのまま渡る・そのまま再生が進む
    （実測: `currentTime` 0.00 → 2.83、`videoWidth` 640、`readyState` 4）
+7. **ネイティブ経路のメディア失敗が画面に出る**（WebKit）: プレイリストは 200 だが
+   セグメントが 404 / 無応答のとき、エラー表示と `再読み込み` が出る（上記
+   `watchNativeMedia`。壊れ方で出るイベントが違うので 2 通りとも見る）
 
 **この手段が本番相当の回帰を 2 件発見した。うち 1 件は、最初の修正そのものが
 生んだものだった。**

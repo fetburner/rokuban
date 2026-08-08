@@ -91,7 +91,7 @@ E2E_LIVE_SERVICE_A=9001 E2E_LIVE_SERVICE_B=9002 node web/e2e/live.mjs
 pnpm exec playwright install chromium webkit
 ```
 
-判定する 6 点（詳細はスクリプト冒頭のコメント）:
+判定する 7 点（詳細はスクリプト冒頭のコメント）:
 
 1. hls.js の動的 import チャンク（`assets/hls-*.js`）が実際に要求される
 2. MSE がアタッチされる（`video.currentSrc` が `blob:` になる。`src` は
@@ -106,6 +106,11 @@ pnpm exec playwright install chromium webkit
    **読み込まない**・`<video>` に m3u8 の URL がそのまま渡る・そのまま再生が
    進む（`currentTime` が進み `videoWidth > 0`。WebKit は `<video>` が MPEG-2 TS
    を demux できる唯一のエンジンなので、フィクスチャをネイティブに再生できる）
+7. **ネイティブ経路のメディア失敗が画面に出る**（WebKit）: プレイリストは 200 だが
+   セグメントが 404 / 無応答のとき、エラー表示と `再読み込み` ボタンが出る。
+   probe は HTTP 層しか見ないので、ここを `<video>` のイベントで拾えていないと
+   **永久に止まった黒いプレイヤー**になる。壊れ方で出るイベントが違う
+   （404 は `error`、無応答は `stalled` のみ）ので 2 通りとも見る
 
 初回実行は ffmpeg で固定フィクスチャ（testsrc + sine を H.264/AAC でエンコード
 した 40 秒ぶん）を生成し `os.tmpdir()` にキャッシュする（`E2E_LIVE_REBUILD_FIXTURE=1`

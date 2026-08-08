@@ -24,6 +24,21 @@ type LivePlayerProps = {
 }
 
 /**
+ * nativeStallTimeoutMs はネイティブ HLS 経路で「止まったまま」と見なすまでの猶予
+ * （テストから参照するので export する）。
+ *
+ * `stalled` / `waiting` が来ただけでは失敗ではない --- ライブ配信は正常時にも
+ * バッファ枯れで一時的に止まる。この猶予の間に `playing` / `canplay` /
+ * `timeupdate` のいずれかが来れば回復と見なしてタイマーを捨てる。
+ *
+ * 12 秒にしたのは、WebKit が `stalled` を出すのがデータ途絶から 3 秒後
+ * （HTML 仕様の「3 秒以上データが来ない」規定。実測でも 3.6 秒）で、
+ * streamer 側のセグメント長が 2 秒（`internal/streamer/live.go` の
+ * `-hls_time 2`）だから --- 正常なら 3 セグメント以上落ちないと到達しない。
+ */
+export const nativeStallTimeoutMs = 12_000
+
+/**
  * LivePlayer はライブ視聴の HLS プレイリストを再生する（M4-4）。
  *
  * 再生に先立ち `probeLivePlaylist` で 1 回プレイリストを取得し、成功したときだけ
@@ -61,6 +76,79 @@ export function LivePlayer({ site, serviceId, className }: LivePlayerProps) {
 
     const url = livePlaylistURL(site, serviceId)
 
+    // teardown はこの effect が張ったものを外す手続き（メディアイベントの
+    // リスナと stall 監視のタイマー）。cleanup から呼ぶ
+    const teardown: Array<() => void> = []
+
+    /**
+     * watchNativeMedia はネイティブ HLS 経路の失敗を表面化する。
+     *
+     * **probe が通ってもメディア層は死にうる**（プレイリストは 200 で返るが
+     * セグメントが 404 / 応答しない / 中身が壊れている）。probe は HTTP 層しか
+     * 見ないので、ここを聴かないと**永久に止まった黒いプレイヤー**になる ---
+     * 文言も読み込み表示も再読み込みボタンも出ない（レビュー #190 の 3 回目の
+     * 指摘。WebKit で実測された症状）。
+     *
+     * 聴く 2 種は WebKit での実測に基づく（`E2E_URL` のスタブに対して
+     * プレイリスト 200 + セグメント 404 / 応答しない / 壊れた中身の 3 通り）:
+     *
+     * | 壊し方 | 出るもの | `video.error` |
+     * |---|---|---|
+     * | セグメント 404 | `error`（+ 再生中なら `waiting`） | code 3 `Media failed to decode` |
+     * | セグメントが応答しない | `progress` → `stalled`（3.6 秒後） | null |
+     * | プレイリストの中身が壊れている | `progress` → `stalled`（3.6 秒後） | null |
+     *
+     * **`error` だけでは足りない**（下 2 つは error を出さない）し、`stalled` /
+     * `waiting` を即座に失敗と見なすのも誤り（正常なライブでも一時的に出る）。
+     * だから `error` は即時、`stalled` / `waiting` は
+     * `nativeStallTimeoutMs` の猶予つきにする。
+     *
+     * hls.js 経路には張らない --- あちらは `Hls.Events.ERROR` が同じ役目を持ち、
+     * MSE のバッファ制御で `waiting` が正常に何度も出るので、ここで拾うと
+     * 誤検知になる。
+     */
+    function watchNativeMedia(media: HTMLVideoElement) {
+      let stallTimer: ReturnType<typeof setTimeout> | null = null
+      const clearStallTimer = () => {
+        if (stallTimer !== null) {
+          clearTimeout(stallTimer)
+          stallTimer = null
+        }
+      }
+      const failed = (message: string) => {
+        if (cancelled) return
+        clearStallTimer()
+        setError({ kind: 'other', status: 0, message })
+        setLoading(false)
+      }
+      const onError = () =>
+        failed('ライブ映像を再生できませんでした（映像データを読み込めません）')
+      const onStall = () => {
+        if (cancelled || stallTimer !== null) return
+        stallTimer = setTimeout(
+          () => failed('ライブ映像が届いていません（映像データが途絶えました）'),
+          nativeStallTimeoutMs,
+        )
+      }
+      const onProgress = () => clearStallTimer()
+
+      media.addEventListener('error', onError)
+      media.addEventListener('stalled', onStall)
+      media.addEventListener('waiting', onStall)
+      media.addEventListener('playing', onProgress)
+      media.addEventListener('canplay', onProgress)
+      media.addEventListener('timeupdate', onProgress)
+      teardown.push(() => {
+        clearStallTimer()
+        media.removeEventListener('error', onError)
+        media.removeEventListener('stalled', onStall)
+        media.removeEventListener('waiting', onStall)
+        media.removeEventListener('playing', onProgress)
+        media.removeEventListener('canplay', onProgress)
+        media.removeEventListener('timeupdate', onProgress)
+      })
+    }
+
     async function start() {
       let probe: Awaited<ReturnType<typeof probeLivePlaylist>>
       try {
@@ -92,6 +180,8 @@ export function LivePlayer({ site, serviceId, className }: LivePlayerProps) {
       //   3. どちらも駄目だが `<video>` が m3u8 に支持を表明する → ネイティブへ
       //      最後の望みを託す（`lib/live.ts` の `claimsHlsPlaylistSupport`）
       if (supportsNativeHls(canPlayType)) {
+        // src を入れる前に張る（入れた後だと、失敗が速いときに取り逃がす）
+        watchNativeMedia(video)
         video.src = url
       } else {
         const { default: Hls } = await import('hls.js')
@@ -99,10 +189,13 @@ export function LivePlayer({ site, serviceId, className }: LivePlayerProps) {
         if (!Hls.isSupported()) {
           // MSE も ManagedMediaSource も無い（iOS 17.1 未満の iPhone Safari が
           // これに当たる）。hls.js では原理的に再生できないので、`<video>` 自身が
-          // m3u8 に支持を表明しているならそちらへ渡す --- 駄目でも `<video>` の
-          // error イベントに落ちるだけで、失うものは無い。ここを「非対応」と
-          // 断じると、ネイティブなら完璧に再生できる端末を締め出す
+          // m3u8 に支持を表明しているならそちらへ渡す。ここを「非対応」と断じると、
+          // ネイティブなら完璧に再生できる端末を締め出す。**渡して駄目だった場合は
+          // `watchNativeMedia` が拾ってエラー表示 + 再読み込みを出す**
+          // （`live-player.test.tsx` の「ネイティブ経路のメディア失敗」3 件 /
+          // `web/e2e/live.mjs` ⑦）--- ここは 1 段目と同じ表面を持つ
           if (claimsHlsPlaylistSupport(canPlayType)) {
+            watchNativeMedia(video)
             video.src = url
             setLoading(false)
             return
@@ -137,6 +230,15 @@ export function LivePlayer({ site, serviceId, className }: LivePlayerProps) {
     return () => {
       cancelled = true
       controller.abort()
+      // メディアイベントのリスナと stall タイマーを外す。
+      //
+      // **実際に効いている防御は `failed()` の `cancelled` チェックの方である。**
+      // この行を `src` の解除より前に置いているのは「解除自体が出しうる `error` を
+      // 拾わないため」だが、**その効き目は測れていない** --- 順序を入れ替えても、
+      // さらに `cancelled` チェックを外しても、WebKit ではチャンネル切替で
+      // `error` が出ず判定に差が出なかった（`web/e2e/live.mjs` で実測）。
+      // 順序は無害な保険として残す。効くと分かっている主張ではない
+      for (const fn of teardown) fn()
       hlsRef.current?.destroy()
       hlsRef.current = null
       if (video) {
