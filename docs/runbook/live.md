@@ -30,14 +30,6 @@ docker compose exec rokuban rokuban server --roles all --config /config.yml
    確認できる人が実機で開いて、①再生できること ②開発者ツールで
    `assets/hls-*.js` を読み込んでいないこと（読み込んでいたらネイティブ分岐に
    入れていない）を見る
-3. **実配信で一時停止しても誤ってエラーにならないことを確認する（未実施）。**
-   ネイティブ経路は `stalled` / `waiting` が猶予（12 秒）を超えたら失敗と見なすが、
-   WebKit は**一時停止した瞬間にも `stalled` を出す**ので、一時停止中は失敗と
-   見なさないようにしてある（`live-player.tsx` の `watchNativeMedia`）。この挙動は
-   `web/e2e/live.mjs` のフィクスチャで確かめているが、**そのフィクスチャは
-   `-hls_list_size 0` 生成なので `#EXT-X-ENDLIST` を持つ VOD 形**であり、実配信の
-   ローリングウィンドウ（ENDLIST 無し）とは挙動が違いうる。実機で再生 →
-   一時停止 → 30 秒放置 → エラー画面が出ないこと、再開して再生が続くことを見る
 3. 別ターミナルでメトリクスを見る:
 
    ```sh
@@ -61,6 +53,18 @@ docker compose exec rokuban rokuban server --roles all --config /config.yml
    留まったチャンネルの前セッションは今までと同様 30〜45 秒残る ---
    デバウンスは「通り過ぎたチャンネル」を掴まないようにするだけの緩和であり、
    idle GC の遅延自体を無くすものではない
+6. **実配信で一時停止しても誤ってエラーにならないことを確認する（未実施）。**
+   ネイティブ経路は `stalled` / `waiting` が猶予（12 秒）を超えたら失敗と見なすが、
+   WebKit は**一時停止した瞬間にも `stalled` を出す**ので、一度でも再生が
+   始まった後の一時停止中は失敗と見なさないようにしてある
+   （`live-player.tsx` の `watchNativeMedia`）。**この抑止をブラウザ側で
+   機械判定する手段は無い** --- `web/e2e/live.mjs` は一時停止を一度も作らない。
+   実装側の分岐は `live-player.test.tsx`（jsdom）が、ブラウザが実際に
+   pause 時に `stalled` を出し再開時に `waiting` を再送することは
+   レビュー時の WebKit 手動測定が根拠で、**実配信では未確認**（e2e の
+   フィクスチャは `-hls_list_size 0` 生成の `#EXT-X-ENDLIST` を持つ VOD 形で、
+   実配信のローリングウィンドウとは挙動が違いうる）。実機で再生 →
+   一時停止 → 30 秒放置 → エラー画面が出ないこと、再開して再生が続くことを見る
 
 ### ② ブラウザ側の配線（mirakc 不要）
 

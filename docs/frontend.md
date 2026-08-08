@@ -942,13 +942,31 @@ hls.js へ URL を渡す前に 1 回取得して成否を確認する。この G
 出る。**`error` は即時、`stalled` / `waiting` は `nativeStallTimeoutMs`（12 秒。
 `stalled` が出るのが途絶から 3 秒後、セグメント長が 2 秒なので、正常なら 3 セグメント
 以上落ちないと到達しない）の猶予つき**にし、猶予中に `playing` / `canplay` /
-`timeupdate` が来たら回復と見なして捨てる。hls.js 経路には張らない（`Hls.Events.ERROR`
-が同じ役目を持ち、MSE のバッファ制御で `waiting` が正常に何度も出るため誤検知になる）。
+`timeupdate` / `pause` が来たら回復と見なして捨てる。hls.js 経路には張らない
+（`Hls.Events.ERROR` が同じ役目を持ち、MSE のバッファ制御で `waiting` が正常に
+何度も出るため誤検知になる）。
 
-判定手段: `live-player.test.tsx` の「ネイティブ経路のメディア失敗」3 件（`error` で出る /
-猶予経過で出る / 猶予中の `playing` で出さない）と「hls.js 経路では stalled を拾わない」
-1 件、`web/e2e/live.mjs` ⑦（実 WebKit。404 と無応答の両方でエラー表示 + 再読み込みが
-出ること）。**覆えているのは probe 通過後のメディア層だけで、HTTP 層（streamer 不在 /
+**一時停止中は猶予を張らない。ただし「一度でも再生が始まった後」に限る。** WebKit は
+`pause()` した瞬間にも `stalled` を出す（フェッチを止めるため）が配信は正常で、しかも
+解除イベントは一時停止中には来ないので、放置すると**正常な配信に必ずエラー画面が出て
+`<video>` が invisible になる**（実測: playing@0.0 → pause@2.3 → stalled@2.3 →
+12 秒後にエラー表示）。一方、抑止条件を `paused` だけにすると**まだ再生を押していない
+窓まで塞がる** --- `<video>` に `autoPlay` は無いので読み込み直後は常に
+`paused === true` であり、そこで無応答が起きると届くイベントは `paused=true` の
+`stalled` だけ（20 秒待っても error も waiting も来ない）で、猶予が一度も張られず
+永久に黒いままになる。そこで `playing` を一度でも観測したかを持ち、
+**`hasStarted && paused` のときだけ抑止する**。再開後に配信が死んだままなら
+`waiting` が再送されるので張り直される（実測: pause@6.05s → play@12.05s →
+waiting@12.05s）。
+
+判定手段: `live-player.test.tsx` の「ネイティブ経路のメディア失敗」6 件（`error` で
+出る / 猶予経過で出る / 猶予中の `playing` で出さない / 一時停止中の `stalled` で
+出さない / 猶予中の `pause` で出さない / **再生前**の `stalled` では出す /
+再開後に復帰していなければ再び出す）と「hls.js 経路では stalled を拾わない」1 件、
+`web/e2e/live.mjs` ⑦（実 WebKit。404 と無応答の両方でエラー表示 + 再読み込みが
+出ること。⑦は `play()` を呼ばないので、上の「再生前の窓を塞がない」ことも同時に
+見ている）。**一時停止の抑止そのものをブラウザで機械判定する手段は無い** ---
+e2e は一時停止を一度も作らないので、そこは jsdom のテストと手動測定が根拠である。**覆えているのは probe 通過後のメディア層だけで、HTTP 層（streamer 不在 /
 503 / プレイリスト 404）は従来どおり probe 側が押さえている。**
 
 **エラーは 3 種に分類する（`classifyLiveLoadError`）。**

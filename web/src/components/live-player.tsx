@@ -109,6 +109,15 @@ export function LivePlayer({ site, serviceId, className }: LivePlayerProps) {
      */
     function watchNativeMedia(media: HTMLVideoElement) {
       let stallTimer: ReturnType<typeof setTimeout> | null = null
+      // 一度でも再生が始まったか。**`paused` だけを抑止条件にすると「まだ再生を
+      // 押していない」状態まで飲み込む** --- `<video>` に `autoPlay` は無いので
+      // 読み込み直後は常に `paused === true` であり、そこで配信が死んでいると
+      // （プレイリストは 200 だがセグメントが無応答）唯一届くイベントが
+      // `paused=true` の `stalled` なので、猶予が一度も張られず**永久に黒いまま
+      // 何も出ない**（レビュー #190 の 5 回目の指摘。実 WebKit で
+      // loadstart→progress→stalled のあと 20 秒待っても他のイベントは来ない）。
+      // 抑止したいのは「再生していたユーザーが自分で止めた」場合だけである。
+      let hasStarted = false
       const clearStallTimer = () => {
         if (stallTimer !== null) {
           clearTimeout(stallTimer)
@@ -134,20 +143,26 @@ export function LivePlayer({ site, serviceId, className }: LivePlayerProps) {
         //
         // hls.js 経路にこの watcher を張らない理由（MSE は正常時にも `waiting` を
         // 頻繁に出す）と同じ危険が、ネイティブ経路の `stalled` で現実化したもの。
-        if (cancelled || media.paused || stallTimer !== null) return
+        if (cancelled || (hasStarted && media.paused) || stallTimer !== null) return
         stallTimer = setTimeout(
           () => failed('ライブ映像が届いていません（映像データが途絶えました）'),
           nativeStallTimeoutMs,
         )
       }
-      // `pause` も回復扱いにする（猶予の途中で一時停止された場合。再開後に配信が
-      // 本当に死んでいれば `stalled` / `waiting` が再び出て、そこで張り直される）
+      // `pause` も回復扱いにする（猶予の途中で一時停止された場合）。再開後に配信が
+      // 本当に死んでいれば `waiting` が再び出て、そこで張り直される --- 実 WebKit で
+      // 測った（再生中に stall → pause@6.05s → play@12.05s → waiting@12.05s）。
+      // 「張り直す」側は `再開後に配信が復帰していなければ再びエラーになる` が守る
       const onProgress = () => clearStallTimer()
+      const onPlaying = () => {
+        hasStarted = true
+        clearStallTimer()
+      }
 
       media.addEventListener('error', onError)
       media.addEventListener('stalled', onStall)
       media.addEventListener('waiting', onStall)
-      media.addEventListener('playing', onProgress)
+      media.addEventListener('playing', onPlaying)
       media.addEventListener('canplay', onProgress)
       media.addEventListener('timeupdate', onProgress)
       media.addEventListener('pause', onProgress)
@@ -156,7 +171,7 @@ export function LivePlayer({ site, serviceId, className }: LivePlayerProps) {
         media.removeEventListener('error', onError)
         media.removeEventListener('stalled', onStall)
         media.removeEventListener('waiting', onStall)
-        media.removeEventListener('playing', onProgress)
+        media.removeEventListener('playing', onPlaying)
         media.removeEventListener('canplay', onProgress)
         media.removeEventListener('timeupdate', onProgress)
         media.removeEventListener('pause', onProgress)

@@ -244,15 +244,40 @@ describe('LivePlayer の状態遷移', () => {
       // レビュー #190 の 4 回目の指摘（WebKit で実測）
       vi.useFakeTimers({ shouldAdvanceTime: true })
       const video = await renderNativePath()
-      Object.defineProperty(video, 'paused', { value: true, configurable: true })
 
       await act(async () => {
+        // 一度は再生が始まっている。**ここが要る** --- 抑止したいのは「再生して
+        // いたユーザーが自分で止めた」場合だけで、再生前の停止は抑止しない
+        video.dispatchEvent(new Event('playing'))
+        Object.defineProperty(video, 'paused', { value: true, configurable: true })
         video.dispatchEvent(new Event('stalled'))
         vi.advanceTimersByTime(nativeStallTimeoutMs * 2)
       })
 
       expect(screen.queryByText(/映像データが途絶えました/)).not.toBeInTheDocument()
       expect(screen.queryByRole('button', { name: '再読み込み' })).not.toBeInTheDocument()
+    })
+
+    it('再生前（まだ一度も再生していない）の stalled は猶予が過ぎたらエラーにする', async () => {
+      // `<video>` に autoPlay は無いので、読み込み直後は常に paused === true。
+      // 抑止条件を `paused` だけにすると**ここが塞がる** --- プレイリストは 200 だが
+      // セグメントが無応答のとき、実 WebKit で届くイベントは
+      // loadstart → progress → `paused=true` の stalled だけで、20 秒待っても
+      // error も waiting も来ない。つまり猶予が一度も張られず永久に黒いままになる。
+      // これは `web/e2e/live.mjs` ⑦（無応答側）が見ている条件そのもの ---
+      // ⑦は play() を呼ばないため、この退行は e2e でも NG になる。
+      // レビュー #190 の 5 回目の指摘（実 WebKit で測定）
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      const video = await renderNativePath()
+      Object.defineProperty(video, 'paused', { value: true, configurable: true })
+
+      await act(async () => {
+        video.dispatchEvent(new Event('stalled'))
+        vi.advanceTimersByTime(nativeStallTimeoutMs)
+      })
+
+      expect(screen.getByText(/映像データが途絶えました/)).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: '再読み込み' })).toBeInTheDocument()
     })
 
     it('再生中に一時停止されると猶予が満了してもエラーにしない（猶予中に pause した場合）', async () => {
@@ -270,6 +295,33 @@ describe('LivePlayer の状態遷移', () => {
       })
 
       expect(screen.queryByText(/映像データが途絶えました/)).not.toBeInTheDocument()
+    })
+
+    it('再開後に配信が復帰していなければ再びエラーになる（一時停止で猶予を捨てた後の張り直し）', async () => {
+      // 上 2 つの抑止が「以後ずっと検出しない」に化けていないことを見る。
+      // ブラウザ側が再開時に `waiting` を再送することは実 WebKit で測った
+      // （stall 中に pause@6.05s → play@12.05s → waiting@12.05s）
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      const video = await renderNativePath()
+
+      await act(async () => {
+        video.dispatchEvent(new Event('playing'))
+        video.dispatchEvent(new Event('stalled'))
+        Object.defineProperty(video, 'paused', { value: true, configurable: true })
+        video.dispatchEvent(new Event('pause'))
+        vi.advanceTimersByTime(nativeStallTimeoutMs * 2)
+      })
+      expect(screen.queryByText(/映像データが途絶えました/)).not.toBeInTheDocument()
+
+      await act(async () => {
+        // ユーザーが再開した。配信は死んだままなので再び waiting が来る
+        Object.defineProperty(video, 'paused', { value: false, configurable: true })
+        video.dispatchEvent(new Event('play'))
+        video.dispatchEvent(new Event('waiting'))
+        vi.advanceTimersByTime(nativeStallTimeoutMs)
+      })
+
+      expect(screen.getByText(/映像データが途絶えました/)).toBeInTheDocument()
     })
 
     it('猶予中に playing が来れば回復と見なしてエラーにしない（逆向き）', async () => {
