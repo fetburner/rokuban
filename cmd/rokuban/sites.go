@@ -134,8 +134,9 @@ func validateSiteBinding(roles []string, bound []config.MirakcSite, queues []str
 		if len(bound) == 0 && worker.RequiresSiteBinding(queues) {
 			return fmt.Errorf("--sites: worker role is unbound (central process) but worker.queues %v "+
 				"still includes site-bound queues (or is empty, meaning all queues); "+
-				"restrict worker.queues to site-independent queues (encode/thumbnail/catalog_export/"+
-				"delete_reconcile) or bind to exactly one site with --sites", queues)
+				"restrict worker.queues to site-independent queues (encode/thumbnail/default --- "+
+				"catalog_export and delete_reconcile ride the default queue) or bind to exactly one "+
+				"site with --sites", queues)
 		}
 	}
 	return nil

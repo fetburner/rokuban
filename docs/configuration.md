@@ -222,7 +222,7 @@ log:
 - 未指定でレジストリが 1 要素ならその 1 つに束縛する。未指定でレジストリが 2 要素以上なら起動エラー（暗黙に「全部」にしない）
 - `--sites=`（明示的な空）は束縛なし = 中央プロセス
 - `--sites tokyo` は tokyo に束縛する。`--sites tokyo,tokyo` のような重複は 1 つに畳む（束縛数の判定が紛らわしいエラーにならないようにするため）
-- `watcher` ロールは 1 プロセス 1 サイトのループしか持たないため、束縛サイト数がちょうど 1 でなければ起動エラーになる。`worker` ロールは今のところ site 単位の仕事（ingest/epg/ruler/reconciler/watcher キュー）と site 非依存の仕事（encode/thumbnail/catalog_export/delete_reconcile キュー）が同居しており（`worker.Deps.Site` / `worker.ClientConfig` の各 `*Site` フィールドがいずれも単一文字列のため）、2 サイト以上の束縛は起動エラーになる。**0 サイト（中央プロセス）の束縛は `worker.queues` を encode/thumbnail 等の site 非依存キューに絞ったときだけ許す** --- `worker.queues` が空（既定=全キュー）のまま、または ingest/epg/ruler/reconciler/watcher のいずれかを含んだまま 0 サイトで起動すると、届く site 単位のジョブが空文字列 site と一致せず全滅して再試行し続けるだけになるため起動エラーにする。**1 プロセスが N サイトの watcher / worker のループを回す形は書き手がまだいないので決めない**（不変条件 11）
+- `watcher` ロールは 1 プロセス 1 サイトのループしか持たないため、束縛サイト数がちょうど 1 でなければ起動エラーになる。`worker` ロールは今のところ site 単位の仕事（ingest/epg/ruler/reconciler/watcher キュー）と site 非依存の仕事（encode/thumbnail/default キュー。`catalog_export` / `delete_reconcile` はどちらもジョブ種別で、キューとしては `default` に乗る）が同居しており（`worker.Deps.Site` / `worker.ClientConfig` の各 `*Site` フィールドがいずれも単一文字列のため）、2 サイト以上の束縛は起動エラーになる。**0 サイト（中央プロセス）の束縛は `worker.queues` を encode/thumbnail/default 等の site 非依存キューに絞ったときだけ許す** --- `worker.queues` が空（既定=全キュー）のまま、または ingest/epg/ruler/reconciler/watcher のいずれかを含んだまま 0 サイトで起動すると、届く site 単位のジョブが空文字列 site と一致せず全滅して再試行し続けるだけになるため起動エラーにする。**1 プロセスが N サイトの watcher / worker のループを回す形は書き手がまだいないので決めない**（不変条件 11）
 - `enqueue` サブコマンドは `--site` で投入先を選ぶ（未指定かつレジストリ 1 要素ならその 1 つ、2 要素以上なら必須）。M4-6 の CronJob がサイトごとに投入するため
 - `rescue` / `shadow-diff` は単一サイト用のまま。`mirakcs:` が 2 要素以上の構成では明示的なエラーで落ちる（多サイトでの意味論を決める書き手がまだいないため）
 
