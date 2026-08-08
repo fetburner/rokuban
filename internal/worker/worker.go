@@ -78,10 +78,16 @@ var pendingJobStates = []rivertype.JobState{
 // cleanup（delete_reconcile / catalog_export、river.QueueDefault → cleanup の
 // 移設が同じ問題を踏む）に適用する。
 //
-// **これは今回の移行そのものは救わない**: ByQueue はこれから作られる一意キーの
-// 形を変えるだけで、既にデプロイ前に入っている旧キューの行の unique_key は
-// 変わらない。旧キューの残骸を消す手順は docs/runbook/troubleshooting.md
-// 「site 単位のジョブが動かない（M4-13 デプロイ直後）」を参照。
+// **これは今回の移行そのものも救う。** 旧キューの行の unique_key は
+// 変わらない（kind + args から作られたまま）が、ByQueue: true の下で作られる
+// 新しい鍵は kind + args + queue から作られるので**別ハッシュになり衝突しない**。
+// レビューで 6 ジョブ種すべてについて実測した --- 旧形式の残骸がある状態でも
+// 新キューへの Insert は skipped=false で通る（対照として、旧形式の再 Insert は
+// skipped=true で dedup されるので、残骸が旧鍵を占有していること自体は確認済み）。
+//
+// したがって旧キューの残骸の掃除は**滞留メトリクスの衛生のためであって、
+// 再投入のブロック解除のためではない**。手順は docs/runbook/troubleshooting.md
+// 「M4-13 デプロイ直後、旧キューの残骸が `river_job` に残っている（issue #185）」を参照。
 //
 // ruler / encode / thumbnail は今回のキュー名変更の対象外（ruler は
 // site 非依存のまま "ruler" 固定、encode/thumbnail も変更していない）ので、
