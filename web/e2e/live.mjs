@@ -194,6 +194,10 @@ async function mockLiveRoutes(page, mode) {
       return
     }
     await new Promise((r) => setTimeout(r, segmentDelayMs))
+    // この `video/mp2t` は streamer の実装値の写し（`internal/streamer/live.go`）。
+    // フロントの再生経路判定（`lib/live.ts` の `supportsNativeHls`）がこの値に
+    // 依存しているが、**ここでモックしている以上、この e2e は Go 側が別の
+    // Content-Type に変わったことを検出できない**（Go 側にも同じ注意書きがある）
     await route.fulfill({ status: 200, contentType: 'video/mp2t', body: readFileSync(file) })
   })
 }

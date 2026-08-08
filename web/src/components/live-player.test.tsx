@@ -193,6 +193,10 @@ describe('LivePlayer の状態遷移', () => {
     )
     resolve(new Response('', { status: 200 }))
     await waitFor(() => expect(video.src).toContain('playlist.m3u8'))
+    // jsdom の `paused` は既定 true（再生が始まらないため）。ここで測りたいのは
+    // **再生中に配信が途絶えた**ときの挙動なので、明示的に「再生中」にしておく。
+    // 一時停止中の挙動は専用のテストが `true` に差し替えて確かめる
+    Object.defineProperty(video, 'paused', { value: false, configurable: true })
     return video
   }
 
@@ -230,6 +234,42 @@ describe('LivePlayer の状態遷移', () => {
 
       expect(screen.getByText(/映像データが途絶えました/)).toBeInTheDocument()
       expect(screen.getByRole('button', { name: '再読み込み' })).toBeInTheDocument()
+    })
+
+    it('一時停止中の stalled はエラーにしない（WebKit は pause した瞬間に stalled を出す）', async () => {
+      // WebKit は一時停止するとフェッチを止めるため `stalled` を出すが、配信は
+      // 正常なまま。解除イベント（playing / canplay / timeupdate）も来ないので、
+      // paused を見ないと猶予が必ず満了してエラー画面が出る --- しかも <video> が
+      // invisible になり、ユーザーが一時停止した映像そのものが隠れる。
+      // レビュー #190 の 4 回目の指摘（WebKit で実測）
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      const video = await renderNativePath()
+      Object.defineProperty(video, 'paused', { value: true, configurable: true })
+
+      await act(async () => {
+        video.dispatchEvent(new Event('stalled'))
+        vi.advanceTimersByTime(nativeStallTimeoutMs * 2)
+      })
+
+      expect(screen.queryByText(/映像データが途絶えました/)).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: '再読み込み' })).not.toBeInTheDocument()
+    })
+
+    it('再生中に一時停止されると猶予が満了してもエラーにしない（猶予中に pause した場合）', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      const video = await renderNativePath()
+
+      await act(async () => {
+        // 再生中に stall（ここでタイマーが張られる）
+        video.dispatchEvent(new Event('stalled'))
+        vi.advanceTimersByTime(nativeStallTimeoutMs / 2)
+        // 猶予の途中でユーザーが一時停止した
+        Object.defineProperty(video, 'paused', { value: true, configurable: true })
+        video.dispatchEvent(new Event('pause'))
+        vi.advanceTimersByTime(nativeStallTimeoutMs * 2)
+      })
+
+      expect(screen.queryByText(/映像データが途絶えました/)).not.toBeInTheDocument()
     })
 
     it('猶予中に playing が来れば回復と見なしてエラーにしない（逆向き）', async () => {

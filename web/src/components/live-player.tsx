@@ -124,12 +124,24 @@ export function LivePlayer({ site, serviceId, className }: LivePlayerProps) {
       const onError = () =>
         failed('ライブ映像を再生できませんでした（映像データを読み込めません）')
       const onStall = () => {
-        if (cancelled || stallTimer !== null) return
+        // **一時停止中の stall は失敗ではない。** WebKit は pause した瞬間に
+        // `stalled` を出す（フェッチを止めるため）が、配信は正常なまま。しかも
+        // 解除イベント（playing / canplay / timeupdate）は一時停止中には来ないので、
+        // ここを見ないと猶予が必ず満了して**正常な配信にエラー画面が出る** ---
+        // さらに `<video>` が invisible になり、ユーザーが一時停止した映像そのものが
+        // 隠れる（レビュー #190 の 4 回目の指摘。WebKit で実測:
+        // playing@0.0 → pause@2.3 → stalled@2.3 → 12 秒後にエラー表示）。
+        //
+        // hls.js 経路にこの watcher を張らない理由（MSE は正常時にも `waiting` を
+        // 頻繁に出す）と同じ危険が、ネイティブ経路の `stalled` で現実化したもの。
+        if (cancelled || media.paused || stallTimer !== null) return
         stallTimer = setTimeout(
           () => failed('ライブ映像が届いていません（映像データが途絶えました）'),
           nativeStallTimeoutMs,
         )
       }
+      // `pause` も回復扱いにする（猶予の途中で一時停止された場合。再開後に配信が
+      // 本当に死んでいれば `stalled` / `waiting` が再び出て、そこで張り直される）
       const onProgress = () => clearStallTimer()
 
       media.addEventListener('error', onError)
@@ -138,6 +150,7 @@ export function LivePlayer({ site, serviceId, className }: LivePlayerProps) {
       media.addEventListener('playing', onProgress)
       media.addEventListener('canplay', onProgress)
       media.addEventListener('timeupdate', onProgress)
+      media.addEventListener('pause', onProgress)
       teardown.push(() => {
         clearStallTimer()
         media.removeEventListener('error', onError)
@@ -146,6 +159,7 @@ export function LivePlayer({ site, serviceId, className }: LivePlayerProps) {
         media.removeEventListener('playing', onProgress)
         media.removeEventListener('canplay', onProgress)
         media.removeEventListener('timeupdate', onProgress)
+        media.removeEventListener('pause', onProgress)
       })
     }
 
