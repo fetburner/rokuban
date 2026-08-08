@@ -165,12 +165,32 @@ func TestMultiSiteRegistry_HandlesAllRegisteredSites(t *testing.T) {
 		site           string
 		programID      string // pathで使う文字列
 		otherProgramID string // 取り違え検出用（自サイトに存在しないはずの id）
+		networkID      int    // insertProgramFixtureForSite に渡した値
+		otherNetworkID int    // 他サイトの networkID（取り違え検出用）
 	}{
-		{"tokyo", itoa(programIDTokyo), itoa(programIDOsaka)},
-		{"osaka", itoa(programIDOsaka), itoa(programIDTokyo)},
+		{"tokyo", itoa(programIDTokyo), itoa(programIDOsaka), 10001, 10002},
+		{"osaka", itoa(programIDOsaka), itoa(programIDTokyo), 10002, 10001},
 	}
 	for _, r := range registered {
 		t.Run("registered/"+r.site, func(t *testing.T) {
+			// GET .../services も自サイトの service だけを返す（site を取り違えると
+			// 他サイトの networkID が混ざる／自サイトの networkID が返らない）。
+			var services []api.Service
+			svcresp := getJSONForTest(t, srv.URL+"/api/sites/"+r.site+"/services", &services)
+			if svcresp.StatusCode != http.StatusOK {
+				t.Fatalf("GET .../services (site=%s) status = %d, want 200", r.site, svcresp.StatusCode)
+			}
+			networkIDs := make([]int, 0, len(services))
+			for _, s := range services {
+				networkIDs = append(networkIDs, s.NetworkId)
+			}
+			if !slices.Contains(networkIDs, r.networkID) {
+				t.Errorf("GET .../services (site=%s) = %v, want to contain networkId %d", r.site, networkIDs, r.networkID)
+			}
+			if slices.Contains(networkIDs, r.otherNetworkID) {
+				t.Errorf("GET .../services (site=%s) = %v, must not contain other site's networkId %d", r.site, networkIDs, r.otherNetworkID)
+			}
+
 			// GET .../programs は自サイトの programId だけを返す（他サイトの
 			// programId が混ざる／返らないことの両方を見る）。
 			var programs []api.ProgramListItem
