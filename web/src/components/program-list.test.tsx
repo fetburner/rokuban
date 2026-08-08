@@ -11,6 +11,7 @@ import {
   type ReservationActions,
 } from '@/components/program-list'
 import { formatDate } from '@/lib/format'
+import { SiteContext } from '@/lib/site'
 
 const dayStart = new Date(2026, 6, 25, 0, 0, 0, 0).getTime()
 
@@ -92,18 +93,20 @@ function renderList(
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={queryClient}>
-      <ProgramList
-        ref={extra.ref}
-        programs={programs}
-        serviceById={services}
-        actions={reservationActions}
-        onVisibleDayChange={extra.onVisibleDayChange}
-        now={extra.now}
-        hasPreviousPage={extra.hasPreviousPage ?? false}
-        isFetchingPreviousPage={extra.isFetchingPreviousPage ?? false}
-        previousDateLabel={extra.previousDateLabel ?? null}
-        onLoadPrevious={extra.onLoadPrevious ?? vi.fn()}
-      />
+      <SiteContext value="default">
+        <ProgramList
+          ref={extra.ref}
+          programs={programs}
+          serviceById={services}
+          actions={reservationActions}
+          onVisibleDayChange={extra.onVisibleDayChange}
+          now={extra.now}
+          hasPreviousPage={extra.hasPreviousPage ?? false}
+          isFetchingPreviousPage={extra.isFetchingPreviousPage ?? false}
+          previousDateLabel={extra.previousDateLabel ?? null}
+          onLoadPrevious={extra.onLoadPrevious ?? vi.fn()}
+        />
+      </SiteContext>
     </QueryClientProvider>,
   )
 }

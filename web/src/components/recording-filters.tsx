@@ -19,7 +19,7 @@ import {
   statusLabels,
   type RecordingsPageSearch,
 } from '@/lib/recording-search'
-import { DEFAULT_SITE } from '@/lib/site'
+import { useCurrentSite } from '@/lib/site'
 
 /** キーワード入力の debounce（ms）。1 文字ごとに URL を書き換えて履歴を汚さない。 */
 const KEYWORD_DEBOUNCE_MS = 300
@@ -41,7 +41,8 @@ export function RecordingFilters({
   search: RecordingsPageSearch
   onChange: Update
 }) {
-  const services = useListServices(DEFAULT_SITE)
+  const site = useCurrentSite()
+  const services = useListServices(site)
   const serviceList = useMemo(() => unwrap(services.data) ?? [], [services.data])
   const serviceById = useMemo(() => {
     const map = new Map<number, Service>()

@@ -63,7 +63,7 @@ func ensureProgramSnapshot(ctx context.Context, q *sqlcgen.Queries, site string,
 // 同一トランザクションで reservations を作らない
 // （#29 の決定: 作成の即時反映は UI の楽観更新で満たす）。
 func (h *Server) PutProgramIntent(ctx context.Context, req PutProgramIntentRequestObject) (PutProgramIntentResponseObject, error) {
-	if req.Site != h.site {
+	if !h.knownSite(req.Site) {
 		return PutProgramIntent400JSONResponse{Error: "unknown site"}, nil
 	}
 	if req.Body == nil {
@@ -101,7 +101,7 @@ func (h *Server) PutProgramIntent(ctx context.Context, req PutProgramIntentReque
 	}); err != nil {
 		return nil, fmt.Errorf("upserting program intent: %w", err)
 	}
-	if err := h.insertRulerPassHint(ctx, tx); err != nil {
+	if err := h.insertRulerPassHint(ctx, tx, req.Site); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -117,7 +117,7 @@ func (h *Server) PutProgramIntent(ctx context.Context, req PutProgramIntentReque
 // PUT .../intent {action: skip}。program_overrides には触れない（別軸）。
 // 行が無くても冪等に 204（DeleteRecording と同じ規律）。
 func (h *Server) DeleteProgramIntent(ctx context.Context, req DeleteProgramIntentRequestObject) (DeleteProgramIntentResponseObject, error) {
-	if req.Site != h.site {
+	if !h.knownSite(req.Site) {
 		return DeleteProgramIntent400JSONResponse{Error: "unknown site"}, nil
 	}
 
@@ -134,7 +134,7 @@ func (h *Server) DeleteProgramIntent(ctx context.Context, req DeleteProgramInten
 	}); err != nil {
 		return nil, fmt.Errorf("deleting program intent: %w", err)
 	}
-	if err := h.insertRulerPassHint(ctx, tx); err != nil {
+	if err := h.insertRulerPassHint(ctx, tx, req.Site); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {

@@ -842,6 +842,11 @@ type Recording struct {
 	ServiceId     int                       `json:"serviceId"`
 	ServiceName   string                    `json:"serviceName"`
 
+	// Site この録画がどのサイト（mirakc インスタンス）のものか。`recordings.site`
+	// そのまま。`GET /api/recordings` は全サイトの録画を返すため
+	// （issue #184 M4-12）、クライアントはこの値で区別する。
+	Site string `json:"site"`
+
 	// SizeBytes 原本の実サイズ。ingest 済み（media_assets 行あり）の場合のみ
 	SizeBytes *int64          `json:"sizeBytes,omitempty"`
 	Source    RecordingSource `json:"source"`
@@ -1234,6 +1239,9 @@ type ServerInterface interface {
 	// UpdateRule Update a recording rule
 	// (PATCH /api/rules/{id})
 	UpdateRule(w http.ResponseWriter, r *http.Request, id int64)
+	// ListSites List the mirakc sites this deployment knows about
+	// (GET /api/sites)
+	ListSites(w http.ResponseWriter, r *http.Request)
 	// ResumeCircuitBreaker Resume a tripped circuit breaker (manual acknowledgement)
 	// (POST /api/sites/{site}/breakers/{name}/resume)
 	ResumeCircuitBreaker(w http.ResponseWriter, r *http.Request, site Site, name string)
@@ -1372,6 +1380,12 @@ func (_ Unimplemented) GetRule(w http.ResponseWriter, r *http.Request, id int64)
 // UpdateRule Update a recording rule
 // (PATCH /api/rules/{id})
 func (_ Unimplemented) UpdateRule(w http.ResponseWriter, r *http.Request, id int64) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// ListSites List the mirakc sites this deployment knows about
+// (GET /api/sites)
+func (_ Unimplemented) ListSites(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -2027,6 +2041,20 @@ func (siw *ServerInterfaceWrapper) UpdateRule(w http.ResponseWriter, r *http.Req
 	handler.ServeHTTP(w, r)
 }
 
+// ListSites operation middleware
+func (siw *ServerInterfaceWrapper) ListSites(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListSites(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ResumeCircuitBreaker operation middleware
 func (siw *ServerInterfaceWrapper) ResumeCircuitBreaker(w http.ResponseWriter, r *http.Request) {
 
@@ -2586,6 +2614,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/api/version", wrapper.GetVersion)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/sites", wrapper.ListSites)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/api/encode-profiles", wrapper.ListEncodeProfiles)
@@ -3208,6 +3239,27 @@ func (response UpdateRule404JSONResponse) VisitUpdateRuleResponse(w http.Respons
 	return err
 }
 
+type ListSitesRequestObject struct {
+}
+
+type ListSitesResponseObject interface {
+	VisitListSitesResponse(w http.ResponseWriter) error
+}
+
+type ListSites200JSONResponse []string
+
+func (response ListSites200JSONResponse) VisitListSitesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type ResumeCircuitBreakerRequestObject struct {
 	Site Site   `json:"site"`
 	Name string `json:"name"`
@@ -3720,6 +3772,9 @@ type StrictServerInterface interface {
 	// UpdateRule Update a recording rule
 	// (PATCH /api/rules/{id})
 	UpdateRule(ctx context.Context, request UpdateRuleRequestObject) (UpdateRuleResponseObject, error)
+	// ListSites List the mirakc sites this deployment knows about
+	// (GET /api/sites)
+	ListSites(ctx context.Context, request ListSitesRequestObject) (ListSitesResponseObject, error)
 	// ResumeCircuitBreaker Resume a tripped circuit breaker (manual acknowledgement)
 	// (POST /api/sites/{site}/breakers/{name}/resume)
 	ResumeCircuitBreaker(ctx context.Context, request ResumeCircuitBreakerRequestObject) (ResumeCircuitBreakerResponseObject, error)
@@ -4220,6 +4275,30 @@ func (sh *strictHandler) UpdateRule(w http.ResponseWriter, r *http.Request, id i
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(UpdateRuleResponseObject); ok {
 		if err := validResponse.VisitUpdateRuleResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListSites operation middleware
+func (sh *strictHandler) ListSites(w http.ResponseWriter, r *http.Request) {
+	var request ListSitesRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListSites(ctx, request.(ListSitesRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListSites")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListSitesResponseObject); ok {
+		if err := validResponse.VisitListSitesResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

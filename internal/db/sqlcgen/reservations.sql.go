@@ -255,78 +255,6 @@ func (q *Queries) GetReservationFullBySiteAndProgramID(ctx context.Context, arg 
 	return i, err
 }
 
-const listReservationsBySite = `-- name: ListReservationsBySite :many
-SELECT r.id, r.site, r.program_id, r.rule_id, r.base, r.created_at, r.updated_at, r.dedup_match_recording_id, r.dedup_similarity, s.site, s.program_id, s.title, s.start_at, s.duration_ms, s.network_id, s.service_id, s.channel_type, s.channel, s.updated_at, s.event_id, s.service_name, i.action AS intent_action, o.overrides AS overrides,
-       EXISTS (
-           SELECT 1 FROM never_scheduled_events nse
-           WHERE nse.site = r.site
-             AND nse.network_id = s.network_id
-             AND nse.service_id = s.service_id
-             AND nse.event_id = s.event_id
-             AND nse.deleted_at IS NULL AND nse.superseded_at IS NULL
-       ) AS never_recorded
-FROM reservations r
-JOIN program_snapshots s ON s.site = r.site AND s.program_id = r.program_id
-LEFT JOIN program_intents i ON i.site = r.site AND i.program_id = r.program_id
-LEFT JOIN program_overrides o ON o.site = r.site AND o.program_id = r.program_id
-WHERE r.site = $1
-ORDER BY s.start_at
-`
-
-type ListReservationsBySiteRow struct {
-	Reservation     Reservation
-	ProgramSnapshot ProgramSnapshot
-	IntentAction    *string
-	Overrides       json.RawMessage
-	NeverRecorded   bool
-}
-
-// never_recorded は GetReservationFull と同じ導出（コメント参照）。
-func (q *Queries) ListReservationsBySite(ctx context.Context, site string) ([]ListReservationsBySiteRow, error) {
-	rows, err := q.db.Query(ctx, listReservationsBySite, site)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []ListReservationsBySiteRow
-	for rows.Next() {
-		var i ListReservationsBySiteRow
-		if err := rows.Scan(
-			&i.Reservation.ID,
-			&i.Reservation.Site,
-			&i.Reservation.ProgramID,
-			&i.Reservation.RuleID,
-			&i.Reservation.Base,
-			&i.Reservation.CreatedAt,
-			&i.Reservation.UpdatedAt,
-			&i.Reservation.DedupMatchRecordingID,
-			&i.Reservation.DedupSimilarity,
-			&i.ProgramSnapshot.Site,
-			&i.ProgramSnapshot.ProgramID,
-			&i.ProgramSnapshot.Title,
-			&i.ProgramSnapshot.StartAt,
-			&i.ProgramSnapshot.DurationMs,
-			&i.ProgramSnapshot.NetworkID,
-			&i.ProgramSnapshot.ServiceID,
-			&i.ProgramSnapshot.ChannelType,
-			&i.ProgramSnapshot.Channel,
-			&i.ProgramSnapshot.UpdatedAt,
-			&i.ProgramSnapshot.EventID,
-			&i.ProgramSnapshot.ServiceName,
-			&i.IntentAction,
-			&i.Overrides,
-			&i.NeverRecorded,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listReservationsForSyncEvaluation = `-- name: ListReservationsForSyncEvaluation :many
 SELECT r.id, r.site, r.program_id, r.rule_id, r.base, r.created_at, r.updated_at, r.dedup_match_recording_id, r.dedup_similarity, s.site, s.program_id, s.title, s.start_at, s.duration_ms, s.network_id, s.service_id, s.channel_type, s.channel, s.updated_at, s.event_id, s.service_name, i.action AS intent_action, o.overrides AS overrides
 FROM reservations r
@@ -444,6 +372,82 @@ func (q *Queries) ListReservationsForSyncEvaluation(ctx context.Context, site st
 			&i.ProgramSnapshot.ServiceName,
 			&i.IntentAction,
 			&i.Overrides,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listReservationsFull = `-- name: ListReservationsFull :many
+SELECT r.id, r.site, r.program_id, r.rule_id, r.base, r.created_at, r.updated_at, r.dedup_match_recording_id, r.dedup_similarity, s.site, s.program_id, s.title, s.start_at, s.duration_ms, s.network_id, s.service_id, s.channel_type, s.channel, s.updated_at, s.event_id, s.service_name, i.action AS intent_action, o.overrides AS overrides,
+       EXISTS (
+           SELECT 1 FROM never_scheduled_events nse
+           WHERE nse.site = r.site
+             AND nse.network_id = s.network_id
+             AND nse.service_id = s.service_id
+             AND nse.event_id = s.event_id
+             AND nse.deleted_at IS NULL AND nse.superseded_at IS NULL
+       ) AS never_recorded
+FROM reservations r
+JOIN program_snapshots s ON s.site = r.site AND s.program_id = r.program_id
+LEFT JOIN program_intents i ON i.site = r.site AND i.program_id = r.program_id
+LEFT JOIN program_overrides o ON o.site = r.site AND o.program_id = r.program_id
+ORDER BY r.site, s.start_at
+`
+
+type ListReservationsFullRow struct {
+	Reservation     Reservation
+	ProgramSnapshot ProgramSnapshot
+	IntentAction    *string
+	Overrides       json.RawMessage
+	NeverRecorded   bool
+}
+
+// never_recorded は GetReservationFull と同じ導出（コメント参照）。
+//
+// GET /api/reservations は全サイトを返す（issue #184 M4-12。api は不変条件 1 に
+// より site に束縛されないため、site 絞り込みは持たない）。並び順は site をまず
+// 揃えて start_at にする --- site 単体の ORDER BY start_at だと複数サイトの行が
+// 入り交じり、同一サイト内の時系列を読み取りにくい。
+func (q *Queries) ListReservationsFull(ctx context.Context) ([]ListReservationsFullRow, error) {
+	rows, err := q.db.Query(ctx, listReservationsFull)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListReservationsFullRow
+	for rows.Next() {
+		var i ListReservationsFullRow
+		if err := rows.Scan(
+			&i.Reservation.ID,
+			&i.Reservation.Site,
+			&i.Reservation.ProgramID,
+			&i.Reservation.RuleID,
+			&i.Reservation.Base,
+			&i.Reservation.CreatedAt,
+			&i.Reservation.UpdatedAt,
+			&i.Reservation.DedupMatchRecordingID,
+			&i.Reservation.DedupSimilarity,
+			&i.ProgramSnapshot.Site,
+			&i.ProgramSnapshot.ProgramID,
+			&i.ProgramSnapshot.Title,
+			&i.ProgramSnapshot.StartAt,
+			&i.ProgramSnapshot.DurationMs,
+			&i.ProgramSnapshot.NetworkID,
+			&i.ProgramSnapshot.ServiceID,
+			&i.ProgramSnapshot.ChannelType,
+			&i.ProgramSnapshot.Channel,
+			&i.ProgramSnapshot.UpdatedAt,
+			&i.ProgramSnapshot.EventID,
+			&i.ProgramSnapshot.ServiceName,
+			&i.IntentAction,
+			&i.Overrides,
+			&i.NeverRecorded,
 		); err != nil {
 			return nil, err
 		}

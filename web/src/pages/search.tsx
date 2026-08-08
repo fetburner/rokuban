@@ -24,7 +24,7 @@ import { useToast } from '@/components/toaster'
 import { Button } from '@/components/ui/button'
 import { Field, Input } from '@/components/ui/field'
 import { formatDateTime, formatDuration } from '@/lib/format'
-import { DEFAULT_SITE } from '@/lib/site'
+import { useCurrentSite } from '@/lib/site'
 import { cn } from '@/lib/utils'
 import {
   buildRuleInput,
@@ -68,9 +68,10 @@ const pageSize = 30
  * 結果は表示のみ（予約操作を持たない）。理由は下の `SearchResultRow` を参照。
  */
 export function SearchPage() {
+  const site = useCurrentSite()
   const [draft, setDraft] = useState<SearchDraft>(emptyDraft)
   const [visibleCount, setVisibleCount] = useState(pageSize)
-  const services = useListServices(DEFAULT_SITE)
+  const services = useListServices(site)
   const search = useSearchPrograms()
 
   const routeSearch = useRouteSearch({ from: '/search' })
@@ -109,7 +110,11 @@ export function SearchPage() {
     const nextDraft = ruleToDraft(sourceRule)
     setDraft(nextDraft)
     setVisibleCount(pageSize)
-    searchRef.current.mutate({ site: DEFAULT_SITE, data: buildSearchRequest(nextDraft) })
+    searchRef.current.mutate({ site, data: buildSearchRequest(nextDraft) })
+    // site は SiteGate が解決した後は再マウントまで変わらない。ruleId /
+    // sourceRule だけを見るガード（上記コメント）が効くよう依存には入れず、
+    // ESLint 警告を消すためだけに include するのは避ける。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ruleId, sourceRule])
 
   const error = draftError(draft)
@@ -119,7 +124,7 @@ export function SearchPage() {
   const submit = () => {
     if (error !== undefined) return
     setVisibleCount(pageSize)
-    search.mutate({ site: DEFAULT_SITE, data: buildSearchRequest(draft) })
+    search.mutate({ site, data: buildSearchRequest(draft) })
   }
 
   const ids = unwrap(search.data) ?? []
@@ -745,8 +750,9 @@ function SearchResultList({
   ids: number[]
   serviceById: Map<number, Service>
 }) {
+  const site = useCurrentSite()
   const details = useQueries({
-    queries: ids.map((id) => getGetProgramQueryOptions(DEFAULT_SITE, id)),
+    queries: ids.map((id) => getGetProgramQueryOptions(site, id)),
   })
 
   return (

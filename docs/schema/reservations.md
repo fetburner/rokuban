@@ -58,7 +58,7 @@ CREATE INDEX ON reservations (rule_id);
 
 ### active / detached / orphaned は API が都度導出する（Phase 1。#28 / #30）
 
-`state` という列はもう存在しない。予約の状態は API 層（`internal/api/handler.go` の `reservationState`）が読むたびに計算して返すが、issue #98 で材料が変わった: `active` / `detached` は引き続き `(rule_id, base)` から、`orphaned` は `orphaned_at` 列（Phase 1）ではなく **「この予約の放送イベントに、生きている `recording.never-scheduled` の `recordings` 行が存在するか」という EXISTS 判定**（`GetReservationFull` / `ListReservationsBySite` の `never_recorded` 列）から導出する。予約 id ではなく放送イベント `(site, network_id, service_id, event_id)` で結合するのは、`reservations.id` が ruler の導出削除・再実体化で変わる不安定な値だから（不変条件 9 の identity。`internal/db/queries/reservations.sql:40-52` のコメントが権威）。
+`state` という列はもう存在しない。予約の状態は API 層（`internal/api/handler.go` の `reservationState`）が読むたびに計算して返すが、issue #98 で材料が変わった: `active` / `detached` は引き続き `(rule_id, base)` から、`orphaned` は `orphaned_at` 列（Phase 1）ではなく **「この予約の放送イベントに、生きている `recording.never-scheduled` の `recordings` 行が存在するか」という EXISTS 判定**（`GetReservationFull` / `ListReservationsFull` の `never_recorded` 列）から導出する。予約 id ではなく放送イベント `(site, network_id, service_id, event_id)` で結合するのは、`reservations.id` が ruler の導出削除・再実体化で変わる不安定な値だから（不変条件 9 の identity。`internal/db/queries/reservations.sql:40-52` のコメントが権威）。
 
 | 値 | 意味 | 導出元 |
 |---|---|---|

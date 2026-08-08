@@ -4,7 +4,9 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { useGetProgramOverlaps, type ProgramOverlaps } from '@/api/generated'
 import { ProgramOverlapWarning } from '@/components/program-overlap-warning'
-import { DEFAULT_SITE } from '@/lib/site'
+
+/** testSite はこのテストが `ProgramOverlapWarning` に渡す site。 */
+const testSite = 'default'
 
 /**
  * Harness は ProgramOverlapWarning と同じクエリキーを共有する監視用の隣接要素
@@ -18,11 +20,11 @@ import { DEFAULT_SITE } from '@/lib/site'
  * クエリの決着（success/error）を待ってから不在を確認する。
  */
 function Harness({ programId }: { programId: number }) {
-  const query = useGetProgramOverlaps(DEFAULT_SITE, programId)
+  const query = useGetProgramOverlaps(testSite, programId)
   return (
     <>
       <div data-testid="query-status">{query.status}</div>
-      <ProgramOverlapWarning programId={programId} />
+      <ProgramOverlapWarning site={testSite} programId={programId} />
     </>
   )
 }
@@ -105,7 +107,7 @@ describe('ProgramOverlapWarning', () => {
 
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled())
     expect(String(fetchMock.mock.calls[0][0])).toBe(
-      `/api/sites/${DEFAULT_SITE}/programs/777/overlaps`,
+      `/api/sites/${testSite}/programs/777/overlaps`,
     )
   })
 })

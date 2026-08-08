@@ -209,7 +209,7 @@ log:
 
 `mirakc` は（複数サイト用の `mirakcs:` を使わない限り）単一オブジェクトとする。複数 mirakc を許すと programId のスコープが mirakc 単位になり、予約・EPG 射影・ingest の全スキーマに「どの mirakc か」が波及する。チューナー集約は mirakc 自身のリモートチューナー機能で賄えるため、単一サイトなら Rokuban 側は 1 エンドポイントで足りる。ハブ mirakc への集約は採らない（WAN リアルタイム依存 = 録画中の回線瞬断が録画欠損に直結するため）。
 
-`mirakc.site` は DB の全テーブルの `site` 列だけでなく、API の資源同定（`/api/sites/{site}/...`）の権威でもある（M3-1、issue #29 / #31 / #53）。**省略時の既定値は `"default"` だが、`site: ""` と明示すると起動エラーになる**（下記の site 名の構文制約が空文字列を許さないため。issue #183 M4-11 で `mirakcs:` レジストリを導入した際に、単一オブジェクト形式にも同じ制約を揃えた。従来は空文字列も黙って許容されていた）。
+`mirakc.site` は DB の全テーブルの `site` 列の値になる（M3-1、issue #29 / #31 / #53）。API の資源同定（`/api/sites/{site}/...`）の権威は `config.mirakc`/`mirakcs` レジストリに site が存在するかであり、api 自身は不変条件 1 によりどの site にも束縛されない（issue #184 M4-12）。単一 `mirakc:` 構成ではレジストリがこの 1 要素だけになるので、実質 `mirakc.site` と一致する。**省略時の既定値は `"default"` だが、`site: ""` と明示すると起動エラーになる**（下記の site 名の構文制約が空文字列を許さないため。issue #183 M4-11 で `mirakcs:` レジストリを導入した際に、単一オブジェクト形式にも同じ制約を揃えた。従来は空文字列も黙って許容されていた）。
 
 #### 複数サイト: `mirakcs:` レジストリ（issue #183 M4-11）
 
@@ -231,8 +231,6 @@ log:
 - `worker` ロールは今のところ site 単位の仕事（`ingest`/`epg`/`reconciler`/`watcher` キュー。キュー名は束縛サイトで `<論理名>_<site>` に修飾される）と site 非依存の仕事（`ruler`/`encode`/`thumbnail`/`cleanup`/`default` キュー。`catalog_export` / `delete_reconcile` はどちらもジョブ種別で、キューとしては `cleanup` に乗る。issue #185 M4-13）が同居しており（`worker.Deps.Site` / `worker.ClientConfig` の各 `*Site` フィールドがいずれも単一文字列のため）、2 サイト以上の束縛は起動エラーになる。**0 サイト（中央プロセス）の束縛は `worker.queues` を ruler/encode/thumbnail/cleanup/default 等の site 非依存キューに絞ったときだけ許す** --- `worker.queues` が空（既定=全キュー）のまま、または ingest/epg/reconciler/watcher のいずれかを含んだまま 0 サイトで起動すると、届く site 単位のジョブが空文字列 site と一致せず全滅して再試行し続けるだけになるため起動エラーにする。**1 プロセスが N サイトの watcher / worker のループを回す形は書き手がまだいないので決めない**（不変条件 11）
 - `enqueue` サブコマンドは `--site` で投入先を選ぶ（未指定かつレジストリ 1 要素ならその 1 つ、2 要素以上なら必須）。M4-6 の CronJob がサイトごとに投入するため
 - `rescue` / `shadow-diff` は単一サイト用のまま。`mirakcs:` が 2 要素以上の構成では明示的なエラーで落ちる（多サイトでの意味論を決める書き手がまだいないため）
-
-api の site 検査（サイトの存在確認や API パスの site スコープの強制）は issue #184（M4-12）の対象外項目として残っている。`rel_path` の site 名前空間は M4-14（issue #186）で、River キュー名の site 修飾は issue #185（M4-13、本 doc の上記）でそれぞれ実装済み。
 
 ### server.allowed_hosts は X-Forwarded-Host を優先する
 

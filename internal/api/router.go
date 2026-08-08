@@ -21,10 +21,12 @@ type RouterConfig struct {
 	// Pool は REST ハンドラが使う DB プール。
 	Pool *pgxpool.Pool
 
-	// Site はこのプロセスが担当する mirakc インスタンスのサイト名
-	// （config.mirakc.site が権威。issue #31）。空なら db.DefaultSite を使う
-	// （テストの部分構成を許す）。
-	Site string
+	// Sites はこのプロセスが応答してよい mirakc サイト名の一覧
+	// （config.mirakc/mirakcs レジストリが権威）。空なら db.DefaultSite の
+	// 1 要素とみなす（テストの部分構成を許す）。api は不変条件 1 によりどの
+	// site にも束縛されないため、1 プロセスがレジストリの全 site を処理できる
+	// （issue #184 M4-12）。
+	Sites []string
 
 	// RiverClient が非 nil なら、ルール作成/更新/削除のヒントで RulerPassArgs を
 	// 同一トランザクションで投入する（InsertTx。dual-write を避けるため。
@@ -104,7 +106,7 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		}))
 	}
 
-	handler := NewServer(cfg.Pool, cfg.RiverClient, cfg.Site, cfg.EncodeProfileNames)
+	handler := NewServer(cfg.Pool, cfg.RiverClient, cfg.Sites, cfg.EncodeProfileNames)
 	strict := NewStrictHandler(handler, nil)
 	HandlerFromMux(strict, r)
 

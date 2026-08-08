@@ -1,6 +1,7 @@
 import { createRootRoute, createRoute, Outlet } from '@tanstack/react-router'
 
 import { AppShell } from './components/app-shell'
+import { SiteGate } from './components/site-gate'
 import { parseRecordingsSearch, type RecordingsPageSearch } from './lib/recording-search'
 import { LivePage } from './pages/live'
 import { ProgramsPage } from './pages/programs'
@@ -13,7 +14,11 @@ import { SearchPage } from './pages/search'
 const rootRoute = createRootRoute({
   component: () => (
     <AppShell>
-      <Outlet />
+      {/* SiteGate は Outlet だけを囲む。ナビゲーション（サイドバー/ボトムタブ）と
+          サーキットブレーカーバナーは site に依存しないので、サイト解決を待たせない。 */}
+      <SiteGate>
+        <Outlet />
+      </SiteGate>
     </AppShell>
   ),
 })

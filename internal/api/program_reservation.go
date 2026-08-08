@@ -21,7 +21,7 @@ import (
 // id が変わってもこのエンドポイントの URL は変わらない
 // （CLAUDE.md 不変条件 9「導出器が作るキーを宛先にしない」）。
 func (h *Server) GetProgramReservation(ctx context.Context, req GetProgramReservationRequestObject) (GetProgramReservationResponseObject, error) {
-	if req.Site != h.site {
+	if !h.knownSite(req.Site) {
 		return GetProgramReservation404JSONResponse{Error: "unknown site"}, nil
 	}
 

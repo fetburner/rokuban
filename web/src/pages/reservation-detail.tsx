@@ -108,7 +108,7 @@ export function ReservationDetailPage() {
             {/* この予約が作られたあとで他の予約が増え、重なりが生じることもあるので
                 詳細画面でも常に出す（issue #24 M2-8。件数だけ・断定なし）。 */}
             <div className="mt-2">
-              <ProgramOverlapWarning programId={reservation.programId} />
+              <ProgramOverlapWarning site={site} programId={reservation.programId} />
             </div>
           </section>
 

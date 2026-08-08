@@ -38,12 +38,19 @@ function jsonResponse(body: unknown, status = 200): Response {
  * （`GET /api/sites/{site}/programs/{programId}/overlaps`）への問い合わせを
  * 振り分ける。`reservationOf` は `(site, programId)` から返す予約を引く関数で、
  * 再実体化（同じ `(site, programId)` でも呼び出しごとに違う `id` を返す）を
- * シミュレートできるようにする。
+ * シミュレートできるようにする。`sites`（既定 `['default']`）は `<SiteGate>`
+ * が返す `GET /api/sites` の応答 --- URL の `$site` と異なる値を渡せるように
+ * している（下記「ゲート済み site と URL の site が違う」テスト参照）。
  */
-function stubFetch(reservationOf: (site: string, programId: number) => Reservation | null) {
+function stubFetch(
+  reservationOf: (site: string, programId: number) => Reservation | null,
+  sites: string[] = ['default'],
+) {
   const fetchMock = vi.fn((input: string | URL | Request) => {
     const url = new URL(String(input), 'http://localhost')
     if (url.pathname === '/api/breakers') return Promise.resolve(jsonResponse([]))
+    // SiteGate（routes.tsx）が全ルートの手前で待つ（issue #184 M4-12）。
+    if (url.pathname === '/api/sites') return Promise.resolve(jsonResponse(sites))
 
     const reservationMatch = /^\/api\/sites\/([^/]+)\/programs\/(\d+)\/reservation$/.exec(
       url.pathname,
@@ -132,5 +139,39 @@ describe('ReservationDetailPage', () => {
     renderAt('/reservations/default/999999')
 
     expect(await screen.findByText('予約が見つかりません')).toBeInTheDocument()
+  })
+
+  // `ProgramOverlapWarning` に `useCurrentSite()`（<SiteGate> が配る「現在の
+  // site」）ではなく URL の `$site` を明示的に渡していることを固定する。
+  //
+  // このページの route は `/reservations/$site/$programId` で、`$site` は
+  // ディープリンクが指す資源そのものの一部（issue #99）。一方 `<SiteGate>` が
+  // 配る「現在の site」はレジストリの先頭サイトに過ぎない（issue #184
+  // M4-12、サイト切り替え UI を持たない決定）。この 2 つはレジストリが 2 サイト
+  // 以上のとき一致するとは限らないので、`ReservationDetailPage` が
+  // `ProgramOverlapWarning` に `useCurrentSite()` を渡す実装に戻すと、
+  // 対象と異なる site の重なりを問い合わせてしまう --- ここでは `<SiteGate>`
+  // が返す「現在の site」（tokyo）と URL の `$site`（osaka）を意図的に
+  // 違えて、実際に叩かれる overlaps の URL が osaka であることを見る。
+  it('重なり警告は URL の $site を使う（<SiteGate> の現在の site とは独立）', async () => {
+    const fetchMock = stubFetch(
+      (site, programId) =>
+        site === 'osaka' && programId === 300000 ? baseReservation({ site: 'osaka' }) : null,
+      ['tokyo', 'osaka'],
+    )
+
+    renderAt('/reservations/osaka/300000')
+
+    expect(await screen.findByText('テスト番組')).toBeInTheDocument()
+
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some((c) => String(c[0]).includes('/programs/300000/overlaps')),
+      ).toBe(true),
+    )
+    const overlapsCall = fetchMock.mock.calls.find((c) =>
+      String(c[0]).includes('/programs/300000/overlaps'),
+    )
+    expect(String(overlapsCall?.[0])).toBe('/api/sites/osaka/programs/300000/overlaps')
   })
 })

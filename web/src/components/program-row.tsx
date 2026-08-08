@@ -14,7 +14,7 @@ import {
   type EncodeSettingsValue,
 } from '@/lib/encode-settings'
 import { formatDuration, formatTime, isAiring } from '@/lib/format'
-import { DEFAULT_SITE } from '@/lib/site'
+import { useCurrentSite } from '@/lib/site'
 import { cn } from '@/lib/utils'
 
 /**
@@ -50,6 +50,7 @@ export function ProgramRow({
   onReserve: (overrides?: ProgramOverridesInput) => void
   onCancel: () => void
 }) {
+  const site = useCurrentSite()
   const [expanded, setExpanded] = useState(false)
   // 展開して初めて出る欄で、開かなければ既定値のまま
   // （= 「予約」を押しても overrides の PATCH は飛ばない）。
@@ -91,7 +92,7 @@ export function ProgramRow({
             {/* 予約する前に見せる（issue #24 M2-8）。展開しなくても常に見える位置に置く
                 （予約後に知らせても遅いため）。取消可能な「取消」ボタン側（既に予約済み）
                 では自分自身との重なりしか出ようがないので問い合わせ自体をしない。 */}
-            {!reserved && <ProgramOverlapWarning programId={program.programId} />}
+            {!reserved && <ProgramOverlapWarning site={site} programId={program.programId} />}
           </div>
           <ChevronDown
             className={cn(
@@ -149,7 +150,8 @@ export function ProgramRow({
  * 展開したときに GET /api/programs/{id} で取得する（段階的開示）。
  */
 function ProgramDetail({ program }: { program: ProgramListItem }) {
-  const detail = useGetProgram(DEFAULT_SITE, program.programId)
+  const site = useCurrentSite()
+  const detail = useGetProgram(site, program.programId)
   const d = unwrap(detail.data)
 
   return (

@@ -167,7 +167,12 @@ func channelTypeStrings(vs []ListRecordingsParamsChannelType) []string {
 // ため）。available_encoded_profiles は trash のときだけ省く ---
 // ListTrashRecordings がそれを意図的に射影しない（ごみ箱では配信 3 クエリが
 // deleted_at IS NOT NULL を理由に必ず 404 になるため）のと同じ区別。
-func buildRecordingsQuery(site string, f recordingsFilter) (string, []any, error) {
+//
+// site では絞らない（全サイトを返す。issue #184 M4-12。api は不変条件 1 に
+// より site に束縛されない）。`?site=` のような絞り込みパラメータも持たない
+// （不変条件 11: 必要になった時点で足す。#136 のマージ後に決めた判断で、
+// 現状 site を欲しがる呼び出し元が無い）。
+func buildRecordingsQuery(f recordingsFilter) (string, []any, error) {
 	if (f.Before == nil) != (f.BeforeID == nil) {
 		return "", nil, fmt.Errorf("before and beforeId must be given together")
 	}
@@ -189,9 +194,8 @@ func buildRecordingsQuery(site string, f recordingsFilter) (string, []any, error
 	}
 
 	// 基底述語は現行 ListRecordings / ListTrashRecordings と揺れさせない
-	// （trash=false: r.site = $1 AND r.deleted_at IS NULL、superseded_at は
-	// 現行も絞っていないので新たに絞らない）。
-	and("r.site = " + arg(site))
+	// （trash=false: r.deleted_at IS NULL、superseded_at は現行も絞っていないので
+	// 新たに絞らない）。site の絞り込みは持たない（上記コメント参照）。
 	if f.Trash {
 		and("r.deleted_at IS NOT NULL")
 		and("r.purged_at IS NULL")
@@ -281,7 +285,7 @@ func buildRecordingsQuery(site string, f recordingsFilter) (string, []any, error
 
 	sql := `
 SELECT
-    r.id, r.rule_id, r.source, r.service_name, r.channel_type, r.channel,
+    r.id, r.site, r.rule_id, r.source, r.service_name, r.channel_type, r.channel,
     r.network_id, r.service_id, r.event_id, r.title, r.description,
     r.program_start_at, r.program_duration_ms, r.status,
     r.started_at, r.ended_at, r.quality_events, r.deleted_at, r.created_at,
@@ -340,8 +344,8 @@ LIMIT ` + limitPlaceholder
 // 0.7ms → 290ms（約 400 倍）の崖。この保護を「保険」として外すと、絞り込みの
 // 組み合わせが少ない環境（同じ SQL テキストが 6 回を超えて再利用される）で
 // この崖に落ちる。
-func queryRecordings(ctx context.Context, pool *pgxpool.Pool, site string, f recordingsFilter) ([]Recording, error) {
-	sql, args, err := buildRecordingsQuery(site, f)
+func queryRecordings(ctx context.Context, pool *pgxpool.Pool, f recordingsFilter) ([]Recording, error) {
+	sql, args, err := buildRecordingsQuery(f)
 	if err != nil {
 		return nil, err
 	}
@@ -356,7 +360,7 @@ func queryRecordings(ctx context.Context, pool *pgxpool.Pool, site string, f rec
 	for rows.Next() {
 		var fields recordingListFields
 		var scanArgs = []any{
-			&fields.ID, &fields.RuleID, &fields.Source, &fields.ServiceName, &fields.ChannelType, &fields.Channel,
+			&fields.ID, &fields.Site, &fields.RuleID, &fields.Source, &fields.ServiceName, &fields.ChannelType, &fields.Channel,
 			&fields.NetworkID, &fields.ServiceID, &fields.EventID, &fields.Title, &fields.Description,
 			&fields.ProgramStartAt, &fields.ProgramDurationMs, &fields.Status,
 			&fields.StartedAt, &fields.EndedAt, &fields.QualityEvents, &fields.DeletedAt, &fields.CreatedAt,

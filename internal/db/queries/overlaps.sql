@@ -9,7 +9,7 @@
 -- ので JOIN して引く。半開区間の判定はここ（SQL）で行うが、effective.skip
 -- の判定は Go 側で db.EffectiveOptions を通す
 -- （internal/api/reservations_overlaps.go）。program_intents /
--- program_overrides との JOIN は ListReservationsBySite
+-- program_overrides との JOIN は ListReservationsFull
 -- (internal/db/queries/reservations.sql) と同じ形。
 --
 -- never-scheduled 除外の述語は never_scheduled_events view（issue #157。

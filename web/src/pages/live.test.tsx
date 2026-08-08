@@ -83,6 +83,10 @@ function stubFetch(options: { services?: Service[]; programsByServiceId?: Record
     if (url.pathname === '/api/breakers') {
       return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }))
     }
+    // SiteGate（routes.tsx）が全ルートの手前で待つ（issue #184 M4-12）。
+    if (url.pathname === '/api/sites') {
+      return Promise.resolve(new Response(JSON.stringify(['default']), { status: 200 }))
+    }
     if (url.pathname === '/api/sites/default/services') {
       return Promise.resolve(new Response(JSON.stringify(services), { status: 200 }))
     }
@@ -111,6 +115,9 @@ describe('LivePage', () => {
   it('チャンネル一覧の取得に失敗したらエラー状態を出す', async () => {
     globalThis.fetch = vi.fn((input: string | URL | Request) => {
       const url = new URL(String(input), 'http://localhost')
+      if (url.pathname === '/api/sites') {
+        return Promise.resolve(new Response(JSON.stringify(['default']), { status: 200 }))
+      }
       if (url.pathname === '/api/sites/default/services') {
         return Promise.resolve(new Response('boom', { status: 500 }))
       }
