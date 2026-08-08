@@ -19,6 +19,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/fetburner/rokuban/internal/api"
+	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
@@ -59,6 +60,33 @@ func newServerCmd() *cobra.Command {
 				return err
 			}
 
+			// このプロセスが束縛される mirakc サイトを --sites から決める
+			// （config キーにしない。issue #183 M4-11「含むもの」4）。
+			bound, err := resolveSiteBinding(cmd, cfg.Registry())
+			if err != nil {
+				return err
+			}
+			if err := validateSiteBinding(roles, bound, cfg.Worker.Queues); err != nil {
+				return err
+			}
+			// boundSite は「ちょうど 1 サイトに束縛されている」場合だけ非ゼロ値になる。
+			// 0 サイト（中央プロセス）では空のまま渡し、worker/watcher 側の既定の
+			// site 未設定規約（空文字列 = db.DefaultSite に解決 / 定期ジョブ未登録）に
+			// 委ねる。
+			var boundSite config.MirakcSite
+			if len(bound) == 1 {
+				boundSite = bound[0]
+			}
+			// live はライブ視聴セッションごとに mirakc へアクセスするため、streamer
+			// ロールが live.enabled で起動するにはちょうど 1 サイトへの束縛が要る
+			// （watcher と同じ理由。issue #91 のライブ資源同定はこのタスクの対象外だが、
+			// レジストリを導入した以上ここだけは壊さないための最小限の検査）。
+			if cfg.Live.Enabled && slices.Contains(roles, "streamer") && len(bound) != 1 {
+				return fmt.Errorf(
+					"live.enabled requires exactly one bound site for the streamer role, got %d (use --sites <site>)",
+					len(bound))
+			}
+
 			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
 
@@ -77,11 +105,14 @@ func newServerCmd() *cobra.Command {
 			// （worker だけの Pod でも滞留メトリクスを取りたい）。
 			// SPA・SSE・バイト配信は担当ロールのときだけ登録する。
 			{
+				backlog := newBoundBacklogCollector(pool, bound)
 				routerCfg := api.RouterConfig{
-					AllowedHosts:    cfg.Server.AllowedHosts,
-					Pool:            pool,
+					AllowedHosts: cfg.Server.AllowedHosts,
+					Pool:         pool,
+					// api ロールを site 非依存にするのは M4-12。このタスクでは今の値
+					// のまま（issue #183 の「含むもの」5）。
 					Site:            cfg.Mirakc.Site,
-					MetricsRegistry: metrics.NewRegistry(metrics.NewBacklogCollector(pool, cfg.Mirakc.Site)),
+					MetricsRegistry: metrics.NewRegistry(backlog),
 				}
 
 				if slices.Contains(roles, "api") {
@@ -138,8 +169,10 @@ func newServerCmd() *cobra.Command {
 								ExtraArgs:      p.ExtraArgs,
 							})
 						}
-						liveMirakcClient := mirakc.NewClient(cfg.Mirakc.URL, nil)
-						liveStreamer := streamer.NewLive(liveMirakcClient, cfg.Mirakc.Site, streamer.LiveConfig{
+						// live.enabled かつ streamer ロールならちょうど 1 サイトへの束縛が
+						// 保証済み（上の事前検査）なので boundSite を使ってよい。
+						liveMirakcClient := mirakc.NewClient(boundSite.URL, nil)
+						liveStreamer := streamer.NewLive(liveMirakcClient, boundSite.Site, streamer.LiveConfig{
 							Enabled:       true,
 							FFmpeg:        cfg.Live.FFmpeg,
 							SegmentDir:    cfg.Live.SegmentDir,
@@ -213,12 +246,21 @@ func newServerCmd() *cobra.Command {
 						return toolErr
 					}
 				}
-				mc := mirakc.NewClient(cfg.Mirakc.URL, nil)
+				// worker.Deps.Site / worker.ClientConfig の各 *Site フィールドは
+				// boundSite から取る（issue #183 の「含むもの」5）。0 サイト束縛
+				// （中央プロセス）では boundSite がゼロ値になり、Site="" と
+				// *Site="" が既存の慣習通りに解釈される（Deps.Site="" は
+				// verifySite で db.DefaultSite に解決、ClientConfig の *Site="" は
+				// その定期ジョブを登録しない。worker.ClientConfig のフィールド
+				// コメント参照）。2 サイト以上の束縛では validateSiteBinding が
+				// worker ロールを起動エラーにしているので、ここに来るのは
+				// 0 または 1 サイト束縛のときだけ。
+				mc := mirakc.NewClient(boundSite.URL, nil)
 				workers := worker.NewWorkers(&worker.Deps{
 					MirakcClient:             mc,
 					Pool:                     pool,
 					MediaDir:                 cfg.Storage.MediaDir,
-					Site:                     cfg.Mirakc.Site,
+					Site:                     boundSite.Site,
 					ScratchDir:               cfg.Storage.ScratchDir,
 					Encode:                   cfg.Encode,
 					EpgRetentionGrace:        cfg.Epg.RetentionGrace,
@@ -241,11 +283,11 @@ func newServerCmd() *cobra.Command {
 					// 投入する（mirakc に触るのも各ジョブのヒント経路をまとめるのも
 					// worker。riverClientFull は worker ロールがあるときにしか
 					// 選ばれないので、ここは無条件に設定してよい）。
-					EpgSyncSite:       cfg.Mirakc.Site,
-					TunerSyncSite:     cfg.Mirakc.Site,
-					RulerPassSite:     cfg.Mirakc.Site,
-					ReconcilePassSite: cfg.Mirakc.Site,
-					RecordSweepSite:   cfg.Mirakc.Site,
+					EpgSyncSite:       boundSite.Site,
+					TunerSyncSite:     boundSite.Site,
+					RulerPassSite:     boundSite.Site,
+					ReconcilePassSite: boundSite.Site,
+					RecordSweepSite:   boundSite.Site,
 					CatalogExport:     true,
 					DeleteReconcile:   true,
 				}
@@ -294,8 +336,10 @@ func newServerCmd() *cobra.Command {
 					}
 					switch roleName {
 					case "watcher":
-						mc := mirakc.NewClient(cfg.Mirakc.URL, nil)
-						w := watcher.New(cfg.Mirakc.Site, mc, pool, riverClient, worker.NewIngestArgs, webhookClient)
+						// validateSiteBinding が watcher ロールを常にちょうど 1 サイト
+						// 束縛に限定しているので、ここでは boundSite が必ず埋まっている。
+						mc := mirakc.NewClient(boundSite.URL, nil)
+						w := watcher.New(boundSite.Site, mc, pool, riverClient, worker.NewIngestArgs, webhookClient)
 						roleFunc = w.Run
 					}
 					return role.RunSingleton(egCtx, pool, roleName, roleFunc, nil)
@@ -317,6 +361,13 @@ func newServerCmd() *cobra.Command {
 	cmd.Flags().StringSlice("roles", nil, "roles to run (comma-separated: api,worker,watcher,streamer,notifier)")
 	cmd.MarkFlagsMutuallyExclusive("all", "roles")
 	cmd.MarkFlagsOneRequired("all", "roles")
+	// --sites はプロセスの束縛を表す起動形態フラグで、config キーにしない
+	// （resolveSiteBinding のコメント、docs/configuration.md §やらないこと）。
+	// 未指定（デフォルト値 nil）と `--sites=`（空スライス）は
+	// cmd.Flags().Changed で区別する。
+	cmd.Flags().StringSlice(siteFlagName, nil,
+		"mirakc sites this process is bound to (comma-separated). "+
+			"Omit to bind to the registry's sole entry; pass an empty value to run unbound (central process)")
 
 	return cmd
 }

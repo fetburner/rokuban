@@ -34,6 +34,15 @@ catalog が無ければ media_dir を走査し、TS / M2TS / MP4 / MKV / WebM �
 				return err
 			}
 
+			// rescue は単一サイト用のまま（issue #183 の「含むもの」7）。多サイトの
+			// 意味論（複数サイトの catalog をどう束ねるか）を決める書き手がまだ
+			// いないので、mirakcs が 2 要素以上なら形を決めずに明示的なエラーで
+			// 落とす（不変条件 11）。
+			site, err := requireSingleSite(cfg.Registry(), "rescue")
+			if err != nil {
+				return err
+			}
+
 			ctx := cmd.Context()
 			// 単発 CLI コマンドは特定のロールを担わないので roles は渡さない
 			// （pgxpool の既定の MaxConns がそのまま使われる。issue #90）。
@@ -43,7 +52,7 @@ catalog が無ければ media_dir を走査し、TS / M2TS / MP4 / MKV / WebM �
 			}
 			defer pool.Close()
 
-			return runRescue(ctx, pool, cfg.Storage.MediaDir, cfg.Mirakc.Site, cmd.OutOrStdout())
+			return runRescue(ctx, pool, cfg.Storage.MediaDir, site.Site, cmd.OutOrStdout())
 		},
 	}
 	return cmd

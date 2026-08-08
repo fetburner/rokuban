@@ -178,6 +178,11 @@ encode:
 	}
 }
 
+// mirakc.url は struct タグの required を持たない（mirakcs: を使う構成では
+// mirakc: を書かないため。issue #183 の「罠」）ので、ここで数えるのは
+// db.* (4) + storage.media_dir (1) の 5 件。mirakc/mirakcs のどちらも
+// 無い場合の検出は validateMirakcRegistry が別のエラーとして行う
+// （TestLoad_MirakcRegistry_NeitherSet が確認する）。
 func TestLoad_MissingRequiredKeys(t *testing.T) {
 	path := writeConfig(t, `
 log:
@@ -193,9 +198,156 @@ log:
 		t.Fatalf("expected ValidationError, got %T: %v", err, err)
 	}
 	fe := ve.FieldErrors()
-	if len(fe) != 6 {
-		t.Fatalf("expected 6 validation errors, got %d: %v", len(fe), err)
+	if len(fe) != 5 {
+		t.Fatalf("expected 5 validation errors, got %d: %v", len(fe), err)
 	}
+}
+
+// mirakcsBase は db/storage だけ満たし、mirakc/mirakcs はテストごとに足す。
+const mirakcsBase = `
+db:
+  host: localhost
+  user: rokuban
+  password: secret
+  database: rokuban
+storage:
+  media_dir: /mnt/media
+`
+
+func TestLoad_MirakcRegistry(t *testing.T) {
+	t.Run("neither mirakc nor mirakcs set is an error", func(t *testing.T) {
+		path := writeConfig(t, mirakcsBase)
+		_, err := Load(path)
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "one of mirakc.url or mirakcs is required") {
+			t.Errorf("error = %v, want mention of mirakc/mirakcs required", err)
+		}
+	})
+
+	t.Run("both mirakc and mirakcs set is an error", func(t *testing.T) {
+		path := writeConfig(t, mirakcsBase+`
+mirakc:
+  url: http://mirakc.local:40772
+mirakcs:
+  - site: tokyo
+    url: http://mirakc-tokyo:40772
+`)
+		_, err := Load(path)
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "must not both be set") {
+			t.Errorf("error = %v, want mention of mutual exclusion", err)
+		}
+	})
+
+	t.Run("mirakc single-object sugar resolves to a one-element registry", func(t *testing.T) {
+		path := writeConfig(t, mirakcsBase+`
+mirakc:
+  url: http://mirakc.local:40772
+  site: tokyo
+`)
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		reg := cfg.Registry()
+		if len(reg) != 1 {
+			t.Fatalf("Registry() len = %d, want 1", len(reg))
+		}
+		if reg[0].Site != "tokyo" || reg[0].URL != "http://mirakc.local:40772" {
+			t.Errorf("Registry()[0] = %+v, want {tokyo http://mirakc.local:40772}", reg[0])
+		}
+	})
+
+	t.Run("mirakcs registry with multiple valid sites", func(t *testing.T) {
+		path := writeConfig(t, mirakcsBase+`
+mirakcs:
+  - site: tokyo
+    url: http://mirakc-tokyo:40772
+  - site: takamatsu
+    url: http://mirakc-takamatsu:40772
+`)
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		reg := cfg.Registry()
+		if len(reg) != 2 {
+			t.Fatalf("Registry() len = %d, want 2", len(reg))
+		}
+		if reg[0].Site != "tokyo" || reg[1].Site != "takamatsu" {
+			t.Errorf("Registry() = %+v", reg)
+		}
+	})
+
+	t.Run("invalid site names are all enumerated together", func(t *testing.T) {
+		longName := strings.Repeat("a", 65)
+		path := writeConfig(t, mirakcsBase+`
+mirakcs:
+  - site: "Tokyo"
+    url: http://a:40772
+  - site: "to.kyo"
+    url: http://b:40772
+  - site: "`+longName+`"
+    url: http://c:40772
+  - site: "catalog"
+    url: http://d:40772
+  - site: "thumbnails"
+    url: http://e:40772
+  - site: "osaka"
+    url: http://f:40772
+  - site: "osaka"
+    url: http://g:40772
+`)
+		_, err := Load(path)
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		msg := err.Error()
+		for _, want := range []string{
+			"Tokyo", "to.kyo", longName, "catalog", "thumbnails", "duplicate site",
+		} {
+			if !strings.Contains(msg, want) {
+				t.Errorf("error missing mention of %q; full error:\n%v", want, msg)
+			}
+		}
+		// 全件列挙されていること（7 要素のうち 6 件が問題を持つ。osaka の 2 件目は
+		// 重複だけが問題）。"  - " ブレット行の数で数える。
+		lines := strings.Split(msg, "\n  - ")
+		if len(lines) < 7 {
+			t.Errorf("expected at least 7 enumerated violations, got %d:\n%s", len(lines), msg)
+		}
+	})
+
+	t.Run("valid site names accept lowercase alnum with - and _", func(t *testing.T) {
+		path := writeConfig(t, mirakcsBase+`
+mirakcs:
+  - site: "tokyo-1_a"
+    url: http://a:40772
+`)
+		_, err := Load(path)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("missing url in a mirakcs entry is an error", func(t *testing.T) {
+		path := writeConfig(t, mirakcsBase+`
+mirakcs:
+  - site: tokyo
+    url: ""
+`)
+		_, err := Load(path)
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "url") {
+			t.Errorf("error = %v, want mention of url", err)
+		}
+	})
 }
 
 func TestLoad_DBPoolingDefaults(t *testing.T) {

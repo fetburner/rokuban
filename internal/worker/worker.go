@@ -492,6 +492,40 @@ func RequiresEncodeTools(queues []string) bool {
 	return slices.Contains(queues, encodeQueue) || slices.Contains(queues, thumbnailQueue)
 }
 
+// siteBoundQueueNames は mirakc への到達を必要とする、site 単位のキュー名。
+// ingest（watcher が発見した record の取り込み）・epg（EPG 全量同期。tuner_sync も
+// 同じキューを使う）・ruler（ルール評価パス）・reconciler（宣言的同期パス）・
+// watcher（record_sweep。recordSweepQueue の実体はこの名前）。
+//
+// 対照的に site 非依存のキューは river.QueueDefault（catalog_export /
+// delete_reconcile）・encode・thumbnail の 3 つ（アーカイブとエンコードプロファイル
+// は単一で、site の属性を持たない）。
+var siteBoundQueueNames = []string{ingestQueue, epgQueue, rulerQueue, reconcilerQueue, recordSweepQueue}
+
+// RequiresSiteBinding は、worker.queues の設定でこのプロセスが site 単位のキュー
+// （ingest/epg/ruler/reconciler/watcher）のいずれかを購読するかを返す。空スライスは
+// 「全キュー購読」を意味するので true になる。
+//
+// RequiresEncodeTools と対になる判定で、worker ロールを 0 サイト束縛（中央プロセス、
+// issue #183 M4-11 の `--sites=`）で起動できるかを決める。site 単位のキューを購読する
+// worker は mirakc へのアクセス（Deps.MirakcClient）と site 単位のジョブ照合
+// （internal/worker/worker.go の verifySite）を必要とし、束縛サイトが無いと
+// 空文字列 site として処理され、届いたジョブの site と一致しないため全滅して
+// 再試行し続ける。encode/thumbnail/delete_reconcile/catalog_export だけに絞った
+// worker（worker.queues でそれ以外を明示的に外した構成）は site 非依存なので
+// 0 サイト束縛でも安全に動く。
+func RequiresSiteBinding(queues []string) bool {
+	if len(queues) == 0 {
+		return true
+	}
+	for _, q := range siteBoundQueueNames {
+		if slices.Contains(queues, q) {
+			return true
+		}
+	}
+	return false
+}
+
 func sortedQueueNames(m map[string]river.QueueConfig) []string {
 	names := make([]string, 0, len(m))
 	for name := range m {
