@@ -67,6 +67,20 @@ S3 マウント（k8s-csi-s3 の geesefs/s3fs、AWS Mountpoint 等）では以�
 
 派生物（視聴用）だけ速いストレージに置きたくなった場合、originals / derivatives で 2 つのストレージルートを持つ小さな拡張で対応できる。現時点では単一ルートで始め、シークの体感が問題になったら足す（YAGNI）。
 
+### rel_path の名前空間（issue #186 M4-14）
+
+アーカイブ（`media_assets`）は `site` 列を持たず単一だが、原本の `rel_path` は mirakc の contentPath 由来でサイトスコープの名前である。2 サイトが同じ contentPath で録ると同じ実ファイルを取り合う（DB は `rel_path` の一意索引で片方の commit を落とすが、実ファイルは先に書いた方が上書きされて壊れる）ため、**原本は `sites/{site}/` を前置する**。
+
+- **トップレベルの予約ディレクトリは `catalog/` / `thumbnails/` / `sites/` の 3 つ。** `catalog/` は削除 reconcile の孤児回収と rescue スキャンが SkipDir する予約ディレクトリ、`thumbnails/` はサムネイルの名前空間（§5.1）、`sites/` が今回追加した site スコープの原本の名前空間
+- **前置の 1 段目を site 名そのもの（`{site}/...`）にせず、固定の `sites/` を挟む。** 当初案（site 名を先頭成分にする）は、前置前に ingest 済みの既存行の先頭成分と site 名が偶然一致すると衝突する --- 例えば `filename_template` が `"tokyo/..."` のような静的接頭辞を書いていて、かつ site 名が `tokyo` だと、新規 ingest の rel_path が既存行と同じになり、一意索引が効く前に実ファイルが上書きされる（PR #196 のレビューで発見。site 名の構文 `^[a-z0-9]([_-]?[a-z0-9])*$` は日付ディレクトリ名や `anime` のような静的な語も許すため、理論上だけの懸念ではない）。`sites/` を固定の 1 段目に挟むことで、新規 ingest の rel_path は必ず `sites/` から始まり、それ以前の既存行が `sites/` から始まっていない限り構造的に衝突しない
+- **前置するのは ingest（`internal/worker/ingest.go` の `determineRelPath`）であって、contentPath テンプレートではない。** ingest は原本 `rel_path` の唯一の書き手なので、ここで前置すれば入力（reconciler が生成する contentPath の形や、ユーザーが書く `filename_template` の内容）に関わらず名前空間が保たれる
+- **サムネイルは `thumbnails/{recording_id}.jpg` のまま**（§5.1）。原本の contentPath に依存しないので `sites/` 前置の影響を受けない（構造的に衝突しない）
+- **派生物は原本の dir を引き継ぐので自動的に前置される**（`EncodedRelPath`、§6 参照。原本が `sites/tokyo/20240101/....m2ts` なら派生物は `sites/tokyo/20240101/...._h264.mp4` になる）
+- **前置前に ingest 済みの既存行は移行しない。** 新規 ingest 分だけ `sites/{site}/` が付き、ディスク上は前置あり/なしが混在する。`rel_path` をパースする読者がいない（rescue の資産種別判定は拡張子しか見ない）ため混在は無害 --- ただし、これは「既存行が `sites/` から始まっていない」という上記の前提の上に成り立つ断定であり、`sites/` 自体を先頭成分に使っていた既存の `filename_template` があれば話は別（`sites/` は `catalog/` / `thumbnails/` と同じ「新設の予約ディレクトリが過去の運用と衝突しないことを祈る」という一般的なトレードオフを負っている）
+- **2 種類の予約を分けて理解する。** どちらも `internal/config` にコードがあるが、根拠が違う:
+  1. **トップレベルディレクトリ名の予約**（`catalog` / `thumbnails` / `sites` の 3 つ）。これは**今も load-bearing**: `catalog/` は削除 reconcile の孤児回収と rescue スキャンが SkipDir する対象、`thumbnails/` はサムネイルの名前空間、`sites/` は本節の原本の名前空間。この 3 つのいずれかを一般のディレクトリ名として使うと実際に壊れるので、この予約は外せない
+  2. **site 名としての `catalog` / `thumbnails` の禁止**（`internal/config.reservedSiteNames`）。M4-11 導入時の根拠は「`{site}/` を先頭成分にする前提で、site 名がこの 2 つと一致するとトップレベル予約ディレクトリと直接衝突する」だったが、`sites/` を挟んだことで site 名は常に `sites/{site}/...` に閉じ込められ、トップレベルの `catalog/` / `thumbnails/` とは構造的に衝突しなくなった。**この禁止を残しているのはパス衝突を防ぐためではなく、緩めても得られる自由度（`catalog` / `thumbnails` を site 名にしたい運用要求は無い）が、緩めるコスト（`internal/config` のバリデーション・テストの変更）に見合わないため。** `sites` 自体を site 名にすることは禁止する必要がない（`sites/sites/...` になるだけで衝突しない。issue #186 のコメント参照）
+
 ## 5.1 サムネイル（M3-4）
 
 録画 1 本につき `kind = 'thumbnail'` の media_asset を 1 つ作る（`UNIQUE (recording_id, kind, profile)`）。

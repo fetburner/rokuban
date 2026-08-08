@@ -326,6 +326,60 @@ func (w *IngestWorker) lookupRecordingID(ctx context.Context, args IngestJobArgs
 // determineRelPath は保存先の相対パスと、それを解決した絶対パスを返す。
 // relPath は mirakc の contentPath 由来なので、メディアディレクトリの外を
 // 指していないことを検証する。
+//
+// 返す relPath には `sites/{site}/` を前置する（issue #186 M4-14）。アーカイブ
+// （media_assets）は site 列を持たず単一だが、contentPath は mirakc インスタンス
+// スコープの名前なので、2 サイトが同じ contentPath で録ると同じ実ファイルを
+// 取り合う（DB は一意索引で片方の commit を落とすが、実ファイルは先に書いた方が
+// 上書きされて壊れる）。ingest は原本 rel_path の唯一の書き手なので、ここで
+// 前置すれば入力（contentPath の有無や形）に関わらず名前空間が保たれる —
+// reconciler の contentPath 生成（mirakc 側の録画バッファ）や運用者の
+// filename_template（ユーザーが書ける）に前置を委ねると、Rokuban 以外が作った
+// record や旧いテンプレートの record で名前空間が破れる。
+//
+// **前置の 1 段目は固定の `sites/` で、その下に site 名を置く。** 当初案の
+// 「site 名をそのまま先頭成分にする」（`{site}/...`）は、既存行（前置前に
+// ingest 済みの rel_path）の先頭成分と site 名が偶然一致した場合に衝突する
+// --- 例えば filename_template が `"tokyo/..."` のような静的接頭辞を書いていて、
+// かつ site 名が `tokyo` だと、新規 ingest の `tokyo/shared/rec.m2ts` が既存行と
+// 同じ rel_path になり、DB の一意索引が通る前に実ファイルが上書きされる
+// （PR #196 のレビューで実測。site 名の構文 `^[a-z0-9]([_-]?[a-z0-9])*$` は
+// 日付ディレクトリ名や静的な語（`anime` 等）も許すため、理論上だけの懸念では
+// ない）。`sites/` を固定の 1 段目に挟むことで、新規 ingest の rel_path は
+// 常に `sites/` から始まり、それ以前の任意の contentPath / filename_template
+// が `sites/` から始まっていない限り構造的に衝突しない（`catalog/` /
+// `thumbnails/` と同じ「トップレベル予約ディレクトリ」の追加であり、
+// この 3 つのいずれから始まる既存行が無いことが前提。詳細は docs/storage.md
+// §5「rel_path の名前空間」）。
+//
+// 前置に使うのは args.Site（w.Site ではない）。Work は determineRelPath を呼ぶ
+// 前に verifySite（internal/worker/worker.go）で args.Site が w.Site（空なら
+// db.DefaultSite）と一致することを検査済みなので値としては同じだが、
+// verifySite は w.Site="" のときに args.Site="" を通さない（正規化後の
+// "default" と比較して弾く）ため、verifySite を通過した args.Site は常に
+// 非空・正規化済みである。w.Site を使うと単体テストの部分構成
+// （w.Site 未設定）で同じ正規化をここで再実装する必要がある。
+//
+// contentPath / Content.Path がどちらも空だと relPath が "."（カレント
+// ディレクトリ）になる。前置前はこの relPath="." がそのまま mediapath.Resolve
+// に渡り "path escapes the media directory" で明示的に弾かれていた。前置後は
+// "sites/{site}/." が Join/Clean で "." が消えて "sites/{site}" という一見
+// 正当なパスになり Resolve を通ってしまう。すると os.Create が
+// "{media_dir}/sites/{site}" を*通常ファイル*として作ってしまい、以後その
+// site 配下に別の contentPath を書こうとする ingest が全て MkdirAll で
+// "not a directory" になる（前置によって初めて顕在化する壊れ方。前置前は
+// Resolve の明示的なエラーで止まっていたので発生しなかった）。前置前に弾く
+// （下記）。
+//
+// `sites/{site}/` は site 名の構文制約（internal/config.validateSiteName、
+// issue #183 M4-11）に依存する安全前提の上に成立している --- site 名に "/" が
+// 含まれないことを保証しているので単純な文字列結合で足りる。
+//
+// 前置前に ingest 済みの既存行は移行しない（マイグレーションを書かない）。
+// 新規 ingest 分だけ `sites/{site}/` が付き、ディスク上は前置あり/なしが
+// 混在する。rel_path をパースする読者はいない（rescueAssetKind は拡張子しか
+// 見ない）ので混在は無害 --- ただし上記の通り、混在する既存行が `sites/` から
+// 始まっていないことが前提。
 func (w *IngestWorker) determineRelPath(ctx context.Context, args IngestJobArgs) (relPath, fullPath string, err error) {
 	record, err := w.MirakcClient.GetRecord(ctx, args.RecordID)
 	if err != nil {
@@ -336,6 +390,16 @@ func (w *IngestWorker) determineRelPath(ctx context.Context, args IngestJobArgs)
 	} else {
 		relPath = filepath.Base(record.Content.Path)
 	}
+	// contentPath / Content.Path がどちらも空だと filepath.Base("") == "."。
+	// 前置すると mediapath.Resolve の脱出検知をすり抜けてディレクトリが作られて
+	// しまう（上の doc コメント参照）ので、前置前に明示的に弾く。
+	if relPath == "." || relPath == "/" {
+		return "", "", fmt.Errorf("mirakc record %s has no usable content path (contentPath and Content.Path both empty)", args.RecordID)
+	}
+	// rel_path のパス区切りは DB 上で '/' 規約（internal/worker/encode.go の
+	// EncodedRelPath 参照）。args.Site は site 名の構文制約で '/' を含み得ない
+	// ので単純な文字列結合で足りる。
+	relPath = "sites/" + args.Site + "/" + relPath
 	fullPath, err = mediapath.Resolve(w.MediaDir, relPath)
 	if err != nil {
 		return "", "", err
