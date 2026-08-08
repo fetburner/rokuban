@@ -69,13 +69,15 @@ S3 マウント（k8s-csi-s3 の geesefs/s3fs、AWS Mountpoint 等）では以�
 
 ### rel_path の名前空間（issue #186 M4-14）
 
-アーカイブ（`media_assets`）は `site` 列を持たず単一だが、原本の `rel_path` は mirakc の contentPath 由来でサイトスコープの名前である。2 サイトが同じ contentPath で録ると同じ実ファイルを取り合う（DB は `rel_path` の一意索引で片方の commit を落とすが、実ファイルは先に書いた方が上書きされて壊れる）ため、**原本は `{site}/` を前置する**。
+アーカイブ（`media_assets`）は `site` 列を持たず単一だが、原本の `rel_path` は mirakc の contentPath 由来でサイトスコープの名前である。2 サイトが同じ contentPath で録ると同じ実ファイルを取り合う（DB は `rel_path` の一意索引で片方の commit を落とすが、実ファイルは先に書いた方が上書きされて壊れる）ため、**原本は `sites/{site}/` を前置する**。
 
+- **トップレベルの予約ディレクトリは `catalog/` / `thumbnails/` / `sites/` の 3 つ。** `catalog/` は削除 reconcile の孤児回収と rescue スキャンが SkipDir する予約ディレクトリ、`thumbnails/` はサムネイルの名前空間（§5.1）、`sites/` が今回追加した site スコープの原本の名前空間
+- **前置の 1 段目を site 名そのもの（`{site}/...`）にせず、固定の `sites/` を挟む。** 当初案（site 名を先頭成分にする）は、前置前に ingest 済みの既存行の先頭成分と site 名が偶然一致すると衝突する --- 例えば `filename_template` が `"tokyo/..."` のような静的接頭辞を書いていて、かつ site 名が `tokyo` だと、新規 ingest の rel_path が既存行と同じになり、一意索引が効く前に実ファイルが上書きされる（PR #196 のレビューで発見。site 名の構文 `^[a-z0-9]([_-]?[a-z0-9])*$` は日付ディレクトリ名や `anime` のような静的な語も許すため、理論上だけの懸念ではない）。`sites/` を固定の 1 段目に挟むことで、新規 ingest の rel_path は必ず `sites/` から始まり、それ以前の既存行が `sites/` から始まっていない限り構造的に衝突しない
 - **前置するのは ingest（`internal/worker/ingest.go` の `determineRelPath`）であって、contentPath テンプレートではない。** ingest は原本 `rel_path` の唯一の書き手なので、ここで前置すれば入力（reconciler が生成する contentPath の形や、ユーザーが書く `filename_template` の内容）に関わらず名前空間が保たれる
-- **site 名は `catalog` / `thumbnails` を使えない**（`internal/config` の予約名検査）。`catalog/` は削除 reconcile の孤児回収と rescue スキャンが SkipDir する予約ディレクトリ、`thumbnails/` はサムネイルの名前空間で、前置する site 名がこの 2 つと衝突すると、そのサイトの原本が孤児回収からも rescue からも永久に見えなくなる
-- **サムネイルは `thumbnails/{recording_id}.jpg` のまま**（§5.1）。原本の contentPath に依存しないので `{site}/` 前置の影響を受けない（構造的に衝突しない）
-- **派生物は原本の dir を引き継ぐので自動的に前置される**（`EncodedRelPath`、§6 参照。原本が `tokyo/20240101/....m2ts` なら派生物は `tokyo/20240101/...._h264.mp4` になる）
-- **前置前に ingest 済みの既存行は移行しない。** 新規 ingest 分だけ `{site}/` が付き、ディスク上は前置あり/なしが混在する。`rel_path` をパースする読者がいない（rescue の資産種別判定は拡張子しか見ない）ため、混在は無害
+- **サムネイルは `thumbnails/{recording_id}.jpg` のまま**（§5.1）。原本の contentPath に依存しないので `sites/` 前置の影響を受けない（構造的に衝突しない）
+- **派生物は原本の dir を引き継ぐので自動的に前置される**（`EncodedRelPath`、§6 参照。原本が `sites/tokyo/20240101/....m2ts` なら派生物は `sites/tokyo/20240101/...._h264.mp4` になる）
+- **前置前に ingest 済みの既存行は移行しない。** 新規 ingest 分だけ `sites/{site}/` が付き、ディスク上は前置あり/なしが混在する。`rel_path` をパースする読者がいない（rescue の資産種別判定は拡張子しか見ない）ため混在は無害 --- ただし、これは「既存行が `sites/` から始まっていない」という上記の前提の上に成り立つ断定であり、`sites/` 自体を先頭成分に使っていた既存の `filename_template` があれば話は別（`sites/` は `catalog/` / `thumbnails/` と同じ「新設の予約ディレクトリが過去の運用と衝突しないことを祈る」という一般的なトレードオフを負っている）
+- **site 名の予約名（`catalog` / `thumbnails`）の根拠は変わった。** 当初案（`{site}/` を先頭成分にする）では、site 名がこの 2 つと一致すると `catalog/` / `thumbnails/` という予約ディレクトリと直接衝突する、というのが禁止の理由だった。`sites/` を挟んだことで site 名は常に `sites/{site}/...` に閉じ込められ、トップレベルの `catalog/` / `thumbnails/` とは構造的に衝突しなくなったため、この理由は成立しなくなった。この制約は現時点ではコード上に残したままにしている（緩めるかどうかは実装ではなく issue #186 のコメントで提起した判断待ち）
 
 ## 5.1 サムネイル（M3-4）
 

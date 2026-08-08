@@ -110,7 +110,7 @@ func TestIngestWorker_FullTransfer(t *testing.T) {
 	}
 
 	// rel_path には args.Site（ここでは "default"）が前置される（issue #186 M4-14）。
-	fullPath := filepath.Join(mediaDir, "default", "test", "recording.m2ts")
+	fullPath := filepath.Join(mediaDir, "sites", "default", "test", "recording.m2ts")
 	data, err := os.ReadFile(fullPath)
 	if err != nil {
 		t.Fatalf("reading output file: %v", err)
@@ -261,7 +261,7 @@ func TestIngestWorker_SiteMatch(t *testing.T) {
 	}
 
 	// rel_path には args.Site（ここでは "site-a"）が前置される（issue #186 M4-14）。
-	fullPath := filepath.Join(mediaDir, "site-a", "match", "recording.m2ts")
+	fullPath := filepath.Join(mediaDir, "sites", "site-a", "match", "recording.m2ts")
 	data, err := os.ReadFile(fullPath)
 	if err != nil {
 		t.Fatalf("reading output file: %v", err)
@@ -357,7 +357,7 @@ func TestIngestWorker_MidTransferDisconnect(t *testing.T) {
 	}
 
 	// rel_path には args.Site（ここでは "default"）が前置される（issue #186 M4-14）。
-	fullPath := filepath.Join(mediaDir, "default", "test", "partial.m2ts")
+	fullPath := filepath.Join(mediaDir, "sites", "default", "test", "partial.m2ts")
 	data, err := os.ReadFile(fullPath)
 	if err != nil {
 		t.Fatalf("reading output file: %v", err)
@@ -521,7 +521,7 @@ func TestIngestWorker_StallDetection(t *testing.T) {
 	}
 
 	// rel_path には args.Site（ここでは "default"）が前置される（issue #186 M4-14）。
-	fullPath := filepath.Join(mediaDir, "default", "test", "stall.m2ts")
+	fullPath := filepath.Join(mediaDir, "sites", "default", "test", "stall.m2ts")
 	data, err := os.ReadFile(fullPath)
 	if err != nil {
 		t.Fatalf("reading output file: %v", err)
@@ -685,7 +685,7 @@ func TestIngestWorker_JobReexecution(t *testing.T) {
 	insertTestRecordSync(t, pool, recordingID, "rec-reexec")
 
 	// rel_path には args.Site（ここでは "default"）が前置される（issue #186 M4-14）。
-	fullPath := filepath.Join(mediaDir, "default", "test", "reexec.m2ts")
+	fullPath := filepath.Join(mediaDir, "sites", "default", "test", "reexec.m2ts")
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -807,7 +807,7 @@ func TestIngestWorker_SkipsTransferWhenAlreadyCommitted(t *testing.T) {
 	}
 
 	// rel_path には args.Site（ここでは "default"）が前置される（issue #186 M4-14）。
-	fullPath := filepath.Join(mediaDir, "default", "test", "reingest.m2ts")
+	fullPath := filepath.Join(mediaDir, "sites", "default", "test", "reingest.m2ts")
 	firstData, err := os.ReadFile(fullPath)
 	if err != nil {
 		t.Fatalf("reading output file after first Work(): %v", err)
@@ -1651,12 +1651,12 @@ func mirakcRecordServer(t *testing.T, tsData []byte, contentPath *string, conten
 
 // TestIngestWorker_RelPathPrefixedWithSite は、issue #186 (M4-14) 受け入れの
 // 1 項目目を固定する: site "tokyo" の worker が ingest した原本の
-// media_assets.rel_path が "tokyo/" で始まり、実ファイルがその下に置かれる
+// media_assets.rel_path が "sites/tokyo/" で始まり、実ファイルがその下に置かれる
 // （contentPath に階層があってもその下に入る）。
 //
-// determineRelPath の "relPath = args.Site + "/" + relPath" を削って
-// "relPath = relPath"（前置なし）に戻すと、rel_path が "20240101/prog.m2ts" の
-// ままになりこのテストは失敗する（アサーション失敗。ビルドは通る）。
+// determineRelPath の前置行（"relPath = "sites/" + args.Site + "/" + relPath"）を
+// 削って前置なしに戻すと、rel_path が "20240101/prog.m2ts" のままになりこの
+// テストは失敗する（アサーション失敗。ビルドは通る）。
 func TestIngestWorker_RelPathPrefixedWithSite(t *testing.T) {
 	tsData := makeTSData(10)
 	srv := mirakcRecordServer(t, tsData, strPtr("20240101/prog.m2ts"), "/recording/20240101/prog.m2ts")
@@ -1693,12 +1693,12 @@ func TestIngestWorker_RelPathPrefixedWithSite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetActiveOriginalMediaAsset: %v", err)
 	}
-	const wantRelPath = "tokyo/20240101/prog.m2ts"
+	const wantRelPath = "sites/tokyo/20240101/prog.m2ts"
 	if asset.RelPath != wantRelPath {
 		t.Errorf("media_assets.rel_path = %q, want %q (site prefix missing)", asset.RelPath, wantRelPath)
 	}
 
-	fullPath := filepath.Join(mediaDir, "tokyo", "20240101", "prog.m2ts")
+	fullPath := filepath.Join(mediaDir, "sites", "tokyo", "20240101", "prog.m2ts")
 	if _, err := os.Stat(fullPath); err != nil {
 		t.Errorf("expected file at %s (site-prefixed dir): %v", fullPath, err)
 	}
@@ -1706,7 +1706,7 @@ func TestIngestWorker_RelPathPrefixedWithSite(t *testing.T) {
 
 // TestIngestWorker_RelPathPrefixedWithSite_FallbackContentPath は受け入れの
 // 2 項目目を固定する: mirakc の contentPath が空で filepath.Base(record.Content.Path)
-// にフォールバックする経路でも "{site}/" が前置される。
+// にフォールバックする経路でも "sites/{site}/" が前置される。
 func TestIngestWorker_RelPathPrefixedWithSite_FallbackContentPath(t *testing.T) {
 	tsData := makeTSData(10)
 	// ContentPath を nil にしてフォールバック経路を通す。
@@ -1745,10 +1745,66 @@ func TestIngestWorker_RelPathPrefixedWithSite_FallbackContentPath(t *testing.T) 
 		t.Fatalf("GetActiveOriginalMediaAsset: %v", err)
 	}
 	// フォールバックは filepath.Base なので階層は失われ "plain.m2ts" だけが残る。
-	// そこに "tokyo/" が前置される。
-	const wantRelPath = "tokyo/plain.m2ts"
+	// そこに "sites/tokyo/" が前置される。
+	const wantRelPath = "sites/tokyo/plain.m2ts"
 	if asset.RelPath != wantRelPath {
 		t.Errorf("media_assets.rel_path = %q, want %q (site prefix missing on fallback path)", asset.RelPath, wantRelPath)
+	}
+}
+
+// TestIngestWorker_DegenerateContentPath_Rejected は、mirakc の contentPath /
+// Content.Path がどちらも空という縮退したレスポンスを、前置前に明示的に拒否する
+// ことを固定する。
+//
+// 前置なしの実装なら relPath = filepath.Base("") = "." が mediapath.Resolve に
+// そのまま渡り "path escapes the media directory" で弾かれていたが、前置後は
+// "sites/{site}/." が Join/Clean で "sites/{site}" という一見正当なパスになって
+// 素通りしてしまう（PR #196 の追レビューで発見）。determineRelPath の
+// `if relPath == "." || relPath == "/"` のガードを削るとこのテストが失敗する
+// （"Work() error = nil, want non-nil" というアサーション失敗。ビルドは通る）。
+func TestIngestWorker_DegenerateContentPath_Rejected(t *testing.T) {
+	tsData := makeTSData(10)
+	// ContentPath も Content.Path も空。
+	srv := mirakcRecordServer(t, tsData, nil, "")
+
+	mediaDir := t.TempDir()
+	mc := mirakc.NewClient(srv.URL, nil)
+
+	w := &IngestWorker{
+		MirakcClient: mc,
+		MediaDir:     mediaDir,
+		StallTimeout: 5 * time.Second,
+		Site:         "tokyo",
+	}
+
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	w.Pool = pool
+
+	recordingID := insertTestRecordingForSite(t, pool, "tokyo", 103)
+	insertTestRecordSyncForSite(t, pool, "tokyo", recordingID, "rec-tokyo-degenerate", 327361024000103)
+
+	job := &river.Job[IngestJobArgs]{
+		JobRow: &rivertype.JobRow{},
+		Args:   IngestJobArgs{Site: "tokyo", RecordID: "rec-tokyo-degenerate"},
+	}
+	if err := w.Work(context.Background(), job); err == nil {
+		t.Fatal("Work() error = nil, want non-nil for a record with no usable content path")
+	}
+
+	// 副作用（sites/tokyo をファイルとして作る等）が残っていないことを確認する。
+	sitesDir := filepath.Join(mediaDir, "sites")
+	entries, statErr := os.ReadDir(sitesDir)
+	if statErr == nil {
+		for _, e := range entries {
+			if e.Name() == "tokyo" && !e.IsDir() {
+				t.Errorf("sites/tokyo was created as a regular file (would break all future ingests for this site): %+v", e)
+			}
+		}
+	} else if !os.IsNotExist(statErr) {
+		t.Fatalf("reading %s: %v", sitesDir, statErr)
 	}
 }
 
@@ -1756,8 +1812,8 @@ func TestIngestWorker_RelPathPrefixedWithSite_FallbackContentPath(t *testing.T) 
 // （罠の核心）を固定する: 同じ contentPath を持つ 2 サイトの record を ingest
 // しても、rel_path の site 前置で実ファイルが別々になり両方が commit できる。
 //
-// 反転確認: determineRelPath の前置（"relPath = args.Site + "/" + relPath"）を
-// 削ると、2 回目の Work() が media_assets の一意索引違反
+// 反転確認: determineRelPath の前置（"relPath = "sites/" + args.Site + "/" +
+// relPath"）を削ると、2 回目の Work() が media_assets の一意索引違反
 // （CREATE UNIQUE INDEX ON media_assets (rel_path) WHERE state <> 'deleted'）で
 // 失敗し、このテストは "second Work() error" で落ちる。実際に前置行を削って
 // 確認済み（PR 本文参照）。
@@ -1812,8 +1868,8 @@ func TestIngestWorker_TwoSitesSameContentPath_DoNotCollide(t *testing.T) {
 		t.Fatalf("second Work() (site-b) error: %v (site prefix likely missing, colliding on rel_path %q)", err, sharedContentPath)
 	}
 
-	pathA := filepath.Join(mediaDir, "site-a", "shared", "recording.m2ts")
-	pathB := filepath.Join(mediaDir, "site-b", "shared", "recording.m2ts")
+	pathA := filepath.Join(mediaDir, "sites", "site-a", "shared", "recording.m2ts")
+	pathB := filepath.Join(mediaDir, "sites", "site-b", "shared", "recording.m2ts")
 
 	dataA, err := os.ReadFile(pathA)
 	if err != nil {
@@ -1843,10 +1899,10 @@ func TestIngestWorker_TwoSitesSameContentPath_DoNotCollide(t *testing.T) {
 	if assetA.RelPath == assetB.RelPath {
 		t.Errorf("both sites committed the same rel_path %q; site prefix must make them distinct", assetA.RelPath)
 	}
-	if assetA.RelPath != "site-a/"+sharedContentPath {
-		t.Errorf("site-a rel_path = %q, want %q", assetA.RelPath, "site-a/"+sharedContentPath)
+	if assetA.RelPath != "sites/site-a/"+sharedContentPath {
+		t.Errorf("site-a rel_path = %q, want %q", assetA.RelPath, "sites/site-a/"+sharedContentPath)
 	}
-	if assetB.RelPath != "site-b/"+sharedContentPath {
-		t.Errorf("site-b rel_path = %q, want %q", assetB.RelPath, "site-b/"+sharedContentPath)
+	if assetB.RelPath != "sites/site-b/"+sharedContentPath {
+		t.Errorf("site-b rel_path = %q, want %q", assetB.RelPath, "sites/site-b/"+sharedContentPath)
 	}
 }

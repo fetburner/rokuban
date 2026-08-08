@@ -1172,6 +1172,70 @@ func TestDeleteReconcileWorker_UntilEncoded_PendingJobOnOneOfMultipleCandidates_
 	}
 }
 
+// TestDeleteReconcileWorker_MixedSitePrefixTree_NoFalseOrphans は、issue #186
+// (M4-14) の受け入れ「前置前に ingest 済みの既存行がそのまま削除 reconcile の
+// 対象であり続ける」を、コードを読んだ論証だけでなく実測で固定する。
+//
+// M4-14 は新規 ingest 分だけ rel_path に "sites/{site}/" を前置し、既存行は
+// 移行しない（マイグレーションを書かない）ため、本番のメディアディレクトリは
+// 前置あり ("sites/tokyo/...") と前置なし ("legacy/...") が混在するツリーに
+// なる。walkMediaFiles（internal/worker/delete_reconcile.go）は catalog.Subdir
+// の完全一致だけを SkipDir する汎用的な Walk で、site 由来の階層を特別扱いして
+// いないので理屈上は無関係のはずだが、将来 catalog.Subdir の判定が
+// strings.HasPrefix 等に緩められた場合に "sites/" を誤って引っ掛ける退行を防ぐ
+// ガードとしてここに固定する。
+func TestDeleteReconcileWorker_MixedSitePrefixTree_NoFalseOrphans(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+
+	legacyRecordingID := insertTestRecording(t, pool)
+	legacyAssetID := seedOriginalAsset(t, pool, mediaDir, legacyRecordingID,
+		"legacy/original.m2ts", []byte("legacy data"))
+
+	prefixedRecordingID := insertTestRecordingForSite(t, pool, "tokyo", 9001)
+	prefixedAssetID := seedOriginalAsset(t, pool, mediaDir, prefixedRecordingID,
+		"sites/tokyo/new/original.m2ts", []byte("prefixed data"))
+
+	// mtime を古くする。orphan 候補判定は mtime が新しい間はスキップするため
+	// （TestDeleteReconcileWorker_Orphan_RecentMTime_NotRegistered 参照）、
+	// mtime が新しいままだと rel_path の突き合わせが実際に走らずこのテストが
+	// 何も保証しないテストになる。両ファイルとも古くして突き合わせ自体を
+	// 通過させることで、「walkMediaFiles が返す relPath と media_assets.rel_path
+	// の突き合わせが両方の形（前置あり/なし）で成立する」ことを固定する。
+	old := time.Now().Add(-30 * 24 * time.Hour)
+	for _, rel := range []string{"legacy/original.m2ts", filepath.Join("sites", "tokyo", "new", "original.m2ts")} {
+		if err := os.Chtimes(filepath.Join(mediaDir, rel), old, old); err != nil {
+			t.Fatalf("chtimes %s: %v", rel, err)
+		}
+	}
+
+	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, OrphanMTimeGrace: 7 * 24 * time.Hour}
+	if err := w.Work(context.Background(), nil); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+
+	if got := assetState(t, pool, legacyAssetID); got != "active" {
+		t.Errorf("legacy (unprefixed) asset state = %q, want active (must survive orphan sweep)", got)
+	}
+	if got := assetState(t, pool, prefixedAssetID); got != "active" {
+		t.Errorf("sites/-prefixed asset state = %q, want active (must survive orphan sweep)", got)
+	}
+	if !fileExists(filepath.Join(mediaDir, "legacy", "original.m2ts")) {
+		t.Error("legacy (unprefixed) file was removed, want kept")
+	}
+	if !fileExists(filepath.Join(mediaDir, "sites", "tokyo", "new", "original.m2ts")) {
+		t.Error("sites/-prefixed file was removed, want kept")
+	}
+
+	var orphanCount int
+	if err := pool.QueryRow(context.Background(), "SELECT count(*) FROM orphan_files").Scan(&orphanCount); err != nil {
+		t.Fatalf("querying orphan_files: %v", err)
+	}
+	if orphanCount != 0 {
+		t.Errorf("orphan_files count = %d, want 0 (both legacy and site-prefixed active assets must not be flagged as orphans)", orphanCount)
+	}
+}
+
 // mtime が新しいファイルは孤児候補として記録しない。
 func TestDeleteReconcileWorker_Orphan_RecentMTime_NotRegistered(t *testing.T) {
 	pool := setupTestPool(t)
