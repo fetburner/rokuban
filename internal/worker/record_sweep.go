@@ -57,9 +57,13 @@ func (RecordSweepArgs) Kind() string { return "record_sweep" }
 // 定期実行のヒントを合流させる機構でもある（ruler_pass / reconcile_pass と同じ形）。
 // ByState は pendingJobStates に絞る。理由は ReconcilePassArgs.InsertOpts のコメント
 // 参照（既定のまま completed を含めると定期ジョブが実質ワンショットになる）。
-func (RecordSweepArgs) InsertOpts() river.InsertOpts {
+//
+// Queue は a.Site で修飾する（qualifyQueueName、issue #185 M4-13）。record_sweep は
+// mirakc への到達性を要する site 単位の仕事なので、多サイト構成で他サイトの
+// worker が掴まないよう、キュー選択の時点で分離する。
+func (a RecordSweepArgs) InsertOpts() river.InsertOpts {
 	return river.InsertOpts{
-		Queue: recordSweepQueue,
+		Queue: qualifyQueueName(recordSweepQueue, a.Site),
 		UniqueOpts: river.UniqueOpts{
 			ByArgs:  true,
 			ByState: pendingJobStates,

@@ -55,9 +55,13 @@ func (ReconcilePassArgs) Kind() string { return "reconcile_pass" }
 // ByState は pendingJobStates に絞る。既定（completed を含む）のままだと、一度
 // 成功したサイトの引数は二度と投入できず、定期ジョブが実質ワンショットになる
 // （ruler_pass / epg_sync と同じ理由）。
-func (ReconcilePassArgs) InsertOpts() river.InsertOpts {
+//
+// Queue は a.Site で修飾する（qualifyQueueName、issue #185 M4-13）。reconciler は
+// mirakc への到達性を要する site 単位の仕事なので、多サイト構成で他サイトの
+// worker が掴まないよう、キュー選択の時点で分離する。
+func (a ReconcilePassArgs) InsertOpts() river.InsertOpts {
 	return river.InsertOpts{
-		Queue: reconcilerQueue,
+		Queue: qualifyQueueName(reconcilerQueue, a.Site),
 		UniqueOpts: river.UniqueOpts{
 			ByArgs:  true,
 			ByState: pendingJobStates,

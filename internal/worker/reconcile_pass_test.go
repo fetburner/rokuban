@@ -126,8 +126,9 @@ func TestReconcilePassPeriodicJob(t *testing.T) {
 		if event.Job.Kind != "reconcile_pass" {
 			t.Errorf("job kind = %q, want %q", event.Job.Kind, "reconcile_pass")
 		}
-		if event.Job.Queue != reconcilerQueue {
-			t.Errorf("job queue = %q, want %q", event.Job.Queue, reconcilerQueue)
+		wantQueue := qualifyQueueName(reconcilerQueue, testSite)
+		if event.Job.Queue != wantQueue {
+			t.Errorf("job queue = %q, want %q", event.Job.Queue, wantQueue)
 		}
 		var args ReconcilePassArgs
 		if err := json.Unmarshal(event.Job.EncodedArgs, &args); err != nil {

@@ -57,6 +57,12 @@ func (RulerPassArgs) Kind() string { return "ruler_pass" }
 // ByState は pendingJobStates に絞る。既定（completed を含む）のままだと、一度
 // 成功したサイトの引数は二度と投入できず、定期ジョブが実質ワンショットになる
 // （epg_sync と同じ理由。InsertOpts のコメント参照）。
+//
+// **Queue は site で修飾しない**（ingest/epg/reconciler/watcher と異なる。issue #185
+// M4-13 の「含むもの」1 の表）。ruler は mirakc に一切触れない DB のみの仕事
+// （下記コメント参照）で、キューも site 非依存 --- args.Site はクエリの絞り込みに
+// 使うだけで、キュー選択の分離が必要な理由（他サイトの mirakc に誤って触れる）が
+// 存在しない。worker.siteBoundQueueNames にも入れていない。
 func (RulerPassArgs) InsertOpts() river.InsertOpts {
 	return river.InsertOpts{
 		Queue: rulerQueue,

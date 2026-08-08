@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -110,8 +111,9 @@ func TestEpgSyncPeriodicJob(t *testing.T) {
 		if event.Job.Kind != "epg_sync" {
 			t.Errorf("job kind = %q, want %q", event.Job.Kind, "epg_sync")
 		}
-		if event.Job.Queue != epgQueue {
-			t.Errorf("job queue = %q, want %q", event.Job.Queue, epgQueue)
+		wantQueue := qualifyQueueName(epgQueue, "default")
+		if event.Job.Queue != wantQueue {
+			t.Errorf("job queue = %q, want %q", event.Job.Queue, wantQueue)
 		}
 		var args EpgSyncArgs
 		if err := json.Unmarshal(event.Job.EncodedArgs, &args); err != nil {
@@ -589,9 +591,12 @@ func TestRequiresEncodeTools(t *testing.T) {
 
 // RequiresSiteBinding は cmd/rokuban が「worker ロールを 0 サイト束縛
 // （issue #183 M4-11 の --sites=）で起動してよいか」を判定する唯一の材料。
-// ここが誤ると、site 単位のジョブ（ingest/epg/ruler/reconciler/watcher）を
+// ここが誤ると、site 単位のジョブ（ingest/epg/reconciler/watcher）を
 // 引く worker が空文字列 site のまま起動し、届いたジョブの site と一致せず
 // 全滅して再試行し続ける（ログにも出ない）。
+//
+// ruler は site 非依存（issue #185 M4-13。#138 の決定表 --- DB のみで mirakc に
+// 触れない）なので、ruler だけの購読は 0 サイト束縛を要求しない。
 func TestRequiresSiteBinding(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -601,10 +606,10 @@ func TestRequiresSiteBinding(t *testing.T) {
 		{"empty means all queues, including site-bound ones", nil, true},
 		{"explicit ingest", []string{ingestQueue}, true},
 		{"explicit epg", []string{epgQueue}, true},
-		{"explicit ruler", []string{rulerQueue}, true},
+		{"explicit ruler does not require binding (site-independent, issue #185)", []string{rulerQueue}, false},
 		{"explicit reconciler", []string{reconcilerQueue}, true},
 		{"explicit watcher (record_sweep)", []string{recordSweepQueue}, true},
-		{"encode/thumbnail only excludes site-bound queues", []string{encodeQueue, thumbnailQueue}, false},
+		{"encode/thumbnail/cleanup/ruler only excludes site-bound queues", []string{encodeQueue, thumbnailQueue, cleanupQueue, rulerQueue}, false},
 		{"encode/thumbnail plus one site-bound queue still requires binding", []string{encodeQueue, ingestQueue}, true},
 	}
 	for _, tt := range tests {
@@ -614,6 +619,119 @@ func TestRequiresSiteBinding(t *testing.T) {
 			}
 		})
 	}
+}
+
+// この 1 つのテストが、M4-11 が M4-13 に申し送った罠を直接固定する（issue #185
+// のコメント）: worker.queues（config）は論理名のままで、RequiresSiteBinding /
+// RequiresEncodeTools はその論理名に対して判定する。キュー名を site で修飾する
+// 実装が、誤ってこの論理名そのもの（キュー定数や siteBoundQueueNames の要素）を
+// 修飾済みの文字列に変えてしまうと、cmd/rokuban.validateSiteBinding が
+// worker.queues の値と一致判定できなくなり、0 サイト束縛の worker が site 単位の
+// キューを購読できる状態のまま起動時ガードを素通りする。
+func TestRequiresSiteBinding_LogicalQueueNamesStayUnqualified(t *testing.T) {
+	for _, base := range []string{ingestQueue, epgQueue, reconcilerQueue, recordSweepQueue} {
+		if strings.Contains(base, "_") {
+			t.Errorf("queue base %q looks site-qualified; worker.queues (config) と "+
+				"RequiresSiteBinding/RequiresEncodeTools は論理名（unqualified）を前提にしている", base)
+		}
+		if !RequiresSiteBinding([]string{base}) {
+			t.Errorf("RequiresSiteBinding([%q]) = false, want true (site-bound queue のはず)", base)
+		}
+	}
+}
+
+// qualifyQueueName は base_site の形にする。空文字列 site は db.DefaultSite に
+// 解決する（verifySite / DeleteReconcileWorker.Work と同じ規約。issue #185）。
+func TestQualifyQueueName(t *testing.T) {
+	tests := []struct {
+		name string
+		base string
+		site string
+		want string
+	}{
+		{"basic", ingestQueue, "tokyo", "ingest_tokyo"},
+		{"empty site resolves to db.DefaultSite", epgQueue, "", "epg_default"},
+		{"reconciler", reconcilerQueue, "takamatsu", "reconciler_takamatsu"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := qualifyQueueName(tt.base, tt.site); got != tt.want {
+				t.Errorf("qualifyQueueName(%q, %q) = %q, want %q", tt.base, tt.site, got, tt.want)
+			}
+		})
+	}
+}
+
+// physicalQueueName は siteBoundQueueNames に含まれる論理名だけ修飾し、
+// それ以外（ruler/encode/thumbnail/cleanup/default）はそのまま通す。
+func TestPhysicalQueueName(t *testing.T) {
+	tests := []struct {
+		name      string
+		logical   string
+		boundSite string
+		want      string
+	}{
+		{"ingest gets qualified", ingestQueue, "tokyo", "ingest_tokyo"},
+		{"epg gets qualified", epgQueue, "tokyo", "epg_tokyo"},
+		{"reconciler gets qualified", reconcilerQueue, "tokyo", "reconciler_tokyo"},
+		{"watcher (record_sweep) gets qualified", recordSweepQueue, "tokyo", "watcher_tokyo"},
+		{"ruler is NOT qualified (site-independent, issue #185)", rulerQueue, "tokyo", rulerQueue},
+		{"encode is NOT qualified", encodeQueue, "tokyo", encodeQueue},
+		{"thumbnail is NOT qualified", thumbnailQueue, "tokyo", thumbnailQueue},
+		{"cleanup is NOT qualified", cleanupQueue, "tokyo", cleanupQueue},
+		{"default is NOT qualified", river.QueueDefault, "tokyo", river.QueueDefault},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := physicalQueueName(tt.logical, tt.boundSite); got != tt.want {
+				t.Errorf("physicalQueueName(%q, %q) = %q, want %q", tt.logical, tt.boundSite, got, tt.want)
+			}
+		})
+	}
+}
+
+// ValidateSiteForQueueNames は、site 修飾後のキュー名が River の 64 文字上限
+// （riverQueueNameMaxLen）を超えると起動時エラーにする（issue #185 の「罠」:
+// internal/config.mirakcSiteNameMaxLen（64）はこの修飾を見込んでいないため、
+// `reconciler_`（11 文字）のような長い prefix が付く分だけ実質の上限は
+// site 名の側で 64 より短くなる）。
+func TestValidateSiteForQueueNames(t *testing.T) {
+	t.Run("short site name is fine", func(t *testing.T) {
+		if err := ValidateSiteForQueueNames("tokyo"); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("53-char site name (the boundary for the longest prefix, reconciler_) is fine", func(t *testing.T) {
+		// River の上限は 64 文字（issue #185 が固定する値そのもの。riverQueueNameMaxLen
+		// を参照するとこの値自体の変化を検出できなくなるため、ここは意図的にリテラルで
+		// 書く）。"reconciler_" は 11 文字なので、64 - 11 = 53 文字まではちょうど収まる。
+		site := strings.Repeat("a", 53)
+		if err := ValidateSiteForQueueNames(site); err != nil {
+			t.Errorf("unexpected error for %d-char site name: %v", len(site), err)
+		}
+	})
+
+	t.Run("54-char site name (one over the boundary) is an error", func(t *testing.T) {
+		site := strings.Repeat("a", 54)
+		err := ValidateSiteForQueueNames(site)
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "reconciler_") {
+			t.Errorf("error = %v, want mention of the offending queue name", err)
+		}
+	})
+
+	t.Run("mirakcSiteNameMaxLen(64) alone would accept a name that breaks reconciler's queue", func(t *testing.T) {
+		// internal/config はキュー修飾を見込んでいないので 64 文字までは通す。
+		// ValidateSiteForQueueNames はその差分を検出する側であることを示す
+		// （config 側のテストではなく、ここでの検証範囲を明示するための対照）。
+		site := strings.Repeat("a", 64)
+		if err := ValidateSiteForQueueNames(site); err == nil {
+			t.Fatal("expected error for a 64-char site name once queue-qualified, got nil")
+		}
+	})
 }
 
 type noOpArgs struct{}

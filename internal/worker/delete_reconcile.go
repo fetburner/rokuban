@@ -79,9 +79,14 @@ func (DeleteReconcileArgs) Kind() string { return "delete_reconcile" }
 //
 // 同一引数の同時実行を UniqueOpts で防ぐ。ByState は pendingJobStates に絞る
 // （completed を含めると定期ジョブが実質ワンショットになる）。
+//
+// Queue は cleanupQueue（issue #185 M4-13。以前は river.QueueDefault だった）。
+// site 非依存の物理削除系ジョブ専用のキューに分けることで、`worker.queues` を
+// 指定しないサイト側 worker（既定は全キュー購読）が中央の削除 reconcile まで
+// 掴んでしまう経路を塞ぐ（cleanupQueue のコメント参照）。
 func (DeleteReconcileArgs) InsertOpts() river.InsertOpts {
 	return river.InsertOpts{
-		Queue: river.QueueDefault,
+		Queue: cleanupQueue,
 		UniqueOpts: river.UniqueOpts{
 			ByArgs:  true,
 			ByState: pendingJobStates,
@@ -110,8 +115,31 @@ type DeleteReconcileWorker struct {
 	Pool     *pgxpool.Pool
 	MediaDir string
 
-	// Site は config.mirakc.site（issue #31）。サーキットブレーカーのキーに使う。
-	// 空なら db.DefaultSite を使う（テストの部分構成を許す）。
+	// Site はサーキットブレーカーのキーに使う（issue #31）。空なら db.DefaultSite
+	// （"default"）を使う。
+	//
+	// # 中央（0 サイト束縛）の cleanup worker では db.DefaultSite が「唯一の選択」になる
+	//
+	// issue #185 M4-13 で delete_reconcile は site 非依存の cleanup キューに移った
+	// ため、中央プロセス（`--sites=`、issue #183 M4-11）でも動かせるようになった。
+	// 中央プロセスでは boundSite が無く Site="" になるので、この決定は
+	// 「db.DefaultSite に解決する（現状維持）」を選んだ:
+	//
+	//   - 対になる api ロールの `POST /api/sites/{site}/breakers/{name}/resume`
+	//     （internal/api/breakers.go）は `req.Site != h.site` を要求し、h.site は
+	//     `cfg.Mirakc.Site`（`mirakcs:` レジストリ経由の束縛サイトではない、単一
+	//     `mirakc:` オブジェクトの値）。この値は config.defaults() が常に
+	//     "default" を既定にする（`mirakc:` / `mirakcs:` の同時指定は起動エラー
+	//     なので、`mirakcs:` を使う構成では `mirakc.site` は書かれず既定値のまま
+	//     残る）。したがって db.DefaultSite に解決する限り、`mirakcs: [tokyo,
+	//     takamatsu]` のように登録に "default" が無い構成でも、api 側の h.site と
+	//     常に一致し続ける --- 新しい不一致は生まれない
+	//   - `mirakcs:` レジストリの実際のサイト名（tokyo 等）でキーする案は、api が
+	//     まだ site 非依存化されていない（issue #184 M4-12 が対象）ため
+	//     h.site と一致する保証がなく、むしろ resume を新たに壊しうる
+	//   - api ロールの site 非依存化（M4-12）が終わったら、この決定を読み直す
+	//     こと --- そのときは「サイト非依存の仕事のブレーカーをどう見せるか」を
+	//     api 側で決め直せる
 	Site string
 
 	TrashRetention    time.Duration

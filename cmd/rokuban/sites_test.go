@@ -134,6 +134,18 @@ func TestValidateSiteBinding(t *testing.T) {
 		{"worker with one site and default queues is fine", []string{"worker"}, []config.MirakcSite{tokyo}, nil, false},
 		{"worker with two sites is an error", []string{"worker"}, []config.MirakcSite{tokyo, takamatsu}, nil, true},
 		{
+			"worker with zero sites and queues restricted to ruler (site-independent, issue #185) is fine",
+			[]string{"worker"}, nil, []string{"ruler"}, false,
+		},
+		{
+			"worker with zero sites and queues restricted to cleanup (issue #185, new queue) is fine",
+			[]string{"worker"}, nil, []string{"cleanup"}, false,
+		},
+		{
+			"worker with zero sites and queues including reconciler is an error",
+			[]string{"worker"}, nil, []string{"reconciler", "ruler"}, true,
+		},
+		{
 			"api alone with two sites is fine (api doesn't need a single site)",
 			[]string{"api"}, []config.MirakcSite{tokyo, takamatsu}, nil, false,
 		},

@@ -1,11 +1,16 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/fetburner/rokuban/internal/config"
+	"github.com/fetburner/rokuban/internal/role"
+	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 func writeServerTestConfig(t *testing.T, content string) string {
@@ -158,5 +163,78 @@ func TestResolveRiverClientKind(t *testing.T) {
 				t.Errorf("resolveRiverClientKind(%v) = %v, want %v", tt.roles, got, tt.want)
 			}
 		})
+	}
+}
+
+// watcherLockName は site ごとに異なるキーを生成すること。site を含めないと、
+// 多サイト構成で 2 つの watcher が同じ pg_advisory_lock を取り合い、負けた側の
+// mirakc の SSE を誰も購読しなくなる（issue #185 M4-13「含むもの」8）。
+func TestWatcherLockName_DiffersPerSite(t *testing.T) {
+	tokyoLock := watcherLockName("tokyo")
+	takamatsuLock := watcherLockName("takamatsu")
+	if tokyoLock == takamatsuLock {
+		t.Fatalf("watcherLockName(tokyo) == watcherLockName(takamatsu) = %q, want distinct names", tokyoLock)
+	}
+	if tokyoLock != watcherLockName("tokyo") {
+		t.Errorf("watcherLockName(tokyo) is not deterministic: %q vs %q", tokyoLock, watcherLockName("tokyo"))
+	}
+}
+
+// TestWatcherLockName_MultiSiteIndependence は watcherLockName が実際に
+// pg_advisory_lock のキーとして機能し、2 サイト構成で両方の watcher が
+// 同時にリーダーを取れることを確認する（issue #185 の受け入れ基準:
+// 「2 サイト構成で watcher を 2 プロセス（サイトごとに 1）立てると両方が
+// mirakc の SSE を購読する」）。
+//
+// 対になる確認（同一サイトで 2 プロセス立てると片方だけが動く）は
+// internal/role.TestTryAcquire_Exclusive がキー文字列一般で固定済みなので、
+// ここでは「site を変えると独立したロックになる」ことだけを固定する。
+func TestWatcherLockName_MultiSiteIndependence(t *testing.T) {
+	dbURL := testutil.DatabaseURL(t)
+	ctx := context.Background()
+
+	poolTokyo, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("creating poolTokyo: %v", err)
+	}
+	defer poolTokyo.Close()
+
+	poolTakamatsu, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("creating poolTakamatsu: %v", err)
+	}
+	defer poolTakamatsu.Close()
+
+	acquiredTokyo, releaseTokyo, err := role.TryAcquire(ctx, poolTokyo, watcherLockName("tokyo"))
+	if err != nil {
+		t.Fatalf("TryAcquire(tokyo): %v", err)
+	}
+	if !acquiredTokyo {
+		t.Fatal("expected tokyo watcher to acquire its lock")
+	}
+	defer releaseTokyo()
+
+	acquiredTakamatsu, releaseTakamatsu, err := role.TryAcquire(ctx, poolTakamatsu, watcherLockName("takamatsu"))
+	if err != nil {
+		t.Fatalf("TryAcquire(takamatsu): %v", err)
+	}
+	if !acquiredTakamatsu {
+		t.Fatal("expected takamatsu watcher to also acquire its own lock while tokyo holds its lock " +
+			"(site 修飾が無いと両者は同じキーを取り合い、この 2 番目の TryAcquire が失敗する)")
+	}
+	defer releaseTakamatsu()
+
+	// 同一サイトの 2 プロセス目は従来どおり排他される（片方だけが動く）。
+	poolTokyo2, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("creating poolTokyo2: %v", err)
+	}
+	defer poolTokyo2.Close()
+	acquiredTokyo2, _, err := role.TryAcquire(ctx, poolTokyo2, watcherLockName("tokyo"))
+	if err != nil {
+		t.Fatalf("TryAcquire(tokyo) second process: %v", err)
+	}
+	if acquiredTokyo2 {
+		t.Fatal("expected the second tokyo watcher to NOT acquire the lock (already held)")
 	}
 }

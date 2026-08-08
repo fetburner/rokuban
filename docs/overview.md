@@ -136,16 +136,20 @@ nginx は構成図上の「箱」ではなく、推奨デプロイパターン�
 
 `worker` が自宅側にあるのは、**キューの置き場所の制約**であってロールの都合ではない。
 
-| キュー | 要求 | 置き場所 |
-|---|---|---|
-| `reconciler` / `epg` / `watcher` | mirakc への到達性 | 自宅側 |
-| `ingest` | mirakc への到達性 + ファイルシステム | 自宅側 |
-| `encode` / `thumbnail` / `cleanup`（M3） | ファイルシステム | 自宅側 |
-| `ruler` | DB のみ | どちらでも |
+| キュー | 要求 | 置き場所 | site 軸 |
+|---|---|---|---|
+| `reconciler` / `epg`（+`tuner_sync`）/ `watcher` | mirakc への到達性 | 自宅側 | **束縛**（キュー名を `_<site>` で修飾。issue #185 M4-13） |
+| `ingest` | mirakc への到達性 + ファイルシステム | 自宅側 | **束縛**（同上） |
+| `encode` / `thumbnail` / `cleanup`（`delete_reconcile` / `catalog_export`） | ファイルシステム | 自宅側 | 非依存（アーカイブは単一） |
+| `ruler` | DB のみ | どちらでも | 非依存（`args.Site` はクエリの絞り込み） |
 
 ロールを増やさずキューの割り当てだけで置き場所が決まるのは、ロールが「プロセスの形」だけを表しているため。
 `worker.queues`（config.yml。空なら全キュー）はデプロイ時のパラメータであり、同じイメージ・同じロール名で
 置き場所ごとに異なるキューを引かせる（[operations.md](operations.md) §5）。
+
+**多サイト構成では `worker.queues` に書く名前は論理名（`ingest` 等）のままで、実際に Insert/購読する
+物理キュー名（`ingest_tokyo` 等）はプロセスが自分の束縛サイトで展開する。** サイトごとに ConfigMap を
+分けずに済ませるための設計（issue #185 M4-13。詳細は [operations.md](operations.md) §5）。
 
 自宅サーバーが落ちていても番組表・録画一覧・予約操作ができ（DB に積まれ、復帰後 reconciler が収束）、メディア視聴だけは自宅到達が必要と割り切る。SSE は長寿命接続なのでサーバーレスには乗せず、CDN のパスルーティングで `/api/events` だけ notifier ロールへ振り分ける（詳細: [api.md](api.md)）。notifier は mirakc への到達性を必要としない（Postgres の NOTIFY を配るだけ）ため、クラウド側に常駐プロセスとして置いても自宅側に置いても成立する。
 

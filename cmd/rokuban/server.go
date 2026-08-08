@@ -69,6 +69,16 @@ func newServerCmd() *cobra.Command {
 			if err := validateSiteBinding(roles, bound, cfg.Worker.Queues); err != nil {
 				return err
 			}
+			// site 名を site 単位のキューに修飾したときに River の 64 文字上限を
+			// 超えないことを検証する（issue #185 の「罠」。
+			// internal/config.mirakcSiteNameMaxLen（64）はこの修飾を見込んでいない
+			// ため、`reconciler_` のような長い prefix が付く分だけ実質の上限は
+			// site 名の側で短くなる。worker.ValidateSiteForQueueNames 参照）。
+			for _, s := range bound {
+				if err := worker.ValidateSiteForQueueNames(s.Site); err != nil {
+					return err
+				}
+			}
 			// boundSite は「ちょうど 1 サイトに束縛されている」場合だけ非ゼロ値になる。
 			// 0 サイト（中央プロセス）では空のまま渡し、worker/watcher 側の既定の
 			// site 未設定規約（空文字列 = db.DefaultSite に解決 / 定期ジョブ未登録）に
@@ -272,6 +282,13 @@ func newServerCmd() *cobra.Command {
 					Cleanup:                  cfg.Cleanup,
 				})
 				clientCfg := worker.ClientConfig{
+					// BoundSite は site 単位のキュー（ingest/epg/reconciler/watcher）を
+					// 物理名（`<base>_<site>`）に展開するのに使う（issue #185 M4-13）。
+					// boundSite.Site は 0 サイト束縛（中央プロセス）では空文字列のままで、
+					// worker.qualifyQueueName が db.DefaultSite に解決する --- 0 サイト
+					// 束縛の worker がこれらのキューを要求しないことは
+					// validateSiteBinding が起動時に強制している。
+					BoundSite:            boundSite.Site,
 					IngestConcurrency:    cfg.Ingest.Concurrency,
 					EncodeConcurrency:    cfg.Encode.Concurrency,
 					ThumbnailConcurrency: cfg.Encode.ThumbnailConcurrency,
@@ -327,6 +344,13 @@ func newServerCmd() *cobra.Command {
 					continue
 				}
 				roleName := r
+				// lockName は advisory lock のキー（role.RunSingleton の第 3 引数）。
+				// watcher だけは site で修飾する（watcherLockName、issue #185 M4-13
+				// 「含むもの」8）。修飾しないと、多サイト構成で 2 つの watcher が
+				// 同じロックを取り合い、負けた側の mirakc の SSE を誰も購読しなくなる
+				// （issue #183 本文。負けた側は "role already held by another process"
+				// を出して 15 秒ごとにポーリングし続けるだけなので、ログ上は正常に見える）。
+				lockName := roleName
 				eg.Go(func() error {
 					roleFunc := func(ctx context.Context) error {
 						slog.Info("role started", "role", roleName)
@@ -341,8 +365,9 @@ func newServerCmd() *cobra.Command {
 						mc := mirakc.NewClient(boundSite.URL, nil)
 						w := watcher.New(boundSite.Site, mc, pool, riverClient, worker.NewIngestArgs, webhookClient)
 						roleFunc = w.Run
+						lockName = watcherLockName(boundSite.Site)
 					}
-					return role.RunSingleton(egCtx, pool, roleName, roleFunc, nil)
+					return role.RunSingleton(egCtx, pool, lockName, roleFunc, nil)
 				})
 			}
 
@@ -427,4 +452,15 @@ func resolveRiverClientKind(roles []string) riverClientKind {
 	default:
 		return riverClientNone
 	}
+}
+
+// watcherLockName は watcher ロールの pg_advisory_lock キー（role.RunSingleton
+// の第 3 引数）を site で修飾した名前を返す（issue #185 M4-13「含むもの」8）。
+//
+// site を含めないと、多サイト構成で 2 つの watcher プロセスが同じロックを
+// 取り合い、負けた側の mirakc の SSE を誰も購読しなくなる（issue #183 本文）。
+// validateSiteBinding が watcher ロールを常にちょうど 1 サイト束縛に限定して
+// いるので、呼び出し側で site が空文字列になることはない。
+func watcherLockName(site string) string {
+	return "watcher:" + site
 }

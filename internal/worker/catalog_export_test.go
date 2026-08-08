@@ -97,8 +97,8 @@ func TestCatalogExportArgs_KindAndQueue(t *testing.T) {
 		t.Errorf("Kind = %q", args.Kind())
 	}
 	opts := args.InsertOpts()
-	if opts.Queue != river.QueueDefault {
-		t.Errorf("Queue = %q, want default", opts.Queue)
+	if opts.Queue != cleanupQueue {
+		t.Errorf("Queue = %q, want %q", opts.Queue, cleanupQueue)
 	}
 	// UniqueOpts が設定されていること（空 args の同時実行を防ぐ）。
 	if !opts.UniqueOpts.ByArgs {
