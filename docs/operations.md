@@ -96,7 +96,16 @@ ruler / reconciler / record_sweep（watcher の 3 段構えのうち (c) 定期�
 
 3 番目が k8s 特有の落とし穴。`PeriodicJobs` はリーダーだけが投入するので、worker が 0 にスケールすると誰も投入しない（[データ層](data.md) §2）。`rokuban enqueue` を叩く CronJob が設定されているかを最初に疑う。
 
-手動で走らせたいときは `rokuban enqueue <job>`（`epg-sync` / `ruler-pass` / `reconcile-pass` / `record-sweep`）。既に待機中なら投入せず終了コード 0 を返すので、cron から重ねて叩いても安全。
+手動で走らせたいときは `rokuban enqueue <job>`。既に待機中なら投入せず終了コード 0 を返すので、cron から重ねて叩いても安全。
+
+**site 束縛ジョブと site 非依存ジョブで `--site` の要否が違う**（issue #200）:
+
+| 種別 | ジョブ | `--site` | CronJob の立て方 |
+|---|---|---|---|
+| site 束縛 | `epg-sync` / `tuner-sync` / `ruler-pass` / `reconcile-pass` / `record-sweep` | 多サイトでは必須（1 サイトなら省略可） | **サイトごとに 1 本**（`--site tokyo` 等） |
+| site 非依存 | `catalog-export` | **付けない**（付けるとエラー） | **全体で 1 本**（サイトごとに立てない） |
+
+`catalog-export` はアーカイブが単一なので site の属性を持たない。サイトごとの CronJob から叩くと N 回投入される（River の一意制約で 1 本に合流はするが意図が読めない）。
 
 **record_sweep には ruler / reconciler と違ってヒント経路（前倒し投入）がない**。定期投入だけが契機で、間隔は既定 5 分（`worker.RecordSweepInterval`、旧 watcher の `ReconcileInterval` を継承）。SSE 再接続をヒントにする案は検討したが、`internal/mirakc.Client.Subscribe` が再接続を内部に隠していて呼び出し側に通知できないため見送った（[録画エンジン](recording.md) §3.3「record_sweep の起動契機」）。取りこぼしの実害は SSE の (a)(b) が大半を吸収し、record_sweep は定期パスとして収束させる保険という位置づけなので、5 分間隔で十分と判断している。
 

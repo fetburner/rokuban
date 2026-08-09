@@ -57,13 +57,19 @@ M2 の待ち時間はほぼこの表で決まる。**定期パスが真実**で�
   CronJob から `rokuban enqueue` で投入する
 
 手で即時実行できる。ジョブ名はハイフン区切り（`epg-sync` / `tuner-sync` /
-`ruler-pass` / `reconcile-pass` / `record-sweep`）。
+`ruler-pass` / `reconcile-pass` / `record-sweep` / `catalog-export`）。
+site 束縛ジョブは多サイトでは `--site` が必須。`catalog-export` だけ site 非依存
+で `--site` を付けない（[operations.md](../operations.md) §ジョブ化されたループの監視）。
 
 ```sh
 docker compose exec rokuban rokuban enqueue ruler-pass --config /config.yml
 # inserted job "ruler-pass" (id=42) for site "default"
 # 既に待機中なら投入されず、終了コードは 0 のまま:
 #   job "ruler-pass" already pending for site "default", not inserted
+
+# catalog-export は --site なし（全体で 1 本）
+docker compose exec rokuban rokuban enqueue catalog-export --config /config.yml
+# inserted job "catalog-export" (id=43)
 ```
 
 **ルールを作ってから録画が始まるまでに待つものは 3 段ある。**

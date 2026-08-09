@@ -6,6 +6,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
+
+	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -155,13 +158,21 @@ func TestRunEnqueue_TunerSync(t *testing.T) {
 }
 
 // catalog-export も投入できること（M3-9 / issue #71）。
+// site 非依存なので site は空で渡す（issue #200）。
 func TestRunEnqueue_CatalogExport(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
 	var out bytes.Buffer
-	if err := runEnqueue(ctx, pool, "catalog-export", db.DefaultSite, &out); err != nil {
+	if err := runEnqueue(ctx, pool, "catalog-export", "", &out); err != nil {
 		t.Fatalf("runEnqueue: %v", err)
+	}
+	if !strings.Contains(out.String(), "inserted job") {
+		t.Errorf("output = %q, want to contain %q", out.String(), "inserted job")
+	}
+	// site 非依存のログは "for site" を付けない（運用者が効いていると誤解しないため）。
+	if strings.Contains(out.String(), "for site") {
+		t.Errorf("output = %q, site-independent job must not mention site", out.String())
 	}
 
 	var count int
@@ -183,5 +194,110 @@ func TestRunEnqueue_UnknownJob(t *testing.T) {
 	var out bytes.Buffer
 	if err := runEnqueue(ctx, pool, "no-such-job", db.DefaultSite, &out); err == nil {
 		t.Fatal("unknown job のとき error を期待したが nil だった")
+	}
+}
+
+func newEnqueueJobSiteTestCmd(t *testing.T) *cobra.Command {
+	t.Helper()
+	cmd := &cobra.Command{Use: "test"}
+	cmd.Flags().String("site", "", "")
+	return cmd
+}
+
+// resolveEnqueueJobSite が site 束縛 / site 非依存を正しく分岐すること（issue #200）。
+func TestResolveEnqueueJobSite(t *testing.T) {
+	multi := []config.MirakcSite{
+		{Site: "tokyo"},
+		{Site: "takamatsu"},
+	}
+
+	t.Run("site-independent without --site succeeds with empty site even under multi-site registry", func(t *testing.T) {
+		cmd := newEnqueueJobSiteTestCmd(t)
+		site, err := resolveEnqueueJobSite(cmd, "catalog-export", multi)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if site != "" {
+			t.Errorf("site = %q, want empty for site-independent job", site)
+		}
+	})
+
+	t.Run("site-independent with --site is an error (not silently ignored)", func(t *testing.T) {
+		cmd := newEnqueueJobSiteTestCmd(t)
+		if err := cmd.Flags().Set("site", "tokyo"); err != nil {
+			t.Fatalf("Set: %v", err)
+		}
+		_, err := resolveEnqueueJobSite(cmd, "catalog-export", multi)
+		if err == nil {
+			t.Fatal("expected error when --site is passed to site-independent job, got nil")
+		}
+		if !strings.Contains(err.Error(), "site-independent") {
+			t.Errorf("error = %v, want to mention site-independent", err)
+		}
+	})
+
+	t.Run("site-independent with empty --site= is still an error (Changed)", func(t *testing.T) {
+		cmd := newEnqueueJobSiteTestCmd(t)
+		if err := cmd.Flags().Set("site", ""); err != nil {
+			t.Fatalf("Set: %v", err)
+		}
+		_, err := resolveEnqueueJobSite(cmd, "catalog-export", multi)
+		if err == nil {
+			t.Fatal("expected error when --site is explicitly set (even to empty), got nil")
+		}
+	})
+
+	t.Run("site-bound without --site under multi-site registry is an error", func(t *testing.T) {
+		cmd := newEnqueueJobSiteTestCmd(t)
+		_, err := resolveEnqueueJobSite(cmd, "ruler-pass", multi)
+		if err == nil {
+			t.Fatal("expected --site required error for site-bound job, got nil")
+		}
+		if !strings.Contains(err.Error(), "--site is required") {
+			t.Errorf("error = %v, want --site is required", err)
+		}
+	})
+
+	t.Run("site-bound with --site resolves", func(t *testing.T) {
+		cmd := newEnqueueJobSiteTestCmd(t)
+		if err := cmd.Flags().Set("site", "takamatsu"); err != nil {
+			t.Fatalf("Set: %v", err)
+		}
+		site, err := resolveEnqueueJobSite(cmd, "epg-sync", multi)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if site != "takamatsu" {
+			t.Errorf("site = %q, want takamatsu", site)
+		}
+	})
+
+	t.Run("unknown job is an error", func(t *testing.T) {
+		cmd := newEnqueueJobSiteTestCmd(t)
+		_, err := resolveEnqueueJobSite(cmd, "no-such-job", multi)
+		if err == nil {
+			t.Fatal("expected error for unknown job, got nil")
+		}
+	})
+}
+
+// enqueueJobs の分類が一貫していること。RequiresSite の集合が「次にジョブを
+// 足す人がどちらかを更新し忘れる」経路にならないよう、現状の契約を固定する
+// （issue #200）。catalog-export だけが site 非依存。
+func TestEnqueueJobs_SiteClassification(t *testing.T) {
+	independent := sortedJobNamesBySite(false)
+	if len(independent) != 1 || independent[0] != "catalog-export" {
+		t.Errorf("site-independent jobs = %v, want [catalog-export]", independent)
+	}
+
+	bound := sortedJobNamesBySite(true)
+	wantBound := []string{"epg-sync", "reconcile-pass", "record-sweep", "ruler-pass", "tuner-sync"}
+	if strings.Join(bound, ",") != strings.Join(wantBound, ",") {
+		t.Errorf("site-bound jobs = %v, want %v", bound, wantBound)
+	}
+
+	// 全ジョブがどちらかに属する（漏れなし）。
+	if got, want := len(bound)+len(independent), len(enqueueJobs); got != want {
+		t.Errorf("bound+independent = %d, enqueueJobs = %d", got, want)
 	}
 }
