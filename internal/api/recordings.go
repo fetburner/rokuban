@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -88,13 +89,13 @@ func recordingFromListFields(r recordingListFields, includeDeletedAt bool) (Reco
 	}
 	// 再生可能な encoded 派生物（observed）。空なら省略（omitempty）。
 	if len(r.AvailableEncodedProfiles) > 0 {
-		profiles := append([]string(nil), r.AvailableEncodedProfiles...)
+		profiles := slices.Clone(r.AvailableEncodedProfiles)
 		rec.EncodedProfiles = &profiles
 	}
 	// 凍結された desired 一覧。空なら省略（omitempty）。UI が「追加済み」を
 	// 判定するのに使う（issue #133）。
 	if len(r.EncodeProfiles) > 0 {
-		profiles := append([]string(nil), r.EncodeProfiles...)
+		profiles := slices.Clone(r.EncodeProfiles)
 		rec.EncodeProfiles = &profiles
 	}
 	if len(r.QualityEvents) > 0 {

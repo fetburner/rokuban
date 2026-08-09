@@ -91,7 +91,7 @@ func (c *Counter) feed(data []byte) {
 			c.buf = c.buf[:len(data)]
 			copy(c.buf, data)
 		} else {
-			c.buf = append([]byte(nil), data...)
+			c.buf = bytes.Clone(data)
 		}
 	} else {
 		c.buf = c.buf[:0]

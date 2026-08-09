@@ -3,6 +3,7 @@ package db
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"time"
 )
 
@@ -155,8 +156,7 @@ func cloneStringSlicePtr(p *[]string) *[]string {
 	if p == nil {
 		return nil
 	}
-	c := make([]string, len(*p))
-	copy(c, *p)
+	c := slices.Clone(*p)
 	return &c
 }
 

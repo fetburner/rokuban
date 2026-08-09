@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"log/slog"
+	"slices"
 
 	"github.com/Comcast/gots/v3"
 	"github.com/Comcast/gots/v3/packet"
@@ -262,20 +263,11 @@ func (c *classifier) onPAT(section []byte) {
 		next = append(next, pmtPID)
 	}
 	for _, pid := range c.pmtPIDs {
-		if !containsInt(next, pid) {
+		if !slices.Contains(next, pid) {
 			c.sections[pid] = nil
 		}
 	}
 	c.pmtPIDs = next
-}
-
-func containsInt(s []int, v int) bool {
-	for _, x := range s {
-		if x == v {
-			return true
-		}
-	}
-	return false
 }
 
 func (c *classifier) onPMT(pid int, section []byte) {
