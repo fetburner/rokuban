@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -648,7 +649,7 @@ func ruleFromRow(row sqlcgen.Rule) Rule {
 		r.DedupeWindowSeconds = &secs
 	}
 	if len(row.EncodeProfiles) > 0 {
-		ep := append([]string(nil), row.EncodeProfiles...)
+		ep := slices.Clone(row.EncodeProfiles)
 		r.EncodeProfiles = &ep
 	}
 	if len(row.Metadata) > 0 && string(row.Metadata) != "{}" && string(row.Metadata) != "null" {

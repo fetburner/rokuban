@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -625,7 +626,7 @@ func rewriteRuleMatches(ctx context.Context, tx pgx.Tx, site string, allMatches 
 func computeBase(rule sqlcgen.Rule, dedupeSkip bool) (json.RawMessage, error) {
 	priority := int(rule.Priority)
 	keepOriginal := rule.KeepOriginal
-	profiles := append([]string(nil), rule.EncodeProfiles...)
+	profiles := slices.Clone(rule.EncodeProfiles)
 
 	opts := db.ReservationOptions{
 		Priority:       &priority,

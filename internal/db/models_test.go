@@ -1086,6 +1086,14 @@ func TestReservationOptions_EffectiveNilBase(t *testing.T) {
 	}
 }
 
+func TestCloneStringSlicePtr_NormalizesNilSlice(t *testing.T) {
+	var profiles []string
+	got := cloneStringSlicePtr(&profiles)
+	if got == nil || *got == nil {
+		t.Fatal("non-nil pointer to nil slice should become non-nil empty slice")
+	}
+}
+
 // docs/recording.md §4.2 が定める式は
 // effective.skip = (action = 'skip') OR (意図がなく base.skip)
 // であり、action が record なら base.skip の値に関わらず false になる。
