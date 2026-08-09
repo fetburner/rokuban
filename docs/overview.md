@@ -66,7 +66,7 @@ nginx は構成図上の「箱」ではなく、推奨デプロイパターン�
 | connect し続ける | サーバー（外向き） | watcher（mirakc の SSE） | シングルトン |
 | 持たない | ジョブ | worker | キュー長で 0〜N（KEDA）または CronJob |
 
-> **この基準は後から来た**（M2-20 / #25）。初版は `ruler` / `reconciler` / `watcher` をシングルトンロールとして並べており、分類の軸が「どの仕事をするか」だった。基準を明文化した結果、ruler / reconciler / record_sweep は worker のジョブになり（#24 M2-17 / M2-18）、`/api/events` は notifier に分かれた（M2-19）。**形を先に固定して判定基準を後から書いた**代償であり、[CLAUDE.md](../CLAUDE.md) 不変条件 11 の 3 実例のうちの 1 つ。
+> **この基準は後から来た**（M2-20 / #25）。初版は `ruler` / `reconciler` / `watcher` をシングルトンロールとして並べており、分類の軸が「どの仕事をするか」だった。基準を明文化した結果、ruler / reconciler / record_sweep は worker のジョブになり（#24 M2-17 / M2-18）、`/api/events` は notifier に分かれた（M2-19）。**形を先に固定して判定基準を後から書いた**代償であり、[CLAUDE.md](../CLAUDE.md) 不変条件 11 の 3 実例（表は [docs/invariants.md](invariants.md) §11）のうちの 1 つ。
 
 この基準を採る理由は、**ソケットの寿命がプロセスの寿命の下限を決めてしまう**こと。接続を張り続ける必要があれば
 そのプロセスは 0 にスケールできず、逆に仕事が始まってから終わるまでで完結するなら 0 にスケールできる。
