@@ -229,7 +229,7 @@ log:
 - `--sites tokyo` は tokyo に束縛する。`--sites tokyo,tokyo` のような重複は 1 つに畳む（束縛数の判定が紛らわしいエラーにならないようにするため）
 - `watcher` ロールは 1 プロセス 1 サイトのループしか持たないため、束縛サイト数がちょうど 1 でなければ起動エラーになる。watcher の advisory lock のキーも束縛サイトで修飾される（`watcher:<site>`）ので、2 サイトそれぞれに 1 プロセスずつ立てれば両方が自分の mirakc の SSE を購読する（issue #185 M4-13）
 - `worker` ロールは今のところ site 単位の仕事（`ingest`/`epg`/`reconciler`/`watcher` キュー。キュー名は束縛サイトで `<論理名>_<site>` に修飾される）と site 非依存の仕事（`ruler`/`encode`/`thumbnail`/`cleanup`/`default` キュー。`catalog_export` / `delete_reconcile` はどちらもジョブ種別で、キューとしては `cleanup` に乗る。issue #185 M4-13）が同居しており（`worker.Deps.Site` / `worker.ClientConfig` の各 `*Site` フィールドがいずれも単一文字列のため）、2 サイト以上の束縛は起動エラーになる。**0 サイト（中央プロセス）の束縛は `worker.queues` を ruler/encode/thumbnail/cleanup/default 等の site 非依存キューに絞ったときだけ許す** --- `worker.queues` が空（既定=全キュー）のまま、または ingest/epg/reconciler/watcher のいずれかを含んだまま 0 サイトで起動すると、届く site 単位のジョブが空文字列 site と一致せず全滅して再試行し続けるだけになるため起動エラーにする。**1 プロセスが N サイトの watcher / worker のループを回す形は書き手がまだいないので決めない**（不変条件 11）
-- `enqueue` サブコマンドは `--site` で投入先を選ぶ（未指定かつレジストリ 1 要素ならその 1 つ、2 要素以上なら必須）。M4-6 の CronJob がサイトごとに投入するため
+- `enqueue` サブコマンドは **site 束縛ジョブだけ** `--site` で投入先を選ぶ（未指定かつレジストリ 1 要素ならその 1 つ、2 要素以上なら必須。M4-6 の CronJob がサイトごとに投入するため）。`catalog-export` は site 非依存なので `--site` を付けない（付けるとエラー。issue #200）。分類は `cmd/rokuban/enqueue.go` の `enqueueJob.RequiresSite` が唯一の根拠（キュー修飾の `siteBoundQueueNames` とは一致しない --- `ruler-pass` はキュー非修飾でも Args.Site が要る）
 - `rescue` / `shadow-diff` は単一サイト用のまま。`mirakcs:` が 2 要素以上の構成では明示的なエラーで落ちる（多サイトでの意味論を決める書き手がまだいないため）
 
 ### server.allowed_hosts は X-Forwarded-Host を優先する
