@@ -79,15 +79,12 @@ func newEnqueueCmd() *cobra.Command {
 		Short: "定期ジョブを 1 件投入する",
 		Long: fmt.Sprintf(`定期ジョブを 1 件投入して即終了する（k8s CronJob 用途 / 手動即時実行用）。
 
-対応ジョブ: %s
-
 site 束縛ジョブ（--site が要る）: %s
 site 非依存ジョブ（--site を付けない）: %s
 
 UniqueOpts により、同じジョブが既に待機中（available/pending/retryable/running/
 scheduled）の場合は新規に投入されず合流する。その場合も終了コード 0 を返す
 （CronJob が失敗扱いにならないようにするため）。`,
-			strings.Join(sortedJobNames(), ", "),
 			strings.Join(sortedJobNamesBySite(true), ", "),
 			strings.Join(sortedJobNamesBySite(false), ", ")),
 		Args: cobra.ExactArgs(1),
@@ -178,19 +175,15 @@ func runEnqueue(ctx context.Context, pool *pgxpool.Pool, job, site string, out i
 		return fmt.Errorf("inserting job %q: %w", job, err)
 	}
 
+	suffix := ""
+	if site != "" {
+		suffix = fmt.Sprintf(" for site %q", site)
+	}
 	if res.UniqueSkippedAsDuplicate {
-		if site == "" {
-			_, _ = fmt.Fprintf(out, "job %q already pending, not inserted\n", job)
-		} else {
-			_, _ = fmt.Fprintf(out, "job %q already pending for site %q, not inserted\n", job, site)
-		}
+		_, _ = fmt.Fprintf(out, "job %q already pending%s, not inserted\n", job, suffix)
 		return nil
 	}
-	if site == "" {
-		_, _ = fmt.Fprintf(out, "inserted job %q (id=%d)\n", job, res.Job.ID)
-	} else {
-		_, _ = fmt.Fprintf(out, "inserted job %q (id=%d) for site %q\n", job, res.Job.ID, site)
-	}
+	_, _ = fmt.Fprintf(out, "inserted job %q (id=%d)%s\n", job, res.Job.ID, suffix)
 	return nil
 }
 
