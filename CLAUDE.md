@@ -127,6 +127,7 @@ $ gh issue create --template sub-issue --title 'M5-1 ...' --label area:worker
 
 チェック:
 - 新しい列を足すとき「この値は毎パス作り直せるか」を問う。作り直せるなら**列にせず導出する**。作り直せない事実と混ぜてはならない。
+- 新しいエンドポイントを足すとき「**宛先のキーは誰が作るか**」を問う。導出器が作るキーは API の宛先に置かない（`base.skip` を覆す意図を書けなくなる。#29）。
 - `WHERE a.x_id = b.id` を書くとき「**この id は誰が作り、いつ変わるか**」を問う。導出器が作るなら放送イベント `(site, network_id, service_id, event_id)` や `(site, program_id)` のように**外から与えられたキー**で引く（#29 / #53 / #98 / #99 / #149 / #152）。導出器が作るキーを保存する列は、読者を移設し終えたら残さない（#158 で DROP）。
 - 導出を列に焼くなら**両方向のテストを書く**。導出の判定をメモリに持って後で適用するなら、適用の側で判定条件を再評価する（読み書きの割り込み窓）。
 
@@ -141,7 +142,7 @@ $ gh issue create --template sub-issue --title 'M5-1 ...' --label area:worker
 
 #### 11. 形を固定する前に、その形を決める判定基準を書く
 
-**分類（ロール）や形（スキーマ・API）を先に固定して判定基準を後から書くと、基準が来た時点でやり直しになる**（M2 で 3 回。代償は docs/invariants.md）。
+**分類（ロール）や形（スキーマ・API）を先に固定して判定基準を後から書くと、基準が来た時点でやり直しになる**（M2 で 3 回。代償は [docs/invariants.md](docs/invariants.md)）。
 
 - **「最終形で切る」の対象は永続資産（`recordings` / `media_assets` / `drop_stats` / `rules`）と外から見える資源同定（API のパスと識別子）に限る。** 導出テーブル（`reservations` / `*_sync` / 射影）の列は、**それを書くコードと同じ PR で決める**（churn のコストが非対称）。
 - **将来への先払いは高い方（API の資源同定・キャッシュキー）から。** 安い方（DB 列）だけ先に払っても利益は出ない。
@@ -160,7 +161,7 @@ $ gh issue create --template sub-issue --title 'M5-1 ...' --label area:worker
 
 チェック: 永続表に列を足すとき「**この列を書くループは脊椎の書き手か**」を問う（`recordings` なら試行を観測する watcher / reconciler。既にその表に書いている＝根拠にならない）。脊椎の書き手でないなら `recording_id` を持つ衛星表にする。
 
-境界（絶対視すると壊す。詳細は docs/invariants.md）: `deleted_at` / `superseded_at` は部分一意索引の述語が参照するので本体に置く。番組スナップショット列群は watcher が一度だけ書くので脊椎に属する。
+境界（絶対視すると壊す。詳細は [docs/invariants.md](docs/invariants.md)）: `deleted_at` / `superseded_at` は部分一意索引の述語が参照するので本体に置く。番組スナップショット列群は watcher が一度だけ書くので脊椎に属する。
 
 ### コーディング規約
 
