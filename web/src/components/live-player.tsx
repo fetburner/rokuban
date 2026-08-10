@@ -19,6 +19,9 @@ type HlsLike = {
 
 type LivePlayerProps = {
   site: string
+  /** SI の networkId。mirakc 合成 service id の組み立てに使う（issue #208）。 */
+  networkId: number
+  /** SI の serviceId。パスに載る前に networkId と合成する（issue #208）。 */
   serviceId: number
   className?: string
 }
@@ -52,7 +55,7 @@ export const nativeStallTimeoutMs = 12_000
  * 要求が止まるが、streamer 側のチューナー開放は `live.idle_timeout` 経過まで遅延する
  * （明示的にセッションを閉じる API が無いため。issue #92 の着手時コメント参照）。
  */
-export function LivePlayer({ site, serviceId, className }: LivePlayerProps) {
+export function LivePlayer({ site, networkId, serviceId, className }: LivePlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const hlsRef = useRef<HlsLike | null>(null)
   const [loading, setLoading] = useState(true)
@@ -74,7 +77,7 @@ export function LivePlayer({ site, serviceId, className }: LivePlayerProps) {
     setLoading(true)
     setError(null)
 
-    const url = livePlaylistURL(site, serviceId)
+    const url = livePlaylistURL(site, networkId, serviceId)
 
     // teardown はこの effect が張ったものを外す手続き（メディアイベントの
     // リスナと stall 監視のタイマー）。cleanup から呼ぶ
@@ -275,7 +278,7 @@ export function LivePlayer({ site, serviceId, className }: LivePlayerProps) {
         video.load()
       }
     }
-  }, [site, serviceId, retryNonce])
+  }, [site, networkId, serviceId, retryNonce])
 
   return (
     <div className={cn('relative aspect-video w-full max-w-3xl rounded bg-black', className)}>

@@ -76,7 +76,7 @@ afterEach(() => {
 describe('LivePlayer の状態遷移', () => {
   it('読み込み中は "読み込み中…" を出し、video は invisible', async () => {
     deferredFetch()
-    render(<LivePlayer site="default" serviceId={1024} />)
+    render(<LivePlayer site="default" networkId={0} serviceId={1024} />)
 
     expect(screen.getByText('読み込み中…')).toBeInTheDocument()
     const video = document.querySelector('video')!
@@ -88,7 +88,7 @@ describe('LivePlayer の状態遷移', () => {
       'fetch',
       vi.fn(() => Promise.reject(new TypeError('Failed to fetch'))),
     )
-    render(<LivePlayer site="default" serviceId={1024} />)
+    render(<LivePlayer site="default" networkId={0} serviceId={1024} />)
 
     const message = await screen.findByText(/自宅サーバーが起動しているか/)
     expect(message).toBeInTheDocument()
@@ -104,7 +104,7 @@ describe('LivePlayer の状態遷移', () => {
         Promise.resolve(new Response('too many concurrent live sessions on this process', { status: 503 })),
       ),
     )
-    render(<LivePlayer site="default" serviceId={1024} />)
+    render(<LivePlayer site="default" networkId={0} serviceId={1024} />)
 
     expect(
       await screen.findByText('too many concurrent live sessions on this process'),
@@ -117,7 +117,7 @@ describe('LivePlayer の状態遷移', () => {
       'fetch',
       vi.fn(() => Promise.resolve(new Response('internal error', { status: 500 }))),
     )
-    render(<LivePlayer site="default" serviceId={1024} />)
+    render(<LivePlayer site="default" networkId={0} serviceId={1024} />)
 
     expect(await screen.findByText('internal error')).toBeInTheDocument()
     expect(screen.getByText('ライブ視聴でエラーが発生しました。')).toBeInTheDocument()
@@ -131,7 +131,7 @@ describe('LivePlayer の状態遷移', () => {
       .mockResolvedValueOnce(new Response('live stream unavailable', { status: 503 }))
     vi.stubGlobal('fetch', fetchMock)
 
-    render(<LivePlayer site="default" serviceId={1024} />)
+    render(<LivePlayer site="default" networkId={0} serviceId={1024} />)
     await screen.findByText('live stream unavailable')
     expect(fetchMock).toHaveBeenCalledTimes(1)
 
@@ -142,7 +142,7 @@ describe('LivePlayer の状態遷移', () => {
 
   it('WebKit（Safari 相当）の実測値なら video.src に直接プレイリスト URL を渡し、hls.js を import しない', async () => {
     const { resolve } = deferredFetch()
-    render(<LivePlayer site="default" serviceId={1024} />)
+    render(<LivePlayer site="default" networkId={0} serviceId={1024} />)
 
     const video = document.querySelector('video')!
     // probe が解決する前に canPlayType を差し替える。**値は WebKit の実測値**
@@ -163,7 +163,7 @@ describe('LivePlayer の状態遷移', () => {
 
   it('Chrome の実測値では hls.js 経路に入る（video.src に m3u8 を渡さない）', async () => {
     const { resolve } = deferredFetch()
-    render(<LivePlayer site="default" serviceId={1024} />)
+    render(<LivePlayer site="default" networkId={0} serviceId={1024} />)
 
     const video = document.querySelector('video')!
     // Chrome / Chromium はプレイリストの MIME に WebKit と同じ 'maybe' を返すが、
@@ -186,7 +186,7 @@ describe('LivePlayer の状態遷移', () => {
    */
   async function renderNativePath() {
     const { resolve } = deferredFetch()
-    render(<LivePlayer site="default" serviceId={1024} />)
+    render(<LivePlayer site="default" networkId={0} serviceId={1024} />)
     const video = document.querySelector('video')!
     vi.spyOn(video, 'canPlayType').mockImplementation((type) =>
       type === 'application/vnd.apple.mpegurl' || type === 'video/mp2t' ? 'maybe' : '',
@@ -344,11 +344,11 @@ describe('LivePlayer の状態遷移', () => {
     const fetchMock = vi.fn((_url: string) => Promise.resolve(new Response('', { status: 200 })))
     vi.stubGlobal('fetch', fetchMock)
 
-    const { rerender } = render(<LivePlayer site="default" serviceId={1024} />)
+    const { rerender } = render(<LivePlayer site="default" networkId={0} serviceId={1024} />)
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
     expect(fetchMock.mock.calls[0]?.[0]).toContain('/services/1024/')
 
-    rerender(<LivePlayer site="default" serviceId={2048} />)
+    rerender(<LivePlayer site="default" networkId={0} serviceId={2048} />)
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
     expect(fetchMock.mock.calls[1]?.[0]).toContain('/services/2048/')
   })
@@ -365,7 +365,7 @@ describe('LivePlayer の状態遷移', () => {
       }),
     )
 
-    const { unmount } = render(<LivePlayer site="default" serviceId={1024} />)
+    const { unmount } = render(<LivePlayer site="default" networkId={0} serviceId={1024} />)
     await waitFor(() => expect(capturedSignal).toBeDefined())
     expect(capturedSignal?.aborted).toBe(false)
 
@@ -384,11 +384,11 @@ describe('LivePlayer の状態遷移', () => {
       }),
     )
 
-    const { rerender } = render(<LivePlayer site="default" serviceId={1024} />)
+    const { rerender } = render(<LivePlayer site="default" networkId={0} serviceId={1024} />)
     await waitFor(() => expect(signals).toHaveLength(1))
     expect(signals[0]?.aborted).toBe(false)
 
-    rerender(<LivePlayer site="default" serviceId={2048} />)
+    rerender(<LivePlayer site="default" networkId={0} serviceId={2048} />)
     await waitFor(() => expect(signals).toHaveLength(2))
 
     // 古い（1024 向け）signal は中断済み、新しい（2048 向け）signal はまだ生きている
@@ -399,7 +399,7 @@ describe('LivePlayer の状態遷移', () => {
   describe('hls.js 経路（ネイティブ HLS 非対応。Chrome / Firefox 相当）', () => {
     it('probe 成功後に動的 import → loadSource / attachMedia が呼ばれる', async () => {
       vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
-      render(<LivePlayer site="default" serviceId={1024} />)
+      render(<LivePlayer site="default" networkId={0} serviceId={1024} />)
       // jsdom の canPlayType は既定で '' を返すため、supportsNativeHls が false
       // になり hls.js 経路に入る（明示的な差し替えは不要）
 
@@ -414,7 +414,7 @@ describe('LivePlayer の状態遷移', () => {
 
     it('fatal エラーで hls インスタンスを破棄し、エラー文言を出す', async () => {
       vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
-      render(<LivePlayer site="default" serviceId={1024} />)
+      render(<LivePlayer site="default" networkId={0} serviceId={1024} />)
 
       await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
       const hls = hlsMockState.instances[0]!
@@ -430,7 +430,7 @@ describe('LivePlayer の状態遷移', () => {
 
     it('non-fatal エラーは破棄もエラー表示もしない', async () => {
       vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
-      render(<LivePlayer site="default" serviceId={1024} />)
+      render(<LivePlayer site="default" networkId={0} serviceId={1024} />)
 
       await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
       const hls = hlsMockState.instances[0]!
@@ -445,7 +445,7 @@ describe('LivePlayer の状態遷移', () => {
 
     it('破棄（アンマウント）すると hls インスタンスが destroy される', async () => {
       vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
-      const { unmount } = render(<LivePlayer site="default" serviceId={1024} />)
+      const { unmount } = render(<LivePlayer site="default" networkId={0} serviceId={1024} />)
 
       await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
       const hls = hlsMockState.instances[0]!
@@ -464,7 +464,7 @@ describe('LivePlayer の状態遷移', () => {
       // 通り抜けて rung 3（最後の砦）に落ちる経路を作る
       hlsMockState.supported = false
       const { resolve } = deferredFetch()
-      render(<LivePlayer site="default" serviceId={1024} />)
+      render(<LivePlayer site="default" networkId={0} serviceId={1024} />)
 
       const video = document.querySelector('video')!
       vi.spyOn(video, 'canPlayType').mockImplementation((type) =>
@@ -486,7 +486,7 @@ describe('LivePlayer の状態遷移', () => {
       hlsMockState.supported = false
       vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
       // jsdom の canPlayType は既定で '' を返す（= どの MIME にも支持が無い）
-      render(<LivePlayer site="default" serviceId={1024} />)
+      render(<LivePlayer site="default" networkId={0} serviceId={1024} />)
 
       expect(
         await screen.findByText('このブラウザはライブ視聴（HLS）に対応していません'),
@@ -500,7 +500,7 @@ describe('LivePlayer の状態遷移', () => {
       // （変異: `watchNativeMedia(video)` を hls.js 分岐にも足すとこのテストが落ちる）
       vi.useFakeTimers({ shouldAdvanceTime: true })
       vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
-      render(<LivePlayer site="default" serviceId={1024} />)
+      render(<LivePlayer site="default" networkId={0} serviceId={1024} />)
 
       await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
       const video = document.querySelector('video')!
@@ -516,12 +516,12 @@ describe('LivePlayer の状態遷移', () => {
 
     it('serviceId が変わると古い hls インスタンスが destroy され、新しいインスタンスが作られる', async () => {
       vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
-      const { rerender } = render(<LivePlayer site="default" serviceId={1024} />)
+      const { rerender } = render(<LivePlayer site="default" networkId={0} serviceId={1024} />)
 
       await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
       const first = hlsMockState.instances[0]!
 
-      rerender(<LivePlayer site="default" serviceId={2048} />)
+      rerender(<LivePlayer site="default" networkId={0} serviceId={2048} />)
 
       await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
       expect(first.destroy).toHaveBeenCalledTimes(1)

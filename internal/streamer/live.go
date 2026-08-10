@@ -647,15 +647,27 @@ func (w *cappedWriter) String() string {
 // 出す引数を組み立てる（issue #91 の決定 1: 1 チューナーから複数プロファイル）。
 //
 // 自由形式の cmd 文字列は受け取らない（encode.BuildFFmpegArgs と同じ方針）。
-// ストリーム選択は既定（ffmpeg が入力から映像・音声の最適ストリームを選ぶ）に
-// 委ねる --- 単一映像・単一音声の放送サービスを前提にした MVP で、複数音声・
-// データ放送は特別扱いしない（既知の限界）。
+// ストリームは先頭の映像・先頭の音声だけを map する（単一映像・単一音声の放送
+// サービス前提の MVP。複数音声・データ放送は特別扱いしない）。
+// **字幕（ARIB caption）を map しない** --- Debian 系の ffmpeg は arib_caption
+// デコーダを持たず、既定のストリーム選択だと「Decoder (codec arib_caption) not
+// found」で exit 1 になる（実 mirakc の地上波 TS で観測）。
 func BuildLiveFFmpegArgs(profiles []LiveProfile, dir string) []string {
 	args := []string{
 		"-hide_banner", "-nostats", "-loglevel", "error",
+		// pipe の MPEG-TS は PAT/PMT が揃うまで寸法 0x0 に見える窓がある。
+		// 既定 probesize だと誤判定しやすいので少し延ばす。playlistStartupTimeout
+		// （15s）を食いつぶさないよう、analyzeduration は数秒に留める。
+		"-probesize", "5M",
+		"-analyzeduration", "3M",
+		"-f", "mpegts",
 		"-i", "pipe:0",
 	}
 	for _, p := range profiles {
+		// 映像・音声だけ。字幕 / データ放送は捨てる（上記 arib_caption）。
+		// -map は output 単位のオプションなので、ループの前に 1 組だけ置くと
+		// 最初の .m3u8 にしか適用されず、2 本目以降は自動ストリーム選択に戻る。
+		args = append(args, "-map", "0:v:0", "-map", "0:a:0")
 		args = append(args, "-c:v", p.VideoCodec, "-c:a", p.AudioCodec)
 		if p.Height > 0 {
 			args = append(args, "-vf", fmt.Sprintf("scale=-2:%d", p.Height))

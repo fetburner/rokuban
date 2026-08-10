@@ -766,6 +766,29 @@ func TestBuildLiveFFmpegArgs(t *testing.T) {
 	if got := args[slices.Index(args, "-i")+1]; got != "pipe:0" {
 		t.Errorf("input = %q, want pipe:0 (streamer fetches from mirakc itself)", got)
 	}
+	// ARIB caption を map すると Debian ffmpeg が exit 1 する（実 mirakc で観測）。
+	// 映像・音声だけを明示 map する契約を固定する。
+	// -map は output 単位なので、プロファイル数ぶんの組が必要（PR #210 レビュー）。
+	// ループの前に 1 組だけだと 2 本目以降は自動選択に戻り arib_caption で落ちる。
+	mapV := 0
+	mapA := 0
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] != "-map" {
+			continue
+		}
+		switch args[i+1] {
+		case "0:v:0":
+			mapV++
+		case "0:a:0":
+			mapA++
+		case "0:s:0", "0:d:0":
+			t.Errorf("must not map subtitle/data streams: %v", args)
+		}
+	}
+	if mapV != len(profiles) || mapA != len(profiles) {
+		t.Errorf("-map 0:v:0 / 0:a:0 counts = %d/%d, want %d each (per output): %v",
+			mapV, mapA, len(profiles), args)
+	}
 
 	// 2 プロファイルぶんの出力（.m3u8）が両方含まれる = 1 回の起動で両方出す。
 	m3u8Count := 0
