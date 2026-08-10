@@ -423,8 +423,11 @@ GET /api/sites/{site}/services/{serviceId}/live/segments/{name}
       → video/mp2t
 ```
 
-- **DB を引かない。**`serviceId` は検証せずそのまま mirakc の
+- **DB を引かない。**パスの `serviceId` は検証せずそのまま mirakc の
   `GET /api/services/{id}/stream?decode=1` に渡す（不明な id は mirakc が拒否する）。
+  ここでの `serviceId` は EPG 射影の SI `serviceId` ではなく **Mirakurun 合成
+  service id**（`networkId * 100_000 + serviceId`。`internal/mirakc.ServiceID` と
+  同じ規則）。フロントが URL を組み立てるときに合成する（issue #208）。
   ライブセッションはインメモリの使い捨てで、認可はリバースプロキシ委譲、同時上限も
   プロセスローカルなので、DB を引く理由が無い（issue #91 の着手前コメント参照）
 - **トランスコードは必須。**ISDB-T 地上波の映像は MPEG-2 で、ブラウザの HLS 経路

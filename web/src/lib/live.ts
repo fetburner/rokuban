@@ -11,11 +11,37 @@
 import type { Service } from '@/api/generated'
 
 /**
+ * mirakcServiceIdMagic は Mirakurun / mirakc が service id を合成する基数。
+ * `internal/mirakc/ids.go` の idMagicNumber（100_000）と同じ。
+ */
+const mirakcServiceIdMagic = 100_000
+
+/**
+ * mirakcServiceId は SI の networkId / serviceId から Mirakurun 合成 service id を作る。
+ *
+ * mirakc の `GET /api/services/{id}/stream` が要求するのは SI の serviceId ではなく
+ * この合成値（issue #208）。streamer は URL の数字をそのまま mirakc に渡す契約
+ * （docs/api.md §ライブ視聴の HLS）なので、合成は URL を組み立てる側の責務。
+ */
+export function mirakcServiceId(networkId: number, serviceId: number): number {
+  return networkId * mirakcServiceIdMagic + serviceId
+}
+
+/**
  * livePlaylistURL はストリーマーが配るプレイリスト URL を組み立てる（OpenAPI 外。
  * [docs/api.md](../../../docs/api.md) §ライブ視聴の HLS）。
+ *
+ * パスの serviceId は EPG の SI serviceId ではなく、mirakc が受け付ける合成 id
+ * （`mirakcServiceId`）。渡す前にここで合成する（issue #208）。
  */
-export function livePlaylistURL(site: string, serviceId: number, profile?: string): string {
-  const base = `/api/sites/${encodeURIComponent(site)}/services/${serviceId}/live/playlist.m3u8`
+export function livePlaylistURL(
+  site: string,
+  networkId: number,
+  serviceId: number,
+  profile?: string,
+): string {
+  const id = mirakcServiceId(networkId, serviceId)
+  const base = `/api/sites/${encodeURIComponent(site)}/services/${id}/live/playlist.m3u8`
   return profile ? `${base}?profile=${encodeURIComponent(profile)}` : base
 }
 

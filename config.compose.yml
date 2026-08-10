@@ -31,6 +31,24 @@ epg:
   sync_interval: ${ROKUBAN_EPG_SYNC_INTERVAL:-10m}
   retention_grace: ${ROKUBAN_EPG_RETENTION_GRACE:-24h}
 
+# ライブ視聴（issue #91 / #208）。既定は off --- 公式イメージは ffmpeg を含まない。
+# 有効にするときは Dockerfile.full でビルドしたイメージを ROKUBAN_IMAGE に指定し、
+# enabled を true にする（segment_dir / profiles は enabled: true のとき必須）。
+live:
+  enabled: false
+  segment_dir: /dev/shm/rokuban-live
+  max_sessions: 4
+  idle_timeout: 30s
+  tuner_priority: 1
+  profiles:
+    - name: h264
+      video_codec: libx264
+      audio_codec: aac
+      height: 720
+      preset: veryfast
+      segment_seconds: 2
+      playlist_size: 6
+
 log:
   level: ${ROKUBAN_LOG_LEVEL:-info}
   format: ${ROKUBAN_LOG_FORMAT:-json}

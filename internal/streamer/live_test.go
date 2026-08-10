@@ -766,6 +766,14 @@ func TestBuildLiveFFmpegArgs(t *testing.T) {
 	if got := args[slices.Index(args, "-i")+1]; got != "pipe:0" {
 		t.Errorf("input = %q, want pipe:0 (streamer fetches from mirakc itself)", got)
 	}
+	// ARIB caption を map すると Debian ffmpeg が exit 1 する（実 mirakc で観測）。
+	// 映像・音声だけを明示 map する契約を固定する。
+	if !slices.Contains(args, "0:v:0") || !slices.Contains(args, "0:a:0") {
+		t.Errorf("missing -map 0:v:0 / 0:a:0 (would pick up arib_caption and die): %v", args)
+	}
+	if slices.Contains(args, "0:s:0") || slices.Contains(args, "0:d:0") {
+		t.Errorf("must not map subtitle/data streams: %v", args)
+	}
 
 	// 2 プロファイルぶんの出力（.m3u8）が両方含まれる = 1 回の起動で両方出す。
 	m3u8Count := 0
