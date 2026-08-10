@@ -662,11 +662,12 @@ func BuildLiveFFmpegArgs(profiles []LiveProfile, dir string) []string {
 		"-analyzeduration", "3M",
 		"-f", "mpegts",
 		"-i", "pipe:0",
-		// 映像・音声だけ。字幕 / データ放送は捨てる（上記 arib_caption）。
-		"-map", "0:v:0",
-		"-map", "0:a:0",
 	}
 	for _, p := range profiles {
+		// 映像・音声だけ。字幕 / データ放送は捨てる（上記 arib_caption）。
+		// -map は output 単位のオプションなので、ループの前に 1 組だけ置くと
+		// 最初の .m3u8 にしか適用されず、2 本目以降は自動ストリーム選択に戻る。
+		args = append(args, "-map", "0:v:0", "-map", "0:a:0")
 		args = append(args, "-c:v", p.VideoCodec, "-c:a", p.AudioCodec)
 		if p.Height > 0 {
 			args = append(args, "-vf", fmt.Sprintf("scale=-2:%d", p.Height))
