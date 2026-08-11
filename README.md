@@ -37,15 +37,15 @@ EPGStation の漸進的改善ではなく、ゼロベースで再設計する。
 | [docs/overview.md](docs/overview.md) | 全体アーキテクチャ |
 | [docs/recording.md](docs/recording.md) | 録画エンジン（索引。本文は `docs/recording/`） |
 | [docs/schema.md](docs/schema.md) | DB スキーマ v1（索引。本文は `docs/schema/`） |
-| [docs/data.md](docs/data.md) | データ層 |
-| [docs/storage.md](docs/storage.md) | メディアストレージ |
-| [docs/api.md](docs/api.md) | API 設計 |
-| [docs/frontend.md](docs/frontend.md) | フロントエンド |
+| [docs/data.md](docs/data.md) | データ層（索引。本文は `docs/data/`） |
+| [docs/storage.md](docs/storage.md) | メディアストレージ（索引。本文は `docs/storage/`） |
+| [docs/api.md](docs/api.md) | API 設計（索引。本文は `docs/api/`） |
+| [docs/frontend.md](docs/frontend.md) | フロントエンド（索引。本文は `docs/frontend/`） |
 | [docs/configuration.md](docs/configuration.md) | 設定 |
-| [docs/operations.md](docs/operations.md) | 運用 |
-| [docs/runbook.md](docs/runbook.md) | シャドー運用 runbook（索引。本文は `docs/runbook/`） |
+| [docs/operations.md](docs/operations.md) | 運用（索引。本文は `docs/operations/`） |
+| [docs/runbook.md](docs/runbook.md) | 手動での動作確認手順（索引。本文は `docs/runbook/`） |
 
-大きい 3 本は索引 + 分割本文になっている。**節番号は分割前のまま**なので、コードコメントの「recording.md §3.2」等は索引の表から該当ファイルを引ける。
+大きい doc は索引 + 分割本文になっている。**節番号・節名は分割前のまま**なので、コードコメントの「recording.md §3.2」等は索引の表から該当ファイルを引ける。
 
 ## 使ってみる
 
@@ -62,14 +62,4 @@ docker compose up -d
 
 ## ステータス
 
-**M1（録れる）実装中。** 手動予約 → 録画 → ingest → 再生の縦切りが通る。
-
-| マイルストーン | 状態 |
-|---|---|
-| M0 歩く骨格 | 完了 |
-| M1 録れる | 手動予約 API・reconciler・watcher・ingest・EPG プロジェクション・UI・Range 配信・メトリクスまで実装済み |
-| M2 任せられる（ルール録画） | 未着手 |
-| M3 置き換えられる（エンコード・削除エンジン） | 未着手 |
-| M4 広げられる（ロール分割・ライブ視聴） | 未着手 |
-
-ルール録画・エンコード・保持ポリシー・ライブ視聴はまだ入っていない。
+M0（歩く骨格）〜 M2（ルールで任せられる）は完了。M3（エンコード・削除・移行）と M4（ロール分割・ライブ視聴・クラウド構成）は実装が進行中で、続く M5〜M8（UI 刷新）はタスク分解済み。最新の進捗は [CLAUDE.md](CLAUDE.md) の「タスクマップ」と GitHub issue を参照。
