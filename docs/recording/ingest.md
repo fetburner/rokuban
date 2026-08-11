@@ -1,3 +1,5 @@
+> [recording.md](../recording.md) §5「ingest パイプライン」・§6「B-CAS 復号の責務境界」の一部。索引から辿る。
+
 ## 5. ingest パイプライン
 
 録画完了後、mirakc のエッジから Rokuban のアーカイブストレージへ録画データを取り込む一連の処理。
@@ -48,8 +50,8 @@ continuity counter の不連続を数えるだけでは実放送で大量の誤�
 
 #### 検証方法
 
-`internal/tsstat/integration_test.go` が既知の良品に対する差分テストを持つ
-（issue #6 の差分テスト戦略）。`ROKUBAN_TEST_TS_FILE` に別実装で drop / error /
+`internal/tsstat/integration_test.go` が既知の良品に対する差分テストを持つ。
+`ROKUBAN_TEST_TS_FILE` に別実装で drop / error /
 scrambled がいずれも 0 と確認済みの .m2ts を指すと有効になる。ファイルは巨大かつ
 著作物なのでリポジトリには置かない。
 
@@ -114,7 +116,7 @@ pull 完了後に書き込みバイト数を HEAD の Content-Length と照合 �
 
 ### 5.5 ingest 完了後のフロー
 
-**#65 で設計変更済み。同一トランザクションでの投入はしない。** `media_assets` のコミット**後**に、ベストエフォートのヒントとしてエンコードジョブを投入する（`IngestWorker.Work` → `EnqueueMissingEncodes`。`ingest.go` の `enqueueMissingEncodesFromContext` 呼び出し）。投入に失敗してもログのみで、コミット済みの ingest は巻き戻さない。
+**同一トランザクションでの投入はしない。** `media_assets` のコミット**後**に、ベストエフォートのヒントとしてエンコードジョブを投入する（`IngestWorker.Work` → `EnqueueMissingEncodes`。`ingest.go` の `enqueueMissingEncodesFromContext` 呼び出し）。投入に失敗してもログのみで、コミット済みの ingest は巻き戻さない。
 
 このヒント投入の失敗とエッジ record の削除成功（`DeleteRecord`。上記「層 3」）が両方起きると、その差分を埋め直す定期ループが無いためヒントは失われたままになる（`EnqueueMissingEncodes` の呼び出し元は ingest 完了時のヒントと `POST /api/recordings/{id}/encode-profiles` のみ）。この穴は [#163](https://github.com/fetburner/rokuban/issues/163) で追跡する。
 

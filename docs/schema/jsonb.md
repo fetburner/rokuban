@@ -1,8 +1,10 @@
+> [docs/schema.md](../schema.md)（索引）の分割本文。節番号は分割前のまま（§8）。
+
 ## 8. jsonb ドキュメント形式
 
 ### 予約オプション（reservations.base / program_overrides.overrides、同形）
 
-キーは camelCase（Go の JSON 規約と揃える）。overrides は「ユーザーが上書きしたキーのみ」を持つ疎なドキュメント。overrides は M2-4（00010）で `program_intents` から `program_overrides` へ分離済み（§3.5）。
+キーは camelCase（Go の JSON 規約と揃える）。overrides は「ユーザーが上書きしたキーのみ」を持つ疎なドキュメントで、`program_intents` ではなく `program_overrides` 表にある（00010 で分離。§3.5）。
 
 ```jsonc
 {
@@ -10,7 +12,7 @@
   "priority": 1,                     // mirakc RecordingOptions.priority
   "contentPath": "2026/07/タイトル_20260723.m2ts",  // recording.basedir 相対。サニタイズ済み
   "filenameTemplate": "{{.Year}}{{.Month}}{{.Day}}/{{.Hour}}{{.Min}}{{.Sec}}_{{.Title}}_{{.ServiceID}}",  // Go text/template。reconciler が展開し、ルール作成時に検証される（recording.md §3.2）
-  "encodeProfiles": ["h265-1080p"],  // 設定ファイル定義のプロファイル名（M2〜）
+  "encodeProfiles": ["h265-1080p"],  // 設定ファイル定義のプロファイル名
   "keepOriginal": "untilEncoded"     // "always" | "untilEncoded"
 }
 ```

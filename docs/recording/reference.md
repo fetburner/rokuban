@@ -1,3 +1,5 @@
+> [recording.md](../recording.md) §7〜§9 の一部。索引から辿る。
+
 ## 7. mirakc schedule options
 
 ```json
@@ -61,4 +63,4 @@ EDCB（Linux ネイティブビルド可、番組追従の実績は最強）を�
 
 ### 「この番組シリーズは常に...」のような永続的例外
 
-overrides（予約の寿命 = 短命）ではなくルール側の機能。必要になったら別途検討。
+[reservation-model.md](reservation-model.md) §4.6 参照。

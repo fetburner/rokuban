@@ -1,11 +1,10 @@
-## ライブ視聴（M4-3 / M4-4）の確認手順
+> [runbook.md](../runbook.md) の一部。索引から辿る。
+
+## ライブ視聴の確認手順
 
 2 段に分かれる。**①は実 mirakc / 実チューナーが要る**（streamer が実際に ffmpeg を
 起動してチューナーを掴む）。**②は要らない**（ブラウザ側の配線 --- hls.js の動的
-import・MSE への実再生・チャンネル切替時の cleanup ---だけを見る。issue #92 の
-着手時点ではこの判定手段が無く、レビューで「テストが実際には何も守っていない」
-ことが判明した経緯がある。詳細は [docs/frontend.md](../frontend.md) §フロントエンド
-実装（M4-4）参照）。
+import・MSE への実再生・チャンネル切替時の cleanup --- だけを見る）。
 
 ### ① idle GC と実再生（実 mirakc が必要）
 
@@ -13,7 +12,7 @@ import・MSE への実再生・チャンネル切替時の cleanup ---だけを�
 1 つ以上設定済み（[config.example.yml](../../config.example.yml) の `live:` 節）。
 
 ```sh
-docker compose exec rokuban rokuban server --roles all --config /config.yml
+docker compose exec rokuban rokuban server --all --config /config.yml
 ```
 
 1. ブラウザで `/live` を開き、チャンネルを選ぶ。数秒で再生が始まる
@@ -145,8 +144,7 @@ pnpm exec playwright install chromium webkit
    いなかったので、この回帰は e2e 緑のまま通った。**⑥（WebKit）を足して初めて
    機械判定できるようになった。判定は「プレイリストとセグメントの両方の
    Content-Type を `<video>` が再生できるか」（`video/mp2t` を demux できるのは
-   WebKit だけ）に置き換えてある。詳細は
-   [docs/frontend.md](../frontend.md) §実機確認について（M4-4）
+   WebKit だけ）に置き換えてある
 
 ### CI では回さない
 
@@ -155,3 +153,10 @@ pnpm exec playwright install chromium webkit
 サーバー + Postgres + Chrome があれば CI でも回せるが、実 Chrome チャンネルの
 インストールと ffmpeg の用意が CI イメージに新しい依存を足すため、現時点では
 ローカル受け入れ確認の位置づけのままにしてある。
+
+## 経緯と失敗事例
+
+- ②の判定手段（`web/e2e/live.mjs`）は、ライブ視聴のフロントエンド実装
+  （issue #92 / M4-4）の着手時点には無く、レビューで「テストが実際には何も
+  守っていない」ことが判明して作られた。実装より先に判定手段を作る教訓の実例
+  （CLAUDE.md「テスト規律」）

@@ -1,8 +1,10 @@
+> [recording.md](../recording.md) §3「Rokuban 側のコンポーネント」の一部。索引から辿る。
+
 ## 3. Rokuban 側のコンポーネント
 
 ### 3.1 ruler（ルール評価 → 予約生成）
 
-EPG プロジェクションの番組をルールと突き合わせ、`reservations`（desired state）の base を生成・更新する。手動予約もルール由来の予約も同じテーブルに入り、区別は `program_intents.action`（`record` の有無）から導出する（issue #26）。
+EPG プロジェクションの番組をルールと突き合わせ、`reservations`（desired state）の base を生成・更新する。手動予約もルール由来の予約も同じテーブルに入り、区別は `program_intents.action`（`record` の有無）から導出する。
 
 **ルールエンジンは Rokuban 側に置く**。mirakc はルールベース自動予約をスコープ外と明言しており（contrib にサンプルがある）、まさに「ルール = サーバー、録画エンジン = エッジ」という分割を想定した作りになっている。
 
@@ -22,7 +24,7 @@ desired 予約が変わる契機は 3 つあり、EPG の変更はそのうち 1
 
 加えて全量評価でないと成立しないものが 2 つある。
 
-- **大量削除サーキットブレーカー**（後述）の「削除数が総数の N% 超過」は、desired 集合の全体が 1 パスで手に入らないと分母が定義できない
+- **大量削除サーキットブレーカー**（[breaker.md](breaker.md)）の「削除数が総数の N% 超過」は、desired 集合の全体が 1 パスで手に入らないと分母が定義できない
 - **競合判定は集合の性質**。1 ルールの予約が増減すると他の予約の競合状態が変わるので、部分評価と相性が悪い（EPGStation の `updateRule` が `findTimeRanges` で影響範囲の予約を引き直しているのは同じ理由）
 
 規模は問題にならない。EPG プロジェクションはローリングウィンドウで永久に有界（[データ層](../data.md) 参照）で、実測で 19 サービス x 8 日 = 2680 行。数百ルールとの突き合わせは pg_trgm GIN 込みで秒未満。評価は Postgres の集合演算で行うので、**予約 1 件ずつのループにはしない**。
@@ -60,7 +62,7 @@ EPG 更新完了で `reservationManage.updateAll()` を呼び、全手動予約�
 
 #### 複数ルール解決
 
-- **desired 予約は programId につき最大 1 つ**。複数ルールがマッチした場合、予約オプション（priority、エンコードプロファイル、保持ポリシー）は最高 priority のルールから採る。生成元ルールは `reservation_rule_matches` に全件記録する（トレーサビリティ。issue #3 のスキーマ決定コメント）
+- **desired 予約は programId につき最大 1 つ**。複数ルールがマッチした場合、予約オプション（priority、エンコードプロファイル、保持ポリシー）は最高 priority のルールから採る。生成元ルールは `reservation_rule_matches` に全件記録する（トレーサビリティ）
 - **勝者決定は全順序**: `ORDER BY priority DESC, id ASC`（同率なら先に作られたルールが勝つ）。同率タイを不定のままにすると、全量パスごとに勝者が入れ替わって base の差分書き込みが発火し続け、mirakc に更新 API がないため reconciler が schedule を DELETE + POST で作り直し続けるフラッピングになる。差分書き込みは勝者決定の決定性を前提として要求する。新しい方でなく古い方を勝たせるのは、同率の新ルール追加が既存予約の base を動かさないため（勝たせたければ priority を上げる — 暗黙の新旧より明示的な優先度操作）
 - **除外はルール単位ではなく番組単位のオーバーライド**（reservation の skip フラグ）。どのルール経由でマッチしていても一貫して除外される
 - EPGStation#538（複数ルールにマッチした番組を除外できない）は、予約がルール単位で管理されていたために起きた不整合。Rokuban は programId ベースなので構造的に防げる
@@ -71,7 +73,7 @@ EPG 更新完了で `reservationManage.updateAll()` を呼び、全手動予約�
 - EPGStation#473 の要望（この番組を重複扱いにする / しないを手動で上書きする）のうち、**予約側は実装済み**: `program_intents.action = 'record'` が dedup の `base.skip` に勝つ合成として `db.EffectiveOptions` が解く（§4.2）。**履歴（`recordings`）側の手動オーバーライドは未実装** —— すでに `finished` になった録画を後から「重複としてカウントしない」と印を付ける経路（列・API）は無い。ここは実装前の方針文のまま残す
 - 判定に使った根拠（マッチした履歴、類似度）を予約に記録し、UI で「なぜスキップされたか」を説明可能にする
 
-M2-6 で実装した（`internal/ruler/dedupe.go`。候補の集合を jsonb で渡す集合演算 1 文）。判定規約:
+実装は `internal/ruler/dedupe.go`（候補の集合を jsonb で渡す集合演算 1 文）。判定規約:
 
 | 項目 | 決めたこと |
 |---|---|
@@ -81,7 +83,7 @@ M2-6 で実装した（`internal/ruler/dedupe.go`。候補の集合を jsonb で
 | 時間窓 | `rules.dedupe_window` が NULL なら**無制限**（`rules` の CHECK は `dedupe_enabled` のとき `dedupe_threshold` だけを要求し window は任意） |
 | 勝者 | `DISTINCT ON (program_id)` で類似度最大の 1 件。tie-break は `recordings.id ASC` |
 
-**自分自身の録画は除外する**（`(network_id, service_id, event_id)` の不一致）。放送済み番組の予約は GC（終了 + `retention_grace`）まで残り、EPG 射影も同じ地平まで番組を保持するので、録画が `finished` になった次のパスで **similarity = 1.0 の自己一致が必ず起きる**。実装中に除外述語を外して再現済み。害は表示だけではない: `effective.skip = true` になると `reconciler.listDesired` から落ち、`recordNeverScheduled`（issue #98。旧 `markOrphaned`）/ `detectStartDelays` の入力からも外れるため、**重複排除が無関係な状態機械の DB 状態を変えてしまう**。site は比較に入れない（同一放送は全サイトで同じ programId を持ち、マッチした全サイトで予約を作る N 予約が既定なので、サイト間の共食いも同時に防ぐ必要がある）。
+**自分自身の録画は除外する**（`(network_id, service_id, event_id)` の不一致）。放送済み番組の予約は GC（終了 + `retention_grace`）まで残り、EPG 射影も同じ地平まで番組を保持するので、録画が `finished` になった次のパスで **similarity = 1.0 の自己一致が必ず起きる**。実装中に除外述語を外して再現済み。害は表示だけではない: `effective.skip = true` になると `reconciler.listDesired` から落ち、`recordNeverScheduled` / `detectStartDelays` の入力からも外れるため、**重複排除が無関係な状態機械の DB 状態を変えてしまう**。site は比較に入れない（同一放送は全サイトで同じ programId を持ち、マッチした全サイトで予約を作る N 予約が既定なので、サイト間の共食いも同時に防ぐ必要がある）。
 
 tie-break を決定的にするのは必須で、任意ではない。同じ類似度の録画が複数あるときに勝者が毎パス入れ替わると、base の差分書き込みが発火し続けて NOTIFY が鳴り止まず、mirakc に更新 API がないため reconciler が schedule を DELETE + POST で作り直し続けるフラッピングになる（本節「複数ルール解決」の priority 同率タイと同じクラスの問題）。
 
@@ -100,4 +102,19 @@ tie-break を決定的にするのは必須で、任意ではない。同じ類�
 NID/SID は放送規格のスコープでサイトに依存しないため、地上波の条件は地域が違えば構造的にマッチしない（NID が違う）。全サイトマッチが実際に効くのは BS/CS と同一地域の複数サイトのみ。
 
 サイト名は安定識別子として扱い、オンラインのリネームはサポートしない（SQL 付け替えを伴う運用作業）。無断リネームは旧サイトの射影が stale になり導出削除として現れるため、サーキットブレーカーが受け止める。
+
+#### 番組終了後の GC
+
+`reservations` / `program_intents` / `program_overrides` の物理削除（GC）は ruler の 1 パス内で、全サイト評価の後に 1 回だけ行う（`internal/ruler/ruler.go` の `runGC`）。実際に DELETE するのは `program_snapshots` の 1 表だけで、対象は `start_at + duration_ms < now() - 猶予` を満たす行（`reservations` の active/detached/orphaned を問わない）。`reservations` / `program_intents` / `program_overrides` はこの表への `(site, program_id)` FK が `ON DELETE CASCADE` なので、スナップショットが消えると 3 表とも一緒に落ちる。猶予には既存の `epg.retention_grace`（既定 24h、EPG プロジェクションのローリングウィンドウと同じ設定）をそのまま流用する。専用の設定項目を増やさず、「EPG から消える」と「予約・意図として GC される」の寿命を揃える。`recordings` は `reservations` への FK を持たないので、この削除で録画履歴（recordings/media_assets。never-scheduled 行を含む）が失われることはない。
+
+**GC は大量削除サーキットブレーカー（`MaxDeletesPerPass`）の対象にせず、ブレーカー発動中でも動く**。GC の削除対象は時刻の比較だけで決定的に定まり、EPG の状態には一切左右されないため（理由の全体は [breaker.md](breaker.md)「GC は対象にしない」）。
+
+---
+
+#### 経緯と失敗事例
+
+- 手動予約とルール由来予約の区別を `program_intents.action` から導出する形は issue #26（`reservations.source` 列の不具合。[reservation-model.md](reservation-model.md) 末尾「経緯と失敗事例」）の帰結
+- GC は当初 3 表それぞれに別々の DELETE 文があり、表ごとに違うスナップショット列を見てドリフトしていた（表ごとに違う時刻で GC していた）。issue #27 で `program_snapshots` への `ON DELETE CASCADE` FK による 1 本の DELETE（`DeleteEndedProgramSnapshots`）に集約した
+- `recordings.reservation_id` 列（GC 当時は `ON DELETE SET NULL`）は issue #158 で列自体を削除した
+- 重複排除（`internal/ruler/dedupe.go`）の実装は M2-6
 

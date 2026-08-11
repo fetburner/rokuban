@@ -4,7 +4,7 @@
 #   docker compose up -d
 #   → http://localhost:40773
 #
-# 手順と出口基準チェックリストは docs/runbook.md を参照。
+# 手順は docs/runbook.md を参照。
 #
 # CI のスモークテストは docker-compose.test.yml（mirakc なしで healthcheck だけ見る）。
 
@@ -19,7 +19,7 @@ services:
     volumes:
       - postgres-data:/var/lib/postgresql/data
       # テスト用 DB も作る。go test ./... がこの postgres を使えるようにするため
-      # （docs/runbook.md の「開発時のテスト」参照）。
+      # （docs/runbook/testing.md 参照）。
       - ./scripts/init-test-db.sh:/docker-entrypoint-initdb.d/10-init-test-db.sh:ro
     ports:
       # ホストから psql / go test で繋ぐため。閉じたい場合はこの 2 行を消す。
@@ -65,7 +65,7 @@ services:
       - media:/mnt/media
     ports:
       - "${ROKUBAN_PORT:-40773}:40773"
-    # M1 は monolith（--all）で動かす。ロール分割デプロイは M4。
+    # monolith（--all）で動かす。ロール分割デプロイは docs/operations.md を参照。
     command: ["server", "--all", "--config", "/config.yml"]
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:40773/healthz"]
