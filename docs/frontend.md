@@ -25,7 +25,7 @@ Vite + React + TypeScript の SPA。go:embed で単一バイナリに同梱し�
 | 「エラーの本文も UI まで運ぶ」 | [frontend/shell.md](frontend/shell.md) |
 | 「検索とルールは同じ条件 UI を双方向に共有する」 | [frontend/search.md](frontend/search.md) |
 | 「録画検索は `/recordings` に同居する」/「debounce と URL 同期で履歴を汚さない」/「ごみ箱タブと検索条件は直交させる」 | [frontend/recordings.md](frontend/recordings.md) |
-| §ライブ視聴 / §フロントエンド実装（M4-4）/ §実機確認について（M4-4） | [frontend/live.md](frontend/live.md) |
+| §ライブ視聴 / §フロントエンド実装 / §実機確認について | [frontend/live.md](frontend/live.md) |
 | アセット配信 | [frontend/assets.md](frontend/assets.md) |
 
 読む順の目安:

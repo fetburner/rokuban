@@ -23,9 +23,11 @@ monolith（`--all`）では `internal/api.RouterConfig.Mounter` 経由で stream
 
 | トピック | 発火元 | クライアントが invalidate するもの |
 |---|---|---|
-| `reservations` | `reservations` の行トリガー | 予約一覧・予約詳細 |
+| `reservations` | `reservations` の行トリガー | 予約一覧・予約詳細（容量超過の導出値も一緒に） |
 | `recordings` | `recordings` / `media_assets` の行トリガー | 録画一覧（サイズ・ドロップ統計も含む） |
 | `epg` | EPG 同期ジョブが明示的に `pg_notify` | 番組リスト・サービス一覧 |
+| `breakers` | `circuit_breakers` の行トリガー | ブレーカー一覧（バナー） |
+| `rules` | `rules` の行トリガー | （現在クライアントは購読していない。notifier は選別せず全トピックを転送する — `web/src/lib/events.ts` の `topicQueryKeys` が購読の一覧） |
 
 **通知の出し方はテーブルの書き込み量で分ける。**
 

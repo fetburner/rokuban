@@ -622,7 +622,7 @@ func rewriteRuleMatches(ctx context.Context, tx pgx.Tx, site string, allMatches 
 // 優先順位の合成に jsonb マージの細工が要る。逆に重複排除は「ルール x 履歴」から
 // 毎パス導出される値なので base に載るのが正しく、ユーザーの action='record' が
 // これに勝つ合成は db.EffectiveOptions の 1 箇所で解かれる
-// （docs/recording.md §4.2「M2-6 の dedup skip」）。
+// （docs/recording.md §4.2「dedup skip（重複排除）」）。
 func computeBase(rule sqlcgen.Rule, dedupeSkip bool) (json.RawMessage, error) {
 	priority := int(rule.Priority)
 	keepOriginal := rule.KeepOriginal

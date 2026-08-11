@@ -108,7 +108,7 @@ func (o *ReservationOptions) Effective(base *ReservationOptions) ReservationOpti
 //
 // つまり**意図があれば action だけが skip を決める**。action = 'record' なら
 // base.skip が true でも false を返す --- M2-6 の重複排除が base に skip を
-// 立てても、ユーザーの「録れ」意図が勝つ（同 §4.2「M2-6 の dedup skip」）。
+// 立てても、ユーザーの「録れ」意図が勝つ（同 §4.2「dedup skip（重複排除）」）。
 // 意図が無いときだけ base / overrides 由来の skip がそのまま効く。
 //
 // action は overrides とは別表（program_intents）にあるので base 側の skip を
