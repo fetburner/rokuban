@@ -70,6 +70,10 @@ M0（歩く骨格）・M1（録れる）・M2（任せられる）の実装は�
 | M2 の出口基準の検証（EPGStation と 1〜2 週間並走し、予約差分がゼロ or 全件説明可能） | [#52](https://github.com/fetburner/rokuban/issues/52) |
 | M3 タスク分解: 置き換えられる（エンコード・削除・移行）。サブ #63〜#75 | [#62](https://github.com/fetburner/rokuban/issues/62) |
 | M4 タスク分解: 広げられる（ロール分割デプロイ・ライブ視聴・クラウド構成）。サブ #89〜#97 | [#88](https://github.com/fetburner/rokuban/issues/88) |
+| M5 タスク分解: 名乗れる（イの計器盤 — デザイン言語と頻度階層）。サブ #224〜#228 | [#220](https://github.com/fetburner/rokuban/issues/220) |
+| M6 タスク分解: 辿れる（画面間の導線とオブジェクトの着地先）。サブ #229〜#233 | [#221](https://github.com/fetburner/rokuban/issues/221) |
+| M7 タスク分解: 見積もれる（資源の値札と残高）。サブ #234〜#239 | [#222](https://github.com/fetburner/rokuban/issues/222) |
+| M8 タスク分解: 見返せる（ホームとライブラリ）。サブ #240〜#242 + 判定基準の決定後に起票 3 件 | [#223](https://github.com/fetburner/rokuban/issues/223) |
 
 - **`reservations` と shadow-diff（#52 の出口基準を測る道具そのもの）を触るタスクは、#52 の並走が始まったら着手しない。** 測定の連続性が切れる。**ただし 2026-08-03 時点で並走は一度も始まっていないので、この制約は今は効いていない** —— 同じ制約を「並走中は着手しない」と書いている issue（#98 / #101 / #129）も同様に保留の理由にならない。並走を始めるときにここを読み直す
 - **streamer のスケールとライブ視聴の資源同定は [docs/operations.md](docs/operations.md) §5「streamer のスケール」と [docs/api.md](docs/api.md) §ライブ視聴の HLS に決まっている。** sticky は使わない / ライブの URL にセッション ID を置かない / 既定 replicas=1 は可逆にする、の 3 点。触るタスク（#91 / #94）は実装前にこの 2 節を読む
