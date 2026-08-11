@@ -1,3 +1,5 @@
+> [runbook.md](../runbook.md) の一部。索引から辿る。
+
 ## 詰まったとき
 
 ### `ingest: transfer complete` が出ない
@@ -7,7 +9,7 @@ docker compose exec postgres psql -U rokuban -d rokuban -c \
   "SELECT id, kind, state, attempt, errors FROM river_job WHERE kind='ingest' ORDER BY id DESC LIMIT 3"
 ```
 
-- `errors` に **500** — mirakc のイメージに `cat` / `dd` が無い（前述）。
+- `errors` に **500** — mirakc のイメージに `cat` / `dd` が無い（[setup.md](setup.md) の前提を参照）。
   HEAD だけ試すと成功するので騙されやすい
 - `errors` に **`context deadline exceeded`** — River の総時間タイムアウト。
   ingest は無効化してあるので、出るなら設定が壊れている
@@ -17,7 +19,7 @@ docker compose exec postgres psql -U rokuban -d rokuban -c \
 ### EPG 同期が一度しか走らない
 
 `river_job` の `epg_sync` に完了済みの行が残っていて `unique_key` を占有している。
-`UniqueOpts.ByState` の設定を変更した場合に起きる（[運用](../operations.md) の
+`UniqueOpts.ByState` の設定を変更した場合に起きる（[データ層](../data.md) の
 「River のジョブ一意性の注意」）。
 
 ```sh
@@ -27,7 +29,7 @@ docker compose exec postgres psql -U rokuban -d rokuban -c \
 
 `rokuban_epg_sync_last_success_timestamp_seconds` が更新され続けているかで監視できる。
 
-### M4-13 デプロイ直後、旧キューの残骸が `river_job` に残っている（issue #185）
+### デプロイ直後、旧キューの残骸が `river_job` に残っている
 
 **実測（このリリースノートを書くために実バイナリで確認済み。手順は下記）**:
 site 単位のキュー名を修飾する変更（`ingest` → `ingest_<site>` 等。
@@ -100,7 +102,7 @@ curl -s "$MIRAKC_URL/api/programs" | jq 'length'
 
 ```sh
 # 1. 条件はマッチしているか（ruler と同じコンパイラ）
-curl -s -X POST http://localhost:40773/api/programs/search \
+curl -s -X POST http://localhost:40773/api/sites/default/programs/search \
   -H 'Content-Type: application/json' -d '<ルールと同じ条件>' | jq length
 
 # 2. ruler パスは走ったか
@@ -126,15 +128,48 @@ docker compose exec postgres psql -U rokuban -d rokuban -c \
 curl -s http://localhost:40773/api/reservations/12 | jq '{state, skip, dedupMatchRecordingId}'
 ```
 
-- `skip: true` — 除外か重複排除。手順 6 で理由を読む
-- `state: "orphaned"` — 同期対象外。番組終了後なら「既知の未解決事項」を先に読む
+- `skip: true` — 除外か重複排除。`dedupMatchRecordingId` / `dedupSimilarity` が
+  入っていれば重複排除（相手の録画 ID と類似度まで説明できる）、無ければ
+  ユーザーの除外（`program_intents.action = 'skip'`）
+- `state: "orphaned"` — 同期対象外（放送済み番組の予約は GC まで残る）
 - どちらでもない — `rokuban_reconcile_pending_diff{action="create"}` が減らないなら
   mirakc が作成を拒否している。`reconciler: creating schedule` の ERROR を見る
 
 ### `/api/capacity/overages` が常に空
 
 `tuner_sync` の射影が空だと**何も主張しない**設計なので、超過が無いのか判定が
-無効なのかを区別できない。手順 10 の「射影が動いているかを先に確認する」を見る。
+無効なのかを区別できない。空配列を見たら、射影が動いているかを先に確認する。
+
+```sh
+curl -s http://localhost:40773/metrics |
+  grep -E 'rokuban_tuners_projected|rokuban_tuner_sync_last_success|rokuban_capacity_overages'
+# rokuban_tuners_projected{site="default"} 4
+# rokuban_tuner_sync_last_success_timestamp_seconds{site="default"} 1.7695e+09
+# rokuban_capacity_overages{site="default"} 0
+```
+
+```sh
+docker compose exec postgres psql -U rokuban -d rokuban -c \
+  "SELECT tuner_index, name, types, is_available, is_fault, observed_at FROM tuner_sync ORDER BY tuner_index"
+```
+
+- 行が無い / `rokuban_tuners_projected` が 0 — 射影が空。判定は無効
+- `tuner sync: mirakc returned no projectable tuners, skipping sweep` — mirakc が
+  空を返したのでスイープを見送った（既存の射影は消さない）
+- `tuner sync: skipping tuner with unknown channel type` — 未知の種別を持つ
+  チューナーを**丸ごと捨てた**。`cap(A)` が 1 本少なくなるので警告が過剰に出る側に
+  ずれる（見逃す側にはずれない）
+- 行はあるが `is_available = false` / `is_fault = true` が全台 — この場合は**判定する**
+  （射影された事実であって我々の無知ではない）
+
+### ドロップ統計で音声 PID が `other` に見える
+
+**`pidType` が `other` の音声 PID**（LATM AAC / `stream_type = 0x11`）は
+「誤読しやすい正常」で、ドロップ統計そのものは正しい。`gots` の
+`IsAudioContent()` の値域に従っているだけで、自前の `stream_type` 表は
+作らない方針。ISDB の GR/BS/CS は 0x0F（MPEG-2 AAC）が主なので実害は
+4K/8K に限られる見込みだが、観測したら「分類の限界」であってドロップではない。
+1 行で足せるので観測したら報告する。
 
 ### 録画が開始直後に失敗する
 
@@ -147,3 +182,8 @@ curl -s "$MIRAKC_URL/api/tuners" | jq '.[] | {name, isAvailable, users}'
 
 EPGStation のライブ視聴・EPG 収集・別チャンネルの録画が掴んでいないか確認する。
 
+
+## 経緯と失敗事例
+
+- 「デプロイ直後、旧キューの残骸が `river_job` に残っている」の挙動と掃除コマンドは、
+  issue #185（M4-13）の検証で実バイナリを使って実測した

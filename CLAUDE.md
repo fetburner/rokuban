@@ -17,7 +17,7 @@ golangci-lint run
 ```bash
 cd web
 pnpm install
-pnpm test      # Vitest。M2-5 で導入（それまでフロントにテスト基盤が無かった）
+pnpm test      # Vitest
 pnpm lint      # oxlint。既存の warning が 3 件あるので増えていないかで見る
 pnpm build     # tsc -b && vite build。型エラーはここで出る
 pnpm exec orval  # openapi.yaml → web/src/api/generated.ts
@@ -26,7 +26,7 @@ pnpm exec orval  # openapi.yaml → web/src/api/generated.ts
 **`go test ./...` は Postgres を要求する。** `ROKUBAN_TEST_DATABASE_URL` を設定していないと DB を使うテストが落ちる（`internal/testutil` がパッケージごとに DB を作り、テストごとに TRUNCATE する）。ローカルなら `postgres://localhost:5432/postgres?sslmode=disable` で足りる。
 
 **sqlc は式の型を推論しきれないことがある。** `program_start_at + interval '...'` のような
-式に `::timestamptz` を明示しないと `int32` として生成され、`Scan` で必ず落ちる（M2-10 で踏んだ）。
+式に `::timestamptz` を明示しないと `int32` として生成され、`Scan` で必ず落ちる。
 式を SELECT に置くときは明示キャストを付ける。
 
 **`oapi-codegen` / `golangci-lint` は PATH に無いことがある。**
@@ -39,25 +39,24 @@ pnpm exec orval  # openapi.yaml → web/src/api/generated.ts
 
 **設計の権威は docs/ にある。** 実装中に設計判断を変えたくなったら実装せず issue にコメントで提起する。
 
-**設計 issue（#1〜#5 / #9）は docs/ に一本化して close した。** 同じ内容を issue とdocs で二重に読まないため。経緯を辿りたいときだけ closed issue を見る。
-
 ### 資料マップ
 
-**タスクに関係する doc だけ読む。** 大きい 3 本は索引 + 分割本文になっているので、索引で節を特定してから該当ファイルだけ開く。
+**タスクに関係する doc だけ読む。** 大きい doc は索引 + 分割本文になっているので、索引で節を特定してから該当ファイルだけ開く。**形（REST のパス・パラメータ / 設定キー / マイグレーション）の権威は `openapi.yaml` / `config.example.yml` / `internal/db/migrations/` にあり、docs は判断（なぜ）だけを持つ。**
 
 | doc | 内容 | 形 |
 |---|---|---|
 | [docs/overview.md](docs/overview.md) | 全体アーキテクチャ（ロール分類/nginx/認証/イメージ配布/サーバーレス/B-CAS） | 単一 |
-| [docs/recording.md](docs/recording.md) | 録画エンジン（ruler/reconciler/watcher/予約モデル/ingest/B-CAS） | **索引** → `docs/recording/` |
-| [docs/schema.md](docs/schema.md) | DB スキーマ v1（設計原則/全テーブル） | **索引** → `docs/schema/` |
-| [docs/data.md](docs/data.md) | データ層（River/NOTIFY/検索・ルール評価/EPG 射影/チューナー射影/輻輳隔離） | 単一 |
-| [docs/api.md](docs/api.md) | API 設計（REST/SSE/メディア配信/認証/プロキシ） | 単一 |
-| [docs/storage.md](docs/storage.md) | ストレージ契約（2 階層/削除エンジン） | 単一 |
-| [docs/frontend.md](docs/frontend.md) | フロントエンド | 単一 |
-| [docs/configuration.md](docs/configuration.md) | 設定 | 単一 |
-| [docs/operations.md](docs/operations.md) | ロールと分散デプロイ | 単一 |
+| [docs/recording.md](docs/recording.md) | 録画エンジン（ruler/reconciler/watcher/予約モデル/ingest/B-CAS）。用語表とデータフロー図はここ | **索引** → `docs/recording/` |
+| [docs/schema.md](docs/schema.md) | DB スキーマ v1（設計原則/全テーブル/ER 図） | **索引** → `docs/schema/` |
+| [docs/data.md](docs/data.md) | データ層（River/NOTIFY/検索・ルール評価/EPG 射影/チューナー射影/輻輳隔離） | **索引** → `docs/data/` |
+| [docs/api.md](docs/api.md) | API 設計（REST の判断/SSE/メディア配信/認証/プロキシ） | **索引** → `docs/api/` |
+| [docs/storage.md](docs/storage.md) | ストレージ契約（2 階層/削除エンジン/catalog・rescue） | **索引** → `docs/storage/` |
+| [docs/frontend.md](docs/frontend.md) | フロントエンド | **索引** → `docs/frontend/` |
+| [docs/configuration.md](docs/configuration.md) | 設定の判断（キーの網羅は `config.example.yml`） | 単一 |
+| [docs/operations.md](docs/operations.md) | 運用（監視/アラート/DB/ストレージ/k8s・ロール分割） | **索引** → `docs/operations/` |
 | [docs/runbook.md](docs/runbook.md) | 手動での動作確認手順 | **索引** → `docs/runbook/` |
 | [docs/invariants.md](docs/invariants.md) | 不変条件 9〜13 の経緯・失敗事例（表と war story）。ルールの根拠を辿るときだけ | 単一 |
+| [docs/workflow.md](docs/workflow.md) | タスク分解・docs 保守・並行作業の規律。該当作業のときだけ | 単一 |
 
 ### タスクマップ
 
@@ -75,35 +74,21 @@ M0（歩く骨格）・M1（録れる）・M2（任せられる）の実装は�
 | M7 タスク分解: 見積もれる（資源の値札と残高）。サブ #234〜#239 | [#222](https://github.com/fetburner/rokuban/issues/222) |
 | M8 タスク分解: 見返せる（ホームとライブラリ）。サブ #240〜#242 + 判定基準の決定後に起票 3 件 | [#223](https://github.com/fetburner/rokuban/issues/223) |
 
-- **`reservations` と shadow-diff（#52 の出口基準を測る道具そのもの）を触るタスクは、#52 の並走が始まったら着手しない。** 測定の連続性が切れる。**ただし 2026-08-03 時点で並走は一度も始まっていないので、この制約は今は効いていない** —— 同じ制約を「並走中は着手しない」と書いている issue（#98 / #101 / #129）も同様に保留の理由にならない。並走を始めるときにここを読み直す
+- **`reservations` と shadow-diff（#52 の出口基準を測る道具そのもの）を触るタスクは、#52 の並走中は着手しない。** 測定の連続性が切れる。並走が始まっているかは #52 を見て判断する（始まっていなければこの制約は効かない。「並走中は着手しない」と書いている issue #98 / #101 / #129 も同じ基準で判断する）
 - **streamer のスケールとライブ視聴の資源同定は [docs/operations.md](docs/operations.md) §5「streamer のスケール」と [docs/api.md](docs/api.md) §ライブ視聴の HLS に決まっている。** sticky は使わない / ライブの URL にセッション ID を置かない / 既定 replicas=1 は可逆にする、の 3 点。触るタスク（#91 / #94）は実装前にこの 2 節を読む
 
 ### タスク分解と issue
 
-**タスク分解を頼まれたら、マイルストーンごとにエピック 1 本 + サブ issue に分ける。** 形式は `.github/ISSUE_TEMPLATE/` の 2 つのテンプレート（`epic` / `sub-issue`）に従う。既存の issue（#62 / #88 など）を読んで形式を真似る必要はない。
-
-```console
-$ gh issue create --template epic --title 'M5 タスク分解: ...'
-$ gh issue create --template sub-issue --title 'M5-1 ...' --label area:worker
-```
-
-- **サブ issue は自己完結させる。** 分割の目的は「実装する人が余計な文書を読まずに済むこと」であって、進捗管理ではない。**エピックや他のサブ issue を読まないと実装できないサブ issue は分割が失敗している。** エピックの「着手前の前提」で決めた共通事項は、参照させずに必要な行を転記する
-- **「読む文書」は節名まで絞る。** 挙げなかった文書は開かせない。不変条件は番号で参照してよい（CLAUDE.md は毎セッション読まれるため）
-- **「触るファイルの目安」を書く。** 並行して進めるときの衝突を防ぐ。`openapi.yaml` を触るタスクは明示する（下記「並行作業」のボトルネック）
-- 本文の先頭に `親: #<エピック番号>` を書く。GitHub ネイティブの parent/sub-issue 機能（`gh issue create --parent`）は使わない —— 本文だけ読んでも親が分かれば足りる
-- **ラベルは `epic` と `area:*` の 2 系統。** `area:*` は `internal/` のパッケージ境界（複数パッケージにまたがる area は許容する。詳細はテンプレートのコメント参照）に対応させる。現在の一覧は `gh label list` で見る（ここには列挙しない。パッケージ構成が変わるとここが腐るため）。`lane:*`（並行ワークストリーム）は導入しない —— エピックの「段階切り」表とサブ issue の「並列」節で足りている
+**タスク分解を頼まれたら [docs/workflow.md](docs/workflow.md) §タスク分解と issue に従う。** 要点: マイルストーンごとにエピック 1 本 + 自己完結したサブ issue（`.github/ISSUE_TEMPLATE/` の `epic` / `sub-issue` テンプレート準拠）。
 
 ### ドキュメントと issue の保守
 
-上の「資料マップ」「タスクマップ」は**読む量を減らす**ための仕組みで、それが効くのは中身が最新である限りにおいてである。
+詳細は [docs/workflow.md](docs/workflow.md) §ドキュメントと issue の保守。全タスクに効く要点だけここに置く:
 
-**実装と同時に更新する。** 実装が docs を追い越したらその PR で直す（別タスクにしない）。古い記述は、古いと分かるまで信じられてしまうぶん、無いより悪い。
-
-**終わったら close する。** 完了したタスク・直したバグはその場で close し、「何がどう解決したか」「どの回帰テストが守っているか」を issue 側に残す。巨大な issue は、残っている項目だけをサブ issue に切り出して親を close する。
-
-**close したものへのポインタを索引に残さない。** 「〜は完了した」「〜は close 済み」という報告を資料マップ・タスクマップに書くと、**読んだ人がその issue を見に行ってしまう**。索引に載せるのは「これから読む必要があるもの」だけにする。完了の事実は、それが変えたコードと docs 自身が示している。
-
-**足す前に「これを読まないと判断を誤る人がいるか」を問う。** docs も issue も価値は「必要な節だけを 1 回で読めること」であって量ではない。同じことを docs と issue の両方に書かない。**ただし過去の失敗の記録は消さない** —— 不変条件の実例のように、もう存在しない列の話でも繰り返さないために効いているものがある。消すのは「**現在の実装はこうである**」と読めて、かつ事実でなくなった記述だけ。
+- **実装と同時に docs を更新する。** 実装が docs を追い越したらその PR で直す（別タスクにしない）。古い記述は無いより悪い
+- **終わったタスクはその場で close し、close したものへのポインタを索引に残さない**
+- **issue 番号・タスク番号は経緯の置き場（invariants.md・各ファイル末尾の「経緯と失敗事例」節・タスクマップ・失敗の証拠）にだけ書く。** 現行仕様の本文に出自として書かない（「M3-1 で変えた」等）。番号を読まないと本文が理解できない状態にしない
+- **過去の失敗の記録は消さない。** 消すのは「現在の実装はこうである」と読めて事実でなくなった記述だけ
 
 ### 不変条件
 
@@ -127,12 +112,12 @@ $ gh issue create --template sub-issue --title 'M5-1 ...' --label area:worker
 
 #### 9. 導出値と不可逆な事実を同じ列に載せない
 
-毎パス再計算される値と、二度と再取得できない事実を 1 つの列に同居させると、**導出側が事実を上書きする**（`program_intents.action` #18 / `reservations.source` #26 / `reservations.state` #30）。混同は列だけでなく identity・式・適用の瞬間にも起きる。
+毎パス再計算される値と、二度と再取得できない事実を 1 つの列に同居させると、**導出側が事実を上書きする**（`program_intents.action` / `reservations.source` / `reservations.state` の 3 例。経緯は invariants.md）。混同は列だけでなく identity・式・適用の瞬間にも起きる。
 
 チェック:
 - 新しい列を足すとき「この値は毎パス作り直せるか」を問う。作り直せるなら**列にせず導出する**。作り直せない事実と混ぜてはならない。
-- 新しいエンドポイントを足すとき「**宛先のキーは誰が作るか**」を問う。導出器が作るキーは API の宛先に置かない（`base.skip` を覆す意図を書けなくなる。#29）。
-- `WHERE a.x_id = b.id` を書くとき「**この id は誰が作り、いつ変わるか**」を問う。導出器が作るなら放送イベント `(site, network_id, service_id, event_id)` や `(site, program_id)` のように**外から与えられたキー**で引く（#29 / #53 / #98 / #99 / #149 / #152）。導出器が作るキーを保存する列は、読者を移設し終えたら残さない（#158 で DROP）。
+- 新しいエンドポイントを足すとき「**宛先のキーは誰が作るか**」を問う。導出器が作るキーは API の宛先に置かない（`base.skip` を覆す意図を書けなくなる）。
+- `WHERE a.x_id = b.id` を書くとき「**この id は誰が作り、いつ変わるか**」を問う。導出器が作るなら放送イベント `(site, network_id, service_id, event_id)` や `(site, program_id)` のように**外から与えられたキー**で引く。導出器が作るキーを保存する列は、読者を移設し終えたら残さない（実例 6 件は invariants.md）。
 - 導出を列に焼くなら**両方向のテストを書く**。導出の判定をメモリに持って後で適用するなら、適用の側で判定条件を再評価する（読み書きの割り込み窓）。
 
 #### 10. 意味を持たない行を作らない
@@ -155,13 +140,13 @@ $ gh issue create --template sub-issue --title 'M5-1 ...' --label area:worker
 
 #### 12. 表は行の寿命で割る
 
-**1 表 = 1 つの書き手 = 1 つの寿命。** 不変条件 9 は**列**の粒度なので、行に寿命が混ざっているケースを網に掛けられない（`reservations` に導出出力・番組スナップショット・不可逆な観測の 3 寿命が同居していた。#27 / #28 / #30、Phase 1 で解消）。分割の軸を「予約という概念」に取ったので 2 回に分かれた（#18 → M2-4）—— 軸を寿命に取れば 1 回で済む。
+**1 表 = 1 つの書き手 = 1 つの寿命。** 不変条件 9 は**列**の粒度なので、行に寿命が混ざっているケースを網に掛けられない（`reservations` に導出出力・番組スナップショット・不可逆な観測の 3 寿命が同居していた。経緯は invariants.md）。分割の軸を「予約という概念」に取ったので解消が 2 回に分かれた —— 軸を寿命に取れば 1 回で済む。
 
 チェック: 新しい列を足すとき「**この値はこの行と同時に生まれて同時に死ぬか**」を問う。違えば `(site, program_id)` を主キーにした別表にする。1 つの表に書き手が 2 人いるのも同じ兆候。
 
 #### 13. 永続表に列を足すとき、書くループが脊椎の書き手でなければ衛星表にする
 
-不変条件 12 の寿命チェックは**永続表に対して盲目**になる（表自体が永続なので列も永続で自明に真が返る。`recordings` が書き手 5 人になっても 12 では止まらなかった。#156）。**recordings 本体は「試行の帰結の観測」だけを持つ脊椎。別のループが書く状態は `recording_id` を FK に持つ衛星表に置く**（`media_assets` が実例）。
+不変条件 12 の寿命チェックは**永続表に対して盲目**になる（表自体が永続なので列も永続で自明に真が返る。`recordings` が書き手 5 人になっても 12 では止まらなかった。経緯は invariants.md）。**recordings 本体は「試行の帰結の観測」だけを持つ脊椎。別のループが書く状態は `recording_id` を FK に持つ衛星表に置く**（`media_assets` が実例）。
 
 チェック: 永続表に列を足すとき「**この列を書くループは脊椎の書き手か**」を問う（`recordings` なら試行を観測する watcher / reconciler。既にその表に書いている＝根拠にならない）。脊椎の書き手でないなら `recording_id` を持つ衛星表にする。
 
@@ -207,13 +192,4 @@ $ gh issue create --template sub-issue --title 'M5-1 ...' --label area:worker
 
 ### 並行作業（複数エージェント）
 
-**契約を先に書いてコミットしてから並列に投げる。** M2-5 ではテーブル・クエリ・`internal/breaker`・メトリクスを先に固定したので 3 本が競合なしに走った。
-
-- **`openapi.yaml` はボトルネック。** 触るのは 1 本に限定する（description だけの狭い例外は可）
-- **クエリファイルは新規に切る。** 既存の `reservations.sql` 等を複数が触ると取り合いになる
-- **git が競合と見なさない意味的な競合がある。** M2-8 の `sqlc.embed(r)` が #26 で削除した列を含んでいて、行としては衝突しないのでマージは成功し、その後ビルドが落ちた。テストフィクスチャの生 SQL も同様
-- **「触るファイルが重ならない」は並列可の条件として不十分。** 一方が**制約を厳しくする**（NOT NULL / CHECK / 一意索引）側で、他方が**同じ表に行を作る**（テストフィクスチャの生 SQL を含む）側なら、ファイルが重ならなくてもマージ後に落ちる。**片方をマージしてから他方をリベースして CI を通す。** #99（`program_snapshots` に生 SQL で 4 列だけ入れるフィクスチャを追加）と #101（同じ表の 6 列を NOT NULL 化）は、それぞれのブランチで CI が緑・衝突する行も無くマージが成功し、main が赤くなった（#151 で修正）
-- **マージ後に必ず生成物を再生成してフルテストを回す**（`sqlc generate` / `go generate ./internal/api/` / `go test ./...`）。マージが通ったことは何の保証にもならない
-- **ローカルのフルテストが緑でも CI を確認する。** CI にしかない条件（コア数・Postgres の構成・`docker` ジョブ・`-timeout`）が拾う失敗はローカルには出ない。実例: 並行 Export の一貫性テストが 2 コアの CI でだけ「レース窓を踏めなかった」で落ちた（競合ゴルーチンの飢餓。閾値を下げるのではなく、条件を満たすまで回す形に直した）
-- エージェントの報告は検証してから信じる。実際に「docs に古い記述がある」という報告が grep すると存在しなかったし、指示範囲外の妥当な修正（分離が生んだ新経路の取りこぼし）を見つけてきたこともある
-- **PR を開く前に、別のエージェントに「このテストは何を壊せば落ちるか」だけを見せるパスを 1 回挟む。** レビュー往復 1 回より安い。M4 で 7 本の PR に出た必須指摘は、2/3 が「テストが退行を検出しない」か「コメントが測っていないことを断言している」のどちらかで、いずれもこのパスで出る種類だった
+複数エージェントで並行させるときは [docs/workflow.md](docs/workflow.md) §並行作業を読む。要点: 契約を先に書いてコミットしてから並列に投げる / `openapi.yaml` を触るのは 1 本に限定 / マージ後は生成物を再生成してフルテスト（マージが通ったことは何の保証にもならない）。

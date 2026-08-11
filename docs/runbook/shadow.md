@@ -1,3 +1,5 @@
+> [runbook.md](../runbook.md) の一部。索引から辿る。
+
 ## EPGStation との並走
 
 同じ mirakc を共有してよい。**チューナーの調停は mirakc が行う**ので、Rokuban が
@@ -50,7 +52,7 @@ EPGStation 側の API の形は**実機（v2.10.0）で確認済み**。`GET /ap
 curl -s "$EPGSTATION_URL/api/reserves?type=all&isHalfWidth=false&limit=1&offset=0" | jq
 ```
 
-M2 の出口基準は「予約差分ゼロ or 全件説明可能」（issue #6 / #24 の M2-14）。
+並走の出口基準は「予約差分ゼロ or 全件説明可能」。
 `rokuban shadow-diff` は Rokuban（DB）と EPGStation（API）の予約集合を programId で
 突き合わせ、差分を標準出力にレポートするサブコマンド。
 

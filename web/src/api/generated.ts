@@ -3333,7 +3333,7 @@ export const getListRecordingsUrl = (params?: ListRecordingsParams,) => {
  *
  * トークンを発行しない。返った配列の**最後の要素**の `startAt` / `id` を、
  * 次のリクエストの `before` / `beforeId` にそのまま渡す（EPG の時間窓カーソル
- * --- 本ファイル「時間窓がカーソル」--- と同じ思想だが、録画は有界に増え続ける
+ * --- docs/api.md「時間窓がカーソル」--- と同じ思想だが、録画は有界に増え続ける
  * ため境界は時間窓ではなく `(program_start_at, id)` の複合キーになる。同一
  * `program_start_at` の録画（同時刻開始の別チャンネル）が普通に発生するため、
  * `id` を tie-breaker にしないとページ跨ぎで重複・欠落が出る）。`before` /

@@ -72,7 +72,7 @@ E2E_LIVE_SERVICE_A=9001 E2E_LIVE_SERVICE_B=9002 pnpm e2e:live
    ことは「壊れる側のブラウザで測っている」ことを意味しない。⑥（WebKit）を
    足して初めて機械判定できるようになった
 
-詳細は [docs/frontend.md](../../docs/frontend.md) §実機確認について（M4-4）。
+詳細は [docs/runbook/live.md](../../docs/runbook/live.md)（実機確認の判定項目と回帰の記録）。
 
 ## CI では回さない
 

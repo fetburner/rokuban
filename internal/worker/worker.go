@@ -87,7 +87,7 @@ var pendingJobStates = []rivertype.JobState{
 //
 // したがって旧キューの残骸の掃除は**滞留メトリクスの衛生のためであって、
 // 再投入のブロック解除のためではない**。手順は docs/runbook/troubleshooting.md
-// 「M4-13 デプロイ直後、旧キューの残骸が `river_job` に残っている（issue #185）」を参照。
+// 「デプロイ直後、旧キューの残骸が `river_job` に残っている」を参照。
 //
 // ruler / encode / thumbnail は今回のキュー名変更の対象外（ruler は
 // site 非依存のまま "ruler" 固定、encode/thumbnail も変更していない）ので、

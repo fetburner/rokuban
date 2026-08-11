@@ -1,3 +1,5 @@
+> [docs/schema.md](../schema.md)（索引）の分割本文。節番号は分割前のまま（§4）。
+
 ## 4. schedule_sync — mirakc schedule の観測（observed state）
 
 `GET /api/recording/schedules` の全量取得結果をそのまま写像した使い捨てテーブル。reconciler だけが書く。**mirakc の形をしてよい唯一の予約側テーブル**。

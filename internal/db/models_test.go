@@ -1098,7 +1098,7 @@ func TestCloneStringSlicePtr_NormalizesNilSlice(t *testing.T) {
 // effective.skip = (action = 'skip') OR (意図がなく base.skip)
 // であり、action が record なら base.skip の値に関わらず false になる。
 // M2-6 の重複排除が base.skip を立てても、ユーザーの record 意図が勝つという主張
-// （同 §4.2「M2-6 の dedup skip」）はこの分岐に依存している。
+// （同 §4.2「dedup skip（重複排除）」）はこの分岐に依存している。
 //
 // intentAction == nil のケースを両方向で押さえているのが要点: 上書きを常に
 // 適用する実装にすると base 由来の skip が効かなくなる（重複排除が機能しなくなる）。

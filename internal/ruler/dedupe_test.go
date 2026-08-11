@@ -557,7 +557,7 @@ VALUES ($1, $2, '{"priority":7}'::jsonb)`,
 
 // 12. 重複排除が base.skip を立てても、ユーザーの action='record' が勝つ
 // （EPGStation#473「この番組は重複扱いにしない」。docs/recording.md §4.2
-// 「M2-6 の dedup skip」）。db.EffectiveOptions の分岐との結線を見る。
+// 「dedup skip（重複排除）」）。db.EffectiveOptions の分岐との結線を見る。
 func TestRunPass_DedupeRecordIntentWins(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()

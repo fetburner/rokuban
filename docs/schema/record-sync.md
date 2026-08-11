@@ -1,3 +1,5 @@
+> [docs/schema.md](../schema.md)（索引）の分割本文。節番号は分割前のまま（§7）。
+
 ## 7. record_sync — mirakc record の観測（observed state）と drop_stats
 
 ### record_sync
@@ -25,7 +27,7 @@ CREATE INDEX ON record_sync (status);
 
 - ingest ジョブは (site, record_id) をここから取る。ingest コミット → エッジ record 削除 → 次回同期で行が消える（リングバッファの写像）
 - `recording_id IS NULL`（rokuban タグのない record）は ingest 対象外
-- 「未 ingest record 総量」メトリクス（M1-9）はこのテーブルの集計。ingest のサイト単位同時実行キャップ（M1-5）も site 列で分割する
+- 「未 ingest record 総量」メトリクスはこのテーブルの集計。ingest のサイト単位同時実行キャップも site 列で分割する
 
 ### drop_stats — PID 別ドロップ統計（永続資産）
 
@@ -39,7 +41,7 @@ CREATE TABLE drop_stats (
     drops          bigint  NOT NULL,   -- continuity counter 不連続
     errors         bigint  NOT NULL,   -- transport_error_indicator
     scrambled      bigint  NOT NULL,   -- scrambling_control ≠ 0（> 0 は B-CAS 系異常の別枠アラート）
-    pid_type       text,               -- PID 種別（M2-13、00014）。分類できなければ NULL
+    pid_type       text,               -- PID 種別（00014 で追加）。分類できなければ NULL
     PRIMARY KEY (media_asset_id, pid)
 );
 ```
@@ -50,6 +52,9 @@ CREATE TABLE drop_stats (
   値集合は `video` / `audio` / `other`（PMT に載っているが映像でも音声でもない ES。
   字幕・文字スーパー・データ放送はすべてここ）/ 固定 PID 名 `pat` `cat` `nit` `sdt` `eit` `tot` /
   `pmt`（PAT が PMT の在り処として指した PID）。**分類できなかった PID は NULL**（空文字は永続化しない）
+- 分類は PAT → PMT の `stream_type` までで**記述子は読まない**ため、字幕と文字スーパーは
+  区別できない（ARIB では両方 `stream_type = 0x06`）。境界の理由は
+  [録画エンジン](../recording.md) §1「例外の境界」
 - PMT の更新（version 更新・番組の境目での PID 再割り当て）で同一 PID の分類が変わった場合は
   **最後に見たものを採用**する。変化の回数は ingest の転送完了ログ（`pid_type_changes`）にだけ残し、
   列にはしない（導出値であり、統計の正しさに影響しない）

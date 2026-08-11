@@ -20,7 +20,7 @@ db:
                                  # 未指定（0）なら、起動時の roles（--all / --roles）から
                                  # ロールごとの budget（api:10 / worker:8 / watcher:3 /
                                  # notifier:3 / streamer:4）を合計して自動算出する
-                                 # （docs/operations.md §3「輻輳時の隔離」、issue #90）
+                                 # （docs/operations.md §3「輻輳時の隔離」）
   # api_statement_timeout: 30s   # api ロールを含むプロセスのプールにだけ適用する
                                  # statement_timeout。未指定（0）なら既定値 30s。
                                  # api ロールを含まないプロセス（worker/watcher 単独等）には
@@ -36,9 +36,9 @@ db:
 mirakc:
   url: http://mirakc.local:40772
   # site: default                # 省略時 "default"。DB 全テーブルと API パスの
-                                 # /api/sites/{site}/... をスコープする（issue #31）
+                                 # /api/sites/{site}/... をスコープする
 
-# 複数 mirakc（issue #183 M4-11）。`mirakc:` の代わりにこちらを使う。
+# 複数 mirakc。`mirakc:` の代わりにこちらを使う。
 # `mirakc:` は `mirakcs:` の 1 要素と等価に解決される糖衣なので、両方を同時に
 # 書くと起動エラーになる。site 名は ^[a-z0-9]([_-]?[a-z0-9])*$ / 64 文字以内、
 # catalog / thumbnails は予約名で使えない。プロセスがどのサイトに束縛されるかは
@@ -121,7 +121,7 @@ encode:
   #     preset: medium           # optional
   #     extra_args: []           # 末尾に追加する ffmpeg 引数（自由形式 cmd 全体は禁止）
 
-# ライブ視聴（streamer ロールのみ使う。issue #91）
+# ライブ視聴（streamer ロールのみ使う）
 live:
   enabled: false                 # true のときだけライブのルートを登録し、ffmpeg の
                                  # LookPath 検査も行う。公式イメージ（ffmpeg 無し）で
@@ -165,6 +165,18 @@ webhook:
                                  #   - encode.failed
                                  #   - recording.deleted
                                  # 本処理（ingest 等）は webhook 成否で止めない
+
+# 削除 reconcile（ごみ箱・孤児回収。docs/storage.md §7）
+cleanup:
+  trash_retention: 720h          # ごみ箱（recordings.deleted_at）の猶予。0 なら既定値（30 日）
+  orphan_mtime_grace: 168h       # 孤児候補にするまでの mtime 猶予。これより新しいファイルは
+                                 # 孤児候補にしない（正常系の録画→ingest→エンコードは数時間で
+                                 # 完結するため）。0 なら既定値（7 日）
+  orphan_age: 336h               # 孤児候補が記録されてから実削除されるまでのエイジング期間。
+                                 # 0 なら既定値（14 日）
+  max_deletes_per_pass: 100      # 一括削除サーキットブレーカーの閾値。ソースを問わず
+                                 # 1 パス全体の合計に対して働く（ruler と同じラッチ式）。
+                                 # 0 なら既定値（100）
 
 # ログ
 log:

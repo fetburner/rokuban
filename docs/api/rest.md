@@ -1,0 +1,150 @@
+> [docs/api.md](../api.md)（索引）の分割本文。REST API の設計判断だけを置く。**パス・パラメータ一覧・enum・既定値の権威は openapi.yaml** であり、ここには書き写さない。
+
+## REST API（OpenAPI ファースト・コード生成・後方互換）
+
+予約・ルール・録画一覧などの CRUD と検索はすべて REST API で提供する。**OpenAPI 定義を単一の真実**とし、クライアント・サーバー双方のコードを生成する。
+
+### コード生成パイプライン
+
+- **TypeScript 側**: orval で型付きクライアント（TanStack Query フック）を生成
+- **Go 側**: ハンドラの型を OpenAPI 定義から導出（oapi-codegen）
+
+### 契約の保護
+
+- 破壊的変更は生成物の差分として **CI で検知**する
+- UI と API のデプロイタイミングはずれ得るため、**API は後方互換を保つ**（参照: [frontend.md](../frontend.md) のアセット配信）
+
+### エンドポイント設計の規約
+
+- API パスは常に**ルート相対パス `/api/*`**（ドメインを含まない絶対パス）を使用する。CDN / リバースプロキシ構成で CORS 不要・実行時コンフィグ注入不要とするため
+- **絶対 URL ビルダーは作らない。** Rokuban には絶対 URL を生成している箇所が現状ゼロ（API・webhook ペイロードともルート相対パスのみ）。無い箇所にビルダーを先回りで作らない（不変条件 11）。必要になった時点で単一ビルダーへ一元化する方針は維持する（棚卸しの経緯は末尾「経緯と失敗事例」）
+- **site は資源同定に含める。** `programId` は site スコープ（[スキーマ](../schema.md) §1-5）なので、番組・意図・上書きを指すパスはすべて `/api/sites/{site}/programs/{programId}...` の形を取る。**api プロセス自身はどの site にも束縛されない**（不変条件 1: mirakc にもファイルシステムにも依存しない）。権威は `config.mirakc`/`mirakcs` レジストリに site が存在するかで、1 プロセスがレジストリの全 site を処理できる。レジストリに無い site を指定すると、読み取り系（GET）は 404、書き込み系（POST/PUT/PATCH/DELETE）は 400 を返す。存在する site の一覧は `GET /api/sites`（mirakc の URL は含まない）で取得できる
+
+### EPG の読み取り
+
+番組表を引く API の形。番組リスト UI とグリッドの両方がこれを使う。
+
+#### 時間窓がカーソル。ページネーショントークンを持たない
+
+`GET /api/sites/{site}/programs` は `start` / `end` の時間窓で引く。トークン方式を採らない理由:
+
+- **データ量が有界** — EPG はローリングウィンドウで、実測 8 日分 2680 件
+  （GR のみ 7 チャンネル）。「ページ 500」が原理的に発生しないので、
+  ページネーションが解決する問題が存在しない
+- **トークンの中身が時間窓の言い換えになる** — 安定ソート鍵は
+  `(start_at, network_id, service_id)` であり、これを opaque token に包むと
+  日付ディープリンクができず、キャッシュも効かなくなるだけ
+- **プロジェクションが 10 分ごとに全量書き換わる** — カーソルが指していた番組が
+  消えているケースを常に扱う必要が出る。時間窓なら「同じ窓 → 常に同じ完全な結果」で、
+  クエリキーが自然に決まり EPG の churn にも強い
+
+窓の最大幅を超えたら 400 を返し、**無言の切り詰めはしない**
+（切り詰めると「全部取れた」と誤解される）。窓の重なり判定・幅の上限・
+`serviceId` の複数指定の形は openapi.yaml の description が権威。
+
+#### サービス一覧は `hasPrograms` を足すが、それでは絞らない
+
+`Service.hasPrograms` は、EPG プロジェクション**全体**（表示中の時間窓ではない）に
+そのサービスの番組が 1 件でもあるかを表す。時間窓に依存させないのは、フロントの
+チャンネル絞り込み候補をこのフラグから作るため（[frontend.md](../frontend.md)）
+--- 候補が時間窓や絞り込み選択に依存すると、「1 局に絞ると他局へ切り替えられ
+なくなる」「ページを読み込むほど候補が増える」という壊れ方をする。
+
+**このエンドポイント自体は `hasPrograms` で行を絞らない。** 番組を持たない
+サービスも含めて全件返す。理由は 2 つ:
+
+- ルール編集画面（`/rules`）がサービスを選ぶので、いま番組を持っていない局も
+  選べる必要がある
+- このエンドポイントは「EPG プロジェクションのサービス一覧」であり、射影に
+  居るが番組ゼロのサービスもその定義上の正当な構成員である。絞ると一覧の
+  名前が実体と食い違う
+
+#### 一覧と詳細で形を分ける（段階的開示）
+
+番組は一覧（`ProgramListItem`。軽い形）と詳細（`Program`。extended / video /
+audios 込み）で形を分ける。`epg_programs` は UI 完全形なので `extended`
+（出演者等）が数 KB あり、全列返すと 1 日分 335 行で 1.5 MB になるが、
+一覧用の軽い列だけなら約 85 KB/日。UI は行を展開したときに詳細を取る。
+
+**フィールド選択（`?fields=`）は入れない。** 生成される型が実質 `Partial<T>` に
+劣化して OpenAPI + コード生成の利点が消え、TanStack Query のドキュメント
+キャッシュも分裂する（フィールドセットが違うと別エントリになる）。GraphQL を
+却下した論拠「クライアントは 1 つで、必要なクエリの形はすべて既知」に従い、
+**形を名前付きで少数だけ用意する**。形が 4 つ 5 つと増えて組み合わせ爆発の兆候が
+出たら、それが GraphQL を再検討するシグナルであり、`?fields=` を黙って足す話ではない。
+
+#### 予約状態は番組と結合しない
+
+番組リストの各行に「予約済み」を出すために `ProgramListItem` へ `reservationId` を
+持たせる（サーバーで JOIN する）ことはしない。`/api/reservations` を別に取って
+クライアント側で結合する。
+
+- 予約は頻繁に変わり番組はほとんど変わらない。**キャッシュの寿命が違う**
+- サーバーで JOIN すると、1 件予約するたびに SSE で番組リスト全体を
+  invalidate することになる。分けておけば予約クエリだけ捨てれば済む
+- 予約は数十件なのでクライアント結合は Map 1 つで済む
+
+### 録画一覧: 絞り込み + キーセットページング
+
+`GET /api/recordings` の絞り込みパラメータ・キーセットカーソルの使い方・
+既定値と上限は openapi.yaml の `listRecordings` の description が権威。
+ここには openapi.yaml に載らない判断だけを残す。
+
+**site では絞らない。** api は不変条件 1 により site に束縛されないため全サイトの
+録画を返し、各要素の `site` フィールドで区別する。`GET /api/reservations` /
+`GET /api/capacity/overages` も同じ形（全サイトを返し、各要素が `site` を持つ）。
+`?site=` のような絞り込みパラメータは、それを欲しがる呼び出し元ができるまで
+足さない（不変条件 11）。
+
+**`trash=true` でもカーソル軸は `program_start_at` 降順のまま**（`deleted_at`
+降順にしない）。一覧・ごみ箱を 1 つのキーセット契約に統一するにあたり、`trash` に
+よってカーソル軸が変わる形は採らなかった --- `before` / `beforeId` の意味が
+`trash` の値に依存すると、同じパラメータ名で違う軸を指すことになり API 契約として
+破綻する（1 エンドポイントの前提が `trash` という別のフラグの値で変わるのは、
+形をモード分岐させる代償の方が大きい。不変条件 11）。ごみ箱 UI で「最近捨てた
+ものが上」が要る場合は、フロント側で `deletedAt` により再ソートする（1 ページ内
+なら安価。ページを跨いだ再ソートが要るなら別途検討）。旧実装との関係は末尾
+「経緯と失敗事例」。
+
+#### 動的 WHERE ビルダ（sqlc の静的クエリにしない）
+
+`internal/api/recordings_query.go` が `internal/rulequery.Compile` と同じ
+`arg` クロージャ方式で WHERE を組む。sqlc の 1 querytext に `($n IS NULL OR ...)`
+形で全軸を詰め込むと、`q` のような選択条件でも汎用プランに落ちて
+`recordings_title_trgm` / `recordings_description_trgm`（式 GIN、
+`internal/db/migrations/00034_recordings_search.sql`）が使われないことがある。
+条件が実際に指定されたときだけ節を足す形にすることで、Postgres が最初に立てる
+プランは常に具体的になる。
+
+**これだけでは片方の劣化しか塞げない。** pgx の既定 `QueryExecModeCacheStatement`
+は SQL テキストごとに named prepared statement を作ってキャッシュし、
+Postgres 自身がその statement を 6 回目以降 custom plan から generic plan に
+切り替えることがある（PostgreSQL の PREPARE のプラン選択規則。generic plan は
+bind 値を見ないため trgm 式 GIN が選ばれない可能性がある）。これは動的 WHERE
+ビルダが解決する「汎用述語（`$n IS NULL OR ...`）による劣化」とは別の劣化経路
+なので、`queryRecordings` はこの経路だけ `pgx.QueryExecModeExec`
+（unnamed statement で毎回明示的に再計画）を指定して別途塞いでいる。この経路は
+絞り込みの組み合わせごとに SQL テキスト自体が変わるため、そもそも named
+statement のキャッシュが効く場面が少ない（キャッシュを維持するコストに対して
+利益が薄い）。
+
+なお録画検索のキーワード正規化は EPG 検索と同じ `normalize_search_text`
+（[data.md](../data.md) §5）を使うが、**エンジン（`internal/rulequery`）は
+共有しない**。理由は [data.md](../data.md) §5「録画検索は rulequery を共有しない」。
+
+## 経緯と失敗事例
+
+- **絶対 URL ビルダーの棚卸し**（M4-1、issue #89）: EPGStation#694 の教訓（絶対
+  URL 生成が散らばって `X-Forwarded-Prefix` 対応が後から効かなかった）を踏まえて
+  Go 側・TS 側双方を棚卸しした結果、絶対 URL を生成している箇所はゼロだった。
+  同じ棚卸しで `X-Forwarded-*` 系の扱いも決めた（[deployment.md](deployment.md)
+  末尾「経緯と失敗事例」）
+- **site を資源同定に含める決定**は issue #29 / #31 / #53 の案 A（M3-1）。導出行
+  （`reservations`）を書き込みの宛先にした旧 API の失敗は
+  [docs/invariants.md](../invariants.md) §9「identity」。1 プロセスが全 site を
+  処理する形（site 非依存の一覧 API）は issue #184（M4-12）
+- **`trash=true` の並び順**は旧 `ListTrashRecordings`
+  （`internal/db/queries/recordings_trash.sql`）の `deleted_at DESC, id DESC`
+  （「最近捨てたものが上」）から `program_start_at` 降順へ意図的に変更した
+  （PR #187 レビュー、M4。一覧・ごみ箱のキーセット契約統一時）
+- **EPG の読み取り**は M1-6 / M1-7、**録画一覧のキーセット化**は M3-24 の成果物
