@@ -96,7 +96,7 @@ function DayCell({
       )}
     >
       <span aria-hidden="true" className="flex flex-col items-center leading-tight">
-        <span className="tabular-nums">{date.getDate()}</span>
+        <span>{date.getDate()}</span>
         <span>{weekdayChars[weekday]}</span>
       </span>
     </button>
