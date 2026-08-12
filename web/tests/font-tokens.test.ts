@@ -9,9 +9,11 @@ import { describe, expect, it } from 'vitest'
  *
  * **フォントが実際に描画に使われるかは jsdom では測れない**（design-tokens.test.ts
  * と同じ理由 --- Tailwind のクラスは解決されず、フォントファイルも取得されない）。
- * 実描画の判定は `web/e2e/design.mjs`（`document.fonts` の実ロード確認と、
- * `font-variant-numeric: tabular-nums` が実際に等幅を作ることの canvas 幅測定）にある。
- * ここで見るのは文字列として確かめられることだけ:
+ * 実描画の判定は `web/e2e/design.mjs`「③ フォントの判定」にある（CDP
+ * `CSS.getPlatformFontsForNode` で番組リストの行の実使用フォントに Noto Sans JP
+ * と Geist が両方出ることと、和文まじりの文字列で `font-variant-numeric:
+ * tabular-nums` が実際に等幅を作ることを DOM の実測幅で見る）。ここで見るのは
+ * 文字列として確かめられることだけ:
  *
  *   1. Noto Sans JP を import しているか（自前配布。CDN 参照ではない）
  *   2. `--font-sans` が Geist → Noto Sans JP → 和文システムフォントの順で並んでいるか

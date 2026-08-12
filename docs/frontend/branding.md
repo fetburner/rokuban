@@ -75,3 +75,12 @@ S3 経路の両方に自動で乗る。
 ## 経緯と失敗事例
 
 - 依存全体のライセンス表示は [issue #22](https://github.com/fetburner/rokuban/issues/22) の論点 5 として残っている
+- **同じ Noto Sans JP の著作権表示が 2 箇所で異なる文言になっている。**
+  `favicon.svg` のコメントは「Copyright 2014-2021 Adobe」、`public/font-licenses.txt`
+  は npm パッケージ（`@fontsource-variable/noto-sans-jp`）の `LICENSE` 冒頭に
+  忠実な「Copyright Google Inc.」。どちらも SIL OFL 1.1 で、取得元（ラスタライズに
+  使ったフォントファイルの版 / fontsource が配布時点で採ったパッケージの版）が
+  違うために著作権表示の文言が違う可能性が高いが、**どちらが正しいかは未検証**。
+  それぞれ自分が実際に取得した配布物の表示に忠実であることだけは確認済み
+  （favicon はラスタライズ元のフォントファイル埋め込み情報、txt は
+  `node_modules/@fontsource-variable/noto-sans-jp/LICENSE` の文字列そのもの）

@@ -104,6 +104,14 @@ E2E_URL=http://localhost:4173 pnpm e2e:design
   **人が見て判断するための成果物**で、機械が比較するものではない
 - 合否（exit code）。状態色（塗りか文字か / 赤か琥珀か）・地の無彩性・
   **WCAG コントラスト**を実画素で判定する。文字は 4.5、面と線は 3 が下限
+- 合否（exit code）。**和文が実際に Noto Sans JP、英数字が実際に Geist で
+  描画されているか**（CDP `CSS.getPlatformFontsForNode` で番組リストの行
+  （`li[data-program-id]`）の実使用フォントを見る --- `main` や `body` の
+  ようなブロック要素だけを子に持つノードを渡すと常に空配列が返るため使えない。
+  `getComputedStyle().fontFamily` は指定文字列を返すだけで実描画の保証にも
+  ならない）。あわせて**和文まじりの文字列でも tabular-nums が実際に等幅を
+  作っているか**を DOM の実測幅で見る（`docs/frontend/stack.md`
+  「フォントは英数字と和文で 2 書体を使い分ける」）
 - 測ったコントラストの表。**数値の権威はこの出力**で、docs には転記しない
 
 判定の設計で外してはいけない点が 2 つある。
