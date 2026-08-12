@@ -192,3 +192,66 @@
     @apply font-sans;
     }
 }
+
+/*
+ * 走査線ユーティリティ。**使ってよいのは空状態・読み込み中・ON AIR の 3 箇所だけ**
+ * （docs/frontend/design.md「走査線は 3 箇所限定」）。全面に敷くとキッチュに転ぶ。
+ *
+ * 周期 2px（輝線 1px + 間隙 1px）はファビコンと同じ設計
+ * （docs/frontend/branding.md「走査線は 3 値で描く」）。実装は
+ * 「間隙 = 要素自身の background-color（測る対象）」「輝線 = 重ねた
+ * background-image の repeating-linear-gradient」に分けてある。
+ *
+ * **`--scanline` トークンそのものは間隙に使えない。** ファビコンの
+ * 「輝線=紙白 / 間隙=走査線グレー / 字=墨」をそのまま持ち込むと、字（`--sumi`）と
+ * 間隙（`--scanline`）のコントラストが 4.5 を割る（本文の文字は 4.5 が下限。
+ * ファビコンは 16px の 1 文字で AA の対象ではないので、この差は流用の限界）。
+ * 間隙には同じ無彩のランプ（`--tone-*`）から、字とのコントラストが十分に
+ * 立つ段（ライト = `--tone-400`、ダーク = `--tone-800`）を選んである。
+ * 「輝線・間隙・字が互いに異なる 3 値」という構造だけを流用し、具体的な値は
+ * 本文の AA 要件に合わせて選び直した。**実測値はここに書かない**（design.md
+ * 「コントラストは毎回測る」。`pnpm e2e:design` が権威）。
+ *
+ * 使う側は文字色を必ず `text-foreground` にすること。`text-muted-foreground`
+ * （= `--scanline` 相当）は間隙の段と近く、2 値に近い衝突を起こす。
+ */
+.scanlines {
+  background-color: var(--tone-400);
+  background-image: repeating-linear-gradient(
+    to bottom,
+    var(--paper) 0px,
+    var(--paper) 1px,
+    transparent 1px,
+    transparent 2px
+  );
+}
+.dark .scanlines {
+  background-color: var(--tone-800);
+  background-image: repeating-linear-gradient(
+    to bottom,
+    var(--background) 0px,
+    var(--background) 1px,
+    transparent 1px,
+    transparent 2px
+  );
+}
+
+/*
+ * ON AIR 表示専用の走査線（タリーレッドの塗り）。design.md「色は信号のみ」の
+ * 例外として ON AIR にだけタリーを使ってよい、という決定（同「走査線は 3 箇所
+ * 限定」）を反映する。間隙（測る対象）は `--tally` そのもの --- 録画中バッジ
+ * （`bg-tally` + `text-tally-foreground`）と同じ組み合わせで、既にそこで
+ * AA を満たすことを確認済みの値を流用する。輝線は同じ色相をさらに沈めた段
+ * （`--tally` と `--sumi` の合成）で、文字より暗くなる方向にしか動かさないので
+ * 間隙側の AA 判定に影響しない。
+ */
+.tally-scanlines {
+  background-color: var(--tally);
+  background-image: repeating-linear-gradient(
+    to bottom,
+    color-mix(in oklch, var(--tally) 60%, var(--sumi) 40%) 0px,
+    color-mix(in oklch, var(--tally) 60%, var(--sumi) 40%) 1px,
+    transparent 1px,
+    transparent 2px
+  );
+}

@@ -140,13 +140,22 @@ const breakers = [
  * `withBreaker` でサーキットブレーカーのバナー（destructive の帯）を出し分ける。
  * バナーは全ページに居座る要素なので、既定では出さない --- 出したままだと
  * どのショットもバナー込みになり、ページ本体の地の判定に混ざる。
+ *
+ * `delayPath` / `delayMs` は「読み込み中」の走査線（`Skeleton` / `ListSkeleton`。
+ * components/page.tsx）を撮るための遅延フック。API が即座に返る作りなので、
+ * 遅延を挟まないと画面遷移からスクリーンショットまでの間に必ず解決してしまい、
+ * 読み込み中の状態を撮れない。
  */
-async function installApiStubs(page, { withBreaker = false } = {}) {
+async function installApiStubs(page, { withBreaker = false, delayPath = null, delayMs = 0 } = {}) {
   await page.route('**/api/**', async (route) => {
     const url = new URL(route.request().url())
     const p = url.pathname
     const json = (body) =>
       route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) })
+
+    if (delayPath !== null && p === delayPath) {
+      await new Promise((r) => setTimeout(r, delayMs))
+    }
 
     // SSE は 204 で「つなぎ直さずに諦めさせる」。text/event-stream を返すと
     // 接続が開いたままになり networkidle に到達しない
@@ -239,6 +248,20 @@ const readColor = (el, prop) => {
 }
 
 const chroma = ([r, g, b]) => Math.max(r, g, b) - Math.min(r, g, b)
+/**
+ * oklchChroma は `getComputedStyle()` が返す `oklch(L C H)` 文字列から C を取り出す。
+ *
+ * **中間の明度では `chroma()`（RGB のチャンネル差）が過大に出る。** oklch の
+ * 色域は明度が両端（白 / 黒）に寄るほど圧縮されるので、同じ oklch chroma でも
+ * 中間の明度（`--tone-400` など）は白・墨に近い明度（`--paper` / `--sumi`）より
+ * 大きい RGB チャンネル差になる。3 値の無彩性は design-tokens.test.ts と同じ
+ * 基準（oklch chroma <= 0.02）で測る --- RGB 側の閾値を緩めると、こちらの
+ * 都合で 3 値本体の判定基準まで緩んでしまう
+ */
+function oklchChroma(value) {
+  const m = /oklch\(\s*[\d.]+\s+([\d.]+)/.exec(value ?? '')
+  return m === null ? null : Number(m[1])
+}
 /** 赤が支配的か（タリー / destructive の判定）。 */
 const isRed = ([r, g, b]) => r > 100 && r - g > 60 && r - b > 60 && Math.abs(g - b) < 60
 /** 琥珀か（赤 > 緑 > 青 の順に落ちる暖色）。 */
@@ -373,6 +396,35 @@ for (const theme of themes) {
   {
     const { context, page } = await open(desktop, theme, screenOf('recordings'), { withBreaker: true })
     const file = path.join(OUT_DIR, `breaker-${theme}-desktop.png`)
+    await page.screenshot({ path: file })
+    log(`  ${path.basename(file)}`)
+    await context.close()
+  }
+  {
+    // 読み込み中（Skeleton / ListSkeleton の走査線）を撮る。API が即座に
+    // 返る作りだと画面遷移からスクリーンショットの間に必ず解決してしまうので、
+    // `/api/recordings` だけ遅延させる。`open()` の `wait` ロケータは
+    // 解決後の状態を待つ設計なので、ここは自前でナビゲートする
+    const context = await browser.newContext({
+      viewport: { width: desktop.width, height: desktop.height },
+      locale: 'ja-JP',
+      timezoneId: 'Asia/Tokyo',
+      colorScheme: theme,
+      deviceScaleFactor: 2,
+    })
+    const page = await context.newPage()
+    await page.clock.setFixedTime(FIXED_NOW)
+    await installApiStubs(page, { delayPath: '/api/recordings', delayMs: 5000 })
+    await page.goto(URL_BASE + '/recordings', { waitUntil: 'domcontentloaded' })
+    if (theme === 'dark') await page.evaluate(() => document.documentElement.classList.add('dark'))
+    await page
+      .locator('.scanlines')
+      .first()
+      .waitFor({ timeout: 5000 })
+      .catch(() => {
+        ng.push(`[${theme}] 読み込み中の走査線（.scanlines）が出ない`)
+      })
+    const file = path.join(OUT_DIR, `loading-${theme}-desktop.png`)
     await page.screenshot({ path: file })
     log(`  ${path.basename(file)}`)
     await context.close()
@@ -642,6 +694,119 @@ for (const theme of themes) {
         ng.push(`[${theme}] ルールの「条件なし」が琥珀でない（${fg.value} = ${fg.rgba}）`)
       }
       checkContrast(theme, '「条件なし」の文字 / 乗っている面', fg.rgba, fg, minTextContrast)
+    }
+    await context.close()
+  }
+
+  // --- 空状態: 走査線の上の文字（EmptyState。components/page.tsx） ---
+  //
+  // 検索は初期状態（未検索）が EmptyState なので、既存の 'search' 画面が
+  // そのまま撮れる。**測るのは地に対する比ではなく、要素自身の
+  // background-color**（= 走査線の間隙側。輝線は background-image で
+  // 重ねているだけで getComputedStyle には出ないので、間隙側が自動的に
+  // 「縞の暗い側（最悪ケース）」になる。index.css の `.scanlines` 参照）。
+  {
+    const { context, page } = await open(desktop, theme, screenOf('search'))
+    const empty = page
+      .locator('div.scanlines', { hasText: '条件を指定して検索してください' })
+      .first()
+    const bg = await computedOf(empty, 'background-color')
+    const fg = await computedOf(empty, 'color')
+    log(`  [${theme}] 空状態の走査線 地=${bg?.value} ${bg?.rgba} / 文字=${fg?.value} ${fg?.rgba}`)
+    if (bg === null || fg === null) {
+      ng.push(`[${theme}] 空状態（EmptyState）の走査線が見つからない`)
+    } else {
+      if (bg.rgba[3] < 200) {
+        ng.push(`[${theme}] 空状態の走査線の地（間隙側）が不透明でない（${bg.value}）`)
+      }
+      const c = oklchChroma(bg.value)
+      if (c === null || c > 0.02) {
+        ng.push(`[${theme}] 空状態の走査線の地が無彩でない（oklch chroma ${c}。${bg.value}）`)
+      }
+      checkContrast(theme, '空状態の文字 / 走査線の間隙（最悪ケース）', fg.rgba, fg, minTextContrast)
+    }
+    await context.close()
+  }
+
+  // --- 読み込み中: Skeleton / ListSkeleton の走査線（components/page.tsx） ---
+  //
+  // 文字は乗らないプレースホルダなので AA の対象ではない。ここで見るのは
+  // 「間隙側（background-color）が不透明・無彩か」と「輝線（background-image）
+  // が実際に重なっているか」---構造の存在確認。API が即座に返る作りだと
+  // 遷移直後に解決してしまうので、`/api/recordings` だけ遅延させて捕まえる
+  {
+    const context = await browser.newContext({
+      viewport: { width: desktop.width, height: desktop.height },
+      locale: 'ja-JP',
+      timezoneId: 'Asia/Tokyo',
+      colorScheme: theme,
+      deviceScaleFactor: 2,
+    })
+    const page = await context.newPage()
+    await page.clock.setFixedTime(FIXED_NOW)
+    await installApiStubs(page, { delayPath: '/api/recordings', delayMs: 5000 })
+    await page.goto(URL_BASE + '/recordings', { waitUntil: 'domcontentloaded' })
+    if (theme === 'dark') await page.evaluate(() => document.documentElement.classList.add('dark'))
+    const skeleton = page.locator('.scanlines').first()
+    await skeleton.waitFor({ timeout: 5000 }).catch(() => {
+      ng.push(`[${theme}] 読み込み中の走査線（.scanlines）が出ない`)
+    })
+    const bg = await computedOf(skeleton, 'background-color')
+    const bgImage = await skeleton
+      .evaluate((el) => getComputedStyle(el).backgroundImage)
+      .catch(() => null)
+    log(
+      `  [${theme}] 読み込み中の走査線 地=${bg?.value} ${bg?.rgba} / ` +
+        `background-image=${bgImage && bgImage !== 'none' ? 'あり' : 'なし'}`,
+    )
+    if (bg === null) {
+      ng.push(`[${theme}] 読み込み中（Skeleton）の走査線が見つからない`)
+    } else {
+      if (bg.rgba[3] < 200) {
+        ng.push(`[${theme}] 読み込み中の走査線の地（間隙側）が不透明でない（${bg.value}）`)
+      }
+      const c = oklchChroma(bg.value)
+      if (c === null || c > 0.02) {
+        ng.push(`[${theme}] 読み込み中の走査線の地が無彩でない（oklch chroma ${c}。${bg.value}）`)
+      }
+      if (bgImage === null || bgImage === 'none') {
+        ng.push(`[${theme}] 読み込み中に走査線の輝線（background-image）が無い（${bgImage}）`)
+      }
+    }
+    await context.close()
+  }
+
+  // --- ライブ: ON AIR バッジ = タリーの塗り + 走査線（pages/live.tsx OnAirBadge） ---
+  {
+    const { context, page } = await open(desktop, theme, screenOf('live'))
+    const badge = page.locator('span.tally-scanlines', { hasText: /^ON AIR$/ }).first()
+    const bg = await computedOf(badge, 'background-color')
+    const fg = await computedOf(badge, 'color')
+    log(`  [${theme}] ON AIR バッジ 地=${bg?.value} ${bg?.rgba} / 文字=${fg?.value} ${fg?.rgba}`)
+    if (bg === null || fg === null) {
+      ng.push(`[${theme}] ON AIR バッジが見つからない（いま放送中の番組が無いスタブになっていないか）`)
+    } else {
+      if (bg.rgba[3] < 200) {
+        ng.push(`[${theme}] ON AIR バッジが塗りでない（不透明度 ${bg.rgba[3]}/255。${bg.value}）`)
+      } else if (!isRed(bg.rgba)) {
+        ng.push(`[${theme}] ON AIR バッジの地（間隙側）がタリーレッドでない（${bg.value} = ${bg.rgba}）`)
+      }
+      if (chroma(fg.rgba) > 30) {
+        ng.push(`[${theme}] ON AIR バッジの文字に色が付いている（塗り + 無彩の文字であるべき。${fg.value}）`)
+      }
+      if (bg !== null && bg.rgba[3] >= 200) {
+        // **地に対する比だけを見ると甘い数字が出る。** ここで測る `bg` は
+        // タリー走査線の間隙側そのもの（= 縞の暗い側ではなく、`--tally` を
+        // 直接測る。輝線側は `--tally` をさらに `--sumi` 方向へ暗くしてあり、
+        // 常にこちらより高いコントラストになるので、間隙側が最悪ケース）
+        checkContrast(theme, 'ON AIR バッジの文字 / タリーの走査線（間隙側・最悪ケース）', fg.rgba, fg, minTextContrast)
+      }
+      const bgImage = await badge
+        .evaluate((el) => getComputedStyle(el).backgroundImage)
+        .catch(() => null)
+      if (bgImage === null || bgImage === 'none') {
+        ng.push(`[${theme}] ON AIR バッジに走査線の輝線（background-image）が無い（${bgImage}）`)
+      }
     }
     await context.close()
   }

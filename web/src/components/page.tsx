@@ -65,10 +65,16 @@ export function PageHeader({
  * `<div>` にする（`<p>` にしない）。issue #137 で「条件をクリア」ボタンのような
  * ブロック要素を子に持つ呼び出し側が出てきたため --- `<p>` の中に `<div>` /
  * 別の `<p>` を置くと無効な HTML になり、React が hydration エラーの警告を出す。
+ *
+ * **走査線は 3 箇所限定の使用箇所の 1 つ**（空状態。docs/frontend/design.md
+ * 「走査線は 3 箇所限定」）。「まだ何も映っていないブラウン管」の質感を出す。
+ * 文字色は `text-foreground` を使う --- `scanlines` の間隙は `text-muted-foreground`
+ * （= `--scanline`）と近く、その組み合わせだと 2 値に近い衝突を起こす
+ * （`index.css` の `.scanlines` コメント参照）。
  */
 export function EmptyState({ children }: { children: React.ReactNode }) {
   return (
-    <div className="px-4 py-12 text-center text-sm text-muted-foreground">{children}</div>
+    <div className="scanlines px-4 py-12 text-center text-sm text-foreground">{children}</div>
   )
 }
 
@@ -79,9 +85,15 @@ export function ErrorState({ children }: { children: React.ReactNode }) {
   )
 }
 
-/** Skeleton は読み込み中のプレースホルダ。 */
+/**
+ * Skeleton は読み込み中のプレースホルダ。
+ *
+ * **走査線は 3 箇所限定の使用箇所の 1 つ**（読み込み中。docs/frontend/design.md
+ * 「走査線は 3 箇所限定」）。地の塗り（旧 `bg-muted`）を `scanlines` に差し替えて
+ * あるが、形は変えていない（呼び出し側は高さ・角丸を `className` で指定する）。
+ */
 export function Skeleton({ className }: { className?: string }) {
-  return <div className={cn('animate-pulse rounded bg-muted', className)} />
+  return <div className={cn('scanlines animate-pulse rounded', className)} />
 }
 
 /** ListSkeleton は一覧の読み込み中プレースホルダ。 */
