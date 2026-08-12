@@ -821,7 +821,7 @@ export function DropStatsTable({ recordingId }: { recordingId: number }) {
   return (
     <section>
       <h4 className="mb-1 font-medium">PID 別ドロップ統計</h4>
-      <div className="grid grid-cols-[auto_auto_1fr_1fr_1fr_1fr] gap-x-3 gap-y-0.5 tabular-nums">
+      <div className="grid grid-cols-[auto_auto_1fr_1fr_1fr_1fr] gap-x-3 gap-y-0.5">
         <span className="text-muted-foreground">PID</span>
         <span className="text-muted-foreground">種別</span>
         <span className="text-right text-muted-foreground">packets</span>

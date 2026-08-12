@@ -807,7 +807,7 @@ function SearchResultRow({
 }) {
   return (
     <div className="flex min-h-14 items-center gap-3 border-b border-border px-4 py-2.5">
-      <div className="w-20 shrink-0 text-sm tabular-nums">{formatDateTime(program.startAt)}</div>
+      <div className="w-20 shrink-0 text-sm">{formatDateTime(program.startAt)}</div>
       <div className="min-w-0 flex-1">
         <div className="truncate text-sm">{program.name}</div>
         <div className="flex items-center gap-2 text-xs text-muted-foreground">

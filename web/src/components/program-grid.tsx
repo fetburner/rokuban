@@ -198,7 +198,7 @@ export function ProgramGrid({
                 }}
               >
                 {service.channelType === 'GR' && service.remoteControlKeyId > 0 && (
-                  <span className="shrink-0 rounded bg-muted px-1 text-[10px] tabular-nums text-muted-foreground">
+                  <span className="shrink-0 rounded bg-muted px-1 text-[10px] text-muted-foreground">
                     {service.remoteControlKeyId}
                   </span>
                 )}
@@ -219,7 +219,7 @@ export function ProgramGrid({
                   key={tick.ms}
                   // 目盛り線の下に置く（19:00 のラベルは 19 時台の帯を指す）。
                   // 線の中央に載せると、先頭の目盛りが sticky なヘッダに隠れる
-                  className="absolute inset-x-0 pt-0.5 pr-1.5 text-right text-[11px] tabular-nums text-muted-foreground"
+                  className="absolute inset-x-0 pt-0.5 pr-1.5 text-right text-[11px] text-muted-foreground"
                   style={{ top: tick.topPx }}
                 >
                   {formatTime(new Date(tick.ms).toISOString())}
@@ -235,7 +235,7 @@ export function ProgramGrid({
                       11px の赤い文字はダークの地に対して 4.5 に届かない ---
                       タリーを塗りに限る規律の実体
                       （docs/frontend/design.md「タリーは塗り、destructive は文字」） */}
-                  <span className="rounded-sm bg-tally px-1 py-px text-[11px] font-medium tabular-nums text-tally-foreground">
+                  <span className="rounded-sm bg-tally px-1 py-px text-[11px] font-medium text-tally-foreground">
                     {formatTime(new Date(currentMs).toISOString())}
                   </span>
                 </div>
@@ -381,7 +381,7 @@ function ProgramCell({
       {reserved && (
         <span className="absolute top-0.5 right-0.5 size-1.5 rounded-full bg-primary" />
       )}
-      <span className="block text-[10px] leading-tight tabular-nums text-muted-foreground">
+      <span className="block text-[10px] leading-tight text-muted-foreground">
         {formatTime(program.startAt)}
       </span>
       <span className="block text-xs leading-tight">{program.name}</span>

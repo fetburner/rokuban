@@ -13,6 +13,18 @@
 //      - 番組リストの時刻に信号色が付いて**いない**か
 //      - 現在時刻の線と札がタリーレッドか / 容量超過の帯の罫線が琥珀か
 //      - 上記すべての WCAG コントラスト（文字 4.5 / 面と線 3）
+//   ③ 和文が実際に Noto Sans JP で、英数字が実際に Geist で描画されているか
+//      （CDP `CSS.getPlatformFontsForNode`）と、和文まじりの文字列でも
+//      tabular-nums が実際に等幅を作っているか（DOM の実測幅）
+//   ④ モバイルの「その他」ポップオーバー（固定されたボトムバーの上に浮く
+//      オーバーレイなので、はみ出し・重なりは jsdom では原理的に測れない。
+//      docs/frontend/shell.md）:
+//      - ボトムタブが常に 4 個か
+//      - 開いたポップオーバーがビューポート内に収まるか
+//      - ポップオーバーがトリガーの上端より上に出るか（バーの下に隠れていないか）
+//   ⑤ 録画一覧の行を Enter で展開したあと、キーボードの Tab だけで
+//      `<video>` に到達できるか（`tabIndex={-1}` を付けると jsdom の
+//      focus spy は通り続けるが実ブラウザの Tab 走査から外れる）
 //
 // **mirakc も実チューナーも DB も要らない。** API は `page.route` でブラウザ側から
 // 丸ごと差し替える（e2e/live.mjs が HLS でやっているのと同じ手）。サーバーには
@@ -331,7 +343,7 @@ async function open(viewport, theme, screen, opts = {}) {
       ng.push(`${screen.name}/${theme}/${viewport.name}: 目印「${screen.wait}」が出ない`)
     })
   }
-  // フォント（Geist Variable）の適用とレイアウト確定を待つ。
+  // フォント（Geist Variable / Noto Sans JP Variable）の適用とレイアウト確定を待つ。
   await page.evaluate(() => document.fonts.ready)
   await page.waitForTimeout(400)
   return { context, page }
@@ -648,7 +660,200 @@ for (const theme of themes) {
   }
 }
 
-// --- 録画一覧: 展開後にキーボードだけでプレイヤーへ到達できるか ---
+// --- ③ フォントの実描画判定 ---
+//
+// **`getComputedStyle().fontFamily` は指定した文字列を返すだけで、ブラウザが
+// 実際にどのフォントを選んで描画したかは別**（docs/frontend/stack.md「フォント
+// は英数字と和文で 2 書体を使い分ける」）。CDP の `CSS.getPlatformFontsForNode`
+// で実際に使われたフォントを見る。フォントファイルが unicode-range で分割
+// されていて、かつ Noto Sans JP の import が消えても `--font-sans` の
+// フォールバック先（システムフォント）が和文をレンダリングできてしまうため、
+// **この判定を外すと「Noto Sans JP を削除して和文がシステムフォントに戻る」
+// 事故がスクリーンショット上は気付かれないまま緑で通り続ける**。
+log('\n=== ③ フォントの判定 ===')
+
+/**
+ * platformFontsOf は CDP 経由で selector に一致するノードの実使用フォントを返す。
+ *
+ * **`cdp` は呼び出し元が `DOM.enable` / `CSS.enable` を送信済みのセッションで
+ * あること。** `CSS.enable` を呼ばずに `CSS.getPlatformFontsForNode` を呼ぶと
+ * **空配列ではなく protocol error で throw する**
+ * （`Protocol error (CSS.getPlatformFontsForNode): CSS agent was not enabled`。
+ * 実測で確認済み）。セッションを作るタイミングはナビゲーションの前後どちらでも
+ * 結果は変わらない（両方実測済み。以前このファイルに「ナビゲーション後に
+ * セッションを作ると空配列が返る」という誤った記述があったが、それは次の罠を
+ * 誤って帰属したものだった）。
+ *
+ * **本当の罠は selector の選び方。** `main` や `body` のような「直接はテキストを
+ * 持たずブロック要素だけを子に持つ」要素を渡すと常に空配列が返る（throw ではない）。
+ * `CSS.getPlatformFontsForNode` はノード自身のインラインレイアウト（実際に
+ * テキストランを持つ層）に紐付いたフォント使用だけを返し、ブロックの子孫を
+ * 再帰集約しない。実際にテキストを直接持つ要素（番組リストの行
+ * `li[data-program-id]` 等）を渡す必要がある。
+ */
+async function platformFontsOf(cdp, selector) {
+  const { root } = await cdp.send('DOM.getDocument')
+  const { nodeId } = await cdp.send('DOM.querySelector', { nodeId: root.nodeId, selector })
+  if (!nodeId) return null
+  const { fonts } = await cdp.send('CSS.getPlatformFontsForNode', { nodeId })
+  return fonts.map((f) => `${f.familyName} x${f.glyphCount}`)
+}
+
+{
+  const { context, page } = await open(desktop, 'light', screenOf('programs'))
+  // このブロックでしか CDP を使わないので、ここでセッションを作って有効化する
+  // （`open()` は全画面 × テーマ × ビューポートで呼ばれるので、そちらに置くと
+  // 使わない呼び出しでも毎回セッションを作ることになる）。
+  const cdp = await context.newCDPSession(page)
+  await cdp.send('DOM.enable')
+  await cdp.send('CSS.enable')
+
+  // 番組リストの行は時刻（Geist が担当）と番組名（Noto Sans JP が担当）を
+  // 同じ行に持つので、1 要素で両方の実使用フォントが確認できる
+  const fonts = await platformFontsOf(cdp, 'li[data-program-id]')
+  log(`  実使用フォント（番組リストの行） = ${fonts?.join(', ') ?? '(取れず)'}`)
+  if (fonts === null) {
+    ng.push('フォント判定: li[data-program-id] が見つからない')
+  } else {
+    if (!fonts.some((f) => f.includes('Noto Sans JP'))) {
+      ng.push(`和文が Noto Sans JP で描画されていない（実使用: ${fonts.join(', ')}）`)
+    }
+    if (!fonts.some((f) => f.includes('Geist'))) {
+      ng.push(`英数字が Geist で描画されていない（実使用: ${fonts.join(', ')}）`)
+    }
+    // 「1 グリフだけ Noto Sans JP、残りはシステムフォント」という部分的な退行は
+    // 上の `some` だけでは検出できない（1 件でも Noto があれば真になる）。
+    // 和文システムフォント（--font-sans のフォールバック候補）が実使用に
+    // 一切現れないことも見て、検出力を上げる。
+    const systemJpFonts = fonts.filter((f) => /Hiragino|Yu Gothic|Meiryo/.test(f))
+    if (systemJpFonts.length > 0) {
+      ng.push(`和文の一部がシステムフォントに落ちている（実使用: ${fonts.join(', ')}）`)
+    }
+  }
+
+  // tabular-nums が和文まじりの文字列でも実際に等幅を作っているか。
+  // canvas 2D の `font` ショートハンドには font-variant-numeric を渡せないので、
+  // 実要素を DOM に挿して getBoundingClientRect で幅を測る（実描画の幅そのもの）。
+  // `normal` 側も測って、判定が「たまたま両方同じ幅」ではなく tabular-nums の
+  // 効果そのものを見ていることを確認する。
+  const widths = await page.evaluate(() => {
+    function width(text, variant) {
+      const el = document.createElement('span')
+      el.style.position = 'absolute'
+      el.style.visibility = 'hidden'
+      el.style.whiteSpace = 'pre'
+      el.style.fontVariantNumeric = variant
+      el.textContent = text
+      document.body.appendChild(el)
+      const w = el.getBoundingClientRect().width
+      el.remove()
+      return w
+    }
+    return {
+      tabularA: width('第11話', 'tabular-nums'),
+      tabularB: width('第88話', 'tabular-nums'),
+      normalA: width('第11話', 'normal'),
+      normalB: width('第88話', 'normal'),
+    }
+  })
+  log(
+    `  第11話/第88話 幅（tabular-nums） = ${widths.tabularA.toFixed(2)} / ${widths.tabularB.toFixed(2)}`,
+  )
+  log(
+    `  第11話/第88話 幅（normal）       = ${widths.normalA.toFixed(2)} / ${widths.normalB.toFixed(2)}`,
+  )
+  if (Math.abs(widths.tabularA - widths.tabularB) > 0.5) {
+    ng.push(
+      `tabular-nums が和文まじりの文字列で等幅を作っていない（${widths.tabularA.toFixed(2)} / ${widths.tabularB.toFixed(2)}）`,
+    )
+  }
+  if (Math.abs(widths.normalA - widths.normalB) < 0.5) {
+    ng.push(
+      'tabular-nums 無指定でも同じ幅になっている（この判定が tabular-nums の効果を検出できていない）',
+    )
+  }
+
+  await context.close()
+}
+
+// --- ④ モバイル: 「その他」ポップオーバーの判定 ---
+//
+// 固定されたボトムバーの上に浮くオーバーレイなので、画面端でのはみ出し・
+// バーの上に出るか・safe-area との重なりは jsdom では原理的に測れない
+// （`app-shell.test.tsx` が固定しているのは DOM の有無と順序だけ）。
+//
+// タブの本数は ARIA の `listitem` ロールではなく `<li>` を直接数える。
+// 実測（このスクリプトが駆動する Chromium）: `nav.getByRole('listitem').count()`
+// も CDP の AX ツリー（`Accessibility.getFullAXTree`）も listitem を 4 件返し、
+// `list-style-type` を `disc` に戻しても変わらない --- CSS 依存の暗黙ロール抑制は
+// 観測されていない。それでも `<li>` を直接数えるのは、ロールの計算をブラウザの
+// アクセシビリティ実装に依存させたくないという保険であり、「抑制が起きるから」
+// ではない（起きるかどうかは未検証。理由にしない）。
+const mobile = viewports[1]
+log('\n=== ④ 「その他」ポップオーバーの判定 ===')
+for (const theme of themes) {
+  const { context, page } = await open(mobile, theme, screenOf('programs'))
+
+  const nav = page.locator('nav[aria-label="主ナビゲーション"]').last()
+  const tabCount = await nav.locator('li').count()
+  log(`  [${theme}] ボトムタブの本数 = ${tabCount}`)
+  if (tabCount !== 4) {
+    ng.push(`[${theme}] ボトムタブが 4 個でない（${tabCount} 個。「その他」への集約が効いていない）`)
+  }
+
+  const trigger = nav.getByRole('button', { name: 'その他' })
+  if ((await trigger.count()) === 0) {
+    ng.push(`[${theme}] 「その他」トリガーが見つからない`)
+  } else {
+    await trigger.click()
+    const menu = page.getByRole('dialog', { name: 'その他のナビゲーション' })
+    await menu.waitFor({ timeout: 5000 }).catch(() => {
+      ng.push(`[${theme}] 「その他」を開いてもポップオーバーが現れない`)
+    })
+    if ((await menu.count()) > 0) {
+      await page.waitForTimeout(300) // 開くアニメーションの終了を待つ
+
+      const file = path.join(OUT_DIR, `more-menu-open-${theme}-mobile.png`)
+      await page.screenshot({ path: file })
+      log(`  ${path.basename(file)}`)
+
+      const triggerBox = await trigger.boundingBox()
+      const menuBox = await menu.boundingBox()
+      if (triggerBox === null || menuBox === null) {
+        ng.push(`[${theme}] 「その他」のバウンディングボックスが取れない`)
+      } else {
+        if (menuBox.x < 0 || menuBox.x + menuBox.width > mobile.width) {
+          ng.push(
+            `[${theme}] 「その他」ポップオーバーが横方向にビューポートをはみ出す` +
+              `（x=${menuBox.x.toFixed(1)}, w=${menuBox.width.toFixed(1)}, vw=${mobile.width}）`,
+          )
+        }
+        if (menuBox.y < 0 || menuBox.y + menuBox.height > mobile.height) {
+          ng.push(
+            `[${theme}] 「その他」ポップオーバーが縦方向にビューポートをはみ出す` +
+              `（y=${menuBox.y.toFixed(1)}, h=${menuBox.height.toFixed(1)}, vh=${mobile.height}）`,
+          )
+        }
+        // ボトムバーの上に出ること（下端が沈んでバーの後ろに隠れていないか）。
+        // トリガーの上端より上にポップオーバーの下端が来ていることを見る
+        if (menuBox.y + menuBox.height > triggerBox.y + 1) {
+          ng.push(
+            `[${theme}] 「その他」ポップオーバーがトリガーの上端より上に出ていない` +
+              `（menu bottom=${(menuBox.y + menuBox.height).toFixed(1)}, trigger top=${triggerBox.y.toFixed(1)}）`,
+          )
+        }
+        log(
+          `  [${theme}] ポップオーバー x=${menuBox.x.toFixed(1)} y=${menuBox.y.toFixed(1)} ` +
+            `w=${menuBox.width.toFixed(1)} h=${menuBox.height.toFixed(1)} / トリガー top=${triggerBox.y.toFixed(1)}`,
+        )
+      }
+    }
+  }
+
+  await context.close()
+}
+
+// --- ⑤ 録画一覧: 展開後にキーボードだけでプレイヤーへ到達できるか ---
 //
 // jsdom では測れない領域（web/e2e/README.md §デザイン）。`<video>` に
 // `tabIndex={-1}` を付けると、プログラムからの `.focus()` は変わらず効く
