@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createMemoryHistory, createRouter, RouterProvider } from '@tanstack/react-router'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -1052,8 +1052,14 @@ describe('AddEncodeProfilesAction', () => {
   })
 })
 
-// issue #230（M6-2）: 録画 → ルールの導線。ruleId の有無で出し分け、削除済み
-// ルールでも壊れないことを両方向で固定する。
+// issue #230（M6-2）: 録画 → ルールの導線。ruleId の有無で出し分け、ルール
+// 一覧にまだ ruleId が載っていない一時的な状態でも壊れないことを固定する。
+//
+// **「ルールが削除された」場合は別の経路になる。** `recordings.rule_id` は
+// `rules` への FK が ON DELETE SET NULL（00006_rules.sql）なので、ルール削除
+// 後は recording.ruleId 自体が省略され「ルール」セクションごと消える
+// （#N へは落ちない）。ここでテストする #N フォールバックは、一覧クエリが
+// 未解決・失敗・キャッシュが古くて該当 id がまだ乗っていない、という状態。
 describe('RecordingDetail ルール導線', () => {
   it('ruleId がある録画は「ルール」セクションを出し、ルール名がリンクになる', async () => {
     const user = userEvent.setup()
@@ -1090,26 +1096,71 @@ describe('RecordingDetail ルール導線', () => {
     expect(screen.queryByRole('link', { name: 'このルールの録画で絞る' })).not.toBeInTheDocument()
   })
 
-  it('参照先のルールが削除済みでも #N 表記に落ちて壊れない', async () => {
+  it('ルール一覧にまだ載っていない ruleId でも #N 表記に落ちて壊れない（キャッシュが古い等、削除ではない経路）', async () => {
     const user = userEvent.setup()
     createFakeRecordingsServer({
       library: [
-        sampleRecording({ id: 52, title: '削除済みルール由来の録画', ruleId: 99, source: 'rule' }),
+        sampleRecording({ id: 52, title: '未知のルール由来の録画', ruleId: 99, source: 'rule' }),
+        sampleRecording({ id: 60, title: '既知のルール由来の録画', ruleId: 1, source: 'rule' }),
       ],
-      rules: [], // ruleId: 99 のルールは既に削除済み（一覧に居ない）
+      // ruleId: 99 は一覧に無い（新規作成直後でキャッシュが追いついていない等、
+      // 一時的にありうる状態。ルール削除では起きない --- 削除は FK の
+      // ON DELETE SET NULL で recording.ruleId 自体が省略されセクションごと
+      // 消えるため、下の describe 冒頭コメント参照）。
+      rules: [sampleRule({ id: 1, name: '既知のルール' })],
     })
 
     renderPage()
-    await user.click(await screen.findByText('削除済みルール由来の録画'))
+    await user.click(await screen.findByText('未知のルール由来の録画'))
+    await user.click(await screen.findByText('既知のルール由来の録画'))
 
-    // ルール一覧の取得が解決するのを待ってから確認する（未解決のうちは
-    // rules が空配列のままで #N に落ちるのと区別できない空虚な成功になる）
-    await waitFor(() => expect(screen.getByRole('link', { name: '#99' })).toBeInTheDocument())
+    // useListRules の取得が解決したことの証拠として、一覧にある方（ruleId: 1）
+    // の名前解決を待つ --- `#99` 自体は未解決中も真なので、`#99` を waitFor
+    // しても「待った証拠」にはならない（レビューで指摘）。
+    await screen.findByRole('link', { name: '既知のルール' })
+
     const nameLink = screen.getByRole('link', { name: '#99' })
     expect(nameLink).toHaveAttribute('href', '/search?ruleId=99')
 
-    const filterLink = screen.getByRole('link', { name: 'このルールの録画で絞る' })
-    expect(filterLink).toHaveAttribute('href', '/recordings?ruleId=99')
+    const filterLinks = screen.getAllByRole('link', { name: 'このルールの録画で絞る' })
+    const targetFilterLink = filterLinks.find(
+      (el) => el.getAttribute('href') === '/recordings?ruleId=99',
+    )
+    expect(targetFilterLink).toBeDefined()
+  })
+
+  it('ruleId を持つ複数の行を同一コミットで展開すると /api/rules の取得は 1 回にまとまる（react-query の初回フェッチの重複排除）', async () => {
+    const server = createFakeRecordingsServer({
+      library: [
+        sampleRecording({ id: 61, title: '同時展開1', ruleId: 1, source: 'rule' }),
+        sampleRecording({ id: 62, title: '同時展開2', ruleId: 1, source: 'rule' }),
+      ],
+      rules: [sampleRule({ id: 1, name: '共有されるルール' })],
+    })
+
+    renderPage()
+    await screen.findByText('同時展開1')
+    const toggle1 = screen.getByRole('button', { name: /同時展開1/, expanded: false })
+    const toggle2 = screen.getByRole('button', { name: /同時展開2/, expanded: false })
+
+    // userEvent.click は個々のクリックの間で内部的に await する（pointer
+    // down/up の分割ディスパッチや act() のフラッシュを挟む）ため、片方の
+    // フェッチが解決してキャッシュに乗ってから次が展開される直列実行になり、
+    // staleTime: 0 の既定では 2 回目のマウントでも refetch が起きて 2 回に
+    // なる（実測。最初はこの書き方で試して 2 回になることを確認した）。
+    // `fireEvent.click` は同期的なので、await を挟まずに連続で発火すれば
+    // React 18 の自動バッチにより 2 つの setState が同一コミットにまとまり、
+    // 2 つの RuleSection がまだキャッシュの無い状態で同時にマウントされる ---
+    // このときだけ react-query が同一 queryKey の取得を 1 回にまとめる。
+    fireEvent.click(toggle1)
+    fireEvent.click(toggle2)
+
+    await screen.findAllByRole('link', { name: '共有されるルール' })
+
+    const rulesCalls = server.fetchMock.mock.calls.filter(
+      (call) => new URL(String(call[0]), 'http://localhost').pathname === '/api/rules',
+    )
+    expect(rulesCalls.length).toBe(1)
   })
 
   it('「このルールの録画で絞る」をクリックすると実際に ruleId で絞り込まれる（同一ページの検索条件変更）', async () => {
