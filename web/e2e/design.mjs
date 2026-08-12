@@ -13,6 +13,12 @@
 //      - 番組リストの時刻に信号色が付いて**いない**か
 //      - 現在時刻の線と札がタリーレッドか / 容量超過の帯の罫線が琥珀か
 //      - 上記すべての WCAG コントラスト（文字 4.5 / 面と線 3）
+//   ③ モバイルの「その他」ポップオーバー（固定されたボトムバーの上に浮く
+//      オーバーレイなので、はみ出し・重なりは jsdom では原理的に測れない。
+//      docs/frontend/shell.md）:
+//      - ボトムタブが常に 4 個か
+//      - 開いたポップオーバーがビューポート内に収まるか
+//      - ポップオーバーがトリガーの上端より上に出るか（バーの下に隠れていないか）
 //
 // **mirakc も実チューナーも DB も要らない。** API は `page.route` でブラウザ側から
 // 丸ごと差し替える（e2e/live.mjs が HLS でやっているのと同じ手）。サーバーには
@@ -645,6 +651,82 @@ for (const theme of themes) {
     }
     await context.close()
   }
+}
+
+// --- ③ モバイル: 「その他」ポップオーバーの判定 ---
+//
+// 固定されたボトムバーの上に浮くオーバーレイなので、画面端でのはみ出し・
+// バーの上に出るか・safe-area との重なりは jsdom では原理的に測れない
+// （`app-shell.test.tsx` が固定しているのは DOM の有無と順序だけ）。
+//
+// タブの本数は ARIA の `listitem` ロールではなく `<li>` を直接数える。
+// Tailwind の preflight は `ul` に `list-style: none` を当てており、
+// Chromium はそれを見て `listitem` の暗黙ロールを外すことがある
+// （jsdom 実装の @testing-library/dom はこの CSS 依存の抑制をしないので、
+// 同じクエリでも実ブラウザと jsdom で結果が割れうる。ここは実ブラウザの
+// 判定なので、CSS に左右されない構造的な数え方を使う）。
+const mobile = viewports[1]
+log('\n=== ③ 「その他」ポップオーバーの判定 ===')
+for (const theme of themes) {
+  const { context, page } = await open(mobile, theme, screenOf('programs'))
+
+  const nav = page.locator('nav[aria-label="主ナビゲーション"]').last()
+  const tabCount = await nav.locator('li').count()
+  log(`  [${theme}] ボトムタブの本数 = ${tabCount}`)
+  if (tabCount !== 4) {
+    ng.push(`[${theme}] ボトムタブが 4 個でない（${tabCount} 個。「その他」への集約が効いていない）`)
+  }
+
+  const trigger = nav.getByRole('button', { name: 'その他' })
+  if ((await trigger.count()) === 0) {
+    ng.push(`[${theme}] 「その他」トリガーが見つからない`)
+  } else {
+    await trigger.click()
+    const menu = page.getByRole('dialog', { name: 'その他のナビゲーション' })
+    await menu.waitFor({ timeout: 5000 }).catch(() => {
+      ng.push(`[${theme}] 「その他」を開いてもポップオーバーが現れない`)
+    })
+    if ((await menu.count()) > 0) {
+      await page.waitForTimeout(300) // 開くアニメーションの終了を待つ
+
+      const file = path.join(OUT_DIR, `more-menu-open-${theme}-mobile.png`)
+      await page.screenshot({ path: file })
+      log(`  ${path.basename(file)}`)
+
+      const triggerBox = await trigger.boundingBox()
+      const menuBox = await menu.boundingBox()
+      if (triggerBox === null || menuBox === null) {
+        ng.push(`[${theme}] 「その他」のバウンディングボックスが取れない`)
+      } else {
+        if (menuBox.x < 0 || menuBox.x + menuBox.width > mobile.width) {
+          ng.push(
+            `[${theme}] 「その他」ポップオーバーが横方向にビューポートをはみ出す` +
+              `（x=${menuBox.x.toFixed(1)}, w=${menuBox.width.toFixed(1)}, vw=${mobile.width}）`,
+          )
+        }
+        if (menuBox.y < 0 || menuBox.y + menuBox.height > mobile.height) {
+          ng.push(
+            `[${theme}] 「その他」ポップオーバーが縦方向にビューポートをはみ出す` +
+              `（y=${menuBox.y.toFixed(1)}, h=${menuBox.height.toFixed(1)}, vh=${mobile.height}）`,
+          )
+        }
+        // ボトムバーの上に出ること（下端が沈んでバーの後ろに隠れていないか）。
+        // トリガーの上端より上にポップオーバーの下端が来ていることを見る
+        if (menuBox.y + menuBox.height > triggerBox.y + 1) {
+          ng.push(
+            `[${theme}] 「その他」ポップオーバーがトリガーの上端より上に出ていない` +
+              `（menu bottom=${(menuBox.y + menuBox.height).toFixed(1)}, trigger top=${triggerBox.y.toFixed(1)}）`,
+          )
+        }
+        log(
+          `  [${theme}] ポップオーバー x=${menuBox.x.toFixed(1)} y=${menuBox.y.toFixed(1)} ` +
+            `w=${menuBox.width.toFixed(1)} h=${menuBox.height.toFixed(1)} / トリガー top=${triggerBox.y.toFixed(1)}`,
+        )
+      }
+    }
+  }
+
+  await context.close()
 }
 
 // 数値は docs に転記しない（転記した瞬間に二重管理になる）。docs は

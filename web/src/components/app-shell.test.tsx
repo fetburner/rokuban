@@ -129,9 +129,18 @@ describe('AppShell / Sidebar の畳み込み', () => {
     await user.click(getToggle())
     expect(getToggle()).toHaveAttribute('aria-expanded', 'false')
 
+    // ボトムタブ（番組/録画/予約）にも同名のリンクがあるため、`screen` に対する
+    // クエリでは「サイドバー側が読み上げ名を失って 2→1 に減った」regression を
+    // 検知できない（1 でも通ってしまう）。サイドバーに絞って各ラベルが
+    // ちょうど 1 件あることを見る。
+    const navs = screen.getAllByRole('navigation', { name: '主ナビゲーション' })
+    const sidebarNav = navs.find(
+      (nav) => within(nav).queryAllByRole('link').length === SIDEBAR_LABELS.length,
+    )
+    expect(sidebarNav).toBeDefined()
     for (const label of SIDEBAR_LABELS) {
-      const links = screen.getAllByRole('link', { name: label })
-      expect(links.length).toBeGreaterThanOrEqual(1)
+      const links = within(sidebarNav as HTMLElement).getAllByRole('link', { name: label })
+      expect(links).toHaveLength(1)
       for (const link of links) {
         expect(link).toHaveAttribute('href')
       }
