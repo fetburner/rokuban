@@ -1,4 +1,5 @@
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query'
+import { useNavigate, useSearch as useRouteSearch } from '@tanstack/react-router'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { CapacityBands } from '@/components/capacity-band'
@@ -35,6 +36,11 @@ import { orderServices, type TimeAxis } from '@/lib/epg-grid'
 import { formatDate } from '@/lib/format'
 import { domLayoutMeasurable } from '@/lib/list-virtualization'
 import { filterProgramsFromListStart } from '@/lib/program-list-window'
+import {
+  serviceIdsFromSet,
+  serviceIdsToSet,
+  type ProgramsPageSearch,
+} from '@/lib/programs-search'
 import { previousDayWindow } from '@/lib/previous-day-window'
 import { useCurrentSite } from '@/lib/site'
 import { lgMediaQuery, useMediaQuery } from '@/lib/use-media-query'
@@ -71,23 +77,49 @@ const gridPxPerHour = 120
 type ProgramView = 'list' | 'grid'
 
 /**
- * serviceIdParam は選択したサービス集合をサーバーへ渡す配列にする。
+ * ProgramsPage は番組表（`/`）。
  *
- * 空集合は「すべて」なのでキーごと落とす（`undefined` を返す。docs/frontend.md
- * 「『問わない』次元はリクエストのキーごと落とす」）。ソートするのは、
- * `Set` の反復順は選び方の履歴に依存するため、そのまま渡すと同じ選択でも
- * URL / queryKey が変わって無限に再取得されるおそれがあるため。
+ * チャンネル絞り込みは URL に持つ（issue #231。`lib/programs-search.ts` の
+ * `ProgramsPageSearch`）。ライブ視聴（`pages/live.tsx`）からは選択中チャンネルの
+ * 番組表へ `?serviceId=` 付きで飛べる（「この局の番組表」リンク）。
+ *
+ * **番組表からライブへの導線はここには置かない。** 放送中の番組の展開に
+ * 「ライブで見る」を出す導線は行（`ProgramRow`）の展開領域が担う（issue #229）。
+ * ページ全体に「視聴中チャンネルへ」のような 2 つ目のライブ導線を足すと、
+ * どの番組が放送中か分からない状態でも押せてしまい行き先が不定になる
+ * （複数チャンネルを絞り込んでいるときにどれへ飛ぶかを決める判断基準が無い）
+ * うえ、個々の番組から飛べる導線と役割が重複する。issue #231 の決定。
  */
-function serviceIdParam(selectedServiceIds: ReadonlySet<number>): number[] | undefined {
-  if (selectedServiceIds.size === 0) return undefined
-  return [...selectedServiceIds].sort((a, b) => a - b)
-}
-
 export function ProgramsPage() {
   const site = useCurrentSite()
-  // 空集合 = すべて表示。初期状態が空なので、これ以外の意味だと初回表示が
-  // 空になってしまう。
-  const [selectedServiceIds, setSelectedServiceIds] = useState<ReadonlySet<number>>(new Set())
+  // チャンネル絞り込みは URL の `?serviceId=` に持つ（issue #231）。深いリンク・
+  // 共有ができるようにする。`dayOffset` 等の他の状態（ジャンプ先の日・表示形式）
+  // は component state のままで URL 化しない（今回のスコープではない次元）。
+  // 検証（不正な値・0 以下の除去・重複除去・昇順ソート）は
+  // `routes.tsx` の `validateSearch`（`lib/programs-search.ts` の
+  // `parseProgramsSearch`）で済んでいるので、ここでは信頼して使う。
+  const search = useRouteSearch({ from: '/' })
+  const navigate = useNavigate()
+  // 空集合 = すべて表示。`search.serviceId` 未指定（初期状態）が空集合になるので、
+  // これ以外の意味だと初回表示が空になってしまう。
+  const selectedServiceIds = useMemo(() => serviceIdsToSet(search.serviceId), [search.serviceId])
+  const updateSearch = (updater: (prev: ProgramsPageSearch) => ProgramsPageSearch) => {
+    // 選ぶたびに URL を書き換えるが、history は汚さない（`replace`。
+    // `lib/recording-search.ts` の絞り込み更新と同じ規律）。
+    //
+    // **updater の引数は「全ルートの search を合成した型」で来る**
+    // （TanStack Router の `ParamsReducerFn`）。`/live` が同じ名前の `serviceId`
+    // を単数（`number`）で持つため、合成後は型上 `number | number[]` になり
+    // `ProgramsPageSearch` にそのままは代入できない。この関数が呼ばれるのは
+    // `/`（番組表）に居るときだけで、そのとき実際に入っているのは
+    // `parseProgramsSearch` が検証した形なので、ここで絞ってから updater に渡す
+    // （`pages/recordings.tsx` の `updateSearch` と同じ形）。
+    void navigate({
+      to: '/',
+      search: (prev) => updater(prev as ProgramsPageSearch),
+      replace: true,
+    })
+  }
   // dayOffset は「ジャンプ先」（DayStrip をタップして跳ぶ先）。0 以上
   // selectableDays 未満。0 は今日で、リストは常にここから連続フィードとして
   // 始まる（`今` という別枠の選択肢は無い）。
@@ -150,13 +182,11 @@ export function ProgramsPage() {
   // 今回のスコープ外なので、クライアント側で now を不変条件として持つだけで足りる。
   const lowerBoundMs = dayOrigin(0, nowMs).getTime()
 
-  // サーバー側で絞り込む。ソートするのは Set の反復順が選び方の履歴に依存する
-  // ためで、順序が揺れると同じ選択でも queryKey / URL が変わってしまう
-  // （serviceIdParam 参照）。
-  const selectedServiceIdParam = useMemo(
-    () => serviceIdParam(selectedServiceIds),
-    [selectedServiceIds],
-  )
+  // サーバー側で絞り込む。`search.serviceId` は `parseProgramsSearch` の時点で
+  // 重複除去・昇順ソート済み（`Set` の反復順は選び方の履歴に依存するため、
+  // 順序が揺れると同じ選択でも queryKey / URL が変わってしまう。
+  // `lib/programs-search.ts` 参照）なので、そのまま使う。
+  const selectedServiceIdParam = search.serviceId
 
   // サーバーが選択に応じて絞るようになったので、queryKey にも選択を入れる。
   // 入れないと別の選択で取得した結果をそのまま再利用してしまう（日付や時間窓と
@@ -429,7 +459,9 @@ export function ProgramsPage() {
             <ChannelPicker
               services={filterableServices}
               selected={selectedServiceIds}
-              onChange={setSelectedServiceIds}
+              onChange={(next) =>
+                updateSearch((s) => ({ ...s, serviceId: serviceIdsFromSet(next) }))
+              }
             />
             {/* 表示形式の切り替えは `lg` 以上でのみ出す。CSS で隠すのではなく
                 出さないのは、モバイルに存在しない選択肢を読み上げさせないため */}

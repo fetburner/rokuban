@@ -1,12 +1,13 @@
-import type { QueryClient } from '@tanstack/react-query'
-import { act, screen, waitFor, within } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { createMemoryHistory, createRouter, RouterProvider } from '@tanstack/react-router'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { CapacityOverage, ProgramListItem, Reservation, Service } from '@/api/generated'
+import { ToastProvider } from '@/components/toaster'
 import { dayOrigin } from '@/lib/day-offset'
-import { ProgramsPage } from '@/pages/programs'
-import { renderInRouter } from '@/test/router'
+import { routeTree } from '@/routes'
 
 /**
  * ページは「今」を時刻境界に切り捨てた時刻を時間窓の起点にする。テストの番組も
@@ -186,6 +187,11 @@ function stubApi(
   let programsCallIndex = 0
   const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input), 'http://localhost')
+    // SiteGate（routes.tsx）が全ルートの手前で GET /api/sites を待つ
+    // （issue #184 M4-12）。ページを本物の routeTree（`RouterProvider`）越しに
+    // 描く（`useSearch`/`useNavigate` を使うため）ようになったので必要になった
+    // （`routes.test.tsx` の '/search' テストと同じ理由）。
+    if (url.pathname === '/api/sites') return Promise.resolve(jsonResponse(['default']))
     if (url.pathname === '/api/sites/default/services') {
       return Promise.resolve(jsonResponse(services))
     }
@@ -195,12 +201,6 @@ function stubApi(
     }
     if (url.pathname === '/api/encode-profiles') {
       return Promise.resolve(jsonResponse(encodeProfiles))
-    }
-    // ProgramRow は行ごとに「ライブで見る」の出し分け（issue #229）のため
-    // useLiveEnabled() を無条件に呼ぶ。React Query が同一キーで重複を除くので
-    // 実際に飛ぶのは 1 本。
-    if (url.pathname === '/api/capabilities') {
-      return Promise.resolve(jsonResponse({ live: true }))
     }
     if (/^\/api\/sites\/default\/programs\/\d+\/overlaps$/.test(url.pathname)) {
       return Promise.resolve(jsonResponse({ count: 0, reservations: [] }))
@@ -282,16 +282,30 @@ afterEach(() => {
 })
 
 /**
- * renderPage は `<ProgramsPage>` をルーターの中で描く。
+ * renderPage は本物の routeTree（`@/routes`）で `ProgramsPage`（`/`）を描く。
  *
- * `ProgramRow`（issue #229）が展開領域に `<Link>` を持つようになったため、
- * `TanStack Router` の外では描けない（`test/router.tsx` の `renderInRouter`
- * のコメントと同じ理由）。予約直後の楽観的更新で `reserved` が true に変わると
- * その `<Link>` が実際にマウントされるので、通常の予約テストでも router の
- * 配線が要る。
+ * `useSearch`/`useNavigate` を使うため（issue #231。チャンネル絞り込みの
+ * URL 化）、最小限のアドホックなルート木ではなく実際の `/` ルート定義
+ * （`validateSearch` を含む）を使う必要がある --- `pages/recordings.test.tsx`
+ * の `renderPage` と同じ理由・同じ形。`SiteContext` を直接注入する旧方式は
+ * `SiteGate`（`GET /api/sites` を待つ）を経由しないためこの構成では使えない。
  */
-function renderPage() {
-  return renderInRouter(<ProgramsPage />, { path: '/' })
+function renderPage(path = '/') {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: 0 } },
+  })
+  const router = createRouter({
+    routeTree,
+    history: createMemoryHistory({ initialEntries: [path] }),
+  })
+  const view = render(
+    <QueryClientProvider client={queryClient}>
+      <ToastProvider>
+        <RouterProvider router={router as never} />
+      </ToastProvider>
+    </QueryClientProvider>,
+  )
+  return { ...view, queryClient, router }
 }
 
 /**
@@ -748,6 +762,55 @@ describe('ProgramsPage のチャンネル複数選択', () => {
       expect(columns).toHaveLength(1)
       expect(columns[0]).toHaveAttribute('data-service-id', '1024')
     })
+  })
+})
+
+/**
+ * チャンネル絞り込みの URL 化（issue #231）。「サーバー側で絞り込む」ことの
+ * 確認は上の「ProgramsPage のチャンネル複数選択」が既に持っているので、
+ * ここでは URL との往復（深いリンクで開く / 選択が URL に反映される）だけを見る。
+ */
+describe('ProgramsPage のチャンネル絞り込みの URL 化（issue #231）', () => {
+  it('?serviceId= 付きの URL で開くと、絞り込み済みの番組表がピッカーの表示と一致して開く', async () => {
+    stubApi()
+    renderPage('/?serviceId=1024')
+
+    // NHK総合（1024）に絞り込んだ状態で開く。ピッカーのラベルは URL の解決だけで
+    // 決まる（データ取得を待たない）ので、先に番組の取得完了（データ取得の完了を
+    // 待ってから見る --- CLAUDE.md「非同期の空虚な成功に注意する」）を待ってから
+    // 両方を見る
+    expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'チャンネル: NHK総合' })).toBeInTheDocument()
+    expect(screen.queryByText('手話ニュース')).not.toBeInTheDocument()
+  })
+
+  it('チャンネルを選ぶと URL の ?serviceId= に反映される（history を汚さず replace）', async () => {
+    stubApi()
+    const { router } = renderPage()
+
+    expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+    expect(router.state.location.search).toEqual({ serviceId: undefined })
+
+    await userEvent.click(screen.getByRole('button', { name: 'チャンネル: すべて' }))
+    const dialog = await screen.findByRole('dialog', { name: 'チャンネル' })
+    await userEvent.click(within(dialog).getByText('NHK総合'))
+
+    await waitFor(() => expect(router.state.location.search).toEqual({ serviceId: [1024] }))
+
+    // history を汚さない（replace）。積んだままだと「戻る」で絞り込み変更が
+    // 1 手ずつ再生されてしまう
+    expect(router.history.length).toBe(1)
+  })
+
+  it('不正な値（?serviceId=abc）は絞り込みなしに落ちて開ける（壊れたリンクを踏んでも画面は開く）', async () => {
+    stubApi()
+    renderPage('/?serviceId=abc')
+
+    expect(await screen.findByRole('button', { name: 'チャンネル: すべて' })).toBeInTheDocument()
+    // 絞り込みなしなので両局の番組が出る（データ取得の完了を待ってから見る ---
+    // CLAUDE.md「非同期の空虚な成功に注意する」）
+    expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+    expect(screen.getByText('手話ニュース')).toBeInTheDocument()
   })
 })
 

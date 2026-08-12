@@ -97,6 +97,44 @@ describe('routeTree', () => {
     }
   })
 
+  it('/?serviceId=abc は useSearch の戻り値に文字列を残さない', async () => {
+    // `/live` と同じ罠（issue #194 型。docs/frontend.md「TanStack Router の
+    // validateSearch は無効な値を『省略』しても消えない」）。validateSearch を
+    // 直接呼ぶだけでは検出できない --- 非 strict モードは生の
+    // location.search の上に戻り値を重ねるので、キーを省略すると生の値が残る。
+    const router = createRouter({
+      routeTree,
+      history: createMemoryHistory({ initialEntries: ['/?serviceId=abc'] }),
+    })
+    await router.load()
+
+    const search = router.state.matches.at(-1)!.search as { serviceId?: unknown }
+    expect(search.serviceId).toBeUndefined()
+    // 正しい値は通る（両方向を見る）
+    const ok = createRouter({
+      routeTree,
+      history: createMemoryHistory({ initialEntries: ['/?serviceId=1024'] }),
+    })
+    await ok.load()
+    expect((ok.state.matches.at(-1)!.search as { serviceId?: unknown }).serviceId).toEqual([1024])
+  })
+
+  it('/ の serviceId は複数指定・混在配列を検証済みの配列に正規化する', async () => {
+    // ?serviceId=1024&serviceId=abc&serviceId=0 のような、一部だけ不正な値が
+    // 混ざった URL（手入力・古いブックマーク）でも、不正な要素だけを落として
+    // 開ける
+    const router = createRouter({
+      routeTree,
+      history: createMemoryHistory({
+        initialEntries: ['/?serviceId=1024&serviceId=abc&serviceId=0&serviceId=1032'],
+      }),
+    })
+    await router.load()
+
+    const search = router.state.matches.at(-1)!.search as { serviceId?: unknown }
+    expect(search.serviceId).toEqual([1024, 1032])
+  })
+
   it('/search を開くと検索画面が出て、主ナビゲーションから辿れる', async () => {
     // jsdom は window.scrollTo を実装していない。ルーターのスクロール復元が
     // 呼ぶため、置いておかないと関係のない例外がログを埋める
