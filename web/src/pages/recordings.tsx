@@ -1,5 +1,5 @@
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query'
-import { useSearch as useRouteSearch, useNavigate } from '@tanstack/react-router'
+import { Link, useSearch as useRouteSearch, useNavigate } from '@tanstack/react-router'
 import { ChevronDown, Play, Trash2 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
@@ -10,6 +10,7 @@ import {
   useDeleteRecording,
   useListEncodeProfiles,
   useListRecordingDropStats,
+  useListRules,
   usePurgeRecording,
   useRestoreRecording,
   type DropSummary,
@@ -558,6 +559,10 @@ export function RecordingDetail({
         )}
       </dl>
 
+      {/* 手動予約由来の録画には ruleId が無い。「機能しないコントロールは
+          置かない」の既存規律に従い、セクションごと出さない（issue #230）。 */}
+      {recording.ruleId !== undefined && <RuleSection ruleId={recording.ruleId} />}
+
       {recording.qualityEvents && recording.qualityEvents.length > 0 && (
         <section>
           <h4 className="mb-1 font-medium">品質イベント</h4>
@@ -577,6 +582,72 @@ export function RecordingDetail({
 
       <RecordingActions recording={recording} trash={trash} />
     </div>
+  )
+}
+
+/**
+ * RuleSection は「この録画はどのルールが録ったのか」への導線（issue #230）。
+ * 呼び出し側（RecordingDetail）が `recording.ruleId !== undefined` を確認して
+ * からマウントするので、ここでは「ある」ことを前提にできる。
+ *
+ * **ルール名の解決は `useListRules` のキャッシュから引く（単体取得の
+ * `GET /api/rules/{id}` / `useGetRule` はあるが使わない）。** `RulesPage` が
+ * `useListRules()`（パラメータなし = 常に全件）で一覧を引く設計に既に乗って
+ * いるので、録画の展開ごとに個別の 1 件取得を増やす理由がない。`/rules` を
+ * 経由していればキャッシュに乗っており、していなければここで引く（後者は
+ * 下記の `#N` → ルール名の差し替えとして見える）。展開行が何行あっても引くのは
+ * 同じ `queryKey`（`/api/rules`）の 1 本のクエリで、行ごとの取得は発行しない
+ * --- `recordings.test.tsx`「展開行が複数あってもルール一覧クエリを共有し、
+ * 行ごとの個別取得を発行しない」で固定した。
+ *
+ * **取得の「回数」はここに書かない。** 回数は `QueryClient` の `staleTime`
+ * 依存で、本番（`main.tsx` の `staleTime: 30_000`）とテストの `renderPage`
+ * （未指定 = 0）では設定が違うため、同じ操作でも一致しない。ハーネスで測った
+ * 回数を一般の挙動として書いた版はレビューで差し戻された（測定値と経緯は
+ * `docs/frontend/recordings.md` §経緯と失敗事例）。
+ *
+ * **`rules.find` が見つからない場合は `#N` 表記に落とす。** これは「ルールが
+ * 削除された」ケースではない --- `recordings.rule_id` は `rules` への FK が
+ * `ON DELETE SET NULL`（`00006_rules.sql`）なので、ルールを削除すると
+ * `recordings.rule_id` が NULL になり `Recording.ruleId` 自体が省略され、この
+ * セクションごと消える（`#N` へは落ちない）。`#N` に落ちるのは `rules.find`
+ * が空を返す間、つまり一覧クエリが未解決 / 失敗（どちらも `query.data` が
+ * `undefined`）か、返ってきた一覧にその id がまだ無い（新しく作られたルール等）
+ * という一時的な状態。未解決の場合に `#N` → ルール名へ差し替わることは
+ * `recordings.test.tsx`「ルール一覧が未解決の間は #N を出し、解決後にルール名へ
+ * 差し替わる」で固定した。
+ *
+ * 原則「固有名詞はリンク」（issue #221）に従い、ルールの識別（名前 or
+ * `#N`）そのものをリンクテキストにする --- 装飾テキストの隣にリンクを
+ * 置く形にしない。リンク先は `/search?ruleId=N`（ルールの実質的な編集画面。
+ * `RulesPage` の「検索しながら編集」と同じ着地先）。
+ */
+function RuleSection({ ruleId }: { ruleId: number }) {
+  const query = useListRules()
+  const rules = unwrap(query.data) ?? []
+  const rule = rules.find((r) => r.id === ruleId)
+  const label = rule?.name ?? `#${ruleId}`
+
+  return (
+    <section>
+      <h4 className="mb-1 font-medium">ルール</h4>
+      <div className="flex flex-wrap items-center gap-3">
+        <Link
+          to="/search"
+          search={{ ruleId }}
+          className="text-primary underline-offset-2 hover:underline"
+        >
+          {label}
+        </Link>
+        <Link
+          to="/recordings"
+          search={{ ruleId }}
+          className="text-muted-foreground underline-offset-2 hover:underline"
+        >
+          このルールの録画で絞る
+        </Link>
+      </div>
+    </section>
   )
 }
 

@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createMemoryHistory, createRouter, RouterProvider } from '@tanstack/react-router'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -9,6 +9,7 @@ import {
   type DropStat,
   type EncodeProfileSummary,
   type Recording,
+  type Rule,
   type Service,
 } from '@/api/generated'
 import { ToastProvider } from '@/components/toaster'
@@ -102,6 +103,17 @@ const sampleRecording = (overrides: Partial<Recording> = {}): Recording => ({
   ...overrides,
 })
 
+const sampleRule = (overrides: Partial<Rule> = {}): Rule => ({
+  id: 5,
+  name: 'サンプルルール',
+  enabled: true,
+  priority: 0,
+  keepOriginal: 'always',
+  createdAt: '2026-01-01T00:00:00Z',
+  updatedAt: '2026-01-01T00:00:00Z',
+  ...overrides,
+})
+
 const sampleService = (overrides: Partial<Service> = {}): Service => ({
   networkId: 32736,
   serviceId: 5168,
@@ -138,11 +150,13 @@ function createFakeRecordingsServer(options: {
   trash?: Recording[]
   services?: Service[]
   encodeProfiles?: EncodeProfileSummary[]
+  rules?: Rule[]
 }) {
   let library = [...(options.library ?? [])]
   let trash = [...(options.trash ?? [])]
   const services = options.services ?? [sampleService()]
   const encodeProfiles = options.encodeProfiles ?? []
+  const rules = options.rules ?? []
 
   function paginate(url: URL, all: Recording[]): Recording[] {
     const q = url.searchParams.get('q')
@@ -191,6 +205,7 @@ function createFakeRecordingsServer(options: {
     if (url.pathname === '/api/sites') return Promise.resolve(jsonResponse(['default']))
     if (url.pathname === '/api/sites/default/services') return Promise.resolve(jsonResponse(services))
     if (url.pathname === '/api/encode-profiles') return Promise.resolve(jsonResponse(encodeProfiles))
+    if (url.pathname === '/api/rules' && method === 'GET') return Promise.resolve(jsonResponse(rules))
 
     if (url.pathname === '/api/recordings' && method === 'GET') {
       const trashParam = url.searchParams.get('trash') === 'true'
@@ -1034,6 +1049,182 @@ describe('AddEncodeProfilesAction', () => {
     await screen.findByText('削除日時')
     expect(screen.queryByText('事後エンコードの追加')).not.toBeInTheDocument()
     expect(screen.queryByRole('checkbox')).not.toBeInTheDocument()
+  })
+})
+
+// issue #230（M6-2）: 録画 → ルールの導線。ruleId の有無で出し分け、ルール
+// 一覧にまだ ruleId が載っていない一時的な状態でも壊れないことを固定する。
+//
+// **「ルールが削除された」場合は別の経路になる。** `recordings.rule_id` は
+// `rules` への FK が ON DELETE SET NULL（00006_rules.sql）なので、ルール削除
+// 後は recording.ruleId 自体が省略され「ルール」セクションごと消える
+// （#N へは落ちない）。#N に落ちるのは `rules.find` が空を返す間だけで、この
+// describe はそのうち 2 つ ---「一覧がまだ解決していない」と「解決した一覧に
+// その id が無い」--- をテストする。取得失敗は前者と同じ経路
+// （`query.data` が undefined）なので別に置かない。
+describe('RecordingDetail ルール導線', () => {
+  it('ruleId がある録画は「ルール」セクションを出し、ルール名がリンクになる', async () => {
+    const user = userEvent.setup()
+    createFakeRecordingsServer({
+      library: [sampleRecording({ id: 50, title: 'ルール由来の録画', ruleId: 5, source: 'rule' })],
+      rules: [sampleRule({ id: 5, name: 'ニュース全部' })],
+    })
+
+    renderPage()
+    await user.click(await screen.findByText('ルール由来の録画'))
+
+    expect(await screen.findByRole('heading', { name: 'ルール', level: 4 })).toBeInTheDocument()
+
+    const nameLink = screen.getByRole('link', { name: 'ニュース全部' })
+    expect(nameLink).toHaveAttribute('href', '/search?ruleId=5')
+
+    const filterLink = screen.getByRole('link', { name: 'このルールの録画で絞る' })
+    expect(filterLink).toHaveAttribute('href', '/recordings?ruleId=5')
+  })
+
+  it('ruleId が無い録画には「ルール」セクションを出さない（手動予約由来）', async () => {
+    const user = userEvent.setup()
+    createFakeRecordingsServer({
+      library: [sampleRecording({ id: 51, title: '手動予約の録画', source: 'manual' })],
+    })
+
+    renderPage()
+    await user.click(await screen.findByText('手動予約の録画'))
+
+    // 展開後の内容（種別）が出るまで待ってから「無い」ことを確認する
+    // （クエリ未解決のうちに queryBy で通ってしまう空虚な成功を避ける）。
+    await screen.findByText('種別')
+    expect(screen.queryByRole('heading', { name: 'ルール', level: 4 })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'このルールの録画で絞る' })).not.toBeInTheDocument()
+  })
+
+  it('ルール一覧にまだ載っていない ruleId でも #N 表記に落ちて壊れない（キャッシュが古い等、削除ではない経路）', async () => {
+    const user = userEvent.setup()
+    createFakeRecordingsServer({
+      library: [
+        sampleRecording({ id: 52, title: '未知のルール由来の録画', ruleId: 99, source: 'rule' }),
+        sampleRecording({ id: 60, title: '既知のルール由来の録画', ruleId: 1, source: 'rule' }),
+      ],
+      // ruleId: 99 は一覧に無い（新規作成直後でキャッシュが追いついていない等、
+      // 一時的にありうる状態。ルール削除では起きない --- 削除は FK の
+      // ON DELETE SET NULL で recording.ruleId 自体が省略されセクションごと
+      // 消えるため、下の describe 冒頭コメント参照）。
+      rules: [sampleRule({ id: 1, name: '既知のルール' })],
+    })
+
+    renderPage()
+    await user.click(await screen.findByText('未知のルール由来の録画'))
+    await user.click(await screen.findByText('既知のルール由来の録画'))
+
+    // useListRules の取得が解決したことの証拠として、一覧にある方（ruleId: 1）
+    // の名前解決を待つ --- `#99` 自体は未解決中も真なので、`#99` を waitFor
+    // しても「待った証拠」にはならない（レビューで指摘）。
+    await screen.findByRole('link', { name: '既知のルール' })
+
+    const nameLink = screen.getByRole('link', { name: '#99' })
+    expect(nameLink).toHaveAttribute('href', '/search?ruleId=99')
+
+    const filterLinks = screen.getAllByRole('link', { name: 'このルールの録画で絞る' })
+    const targetFilterLink = filterLinks.find(
+      (el) => el.getAttribute('href') === '/recordings?ruleId=99',
+    )
+    expect(targetFilterLink).toBeDefined()
+  })
+
+  // ルール名の解決は非同期なので、展開の瞬間は必ず一度 `#N` を通る。docs
+  // （frontend/recordings.md）でこれを「一時的な状態」として説明しているので、
+  // 説明どおりであること（空でもスピナーでもなく `#N` で、後からルール名に
+  // 差し替わること）をここで固定する。`fireEvent` は同期的に commit するので、
+  // 直後の同期アサーションは取得が解決する前を確実に観測できる。
+  it('ルール一覧が未解決の間は #N を出し、解決後にルール名へ差し替わる', async () => {
+    createFakeRecordingsServer({
+      library: [sampleRecording({ id: 55, title: '解決前の録画', ruleId: 5, source: 'rule' })],
+      rules: [sampleRule({ id: 5, name: '後から出るルール' })],
+    })
+
+    renderPage()
+    await screen.findByText('解決前の録画')
+    fireEvent.click(screen.getByRole('button', { name: /解決前の録画/, expanded: false }))
+
+    // 未解決の瞬間（await を挟む前）
+    expect(screen.getByRole('link', { name: '#5' })).toHaveAttribute('href', '/search?ruleId=5')
+
+    // 解決後は同じリンクがルール名に差し替わる（`#5` は消える）
+    expect(await screen.findByRole('link', { name: '後から出るルール' })).toHaveAttribute(
+      'href',
+      '/search?ruleId=5',
+    )
+    expect(screen.queryByRole('link', { name: '#5' })).not.toBeInTheDocument()
+  })
+
+  // 守る性質は「展開行ごとに個別の取得を発行しない」。**2 行の ruleId は別に
+  // する** --- 同じ ruleId だと行ごとの queryKey（`['/api/rules', ruleId]`）に
+  // 変えても 1 回のままで、共有か個別かを見分けられない（最初は両方 ruleId: 1
+  // で書いてしまい、この変異で落ちないことを確認して直した）。別 id にした後は
+  // 行ごとの queryKey で `expected 2 to be 1`、`useGetRule(ruleId)` に差し替える
+  // と `/api/rules/{id}` へ行くのでルール名が解決せずタイムアウトで落ちる
+  // （どちらも実際に変異させて確認した）。
+  //
+  // トリガが `fireEvent` の連続発火なのは合成的で、実ユーザーには起きない
+  // （`expanded` は行ごとの `useState` なので 1 クリック = 1 行）。それでもこう
+  // 書くのは、`renderPage` の `QueryClient` が `staleTime` 未指定（= 0）で、
+  // 逐次展開だと正しい実装でも取得回数が定まらない（同一シナリオを実測して
+  // 2 回。`main.tsx` の `staleTime: 30_000` では 1 回）ため --- 「回数」は
+  // 設定依存なので仕様として主張しない。同期発火なら React の自動バッチで
+  // 2 つの setState が同一コミットに入り、キャッシュが空のまま 2 つの
+  // RuleSection がマウントされるので、共有か個別かが回数に一意に出る。
+  it('展開行が複数あってもルール一覧クエリを共有し、行ごとの個別取得を発行しない', async () => {
+    const server = createFakeRecordingsServer({
+      library: [
+        sampleRecording({ id: 61, title: '同時展開1', ruleId: 1, source: 'rule' }),
+        sampleRecording({ id: 62, title: '同時展開2', ruleId: 2, source: 'rule' }),
+      ],
+      rules: [
+        sampleRule({ id: 1, name: 'ルールその1' }),
+        sampleRule({ id: 2, name: 'ルールその2' }),
+      ],
+    })
+
+    renderPage()
+    await screen.findByText('同時展開1')
+    const toggle1 = screen.getByRole('button', { name: /同時展開1/, expanded: false })
+    const toggle2 = screen.getByRole('button', { name: /同時展開2/, expanded: false })
+
+    // `userEvent.click` は個々のクリックの間で内部的に await する（pointer
+    // down/up の分割ディスパッチや act() のフラッシュを挟む）ので直列実行に
+    // なる。ここでは同一コミットに入れたいので同期的な `fireEvent` を使う。
+    fireEvent.click(toggle1)
+    fireEvent.click(toggle2)
+
+    // 両行がルール名を解決したことを待つ（片方だけ解決した時点で回数を数えると
+    // 空虚な成功になる）。
+    await screen.findByRole('link', { name: 'ルールその1' })
+    await screen.findByRole('link', { name: 'ルールその2' })
+
+    const rulesCalls = server.fetchMock.mock.calls.filter(
+      (call) => new URL(String(call[0]), 'http://localhost').pathname === '/api/rules',
+    )
+    expect(rulesCalls.length).toBe(1)
+  })
+
+  it('「このルールの録画で絞る」をクリックすると実際に ruleId で絞り込まれる（同一ページの検索条件変更）', async () => {
+    const user = userEvent.setup()
+    createFakeRecordingsServer({
+      library: [
+        sampleRecording({ id: 53, title: 'ルール由来', ruleId: 7, source: 'rule' }),
+        sampleRecording({ id: 54, title: '別ルール由来', ruleId: 8, source: 'rule' }),
+      ],
+      rules: [sampleRule({ id: 7, name: '対象ルール' })],
+    })
+
+    const { router } = renderPage()
+    await user.click(await screen.findByText('ルール由来'))
+    await user.click(await screen.findByRole('link', { name: 'このルールの録画で絞る' }))
+
+    // parseRecordingsSearch を通った検証済みの search になる（チップにも出る）
+    await waitFor(() => expect(router.state.location.search).toMatchObject({ ruleId: 7 }))
+    expect(await screen.findByText('ルール #7')).toBeInTheDocument()
+    expect(screen.queryByText('別ルール由来')).not.toBeInTheDocument()
   })
 })
 
