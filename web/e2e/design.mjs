@@ -322,14 +322,6 @@ async function open(viewport, theme, screen, opts = {}) {
     deviceScaleFactor: 2,
   })
   const page = await context.newPage()
-  // CDP の DOM/CSS ドメインは、それを有効化した後に起きたレイアウト/ペイントに
-  // ついてしか実使用フォントを記録しない。**ナビゲーション後にセッションを
-  // 開いて即座に `CSS.getPlatformFontsForNode` を呼ぶと、既に描画済みのページに
-  // 対しては空配列が返る**ことを実測で確認した（platformFontsOf の呼び出し側で
-  // このセッションを使う）。ナビゲーション前に有効化しておく必要があるので、ここで作る。
-  const cdp = await context.newCDPSession(page)
-  await cdp.send('DOM.enable')
-  await cdp.send('CSS.enable')
   await page.clock.setFixedTime(FIXED_NOW)
   await installApiStubs(page, opts)
   await page.goto(URL_BASE + screen.path, { waitUntil: 'domcontentloaded' })
@@ -344,7 +336,7 @@ async function open(viewport, theme, screen, opts = {}) {
   // フォント（Geist Variable / Noto Sans JP Variable）の適用とレイアウト確定を待つ。
   await page.evaluate(() => document.fonts.ready)
   await page.waitForTimeout(400)
-  return { context, page, cdp }
+  return { context, page }
 }
 
 log(`URL      : ${URL_BASE}`)
@@ -673,16 +665,21 @@ log('\n=== ③ フォントの判定 ===')
 /**
  * platformFontsOf は CDP 経由で selector に一致するノードの実使用フォントを返す。
  *
- * 2 つの罠を実測で確認して踏まえてある:
- * - **`cdp` は呼び出し元がナビゲーション前から有効化済みのセッションであること。**
- *   `DOM.enable` / `CSS.enable` はそれ以降のレイアウト/ペイントしか記録しないため、
- *   既に描画済みのページに対してここで新規セッションを作って呼ぶと常に空配列が返る
- *   （`open()` がナビゲーション前に作った `cdp` を渡す）
- * - **`main` や `body` のような「直接はテキストを持たずブロック要素だけを子に持つ」
- *   要素を渡すと常に空配列が返る。** `CSS.getPlatformFontsForNode` はノード自身の
- *   インラインレイアウト（実際にテキストランを持つ層）に紐付いたフォント使用だけを
- *   返し、ブロックの子孫を再帰集約しない。実際にテキストを直接持つ要素
- *   （番組リストの行 `li[data-program-id]` 等）を渡す必要がある
+ * **`cdp` は呼び出し元が `DOM.enable` / `CSS.enable` を送信済みのセッションで
+ * あること。** `CSS.enable` を呼ばずに `CSS.getPlatformFontsForNode` を呼ぶと
+ * **空配列ではなく protocol error で throw する**
+ * （`Protocol error (CSS.getPlatformFontsForNode): CSS agent was not enabled`。
+ * 実測で確認済み）。セッションを作るタイミングはナビゲーションの前後どちらでも
+ * 結果は変わらない（両方実測済み。以前このファイルに「ナビゲーション後に
+ * セッションを作ると空配列が返る」という誤った記述があったが、それは次の罠を
+ * 誤って帰属したものだった）。
+ *
+ * **本当の罠は selector の選び方。** `main` や `body` のような「直接はテキストを
+ * 持たずブロック要素だけを子に持つ」要素を渡すと常に空配列が返る（throw ではない）。
+ * `CSS.getPlatformFontsForNode` はノード自身のインラインレイアウト（実際に
+ * テキストランを持つ層）に紐付いたフォント使用だけを返し、ブロックの子孫を
+ * 再帰集約しない。実際にテキストを直接持つ要素（番組リストの行
+ * `li[data-program-id]` 等）を渡す必要がある。
  */
 async function platformFontsOf(cdp, selector) {
   const { root } = await cdp.send('DOM.getDocument')
@@ -693,7 +690,13 @@ async function platformFontsOf(cdp, selector) {
 }
 
 {
-  const { context, page, cdp } = await open(desktop, 'light', screenOf('programs'))
+  const { context, page } = await open(desktop, 'light', screenOf('programs'))
+  // このブロックでしか CDP を使わないので、ここでセッションを作って有効化する
+  // （`open()` は全画面 × テーマ × ビューポートで呼ばれるので、そちらに置くと
+  // 使わない呼び出しでも毎回セッションを作ることになる）。
+  const cdp = await context.newCDPSession(page)
+  await cdp.send('DOM.enable')
+  await cdp.send('CSS.enable')
 
   // 番組リストの行は時刻（Geist が担当）と番組名（Noto Sans JP が担当）を
   // 同じ行に持つので、1 要素で両方の実使用フォントが確認できる
@@ -707,6 +710,14 @@ async function platformFontsOf(cdp, selector) {
     }
     if (!fonts.some((f) => f.includes('Geist'))) {
       ng.push(`英数字が Geist で描画されていない（実使用: ${fonts.join(', ')}）`)
+    }
+    // 「1 グリフだけ Noto Sans JP、残りはシステムフォント」という部分的な退行は
+    // 上の `some` だけでは検出できない（1 件でも Noto があれば真になる）。
+    // 和文システムフォント（--font-sans のフォールバック候補）が実使用に
+    // 一切現れないことも見て、検出力を上げる。
+    const systemJpFonts = fonts.filter((f) => /Hiragino|Yu Gothic|Meiryo/.test(f))
+    if (systemJpFonts.length > 0) {
+      ng.push(`和文の一部がシステムフォントに落ちている（実使用: ${fonts.join(', ')}）`)
     }
   }
 
