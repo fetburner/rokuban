@@ -259,7 +259,10 @@ const chroma = ([r, g, b]) => Math.max(r, g, b) - Math.min(r, g, b)
  * 都合で 3 値本体の判定基準まで緩んでしまう
  */
 function oklchChroma(value) {
-  const m = /oklch\(\s*[\d.]+\s+([\d.]+)/.exec(value ?? '')
+  // L は `0.705` のような比率でも `98.5%` のようなパーセントでも来る
+  // （`--scan-lit` はカスタムプロパティ経由で読むため、標準プロパティより
+  // 表記ゆれが出やすい）。どちらも通す
+  const m = /oklch\(\s*[\d.]+%?\s+([\d.]+)/.exec(value ?? '')
   return m === null ? null : Number(m[1])
 }
 /** 赤が支配的か（タリー / destructive の判定）。 */
@@ -294,6 +297,40 @@ function contrast(fg, bg) {
 async function computedOf(locator, prop) {
   if ((await locator.count()) === 0) return null
   return locator.first().evaluate(readColor, prop)
+}
+
+/**
+ * readCustomColor はカスタムプロパティ（`--scan-gap` / `--scan-lit`）の計算値を
+ * 読む。`readColor`（標準プロパティ用）と違って祖先を遡る backdrop 合成はしない
+ * --- 縞の 2 色それぞれの値そのものを見るためのもので、透過は想定しない。
+ *
+ * **これが無いと `background-image` に直接書いた縞の色は一切読めない。**
+ * `getComputedStyle().backgroundColor` は `background-color`（= 縞の片側）
+ * しか返さないので、もう片側（グラデーションの中の色）を測る手段が無いと
+ * 「輝線を文字と同じ色にする」変異が判定をすり抜ける（design.md の失敗事例
+ * 「判定を足したことと、それが効いていることは別」と同じ形の穴になる）。
+ * `index.css` の `.scanlines` / `.tally-scanlines` は縞の両方の色を
+ * `--scan-gap` / `--scan-lit` というカスタムプロパティに出し、
+ * `background-color` と `background-image` の両方がそれを `var()` で参照する
+ * ようにしてあるので、ここから両方読める
+ */
+const readCustomColor = (el, varName) => {
+  const canvas = document.createElement('canvas')
+  canvas.width = 1
+  canvas.height = 1
+  const ctx = canvas.getContext('2d', { willReadFrequently: true })
+  const value = getComputedStyle(el).getPropertyValue(varName).trim()
+  ctx.clearRect(0, 0, 1, 1)
+  ctx.fillStyle = value
+  ctx.fillRect(0, 0, 1, 1)
+  const d = ctx.getImageData(0, 0, 1, 1).data
+  return { value, rgba: [d[0], d[1], d[2], d[3]] }
+}
+
+/** computedVar は指定要素のカスタムプロパティを `{ value, rgba }` で返す（無ければ null）。 */
+async function computedVar(locator, varName) {
+  if ((await locator.count()) === 0) return null
+  return locator.first().evaluate(readCustomColor, varName)
 }
 
 // --- 実行 -------------------------------------------------------------------
@@ -425,6 +462,23 @@ for (const theme of themes) {
         ng.push(`[${theme}] 読み込み中の走査線（.scanlines）が出ない`)
       })
     const file = path.join(OUT_DIR, `loading-${theme}-desktop.png`)
+    await page.screenshot({ path: file })
+    log(`  ${path.basename(file)}`)
+    await context.close()
+  }
+  {
+    // 空状態（EmptyState）の文言が実際に読める位置のショット。デスクトップ
+    // 1280×900 では検索フォームが長く、既定のビューポートの下端で切れて
+    // 文言まで届かない --- `search-*-desktop.png` は走査線の帯の上端しか
+    // 写っていない。この PR の主題（走査線の上の文字が読めるか）を実際に
+    // 見て判断できるショットを別途 1 組足す
+    const { context, page } = await open(desktop, theme, screenOf('search'))
+    const empty = page
+      .locator('div.scanlines', { hasText: '条件を指定して検索してください' })
+      .first()
+    await empty.scrollIntoViewIfNeeded()
+    await page.waitForTimeout(100)
+    const file = path.join(OUT_DIR, `empty-${theme}-desktop.png`)
     await page.screenshot({ path: file })
     log(`  ${path.basename(file)}`)
     await context.close()
@@ -701,29 +755,47 @@ for (const theme of themes) {
   // --- 空状態: 走査線の上の文字（EmptyState。components/page.tsx） ---
   //
   // 検索は初期状態（未検索）が EmptyState なので、既存の 'search' 画面が
-  // そのまま撮れる。**測るのは地に対する比ではなく、要素自身の
-  // background-color**（= 走査線の間隙側。輝線は background-image で
-  // 重ねているだけで getComputedStyle には出ないので、間隙側が自動的に
-  // 「縞の暗い側（最悪ケース）」になる。index.css の `.scanlines` 参照）。
+  // そのまま撮れる。**縞の 2 色（`--scan-gap` = background-color /
+  // `--scan-lit` = background-image。index.css の `.scanlines` 参照）を
+  // 両方測り、両方が文字色との AA を満たすことを見る。**
+  //
+  // 「間隙側だけが最悪ケード」という前提を置かない --- ライトはたまたま
+  // 間隙（明るい）側が字（墨）に対して不利だが、ダークは逆に輝線側が字
+  // （紙白）に対して不利になる。片方しか測らないと「輝線を文字と同じ色に
+  // する」変異（グリフの半分が地に溶ける）が判定をすり抜ける
+  // （design.md の失敗事例と同じ形の穴。かつてここは間隙側だけを見ていた）
   {
     const { context, page } = await open(desktop, theme, screenOf('search'))
     const empty = page
       .locator('div.scanlines', { hasText: '条件を指定して検索してください' })
       .first()
-    const bg = await computedOf(empty, 'background-color')
+    const gap = await computedOf(empty, 'background-color')
+    const lit = await computedVar(empty, '--scan-lit')
     const fg = await computedOf(empty, 'color')
-    log(`  [${theme}] 空状態の走査線 地=${bg?.value} ${bg?.rgba} / 文字=${fg?.value} ${fg?.rgba}`)
-    if (bg === null || fg === null) {
+    log(
+      `  [${theme}] 空状態の走査線 間隙=${gap?.value} ${gap?.rgba} / ` +
+        `輝線=${lit?.value} ${lit?.rgba} / 文字=${fg?.value} ${fg?.rgba}`,
+    )
+    if (gap === null || lit === null || fg === null) {
       ng.push(`[${theme}] 空状態（EmptyState）の走査線が見つからない`)
     } else {
-      if (bg.rgba[3] < 200) {
-        ng.push(`[${theme}] 空状態の走査線の地（間隙側）が不透明でない（${bg.value}）`)
+      if (gap.rgba[3] < 200) {
+        ng.push(`[${theme}] 空状態の走査線の間隙が不透明でない（${gap.value}）`)
       }
-      const c = oklchChroma(bg.value)
-      if (c === null || c > 0.02) {
-        ng.push(`[${theme}] 空状態の走査線の地が無彩でない（oklch chroma ${c}。${bg.value}）`)
+      if (lit.rgba[3] < 200) {
+        ng.push(`[${theme}] 空状態の走査線の輝線が不透明でない（${lit.value}）`)
       }
-      checkContrast(theme, '空状態の文字 / 走査線の間隙（最悪ケース）', fg.rgba, fg, minTextContrast)
+      for (const [side, measured] of [
+        ['間隙', gap],
+        ['輝線', lit],
+      ]) {
+        const c = oklchChroma(measured.value)
+        if (c === null || c > 0.02) {
+          ng.push(`[${theme}] 空状態の走査線の${side}が無彩でない（oklch chroma ${c}。${measured.value}）`)
+        }
+      }
+      checkContrast(theme, '空状態の文字 / 走査線の間隙', fg.rgba, fg, minTextContrast)
+      checkContrast(theme, '空状態の文字 / 走査線の輝線', fg.rgba, { backdrop: lit.rgba }, minTextContrast)
     }
     await context.close()
   }
@@ -731,9 +803,9 @@ for (const theme of themes) {
   // --- 読み込み中: Skeleton / ListSkeleton の走査線（components/page.tsx） ---
   //
   // 文字は乗らないプレースホルダなので AA の対象ではない。ここで見るのは
-  // 「間隙側（background-color）が不透明・無彩か」と「輝線（background-image）
-  // が実際に重なっているか」---構造の存在確認。API が即座に返る作りだと
-  // 遷移直後に解決してしまうので、`/api/recordings` だけ遅延させて捕まえる
+  // 縞の 2 色（`--scan-gap` / `--scan-lit`）が両方とも不透明・無彩かという
+  // 構造の存在確認。API が即座に返る作りだと遷移直後に解決してしまうので、
+  // `/api/recordings` だけ遅延させて捕まえる
   {
     const context = await browser.newContext({
       viewport: { width: desktop.width, height: desktop.height },
@@ -751,23 +823,32 @@ for (const theme of themes) {
     await skeleton.waitFor({ timeout: 5000 }).catch(() => {
       ng.push(`[${theme}] 読み込み中の走査線（.scanlines）が出ない`)
     })
-    const bg = await computedOf(skeleton, 'background-color')
+    const gap = await computedOf(skeleton, 'background-color')
+    const lit = await computedVar(skeleton, '--scan-lit')
     const bgImage = await skeleton
       .evaluate((el) => getComputedStyle(el).backgroundImage)
       .catch(() => null)
     log(
-      `  [${theme}] 読み込み中の走査線 地=${bg?.value} ${bg?.rgba} / ` +
+      `  [${theme}] 読み込み中の走査線 間隙=${gap?.value} ${gap?.rgba} / 輝線=${lit?.value} ${lit?.rgba} / ` +
         `background-image=${bgImage && bgImage !== 'none' ? 'あり' : 'なし'}`,
     )
-    if (bg === null) {
+    if (gap === null || lit === null) {
       ng.push(`[${theme}] 読み込み中（Skeleton）の走査線が見つからない`)
     } else {
-      if (bg.rgba[3] < 200) {
-        ng.push(`[${theme}] 読み込み中の走査線の地（間隙側）が不透明でない（${bg.value}）`)
+      if (gap.rgba[3] < 200) {
+        ng.push(`[${theme}] 読み込み中の走査線の間隙が不透明でない（${gap.value}）`)
       }
-      const c = oklchChroma(bg.value)
-      if (c === null || c > 0.02) {
-        ng.push(`[${theme}] 読み込み中の走査線の地が無彩でない（oklch chroma ${c}。${bg.value}）`)
+      if (lit.rgba[3] < 200) {
+        ng.push(`[${theme}] 読み込み中の走査線の輝線が不透明でない（${lit.value}）`)
+      }
+      for (const [side, measured] of [
+        ['間隙', gap],
+        ['輝線', lit],
+      ]) {
+        const c = oklchChroma(measured.value)
+        if (c === null || c > 0.02) {
+          ng.push(`[${theme}] 読み込み中の走査線の${side}が無彩でない（oklch chroma ${c}。${measured.value}）`)
+        }
       }
       if (bgImage === null || bgImage === 'none') {
         ng.push(`[${theme}] 読み込み中に走査線の輝線（background-image）が無い（${bgImage}）`)
@@ -777,29 +858,50 @@ for (const theme of themes) {
   }
 
   // --- ライブ: ON AIR バッジ = タリーの塗り + 走査線（pages/live.tsx OnAirBadge） ---
+  //
+  // 縞の 2 色（`--scan-gap` = `--tally` そのもの / `--scan-lit` = `--tally` を
+  // 明度だけ落とした段。index.css の `.tally-scanlines` 参照）を両方測る。
+  // タリーは既定で赤なので両方に `isRed` を掛け、文字とのコントラストも
+  // 両方で見る --- 間隙だけでは「輝線を文字と同じ色にする」変異
+  // （グリフの半分が塗りに溶ける）を見逃す
   {
     const { context, page } = await open(desktop, theme, screenOf('live'))
     const badge = page.locator('span.tally-scanlines', { hasText: /^ON AIR$/ }).first()
-    const bg = await computedOf(badge, 'background-color')
+    const gap = await computedOf(badge, 'background-color')
+    const lit = await computedVar(badge, '--scan-lit')
     const fg = await computedOf(badge, 'color')
-    log(`  [${theme}] ON AIR バッジ 地=${bg?.value} ${bg?.rgba} / 文字=${fg?.value} ${fg?.rgba}`)
-    if (bg === null || fg === null) {
+    log(
+      `  [${theme}] ON AIR バッジ 間隙=${gap?.value} ${gap?.rgba} / ` +
+        `輝線=${lit?.value} ${lit?.rgba} / 文字=${fg?.value} ${fg?.rgba}`,
+    )
+    if (gap === null || lit === null || fg === null) {
       ng.push(`[${theme}] ON AIR バッジが見つからない（いま放送中の番組が無いスタブになっていないか）`)
     } else {
-      if (bg.rgba[3] < 200) {
-        ng.push(`[${theme}] ON AIR バッジが塗りでない（不透明度 ${bg.rgba[3]}/255。${bg.value}）`)
-      } else if (!isRed(bg.rgba)) {
-        ng.push(`[${theme}] ON AIR バッジの地（間隙側）がタリーレッドでない（${bg.value} = ${bg.rgba}）`)
-      }
       if (chroma(fg.rgba) > 30) {
         ng.push(`[${theme}] ON AIR バッジの文字に色が付いている（塗り + 無彩の文字であるべき。${fg.value}）`)
       }
-      if (bg !== null && bg.rgba[3] >= 200) {
-        // **地に対する比だけを見ると甘い数字が出る。** ここで測る `bg` は
-        // タリー走査線の間隙側そのもの（= 縞の暗い側ではなく、`--tally` を
-        // 直接測る。輝線側は `--tally` をさらに `--sumi` 方向へ暗くしてあり、
-        // 常にこちらより高いコントラストになるので、間隙側が最悪ケース）
-        checkContrast(theme, 'ON AIR バッジの文字 / タリーの走査線（間隙側・最悪ケース）', fg.rgba, fg, minTextContrast)
+      for (const [side, measured] of [
+        ['間隙', gap],
+        ['輝線', lit],
+      ]) {
+        if (measured.rgba[3] < 200) {
+          ng.push(`[${theme}] ON AIR バッジの${side}が塗りでない（不透明度 ${measured.rgba[3]}/255。${measured.value}）`)
+          continue
+        }
+        if (!isRed(measured.rgba)) {
+          ng.push(`[${theme}] ON AIR バッジの${side}がタリーレッドでない（マゼンタ等への色相ずれの疑い。${measured.value} = ${measured.rgba}）`)
+        }
+      }
+      // **地に対する比だけを見ると甘い数字が出る。** 間隙（`--tally` そのもの。
+      // 録画中バッジと同じ値）・輝線（`--tally` を明度だけ落とした段）の
+      // 両方を文字色との比で見る。輝線は間隙より暗いので理屈のうえでは
+      // 間隙側が不利なはずだが、**「そのはず」を判定の根拠にはしない** ---
+      // 両方を実測して両方に下限を掛けることで、想定が外れても気付ける形にする
+      if (gap.rgba[3] >= 200) {
+        checkContrast(theme, 'ON AIR バッジの文字 / タリー走査線の間隙', fg.rgba, fg, minTextContrast)
+      }
+      if (lit.rgba[3] >= 200) {
+        checkContrast(theme, 'ON AIR バッジの文字 / タリー走査線の輝線', fg.rgba, { backdrop: lit.rgba }, minTextContrast)
       }
       const bgImage = await badge
         .evaluate((el) => getComputedStyle(el).backgroundImage)
