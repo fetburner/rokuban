@@ -45,6 +45,23 @@ const services: Service[] = [
   },
 ]
 
+/**
+ * サブサービス（マルチ編成の無い時間帯は番組を持たない）。`hasPrograms: false`
+ * なので `filterableServices`（ピッカーの候補の生成元）には入らないが、
+ * `GET /api/sites/default/services` には実在する（issue #231 のレビュー
+ * must-fix: ピッカーの定義域テスト用）。
+ */
+const subService: Service = {
+  networkId: 32736,
+  serviceId: 1040,
+  name: 'NHK総合サブ',
+  channelType: 'GR',
+  channel: '27',
+  remoteControlKeyId: 1,
+  hasLogoData: false,
+  hasPrograms: false,
+}
+
 function program(
   programId: number,
   serviceId: number,
@@ -176,6 +193,10 @@ const encodeProfiles = [{ name: 'h264', container: 'mp4' as const }]
  * `overridesPatchResponse` は `PATCH /api/sites/default/programs/{id}/overrides`
  * の応答を差し替える（issue #132 の「PATCH が失敗しても予約は成立する」テスト用）。
  * 未指定なら常に 204。
+ *
+ * `extraServices` は `services`（固定 2 局）に追加で載せるサービス（既定は
+ * 追加無し）。ピッカーの定義域テスト（issue #231 のレビュー must-fix）だけが
+ * `hasPrograms: false` の局を注入するために使う。
  */
 function stubApi(
   reservations: Reservation[] = [],
@@ -183,6 +204,7 @@ function stubApi(
   programs: ProgramListItem[] = allPrograms,
   onProgramsCall?: (callIndex: number) => Response | undefined,
   overridesPatchResponse?: () => Response,
+  extraServices: Service[] = [],
 ) {
   let programsCallIndex = 0
   const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
@@ -193,8 +215,17 @@ function stubApi(
     // （`routes.test.tsx` の '/search' テストと同じ理由）。
     if (url.pathname === '/api/sites') return Promise.resolve(jsonResponse(['default']))
     if (url.pathname === '/api/sites/default/services') {
-      return Promise.resolve(jsonResponse(services))
+      return Promise.resolve(jsonResponse([...services, ...extraServices]))
     }
+    // AppShell がナビゲーションの出し分けに読む（issue #209）。未 stub でも
+    // react-query が飲み込んで緑になる（`useLiveEnabled` が fail-closed で false
+    // に倒れる）が、明示的に返しておく
+    if (url.pathname === '/api/capabilities') {
+      return Promise.resolve(jsonResponse({ live: true }))
+    }
+    // AppShell が全ページの手前でサーキットブレーカーの有無を読む
+    // （`pages/recordings.test.tsx` の fetchMock と同じ stub）
+    if (url.pathname === '/api/breakers') return Promise.resolve(jsonResponse([]))
     if (url.pathname === '/api/reservations') return Promise.resolve(jsonResponse(reservations))
     if (url.pathname === '/api/capacity/overages') {
       return Promise.resolve(jsonResponse(overages))
@@ -811,6 +842,54 @@ describe('ProgramsPage のチャンネル絞り込みの URL 化（issue #231）
     // CLAUDE.md「非同期の空虚な成功に注意する」）
     expect(await screen.findByText('ニュース7')).toBeInTheDocument()
     expect(screen.getByText('手話ニュース')).toBeInTheDocument()
+  })
+})
+
+/**
+ * ピッカーの定義域（issue #231 のレビュー must-fix）。
+ *
+ * 絞り込みが URL 化された時点で、選択（`selectedServiceIds`）は「外から入る値」
+ * になる。この PR 以前は選択の唯一の生成元がピッカー自身だったため
+ * `selected ⊆ filterableServices` が構造的に成り立っていたが、URL 化すると
+ * この前提が消える（閉世界 → 開世界）。`filterableServices`（`hasPrograms`
+ * から作る候補の生成元）に無い serviceId への深いリンクで、ピッカーが
+ * 「0 件選択（＝すべて）」に見えてはならない --- 「絞り込みで全部隠れている」
+ * ことと「絞り込みなしで番組が無い」ことは区別できる必要がある。
+ */
+describe('ProgramsPage のピッカーの定義域（issue #231 のレビュー must-fix）', () => {
+  it('filterableServices に無い局（hasPrograms: false）への深いリンクでも「すべて」に見えず、個別に解除できる', async () => {
+    stubApi([], [], allPrograms, undefined, undefined, [subService])
+    renderPage('/?serviceId=1040')
+
+    // サブサービスは番組を持たないので一覧は空になる。だが「絞り込みで全部
+    // 隠れている」ことがトリガーから読める必要がある
+    expect(await screen.findByText('この時間帯の番組がありません')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'チャンネル: NHK総合サブ' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'チャンネル: すべて' })).not.toBeInTheDocument()
+
+    // 候補にも出ていて、個別に解除できる（「すべて」で全解除する以外の手段がある）
+    await userEvent.click(screen.getByRole('button', { name: 'チャンネル: NHK総合サブ' }))
+    const dialog = await screen.findByRole('dialog', { name: 'チャンネル' })
+    await userEvent.click(within(dialog).getByText('NHK総合サブ'))
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'チャンネル: すべて' })).toBeInTheDocument(),
+    )
+  })
+
+  it('services にも実在しない id への深いリンク（削除された局・壊れた共有リンク）は「チャンネル #<id>」で示され、個別に解除できる', async () => {
+    stubApi()
+    renderPage('/?serviceId=9999')
+
+    expect(await screen.findByText('この時間帯の番組がありません')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'チャンネル: チャンネル #9999' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'チャンネル: すべて' })).not.toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('button', { name: 'チャンネル: チャンネル #9999' }))
+    const dialog = await screen.findByRole('dialog', { name: 'チャンネル' })
+    await userEvent.click(within(dialog).getByText('チャンネル #9999'))
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'チャンネル: すべて' })).toBeInTheDocument(),
+    )
   })
 })
 

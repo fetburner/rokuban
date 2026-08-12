@@ -37,6 +37,7 @@ import { formatDate } from '@/lib/format'
 import { domLayoutMeasurable } from '@/lib/list-virtualization'
 import { filterProgramsFromListStart } from '@/lib/program-list-window'
 import {
+  pickerServiceDomain,
   serviceIdsFromSet,
   serviceIdsToSet,
   type ProgramsPageSearch,
@@ -84,7 +85,8 @@ type ProgramView = 'list' | 'grid'
  * 番組表へ `?serviceId=` 付きで飛べる（「この局の番組表」リンク）。
  *
  * **番組表からライブへの導線はここには置かない。** 放送中の番組の展開に
- * 「ライブで見る」を出す導線は行（`ProgramRow`）の展開領域が担う（issue #229）。
+ * 「ライブで見る」を出す導線は行（`ProgramRow`）の展開領域の担当にする
+ * （issue #229。この PR の時点では未実装・並行実装中）。
  * ページ全体に「視聴中チャンネルへ」のような 2 つ目のライブ導線を足すと、
  * どの番組が放送中か分からない状態でも押せてしまい行き先が不定になる
  * （複数チャンネルを絞り込んでいるときにどれへ飛ぶかを決める判断基準が無い）
@@ -349,6 +351,24 @@ export function ProgramsPage() {
     [services.data],
   )
 
+  // ピッカーが表示・列挙できる集合（issue #231 のレビュー must-fix）。
+  //
+  // `selectedServiceIds` は URL 化された時点で「外から入る値」になった。この
+  // PR 以前は選択の唯一の生成元がピッカー自身だったため
+  // `selectedServiceIds ⊆ filterableServices` が構造的に成り立っていたが、
+  // URL 化するとこの前提が消える（閉世界 → 開世界）。`ChannelPicker` は
+  // トリガーのラベルを `services.filter(s => selected.has(s.serviceId))` から
+  // 作るため、`filterableServices` に無い serviceId で開くと選択が 0 件
+  // （「すべて」）に見えてしまい、かつ候補にも出ないので個別に外す手段が無い。
+  // `pickerServiceDomain`（`lib/programs-search.ts`）が
+  // `filterableServices ∪ 選択中の serviceId` を作る --- 混ぜているのは検索
+  // 結果ではなく URL からの外部入力なので、「候補は `Service.hasPrograms` から
+  // 作る」（検索結果から候補を導かない）という決定と矛盾しない。
+  const pickerServices = useMemo(
+    () => pickerServiceDomain(filterableServices, selectedServiceIds, serviceById),
+    [filterableServices, selectedServiceIds, serviceById],
+  )
+
   // グリッドの列。番組を 1 つも持たないサービスは列にしない（空の列が数十本
   // 並ぶと、隣り合う番組の同時性が読み取れなくなる）。並び順は全順序なので
   // 再描画で列が入れ替わらない。
@@ -457,7 +477,7 @@ export function ProgramsPage() {
                 グリッドの列にも効くので、隠すと解除手段のない 1 列グリッドに
                 なる（docs/frontend.md「番組リスト」）。 */}
             <ChannelPicker
-              services={filterableServices}
+              services={pickerServices}
               selected={selectedServiceIds}
               onChange={(next) =>
                 updateSearch((s) => ({ ...s, serviceId: serviceIdsFromSet(next) }))

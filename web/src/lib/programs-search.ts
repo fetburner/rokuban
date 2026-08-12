@@ -10,15 +10,12 @@
  * React に依存しないのはテストのため（`lib/recording-search.ts` と同じ理由）。
  */
 
+import { ServiceChannelType, type Service } from '@/api/generated'
+
 /** ProgramsPageSearch は `/`（番組表）の URL クエリパラメータ（検証済み）。 */
 export type ProgramsPageSearch = {
   /** 絞り込み中のチャンネル（サービス）。複数可、OR。空集合（＝すべて）は `undefined`。 */
   serviceId?: number[]
-}
-
-/** emptyProgramsSearch は絞り込みを何も指定していない状態。 */
-export function emptyProgramsSearch(): ProgramsPageSearch {
-  return {}
 }
 
 function toRawValues(raw: unknown): unknown[] {
@@ -87,4 +84,64 @@ export function serviceIdsToSet(serviceId: number[] | undefined): ReadonlySet<nu
 export function serviceIdsFromSet(selected: ReadonlySet<number>): number[] | undefined {
   if (selected.size === 0) return undefined
   return [...selected].sort((a, b) => a - b)
+}
+
+/**
+ * placeholderService は `serviceById` にも無い serviceId（EPG から消えた局・
+ * 実在しない id を含む古いブックマーク・共有リンク）の代わりに `ChannelPicker`
+ * へ渡すダミーの `Service`。名前は引けないが「何かで絞られている」ことは
+ * 読める必要がある（`lib/recording-search.ts` の `describeRecordingsFilters`
+ * が `チャンネル #<id>` で名前不明の serviceId を表す先例と同じ形）。
+ *
+ * `channelType` は型上いずれかの値を選ぶ必要があるため `GR` に固定する
+ * （実体が無い局の分類は元々決めようがない。表示上どのグループに現れるかは
+ * 些末なので、これ以上の判定基準は持たない）。`remoteControlKeyId: 0` で
+ * `ChannelOption` のリモコン番号バッジ（`channelType === 'GR' &&
+ * remoteControlKeyId > 0` のときだけ出す）を抑止する。
+ */
+function placeholderService(serviceId: number): Service {
+  return {
+    networkId: 0,
+    serviceId,
+    name: `チャンネル #${serviceId}`,
+    channelType: ServiceChannelType.GR,
+    channel: '',
+    remoteControlKeyId: 0,
+    hasLogoData: false,
+    hasPrograms: false,
+  }
+}
+
+/**
+ * pickerServiceDomain は `ChannelPicker` が表示・列挙できる集合を返す
+ * （issue #231 のレビュー指摘。must-fix）。
+ *
+ * **絞り込みが URL 化された時点で、選択（`selected`）は「外から入る値」になる。**
+ * この PR 以前は選択の唯一の生成元がピッカー自身だったため
+ * `selected ⊆ filterable` が構造的に成り立っていたが、URL 化するとこの前提が
+ * 消える（閉世界 → 開世界）。`ChannelPicker` はトリガーのラベルを
+ * `filterable.filter(s => selected.has(s.serviceId))` から作るため、
+ * `filterable` に無い serviceId で開くと選択が 0 件（「すべて」）に見えてしまい、
+ * かつ候補にも出ないので個別に外す手段が無い（「すべて」で全解除するしかない）。
+ *
+ * 候補（`filterable`）は `Service.hasPrograms` から作る
+ * （docs/frontend.md「ピッカーの候補は `Service.hasPrograms` から作る」）が、
+ * それは**検索結果から候補を導かない**という決定であって、**URL から来た
+ * 選択値を候補に混ぜること**とは矛盾しない --- 混ぜているのは検索結果ではなく
+ * 外部入力（URL）である。`serviceById`（EPG プロジェクション全体。
+ * `hasPrograms` を問わない）に居れば実名を使い、それにも居なければ
+ * `placeholderService` で `チャンネル #<id>` に落とす。
+ */
+export function pickerServiceDomain(
+  filterable: readonly Service[],
+  selected: ReadonlySet<number>,
+  serviceById: ReadonlyMap<number, Service>,
+): Service[] {
+  const map = new Map<number, Service>()
+  for (const s of filterable) map.set(s.serviceId, s)
+  for (const id of selected) {
+    if (map.has(id)) continue
+    map.set(id, serviceById.get(id) ?? placeholderService(id))
+  }
+  return [...map.values()]
 }
