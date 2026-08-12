@@ -2,12 +2,39 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 @import "@fontsource-variable/geist";
+/*
+ * Noto Sans JP は SIL OFL 1.1（Copyright Google Inc.）。ライセンス表示は
+ * public/font-licenses.txt に置く --- ここに `/*!` バナーコメントを書いても
+ * Tailwind v4（Lightning CSS）のビルドで丸ごと落ちることを実測で確認した
+ * （dist の CSS にコメントが 1 つも残らない）。public/ 配下ならビルドを
+ * 経由せず dist 直下にそのままコピーされる（ファビコンの SVG コメントと同じ
+ * 「配布物に残す」方式。docs/frontend/branding.md「ファビコンはスクリプトで
+ * 生成する」）。
+ */
+@import "@fontsource-variable/noto-sans-jp";
 
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
     --font-heading: var(--font-sans);
-    --font-sans: 'Geist Variable', sans-serif;
+    /*
+     * `lang="ja"` の UI で本文のほぼ全部が和文。Geist は日本語グリフを持たないため、
+     * 単独指定では和文がすべて「指定していないシステムフォールバック」で描画されていた
+     * （docs/frontend/branding.md「ファビコンは Noto Sans JP Black」で書体は既に
+     * 意匠の一部になっている）。
+     *
+     * Geist は廃止せず、和文にだけ Noto Sans JP を足す --- font-family のフォール
+     * バックはノード単位ではなく**文字単位**で解決されるので、この 1 行だけで
+     * 「英数字は Geist、和文は Noto Sans JP」が両立する（使い分けを条件分岐で
+     * 書く必要がない）。Geist を残す理由は数字: `font-variant-numeric: tabular-nums`
+     * が実際に等幅化するのは Geist の OpenType tnum を実測して確認した
+     * （Noto Sans JP の半角数字は既定でほぼ等幅なので tabular-nums を当てても
+     * 当てなくても見た目は変わらない。実測は web/tests/font-tokens.test.ts と
+     * PR 本文に残す）。ヒラギノ/游ゴシック/メイリオは Noto Sans JP のダウンロード
+     * 前後（font-display: swap）とダウンロード失敗時のフォールバック
+     */
+    --font-sans: 'Geist Variable', 'Noto Sans JP Variable', 'Hiragino Kaku Gothic ProN',
+      'Hiragino Sans', 'Yu Gothic Medium', 'Yu Gothic', 'Meiryo', sans-serif;
     --color-sidebar-ring: var(--sidebar-ring);
     --color-sidebar-border: var(--sidebar-border);
     --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -189,7 +216,11 @@
     @apply bg-background text-foreground;
     }
   html {
-    @apply font-sans;
+    /* 時刻・尺・サイズ・ドロップ数・PID が縦に並ぶ計器盤（docs/frontend/design.md
+       「数字は tabular-nums」）。触るたびに個別のクラスを足すのを要求すると
+       足し忘れが起きるので、`html` に一度だけ当てて全域に効かせる ---
+       個別の `tabular-nums` クラスは統合してここに 1 本化した */
+    @apply font-sans tabular-nums;
     }
 }
 

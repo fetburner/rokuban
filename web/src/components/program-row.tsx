@@ -77,7 +77,7 @@ export function ProgramRow({
           onClick={() => setExpanded((v) => !v)}
           className="flex min-h-14 min-w-0 flex-1 items-center gap-3 px-4 py-2.5 text-left hover:bg-muted/50"
         >
-          <div className="w-11 shrink-0 text-sm tabular-nums">
+          <div className="w-11 shrink-0 text-sm">
             {/* 放送中の行は**色を使わず**太さで立てる。理由は 2 つあり、どちらも
                 docs/frontend/design.md にある: (1) 旧 `text-primary` は地の墨と
                 同値になったので、そのままでは「いま」が立たない。(2) タリーレッドに
@@ -86,8 +86,8 @@ export function ProgramRow({
                 番組表グリッド側が持つ */}
             <div
               // e2e（web/e2e/design.mjs）が「この要素に信号色が付いていないこと」を
-              // 測る。クラス名でセレクタを組むと、`tabular-nums` が別の要素へ移った
-              // だけで**別の要素を測ったまま通る**
+              // 測る。クラス名でセレクタを組むと、そのユーティリティクラスが
+              // 別の要素へ移っただけで**別の要素を測ったまま通る**
               data-testid="program-row-time"
               className={cn(isAiring(program.startAt, program.endAt) && 'font-medium')}
             >

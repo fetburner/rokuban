@@ -140,8 +140,14 @@ CI の lint job でも回る。除外は理由込みで `web/scripts/check-color
 ## 数字は tabular-nums
 
 時刻・尺・サイズ・ドロップ数・PID は縦に並ぶので、等幅数字にしないと桁が揃わず
-「並べて比べる」という計器盤の唯一の仕事ができない。数字を出す箇所には
-`tabular-nums` を当てる。
+「並べて比べる」という計器盤の唯一の仕事ができない。
+
+**`html` に 1 度だけ当てて全域に効かせる。コンポーネント側で個別に指定しない。**
+触るたびに指定を思い出す必要をなくすためで、`web/tests/font-tokens.test.ts` が
+「コンポーネント側に `tabular-nums` の個別指定が残っていないこと」を検査する
+（残っていると全域適用に統合した決定と矛盾するので、そこで落ちる）。フォントと
+tabular-nums の実効性（どの書体が実際に等幅を作るか）は
+[stack.md](stack.md)「フォントは英数字と和文で 2 書体を使い分ける」にある。
 
 ## 走査線は 3 箇所限定
 
@@ -229,6 +235,13 @@ grep -rln --include='*.ts' --include='*.tsx' --include='*.css' 'scanlines' web/s
 
 単一世帯の運用なので、頻度の仮説は自分の行動で検証してよい。
 
+**「端」に寄せる実装手段は overflow メニュー（`components/ui/dropdown-menu.tsx`。
+`@base-ui/react` の `Menu` を shadcn の作法でラップした標準部品）。** ルール一覧の
+削除（稀・破壊的）はこれに乗せ、検索で開く/編集という主操作とは同格に並べない。
+新しい破壊的・稀な操作を行に足すときは、新しい overflow の作法を都度作らずこの
+部品を再利用する。逆方向（頻度が高いのに埋もれている操作を「一等地」へ引き上げる）
+の実装例は [recordings.md](recordings.md) の再生ボタン。
+
 ## 合否は画素で測る
 
 **色は jsdom では測れない。** Tailwind のクラスは解決されないし、oklch も計算されない。
@@ -260,6 +273,9 @@ DB も要らない。時刻も固定してあり、ショットの差分は実�
 
 ## 経緯と失敗事例
 
+- 頻度 3 段の「端」を overflow メニューで実装する形、および `dropdown-menu.tsx`
+  の導入は M5-4（issue #227）。それまでルールの削除は編集フォームのフッタに
+  保存・キャンセルと同格の `destructive` ボタンとして置かれていた
 - `index.css` は長らく shadcn neutral の既定（全色 chroma 0、`--radius: 0.625rem`）
   のままだった。M1 の UI が意図的に素だった（[issue #22](https://github.com/fetburner/rokuban/issues/22)）
   ことの残り

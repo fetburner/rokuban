@@ -69,13 +69,16 @@ const services: Service[] = [
 function stubApi(rules: Rule[] = [sampleRule]) {
   const putBodies: { id: number; body: RuleInput }[] = []
   const postBodies: RuleInput[] = []
+  const deletedIds: number[] = []
 
   globalThis.fetch = vi.fn((input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input), 'http://localhost')
     const method = init?.method ?? 'GET'
 
     if (url.pathname === '/api/rules' && method === 'GET') {
-      return Promise.resolve(jsonResponse(rules))
+      // 削除は状態を持って反映する --- invalidate 後の再取得で一覧から
+      // 消えることを確認するテストのため（GET のたびに現在の状態を返す）。
+      return Promise.resolve(jsonResponse(rules.filter((r) => !deletedIds.includes(r.id))))
     }
     if (url.pathname === '/api/rules' && method === 'POST') {
       const body = JSON.parse(String(init?.body)) as RuleInput
@@ -94,7 +97,9 @@ function stubApi(rules: Rule[] = [sampleRule]) {
       )
     }
     if (putMatch && method === 'DELETE') {
-      return Promise.resolve(jsonResponse({ id: Number(putMatch[1]), deletedReservations: 0, detachedReservations: 0 }))
+      const id = Number(putMatch[1])
+      deletedIds.push(id)
+      return Promise.resolve(jsonResponse({ id, deletedReservations: 0, detachedReservations: 0 }))
     }
     if (url.pathname === '/api/encode-profiles') return Promise.resolve(jsonResponse(profiles))
     if (url.pathname === '/api/breakers') return Promise.resolve(jsonResponse([]))
@@ -102,7 +107,7 @@ function stubApi(rules: Rule[] = [sampleRule]) {
     throw new Error(`unexpected fetch: ${method} ${url.pathname}`)
   }) as unknown as typeof fetch
 
-  return { postBodies, putBodies }
+  return { postBodies, putBodies, deletedIds }
 }
 
 function renderPage() {
@@ -322,5 +327,68 @@ describe('RulesPage 条件編集', () => {
     await screen.findByText('平日ニュース')
     const link = screen.getByRole('link', { name: 'このルールの録画' })
     expect(link).toHaveAttribute('href', '/recordings?ruleId=2')
+  })
+})
+
+// issue #227（M5-4）: 削除（稀・破壊的）を行の overflow メニューへ寄せ、
+// 編集フォームの保存・キャンセルと同格には並べない。
+describe('RulesPage 削除は overflow メニュー', () => {
+  it('一覧の行に「削除」ボタンが直接は出ない（overflow の中）', async () => {
+    stubApi()
+    renderPage()
+
+    // 行が描画されたことを先に待ってから「無い」ことを確認する
+    // （非同期の空虚な成功を避ける）。
+    await screen.findByText('ニュース')
+    expect(screen.queryByRole('button', { name: '削除' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: '削除' })).not.toBeInTheDocument()
+  })
+
+  it('overflow を開くと「削除」が menuitem として出て、選ぶと確認の上で削除される', async () => {
+    stubApi()
+    const user = userEvent.setup()
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    renderPage()
+
+    await screen.findByText('ニュース')
+    await user.click(screen.getByRole('button', { name: 'ルール「ニュース」のその他の操作' }))
+
+    const deleteItem = await screen.findByRole('menuitem', { name: '削除' })
+    await user.click(deleteItem)
+
+    expect(confirmSpy).toHaveBeenCalledWith('ルール「ニュース」を削除しますか？')
+    expect(await screen.findByText('ルールを削除しました')).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByText('ニュース')).not.toBeInTheDocument())
+  })
+
+  it('確認をキャンセルすると削除されない', async () => {
+    stubApi()
+    const user = userEvent.setup()
+    vi.spyOn(window, 'confirm').mockReturnValue(false)
+    renderPage()
+
+    await screen.findByText('ニュース')
+    await user.click(screen.getByRole('button', { name: 'ルール「ニュース」のその他の操作' }))
+    await user.click(await screen.findByRole('menuitem', { name: '削除' }))
+
+    // DELETE が飛んでいないことを確認する（行が残っていることでも分かるが、
+    // ネットワーク呼び出しの有無を直接見て確定させる）
+    const deleteCalls = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.filter(
+      (call: unknown[]) => (call[1] as RequestInit | undefined)?.method === 'DELETE',
+    )
+    expect(deleteCalls.length).toBe(0)
+    expect(screen.getByText('ニュース')).toBeInTheDocument()
+  })
+
+  it('編集フォームには削除ボタンが無い（保存・キャンセルだけが主操作）', async () => {
+    stubApi()
+    const user = userEvent.setup()
+    renderPage()
+
+    await screen.findByText('ニュース')
+    await user.click(screen.getByRole('button', { name: '編集' }))
+
+    await screen.findByLabelText('名前')
+    expect(screen.queryByRole('button', { name: '削除' })).not.toBeInTheDocument()
   })
 })
