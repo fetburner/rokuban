@@ -648,6 +648,52 @@ for (const theme of themes) {
   }
 }
 
+// --- 録画一覧: 展開後にキーボードだけでプレイヤーへ到達できるか ---
+//
+// jsdom では測れない領域（web/e2e/README.md §デザイン）。`<video>` に
+// `tabIndex={-1}` を付けると、プログラムからの `.focus()` は変わらず効く
+// ため jsdom のユニットテスト（focus spy）は通り続けるが、実ブラウザの
+// キーボード Tab 走査からは完全に外れる（M5-4 / issue #227 でこの属性を
+// 一度入れて実際に壊した退行そのもの）。**行本体タップ（Enter）で展開する
+// 経路**を使う --- 再生ボタンのクリックは JS の `.focus()` を直接呼ぶため、
+// `tabIndex` の有無に関係なく activeElement が動いてしまい、Tab 走査の
+// 検証としては成立しない。
+{
+  const { context, page } = await open(desktop, 'light', screenOf('recordings'))
+  const row = page.locator('li', { hasText: 'クラシック音楽館' })
+  const rowToggle = row.locator('button[aria-expanded]').first()
+  if ((await rowToggle.count()) === 0) {
+    ng.push('キーボード到達性: encoded 付き録画の行が見つからない')
+  } else {
+    await rowToggle.focus()
+    await page.keyboard.press('Enter')
+    await page.locator('video').first().waitFor({ timeout: 5000 }).catch(() => {})
+    if ((await page.locator('video').count()) === 0) {
+      ng.push('キーボード到達性: Enter で展開してもプレイヤーが出ない')
+    } else {
+      const maxPresses = 2
+      let reachedAt = null
+      for (let i = 1; i <= maxPresses; i++) {
+        await page.keyboard.press('Tab')
+        const tag = await page.evaluate(() => document.activeElement?.tagName)
+        if (tag === 'VIDEO') {
+          reachedAt = i
+          break
+        }
+      }
+      log(`  キーボード到達性: 行本体展開 → Tab ${reachedAt ?? `${maxPresses}+`} 回で video`)
+      if (reachedAt === null) {
+        ng.push(
+          `キーボード到達性: 展開後 Tab ${maxPresses} 回以内に <video> へ到達しない` +
+            '（<video> に tabIndex を明示していないか確認する。M5-4 で一度この属性を' +
+            '付けて実際に壊した退行）',
+        )
+      }
+    }
+  }
+  await context.close()
+}
+
 // 数値は docs に転記しない（転記した瞬間に二重管理になる）。docs は
 // 「ここで測る」とだけ言い、実際の数値はこの出力が権威。
 log('\n=== 測ったコントラスト ===')

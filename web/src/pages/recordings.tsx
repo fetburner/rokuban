@@ -336,13 +336,16 @@ function RecordingRow({ recording, trash }: { recording: Recording; trash: boole
         <button
           type="button"
           aria-expanded={expanded}
-          onClick={() =>
-            setExpanded((v) => {
-              const next = !v
-              if (!next) setFocusPlayerToken(0)
-              return next
-            })
-          }
+          onClick={() => {
+            // updater 関数の中に副作用（setFocusPlayerToken）を書かない ---
+            // React の state updater は純粋であることが要求され、StrictMode
+            // では dev ビルドで 2 回呼ばれる。今回の副作用は定数 0 の代入で
+            // 冪等なので実害は無いが、次にここへ副作用を足す人が踏む形を
+            // 残さない。読み取りと副作用はハンドラ本体で行う
+            const next = !expanded
+            setExpanded(next)
+            if (!next) setFocusPlayerToken(0)
+          }}
           className="flex min-h-14 min-w-0 flex-1 items-center gap-3 px-4 py-2.5 text-left hover:bg-muted/50"
         >
           {/*
