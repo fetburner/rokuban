@@ -81,10 +81,17 @@ export function ProgramRow({
   // 理由: このリンクは番組 ID を運ばず `serviceId`（チャンネル）だけを渡すので、
   // 境界を挟んで多少ズレても遷移先を誤ることはない --- 遷移先の /live 画面が
   // 自前で「いま何が流れているか」を再取得して表示するので、真実はそちら側に
-  // ある（issue #229 の指示どおり）。行を展開したまま番組終了をまたいでも、
-  // リンクの消える/現れるタイミングが数十秒ずれるだけ。pages/live.tsx の
-  // `nowMs`（30 秒間隔の tick）は「いま放送中の番組名」という常時表示のために
-  // 要るが、ここは真偽 1 個の出し分けで代償が小さいため見送る。
+  // ある（issue #229 の指示どおり）。
+  //
+  // **このズレに上界は無い。** 行を展開したまま放置すると、次にこの行が
+  // 再レンダーされるまで判定は更新されない --- `pages/programs.tsx` の
+  // `nowMs` は tick（`setInterval`）を持たず毎レンダー `Date.now()` を読むだけ、
+  // QueryClient（`main.tsx`）は `staleTime: 30_000` と `refetchOnWindowFocus`
+  // のみで `refetchInterval` は無く、このコンポーネント自身が張るクエリ
+  // （capabilities / 番組詳細 / overlaps）も定期再取得しない。したがって
+  // 「数十秒で追いつく」保証は無い。それでも良いのは上記の理由（誤った遷移先を
+  // 指さない）だけであり、pages/live.tsx の `nowMs`（30 秒 tick）のような
+  // 常時性の高い表示を求められたら別の設計が要る。
   const showLiveLink = liveEnabled && isAiring(program.startAt, program.endAt)
 
   return (

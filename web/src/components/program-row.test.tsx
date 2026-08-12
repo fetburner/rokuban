@@ -42,7 +42,7 @@ function airingProgram(overrides: Partial<ProgramListItem> = {}): ProgramListIte
  * - `GET .../programs/{id}`: 展開時に `ProgramDetail` が問い合わせる番組詳細
  */
 function stubFetch({ live = true }: { live?: boolean } = {}) {
-  globalThis.fetch = vi.fn((input: string | URL | Request) => {
+  const fetchMock = vi.fn((input: string | URL | Request) => {
     const url = new URL(String(input), 'http://localhost')
     if (url.pathname === '/api/capabilities') {
       return Promise.resolve(
@@ -77,7 +77,9 @@ function stubFetch({ live = true }: { live?: boolean } = {}) {
         headers: { 'Content-Type': 'application/json' },
       }),
     )
-  }) as unknown as typeof fetch
+  })
+  globalThis.fetch = fetchMock as unknown as typeof fetch
+  return fetchMock
 }
 
 async function expandRow() {
@@ -91,6 +93,38 @@ async function expandRow() {
 }
 
 describe('ProgramRow の外向き導線（issue #229）', () => {
+  it('展開前は、放送中かつ予約済みの行でも外向きリンクが 1 つも出ない（展開領域限定）', async () => {
+    // issue #229 の「決定済みの方向」（固有名詞へのリンクは折りたたみ行では
+    // なく展開領域側に置く）そのものを守るテスト。他のテストは全部
+    // expandRow() を通してから見るので、展開前に何が無いかを見るのはこの
+    // 1 本だけ --- リンクを `{expanded && ...}` の外（行ヘッダの兄弟）へ
+    // 移す変異は、他のテストを崩さずにこれだけを落とす。
+    const fetchMock = stubFetch()
+    renderInRouter(
+      <ProgramRow
+        program={airingProgram({ programId: 7 })}
+        reserved={true}
+        pending={false}
+        onReserve={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    )
+
+    // 行本体が描かれるまで待つ（ルーターの初回マッチ解決は非同期）。
+    await screen.findByText('対象番組')
+    // 能力 API の解決を待ってから確認する。未解決のうちは fail-closed で
+    // 元から「ライブで見る」が出ないだけなので、それだけで「出ない」を
+    // 確認すると空虚な成功になる（CLAUDE.md テスト規律）。
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining('/api/capabilities'),
+        expect.anything(),
+      ),
+    )
+
+    expect(screen.queryAllByRole('link')).toHaveLength(0)
+  })
+
   it('放送中の番組を展開すると「ライブで見る」が出て /live?serviceId= （SI の serviceId）へのリンクになる', async () => {
     stubFetch()
     renderInRouter(
