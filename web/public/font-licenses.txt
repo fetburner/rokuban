@@ -1,0 +1,18 @@
+Rokuban が自前配布している Web フォントのライセンス表示。
+
+Geist Variable
+  Copyright 2024 The Geist Project Authors (https://github.com/vercel/geist-font)
+  SIL Open Font License, Version 1.1 (http://scripts.sil.org/OFL)
+
+Noto Sans JP Variable
+  Copyright Google Inc.
+  SIL Open Font License, Version 1.1 (http://scripts.sil.org/OFL)
+
+各フォントの完全なライセンス条文は配布パッケージに同梱されている
+（node_modules/@fontsource-variable/geist/LICENSE,
+ node_modules/@fontsource-variable/noto-sans-jp/LICENSE）。
+
+このファイルはビルド成果物（dist/）にライセンス表示を残すための短い notice で、
+docs/frontend/branding.md に書かれている「ファビコンの SVG コメントにライセンス
+表示を入れる」方式と同じもの（CSS のバナーコメントは Tailwind のビルドで
+落ちるため使えない。web/src/index.css 参照）。

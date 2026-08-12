@@ -217,7 +217,7 @@ export function LivePage() {
                           )}
                         >
                           {s.channelType === 'GR' && s.remoteControlKeyId > 0 && (
-                            <span className="shrink-0 rounded bg-muted px-1 text-[10px] tabular-nums text-muted-foreground">
+                            <span className="shrink-0 rounded bg-muted px-1 text-[10px] text-muted-foreground">
                               {s.remoteControlKeyId}
                             </span>
                           )}

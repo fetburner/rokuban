@@ -235,7 +235,7 @@ function ChannelOption({
         />
       </span>
       {remoteControlKeyId !== undefined && (
-        <span className="shrink-0 rounded bg-muted px-1 text-[10px] tabular-nums text-muted-foreground">
+        <span className="shrink-0 rounded bg-muted px-1 text-[10px] text-muted-foreground">
           {remoteControlKeyId}
         </span>
       )}

@@ -51,7 +51,14 @@ SIL OFL 1.1（Copyright 2014-2021 Adobe）で、著作権表示を生成され�
 コメントに入れている。ヒラギノで作った版もあったが、Apple のシステムフォントには
 輪郭を同梱する権利がないため使えない。
 
-依存全体のライセンス表示は別途必要（下記「経緯と失敗事例」）。
+依存全体のライセンス表示は別途必要（下記「経緯と失敗事例」）。**自前配布している
+Web フォント本体（Geist Variable / Noto Sans JP Variable）のライセンス表示は
+`public/font-licenses.txt` に置いてある** --- ここと同じ「配布物にそのまま残す」
+方式だが、CSS のバナーコメント（`/*! ... */`）は Tailwind のビルドで丸ごと
+落ちることを実測で確認した（[stack.md](stack.md)「フォントは英数字と和文で
+2 書体を使い分ける」）ので、`public/` 配下の生ファイルにしてビルドを経由させない
+形にしている。依存全体（npm パッケージ・Go モジュール）のライセンス表示は
+これでも埋まらず、issue #22 のまま残っている。
 
 ラスタ版（`favicon.ico` / `apple-touch-icon.png`）は npm 依存にない外部ツール
 （rsvg-convert / ImageMagick）で作るため自動化していない。
@@ -68,3 +75,12 @@ S3 経路の両方に自動で乗る。
 ## 経緯と失敗事例
 
 - 依存全体のライセンス表示は [issue #22](https://github.com/fetburner/rokuban/issues/22) の論点 5 として残っている
+- **同じ Noto Sans JP の著作権表示が 2 箇所で異なる文言になっている。**
+  `favicon.svg` のコメントは「Copyright 2014-2021 Adobe」、`public/font-licenses.txt`
+  は npm パッケージ（`@fontsource-variable/noto-sans-jp`）の `LICENSE` 冒頭に
+  忠実な「Copyright Google Inc.」。どちらも SIL OFL 1.1 で、取得元（ラスタライズに
+  使ったフォントファイルの版 / fontsource が配布時点で採ったパッケージの版）が
+  違うために著作権表示の文言が違う可能性が高いが、**どちらが正しいかは未検証**。
+  それぞれ自分が実際に取得した配布物の表示に忠実であることだけは確認済み
+  （favicon はラスタライズ元のフォントファイル埋め込み情報、txt は
+  `node_modules/@fontsource-variable/noto-sans-jp/LICENSE` の文字列そのもの）
