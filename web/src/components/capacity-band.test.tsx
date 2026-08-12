@@ -178,3 +178,28 @@ describe('CapacityBands', () => {
     expect(screen.queryByText(/チューナー/)).not.toBeInTheDocument()
   })
 })
+
+/**
+ * 帯の色。jsdom は色を計算しないのでクラス名を見る（実画素とコントラストの判定は
+ * web/e2e/design.mjs。docs/frontend/design.md）。
+ */
+describe('CapacityBands の色', () => {
+  it('警告の信号色（琥珀）を使い、Tailwind 標準パレットを直接使わない', () => {
+    renderGrid([overage(20 * 60, 21 * 60)], [])
+
+    const el = band(20 * 60)
+    expect(el).not.toBeNull()
+    // 塗りは淡く、境界は罫線が伝える（番組セルのタイトルを潰さないため）
+    expect(el).toHaveClass('bg-warning/10')
+    expect(el).toHaveClass('border-warning/80')
+    expect(el!.className).not.toMatch(/amber|yellow|orange/)
+  })
+
+  it('ラベルも同じ琥珀トークンを使う（帯のためだけの色を作らない）', () => {
+    renderGrid([overage(20 * 60, 21 * 60)], [])
+
+    const label = screen.getByText('チューナー不足（BS が 1 本）')
+    expect(label).toHaveClass('text-warning')
+    expect(label.className).not.toMatch(/amber|yellow|orange/)
+  })
+})

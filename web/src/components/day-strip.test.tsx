@@ -61,3 +61,38 @@ describe('DayStrip', () => {
     expect(hidden).not.toBeNull()
   })
 })
+
+/**
+ * 週末の表し方。jsdom は色を計算しないのでクラス名を見る
+ * （実画素での判定は web/e2e/design.mjs。docs/frontend/design.md）。
+ */
+describe('DayStrip の週末', () => {
+  /** 2026-08-01(土) 起点なので index 0 = 土、1 = 日、2 = 月。 */
+  function cells() {
+    return screen.getAllByRole('button')
+  }
+
+  it('週末は色ではなく濃さで立てる（赤・青のカレンダー色を使わない）', () => {
+    render(<DayStrip current={5} days={8} onSelect={vi.fn()} now={now} />)
+
+    const [saturday, sunday, monday] = cells()
+    expect(saturday).toHaveClass('text-foreground')
+    expect(sunday).toHaveClass('text-foreground')
+    expect(monday).toHaveClass('text-muted-foreground')
+    // 赤はタリー（いま電波に乗っている）専用。曜日には出さない
+    for (const cell of cells()) {
+      expect(cell.className).not.toMatch(/red|blue|tally/)
+      expect(cell.querySelector('span span')?.className ?? '').not.toMatch(/red|blue|tally/)
+    }
+  })
+
+  it('ハイライト中のセルは週末でも反転側の配色になる', () => {
+    // current=0 は 8/1(土)。週末の濃さより「いま見ている日」の主張が優先する
+    render(<DayStrip current={0} days={8} onSelect={vi.fn()} now={now} />)
+
+    const [saturday] = cells()
+    expect(saturday).toHaveClass('bg-primary')
+    expect(saturday).toHaveClass('text-primary-foreground')
+    expect(saturday).not.toHaveClass('text-foreground')
+  })
+})

@@ -25,6 +25,9 @@
     --color-input: var(--input);
     --color-border: var(--border);
     --color-destructive: var(--destructive);
+    --color-warning: var(--warning);
+    --color-tally-foreground: var(--tally-foreground);
+    --color-tally: var(--tally);
     --color-accent-foreground: var(--accent-foreground);
     --color-accent: var(--accent);
     --color-muted-foreground: var(--muted-foreground);
@@ -48,73 +51,125 @@
     --radius-4xl: calc(var(--radius) * 2.6);
 }
 
+/*
+ * 地の階調（無彩 3 値 + 補間段）。**ここが唯一の色の定義場所**で、
+ * コンポーネントは意味を持つトークン（--background / --muted / --tally 等）だけを使う
+ * （docs/frontend/design.md「色は信号のみ」「トークン外の生の色値を書かない」）。
+ *
+ * 3 値はファビコンの LIT / GAP / INK と同一の値にする
+ * （scripts/gen-favicon.mjs の定数。docs/frontend/branding.md
+ * 「走査線は 3 値で描く」）。16px のマークで成立している階調構成を、
+ * そのままアプリの地に使う ---「輝線 = 紙白 / 間隙 = 走査線グレー / 字 = 墨」。
+ * 一致は tests/design-tokens.test.ts が両方のファイルを読んで検査する。
+ *
+ * 3 値は Tailwind の zinc の 50 / 500 / 900 に一致するので、間の段（--tone-*）も
+ * 同じ zinc の ramp から採る。zinc はわずかに寒色（hue ≈ 286、chroma ≤ 0.016）で、
+ * これが「地は無彩、色は信号」を成立させる: 地が寒色側に寄っているぶん、
+ * 暖色の信号（タリーレッド・琥珀）だけが色として立ち上がる。
+ */
 :root {
-    --background: oklch(1 0 0);
-    --foreground: oklch(0.145 0 0);
-    --card: oklch(1 0 0);
-    --card-foreground: oklch(0.145 0 0);
-    --popover: oklch(1 0 0);
-    --popover-foreground: oklch(0.145 0 0);
-    --primary: oklch(0.205 0 0);
-    --primary-foreground: oklch(0.985 0 0);
-    --secondary: oklch(0.97 0 0);
-    --secondary-foreground: oklch(0.205 0 0);
-    --muted: oklch(0.97 0 0);
-    --muted-foreground: oklch(0.556 0 0);
-    --accent: oklch(0.97 0 0);
-    --accent-foreground: oklch(0.205 0 0);
-    --destructive: oklch(0.577 0.245 27.325);
-    --border: oklch(0.922 0 0);
-    --input: oklch(0.922 0 0);
-    --ring: oklch(0.708 0 0);
-    --chart-1: oklch(0.87 0 0);
-    --chart-2: oklch(0.556 0 0);
-    --chart-3: oklch(0.439 0 0);
-    --chart-4: oklch(0.371 0 0);
-    --chart-5: oklch(0.269 0 0);
-    --radius: 0.625rem;
-    --sidebar: oklch(0.985 0 0);
-    --sidebar-foreground: oklch(0.145 0 0);
-    --sidebar-primary: oklch(0.205 0 0);
-    --sidebar-primary-foreground: oklch(0.985 0 0);
-    --sidebar-accent: oklch(0.97 0 0);
-    --sidebar-accent-foreground: oklch(0.205 0 0);
-    --sidebar-border: oklch(0.922 0 0);
-    --sidebar-ring: oklch(0.708 0 0);
+    --paper: oklch(0.985 0 0); /* 輝線 = 紙白 #fafafa */
+    --scanline: oklch(0.552 0.016 285.938); /* 間隙 = 走査線グレー #71717a */
+    --sumi: oklch(0.21 0.006 285.885); /* 字 = 墨 #18181b */
+    --tone-100: oklch(0.967 0.001 286.375);
+    --tone-200: oklch(0.92 0.004 286.32);
+    --tone-400: oklch(0.705 0.015 286.067);
+    --tone-800: oklch(0.274 0.006 286.033);
+    --tone-950: oklch(0.141 0.005 285.823); /* 消灯した画面 */
 }
 
+/*
+ * ライト = ファビコンそのもの（白地に黒）。
+ *
+ * 浮いた面（--card / --popover）だけは 3 値の外に出て純白を使う ---
+ * ポップオーバー（recording-filters / channel-picker）はオーバーレイを持たないので、
+ * 地と同色だと輪郭が罫線と影しか無くなる。
+ */
+:root {
+    --background: var(--paper);
+    --foreground: var(--sumi);
+    --card: oklch(1 0 0);
+    --card-foreground: var(--sumi);
+    --popover: oklch(1 0 0);
+    --popover-foreground: var(--sumi);
+    --primary: var(--sumi);
+    --primary-foreground: var(--paper);
+    --secondary: var(--tone-100);
+    --secondary-foreground: var(--sumi);
+    --muted: var(--tone-100);
+    --muted-foreground: var(--scanline);
+    --accent: var(--tone-100);
+    --accent-foreground: var(--sumi);
+    --destructive: oklch(0.577 0.245 27.325);
+    --tally: oklch(0.56 0.215 27);
+    --tally-foreground: var(--paper);
+    /* 琥珀は「文字 + 淡い地（bg-warning/10）」で使うので、地ではなくその淡い地の上で
+       AA を満たす明度にする。Tailwind の amber-700 相当（0.555）だと自分の 10% の
+       上で 4.22 しかない（e2e/design.mjs のコントラスト判定が落ちる） */
+    --warning: oklch(0.52 0.15 46);
+    --border: var(--tone-200);
+    --input: var(--tone-200);
+    --ring: var(--tone-400);
+    --chart-1: var(--tone-200);
+    --chart-2: var(--tone-400);
+    --chart-3: var(--scanline);
+    --chart-4: var(--tone-800);
+    --chart-5: var(--sumi);
+    /* 計器のパネルとスイッチは角が立っている。shadcn 既定の 0.625rem（10px）は
+       SaaS のカードの丸みで、1 行 56px の密な一覧に対しては過剰に柔らかい。
+       --radius-* の派生段（0.6〜2.6 倍）もこの値に追従する */
+    --radius: 0.25rem;
+    --sidebar: var(--paper);
+    --sidebar-foreground: var(--sumi);
+    --sidebar-primary: var(--sumi);
+    --sidebar-primary-foreground: var(--paper);
+    --sidebar-accent: var(--tone-100);
+    --sidebar-accent-foreground: var(--sumi);
+    --sidebar-border: var(--tone-200);
+    --sidebar-ring: var(--tone-400);
+}
+
+/*
+ * ダーク = 消灯した画面に輝線が乗る側。ライトの反転ではなく、
+ * 同じ 3 値の役割を入れ替えたもの（地 = 消灯、字 = 紙白、浮いた面 = 墨）。
+ */
 .dark {
-    --background: oklch(0.145 0 0);
-    --foreground: oklch(0.985 0 0);
-    --card: oklch(0.205 0 0);
-    --card-foreground: oklch(0.985 0 0);
-    --popover: oklch(0.205 0 0);
-    --popover-foreground: oklch(0.985 0 0);
-    --primary: oklch(0.922 0 0);
-    --primary-foreground: oklch(0.205 0 0);
-    --secondary: oklch(0.269 0 0);
-    --secondary-foreground: oklch(0.985 0 0);
-    --muted: oklch(0.269 0 0);
-    --muted-foreground: oklch(0.708 0 0);
-    --accent: oklch(0.269 0 0);
-    --accent-foreground: oklch(0.985 0 0);
+    --background: var(--tone-950);
+    --foreground: var(--paper);
+    --card: var(--sumi);
+    --card-foreground: var(--paper);
+    --popover: var(--sumi);
+    --popover-foreground: var(--paper);
+    --primary: var(--tone-200);
+    --primary-foreground: var(--sumi);
+    --secondary: var(--tone-800);
+    --secondary-foreground: var(--paper);
+    --muted: var(--tone-800);
+    --muted-foreground: var(--tone-400);
+    --accent: var(--tone-800);
+    --accent-foreground: var(--paper);
     --destructive: oklch(0.704 0.191 22.216);
+    --tally: oklch(0.58 0.215 27);
+    --tally-foreground: var(--paper);
+    --warning: oklch(0.769 0.188 70.08);
     --border: oklch(1 0 0 / 10%);
     --input: oklch(1 0 0 / 15%);
-    --ring: oklch(0.556 0 0);
-    --chart-1: oklch(0.87 0 0);
-    --chart-2: oklch(0.556 0 0);
-    --chart-3: oklch(0.439 0 0);
-    --chart-4: oklch(0.371 0 0);
-    --chart-5: oklch(0.269 0 0);
-    --sidebar: oklch(0.205 0 0);
-    --sidebar-foreground: oklch(0.985 0 0);
-    --sidebar-primary: oklch(0.488 0.243 264.376);
-    --sidebar-primary-foreground: oklch(0.985 0 0);
-    --sidebar-accent: oklch(0.269 0 0);
-    --sidebar-accent-foreground: oklch(0.985 0 0);
+    --ring: var(--scanline);
+    --chart-1: var(--tone-200);
+    --chart-2: var(--tone-400);
+    --chart-3: var(--scanline);
+    --chart-4: var(--tone-800);
+    --chart-5: var(--sumi);
+    --sidebar: var(--tone-950);
+    --sidebar-foreground: var(--paper);
+    /* shadcn 既定はここだけ青（oklch(0.488 0.243 264.376)）だった。
+       地に恒常的な色を置かない規律に合わせて無彩に戻す */
+    --sidebar-primary: var(--tone-200);
+    --sidebar-primary-foreground: var(--sumi);
+    --sidebar-accent: var(--tone-800);
+    --sidebar-accent-foreground: var(--paper);
     --sidebar-border: oklch(1 0 0 / 10%);
-    --sidebar-ring: oklch(0.556 0 0);
+    --sidebar-ring: var(--scanline);
 }
 
 @layer base {

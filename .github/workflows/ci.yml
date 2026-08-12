@@ -68,6 +68,10 @@ jobs:
         working-directory: web
       - run: pnpm lint
         working-directory: web
+      # トークン外の生の色値の検出（docs/frontend/design.md）。実ブラウザは
+      # 要らないのでここで回す。色そのものの合否は `pnpm e2e:design`（ローカル）
+      - run: pnpm check:colors
+        working-directory: web
       - uses: golangci/golangci-lint-action@v7
         with:
           version: v2.12.2

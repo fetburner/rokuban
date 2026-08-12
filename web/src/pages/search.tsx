@@ -403,7 +403,7 @@ function CreateRuleForm({
       }}
     >
       {hasPeriod && (
-        <p className="text-xs text-amber-700 dark:text-amber-500">
+        <p className="text-xs text-warning">
           期間を指定したまま作成すると、ルールの恒久的な期間制限になります。「いまだけ絞り込みたい」
           場合は、上の条件フォームで期間を空にしてから作成してください。
         </p>
@@ -617,7 +617,7 @@ function RuleEditForm({
       }}
     >
       {hasPeriod && (
-        <p className="text-xs text-amber-700 dark:text-amber-500">
+        <p className="text-xs text-warning">
           期間を指定したまま保存すると、ルールの恒久的な期間制限になります。「いまだけ絞り込みたい」
           場合は、上の条件フォームで期間を空にしてから保存してください。
         </p>

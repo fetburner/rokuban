@@ -40,7 +40,7 @@ export function ProgramOverlapWarning({
   if (!overlaps || overlaps.count === 0) return null
 
   return (
-    <p className="flex items-start gap-1 text-xs text-amber-700 dark:text-amber-500">
+    <p className="flex items-start gap-1 text-xs text-warning">
       <TriangleAlert className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
       <span>
         同じ時間帯に{overlaps.count}件の予約があります（

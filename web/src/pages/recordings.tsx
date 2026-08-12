@@ -347,13 +347,22 @@ function RecordingRow({ recording, trash }: { recording: Recording; trash: boole
   )
 }
 
+/**
+ * StatusBadge は録画の状態。**録画中だけがタリーレッドの塗り**になる
+ * （docs/frontend/design.md「色は信号のみ」）。
+ *
+ * 赤は 2 つの意味に使うが、色相ではなく**形で分ける**: タリーは「点灯」なので
+ * 塗り（`bg-tally` + 紙白の文字）、destructive は「取り返しがつかない」なので
+ * 文字と淡い地（`text-destructive` + `bg-destructive/10`）。同じ赤でも、
+ * 塗られているかどうかで「いま電波に乗っている」と「壊れた」を見分けられる。
+ */
 function StatusBadge({ status }: { status: Recording['status'] }) {
   return (
     <span
       className={cn(
         'shrink-0 rounded px-1.5 py-0.5 text-[0.65rem]',
         status === 'failed' && 'bg-destructive/10 text-destructive',
-        status === 'recording' && 'bg-primary/10 text-primary',
+        status === 'recording' && 'bg-tally font-medium text-tally-foreground',
         status === 'finished' && 'bg-muted text-muted-foreground',
       )}
     >
