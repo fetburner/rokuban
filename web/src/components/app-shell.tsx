@@ -1,9 +1,19 @@
 import { Link, useRouterState } from '@tanstack/react-router'
-import { CalendarClock, ListVideo, Menu, Radio, Search, Settings2, Tv } from 'lucide-react'
+import {
+  CalendarClock,
+  ListVideo,
+  Menu,
+  MoreHorizontal,
+  Radio,
+  Search,
+  Settings2,
+  Tv,
+} from 'lucide-react'
 import type { ComponentType } from 'react'
 import { useEffect, useState } from 'react'
 
 import { CircuitBreakerBanner } from '@/components/circuit-breaker-banner'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { cn } from '@/lib/utils'
 
 /**
@@ -40,15 +50,36 @@ type NavItem = {
 /**
  * 主ナビゲーションの行き先。モバイルのボトムタブとデスクトップのサイドバーで
  * 同じ定義を使う（ルート定義は 1 つで、レイアウトだけが切り替わる）。
+ *
+ * 並びは実装順ではなく**触る頻度**で決める（docs/frontend/design.md §頻度 3 段）。
+ * 単一世帯の運用を前提にした仮説であり、実測ではない:
+ *
+ * - 一等地: 番組（毎回の起点）・録画（視聴のたび）
+ * - 中間: 予約（差分・重複の確認は毎日ではないが週次では触る）・
+ *   ライブ（視聴のたびではないが番組ほど反復しない）
+ * - 端: 検索（意図して探すときだけ）・ルール（set-and-forget、月数回以下）
  */
 const navItems: NavItem[] = [
   { to: '/', label: '番組', icon: Tv },
+  { to: '/recordings', label: '録画', icon: ListVideo },
+  { to: '/reservations', label: '予約', icon: CalendarClock },
+  { to: '/live', label: 'ライブ', icon: Radio },
   { to: '/search', label: '検索', icon: Search },
   { to: '/rules', label: 'ルール', icon: Settings2 },
-  { to: '/reservations', label: '予約', icon: CalendarClock },
-  { to: '/recordings', label: '録画', icon: ListVideo },
-  { to: '/live', label: 'ライブ', icon: Radio },
 ]
+
+/**
+ * モバイルのボトムタブに常時出す項目数。残りは `MoreMenu`（「その他」）に畳む。
+ *
+ * 一等地の 2 個（番組・録画）に加えて予約も常時タブに出す。理由: 予約は
+ * 「今夜これで録れているか」を録画そのものと同じくらいの頻度で確認する
+ * 対象という仮説を置いた（ライブは番組ほど毎回開かないと見て「その他」側）。
+ * この仮説も上と同じく実測ではない。
+ */
+const MOBILE_PRIMARY_COUNT = 3
+const mobilePrimaryItems = navItems.slice(0, MOBILE_PRIMARY_COUNT)
+/** モバイルで「その他」に畳む項目（ライブ・検索・ルール）。 */
+const moreNavItems = navItems.slice(MOBILE_PRIMARY_COUNT)
 
 function useActivePath(): string {
   return useRouterState({ select: (s) => s.location.pathname })
@@ -59,11 +90,82 @@ function isActive(pathname: string, to: string): boolean {
 }
 
 /**
+ * MoreMenu はボトムタブの「その他」。頻度が低い項目（`moreNavItems`）を
+ * ポップオーバーに畳んで、ボトムタブの本数を親指の届く 4 個に抑える。
+ *
+ * シートではなくポップオーバーを選んだ理由: 中身がリンク 3 個だけの単純な
+ * リストで、フォーム操作や長いコンテンツを持たない。全画面/半画面を覆う
+ * シート（`components/ui/drawer.tsx` 相当）はここでは過剰で、トリガーの
+ * 直上に浮かせるポップオーバーの方が「タブの延長」に見える。
+ *
+ * トリガー自身のアクティブ表示は、配下の項目（ライブ・検索・ルール）の
+ * いずれかが現在地のときに立てる。個々のリンクは自身のページに居るときだけ
+ * `aria-current="page"` を持つのに対し、トリガーはページそのものではなく
+ * 「その他」という集合の現在地を表すので `aria-current="true"` を使う
+ * （両方 `undefined` にならないよう、両方向をテストで固定する）。
+ */
+function MoreMenu({ pathname }: { pathname: string }) {
+  const [open, setOpen] = useState(false)
+  const active = moreNavItems.some((item) => isActive(pathname, item.to))
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger
+        aria-current={active ? 'true' : undefined}
+        // min-h-14 で最小タップ領域（44px 以上）を確保する。他タブと高さを揃える
+        className={cn(
+          'flex min-h-14 w-full flex-col items-center justify-center gap-0.5 text-xs transition-colors',
+          active ? 'text-primary' : 'text-muted-foreground',
+        )}
+      >
+        <MoreHorizontal className="size-5" />
+        その他
+      </PopoverTrigger>
+      <PopoverContent
+        side="top"
+        align="end"
+        sideOffset={8}
+        aria-label="その他のナビゲーション"
+        className="w-44 p-1"
+      >
+        <ul className="flex flex-col gap-0.5">
+          {moreNavItems.map(({ to, label, icon: Icon }) => {
+            const itemActive = isActive(pathname, to)
+            return (
+              <li key={to}>
+                <Link
+                  to={to}
+                  aria-current={itemActive ? 'page' : undefined}
+                  onClick={() => setOpen(false)}
+                  className={cn(
+                    'flex items-center gap-2 rounded-md px-3 py-2.5 text-sm transition-colors',
+                    itemActive
+                      ? 'bg-muted font-medium text-foreground'
+                      : 'text-foreground hover:bg-muted/60',
+                  )}
+                >
+                  <Icon className="size-4 shrink-0" />
+                  {label}
+                </Link>
+              </li>
+            )
+          })}
+        </ul>
+      </PopoverContent>
+    </Popover>
+  )
+}
+
+/**
  * BottomTabs はモバイル向けの主ナビゲーション。
  *
  * 下端にぴったり付けず `env(safe-area-inset-bottom)` + 最低 8px の余白を空ける。
  * iOS のホームインジケータと重なるのを防ぎ、Android のジェスチャーナビの
  * 「下端から上スワイプでホーム」領域からも離す。
+ *
+ * 常時表示するのは `mobilePrimaryItems`（頻度の一等地〜中間の一部）+
+ * 「その他」の 4 個まで。6 個の等幅タブは 1 個あたりの幅が親指の誤タップを
+ * 誘発するほど狭くなる（実機確認は e2e/README.md）。
  */
 function BottomTabs() {
   const pathname = useActivePath()
@@ -74,7 +176,7 @@ function BottomTabs() {
       className="fixed inset-x-0 bottom-0 z-20 border-t border-border bg-background/95 pb-[var(--bottom-nav-inset)] backdrop-blur md:hidden"
     >
       <ul className="flex">
-        {navItems.map(({ to, label, icon: Icon }) => {
+        {mobilePrimaryItems.map(({ to, label, icon: Icon }) => {
           const active = isActive(pathname, to)
           return (
             <li key={to} className="flex-1">
@@ -93,6 +195,9 @@ function BottomTabs() {
             </li>
           )
         })}
+        <li className="flex-1">
+          <MoreMenu pathname={pathname} />
+        </li>
       </ul>
     </nav>
   )
