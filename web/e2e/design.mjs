@@ -660,11 +660,12 @@ for (const theme of themes) {
 // （`app-shell.test.tsx` が固定しているのは DOM の有無と順序だけ）。
 //
 // タブの本数は ARIA の `listitem` ロールではなく `<li>` を直接数える。
-// Tailwind の preflight は `ul` に `list-style: none` を当てており、
-// Chromium はそれを見て `listitem` の暗黙ロールを外すことがある
-// （jsdom 実装の @testing-library/dom はこの CSS 依存の抑制をしないので、
-// 同じクエリでも実ブラウザと jsdom で結果が割れうる。ここは実ブラウザの
-// 判定なので、CSS に左右されない構造的な数え方を使う）。
+// 実測（このスクリプトが駆動する Chromium）: `nav.getByRole('listitem').count()`
+// も CDP の AX ツリー（`Accessibility.getFullAXTree`）も listitem を 4 件返し、
+// `list-style-type` を `disc` に戻しても変わらない --- CSS 依存の暗黙ロール抑制は
+// 観測されていない。それでも `<li>` を直接数えるのは、ロールの計算をブラウザの
+// アクセシビリティ実装に依存させたくないという保険であり、「抑制が起きるから」
+// ではない（起きるかどうかは未検証。理由にしない）。
 const mobile = viewports[1]
 log('\n=== ③ 「その他」ポップオーバーの判定 ===')
 for (const theme of themes) {
