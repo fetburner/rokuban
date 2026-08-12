@@ -52,16 +52,44 @@ function parseServiceIds(raw: unknown): number[] | undefined {
 }
 
 /**
+ * ECMAScript の time value の定義域（[Time Values and Time Range]
+ * https://tc39.es/ecma262/#sec-time-values-and-time-range）。±100,000,000 日
+ * （ミリ秒換算で ±8,640,000,000,000,000）を超える値は `Date` が扱えず、
+ * `new Date(ms)` は Invalid Date（`getTime()` が `NaN`）になる。
+ *
+ * これは「判定基準が無いから決めない」（不変条件 11）には当たらない ---
+ * 基準は言語仕様に既にある。`at` を落とす／落とさないの選択の余地ではなく、
+ * この範囲外は `Date` に載せられないという事実。
+ */
+const MAX_DATE_TIME_VALUE_MS = 8_640_000_000_000_000
+
+/**
  * parseAt は URL の値を検証済みの `at`（epoch ms）にする。
  *
- * 数値に変換できない・有限でない値は落とす（`serviceId` と違い、`at` は
- * 0 以下や過去の時刻も落とさない --- 番組表側の消費者（`dayOffsetForMs` /
- * `ProgramGrid` の `scrollToMs`）が範囲外の値を自分でクランプ・無視できる
- * ため、ここで正の値・未来の値に絞る判断基準を持たない）。
+ * 数値に変換できない・有限でない値は落とす。`serviceId` と違い、`at` は
+ * 0 以下や過去の時刻は落とさない（番組表側の消費者が「今日より前」を
+ * 「今日」にクランプするなど、範囲内の値は自分で扱える）が、
+ * **`Date` の time value の定義域外は落とす**。
+ *
+ * 定義域外を通すと `new Date(at)` が Invalid Date になり、その後 `dayOrigin` /
+ * `dayOffsetForMs`（`lib/day-offset.ts`）が `.setHours()` で `NaN` を作り、
+ * `Math.min`/`Math.max` が `NaN` を伝播させて `dayOffset` state に `NaN` が
+ * 入る。そこから `dayOrigin(NaN)` → `originMs = NaN` → API 呼び出しの
+ * `new Date(NaN).toISOString()` が `RangeError: Invalid time value` を投げ、
+ * 番組表ページ全体がエラー境界に落ちる（実測: `/?at=1e30` 等。ここで
+ * 定義域を検証しないと「壊れたリンクを踏んでも画面は開く」という
+ * `parseProgramsSearch` 全体の契約が破れる）。
  */
 function parseAt(raw: unknown): number | undefined {
+  // 空文字は `Number('') === 0` で「0 時ちょうど」という具体的な値に化ける
+  // （`Number(undefined)` は NaN になるので他の欠落値と同じ経路には乗らない）。
+  // `?at=` のような壊れたリンクを「0 時にジャンプ」と読むのは
+  // omit-on-invalid の意図（欠落は「無し」であるべき）に反するので、先に弾く。
+  if (typeof raw === 'string' && raw.trim() === '') return undefined
   const n = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : NaN
-  return Number.isFinite(n) && Number.isInteger(n) ? n : undefined
+  if (!Number.isFinite(n) || !Number.isInteger(n)) return undefined
+  if (Math.abs(n) > MAX_DATE_TIME_VALUE_MS) return undefined
+  return n
 }
 
 /**

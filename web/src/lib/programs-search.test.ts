@@ -76,6 +76,57 @@ describe('parseProgramsSearch', () => {
     expect(parseProgramsSearch({ at: 1.5 })).toEqual({ serviceId: undefined, at: undefined })
     expect(parseProgramsSearch({ at: [1, 2] })).toEqual({ serviceId: undefined, at: undefined })
   })
+
+  // nit 3（レビュー）: 空文字は Number('') === 0 で「0 時ちょうど」という
+  // 具体的な値に化ける。`?at=` という壊れたリンクを「0 時にジャンプ」ではなく
+  // 「欠落（絞り込みなし）」と読む。
+  it('at の空文字は 0 に変換せず undefined に落とす', () => {
+    expect(parseProgramsSearch({ at: '' })).toEqual({ serviceId: undefined, at: undefined })
+    expect(parseProgramsSearch({ at: '   ' })).toEqual({ serviceId: undefined, at: undefined })
+  })
+
+  // レビューの must-fix 1: `Date` の time value の定義域（±8,640,000,000,000,000ms）
+  // を超える at は落とす。落とさないと `new Date(at)` が Invalid Date になり、
+  // 後続の `dayOffsetForMs` → `dayOrigin` → `.toISOString()` が
+  // `RangeError: Invalid time value` を投げて番組表ページ全体がエラー境界に
+  // 落ちる（実測: 実ブラウザ・jsdom の両方で `/?at=1e30` 等が
+  // "Something went wrong!" になった）。
+  it('Date の time value の定義域を超える at は undefined に落とす（実測で RangeError の原因だった値）', () => {
+    expect(parseProgramsSearch({ at: 9_000_000_000_000_000 })).toEqual({
+      serviceId: undefined,
+      at: undefined,
+    })
+    expect(parseProgramsSearch({ at: '9000000000000000' })).toEqual({
+      serviceId: undefined,
+      at: undefined,
+    })
+    expect(parseProgramsSearch({ at: 1e30 })).toEqual({ serviceId: undefined, at: undefined })
+    expect(parseProgramsSearch({ at: '99999999999999999999' })).toEqual({
+      serviceId: undefined,
+      at: undefined,
+    })
+    // 負の側の定義域外も同じく落とす
+    expect(parseProgramsSearch({ at: -9_000_000_000_000_000 })).toEqual({
+      serviceId: undefined,
+      at: undefined,
+    })
+  })
+
+  it('Date の time value の定義域の境界そのもの（±8,640,000,000,000,000）は受け入れる', () => {
+    expect(parseProgramsSearch({ at: 8_640_000_000_000_000 })).toEqual({
+      serviceId: undefined,
+      at: 8_640_000_000_000_000,
+    })
+    expect(parseProgramsSearch({ at: -8_640_000_000_000_000 })).toEqual({
+      serviceId: undefined,
+      at: -8_640_000_000_000_000,
+    })
+    // 境界の 1ms 外は落ちる
+    expect(parseProgramsSearch({ at: 8_640_000_000_000_001 })).toEqual({
+      serviceId: undefined,
+      at: undefined,
+    })
+  })
 })
 
 describe('serviceIdsToSet / serviceIdsFromSet', () => {

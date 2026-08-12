@@ -1169,10 +1169,63 @@ describe('ProgramsPage の at パラメータ（容量バッジからの導線�
     expect(screen.queryByTestId('program-grid')).not.toBeInTheDocument()
 
     // 画面幅が狭くなって（他の画面遷移や resize で）また広くなっても、
-    // 同じ at のままではグリッドへ戻されない（`forcedGridForAtRef` の役目）
+    // 同じ at のままではグリッドへ戻されない（`forcedGridForAtRef` の役目。
+    // at 自体は URL に残ったままだが、「1 回切り替えたら終わり」を覚えるのは
+    // この ref であって at の有無ではない）
     media.set(false)
     media.set(true)
     expect(screen.queryByTestId('program-grid')).not.toBeInTheDocument()
+  })
+
+  // レビュー nit 4: 素朴に「at を 1 回使ったら URL から navigate で消す」実装を
+  // 試したところ、`navigate` の非同期解決がグリッドの初回スクロール確定より
+  // 先に終わってしまい、肝心のスクロールが「今」にしか効かなくなる退行を
+  // e2e（`web/e2e/badge-links.mjs` の②）で検出した。代わりに `scrollToMs` を
+  // `dayOffset === atDayOffset` で条件付ける方式にしたので、at は URL に残る
+  // （消費・削除しない）。ここで確認できるのは「別の日を選べば実際にその日へ
+  // 切り替わる」こと（= at が現在地を固定してしまわないこと）まで --- 「今日へ
+  // 戻したときに now へスクロールし直す」というスクロール位置そのものの主張は
+  // jsdom では測れないため e2e の担当。
+  it('at がある状態でも別の日を選べば、その日の内容に切り替わる（at が現在地を固定しない）', async () => {
+    stubApi([], [], [...allPrograms, dayTwoProgram])
+    stubMatchMedia(true)
+    renderPage(`/?at=${targetMs}`)
+
+    await screen.findByTestId('program-grid')
+    expect(screen.getByText('容量バッジ導線の番組')).toBeInTheDocument()
+
+    // 「今日」（offset 0）を選び直す
+    const dayGroup = screen.getByRole('group', { name: '日付' })
+    await userEvent.click(within(dayGroup).getAllByRole('button')[0])
+
+    await waitFor(() =>
+      expect(within(dayGroup).getAllByRole('button')[0]).toHaveAttribute('aria-current', 'date'),
+    )
+    // day 2 専用の番組はもう見えない（軸が実際に today へ切り替わった証拠）
+    expect(screen.queryByText('容量バッジ導線の番組')).not.toBeInTheDocument()
+  })
+
+  // レビューの must-fix 1（実測: 実ブラウザ・jsdom の両方で `/?at=1e30` 等が
+  // "Something went wrong!" になった）の回帰テスト。`parseAt`
+  // （lib/programs-search.ts）が Date の time value の定義域外を落とすので、
+  // ここまで来る `at` は既に安全なはずだが、実際にページ全体を描いて
+  // エラー境界（TanStack Router の既定のエラーコンポーネント）に落ちて
+  // いないことまで確認する --- 単体関数のテストだけでは「呼び出し側で
+  // 本当に守られているか」までは分からない。
+  it('Date の time value の定義域を超える at を踏んでもエラー境界に落ちない（壊れたリンクでも画面は開く）', async () => {
+    stubApi()
+    stubMatchMedia(true)
+    renderPage('/?at=1e30')
+
+    // 通常表示（「今日」のまま）に落ちる。エラー境界の文言が出ていないこと
+    // まで見る（`document.body.textContent` に "Something went wrong" を
+    // 含めば実測どおりの回帰）
+    expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+    expect(document.body.textContent).not.toMatch(/Something went wrong/)
+
+    const dayGroup = screen.getByRole('group', { name: '日付' })
+    // at が落とされているので、日付ジャンプは起きず「今日」のまま
+    expect(within(dayGroup).getAllByRole('button')[0]).toHaveAttribute('aria-current', 'date')
   })
 })
 
