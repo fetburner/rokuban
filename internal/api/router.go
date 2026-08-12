@@ -42,7 +42,8 @@ type RouterConfig struct {
 	// Mounter が非 nil なら追加のルートを登録する。
 	// バイト配信（streamer）・SSE 配信（notifier）を api の外に置いたまま同一
 	// プロセスで相乗りさせるための口（不変条件 1）。api ロール単独では常に nil
-	// なので、/api/events は生えない（404 になる。M2-19）。
+	// なので、/api/events は生えない（404 になる。M2-19。SPA を配る構成でも
+	// HTML 200 に落とさないのは spa.go の spaOrAPINotFound。issue #209）。
 	//
 	// 複数のロールを同居させたい場合（monolith / --all）は Mounters で束ねる。
 	Mounter Mounter
@@ -54,6 +55,20 @@ type RouterConfig struct {
 	// ルール create/update と予約 overrides で encodeProfiles に未知名があれば 400 にする
 	// （issue #64）。空/nil なら名前検証をスキップする（テストの部分構成を許す）。
 	EncodeProfileNames []string
+
+	// LiveEnabled は config.live.enabled。GET /api/capabilities の live に出す
+	// （issue #209）。フロントはこれを見てライブへの導線（主ナビ・番組行のリンク）
+	// を出すかどうかを決める。
+	//
+	// **この値は「streamer がライブのルートを登録したか」ではなく config の状態**。
+	// api は不変条件 1 により streamer にも mirakc にも問い合わせないので、
+	// 同じ config ファイルを共有する（docs/configuration.md §スキーマ構造）ことを
+	// 根拠に config の値をそのまま公開面に出す。
+	//
+	// **ロールに関係なく常に渡す。** 生成ルートはロールで絞られない（api ロールを
+	// 持たないプロセスでも /api/capabilities は生える）ので、api ロールのときだけ
+	// 代入すると同じ config の別プロセスが違う答えを返す（cmd/rokuban/server.go）。
+	LiveEnabled bool
 }
 
 // Mounter はルーターへ追加のルートを登録する。
@@ -106,12 +121,13 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		}))
 	}
 
-	handler := NewServer(cfg.Pool, cfg.RiverClient, cfg.Sites, cfg.EncodeProfileNames)
+	handler := NewServer(cfg.Pool, cfg.RiverClient, cfg.Sites, cfg.EncodeProfileNames,
+		Capabilities{Live: cfg.LiveEnabled})
 	strict := NewStrictHandler(handler, nil)
 	HandlerFromMux(strict, r)
 
 	if cfg.DistFS != nil {
-		r.NotFound(NewSPAHandler(cfg.DistFS).ServeHTTP)
+		r.NotFound(spaOrAPINotFound(NewSPAHandler(cfg.DistFS)))
 	}
 
 	return r

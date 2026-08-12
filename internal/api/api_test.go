@@ -672,3 +672,111 @@ func TestAllowedHosts_LocalhostAlwaysAllowed(t *testing.T) {
 		})
 	}
 }
+
+// /api/ 配下の未マッチは SPA に落とさず 404 にする（issue #209）。
+//
+// 落とすと「無い」が「200 の HTML」になる。実害の出た経路が下の
+// TestSPA_LivePlaylistNotFoundWhenLiveDisabled で、こちらはその一般形。
+func TestSPA_APIPathsNotFallback(t *testing.T) {
+	router := NewRouter(RouterConfig{DistFS: newTestDistFS()})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/does-not-exist")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusNotFound)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+	var body ErrorResponse
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if body.Error == "" {
+		t.Error("error message is empty")
+	}
+}
+
+// issue #209 の再現そのもの。live.enabled が false のとき streamer はライブの
+// ルートを登録しないので、このパスは未マッチになる。SPA に落とすと
+// probeLivePlaylist（web/src/lib/live.ts）が HTML 200 を成功扱いし、
+// 「無効な機能」ではなく「壊れた再生」として見える。
+func TestSPA_LivePlaylistNotFoundWhenLiveDisabled(t *testing.T) {
+	router := NewRouter(RouterConfig{DistFS: newTestDistFS()})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/sites/default/services/5324853248/live/playlist.m3u8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusNotFound)
+	}
+	if ct := resp.Header.Get("Content-Type"); strings.Contains(ct, "text/html") {
+		t.Errorf("Content-Type = %q, want non-HTML (SPA フォールバックに落ちている)", ct)
+	}
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "<html>") {
+		t.Errorf("body = %q, want non-HTML", raw)
+	}
+}
+
+// クライアントルートは従来どおり index.html に落ちる（/api/ の 404 化で
+// SPA のディープリンクを壊していないこと。/live 直リンクを含む）。
+func TestSPA_ClientRoutesStillFallback(t *testing.T) {
+	router := NewRouter(RouterConfig{DistFS: newTestDistFS()})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	for _, path := range []string{"/live", "/recordings", "/apiary"} {
+		resp, err := http.Get(srv.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("GET %s: status = %d, want %d", path, resp.StatusCode, http.StatusOK)
+		}
+		if string(raw) != "<html>app</html>" {
+			t.Errorf("GET %s: body = %q, want index.html", path, raw)
+		}
+	}
+}
+
+// `/api`（末尾スラッシュ無し）も SPA に落とさない。落とすと末尾スラッシュの
+// 有無で「404」と「HTML 200」に分かれ、docs の「`/api/` 配下は 404」という
+// 記述の境界が 1 文字ぶんずれる（issue #209 のレビュー指摘）。
+func TestSPA_APIRootNotFallback(t *testing.T) {
+	router := NewRouter(RouterConfig{DistFS: newTestDistFS()})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusNotFound)
+	}
+	if ct := resp.Header.Get("Content-Type"); strings.Contains(ct, "text/html") {
+		t.Errorf("Content-Type = %q, want non-HTML", ct)
+	}
+}
