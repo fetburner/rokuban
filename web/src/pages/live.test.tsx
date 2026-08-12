@@ -189,6 +189,20 @@ describe('LivePage', () => {
     renderLive()
 
     expect(await screen.findByText('いま放送中の番組の情報はありません')).toBeInTheDocument()
+    // ON AIR は「いま電波に乗っている」を示すバッジ（走査線は 3 箇所限定の 1 つ。
+    // docs/frontend/design.md）。放送中の番組が無いときは出ない
+    expect(screen.queryByText('ON AIR')).not.toBeInTheDocument()
+  })
+
+  it('いま放送中の番組があるときだけ ON AIR バッジ（走査線）を出す', async () => {
+    stubFetch({
+      services: [service({ serviceId: 1, name: 'チャンネル A' })],
+      programsByServiceId: { 1: [program({ serviceId: 1, name: '放送中の番組' })] },
+    })
+    renderLive()
+
+    const badge = await screen.findByText('ON AIR')
+    expect(badge.className.split(' ')).toContain('tally-scanlines')
   })
 
   it('チャンネル一覧の別チャンネルを押すと選択が切り替わる', async () => {

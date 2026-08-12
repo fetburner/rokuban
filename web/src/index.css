@@ -223,3 +223,92 @@
     @apply font-sans tabular-nums;
     }
 }
+
+/*
+ * 走査線ユーティリティ。**使ってよいのは空状態・読み込み中・ON AIR の 3 箇所だけ**
+ * （docs/frontend/design.md「走査線は 3 箇所限定」）。全面に敷くとキッチュに転ぶ。
+ *
+ * 周期 2px（輝線 1px + 間隙 1px）はファビコンと同じ設計
+ * （docs/frontend/branding.md「走査線は 3 値で描く」）。
+ *
+ * **縞の 2 色は `--scan-gap` / `--scan-lit` というカスタムプロパティに出す。**
+ * `background-color`（= `--scan-gap`）は `getComputedStyle` で読めるが、
+ * `background-image` のグラデーションに直接書いた色は読めない --- 一度カスタム
+ * プロパティに出しておけば、`background-image` 側もそれを `var()` で参照する
+ * ので値が 1 箇所に収まり、かつ `e2e:design` がどちらの縞も個別に読める
+ * （読めないと「輝線を文字と同じ色にする」変異が判定をすり抜ける。
+ * `e2e/design.mjs` のコメント参照）。
+ *
+ * **`--scan-gap` は「暗い側」ではなく「文字に対してコントラストが低い側」を
+ * 選ぶ。** ライトは字（`--sumi`）が暗いので、明るい側（間隙）が不利になり
+ * `--scan-gap` は間隙 = `--tone-400`。ダークは字（`--paper`）が明るいので、
+ * **明るい側（輝線相当）が不利になり** `--scan-gap` はそちら（`--tone-800`）に
+ * 割り当ててある --- ライトとダークで `--scan-gap` が「間隙」と「輝線」を
+ * 交互に指す。`background-color` は 1 つしか持てないので、必ず不利な側を
+ * そこに置き、有利な側を `background-image` に回す。
+ *
+ * **`--scanline` トークンそのものは使えない。** ファビコンの
+ * 「輝線=紙白 / 間隙=走査線グレー / 字=墨」をそのまま持ち込むと、字（`--sumi`）と
+ * 間隙（`--scanline`）のコントラストが 4.5 を割る（本文の文字は 4.5 が下限。
+ * ファビコンは 16px の 1 文字で AA の対象ではないので、この差は流用の限界）。
+ * 同じ無彩のランプ（`--tone-*`）から、字とのコントラストが縞の**両方**で
+ * 十分に立つ段を選んである。「輝線・間隙・字が互いに異なる 3 値」という
+ * 構造だけを流用し、具体的な値は本文の AA 要件に合わせて選び直した。
+ * **実測値はここに書かない**（design.md「コントラストは毎回測る」。
+ * `pnpm e2e:design` が権威）。
+ *
+ * 使う側は文字色を必ず `text-foreground` にすること。`text-muted-foreground`
+ * （= `--scanline` 相当）は間隙の段と近く、2 値に近い衝突を起こす。
+ */
+.scanlines {
+  --scan-gap: var(--tone-400);
+  --scan-lit: var(--paper);
+  background-color: var(--scan-gap);
+  background-image: repeating-linear-gradient(
+    to bottom,
+    var(--scan-lit) 0px,
+    var(--scan-lit) 1px,
+    transparent 1px,
+    transparent 2px
+  );
+}
+.dark .scanlines {
+  --scan-gap: var(--tone-800);
+  --scan-lit: var(--background);
+  background-color: var(--scan-gap);
+  background-image: repeating-linear-gradient(
+    to bottom,
+    var(--scan-lit) 0px,
+    var(--scan-lit) 1px,
+    transparent 1px,
+    transparent 2px
+  );
+}
+
+/*
+ * ON AIR 表示専用の走査線（タリーレッドの塗り）。design.md「色は信号のみ」の
+ * 例外として ON AIR にだけタリーを使ってよい、という決定（同「走査線は 3 箇所
+ * 限定」）を反映する。間隙（= `--scan-gap`。文字に対してコントラストが低い側）
+ * は `--tally` そのもの --- 録画中バッジ（`bg-tally` + `text-tally-foreground`）
+ * と同じ組み合わせで、既にそこで AA を満たすことを確認済みの値を流用する。
+ *
+ * **輝線は `--tally` の色相・彩度を変えずに明度だけ落とす。** かつては
+ * `color-mix(in oklch, var(--tally) 60%, var(--sumi) 40%)` にしていたが、
+ * oklch の補間は色相を極座標で結ぶため、タリー（27°）から墨（286°）へは
+ * 短い弧を通ってしまい、結果がマゼンタに寄っていた（`design.md` 「色は
+ * 信号のみ」が固定した信号色のどれでもない、5 つ目の色相が生まれていた）。
+ * CSS Color 4 の相対カラー構文 `oklch(from ...)` で `l` だけを操作すれば
+ * 色相 `h` と彩度 `c` は`--tally` と完全に同じ値のまま動かない
+ */
+.tally-scanlines {
+  --scan-gap: var(--tally);
+  --scan-lit: oklch(from var(--tally) calc(l * 0.7) c h);
+  background-color: var(--scan-gap);
+  background-image: repeating-linear-gradient(
+    to bottom,
+    var(--scan-lit) 0px,
+    var(--scan-lit) 1px,
+    transparent 1px,
+    transparent 2px
+  );
+}

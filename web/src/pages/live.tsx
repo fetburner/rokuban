@@ -173,7 +173,10 @@ export function LivePage() {
               serviceId={selectedService.serviceId}
             />
             <div>
-              <p className="font-medium">{selectedService.name}</p>
+              <div className="flex items-center gap-2">
+                <p className="font-medium">{selectedService.name}</p>
+                {nowPlaying && <OnAirBadge />}
+              </div>
               {nowPlaying ? (
                 <p className="text-sm text-muted-foreground">
                   <span>
@@ -233,5 +236,22 @@ export function LivePage() {
         </div>
       )}
     </>
+  )
+}
+
+/**
+ * OnAirBadge は「いま電波に乗っている」ことを示すバッジ（M4-4 のライブ視聴専用）。
+ *
+ * **走査線は 3 箇所限定の使用箇所の 1 つ**（ON AIR。docs/frontend/design.md
+ * 「走査線は 3 箇所限定」）。タリーレッドの塗り（`tally-scanlines` /
+ * `text-tally-foreground`）は録画中バッジと同じ組み合わせをベースにしており、
+ * AA を満たすことを確認済み（`e2e/design.mjs`）。選択中チャンネルに `nowPlaying`
+ * （いま放送中の番組）があるときだけ呼び出し側が描画する。
+ */
+function OnAirBadge() {
+  return (
+    <span className="tally-scanlines shrink-0 rounded px-1.5 py-0.5 text-[0.65rem] font-medium text-tally-foreground">
+      ON AIR
+    </span>
   )
 }
