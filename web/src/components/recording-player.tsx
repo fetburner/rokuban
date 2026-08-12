@@ -122,14 +122,16 @@ export function RecordingPlayer({
         playsInline
         preload="metadata"
         src={src}
-        // tabIndex={-1}: プログラムからの focus() は常に効くようにするが、
-        // キーボードの Tab 順には追加しない（native controls 自体が
-        // 個々のボタンにフォーカスを持つため、コンテナである <video> を
-        // Tab 対象にする必要はない）。`<video controls>` は仕様上
-        // フォーカス可能な領域だが、明示的な tabindex を持たない場合の
-        // 扱いはブラウザ実装に委ねられている --- 再生ボタンからの
-        // フォーカス移動を確実にするため明示する。
-        tabIndex={-1}
+        // tabIndex は明示しない。実 Chromium で測ったところ `<video controls>` は
+        // tabindex 無しでもそれ自体が唯一の Tab stop になっており（native controls
+        // の個々のボタンは Tab stop ではない）、`tabIndex={-1}` を付けると逆に
+        // Tab 順から完全に外れてキーボード到達性を落とす退行になった（実測: 対照
+        // ページで `<button> <video controls> <video controls tabindex=-1> <button>`
+        // の Tab 順が `VIDEO(tabindex無し) -> 次のbutton`。展開後に Tab を押しても
+        // 一度も VIDEO に止まらないことを確認した）。`.focus()` はこの属性が無くても
+        // 実 Chromium では効く（同じく実測）。以前ここに書いていた
+        // 「個々のボタンにフォーカスを持つため tabindex は不要」という理屈は
+        // 測らずに書いた誤りだった（CLAUDE.md「測っていない挙動を断言しない」）。
         className="aspect-video w-full max-w-3xl rounded bg-black"
         onLoadedMetadata={(e) => {
           if (!restorePending.current) return

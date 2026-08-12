@@ -315,8 +315,17 @@ function RecordingRow({ recording, trash }: { recording: Recording; trash: boole
   const [expanded, setExpanded] = useState(false)
   const [thumbFailed, setThumbFailed] = useState(false)
   // プレイヤーへのフォーカス要求。値そのものに意味は無く、変化を検知する
-  // トークンとして使う（同じ true を渡し続けても再度スクロール/フォーカスしたい
+  // トークンとして使う（同じ値を渡し続けても再度スクロール/フォーカスしたい
   // ケース --- 展開済みの行でもう一度「再生」を押した場合 --- を拾うため）。
+  //
+  // **行を閉じるたびに 0 へ戻す。** `RecordingDetail`（延いては
+  // `RecordingPlayer`）は `expanded` の真偽で mount/unmount される。0 に
+  // 戻さず値を残したまま次に「行本体タップ」で開き直すと、Play を経由せず
+  // 開いただけなのに新しくマウントされた `RecordingPlayer` の初回 effect が
+  // 古いトークン（非 0）を見てフォーカス/スクロールを要求してしまう ---
+  // 「Play を押したときだけプレイヤーへ連れて行く」という決定が、行本体
+  // タップという別の経路でも起きる意図しない再発火になる。閉じた時点で
+  // 0 に戻せば、次に非 0 になるのは再び Play を押したときだけになる。
   const [focusPlayerToken, setFocusPlayerToken] = useState(0)
 
   const playable = !trash && (recording.encodedProfiles ?? []).length > 0
@@ -327,7 +336,13 @@ function RecordingRow({ recording, trash }: { recording: Recording; trash: boole
         <button
           type="button"
           aria-expanded={expanded}
-          onClick={() => setExpanded((v) => !v)}
+          onClick={() =>
+            setExpanded((v) => {
+              const next = !v
+              if (!next) setFocusPlayerToken(0)
+              return next
+            })
+          }
           className="flex min-h-14 min-w-0 flex-1 items-center gap-3 px-4 py-2.5 text-left hover:bg-muted/50"
         >
           {/*
