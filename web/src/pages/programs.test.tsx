@@ -1,13 +1,12 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { act, render, screen, waitFor, within } from '@testing-library/react'
+import type { QueryClient } from '@tanstack/react-query'
+import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { CapacityOverage, ProgramListItem, Reservation, Service } from '@/api/generated'
-import { ToastProvider } from '@/components/toaster'
 import { dayOrigin } from '@/lib/day-offset'
-import { SiteContext } from '@/lib/site'
 import { ProgramsPage } from '@/pages/programs'
+import { renderInRouter } from '@/test/router'
 
 /**
  * ページは「今」を時刻境界に切り捨てた時刻を時間窓の起点にする。テストの番組も
@@ -197,6 +196,12 @@ function stubApi(
     if (url.pathname === '/api/encode-profiles') {
       return Promise.resolve(jsonResponse(encodeProfiles))
     }
+    // ProgramRow は行ごとに「ライブで見る」の出し分け（issue #229）のため
+    // useLiveEnabled() を無条件に呼ぶ。React Query が同一キーで重複を除くので
+    // 実際に飛ぶのは 1 本。
+    if (url.pathname === '/api/capabilities') {
+      return Promise.resolve(jsonResponse({ live: true }))
+    }
     if (/^\/api\/sites\/default\/programs\/\d+\/overlaps$/.test(url.pathname)) {
       return Promise.resolve(jsonResponse({ count: 0, reservations: [] }))
     }
@@ -276,20 +281,17 @@ afterEach(() => {
   Reflect.deleteProperty(window, 'matchMedia')
 })
 
+/**
+ * renderPage は `<ProgramsPage>` をルーターの中で描く。
+ *
+ * `ProgramRow`（issue #229）が展開領域に `<Link>` を持つようになったため、
+ * `TanStack Router` の外では描けない（`test/router.tsx` の `renderInRouter`
+ * のコメントと同じ理由）。予約直後の楽観的更新で `reserved` が true に変わると
+ * その `<Link>` が実際にマウントされるので、通常の予約テストでも router の
+ * 配線が要る。
+ */
 function renderPage() {
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false, staleTime: 0 } },
-  })
-  const view = render(
-    <QueryClientProvider client={queryClient}>
-      <ToastProvider>
-        <SiteContext value="default">
-          <ProgramsPage />
-        </SiteContext>
-      </ToastProvider>
-    </QueryClientProvider>,
-  )
-  return { ...view, queryClient }
+  return renderInRouter(<ProgramsPage />, { path: '/' })
 }
 
 /**
