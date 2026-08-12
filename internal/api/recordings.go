@@ -133,6 +133,24 @@ func (h *Server) ListRecordings(ctx context.Context, req ListRecordingsRequestOb
 	return ListRecordings200JSONResponse(result), nil
 }
 
+// GetRecording は録画を単体で取得する（issue #232 M6-4。一覧要素と同形）。
+//
+// ごみ箱の録画（deleted_at IS NOT NULL）も 200 で返す --- 一覧の trash=true が
+// 既にメタデータを 200 で返しているため単体 GET だけ厳しくする理由が無い
+// （メディア配信の 404 契約とは別の判断。openapi.yaml の getRecording
+// description 参照）。purged_at が立った tombstone（issue #135）は 404
+// （queryRecordingByID 参照）。
+func (h *Server) GetRecording(ctx context.Context, req GetRecordingRequestObject) (GetRecordingResponseObject, error) {
+	rec, ok, err := queryRecordingByID(ctx, h.pool, req.Id)
+	if err != nil {
+		return nil, fmt.Errorf("getting recording %d: %w", req.Id, err)
+	}
+	if !ok {
+		return GetRecording404JSONResponse{Error: "recording not found"}, nil
+	}
+	return GetRecording200JSONResponse(rec), nil
+}
+
 // DeleteRecording は録画を論理削除する（ごみ箱へ）。
 // deleted_at を立てるだけでファイルには触れない。既に削除済みでも冪等に 204。
 func (h *Server) DeleteRecording(ctx context.Context, req DeleteRecordingRequestObject) (DeleteRecordingResponseObject, error) {

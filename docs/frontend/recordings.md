@@ -2,6 +2,33 @@
 
 # 録画一覧・検索・再生
 
+## 録画単体の着地先
+
+録画は一覧内展開でしか見られず単体の URL を持たなかったため、skip 理由
+（「重複（録画 #345）」）や予約 → 録画の導線がリンクの終点を持てなかった
+（issue #232 M6-4）。着地先は `/recordings/$id`。`recordings.id` は ingest（watcher）が一度作ったら
+変わらない不可逆な事実の id なので、そのまま URL に使ってよい ---
+`reservations.id` を URL に使わず `(site, programId)` を宛先にした予約詳細
+（`pages/reservation-detail.tsx`。`reservations` は ruler の導出削除・
+再実体化で id が変わりうる）とは事情が異なる。「一覧内スクロール + 展開」は
+無限リストで対象が読み込み済みとは限らず成立しないため、別ルートにした。
+
+本体（プレイヤー・メタデータ・削除系操作。下記「ブラウザ再生」節と
+「ドロップ統計」節が対象とするもの）は一覧の行展開（`RecordingDetail`）と
+単体ページ（`pages/recording-detail.tsx`）が同じ部品を共有する ---
+実装を 2 系統に分けず「一覧の展開と同等に機能する」を保つため。したがって
+以下の各節（ブラウザ再生の出し分け・ごみ箱の非表示規律）は両方の画面に
+同時に適用される。単体ページ自身のクエリ（`GET /api/recordings/{id}`）は
+一覧の invalidate（`'/api/recordings'` 前方一致）では捨てられない別の
+クエリキー（`'/api/recordings/{id}'` という 1 要素の文字列）なので、
+削除・復元・完全削除の成功後に単体ページ自身を再検証する経路
+（`onMutated`）を別に持つ。
+
+`GET /api/recordings/{id}` はごみ箱の録画も 200 で返す（メタデータの
+可視性はメディア配信の 404 契約とは別の判断。[api/rest.md](../api/rest.md)
+「録画単体」）。単体ページはこの `deletedAt` の有無で、下記のごみ箱の
+出し分け規律をそのまま適用する。
+
 ## 録画のブラウザ再生
 
 **VOD は MP4 progressive + Range。** streamer の `GET /api/recordings/{id}/file?profile=<name>` を
@@ -181,6 +208,9 @@ limit)`（カーソル `before` / `beforeId` を含めない）にする --- 同
 
 - ブラウザ再生は M3-5、ごみ箱ビューの非表示は M3-18、録画検索の同居は M3-25 で
   実装した
+- 録画単体の着地先（`/recordings/$id`、`GET /api/recordings/{id}`）は
+  M6-4（issue #232）。一覧の行展開（`RecordingDetail`）をそのまま単体ページに
+  も渡す形にし、実装を 2 系統に分けなかった
 - 再生ボタンを行右端に独立させる決定と「`.play()` を呼ばない」判断は M5-4（issue #227）。
   レビューで一度差し戻された --- `<video>` に `tabIndex={-1}` を付けた最初の版は
   「native controls の個々のボタンにフォーカスが行くのでコンテナは Tab 対象で

@@ -809,6 +809,41 @@ paths:
         schema:
           type: integer
           format: int64
+    get:
+      operationId: getRecording
+      summary: Get a single recording by id
+      description: |
+        一覧要素（`GET /api/recordings` の各要素）と同形。単体ページ・skip 理由や
+        予約からの導線（issue #232 M6-4）が着地する先。
+
+        **ごみ箱（`deleted_at IS NOT NULL`）の録画も 200 で返す。** メディア配信の
+        404 契約（`recordings.deleted_at IS NOT NULL` を 404 にする。
+        docs/api/media.md）とメタデータの可視性は別の判断 --- 一覧が
+        `trash=true` で既にごみ箱の録画のメタデータを 200 で返しているため、
+        単体 GET だけ厳しくする理由が無い。フロントはこの `deletedAt` を見て
+        再生系（プレイヤー・原本リンク）を出さない（一覧の展開と同じ規律。
+        docs/frontend/recordings.md）。
+
+        **完全削除（purge）済みの tombstone（`purged_at` が立った行、issue
+        #135）は 404。** ファイルが既に無く、通常一覧・ごみ箱一覧のどちらにも
+        現れない行なので、単体 GET だけ見える形にしない。
+
+        ごみ箱の行では一覧と同じく `encodedProfiles` を省略する
+        （`available_encoded_profiles` を射影しない一覧の規律と揃える。
+        プレイヤーを出さないので揃える必要が無い）。
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Recording"
+        "404":
+          description: Recording not found, or fully purged
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
     delete:
       operationId: deleteRecording
       summary: Soft-delete a recording (move to trash)
@@ -1437,8 +1472,9 @@ components:
             type: object
         deletedAt:
           description: |
-            論理削除時刻。ごみ箱一覧（`trash=true`）でのみ出現する。
-            通常一覧では省略（生きている行は NULL）。
+            論理削除時刻。ごみ箱一覧（`trash=true`）と `GET /api/recordings/{id}`
+            （ごみ箱の録画も 200 で返す）でのみ出現する。通常一覧・生きている
+            行では省略（NULL）。
           type: string
           format: date-time
         createdAt:

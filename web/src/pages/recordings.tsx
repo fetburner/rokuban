@@ -433,7 +433,7 @@ function RecordingRow({ recording, trash }: { recording: Recording; trash: boole
  * 文字と淡い地（`text-destructive` + `bg-destructive/10`）。同じ赤でも、
  * 塗られているかどうかで「いま電波に乗っている」と「壊れた」を見分けられる。
  */
-function StatusBadge({ status }: { status: Recording['status'] }) {
+export function StatusBadge({ status }: { status: Recording['status'] }) {
   return (
     <span
       className={cn(
@@ -475,15 +475,30 @@ function DropBadges({ summary }: { summary: DropSummary }) {
   )
 }
 
-function RecordingDetail({
+/**
+ * RecordingDetail は録画 1 件の詳細本体（プレイヤー・メタデータ・操作）。
+ * 一覧の行展開（`RecordingRow`）と単体ページ（`pages/recording-detail.tsx`）の
+ * 両方が使う共通部品 --- 「再生・操作が一覧の展開と同等に機能する」（issue #232
+ * M6-4 の受け入れ）を、実装を分岐させずに実現するため。
+ */
+export function RecordingDetail({
   recording,
   trash,
   focusPlayerToken,
+  onMutated,
 }: {
   recording: Recording
   trash: boolean
   /** 再生ボタンから展開されたときにインクリメントされる（RecordingRow）。 */
   focusPlayerToken?: number
+  /**
+   * 削除 / 復元 / 完全削除の依頼が成功した後に呼ばれる（`RecordingActions` へ
+   * そのまま渡す）。一覧側は渡さない --- 一覧クエリの invalidate だけで自分の
+   * 行が消える/移る。単体ページは自分自身のクエリ（`getGetRecordingQueryKey`）
+   * を持つので、それを再検証させるために使う（詳細は
+   * `pages/recording-detail.tsx`）。
+   */
+  onMutated?: () => void
 }) {
   const encodedProfiles = recording.encodedProfiles ?? []
   const hasOriginal = recording.sizeBytes !== undefined
@@ -555,7 +570,7 @@ function RecordingDetail({
       {/* PID 別の内訳は行数が多いので、モバイルで横スクロールさせずここに畳む */}
       {recording.dropSummary && <DropStatsTable recordingId={recording.id} />}
 
-      <RecordingActions recording={recording} trash={trash} />
+      <RecordingActions recording={recording} trash={trash} onMutated={onMutated} />
     </div>
   )
 }
@@ -564,7 +579,16 @@ function RecordingDetail({
  * RecordingActions は論理削除 / 復元 / 即時 purge 印 + 追加エンコードの依頼。
  * 削除系はいずれも DB だけを触り、ファイルは消さない（M3-7）。
  */
-function RecordingActions({ recording, trash }: { recording: Recording; trash: boolean }) {
+export function RecordingActions({
+  recording,
+  trash,
+  onMutated,
+}: {
+  recording: Recording
+  trash: boolean
+  /** 各操作の成功後に呼ばれる（`RecordingDetail` の同名 prop 参照）。 */
+  onMutated?: () => void
+}) {
   const recordingId = recording.id
   const [purgeConfirmOpen, setPurgeConfirmOpen] = useState(false)
   const queryClient = useQueryClient()
@@ -574,8 +598,13 @@ function RecordingActions({ recording, trash }: { recording: Recording; trash: b
   const purgeRecording = usePurgeRecording()
 
   const invalidate = () => {
-    // ライブラリとごみ箱の両方を捨てる（片側の操作がもう片側の集合を変える）
+    // ライブラリとごみ箱の両方を捨てる（片側の操作がもう片側の集合を変える）。
+    // このキー（'/api/recordings' 単体）は一覧のクエリキー（getListRecordingsQueryKey
+    // が返す ['/api/recordings', ...] 前方一致）だけを捨てる --- 単体ページ自身の
+    // クエリキー（getGetRecordingQueryKey、'/api/recordings/{id}' という別の
+    // 1 要素の文字列）はここに前方一致しないため別途 onMutated で再検証させる。
     void queryClient.invalidateQueries({ queryKey: ['/api/recordings'] })
+    onMutated?.()
   }
 
   const busy =

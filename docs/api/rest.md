@@ -168,6 +168,17 @@ statement のキャッシュが効く場面が少ない（キャッシュを維�
 （[data.md](../data.md) §5）を使うが、**エンジン（`internal/rulequery`）は
 共有しない**。理由は [data.md](../data.md) §5「録画検索は rulequery を共有しない」。
 
+### 録画単体: `GET /api/recordings/{id}`
+
+一覧要素と同形の 1 件（issue #232 M6-4。skip 理由・予約からの導線の着地先）。
+**ごみ箱（`deleted_at IS NOT NULL`）の録画も 200 で返す** --- 一覧の
+`trash=true` が既にメタデータを 200 で返しているため、単体 GET だけ厳しくする
+理由が無い（メディア配信が `deleted_at IS NOT NULL` を 404 にする契約
+[api/media.md](media.md) とは別の判断）。**完全削除（purge）済みの
+tombstone（`purged_at` が立った行）だけは 404** にする --- ファイルが既に無く
+通常一覧・ごみ箱一覧のどちらにも現れない行なので、単体 GET だけ見える形に
+しない。
+
 ## 経緯と失敗事例
 
 - **絶対 URL ビルダーの棚卸し**（M4-1、issue #89）: EPGStation#694 の教訓（絶対

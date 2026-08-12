@@ -13,7 +13,7 @@ Vite + React + TypeScript の SPA。go:embed で単一バイナリに同梱し�
 | 進行方向・遡行の読み込み（時間窓の継ぎ足しとスクロール位置の復元） | [frontend/scroll.md](frontend/scroll.md) |
 | 予約の操作・予約詳細・録られない理由の表示 | [frontend/reservations.md](frontend/reservations.md) |
 | 検索 `/search` とルール条件の共有 | [frontend/search.md](frontend/search.md) |
-| 録画一覧・録画検索・ブラウザ再生・ドロップ統計 | [frontend/recordings.md](frontend/recordings.md) |
+| 録画一覧・録画検索・録画単体の着地先・ブラウザ再生・ドロップ統計 | [frontend/recordings.md](frontend/recordings.md) |
 | ライブ視聴 | [frontend/live.md](frontend/live.md) |
 | アセット配信（go:embed / S3+CDN・キャッシュ規約） | [frontend/assets.md](frontend/assets.md) |
 | ファビコン・走査線 | [frontend/branding.md](frontend/branding.md) |

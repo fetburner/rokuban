@@ -24,6 +24,7 @@ describe('routeTree', () => {
       '/reservations',
       '/reservations/$site/$programId',
       '/recordings',
+      '/recordings/$id',
       '/live',
     ])
   })
