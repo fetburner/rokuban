@@ -1058,8 +1058,10 @@ describe('AddEncodeProfilesAction', () => {
 // **「ルールが削除された」場合は別の経路になる。** `recordings.rule_id` は
 // `rules` への FK が ON DELETE SET NULL（00006_rules.sql）なので、ルール削除
 // 後は recording.ruleId 自体が省略され「ルール」セクションごと消える
-// （#N へは落ちない）。ここでテストする #N フォールバックは、一覧クエリが
-// 未解決・失敗・キャッシュが古くて該当 id がまだ乗っていない、という状態。
+// （#N へは落ちない）。#N に落ちるのは `rules.find` が空を返す間だけで、この
+// describe はそのうち 2 つ ---「一覧がまだ解決していない」と「解決した一覧に
+// その id が無い」--- をテストする。取得失敗は前者と同じ経路
+// （`query.data` が undefined）なので別に置かない。
 describe('RecordingDetail ルール導線', () => {
   it('ruleId がある録画は「ルール」セクションを出し、ルール名がリンクになる', async () => {
     const user = userEvent.setup()
@@ -1129,13 +1131,58 @@ describe('RecordingDetail ルール導線', () => {
     expect(targetFilterLink).toBeDefined()
   })
 
-  it('ruleId を持つ複数の行を同一コミットで展開すると /api/rules の取得は 1 回にまとまる（react-query の初回フェッチの重複排除）', async () => {
+  // ルール名の解決は非同期なので、展開の瞬間は必ず一度 `#N` を通る。docs
+  // （frontend/recordings.md）でこれを「一時的な状態」として説明しているので、
+  // 説明どおりであること（空でもスピナーでもなく `#N` で、後からルール名に
+  // 差し替わること）をここで固定する。`fireEvent` は同期的に commit するので、
+  // 直後の同期アサーションは取得が解決する前を確実に観測できる。
+  it('ルール一覧が未解決の間は #N を出し、解決後にルール名へ差し替わる', async () => {
+    createFakeRecordingsServer({
+      library: [sampleRecording({ id: 55, title: '解決前の録画', ruleId: 5, source: 'rule' })],
+      rules: [sampleRule({ id: 5, name: '後から出るルール' })],
+    })
+
+    renderPage()
+    await screen.findByText('解決前の録画')
+    fireEvent.click(screen.getByRole('button', { name: /解決前の録画/, expanded: false }))
+
+    // 未解決の瞬間（await を挟む前）
+    expect(screen.getByRole('link', { name: '#5' })).toHaveAttribute('href', '/search?ruleId=5')
+
+    // 解決後は同じリンクがルール名に差し替わる（`#5` は消える）
+    expect(await screen.findByRole('link', { name: '後から出るルール' })).toHaveAttribute(
+      'href',
+      '/search?ruleId=5',
+    )
+    expect(screen.queryByRole('link', { name: '#5' })).not.toBeInTheDocument()
+  })
+
+  // 守る性質は「展開行ごとに個別の取得を発行しない」。**2 行の ruleId は別に
+  // する** --- 同じ ruleId だと行ごとの queryKey（`['/api/rules', ruleId]`）に
+  // 変えても 1 回のままで、共有か個別かを見分けられない（最初は両方 ruleId: 1
+  // で書いてしまい、この変異で落ちないことを確認して直した）。別 id にした後は
+  // 行ごとの queryKey で `expected 2 to be 1`、`useGetRule(ruleId)` に差し替える
+  // と `/api/rules/{id}` へ行くのでルール名が解決せずタイムアウトで落ちる
+  // （どちらも実際に変異させて確認した）。
+  //
+  // トリガが `fireEvent` の連続発火なのは合成的で、実ユーザーには起きない
+  // （`expanded` は行ごとの `useState` なので 1 クリック = 1 行）。それでもこう
+  // 書くのは、`renderPage` の `QueryClient` が `staleTime` 未指定（= 0）で、
+  // 逐次展開だと正しい実装でも取得回数が定まらない（同一シナリオを実測して
+  // 2 回。`main.tsx` の `staleTime: 30_000` では 1 回）ため --- 「回数」は
+  // 設定依存なので仕様として主張しない。同期発火なら React の自動バッチで
+  // 2 つの setState が同一コミットに入り、キャッシュが空のまま 2 つの
+  // RuleSection がマウントされるので、共有か個別かが回数に一意に出る。
+  it('展開行が複数あってもルール一覧クエリを共有し、行ごとの個別取得を発行しない', async () => {
     const server = createFakeRecordingsServer({
       library: [
         sampleRecording({ id: 61, title: '同時展開1', ruleId: 1, source: 'rule' }),
-        sampleRecording({ id: 62, title: '同時展開2', ruleId: 1, source: 'rule' }),
+        sampleRecording({ id: 62, title: '同時展開2', ruleId: 2, source: 'rule' }),
       ],
-      rules: [sampleRule({ id: 1, name: '共有されるルール' })],
+      rules: [
+        sampleRule({ id: 1, name: 'ルールその1' }),
+        sampleRule({ id: 2, name: 'ルールその2' }),
+      ],
     })
 
     renderPage()
@@ -1143,19 +1190,16 @@ describe('RecordingDetail ルール導線', () => {
     const toggle1 = screen.getByRole('button', { name: /同時展開1/, expanded: false })
     const toggle2 = screen.getByRole('button', { name: /同時展開2/, expanded: false })
 
-    // userEvent.click は個々のクリックの間で内部的に await する（pointer
-    // down/up の分割ディスパッチや act() のフラッシュを挟む）ため、片方の
-    // フェッチが解決してキャッシュに乗ってから次が展開される直列実行になり、
-    // staleTime: 0 の既定では 2 回目のマウントでも refetch が起きて 2 回に
-    // なる（実測。最初はこの書き方で試して 2 回になることを確認した）。
-    // `fireEvent.click` は同期的なので、await を挟まずに連続で発火すれば
-    // React 18 の自動バッチにより 2 つの setState が同一コミットにまとまり、
-    // 2 つの RuleSection がまだキャッシュの無い状態で同時にマウントされる ---
-    // このときだけ react-query が同一 queryKey の取得を 1 回にまとめる。
+    // `userEvent.click` は個々のクリックの間で内部的に await する（pointer
+    // down/up の分割ディスパッチや act() のフラッシュを挟む）ので直列実行に
+    // なる。ここでは同一コミットに入れたいので同期的な `fireEvent` を使う。
     fireEvent.click(toggle1)
     fireEvent.click(toggle2)
 
-    await screen.findAllByRole('link', { name: '共有されるルール' })
+    // 両行がルール名を解決したことを待つ（片方だけ解決した時点で回数を数えると
+    // 空虚な成功になる）。
+    await screen.findByRole('link', { name: 'ルールその1' })
+    await screen.findByRole('link', { name: 'ルールその2' })
 
     const rulesCalls = server.fetchMock.mock.calls.filter(
       (call) => new URL(String(call[0]), 'http://localhost').pathname === '/api/rules',
