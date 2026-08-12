@@ -16,8 +16,10 @@ import { RecordingDetail, StatusBadge } from '@/pages/recordings'
  * 埋め込んだ 1 要素の文字列）は使わない。一覧側の mutater（`RecordingActions` の
  * `invalidate` / `AddEncodeProfilesAction` の `onSuccess`、両方
  * `pages/recordings.tsx`）はどちらも `queryClient.invalidateQueries({ queryKey:
- * ['/api/recordings'] })` で捨てる --- TanStack Query の既定の前方一致は
- * 配列の**先頭要素が文字列として等しいか**で判定するため、生成された 1 要素キー
+ * ['/api/recordings'] })` で捨てる --- TanStack Query の既定の前方一致
+ * （`partialMatchKey`）はフィルタキーに書いた要素を**前から順に**比較する
+ * ため（ここではフィルタが `['/api/recordings']` という 1 要素なので、
+ * 実質「先頭要素が等しいか」になる）、生成された 1 要素キー
  * （'/api/recordings/{id}' という別の文字列）はそこに前方一致しない。
  *
  * `RecordingDetail` の下に mutater を足すたびに単体ページへの配線

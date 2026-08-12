@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"reflect"
 	"testing"
 	"time"
 
@@ -744,5 +745,87 @@ func TestGetRecording_Purged(t *testing.T) {
 	resp = doRecordingMethod(t, http.MethodGet, fmt.Sprintf("%s/api/recordings/%d", srv.URL, id))
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
+// TestGetRecording_MatchesListElement は issue #232 レビューの nit 4: 単体取得
+// （queryRecordingByID）と一覧（queryRecordings）が同じ SELECT リスト定数
+// （recordingsSelectColumns 等）を共有していることは構造的な保証だが、
+// それ自体は「Scan の並びが定数と対応しているか」までは見ない。ここでは
+// 同じ録画を GET /api/recordings（一覧から該当行を探す）と
+// GET /api/recordings/{id} の両方から独立に取得し、返ってきた 2 つの
+// Recording を直接比較する --- 実装の定数と比較する類（CLAUDE.md「テスト規律」
+// が禁じる「期待値が定数」）ではなく、2 本の実際の HTTP レスポンスを比べる
+// 本物のオラクル。原本・エンコード派生物・ドロップ統計・品質イベントを
+// 一通り持つ録画で、両エンドポイントがまったく同じ形を返すことを見る。
+func TestGetRecording_MatchesListElement(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := newAPIServer(t, pool)
+
+	base := time.Now().Truncate(time.Second)
+	desc := "一覧要素と単体取得が一致するかの確認用"
+	id, err := sqlcgen.New(pool).CreateRecording(context.Background(), sqlcgen.CreateRecordingParams{
+		Source:            "manual",
+		Site:              db.DefaultSite,
+		NetworkID:         32678,
+		ServiceID:         5168,
+		EventID:           40,
+		ServiceName:       "ＯＨＫ",
+		ChannelType:       "GR",
+		Channel:           "27",
+		Title:             "一覧と単体の一致確認",
+		Description:       &desc,
+		ProgramStartAt:    base,
+		ProgramDurationMs: (30 * time.Minute).Milliseconds(),
+		Status:            "finished",
+	})
+	if err != nil {
+		t.Fatalf("seeding recording: %v", err)
+	}
+	seedIngested(t, pool, id, 5000, map[int32][4]int64{
+		0x100: {900, 3, 2, 1},
+	})
+	h264 := "h264"
+	if _, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
+		RecordingID: id,
+		Kind:        db.AssetKindEncoded,
+		Profile:     &h264,
+		RelPath:     "match_h264.mp4",
+		SizeBytes:   50,
+	}); err != nil {
+		t.Fatalf("seed encoded: %v", err)
+	}
+	events, err := json.Marshal([]db.QualityEvent{{At: base, Event: "bcas_anomaly"}})
+	if err != nil {
+		t.Fatalf("marshalling events: %v", err)
+	}
+	if err := sqlcgen.New(pool).AppendQualityEvents(context.Background(), sqlcgen.AppendQualityEventsParams{
+		ID:     id,
+		Events: events,
+	}); err != nil {
+		t.Fatalf("appending quality events: %v", err)
+	}
+
+	var list []Recording
+	getJSON(t, srv.URL+"/api/recordings", &list)
+	var fromList *Recording
+	for i := range list {
+		if list[i].Id == id {
+			fromList = &list[i]
+			break
+		}
+	}
+	if fromList == nil {
+		t.Fatalf("recording %d not found in list %+v", id, list)
+	}
+
+	var fromDetail Recording
+	resp := getJSON(t, fmt.Sprintf("%s/api/recordings/%d", srv.URL, id), &fromDetail)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	if !reflect.DeepEqual(*fromList, fromDetail) {
+		t.Errorf("GET /api/recordings element and GET /api/recordings/{id} differ:\nlist   = %+v\ndetail = %+v", *fromList, fromDetail)
 	}
 }
