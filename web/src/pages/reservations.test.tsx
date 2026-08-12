@@ -297,6 +297,31 @@ describe('予約一覧の容量バッジのリンク化（issue #233 M6-5）', (
 })
 
 /**
+ * 行本体のリンクの accessible name（レビュー nit 1）。
+ *
+ * 行本体のリンクは `absolute inset-0` にして子要素を持たないため（must-fix 2
+ * の再構成）、accessible name は `children` からではなく `aria-label` から
+ * 計算される。この配線は前回のテスト（リンクの**本数**だけを見るもの）では
+ * 検知できない --- `aria-label` を別の属性（例えば `data-row-label`）に
+ * 変える壊し方でも本数は変わらないまま全行のリンクが無名になり、577 テスト
+ * 全通過・build/lint clean のまま気付けなかった（レビュー実測）。
+ * ここでは `getByRole('link', { name: ... })` で**名前による検索そのもの**が
+ * 機能することを見る。
+ */
+describe('予約一覧の行本体リンクの accessible name（issue #233 レビュー nit 1）', () => {
+  it('タイトルを含む名前でリンクを引け、宛先は予約詳細になる', async () => {
+    renderWith([reservation(1, '交差する番組', 19 * 60, 60)], [overage(19 * 60, 20 * 60)])
+
+    // バッジ（別のリンク）も同時に存在する状態で、名前による検索が行本体の
+    // リンクだけを一意に引けることまで確認する
+    await screen.findByText('チューナー不足（BS が 1 本）')
+
+    const rowLink = screen.getByRole('link', { name: /交差する番組/ })
+    expect(rowLink).toHaveAttribute('href', '/reservations/default/10')
+  })
+})
+
+/**
  * 警告の信号色。jsdom は色を計算しないので、当たっているクラスだけを見る
  * （実画素での判定は `web/e2e/design.mjs`。docs/frontend/design.md）。
  */

@@ -378,36 +378,44 @@ await narrowBadge.waitFor({ timeout: 15000 }).catch(() => {
 })
 
 if ((await narrowBadge.count()) > 0) {
-  await narrowBadge.first().click()
-  await narrowPage.waitForTimeout(600)
-  const narrowUrl = new URL(narrowPage.url())
-  log(`  クリック後の URL: ${narrowUrl.pathname}${narrowUrl.search}`)
+  try {
+    await narrowBadge.first().click()
+    await narrowPage.waitForTimeout(600)
+    const narrowUrl = new URL(narrowPage.url())
+    log(`  クリック後の URL: ${narrowUrl.pathname}${narrowUrl.search}`)
 
-  const bodyText = await narrowPage.evaluate(() => document.body.textContent ?? '')
-  if (/Something went wrong/.test(bodyText)) {
-    ng.push('③ 375px で番組表へ飛んだ直後にエラー境界に落ちた')
-  } else if (narrowUrl.pathname !== '/') {
-    ng.push(`③ 375px でも番組表（/）へ飛ぶはずが ${narrowUrl.pathname}${narrowUrl.search} だった`)
-  } else {
-    const narrowGrid = narrowPage.locator('[data-testid="program-grid"]')
-    if ((await narrowGrid.count()) > 0) {
-      ng.push('③ lg 未満なのにグリッドが出ている（表示形式の出し分けが壊れている）')
+    const bodyText = await narrowPage.evaluate(() => document.body.textContent ?? '')
+    if (/Something went wrong/.test(bodyText)) {
+      ng.push('③ 375px で番組表へ飛んだ直後にエラー境界に落ちた')
+    } else if (narrowUrl.pathname !== '/') {
+      ng.push(`③ 375px でも番組表（/）へ飛ぶはずが ${narrowUrl.pathname}${narrowUrl.search} だった`)
     } else {
-      log('  番組表（リスト表示）へ遷移し、グリッドは出ていない（期待どおり）')
-
-      // グリッドが無くても、at が指す日への日付ジャンプは効いているはず
-      // （不足区間は「今」から 30 時間後なので、ハイライトは today = index 0
-      // ではないはず）
-      const dayButtons = narrowPage.locator('[role="group"][aria-label="日付"] button')
-      const currentIndex = await dayButtons
-        .evaluateAll((els) => els.findIndex((el) => el.getAttribute('aria-current') === 'date'))
-      log(`  ハイライトされている日の添字: ${currentIndex}（0 なら今日のまま）`)
-      if (currentIndex <= 0) {
-        ng.push('③ リスト表示でも at の日付ジャンプが効くはずが、今日のままだった')
+      const narrowGrid = narrowPage.locator('[data-testid="program-grid"]')
+      if ((await narrowGrid.count()) > 0) {
+        ng.push('③ lg 未満なのにグリッドが出ている（表示形式の出し分けが壊れている）')
       } else {
-        log('  日付ジャンプが効いている（期待どおり）')
+        log('  番組表（リスト表示）へ遷移し、グリッドは出ていない（期待どおり）')
+
+        // グリッドが無くても、at が指す日への日付ジャンプは効いているはず
+        // （不足区間は「今」から 30 時間後なので、ハイライトは today = index 0
+        // ではないはず）
+        const dayButtons = narrowPage.locator('[role="group"][aria-label="日付"] button')
+        const currentIndex = await dayButtons
+          .evaluateAll((els) => els.findIndex((el) => el.getAttribute('aria-current') === 'date'))
+        log(`  ハイライトされている日の添字: ${currentIndex}（0 なら今日のまま）`)
+        if (currentIndex <= 0) {
+          ng.push('③ リスト表示でも at の日付ジャンプが効くはずが、今日のままだった')
+        } else {
+          log('  日付ジャンプが効いている（期待どおり）')
+        }
       }
     }
+  } catch (err) {
+    // ① と同じ理由（`className="relative"` を外す等でバッジが押せなくなる
+    // 回帰があると、クリック待ちが未捕捉の TimeoutError で落ち、`=== 結果 ===`
+    // の要約が一度も印字されないままスタックトレースだけが出る。exit code
+    // 自体は 1 のまま変わらないが、診断のしやすさを①と揃える。
+    ng.push(`③ バッジのクリックで例外: ${String(err.message).split('\n')[0]}`)
   }
 }
 await narrowContext.close()
