@@ -310,3 +310,46 @@ describe('ProgramList', () => {
     })
   })
 })
+
+/**
+ * 放送中の行の見せ方。**色は使わない**（太さだけ）。
+ *
+ * リストの ON AIR はチャンネル数ぶん同時に点くので、タリーレッドにすると
+ * 「いま電波に乗っている」の信号として機能しなくなる。線と札で示す「いま」は
+ * 番組表グリッド側が持つ（docs/frontend/design.md「色は信号のみ」）。
+ * jsdom は色を計算しないのでクラス名を見る。
+ */
+describe('ProgramList の放送中', () => {
+  /** airing は実時刻をまたぐ番組を作る（`isAiring` は `Date.now()` を見るため）。 */
+  function airing(programId: number, name: string): ProgramListItem {
+    const startAt = Date.now() - 10 * 60_000
+    return {
+      ...program(programId, 0, name),
+      startAt: new Date(startAt).toISOString(),
+      endAt: new Date(startAt + 30 * 60_000).toISOString(),
+    }
+  }
+
+  /** timeCellOf は行の左端（開始時刻）の要素を返す。 */
+  function timeCellOf(name: string): HTMLElement {
+    const row = screen.getByText(name).closest('li[data-program-id]')
+    if (!row) throw new Error(`row ${name} not found`)
+    const cell = row.querySelector('[data-testid="program-row-time"]')
+    if (!cell) throw new Error(`time cell of ${name} not found`)
+    return cell as HTMLElement
+  }
+
+  it('放送中の行は太字になり、放送中でない行はならない', () => {
+    renderList([airing(1, '放送中の番組'), program(2, 23, 'ずっと先の番組')])
+
+    expect(timeCellOf('放送中の番組')).toHaveClass('font-medium')
+    expect(timeCellOf('ずっと先の番組')).not.toHaveClass('font-medium')
+  })
+
+  it('放送中でも信号色は当てない（赤はタリー専用）', () => {
+    renderList([airing(1, '放送中の番組')])
+
+    const cell = timeCellOf('放送中の番組')
+    expect(cell.className).not.toMatch(/tally|text-primary|red|destructive|warning/)
+  })
+})

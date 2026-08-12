@@ -67,6 +67,8 @@ function DayCell({
   const date = dayOrigin(dayOffset, now)
   const weekday = date.getDay()
   const dateLabel = `${date.getMonth() + 1}月${date.getDate()}日(${weekdayChars[weekday]})`
+  // 0 = 日、6 = 土。
+  const isWeekend = weekday % 6 === 0
 
   return (
     <button
@@ -79,23 +81,23 @@ function DayCell({
       // （components/capacity-shortfall-badge.tsx と同じ手法）。
       aria-label={dateLabel}
       onClick={() => onSelect(dayOffset)}
+      // 週末は色ではなく濃さで立てる（墨 = 週末 / 走査線グレー = 平日）。
+      // カレンダー慣習の「日 = 赤 / 土 = 青」は使わない --- 赤は「いま電波に
+      // 乗っている」専用（タリー）で、曜日に赤を置くと画面の中で赤が 2 つの意味を
+      // 持つ（docs/frontend/design.md「色は信号のみ」）。土と日のどちらかは
+      // 文字自身が言うので、色で区別する必要はない
       className={cn(
         'flex h-11 min-w-0 flex-col items-center justify-center rounded-md border text-xs transition-colors',
         isCurrent
           ? 'border-primary bg-primary text-primary-foreground'
-          : 'border-border text-muted-foreground hover:bg-muted',
+          : isWeekend
+            ? 'border-border font-medium text-foreground hover:bg-muted'
+            : 'border-border text-muted-foreground hover:bg-muted',
       )}
     >
       <span aria-hidden="true" className="flex flex-col items-center leading-tight">
         <span className="tabular-nums">{date.getDate()}</span>
-        <span
-          className={cn(
-            !isCurrent && weekday === 6 && 'text-blue-600 dark:text-blue-400',
-            !isCurrent && weekday === 0 && 'text-red-600 dark:text-red-400',
-          )}
-        >
-          {weekdayChars[weekday]}
-        </span>
+        <span>{weekdayChars[weekday]}</span>
       </span>
     </button>
   )

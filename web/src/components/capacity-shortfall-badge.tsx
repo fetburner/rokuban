@@ -43,7 +43,7 @@ export function CapacityShortfallBadge({
   if (worst === null) return null
 
   return (
-    <span className="flex shrink-0 items-center gap-1 rounded bg-amber-50 px-1.5 py-0.5 text-[0.65rem] text-amber-700 dark:bg-amber-950/50 dark:text-amber-500">
+    <span className="flex shrink-0 items-center gap-1 rounded bg-warning/10 px-1.5 py-0.5 text-[0.65rem] text-warning">
       <TriangleAlert className="size-3 shrink-0" aria-hidden="true" />
       {/* 読み上げには文で渡す（バッジの短い表示だけだと主語が「時間帯」であることが
           伝わらず、「この予約が録れない」と読まれかねない） */}

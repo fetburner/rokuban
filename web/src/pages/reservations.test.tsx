@@ -252,3 +252,31 @@ describe('予約一覧のチューナー不足バッジ', () => {
     expect(capacityRequests(fetchMock)).toHaveLength(0)
   })
 })
+
+/**
+ * 警告の信号色。jsdom は色を計算しないので、当たっているクラスだけを見る
+ * （実画素での判定は `web/e2e/design.mjs`。docs/frontend/design.md）。
+ */
+describe('予約一覧の信号色', () => {
+  it('チューナー不足は琥珀（--warning）で、Tailwind 標準パレットを直接使わない', async () => {
+    renderWith([reservation(1, '交差する番組', 19 * 60, 60)], [overage(19 * 60, 20 * 60)])
+
+    const badge = (await screen.findByText('チューナー不足（BS が 1 本）')).closest('span')
+      ?.parentElement
+    expect(badge).not.toBeNull()
+    expect(badge).toHaveClass('text-warning')
+    expect(badge).toHaveClass('bg-warning/10')
+    expect(badge!.className).not.toMatch(/amber|yellow|orange/)
+  })
+
+  it('EPG から消失は destructive のまま（警告色に落とさない）', async () => {
+    renderWith(
+      [{ ...reservation(1, '消えた番組', 19 * 60, 60), state: 'orphaned' as const }],
+      [],
+    )
+
+    const badge = await screen.findByText('EPG から消失')
+    expect(badge).toHaveClass('text-destructive')
+    expect(badge.className).not.toMatch(/warning|tally/)
+  })
+})

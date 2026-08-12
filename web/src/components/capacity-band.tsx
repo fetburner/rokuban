@@ -62,11 +62,16 @@ function CapacityBand({ axis, overage }: { axis: TimeAxis; overage: CapacityOver
       data-testid="capacity-band"
       data-start-at={overage.startAt}
       // 淡い着色 + 上下の罫線。塗りを強くすると番組セルのタイトルが読めなくなり、
-      // 番組表として使えなくなる（区間の境界は罫線が伝える）。明度はジャンル色と
-      // 同じ 50 / 950 に揃える（新しいデザイン言語を持ち込まない。lib/genre.ts）。
+      // 番組表として使えなくなる（区間の境界は罫線が伝える）。色は警告の信号色
+      // （琥珀）そのもので、濃さだけを下げる --- 帯のためだけの別の琥珀を作らない
+      // （docs/frontend/design.md「トークン外の生の色値を書かない」）。
       // overflow は切らない --- `overflow: hidden` は自身をスクロール容器にするので、
       // 中のラベルの sticky が効かなくなる（はみ出しは labelMinHeightPx で抑える）
-      className="absolute inset-x-0 border-y border-amber-400/80 bg-amber-50/60 dark:border-amber-700/80 dark:bg-amber-950/40"
+      // 罫線の濃さ（/80）は「境界を伝える」役割から決めた実測値 --- これ未満だと
+      // ライトで、帯が重なりうる面のうち最も不利なものに対して 3:1 を割る
+      // （旧実装の淡い琥珀の罫線は 1.51 で、ライトでは境界がほぼ見えていなかった）。
+      // e2e/design.mjs が毎回、グリッドのセルの面まで含めて測る
+      className="absolute inset-x-0 border-y border-warning/80 bg-warning/10"
       style={{ top: rect.topPx, height: rect.heightPx }}
     >
       {/* 読み上げには常に時刻付きの文を出す（帯が短いとラベルが出ないため、
@@ -77,7 +82,7 @@ function CapacityBand({ axis, overage }: { axis: TimeAxis; overage: CapacityOver
           aria-hidden="true"
           // sticky left-0: 帯は列の総幅を張るので、横スクロールしてもラベルが
           // 画面内に残るようにする（左端に置いたままだと右へパンした先で消える）
-          className="sticky left-0 flex w-fit items-center gap-1 px-1.5 text-[10px] font-medium whitespace-nowrap text-amber-800 dark:text-amber-300"
+          className="sticky left-0 flex w-fit items-center gap-1 px-1.5 text-[10px] font-medium whitespace-nowrap text-warning"
         >
           <TriangleAlert className="size-3 shrink-0" aria-hidden="true" />
           {shortageLabel(overage)}

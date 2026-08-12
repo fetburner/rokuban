@@ -6,6 +6,7 @@ Vite + React + TypeScript の SPA。go:embed で単一バイナリに同梱し�
 
 | 内容 | ファイル |
 |---|---|
+| デザイン言語（トークン / 状態色 / 原則）。**UI を触るなら最初に読む** | [frontend/design.md](frontend/design.md) |
 | 前提条件 / 採用スタック / 決め手（技術選定の経緯） | [frontend/stack.md](frontend/stack.md) |
 | 共通シェル: ナビゲーション / 生成クライアントとエラー運搬 / SSE 通知 / `<html lang>` / PWA | [frontend/shell.md](frontend/shell.md) |
 | 番組リスト・番組表グリッド / 日付・チャンネル絞り込み / 容量超過の表示 | [frontend/programs.md](frontend/programs.md) |
@@ -21,6 +22,7 @@ Vite + React + TypeScript の SPA。go:embed で単一バイナリに同梱し�
 
 | 節名 | ファイル |
 |---|---|
+| 「色は信号のみ」/「トークン外の生の色値を書かない」/「地は「イ」の 3 値」/「合否は画素で測る」 | [frontend/design.md](frontend/design.md) |
 | 「番組リスト」/「リストを第一級に置く。グリッドはその上に足す」/「グリッドは lg 以上でのみ出し、モバイルは常にリスト」/「仮想化はライブラリを入れず自前」/「セルの高さに下限を設けない」/「容量超過は番組ではなく区間に描く」/「リスト・予約一覧・モバイル: 同じ文言のバッジ」/「受け入れは実機で行う」 | [frontend/programs.md](frontend/programs.md) |
 | 「エラーの本文も UI まで運ぶ」 | [frontend/shell.md](frontend/shell.md) |
 | 「検索とルールは同じ条件 UI を双方向に共有する」 | [frontend/search.md](frontend/search.md) |
@@ -30,6 +32,7 @@ Vite + React + TypeScript の SPA。go:embed で単一バイナリに同梱し�
 
 読む順の目安:
 
+- **色・余白・状態表示を触る（= UI を触るなら常に）** → [frontend/design.md](frontend/design.md)
 - **番組表・番組リストを触る** → [frontend/programs.md](frontend/programs.md)（遡行・スクロール位置の復元は [frontend/scroll.md](frontend/scroll.md)）
 - **録画一覧を触る** → [frontend/recordings.md](frontend/recordings.md)
 - **ライブ視聴を触る** → [frontend/live.md](frontend/live.md)（資源同定は [api.md](api.md) §ライブ視聴の HLS が権威）

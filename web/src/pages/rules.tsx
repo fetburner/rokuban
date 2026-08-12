@@ -131,7 +131,7 @@ function RuleRow({ rule, onEdit }: { rule: Rule; onEdit: () => void }) {
               見えるようにする（設定を開かないと気付けない事故を防ぐ）。 */}
           <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-xs">
             {conditions.length === 0 ? (
-              <span className="font-medium text-amber-600 dark:text-amber-400">
+              <span className="font-medium text-warning">
                 条件なし（すべての番組にマッチ）
               </span>
             ) : (

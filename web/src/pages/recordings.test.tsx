@@ -861,3 +861,64 @@ describe('AddEncodeProfilesAction', () => {
     expect(screen.queryByRole('checkbox')).not.toBeInTheDocument()
   })
 })
+
+/**
+ * 状態色の適用。**色そのものは jsdom では測れない**（Tailwind のクラスは
+ * 解決されないし oklch も計算されない）ので、ここで見るのは「どのトークンの
+ * クラスが当たっているか」だけ。実際の画素での判定は `web/e2e/design.mjs`
+ * （`pnpm e2e:design`）が持つ。
+ *
+ * それでもここに置くのは、`bg-tally` を `bg-primary/10` に戻すような差し替えを
+ * 実ブラウザを起動せずに止められるため（docs/frontend/design.md）。
+ */
+describe('録画状態の信号色', () => {
+  /** badgeFor は一覧の行から状態バッジの要素を引く。 */
+  function badgeFor(label: string): HTMLElement {
+    const badge = screen.getByText(label)
+    expect(badge.tagName).toBe('SPAN')
+    return badge
+  }
+
+  it('録画中はタリーレッドの「塗り」になる（destructive の淡い地と形で分かれる）', async () => {
+    createFakeRecordingsServer({
+      library: [sampleRecording({ id: 21, title: '進行中', status: 'recording' })],
+    })
+
+    renderPage()
+    await screen.findByText('進行中')
+
+    const badge = badgeFor('録画中')
+    expect(badge).toHaveClass('bg-tally')
+    expect(badge).toHaveClass('text-tally-foreground')
+    // 塗りなので淡い地の流儀（`bg-*/10` + 色付きの文字）ではない
+    expect(badge.className).not.toMatch(/bg-tally\//)
+    expect(badge.className).not.toMatch(/text-tally(?![-\w])/)
+  })
+
+  it('失敗は destructive のまま（タリーに置き換えない）', async () => {
+    createFakeRecordingsServer({
+      library: [sampleRecording({ id: 22, title: '落ちた録画', status: 'failed' })],
+    })
+
+    renderPage()
+    await screen.findByText('落ちた録画')
+
+    const badge = badgeFor('失敗')
+    expect(badge).toHaveClass('bg-destructive/10')
+    expect(badge).toHaveClass('text-destructive')
+    expect(badge.className).not.toMatch(/tally/)
+  })
+
+  it('完了は無彩のまま（信号色を使わない）', async () => {
+    createFakeRecordingsServer({
+      library: [sampleRecording({ id: 23, title: '終わった録画', status: 'finished' })],
+    })
+
+    renderPage()
+    await screen.findByText('終わった録画')
+
+    const badge = badgeFor('完了')
+    expect(badge).toHaveClass('bg-muted')
+    expect(badge.className).not.toMatch(/tally|warning|destructive/)
+  })
+})

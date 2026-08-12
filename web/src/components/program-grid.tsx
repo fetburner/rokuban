@@ -228,10 +228,16 @@ export function ProgramGrid({
               {nowTopPx !== null && (
                 <div
                   data-testid="program-grid-now-label"
-                  className="absolute inset-x-0 -translate-y-1/2 pr-1.5 text-right text-[11px] font-medium tabular-nums text-primary"
+                  className="absolute inset-x-0 -translate-y-1/2 pr-1.5 text-right"
                   style={{ top: nowTopPx }}
                 >
-                  {formatTime(new Date(currentMs).toISOString())}
+                  {/* 「いま」はタリーレッドだが、**塗りにする**（文字色にしない）。
+                      11px の赤い文字はダークの地に対して 4.5 に届かない ---
+                      タリーを塗りに限る規律の実体
+                      （docs/frontend/design.md「タリーは塗り、destructive は文字」） */}
+                  <span className="rounded-sm bg-tally px-1 py-px text-[11px] font-medium tabular-nums text-tally-foreground">
+                    {formatTime(new Date(currentMs).toISOString())}
+                  </span>
                 </div>
               )}
             </div>
@@ -269,7 +275,9 @@ export function ProgramGrid({
               {nowTopPx !== null && (
                 <div
                   data-testid="program-grid-now-line"
-                  className="absolute inset-x-0 border-t-2 border-primary"
+                  // 現在時刻の線は ON AIR の指標なのでタリーレッド。地が無彩なので
+                  // 罫線と番組セルの境界に紛れない（docs/frontend/design.md）
+                  className="absolute inset-x-0 border-t-2 border-tally"
                   style={{ top: nowTopPx }}
                 />
               )}
