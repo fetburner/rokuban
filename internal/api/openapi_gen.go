@@ -821,8 +821,9 @@ type Recording struct {
 	ChannelType RecordingChannelType `json:"channelType"`
 	CreatedAt   time.Time            `json:"createdAt"`
 
-	// DeletedAt 論理削除時刻。ごみ箱一覧（`trash=true`）でのみ出現する。
-	// 通常一覧では省略（生きている行は NULL）。
+	// DeletedAt 論理削除時刻。ごみ箱一覧（`trash=true`）と `GET /api/recordings/{id}`
+	// （ごみ箱の録画も 200 で返す）でのみ出現する。通常一覧・生きている
+	// 行では省略（NULL）。
 	DeletedAt   *time.Time   `json:"deletedAt,omitempty"`
 	Description *string      `json:"description,omitempty"`
 	DropSummary *DropSummary `json:"dropSummary,omitempty"`
@@ -1219,6 +1220,9 @@ type ServerInterface interface {
 	// DeleteRecording Soft-delete a recording (move to trash)
 	// (DELETE /api/recordings/{id})
 	DeleteRecording(w http.ResponseWriter, r *http.Request, id int64)
+	// GetRecording Get a single recording by id
+	// (GET /api/recordings/{id})
+	GetRecording(w http.ResponseWriter, r *http.Request, id int64)
 	// ListRecordingDropStats Get per-PID drop statistics for a recording
 	// (GET /api/recordings/{id}/drop-stats)
 	ListRecordingDropStats(w http.ResponseWriter, r *http.Request, id int64)
@@ -1333,6 +1337,12 @@ func (_ Unimplemented) ListRecordings(w http.ResponseWriter, r *http.Request, pa
 // DeleteRecording Soft-delete a recording (move to trash)
 // (DELETE /api/recordings/{id})
 func (_ Unimplemented) DeleteRecording(w http.ResponseWriter, r *http.Request, id int64) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// GetRecording Get a single recording by id
+// (GET /api/recordings/{id})
+func (_ Unimplemented) GetRecording(w http.ResponseWriter, r *http.Request, id int64) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1815,6 +1825,32 @@ func (siw *ServerInterfaceWrapper) DeleteRecording(w http.ResponseWriter, r *htt
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.DeleteRecording(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetRecording operation middleware
+func (siw *ServerInterfaceWrapper) GetRecording(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetRecording(w, r, id)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -2715,6 +2751,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Delete(options.BaseURL+"/api/recordings/{id}", wrapper.DeleteRecording)
 	})
 	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/recordings/{id}", wrapper.GetRecording)
+	})
+	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/api/recordings/{id}/restore", wrapper.RestoreRecording)
 	})
 	r.Group(func(r chi.Router) {
@@ -2893,6 +2932,42 @@ func (response DeleteRecording204Response) VisitDeleteRecordingResponse(w http.R
 type DeleteRecording404JSONResponse ErrorResponse
 
 func (response DeleteRecording404JSONResponse) VisitDeleteRecordingResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetRecordingRequestObject struct {
+	Id int64 `json:"id"`
+}
+
+type GetRecordingResponseObject interface {
+	VisitGetRecordingResponse(w http.ResponseWriter) error
+}
+
+type GetRecording200JSONResponse Recording
+
+func (response GetRecording200JSONResponse) VisitGetRecordingResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetRecording404JSONResponse ErrorResponse
+
+func (response GetRecording404JSONResponse) VisitGetRecordingResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response); err != nil {
@@ -3799,6 +3874,9 @@ type StrictServerInterface interface {
 	// DeleteRecording Soft-delete a recording (move to trash)
 	// (DELETE /api/recordings/{id})
 	DeleteRecording(ctx context.Context, request DeleteRecordingRequestObject) (DeleteRecordingResponseObject, error)
+	// GetRecording Get a single recording by id
+	// (GET /api/recordings/{id})
+	GetRecording(ctx context.Context, request GetRecordingRequestObject) (GetRecordingResponseObject, error)
 	// ListRecordingDropStats Get per-PID drop statistics for a recording
 	// (GET /api/recordings/{id}/drop-stats)
 	ListRecordingDropStats(ctx context.Context, request ListRecordingDropStatsRequestObject) (ListRecordingDropStatsResponseObject, error)
@@ -4058,6 +4136,32 @@ func (sh *strictHandler) DeleteRecording(w http.ResponseWriter, r *http.Request,
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(DeleteRecordingResponseObject); ok {
 		if err := validResponse.VisitDeleteRecordingResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetRecording operation middleware
+func (sh *strictHandler) GetRecording(w http.ResponseWriter, r *http.Request, id int64) {
+	var request GetRecordingRequestObject
+
+	request.Id = id
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetRecording(ctx, request.(GetRecordingRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetRecording")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetRecordingResponseObject); ok {
+		if err := validResponse.VisitGetRecordingResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

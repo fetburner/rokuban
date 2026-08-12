@@ -5,6 +5,7 @@ import { SiteGate } from './components/site-gate'
 import { parseRecordingsSearch, type RecordingsPageSearch } from './lib/recording-search'
 import { LivePage } from './pages/live'
 import { ProgramsPage } from './pages/programs'
+import { RecordingDetailPage } from './pages/recording-detail'
 import { RecordingsPage } from './pages/recordings'
 import { ReservationDetailPage } from './pages/reservation-detail'
 import { ReservationsPage } from './pages/reservations'
@@ -101,6 +102,18 @@ const recordingsRoute = createRoute({
   component: RecordingsPage,
 })
 
+/**
+ * 録画単体の着地先（issue #232 M6-4）。`recordings.id` は ingest（watcher）が
+ * 一度作ったら変わらない不可逆な事実の id なので、`/reservations/$site/$programId`
+ * （issue #99、`reservations.id` が ruler の再実体化で変わるため id を避けた）と
+ * 違って id をそのまま URL に使ってよい。
+ */
+const recordingDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/recordings/$id',
+  component: RecordingDetailPage,
+})
+
 /** LivePageSearch は `/live` のクエリパラメータ。 */
 export type LivePageSearch = {
   /** 視聴中のチャンネル（省略時は番組を持つ先頭のサービスに落ちる。`lib/live.ts` の `pickInitialServiceId`）。 */
@@ -141,5 +154,6 @@ export const routeTree = rootRoute.addChildren([
   reservationsRoute,
   reservationDetailRoute,
   recordingsRoute,
+  recordingDetailRoute,
   liveRoute,
 ])

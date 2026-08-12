@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -157,6 +158,67 @@ func channelTypeStrings(vs []ListRecordingsParamsChannelType) []string {
 	return out
 }
 
+// recordingsSelectColumns / recordingsAvailableEncodedProfilesSelect /
+// recordingsFromJoins は `GET /api/recordings`（buildRecordingsQuery）と
+// `GET /api/recordings/{id}`（queryRecordingByID）が共有する SELECT リストと
+// FROM/JOIN 節。openapi.yaml は単体 GET を「一覧要素と同形」とコミットしている
+// ため、この 2 つのクエリの射影は常に一致していなければならない。両方が
+// 手書きの文字列で別々に SQL を組んでいた最初の実装では、一方に列を足しても
+// もう一方は静かに古い形のまま残り続けても `Scan` 呼び出し自体は（列数が
+// 揃っている限り）コンパイルも実行も通ってしまう --- `encode_profiles`
+// （issue #159）や `available_encoded_profiles`（issue #133）のように過去に
+// 列が増えた表なので、次に一覧側だけ列を足したときに同じ drift が再発しうる
+// （issue #232 のレビュー指摘）。共有の定数に切り出すことで、列を足す変更は
+// 両方のクエリに自動的に効く。
+const (
+	// recordingsSelectColumns は両クエリ共通の SELECT リスト（末尾カンマ無し）。
+	recordingsSelectColumns = `
+    r.id, r.site, r.rule_id, r.source, r.service_name, r.channel_type, r.channel,
+    r.network_id, r.service_id, r.event_id, r.title, r.description,
+    r.program_start_at, r.program_duration_ms, r.status,
+    r.started_at, r.ended_at, r.quality_events, r.deleted_at, r.created_at,
+    a.size_bytes                        AS original_size_bytes,
+    COALESCE(d.packets, 0)::bigint      AS drop_packets,
+    COALESCE(d.drops, 0)::bigint        AS drop_drops,
+    COALESCE(d.errors, 0)::bigint       AS drop_errors,
+    COALESCE(d.scrambled, 0)::bigint    AS drop_scrambled,
+    COALESCE(p.encode_profiles, '{}')::text[] AS encode_profiles`
+
+	// recordingsAvailableEncodedProfilesSelect はブラウザ再生用の観測列（active な
+	// encoded のみ）。先頭にカンマを持つので recordingsSelectColumns の直後に
+	// そのまま連結できる。
+	//
+	// buildRecordingsQuery は trash=true のときこれを連結しない（一覧側の
+	// 意図的な省略。docs/api/rest.md「録画一覧」）。queryRecordingByID は常に
+	// 連結し、代わりに Go 側でごみ箱の行だけ結果を捨てる（そちらのコメント
+	// 参照）--- 「ごみ箱では出さない」という同じ結論に、SQL 側で省くか
+	// Go 側で捨てるかという別の手段で辿り着いている。手段が違う理由は
+	// 一覧側は trash という絞り込み軸を静的に知っているため SQL 自体を
+	// 分岐できるが、単体 GET は行を読むまで trash かどうかが分からないため。
+	recordingsAvailableEncodedProfilesSelect = `,
+    (
+        SELECT coalesce(array_agg(e.profile ORDER BY e.profile), '{}')::text[]
+        FROM media_assets e
+        WHERE e.recording_id = r.id
+          AND e.kind = 'encoded'
+          AND e.state = 'active'
+          AND e.profile IS NOT NULL
+    ) AS available_encoded_profiles`
+
+	// recordingsFromJoins は両クエリ共通の FROM + JOIN 節。
+	recordingsFromJoins = `
+FROM recordings r
+LEFT JOIN media_assets a
+    ON a.recording_id = r.id AND a.kind = 'original' AND a.state <> 'deleted'
+LEFT JOIN recording_encode_policy p ON p.recording_id = r.id
+LEFT JOIN LATERAL (
+    SELECT sum(packets) AS packets, sum(drops) AS drops,
+           sum(errors) AS errors, sum(scrambled) AS scrambled
+    FROM drop_stats
+    WHERE media_asset_id = a.id
+) d ON true`
+)
+
 // buildRecordingsQuery は GET /api/recordings の絞り込み + キーセットページングを
 // 動的 WHERE として組む（internal/rulequery.Compile の arg クロージャ方式に倣う。
 // sqlc の静的クエリにしない理由は queryRecordings のコメント参照）。
@@ -269,42 +331,15 @@ func buildRecordingsQuery(f recordingsFilter) (string, []any, error) {
 	availableProfilesSelect := ""
 	if !f.Trash {
 		// ListRecordings（internal/db/queries/recordings.sql）と同じ形。
-		// ブラウザ再生用の観測（active な encoded のみ）。
-		availableProfilesSelect = `,
-    (
-        SELECT coalesce(array_agg(e.profile ORDER BY e.profile), '{}')::text[]
-        FROM media_assets e
-        WHERE e.recording_id = r.id
-          AND e.kind = 'encoded'
-          AND e.state = 'active'
-          AND e.profile IS NOT NULL
-    ) AS available_encoded_profiles`
+		// ブラウザ再生用の観測（active な encoded のみ）。trash のときだけ省く
+		// 理由は recordingsAvailableEncodedProfilesSelect のコメント参照。
+		availableProfilesSelect = recordingsAvailableEncodedProfilesSelect
 	}
 
 	limitPlaceholder := arg(f.Limit)
 
 	sql := `
-SELECT
-    r.id, r.site, r.rule_id, r.source, r.service_name, r.channel_type, r.channel,
-    r.network_id, r.service_id, r.event_id, r.title, r.description,
-    r.program_start_at, r.program_duration_ms, r.status,
-    r.started_at, r.ended_at, r.quality_events, r.deleted_at, r.created_at,
-    a.size_bytes                        AS original_size_bytes,
-    COALESCE(d.packets, 0)::bigint      AS drop_packets,
-    COALESCE(d.drops, 0)::bigint        AS drop_drops,
-    COALESCE(d.errors, 0)::bigint       AS drop_errors,
-    COALESCE(d.scrambled, 0)::bigint    AS drop_scrambled,
-    COALESCE(p.encode_profiles, '{}')::text[] AS encode_profiles` + availableProfilesSelect + `
-FROM recordings r
-LEFT JOIN media_assets a
-    ON a.recording_id = r.id AND a.kind = 'original' AND a.state <> 'deleted'
-LEFT JOIN recording_encode_policy p ON p.recording_id = r.id
-LEFT JOIN LATERAL (
-    SELECT sum(packets) AS packets, sum(drops) AS drops,
-           sum(errors) AS errors, sum(scrambled) AS scrambled
-    FROM drop_stats
-    WHERE media_asset_id = a.id
-) d ON true
+SELECT` + recordingsSelectColumns + availableProfilesSelect + recordingsFromJoins + `
 WHERE ` + where.String() + `
 ORDER BY r.program_start_at ` + orderDir + `, r.id ` + orderDir + `
 LIMIT ` + limitPlaceholder
@@ -344,6 +379,58 @@ LIMIT ` + limitPlaceholder
 // 0.7ms → 290ms（約 400 倍）の崖。この保護を「保険」として外すと、絞り込みの
 // 組み合わせが少ない環境（同じ SQL テキストが 6 回を超えて再利用される）で
 // この崖に落ちる。
+
+// queryRecordingByID は GET /api/recordings/{id} の単体取得。
+// 一覧（queryRecordings）と同じ射影（recordingsSelectColumns /
+// recordingsAvailableEncodedProfilesSelect / recordingsFromJoins、この 2 つの
+// クエリの共有元）を使うが、絞り込み軸が id 固定のためキーセットカーソルも
+// 動的 WHERE ビルダも要らない --- trgm 式 GIN が問題になる可変な組み合わせが
+// 存在しない（queryRecordings のコメント参照）ので、単純な静的クエリで十分。
+//
+// **trash（`deleted_at IS NOT NULL`）の行も返す。** 一覧の `trash=true` が
+// メタデータを 200 で返すのと揃える（メディア配信の 404 契約とは別の判断。
+// openapi.yaml の getRecording description 参照）。**purged_at が立った
+// tombstone（issue #135）だけは除く** --- ファイルが既に無く、通常一覧・
+// ごみ箱一覧のどちらにも現れない行なので、単体 GET だけ見える形にしない。
+//
+// 見つからなければ (Recording{}, false, nil) を返す。
+func queryRecordingByID(ctx context.Context, pool *pgxpool.Pool, id int64) (Recording, bool, error) {
+	const sql = `
+SELECT` + recordingsSelectColumns + recordingsAvailableEncodedProfilesSelect + recordingsFromJoins + `
+WHERE r.id = $1 AND r.purged_at IS NULL`
+
+	var fields recordingListFields
+	err := pool.QueryRow(ctx, sql, id).Scan(
+		&fields.ID, &fields.Site, &fields.RuleID, &fields.Source, &fields.ServiceName, &fields.ChannelType, &fields.Channel,
+		&fields.NetworkID, &fields.ServiceID, &fields.EventID, &fields.Title, &fields.Description,
+		&fields.ProgramStartAt, &fields.ProgramDurationMs, &fields.Status,
+		&fields.StartedAt, &fields.EndedAt, &fields.QualityEvents, &fields.DeletedAt, &fields.CreatedAt,
+		&fields.OriginalSizeBytes,
+		&fields.DropPackets, &fields.DropDrops, &fields.DropErrors, &fields.DropScrambled,
+		&fields.EncodeProfiles,
+		&fields.AvailableEncodedProfiles,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Recording{}, false, nil
+		}
+		return Recording{}, false, fmt.Errorf("querying recording %d: %w", id, err)
+	}
+
+	// ごみ箱の行では一覧の trash=true と同じく encodedProfiles を出さない
+	// （プレイヤーを出さないので揃える必要が無い。openapi.yaml の
+	// getRecording description、docs/frontend/recordings.md）。
+	if fields.DeletedAt != nil {
+		fields.AvailableEncodedProfiles = nil
+	}
+
+	rec, err := recordingFromListFields(fields, true)
+	if err != nil {
+		return Recording{}, false, err
+	}
+	return rec, true, nil
+}
+
 func queryRecordings(ctx context.Context, pool *pgxpool.Pool, f recordingsFilter) ([]Recording, error) {
 	sql, args, err := buildRecordingsQuery(f)
 	if err != nil {

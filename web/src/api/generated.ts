@@ -244,8 +244,9 @@ export interface Recording {
   /** recording.failed / record-broken / bcas_anomaly の履歴 */
   qualityEvents?: RecordingQualityEventsItem[];
   /**
-     * 論理削除時刻。ごみ箱一覧（`trash=true`）でのみ出現する。
-     * 通常一覧では省略（生きている行は NULL）。
+     * 論理削除時刻。ごみ箱一覧（`trash=true`）と `GET /api/recordings/{id}`
+     * （ごみ箱の録画も 200 で返す）でのみ出現する。通常一覧・生きている
+     * 行では省略（NULL）。
      */
   deletedAt?: string;
   createdAt: string;
@@ -3570,6 +3571,144 @@ export function useListRecordings<TData = Awaited<ReturnType<typeof listRecordin
  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
 
   const queryOptions = getListRecordingsQueryOptions(params,options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export type getRecordingResponse200 = {
+  data: Recording
+  status: 200
+}
+
+export type getRecordingResponse404 = {
+  data: ErrorResponse
+  status: 404
+}
+
+export type getRecordingResponseSuccess = (getRecordingResponse200) & {
+  headers: Headers;
+};
+export type getRecordingResponseError = (getRecordingResponse404) & {
+  headers: Headers;
+};
+
+export type getRecordingResponse = (getRecordingResponseSuccess | getRecordingResponseError)
+
+export const getGetRecordingUrl = (id: number,) => {
+
+
+
+
+  return `/api/recordings/${id}`
+}
+
+/**
+ * 一覧要素（`GET /api/recordings` の各要素）と同形。単体ページ・skip 理由や
+ * 予約からの導線が着地する先。
+ *
+ * **ごみ箱（`deleted_at IS NOT NULL`）の録画も 200 で返す。** メディア配信の
+ * 404 契約（`recordings.deleted_at IS NOT NULL` を 404 にする。
+ * docs/api/media.md）とメタデータの可視性は別の判断 --- 一覧が
+ * `trash=true` で既にごみ箱の録画のメタデータを 200 で返しているため、
+ * 単体 GET だけ厳しくする理由が無い。フロントはこの `deletedAt` を見て
+ * 再生系（プレイヤー・原本リンク）を出さない（一覧の展開と同じ規律。
+ * docs/frontend/recordings.md）。
+ *
+ * **完全削除（purge）済みの tombstone（`purged_at` が立った行、issue
+ * #135）は 404。** ファイルが既に無く、通常一覧・ごみ箱一覧のどちらにも
+ * 現れない行なので、単体 GET だけ見える形にしない。
+ *
+ * ごみ箱の行では一覧と同じく `encodedProfiles` を省略する
+ * （`available_encoded_profiles` を射影しない一覧の規律と揃える。
+ * プレイヤーを出さないので揃える必要が無い）。
+ * @summary Get a single recording by id
+ */
+export const getRecording = async (id: number, options?: RequestInit): Promise<getRecordingResponse> => {
+
+  return customInstance<getRecordingResponse>(getGetRecordingUrl(id),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetRecordingQueryKey = (id: number,) => {
+    return [
+    `/api/recordings/${id}`
+    ] as const;
+    }
+
+
+export const getGetRecordingQueryOptions = <TData = Awaited<ReturnType<typeof getRecording>>, TError = ErrorResponse>(id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getRecording>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetRecordingQueryKey(id);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getRecording>>> = ({ signal }) => getRecording(id, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: id !== null && id !== undefined, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getRecording>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type GetRecordingQueryResult = NonNullable<Awaited<ReturnType<typeof getRecording>>>
+export type GetRecordingQueryError = ErrorResponse
+
+
+export function useGetRecording<TData = Awaited<ReturnType<typeof getRecording>>, TError = ErrorResponse>(
+ id: number, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getRecording>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getRecording>>,
+          TError,
+          Awaited<ReturnType<typeof getRecording>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetRecording<TData = Awaited<ReturnType<typeof getRecording>>, TError = ErrorResponse>(
+ id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getRecording>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getRecording>>,
+          TError,
+          Awaited<ReturnType<typeof getRecording>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetRecording<TData = Awaited<ReturnType<typeof getRecording>>, TError = ErrorResponse>(
+ id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getRecording>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary Get a single recording by id
+ */
+
+export function useGetRecording<TData = Awaited<ReturnType<typeof getRecording>>, TError = ErrorResponse>(
+ id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getRecording>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getGetRecordingQueryOptions(id,options)
 
   const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
 

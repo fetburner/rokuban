@@ -2,6 +2,42 @@
 
 # 録画一覧・検索・再生
 
+## 録画単体の着地先
+
+録画は一覧内展開でしか見られず単体の URL を持たなかったため、skip 理由
+（「重複（録画 #345）」）や予約 → 録画の導線がリンクの終点を持てなかった。
+着地先は `/recordings/$id`。`recordings.id` は ingest（watcher）が一度作ったら
+変わらない不可逆な事実の id なので、そのまま URL に使ってよい ---
+`reservations.id` を URL に使わず `(site, programId)` を宛先にした予約詳細
+（`pages/reservation-detail.tsx`。`reservations` は ruler の導出削除・
+再実体化で id が変わりうる）とは事情が異なる。「一覧内スクロール + 展開」は
+無限リストで対象が読み込み済みとは限らず成立しないため、別ルートにした。
+
+本体（プレイヤー・メタデータ・削除系操作。下記「ブラウザ再生」節と
+「ドロップ統計」節が対象とするもの）は一覧の行展開（`RecordingDetail`）と
+単体ページ（`pages/recording-detail.tsx`）が同じ部品を共有する ---
+実装を 2 系統に分けず「一覧の展開と同等に機能する」を保つため。したがって
+以下の各節（ブラウザ再生の出し分け・ごみ箱の非表示規律）は両方の画面に
+同時に適用される。
+
+**単体ページ自身のクエリキーは、一覧の invalidate に前方一致させてある**
+（`pages/recording-detail.tsx` の `recordingDetailQueryKey`。先頭要素を
+`getListRecordingsQueryKey` と同じ `'/api/recordings'` に揃える）。
+削除 / 復元 / 完全削除 / 追加エンコードはすべて `RecordingDetail` の下から
+`queryClient.invalidateQueries({ queryKey: ['/api/recordings'] })` を呼ぶだけ
+（`RecordingActions.invalidate` / `AddEncodeProfilesAction` の `onSuccess`、
+どちらも `pages/recordings.tsx`）で、単体ページも自動的に再検証される。
+prop で 1 段ずつ配線する形（`onMutated` のような穴）は採らなかった ---
+`RecordingDetail` の下に mutater を足すたびに「単体ページへの配線を通す」
+ことを覚えていないといけない形は、通し忘れても型エラーにならず黒く抜ける
+（最初の実装がこれで `AddEncodeProfilesAction` の再検証漏れを踏んだ。
+下記「経緯と失敗事例」）。
+
+`GET /api/recordings/{id}` はごみ箱の録画も 200 で返す（メタデータの
+可視性はメディア配信の 404 契約とは別の判断。[api/rest.md](../api/rest.md)
+「録画単体」）。単体ページはこの `deletedAt` の有無で、下記のごみ箱の
+出し分け規律をそのまま適用する。
+
 ## 録画のブラウザ再生
 
 **VOD は MP4 progressive + Range。** streamer の `GET /api/recordings/{id}/file?profile=<name>` を
@@ -181,6 +217,15 @@ limit)`（カーソル `before` / `beforeId` を含めない）にする --- 同
 
 - ブラウザ再生は M3-5、ごみ箱ビューの非表示は M3-18、録画検索の同居は M3-25 で
   実装した
+- 録画単体の着地先（`/recordings/$id`、`GET /api/recordings/{id}`）は
+  M6-4（issue #232）。一覧の行展開（`RecordingDetail`）をそのまま単体ページに
+  も渡す形にし、実装を 2 系統に分けなかった。最初の実装は単体ページの再検証を
+  `RecordingActions` にだけ `onMutated` prop で配線したため、同じ `RecordingDetail`
+  配下の別の mutater（`AddEncodeProfilesAction`）が素通しになり、「事後エンコード
+  を依頼しても単体ページの『追加済み』表示が更新されない」不具合をレビューで
+  実機再現された。配線を prop で持つ形自体が「次に mutater を足す人が通し忘れる」
+  穴を残すので、単体ページのクエリキーを一覧の invalidate に前方一致させる形
+  （`recordingDetailQueryKey`）に直した
 - 再生ボタンを行右端に独立させる決定と「`.play()` を呼ばない」判断は M5-4（issue #227）。
   レビューで一度差し戻された --- `<video>` に `tabIndex={-1}` を付けた最初の版は
   「native controls の個々のボタンにフォーカスが行くのでコンテナは Tab 対象で

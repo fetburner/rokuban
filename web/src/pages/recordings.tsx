@@ -433,7 +433,7 @@ function RecordingRow({ recording, trash }: { recording: Recording; trash: boole
  * 文字と淡い地（`text-destructive` + `bg-destructive/10`）。同じ赤でも、
  * 塗られているかどうかで「いま電波に乗っている」と「壊れた」を見分けられる。
  */
-function StatusBadge({ status }: { status: Recording['status'] }) {
+export function StatusBadge({ status }: { status: Recording['status'] }) {
   return (
     <span
       className={cn(
@@ -475,7 +475,27 @@ function DropBadges({ summary }: { summary: DropSummary }) {
   )
 }
 
-function RecordingDetail({
+/**
+ * RecordingDetail は録画 1 件の詳細本体（プレイヤー・メタデータ・操作）。
+ * 一覧の行展開（`RecordingRow`）と単体ページ（`pages/recording-detail.tsx`）の
+ * 両方が使う共通部品 --- 「再生・操作が一覧の展開と同等に機能する」を、
+ * 実装を分岐させずに実現するため。
+ *
+ * 単体ページはここで行われる削除 / 復元 / 完全削除 / 追加エンコードのどの
+ * mutate が成功しても自分自身を再描画したいが、それを prop で 1 段ずつ手渡す
+ * 形（例: `onMutated`）は「この部品の下で mutate する者は全員 prop を受け取る」
+ * という規律を要求し、守らせる仕組みが無い。実際、最初の実装はこの穴を
+ * `RecordingActions` にだけ塞いで `AddEncodeProfilesAction`（下記）を素通しし、
+ * 単体ページで「追加エンコードを依頼」しても再検証されない不具合になった
+ * （issue #232 のレビューで実機再現）。
+ *
+ * 直し方は prop を増やすことではなく、**単体ページ自身のクエリキーを一覧の
+ * invalidate に前方一致させる**（`pages/recording-detail.tsx` の
+ * `recordingDetailQueryKey` 参照）。ここに mutater を何人足しても、
+ * 各自が今のまま `['/api/recordings']` を invalidate するだけで単体ページも
+ * 自動的に巻き込まれるので、`RecordingDetail` 自身に配線用の prop は要らない。
+ */
+export function RecordingDetail({
   recording,
   trash,
   focusPlayerToken,
@@ -564,7 +584,7 @@ function RecordingDetail({
  * RecordingActions は論理削除 / 復元 / 即時 purge 印 + 追加エンコードの依頼。
  * 削除系はいずれも DB だけを触り、ファイルは消さない（M3-7）。
  */
-function RecordingActions({ recording, trash }: { recording: Recording; trash: boolean }) {
+export function RecordingActions({ recording, trash }: { recording: Recording; trash: boolean }) {
   const recordingId = recording.id
   const [purgeConfirmOpen, setPurgeConfirmOpen] = useState(false)
   const queryClient = useQueryClient()
@@ -574,7 +594,11 @@ function RecordingActions({ recording, trash }: { recording: Recording; trash: b
   const purgeRecording = usePurgeRecording()
 
   const invalidate = () => {
-    // ライブラリとごみ箱の両方を捨てる（片側の操作がもう片側の集合を変える）
+    // ライブラリとごみ箱の両方を捨てる（片側の操作がもう片側の集合を変える）。
+    // 単体ページ（pages/recording-detail.tsx）はこのキーに前方一致する
+    // クエリキー（recordingDetailQueryKey）を自ら使っているので、単体ページ
+    // だけを別途再検証する配線はここには要らない（テスト:
+    // recording-detail.test.tsx「ごみ箱へ移すと、ナビゲーションなしで…」）。
     void queryClient.invalidateQueries({ queryKey: ['/api/recordings'] })
   }
 

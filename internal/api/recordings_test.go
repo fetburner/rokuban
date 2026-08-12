@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"reflect"
 	"testing"
 	"time"
 
@@ -631,5 +632,200 @@ func TestRestoreRecording_PurgedNotFound(t *testing.T) {
 	}
 	if purgedAtVal == nil {
 		t.Error("purged_at should remain set (restore must not have cleared it)")
+	}
+}
+
+// GetRecording は一覧要素と同形の 1 件を返す（issue #232 M6-4）。
+func TestGetRecording_Found(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := newAPIServer(t, pool)
+
+	base := time.Now().Truncate(time.Second)
+	id := seedRecording(t, pool, "単体取得", base, "finished", 30)
+	seedIngested(t, pool, id, 1234, map[int32][4]int64{
+		0x100: {500, 2, 1, 0},
+	})
+
+	var got Recording
+	resp := getJSON(t, fmt.Sprintf("%s/api/recordings/%d", srv.URL, id), &got)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if got.Id != id {
+		t.Errorf("id = %d, want %d", got.Id, id)
+	}
+	if got.Title != "単体取得" {
+		t.Errorf("title = %q", got.Title)
+	}
+	if got.DropSummary == nil {
+		t.Fatal("dropSummary is nil")
+	}
+	want := DropSummary{Packets: 500, Drops: 2, Errors: 1, Scrambled: 0}
+	if *got.DropSummary != want {
+		t.Errorf("dropSummary = %+v, want %+v", *got.DropSummary, want)
+	}
+	if got.SizeBytes == nil || *got.SizeBytes != 1234 {
+		t.Errorf("sizeBytes = %v, want 1234", got.SizeBytes)
+	}
+	if got.DeletedAt != nil {
+		t.Errorf("deletedAt = %v, want nil (生きている行)", got.DeletedAt)
+	}
+}
+
+// 存在しない id は 404。
+func TestGetRecording_NotFound(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := newAPIServer(t, pool)
+
+	resp := doRecordingMethod(t, http.MethodGet, fmt.Sprintf("%s/api/recordings/999999", srv.URL))
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
+// ごみ箱の録画も 200 で返す（メディア配信の 404 契約とは別の判断。
+// openapi.yaml の getRecording description）。ただし encodedProfiles は
+// 一覧の trash=true と同じく省略する（プレイヤーを出さないので揃える必要が
+// 無い。docs/frontend/recordings.md）。
+func TestGetRecording_Trash(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := newAPIServer(t, pool)
+
+	base := time.Now().Truncate(time.Second)
+	id := seedRecording(t, pool, "ごみ箱の単体取得", base, "finished", 31)
+	seedIngested(t, pool, id, 1000, nil)
+	h264 := "h264"
+	if _, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
+		RecordingID: id,
+		Kind:        db.AssetKindEncoded,
+		Profile:     &h264,
+		RelPath:     "trash_h264.mp4",
+		SizeBytes:   50,
+	}); err != nil {
+		t.Fatalf("seed encoded: %v", err)
+	}
+
+	resp := doRecordingMethod(t, http.MethodDelete, fmt.Sprintf("%s/api/recordings/%d", srv.URL, id))
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete status = %d, want 204", resp.StatusCode)
+	}
+
+	var got Recording
+	resp = getJSON(t, fmt.Sprintf("%s/api/recordings/%d", srv.URL, id), &got)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (trash はメタデータを返す)", resp.StatusCode)
+	}
+	if got.DeletedAt == nil {
+		t.Error("trash の録画は deletedAt を含むべき")
+	}
+	if got.EncodedProfiles != nil {
+		t.Errorf("trash の録画は encodedProfiles を省略するべき、got %v", got.EncodedProfiles)
+	}
+}
+
+// 完全削除済み（purge_at が立った tombstone、issue #135）は 404。
+// ファイルが既に無く、通常一覧・ごみ箱一覧のどちらにも現れない行なので、
+// 単体 GET だけ見える形にしない。
+func TestGetRecording_Purged(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := newAPIServer(t, pool)
+	ctx := context.Background()
+
+	id := seedRecording(t, pool, "完全削除済みの単体取得", time.Now().Truncate(time.Second), "finished", 32)
+
+	resp := doRecordingMethod(t, http.MethodDelete, fmt.Sprintf("%s/api/recordings/%d", srv.URL, id))
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete status = %d, want 204", resp.StatusCode)
+	}
+	if _, err := pool.Exec(ctx,
+		"UPDATE recordings SET purged_at = now() WHERE id = $1", id); err != nil {
+		t.Fatalf("marking purged: %v", err)
+	}
+
+	resp = doRecordingMethod(t, http.MethodGet, fmt.Sprintf("%s/api/recordings/%d", srv.URL, id))
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
+// TestGetRecording_MatchesListElement は issue #232 レビューの nit 4: 単体取得
+// （queryRecordingByID）と一覧（queryRecordings）が同じ SELECT リスト定数
+// （recordingsSelectColumns 等）を共有していることは構造的な保証だが、
+// それ自体は「Scan の並びが定数と対応しているか」までは見ない。ここでは
+// 同じ録画を GET /api/recordings（一覧から該当行を探す）と
+// GET /api/recordings/{id} の両方から独立に取得し、返ってきた 2 つの
+// Recording を直接比較する --- 実装の定数と比較する類（CLAUDE.md「テスト規律」
+// が禁じる「期待値が定数」）ではなく、2 本の実際の HTTP レスポンスを比べる
+// 本物のオラクル。原本・エンコード派生物・ドロップ統計・品質イベントを
+// 一通り持つ録画で、両エンドポイントがまったく同じ形を返すことを見る。
+func TestGetRecording_MatchesListElement(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := newAPIServer(t, pool)
+
+	base := time.Now().Truncate(time.Second)
+	desc := "一覧要素と単体取得が一致するかの確認用"
+	id, err := sqlcgen.New(pool).CreateRecording(context.Background(), sqlcgen.CreateRecordingParams{
+		Source:            "manual",
+		Site:              db.DefaultSite,
+		NetworkID:         32678,
+		ServiceID:         5168,
+		EventID:           40,
+		ServiceName:       "ＯＨＫ",
+		ChannelType:       "GR",
+		Channel:           "27",
+		Title:             "一覧と単体の一致確認",
+		Description:       &desc,
+		ProgramStartAt:    base,
+		ProgramDurationMs: (30 * time.Minute).Milliseconds(),
+		Status:            "finished",
+	})
+	if err != nil {
+		t.Fatalf("seeding recording: %v", err)
+	}
+	seedIngested(t, pool, id, 5000, map[int32][4]int64{
+		0x100: {900, 3, 2, 1},
+	})
+	h264 := "h264"
+	if _, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
+		RecordingID: id,
+		Kind:        db.AssetKindEncoded,
+		Profile:     &h264,
+		RelPath:     "match_h264.mp4",
+		SizeBytes:   50,
+	}); err != nil {
+		t.Fatalf("seed encoded: %v", err)
+	}
+	events, err := json.Marshal([]db.QualityEvent{{At: base, Event: "bcas_anomaly"}})
+	if err != nil {
+		t.Fatalf("marshalling events: %v", err)
+	}
+	if err := sqlcgen.New(pool).AppendQualityEvents(context.Background(), sqlcgen.AppendQualityEventsParams{
+		ID:     id,
+		Events: events,
+	}); err != nil {
+		t.Fatalf("appending quality events: %v", err)
+	}
+
+	var list []Recording
+	getJSON(t, srv.URL+"/api/recordings", &list)
+	var fromList *Recording
+	for i := range list {
+		if list[i].Id == id {
+			fromList = &list[i]
+			break
+		}
+	}
+	if fromList == nil {
+		t.Fatalf("recording %d not found in list %+v", id, list)
+	}
+
+	var fromDetail Recording
+	resp := getJSON(t, fmt.Sprintf("%s/api/recordings/%d", srv.URL, id), &fromDetail)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	if !reflect.DeepEqual(*fromList, fromDetail) {
+		t.Errorf("GET /api/recordings element and GET /api/recordings/{id} differ:\nlist   = %+v\ndetail = %+v", *fromList, fromDetail)
 	}
 }
