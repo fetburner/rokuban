@@ -2,6 +2,7 @@ import { createRootRoute, createRoute, Outlet } from '@tanstack/react-router'
 
 import { AppShell } from './components/app-shell'
 import { SiteGate } from './components/site-gate'
+import { parseProgramsSearch, type ProgramsPageSearch } from './lib/programs-search'
 import { parseRecordingsSearch, type RecordingsPageSearch } from './lib/recording-search'
 import { LivePage } from './pages/live'
 import { ProgramsPage } from './pages/programs'
@@ -24,9 +25,18 @@ const rootRoute = createRootRoute({
   ),
 })
 
+/**
+ * 番組表のチャンネル絞り込みは URL の `?serviceId=` に持つ（issue #231）。
+ * `/recordings` の `serviceId` と同じ形（`number[]`。複数可・OR）で、絞り込み
+ * 済みの番組表への深いリンクや共有ができるようにする。壊れた値は
+ * `parseProgramsSearch`（`/recordings` の `parseRecordingsSearch` と同じ流儀）が
+ * 落とすので、壊れたリンクを踏んでも「絞り込みなし」で開ける。
+ */
 const programsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/',
+  validateSearch: (search: Record<string, unknown>): ProgramsPageSearch =>
+    parseProgramsSearch(search),
   component: ProgramsPage,
 })
 

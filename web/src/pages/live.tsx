@@ -207,6 +207,15 @@ export function LivePage() {
               ) : !nowPlayingQuery.isPending ? (
                 <p className="text-sm text-muted-foreground">いま放送中の番組の情報はありません</p>
               ) : null}
+              {/* ライブ ⇄ 番組表の導線（issue #231）。番組表の `?serviceId=` は
+                  `/recordings` と同じ形（複数可の配列）なので、1 局分の配列を渡す。 */}
+              <Link
+                to="/"
+                search={{ serviceId: [selectedService.serviceId] }}
+                className="mt-1 inline-block text-sm text-primary underline-offset-2 hover:underline"
+              >
+                この局の番組表
+              </Link>
             </div>
           </div>
 

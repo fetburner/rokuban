@@ -274,6 +274,27 @@ describe('LivePage', () => {
     expect(await screen.findByText('B の番組')).toBeInTheDocument()
   })
 
+  it('視聴中チャンネルの「この局の番組表」は番組表の ?serviceId= へ遷移する（issue #231）', async () => {
+    stubFetch({
+      services: [
+        service({ serviceId: 10, name: 'チャンネル A' }),
+        service({ serviceId: 20, name: 'チャンネル B' }),
+      ],
+      programsByServiceId: {
+        20: [program({ serviceId: 20, name: 'B の番組' })],
+      },
+    })
+    renderLive('/live?serviceId=20')
+
+    expect(await screen.findByText('B の番組')).toBeInTheDocument()
+
+    const link = screen.getByRole('link', { name: 'この局の番組表' })
+    // 配列は既定のシリアライズ（JSON.stringify）で 1 パラメータに載る
+    // （`?serviceId=[20]` が URL エンコードされた形）。往復して正しく戻ることは
+    // 別途 lib/programs-search.test.ts と routes.test.tsx で見ている
+    expect(link).toHaveAttribute('href', '/?serviceId=%5B20%5D')
+  })
+
   it('存在しない serviceId を指定すると番組を持つ先頭にフォールバックする', async () => {
     stubFetch({
       services: [
