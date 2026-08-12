@@ -9,6 +9,7 @@ import {
   type DropStat,
   type EncodeProfileSummary,
   type Recording,
+  type Rule,
   type Service,
 } from '@/api/generated'
 import { ToastProvider } from '@/components/toaster'
@@ -102,6 +103,17 @@ const sampleRecording = (overrides: Partial<Recording> = {}): Recording => ({
   ...overrides,
 })
 
+const sampleRule = (overrides: Partial<Rule> = {}): Rule => ({
+  id: 5,
+  name: 'サンプルルール',
+  enabled: true,
+  priority: 0,
+  keepOriginal: 'always',
+  createdAt: '2026-01-01T00:00:00Z',
+  updatedAt: '2026-01-01T00:00:00Z',
+  ...overrides,
+})
+
 const sampleService = (overrides: Partial<Service> = {}): Service => ({
   networkId: 32736,
   serviceId: 5168,
@@ -138,11 +150,13 @@ function createFakeRecordingsServer(options: {
   trash?: Recording[]
   services?: Service[]
   encodeProfiles?: EncodeProfileSummary[]
+  rules?: Rule[]
 }) {
   let library = [...(options.library ?? [])]
   let trash = [...(options.trash ?? [])]
   const services = options.services ?? [sampleService()]
   const encodeProfiles = options.encodeProfiles ?? []
+  const rules = options.rules ?? []
 
   function paginate(url: URL, all: Recording[]): Recording[] {
     const q = url.searchParams.get('q')
@@ -191,6 +205,7 @@ function createFakeRecordingsServer(options: {
     if (url.pathname === '/api/sites') return Promise.resolve(jsonResponse(['default']))
     if (url.pathname === '/api/sites/default/services') return Promise.resolve(jsonResponse(services))
     if (url.pathname === '/api/encode-profiles') return Promise.resolve(jsonResponse(encodeProfiles))
+    if (url.pathname === '/api/rules' && method === 'GET') return Promise.resolve(jsonResponse(rules))
 
     if (url.pathname === '/api/recordings' && method === 'GET') {
       const trashParam = url.searchParams.get('trash') === 'true'
@@ -1034,6 +1049,87 @@ describe('AddEncodeProfilesAction', () => {
     await screen.findByText('削除日時')
     expect(screen.queryByText('事後エンコードの追加')).not.toBeInTheDocument()
     expect(screen.queryByRole('checkbox')).not.toBeInTheDocument()
+  })
+})
+
+// issue #230（M6-2）: 録画 → ルールの導線。ruleId の有無で出し分け、削除済み
+// ルールでも壊れないことを両方向で固定する。
+describe('RecordingDetail ルール導線', () => {
+  it('ruleId がある録画は「ルール」セクションを出し、ルール名がリンクになる', async () => {
+    const user = userEvent.setup()
+    createFakeRecordingsServer({
+      library: [sampleRecording({ id: 50, title: 'ルール由来の録画', ruleId: 5, source: 'rule' })],
+      rules: [sampleRule({ id: 5, name: 'ニュース全部' })],
+    })
+
+    renderPage()
+    await user.click(await screen.findByText('ルール由来の録画'))
+
+    expect(await screen.findByRole('heading', { name: 'ルール', level: 4 })).toBeInTheDocument()
+
+    const nameLink = screen.getByRole('link', { name: 'ニュース全部' })
+    expect(nameLink).toHaveAttribute('href', '/search?ruleId=5')
+
+    const filterLink = screen.getByRole('link', { name: 'このルールの録画で絞る' })
+    expect(filterLink).toHaveAttribute('href', '/recordings?ruleId=5')
+  })
+
+  it('ruleId が無い録画には「ルール」セクションを出さない（手動予約由来）', async () => {
+    const user = userEvent.setup()
+    createFakeRecordingsServer({
+      library: [sampleRecording({ id: 51, title: '手動予約の録画', source: 'manual' })],
+    })
+
+    renderPage()
+    await user.click(await screen.findByText('手動予約の録画'))
+
+    // 展開後の内容（種別）が出るまで待ってから「無い」ことを確認する
+    // （クエリ未解決のうちに queryBy で通ってしまう空虚な成功を避ける）。
+    await screen.findByText('種別')
+    expect(screen.queryByRole('heading', { name: 'ルール', level: 4 })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'このルールの録画で絞る' })).not.toBeInTheDocument()
+  })
+
+  it('参照先のルールが削除済みでも #N 表記に落ちて壊れない', async () => {
+    const user = userEvent.setup()
+    createFakeRecordingsServer({
+      library: [
+        sampleRecording({ id: 52, title: '削除済みルール由来の録画', ruleId: 99, source: 'rule' }),
+      ],
+      rules: [], // ruleId: 99 のルールは既に削除済み（一覧に居ない）
+    })
+
+    renderPage()
+    await user.click(await screen.findByText('削除済みルール由来の録画'))
+
+    // ルール一覧の取得が解決するのを待ってから確認する（未解決のうちは
+    // rules が空配列のままで #N に落ちるのと区別できない空虚な成功になる）
+    await waitFor(() => expect(screen.getByRole('link', { name: '#99' })).toBeInTheDocument())
+    const nameLink = screen.getByRole('link', { name: '#99' })
+    expect(nameLink).toHaveAttribute('href', '/search?ruleId=99')
+
+    const filterLink = screen.getByRole('link', { name: 'このルールの録画で絞る' })
+    expect(filterLink).toHaveAttribute('href', '/recordings?ruleId=99')
+  })
+
+  it('「このルールの録画で絞る」をクリックすると実際に ruleId で絞り込まれる（同一ページの検索条件変更）', async () => {
+    const user = userEvent.setup()
+    createFakeRecordingsServer({
+      library: [
+        sampleRecording({ id: 53, title: 'ルール由来', ruleId: 7, source: 'rule' }),
+        sampleRecording({ id: 54, title: '別ルール由来', ruleId: 8, source: 'rule' }),
+      ],
+      rules: [sampleRule({ id: 7, name: '対象ルール' })],
+    })
+
+    const { router } = renderPage()
+    await user.click(await screen.findByText('ルール由来'))
+    await user.click(await screen.findByRole('link', { name: 'このルールの録画で絞る' }))
+
+    // parseRecordingsSearch を通った検証済みの search になる（チップにも出る）
+    await waitFor(() => expect(router.state.location.search).toMatchObject({ ruleId: 7 }))
+    expect(await screen.findByText('ルール #7')).toBeInTheDocument()
+    expect(screen.queryByText('別ルール由来')).not.toBeInTheDocument()
   })
 })
 

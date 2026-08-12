@@ -1,5 +1,5 @@
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query'
-import { useSearch as useRouteSearch, useNavigate } from '@tanstack/react-router'
+import { Link, useSearch as useRouteSearch, useNavigate } from '@tanstack/react-router'
 import { ChevronDown, Play, Trash2 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
@@ -10,6 +10,7 @@ import {
   useDeleteRecording,
   useListEncodeProfiles,
   useListRecordingDropStats,
+  useListRules,
   usePurgeRecording,
   useRestoreRecording,
   type DropSummary,
@@ -558,6 +559,10 @@ export function RecordingDetail({
         )}
       </dl>
 
+      {/* 手動予約由来の録画には ruleId が無い。「機能しないコントロールは
+          置かない」の既存規律に従い、セクションごと出さない（issue #230）。 */}
+      {recording.ruleId !== undefined && <RuleSection ruleId={recording.ruleId} />}
+
       {recording.qualityEvents && recording.qualityEvents.length > 0 && (
         <section>
           <h4 className="mb-1 font-medium">品質イベント</h4>
@@ -577,6 +582,58 @@ export function RecordingDetail({
 
       <RecordingActions recording={recording} trash={trash} />
     </div>
+  )
+}
+
+/**
+ * RuleSection は「この録画はどのルールが録ったのか」への導線（issue #230）。
+ * 呼び出し側（RecordingDetail）が `recording.ruleId !== undefined` を確認して
+ * からマウントするので、ここでは「ある」ことを前提にできる。
+ *
+ * **ルール名の解決は `useListRules` のキャッシュから。** 専用の
+ * `GET /api/rules/{id}` は無く、ルール一覧はどのページでもキャッシュに乗る
+ * 程度の件数（`RulesPage` が常に全件を引く設計）なので、録画の展開ごとに
+ * 個別の 1 件取得を増やす理由がない。同じ `queryKey` を複数の
+ * `RecordingDetail` が同時にマウントしても react-query が 1 回の取得に
+ * まとめる。
+ *
+ * **削除済みルール（一覧に居ない ruleId）でも壊れない。** `rules.find` が
+ * 見つからなければ `#N` 表記に落とす --- `recordings.rule_id` は
+ * 履歴として残る一方 `rules` 行は削除されうる非対称（不変条件 9 の裏側:
+ * 録画側は「その時点で使われた事実」を持ち続ける）ので、参照先が消えている
+ * ケースは通常の状態として扱う（例外にしない）。
+ *
+ * 原則「固有名詞はリンク」（issue #221）に従い、ルールの識別（名前 or
+ * `#N`）そのものをリンクテキストにする --- 装飾テキストの隣にリンクを
+ * 置く形にしない。リンク先は `/search?ruleId=N`（ルールの実質的な編集画面。
+ * `RulesPage` の「検索しながら編集」と同じ着地先）。
+ */
+function RuleSection({ ruleId }: { ruleId: number }) {
+  const query = useListRules()
+  const rules = unwrap(query.data) ?? []
+  const rule = rules.find((r) => r.id === ruleId)
+  const label = rule?.name ?? `#${ruleId}`
+
+  return (
+    <section>
+      <h4 className="mb-1 font-medium">ルール</h4>
+      <div className="flex flex-wrap items-center gap-3">
+        <Link
+          to="/search"
+          search={{ ruleId }}
+          className="text-primary underline-offset-2 hover:underline"
+        >
+          {label}
+        </Link>
+        <Link
+          to="/recordings"
+          search={{ ruleId }}
+          className="text-muted-foreground underline-offset-2 hover:underline"
+        >
+          このルールの録画で絞る
+        </Link>
+      </div>
+    </section>
   )
 }
 
