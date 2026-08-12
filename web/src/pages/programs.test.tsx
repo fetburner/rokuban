@@ -1103,6 +1103,133 @@ describe('ProgramsPage の日付ジャンプ（先頭の窓に重なる前日の
 })
 
 /**
+ * 容量不足バッジ（`components/capacity-shortfall-badge.tsx`）からの導線
+ * （issue #233 M6-5）。バッジは番組表ルート（`/`）に `?at=<epoch ms>` を積んで
+ * リンクする。
+ *
+ * グリッドの実際のスクロール位置（px）は jsdom で測れないので e2e の担当
+ * （`web/e2e/`）。ここで見るのは jsdom でも判定できる部分だけ ---
+ * (1) `lg` 未満・リスト表示中は「その時刻が属する日」への日付ジャンプに
+ * フォールバックすること、(2) `lg` 以上では自動でグリッド表示に切り替わること、
+ * (3) 切替後にユーザーが手動でリストへ戻した選択を、画面幅の再評価で上書きしない
+ * こと。
+ */
+describe('ProgramsPage の at パラメータ（容量バッジからの導線。issue #233 M6-5）', () => {
+  // dayOffset 2（明後日）に属する時刻。他の日付ジャンプテストと同じ理由で
+  // offset 1 ではなく 2 を使う（allPrograms の固定オフセットとの窓の重なりを
+  // 避ける）。この時刻を覆う番組を明示的に置く --- 置かないと day 2 の窓が
+  // 空になり、「グリッドが出る/出ない」ではなく「空状態が出る」で判定が
+  // 潰れてしまう（グリッド・リストのどちらも `programs.length === 0` で同じ
+  // EmptyState に落ちるため、`program-grid` の testid の有無まで見分けられない）。
+  const targetMs = dayOrigin(2).getTime() + 3 * 3_600_000
+  const dayTwoProgram = programAtAbsolute(220, 1024, targetMs, '容量バッジ導線の番組')
+
+  it('lg 未満では、グリッドを出さずに at が属する日へ日付ジャンプする', async () => {
+    stubApi([], [], [...allPrograms, dayTwoProgram])
+    stubMatchMedia(false)
+    renderPage(`/?at=${targetMs}`)
+
+    // 「ニュース7」（今日の番組）ではなく、day 2 の番組が出る ---
+    // 日付ジャンプが実際に効いていることの証拠（効いていなければ今日のまま
+    // 「ニュース7」が出続け、この見つけ方は失敗する）
+    expect(await screen.findByText('容量バッジ導線の番組')).toBeInTheDocument()
+    expect(screen.queryByText('ニュース7')).not.toBeInTheDocument()
+    // グリッドは lg 未満では出ない（表示形式の切り替えごと存在しない）
+    expect(screen.queryByTestId('program-grid')).not.toBeInTheDocument()
+
+    const dayGroup = screen.getByRole('group', { name: '日付' })
+    expect(within(dayGroup).getAllByRole('button')[2]).toHaveAttribute('aria-current', 'date')
+  })
+
+  it('lg 以上では、リストのままにせず自動でグリッド表示に切り替わる', async () => {
+    stubApi([], [], [...allPrograms, dayTwoProgram])
+    stubMatchMedia(true)
+    renderPage(`/?at=${targetMs}`)
+
+    // クリックせずにグリッドが出る（`表示形式` チップを押す通常の経路と違う）。
+    // グリッドの中に day 2 の番組が実際に見えることまで確認する ---
+    // 単に testid が存在するだけでは「軸が day 2 に合っている」保証にならない
+    // （軸がずれていても `programs.length` が非 0 なら testid 自体は出る）。
+    await screen.findByTestId('program-grid')
+    expect(screen.getByText('容量バッジ導線の番組')).toBeInTheDocument()
+
+    const dayGroup = screen.getByRole('group', { name: '日付' })
+    expect(within(dayGroup).getAllByRole('button')[2]).toHaveAttribute('aria-current', 'date')
+  })
+
+  it('自動切替後にユーザーがリストへ戻すと、画面幅の再評価だけではグリッドに戻さない', async () => {
+    stubApi([], [], [...allPrograms, dayTwoProgram])
+    const media = stubMatchMedia(true)
+    renderPage(`/?at=${targetMs}`)
+
+    await screen.findByTestId('program-grid')
+
+    // ユーザーが手動でリストへ戻す
+    await userEvent.click(screen.getByRole('button', { name: 'リスト' }))
+    expect(screen.queryByTestId('program-grid')).not.toBeInTheDocument()
+
+    // 画面幅が狭くなって（他の画面遷移や resize で）また広くなっても、
+    // 同じ at のままではグリッドへ戻されない（`forcedGridForAtRef` の役目。
+    // at 自体は URL に残ったままだが、「1 回切り替えたら終わり」を覚えるのは
+    // この ref であって at の有無ではない）
+    media.set(false)
+    media.set(true)
+    expect(screen.queryByTestId('program-grid')).not.toBeInTheDocument()
+  })
+
+  // レビュー nit 4: 素朴に「at を 1 回使ったら URL から navigate で消す」実装を
+  // 試したところ、`navigate` の非同期解決がグリッドの初回スクロール確定より
+  // 先に終わってしまい、肝心のスクロールが「今」にしか効かなくなる退行を
+  // e2e（`web/e2e/badge-links.mjs` の②）で検出した。代わりに `scrollToMs` を
+  // `dayOffset === atDayOffset` で条件付ける方式にしたので、at は URL に残る
+  // （消費・削除しない）。ここで確認できるのは「別の日を選べば実際にその日へ
+  // 切り替わる」こと（= at が現在地を固定してしまわないこと）まで --- 「今日へ
+  // 戻したときに now へスクロールし直す」というスクロール位置そのものの主張は
+  // jsdom では測れないため e2e の担当。
+  it('at がある状態でも別の日を選べば、その日の内容に切り替わる（at が現在地を固定しない）', async () => {
+    stubApi([], [], [...allPrograms, dayTwoProgram])
+    stubMatchMedia(true)
+    renderPage(`/?at=${targetMs}`)
+
+    await screen.findByTestId('program-grid')
+    expect(screen.getByText('容量バッジ導線の番組')).toBeInTheDocument()
+
+    // 「今日」（offset 0）を選び直す
+    const dayGroup = screen.getByRole('group', { name: '日付' })
+    await userEvent.click(within(dayGroup).getAllByRole('button')[0])
+
+    await waitFor(() =>
+      expect(within(dayGroup).getAllByRole('button')[0]).toHaveAttribute('aria-current', 'date'),
+    )
+    // day 2 専用の番組はもう見えない（軸が実際に today へ切り替わった証拠）
+    expect(screen.queryByText('容量バッジ導線の番組')).not.toBeInTheDocument()
+  })
+
+  // レビューの must-fix 1（実測: 実ブラウザ・jsdom の両方で `/?at=1e30` 等が
+  // "Something went wrong!" になった）の回帰テスト。`parseAt`
+  // （lib/programs-search.ts）が Date の time value の定義域外を落とすので、
+  // ここまで来る `at` は既に安全なはずだが、実際にページ全体を描いて
+  // エラー境界（TanStack Router の既定のエラーコンポーネント）に落ちて
+  // いないことまで確認する --- 単体関数のテストだけでは「呼び出し側で
+  // 本当に守られているか」までは分からない。
+  it('Date の time value の定義域を超える at を踏んでもエラー境界に落ちない（壊れたリンクでも画面は開く）', async () => {
+    stubApi()
+    stubMatchMedia(true)
+    renderPage('/?at=1e30')
+
+    // 通常表示（「今日」のまま）に落ちる。エラー境界の文言が出ていないこと
+    // まで見る（`document.body.textContent` に "Something went wrong" を
+    // 含めば実測どおりの回帰）
+    expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+    expect(document.body.textContent).not.toMatch(/Something went wrong/)
+
+    const dayGroup = screen.getByRole('group', { name: '日付' })
+    // at が落とされているので、日付ジャンプは起きず「今日」のまま
+    expect(within(dayGroup).getAllByRole('button')[0]).toHaveAttribute('aria-current', 'date')
+  })
+})
+
+/**
  * 番組表から「予約」する際に encodeProfiles / keepOriginal を指定できることの
  * 回帰テスト（issue #132）。
  *

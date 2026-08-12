@@ -6,6 +6,7 @@ import {
   ReservationSkipBadge,
   ReservationSkipReason,
 } from '@/components/reservation-skip-reason'
+import { renderInRouter } from '@/test/router'
 
 /**
  * 同期レンダリングのみのコンポーネントなので、`ProgramOverlapWarning` のような
@@ -66,13 +67,20 @@ describe('ReservationSkipBadge', () => {
 })
 
 describe('ReservationSkipReason', () => {
-  it('重複の根拠（録画 id と類似度）を出す', () => {
-    render(
+  // 「録画 #id」がリンクになった（issue #233 M6-5）ので `Link` を描くのに
+  // ルーターが要る（他のテストは `<span>` だけなので不要。この 1 件だけ
+  // `renderInRouter` を使う）。
+  it('重複の根拠（録画 id と類似度）を出す。録画 id は録画単体ページへのリンク', async () => {
+    renderInRouter(
       <ReservationSkipReason
         reservation={reservation({ skip: true, dedupMatchRecordingId: 12, dedupSimilarity: 0.875 })}
       />,
     )
-    expect(screen.getByText(/録画 #12/)).toBeInTheDocument()
+    // 「録画 #12」というリンクが録画単体ページ（/recordings/12）を指す
+    // （固有名詞はリンクにする、issue #233 の原則）。RouterProvider は初回
+    // マッチが解決するまで何も描かないので findBy* で待つ。
+    const link = await screen.findByRole('link', { name: '録画 #12' })
+    expect(link).toHaveAttribute('href', '/recordings/12')
     expect(screen.getByText(/類似度 0\.88/)).toBeInTheDocument()
   })
 

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { dayOrigin } from '@/lib/day-offset'
+import { dayOffsetForMs, dayOrigin } from '@/lib/day-offset'
 
 describe('dayOrigin', () => {
   it('0 は now を時・分・秒で切り捨てた時刻になる（0 時ではない）', () => {
@@ -38,5 +38,29 @@ describe('dayOrigin', () => {
     expect(origin).toEqual(new Date(2026, 6, 25, 10, 0, 0, 0))
 
     vi.restoreAllMocks()
+  })
+})
+
+describe('dayOffsetForMs', () => {
+  const now = new Date(2026, 6, 25, 15, 0, 0, 0).getTime()
+
+  it('今日の時刻は 0 になる（未明でも前日に誤判定しない）', () => {
+    const earlyMorning = new Date(2026, 6, 25, 0, 30, 0, 0).getTime()
+    expect(dayOffsetForMs(earlyMorning, now, 8)).toBe(0)
+  })
+
+  it('3 日先の時刻は 3 になる', () => {
+    const threeDaysLater = new Date(2026, 6, 28, 21, 0, 0, 0).getTime()
+    expect(dayOffsetForMs(threeDaysLater, now, 8)).toBe(3)
+  })
+
+  it('過去の時刻は 0 にクランプする', () => {
+    const yesterday = new Date(2026, 6, 24, 21, 0, 0, 0).getTime()
+    expect(dayOffsetForMs(yesterday, now, 8)).toBe(0)
+  })
+
+  it('selectableDays より先の時刻は selectableDays - 1 にクランプする', () => {
+    const farFuture = new Date(2026, 7, 20, 0, 0, 0, 0).getTime()
+    expect(dayOffsetForMs(farFuture, now, 8)).toBe(7)
   })
 })

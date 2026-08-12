@@ -80,6 +80,7 @@ export function ProgramGrid({
   selectedProgramId,
   onSelect,
   now,
+  scrollToMs,
   overlay,
 }: {
   /** 列。渡された順に左から並べる（並び順は lib/epg-grid.ts の orderServices）。 */
@@ -91,6 +92,14 @@ export function ProgramGrid({
   onSelect: (program: ProgramListItem) => void
   /** 現在時刻。省略すると内部の時計を使う（テストから固定するための口）。 */
   now?: number
+  /**
+   * 軸が変わったときの初期スクロール先（epoch ms）。省略すると「今」に
+   * スクロールする既定の挙動（下記 useLayoutEffect）のまま。容量不足バッジ
+   * （`components/capacity-shortfall-badge.tsx`）から「この時間帯」への導線
+   * （issue #233 M6-5）が、軸の外の時刻を渡すこともある --- その場合は「今」と
+   * 同じフォールバック（先頭。`inAxis` が false になる分岐）に落ちる。
+   */
+  scrollToMs?: number
   /** 全チャンネル縦断の帯を重ねる層。軸を受け取って絶対配置の要素を返す。 */
   overlay?: (axis: TimeAxis) => React.ReactNode
 }) {
@@ -127,19 +136,20 @@ export function ProgramGrid({
     return () => observer.disconnect()
   }, [measure])
 
-  // 開いた直後は「今」が見えている方が有用なので、そこまでスクロールしておく。
-  // 軸が変わったとき（日付を変えたとき）だけやり直す — 時計の更新で毎分
-  // スクロール位置が戻ると操作できない。
+  // 開いた直後は「今」（または `scrollToMs` が指す時刻）が見えている方が
+  // 有用なので、そこまでスクロールしておく。軸が変わったとき（日付を変えた
+  // とき）だけやり直す — 時計の更新で毎分スクロール位置が戻ると操作できない。
   const scrolledForAxisRef = useRef<number | null>(null)
   useLayoutEffect(() => {
     const el = scrollerRef.current
     if (!el || scrolledForAxisRef.current === axis.startMs) return
     scrolledForAxisRef.current = axis.startMs
-    const inAxis = currentMs >= axis.startMs && currentMs < axis.endMs
-    // 少し上に余白を残す（「今」が画面の最上端に張り付くと直前の番組が見えない）
-    el.scrollTop = inAxis ? Math.max(0, timeToPx(axis, currentMs) - axis.pxPerHour / 2) : 0
+    const targetMs = scrollToMs ?? currentMs
+    const inAxis = targetMs >= axis.startMs && targetMs < axis.endMs
+    // 少し上に余白を残す（対象が画面の最上端に張り付くと直前の番組が見えない）
+    el.scrollTop = inAxis ? Math.max(0, timeToPx(axis, targetMs) - axis.pxPerHour / 2) : 0
     measure()
-  }, [axis, currentMs, measure])
+  }, [axis, currentMs, scrollToMs, measure])
 
   const placedByService = useMemo(() => groupProgramsByService(programs), [programs])
   const ticks = useMemo(() => hourTicks(axis), [axis])

@@ -31,7 +31,7 @@ import {
 } from '@/api/generated'
 import { apiErrorMessage, unwrap } from '@/api/unwrap'
 import { shouldAutoLoadNextPage, shouldShowLoadMoreButton } from '@/lib/auto-load'
-import { dayOrigin } from '@/lib/day-offset'
+import { dayOffsetForMs, dayOrigin } from '@/lib/day-offset'
 import { orderServices, type TimeAxis } from '@/lib/epg-grid'
 import { formatDate } from '@/lib/format'
 import { domLayoutMeasurable } from '@/lib/list-virtualization'
@@ -83,6 +83,11 @@ type ProgramView = 'list' | 'grid'
  * チャンネル絞り込みは URL に持つ（issue #231。`lib/programs-search.ts` の
  * `ProgramsPageSearch`）。ライブ視聴（`pages/live.tsx`）からは選択中チャンネルの
  * 番組表へ `?serviceId=` 付きで飛べる（「この局の番組表」リンク）。
+ *
+ * 容量不足バッジ（予約一覧）からは `?at=<epoch ms>` 付きで飛べる（issue #233
+ * M6-5）。`lg` 以上ではグリッドへ自動で切り替えてその時刻へスクロールし、
+ * それ以外（リスト・`lg` 未満）では「その時刻が属する日」への日付ジャンプに
+ * 留める（下記 `at` 関連の 2 つの effect 参照）。
  *
  * **番組表からライブへの導線はここには置かない。** 放送中の番組の展開に
  * 「ライブで見る」を出す導線は行（`ProgramRow`）の展開領域の担当にする
@@ -160,11 +165,71 @@ export function ProgramsPage() {
     setVisibleDay(offset)
   }
 
+  // at は容量不足バッジ（`components/capacity-shortfall-badge.tsx`）からの
+  // ジャンプ先の時刻（epoch ms。issue #233 M6-5、`lib/programs-search.ts` の
+  // `parseProgramsSearch` が検証済み）。グリッドの初期スクロール位置に使う
+  // （下記 `ProgramGridView` への `scrollToMs`）他に、グリッドが出ない・
+  // 選ばれていない画面でも「その時刻が属する日」だけは合わせる（次項）。
+  const at = search.at
+  // atDayOffset は at が属する日（`lib/day-offset.ts` の `dayOffsetForMs`）。
+  // `dayOffset`（いま実際に見ている日）と比較することで「at はまだ有効か」を
+  // 判定する（下記 `scrollToMs` 参照）。
+  const atDayOffset = at === undefined ? undefined : dayOffsetForMs(at, Date.now(), selectableDays)
+
+  // at が指す日へ「いま見ている日」を合わせる。グリッドの有無・表示形式に
+  // 関わらず効かせる --- リスト表示中・`lg` 未満（グリッドが出ない）画面では
+  // 帯で「その時間帯」を直接見せる手段が無いため、次善として日だけ合わせる
+  // のがこの導線の唯一の反映先になる。
+  useEffect(() => {
+    if (atDayOffset === undefined) return
+    setDayOffset(atDayOffset)
+    setVisibleDay(atDayOffset)
+  }, [atDayOffset])
+
   // グリッドは `lg` 以上でのみ出す。モバイルは常にリストのまま
   // （docs/frontend.md「リストを第一級に置く。グリッドはその上に足す」）。
   // view は画面幅で捨てないので、幅が戻ればグリッドに戻る。
   const wideScreen = useMediaQuery(lgMediaQuery)
   const showGrid = wideScreen && view === 'grid'
+
+  // at があり、かつグリッドが選べる画面幅なら自動でグリッドへ切り替える ---
+  // バッジの目的は「その時間帯を帯で見る」ことなので、リストのままでは用が
+  // 済まない。`useMediaQuery` は初回レンダーでは必ず false を返し（`window`
+  // の購読は effect 経由なので、マウント直後の 1 回だけは実際の画面幅を
+  // 反映できない）、遅れて true になった時点でこの effect が発火する。
+  // `forcedGridForAtRef` で「この at には既に 1 回切り替えた」ことを覚えておき、
+  // 切り替え後にユーザーが手動でリストへ戻した選択を、resize による
+  // `wideScreen` の再評価で上書きしない。別のバッジ（別の at）を踏めばまた
+  // 1 回だけ働く。
+  //
+  // **`at` を URL から消費・削除する方式は採らない**（レビュー指摘 nit 4 の
+  // 素朴な実装で一度試して実機で退行を確認したため）。`navigate` で `at` を
+  // 消す effect は非同期に解決し、グリッドが実際に軸を確定してスクロールを
+  // 適用するより先に `at` が消えてしまうことがあった（`useMediaQuery` が
+  // `false → true` になるのに最低 1 レンダー、`view` が `'grid'` になるのに
+  // さらに 1 レンダーかかる一方、`navigate` の解決タイミングはそれより早く
+  // 終わりうる）--- 結果、肝心の初回スクロールが「今」にしか効かなくなった
+  // （e2e `web/e2e/badge-links.mjs` の②が実際に落ちて発覚した）。代わりに
+  // 下記 `scrollToMs` を `dayOffset === atDayOffset` で条件付けることで、
+  // 「at は現在地の日を離れたら自動的に効かなくなる」を URL を書き換えずに
+  // 実現する --- 「今日」ボタンを押す（`dayOffset` が変わる）だけで scrollToMs
+  // は自然に `undefined` に戻り、以後の軸変更は「今」へスクロールする既定の
+  // 挙動に戻る。
+  const forcedGridForAtRef = useRef<number | undefined>(undefined)
+  useEffect(() => {
+    if (at === undefined || !wideScreen) return
+    if (forcedGridForAtRef.current === at) return
+    forcedGridForAtRef.current = at
+    setView('grid')
+  }, [at, wideScreen])
+
+  // scrollToMs はグリッドの初期スクロール先。**`dayOffset` が `at` の指す日と
+  // 一致している間だけ** `at` を渡す --- 一致しなくなった（「今日」ボタンや
+  // 日付ストリップで別の日へ移った）後まで古い `at` を渡し続けると、以後の
+  // 軸変更のたびに「今」ではなく `at` の位置へ戻ってしまう（実測。上記コメント
+  // 参照）。`at` 自体は URL に残ったままだが、実際に効くのは「その日を見ている
+  // 間の最初の 1 回」に限られる。
+  const scrollToMs = at !== undefined && dayOffset === atDayOffset ? at : undefined
 
   const services = useListServices(site)
   const reservations = useListReservations()
@@ -508,6 +573,7 @@ export function ProgramsPage() {
           serviceById={serviceById}
           overages={overages}
           actions={actions}
+          scrollToMs={scrollToMs}
           // グリッドではサービスが列そのもの（構造）なので、リストと違って
           // サービスの取得失敗を「名前が出ないだけ」に落とせない。列が 0 本の
           // グリッドは「番組がない」と見分けがつかないので、取得状態を合わせる
@@ -795,6 +861,7 @@ function ProgramGridView({
   actions,
   isPending,
   isError,
+  scrollToMs,
 }: {
   axis: TimeAxis
   programs: ProgramListItem[]
@@ -805,6 +872,8 @@ function ProgramGridView({
   actions: ReservationActions
   isPending: boolean
   isError: boolean
+  /** グリッドの初期スクロール先（issue #233 M6-5）。`ProgramGrid` にそのまま渡す。 */
+  scrollToMs?: number
 }) {
   const [selectedProgramId, setSelectedProgramId] = useState<number | null>(null)
 
@@ -851,6 +920,7 @@ function ProgramGridView({
           reservationByProgramId={actions.reservedProgramIds}
           selectedProgramId={selected?.programId ?? null}
           onSelect={(program) => setSelectedProgramId(program.programId)}
+          scrollToMs={scrollToMs}
           // 帯はセルより上・ヘッダより下の層に入る。軸を受け取って同じ
           // spanToPx を通すので、帯と番組セルは同じ時刻で必ず同じ位置に来る
           overlay={(gridAxis) => <CapacityBands axis={gridAxis} overages={overages} />}

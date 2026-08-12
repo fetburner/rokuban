@@ -14,7 +14,8 @@
     "e2e": "node e2e/checks.mjs",
     "e2e:diagnose": "node e2e/diagnose.mjs",
     "e2e:live": "node e2e/live.mjs",
-    "e2e:design": "node e2e/design.mjs"
+    "e2e:design": "node e2e/design.mjs",
+    "e2e:badge-links": "node e2e/badge-links.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.6.0",
