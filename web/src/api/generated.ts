@@ -34,6 +34,20 @@ export interface VersionResponse {
 }
 
 /**
+ * オプション機能のフラグ集合。**すべてのフィールドを required にする** ---
+ * 欠けた項目を「未対応の古いサーバー」として扱うか「無効」として扱うかを
+ * フロント側で判断させると、判断が導線ごとにばらける。足すときは既定値を
+ * サーバー側で必ず埋める。
+ */
+export interface Capabilities {
+  /**
+     * ライブ視聴（`live.enabled`）が有効か。false のときフロントは
+     * ライブへの導線（主ナビ・番組行のリンク等）を出さない。
+     */
+  live: boolean;
+}
+
+/**
  * 出力コンテナ（表示用。未注入なら省略）。
  */
 export type EncodeProfileSummaryContainer = typeof EncodeProfileSummaryContainer[keyof typeof EncodeProfileSummaryContainer];
@@ -1039,6 +1053,133 @@ export function useGetVersion<TData = Awaited<ReturnType<typeof getVersion>>, TE
  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
 
   const queryOptions = getGetVersionQueryOptions(options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export type getCapabilitiesResponse200 = {
+  data: Capabilities
+  status: 200
+}
+
+export type getCapabilitiesResponseSuccess = (getCapabilitiesResponse200) & {
+  headers: Headers;
+};
+;
+
+export type getCapabilitiesResponse = (getCapabilitiesResponseSuccess)
+
+export const getGetCapabilitiesUrl = () => {
+
+
+
+
+  return `/api/capabilities`
+}
+
+/**
+ * **オプション機能の導線を出してよいかをフロントが判断するための公開面**
+ * （issue #209）。フロントは config を読めない（api ロールは設定ファイルを
+ * 配らない。不変条件 1）ため、`live.enabled` のように「無効なら導線ごと
+ * 消したい」設定は API で観測できる必要がある。
+ *
+ * **設定値そのものではなく「導線を出してよいか」だけを返す。** 返すのは
+ * 真偽値だけで、config のキー名・値・ffmpeg のパス・プロファイル定義は
+ * 載せない（`GET /api/encode-profiles` / `GET /api/sites` と同じ規律）。
+ *
+ * **機能が「有効」であることは「今すぐ使える」ことを意味しない。**
+ * `live: true` はこのデプロイの config が `live.enabled: true` である
+ * ことだけを表し、streamer ロールが実際に動いている / チューナーが空いて
+ * いることは表さない（後者はプレイリスト取得の 404 / 503 として出る。
+ * docs/frontend/live.md）。
+ * @summary Report which optional features this deployment has enabled
+ */
+export const getCapabilities = async ( options?: RequestInit): Promise<getCapabilitiesResponse> => {
+
+  return customInstance<getCapabilitiesResponse>(getGetCapabilitiesUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetCapabilitiesQueryKey = () => {
+    return [
+    `/api/capabilities`
+    ] as const;
+    }
+
+
+export const getGetCapabilitiesQueryOptions = <TData = Awaited<ReturnType<typeof getCapabilities>>, TError = unknown>( options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getCapabilities>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetCapabilitiesQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getCapabilities>>> = ({ signal }) => getCapabilities({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getCapabilities>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type GetCapabilitiesQueryResult = NonNullable<Awaited<ReturnType<typeof getCapabilities>>>
+export type GetCapabilitiesQueryError = unknown
+
+
+export function useGetCapabilities<TData = Awaited<ReturnType<typeof getCapabilities>>, TError = unknown>(
+  options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getCapabilities>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getCapabilities>>,
+          TError,
+          Awaited<ReturnType<typeof getCapabilities>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetCapabilities<TData = Awaited<ReturnType<typeof getCapabilities>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getCapabilities>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getCapabilities>>,
+          TError,
+          Awaited<ReturnType<typeof getCapabilities>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetCapabilities<TData = Awaited<ReturnType<typeof getCapabilities>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getCapabilities>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary Report which optional features this deployment has enabled
+ */
+
+export function useGetCapabilities<TData = Awaited<ReturnType<typeof getCapabilities>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getCapabilities>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getGetCapabilitiesQueryOptions(options)
 
   const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
 

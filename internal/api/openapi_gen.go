@@ -534,6 +534,16 @@ type AudioInfo struct {
 	SamplingRate  int       `json:"samplingRate"`
 }
 
+// Capabilities オプション機能のフラグ集合。**すべてのフィールドを required にする** ---
+// 欠けた項目を「未対応の古いサーバー」として扱うか「無効」として扱うかを
+// フロント側で判断させると、判断が導線ごとにばらける。足すときは既定値を
+// サーバー側で必ず埋める。
+type Capabilities struct {
+	// Live ライブ視聴（`live.enabled`）が有効か。false のときフロントは
+	// ライブへの導線（主ナビ・番組行のリンク等）を出さない。
+	Live bool `json:"live"`
+}
+
 // CapacityOverage defines model for CapacityOverage.
 type CapacityOverage struct {
 	EndAt time.Time `json:"endAt"`
@@ -1194,6 +1204,9 @@ type ServerInterface interface {
 	// ListCircuitBreakers List tripped circuit breakers
 	// (GET /api/breakers)
 	ListCircuitBreakers(w http.ResponseWriter, r *http.Request)
+	// GetCapabilities Report which optional features this deployment has enabled
+	// (GET /api/capabilities)
+	GetCapabilities(w http.ResponseWriter, r *http.Request)
 	// ListCapacityOverages List intervals where tuner capacity is exceeded
 	// (GET /api/capacity/overages)
 	ListCapacityOverages(w http.ResponseWriter, r *http.Request, params ListCapacityOveragesParams)
@@ -1290,6 +1303,12 @@ type Unimplemented struct{}
 // ListCircuitBreakers List tripped circuit breakers
 // (GET /api/breakers)
 func (_ Unimplemented) ListCircuitBreakers(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// GetCapabilities Report which optional features this deployment has enabled
+// (GET /api/capabilities)
+func (_ Unimplemented) GetCapabilities(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1481,6 +1500,20 @@ func (siw *ServerInterfaceWrapper) ListCircuitBreakers(w http.ResponseWriter, r 
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ListCircuitBreakers(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetCapabilities operation middleware
+func (siw *ServerInterfaceWrapper) GetCapabilities(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetCapabilities(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -2616,6 +2649,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Get(options.BaseURL+"/api/version", wrapper.GetVersion)
 	})
 	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/capabilities", wrapper.GetCapabilities)
+	})
+	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/api/sites", wrapper.ListSites)
 	})
 	r.Group(func(r chi.Router) {
@@ -2713,6 +2749,27 @@ type ListCircuitBreakersResponseObject interface {
 type ListCircuitBreakers200JSONResponse []CircuitBreaker
 
 func (response ListCircuitBreakers200JSONResponse) VisitListCircuitBreakersResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetCapabilitiesRequestObject struct {
+}
+
+type GetCapabilitiesResponseObject interface {
+	VisitGetCapabilitiesResponse(w http.ResponseWriter) error
+}
+
+type GetCapabilities200JSONResponse Capabilities
+
+func (response GetCapabilities200JSONResponse) VisitGetCapabilitiesResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response); err != nil {
@@ -3727,6 +3784,9 @@ type StrictServerInterface interface {
 	// ListCircuitBreakers List tripped circuit breakers
 	// (GET /api/breakers)
 	ListCircuitBreakers(ctx context.Context, request ListCircuitBreakersRequestObject) (ListCircuitBreakersResponseObject, error)
+	// GetCapabilities Report which optional features this deployment has enabled
+	// (GET /api/capabilities)
+	GetCapabilities(ctx context.Context, request GetCapabilitiesRequestObject) (GetCapabilitiesResponseObject, error)
 	// ListCapacityOverages List intervals where tuner capacity is exceeded
 	// (GET /api/capacity/overages)
 	ListCapacityOverages(ctx context.Context, request ListCapacityOveragesRequestObject) (ListCapacityOveragesResponseObject, error)
@@ -3872,6 +3932,30 @@ func (sh *strictHandler) ListCircuitBreakers(w http.ResponseWriter, r *http.Requ
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(ListCircuitBreakersResponseObject); ok {
 		if err := validResponse.VisitListCircuitBreakersResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetCapabilities operation middleware
+func (sh *strictHandler) GetCapabilities(w http.ResponseWriter, r *http.Request) {
+	var request GetCapabilitiesRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetCapabilities(ctx, request.(GetCapabilitiesRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetCapabilities")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetCapabilitiesResponseObject); ok {
+		if err := validResponse.VisitGetCapabilitiesResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

@@ -96,6 +96,11 @@ storage:
 
 ライブセッションはインメモリの使い捨て状態（全体アーキテクチャの crash-only 例外）で、「クライアントがいなくなったら ffmpeg を止める」idle GC が要る。セグメント要求がアプリを通れば last-access の更新がタダで手に入るが、nginx が scratch から直接配るとアプリはクライアントの生存を見失う。`auth_request` やログ監視で回収はできるが、セグメントは数 MB で転送負荷が軽く、複雑さに見合わない。**streamer ロールのアプリ配信のまま**とする。
 
+**`live.enabled: false` ならこれらのルートは登録されず、404（JSON）になる。**
+SPA フォールバックには落とさない（[rest.md](rest.md)「機能の有効/無効は能力 API で
+観測する」。落とすと「無い」が HTML の 200 になり、probe するクライアントが成功と
+誤認する。issue #209）。導線そのものを出さない判断は `GET /api/capabilities` 側。
+
 #### 資源同定: セッション ID を持たない
 
 プレイリストとセグメントの URL は **`/api/sites/{site}/services/{serviceId}/live...`**

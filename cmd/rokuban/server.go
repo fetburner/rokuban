@@ -125,6 +125,20 @@ func newServerCmd() *cobra.Command {
 					// （issue #184 M4-12）。
 					Sites:           registryNames(cfg.Registry()),
 					MetricsRegistry: metrics.NewRegistry(backlog),
+					// GET /api/capabilities に出すオプション機能（issue #209）。
+					// フロントはこれを見てライブへの導線を出すかどうかを決める。
+					//
+					// **ロールで囲わない。** OpenAPI 生成ルート（HandlerFromMux）は
+					// ロールに関わらず全プロセスに生えるので、api ロールの中だけで
+					// 代入すると、同じ config の別プロセス（notifier 単独など）に
+					// 聞いたときだけ live:false になる --- config → 公開面の値なのに
+					// 答えがプロセスの役割で変わる。Sites / MetricsRegistry を
+					// 無条件に渡しているのと同じ理由でここに置く（レビュー指摘）。
+					//
+					// 渡すのはこのプロセスが streamer ロールを持つかではなく config の
+					// 値。ロール分割構成では api と streamer は別プロセスだが config
+					// ファイルは共有する（docs/configuration.md §スキーマ構造）。
+					LiveEnabled: cfg.Live.Enabled,
 				}
 
 				if slices.Contains(roles, "api") {

@@ -11,6 +11,12 @@ import・MSE への実再生・チャンネル切替時の cleanup --- だけを
 前提: `live.enabled: true`、`live.ffmpeg` が PATH にある、`live.profiles` を
 1 つ以上設定済み（[config.example.yml](../../config.example.yml) の `live:` 節）。
 
+**`live.enabled` が false（既定。`config.compose.yml` にも `live:` 節は無い）だと
+そもそもライブに辿り着けない**（issue #209）。主ナビに「ライブ」が出ず、`/live` を
+直接開くと「この環境ではライブ視聴が無効です」になる。設定が効いているかは
+`curl -s http://localhost:40773/api/capabilities` が `{"live":true}` を返すかで
+確かめられる。
+
 ```sh
 docker compose exec rokuban rokuban server --all --config /config.yml
 ```
@@ -70,6 +76,12 @@ docker compose exec rokuban rokuban server --all --config /config.yml
 `web/e2e/live.mjs`。HLS プレイリスト/セグメントは Playwright の `page.route`
 でブラウザ側から丸ごと差し替えるため、streamer 側は `live.enabled` を立てる
 必要すら無い（サーバーは「サービス一覧を返す」以外の実仕事をしない）。
+`GET /api/capabilities` も同じく差し替えている --- 立てていないサーバーだと
+画面が「無効です」になって①〜⑦が全滅するため（issue #209）。
+
+`E2E_LIVE_SERVICE_A` / `_B` に渡すのは **SI の `serviceId`**（下の投入例なら
+9001 / 9002）。URL に載る mirakc 合成 id（`network_id * 100000 + service_id`）は
+`live.mjs` が `GET /api/sites/{site}/services` から解決する。
 
 準備（初回のみ）:
 

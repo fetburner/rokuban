@@ -14,6 +14,7 @@ import { useEffect, useState } from 'react'
 
 import { CircuitBreakerBanner } from '@/components/circuit-breaker-banner'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { useLiveEnabled } from '@/lib/capabilities'
 import { cn } from '@/lib/utils'
 
 /**
@@ -45,6 +46,11 @@ type NavItem = {
   to: string
   label: string
   icon: ComponentType<{ className?: string }>
+  /**
+   * この項目を出すためにサーバー側で有効になっている必要がある機能
+   * （`GET /api/capabilities`）。省略なら常に出す。
+   */
+  requires?: 'live'
 }
 
 /**
@@ -63,7 +69,7 @@ const navItems: NavItem[] = [
   { to: '/', label: '番組', icon: Tv },
   { to: '/recordings', label: '録画', icon: ListVideo },
   { to: '/reservations', label: '予約', icon: CalendarClock },
-  { to: '/live', label: 'ライブ', icon: Radio },
+  { to: '/live', label: 'ライブ', icon: Radio, requires: 'live' },
   { to: '/search', label: '検索', icon: Search },
   { to: '/rules', label: 'ルール', icon: Settings2 },
 ]
@@ -77,9 +83,31 @@ const navItems: NavItem[] = [
  * この仮説も上と同じく実測ではない。
  */
 const MOBILE_PRIMARY_COUNT = 3
-const mobilePrimaryItems = navItems.slice(0, MOBILE_PRIMARY_COUNT)
-/** モバイルで「その他」に畳む項目（ライブ・検索・ルール）。 */
-const moreNavItems = navItems.slice(MOBILE_PRIMARY_COUNT)
+
+/**
+ * useNavItems はこのデプロイで出してよいナビ項目を頻度順で返す。
+ *
+ * `live.enabled: false` のサーバーでは「ライブ」を落とす（issue #209）---
+ * ライブのルートが登録されていないので、開いてもプレイリストが 404 になる
+ * だけの「機能しない導線」になる。判断はサーバーの能力 API に一本化する
+ * （`lib/capabilities.ts`。番組行の「ライブで見る」導線も同じ入口を使う）。
+ *
+ * **常時項目とその他の切れ目は「除外後の並び」に対して取る。** ただし今の
+ * 並びでは差は出ない --- ライブは既に「その他」側（4 番目）にいるので、
+ * 除外前に切っても結果は同じである（切り方を入れ替えて `app-shell.test.tsx`
+ * を回し、20 件とも通ることを確認済み）。差が出るのは、この形の項目が将来
+ * 常時タブ側（先頭 3 個）に来たとき: 除外前に切るとボトムタブが 3 個 +
+ * その他に痩せるが、除外後に切れば常時 3 個は保たれる。
+ */
+function useNavItems(): { items: NavItem[]; primary: NavItem[]; more: NavItem[] } {
+  const liveEnabled = useLiveEnabled()
+  const items = navItems.filter((item) => item.requires !== 'live' || liveEnabled)
+  return {
+    items,
+    primary: items.slice(0, MOBILE_PRIMARY_COUNT),
+    more: items.slice(MOBILE_PRIMARY_COUNT),
+  }
+}
 
 function useActivePath(): string {
   return useRouterState({ select: (s) => s.location.pathname })
@@ -90,7 +118,7 @@ function isActive(pathname: string, to: string): boolean {
 }
 
 /**
- * MoreMenu はボトムタブの「その他」。頻度が低い項目（`moreNavItems`）を
+ * MoreMenu はボトムタブの「その他」。頻度が低い項目（`useNavItems` の `more`）を
  * ポップオーバーに畳んで、ボトムタブの本数を親指の届く 4 個に抑える。
  *
  * シートではなくポップオーバーを選んだ理由: 中身がリンク 3 個だけの単純な
@@ -108,10 +136,13 @@ function isActive(pathname: string, to: string): boolean {
  * `aria-current="page"` を持つのに対し、トリガーはページそのものではなく
  * 「その他」という集合の現在地を表すので `aria-current="true"` を使う
  * （両方 `undefined` にならないよう、両方向をテストで固定する）。
+ *
+ * 中身は `useNavItems` が決める（`live.enabled: false` なら「ライブ」は
+ * 落ちて検索・ルールの 2 個になる。issue #209）。
  */
-function MoreMenu({ pathname }: { pathname: string }) {
+function MoreMenu({ pathname, items }: { pathname: string; items: NavItem[] }) {
   const [open, setOpen] = useState(false)
-  const active = moreNavItems.some((item) => isActive(pathname, item.to))
+  const active = items.some((item) => isActive(pathname, item.to))
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -134,7 +165,7 @@ function MoreMenu({ pathname }: { pathname: string }) {
         className="w-44 p-1"
       >
         <ul className="flex flex-col gap-0.5">
-          {moreNavItems.map(({ to, label, icon: Icon }) => {
+          {items.map(({ to, label, icon: Icon }) => {
             const itemActive = isActive(pathname, to)
             return (
               <li key={to}>
@@ -168,7 +199,7 @@ function MoreMenu({ pathname }: { pathname: string }) {
  * iOS のホームインジケータと重なるのを防ぎ、Android のジェスチャーナビの
  * 「下端から上スワイプでホーム」領域からも離す。
  *
- * 常時表示するのは `mobilePrimaryItems`（頻度の一等地〜中間の一部）+
+ * 常時表示するのは `useNavItems` の `primary`（頻度の一等地〜中間の一部）+
  * 「その他」の 4 個まで。決めた理由は誤タップ対策ではなく、頻度の低い
  * 3 項目（ライブ・検索・ルール）を畳んで一等地のタブを広く取ること
  * （実測 @390px: 4 タブ = 97.5px/個、6 タブなら 65px/個。どちらも
@@ -176,6 +207,7 @@ function MoreMenu({ pathname }: { pathname: string }) {
  */
 function BottomTabs() {
   const pathname = useActivePath()
+  const { primary, more } = useNavItems()
 
   return (
     <nav
@@ -183,7 +215,7 @@ function BottomTabs() {
       className="fixed inset-x-0 bottom-0 z-20 border-t border-border bg-background/95 pb-[var(--bottom-nav-inset)] backdrop-blur md:hidden"
     >
       <ul className="flex">
-        {mobilePrimaryItems.map(({ to, label, icon: Icon }) => {
+        {primary.map(({ to, label, icon: Icon }) => {
           const active = isActive(pathname, to)
           return (
             <li key={to} className="flex-1">
@@ -203,7 +235,7 @@ function BottomTabs() {
           )
         })}
         <li className="flex-1">
-          <MoreMenu pathname={pathname} />
+          <MoreMenu pathname={pathname} items={more} />
         </li>
       </ul>
     </nav>
@@ -235,6 +267,7 @@ function BottomTabs() {
  */
 function Sidebar() {
   const pathname = useActivePath()
+  const { items } = useNavItems()
   const [collapsed, setCollapsed] = useState(() => loadSidebarCollapsed())
 
   useEffect(() => {
@@ -272,7 +305,7 @@ function Sidebar() {
         )}
       </div>
       <ul className="flex flex-1 flex-col gap-1 overflow-y-auto px-2 pb-2">
-        {navItems.map(({ to, label, icon: Icon }) => {
+        {items.map(({ to, label, icon: Icon }) => {
           const active = isActive(pathname, to)
           return (
             <li key={to}>

@@ -36,6 +36,32 @@ const skipped = []
 const log = (...a) => console.log(...a)
 
 /**
+ * composedServiceId は SI の serviceId を mirakc 合成 id
+ * （`networkId * 100000 + serviceId`。`web/src/lib/live.ts` の
+ * `mirakcServiceId` と同じ式）に変換する。プレイリスト / セグメントの URL に
+ * 載るのはこちらなので、要求の照合にはこの値が要る（issue #208）。
+ *
+ * `networkId` は `GET /api/sites/{site}/services` から引く --- 環境変数を
+ * 増やすと、SI の id と合成 id のどちらを渡すのかを実行者が判断することになり、
+ * 間違えても「タイムアウトした」としか見えない。
+ */
+async function composedServiceId(serviceId) {
+  const res = await fetch(`${BASE_URL}/api/sites/${SITE}/services`)
+  if (!res.ok) {
+    throw new Error(`GET /api/sites/${SITE}/services が ${res.status}`)
+  }
+  const services = await res.json()
+  const found = services.find((s) => String(s.serviceId) === String(serviceId))
+  if (found === undefined) {
+    throw new Error(
+      `serviceId=${serviceId} が site=${SITE} のサービス一覧に無い` +
+        `（E2E_LIVE_SERVICE_A / _B を実在する serviceId にする。docs/runbook/live.md §②）`,
+    )
+  }
+  return found.networkId * 100_000 + found.serviceId
+}
+
+/**
  * ensureFixture は固定 HLS フィクスチャ（testsrc + sine を H.264/AAC でエンコードした
  * 12 秒ぶんのセグメント + プレイリスト）を用意する。実 ISDB-T / mirakc は要らない ---
  * ブラウザ側の再生経路（hls.js の attachMedia 以降）だけを検査したいので、
@@ -159,6 +185,18 @@ const playerDecided = () => {
  * 止めているのか・単にネタが尽きていたのかを区別できるようにする。
  */
 async function mockLiveRoutes(page, mode) {
+  // ライブ画面はサーバーの live.enabled に連動する（issue #209）。この判定は
+  // 「ライブが有効なデプロイ」を前提にしているが、判定を回すサーバーの config は
+  // 既定（live.enabled: false）のことが多い --- 差し替えないと画面が
+  // 「この環境ではライブ視聴が無効です」になり、①〜⑦ が全滅する
+  await page.route('**/api/capabilities', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ live: true }),
+    })
+  })
+
   await page.route('**/live/playlist.m3u8*', async (route) => {
     if (mode.playlist === 'error') {
       await route.fulfill({
@@ -280,9 +318,17 @@ async function runChromiumChecks(browser) {
       .getEntriesByType('resource')
       .some((r) => r.name.includes(`/sites/${site}/services/${serviceId}/live/segments/`))
 
-  await page.waitForFunction(segmentsRequested, [SITE, SERVICE_A], { timeout: 10000 })
+  // **セグメントの URL に載るのは SI の serviceId ではなく mirakc 合成 id**
+  // （`lib/live.ts` の `mirakcServiceId`。issue #208）。ここを SI の id で
+  // 照合すると、`network_id` が 0 でない限り一致しない --- 実 EPG（network_id
+  // 32200 等）でも runbook の投入例（network_id 1）でも一致せず、この待機が
+  // 必ずタイムアウトする（#208 以降ずっとそうなっていた。この修正で解消）
+  const composedA = await composedServiceId(SERVICE_A)
+  const composedB = await composedServiceId(SERVICE_B)
+
+  await page.waitForFunction(segmentsRequested, [SITE, composedA], { timeout: 10000 })
   const requestsBeforeSwitchCount = requestLog.filter((u) =>
-    u.includes(`/services/${SERVICE_A}/live/segments/`),
+    u.includes(`/services/${composedA}/live/segments/`),
   ).length
   log(`  切替前の A 向けセグメント要求数: ${requestsBeforeSwitchCount}`)
 
@@ -290,13 +336,13 @@ async function runChromiumChecks(browser) {
   await page
     .locator(`nav[aria-label="チャンネル一覧"] a[href*="serviceId=${SERVICE_B}"]`)
     .click()
-  await page.waitForFunction(segmentsRequested, [SITE, SERVICE_B], { timeout: 10000 })
+  await page.waitForFunction(segmentsRequested, [SITE, composedB], { timeout: 10000 })
   // 切り替え後もしばらく要求が続くかもしれない旧チャンネルの要求を数える余地を
   // 与える（hls.js の非同期な内部タイマーが 1 フレームだけ遅れて発火する
   // ケースを見逃さないため）
   await page.waitForTimeout(1500)
   const staleRequestsAfterSwitch = requestLog.filter((u) =>
-    u.includes(`/services/${SERVICE_A}/live/segments/`),
+    u.includes(`/services/${composedA}/live/segments/`),
   )
   log(`  切替後の A 向けセグメント要求数: ${staleRequestsAfterSwitch.length}`)
   if (staleRequestsAfterSwitch.length > 0) {

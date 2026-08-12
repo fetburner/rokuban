@@ -174,6 +174,11 @@ async function installApiStubs(page, { withBreaker = false, delayPath = null, de
     // 接続が開いたままになり networkidle に到達しない
     if (p === '/api/events') return route.fulfill({ status: 204 })
     if (p === '/api/sites') return json([SITE])
+    // ライブへの導線（主ナビの「ライブ」・/live 画面）はサーバーの live.enabled に
+    // 連動する（issue #209）。ここは「有効なデプロイ」の見た目を撮るための判定なので
+    // true を返す --- 返さないと主ナビが 5 項目になり、/live はチャンネル一覧ではなく
+    // 「無効です」の空状態になる
+    if (p === '/api/capabilities') return json({ live: true })
     if (p === '/api/breakers') return json(withBreaker ? breakers : [])
     if (p === '/api/encode-profiles') return json([{ name: 'hevc-1080p', container: 'mp4' }])
     if (p === '/api/rules') return json(rules)

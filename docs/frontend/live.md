@@ -30,6 +30,30 @@ Rokuban 自体のライブ視聴は「チャンネル一覧から選んでブラ
 チャンネル一覧のリンクは `replace` にし、ザッピングでブラウザ履歴が積み上がらない
 ようにする。
 
+**ライブへの導線はサーバーの `live.enabled` に連動させる（issue #209）。**
+`live.enabled: false` のとき streamer はライブのルートを一切登録しないので、
+導線を出しても行き先が無い。判断は `GET /api/capabilities` の `live` に一本化し、
+フロント側の入口は `lib/capabilities.ts` だけにする（ナビの出し分けは
+[shell.md](shell.md)「無効な機能の項目は出さない」）。`/live` のルート自体は
+残し、**直リンク・ブックマークで来たときは「この環境ではライブ視聴が無効です」+
+`live.enabled` という手がかりを出す** --- ルートを消すと SPA の 404 になるだけで、
+運用者は原因（サーバー設定）に辿り着けない。無効のときはプレイリストを一度も
+取りに行かない。
+
+**「無効」と断言するのは `live: false` を実際に受け取ったときだけにする。**
+この画面は原因（サーバー設定）を名指しするので、`useLiveEnabled()` の真偽値では
+なく `useLiveCapability()` の 4 値を見て、`pending` は読み込み中・`unknown`
+（能力 API が失敗）は「利用できるかを確認できませんでした」に分ける。潰すと
+**`live.enabled: true` のデプロイで能力 API が瞬断しただけでも「設定が無効」と
+表示され**、issue #209 が消したかった「原因にたどり着けない」を別の顔で再演する
+（レビューでの指摘。潰した実装で `pages/live.test.tsx` の 2 件が落ちることを
+確認済み）。導線側（ナビ）は逆に未確定を無効に倒してよい --- 黙って消えるだけで
+誤った原因を主張しないため（[shell.md](shell.md)）。
+
+**「有効」と「今すぐ見られる」は別**である。`live: true` は config の状態だけを
+表し、streamer が動いていない / チューナーが埋まっている場合は導線が出たまま
+プレイリスト取得の 404 / 503 として下記のエラー分類に出る。
+
 **プロファイル（画質）を選ぶ UI は持たない。** `live.profiles` を列挙する API が
 無い（`GET /api/sites/{site}/services/{serviceId}/live/playlist.m3u8` は OpenAPI
 対象外なので設定名の一覧を返す仕組みも無い）ため、選択肢を出すと「機能しない
@@ -236,6 +260,24 @@ prop の変化）を effect の cleanup で検知し、probe の in-flight `fetc
   （HLS）に対応していません」が出る
 - サーバー側の即時セッション解放 API は
   [issue #191](https://github.com/fetburner/rokuban/issues/191) へ切り出し済み
+- **`live.enabled: false` でも導線が出ていた**（issue #209）。probe は
+  `response.ok` を見るが、ライブのルートが無いパスは SPA フォールバックの
+  **HTML を 200 で返していた**ので probe が通り、hls.js / `<video>` が m3u8 と
+  して解釈できずに再生エラーになっていた --- 「無効」ではなく「壊れている」と
+  読める壊れ方。直したのは 2 箇所で、**どちらか一方だけでは足りなかった**:
+  能力 API（導線を消す）と `/api/` の 404 化（probe が HTML を成功扱いしない）
+- **e2e（`live.mjs`）はライブが有効なサーバーを前提にする**ので、
+  `/api/capabilities` も `page.route` で差し替えている（プレイリスト/セグメントと
+  同じ扱い）。差し替えを `{live: false}` にすると①〜⑦のすべてが NG になることを
+  実測した（macOS / ffmpeg あり / Chromium + WebKit。`live.enabled: false` の
+  サーバーに対して実行。ffmpeg が無い環境では①〜⑤は NG ではなく「未測定」に
+  落ちるので、この観測は ffmpeg のある環境での話）--- 判定がこの導線に依存して
+  いることの裏取りでもある
+- **同じ確認で `live.mjs` ④ が #208 以降ずっと測れていなかったことが判明した。**
+  セグメント URL に載るのは mirakc 合成 id（`networkId * 100000 + serviceId`）
+  なのに、SI の `serviceId` で照合していたため `network_id` が 0 でない環境
+  （実 EPG も runbook の投入例も該当）では待機が必ずタイムアウトしていた。
+  合成 id を `GET /api/sites/{site}/services` から解決する形に直した
 - 実 mirakc / 実チューナーでの idle GC・録画優先度調停・実 ISDB-T トランス
   コードの確認手順は [runbook.md](../runbook.md)（ライブ視聴の節）にあるが、
   M4-4 の時点では ISDB-T チューナーも mirakc も無い開発環境のため実行されて

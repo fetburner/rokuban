@@ -5,6 +5,7 @@ import { useListPrograms, useListServices, type ProgramListItem, type Service } 
 import { unwrap } from '@/api/unwrap'
 import { EmptyState, ErrorState, ListSkeleton, PageHeader } from '@/components/page'
 import { LivePlayer } from '@/components/live-player'
+import { useLiveCapability } from '@/lib/capabilities'
 import { currentProgramWindow, pickInitialServiceId } from '@/lib/live'
 import { orderServices } from '@/lib/epg-grid'
 import { formatTime, isAiring } from '@/lib/format'
@@ -85,6 +86,7 @@ function groupByChannelType(ordered: readonly Service[]): ChannelGroup[] {
  * 下記 `selectChannel` 参照）。
  */
 export function LivePage() {
+  const liveCapability = useLiveCapability()
   const site = useCurrentSite()
   const services = useListServices(site)
   const routeSearch = useRouteSearch({ from: '/live' })
@@ -154,7 +156,25 @@ export function LivePage() {
     <>
       <PageHeader title="ライブ" />
 
-      {services.isError ? (
+      {/* 能力 API の 4 状態を潰さずに出し分ける（issue #209 のレビュー指摘）。
+          「無効です」と原因を名指しできるのは disabled を実際に受け取ったとき
+          だけで、pending / unknown で同じ文言を出すと、live.enabled: true の
+          デプロイで能力 API が瞬断しただけでも「設定が無効」と嘘をつく。 */}
+      {liveCapability === 'pending' ? (
+        <ListSkeleton />
+      ) : liveCapability === 'unknown' ? (
+        <ErrorState>ライブ視聴が利用できるかを確認できませんでした</ErrorState>
+      ) : liveCapability === 'disabled' ? (
+        // 主ナビからは消えているので通常ここには来ないが、直リンク・ブックマーク・
+        // 戻る操作では来る（issue #209 の受け入れ 2）。何も言わずに再生を試すと
+        // プレイリストが 404 になるだけで、原因（サーバー設定）に辿り着けない。
+        <EmptyState>
+          <p>この環境ではライブ視聴が無効です</p>
+          <p className="mt-1 text-muted-foreground">
+            サーバーの設定（<code>live.enabled</code>）で有効にすると使えます
+          </p>
+        </EmptyState>
+      ) : services.isError ? (
         <ErrorState>チャンネル一覧の取得に失敗しました</ErrorState>
       ) : services.isPending ? (
         <ListSkeleton />

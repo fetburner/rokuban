@@ -15,12 +15,14 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 
+	"github.com/fetburner/rokuban/internal/api"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
 )
@@ -915,4 +917,53 @@ func gaugeValue(t *testing.T, g prometheus.Gauge) float64 {
 		t.Fatalf("reading gauge: %v", err)
 	}
 	return m.GetGauge().GetValue()
+}
+
+// live.enabled が false のとき、SPA を配る api ルーターに同居させても
+// プレイリストのパスが HTML 200 にならない（404 になる）ことを、
+// **実際の合成（api.NewRouter + LiveStreamer.Mount の early return + SPA
+// フォールバック）で**確かめる（issue #209）。
+//
+// api 側の TestSPA_LivePlaylistNotFoundWhenLiveDisabled は Mounter を
+// 一切渡さない構成なので、`Mount` の early return を通らない ---
+// 「無効時にプレースホルダルートを登録する」形に将来変えると、あちらは
+// 緑のままここだけが落ちる（CLAUDE.md「壊す場所を、実際に壊れる経路の上に置く」）。
+func TestLiveMount_DisabledDoesNotFallBackToSPA(t *testing.T) {
+	ls := NewLive(mirakc.NewClient("http://mirakc.invalid", nil), testLiveSite, LiveConfig{
+		Enabled: false,
+		// 無効なので使われない値（有効時に必須のものを埋めても登録されないこと）
+		FFmpeg:     "ffmpeg",
+		SegmentDir: t.TempDir(),
+		Profiles:   []LiveProfile{{Name: "h264", VideoCodec: "libx264", AudioCodec: "aac"}},
+	})
+	router := api.NewRouter(api.RouterConfig{
+		DistFS:  fstest.MapFS{"index.html": {Data: []byte("<html>app</html>")}},
+		Mounter: ls,
+	})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	for _, path := range []string{
+		playlistURL(srv.URL, 3192053248, ""),
+		fmt.Sprintf("%s/api/sites/%s/services/3192053248/live/segments/segment_000.ts", srv.URL, testLiveSite),
+	} {
+		resp, body := get(t, path, nil)
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("GET %s = %d, want %d", path, resp.StatusCode, http.StatusNotFound)
+		}
+		if ct := resp.Header.Get("Content-Type"); strings.Contains(ct, "text/html") {
+			t.Errorf("GET %s: Content-Type = %q, want non-HTML（SPA に落ちている）", path, ct)
+		}
+		if strings.Contains(string(body), "<html>") {
+			t.Errorf("GET %s: body = %q, want non-HTML", path, body)
+		}
+	}
+
+	// 逆方向: 有効なら同じパスが登録される（この 404 が「無効だから」であって
+	// 「パスの綴りが違うから」ではないことを示す）
+	_, enabledSrv := newTestLiveStreamer(t, "http://mirakc.invalid", baseLiveConfig(t))
+	resp, _ := get(t, playlistURL(enabledSrv.URL, 3192053248, ""), nil)
+	if resp.StatusCode == http.StatusNotFound {
+		t.Errorf("enabled: GET playlist = 404, want the route to exist")
+	}
 }
