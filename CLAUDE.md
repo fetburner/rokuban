@@ -62,15 +62,13 @@ pnpm exec orval  # openapi.yaml → web/src/api/generated.ts
 
 タスクの分解・受け入れ基準は GitHub issue 側にある。**親 issue には一覧しか置かない**ので、`gh issue view <親>` でタスク表を見て、**担当タスクのサブ issue だけ読む**。
 
-M0（歩く骨格）・M1（録れる）・M2（任せられる）の実装は完了している。open なのは次だけ。
+M0（歩く骨格）・M1（録れる）・M2（任せられる）・M5（名乗れる）・M6（辿れる）の実装は完了している。open なのは次だけ。
 
 | | 入口 |
 |---|---|
 | M2 の出口基準の検証（EPGStation と 1〜2 週間並走し、予約差分がゼロ or 全件説明可能） | [#52](https://github.com/fetburner/rokuban/issues/52) |
 | M3 タスク分解: 置き換えられる（エンコード・削除・移行）。サブ #63〜#75 | [#62](https://github.com/fetburner/rokuban/issues/62) |
 | M4 タスク分解: 広げられる（ロール分割デプロイ・ライブ視聴・クラウド構成）。サブ #89〜#97 | [#88](https://github.com/fetburner/rokuban/issues/88) |
-| M5 タスク分解: 名乗れる（イの計器盤 — デザイン言語と頻度階層）。サブ #224〜#228 | [#220](https://github.com/fetburner/rokuban/issues/220) |
-| M6 タスク分解: 辿れる（画面間の導線とオブジェクトの着地先）。サブ #229〜#233 | [#221](https://github.com/fetburner/rokuban/issues/221) |
 | M7 タスク分解: 見積もれる（資源の値札と残高）。サブ #234〜#239 | [#222](https://github.com/fetburner/rokuban/issues/222) |
 | M8 タスク分解: 見返せる（ホームとライブラリ）。サブ #240〜#242 + 判定基準の決定後に起票 3 件 | [#223](https://github.com/fetburner/rokuban/issues/223) |
 
