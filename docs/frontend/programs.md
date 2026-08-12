@@ -165,6 +165,28 @@ Android のジェスチャーナビは左右端からの横スワイプが「戻
 展開時に `GET /api/sites/{site}/programs/{programId}` で取る
 （[api.md](../api.md) の「EPG の読み取り」）。
 
+## 展開領域の外向き導線
+
+行本体（タップで展開）と行右端 44px（予約 / 取消）というタップ予算
+（[reservations.md](reservations.md) §予約はワンタップ + トーストから取消）に
+触れないよう、**固有名詞（放送中のチャンネル・予約という実体）へのリンクは
+折りたたみ行ではなく展開領域側に置く**。`components/program-row.tsx` の
+展開パネルに次の 2 本を持つ:
+
+- **放送中**（`startAt <= now < endAt`）の番組: 「ライブで見る」 → `/live?serviceId=`。
+  渡すのは番組が持つ **SI の serviceId**（サービス一覧・番組と同じ id 空間）で、
+  Mirakurun 合成 id（`networkId*100000+serviceId`。プレイリスト側で合成）ではない。
+  `live.enabled` が無効なデプロイでは主ナビと同じ判断（`lib/capabilities.ts` の
+  `useLiveEnabled()`）で出さない
+- **予約済み**の番組: 「予約の詳細」 → `/reservations/$site/$programId`。overrides
+  編集は予約詳細画面の担当で、番組行の展開パネル（未予約時の encodeProfiles /
+  keepOriginal 欄）はここを引き継がない
+
+`now` の判定は「展開されて描画される瞬間（とその後の再レンダー）」で行い、専用の
+tick タイマーは持たない。このリンクは番組 ID を運ばず `serviceId` だけを渡すため、
+番組境界を挟んで多少ズレても遷移先を誤らない --- 遷移先の `/live` 画面が自前で
+「いま何が流れているか」を再取得するので、真実はそちら側にある。
+
 ## 容量超過は番組ではなく区間に描く
 
 チューナー不足の表示は**番組への着色ではなく区間の帯**にする。番組を着色すると「この番組が負ける」という勝敗の主張になるが、決めるのは mirakc であり、Rokuban から見えない消費者（EPGStation の並走・ライブ視聴・EPG 収集）がいるので予測できない。判定と根拠は [data.md](../data.md) §6.5。

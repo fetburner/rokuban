@@ -1,3 +1,4 @@
+import { Link } from '@tanstack/react-router'
 import { ChevronDown, Loader2 } from 'lucide-react'
 import { useState } from 'react'
 
@@ -6,6 +7,7 @@ import { unwrap } from '@/api/unwrap'
 import { EncodeSettingsFields } from '@/components/encode-settings-fields'
 import { ProgramOverlapWarning } from '@/components/program-overlap-warning'
 import { Button } from '@/components/ui/button'
+import { useLiveEnabled } from '@/lib/capabilities'
 import {
   defaultEncodeSettingsValue,
   encodeSettingsError,
@@ -34,6 +36,11 @@ import { cn } from '@/lib/utils'
  * 外（兄弟要素）に置く --- `<button>` の中に `<input>`/`<select>` を置くと
  * 無効な HTML になり、それらへのクリックが展開トグルにもバブリングして
  * 意図しない開閉を起こす。
+ *
+ * 展開領域には外向きの導線（「ライブで見る」「予約の詳細」）も置く
+ * （issue #229）。行本体 = 展開 / 右端 44px = 予約、というタップ予算
+ * （docs/frontend/reservations.md §予約はワンタップ）に触れないよう、
+ * 折りたたみ行ではなく展開領域側に置く。
  */
 export function ProgramRow({
   program,
@@ -51,6 +58,7 @@ export function ProgramRow({
   onCancel: () => void
 }) {
   const site = useCurrentSite()
+  const liveEnabled = useLiveEnabled()
   const [expanded, setExpanded] = useState(false)
   // 展開して初めて出る欄で、開かなければ既定値のまま
   // （= 「予約」を押しても overrides の PATCH は飛ばない）。
@@ -66,6 +74,25 @@ export function ProgramRow({
   }
 
   const detailId = `program-row-detail-${program.programId}`
+
+  // now の評価タイミングは「展開されて描画される瞬間（＋その後の再レンダー）」で
+  // 足りるとし、専用の tick タイマーは持たない。
+  //
+  // 理由: このリンクは番組 ID を運ばず `serviceId`（チャンネル）だけを渡すので、
+  // 境界を挟んで多少ズレても遷移先を誤ることはない --- 遷移先の /live 画面が
+  // 自前で「いま何が流れているか」を再取得して表示するので、真実はそちら側に
+  // ある（issue #229 の指示どおり）。
+  //
+  // **このズレに上界は無い。** 行を展開したまま放置すると、次にこの行が
+  // 再レンダーされるまで判定は更新されない --- `pages/programs.tsx` の
+  // `nowMs` は tick（`setInterval`）を持たず毎レンダー `Date.now()` を読むだけ、
+  // QueryClient（`main.tsx`）は `staleTime: 30_000` と `refetchOnWindowFocus`
+  // のみで `refetchInterval` は無く、このコンポーネント自身が張るクエリ
+  // （capabilities / 番組詳細 / overlaps）も定期再取得しない。したがって
+  // 「数十秒で追いつく」保証は無い。それでも良いのは上記の理由（誤った遷移先を
+  // 指さない）だけであり、pages/live.tsx の `nowMs`（30 秒 tick）のような
+  // 常時性の高い表示を求められたら別の設計が要る。
+  const showLiveLink = liveEnabled && isAiring(program.startAt, program.endAt)
 
   return (
     <div className="flex flex-col border-b border-border">
@@ -137,6 +164,35 @@ export function ProgramRow({
       {expanded && (
         <div id={detailId} className="px-4 pb-3">
           <ProgramDetail program={program} />
+
+          {/* 固有名詞（放送中のチャンネル・予約という実体）はリンクにする
+              （issue #229「決定済みの方向」）。折りたたみ行のタップ予算には
+              触れず、展開領域側に置く。 */}
+          {(showLiveLink || reserved) && (
+            <div className="mt-3 flex flex-wrap gap-4 text-xs">
+              {showLiveLink && (
+                <Link
+                  to="/live"
+                  search={{ serviceId: program.serviceId }}
+                  className="text-primary underline-offset-2 hover:underline"
+                >
+                  ライブで見る
+                </Link>
+              )}
+              {/* 予約済みの番組の overrides 編集は予約詳細画面の担当（下記コメント）。
+                  その画面への導線をここに置く。 */}
+              {reserved && (
+                <Link
+                  to="/reservations/$site/$programId"
+                  params={{ site, programId: String(program.programId) }}
+                  className="text-primary underline-offset-2 hover:underline"
+                >
+                  予約の詳細
+                </Link>
+              )}
+            </div>
+          )}
+
           {/* 予約済みの番組は「予約詳細」画面（reservation-detail.tsx）で
               overrides を編集する。ここで扱うのは「これから予約する」番組だけ。 */}
           {!reserved && (
