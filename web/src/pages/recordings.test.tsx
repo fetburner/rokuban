@@ -751,6 +751,181 @@ describe('RecordingsPage invalidate', () => {
   })
 })
 
+// issue #227（M5-4）: 最頻操作の「再生」を行右端の固定幅ボタンに独立させる
+// （行タップ = 展開の 1 段下に埋めない）。出し分けは両方向で確認する ---
+// ごみ箱では出さない（配信側が 404 にする契約）/ encodedProfiles が空でも
+// 出さない（`RecordingPlayer` が実際に <video> を描く条件と一致させる）。
+describe('RecordingsPage 再生ボタン', () => {
+  it('encoded がある録画には再生ボタンが出て、押すと展開されプレイヤーへフォーカス要求を出す', async () => {
+    const user = userEvent.setup()
+    // jsdom は tabindex 無しの <video> を `.focus()` しても activeElement に
+    // しない（isFocusableAreaElement が tabindex 有無で判定するため。実測は
+    // recording-player.tsx のコメント参照）。ここで主張したいのは
+    // 「フォーカス要求を出したか」であって「jsdom 上で activeElement が
+    // 実際に切り替わるか」ではない（それは jsdom の制約であり実装のバグでは
+    // ない）ので、`HTMLElement.prototype.focus` の呼び出しを見る。
+    const focusSpy = vi.spyOn(window.HTMLElement.prototype, 'focus')
+    createFakeRecordingsServer({
+      library: [
+        sampleRecording({
+          id: 3,
+          title: '再生できる録画',
+          encodedProfiles: ['web'],
+          sizeBytes: 1_000_000,
+        }),
+      ],
+    })
+
+    renderPage()
+
+    // 行が描画されるまで待つ（非同期の空虚な成功を避ける）
+    await screen.findByText('再生できる録画')
+    const playButton = screen.getByRole('button', { name: '再生できる録画を再生' })
+
+    await user.click(playButton)
+
+    // 展開され、プレイヤー（video）が出る
+    const region = await screen.findByRole('region', { name: '再生' })
+    expect(region).toBeInTheDocument()
+    const video = document.querySelector('video')
+    expect(video).toBeInTheDocument()
+
+    // video 要素に対してフォーカス要求（`.focus()`）が出ていることを見る
+    // （`.play()` は呼ばない --- 呼び出し元のコメント参照。scrollIntoView は
+    // jsdom に実装が無いので測らない）
+    await waitFor(() => expect(focusSpy).toHaveBeenCalled())
+    expect(focusSpy.mock.instances).toContain(video)
+  })
+
+  it('再生ボタンを押しても video の再生は開始しない（.play() を呼ばない）', async () => {
+    const user = userEvent.setup()
+    // M7 の値札方針（コストのかかる操作を暗黙に始めない）の検証そのもの。
+    // `.play()` が呼ばれれば本編データの取得が始まる --- 「展開して
+    // プレイヤーへ」であって「即再生」ではない決定を、呼び出しの有無で固定する。
+    const playSpy = vi
+      .spyOn(window.HTMLMediaElement.prototype, 'play')
+      .mockResolvedValue(undefined)
+    const focusSpy = vi.spyOn(window.HTMLElement.prototype, 'focus')
+    createFakeRecordingsServer({
+      library: [
+        sampleRecording({
+          id: 30,
+          title: '再生開始しない録画',
+          encodedProfiles: ['web'],
+          sizeBytes: 1_000_000,
+        }),
+      ],
+    })
+
+    renderPage()
+    await screen.findByText('再生開始しない録画')
+    await user.click(screen.getByRole('button', { name: '再生開始しない録画を再生' }))
+
+    // フォーカス要求が出るまで待ってから（展開・マウントが完了したことの
+    // 確認として）play が一度も呼ばれていないことを見る
+    const video = document.querySelector('video')
+    await waitFor(() => expect(focusSpy.mock.instances).toContain(video))
+    expect(playSpy).not.toHaveBeenCalled()
+  })
+
+  it('ごみ箱の行には再生ボタンを出さない（encoded があっても）', async () => {
+    const user = userEvent.setup()
+    createFakeRecordingsServer({
+      trash: [
+        sampleRecording({
+          id: 31,
+          title: 'ごみ箱の録画',
+          deletedAt: '2026-01-04T00:00:00Z',
+          encodedProfiles: ['web'],
+          sizeBytes: 1_000_000,
+        }),
+      ],
+    })
+
+    renderPage()
+    await user.click(await screen.findByRole('button', { name: 'ごみ箱' }))
+
+    // 行が描画されたことを先に待つ
+    await screen.findByText('ごみ箱の録画')
+    expect(
+      screen.queryByRole('button', { name: 'ごみ箱の録画を再生' }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('encoded が無い録画には再生ボタンを出さない（原本だけあっても）', async () => {
+    createFakeRecordingsServer({
+      library: [
+        sampleRecording({
+          id: 32,
+          title: 'エンコード無し録画',
+          encodedProfiles: [],
+          sizeBytes: 1_000_000,
+        }),
+      ],
+    })
+
+    renderPage()
+
+    await screen.findByText('エンコード無し録画')
+    expect(
+      screen.queryByRole('button', { name: 'エンコード無し録画を再生' }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('Play で開いた後に閉じて行本体タップだけで開き直しても、意図しないフォーカス要求は再発火しない', async () => {
+    const user = userEvent.setup()
+    const focusSpy = vi.spyOn(window.HTMLElement.prototype, 'focus')
+    createFakeRecordingsServer({
+      library: [
+        sampleRecording({
+          id: 40,
+          title: '開閉を繰り返す録画',
+          encodedProfiles: ['web'],
+          sizeBytes: 1_000_000,
+        }),
+      ],
+    })
+
+    renderPage()
+    await screen.findByText('開閉を繰り返す録画')
+
+    // 行本体の展開トグルは再生ボタン（アクセシブルネームが「...を再生」で
+    // 部分一致してしまう）と区別するため、まだ閉じている（aria-expanded=false）
+    // 時点で一度だけ掴んでおく。中身を開閉しても行トグル自身は remount
+    // されない（remount されるのは RecordingDetail 以下だけ）ので、
+    // このハンドルを使い回してよい
+    const rowToggle = screen.getByRole('button', {
+      name: /開閉を繰り返す録画/,
+      expanded: false,
+    })
+
+    // 1) 再生ボタンで展開 --- video にフォーカス要求が出る
+    await user.click(screen.getByRole('button', { name: '開閉を繰り返す録画を再生' }))
+    const firstVideo = await screen.findByRole('region', { name: '再生' }).then(
+      () => document.querySelector('video'),
+    )
+    expect(firstVideo).not.toBeNull()
+    await waitFor(() => expect(focusSpy.mock.instances).toContain(firstVideo))
+
+    // 2) 行本体タップで閉じる（RecordingDetail が unmount される）
+    await user.click(rowToggle)
+    await waitFor(() => expect(screen.queryByRole('region', { name: '再生' })).not.toBeInTheDocument())
+
+    // 3) 行本体タップだけでもう一度開く（Play は押していない）
+    focusSpy.mockClear()
+    await user.click(rowToggle)
+    const secondVideo = await screen.findByRole('region', { name: '再生' }).then(
+      () => document.querySelector('video'),
+    )
+    expect(secondVideo).not.toBeNull()
+    // 新しくマウントされた video インスタンス（remount なので参照が変わる）は
+    // Play を経由していないので、フォーカス要求の対象にならないはず
+    expect(secondVideo).not.toBe(firstVideo)
+    await new Promise((r) => setTimeout(r, 50))
+    expect(focusSpy.mock.instances).not.toContain(secondVideo)
+  })
+})
+
 // 事後追加のエンコード依頼（issue #133、凍結の例外。docs/storage.md §6「凍結の
 // 例外: 事後追加」）。RecordingActions に足した AddEncodeProfilesAction の
 // 判定分岐 --- 原本の有無 / 追加済みの除外 / 送信 / ごみ箱で出さない、をそれぞれ

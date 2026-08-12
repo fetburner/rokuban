@@ -1,5 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
+import { MoreVertical, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 
 import {
@@ -20,6 +21,12 @@ import { EmptyState, ErrorState, ListSkeleton, PageHeader } from '@/components/p
 import { summarizeRuleConditions } from '@/components/rule-condition-summary'
 import { useToast } from '@/components/toaster'
 import { Button } from '@/components/ui/button'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { Field, Input } from '@/components/ui/field'
 import { keepOriginalLabel, type KeepOriginal } from '@/lib/encode-settings'
 import {
@@ -109,10 +116,38 @@ export function RulesPage() {
   )
 }
 
+/**
+ * RuleRow は一覧の 1 行。
+ *
+ * 主操作（編集 / 検索しながら編集 / このルールの録画）は露出のまま、削除
+ * （稀・破壊的）だけを overflow メニューに寄せる（issue #227）。以前は
+ * 「編集」を開いた先の `RuleForm` フッタに保存・キャンセルと同格の
+ * `destructive` ボタンとして置いていたが、それだと編集を開くたびに
+ * 破壊的操作が主操作と並んでしまう。行を離れた overflow に置くことで、
+ * 一覧を眺めているだけでは目に入らない位置にする。
+ */
 function RuleRow({ rule, onEdit }: { rule: Rule; onEdit: () => void }) {
   const profiles = rule.encodeProfiles ?? []
   const keep = (rule.keepOriginal ?? 'always') as KeepOriginal
   const conditions = summarizeRuleConditions(rule)
+  const toast = useToast()
+  const queryClient = useQueryClient()
+  const deleteRule = useDeleteRule()
+
+  const remove = () => {
+    if (!window.confirm(`ルール「${rule.name}」を削除しますか？`)) return
+    deleteRule.mutate(
+      { id: rule.id },
+      {
+        onSuccess: () => {
+          toast({ message: 'ルールを削除しました' })
+          void queryClient.invalidateQueries({ queryKey: getListRulesQueryKey() })
+        },
+        onError: (err) =>
+          toast({ message: apiErrorMessage(err) ?? 'ルールの削除に失敗しました' }),
+      },
+    )
+  }
 
   return (
     <div className="rounded-lg border border-border px-3 py-3">
@@ -151,27 +186,54 @@ function RuleRow({ rule, onEdit }: { rule: Rule; onEdit: () => void }) {
             </span>
           </div>
         </div>
-        <div className="flex shrink-0 flex-col items-end gap-2">
-          <Button type="button" variant="outline" size="sm" onClick={onEdit}>
-            編集
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            render={<Link to="/search" search={{ ruleId: rule.id }} />}
-          >
-            検索しながら編集
-          </Button>
-          {/* このルール由来の録画だけに絞った /recordings への導線（issue #137）。
-              条件モデルは検索（ProgramSearchRequest）と共有しないので、遷移先は
-              /search ではなく /recordings?ruleId=N になる。 */}
-          <Button
-            variant="ghost"
-            size="sm"
-            render={<Link to="/recordings" search={{ ruleId: rule.id }} />}
-          >
-            このルールの録画
-          </Button>
+        <div className="flex shrink-0 items-start gap-1">
+          <div className="flex flex-col items-end gap-2">
+            <Button type="button" variant="outline" size="sm" onClick={onEdit}>
+              編集
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              render={<Link to="/search" search={{ ruleId: rule.id }} />}
+            >
+              検索しながら編集
+            </Button>
+            {/* このルール由来の録画だけに絞った /recordings への導線（issue #137）。
+                条件モデルは検索（ProgramSearchRequest）と共有しないので、遷移先は
+                /search ではなく /recordings?ruleId=N になる。 */}
+            <Button
+              variant="ghost"
+              size="sm"
+              render={<Link to="/recordings" search={{ ruleId: rule.id }} />}
+            >
+              このルールの録画
+            </Button>
+          </div>
+          {/* 破壊的・稀な操作（削除）は overflow に寄せる（issue #227）。 */}
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              render={
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  aria-label={`ルール「${rule.name}」のその他の操作`}
+                />
+              }
+            >
+              <MoreVertical />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem
+                variant="destructive"
+                disabled={deleteRule.isPending}
+                onClick={remove}
+              >
+                <Trash2 />
+                削除
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </div>
     </div>
@@ -187,7 +249,6 @@ function RuleForm(props: RuleFormProps) {
   const queryClient = useQueryClient()
   const createRule = useCreateRule()
   const updateRule = useUpdateRule()
-  const deleteRule = useDeleteRule()
 
   const [draft, setDraft] = useState<SearchDraft>(() =>
     props.mode === 'edit' ? ruleToDraft(props.rule) : emptyDraft(),
@@ -204,7 +265,7 @@ function RuleForm(props: RuleFormProps) {
     setMeta((m) => ({ ...m, keepOriginal: next.keepOriginal, encodeProfiles: next.encodeProfiles }))
 
   const formError = draftError(draft) ?? ruleMetaError(meta)
-  const pending = createRule.isPending || updateRule.isPending || deleteRule.isPending
+  const pending = createRule.isPending || updateRule.isPending
 
   const invalidate = () =>
     queryClient.invalidateQueries({ queryKey: getListRulesQueryKey() })
@@ -253,23 +314,6 @@ function RuleForm(props: RuleFormProps) {
         },
       )
     }
-  }
-
-  const remove = () => {
-    if (props.mode !== 'edit') return
-    if (!window.confirm(`ルール「${props.rule.name}」を削除しますか？`)) return
-    deleteRule.mutate(
-      { id: props.rule.id },
-      {
-        onSuccess: () => {
-          toast({ message: 'ルールを削除しました' })
-          void invalidate()
-          props.onSaved()
-        },
-        onError: (err) =>
-          toast({ message: apiErrorMessage(err) ?? 'ルールの削除に失敗しました' }),
-      },
-    )
   }
 
   return (
@@ -344,17 +388,8 @@ function RuleForm(props: RuleFormProps) {
         <Button type="button" variant="outline" size="lg" disabled={pending} onClick={props.onCancel}>
           キャンセル
         </Button>
-        {props.mode === 'edit' && (
-          <Button
-            type="button"
-            variant="destructive"
-            size="lg"
-            disabled={pending}
-            onClick={remove}
-          >
-            削除
-          </Button>
-        )}
+        {/* 削除はルール行の overflow メニューに移した（issue #227）。編集フォームは
+            保存・キャンセルという主操作だけを持つ。 */}
       </div>
     </form>
   )
