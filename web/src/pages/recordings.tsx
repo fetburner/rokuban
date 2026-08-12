@@ -1,6 +1,6 @@
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query'
 import { useSearch as useRouteSearch, useNavigate } from '@tanstack/react-router'
-import { ChevronDown, Trash2 } from 'lucide-react'
+import { ChevronDown, Play, Trash2 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import {
@@ -286,63 +286,122 @@ function ViewTab({
   )
 }
 
+/**
+ * RecordingRow は録画一覧の 1 行。
+ *
+ * 行本体のタップは従来どおり詳細（メタデータ・削除系操作を含む全体）を展開する。
+ * それとは別に、最頻操作である「再生」を行右端の固定幅ボタンに独立させる
+ * （issue #227。予約行の予約ボタンと同じ配置文法 --- `program-row.tsx` の
+ * 「予約ボタンは行本体と分離した固定幅」参照）。以前は再生も他のメタデータと
+ * 同じ「展開」の 1 段下に埋もれていた。
+ *
+ * **再生ボタンは「展開してプレイヤーへスクロール + フォーカス」であって
+ * 「即再生」ではない。** `<video preload="metadata">` はメタデータだけを
+ * 先読みするが、実際の再生開始（`.play()` に相当する処理）はブラウザが
+ * 本編データの取得を始める重い操作で、M7 の値札方針（コストのかかる操作を
+ * 暗黙に始めない）と衝突する。行のボタンをワンタップしただけで本編の転送が
+ * 始まると、一覧をスクロール中の誤タップがそのまま通信量になる。ネイティブ
+ * `<video controls>` の再生ボタンをもう一段挟むことで、実際のデータ転送は
+ * 利用者の最後の明示的なクリックに紐付く（予約のワンタップ + トーストとは
+ * 非対称だが、予約は DB 行を作るだけで安価、再生は帯域を伴うため意図的に
+ * 揃えていない）。
+ *
+ * 出し分けは 2 条件: ごみ箱では出さない（配信側が `deleted_at IS NOT NULL` を
+ * 404 にする契約なので出しても必ず失敗する）。`encodedProfiles` が空でも
+ * 出さない（`RecordingPlayer` が実際に `<video>` を描くかどうかと同じ条件 ---
+ * 原本だけがある録画は VLC リンクしか出さないので「再生」ボタンの対象ではない）。
+ */
 function RecordingRow({ recording, trash }: { recording: Recording; trash: boolean }) {
   const [expanded, setExpanded] = useState(false)
   const [thumbFailed, setThumbFailed] = useState(false)
+  // プレイヤーへのフォーカス要求。値そのものに意味は無く、変化を検知する
+  // トークンとして使う（同じ true を渡し続けても再度スクロール/フォーカスしたい
+  // ケース --- 展開済みの行でもう一度「再生」を押した場合 --- を拾うため）。
+  const [focusPlayerToken, setFocusPlayerToken] = useState(0)
+
+  const playable = !trash && (recording.encodedProfiles ?? []).length > 0
 
   return (
     <div className="border-b border-border">
-      <button
-        type="button"
-        aria-expanded={expanded}
-        onClick={() => setExpanded((v) => !v)}
-        className="flex min-h-14 w-full items-center gap-3 px-4 py-2.5 text-left hover:bg-muted/50"
-      >
-        {/*
-          サムネイルは openapi 外の streamer 経路（/api/recordings/{id}/thumbnail）。
-          未生成時は 404 → onError でプレースホルダ。hasThumbnail 列は持たない（M3-4）。
-          ごみ箱の録画は配信側が deleted_at IS NOT NULL を 404 にする契約（docs/api.md
-          §メディア配信）なので、そもそもリクエストを出さずプレースホルダ固定にする
-          （M3-18: 未生成と 404 で区別が付かない曖昧さもこれで消える）。
-        */}
-        <div className="size-12 shrink-0 overflow-hidden rounded bg-muted">
-          {!trash && !thumbFailed ? (
-            <img
-              src={`/api/recordings/${recording.id}/thumbnail`}
-              alt=""
-              className="size-full object-cover"
-              loading="lazy"
-              onError={() => setThumbFailed(true)}
-            />
-          ) : (
-            <div className="size-full bg-muted" aria-hidden />
-          )}
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-sm">{recording.title || '（番組名なし）'}</div>
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-            <StatusBadge status={recording.status} />
-            <span className="shrink-0">{recording.serviceName}</span>
-            <span className="shrink-0">{formatDateTime(recording.startAt)}</span>
-            <span className="shrink-0">{formatDuration(recording.durationMs)}</span>
-            {recording.sizeBytes !== undefined && (
-              <span className="shrink-0">{formatBytes(recording.sizeBytes)}</span>
+      <div className="flex items-stretch">
+        <button
+          type="button"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((v) => !v)}
+          className="flex min-h-14 min-w-0 flex-1 items-center gap-3 px-4 py-2.5 text-left hover:bg-muted/50"
+        >
+          {/*
+            サムネイルは openapi 外の streamer 経路（/api/recordings/{id}/thumbnail）。
+            未生成時は 404 → onError でプレースホルダ。hasThumbnail 列は持たない（M3-4）。
+            ごみ箱の録画は配信側が deleted_at IS NOT NULL を 404 にする契約（docs/api.md
+            §メディア配信）なので、そもそもリクエストを出さずプレースホルダ固定にする
+            （M3-18: 未生成と 404 で区別が付かない曖昧さもこれで消える）。
+          */}
+          <div className="size-12 shrink-0 overflow-hidden rounded bg-muted">
+            {!trash && !thumbFailed ? (
+              <img
+                src={`/api/recordings/${recording.id}/thumbnail`}
+                alt=""
+                className="size-full object-cover"
+                loading="lazy"
+                onError={() => setThumbFailed(true)}
+              />
+            ) : (
+              <div className="size-full bg-muted" aria-hidden />
             )}
-            {trash && recording.deletedAt && (
-              <span className="shrink-0">削除 {formatDateTime(recording.deletedAt)}</span>
-            )}
-            {recording.dropSummary && <DropBadges summary={recording.dropSummary} />}
           </div>
-        </div>
-        <ChevronDown
-          className={cn(
-            'size-4 shrink-0 text-muted-foreground transition-transform',
-            expanded && 'rotate-180',
-          )}
-        />
-      </button>
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-sm">{recording.title || '（番組名なし）'}</div>
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+              <StatusBadge status={recording.status} />
+              <span className="shrink-0">{recording.serviceName}</span>
+              <span className="shrink-0">{formatDateTime(recording.startAt)}</span>
+              <span className="shrink-0">{formatDuration(recording.durationMs)}</span>
+              {recording.sizeBytes !== undefined && (
+                <span className="shrink-0">{formatBytes(recording.sizeBytes)}</span>
+              )}
+              {trash && recording.deletedAt && (
+                <span className="shrink-0">削除 {formatDateTime(recording.deletedAt)}</span>
+              )}
+              {recording.dropSummary && <DropBadges summary={recording.dropSummary} />}
+            </div>
+          </div>
+          <ChevronDown
+            className={cn(
+              'size-4 shrink-0 text-muted-foreground transition-transform',
+              expanded && 'rotate-180',
+            )}
+          />
+        </button>
 
-      {expanded && <RecordingDetail recording={recording} trash={trash} />}
+        {/* 再生ボタンは行本体と分離した固定幅。最小 44px のタップ領域を確保する
+            （program-row.tsx の予約ボタンと同じ配置文法）。 */}
+        {playable && (
+          <div className="flex w-20 shrink-0 items-center justify-center border-l border-border">
+            <Button
+              type="button"
+              size="sm"
+              className="min-h-11 w-full rounded-none"
+              aria-label={`${recording.title || '（番組名なし）'}を再生`}
+              onClick={() => {
+                setExpanded(true)
+                setFocusPlayerToken((t) => t + 1)
+              }}
+            >
+              <Play data-icon="inline-start" />
+              再生
+            </Button>
+          </div>
+        )}
+      </div>
+
+      {expanded && (
+        <RecordingDetail
+          recording={recording}
+          trash={trash}
+          focusPlayerToken={focusPlayerToken}
+        />
+      )}
     </div>
   )
 }
@@ -398,7 +457,16 @@ function DropBadges({ summary }: { summary: DropSummary }) {
   )
 }
 
-function RecordingDetail({ recording, trash }: { recording: Recording; trash: boolean }) {
+function RecordingDetail({
+  recording,
+  trash,
+  focusPlayerToken,
+}: {
+  recording: Recording
+  trash: boolean
+  /** 再生ボタンから展開されたときにインクリメントされる（RecordingRow）。 */
+  focusPlayerToken?: number
+}) {
   const encodedProfiles = recording.encodedProfiles ?? []
   const hasOriginal = recording.sizeBytes !== undefined
 
@@ -417,6 +485,7 @@ function RecordingDetail({ recording, trash }: { recording: Recording; trash: bo
           recordingId={recording.id}
           encodedProfiles={encodedProfiles}
           hasOriginal={hasOriginal}
+          focusToken={focusPlayerToken}
         />
       )}
 

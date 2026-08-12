@@ -751,6 +751,119 @@ describe('RecordingsPage invalidate', () => {
   })
 })
 
+// issue #227（M5-4）: 最頻操作の「再生」を行右端の固定幅ボタンに独立させる
+// （行タップ = 展開の 1 段下に埋めない）。出し分けは両方向で確認する ---
+// ごみ箱では出さない（配信側が 404 にする契約）/ encodedProfiles が空でも
+// 出さない（`RecordingPlayer` が実際に <video> を描く条件と一致させる）。
+describe('RecordingsPage 再生ボタン', () => {
+  it('encoded がある録画には再生ボタンが出て、押すと展開されプレイヤーへフォーカスする', async () => {
+    const user = userEvent.setup()
+    createFakeRecordingsServer({
+      library: [
+        sampleRecording({
+          id: 3,
+          title: '再生できる録画',
+          encodedProfiles: ['web'],
+          sizeBytes: 1_000_000,
+        }),
+      ],
+    })
+
+    renderPage()
+
+    // 行が描画されるまで待つ（非同期の空虚な成功を避ける）
+    await screen.findByText('再生できる録画')
+    const playButton = screen.getByRole('button', { name: '再生できる録画を再生' })
+
+    await user.click(playButton)
+
+    // 展開され、プレイヤー（video）が出る
+    const region = await screen.findByRole('region', { name: '再生' })
+    expect(region).toBeInTheDocument()
+    const video = document.querySelector('video')
+    expect(video).toBeInTheDocument()
+
+    // フォーカスは video 要素に移る（`.play()` は呼ばない --- 呼び出し元の
+    // コメント参照。scrollIntoView は jsdom に実装が無いので測らない）
+    await waitFor(() => expect(document.activeElement).toBe(video))
+  })
+
+  it('再生ボタンを押しても video の再生は開始しない（.play() を呼ばない）', async () => {
+    const user = userEvent.setup()
+    // M7 の値札方針（コストのかかる操作を暗黙に始めない）の検証そのもの。
+    // `.play()` が呼ばれれば本編データの取得が始まる --- 「展開して
+    // プレイヤーへ」であって「即再生」ではない決定を、呼び出しの有無で固定する。
+    const playSpy = vi
+      .spyOn(window.HTMLMediaElement.prototype, 'play')
+      .mockResolvedValue(undefined)
+    createFakeRecordingsServer({
+      library: [
+        sampleRecording({
+          id: 30,
+          title: '再生開始しない録画',
+          encodedProfiles: ['web'],
+          sizeBytes: 1_000_000,
+        }),
+      ],
+    })
+
+    renderPage()
+    await screen.findByText('再生開始しない録画')
+    await user.click(screen.getByRole('button', { name: '再生開始しない録画を再生' }))
+
+    // フォーカスが移るまで待ってから（展開・マウントが完了したことの確認として）
+    // play が一度も呼ばれていないことを見る
+    await waitFor(() =>
+      expect(document.activeElement).toBe(document.querySelector('video')),
+    )
+    expect(playSpy).not.toHaveBeenCalled()
+  })
+
+  it('ごみ箱の行には再生ボタンを出さない（encoded があっても）', async () => {
+    const user = userEvent.setup()
+    createFakeRecordingsServer({
+      trash: [
+        sampleRecording({
+          id: 31,
+          title: 'ごみ箱の録画',
+          deletedAt: '2026-01-04T00:00:00Z',
+          encodedProfiles: ['web'],
+          sizeBytes: 1_000_000,
+        }),
+      ],
+    })
+
+    renderPage()
+    await user.click(await screen.findByRole('button', { name: 'ごみ箱' }))
+
+    // 行が描画されたことを先に待つ
+    await screen.findByText('ごみ箱の録画')
+    expect(
+      screen.queryByRole('button', { name: 'ごみ箱の録画を再生' }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('encoded が無い録画には再生ボタンを出さない（原本だけあっても）', async () => {
+    createFakeRecordingsServer({
+      library: [
+        sampleRecording({
+          id: 32,
+          title: 'エンコード無し録画',
+          encodedProfiles: [],
+          sizeBytes: 1_000_000,
+        }),
+      ],
+    })
+
+    renderPage()
+
+    await screen.findByText('エンコード無し録画')
+    expect(
+      screen.queryByRole('button', { name: 'エンコード無し録画を再生' }),
+    ).not.toBeInTheDocument()
+  })
+})
+
 // 事後追加のエンコード依頼（issue #133、凍結の例外。docs/storage.md §6「凍結の
 // 例外: 事後追加」）。RecordingActions に足した AddEncodeProfilesAction の
 // 判定分岐 --- 原本の有無 / 追加済みの除外 / 送信 / ごみ箱で出さない、をそれぞれ

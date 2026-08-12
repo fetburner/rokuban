@@ -15,6 +15,16 @@ type RecordingPlayerProps = {
   /** 原本 TS があるとき VLC 向けリンクを出す。 */
   hasOriginal?: boolean
   className?: string
+  /**
+   * 変化するたびに `<video>` へスクロール + フォーカスする（値そのものに
+   * 意味は無いトークン。録画一覧の「再生」ボタンから展開されたときに
+   * インクリメントされる。`pages/recordings.tsx` の `RecordingRow`
+   * 参照）。**`.play()` は呼ばない** --- 呼ぶと本編データの取得が
+   * 暗黙に始まってしまう（M7 の値札方針。詳細は呼び出し元のコメント）。
+   * 実際の再生開始はネイティブ `<video controls>` への利用者の
+   * もう一段のクリックに委ねる。
+   */
+  focusToken?: number
 }
 
 /**
@@ -26,6 +36,7 @@ export function RecordingPlayer({
   encodedProfiles,
   hasOriginal = false,
   className,
+  focusToken,
 }: RecordingPlayerProps) {
   const profiles = encodedProfiles
   const [profile, setProfile] = useState(profiles[0] ?? '')
@@ -46,6 +57,18 @@ export function RecordingPlayer({
     restorePending.current = true
     lastSavedSecond.current = null
   }, [recordingId, profile])
+
+  // `focusToken` が変わるたびに video 要素へスクロール + フォーカスする。
+  // `scrollIntoView` は jsdom に実装が無い（web/e2e/README.md 参照。この効果は
+  // 実ブラウザでしか測れない領域）ので optional call にして落ちないようにする。
+  useEffect(() => {
+    if (!focusToken) return
+    const v = videoRef.current
+    if (!v) return
+    v.scrollIntoView?.({ block: 'center', behavior: 'smooth' })
+    v.focus()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusToken])
 
   if (profiles.length === 0) {
     return (
@@ -99,6 +122,14 @@ export function RecordingPlayer({
         playsInline
         preload="metadata"
         src={src}
+        // tabIndex={-1}: プログラムからの focus() は常に効くようにするが、
+        // キーボードの Tab 順には追加しない（native controls 自体が
+        // 個々のボタンにフォーカスを持つため、コンテナである <video> を
+        // Tab 対象にする必要はない）。`<video controls>` は仕様上
+        // フォーカス可能な領域だが、明示的な tabindex を持たない場合の
+        // 扱いはブラウザ実装に委ねられている --- 再生ボタンからの
+        // フォーカス移動を確実にするため明示する。
+        tabIndex={-1}
         className="aspect-video w-full max-w-3xl rounded bg-black"
         onLoadedMetadata={(e) => {
           if (!restorePending.current) return
