@@ -3612,7 +3612,7 @@ export const getGetRecordingUrl = (id: number,) => {
 
 /**
  * 一覧要素（`GET /api/recordings` の各要素）と同形。単体ページ・skip 理由や
- * 予約からの導線（issue #232 M6-4）が着地する先。
+ * 予約からの導線が着地する先。
  *
  * **ごみ箱（`deleted_at IS NOT NULL`）の録画も 200 で返す。** メディア配信の
  * 404 契約（`recordings.deleted_at IS NOT NULL` を 404 にする。

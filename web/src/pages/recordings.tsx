@@ -478,27 +478,32 @@ function DropBadges({ summary }: { summary: DropSummary }) {
 /**
  * RecordingDetail は録画 1 件の詳細本体（プレイヤー・メタデータ・操作）。
  * 一覧の行展開（`RecordingRow`）と単体ページ（`pages/recording-detail.tsx`）の
- * 両方が使う共通部品 --- 「再生・操作が一覧の展開と同等に機能する」（issue #232
- * M6-4 の受け入れ）を、実装を分岐させずに実現するため。
+ * 両方が使う共通部品 --- 「再生・操作が一覧の展開と同等に機能する」を、
+ * 実装を分岐させずに実現するため。
+ *
+ * 単体ページはここで行われる削除 / 復元 / 完全削除 / 追加エンコードのどの
+ * mutate が成功しても自分自身を再描画したいが、それを prop で 1 段ずつ手渡す
+ * 形（例: `onMutated`）は「この部品の下で mutate する者は全員 prop を受け取る」
+ * という規律を要求し、守らせる仕組みが無い。実際、最初の実装はこの穴を
+ * `RecordingActions` にだけ塞いで `AddEncodeProfilesAction`（下記）を素通しし、
+ * 単体ページで「追加エンコードを依頼」しても再検証されない不具合になった
+ * （issue #232 のレビューで実機再現）。
+ *
+ * 直し方は prop を増やすことではなく、**単体ページ自身のクエリキーを一覧の
+ * invalidate に前方一致させる**（`pages/recording-detail.tsx` の
+ * `recordingDetailQueryKey` 参照）。ここに mutater を何人足しても、
+ * 各自が今のまま `['/api/recordings']` を invalidate するだけで単体ページも
+ * 自動的に巻き込まれるので、`RecordingDetail` 自身に配線用の prop は要らない。
  */
 export function RecordingDetail({
   recording,
   trash,
   focusPlayerToken,
-  onMutated,
 }: {
   recording: Recording
   trash: boolean
   /** 再生ボタンから展開されたときにインクリメントされる（RecordingRow）。 */
   focusPlayerToken?: number
-  /**
-   * 削除 / 復元 / 完全削除の依頼が成功した後に呼ばれる（`RecordingActions` へ
-   * そのまま渡す）。一覧側は渡さない --- 一覧クエリの invalidate だけで自分の
-   * 行が消える/移る。単体ページは自分自身のクエリ（`getGetRecordingQueryKey`）
-   * を持つので、それを再検証させるために使う（詳細は
-   * `pages/recording-detail.tsx`）。
-   */
-  onMutated?: () => void
 }) {
   const encodedProfiles = recording.encodedProfiles ?? []
   const hasOriginal = recording.sizeBytes !== undefined
@@ -570,7 +575,7 @@ export function RecordingDetail({
       {/* PID 別の内訳は行数が多いので、モバイルで横スクロールさせずここに畳む */}
       {recording.dropSummary && <DropStatsTable recordingId={recording.id} />}
 
-      <RecordingActions recording={recording} trash={trash} onMutated={onMutated} />
+      <RecordingActions recording={recording} trash={trash} />
     </div>
   )
 }
@@ -579,16 +584,7 @@ export function RecordingDetail({
  * RecordingActions は論理削除 / 復元 / 即時 purge 印 + 追加エンコードの依頼。
  * 削除系はいずれも DB だけを触り、ファイルは消さない（M3-7）。
  */
-export function RecordingActions({
-  recording,
-  trash,
-  onMutated,
-}: {
-  recording: Recording
-  trash: boolean
-  /** 各操作の成功後に呼ばれる（`RecordingDetail` の同名 prop 参照）。 */
-  onMutated?: () => void
-}) {
+export function RecordingActions({ recording, trash }: { recording: Recording; trash: boolean }) {
   const recordingId = recording.id
   const [purgeConfirmOpen, setPurgeConfirmOpen] = useState(false)
   const queryClient = useQueryClient()
@@ -599,12 +595,11 @@ export function RecordingActions({
 
   const invalidate = () => {
     // ライブラリとごみ箱の両方を捨てる（片側の操作がもう片側の集合を変える）。
-    // このキー（'/api/recordings' 単体）は一覧のクエリキー（getListRecordingsQueryKey
-    // が返す ['/api/recordings', ...] 前方一致）だけを捨てる --- 単体ページ自身の
-    // クエリキー（getGetRecordingQueryKey、'/api/recordings/{id}' という別の
-    // 1 要素の文字列）はここに前方一致しないため別途 onMutated で再検証させる。
+    // 単体ページ（pages/recording-detail.tsx）はこのキーに前方一致する
+    // クエリキー（recordingDetailQueryKey）を自ら使っているので、単体ページ
+    // だけを別途再検証する配線はここには要らない（テスト:
+    // recording-detail.test.tsx「ごみ箱へ移すと、ナビゲーションなしで…」）。
     void queryClient.invalidateQueries({ queryKey: ['/api/recordings'] })
-    onMutated?.()
   }
 
   const busy =

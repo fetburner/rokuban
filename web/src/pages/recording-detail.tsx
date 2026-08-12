@@ -1,9 +1,8 @@
-import { useQueryClient } from '@tanstack/react-query'
 import { Link, useParams } from '@tanstack/react-router'
 import { ArrowLeft } from 'lucide-react'
 import { useState } from 'react'
 
-import { getGetRecordingQueryKey, useGetRecording } from '@/api/generated'
+import { useGetRecording } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
 import { ErrorState, ListSkeleton } from '@/components/page'
 import { Button } from '@/components/ui/button'
@@ -11,19 +10,42 @@ import { formatBytes, formatDateTime, formatDuration } from '@/lib/format'
 import { RecordingDetail, StatusBadge } from '@/pages/recordings'
 
 /**
- * RecordingDetailPage は録画単体の着地先（issue #232 M6-4）。
+ * recordingDetailQueryKey は単体ページ自身のクエリキー。
+ *
+ * orval が生成する `getGetRecordingQueryKey`（`['/api/recordings/{id}']`、id を
+ * 埋め込んだ 1 要素の文字列）は使わない。一覧側の mutater（`RecordingActions` の
+ * `invalidate` / `AddEncodeProfilesAction` の `onSuccess`、両方
+ * `pages/recordings.tsx`）はどちらも `queryClient.invalidateQueries({ queryKey:
+ * ['/api/recordings'] })` で捨てる --- TanStack Query の既定の前方一致は
+ * 配列の**先頭要素が文字列として等しいか**で判定するため、生成された 1 要素キー
+ * （'/api/recordings/{id}' という別の文字列）はそこに前方一致しない。
+ *
+ * `RecordingDetail` の下に mutater を足すたびに単体ページへの配線
+ * （`onMutated` のような prop）を手で通す形は、通し忘れても型エラーにも
+ * ならず黒く抜ける（実際に `AddEncodeProfilesAction` がこの穴を最初に踏んだ
+ * --- issue #232 のレビューで実機再現された）。**「覚えておく」を要求する
+ * 代わりに、単体ページ自身のキーの先頭要素を一覧と同じ `'/api/recordings'` に
+ * 揃えておけば、一覧側のどの mutater（今あるものも将来足されるものも）の
+ * invalidate がこのページのキャッシュも自動的に巻き込む**（前方一致は
+ * `getListRecordingsQueryKey` が返す `['/api/recordings', {...}]` にも同じ
+ * 理屈で効いている）。`RecordingDetail` 配下に prop を新設する必要が無くなる。
+ */
+function recordingDetailQueryKey(id: number) {
+  return ['/api/recordings', 'detail', id] as const
+}
+
+/**
+ * RecordingDetailPage は録画単体の着地先。
  *
  * 録画は一覧内展開でしか見られず単体の URL を持たなかったため、skip 理由
- * （「重複（録画 #345）」）や予約 → 録画の導線がリンクの終点を持てなかった
- * （後続の M6-5 が実際にリンクを張る）。
+ * （「重複（録画 #345）」）や予約 → 録画の導線がリンクの終点を持てなかった。
  *
  * `/recordings/$id` を宛先にする（推奨案どおり）。「一覧内スクロール + 展開」
- * は無限リストで対象が読み込み済みとは限らず成立しない（issue 本文）。
+ * は無限リストで対象が読み込み済みとは限らず成立しない。
  *
  * `reservations.id` のような導出 id とは違い、`recordings.id` は
  * ingest（watcher）が一度作ったら変わらない不可逆な事実の id なので、
- * `/reservations/$site/$programId`（issue #99）と違って id をそのまま URL に
- * 使ってよい。
+ * `/reservations/$site/$programId` と違って id をそのまま URL に使ってよい。
  *
  * 本体（プレイヤー・メタデータ・削除系操作）は一覧の行展開
  * （`pages/recordings.tsx` の `RecordingDetail`）と同じ部品を再利用する ---
@@ -32,10 +54,9 @@ import { RecordingDetail, StatusBadge } from '@/pages/recordings'
 export function RecordingDetailPage() {
   const { id } = useParams({ from: '/recordings/$id' })
   const idNum = Number(id)
-  const queryClient = useQueryClient()
   const [thumbFailed, setThumbFailed] = useState(false)
 
-  const query = useGetRecording(idNum)
+  const query = useGetRecording(idNum, { query: { queryKey: recordingDetailQueryKey(idNum) } })
   const recording = unwrap(query.data)
   // ごみ箱の録画（deletedAt 付き）も 200 で返る（getRecording の openapi.yaml
   // description）。この真偽で一覧の展開と同じ規律（再生系を出さない）を適用する。
@@ -93,17 +114,7 @@ export function RecordingDetailPage() {
             </div>
           </section>
 
-          <RecordingDetail
-            recording={recording}
-            trash={trash}
-            onMutated={() => {
-              // 単体ページ自身のクエリは一覧の invalidate（'/api/recordings' 前方
-              // 一致）では捨てられない別キー（getGetRecordingQueryKey が返す
-              // '/api/recordings/{id}' という 1 要素の文字列）なので、ここで
-              // 明示的に再検証する（RecordingActions の invalidate 参照）。
-              void queryClient.invalidateQueries({ queryKey: getGetRecordingQueryKey(idNum) })
-            }}
-          />
+          <RecordingDetail recording={recording} trash={trash} />
         </div>
       )}
     </>

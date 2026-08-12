@@ -97,6 +97,20 @@ function createFakeServer(options: {
       return Promise.resolve(jsonResponse(null, 204))
     }
 
+    const encodeMatch = /^\/api\/recordings\/(\d+)\/encode-profiles$/.exec(url.pathname)
+    if (encodeMatch && method === 'POST') {
+      const id = Number(encodeMatch[1])
+      if (!recording || recording.id !== id) {
+        return Promise.resolve(jsonResponse({ error: 'not found' }, 404))
+      }
+      const body: { profiles?: string[] } = init?.body ? JSON.parse(String(init.body)) : {}
+      recording = {
+        ...recording,
+        encodeProfiles: [...(recording.encodeProfiles ?? []), ...(body.profiles ?? [])],
+      }
+      return Promise.resolve(jsonResponse(null, 204))
+    }
+
     if (/^\/api\/recordings\/\d+\/drop-stats$/.test(url.pathname)) {
       return Promise.resolve(jsonResponse([]))
     }
@@ -179,10 +193,11 @@ describe('RecordingDetailPage', () => {
     expect(screen.getByRole('button', { name: '復元' })).toBeInTheDocument()
   })
 
-  // 単体ページ固有の経路: 一覧の invalidate（'/api/recordings' 前方一致）は
-  // このページ自身のクエリキー（'/api/recordings/{id}' という別の 1 要素の
-  // 文字列）を捨てない。RecordingDetail に渡した onMutated がここを埋めて
-  // いなければ、削除してもこの画面は古い（生きている）表示のまま固まる。
+  // 単体ページ固有の経路: 単体ページ自身のクエリキー（recordingDetailQueryKey）
+  // は先頭要素を一覧と同じ '/api/recordings' に揃えてあるので、RecordingActions
+  // の invalidate（'/api/recordings' 前方一致）がこのページのキャッシュも
+  // 自動的に巻き込む。ここが効いていなければ、削除してもこの画面は古い
+  // （生きている）表示のまま固まる。
   it('ごみ箱へ移すと、ナビゲーションなしで自分自身が再生系無しの表示に更新される', async () => {
     const user = userEvent.setup()
     createFakeServer({
@@ -198,5 +213,32 @@ describe('RecordingDetailPage', () => {
     await waitFor(() => expect(screen.getByText('復元')).toBeInTheDocument())
     expect(screen.queryByRole('region', { name: '再生' })).not.toBeInTheDocument()
     expect(document.querySelector('video')).not.toBeInTheDocument()
+  })
+
+  // 回帰テスト（issue #232 のレビューで実機再現）: RecordingDetail の下には
+  // 削除系（RecordingActions）だけでなく事後エンコード追加
+  // （AddEncodeProfilesAction）というもう 1 人の mutater がいる。単体ページの
+  // 再検証を「一覧の invalidate に前方一致するクエリキー」で構造的に解決して
+  // いれば、AddEncodeProfilesAction 側を一切変更しなくてもここが効くはず ---
+  // それを確かめる。
+  it('事後エンコードを依頼すると、単体ページでも一覧の展開と同様に「追加済み」が出る', async () => {
+    const user = userEvent.setup()
+    createFakeServer({
+      recording: sampleRecording({ sizeBytes: 1_000_000 }), // encodeProfiles 未指定 = 追加済み無し
+      encodeProfiles: [{ name: 'web' }],
+    })
+
+    renderAt('/recordings/3')
+
+    const checkbox = await screen.findByRole('checkbox', { name: 'web' })
+    await user.click(checkbox)
+    await user.click(screen.getByRole('button', { name: '追加エンコードを依頼' }))
+
+    // 依頼が成功した（トースト）だけでは何も主張していない --- 単体ページ自身の
+    // クエリが再検証され、「追加済み: web」が実際に描画されることを見る。
+    expect(await screen.findByText('エンコードを依頼しました')).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByText('追加済み: web')).toBeInTheDocument())
+    // 追加済みになった選択肢はチェックボックスの一覧から消える（二重依頼に見せない）。
+    expect(screen.queryByRole('checkbox', { name: 'web' })).not.toBeInTheDocument()
   })
 })
