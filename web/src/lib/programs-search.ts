@@ -16,6 +16,15 @@ import { ServiceChannelType, type Service } from '@/api/generated'
 export type ProgramsPageSearch = {
   /** 絞り込み中のチャンネル（サービス）。複数可、OR。空集合（＝すべて）は `undefined`。 */
   serviceId?: number[]
+  /**
+   * ジャンプ先の時刻（epoch ms）。容量不足バッジ（`components/capacity-shortfall-badge.tsx`）
+   * が「この時間帯」への導線として付ける（issue #233 M6-5）。グリッド（`lg` 以上）では
+   * 初期スクロール位置に使い、それ以外（リスト表示・`lg` 未満）では日付ジャンプの
+   * フォールバックにする（`pages/programs.tsx` 参照）。番組の識別子ではなく
+   * 「この瞬間を見る」という要求そのものなので、`programId` のような外部キーを
+   * 経由せず時刻を直接運ぶ。
+   */
+  at?: number
 }
 
 function toRawValues(raw: unknown): unknown[] {
@@ -43,6 +52,19 @@ function parseServiceIds(raw: unknown): number[] | undefined {
 }
 
 /**
+ * parseAt は URL の値を検証済みの `at`（epoch ms）にする。
+ *
+ * 数値に変換できない・有限でない値は落とす（`serviceId` と違い、`at` は
+ * 0 以下や過去の時刻も落とさない --- 番組表側の消費者（`dayOffsetForMs` /
+ * `ProgramGrid` の `scrollToMs`）が範囲外の値を自分でクランプ・無視できる
+ * ため、ここで正の値・未来の値に絞る判断基準を持たない）。
+ */
+function parseAt(raw: unknown): number | undefined {
+  const n = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : NaN
+  return Number.isFinite(n) && Number.isInteger(n) ? n : undefined
+}
+
+/**
  * parseProgramsSearch は URL の生の値を検証済みの検索条件にする
  * （`routes.tsx` の `validateSearch`）。
  *
@@ -64,6 +86,7 @@ function parseServiceIds(raw: unknown): number[] | undefined {
 export function parseProgramsSearch(search: Record<string, unknown>): ProgramsPageSearch {
   return {
     serviceId: parseServiceIds(search.serviceId),
+    at: parseAt(search.at),
   }
 }
 

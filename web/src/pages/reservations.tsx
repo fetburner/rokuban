@@ -50,11 +50,11 @@ export function ReservationsPage() {
       ) : (
         <ul>
           {reservations.map((r) => (
-            <li key={r.id}>
+            <li key={r.id} className="flex min-h-14 items-center border-b border-border">
               <Link
                 to="/reservations/$site/$programId"
                 params={{ site: r.site, programId: String(r.programId) }}
-                className="flex min-h-14 items-center gap-3 border-b border-border px-4 py-2.5 hover:bg-muted/50"
+                className="flex min-w-0 flex-1 items-center gap-3 px-4 py-2.5 hover:bg-muted/50"
               >
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-sm">{r.title || '（番組名なし）'}</div>
@@ -63,18 +63,23 @@ export function ReservationsPage() {
                     <span className="shrink-0">{formatDuration(r.durationMs)}</span>
                     <StateBadge state={r.state} />
                     <ReservationSkipBadge reservation={r} />
-                    {/* 判定はサイトごとに独立している（docs/data.md §6.5）ので
-                        予約自身の site を渡す。定数を持たない。 */}
-                    <CapacityShortfallBadge
-                      overages={overages}
-                      site={r.site}
-                      startMs={new Date(r.startAt).getTime()}
-                      endMs={new Date(r.startAt).getTime() + r.durationMs}
-                    />
                   </div>
                 </div>
                 <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
               </Link>
+              {/* 容量バッジは番組表への別の Link（issue #233 M6-5）。行本体の Link の
+                  外（兄弟要素）に置く --- <a> の中に <a> は不正で、クリックの宛先が
+                  不定になる（`components/capacity-shortfall-badge.tsx` の doc コメント
+                  参照）。
+                  判定はサイトごとに独立している（docs/data.md §6.5）ので予約自身の
+                  site を渡す。定数を持たない。 */}
+              <CapacityShortfallBadge
+                className="mr-4 shrink-0"
+                overages={overages}
+                site={r.site}
+                startMs={new Date(r.startAt).getTime()}
+                endMs={new Date(r.startAt).getTime() + r.durationMs}
+              />
             </li>
           ))}
         </ul>

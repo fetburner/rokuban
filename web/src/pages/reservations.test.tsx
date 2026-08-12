@@ -254,6 +254,49 @@ describe('予約一覧のチューナー不足バッジ', () => {
 })
 
 /**
+ * 容量バッジの番組表への導線（issue #233 M6-5）。
+ *
+ * バッジは行本体の `Link`（詳細への導線）の中に元々あった。バッジ自身も
+ * `Link` になった以上、**`<a>` の中に `<a>` を作っていないこと**（コンテンツ
+ * モデル上不正で、クリックの宛先が不定になる）を構造で確かめる。href の値
+ * そのもの（宛先ルート・`at` パラメータ）はここで確認し、実際のクリックによる
+ * 画面遷移・グリッドのスクロールは `web/e2e` で確認する（jsdom はレイアウトを
+ * 測れない。CLAUDE.md テスト規律）。
+ */
+describe('予約一覧の容量バッジのリンク化（issue #233 M6-5）', () => {
+  it('<a> の中に <a> を作らない（行本体のリンクの外に置く）', async () => {
+    renderWith([reservation(1, '交差する番組', 19 * 60, 60)], [overage(19 * 60, 20 * 60)])
+
+    await screen.findByText('チューナー不足（BS が 1 本）')
+
+    // 行本体のリンクと容量バッジのリンクが「入れ子」ではなく「兄弟」になっている
+    // ことを、実際の DOM 構造で確かめる（querySelectorAll('a a') が入れ子の
+    // 唯一の機械的な証拠）。
+    expect(document.querySelectorAll('a a')).toHaveLength(0)
+
+    const links = screen.getAllByRole('link')
+    expect(links).toHaveLength(2)
+  })
+
+  it('番組表ルートへ、不足区間の開始時刻を at として積んだリンクになる', async () => {
+    renderWith([reservation(1, '交差する番組', 19 * 60, 60)], [overage(19 * 60, 20 * 60)])
+
+    const badge = await screen.findByText('チューナー不足（BS が 1 本）')
+    const badgeLink = badge.closest('a')
+    expect(badgeLink).not.toBeNull()
+    const expectedAtMs = new Date(at(19 * 60)).getTime()
+    expect(badgeLink).toHaveAttribute('href', `/?at=${expectedAtMs}`)
+  })
+
+  it('容量バッジが無い行では追加のリンクは増えない', async () => {
+    renderWith([reservation(1, 'ニュース7', 19 * 60, 60)], [])
+
+    expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+    expect(screen.getAllByRole('link')).toHaveLength(1)
+  })
+})
+
+/**
  * 警告の信号色。jsdom は色を計算しないので、当たっているクラスだけを見る
  * （実画素での判定は `web/e2e/design.mjs`。docs/frontend/design.md）。
  */

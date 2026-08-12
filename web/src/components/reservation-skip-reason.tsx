@@ -1,3 +1,4 @@
+import { Link } from '@tanstack/react-router'
 import { CopyCheck, MinusCircle } from 'lucide-react'
 
 import type { Reservation } from '@/api/generated'
@@ -52,6 +53,12 @@ export function ReservationSkipBadge({ reservation }: { reservation: Reservation
  * 重複排除の場合は根拠（マッチした録画と類似度）まで出す --- 「なぜスキップ
  * されたか」を説明可能にするのがこの 2 列を持つ目的なので、件数や真偽値だけでは
  * 足りない。類似度は pg_trgm の similarity() で 0.0〜1.0。
+ *
+ * **「録画 #id」は録画単体ページ（`/recordings/$id`）へのリンクにする**
+ * （issue #233 M6-5。「固有名詞はリンク」の原則）。この文はどこにも別の `Link` の
+ * 中に置かれていない（呼び出し元は `pages/reservation-detail.tsx` の詳細フィールド）
+ * ので、`<a>` の入れ子の心配は無い --- 同じ「参照をリンクにする」変更でも
+ * `CapacityShortfallBadge`（予約一覧の行の `Link` の中）とは事情が違う。
  */
 export function ReservationSkipReason({ reservation }: { reservation: Reservation }) {
   const reason = skipReason(reservation)
@@ -63,7 +70,14 @@ export function ReservationSkipReason({ reservation }: { reservation: Reservatio
   const similarity = reservation.dedupSimilarity
   return (
     <span>
-      重複（録画 #{reservation.dedupMatchRecordingId}
+      重複（
+      <Link
+        to="/recordings/$id"
+        params={{ id: String(reservation.dedupMatchRecordingId) }}
+        className="text-primary underline-offset-2 hover:underline"
+      >
+        録画 #{reservation.dedupMatchRecordingId}
+      </Link>
       {similarity === undefined ? '' : `・類似度 ${similarity.toFixed(2)}`}）
     </span>
   )

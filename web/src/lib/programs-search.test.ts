@@ -46,6 +46,36 @@ describe('parseProgramsSearch', () => {
   it('非整数（1.5）は落とす', () => {
     expect(parseProgramsSearch({ serviceId: [1.5, 1024] })).toEqual({ serviceId: [1024] })
   })
+
+  // `at`（issue #233 M6-5 の容量バッジ導線）。omit-on-invalid の罠は `serviceId` と
+  // 同じなので、キー自体は常に存在させる。
+  it('at が無ければ明示的に undefined になる', () => {
+    const result = parseProgramsSearch({})
+    expect(result).toEqual({ serviceId: undefined, at: undefined })
+    expect('at' in result).toBe(true)
+  })
+
+  it('at は数値化できればそのまま受け取る（文字列も数値化する）', () => {
+    expect(parseProgramsSearch({ at: 1_700_000_000_000 })).toEqual({
+      serviceId: undefined,
+      at: 1_700_000_000_000,
+    })
+    expect(parseProgramsSearch({ at: '1700000000000' })).toEqual({
+      serviceId: undefined,
+      at: 1700000000000,
+    })
+  })
+
+  it('at は serviceId と違い、0 以下・過去の値も落とさない', () => {
+    expect(parseProgramsSearch({ at: -1 })).toEqual({ serviceId: undefined, at: -1 })
+    expect(parseProgramsSearch({ at: 0 })).toEqual({ serviceId: undefined, at: 0 })
+  })
+
+  it('at が数値化できない・非整数なら undefined に落とす', () => {
+    expect(parseProgramsSearch({ at: 'abc' })).toEqual({ serviceId: undefined, at: undefined })
+    expect(parseProgramsSearch({ at: 1.5 })).toEqual({ serviceId: undefined, at: undefined })
+    expect(parseProgramsSearch({ at: [1, 2] })).toEqual({ serviceId: undefined, at: undefined })
+  })
 })
 
 describe('serviceIdsToSet / serviceIdsFromSet', () => {

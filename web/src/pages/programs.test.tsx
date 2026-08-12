@@ -1103,6 +1103,80 @@ describe('ProgramsPage の日付ジャンプ（先頭の窓に重なる前日の
 })
 
 /**
+ * 容量不足バッジ（`components/capacity-shortfall-badge.tsx`）からの導線
+ * （issue #233 M6-5）。バッジは番組表ルート（`/`）に `?at=<epoch ms>` を積んで
+ * リンクする。
+ *
+ * グリッドの実際のスクロール位置（px）は jsdom で測れないので e2e の担当
+ * （`web/e2e/`）。ここで見るのは jsdom でも判定できる部分だけ ---
+ * (1) `lg` 未満・リスト表示中は「その時刻が属する日」への日付ジャンプに
+ * フォールバックすること、(2) `lg` 以上では自動でグリッド表示に切り替わること、
+ * (3) 切替後にユーザーが手動でリストへ戻した選択を、画面幅の再評価で上書きしない
+ * こと。
+ */
+describe('ProgramsPage の at パラメータ（容量バッジからの導線。issue #233 M6-5）', () => {
+  // dayOffset 2（明後日）に属する時刻。他の日付ジャンプテストと同じ理由で
+  // offset 1 ではなく 2 を使う（allPrograms の固定オフセットとの窓の重なりを
+  // 避ける）。この時刻を覆う番組を明示的に置く --- 置かないと day 2 の窓が
+  // 空になり、「グリッドが出る/出ない」ではなく「空状態が出る」で判定が
+  // 潰れてしまう（グリッド・リストのどちらも `programs.length === 0` で同じ
+  // EmptyState に落ちるため、`program-grid` の testid の有無まで見分けられない）。
+  const targetMs = dayOrigin(2).getTime() + 3 * 3_600_000
+  const dayTwoProgram = programAtAbsolute(220, 1024, targetMs, '容量バッジ導線の番組')
+
+  it('lg 未満では、グリッドを出さずに at が属する日へ日付ジャンプする', async () => {
+    stubApi([], [], [...allPrograms, dayTwoProgram])
+    stubMatchMedia(false)
+    renderPage(`/?at=${targetMs}`)
+
+    // 「ニュース7」（今日の番組）ではなく、day 2 の番組が出る ---
+    // 日付ジャンプが実際に効いていることの証拠（効いていなければ今日のまま
+    // 「ニュース7」が出続け、この見つけ方は失敗する）
+    expect(await screen.findByText('容量バッジ導線の番組')).toBeInTheDocument()
+    expect(screen.queryByText('ニュース7')).not.toBeInTheDocument()
+    // グリッドは lg 未満では出ない（表示形式の切り替えごと存在しない）
+    expect(screen.queryByTestId('program-grid')).not.toBeInTheDocument()
+
+    const dayGroup = screen.getByRole('group', { name: '日付' })
+    expect(within(dayGroup).getAllByRole('button')[2]).toHaveAttribute('aria-current', 'date')
+  })
+
+  it('lg 以上では、リストのままにせず自動でグリッド表示に切り替わる', async () => {
+    stubApi([], [], [...allPrograms, dayTwoProgram])
+    stubMatchMedia(true)
+    renderPage(`/?at=${targetMs}`)
+
+    // クリックせずにグリッドが出る（`表示形式` チップを押す通常の経路と違う）。
+    // グリッドの中に day 2 の番組が実際に見えることまで確認する ---
+    // 単に testid が存在するだけでは「軸が day 2 に合っている」保証にならない
+    // （軸がずれていても `programs.length` が非 0 なら testid 自体は出る）。
+    await screen.findByTestId('program-grid')
+    expect(screen.getByText('容量バッジ導線の番組')).toBeInTheDocument()
+
+    const dayGroup = screen.getByRole('group', { name: '日付' })
+    expect(within(dayGroup).getAllByRole('button')[2]).toHaveAttribute('aria-current', 'date')
+  })
+
+  it('自動切替後にユーザーがリストへ戻すと、画面幅の再評価だけではグリッドに戻さない', async () => {
+    stubApi([], [], [...allPrograms, dayTwoProgram])
+    const media = stubMatchMedia(true)
+    renderPage(`/?at=${targetMs}`)
+
+    await screen.findByTestId('program-grid')
+
+    // ユーザーが手動でリストへ戻す
+    await userEvent.click(screen.getByRole('button', { name: 'リスト' }))
+    expect(screen.queryByTestId('program-grid')).not.toBeInTheDocument()
+
+    // 画面幅が狭くなって（他の画面遷移や resize で）また広くなっても、
+    // 同じ at のままではグリッドへ戻されない（`forcedGridForAtRef` の役目）
+    media.set(false)
+    media.set(true)
+    expect(screen.queryByTestId('program-grid')).not.toBeInTheDocument()
+  })
+})
+
+/**
  * 番組表から「予約」する際に encodeProfiles / keepOriginal を指定できることの
  * 回帰テスト（issue #132）。
  *

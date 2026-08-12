@@ -49,6 +49,35 @@ E2E_URL=http://localhost:40775 pnpm e2e
 pnpm e2e:diagnose
 ```
 
+### 参照バッジの導線（`badge-links.mjs`）
+
+容量不足バッジ（予約一覧）から番組表への導線（issue #233 M6-5）。見るのは 2 点
+--- ①バッジが行本体の詳細リンクの中に入れ子の `<a>` として置かれておらず、クリック
+すると番組表（`/?at=...`）へ飛ぶこと、②`lg` 以上ではグリッド表示に自動で切り替わり、
+不足区間の帯がスクロール後に可視範囲へ入っていること。②はスクロール位置そのものの
+判定なので、jsdom（`pnpm test`）では原理的に確認できない。
+
+`design.mjs` と同じ手（`/api/**` を `page.route` で丸ごと差し替え、時刻は
+`page.clock.setFixedTime` で固定）で、mirakc も実チューナーも DB も要らない。
+
+```sh
+pnpm build && pnpm preview --port 4173 --strictPort &
+E2E_URL=http://localhost:4173 pnpm e2e:badge-links
+```
+
+**起動前にポートが空いているか、起動後に自分のビルドを配っているかを確認する。**
+`--strictPort` は使用中だと起動自体を失敗させるはずだが、複数の worktree を並行して
+触っていると別の worktree の preview が同じポートに先に居座っていることがあり、
+その場合は自分の起動が黙って失敗し `E2E_URL` は無関係な別ビルドを指したまま判定が
+進む（実際に踏んだ。別 worktree の dist を測っていたため「直す前の実装で落ちる」が
+常に成立するだけの壊れた判定になっていた）。
+
+```sh
+curl -s http://localhost:4173/ | grep -o 'assets/index-[^"]*\.js'
+ls dist/assets/ | grep -o 'index-.*\.js'
+# 2 行のファイル名が一致しなければ、そのポートは自分のビルドを配っていない
+```
+
 ### ライブ視聴（`live.mjs`）
 
 番組リストと違い、**mirakc も実チューナーも要らない** --- HLS プレイリスト/
