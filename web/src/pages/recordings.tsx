@@ -788,11 +788,22 @@ export function RecordingActions({ recording, trash }: { recording: Recording; t
  * 既に追加済み/完了済みのプロファイルを選ばせない（罠: `UniqueOpts` が二重投入を
  * 黙って握りつぶすため、UI 側で「追加済み」を出して二重依頼に見せない）。
  *
- * 原本削除済みの録画は `sizeBytes` が省略される（`recordingFromListFields` の
- * 射影。`OriginalSizeBytes` が無い = 原本 media_asset が active でない）ので、
- * それをボタンを出す/出さないの判定にそのまま使う --- サーバー側の 409 判定
- * （`GetActiveOriginalMediaAsset`）と同じ条件を UI 側でも先読みし、押しても
- * 必ず失敗するボタンを表示しない。
+ * `sizeBytes` は一覧の射影（`recordingsFromJoins`、`internal/api/recordings_query.go`）
+ * が `a.kind = 'original' AND a.state <> 'deleted'` の行から埋める。一方サーバー側の
+ * 409 判定（`GetActiveOriginalMediaAsset`、`internal/db/queries/media_assets.sql`）は
+ * `state = 'active'` だけを見る --- **2 つの条件は同じではない**。`state = 'deleting'`
+ * （unlink 待ち）の原本は射影には出る（`sizeBytes` あり）が 409 判定には出ないため、
+ * `sizeBytes` があってもボタンを押すと確定で 409 になることがある
+ * （`internal/api/recordings.go` の `AddRecordingEncodeProfiles` が同じ理由でこの
+ * ケースを踏まえて 409 文言を hedge している）。ここでの `hasOriginal` はこの近似の
+ * 上に立つ先読みであり、409 を完全には避けられない。
+ *
+ * `sizeBytes` が省略される（`hasOriginal` が偽になる）録画は「原本が削除された」に
+ * 限らない --- ingest がまだ完了していない/失敗中でリトライ待ちの録画（`media_assets`
+ * に `kind=original` の行が 1 つも無い）も同じ形になる（issue #211: 実観測では
+ * `/mnt/media` の権限不足で ingest が permission denied のままリトライ中だった録画に
+ * 「原本が削除済み」と断定する文言が出て誤誘導になった）。区別する情報が API に
+ * 無いので、断定しない中立文言に落とす。
  */
 function AddEncodeProfilesAction({ recording }: { recording: Recording }) {
   const hasOriginal = recording.sizeBytes !== undefined
@@ -809,7 +820,7 @@ function AddEncodeProfilesAction({ recording }: { recording: Recording }) {
   if (!hasOriginal) {
     return (
       <p className="text-xs text-muted-foreground">
-        原本が削除済みのため、追加のエンコードは依頼できません。
+        この録画には再生可能な原本がありません。追加のエンコードは依頼できません。
       </p>
     )
   }
