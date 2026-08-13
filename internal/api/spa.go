@@ -25,7 +25,8 @@ func isAPIPath(path string) bool {
 //
 // **`/api/` を index.html に落とすと「無い」が「200 の HTML」になる。**
 // 実害の出た経路（issue #209）: live.enabled が false のとき streamer はライブの
-// ルートを一切登録しないので `GET /api/sites/{site}/services/{id}/live/playlist.m3u8`
+// ルートを一切登録しないので
+// `GET /api/sites/{site}/networks/{networkId}/services/{serviceId}/live/playlist.m3u8`
 // は未マッチになるが、SPA フォールバックが index.html を 200 で返していた。
 // フロントの probeLivePlaylist は `response.ok` を見るので probe は通り、その後
 // hls.js / <video> が HTML を m3u8 として解釈できずに再生エラーになる ---

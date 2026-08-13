@@ -165,20 +165,27 @@ GET /api/sites/{site}/networks/{networkId}/services/{serviceId}/live/segments/{n
   （`internal/mirakc.ServiceID` の純関数）。ライブセッションはインメモリの
   使い捨てで、認可はリバースプロキシ委譲、同時上限もプロセスローカルなので、
   DB を引く理由が無い
-- **id セグメントは 16 bit 符号なし整数としてだけ受け付ける**
-  （`strconv.ParseUint(s, 10, 16)`。SI の network_id / service_id の幅）。
-  読めなければ 400 で、mirakc には触れない。**mirakc に渡るのは常にここで
-  合成した整数であり、URL の文字列ではない**ので、パス区切り（`%2F`）や
+- **id セグメントは 16 bit 符号なし整数の十進正準形としてだけ受け付ける**
+  （`strconv.ParseUint(s, 10, 16)` + 先頭ゼロの拒否。SI の network_id /
+  service_id の幅）。読めなければ 400 で、mirakc には触れない。**mirakc に渡るのは
+  常にここで合成した整数であり、URL の文字列ではない**ので、パス区切り（`%2F`）や
   クエリ（`%3F`）を仕込んで mirakc の別エンドポイントへの要求に化けさせる経路が
   無い。測っているのは
   `TestLiveStreamer_RejectsHostileIDSegments`（`%2F` / `%3F` / 非数値 / 空 /
-  符号付き / 16 bit 超 / 桁あふれ / 全角数字を 400 で止め、偽 mirakc が
+  符号付き / 16 bit 超 / 桁あふれ / 全角数字 / 先頭ゼロを 400 で止め、偽 mirakc が
   1 件も要求を受け取らないこと）と
   `TestLiveStreamer_MirakcPathIsComposedFromPathSegments`（mirakc が受け取る
-  Request-URI が `/api/services/3192053248/stream?decode=1` ちょうどであること）。
-  **「不明な id を mirakc がどう扱うか」は測っていないし、依存もしていない** ---
-  実在しない id での起動失敗は他の失敗（チューナー枯渇・ffmpeg 起動失敗）と
-  同じく 503 にまとまる
+  Request-URI が `/api/services/3192053248/stream?decode=1` ちょうどであること）
+- **正準形だけを受けるのは前段の hash 鍵が URL 文字列だから。**`1024` と `01024` は
+  streamer 内部では同じセッション鍵（合成後の整数）になるが、
+  [operations.md](../operations.md) §5 の `map $uri $live_key` は URL の文字列を
+  鍵にするので、別名を許すと同じチャンネルが 2 つの Pod に落ちてチューナーを
+  2 本掴む。「同じチャンネルの視聴者は同じ Pod」という鍵の取り方の前提を、
+  URL の正準性に暗黙依存させない
+- **「不明な id を mirakc がどう扱うか」は測っていないし、依存もしていない。**
+  実在しない id での起動失敗は他の失敗（チューナー枯渇・ffmpeg 起動失敗）と同じく
+  503 にまとまる（`TestLiveStreamer_UpstreamRejectionBecomes503`。上流が拒否
+  ステータスを返したとき、本文も含めて他の起動失敗と同じ 503 になることを見る）
 - **トランスコードは必須。**ISDB-T 地上波の映像は MPEG-2 で、ブラウザの HLS 経路
   （hls.js/MSE）は事実上再生できない。mirakc フィルタ + `-c copy` では受信端末を
   満たせないため、ffmpeg で H.264/AAC に変換する（`live.profiles`、

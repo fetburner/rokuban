@@ -636,6 +636,10 @@ func TestLiveStreamer_RejectsHostileIDSegments(t *testing.T) {
 		{"beyond 16 bit", "/api/sites/default/networks/0/services/65536/live/playlist.m3u8", http.StatusBadRequest},
 		{"overflow", "/api/sites/default/networks/0/services/99999999999999999999/live/playlist.m3u8", http.StatusBadRequest},
 		{"fullwidth digits", "/api/sites/default/networks/0/services/１０２４/live/playlist.m3u8", http.StatusBadRequest},
+		// 先頭ゼロは「同じチャンネルの別名 URL」になり、前段の consistent hash
+		// （鍵は URL 文字列）が同じサービスを 2 Pod に割る。正準形だけ受ける。
+		{"leading zero service id", "/api/sites/default/networks/0/services/01024/live/playlist.m3u8", http.StatusBadRequest},
+		{"leading zero network id", "/api/sites/default/networks/00/services/1024/live/playlist.m3u8", http.StatusBadRequest},
 		{"network id non numeric", "/api/sites/default/networks/abc/services/1024/live/playlist.m3u8", http.StatusBadRequest},
 		{"network id beyond 16 bit", "/api/sites/default/networks/65536/services/1024/live/playlist.m3u8", http.StatusBadRequest},
 		// 生の '/' は階層が変わるのでルート自体に一致しない。
@@ -687,6 +691,36 @@ func TestLiveStreamer_MirakcPathIsComposedFromPathSegments(t *testing.T) {
 	want := []string{"/api/services/3192053248/stream?decode=1"}
 	if !slices.Equal(got, want) {
 		t.Errorf("mirakc request URIs = %v, want %v", got, want)
+	}
+}
+
+// mirakc が要求を拒否した場合（実在しない id・チューナー枯渇など）は 503 に
+// まとまる（issue #217）。
+//
+// **docs/api/media.md が「実在しない id での起動失敗は他の失敗と同じく 503 に
+// まとまる」と書いている根拠がこれ。** Rokuban は不明な id を検出しない
+// （そのために DB を引かない）ので、mirakc がどのステータスで拒否しても
+// writeSessionError の default 節に落ちる --- 分類の細かさは mirakc の応答に
+// 依存させない。
+func TestLiveStreamer_UpstreamRejectionBecomes503(t *testing.T) {
+	// 実在しない id に対する mirakc の応答を模す（404）。**mirakc が実際に
+	// 404 を返すことは測っていない**ので、ここで固定しているのは「上流が
+	// 拒否したときの Rokuban 側の振る舞い」だけである。
+	mirakcSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "service not found", http.StatusNotFound)
+	}))
+	t.Cleanup(mirakcSrv.Close)
+
+	_, srv := newTestLiveStreamer(t, mirakcSrv.URL, baseLiveConfig(t))
+
+	resp, body := get(t, playlistURL(srv.URL, 31920, 53248, "h264"), nil)
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503", resp.StatusCode)
+	}
+	// 本文は上流のものを漏らさず、他の起動失敗（チューナー枯渇・ffmpeg 起動
+	// 失敗）と同じ文言にまとまる（プレーンテキスト。OpenAPI 対象外）。
+	if got := strings.TrimSpace(string(body)); got != "live stream unavailable" {
+		t.Errorf("body = %q, want %q", got, "live stream unavailable")
 	}
 }
 

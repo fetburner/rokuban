@@ -424,7 +424,18 @@ func (ls *LiveStreamer) resolveRequest(w http.ResponseWriter, r *http.Request) (
 // serviceID < 100_000 が必要で、16 bit 上限（65535）はそれを満たす。
 // strconv.ParseUint(s, 10, 16) は空文字・符号付き・基数接頭辞・アンダースコア
 // 区切り・全角数字・65535 超をすべて弾く。
+//
+// **十進の正準形だけを受ける（先頭ゼロを弾く）。** ParseUint は `01024` を 1024 と
+// して受けるが、**前段の consistent hash の鍵は URL の文字列**である
+// （docs/operations/k8s.md §5 の `map $uri $live_key`）ため、`1024` と `01024` は
+// 同じチャンネルを指しながら別 Pod に落ちる --- そこで ffmpeg とチューナーが
+// 2 本になり、「同じチャンネルの視聴者は同じ Pod に落ちるので 1 本で済む」という
+// 鍵の取り方の前提そのものが崩れる。streamer 内部の鍵（合成後の整数）は同一に
+// なるので単体プロセスでは症状が出ない --- 弾くのは URL の別名を作らないため。
 func parseSIID(s string) (int, bool) {
+	if len(s) > 1 && s[0] == '0' {
+		return 0, false
+	}
 	v, err := strconv.ParseUint(s, 10, 16)
 	if err != nil {
 		return 0, false
