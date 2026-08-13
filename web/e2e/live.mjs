@@ -325,6 +325,44 @@ async function runConsentCheck() {
     }
     log(`  再生ボタン押下後にプレイリスト要求が飛んだ: ${fired ? 'YES' : 'NO'}`)
     if (!fired) ng.push('⓪ 「再生」ボタンを押してもプレイリスト要求が飛ばない')
+
+    // --- ⓪' 再生中に別チャンネルへ切り替えても、押していない方の playlist/
+    // segment 要求が飛ばない ---
+    //
+    // レビューで発見された穴（PR #259）: 再生状態のリセットを `useEffect` で
+    // 行うと、`selectedServiceId` が A→B に変わった直後の 1 コミットだけ古い
+    // 再生中フラグが残っていて `LivePlayer` が B の serviceId で透過的に
+    // マウントされ、その 1 回の probe が実際に飛ぶ（`AbortController.abort()`
+    // では取り消せない --- `internal/streamer/live.go` のセッションは
+    // `context.WithCancel(context.Background())` で回る）。「A を再生 → B の
+    // チャンネルリンクをクリック（再生は押さない）→ B 向け要求が 0 件」を
+    // 確認することで、この透過マウント自体が起きないことを実ブラウザで固定する
+    if (fired) {
+      requestLog.length = 0
+      await page
+        .locator(`nav[aria-label="チャンネル一覧"] a[href*="serviceId=${SERVICE_B}"]`)
+        .click()
+      // 「再生」ボタンが B 向けに再表示される（= 選択状態に戻った）のを待つことで、
+      // 一連の再レンダー（切替の 1 回目のコミット・再生状態のリセット）が
+      // 落ち着いたことを確認する。ここで待たずに数えると「まだ再レンダーが
+      // 済んでいないだけ」を「透過マウントが起きなかった」と誤って合格にする
+      await page.getByRole('button', { name: /再生/ }).waitFor({ timeout: 10000 })
+      const composedB = await composedServiceId(SERVICE_B)
+      const bRequestsWithoutPlay = requestLog.filter((u) =>
+        u.includes(`/services/${composedB}/live/`),
+      )
+      log(
+        `  B のリンクを押しただけ（再生は押さない）での B 向け要求数: ` +
+          `${bRequestsWithoutPlay.length}`,
+      )
+      if (bRequestsWithoutPlay.length > 0) {
+        ng.push(
+          `⓪' 再生中に別チャンネルへ切り替えると、押していない B へ` +
+            `${bRequestsWithoutPlay.length} 件の要求が飛んだ（選択と視聴開始の分離が` +
+            '切替の瞬間には成立していない）',
+        )
+      }
+    }
   } finally {
     await browser.close()
   }

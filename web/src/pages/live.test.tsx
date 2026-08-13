@@ -124,6 +124,12 @@ function playlistFetchCalled(): boolean {
   return calls.some(([url]) => String(url).includes('/live/playlist.m3u8'))
 }
 
+/** playlistFetchCallCount は `/live/playlist.m3u8` への fetch 呼び出し回数（累積）。 */
+function playlistFetchCallCount(): number {
+  const calls = (globalThis.fetch as unknown as { mock: { calls: [string][] } }).mock.calls
+  return calls.filter(([url]) => String(url).includes('/live/playlist.m3u8')).length
+}
+
 afterEach(() => {
   vi.restoreAllMocks()
 })
@@ -473,12 +479,26 @@ describe('LivePage', () => {
     await screen.findByText(/接続できません/)
     expect(screen.queryByRole('button', { name: /再生/ })).not.toBeInTheDocument()
 
+    // A の再生で飛んだ playlist 要求の件数を基準値にする（0 件ではないことも確認 ---
+    // 基準値が既に壊れていたら、以降の「増えていない」判定が何も守らなくなる）
+    const playlistCallsAfterA = playlistFetchCallCount()
+    expect(playlistCallsAfterA).toBeGreaterThan(0)
+
     await user.click(screen.getByRole('link', { name: /チャンネル B/ }))
 
     await waitFor(() => expect(screen.getByText('B の番組')).toBeInTheDocument())
     // B に切り替わったら選択状態（再生ボタン）に戻り、プレイヤー（A のエラー表示）は消える
     expect(screen.getByRole('button', { name: /再生/ })).toBeInTheDocument()
     expect(screen.queryByText(/接続できません/)).not.toBeInTheDocument()
+    // **押していない B の playlist を一度も取りに行かない。** レビューでの指摘:
+    // 再生状態のリセットを `useEffect` で行うと、`selectedServiceId` が A→B に
+    // 変わった直後の 1 コミットだけ古い再生中フラグが残っていて `LivePlayer` が
+    // B の serviceId で透過的にマウントされ、その 1 回の probe が実際に飛ぶ
+    // （実測: jsdom でもこの fetch モックに `/services/{B の合成 id}/live/
+    // playlist.m3u8` への呼び出しが記録される）。判定はレンダー中の調整で防ぐ
+    // （`pages/live.tsx` の `playingServiceId` 参照）。件数が増えていなければ、
+    // B 向けの LivePlayer が一度もマウントされなかったと言える
+    expect(playlistFetchCallCount()).toBe(playlistCallsAfterA)
   })
 
   it(

@@ -100,18 +100,37 @@ export function LivePage() {
   const selectedServiceId = pickInitialServiceId(orderedServices, routeSearch.serviceId)
   const selectedService = orderedServices.find((s) => s.serviceId === selectedServiceId)
 
-  // isPlaying は「再生」ボタンで明示的に視聴を始めたかどうか。**選択（URL の
-  // ?serviceId= = selectedServiceId）が変わるたびに false へ戻す** --- 直リンク・
-  // ブックマークで来た場合（issue #234 の含むもの 3）も、チャンネル一覧で
-  // 別のチャンネルへ切り替えた場合も、同意はチャンネルごとに 1 回ずつ必要
-  // というのが構造で同意を取る設計の要点。この reset の effect を落とすと、A を再生中に
-  // B を選んでからまた A を選び直したときに（selectedServiceId が A→B→A と
-  // 変化しても isPlaying が true のまま残るため）再生ボタンを経由せず A の
-  // LivePlayer が再マウントされてしまう
-  const [isPlaying, setIsPlaying] = useState(false)
-  useEffect(() => {
-    setIsPlaying(false)
-  }, [selectedServiceId])
+  // playingServiceId は「再生」ボタンで明示的に視聴を始めたチャンネルの serviceId。
+  // `null` なら未再生（選択状態）。**選択（selectedServiceId）と一致するときだけ
+  // 再生中とみなす** --- 直リンク・ブックマークで来た場合（issue #234 の含むもの 3）も、
+  // チャンネル一覧で別のチャンネルへ切り替えた場合も、同意はチャンネルごとに 1 回
+  // ずつ必要というのが構造で同意を取る設計の要点。
+  //
+  // **この判定は effect ではなくレンダー中に行う（React の「レンダー中に state を
+  // 調整する」パターン）。** 当初は `useEffect(() => setIsPlaying(false),
+  // [selectedServiceId])` で「選択が変わったら false に戻す」を実装していたが、
+  // これは 1 コミットぶん透過的にバグる --- passive effect は子（LivePlayer）→親
+  // （LivePage）の順に走るため、チャンネルを A→B へ切り替えた直後のコミットでは
+  // 「`selectedServiceId` は B に変わっているが `isPlaying` はまだ前の値（true）」
+  // という状態で一度レンダーされ、その 1 回だけ `<LivePlayer serviceId={B}>` が
+  // マウントされて probe（チューナー確保 + ffmpeg 起動）を投げてしまう ---
+  // その直後に `LivePage` 側の reset effect が走って `isPlaying` を false に戻し
+  // `LivePlayer` は unmount されるが、**このコミットで実際に飛んだネットワーク要求
+  // 自体は取り消せない**（`internal/streamer/live.go` のセッションは
+  // `context.WithCancel(context.Background())` で回るため、クライアント側の
+  // `AbortController.abort()` はセッション自体を止めない）。押していないチャンネルの
+  // チューナー + ffmpeg が idle GC まで 30〜45 秒残る（レビューでの指摘。jsdom と
+  // 実ブラウザ（`rokuban server --roles api` の実バイナリ）の両方で実際に
+  // `/live/playlist.m3u8` への fetch が飛ぶことを確認された）。
+  //
+  // レンダー中に判定すれば、`selectedServiceId` が変わった**その場のレンダーで**
+  // 「再生中でない」が確定するので、`<LivePlayer>` が異なる serviceId で透過的に
+  // マウントされる中間コミット自体が存在しない。
+  const [playingServiceId, setPlayingServiceId] = useState<number | null>(null)
+  if (playingServiceId !== null && playingServiceId !== selectedServiceId) {
+    setPlayingServiceId(null)
+  }
+  const isPlaying = playingServiceId !== null && playingServiceId === selectedServiceId
 
   // nowMs は「いま」を一定間隔で更新するティック。Date.now() を毎レンダー呼ぶだけでは
   // 再レンダーの理由にならず、番組が終わっても表示が切り替わらない。
@@ -176,7 +195,7 @@ export function LivePage() {
             ) : (
               <LiveSelectionPreview
                 serviceName={selectedService.name}
-                onPlay={() => setIsPlaying(true)}
+                onPlay={() => setPlayingServiceId(selectedService.serviceId)}
               />
             )}
             <div>
@@ -264,7 +283,11 @@ export function LivePage() {
  * `LivePlayer` と同じ寸法（`aspect-video` の黒地）にして、再生ボタンを押した
  * 瞬間のレイアウトシフトを避ける。probe もセッションもここでは起こさない ---
  * 「再生」ボタンを押した後に呼び出し側が `LivePlayer` をマウントするまで、
- * ネットワーク要求は一切発生しない。
+ * ネットワーク要求は一切発生しない（チャンネル切り替えの中間コミットも含む。
+ * `playingServiceId` の判定をレンダー中に落とす必要があった理由も同じ ---
+ * `LivePage` のコメント参照）。`pages/live.test.tsx`「再生中に別チャンネルへ
+ * 切り替えると選択状態に戻る（同意はチャンネルごとに必要）」の
+ * `playlistFetchCallCount()` の assertion と `web/e2e/live.mjs` ⓪' で実測済み。
  */
 function LiveSelectionPreview({
   serviceName,
