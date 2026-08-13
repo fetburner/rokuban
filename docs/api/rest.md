@@ -132,6 +132,12 @@ audios 込み）で形を分ける。`epg_programs` は UI 完全形なので `e
 `?site=` のような絞り込みパラメータは、それを欲しがる呼び出し元ができるまで
 足さない（不変条件 11）。
 
+**`GET /api/storage` は上記と違って `site` フィールドを持たない。** アーカイブ
+（`storage.media_dir`）とスクラッチ（`storage.scratch_dir`）は mirakc サイトの
+ように複数存在しうる資源ではなく単一なので、「全サイトを返し各要素に `site` を
+持たせる」形は当てはまらない（issue #238 M7-5。詳細は
+[docs/storage.md](../storage.md) §5「残量の観測」）。
+
 **`trash=true` でもカーソル軸は `program_start_at` 降順のまま**（`deleted_at`
 降順にしない）。一覧・ごみ箱を 1 つのキーセット契約に統一するにあたり、`trash` に
 よってカーソル軸が変わる形は採らなかった --- `before` / `beforeId` の意味が

@@ -415,6 +415,24 @@ func (e ServiceChannelType) Valid() bool {
 	}
 }
 
+// Defines values for StorageRootRoot.
+const (
+	Media   StorageRootRoot = "media"
+	Scratch StorageRootRoot = "scratch"
+)
+
+// Valid indicates whether the value is a known member of the StorageRootRoot enum.
+func (e StorageRootRoot) Valid() bool {
+	switch e {
+	case Media:
+		return true
+	case Scratch:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ListRecordingsParamsQTarget.
 const (
 	Title            ListRecordingsParamsQTarget = "title"
@@ -1088,6 +1106,39 @@ type Service struct {
 // ServiceChannelType defines model for Service.ChannelType.
 type ServiceChannelType string
 
+// StorageRoot 1 つのストレージ root（`storage.media_dir` または `storage.scratch_dir`）の
+// 容量観測 1 件（`storage_sync` 行そのもの。issue #238 M7-5）。
+type StorageRoot struct {
+	// AvailableBytes 非特権プロセスが実際に書き込める残量（statfs の Bavail）。
+	// 「残高」として UI に出すべき数字はこちら。`observedAt` 時点の
+	// スナップショット。
+	AvailableBytes int64 `json:"availableBytes"`
+
+	// ObservedAt この行を最後に観測できた時刻。観測ループが止まっていても行は
+	// 消えないため、この値の鮮度だけが異常の手がかりになる。
+	ObservedAt time.Time `json:"observedAt"`
+
+	// Path 観測対象の絶対パス（config の値そのもの）。他のフィールドと同じく
+	// `observedAt` 時点のスナップショット --- config の path を変更した
+	// 直後に statfs が失敗すると、次の成功する観測まで**古い path のまま**
+	// 残る（バイト数も同様に古い値のまま）。現在の設定を保証しない。
+	Path string `json:"path"`
+
+	// Root config キー（`storage.media_dir` / `storage.scratch_dir`）と 1:1。
+	Root StorageRootRoot `json:"root"`
+
+	// TotalBytes ファイルシステム全体の容量（`observedAt` 時点のスナップショット。
+	// `path` の説明を参照）。
+	TotalBytes int64 `json:"totalBytes"`
+
+	// UsedBytes root 予約領域を使用済み側に数えた使用量（total - free）。
+	// `observedAt` 時点のスナップショット。
+	UsedBytes int64 `json:"usedBytes"`
+}
+
+// StorageRootRoot config キー（`storage.media_dir` / `storage.scratch_dir`）と 1:1。
+type StorageRootRoot string
+
 // VersionResponse defines model for VersionResponse.
 type VersionResponse struct {
 	Version string `json:"version"`
@@ -1292,6 +1343,9 @@ type ServerInterface interface {
 	// ListServices List EPG services (channels)
 	// (GET /api/sites/{site}/services)
 	ListServices(w http.ResponseWriter, r *http.Request, site Site)
+	// GetStorage Get observed storage usage
+	// (GET /api/storage)
+	GetStorage(w http.ResponseWriter, r *http.Request)
 	// GetVersion Get server version
 	// (GET /api/version)
 	GetVersion(w http.ResponseWriter, r *http.Request)
@@ -1481,6 +1535,12 @@ func (_ Unimplemented) GetProgramReservation(w http.ResponseWriter, r *http.Requ
 // ListServices List EPG services (channels)
 // (GET /api/sites/{site}/services)
 func (_ Unimplemented) ListServices(w http.ResponseWriter, r *http.Request, site Site) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// GetStorage Get observed storage usage
+// (GET /api/storage)
+func (_ Unimplemented) GetStorage(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -2537,6 +2597,20 @@ func (siw *ServerInterfaceWrapper) ListServices(w http.ResponseWriter, r *http.R
 	handler.ServeHTTP(w, r)
 }
 
+// GetStorage operation middleware
+func (siw *ServerInterfaceWrapper) GetStorage(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetStorage(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // GetVersion operation middleware
 func (siw *ServerInterfaceWrapper) GetVersion(w http.ResponseWriter, r *http.Request) {
 
@@ -2767,6 +2841,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/api/capacity/overages", wrapper.ListCapacityOverages)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/storage", wrapper.GetStorage)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/api/breakers", wrapper.ListCircuitBreakers)
@@ -3812,6 +3889,27 @@ func (response ListServices404JSONResponse) VisitListServicesResponse(w http.Res
 	return err
 }
 
+type GetStorageRequestObject struct {
+}
+
+type GetStorageResponseObject interface {
+	VisitGetStorageResponse(w http.ResponseWriter) error
+}
+
+type GetStorage200JSONResponse []StorageRoot
+
+func (response GetStorage200JSONResponse) VisitGetStorageResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type GetVersionRequestObject struct {
 }
 
@@ -3946,6 +4044,9 @@ type StrictServerInterface interface {
 	// ListServices List EPG services (channels)
 	// (GET /api/sites/{site}/services)
 	ListServices(ctx context.Context, request ListServicesRequestObject) (ListServicesResponseObject, error)
+	// GetStorage Get observed storage usage
+	// (GET /api/storage)
+	GetStorage(ctx context.Context, request GetStorageRequestObject) (GetStorageResponseObject, error)
 	// GetVersion Get server version
 	// (GET /api/version)
 	GetVersion(ctx context.Context, request GetVersionRequestObject) (GetVersionResponseObject, error)
@@ -4803,6 +4904,30 @@ func (sh *strictHandler) ListServices(w http.ResponseWriter, r *http.Request, si
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(ListServicesResponseObject); ok {
 		if err := validResponse.VisitListServicesResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetStorage operation middleware
+func (sh *strictHandler) GetStorage(w http.ResponseWriter, r *http.Request) {
+	var request GetStorageRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetStorage(ctx, request.(GetStorageRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetStorage")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetStorageResponseObject); ok {
+		if err := validResponse.VisitGetStorageResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

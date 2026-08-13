@@ -697,6 +697,54 @@ export interface CircuitBreaker {
   detail: CircuitBreakerSample;
 }
 
+/**
+ * config キー（`storage.media_dir` / `storage.scratch_dir`）と 1:1。
+ */
+export type StorageRootRoot = typeof StorageRootRoot[keyof typeof StorageRootRoot];
+
+
+export const StorageRootRoot = {
+  media: 'media',
+  scratch: 'scratch',
+} as const;
+
+/**
+ * 1 つのストレージ root（`storage.media_dir` または `storage.scratch_dir`）の
+ * 容量観測 1 件（`storage_sync` 行そのもの。issue #238 M7-5）。
+ */
+export interface StorageRoot {
+  /** config キー（`storage.media_dir` / `storage.scratch_dir`）と 1:1。 */
+  root: StorageRootRoot;
+  /**
+     * 観測対象の絶対パス（config の値そのもの）。他のフィールドと同じく
+     * `observedAt` 時点のスナップショット --- config の path を変更した
+     * 直後に statfs が失敗すると、次の成功する観測まで**古い path のまま**
+     * 残る（バイト数も同様に古い値のまま）。現在の設定を保証しない。
+     */
+  path: string;
+  /**
+     * ファイルシステム全体の容量（`observedAt` 時点のスナップショット。
+     * `path` の説明を参照）。
+     */
+  totalBytes: number;
+  /**
+     * root 予約領域を使用済み側に数えた使用量（total - free）。
+     * `observedAt` 時点のスナップショット。
+     */
+  usedBytes: number;
+  /**
+     * 非特権プロセスが実際に書き込める残量（statfs の Bavail）。
+     * 「残高」として UI に出すべき数字はこちら。`observedAt` 時点の
+     * スナップショット。
+     */
+  availableBytes: number;
+  /**
+     * この行を最後に観測できた時刻。観測ループが止まっていても行は
+     * 消えないため、この値の鮮度だけが異常の手がかりになる。
+     */
+  observedAt: string;
+}
+
 export type ListProgramsParams = {
 /**
  * 時間窓の開始（この時刻より後に終わる番組が対象）
@@ -4371,6 +4419,133 @@ export function useListCapacityOverages<TData = Awaited<ReturnType<typeof listCa
  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
 
   const queryOptions = getListCapacityOveragesQueryOptions(params,options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export type getStorageResponse200 = {
+  data: StorageRoot[]
+  status: 200
+}
+
+export type getStorageResponseSuccess = (getStorageResponse200) & {
+  headers: Headers;
+};
+;
+
+export type getStorageResponse = (getStorageResponseSuccess)
+
+export const getGetStorageUrl = () => {
+
+
+
+
+  return `/api/storage`
+}
+
+/**
+ * `storage.media_dir`（アーカイブ）と `storage.scratch_dir`（ローカルスクラッチ）の
+ * 容量観測（issue #238 M7-5）。api ロールはファイルシステムに依存しない
+ * （不変条件 1）ので、ファイルシステムを持つ worker が定期的に statfs 相当で
+ * 観測して DB に射影し、ここはその射影を読むだけ。
+ *
+ * 毎パス全量を作り直す観測値であり、過去の観測を積むログではない
+ * （不変条件 9）。`observedAt` は「最後にいつ観測できたか」を表し、UI が
+ * 鮮度を示すために必ず使う --- 観測ループが止まっていても行は消えない
+ * ので、鮮度が古いことだけが異常の手がかりになる（沈黙は保証ではない）。
+ *
+ * `scratch` は `storage.scratch_dir` が設定されているときだけ現れる
+ * （空文字列に設定を変えると、次の観測パスで消える）。`media` は
+ * `storage.media_dir` が必須なので常に現れるはずだが、初回の観測パスが
+ * まだ走っていない/失敗し続けている場合は配列が空になることもある。
+ * @summary Get observed storage usage
+ */
+export const getStorage = async ( options?: RequestInit): Promise<getStorageResponse> => {
+
+  return customInstance<getStorageResponse>(getGetStorageUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetStorageQueryKey = () => {
+    return [
+    `/api/storage`
+    ] as const;
+    }
+
+
+export const getGetStorageQueryOptions = <TData = Awaited<ReturnType<typeof getStorage>>, TError = unknown>( options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getStorage>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetStorageQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getStorage>>> = ({ signal }) => getStorage({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getStorage>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type GetStorageQueryResult = NonNullable<Awaited<ReturnType<typeof getStorage>>>
+export type GetStorageQueryError = unknown
+
+
+export function useGetStorage<TData = Awaited<ReturnType<typeof getStorage>>, TError = unknown>(
+  options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getStorage>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getStorage>>,
+          TError,
+          Awaited<ReturnType<typeof getStorage>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetStorage<TData = Awaited<ReturnType<typeof getStorage>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getStorage>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getStorage>>,
+          TError,
+          Awaited<ReturnType<typeof getStorage>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetStorage<TData = Awaited<ReturnType<typeof getStorage>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getStorage>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary Get observed storage usage
+ */
+
+export function useGetStorage<TData = Awaited<ReturnType<typeof getStorage>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getStorage>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getGetStorageQueryOptions(options)
 
   const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
 

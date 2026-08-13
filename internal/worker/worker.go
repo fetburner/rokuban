@@ -259,6 +259,11 @@ func NewWorkers(deps *Deps) *river.Workers {
 		MaxDeletesPerPass: deps.Cleanup.MaxDeletesPerPass,
 		Webhook:           deps.Webhook,
 	})
+	river.AddWorker(workers, &StorageSyncWorker{
+		Pool:       deps.Pool,
+		MediaDir:   deps.MediaDir,
+		ScratchDir: deps.ScratchDir,
+	})
 	return workers
 }
 
@@ -286,6 +291,14 @@ const (
 	// 誰にも走らなくなるので単純にはできない。設計判断が必要なため、実装せず
 	// issue #185 のコメントに提起した。
 	cleanupQueue = "cleanup"
+
+	// storageQueue はストレージ観測ジョブ（storage_sync）専用のキュー名
+	// （issue #238 M7-5）。cleanupQueue に混ぜない理由は StorageSyncArgs.InsertOpts
+	// のコメント参照（cleanupQueue は「物理削除系ジョブ専用」と明記されており、
+	// 削除を一切しない観測ジョブを混ぜるとその名付けの前提が崩れる）。
+	// site には依存しない（アーカイブもスクラッチも単一。siteBoundQueueNames には
+	// 入れない）。
+	storageQueue = "storage"
 
 	defaultEncodeConcurrency    = 1
 	defaultThumbnailConcurrency = 1
@@ -321,8 +334,9 @@ const (
 // 非依存）に合わせてここで外す。
 //
 // 対照的に site 非依存のキューは river.QueueDefault・ruler・encode・thumbnail・
-// cleanup の 5 つ（アーカイブとエンコードプロファイルは単一で、site の属性を
-// 持たない。ruler は DB のみ）。
+// cleanup・storage の 6 つ（アーカイブとエンコードプロファイルは単一で、site の
+// 属性を持たない。ruler は DB のみ。storage は issue #238 M7-5 で追加、アーカイブ/
+// スクラッチが単一なのは cleanup と同じ理由）。
 var siteBoundQueueNames = []string{ingestQueue, epgQueue, reconcilerQueue, recordSweepQueue}
 
 // qualifyQueueName は site 単位のキューの物理名を組み立てる下請け
@@ -413,6 +427,9 @@ func allQueues(ingestConcurrency, encodeConcurrency, thumbnailConcurrency int) m
 		thumbnailQueue: {MaxWorkers: thumbnailConcurrency},
 		// delete_reconcile / catalog_export 用（issue #185 M4-13。cleanupQueue のコメント参照）。
 		cleanupQueue: {MaxWorkers: defaultCleanupConcurrency},
+		// storage_sync 用（issue #238 M7-5）。UniqueOpts{ByArgs} が重複実行を防ぐので
+		// tuner_sync/ruler/reconciler/record_sweep と同じく 1 本で足りる。
+		storageQueue: {MaxWorkers: 1},
 	}
 }
 
@@ -493,9 +510,17 @@ type ClientConfig struct {
 	// DeleteReconcileInterval は削除 reconcile の間隔。0 なら既定値（15 分）。
 	DeleteReconcileInterval time.Duration
 
+	// StorageSync が true ならストレージ観測（issue #238 M7-5）を定期ジョブとして
+	// 登録する（PeriodicJobs が true のときのみ）。CatalogExport / DeleteReconcile と
+	// 同じくサイト非依存（観測対象は単一の MediaDir / ScratchDir）。
+	StorageSync bool
+
+	// StorageSyncInterval はストレージ観測の間隔。0 なら既定値（5 分）。
+	StorageSyncInterval time.Duration
+
 	// PeriodicJobs が false なら、EpgSyncSite / TunerSyncSite / RulerPassSite /
-	// ReconcilePassSite / RecordSweepSite / CatalogExport / DeleteReconcile が
-	// 設定されていても River の PeriodicJobs を一切登録しない。
+	// ReconcilePassSite / RecordSweepSite / CatalogExport / DeleteReconcile /
+	// StorageSync が設定されていても River の PeriodicJobs を一切登録しない。
 	// k8s では false にして、CronJob が
 	// `rokuban enqueue` を叩く形に委ねる（docs/data.md §2「定期実行の契機は
 	// デプロイ形態に委ねる」。設定キーは worker.periodic_jobs、既定 true）。
@@ -660,6 +685,19 @@ func buildRiverConfig(workers *river.Workers, cfg ClientConfig) (*river.Config, 
 				river.PeriodicInterval(interval),
 				func() (river.JobArgs, *river.InsertOpts) {
 					return DeleteReconcileArgs{}, nil
+				},
+				&river.PeriodicJobOpts{RunOnStart: true},
+			))
+		}
+		if cfg.StorageSync {
+			interval := cfg.StorageSyncInterval
+			if interval <= 0 {
+				interval = defaultStorageSyncInterval
+			}
+			riverCfg.PeriodicJobs = append(riverCfg.PeriodicJobs, river.NewPeriodicJob(
+				river.PeriodicInterval(interval),
+				func() (river.JobArgs, *river.InsertOpts) {
+					return StorageSyncArgs{}, nil
 				},
 				&river.PeriodicJobOpts{RunOnStart: true},
 			))
