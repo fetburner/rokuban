@@ -10,13 +10,18 @@ import (
 )
 
 // knownCircuitBreakerNames はブレーカー識別子の既知集合。値の権威は
-// internal/breaker の定数（DB に CHECK 制約は無い。internal/breaker/breaker.go
-// のコメント参照）で、ここはそれを参照するだけ。未知の名前を渡された resume は
-// タイポを黙って無視せず 400 にする。
-var knownCircuitBreakerNames = map[string]bool{
-	breaker.RulerDeletes:       true,
-	breaker.ReconcileTotalLoss: true,
-}
+// internal/breaker.All（DB に CHECK 制約は無い。internal/breaker/breaker.go
+// のコメント参照）で、ここはそれを導出するだけ。手書きの複製を持つと片方だけ
+// 更新されてずれる事故が起きる（issue #199: breaker.DeleteReconcile が
+// 複製から漏れ、発動中なのに resume が 400 を返し続けた）。未知の名前を
+// 渡された resume はタイポを黙って無視せず 400 にする。
+var knownCircuitBreakerNames = func() map[string]bool {
+	m := make(map[string]bool, len(breaker.All))
+	for _, name := range breaker.All {
+		m[name] = true
+	}
+	return m
+}()
 
 // ListCircuitBreakers は発動中のサーキットブレーカー一覧を返す
 // (GET /api/breakers)。circuit_breakers は行の存在そのものが「発動中」を表すので、

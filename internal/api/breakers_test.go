@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/api"
+	"github.com/fetburner/rokuban/internal/breaker"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -293,5 +294,76 @@ VALUES ('other-site', 'ruler_deletes', 10, 50, '{"total":10}'::jsonb)`); err != 
 	}
 	if n != 1 {
 		t.Errorf("other-site circuit breaker row count = %d, want 1 (should be untouched)", n)
+	}
+}
+
+// 8. internal/breaker.All が定義する全ブレーカー名について、「発動 → GET
+// /api/breakers に出る → resume で消える」の一往復が通ることを確認する
+// (issue #199)。
+//
+// これは internal/breaker.All（値の権威）と internal/api の
+// knownCircuitBreakerNames（resume が検証に使う既知集合）がずれていないかの
+// 回帰テストでもある。knownCircuitBreakerNames は breaker.All から導出する
+// 実装になっているので現状ずれようがないが、将来 breaker.go に新しい識別子を
+// 足して breaker.All への追加を忘れると（Go の定数はリフレクションで列挙
+// できないため、コンパイラも静的解析もそれを検出できない）、その識別子は
+// このテストの対象に入らないまま「発動はするが resume できない」という
+// issue #199 と同じ形の穴になり得る。このテストのループを breaker.All から
+// 生成しているのはそのための保険 —— 新しい識別子を breaker.All に追加した
+// 瞬間にこのテストの対象にも自動的に入る。
+func TestCircuitBreaker_TripListResumeRoundTripForEveryKnownName(t *testing.T) {
+	for _, name := range breaker.All {
+		t.Run(name, func(t *testing.T) {
+			pool := testutil.SetupDB(t)
+			ctx := context.Background()
+
+			router := api.NewRouter(api.RouterConfig{Pool: pool})
+			srv := httptest.NewServer(router)
+			defer srv.Close()
+
+			insertCircuitBreakerFixture(t, pool, ctx, name, 7, 10, `{"total":7}`)
+
+			// 発動中として一覧に出る。
+			resp, err := http.Get(srv.URL + "/api/breakers")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("GET /api/breakers status = %d, want 200", resp.StatusCode)
+			}
+			var got []circuitBreakerResp
+			if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+				t.Fatalf("decoding response: %v", err)
+			}
+			found := false
+			for _, b := range got {
+				if b.Name == name {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("breaker %q not present in GET /api/breakers response %+v", name, got)
+			}
+
+			// resume で消える（400 で拒否されない）。
+			req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/sites/default/breakers/"+name+"/resume", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resumeResp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = resumeResp.Body.Close() }()
+			if resumeResp.StatusCode != http.StatusNoContent {
+				body, _ := io.ReadAll(resumeResp.Body)
+				t.Fatalf("resume status = %d, want 204 (body: %s)", resumeResp.StatusCode, body)
+			}
+			if existsCircuitBreaker(t, pool, ctx, name) {
+				t.Errorf("circuit breaker %q still exists after resume", name)
+			}
+		})
 	}
 }

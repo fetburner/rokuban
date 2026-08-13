@@ -52,6 +52,22 @@ const (
 	DeleteReconcile = "delete_reconcile"
 )
 
+// All はここで定義している全ブレーカー識別子の一覧。internal/api はここから
+// resume の妥当性検証に使う既知集合を導出する（internal/api/breakers.go の
+// knownCircuitBreakerNames）。API 側に識別子を手で複製すると、片方だけ更新
+// して他方が古いまま残る事故が起きる（issue #199: DeleteReconcile が
+// knownCircuitBreakerNames から漏れ、発動中なのに resume が 400 を返し
+// 続けた）。
+//
+// この一覧自体は手書きなので、新しい定数を上に足してここへの追加を
+// 忘れる余地はまだ残る（Go の定数はリフレクションで列挙できないため、
+// コンパイラも静的解析もそれを機械的には捕まえられない）。抜けを検知する
+// 手段は internal/api/breakers_test.go の回帰テスト（All の各名前について
+// trip → GET /api/breakers に出る → resume で消える、を確認する）に
+// 委ねている——このテストは、resume が知らない名前を発動一覧が返した
+// 時点で落ちる。
+var All = []string{RulerDeletes, ReconcileTotalLoss, DeleteReconcile}
+
 // Sample は発動時に「何が消されようとしていたか」を説明するためのペイロード。
 // 手動確認の材料であり、ブレーカー自身のロジックは中身を使わない。
 type Sample struct {
