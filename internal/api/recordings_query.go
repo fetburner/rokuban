@@ -166,7 +166,8 @@ func channelTypeStrings(vs []ListRecordingsParamsChannelType) []string {
 // 手書きの文字列で別々に SQL を組んでいた最初の実装では、一方に列を足しても
 // もう一方は静かに古い形のまま残り続けても `Scan` 呼び出し自体は（列数が
 // 揃っている限り）コンパイルも実行も通ってしまう --- `encode_profiles`
-// （issue #159）や `available_encoded_assets`（issue #133）のように過去に
+// （issue #159）や `available_encoded_profiles`（issue #133。現在は
+// `available_encoded_assets` に改名。issue #236）のように過去に
 // 列が増えた表なので、次に一覧側だけ列を足したときに同じ drift が再発しうる
 // （issue #232 のレビュー指摘）。共有の定数に切り出すことで、列を足す変更は
 // 両方のクエリに自動的に効く。

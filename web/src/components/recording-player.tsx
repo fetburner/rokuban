@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import type { EncodedAsset } from '@/api/generated'
 import { formatBytes } from '@/lib/format'
@@ -48,7 +48,11 @@ export function RecordingPlayer({
   className,
   focusToken,
 }: RecordingPlayerProps) {
-  const profiles = encodedAssets.map((a) => a.profile)
+  // `encodedAssets` の参照が変わらない限り再計算しない --- 素の `.map()` だと
+  // 毎レンダーで新しい配列になり、下の useEffect の依存配列がレンダーごとに
+  // 変化したと判定されて毎回走ってしまう（中身は冪等で setProfile を呼ばない
+  // 限りループにはならないが、無駄な再実行を避ける）。
+  const profiles = useMemo(() => encodedAssets.map((a) => a.profile), [encodedAssets])
   const [profile, setProfile] = useState(profiles[0] ?? '')
   const videoRef = useRef<HTMLVideoElement>(null)
   // プロファイル切替時に load したあとだけ currentTime を復元する

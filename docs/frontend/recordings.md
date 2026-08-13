@@ -56,7 +56,7 @@ prop で 1 段ずつ配線する形（`onMutated` のような穴）は採らな
   復元してから見る運用にする。ごみ箱一覧が `encodedAssets` を射影しないままなのも
   同じ理由（プレイヤーを出さないので揃える必要がない）
 
-### 操作点にサイズを常置する（値札、issue #236 M7-3）
+### 操作点にサイズを常置する（値札）
 
 **資源を消費する操作には実行前に値札。値札は事実（実測サイズ）のみ**（転送時間の
 見積などは書かない）。プロファイルセレクタの各選択肢（`<option>`）・ダウンロード
@@ -69,10 +69,20 @@ prop で 1 段ずつ配線する形（`onMutated` のような穴）は採らな
 （openapi.yaml）は省略可能な形にしてある --- 選択肢（プロファイル名）自体は
 分類の失敗（ここではサイズの欠落）を理由に隠さない。ドロップ統計の「分類できな
 かった PID は種別を空にして PID 数値だけ出す」（下記「ドロップ統計」節）と同じ
-判断。`media_assets.size_bytes` は NOT NULL なので active な encoded 行がある限り
-実際には常にサイズが付く（`internal/db/migrations/00002_schema_v1.sql` の CHECK
-制約が根拠）が、型としては省略可能にしてこの表示規律をテストで固定している
-（`recording-player.test.tsx`）。
+判断。`media_assets.size_bytes` は `NOT NULL` 列制約なので active な encoded 行が
+ある限り実際には常にサイズが付く（`internal/db/migrations/00002_schema_v1.sql`
+の `size_bytes bigint NOT NULL` が根拠。同テーブルの CHECK 制約は `kind` /
+`profile` / `state` にしか掛かっておらず `size_bytes` には無い）が、型としては
+省略可能にしてこの表示規律をテストで固定している（`recording-player.test.tsx`）。
+
+**`Recording.encodedProfiles`（プロファイル名だけの配列）は `encodedAssets` に
+サイズを足した後も残している。** UI と API のデプロイタイミングはずれ得るため
+API は後方互換を保つ（docs/api/rest.md §契約の保護）--- 旧バンドルを掴んだ
+ブラウザ（静的アセットは immutable、開いたままのタブも同じ）が新 API を叩いても
+`encodedProfiles` は変わらず届くので、再生ボタンやプレイヤーの出し分けが黙って
+消えない。`encodedAssets` は同じ SELECT 結果から Go 側で `encodedProfiles` と
+同時に作るので、2 つが食い違うことはない（`internal/api/recordings.go` の
+`recordingFromListFields`）。
 
 ### 再生ボタンは行右端に独立させる
 

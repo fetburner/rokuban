@@ -763,7 +763,7 @@ describe('RecordingsPage invalidate', () => {
     expect(document.querySelector('video')).not.toBeInTheDocument()
     expect(document.querySelector('img')).not.toBeInTheDocument()
     expect(screen.queryByRole('link', { name: /ダウンロード \/ VLC/ })).not.toBeInTheDocument()
-    expect(screen.queryByText('VLC 等で開く')).not.toBeInTheDocument()
+    expect(screen.queryByText(/VLC 等で開く/)).not.toBeInTheDocument()
   })
 })
 

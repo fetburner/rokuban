@@ -101,6 +101,15 @@ func recordingFromListFields(r recordingListFields, includeDeletedAt bool) (Reco
 		}
 	}
 	// 再生可能な encoded 派生物（observed）。空 `[]`/nil なら省略（omitempty）。
+	//
+	// `EncodedAssets`（profile + sizeBytes）と `EncodedProfiles`（profile
+	// だけ、後方互換のため残す。openapi.yaml の `encodedProfiles` description・
+	// docs/frontend/recordings.md 参照）は、必ずこの同じ `rows`（1 回の
+	// jsonb_agg の結果）から同時に作る。名前だけの配列とサイズ付きの配列を
+	// 別々の SQL 集約（2 本の array_agg/jsonb_agg）で作ると、片方だけ
+	// ORDER BY を書き忘れたときに添字がずれる drift が起こり得るが、
+	// 同じ `rows` から Go 側で両方を導出する形ではその種の drift は構造的に
+	// 起こらない。
 	if len(r.AvailableEncodedAssets) > 0 {
 		var rows []encodedAssetRow
 		if err := json.Unmarshal(r.AvailableEncodedAssets, &rows); err != nil {
@@ -108,10 +117,13 @@ func recordingFromListFields(r recordingListFields, includeDeletedAt bool) (Reco
 		}
 		if len(rows) > 0 {
 			assets := make([]EncodedAsset, len(rows))
+			profiles := make([]string, len(rows))
 			for i, row := range rows {
 				assets[i] = EncodedAsset{Profile: row.Profile, SizeBytes: &row.SizeBytes}
+				profiles[i] = row.Profile
 			}
 			rec.EncodedAssets = &assets
+			rec.EncodedProfiles = &profiles
 		}
 	}
 	// 凍結された desired 一覧。空なら省略（omitempty）。UI が「追加済み」を
