@@ -398,6 +398,193 @@ func TestLiveStreamer_UnknownProfile(t *testing.T) {
 	}
 }
 
+// injectNeverReadySession は runSession を経ずに、起動待ちのまま（s.ready を
+// 閉じない）セッションを ls.sessions に直接注入する。getOrCreateSession 経由で
+// 作ると呼び出し側もろとも ready を待ってしまい、Segment / Playlist 単体の
+// タイムアウト挙動を検証できない。
+//
+// newTestLiveStreamer が登録した t.Cleanup(ls.shutdown) は全セッションに
+// stop()（cancel を呼んで <-s.done を待つ）を呼ぶ。この注入セッションは
+// runSession を経ていない（s.done を閉じる者がいない）ため、何もしないと
+// shutdown が無期限にハングする。t.Cleanup は LIFO なので、ここで（呼び出し元が
+// newTestLiveStreamer の後で呼ぶ前提で）登録すれば shutdown より先に走り、
+// s.done を閉じて詰まりを防げる。
+func injectNeverReadySession(t *testing.T, ls *LiveStreamer, serviceID int64) *liveSession {
+	t.Helper()
+	s := &liveSession{
+		serviceID:  serviceID,
+		ready:      make(chan struct{}), // 意図的に閉じない = 起動待ちのまま
+		done:       make(chan struct{}),
+		lastAccess: time.Now(),
+		cancel:     func() {},
+	}
+	ls.mu.Lock()
+	ls.sessions[serviceID] = s
+	ls.mu.Unlock()
+	t.Cleanup(func() { close(s.done) })
+	return s
+}
+
+// assertBoundedByStartupTimeout は elapsed が「その時点の playlistStartupTimeout
+// ちょうどで打ち切られた」ことを確認する。**上限だけでなく下限も見る。** 上限
+// だけだと、検証対象の経路が playlistStartupTimeout を読まず、別の（たまたま
+// 短い）定数に差し替えられていても素通りしてしまう（レビュー指摘、issue #286
+// の任意項目）。下限を「その時点の値」そのものと比較することで、テストが
+// 上書きした値を経路が実際に読んでいることまで固定する。
+func assertBoundedByStartupTimeout(t *testing.T, elapsed time.Duration) {
+	t.Helper()
+	if elapsed < playlistStartupTimeout {
+		t.Errorf("elapsed %v is shorter than the current playlistStartupTimeout (%v) --- "+
+			"the code path under test must be reading this same variable, not a different literal",
+			elapsed, playlistStartupTimeout)
+	}
+	if elapsed > 1*time.Second {
+		t.Errorf("elapsed %v took too long, want bounded by playlistStartupTimeout (%v)", elapsed, playlistStartupTimeout)
+	}
+}
+
+// Segment はセッションの起動待ちで無期限に滞留しない（issue #189 の項目 1）。
+// Playlist 側の waitForPlaylist と同じ playlistStartupTimeout で打ち切ることを
+// 固定する --- ここを直す前は、起動処理（runSession）がまだ s.ready を閉じて
+// いないセッションに対する Segment 要求は、リクエストしたクライアント自身が
+// 切断するまで戻らなかった（mirakc への接続がハングした場合の実害。docs/api.md
+// §ライブ視聴の HLS が前提とする idle GC はセッションが動き出してから効くもので、
+// 起動待ち自体には効かない）。
+func TestLiveStreamer_Segment_TimesOutWhenSessionNeverBecomesReady(t *testing.T) {
+	// 15 秒の実待ちはテストを不必要に遅くするので、この 1 本だけ短くする
+	// （罠: 他の待ちと定数を分けるとここが揃っているか気付けなくなるので、
+	// 必ず playlistStartupTimeout そのものを書き換える）。
+	prevTimeout := playlistStartupTimeout
+	playlistStartupTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { playlistStartupTimeout = prevTimeout })
+
+	mirakcSrv, _ := newFakeMirakcLiveServer(t)
+	ls, srv := newTestLiveStreamer(t, mirakcSrv.URL, baseLiveConfig(t))
+
+	const serviceID = int64(999)
+	s := injectNeverReadySession(t, ls, serviceID)
+
+	// テストのクライアント自身には十分大きいタイムアウトを設定する。直す前の
+	// 実装のまま実行しても、ここでテストプロセスがハングせずアサーション失敗
+	// （t.Fatalf）で終わるようにするための保険。
+	client := &http.Client{Timeout: 2 * time.Second}
+	segURL := fmt.Sprintf("%s/api/sites/%s/services/%d/live/segments/h264_seg00001.ts",
+		srv.URL, testLiveSite, serviceID)
+
+	start := time.Now()
+	resp, err := client.Get(segURL)
+	if err != nil {
+		t.Fatalf("GET segment: %v (segment request should time out with a response, not hang until the client gives up)", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	elapsed := time.Since(start)
+
+	if resp.StatusCode != http.StatusGatewayTimeout {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusGatewayTimeout)
+	}
+	assertBoundedByStartupTimeout(t, elapsed)
+
+	// 起動待ちを諦めても close(s.ready) の性質は変えない --- セッション自体は
+	// 「起動中」のまま残る（このハンドラの都合でセッションを壊してはいけない。
+	// issue #189 の罠）。
+	select {
+	case <-s.ready:
+		t.Errorf("s.ready must not be closed by the handler giving up on waiting")
+	default:
+	}
+}
+
+// Playlist もセッションの起動待ち（getOrCreateSession の <-s.ready）で無期限に
+// 滞留しない（issue #286。#189 は Segment だけを直しており、Playlist 側の
+// getOrCreateSession は当時直っていなかった --- レビューで指摘され、#286 の
+// probe で実測された）。
+//
+// **Segment より実害が大きい。** hls.js はプレイリストを数秒間隔で再取得する
+// のに対し、セグメント要求はプレイリストが 1 度成功した後にしか発生しない。
+// mirakc がハングしている間、実際に滞留するのは主に Playlist ハンドラの側になる。
+func TestLiveStreamer_Playlist_TimesOutWhenSessionNeverBecomesReady(t *testing.T) {
+	prevTimeout := playlistStartupTimeout
+	playlistStartupTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { playlistStartupTimeout = prevTimeout })
+
+	mirakcSrv, _ := newFakeMirakcLiveServer(t)
+	ls, srv := newTestLiveStreamer(t, mirakcSrv.URL, baseLiveConfig(t))
+
+	const serviceID = int64(998)
+	injectNeverReadySession(t, ls, serviceID)
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	start := time.Now()
+	resp, err := client.Get(playlistURL(srv.URL, serviceID, ""))
+	if err != nil {
+		t.Fatalf("GET playlist: %v (playlist request should time out with a response, not hang until the client gives up)", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	elapsed := time.Since(start)
+
+	if resp.StatusCode != http.StatusGatewayTimeout {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusGatewayTimeout)
+	}
+	assertBoundedByStartupTimeout(t, elapsed)
+}
+
+// newHangingMirakcServer はヘッダを一切返さない偽 mirakc（接続は受け付けるが、
+// クライアントが諦める・呼び出し元がこのサーバーを閉じるまで応答しない）。
+// mirakc が完全にハングしている状況を、注入ではなく `StreamService` の
+// 本物の HTTP 往復を通して再現するためのもの。
+func newHangingMirakcServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// getOrCreateSession の**新規作成経路**（`ls.sessions` にまだ無い serviceID への
+// 最初の要求。マップ挿入直後に `go ls.runSession` し、その `<-s.ready` を待つ側）
+// も playlistStartupTimeout で打ち切られることを、実際に `runSession` →
+// `StreamService` を通す経路で固定する（issue #286 の再指摘）。
+//
+// `TestLiveStreamer_Playlist_TimesOutWhenSessionNeverBecomesReady` は
+// `injectNeverReadySession` で `ls.sessions` に直接セッションを注入するため、
+// **既存セッション経路**（`live.go` の 1 つ目の select）しか通らない。
+// `getOrCreateSession` には `<-s.ready` を待つ select が既存セッション経路・
+// 新規作成経路の 2 か所にあり、これは互いに独立したコードパスなので、
+// 片方だけに期限を入れて片方を忘れても上記のテストは検知できない。
+//
+// 実際にレビューで、新規作成経路側の `case <-time.After(playlistStartupTimeout):
+// return nil, errStartupTimeout` を丸ごと削除して `go test ./internal/streamer/`
+// を回しても全テスト green のままであることが指摘された。しかも新規作成経路は
+// 「mirakc がハングしたときに最初のプレイリスト要求が通る側」（2 本目以降の
+// 要求だけが既存セッション経路に入る）なので、本番で先に効くのはこちらである。
+func TestLiveStreamer_Playlist_NewSessionTimesOutWhenMirakcNeverResponds(t *testing.T) {
+	prevTimeout := playlistStartupTimeout
+	playlistStartupTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { playlistStartupTimeout = prevTimeout })
+
+	mirakcSrv := newHangingMirakcServer(t)
+	_, srv := newTestLiveStreamer(t, mirakcSrv.URL, baseLiveConfig(t))
+
+	// ls.sessions にまだ存在しない serviceID --- 最初の要求は必ず
+	// getOrCreateSession の新規作成経路（マップ挿入 + go ls.runSession）を通る。
+	const serviceID = int64(777)
+
+	client := &http.Client{Timeout: 3 * time.Second}
+	start := time.Now()
+	resp, err := client.Get(playlistURL(srv.URL, serviceID, ""))
+	if err != nil {
+		t.Fatalf("GET playlist: %v (new-session path should time out with a response, not hang until the client gives up)", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	elapsed := time.Since(start)
+
+	if resp.StatusCode != http.StatusGatewayTimeout {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusGatewayTimeout)
+	}
+	assertBoundedByStartupTimeout(t, elapsed)
+}
+
 // site が config.mirakc.site と一致しない要求は 404（DB を引かずパスだけで判定する）。
 func TestLiveStreamer_SiteMismatch(t *testing.T) {
 	mirakcSrv, state := newFakeMirakcLiveServer(t)
@@ -661,6 +848,14 @@ func TestLiveStreamer_NewLive_SweepsStaleSegmentDirAtStartup(t *testing.T) {
 	}
 	if _, err := os.Stat(staleDir); !os.IsNotExist(err) {
 		t.Errorf("stale session dir should be swept at startup, stat err = %v", err)
+	}
+	// **cfg.SegmentDir 自体は消さない（issue #189 の項目 2）。** SegmentDir に
+	// k8s emptyDir を直接マウントしている構成では、Linux はマウントポイント
+	// 自体への rmdir を EBUSY で拒む（Linux コンテナで実測済み。issue #189
+	// コメント参照）。中身だけを掃く実装なら、この構成でも起動時 sweep が
+	// SegmentDir 自体を rmdir しようとしないので EBUSY を踏まない。
+	if _, err := os.Stat(cfg.SegmentDir); err != nil {
+		t.Errorf("cfg.SegmentDir itself must survive the sweep (only its contents should be removed), stat err = %v", err)
 	}
 }
 
