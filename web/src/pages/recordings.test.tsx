@@ -1041,19 +1041,26 @@ describe('AddEncodeProfilesAction', () => {
     expect(await screen.findByText('追加済み: h264')).toBeInTheDocument()
   })
 
-  it('原本削除済み（sizeBytes 省略）では追加できない旨を出し、チェックボックスを出さない', async () => {
+  // issue #211: sizeBytes 省略は「原本削除済み」に限らない --- ingest 未完了・
+  // 失敗中の finished 録画でも同じ形になる（`docs/runbook/troubleshooting.md`
+  // 「ingest: transfer complete が出ない」の実観測）。「削除済み」と断定する
+  // 文言は誤誘導なので、事実だけを言う中立文言に固定する。
+  it('原本が無い（sizeBytes 省略）録画では、削除済みと断定せず中立文言を出し、チェックボックスを出さない', async () => {
     const user = userEvent.setup()
     createFakeRecordingsServer({
-      library: [sampleRecording({ id: 13, title: '原本削除済み', encodeProfiles: [] })],
+      library: [sampleRecording({ id: 13, title: '原本なし', encodeProfiles: [] })],
       encodeProfiles: [{ name: 'h264' }],
     })
 
     renderPage()
-    await user.click(await screen.findByText('原本削除済み'))
+    await user.click(await screen.findByText('原本なし'))
 
     expect(
-      await screen.findByText('原本が削除済みのため、追加のエンコードは依頼できません。'),
+      await screen.findByText(
+        'この録画には再生可能な原本がありません。追加のエンコードは依頼できません。',
+      ),
     ).toBeInTheDocument()
+    expect(screen.queryByText(/削除済み/)).not.toBeInTheDocument()
     expect(screen.queryByRole('checkbox')).not.toBeInTheDocument()
   })
 
