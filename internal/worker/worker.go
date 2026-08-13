@@ -213,6 +213,9 @@ func NewWorkers(deps *Deps) *river.Workers {
 	})
 	river.AddWorker(workers, &EncodeReconcileWorker{
 		Pool: deps.Pool,
+		// desired の絞り込みにプロファイル名だけを使う（EncodeWorker と同じ
+		// 設定を読む。EncodeReconcileArgs.InsertOpts のコメント参照）。
+		Profiles: deps.Encode,
 	})
 	river.AddWorker(workers, &EpgSyncWorker{
 		MirakcClient:   deps.MirakcClient,

@@ -375,6 +375,47 @@ var (
 	})
 )
 
+// encode の desired−observed 定期 reconcile（internal/worker/encode_reconcile.go）の
+// メトリクス。
+//
+// このパスは「ヒントを落とした録画が黙ってエンコードされない」を塞ぐバックストップ
+// なので、**パス自身が止まったこと・見切れたことも黙って起きうる**。2 つのゲージは
+// その 2 通りの黙り方に 1 対 1 で対応する。
+var (
+	// EncodeReconcileLastPass は最後に完走した encode reconcile パスの時刻（UNIX 秒）。
+	// DeleteReconcileLastPass と同じ理由（ゲージの凍結対策）で持つ。
+	EncodeReconcileLastPass = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "rokuban_encode_reconcile_last_pass_timestamp_seconds",
+		Help: "Unix time of the last completed encode-reconcile pass. Use with time() to detect a stalled pass.",
+	})
+
+	// EncodeReconcileCandidates は直近のパスが見た候補件数（desired なのに
+	// active な encoded が無い録画）。
+	//
+	// **上限（encodeReconcileRowLimit）に張り付いたら、それより後ろの
+	// recording_id には到達していない**（候補は recording_id 昇順で切られ、
+	// このパスは候補を減らさないため。EncodeReconcileWorker の doc コメント
+	// 「窓は回らない」参照）。エンコード実行中の録画も候補に数えるので、
+	// 0 でないこと自体は異常ではない。
+	EncodeReconcileCandidates = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "rokuban_encode_reconcile_candidates",
+		Help: "Recordings seen by the last encode-reconcile pass that still lack an active encoded asset. If this sits at the pass row limit, recordings beyond it are not being reached.",
+	})
+
+	// EncodeReconcileUnsatisfiable は「凍結済みの desired が現在の
+	// encode.profiles に存在しない」ために、このパスが投入対象から外している
+	// 録画数（プロファイル名別）。
+	//
+	// プロファイルを改名 / 削除すると、その名前で凍結済みの過去録画が一斉に
+	// ここへ落ちる。投入しても EncodeWorker が `unknown encode profile` で
+	// 弾く（encode.go）ため投入しないのが正しいが、**黙って落とすと
+	// 「エンコードされない録画」が静かに増える**ので数えて見せる。
+	EncodeReconcileUnsatisfiable = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "rokuban_encode_reconcile_unsatisfiable",
+		Help: "Recordings whose frozen encode profile no longer exists in encode.profiles, by profile name. Non-zero means a rename/removal left past recordings unencodable.",
+	}, []string{"profile"})
+)
+
 // ストレージ観測（issue #238 M7-5）のメトリクス。
 //
 // StorageSyncLastSuccess はジョブ全体（1 パス）の完走を見るゲージで、
@@ -527,6 +568,10 @@ func NewRegistry(backlog prometheus.Collector) *prometheus.Registry {
 		DeleteReconcileDeleted,
 		DeleteReconcileBytes,
 		DeleteReconcileLastPass,
+
+		EncodeReconcileLastPass,
+		EncodeReconcileCandidates,
+		EncodeReconcileUnsatisfiable,
 
 		StorageSyncLastSuccess,
 		StorageRootLastSuccess,
