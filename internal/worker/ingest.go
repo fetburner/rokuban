@@ -185,19 +185,24 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[IngestJobArgs]) 
 
 	// os.Create（次の数行）は宛先を truncate してから中身を書き始める。
 	// media_assets の一意索引（rel_path, WHERE state <> 'deleted'）は commit
-	// 時の INSERT で初めて効くので、事前チェックなしだと「別の active な
-	// media_asset が既にこの rel_path を使っている」場合に、先行の実ファイルを
-	// truncate して上書きしてから 23505 で落ちる。DB は先行の録画を
-	// active のまま指し続けるのに実体は新しい録画のもの、という不変条件 3
+	// 時の INSERT で初めて効くので、事前チェックなしだと「別の生きている
+	// （state <> 'deleted' の。'active' に限らず、削除処理中の 'deleting' も
+	// 含む）media_asset が既にこの rel_path を使っている」場合に、先行の
+	// 実ファイルを truncate して上書きしてから 23505 で落ちる。DB は先行の
+	// 録画をそのまま指し続けるのに実体は新しい録画のもの、という不変条件 3
 	// （コミット = DB 行）の逆（DB 行はあるのに実体が別物）が作れてしまう
-	// （PR #196 のレビューで実測。issue #197）。
+	// （PR #196 のレビューで実測。issue #197）。'deleting' を見逃す（例えば
+	// 'active' だけを見る）と、delete_reconcile が unlink 前に持つその
+	// ファイルを上書きしてしまい、後から resolveUnqualifiedDeletingAsset が
+	// ファイルの現存を根拠にその行を active へ復元しうるため、同じ壊れ方が
+	// 再生産される（PR #267 のレビューで指摘）。
 	//
 	// checkRelPathConflict のガードはここで転送そのものを始めさせない
 	// ことで先行ファイルを保護する。
 	if conflictRecordingID, err := w.checkRelPathConflict(ctx, relPath); err != nil {
 		return fmt.Errorf("checking rel_path conflict: %w", err)
 	} else if conflictRecordingID != 0 {
-		return fmt.Errorf("ingest: rel_path %q is already used by an active media_asset (recording_id=%d); refusing to overwrite its file (recording_id=%d)",
+		return fmt.Errorf("ingest: rel_path %q is already used by another media_asset that has not been deleted (recording_id=%d); refusing to overwrite its file (recording_id=%d)",
 			relPath, conflictRecordingID, recordingID)
 	}
 
@@ -337,34 +342,46 @@ func (w *IngestWorker) hasOriginalMediaAsset(ctx context.Context, recordingID in
 	return false, fmt.Errorf("querying media_assets: %w", err)
 }
 
-// checkRelPathConflict は relPath を既に使っている active な media_asset が
-// あれば、その recording_id を返す（無ければ 0, nil）。Work が os.Create の
-// 前に呼び、宛先を書き始める前に「よくある事故を安く防ぐ」ための先読み
-// （issue #197）。
+// checkRelPathConflict は relPath を既に使っている、まだ削除されていない
+// （state <> 'deleted'。'active' に限らず、削除処理中の 'deleting' も含む）
+// media_asset があれば、その recording_id を返す（無ければ 0, nil）。Work が
+// os.Create の前に呼び、宛先を書き始める前に「よくある事故を安く防ぐ」ための
+// 先読み（issue #197）。
 //
 // **これは正しさの根拠ではない。** この SELECT と実際の CreateMediaAsset の
 // INSERT の間には TOCTOU の窓があり、2 つの ingest ジョブがほぼ同時にこの
-// チェックを通過して両方が転送を始めることは起こりうる。正しさの根拠は
-// 常に media_assets の一意索引（CREATE UNIQUE INDEX ON media_assets (rel_path)
-// WHERE state <> 'deleted'、00002_schema_v1.sql）であり、レベルトリガー
-// （CLAUDE.md 不変条件 5）の原則どおり、ここでの先読みが外れても最終的な
-// INSERT が 23505 で確実に片方を落とす。この関数を「一意索引を通す前の
-// ゲート」以上の役割にしない --- 一意索引を緩めたり INSERT のエラー処理を
-// 弱めたりする理由には使わない。
+// チェックを通過して両方が転送を始めることは起こりうる（その場合、両方が
+// os.Create で相手のファイルを truncate しうるので、先行ファイルが守られる
+// 保証はここには無い）。正しさの根拠は常に media_assets の一意索引
+// （CREATE UNIQUE INDEX ON media_assets (rel_path) WHERE state <> 'deleted'、
+// 00002_schema_v1.sql）であり、レベルトリガー（CLAUDE.md 不変条件 5）の
+// 原則どおり、ここでの先読みが外れても最終的な INSERT が 23505 で
+// media_assets の行の一意性だけは確実に守る（= 2 つの recording_id が同じ
+// rel_path を指す行を両方コミットすることはない）。ただし INSERT が守るのは
+// あくまで DB 行の一意性であり、TOCTOU の窓に落ちた場合の実ファイルの
+// 破損までは守らない --- この関数を「一意索引を通す前の安価なゲート」以上の
+// 役割にしない。一意索引を緩めたり INSERT のエラー処理を弱めたりする理由には
+// 使わない。
 //
 // WHERE state <> 'deleted' はその一意索引の述語と同じにする。削除済み
 // （state='deleted'）の行が使っていた rel_path は正当に再利用できるので、
-// ここで引っかけて誤って失敗させてはいけない。
+// ここで引っかけて誤って失敗させてはいけない。'deleting'（delete_reconcile の
+// unlink 前後の中間状態）はまだ 'deleted' ではない --- unlink 前・unlink
+// 失敗中は実ファイルが残っており、かつ resolveUnqualifiedDeletingAsset が
+// ファイルの現存を確認した上でその行を active に戻しうる
+// （delete_reconcile.go）ため、'deleting' の rel_path を ingest が上書きすると
+// 「DB は active、実体は別番組」が再生産される。したがって 'deleting' も
+// 'active' と同じく衝突として扱う。
 func (w *IngestWorker) checkRelPathConflict(ctx context.Context, relPath string) (int64, error) {
 	q := sqlcgen.New(w.Pool)
-	row, err := q.GetActiveMediaAssetByRelPath(ctx, relPath)
+	conflictRecordingID, err := q.GetLiveMediaAssetByRelPath(ctx, relPath)
 	if err != nil {
 		if errors.Is(err, pgx5.ErrNoRows) {
 			return 0, nil
 		}
 		return 0, fmt.Errorf("querying media_assets: %w", err)
 	}
-	return row.RecordingID, nil
+	return conflictRecordingID, nil
 }
 
 func (w *IngestWorker) lookupRecordingID(ctx context.Context, args IngestJobArgs) (int64, error) {

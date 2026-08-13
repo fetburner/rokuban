@@ -12,16 +12,25 @@ SELECT id FROM media_assets
 WHERE recording_id = $1 AND kind = 'original';
 
 -- ingest の宛先事前チェック用（issue #197）。os.Create で宛先ファイルを開く前に、
--- 別の active な media_asset が同じ rel_path を既に使っていないかを確認する。
+-- 別のまだ削除されていない（state <> 'deleted'。'active' に限らず、
+-- delete_reconcile の unlink 前後の中間状態である 'deleting' も含む）
+-- media_asset が同じ rel_path を既に使っていないかを確認する。名前を
+-- "Active" ではなく "Live" にしているのは、他の Get*Active*MediaAsset* 系
+-- クエリ（state = 'active' を厳密に見る）と述語が違うことを名前からも
+-- 分かるようにするため（PR #267 のレビュー指摘: "active" という語だと
+-- 'deleting' 行にも発火する事実とずれる）。
 -- **正しさの根拠ではない**（先読みと実際の INSERT の間に別ジョブが commit
--- しうる TOCTOU の窓がある）。正しさの根拠は
+-- しうる TOCTOU の窓がある。窓に落ちると両方が transfer を始めうるので、
+-- 先行ファイルの破損まではこの SELECT では守れない）。正しさの根拠は
 -- CREATE UNIQUE INDEX ON media_assets (rel_path) WHERE state <> 'deleted'
--- （00002_schema_v1.sql）であり、ここが競合を見逃してもそちらが 23505 で守る。
--- ここでの WHERE state <> 'deleted' はその一意索引の述語と同じにする ---
+-- （00002_schema_v1.sql）であり、ここが競合を見逃しても最終的な INSERT が
+-- 23505 で media_assets の行の一意性だけは確実に守る。ここでの
+-- WHERE state <> 'deleted' はその一意索引の述語と同じにする ---
 -- 削除済みの行が使っていた rel_path は正当に再利用できるので、削除済み行と
--- 衝突させてはいけない。該当行が無ければ pgx.ErrNoRows を返す。
--- name: GetActiveMediaAssetByRelPath :one
-SELECT id, recording_id FROM media_assets
+-- 衝突させてはいけない。呼び出し側は recording_id しか使わないので id は
+-- 選択しない。該当行が無ければ pgx.ErrNoRows を返す。
+-- name: GetLiveMediaAssetByRelPath :one
+SELECT recording_id FROM media_assets
 WHERE rel_path = $1 AND state <> 'deleted';
 
 -- encode / thumbnail が読む原本(パスとサイズ)。active のみ。tombstone や未 commit は対象外。

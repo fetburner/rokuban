@@ -1914,14 +1914,40 @@ func TestIngestWorker_TwoSitesSameContentPath_DoNotCollide(t *testing.T) {
 // issue #197 の受け入れ基準 1 項目目を固定する: 同じ rel_path になる 2 つ目の
 // ingest が、先行の実ファイルを壊さずに失敗する。
 //
+// checkRelPathConflict の述語は `state <> 'deleted'`（一意索引の述語と同じ）
+// であり、'active' と 'deleting' の両方を「衝突」として塞ぐ。これを
+// `state = 'active'` に狭める変異（'deleting' を見逃す）は worker パッケージ
+// 全緑のまま通ってしまう穴だった（PR #267 のレビューで指摘・実測）。
+// 'deleting' 行のファイルは delete_reconcile の 3 段階
+// （active → deleting → unlink → deleted、delete_reconcile.go の
+// deleteMediaAsset）のうち unlink 前・unlink 失敗中はまだ実在し、かつ
+// resolveUnqualifiedDeletingAsset がファイルの現存を確認した上でその行を
+// active に戻しうる（issue #105）。したがって 'deleting' 行のファイルを
+// ingest が上書きすると、それが後から active として復元され、issue #197
+// が問題にした「DB は active、実体は別番組」がここでも再生産される。
+// そのためテーブル駆動で 'active' / 'deleting' の両方を確認する
+// （CLAUDE.md テスト規律「分岐を直したら両方向で確認する」）。
+func TestIngestWorker_RelPathConflict_RefusesWithoutCorruptingExistingFile(t *testing.T) {
+	for _, existingState := range []string{"active", "deleting"} {
+		t.Run(existingState, func(t *testing.T) {
+			testRelPathConflictRefusesWithoutCorruptingExistingFile(t, existingState)
+		})
+	}
+}
+
+// testRelPathConflictRefusesWithoutCorruptingExistingFile は
+// TestIngestWorker_RelPathConflict_RefusesWithoutCorruptingExistingFile の
+// 本体。existingState は先行の media_asset に与える state（"active" /
+// "deleting"）。
+//
 // 修正前（determineRelPath の直後の事前チェックを外す）は、2 つ目の
 // Work() が os.Create で先行の実ファイル（21 バイトの「正しい」中身）を
-// 0 バイトに truncate し、新しい TS（tsDataB）で上書きしてから
+// 0 バイトに truncate し、新しい TS（tsDataNew）で上書きしてから
 // media_assets の一意索引違反（23505）でようやく失敗する --- つまり
 // エラーは返るが、その時点で先行ファイルは既に壊れている。「両方失敗する」
 // だけでは検知できないため、このテストは失敗後に**先行ファイルの中身を
 // 実際に読んで**元のバイト列のままであることを確認する。
-func TestIngestWorker_RelPathConflict_RefusesWithoutCorruptingExistingFile(t *testing.T) {
+func testRelPathConflictRefusesWithoutCorruptingExistingFile(t *testing.T, existingState string) {
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -1929,18 +1955,29 @@ func TestIngestWorker_RelPathConflict_RefusesWithoutCorruptingExistingFile(t *te
 	ctx := context.Background()
 	mediaDir := t.TempDir()
 
-	// 先行: 既に active な media_asset として commit 済みの録画（別の
-	// recording_id）。実ファイルは既存の「正しい」中身を持つ。
+	// 先行: 既に existingState の media_asset として commit 済みの録画
+	// （別の recording_id）。実ファイルは既存の「正しい」中身を持つ。
 	existingRecordingID := insertTestRecordingForSite(t, pool, "default", 301)
 	const conflictRelPath = "sites/default/shared/conflict.m2ts"
 	q := sqlcgen.New(pool)
-	if _, err := q.CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
+	existingAssetID, err := q.CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
 		RecordingID: existingRecordingID,
 		Kind:        "original",
 		RelPath:     conflictRelPath,
 		SizeBytes:   21,
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("creating existing media_asset: %v", err)
+	}
+	if existingState != "active" {
+		// MarkMediaAssetDeleting（delete_reconcile.go）は deleted_at を
+		// 立てない --- 'deleting' は unlink 前後の中間状態であり、不可逆な
+		// 削除確定（deleted_at）はまだ起きていない。ここでもその形を模す。
+		if _, err := pool.Exec(ctx,
+			"UPDATE media_assets SET state = $2 WHERE id = $1", existingAssetID, existingState,
+		); err != nil {
+			t.Fatalf("setting existing media_asset state to %s: %v", existingState, err)
+		}
 	}
 
 	existingContent := []byte("existing-untouched-01") // 21 バイト
@@ -2002,12 +2039,12 @@ func TestIngestWorker_RelPathConflict_RefusesWithoutCorruptingExistingFile(t *te
 		Args:   IngestJobArgs{Site: "default", RecordID: "rec-conflict-new"},
 	}
 
-	err := w.Work(ctx, job)
+	err = w.Work(ctx, job)
 	if err == nil {
 		t.Fatal("Work() error = nil, want an explicit failure for a conflicting rel_path")
 	}
-	if !strings.Contains(err.Error(), "rel_path") {
-		t.Errorf("Work() error = %v, want it to mention the conflicting rel_path", err)
+	if !strings.Contains(err.Error(), "refusing to overwrite") {
+		t.Errorf("Work() error = %v, want it to mention refusing to overwrite (distinct from a bare 23505 unique-violation message)", err)
 	}
 
 	// 核心のアサーション: 先行の実ファイルは中身まで元のままである

@@ -58,32 +58,6 @@ func (q *Queries) GetActiveEncodedMediaAssetID(ctx context.Context, arg GetActiv
 	return id, err
 }
 
-const getActiveMediaAssetByRelPath = `-- name: GetActiveMediaAssetByRelPath :one
-SELECT id, recording_id FROM media_assets
-WHERE rel_path = $1 AND state <> 'deleted'
-`
-
-type GetActiveMediaAssetByRelPathRow struct {
-	ID          int64
-	RecordingID int64
-}
-
-// ingest の宛先事前チェック用（issue #197）。os.Create で宛先ファイルを開く前に、
-// 別の active な media_asset が同じ rel_path を既に使っていないかを確認する。
-// **正しさの根拠ではない**（先読みと実際の INSERT の間に別ジョブが commit
-// しうる TOCTOU の窓がある）。正しさの根拠は
-// CREATE UNIQUE INDEX ON media_assets (rel_path) WHERE state <> 'deleted'
-// （00002_schema_v1.sql）であり、ここが競合を見逃してもそちらが 23505 で守る。
-// ここでの WHERE state <> 'deleted' はその一意索引の述語と同じにする ---
-// 削除済みの行が使っていた rel_path は正当に再利用できるので、削除済み行と
-// 衝突させてはいけない。該当行が無ければ pgx.ErrNoRows を返す。
-func (q *Queries) GetActiveMediaAssetByRelPath(ctx context.Context, relPath string) (GetActiveMediaAssetByRelPathRow, error) {
-	row := q.db.QueryRow(ctx, getActiveMediaAssetByRelPath, relPath)
-	var i GetActiveMediaAssetByRelPathRow
-	err := row.Scan(&i.ID, &i.RecordingID)
-	return i, err
-}
-
 const getActiveOriginalMediaAsset = `-- name: GetActiveOriginalMediaAsset :one
 SELECT id, rel_path, size_bytes
 FROM media_assets
@@ -157,6 +131,36 @@ func (q *Queries) GetEncodedMediaAssetForServing(ctx context.Context, arg GetEnc
 		&i.Profile,
 	)
 	return i, err
+}
+
+const getLiveMediaAssetByRelPath = `-- name: GetLiveMediaAssetByRelPath :one
+SELECT recording_id FROM media_assets
+WHERE rel_path = $1 AND state <> 'deleted'
+`
+
+// ingest の宛先事前チェック用（issue #197）。os.Create で宛先ファイルを開く前に、
+// 別のまだ削除されていない（state <> 'deleted'。'active' に限らず、
+// delete_reconcile の unlink 前後の中間状態である 'deleting' も含む）
+// media_asset が同じ rel_path を既に使っていないかを確認する。名前を
+// "Active" ではなく "Live" にしているのは、他の Get*Active*MediaAsset* 系
+// クエリ（state = 'active' を厳密に見る）と述語が違うことを名前からも
+// 分かるようにするため（PR #267 のレビュー指摘: "active" という語だと
+// 'deleting' 行にも発火する事実とずれる）。
+// **正しさの根拠ではない**（先読みと実際の INSERT の間に別ジョブが commit
+// しうる TOCTOU の窓がある。窓に落ちると両方が transfer を始めうるので、
+// 先行ファイルの破損まではこの SELECT では守れない）。正しさの根拠は
+// CREATE UNIQUE INDEX ON media_assets (rel_path) WHERE state <> 'deleted'
+// （00002_schema_v1.sql）であり、ここが競合を見逃しても最終的な INSERT が
+// 23505 で media_assets の行の一意性だけは確実に守る。ここでの
+// WHERE state <> 'deleted' はその一意索引の述語と同じにする ---
+// 削除済みの行が使っていた rel_path は正当に再利用できるので、削除済み行と
+// 衝突させてはいけない。呼び出し側は recording_id しか使わないので id は
+// 選択しない。該当行が無ければ pgx.ErrNoRows を返す。
+func (q *Queries) GetLiveMediaAssetByRelPath(ctx context.Context, relPath string) (int64, error) {
+	row := q.db.QueryRow(ctx, getLiveMediaAssetByRelPath, relPath)
+	var recording_id int64
+	err := row.Scan(&recording_id)
+	return recording_id, err
 }
 
 const getOriginalMediaAssetForServing = `-- name: GetOriginalMediaAssetForServing :one
