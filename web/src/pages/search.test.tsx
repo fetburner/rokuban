@@ -597,6 +597,54 @@ describe('SearchPage', () => {
         )
       })
     })
+
+    it('期間の根拠は実行した検索から導く: 下書きを触っても再検索するまで変わらない（両方向）', async () => {
+      stubApi()
+      renderPage()
+
+      // 期間を入れて検索する
+      await addKeyword('ニュース')
+      fireEvent.change(screen.getByLabelText('開始日時'), {
+        target: { value: '2020-01-01T00:00' },
+      })
+      await userEvent.click(screen.getByRole('button', { name: '検索' }))
+      await waitFor(() => {
+        expect(screen.getByText(/この条件で保存すると/).textContent).toContain(
+          '期間条件で絞っている',
+        )
+      })
+
+      // 再検索せずに期間欄だけを空にする。値札の数値（件数・時間）は「期間で
+      // 絞った検索」の産物のままなので、その根拠の文言も変わってはならない
+      // （変わると、期間で絞った数値に「8 日分を 7 日換算」という偽の根拠が付く）
+      fireEvent.change(screen.getByLabelText('開始日時'), { target: { value: '' } })
+      // 先に下書きが反映された（＝値札も再レンダーされた）ことを確かめる。これが
+      // 無いと、再レンダー前にアサートして空虚に成功しうる
+      await waitFor(() => {
+        expect(screen.getByLabelText<HTMLInputElement>('開始日時').value).toBe('')
+      })
+      const afterClear = screen.getByText(/この条件で保存すると/)
+      expect(afterClear.textContent).not.toContain('8 日分を 7 日換算')
+      expect(afterClear.textContent).toContain('期間条件で絞っている')
+
+      // 逆向き: 期間なしで検索し直すと根拠が戻る
+      await userEvent.click(screen.getByRole('button', { name: '検索' }))
+      await waitFor(() => {
+        expect(screen.getByText(/この条件で保存すると/).textContent).toContain('8 日分を 7 日換算')
+      })
+
+      // 再検索せずにフォームへ期間を打ち込んでも、8 日基準の正しい見積もりに
+      // 「実際より小さく出ます」という誤った但し書きは付かない
+      fireEvent.change(screen.getByLabelText('開始日時'), {
+        target: { value: '2020-01-02T00:00' },
+      })
+      await waitFor(() => {
+        expect(screen.getByLabelText<HTMLInputElement>('開始日時').value).toBe('2020-01-02T00:00')
+      })
+      const afterType = screen.getByText(/この条件で保存すると/)
+      expect(afterType.textContent).toContain('8 日分を 7 日換算')
+      expect(afterType.textContent).not.toContain('期間条件で絞っている')
+    })
   })
 
   describe('この条件でルールを作成', () => {

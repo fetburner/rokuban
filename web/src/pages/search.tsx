@@ -166,13 +166,30 @@ export function SearchPage() {
     .filter((ms): ms is number => ms !== undefined)
 
   /**
-   * hasPeriod は値札に「8 日分を 7 日換算」という根拠を出してよいかの判定。
+   * searchedHasPeriod は値札に「8 日分を 7 日換算」という根拠を出してよいかの判定。
    * `periodStartAt` / `periodEndAt` で期間を絞った検索は観測スパンが 8 日ではなく
-   * その期間そのものになるため、8 日を根拠にすると偽の説明になる
-   * （`CreateRuleForm` / `RuleEditForm` の同名の定数と同じ判定。それらは折りたたみの
-   * 中の警告用なので、値札だけ見ているユーザーにも同じ注意が届くようここでも計算する）。
+   * その期間そのものになるため、8 日を根拠にすると偽の説明になる。
+   *
+   * **下書き（`draft`）ではなく実行した検索（`search.variables`）から導く。**
+   * 値札の数値（`ids.length` / `loadedDurationsMs`）は実行済みの検索の産物なので、
+   * 根拠だけをフォームの現在値から取ると再検索するまでの間だけ両者が食い違う ---
+   * 期間を入れて検索したあと欄を空にするだけで、期間で絞った数値に
+   * 「8 日分を 7 日換算」という偽の根拠が付き直す（逆向きも同様）。検証:
+   * `search.test.tsx`「期間の根拠は実行した検索から導く: 下書きを触っても
+   * 再検索するまで変わらない（両方向）」。
+   *
+   * `buildSearchRequest`（`lib/program-search.ts`）は期間が空ならキーごと落とす
+   * ので、キーの有無がそのまま「期間で絞ったか」になる。型が許す `null`
+   * （＝問わない）は「指定なし」側に畳む。
+   *
+   * `CreateRuleForm` / `RuleEditForm` にも同名の判定があるが、あちらは
+   * 「この下書きを保存すると恒久的な期間制限になる」という**下書き**についての
+   * 警告なので、下書きから導くのが正しい（同じ式に見えて由来が違う）。
    */
-  const hasPeriod = draft.periodStartAt !== '' || draft.periodEndAt !== ''
+  const searchedRequest = search.variables?.data
+  const searchedHasPeriod =
+    (searchedRequest?.periodStartAt ?? null) !== null ||
+    (searchedRequest?.periodEndAt ?? null) !== null
 
   return (
     <>
@@ -229,7 +246,7 @@ export function SearchPage() {
         status={costStatus}
         totalCount={ids.length}
         loadedDurationsMs={loadedDurationsMs}
-        hasPeriod={hasPeriod}
+        hasPeriod={searchedHasPeriod}
       />
 
       {ruleId !== undefined ? (
@@ -322,6 +339,10 @@ export function SearchPage() {
  * その期間そのものになるため前提が崩れる（8 日分ではないのに 8 日分と言うと偽の
  * 根拠になる。issue #237 の罠「黙って過小に見せない」に反する）。代わりに
  * 「期間条件で絞っているため、週あたりの見込みは実際より小さく出ます」と明記する。
+ *
+ * **`hasPeriod` は `totalCount` / `loadedDurationsMs` と同じ検索の産物でなければ
+ * ならない**（呼び出し側の `searchedHasPeriod` を参照）。数値と根拠の由来が
+ * 食い違うと、消したはずの偽の根拠が「フォームを触っただけ」で復活する。
  */
 function RuleCostSummary({
   status,
