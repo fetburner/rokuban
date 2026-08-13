@@ -1,6 +1,6 @@
+import { keepPreviousData } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { TriangleAlert } from 'lucide-react'
-import { useMemo } from 'react'
 
 import {
   useListCapacityOverages,
@@ -32,15 +32,28 @@ const RECENT_FINISHED_LIMIT = 6
 
 /**
  * DROP_WARNING_SCAN_LIMIT はドロップ警告の材料を取る範囲。**「直近の完了」の
- * 表示件数（`RECENT_FINISHED_LIMIT`）とは意図的に独立させてある。**
- *
- * レビュー指摘: 以前は警告のドロップ検出を表示用の `recentFinished`
- * （`RECENT_FINISHED_LIMIT` 件）にそのまま乗せていたため、表示上限をレイアウト
- * の都合で下げると警告の遡り幅まで黙って縮み、それを検知するテストも無かった。
+ * 表示件数（`RECENT_FINISHED_LIMIT`）とは独立の定数にしてある** ---
  * 表示（何行見せるか = レイアウトの都合）と検出（どこまで遡って異常を拾うか =
- * 正しさの都合）は別の関心事なので、別クエリ（`dropScanQuery`）に分離した。
- * この値も上と同じく恣意的な上限（実測ではない）だが、少なくとも表示件数を
- * 変えても警告の遡り幅は変わらない。
+ * 正しさの都合）は別の関心事で、同じ値に乗せるとレイアウト都合で表示件数を
+ * 下げただけで警告の遡り幅まで黙って縮む。この値も上と同じく恣意的な上限
+ * （実測ではない）。
+ *
+ * **問い合わせは 1 本にまとめる**（`limit=DROP_WARNING_SCAN_LIMIT` で取り、
+ * 表示はその先頭 `RECENT_FINISHED_LIMIT` 件へ切る）。同じ絞り込み・同じ既定順
+ * （`program_start_at` 降順）なので `limit=6` の集合は `limit=20` の先頭 6 件と
+ * 一致し、2 本目の問い合わせは何も新しい情報を持ってこない。定数 2 つの独立性は
+ * スライスでも保たれる（テスト「表示上限（6 件）の外にある録画のドロップも警告
+ * には出る」がそれを固定している）。
+ *
+ * 以前は本当に 2 本のクエリに分けていた（`dropScanQuery`）。分ける根拠として
+ * 「表示件数を変える変更と警告を壊す変更が同じ 1 行の定数変更に潰れる」と
+ * 書いていたが、それはスライスでも潰れないのでレビューで根拠にならないと
+ * 指摘された。実際に払っていた代償は: 問い合わせが 1 本増える（マウント時も
+ * `recordings` の SSE invalidate のたびも 2 本走る）/ 表示ゲート
+ * （`warningsPending` / `allSettled`）が待つクエリが 1 本増える /
+ * **2 つの応答の間に録画が 1 本完了すると、表示リストと警告の検出リストが
+ * 食い違いうる**（同じ画面の中で「直近の完了」に出ていない録画のドロップ警告が
+ * 出る、または逆）。
  */
 const DROP_WARNING_SCAN_LIMIT = 20
 
@@ -62,7 +75,7 @@ const DROP_WARNING_SCAN_LIMIT = 20
  *
  * **セクションごとの可視性はそのセクション自身のクエリの解決だけを待つ。**
  * 「全セクションが空」（`allEmpty`）の判定だけが全クエリの解決を待つ ---
- * 6 本のうち最も遅い 1 本（絞り込みを持たない `GET /api/reservations` など）に
+ * 5 本のうち最も遅い 1 本（絞り込みを持たない `GET /api/reservations` など）に
  * 「いま録画中」のような最も見たいセクションまで引きずられて隠れる半径を
  * 小さくするため（レビュー指摘）。一方で「まだ解決していないセクションを
  * 0 件として隠す」ことはしない --- 個別のクエリが解決する前に「空だから隠す」を
@@ -72,11 +85,12 @@ const DROP_WARNING_SCAN_LIMIT = 20
  *
  * 取得が失敗した場合は空扱いにせず、そのセクションだけ取得失敗を表示する
  * （空白のセクションを「異常なし」と取り違えさせないため）。ただし警告
- * セクションの材料であるサーキットブレーカー・容量超過・ドロップ検出用の
- * 録画一覧は、他の画面（`CircuitBreakerBanner` / 予約一覧の容量バッジ）と
- * 同じ「取得失敗は警告が無いことにする」流儀に揃える --- `docs/data.md` §6.5
- * が言う「既知の盲点は警告を見逃す方向に偏っている」を承知のうえで、既存の
- * 踏襲先が同じ判断をしている。
+ * セクションの材料（サーキットブレーカー・容量超過・完了録画のドロップ統計）は、
+ * 他の画面（`CircuitBreakerBanner` / 予約一覧の容量バッジ）と同じ「取得失敗は
+ * 警告が無いことにする」流儀に揃える --- `docs/data.md` §6.5 が言う「既知の
+ * 盲点は警告を見逃す方向に偏っている」を承知のうえで、既存の踏襲先が同じ判断を
+ * している。完了録画の一覧は「直近の完了」の表示と警告の材料を兼ねるので、
+ * それが失敗したときは前者にエラーを出し、後者は黙って警告なしに縮退する。
  */
 export function HomePage() {
   // nowMs はこのレンダーの間で一貫させる（`pages/programs.tsx` と同じ規律。
@@ -106,65 +120,71 @@ export function HomePage() {
   const reservationsWindowEndMs = dayOrigin(2, nowMs).getTime()
 
   const recordingQuery = useListRecordings({ status: 'recording' })
+  // 「直近の完了」の表示とドロップ警告の検出を兼ねる 1 本。取る範囲は広い方
+  // （`DROP_WARNING_SCAN_LIMIT`）に合わせ、表示だけを先頭 `RECENT_FINISHED_LIMIT`
+  // 件に切る（`DROP_WARNING_SCAN_LIMIT` の doc コメント参照。以前は表示用と
+  // 検出用で 2 本叩いていた）。
   const finishedQuery = useListRecordings({
-    status: 'finished',
-    limit: RECENT_FINISHED_LIMIT,
-  })
-  // ドロップ警告専用。`finishedQuery`（表示用、上限 6）とは独立に、より広い
-  // 範囲（上限 20）を取る（`DROP_WARNING_SCAN_LIMIT` 参照）。
-  const dropScanQuery = useListRecordings({
     status: 'finished',
     limit: DROP_WARNING_SCAN_LIMIT,
   })
   const reservationsQuery = useListReservations()
   const breakersQuery = useListCircuitBreakers()
-  const overagesQuery = useListCapacityOverages({
-    start: new Date(overagesStartMs).toISOString(),
-    end: new Date(reservationsWindowEndMs).toISOString(),
-  })
-
-  const recordingsInProgress = unwrap(recordingQuery.data) ?? []
-  // `useMemo` で安定させる --- `unwrap(...) ?? []` は解決前/失敗時に毎回新しい
-  // 配列を作るため、これを他の useMemo（`warnings`）の依存に生で渡すと
-  // 「依存が毎回変わる」形になり oxlint の exhaustive-deps 警告になる
-  // （CLAUDE.md「既存 3 件の oxlint warning は増やさない」）。
-  const recentFinished = useMemo(() => unwrap(finishedQuery.data) ?? [], [finishedQuery.data])
-  const dropScanRecordings = useMemo(
-    () => unwrap(dropScanQuery.data) ?? [],
-    [dropScanQuery.data],
+  const overagesQuery = useListCapacityOverages(
+    {
+      start: new Date(overagesStartMs).toISOString(),
+      end: new Date(reservationsWindowEndMs).toISOString(),
+    },
+    {
+      // **時境界を越えた瞬間に警告セクションを消さない。** 上の量子化により
+      // キーは毎時 0 分に 1 回変わる。新しいキーにはまだデータが無いので、
+      // 素のままだと `isPending` → `warningsPending` → 警告セクションが 1 RTT
+      // だけ消える（警告だけが可視だった場合はページ全体がスケルトンに戻る）。
+      // この画面の主題は「セクションが理由なく消えないこと」なので、キーが
+      // 進んでいる間は前のキーのデータを見せ続ける（`isPending` は false のまま
+      // になる）。判定はテスト「時境界を越えてキーが変わっても警告は消えない」。
+      query: { placeholderData: keepPreviousData },
+    },
   )
 
-  const upcomingReservations = useMemo(() => {
-    const all = unwrap(reservationsQuery.data) ?? []
-    return all
-      .filter((r) => {
-        const startMs = new Date(r.startAt).getTime()
-        return startMs >= nowMs && startMs < reservationsWindowEndMs
-      })
-      .sort((a, b) => new Date(a.startAt).getTime() - new Date(b.startAt).getTime())
-  }, [reservationsQuery.data, nowMs, reservationsWindowEndMs])
+  const recordingsInProgress = unwrap(recordingQuery.data) ?? []
+  // 以下の導出は `useMemo` を使わない。**この関数の中で最も頻繁に変わる依存は
+  // `nowMs`（= 生の `Date.now()`）で、レンダーごとに必ず変わる。** それを deps に
+  // 持つ `useMemo` は毎レンダー再計算されるので何も買っていない（レビュー指摘。
+  // 以前は `activeOverages` / `upcomingReservations` / `warnings` を `useMemo` で
+  // 包んでおり、後者 2 つは前者が毎レンダー新しい配列になることで連鎖して
+  // 再計算されていた）。件数は上限付きで小さい（録画・予約は API の limit と
+  // チューナー数で、超過区間は窓幅で上界がある）ので、素朴に毎レンダー計算する。
+  const finishedRecordings = unwrap(finishedQuery.data) ?? []
+  const recentFinished = finishedRecordings.slice(0, RECENT_FINISHED_LIMIT)
+
+  const upcomingReservations = (unwrap(reservationsQuery.data) ?? [])
+    .filter((r) => {
+      const startMs = new Date(r.startAt).getTime()
+      return startMs >= nowMs && startMs < reservationsWindowEndMs
+    })
+    .sort((a, b) => new Date(a.startAt).getTime() - new Date(b.startAt).getTime())
   const reservationsOverflow = upcomingReservations.length > RESERVATION_LIMIT
   const shownReservations = upcomingReservations.slice(0, RESERVATION_LIMIT)
 
-  // `overagesStartMs` を時境界へ丸めた分だけ、実際の「今」より前に始まった
-  // （が、その時点ではまだ終わっていなかった）区間まで返ってきうる。ここで
-  // 「実際の今より後に終わる」区間だけへ絞り、量子化前と同じ主張の強さに戻す
-  // （量子化はキャッシュキーの安定のためだけの手段で、表示する内容の正しさを
-  // 緩めてよい理由にはしない）。
-  const activeOverages = useMemo(() => {
-    const all = unwrap(overagesQuery.data) ?? []
-    return all.filter((o) => new Date(o.endAt).getTime() > nowMs)
-  }, [overagesQuery.data, nowMs])
-
-  const warnings = useMemo(
-    () =>
-      buildWarnings({
-        breakers: unwrap(breakersQuery.data) ?? [],
-        overages: activeOverages,
-        dropCandidates: dropScanRecordings,
-      }),
-    [breakersQuery.data, activeOverages, dropScanRecordings],
+  // `overagesStartMs` を時境界へ丸めた分だけ、実際の「今」より前に始まって
+  // **既に終わった**区間まで返ってきうる（`openapi.yaml` の `start` は「この時刻
+  // より後に終わる区間が対象」なので、`start` を時頭まで後退させて増えるのは
+  // ちょうど「[時頭, now] に終わった区間」だけ）。ここで「実際の今より後に
+  // 終わる」区間だけへ絞り、量子化前と同じ主張の強さに戻す（量子化はキャッシュ
+  // キーの安定のためだけの手段で、表示する内容の正しさを緩めてよい理由には
+  // しない）。これが無いと「もう終わったチューナー不足」が最大 59 分ぶん警告に
+  // 出続ける。判定はテスト「既に終わった超過区間は警告に出さない」/「時境界より
+  // 前に始まって進行中の超過区間は警告に出す」の両方向。
+  const activeOverages = (unwrap(overagesQuery.data) ?? []).filter(
+    (o) => new Date(o.endAt).getTime() > nowMs,
   )
+
+  const warnings = buildWarnings({
+    breakers: unwrap(breakersQuery.data) ?? [],
+    overages: activeOverages,
+    dropCandidates: finishedRecordings,
+  })
 
   // セクションごとの可視性はそのセクション自身のクエリの解決だけを待つ
   // （上記 doc コメント参照）。警告は 3 本のクエリの合成なので、そのいずれかが
@@ -174,7 +194,7 @@ export function HomePage() {
   const reservationSectionVisible =
     !reservationsQuery.isPending && (reservationsQuery.isError || shownReservations.length > 0)
   const warningsPending =
-    breakersQuery.isPending || overagesQuery.isPending || dropScanQuery.isPending
+    breakersQuery.isPending || overagesQuery.isPending || finishedQuery.isPending
   const warningSectionVisible = !warningsPending && warnings.length > 0
   const finishedSectionVisible =
     !finishedQuery.isPending && (finishedQuery.isError || recentFinished.length > 0)
@@ -385,9 +405,10 @@ type WarningItem = {
  * ホームの「警告」セクションの項目を組む（issue #242 着手宣言コメントの決定：
  * 新しい API を作らず、既存の取得結果だけを材料にする）。
  *
- * `dropCandidates` は表示用の「直近の完了」一覧とは別に、より広い範囲
- * （`DROP_WARNING_SCAN_LIMIT`）で取った録画一覧 --- 表示件数を絞っても警告の
- * 検出範囲まで連動して狭まらないようにするため（呼び出し元の doc コメント参照）。
+ * `dropCandidates` は `limit=DROP_WARNING_SCAN_LIMIT` で取った完了録画の全件で、
+ * 「直近の完了」に**表示する分（先頭 `RECENT_FINISHED_LIMIT` 件）に切る前**の
+ * リスト --- 表示件数を絞っても警告の検出範囲まで連動して狭まらないようにする
+ * ため（呼び出し元の doc コメント参照）。
  *
  * 容量超過は呼び出し元で「実際の今より後に終わる」ものへ絞り込み済みなので、
  * ここで追加の時間フィルタはしない。

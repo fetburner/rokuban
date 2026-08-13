@@ -10,9 +10,13 @@ const dayStart = new Date(2026, 6, 25, 0, 0, 0, 0)
 const nowMs = dayStart.getTime() + 20 * 3_600_000 // 当日 20:00 を「今」とする
 const HOUR = 3_600_000
 
-/** ホームが「直近の完了」の表示に使う上限（`pages/home.tsx` の `RECENT_FINISHED_LIMIT`）。 */
-const RECENT_FINISHED_LIMIT = 6
-/** ホームがドロップ警告の検出に使う、表示件数とは独立の上限（`DROP_WARNING_SCAN_LIMIT`）。 */
+/**
+ * ホームが完了録画を取るときに送る `limit`（`pages/home.tsx` の
+ * `DROP_WARNING_SCAN_LIMIT`）。stub がこの値のリクエストだけに応えるので、
+ * 実装が送る `limit` を変えるとフィクスチャが届かずテストが落ちる（意図的）。
+ * 表示件数（6）の方は期待値としてリテラルで書く --- 実装の定数と比較する
+ * アサーションは、定数を変えても通ってしまい何も主張しない。
+ */
 const DROP_WARNING_SCAN_LIMIT = 20
 
 /**
@@ -107,39 +111,40 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 type Fixtures = {
   recording?: Recording[]
-  /** 「直近の完了」表示用（`limit=6`）。省略時は `dropScan` があればそれを、無ければ空を使う。 */
-  finished?: Recording[]
   /**
-   * ドロップ警告検出用（`limit=20`）。省略時は `finished` にフォールバックする ---
-   * 「表示とは独立」を明示的に検証したいテストだけがこれを指定する。
+   * 完了録画（`status=finished&limit=20`）。ホームはこれの先頭 6 件を
+   * 「直近の完了」に表示し、ドロップ警告は全件から拾う。
    */
-  dropScan?: Recording[]
+  finished?: Recording[]
   reservations?: Reservation[]
   breakers?: CircuitBreaker[]
   overages?: CapacityOverage[]
   /** 特定パスの応答を意図的に遅延させ、読み込み中の状態を作るためのフック。 */
   pendingPaths?: Set<string>
   /**
-   * `/api/recordings` を pending にするとき、`status=recording` /
-   * `status=finished&limit=6` / `status=finished&limit=20` のどれを遅らせるか
-   * を絞り込む述語。省略時は `pendingPaths` に `/api/recordings` があれば
-   * status を問わず全部遅らせる。
+   * 特定パスの **2 回目以降**の呼び出しだけを遅延させるフック。クエリキーが
+   * 進んだ瞬間（時境界の越え際）に前のデータを見せ続けるかを、確定的に測る
+   * ために使う --- 2 回目を即答させると「消えた一瞬」が assert より先に
+   * 終わってしまい、壊れていても緑になる（CLAUDE.md「非同期の空虚な成功」）。
    */
-  pendingRecordingsMatch?: (url: URL) => boolean
+  pendingAfterFirstCall?: Set<string>
   /** 特定パスを 500 で応答させる。 */
   errorPaths?: Set<string>
 }
 
 /**
- * stubApi はホームが叩く 6 本の GET を振り分ける。`status` / `limit` クエリで
- * 「いま録画中」「直近の完了（表示）」「ドロップ警告検出用」を分ける
+ * stubApi はホームが叩く 5 本の GET を振り分ける。`/api/recordings` は `status`
+ * クエリで「いま録画中」「完了録画（表示 + ドロップ検出）」を分ける
  * （サーバーの絞り込みを模す）。
  */
 function stubApi(fixtures: Fixtures) {
   const pendingResolvers: Array<() => void> = []
+  const callCounts = new Map<string, number>()
   const fetchMock = vi.fn((input: string | URL | Request) => {
     const url = new URL(String(input), 'http://localhost')
     const p = url.pathname
+    const callCount = (callCounts.get(p) ?? 0) + 1
+    callCounts.set(p, callCount)
 
     const respond = (): Response => {
       if (fixtures.errorPaths?.has(p)) return jsonResponse({ error: 'boom' }, 500)
@@ -147,11 +152,8 @@ function stubApi(fixtures: Fixtures) {
         const status = url.searchParams.get('status')
         const limit = url.searchParams.get('limit')
         if (status === 'recording') return jsonResponse(fixtures.recording ?? [])
-        if (status === 'finished' && limit === String(RECENT_FINISHED_LIMIT)) {
-          return jsonResponse(fixtures.finished ?? [])
-        }
         if (status === 'finished' && limit === String(DROP_WARNING_SCAN_LIMIT)) {
-          return jsonResponse(fixtures.dropScan ?? fixtures.finished ?? [])
+          return jsonResponse(fixtures.finished ?? [])
         }
         return jsonResponse([])
       }
@@ -162,8 +164,8 @@ function stubApi(fixtures: Fixtures) {
     }
 
     const isPending =
-      fixtures.pendingPaths?.has(p) &&
-      (p !== '/api/recordings' || !fixtures.pendingRecordingsMatch || fixtures.pendingRecordingsMatch(url))
+      fixtures.pendingPaths?.has(p) ||
+      (fixtures.pendingAfterFirstCall?.has(p) === true && callCount > 1)
     if (isPending) {
       return new Promise<Response>((resolve) => {
         pendingResolvers.push(() => resolve(respond()))
@@ -307,6 +309,46 @@ describe('ホーム: 警告セクション', () => {
     expect(link).toHaveAttribute('href', `/programs?at=${expectedAtMs}`)
   })
 
+  /**
+   * 容量超過クエリの `start` は時境界へ量子化してある（`pages/home.tsx`）ので、
+   * サーバーは「最大 59 分前に始まって既に終わった超過区間」まで返しうる
+   * （`openapi.yaml` の `start` は「この時刻より後に終わる区間が対象」）。それを
+   * `activeOverages` の `endAt > now` が落として、量子化前と同じ主張の強さに
+   * 戻している --- **その回収を実際に測る両方向の判定**（レビュー指摘: 以前は
+   * この 1 行を `filter(() => true)` に変えても 17 件全部が緑だった。消すと
+   * 「もう終わったチューナー不足」が最大 59 分ぶん警告に出続ける）。
+   *
+   * 「今」を時境界の 30 分後（20:30）に置くので、量子化された `start` は 20:00。
+   * サーバー役の stub は `start` を見ずに返すので、ここで測るのは「時頭より後に
+   * 終わった区間（= 量子化で新たに入ってくる分）をクライアントが落とすか」。
+   */
+  const halfPastNowMs = nowMs + 30 * 60_000
+
+  it('既に終わった超過区間は警告に出さない（量子化で広げた窓の回収）', async () => {
+    vi.setSystemTime(halfPastNowMs)
+    // 20:00〜20:15 = 時頭より後に終わっており、量子化した `start`（20:00）では
+    // サーバーの対象に入るが、実際の「今」（20:30）にはもう終わっている。
+    stubApi({ overages: [overage(0, 15 * 60_000)] })
+    renderHome()
+
+    // 全クエリが解決したことを、単一の空状態が出ることで確かめてから不在を見る
+    // （非同期の空虚な成功を避ける）。
+    expect(await screen.findByText('表示できる項目がありません')).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: '警告' })).not.toBeInTheDocument()
+    expect(screen.queryByText(/チューナーが不足しています/)).not.toBeInTheDocument()
+  })
+
+  it('時境界より前に始まり進行中の超過区間は警告に出す（回収が広すぎない）', async () => {
+    vi.setSystemTime(halfPastNowMs)
+    // 18:00〜21:00 = 量子化した `start`（20:00）より前に始まっているが進行中。
+    // 量子化の回収が「開始時刻」を見る実装になっていると、これを取り落とす。
+    stubApi({ overages: [overage(-2 * HOUR, HOUR)] })
+    renderHome()
+
+    expect(await screen.findByRole('heading', { name: '警告' })).toBeInTheDocument()
+    expect(screen.getByText(/チューナーが不足しています/)).toBeInTheDocument()
+  })
+
   it('直近完了にドロップが無く、ブレーカー・チューナー不足も無ければ警告は出ない（両方向）', async () => {
     stubApi({
       finished: [recording(9, 'きれいな録画', 'finished')],
@@ -326,7 +368,7 @@ describe('ホーム: 警告セクション', () => {
     stubApi({
       breakers: [breaker('ruler_deletes')],
       overages: [overage(2 * HOUR, 3 * HOUR)],
-      dropScan: [
+      finished: [
         recording(9, 'ドロップのある録画', 'finished', {
           dropSummary: { packets: 1000, drops: 12, errors: 0, scrambled: 3 },
         }),
@@ -356,19 +398,18 @@ describe('ホーム: 警告セクション', () => {
 
 describe('ホーム: ドロップ警告の検出範囲は「直近の完了」の表示件数から独立している', () => {
   it('表示上限（6 件）の外にある録画のドロップも警告には出る', async () => {
-    // 「直近の完了」表示には出ない（7 番目以降）が、ドロップ検出用の
-    // より広い問い合わせ（limit=20）には入っている録画を用意する。
-    const dropScan = Array.from({ length: 7 }, (_, i) =>
+    // サーバーは `limit=20` の 7 件を返し、ホームは表示だけを先頭 6 件に切る。
+    // 7 番目（表示には出ない）にドロップを持たせ、それでも警告に出ることを見る
+    // --- 表示のスライスを警告の材料にも掛けてしまうと落ちる。
+    const finished = Array.from({ length: 7 }, (_, i) =>
       recording(i + 1, `録画 ${i + 1}`, 'finished', { startAt: iso(-(i + 1) * HOUR) }),
     )
-    // 7 番目（表示の 6 件には入らない）にドロップを持たせる
-    dropScan[6] = {
-      ...dropScan[6]!,
+    finished[6] = {
+      ...finished[6]!,
       dropSummary: { packets: 100, drops: 5, errors: 0, scrambled: 0 },
     }
-    const finished = dropScan.slice(0, 6)
 
-    stubApi({ finished, dropScan })
+    stubApi({ finished })
     renderHome()
 
     expect(await screen.findByRole('heading', { name: '直近の完了' })).toBeInTheDocument()
@@ -484,6 +525,56 @@ describe('ホーム: 実時計でのクエリキー安定性（無限再取得�
       (call) =>
         new URL(String(call[0]), 'http://localhost').pathname === '/api/capacity/overages',
     )
+    // **下限も見る。** 上限だけの判定は「クエリを消した」「`enabled: false` に
+    // した」「ページが起動しない」のいずれでも 0 回で緑になり、何も判定して
+    // いない（レビュー指摘）。
+    expect(overagesCalls.length).toBeGreaterThanOrEqual(1)
     expect(overagesCalls.length).toBeLessThanOrEqual(2)
+  })
+})
+
+/**
+ * should-fix（レビュー）: `start` の量子化により、キーは毎時 0 分に 1 回変わる。
+ * 新しいキーにはまだデータが無いので、素のままだと `isPending` → 警告セクションが
+ * 1 RTT だけ消える（警告だけが可視だった場合はページ全体がスケルトンに戻る）。
+ * この画面の主題は「セクションが理由なく消えないこと」なので
+ * `placeholderData: keepPreviousData` を置いた。**それが効いていることの判定。**
+ */
+describe('ホーム: 時境界を越えてキーが変わっても警告は消えない', () => {
+  it('容量超過クエリのキーが進み、新キーが未解決のままでも警告セクションは残る', async () => {
+    // 時境界（20:00）の直前に「今」を置く。量子化された `start` は 19:00。
+    vi.setSystemTime(nowMs - 500)
+    const { fetchMock, resolvePending } = stubApi({
+      breakers: [breaker('ruler_deletes')],
+      reservations: [reservation(1, '今夜の予約', 2 * HOUR)],
+      // 再レンダーの引き金。これを解決させた瞬間に新しい `Date.now()` で
+      // レンダーが走り、量子化後の `start` が 20:00 に進む。
+      pendingPaths: new Set(['/api/reservations']),
+      // 2 回目（= 新しいキー）の容量超過だけ未解決にする。即答させると
+      // 「消えた一瞬」が assert より先に終わってしまい、壊れていても緑になる。
+      pendingAfterFirstCall: new Set(['/api/capacity/overages']),
+    })
+    renderHome()
+
+    expect(await screen.findByRole('heading', { name: '警告' })).toBeInTheDocument()
+
+    // 時境界を越える
+    vi.setSystemTime(nowMs + 500)
+    resolvePending()
+
+    // 予約が解決 = 新しい「今」でレンダーされたことの目印
+    expect(await screen.findByRole('heading', { name: '今夜〜明日の予約' })).toBeInTheDocument()
+
+    // キーが実際に進んだこと（`start` の違う 2 回目の要求が出たこと）を確かめる。
+    // これが無いと「キーが変わらなかったので消えなかった」でも通ってしまう。
+    const starts = fetchMock.mock.calls
+      .map((call) => new URL(String(call[0]), 'http://localhost'))
+      .filter((url) => url.pathname === '/api/capacity/overages')
+      .map((url) => url.searchParams.get('start'))
+    expect(new Set(starts).size).toBe(2)
+
+    // 新しいキーは未解決のままだが、警告は消えていない
+    expect(screen.getByRole('heading', { name: '警告' })).toBeInTheDocument()
+    expect(screen.getByText(/ルール評価による予約の削除が停止中/)).toBeInTheDocument()
   })
 })

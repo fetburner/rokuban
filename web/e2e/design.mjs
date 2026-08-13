@@ -198,7 +198,8 @@ async function installApiStubs(
     if (p === '/api/capacity/overages') return json(emptyHome ? [] : overages)
     if (p === '/api/recordings') {
       // ホーム（M8-3）は `status` / `limit` を実際に付けて問い合わせる
-      // （`いま録画中` = status=recording、`直近の完了` = status=finished&limit=6）。
+      // （`いま録画中` = status=recording、完了録画 = status=finished&limit=20 の
+      // 1 本で、「直近の完了」の表示はその先頭 6 件に切られる）。
       // 既定の録画一覧（`pages/recordings.tsx`）は status を付けずに常に
       // limit=50 を送るので、ここでの絞り込みはそちらの見た目に影響しない。
       // 実サーバーの既定（program_start_at 降順）に合わせて並べ替えてから絞る。
@@ -669,7 +670,14 @@ log("\n=== ①'' ホーム: 警告の種別ごとの色（琥珀 vs destructive�
 // `start` に生の Date.now() を渡しており、時計を止めた判定は全部素通りしていた。
 // docs/frontend/home.md §経緯と失敗事例）。ここだけ時計を止めずに実際の要求回数
 // を数える。
-log("\n=== ①'''' ホーム: 実時計でのクエリキー安定性（無限再取得の回帰検出） ===")
+//
+// **上限だけでなく下限（>= 1）も見る。** 「N 回以下」だけの判定は、クエリを
+// 消した・`enabled: false` にした・そもそもページが起動しない、のいずれでも
+// 0 回で緑になる（レビュー指摘）。数え始める前にホームの目印を待って画面が
+// 実際に立っていることを確かめ、そのうえで回数の下限と上限の両方に掛ける
+// （`badge-links.mjs` ⓪ が「配っている bundle が dist の現物と一致するか」を
+// 最初に見ているのと同じ思想 --- 前提が崩れていると下流の判定は全部無意味）。
+log("\n=== ①''' ホーム: 実時計でのクエリキー安定性（無限再取得の回帰検出） ===")
 {
   const context = await browser.newContext({
     viewport: { width: desktop.width, height: desktop.height },
@@ -684,8 +692,26 @@ log("\n=== ①'''' ホーム: 実時計でのクエリキー安定性（無限�
   })
   await installApiStubs(page)
   await page.goto(URL_BASE + '/', { waitUntil: 'domcontentloaded' })
+  let homeUp = true
+  await page
+    .locator(screenOf('home').wait)
+    .first()
+    .waitFor({ timeout: 15000 })
+    .catch(() => {
+      homeUp = false
+      ng.push(
+        `ホーム: 実時計（page.clock を使わない）でホームが立たない（目印「${screenOf('home').wait}」が出ない）`,
+      )
+    })
   await page.waitForTimeout(2500)
   log(`  /api/capacity/overages への実要求回数（実時計 2.5 秒）: ${overagesRequests.length}`)
+  if (homeUp && overagesRequests.length < 1) {
+    ng.push(
+      'ホーム: 実時計で /api/capacity/overages を一度も要求していない' +
+        '（クエリが消えている・enabled: false になっている疑い。' +
+        'この下限が無いと「0 回」でこの判定は緑になる）',
+    )
+  }
   if (overagesRequests.length > 3) {
     ng.push(
       `ホーム: 実時計で /api/capacity/overages への要求が ${overagesRequests.length} 回` +
