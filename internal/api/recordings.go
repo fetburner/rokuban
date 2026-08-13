@@ -18,36 +18,49 @@ import (
 // recordingListFields は ListRecordings / ListTrashRecordings が共有する射影。
 // sqlc はクエリごとに別 struct を生成するので、ここで共通化してマッピングする。
 type recordingListFields struct {
-	ID                       int64
-	Site                     string
-	RuleID                   *int64
-	Source                   string
-	ServiceName              string
-	ChannelType              string
-	Channel                  string
-	NetworkID                int32
-	ServiceID                int32
-	EventID                  int32
-	Title                    string
-	Description              *string
-	ProgramStartAt           time.Time
-	ProgramDurationMs        int64
-	Status                   string
-	StartedAt                *time.Time
-	EndedAt                  *time.Time
-	QualityEvents            json.RawMessage
-	DeletedAt                *time.Time
-	CreatedAt                time.Time
-	OriginalSizeBytes        *int64
-	DropPackets              int64
-	DropDrops                int64
-	DropErrors               int64
-	DropScrambled            int64
-	AvailableEncodedProfiles []string
+	ID                int64
+	Site              string
+	RuleID            *int64
+	Source            string
+	ServiceName       string
+	ChannelType       string
+	Channel           string
+	NetworkID         int32
+	ServiceID         int32
+	EventID           int32
+	Title             string
+	Description       *string
+	ProgramStartAt    time.Time
+	ProgramDurationMs int64
+	Status            string
+	StartedAt         *time.Time
+	EndedAt           *time.Time
+	QualityEvents     json.RawMessage
+	DeletedAt         *time.Time
+	CreatedAt         time.Time
+	OriginalSizeBytes *int64
+	DropPackets       int64
+	DropDrops         int64
+	DropErrors        int64
+	DropScrambled     int64
+	// AvailableEncodedAssets は recordingsAvailableEncodedAssetsSelect
+	// （jsonb_agg({profile, sizeBytes})）を Scan した生 JSON。プロファイル名の
+	// 配列とサイズの配列を並行に持つ形にしなかった理由は recordings_query.go の
+	// コメント参照。nil（trash など SELECT に含めなかった行）と `[]`（active な
+	// encoded が無い行）は区別しない --- どちらも recordingFromListFields で
+	// EncodedAssets を省略する結果になる。
+	AvailableEncodedAssets json.RawMessage
 	// EncodeProfiles は凍結された desired 一覧（recordings.encode_profiles）。
-	// AvailableEncodedProfiles（observed、active のみ）とは異なり、pending な
+	// AvailableEncodedAssets（observed、active のみ）とは異なり、pending な
 	// ジョブのプロファイルも含む。事後追加（issue #133）で増える唯一の経路。
 	EncodeProfiles []string
+}
+
+// encodedAssetRow は available_encoded_assets（jsonb_agg）1 要素の JSON 形。
+// jsonb_build_object のキー（'profile' / 'sizeBytes'）と一致させる。
+type encodedAssetRow struct {
+	Profile   string `json:"profile"`
+	SizeBytes int64  `json:"sizeBytes"`
 }
 
 // recordingFromListFields は一覧行を API の Recording に写す。
@@ -87,10 +100,31 @@ func recordingFromListFields(r recordingListFields, includeDeletedAt bool) (Reco
 			Scrambled: r.DropScrambled,
 		}
 	}
-	// 再生可能な encoded 派生物（observed）。空なら省略（omitempty）。
-	if len(r.AvailableEncodedProfiles) > 0 {
-		profiles := slices.Clone(r.AvailableEncodedProfiles)
-		rec.EncodedProfiles = &profiles
+	// 再生可能な encoded 派生物（observed）。空 `[]`/nil なら省略（omitempty）。
+	//
+	// `EncodedAssets`（profile + sizeBytes）と `EncodedProfiles`（profile
+	// だけ、後方互換のため残す。openapi.yaml の `encodedProfiles` description・
+	// docs/frontend/recordings.md 参照）は、必ずこの同じ `rows`（1 回の
+	// jsonb_agg の結果）から同時に作る。名前だけの配列とサイズ付きの配列を
+	// 別々の SQL 集約（2 本の array_agg/jsonb_agg）で作ると、片方だけ
+	// ORDER BY を書き忘れたときに添字がずれる drift が起こり得るが、
+	// 同じ `rows` から Go 側で両方を導出する形ではその種の drift は構造的に
+	// 起こらない。
+	if len(r.AvailableEncodedAssets) > 0 {
+		var rows []encodedAssetRow
+		if err := json.Unmarshal(r.AvailableEncodedAssets, &rows); err != nil {
+			return Recording{}, fmt.Errorf("decoding available_encoded_assets for recording %d: %w", r.ID, err)
+		}
+		if len(rows) > 0 {
+			assets := make([]EncodedAsset, len(rows))
+			profiles := make([]string, len(rows))
+			for i, row := range rows {
+				assets[i] = EncodedAsset{Profile: row.Profile, SizeBytes: &row.SizeBytes}
+				profiles[i] = row.Profile
+			}
+			rec.EncodedAssets = &assets
+			rec.EncodedProfiles = &profiles
+		}
 	}
 	// 凍結された desired 一覧。空なら省略（omitempty）。UI が「追加済み」を
 	// 判定するのに使う（issue #133）。

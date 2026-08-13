@@ -679,6 +679,22 @@ type EncodeProfileSummary struct {
 // EncodeProfileSummaryContainer 出力コンテナ（表示用。未注入なら省略）。
 type EncodeProfileSummaryContainer string
 
+// EncodedAsset defines model for EncodedAsset.
+type EncodedAsset struct {
+	Profile string `json:"profile"`
+
+	// SizeBytes encoded 派生物の実サイズ。`media_assets.size_bytes` は NOT NULL
+	// なので active な行が存在する限り常に付く（未検証の断言にしないため:
+	// `internal/db/migrations/00002_schema_v1.sql` の `size_bytes` 列の
+	// `NOT NULL` 制約が根拠、実行時計測ではない。同テーブルの CHECK は
+	// `kind` / `profile` / `state` に掛かるものだけで `size_bytes` には
+	// 無い）。省略可能にしているのは、サイズが取れない資産があっても
+	// 選択肢そのものは隠さない（ドロップ統計の「分類できなかった PID」と
+	// 同じ判断。docs/frontend/recordings.md）という UI 側の表示規律を
+	// 型で表現するため。
+	SizeBytes *int64 `json:"sizeBytes,omitempty"`
+}
+
 // ErrorResponse defines model for ErrorResponse.
 type ErrorResponse struct {
 	Error string `json:"error"`
@@ -851,14 +867,29 @@ type Recording struct {
 	// recordings.encode_profiles）。ingest 完了時に一度だけ焼き込まれ、以後は
 	// `POST /api/recordings/{id}/encode-profiles` による事後追加（凍結の例外。
 	// docs/storage.md §6「原本 TS の保持ポリシー」）でのみ増える。
-	// `encodedProfiles`（observed、再生可能なもの）とは異なり、まだ完了して
+	// `encodedAssets`（observed、再生可能なもの）とは異なり、まだ完了して
 	// いない pending なジョブのプロファイルも含む --- UI が「追加済み」を
 	// 判定するのに使う。空配列は省略可。
 	EncodeProfiles *[]string `json:"encodeProfiles,omitempty"`
 
-	// EncodedProfiles 再生可能な encoded 派生物のプロファイル名（media_assets の active のみ）。
+	// EncodedAssets 再生可能な encoded 派生物（media_assets の active のみ）。
 	// ブラウザ再生は GET /api/recordings/{id}/file?profile=<name> を使う。
-	// desired（encode_profiles）ではなく observed。空配列は省略可。
+	// desired（encodeProfiles）ではなく observed。空配列は省略可。
+	//
+	// `encodedProfiles`（プロファイル名だけの配列、下記）にサイズを足した
+	// もの。両方とも同じ SELECT の結果から作るので、名前だけの配列と
+	// 資産の配列が食い違うことはない（`internal/api/recordings.go` の
+	// `recordingFromListFields` が同じ `rows` から両方を導出する）。
+	EncodedAssets *[]EncodedAsset `json:"encodedAssets,omitempty"`
+
+	// EncodedProfiles `encodedAssets`（上記）に置き換え済み。**後方互換のため残している**
+	// （docs/api/rest.md §契約の保護・docs/frontend/assets.md の
+	// 「UI と API のデプロイタイミングはずれ得るため API は後方互換を保つ」）。
+	// 旧バンドルを掴んだブラウザ（`immutable` な静的アセット、開いたままの
+	// タブ）はデプロイ後もこのフィールドだけを読むため、`encodedAssets` を
+	// 足しても消してはならない。`encodedAssets.map(a => a.profile)` と
+	// 常に一致する。
+	// Deprecated: this property has been marked as deprecated upstream, but no `x-deprecated-reason` was set
 	EncodedProfiles *[]string  `json:"encodedProfiles,omitempty"`
 	EndedAt         *time.Time `json:"endedAt,omitempty"`
 	EventId         int        `json:"eventId"`

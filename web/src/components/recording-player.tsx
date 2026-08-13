@@ -1,5 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
+import type { EncodedAsset } from '@/api/generated'
+import { formatBytes } from '@/lib/format'
 import {
   loadPlaybackPosition,
   recordingFileURL,
@@ -10,10 +12,17 @@ import { cn } from '@/lib/utils'
 
 type RecordingPlayerProps = {
   recordingId: number
-  /** 再生可能な encoded プロファイル名（active media_assets）。空ならプレイヤーを出さない。 */
-  encodedProfiles: string[]
+  /**
+   * 再生可能な encoded 派生物（active media_assets）。空ならプレイヤーを出さない。
+   * `sizeBytes` が省略された要素も**選択肢そのものは隠さない**（M7-3 の値札
+   * 方針: サイズが取れないという分類の失敗で機能を隠さない。ドロップ統計の
+   * 「分類できなかった PID」と同じ判断。docs/frontend/recordings.md）。
+   */
+  encodedAssets: EncodedAsset[]
   /** 原本 TS があるとき VLC 向けリンクを出す。 */
   hasOriginal?: boolean
+  /** 原本 TS の実サイズ。`hasOriginal` のときだけ渡され、ダウンロード / VLC リンクに常置する。 */
+  originalSizeBytes?: number
   className?: string
   /**
    * 変化するたびに `<video>` へスクロール + フォーカスする（値そのものに
@@ -33,12 +42,17 @@ type RecordingPlayerProps = {
  */
 export function RecordingPlayer({
   recordingId,
-  encodedProfiles,
+  encodedAssets,
   hasOriginal = false,
+  originalSizeBytes,
   className,
   focusToken,
 }: RecordingPlayerProps) {
-  const profiles = encodedProfiles
+  // `encodedAssets` の参照が変わらない限り再計算しない --- 素の `.map()` だと
+  // 毎レンダーで新しい配列になり、下の useEffect の依存配列がレンダーごとに
+  // 変化したと判定されて毎回走ってしまう（中身は冪等で setProfile を呼ばない
+  // 限りループにはならないが、無駄な再実行を避ける）。
+  const profiles = useMemo(() => encodedAssets.map((a) => a.profile), [encodedAssets])
   const [profile, setProfile] = useState(profiles[0] ?? '')
   const videoRef = useRef<HTMLVideoElement>(null)
   // プロファイル切替時に load したあとだけ currentTime を復元する
@@ -80,7 +94,7 @@ export function RecordingPlayer({
               href={recordingFileURL(recordingId)}
               className="text-primary underline-offset-2 hover:underline"
             >
-              VLC 等で開く
+              VLC 等で開く{originalSizeBytes !== undefined && ` (${formatBytes(originalSizeBytes)})`}
             </a>
             ことができます。
           </p>
@@ -92,10 +106,11 @@ export function RecordingPlayer({
   }
 
   const src = recordingFileURL(recordingId, profile)
+  const selectedAsset = encodedAssets.find((a) => a.profile === profile)
 
   return (
     <section className={cn('flex flex-col gap-2', className)} aria-label="再生">
-      {profiles.length > 1 && (
+      {profiles.length > 1 ? (
         <div className="flex flex-wrap items-center gap-2">
           <label htmlFor={`profile-${recordingId}`} className="text-muted-foreground">
             プロファイル
@@ -106,13 +121,21 @@ export function RecordingPlayer({
             onChange={(e) => setProfile(e.target.value)}
             className="rounded border border-border bg-background px-2 py-1 text-xs"
           >
-            {profiles.map((p) => (
-              <option key={p} value={p}>
-                {p}
+            {encodedAssets.map((a) => (
+              <option key={a.profile} value={a.profile}>
+                {assetOptionLabel(a)}
               </option>
             ))}
           </select>
         </div>
+      ) : (
+        // 選択肢が 1 つ（= セレクタを出さない）でも、押す前にサイズを見せる
+        // という値札の方針（issue #236 M7-3）は変わらないので、常にキャプション
+        // として出す。サイズが取れない資産でも選択肢（プロファイル名）自体は
+        // 隠さない --- 分類の失敗で機能を隠さないというドロップ統計と同じ判断。
+        selectedAsset && (
+          <p className="text-muted-foreground">{assetOptionLabel(selectedAsset)}</p>
+        )
       )}
 
       <video
@@ -162,9 +185,20 @@ export function RecordingPlayer({
             className="text-primary underline-offset-2 hover:underline"
           >
             ダウンロード / VLC
+            {originalSizeBytes !== undefined && ` (${formatBytes(originalSizeBytes)})`}
           </a>
         </p>
       )}
     </section>
   )
+}
+
+/**
+ * assetOptionLabel はプロファイルセレクタの選択肢・単一プロファイル時の
+ * キャプションに共通で使う表示文字列。`sizeBytes` が省略された資産でも
+ * プロファイル名だけは出す（値札方針: サイズが取れないことを理由に選択肢
+ * そのものを隠さない）。
+ */
+function assetOptionLabel(asset: EncodedAsset): string {
+  return asset.sizeBytes === undefined ? asset.profile : `${asset.profile} (${formatBytes(asset.sizeBytes)})`
 }
