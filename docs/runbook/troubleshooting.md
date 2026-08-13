@@ -26,8 +26,9 @@ docker compose exec postgres psql -U rokuban -d rokuban -c \
   "SELECT recording_id, written_bytes, expected_bytes, observed_at FROM recording_ingest_progress"
 ```
 
-`observed_at` が現在時刻から離れていくなら転送は止まっている（進捗は 2 秒ごとに
-書き直される）。`written_bytes` が 0 に戻るのは異常ではない —— ジョブ再試行は部分
+`observed_at` が現在時刻から離れていくなら転送は止まっている（進捗の書き直しは
+**最短** 2 秒間隔 --- バイトが流れたときにしか書かないので、極端に遅い回線では
+これより粗くなる）。`written_bytes` が 0 に戻るのは異常ではない —— ジョブ再試行は部分
 ファイルを truncate してゼロから作り直す（[recording/ingest.md](../recording/ingest.md) §5.3）
 
 ### EPG 同期が一度しか走らない

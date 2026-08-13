@@ -37,9 +37,9 @@ import { Button } from '@/components/ui/button'
 import { shouldAutoLoadNextPage, shouldShowLoadMoreButton } from '@/lib/auto-load'
 import { formatBytes, formatDateTime, formatDuration } from '@/lib/format'
 import {
+  hasLiveIngestProgress,
   ingestDisplay,
   ingestRefetchIntervalMs,
-  isIngestInFlight,
   type IngestDisplay,
 } from '@/lib/ingest'
 import { domLayoutMeasurable } from '@/lib/list-virtualization'
@@ -103,14 +103,18 @@ export function RecordingsPage() {
     queryFn: ({ pageParam }: { pageParam: RecordingsPageParam }) =>
       listRecordings({ ...listParams, ...pageParam }),
     initialPageParam: {} as RecordingsPageParam,
-    // 取り込み中（または録画中）の録画が読み込み済みのページにある間だけ定期
+    // **進捗の数字が動いている録画が読み込み済みのページにある間だけ**定期
     // 再取得する（issue #212）。SSE はヒントで真実ではない（不変条件 5）ので、
-    // 進捗は REST の再取得で収束させる。終わっている画面はポーリングしない ---
-    // 一覧は無限リストで、常時ポーリングすると積んだページ全部を取り直す。
-    refetchInterval: (q) =>
-      (q.state.data?.pages ?? []).some((page) => (unwrap(page) ?? []).some(isIngestInFlight))
-        ? ingestRefetchIntervalMs
-        : false,
+    // 進捗は REST の再取得で収束させる。止まったら止める --- 一覧は無限リストで、
+    // 常時ポーリングすると積んだページ全部を取り直す。止めた後の収束は
+    // lib/events.ts の 60 秒 invalidate が担う（hasLiveIngestProgress 参照）。
+    refetchInterval: (q) => {
+      const now = Date.now()
+      const live = (q.state.data?.pages ?? []).some((page) =>
+        (unwrap(page) ?? []).some((r) => hasLiveIngestProgress(r, now)),
+      )
+      return live ? ingestRefetchIntervalMs : false
+    },
     getNextPageParam: (lastPage) => {
       const data = unwrap(lastPage) ?? []
       if (data.length < pageSize) return undefined

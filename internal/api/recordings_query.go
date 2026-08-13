@@ -197,9 +197,20 @@ const (
         SELECT 1 FROM media_assets o
         WHERE o.recording_id = r.id AND o.kind = 'original'
     ) AS has_original_asset,
+    -- has_ingestable_record の述語は **watcher が ingest ジョブを投入する条件と
+    -- 同じもの**を見る（internal/watcher/watcher.go の
+    -- record.Recording.Status == "finished"）。record_sync.status は mirakc の
+    -- recordingStatus そのまま（CHECK 無し。docs/schema/record-sync.md）。
+    --
+    -- **status で絞らずに行の存在だけを見てはならない。** record_sync 行は
+    -- failed / canceled の record にも作られ、Rokuban はこの行を消さない
+    -- （本番に DELETE FROM record_sync の経路は無い）ので、絞らないと
+    -- 「ingest ジョブが永久に来ない録画」が永久に pending を名乗る
+    -- （= UI が来ない未来を断定する。issue #211 と同じ形の誤り）。
     EXISTS (
-        SELECT 1 FROM record_sync rs WHERE rs.recording_id = r.id
-    ) AS has_record_sync,
+        SELECT 1 FROM record_sync rs
+        WHERE rs.recording_id = r.id AND rs.status = 'finished'
+    ) AS has_ingestable_record,
     ip.written_bytes  AS ingest_written_bytes,
     ip.expected_bytes AS ingest_expected_bytes,
     ip.observed_at    AS ingest_observed_at`
@@ -442,7 +453,7 @@ WHERE r.id = $1 AND r.purged_at IS NULL`
 		&fields.OriginalSizeBytes,
 		&fields.DropPackets, &fields.DropDrops, &fields.DropErrors, &fields.DropScrambled,
 		&fields.EncodeProfiles,
-		&fields.HasOriginalAsset, &fields.HasRecordSync,
+		&fields.HasOriginalAsset, &fields.HasIngestableRecord,
 		&fields.IngestWrittenBytes, &fields.IngestExpectedBytes, &fields.IngestObservedAt,
 		&fields.AvailableEncodedAssets,
 	)
@@ -490,7 +501,7 @@ func queryRecordings(ctx context.Context, pool *pgxpool.Pool, f recordingsFilter
 			&fields.OriginalSizeBytes,
 			&fields.DropPackets, &fields.DropDrops, &fields.DropErrors, &fields.DropScrambled,
 			&fields.EncodeProfiles,
-			&fields.HasOriginalAsset, &fields.HasRecordSync,
+			&fields.HasOriginalAsset, &fields.HasIngestableRecord,
 			&fields.IngestWrittenBytes, &fields.IngestExpectedBytes, &fields.IngestObservedAt,
 		}
 		if !f.Trash {

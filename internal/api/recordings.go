@@ -60,10 +60,15 @@ type recordingListFields struct {
 	// 見る）とはわざと述語が違う --- この差が「まだ取り込めていない」と
 	// 「取り込んだ後に削除した」を分ける（issue #211）。
 	HasOriginalAsset bool
-	// HasRecordSync は mirakc record の観測（record_sync）がこの録画に紐付いて
-	// いるか。原本も進捗も無いときに「取り込み待ち」と「そもそも取り込む対象が
-	// 無い」を分ける。
-	HasRecordSync bool
+	// HasIngestableRecord は **ingest ジョブが投入される（された）はずの**
+	// mirakc record の観測がこの録画に紐付いているか。原本も進捗も無いときに
+	// 「取り込み待ち」と「そもそも取り込みが来ない」を分ける。
+	//
+	// 単なる record_sync 行の存在ではなく `status = 'finished'` で絞る
+	// （recordings_query.go の SQL コメント参照）。watcher が ingest を投入する
+	// 条件と同じものを見ていないと、failed / canceled の録画が永久に pending を
+	// 名乗る。
+	HasIngestableRecord bool
 	// IngestWrittenBytes / IngestExpectedBytes / IngestObservedAt は
 	// recording_ingest_progress の 1 行（無ければすべて nil）。
 	IngestWrittenBytes  *int64
@@ -84,8 +89,17 @@ type recordingListFields struct {
 //     取り残された進捗行（別経路で原本が登録された場合など）が「取り込み中」を
 //     名乗らないようにするため（真実は media_assets 側。不変条件 5）。
 //  2. 進捗行があれば transferring。バイト数と観測時刻を添える。
-//  3. mirakc record の観測だけがあれば pending（取り込み待ち / 再試行待ち）。
-//  4. どれでもなければ unknown。
+//  3. **ingest ジョブが来るはずの** record 観測だけがあれば pending
+//     （取り込み待ち / 再試行待ち）。
+//  4. どれでもなければ unknown --- 取り込みが始まった観測が無い。record 自体が
+//     観測されていないか、mirakc の record が finished でない（録画中・失敗・
+//     中止。この録画に ingest ジョブは投入されない）。
+//
+// **pending は「これから来る」の断定なので、来る根拠が無いものを入れない。**
+// record_sync 行の存在だけを根拠にすると、failed / canceled の録画（ingest が
+// 一度も投入されず、record_sync 行は消えない）が永久に「取り込み待ち」を名乗る
+// --- API に区別の材料が無いまま UI が未来を断定するという、issue #211 が
+// 潰したのと同じ形の誤りになる。
 //
 // 「リトライ中」を pending と区別する値は返さない（openapi.yaml の
 // IngestProgress.state の説明参照）。
@@ -101,7 +115,7 @@ func ingestProgressFromFields(r recordingListFields) IngestProgress {
 			ExpectedBytes: r.IngestExpectedBytes,
 			ObservedAt:    r.IngestObservedAt,
 		}
-	case r.HasRecordSync:
+	case r.HasIngestableRecord:
 		return IngestProgress{State: Pending}
 	default:
 		return IngestProgress{State: Unknown}

@@ -11,15 +11,15 @@ import (
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
-// seedRecordSync は mirakc record の観測を 1 行入れる。ingest 状態の導出で
-// 「取り込み待ち（pending）」と「取り込む対象の観測すら無い（unknown）」を
-// 分ける材料。
-func seedRecordSync(t *testing.T, pool *pgxpool.Pool, recordingID int64, recordID string, contentLength *int64) {
+// seedRecordSync は mirakc record の観測を 1 行入れる。status は mirakc の
+// recordingStatus 生値（CHECK 無し）。ingest 状態の導出で「取り込み待ち
+// （pending）」と「取り込みが来ない（unknown）」を分ける材料。
+func seedRecordSync(t *testing.T, pool *pgxpool.Pool, recordingID int64, recordID, status string, contentLength *int64) {
 	t.Helper()
 	if _, err := pool.Exec(context.Background(),
 		`INSERT INTO record_sync (site, record_id, recording_id, program_id, status, content_length)
-		 VALUES ('default', $1, $2, 1, 'finished', $3)`,
-		recordID, recordingID, contentLength); err != nil {
+		 VALUES ('default', $1, $2, 1, $3, $4)`,
+		recordID, recordingID, status, contentLength); err != nil {
 		t.Fatalf("seeding record_sync: %v", err)
 	}
 }
@@ -65,12 +65,12 @@ func TestListRecordingsIngestState(t *testing.T) {
 	expected := int64(1000)
 	observed := base.Add(-30 * time.Second)
 	transferring := seedRecording(t, pool, "転送中", base.Add(-3*time.Hour), "finished", 3)
-	seedRecordSync(t, pool, transferring, "rec-transferring", &expected)
+	seedRecordSync(t, pool, transferring, "rec-transferring", "finished", &expected)
 	seedIngestProgress(t, pool, transferring, 250, &expected, observed)
 
 	// (4) 取り込み待ち（record の観測だけがある）
 	pending := seedRecording(t, pool, "取り込み待ち", base.Add(-4*time.Hour), "finished", 4)
-	seedRecordSync(t, pool, pending, "rec-pending", &expected)
+	seedRecordSync(t, pool, pending, "rec-pending", "finished", &expected)
 
 	// (5) record の観測すら無い
 	unknown := seedRecording(t, pool, "観測なし", base.Add(-5*time.Hour), "finished", 5)
@@ -149,6 +149,68 @@ func TestListRecordingsIngestState(t *testing.T) {
 	}
 }
 
+// TestListRecordingsIngestNoJobComing は、ingest ジョブが投入されない録画
+// （mirakc の record が finished でない = failed / canceled / 録画中）が
+// **「取り込み待ち」を名乗らない**ことを固定する（PR #323 レビュー）。
+//
+// record_sync 行は failed / canceled でも作られ、Rokuban はこの行を消さない
+// （本番に DELETE FROM record_sync の経路は無い）。行の存在だけを pending の
+// 根拠にすると、来ない未来を UI が永久に断定し続け、進捗ポーリングも止まらない
+// --- issue #211 が潰したのと同じ形の誤りになる。
+func TestListRecordingsIngestNoJobComing(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := newAPIServer(t, pool)
+
+	base := time.Now().Truncate(time.Second)
+
+	// recordings.status と record_sync.status の対応は watcher の
+	// normalizeRecordingStatus のとおり（既知の値はそのまま）。
+	failed := seedRecording(t, pool, "失敗した録画", base.Add(-time.Hour), "failed", 1)
+	seedRecordSync(t, pool, failed, "rec-failed", "failed", nil)
+
+	canceled := seedRecording(t, pool, "中止した録画", base.Add(-2*time.Hour), "canceled", 2)
+	seedRecordSync(t, pool, canceled, "rec-canceled", "canceled", nil)
+
+	recording := seedRecording(t, pool, "録画中", base.Add(-30*time.Minute), "recording", 3)
+	seedRecordSync(t, pool, recording, "rec-recording", "recording", nil)
+
+	// 対照群: 同じ形（原本も進捗も無い）でも record が finished なら pending。
+	// これが無いと「常に unknown を返す」実装でもこのテストが通ってしまう。
+	waiting := seedRecording(t, pool, "取り込み待ち", base.Add(-3*time.Hour), "finished", 4)
+	seedRecordSync(t, pool, waiting, "rec-waiting", "finished", nil)
+
+	var got []Recording
+	if resp := getJSON(t, srv.URL+"/api/recordings", &got); resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	byID := map[int64]Recording{}
+	for _, r := range got {
+		byID[r.Id] = r
+	}
+
+	for _, tc := range []struct {
+		name      string
+		id        int64
+		wantState IngestProgressState
+	}{
+		{"failed", failed, "unknown"},
+		{"canceled", canceled, "unknown"},
+		{"録画中", recording, "unknown"},
+		{"finished（対照群）", waiting, "pending"},
+	} {
+		rec, ok := byID[tc.id]
+		if !ok {
+			t.Fatalf("%s: recording %d missing from list", tc.name, tc.id)
+		}
+		if rec.Ingest == nil {
+			t.Fatalf("%s: ingest is nil (want state %q)", tc.name, tc.wantState)
+		}
+		if rec.Ingest.State != tc.wantState {
+			t.Errorf("%s: ingest.state = %q, want %q", tc.name, rec.Ingest.State, tc.wantState)
+		}
+	}
+}
+
 // TestListRecordingsIngestExpectedBytesOmitted は mirakc が record の length を
 // 返さない構成（record_sync.content_length が NULL）で、分母をでっち上げずに
 // 省略することを固定する。
@@ -157,7 +219,7 @@ func TestListRecordingsIngestExpectedBytesOmitted(t *testing.T) {
 	srv := newAPIServer(t, pool)
 
 	id := seedRecording(t, pool, "分母なし転送中", time.Now().Truncate(time.Second), "finished", 1)
-	seedRecordSync(t, pool, id, "rec-1", nil)
+	seedRecordSync(t, pool, id, "rec-1", "finished", nil)
 	seedIngestProgress(t, pool, id, 512, nil, time.Now())
 
 	var got []Recording
@@ -194,7 +256,7 @@ func TestIngestProgressFromFields(t *testing.T) {
 	}{
 		{
 			name:      "原本行がある",
-			fields:    recordingListFields{HasOriginalAsset: true, HasRecordSync: true},
+			fields:    recordingListFields{HasOriginalAsset: true, HasIngestableRecord: true},
 			wantState: "committed",
 		},
 		{
@@ -209,15 +271,15 @@ func TestIngestProgressFromFields(t *testing.T) {
 		{
 			name: "進捗行だけ",
 			fields: recordingListFields{
-				HasRecordSync:      true,
-				IngestWrittenBytes: &written,
-				IngestObservedAt:   &observed,
+				HasIngestableRecord: true,
+				IngestWrittenBytes:  &written,
+				IngestObservedAt:    &observed,
 			},
 			wantState: "transferring",
 		},
 		{
-			name:      "record の観測だけ",
-			fields:    recordingListFields{HasRecordSync: true},
+			name:      "ingest が来るはずの record 観測だけ",
+			fields:    recordingListFields{HasIngestableRecord: true},
 			wantState: "pending",
 		},
 		{

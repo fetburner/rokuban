@@ -199,6 +199,20 @@ describe('取り込み進捗の表示', () => {
     expect(screen.queryByText(/取り込み中|取り込み待ち/)).not.toBeInTheDocument()
   })
 
+  // ingest ジョブが投入されない録画（サーバーは state='unknown' を返す。
+  // internal/api の TestListRecordingsIngestNoJobComing）。「取り込み待ち」を
+  // 出すと来ない未来を断定することになる（#211 と同じ形）。
+  it('失敗した録画には「取り込み待ち」を出さない', async () => {
+    renderRecording(
+      sampleRecording({ title: '失敗した録画', status: 'failed', ingest: { state: 'unknown' } }),
+    )
+
+    expect(await screen.findByText('失敗した録画')).toBeInTheDocument()
+    expect(screen.queryByText('取り込み待ち')).not.toBeInTheDocument()
+    expect(screen.queryByText('待機中（まだ原本を取り込んでいません）')).not.toBeInTheDocument()
+    expect(screen.queryByText('取り込み')).not.toBeInTheDocument()
+  })
+
   it('正常に取り込めた録画には取り込み欄そのものが出ない', async () => {
     renderRecording(sampleRecording({ ingest: { state: 'committed' }, sizeBytes: 1_000_000 }))
 

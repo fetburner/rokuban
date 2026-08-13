@@ -188,8 +188,11 @@ DB に残した観測（`recording_ingest_progress`）だけ。api は**毎リ�
 `IngestProgress` と [recording/ingest.md](../recording/ingest.md) §5.6。
 
 **進捗は SSE で押さない。** SSE はヒントであって真実ではない（不変条件 5）ので、
-クライアントは取り込み中の録画がある間だけ一覧・単体 GET を再取得して収束させる
-（[frontend/recordings.md](../frontend/recordings.md)）。
+クライアントは REST の再取得で収束させる。ただし短い周期（5 秒）を張るのは
+**進捗の数字が動いている間だけ**で、それ以外は SSE グループの 60 秒 invalidate に
+落とす（[frontend/recordings.md](../frontend/recordings.md)）。「未完了なら短い周期」に
+すると、`pending` が恒久的に残りうる（`record_sync` 行は消えない）ためポーリングが
+止まらない。
 
 ### 録画単体: `GET /api/recordings/{id}`
 

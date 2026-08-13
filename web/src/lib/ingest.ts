@@ -19,19 +19,24 @@ import type { Recording } from '@/api/generated'
  *
  * 既定のストール検知（`ingest.stall_timeout` = 30 秒。無進捗でいったん接続を
  * 切り、Range で繋ぎ直す）より長く取る --- 正常な再接続を毎回「停滞」と呼ぶと、
- * 本当に止まっているケースと区別が付かなくなる。進捗の書き込み間隔は 2 秒
- * （`internal/worker/ingest_progress.go` の `ingestProgressInterval`）なので、
- * 60 秒無進捗は再接続 1 往復では説明が付かない。
+ * 本当に止まっているケースと区別が付かなくなる。進捗の書き直しは**最短** 2 秒
+ * 間隔（`internal/worker/ingest_progress.go` の `ingestProgressInterval`。
+ * バイトが流れたときにしか呼ばれないので、極端に遅い回線ではこれより粗くなる）
+ * なので、60 秒無進捗は再接続 1 往復では説明が付かない。
  */
 export const ingestStaleAfterMs = 60_000
 
 /**
- * ingestRefetchIntervalMs は取り込み中の録画が画面にある間の一覧・詳細の再取得
- * 間隔。
+ * ingestRefetchIntervalMs は**進捗の数字が動いている間だけ**使う一覧・詳細の
+ * 再取得間隔。
  *
  * SSE はヒントであって真実ではない（不変条件 5）ので、進捗は REST の再取得で
- * 収束させる。worker 側の書き込み間隔（2 秒）より長くする --- それより短くしても
- * 同じ値を読み直すだけになる。
+ * 収束させる。worker 側の書き込み間隔（最短 2 秒）より長くする --- それより
+ * 短くしても同じ値を読み直すだけになる。
+ *
+ * **止まったら止める**（`hasLiveIngestProgress`）。この短い周期を張り続けてよい
+ * のは「秒単位で変わる数字が画面にある」間だけで、それ以外の収束は
+ * `lib/events.ts` の 60 秒 invalidate（`operationalRefreshIntervalMs`）に任せる。
  */
 export const ingestRefetchIntervalMs = 5_000
 
@@ -107,15 +112,29 @@ export function ingestDisplay(recording: Recording, nowMs: number): IngestDispla
 }
 
 /**
- * isIngestInFlight は「この録画の取り込みがまだ終わっていない」か。一覧・詳細を
- * 定期再取得するかどうかの判定に使う（終わっている画面をポーリングし続けない）。
+ * hasLiveIngestProgress は「この録画の進捗の数字がいま動いている」か。
+ * `ingestRefetchIntervalMs` の短い再取得を張るかどうかの判定に使う。
  *
- * `status = 'recording'` の録画も真にする --- 録画が終われば取り込みが始まり、
- * そのとき画面が自動で追随してほしい（`ingestDisplay` が録画中に何も出さない
- * のは表示の判断であって、再取得を止める理由ではない）。
+ * **真になるのは「転送中かつ進捗が新しい」ときだけ。** 判定を `ingestDisplay` の
+ * 結果から作るので、表示と再取得の条件がずれることが構造的に起きない。
+ *
+ * 真にしないものと、その代わりに何が収束させるか:
+ *
+ * - `pending`: いつ始まるかはこちらから分からない。**失敗し続けている ingest も
+ *   ここに落ちる** --- 権限不足で `MkdirAll` に失敗する場合、進捗行が書かれる
+ *   前に落ちるので、River が再試行し続ける間ずっと `pending` のまま
+ *   （issue #211 で実際に起きた壊れ方）。ここを真にすると 5 秒ポーリングが
+ *   恒久的に続く
+ * - 停滞した `transferring`: River のバックオフ待ちや、discard 後に
+ *   record_sweep（5 分周期）が再投入するのを待っている状態。分オーダーでしか
+ *   動かないものを 5 秒で叩き続ける理由が無い。**再開すれば `observedAt` が
+ *   新しくなり、この関数は自動的に真に戻る**（自己回復する）
+ * - `status = 'recording'`: 録画中に取り込みの数字は動かない
+ *
+ * いずれも `lib/events.ts` の 60 秒 invalidate（`operationalRefreshIntervalMs`）
+ * が拾うので、放置ではなく「周期を落とす」だけになる。
  */
-export function isIngestInFlight(recording: Recording): boolean {
-  if (recording.status === 'recording') return true
-  const state = recording.ingest?.state
-  return state === 'transferring' || state === 'pending'
+export function hasLiveIngestProgress(recording: Recording, nowMs: number): boolean {
+  const display = ingestDisplay(recording, nowMs)
+  return display?.kind === 'transferring' && !display.stale
 }

@@ -1560,10 +1560,19 @@ components:
             - `transferring`: 原本行が無く、転送の進捗行がある。`writtenBytes` /
               `observedAt` が付く。`observedAt` が古いまま止まっていれば停滞して
               いる（River のバックオフ待ち・ストール）
-            - `pending`: 原本行も進捗行も無く、mirakc record の観測
-              （`record_sync`）がある。取り込み待ち、または失敗して再試行待ち
-            - `unknown`: 上のどれでもない。mirakc record の観測すら無い
-              （録画が始まる前・`canceled` など）
+            - `pending`: 原本行も進捗行も無く、**ingest ジョブが投入される
+              はずの** mirakc record の観測（`record_sync.status = 'finished'`。
+              watcher が ingest を投入する条件と同じ述語）がある。取り込み待ち、
+              または失敗して再試行待ち
+            - `unknown`: 上のどれでもない。取り込みが始まった観測が無い ---
+              mirakc record が観測されていないか、record が `finished` でない
+              （録画中・`failed`・`canceled`。**この録画に ingest ジョブは
+              投入されない**）
+
+            **`pending` は「これから来る」の断定なので、来る根拠が無いものは
+            入れない。** `record_sync` 行の存在だけを根拠にすると、`failed` /
+            `canceled` の録画（ingest が一度も投入されず、`record_sync` 行も
+            消えない）が永久に「取り込み待ち」を名乗る。
 
             **「リトライ中」を `pending` と区別する値は持たない。** 区別するには
             River の `river_job` を API 契約に露出させる（内部実装の露出）か、
