@@ -227,17 +227,26 @@ func (ls *LiveStreamer) Run(ctx context.Context) error {
 // までの待ち時間」（waitForPlaylist、セッションが ready になった**後**の
 // ファイル出現待ち）として導入された値だが、現在はセッションの起動待ち
 // （mirakc への接続 + ffmpeg exec が終わる = `close(s.ready)` を待つ経路）にも
-// 同じ値を掛けている --- 使う場所は次の 3 箇所:
+// 同じ値を掛けている --- 参照する箇所は次の 4 つ:
 //
-//   - waitForPlaylist（Playlist、ready になった後のプレイリストファイル出現待ち）
-//   - getOrCreateSession の 2 か所の `<-s.ready` 待ち（Playlist が呼ぶ。issue #286）
+//   - getOrCreateSession の既存セッション経路の `<-s.ready` 待ち（Playlist が呼ぶ。issue #286）
+//   - getOrCreateSession の新規作成経路の `<-s.ready` 待ち（同上。issue #286 --- この
+//     2 経路は互いに独立したコードパスであり、片方だけ直すと非対称が残る。
+//     実際にレビューで新規作成経路側だけテストが無いまま気付かれず、指摘された）
 //   - Segment の `<-s.ready` 待ち（issue #189）
+//   - waitForPlaylist（Playlist、ready になった後のプレイリストファイル出現待ち）
 //
-// **3 箇所が同じ 1 つの変数を参照することが本質。** 分けると、どれか 1 つだけ
+// **4 箇所が同じ 1 つの変数を参照することが本質。** 分けると、どれか 1 つだけ
 // 直したときに非対称が残っても気付けない --- 実際に #189 で Segment だけ
 // 直したときに Playlist 側（getOrCreateSession）の非対称が見過ごされ、
 // レビューで #286 として指摘された。新しい待ちを足すときもここを増やさず
 // この変数を再利用すること。
+//
+// **Playlist ハンドラ 1 本の最悪応答時間はこの値の 1 回分ではない。**
+// getOrCreateSession の起動待ち（最大この値）が終わってから waitForPlaylist
+// （さらに最大この値）が直列で走るため、両方が上限いっぱいまでかかると
+// Playlist の合計は**この値の 2 倍**（既定なら 30s）になる。Segment は
+// getOrCreateSession を経由しない分、この値 1 回分（既定 15s）で済む。
 //
 // var にしてあるのはテストからの上書き用（15 秒の実待ちはテストを不必要に
 // 遅くする）。運用者向けの設定キーではない。

@@ -528,6 +528,63 @@ func TestLiveStreamer_Playlist_TimesOutWhenSessionNeverBecomesReady(t *testing.T
 	assertBoundedByStartupTimeout(t, elapsed)
 }
 
+// newHangingMirakcServer はヘッダを一切返さない偽 mirakc（接続は受け付けるが、
+// クライアントが諦める・呼び出し元がこのサーバーを閉じるまで応答しない）。
+// mirakc が完全にハングしている状況を、注入ではなく `StreamService` の
+// 本物の HTTP 往復を通して再現するためのもの。
+func newHangingMirakcServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// getOrCreateSession の**新規作成経路**（`ls.sessions` にまだ無い serviceID への
+// 最初の要求。マップ挿入直後に `go ls.runSession` し、その `<-s.ready` を待つ側）
+// も playlistStartupTimeout で打ち切られることを、実際に `runSession` →
+// `StreamService` を通す経路で固定する（issue #286 の再指摘）。
+//
+// `TestLiveStreamer_Playlist_TimesOutWhenSessionNeverBecomesReady` は
+// `injectNeverReadySession` で `ls.sessions` に直接セッションを注入するため、
+// **既存セッション経路**（`live.go` の 1 つ目の select）しか通らない。
+// `getOrCreateSession` には `<-s.ready` を待つ select が既存セッション経路・
+// 新規作成経路の 2 か所にあり、これは互いに独立したコードパスなので、
+// 片方だけに期限を入れて片方を忘れても上記のテストは検知できない。
+//
+// 実際にレビューで、新規作成経路側の `case <-time.After(playlistStartupTimeout):
+// return nil, errStartupTimeout` を丸ごと削除して `go test ./internal/streamer/`
+// を回しても全テスト green のままであることが指摘された。しかも新規作成経路は
+// 「mirakc がハングしたときに最初のプレイリスト要求が通る側」（2 本目以降の
+// 要求だけが既存セッション経路に入る）なので、本番で先に効くのはこちらである。
+func TestLiveStreamer_Playlist_NewSessionTimesOutWhenMirakcNeverResponds(t *testing.T) {
+	prevTimeout := playlistStartupTimeout
+	playlistStartupTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { playlistStartupTimeout = prevTimeout })
+
+	mirakcSrv := newHangingMirakcServer(t)
+	_, srv := newTestLiveStreamer(t, mirakcSrv.URL, baseLiveConfig(t))
+
+	// ls.sessions にまだ存在しない serviceID --- 最初の要求は必ず
+	// getOrCreateSession の新規作成経路（マップ挿入 + go ls.runSession）を通る。
+	const serviceID = int64(777)
+
+	client := &http.Client{Timeout: 3 * time.Second}
+	start := time.Now()
+	resp, err := client.Get(playlistURL(srv.URL, serviceID, ""))
+	if err != nil {
+		t.Fatalf("GET playlist: %v (new-session path should time out with a response, not hang until the client gives up)", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	elapsed := time.Since(start)
+
+	if resp.StatusCode != http.StatusGatewayTimeout {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusGatewayTimeout)
+	}
+	assertBoundedByStartupTimeout(t, elapsed)
+}
+
 // site が config.mirakc.site と一致しない要求は 404（DB を引かずパスだけで判定する）。
 func TestLiveStreamer_SiteMismatch(t *testing.T) {
 	mirakcSrv, state := newFakeMirakcLiveServer(t)
