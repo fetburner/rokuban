@@ -682,3 +682,73 @@ func TestRunPass_DedupeMatchesSameServiceDifferentEvent(t *testing.T) {
 	}
 	assertDedupeEvidence(t, res, &other)
 }
+
+// 14. ルールを削除すると、そのルールで録れた履歴は比較のスコープから外れる
+// （issue #215 の決定。docs/recording/ruler.md §3.1「ルールの削除は履歴の
+// スコープを消す」）。両方向で押さえる:
+//
+//   - ルールが生きている間は skip する（1 と同じ前提。ここが崩れたら以降の
+//     アサーションは空虚になる）
+//   - ルールを削除して**同じ条件で作り直す**と skip しない。作り直したルールは
+//     新しい id を持つので、過去の録画は 1 件もマッチしない
+//
+// このテストは「FK を外して recordings.rule_id の値を残す」実装に変えても
+// 通る —— 症状（作り直したルールでは履歴が効かない）は値の保持では消えず、
+// それが FK を外す案を採らなかった理由そのものだから。固定しているのは仕様で
+// あって機構ではない（機構は段階 1 のアサーションが別に見ている）。
+func TestRunPass_DedupeHistoryLeavesScopeOnRuleDelete(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	f := setupDedupeFixture(t, pool, ctx)
+
+	if err := ruler.New([]string{testSite}, pool, nil).RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
+	res, ok := getReservation(t, pool, ctx, f.programID)
+	if !ok {
+		t.Fatal("reservation not created")
+	}
+	if !baseSkip(t, res.Base) {
+		t.Fatalf("base.skip = false while the rule is alive (base = %s)", res.Base)
+	}
+	assertDedupeEvidence(t, res, &f.recordingID)
+
+	// ルールを削除する。DELETE /api/rules/{id} は予約の後片付けを足すが、
+	// 履歴に効くのはこの 1 文（rules の行が消えること）だけ。
+	if _, err := pool.Exec(ctx, `DELETE FROM rules WHERE id = $1`, f.ruleID); err != nil {
+		t.Fatalf("deleting rule: %v", err)
+	}
+
+	// 段階 1: FK が ON DELETE SET NULL なので履歴の帰属が落ちる（00006_rules.sql）。
+	var histRuleID *int64
+	if err := pool.QueryRow(ctx,
+		`SELECT rule_id FROM recordings WHERE id = $1`, f.recordingID,
+	).Scan(&histRuleID); err != nil {
+		t.Fatalf("querying recordings.rule_id: %v", err)
+	}
+	if histRuleID != nil {
+		t.Errorf("recordings.rule_id = %d after deleting the rule, want NULL", *histRuleID)
+	}
+
+	// 段階 2: 同じ条件でルールを作り直す。id は新しくなる。
+	newRuleID := insertRule(t, pool, ctx, "rerun", 10)
+	insertRuleKeyword(t, pool, ctx, newRuleID, "再放送テスト")
+	enableDedupe(t, pool, ctx, newRuleID, dedupeFixtureThreshold, nil)
+	if newRuleID == f.ruleID {
+		t.Fatalf("recreated rule reused id %d; rules.id must be GENERATED ALWAYS AS IDENTITY", newRuleID)
+	}
+
+	if err := ruler.New([]string{testSite}, pool, nil).RunPass(ctx); err != nil {
+		t.Fatalf("RunPass after recreating the rule: %v", err)
+	}
+
+	res2, ok := getReservation(t, pool, ctx, f.programID)
+	if !ok {
+		t.Fatal("reservation not created after recreating the rule")
+	}
+	if baseSkip(t, res2.Base) {
+		t.Errorf("base.skip = true after delete + recreate (base = %s); "+
+			"履歴は削除で比較対象から外れ、作り直しても引き継がれないのが仕様", res2.Base)
+	}
+	assertDedupeEvidence(t, res2, nil)
+}

@@ -9,6 +9,7 @@ import {
   useDeleteRule,
   useListRules,
   useUpdateRule,
+  type DeleteRuleResponse,
   type Rule,
 } from '@/api/generated'
 import { apiErrorMessage, unwrap } from '@/api/unwrap'
@@ -117,6 +118,49 @@ export function RulesPage() {
 }
 
 /**
+ * deleteRuleConfirmMessage は削除の確認文を組み立てる。
+ *
+ * 重複排除を有効にしたルールでは、削除で**履歴が比較のスコープから外れる**
+ * ことを事前に伝える。`recordings.rule_id` はルール削除で NULL に落ち、同じ
+ * 条件で作り直しても新しい id になるので過去の録画は 1 件もマッチしない
+ * （`docs/recording/ruler.md` §3.1「ルールの削除は履歴のスコープを消す」）。
+ * 帰結は「窓の中の再放送を録り直す」であって録り逃しではないが、押した後に
+ * 取り消せる操作でもないので、条件を変えたいだけなら削除ではなく「編集」
+ * （id を保つ上書き保存）を使えることまで書く。
+ *
+ * 件数は出さない。削除前に「何件の録画がスコープから外れるか」を数える API は
+ * 無いうえ、件数は行動を変えない（引き継がれないという質の情報で足りる）。
+ */
+function deleteRuleConfirmMessage(rule: Rule): string {
+  const head = `ルール「${rule.name}」を削除しますか？`
+  if (!rule.dedupeEnabled) return head
+  return (
+    `${head}\n\n` +
+    'このルールの重複排除の履歴も一緒に外れます。同じ条件で作り直しても引き継がれず、' +
+    '重複排除の窓の中の再放送を録り直します。条件を変えたいだけなら「編集」で上書きしてください。'
+  )
+}
+
+/**
+ * deleteRuleResultMessage は削除後のトーストの文言を組み立てる。
+ *
+ * 削除 API が返す内訳（削除した予約 / 編集済みのため残った予約）をそのまま出す
+ * （`docs/recording/reservation-model.md` §4.3「ルール削除の UX は可視化で
+ * 解決する」）。残った予約は定義上「ユーザーが自分で触ったもの」だけ
+ * なので、件数は常に少なく 1 件ずつ説明できる。
+ *
+ * 応答が読めなかった場合（`unwrap` が undefined）は内訳なしの文言に落とす。
+ * 削除自体は成功しているので、そこで黙るのは間違い。
+ */
+function deleteRuleResultMessage(res: DeleteRuleResponse | undefined): string {
+  if (!res) return 'ルールを削除しました'
+  if (res.detachedReservations > 0) {
+    return `ルールを削除しました（予約 ${res.deletedReservations} 件を削除、${res.detachedReservations} 件は編集済みのため残しました）`
+  }
+  return `ルールを削除しました（予約 ${res.deletedReservations} 件を削除）`
+}
+
+/**
  * RuleRow は一覧の 1 行。
  *
  * 主操作（編集 / 検索しながら編集 / このルールの録画）は露出のまま、削除
@@ -135,12 +179,12 @@ function RuleRow({ rule, onEdit }: { rule: Rule; onEdit: () => void }) {
   const deleteRule = useDeleteRule()
 
   const remove = () => {
-    if (!window.confirm(`ルール「${rule.name}」を削除しますか？`)) return
+    if (!window.confirm(deleteRuleConfirmMessage(rule))) return
     deleteRule.mutate(
       { id: rule.id },
       {
-        onSuccess: () => {
-          toast({ message: 'ルールを削除しました' })
+        onSuccess: (res) => {
+          toast({ message: deleteRuleResultMessage(unwrap(res)) })
           void queryClient.invalidateQueries({ queryKey: getListRulesQueryKey() })
         },
         onError: (err) =>
