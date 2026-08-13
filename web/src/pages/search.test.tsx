@@ -423,6 +423,79 @@ describe('SearchPage', () => {
     expect(screen.queryByLabelText('テキスト条件 1 の値')).not.toBeInTheDocument()
   })
 
+  describe('値札（コストの見込み）', () => {
+    it('未検索と 0 件を混同しない', async () => {
+      stubApi()
+      renderPage()
+
+      expect(await screen.findByRole('button', { name: 'NHK総合' })).toBeInTheDocument()
+      expect(
+        screen.getByText(
+          '検索すると、この条件で保存した場合の週あたりの見込み（件数・録画時間）が表示されます',
+        ),
+      ).toBeInTheDocument()
+
+      await addKeyword('該当しない語')
+      await userEvent.click(screen.getByRole('button', { name: '検索' }))
+
+      // 0 件でも「まだ検索していない」の文言には戻らない
+      expect(
+        await screen.findByText(/この条件で保存すると、週あたり見込みで約 0 件・約 0分/),
+      ).toBeInTheDocument()
+      expect(
+        screen.queryByText(
+          '検索すると、この条件で保存した場合の週あたりの見込み（件数・録画時間）が表示されます',
+        ),
+      ).not.toBeInTheDocument()
+    })
+
+    it('1 件マッチしたときは 7 日換算した件数・時間が出る（母数 = サンプルなので外挿の注記は出ない）', async () => {
+      stubApi()
+      renderPage()
+
+      await addKeyword('ニュース')
+      await userEvent.click(screen.getByRole('button', { name: '検索' }))
+
+      expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+      // 1 件 * 7/8 = 0.875 → 約 1 件。30 分（1_800_000ms）* 7/8 = 26.25 分 → 約 26分。
+      const summary = await screen.findByText(
+        /この条件で保存すると、週あたり見込みで約 1 件・約 26分/,
+      )
+      // 読み込み済み 1 件 = 母数 1 件なので、外挿であることの注記は不要
+      expect(summary.textContent).not.toMatch(/読み込み済み/)
+    })
+
+    it('読み込みが母数に追いついていない間は外挿である旨を明記し、追いつくと消える', async () => {
+      stubApi()
+      renderPage()
+
+      expect(await screen.findByRole('button', { name: 'NHK総合' })).toBeInTheDocument()
+      // 条件なしの検索で 37 件（pageSize=30 を超える）に当てる
+      await userEvent.click(screen.getByRole('button', { name: '検索' }))
+
+      // 37 件 * 7/8 = 32.375 → 約 32 件。全 37 件が一様に 30 分（1_800_000ms）なので、
+      // 平均 30 分 * 37 件 * 7/8 = 971.25 分 = 16時間11分。最初の 30 件だけのサンプル
+      // でも平均は同じ 30 分になるため、この値自体は「読み込みが全件に届いたとき」
+      // と変わらない（下の「さらに表示」後の再検証で確認する）。
+      const summary = await screen.findByText(
+        /この条件で保存すると、週あたり見込みで約 32 件・約 16時間11分/,
+      )
+      // まだ最初の 30 件しか durationMs を読み込んでいないので、外挿であることを明記する
+      expect(summary.textContent).toContain('（時間は読み込み済みの 30 件の平均から算出）')
+
+      await userEvent.click(screen.getByRole('button', { name: 'さらに表示' }))
+
+      // 全件（37 件）の詳細が読み込み終わると、外挿の注記が消える
+      // （値そのものは一様な 30 分番組なので変わらない）
+      await waitFor(() => {
+        expect(
+          screen.getByText(/この条件で保存すると、週あたり見込みで約 32 件・約 16時間11分/)
+            .textContent,
+        ).not.toContain('読み込み済み')
+      })
+    })
+  })
+
   describe('この条件でルールを作成', () => {
     it('テキスト・ジャンル・時間帯の条件を落とさずに RuleInput にする（核心）', async () => {
       const { createRuleBodies } = stubApi()
