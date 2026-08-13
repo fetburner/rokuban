@@ -176,6 +176,8 @@ api が行を直接消さない理由は ruler 側の GC ロジックと同じ: 
 
 UI で「開始後に意味を持つフィールド」を区別表示する。この内容は overrides API のフィールド説明（`openapi.yaml`）にも同じことを書く --- API だけを見ている利用者が「上書きしたのに反映されない」で詰まらないようにするため。
 
+「ingest 完了まで効く」には上限がある。凍結の導出元（`program_snapshots` と CASCADE で連なる 3 表）は放送終了 + `epg.retention_grace`（既定 24h）で GC されるので、**エッジに record が滞留して ingest がそれより遅れると、指定は効かず既定値で凍結される**（原本は残るのでデータは失われないが、エンコードは投入されない）。エッジのリングバッファのサイジングと `epg.retention_grace` の関係として [ストレージ](../storage.md) §6「凍結が依存する寿命と、エッジの滞留の交点」に書いてある。
+
 **凍結の設計の権威は [ストレージ](../storage.md) §6「原本 TS の保持ポリシー」にある。** ingest コミット時に凍結する理由（導出元の `reservations` / `program_intents` / `program_overrides` は放送終了 + 猶予後に GC される短命な表で、参照のまま依存させると原本削除・再エンコードが壊れる）、衛星表 `recording_encode_policy`（行の存在 = 凍結済み）の設計、凍結の例外（`POST /api/recordings/{id}/encode-profiles` による追加専用の事後書き換え。原本削除済みなら 409）は、いずれも同 §6 を参照。
 
 ### 4.6 スコープ外

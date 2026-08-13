@@ -11,6 +11,23 @@
 
 録画バッファの容量アラート（[監視メトリクス](monitoring.md) の「未 ingest record 総量」と[アラート設計](alerts.md) のエッジディスク残量アラート）とセットで運用する。
 
+#### N 日は容量だけでは決まらない: `epg.retention_grace` との交点
+
+**ディスクを N 日分積んでも、encode 意図が生き残る滞留の上限は `epg.retention_grace`（既定 24h）である。** 録画の encode policy（`keepOriginal` / `encodeProfiles`）は ingest が原本をコミットする瞬間に `program_snapshots` 経由で予約から解決して凍結されるが（[ストレージ](../storage.md) §6）、その `program_snapshots` は**放送終了 + `epg.retention_grace` で GC される**。GC は DB の時計だけで動き、エッジに到達できるかどうかを見ない。
+
+> **滞留を N 日まで許すつもりでリングバッファをサイジングするなら、`epg.retention_grace >= N` にする。**
+
+超えた場合、その滞留から復帰した録画は既定ポリシー（`keep_original='always'` / `encode_profiles=[]`）で凍結される。原本は残るのでデータは失われないが、**エンコードは投入されず、`recordings.source` は `manual` に・`rule_id` は NULL に落ちる**。復帰は障害復旧時に一括で起きるので、まとまった件数が同時にこうなる。事後回復は `POST /api/recordings/{id}/encode-profiles`（追加のみ）。**GC 側を滞留と連動させない理由**（回線断のときクラウド側に留め置きのアンカーが存在しない）と、確認しているテストは [ストレージ](../storage.md) §6「凍結が依存する寿命と、エッジの滞留の交点」にある。
+
+見張るメトリクスは滞留の型で分かれる。**どちらも閾値は「悪い状態が `epg.retention_grace` を超えて続いたか」**（[監視メトリクス](monitoring.md) の一覧）:
+
+| 滞留の型 | 見るメトリクス |
+|---|---|
+| リンクは生きているが ingest が詰まる（worker 停止・ストレージ障害・キュー詰まり） | `rokuban_uningested_records{site}` / `rokuban_uningested_record_bytes{site}` の増加 |
+| エッジ↔クラウドの回線断（未 ingest の record はクラウドから見えない） | `rokuban_sweep_last_pass_timestamp_seconds` / `rokuban_epg_sync_last_success_timestamp_seconds` の停滞 |
+
+後者では未 ingest メトリクスは増えない —— record を観測する watcher 自身が届いていないため。**滞留量のアラートだけでは回線断を検知できない。**
+
 ### アーカイブの速度要件
 
 アーカイブ（Rokuban のメディアストレージ。ローカル FS / NAS / CSI の S3）は低速で良い:

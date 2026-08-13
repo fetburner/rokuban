@@ -1365,6 +1365,105 @@ func TestIngestWorker_NoReservation_LeavesEncodePolicyDefault(t *testing.T) {
 	}
 }
 
+// TestIngestWorker_SnapshotGCedBeyondGrace_FreezesDefaults は issue #214 の決定
+// 「encode 意図が生き残る滞留の上限は epg.retention_grace であって、エッジの
+// リングバッファの N 日ではない」を固定する。
+//
+// エッジのリングバッファは「回線断・クラウド側障害で未 ingest の record が
+// N 日分溜まる」ことを前提にサイジングする（docs/operations.md §4）が、凍結の
+// JOIN 先 program_snapshots の寿命は放送終了 + epg.retention_grace（既定 24h）で
+// 決まる（docs/storage.md §6）。**2 つの時計の間に制約が無い**ので、猶予を
+// 超えた滞留から復帰した ingest は予約を引けず、既定値で凍結される。
+//
+// このテストは「そうなる」ことを固定する ---
+// TestIngestWorker_NoReservation_LeavesEncodePolicyDefault が「予約が最初から
+// 無い」を模すのに対し、こちらは**予約と意図が確かに存在したうえで GC に刈られた**
+// 経路を、実際の GC クエリ（DeleteEndedProgramSnapshots）を通して模す。GC を
+// 未 ingest の record_sync と連動させる案（issue #214 の案 1）を実装すると、
+// 猶予超過でもスナップショットが残って until_encoded / h265 で凍結されるため
+// このテストは落ちる。決定を変えるならこのテストも一緒に変える。
+func TestIngestWorker_SnapshotGCedBeyondGrace_FreezesDefaults(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+	q := sqlcgen.New(pool)
+
+	programID := int64(900000000000010)
+	res := insertProgramSnapshotAndReservation(t, pool, programID, "滞留番組")
+	setReservationBase(t, pool, res.ID, `{"keepOriginal":"until_encoded","encodeProfiles":["h265"]}`)
+
+	recordingID := insertTestRecordingForReservation(t, pool, programID)
+	insertTestRecordSync(t, pool, recordingID, "rec-policy-gced")
+
+	// 放送は 48 時間前に終わったことにする（insertProgramSnapshotAndReservation は
+	// start_at = now() で作る）。GC の cutoff は epg.retention_grace = 24h 相当。
+	if _, err := pool.Exec(ctx,
+		"UPDATE program_snapshots SET start_at = now() - interval '48 hours' WHERE site = $1 AND program_id = $2",
+		"default", programID,
+	); err != nil {
+		t.Fatalf("aging program snapshot: %v", err)
+	}
+
+	// ruler の GC 本体（internal/ruler.runGC が呼ぶのと同じクエリ）。FK CASCADE で
+	// reservations / program_intents / program_overrides も一緒に落ちる。
+	deleted, err := q.DeleteEndedProgramSnapshots(ctx, time.Now().Add(-24*time.Hour))
+	if err != nil {
+		t.Fatalf("running GC: %v", err)
+	}
+	if deleted != 1 {
+		t.Fatalf("DeleteEndedProgramSnapshots deleted %d rows, want 1 "+
+			"（このテストの前提が崩れている: GC が刈らないなら以降のアサーションは何も主張しない）", deleted)
+	}
+	var reservations int
+	if err := pool.QueryRow(ctx,
+		"SELECT count(*) FROM reservations WHERE site = $1 AND program_id = $2", "default", programID,
+	).Scan(&reservations); err != nil {
+		t.Fatalf("counting reservations: %v", err)
+	}
+	if reservations != 0 {
+		t.Fatalf("reservations after GC = %d, want 0 (FK CASCADE で一緒に落ちるはず)", reservations)
+	}
+
+	tsData := makeTSData(20)
+	srv := newFullTransferServer(t, tsData, "test/policy-gced.m2ts")
+	mc := mirakc.NewClient(srv.URL, nil)
+
+	w := &IngestWorker{
+		MirakcClient: mc,
+		MediaDir:     t.TempDir(),
+		Pool:         pool,
+		StallTimeout: 5 * time.Second,
+	}
+
+	job := &river.Job[IngestJobArgs]{
+		JobRow: &rivertype.JobRow{},
+		Args:   IngestJobArgs{Site: "default", RecordID: "rec-policy-gced"},
+	}
+
+	if err := w.Work(riverWorkContext(t, pool), job); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+
+	// 凍結そのものはスキップされない（issue #159）。行はあり、値が既定値になる。
+	if !encodePolicyRowExists(t, pool, recordingID) {
+		t.Error("recording_encode_policy に行が無い。解決に失敗しても既定値で凍結する契約（issue #159）が破れている")
+	}
+	keepOriginal, profiles := encodePolicyOfRecording(t, pool, recordingID)
+	if keepOriginal != "always" {
+		t.Errorf("keep_original = %q, want always "+
+			"（猶予超過の滞留では予約を引けないので既定値で凍結される。issue #214）", keepOriginal)
+	}
+	if len(profiles) != 0 {
+		t.Errorf("encode_profiles = %v, want empty （予約の h265 は GC で失われている。issue #214）", profiles)
+	}
+	if got := countEncodeJobs(t, pool, recordingID, "h265"); got != 0 {
+		t.Errorf("encode jobs for h265 = %d, want 0 "+
+			"（原本は keep_original='always' で残るがエンコードは投入されない。issue #214）", got)
+	}
+}
+
 // TestIngestWorker_SnapshotsEncodePolicy_SurvivesReservationRematerialization は
 // issue #149 の受け入れ基準「予約の再実体化を跨いでもエンコード方針が焼き込まれる」
 // を確認する。
