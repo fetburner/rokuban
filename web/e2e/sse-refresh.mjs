@@ -25,7 +25,8 @@ const operationalMs = 60_000
 /** EPG の周期（同 epgRefreshIntervalMs）。 */
 const epgMs = 600_000
 
-const counts = new Map()
+/** 現在測っているページのリクエスト数。ページを変えるたびに差し替える。 */
+let counts = new Map()
 const ng = []
 const log = (...a) => console.log(...a)
 const count = (path) => counts.get(path) ?? 0
@@ -58,42 +59,69 @@ if (served === undefined || served !== local) {
 }
 log(`OK  ⓪ 配っている bundle は自分の dist（${served}）`)
 
+const reservation = {
+  id: 111,
+  site: 'tokyo',
+  programId: 300000,
+  source: 'manual',
+  state: 'active',
+  title: 'e2e 予約',
+  startAt: '2026-08-14T00:00:00.000Z',
+  durationMs: 1_800_000,
+  createdAt: '2026-08-13T00:00:00.000Z',
+  updatedAt: '2026-08-13T00:00:00.000Z',
+  skip: false,
+}
+
 const browser = await chromium.launch()
-const page = await browser.newPage({ viewport: { width: 1280, height: 800 } })
-page.on('pageerror', (e) => {
-  log('NG  ページ例外:', e.message)
-  ng.push('pageerror')
-})
 
-await page.route('**/api/**', async (route) => {
-  const path = new URL(route.request().url()).pathname
-  counts.set(path, count(path) + 1)
-  if (path === '/api/events') {
-    // 接続は張るが通知は 1 通も送らない（notifier がバッファ満杯で捨てた状態）。
-    // retry を 1 日にして、時計を進めても再接続 invalidate が混ざらないようにする
-    await route.fulfill({
-      status: 200,
-      headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' },
-      body: 'retry: 86400000\n\n: ping\n\n',
-    })
-    return
-  }
-  const body =
-    path === '/api/capabilities'
-      ? '{"encode":false,"live":false,"storage":false}'
-      : path === '/api/version'
-        ? '{"version":"e2e"}'
-        : path === '/api/sites'
-          ? '["tokyo"]'
-          : '[]'
-  await route.fulfill({ status: 200, headers: { 'content-type': 'application/json' }, body })
-})
+/**
+ * openStubbed は `/api/**` を丸ごと差し替えたページを開く。カウンタ（`counts`）は
+ * ページごとに新しくするので、増分はそのページの回復経路だけを表す。
+ */
+async function openStubbed(pathname, label) {
+  counts = new Map()
+  const p = await browser.newPage({ viewport: { width: 1280, height: 800 } })
+  p.on('pageerror', (e) => {
+    log(`NG  ページ例外（${label}）:`, e.message)
+    ng.push(`pageerror（${label}）`)
+  })
+  await p.route('**/api/**', async (route) => {
+    const requested = new URL(route.request().url()).pathname
+    counts.set(requested, count(requested) + 1)
+    if (requested === '/api/events') {
+      // 接続は張るが通知は 1 通も送らない（notifier がバッファ満杯で捨てた状態）。
+      // retry を 1 日にして、時計を進めても再接続 invalidate が混ざらないようにする
+      await route.fulfill({
+        status: 200,
+        headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' },
+        body: 'retry: 86400000\n\n: ping\n\n',
+      })
+      return
+    }
+    const body =
+      requested === '/api/capabilities'
+        ? '{"encode":false,"live":false,"storage":false}'
+        : requested === '/api/version'
+          ? '{"version":"e2e"}'
+          : requested === '/api/sites'
+            ? '["tokyo"]'
+            : /\/reservation$/.test(requested)
+              ? JSON.stringify(reservation)
+              : /\/overlaps$/.test(requested)
+                ? '{"count":0,"reservations":[]}'
+                : '[]'
+    await route.fulfill({ status: 200, headers: { 'content-type': 'application/json' }, body })
+  })
+  // 時計を握ってから開く。10 分を実時間で待たない
+  await p.clock.install()
+  await p.goto(BASE + pathname, { waitUntil: 'networkidle' })
+  await p.waitForTimeout(500)
+  return p
+}
 
-// 時計を握ってから開く。10 分を実時間で待たない
-await page.clock.install()
 // 番組リスト（EPG）と予約・ブレーカー（運用状態）が同じ画面から出る
-await page.goto(BASE + '/programs', { waitUntil: 'networkidle' })
-await page.waitForTimeout(500)
+const page = await openStubbed('/programs', '番組表')
 
 const programs = '/api/sites/tokyo/programs'
 const services = '/api/sites/tokyo/services'
@@ -119,6 +147,20 @@ await page.waitForTimeout(500)
 check('10 分後: 番組リスト', count(programs), 2)
 check('10 分後: サービス一覧', count(services), 2)
 check('10 分後: 予約', count('/api/reservations'), 1 + epgMs / operationalMs)
+
+// 予約詳細（別ページ）。URL は /api/sites/... なので、生成キーのままだと
+// EPG グループ（10 分）に落ちる --- ここで見るのは「60 秒側で取り直すこと」。
+// キーの先頭要素が所属を決めるという規律（docs/api/sse.md）を、画面が実際に
+// 使っているキーの上で確かめる唯一の判定。
+log('\n=== 予約詳細（/reservations/$site/$programId）===')
+const detailPage = await openStubbed('/reservations/tokyo/300000', '予約詳細')
+
+const detail = '/api/sites/tokyo/programs/300000/reservation'
+log('初回ロード後:', Object.fromEntries([...counts.entries()].sort()))
+check('初回: 予約詳細', count(detail), 1)
+await detailPage.clock.runFor(operationalMs)
+await detailPage.waitForTimeout(500)
+check('60 秒後: 予約詳細（運用状態グループ）', count(detail), 2)
 
 await browser.close()
 if (ng.length > 0) {

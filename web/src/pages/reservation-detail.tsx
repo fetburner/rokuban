@@ -3,7 +3,6 @@ import { Link, useNavigate, useParams } from '@tanstack/react-router'
 import { ArrowLeft } from 'lucide-react'
 
 import {
-  getGetProgramReservationQueryKey,
   useGetProgramReservation,
   usePatchProgramOverrides,
   usePutProgramIntent,
@@ -18,6 +17,28 @@ import { ReservationSkipReason } from '@/components/reservation-skip-reason'
 import { useToast } from '@/components/toaster'
 import { Button } from '@/components/ui/button'
 import { formatDateTime, formatDuration } from '@/lib/format'
+
+/**
+ * reservationDetailQueryKey は単体ページ自身のクエリキー。
+ *
+ * orval が生成する `getGetProgramReservationQueryKey`
+ * （`['/api/sites/{site}/programs/{programId}/reservation']`、1 要素）は使わない。
+ * TanStack Query の既定の前方一致はフィルタキーの要素を前から順に比較するので、
+ * 生成キーは一覧側・SSE 側が使う `['/api/reservations']` に**掛からない**。
+ * その結果このページは
+ *
+ *   - `reservations` トピック（`lib/events.ts`）の invalidate が届かず
+ *   - 定期 invalidate では `'/api/sites/'` の方に掛かって EPG グループ
+ *     （10 分）に落ちる
+ *
+ * という状態だった。宛先が `(site, programId)` であること（`reservations.id` を
+ * URL・キーに使わない）は変えずに、**先頭要素だけを一覧と揃える**
+ * （`pages/recording-detail.tsx` の `recordingDetailQueryKey` と同じ手）。
+ * site と programId をキーの要素として持つので、資源の同定は生成キーと等価。
+ */
+function reservationDetailQueryKey(site: string, programId: number) {
+  return ['/api/reservations', 'detail', site, programId] as const
+}
 
 /**
  * ReservationDetailPage は予約 1 件の詳細。
@@ -41,7 +62,9 @@ export function ReservationDetailPage() {
   const queryClient = useQueryClient()
 
   const programIdNum = Number(programId)
-  const query = useGetProgramReservation(site, programIdNum)
+  const query = useGetProgramReservation(site, programIdNum, {
+    query: { queryKey: reservationDetailQueryKey(site, programIdNum) },
+  })
   const putIntent = usePutProgramIntent()
   const patchOverrides = usePatchProgramOverrides()
 
@@ -73,7 +96,7 @@ export function ReservationDetailPage() {
         onSuccess: () => {
           toast({ message: 'エンコード設定を更新しました' })
           void queryClient.invalidateQueries({
-            queryKey: getGetProgramReservationQueryKey(site, programIdNum),
+            queryKey: reservationDetailQueryKey(site, programIdNum),
           })
         },
         onError: (err) =>

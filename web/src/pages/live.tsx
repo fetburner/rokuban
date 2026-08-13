@@ -196,7 +196,7 @@ export function LivePage() {
   // 予約一覧は絞り込みパラメータを持たない（`GET /api/reservations` は全サイトを
   // 返す。docs/api.md）。SSE の `reservations` トピックは既にこのクエリキーの
   // 接頭辞（`/api/reservations`）を invalidate するので、専用トピックは作らない
-  // （`lib/events.ts` の `topicQueryKeys.reservations`。容量バッジと同じ判断）。
+  // （`lib/events.ts` の `queryGroups` の reservations。容量バッジと同じ判断）。
   const reservationsQuery = useListReservations()
   const reservations = useMemo(() => unwrap(reservationsQuery.data) ?? [], [reservationsQuery.data])
   const interruptingReservation = useMemo(

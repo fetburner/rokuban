@@ -314,7 +314,7 @@ EPGStation・KonomiTV には構造的にできない表示。
   ない（`CapacityShortfallBadge` / `ProgramOverlapWarning` と同じ「余計な枠を
   出さない」流儀）
 - **鮮度は SSE の `reservations` トピックに相乗りする。専用トピックは作らない**
-  （容量バッジと同じ判断。`lib/events.ts` の `topicQueryKeys.reservations` が既に
+  （容量バッジと同じ判断。`lib/events.ts` の `queryGroups` の reservations が既に
   `/api/reservations` を接頭辞に持つため、予約が変わればこの表示も自動で
   invalidate される）
 - **値札（選択状態。issue #234 M7-1）と視聴中の画面の両方に同じ

@@ -71,12 +71,22 @@ const epgKey = ['/api/sites/tokyo/programs', { start: 'a' }]
  * `/api/sites/` の接頭辞では引っかからない。
  */
 const programListKey = ['/api/programs', 'infinite', 0, 1, undefined]
+/**
+ * 予約詳細（pages/reservation-detail.tsx）のキー。URL は `/api/sites/...` だが、
+ * 先頭要素を一覧と揃えてあるので運用状態グループ（60 秒）に入る。
+ */
+const reservationDetailKey = ['/api/reservations', 'detail', 'tokyo', 300000]
 
 /** fetchCounts は監視中のクエリが実際に何回 fetch されたかを数える。 */
-type FetchCounts = { reservations: number; epg: number; programList: number }
+type FetchCounts = {
+  reservations: number
+  reservationDetail: number
+  epg: number
+  programList: number
+}
 
 /**
- * ActiveQueries は観測者付きのクエリを 2 本張る。観測者が居ないと invalidate は
+ * ActiveQueries は観測者付きのクエリを 4 本張る。観測者が居ないと invalidate は
  * stale 化するだけで fetch を起こさないので、「再取得が実際に走ったか」を見る
  * テストではこちらを使う。
  */
@@ -93,6 +103,13 @@ function ActiveQueries({ counts }: { counts: FetchCounts }) {
     queryFn: () => {
       counts.epg += 1
       return Promise.resolve([])
+    },
+  })
+  useQuery({
+    queryKey: reservationDetailKey,
+    queryFn: () => {
+      counts.reservationDetail += 1
+      return Promise.resolve({})
     },
   })
   useQuery({
@@ -129,7 +146,7 @@ async function renderLevelPaths() {
     // 増分は必ず invalidate 由来になる
     defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: Infinity } },
   })
-  const counts: FetchCounts = { reservations: 0, epg: 0, programList: 0 }
+  const counts: FetchCounts = { reservations: 0, reservationDetail: 0, epg: 0, programList: 0 }
   const view = render(
     <QueryClientProvider client={queryClient}>
       <Subscriber />
@@ -139,7 +156,7 @@ async function renderLevelPaths() {
   await advance(0)
   // 初回 fetch を観測してから始める。ここが 0 のままだと、以降の「増えた」が
   // 何も測っていないことになる
-  expect(counts).toEqual({ reservations: 1, epg: 1, programList: 1 })
+  expect(counts).toEqual({ reservations: 1, reservationDetail: 1, epg: 1, programList: 1 })
   return { queryClient, counts, view }
 }
 
@@ -198,6 +215,20 @@ describe('useServerEvents', () => {
     expect(counts.reservations).toBe(2)
     // 周期は定数ではなくリテラルで押さえる（定数を変えても通るテストにしない）
     expect(operationalRefreshIntervalMs).toBe(60_000)
+  })
+
+  it('予約詳細は運用状態グループ（60 秒）で取り直す', async () => {
+    vi.useFakeTimers()
+    const { counts } = await renderLevelPaths()
+
+    // 予約詳細の URL は /api/sites/{site}/programs/{id}/reservation だが、
+    // キーの先頭要素を一覧と揃えてあるので EPG の 10 分ではなく 60 秒側に入る。
+    // 所属を決めるのは URL ではなくキーの先頭要素
+    await advance(60_000)
+    expect(counts.reservationDetail).toBe(2)
+    // 同じ時点で EPG 側は動いていない（「どの周期でも増える」では所属を
+    // 主張したことにならない）
+    expect(counts.epg).toBe(1)
   })
 
   it('EPG は運用状態より長い周期でしか取り直さない', async () => {
@@ -260,13 +291,13 @@ describe('useServerEvents', () => {
     // 初回接続の open では取り直さない（各クエリの mount 時の取得と二重になる）
     EventSourceStub.last?.emit('open')
     await advance(0)
-    expect(counts).toEqual({ reservations: 1, epg: 1, programList: 1 })
+    expect(counts).toEqual({ reservations: 1, reservationDetail: 1, epg: 1, programList: 1 })
 
     // 切断 → 再接続。切断中に飛んだ通知は再送されないので、周期を待たずに取り直す
     EventSourceStub.last?.emit('error')
     EventSourceStub.last?.emit('open')
     await advance(0)
 
-    expect(counts).toEqual({ reservations: 2, epg: 2, programList: 2 })
+    expect(counts).toEqual({ reservations: 2, reservationDetail: 2, epg: 2, programList: 2 })
   })
 })

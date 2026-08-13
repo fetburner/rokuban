@@ -24,10 +24,10 @@ monolith（`--all`）では `internal/api.RouterConfig.Mounter` 経由で stream
 | トピック | 発火元 | クライアントが invalidate するもの |
 |---|---|---|
 | `reservations` | `reservations` の行トリガー | 予約一覧・予約詳細（容量超過の導出値も一緒に） |
-| `recordings` | `recordings` / `media_assets` の行トリガー | 録画一覧（サイズ・ドロップ統計も含む） |
-| `epg` | EPG 同期ジョブが明示的に `pg_notify` | 番組リスト・サービス一覧 |
+| `recordings` | `recordings` / `media_assets` の行トリガー | 録画一覧・録画詳細（サイズ・ドロップ統計も含む） |
+| `epg` | EPG 同期ジョブが明示的に `pg_notify` | 番組表グリッド・番組リスト・サービス一覧 |
 | `breakers` | `circuit_breakers` の行トリガー | ブレーカー一覧（バナー） |
-| `rules` | `rules` の行トリガー | （現在クライアントは購読していない。notifier は選別せず全トピックを転送する — `web/src/lib/events.ts` の `topicQueryKeys` が購読の一覧） |
+| `rules` | `rules` の行トリガー | （現在クライアントは購読していない。notifier は選別せず全トピックを転送する — `web/src/lib/events.ts` の `queryGroups` が購読の一覧） |
 
 **通知の出し方はテーブルの書き込み量で分ける。**
 
@@ -82,10 +82,21 @@ window focus も別操作も起きない」画面は、`staleTime` だけでは�
 | 運用状態 | `/api/reservations` `/api/capacity/overages` `/api/recordings` `/api/breakers` | 60 秒 | 応答が小さく、変化が速い |
 | EPG | `/api/sites/`（番組表グリッド・サービス一覧・重なり）+ `/api/programs`（番組リストの手書きキー） | 10 分 | 数十チャンネル x 24 時間の大きな時間窓を 1 回で取る。EPG 同期ジョブ自体が分オーダーでしか動かないので、短周期で回しても得るものが無い |
 
-**接頭辞は URL とは限らない。** 番組リスト（`pages/programs.tsx` の `useInfiniteQuery`）は
-ページの形が「取得した半開区間」なのでキーを URL にできず、手書きの
-`['/api/programs', 'infinite', ...]` を使う。この接頭辞を書き忘れると、番組リストは
-SSE の `epg` イベントでも定期 invalidate でも取り直されない（下記「経緯と失敗事例」）。
+**キーの先頭要素がグループの所属を決める。** 接頭辞の照合はクエリキーの先頭要素に対する
+前方一致なので、**URL が `/api/sites/...` でも先頭要素が `'/api/reservations'` なら
+運用状態グループに入る**（逆も同じ）。ここが所属を決める唯一の場所であり、生成キーを
+そのまま使うと意図と食い違うことがある。フロント側の規律は 2 つ。
+
+- **単体ページのキーは先頭要素を一覧と揃える**（`['/api/reservations', 'detail', site, programId]` /
+  `['/api/recordings', 'detail', id]`）。orval の生成キーは URL 1 要素なので、
+  一覧側の mutater の invalidate にも SSE トピックにも掛からない
+- **URL をキーにできないクエリは接頭辞をここに登録する**。番組リスト
+  （`pages/programs.tsx` の `useInfiniteQuery`）はページの形が「取得した半開区間」なので
+  手書きの `['/api/programs', 'infinite', ...]` を使う
+
+どちらも守らないと、そのクエリは SSE のトピックでも定期 invalidate でも取り直されない
+（番組リスト）か、意図と違うグループの周期で収束する（予約詳細が EPG の 10 分側に
+落ちていた）。**実例 2 件はどちらも下記「経緯と失敗事例」。**
 
 - **背面タブでは投げない。** 復帰時は `refetchOnWindowFocus`（`main.tsx` の QueryClient 既定）が拾う
 - **SSE が再接続したとき（切断を観測した後の `open`）は全グループを invalidate する。** 切断中に
@@ -147,6 +158,15 @@ Rokuban には長寿命接続が 2 つある --- notifier がブラウザへ送�
   リクエスト数を数える）で「10 分進めても `/api/sites/tokyo/programs` の回数が
   1 のまま」を観測したとき。回帰テストは `web/src/lib/events.test.tsx` の
   「epg のイベントで番組リスト（手書きのクエリキー）も取り直す」
+- **予約詳細も同じ形で漏れていた**（同 issue #181 のレビューで、生成キー 20 本 + 手書き
+  2 本を全部 `startsWith` に当てる全数確認をして発見）。orval の生成キー
+  `['/api/sites/{site}/programs/{programId}/reservation']` は `'/api/reservations'` に
+  前方一致しないので `reservations` トピックが届かず、代わりに `'/api/sites/'` に
+  掛かって**収束が 60 秒ではなく 10 分**になっていた。番組リストの件と**同じ形の漏れ**
+  （キーの先頭要素が所属を決めることの見落とし）で、片方を直したときにもう片方に
+  気付けなかった。回帰テストは `pages/reservation-detail.test.tsx` の
+  「予約一覧の invalidate（`['/api/reservations']`）が詳細ページにも届く」と
+  `lib/events.test.tsx` の「予約詳細は運用状態グループ（60 秒）で取り直す」
 - SSE の初期実装は M1-7 で api ロール内（`internal/api/events.go` の `EventHub`）に
   置かれ、M2-19（issue #24）で notifier ロールへ分離した。ロールを分ける判断と
   「2 つの SSE を集約しない」判断は issue #25 §4
