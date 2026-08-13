@@ -153,8 +153,10 @@ export function HomePage() {
   // 持つ `useMemo` は毎レンダー再計算されるので何も買っていない（レビュー指摘。
   // 以前は `activeOverages` / `upcomingReservations` / `warnings` を `useMemo` で
   // 包んでおり、後者 2 つは前者が毎レンダー新しい配列になることで連鎖して
-  // 再計算されていた）。件数は上限付きで小さい（録画・予約は API の limit と
-  // チューナー数で、超過区間は窓幅で上界がある）ので、素朴に毎レンダー計算する。
+  // 再計算されていた）。録画は API の `limit`、超過区間は窓幅で上界があるが、
+  // **予約だけは上界が無い**（`GET /api/reservations` は絞り込みパラメータを
+  // 持たない全件取得で `limit` も無い）。それでも `useMemo` は上記のとおり
+  // `nowMs` 依存で効かないので、素朴に毎レンダー計算する。
   const finishedRecordings = unwrap(finishedQuery.data) ?? []
   const recentFinished = finishedRecordings.slice(0, RECENT_FINISHED_LIMIT)
 

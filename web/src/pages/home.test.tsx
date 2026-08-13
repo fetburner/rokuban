@@ -138,7 +138,7 @@ type Fixtures = {
  * （サーバーの絞り込みを模す）。
  */
 function stubApi(fixtures: Fixtures) {
-  const pendingResolvers: Array<() => void> = []
+  const pendingResolvers: Array<{ path: string; done: boolean; run: () => void }> = []
   const callCounts = new Map<string, number>()
   const fetchMock = vi.fn((input: string | URL | Request) => {
     const url = new URL(String(input), 'http://localhost')
@@ -168,13 +168,31 @@ function stubApi(fixtures: Fixtures) {
       (fixtures.pendingAfterFirstCall?.has(p) === true && callCount > 1)
     if (isPending) {
       return new Promise<Response>((resolve) => {
-        pendingResolvers.push(() => resolve(respond()))
+        pendingResolvers.push({ path: p, done: false, run: () => resolve(respond()) })
       })
     }
     return Promise.resolve(respond())
   })
   globalThis.fetch = fetchMock as unknown as typeof fetch
-  return { fetchMock, resolvePending: () => pendingResolvers.forEach((r) => r()) }
+  return {
+    fetchMock,
+    resolvePending: () => {
+      for (const entry of pendingResolvers) {
+        if (entry.done) continue
+        entry.done = true
+        entry.run()
+      }
+    },
+    /**
+     * unresolvedCount は `path` 宛で**まだ解決していない**応答の数。
+     *
+     * 「未解決のまま」を前提に書いたテストが、遅延の仕掛けが静かに効かなく
+     * なった（= 即答するようになった）ときに空虚な成功へ転ぶのを防ぐための
+     * ガード。前提そのものを assert できるようにしておく。
+     */
+    unresolvedCount: (path: string) =>
+      pendingResolvers.filter((e) => e.path === path && !e.done).length,
+  }
 }
 
 function renderHome() {
@@ -544,7 +562,7 @@ describe('ホーム: 時境界を越えてキーが変わっても警告は消�
   it('容量超過クエリのキーが進み、新キーが未解決のままでも警告セクションは残る', async () => {
     // 時境界（20:00）の直前に「今」を置く。量子化された `start` は 19:00。
     vi.setSystemTime(nowMs - 500)
-    const { fetchMock, resolvePending } = stubApi({
+    const { fetchMock, resolvePending, unresolvedCount } = stubApi({
       breakers: [breaker('ruler_deletes')],
       reservations: [reservation(1, '今夜の予約', 2 * HOUR)],
       // 再レンダーの引き金。これを解決させた瞬間に新しい `Date.now()` で
@@ -572,6 +590,12 @@ describe('ホーム: 時境界を越えてキーが変わっても警告は消�
       .filter((url) => url.pathname === '/api/capacity/overages')
       .map((url) => url.searchParams.get('start'))
     expect(new Set(starts).size).toBe(2)
+
+    // **2 回目がこの時点でまだ未解決であること自体を assert する。**
+    // `pendingAfterFirstCall` の仕掛けが静かに効かなくなって 2 回目も即答する
+    // ようになると、`placeholderData` が無くても警告は戻ってきてしまい、
+    // 下の 2 行が通る（このテストが測っているつもりのものを測らなくなる）。
+    expect(unresolvedCount('/api/capacity/overages')).toBe(1)
 
     // 新しいキーは未解決のままだが、警告は消えていない
     expect(screen.getByRole('heading', { name: '警告' })).toBeInTheDocument()
