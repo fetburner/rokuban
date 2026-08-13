@@ -685,7 +685,7 @@ func TestRunPass_DedupeMatchesSameServiceDifferentEvent(t *testing.T) {
 
 // 14. ルールを削除すると、そのルールで録れた履歴は比較のスコープから外れる
 // （issue #215 の決定。docs/recording/ruler.md §3.1「ルールの削除は履歴の
-// スコープを消す」）。両方向で押さえる:
+// スコープを消す」）。3 段階で押さえる:
 //
 //   - ルールが生きている間は skip する（1 と同じ前提。ここが崩れたら以降の
 //     アサーションは空虚になる）
@@ -694,10 +694,12 @@ func TestRunPass_DedupeMatchesSameServiceDifferentEvent(t *testing.T) {
 //   - **新ルールの下で 1 本録れると、また skip する**（過剰録画が一過性である
 //     ことの根拠。docs はこのテスト名を併記してその主張を書いている）
 //
-// このテストは「FK を外して recordings.rule_id の値を残す」実装に変えても
-// 通る —— 症状（作り直したルールでは履歴が効かない）は値の保持では消えず、
-// それが FK を外す案を採らなかった理由そのものだから。固定しているのは仕様で
-// あって機構ではない（機構は段階 1 のアサーションが別に見ている）。
+// 「FK を外して recordings.rule_id の値を残す」実装に変えると、**機構を見て
+// いる段階 1 だけが落ちて、仕様を見ている段階 2・3 は通る**（実測: 一時
+// マイグレーションで recordings_rule_id_fkey を DROP すると
+// 「recordings.rule_id = 1 after deleting the rule, want NULL」の 1 件のみ
+// FAIL）。症状（作り直したルールでは履歴が効かない）は値の保持では消えず、
+// それが FK を外す案を採らなかった理由そのものである。
 func TestRunPass_DedupeHistoryLeavesScopeOnRuleDelete(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
