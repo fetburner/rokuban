@@ -17,7 +17,18 @@ import (
 
 // RescueResult は rescue で復元した件数のサマリ。
 type RescueResult struct {
-	CatalogPath             string
+	CatalogPath string
+	// Generation は復元に使った世代ディレクトリ名（docs/storage.md §8）。
+	// 旧形式のフラットファイルから復元したときは空。
+	Generation string
+	// LegacyCatalog は manifest を持たない旧形式のフラットファイルから復元した
+	// ことを示す。完成を検証できていないので、呼び出し側は必ず報告する。
+	LegacyCatalog bool
+	// RejectedSnapshots は完成判定に落ちて飛ばした世代（新しい順）。空でなければ
+	// 「最新に見えた世代を飛ばして古い世代へ落ちた」ということなので、黙って
+	// 成功させずに呼び出し側が報告する。
+	RejectedSnapshots []RejectedSnapshot
+
 	Rules                   int
 	Recordings              int
 	RecordingEncodePolicies int
@@ -42,18 +53,49 @@ type RescueResult struct {
 	RestoredLegacyEncodePolicies int
 }
 
-// RescueLatest は media_dir/catalog/ の最新 catalog を読んで DB に冪等 upsert する。
-// catalog が無ければ media_dir を走査し、認識できる動画ファイルを素の asset として
-// in-place 登録する。どちらの経路もファイル本体はコピー・変更しない。
+// RescueLatest は media_dir/catalog/ の**最新の完成世代**を読んで DB に冪等
+// upsert する（完成判定は SelectLatest / VerifyGeneration。docs/storage.md §8）。
+//
+// 最新世代が不完全・checksum 不一致なら 1 つ前の完成世代へ落ちる。完成世代が
+// 無ければ manifest を持たない旧形式のフラットファイル、それも無ければ media_dir
+// を走査して認識できる動画ファイルを素の asset として in-place 登録する。
+// どの経路もファイル本体はコピー・変更しない。
 func RescueLatest(ctx context.Context, pool *pgxpool.Pool, mediaDir, site string) (*RescueResult, error) {
-	path, err := LatestPath(mediaDir)
+	sel, err := SelectLatest(mediaDir)
+	if sel != nil {
+		for _, r := range sel.Rejected {
+			slog.Warn("rescue: skipping incomplete catalog generation",
+				"generation", r.Name, "reason", r.Reason)
+		}
+	}
 	if err != nil {
 		if os.IsNotExist(err) {
-			return rescueStorage(ctx, pool, mediaDir, site)
+			// 「catalog が 1 つも無い」と「あったが全部不完全だった」を
+			// 混同させない: 飛ばした世代は結果に載せて呼び出し側に報告させる。
+			result, scanErr := rescueStorage(ctx, pool, mediaDir, site)
+			if scanErr != nil {
+				return nil, scanErr
+			}
+			if sel != nil {
+				result.RejectedSnapshots = sel.Rejected
+			}
+			return result, nil
 		}
 		return nil, err
 	}
-	return RescueFile(ctx, pool, path)
+	if sel.Legacy {
+		slog.Warn("rescue: falling back to a catalog file without a manifest "+
+			"(completeness cannot be verified)", "path", sel.DocumentPath)
+	}
+
+	result, err := RescueFile(ctx, pool, sel.DocumentPath)
+	if err != nil {
+		return nil, err
+	}
+	result.Generation = sel.Generation
+	result.LegacyCatalog = sel.Legacy
+	result.RejectedSnapshots = sel.Rejected
+	return result, nil
 }
 
 // RescueFile は path の catalog JSON を読んで DB に冪等 upsert する。
