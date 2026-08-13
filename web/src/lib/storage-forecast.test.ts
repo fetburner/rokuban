@@ -335,4 +335,58 @@ describe('estimateStorageForecast', () => {
     expect(forecast.exceedsAvailable).toBe(true)
     expect(forecast.fullAtMs).toBe(nowMs)
   })
+
+  // 既知の残存近似（レビューで発見。実装は変えず、doc に近似として明記した
+  // --- モジュール doc の近似 3「重なる予約を直列として扱う」参照）。
+  // `projectedFullAtMs` は予約を startMs 昇順の直列として消費を積み上げるため、
+  // 実際に並行して録画される予約（複数チューナー構成では普通）どうしの重なりを
+  // 見ない。ここでは実装を固定するのではなく、**この近似がどちらの方向にも
+  // 振れることそのもの**を固定する（一方向の保証を書かないための裏付け）。
+  it('既知の近似: 同時開始の複数予約は直列消費として扱われ、実際より遅い満杯見込みを出す（過小警告・危険な方向）', () => {
+    const sixHours = 6 * 60 * 60 * 1000
+    const forecast = estimateStorageForecast({
+      availableBytes: 10_000_000,
+      averageBitrate: { bytesPerMs: 1, sampleSize: 1 },
+      // 同時開始の 6 時間予約 2 本。実際は並行録画で 2 bytes/ms の合成レートに
+      // なるが、直列近似は 1 本目の 1 bytes/ms のレートのまま計算する。
+      upcomingSchedule: [
+        { startMs: nowMs, durationMs: sixHours },
+        { startMs: nowMs, durationMs: sixHours },
+      ],
+      nowMs,
+    })
+
+    // 直列近似の報告値（実測: 2.7778 時間）。
+    expect(forecast.fullAtMs! - nowMs).toBeCloseTo(10_000_000)
+    // 真値（合成レート 2 bytes/ms で 10_000_000 / 2 = 5_000_000ms ≈ 1.3889 時間）
+    // より確実に遅い --- 直列近似は実際より「まだ時間がある」と見せてしまう。
+    const trueMs = 10_000_000 / 2
+    expect(forecast.fullAtMs! - nowMs).toBeGreaterThan(trueMs)
+  })
+
+  it('既知の近似: 長い予約に短い予約が重なると、実際より早い満杯見込みを出す（過大警告・安全側だが不正確）', () => {
+    const twentyFourHours = 24 * 60 * 60 * 1000
+    const thirtyMin = 30 * 60 * 1000
+    const forecast = estimateStorageForecast({
+      availableBytes: 87_000_000,
+      averageBitrate: { bytesPerMs: 1, sampleSize: 1 },
+      // 24 時間予約の冒頭に 30 分予約が重なる。直列近似は 24 時間予約の
+      // バイト数を積んだ「後」に 30 分予約のバイト数を積むため、実際の
+      // 重なり（先頭 30 分だけ合成レート 2 bytes/ms）とは別の場所で交差する。
+      upcomingSchedule: [
+        { startMs: nowMs, durationMs: twentyFourHours },
+        { startMs: nowMs, durationMs: thirtyMin },
+      ],
+      nowMs,
+    })
+
+    // 直列近似の報告値（実測: 0.1667 時間 = 10 分）。
+    expect(forecast.fullAtMs! - nowMs).toBeCloseTo(600_000)
+    // 真値: 先頭 30 分は合成レート 2 bytes/ms、以降は 24 時間予約のみの
+    // 1 bytes/ms。87_000_000 バイトに達するのは
+    // 1_800_000（重複区間で消費）+ 83_400_000（単独区間、レート 1）=
+    // 85_200_000ms ≈ 23.6667 時間後。
+    const trueMs = 1_800_000 + 83_400_000
+    expect(forecast.fullAtMs! - nowMs).toBeLessThan(trueMs)
+  })
 })
