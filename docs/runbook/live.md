@@ -21,7 +21,9 @@ import・MSE への実再生・チャンネル切替時の cleanup --- だけを
 docker compose exec rokuban rokuban server --all --config /config.yml
 ```
 
-1. ブラウザで `/live` を開き、チャンネルを選ぶ。数秒で再生が始まる
+1. ブラウザで `/live` を開き、チャンネルを選ぶ（この時点ではまだ何も始まらない
+   --- issue #234 M7-1 で選択と視聴開始を分離した）。「再生」ボタンを押すと
+   数秒で再生が始まる
 2. **iPhone の Safari で `/live` を開いて再生できることを確認する（未実施）。**
    iPhone は `window.MediaSource` を持たない（`ManagedMediaSource` のみ。iPad と
    違う）ため、**ネイティブ HLS 経路に入れないと iOS 17.1 未満では
@@ -49,15 +51,17 @@ docker compose exec rokuban rokuban server --all --config /config.yml
    止まってから **30〜45 秒**（`live.idle_timeout` 既定 30 秒 + GC 周期
    `idle_timeout/2` = 15 秒ぶんの遅れ）で `rokuban_live_active_sessions` が
    `0` に戻り、`rokuban_live_idle_gc_reclaimed_total` が `1` 増える
-5. チューナー本数が少ない環境で複数チャンネルを連続でザップすると、
+5. チューナー本数が少ない環境で複数チャンネルへ連続で「再生」を押すと、
    `live.max_sessions`（既定 4）に達した時点で 503
    `too many concurrent live sessions on this process` が、チューナー自体が
    枯渇した場合は 503 `live stream unavailable` が返る（画面には
-   「チューナー不足または同時視聴数の上限」+ 30 秒待つ案内が出る）。
-   フロント側はチャンネル切替を 400ms デバウンスしているが、実際に選んで
-   留まったチャンネルの前セッションは今までと同様 30〜45 秒残る ---
-   デバウンスは「通り過ぎたチャンネル」を掴まないようにするだけの緩和であり、
-   idle GC の遅延自体を無くすものではない
+   「チューナー不足または同時視聴数の上限」+ 30 秒待つ案内が出る）。**チャンネル
+   選択自体（`?serviceId=` を切り替えるだけ）はセッションを起こさない**
+   （issue #234 M7-1）ため、ここで積まれるのは実際に「再生」を押した本数だけで、
+   通り過ぎただけのチャンネルは対象外 --- 以前あった 400ms のデバウンス
+   （ザッピングでセッションが積まれないようにする緩和）は選択自体がコスト 0 に
+   なったことで存在理由が消え、削除した。押して留まったチャンネルの前セッションは
+   今までと同様 idle GC 待ちで 30〜45 秒残る
 6. **実配信で一時停止しても誤ってエラーにならないことを確認する（未実施）。**
    ネイティブ経路は `stalled` / `waiting` が猶予（12 秒）を超えたら失敗と見なすが、
    WebKit は**一時停止した瞬間にも `stalled` を出す**ので、一度でも再生が
@@ -114,8 +118,14 @@ E2E_LIVE_SERVICE_A=9001 E2E_LIVE_SERVICE_B=9002 node web/e2e/live.mjs
 pnpm exec playwright install chromium webkit
 ```
 
-判定する 7 点（詳細はスクリプト冒頭のコメント）:
+判定する点（詳細はスクリプト冒頭のコメント）:
 
+0. **選択と視聴開始の分離（issue #234 M7-1）**: `/live?serviceId=` を開いた
+   直後はプレイリスト/セグメント要求が 0 件（`page.route` で観測）で、「再生」
+   ボタンを押して初めて要求が飛ぶ。ffmpeg 不要（フィクスチャを使わない）で
+   bundled Chromium だけで測れるため、①〜⑦と異なりゲートしていない。
+   ①〜⑦は「再生」ボタンを押した後の挙動を見るものなので、`page.goto` の後に
+   このボタンを押す手順を挟んでいる
 1. hls.js の動的 import チャンク（`assets/hls-*.js`）が実際に要求される
 2. MSE がアタッチされる（`video.currentSrc` が `blob:` になる。`src` は
    hls.js が `sourceopen` 後に object URL を revoke するので短命であり、

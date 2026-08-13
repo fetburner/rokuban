@@ -91,7 +91,9 @@ function stubFetch(options: {
     // ライブ視聴の HLS プレイリストは OpenAPI 対象外の別経路。この画面の
     // テストではプレイヤー本体を検証しない（components/live-player.test.tsx が
     // 状態遷移を担う）ので、streamer 不在（unreachable）に落として hls.js の
-    // 動的 import を誘発しない
+    // 動的 import を誘発しない。**この経路への fetch が実際に呼ばれたかどうか
+    // 自体は、選択と再生の分離（issue #234 M7-1）の判定に使う**
+    // ---「再生」ボタンを押すまで一度も呼ばれないことを見る
     if (url.pathname.includes('/live/playlist.m3u8')) {
       return Promise.reject(new TypeError('Failed to fetch'))
     }
@@ -114,6 +116,12 @@ function stubFetch(options: {
     }
     return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }))
   }) as unknown as typeof fetch
+}
+
+/** playlistFetchCalled は stubFetch 下で `/live/playlist.m3u8` への fetch が実際に呼ばれたか。 */
+function playlistFetchCalled(): boolean {
+  const calls = (globalThis.fetch as unknown as { mock: { calls: [string][] } }).mock.calls
+  return calls.some(([url]) => String(url).includes('/live/playlist.m3u8'))
 }
 
 afterEach(() => {
@@ -139,17 +147,17 @@ describe('LivePage / live.enabled が false のとき（issue #209）', () => {
     renderLive()
     await screen.findByText('この環境ではライブ視聴が無効です')
 
-    const calls = (globalThis.fetch as unknown as { mock: { calls: [string][] } }).mock.calls
-    const playlistCalls = calls.filter(([url]) => String(url).includes('/live/playlist.m3u8'))
-    expect(playlistCalls).toEqual([])
+    expect(playlistFetchCalled()).toBe(false)
   })
 
-  it('有効なら従来どおりチャンネル一覧とプレイヤーが出る（両方向）', async () => {
+  it('有効ならチャンネル一覧と選択画面（再生ボタン）が出る（両方向）', async () => {
     stubFetch({ live: true, services: [service({ serviceId: 1, name: 'チャンネル A' })] })
     renderLive()
 
     expect(await screen.findByRole('navigation', { name: 'チャンネル一覧' })).toBeInTheDocument()
     expect(screen.queryByText('この環境ではライブ視聴が無効です')).not.toBeInTheDocument()
+    // 選択状態（再生ボタン）で止まる --- 有効なだけでは probe しない
+    expect(screen.getByRole('button', { name: /再生/ })).toBeInTheDocument()
   })
 
   /**
@@ -331,6 +339,23 @@ describe('LivePage', () => {
     expect(badge.className.split(' ')).toContain('tally-scanlines')
   })
 
+  it('選択中チャンネルのチャンネル種別（GR/BS/CS）を表示する（issue #234 の含むもの 1）', async () => {
+    stubFetch({
+      services: [service({ serviceId: 1, name: 'チャンネル A', channelType: 'BS' })],
+    })
+    renderLive()
+
+    // `screen.findByText('チャンネル A')` は情報欄（`<p>`）とチャンネル一覧の
+    // 両方に一致して例外になるため、より具体的な「再生」ボタン（情報欄の直上に
+    // 出る）を目印に読み込み完了を待つ
+    await screen.findByRole('button', { name: /チャンネル Aを再生/ })
+    // 情報欄（`.font-medium` を持つ p 要素と同じブロック）に種別バッジが出る。
+    // チャンネル一覧側の見出し（`groupByChannelType` の小見出し）にも同じ文字列
+    // "BS" が出るため、`getAllByText` で件数だけを見る（両方合わせて 2 件になる
+    // ---見出し 1 + 情報欄バッジ 1）
+    expect(screen.getAllByText('BS')).toHaveLength(2)
+  })
+
   it('チャンネル一覧の別チャンネルを押すと選択が切り替わる', async () => {
     const user = userEvent.setup()
     stubFetch({
@@ -355,7 +380,14 @@ describe('LivePage', () => {
     expect(screen.queryByText('A の番組')).not.toBeInTheDocument()
   })
 
-  it('ハイライトは即座に切り替わるが、実際のナビゲーションはデバウンスする', async () => {
+  /**
+   * デバウンスは M7-1（issue #234）で削除した --- 以前は「通り過ぎたチャンネル」の
+   * probe / セッションを起こさないための緩和として 400ms 挟んでいたが、選択自体が
+   * probe もセッションも起こさなくなった今、デバウンスする対象が消えた。ここでは
+   * 「クリック直後に URL 側の選択（`aria-current`）が即座に切り替わる」ことで
+   * デバウンスが再導入されていないことを確認する。
+   */
+  it('チャンネル切り替えはデバウンスせず即座にナビゲートする（issue #234 の含むもの 4）', async () => {
     const user = userEvent.setup()
     stubFetch({
       services: [
@@ -372,50 +404,113 @@ describe('LivePage', () => {
 
     await user.click(screen.getByRole('link', { name: /チャンネル B/ }))
 
-    // ハイライトは即座に B へ移る
+    // デバウンス（かつて 400ms）を待たずに、URL 側の選択が既に B へ切り替わっている
     expect(screen.getByRole('link', { name: /チャンネル B/ })).toHaveAttribute(
       'aria-current',
       'page',
     )
-    // が、デバウンス（400ms）中はまだ A を見ている（probe / セッションを
-    // まだ起こしていない）
-    expect(screen.getByText('A の番組')).toBeInTheDocument()
-
-    await waitFor(() => expect(screen.getByText('B の番組')).toBeInTheDocument())
   })
 
-  it('デバウンス中に別チャンネルへ切り替えると、通り過ぎたチャンネルへは一度も遷移しない', async () => {
+  it(
+    'チャンネルを選んでもプレイリストを取りに行かず、再生ボタンを押して初めて取りに行く' +
+      '（issue #234 の受け入れ「チャンネルタップではプレイリスト要求が飛ばない」）',
+    async () => {
+      const user = userEvent.setup()
+      stubFetch({
+        services: [service({ serviceId: 10, name: 'チャンネル A' })],
+        programsByServiceId: { 10: [program({ serviceId: 10, name: 'A の番組' })] },
+      })
+      renderLive()
+
+      expect(await screen.findByText('A の番組')).toBeInTheDocument()
+      // 選択（チャンネル一覧の描画・now/next の取得）だけでは probe しない
+      expect(playlistFetchCalled()).toBe(false)
+      // プレイヤー本体（読み込み中の表示）はまだ無く、「再生」ボタンだけがある
+      expect(screen.queryByText('読み込み中…')).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /再生/ })).toBeInTheDocument()
+
+      await user.click(screen.getByRole('button', { name: /再生/ }))
+
+      await waitFor(() => expect(playlistFetchCalled()).toBe(true))
+      // 再生ボタンは消え、プレイヤー本体に置き換わる
+      expect(screen.queryByRole('button', { name: /再生/ })).not.toBeInTheDocument()
+    },
+  )
+
+  it('?serviceId= の直開きでも選択状態で止まり、再生ボタンを押すまでプレイリストを取りに行かない（issue #234 の含むもの 3）', async () => {
+    stubFetch({
+      services: [service({ serviceId: 10, name: 'チャンネル A' })],
+      programsByServiceId: { 10: [program({ serviceId: 10, name: 'A の番組' })] },
+    })
+    renderLive('/live?serviceId=10')
+
+    expect(await screen.findByText('A の番組')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /再生/ })).toBeInTheDocument()
+    expect(playlistFetchCalled()).toBe(false)
+  })
+
+  it('再生中に別チャンネルへ切り替えると選択状態に戻る（同意はチャンネルごとに必要）', async () => {
     const user = userEvent.setup()
     stubFetch({
       services: [
         service({ serviceId: 10, name: 'チャンネル A' }),
         service({ serviceId: 20, name: 'チャンネル B' }),
-        service({ serviceId: 30, name: 'チャンネル C' }),
       ],
       programsByServiceId: {
         10: [program({ serviceId: 10, name: 'A の番組' })],
         20: [program({ serviceId: 20, name: 'B の番組' })],
-        30: [program({ serviceId: 30, name: 'C の番組' })],
       },
     })
-    renderLive()
+    renderLive('/live?serviceId=10')
     await screen.findByText('A の番組')
 
-    // B → C とデバウンス幅（400ms）内に連続でザップする
+    await user.click(screen.getByRole('button', { name: /再生/ }))
+    // LivePlayer がマウントされたことを、probe 失敗（stubFetch が
+    // playlist.m3u8 を reject する）後の終端状態で確認する。「読み込み中…」は
+    // reject が即座に解決すると一度も観測されない瞬間的な状態なので、判定には
+    // 使わない（テスト規律「非同期の空虚な成功に注意する」の逆 --- 早すぎて
+    // 見えない状態を待つと flaky になる）
+    await screen.findByText(/接続できません/)
+    expect(screen.queryByRole('button', { name: /再生/ })).not.toBeInTheDocument()
+
     await user.click(screen.getByRole('link', { name: /チャンネル B/ }))
-    await user.click(screen.getByRole('link', { name: /チャンネル C/ }))
 
-    await waitFor(() => expect(screen.getByText('C の番組')).toBeInTheDocument())
-
-    // B の「いま放送中」問い合わせが一度も発生していない
-    // （= B 向けの LivePlayer / probe も一度も起きていない）ことを、
-    // fetch 呼び出しの実績から確認する
-    const calls = (globalThis.fetch as unknown as { mock: { calls: [string][] } }).mock.calls
-    const queriedServiceIds = calls
-      .map(([url]) => new URL(url, 'http://localhost'))
-      .filter((u) => u.pathname === '/api/sites/default/programs')
-      .map((u) => u.searchParams.get('serviceId'))
-    expect(queriedServiceIds).not.toContain('20')
-    expect(queriedServiceIds).toContain('30')
+    await waitFor(() => expect(screen.getByText('B の番組')).toBeInTheDocument())
+    // B に切り替わったら選択状態（再生ボタン）に戻り、プレイヤー（A のエラー表示）は消える
+    expect(screen.getByRole('button', { name: /再生/ })).toBeInTheDocument()
+    expect(screen.queryByText(/接続できません/)).not.toBeInTheDocument()
   })
+
+  it(
+    '再生中に別チャンネルへ切り替えてから元のチャンネルへ戻ると、再度「再生」を押すまで' +
+      'プレイヤーが出ない（selectedServiceId が変わるたびに再生状態を落とす reset effect の検証）',
+    async () => {
+      const user = userEvent.setup()
+      stubFetch({
+        services: [
+          service({ serviceId: 10, name: 'チャンネル A' }),
+          service({ serviceId: 20, name: 'チャンネル B' }),
+        ],
+        programsByServiceId: {
+          10: [program({ serviceId: 10, name: 'A の番組' })],
+          20: [program({ serviceId: 20, name: 'B の番組' })],
+        },
+      })
+      renderLive('/live?serviceId=10')
+      await screen.findByText('A の番組')
+
+      await user.click(screen.getByRole('button', { name: /再生/ }))
+      await screen.findByText(/接続できません/)
+
+      await user.click(screen.getByRole('link', { name: /チャンネル B/ }))
+      await waitFor(() => expect(screen.getByText('B の番組')).toBeInTheDocument())
+
+      await user.click(screen.getByRole('link', { name: /チャンネル A/ }))
+      await waitFor(() => expect(screen.getByText('A の番組')).toBeInTheDocument())
+
+      // A へ戻っても以前の「再生」は引き継がれない --- 選択状態（再生ボタン）で止まる
+      expect(screen.getByRole('button', { name: /再生/ })).toBeInTheDocument()
+      expect(screen.queryByText(/接続できません/)).not.toBeInTheDocument()
+    },
+  )
 })
