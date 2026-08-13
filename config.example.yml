@@ -73,11 +73,15 @@ ingest:
 # EPG プロジェクション
 epg:
   sync_interval: 10m             # mirakc から EPG を全量取得する間隔
-  retention_grace: 24h           # 放送終了からこの時間で番組を刈り取る。予約・意図・上書きも
-                                 # 一緒に落ちるので、これが「encode 意図が生き残る滞留の上限」に
-                                 # なる。エッジのリングバッファを N 日分でサイジングするなら
-                                 # N 以上にする（docs/storage.md §6「凍結が依存する寿命と、
-                                 # エッジの滞留の交点」/ docs/operations.md §4）
+  retention_grace: 24h           # 放送終了からこの時間で番組を刈り取る。EPG 射影
+                                 # （epg_programs）と ruler の GC（予約・意図・上書き）の
+                                 # 両方の窓がこの 1 つの値で決まる。
+                                 # 後者があるので、これが「encode 意図が生き残る滞留の上限」に
+                                 # もなる。エッジのリングバッファを N 日分でサイジングするなら
+                                 # N 以上にする。ただし上げると EPG 射影の窓も一緒に広がる
+                                 # （放送済み番組が長く残り、never-scheduled 行を作る窓も広がる）
+                                 # docs/storage.md §6「凍結が依存する寿命と、エッジの滞留の交点」
+                                 # / docs/operations.md §4
 
 # ルール評価（ruler）
 ruler:

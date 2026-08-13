@@ -1508,6 +1508,87 @@ func TestProcessRecord_MissingReservation_SourceManual(t *testing.T) {
 	}
 }
 
+// TestProcessRecord_ReservationGCedBeyondGrace_SourceManual は issue #214 の
+// 交点の**前半**を固定する: エッジに record が滞留して復帰が
+// epg.retention_grace（既定 24h）より後になると、復帰時に recordings 行を作る
+// createRecording は既に GC された予約を引くことになり、ルール由来の録画でも
+// source が 'manual' に・rule_id が NULL になる。
+//
+// TestProcessRecord_MissingReservation_SourceManual が「予約行が最初から無い」を
+// 模すのに対し、こちらは**ルール予約が確かに存在したうえで、実際の GC クエリ
+// （DeleteEndedProgramSnapshots。ruler の runGC が呼ぶのと同じもの）に刈られた**
+// 経路を通す。
+//
+// 後半（source='manual' の録画で ingest の凍結解決が失敗すると slog.Warn では
+// なく slog.Info になる）は internal/worker の
+// TestIngestWorker_LogsInfoWhenManualSourceReservationUnresolvable が持つ。
+// docs/storage.md §6 が書く回線断の経路はこの 2 本の合成であり、1 本で通す
+// テストは無い（パッケージ境界。internal/watcher は internal/worker に依存
+// できない。本ファイル冒頭 testIngestJobArgs のコメント参照）。
+func TestProcessRecord_ReservationGCedBeyondGrace_SourceManual(t *testing.T) {
+	w, pool := setupTest(t)
+	ctx := context.Background()
+
+	ruleID := createTestRule(t, pool)
+	programID := int64(700006)
+	createTestReservationWithRule(t, pool, programID, ruleID)
+
+	// 放送は 48 時間前に終わったことにする（insertTestProgramSnapshot は
+	// start_at = now() / duration 1h で作る）。
+	if _, err := pool.Exec(ctx,
+		"UPDATE program_snapshots SET start_at = now() - interval '48 hours' WHERE site = $1 AND program_id = $2",
+		DefaultSite, programID,
+	); err != nil {
+		t.Fatalf("aging program snapshot: %v", err)
+	}
+
+	var deleted int64
+	if err := pool.QueryRow(ctx,
+		// ruler の runGC が呼ぶ DeleteEndedProgramSnapshots と同じ述語。
+		// internal/db/sqlcgen をこのテストから引かずに書き下すのは、
+		// 本パッケージのフィクスチャが一貫して生 SQL である流儀に合わせるため。
+		`WITH d AS (
+		     DELETE FROM program_snapshots
+		     WHERE start_at + (duration_ms * interval '1 millisecond') < now() - interval '24 hours'
+		     RETURNING 1
+		 ) SELECT count(*) FROM d`,
+	).Scan(&deleted); err != nil {
+		t.Fatalf("running GC: %v", err)
+	}
+	if deleted != 1 {
+		t.Fatalf("GC が刈った行数 = %d, want 1（前提が崩れている: 刈られていないなら以降は何も主張しない）", deleted)
+	}
+	var reservations int
+	if err := pool.QueryRow(ctx,
+		"SELECT count(*) FROM reservations WHERE site = $1 AND program_id = $2", DefaultSite, programID,
+	).Scan(&reservations); err != nil {
+		t.Fatalf("counting reservations: %v", err)
+	}
+	if reservations != 0 {
+		t.Fatalf("GC 後の reservations = %d, want 0（FK CASCADE で一緒に落ちるはず）", reservations)
+	}
+
+	record := testRecord("record-gced-001", programID, "finished")
+	if err := w.processRecord(ctx, record); err != nil {
+		t.Fatalf("processRecord: %v", err)
+	}
+
+	var source string
+	var gotRuleID *int64
+	if err := pool.QueryRow(ctx,
+		"SELECT source, rule_id FROM recordings WHERE site = $1 AND event_id = $2", w.site, 100,
+	).Scan(&source, &gotRuleID); err != nil {
+		t.Fatalf("querying recordings: %v", err)
+	}
+	if source != db.SourceManual {
+		t.Errorf("recordings.source = %q, want %q "+
+			"（GC 済みの予約は引けないので manual に倒れる。issue #214 の交点）", source, db.SourceManual)
+	}
+	if gotRuleID != nil {
+		t.Errorf("recordings.rule_id = %v, want nil （ルール予約は GC で失われている。issue #214）", *gotRuleID)
+	}
+}
+
 // TestProcessRecord_StatusValues は issue #130 の受け入れ基準の核心:
 // mirakc が返しうる recording.status の 4 値（recording/finished/canceled/failed）
 // すべてで processRecord がエラーを返さず、決定的な結果になることを固定する。

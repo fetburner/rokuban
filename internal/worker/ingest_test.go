@@ -1378,10 +1378,20 @@ func TestIngestWorker_NoReservation_LeavesEncodePolicyDefault(t *testing.T) {
 // このテストは「そうなる」ことを固定する ---
 // TestIngestWorker_NoReservation_LeavesEncodePolicyDefault が「予約が最初から
 // 無い」を模すのに対し、こちらは**予約と意図が確かに存在したうえで GC に刈られた**
-// 経路を、実際の GC クエリ（DeleteEndedProgramSnapshots）を通して模す。GC を
-// 未 ingest の record_sync と連動させる案（issue #214 の案 1）を実装すると、
-// 猶予超過でもスナップショットが残って until_encoded / h265 で凍結されるため
-// このテストは落ちる。決定を変えるならこのテストも一緒に変える。
+// 経路を、実際の GC クエリ（DeleteEndedProgramSnapshots）を通して模す。
+//
+// **record_sync の program_id を programID に一致させるのが要点。** GC を未 ingest の
+// record_sync と連動させる案（issue #214 の案 1）は、record_sync が持つ唯一の
+// 番組キー (site, program_id) でスナップショットを引いて留め置く形になる。
+// 汎用ヘルパ insertTestRecordSync は program_id を固定値でハードコードしている
+// ので、それを使うとこの record_sync 行は GC 対象のスナップショットを指さず、
+// **案 1 を実装してもこのテストは通り続ける**（実際に通ってしまっていた。
+// PR #270 のレビューで発覚）。programID を渡せる insertTestRecordSyncForSite を
+// 使い、案 1 の鍵付けを実際に成立させる。
+//
+// 案 1 を (site, program_id) で実装すると、このテストは
+// 「DeleteEndedProgramSnapshots deleted 0 rows, want 1」で落ちる（確認済み）。
+// 決定を変えるならこのテストも一緒に変える。
 func TestIngestWorker_SnapshotGCedBeyondGrace_FreezesDefaults(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {
@@ -1395,7 +1405,9 @@ func TestIngestWorker_SnapshotGCedBeyondGrace_FreezesDefaults(t *testing.T) {
 	setReservationBase(t, pool, res.ID, `{"keepOriginal":"until_encoded","encodeProfiles":["h265"]}`)
 
 	recordingID := insertTestRecordingForReservation(t, pool, programID)
-	insertTestRecordSync(t, pool, recordingID, "rec-policy-gced")
+	// program_id を programID に一致させる（doc コメント参照）。status='finished' /
+	// 原本 media_asset なしなので、案 1 から見て「未 ingest の record」に該当する。
+	insertTestRecordSyncForSite(t, pool, "default", recordingID, "rec-policy-gced", programID)
 
 	// 放送は 48 時間前に終わったことにする（insertProgramSnapshotAndReservation は
 	// start_at = now() で作る）。GC の cutoff は epg.retention_grace = 24h 相当。
@@ -1414,7 +1426,9 @@ func TestIngestWorker_SnapshotGCedBeyondGrace_FreezesDefaults(t *testing.T) {
 	}
 	if deleted != 1 {
 		t.Fatalf("DeleteEndedProgramSnapshots deleted %d rows, want 1 "+
-			"（このテストの前提が崩れている: GC が刈らないなら以降のアサーションは何も主張しない）", deleted)
+			"（未 ingest の record_sync（program_id=%d）があるスナップショットも刈るのが issue #214 の決定。"+
+			"GC を record_sync と連動させる案 1 を実装したならここで落ちる —— 決定を変えるならこのテストも変える）",
+			deleted, programID)
 	}
 	var reservations int
 	if err := pool.QueryRow(ctx,

@@ -30,18 +30,30 @@
 
 > **encode 意図が生き残る滞留の上限は `epg.retention_grace`（既定 24h）であって、リングバッファの N 日ではない。滞留を N 日まで許すつもりなら `epg.retention_grace >= N` にする。**
 
-`epg.retention_grace` を超えた滞留から復帰した録画で何が起きるか（括弧内は確認しているテスト）:
+GC 済みのスナップショットの上で ingest が走った場合に何が起きるか（括弧内は確認しているテスト）:
 
 - encode policy は既定値 `keep_original='always'` / `encode_profiles=[]` で凍結される（`TestIngestWorker_SnapshotGCedBeyondGrace_FreezesDefaults` / `TestIngestWorker_NoReservation_LeavesEncodePolicyDefault`）。**原本は残るのでデータは失われず、エンコードだけが投入されない**
-- 落ちるのは encode 意図だけではない。復帰時に `recordings` 行を作る `internal/watcher` の `createRecording` も同じ GC 済みの予約を引くので、`source` が `manual` に倒れ `rule_id` が NULL になる（`TestProcessRecord_MissingReservation_SourceManual`）
-- したがって**回線断のケースのログは `slog.Warn` ではなく `slog.Info`** になる（`TestIngestWorker_LogsInfoWhenManualSourceReservationUnresolvable`）。上記「`source = 'rule'` なら常に異常系なので Warn」が実際に出るのは、リンクは生きていて ingest だけが詰まった場合に限られる
+- 落ちるのは encode 意図だけではない。復帰時に `recordings` 行を作る `internal/watcher` の `createRecording` も同じ GC 済みの予約を引くので、ルール由来の録画でも `source` が `manual` に倒れ `rule_id` が NULL になる（`TestProcessRecord_ReservationGCedBeyondGrace_SourceManual`）
+- したがって**その録画のログは `slog.Warn` ではなく `slog.Info`** になる（`TestIngestWorker_LogsInfoWhenManualSourceReservationUnresolvable`）。上記「`source = 'rule'` なら常に異常系なので Warn」が実際に出るのは、**録画開始時には予約が生きていて、ingest だけが猶予を跨いで遅れた**場合に限られる。この 2 段（GC → `manual` → Info）を 1 本で通すテストは無い（パッケージ境界。上記 2 テストの合成である）
 - 事後回復は `POST /api/recordings/{id}/encode-profiles`（下記「凍結の例外: 事後追加」。追加のみ）
 
-**GC 側を滞留と連動させる案（未 ingest の `record_sync` が指す放送イベントのスナップショットを刈らない）は採らない。** `record_sync` も `recordings` も watcher が mirakc を観測して初めて作られる（`internal/watcher/watcher.go` の `processRecord` / `createRecording`）ため、**回線が切れている間は GC に「留め置け」と言わせるアンカーがクラウド側に存在しない** —— 行ができるのは復帰後で、そのときには GC は済んでいる（`runGC` は ruler のサイトパスが失敗しても実行され、削除条件は時計の比較だけ）。塞げるのは「リンクは生きているが ingest だけ詰まる」部分集合に限られる一方、`DeleteEndedProgramSnapshots`（この表から行を消す唯一の経路。`internal/db/queries/program_snapshots.sql`）が `record_sync` の状態に依存し、ingest が恒久的に完了しない record がスナップショットと予約を無期限にピン留めする漏れができる。
+**GC 側を滞留と連動させる案（未 ingest の `record_sync` が指す放送イベントのスナップショットを刈らない）は採らない。** 留め置きの根拠にできるのは `record_sync` 行であり、それは watcher が mirakc を観測して初めて作られる（`internal/watcher/watcher.go` の `processRecord` 入口の `AcquireRecordSync` が status を問わず作り、`Sweep` は進行中の record も列挙する）。したがって:
 
-同じ理由で**凍結を録画開始時へ前倒す案も採らない**（`recordings` 行の生成も watcher の観測に依存するので、クラウドから見た「録画開始時」は「復帰時」でしかない）。加えて[録画エンジン](../recording.md) §4.5 の「録画開始後の変更でも ingest 完了までは効く」を失う。`epg.retention_grace` を上げることは、この 2 案が塞げる範囲と塞げない回線断の両方を 1 つの数で覆う。**既定は上げない** —— コストは滞留を N 日許す構成にだけ課す（上げると `reservations` / `program_snapshots` / `program_intents` / `program_overrides` の行が「予約された番組数 × N 日」ぶん長く残る。時間窓で絞らずこれらを読む経路がある: `ListCapacityDemand` / `ListCapacityDemandAllSites`）。
+- **断が始まる前に一度でも観測された record にはアンカーがある** —— この分は案 1 でも留め置ける（`status='recording'` の段階で観測されていれば足りる）
+- **断の最中に始まった録画にはアンカーが無い。** 行ができるのは復帰後で、そのときには GC は済んでいる（`runGC` は ruler のサイトパスが失敗しても実行され、削除条件は時計の比較だけ）
+
+つまり**正しい分割は「リンクが生きているか」ではなく「その record の観測が届いていたか」**で、数日の断ではその大半が未観測になるので、案 1 は主要部分を塞げない。加えて `DeleteEndedProgramSnapshots`（この表から行を消す唯一の経路。`internal/db/queries/program_snapshots.sql`）が `record_sync` の状態に依存し、ingest が恒久的に完了しない record がスナップショットと予約を無期限にピン留めする漏れができる。
+
+同じ理由で**凍結を録画開始時へ前倒す案も採らない**（`recordings` 行の生成も watcher の観測に依存するので、断の最中に始まった録画ではクラウドから見た「録画開始時」が「復帰時」になる）。加えて[録画エンジン](../recording.md) §4.5 の「録画開始後の変更でも ingest 完了までは効く」を失う。`epg.retention_grace` を上げることは、この 2 案が塞げる範囲と塞げない未観測ぶんの両方を 1 つの数で覆う。
+
+**ただし「上げれば済む」ではない。既定は上げない** —— コストは滞留を N 日許す構成にだけ課す:
+
+- `reservations` / `program_snapshots` / `program_intents` / `program_overrides` の行が「予約された番組数 × N 日」ぶん長く残る。時間窓で絞らずこれらを読む経路がある（`ListCapacityDemand` / `ListCapacityDemandAllSites`）
+- **同じキーが EPG 射影のローリングウィンドウも駆動する。** `cfg.Epg.RetentionGrace` は ruler の GC と EPG 射影の `PruneEpgPrograms`（`internal/worker/epg.go`）の**両方**に渡される（`cmd/rokuban/server.go`）ので、N 日にすると `epg_programs` に**予約の有無に関わらず全サービスの放送済み番組**が N 日ぶん残る。ルール照合（`internal/rulequery` の `MatchProgramIDs`）は時間で絞らないのでその放送済み番組も拾い、終了済み番組の予約に対して reconciler の `programEnded` 分岐と `recordNeverScheduled` が**永続表 `recordings` に never-scheduled 行**を作る窓が 24h から N 日に広がる。**行がどれだけ増えるかは未検証**（この節の他の記述と違い、測っていない）
 
 滞留を見張るメトリクスと閾値は[運用](../operations.md) §4 にある。
+
+**「クラウド側障害」と「回線断」を同じ結論で括らない。** 上の帰結が決定論的に成り立つのは「GC は動き続けたが ingest が猶予を跨いで遅れた」場合であって、ruler ごと止まる障害（worker 全停止・DB 到達不能）では**断のあいだ GC も進まない**。復帰時は sweep + ingest と `ruler_pass` の競争になり、ingest が先に走れば意図は守られる。どちらになるかはジョブの実行順に依存する（未検証）。
 
 ### 安全性
 

@@ -1,9 +1,17 @@
 -- 未 ingest の record（エッジに滞留しているぶん）の件数とバイト数。
 --
--- 「録画は終わったが Rokuban 側にコミットされていない」もの。回線断や
--- クラウド側障害で ingest が詰まるとここが増え続け、エッジの録画バッファを
--- 食い潰す（issue #4 のサイジングコメント）。エッジディスク残量アラートと
--- 対で使う。
+-- 「録画は終わったが Rokuban 側にコミットされていない」もの。ingest が詰まると
+-- ここが増え続け、エッジの録画バッファを食い潰す（issue #4 のサイジング
+-- コメント）。エッジディスク残量アラートと対で使う。
+--
+-- **数えるのは「クラウドが観測できた record」だけ。** record_sync の行は watcher が
+-- mirakc を観測して初めて作られる（internal/watcher の processRecord。入口の
+-- AcquireRecordSync が status を問わず作る）ので、**エッジ↔クラウドの回線が
+-- 切れている間に始まった録画はここに現れず、この値は増えない**。回線断の検知は
+-- 滞留量ではなく rokuban_sweep_last_pass_timestamp_seconds /
+-- rokuban_epg_sync_last_success_timestamp_seconds の停滞で行う
+-- （docs/operations.md §4。断が epg.retention_grace を超えると encode 意図が
+-- 落ちる交点も同節）。
 --
 -- コミット = media_assets 行なので、その不在で判定する。ファイルの有無は見ない
 -- （不変条件 3）。content_length は mirakc の観測値で NULL のこともある。

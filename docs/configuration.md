@@ -52,7 +52,7 @@ Grafana Loki / Tempo の `-config.expand-env` と同じ、**YAML パース前の
 | `ingest.concurrency` | `2` | mirakc サイトあたりの同時転送数 |
 | `ingest.stall_timeout` | `30s` | 転送の無進捗検知（下記「ingest.stall_timeout」） |
 | `epg.sync_interval` | `10m` | mirakc から EPG を全量取得する間隔 |
-| `epg.retention_grace` | `24h` | 放送終了から番組を刈り取るまでの猶予。ruler の GC（予約と番組単位の意図）も同じ猶予を使う |
+| `epg.retention_grace` | `24h` | 放送終了から番組を刈り取るまでの猶予。ruler の GC（予約と番組単位の意図）も同じ猶予を使う。**エッジの滞留を N 日許すなら N 以上が要る**（[ストレージ](storage.md) §6「凍結が依存する寿命と、エッジの滞留の交点」） |
 | `ruler.max_deletes_per_pass` | `0`（= 50） | 大量削除サーキットブレーカーの閾値（下記「サーキットブレーカーと検出器の閾値」） |
 | `reconciler.start_delay_grace` | `0`（= 3m） | 開始遅延検出器の猶予（同上） |
 | `worker.periodic_jobs` | `true` | プロセス内で定期ジョブを投入するか（下記「worker.periodic_jobs と worker.queues」） |

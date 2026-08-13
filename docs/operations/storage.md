@@ -17,16 +17,20 @@
 
 > **滞留を N 日まで許すつもりでリングバッファをサイジングするなら、`epg.retention_grace >= N` にする。**
 
-超えた場合、その滞留から復帰した録画は既定ポリシー（`keep_original='always'` / `encode_profiles=[]`）で凍結される。原本は残るのでデータは失われないが、**エンコードは投入されず、`recordings.source` は `manual` に・`rule_id` は NULL に落ちる**。復帰は障害復旧時に一括で起きるので、まとまった件数が同時にこうなる。事後回復は `POST /api/recordings/{id}/encode-profiles`（追加のみ）。**GC 側を滞留と連動させない理由**（回線断のときクラウド側に留め置きのアンカーが存在しない）と、確認しているテストは [ストレージ](../storage.md) §6「凍結が依存する寿命と、エッジの滞留の交点」にある。
+GC がその番組のスナップショットを刈った後に ingest が走ると、その録画は既定ポリシー（`keep_original='always'` / `encode_profiles=[]`）で凍結される。原本は残るのでデータは失われないが、**エンコードは投入されず、`recordings.source` は `manual` に・`rule_id` は NULL に落ちる**。復帰は障害復旧時に一括で起きるので、まとまった件数が同時にこうなりうる。事後回復は `POST /api/recordings/{id}/encode-profiles`（追加のみ）。
 
-見張るメトリクスは滞留の型で分かれる。**どちらも閾値は「悪い状態が `epg.retention_grace` を超えて続いたか」**（[監視メトリクス](monitoring.md) の一覧）:
+**ただし GC 自身が止まる障害では話が違う。** worker 全停止や DB 到達不能のように `ruler_pass` ごと止まる障害では断のあいだ GC も進まないので、復帰時は sweep + ingest と `ruler_pass` の競争になり、ingest が先に走れば意図は守られる（どちらが先かはジョブの実行順に依存する。未検証）。決定論的に上の帰結になるのは「**GC は動き続けたが、その録画の ingest だけが猶予を跨いで遅れた**」場合。
+
+**`epg.retention_grace` を上げるのは無料ではない。** 同じキーが EPG 射影のローリングウィンドウ（`PruneEpgPrograms`）も駆動するため、N 日にすると `epg_programs` に全サービスの放送済み番組が N 日ぶん残り、終了済み番組に対して永続表 `recordings` へ never-scheduled 行が作られる窓も同じだけ広がる（増加量は未検証）。詳細と、**GC 側を滞留と連動させない理由**、確認しているテストは [ストレージ](../storage.md) §6「凍結が依存する寿命と、エッジの滞留の交点」にある。
+
+見張るメトリクスは**「その record の観測がクラウドに届いていたか」**で分かれる（「リンクが生きているか」ではない）。**どちらも閾値は「悪い状態が `epg.retention_grace` を超えて続いたか」**（[監視メトリクス](monitoring.md) の一覧）:
 
 | 滞留の型 | 見るメトリクス |
 |---|---|
-| リンクは生きているが ingest が詰まる（worker 停止・ストレージ障害・キュー詰まり） | `rokuban_uningested_records{site}` / `rokuban_uningested_record_bytes{site}` の増加 |
-| エッジ↔クラウドの回線断（未 ingest の record はクラウドから見えない） | `rokuban_sweep_last_pass_timestamp_seconds` / `rokuban_epg_sync_last_success_timestamp_seconds` の停滞 |
+| 観測は届いているが ingest が詰まる（worker 停止・ストレージ障害・キュー詰まり。断の直前までに観測済みの record もこちら） | `rokuban_uningested_records{site}` / `rokuban_uningested_record_bytes{site}` の増加 |
+| エッジ↔クラウドの回線断で、**断の最中に始まった録画**（クラウドは record 自体を知らない） | `rokuban_sweep_last_pass_timestamp_seconds` / `rokuban_epg_sync_last_success_timestamp_seconds` の停滞 |
 
-後者では未 ingest メトリクスは増えない —— record を観測する watcher 自身が届いていないため。**滞留量のアラートだけでは回線断を検知できない。**
+後者では未 ingest メトリクスは増えない —— `record_sync` の行は watcher が mirakc を観測して初めて作られるため（`internal/db/queries/metrics.sql` の `GetUningestedRecordBacklog` のコメント参照）。**滞留量のアラートだけでは回線断を検知できない。**
 
 ### アーカイブの速度要件
 
