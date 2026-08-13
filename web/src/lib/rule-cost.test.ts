@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { epgWindowDays, estimateRuleCost, type RuleCostSample } from '@/lib/rule-cost'
+import { estimateRuleCost, type RuleCostSample } from '@/lib/rule-cost'
 
 describe('estimateRuleCost', () => {
   it('0 件のときは件数・時間ともに 0 になる（未算出とは違う確定値）', () => {
@@ -61,14 +61,5 @@ describe('estimateRuleCost', () => {
     expect(estimate.isSampled).toBe(true)
     // 平均(1_800_000) * 100 件 * 7/8 = 157_500_000ms
     expect(estimate.durationMsPerWeek).toBeCloseTo(157_500_000)
-  })
-
-  it('windowDays を明示すると既定の 8 日ではなくその値で正規化する', () => {
-    // 期間条件で 7 日ちょうどに絞って検索したケースを想定（factor = 1 になる）
-    const sample: RuleCostSample = { totalCount: 5, loadedDurationsMs: [3_600_000] }
-    const estimate = estimateRuleCost(sample, 7)
-
-    expect(estimate.countPerWeek).toBe(5)
-    expect(epgWindowDays).toBe(8) // 既定値そのものが変わっていないことも確認する
   })
 })

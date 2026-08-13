@@ -147,8 +147,15 @@ export function SearchPage() {
    * costSampleIds は値札の時間見積もりに使う番組の部分集合。`SearchResultList`
    * が表示のために取得する `ids.slice(0, visibleCount)`（下の JSX）と同じ集合を
    * 使う。`useQueries` のクエリキー（`getGetProgramQueryOptions(site, id)`）が
-   * 一致するので、値札のために追加の HTTP リクエストは発生しない
-   * （React Query がキャッシュを共有する）。
+   * 一致するので、値札のために追加の HTTP リクエストは発生しない（React Query が
+   * キャッシュを共有する）。**実測済み**: `search.test.tsx` の
+   * 「読み込みが母数に追いついていない間は『先頭 N 件』からの外挿である旨を
+   * 明記し、追いつくと消える（値札のために追加の HTTP リクエストは発生しない）」
+   * が `GET /api/programs/{id}` の呼び出し件数を数えて確認している（37 件マッチ
+   * で 30 → 37 と増える一方、重複が無いこと）。
+   *
+   * `loadedDurationsMs` の由来（先頭 N 件で無作為抽出ではない）は
+   * `lib/rule-cost.ts` の `RuleCostSample` のコメントを参照。
    */
   const costSampleIds = ids.slice(0, visibleCount)
   const costDetails = useQueries({
@@ -157,6 +164,15 @@ export function SearchPage() {
   const loadedDurationsMs = costDetails
     .map((d) => unwrap(d.data)?.durationMs)
     .filter((ms): ms is number => ms !== undefined)
+
+  /**
+   * hasPeriod は値札に「8 日分を 7 日換算」という根拠を出してよいかの判定。
+   * `periodStartAt` / `periodEndAt` で期間を絞った検索は観測スパンが 8 日ではなく
+   * その期間そのものになるため、8 日を根拠にすると偽の説明になる
+   * （`CreateRuleForm` / `RuleEditForm` の同名の定数と同じ判定。それらは折りたたみの
+   * 中の警告用なので、値札だけ見ているユーザーにも同じ注意が届くようここでも計算する）。
+   */
+  const hasPeriod = draft.periodStartAt !== '' || draft.periodEndAt !== ''
 
   return (
     <>
@@ -213,6 +229,7 @@ export function SearchPage() {
         status={costStatus}
         totalCount={ids.length}
         loadedDurationsMs={loadedDurationsMs}
+        hasPeriod={hasPeriod}
       />
 
       {ruleId !== undefined ? (
@@ -291,18 +308,31 @@ export function SearchPage() {
  *
  * 件数は `totalCount`（検索 API が返す全件、ページングなし）から厳密に出せる。
  * 時間は番組ごとの `durationMs` が要るため `loadedDurationsMs`（画面が結果表示の
- * ために読み込んだ分）の平均から外挿する近似値になる --- 母数（`totalCount`）に
- * 対して読み込みが追いついていないときは `estimateRuleCost` の `isSampled` を見て
- * その旨を文言に足す（黙って過小に見せない）。
+ * ために読み込んだ分。`programId` 昇順の先頭 N 件で、無作為抽出ではない ---
+ * `lib/rule-cost.ts` の `RuleCostSample` のコメントを参照）の平均から外挿する
+ * 近似値になる。母数（`totalCount`）に対して読み込みが追いついていないときは
+ * `estimateRuleCost` の `isSampled` を見て「先頭 N 件」であることを文言に足す
+ * （黙って過小に見せない。かつ読み込みが 1 件も済んでいない間はこの注記を出さない
+ * --- `estimate.durationMsPerWeek === undefined`（算出中）のときに
+ * 「0 件の平均から算出」という自己矛盾した文言を出さないため）。
+ *
+ * `hasPeriod` が真（`periodStartAt` / `periodEndAt` で期間を絞った検索）のときは
+ * 「8 日分を 7 日換算」という根拠を出さない --- その根拠は「検索結果は EPG の
+ * 前方 8 日ぶんの観測」という前提に立っており、期間を絞った検索では観測スパンが
+ * その期間そのものになるため前提が崩れる（8 日分ではないのに 8 日分と言うと偽の
+ * 根拠になる。issue #237 の罠「黙って過小に見せない」に反する）。代わりに
+ * 「期間条件で絞っているため、週あたりの見込みは実際より小さく出ます」と明記する。
  */
 function RuleCostSummary({
   status,
   totalCount,
   loadedDurationsMs,
+  hasPeriod,
 }: {
   status: 'idle' | 'pending' | 'error' | 'success'
   totalCount: number
   loadedDurationsMs: number[]
+  hasPeriod: boolean
 }) {
   if (status === 'idle') {
     return (
@@ -328,15 +358,29 @@ function RuleCostSummary({
     estimate.durationMsPerWeek === undefined
       ? '算出中…'
       : `約 ${formatDuration(estimate.durationMsPerWeek)}`
-  const sampledNote = estimate.isSampled
-    ? `（時間は読み込み済みの ${estimate.sampleSize} 件の平均から算出）`
+
+  // 期間条件で絞っている検索は観測スパンが 8 日ではないため、8 日を根拠にする
+  // 文言は出さず、実際より小さく出ることを明記する（上のコメント参照）。
+  const basisText = hasPeriod
+    ? ''
+    : `（現在の EPG 実測 ${estimate.totalCount} 件・${epgWindowDays} 日分を ${ruleCostWeekDays} 日換算）`
+  const periodNote = hasPeriod
+    ? '（期間条件で絞っているため、週あたりの見込みは実際より小さく出ます）'
     : ''
+
+  // 読み込みが 1 件も済んでいない間（durationMsPerWeek === undefined）は
+  // 「0 件の平均から算出」という自己矛盾した文言を出さない。
+  const sampledNote =
+    estimate.durationMsPerWeek !== undefined && estimate.isSampled
+      ? `（時間は先頭 ${estimate.sampleSize} 件の平均から算出）`
+      : ''
 
   // 件数は 1 つの文字列にする（JSX で連結するとテキストノードが分かれ、
   // 読み上げも切れて聞こえる。上の検索結果件数の表示と同じ流儀）。
   const text =
     `この条件で保存すると、週あたり見込みで${countText}・${durationText}` +
-    `（現在の EPG 実測 ${estimate.totalCount} 件・${epgWindowDays} 日分を ${ruleCostWeekDays} 日換算）` +
+    basisText +
+    periodNote +
     sampledNote
 
   return <p className="px-4 py-2 text-xs text-muted-foreground">{text}</p>

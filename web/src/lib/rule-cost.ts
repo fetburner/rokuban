@@ -10,29 +10,39 @@
  */
 
 /**
- * epgWindowDays は EPG のローリングウィンドウが「今日から何日先まで」保持される
- * 想定日数。番組表は「共通の『EPG のローリングウィンドウの終端』（8 日先の 0 時）」
- * （docs/frontend/programs.md）を上限に使っており、EPG プロジェクション自体も
- * 「8 日 + 猶予」（docs/data/projections.md）で刈り取られる。検索結果はこの窓の
- * 範囲内でしか出ないため、検索結果の実測はおおむね「今日から 8 日分」の観測である。
+ * epgWindowDays は 7 日（1 週間）への正規化に使う固定の分母。**「観測スパンの
+ * 正確な日数」ではなく、EPG プロジェクションの前方保持日数（`docs/frontend/programs.md`
+ * 「EPG のローリングウィンドウの終端」（8 日先の 0 時）/ `docs/data/projections.md`
+ * 「8 日 + 猶予」）だけを近似の分母として使っている。**
  *
  * ルールの時間帯条件は曜日単位（1 週間周期）で書く（`RuleTimeWindow.weekdays`）ため、
  * 8 日という半端な単位のまま件数・時間を見せると「多い/少ない」の直感的な判断が
  * しにくい。7 日（1 週間）あたりに正規化することで、曜日条件と同じ周期の単位に揃える。
  *
- * 「今」から窓の終端までの実際の残り日数は時刻に応じて 7〜8 日の間で揺れるが、
- * ここでは実際の残り日数を測らず、EPG が保証する上限（8 日）を固定の分母として使う
- * --- 実際の残り日数を測るには「今」と窓の終端（サービスごとに EPG 受信状況で
- * 微妙に前後する）を別途問い合わせる必要があり、値札 1 つのために追加の API 呼び出しを
- * 増やすコストに見合わない。揺れの分だけ 7 日換算が実際の平均より少なめに出ることは
- * あっても、多めに出ることはない（保証された上限を分母に使っているため）。
+ * **この正規化は過大にも過小にも振れる近似であり、方向の保証は無い。** 検索結果の
+ * 実際の観測スパンは「未来 8 日」だけではない --- `epg_programs` の刈り取り
+ * （`PruneEpgPrograms`、`internal/db/queries/epg.sql`）は
+ * `end_at < 基準時刻 - retention_grace` で、`retention_grace` の既定値は 24 時間
+ * （`internal/worker/epg.go` の `defaultEpgRetentionGrace`。設定キー
+ * `epg.retention_grace` で変更可能、フロントからは見えない）。つまり**放送済みの
+ * 番組が最大で `retention_grace` ぶん残る**。加えて `internal/rulequery/compile.go`
+ * には `now()` を基準に未来だけへ絞る述語は無く（`start_at` を触るのは
+ * `PeriodStartAt` / `PeriodEndAt` の 2 箇所だけで、どちらも検索条件で明示しない限り
+ * 効かない）、`internal/api/search.go` も足していない。したがって条件を指定しない
+ * 検索の観測スパンは「過去 `retention_grace`（既定 24h）+ 未来 ~8 日」で
+ * **8 日より長くなりうる**（既定値なら約 9 日）。観測件数が多いぶん `totalCount` が
+ * 実際の週あたりの値より大きくなり、8 日固定の分母で 7 日換算すると**過大に**出る
+ * （例: 毎日 1 回の帯番組で未来 8 回 + 昨夜 1 回残っていると `totalCount = 9`、
+ * `9 * 7/8 = 7.875` で「約 8 件」と出るが真値は週 7 件）。逆に検索直後で EPG の
+ * 取得がまだ先まで届いていない、あるいは番組表側が「実際の残り日数は 7〜8 日で
+ * 揺れる」（`docs/frontend/programs.md`）と書いている通り窓の終端が縮んでいる局面では
+ * 過小にも振れる。**このどちらの方向にも振れることを前提に「見込み」と呼んでおり、
+ * 「多めには出ない」のような一方向の保証は書かない**（一度も真でなかった記述は
+ * 古い記述より悪い --- CLAUDE.md「測っていない挙動を断言しない」）。
  *
- * 検索条件に `periodStartAt` / `periodEndAt` で明示的な期間を指定した場合も、この
- * 8 日基準をそのまま使う。期間を絞った検索は既に「期間を指定したまま保存すると
- * 恒久的な期間制限になる」という別の注意書き（`pages/search.tsx` の `hasPeriod`）を
- * 持っているので、値札側でさらに期間の実際の幅を分母にする特別扱いを足すと
- * 「なぜこの数字だけ基準が違うのか」を説明する負担が増える。期間指定時の値札の精度は
- * 元々「見込み」の範囲内として扱う。
+ * 実際の観測スパンを厳密に測るには「今」・窓の終端・`retention_grace` を突き合わせる
+ * 追加の問い合わせが要り、値札 1 つのために増やすコストに見合わないため、ここでは
+ * 固定値 8 のままにしている。
  */
 export const epgWindowDays = 8
 
@@ -51,9 +61,18 @@ export const ruleCostWeekDays = 7
  * `loadedDurationsMs` は番組ごとの `durationMs`。検索 API 自体は `programId` しか
  * 返さないため、`GET /api/programs/{id}` で個別に取得できた分だけがここに入る
  * （`pages/search.tsx` が結果一覧の表示のために取得している分をそのまま再利用する
- * ので、値札のために追加のリクエストは発生しない）。全件に届いていないとき
+ * ので、値札のために追加のリクエストは発生しない。実測は `pages/search.tsx` の
+ * `RuleCostSummary` のコメントを参照）。全件に届いていないとき
  * （`loadedDurationsMs.length < totalCount`）は平均から外挿する --- 黙って
  * 読み込み済みの合計だけを見せると実際より小さく見えるため。
+ *
+ * **このサンプルは無作為抽出ではない。** `loadedDurationsMs` の由来は結果の
+ * `programId` 昇順の先頭 N 件（`internal/rulequery/query.go` の
+ * `ORDER BY p.program_id`）で、`programId` はネットワーク・サービス順に固まる
+ * （`(networkId*100000 + serviceId)*100000 + eventId`。`internal/capacity` のテストが
+ * 前提にしている形）。複数チャンネルに跨がるルール（例: 30 分番組の多い GR と
+ * 120 分番組の多い BS が両方マッチする）では、先頭 N 件が特定チャンネルに偏り、
+ * 平均尺が全体の平均から外れた標本になりうる。
  */
 export type RuleCostSample = {
   totalCount: number
@@ -86,17 +105,17 @@ export type RuleCostEstimate = {
  *
  * 件数は `totalCount` から厳密に計算できる（母数が全件であることは
  * `RuleCostSample` のコメントの通り確認済み）。時間は `loadedDurationsMs`
- * （読み込み済みの一部でありうる）の平均を `totalCount` に外挿する --- 全件の
- * 詳細を取得し直すと数百件規模のルールでリクエストが数百本に膨らむため
- * （`pages/search.tsx` の `pageSize` のコメントと同じ理由）、既に画面が持っている
- * 分だけを使う。
+ * （読み込み済みの一部でありうる。無作為抽出ではないことは `RuleCostSample` の
+ * コメントの通り）の平均を `totalCount` に外挿する --- 全件の詳細を取得し直すと
+ * 数百件規模のルールでリクエストが数百本に膨らむため（`pages/search.tsx` の
+ * `pageSize` のコメントと同じ理由）、既に画面が持っている分だけを使う。
+ *
+ * 7 日への正規化係数（`ruleCostWeekDays / epgWindowDays`）が過大にも過小にも
+ * 振れる近似であることは `epgWindowDays` のコメントの通り。
  */
-export function estimateRuleCost(
-  sample: RuleCostSample,
-  windowDays: number = epgWindowDays,
-): RuleCostEstimate {
+export function estimateRuleCost(sample: RuleCostSample): RuleCostEstimate {
   const { totalCount, loadedDurationsMs } = sample
-  const factor = ruleCostWeekDays / windowDays
+  const factor = ruleCostWeekDays / epgWindowDays
   const sampleSize = loadedDurationsMs.length
   const isSampled = sampleSize < totalCount
 
