@@ -107,11 +107,12 @@ func TestAllowedHosts_InvalidHost(t *testing.T) {
 }
 
 // リバースプロキシ前段では Host がプロキシ自身の値に書き換わり、元の
-// クライアント向け Host は X-Forwarded-Host に移る。X-Forwarded-Host が
-// allowlist 内なら、r.Host が allowlist 外（プロキシのホスト名）でも通す
-// （docs/api.md §リバースプロキシ・フレンドリー要件、issue #89）。
+// クライアント向け Host は X-Forwarded-Host に移る。TrustForwardedHost を
+// opt-in した構成（信頼できるプロキシが必ず前段に居る）では、X-Forwarded-Host
+// が allowlist 内なら r.Host が allowlist 外（プロキシのホスト名）でも通す
+// （docs/api.md §リバースプロキシ・フレンドリー要件、issue #89 / #216）。
 func TestAllowedHosts_ForwardedHostValidPassesEvenIfHostInvalid(t *testing.T) {
-	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}})
+	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}, TrustForwardedHost: true})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -134,10 +135,11 @@ func TestAllowedHosts_ForwardedHostValidPassesEvenIfHostInvalid(t *testing.T) {
 	}
 }
 
-// X-Forwarded-Host が allowlist 外なら、r.Host の値に関わらず 400 にする。
-// X-Forwarded-Host を無検証で信じると DNS rebinding 対策が無効化される。
+// TrustForwardedHost を opt-in した構成では、X-Forwarded-Host が allowlist
+// 外なら r.Host の値に関わらず 400 にする（プロキシが外来のヘッダーを
+// 上書きする前提の構成なので、ここに来る値はプロキシ自身が付けた値）。
 func TestAllowedHosts_ForwardedHostInvalidRejectsEvenIfHostValid(t *testing.T) {
-	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}})
+	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}, TrustForwardedHost: true})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -192,7 +194,7 @@ func TestAllowedHosts_NoForwardedHostFallsBackToHost(t *testing.T) {
 // 意図せず通ってしまう（レビュー指摘）。先頭カンマ要素を切り出してから
 // stripPort する実装であることを確認する。
 func TestAllowedHosts_ForwardedHostCommaSeparatedWithPortUsesFirstElement(t *testing.T) {
-	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}})
+	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}, TrustForwardedHost: true})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -221,7 +223,7 @@ func TestAllowedHosts_ForwardedHostCommaSeparatedWithPortUsesFirstElement(t *tes
 // 要素であっても一致せず 400 になっていた（ポートの有無で結果が変わる
 // 一貫性の無さそのもの）。
 func TestAllowedHosts_ForwardedHostCommaSeparatedNoPortUsesFirstElement(t *testing.T) {
-	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}})
+	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}, TrustForwardedHost: true})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -247,7 +249,7 @@ func TestAllowedHosts_ForwardedHostCommaSeparatedNoPortUsesFirstElement(t *testi
 // allowlist 内の値が含まれていても拒否する。「いずれかの要素が一致すれば通す」
 // という誤った実装（更なる抜け道）になっていないことを確認する。
 func TestAllowedHosts_ForwardedHostCommaSeparatedRejectsWhenFirstElementInvalid(t *testing.T) {
-	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}})
+	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}, TrustForwardedHost: true})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -272,7 +274,7 @@ func TestAllowedHosts_ForwardedHostCommaSeparatedRejectsWhenFirstElementInvalid(
 // X-Forwarded-Host が複数のヘッダー行に分かれて送られた場合も、最初の行を
 // 権威として使う（複数行は連結した1つの値と等価に扱う。RFC 9110 §5.3）。
 func TestAllowedHosts_ForwardedHostMultipleHeaderLinesUsesFirstLine(t *testing.T) {
-	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}})
+	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}, TrustForwardedHost: true})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -298,7 +300,7 @@ func TestAllowedHosts_ForwardedHostMultipleHeaderLinesUsesFirstLine(t *testing.T
 // 上のテストの行の順序を逆にすると結果も反転すること（最初の行が権威である
 // ことの両方向確認）。
 func TestAllowedHosts_ForwardedHostMultipleHeaderLinesRejectsWhenFirstLineInvalid(t *testing.T) {
-	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}})
+	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}, TrustForwardedHost: true})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -327,7 +329,7 @@ func TestAllowedHosts_ForwardedHostMultipleHeaderLinesRejectsWhenFirstLineInvali
 // X-Forwarded-Host: localhost を送るだけで allowlist を素通りできてしまう
 // バグ（レビュー指摘）の回帰を防ぐ。
 func TestAllowedHosts_ForwardedHostLocalhostDoesNotBypassAllowlist(t *testing.T) {
-	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}})
+	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}, TrustForwardedHost: true})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -394,6 +396,64 @@ func TestAllowedHosts_EmptyAllowsAll(t *testing.T) {
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want %d (empty allowlist should allow all)", resp.StatusCode, http.StatusOK)
+	}
+}
+
+// 直接露出構成（前段にリバースプロキシが居ない、TrustForwardedHost の既定
+// false）では X-Forwarded-Host を一切見ない。DNS rebinding の攻撃ページは
+// 同一オリジンとして任意のリクエストヘッダーを付けられるので、この免除が
+// 無いと `X-Forwarded-Host: <allowlist に載っている値>` を自己申告するだけで
+// allowlist を素通りできてしまう（issue #216）。r.Host には DNS rebinding
+// された攻撃者ドメインが来る想定。
+func TestAllowedHosts_UntrustedForwardedHostDoesNotBypassAllowlist(t *testing.T) {
+	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	req, err := http.NewRequest("GET", srv.URL+"/api/version", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// r.Host は DNS rebinding された攻撃者ドメイン（allowlist 外）。
+	req.Host = "attacker-controlled.example.com"
+	// 攻撃側が allowlist に載っている値を自己申告する。
+	req.Header.Set("X-Forwarded-Host", "rokuban.local")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d（TrustForwardedHost 未設定なら X-Forwarded-Host の自己申告で allowlist を素通りしてはいけない）", resp.StatusCode, http.StatusBadRequest)
+	}
+}
+
+// TrustForwardedHost を明示的に opt-in した、正しいリバースプロキシ構成
+// （プロキシが外来の X-Forwarded-Host を上書きする）では、従来どおり
+// X-Forwarded-Host を検証対象にして通す（上のテストとの両方向確認）。
+func TestAllowedHosts_TrustedForwardedHostStillPasses(t *testing.T) {
+	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}, TrustForwardedHost: true})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	req, err := http.NewRequest("GET", srv.URL+"/api/version", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// r.Host はプロキシ自身のホスト名（allowlist 外だが、プロキシ経由なので安全）。
+	req.Host = "internal-proxy.example.com"
+	req.Header.Set("X-Forwarded-Host", "rokuban.local")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want %d（TrustForwardedHost: true なら X-Forwarded-Host が allowlist 内で通すべき）", resp.StatusCode, http.StatusOK)
 	}
 }
 

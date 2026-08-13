@@ -4,7 +4,13 @@
 # HTTP を持つロール (api, streamer, notifier) 共通
 server:
   listen: ":40773"               # mirakc の 40772 の隣
-  allowed_hosts: [rokuban.local] # Host ヘッダー allowlist（X-Forwarded-Host があれば優先）。空にするとチェック無効（開発用）
+  allowed_hosts: [rokuban.local] # Host ヘッダー allowlist。空にするとチェック無効（開発用）
+  # trust_forwarded_host: true   # リバースプロキシ前段で X-Forwarded-Host を検証対象にする（既定 false）。
+                                  # 前段にプロキシが無い直接露出構成（--all の既定）では有効にしないこと。
+                                  # X-Forwarded-Host はクライアントが自由に送れる自己申告値なので、
+                                  # プロキシ無しで信頼すると Host allowlist（DNS rebinding 対策）を
+                                  # 迂回できてしまう。信頼できるプロキシが必ず前段に居り、かつ
+                                  # プロキシが外来の X-Forwarded-Host を上書きする構成でのみ true にする
 
 # PostgreSQL 接続情報（必須）
 db:

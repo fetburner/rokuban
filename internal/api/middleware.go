@@ -32,15 +32,22 @@ var infraPaths = map[string]bool{
 //
 // リバースプロキシ前段では `Host` がプロキシ自身の値に書き換わり、元の
 // クライアント向け Host は `X-Forwarded-Host` に移る（docs/api.md §リバース
-// プロキシ・フレンドリー要件、issue #89）。そのため `X-Forwarded-Host` が
-// あればそちらを検証対象にし、無ければ従来通り `r.Host` を使う。
+// プロキシ・フレンドリー要件、issue #89）。ただし `X-Forwarded-Host` は
+// クライアントが自由に送れるヘッダーであり、前段にプロキシが存在しない
+// 直接露出構成（`--all` の既定構成）でこの自己申告をそのまま allowlist の
+// 判定に使うと、DNS rebinding 攻撃ページが `X-Forwarded-Host: <allowlist に
+// 載っている値>` を自己申告するだけで検証を素通りできてしまう（issue #216）。
+// そのため `trustForwardedHost` が true（`server.trust_forwarded_host` を
+// 明示した、信頼できるプロキシが必ず前段に居る構成）のときにだけ
+// `X-Forwarded-Host` を検証対象にし、それ以外（既定 = false）では常に
+// `r.Host` を使う。
 //
 // `alwaysAllowedHosts`（localhost 系の常時許可）は `r.Host` を直接使う
 // ときにのみ適用する。`X-Forwarded-Host` は自己申告値（クライアントや
 // 途中の何者かが書ける）なので、`localhost` を騙って allowlist を素通り
 // できてしまう（実際の TCP 接続相手が localhost であることが前提の緩和
 // なので、転送された値には適用できない）。
-func AllowedHosts(allowedHosts []string) func(http.Handler) http.Handler {
+func AllowedHosts(allowedHosts []string, trustForwardedHost bool) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		if len(allowedHosts) == 0 {
 			return next
@@ -50,7 +57,11 @@ func AllowedHosts(allowedHosts []string) func(http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
-			forwarded, isForwarded := forwardedHost(r)
+			var forwarded string
+			var isForwarded bool
+			if trustForwardedHost {
+				forwarded, isForwarded = forwardedHost(r)
+			}
 			var host string
 			if isForwarded {
 				host = stripPort(forwarded)

@@ -37,6 +37,13 @@ type Config struct {
 type ServerConfig struct {
 	Listen       string   `yaml:"listen"`
 	AllowedHosts []string `yaml:"allowed_hosts"`
+
+	// TrustForwardedHost は `X-Forwarded-Host` を allowed_hosts の検証対象に
+	// するかどうか（既定 false）。信頼できるリバースプロキシが必ず前段に
+	// 居り、かつプロキシが外来の `X-Forwarded-Host` を上書きする構成でのみ
+	// true にする。opt-in にする理由と直接露出構成でのリスクは
+	// docs/configuration.md §server.allowed_hosts を参照（issue #216）。
+	TrustForwardedHost bool `yaml:"trust_forwarded_host"`
 }
 
 // DBConfig は PostgreSQL 接続設定。
