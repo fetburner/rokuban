@@ -54,7 +54,8 @@ data: {"topic":"recordings"}
 - 25 秒ごとにコメント行（`: ping`）を送る。リバースプロキシ・CDN のアイドルタイムアウト対策
 - `X-Accel-Buffering: no` を付ける。nginx がイベントを溜め込むのを防ぐ
 - クライアントのバッファが埋まっていたら通知を**捨てる**。詰まった 1 クライアントのために
-  全体を止めない。落とした通知は stale-time 経過後の再取得で回復する
+  全体を止めない。落とした通知はクライアント側の定期 invalidate で回復する（下記
+  「レベルトリガーの対称性」）
 - LISTEN コネクションが切れたら 5 秒後に再接続する。切断中の変更も同様に回復する
 
 ### レベルトリガーの対称性
@@ -65,7 +66,50 @@ data: {"topic":"recordings"}
 2. 真実は常に REST から再取得
 3. **プッシュの中身を直接信頼して画面状態を書き換えることはしない**
 
-SSE の取りこぼしは stale-time 経過後の再取得で自然回復する。プッシュデータを信頼して手元状態を書き換える設計（Socket.IO 時代の EPGStation）より壊れ方が大幅に単純になる。
+プッシュデータを信頼して手元状態を書き換える設計（Socket.IO 時代の EPGStation）より壊れ方が大幅に単純になる。
+
+#### 取りこぼしを回復するのは定期 invalidate（`staleTime` ではない）
+
+`staleTime` は「データを stale と判定する期限」であって、期限に達したら再取得を起こす
+周期タイマーではない。したがって「通知が捨てられた・接続は生きたまま・再 mount も
+window focus も別操作も起きない」画面は、`staleTime` だけでは古い表示が無期限に残る。
+回復はクライアント側（`web/src/lib/events.ts`）が張るタイマーが担う。
+
+**グループの寿命・変更頻度・応答の大きさで周期を分ける。**
+
+| グループ | クエリキー接頭辞 | SSE 無しでの収束の上限 | 周期を決めた理由 |
+|---|---|---|---|
+| 運用状態 | `/api/reservations` `/api/capacity/overages` `/api/recordings` `/api/breakers` | 60 秒 | 応答が小さく、変化が速い |
+| EPG | `/api/sites/`（番組表グリッド・サービス一覧・重なり）+ `/api/programs`（番組リストの手書きキー） | 10 分 | 数十チャンネル x 24 時間の大きな時間窓を 1 回で取る。EPG 同期ジョブ自体が分オーダーでしか動かないので、短周期で回しても得るものが無い |
+
+**接頭辞は URL とは限らない。** 番組リスト（`pages/programs.tsx` の `useInfiniteQuery`）は
+ページの形が「取得した半開区間」なのでキーを URL にできず、手書きの
+`['/api/programs', 'infinite', ...]` を使う。この接頭辞を書き忘れると、番組リストは
+SSE の `epg` イベントでも定期 invalidate でも取り直されない（下記「経緯と失敗事例」）。
+
+- **背面タブでは投げない。** 復帰時は `refetchOnWindowFocus`（`main.tsx` の QueryClient 既定）が拾う
+- **SSE が再接続したとき（切断を観測した後の `open`）は全グループを invalidate する。** 切断中に
+  飛んだ通知は再送されないので、周期を待たずに取り直す。初回接続では invalidate しない
+  （各クエリの mount 時の取得と二重になるだけ）
+- **再接続時の invalidate だけでは足りない。** 接続を切らずに個別の通知だけ落としたケースを
+  回復できるのは定期 invalidate の方だけ
+- 上の接頭辞に載っていないクエリ（`/api/storage` `/api/tuners` `/api/rules` `/api/version` 等）は
+  この定期経路に乗っていない。mount と window focus でのみ取り直す
+
+周期と経路は 2 段で測っている。
+
+- **jsdom**（`web/src/lib/events.test.tsx`）: 偽タイマーを進めて**再取得の回数を数える**
+  （「SSE が来なくても運用状態のクエリは 60 秒周期で取り直す」「EPG は運用状態より長い周期で
+  しか取り直さない」「再接続したら切断中の変更を全グループ取り直す」「背面タブでは定期取得を
+  投げず、前面に戻ると再開する」「epg のイベントで番組リスト（手書きのクエリキー）も取り直す」）
+- **実ブラウザ**（`web/e2e/sse-refresh.mjs`。Chromium + ビルド済み bundle + `page.clock`）:
+  SSE を張ったまま 1 通も送らず、`/api/**` のリクエスト数を数える。実測は
+  60 秒で `/api/reservations` `/api/breakers` が 1 → 2、10 分で
+  `/api/sites/{site}/programs` `/api/sites/{site}/services` が 1 → 2、
+  `/api/reservations` が 11（10 分ぶんの 10 回 + 初回）
+
+**実 notifier に対する収束時間と、切断時に実際の `EventSource` が `error` → `open` を
+この順で出すことは未計測**（仕様上はそうなる。再接続の経路を確かめているのはスタブの方だけ）。
 
 ### 水平スケール
 
@@ -88,6 +132,21 @@ Rokuban には長寿命接続が 2 つある --- notifier がブラウザへ送�
 
 ## 経緯と失敗事例
 
+- **「取りこぼしは stale-time 経過後の再取得で自然回復する」と docs 3 箇所（ここ・
+  frontend/stack.md・frontend/shell.md）に書いていたが、そのような再取得はどこにも
+  存在しなかった**（issue #181）。`staleTime` は判定の期限であってタイマーではない。
+  レベルトリガー設計の「イベントはヒント、真実は定期再取得」のうち**定期の側が
+  フロントに無い**まま、docs だけが在ることにしていた。定期 invalidate と再接続時の
+  invalidate を足して埋めた
+- **`epg` トピックが番組リストに一度も届いていなかった**（同 issue #181 で発見）。
+  接頭辞は `/api/sites/` だけだったが、番組リストのキーは手書きの
+  `['/api/programs', 'infinite', ...]`。**jsdom のテストは「トピックを撃つと
+  `/api/sites/...` のクエリが stale になる」ことしか見ておらず、画面が実際に使って
+  いるキーを通っていなかった**ので通り続けていた。見つかったのは実ブラウザ
+  （Chromium + ビルド済み bundle + `page.clock` で時計を進め、`/api/**` をスタブして
+  リクエスト数を数える）で「10 分進めても `/api/sites/tokyo/programs` の回数が
+  1 のまま」を観測したとき。回帰テストは `web/src/lib/events.test.tsx` の
+  「epg のイベントで番組リスト（手書きのクエリキー）も取り直す」
 - SSE の初期実装は M1-7 で api ロール内（`internal/api/events.go` の `EventHub`）に
   置かれ、M2-19（issue #24）で notifier ロールへ分離した。ロールを分ける判断と
   「2 つの SSE を集約しない」判断は issue #25 §4
