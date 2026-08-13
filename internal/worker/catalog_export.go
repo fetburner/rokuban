@@ -88,13 +88,13 @@ func (w *CatalogExportWorker) Work(ctx context.Context, job *river.Job[CatalogEx
 		return err
 	}
 
-	path, err := catalog.Write(w.MediaDir, doc, job.Args.Keep)
+	genDir, err := catalog.Write(w.MediaDir, doc, job.Args.Keep)
 	if err != nil {
 		return err
 	}
 
 	slog.Info("catalog exported",
-		"path", path,
+		"generation_dir", genDir,
 		"site", job.Args.Site,
 		"rules", len(doc.Rules),
 		"recordings", len(doc.Recordings),

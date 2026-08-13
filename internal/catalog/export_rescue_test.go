@@ -188,8 +188,7 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 	}
 
 	mediaDir := t.TempDir()
-	path, err := Write(mediaDir, doc, 7)
-	if err != nil {
+	if _, err := Write(mediaDir, doc, 7); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 
@@ -204,9 +203,13 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 	}
 
 	// --- rescue ---
-	result, err := RescueFile(ctx, pool, path)
+	// 実際の入口（RescueLatest）を通す: 世代の完成判定 → 選択 → 復元まで。
+	result, err := RescueLatest(ctx, pool, mediaDir, "default")
 	if err != nil {
-		t.Fatalf("RescueFile: %v", err)
+		t.Fatalf("RescueLatest: %v", err)
+	}
+	if result.Generation == "" || result.LegacyCatalog {
+		t.Fatalf("rescued from %+v, want a verified generation", result)
 	}
 	if result.Rules != 1 || result.Recordings != 2 || result.MediaAssets != 1 || result.DropStats != 1 {
 		t.Fatalf("rescue counts: rules=%d rec=%d assets=%d drops=%d",
@@ -288,9 +291,9 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 	}
 
 	// --- idempotent second pass ---
-	result2, err := RescueFile(ctx, pool, path)
+	result2, err := RescueLatest(ctx, pool, mediaDir, "default")
 	if err != nil {
-		t.Fatalf("RescueFile second: %v", err)
+		t.Fatalf("RescueLatest second: %v", err)
 	}
 	if result2.Recordings != 2 {
 		t.Errorf("second rescue recordings = %d, want 2", result2.Recordings)
@@ -474,11 +477,10 @@ func TestExport_ConcurrentIngestStaysConsistent(t *testing.T) {
 
 	// フルパイプライン: 最後に取れた Document を rescue しても FK 違反が出ないこと。
 	mediaDir := t.TempDir()
-	path, err := Write(mediaDir, lastDoc, 7)
-	if err != nil {
+	if _, err := Write(mediaDir, lastDoc, 7); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
-	if _, err := RescueFile(ctx, pool, path); err != nil {
-		t.Fatalf("RescueFile after concurrent export: %v", err)
+	if _, err := RescueLatest(ctx, pool, mediaDir, "default"); err != nil {
+		t.Fatalf("RescueLatest after concurrent export: %v", err)
 	}
 }

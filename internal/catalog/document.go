@@ -17,10 +17,13 @@ const Version = 1
 // Subdir は media_dir 配下の catalog ディレクトリ名。
 const Subdir = "catalog"
 
-// DefaultKeep は世代保持の既定値（最新 N 件）。
+// DefaultKeep は世代保持の既定値（最新 N 件の**完成世代**を残す。
+// docs/storage.md §8「不完全世代の保持と掃除」）。
 const DefaultKeep = 7
 
-// FilenamePrefix は catalog ファイル名の接頭辞。
+// FilenamePrefix は世代ディレクトリ名の接頭辞（`catalog-<UTC 時刻>`）。
+// 世代ディレクトリ導入前に書かれたフラットな `catalog-<UTC 時刻>.json` も
+// 同じ接頭辞を持つ。
 const FilenamePrefix = "catalog-"
 
 // Document は export / rescue で共有する catalog JSON の形。

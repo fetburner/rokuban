@@ -3,6 +3,7 @@ package catalog
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -78,10 +79,11 @@ func TestExportRescue_PreservesNeverScheduledRecording(t *testing.T) {
 	}
 
 	mediaDir := t.TempDir()
-	path, err := Write(mediaDir, doc, 7)
+	genDir, err := Write(mediaDir, doc, 7)
 	if err != nil {
 		t.Fatalf("Write: %v", err)
 	}
+	path := filepath.Join(genDir, DocumentFilename)
 	if _, err := pool.Exec(ctx, `TRUNCATE media_assets, recordings RESTART IDENTITY CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}

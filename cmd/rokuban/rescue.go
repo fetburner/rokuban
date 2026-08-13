@@ -67,9 +67,26 @@ func runRescue(ctx context.Context, pool *pgxpool.Pool, mediaDir, site string, o
 	}
 
 	if result.CatalogPath == "" {
-		_, _ = fmt.Fprintln(out, "rescued by scanning media_dir (catalog not found)")
+		// 「catalog が 1 つも無い」と「あったが全部不完全だった」を区別して出す。
+		if len(result.RejectedSnapshots) > 0 {
+			_, _ = fmt.Fprintln(out, "rescued by scanning media_dir (no complete catalog generation)")
+		} else {
+			_, _ = fmt.Fprintln(out, "rescued by scanning media_dir (catalog not found)")
+		}
 	} else {
 		_, _ = fmt.Fprintf(out, "rescued from %s\n", result.CatalogPath)
+	}
+	// 「最新に見えたものを飛ばした」ことは黙って成功させない（docs/storage.md §8）。
+	// 世代ディレクトリと旧形式のフラットファイルは別物なので文言を分ける。
+	for _, r := range result.RejectedSnapshots {
+		if r.Generation {
+			_, _ = fmt.Fprintf(out, "  skipped incomplete generation %s: %s\n", r.Name, r.Reason)
+			continue
+		}
+		_, _ = fmt.Fprintf(out, "  skipped unreadable catalog file %s: %s\n", r.Name, r.Reason)
+	}
+	if result.LegacyCatalog {
+		_, _ = fmt.Fprintln(out, "  warning: this catalog has no manifest; completeness was not verified")
 	}
 	_, _ = fmt.Fprintf(out, "  rules:              %d\n", result.Rules)
 	_, _ = fmt.Fprintf(out, "  recordings:         %d\n", result.Recordings)

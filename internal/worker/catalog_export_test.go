@@ -60,14 +60,21 @@ func TestCatalogExportWorker_WritesFile(t *testing.T) {
 		t.Fatalf("reading catalog dir: %v", err)
 	}
 	if len(entries) != 1 {
-		t.Fatalf("catalog files = %d, want 1", len(entries))
+		t.Fatalf("catalog entries = %d, want 1", len(entries))
 	}
-	if filepath.Ext(entries[0].Name()) != ".json" {
-		t.Errorf("file = %q, want .json", entries[0].Name())
+	if !entries[0].IsDir() {
+		t.Fatalf("entry = %q, want a generation directory", entries[0].Name())
+	}
+
+	// 世代が完成宣言（manifest）まで書けていること = rescue が選べる形で
+	// 出ていること（docs/storage.md §8）。
+	genDir := filepath.Join(catalog.Dir(mediaDir), entries[0].Name())
+	if _, err := catalog.VerifyGeneration(genDir); err != nil {
+		t.Fatalf("exported generation does not verify: %v", err)
 	}
 
 	// JSON が読めて version が載っていること。
-	doc, err := catalog.Load(filepath.Join(catalog.Dir(mediaDir), entries[0].Name()))
+	doc, err := catalog.Load(filepath.Join(genDir, catalog.DocumentFilename))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
