@@ -71,7 +71,7 @@ HTTP リスナーは常に 1 本立てる。OpenAPI には載せない（text fo
 | `rokuban_live_active_sessions` | Gauge | ライブセッション数（**per-process**。全体は Prometheus 側で sum。[k8s 運用](k8s.md) §5） |
 | `rokuban_live_session_start_failures_total{reason}` | Counter | ライブセッション開始失敗（`session_limit` / `upstream_error` / `ffmpeg_error`） |
 | `rokuban_live_idle_gc_reclaimed_total` | Counter | idle GC が回収したライブセッション数 |
-| `rokuban_live_leave_hints_total{result}` | Counter | 離脱ヒントの受信数（`deadline_shortened` / `no_session`）。**回収数と対で読む** --- ヒントは停止命令ではないので一致しない（差が開いていれば共有セッションが多い） |
+| `rokuban_live_leave_hints_total{result}` | Counter | 離脱ヒントの受信数（`deadline_shortened` / `no_session` / `no_effect`）。**回収数と対で読む** --- ヒントは停止命令ではないので一致しない（差が開いていれば共有セッションが多い）。`no_effect` が定常的に出るなら「猶予 ≥ `live.idle_timeout`」でヒントが効かない設定 |
 | `rokuban_live_idle_gc_last_pass_timestamp_seconds` | Gauge | 最後に完走した idle GC パスの時刻 |
 
 **録画失敗は観測した時点で数える。** 予約の照会や mirakc への問い合わせより後に

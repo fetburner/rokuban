@@ -516,12 +516,16 @@ var (
 	// 「離脱＝即回収」、開いていれば「共有セッションが多い」と読める。
 	//
 	// result:
-	//   - "deadline_shortened": 該当セッションがあり、idle 期限を詰めた
+	//   - "deadline_shortened": 該当セッションがあり、idle 期限を実際に詰めた
 	//   - "no_session": 該当サービスのセッションが無かった（既に回収済み・未開始）。
 	//     ヒントは何も起こさない --- セッションを作らないことがこの口の契約
+	//   - "no_effect": セッションはあったが期限は動かなかった。**設定上ヒントが
+	//     効かない**（猶予 = 3×segment_seconds + 2s が live.idle_timeout 以上）か、
+	//     **連打の 2 発目以降**（既に詰めた期限より後ろにしか詰められない）。
+	//     前者が定常的に出ているなら「離脱ヒントが効かない設定」を意味する
 	LiveLeaveHints = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "rokuban_live_leave_hints_total",
-		Help: "Live-viewing leave hints received, by result (deadline_shortened, no_session). A hint shortens the idle deadline; it never stops a session directly.",
+		Help: "Live-viewing leave hints received, by result (deadline_shortened, no_session, no_effect). A hint shortens the idle deadline; it never stops a session directly.",
 	}, []string{"result"})
 
 	// LiveIdleGCLastPass は最後に完走した idle GC パスの時刻（UNIX 秒）。

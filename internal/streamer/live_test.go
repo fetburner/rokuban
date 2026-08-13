@@ -2,6 +2,7 @@ package streamer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -1219,6 +1220,210 @@ func TestLiveStreamer_GCIntervalTakesTheEarlierDeadline(t *testing.T) {
 // 「猶予をセグメント長より短くすると leave が他人の視聴を切る道具になる」の
 // 実体である。**「切れない」ことを、切れるはずの間隔（A の要求間隔 = セグメント長）
 // より長い時間、実時間で観測する。**
+// 起動完了待ち（`<-s.ready`）の区間でも last-access が進むこと。
+//
+// Playlist のプレイリスト待ちは
+// `TestLiveStreamer_LeaveHint_DoesNotKillASessionThatIsStillStartingUp` が
+// 実経路で見ているが、**ready 待ちの区間**（getOrCreateSession の 2 経路と
+// Segment。mirakc への接続が遅いと最大 playlistStartupTimeout 続く）は
+// 偽 mirakc の応答を遅らせないと踏めないので、ここでは helper を直接見る ---
+// 3 経路とも同じ helper を通しているので、これでその 3 つを覆える。
+func TestWaitReadyTouching_KeepsTheSessionFresh(t *testing.T) {
+	s := &liveSession{
+		ready:      make(chan struct{}),
+		lastAccess: time.Now().Add(-time.Hour), // 十分に古い
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- waitReadyTouching(context.Background(), s, 5*time.Second) }()
+
+	// ポーリング 2 周ぶん待てば、待っている側が touch しているはず。
+	time.Sleep(5 * playlistPollInterval)
+	if idle := s.idleSince(time.Now()); idle > time.Second {
+		t.Errorf("idleSince while waiting for readiness = %v, want < 1s (a client waiting for startup must count as activity)", idle)
+	}
+
+	close(s.ready)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("waitReadyTouching() = %v, want nil once ready is closed", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("waitReadyTouching did not return after ready was closed")
+	}
+}
+
+// 逆方向: 起動が終わらないまま timeout すれば errStartupTimeout を返す
+// （待ちながら touch する形にしても、#189 / #286 が入れた期限は生きている）。
+func TestWaitReadyTouching_TimesOut(t *testing.T) {
+	s := &liveSession{ready: make(chan struct{}), lastAccess: time.Now()}
+	start := time.Now()
+	err := waitReadyTouching(context.Background(), s, 3*playlistPollInterval)
+	if !errors.Is(err, errStartupTimeout) {
+		t.Errorf("waitReadyTouching() = %v, want errStartupTimeout", err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("waitReadyTouching took %v, want it to give up at the timeout", elapsed)
+	}
+}
+
+// installSlowStartFakeLiveFFmpeg は installFakeLiveFFmpeg と同じものを書き出すが、
+// **書き出しを delay だけ遅らせる**（実 ffmpeg のトランスコード立ち上がりが遅く、
+// プレイリストの 1 本目が出るまで時間がかかる状況）。
+//
+// `cmd.Start()` 自体は即座に返るので、**セッションは「起動済み（ready）」だが
+// プレイリストはまだ無い**という状態が delay のあいだ続く --- ここが
+// issue #191 のレビューで指摘された無音区間である。
+func installSlowStartFakeLiveFFmpeg(t *testing.T, delay time.Duration) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("fake ffmpeg script assumes a POSIX shell")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "slow-fake-ffmpeg-live")
+	script := fmt.Sprintf(`#!/bin/sh
+cat >/dev/null &
+sleep %.2f
+baseurl=""
+segfile=""
+prev=""
+for a in "$@"; do
+  if [ "$prev" = "-hls_segment_filename" ]; then segfile="$a"; fi
+  if [ "$prev" = "-hls_base_url" ]; then baseurl="$a"; fi
+  case "$a" in
+    *.m3u8)
+      playlist="$a"
+      mkdir -p "$(dirname "$playlist")" 2>/dev/null
+      seg=$(printf '%%s' "$segfile" | sed 's/%%05d/00001/')
+      mkdir -p "$(dirname "$seg")" 2>/dev/null
+      printf 'fake-ts-segment-data' > "$seg.tmp"
+      mv "$seg.tmp" "$seg"
+      {
+        printf '#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:2\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:2.0,\n'
+        printf '%%s\n' "${baseurl}$(basename "$seg")"
+      } > "$playlist.tmp"
+      mv "$playlist.tmp" "$playlist"
+      ;;
+  esac
+  prev="$a"
+done
+while true; do sleep 1; done
+`, delay.Seconds())
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// **離脱ヒントは「起動を待っている視聴者」のセッションを殺してはならない**
+// （issue #191 のレビュー指摘。この PR が新設した経路）。
+//
+// Playlist は `getOrCreateSession` の後に touch() を 1 回打ち、そこから
+// waitForPlaylist（最大 playlistStartupTimeout）に入る。この区間で誰も touch
+// しないと、そこに届いたヒント 1 発で idle 期限が猶予まで詰まり、**待っている
+// 視聴者ごと**回収されてしまう。回収前は期限 30 秒 > 起動待ち 15 秒だったので
+// この経路は存在せず、猶予を 8 秒に詰められるようにしたことで生まれた。
+//
+// **仮想時計を使わず、実時間の GC ループ（ls.Run）で見る。** reapIdleAt に
+// 「いま」を渡す形だと、無音区間と GC 周期の重なりという**この不具合の本体**が
+// テストから消える（レビュアーの再現条件に合わせる）。
+//
+// 修正前の実測: ヒント送出 → 約 2 秒後に回収 → 視聴者は playlistStartupTimeout
+// 満了で 504。修正後: 200（起動待ちのあいだ last-access が更新され続ける）。
+func TestLiveStreamer_LeaveHint_DoesNotKillASessionThatIsStillStartingUp(t *testing.T) {
+	// 起動待ち（3.5s）> 猶予（2s）+ GC 周期（1s）になるように選ぶ。
+	// **`segment_seconds: 0` は production では起こらない**（config が既定 2 を
+	// 埋める）が、ここで固定したいのは「無音区間 > 猶予 + 周期」という**形**で
+	// あって production の秒数ではない --- 実際の既定値（猶予 8 秒）で同じ形を
+	// 作ると、起動待ちを 10 秒以上にする必要があり、テストが不必要に遅くなる。
+	const startupDelay = 3500 * time.Millisecond
+	prevTimeout := playlistStartupTimeout
+	playlistStartupTimeout = 6 * time.Second
+	t.Cleanup(func() { playlistStartupTimeout = prevTimeout })
+
+	mirakcSrv, state := newFakeMirakcLiveServer(t)
+	cfg := baseLiveConfig(t)
+	cfg.FFmpeg = installSlowStartFakeLiveFFmpeg(t, startupDelay)
+	cfg.IdleTimeout = 8 * time.Second // 起動待ちより長い = ヒントが無ければ死なない
+	cfg.Profiles[0].SegmentSeconds = 0
+	ls, srv := newTestLiveStreamer(t, mirakcSrv.URL, cfg)
+	grace := cfg.leaveGrace()
+	if grace+ls.gcInterval() >= startupDelay {
+		t.Fatalf("test setup: grace (%v) + gc interval (%v) must be shorter than the startup delay (%v) to exercise the window",
+			grace, ls.gcInterval(), startupDelay)
+	}
+
+	// 実時間の GC ループを回す（この不具合は周期と無音区間の重なりで出る）。
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = ls.Run(ctx) }()
+
+	const serviceID = int64(93)
+	type result struct {
+		status int
+		took   time.Duration
+	}
+	got := make(chan result, 1)
+	go func() {
+		start := time.Now()
+		resp, err := http.Get(playlistURL(srv.URL, serviceID, "h264"))
+		if err != nil {
+			got <- result{0, time.Since(start)}
+			return
+		}
+		defer func() { _ = resp.Body.Close() }()
+		_, _ = io.ReadAll(resp.Body)
+		got <- result{resp.StatusCode, time.Since(start)}
+	}()
+
+	// セッションが起きるのを待つ（ここを待たずにヒントを送ると "no_session" に
+	// なり、何も検証していないテストになる）。
+	waitDeadline := time.Now().Add(2 * time.Second)
+	for ls.sessionCount() == 0 && time.Now().Before(waitDeadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if ls.sessionCount() != 1 {
+		t.Fatalf("session did not start; sessionCount = %d", ls.sessionCount())
+	}
+	// **Playlist が touch() を打った後**にヒントを送る（それより前だと直後の
+	// touch() がヒントを打ち消してしまい、この窓を踏まない）。
+	time.Sleep(700 * time.Millisecond)
+	if code := postLeave(t, srv.URL, serviceID); code != http.StatusNoContent {
+		t.Fatalf("POST leave = %d, want 204", code)
+	}
+
+	select {
+	case r := <-got:
+		if r.status != http.StatusOK {
+			t.Fatalf("viewer waiting for the playlist got %d after %v, want 200: a leave hint must not reclaim a session that a client is still waiting on",
+				r.status, r.took)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("playlist request never returned")
+	}
+	select {
+	case sid := <-state.disconnected:
+		t.Fatalf("service %d was disconnected while a client was still waiting for its playlist", sid)
+	default:
+	}
+
+	// 逆方向: 起動待ちが終われば、ヒントは普通に効く（待ちの touch が
+	// セッションを永久に免疫にしてしまっていない）。
+	if code := postLeave(t, srv.URL, serviceID); code != http.StatusNoContent {
+		t.Fatalf("POST leave (after startup) = %d, want 204", code)
+	}
+	select {
+	case sid := <-state.disconnected:
+		if sid != serviceID {
+			t.Errorf("disconnected service id = %d, want %d", sid, serviceID)
+		}
+	case <-time.After(grace + 4*time.Second):
+		t.Fatalf("session was not reclaimed within %v of a leave hint sent after startup finished (the startup touching must not immunize the session forever)",
+			grace+4*time.Second)
+	}
+}
+
 func TestLiveStreamer_LeaveHint_ClippedGraceIsNoOp(t *testing.T) {
 	mirakcSrv, state := newFakeMirakcLiveServer(t)
 	cfg := baseLiveConfig(t)
@@ -1263,8 +1468,18 @@ func TestLiveStreamer_LeaveHint_ClippedGraceIsNoOp(t *testing.T) {
 	})
 
 	// B が離脱ヒントを投げる。A は見続けている。
+	shortenedBefore := counterValue(t, metrics.LiveLeaveHints.WithLabelValues("deadline_shortened"))
+	noEffectBefore := counterValue(t, metrics.LiveLeaveHints.WithLabelValues("no_effect"))
 	if code := postLeave(t, srv.URL, serviceID); code != http.StatusNoContent {
 		t.Fatalf("POST leave = %d, want 204", code)
+	}
+	// **効かなかったヒントを「詰めた」と数えない**（メトリクスは実際に起きたことを
+	// 表す。issue #191 のレビュー指摘の任意 1 件）。
+	if got := counterValue(t, metrics.LiveLeaveHints.WithLabelValues("no_effect")); got != noEffectBefore+1 {
+		t.Errorf("rokuban_live_leave_hints_total{result=no_effect} = %v, want %v", got, noEffectBefore+1)
+	}
+	if got := counterValue(t, metrics.LiveLeaveHints.WithLabelValues("deadline_shortened")); got != shortenedBefore {
+		t.Errorf("rokuban_live_leave_hints_total{result=deadline_shortened} = %v, want %v (a hint that changed nothing must not be counted as shortened)", got, shortenedBefore)
 	}
 
 	// A の要求間隔（0.3 秒）よりも、セグメント長（6 秒）よりも、idle_timeout
