@@ -547,7 +547,7 @@ describe('LivePage', () => {
     // 再生状態のリセットを `useEffect` で行うと、`selectedServiceId` が A→B に
     // 変わった直後の 1 コミットだけ古い再生中フラグが残っていて `LivePlayer` が
     // B の serviceId で透過的にマウントされ、その 1 回の probe が実際に飛ぶ
-    // （実測: jsdom でもこの fetch モックに `/services/{B の合成 id}/live/
+    // （実測: jsdom でもこの fetch モックに `/services/{B の serviceId}/live/
     // playlist.m3u8` への呼び出しが記録される）。判定はレンダー中の調整で防ぐ
     // （`pages/live.tsx` の `playingServiceId` 参照）。件数が増えていなければ、
     // B 向けの LivePlayer が一度もマウントされなかったと言える

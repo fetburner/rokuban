@@ -91,8 +91,8 @@ jsdom で原理的に測れず、`vi.mock` によるフェイクの配線検査�
 E2E_LIVE_SERVICE_A=9001 E2E_LIVE_SERVICE_B=9002 pnpm e2e:live
 ```
 
-渡すのは **SI の `serviceId`**（URL に載る mirakc 合成 id は `live.mjs` が
-`GET /api/sites/{site}/services` から解決する）。`GET /api/capabilities` も
+渡すのは **SI の `serviceId`**（ライブの URL に載るのも SI の値そのもの。
+issue #217）。`GET /api/capabilities` も
 `page.route` で `{live: true}` に差し替えるので、サーバー側の `live.enabled` は
 false（既定）のままでよい --- 差し替えないと画面が「無効です」になって
 ①〜⑦が全滅する（issue #209）。①〜⑦は「再生」ボタンを押した後の挙動を見るもの

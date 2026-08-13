@@ -3,14 +3,17 @@
 // 資源同定・スケール方針は docs/api.md §ライブ視聴の HLS と docs/operations.md §5
 // 「streamer のスケール」で決まっている。ここで守る 3 点:
 //
-//   - URL はセッション ID を持たない。`/api/sites/{site}/services/{serviceId}/live/...`
-//     から正規表現 1 本で (site, serviceId) が取り出せる固定深さ
+//   - URL はセッション ID を持たない。
+//     `/api/sites/{site}/networks/{networkId}/services/{serviceId}/live/...`
+//     から正規表現 1 本で (site, networkId, serviceId) が取り出せる固定深さ
 //   - idle GC の粒度はサービス単位（クライアント 1 人ごとの生存は追わない）
 //   - 同時セッション上限はプロセスローカル（グローバルな天井はチューナー数で、
 //     裁定者は mirakc）
 //
-// **DB を引かない**（issue #91 の決定 3）。serviceId は検証せずそのまま mirakc に
-// 渡す。セッションはインメモリの使い捨て --- crash-only の唯一の例外
+// **DB を引かない**（issue #91 の決定 3）。パスの (networkId, serviceId) は
+// SI の値そのもの（`GET /api/sites/{site}/services` が返すのと同じ id 空間）で、
+// mirakc が要求する合成 id への変換は mirakc.ServiceID による純関数（issue #217）。
+// セッションはインメモリの使い捨て --- crash-only の唯一の例外
 // （docs/overview.md §crash-only）。
 package streamer
 
@@ -189,14 +192,15 @@ func sweepStaleLiveSegments(dir string) {
 
 // Mount はライブ視聴のルートを登録する（cfg.Enabled が true のときだけ）。
 //
-// パスは `/api/sites/{site}/services/{serviceId}/live/...` の固定深さ
-// （issue #56 の決定。1 つの nginx 変数で (site, serviceId) を取り出せる）。
-// OpenAPI には載せない（バイナリ + 長寿命という原本 /file と同じ理由）。
+// パスは `/api/sites/{site}/networks/{networkId}/services/{serviceId}/live/...` の
+// 固定深さ（issue #56 の決定。1 つの nginx 変数で
+// (site, networkId, serviceId) を取り出せる）。OpenAPI には載せない
+// （バイナリ + 長寿命という原本 /file と同じ理由）。
 func (ls *LiveStreamer) Mount(r chi.Router) {
 	if !ls.cfg.Enabled {
 		return
 	}
-	const base = "/api/sites/{site}/services/{serviceId}/live"
+	const base = "/api/sites/{site}/networks/{networkId}/services/{serviceId}/live"
 	r.Get(base+"/playlist.m3u8", ls.Playlist)
 	r.Get(base+"/segments/{name}", ls.Segment)
 }
@@ -254,7 +258,8 @@ var playlistStartupTimeout = 15 * time.Second
 
 const playlistPollInterval = 100 * time.Millisecond
 
-// Playlist は GET /api/sites/{site}/services/{serviceId}/live/playlist.m3u8 を処理する。
+// Playlist は GET /api/sites/{site}/networks/{networkId}/services/{serviceId}/live/playlist.m3u8
+// を処理する。
 // `?profile=` が無ければ既定（先頭）プロファイル。
 func (ls *LiveStreamer) Playlist(w http.ResponseWriter, r *http.Request) {
 	serviceID, ok := ls.resolveRequest(w, r)
@@ -302,7 +307,8 @@ func (ls *LiveStreamer) Playlist(w http.ResponseWriter, r *http.Request) {
 // 常に 1 階層のファイル名になる）。
 var segmentNamePattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+\.ts$`)
 
-// Segment は GET /api/sites/{site}/services/{serviceId}/live/segments/{name} を処理する。
+// Segment は GET /api/sites/{site}/networks/{networkId}/services/{serviceId}/live/segments/{name}
+// を処理する。
 //
 // name にプロファイルは含まれない代わりに、ffmpeg が書き出すファイル名自体に
 // プロファイル名を接頭辞として焼く（BuildLiveFFmpegArgs）。セグメント URL に
@@ -380,20 +386,61 @@ func (ls *LiveStreamer) Segment(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, path)
 }
 
-// resolveRequest はパスから (site, serviceId) を取り出し、site がこのプロセスの
-// 担当（config.mirakc.site）と一致することを確かめる。DB は引かない
-// （issue #91 の決定 3）--- serviceId はここでは検証せず、そのまま mirakc に渡す。
+// resolveRequest はパスから (site, networkId, serviceId) を取り出し、site が
+// このプロセスの担当（config.mirakc.site）と一致することを確かめたうえで、
+// mirakc に渡す合成 service id を返す。DB は引かない（issue #91 の決定 3）---
+// 合成は mirakc.ServiceID の純関数。
+//
+// **mirakc へ渡るのは常にここで組み立てた整数であり、URL の文字列ではない。**
+// パスセグメントを 16 bit 符号なし整数として解析できなければ 400 を返して
+// 打ち切るので、細工した値が mirakc の別エンドポイントへの要求に化ける経路が無い
+// （TestLiveStreamer_RejectsHostileIDSegments が %2F・クエリ注入・符号付き・
+// 桁あふれ・全角数字を、TestLiveStreamer_MirakcPathIsComposedFromPathSegments が
+// 実際に mirakc が受け取るパスとクエリを固定する）。「不明な id は mirakc が拒否
+// する」という mirakc 側の挙動には依存しない --- 起動に失敗した理由が何であれ
+// writeSessionError が 503 にまとめる（issue #217）。
 func (ls *LiveStreamer) resolveRequest(w http.ResponseWriter, r *http.Request) (int64, bool) {
 	if chi.URLParam(r, "site") != ls.site {
 		http.NotFound(w, r)
 		return 0, false
 	}
-	serviceID, err := strconv.ParseInt(chi.URLParam(r, "serviceId"), 10, 64)
-	if err != nil {
+	networkID, ok := parseSIID(chi.URLParam(r, "networkId"))
+	if !ok {
+		http.Error(w, "invalid network id", http.StatusBadRequest)
+		return 0, false
+	}
+	serviceID, ok := parseSIID(chi.URLParam(r, "serviceId"))
+	if !ok {
 		http.Error(w, "invalid service id", http.StatusBadRequest)
 		return 0, false
 	}
-	return serviceID, true
+	return mirakc.ServiceID(networkID, serviceID), true
+}
+
+// parseSIID は SI の network_id / service_id を表すパスセグメントを解析する。
+//
+// いずれも SI 上は 16 bit 符号なし整数なので上限をそこに取る。合成
+// （mirakc.ServiceID = networkID*100_000 + serviceID）が可逆であるためには
+// serviceID < 100_000 が必要で、16 bit 上限（65535）はそれを満たす。
+// strconv.ParseUint(s, 10, 16) は空文字・符号付き・基数接頭辞・アンダースコア
+// 区切り・全角数字・65535 超をすべて弾く。
+//
+// **十進の正準形だけを受ける（先頭ゼロを弾く）。** ParseUint は `01024` を 1024 と
+// して受けるが、**前段の consistent hash の鍵は URL の文字列**である
+// （docs/operations/k8s.md §5 の `map $uri $live_key`）ため、`1024` と `01024` は
+// 同じチャンネルを指しながら別 Pod に落ちる --- そこで ffmpeg とチューナーが
+// 2 本になり、「同じチャンネルの視聴者は同じ Pod に落ちるので 1 本で済む」という
+// 鍵の取り方の前提そのものが崩れる。streamer 内部の鍵（合成後の整数）は同一に
+// なるので単体プロセスでは症状が出ない --- 弾くのは URL の別名を作らないため。
+func parseSIID(s string) (int, bool) {
+	if len(s) > 1 && s[0] == '0' {
+		return 0, false
+	}
+	v, err := strconv.ParseUint(s, 10, 16)
+	if err != nil {
+		return 0, false
+	}
+	return int(v), true
 }
 
 func writeSessionError(w http.ResponseWriter, err error) {

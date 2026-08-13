@@ -767,12 +767,23 @@ func TestSPA_APIPathsNotFallback(t *testing.T) {
 // ルートを登録しないので、このパスは未マッチになる。SPA に落とすと
 // probeLivePlaylist（web/src/lib/live.ts）が HTML 200 を成功扱いし、
 // 「無効な機能」ではなく「壊れた再生」として見える。
+//
+// **URL は「ライブを有効にすれば実在する」現在の形でなければならない**
+// （`/api/sites/{site}/networks/{networkId}/services/{serviceId}/live/...`。
+// issue #217 で id 空間を一覧 API に揃えたときに変わった）。有効にしても
+// 存在しないパスを置くと、このテストは直上の TestSPA_APIPathsNotFallback と
+// 同じ「`/api/` 配下の未マッチが JSON 404 になる」しか主張しなくなる ---
+// 実際、旧形式のまま残っていたためレビューで指摘された。api は streamer を
+// import できない（streamer → api の依存があるので循環する）ので、実際に
+// Mount した状態との対比は `internal/streamer` の
+// TestLiveMount_DisabledDoesNotFallBackToSPA が持つ（あちらは有効時に同じ
+// パスが 404 でなくなることまで見る）。
 func TestSPA_LivePlaylistNotFoundWhenLiveDisabled(t *testing.T) {
 	router := NewRouter(RouterConfig{DistFS: newTestDistFS()})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
-	resp, err := http.Get(srv.URL + "/api/sites/default/services/5324853248/live/playlist.m3u8")
+	resp, err := http.Get(srv.URL + "/api/sites/default/networks/31920/services/53248/live/playlist.m3u8")
 	if err != nil {
 		t.Fatal(err)
 	}

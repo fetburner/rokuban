@@ -71,7 +71,7 @@ site 単位のキューを一切購読できない（`worker.RequiresSiteBinding
 | | 置き場所 | レプリカ | 前段 | イメージ |
 |---|---|---|---|---|
 | 録画配信 / サムネイル | メディアストレージの隣 | 水平（N） | 素の round-robin | 公式（ffmpeg 不要） |
-| ライブ視聴 | mirakc の隣（サイトごと） | 既定 1 | `(site, serviceId)` の consistent hash | `Dockerfile.full` |
+| ライブ視聴 | mirakc の隣（サイトごと） | 既定 1 | `(site, networkId, serviceId)` の consistent hash | `Dockerfile.full` |
 
 #### 録画配信はセッション親和性を必要としない
 
@@ -88,14 +88,16 @@ Pod は site 非依存**で、どの Pod でもどの録画を配れる。`recor
 再生中に Pod が落ちてもクライアントは Range で再接続して継続する。決めるべきは
 `terminationGracePeriodSeconds` を進行中の転送を打ち切らない長さにすることだけ。
 
-#### ライブ視聴は mirakc の隣、シャード鍵は serviceId
+#### ライブ視聴は mirakc の隣、シャード鍵はサービスの同定子
 
 生 TS は 17 Mbps 連続なので WAN に出さない。**トランスコードは mirakc と同じサイトで
 行い、HLS になったものだけがサイトの外に出る。**
 
-セッションを Pod に貼り付ける代わりに、**前段で `(site, serviceId)` の consistent
-hash によって振る**。この鍵は既に資源同定の中にある
-（`/api/sites/{site}/services/{serviceId}/...`。[api.md](../api.md) §ライブ視聴の HLS）
+セッションを Pod に貼り付ける代わりに、**前段で `(site, networkId, serviceId)` の
+consistent hash によって振る**。この鍵は既に資源同定の中にある
+（`/api/sites/{site}/networks/{networkId}/services/{serviceId}/...`。
+[api.md](../api.md) §ライブ視聴の HLS。SI の service_id は network をまたぐと
+一意でないので、鍵も 3 項になる）
 ので、レプリカを増やしても URL もクライアントも変わらない。
 
 - **cookie による affinity は使わない。**外部プレイヤー（VLC 等）は cookie を
@@ -104,7 +106,7 @@ hash によって振る**。この鍵は既に資源同定の中にある
   からもクライアントを剥がす**
 - **同じチャンネルの視聴者は同じ Pod に落ちる**ので、ffmpeg 1 本・チューナー 1 本を
   共有する。チューナーは録画と取り合う唯一の共有資源なので、これは偶然の利益ではなく
-  鍵を `serviceId` に取る理由そのもの
+  鍵をサービスの同定子に取る理由そのもの
 - **Pod が落ちても、ハッシュの担当が移っても自己修復する。**視聴者の再要求が新しい
   Pod に落ちてそこで ffmpeg が起き、旧 Pod は要求が来なくなるので idle GC が
   チューナーを解放する。クライアント側にセッションの概念が無いので、見えるのは
@@ -116,13 +118,13 @@ hash によって振る**。この鍵は既に資源同定の中にある
 （ライブ 1 本がチューナー 1 本を占有し、残りが録画に使われる）。1 サイトのチューナー
 数ぶんのトランスコードが 1 Pod に収まる間は、増やす理由が無い。
 
-収まらなくなったら **replica を増やし、前段に `(site, serviceId)` の consistent hash
+収まらなくなったら **replica を増やし、前段に `(site, networkId, serviceId)` の consistent hash
 を設定するだけでよい。**URL・クライアント・API は変わらない。この可逆性を保つために
 実装側で守るのは次の 3 点:
 
 1. **プレイリスト / セグメントの URL を固定深さにする。**前段が 1 つの nginx 変数で
    鍵を取り出せる形にする。OSS nginx なら
-   `map $uri $live_key { ~^/api/sites/(?<s>[^/]+)/services/(?<sv>[^/]+)/live/ "$s/$sv"; }`
+   `map $uri $live_key { ~^/api/sites/(?<s>[^/]+)/networks/(?<n>[^/]+)/services/(?<sv>[^/]+)/live/ "$s/$n/$sv"; }`
    → `hash $live_key consistent;`。可変長パスやクエリ文字列に鍵を置くと書けない
    （ingress-nginx の `upstream-hash-by` で同じキャプチャがどう書けるかは未検証）
 2. **同時セッション上限はプロセスローカルであることを前提にする。**グローバルな
@@ -209,6 +211,6 @@ preemption 対策は上記の ScaledJob で十分であり、チャンク化の�
 - ロールとキュー購読の構造的保証は issue #113（`--roles watcher` 構成で起動時検査が実態より広い安心を与える経路があった）。
 - キュー名の site 修飾（`<論理名>_<site>`）・watcher の advisory lock キーの site 修飾（`watcher:<site>`）・`delete_reconcile` / `catalog_export` の `cleanup` キューへの配置は issue #185 M4-13。
 - `--sites` フラグと `mirakcs:` レジストリは issue #183 M4-11。
-- streamer のスケール設計（sticky を使わない / consistent hash / 既定 replicas=1 の可逆性）は issue #56。ライブの資源同定 `/api/sites/{site}/services/{serviceId}/...` は M3-1。ingress-nginx の `upstream-hash-by` で consistent hash の同じキャプチャがどう書けるかは M4-6 で実機確認するとされた（本文では未検証と記載）。
+- streamer のスケール設計（sticky を使わない / consistent hash / 既定 replicas=1 の可逆性）は issue #56。ライブの資源同定 `/api/sites/{site}/services/{serviceId}/...` は M3-1（id 空間を一覧 API に揃えるため `networks/{networkId}/services/{serviceId}` に変えたのは issue #217）。ingress-nginx の `upstream-hash-by` で consistent hash の同じキャプチャがどう書けるかは M4-6 で実機確認するとされた（本文では未検証と記載）。
 - 録画配信の URL に site を持たない決定（`recordings.id` は surrogate）は issue #31。
 - watcher の `processRecord` 冪等化（singleton 性が「正しさ」の要件でなくなった）は M2-16。
