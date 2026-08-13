@@ -62,6 +62,9 @@ HTTP リスナーは常に 1 本立てる。OpenAPI には載せない（text fo
 | `rokuban_delete_reconcile_deleted_total{source}` | Counter | 物理削除したアセット件数（source 別） |
 | `rokuban_delete_reconcile_bytes_total{source}` | Counter | 物理削除で解放したバイト数 |
 | `rokuban_delete_reconcile_last_pass_timestamp_seconds` | Gauge | 最後に成功した削除 reconcile パスの時刻 |
+| `rokuban_storage_sync_last_success_timestamp_seconds` | Gauge | **全 root を観測できた**パスの時刻。1 root でも失敗した部分成功では進まない（下の per-root ゲージと対で見る） |
+| `rokuban_storage_root_last_success_timestamp_seconds{root}` | Gauge | root（`media` / `scratch`）ごとに最後に観測できた時刻。片方だけ恒久的に壊れているケースをここで特定する（下記「沈黙は保証ではない」） |
+| `rokuban_storage_total_bytes{root}` / `rokuban_storage_used_bytes{root}` / `rokuban_storage_available_bytes{root}` | Gauge | root ごとの直近観測バイト数。`GET /api/storage` を経由せず Prometheus 側で容量アラートを組める |
 | `rokuban_live_active_sessions` | Gauge | ライブセッション数（**per-process**。全体は Prometheus 側で sum。[k8s 運用](k8s.md) §5） |
 | `rokuban_live_session_start_failures_total{reason}` | Counter | ライブセッション開始失敗（`session_limit` / `upstream_error` / `ffmpeg_error`） |
 | `rokuban_live_idle_gc_reclaimed_total` | Counter | idle GC が回収したライブセッション数 |
@@ -121,9 +124,9 @@ ruler / reconciler / record_sweep（watcher の 3 段構えのうち (c) 定期�
 | 種別 | ジョブ | `--site` | CronJob の立て方 |
 |---|---|---|---|
 | site 束縛 | `epg-sync` / `tuner-sync` / `ruler-pass` / `reconcile-pass` / `record-sweep` | 多サイトでは必須（1 サイトなら省略可） | **サイトごとに 1 本**（`--site tokyo` 等） |
-| site 非依存 | `catalog-export` | **付けない**（付けるとエラー） | **全体で 1 本**（サイトごとに立てない） |
+| site 非依存 | `catalog-export` / `storage-sync` | **付けない**（付けるとエラー） | **全体で 1 本**（サイトごとに立てない） |
 
-`catalog-export` はアーカイブが単一なので site の属性を持たない。サイトごとの CronJob から叩くと N 回投入される（River の一意制約で 1 本に合流はするが意図が読めない）。
+`catalog-export` / `storage-sync` はアーカイブ（+ スクラッチ）が単一なので site の属性を持たない。サイトごとの CronJob から叩くと N 回投入される（River の一意制約で 1 本に合流はするが意図が読めない）。**`worker.periodic_jobs: false` の構成では `storage-sync` の CronJob を忘れると `storage_sync` が一度も投入されず、`GET /api/storage` が永遠に空配列を返す**（issue #238 のレビュー指摘）。
 
 **record_sweep には ruler / reconciler と違ってヒント経路（前倒し投入）がない**。定期投入だけが契機で、間隔は既定 5 分（`worker.RecordSweepInterval`、旧 watcher の `ReconcileInterval` を継承）。SSE 再接続をヒントにする案は検討したが、`internal/mirakc.Client.Subscribe` が再接続を内部に隠していて呼び出し側に通知できないため見送った（[録画エンジン](../recording.md) §3.3「record_sweep の起動契機」）。取りこぼしの実害は SSE の (a)(b) が大半を吸収し、record_sweep は定期パスとして収束させる保険という位置づけなので、5 分間隔で十分と判断している。
 
@@ -181,6 +184,7 @@ ruler / reconciler / record_sweep（watcher の 3 段構えのうち (c) 定期�
 | `/api/sites/{site}/programs/{programId}/overlaps` の `count = 0` | 録れるとは限らない（他サイトや mirakc の他の消費者は数えていない） | 重なりの手動確認（[docs/runbook/](../runbook.md) 側） |
 | `/api/breakers` が空 | 削除が正しかったとは限らない。**閾値を下回る削除は素通りする** | `rokuban_ruler_reservations_total{action="deleted"}` の増え方 |
 | `rokuban_reconcile_start_delayed` が 0 | 録画が始まったことの確認ではない（猶予 3 分の内側は検出しない） | `recordings.started_at` |
+| `GET /api/storage` に root が載っている | 最新の観測とは限らない。1 root の statfs 失敗時は前回の観測行をそのまま残すため、行の存在だけでは「観測が続いている」ことを保証しない | 各要素の `observedAt` の鮮度 / `rokuban_storage_root_last_success_timestamp_seconds{root}` |
 
 ### 経緯と失敗事例
 

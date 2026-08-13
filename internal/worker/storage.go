@@ -16,11 +16,13 @@ import (
 
 // defaultStorageSyncInterval はストレージ観測の既定間隔。
 //
-// 残量は録画・削除・エンコードで連続的に変わるが、「残高」として UI に出す用途に
-// 分単位の鮮度で足りる（tuner_sync の 10 分より短くしているのは、容量枯渇の
-// 兆候をアラートに乗せるまでの遅延を抑えるため）。専用の設定キーは設けていない
-// --- tuner_sync / catalog_export / delete_reconcile の既定間隔と同じく、
-// 運用者が調整する理由が今のところ無い（issue #238）。
+// tuner_sync（10 分）より短くしているが、この値そのものに測定的根拠はない
+// （未検証。record_sweep の 5 分に合わせただけの初期値）。実際のアラート整備
+// （time() 差分での閾値検討）は本 PR のスコープ外 --- rokuban_storage_root_*
+// メトリクスを export するようになった今は組めるようになったが、アラート自体は
+// 未着手。専用の設定キーは設けていない --- tuner_sync / catalog_export /
+// delete_reconcile / record_sweep の既定間隔と同じく、運用者が調整する理由が
+// 今のところ無い（docs/runbook/setup.md の record_sweep の前例。issue #238）。
 const defaultStorageSyncInterval = 5 * time.Minute
 
 // storageSyncTimeout は 1 パス（root ごとの statfs + DB upsert 高々 2 回）の上限。
@@ -125,18 +127,41 @@ func (w *StorageSyncWorker) Work(ctx context.Context, _ *river.Job[StorageSyncAr
 
 	roots := w.roots()
 	desired := make([]string, len(roots))
+	desiredSet := make(map[string]bool, len(roots))
 	for i, r := range roots {
 		desired[i] = r.name
+		desiredSet[r.name] = true
 	}
 
 	q := sqlcgen.New(w.Pool)
 
-	// config が要求しなくなった root（例: scratch_dir を空に変更した）だけを
-	// 消す。今回 statfs に失敗した root はこの集合に含まれる（desired から
-	// 外れない）ので、ここでは消えない --- 消すかどうかは config が決め、
-	// 「今回観測できたか」では決めない（storage_sync.sql のコメント参照）。
+	// 削除前に既存行を見て、config から外れる root（例: scratch_dir を空に
+	// 変更した）を特定する --- DB 行を消すのと同時に、その root の Prometheus
+	// ラベルも消す（残すと「二度と更新されないのに値だけが居座る」壊れ方をする。
+	// PR #258 のレビュー指摘）。
+	existing, err := q.ListStorageSync(ctx)
+	if err != nil {
+		return fmt.Errorf("storage sync: listing existing roots: %w", err)
+	}
+	var removed []string
+	for _, e := range existing {
+		if !desiredSet[e.Root] {
+			removed = append(removed, e.Root)
+		}
+	}
+
+	// config が要求しなくなった root だけを消す。今回 statfs に失敗した root は
+	// この集合に含まれる（desired から外れない）ので、ここでは消えない ---
+	// 消すかどうかは config が決め、「今回観測できたか」では決めない
+	// （storage_sync.sql のコメント参照）。
 	if err := q.DeleteStorageSyncExcept(ctx, desired); err != nil {
 		return fmt.Errorf("storage sync: deleting stale roots: %w", err)
+	}
+	for _, name := range removed {
+		metrics.StorageRootLastSuccess.DeleteLabelValues(name)
+		metrics.StorageRootTotalBytes.DeleteLabelValues(name)
+		metrics.StorageRootUsedBytes.DeleteLabelValues(name)
+		metrics.StorageRootAvailableBytes.DeleteLabelValues(name)
 	}
 
 	stat := w.statFunc()
@@ -146,10 +171,12 @@ func (w *StorageSyncWorker) Work(ctx context.Context, _ *river.Job[StorageSyncAr
 		if err != nil {
 			// 1 root の statfs 失敗でパス全体を失敗させない --- media と scratch は
 			// 別々のマウントであることが多く、片方の一時的な不調（アンマウント等）
-			// でもう片方の観測まで止める理由がない。前回の観測行はそのまま残す
-			// （observed_at が更新されないので、UI の鮮度表示が「観測が止まって
-			// いる」ことを黒く塗らずに伝える。metrics.TunerSyncLastSuccess と同じ
-			// 「沈黙は保証ではない」姿勢）。
+			// でもう片方の観測まで止める理由がない。前回の観測行・
+			// StorageRootLastSuccess / バイト数ゲージはそのまま残す（更新しない）。
+			// observed_at とこれらのゲージの鮮度だけが「観測が止まっている」
+			// ことを伝える手がかりになる（M7-6 で UI がこの鮮度を出せるように
+			// なる想定。metrics.TunerSyncLastSuccess と同じ「沈黙は保証ではない」
+			// 姿勢）。
 			slog.Warn("storage sync: statfs failed, keeping previous observation",
 				"root", r.name, "path", r.path, "err", err)
 			continue
@@ -164,6 +191,14 @@ func (w *StorageSyncWorker) Work(ctx context.Context, _ *river.Job[StorageSyncAr
 			return fmt.Errorf("storage sync: upserting root %s: %w", r.name, err)
 		}
 		observed++
+
+		// root ごとのゲージは、この root の観測が実際に成功した場合にだけ進める
+		// （StorageSyncLastSuccess の対になる、root 単位の鮮度シグナル。
+		// internal/metrics.StorageRootLastSuccess のコメント参照）。
+		metrics.StorageRootLastSuccess.WithLabelValues(r.name).SetToCurrentTime()
+		metrics.StorageRootTotalBytes.WithLabelValues(r.name).Set(float64(u.TotalBytes))
+		metrics.StorageRootUsedBytes.WithLabelValues(r.name).Set(float64(u.UsedBytes))
+		metrics.StorageRootAvailableBytes.WithLabelValues(r.name).Set(float64(u.AvailableBytes))
 	}
 
 	if observed == 0 {
@@ -175,7 +210,15 @@ func (w *StorageSyncWorker) Work(ctx context.Context, _ *river.Job[StorageSyncAr
 		return fmt.Errorf("storage sync: all %d root(s) failed to observe", len(roots))
 	}
 
-	metrics.StorageSyncLastSuccess.SetToCurrentTime()
+	// StorageSyncLastSuccess は**全 root**を観測できたパスだけで進める。
+	// 1 root でも失敗した部分成功では進めない --- 進めてしまうと、片方の root が
+	// 恒久的に壊れていても他方が成功し続ける限り「最後に成功した時刻」が
+	// 現在時刻付近を保ち続け、まさにこの機能の存在理由（容量枯渇の検知）を
+	// 見失う（PR #258 のレビュー指摘）。root 単位の欠落は
+	// StorageRootLastSuccess で検知する。
+	if observed == len(roots) {
+		metrics.StorageSyncLastSuccess.SetToCurrentTime()
+	}
 	slog.Info("storage sync complete", "roots", len(roots), "observed", observed)
 	return nil
 }

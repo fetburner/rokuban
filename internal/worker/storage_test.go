@@ -7,11 +7,13 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/diskusage"
+	"github.com/fetburner/rokuban/internal/metrics"
 )
 
 func runStorageSync(t *testing.T, w *StorageSyncWorker) error {
@@ -259,5 +261,154 @@ func TestStorageSyncWorker_AllRootsFailReturnsError(t *testing.T) {
 	rows := allStorageSync(t, pool)
 	if len(rows) != 0 {
 		t.Errorf("storage_sync rows = %+v, want 0 (nothing observed)", rows)
+	}
+}
+
+// fakeStat は root ごとに固定の diskusage.Usage を返す（実ディスクの数字に依存せず
+// ゲージの値を厳密に検証するため）。
+func fakeStat(usageByPath map[string]diskusage.Usage, failPaths map[string]bool) func(string) (diskusage.Usage, error) {
+	return func(path string) (diskusage.Usage, error) {
+		if failPaths[path] {
+			return diskusage.Usage{}, fmt.Errorf("simulated statfs failure for %s", path)
+		}
+		u, ok := usageByPath[path]
+		if !ok {
+			return diskusage.Usage{}, fmt.Errorf("fakeStat: no usage configured for %s", path)
+		}
+		return u, nil
+	}
+}
+
+// StorageSyncLastSuccess（ジョブ全体のゲージ）は**全 root を観測できたパスだけ**
+// 進む。1 root でも失敗した部分成功では進めない --- PR #258 のレビューで指摘された
+// 欠陥（media が恒久的に壊れていても scratch が成功し続ける限りこのゲージが
+// 進み続け、機能の存在理由である容量枯渇の検知を見失う）の直接の受け入れ基準。
+func TestStorageSyncWorker_JobLevelLastSuccessOnlyOnFullSuccess(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+	scratchDir := t.TempDir()
+
+	before := promtestutil.ToFloat64(metrics.StorageSyncLastSuccess)
+
+	// 部分成功（scratch だけ失敗）では進まない。
+	w := &StorageSyncWorker{
+		Pool: pool, MediaDir: mediaDir, ScratchDir: scratchDir,
+		Stat: fakeStat(
+			map[string]diskusage.Usage{mediaDir: {TotalBytes: 100, UsedBytes: 10, AvailableBytes: 90}},
+			map[string]bool{scratchDir: true},
+		),
+	}
+	if err := runStorageSync(t, w); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+	if got := promtestutil.ToFloat64(metrics.StorageSyncLastSuccess); got != before {
+		t.Errorf("StorageSyncLastSuccess = %v after partial success, want unchanged %v", got, before)
+	}
+
+	// 全 root 成功で進む。
+	w.Stat = fakeStat(map[string]diskusage.Usage{
+		mediaDir:   {TotalBytes: 100, UsedBytes: 10, AvailableBytes: 90},
+		scratchDir: {TotalBytes: 200, UsedBytes: 20, AvailableBytes: 180},
+	}, nil)
+	if err := runStorageSync(t, w); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+	if got := promtestutil.ToFloat64(metrics.StorageSyncLastSuccess); got <= before {
+		t.Errorf("StorageSyncLastSuccess = %v after full success, want > %v", got, before)
+	}
+}
+
+// root ごとのゲージ（StorageRootLastSuccess / TotalBytes / UsedBytes /
+// AvailableBytes）は、その root の観測が実際に成功したときだけ更新される。
+// 失敗した root は前回の値のまま凍結する（PR #258 のレビュー指摘の核心 ---
+// このゲージの組がなければ「片方の root だけ壊れている」を Prometheus から
+// 検知できない）。
+func TestStorageSyncWorker_PerRootMetricsFreezeOnFailure(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+	scratchDir := t.TempDir()
+
+	w := &StorageSyncWorker{
+		Pool: pool, MediaDir: mediaDir, ScratchDir: scratchDir,
+		Stat: fakeStat(map[string]diskusage.Usage{
+			mediaDir:   {TotalBytes: 100, UsedBytes: 10, AvailableBytes: 90},
+			scratchDir: {TotalBytes: 500, UsedBytes: 50, AvailableBytes: 450},
+		}, nil),
+	}
+	if err := runStorageSync(t, w); err != nil {
+		t.Fatalf("first Work() error: %v", err)
+	}
+	scratchLastSuccessBefore := promtestutil.ToFloat64(metrics.StorageRootLastSuccess.WithLabelValues("scratch"))
+	if got := promtestutil.ToFloat64(metrics.StorageRootTotalBytes.WithLabelValues("scratch")); got != 500 {
+		t.Fatalf("scratch TotalBytes = %v, want 500", got)
+	}
+
+	time.Sleep(10 * time.Millisecond)
+
+	// 2 回目: scratch の statfs が失敗、media は新しい値で成功する。
+	w.Stat = fakeStat(map[string]diskusage.Usage{
+		mediaDir: {TotalBytes: 999, UsedBytes: 111, AvailableBytes: 888},
+	}, map[string]bool{scratchDir: true})
+	if err := runStorageSync(t, w); err != nil {
+		t.Fatalf("second Work() error: %v", err)
+	}
+
+	if got := promtestutil.ToFloat64(metrics.StorageRootLastSuccess.WithLabelValues("scratch")); got != scratchLastSuccessBefore {
+		t.Errorf("scratch StorageRootLastSuccess = %v, want unchanged %v (statfs failed this pass)", got, scratchLastSuccessBefore)
+	}
+	if got := promtestutil.ToFloat64(metrics.StorageRootTotalBytes.WithLabelValues("scratch")); got != 500 {
+		t.Errorf("scratch TotalBytes = %v, want unchanged 500 (statfs failed this pass)", got)
+	}
+
+	if got := promtestutil.ToFloat64(metrics.StorageRootLastSuccess.WithLabelValues("media")); got <= scratchLastSuccessBefore {
+		t.Errorf("media StorageRootLastSuccess = %v, want > %v (media succeeded this pass)", got, scratchLastSuccessBefore)
+	}
+	if got := promtestutil.ToFloat64(metrics.StorageRootTotalBytes.WithLabelValues("media")); got != 999 {
+		t.Errorf("media TotalBytes = %v, want 999 (updated this pass)", got)
+	}
+	if got := promtestutil.ToFloat64(metrics.StorageRootUsedBytes.WithLabelValues("media")); got != 111 {
+		t.Errorf("media UsedBytes = %v, want 111", got)
+	}
+	if got := promtestutil.ToFloat64(metrics.StorageRootAvailableBytes.WithLabelValues("media")); got != 888 {
+		t.Errorf("media AvailableBytes = %v, want 888", got)
+	}
+}
+
+// config から root が外れたら、その root の Prometheus ラベルも消す
+// （DeleteLabelValues）。残すと二度と更新されない値が Prometheus に居座り続ける
+// （PR #258 のレビュー指摘）。
+func TestStorageSyncWorker_MetricsClearedWhenRootRemoved(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+	scratchDir := t.TempDir()
+
+	w := &StorageSyncWorker{
+		Pool: pool, MediaDir: mediaDir, ScratchDir: scratchDir,
+		Stat: fakeStat(map[string]diskusage.Usage{
+			mediaDir:   {TotalBytes: 100, UsedBytes: 10, AvailableBytes: 90},
+			scratchDir: {TotalBytes: 500, UsedBytes: 50, AvailableBytes: 450},
+		}, nil),
+	}
+	if err := runStorageSync(t, w); err != nil {
+		t.Fatalf("first Work() error: %v", err)
+	}
+	if got := promtestutil.ToFloat64(metrics.StorageRootLastSuccess.WithLabelValues("scratch")); got == 0 {
+		t.Fatalf("scratch StorageRootLastSuccess = %v, want set (nonzero) before removal", got)
+	}
+
+	// scratch_dir を空にした運用者の再設定 + プロセス再起動を模す。
+	w.ScratchDir = ""
+	w.Stat = fakeStat(map[string]diskusage.Usage{
+		mediaDir: {TotalBytes: 100, UsedBytes: 10, AvailableBytes: 90},
+	}, nil)
+	if err := runStorageSync(t, w); err != nil {
+		t.Fatalf("second Work() error: %v", err)
+	}
+
+	if got := promtestutil.ToFloat64(metrics.StorageRootLastSuccess.WithLabelValues("scratch")); got != 0 {
+		t.Errorf("scratch StorageRootLastSuccess = %v after removal, want 0 (DeleteLabelValues should have cleared it)", got)
+	}
+	if got := promtestutil.ToFloat64(metrics.StorageRootTotalBytes.WithLabelValues("scratch")); got != 0 {
+		t.Errorf("scratch TotalBytes = %v after removal, want 0", got)
 	}
 }

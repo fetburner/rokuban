@@ -33,7 +33,8 @@ encode/thumbnail ジョブが River の再試行を焼き続けてから気付�
 キュー（`ingest` / `epg`（`tuner_sync` も同じ）/ `reconciler` / `watcher`）だけ、
 プロセスが束縛されているサイト名で `<論理名>_<site>`（例: `ingest_tokyo`）に
 修飾される。`ruler` / `encode` / `thumbnail` / `cleanup`
-（`delete_reconcile` / `catalog_export` のキュー）/ `default` は site に依存しないので
+（`delete_reconcile` / `catalog_export` のキュー）/ `storage`（`storage_sync` の
+キュー）/ `default` は site に依存しないので
 修飾されない。修飾は `worker.queues` の
 設定値・未知キューのエラーメッセージのどちらにも現れない --- 設定・エラー文言は
 常に論理名のままで、実際にキューを引くプロセス（KEDA のスケーラ定義や Prometheus の
@@ -46,13 +47,17 @@ encode/thumbnail ジョブが River の再試行を焼き続けてから気付�
 |---|---|---|---|
 | `reconciler` / `epg`（+`tuner_sync`）/ `watcher` | mirakc への到達性 | 自宅側 | **束縛**（キュー名を `_<site>` で修飾） |
 | `ingest` | mirakc への到達性 + ファイルシステム | 自宅側 | **束縛**（同上） |
-| `encode` / `thumbnail` / `cleanup`（`delete_reconcile` / `catalog_export`） | ファイルシステム | 自宅側 | 非依存（アーカイブは単一） |
+| `encode` / `thumbnail` / `cleanup`（`delete_reconcile` / `catalog_export`） / `storage`（`storage_sync`） | ファイルシステム | 自宅側 | 非依存（アーカイブ・スクラッチは単一） |
 | `ruler` | DB のみ | どちらでも | 非依存（`args.Site` はクエリの絞り込み） |
 
 0 サイト束縛（中央プロセス、`server --sites=`）の worker は
 site 単位のキューを一切購読できない（`worker.RequiresSiteBinding` が起動時に
 強制する）。中央プロセスで動かせるのは `ruler` / `encode` / `thumbnail` /
-`cleanup` / `default` に `worker.queues` を絞った構成だけである。
+`cleanup` / `storage` / `default` に `worker.queues` を絞った構成だけである
+--- ただし `cleanup` / `storage` は表の通りファイルシステムを要求するので、
+「0 サイト束縛」（mirakc の site 数の話）と「ファイルシステム不要」を混同しないこと。
+中央プロセスであっても media_dir/scratch_dir のマウントに到達できるノードで
+動かす必要がある。
 
 ### streamer のスケール
 

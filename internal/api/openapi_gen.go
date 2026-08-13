@@ -1110,23 +1110,29 @@ type ServiceChannelType string
 // 容量観測 1 件（`storage_sync` 行そのもの。issue #238 M7-5）。
 type StorageRoot struct {
 	// AvailableBytes 非特権プロセスが実際に書き込める残量（statfs の Bavail）。
-	// 「残高」として UI に出すべき数字はこちら。
+	// 「残高」として UI に出すべき数字はこちら。`observedAt` 時点の
+	// スナップショット。
 	AvailableBytes int64 `json:"availableBytes"`
 
 	// ObservedAt この行を最後に観測できた時刻。観測ループが止まっていても行は
 	// 消えないため、この値の鮮度だけが異常の手がかりになる。
 	ObservedAt time.Time `json:"observedAt"`
 
-	// Path 観測対象の絶対パス（config の値そのもの）。
+	// Path 観測対象の絶対パス（config の値そのもの）。他のフィールドと同じく
+	// `observedAt` 時点のスナップショット --- config の path を変更した
+	// 直後に statfs が失敗すると、次の成功する観測まで**古い path のまま**
+	// 残る（バイト数も同様に古い値のまま）。現在の設定を保証しない。
 	Path string `json:"path"`
 
 	// Root config キー（`storage.media_dir` / `storage.scratch_dir`）と 1:1。
 	Root StorageRootRoot `json:"root"`
 
-	// TotalBytes ファイルシステム全体の容量。
+	// TotalBytes ファイルシステム全体の容量（`observedAt` 時点のスナップショット。
+	// `path` の説明を参照）。
 	TotalBytes int64 `json:"totalBytes"`
 
 	// UsedBytes root 予約領域を使用済み側に数えた使用量（total - free）。
+	// `observedAt` 時点のスナップショット。
 	UsedBytes int64 `json:"usedBytes"`
 }
 

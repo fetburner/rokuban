@@ -376,17 +376,54 @@ var (
 )
 
 // ストレージ観測（issue #238 M7-5）のメトリクス。
+//
+// StorageSyncLastSuccess はジョブ全体（1 パス）の完走を見るゲージで、
+// **root ごとの健全性は見分けられない**。「media は何日も観測できていないが
+// scratch は健全」という部分故障（PR #258 のレビューで指摘）では、
+// StorageSyncLastSuccess は scratch が成功するたびに現在時刻へ進み続けるため、
+// このゲージ単体では検知できない --- 根本原因（存在理由そのものである
+// アーカイブの容量）を見失う。そのための root 別シグナルが
+// StorageRootLastSuccess / StorageRootTotalBytes / StorageRootUsedBytes /
+// StorageRootAvailableBytes の 4 つ。「観測が止まっている」と「statfs が
+// 失敗し続けている」をログ無しで区別できるのはこの 4 つの組であり、
+// StorageSyncLastSuccess 単体ではできない。
 var (
-	// StorageSyncLastSuccess は最後に成功したストレージ観測パスの時刻（UNIX 秒）。
-	// EpgSyncLastSuccess と同じ理由（このゲージがないと、observed_at が古いままの
-	// root が「観測が止まっている」のか「statfs が失敗し続けている」のか
-	// worker プロセス全体のログを見ずに区別できない）で持つ。site ラベルは
-	// 持たない --- アーカイブ/スクラッチは単一で site に従属しない
+	// StorageSyncLastSuccess は最後に**全 root を観測できた**パスの時刻（UNIX 秒）。
+	// 1 root でも失敗したパスでは進めない（部分成功を「成功」に数えない。
+	// internal/worker/storage.go の StorageSyncWorker.Work 参照）。
+	// site ラベルは持たない --- アーカイブ/スクラッチは単一で site に従属しない
 	// （StorageSyncArgs のコメント参照）。
 	StorageSyncLastSuccess = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "rokuban_storage_sync_last_success_timestamp_seconds",
-		Help: "Unix time of the last successful storage usage sync (all configured roots observed). Use with time() to detect a stalled sync job.",
+		Help: "Unix time of the last storage sync pass where every configured root was observed successfully. Use with time() to detect a degraded sync; check rokuban_storage_root_last_success_timestamp_seconds{root} for which root is stale.",
 	})
+
+	// StorageRootLastSuccess は root ごとに最後に観測できた時刻（UNIX 秒）。
+	// 統計に失敗した root は更新しない（前回の値のまま残る）ので、
+	// time() との差分がその root だけ伸び続けることで壊れた root を特定できる。
+	StorageRootLastSuccess = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "rokuban_storage_root_last_success_timestamp_seconds",
+		Help: "Unix time of the last successful statfs observation for this root. Use with time() to detect a specific root that has stopped being observed.",
+	}, []string{"root"})
+
+	// StorageRootTotalBytes / StorageRootUsedBytes / StorageRootAvailableBytes は
+	// root ごとの直近の観測バイト数。GET /api/storage を経由せずに Prometheus 側で
+	// 直接容量アラートを組めるようにするための対（PR #258 のレビュー指摘）。
+	// 統計に失敗した root は更新しない（前回値のまま。StorageRootLastSuccess と
+	// 同じ「沈黙は保証ではない」姿勢 --- 値が古くなっていることは
+	// StorageRootLastSuccess の鮮度で判別する）。
+	StorageRootTotalBytes = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "rokuban_storage_total_bytes",
+		Help: "Total filesystem capacity of this storage root, as of the last successful observation.",
+	}, []string{"root"})
+	StorageRootUsedBytes = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "rokuban_storage_used_bytes",
+		Help: "Used bytes of this storage root (total - free, counting the root-reserved region as used), as of the last successful observation.",
+	}, []string{"root"})
+	StorageRootAvailableBytes = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "rokuban_storage_available_bytes",
+		Help: "Bytes an unprivileged process can actually write to this storage root (statfs Bavail), as of the last successful observation.",
+	}, []string{"root"})
 )
 
 // ライブ視聴（HLS streamer、issue #91）のメトリクス。
@@ -492,6 +529,10 @@ func NewRegistry(backlog prometheus.Collector) *prometheus.Registry {
 		DeleteReconcileLastPass,
 
 		StorageSyncLastSuccess,
+		StorageRootLastSuccess,
+		StorageRootTotalBytes,
+		StorageRootUsedBytes,
+		StorageRootAvailableBytes,
 
 		LiveActiveSessions,
 		LiveSessionStartFailures,

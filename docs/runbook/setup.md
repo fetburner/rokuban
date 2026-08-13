@@ -97,9 +97,10 @@ volume 行を bind mount に差し替える。
   CronJob から `rokuban enqueue` で投入する
 
 手で即時実行できる。ジョブ名はハイフン区切り（`epg-sync` / `tuner-sync` /
-`ruler-pass` / `reconcile-pass` / `record-sweep` / `catalog-export`）。
-site 束縛ジョブは多サイトでは `--site` が必須。`catalog-export` だけ site 非依存
-で `--site` を付けない（[operations.md](../operations.md) §ジョブ化されたループの監視）。
+`ruler-pass` / `reconcile-pass` / `record-sweep` / `catalog-export` /
+`storage-sync`）。
+site 束縛ジョブは多サイトでは `--site` が必須。`catalog-export` / `storage-sync`
+だけ site 非依存で `--site` を付けない（[operations.md](../operations.md) §ジョブ化されたループの監視）。
 
 ```sh
 docker compose exec rokuban rokuban enqueue ruler-pass --config /config.yml
@@ -107,9 +108,11 @@ docker compose exec rokuban rokuban enqueue ruler-pass --config /config.yml
 # 既に待機中なら投入されず、終了コードは 0 のまま:
 #   job "ruler-pass" already pending for site "default", not inserted
 
-# catalog-export は --site なし（全体で 1 本）
+# catalog-export / storage-sync は --site なし（全体で 1 本）
 docker compose exec rokuban rokuban enqueue catalog-export --config /config.yml
 # inserted job "catalog-export" (id=43)
+docker compose exec rokuban rokuban enqueue storage-sync --config /config.yml
+# inserted job "storage-sync" (id=44)
 ```
 
 **ルールを作ってから録画が始まるまでに待つものは 3 段ある。**
