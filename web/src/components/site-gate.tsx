@@ -14,13 +14,14 @@ import { SiteContext } from '@/lib/site'
  * その形が合っているかの判定基準を持たないまま固定することになる
  * （不変条件 11「形を固定する前に、その形を決める判定基準を書く」）。
  *
- * **これが効くのは mirakc 由来の資源（`/api/sites/{site}/...` = 番組表・検索・
- * ライブ・サービス一覧）だけ**で、Rokuban の DB 由来の一覧（`/api/reservations`
- * / `/api/recordings` / `/api/capacity/overages`）は全サイトの行を返し、UI も
- * 各行の `site` をそのまま宛先に使う（`pages/reservations.tsx`）。したがって
- * 先頭以外のサイトも「予約・録画は一覧に出るが EPG を辿れない」形で現れる ---
- * 「他サイトの予約が無い」ように見える静かな壊れ方ではないので気付ける。
- * 詳細は docs/frontend.md「サイトの扱い」（`docs/frontend/shell.md`）。
+ * **これが効くのは「site の出所が無い入口」だけ**（番組表・検索・ライブと、
+ * サービスの選択肢）。一覧（`/api/reservations` / `/api/recordings` /
+ * `/api/capacity/overages` / `/api/breakers`）は全サイトの行を返し、行から
+ * 始まる操作は行の `site` を使う（予約詳細への遷移は `pages/reservations.tsx`、
+ * ブレーカー再開は `components/circuit-breaker-banner.tsx`）--- 呼ぶ URL が
+ * `/api/sites/{site}/...` の形かどうかは判別子にならない。したがって先頭以外の
+ * サイトも「予約・録画は一覧に出るが EPG の入口が無い」形で現れる。
+ * 詳細は `docs/frontend/shell.md`「サイトの扱い」。
  */
 export function SiteGate({ children }: { children: ReactNode }) {
   const query = useListSites()

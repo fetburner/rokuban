@@ -322,7 +322,7 @@ describe('予約一覧の行本体リンクの accessible name（issue #233 レ�
 })
 
 /**
- * 多サイト時に一覧が何を出すか（docs/frontend.md「サイトの扱い」）。
+ * 多サイト時に一覧が何を出すか（`docs/frontend/shell.md`「サイトの扱い」）。
  *
  * `GET /api/reservations` は全サイトの予約を返し（api は site に束縛されない ---
  * 不変条件 1）、UI はそれを `<SiteGate>` が配る「現在の site」で絞らない。
