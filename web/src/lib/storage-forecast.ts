@@ -10,20 +10,40 @@
  *
  * ## すべて「見込み」であって「足りる」の肯定はしない
  *
- * `lib/capacity.ts` の「主張は下界に限る」と同じ精神。この予測は次の 2 つの近似の上に
+ * `lib/capacity.ts` の「主張は下界に限る」と同じ精神。この予測は次の 3 つの近似の上に
  * 立っている:
  *
  * 1. **平均ビットレートは直近の標本の外挿。** 番組の種類（ドラマ / スポーツ中継 /
  *    アニメ）でビットレートは変わるため、直近の標本の平均が今後の録画にも当てはまる
  *    保証は無い。
- * 2. **消費見込みは今後 {@link forecastWindowDays} 日間に均等に分布すると仮定した
- *    線形外挿。** 実際の予約は曜日・時間帯に偏るが、日ごとの偏りを再現する根拠が
- *    無いための単純化。
+ * 2. **`sizeBytes` は原本 TS のみで、エンコード派生物を含まない。** `Recording.sizeBytes`
+ *    は「原本の実サイズ。ingest 済みの場合のみ」（openapi.yaml）で、エンコード
+ *    プロファイルを設定しているルール（`keepOriginal: always`、既定。
+ *    [storage/retention.md](../../docs/storage/retention.md)）では実消費は
+ *    原本 + 派生物なので、この見込みは**過小**に振れる。逆に `keepOriginal:
+ *    until_encoded` を選んでいるルールでは、エンコード完了後に原本が削除され
+ *    実消費が派生物サイズ（原本の 1/4〜1/10、同 doc）へ縮むため、原本サイズを
+ *    今後も一定と仮定するこの見込みは**過大**に振れる。どちらの方向にも振れる
+ *    ことを前提に見せており、一方向の保証は書かない
+ *    （`lib/rule-cost.ts` の「見込み」と同じ立場）。
+ * 3. **満杯見込み日は取得済みの予約の実際の開始時刻を辿って算出する** ---
+ *    後述の `estimateStorageForecast` 参照。一様分布の仮定は置かない。
  *
  * したがって「見込み消費が残量に収まる」ときは何も言わない（`fullAtMs` は
  * `undefined`）。**収まることを保証できるほどこの近似は正確ではない** ---
  * 「満杯見込み」を出すのは見込みが残量を超えたときだけで、超えていない側の沈黙を
  * 「足りる」という肯定として読ませない。
+ *
+ * ## 欠損データは「0」ではなく「算出不能」として伝える
+ *
+ * `averageBitrate` / `upcomingSchedule` のどちらかが `undefined`（録画・予約の
+ * どちらかの取得が未解決 or 失敗）なら `estimateStorageForecast` は
+ * `hasEstimate: false` を返す。**`0` にフォールバックしない** ---
+ * 「取得できていない」を `0`（=「これから何も消費しない」という肯定）に変換すると、
+ * 欠損データから見込みを捏造することになり下界主義に反する。実際に予約が
+ * 0 件（正当な `[]`）のときは `upcomingSchedule` が空配列になり `hasEstimate: true`
+ * かつ `projectedConsumptionBytes: 0` になる --- こちらは「見込みが無い」ではなく
+ * 「見込みを算出した結果 0 だった」なので区別する。
  */
 
 import type { Recording, Reservation, StorageRoot } from '@/api/generated'
@@ -56,15 +76,23 @@ export const recentRecordingSampleLimit = 20
  * observationStaleAfterMs は `observedAt` をこれより古いと「古い観測」として扱う
  * しきい値（1 時間）。
  *
- * worker のストレージ観測ループは既定 5 分間隔（`internal/worker/storage.go` の
- * `defaultStorageSyncInterval`）だが、この値は設定で変更可能で API には表れない
- * （`config.example.yml` の該当キーはフロントから見えない）。したがって
- * 「既定間隔の何倍か」という基準ではなく、**観測ループが実際に止まっていることを
- * 検知するための独立した余裕**として 1 時間を選んでいる --- 既定間隔に対しては
+ * worker のストレージ観測ループの間隔は現在 **5 分固定**（`internal/worker/storage.go`
+ * の `defaultStorageSyncInterval`）。`worker.Config.StorageSyncInterval` という
+ * フィールドは存在するが、`cmd/rokuban/server.go` がこれを設定ファイルのどのキーからも
+ * 埋めていない（`grep -rn StorageSyncInterval` が返すのは宣言・既定値へのフォール
+ * バック・doc コメントだけで、代入は無い）。つまり**今は実質ハードコードの 5 分**で、
+ * 「設定で変更可能」という以前の記述は誤り（実在しないキーへの参照だった）。
+ *
+ * それでも間隔の値をここへ輸入して「5 分の N 倍」と定義しないのは、この値が
+ * worker 側の実装詳細であり `GET /api/storage` の契約に含まれていないため ---
+ * フロントは API 契約だけを見て判定すべきで、worker の定数に結合すると、
+ * 将来 worker 側だけが変わってフロントが追随できない依存になる。1 時間は
+ * その代わりに置いた**独立した固定の安全マージン**: 現在の 5 分間隔に対しては
  * 12 倍の余裕があり、1 回の失敗パス・再起動直後の遅延程度では誤って「古い」と
  * 出ない一方、観測ループが本当に止まっていれば 1 時間以内に検知できる。
- * 設定で間隔を大きく延ばした運用では基準として弱くなるが、その場合の調整は
- * 別 issue（このしきい値を設定可能にする要求が実際に出てから）に回す。
+ * 将来 `StorageSyncInterval` が実際に設定可能になり、かつ既定より大きく延ばす
+ * 運用が出てきた場合はこの余裕が相対的に薄くなるため、そのときはしきい値を
+ * 見直す（現時点ではそのような運用要求が無いので固定値のままにする）。
  */
 export const observationStaleAfterMs = 60 * 60 * 1000
 
@@ -85,8 +113,12 @@ export type BitrateSample = {
  * （桁を外す近似ではないが方向が偏るため、確実に除ける失敗録画は除く）。
  * `canceled` はそもそも録画されていないので `sizeBytes` が無い。
  *
- * **`sizeBytes` が無い録画（原本削除済み。`Recording.sizeBytes` のコメント参照）も
- * 除く。** 実測が残っていない標本を算出に混ぜる理由が無い。
+ * **`sizeBytes` が無い録画（原本削除済み。`Recording.sizeBytes` のコメント
+ * 「原本の実サイズ。ingest 済みの場合のみ」参照 --- 未 ingest も含む）も除く。**
+ * 実測が残っていない標本を算出に混ぜる理由が無い。
+ *
+ * **`sizeBytes` は原本 TS のみでエンコード派生物を含まない。** これがそのまま
+ * 今後の見込みの近似の一部になる（モジュール doc の近似 2 参照）。
  */
 export function recentBitrateSamples(recordings: readonly Recording[]): BitrateSample[] {
   return recordings
@@ -120,12 +152,19 @@ export function estimateAverageBitrate(samples: readonly BitrateSample[]): Avera
   return { bytesPerMs: totalBytes / totalDurationMs, sampleSize: samples.length }
 }
 
-/** UpcomingReservation は `upcomingReservationDurationMs` の入力 1 件。 */
+/** UpcomingReservation は `upcomingReservationSchedule` の入力 1 件。 */
 export type UpcomingReservation = Pick<Reservation, 'startAt' | 'durationMs' | 'skip'>
 
+/** ScheduledConsumption は 1 予約ぶんの消費イベント（開始時刻・尺）。 */
+export type ScheduledConsumption = {
+  startMs: number
+  durationMs: number
+}
+
 /**
- * upcomingReservationDurationMs は `[windowStartMs, windowEndMs)` に開始する、
- * 実際に mirakc へ同期される見込みの予約（`skip === false`）の合計時間。
+ * upcomingReservationSchedule は `[windowStartMs, windowEndMs)` に開始する、
+ * 実際に mirakc へ同期される見込みの予約（`skip === false`）を `startMs` 昇順に
+ * 整列した消費イベント列にする。
  *
  * **`skip === true` の予約は除く。** `skip` は `effective.skip`
  * （`docs/recording/reservation-model.md` §4.3「同期の可否を決めるのは state では
@@ -135,20 +174,24 @@ export type UpcomingReservation = Pick<Reservation, 'startAt' | 'durationMs' | '
  *
  * 区間は半開区間 `[windowStartMs, windowEndMs)`（`lib/capacity.ts` の区間規約と
  * 揃える）。
+ *
+ * `startMs` 昇順に整列するのは、`estimateStorageForecast` が満杯見込み日を
+ * 「取得済みの各予約の実際の開始時刻」に沿って累積消費曲線を辿って算出するため
+ * （一様分布の仮定を置かない。モジュール doc の近似 3）。
  */
-export function upcomingReservationDurationMs(
+export function upcomingReservationSchedule(
   reservations: readonly UpcomingReservation[],
   windowStartMs: number,
   windowEndMs: number,
-): number {
-  let total = 0
+): ScheduledConsumption[] {
+  const events: ScheduledConsumption[] = []
   for (const r of reservations) {
     if (r.skip) continue
     const startMs = new Date(r.startAt).getTime()
     if (startMs < windowStartMs || startMs >= windowEndMs) continue
-    total += r.durationMs
+    events.push({ startMs, durationMs: r.durationMs })
   }
-  return total
+  return events.sort((a, b) => a.startMs - b.startMs)
 }
 
 /**
@@ -158,6 +201,9 @@ export function upcomingReservationDurationMs(
  * `GET /api/storage` の `observedAt` は「観測ループが止まっていても行は消えない」
  * ため鮮度の手がかりとして必ず使う契約（openapi.yaml `StorageRoot.observedAt`）。
  * 古い観測を新しい顔で見せないための唯一の判定点をここに集約する。
+ *
+ * しきい値ちょうど（`nowMs - observedAt === staleAfterMs`）は古いとしない
+ * （`>` であって `>=` ではない --- 境界値テストで固定してある）。
  */
 export function isObservationStale(
   observedAt: string,
@@ -170,15 +216,18 @@ export function isObservationStale(
 /** StorageForecast は `estimateStorageForecast` の出力。 */
 export type StorageForecast = {
   /**
-   * 見込みを算出できたか。録画実績が 0 件（`averageBitrate` が `undefined`）なら
-   * `false` --- 呼び出し側はこれを見て「見込み」欄そのものを描かない。
+   * 見込みを算出できたか。次のいずれかで `false`: 録画実績が 0 件
+   * （`averageBitrate` が `undefined`）、または予約の取得が未解決/失敗
+   * （`upcomingSchedule` が `undefined`）。呼び出し側はこれを見て「見込み」欄
+   * そのものを描かない。
    */
   hasEstimate: boolean
   /** 見込みに使った標本数（`hasEstimate` が `false` なら 0）。 */
   sampleSize: number
   /**
    * 今後 {@link forecastWindowDays} 日ぶんの消費見込み（バイト）。
-   * `hasEstimate` が `false` なら `undefined`。
+   * `hasEstimate` が `false` なら `undefined`。予約が正当に 0 件のときは
+   * `0`（算出不能の `undefined` とは区別する。モジュール doc 参照）。
    */
   projectedConsumptionBytes: number | undefined
   /** 見込み消費が残量（`availableBytes`）を超えるか。 */
@@ -192,32 +241,33 @@ export type StorageForecast = {
 }
 
 /**
- * estimateStorageForecast は残量・平均ビットレート・今後の予約時間から
+ * estimateStorageForecast は残量・平均ビットレート・今後の予約スケジュールから
  * 「空き X / +Y の見込み / (超える場合のみ) 満杯見込み日」を導出する。
  *
- * 満杯見込み日は、見込み消費（`projectedConsumptionBytes`）を
- * {@link forecastWindowDays} 日間に均等に分布すると仮定した線形外挿
- * （モジュール doc の近似 2 を参照）。`availableBytes` が既に 0 以下でも
- * `msUntilFull` が 0 以下になり `nowMs` 以前を指すことがあるが、それも
- * 「すでに満杯（見込みを過ぎている）」という事実の表現として扱う
- * （呼び出し側で `Math.max(nowMs, fullAtMs)` のような下駄を履かせる必要は無い
- * --- 表示側が formatDate に渡せば過去日として素直に出る）。
+ * **満杯見込み日は一様分布を仮定しない。** `upcomingSchedule`
+ * （`upcomingReservationSchedule` の結果。`startMs` 昇順）を先頭から辿り、
+ * 各予約の消費（`durationMs × bytesPerMs`）を積み上げて `availableBytes` を
+ * 最初に超える瞬間を報告する（`projectedFullAtMs`）。各予約の開始時刻・尺は
+ * `GET /api/reservations` で既に取得済みなので、7 日間に均等に散らすという
+ * 単純化を置く理由が無い --- 窓の後半に固まった予約を前寄せで警告したり
+ * （過大）、窓の直後に固まった予約を後ろ倒しで警告する（過小・危険な方向）
+ * ことを避ける。
  */
 export function estimateStorageForecast(input: {
   /** `GET /api/storage` の archive root（`root === 'media'`）の残量。 */
   availableBytes: number
   averageBitrate: AverageBitrate | undefined
-  /** `upcomingReservationDurationMs` の結果。 */
-  upcomingDurationMs: number
+  /**
+   * `upcomingReservationSchedule` の結果。`undefined` は「予約の取得が
+   * 未解決/失敗」を表し、正当な 0 件（`[]`）とは区別する
+   * （モジュール doc「欠損データは『0』ではなく『算出不能』として伝える」）。
+   */
+  upcomingSchedule: ScheduledConsumption[] | undefined
   nowMs: number
-  /** 既定 {@link forecastWindowDays}。テストで窓を変えられるようにするための穴。 */
-  windowDays?: number
 }): StorageForecast {
-  const { availableBytes, averageBitrate, upcomingDurationMs, nowMs } = input
-  const windowDays = input.windowDays ?? forecastWindowDays
-  const windowMs = windowDays * 24 * 60 * 60 * 1000
+  const { availableBytes, averageBitrate, upcomingSchedule, nowMs } = input
 
-  if (averageBitrate === undefined) {
+  if (averageBitrate === undefined || upcomingSchedule === undefined) {
     return {
       hasEstimate: false,
       sampleSize: 0,
@@ -227,15 +277,16 @@ export function estimateStorageForecast(input: {
     }
   }
 
-  const projectedConsumptionBytes = averageBitrate.bytesPerMs * upcomingDurationMs
+  const bytesPerMs = averageBitrate.bytesPerMs
+  const projectedConsumptionBytes = upcomingSchedule.reduce(
+    (sum, event) => sum + event.durationMs * bytesPerMs,
+    0,
+  )
   const exceedsAvailable = projectedConsumptionBytes > availableBytes
 
-  let fullAtMs: number | undefined
-  if (exceedsAvailable && projectedConsumptionBytes > 0) {
-    const bytesPerMsOverWindow = projectedConsumptionBytes / windowMs
-    const msUntilFull = availableBytes / bytesPerMsOverWindow
-    fullAtMs = nowMs + msUntilFull
-  }
+  const fullAtMs = exceedsAvailable
+    ? projectedFullAtMs(upcomingSchedule, bytesPerMs, availableBytes, nowMs)
+    : undefined
 
   return {
     hasEstimate: true,
@@ -244,6 +295,41 @@ export function estimateStorageForecast(input: {
     exceedsAvailable,
     fullAtMs,
   }
+}
+
+/**
+ * projectedFullAtMs は実際の予約開始時刻に沿った累積消費曲線を辿り、残量
+ * （`availableBytes`）を最初に超える瞬間を返す。
+ *
+ * `schedule` は `startMs` 昇順（`upcomingReservationSchedule` の契約）が前提。
+ * 超える予約が見つかったら、その予約の途中で交差する正確な時刻を予約内で
+ * 比例配分して返す（予約の消費が瞬間的ではなく尺に沿って一定速度で進むと
+ * 仮定する --- 予約の中でだけ置く単純化で、予約の外（窓の一様分布）には
+ * 拡張しない）。
+ *
+ * 呼び出し側（`estimateStorageForecast`）は `exceedsAvailable` を確認した
+ * 後にだけこれを呼ぶが、`schedule` が空、または浮動小数点誤差で 1 件も
+ * 超えなかった場合の保険として、最後の予約の終了時刻（`schedule` が空なら
+ * `nowMs`）にフォールバックする。
+ */
+function projectedFullAtMs(
+  schedule: readonly ScheduledConsumption[],
+  bytesPerMs: number,
+  availableBytes: number,
+  nowMs: number,
+): number {
+  let cumulative = 0
+  for (const event of schedule) {
+    const eventBytes = event.durationMs * bytesPerMs
+    if (cumulative + eventBytes > availableBytes) {
+      const remaining = availableBytes - cumulative
+      const fraction = eventBytes > 0 ? remaining / eventBytes : 0
+      return event.startMs + fraction * event.durationMs
+    }
+    cumulative += eventBytes
+  }
+  const last = schedule[schedule.length - 1]
+  return last === undefined ? nowMs : last.startMs + last.durationMs
 }
 
 /** findMediaRoot は `GET /api/storage` の結果からアーカイブ root（`media`）を探す。 */

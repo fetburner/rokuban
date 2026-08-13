@@ -1,14 +1,22 @@
 import { screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
-import type { Recording, Reservation, StorageRoot } from '@/api/generated'
+import {
+  useGetStorage,
+  useListRecordings,
+  useListReservations,
+  type Recording,
+  type Reservation,
+  type StorageRoot,
+} from '@/api/generated'
 import { StorageBalance } from '@/components/storage-balance'
+import { recentRecordingSampleLimit } from '@/lib/storage-forecast'
 import { renderInRouter } from '@/test/router'
 
 /**
- * StorageBalance の表示分岐（issue #239 M7-6）。導出そのもの（母数・線形外挿・
+ * StorageBalance の表示分岐（issue #239 M7-6）。導出そのもの（母数・累積曲線・
  * 境界値）は `lib/storage-forecast.test.ts` が担当するので、ここでは
- * 「3 つの沈黙」と「表示に出るべき数字」を実際の DOM で確認する
+ * 「4 つの沈黙」と「表示に出るべき数字」を実際の DOM で確認する
  * （CLAUDE.md テスト規律「CI が緑でも実バイナリ・実ブラウザを起動して確かめる」の
  * 手前 --- まずユニットテストで DOM に出るところまで固定する）。
  *
@@ -17,6 +25,14 @@ import { renderInRouter } from '@/test/router'
  * （testing-library 内部のポーリング）が固まって全テストがタイムアウトする
  * （実際に踏んだ --- `setSystemTime` を使った最初の実装は 7 件全滅した）。
  * 代わりに実行時の `Date.now()` からの相対オフセットで日時を組む。
+ *
+ * **「無い」ことを見るテストは、3 つのクエリが実際に解決したことを確認してから
+ * アサートする。** レビューで指摘された通り、`fetch` が「呼ばれた」ことだけを
+ * 待つ（`toHaveBeenCalled`）のは「解決した」ことの証明にならない
+ * （非同期の空虚な成功 --- クエリが unresolved の間も `media` は
+ * `undefined` で「無い」ことと見分けが付かない）。`Harness` が `StorageBalance`
+ * と同じ 3 つのクエリを（同じ `queryClient` を共有するので同じキャッシュ状態を）
+ * 呼び、そのステータス文字列が確定するまで待ってから、初めて否定のアサートに進む。
  */
 
 /** iso は「実行時から offsetMs だけ先/前」の ISO 文字列を返す。 */
@@ -81,15 +97,21 @@ function jsonResponse(body: unknown, status = 200): Response {
   })
 }
 
-/** mockApis は StorageBalance が発行する 3 つの GET を差し替える。 */
+/**
+ * mockApis は StorageBalance が発行する 3 つの GET を差し替える。
+ * `reservationsStatus` を 200 以外にすると `GET /api/reservations` の失敗
+ * （指摘 1 の再現）をシミュレートできる。
+ */
 function mockApis(options: {
   storage?: StorageRoot[]
   recordings?: Recording[]
   reservations?: Reservation[]
+  reservationsStatus?: number
 }) {
   const storage = options.storage ?? [mediaRoot()]
   const recordings = options.recordings ?? []
   const reservations = options.reservations ?? []
+  const reservationsStatus = options.reservationsStatus ?? 200
 
   globalThis.fetch = vi.fn((input: string | URL | Request) => {
     const url = new URL(String(input), 'http://localhost')
@@ -101,31 +123,110 @@ function mockApis(options: {
       const filtered = recordings.filter((r) => status === null || r.status === status)
       return Promise.resolve(jsonResponse(filtered.slice(0, limit)))
     }
-    if (url.pathname === '/api/reservations') return Promise.resolve(jsonResponse(reservations))
+    if (url.pathname === '/api/reservations') {
+      if (reservationsStatus !== 200) {
+        return Promise.resolve(jsonResponse({ error: 'boom' }, reservationsStatus))
+      }
+      return Promise.resolve(jsonResponse(reservations))
+    }
 
     throw new Error(`unexpected fetch: ${url.pathname}`)
   }) as unknown as typeof fetch
+}
+
+/**
+ * Harness は `StorageBalance` と同じ 3 クエリを併走させ、それぞれの
+ * `status`（'pending' | 'error' | 'success'）をテストから見える形で出す。
+ * 同じ `QueryClientProvider` の下では同じ `queryKey` を指すクエリはキャッシュを
+ * 共有するので、ここで見えるステータスは `StorageBalance` 内部のクエリの
+ * ステータスそのもの。
+ */
+function Harness() {
+  const storageQuery = useGetStorage()
+  const recordingsQuery = useListRecordings({
+    status: 'finished',
+    limit: recentRecordingSampleLimit,
+  })
+  const reservationsQuery = useListReservations()
+
+  return (
+    <>
+      <div data-testid="query-status">
+        {storageQuery.status} {recordingsQuery.status} {reservationsQuery.status}
+      </div>
+      <StorageBalance />
+    </>
+  )
+}
+
+/** renderSettled は Harness を描き、3 クエリすべてが指定のステータスに確定するまで待つ。 */
+async function renderSettled(expectedStatus: string) {
+  const view = renderInRouter(<Harness />)
+  await waitFor(() => expect(screen.getByTestId('query-status')).toHaveTextContent(expectedStatus))
+  return view
 }
 
 describe('StorageBalance', () => {
   it('観測なし（media root が無い）ときは何も描かない', async () => {
     mockApis({ storage: [] })
 
-    const { container } = renderInRouter(<StorageBalance />)
+    await renderSettled('success success success')
 
-    // クエリの解決を待ってから「無い」ことを見る（非同期の空虚な成功を避ける）
-    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalled())
-    await waitFor(() => expect(container.textContent).toBe(''))
+    // 3 クエリすべて解決した後で「無い」ことを見る（空虚な成功を避ける）。
+    expect(screen.queryByText(/空き/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/の見込み/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/満杯見込み/)).not.toBeInTheDocument()
   })
 
   it('録画実績が 0 件のときは空きだけ出し、見込みは出さない', async () => {
     mockApis({ recordings: [], reservations: [reservation()] })
 
-    renderInRouter(<StorageBalance />)
+    await renderSettled('success success success')
 
-    expect(await screen.findByText(/空き/)).toBeInTheDocument()
+    expect(screen.getByText(/空き/)).toBeInTheDocument()
     expect(screen.queryByText(/の見込み/)).not.toBeInTheDocument()
     expect(screen.queryByText(/満杯見込み/)).not.toBeInTheDocument()
+  })
+
+  // 指摘 1: 予約の取得が失敗すると、以前は upcomingDurationMs が 0 に
+  // フォールバックし「今後7日の予約で約 +0 B の見込み」という、欠損データから
+  // 捏造した肯定を描いていた（実ブラウザで再現: 「空き 931.3 GB今後7日の予約で
+  // 約 +0 B の見込み観測: 8/13 15:57」）。録画実績はあるが予約取得が失敗する
+  // ケースを再現し、見込み欄が一切出ないことを確認する。
+  it('予約の取得が失敗したときは見込みを出さない（残高のみ。「+0 B」を捏造しない）', async () => {
+    mockApis({
+      recordings: [recording()],
+      reservationsStatus: 500,
+    })
+
+    await renderSettled('success success error')
+
+    expect(screen.getByText(/空き/)).toBeInTheDocument()
+    expect(screen.queryByText(/の見込み/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/満杯見込み/)).not.toBeInTheDocument()
+    // 「+0 B」という文字列そのものが出ていないことも明示的に確認する
+    // （0 B は formatBytes(0) の出力そのものなので、これが出ていれば
+    // 「見込みが算出された」ことの直接の証拠になる）。
+    expect(screen.queryByText(/\+0 B/)).not.toBeInTheDocument()
+  })
+
+  // 指摘 2: 予約が正当に 0 件（取得は成功したが窓の中に予約が無い）のときも、
+  // 指摘 1 と同じ表示（見込み欄が出ない）になるべきだが、内部的には別の経路
+  // （hasEstimate: true, projectedConsumptionBytes: 0）を通る。表示結果は同じでも
+  // 取得失敗と正当な 0 件を混ぜて同じ扱いにしていないことを、クエリステータス
+  // （'success'）で区別して確認する。
+  it('予約が正当に 0 件のときも見込みを出さない（0 のものは出さない）', async () => {
+    mockApis({
+      recordings: [recording()],
+      reservations: [],
+    })
+
+    await renderSettled('success success success')
+
+    expect(screen.getByText(/空き/)).toBeInTheDocument()
+    expect(screen.queryByText(/の見込み/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/満杯見込み/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/\+0 B/)).not.toBeInTheDocument()
   })
 
   it('見込み消費が残量に収まるときは満杯見込みを出さない（下界主義）', async () => {
@@ -137,9 +238,9 @@ describe('StorageBalance', () => {
       reservations: [reservation()],
     })
 
-    renderInRouter(<StorageBalance />)
+    await renderSettled('success success success')
 
-    expect(await screen.findByText(/の見込み/)).toBeInTheDocument()
+    expect(screen.getByText(/の見込み/)).toBeInTheDocument()
     expect(screen.queryByText(/満杯見込み/)).not.toBeInTheDocument()
   })
 
@@ -157,9 +258,9 @@ describe('StorageBalance', () => {
       ),
     })
 
-    renderInRouter(<StorageBalance />)
+    await renderSettled('success success success')
 
-    expect(await screen.findByText(/満杯見込み/)).toBeInTheDocument()
+    expect(screen.getByText(/満杯見込み/)).toBeInTheDocument()
   })
 
   it('観測が古い（1 時間超）ときは古い可能性を表示する', async () => {
@@ -167,9 +268,9 @@ describe('StorageBalance', () => {
       storage: [mediaRoot({ observedAt: iso(-2 * 60 * 60 * 1000) })],
     })
 
-    renderInRouter(<StorageBalance />)
+    await renderSettled('success success success')
 
-    expect(await screen.findByText(/古い可能性/)).toBeInTheDocument()
+    expect(screen.getByText(/古い可能性/)).toBeInTheDocument()
   })
 
   it('観測が新しい（1 時間以内）ときは古い可能性を表示しない', async () => {
@@ -177,19 +278,20 @@ describe('StorageBalance', () => {
       storage: [mediaRoot({ observedAt: iso(-5 * 60 * 1000) })],
     })
 
-    renderInRouter(<StorageBalance />)
+    await renderSettled('success success success')
 
-    expect(await screen.findByText(/空き/)).toBeInTheDocument()
+    expect(screen.getByText(/空き/)).toBeInTheDocument()
     expect(screen.queryByText(/古い可能性/)).not.toBeInTheDocument()
   })
 
-  it('skip=true の予約は消費見込みに数えない', async () => {
+  // skip=true の予約は消費に数えない（reconciler が mirakc に同期しないため）。
+  // 全予約が skip=true なら見込み消費は 0 になり、指摘 2 の修正により
+  // 「+0 B」は描かれない（以前は「見込み自体は出る」を期待していたが、0 は
+  // 出さない方針にしたため期待値を反転した）。
+  it('skip=true の予約は消費見込みに数えない（全 skip なら見込み消費 0 で見込み欄は出ない）', async () => {
     mockApis({
       storage: [mediaRoot({ availableBytes: 100_000_000 })], // 100MB
       recordings: [recording()],
-      // skip=true の予約が 7 件あっても、reconciler が mirakc に同期しないので
-      // 消費に数えない → 見込み消費 0（recording 標本はあるので見込み自体は
-      // 出る）で、0 は残量を超えないため満杯見込みは出ない
       reservations: Array.from({ length: 7 }, (_, i) =>
         reservation({
           id: i + 1,
@@ -200,9 +302,27 @@ describe('StorageBalance', () => {
       ),
     })
 
-    renderInRouter(<StorageBalance />)
+    await renderSettled('success success success')
 
-    expect(await screen.findByText(/の見込み/)).toBeInTheDocument()
+    expect(screen.getByText(/空き/)).toBeInTheDocument()
+    expect(screen.queryByText(/の見込み/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/満杯見込み/)).not.toBeInTheDocument()
+  })
+
+  // skip=true と skip=false が混在する場合は skip=false の分だけ数える
+  // （上のテストが「全 skip なら 0」を見ているので、ここでは「一部だけ有効」を
+  // 別途固定する --- 全 skip のケースだけでは skip フィルタが機能しているのか
+  // 単に予約が無いのかを区別できない）。
+  it('skip=true と skip=false が混在するときは skip=false の分だけ見込みに数える', async () => {
+    mockApis({
+      storage: [mediaRoot({ availableBytes: 1_000_000_000_000 })], // 1TB（収まる）
+      recordings: [recording()],
+      reservations: [reservation({ skip: false }), reservation({ id: 2, programId: 2, skip: true })],
+    })
+
+    await renderSettled('success success success')
+
+    expect(screen.getByText(/の見込み/)).toBeInTheDocument()
     expect(screen.queryByText(/満杯見込み/)).not.toBeInTheDocument()
   })
 })
