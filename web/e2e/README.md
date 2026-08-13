@@ -204,6 +204,31 @@ pnpm check:colors
 検査が見ていない書き方（動的なクラス名の合成・CSS の名前付き色・3 桁の 16 進・
 `public/` の資産）は `scripts/check-colors.mjs` に書き出してあり、実行のたびに出力する。
 
+### SSE 抜きでの定期再取得（`sse-refresh.mjs`）
+
+SSE の通知を 1 通も届けないまま接続だけ維持したとき、**定めた周期で REST 再取得が
+実際に起きるか**を、リクエスト数を数えて判定する（運用状態 60 秒 / EPG 10 分。周期と
+対象は [docs/api/sse.md](../../docs/api/sse.md) §レベルトリガーの対称性）。時計は
+`page.clock.runFor` で進めるので 10 分待たない。`design.mjs` と同じく `/api/**` を
+丸ごと差し替えるため、mirakc も DB も Go サーバーも要らない。
+
+**単体テスト（`src/lib/events.test.tsx`）と重なっていない部分がここの存在理由。**
+単体テストはフックとテスト用のクエリキーしか通らないので、**画面が実際に使っている
+キーを取りこぼしている**という壊れ方を検出できない。実際、`epg` トピックが番組リスト
+（`useInfiniteQuery` の手書きキー `['/api/programs', 'infinite', ...]`）に一度も
+届いていなかったのを見つけたのはこの判定（詳細は docs/api.md §SSE「経緯と失敗事例」）。
+同じ形の漏れ（予約詳細が生成キーのままで EPG の 10 分側に落ちる）を押さえるため、
+**画面を 2 つ開く** --- 番組表（`/programs`）と予約詳細
+（`/reservations/$site/$programId`）。ページごとにカウンタを作り直すので、増分は
+そのページの回復経路だけを表す。
+
+```sh
+pnpm build && pnpm preview --port 4173 --strictPort &
+E2E_URL=http://localhost:4173 pnpm e2e:sse-refresh
+```
+
+`badge-links.mjs` と同じ ⓪（配っている bundle と `dist/` の一致）を自分で確認する。
+
 ## CI では回さない
 
 実サーバーと実 mirakc のデータに依存するため、CI には載せない。**ローカルでの受け入れ確認**の

@@ -125,12 +125,39 @@ describe('ReservationDetailPage', () => {
     // ruler の導出削除・再実体化を模す: 同じ (site, programId) だが id が変わる。
     currentId = 222
     await queryClient.invalidateQueries({
-      queryKey: ['/api/sites/default/programs/300000/reservation'],
+      queryKey: ['/api/reservations', 'detail', 'default', 300000],
     })
 
     await waitFor(() => expect(screen.getByText('番組 (id=222)')).toBeInTheDocument())
     // URL 自体は変わっていない（再取得だけで済んでいる = ナビゲーション不要）。
     expect(fetchMock.mock.calls.some((c) => String(c[0]).includes('/reservation'))).toBe(true)
+  })
+
+  // このページのクエリキーの**先頭要素**が一覧と同じ '/api/reservations' で
+  // あることを、実際に使われる経路（前方一致の invalidate → 再取得 → 表示の
+  // 更新）で固定する。orval の生成キー
+  // （['/api/sites/{site}/programs/{programId}/reservation'] の 1 要素）に戻すと、
+  // TanStack Query の前方一致は先頭要素の比較なのでこの invalidate が届かず、
+  // SSE の `reservations` トピックも `lib/events.ts` の 60 秒の定期 invalidate も
+  // このページを素通りする（代わりに '/api/sites/' に掛かって EPG の 10 分側で
+  // しか収束しなくなる）。
+  it('予約一覧の invalidate（[\'/api/reservations\']）が詳細ページにも届く', async () => {
+    let title = '更新前のタイトル'
+    stubFetch((site, programId) =>
+      site === 'default' && programId === 300000 ? baseReservation({ title }) : null,
+    )
+
+    const { queryClient } = renderAt('/reservations/default/300000')
+
+    // 初回の表示を観測してから始める（「何も起きないまま成功」を避ける）
+    expect(await screen.findByText('更新前のタイトル')).toBeInTheDocument()
+
+    // SSE の reservations トピック・定期 invalidate・一覧側の mutater が
+    // 使うのと同じフィルタ
+    title = '更新後のタイトル'
+    await queryClient.invalidateQueries({ queryKey: ['/api/reservations'] })
+
+    await waitFor(() => expect(screen.getByText('更新後のタイトル')).toBeInTheDocument())
   })
 
   it('存在しない (site, programId) は「見つかりません」を表示する', async () => {

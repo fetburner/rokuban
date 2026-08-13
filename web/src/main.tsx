@@ -11,8 +11,9 @@ import './index.css'
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      // SSE は取りこぼしうるヒントなので、staleTime を置いて定期的な再取得でも
-      // 収束させる。プッシュが来なくても最終的に正しい状態に追いつく。
+      // staleTime は「stale と判定する期限」であって再取得を起こすタイマーでは
+      // ない。mount / focus のたびに取り直す幅を抑えるだけの値で、SSE の
+      // 取りこぼしを回復するのは lib/events.ts の定期 invalidate の方。
       staleTime: 30_000,
       refetchOnWindowFocus: true,
     },

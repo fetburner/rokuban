@@ -138,7 +138,7 @@ mirakc と同じ「接続時に現在状態を再送し、以降差分」とい�
 
 - SSE (`/api/events`) を配るのは api ではなく **notifier ロール**。notifier を複数レプリカにしても、各レプリカが Postgres の NOTIFY を購読して配るだけなので **Redis アダプタのような追加基盤は不要**
 - notifier をロールとして分けたことで、api は SSE という長寿命接続を持たなくなり、サーバーレス（scale-to-zero）に本当に載せられるようになった（[overview.md](../overview.md)）
-- レベルトリガーにより、SSE 接続断中の変更も stale-time 経過後の REST 再取得で自然回復する
+- レベルトリガーの「定期」の側は `lib/events.ts` が持つ。**接続断中の変更は再接続時（切断を観測した後の `open`）の invalidate で取り直し、接続が生きたまま個別の通知だけ落ちたケースはグループごとの定期 invalidate（運用状態 60 秒 / EPG 10 分、前面タブのみ）で収束する。** `staleTime` は stale と判定する期限であって再取得を起こすタイマーではないので、これに頼ると古い表示が無期限に残る（対象クエリと周期の表は [api.md](../api.md) §SSE）
 
 通信設計の詳細は [api.md](../api.md) を参照。
 

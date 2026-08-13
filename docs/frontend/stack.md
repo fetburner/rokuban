@@ -25,7 +25,7 @@ go:embed で単一バイナリに同梱するため、成果物は**静的ファ
 
 - SSE イベントは該当クエリの `invalidateQueries` に徹する
 - 真実は常に REST から再取得
-- SSE の取りこぼしは stale-time 経過後の再取得で自然回復
+- SSE の取りこぼしはグループごとの定期 invalidate で回復する（運用状態 60 秒 / EPG 10 分。`lib/events.ts`）。`staleTime` は判定の期限であって再取得の周期タイマーではないので、この定期経路が対称性の「定期 reconcile」に当たる（[api.md](../api.md) §SSE）
 
 プッシュデータを信頼して手元状態を書き換える設計（Socket.IO 時代の EPGStation）より壊れ方が大幅に単純になる。
 
