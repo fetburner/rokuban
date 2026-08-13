@@ -596,9 +596,18 @@ type CircuitBreaker struct {
 	// Name internal/breaker の定数（RulerDeletes / ReconcileTotalLoss /
 	// DeleteReconcile）。値の権威は internal/breaker.All
 	// （internal/breaker/breaker.go）で、この enum はそれを手で複製した
-	// ものなので、breaker.All に定数を足したときはここも合わせて直す
-	// （internal/breaker の AST テストは breaker.go の const ブロックと
-	// All の一致だけを見ており、この enum との一致までは検証できない）。
+	// ものなので、breaker.All に定数を足したときはここも合わせて直す。
+	//
+	// ずれの検知は 2 段構え: internal/breaker パッケージのエクスポート
+	// 済み文字列定数と All 自体の一致は internal/breaker の AST テスト
+	// （TestAll_MatchesDeclaredConstants）が見る。All とこの enum の
+	// 一致は internal/api の純ユニットテスト
+	// （TestBreakerAllNamesAreValidCircuitBreakerNameEnumMembers。
+	// CircuitBreakerName.Valid() 経由）が見る。後者を GET /api/breakers
+	// の runtime チェックにはしていない —— 唯一の消費者
+	// （web/src/components/circuit-breaker-banner.tsx）が isError を
+	// 見ておらず、enum 外の 1 行のせいで一覧全体を 500 にすると発動中の
+	// 他のブレーカーまで隠れてしまうため（issue #199 のレビューで指摘）。
 	Name CircuitBreakerName `json:"name"`
 
 	// Pending 発動時に止めた削除の件数。
@@ -616,9 +625,18 @@ type CircuitBreaker struct {
 // CircuitBreakerName internal/breaker の定数（RulerDeletes / ReconcileTotalLoss /
 // DeleteReconcile）。値の権威は internal/breaker.All
 // （internal/breaker/breaker.go）で、この enum はそれを手で複製した
-// ものなので、breaker.All に定数を足したときはここも合わせて直す
-// （internal/breaker の AST テストは breaker.go の const ブロックと
-// All の一致だけを見ており、この enum との一致までは検証できない）。
+// ものなので、breaker.All に定数を足したときはここも合わせて直す。
+//
+// ずれの検知は 2 段構え: internal/breaker パッケージのエクスポート
+// 済み文字列定数と All 自体の一致は internal/breaker の AST テスト
+// （TestAll_MatchesDeclaredConstants）が見る。All とこの enum の
+// 一致は internal/api の純ユニットテスト
+// （TestBreakerAllNamesAreValidCircuitBreakerNameEnumMembers。
+// CircuitBreakerName.Valid() 経由）が見る。後者を GET /api/breakers
+// の runtime チェックにはしていない —— 唯一の消費者
+// （web/src/components/circuit-breaker-banner.tsx）が isError を
+// 見ておらず、enum 外の 1 行のせいで一覧全体を 500 にすると発動中の
+// 他のブレーカーまで隠れてしまうため（issue #199 のレビューで指摘）。
 type CircuitBreakerName string
 
 // CircuitBreakerSample 発動時に「何が消されようとしていたか」を説明する抜粋

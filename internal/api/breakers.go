@@ -45,19 +45,27 @@ func (h *Server) ListCircuitBreakers(ctx context.Context, _ ListCircuitBreakersR
 		}
 		// name の権威は internal/breaker.All だが、openapi.yaml の
 		// CircuitBreakerName enum はそれを手で複製したものなので、breaker.All
-		// に定数を足して openapi.yaml 側を直し忘れるとここで初めてずれが
-		// 顕在化する。無検査でキャストして黙って enum 外の値を返すと、生成
-		// クライアント（web/src/api/generated.ts の CircuitBreakerName・
-		// web/src/lib/breaker.ts の Record）が知らない値を受け取り、ラベルも
-		// 再開理由も空のまま誰も気付かない（issue #199 のレビューで指摘された
-		// 穴と同じ形）。fail loud にして気付けるようにする。
-		name := CircuitBreakerName(r.Name)
-		if !name.Valid() {
-			return nil, fmt.Errorf("circuit breaker %s/%s has name %q, which is not declared in the CircuitBreakerName enum (openapi.yaml is out of sync with internal/breaker.All)", r.Site, r.Name, r.Name)
-		}
+		// に定数を足して openapi.yaml 側を直し忘れるとここでずれが顕在化しうる。
+		//
+		// 以前はここで CircuitBreakerName.Valid() を検査し、無効なら 500 に
+		// していたが、唯一の消費者である web/src/components/circuit-breaker-banner.tsx
+		// は isError を見ておらず（`unwrap(query.data) ?? []` → 0 件なら
+		// 非表示）、500 は「未知の名前を見せる」よりまずい「発動中の他の
+		// ブレーカーも含めて一覧そのものが消える」を引き起こす（1 行の enum
+		// 外の値がループ全体の 500 に波及する）。web/src/pages/home.tsx の
+		// 警告セクションも isError を見ていないので同様に静かに消える。
+		// つまり「fail loud」のつもりが唯一の消費者では fail silent になる
+		// （PR #265 のレビューで指摘、実装をここへ差し戻した）。
+		//
+		// enum と breaker.All のずれの検知は internal/api/breakers_test.go の
+		// TestBreakerAllNamesAreValidCircuitBreakerNameEnumMembers（DB も
+		// HTTP も使わない純ユニットテスト）に閉じ、ハンドラは値をそのまま
+		// 通す。クライアント側は元々このずれを見越したフォールバックを持つ
+		// （web/src/lib/breaker.ts の describeBreakerName / describeBreakerReason
+		// —— 未知の値は識別子そのもの表示 / 理由は空文字）。
 		result = append(result, CircuitBreaker{
 			Site:      r.Site,
-			Name:      name,
+			Name:      CircuitBreakerName(r.Name),
 			TrippedAt: r.TrippedAt,
 			Pending:   int(r.Pending),
 			Threshold: int(r.Threshold),

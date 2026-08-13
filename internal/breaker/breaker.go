@@ -67,13 +67,20 @@ const (
 // レビューで「保険になっていない」と実測で指摘された）。
 //
 // 代わりに TestAll_MatchesDeclaredConstants（all_test.go）が go/parser で
-// このファイルの const ブロックを直接読み、宣言されている文字列定数の集合と
-// All を突き合わせる。「Go の定数はリフレクションで列挙できない」は事実だが、
-// リフレクションを使わない静的解析（go/parser・go/ast）なら宣言済みの定数を
-// 列挙できるので、「機械的には捕まえられない」は誤りだった。新しい定数を
-// ここへ足すのを忘れると all_test.go が落ちる。openapi.yaml の
-// CircuitBreakerName enum との一致まではこのテストの対象外
-// （internal/api/breakers.go の ListCircuitBreakers 参照）。
+// このパッケージディレクトリ（_test.go を除く全 .go ファイル。新しい定数を
+// 別ファイルに置いても見逃さない）のエクスポート済み文字列定数を直接読み、
+// All を突き合わせる。「Go の定数はリフレクションで列挙できない」は事実
+// だが、リフレクションを使わない静的解析（go/parser・go/ast）なら宣言済みの
+// 定数を列挙できるので、「機械的には捕まえられない」は誤りだった。新しい
+// 定数をここへ足すのを忘れると all_test.go が落ちる。
+//
+// openapi.yaml の CircuitBreakerName enum との一致は、このテストではなく
+// internal/api/breakers_test.go の
+// TestBreakerAllNamesAreValidCircuitBreakerNameEnumMembers（純ユニット
+// テスト）が見る。GET /api/breakers の runtime チェックにしていない理由は
+// internal/api/breakers.go の ListCircuitBreakers のコメント参照
+// （唯一の消費者が isError を見ておらず、runtime で 500 にすると
+// 一覧全体が消えて発動中の他のブレーカーまで隠れる）。
 var All = []string{RulerDeletes, ReconcileTotalLoss, DeleteReconcile}
 
 // Sample は発動時に「何が消されようとしていたか」を説明するためのペイロード。
