@@ -66,7 +66,14 @@ const services: Service[] = [
   },
 ]
 
-function stubApi(rules: Rule[] = [sampleRule]) {
+function stubApi(
+  rules: Rule[] = [sampleRule],
+  // 削除 API が返す内訳。既定は 0 件（大半のテストは内訳に関心が無い）。
+  deleteImpact: { deletedReservations: number; detachedReservations: number } = {
+    deletedReservations: 0,
+    detachedReservations: 0,
+  },
+) {
   const putBodies: { id: number; body: RuleInput }[] = []
   const postBodies: RuleInput[] = []
   const deletedIds: number[] = []
@@ -99,7 +106,7 @@ function stubApi(rules: Rule[] = [sampleRule]) {
     if (putMatch && method === 'DELETE') {
       const id = Number(putMatch[1])
       deletedIds.push(id)
-      return Promise.resolve(jsonResponse({ id, deletedReservations: 0, detachedReservations: 0 }))
+      return Promise.resolve(jsonResponse({ id, ...deleteImpact }))
     }
     if (url.pathname === '/api/encode-profiles') return Promise.resolve(jsonResponse(profiles))
     if (url.pathname === '/api/breakers') return Promise.resolve(jsonResponse([]))
@@ -357,8 +364,84 @@ describe('RulesPage 削除は overflow メニュー', () => {
     await user.click(deleteItem)
 
     expect(confirmSpy).toHaveBeenCalledWith('ルール「ニュース」を削除しますか？')
+    // 予約が 1 件も無いルール（内訳 0 件）は数字を添えない。
     expect(await screen.findByText('ルールを削除しました')).toBeInTheDocument()
     await waitFor(() => expect(screen.queryByText('ニュース')).not.toBeInTheDocument())
+  })
+
+  // 削除 API の内訳（削除 N 件 / 編集済みのため残った M 件）をトーストに出す
+  // （reservation-model.md §4.3「ルール削除の UX は可視化で解決する」）。
+  // 残った予約は「ユーザーが自分で触ったもの」だけなので、黙って残すと
+  // 一覧に見慣れないマーカー付きの行が増えた理由が分からなくなる。
+  it('削除のトーストに予約の内訳（削除 / 残った件数）が出る', async () => {
+    stubApi([sampleRule], { deletedReservations: 3, detachedReservations: 2 })
+    const user = userEvent.setup()
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    renderPage()
+
+    await screen.findByText('ニュース')
+    await user.click(screen.getByRole('button', { name: 'ルール「ニュース」のその他の操作' }))
+    await user.click(await screen.findByRole('menuitem', { name: '削除' }))
+
+    expect(
+      await screen.findByText('ルールを削除しました（予約 3 件を削除、2 件は編集済みのため残しました）'),
+    ).toBeInTheDocument()
+  })
+
+  // detached が 0 でも削除した予約があれば内訳を出す（0 件で黙るのは
+  // 「何も起きていない削除」のときだけ、という境界の反対側）。
+  it('残った予約が 0 件でも、削除した予約があれば件数を出す', async () => {
+    stubApi([sampleRule], { deletedReservations: 4, detachedReservations: 0 })
+    const user = userEvent.setup()
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    renderPage()
+
+    await screen.findByText('ニュース')
+    await user.click(screen.getByRole('button', { name: 'ルール「ニュース」のその他の操作' }))
+    await user.click(await screen.findByRole('menuitem', { name: '削除' }))
+
+    expect(await screen.findByText('ルールを削除しました（予約 4 件を削除）')).toBeInTheDocument()
+  })
+
+  // issue #215: 重複排除の比較対象は「同じ rule_id の recordings」なので、
+  // ルールを削除すると履歴がスコープから外れ、同じ条件で作り直しても
+  // 引き継がれない（docs/recording/ruler.md §3.1）。押した後では取り返せない
+  // 副作用なので、確認の時点で伝える。
+  it('重複排除が有効なルールの削除確認に、履歴が外れることと「編集」への案内が出る', async () => {
+    stubApi([ruleWithConditions])
+    const user = userEvent.setup()
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    renderPage()
+
+    await screen.findByText('平日ニュース')
+    await user.click(screen.getByRole('button', { name: 'ルール「平日ニュース」のその他の操作' }))
+    await user.click(await screen.findByRole('menuitem', { name: '削除' }))
+
+    const message = confirmSpy.mock.calls[0][0] as string
+    expect(message).toContain('ルール「平日ニュース」を削除しますか？')
+    expect(message).toContain('重複排除の履歴も一緒に外れます')
+    expect(message).toContain('作り直しても引き継がれない')
+    expect(message).toContain('「編集」')
+    // 被害の大きさを docs より強く書かない（過剰録画は一過性で、新ルールの
+    // 下で 1 本録れれば以降は再び弾かれる ——
+    // TestRunPass_DedupeHistoryLeavesScopeOnRuleDelete 段階 3 の測定）。
+    expect(message).toContain('1 本録れれば以降はまた弾かれます')
+    expect(message).not.toContain('窓の中の再放送を録り直します')
+  })
+
+  // 反対方向: 重複排除を使っていないルールでは警告を出さない
+  // （常に出す実装だと、無関係なルールにも意味の無い長文が付く）。
+  it('重複排除が無効なルールの削除確認には履歴の警告を出さない', async () => {
+    stubApi([sampleRule])
+    const user = userEvent.setup()
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    renderPage()
+
+    await screen.findByText('ニュース')
+    await user.click(screen.getByRole('button', { name: 'ルール「ニュース」のその他の操作' }))
+    await user.click(await screen.findByRole('menuitem', { name: '削除' }))
+
+    expect(confirmSpy.mock.calls[0][0]).toBe('ルール「ニュース」を削除しますか？')
   })
 
   it('確認をキャンセルすると削除されない', async () => {

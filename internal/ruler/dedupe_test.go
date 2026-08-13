@@ -682,3 +682,99 @@ func TestRunPass_DedupeMatchesSameServiceDifferentEvent(t *testing.T) {
 	}
 	assertDedupeEvidence(t, res, &other)
 }
+
+// 14. ルールを削除すると、そのルールで録れた履歴は比較のスコープから外れる
+// （issue #215 の決定。docs/recording/ruler.md §3.1「ルールの削除は履歴の
+// スコープを消す」）。3 段階で押さえる:
+//
+//   - ルールが生きている間は skip する（1 と同じ前提。ここが崩れたら以降の
+//     アサーションは空虚になる）
+//   - ルールを削除して**同じ条件で作り直す**と skip しない。作り直したルールは
+//     新しい id を持つので、過去の録画は 1 件もマッチしない
+//   - **新ルールの下で 1 本録れると、また skip する**（過剰録画が一過性である
+//     ことの根拠。docs はこのテスト名を併記してその主張を書いている）
+//
+// 「FK を外して recordings.rule_id の値を残す」実装に変えると、**機構を見て
+// いる段階 1 だけが落ちて、仕様を見ている段階 2・3 は通る**（実測: 一時
+// マイグレーションで recordings_rule_id_fkey を DROP すると
+// 「recordings.rule_id = 1 after deleting the rule, want NULL」の 1 件のみ
+// FAIL）。症状（作り直したルールでは履歴が効かない）は値の保持では消えず、
+// それが FK を外す案を採らなかった理由そのものである。
+func TestRunPass_DedupeHistoryLeavesScopeOnRuleDelete(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	f := setupDedupeFixture(t, pool, ctx)
+
+	if err := ruler.New([]string{testSite}, pool, nil).RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
+	res, ok := getReservation(t, pool, ctx, f.programID)
+	if !ok {
+		t.Fatal("reservation not created")
+	}
+	if !baseSkip(t, res.Base) {
+		t.Fatalf("base.skip = false while the rule is alive (base = %s)", res.Base)
+	}
+	assertDedupeEvidence(t, res, &f.recordingID)
+
+	// ルールを削除する。DELETE /api/rules/{id} は予約の後片付けを足すが、
+	// 履歴に効くのはこの 1 文（rules の行が消えること）だけ。
+	if _, err := pool.Exec(ctx, `DELETE FROM rules WHERE id = $1`, f.ruleID); err != nil {
+		t.Fatalf("deleting rule: %v", err)
+	}
+
+	// 段階 1: FK が ON DELETE SET NULL なので履歴の帰属が落ちる（00006_rules.sql）。
+	var histRuleID *int64
+	if err := pool.QueryRow(ctx,
+		`SELECT rule_id FROM recordings WHERE id = $1`, f.recordingID,
+	).Scan(&histRuleID); err != nil {
+		t.Fatalf("querying recordings.rule_id: %v", err)
+	}
+	if histRuleID != nil {
+		t.Errorf("recordings.rule_id = %d after deleting the rule, want NULL", *histRuleID)
+	}
+
+	// 段階 2: 同じ条件でルールを作り直す。id は新しくなる。
+	newRuleID := insertRule(t, pool, ctx, "rerun", 10)
+	insertRuleKeyword(t, pool, ctx, newRuleID, "再放送テスト")
+	enableDedupe(t, pool, ctx, newRuleID, dedupeFixtureThreshold, nil)
+	if newRuleID == f.ruleID {
+		t.Fatalf("recreated rule reused id %d; rules.id must be GENERATED ALWAYS AS IDENTITY", newRuleID)
+	}
+
+	if err := ruler.New([]string{testSite}, pool, nil).RunPass(ctx); err != nil {
+		t.Fatalf("RunPass after recreating the rule: %v", err)
+	}
+
+	res2, ok := getReservation(t, pool, ctx, f.programID)
+	if !ok {
+		t.Fatal("reservation not created after recreating the rule")
+	}
+	if baseSkip(t, res2.Base) {
+		t.Errorf("base.skip = true after delete + recreate (base = %s); "+
+			"履歴は削除で比較対象から外れ、作り直しても引き継がれないのが仕様", res2.Base)
+	}
+	assertDedupeEvidence(t, res2, nil)
+
+	// 段階 3: 新ルールの下で 1 本録れると、以降はまた弾かれる。
+	//
+	// 過剰録画が**一過性**であること（= 被害の上限）の根拠はこの段階にしか
+	// 無い。ここが偽なら帰結は「窓の中の再放送を全部録り直す」に戻り、
+	// 決定 (a)（仕様として受け入れる）の結論自体が変わる。docs は
+	// このテスト名を根拠に「1 本録れれば以降はまた弾かれる」と書いている。
+	newRec := insertRecording(t, pool, ctx, &newRuleID,
+		"再放送テスト 第1話", db.RecordingStatusFinished, time.Now().Add(-2*time.Hour), false)
+	if err := ruler.New([]string{testSite}, pool, nil).RunPass(ctx); err != nil {
+		t.Fatalf("RunPass after one recording under the new rule: %v", err)
+	}
+	res3, ok := getReservation(t, pool, ctx, f.programID)
+	if !ok {
+		t.Fatal("reservation not created after recording under the new rule")
+	}
+	if !baseSkip(t, res3.Base) {
+		t.Errorf("base.skip = false after one recording under the new rule (base = %s); "+
+			"過剰録画が一過性であることの根拠が崩れている", res3.Base)
+	}
+	// 根拠 2 列は**新しい**録画を指す（旧ルールの履歴が復活したのではない）。
+	assertDedupeEvidence(t, res3, &newRec)
+}

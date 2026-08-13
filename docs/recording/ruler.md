@@ -77,7 +77,7 @@ EPG 更新完了で `reservationManage.updateAll()` を呼び、全手動予約�
 
 | 項目 | 決めたこと |
 |---|---|
-| 比較対象 | **同じ `rule_id` の `recordings` だけ**。「同じルールが同じ番組シリーズを指している」前提に乗る（グローバルな突き合わせはしない） |
+| 比較対象 | **同じ `rule_id` の `recordings` だけ**。「同じルールが同じ番組シリーズを指している」前提に乗る（グローバルな突き合わせはしない）。**ルールを削除すると履歴は比較対象から外れる**（下記「ルールの削除は履歴のスコープを消す」） |
 | 状態 | `status = 'finished'` のみ。`recording`（進行中）も `failed` も「録れた」とはみなさない |
 | `deleted_at` | **絞らない。** ごみ箱に入れても物理削除しても行は tombstone として残り、重複排除は機能する契約（[スキーマ](../schema.md) §5）。`deleted_at IS NULL` を足すのは書き忘れの修正ではなく契約違反 |
 | 時間窓 | `rules.dedupe_window` が NULL なら**無制限**（`rules` の CHECK は `dedupe_enabled` のとき `dedupe_threshold` だけを要求し window は任意） |
@@ -90,6 +90,21 @@ tie-break を決定的にするのは必須で、任意ではない。同じ類�
 **`base.skip` に skip を載せる唯一の経路が重複排除である。** ユーザーの「録るな」は `program_intents.action` が担い、`action = 'record'` が dedup の skip に勝つ合成は `db.EffectiveOptions` の 1 箇所で解く（§4.2）。このとき**根拠 2 列は消さない** — UI が「重複と判定したが録る」と説明できるようにするため。
 
 根拠 2 列（`dedup_match_recording_id` / `dedup_similarity`）は base と同じ凍結規則に従う。ルールが base を供給している間は毎パス作り直し、マッチが無ければ NULL に戻す（前パスの根拠を残さない。不変条件 9）。`rule_id` が外れたら base と一緒に凍結する — base だけ凍結して根拠を消すと「なぜ skip なのか説明できない base」が残るため。FK を張っていないので、参照先の録画が消えた場合もこの毎パスの作り直しが孤立を解消する（[スキーマ](../schema.md) §3）。
+
+##### ルールの削除は履歴のスコープを消す
+
+比較対象を `rule_id` で絞るということは、**比較のスコープは生きている `rules` の行が定義している**ということである。ルールを削除すると 2 段階で履歴が効かなくなる。
+
+1. `recordings.rule_id` は `rules` への FK が `ON DELETE SET NULL`（`00006_rules.sql`）なので、そのルールで録れた履歴の `rule_id` が NULL に落ちる。以後どのルールの比較対象にもならない
+2. 同じ条件でルールを**作り直しても** id は新しくなるので、過去の録画は 1 件もマッチしない。直後のパスでは重複としてスキップされなくなる（実際に余分に録れる量は下記のとおり一過性）
+
+**これは仕様である**（`internal/ruler/dedupe_test.go` の `TestRunPass_DedupeHistoryLeavesScopeOnRuleDelete` が 3 段階で固定している: ルールが生きていれば skip / 削除→作り直し直後は skip しない / 新ルールで 1 本録れるとまた skip する）。条件を大きく変えたいだけなら**削除して作り直すのではなく編集する** —— `PATCH /api/rules/{id}`（UI の「編集」「検索しながら編集」）は id を保つので履歴も保たれる。
+
+`deleted_at` の tombstone 契約（上表）との非対称に見えるが、守っている主語が違う。tombstone が守るのは「録画したという不可逆な事実」で、ユーザーがファイルを消しても事実は残る。ルール削除で失われるのは事実ではなく**比較の枠**で、`recordings` の行は 1 行も減っていない。倒れる方向も「録り逃し」ではなく「余計に録る」側であり（[予約モデル](reservation-model.md) §4.3「迷ったら録る側に倒す」）、**新ルールの下で 1 本録れれば以降の再放送はまた弾かれる**（上と同じテストの段階 3 で測っている: `base.skip` が true に戻り、根拠 2 列は新しい録画を指す）—— 履歴が積み直るまでの一過性の過剰録画になる。この一文が受け入れ可能かどうかの分かれ目で、偽なら帰結は「窓の中の再放送を全部録り直す」に戻る。
+
+`recordings.rule_id` の FK を外して値を残す案は採らない。作り直したルールが新しい id を持つ以上、上の 2 が残って**症状が消えない**（履歴に旧 id を保存しても新ルールの比較対象にはならない）。削除→作り直しをまたいで効かせるには「ルール名をキーにする」等の別の同定が要るが、名前キーは同名の別ルールの履歴を黙って混ぜるので、いま乗っている前提より弱い前提に置き換わる。加えて、恒久に解決しない `ruleId` を履歴に残すと「一覧が未解決だから解決できない」という**一時的な**状態の表示（[フロントエンド](../frontend/recordings.md)「ルール名の解決」）と区別が付かなくなる。
+
+削除の確認ダイアログは、`dedupeEnabled` なルールに限りこの帰結を事前に伝える（`web/src/pages/rules.tsx` の `deleteRuleConfirmMessage`。文面は上の測定に合わせ「次の再放送を録り直す / 1 本録れれば以降はまた弾かれる」までを言う）。**重複排除の設定自体を編集する UI は現状無い**（`web/src` で `dedupe*` に触るのは `buildRuleInput` の `preserve` と skip 理由の表示だけ）。`dedupeEnabled` なルールは `POST` / `PATCH /api/rules` を直接叩いて作ったものに限られ、この確認文に到達する経路も今はそこだけになる。
 
 **類似度検索に trgm GIN は効かない。** `gin_trgm_ops` が加速するのは `%` / `<%` / LIKE / 正規表現で、`similarity()` の関数呼び出しはインデックスに乗らない。`%` は閾値をルール単位ではなく GUC `pg_trgm.similarity_threshold` から読むため `rules.dedupe_threshold` と直接は噛み合わない（前段フィルタにする手順は `internal/ruler/dedupe.go` のコメントに残してある）。家庭用の履歴規模では素の走査で足りるので、隠れたセッション状態を持ち込む前に実測する。
 
@@ -117,4 +132,5 @@ NID/SID は放送規格のスコープでサイトに依存しないため、地
 - GC は当初 3 表それぞれに別々の DELETE 文があり、表ごとに違うスナップショット列を見てドリフトしていた（表ごとに違う時刻で GC していた）。issue #27 で `program_snapshots` への `ON DELETE CASCADE` FK による 1 本の DELETE（`DeleteEndedProgramSnapshots`）に集約した
 - `recordings.reservation_id` 列（GC 当時は `ON DELETE SET NULL`）は issue #158 で列自体を削除した
 - 重複排除（`internal/ruler/dedupe.go`）の実装は M2-6
+- 「ルールの削除は履歴のスコープを消す」は issue #215 の決定。`recordings.rule_id` の FK を外して値を残す案（`dedup_match_recording_id` で FK を張らなかった議論と同型）を評価したうえで採らなかった —— 作り直したルールが新 id を持つ以上、値を残しても症状（`dedupe_window` 内の再放送を録り直す）が消えないため。判断の全文は同 issue のコメントにある
 
