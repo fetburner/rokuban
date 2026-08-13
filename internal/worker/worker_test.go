@@ -272,6 +272,11 @@ func TestInsertOpts_UniqueStatesExcludeFinalized(t *testing.T) {
 // 黙って塞ぐ（pendingJobStates 直後の doc コメント、issue #185 のレビュー
 // 指摘）。この 1 つのテーブルにまとめておくことで、7 種のうち 1 つでも
 // ByQueue を書き忘れたときに検出漏れが起きないようにする。
+//
+// storage_sync だけは事情が違う（キュー名を変えたことがないので、この表が
+// 押さえている「リネームで塞がる」失敗はまだ起きえない）。専用の storage
+// キューを新設した時点で先に立てておくという選択の記録としてここに置く ---
+// 後から `storage` を改名したくなったときに、上記の失敗を踏み直さないため。
 func TestInsertOpts_ByQueueForRenamedQueues(t *testing.T) {
 	tests := []struct {
 		name string
@@ -285,7 +290,7 @@ func TestInsertOpts_ByQueueForRenamedQueues(t *testing.T) {
 		{"record_sweep", RecordSweepArgs{}.InsertOpts(), true},
 		{"delete_reconcile", DeleteReconcileArgs{}.InsertOpts(), true},
 		{"catalog_export", CatalogExportArgs{}.InsertOpts(), true},
-		{"storage_sync", StorageSyncArgs{}.InsertOpts(), true},
+		{"storage_sync (new queue, set up-front against a future rename)", StorageSyncArgs{}.InsertOpts(), true},
 		{"ruler_pass (queue name unchanged, not required)", RulerPassArgs{}.InsertOpts(), false},
 	}
 	for _, tt := range tests {

@@ -57,6 +57,13 @@ func (StorageSyncArgs) InsertOpts() river.InsertOpts {
 	}
 }
 
+// allStorageRootNames は Rokuban が観測しうる root 名の全体集合。
+// マイグレーション 00035 の CHECK (root IN ('media', 'scratch')) と 1:1 で、
+// Go 側ではここが唯一の出所（roots() の対象も、外れた root のラベル掃除の
+// 走査範囲も、両方これから導出する。TestStorageSyncWorker_Roots が
+// rootPath() の case 漏れを検出する）。
+var allStorageRootNames = []string{"media", "scratch"}
+
 // storageRoot は 1 つの観測対象（config キーと statfs するパスの対応）。
 type storageRoot struct {
 	// name は storage_sync.root の値（'media' | 'scratch'）。config キー名
@@ -110,11 +117,27 @@ func (w *StorageSyncWorker) statFunc() func(string) (diskusage.Usage, error) {
 	return diskusage.Stat
 }
 
-// roots は今回のパスで観測すべき root の一覧を返す。
+// rootPath は root 名に対応する config の値を返す。空文字列は「この root は
+// 観測しない」を意味する（scratch_dir を明示的に空にした場合。media_dir が空の
+// ケースは Work が先に弾く）。allStorageRootNames に無い名前も空を返す。
+func (w *StorageSyncWorker) rootPath(name string) string {
+	switch name {
+	case "media":
+		return w.MediaDir
+	case "scratch":
+		return w.ScratchDir
+	default:
+		return ""
+	}
+}
+
+// roots は今回のパスで観測すべき root の一覧を返す（config が値を持つものだけ）。
 func (w *StorageSyncWorker) roots() []storageRoot {
-	roots := []storageRoot{{name: "media", path: w.MediaDir}}
-	if w.ScratchDir != "" {
-		roots = append(roots, storageRoot{name: "scratch", path: w.ScratchDir})
+	roots := make([]storageRoot, 0, len(allStorageRootNames))
+	for _, name := range allStorageRootNames {
+		if path := w.rootPath(name); path != "" {
+			roots = append(roots, storageRoot{name: name, path: path})
+		}
 	}
 	return roots
 }
@@ -135,21 +158,6 @@ func (w *StorageSyncWorker) Work(ctx context.Context, _ *river.Job[StorageSyncAr
 
 	q := sqlcgen.New(w.Pool)
 
-	// 削除前に既存行を見て、config から外れる root（例: scratch_dir を空に
-	// 変更した）を特定する --- DB 行を消すのと同時に、その root の Prometheus
-	// ラベルも消す（残すと「二度と更新されないのに値だけが居座る」壊れ方をする。
-	// PR #258 のレビュー指摘）。
-	existing, err := q.ListStorageSync(ctx)
-	if err != nil {
-		return fmt.Errorf("storage sync: listing existing roots: %w", err)
-	}
-	var removed []string
-	for _, e := range existing {
-		if !desiredSet[e.Root] {
-			removed = append(removed, e.Root)
-		}
-	}
-
 	// config が要求しなくなった root だけを消す。今回 statfs に失敗した root は
 	// この集合に含まれる（desired から外れない）ので、ここでは消えない ---
 	// 消すかどうかは config が決め、「今回観測できたか」では決めない
@@ -157,7 +165,20 @@ func (w *StorageSyncWorker) Work(ctx context.Context, _ *river.Job[StorageSyncAr
 	if err := q.DeleteStorageSyncExcept(ctx, desired); err != nil {
 		return fmt.Errorf("storage sync: deleting stale roots: %w", err)
 	}
-	for _, name := range removed {
+
+	// Prometheus 側も同じ desired set で毎パス揃える。DB 行と違って
+	// DeleteLabelValues は「消えていること」に対して冪等なので、既に消えている
+	// ラベルを毎パス消しても何も起きない --- 逆に「行がまだ見えていた 1 パス」に
+	// 掃除を賭けると、storage キューを引く別レプリカが先に行を消したパスで
+	// ラベルが取り残され、二度と掃除されない（不変条件 5: レベルトリガー。
+	// TestStorageSyncWorker_MetricsClearedWhenRowRemovedByAnotherReplica で固定）。
+	// 取り残されたラベルは「凍結した鮮度ゲージ」= Pod を再起動するまで消えない
+	// 偽陽性アラートになる（docs/operations/monitoring.md §沈黙は保証ではない が
+	// この鮮度を判断材料に挙げている）。
+	for _, name := range allStorageRootNames {
+		if desiredSet[name] {
+			continue
+		}
 		metrics.StorageRootLastSuccess.DeleteLabelValues(name)
 		metrics.StorageRootTotalBytes.DeleteLabelValues(name)
 		metrics.StorageRootUsedBytes.DeleteLabelValues(name)

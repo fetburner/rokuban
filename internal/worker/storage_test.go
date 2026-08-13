@@ -61,6 +61,21 @@ func TestStorageSyncWorker_Roots(t *testing.T) {
 	if got[0].name != "media" || got[1].name != "scratch" || got[1].path != "/scratch" {
 		t.Errorf("roots() = %+v, want [{media /media} {scratch /scratch}]", got)
 	}
+
+	// allStorageRootNames は「観測しうる root の全体集合」であり、ラベル掃除の
+	// 走査範囲でもある。ここに名前を足して rootPath() の case を足し忘れると、
+	// その root は永久に観測されないのに DB の CHECK は通る（掃除だけが効いて
+	// 行が消え続ける）ので、全 config を与えたときの roots() が全体集合と
+	// 一致することを検査する。
+	if len(got) != len(allStorageRootNames) {
+		t.Fatalf("roots() with every dir configured = %+v (%d entries), want one per allStorageRootNames (%v)",
+			got, len(got), allStorageRootNames)
+	}
+	for i, name := range allStorageRootNames {
+		if got[i].name != name {
+			t.Errorf("roots()[%d].name = %q, want %q (rootPath() missing a case?)", i, got[i].name, name)
+		}
+	}
 }
 
 // media/scratch の両方を実ディレクトリに向けた 1 パスで、2 行が正しく投影されること。
@@ -410,5 +425,69 @@ func TestStorageSyncWorker_MetricsClearedWhenRootRemoved(t *testing.T) {
 	}
 	if got := promtestutil.ToFloat64(metrics.StorageRootTotalBytes.WithLabelValues("scratch")); got != 0 {
 		t.Errorf("scratch TotalBytes = %v after removal, want 0", got)
+	}
+}
+
+// ラベルの掃除は「DB 行がまだ見えている遷移」に依存しない（不変条件 5:
+// レベルトリガー）。storage キューを引く別のレプリカが新しい config で先に走って
+// 行を消していても、このプロセスは自分の次のパスで config から desired set を
+// 再導出してラベルを掃除できること。
+//
+// エッジトリガー実装（既存行を SELECT して差集合だけ掃除する）だと、行を消したのが
+// 他者だったパスでラベルが取り残され、二度と掃除されない ---
+// rokuban_storage_root_last_success_timestamp_seconds{root="scratch"} が凍結した
+// まま残り、その鮮度でアラートせよと書いている docs/operations/monitoring.md の
+// 手順が Pod を再起動するまで消えない偽陽性を出し続ける。
+func TestStorageSyncWorker_MetricsClearedWhenRowRemovedByAnotherReplica(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+	scratchDir := t.TempDir()
+
+	w := &StorageSyncWorker{
+		Pool: pool, MediaDir: mediaDir, ScratchDir: scratchDir,
+		Stat: fakeStat(map[string]diskusage.Usage{
+			mediaDir:   {TotalBytes: 100, UsedBytes: 10, AvailableBytes: 90},
+			scratchDir: {TotalBytes: 777, UsedBytes: 77, AvailableBytes: 700},
+		}, nil),
+	}
+	if err := runStorageSync(t, w); err != nil {
+		t.Fatalf("first Work() error: %v", err)
+	}
+	if got := promtestutil.ToFloat64(metrics.StorageRootTotalBytes.WithLabelValues("scratch")); got != 777 {
+		t.Fatalf("scratch TotalBytes = %v, want 777 before removal", got)
+	}
+
+	// storage キューを引く 2 台目の worker レプリカが、新しい config で先に 1 パス
+	// 走って scratch 行を消した状況を模す（このプロセスから見ると、config 変更に
+	// 気付いたときには DB 行がもう無い）。
+	if _, err := pool.Exec(context.Background(), "DELETE FROM storage_sync WHERE root = 'scratch'"); err != nil {
+		t.Fatalf("simulating another replica's sweep: %v", err)
+	}
+
+	// このプロセスも新しい config（scratch_dir 空）で 1 パス走る。
+	w.ScratchDir = ""
+	w.Stat = fakeStat(map[string]diskusage.Usage{
+		mediaDir: {TotalBytes: 100, UsedBytes: 10, AvailableBytes: 90},
+	}, nil)
+	if err := runStorageSync(t, w); err != nil {
+		t.Fatalf("second Work() error: %v", err)
+	}
+
+	if got := promtestutil.ToFloat64(metrics.StorageRootTotalBytes.WithLabelValues("scratch")); got != 0 {
+		t.Errorf("scratch TotalBytes = %v, want 0 (stale label must be cleared even when another replica deleted the row first)", got)
+	}
+	if got := promtestutil.ToFloat64(metrics.StorageRootLastSuccess.WithLabelValues("scratch")); got != 0 {
+		t.Errorf("scratch StorageRootLastSuccess = %v, want 0 (a frozen freshness gauge is a permanent false-positive alert)", got)
+	}
+	if got := promtestutil.ToFloat64(metrics.StorageRootUsedBytes.WithLabelValues("scratch")); got != 0 {
+		t.Errorf("scratch UsedBytes = %v, want 0", got)
+	}
+	if got := promtestutil.ToFloat64(metrics.StorageRootAvailableBytes.WithLabelValues("scratch")); got != 0 {
+		t.Errorf("scratch AvailableBytes = %v, want 0", got)
+	}
+
+	// media 側は掃除に巻き込まれない（desired set に残っている）。
+	if got := promtestutil.ToFloat64(metrics.StorageRootTotalBytes.WithLabelValues("media")); got != 100 {
+		t.Errorf("media TotalBytes = %v, want 100 (still desired, must not be swept)", got)
 	}
 }
