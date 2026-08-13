@@ -243,6 +243,43 @@ mirakcs:
 		}
 	})
 
+	// url を欠いた `mirakc:` は「書かれていない」と見なされていたため、`mirakcs:`
+	// との併記が相互排他の検査を素通りし、書いた `mirakc.site` が黙って無視されて
+	// いた（issue #184 に M4-11 のレビューから送られた申し送り 1 件目）。
+	// 相互排他はキーが書かれたかで判定する（detectMirakcKeyWritten）。
+	t.Run("mirakc without url plus mirakcs is an error, not a silent ignore", func(t *testing.T) {
+		path := writeConfig(t, mirakcsBase+`
+mirakc:
+  site: tokyo
+mirakcs:
+  - site: takamatsu
+    url: http://mirakc-takamatsu:40772
+`)
+		_, err := Load(path)
+		if err == nil {
+			t.Fatal("expected error, got nil (mirakc.site would be silently ignored)")
+		}
+		if !strings.Contains(err.Error(), "must not both be set") {
+			t.Errorf("error = %v, want mention of mutual exclusion", err)
+		}
+	})
+
+	// 単独で書かれた url 無しの `mirakc:` は「どちらも未設定」ではなく
+	// 「mirakc.url が無い」として報告する（何を書き足せばよいかが分かる）。
+	t.Run("mirakc without url alone reports the missing url", func(t *testing.T) {
+		path := writeConfig(t, mirakcsBase+`
+mirakc:
+  site: tokyo
+`)
+		_, err := Load(path)
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "mirakc.url is required") {
+			t.Errorf("error = %v, want mention of mirakc.url is required", err)
+		}
+	})
+
 	t.Run("mirakc single-object sugar resolves to a one-element registry", func(t *testing.T) {
 		path := writeConfig(t, mirakcsBase+`
 mirakc:
