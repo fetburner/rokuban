@@ -42,6 +42,7 @@ func (e CapacityOverageJammedTypes) Valid() bool {
 
 // Defines values for CircuitBreakerName.
 const (
+	DeleteReconcile    CircuitBreakerName = "delete_reconcile"
 	ReconcileTotalLoss CircuitBreakerName = "reconcile_total_loss"
 	RulerDeletes       CircuitBreakerName = "ruler_deletes"
 )
@@ -49,6 +50,8 @@ const (
 // Valid indicates whether the value is a known member of the CircuitBreakerName enum.
 func (e CircuitBreakerName) Valid() bool {
 	switch e {
+	case DeleteReconcile:
+		return true
 	case ReconcileTotalLoss:
 		return true
 	case RulerDeletes:
@@ -590,7 +593,12 @@ type CircuitBreaker struct {
 	// （`internal/breaker.Sample` と同じ形。手動確認の材料）。
 	Detail CircuitBreakerSample `json:"detail"`
 
-	// Name internal/breaker の定数（RulerDeletes / ReconcileTotalLoss）。
+	// Name internal/breaker の定数（RulerDeletes / ReconcileTotalLoss /
+	// DeleteReconcile）。値の権威は internal/breaker.All
+	// （internal/breaker/breaker.go）で、この enum はそれを手で複製した
+	// ものなので、breaker.All に定数を足したときはここも合わせて直す
+	// （internal/breaker の AST テストは breaker.go の const ブロックと
+	// All の一致だけを見ており、この enum との一致までは検証できない）。
 	Name CircuitBreakerName `json:"name"`
 
 	// Pending 発動時に止めた削除の件数。
@@ -605,7 +613,12 @@ type CircuitBreaker struct {
 	TrippedAt time.Time `json:"trippedAt"`
 }
 
-// CircuitBreakerName internal/breaker の定数（RulerDeletes / ReconcileTotalLoss）。
+// CircuitBreakerName internal/breaker の定数（RulerDeletes / ReconcileTotalLoss /
+// DeleteReconcile）。値の権威は internal/breaker.All
+// （internal/breaker/breaker.go）で、この enum はそれを手で複製した
+// ものなので、breaker.All に定数を足したときはここも合わせて直す
+// （internal/breaker の AST テストは breaker.go の const ブロックと
+// All の一致だけを見ており、この enum との一致までは検証できない）。
 type CircuitBreakerName string
 
 // CircuitBreakerSample 発動時に「何が消されようとしていたか」を説明する抜粋

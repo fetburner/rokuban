@@ -301,16 +301,17 @@ VALUES ('other-site', 'ruler_deletes', 10, 50, '{"total":10}'::jsonb)`); err != 
 // /api/breakers に出る → resume で消える」の一往復が通ることを確認する
 // (issue #199)。
 //
-// これは internal/breaker.All（値の権威）と internal/api の
-// knownCircuitBreakerNames（resume が検証に使う既知集合）がずれていないかの
-// 回帰テストでもある。knownCircuitBreakerNames は breaker.All から導出する
-// 実装になっているので現状ずれようがないが、将来 breaker.go に新しい識別子を
-// 足して breaker.All への追加を忘れると（Go の定数はリフレクションで列挙
-// できないため、コンパイラも静的解析もそれを検出できない）、その識別子は
-// このテストの対象に入らないまま「発動はするが resume できない」という
-// issue #199 と同じ形の穴になり得る。このテストのループを breaker.All から
-// 生成しているのはそのための保険 —— 新しい識別子を breaker.All に追加した
-// 瞬間にこのテストの対象にも自動的に入る。
+// knownCircuitBreakerNames は breaker.All から導出する実装になっているので、
+// All とここのループの間はずれようがない。**このテストが検出できるのは
+// 「knownCircuitBreakerNames の導出配線が壊れていないか」だけ**であり、
+// 「breaker.go の const 宣言に All への追加を忘れていないか」は検出できない
+// ——このループ自体が All から生成されるので、All に無い名前はそもそも
+// テストケースにならない（PR #199 のレビューで、まさにこの mutation
+// （All から 1 件落とす）を入れても本テストを含む `go test ./...` 全体が
+// 緑のままであることが実測された）。後者の検知は
+// internal/breaker/all_test.go の TestAll_MatchesDeclaredConstants
+// （go/parser で breaker.go の const ブロックを直接読み、All と突き合わせる）
+// に委ねている。
 func TestCircuitBreaker_TripListResumeRoundTripForEveryKnownName(t *testing.T) {
 	for _, name := range breaker.All {
 		t.Run(name, func(t *testing.T) {
@@ -365,5 +366,34 @@ func TestCircuitBreaker_TripListResumeRoundTripForEveryKnownName(t *testing.T) {
 				t.Errorf("circuit breaker %q still exists after resume", name)
 			}
 		})
+	}
+}
+
+// 9. GET /api/breakers は、circuit_breakers.name の値が openapi.yaml の
+// CircuitBreakerName enum に無い場合、黙って enum 外の値を返さずエラー
+// にする (issue #199 のレビュー指摘: internal/breaker.All と openapi.yaml
+// の enum は別々の手書きの複製で、後者がずれても検出する手段が無かった)。
+//
+// circuit_breakers に CHECK 制約は無い（internal/breaker/breaker.go の
+// コメント参照）ので、この行は「DB に無検査の値が入り得る」ことの
+// 直接の再現であり、リフレクションや mock を要さない。
+func TestListCircuitBreakers_ErrorsWhenNameNotInEnum(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	router := api.NewRouter(api.RouterConfig{Pool: pool})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	insertCircuitBreakerFixture(t, pool, ctx, "not_a_declared_breaker", 1, 1, `{"total":1}`)
+
+	resp, err := http.Get(srv.URL + "/api/breakers")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusInternalServerError {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 500 (body: %s)", resp.StatusCode, body)
 	}
 }

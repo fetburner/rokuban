@@ -683,7 +683,12 @@ export interface ProgramOverlaps {
 }
 
 /**
- * internal/breaker の定数（RulerDeletes / ReconcileTotalLoss）。
+ * internal/breaker の定数（RulerDeletes / ReconcileTotalLoss /
+ * DeleteReconcile）。値の権威は internal/breaker.All
+ * （internal/breaker/breaker.go）で、この enum はそれを手で複製した
+ * ものなので、breaker.All に定数を足したときはここも合わせて直す
+ * （internal/breaker の AST テストは breaker.go の const ブロックと
+ * All の一致だけを見ており、この enum との一致までは検証できない）。
  */
 export type CircuitBreakerName = typeof CircuitBreakerName[keyof typeof CircuitBreakerName];
 
@@ -691,6 +696,7 @@ export type CircuitBreakerName = typeof CircuitBreakerName[keyof typeof CircuitB
 export const CircuitBreakerName = {
   ruler_deletes: 'ruler_deletes',
   reconcile_total_loss: 'reconcile_total_loss',
+  delete_reconcile: 'delete_reconcile',
 } as const;
 
 export interface CircuitBreakerSampleProgram {
@@ -715,7 +721,14 @@ export interface CircuitBreakerSample {
  */
 export interface CircuitBreaker {
   site: string;
-  /** internal/breaker の定数（RulerDeletes / ReconcileTotalLoss）。 */
+  /**
+     * internal/breaker の定数（RulerDeletes / ReconcileTotalLoss /
+     * DeleteReconcile）。値の権威は internal/breaker.All
+     * （internal/breaker/breaker.go）で、この enum はそれを手で複製した
+     * ものなので、breaker.All に定数を足したときはここも合わせて直す
+     * （internal/breaker の AST テストは breaker.go の const ブロックと
+     * All の一致だけを見ており、この enum との一致までは検証できない）。
+     */
   name: CircuitBreakerName;
   /**
      * 発動した時刻（最初の発動時刻。再発動で更新されるのは pending /

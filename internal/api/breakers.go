@@ -43,9 +43,21 @@ func (h *Server) ListCircuitBreakers(ctx context.Context, _ ListCircuitBreakersR
 		if err := json.Unmarshal(r.Detail, &sample); err != nil {
 			return nil, fmt.Errorf("unmarshalling detail for circuit breaker %s/%s: %w", r.Site, r.Name, err)
 		}
+		// name の権威は internal/breaker.All だが、openapi.yaml の
+		// CircuitBreakerName enum はそれを手で複製したものなので、breaker.All
+		// に定数を足して openapi.yaml 側を直し忘れるとここで初めてずれが
+		// 顕在化する。無検査でキャストして黙って enum 外の値を返すと、生成
+		// クライアント（web/src/api/generated.ts の CircuitBreakerName・
+		// web/src/lib/breaker.ts の Record）が知らない値を受け取り、ラベルも
+		// 再開理由も空のまま誰も気付かない（issue #199 のレビューで指摘された
+		// 穴と同じ形）。fail loud にして気付けるようにする。
+		name := CircuitBreakerName(r.Name)
+		if !name.Valid() {
+			return nil, fmt.Errorf("circuit breaker %s/%s has name %q, which is not declared in the CircuitBreakerName enum (openapi.yaml is out of sync with internal/breaker.All)", r.Site, r.Name, r.Name)
+		}
 		result = append(result, CircuitBreaker{
 			Site:      r.Site,
-			Name:      CircuitBreakerName(r.Name),
+			Name:      name,
 			TrippedAt: r.TrippedAt,
 			Pending:   int(r.Pending),
 			Threshold: int(r.Threshold),

@@ -1113,7 +1113,7 @@ paths:
         required: true
         description: |
           ブレーカー識別子（`internal/breaker` の定数。`ruler_deletes` /
-          `reconcile_total_loss`）。未知の値は 400。
+          `reconcile_total_loss` / `delete_reconcile`）。未知の値は 400。
         schema:
           type: string
     post:
@@ -2088,8 +2088,14 @@ components:
           type: string
         name:
           type: string
-          enum: [ruler_deletes, reconcile_total_loss]
-          description: internal/breaker の定数（RulerDeletes / ReconcileTotalLoss）。
+          enum: [ruler_deletes, reconcile_total_loss, delete_reconcile]
+          description: |
+            internal/breaker の定数（RulerDeletes / ReconcileTotalLoss /
+            DeleteReconcile）。値の権威は internal/breaker.All
+            （internal/breaker/breaker.go）で、この enum はそれを手で複製した
+            ものなので、breaker.All に定数を足したときはここも合わせて直す
+            （internal/breaker の AST テストは breaker.go の const ブロックと
+            All の一致だけを見ており、この enum との一致までは検証できない）。
         trippedAt:
           type: string
           format: date-time

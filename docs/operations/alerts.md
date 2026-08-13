@@ -25,7 +25,7 @@ EPG の一時欠損（mirakc 再起動・再スキャン・SI 取得不良）で
 |---|---|---|
 | `ruler_deletes` | ルール x EPG の評価から導出された予約削除 | `GET /api/breakers` の `detail` で消されようとしていた番組を確認 → 正当なら `POST /api/sites/{site}/breakers/ruler_deletes/resume`（`site` は一覧のレスポンスにある値） |
 | `reconcile_total_loss` | 「desired が空なのに自分の schedule が観測されている」という全損シグネチャ | DB 接続・`reservations` の中身を確認。**件数の閾値ではない**ので、発動したら本当に異常である |
-| `delete_reconcile` | 削除 reconcile（ごみ箱の猶予超過 / `until_encoded` の派生物完備 / 孤児回収の 3 ソースをまとめた 1 パス分の物理 unlink） | `GET /api/breakers` の `detail` で消されようとしていたファイルを確認 → 正当なら `POST /api/sites/{site}/breakers/delete_reconcile/resume` |
+| `delete_reconcile` | 削除 reconcile（ごみ箱の猶予超過 / `until_encoded` の派生物完備 / 孤児回収の 3 ソースをまとめた 1 パス分の物理 unlink） | **`ruler_deletes` と異なり `detail` に対象の抜粋は載らない**（`internal/worker/delete_reconcile.go` は `breaker.Sample{Total: total}` しか渡さず、`breaker.Sample`/`SampleProgram` にファイルを表す欄も無い。未検証で「ファイルを確認」とは書けない）。`GET /api/breakers` の `pending`/`threshold` で規模を確認し、対象の内訳が要るなら `media_assets` を直接クエリする（3 ソースの判定条件は [storage/retention.md](../storage/retention.md)）→ 正当なら `POST /api/sites/{site}/breakers/delete_reconcile/resume`（`site` は一覧のレスポンスにある値） |
 
 **1 が続く間、導出削除は一切実行されない。** これは「reconcile が収束できていない」ではなく
 「人間の確認を待っている」を意味する。放置すると mirakc 側に不要な schedule が残り続けるため、

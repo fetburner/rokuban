@@ -182,8 +182,10 @@ cleanup:
   orphan_age: 336h               # 孤児候補が記録されてから実削除されるまでのエイジング期間。
                                  # 0 なら既定値（14 日）
   max_deletes_per_pass: 100      # 一括削除サーキットブレーカーの閾値。ソースを問わず
-                                 # 1 パス全体の合計に対して働く（ruler と同じラッチ式）。
-                                 # 0 なら既定値（100）
+                                 # 1 パス全体の合計に対して働く（ruler と同じラッチ式。
+                                 # 手動で
+                                 #  POST /api/sites/{site}/breakers/delete_reconcile/resume
+                                 # するまで止まり続ける）。0 なら既定値（100）
 
 # ログ
 log:

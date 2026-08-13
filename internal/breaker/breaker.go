@@ -60,12 +60,20 @@ const (
 // 続けた）。
 //
 // この一覧自体は手書きなので、新しい定数を上に足してここへの追加を
-// 忘れる余地はまだ残る（Go の定数はリフレクションで列挙できないため、
-// コンパイラも静的解析もそれを機械的には捕まえられない）。抜けを検知する
-// 手段は internal/api/breakers_test.go の回帰テスト（All の各名前について
-// trip → GET /api/breakers に出る → resume で消える、を確認する）に
-// 委ねている——このテストは、resume が知らない名前を発動一覧が返した
-// 時点で落ちる。
+// 忘れる余地はまだ残る。この漏れは internal/api/breakers_test.go の
+// 回帰テスト（All の各名前についてループする）では検出できない
+// ——そちらは All の中身をそのままテストケースにするので、All に無い
+// 定数はループの視界にすら入らない（PR #199 で最初にこの形で書いて、
+// レビューで「保険になっていない」と実測で指摘された）。
+//
+// 代わりに TestAll_MatchesDeclaredConstants（all_test.go）が go/parser で
+// このファイルの const ブロックを直接読み、宣言されている文字列定数の集合と
+// All を突き合わせる。「Go の定数はリフレクションで列挙できない」は事実だが、
+// リフレクションを使わない静的解析（go/parser・go/ast）なら宣言済みの定数を
+// 列挙できるので、「機械的には捕まえられない」は誤りだった。新しい定数を
+// ここへ足すのを忘れると all_test.go が落ちる。openapi.yaml の
+// CircuitBreakerName enum との一致まではこのテストの対象外
+// （internal/api/breakers.go の ListCircuitBreakers 参照）。
 var All = []string{RulerDeletes, ReconcileTotalLoss, DeleteReconcile}
 
 // Sample は発動時に「何が消されようとしていたか」を説明するためのペイロード。
