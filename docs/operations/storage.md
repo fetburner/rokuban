@@ -23,14 +23,16 @@ GC がその番組のスナップショットを刈った後に ingest が走る
 
 **`epg.retention_grace` を上げるのは無料ではない。** 同じキーが EPG 射影のローリングウィンドウ（`PruneEpgPrograms`）も駆動するため、N 日にすると `epg_programs` に全サービスの放送済み番組が N 日ぶん残り、終了済み番組に対して永続表 `recordings` へ never-scheduled 行が作られる窓も同じだけ広がる（増加量は未検証）。詳細と、**GC 側を滞留と連動させない理由**、確認しているテストは [ストレージ](../storage.md) §6「凍結が依存する寿命と、エッジの滞留の交点」にある。
 
-見張るメトリクスは**「その record の観測がクラウドに届いていたか」**で分かれる（「リンクが生きているか」ではない）。**どちらも閾値は「悪い状態が `epg.retention_grace` を超えて続いたか」**（[監視メトリクス](monitoring.md) の一覧）:
+見張るメトリクスは**「その record が `finished` としてクラウドに観測されていたか」**で分かれる（「リンクが生きているか」ではない）。**どちらも閾値は「悪い状態が `epg.retention_grace` を超えて続いたか」**（[監視メトリクス](monitoring.md) の一覧）:
 
 | 滞留の型 | 見るメトリクス |
 |---|---|
-| 観測は届いているが ingest が詰まる（worker 停止・ストレージ障害・キュー詰まり。断の直前までに観測済みの record もこちら） | `rokuban_uningested_records{site}` / `rokuban_uningested_record_bytes{site}` の増加 |
-| エッジ↔クラウドの回線断で、**断の最中に始まった録画**（クラウドは record 自体を知らない） | `rokuban_sweep_last_pass_timestamp_seconds` / `rokuban_epg_sync_last_success_timestamp_seconds` の停滞 |
+| `finished` として観測済みなのに ingest が詰まる（worker 停止・ストレージ障害・キュー詰まり。**断の直前に `finished` として観測済み**の record もこちら） | `rokuban_uningested_records{site}` / `rokuban_uningested_record_bytes{site}` の増加 |
+| エッジ↔クラウドの回線断で、**断の最中に始まった録画と、断が始まった時点でまだ録画中だった録画** | `rokuban_sweep_last_pass_timestamp_seconds` / `rokuban_epg_sync_last_success_timestamp_seconds` の停滞 |
 
-後者では未 ingest メトリクスは増えない —— `record_sync` の行は watcher が mirakc を観測して初めて作られるため（`internal/db/queries/metrics.sql` の `GetUningestedRecordBacklog` のコメント参照）。**滞留量のアラートだけでは回線断を検知できない。**
+後者では未 ingest メトリクスは増えない。`GetUningestedRecordBacklog`（`internal/db/queries/metrics.sql`）の述語は `record_sync.status = 'finished'` で、その行は watcher が mirakc を観測して初めて作られる・更新される。したがって**断の最中に始まった録画（行そのものが無い）だけでなく、断が始まった時点で `status='recording'` だった録画も gauge には現れない** —— `finished` への更新には復帰後の再観測が要るため、断のあいだ gauge は平らなまま。**滞留量のアラートだけでは回線断を検知できない。**
+
+> 「アンカーがある（案 1 で留め置ける）」と「gauge に出る」は**別の条件**。案 1 は述語を自分で選べるので `status='recording'` の観測でも足りる（[ストレージ](../storage.md) §6）が、gauge の述語は `finished` 固定で選べない。
 
 ### アーカイブの速度要件
 

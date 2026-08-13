@@ -33,8 +33,8 @@ HTTP リスナーは常に 1 本立てる。OpenAPI には載せない（text fo
 | `rokuban_ingest_bytes_total` | Counter | ingest バイト数 |
 | `rokuban_ingest_duration_seconds` | Histogram | ingest 所要時間 |
 | `rokuban_ingest_jobs_total{result}` | Counter | ingest の成功/失敗件数 |
-| `rokuban_uningested_records{site}` | Gauge（DB） | 未 ingest record 総量（件数） |
-| `rokuban_uningested_record_bytes{site}` | Gauge（DB） | 未 ingest record 総量（バイト） |
+| `rokuban_uningested_records{site}` | Gauge（DB） | 未 ingest record 総量（件数）。**`finished` として観測済みのぶんだけ**（下記 ingest） |
+| `rokuban_uningested_record_bytes{site}` | Gauge（DB） | 未 ingest record 総量（バイト）。同上 |
 | `rokuban_uningested_backlog_scrape_errors_total{site}` | Counter | 上記の取得失敗 |
 | `rokuban_encode_duration_seconds` | Histogram | encode 1 件の所要時間 |
 | `rokuban_encode_jobs_total{result}` | Counter | encode の成功/失敗件数 |
@@ -150,9 +150,9 @@ ruler / reconciler / record_sweep（watcher の 3 段構えのうち (c) 定期�
 | メトリクス | 説明 |
 |---|---|
 | ingest バイト数・所要時間 | 転送パフォーマンスの監視 |
-| 未 ingest record 総量 | エッジのリングバッファ滞留量。エッジディスク残量と突き合わせてアラートの基礎とする |
+| 未 ingest record 総量 | **`finished` として観測済みで、まだコミットされていない** record の量。エッジディスク残量と突き合わせてアラートの基礎とする。エッジのリングバッファの中身そのものではない（回線断のあいだに始まった／録画中だったぶんは含まれない。[アラート設計](alerts.md)「エッジディスク残量」） |
 
-ジョブは諦めず再試行し続ける（max attempts で dead-letter にすると record が宙に浮く）。長時間の転送失敗でエッジのリングバッファが溜まり続けるのが唯一の運用リスクであり、このメトリクスで可視化する。
+ジョブは諦めず再試行し続ける（max attempts で dead-letter にすると record が宙に浮く）。長時間の転送失敗でエッジのリングバッファが溜まり続けるのが**エッジに到達できている間の**主な運用リスクであり、このメトリクスで可視化する。到達できていない間（回線断）はこのメトリクスでは見えないので、上記の「エッジのリングバッファの中身そのものではない」を読む。
 
 ### reconcile
 

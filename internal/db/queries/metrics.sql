@@ -4,11 +4,16 @@
 -- ここが増え続け、エッジの録画バッファを食い潰す（issue #4 のサイジング
 -- コメント）。エッジディスク残量アラートと対で使う。
 --
--- **数えるのは「クラウドが観測できた record」だけ。** record_sync の行は watcher が
--- mirakc を観測して初めて作られる（internal/watcher の processRecord。入口の
--- AcquireRecordSync が status を問わず作る）ので、**エッジ↔クラウドの回線が
--- 切れている間に始まった録画はここに現れず、この値は増えない**。回線断の検知は
--- 滞留量ではなく rokuban_sweep_last_pass_timestamp_seconds /
+-- **数えるのは「finished として観測できた record」だけ。** record_sync の行は
+-- watcher が mirakc を観測して初めて作られ・更新される（internal/watcher の
+-- processRecord）ので、エッジ↔クラウドの回線が切れている間は
+--
+--   * 断の最中に始まった録画 —— 行そのものが無い
+--   * 断が始まった時点で status='recording' だった録画 —— 行はあるが
+--     'finished' への更新が復帰後になるので下の WHERE に掛からない
+--
+-- のどちらも数に入らず、**断のあいだこの値は平らなまま**になる。
+-- 回線断の検知は滞留量ではなく rokuban_sweep_last_pass_timestamp_seconds /
 -- rokuban_epg_sync_last_success_timestamp_seconds の停滞で行う
 -- （docs/operations.md §4。断が epg.retention_grace を超えると encode 意図が
 -- 落ちる交点も同節）。
