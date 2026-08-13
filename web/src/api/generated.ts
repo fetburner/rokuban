@@ -683,7 +683,22 @@ export interface ProgramOverlaps {
 }
 
 /**
- * internal/breaker の定数（RulerDeletes / ReconcileTotalLoss）。
+ * internal/breaker の定数（RulerDeletes / ReconcileTotalLoss /
+ * DeleteReconcile）。値の権威は internal/breaker.All
+ * （internal/breaker/breaker.go）で、この enum はそれを手で複製した
+ * ものなので、breaker.All に定数を足したときはここも合わせて直す。
+ *
+ * ずれの検知は 2 段構え: internal/breaker パッケージのエクスポート
+ * 済み文字列定数と All 自体の一致は internal/breaker の AST テスト
+ * （TestAll_MatchesDeclaredConstants）が見る。All とこの enum の
+ * 一致は internal/api の純ユニットテスト
+ * （TestBreakerAllNamesAreValidCircuitBreakerNameEnumMembers。
+ * CircuitBreakerName.Valid() 経由）が見る。後者を GET /api/breakers
+ * の runtime チェックにはしていない —— 消費者
+ * （web/src/components/circuit-breaker-banner.tsx・web/src/pages/home.tsx）
+ * が isError を見ておらず、enum 外の 1 行のせいで一覧全体を 500 に
+ * すると発動中の他のブレーカーまで隠れてしまうため（issue #199 の
+ * レビューで指摘）。
  */
 export type CircuitBreakerName = typeof CircuitBreakerName[keyof typeof CircuitBreakerName];
 
@@ -691,6 +706,7 @@ export type CircuitBreakerName = typeof CircuitBreakerName[keyof typeof CircuitB
 export const CircuitBreakerName = {
   ruler_deletes: 'ruler_deletes',
   reconcile_total_loss: 'reconcile_total_loss',
+  delete_reconcile: 'delete_reconcile',
 } as const;
 
 export interface CircuitBreakerSampleProgram {
@@ -715,7 +731,24 @@ export interface CircuitBreakerSample {
  */
 export interface CircuitBreaker {
   site: string;
-  /** internal/breaker の定数（RulerDeletes / ReconcileTotalLoss）。 */
+  /**
+     * internal/breaker の定数（RulerDeletes / ReconcileTotalLoss /
+     * DeleteReconcile）。値の権威は internal/breaker.All
+     * （internal/breaker/breaker.go）で、この enum はそれを手で複製した
+     * ものなので、breaker.All に定数を足したときはここも合わせて直す。
+     *
+     * ずれの検知は 2 段構え: internal/breaker パッケージのエクスポート
+     * 済み文字列定数と All 自体の一致は internal/breaker の AST テスト
+     * （TestAll_MatchesDeclaredConstants）が見る。All とこの enum の
+     * 一致は internal/api の純ユニットテスト
+     * （TestBreakerAllNamesAreValidCircuitBreakerNameEnumMembers。
+     * CircuitBreakerName.Valid() 経由）が見る。後者を GET /api/breakers
+     * の runtime チェックにはしていない —— 消費者
+     * （web/src/components/circuit-breaker-banner.tsx・web/src/pages/home.tsx）
+     * が isError を見ておらず、enum 外の 1 行のせいで一覧全体を 500 に
+     * すると発動中の他のブレーカーまで隠れてしまうため（issue #199 の
+     * レビューで指摘）。
+     */
   name: CircuitBreakerName;
   /**
      * 発動した時刻（最初の発動時刻。再発動で更新されるのは pending /

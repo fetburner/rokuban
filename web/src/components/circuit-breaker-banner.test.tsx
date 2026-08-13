@@ -161,6 +161,34 @@ describe('CircuitBreakerBanner', () => {
     )
   })
 
+  it('CircuitBreakerName に無い name が混ざっていても、他の発動中ブレーカーは消えない（issue #199）', async () => {
+    // GET /api/breakers の name は openapi.yaml の CircuitBreakerName enum と
+    // internal/breaker.All という 2 つの独立した手書きの列挙から作られており、
+    // 将来またずれる可能性がある（サーバーはこのずれをエラーにせず値をその
+    // まま通す設計 — internal/api/breakers.go の ListCircuitBreakers 参照）。
+    // このコンポーネントは isError を見ておらず 0 件のときは何も描画しない
+    // （:70 `if (breakers.length === 0) return null`）ため、もしサーバーが
+    // enum 外の値を理由に一覧全体を 500 にしていたら、このバナー自体が
+    // 丸ごと消えていた（ラッチの唯一の常設可視化が沈黙する、が最悪の結果）。
+    // ここでは「未知の name が 1 件混ざっても、既知のブレーカーの表示は
+    // 生き残る」ことを消費者側で固定する。
+    const unknownNameBreaker = {
+      ...trippedBreaker,
+      name: 'not_a_declared_breaker',
+    } as unknown as CircuitBreaker
+    stubFetch({ list: [trippedBreaker, unknownNameBreaker] })
+
+    renderBanner()
+
+    // 既知のブレーカー（ruler_deletes）はラベル付きで表示される。
+    expect(await screen.findByText('ルール評価による予約の削除が停止中')).toBeInTheDocument()
+    // 未知の name も、識別子そのものへのフォールバック表示で残る
+    // （describeBreakerName の未知値フォールバック。lib/breaker.ts 参照）。
+    // 何も表示されない・行ごと消えるのではなく、識別子が見える形で残る
+    // ことが「気付ける」の最低ラインである。
+    expect(screen.getByText('not_a_declared_breakerが停止中')).toBeInTheDocument()
+  })
+
   it('再開が失敗したときエラーが表示される（黙って成功に見せない）', async () => {
     const fetchMock = stubFetch({ list: [trippedBreaker], resume: 'error' })
     const user = userEvent.setup()

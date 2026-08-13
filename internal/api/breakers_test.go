@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/api"
+	"github.com/fetburner/rokuban/internal/breaker"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -293,5 +294,152 @@ VALUES ('other-site', 'ruler_deletes', 10, 50, '{"total":10}'::jsonb)`); err != 
 	}
 	if n != 1 {
 		t.Errorf("other-site circuit breaker row count = %d, want 1 (should be untouched)", n)
+	}
+}
+
+// 8. internal/breaker.All が定義する全ブレーカー名について、「発動 → GET
+// /api/breakers に出る → resume で消える」の一往復が通ることを確認する
+// (issue #199)。
+//
+// knownCircuitBreakerNames は breaker.All から導出する実装になっているので、
+// All とここのループの間はずれようがない。**このテストが検出できるのは
+// 「knownCircuitBreakerNames の導出配線が壊れていないか」だけ**であり、
+// 「breaker.go の const 宣言に All への追加を忘れていないか」は検出できない
+// ——このループ自体が All から生成されるので、All に無い名前はそもそも
+// テストケースにならない（PR #199 のレビューで、まさにこの mutation
+// （All から 1 件落とす）を入れても本テストを含む `go test ./...` 全体が
+// 緑のままであることが実測された）。後者の検知は
+// internal/breaker/all_test.go の TestAll_MatchesDeclaredConstants
+// （go/parser で internal/breaker パッケージのエクスポート済み文字列定数を
+// 直接読み、All と突き合わせる）に委ねている。
+func TestCircuitBreaker_TripListResumeRoundTripForEveryKnownName(t *testing.T) {
+	for _, name := range breaker.All {
+		t.Run(name, func(t *testing.T) {
+			pool := testutil.SetupDB(t)
+			ctx := context.Background()
+
+			router := api.NewRouter(api.RouterConfig{Pool: pool})
+			srv := httptest.NewServer(router)
+			defer srv.Close()
+
+			insertCircuitBreakerFixture(t, pool, ctx, name, 7, 10, `{"total":7}`)
+
+			// 発動中として一覧に出る。
+			resp, err := http.Get(srv.URL + "/api/breakers")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("GET /api/breakers status = %d, want 200", resp.StatusCode)
+			}
+			var got []circuitBreakerResp
+			if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+				t.Fatalf("decoding response: %v", err)
+			}
+			found := false
+			for _, b := range got {
+				if b.Name == name {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("breaker %q not present in GET /api/breakers response %+v", name, got)
+			}
+
+			// resume で消える（400 で拒否されない）。
+			req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/sites/default/breakers/"+name+"/resume", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resumeResp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = resumeResp.Body.Close() }()
+			if resumeResp.StatusCode != http.StatusNoContent {
+				body, _ := io.ReadAll(resumeResp.Body)
+				t.Fatalf("resume status = %d, want 204 (body: %s)", resumeResp.StatusCode, body)
+			}
+			if existsCircuitBreaker(t, pool, ctx, name) {
+				t.Errorf("circuit breaker %q still exists after resume", name)
+			}
+		})
+	}
+}
+
+// 9. GET /api/breakers は、circuit_breakers.name の値が openapi.yaml の
+// CircuitBreakerName enum に無くても、一覧全体を落とさずそのまま通す
+// (issue #199 のレビューで一度 500 にする実装を入れたが、消費者
+// web/src/components/circuit-breaker-banner.tsx / web/src/pages/home.tsx は isError を見ておらず、
+// 500 は「一覧全体が消える」（同時に発動中の他のブレーカーも見えなくなる）
+// という、対処しようとした問題（ラベル・理由が空）より重い結果を生むと
+// 指摘されて差し戻した)。
+//
+// circuit_breakers に CHECK 制約は無い（internal/breaker/breaker.go の
+// コメント参照）ので、この行は「DB に無検査の値が入り得る」ことの
+// 直接の再現であり、リフレクションや mock を要さない。
+//
+// enum と internal/breaker.All のずれの検知自体は、この HTTP 経路ではなく
+// TestBreakerAllNamesAreValidCircuitBreakerNameEnumMembers（本ファイル内、
+// DB も HTTP も使わない純ユニットテスト）に閉じている。
+func TestListCircuitBreakers_PassesThroughNameNotInEnumInsteadOfFailingWholeList(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	router := api.NewRouter(api.RouterConfig{Pool: pool})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	// 発動中の既知ブレーカーと、enum に無い名前を同時に発動させる —— 後者
+	// 1 件のせいで前者まで見えなくなってはいけない、というのがこのテストの
+	// 核心（レビューで指摘された「巻き添え」の再現）。
+	insertCircuitBreakerFixture(t, pool, ctx, "ruler_deletes", 10, 50, `{"total":10}`)
+	insertCircuitBreakerFixture(t, pool, ctx, "not_a_declared_breaker", 1, 1, `{"total":1}`)
+
+	resp, err := http.Get(srv.URL + "/api/breakers")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 200 (body: %s)", resp.StatusCode, body)
+	}
+
+	var got []circuitBreakerResp
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("len(got) = %d, want 2 (both breakers should be visible): %+v", len(got), got)
+	}
+	names := map[string]bool{}
+	for _, b := range got {
+		names[b.Name] = true
+	}
+	if !names["ruler_deletes"] {
+		t.Error("ruler_deletes missing from response — an unrelated enum-unknown row should not hide it")
+	}
+	if !names["not_a_declared_breaker"] {
+		t.Error("not_a_declared_breaker missing from response — unknown names should pass through, not be dropped or fail the whole list")
+	}
+}
+
+// 10. internal/breaker.All が定義するすべての名前が、openapi.yaml 由来の
+// CircuitBreakerName enum のメンバーである (issue #199)。
+//
+// enum と breaker.All は独立した手書きの複製なので、片方だけ更新すると
+// ずれる。この検知を GET /api/breakers の runtime チェックに置くと、唯一の
+// 消費者（バナー）が isError を見ていないために「一覧全体が消える」という
+// より重い障害を生む（上記 TestListCircuitBreakers_PassesThroughNameNotInEnumInsteadOfFailingWholeList
+// のコメント参照）。そのため検知は DB も HTTP も使わないこの純ユニット
+// テストに閉じ、ハンドラは値をそのまま通す。
+func TestBreakerAllNamesAreValidCircuitBreakerNameEnumMembers(t *testing.T) {
+	for _, name := range breaker.All {
+		if !api.CircuitBreakerName(name).Valid() {
+			t.Errorf("breaker.All contains %q, which CircuitBreakerName.Valid() rejects — openapi.yaml's CircuitBreakerName enum is out of sync with internal/breaker.All (regenerate internal/api/openapi_gen.go after adding it to the enum)", name)
+		}
 	}
 }

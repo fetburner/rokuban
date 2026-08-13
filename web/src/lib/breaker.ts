@@ -8,12 +8,18 @@ import { CircuitBreakerName } from '@/api/generated'
  * 「予約の全件消失疑いによる削除が停止中」のように原因と結果が逆に読める文になる
  * （止まっているのは削除であって、全件消失は止めた理由）。
  *
- * 値は将来 `internal/breaker` に識別子が増える可能性があるため網羅チェックはせず、
- * 未知の値は識別子そのものをフォールバック表示する。
+ * `Record<CircuitBreakerName, string>` なので `internal/breaker` に識別子が
+ * 増えて `CircuitBreakerName`（openapi.yaml 経由の生成型）にも反映されると、
+ * ここへの追記漏れは型エラーとして検出される（issue #199 のレビュー
+ * で実測: `delete_reconcile` を enum に足した時点でこのオブジェクトが
+ * `pnpm build` で落ちた）。describeBreakerName 側の「未知の値は識別子
+ * そのものをフォールバック表示する」は、それでも生成型と実行時の値が
+ * ずれる窓（例えば古いフロントが新しい識別子を受け取る）への保険。
  */
 const breakerLabels: Record<CircuitBreakerName, string> = {
   [CircuitBreakerName.ruler_deletes]: 'ルール評価による予約の削除',
   [CircuitBreakerName.reconcile_total_loss]: 'mirakc の録画予定の削除',
+  [CircuitBreakerName.delete_reconcile]: 'ごみ箱・エンコード原本・孤児ファイルの物理削除',
 }
 
 /**
@@ -25,6 +31,8 @@ const breakerReasons: Record<CircuitBreakerName, string> = {
     '1 回の評価で消える予約が多すぎます。EPG の一時的な欠損を疑ってください',
   [CircuitBreakerName.reconcile_total_loss]:
     '予約が 1 件も無いのに録画予定が残っています。予約が失われていないか確認してください',
+  [CircuitBreakerName.delete_reconcile]:
+    '1 回のパスで物理削除される件数が多すぎます。大量削除の意図が正しいか確認してください（対象の内訳は API の detail に出ないため、DB を直接確認する必要があります）',
 }
 
 /** describeBreakerName はブレーカー識別子を「何が止まっているか」の日本語にする。 */

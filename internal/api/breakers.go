@@ -10,13 +10,18 @@ import (
 )
 
 // knownCircuitBreakerNames はブレーカー識別子の既知集合。値の権威は
-// internal/breaker の定数（DB に CHECK 制約は無い。internal/breaker/breaker.go
-// のコメント参照）で、ここはそれを参照するだけ。未知の名前を渡された resume は
-// タイポを黙って無視せず 400 にする。
-var knownCircuitBreakerNames = map[string]bool{
-	breaker.RulerDeletes:       true,
-	breaker.ReconcileTotalLoss: true,
-}
+// internal/breaker.All（DB に CHECK 制約は無い。internal/breaker/breaker.go
+// のコメント参照）で、ここはそれを導出するだけ。手書きの複製を持つと片方だけ
+// 更新されてずれる事故が起きる（issue #199: breaker.DeleteReconcile が
+// 複製から漏れ、発動中なのに resume が 400 を返し続けた）。未知の名前を
+// 渡された resume はタイポを黙って無視せず 400 にする。
+var knownCircuitBreakerNames = func() map[string]bool {
+	m := make(map[string]bool, len(breaker.All))
+	for _, name := range breaker.All {
+		m[name] = true
+	}
+	return m
+}()
 
 // ListCircuitBreakers は発動中のサーキットブレーカー一覧を返す
 // (GET /api/breakers)。circuit_breakers は行の存在そのものが「発動中」を表すので、
@@ -38,6 +43,26 @@ func (h *Server) ListCircuitBreakers(ctx context.Context, _ ListCircuitBreakersR
 		if err := json.Unmarshal(r.Detail, &sample); err != nil {
 			return nil, fmt.Errorf("unmarshalling detail for circuit breaker %s/%s: %w", r.Site, r.Name, err)
 		}
+		// name の権威は internal/breaker.All だが、openapi.yaml の
+		// CircuitBreakerName enum はそれを手で複製したものなので、breaker.All
+		// に定数を足して openapi.yaml 側を直し忘れるとここでずれが顕在化しうる。
+		//
+		// 以前はここで CircuitBreakerName.Valid() を検査し、無効なら 500 に
+		// していたが、消費者である web/src/components/circuit-breaker-banner.tsx
+		// は isError を見ておらず（`unwrap(query.data) ?? []` → 0 件なら
+		// 非表示）、500 は「未知の名前を見せる」よりまずい「発動中の他の
+		// ブレーカーも含めて一覧そのものが消える」を引き起こす（1 行の enum
+		// 外の値がループ全体の 500 に波及する）。web/src/pages/home.tsx の
+		// 警告セクションも isError を見ていないので同様に静かに消える。
+		// つまり「fail loud」のつもりが、これら消費者では fail silent になる
+		// （PR #265 のレビューで指摘、実装をここへ差し戻した）。
+		//
+		// enum と breaker.All のずれの検知は internal/api/breakers_test.go の
+		// TestBreakerAllNamesAreValidCircuitBreakerNameEnumMembers（DB も
+		// HTTP も使わない純ユニットテスト）に閉じ、ハンドラは値をそのまま
+		// 通す。クライアント側は元々このずれを見越したフォールバックを持つ
+		// （web/src/lib/breaker.ts の describeBreakerName / describeBreakerReason
+		// —— 未知の値は識別子そのもの表示 / 理由は空文字）。
 		result = append(result, CircuitBreaker{
 			Site:      r.Site,
 			Name:      CircuitBreakerName(r.Name),

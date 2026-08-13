@@ -42,6 +42,7 @@ func (e CapacityOverageJammedTypes) Valid() bool {
 
 // Defines values for CircuitBreakerName.
 const (
+	DeleteReconcile    CircuitBreakerName = "delete_reconcile"
 	ReconcileTotalLoss CircuitBreakerName = "reconcile_total_loss"
 	RulerDeletes       CircuitBreakerName = "ruler_deletes"
 )
@@ -49,6 +50,8 @@ const (
 // Valid indicates whether the value is a known member of the CircuitBreakerName enum.
 func (e CircuitBreakerName) Valid() bool {
 	switch e {
+	case DeleteReconcile:
+		return true
 	case ReconcileTotalLoss:
 		return true
 	case RulerDeletes:
@@ -590,7 +593,22 @@ type CircuitBreaker struct {
 	// （`internal/breaker.Sample` と同じ形。手動確認の材料）。
 	Detail CircuitBreakerSample `json:"detail"`
 
-	// Name internal/breaker の定数（RulerDeletes / ReconcileTotalLoss）。
+	// Name internal/breaker の定数（RulerDeletes / ReconcileTotalLoss /
+	// DeleteReconcile）。値の権威は internal/breaker.All
+	// （internal/breaker/breaker.go）で、この enum はそれを手で複製した
+	// ものなので、breaker.All に定数を足したときはここも合わせて直す。
+	//
+	// ずれの検知は 2 段構え: internal/breaker パッケージのエクスポート
+	// 済み文字列定数と All 自体の一致は internal/breaker の AST テスト
+	// （TestAll_MatchesDeclaredConstants）が見る。All とこの enum の
+	// 一致は internal/api の純ユニットテスト
+	// （TestBreakerAllNamesAreValidCircuitBreakerNameEnumMembers。
+	// CircuitBreakerName.Valid() 経由）が見る。後者を GET /api/breakers
+	// の runtime チェックにはしていない —— 消費者
+	// （web/src/components/circuit-breaker-banner.tsx・web/src/pages/home.tsx）
+	// が isError を見ておらず、enum 外の 1 行のせいで一覧全体を 500 に
+	// すると発動中の他のブレーカーまで隠れてしまうため（issue #199 の
+	// レビューで指摘）。
 	Name CircuitBreakerName `json:"name"`
 
 	// Pending 発動時に止めた削除の件数。
@@ -605,7 +623,22 @@ type CircuitBreaker struct {
 	TrippedAt time.Time `json:"trippedAt"`
 }
 
-// CircuitBreakerName internal/breaker の定数（RulerDeletes / ReconcileTotalLoss）。
+// CircuitBreakerName internal/breaker の定数（RulerDeletes / ReconcileTotalLoss /
+// DeleteReconcile）。値の権威は internal/breaker.All
+// （internal/breaker/breaker.go）で、この enum はそれを手で複製した
+// ものなので、breaker.All に定数を足したときはここも合わせて直す。
+//
+// ずれの検知は 2 段構え: internal/breaker パッケージのエクスポート
+// 済み文字列定数と All 自体の一致は internal/breaker の AST テスト
+// （TestAll_MatchesDeclaredConstants）が見る。All とこの enum の
+// 一致は internal/api の純ユニットテスト
+// （TestBreakerAllNamesAreValidCircuitBreakerNameEnumMembers。
+// CircuitBreakerName.Valid() 経由）が見る。後者を GET /api/breakers
+// の runtime チェックにはしていない —— 消費者
+// （web/src/components/circuit-breaker-banner.tsx・web/src/pages/home.tsx）
+// が isError を見ておらず、enum 外の 1 行のせいで一覧全体を 500 に
+// すると発動中の他のブレーカーまで隠れてしまうため（issue #199 の
+// レビューで指摘）。
 type CircuitBreakerName string
 
 // CircuitBreakerSample 発動時に「何が消されようとしていたか」を説明する抜粋
