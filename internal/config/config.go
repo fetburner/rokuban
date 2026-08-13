@@ -109,6 +109,8 @@ func quoteDSNValue(v string) string {
 // `mirakc: {url, site}` は `mirakcs: [{site, url}]` の 1 要素と等価に解決される
 // （Config.Registry）。**`mirakc:` と `mirakcs:` の同時指定は起動エラー**
 // （Config.validateMirakcRegistry、どちらが勝つかを覚えさせない。issue #183 M4-11）。
+// 「同時指定」はキーを書いたかで判定する（detectMirakcKeyWritten）。Site は
+// defaults() が埋めるため、値の非ゼロ性では書いたかどうかを判定できない。
 //
 // **URL に `required` は付けない。** `mirakcs:` を使う構成では `mirakc:` を
 // 書かないため、struct タグの required は無条件に走ってしまい、正しい構成を
@@ -142,6 +144,11 @@ type MirakcSite struct {
 // として解決する（`mirakc.url` が空なら Mirakc も未設定と見なし、空のレジストリを
 // 返す）。両方が同時に非空になるケースは Load が起動エラーにするので、Load を
 // 経た Config では実質どちらか一方だけが反映される。
+//
+// **Load を経た Config では空にならない**（どちらも未設定・url を欠いた `mirakc:`
+// はいずれも Load が起動エラーにする）。逆に validateMirakcRegistry は検査対象を
+// ここから取らない —— url が空の Mirakc を捨てる挙動が、まさに検査したい
+// 「url を欠いた `mirakc:`」を検査対象から外してしまうため。
 func (c Config) Registry() []MirakcSite {
 	if len(c.Mirakcs) > 0 {
 		return c.Mirakcs
@@ -195,18 +202,32 @@ func validateSiteName(name string) []string {
 // validateMirakcRegistry は `mirakc:`/`mirakcs:` の相互排他、site 名の構文制約・
 // 予約名・重複、各要素の url を検査する。見つかった問題を全件列挙して返す
 // （規約 4）。問題が無ければ nil を返す。
-func (c Config) validateMirakcRegistry() error {
-	mirakcSet := c.Mirakc.URL != ""
+//
+// mirakcWritten は設定ファイルに `mirakc:` キーが書かれていたか
+// （detectMirakcKeyWritten）。**Config の値からは判定できない**ので呼び出し元が
+// 渡す —— defaults() が Mirakc.Site に "default" を入れるため、Unmarshal 後の
+// Config では「書かれていない `mirakc:`」と「site だけ書かれた `mirakc:`」が
+// 同じ値になる。かつて相互排他を `c.Mirakc.URL != ""` で判定していたときは、
+// url を欠いた `mirakc: {site: tokyo}` と `mirakcs:` の併記が検査を素通りし、
+// 書いた `mirakc.site` が黙って無視されていた（TestLoad_MirakcRegistry の
+// "mirakc without url plus mirakcs is an error, not a silent ignore"）。
+func (c Config) validateMirakcRegistry(mirakcWritten bool) error {
 	mirakcsSet := len(c.Mirakcs) > 0
 
 	var errs []string
 	switch {
-	case mirakcSet && mirakcsSet:
+	case mirakcWritten && mirakcsSet:
 		errs = append(errs, "mirakc and mirakcs must not both be set (mirakc is sugar for a one-element mirakcs)")
-	case !mirakcSet && !mirakcsSet:
+	case !mirakcWritten && !mirakcsSet:
 		errs = append(errs, "one of mirakc.url or mirakcs is required")
 	default:
-		registry := c.Registry()
+		// `mirakc:` 側は Registry() を経由しない。Registry() は url が空の
+		// Mirakc を「未設定」として捨てるので、url を欠いた `mirakc: {site: ...}`
+		// が検査対象ゼロ件になり、下の "url is required" に到達しない。
+		registry := c.Mirakcs
+		if !mirakcsSet {
+			registry = []MirakcSite{{Site: c.Mirakc.Site, URL: c.Mirakc.URL}}
+		}
 		seen := make(map[string]bool, len(registry))
 		for i, s := range registry {
 			label := "mirakc"
@@ -708,6 +729,30 @@ func defaults() Config {
 
 var vld = validator.New(validator.WithRequiredStructEnabled())
 
+// detectMirakcKeyWritten は展開済み YAML に `mirakc:` キーが書かれていたかを返す。
+//
+// **キーだけ書いて値が無い `mirakc:`（null）は「書かれていない」、空マップの
+// `mirakc: {}` は「書かれた」になる。** goccy/go-yaml が null をポインタの nil に
+// デコードするかどうかに乗った挙動なので、リポジトリ側で固定しておく
+// （TestLoad_MirakcRegistry の "bare mirakc: key with no value counts as unwritten"
+// / "empty mirakc: {} counts as written"）。
+//
+// defaults() が Mirakc.Site を埋めてしまうため、相互排他の判定に必要な「書いたか
+// どうか」は Unmarshal 後の Config からは復元できない。ここだけキーの有無を見る。
+//
+// **Strict は使わない。** 未知キーの検出は本体の Unmarshal が済ませており、
+// ここで再度落とすと同じ typo が二重に報告される。またこの probe は `mirakc:`
+// しか持たないので、Strict にすると他のキーを書いた正しい設定が全部落ちる。
+func detectMirakcKeyWritten(expanded string) (bool, error) {
+	var probe struct {
+		Mirakc *MirakcConfig `yaml:"mirakc"`
+	}
+	if err := yaml.Unmarshal([]byte(expanded), &probe); err != nil {
+		return false, fmt.Errorf("parsing config: %w", err)
+	}
+	return probe.Mirakc != nil, nil
+}
+
 // Load reads a config file, expands ${VAR} references using environment
 // variables, and parses the result with strict mode enabled.
 func Load(path string) (*Config, error) {
@@ -742,7 +787,11 @@ func loadFromString(raw string) (*Config, error) {
 	// mirakc:/mirakcs: の相互排他・site 名の構文制約・予約名・重複・url を検査する
 	// （MirakcConfig.URL には validate:"required" タグを付けていないため、ここで
 	// 明示的に検査する。issue #183 の「罠」）。
-	if err := cfg.validateMirakcRegistry(); err != nil {
+	mirakcWritten, err := detectMirakcKeyWritten(expanded)
+	if err != nil {
+		return nil, err
+	}
+	if err := cfg.validateMirakcRegistry(mirakcWritten); err != nil {
 		return nil, err
 	}
 

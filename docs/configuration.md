@@ -133,6 +133,8 @@ Grafana Loki / Tempo の `-config.expand-env` と同じ、**YAML パース前の
 
 多拠点構成では `mirakc:` の代わりに `mirakcs:` （`{site, url}` の配列）を書く。`mirakc: {url, site}` は `mirakcs: [{site, url}]` の 1 要素と等価に解決される糖衣で、**両方を同時に書くと起動エラー**になる（どちらが勝つかを覚えさせない）。
 
+- **相互排他は「`mirakc:` キーを書いたか」で判定する。「`mirakc.url` が非空か」ではない。** url を欠いた `mirakc: {site: tokyo}` は「書いていない」ではなく「url が足りない `mirakc:`」として扱われ、`mirakcs:` と併記すれば相互排他エラー、単独なら `mirakc.url is required` になる。値で判定すると、既定値が入る `mirakc.site` は「書かれていない」と区別できず、**書いた `mirakc.site` が黙って無視される**（末尾「経緯と失敗事例」）
+
 - **`mirakcs:` の要素は `site` と `url` の 2 つだけ。** `storage` / `worker` / `ingest` 等のチューニング値は要素に入れない。アーカイブは単一（`media_assets` に site 列が無い）であり、`worker.queues` 等はデプロイ時のパラメータであって site の属性ではない。site ごとのチューニング値は、それを読むコードができたときに足す（不変条件 11）
 - **site 名の構文制約**: `^[a-z0-9]([_-]?[a-z0-9])*$`、64 文字以内。**River のキュー名の制約と同一で、緩めない** --- キュー名を site で修飾するため、緩めると site 名がキュー名として弾かれる。ただし 64 文字はキュー名の prefix（例: `reconciler_`、11 文字）を見込んでいないため、修飾後に River の上限を超える長さの site は `--sites` の起動時検査（`worker.ValidateSiteForQueueNames`）で別途弾く。**この検査は束縛した site と `enqueue --site` にしか効かない** --- レジストリに載っているだけで束縛されていない site 名は検査対象外（未検証。締める案は末尾「経緯と失敗事例」）
 - **予約名**: `catalog` と `thumbnails` は site 名にできない。緩めても得られる自由度（この 2 語を site 名にしたい運用要求は無い）が、緩めるコスト（`internal/config` のバリデーション・テストの変更）に見合わないため禁止を残している（当初の根拠は変遷している。末尾「経緯と失敗事例」）。これはトップレベルディレクトリ名の予約（`catalog/` / `thumbnails/` / `sites/` の 3 つ。今も load-bearing）とは別の話で、[docs/storage.md](storage.md) §5 で分けて説明している
@@ -226,6 +228,7 @@ Grafana Loki / Tempo の `-config.expand-env` と同じ、**YAML パース前の
 
 - site スコープ（`mirakc.site`、`/api/sites/{site}/...`）は M3-1（issue #29 / #31 / #53）。api がどの site にも束縛されない資源同定の整理は issue #184 M4-12。
 - `mirakcs:` レジストリと `--sites` フラグは issue #183 M4-11。**単一オブジェクト形式の `site: ""` が起動エラーになるのはこのとき制約を揃えたため**で、従来は空文字列も黙って許容されていた。
+- **相互排他の判定を「値が非ゼロか」で書いたため、1 マイルストーン分すり抜けた。** M4-11 の実装は `mirakc:` が書かれたかを `c.Mirakc.URL != ""` で代用していた。しかし既定値を埋める `defaults()` が `mirakc.site` に `"default"` を入れるので、**Unmarshal 後の Config からは「書かれていない `mirakc:`」と「site だけ書かれた `mirakc:`」が区別できない**。結果、`mirakc: {site: tokyo}` + `mirakcs:` の併記が検査を素通りし、書いた `mirakc.site` が黙って捨てられていた（M4-11 のレビューで発見され issue #184 M4-12 に申し送られたが、#184 の実装（PR #204）でも閉じ残った）。判定は値ではなくキーの有無（`detectMirakcKeyWritten` が probe で復元する）で行う。**既定値を先に埋める設計では、「書かれたか」は値から復元できない**というのが一般形。
 - site 名の構文制約が River のキュー名制約と同一なのは、キュー名を site で修飾する issue #185 M4-13 のため。束縛されていない site 名が長さ検査の対象外である点は未検証のまま残っており、`internal/config.mirakcSiteNameMaxLen` を締める案は issue #185 のコメントで提起した。
 - **予約名 `catalog` / `thumbnails` の当初の根拠は成立しなくなったが、禁止自体は残した**（issue #186 のコメントで結論）。M4-11 導入時の根拠は「`rel_path` に `{site}/` を前置すると、この 2 つと衝突する site 名は削除 reconcile の孤児回収と rescue スキャンの走査対象から外れてしまう」だったが、実装された M4-14 の前置は `sites/{site}/`（site 名の前に固定の `sites/` を挟む形。[docs/storage.md](storage.md) §5「rel_path の名前空間」）になったため、site 名はトップレベルの `catalog/` / `thumbnails/` と直接衝突しなくなった。
 - `catalog-export` が `--site` を取らない決定は issue #200。多サイトでのロール配置（site 束縛 / 中央プロセスの分類）の決定は #138。
