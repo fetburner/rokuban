@@ -322,6 +322,41 @@ describe('予約一覧の行本体リンクの accessible name（issue #233 レ�
 })
 
 /**
+ * 多サイト時に一覧が何を出すか（`docs/frontend/shell.md`「サイトの扱い」）。
+ *
+ * `GET /api/reservations` は全サイトの予約を返し（api は site に束縛されない ---
+ * 不変条件 1）、UI はそれを `<SiteGate>` が配る「現在の site」で絞らない。
+ * 上の「default 以外のサイトの予約にも自サイトの不足が出る」は容量バッジの
+ * `site` の配線を見るテストで、**一覧そのものが絞られていないこと**は主張の
+ * 副産物として通っているに過ぎない（バッジが無い構成に変えると消える）ので、
+ * 決定そのものをここで独立に固定する。
+ *
+ * 期待値は href のリテラルで書く。行の有無だけを見ると、宛先に単一サイト前提の
+ * 定数を書いた実装（`params={{ site: 'default', ... }}`）でも通ってしまう。
+ */
+describe('多サイトの予約一覧（issue #218）', () => {
+  it('現在サイト以外の予約も一覧に出し、宛先はその予約自身の site になる', async () => {
+    // renderInRouter が SiteContext に流すのは 'default'（test/router.tsx の testSite）
+    renderWith(
+      [
+        reservation(1, '既定サイトの番組', 19 * 60, 60),
+        reservation(2, '高松の番組', 20 * 60, 60, 'takamatsu'),
+      ],
+      [],
+    )
+
+    // 現在サイトの行が出たことを読み込み完了の目印にする（クエリ解決前に
+    // getAllByRole が空を返して通る「空虚な成功」を防ぐ）
+    await screen.findByRole('link', { name: /既定サイトの番組/ })
+
+    expect(screen.getAllByRole('link').map((a) => a.getAttribute('href'))).toEqual([
+      '/reservations/default/10',
+      '/reservations/takamatsu/20',
+    ])
+  })
+})
+
+/**
  * 警告の信号色。jsdom は色を計算しないので、当たっているクラスだけを見る
  * （実画素での判定は `web/e2e/design.mjs`。docs/frontend/design.md）。
  */

@@ -9,13 +9,19 @@ import { SiteContext } from '@/lib/site'
  * api は不変条件 1 によりどの site にも束縛されないため、フロントは自分で
  * 対象の site を決め打ちできなくなった（旧 `DEFAULT_SITE` 定数の撤去）。
  *
- * **サイト切り替え UI は持たない。** レジストリの先頭サイトだけを対象にする。
- * 2 サイト以上の運用実績が無い状態で切り替え UI を先回りして作ると、
+ * **サイト切り替え UI は持たない。** レジストリの先頭サイトを `SiteContext` に
+ * 流す。2 サイト以上の運用実績が無い状態で切り替え UI を先回りして作ると、
  * その形が合っているかの判定基準を持たないまま固定することになる
  * （不変条件 11「形を固定する前に、その形を決める判定基準を書く」）。
- * 先頭以外のサイトは黙って見えなくなるが、これは「他サイトの予約が無い」
- * ように見える最悪の壊れ方ではなく、**サイト自体が UI に一切現れない**
- * ので気付ける（詳細は issue #184 のコメント参照）。
+ *
+ * **これが効くのは「site の出所が無い入口」だけ**（番組表・検索・ライブと、
+ * サービスの選択肢）。一覧（`/api/reservations` / `/api/recordings` /
+ * `/api/capacity/overages` / `/api/breakers`）は全サイトの行を返し、行から
+ * 始まる操作は行の `site` を使う（予約詳細への遷移は `pages/reservations.tsx`、
+ * ブレーカー再開は `components/circuit-breaker-banner.tsx`）--- 呼ぶ URL が
+ * `/api/sites/{site}/...` の形かどうかは判別子にならない。したがって先頭以外の
+ * サイトも「予約・録画は一覧に出るが EPG の入口が無い」形で現れる。
+ * 詳細は `docs/frontend/shell.md`「サイトの扱い」。
  */
 export function SiteGate({ children }: { children: ReactNode }) {
   const query = useListSites()
