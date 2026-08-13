@@ -49,8 +49,11 @@ WHERE site = $1 AND program_id = ANY(sqlc.arg(program_ids)::bigint[]);
 -- internal/ruler/sql.go に生 SQL として置き、pgxpool 経由で直接実行する。
 
 -- name: DeleteReservationsBySiteAndProgramIDs :execrows
--- ルール・program_intents のどちらからも desired でなくなった予約を削除する
--- （導出削除。呼び出し側でサーキットブレーカーの閾値判定を先に行うこと）。
+-- ルール・program_intents のどちらからも desired でなくなった予約のうち、
+-- 「ルール x EPG」由来と区別できないものを削除する（導出削除。呼び出し側で
+-- サーキットブレーカーの閾値判定を先に行うこと）。ユーザーが投資を手放す書き込みを
+-- しない限り起きない削除は先に DeleteReleasedReservationsBySiteAndProgramIDs が
+-- 処理済みで、ブレーカーの数にも入らない。
 --
 -- toDelete は runPassForSite の先頭（トランザクション外）で ListProgramIntentActionsBySite /
 -- ListProgramInvestmentProgramIDsBySite / ListReservationProgramIDsBySite を読んでから
@@ -76,6 +79,73 @@ WHERE r.site = $1 AND r.program_id = ANY(sqlc.arg(program_ids)::bigint[])
       SELECT 1 FROM program_investments v
       WHERE v.site = r.site AND v.program_id = r.program_id
   );
+
+-- name: DeleteReleasedReservationsBySiteAndProgramIDs :many
+-- desired から外れた予約のうち、**ユーザー（運用者）が投資を手放す書き込みを
+-- しない限り起きない**ものを削除し、実際に消した programId を返す。呼び出し側
+-- （runPassForSite）はこれを大量削除サーキットブレーカーの対象にしない ---
+-- ブレーカーが防ぐのは EPG の一時欠損による一斉削除（EPGStation#692。
+-- docs/recording.md §3.2「大量削除サーキットブレーカー」）で、この集合は EPG が
+-- 壊れただけでは増えないため。
+--
+-- 条件（上の DELETE と同じ NOT EXISTS program_investments に加えて、次のいずれか）:
+--
+--   r.rule_id IS NULL
+--     いまルールが base を供給していない行。**この列は EPG の変化だけでも NULL に
+--     なる**ので、これ単体では「ユーザー由来」の証明にならない: 投資（record 意図
+--     ∪ overrides）を持つ行はルールが外れても desired に残るためそのパスで
+--     upsert され、internal/ruler/sql.go の resolved CTE が凍結するのは base と
+--     dedup 根拠 2 列だけで、rule_id = EXCLUDED.rule_id がそのまま NULL を書く
+--     （TestRunPass_EpgUnmatchNullsRuleIDButInvestmentBlocksRelease が実測で固定）。
+--     効いているのは NOT EXISTS program_investments のほうである ---
+--     rule_id が NULL の行は、その NULL が書かれた時点で必ず投資を持っていた
+--     （ruler の upsert が NULL を書くのは「勝者なしで desired」= 投資ありの行
+--     だけ。rule_id を NULL にするもう 1 つの経路である rules の FK
+--     ON DELETE SET NULL も、DeleteRule が同一 tx で投資なしの行を**先に**消す
+--     ため、SET NULL を受けて生き残るのは投資ありの行だけ。internal/api/rules.go）。
+--     したがってこの文の対象に落ちるには、投資を消す書き込みが別途必要になる。
+--   program_intents.action = 'skip'
+--     ユーザーが「録るな」と書いた。
+--
+-- 投資を消す（あるいは record を skip に倒す）書き込みの全数え上げ:
+-- per-program の api 3 本（DELETE .../intent / DELETE .../overrides /
+-- PUT .../intent{skip}。openapi.yaml のパスはどちらも {programId} を含み
+-- バルクが無い）、運用者が明示的に走らせる catalog rescue の復元
+-- （internal/catalog/rescue.go。program_intents を upsert するので record を
+-- skip で上書きしうる。バルクだが EPG に駆動されない運用者の操作で、復元して
+-- いるのは記録済みのユーザー意図そのもの）、program_snapshots の GC CASCADE
+-- （このとき reservations 行も一緒に落ちるので toDelete に現れない）。
+-- epg_sync / ruler / reconciler はこの 2 表に一切書かない。よって EPG が
+-- 壊れてもこの文が消す件数は「人が書いた回数」で頭打ちになる。
+--
+-- 逆に rule_id が非 NULL で skip 意図も無い行は「ルールが base を供給しているのに
+-- desired から外れた」= EPG 由来と区別できない削除であり、この文の対象外
+-- （上の DeleteReservationsBySiteAndProgramIDs 側でブレーカーを通す）。
+--
+-- 境界: EPG 欠損中は投資を持つ行の rule_id が一斉に NULL に落ちるので、その最中に
+-- ユーザーが投資を消すと、健全な EPG ならルール由来で残ったはずの予約がブレーカーの
+-- 外で消える。EPG 復旧後の次パスでルールが作り直すので自己修復するが、
+-- 「明示操作からしか説明できない」とまでは言えない（docs/recording.md §3.2 の
+-- 境界 (c)）。
+--
+-- 分類そのものをこの WHERE に置いてあるのは #29 型の窓を作らないため。呼び出し側は
+-- toDelete 全体をこの文に渡し、RETURNING で「実際にここで消えた集合」を受け取って、
+-- その差集合をブレーカー対象の導出削除とする。分類がトランザクション外の古い
+-- 読み取りで決まる余地がない（上の DELETE と同じ規律）。
+DELETE FROM reservations r
+WHERE r.site = $1 AND r.program_id = ANY(sqlc.arg(program_ids)::bigint[])
+  AND NOT EXISTS (
+      SELECT 1 FROM program_investments v
+      WHERE v.site = r.site AND v.program_id = r.program_id
+  )
+  AND (
+      r.rule_id IS NULL
+      OR EXISTS (
+          SELECT 1 FROM program_intents i
+          WHERE i.site = r.site AND i.program_id = r.program_id AND i.action = 'skip'
+      )
+  )
+RETURNING r.program_id;
 
 -- name: ListReservationIDsBySiteAndProgramIDs :many
 SELECT id, program_id FROM reservations

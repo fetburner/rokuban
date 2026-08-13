@@ -229,12 +229,20 @@ var (
 		Buckets: []float64{0.05, 0.1, 0.5, 1, 2, 5, 10, 30, 60},
 	})
 
-	// RulerReservations はルールが作成/更新/削除した予約の件数。
+	// RulerReservations は ruler が作成/更新/削除した予約の件数。
+	// action は created / updated / deleted / released / gc の 5 値。
 	// created/updated は差分書き込みで実際に行が変わった件数のみを数える
 	// （変化のない行は IS DISTINCT FROM に弾かれ、ここにも計上されない）。
+	// deleted は大量削除サーキットブレーカーを通った導出削除、released は
+	// ブレーカーを通っていない削除（ユーザーが投資を手放す書き込みをしない限り
+	// 起きないもの。docs/recording.md §3.2）で、混ぜると「閾値を下回る導出削除が
+	// 素通りしていないか」を deleted の増え方で見る運用が汚れる。gc は番組終了後の
+	// GC（ブレーカーの対象外）。
 	RulerReservations = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "rokuban_ruler_reservations_total",
-		Help: "Reservations created, updated, or deleted by the ruler.",
+		Help: "Reservations created, updated, or deleted by the ruler. " +
+			"action: created / updated / deleted (derived deletes that passed the bulk-delete circuit breaker) / " +
+			"released (deletes outside the breaker; they require an explicit write that drops the user's investment) / gc.",
 	}, []string{"action"})
 
 	// RulerCircuitBreakerTrips は大量削除サーキットブレーカーが**発動に遷移した**

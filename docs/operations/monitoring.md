@@ -135,7 +135,7 @@ ruler / reconciler / record_sweep（watcher の 3 段構えのうち (c) 定期�
 | メトリクス | 説明 |
 |---|---|
 | `rokuban_ruler_pass_duration_seconds` | 1 パス（全ルール x 全射影番組）の所要時間。射影が有界なので伸び続けることはない |
-| `rokuban_ruler_reservations_total{action}` | `created` / `updated` / `deleted` / `gc`。**`updated` が毎パス予約数と同じ値で増え続けるなら差分書き込みが効いていない**（[録画エンジン](../recording.md) §3.1） |
+| `rokuban_ruler_reservations_total{action}` | `created` / `updated` / `deleted` / `released` / `gc`。**`updated` が毎パス予約数と同じ値で増え続けるなら差分書き込みが効いていない**（[録画エンジン](../recording.md) §3.1）。`released` は**ブレーカーを通っていない削除**（ユーザーが投資を手放す書き込みをしない限り起きないもの。同 §3.2）で、`deleted`（EPG 由来の導出削除）と混ぜない |
 | `rokuban_ruler_circuit_breaker_trips_total` | 大量削除で停止した回数。EPG の一時欠損を疑う入口 |
 | `rokuban_circuit_breaker_tripped{breaker="ruler_deletes"}` | **1 の間は導出削除が一切走らない**（手動再開まで止まるラッチ）。カウンタと違い「いま止まっているか」に答える |
 | `rokuban_ruler_last_pass_timestamp_seconds` | 最終パス時刻。`time() - この値` でパスが止まっていることを検出する（gauge が凍る問題への対策） |
@@ -182,7 +182,7 @@ ruler / reconciler / record_sweep（watcher の 3 段構えのうち (c) 定期�
 | `drop-stats` の `pidType` が無い | 分類できなかっただけで、ドロップ統計そのものは正しい | `packets` / `drops` は種別と独立に信頼できる |
 | `pidType` が `other` | 音声でないとは限らない（LATM AAC は `other` に落ちる） | 4K/8K を録ったなら疑う |
 | `/api/sites/{site}/programs/{programId}/overlaps` の `count = 0` | 録れるとは限らない（他サイトや mirakc の他の消費者は数えていない） | 重なりの手動確認（[docs/runbook/](../runbook.md) 側） |
-| `/api/breakers` が空 | 削除が正しかったとは限らない。**閾値を下回る削除は素通りする** | `rokuban_ruler_reservations_total{action="deleted"}` の増え方 |
+| `/api/breakers` が空 | 削除が正しかったとは限らない。**閾値を下回る削除は素通りする**し、明示操作由来の削除（`action="released"`）はそもそもブレーカーを通らない | `rokuban_ruler_reservations_total{action="deleted"}` の増え方 |
 | `rokuban_reconcile_start_delayed` が 0 | 録画が始まったことの確認ではない（猶予 3 分の内側は検出しない） | `recordings.started_at` |
 | `GET /api/storage` に root が載っている | 最新の観測とは限らない。1 root の statfs 失敗時は前回の観測行をそのまま残すため、行の存在だけでは「観測が続いている」ことを保証しない | 各要素の `observedAt` の鮮度 / `rokuban_storage_root_last_success_timestamp_seconds{root}` |
 

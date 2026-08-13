@@ -33,20 +33,16 @@ import (
 // Config は Ruler の設定。
 type Config struct {
 	// MaxDeletesPerPass は 1 サイト・1 パスあたりの削除許容数。超えたら削除を
-	// 一切実行せず、サーキットブレーカーとして停止する。ここで守るのは「ルール x EPG」
-	// から導出される削除だが、実装はカウント対象を toDelete（既存予約のうち desired
-	// から外れた行）で判定するだけで、外れた理由が EPG の一時欠損かユーザーの明示操作
-	// かを区別しない。そのためルールの編集で勝者が変わる／intent skip／intent
-	// クリア／overrides の削除といったユーザー操作も同じ toDelete に混ざってカウント
-	// され、ラッチ中は他の導出削除と同様に保留される（経路の内訳と条件は
-	// docs/recording.md §3.2「大量削除サーキットブレーカー」）。**ルールの削除だけは
-	// この対象外**（API ハンドラが同一トランザクションで reservations を直接 DELETE
-	// し、ここを経由しない。同 §3.2「止められる場所は ruler だけ」の表）。
-	//
-	// 実害も経路によって非対称: intent skip は effective.skip を立てて
-	// listDesired からも除外するので録画は防がれるが（実害は表示上の残留のみ）、
-	// intent クリアは effective.skip を立てないため、ラッチ中は録画が続く
-	// （この経路の扱いは未決、issue #171）。
+	// 一切実行せず、サーキットブレーカーとして停止する。**数えるのは「ルールが
+	// base を供給していたのにマッチしなくなった」削除だけ**で、ユーザーの明示操作
+	// からしか説明できない削除（intent skip／intent クリア／最後の investment
+	// だった overrides の削除）は数にも入らず、ラッチ中でも実行される
+	// （分類の条件と根拠は internal/db/queries/ruler.sql の
+	// DeleteReleasedReservationsBySiteAndProgramIDs、判断は docs/recording.md
+	// §3.2「大量削除サーキットブレーカー」）。ルールの**編集**で勝者が変わる経路は
+	// rule_id が残るのでブレーカー対象のままで、ルールの**削除**はそもそもここを
+	// 経由しない（API ハンドラが同一トランザクションで reservations を直接 DELETE
+	// する。同 §3.2「止められる場所は ruler だけ」の表）。
 	//
 	// **発動は internal/breaker によりラッチとして永続化される**（issue #24 M2-5）。
 	// 件数が閾値以下に戻っても自動では解除されず、
@@ -377,6 +373,27 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 		return fmt.Errorf("rewriting reservation_rule_matches: %w", err)
 	}
 
+	// ユーザー（運用者）が投資を手放す書き込みをしない限り起きない削除を先に、
+	// ブレーカーとは無関係に実行する（docs/recording.md §3.2「大量削除サーキット
+	// ブレーカー」）。toDelete 全体を渡し、どれがそれに当たるかは DELETE 文の
+	// WHERE が適用の瞬間に判定して RETURNING で返す — 分類をトランザクション外の
+	// 古い読み取りに置かないため（#29 型の窓を作らない）。条件と、その条件で
+	// 守備範囲が狭まらない根拠（および狭まる境界）は
+	// internal/db/queries/ruler.sql の同クエリのコメントが権威。
+	var released []int64
+	if len(toDelete) > 0 {
+		released, err = tq.DeleteReleasedReservationsBySiteAndProgramIDs(ctx, sqlcgen.DeleteReleasedReservationsBySiteAndProgramIDsParams{
+			Site:       site,
+			ProgramIds: toDelete,
+		})
+		if err != nil {
+			return fmt.Errorf("deleting user-released reservations: %w", err)
+		}
+	}
+	// ブレーカーが数えるのは残り（= ルールが base を供給していたのにマッチしなく
+	// なった行）だけ。EPG の欠損・フリッカーが作れるのはこちらの集合に限られる。
+	derivedDeletes := subtract(toDelete, released)
+
 	var deleted int64
 	// newlyTripped: このパスで初めて発動した（tripped が false だった）ことを示す
 	// フラグ。metrics.RulerCircuitBreakerTrips.Inc() は tx.Commit の成否が
@@ -387,12 +404,12 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 	// 真実に合わせ直すので、ここでは触らなくてよい。
 	var newlyTripped bool
 	switch {
-	case len(toDelete) > r.cfg.MaxDeletesPerPass:
+	case len(derivedDeletes) > r.cfg.MaxDeletesPerPass:
 		// 閾値超過。tripped が既に true でも Trip を呼び直す — 既に発動中なら
 		// tripped_at は据え置かれたまま pending/detail だけが最新の値に更新される
 		// （TripCircuitBreaker の ON CONFLICT。「いつから止まっているか」を保つ一方、
 		// 手動確認の材料は最新に保つ）。どちらの場合もこの分岐では削除しない。
-		sample, sampleErr := r.buildDeleteSample(ctx, tq, site, toDelete)
+		sample, sampleErr := r.buildDeleteSample(ctx, tq, site, derivedDeletes)
 		if sampleErr != nil {
 			return fmt.Errorf("building circuit breaker sample: %w", sampleErr)
 		}
@@ -408,17 +425,17 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 		// （breaker パッケージのコメント「自動で解けるようにすると『一瞬止まって
 		// 自動復帰した』がアラートに残らない」）。再開は人間が
 		// POST /api/sites/{site}/breakers/ruler_deletes/resume を叩くまで待つ。
-		if len(toDelete) > 0 {
+		if len(derivedDeletes) > 0 {
 			slog.Warn("ruler: circuit breaker latched — withholding derived deletes until manually resumed",
 				"site", site,
 				"breaker", breaker.RulerDeletes,
-				"pending_deletes", len(toDelete),
+				"pending_deletes", len(derivedDeletes),
 			)
 		}
-	case len(toDelete) > 0:
+	case len(derivedDeletes) > 0:
 		deleted, err = tq.DeleteReservationsBySiteAndProgramIDs(ctx, sqlcgen.DeleteReservationsBySiteAndProgramIDsParams{
 			Site:       site,
-			ProgramIds: toDelete,
+			ProgramIds: derivedDeletes,
 		})
 		if err != nil {
 			return fmt.Errorf("deleting stale reservations: %w", err)
@@ -439,6 +456,10 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 	metrics.RulerReservations.WithLabelValues("created").Add(float64(created))
 	metrics.RulerReservations.WithLabelValues("updated").Add(float64(updated))
 	metrics.RulerReservations.WithLabelValues("deleted").Add(float64(deleted))
+	// released はブレーカーを通っていない削除なので deleted と分けて数える。
+	// 混ぜると「閾値を下回る導出削除が素通りしていないか」を deleted の増え方で
+	// 見る運用（docs/operations.md §2）が、明示操作の分で汚れる。
+	metrics.RulerReservations.WithLabelValues("released").Add(float64(len(released)))
 
 	slog.Info("ruler: pass complete",
 		"site", site,
@@ -447,6 +468,7 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 		"created", created,
 		"updated", updated,
 		"deleted", deleted,
+		"released", len(released),
 		"delete_candidates", len(deleteCandidates),
 	)
 	return nil
@@ -525,6 +547,30 @@ func (r *Ruler) buildDeleteSample(ctx context.Context, q *sqlcgen.Queries, site 
 		programs = append(programs, breaker.SampleProgram{ProgramID: t.ProgramID, Title: t.Title})
 	}
 	return breaker.Sample{Total: len(toDelete), Programs: programs}, nil
+}
+
+// subtract は ids から removed に含まれる要素を除いたスライスを返す（順序は ids のまま）。
+// 「削除候補のうち、ブレーカー外で既に消えた分を引く」ためだけに使う。
+//
+// removed が ids の部分集合であることは前提にしない（cap を len(ids) にしてある）。
+// 現状の呼び出しでは DELETE ... RETURNING の結果なので必ず部分集合だが、
+// 前提が落ちたときに負の cap で panic するより多めに確保して壊れないほうがよい。
+func subtract(ids, removed []int64) []int64 {
+	if len(removed) == 0 {
+		return ids
+	}
+	removedSet := make(map[int64]struct{}, len(removed))
+	for _, id := range removed {
+		removedSet[id] = struct{}{}
+	}
+	rest := make([]int64, 0, len(ids))
+	for _, id := range ids {
+		if _, ok := removedSet[id]; ok {
+			continue
+		}
+		rest = append(rest, id)
+	}
+	return rest
 }
 
 // stillProjectedSubset は candidates のうち、EPG プロジェクションに現在も番組がある

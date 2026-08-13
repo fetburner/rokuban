@@ -78,7 +78,7 @@ CREATE INDEX ON reservations (rule_id);
 | カラム | 書く人 |
 |---|---|
 | `reservations` の `base` / `rule_id` / dedup 根拠 2 列（INSERT/UPDATE） | ruler（毎パス） |
-| `reservations` の DELETE（desired から外れ、`program_investments` に行が無い予約） | ruler（毎パス。大量削除サーキットブレーカーの対象。`DeleteReservationsBySiteAndProgramIDs`） |
+| `reservations` の DELETE（desired から外れ、`program_investments` に行が無い予約） | ruler（毎パス。ルールが base を供給している行は大量削除サーキットブレーカーの対象で `DeleteReservationsBySiteAndProgramIDs`、ユーザーが投資を手放す書き込みをしない限り起きない行はブレーカーの外で `DeleteReleasedReservationsBySiteAndProgramIDs`。分類の条件と境界は[録画エンジン](../recording.md) §3.2） |
 | `reservations` の DELETE（ルール削除時、`program_investments` に行が無い予約のみ） | api（`DeleteRule`。上記の例外） |
 | `program_snapshots` の GC（番組終了 + `epg.retention_grace` 経過）と、そこからの FK CASCADE による `reservations` / `program_intents` / `program_overrides` の GC | ruler のパス（`runGC`。§3.7） |
 | `program_intents`（action）、`program_overrides`（overrides） | api |
