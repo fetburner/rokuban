@@ -694,10 +694,11 @@ export interface ProgramOverlaps {
  * 一致は internal/api の純ユニットテスト
  * （TestBreakerAllNamesAreValidCircuitBreakerNameEnumMembers。
  * CircuitBreakerName.Valid() 経由）が見る。後者を GET /api/breakers
- * の runtime チェックにはしていない —— 唯一の消費者
- * （web/src/components/circuit-breaker-banner.tsx）が isError を
- * 見ておらず、enum 外の 1 行のせいで一覧全体を 500 にすると発動中の
- * 他のブレーカーまで隠れてしまうため（issue #199 のレビューで指摘）。
+ * の runtime チェックにはしていない —— 消費者
+ * （web/src/components/circuit-breaker-banner.tsx・web/src/pages/home.tsx）
+ * が isError を見ておらず、enum 外の 1 行のせいで一覧全体を 500 に
+ * すると発動中の他のブレーカーまで隠れてしまうため（issue #199 の
+ * レビューで指摘）。
  */
 export type CircuitBreakerName = typeof CircuitBreakerName[keyof typeof CircuitBreakerName];
 
@@ -742,10 +743,11 @@ export interface CircuitBreaker {
      * 一致は internal/api の純ユニットテスト
      * （TestBreakerAllNamesAreValidCircuitBreakerNameEnumMembers。
      * CircuitBreakerName.Valid() 経由）が見る。後者を GET /api/breakers
-     * の runtime チェックにはしていない —— 唯一の消費者
-     * （web/src/components/circuit-breaker-banner.tsx）が isError を
-     * 見ておらず、enum 外の 1 行のせいで一覧全体を 500 にすると発動中の
-     * 他のブレーカーまで隠れてしまうため（issue #199 のレビューで指摘）。
+     * の runtime チェックにはしていない —— 消費者
+     * （web/src/components/circuit-breaker-banner.tsx・web/src/pages/home.tsx）
+     * が isError を見ておらず、enum 外の 1 行のせいで一覧全体を 500 に
+     * すると発動中の他のブレーカーまで隠れてしまうため（issue #199 の
+     * レビューで指摘）。
      */
   name: CircuitBreakerName;
   /**

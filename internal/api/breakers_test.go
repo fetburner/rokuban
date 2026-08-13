@@ -371,8 +371,8 @@ func TestCircuitBreaker_TripListResumeRoundTripForEveryKnownName(t *testing.T) {
 
 // 9. GET /api/breakers は、circuit_breakers.name の値が openapi.yaml の
 // CircuitBreakerName enum に無くても、一覧全体を落とさずそのまま通す
-// (issue #199 のレビューで一度 500 にする実装を入れたが、唯一の消費者
-// web/src/components/circuit-breaker-banner.tsx は isError を見ておらず、
+// (issue #199 のレビューで一度 500 にする実装を入れたが、消費者
+// web/src/components/circuit-breaker-banner.tsx / web/src/pages/home.tsx は isError を見ておらず、
 // 500 は「一覧全体が消える」（同時に発動中の他のブレーカーも見えなくなる）
 // という、対処しようとした問題（ラベル・理由が空）より重い結果を生むと
 // 指摘されて差し戻した)。

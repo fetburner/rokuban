@@ -79,7 +79,7 @@ const (
 // TestBreakerAllNamesAreValidCircuitBreakerNameEnumMembers（純ユニット
 // テスト）が見る。GET /api/breakers の runtime チェックにしていない理由は
 // internal/api/breakers.go の ListCircuitBreakers のコメント参照
-// （唯一の消費者が isError を見ておらず、runtime で 500 にすると
+// （消費者が isError を見ておらず、runtime で 500 にすると
 // 一覧全体が消えて発動中の他のブレーカーまで隠れる）。
 var All = []string{RulerDeletes, ReconcileTotalLoss, DeleteReconcile}
 

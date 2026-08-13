@@ -48,13 +48,13 @@ func (h *Server) ListCircuitBreakers(ctx context.Context, _ ListCircuitBreakersR
 		// に定数を足して openapi.yaml 側を直し忘れるとここでずれが顕在化しうる。
 		//
 		// 以前はここで CircuitBreakerName.Valid() を検査し、無効なら 500 に
-		// していたが、唯一の消費者である web/src/components/circuit-breaker-banner.tsx
+		// していたが、消費者である web/src/components/circuit-breaker-banner.tsx
 		// は isError を見ておらず（`unwrap(query.data) ?? []` → 0 件なら
 		// 非表示）、500 は「未知の名前を見せる」よりまずい「発動中の他の
 		// ブレーカーも含めて一覧そのものが消える」を引き起こす（1 行の enum
 		// 外の値がループ全体の 500 に波及する）。web/src/pages/home.tsx の
 		// 警告セクションも isError を見ていないので同様に静かに消える。
-		// つまり「fail loud」のつもりが唯一の消費者では fail silent になる
+		// つまり「fail loud」のつもりが、これら消費者では fail silent になる
 		// （PR #265 のレビューで指摘、実装をここへ差し戻した）。
 		//
 		// enum と breaker.All のずれの検知は internal/api/breakers_test.go の
