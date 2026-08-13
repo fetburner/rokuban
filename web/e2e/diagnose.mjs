@@ -8,7 +8,8 @@ const ROUNDS = Number(process.env.E2E_REWINDS ?? 3)
 
 const browser = await chromium.launch()
 const page = await browser.newPage({ viewport: { width: 1280, height: 800 } })
-await page.goto(URL, { waitUntil: 'networkidle' })
+// 番組表は M8-3 でホーム（`/`）に `/` を譲り `/programs` へ移設した。
+await page.goto(URL + '/programs', { waitUntil: 'networkidle' })
 await page.waitForSelector('li[data-program-id]')
 await page.locator('[role="group"][aria-label="日付"] button').nth(DAY_INDEX).click()
 await page.waitForTimeout(2500)

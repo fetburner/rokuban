@@ -78,7 +78,12 @@ const gridPxPerHour = 120
 type ProgramView = 'list' | 'grid'
 
 /**
- * ProgramsPage は番組表（`/`）。
+ * ProgramsPage は番組表（`/programs`）。
+ *
+ * ホーム（`/`）の新設（M8-3, issue #242）で `/` を譲り、このページ自身は
+ * `/programs` に移設した。裸の `/` はホームになり、`?serviceId=` / `?at=` が
+ * 付いた `/` だけ `/programs` へリダイレクトされる（`routes.tsx` の
+ * `homeRoute`）。
  *
  * チャンネル絞り込みは URL に持つ（issue #231。`lib/programs-search.ts` の
  * `ProgramsPageSearch`）。ライブ視聴（`pages/live.tsx`）からは選択中チャンネルの
@@ -105,7 +110,7 @@ export function ProgramsPage() {
   // 検証（不正な値・0 以下の除去・重複除去・昇順ソート）は
   // `routes.tsx` の `validateSearch`（`lib/programs-search.ts` の
   // `parseProgramsSearch`）で済んでいるので、ここでは信頼して使う。
-  const search = useRouteSearch({ from: '/' })
+  const search = useRouteSearch({ from: '/programs' })
   const navigate = useNavigate()
   // 空集合 = すべて表示。`search.serviceId` 未指定（初期状態）が空集合になるので、
   // これ以外の意味だと初回表示が空になってしまう。
@@ -118,11 +123,11 @@ export function ProgramsPage() {
     // （TanStack Router の `ParamsReducerFn`）。`/live` が同じ名前の `serviceId`
     // を単数（`number`）で持つため、合成後は型上 `number | number[]` になり
     // `ProgramsPageSearch` にそのままは代入できない。この関数が呼ばれるのは
-    // `/`（番組表）に居るときだけで、そのとき実際に入っているのは
+    // `/programs`（番組表）に居るときだけで、そのとき実際に入っているのは
     // `parseProgramsSearch` が検証した形なので、ここで絞ってから updater に渡す
     // （`pages/recordings.tsx` の `updateSearch` と同じ形）。
     void navigate({
-      to: '/',
+      to: '/programs',
       search: (prev) => updater(prev as ProgramsPageSearch),
       replace: true,
     })

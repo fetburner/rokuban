@@ -17,7 +17,8 @@ const log = (...a) => console.log(...a)
 
 const browser = await chromium.launch()
 const page = await browser.newPage({ viewport: { width: 1280, height: 800 } })
-await page.goto(URL, { waitUntil: 'networkidle' })
+// 番組表は M8-3 でホーム（`/`）に `/` を譲り `/programs` へ移設した。
+await page.goto(URL + '/programs', { waitUntil: 'networkidle' })
 await page.waitForSelector('li[data-program-id]', { timeout: 15000 })
 
 const dayCells = page.locator('[role="group"][aria-label="日付"] button')

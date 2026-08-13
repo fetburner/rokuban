@@ -14,15 +14,16 @@ import { AppShell } from '@/components/app-shell'
 
 /**
  * デスクトップのサイドバーに出る全項目。並びは頻度順
- * （docs/frontend/design.md §頻度 3 段: 一等地=番組・録画 / 中間=予約・ライブ /
- * 端=検索・ルール）で、`app-shell.tsx` の `navItems` と比較するのではなく
- * ここにリテラルで書く（実装の定数と比較するテストは並びが崩れても検知できない）。
+ * （docs/frontend/design.md §頻度 3 段: 一等地=ホーム・番組・録画 / 中間=予約・
+ * ライブ / 端=検索・ルール。ホームは M8-3 で新設）で、`app-shell.tsx` の
+ * `navItems` と比較するのではなくここにリテラルで書く（実装の定数と比較する
+ * テストは並びが崩れても検知できない）。
  */
-const SIDEBAR_LABELS = ['番組', '録画', '予約', 'ライブ', '検索', 'ルール']
+const SIDEBAR_LABELS = ['ホーム', '番組', '録画', '予約', 'ライブ', '検索', 'ルール']
 /** モバイルのボトムタブに常時出る項目（「その他」を除く）。 */
-const MOBILE_PRIMARY_LABELS = ['番組', '録画', '予約']
+const MOBILE_PRIMARY_LABELS = ['ホーム', '番組', '録画']
 /** モバイルで「その他」ポップオーバーに畳まれる項目。 */
-const MOBILE_MORE_LABELS = ['ライブ', '検索', 'ルール']
+const MOBILE_MORE_LABELS = ['予約', 'ライブ', '検索', 'ルール']
 const STORAGE_KEY = 'rokuban:sidebar:collapsed'
 
 /**
@@ -42,7 +43,7 @@ function renderShell(initialPath = '/', options: ShellStubOptions = {}) {
       </AppShell>
     ),
   })
-  const paths = ['/', '/recordings', '/reservations', '/live', '/search', '/rules']
+  const paths = ['/', '/programs', '/recordings', '/reservations', '/live', '/search', '/rules']
   const children = paths.map((path) =>
     createRoute({ getParentRoute: () => rootRoute, path, component: () => null }),
   )
@@ -298,16 +299,30 @@ describe('AppShell / Sidebar の畳み込み', () => {
     expect(within(bottomNav as HTMLElement).getAllByRole('listitem')).toHaveLength(4)
   })
 
-  it('現在地には aria-current="page" が付く', async () => {
+  it('現在地には aria-current="page" が付く（裸の / はホームが現在地）', async () => {
     renderShell()
+    await findToggle()
+
+    const links = screen.getAllByRole('link', { name: 'ホーム' })
+    for (const link of links) {
+      expect(link).toHaveAttribute('aria-current', 'page')
+    }
+    const otherLinks = screen.getAllByRole('link', { name: '検索' })
+    for (const link of otherLinks) {
+      expect(link).not.toHaveAttribute('aria-current')
+    }
+  })
+
+  it('/programs では「番組」が現在地になる（ホームとの区別。M8-3）', async () => {
+    renderShell('/programs')
     await findToggle()
 
     const links = screen.getAllByRole('link', { name: '番組' })
     for (const link of links) {
       expect(link).toHaveAttribute('aria-current', 'page')
     }
-    const otherLinks = screen.getAllByRole('link', { name: '検索' })
-    for (const link of otherLinks) {
+    const homeLinks = screen.getAllByRole('link', { name: 'ホーム' })
+    for (const link of homeLinks) {
       expect(link).not.toHaveAttribute('aria-current')
     }
   })
@@ -409,12 +424,12 @@ describe('ナビの出し分け（live.enabled）', () => {
     expect(screen.queryByRole('link', { name: 'ライブ' })).not.toBeInTheDocument()
 
     const navs = screen.getAllByRole('navigation', { name: '主ナビゲーション' })
-    const sidebarNav = navs.find((nav) => within(nav).queryAllByRole('link').length === 5)
+    const sidebarNav = navs.find((nav) => within(nav).queryAllByRole('link').length === 6)
     expect(sidebarNav).toBeDefined()
     const labels = within(sidebarNav as HTMLElement)
       .getAllByRole('link')
       .map((el) => el.textContent)
-    expect(labels).toEqual(['番組', '録画', '予約', '検索', 'ルール'])
+    expect(labels).toEqual(['ホーム', '番組', '録画', '予約', '検索', 'ルール'])
   })
 
   it('live.enabled が false でも「その他」の中身からライブだけが消える', async () => {
@@ -427,7 +442,7 @@ describe('ナビの出し分け（live.enabled）', () => {
     const labels = within(menu)
       .getAllByRole('link')
       .map((el) => el.textContent)
-    expect(labels).toEqual(['検索', 'ルール'])
+    expect(labels).toEqual(['予約', '検索', 'ルール'])
   })
 
   it('live.enabled が false でもボトムタブは 4 個（常時 3 個 + その他）のまま', async () => {

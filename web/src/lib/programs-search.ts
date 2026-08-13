@@ -1,5 +1,6 @@
 /**
- * 番組表（`/`）のチャンネル絞り込み（URL の `search`）の型と純関数（issue #231）。
+ * 番組表（`/programs`。ホーム新設（M8-3）前は `/` だった）のチャンネル絞り込み
+ * （URL の `search`）の型と純関数（issue #231）。
  *
  * `serviceId` は `/recordings` と同じ形（`number[]`。複数可・OR・空集合は
  * 「すべて」で `undefined`）を使う（`lib/recording-search.ts` の
@@ -76,7 +77,7 @@ const MAX_DATE_TIME_VALUE_MS = 8_640_000_000_000_000
  * `Math.min`/`Math.max` が `NaN` を伝播させて `dayOffset` state に `NaN` が
  * 入る。そこから `dayOrigin(NaN)` → `originMs = NaN` → API 呼び出しの
  * `new Date(NaN).toISOString()` が `RangeError: Invalid time value` を投げ、
- * 番組表ページ全体がエラー境界に落ちる（実測: `/?at=1e30` 等。ここで
+ * 番組表ページ全体がエラー境界に落ちる（実測: `/programs?at=1e30` 等。ここで
  * 定義域を検証しないと「壊れたリンクを踏んでも画面は開く」という
  * `parseProgramsSearch` 全体の契約が破れる）。
  */

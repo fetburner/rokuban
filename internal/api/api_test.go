@@ -740,7 +740,7 @@ func TestSPA_ClientRoutesStillFallback(t *testing.T) {
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
-	for _, path := range []string{"/live", "/recordings", "/apiary"} {
+	for _, path := range []string{"/live", "/recordings", "/programs", "/apiary"} {
 		resp, err := http.Get(srv.URL + path)
 		if err != nil {
 			t.Fatal(err)

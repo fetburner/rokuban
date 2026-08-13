@@ -1,6 +1,7 @@
 import { Link, useRouterState } from '@tanstack/react-router'
 import {
   CalendarClock,
+  Home,
   ListVideo,
   Menu,
   MoreHorizontal,
@@ -60,13 +61,17 @@ type NavItem = {
  * 並びは実装順ではなく**触る頻度**で決める（docs/frontend/design.md §頻度 3 段）。
  * 単一世帯の運用を前提にした仮説であり、実測ではない:
  *
- * - 一等地: 番組（毎回の起点）・録画（視聴のたび）
+ * - 一等地: ホーム（毎回の起点。M8-3）・番組（これから録るものを眺める）・
+ *   録画（視聴のたび）
  * - 中間: 予約（差分・重複の確認は毎日ではないが週次では触る）・
  *   ライブ（視聴のたびではないが番組ほど反復しない）
  * - 端: 検索（意図して探すときだけ）・ルール（set-and-forget、月数回以下）
+ *
+ * ホーム（`/`）の新設（M8-3, issue #242）で番組表は `/programs` へ移設した。
  */
 const navItems: NavItem[] = [
-  { to: '/', label: '番組', icon: Tv },
+  { to: '/', label: 'ホーム', icon: Home },
+  { to: '/programs', label: '番組', icon: Tv },
   { to: '/recordings', label: '録画', icon: ListVideo },
   { to: '/reservations', label: '予約', icon: CalendarClock },
   { to: '/live', label: 'ライブ', icon: Radio, requires: 'live' },
@@ -77,10 +82,12 @@ const navItems: NavItem[] = [
 /**
  * モバイルのボトムタブに常時出す項目数。残りは `MoreMenu`（「その他」）に畳む。
  *
- * 一等地の 2 個（番組・録画）に加えて予約も常時タブに出す。理由: 予約は
- * 「今夜これで録れているか」を録画そのものと同じくらいの頻度で確認する
- * 対象という仮説を置いた（ライブは番組ほど毎回開かないと見て「その他」側）。
- * この仮説も上と同じく実測ではない。
+ * 一等地の 3 個（ホーム・番組・録画）を常時タブに出し、予約は「その他」側へ
+ * 下がる（M8-3）。**予約を常時タブに置いていた理由（「今夜これで録れているか」を
+ * 録画と同じ頻度で確認する対象という仮説）は、ホームの新設でホーム自身が
+ * その確認そのもの（今夜〜明日の予約セクション）を持つようになったため、
+ * 確認の頻度はホームに移った。** この判断も元の仮説と同じく実測ではない
+ * （docs/frontend/home.md 参照）。
  */
 const MOBILE_PRIMARY_COUNT = 3
 
@@ -93,7 +100,7 @@ const MOBILE_PRIMARY_COUNT = 3
  * （`lib/capabilities.ts`。番組行の「ライブで見る」導線も同じ入口を使う）。
  *
  * **常時項目とその他の切れ目は「除外後の並び」に対して取る。** ただし今の
- * 並びでは差は出ない --- ライブは既に「その他」側（4 番目）にいるので、
+ * 並びでは差は出ない --- ライブは既に「その他」側（5 番目）にいるので、
  * 除外前に切っても結果は同じである（切り方を入れ替えて `app-shell.test.tsx`
  * を回し、20 件とも通ることを確認済み）。差が出るのは、この形の項目が将来
  * 常時タブ側（先頭 3 個）に来たとき: 除外前に切るとボトムタブが 3 個 +
@@ -121,7 +128,7 @@ function isActive(pathname: string, to: string): boolean {
  * MoreMenu はボトムタブの「その他」。頻度が低い項目（`useNavItems` の `more`）を
  * ポップオーバーに畳んで、ボトムタブの本数を親指の届く 4 個に抑える。
  *
- * シートではなくポップオーバーを選んだ理由: 中身がリンク 3 個だけの単純な
+ * シートではなくポップオーバーを選んだ理由: 中身がリンク 4 個だけの単純な
  * リストで、フォーム操作や長いコンテンツを持たない。全画面/半画面を覆う
  * シートはここでは過剰で、トリガーの直上に浮かせるポップオーバーの方が
  * 「タブの延長」に見える。
@@ -131,14 +138,14 @@ function isActive(pathname: string, to: string): boolean {
  * （docs/frontend/shell.md）。実ブラウザでの合否は `e2e/design.mjs` の
  * 「その他」判定が担う。
  *
- * トリガー自身のアクティブ表示は、配下の項目（ライブ・検索・ルール）の
+ * トリガー自身のアクティブ表示は、配下の項目（予約・ライブ・検索・ルール）の
  * いずれかが現在地のときに立てる。個々のリンクは自身のページに居るときだけ
  * `aria-current="page"` を持つのに対し、トリガーはページそのものではなく
  * 「その他」という集合の現在地を表すので `aria-current="true"` を使う
  * （両方 `undefined` にならないよう、両方向をテストで固定する）。
  *
  * 中身は `useNavItems` が決める（`live.enabled: false` なら「ライブ」は
- * 落ちて検索・ルールの 2 個になる。issue #209）。
+ * 落ちて予約・検索・ルールの 3 個になる。issue #209）。
  */
 function MoreMenu({ pathname, items }: { pathname: string; items: NavItem[] }) {
   const [open, setOpen] = useState(false)
@@ -199,11 +206,12 @@ function MoreMenu({ pathname, items }: { pathname: string; items: NavItem[] }) {
  * iOS のホームインジケータと重なるのを防ぎ、Android のジェスチャーナビの
  * 「下端から上スワイプでホーム」領域からも離す。
  *
- * 常時表示するのは `useNavItems` の `primary`（頻度の一等地〜中間の一部）+
+ * 常時表示するのは `useNavItems` の `primary`（頻度の一等地）+
  * 「その他」の 4 個まで。決めた理由は誤タップ対策ではなく、頻度の低い
- * 3 項目（ライブ・検索・ルール）を畳んで一等地のタブを広く取ること
- * （実測 @390px: 4 タブ = 97.5px/個、6 タブなら 65px/個。どちらも
- * `min-h-14` が確保する最小タップ領域 44px は満たす）。
+ * 4 項目（予約・ライブ・検索・ルール）を畳んで一等地のタブを広く取ること
+ * （実測 @390px: 4 タブ = 97.5px/個、6 タブなら 65px/個。項目数が
+ * 6→7 に増えた M8-3 でも並びと畳む本数の判断は変わらないので測り直していない
+ * --- どちらも `min-h-14` が確保する最小タップ領域 44px は満たす）。
  */
 function BottomTabs() {
   const pathname = useActivePath()

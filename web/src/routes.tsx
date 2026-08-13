@@ -1,9 +1,10 @@
-import { createRootRoute, createRoute, Outlet } from '@tanstack/react-router'
+import { createRootRoute, createRoute, Outlet, redirect } from '@tanstack/react-router'
 
 import { AppShell } from './components/app-shell'
 import { SiteGate } from './components/site-gate'
 import { parseProgramsSearch, type ProgramsPageSearch } from './lib/programs-search'
 import { parseRecordingsSearch, type RecordingsPageSearch } from './lib/recording-search'
+import { HomePage } from './pages/home'
 import { LivePage } from './pages/live'
 import { ProgramsPage } from './pages/programs'
 import { RecordingDetailPage } from './pages/recording-detail'
@@ -26,15 +27,52 @@ const rootRoute = createRootRoute({
 })
 
 /**
+ * `/` はホーム（M8-3, issue #242）。番組表は `/programs` へ移設した --- 起動して
+ * 最初に見えるのが「これから録るもの」（番組表）ではなく「録れているか・今夜
+ * なにが録れるか・見るものはあるか・異常はないか」に 1 画面で答える場所になる。
+ *
+ * **裸の `/` はホームへ、`?serviceId=` か `?at=` が付いた `/` だけ `/programs` へ
+ * リダイレクトする（下記 `homeRoute` の `beforeLoad`）。** この 2 つは番組表固有の
+ * クエリで、`/` が番組表だった頃に外部（共有・ブラウザ履歴）へ出た URL
+ * （容量不足バッジの `?at=`・ライブ「この局の番組表」の `?serviceId=`）を救うため。
+ * リポジトリ内の発行元はこの PR で `/programs` に直したので、リダイレクトが
+ * 実際に効くのは外部に残った旧リンクだけになる。区別できない裸の `/` は新しい
+ * 意味（ホーム）を優先する --- 番組表はナビの 2 番目にあるので、踏んだ人の
+ * コストはクリック 1 回にとどまる。
+ */
+const homeRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/',
+  // このルート自身は validateSearch を持たない（ホームは検証すべきクエリ次元を
+  // 持たない）。TanStack Router の非 strict モードは未検証の生の location.search
+  // をそのまま素通しするので、`beforeLoad` はここで `?serviceId=` / `?at=` の
+  // **有無**だけを見る（値の形は問わない --- 形の検証は `/programs` 側
+  // （`parseProgramsSearch`）の仕事のままにする。ここで検証すると「検証は
+  // 誰の仕事か」が 2 箇所に散る）。
+  beforeLoad: ({ search }) => {
+    const raw = search as Record<string, unknown>
+    if (raw.serviceId !== undefined || raw.at !== undefined) {
+      // `search: true` で現在の location.search をそのまま引き継ぐ。ここで
+      // 値を正規化・再構築しない --- `/programs` 側の `validateSearch` が
+      // 同じ生の search を検証するので、二重に検証を書かない。
+      throw redirect({ to: '/programs', search: true, replace: true })
+    }
+  },
+  component: HomePage,
+})
+
+/**
  * 番組表のチャンネル絞り込みは URL の `?serviceId=` に持つ（issue #231）。
  * `/recordings` の `serviceId` と同じ形（`number[]`。複数可・OR）で、絞り込み
  * 済みの番組表への深いリンクや共有ができるようにする。壊れた値は
  * `parseProgramsSearch`（`/recordings` の `parseRecordingsSearch` と同じ流儀）が
  * 落とすので、壊れたリンクを踏んでも「絞り込みなし」で開ける。
+ *
+ * ルートは `/programs`（M8-3 でホームに `/` を譲った。上記 `homeRoute` 参照）。
  */
 const programsRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: '/',
+  path: '/programs',
   validateSearch: (search: Record<string, unknown>): ProgramsPageSearch =>
     parseProgramsSearch(search),
   component: ProgramsPage,
@@ -158,6 +196,7 @@ const liveRoute = createRoute({
 })
 
 export const routeTree = rootRoute.addChildren([
+  homeRoute,
   programsRoute,
   searchRoute,
   rulesRoute,

@@ -32,7 +32,8 @@ import { cn } from '@/lib/utils'
  * ## 番組表への導線（issue #233 M6-5）
  *
  * バッジは「この時間帯」と言うだけで、その時間帯を見る手段が無かった。番組表
- * ルート（`/`）の `at`（epoch ms。`lib/programs-search.ts`）に不足区間の開始時刻を
+ * ルート（`/programs`。ホーム新設（M8-3）前は `/` だった）の `at`（epoch ms。
+ * `lib/programs-search.ts`）に不足区間の開始時刻を
  * 積んで `Link` にする --- グリッド（`lg` 以上）ではこれを初期スクロール位置に、
  * それ以外（リスト・`lg` 未満）では日付ジャンプのフォールバックに使う
  * （`pages/programs.tsx` 参照）。
@@ -73,7 +74,7 @@ export function CapacityShortfallBadge({
 
   return (
     <Link
-      to="/"
+      to="/programs"
       // 絞り込み中のチャンネル（serviceId）はこの導線の文脈に無いので指定しない
       // （「すべて」のまま開く。呼び出し元は予約一覧で、予約ごとにチャンネルが
       // 違うため、単一の serviceId に絞ると他の予約の不足が見えなくなる）。
