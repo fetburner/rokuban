@@ -14,7 +14,7 @@
 
 具体的には `program_snapshots` で `(network_id, service_id, event_id)` → `program_id` を引き、`reservations` を `program_id` で結合する（`GetReservationEncodePolicyByEvent`、`internal/db/queries/recording_policy.sql`）。`program_snapshots` は放送後 `epg.retention_grace`（既定 24h）で GC される寿命の短い表（[スキーマ](../schema.md) §3「射影にある間は更新、消えたら凍結」）で、ingest は通常なら録画終了直後 --- GC の猶予期間より十分前 --- に走る。**ただし「通常なら」であって、滞留の設計はこれを超える遅延を明示的に許容している**（下記「凍結が依存する寿命と、エッジの滞留の交点」）。
 
-`recordings.source`（`DeriveRecordingSource`、`internal/db/recording_source.go`）はこの JOIN 失敗の異常度を判定する軸として使える場面が半分しかない。`source = 'rule'` は「作成時点で予約があり、かつ `program_intents.action = 'record'` の行が無かった」を意味するので、JOIN が失敗するのは常に異常系（GC が想定より早く走った、または予約が恒久的に削除された）で `slog.Warn` に識別子（site/network_id/service_id/event_id）と recording_id を残す。一方 `source = 'manual'` は「intent が `action = 'record'` だった（予約の有無に関わらず）」と「そもそも予約が最初から無かった」（手動起動、日常的）という区別できない 2 つの経路を 1 つの値に潰しているため、JOIN 失敗が異常かどうか判定できない。前者（ユーザーが手動予約して encodeProfiles を指定した録画）で解決に失敗すると静かにエンコードされない状態がそのまま残ってしまうので、`source = 'manual'` でも黙って return せず `slog.Info` に同じ識別子を残す。
+`recordings.source`（`DeriveRecordingSource`、`internal/db/recording_source.go`）はこの JOIN 失敗の異常度を判定する軸として使える場面が半分しかない。`source = 'rule'` は「作成時点で予約があり、かつ `program_intents.action = 'record'` の行が無かった」を意味するので、JOIN が失敗するのは常に「**予約はあったのに引けなくなった**」を意味し、`slog.Warn` に識別子（site/network_id/service_id/event_id）と recording_id を残す。原因は 3 つ: (a) GC が想定より早く走った、(b) 予約が恒久的に削除された、(c) **GC は設計どおりに走ったが ingest が猶予を跨いで遅れた**（下記「凍結が依存する寿命と、エッジの滞留の交点」。異常系ではなく設計が許容するシナリオだが、エンコードが投入されない点は同じ）。一方 `source = 'manual'` は「intent が `action = 'record'` だった（予約の有無に関わらず）」と「そもそも予約が最初から無かった」（手動起動、日常的）という区別できない 2 つの経路を 1 つの値に潰しているため、JOIN 失敗が異常かどうか判定できない。前者（ユーザーが手動予約して encodeProfiles を指定した録画）で解決に失敗すると静かにエンコードされない状態がそのまま残ってしまうので、`source = 'manual'` でも黙って return せず `slog.Info` に同じ識別子を残す。
 
 **retention reconcile ループ**（worker の cleanup 系ジョブ）が定期的に走り、次を**すべて**満たす原本アセットを削除する:
 
@@ -34,7 +34,7 @@ GC 済みのスナップショットの上で ingest が走った場合に何が
 
 - encode policy は既定値 `keep_original='always'` / `encode_profiles=[]` で凍結される（`TestIngestWorker_SnapshotGCedBeyondGrace_FreezesDefaults` / `TestIngestWorker_NoReservation_LeavesEncodePolicyDefault`）。**原本は残るのでデータは失われず、エンコードだけが投入されない**
 - 落ちるのは encode 意図だけではない。復帰時に `recordings` 行を作る `internal/watcher` の `createRecording` も同じ GC 済みの予約を引くので、ルール由来の録画でも `source` が `manual` に倒れ `rule_id` が NULL になる（`TestProcessRecord_ReservationGCedBeyondGrace_SourceManual`）
-- したがって**その録画のログは `slog.Warn` ではなく `slog.Info`** になる（`TestIngestWorker_LogsInfoWhenManualSourceReservationUnresolvable`）。上記「`source = 'rule'` なら常に異常系なので Warn」が実際に出るのは、**録画開始時には予約が生きていて、ingest だけが猶予を跨いで遅れた**場合に限られる。この 2 段（GC → `manual` → Info）を 1 本で通すテストは無い（パッケージ境界。上記 2 テストの合成である）
+- したがって**その録画のログは `slog.Warn` ではなく `slog.Info`** になる（`TestIngestWorker_LogsInfoWhenManualSourceReservationUnresolvable`）。上記「`source = 'rule'` なら Warn」が実際に出るのは、**録画開始時には予約が生きていて、ingest だけが猶予を跨いで遅れた**場合（上の原因 (c) のうち観測が届いていたぶん）に限られる。この 2 段（GC → `manual` → Info）を 1 本で通すテストは無い（パッケージ境界。上記 2 テストの合成である）
 - 事後回復は `POST /api/recordings/{id}/encode-profiles`（下記「凍結の例外: 事後追加」。追加のみ）
 
 **GC 側を滞留と連動させる案（未 ingest の `record_sync` が指す放送イベントのスナップショットを刈らない）は採らない。** 留め置きの根拠にできるのは `record_sync` 行であり、それは watcher が mirakc を観測して初めて作られる（`internal/watcher/watcher.go` の `processRecord` 入口の `AcquireRecordSync` が status を問わず作り、`Sweep` は進行中の record も列挙する）。したがって:

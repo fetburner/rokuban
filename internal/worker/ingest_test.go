@@ -1582,9 +1582,12 @@ func TestIngestWorker_LogsWarnWhenRuleSourceReservationUnresolvable(t *testing.T
 	recordingID := insertTestRecordingForReservation(t, pool, programID)
 	insertTestRecordSync(t, pool, recordingID, "rec-policy-rule-gone")
 
-	// GC が想定より早く走った、または予約が恒久的に削除された場合を模す
+	// 予約が恒久的に削除された（または GC が想定より早く走った）場合を模す
 	// （再実体化しない。TestIngestWorker_SnapshotsEncodePolicy_SurvivesReservationRematerialization
 	// と異なり、これが正常経路には無い異常系であることが本テストの前提）。
+	// JOIN 失敗の 3 つ目の原因（GC は設計どおり走ったが ingest が猶予を跨いで
+	// 遅れた。issue #214）は TestIngestWorker_SnapshotGCedBeyondGrace_FreezesDefaults
+	// が別に持つ —— そちらは異常系ではなく設計が許容するシナリオ。
 	if _, err := pool.Exec(ctx, `DELETE FROM reservations WHERE id = $1`, res.ID); err != nil {
 		t.Fatalf("deleting reservation: %v", err)
 	}
