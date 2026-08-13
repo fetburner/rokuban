@@ -38,6 +38,7 @@ import {
   type RuleMetaDraft,
   type SearchDraft,
 } from '@/lib/program-search'
+import { epgWindowDays, estimateRuleCost, ruleCostWeekDays } from '@/lib/rule-cost'
 
 /**
  * pageSize は一度に詳細を取りに行く結果の件数。
@@ -129,6 +130,67 @@ export function SearchPage() {
 
   const ids = unwrap(search.data) ?? []
 
+  /**
+   * costStatus は値札（`RuleCostSummary`）に渡す検索の状態。「未検索」（idle）と
+   * 「検索したが 0 件」はどちらも `ids.length === 0` になり `ids` だけでは
+   * 区別できないため、結果一覧（下の `search.isIdle` 分岐）と同じ判定を渡す。
+   */
+  const costStatus: 'idle' | 'pending' | 'error' | 'success' = search.isIdle
+    ? 'idle'
+    : search.isPending
+      ? 'pending'
+      : search.isError
+        ? 'error'
+        : 'success'
+
+  /**
+   * costSampleIds は値札の時間見積もりに使う番組の部分集合。`SearchResultList`
+   * が表示のために取得する `ids.slice(0, visibleCount)`（下の JSX）と同じ集合を
+   * 使う。`useQueries` のクエリキー（`getGetProgramQueryOptions(site, id)`）が
+   * 一致するので、値札のために追加の HTTP リクエストは発生しない（React Query が
+   * キャッシュを共有する）。**実測済み**: `search.test.tsx` の
+   * 「読み込みが母数に追いついていない間は『先頭 N 件』からの外挿である旨を
+   * 明記し、追いつくと消える（値札のために追加の HTTP リクエストは発生しない）」
+   * が `GET /api/programs/{id}` の呼び出し件数を数えて確認している（37 件マッチ
+   * で 30 → 37 と増える一方、重複が無いこと）。
+   *
+   * `loadedDurationsMs` の由来（先頭 N 件で無作為抽出ではない）は
+   * `lib/rule-cost.ts` の `RuleCostSample` のコメントを参照。
+   */
+  const costSampleIds = ids.slice(0, visibleCount)
+  const costDetails = useQueries({
+    queries: costSampleIds.map((id) => getGetProgramQueryOptions(site, id)),
+  })
+  const loadedDurationsMs = costDetails
+    .map((d) => unwrap(d.data)?.durationMs)
+    .filter((ms): ms is number => ms !== undefined)
+
+  /**
+   * searchedHasPeriod は値札に「8 日分を 7 日換算」という根拠を出してよいかの判定。
+   * `periodStartAt` / `periodEndAt` で期間を絞った検索は観測スパンが 8 日ではなく
+   * その期間そのものになるため、8 日を根拠にすると偽の説明になる。
+   *
+   * **下書き（`draft`）ではなく実行した検索（`search.variables`）から導く。**
+   * 値札の数値（`ids.length` / `loadedDurationsMs`）は実行済みの検索の産物なので、
+   * 根拠だけをフォームの現在値から取ると再検索するまでの間だけ両者が食い違う ---
+   * 期間を入れて検索したあと欄を空にするだけで、期間で絞った数値に
+   * 「8 日分を 7 日換算」という偽の根拠が付き直す（逆向きも同様）。検証:
+   * `search.test.tsx`「期間の根拠は実行した検索から導く: 下書きを触っても
+   * 再検索するまで変わらない（両方向）」。
+   *
+   * `buildSearchRequest`（`lib/program-search.ts`）は期間が空ならキーごと落とす
+   * ので、キーの有無がそのまま「期間で絞ったか」になる。型が許す `null`
+   * （＝問わない）は「指定なし」側に畳む。
+   *
+   * `CreateRuleForm` / `RuleEditForm` にも同名の判定があるが、あちらは
+   * 「この下書きを保存すると恒久的な期間制限になる」という**下書き**についての
+   * 警告なので、下書きから導くのが正しい（同じ式に見えて由来が違う）。
+   */
+  const searchedRequest = search.variables?.data
+  const searchedHasPeriod =
+    (searchedRequest?.periodStartAt ?? null) !== null ||
+    (searchedRequest?.periodEndAt ?? null) !== null
+
   return (
     <>
       <PageHeader title="検索" />
@@ -179,6 +241,13 @@ export function SearchPage() {
           </div>
         </div>
       </form>
+
+      <RuleCostSummary
+        status={costStatus}
+        totalCount={ids.length}
+        loadedDurationsMs={loadedDurationsMs}
+        hasPeriod={searchedHasPeriod}
+      />
 
       {ruleId !== undefined ? (
         // ruleId のルールがまだ読み込めていない間（読み込み中 / 404 / 失敗）は
@@ -233,6 +302,109 @@ export function SearchPage() {
       )}
     </>
   )
+}
+
+/**
+ * RuleCostSummary は「この条件でルールを作成」「上書き保存」の近くに常置する値札
+ * （issue #237）。ルールは保存した瞬間から録画（チューナー・ストレージ）を消費し
+ * 続けるが、保存前に見えるのはマッチする番組リストだけで量としてのコストが無音
+ * だった、という問題への対処。
+ *
+ * **値札は警告ではない。** しきい値で色を変えたり保存を止めたりしない --- 多いか
+ * 少ないかの判断はユーザーのもの。文字色は他の情報表示と同じ `text-muted-foreground`
+ * を使う（`--warning` は「条件ゼロ」「期間指定の恒久化」用、`--destructive` は
+ * 「壊れた・取り返しがつかない」用で、どちらも意味が違うので流用しない。
+ * docs/frontend/design.md「色は信号のみ」）。**GB 換算もやらない** ---
+ * ビットレートの実測の出所が未決で、件数と時間は検索結果だけから導出でき
+ * 未決に依存しないため、そこをこの値札のスコープの切れ目にしている。
+ *
+ * 「未検索」（`status === 'idle'`）と「検索したが 0 件」（`status === 'success'`
+ * かつ `totalCount === 0`）を同じ文言にしない --- 両方とも件数が無い状態だが、
+ * 条件を指定し忘れているだけなのか、条件が正しく絞り込めているのかは区別が要る
+ * （`/search` の既存規律「未検索と 0 件を混同しない」と同じ精神）。
+ *
+ * 件数は `totalCount`（検索 API が返す全件、ページングなし）から厳密に出せる。
+ * 時間は番組ごとの `durationMs` が要るため `loadedDurationsMs`（画面が結果表示の
+ * ために読み込んだ分。`programId` 昇順の先頭 N 件で、無作為抽出ではない ---
+ * `lib/rule-cost.ts` の `RuleCostSample` のコメントを参照）の平均から外挿する
+ * 近似値になる。母数（`totalCount`）に対して読み込みが追いついていないときは
+ * `estimateRuleCost` の `isSampled` を見て「先頭 N 件」であることを文言に足す
+ * （黙って過小に見せない。かつ読み込みが 1 件も済んでいない間はこの注記を出さない
+ * --- `estimate.durationMsPerWeek === undefined`（算出中）のときに
+ * 「0 件の平均から算出」という自己矛盾した文言を出さないため）。
+ *
+ * `hasPeriod` が真（`periodStartAt` / `periodEndAt` で期間を絞った検索）のときは
+ * 「8 日分を 7 日換算」という根拠を出さない --- その根拠は「検索結果は EPG の
+ * 前方 8 日ぶんの観測」という前提に立っており、期間を絞った検索では観測スパンが
+ * その期間そのものになるため前提が崩れる（8 日分ではないのに 8 日分と言うと偽の
+ * 根拠になる。issue #237 の罠「黙って過小に見せない」に反する）。代わりに
+ * 「期間条件で絞っているため、週あたりの見込みは実際より小さく出ます」と明記する。
+ *
+ * **`hasPeriod` は `totalCount` / `loadedDurationsMs` と同じ検索の産物でなければ
+ * ならない**（呼び出し側の `searchedHasPeriod` を参照）。数値と根拠の由来が
+ * 食い違うと、消したはずの偽の根拠が「フォームを触っただけ」で復活する。
+ */
+function RuleCostSummary({
+  status,
+  totalCount,
+  loadedDurationsMs,
+  hasPeriod,
+}: {
+  status: 'idle' | 'pending' | 'error' | 'success'
+  totalCount: number
+  loadedDurationsMs: number[]
+  hasPeriod: boolean
+}) {
+  if (status === 'idle') {
+    return (
+      <p className="px-4 py-2 text-xs text-muted-foreground">
+        検索すると、この条件で保存した場合の週あたりの見込み（件数・録画時間）が表示されます
+      </p>
+    )
+  }
+  if (status === 'pending') {
+    return <p className="px-4 py-2 text-xs text-muted-foreground">見込みを計算中…</p>
+  }
+  if (status === 'error') {
+    return (
+      <p className="px-4 py-2 text-xs text-muted-foreground">
+        検索が失敗したため見込みを表示できません
+      </p>
+    )
+  }
+
+  const estimate = estimateRuleCost({ totalCount, loadedDurationsMs })
+  const countText = `約 ${Math.round(estimate.countPerWeek)} 件`
+  const durationText =
+    estimate.durationMsPerWeek === undefined
+      ? '算出中…'
+      : `約 ${formatDuration(estimate.durationMsPerWeek)}`
+
+  // 期間条件で絞っている検索は観測スパンが 8 日ではないため、8 日を根拠にする
+  // 文言は出さず、実際より小さく出ることを明記する（上のコメント参照）。
+  const basisText = hasPeriod
+    ? ''
+    : `（現在の EPG 実測 ${estimate.totalCount} 件・${epgWindowDays} 日分を ${ruleCostWeekDays} 日換算）`
+  const periodNote = hasPeriod
+    ? '（期間条件で絞っているため、週あたりの見込みは実際より小さく出ます）'
+    : ''
+
+  // 読み込みが 1 件も済んでいない間（durationMsPerWeek === undefined）は
+  // 「0 件の平均から算出」という自己矛盾した文言を出さない。
+  const sampledNote =
+    estimate.durationMsPerWeek !== undefined && estimate.isSampled
+      ? `（時間は先頭 ${estimate.sampleSize} 件の平均から算出）`
+      : ''
+
+  // 件数は 1 つの文字列にする（JSX で連結するとテキストノードが分かれ、
+  // 読み上げも切れて聞こえる。上の検索結果件数の表示と同じ流儀）。
+  const text =
+    `この条件で保存すると、週あたり見込みで${countText}・${durationText}` +
+    basisText +
+    periodNote +
+    sampledNote
+
+  return <p className="px-4 py-2 text-xs text-muted-foreground">{text}</p>
 }
 
 /**

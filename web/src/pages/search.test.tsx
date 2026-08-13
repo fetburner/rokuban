@@ -110,10 +110,25 @@ function jsonResponse(body: unknown, status = 200): Response {
  * リクエスト本体そのものも検証できる）。`PATCH` は `rules` 配列も更新するので、
  * 同じテスト内で連続保存したときの挙動（例: 上書き後に再取得した内容）も追える。
  */
-function stubApi(options?: { rules?: Rule[] }) {
+function stubApi(options?: { rules?: Rule[]; holdProgramDetails?: boolean }) {
   const searchBodies: ProgramSearchRequest[] = []
   const createRuleBodies: RuleInput[] = []
   const updateRuleBodies: { id: number; data: RuleInput }[] = []
+  // 値札（RuleCostSummary）用の useQueries が `SearchResultList` と同じクエリキー
+  // を再利用しても追加のリクエストが発生しないことを実測するための記録
+  // （`pages/search.tsx` のコメント「値札のために追加の HTTP リクエストは
+  // 発生しない」の裏付け。下の「値札用の useQueries を足しても...」テストで使う）。
+  const programDetailRequests: number[] = []
+  // `holdProgramDetails` が true のとき、番組の詳細（GET /api/programs/{id}）を
+  // 即座に解決せず保留する。「検索は解決したが durationMs は 1 件も届いていない」
+  // 瞬間（`loadedDurationsMs` が空のまま `totalCount > 0`）を確実に再現するための
+  // 仕掛け --- 実タイマーに依存すると環境差でその瞬間を取りこぼしうる。
+  // `releaseProgramDetails()` で保留分をまとめて解決する。
+  const pendingProgramDetails: (() => void)[] = []
+  function releaseProgramDetails() {
+    const toRelease = pendingProgramDetails.splice(0, pendingProgramDetails.length)
+    for (const resolve of toRelease) resolve()
+  }
   const rules = options?.rules ? [...options.rules] : []
 
   const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
@@ -170,10 +185,15 @@ function stubApi(options?: { rules?: Rule[] }) {
 
     const detail = /^\/api\/sites\/default\/programs\/(\d+)$/.exec(url.pathname)
     if (detail) {
+      programDetailRequests.push(Number(detail[1]))
       const found = allPrograms.find((p) => p.programId === Number(detail[1]))
-      return Promise.resolve(
-        found ? jsonResponse(found) : jsonResponse({ error: 'not found' }, 404),
-      )
+      const response = found ? jsonResponse(found) : jsonResponse({ error: 'not found' }, 404)
+      if (options?.holdProgramDetails) {
+        return new Promise<Response>((resolve) => {
+          pendingProgramDetails.push(() => resolve(response))
+        })
+      }
+      return Promise.resolve(response)
     }
 
     if (url.pathname === '/api/sites/default/programs/search') {
@@ -220,7 +240,15 @@ function stubApi(options?: { rules?: Rule[] }) {
   })
 
   globalThis.fetch = fetchMock as unknown as typeof fetch
-  return { fetchMock, searchBodies, createRuleBodies, updateRuleBodies, rules }
+  return {
+    fetchMock,
+    searchBodies,
+    createRuleBodies,
+    updateRuleBodies,
+    rules,
+    programDetailRequests,
+    releaseProgramDetails,
+  }
 }
 
 /**
@@ -421,6 +449,202 @@ describe('SearchPage', () => {
     expect(screen.getByText('条件を指定して検索してください')).toBeInTheDocument()
     expect(screen.queryByText('ニュース7')).not.toBeInTheDocument()
     expect(screen.queryByLabelText('テキスト条件 1 の値')).not.toBeInTheDocument()
+  })
+
+  describe('値札（コストの見込み）', () => {
+    it('未検索と 0 件を混同しない', async () => {
+      stubApi()
+      renderPage()
+
+      expect(await screen.findByRole('button', { name: 'NHK総合' })).toBeInTheDocument()
+      expect(
+        screen.getByText(
+          '検索すると、この条件で保存した場合の週あたりの見込み（件数・録画時間）が表示されます',
+        ),
+      ).toBeInTheDocument()
+
+      await addKeyword('該当しない語')
+      await userEvent.click(screen.getByRole('button', { name: '検索' }))
+
+      // 0 件でも「まだ検索していない」の文言には戻らない
+      expect(
+        await screen.findByText(/この条件で保存すると、週あたり見込みで約 0 件・約 0分/),
+      ).toBeInTheDocument()
+      expect(
+        screen.queryByText(
+          '検索すると、この条件で保存した場合の週あたりの見込み（件数・録画時間）が表示されます',
+        ),
+      ).not.toBeInTheDocument()
+    })
+
+    it('1 件マッチしたときは 7 日換算した件数・時間が出る（母数 = サンプルなので外挿の注記は出ない）', async () => {
+      stubApi()
+      renderPage()
+
+      await addKeyword('ニュース')
+      await userEvent.click(screen.getByRole('button', { name: '検索' }))
+
+      expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+      // 1 件 * 7/8 = 0.875 → 約 1 件。30 分（1_800_000ms）* 7/8 = 26.25 分 → 約 26分。
+      const summary = await screen.findByText(
+        /この条件で保存すると、週あたり見込みで約 1 件・約 26分/,
+      )
+      // 読み込み済み 1 件 = 母数 1 件なので、外挿であることの注記は不要
+      expect(summary.textContent).not.toMatch(/先頭/)
+    })
+
+    it('読み込みが母数に追いついていない間は「先頭 N 件」からの外挿である旨を明記し、追いつくと消える（値札のために追加の HTTP リクエストは発生しない）', async () => {
+      const { programDetailRequests } = stubApi()
+      renderPage()
+
+      expect(await screen.findByRole('button', { name: 'NHK総合' })).toBeInTheDocument()
+      // 条件なしの検索で 37 件（pageSize=30 を超える）に当てる
+      await userEvent.click(screen.getByRole('button', { name: '検索' }))
+
+      // 37 件 * 7/8 = 32.375 → 約 32 件。全 37 件が一様に 30 分（1_800_000ms）なので、
+      // 平均 30 分 * 37 件 * 7/8 = 971.25 分 = 16時間11分。最初の 30 件だけのサンプル
+      // でも平均は同じ 30 分になるため、この値自体は「読み込みが全件に届いたとき」
+      // と変わらない（下の「さらに表示」後の再検証で確認する）。
+      await screen.findByText(/この条件で保存すると、週あたり見込みで約 32 件・約 16時間11分/)
+      // まだ最初の 30 件しか durationMs を読み込んでいないので、外挿であることを明記する。
+      // 「読み込み済み」ではなく「先頭」と言う --- サンプルは programId 昇順の
+      // 先頭 N 件で無作為抽出ではない（`lib/rule-cost.ts` の `RuleCostSample` 参照）
+      await waitFor(() => {
+        expect(screen.getByText(/この条件で保存すると/).textContent).toContain(
+          '（時間は先頭 30 件の平均から算出）',
+        )
+      })
+
+      // 値札用に足した `useQueries`（`pages/search.tsx` の `costSampleIds`）が
+      // `SearchResultList` と同じクエリキーを使うため、追加の HTTP リクエストが
+      // 発生しないことをここで実測する（30 件・重複無し。60 件になっていないか）。
+      await waitFor(() => expect(programDetailRequests.length).toBe(30))
+      expect(new Set(programDetailRequests).size).toBe(30)
+
+      await userEvent.click(screen.getByRole('button', { name: 'さらに表示' }))
+
+      // 全件（37 件）の詳細が読み込み終わると、外挿の注記が消える
+      // （値そのものは一様な 30 分番組なので変わらない）
+      await waitFor(() => {
+        expect(
+          screen.getByText(/この条件で保存すると、週あたり見込みで約 32 件・約 16時間11分/)
+            .textContent,
+        ).not.toContain('先頭')
+      })
+
+      // 残り 7 件（37 - 30）がさらに読み込まれ、重複は無い（合計 37 件）
+      await waitFor(() => expect(programDetailRequests.length).toBe(37))
+      expect(new Set(programDetailRequests).size).toBe(37)
+    })
+
+    it('番組の詳細が 1 件も届いていない間は「0 件の平均から算出」という自己矛盾した文言を出さない', async () => {
+      const { releaseProgramDetails } = stubApi({ holdProgramDetails: true })
+      renderPage()
+
+      await addKeyword('ニュース')
+      await userEvent.click(screen.getByRole('button', { name: '検索' }))
+
+      // 検索（POST .../search）は解決したが、番組の詳細（GET /api/programs/{id}）は
+      // まだ 1 件も返っていない瞬間を確実に再現する（`holdProgramDetails` で保留）。
+      // 件数は totalCount だけで確定するので先に出るが、時間はサンプルが無いので
+      // 「算出中…」になる。
+      const summary = await screen.findByText(
+        /この条件で保存すると、週あたり見込みで約 1 件・算出中…/,
+      )
+      // 「0 件の平均から算出」（sampleSize = 0 のまま外挿の注記だけが出る自己矛盾）
+      // にならないことを確認する
+      expect(summary.textContent).not.toContain('平均から算出')
+      expect(summary.textContent).not.toContain('0 件')
+
+      releaseProgramDetails()
+
+      // 詳細が届くと通常の表示に戻る
+      await waitFor(() => {
+        expect(
+          screen.getByText(/この条件で保存すると、週あたり見込みで約 1 件・約 26分/),
+        ).toBeInTheDocument()
+      })
+    })
+
+    it('期間条件で絞っている検索では 8 日換算の根拠を出さず、実際より小さく出ることを明記する（両方向）', async () => {
+      stubApi()
+      renderPage()
+
+      await addKeyword('ニュース')
+      await userEvent.click(screen.getByRole('button', { name: '検索' }))
+
+      // 期間を指定していない: 「8 日分を 7 日換算」という根拠が出る
+      const withoutPeriod = await screen.findByText(
+        /この条件で保存すると、週あたり見込みで約 1 件・約 26分/,
+      )
+      expect(withoutPeriod.textContent).toContain('8 日分を 7 日換算')
+      expect(withoutPeriod.textContent).not.toContain('期間条件で絞っている')
+
+      // 期間を指定する: 観測スパンが 8 日ではなくなるため、8 日を根拠にした文言を
+      // 出さず、実際より小さく出ることを明記する
+      fireEvent.change(screen.getByLabelText('開始日時'), {
+        target: { value: '2020-01-01T00:00' },
+      })
+      await userEvent.click(screen.getByRole('button', { name: '検索' }))
+
+      await waitFor(() => {
+        const withPeriod = screen.getByText(
+          /この条件で保存すると、週あたり見込みで約 1 件・約 26分/,
+        )
+        expect(withPeriod.textContent).not.toContain('8 日分を 7 日換算')
+        expect(withPeriod.textContent).toContain(
+          '期間条件で絞っているため、週あたりの見込みは実際より小さく出ます',
+        )
+      })
+    })
+
+    it('期間の根拠は実行した検索から導く: 下書きを触っても再検索するまで変わらない（両方向）', async () => {
+      stubApi()
+      renderPage()
+
+      // 期間を入れて検索する
+      await addKeyword('ニュース')
+      fireEvent.change(screen.getByLabelText('開始日時'), {
+        target: { value: '2020-01-01T00:00' },
+      })
+      await userEvent.click(screen.getByRole('button', { name: '検索' }))
+      await waitFor(() => {
+        expect(screen.getByText(/この条件で保存すると/).textContent).toContain(
+          '期間条件で絞っている',
+        )
+      })
+
+      // 再検索せずに期間欄だけを空にする。値札の数値（件数・時間）は「期間で
+      // 絞った検索」の産物のままなので、その根拠の文言も変わってはならない
+      // （変わると、期間で絞った数値に「8 日分を 7 日換算」という偽の根拠が付く）
+      fireEvent.change(screen.getByLabelText('開始日時'), { target: { value: '' } })
+      // 先に下書きが反映された（＝値札も再レンダーされた）ことを確かめる。これが
+      // 無いと、再レンダー前にアサートして空虚に成功しうる
+      await waitFor(() => {
+        expect(screen.getByLabelText<HTMLInputElement>('開始日時').value).toBe('')
+      })
+      const afterClear = screen.getByText(/この条件で保存すると/)
+      expect(afterClear.textContent).not.toContain('8 日分を 7 日換算')
+      expect(afterClear.textContent).toContain('期間条件で絞っている')
+
+      // 逆向き: 期間なしで検索し直すと根拠が戻る
+      await userEvent.click(screen.getByRole('button', { name: '検索' }))
+      await waitFor(() => {
+        expect(screen.getByText(/この条件で保存すると/).textContent).toContain('8 日分を 7 日換算')
+      })
+
+      // 再検索せずにフォームへ期間を打ち込んでも、8 日基準の正しい見積もりに
+      // 「実際より小さく出ます」という誤った但し書きは付かない
+      fireEvent.change(screen.getByLabelText('開始日時'), {
+        target: { value: '2020-01-02T00:00' },
+      })
+      await waitFor(() => {
+        expect(screen.getByLabelText<HTMLInputElement>('開始日時').value).toBe('2020-01-02T00:00')
+      })
+      const afterType = screen.getByText(/この条件で保存すると/)
+      expect(afterType.textContent).toContain('8 日分を 7 日換算')
+      expect(afterType.textContent).not.toContain('期間条件で絞っている')
+    })
   })
 
   describe('この条件でルールを作成', () => {
