@@ -1140,10 +1140,19 @@ func TestLiveConfig_LeaveGrace(t *testing.T) {
 		// 複数プロファイルなら最長のセグメント長に合わせる（短い方に合わせると、
 		// 長いプロファイルを見ている視聴者が切られる）
 		{"最長のセグメント長に合わせる", 30 * time.Second, profiles(2, 6), 20 * time.Second},
-		// 3*10+2 = 32s は idle_timeout(30s) を超えるのでクリップ（ヒントが no-op になる）
-		{"長いセグメントはクリップされる", 30 * time.Second, profiles(10), 30 * time.Second},
-		// idle_timeout より長い猶予は「詰める」ことにならないのでクリップ
-		{"idle_timeout でクリップ", 5 * time.Second, profiles(2), 5 * time.Second},
+		// **危険側の組（レビュー指摘）。** 初版は idle_timeout でクリップしていたため、
+		// ここが 30s / 2s / 1s になり「猶予 < セグメント長」を満たしてしまっていた。
+		// idle_timeout が何であろうと猶予はセグメント長から決まる ---
+		// 猶予が idle_timeout 以上になる設定では、詰める先が現在の期限より後ろに
+		// なるのでヒントが no-op になる（TestLiveStreamer_LeaveHint_ClippedGraceIsNoOp）。
+		{"猶予 > idle_timeout でもクリップしない", 30 * time.Second, profiles(10), 32 * time.Second},
+		{"idle_timeout が猶予より短い", 5 * time.Second, profiles(2), 8 * time.Second},
+		// `internal/api/api_test.go` に実在する idle_timeout: 2s との組み合わせ。
+		// クリップしていた初版ではここが 2s（< セグメント長 6s）になっていた
+		{"idle_timeout 2s + segment 6s（実在する設定）", 2 * time.Second, profiles(6), 20 * time.Second},
+		// プロファイルが無い設定（ライブは何も配れないので session も起きない）。
+		// マージンだけが残る
+		{"プロファイル無し", 30 * time.Second, nil, 2 * time.Second},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1151,8 +1160,11 @@ func TestLiveConfig_LeaveGrace(t *testing.T) {
 			if got := cfg.leaveGrace(); got != tt.want {
 				t.Errorf("leaveGrace() = %v, want %v", got, tt.want)
 			}
-			// 罠そのもの: 猶予はセグメント長より必ず長い（クリップされた場合を
-			// 除く --- そのときはヒント自体が no-op になるので「切る道具」にならない）。
+			// 罠そのもの: **猶予はセグメント長より必ず長い。例外を作らない。**
+			// 初版はここに「クリップされた場合を除く」という逃げ道を書いていたため、
+			// 危険側の組（上記）がすり抜けた --- 逃げ道が「破れていないこと」の根拠を
+			// 別の安全装置（hintLeave の clamp）に預けており、この関数単体では
+			// 性質が成り立っていなかった。
 			longest := 0
 			for _, p := range tt.profiles {
 				if p.SegmentSeconds > longest {
@@ -1160,10 +1172,136 @@ func TestLiveConfig_LeaveGrace(t *testing.T) {
 				}
 			}
 			segment := time.Duration(longest) * time.Second
-			if got := cfg.leaveGrace(); got <= segment && got != tt.idleTimeout {
+			if got := cfg.leaveGrace(); got <= segment {
 				t.Errorf("leaveGrace() = %v <= segment length %v: a leave hint could cut another viewer off", got, segment)
 			}
 		})
+	}
+}
+
+// gcInterval は「先に来る方の期限」に追随する（min(IdleTimeout, 猶予) / 2）。
+//
+// クリップを外した（レビュー指摘）ことで猶予が IdleTimeout を超えうるように
+// なったため、**猶予だけを見ていると通常の idle GC の刻みまで粗くなる**
+// （ヒントと無関係な回収が遅れる）。両方向をリテラルの期待値で固定する。
+func TestLiveStreamer_GCIntervalTakesTheEarlierDeadline(t *testing.T) {
+	tests := []struct {
+		name        string
+		idleTimeout time.Duration
+		segment     int
+		want        time.Duration
+	}{
+		// 既定: 猶予 8 秒の方が先に来るので 4 秒（idle_timeout/2 = 15 秒ではない）
+		{"既定は猶予に追随する", 30 * time.Second, 2, 4 * time.Second},
+		// 猶予 32 秒 > idle_timeout 30 秒: idle_timeout 側に追随（16 秒にしない）
+		{"猶予が長い設定では idle_timeout に追随する", 30 * time.Second, 10, 15 * time.Second},
+		// 下限 1 秒（busy loop 防止）
+		{"下限は 1 秒", 500 * time.Millisecond, 2, time.Second},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ls := &LiveStreamer{cfg: LiveConfig{
+				IdleTimeout: tt.idleTimeout,
+				Profiles:    []LiveProfile{{Name: "h264", SegmentSeconds: tt.segment}},
+			}}
+			if got := ls.gcInterval(); got != tt.want {
+				t.Errorf("gcInterval() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// 猶予が idle_timeout 以上になる設定（`segment_seconds: 6` + `idle_timeout: 2s`
+// 等）では、**ヒントは期限を一切動かさない**（no-op）。
+//
+// レビュー指摘の危険側の組をそのまま踏む。ここが no-op でなければ、A が
+// 見ている最中に B の leave 1 回で A のセッションが消える --- issue #191 の罠
+// 「猶予をセグメント長より短くすると leave が他人の視聴を切る道具になる」の
+// 実体である。**「切れない」ことを、切れるはずの間隔（A の要求間隔 = セグメント長）
+// より長い時間、実時間で観測する。**
+func TestLiveStreamer_LeaveHint_ClippedGraceIsNoOp(t *testing.T) {
+	mirakcSrv, state := newFakeMirakcLiveServer(t)
+	cfg := baseLiveConfig(t)
+	cfg.IdleTimeout = 2 * time.Second
+	cfg.Profiles[0].SegmentSeconds = 6 // 猶予 20 秒 >> idle_timeout 2 秒
+	if cfg.leaveGrace() <= cfg.IdleTimeout {
+		t.Fatalf("test setup: leaveGrace (%v) must exceed idle timeout (%v) to exercise the no-op path",
+			cfg.leaveGrace(), cfg.IdleTimeout)
+	}
+	ls, srv := newTestLiveStreamer(t, mirakcSrv.URL, cfg)
+
+	const serviceID = int64(66)
+	segURL := firstSegmentURL(t, playlistURL(srv.URL, serviceID, "h264"))
+	if got := ls.sessionCount(); got != 1 {
+		t.Fatalf("sessionCount before the hint = %d, want 1", got)
+	}
+
+	// 視聴者 A はセグメントを取り続けている（idle_timeout より短い間隔）。
+	stopA := make(chan struct{})
+	aDone := make(chan struct{})
+	go func() {
+		defer close(aDone)
+		for {
+			select {
+			case <-stopA:
+				return
+			default:
+			}
+			if resp, err := http.Get(segURL); err == nil {
+				_ = resp.Body.Close()
+			}
+			time.Sleep(300 * time.Millisecond)
+		}
+	}()
+	t.Cleanup(func() {
+		select {
+		case <-stopA:
+		default:
+			close(stopA)
+		}
+		<-aDone
+	})
+
+	// B が離脱ヒントを投げる。A は見続けている。
+	if code := postLeave(t, srv.URL, serviceID); code != http.StatusNoContent {
+		t.Fatalf("POST leave = %d, want 204", code)
+	}
+
+	// A の要求間隔（0.3 秒）よりも、セグメント長（6 秒）よりも、idle_timeout
+	// （2 秒）よりも長く回す。ヒントが期限を動かしていたら必ずここで死ぬ。
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		ls.reapIdle()
+		select {
+		case sid := <-state.disconnected:
+			t.Fatalf("service %d was reclaimed while viewer A was still watching: a leave hint must never shorten the deadline below what the config already implies", sid)
+		default:
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	resp, err := http.Get(segURL)
+	if err != nil {
+		t.Fatalf("GET segment (viewer A, final): %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("viewer A segment status = %d, want 200", resp.StatusCode)
+	}
+
+	// 逆方向: A も離れれば（この設定でも）回収される --- 上のループが
+	// 「そもそも回収され得ない」だけで通っていないことの確認。
+	close(stopA)
+	<-aDone
+	time.Sleep(cfg.IdleTimeout + 200*time.Millisecond)
+	ls.reapIdle()
+	select {
+	case sid := <-state.disconnected:
+		if sid != serviceID {
+			t.Errorf("disconnected service id = %d, want %d", sid, serviceID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("session was not reclaimed after the viewer left (the oracle above cannot actually kill a session)")
 	}
 }
 
@@ -1413,25 +1551,6 @@ func TestLiveStreamer_LeaveHint_SiteMismatch(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", resp.StatusCode)
-	}
-}
-
-// idle GC の刻みが猶予に追随すること。刻みが idle_timeout/2（既定 15 秒）のままだと、
-// 期限を 8 秒に詰めても回収は最大 15 秒後になり**ヒントが刻みに飲まれる**。
-func TestLiveStreamer_GCIntervalFollowsLeaveGrace(t *testing.T) {
-	cfg := LiveConfig{
-		IdleTimeout: 30 * time.Second,
-		Profiles:    []LiveProfile{{Name: "h264", SegmentSeconds: 2}},
-	}
-	ls := &LiveStreamer{cfg: cfg}
-	// 猶予 8 秒（TestLiveConfig_LeaveGrace で固定）の半分。期待値はリテラルで書く。
-	if got := ls.gcInterval(); got != 4*time.Second {
-		t.Errorf("gcInterval() = %v, want 4s (half of the 8s leave grace, not half of the 30s idle timeout)", got)
-	}
-	// 下限 1 秒（極端に短い設定で busy loop にしない）。
-	ls = &LiveStreamer{cfg: LiveConfig{IdleTimeout: 500 * time.Millisecond, Profiles: cfg.Profiles}}
-	if got := ls.gcInterval(); got != time.Second {
-		t.Errorf("gcInterval() = %v, want 1s (floor)", got)
 	}
 }
 

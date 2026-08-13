@@ -226,13 +226,19 @@ func (ls *LiveStreamer) Run(ctx context.Context) error {
 
 // gcInterval は idle GC ループの刻みを返す。
 //
-// **刻みは猶予（leaveGrace）に合わせる。** IdleTimeout/2 のままだと、離脱ヒントで
-// idle 期限を「いま + 猶予」に詰めても、次の GC パスが来るまで（既定 30s/2 = 15 秒）
-// 回収されず、ヒントの効果が刻みに飲まれる。leaveGrace は IdleTimeout でクリップ
-// 済みなので、これは min(IdleTimeout, 猶予) / 2 と同じ。下限 1 秒は、極端に短い
-// 設定でループが busy loop 化するのを防ぐため。
+// **刻みは「先に来る方の期限」に合わせる = min(IdleTimeout, leaveGrace) / 2。**
+// IdleTimeout/2 のままだと、離脱ヒントで idle 期限を「いま + 猶予」に詰めても
+// 次の GC パスが来るまで（既定 30s/2 = 15 秒）回収されず、ヒントの効果が刻みに
+// 飲まれる。逆に leaveGrace だけを見ると、猶予が IdleTimeout より長い設定
+// （ヒントが no-op になる設定）で刻みが IdleTimeout より粗くなり、**ヒントと
+// 無関係な通常の idle GC まで遅くなる** --- min はどちらの劣化も防ぐ。
+// 下限 1 秒は、極端に短い設定でループが busy loop 化するのを防ぐため。
 func (ls *LiveStreamer) gcInterval() time.Duration {
-	interval := ls.cfg.leaveGrace() / 2
+	interval := ls.cfg.IdleTimeout
+	if grace := ls.cfg.leaveGrace(); grace < interval {
+		interval = grace
+	}
+	interval /= 2
 	if interval < time.Second {
 		interval = time.Second
 	}
@@ -254,8 +260,25 @@ func (ls *LiveStreamer) gcInterval() time.Duration {
 // ない**（未検証）--- セグメント長より短くならないことだけが要件で、そこには
 // 大きな余裕がある。
 //
-// IdleTimeout より長い猶予は「詰める」ことにならないのでクリップする（ヒントが
-// 無害な no-op になるだけ）。
+// **IdleTimeout でクリップしない（レビュー指摘。issue #191）。** 初版は
+// `min(3×segment+2s, IdleTimeout)` にしていたが、これは `segment_seconds: 6` +
+// `idle_timeout: 2s`（`internal/api/api_test.go` に実在する組み合わせ）のような
+// 設定で猶予 2 秒 < セグメント長 6 秒となり、**この関数が持つべき唯一の性質
+// （猶予 > セグメント長）を、docs がそう書いている当の場所で破っていた**。
+//
+// 実害が出ていなかったのは hintLeave の「前へ進めない」clamp が吸収していた
+// ためで（クリップ後は必ず `grace == IdleTimeout` になり、詰め先が「いま」に
+// なって no-op に落ちる。`TestLiveStreamer_LeaveHint_ClippedGraceIsNoOp` で
+// 固定）、**2 つの安全装置が絡んで初めて安全**という状態だった。clamp を将来
+// 触った瞬間に「他人の視聴を切る道具」が出現する。ここでは値そのものが常に
+// 性質を満たすようにし、猶予が IdleTimeout 以上になる設定では
+// **ヒントが no-op になる**（= 何も起こらない）方へ倒す。
+//
+// 設定バリデーションで `idle_timeout > 3×segment+2s` を要求する案は採らない。
+// 「速く解放したいので idle_timeout を短くする」は運用者の正当な意思であり、
+// **config の値の組で起動を止めるのは重い**（[docs/configuration.md] の
+// 「config と DB の境界」= 運用者の意思を否定しない）。導出側で守れば、危険な
+// 組み合わせの帰結は起動失敗ではなく「ヒントが効かないだけ」で済む。
 func (c LiveConfig) leaveGrace() time.Duration {
 	longestSegment := 0
 	for _, p := range c.Profiles {
@@ -263,11 +286,7 @@ func (c LiveConfig) leaveGrace() time.Duration {
 			longestSegment = p.SegmentSeconds
 		}
 	}
-	grace := time.Duration(3*longestSegment)*time.Second + 2*time.Second
-	if grace > c.IdleTimeout {
-		return c.IdleTimeout
-	}
-	return grace
+	return time.Duration(3*longestSegment)*time.Second + 2*time.Second
 }
 
 // playlistStartupTimeout は元々「ffmpeg がプレイリストの初回書き出しを終える

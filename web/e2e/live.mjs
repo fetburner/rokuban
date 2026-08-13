@@ -395,6 +395,18 @@ async function runChromiumChecks(browser) {
   page.on('request', (req) => {
     if (req.url().includes('/live/leave')) leaveLog.push(`${req.method()} ${req.url()}`)
   })
+  /**
+   * countLeaves は今までに観測した「その serviceId 向けの離脱ヒント」の件数。
+   *
+   * **⑧ は累積の有無ではなく「チャンネル切り替えを跨いで増えたか」で判定する。**
+   * 累積が 1 件以上あることだけを見ると、切り替えと無関係に飛んだヒント
+   * （タブが一瞬 hidden になった等、`visibilitychange` 由来のもの）で合格して
+   * しまい、**送信をやめる実装でも緑になりうる**（レビュー指摘）。差分で見れば、
+   * その回の切り替えが実際にヒントを出したことしか合格の理由にならない。
+   */
+  const countLeaves = (composed) =>
+    leaveLog.filter((entry) => entry === `POST ${BASE_URL}/api/sites/${SITE}/services/${composed}/live/leave`)
+      .length
 
   const mode = { playlist: 'ok' }
   await mockLiveRoutes(page, mode)
@@ -460,6 +472,9 @@ async function runChromiumChecks(browser) {
   const requestsBeforeSwitchCount = requestLog.filter((u) => u.includes(segmentsA)).length
   log(`  切替前の A 向けセグメント要求数: ${requestsBeforeSwitchCount}`)
 
+  // ⑧ の基準値。**クリックの直前**に取る（切り替えを跨いだ増分だけを見るため）。
+  const leavesBeforeSwitch = { a: countLeaves(composedA), b: countLeaves(composedB) }
+
   await page
     .locator(`nav[aria-label="チャンネル一覧"] a[href*="serviceId=${SERVICE_B}"]`)
     .click()
@@ -500,19 +515,24 @@ async function runChromiumChecks(browser) {
   // jsdom に存在しないので、ユニットテスト（`live-player.test.tsx`）が見ているのは
   // 「差し替えた sendBeacon が呼ばれたか」という配線だけ。実ブラウザが本当に
   // ネットワーク要求として送出するか（キューに載せて捨てないか）はここでしか出ない。
+  // **増分で見る**（累積の有無では、送信をやめる実装でも切り替えと無関係な
+  // ヒント 1 件で緑になりうる。`countLeaves` のコメント参照）。
+  const gainedA = countLeaves(composedA) - leavesBeforeSwitch.a
+  const gainedB = countLeaves(composedB) - leavesBeforeSwitch.b
+  log(`  切替前の leave 件数: A=${leavesBeforeSwitch.a} B=${leavesBeforeSwitch.b}`)
+  log(`  切替で増えた leave 件数: A=${gainedA} B=${gainedB}`)
   log(`  観測した leave 要求: ${leaveLog.length === 0 ? '（なし）' : leaveLog.join(', ')}`)
-  const leftA = leaveLog.some((entry) => entry === `POST ${BASE_URL}/api/sites/${SITE}/services/${composedA}/live/leave`)
-  if (!leftA) {
+  if (gainedA < 1) {
     ng.push(
       `⑧ チャンネル切替で旧チャンネル（${SERVICE_A} = 合成 id ${composedA}）への` +
-        `離脱ヒント（POST .../live/leave）が飛んでいない`,
+        `離脱ヒント（POST .../live/leave）が増えていない（切替前 ${leavesBeforeSwitch.a} 件、` +
+        `切替後 ${countLeaves(composedA)} 件）`,
     )
   }
   // 新しく見ているチャンネル（B）に送ってはならない --- 送ると自分の視聴の
   // idle 期限を自分で詰めることになる
-  const leftB = leaveLog.some((entry) => entry.includes(`/services/${composedB}/live/leave`))
-  if (leftB) {
-    ng.push(`⑧ これから見るチャンネル（${SERVICE_B}）にも離脱ヒントが飛んでいる`)
+  if (gainedB > 0) {
+    ng.push(`⑧ これから見るチャンネル（${SERVICE_B}）にも離脱ヒントが ${gainedB} 件飛んでいる`)
   }
 
   // --- ⑤ 503（本文つき）でエラー文言が出る。再読み込みで復帰する ---
