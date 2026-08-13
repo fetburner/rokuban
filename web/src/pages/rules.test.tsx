@@ -364,7 +364,8 @@ describe('RulesPage 削除は overflow メニュー', () => {
     await user.click(deleteItem)
 
     expect(confirmSpy).toHaveBeenCalledWith('ルール「ニュース」を削除しますか？')
-    expect(await screen.findByText('ルールを削除しました（予約 0 件を削除）')).toBeInTheDocument()
+    // 予約が 1 件も無いルール（内訳 0 件）は数字を添えない。
+    expect(await screen.findByText('ルールを削除しました')).toBeInTheDocument()
     await waitFor(() => expect(screen.queryByText('ニュース')).not.toBeInTheDocument())
   })
 
@@ -387,6 +388,21 @@ describe('RulesPage 削除は overflow メニュー', () => {
     ).toBeInTheDocument()
   })
 
+  // detached が 0 でも削除した予約があれば内訳を出す（0 件で黙るのは
+  // 「何も起きていない削除」のときだけ、という境界の反対側）。
+  it('残った予約が 0 件でも、削除した予約があれば件数を出す', async () => {
+    stubApi([sampleRule], { deletedReservations: 4, detachedReservations: 0 })
+    const user = userEvent.setup()
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    renderPage()
+
+    await screen.findByText('ニュース')
+    await user.click(screen.getByRole('button', { name: 'ルール「ニュース」のその他の操作' }))
+    await user.click(await screen.findByRole('menuitem', { name: '削除' }))
+
+    expect(await screen.findByText('ルールを削除しました（予約 4 件を削除）')).toBeInTheDocument()
+  })
+
   // issue #215: 重複排除の比較対象は「同じ rule_id の recordings」なので、
   // ルールを削除すると履歴がスコープから外れ、同じ条件で作り直しても
   // 引き継がれない（docs/recording/ruler.md §3.1）。押した後では取り返せない
@@ -404,8 +420,13 @@ describe('RulesPage 削除は overflow メニュー', () => {
     const message = confirmSpy.mock.calls[0][0] as string
     expect(message).toContain('ルール「平日ニュース」を削除しますか？')
     expect(message).toContain('重複排除の履歴も一緒に外れます')
-    expect(message).toContain('作り直しても引き継がれず')
+    expect(message).toContain('作り直しても引き継がれない')
     expect(message).toContain('「編集」')
+    // 被害の大きさを docs より強く書かない（過剰録画は一過性で、新ルールの
+    // 下で 1 本録れれば以降は再び弾かれる ——
+    // TestRunPass_DedupeHistoryLeavesScopeOnRuleDelete 段階 3 の測定）。
+    expect(message).toContain('1 本録れれば以降はまた弾かれます')
+    expect(message).not.toContain('窓の中の再放送を録り直します')
   })
 
   // 反対方向: 重複排除を使っていないルールでは警告を出さない

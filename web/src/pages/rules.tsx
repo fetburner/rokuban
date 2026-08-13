@@ -124,9 +124,14 @@ export function RulesPage() {
  * ことを事前に伝える。`recordings.rule_id` はルール削除で NULL に落ち、同じ
  * 条件で作り直しても新しい id になるので過去の録画は 1 件もマッチしない
  * （`docs/recording/ruler.md` §3.1「ルールの削除は履歴のスコープを消す」）。
- * 帰結は「窓の中の再放送を録り直す」であって録り逃しではないが、押した後に
- * 取り消せる操作でもないので、条件を変えたいだけなら削除ではなく「編集」
- * （id を保つ上書き保存）を使えることまで書く。
+ * 帰結は録り逃しではないが、押した後に取り消せる操作でもないので、条件を
+ * 変えたいだけなら削除ではなく「編集」（id を保つ上書き保存）を使えることまで
+ * 書く。
+ *
+ * **被害の大きさを docs より強く書かない。** 過剰録画は一過性で、新しい
+ * ルールの下で 1 本録れれば以降の再放送はまた弾かれる（`internal/ruler`
+ * の `TestRunPass_DedupeHistoryLeavesScopeOnRuleDelete` 段階 3 で測っている）。
+ * 「窓の中の再放送を録り直す」と書くと UI だけ被害が大きく読める。
  *
  * 件数は出さない。削除前に「何件の録画がスコープから外れるか」を数える API は
  * 無いうえ、件数は行動を変えない（引き継がれないという質の情報で足りる）。
@@ -136,8 +141,9 @@ function deleteRuleConfirmMessage(rule: Rule): string {
   if (!rule.dedupeEnabled) return head
   return (
     `${head}\n\n` +
-    'このルールの重複排除の履歴も一緒に外れます。同じ条件で作り直しても引き継がれず、' +
-    '重複排除の窓の中の再放送を録り直します。条件を変えたいだけなら「編集」で上書きしてください。'
+    'このルールの重複排除の履歴も一緒に外れます。同じ条件で作り直しても引き継がれないので、' +
+    '次の再放送を録り直します（新しいルールで 1 本録れれば以降はまた弾かれます）。' +
+    '条件を変えたいだけなら「編集」で上書きしてください。'
   )
 }
 
@@ -149,11 +155,16 @@ function deleteRuleConfirmMessage(rule: Rule): string {
  * 解決する」）。残った予約は定義上「ユーザーが自分で触ったもの」だけ
  * なので、件数は常に少なく 1 件ずつ説明できる。
  *
- * 応答が読めなかった場合（`unwrap` が undefined）は内訳なしの文言に落とす。
- * 削除自体は成功しているので、そこで黙るのは間違い。
+ * **両方 0 件なら数字を出さない。** 予約が 1 件も無かったルールに
+ * 「（予約 0 件を削除）」と添えても読み手の判断は変わらず、ノイズが増えるだけ。
+ * 応答が読めなかった場合（`unwrap` が undefined）も同じ文言に落とす
+ * —— 削除自体は成功しているので、そこで黙るのは間違い。
  */
 function deleteRuleResultMessage(res: DeleteRuleResponse | undefined): string {
   if (!res) return 'ルールを削除しました'
+  if (res.deletedReservations === 0 && res.detachedReservations === 0) {
+    return 'ルールを削除しました'
+  }
   if (res.detachedReservations > 0) {
     return `ルールを削除しました（予約 ${res.deletedReservations} 件を削除、${res.detachedReservations} 件は編集済みのため残しました）`
   }
