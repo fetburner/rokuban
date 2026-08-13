@@ -5,7 +5,8 @@
 //   ⓪ 前提条件 --- 配っている bundle が dist/ の現物と一致するか（他の判定は
 //      これが崩れているだけで無意味になるので最初に見る。下記のコメント参照）
 //   ① 予約一覧の容量不足バッジをクリックすると、行本体の詳細リンク（宛先
-//      `/reservations/$site/$programId`）ではなく番組表（`/?at=...`）へ飛ぶこと
+//      `/reservations/$site/$programId`）ではなく番組表（`/programs?at=...`。
+//      ホーム新設（M8-3）前は `/?at=...` だった）へ飛ぶこと
 //      --- バッジが行本体の `<a>` の中に入れ子の `<a>` として置かれていると、
 //      クリックの宛先が不定になり、多くのブラウザ実装では外側（詳細ページ）が
 //      勝つ。この構造上の欠陥は jsdom の DOM 構造チェック（`querySelectorAll('a a')`）
@@ -267,8 +268,8 @@ if ((await badge.count()) > 0) {
       ng.push(
         `① バッジを押しても予約詳細（${url.pathname}）に留まっている（<a> の入れ子で外側が勝った疑い）`,
       )
-    } else if (url.pathname !== '/') {
-      ng.push(`① 番組表（/）ではなく ${url.pathname}${url.search} へ飛んだ`)
+    } else if (url.pathname !== '/programs') {
+      ng.push(`① 番組表（/programs）ではなく ${url.pathname}${url.search} へ飛んだ`)
     } else {
       // `at` は URL から消費・削除しない方針にした（`pages/programs.tsx` の
       // コメント参照。素朴に消す実装は初回スクロールとの競合で退行した）ので、
@@ -387,8 +388,10 @@ if ((await narrowBadge.count()) > 0) {
     const bodyText = await narrowPage.evaluate(() => document.body.textContent ?? '')
     if (/Something went wrong/.test(bodyText)) {
       ng.push('③ 375px で番組表へ飛んだ直後にエラー境界に落ちた')
-    } else if (narrowUrl.pathname !== '/') {
-      ng.push(`③ 375px でも番組表（/）へ飛ぶはずが ${narrowUrl.pathname}${narrowUrl.search} だった`)
+    } else if (narrowUrl.pathname !== '/programs') {
+      ng.push(
+        `③ 375px でも番組表（/programs）へ飛ぶはずが ${narrowUrl.pathname}${narrowUrl.search} だった`,
+      )
     } else {
       const narrowGrid = narrowPage.locator('[data-testid="program-grid"]')
       if ((await narrowGrid.count()) > 0) {

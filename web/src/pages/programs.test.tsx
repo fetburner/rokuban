@@ -313,15 +313,16 @@ afterEach(() => {
 })
 
 /**
- * renderPage は本物の routeTree（`@/routes`）で `ProgramsPage`（`/`）を描く。
+ * renderPage は本物の routeTree（`@/routes`）で `ProgramsPage`（`/programs`。
+ * ホーム新設（M8-3）前は `/` だった）を描く。
  *
  * `useSearch`/`useNavigate` を使うため（issue #231。チャンネル絞り込みの
- * URL 化）、最小限のアドホックなルート木ではなく実際の `/` ルート定義
+ * URL 化）、最小限のアドホックなルート木ではなく実際の `/programs` ルート定義
  * （`validateSearch` を含む）を使う必要がある --- `pages/recordings.test.tsx`
  * の `renderPage` と同じ理由・同じ形。`SiteContext` を直接注入する旧方式は
  * `SiteGate`（`GET /api/sites` を待つ）を経由しないためこの構成では使えない。
  */
-function renderPage(path = '/') {
+function renderPage(path = '/programs') {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: 0 } },
   })
@@ -804,7 +805,7 @@ describe('ProgramsPage のチャンネル複数選択', () => {
 describe('ProgramsPage のチャンネル絞り込みの URL 化（issue #231）', () => {
   it('?serviceId= 付きの URL で開くと、絞り込み済みの番組表がピッカーの表示と一致して開く', async () => {
     stubApi()
-    renderPage('/?serviceId=1024')
+    renderPage('/programs?serviceId=1024')
 
     // NHK総合（1024）に絞り込んだ状態で開く。ピッカーのラベルは URL の解決だけで
     // 決まる（データ取得を待たない）ので、先に番組の取得完了（データ取得の完了を
@@ -835,7 +836,7 @@ describe('ProgramsPage のチャンネル絞り込みの URL 化（issue #231）
 
   it('不正な値（?serviceId=abc）は絞り込みなしに落ちて開ける（壊れたリンクを踏んでも画面は開く）', async () => {
     stubApi()
-    renderPage('/?serviceId=abc')
+    renderPage('/programs?serviceId=abc')
 
     expect(await screen.findByRole('button', { name: 'チャンネル: すべて' })).toBeInTheDocument()
     // 絞り込みなしなので両局の番組が出る（データ取得の完了を待ってから見る ---
@@ -859,7 +860,7 @@ describe('ProgramsPage のチャンネル絞り込みの URL 化（issue #231）
 describe('ProgramsPage のピッカーの定義域（issue #231 のレビュー must-fix）', () => {
   it('filterableServices に無い局（hasPrograms: false）への深いリンクでも「すべて」に見えず、個別に解除できる', async () => {
     stubApi([], [], allPrograms, undefined, undefined, [subService])
-    renderPage('/?serviceId=1040')
+    renderPage('/programs?serviceId=1040')
 
     // サブサービスは番組を持たないので一覧は空になる。だが「絞り込みで全部
     // 隠れている」ことがトリガーから読める必要がある
@@ -878,7 +879,7 @@ describe('ProgramsPage のピッカーの定義域（issue #231 のレビュー 
 
   it('services にも実在しない id への深いリンク（削除された局・壊れた共有リンク）は「チャンネル #<id>」で示され、個別に解除できる', async () => {
     stubApi()
-    renderPage('/?serviceId=9999')
+    renderPage('/programs?serviceId=9999')
 
     expect(await screen.findByText('この時間帯の番組がありません')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'チャンネル: チャンネル #9999' })).toBeInTheDocument()
@@ -1127,7 +1128,7 @@ describe('ProgramsPage の at パラメータ（容量バッジからの導線�
   it('lg 未満では、グリッドを出さずに at が属する日へ日付ジャンプする', async () => {
     stubApi([], [], [...allPrograms, dayTwoProgram])
     stubMatchMedia(false)
-    renderPage(`/?at=${targetMs}`)
+    renderPage(`/programs?at=${targetMs}`)
 
     // 「ニュース7」（今日の番組）ではなく、day 2 の番組が出る ---
     // 日付ジャンプが実際に効いていることの証拠（効いていなければ今日のまま
@@ -1144,7 +1145,7 @@ describe('ProgramsPage の at パラメータ（容量バッジからの導線�
   it('lg 以上では、リストのままにせず自動でグリッド表示に切り替わる', async () => {
     stubApi([], [], [...allPrograms, dayTwoProgram])
     stubMatchMedia(true)
-    renderPage(`/?at=${targetMs}`)
+    renderPage(`/programs?at=${targetMs}`)
 
     // クリックせずにグリッドが出る（`表示形式` チップを押す通常の経路と違う）。
     // グリッドの中に day 2 の番組が実際に見えることまで確認する ---
@@ -1160,7 +1161,7 @@ describe('ProgramsPage の at パラメータ（容量バッジからの導線�
   it('自動切替後にユーザーがリストへ戻すと、画面幅の再評価だけではグリッドに戻さない', async () => {
     stubApi([], [], [...allPrograms, dayTwoProgram])
     const media = stubMatchMedia(true)
-    renderPage(`/?at=${targetMs}`)
+    renderPage(`/programs?at=${targetMs}`)
 
     await screen.findByTestId('program-grid')
 
@@ -1189,7 +1190,7 @@ describe('ProgramsPage の at パラメータ（容量バッジからの導線�
   it('at がある状態でも別の日を選べば、その日の内容に切り替わる（at が現在地を固定しない）', async () => {
     stubApi([], [], [...allPrograms, dayTwoProgram])
     stubMatchMedia(true)
-    renderPage(`/?at=${targetMs}`)
+    renderPage(`/programs?at=${targetMs}`)
 
     await screen.findByTestId('program-grid')
     expect(screen.getByText('容量バッジ導線の番組')).toBeInTheDocument()
@@ -1215,7 +1216,7 @@ describe('ProgramsPage の at パラメータ（容量バッジからの導線�
   it('Date の time value の定義域を超える at を踏んでもエラー境界に落ちない（壊れたリンクでも画面は開く）', async () => {
     stubApi()
     stubMatchMedia(true)
-    renderPage('/?at=1e30')
+    renderPage('/programs?at=1e30')
 
     // 通常表示（「今日」のまま）に落ちる。エラー境界の文言が出ていないこと
     // まで見る（`document.body.textContent` に "Something went wrong" を

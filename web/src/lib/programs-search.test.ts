@@ -89,7 +89,8 @@ describe('parseProgramsSearch', () => {
   // を超える at は落とす。落とさないと `new Date(at)` が Invalid Date になり、
   // 後続の `dayOffsetForMs` → `dayOrigin` → `.toISOString()` が
   // `RangeError: Invalid time value` を投げて番組表ページ全体がエラー境界に
-  // 落ちる（実測: 実ブラウザ・jsdom の両方で `/?at=1e30` 等が
+  // 落ちる（実測: 実ブラウザ・jsdom の両方で `/programs?at=1e30`（当時は `/`。
+  // ホーム新設（M8-3）で番組表は `/programs` に移設した）等が
   // "Something went wrong!" になった）。
   it('Date の time value の定義域を超える at は undefined に落とす（実測で RangeError の原因だった値）', () => {
     expect(parseProgramsSearch({ at: 9_000_000_000_000_000 })).toEqual({

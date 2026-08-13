@@ -132,8 +132,13 @@ const overages = [
 
 const recordings = [
   { id: 11, site: SITE, source: 'rule', serviceName: 'NHK総合', channelType: 'GR', channel: '27', networkId: 32736, serviceId: 1024, eventId: 11, title: 'ニュース７', startAt: iso(nowMs - 600_000), durationMs: 1_800_000, status: 'recording', createdAt: iso(nowMs - 600_000), startedAt: iso(nowMs - 600_000) },
-  // encodedProfiles を持たせて再生ボタン（issue #227）が実ブラウザで出ることを撮る
-  { id: 12, site: SITE, source: 'manual', serviceName: 'ＮＨＫＢＳ', channelType: 'BS', channel: 'BS15_0', networkId: 4, serviceId: 101, eventId: 12, title: 'クラシック音楽館', startAt: iso(nowMs - 26 * HOUR), durationMs: 5_400_000, status: 'finished', sizeBytes: 8_123_456_789, createdAt: iso(nowMs - 26 * HOUR), dropSummary: { drops: 12, errors: 0, scrambled: 3 }, encodedProfiles: ['hevc-1080p'] },
+  // encodedAssets を持たせて再生ボタン（issue #227）・<video> が実ブラウザで
+  // 出ることを撮る。`encodedProfiles`（非推奨の後方互換フィールド）だけでは
+  // `RecordingPlayer` が <video> を出さない（`encodedAssets` を見るため）ので
+  // 両方持たせる --- 過去このフィクスチャが `encodedProfiles` だけだったため、
+  // e2e/design.mjs ⑤（キーボード到達性）が「Enter で展開してもプレイヤーが
+  // 出ない」で落ちていた（M8-3 の実装確認中に発見・修正。本題とは無関係）。
+  { id: 12, site: SITE, source: 'manual', serviceName: 'ＮＨＫＢＳ', channelType: 'BS', channel: 'BS15_0', networkId: 4, serviceId: 101, eventId: 12, title: 'クラシック音楽館', startAt: iso(nowMs - 26 * HOUR), durationMs: 5_400_000, status: 'finished', sizeBytes: 8_123_456_789, createdAt: iso(nowMs - 26 * HOUR), dropSummary: { drops: 12, errors: 0, scrambled: 3 }, encodedProfiles: ['hevc-1080p'], encodedAssets: [{ profile: 'hevc-1080p', sizeBytes: 2_345_678_901 }] },
   { id: 13, site: SITE, source: 'rule', serviceName: 'テレビ大阪', channelType: 'GR', channel: '18', networkId: 32738, serviceId: 1040, eventId: 13, title: 'アニメ劇場', startAt: iso(nowMs - 50 * HOUR), durationMs: 1_800_000, status: 'failed', createdAt: iso(nowMs - 50 * HOUR) },
   { id: 14, site: SITE, source: 'rule', serviceName: 'NHKEテレ', channelType: 'GR', channel: '26', networkId: 32737, serviceId: 1032, eventId: 14, title: '連続テレビ小説', startAt: iso(nowMs - 74 * HOUR), durationMs: 900_000, status: 'finished', sizeBytes: 1_234_567_890, createdAt: iso(nowMs - 74 * HOUR) },
 ]
@@ -158,8 +163,15 @@ const breakers = [
  * components/page.tsx）を撮るための遅延フック。API が即座に返る作りなので、
  * 遅延を挟まないと画面遷移からスクリーンショットまでの間に必ず解決してしまい、
  * 読み込み中の状態を撮れない。
+ *
+ * `emptyHome` はホーム（M8-3）の「全セクションが空」を撮る/判定するための
+ * フック。予約・容量超過・録画をすべて空にする（ブレーカーは元々 `withBreaker`
+ * が制御している）。
  */
-async function installApiStubs(page, { withBreaker = false, delayPath = null, delayMs = 0 } = {}) {
+async function installApiStubs(
+  page,
+  { withBreaker = false, delayPath = null, delayMs = 0, emptyHome = false } = {},
+) {
   await page.route('**/api/**', async (route) => {
     const url = new URL(route.request().url())
     const p = url.pathname
@@ -182,9 +194,22 @@ async function installApiStubs(page, { withBreaker = false, delayPath = null, de
     if (p === '/api/breakers') return json(withBreaker ? breakers : [])
     if (p === '/api/encode-profiles') return json([{ name: 'hevc-1080p', container: 'mp4' }])
     if (p === '/api/rules') return json(rules)
-    if (p === '/api/reservations') return json(reservations)
-    if (p === '/api/capacity/overages') return json(overages)
-    if (p === '/api/recordings') return json(recordings)
+    if (p === '/api/reservations') return json(emptyHome ? [] : reservations)
+    if (p === '/api/capacity/overages') return json(emptyHome ? [] : overages)
+    if (p === '/api/recordings') {
+      // ホーム（M8-3）は `status` / `limit` を実際に付けて問い合わせる
+      // （`いま録画中` = status=recording、完了録画 = status=finished&limit=20 の
+      // 1 本で、「直近の完了」の表示はその先頭 6 件に切られる）。
+      // 既定の録画一覧（`pages/recordings.tsx`）は status を付けずに常に
+      // limit=50 を送るので、ここでの絞り込みはそちらの見た目に影響しない。
+      // 実サーバーの既定（program_start_at 降順）に合わせて並べ替えてから絞る。
+      const source = emptyHome ? [] : recordings
+      const status = url.searchParams.get('status')
+      const limit = Number(url.searchParams.get('limit') ?? source.length)
+      const filtered = status ? source.filter((r) => r.status === status) : source
+      const sorted = [...filtered].sort((a, b) => Date.parse(b.startAt) - Date.parse(a.startAt))
+      return json(sorted.slice(0, limit))
+    }
     if (/^\/api\/recordings\/\d+\/drop-stats$/.test(p)) return json([])
     // サムネイルは 404 に落として実装側のプレースホルダを撮る（画像を作らない）
     if (/^\/api\/recordings\/\d+\/thumbnail$/.test(p)) return route.fulfill({ status: 404 })
@@ -355,7 +380,12 @@ async function computedVar(locator, varName) {
 
 /** 撮る画面。`wait` はその画面で描画完了と見なせる目印。 */
 const screens = [
-  { name: 'programs', path: '/', wait: 'li[data-program-id], [data-testid="program-grid-now-line"]' },
+  // ホーム（M8-3, issue #242）は `/` を新設で受け取り、番組表は `/programs` へ
+  // 移設した。フィクスチャは「いま録画中」1 件・「今夜〜明日の予約」窓に入る
+  // 予約複数件・容量超過 1 件（→「警告」）・「直近の完了」複数件を持つので、
+  // 4 セクションすべてが一度に撮れる。
+  { name: 'home', path: '/', wait: 'text=いま録画中' },
+  { name: 'programs', path: '/programs', wait: 'li[data-program-id], [data-testid="program-grid-now-line"]' },
   { name: 'reservations', path: '/reservations', wait: 'text=チューナー不足' },
   { name: 'recordings', path: '/recordings', wait: 'text=録画中' },
   { name: 'rules', path: '/rules', wait: 'text=朝ドラ' },
@@ -501,6 +531,195 @@ for (const theme of themes) {
     log(`  ${path.basename(file)}`)
     await context.close()
   }
+  {
+    // ホーム（M8-3）の「全セクションが空」= 単一の空状態（EmptyState の走査線）。
+    // `home-*-desktop.png`（既定の 4 セクション表示）と対にして人が見比べられる
+    // ようにする。
+    const context = await browser.newContext({
+      viewport: { width: desktop.width, height: desktop.height },
+      locale: 'ja-JP',
+      timezoneId: 'Asia/Tokyo',
+      colorScheme: theme,
+      deviceScaleFactor: 2,
+    })
+    const page = await context.newPage()
+    await page.clock.setFixedTime(FIXED_NOW)
+    await installApiStubs(page, { emptyHome: true })
+    await page.goto(URL_BASE + '/', { waitUntil: 'domcontentloaded' })
+    if (theme === 'dark') await page.evaluate(() => document.documentElement.classList.add('dark'))
+    await page
+      .locator('div.scanlines', { hasText: '表示できる項目がありません' })
+      .first()
+      .waitFor({ timeout: 5000 })
+      .catch(() => {
+        ng.push(`[${theme}] ホームの空状態（全セクション空）が出ない`)
+      })
+    const file = path.join(OUT_DIR, `home-empty-${theme}-desktop.png`)
+    await page.screenshot({ path: file })
+    log(`  ${path.basename(file)}`)
+    await context.close()
+  }
+}
+
+// --- ①' ホーム（M8-3）: 空セクションが出ない/出るの機械判定 ---
+//
+// jsdom（`pages/home.test.tsx`）が既に見ている範囲（セクションの出し分けロジック
+// そのもの）はここでは繰り返さない。ここで見るのは実ブラウザでしか確認できない
+// こと --- 既定フィクスチャで 4 見出しが**実際に画面に出る**こと（レイアウトが
+// 崩れて隠れていないか）と、警告セクションのチューナー不足項目が実際にクリック
+// できるリンクとして機能すること（href だけでなく実クリックでの遷移）。
+log("\n=== ①' ホームの空セクション判定 ===")
+{
+  const { context, page } = await open(desktop, 'light', screenOf('home'))
+  for (const heading of ['いま録画中', '今夜〜明日の予約', '警告', '直近の完了']) {
+    const found = await page.getByRole('heading', { name: heading }).count()
+    if (found === 0) {
+      ng.push(`ホーム: 見出し「${heading}」が既定フィクスチャで出ていない`)
+    }
+  }
+  // チューナー不足の警告項目は番組表（`/programs?at=...`）へのリンクとして機能する
+  const shortageLink = page.getByRole('link', { name: /チューナーが不足しています/ })
+  if ((await shortageLink.count()) === 0) {
+    ng.push('ホーム: 警告セクションにチューナー不足の項目が無い')
+  } else {
+    await shortageLink.first().click()
+    await page.waitForTimeout(400)
+    const url = new URL(page.url())
+    if (url.pathname !== '/programs') {
+      ng.push(`ホーム: チューナー不足をクリックしても番組表へ飛ばない（${url.pathname}）`)
+    }
+  }
+  await context.close()
+}
+{
+  // 両方向: 全セクションが空のときは 4 見出しとも出ず、単一の空状態だけが出る
+  const context = await browser.newContext({
+    viewport: { width: desktop.width, height: desktop.height },
+    locale: 'ja-JP',
+    timezoneId: 'Asia/Tokyo',
+    colorScheme: 'light',
+    deviceScaleFactor: 2,
+  })
+  const page = await context.newPage()
+  await page.clock.setFixedTime(FIXED_NOW)
+  await installApiStubs(page, { emptyHome: true })
+  await page.goto(URL_BASE + '/', { waitUntil: 'domcontentloaded' })
+  await page
+    .getByText('表示できる項目がありません')
+    .waitFor({ timeout: 5000 })
+    .catch(() => {
+      ng.push('ホーム: 全セクション空でも単一の空状態が出ない')
+    })
+  for (const heading of ['いま録画中', '今夜〜明日の予約', '警告', '直近の完了']) {
+    if ((await page.getByRole('heading', { name: heading }).count()) > 0) {
+      ng.push(`ホーム: 全セクション空のはずが見出し「${heading}」が出ている`)
+    }
+  }
+  await context.close()
+}
+
+log("\n=== ①'' ホーム: 警告の種別ごとの色（琥珀 vs destructive） ===")
+{
+  // ブレーカーも同時に出すため withBreaker: true で開く（overage と drop は
+  // 既定フィクスチャに既に含まれている）。
+  const { context, page } = await open(desktop, 'light', screenOf('home'), { withBreaker: true })
+
+  // 容量超過（チューナー不足）= 琥珀。色はリンク（`<a>`）に付く。
+  const overageRow = page.locator('li', { hasText: 'チューナーが不足しています' }).first()
+  const overageColor = await computedOf(overageRow.locator('a').first(), 'color')
+  if (overageColor === null) {
+    ng.push('ホーム: チューナー不足の警告項目の文字色が取得できない')
+  } else if (!isAmber(overageColor.rgba)) {
+    ng.push(
+      `ホーム: チューナー不足の警告項目が琥珀でない（${overageColor.value} = ${overageColor.rgba}）`,
+    )
+  }
+
+  // サーキットブレーカー = destructive。リンクを持たないので色は <li> 自身に付く。
+  const breakerRow = page.locator('li', { hasText: 'ルール評価による予約の削除が停止中' }).first()
+  const breakerColor = await computedOf(breakerRow, 'color')
+  if (breakerColor === null) {
+    ng.push('ホーム: ブレーカーの警告項目の文字色が取得できない')
+  } else if (!isRed(breakerColor.rgba)) {
+    ng.push(
+      `ホーム: ブレーカーの警告項目が destructive でない（${breakerColor.value} = ${breakerColor.rgba}）`,
+    )
+  }
+
+  // ドロップ = destructive。色はリンクに付く。
+  const dropRow = page.locator('li', { hasText: 'クラシック音楽館: drop' }).first()
+  const dropColor = await computedOf(dropRow.locator('a').first(), 'color')
+  if (dropColor === null) {
+    ng.push('ホーム: ドロップの警告項目の文字色が取得できない')
+  } else if (!isRed(dropColor.rgba)) {
+    ng.push(`ホーム: ドロップの警告項目が destructive でない（${dropColor.value} = ${dropColor.rgba}）`)
+  }
+
+  log(
+    `  チューナー不足=${overageColor?.rgba} / ブレーカー=${breakerColor?.rgba} / ドロップ=${dropColor?.rgba}`,
+  )
+  await context.close()
+}
+
+// --- ①''' ホーム: 実時計でのクエリキー安定性（無限再取得の回帰検出） ---
+//
+// **時計を止めない。** このファイルの他の全判定は `page.clock.setFixedTime` で
+// 時計を止めており、それは「時計が動くことに起因する欠陥」（レンダーごとに
+// 変わる生の Date.now() をキャッシュキーに載せて無限再取得になる、等）を
+// 原理的に検出できない（レビューで発覚。実装 PR で `/api/capacity/overages` の
+// `start` に生の Date.now() を渡しており、時計を止めた判定は全部素通りしていた。
+// docs/frontend/home.md §経緯と失敗事例）。ここだけ時計を止めずに実際の要求回数
+// を数える。
+//
+// **上限だけでなく下限（>= 1）も見る。** 「N 回以下」だけの判定は、クエリを
+// 消した・`enabled: false` にした・そもそもページが起動しない、のいずれでも
+// 0 回で緑になる（レビュー指摘）。数え始める前にホームの目印を待って画面が
+// 実際に立っていることを確かめ、そのうえで回数の下限と上限の両方に掛ける
+// （`badge-links.mjs` ⓪ が「配っている bundle が dist の現物と一致するか」を
+// 最初に見ているのと同じ思想 --- 前提が崩れていると下流の判定は全部無意味）。
+log("\n=== ①''' ホーム: 実時計でのクエリキー安定性（無限再取得の回帰検出） ===")
+{
+  const context = await browser.newContext({
+    viewport: { width: desktop.width, height: desktop.height },
+    locale: 'ja-JP',
+    timezoneId: 'Asia/Tokyo',
+  })
+  const page = await context.newPage()
+  const overagesRequests = []
+  page.on('request', (req) => {
+    const url = new URL(req.url())
+    if (url.pathname === '/api/capacity/overages') overagesRequests.push(url.toString())
+  })
+  await installApiStubs(page)
+  await page.goto(URL_BASE + '/', { waitUntil: 'domcontentloaded' })
+  let homeUp = true
+  await page
+    .locator(screenOf('home').wait)
+    .first()
+    .waitFor({ timeout: 15000 })
+    .catch(() => {
+      homeUp = false
+      ng.push(
+        `ホーム: 実時計（page.clock を使わない）でホームが立たない（目印「${screenOf('home').wait}」が出ない）`,
+      )
+    })
+  await page.waitForTimeout(2500)
+  log(`  /api/capacity/overages への実要求回数（実時計 2.5 秒）: ${overagesRequests.length}`)
+  if (homeUp && overagesRequests.length < 1) {
+    ng.push(
+      'ホーム: 実時計で /api/capacity/overages を一度も要求していない' +
+        '（クエリが消えている・enabled: false になっている疑い。' +
+        'この下限が無いと「0 回」でこの判定は緑になる）',
+    )
+  }
+  if (overagesRequests.length > 3) {
+    ng.push(
+      `ホーム: 実時計で /api/capacity/overages への要求が ${overagesRequests.length} 回` +
+        '（無限再取得の疑い。start に生の Date.now() を渡していないか確認する。' +
+        'レビュー実測では 18〜37 回だった）',
+    )
+  }
+  await context.close()
 }
 
 // --- ② 色の機械判定 ---
@@ -634,9 +853,18 @@ for (const theme of themes) {
     const { context, page } = await open(desktop, theme, screenOf('reservations'))
     // **淡い地を持つのは外側のバッジ、文字を持つのは内側の span。**
     // 内側だけを掴むと背景が透明になり、合成が恒等になって「地の上での比」を
-    // 測ってしまう（`^チューナー不足` で引くと、外側は sr-only の文が先頭に来て
-    // 一致せず、内側だけが残る）。外側から引いて、文字色は子から採る
-    const badge = page.locator('ul span').filter({ hasText: /チューナー不足/ }).first()
+    // 測ってしまう。外側から引いて、文字色は子から採る。
+    //
+    // **外側は `<span>` ではなく `<a>`（`Link`）。** issue #233 M6-5 で
+    // バッジ自身が番組表への `Link` になり、淡い地（`bg-warning/10`）を持つ
+    // 外側の要素は `<span>` から `<a>` に変わった。この判定はその変更の後も
+    // `ul span` のまま据え置かれており、`.filter({ hasText })` が `<a>` の
+    // 子である 2 つの `<span>`（sr-only の文・見える側のラベル）しか拾えず
+    // `label`（`badge` の子孫を探す）が空になって常に「見つからない」扱いに
+    // なっていた（実機で確認: `badge` が実際には見える側のラベル span 自身に
+    // 解決し、その子孫に `span[aria-hidden="true"]` は無い）。M8-3 の実装
+    // 確認中に発見・修正した（本題（ホーム）とは無関係な既存の不具合）。
+    const badge = page.locator('ul a').filter({ hasText: /チューナー不足/ }).first()
     const label = badge.locator('span[aria-hidden="true"]')
     const bg = await computedOf(badge, 'background-color')
     const fg = await computedOf(label, 'color')

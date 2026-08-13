@@ -35,7 +35,8 @@ function overage(
 
 /**
  * CapacityShortfallBadge は「その時間帯にチューナーが足りていない」ことを一覧の
- * 行に出すバッジ。issue #233 M6-5 で番組表（`/`）への `Link` になった --- ここは
+ * 行に出すバッジ。issue #233 M6-5 で番組表（`/programs`。ホーム新設（M8-3）前は
+ * `/` だった）への `Link` になった --- ここは
  * その導線（href の宛先・`at` パラメータ）と、リンク化後も読み上げの規律
  * （見える側 `aria-hidden`、読み上げ文は `sr-only`）が保たれていることを見る。
  * 出し分け（交差する/しない）自体は `lib/capacity.test.ts` と
@@ -53,7 +54,7 @@ describe('CapacityShortfallBadge', () => {
     )
 
     const link = await screen.findByRole('link')
-    expect(link).toHaveAttribute('href', `/?at=${atMs(19 * 60)}`)
+    expect(link).toHaveAttribute('href', `/programs?at=${atMs(19 * 60)}`)
   })
 
   it('交差する区間が無ければ何も描画しない（リンクも作らない）', async () => {

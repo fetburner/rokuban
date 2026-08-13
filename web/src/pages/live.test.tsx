@@ -357,8 +357,9 @@ describe('LivePage', () => {
     const link = screen.getByRole('link', { name: 'この局の番組表' })
     // 配列は既定のシリアライズ（JSON.stringify）で 1 パラメータに載る
     // （`?serviceId=[20]` が URL エンコードされた形）。往復して正しく戻ることは
-    // 別途 lib/programs-search.test.ts と routes.test.tsx で見ている
-    expect(link).toHaveAttribute('href', '/?serviceId=%5B20%5D')
+    // 別途 lib/programs-search.test.ts と routes.test.tsx で見ている。宛先は
+    // `/programs`（ホーム新設（M8-3）前は `/` だった）。
+    expect(link).toHaveAttribute('href', '/programs?serviceId=%5B20%5D')
   })
 
   it('存在しない serviceId を指定すると番組を持つ先頭にフォールバックする', async () => {

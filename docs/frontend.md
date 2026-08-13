@@ -9,7 +9,8 @@ Vite + React + TypeScript の SPA。go:embed で単一バイナリに同梱し�
 | デザイン言語（トークン / 状態色 / 原則）。**UI を触るなら最初に読む** | [frontend/design.md](frontend/design.md) |
 | 前提条件 / 採用スタック / 決め手（技術選定の経緯） | [frontend/stack.md](frontend/stack.md) |
 | 共通シェル: ナビゲーション / 生成クライアントとエラー運搬 / SSE 通知 / `<html lang>` / PWA | [frontend/shell.md](frontend/shell.md) |
-| 番組リスト・番組表グリッド / 日付・チャンネル絞り込み / 容量超過の表示 | [frontend/programs.md](frontend/programs.md) |
+| ホーム（`/`）: 集約するセクション・窓と上限・空セクションの扱い | [frontend/home.md](frontend/home.md) |
+| 番組リスト・番組表グリッド（`/programs`） / 日付・チャンネル絞り込み / 容量超過の表示 | [frontend/programs.md](frontend/programs.md) |
 | 進行方向・遡行の読み込み（時間窓の継ぎ足しとスクロール位置の復元） | [frontend/scroll.md](frontend/scroll.md) |
 | 予約の操作・予約詳細・録られない理由の表示 | [frontend/reservations.md](frontend/reservations.md) |
 | 検索 `/search` とルール条件の共有 | [frontend/search.md](frontend/search.md) |
@@ -33,6 +34,7 @@ Vite + React + TypeScript の SPA。go:embed で単一バイナリに同梱し�
 読む順の目安:
 
 - **色・余白・状態表示を触る（= UI を触るなら常に）** → [frontend/design.md](frontend/design.md)
+- **ホームを触る** → [frontend/home.md](frontend/home.md)
 - **番組表・番組リストを触る** → [frontend/programs.md](frontend/programs.md)（遡行・スクロール位置の復元は [frontend/scroll.md](frontend/scroll.md)）
 - **録画一覧を触る** → [frontend/recordings.md](frontend/recordings.md)
 - **ライブ視聴を触る** → [frontend/live.md](frontend/live.md)（資源同定は [api.md](api.md) §ライブ視聴の HLS が権威）

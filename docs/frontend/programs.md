@@ -250,7 +250,8 @@ tick タイマーは持たない。このリンクは番組 ID を運ばず `ser
 ## 番組表への `at` 導線
 
 容量不足バッジ（予約一覧。[reservations.md](reservations.md) §容量不足バッジから
-番組表へ）は番組表ルート（`/`）へ、不足区間の開始時刻を `at`（epoch ms。
+番組表へ）は番組表ルート（`/programs`。ホーム新設（[home.md](home.md)。M8-3）前は
+`/` だった）へ、不足区間の開始時刻を `at`（epoch ms。
 `lib/programs-search.ts` の `ProgramsPageSearch.at`）に積んだ `Link` で飛ぶ。
 
 着地後の反映先は画面幅・表示形式で 3 つに分かれる。**グリッドが唯一「その時間帯」を
