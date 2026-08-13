@@ -104,6 +104,13 @@ var (
 	errSessionLimit = errors.New("live session limit reached (process-local)")
 	// errShuttingDown は Run の ctx が既に完了し、新規セッションを受け付けないことを示す。
 	errShuttingDown = errors.New("streamer is shutting down")
+	// errStartupTimeout は getOrCreateSession の `<-s.ready` 待ちが
+	// playlistStartupTimeout を超えたことを示す（issue #286）。mirakc への接続
+	// （StreamService、全体タイムアウト無し）がハングすると close(s.ready) に
+	// 到達しないため、ハンドラ側の待ちだけを打ち切る。**セッションの起動 goroutine
+	// （sessionCtx 由来の runSession）やセッション自体の状態には影響しない**
+	// --- 諦めるのはこの呼び出しの待ちだけで、セッションはそのまま起動を続ける。
+	errStartupTimeout = errors.New("live session did not become ready in time")
 )
 
 // LiveStreamer はライブ視聴の HLS ルートを配信する。
@@ -216,13 +223,21 @@ func (ls *LiveStreamer) Run(ctx context.Context) error {
 	}
 }
 
-// playlistStartupTimeout は ffmpeg がプレイリストの初回書き出しを終えるまでの
-// 待ち時間。トランスコード開始からセグメント 1 本目が出るまでの遅延を吸収する。
+// playlistStartupTimeout は元々「ffmpeg がプレイリストの初回書き出しを終える
+// までの待ち時間」（waitForPlaylist、セッションが ready になった**後**の
+// ファイル出現待ち）として導入された値だが、現在はセッションの起動待ち
+// （mirakc への接続 + ffmpeg exec が終わる = `close(s.ready)` を待つ経路）にも
+// 同じ値を掛けている --- 使う場所は次の 3 箇所:
 //
-// **Segment ハンドラの `<-s.ready` 待ちにも同じ値を使う**（issue #189）。
-// セッション起動（mirakc 接続 + ffmpeg exec）を待つ経路は Playlist と Segment の
-// 2 つがあり、片方だけ期限を持つと非対称になる --- 定数を分けると片方だけ直した
-// ときに気付けない（issue #189 の罠）ので、必ずこの 1 つを両方から参照する。
+//   - waitForPlaylist（Playlist、ready になった後のプレイリストファイル出現待ち）
+//   - getOrCreateSession の 2 か所の `<-s.ready` 待ち（Playlist が呼ぶ。issue #286）
+//   - Segment の `<-s.ready` 待ち（issue #189）
+//
+// **3 箇所が同じ 1 つの変数を参照することが本質。** 分けると、どれか 1 つだけ
+// 直したときに非対称が残っても気付けない --- 実際に #189 で Segment だけ
+// 直したときに Playlist 側（getOrCreateSession）の非対称が見過ごされ、
+// レビューで #286 として指摘された。新しい待ちを足すときもここを増やさず
+// この変数を再利用すること。
 //
 // var にしてあるのはテストからの上書き用（15 秒の実待ちはテストを不必要に
 // 遅くする）。運用者向けの設定キーではない。
@@ -246,6 +261,10 @@ func (ls *LiveStreamer) Playlist(w http.ResponseWriter, r *http.Request) {
 
 	s, err := ls.getOrCreateSession(r.Context(), serviceID)
 	if err != nil {
+		if errors.Is(err, errStartupTimeout) {
+			slog.Error("streamer: live playlist session did not become ready in time",
+				"service_id", serviceID)
+		}
 		writeSessionError(w, err)
 		return
 	}
@@ -374,6 +393,10 @@ func writeSessionError(w http.ResponseWriter, err error) {
 		http.Error(w, "too many concurrent live sessions on this process", http.StatusServiceUnavailable)
 	case errors.Is(err, errShuttingDown):
 		http.Error(w, "streamer is shutting down", http.StatusServiceUnavailable)
+	case errors.Is(err, errStartupTimeout):
+		// Segment ハンドラの起動待ちタイムアウトと同じ扱い（同じステータス・
+		// 同じ文言）に揃える（issue #286）。
+		http.Error(w, "live stream did not start in time", http.StatusGatewayTimeout)
 	default:
 		// mirakc 側のチューナー枯渇・ffmpeg 起動失敗などをまとめて 503 にする。
 		// 詳細はログと rokuban_live_session_start_failures_total{reason} 側で見る。
@@ -462,6 +485,16 @@ func (ls *LiveStreamer) sessionCount() int {
 // ctx は**セッション自体の生存**（sessionCtx）ではなく、**この呼び出しがどれだけ
 // 待つか**にだけ使う。呼び出し元のリクエストが切れても他の同時リクエストが待って
 // いる可能性があるセッションの起動を巻き込んで中断しない --- 待つのをやめるだけ。
+//
+// **`<-s.ready` 待ちは playlistStartupTimeout で打ち切る（issue #286）。** mirakc
+// への接続（StreamService、全体タイムアウト無し）がハングすると close(s.ready) に
+// 到達せず、ctx（呼び出し元のリクエストの ctx）だけでは呼び出し元が切断するまで
+// 戻らない。**この期限は呼び出し元の ctx に `context.WithTimeout` を被せる形では
+// 実装しない** --- 下の 2 か所の select にそれぞれ `case <-time.After(...)` を
+// 足すだけに留める。ctx を包んで下位の sessionCtx にまで渡してしまうと、この
+// 呼び出しの待ちを諦めるだけのつもりが起動中のセッションそのものを巻き込んで
+// 中断してしまう（sessionCtx は `context.Background()` 由来で、ctx とは独立して
+// いなければならない。issue #189 の罠と同じ形）。
 func (ls *LiveStreamer) getOrCreateSession(ctx context.Context, serviceID int64) (*liveSession, error) {
 	ls.mu.Lock()
 	if s, ok := ls.sessions[serviceID]; ok {
@@ -470,6 +503,8 @@ func (ls *LiveStreamer) getOrCreateSession(ctx context.Context, serviceID int64)
 		case <-s.ready:
 		case <-ctx.Done():
 			return nil, ctx.Err()
+		case <-time.After(playlistStartupTimeout):
+			return nil, errStartupTimeout
 		}
 		if s.startErr != nil {
 			return nil, s.startErr
@@ -503,6 +538,8 @@ func (ls *LiveStreamer) getOrCreateSession(ctx context.Context, serviceID int64)
 	case <-s.ready:
 	case <-ctx.Done():
 		return nil, ctx.Err()
+	case <-time.After(playlistStartupTimeout):
+		return nil, errStartupTimeout
 	}
 	if s.startErr != nil {
 		return nil, s.startErr

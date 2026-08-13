@@ -398,29 +398,19 @@ func TestLiveStreamer_UnknownProfile(t *testing.T) {
 	}
 }
 
-// Segment はセッションの起動待ちで無期限に滞留しない（issue #189 の項目 1）。
-// Playlist 側の waitForPlaylist と同じ playlistStartupTimeout で打ち切ることを
-// 固定する --- ここを直す前は、起動処理（runSession）がまだ s.ready を閉じて
-// いないセッションに対する Segment 要求は、リクエストしたクライアント自身が
-// 切断するまで戻らなかった（mirakc への接続がハングした場合の実害。docs/api.md
-// §ライブ視聴の HLS が前提とする idle GC はセッションが動き出してから効くもので、
-// 起動待ち自体には効かない）。
-func TestLiveStreamer_Segment_TimesOutWhenSessionNeverBecomesReady(t *testing.T) {
-	// 15 秒の実待ちはテストを不必要に遅くするので、この 1 本だけ短くする
-	// （罠: Playlist 用の待ちと定数を分けるとここが揃っているか気付けなくなる
-	// ので、必ず playlistStartupTimeout そのものを書き換える）。
-	prevTimeout := playlistStartupTimeout
-	playlistStartupTimeout = 50 * time.Millisecond
-	t.Cleanup(func() { playlistStartupTimeout = prevTimeout })
-
-	mirakcSrv, _ := newFakeMirakcLiveServer(t)
-	ls, srv := newTestLiveStreamer(t, mirakcSrv.URL, baseLiveConfig(t))
-
-	// mirakc への接続がまだ終わっていない（起動処理 runSession が s.ready を
-	// 閉じていない）セッションを直接マップに注入する。getOrCreateSession 経由で
-	// 作ると呼び出し側もろとも ready を待ってしまい、Segment 単体の挙動を
-	// 検証できない。
-	const serviceID = int64(999)
+// injectNeverReadySession は runSession を経ずに、起動待ちのまま（s.ready を
+// 閉じない）セッションを ls.sessions に直接注入する。getOrCreateSession 経由で
+// 作ると呼び出し側もろとも ready を待ってしまい、Segment / Playlist 単体の
+// タイムアウト挙動を検証できない。
+//
+// newTestLiveStreamer が登録した t.Cleanup(ls.shutdown) は全セッションに
+// stop()（cancel を呼んで <-s.done を待つ）を呼ぶ。この注入セッションは
+// runSession を経ていない（s.done を閉じる者がいない）ため、何もしないと
+// shutdown が無期限にハングする。t.Cleanup は LIFO なので、ここで（呼び出し元が
+// newTestLiveStreamer の後で呼ぶ前提で）登録すれば shutdown より先に走り、
+// s.done を閉じて詰まりを防げる。
+func injectNeverReadySession(t *testing.T, ls *LiveStreamer, serviceID int64) *liveSession {
+	t.Helper()
 	s := &liveSession{
 		serviceID:  serviceID,
 		ready:      make(chan struct{}), // 意図的に閉じない = 起動待ちのまま
@@ -431,12 +421,48 @@ func TestLiveStreamer_Segment_TimesOutWhenSessionNeverBecomesReady(t *testing.T)
 	ls.mu.Lock()
 	ls.sessions[serviceID] = s
 	ls.mu.Unlock()
-	// newTestLiveStreamer が登録した t.Cleanup(ls.shutdown) は全セッションに対して
-	// stop()（cancel を呼んで <-s.done を待つ）を呼ぶ。この注入セッションは
-	// runSession を経ていない（s.done を閉じる者がいない）ため、何もしないと
-	// shutdown が無期限にハングする。t.Cleanup は LIFO なので、ここで後から
-	// 登録すれば shutdown より先に走り、s.done を閉じて詰まりを防げる。
 	t.Cleanup(func() { close(s.done) })
+	return s
+}
+
+// assertBoundedByStartupTimeout は elapsed が「その時点の playlistStartupTimeout
+// ちょうどで打ち切られた」ことを確認する。**上限だけでなく下限も見る。** 上限
+// だけだと、検証対象の経路が playlistStartupTimeout を読まず、別の（たまたま
+// 短い）定数に差し替えられていても素通りしてしまう（レビュー指摘、issue #286
+// の任意項目）。下限を「その時点の値」そのものと比較することで、テストが
+// 上書きした値を経路が実際に読んでいることまで固定する。
+func assertBoundedByStartupTimeout(t *testing.T, elapsed time.Duration) {
+	t.Helper()
+	if elapsed < playlistStartupTimeout {
+		t.Errorf("elapsed %v is shorter than the current playlistStartupTimeout (%v) --- "+
+			"the code path under test must be reading this same variable, not a different literal",
+			elapsed, playlistStartupTimeout)
+	}
+	if elapsed > 1*time.Second {
+		t.Errorf("elapsed %v took too long, want bounded by playlistStartupTimeout (%v)", elapsed, playlistStartupTimeout)
+	}
+}
+
+// Segment はセッションの起動待ちで無期限に滞留しない（issue #189 の項目 1）。
+// Playlist 側の waitForPlaylist と同じ playlistStartupTimeout で打ち切ることを
+// 固定する --- ここを直す前は、起動処理（runSession）がまだ s.ready を閉じて
+// いないセッションに対する Segment 要求は、リクエストしたクライアント自身が
+// 切断するまで戻らなかった（mirakc への接続がハングした場合の実害。docs/api.md
+// §ライブ視聴の HLS が前提とする idle GC はセッションが動き出してから効くもので、
+// 起動待ち自体には効かない）。
+func TestLiveStreamer_Segment_TimesOutWhenSessionNeverBecomesReady(t *testing.T) {
+	// 15 秒の実待ちはテストを不必要に遅くするので、この 1 本だけ短くする
+	// （罠: 他の待ちと定数を分けるとここが揃っているか気付けなくなるので、
+	// 必ず playlistStartupTimeout そのものを書き換える）。
+	prevTimeout := playlistStartupTimeout
+	playlistStartupTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { playlistStartupTimeout = prevTimeout })
+
+	mirakcSrv, _ := newFakeMirakcLiveServer(t)
+	ls, srv := newTestLiveStreamer(t, mirakcSrv.URL, baseLiveConfig(t))
+
+	const serviceID = int64(999)
+	s := injectNeverReadySession(t, ls, serviceID)
 
 	// テストのクライアント自身には十分大きいタイムアウトを設定する。直す前の
 	// 実装のまま実行しても、ここでテストプロセスがハングせずアサーション失敗
@@ -456,9 +482,7 @@ func TestLiveStreamer_Segment_TimesOutWhenSessionNeverBecomesReady(t *testing.T)
 	if resp.StatusCode != http.StatusGatewayTimeout {
 		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusGatewayTimeout)
 	}
-	if elapsed > 1*time.Second {
-		t.Errorf("segment request took %v, want bounded by playlistStartupTimeout (%v)", elapsed, playlistStartupTimeout)
-	}
+	assertBoundedByStartupTimeout(t, elapsed)
 
 	// 起動待ちを諦めても close(s.ready) の性質は変えない --- セッション自体は
 	// 「起動中」のまま残る（このハンドラの都合でセッションを壊してはいけない。
@@ -468,6 +492,40 @@ func TestLiveStreamer_Segment_TimesOutWhenSessionNeverBecomesReady(t *testing.T)
 		t.Errorf("s.ready must not be closed by the handler giving up on waiting")
 	default:
 	}
+}
+
+// Playlist もセッションの起動待ち（getOrCreateSession の <-s.ready）で無期限に
+// 滞留しない（issue #286。#189 は Segment だけを直しており、Playlist 側の
+// getOrCreateSession は当時直っていなかった --- レビューで指摘され、#286 の
+// probe で実測された）。
+//
+// **Segment より実害が大きい。** hls.js はプレイリストを数秒間隔で再取得する
+// のに対し、セグメント要求はプレイリストが 1 度成功した後にしか発生しない。
+// mirakc がハングしている間、実際に滞留するのは主に Playlist ハンドラの側になる。
+func TestLiveStreamer_Playlist_TimesOutWhenSessionNeverBecomesReady(t *testing.T) {
+	prevTimeout := playlistStartupTimeout
+	playlistStartupTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { playlistStartupTimeout = prevTimeout })
+
+	mirakcSrv, _ := newFakeMirakcLiveServer(t)
+	ls, srv := newTestLiveStreamer(t, mirakcSrv.URL, baseLiveConfig(t))
+
+	const serviceID = int64(998)
+	injectNeverReadySession(t, ls, serviceID)
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	start := time.Now()
+	resp, err := client.Get(playlistURL(srv.URL, serviceID, ""))
+	if err != nil {
+		t.Fatalf("GET playlist: %v (playlist request should time out with a response, not hang until the client gives up)", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	elapsed := time.Since(start)
+
+	if resp.StatusCode != http.StatusGatewayTimeout {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusGatewayTimeout)
+	}
+	assertBoundedByStartupTimeout(t, elapsed)
 }
 
 // site が config.mirakc.site と一致しない要求は 404（DB を引かずパスだけで判定する）。
