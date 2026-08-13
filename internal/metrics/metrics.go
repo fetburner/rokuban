@@ -508,6 +508,22 @@ var (
 		Help: "Live-viewing sessions stopped by the idle GC because no segment request arrived within the idle timeout.",
 	})
 
+	// LiveLeaveHints は離脱ヒント（POST .../live/leave）の受信数。
+	//
+	// **LiveIdleGCReclaimed と対で読む。** ヒントは停止命令ではなく idle 期限を
+	// 詰めるだけなので、「ヒントを受けた数」と「実際に回収した数」は一致しない
+	// （他に視聴者がいれば次のセグメント要求が期限を戻す）。差が常に 0 に近ければ
+	// 「離脱＝即回収」、開いていれば「共有セッションが多い」と読める。
+	//
+	// result:
+	//   - "deadline_shortened": 該当セッションがあり、idle 期限を詰めた
+	//   - "no_session": 該当サービスのセッションが無かった（既に回収済み・未開始）。
+	//     ヒントは何も起こさない --- セッションを作らないことがこの口の契約
+	LiveLeaveHints = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "rokuban_live_leave_hints_total",
+		Help: "Live-viewing leave hints received, by result (deadline_shortened, no_session). A hint shortens the idle deadline; it never stops a session directly.",
+	}, []string{"result"})
+
 	// LiveIdleGCLastPass は最後に完走した idle GC パスの時刻（UNIX 秒）。
 	//
 	// DeleteReconcileLastPass / EpgSyncLastSuccess と同じ理由（ゲージの凍結対策。
@@ -590,6 +606,7 @@ func NewRegistry(backlog prometheus.Collector) *prometheus.Registry {
 		LiveActiveSessions,
 		LiveSessionStartFailures,
 		LiveIdleGCReclaimed,
+		LiveLeaveHints,
 		LiveIdleGCLastPass,
 	)
 

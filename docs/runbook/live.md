@@ -43,14 +43,31 @@ docker compose exec rokuban rokuban server --all --config /config.yml
    curl -s http://localhost:40773/metrics | grep rokuban_live
    # rokuban_live_active_sessions 0
    # rokuban_live_idle_gc_reclaimed_total 0
+   # rokuban_live_leave_hints_total{result="deadline_shortened"} 0
    # rokuban_live_idle_gc_last_pass_timestamp_seconds 1.7...e9
    ```
 
    再生中は `rokuban_live_active_sessions` が `1`（見ているチャンネル数）になる
-4. ブラウザのタブを閉じる（または別チャンネルへ切り替える）。セグメント要求が
-   止まってから **30〜45 秒**（`live.idle_timeout` 既定 30 秒 + GC 周期
-   `idle_timeout/2` = 15 秒ぶんの遅れ）で `rokuban_live_active_sessions` が
-   `0` に戻り、`rokuban_live_idle_gc_reclaimed_total` が `1` 増える
+4. ブラウザのタブを閉じる（または別チャンネルへ切り替える）。**離脱ヒントが届けば
+   十数秒**（猶予 8 秒 = `3 × segment_seconds + 2s` + GC 周期 4 秒ぶんの遅れ。
+   実測 13 秒）で
+   `rokuban_live_active_sessions` が `0` に戻り、
+   `rokuban_live_idle_gc_reclaimed_total` が `1` 増える。同時に
+   `rokuban_live_leave_hints_total{result="deadline_shortened"}` も `1` 増えている
+   はず（**ここが増えずに回収された場合、ヒントは届いていない** ---
+   その場合の回収は `live.idle_timeout` 既定 30 秒 + GC 周期 4 秒 = **30 秒強**
+   後になる（実測 33 秒））。**この秒数は偽 mirakc + 偽 ffmpeg に対する実バイナリ
+   （`rokuban server --roles streamer`）で実測した**（ヒントあり 13 秒 /
+   ヒント無し 33 秒。`rokuban_live_active_sessions` が 0 に戻るまでを 1 秒間隔で
+   ポーリング。issue #191）。**実チューナー・実 ffmpeg では未測定** ---
+   ffmpeg の停止に掛かる時間だけ伸びうるので、この手順で確かめる
+   - 同じチャンネルを 2 つのタブで開いて片方だけ閉じると、
+     `rokuban_live_leave_hints_total` は増えるが
+     `rokuban_live_active_sessions` は `1` のまま下がらない（残っているタブの
+     セグメント要求が idle 期限を戻す）。**これがヒントを「停止命令」にしなかった
+     理由そのもの**（[api.md](../api.md) §ライブ視聴の HLS）。偽 mirakc に対する
+     実バイナリでは実測済み（2 秒ごとに `leave` を送りながらセグメントを取り
+     続ける形で 20 秒間、セッションは落ちなかった。ヒント 10 回に対し回収 0 回）
 5. チューナー本数が少ない環境で複数チャンネルへ連続で「再生」を押すと、
    `live.max_sessions`（既定 4）に達した時点で 503
    `too many concurrent live sessions on this process` が、チューナー自体が
@@ -61,7 +78,7 @@ docker compose exec rokuban rokuban server --all --config /config.yml
    通り過ぎただけのチャンネルは対象外 --- 以前あった 400ms のデバウンス
    （ザッピングでセッションが積まれないようにする緩和）は選択自体がコスト 0 に
    なったことで存在理由が消え、削除した。押して留まったチャンネルの前セッションは
-   今までと同様 idle GC 待ちで 30〜45 秒残る
+   離脱ヒントが届けば十数秒、届かなければ 30 秒強残る（上の 4）
 6. **実配信で一時停止しても誤ってエラーにならないことを確認する（未実施）。**
    ネイティブ経路は `stalled` / `waiting` が猶予（12 秒）を超えたら失敗と見なすが、
    WebKit は**一時停止した瞬間にも `stalled` を出す**ので、一度でも再生が
@@ -144,6 +161,13 @@ pnpm exec playwright install chromium webkit
    probe は HTTP 層しか見ないので、ここを `<video>` のイベントで拾えていないと
    **永久に止まった黒いプレイヤー**になる。壊れ方で出るイベントが違う
    （404 は `error`、無応答は `stalled` のみ）ので 2 通りとも見る
+
+8. **チャンネル切り替えで離脱ヒントが実際に飛ぶ**（`POST .../live/leave`。④ と
+   同じ切り替え操作を観測する）。**jsdom では原理的に測れない** ---
+   `navigator.sendBeacon` が jsdom に無いため、ユニットテストが見ているのは
+   差し替えた関数が呼ばれたかという配線だけで、実ブラウザが本当にネットワーク
+   要求として送出するかはここでしか出ない。離れた側（A）にだけ飛び、これから
+   見るチャンネル（B）には飛ばないことも見る
 
 初回実行は ffmpeg で固定フィクスチャ（testsrc + sine を H.264/AAC でエンコード
 した 40 秒ぶん）を生成し `os.tmpdir()` にキャッシュする（`E2E_LIVE_REBUILD_FIXTURE=1`

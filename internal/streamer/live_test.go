@@ -768,6 +768,9 @@ func TestLiveStreamer_URLPathFixedDepth(t *testing.T) {
 	want := []string{
 		"/api/sites/{site}/networks/{networkId}/services/{serviceId}/live/playlist.m3u8",
 		"/api/sites/{site}/networks/{networkId}/services/{serviceId}/live/segments/{name}",
+		// 離脱ヒント（issue #191）。セッション ID を持たない = 宛先はプレイリスト /
+		// セグメントと同じ (site, networkId, serviceId) のまま、固定深さも保つ。
+		"/api/sites/{site}/networks/{networkId}/services/{serviceId}/live/leave",
 	}
 	slices.Sort(routes)
 	slices.Sort(want)
@@ -779,10 +782,11 @@ func TestLiveStreamer_URLPathFixedDepth(t *testing.T) {
 	// 正規表現で (site, networkId, serviceId) が取り出せることを確認する
 	// （ルートの形だけでなく、実在の URL でも成立する）。
 	re := regexp.MustCompile(`^/api/sites/([^/]+)/networks/([^/]+)/services/([^/]+)/live/`)
-	plURL := playlistURL(newLiveTestServerURL(t, r), 4, 1024, "h264")
+	baseURL := newLiveTestServerURL(t, r)
+	plURL := playlistURL(baseURL, 4, 1024, "h264")
 	segURL := firstSegmentURL(t, plURL)
 
-	for _, raw := range []string{plURL, segURL} {
+	for _, raw := range []string{plURL, segURL, leaveURL(baseURL, 4, 1024)} {
 		u, err := url.Parse(raw)
 		if err != nil {
 			t.Fatalf("parsing %q: %v", raw, err)
@@ -1091,6 +1095,346 @@ func TestLiveStreamer_OneClientLeavingDoesNotStopTheOther(t *testing.T) {
 	}
 }
 
+// leaveURL は離脱ヒントの宛先（issue #191）。セッション ID を持たず、
+// プレイリスト / セグメントと同じ (site, networkId, serviceId) の固定深さ
+// （id は SI の値。issue #217）。
+func leaveURL(base string, networkID, serviceID int) string {
+	return fmt.Sprintf("%s/api/sites/%s/networks/%d/services/%d/live/leave",
+		base, testLiveSite, networkID, serviceID)
+}
+
+// postLeave は離脱ヒントを 1 回送り、ステータスコードを返す。
+func postLeave(t *testing.T, base string, networkID, serviceID int) int {
+	t.Helper()
+	resp, err := http.Post(leaveURL(base, networkID, serviceID), "", nil)
+	if err != nil {
+		t.Fatalf("POST leave: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.ReadAll(resp.Body)
+	return resp.StatusCode
+}
+
+// 猶予の値そのものを固定する（期待値はリテラル。実装の式と比較すると何も
+// 主張しないため）。**「猶予 > セグメント長 + マージン」が issue #191 の罠
+// （猶予を短くすると leave が「他人の視聴を切る道具」になる）の唯一の防壁**なので、
+// 振る舞いのテストとは別にここで静的に固定する --- 振る舞い側は「他の視聴者が
+// touch すれば生き残る」を見るが、それは猶予が 1 秒でも 8 秒でも通ってしまう
+// （実クライアントの要求間隔を実時間で待つテストは書けない）。
+func TestLiveConfig_LeaveGrace(t *testing.T) {
+	profiles := func(segmentSeconds ...int) []LiveProfile {
+		var ps []LiveProfile
+		for i, s := range segmentSeconds {
+			ps = append(ps, LiveProfile{Name: fmt.Sprintf("p%d", i), SegmentSeconds: s})
+		}
+		return ps
+	}
+	tests := []struct {
+		name        string
+		idleTimeout time.Duration
+		profiles    []LiveProfile
+		want        time.Duration
+	}{
+		// 既定の設定（config.example.yml: segment_seconds 2 / idle_timeout 30s）
+		{"既定", 30 * time.Second, profiles(2), 8 * time.Second},
+		// 複数プロファイルなら最長のセグメント長に合わせる（短い方に合わせると、
+		// 長いプロファイルを見ている視聴者が切られる）
+		{"最長のセグメント長に合わせる", 30 * time.Second, profiles(2, 6), 20 * time.Second},
+		// 3*10+2 = 32s は idle_timeout(30s) を超えるのでクリップ（ヒントが no-op になる）
+		{"長いセグメントはクリップされる", 30 * time.Second, profiles(10), 30 * time.Second},
+		// idle_timeout より長い猶予は「詰める」ことにならないのでクリップ
+		{"idle_timeout でクリップ", 5 * time.Second, profiles(2), 5 * time.Second},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := LiveConfig{IdleTimeout: tt.idleTimeout, Profiles: tt.profiles}
+			if got := cfg.leaveGrace(); got != tt.want {
+				t.Errorf("leaveGrace() = %v, want %v", got, tt.want)
+			}
+			// 罠そのもの: 猶予はセグメント長より必ず長い（クリップされた場合を
+			// 除く --- そのときはヒント自体が no-op になるので「切る道具」にならない）。
+			longest := 0
+			for _, p := range tt.profiles {
+				if p.SegmentSeconds > longest {
+					longest = p.SegmentSeconds
+				}
+			}
+			segment := time.Duration(longest) * time.Second
+			if got := cfg.leaveGrace(); got <= segment && got != tt.idleTimeout {
+				t.Errorf("leaveGrace() = %v <= segment length %v: a leave hint could cut another viewer off", got, segment)
+			}
+		})
+	}
+}
+
+// ヒントは idle 期限を**縮める方向にしか動かない**。
+//
+// 猶予が idle_timeout でクリップされる設定（segment_seconds が長い）では
+// 「いま + 猶予」が現在の期限と同じかそれより後になるので、無条件に代入する実装だと
+// **ヒントが延命の道具になる**（「離れた」と言うだけでチューナーを掴み続けられる）。
+// 巻き戻しだけを許すことで、最悪ケースが「何も起こらない」になる。
+func TestLiveSession_HintLeaveNeverExtendsTheDeadline(t *testing.T) {
+	now := time.Now()
+	// 9 秒前から誰も要求していないセッション（あと 1 秒で idle GC の対象になる）。
+	s := &liveSession{lastAccess: now.Add(-9 * time.Second)}
+
+	// 猶予 = idle_timeout（leaveGrace がクリップした状態）。
+	s.hintLeave(now, 10*time.Second, 10*time.Second)
+
+	if got := s.idleSince(now); got != 9*time.Second {
+		t.Errorf("idleSince after a no-op hint = %v, want 9s (a leave hint must never push the deadline forward)", got)
+	}
+}
+
+// 離脱ヒントを送ると、他に視聴者がいないサービスのセッションが idle_timeout を
+// 待たずに回収される（受け入れ基準 2、issue #191）。
+//
+// **同じ瞬間に、ヒントを受けていないセッションが生き残ることを対で見る。**
+// 片方だけだと「時間が経ったから回収された」と区別できない --- 回収の原因が
+// ヒントであることは、同じ reapIdleAt の 1 パスで運命が分かれることでしか示せない。
+//
+// 実時間を待たずに済むよう、GC には仮想の「いま」を渡す（reapIdleAt）。
+func TestLiveStreamer_LeaveHint_ShortensIdleDeadline(t *testing.T) {
+	mirakcSrv, state := newFakeMirakcLiveServer(t)
+	cfg := baseLiveConfig(t)
+	ls, srv := newTestLiveStreamer(t, mirakcSrv.URL, cfg)
+
+	const leavingService = 55
+	const stayingService = 56
+	grace := cfg.leaveGrace()
+	if grace >= cfg.IdleTimeout {
+		t.Fatalf("test setup: leaveGrace (%v) must be shorter than idle timeout (%v)", grace, cfg.IdleTimeout)
+	}
+
+	// セッションが実際に起きるまで待つ（firstSegmentURL はプレイリストが
+	// 配れなければ Fatal する）。「何も起きない」で通るのを防ぐため、
+	// ヒントを送る前にセッション数も確認する。
+	leavingSeg := firstSegmentURL(t, playlistURL(srv.URL, 0, leavingService, "h264"))
+	stayingSeg := firstSegmentURL(t, playlistURL(srv.URL, 0, stayingService, "h264"))
+	if got := ls.sessionCount(); got != 2 {
+		t.Fatalf("sessionCount before the hint = %d, want 2", got)
+	}
+
+	// 両方の lastAccess を「いま」に揃えてから片方にだけヒントを送る
+	// （偽 ffmpeg の起動コストぶんの差を判定に持ち込まない）。
+	for _, u := range []string{leavingSeg, stayingSeg} {
+		resp, err := http.Get(u)
+		if err != nil {
+			t.Fatalf("GET segment: %v", err)
+		}
+		_ = resp.Body.Close()
+	}
+	if code := postLeave(t, srv.URL, 0, leavingService); code != http.StatusNoContent {
+		t.Fatalf("POST leave = %d, want 204", code)
+	}
+	now := time.Now()
+
+	// 猶予を過ぎた瞬間: ヒントを受けた方だけが回収される。
+	ls.reapIdleAt(now.Add(grace + 10*time.Millisecond))
+
+	select {
+	case sid := <-state.disconnected:
+		if sid != leavingService {
+			t.Fatalf("disconnected service id = %d, want %d", sid, leavingService)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("the session that sent a leave hint was not reclaimed %v after it (idle_timeout is %v, so this must not need the full timeout)",
+			grace, cfg.IdleTimeout)
+	}
+
+	// ヒントを送っていない方は同じパスで生き残る（= 回収の原因は経過時間ではなく
+	// ヒントである）。
+	resp, err := http.Get(stayingSeg)
+	if err != nil {
+		t.Fatalf("GET segment (staying service): %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("staying service segment status = %d, want 200 (only the service that sent a hint may be reclaimed)", resp.StatusCode)
+	}
+
+	if got := counterValue(t, metrics.LiveLeaveHints.WithLabelValues("deadline_shortened")); got < 1 {
+		t.Errorf("rokuban_live_leave_hints_total{result=deadline_shortened} = %v, want >= 1", got)
+	}
+}
+
+// ヒントは**停止命令ではない**（issue #191 の罠）。受けた直後もセッションは
+// 生きていて、配信も続く --- 変わるのは idle 期限だけ。
+func TestLiveStreamer_LeaveHint_DoesNotStopTheSession(t *testing.T) {
+	mirakcSrv, state := newFakeMirakcLiveServer(t)
+	cfg := baseLiveConfig(t)
+	ls, srv := newTestLiveStreamer(t, mirakcSrv.URL, cfg)
+
+	const serviceID = 77
+	segURL := firstSegmentURL(t, playlistURL(srv.URL, 0, serviceID, "h264"))
+	if got := ls.sessionCount(); got != 1 {
+		t.Fatalf("sessionCount before the hint = %d, want 1", got)
+	}
+
+	if code := postLeave(t, srv.URL, 0, serviceID); code != http.StatusNoContent {
+		t.Fatalf("POST leave = %d, want 204", code)
+	}
+	now := time.Now()
+
+	// mirakc への接続が切れていない（チューナーを即座に手放していない）。
+	select {
+	case sid := <-state.disconnected:
+		t.Fatalf("service %d was disconnected by the leave hint itself; the hint must only shorten the idle deadline", sid)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if got := ls.sessionCount(); got != 1 {
+		t.Errorf("sessionCount right after the hint = %d, want 1 (the hint is not a stop command)", got)
+	}
+	// 猶予の内側では GC も回収しない。
+	ls.reapIdleAt(now.Add(cfg.leaveGrace() / 2))
+	if got := ls.sessionCount(); got != 1 {
+		t.Errorf("sessionCount within the grace = %d, want 1", got)
+	}
+
+	resp, err := http.Get(segURL)
+	if err != nil {
+		t.Fatalf("GET segment after the hint: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("segment status right after the hint = %d, want 200 (playback must continue during the grace)", resp.StatusCode)
+	}
+}
+
+// 罠そのもの: **leave を連打しても、実際に見ている人の要求が期限を戻す**ので
+// 他人の視聴を切れない（受け入れ基準 3、issue #191）。
+//
+// 判定の瞬間は `TestLiveStreamer_LeaveHint_ShortensIdleDeadline` と**同じ**
+// 「ヒント + 猶予」の直後に取る --- そこで回収されるかどうかだけが両テストの差で、
+// 差を作っているのは「他の視聴者の要求が来たか」だけである。
+//
+// 最後に「B も離れたら回収される」を同じ道具で確かめる（この判定手段が本当に
+// セッションを殺せることの確認 --- 「何も起きない」系のテストが空虚に成功して
+// いないことの証明）。
+func TestLiveStreamer_LeaveHint_OtherViewerKeepsSessionAlive(t *testing.T) {
+	mirakcSrv, state := newFakeMirakcLiveServer(t)
+	cfg := baseLiveConfig(t)
+	ls, srv := newTestLiveStreamer(t, mirakcSrv.URL, cfg)
+
+	const serviceID = 88
+	grace := cfg.leaveGrace()
+	segURL := firstSegmentURL(t, playlistURL(srv.URL, 0, serviceID, "h264"))
+	if got := ls.sessionCount(); got != 1 {
+		t.Fatalf("sessionCount before the hint = %d, want 1", got)
+	}
+
+	// 悪意のあるクライアント A が leave を連打する。そのたびに視聴者 B の
+	// セグメント要求が続く（実際に見ている人がいる）。
+	for i := range 5 {
+		if code := postLeave(t, srv.URL, 0, serviceID); code != http.StatusNoContent {
+			t.Fatalf("POST leave #%d = %d, want 204", i, code)
+		}
+		hintedAt := time.Now()
+
+		// B の要求（ヒントの後に届く = 期限を戻す）。
+		resp, err := http.Get(segURL)
+		if err != nil {
+			t.Fatalf("GET segment (viewer B, round %d): %v", i, err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("viewer B segment status (round %d) = %d, want 200", i, resp.StatusCode)
+		}
+
+		// ヒントが詰めたはずの期限を跨いで GC を回す。B が見ているので回収されない。
+		ls.reapIdleAt(hintedAt.Add(grace + 10*time.Millisecond))
+		if got := ls.sessionCount(); got != 1 {
+			t.Fatalf("sessionCount after leave spam #%d = %d, want 1 (a leave hint must not cut off a viewer who is still requesting segments)", i, got)
+		}
+		select {
+		case sid := <-state.disconnected:
+			t.Fatalf("service %d was disconnected by leave spam while viewer B was still watching", sid)
+		default:
+		}
+	}
+
+	if resp, err := http.Get(segURL); err != nil {
+		t.Fatalf("GET segment (viewer B, final): %v", err)
+	} else {
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("viewer B segment status = %d, want 200 (B must still be watching)", resp.StatusCode)
+		}
+	}
+
+	// 逆方向: B も離れれば（もう誰も要求しない）同じ道具で回収される。
+	// これが無いと、上のループは「そもそも回収され得ない」だけで通りうる。
+	if code := postLeave(t, srv.URL, 0, serviceID); code != http.StatusNoContent {
+		t.Fatalf("POST leave (final) = %d, want 204", code)
+	}
+	ls.reapIdleAt(time.Now().Add(grace + 10*time.Millisecond))
+	select {
+	case sid := <-state.disconnected:
+		if sid != serviceID {
+			t.Errorf("disconnected service id = %d, want %d", sid, serviceID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("session was not reclaimed after every viewer left (the oracle above cannot actually kill a session)")
+	}
+}
+
+// ヒントはセッションを**作らない**（未開始・回収済みのどちらでも 204 のまま、
+// mirakc には触らない）。宛先が (site, serviceId) である以上、この口は
+// 「そのサービスを見たい」という要求と同じ形をしているので、うっかり
+// getOrCreateSession を呼ぶ実装にすると**離脱がチューナーを掴む**。
+func TestLiveStreamer_LeaveHint_DoesNotStartASession(t *testing.T) {
+	mirakcSrv, state := newFakeMirakcLiveServer(t)
+	ls, srv := newTestLiveStreamer(t, mirakcSrv.URL, baseLiveConfig(t))
+
+	before := counterValue(t, metrics.LiveLeaveHints.WithLabelValues("no_session"))
+	if code := postLeave(t, srv.URL, 0, 4649); code != http.StatusNoContent {
+		t.Errorf("POST leave (no session) = %d, want 204", code)
+	}
+	if got := state.requestCount(); got != 0 {
+		t.Errorf("mirakc stream requests = %d, want 0 (a leave hint must never start a session)", got)
+	}
+	if got := ls.sessionCount(); got != 0 {
+		t.Errorf("sessionCount = %d, want 0", got)
+	}
+	if got := counterValue(t, metrics.LiveLeaveHints.WithLabelValues("no_session")); got != before+1 {
+		t.Errorf("rokuban_live_leave_hints_total{result=no_session} = %v, want %v", got, before+1)
+	}
+}
+
+// site が一致しないヒントは 404（プレイリスト / セグメントと同じ判定。DB は引かない）。
+func TestLiveStreamer_LeaveHint_SiteMismatch(t *testing.T) {
+	mirakcSrv, _ := newFakeMirakcLiveServer(t)
+	_, srv := newTestLiveStreamer(t, mirakcSrv.URL, baseLiveConfig(t))
+
+	resp, err := http.Post(fmt.Sprintf("%s/api/sites/other-site/services/1/live/leave", srv.URL), "", nil)
+	if err != nil {
+		t.Fatalf("POST leave: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
+// idle GC の刻みが猶予に追随すること。刻みが idle_timeout/2（既定 15 秒）のままだと、
+// 期限を 8 秒に詰めても回収は最大 15 秒後になり**ヒントが刻みに飲まれる**。
+func TestLiveStreamer_GCIntervalFollowsLeaveGrace(t *testing.T) {
+	cfg := LiveConfig{
+		IdleTimeout: 30 * time.Second,
+		Profiles:    []LiveProfile{{Name: "h264", SegmentSeconds: 2}},
+	}
+	ls := &LiveStreamer{cfg: cfg}
+	// 猶予 8 秒（TestLiveConfig_LeaveGrace で固定）の半分。期待値はリテラルで書く。
+	if got := ls.gcInterval(); got != 4*time.Second {
+		t.Errorf("gcInterval() = %v, want 4s (half of the 8s leave grace, not half of the 30s idle timeout)", got)
+	}
+	// 下限 1 秒（極端に短い設定で busy loop にしない）。
+	ls = &LiveStreamer{cfg: LiveConfig{IdleTimeout: 500 * time.Millisecond, Profiles: cfg.Profiles}}
+	if got := ls.gcInterval(); got != time.Second {
+		t.Errorf("gcInterval() = %v, want 1s (floor)", got)
+	}
+}
+
 func TestBuildLiveFFmpegArgs(t *testing.T) {
 	profiles := []LiveProfile{
 		{Name: "h264", VideoCodec: "libx264", AudioCodec: "aac", Height: 720, Preset: "veryfast", SegmentSeconds: 2, PlaylistSize: 6, ExtraArgs: []string{"-b:v", "2M"}},
@@ -1243,6 +1587,17 @@ func TestLiveStreamer_PlaylistSegmentURIsResolveToServingRoute(t *testing.T) {
 	if string(segBody) != "fake-ts-segment-data" {
 		t.Errorf("segment body = %q, want %q", segBody, "fake-ts-segment-data")
 	}
+}
+
+// counterValue はテストのためだけに prometheus.Counter の現在値を読む
+// （メトリクスはプロセス全体で共有されるので、テストは差分で見る）。
+func counterValue(t *testing.T, c prometheus.Counter) float64 {
+	t.Helper()
+	var m dto.Metric
+	if err := c.Write(&m); err != nil {
+		t.Fatalf("reading counter: %v", err)
+	}
+	return m.GetCounter().GetValue()
 }
 
 // gaugeValue はテストのためだけに prometheus.Gauge の現在値を読む。

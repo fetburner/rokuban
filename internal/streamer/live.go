@@ -203,17 +203,14 @@ func (ls *LiveStreamer) Mount(r chi.Router) {
 	const base = "/api/sites/{site}/networks/{networkId}/services/{serviceId}/live"
 	r.Get(base+"/playlist.m3u8", ls.Playlist)
 	r.Get(base+"/segments/{name}", ls.Segment)
+	r.Post(base+"/leave", ls.Leave)
 }
 
 // Run は idle GC ループを ctx が Done になるまで回す。ctx が Done になったら
 // 保持している全セッションを止めて（mirakc の接続も閉じる = チューナー解放）から
 // 返る。notifier.EventHub.Run と同じ形で eg.Go から呼ぶことを想定する。
 func (ls *LiveStreamer) Run(ctx context.Context) error {
-	interval := ls.cfg.IdleTimeout / 2
-	if interval < time.Second {
-		interval = time.Second
-	}
-	ticker := time.NewTicker(interval)
+	ticker := time.NewTicker(ls.gcInterval())
 	defer ticker.Stop()
 
 	for {
@@ -225,6 +222,52 @@ func (ls *LiveStreamer) Run(ctx context.Context) error {
 			ls.reapIdle()
 		}
 	}
+}
+
+// gcInterval は idle GC ループの刻みを返す。
+//
+// **刻みは猶予（leaveGrace）に合わせる。** IdleTimeout/2 のままだと、離脱ヒントで
+// idle 期限を「いま + 猶予」に詰めても、次の GC パスが来るまで（既定 30s/2 = 15 秒）
+// 回収されず、ヒントの効果が刻みに飲まれる。leaveGrace は IdleTimeout でクリップ
+// 済みなので、これは min(IdleTimeout, 猶予) / 2 と同じ。下限 1 秒は、極端に短い
+// 設定でループが busy loop 化するのを防ぐため。
+func (ls *LiveStreamer) gcInterval() time.Duration {
+	interval := ls.cfg.leaveGrace() / 2
+	if interval < time.Second {
+		interval = time.Second
+	}
+	return interval
+}
+
+// leaveGrace は離脱ヒント（Leave）を受けたときに idle 期限を詰める先までの猶予。
+//
+// **設定キーにせず `live.profiles[].segment_seconds` から導出する。** 守るべき
+// 性質は「猶予 > 生きている視聴者の次の要求が来るまでの間隔」で、その間隔を
+// 決めているのはセグメント長そのもの（プレイリスト再取得もセグメント取得も
+// last-access を更新し、どちらもおおむねセグメント長の周期で来る）。独立した
+// 設定キーにすると `segment_seconds: 6` と `leave_grace: 1s` のような組み合わせが
+// 書けてしまい、**leave が「他人の視聴を切る道具」に化ける**（issue #191 の罠）。
+// 導出にすればその組み合わせは表現不可能になる。
+//
+// 係数 3 + マージン 2 秒は「連続 3 回ぶんの取りこぼしを許す」という選択で、
+// 既定（segment_seconds: 2）で 8 秒。**実クライアントの要求間隔を測った値では
+// ない**（未検証）--- セグメント長より短くならないことだけが要件で、そこには
+// 大きな余裕がある。
+//
+// IdleTimeout より長い猶予は「詰める」ことにならないのでクリップする（ヒントが
+// 無害な no-op になるだけ）。
+func (c LiveConfig) leaveGrace() time.Duration {
+	longestSegment := 0
+	for _, p := range c.Profiles {
+		if p.SegmentSeconds > longestSegment {
+			longestSegment = p.SegmentSeconds
+		}
+	}
+	grace := time.Duration(3*longestSegment)*time.Second + 2*time.Second
+	if grace > c.IdleTimeout {
+		return c.IdleTimeout
+	}
+	return grace
 }
 
 // playlistStartupTimeout は元々「ffmpeg がプレイリストの初回書き出しを終える
@@ -386,6 +429,50 @@ func (ls *LiveStreamer) Segment(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, path)
 }
 
+// Leave は POST /api/sites/{site}/networks/{networkId}/services/{serviceId}/live/leave
+// を処理する。
+//
+// **これは停止命令ではなく「離脱のヒント」である。** ライブセッションはサービス
+// 単位で共有される（同じチャンネルを別の部屋で見ている視聴者は同じ ffmpeg・同じ
+// チューナーを使う。docs/api.md §「資源同定: セッション ID を持たない」）ので、
+// 離れた側の要求でセッションを止める形にすると**別の視聴者の再生を一方的に切れて
+// しまう**。代わりに idle 期限を「いま + leaveGrace」に詰めるだけにする ---
+// 他に視聴者がいれば、その人の次のセグメント / プレイリスト要求が last-access を
+// 更新して期限が元に戻る。ヒントは収束を速めるだけで、「誰かが見ているか」という
+// 真実は既存の観測（セグメント要求）が持つ --- レベルトリガー（不変条件 5）と
+// 同じ形。
+//
+// **セッションを作らない。** 該当サービスのセッションが無ければ何もしない
+// （未開始・回収済みのどちらでも同じ）。**常に 204 を返す**（存在の有無を
+// 漏らさず、`navigator.sendBeacon` に再送の材料も与えない）。
+//
+// 宛先は**プレイリスト / セグメントと同じ資源同定**（`(site, networkId, serviceId)`。
+// id は SI の値で、mirakc 合成 id への変換は resolveRequest が行う。issue #217）---
+// セッション ID は URL にもクッキーにも置かない（issue #56）。この口も DB を
+// 引かない（issue #91 の決定 3）。
+func (ls *LiveStreamer) Leave(w http.ResponseWriter, r *http.Request) {
+	serviceID, ok := ls.resolveRequest(w, r)
+	if !ok {
+		return
+	}
+
+	ls.mu.Lock()
+	s, ok := ls.sessions[serviceID]
+	ls.mu.Unlock()
+	if !ok {
+		metrics.LiveLeaveHints.WithLabelValues("no_session").Inc()
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	grace := ls.cfg.leaveGrace()
+	s.hintLeave(time.Now(), grace, ls.cfg.IdleTimeout)
+	metrics.LiveLeaveHints.WithLabelValues("deadline_shortened").Inc()
+	slog.Info("streamer: live leave hint received, shortening idle deadline",
+		"service_id", serviceID, "grace", grace)
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // resolveRequest はパスから (site, networkId, serviceId) を取り出し、site が
 // このプロセスの担当（config.mirakc.site）と一致することを確かめたうえで、
 // mirakc に渡す合成 service id を返す。DB は引かない（issue #91 の決定 3）---
@@ -508,6 +595,26 @@ func (s *liveSession) touch() {
 	s.mu.Lock()
 	s.lastAccess = time.Now()
 	s.mu.Unlock()
+}
+
+// hintLeave は離脱ヒントを反映する。idle 期限が「now + grace」になるところまで
+// lastAccess を**巻き戻す**。
+//
+// **前へ進める方向には決して動かさない。** grace が idleTimeout 以上の設定
+// （あるいは既にもっと古い lastAccess を持つセッション）でこれを無条件に代入
+// すると、ヒントが**延命の道具**になる --- 「離れた」と言うだけでセッションを
+// 引き延ばせてしまい、意味が反転する。巻き戻しだけを許すことで、ヒントの
+// 最悪ケースは「何も起こらない」になる。
+//
+// この後に誰かが touch() すれば lastAccess は now に戻り、猶予も元の
+// idleTimeout に戻る（他の視聴者がいる場合の自己修復。Leave の doc コメント参照）。
+func (s *liveSession) hintLeave(now time.Time, grace, idleTimeout time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	shortened := now.Add(grace - idleTimeout)
+	if shortened.Before(s.lastAccess) {
+		s.lastAccess = shortened
+	}
 }
 
 func (s *liveSession) idleSince(now time.Time) time.Duration {
@@ -690,9 +797,14 @@ func (ls *LiveStreamer) runSession(ctx context.Context, s *liveSession) {
 // 変わっていない」のか「本当に GC 対象が無かった」のかを区別できない
 // （レビューで指摘。issue #91 の受け入れ条件）。
 func (ls *LiveStreamer) reapIdle() {
+	ls.reapIdleAt(time.Now())
+}
+
+// reapIdleAt は reapIdle の本体。「いま」を引数で受けるのは、離脱ヒントで詰めた
+// 期限の前後（now+猶予 の直前と直後）をテストが実時間を待たずに踏むため。
+func (ls *LiveStreamer) reapIdleAt(now time.Time) {
 	defer metrics.LiveIdleGCLastPass.SetToCurrentTime()
 
-	now := time.Now()
 	ls.mu.Lock()
 	var idle []*liveSession
 	for id, s := range ls.sessions {

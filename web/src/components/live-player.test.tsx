@@ -343,22 +343,30 @@ describe('LivePlayer の状態遷移', () => {
   it('serviceId が変わると新しい URL で probe をやり直す', async () => {
     const fetchMock = vi.fn((_url: string) => Promise.resolve(new Response('', { status: 200 })))
     vi.stubGlobal('fetch', fetchMock)
+    // probe だけを数える。jsdom には `navigator.sendBeacon` が無いので、離脱ヒント
+    // （issue #191）はこの同じ fetch モックに POST として現れる --- 全呼び出しを
+    // 数えると probe の数え上げに混ざる（ヒント自体の検証は下の describe）
+    const probeURLs = () =>
+      fetchMock.mock.calls.map(([url]) => String(url)).filter((u) => u.includes('playlist.m3u8'))
 
     const { rerender } = render(<LivePlayer site="default" networkId={0} serviceId={1024} />)
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
-    expect(fetchMock.mock.calls[0]?.[0]).toContain('/services/1024/')
+    await waitFor(() => expect(probeURLs()).toHaveLength(1))
+    expect(probeURLs()[0]).toContain('/services/1024/')
 
     rerender(<LivePlayer site="default" networkId={0} serviceId={2048} />)
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
-    expect(fetchMock.mock.calls[1]?.[0]).toContain('/services/2048/')
+    await waitFor(() => expect(probeURLs()).toHaveLength(2))
+    expect(probeURLs()[1]).toContain('/services/2048/')
   })
 
   it('破棄すると probe の in-flight fetch を AbortController で中断する', async () => {
     let capturedSignal: AbortSignal | undefined
     vi.stubGlobal(
       'fetch',
-      vi.fn((_url: string, init?: RequestInit) => {
-        capturedSignal = init?.signal ?? undefined
+      vi.fn((url: string, init?: RequestInit) => {
+        // probe（プレイリストの GET）の signal だけを見る。アンマウントでは
+        // 離脱ヒント（issue #191）の POST も同じモックに来るが、あちらは signal を
+        // 持たない（`keepalive` で投げっぱなしにする）ので上書きさせない
+        if (String(url).includes('playlist.m3u8')) capturedSignal = init?.signal ?? undefined
         return new Promise<Response>(() => {
           /* 中断だけを見るテストなので解決しない */
         })
@@ -528,6 +536,119 @@ describe('LivePlayer の状態遷移', () => {
       expect(hlsMockState.instances[1]!.loadSource).toHaveBeenCalledWith(
         expect.stringContaining('/services/2048/'),
       )
+    })
+  })
+
+  /**
+   * 離脱ヒント（issue #191）。**送ったかどうかは `navigator.sendBeacon` の
+   * 呼び出しで見る** --- jsdom は `sendBeacon` を実装していないので、テスト側で
+   * 差し替えたものが呼ばれれば「実ブラウザで beacon 経路に入る」配線の確認になる
+   * （実 beacon が本当にサーバーへ届くことは jsdom では測れない。`web/e2e/live.mjs`
+   * ⑧が実ブラウザで見る）。
+   */
+  describe('離脱ヒント（issue #191）', () => {
+    /** stubBeacon は `navigator.sendBeacon` を差し替え、送信先 URL を記録する。 */
+    function stubBeacon(): string[] {
+      const sent: string[] = []
+      vi.stubGlobal('navigator', {
+        sendBeacon: (url: string) => {
+          sent.push(url)
+          return true
+        },
+      })
+      return sent
+    }
+
+    /** playing は probe が通ってプレイヤーが立ち上がるまで待つ（空虚な成功を防ぐ）。 */
+    async function waitForPlaying() {
+      await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+    }
+
+    it('アンマウント（再生停止・画面遷移）でヒントを送る', async () => {
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
+      const sent = stubBeacon()
+      const { unmount } = render(<LivePlayer site="default" networkId={0} serviceId={1024} />)
+      await waitForPlaying()
+      expect(sent).toHaveLength(0)
+
+      unmount()
+
+      expect(sent).toEqual(['/api/sites/default/networks/0/services/1024/live/leave'])
+    })
+
+    it('チャンネル切り替えでは「離れた側」の serviceId にヒントを送る', async () => {
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
+      const sent = stubBeacon()
+      const { rerender } = render(<LivePlayer site="default" networkId={0} serviceId={1024} />)
+      await waitForPlaying()
+
+      rerender(<LivePlayer site="default" networkId={0} serviceId={2048} />)
+
+      // 新しい方（2048）に送ってはならない --- それは今から見るチャンネルである
+      expect(sent).toEqual(['/api/sites/default/networks/0/services/1024/live/leave'])
+    })
+
+    it('pagehide でヒントを送る（モバイル Safari では unload が発火しない）', async () => {
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
+      const sent = stubBeacon()
+      render(<LivePlayer site="default" networkId={0} serviceId={1024} />)
+      await waitForPlaying()
+
+      window.dispatchEvent(new Event('pagehide'))
+
+      expect(sent).toEqual(['/api/sites/default/networks/0/services/1024/live/leave'])
+    })
+
+    it('visibilitychange は hidden のときだけ送る（両方向）', async () => {
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
+      const sent = stubBeacon()
+      render(<LivePlayer site="default" networkId={0} serviceId={1024} />)
+      await waitForPlaying()
+
+      const visibility = vi.spyOn(document, 'visibilityState', 'get')
+
+      // 復帰（visible）では送らない。送ると、タブに戻るたびに自分の視聴の
+      // idle 期限を詰めることになる
+      visibility.mockReturnValue('visible')
+      document.dispatchEvent(new Event('visibilitychange'))
+      expect(sent).toHaveLength(0)
+
+      visibility.mockReturnValue('hidden')
+      document.dispatchEvent(new Event('visibilitychange'))
+      expect(sent).toEqual(['/api/sites/default/networks/0/services/1024/live/leave'])
+    })
+
+    it('「再読み込み」では送らない（離脱ではないので、メトリクスに混ぜない）', async () => {
+      const user = userEvent.setup()
+      vi.stubGlobal(
+        'fetch',
+        vi
+          .fn()
+          .mockResolvedValueOnce(new Response('busy', { status: 503 }))
+          .mockResolvedValue(new Response('', { status: 200 })),
+      )
+      const sent = stubBeacon()
+      render(<LivePlayer site="default" networkId={0} serviceId={1024} />)
+      await screen.findByRole('button', { name: '再読み込み' })
+
+      await user.click(screen.getByRole('button', { name: '再読み込み' }))
+      await waitForPlaying()
+
+      expect(sent).toEqual([])
+    })
+
+    it('アンマウント後のイベントでは送らない（リスナが外れている）', async () => {
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
+      const sent = stubBeacon()
+      const { unmount } = render(<LivePlayer site="default" networkId={0} serviceId={1024} />)
+      await waitForPlaying()
+      unmount()
+      expect(sent).toHaveLength(1)
+
+      window.dispatchEvent(new Event('pagehide'))
+      document.dispatchEvent(new Event('visibilitychange'))
+
+      expect(sent).toHaveLength(1)
     })
   })
 })

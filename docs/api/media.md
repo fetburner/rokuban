@@ -147,6 +147,45 @@ mirakc が要求する Mirakurun 合成 service id（`networkId * 100_000 + serv
 帰結として **idle GC の粒度もサービス単位**になる（そのサービスへのセグメント要求が
 一定時間来なければ ffmpeg を止める）。「クライアント 1 人ごとの生存」は追わない。
 
+#### 離脱は「ヒント」であって停止命令ではない
+
+チャンネルを切り替えた視聴者のセッションが `live.idle_timeout` のあいだ残ると、
+**1 人の視聴者が 2 本のチューナーを掴む**。チューナーが 2 本しか無い環境では
+切り替え 1 回で録画が開始できなくなりうる（mirakc の優先度では録画が勝つので、
+視聴者からは「切り替えたら見られなくなった」と見える）。この窓を縮めるために
+離脱の受け口を置くが、**「セッションを閉じる API」にはできない**。
+
+```
+POST /api/sites/{site}/services/{serviceId}/live/leave  → 204 No Content（常に）
+```
+
+- **止めるのではなく idle 期限を「いま + 短い猶予」に詰める。** ライブセッションは
+  サービス単位で共有される（上記）ので、「離れた側の要求で止める」形にすると
+  **別の部屋で同じチャンネルを見ている視聴者の再生を一方的に切れてしまう**。
+  他に視聴者がいれば、その人の次のセグメント / プレイリスト要求が last-access を
+  更新して期限が元に戻る --- **ヒントは収束を速めるだけで、「誰かが見ているか」と
+  いう真実は既存の観測（セグメント要求）が持つ**。レベルトリガー（不変条件 5）と
+  同じ形であり、クライアントの identity も参照カウントも要らない
+- **宛先は `(site, serviceId)`。** セッション ID は導入しない（この節の決定）。
+  固定深さも保つので前段の consistent hash 鍵の取り出しはそのまま効く
+- **セッションを作らない。** 該当セッションが無ければ何もせず 204（存在を漏らさず、
+  `sendBeacon` に再送の材料も与えない）。**POST なのは `navigator.sendBeacon` が
+  POST しか出せないから** --- モバイル Safari では `unload` が発火しないので、
+  ページ離脱時に届く送信手段はこれしかない
+- **猶予は設定キーにせず `live.profiles[].segment_seconds` から導出する**
+  （`3 × 最長の segment_seconds + 2s`、`live.idle_timeout` で上限クリップ。既定
+  8 秒）。守るべき性質は「猶予 > 生きている視聴者の次の要求が来るまでの間隔」で、
+  その間隔を決めているのはセグメント長そのもの。独立したキーにすると
+  `segment_seconds: 6` と 1 秒の猶予のような組み合わせが書けてしまい、**leave が
+  「他人の視聴を切る道具」に化ける**。導出ならその組み合わせは表現不可能になる
+- **期限は縮む方向にしか動かない。** 猶予がクリップされた設定でヒントが
+  **延命**に使えてしまわないよう、last-access は巻き戻しだけを許す
+- idle GC ループの刻みも猶予の半分にする（`idle_timeout / 2` のままだと、期限を
+  詰めても回収が次のパスまで来ずヒントが刻みに飲まれる）
+
+ヒントが届かなくても壊れない（従来どおり `live.idle_timeout` で回収される）し、
+余計に届いても壊れない（自分の次の要求が期限を戻す）。
+
 **プロファイルはクエリ（`?profile=`）で受け、ハッシュ鍵には入れない。**鍵に入れると
 同じサービスを別プロファイルで見たときに 2 つの Pod に割れ、チューナーを 2 本掴む。
 1 つの Pod の中で 1 チューナーから複数プロファイルを出す。
@@ -154,10 +193,12 @@ mirakc が要求する Mirakurun 合成 service id（`networkId * 100_000 + serv
 #### 実装（`internal/streamer`）
 
 ```
-GET /api/sites/{site}/networks/{networkId}/services/{serviceId}/live/playlist.m3u8[?profile=<name>]
-      → application/vnd.apple.mpegurl
-GET /api/sites/{site}/networks/{networkId}/services/{serviceId}/live/segments/{name}
-      → video/mp2t
+GET  /api/sites/{site}/networks/{networkId}/services/{serviceId}/live/playlist.m3u8[?profile=<name>]
+       → application/vnd.apple.mpegurl
+GET  /api/sites/{site}/networks/{networkId}/services/{serviceId}/live/segments/{name}
+       → video/mp2t
+POST /api/sites/{site}/networks/{networkId}/services/{serviceId}/live/leave
+       → 204（離脱のヒント。上記「離脱は『ヒント』であって停止命令ではない」）
 ```
 
 - **DB を引かない。**パスの `(networkId, serviceId)` から mirakc の
@@ -212,7 +253,9 @@ GET /api/sites/{site}/networks/{networkId}/services/{serviceId}/live/segments/{n
   （エラーの本文はプレーンテキスト。OpenAPI 対象外のため生成クライアントの契約は無い）
 - **idle GC はサービス単位。**セグメント要求（プレイリスト取得も含む）ごとに
   last-access を更新し、`live.idle_timeout` の間要求が来なければ ffmpeg と mirakc への
-  接続を止める。クライアント 1 人ごとの生存は追わない
+  接続を止める。クライアント 1 人ごとの生存は追わない。**離脱ヒント
+  （`POST .../live/leave`）はこの last-access を巻き戻すだけ**で、止めるのは
+  あくまで idle GC である（上記「離脱は『ヒント』であって停止命令ではない」）
 - **セグメントは `live.segment_dir`（tmpfs 前提）に書く。**録画バッファとは別ディスク
   （[operations.md](../operations.md) §5「ライブのセグメントを録画バッファと同じディスクに
   置かない」）。プロセス終了（`--all`/`--roles streamer` の SIGTERM）時は idle GC と同じ
@@ -252,6 +295,12 @@ mirakc は起動中の局ロゴ抽出をサポートせず、運用者が事前�
 - **「不明な id は mirakc が拒否する」は測っていない断言だった**（issue #217）。
   streamer 側で 16 bit 整数として解析することで、mirakc の挙動に依存せずに
   「何を送るか」だけを主張する形に置き換えた
+- **離脱ヒント**は issue #191。M4-4（issue #92）は「チャンネル切り替えの窓は idle GC に
+  任せる」で通した判断を、チューナー 2 本の環境で 30〜45 秒が実害になるとして
+  縮めたもの。**素朴な「セッション削除 API」を作れないのは #56 の決定
+  （共有・identity 無し）が理由**であり、それを覆さずに窓だけを縮める形として
+  「ヒント + 猶予」に落ちた。参照カウント案（identity の導入）は #56 への差し戻しに
+  なるため採らなかった
 - **tmpfs の後始末**: 当初この doc は「tmpfs はコンテナ再起動で消える」前提で書かれて
   いたが誤りで（ノード再起動でしか消えない）、レビュー指摘で起動時スイープに直した
   （`internal/streamer/live.go` の `NewLive` のコメント参照）

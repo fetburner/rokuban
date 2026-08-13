@@ -57,7 +57,9 @@ serviceId={B}>` が透過的にマウントされ probe を投げてしまい、
 reset effect が走って unmount してももう遅い（`internal/streamer/live.go` の
 セッションは `context.WithCancel(context.Background())` で回るため、クライアント側の
 `AbortController.abort()` はセッション自体を止めない --- 押していないチャンネルの
-チューナー + ffmpeg が idle GC まで 30〜45 秒残る）。レンダー中に判定すれば
+チューナー + ffmpeg が残る。**離脱ヒントを送っても縮むだけで 0 にはならない** ---
+押していないチャンネルを掴む時間は「猶予（既定 8 秒）+ GC 周期」であって、
+掴まないのとは違う）。レンダー中に判定すれば
 `selectedServiceId` が変わった**その場のレンダーで**「再生中でない」が確定し、
 異なる serviceId で透過的にマウントされる中間コミット自体が存在しない
 （詳細は `pages/live.tsx` の `playingServiceId` 定義部のコメント）。
@@ -216,19 +218,38 @@ e2e は一時停止を一度も作らないので、そこは jsdom のテスト
 
 いずれも再読み込みボタンで `probeLivePlaylist` からやり直せる。
 
-**チャンネル切り替えは idle GC に任せる。明示的にセッションを閉じる API が無い**
-（配られているのは `GET .../live/playlist.m3u8` と `GET .../live/segments/{name}`
-のみ）ため、実質これ以外の選択肢がない（サーバー側の即時解放 API は切り出し済みの
-別 issue。下記「経緯と失敗事例」）。`LivePlayer` はチャンネル切り替え（`serviceId`
-prop の変化）を effect の cleanup で検知し、probe の in-flight `fetch` を
-`AbortController` で中断、hls.js の `destroy()` / `<video>` の `src` 解除を
-即座に行って**それ以上そのサービスへのセグメント要求を出さない**ところまでは
-保証する。
+**チャンネル切り替え・離脱では「離脱のヒント」を送る。** `LivePlayer` はチャンネル
+切り替え（`serviceId` prop の変化）を effect の cleanup で検知し、probe の
+in-flight `fetch` を `AbortController` で中断、hls.js の `destroy()` /
+`<video>` の `src` 解除を即座に行って**それ以上そのサービスへのセグメント要求を
+出さない**ようにしたうえで、`POST .../live/leave` を投げる
+（`sendLiveLeaveHint`）。
 
-**実配値は `live.idle_timeout` 既定 30 秒 / `live.max_sessions` 既定 4 / GC 周期
-`idle_timeout / 2` = 15 秒（`internal/config/config.go` / `internal/streamer/live.go`）。**
-セッションは最終アクセスから**30〜45 秒**生き残る。クライアント側がセグメント
-要求を止めても、この間サーバー側のチューナーは掴まれたまま。
+- **これは停止命令ではない。** サーバー側はセッションを止めず idle 期限を短い猶予
+  （既定 8 秒）まで詰めるだけで、同じチャンネルを見ている別の視聴者がいれば
+  その人の要求が期限を戻す（理由と形は [api.md](../api.md) §ライブ視聴の HLS
+  「離脱は『ヒント』であって停止命令ではない」）。したがって**送れなくても
+  送りすぎても壊れない**
+- **送信は `navigator.sendBeacon`、無ければ `keepalive` つきの `fetch`。**
+  ページ離脱の瞬間は通常の `fetch` がドキュメント破棄で中断されうる
+- **発火点は cleanup（切り替え・停止・画面遷移）と `pagehide` /
+  `visibilitychange`（hidden）。`unload` は使わない** --- モバイル Safari では
+  bfcache のため発火しない。`visibilitychange` も併せて聴くのは、タブが破棄されず
+  hidden のまま放置される経路では `pagehide` すら来ないため。hidden で送っても
+  壊れないのは上記のとおり（音声だけ聴き続けている等でセグメント要求が続いて
+  いれば期限が戻る）
+- **「再読み込み」ボタンでは送らない**（離脱ではない）。probe の effect とは別の
+  effect に分けてあり、`retryNonce` に依存させない ---
+  `rokuban_live_leave_hints_total` が離脱以外を数えると、idle GC 回収数と対で
+  読めなくなる
+
+**実配値は `live.idle_timeout` 既定 30 秒 / `live.max_sessions` 既定 4 / 猶予
+8 秒（`3 × segment_seconds + 2s`）/ GC 周期は猶予の半分 = 4 秒
+（`internal/config/config.go` / `internal/streamer/live.go`）。**実測（実バイナリ
+`rokuban server --roles streamer` + 偽 mirakc + 偽 ffmpeg。`rokuban_live_active_sessions`
+が 0 に戻るまでを 1 秒間隔でポーリング）: **ヒントあり 13 秒 / ヒント無し 33 秒**。
+実チューナー・実 ffmpeg では ffmpeg の停止に掛かる時間だけ伸びうる（未測定）。
+手順は [runbook.md](../runbook.md) のライブ視聴の節 ①-4。
 
 **選択と視聴開始を分離した（issue #234 M7-1）ことで、この節が本来問題にしていた
 「ザッピングのたびにセッションが積まれる」という事態自体が起きなくなった。**
@@ -241,7 +262,8 @@ prop の変化）を effect の cleanup で検知し、probe の in-flight `fetc
 緩和のためのデバウンス（400ms。`channelSwitchDebounceMs`）はこの理由により削除
 した（`pages/live.tsx` に存在しない。issue #234 の含むもの 4）。掴まれるのは
 利用者が明示的に「再生」を押したチャンネルだけであり、その本数分だけ
-**最終アクセスから 30〜45 秒**残る（既定 `max_sessions` の 4 を明示的な再生の
+**離脱ヒントが届けば十数秒、届かなければ最終アクセスから 30 秒強**残る
+（実測値は下記。既定 `max_sessions` の 4 を明示的な再生の
 連打で超えると、5 回目が 503 `too many concurrent live sessions on this
 process`、チューナー本数がそれより少ない環境ではさらに手前で mirakc 側の枯渇に
 より 503 `live stream unavailable` になる。この経路自体は変わっていない）。
@@ -251,7 +273,10 @@ process`、チューナー本数がそれより少ない環境ではさらに手
 
 **503（`capacity`）のエラー文言には「30 秒ほど待って再読み込み」という具体的な
 案内を付けている（`LiveErrorMessage`）。** 待てば直ることが読めないと、ユーザーは
-「壊れている」と誤解して繰り返しリロード/再訪問し、状況を悪化させる。
+「壊れている」と誤解して繰り返しリロード/再訪問し、状況を悪化させる。**離脱ヒントが
+効けば実際の待ちは猶予（既定 8 秒）ぶんで済むが、案内は長い方（`idle_timeout`）の
+ままにする** --- ヒントの届かない経路（beacon が落ちた・別端末が掴んでいる）が
+あるので、短い方を書くと「待ったのに直らない」が起きる。
 
 **テストの範囲を正確に書く。** jsdom はレイアウト・実再生のいずれも測れないため、
 `components/live-player.test.tsx` は 3 層に分けてある:
@@ -406,8 +431,13 @@ EPGStation・KonomiTV には構造的にできない表示。
   `window.MediaSource` を持たない iOS 17.1 未満では `Hls.isSupported()` が
   false になり、ネイティブなら完璧に再生できる端末に「このブラウザはライブ視聴
   （HLS）に対応していません」が出る
-- サーバー側の即時セッション解放 API は
-  [issue #191](https://github.com/fetburner/rokuban/issues/191) へ切り出し済み
+- **「明示的にセッションを閉じる API が無いので、チャンネル切り替えの窓（30〜45 秒）は
+  idle GC に任せる」は M4-4（issue #92）の判断で、issue #191 で覆した。** 覆せた形は
+  「セッションを閉じる API」ではなく**離脱のヒント** --- 素朴な削除 API は、
+  サービス単位で共有されるセッション（issue #56）を他人の要求で止められる形になり、
+  それを避けようとすると参照カウント = identity の導入（#56 の決定の差し戻し）に
+  なる。ヒント + 猶予にすれば、既存の観測（セグメント要求）が「まだ誰か見ている」を
+  勝手に主張し続けてくれる（レベルトリガー、不変条件 5）
 - **`live.enabled: false` でも導線が出ていた**（issue #209）。probe は
   `response.ok` を見るが、ライブのルートが無いパスは SPA フォールバックの
   **HTML を 200 で返していた**ので probe が通り、hls.js / `<video>` が m3u8 と

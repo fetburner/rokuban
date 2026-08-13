@@ -5,6 +5,7 @@ import {
   claimsHlsPlaylistSupport,
   livePlaylistURL,
   probeLivePlaylist,
+  sendLiveLeaveHint,
   supportsNativeHls,
 } from '@/lib/live'
 import { cn } from '@/lib/utils'
@@ -52,8 +53,9 @@ export const nativeStallTimeoutMs = 12_000
  *
  * チャンネル切り替えは呼び出し側が `serviceId` を変えて渡す（`key` での再マウントを
  * 前提にしない --- effect の cleanup で確実に破棄する）。破棄すると即座にセグメント
- * 要求が止まるが、streamer 側のチューナー開放は `live.idle_timeout` 経過まで遅延する
- * （明示的にセッションを閉じる API が無いため。issue #92 の着手時コメント参照）。
+ * 要求が止まり、あわせて**離脱のヒント**を送る（下の effect）。ヒントはセッションを
+ * 止めるのではなく idle 期限を短い猶予まで詰めるだけなので、同じチャンネルを見て
+ * いる別の視聴者がいれば何も起きない（`lib/live.ts` の `sendLiveLeaveHint`）。
  */
 export function LivePlayer({ site, networkId, serviceId, className }: LivePlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null)
@@ -280,6 +282,41 @@ export function LivePlayer({ site, networkId, serviceId, className }: LivePlayer
     }
   }, [site, networkId, serviceId, retryNonce])
 
+  // 離脱のヒント（issue #191）。**再生を担っているのはこのコンポーネントだけ**
+  // なので、その生存（= このチャンネルを見ている間）にヒントの送信を紐づける。
+  //
+  // **probe の effect とは分ける。** あちらは `retryNonce` にも依存しており、
+  // 同居させると「再読み込み」ボタンのたびに離脱ヒントが飛ぶ（直後の probe が
+  // 期限を戻すので実害は無いが、`rokuban_live_leave_hints_total` が離脱以外の
+  // 数を数えることになり、idle GC 回収数と対で読めなくなる）。
+  //
+  // 発火点は 2 系統:
+  //
+  //   - **cleanup**: チャンネル切り替え・再生停止・画面遷移（アンマウント）。
+  //     `pages/live.tsx` は切り替え時に `playingServiceId` を落として
+  //     `LivePlayer` を外すので、切り替えはここを必ず通る
+  //   - **`pagehide` / `visibilitychange`（hidden）**: タブ・ウィンドウを閉じる、
+  //     別アプリへ切り替える等。**`unload` は使わない** --- モバイル Safari では
+  //     発火せず（bfcache のため）、`pagehide` が唯一届く終端イベントである。
+  //     `visibilitychange` も併せて聴くのは、モバイルではタブが破棄されずに
+  //     hidden のまま放置される経路があり、そこでは `pagehide` すら来ないため。
+  //     **hidden で送っても壊れない**（音声だけ聴き続けている等でセグメント要求が
+  //     続いていれば、その要求が期限を戻す。`lib/live.ts` の
+  //     `sendLiveLeaveHint` 参照）
+  useEffect(() => {
+    const leave = () => sendLiveLeaveHint(site, networkId, serviceId)
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') leave()
+    }
+    window.addEventListener('pagehide', leave)
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    return () => {
+      window.removeEventListener('pagehide', leave)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+      leave()
+    }
+  }, [site, networkId, serviceId])
+
   return (
     <div className={cn('relative aspect-video w-full max-w-3xl rounded bg-black', className)}>
       <video
@@ -334,7 +371,11 @@ function LiveErrorMessage({ error }: { error: LiveLoadError }) {
         <p>いま視聴できません（チューナー不足または同時視聴数の上限）。</p>
         {/* 待てば直ることが読めないと「壊れている」と誤解される（レビュー #190 の
             指摘）。直前まで別のチャンネルを見ていた場合は、そのセッションの
-            idle GC（既定 30 秒）待ちである可能性が高い */}
+            解放待ちである可能性が高い。切り替え時に離脱ヒントを送るので通常は
+            猶予（既定 8 秒 = 3 × segment_seconds + 2 秒）で解放されるが、
+            ヒントが届かなかった場合は従来どおり live.idle_timeout（既定 30 秒）
+            まで伸びる。ここでは長い方を案内する --- 短い方を書くと「待ったのに
+            直らない」になる */}
         <p className="text-muted-foreground">
           チャンネルを切り替えた直後は、前のチャンネルの解放待ちの可能性があります。
           30 秒ほど待って再読み込みしてください。
