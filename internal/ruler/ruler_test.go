@@ -1608,3 +1608,307 @@ SELECT EXISTS (
 			"do not reintroduce a derived source-like column on reservations)")
 	}
 }
+
+// insertManualReservation は「手動予約」（ルールがマッチせず intent{record} だけで
+// desired になる番組）を EPG プロジェクション込みで用意する。ruler が実体化した
+// 予約行は rule_id が NULL になり、intent をクリアすると「明示操作からしか説明
+// できない削除」の対象になる。削除候補になったときに stillProjectedSubset で
+// 凍結されないよう、epg_programs にも行を入れる（どのルールにもマッチしない
+// 題名を使う）。
+func insertManualReservation(t *testing.T, pool *pgxpool.Pool, ctx context.Context, programID int64, title string, startAt time.Time) {
+	t.Helper()
+	insertProgram(t, pool, ctx, programID, title, startAt)
+	insertProgramSnapshotDirect(t, pool, ctx, programID, title, startAt)
+	q := sqlcgen.New(pool)
+	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
+		Site: testSite, ProgramID: programID, Action: db.IntentRecord,
+	}); err != nil {
+		t.Fatalf("upserting record intent for program %d: %v", programID, err)
+	}
+}
+
+// issue #171 の核心: ラッチ中でも intent クリア（DELETE .../intent）由来の削除は
+// 保留されない。
+//
+// 修正前は toDelete が「desired から外れた理由」を区別しなかったため、intent を
+// クリアしても予約行が existing のまま残り、effective.skip も立たない（クリアは
+// 「意見なし」であって「録るな」ではない）ので listDesired からも除外されず、
+// 人間が resume するまで番組が録画され続けた。ブレーカーが守るのは「ルール x EPG」
+// 由来の削除であり、intent クリアはユーザーの明示操作からしか説明できない
+// （rule_id IS NULL = この行を desired にしていたのは投資だけだった）。
+//
+// 反対方向（ルール由来の削除はラッチ中に保留され続ける）は
+// TestRunPass_CircuitBreakerLatchBlocksDeleteEvenBelowThreshold と、
+// このテスト内の ruleProgram の確認が固定する。
+func TestRunPass_LatchDoesNotWithholdIntentClearDelete(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	insertService(t, pool, ctx)
+	start := time.Now().Add(24 * time.Hour).Truncate(time.Second)
+
+	ruleID := insertRule(t, pool, ctx, "latch-trigger", 10)
+	insertRuleKeyword(t, pool, ctx, ruleID, "対象")
+
+	const n = 3
+	for i := range n {
+		insertProgram(t, pool, ctx, int64(31000+i), fmt.Sprintf("対象%d", i), start)
+	}
+	// ルールにマッチしない手動予約。intent{record} だけで desired になる。
+	const manualProgramID = 31900
+	insertManualReservation(t, pool, ctx, manualProgramID, "手動で録りたい番組", start)
+
+	r := ruler.New([]string{testSite}, pool, &ruler.Config{MaxDeletesPerPass: 2})
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("initial RunPass: %v", err)
+	}
+	manual, ok := getReservation(t, pool, ctx, manualProgramID)
+	if !ok {
+		t.Fatal("manual reservation should exist after the first pass")
+	}
+	if manual.RuleID != nil {
+		t.Fatalf("manual reservation rule_id = %v, want nil (no rule should match it)", manual.RuleID)
+	}
+
+	// ルール無効化 → 3 件が unmatch（> 閾値 2）でブレーカー発動。
+	if _, err := pool.Exec(ctx, `UPDATE rules SET enabled = false WHERE id = $1`, ruleID); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass (trip): %v", err)
+	}
+	if _, ok := getRulerDeletesBreaker(t, pool, ctx); !ok {
+		t.Fatal("circuit breaker should be tripped")
+	}
+
+	// ラッチ中にユーザーが手動予約の意図をクリアする（「意見なし」に戻す）。
+	q := sqlcgen.New(pool)
+	if _, err := q.DeleteProgramIntent(ctx, sqlcgen.DeleteProgramIntentParams{
+		Site: testSite, ProgramID: manualProgramID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass (while latched): %v", err)
+	}
+
+	if reservationExists(t, pool, ctx, manualProgramID) {
+		t.Error("intent クリア後の予約はラッチ中でも削除されるべき " +
+			"（残すと effective.skip も立たないため番組が録画され続ける。issue #171）")
+	}
+	// 反対方向: ルール由来の削除は依然として保留されている。
+	for i := range n {
+		if !reservationExists(t, pool, ctx, int64(31000+i)) {
+			t.Errorf("program %d (rule-derived unmatch) must still be withheld while latched", 31000+i)
+		}
+	}
+	if _, ok := getRulerDeletesBreaker(t, pool, ctx); !ok {
+		t.Error("circuit breaker should still be latched (an explicit delete must not resume it)")
+	}
+}
+
+// issue #171: 明示操作由来の削除はブレーカーの**数にも入らない**。intent を
+// まとめてクリアしても、その件数だけでブレーカーが発動してはいけない
+// （EPG の欠損・フリッカーではこの集合を作れないので、ここを数えても
+// EPGStation#692 クラスの防御にはならず、ユーザー操作を人質に取るだけになる）。
+func TestRunPass_IntentClearDeletesDoNotCountTowardBreaker(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	insertService(t, pool, ctx)
+	start := time.Now().Add(24 * time.Hour).Truncate(time.Second)
+
+	const n = 3
+	for i := range n {
+		insertManualReservation(t, pool, ctx, int64(32000+i), fmt.Sprintf("手動%d", i), start)
+	}
+
+	// 閾値 2 < 3 件。混同していれば発動する。
+	r := ruler.New([]string{testSite}, pool, &ruler.Config{MaxDeletesPerPass: 2})
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("initial RunPass: %v", err)
+	}
+	for i := range n {
+		if !reservationExists(t, pool, ctx, int64(32000+i)) {
+			t.Fatalf("manual reservation %d should exist after the first pass", 32000+i)
+		}
+	}
+
+	q := sqlcgen.New(pool)
+	for i := range n {
+		if _, err := q.DeleteProgramIntent(ctx, sqlcgen.DeleteProgramIntentParams{
+			Site: testSite, ProgramID: int64(32000 + i),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass after clearing intents: %v", err)
+	}
+
+	for i := range n {
+		if reservationExists(t, pool, ctx, int64(32000+i)) {
+			t.Errorf("manual reservation %d should be deleted after its intent was cleared", 32000+i)
+		}
+	}
+	if cb, ok := getRulerDeletesBreaker(t, pool, ctx); ok {
+		t.Errorf("circuit breaker must not trip on explicit deletes (pending = %d, threshold = %d)",
+			cb.Pending, cb.Threshold)
+	}
+}
+
+// issue #171: intent skip 由来の削除もラッチ中に保留されない。skip の実害は
+// 「予約一覧に消えない行が残る」だけ（effective.skip が録画自体は防ぐ）だが、
+// 明示操作をブレーカーの外に出す線は skip とクリアで分けない — 分けると
+// 「明示操作は対象外、ただし skip を除く」という覚えておくべき例外が増える。
+func TestRunPass_LatchDoesNotWithholdSkipIntentDelete(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	insertService(t, pool, ctx)
+	start := time.Now().Add(24 * time.Hour).Truncate(time.Second)
+
+	// ブレーカーを発動させるためのルール（無効化して一斉 unmatch させる）。
+	triggerRule := insertRule(t, pool, ctx, "latch-trigger", 10)
+	insertRuleKeyword(t, pool, ctx, triggerRule, "臨時")
+	const n = 3
+	for i := range n {
+		insertProgram(t, pool, ctx, int64(33000+i), fmt.Sprintf("臨時%d", i), start)
+	}
+
+	// こちらは有効なまま残るルール。ユーザーはこのルールが作った予約を取消す。
+	keepRule := insertRule(t, pool, ctx, "keeper", 10)
+	insertRuleKeyword(t, pool, ctx, keepRule, "定期")
+	const skippedProgramID = 33900
+	insertProgram(t, pool, ctx, skippedProgramID, "定期番組", start)
+
+	r := ruler.New([]string{testSite}, pool, &ruler.Config{MaxDeletesPerPass: 2})
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("initial RunPass: %v", err)
+	}
+	kept, ok := getReservation(t, pool, ctx, skippedProgramID)
+	if !ok {
+		t.Fatal("the rule-backed reservation should exist after the first pass")
+	}
+	if kept.RuleID == nil {
+		t.Fatal("the rule-backed reservation should have a rule_id (otherwise this test would not exercise the skip branch)")
+	}
+
+	if _, err := pool.Exec(ctx, `UPDATE rules SET enabled = false WHERE id = $1`, triggerRule); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass (trip): %v", err)
+	}
+	if _, ok := getRulerDeletesBreaker(t, pool, ctx); !ok {
+		t.Fatal("circuit breaker should be tripped")
+	}
+
+	// ラッチ中にユーザーが「録るな」を書く。
+	q := sqlcgen.New(pool)
+	if _, err := q.SkipProgram(ctx, sqlcgen.SkipProgramParams{
+		Site: testSite, ProgramID: skippedProgramID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass (while latched): %v", err)
+	}
+
+	if reservationExists(t, pool, ctx, skippedProgramID) {
+		t.Error("skip intent の予約はラッチ中でも削除されるべき（明示操作はブレーカーの外。issue #171）")
+	}
+	for i := range n {
+		if !reservationExists(t, pool, ctx, int64(33000+i)) {
+			t.Errorf("program %d (rule-derived unmatch) must still be withheld while latched", 33000+i)
+		}
+	}
+}
+
+// 罠（#29 型の窓）の回帰テスト（方向 1/2）: 明示操作由来の DELETE も、削除の瞬間に
+// program_investments を再評価する。runPassForSite が toDelete を計算してから
+// この文を実行するまでの間に record 意図が着地したら、削除してはならない。
+//
+// DeleteReleasedReservationsBySiteAndProgramIDs は runPassForSite の実削除が使うのと
+// 同じクエリなので、ここでの検証はそのまま runPassForSite の保護に直結する
+// （TestRunPass_DeleteGuard_RecordIntentBlocksStaleDelete と同じ組み立て）。
+func TestRunPass_ReleasedDeleteGuard_RecordIntentBlocksStaleDelete(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	start := time.Now().Add(24 * time.Hour).Truncate(time.Second)
+	const programID = 34001
+	// rule_id が NULL の予約行 = 明示操作由来の削除の候補になりうる形。
+	insertReservationDirect(t, pool, ctx, programID, "並行手動予約", start)
+
+	q := sqlcgen.New(pool)
+	// ruler の読み取りと DELETE 実行の間に割り込んで着地した record 意図。
+	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
+		Site: testSite, ProgramID: programID, Action: db.IntentRecord,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	released, err := q.DeleteReleasedReservationsBySiteAndProgramIDs(ctx,
+		sqlcgen.DeleteReleasedReservationsBySiteAndProgramIDsParams{
+			Site:       testSite,
+			ProgramIds: []int64{programID},
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(released) != 0 {
+		t.Errorf("released = %v, want empty (a concurrently-created record intent must block the stale delete)", released)
+	}
+	if !reservationExists(t, pool, ctx, programID) {
+		t.Error("reservation with a concurrently-created record intent must survive the stale delete")
+	}
+}
+
+// 罠の回帰テスト（方向 2/2）: ルールが base を供給していた予約（rule_id 非 NULL、
+// skip 意図なし）は明示操作由来の DELETE の対象にならない。ここが漏れると
+// 「ルールが EPG の欠損でマッチしなくなった」削除がブレーカーを迂回し、
+// EPGStation#692 クラスの一斉削除に対する防御そのものが消える。
+func TestRunPass_ReleasedDeleteGuard_RuleBackedRowIsNotReleased(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	insertService(t, pool, ctx)
+	start := time.Now().Add(24 * time.Hour).Truncate(time.Second)
+	const programID = 35001
+	insertProgram(t, pool, ctx, programID, "ルール由来", start)
+	ruleID := insertRule(t, pool, ctx, "rule-backed", 10)
+	insertRuleKeyword(t, pool, ctx, ruleID, "ルール由来")
+
+	r := ruler.New([]string{testSite}, pool, nil)
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
+	res, ok := getReservation(t, pool, ctx, programID)
+	if !ok {
+		t.Fatal("reservation should exist after the pass")
+	}
+	if res.RuleID == nil {
+		t.Fatal("reservation should carry a rule_id (otherwise this test asserts nothing)")
+	}
+
+	// EPG の欠損でルールがマッチしなくなった状況を模して、削除候補として渡す。
+	q := sqlcgen.New(pool)
+	released, err := q.DeleteReleasedReservationsBySiteAndProgramIDs(ctx,
+		sqlcgen.DeleteReleasedReservationsBySiteAndProgramIDsParams{
+			Site:       testSite,
+			ProgramIds: []int64{programID},
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(released) != 0 {
+		t.Errorf("released = %v, want empty (a rule-backed unmatch must stay subject to the circuit breaker)", released)
+	}
+	if !reservationExists(t, pool, ctx, programID) {
+		t.Error("a rule-backed reservation must not be deleted by the explicit-operation delete")
+	}
+}

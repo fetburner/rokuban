@@ -7,23 +7,28 @@
 対策:
 
 - **1 回の ruler パスでの削除数に閾値**（`ruler.max_deletes_per_pass`）を設け、超えたら削除を実行せず停止してアラート。手動確認後に再開
-- **ブレーカーが数えるのは `toDelete`（既存予約のうち desired から外れた行）で、外れた理由が EPG の一時欠損かユーザーの明示操作かを区別しない。** desired は「(ルール勝者 − intent skip) ∪ investment（record 意図 ∪ overrides）」から導出されるため、ルール編集で勝者が変わる／intent skip を立てる／intent をクリアする（`DELETE .../intent`）／最後の investment だった overrides を消すといったユーザーの明示操作も同じ `toDelete` に混ざり、ラッチ中は他の導出削除と同様にカウント・保留される（非網羅）。**ルールの削除だけは例外で `toDelete` を経由しない**（下記「止められる場所は ruler だけ」の表）。区別しないのは単純さを優先した設計判断で、代わりに影響件数の内訳を提示する確認 UI が安全装置になる
-- **実害は経路によって異なる。** intent skip は `intent.action='skip'` により `effective.skip` を立てるため、ラッチ中に予約行が残っても `listDesired`（`db.EvaluateSyncCandidates` の `Skipped`）が同期対象から除外し、録画そのものは防がれる（実害は予約一覧の表示上の残留のみ。`TestReconciler_SkippedReservationNotScheduled` が固定）。**intent クリア（`DELETE .../intent`）はこの限りではない** —— `program_intents` の行を消すだけで `effective.skip` を立てないため、ラッチ中に残る予約行は `listDesired` から除外されず、既存 schedule も消えず、番組は録画され続ける。この経路の扱いは未決（issue #171）
+- **数えて止めるのは「ルールが base を供給していたのにマッチしなくなった」削除だけ。** desired は「(ルール勝者 − intent skip) ∪ investment（record 意図 ∪ overrides）」から導出されるので、`toDelete`（既存予約のうち desired から外れた行）には EPG 由来の unmatch とユーザーの明示操作が混ざる。このうち**明示操作からしか説明できない削除はブレーカーの外**に置き、カウントにも入れずラッチ中でも実行する。判定は削除文の `WHERE` が適用の瞬間に行い（`program_investments` が空であることに加えて、次のどちらかが立てば明示操作）:
+  - `reservations.rule_id IS NULL` — いまルールが base を供給していない = この行を desired にしていたのは投資だけだった。その投資が今は無いのだから、desired から外したのは投資を消した操作しかありえない。`rule_id` を書くのは ruler の upsert だけで、desired から外れた行はそのパスで upsert されない（EPG が動いても既存の `rule_id` は据え置かれる）ため、**EPG 由来の unmatch はこの条件を作れない**
+  - `program_intents.action='skip'` — ユーザーが「録るな」と書いた。`program_intents` を書くのは api だけ
+
+  intent クリア（`DELETE .../intent`）と「最後の investment だった overrides の削除」は前者、intent skip は後者に落ちる。**ルールの編集**で勝者が変わる経路は `rule_id` が残るので EPG 由来の unmatch と区別できず、ブレーカー対象のまま。**ルールの削除**はそもそも `toDelete` を経由しない（下記「止められる場所は ruler だけ」の表）。境界が 2 つある: (a) ルール由来の unmatch と明示操作が同じ番組で重なった場合（`rule_id` が残ったままの行の意図を消した）は前者と区別できないのでブレーカー対象のまま —— ブレーカーが発動しているのはまさにルール x EPG が大きく動いたときなので保守側に倒す。(b) 削除候補になる前提として EPG 射影に番組が残っている必要がある（射影から消えた番組の凍結は別の防御で、EPG が復旧すれば次パスで自動的に解ける。ラッチと違い人間の再開を待たない）
+- **明示操作を外に出してもブレーカーの守備範囲は狭まらない。** 防ぐ相手は EPG の一時欠損による一斉削除（上記 EPGStation#692）で、上の 2 条件は EPG の欠損・フリッカーでは成立しないため、除外できる集合の大きさはユーザーが叩いた API の回数で頭打ちになる。逆に混ぜたままにすると、ラッチが人間の再開を待つ無期限の状態であるぶん実害も無期限に続く: intent クリアは `effective.skip` を立てない（クリアは「意見なし」であって「録るな」ではない）ので、ラッチ中に残る予約行は `listDesired`（`db.EvaluateSyncCandidates` の `Skipped`）からも除外されず、reconciler は schedule を消さず、番組は録画され続ける。失うのは導出で作り直せる予約行ではなくディスクとチューナーで、ブレーカーが守ろうとしているものより重い（`TestRunPass_LatchDoesNotWithholdIntentClearDelete` / `TestRunPass_IntentClearDeletesDoNotCountTowardBreaker` / `TestRunPass_LatchDoesNotWithholdSkipIntentDelete` が固定）。intent skip 側の実害はもともと予約一覧の表示上の残留だけだった（`intent.action='skip'` が `effective.skip` を立てるので録画は防がれる。`TestReconciler_SkippedReservationNotScheduled`）が、「明示操作は対象外、ただし skip を除く」という例外を増やさないため同じ側に置く
 - **不変条件: 録画済みデータ（media_assets）に至る自動削除経路は retention reconcile のみ**。EPG・予約側の状態変化から録画物の削除に到達するパスを作らない
 - programId が EPG から消えた予約は即削除せず猶予を置く（mirakc 自身も removed-from-epg を理由付き failed として通知してくる）。なお導出値 `orphaned` はこの用途ではなく「番組終了後に schedule が観測されなかった」を意味し、`recordings` に never-scheduled 行が存在するかどうかから読むたびに導出する（[schema.md](../schema.md) §3）
 
 ##### 止められる場所は ruler だけ
 
-削除件数の閾値を持つのは ruler 側だけで、**reconciler 側には置かない**（両方に置いていた時期があるが、reconciler 側は誤発火しかしないので撤去した。末尾「経緯と失敗事例」）。reconciler が「消すべき schedule」と判断する経路は、desired（reservations）を減らす操作の数だけあるが、reconciler からはどれも「desired に無い schedule がある」以上には区別できない。ruler のブレーカーの対象かどうかで束ねると次の 4 通りに分かれる:
+削除件数の閾値を持つのは ruler 側だけで、**reconciler 側には置かない**（両方に置いていた時期があるが、reconciler 側は誤発火しかしないので撤去した。末尾「経緯と失敗事例」）。reconciler が「消すべき schedule」と判断する経路は、desired（reservations）を減らす操作の数だけあるが、reconciler からはどれも「desired に無い schedule がある」以上には区別できない。ruler のブレーカーの対象かどうかで束ねると次の 5 通りに分かれる:
 
 | 経路 | ruler の `MaxDeletesPerPass` の対象か |
 |---|---|
 | ruler が EPG の変化から導出削除した | 対象。ruler のブレーカーが既に通している |
-| ユーザーの明示操作で desired から外れた（intent skip、intent クリア、最後の investment だった overrides の削除、ルール**編集**で勝者が変わるなど） | 対象。上記「大量削除サーキットブレーカー」のとおり区別せず同じ `toDelete` に混ざる |
+| ルール**編集**（無効化・条件変更）で勝者が変わった | 対象。`rule_id` が残るので EPG 由来の unmatch と区別できない |
+| ユーザーの明示操作で desired から外れた（intent skip、intent クリア、最後の investment だった overrides の削除） | **対象外**。削除文の `WHERE` が適用の瞬間に明示操作と判定し、カウントにも入れずラッチ中でも実行する（上記「大量削除サーキットブレーカー」） |
 | ユーザーの明示操作のうちルール**削除**（`DeleteRule`） | **対象外**。API ハンドラ（`internal/api/rules.go`）が同一トランザクションで `reservations` を直接 DELETE し、ruler の `toDelete` も `MaxDeletesPerPass` も経由しない |
 | 番組終了後の GC が予約行を刈った | **対象外**。GC は `runGC` という別経路で `runPassForSite` の `toDelete` を通らない（[ruler.md](ruler.md)「番組終了後の GC」と下記「GC は対象にしない」） |
 
-ruler のブレーカーが通しているのは EPG 由来の導出削除と、desired から外れる形の明示操作で、**ルール削除と GC はブレーカーの外にある**。reconciler から見ると、この 2 経路以外は「ruler が既に処理して DB にコミット済み」の状態でしか観測されない。reconciler にもう一段ブレーカーを置いても、desired に無い schedule があるという観測だけではこの区別ができず、ルール削除の一括処理（内訳を提示する確認 UI で安全性を担保済み）と GC の正常な一括削除（「長時間停止していた場合、再開後に溜まった期限切れ行を一括で消す」）に誤発火するだけだった。
+ruler のブレーカーが通しているのは EPG 由来の導出削除（ルール編集で勝者が変わる経路を含む）だけで、**明示操作・ルール削除・GC はブレーカーの外にある**。reconciler から見ると、どの経路も「ruler あるいは API ハンドラが既に処理して DB にコミット済み」の状態でしか観測されない。reconciler にもう一段ブレーカーを置いても、desired に無い schedule があるという観測だけではこの区別ができず、ユーザーが取消した予約・ルール削除の一括処理（内訳を提示する確認 UI で安全性を担保済み）・GC の正常な一括削除（「長時間停止していた場合、再開後に溜まった期限切れ行を一括で消す」）に誤発火するだけだった。
 
 守る価値もない。**reconciler が DELETE する時点で「録画しない」決定は DB にコミット済み**である（不変条件「コミット = DB 行」）。誤りなら止めるべき場所は ruler で、reconciler で止めるのは「DB に合わせることを拒否する」ことにしかならず、mirakc に不要な schedule を残し続ける。
 
@@ -57,3 +62,4 @@ GC・ユーザー操作では他の予約が残るので誤発火しない。全
 - **reconciler 側の閾値の撤去**: M1-4 では ruler と reconciler の両方に削除件数の閾値を置いていたが、reconciler 側は誤発火しかしないので M2-5 で撤去した（issue #2 のコメント）。理由は上記「止められる場所は ruler だけ」のとおり
 - **ラッチ化**: M1-4 の骨格はパス内で完結していて、次のパスでは何も覚えていなかった。「手動確認後に再開」を実現するために M2-5 で `circuit_breakers` 表による永続ラッチにした
 - 再開 API の資源同定（`(site, name)` を PK とする `/breakers/{name}/resume`）は issue #102 で決めた
+- **明示操作をブレーカーの外に出した**: M2-5 のラッチ化から issue #171 まで、`toDelete` は「desired から外れた理由」を区別せず数え・保留していた。intent skip は `effective.skip` が録画を止めるので実害が予約一覧の表示上の残留に留まったが、**intent クリア（`DELETE .../intent`）は `effective.skip` を立てない**ため、ラッチ中は「クリアしたのに人間が再開するまで録り続ける」になっていた（#154 の実装レビューで発見）。3 択（録画も止める／導出削除の対象から外す／UI 説明で足りるとする）のうち「対象から外す」を採った。「録画も止める」（reconciler 側で現在の desired を再評価する）は、根拠のない予約行が一覧に残り続ける上に desired の判定器が 2 つになる（reconciler が ruler と同じ材料を読み直す）ので却下。「UI 説明」は、ラッチが人間の再開を待つ無期限の状態である以上「クリアしたのに録れる」を真にできないので却下。判定を削除文の `WHERE` に置いたのは #29 型の窓（読み取りと適用の間に着地した意図を踏み潰す）を作らないため —— 呼び出し側は `toDelete` 全体を渡し、`RETURNING` で「実際に明示操作由来として消えた集合」を受け取って、残りをブレーカーに掛ける。分類がトランザクション外の古い読み取りで決まる余地がない。取りこぼす境界（ルール由来の unmatch と重なった intent クリア）を上記「大量削除サーキットブレーカー」に明記してある —— 「明示操作は必ず即座に効く」とは書かない

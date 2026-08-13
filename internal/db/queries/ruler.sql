@@ -49,8 +49,11 @@ WHERE site = $1 AND program_id = ANY(sqlc.arg(program_ids)::bigint[]);
 -- internal/ruler/sql.go に生 SQL として置き、pgxpool 経由で直接実行する。
 
 -- name: DeleteReservationsBySiteAndProgramIDs :execrows
--- ルール・program_intents のどちらからも desired でなくなった予約を削除する
--- （導出削除。呼び出し側でサーキットブレーカーの閾値判定を先に行うこと）。
+-- ルール・program_intents のどちらからも desired でなくなった予約のうち、
+-- 「ルール x EPG」由来と区別できないものを削除する（導出削除。呼び出し側で
+-- サーキットブレーカーの閾値判定を先に行うこと）。明示操作からしか説明できない
+-- 削除は先に DeleteReleasedReservationsBySiteAndProgramIDs が処理済みで、
+-- ブレーカーの数にも入らない。
 --
 -- toDelete は runPassForSite の先頭（トランザクション外）で ListProgramIntentActionsBySite /
 -- ListProgramInvestmentProgramIDsBySite / ListReservationProgramIDsBySite を読んでから
@@ -76,6 +79,50 @@ WHERE r.site = $1 AND r.program_id = ANY(sqlc.arg(program_ids)::bigint[])
       SELECT 1 FROM program_investments v
       WHERE v.site = r.site AND v.program_id = r.program_id
   );
+
+-- name: DeleteReleasedReservationsBySiteAndProgramIDs :many
+-- desired から外れた予約のうち、**外れた理由がユーザーの明示操作からしか
+-- 説明できない**ものを削除し、実際に消した programId を返す。呼び出し側
+-- （runPassForSite）はこれを大量削除サーキットブレーカーの対象にしない ---
+-- 「ルール x EPG」から導出される削除だけを止めるのがブレーカーの守備範囲で
+-- （docs/recording.md §3.2「大量削除サーキットブレーカー」）、下の 2 条件は
+-- EPG の欠損・フリッカーでは成立しないため。
+--
+-- 明示操作である条件（上の DELETE と同じ NOT EXISTS program_investments に加えて、
+-- 次のいずれか）:
+--
+--   r.rule_id IS NULL
+--     いまルールが base を供給していない = この行を desired にしていたのは
+--     投資（record 意図 ∪ overrides）だけだった。その投資が今は無いのだから、
+--     desired から外したのは投資を消した操作しかありえない。rule_id を書くのは
+--     ruler の upsert だけで、desired から外れた行はそのパスで upsert されない
+--     （EPG が動いても既存の rule_id は据え置かれる）ため、EPG 由来の unmatch が
+--     この条件を作ることはない。
+--   program_intents.action = 'skip'
+--     ユーザーが「録るな」と書いた。program_intents を書くのは api だけ。
+--
+-- 逆に rule_id が非 NULL で skip 意図も無い行は「ルールが base を供給していたのに
+-- マッチしなくなった」= EPG 由来と区別できない削除であり、この文の対象外
+-- （上の DeleteReservationsBySiteAndProgramIDs 側でブレーカーを通す）。
+--
+-- 分類そのものをこの WHERE に置いてあるのは #29 型の窓を作らないため。呼び出し側は
+-- toDelete 全体をこの文に渡し、RETURNING で「実際に明示操作由来として消えた集合」を
+-- 受け取って、その差集合をブレーカー対象の導出削除とする。分類がトランザクション外の
+-- 古い読み取りで決まる余地がない（上の DELETE と同じ規律）。
+DELETE FROM reservations r
+WHERE r.site = $1 AND r.program_id = ANY(sqlc.arg(program_ids)::bigint[])
+  AND NOT EXISTS (
+      SELECT 1 FROM program_investments v
+      WHERE v.site = r.site AND v.program_id = r.program_id
+  )
+  AND (
+      r.rule_id IS NULL
+      OR EXISTS (
+          SELECT 1 FROM program_intents i
+          WHERE i.site = r.site AND i.program_id = r.program_id AND i.action = 'skip'
+      )
+  )
+RETURNING r.program_id;
 
 -- name: ListReservationIDsBySiteAndProgramIDs :many
 SELECT id, program_id FROM reservations
