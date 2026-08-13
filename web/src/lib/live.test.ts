@@ -6,7 +6,6 @@ import {
   classifyLiveLoadError,
   currentProgramWindow,
   livePlaylistURL,
-  mirakcServiceId,
   pickInitialServiceId,
   probeLivePlaylist,
   supportsNativeHls,
@@ -16,36 +15,32 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-describe('mirakcServiceId', () => {
-  // mirakc の ServiceId 合成規則（networkId * 100_000 + serviceId）。
-  // SI の serviceId だけを渡すと stream が 404 になる（issue #208）。
-  it('SI の networkId / serviceId から Mirakurun 合成 id を作る', () => {
-    expect(mirakcServiceId(31920, 53248)).toBe(3192053248)
-  })
-})
-
 describe('livePlaylistURL', () => {
   it('profile 無しは ?profile を付けない', () => {
-    // networkId=0 なら合成 id は SI serviceId と同じ（テストの固定値を崩さない）
     expect(livePlaylistURL('default', 0, 1024)).toBe(
-      '/api/sites/default/services/1024/live/playlist.m3u8',
+      '/api/sites/default/networks/0/services/1024/live/playlist.m3u8',
     )
   })
 
   it('profile を渡すと ?profile= が付く', () => {
     expect(livePlaylistURL('default', 0, 1024, 'h264-720p')).toBe(
-      '/api/sites/default/services/1024/live/playlist.m3u8?profile=h264-720p',
+      '/api/sites/default/networks/0/services/1024/live/playlist.m3u8?profile=h264-720p',
     )
   })
 
   it('site をエスケープする', () => {
-    expect(livePlaylistURL('a b', 0, 1)).toBe('/api/sites/a%20b/services/1/live/playlist.m3u8')
+    expect(livePlaylistURL('a b', 0, 1)).toBe(
+      '/api/sites/a%20b/networks/0/services/1/live/playlist.m3u8',
+    )
   })
 
-  it('パスには SI serviceId ではなく mirakc 合成 id を載せる（issue #208）', () => {
-    expect(livePlaylistURL('default', 31920, 53248)).toBe(
-      '/api/sites/default/services/3192053248/live/playlist.m3u8',
-    )
+  // パスに載るのは SI の (networkId, serviceId) そのもの。合成 id
+  // （networkId * 100000 + serviceId = 3192053248）を作るのは streamer 側で、
+  // web はその規則を知らない（issue #217。合成をここで行っていたのが issue #208）。
+  it('SI の networkId / serviceId をそのまま別セグメントに載せる', () => {
+    const url = livePlaylistURL('default', 31920, 53248)
+    expect(url).toBe('/api/sites/default/networks/31920/services/53248/live/playlist.m3u8')
+    expect(url).not.toContain('3192053248')
   })
 })
 

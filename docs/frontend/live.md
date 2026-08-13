@@ -110,7 +110,8 @@ probe もセッションも起こさなくなった今、デバウンスする�
 プレイリスト取得の 404 / 503 として下記のエラー分類に出る。
 
 **プロファイル（画質）を選ぶ UI は持たない。** `live.profiles` を列挙する API が
-無い（`GET /api/sites/{site}/services/{serviceId}/live/playlist.m3u8` は OpenAPI
+無い（`GET /api/sites/{site}/networks/{networkId}/services/{serviceId}/live/playlist.m3u8`
+は OpenAPI
 対象外なので設定名の一覧を返す仕組みも無い）ため、選択肢を出すと「機能しない
 コントロール」になる。既定プロファイル（サーバー側の `live.profiles` 先頭）に
 固定し、画質切り替えは将来 `live.profiles` の一覧 API ができてから足す。
@@ -424,7 +425,10 @@ EPGStation・KonomiTV には構造的にできない表示。
   セグメント URL に載るのは mirakc 合成 id（`networkId * 100000 + serviceId`）
   なのに、SI の `serviceId` で照合していたため `network_id` が 0 でない環境
   （実 EPG も runbook の投入例も該当）では待機が必ずタイムアウトしていた。
-  合成 id を `GET /api/sites/{site}/services` から解決する形に直した
+  合成 id を `GET /api/sites/{site}/services` から解決する形に一度直したが、
+  そもそも URL の id 空間が一覧 API と食い違っていたのが原因なので、issue #217 で
+  ライブの URL を `networks/{networkId}/services/{serviceId}`（SI の値そのもの）に
+  変え、合成を streamer に戻した。e2e の照合も SI の `serviceId` に戻っている
 - 実 mirakc / 実チューナーでの idle GC・録画優先度調停・実 ISDB-T トランス
   コードの確認手順は [runbook.md](../runbook.md)（ライブ視聴の節）にあるが、
   M4-4 の時点では ISDB-T チューナーも mirakc も無い開発環境のため実行されて

@@ -155,7 +155,7 @@ describe('LivePlayer の状態遷移', () => {
     resolve(new Response('', { status: 200 }))
 
     await waitFor(() => expect(screen.queryByText('読み込み中…')).not.toBeInTheDocument())
-    expect(video.src).toContain('/api/sites/default/services/1024/live/playlist.m3u8')
+    expect(video.src).toContain('/api/sites/default/networks/0/services/1024/live/playlist.m3u8')
     expect(screen.queryByRole('button', { name: '再読み込み' })).not.toBeInTheDocument()
     // ネイティブ分岐では hls.js を import すらしない（約 520 KB を読ませない）
     expect(hlsMockState.instances).toHaveLength(0)
@@ -406,7 +406,7 @@ describe('LivePlayer の状態遷移', () => {
       await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
       const hls = hlsMockState.instances[0]!
       expect(hls.loadSource).toHaveBeenCalledWith(
-        expect.stringContaining('/api/sites/default/services/1024/live/playlist.m3u8'),
+        expect.stringContaining('/api/sites/default/networks/0/services/1024/live/playlist.m3u8'),
       )
       expect(hls.attachMedia).toHaveBeenCalledTimes(1)
       await waitFor(() => expect(screen.queryByText('読み込み中…')).not.toBeInTheDocument())
@@ -474,7 +474,7 @@ describe('LivePlayer の状態遷移', () => {
       resolve(new Response('', { status: 200 }))
 
       await waitFor(() =>
-        expect(video.src).toContain('/api/sites/default/services/1024/live/playlist.m3u8'),
+        expect(video.src).toContain('/api/sites/default/networks/0/services/1024/live/playlist.m3u8'),
       )
       expect(
         screen.queryByText('このブラウザはライブ視聴（HLS）に対応していません'),

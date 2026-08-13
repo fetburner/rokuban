@@ -84,8 +84,8 @@ docker compose exec rokuban rokuban server --all --config /config.yml
 画面が「無効です」になって①〜⑦が全滅するため（issue #209）。
 
 `E2E_LIVE_SERVICE_A` / `_B` に渡すのは **SI の `serviceId`**（下の投入例なら
-9001 / 9002）。URL に載る mirakc 合成 id（`network_id * 100000 + service_id`）は
-`live.mjs` が `GET /api/sites/{site}/services` から解決する。
+9001 / 9002）。ライブの URL に載るのも SI の `(network_id, service_id)` そのもの
+なので、合成 id への読み替えは要らない。
 
 準備（初回のみ）:
 

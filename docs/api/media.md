@@ -103,15 +103,16 @@ SPA フォールバックには落とさない（[rest.md](rest.md)「機能の�
 
 #### 資源同定: セッション ID を持たない
 
-プレイリストとセグメントの URL は **`/api/sites/{site}/services/{serviceId}/live...`**
+プレイリストとセグメントの URL は
+**`/api/sites/{site}/networks/{networkId}/services/{serviceId}/live...`**
 の形にし、**セッション ID を URL にもクッキーにも置かない**。ライブセッションは
 サービスに対して 1 つで、同じサービスを見ている視聴者はそれを共有する。
 
 - **チューナーが共有される。**別の部屋で同じチャンネルを見ても ffmpeg 1 本・
   チューナー 1 本で済む。チューナーは録画と取り合う唯一の共有資源なので、これが
   一番効く
-- **スケールアウトの鍵が既に資源同定の中にある。**`(site, serviceId)` は前段の
-  consistent hash の鍵にそのまま使えるので、streamer のレプリカを増やしても
+- **スケールアウトの鍵が既に資源同定の中にある。**`(site, networkId, serviceId)` は
+  前段の consistent hash の鍵にそのまま使えるので、streamer のレプリカを増やしても
   URL・クライアント・API は変わらない（[operations.md](../operations.md) §5
   「streamer のスケール」。URL を固定深さにする制約もそこに書いてある）
 - **セッションが消えても URL が死なない。**Pod 死・ハッシュの担当移動・idle GC の
@@ -123,6 +124,26 @@ SPA フォールバックには落とさない（[rest.md](rest.md)「機能の�
 セッションは使い捨ての導出物なので、宛先は「このサービスが見たい」という欲求の側で
 名指しする --- レベルトリガー（不変条件 5）と同じ形である。
 
+**パスの id 空間は一覧 API に揃える。**`{networkId}` / `{serviceId}` は
+`GET /api/sites/{site}/services` が返すのと同じ **SI の値そのもの**であり、
+mirakc が要求する Mirakurun 合成 service id（`networkId * 100_000 + serviceId`）
+への変換は streamer が `internal/mirakc.ServiceID` で行う。
+
+- **同じ URL 階層に 2 つの id 空間を同居させない。**`services/{serviceId}` が
+  一覧では SI の値、ライブでは合成 id を指す状態は、将来
+  `GET /api/sites/{site}/.../services/{serviceId}` を足したときにどちらの空間か
+  決められなくする。API の資源同定は差し替えコストが最も高い先払い（不変条件 11）
+  なので、読者が 1 つ（同梱 SPA）しかいない今のうちに払う
+- **mirakc の id 規則を Rokuban の一番外側に置かない。**合成 id は mirakc /
+  Mirakurun の内部規則（`internal/mirakc.ServiceID`）であり、変換を web に置くと
+  同じ規則の実装が Go と TypeScript に二重化する。URL は永続テーブルより
+  差し替えが高いので、mirakc 固有の概念を置く場所として最悪である（不変条件 7 の
+  精神）
+- **`serviceId` 単独では鍵にならない。**SI の service_id は network をまたぐと
+  一意でない（Mirakurun が合成 id を発明した理由そのもの）。宛先を SI の値で
+  名指しするなら `networkId` も URL に要る --- 放送イベントを
+  `(site, network_id, service_id, event_id)` で引く不変条件 9 と同じ形
+
 帰結として **idle GC の粒度もサービス単位**になる（そのサービスへのセグメント要求が
 一定時間来なければ ffmpeg を止める）。「クライアント 1 人ごとの生存」は追わない。
 
@@ -133,19 +154,31 @@ SPA フォールバックには落とさない（[rest.md](rest.md)「機能の�
 #### 実装（`internal/streamer`）
 
 ```
-GET /api/sites/{site}/services/{serviceId}/live/playlist.m3u8[?profile=<name>]
+GET /api/sites/{site}/networks/{networkId}/services/{serviceId}/live/playlist.m3u8[?profile=<name>]
       → application/vnd.apple.mpegurl
-GET /api/sites/{site}/services/{serviceId}/live/segments/{name}
+GET /api/sites/{site}/networks/{networkId}/services/{serviceId}/live/segments/{name}
       → video/mp2t
 ```
 
-- **DB を引かない。**パスの `serviceId` は検証せずそのまま mirakc の
-  `GET /api/services/{id}/stream?decode=1` に渡す（不明な id は mirakc が拒否する）。
-  ここでの `serviceId` は EPG 射影の SI `serviceId` ではなく **Mirakurun 合成
-  service id**（`networkId * 100_000 + serviceId`。`internal/mirakc.ServiceID` と
-  同じ規則）。フロントが URL を組み立てるときに合成する（`web/src/lib/live.ts`）。
-  ライブセッションはインメモリの使い捨てで、認可はリバースプロキシ委譲、同時上限も
-  プロセスローカルなので、DB を引く理由が無い
+- **DB を引かない。**パスの `(networkId, serviceId)` から mirakc の
+  `GET /api/services/{id}/stream?decode=1` の `{id}` を合成するだけ
+  （`internal/mirakc.ServiceID` の純関数）。ライブセッションはインメモリの
+  使い捨てで、認可はリバースプロキシ委譲、同時上限もプロセスローカルなので、
+  DB を引く理由が無い
+- **id セグメントは 16 bit 符号なし整数としてだけ受け付ける**
+  （`strconv.ParseUint(s, 10, 16)`。SI の network_id / service_id の幅）。
+  読めなければ 400 で、mirakc には触れない。**mirakc に渡るのは常にここで
+  合成した整数であり、URL の文字列ではない**ので、パス区切り（`%2F`）や
+  クエリ（`%3F`）を仕込んで mirakc の別エンドポイントへの要求に化けさせる経路が
+  無い。測っているのは
+  `TestLiveStreamer_RejectsHostileIDSegments`（`%2F` / `%3F` / 非数値 / 空 /
+  符号付き / 16 bit 超 / 桁あふれ / 全角数字を 400 で止め、偽 mirakc が
+  1 件も要求を受け取らないこと）と
+  `TestLiveStreamer_MirakcPathIsComposedFromPathSegments`（mirakc が受け取る
+  Request-URI が `/api/services/3192053248/stream?decode=1` ちょうどであること）。
+  **「不明な id を mirakc がどう扱うか」は測っていないし、依存もしていない** ---
+  実在しない id での起動失敗は他の失敗（チューナー枯渇・ffmpeg 起動失敗）と
+  同じく 503 にまとまる
 - **トランスコードは必須。**ISDB-T 地上波の映像は MPEG-2 で、ブラウザの HLS 経路
   （hls.js/MSE）は事実上再生できない。mirakc フィルタ + `-c copy` では受信端末を
   満たせないため、ffmpeg で H.264/AAC に変換する（`live.profiles`、
@@ -201,8 +234,17 @@ mirakc は起動中の局ロゴ抽出をサポートせず、運用者が事前�
 - 原本配信は M1-8、派生物（encoded / thumbnail）は M3-4 / M3-5 の成果物。再生位置を
   localStorage に置く決定は issue #14 7c
 - **ライブのセッションレス資源同定**は issue #56 の決定。実装は M4-3（issue #91。
-  「DB を引かない」の判断は着手前コメント）。Mirakurun 合成 service id をフロント側で
-  合成する形は issue #208
+  「DB を引かない」の判断は着手前コメント）
+- **ライブの id 空間**は 2 度動いた。当初は SI の `serviceId` を渡していて mirakc が
+  404 を返し（issue #208）、Mirakurun 合成 id をフロントで合成する形に直した。
+  これで `services/{serviceId}` が一覧 API と別の id 空間を指すようになり、
+  合成規則が Go と TypeScript に二重化した（e2e ④ はこの食い違いを踏んで
+  `network_id != 0` の環境で必ずタイムアウトし、一覧 API から合成 id を
+  解決し直す迂回を必要とした。[frontend/live.md](../frontend/live.md)）。issue #217 で
+  `networks/{networkId}/services/{serviceId}` に変え、合成を streamer に戻した
+- **「不明な id は mirakc が拒否する」は測っていない断言だった**（issue #217）。
+  streamer 側で 16 bit 整数として解析することで、mirakc の挙動に依存せずに
+  「何を送るか」だけを主張する形に置き換えた
 - **tmpfs の後始末**: 当初この doc は「tmpfs はコンテナ再起動で消える」前提で書かれて
   いたが誤りで（ノード再起動でしか消えない）、レビュー指摘で起動時スイープに直した
   （`internal/streamer/live.go` の `NewLive` のコメント参照）

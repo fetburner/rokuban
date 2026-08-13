@@ -11,28 +11,15 @@
 import type { Service } from '@/api/generated'
 
 /**
- * mirakcServiceIdMagic は Mirakurun / mirakc が service id を合成する基数。
- * `internal/mirakc/ids.go` の idMagicNumber（100_000）と同じ。
- */
-const mirakcServiceIdMagic = 100_000
-
-/**
- * mirakcServiceId は SI の networkId / serviceId から Mirakurun 合成 service id を作る。
- *
- * mirakc の `GET /api/services/{id}/stream` が要求するのは SI の serviceId ではなく
- * この合成値（issue #208）。streamer は URL の数字をそのまま mirakc に渡す契約
- * （docs/api.md §ライブ視聴の HLS）なので、合成は URL を組み立てる側の責務。
- */
-export function mirakcServiceId(networkId: number, serviceId: number): number {
-  return networkId * mirakcServiceIdMagic + serviceId
-}
-
-/**
  * livePlaylistURL はストリーマーが配るプレイリスト URL を組み立てる（OpenAPI 外。
  * [docs/api.md](../../../docs/api.md) §ライブ視聴の HLS）。
  *
- * パスの serviceId は EPG の SI serviceId ではなく、mirakc が受け付ける合成 id
- * （`mirakcServiceId`）。渡す前にここで合成する（issue #208）。
+ * パスの `networkId` / `serviceId` は **SI の値そのもの** ---
+ * `GET /api/sites/{site}/services` が返すのと同じ id 空間である。mirakc が要求する
+ * 合成 id（`networkId * 100000 + serviceId`）への変換は streamer 側で行う
+ * （`internal/streamer/live.go` の `resolveRequest`）。合成をここで行っていた形
+ * （issue #208）は、mirakc の id 規則を TypeScript にも複製したうえで、URL の
+ * `services/{...}` が一覧 API と違う id を指す状態を作っていた（issue #217）。
  */
 export function livePlaylistURL(
   site: string,
@@ -40,8 +27,9 @@ export function livePlaylistURL(
   serviceId: number,
   profile?: string,
 ): string {
-  const id = mirakcServiceId(networkId, serviceId)
-  const base = `/api/sites/${encodeURIComponent(site)}/services/${id}/live/playlist.m3u8`
+  const base =
+    `/api/sites/${encodeURIComponent(site)}` +
+    `/networks/${networkId}/services/${serviceId}/live/playlist.m3u8`
   return profile ? `${base}?profile=${encodeURIComponent(profile)}` : base
 }
 

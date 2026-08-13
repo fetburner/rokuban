@@ -34,6 +34,7 @@ type fakeMirakcLiveState struct {
 	mu           sync.Mutex
 	requests     int
 	priorities   []string
+	requestURIs  []string
 	disconnected chan int64
 }
 
@@ -41,6 +42,14 @@ func (s *fakeMirakcLiveState) requestCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.requests
+}
+
+// requestURIList は mirakc が受け取った生の Request-URI（パス + クエリ）を返す。
+// 「streamer が mirakc に何を送ったか」を測る唯一の観測点（issue #217）。
+func (s *fakeMirakcLiveState) requestURIList() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.requestURIs)
 }
 
 // newFakeMirakcLiveServer は GET /api/services/{id}/stream を実装する偽 mirakc。
@@ -57,6 +66,10 @@ func newFakeMirakcLiveServer(t *testing.T) (*httptest.Server, *fakeMirakcLiveSta
 		state.mu.Lock()
 		state.requests++
 		state.priorities = append(state.priorities, r.Header.Get("X-Mirakurun-Priority"))
+		// r.RequestURI は net/http が受け取った生の Request-URI（デコード前）。
+		// r.URL.Path を見ると %2F が '/' に戻ってしまい、「別エンドポイントへの
+		// 要求に化けていないか」の観測にならない。
+		state.requestURIs = append(state.requestURIs, r.RequestURI)
 		state.mu.Unlock()
 
 		w.Header().Set("Content-Type", "video/MP2T")
@@ -199,8 +212,11 @@ func baseLiveConfig(t *testing.T) LiveConfig {
 	}
 }
 
-func playlistURL(base string, serviceID int64, profile string) string {
-	u := fmt.Sprintf("%s/api/sites/%s/services/%d/live/playlist.m3u8", base, testLiveSite, serviceID)
+// playlistURL は SI の (networkId, serviceId) からプレイリスト URL を組み立てる。
+// パスに載るのは SI の値そのもの（合成 id ではない。issue #217）。
+func playlistURL(base string, networkID, serviceID int, profile string) string {
+	u := fmt.Sprintf("%s/api/sites/%s/networks/%d/services/%d/live/playlist.m3u8",
+		base, testLiveSite, networkID, serviceID)
 	if profile != "" {
 		u += "?profile=" + profile
 	}
@@ -270,14 +286,14 @@ func TestLiveStreamer_SharedSession(t *testing.T) {
 	ls, srv := newTestLiveStreamer(t, mirakcSrv.URL, baseLiveConfig(t))
 	_ = ls
 
-	const serviceID = int64(1024)
+	const serviceID = 1024
 	var wg sync.WaitGroup
 	results := make([]int, 2)
 	for i := range 2 {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			resp, err := http.Get(playlistURL(srv.URL, serviceID, "h264"))
+			resp, err := http.Get(playlistURL(srv.URL, 0, serviceID, "h264"))
 			if err != nil {
 				t.Errorf("GET playlist: %v", err)
 				return
@@ -300,7 +316,7 @@ func TestLiveStreamer_SharedSession(t *testing.T) {
 
 	// プレイリストが指すセグメント URI を、プレイリスト URL 基準で相対解決した先
 	// から実際に配信できることも確認する（hls.js と同じ経路）。
-	segURL := firstSegmentURL(t, playlistURL(srv.URL, serviceID, "h264"))
+	segURL := firstSegmentURL(t, playlistURL(srv.URL, 0, serviceID, "h264"))
 
 	segResp, err := http.Get(segURL)
 	if err != nil {
@@ -324,7 +340,7 @@ func TestLiveStreamer_UsesConfiguredTunerPriority(t *testing.T) {
 	cfg.TunerPriority = 5
 	_, srv := newTestLiveStreamer(t, mirakcSrv.URL, cfg)
 
-	resp, err := http.Get(playlistURL(srv.URL, 1, "h264"))
+	resp, err := http.Get(playlistURL(srv.URL, 0, 1, "h264"))
 	if err != nil {
 		t.Fatalf("GET playlist: %v", err)
 	}
@@ -345,7 +361,7 @@ func TestLiveStreamer_SessionLimit(t *testing.T) {
 	cfg.MaxSessions = 1
 	_, srv := newTestLiveStreamer(t, mirakcSrv.URL, cfg)
 
-	resp1, err := http.Get(playlistURL(srv.URL, 1, "h264"))
+	resp1, err := http.Get(playlistURL(srv.URL, 0, 1, "h264"))
 	if err != nil {
 		t.Fatalf("GET playlist (1st service): %v", err)
 	}
@@ -355,7 +371,7 @@ func TestLiveStreamer_SessionLimit(t *testing.T) {
 		t.Fatalf("1st service status = %d, want 200", resp1.StatusCode)
 	}
 
-	resp2, err := http.Get(playlistURL(srv.URL, 2, "h264"))
+	resp2, err := http.Get(playlistURL(srv.URL, 0, 2, "h264"))
 	if err != nil {
 		t.Fatalf("GET playlist (2nd service): %v", err)
 	}
@@ -365,7 +381,7 @@ func TestLiveStreamer_SessionLimit(t *testing.T) {
 	}
 
 	// 既存セッション（1st service）は壊れていない。
-	resp1b, err := http.Get(playlistURL(srv.URL, 1, "h264"))
+	resp1b, err := http.Get(playlistURL(srv.URL, 0, 1, "h264"))
 	if err != nil {
 		t.Fatalf("GET playlist (1st service again): %v", err)
 	}
@@ -385,7 +401,7 @@ func TestLiveStreamer_UnknownProfile(t *testing.T) {
 	mirakcSrv, state := newFakeMirakcLiveServer(t)
 	_, srv := newTestLiveStreamer(t, mirakcSrv.URL, baseLiveConfig(t))
 
-	resp, err := http.Get(playlistURL(srv.URL, 1, "does-not-exist"))
+	resp, err := http.Get(playlistURL(srv.URL, 0, 1, "does-not-exist"))
 	if err != nil {
 		t.Fatalf("GET playlist: %v", err)
 	}
@@ -461,14 +477,14 @@ func TestLiveStreamer_Segment_TimesOutWhenSessionNeverBecomesReady(t *testing.T)
 	mirakcSrv, _ := newFakeMirakcLiveServer(t)
 	ls, srv := newTestLiveStreamer(t, mirakcSrv.URL, baseLiveConfig(t))
 
-	const serviceID = int64(999)
+	const serviceID = 999
 	s := injectNeverReadySession(t, ls, serviceID)
 
 	// テストのクライアント自身には十分大きいタイムアウトを設定する。直す前の
 	// 実装のまま実行しても、ここでテストプロセスがハングせずアサーション失敗
 	// （t.Fatalf）で終わるようにするための保険。
 	client := &http.Client{Timeout: 2 * time.Second}
-	segURL := fmt.Sprintf("%s/api/sites/%s/services/%d/live/segments/h264_seg00001.ts",
+	segURL := fmt.Sprintf("%s/api/sites/%s/networks/0/services/%d/live/segments/h264_seg00001.ts",
 		srv.URL, testLiveSite, serviceID)
 
 	start := time.Now()
@@ -510,12 +526,12 @@ func TestLiveStreamer_Playlist_TimesOutWhenSessionNeverBecomesReady(t *testing.T
 	mirakcSrv, _ := newFakeMirakcLiveServer(t)
 	ls, srv := newTestLiveStreamer(t, mirakcSrv.URL, baseLiveConfig(t))
 
-	const serviceID = int64(998)
+	const serviceID = 998
 	injectNeverReadySession(t, ls, serviceID)
 
 	client := &http.Client{Timeout: 2 * time.Second}
 	start := time.Now()
-	resp, err := client.Get(playlistURL(srv.URL, serviceID, ""))
+	resp, err := client.Get(playlistURL(srv.URL, 0, serviceID, ""))
 	if err != nil {
 		t.Fatalf("GET playlist: %v (playlist request should time out with a response, not hang until the client gives up)", err)
 	}
@@ -568,11 +584,11 @@ func TestLiveStreamer_Playlist_NewSessionTimesOutWhenMirakcNeverResponds(t *test
 
 	// ls.sessions にまだ存在しない serviceID --- 最初の要求は必ず
 	// getOrCreateSession の新規作成経路（マップ挿入 + go ls.runSession）を通る。
-	const serviceID = int64(777)
+	const serviceID = 777
 
 	client := &http.Client{Timeout: 3 * time.Second}
 	start := time.Now()
-	resp, err := client.Get(playlistURL(srv.URL, serviceID, ""))
+	resp, err := client.Get(playlistURL(srv.URL, 0, serviceID, ""))
 	if err != nil {
 		t.Fatalf("GET playlist: %v (new-session path should time out with a response, not hang until the client gives up)", err)
 	}
@@ -585,12 +601,101 @@ func TestLiveStreamer_Playlist_NewSessionTimesOutWhenMirakcNeverResponds(t *test
 	assertBoundedByStartupTimeout(t, elapsed)
 }
 
+// パスの id セグメントが SI の 16 bit 整数として読めない要求は、mirakc に
+// 一切触れずに弾かれる（issue #217）。
+//
+// **これは「不明な id は mirakc が拒否する」という未測定の断言の置き換えである。**
+// 以前の実装はパスの値をそのまま mirakc へ渡す前提だったので、「細工した値が
+// mirakc の別エンドポイントへの要求に化けないこと」を Rokuban 側で示す手段が
+// 無かった。ここでは弾く側（400/404）を、
+// TestLiveStreamer_MirakcPathIsComposedFromPathSegments が通す側（mirakc が
+// 実際に受け取る Request-URI）を固定するので、mirakc の挙動に依存しない。
+func TestLiveStreamer_RejectsHostileIDSegments(t *testing.T) {
+	mirakcSrv, state := newFakeMirakcLiveServer(t)
+	_, srv := newTestLiveStreamer(t, mirakcSrv.URL, baseLiveConfig(t))
+
+	tests := []struct {
+		name string
+		path string
+		want int
+	}{
+		// パス区切りの注入。%2F はデコードされずセグメントの一部として届くため、
+		// 400 で止まる（デコードされて別階層に化けるなら 404 になり、いずれに
+		// せよ mirakc には届かない）。
+		{"encoded path traversal", "/api/sites/default/networks/0/services/1%2F..%2Ftuners/live/playlist.m3u8", http.StatusBadRequest},
+		// クエリの注入（`?decode=0` を service id 側にねじ込む）。
+		{"encoded query injection", "/api/sites/default/networks/0/services/1%3Fdecode%3D0/live/playlist.m3u8", http.StatusBadRequest},
+		{"non numeric", "/api/sites/default/networks/0/services/abc/live/playlist.m3u8", http.StatusBadRequest},
+		// 空セグメントは chi のルートに一致してしまう（実測: 404 ではなく
+		// ハンドラまで届く）ので、空文字を弾くのは parseSIID 側の責務になる。
+		{"empty service id", "/api/sites/default/networks/0/services//live/playlist.m3u8", http.StatusBadRequest},
+		{"negative", "/api/sites/default/networks/0/services/-1/live/playlist.m3u8", http.StatusBadRequest},
+		{"signed plus", "/api/sites/default/networks/0/services/+1/live/playlist.m3u8", http.StatusBadRequest},
+		{"hex", "/api/sites/default/networks/0/services/0x400/live/playlist.m3u8", http.StatusBadRequest},
+		// SI の service_id は 16 bit。65536 以上は合成 id の桁を侵食するので弾く。
+		{"beyond 16 bit", "/api/sites/default/networks/0/services/65536/live/playlist.m3u8", http.StatusBadRequest},
+		{"overflow", "/api/sites/default/networks/0/services/99999999999999999999/live/playlist.m3u8", http.StatusBadRequest},
+		{"fullwidth digits", "/api/sites/default/networks/0/services/１０２４/live/playlist.m3u8", http.StatusBadRequest},
+		{"network id non numeric", "/api/sites/default/networks/abc/services/1024/live/playlist.m3u8", http.StatusBadRequest},
+		{"network id beyond 16 bit", "/api/sites/default/networks/65536/services/1024/live/playlist.m3u8", http.StatusBadRequest},
+		// 生の '/' は階層が変わるのでルート自体に一致しない。
+		{"literal extra segment", "/api/sites/default/networks/0/services/1/stream/live/playlist.m3u8", http.StatusNotFound},
+		// セグメント側も同じ入口（resolveRequest）を通る。
+		{"segment route non numeric", "/api/sites/default/networks/0/services/abc/live/segments/h264_seg00001.ts", http.StatusBadRequest},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp, err := http.Get(srv.URL + tt.path)
+			if err != nil {
+				t.Fatalf("GET %s: %v", tt.path, err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			if resp.StatusCode != tt.want {
+				t.Errorf("GET %s status = %d, want %d", tt.path, resp.StatusCode, tt.want)
+			}
+		})
+	}
+
+	if got := state.requestURIList(); len(got) != 0 {
+		t.Errorf("mirakc received %d request(s) %v, want none", len(got), got)
+	}
+}
+
+// 通る側: mirakc が実際に受け取る Request-URI は、パスの SI 値から合成した
+// 整数 1 つだけで組み立てられている（issue #217 / #208）。
+//
+// パスに載るのは SI の (networkId, serviceId) で、Mirakurun 合成 id
+// （networkId*100_000 + serviceId）への変換は streamer が mirakc.ServiceID で行う。
+// フロントが合成していた形（issue #208）だと、この変換規則が Go と TypeScript に
+// 二重化し、URL の id 空間が一覧 API と食い違ったままになる。
+func TestLiveStreamer_MirakcPathIsComposedFromPathSegments(t *testing.T) {
+	mirakcSrv, state := newFakeMirakcLiveServer(t)
+	_, srv := newTestLiveStreamer(t, mirakcSrv.URL, baseLiveConfig(t))
+
+	// 実機の BS（network_id=4, service_id=101）ではなく、network_id が 0 でない
+	// ことがはっきり効く値を使う（0 だと合成の有無を区別できない）。
+	resp, err := http.Get(playlistURL(srv.URL, 31920, 53248, "h264"))
+	if err != nil {
+		t.Fatalf("GET playlist: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	got := state.requestURIList()
+	want := []string{"/api/services/3192053248/stream?decode=1"}
+	if !slices.Equal(got, want) {
+		t.Errorf("mirakc request URIs = %v, want %v", got, want)
+	}
+}
+
 // site が config.mirakc.site と一致しない要求は 404（DB を引かずパスだけで判定する）。
 func TestLiveStreamer_SiteMismatch(t *testing.T) {
 	mirakcSrv, state := newFakeMirakcLiveServer(t)
 	_, srv := newTestLiveStreamer(t, mirakcSrv.URL, baseLiveConfig(t))
 
-	resp, err := http.Get(fmt.Sprintf("%s/api/sites/other-site/services/1/live/playlist.m3u8", srv.URL))
+	resp, err := http.Get(fmt.Sprintf("%s/api/sites/other-site/networks/0/services/1/live/playlist.m3u8", srv.URL))
 	if err != nil {
 		t.Fatalf("GET playlist: %v", err)
 	}
@@ -603,8 +708,9 @@ func TestLiveStreamer_SiteMismatch(t *testing.T) {
 	}
 }
 
-// URL にセッション ID が現れず、正規表現 1 本で (site, serviceId) が取り出せること
-// （前段の consistent hash 鍵になるための固定深さ制約、issue #56 / #91）。
+// URL にセッション ID が現れず、正規表現 1 本で (site, networkId, serviceId) が
+// 取り出せること（前段の consistent hash 鍵になるための固定深さ制約、
+// issue #56 / #91。鍵が 3 項になったのは issue #217）。
 //
 // レビュー指摘（必須 3）: 以前のこのテストはテスト自身が書いたリテラル文字列に
 // 正規表現を当てるだけで、Mount が実際に登録するルートを一切見ていなかった。
@@ -626,8 +732,8 @@ func TestLiveStreamer_URLPathFixedDepth(t *testing.T) {
 
 	routes := walkLiveRoutes(t, r)
 	want := []string{
-		"/api/sites/{site}/services/{serviceId}/live/playlist.m3u8",
-		"/api/sites/{site}/services/{serviceId}/live/segments/{name}",
+		"/api/sites/{site}/networks/{networkId}/services/{serviceId}/live/playlist.m3u8",
+		"/api/sites/{site}/networks/{networkId}/services/{serviceId}/live/segments/{name}",
 	}
 	slices.Sort(routes)
 	slices.Sort(want)
@@ -636,10 +742,10 @@ func TestLiveStreamer_URLPathFixedDepth(t *testing.T) {
 	}
 
 	// 実際に 200 が返る要求の URL にも、docs/operations.md §5 の nginx map と同じ
-	// 正規表現で (site, serviceId) が取り出せることを確認する（ルートの形だけでなく、
-	// 実在の URL でも成立する）。
-	re := regexp.MustCompile(`^/api/sites/([^/]+)/services/([^/]+)/live/`)
-	plURL := playlistURL(newLiveTestServerURL(t, r), 1024, "h264")
+	// 正規表現で (site, networkId, serviceId) が取り出せることを確認する
+	// （ルートの形だけでなく、実在の URL でも成立する）。
+	re := regexp.MustCompile(`^/api/sites/([^/]+)/networks/([^/]+)/services/([^/]+)/live/`)
+	plURL := playlistURL(newLiveTestServerURL(t, r), 4, 1024, "h264")
 	segURL := firstSegmentURL(t, plURL)
 
 	for _, raw := range []string{plURL, segURL} {
@@ -648,12 +754,13 @@ func TestLiveStreamer_URLPathFixedDepth(t *testing.T) {
 			t.Fatalf("parsing %q: %v", raw, err)
 		}
 		m := re.FindStringSubmatch(u.Path)
-		if m == nil || m[1] != "default" || m[2] != "1024" {
+		if m == nil || m[1] != "default" || m[2] != "4" || m[3] != "1024" {
 			t.Errorf("request path %q did not match the fixed-depth regex: %v", u.Path, m)
 		}
-		// クエリ文字列に鍵（site/serviceId）を置いていないことも確認する
+		// クエリ文字列に鍵（site/networkId/serviceId）を置いていないことも確認する
 		// （profile はクエリ側に許すが、鍵はパス側のみ）。
-		if u.RawQuery != "" && (strings.Contains(u.RawQuery, "site") || strings.Contains(u.RawQuery, "service")) {
+		if u.RawQuery != "" && (strings.Contains(u.RawQuery, "site") ||
+			strings.Contains(u.RawQuery, "service") || strings.Contains(u.RawQuery, "network")) {
 			t.Errorf("query %q must not carry the hash key", u.RawQuery)
 		}
 	}
@@ -691,7 +798,7 @@ func TestLiveStreamer_IdleGC_StopsSession(t *testing.T) {
 	cfg.IdleTimeout = 30 * time.Millisecond
 	ls, srv := newTestLiveStreamer(t, mirakcSrv.URL, cfg)
 
-	segURL := firstSegmentURL(t, playlistURL(srv.URL, 42, "h264"))
+	segURL := firstSegmentURL(t, playlistURL(srv.URL, 0, 42, "h264"))
 
 	if got := state.requestCount(); got != 1 {
 		t.Fatalf("mirakc requests = %d, want 1", got)
@@ -740,7 +847,7 @@ func TestLiveStreamer_IdleGC_TouchKeepsSessionAlive(t *testing.T) {
 	cfg.IdleTimeout = 200 * time.Millisecond
 	ls, srv := newTestLiveStreamer(t, mirakcSrv.URL, cfg)
 
-	segURL := firstSegmentURL(t, playlistURL(srv.URL, 7, "h264"))
+	segURL := firstSegmentURL(t, playlistURL(srv.URL, 0, 7, "h264"))
 
 	// idle timeout より短い間隔でセグメントを要求し続け、GC が走っても消えないことを見る。
 	deadline := time.Now().Add(400 * time.Millisecond)
@@ -778,7 +885,7 @@ func TestLiveStreamer_Run_StopsAllSessionsOnShutdown(t *testing.T) {
 	cfg.IdleTimeout = time.Hour // GC では止まらない距離にしておく
 	ls, srv := newTestLiveStreamer(t, mirakcSrv.URL, cfg)
 
-	resp, err := http.Get(playlistURL(srv.URL, 99, "h264"))
+	resp, err := http.Get(playlistURL(srv.URL, 0, 99, "h264"))
 	if err != nil {
 		t.Fatalf("GET playlist: %v", err)
 	}
@@ -811,7 +918,7 @@ func TestLiveStreamer_Run_StopsAllSessionsOnShutdown(t *testing.T) {
 	}
 
 	// shutdown 後は新規セッションを受け付けない。
-	resp2, err := http.Get(playlistURL(srv.URL, 100, "h264"))
+	resp2, err := http.Get(playlistURL(srv.URL, 0, 100, "h264"))
 	if err != nil {
 		t.Fatalf("GET playlist after shutdown: %v", err)
 	}
@@ -870,14 +977,14 @@ func TestLiveStreamer_OneClientLeavingDoesNotStopTheOther(t *testing.T) {
 	cfg.IdleTimeout = 120 * time.Millisecond
 	ls, srv := newTestLiveStreamer(t, mirakcSrv.URL, cfg)
 
-	const serviceID = int64(55)
+	const serviceID = 55
 
 	// クライアント A: 最初にプレイリストを取得してセッションを起こすが、その後は
 	// 何も要求せず離脱する。ffmpeg の起動（偽物でもプロセス起動コストがある）が
 	// idle timeout に対して遅いことがあるため、この 1 回目の取得時間そのものを
 	// idle 判定の基準にしない --- 直後に 1 回セグメントを取り直して lastAccess を
 	// 「今」に揃えてから idle 判定ループへ入る。
-	segURL := firstSegmentURL(t, playlistURL(srv.URL, serviceID, "h264"))
+	segURL := firstSegmentURL(t, playlistURL(srv.URL, 0, serviceID, "h264"))
 	if resp, err := http.Get(segURL); err == nil {
 		_ = resp.Body.Close()
 	}
@@ -1039,7 +1146,7 @@ func TestLiveStreamer_Disabled_DoesNotMountRoutes(t *testing.T) {
 	cfg.Enabled = false
 	_, srv := newTestLiveStreamer(t, mirakcSrv.URL, cfg)
 
-	resp, err := http.Get(playlistURL(srv.URL, 1, "h264"))
+	resp, err := http.Get(playlistURL(srv.URL, 0, 1, "h264"))
 	if err != nil {
 		t.Fatalf("GET playlist: %v", err)
 	}
@@ -1057,7 +1164,7 @@ func TestLiveStreamer_ActiveSessionsGauge(t *testing.T) {
 	cfg.IdleTimeout = time.Hour
 	ls, srv := newTestLiveStreamer(t, mirakcSrv.URL, cfg)
 
-	resp, err := http.Get(playlistURL(srv.URL, 1, "h264"))
+	resp, err := http.Get(playlistURL(srv.URL, 0, 1, "h264"))
 	if err != nil {
 		t.Fatalf("GET playlist: %v", err)
 	}
@@ -1087,7 +1194,7 @@ func TestLiveStreamer_PlaylistSegmentURIsResolveToServingRoute(t *testing.T) {
 	mirakcSrv, _ := newFakeMirakcLiveServer(t)
 	_, srv := newTestLiveStreamer(t, mirakcSrv.URL, baseLiveConfig(t))
 
-	segURL := firstSegmentURL(t, playlistURL(srv.URL, 1, "h264"))
+	segURL := firstSegmentURL(t, playlistURL(srv.URL, 0, 1, "h264"))
 
 	segResp, err := http.Get(segURL)
 	if err != nil {
@@ -1139,8 +1246,9 @@ func TestLiveMount_DisabledDoesNotFallBackToSPA(t *testing.T) {
 	defer srv.Close()
 
 	for _, path := range []string{
-		playlistURL(srv.URL, 3192053248, ""),
-		fmt.Sprintf("%s/api/sites/%s/services/3192053248/live/segments/segment_000.ts", srv.URL, testLiveSite),
+		playlistURL(srv.URL, 31920, 53248, ""),
+		fmt.Sprintf("%s/api/sites/%s/networks/31920/services/53248/live/segments/segment_000.ts",
+			srv.URL, testLiveSite),
 	} {
 		resp, body := get(t, path, nil)
 		if resp.StatusCode != http.StatusNotFound {
@@ -1157,7 +1265,7 @@ func TestLiveMount_DisabledDoesNotFallBackToSPA(t *testing.T) {
 	// 逆方向: 有効なら同じパスが登録される（この 404 が「無効だから」であって
 	// 「パスの綴りが違うから」ではないことを示す）
 	_, enabledSrv := newTestLiveStreamer(t, "http://mirakc.invalid", baseLiveConfig(t))
-	resp, _ := get(t, playlistURL(enabledSrv.URL, 3192053248, ""), nil)
+	resp, _ := get(t, playlistURL(enabledSrv.URL, 31920, 53248, ""), nil)
 	if resp.StatusCode == http.StatusNotFound {
 		t.Errorf("enabled: GET playlist = 404, want the route to exist")
 	}

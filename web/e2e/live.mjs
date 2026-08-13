@@ -36,30 +36,15 @@ const skipped = []
 const log = (...a) => console.log(...a)
 
 /**
- * composedServiceId は SI の serviceId を mirakc 合成 id
- * （`networkId * 100000 + serviceId`。`web/src/lib/live.ts` の
- * `mirakcServiceId` と同じ式）に変換する。プレイリスト / セグメントの URL に
- * 載るのはこちらなので、要求の照合にはこの値が要る（issue #208）。
+ * liveSegmentsPathOf は serviceId のセグメント要求を照合するためのパス断片を返す。
  *
- * `networkId` は `GET /api/sites/{site}/services` から引く --- 環境変数を
- * 増やすと、SI の id と合成 id のどちらを渡すのかを実行者が判断することになり、
- * 間違えても「タイムアウトした」としか見えない。
+ * ライブの URL は `/api/sites/{site}/networks/{networkId}/services/{serviceId}/live/...`
+ * で、**`{serviceId}` は SI の値そのもの**（一覧 API と同じ id 空間。issue #217）。
+ * 以前は mirakc 合成 id（`networkId * 100000 + serviceId`）が載っていたため、
+ * ここで一覧 API から networkId を引いて合成し直す必要があった --- その必要が
+ * 無くなったので、環境変数の SERVICE_A / _B をそのまま照合に使える。
  */
-async function composedServiceId(serviceId) {
-  const res = await fetch(`${BASE_URL}/api/sites/${SITE}/services`)
-  if (!res.ok) {
-    throw new Error(`GET /api/sites/${SITE}/services が ${res.status}`)
-  }
-  const services = await res.json()
-  const found = services.find((s) => String(s.serviceId) === String(serviceId))
-  if (found === undefined) {
-    throw new Error(
-      `serviceId=${serviceId} が site=${SITE} のサービス一覧に無い` +
-        `（E2E_LIVE_SERVICE_A / _B を実在する serviceId にする。docs/runbook/live.md §②）`,
-    )
-  }
-  return found.networkId * 100_000 + found.serviceId
-}
+const liveSegmentsPathOf = (serviceId) => `/services/${serviceId}/live/segments/`
 
 /**
  * ensureFixture は固定 HLS フィクスチャ（testsrc + sine を H.264/AAC でエンコードした
@@ -347,9 +332,8 @@ async function runConsentCheck() {
       // 落ち着いたことを確認する。ここで待たずに数えると「まだ再レンダーが
       // 済んでいないだけ」を「透過マウントが起きなかった」と誤って合格にする
       await page.getByRole('button', { name: /再生/ }).waitFor({ timeout: 10000 })
-      const composedB = await composedServiceId(SERVICE_B)
       const bRequestsWithoutPlay = requestLog.filter((u) =>
-        u.includes(`/services/${composedB}/live/`),
+        u.includes(`/services/${SERVICE_B}/live/`),
       )
       log(
         `  B のリンクを押しただけ（再生は押さない）での B 向け要求数: ` +
@@ -451,23 +435,19 @@ async function runChromiumChecks(browser) {
   // 切り替え前に旧チャンネル（A）のセグメントが最低 1 件要求されていることを
   // 確認してから切り替える（そもそも要求していなければ「0 件」の判定が
   // 成立しない）
-  const segmentsRequested = ([site, serviceId]) =>
+  const segmentsRequested = ([site, path]) =>
     window.performance
       .getEntriesByType('resource')
-      .some((r) => r.name.includes(`/sites/${site}/services/${serviceId}/live/segments/`))
+      .some((r) => r.name.includes(`/sites/${site}/networks/`) && r.name.includes(path))
 
-  // **セグメントの URL に載るのは SI の serviceId ではなく mirakc 合成 id**
-  // （`lib/live.ts` の `mirakcServiceId`。issue #208）。ここを SI の id で
-  // 照合すると、`network_id` が 0 でない限り一致しない --- 実 EPG（network_id
-  // 32200 等）でも runbook の投入例（network_id 1）でも一致せず、この待機が
-  // 必ずタイムアウトする（#208 以降ずっとそうなっていた。この修正で解消）
-  const composedA = await composedServiceId(SERVICE_A)
-  const composedB = await composedServiceId(SERVICE_B)
+  // **セグメントの URL に載るのは SI の serviceId**（issue #217）。#208〜#217 の
+  // 間だけは mirakc 合成 id が載っており、ここを SI の id で照合すると
+  // `network_id` が 0 でない限り一致せず、この待機が必ずタイムアウトしていた。
+  const segmentsA = liveSegmentsPathOf(SERVICE_A)
+  const segmentsB = liveSegmentsPathOf(SERVICE_B)
 
-  await page.waitForFunction(segmentsRequested, [SITE, composedA], { timeout: 10000 })
-  const requestsBeforeSwitchCount = requestLog.filter((u) =>
-    u.includes(`/services/${composedA}/live/segments/`),
-  ).length
+  await page.waitForFunction(segmentsRequested, [SITE, segmentsA], { timeout: 10000 })
+  const requestsBeforeSwitchCount = requestLog.filter((u) => u.includes(segmentsA)).length
   log(`  切替前の A 向けセグメント要求数: ${requestsBeforeSwitchCount}`)
 
   await page
@@ -490,14 +470,12 @@ async function runChromiumChecks(browser) {
   await playButtonForB.waitFor()
   requestLog.length = 0
   await playButtonForB.click()
-  await page.waitForFunction(segmentsRequested, [SITE, composedB], { timeout: 10000 })
+  await page.waitForFunction(segmentsRequested, [SITE, segmentsB], { timeout: 10000 })
   // 切り替え後もしばらく要求が続くかもしれない旧チャンネルの要求を数える余地を
   // 与える（hls.js の非同期な内部タイマーが 1 フレームだけ遅れて発火する
   // ケースを見逃さないため）
   await page.waitForTimeout(1500)
-  const staleRequestsAfterSwitch = requestLog.filter((u) =>
-    u.includes(`/services/${composedA}/live/segments/`),
-  )
+  const staleRequestsAfterSwitch = requestLog.filter((u) => u.includes(segmentsA))
   log(`  切替後の A 向けセグメント要求数: ${staleRequestsAfterSwitch.length}`)
   if (staleRequestsAfterSwitch.length > 0) {
     ng.push(
