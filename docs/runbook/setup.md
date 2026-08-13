@@ -98,9 +98,10 @@ volume 行を bind mount に差し替える。
 
 手で即時実行できる。ジョブ名はハイフン区切り（`epg-sync` / `tuner-sync` /
 `ruler-pass` / `reconcile-pass` / `record-sweep` / `catalog-export` /
-`storage-sync`）。
-site 束縛ジョブは多サイトでは `--site` が必須。`catalog-export` / `storage-sync`
-だけ site 非依存で `--site` を付けない（[operations.md](../operations.md) §ジョブ化されたループの監視）。
+`encode-reconcile` / `storage-sync`）。
+site 束縛ジョブは多サイトでは `--site` が必須。`catalog-export` /
+`encode-reconcile` / `storage-sync` だけ site 非依存で `--site` を付けない
+（[operations.md](../operations.md) §ジョブ化されたループの監視）。
 
 ```sh
 docker compose exec rokuban rokuban enqueue ruler-pass --config /config.yml

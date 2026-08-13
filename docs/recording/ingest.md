@@ -118,7 +118,9 @@ pull 完了後に書き込みバイト数を HEAD の Content-Length と照合 �
 
 **同一トランザクションでの投入はしない。** `media_assets` のコミット**後**に、ベストエフォートのヒントとしてエンコードジョブを投入する（`IngestWorker.Work` → `EnqueueMissingEncodes`。`ingest.go` の `enqueueMissingEncodesFromContext` 呼び出し）。投入に失敗してもログのみで、コミット済みの ingest は巻き戻さない。
 
-このヒント投入の失敗とエッジ record の削除成功（`DeleteRecord`。上記「層 3」）が両方起きると、その差分を埋め直す定期ループが無いためヒントは失われたままになる（`EnqueueMissingEncodes` の呼び出し元は ingest 完了時のヒントと `POST /api/recordings/{id}/encode-profiles` のみ）。この穴は [#163](https://github.com/fetburner/rokuban/issues/163) で追跡する。
+**落としたヒントは定期パスが埋める。** ヒント投入の失敗とエッジ record の削除成功（`DeleteRecord`。上記「層 3」）が両方起きると、そのヒントは二度と飛ばない —— エッジに record が残っていないので record_sweep も ingest ジョブを再投入しない。ヒントだけに頼ると、コミット済みの録画が誰にも再投入されず黙ってエンコードされないまま残る。これを塞ぐのが `encode_reconcile` ジョブ（`internal/worker/encode_reconcile.go`、既定 15 分周期）で、desired（`recording_encode_policy.encode_profiles`）− observed（active な `encoded` の `media_assets`）の差分を定期的に取り直して `EnqueueMissingEncodes` を呼ぶ。真実は DB の状態であって「ヒントが飛んだかどうか」ではない（不変条件 5）。
+
+対象は「原本（`kind='original'`）が active でコミット済み」かつ「ごみ箱に入っていない」録画に限る（ingest 未完了の録画とユーザーが捨てた録画を掘り起こさない）。エンコードは site の属性を持たない（アーカイブもプロファイルも単一）ので、このジョブは record_sweep のような site 単位ではなく全体で 1 本。`worker.periodic_jobs: false` の構成では `rokuban enqueue encode-reconcile` を CronJob から叩く（[operations/monitoring.md](../operations/monitoring.md) の CronJob 一覧）。
 
 ---
 

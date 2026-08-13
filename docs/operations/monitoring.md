@@ -124,9 +124,9 @@ ruler / reconciler / record_sweep（watcher の 3 段構えのうち (c) 定期�
 | 種別 | ジョブ | `--site` | CronJob の立て方 |
 |---|---|---|---|
 | site 束縛 | `epg-sync` / `tuner-sync` / `ruler-pass` / `reconcile-pass` / `record-sweep` | 多サイトでは必須（1 サイトなら省略可） | **サイトごとに 1 本**（`--site tokyo` 等） |
-| site 非依存 | `catalog-export` / `storage-sync` | **付けない**（付けるとエラー） | **全体で 1 本**（サイトごとに立てない） |
+| site 非依存 | `catalog-export` / `encode-reconcile` / `storage-sync` | **付けない**（付けるとエラー） | **全体で 1 本**（サイトごとに立てない） |
 
-`catalog-export` / `storage-sync` はアーカイブ（+ スクラッチ）が単一なので site の属性を持たない。サイトごとの CronJob から叩くと N 回投入される（River の一意制約で 1 本に合流はするが意図が読めない）。**`worker.periodic_jobs: false` の構成では `storage-sync` の CronJob を忘れると `storage_sync` が一度も投入されず、`GET /api/storage` が永遠に空配列を返す**（issue #238 のレビュー指摘）。
+`catalog-export` / `storage-sync` はアーカイブ（+ スクラッチ）が単一なので site の属性を持たない。`encode-reconcile` はエンコードのプロファイルとアーカイブがどちらも単一だから同じ扱い。サイトごとの CronJob から叩くと N 回投入される（River の一意制約で 1 本に合流はするが意図が読めない）。**`worker.periodic_jobs: false` の構成では `storage-sync` の CronJob を忘れると `storage_sync` が一度も投入されず、`GET /api/storage` が永遠に空配列を返す**（issue #238 のレビュー指摘）。**`encode-reconcile` を忘れた場合の症状は静かで、ヒントを落とした録画だけがエンコードされないまま残る**（[ingest](../recording/ingest.md) §5.5）。
 
 **record_sweep には ruler / reconciler と違ってヒント経路（前倒し投入）がない**。定期投入だけが契機で、間隔は既定 5 分（`worker.RecordSweepInterval`、旧 watcher の `ReconcileInterval` を継承）。SSE 再接続をヒントにする案は検討したが、`internal/mirakc.Client.Subscribe` が再接続を内部に隠していて呼び出し側に通知できないため見送った（[録画エンジン](../recording.md) §3.3「record_sweep の起動契機」）。取りこぼしの実害は SSE の (a)(b) が大半を吸収し、record_sweep は定期パスとして収束させる保険という位置づけなので、5 分間隔で十分と判断している。
 

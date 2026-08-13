@@ -65,6 +65,16 @@ var enqueueJobs = map[string]enqueueJob{
 		RequiresSite: false,
 		NewArgs:      func(string) river.JobArgs { return worker.CatalogExportArgs{} },
 	},
+	"encode-reconcile": {
+		// エンコードは site の属性を持たない（アーカイブもプロファイルも単一。
+		// worker.EncodeReconcileArgs のコメント）。delete_reconcile と違って
+		// 何も削除せず、DB を読んで encode ジョブを投入するだけなので、
+		// `worker.periodic_jobs: false` の構成（k8s）で CronJob から叩けるよう
+		// ここに載せる --- 載せないと、その構成ではこの定期パスが一度も走らず
+		// issue #163 の穴（ヒントを落とすと黙って再投入されない）が塞がらない。
+		RequiresSite: false,
+		NewArgs:      func(string) river.JobArgs { return worker.EncodeReconcileArgs{} },
+	},
 	"storage-sync": {
 		// catalog-export と同じ理由（アーカイブ/スクラッチが単一で Site を
 		// 持たない。issue #238 M7-5）。delete_reconcile とは異なり読み取り専用
