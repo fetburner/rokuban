@@ -71,7 +71,10 @@ export type IngestDisplay =
  *   「待っている」ことを知らせる情報ではない。録画中の全行に「取り込み待ち」が
  *   並ぶのは、何も言っていないのと同じ
  * - `committed` かつ原本がある（`sizeBytes` あり）: 正常な完了形なので黙る
- * - `unknown`: mirakc record の観測すら無い。言えることが無い
+ * - `unknown`: 取り込みが始まった観測が無い。mirakc record が観測されていないか、
+ *   record が `finished` でない（録画中・`failed`・`canceled` ---
+ *   **この録画に ingest ジョブは投入されない**）。前者は言えることが無く、後者は
+ *   「取り込み待ち」と言うと来ない未来を断定することになるので、どちらも黙る
  *
  * `originalDeleted`（`committed` かつ `sizeBytes` 無し）だけは `status` に
  * 関わらず返す --- これが **「まだ取り込めていない」と「取り込んだ後に消した」を
