@@ -171,8 +171,10 @@ func (EncodeReconcileArgs) InsertOpts() river.InsertOpts {
 // 録画単位の恒久失敗（入力ファイルの破損など）が RowLimit 件を超えた場合の
 // 到達不能は**残っている**。収束は主張しない: 窓が埋まったパスは Warn ログと
 // metrics.EncodeReconcileCandidates（上限に張り付く）で見える形にしてある。
-// 実際に窓が埋まると後ろに到達しないことは
-// TestEncodeReconcileWorker_RowLimitLeavesLaterRecordingsUnreached が固定している。
+// **2 パス回しても後ろに到達しない**ことは
+// TestEncodeReconcileWorker_RowLimitLeavesLaterRecordingsUnreached が固定している
+// （1 パスだけ回すテストでは「1 パスが LIMIT で切れる」しか言えず、それは
+// #326 を解消しても真のままなので限界の裏付けにならない）。
 //
 // site 照合ガード（issue #139）は不要: EncodeReconcileArgs は site を持たず、
 // mirakc にもファイルにも触れない（DB 読み + River Insert のみ）。どの site に
@@ -183,6 +185,13 @@ type EncodeReconcileWorker struct {
 
 	// Profiles は現在の encode.profiles（config.EncodeConfig）。desired の
 	// 絞り込みに名前だけを使う（ffmpeg は起動しない）。
+	//
+	// 空（プロファイル未設定）でも黙らない: 候補は 0 件になるが、凍結済みの
+	// desired は全部 metrics.EncodeReconcileUnsatisfiable と Warn に出る
+	// （TestEncodeReconcileWorker_EmptyProfileConfigIsVisibleNotSilent）。
+	// これは ProfileNames() が空設定でも non-nil を返すことに依存している ---
+	// nil を渡すと SQL 側が `= ANY(NULL)` で NULL になり、候補も検出も同時に
+	// 落ちる（encode_reconcile.sql のコメント参照）。
 	Profiles config.EncodeConfig
 
 	// RowLimit は 1 パスで拾う候補の上限。0 なら encodeReconcileRowLimit。

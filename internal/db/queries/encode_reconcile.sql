@@ -50,6 +50,16 @@
 --     プロファイル名がここで自動的に落ちるのも同じ仕組み（設定側の名前は
 --     必須検証済みなので known_profiles に空文字列は入らない）
 --
+-- **known_profiles は non-NULL でなければならない。** `x = ANY(NULL::text[])` は
+-- false ではなく NULL なので、NULL（Go 側の nil スライス）を渡すと EXISTS が
+-- 常に偽になり候補が全滅する。しかも下の ListUnsatisfiableEncodeProfiles の
+-- `NOT (... = ANY(...))` も同時に NULL になるため、**空振りしていることすら
+-- 見えなくなる**（バックストップが無症状で死ぬ）。呼び出し側が渡すのは
+-- config.EncodeConfig.ProfileNames() で、空設定でも non-nil を返す契約
+-- （internal/config の TestEncodeConfig_ProfileNames_EmptyIsNonNil、
+-- internal/worker の TestEncodeReconcileWorker_EmptyProfileConfigIsVisibleNotSilent
+-- が両側から固定している）。
+--
 -- name: ListRecordingsMissingEncodes :many
 SELECT p.recording_id
 FROM recording_encode_policy p

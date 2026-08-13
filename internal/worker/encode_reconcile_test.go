@@ -392,6 +392,14 @@ func TestEncodeReconcileWorker_SkipsProfilesMissingFromConfig(t *testing.T) {
 // 事実であることの裏付けである（測っていない挙動を断言しない）。限界を
 // 解消したら（#326）このテストは落ちるので、そのとき doc コメントと一緒に
 // 書き換える。
+//
+// **パスは 2 回回す。** 1 回だけだと固定できるのは「1 パスが LIMIT で切れる」
+// までで、それは #326 を解消しても真のまま（窓を回す実装でも 1 パスの取得件数は
+// LIMIT のまま）なので、限界そのもの ---「**次のパスでも**到達しない」--- の
+// 裏付けにならない。2 パス目を回すと、#326 の候補 1（カーソルで窓を回す）でも
+// 候補 2（恒久失敗を候補から隔離する）でも 2 件目に到達するようになるため、
+// このテストが落ちて書き換えを促す。カーソル案を Work に仮実装して確認済み
+// （1 パスのままでは PASS のまま = 修正を検出できない）。
 func TestEncodeReconcileWorker_RowLimitLeavesLaterRecordingsUnreached(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {
@@ -404,14 +412,17 @@ func TestEncodeReconcileWorker_RowLimitLeavesLaterRecordingsUnreached(t *testing
 		t.Fatalf("expected the first seeded recording to have the lower id (%d > %d)", first, second)
 	}
 
+	// 1 件目は投入されるが encoded は生まれない（このテストは encode を走らせない）
+	// ので、次パスでも 1 件目が候補の先頭に居座る --- 「永久に満たせない候補」と
+	// 同じ状況を作っている。
 	w := &EncodeReconcileWorker{Pool: pool, Profiles: encodeConfigWith("h265"), RowLimit: 1}
+	runEncodeReconcilePass(t, pool, w)
 	runEncodeReconcilePass(t, pool, w)
 
 	if got := countEncodeJobs(t, pool, first, "h265"); got != 1 {
 		t.Errorf("encode jobs for the first recording = %d, want 1", got)
 	}
-	// 2 件目は窓に入らなかった（次パスも同じ 1 件目を拾うので、1 件目が
-	// 永久に満たされないなら 2 件目には二度と到達しない）。
+	// 2 件目には 2 パス目でも到達しない（窓が回らない）。
 	if got := countEncodeJobs(t, pool, second, "h265"); got != 0 {
 		t.Errorf("encode jobs for the recording beyond the window = %d, want 0", got)
 	}
@@ -421,6 +432,40 @@ func TestEncodeReconcileWorker_RowLimitLeavesLaterRecordingsUnreached(t *testing
 	}
 	if got := promtestutil.ToFloat64(metrics.EncodeReconcileLastPass); got == 0 {
 		t.Error("last-pass gauge was not set; a stalled pass would be undetectable")
+	}
+}
+
+// TestEncodeReconcileWorker_EmptyProfileConfigIsVisibleNotSilent は、
+// encode.profiles が空の構成でパスが**空振りしていることが見える**ことを固定する。
+//
+// このパスは known_profiles を SQL に渡すが、Postgres の
+// `x = ANY(NULL::text[])` は false ではなく NULL になるため、**nil を渡すと候補も
+// 検出も同時に落ちてバックストップが無症状で死ぬ**。config.EncodeConfig.ProfileNames()
+// は空設定でも non-nil を返す契約（TestEncodeConfig_ProfileNames_EmptyIsNonNil が
+// 固定）なので、ここでは「空 = 候補ゼロだが unsatisfiable に出る」を確認する
+// --- ProfileNames が nil を返すようになるとこのテストが落ちる。
+func TestEncodeReconcileWorker_EmptyProfileConfigIsVisibleNotSilent(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	recordingID := seedRecordingWithOriginal(t, pool, t.TempDir(), "empty/a.m2ts",
+		[]string{"h265"}, []byte("x"))
+
+	// プロファイルが 1 つも無い設定。
+	w := &EncodeReconcileWorker{Pool: pool, Profiles: config.EncodeConfig{}}
+	runEncodeReconcilePass(t, pool, w)
+
+	if got := countEncodeJobs(t, pool, recordingID, "h265"); got != 0 {
+		t.Errorf("encode jobs = %d, want 0 (nothing can be encoded without profiles)", got)
+	}
+	if got := promtestutil.ToFloat64(metrics.EncodeReconcileCandidates); got != 0 {
+		t.Errorf("candidates gauge = %v, want 0", got)
+	}
+	// 空振りが見えること。ここが 0 だと「候補ゼロ」と「クエリが NULL で全部
+	// 落ちた」を区別できない。
+	if got := promtestutil.ToFloat64(metrics.EncodeReconcileUnsatisfiable.WithLabelValues("h265")); got != 1 {
+		t.Errorf("unsatisfiable gauge for %q = %v, want 1 (an empty profile set must be visible, not silent)", "h265", got)
 	}
 }
 

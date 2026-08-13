@@ -902,6 +902,26 @@ func TestEncodeConfig_Profile(t *testing.T) {
 	}
 }
 
+// TestEncodeConfig_ProfileNames_EmptyIsNonNil は「プロファイルが 1 つも無い設定でも
+// ProfileNames() は non-nil を返す」という契約を固定する。`slices.Equal` は nil と
+// 空スライスを等しいと見るので、上のテストではこの違いを捕まえられない。
+//
+// 依存している側（nil にすると壊れる側）:
+//   - internal/worker: encode の定期 reconcile がこの結果を SQL に渡す。
+//     Postgres の `x = ANY(NULL::text[])` は false ではなく **NULL** なので、
+//     nil を渡すと候補（EXISTS が偽になる）も検出（NOT NULL も NULL）も同時に
+//     落ち、バックストップが**無症状で**死ぬ（空スライスなら「候補ゼロ + 未設定
+//     プロファイルの警告」が出て気付ける）。実挙動は
+//     TestEncodeReconcileWorker_EmptyProfileConfigIsVisibleNotSilent が見る
+//   - internal/api/handler.go: nil を「検証スキップ」の合図に使っている
+//     （そこのコメント参照）ので、nil を返すと未知プロファイル名の 400 判定が
+//     まるごと無効になる
+func TestEncodeConfig_ProfileNames_EmptyIsNonNil(t *testing.T) {
+	if got := (EncodeConfig{}).ProfileNames(); got == nil {
+		t.Error("ProfileNames() on an empty config returned nil; callers rely on non-nil (see the doc comment on this test)")
+	}
+}
+
 func TestEncodeConfig_ValidateTools(t *testing.T) {
 	// 存在しないコマンド名は失敗する（LookPath の経路）。
 	// 実在する ffmpeg は環境依存なので「無い方」だけ固定する。
