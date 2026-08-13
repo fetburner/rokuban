@@ -14,8 +14,9 @@ import (
 )
 
 // catalogFile は catalog の書き込み先。os.File のうち Write が使う操作だけを
-// 切り出してある（テストが「書き込み途中で停止」を注入するための継ぎ目。
-// generation_test.go の failing writer を参照）。
+// 切り出してある（テストが「書き込み途中で停止」と「書き込み順序の観測」を
+// 注入するための継ぎ目。generation_test.go の stoppingFile / recordingOpener
+// を参照）。
 type catalogFile interface {
 	io.Writer
 	Sync() error
@@ -138,11 +139,15 @@ func (w *countingWriter) Write(p []byte) (int, error) {
 
 // uniqueGenerationName は base から始めて、まだ存在しない世代名を返す。
 // 同じ秒に 2 回書くことになっても既存世代を上書きしない（連番を足す）。
+//
+// 連番は**ゼロ詰め 2 桁**にする。辞書順が「新しい順」の唯一の根拠なので、
+// `-2` と `-10` を並べると 10 本目が 2 本目より古い側に落ちる（`-02` < `-10`）。
+// 99 本を超えたら名前を作らずエラーにする（黙って順序の壊れた名前を作らない）。
 func uniqueGenerationName(dir, base string) (string, error) {
-	for i := 1; i <= 100; i++ {
+	for i := 1; i <= 99; i++ {
 		name := base
 		if i > 1 {
-			name = fmt.Sprintf("%s-%d", base, i)
+			name = fmt.Sprintf("%s-%02d", base, i)
 		}
 		_, err := os.Stat(filepath.Join(dir, name))
 		if os.IsNotExist(err) {
@@ -205,13 +210,35 @@ func scanSnapshots(catalogDir string) (snaps []snapshot, stale []string, err err
 	return snaps, stale, nil
 }
 
+// verifySnapshot は 1 エントリの完成判定を行う。判定の唯一の入口にして、
+// Prune / SelectLatest / ListSnapshots が同じ基準で見るようにする。
+//
+// 世代ディレクトリは VerifyGeneration（manifest + サイズ + sha256）。旧形式の
+// フラットファイルは manifest を持たないので、**parse できることまでしか
+// 確かめられない**（docs/storage.md §8）。
+func verifySnapshot(catalogDir string, s snapshot) (*Manifest, error) {
+	path := filepath.Join(catalogDir, s.name)
+	if s.generation {
+		return VerifyGeneration(path)
+	}
+	if _, err := Load(path); err != nil {
+		return nil, err
+	}
+	return nil, nil
+}
+
 // Prune は catalogDir を掃除する（docs/storage.md §8「不完全世代の保持と掃除」）。
 //
-//   - 使える世代（完成世代 + 旧形式のフラットファイル）を新しい順に keep 件残し、
-//     それより古いものを消す
-//   - 不完全な世代は「それより新しい使える世代がある」ときだけ消す。最新側の
-//     不完全世代は**進行中のエクスポートかもしれない**ので残す
+//   - 使えるもの（完成世代 + 旧形式のフラットファイル）を rescue の選択順
+//     （**完成世代が先、旧形式が後**。それぞれ新しい順）に keep 件残し、
+//     溢れた分を消す。厳密な時刻順ではない --- 検証できない旧形式ファイルの
+//     ために検証済みの完成世代を消さないため
+//   - 不完全な世代は「時刻順でそれより新しい使えるものがある」ときだけ消す。
+//     最新側の不完全世代は**進行中のエクスポートかもしれない**ので残す
 //   - 旧方式の残骸（catalog-*.tmp）は消す
+//
+// **Prune を呼ぶのは Write の成功パスだけ**（エクスポートが失敗し続ける間は
+// 掃除も走らない）。docs/storage.md §8 に同じ但し書きがある。
 //
 // catalog/ 以外は触らない。catalog- で始まらないファイルにも触らない。
 func Prune(catalogDir string, keep int) error {
@@ -235,10 +262,8 @@ func Prune(catalogDir string, keep int) error {
 	var usableSeen bool
 	for _, s := range snaps {
 		usable := true
-		if s.generation {
-			if _, err := VerifyGeneration(filepath.Join(catalogDir, s.name)); err != nil {
-				usable = false
-			}
+		if _, err := verifySnapshot(catalogDir, s); err != nil {
+			usable = false
 		}
 		if !usable {
 			// 不完全世代: 時刻順で新しい側に使えるものが 1 つでもあれば消す。
@@ -289,8 +314,72 @@ type Selection struct {
 
 // RejectedSnapshot は完成判定に落ちた世代（または読めなかった旧形式ファイル）。
 type RejectedSnapshot struct {
-	Name   string
+	Name string
+	// Generation は世代ディレクトリなら true、旧形式のフラットファイルなら
+	// false。運用者向けの文言を分けるために持つ（ファイルは世代ではない）。
+	Generation bool
+	Reason     string
+}
+
+// SnapshotStatus は catalog/ の 1 エントリを完成判定に掛けた結果。
+type SnapshotStatus struct {
+	// Name は世代ディレクトリ名、または旧形式のフラットファイル名。
+	Name string
+	// Generation は世代ディレクトリなら true。
+	Generation bool
+	// Complete は世代なら完成判定（manifest + サイズ + sha256）を通ったこと。
+	// 旧形式のフラットファイルは manifest を持たないので「parse できた」までしか
+	// 意味しない（Generation が false のときは Complete を完成の証明として
+	// 読まない。docs/storage.md §8）。
+	Complete bool
+	// Reason は Complete が false のときの理由。
 	Reason string
+	// Manifest は完成世代の manifest（旧形式なら nil）。
+	Manifest *Manifest
+}
+
+// ListSnapshots は media_dir/catalog/ の全エントリを **rescue と同じ優先順**
+// （完成世代が先、旧形式のフラットファイルが後。それぞれ新しい順）に並べ、
+// 1 つずつ完成判定に掛けた結果を返す。**DB には一切触らない。**
+//
+// 最初に Complete が true になったエントリが、rescue が選ぶものと一致する
+// （TestListSnapshots_FirstCompleteMatchesSelectLatest）。
+func ListSnapshots(mediaDir string) ([]SnapshotStatus, error) {
+	dir := Dir(mediaDir)
+	snaps, _, err := scanSnapshots(dir)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]SnapshotStatus, 0, len(snaps))
+	for _, s := range orderSnapshots(snaps) {
+		st := SnapshotStatus{Name: s.name, Generation: s.generation, Complete: true}
+		m, err := verifySnapshot(dir, s)
+		if err != nil {
+			st.Complete = false
+			st.Reason = err.Error()
+		}
+		st.Manifest = m
+		out = append(out, st)
+	}
+	return out, nil
+}
+
+// orderSnapshots は新しい順に並んだ snaps を、rescue の優先順（完成世代が先、
+// 旧形式が後。それぞれ新しい順のまま）に並べ替える。
+func orderSnapshots(snaps []snapshot) []snapshot {
+	ordered := make([]snapshot, 0, len(snaps))
+	for _, s := range snaps {
+		if s.generation {
+			ordered = append(ordered, s)
+		}
+	}
+	for _, s := range snaps {
+		if !s.generation {
+			ordered = append(ordered, s)
+		}
+	}
+	return ordered
 }
 
 // SelectLatest は media_dir/catalog/ から**最新の完成世代**を選ぶ。
@@ -304,40 +393,28 @@ type RejectedSnapshot struct {
 // （飛ばした世代の理由を呼び出し側が報告できるようにする。「catalog が無い」と
 // 「catalog はあるが全部不完全だった」を混同させない）。
 func SelectLatest(mediaDir string) (*Selection, error) {
-	dir := Dir(mediaDir)
-	snaps, _, err := scanSnapshots(dir)
+	statuses, err := ListSnapshots(mediaDir)
 	if err != nil {
 		return nil, err
 	}
 
+	dir := Dir(mediaDir)
 	sel := &Selection{}
-	// 1 巡目: 完成世代だけを見る。旧形式は検証できないので後回しにする。
-	var legacy []snapshot
-	for _, s := range snaps {
-		if !s.generation {
-			legacy = append(legacy, s)
+	for _, st := range statuses {
+		if !st.Complete {
+			sel.Rejected = append(sel.Rejected, RejectedSnapshot{
+				Name: st.Name, Generation: st.Generation, Reason: st.Reason,
+			})
 			continue
 		}
-		path := filepath.Join(dir, s.name)
-		m, err := VerifyGeneration(path)
-		if err != nil {
-			sel.Rejected = append(sel.Rejected, RejectedSnapshot{Name: s.name, Reason: err.Error()})
-			continue
+		if st.Generation {
+			sel.DocumentPath = filepath.Join(dir, st.Name, st.Manifest.Document)
+			sel.Generation = st.Name
+			sel.Manifest = st.Manifest
+			return sel, nil
 		}
-		sel.DocumentPath = filepath.Join(path, m.Document)
-		sel.Generation = s.name
-		sel.Manifest = m
-		return sel, nil
-	}
-
-	// 2 巡目: 旧形式。parse できることしか確かめられない。
-	for _, s := range legacy {
-		path := filepath.Join(dir, s.name)
-		if _, err := Load(path); err != nil {
-			sel.Rejected = append(sel.Rejected, RejectedSnapshot{Name: s.name, Reason: err.Error()})
-			continue
-		}
-		sel.DocumentPath = path
+		// 旧形式のフラットファイル。完成を検証できていない最後の手段。
+		sel.DocumentPath = filepath.Join(dir, st.Name)
 		sel.Legacy = true
 		return sel, nil
 	}
