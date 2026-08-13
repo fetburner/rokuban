@@ -19,6 +19,7 @@ import {
 import { apiErrorMessage, unwrap } from '@/api/unwrap'
 import { RecordingFilters } from '@/components/recording-filters'
 import { RecordingPlayer } from '@/components/recording-player'
+import { StorageBalance } from '@/components/storage-balance'
 import { EmptyState, ErrorState, ListSkeleton, PageHeader } from '@/components/page'
 import { useToast } from '@/components/toaster'
 import {
@@ -189,6 +190,7 @@ export function RecordingsPage() {
           />
         </div>
         <RecordingFilters search={search} onChange={updateSearch} />
+        <StorageBalance />
       </PageHeader>
 
       {query.isError ? (
