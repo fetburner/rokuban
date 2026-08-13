@@ -275,6 +275,92 @@ process`、チューナー本数がそれより少ない環境ではさらに手
 （= 保証の実効性そのもの）は `web/e2e/live.mjs` が実ブラウザ・実 hls.js で担う
 （後述「実機確認について」）。
 
+### 録画予約による中断予測（issue #235 M7-2）
+
+mirakc の優先度調停では録画が勝つため、視聴中に同じチャンネル種別の録画予約が
+始まるとチューナーを取られて視聴側が中断されうる。Rokuban は予約（desired state）
+を持っているので、視聴開始前に「この後中断されうるか」を知らせられる ---
+EPGStation・KonomiTV には構造的にできない表示。
+
+**判定は純関数 `lib/live-interruption.ts` の `upcomingInterruptingReservation`。**
+視聴対象と同じチャンネル種別のサービスに絞って EPG（`GET /api/sites/{site}/programs`）
+から programId を引き、`GET /api/reservations`（全サイト分。絞り込みパラメータを
+持たない）の予約と `(site, programId)` で突き合わせる --- `Reservation` はチャンネル
+種別を持たないため、この EPG 側の join が要る。予約は `programId` が site スコープの
+値であり、別サイトの同じ番号の番組と取り違えないよう `site` の一致も見る
+（docs/schema.md §1 の設計原則）。
+
+- **先読みの時間窓は 2 時間。** 視聴を選ぶ／始める瞬間の判断材料として出す表示
+  なので、窓は「これから見始める 1 回の視聴」がカバーする範囲に合わせる。1 番組
+  （30 分〜1 時間）を見ている間に次の番組の録画が競合し得ることまでは見せたいが、
+  24 時間先の録画予約まで警告すると「今まさに見るかどうかの判断」には関係の薄い
+  予約まで出てノイズになる
+- **skip の予約は除外する（サーバーの需要計算と同じ規則）。** `effective.skip` が
+  true の予約は reconciler が mirakc に同期しないためチューナーを消費しない
+  （`internal/capacity/load.go` の `demandFromRow` --- `eff.IsSkipped()` が true の
+  行は容量の需要から除外される。docs/data.md §6.5）。API が返す `Reservation.skip`
+  はまさにこの `effective.skip` なので、フロント側もこの値で同じ除外を行う
+- **下界主義は容量バッジと同じ規律（docs/data.md §6.5）。** 「中断されます」と
+  断言しない --- チューナーに余裕があれば中断されないが、余裕があるとも言えない
+  （見えない消費者。並走 EPGStation・他のライブ視聴セッション・mirakc の
+  `excluded_channels`。**加えてチャンネル種別一致だけを見ているため、BS/CS
+  兼用チューナー等、別種別でも同じチューナーを取り合う構成では警告が出ない
+  --- サーバー側の Hall 条件は `tuner_sync.types` でこの兼用を扱うが、フロントは
+  そこまで見ていない。沈黙側に倒れているので下界主義には反しないが既知の盲点**）。
+  文言は「HH:MM から録画予約があります。チューナーが
+  不足すると視聴は中断されます」という条件付きにする。**「録画予約はありません =
+  安全に見られます」は出さない** --- 肯定的な文言を一切持たない。沈黙は保証では
+  ない（`CapacityShortfallBadge` / `ProgramOverlapWarning` と同じ「余計な枠を
+  出さない」流儀）
+- **鮮度は SSE の `reservations` トピックに相乗りする。専用トピックは作らない**
+  （容量バッジと同じ判断。`lib/events.ts` の `topicQueryKeys.reservations` が既に
+  `/api/reservations` を接頭辞に持つため、予約が変わればこの表示も自動で
+  invalidate される）
+- **値札（選択状態。issue #234 M7-1）と視聴中の画面の両方に同じ
+  `LiveInterruptionWarning`（`components/live-interruption-warning.tsx`）を出す。**
+  `pages/live.tsx` ではチャンネル名・種別バッジ・番組表への導線と同じ情報欄
+  （`isPlaying` の分岐の外）に置くことで、1 箇所の実装で両方の受け入れ条件を
+  満たしている
+- **EPG 問い合わせ（`GET /api/sites/{site}/programs`）の時間窓は 10 分グリッドに
+  丸める（`lib/live-interruption.ts` の `interruptionQueryWindow`）。** `nowMs`
+  から素直に窓を組むと、「いま」を更新する tick（`nowPlayingRefetchMs`。30 秒）
+  ごとに `useListPrograms` のクエリキーが変わり、react-query がそれを**新しい
+  キャッシュエントリ**として扱う --- 取得完了までの間 `sameTypeProgramIds` が
+  空集合に戻り、**表示中の警告が一時的に消える**（実測: jsdom で 30038ms 後・
+  実 Chromium で 28258ms 後に消失。レビューでの指摘）。丸めることで 10 分間は
+  窓の値が変わらず、キャッシュも保たれる（副作用として、同種別全サービス ×
+  2 時間ぶんの EPG を 30 秒ごとに取り直していた無駄も無くなる）
+
+判定手段: `lib/live-interruption.test.ts`（一致するとき返す / skip・別チャンネル
+種別・別サイトの同じ programId・窓外・すでに始まった予約では返さない、の両方向。
+加えて `interruptionQueryWindow` が tick を跨いでも窓の値を保つこと・グリッドを
+跨げば変わること・常に判定窓の上位集合であること）、`pages/live.test.tsx`
+「録画予約による中断予測」（選択状態・視聴中画面の両方に出る / skip・別チャンネル
+種別では出ない、の end-to-end wiring。加えて 30 秒の tick を実時間で跨いでも
+警告が消え続けないことをポーリングで確認）、
+`components/live-interruption-warning.test.tsx`（`reservation` が null のとき
+**描画そのものが無いこと**を `toBeEmptyDOMElement()` で見る --- 文言の regex
+一致だけでは、指定した語を含まない別の肯定文言への変異を検出できない。
+レビューでの指摘）。
+
+**未検証・要確認の 2 点**（blocking ではないが、既知の不正確さとして書いておく）:
+
+- **視聴中のチャンネル自体の録画予約でも警告が出る。** docs/data.md §6.5 の需要
+  モデルは「同一物理チャンネルなら 1 本のチューナーに相乗りできる」ため、録画同士
+  は同一チャンネルで競合しない。しかし mirakc がライブのストリーム要求と録画を
+  同一チャンネルで相乗りさせるかどうかは本リポジトリ内に記述が無く、**未検証**
+  （`internal/streamer/live.go` は「同じサービスを複数クライアントが見ても共有
+  する」までしか言っていない）。相乗りするなら、この機能が最も頻繁に発火する
+  ケース（見ているチャンネルの次の番組がルールで予約されている）が偽陽性になる
+  --- 文言自体は「不足すると中断されます」という条件付きなので嘘にはならないが、
+  値札としての精度は下がる
+- **別チャンネル種別でも同じチューナーを取り合う構成（BS/CS 兼用チューナー等）
+  では沈黙する。** 判定は `sameTypeServiceIds`（チャンネル種別の一致）だけで
+  引いており、`tuner_sync.types`（サーバー側の Hall 条件はこちらで兼用を扱う。
+  docs/data/capacity.md）までは見ていない。issue #235 の指定どおり種別一致で
+  実装しており、沈黙側に倒れているので下界主義には反しないが、既知の盲点として
+  上記「下界主義」の項の見えない消費者の一覧に追記した
+
 ### 実機確認について
 
 **実機確認の手段・判定項目・回帰の記録は [runbook.md](../runbook.md)（ライブ視聴の

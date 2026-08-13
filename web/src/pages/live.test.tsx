@@ -4,7 +4,7 @@ import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { ProgramListItem, Service } from '@/api/generated'
+import type { ProgramListItem, Reservation, Service } from '@/api/generated'
 import { ToastProvider } from '@/components/toaster'
 import { routeTree } from '@/routes'
 
@@ -39,6 +39,23 @@ function program(overrides: Partial<ProgramListItem>): ProgramListItem {
   }
 }
 
+function reservation(overrides: Partial<Reservation> = {}): Reservation {
+  return {
+    id: 1,
+    site: 'default',
+    programId: 1,
+    source: 'rule',
+    state: 'active',
+    title: '予約',
+    startAt: new Date(Date.now() + 30 * 60_000).toISOString(),
+    durationMs: 3600_000,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    skip: false,
+    ...overrides,
+  }
+}
+
 /**
  * renderLive は実際の routeTree（`@/routes`）を使って `/live` を開く。
  *
@@ -54,16 +71,36 @@ function renderLive(initialEntry = '/live') {
     routeTree,
     history: createMemoryHistory({ initialEntries: [initialEntry] }),
   })
-  return render(
-    <QueryClientProvider
-      client={new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 } } })}
-    >
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 } } })
+  const result = render(
+    <QueryClientProvider client={queryClient}>
       <ToastProvider>
         {/* 型はアプリ本体（main.tsx）の router 登録で付くため、ここでは構造だけ見る */}
         <RouterProvider router={router as never} />
       </ToastProvider>
     </QueryClientProvider>,
   )
+  return { ...result, queryClient }
+}
+
+/**
+ * interruptionSettled は中断予測（issue #235）が使う予約クエリの解決を待つ
+ * （`pages/reservations.test.tsx` の `overagesSettled` と同じ考え方）。
+ *
+ * `queryClient.isFetching() === 0` だけでは「まだクエリが始まっていない瞬間」を
+ * 「解決済み」と読んで通ってしまう（CLAUDE.md「非同期の空虚な成功」）ため、
+ * `/api/reservations` が少なくとも 1 回 success になったことも要求する。
+ * 「警告が出ない」ことの確認はこれを通してから行う。
+ */
+async function interruptionSettled(queryClient: QueryClient): Promise<void> {
+  await waitFor(() => {
+    expect(queryClient.isFetching()).toBe(0)
+    const statuses = queryClient
+      .getQueryCache()
+      .findAll({ queryKey: ['/api/reservations'] })
+      .map((query) => query.state.status)
+    expect(statuses).toContain('success')
+  })
 }
 
 /** stubFetch は pathname ごとに応答を振り分ける（routes.test.tsx と同じ形）。 */
@@ -74,10 +111,22 @@ function stubFetch(options: {
   live?: boolean
   /** 能力 API のステータス。200 以外なら「有効か無効か分からない」状態になる。 */
   capabilitiesStatus?: number
+  /** `GET /api/reservations`（全サイト分）。既定は空 --- 中断予測（issue #235）用。 */
+  reservations?: Reservation[]
 }) {
-  const { services = [], programsByServiceId = {}, live = true, capabilitiesStatus = 200 } = options
+  const {
+    services = [],
+    programsByServiceId = {},
+    live = true,
+    capabilitiesStatus = 200,
+    reservations = [],
+  } = options
   globalThis.fetch = vi.fn((input: string | URL | Request) => {
     const url = new URL(String(input), 'http://localhost')
+
+    if (url.pathname === '/api/reservations') {
+      return Promise.resolve(new Response(JSON.stringify(reservations), { status: 200 }))
+    }
 
     // ライブへの導線・画面はサーバー側の live.enabled に連動する（issue #209）。
     if (url.pathname === '/api/capabilities') {
@@ -109,9 +158,12 @@ function stubFetch(options: {
       return Promise.resolve(new Response(JSON.stringify(services), { status: 200 }))
     }
     if (url.pathname === '/api/sites/default/programs') {
-      const serviceIdParam = url.searchParams.get('serviceId')
-      const serviceId = serviceIdParam !== null ? Number(serviceIdParam) : undefined
-      const list = serviceId !== undefined ? programsByServiceId[serviceId] ?? [] : []
+      // `?serviceId=` は複数指定可（orval のクエリシリアライズは同名パラメータの
+      // 繰り返し）。中断予測（issue #235）のクエリは同じチャンネル種別の
+      // 複数サービスを一度に渡すため `getAll` で読む --- 既存の単一指定
+      // （`?serviceId=1`）も `getAll` は 1 要素の配列として返すので後方互換。
+      const serviceIds = url.searchParams.getAll('serviceId').map(Number)
+      const list = serviceIds.flatMap((id) => programsByServiceId[id] ?? [])
       return Promise.resolve(new Response(JSON.stringify(list), { status: 200 }))
     }
     return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }))
@@ -533,4 +585,181 @@ describe('LivePage', () => {
       expect(screen.queryByText(/接続できません/)).not.toBeInTheDocument()
     },
   )
+})
+
+describe('LivePage / 録画予約による中断予測（issue #235 M7-2）', () => {
+  it('同じチャンネル種別の近い録画予約があるとき、値札（選択状態）にも視聴中画面にも警告が出る', async () => {
+    const user = userEvent.setup()
+    const startAt = new Date(Date.now() + 30 * 60_000).toISOString()
+    stubFetch({
+      services: [service({ serviceId: 10, name: 'チャンネル A', channelType: 'GR' })],
+      programsByServiceId: {
+        10: [
+          program({
+            programId: 5,
+            serviceId: 10,
+            startAt,
+            endAt: new Date(Date.now() + 90 * 60_000).toISOString(),
+          }),
+        ],
+      },
+      reservations: [reservation({ programId: 5, site: 'default', startAt, skip: false })],
+    })
+    renderLive()
+
+    // 選択状態（値札）
+    await screen.findByRole('button', { name: /再生/ })
+    expect(await screen.findByText(/から録画予約があります/)).toBeInTheDocument()
+    // 「不足すると中断されます」という条件付きの文言（断言しない。issue #235 の「罠」）
+    expect(screen.getByText(/チューナーが不足すると視聴は中断されます/)).toBeInTheDocument()
+
+    // 視聴中の画面でも同じ情報欄が出る（LivePlayer / LiveSelectionPreview の外の
+    // 共通ブロックに置いたことの検証。`pages/live.tsx` の配置コメント参照）
+    await user.click(screen.getByRole('button', { name: /再生/ }))
+    await screen.findByText(/接続できません/)
+    expect(screen.getByText(/から録画予約があります/)).toBeInTheDocument()
+  })
+
+  /**
+   * `nowPlayingRefetchMs`（30 秒）の tick を跨いでも警告が消えないことを見る
+   * （レビューでの指摘。修正前は `interruptionQueryWindow` が丸めずに `nowMs`
+   * から素直に窓を組んでいたため、tick ごとに `useListPrograms` のクエリキーが
+   * 変わって react-query が新しいキャッシュエントリとして扱い、取得完了までの
+   * 間 `sameTypeProgramIds` が空集合に戻って警告が消えていた --- 実測: jsdom で
+   * 30038ms 後・実 Chromium で 28258ms 後に消失。この判定は修正前の実装で
+   * 実際に落ちることを確認済み）。
+   *
+   * **`GET /api/sites/{site}/programs` の応答にわざと 500ms の遅延を入れる。**
+   * レビュアーの実測でも「EPG 応答を 1200ms 遅らせて観測」とあるとおり、モック
+   * fetch が即時解決すると tick 直後の「新しいクエリキーが解決するまでの間」が
+   * 1ms 未満で終わり、後から 1 回だけ確認する形の assertion では消失が
+   * 観測できない（実際に遅延無しで最初に書いたところ、修正前の実装でも
+   * このテストが誤って緑になった）。遅延を入れたうえで**tick を跨ぐ間ずっと
+   * 100ms 間隔でポーリングし続け、一度も欠けないこと**を見る --- 後から 1 回
+   * 見るだけの assertion は「たまたま復帰していた瞬間を見た」だけになりうる。
+   *
+   * **実時間で待つ**（`setInterval` を fake timers 化すると react-query 内部の
+   * タイマーや testing-library の非同期ポーリングと絡んで不安定になったため、
+   * レビュアーと同じ「実時間で待つ」方式に倣った）。ただ real wall-clock
+   * 時刻をそのまま使うと、テスト実行のタイミングがたまたま 10 分グリッドの
+   * 境界の直前（残り 30 秒未満）だと、待っている間にグリッドが切り替わって
+   * クエリキーが変わり、無関係に flaky になる --- それを避けるため `Date.now`
+   * をグリッドの安全な位置（境界から 2 分後）を起点にした値へ差し替える
+   * （`performance.now()` で実際の経過時間だけ反映させるので、待つこと自体は
+   * 本物の real timer のまま）。
+   */
+  it(
+    '30 秒の tick を跨いでも警告が消えない（EPG 問い合わせの窓を 10 分グリッドに丸めているため）',
+    async () => {
+      const gridMs = 10 * 60_000
+      const rawBase = new Date('2026-01-01T00:00:00.000Z').getTime()
+      // グリッドの境界から 2 分進めた、境界に近すぎない安全な位置
+      const gridSafeBase = rawBase - (rawBase % gridMs) + 2 * 60_000
+      const perfStart = performance.now()
+      vi.spyOn(Date, 'now').mockImplementation(() => gridSafeBase + (performance.now() - perfStart))
+
+      const startAt = new Date(gridSafeBase + 30 * 60_000).toISOString()
+      stubFetch({
+        services: [service({ serviceId: 10, name: 'チャンネル A', channelType: 'GR' })],
+        programsByServiceId: {
+          10: [
+            program({
+              programId: 5,
+              serviceId: 10,
+              startAt,
+              endAt: new Date(gridSafeBase + 90 * 60_000).toISOString(),
+            }),
+          ],
+        },
+        reservations: [reservation({ programId: 5, site: 'default', startAt, skip: false })],
+      })
+      // programs 応答にだけ 500ms 遅らせる（上記コメントの理由）
+      const withoutDelay = globalThis.fetch as unknown as (
+        input: string | URL | Request,
+      ) => Promise<Response>
+      globalThis.fetch = vi.fn(async (input: string | URL | Request) => {
+        const url = new URL(String(input), 'http://localhost')
+        if (url.pathname === '/api/sites/default/programs') {
+          await new Promise((resolve) => setTimeout(resolve, 500))
+        }
+        return withoutDelay(input)
+      }) as unknown as typeof fetch
+
+      renderLive()
+
+      expect(await screen.findByText(/から録画予約があります/, undefined, { timeout: 5000 })).toBeInTheDocument()
+
+      // 30 秒の tick を跨いで、ずっと消えないことをポーリングで見る
+      // （後から 1 回見るだけでは、消えて戻った瞬間を見逃す）
+      const pollUntil = performance.now() + 32_000
+      while (performance.now() < pollUntil) {
+        expect(screen.queryByText(/から録画予約があります/)).toBeInTheDocument()
+        await new Promise((resolve) => setTimeout(resolve, 100))
+      }
+    },
+    45_000,
+  )
+
+  it('近い録画予約が無いときは何も出さない（沈黙。「安全に見られます」等の肯定文言は無い）', async () => {
+    stubFetch({ services: [service({ serviceId: 1, name: 'チャンネル A', channelType: 'GR' })] })
+    const { queryClient } = renderLive()
+
+    await screen.findByRole('button', { name: /再生/ })
+    // 問い合わせが解決し切るまで待ってから確かめる（非同期の空虚な成功を避ける。
+    // `interruptionSettled` 参照）
+    await interruptionSettled(queryClient)
+    expect(screen.queryByText(/録画予約/)).not.toBeInTheDocument()
+  })
+
+  it('skip の予約では警告が出ない（サーバーの需要計算と同じ除外規則）', async () => {
+    const startAt = new Date(Date.now() + 30 * 60_000).toISOString()
+    stubFetch({
+      services: [service({ serviceId: 10, name: 'チャンネル A', channelType: 'GR' })],
+      programsByServiceId: {
+        10: [
+          program({
+            programId: 5,
+            serviceId: 10,
+            startAt,
+            endAt: new Date(Date.now() + 90 * 60_000).toISOString(),
+          }),
+        ],
+      },
+      reservations: [reservation({ programId: 5, site: 'default', startAt, skip: true })],
+    })
+    const { queryClient } = renderLive()
+
+    await screen.findByRole('button', { name: /再生/ })
+    await interruptionSettled(queryClient)
+    expect(screen.queryByText(/録画予約/)).not.toBeInTheDocument()
+  })
+
+  it('別チャンネル種別の録画予約では警告が出ない', async () => {
+    const startAt = new Date(Date.now() + 30 * 60_000).toISOString()
+    stubFetch({
+      services: [
+        service({ serviceId: 10, name: 'チャンネル A', channelType: 'GR' }),
+        service({ serviceId: 20, name: 'チャンネル B', channelType: 'BS' }),
+      ],
+      programsByServiceId: {
+        // 選択中（GR）ではなく BS の serviceId 20 にだけ番組がある --- 中断予測の
+        // 問い合わせは選択中と同じチャンネル種別（serviceId=[10]）に絞るので、
+        // この番組・予約は候補集合に入らない
+        20: [
+          program({
+            programId: 6,
+            serviceId: 20,
+            startAt,
+            endAt: new Date(Date.now() + 90 * 60_000).toISOString(),
+          }),
+        ],
+      },
+      reservations: [reservation({ programId: 6, site: 'default', startAt, skip: false })],
+    })
+    const { queryClient } = renderLive('/live?serviceId=10')
+
+    await screen.findByRole('button', { name: /再生/ })
+    await interruptionSettled(queryClient)
+    expect(screen.queryByText(/録画予約/)).not.toBeInTheDocument()
+  })
 })
