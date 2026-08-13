@@ -2,13 +2,21 @@ import { Link, useSearch as useRouteSearch } from '@tanstack/react-router'
 import { Play } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 
-import { useListPrograms, useListServices, type ProgramListItem, type Service } from '@/api/generated'
+import {
+  useListPrograms,
+  useListReservations,
+  useListServices,
+  type ProgramListItem,
+  type Service,
+} from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
 import { EmptyState, ErrorState, ListSkeleton, PageHeader } from '@/components/page'
+import { LiveInterruptionWarning } from '@/components/live-interruption-warning'
 import { LivePlayer } from '@/components/live-player'
 import { Button } from '@/components/ui/button'
 import { useLiveCapability } from '@/lib/capabilities'
 import { currentProgramWindow, pickInitialServiceId } from '@/lib/live'
+import { interruptionLookaheadMs, upcomingInterruptingReservation } from '@/lib/live-interruption'
 import { orderServices } from '@/lib/epg-grid'
 import { formatTime, isAiring } from '@/lib/format'
 import { useCurrentSite } from '@/lib/site'
@@ -60,7 +68,8 @@ function groupByChannelType(ordered: readonly Service[]): ChannelGroup[] {
 }
 
 /**
- * LivePage はライブ視聴画面（M4-4。選択と視聴開始の分離は M7-1）。
+ * LivePage はライブ視聴画面（M4-4。選択と視聴開始の分離は M7-1。録画予約による
+ * 中断予測は M7-2）。
  *
  * 「チャンネル一覧から選んでブラウザ再生、画質切り替え程度で良い」
  * （docs/frontend.md §ライブ視聴）という方針どおり、機能は絞る。プロファイル
@@ -151,6 +160,52 @@ export function LivePage() {
     return programs.find((p) => isAiring(p.startAt, p.endAt, nowMs))
   }, [nowPlayingQuery.data, nowMs])
 
+  // 録画予約による中断予測（M7-2, issue #235）。
+  //
+  // `Reservation` はチャンネル種別を持たないので、視聴対象と同じチャンネル種別の
+  // 予約を引くには EPG（`GET /api/sites/{site}/programs`）を経由して programId を
+  // 突き合わせる必要がある。`serviceId` に同じ種別のサービスだけを渡すことで、
+  // サーバー側に絞り込みを任せる（クライアントで全番組を持って channelType を
+  // 引き直すより軽い）。
+  const sameTypeServiceIds = useMemo(
+    () =>
+      selectedService === undefined
+        ? []
+        : orderedServices
+            .filter((s) => s.channelType === selectedService.channelType)
+            .map((s) => s.serviceId),
+    [orderedServices, selectedService],
+  )
+  const interruptionWindow = useMemo(
+    () => ({
+      start: new Date(nowMs).toISOString(),
+      end: new Date(nowMs + interruptionLookaheadMs).toISOString(),
+    }),
+    [nowMs],
+  )
+  const sameTypeProgramsQuery = useListPrograms(
+    site,
+    { start: interruptionWindow.start, end: interruptionWindow.end, serviceId: sameTypeServiceIds },
+    { query: { enabled: sameTypeServiceIds.length > 0 } },
+  )
+  const sameTypeProgramIds = useMemo(
+    () => new Set((unwrap(sameTypeProgramsQuery.data) ?? []).map((p) => p.programId)),
+    [sameTypeProgramsQuery.data],
+  )
+  // 予約一覧は絞り込みパラメータを持たない（`GET /api/reservations` は全サイトを
+  // 返す。docs/api.md）。SSE の `reservations` トピックは既にこのクエリキーの
+  // 接頭辞（`/api/reservations`）を invalidate するので、専用トピックは作らない
+  // （`lib/events.ts` の `topicQueryKeys.reservations`。容量バッジと同じ判断）。
+  const reservationsQuery = useListReservations()
+  const reservations = useMemo(() => unwrap(reservationsQuery.data) ?? [], [reservationsQuery.data])
+  const interruptingReservation = useMemo(
+    () =>
+      selectedService === undefined
+        ? null
+        : upcomingInterruptingReservation(reservations, site, sameTypeProgramIds, nowMs),
+    [reservations, site, sameTypeProgramIds, nowMs, selectedService],
+  )
+
   return (
     <>
       <PageHeader title="ライブ" />
@@ -229,6 +284,10 @@ export function LivePage() {
               >
                 この局の番組表
               </Link>
+              {/* 録画予約による中断予測（issue #235 M7-2）。選択状態（値札）・
+                  視聴中のどちらの画面でもこの情報欄は共通なので、1 箇所に置くだけで
+                  両方の受け入れ条件（値札 / 視聴中画面への表示）を満たす。 */}
+              <LiveInterruptionWarning reservation={interruptingReservation} />
             </div>
           </div>
 

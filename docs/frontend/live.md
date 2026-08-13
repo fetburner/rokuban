@@ -275,6 +275,54 @@ process`、チューナー本数がそれより少ない環境ではさらに手
 （= 保証の実効性そのもの）は `web/e2e/live.mjs` が実ブラウザ・実 hls.js で担う
 （後述「実機確認について」）。
 
+### 録画予約による中断予測（issue #235 M7-2）
+
+mirakc の優先度調停では録画が勝つため、視聴中に同じチャンネル種別の録画予約が
+始まるとチューナーを取られて視聴側が中断されうる。Rokuban は予約（desired state）
+を持っているので、視聴開始前に「この後中断されうるか」を知らせられる ---
+EPGStation・KonomiTV には構造的にできない表示。
+
+**判定は純関数 `lib/live-interruption.ts` の `upcomingInterruptingReservation`。**
+視聴対象と同じチャンネル種別のサービスに絞って EPG（`GET /api/sites/{site}/programs`）
+から programId を引き、`GET /api/reservations`（全サイト分。絞り込みパラメータを
+持たない）の予約と `(site, programId)` で突き合わせる --- `Reservation` はチャンネル
+種別を持たないため、この EPG 側の join が要る。予約は `programId` が site スコープの
+値であり、別サイトの同じ番号の番組と取り違えないよう `site` の一致も見る
+（docs/schema.md §1 の設計原則）。
+
+- **先読みの時間窓は 2 時間。** 視聴を選ぶ／始める瞬間の判断材料として出す表示
+  なので、窓は「これから見始める 1 回の視聴」がカバーする範囲に合わせる。1 番組
+  （30 分〜1 時間）を見ている間に次の番組の録画が競合し得ることまでは見せたいが、
+  24 時間先の録画予約まで警告すると「今まさに見るかどうかの判断」には関係の薄い
+  予約まで出てノイズになる
+- **skip の予約は除外する（サーバーの需要計算と同じ規則）。** `effective.skip` が
+  true の予約は reconciler が mirakc に同期しないためチューナーを消費しない
+  （`internal/capacity/load.go` の `demandFromRow` --- `eff.IsSkipped()` が true の
+  行は容量の需要から除外される。docs/data.md §6.5）。API が返す `Reservation.skip`
+  はまさにこの `effective.skip` なので、フロント側もこの値で同じ除外を行う
+- **下界主義は容量バッジと同じ規律（docs/data.md §6.5）。** 「中断されます」と
+  断言しない --- チューナーに余裕があれば中断されないが、余裕があるとも言えない
+  （見えない消費者。並走 EPGStation・他のライブ視聴セッション・mirakc の
+  `excluded_channels`）。文言は「HH:MM から録画予約があります。チューナーが
+  不足すると視聴は中断されます」という条件付きにする。**「録画予約はありません =
+  安全に見られます」は出さない** --- 肯定的な文言を一切持たない。沈黙は保証では
+  ない（`CapacityShortfallBadge` / `ProgramOverlapWarning` と同じ「余計な枠を
+  出さない」流儀）
+- **鮮度は SSE の `reservations` トピックに相乗りする。専用トピックは作らない**
+  （容量バッジと同じ判断。`lib/events.ts` の `topicQueryKeys.reservations` が既に
+  `/api/reservations` を接頭辞に持つため、予約が変わればこの表示も自動で
+  invalidate される）
+- **値札（選択状態。issue #234 M7-1）と視聴中の画面の両方に同じ
+  `LiveInterruptionWarning`（`components/live-interruption-warning.tsx`）を出す。**
+  `pages/live.tsx` ではチャンネル名・種別バッジ・番組表への導線と同じ情報欄
+  （`isPlaying` の分岐の外）に置くことで、1 箇所の実装で両方の受け入れ条件を
+  満たしている
+
+判定手段: `lib/live-interruption.test.ts`（一致するとき返す / skip・別チャンネル
+種別・別サイトの同じ programId・窓外・すでに始まった予約では返さない、の両方向）と
+`pages/live.test.tsx`「録画予約による中断予測」（選択状態・視聴中画面の両方に出る /
+skip・別チャンネル種別では出ない、の end-to-end wiring）。
+
 ### 実機確認について
 
 **実機確認の手段・判定項目・回帰の記録は [runbook.md](../runbook.md)（ライブ視聴の
