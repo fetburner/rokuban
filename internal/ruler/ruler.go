@@ -373,11 +373,13 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 		return fmt.Errorf("rewriting reservation_rule_matches: %w", err)
 	}
 
-	// 明示操作からしか説明できない削除を先に、ブレーカーとは無関係に実行する
-	// （docs/recording.md §3.2「大量削除サーキットブレーカー」の「明示操作は
-	// ブレーカーの外」）。toDelete 全体を渡し、どれが明示操作由来だったかは
-	// DELETE 文の WHERE が適用の瞬間に判定して RETURNING で返す — 分類を
-	// トランザクション外の古い読み取りに置かないため（#29 型の窓を作らない）。
+	// ユーザー（運用者）が投資を手放す書き込みをしない限り起きない削除を先に、
+	// ブレーカーとは無関係に実行する（docs/recording.md §3.2「大量削除サーキット
+	// ブレーカー」）。toDelete 全体を渡し、どれがそれに当たるかは DELETE 文の
+	// WHERE が適用の瞬間に判定して RETURNING で返す — 分類をトランザクション外の
+	// 古い読み取りに置かないため（#29 型の窓を作らない）。条件と、その条件で
+	// 守備範囲が狭まらない根拠（および狭まる境界）は
+	// internal/db/queries/ruler.sql の同クエリのコメントが権威。
 	var released []int64
 	if len(toDelete) > 0 {
 		released, err = tq.DeleteReleasedReservationsBySiteAndProgramIDs(ctx, sqlcgen.DeleteReleasedReservationsBySiteAndProgramIDsParams{
@@ -548,7 +550,11 @@ func (r *Ruler) buildDeleteSample(ctx context.Context, q *sqlcgen.Queries, site 
 }
 
 // subtract は ids から removed に含まれる要素を除いたスライスを返す（順序は ids のまま）。
-// 「削除候補のうち、明示操作由来として既に消えた分を引く」ためだけに使う。
+// 「削除候補のうち、ブレーカー外で既に消えた分を引く」ためだけに使う。
+//
+// removed が ids の部分集合であることは前提にしない（cap を len(ids) にしてある）。
+// 現状の呼び出しでは DELETE ... RETURNING の結果なので必ず部分集合だが、
+// 前提が落ちたときに負の cap で panic するより多めに確保して壊れないほうがよい。
 func subtract(ids, removed []int64) []int64 {
 	if len(removed) == 0 {
 		return ids
@@ -557,7 +563,7 @@ func subtract(ids, removed []int64) []int64 {
 	for _, id := range removed {
 		removedSet[id] = struct{}{}
 	}
-	rest := make([]int64, 0, len(ids)-len(removed))
+	rest := make([]int64, 0, len(ids))
 	for _, id := range ids {
 		if _, ok := removedSet[id]; ok {
 			continue

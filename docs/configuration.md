@@ -96,7 +96,7 @@ Grafana Loki / Tempo の `-config.expand-env` と同じ、**YAML パース前の
 
 ### サーキットブレーカーと検出器の閾値
 
-- `ruler.max_deletes_per_pass`: 1 サイト・1 パスで実行してよい導出削除数の上限。超えたら削除を一切実行せず、大量削除サーキットブレーカーとして発動する。数えるのは「ルールが base を供給していたのにマッチしなくなった」削除だけで、**ユーザーの明示操作からしか説明できない削除（intent skip / intent クリア / 最後の investment だった overrides の削除）は数にも入らず、発動中でも実行される**（[recording.md](recording.md) §3.2）。手動で `POST /api/sites/{site}/breakers/ruler_deletes/resume` するまで止まり続けるラッチで、件数が閾値以下に戻っても自動では解けない（[recording.md](recording.md) §3.2「大量削除サーキットブレーカー」）。下げると EPG の一時的な欠損やルールの一括編集で発動しやすくなる代わりに、誤判定で一気に失う予約の上限が下がる。既定値 50 は、通常運用で 1 サイトが同時に抱えるアクティブ予約数を明確に超える値として選んである
+- `ruler.max_deletes_per_pass`: 1 サイト・1 パスで実行してよい導出削除数の上限。超えたら削除を一切実行せず、大量削除サーキットブレーカーとして発動する。数えるのは「ルールが base を供給しているのに desired から外れた」削除だけで、**ユーザーが投資を手放す書き込み（intent skip / intent クリア / 最後の investment だった overrides の削除）をしない限り起きない削除は数にも入らず、発動中でも実行される**（[recording.md](recording.md) §3.2。境界も同節）。手動で `POST /api/sites/{site}/breakers/ruler_deletes/resume` するまで止まり続けるラッチで、件数が閾値以下に戻っても自動では解けない（[recording.md](recording.md) §3.2「大量削除サーキットブレーカー」）。下げると EPG の一時的な欠損やルールの一括編集で発動しやすくなる代わりに、誤判定で一気に失う予約の上限が下がる。既定値 50 は、通常運用で 1 サイトが同時に抱えるアクティブ予約数を明確に超える値として選んである
 - `reconciler.start_delay_grace`: 開始遅延検出器（[recording.md](recording.md) §3.3）の猶予。「開始時刻 + この時間」を過ぎても `recordings.started_at` が観測されない予約を検出してアラートする。mirakc 側の未知の不具合への保険（EPGStation#724: チューナー再接続ハングで開始が 10 分遅延した実例あり）。開始直後は mirakc の SSE 到達と watcher の処理に遅れがあるため、短すぎると正常な録画開始でも誤検知してアラートが常時鳴る
 
 ### worker.periodic_jobs と worker.queues

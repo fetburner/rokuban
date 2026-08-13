@@ -1611,8 +1611,8 @@ SELECT EXISTS (
 
 // insertManualReservation は「手動予約」（ルールがマッチせず intent{record} だけで
 // desired になる番組）を EPG プロジェクション込みで用意する。ruler が実体化した
-// 予約行は rule_id が NULL になり、intent をクリアすると「明示操作からしか説明
-// できない削除」の対象になる。削除候補になったときに stillProjectedSubset で
+// 予約行は rule_id が NULL になり、intent をクリアすると「ユーザーが投資を消さない
+// 限り起きない削除」の対象になる。削除候補になったときに stillProjectedSubset で
 // 凍結されないよう、epg_programs にも行を入れる（どのルールにもマッチしない
 // 題名を使う）。
 func insertManualReservation(t *testing.T, pool *pgxpool.Pool, ctx context.Context, programID int64, title string, startAt time.Time) {
@@ -1634,8 +1634,11 @@ func insertManualReservation(t *testing.T, pool *pgxpool.Pool, ctx context.Conte
 // クリアしても予約行が existing のまま残り、effective.skip も立たない（クリアは
 // 「意見なし」であって「録るな」ではない）ので listDesired からも除外されず、
 // 人間が resume するまで番組が録画され続けた。ブレーカーが守るのは「ルール x EPG」
-// 由来の削除であり、intent クリアはユーザーの明示操作からしか説明できない
-// （rule_id IS NULL = この行を desired にしていたのは投資だけだった）。
+// 由来の削除であり、intent クリアはユーザーが投資を消す書き込みをしない限り起きない
+// （その根拠は NOT EXISTS program_investments のほうにある ---
+// TestRunPass_EpgUnmatchNullsRuleIDButInvestmentBlocksRelease と
+// internal/db/queries/ruler.sql のコメント参照。rule_id IS NULL は EPG の変化
+// だけでも立つのでユーザー由来の証明にはならない）。
 //
 // 反対方向（ルール由来の削除はラッチ中に保留され続ける）は
 // TestRunPass_CircuitBreakerLatchBlocksDeleteEvenBelowThreshold と、
@@ -1865,6 +1868,104 @@ func TestRunPass_ReleasedDeleteGuard_RecordIntentBlocksStaleDelete(t *testing.T)
 	}
 	if !reservationExists(t, pool, ctx, programID) {
 		t.Error("reservation with a concurrently-created record intent must survive the stale delete")
+	}
+}
+
+// 実測で固定する事実（PR #273 のレビューで最初の論証が偽と判明した箇所）:
+// **`reservations.rule_id` は EPG の変化だけでも NULL になる。** 投資
+// （`program_overrides` / `intent{record}`）を持つ行はルールが外れても desired に
+// 残るのでそのパスで upsert され、`internal/ruler/sql.go` の resolved CTE が凍結
+// するのは `base` と dedup 根拠 2 列だけで、`rule_id = EXCLUDED.rule_id` が
+// そのまま NULL を書くため。
+//
+// したがって `rule_id IS NULL` は「ユーザー由来の削除」の証明にならない。
+// 明示操作由来の削除をブレーカーの外に出せる根拠は `NOT EXISTS
+// program_investments` のほうにあり、このテストは 3 点を測る:
+//
+//  1. EPG だけが動いた（ルールがマッチしなくなった）投資つきの行は rule_id が NULL になる
+//  2. **投資がある限り released にはならない**（守備範囲を保っているのはこの条件）
+//  3. 投資を消すと released になる = 境界 (c)（docs/recording/breaker.md）。
+//     EPG 欠損中に投資を消すと、健全な EPG ならルール由来で残ったはずの予約が
+//     ブレーカーの外で消える。次パスでルールが作り直すので自己修復する
+//
+// TestRunPass_ReleasedDeleteGuard_RecordIntentBlocksStaleDelete は「あとから
+// record 意図が着地する」形なので、この「EPG が rule_id を落とした行」の形は
+// 押さえていない。
+func TestRunPass_EpgUnmatchNullsRuleIDButInvestmentBlocksRelease(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	insertService(t, pool, ctx)
+	start := time.Now().Add(24 * time.Hour).Truncate(time.Second)
+	const programID = 36001
+	insertProgram(t, pool, ctx, programID, "対象番組", start)
+	ruleID := insertRule(t, pool, ctx, "epg-nulls-rule-id", 10)
+	insertRuleKeyword(t, pool, ctx, ruleID, "対象")
+
+	r := ruler.New([]string{testSite}, pool, nil)
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("initial RunPass: %v", err)
+	}
+	res, ok := getReservation(t, pool, ctx, programID)
+	if !ok || res.RuleID == nil {
+		t.Fatalf("reservation should exist with a rule_id after the first pass (exists=%v rule_id=%v)", ok, res.RuleID)
+	}
+
+	// ユーザーが上書きを 1 つ置く（investment）。これでルールが外れても desired に残る。
+	q := sqlcgen.New(pool)
+	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
+		Site: testSite, ProgramID: programID, Overrides: []byte(`{"priority":3}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// **EPG だけが動く**（番組名が変わってルールがマッチしなくなる）。ユーザーは何もしていない。
+	insertProgram(t, pool, ctx, programID, "別の番組", start)
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass after the EPG-only change: %v", err)
+	}
+
+	// 1. rule_id は EPG の変化だけで NULL になる。
+	res, ok = getReservation(t, pool, ctx, programID)
+	if !ok {
+		t.Fatal("reservation should survive via the investment")
+	}
+	if res.RuleID != nil {
+		t.Fatalf("rule_id = %d, want nil "+
+			"（EPG の変化だけで NULL になる。この事実の上に released の論証が乗っている）", *res.RuleID)
+	}
+
+	// 2. 投資がある限り released にならない。ここが守備範囲を保っている条件。
+	released, err := q.DeleteReleasedReservationsBySiteAndProgramIDs(ctx,
+		sqlcgen.DeleteReleasedReservationsBySiteAndProgramIDsParams{
+			Site: testSite, ProgramIds: []int64{programID},
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(released) != 0 {
+		t.Errorf("released = %v, want empty "+
+			"（EPG が rule_id を落としただけの行がブレーカーの外で消えてはならない）", released)
+	}
+	if !reservationExists(t, pool, ctx, programID) {
+		t.Fatal("reservation must survive while the investment exists")
+	}
+
+	// 3. 投資を消すと released になる（境界 (c)。ユーザーの書き込みが要ることの裏返し）。
+	if _, err := q.DeleteProgramOverrides(ctx, sqlcgen.DeleteProgramOverridesParams{
+		Site: testSite, ProgramID: programID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	released, err = q.DeleteReleasedReservationsBySiteAndProgramIDs(ctx,
+		sqlcgen.DeleteReleasedReservationsBySiteAndProgramIDsParams{
+			Site: testSite, ProgramIds: []int64{programID},
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(released) != 1 || released[0] != programID {
+		t.Errorf("released = %v, want [%d] (removing the last investment must release the row)", released, programID)
 	}
 }
 
