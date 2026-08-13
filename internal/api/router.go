@@ -18,6 +18,13 @@ type RouterConfig struct {
 	// AllowedHosts は Host ヘッダーの allowlist。空なら検査しない。
 	AllowedHosts []string
 
+	// TrustForwardedHost が true のときだけ `X-Forwarded-Host` を
+	// AllowedHosts の検証対象にする（既定 false = 常に `r.Host` を使う）。
+	// 信頼できるリバースプロキシが必ず前段に居る構成でのみ true にする
+	// （`server.trust_forwarded_host`。docs/configuration.md §server.allowed_hosts、
+	// issue #216）。
+	TrustForwardedHost bool
+
 	// Pool は REST ハンドラが使う DB プール。
 	Pool *pgxpool.Pool
 
@@ -102,7 +109,7 @@ func (ms Mounters) Mount(r chi.Router) {
 func NewRouter(cfg RouterConfig) http.Handler {
 	r := chi.NewRouter()
 
-	r.Use(AllowedHosts(cfg.AllowedHosts))
+	r.Use(AllowedHosts(cfg.AllowedHosts, cfg.TrustForwardedHost))
 
 	// SSE (/api/events) やバイト配信は OpenAPI に載せない（生成クライアントは
 	// JSON を前提にする）ため、生成ハンドラを通さず Mounter 経由で直接登録する。

@@ -117,8 +117,9 @@ func newServerCmd() *cobra.Command {
 			{
 				backlog := newBoundBacklogCollector(pool, bound)
 				routerCfg := api.RouterConfig{
-					AllowedHosts: cfg.Server.AllowedHosts,
-					Pool:         pool,
+					AllowedHosts:       cfg.Server.AllowedHosts,
+					TrustForwardedHost: cfg.Server.TrustForwardedHost,
+					Pool:               pool,
 					// api は不変条件 1（mirakc にもファイルシステムにも依存しない）に
 					// より site に束縛されない。boundSite ではなくレジストリ全体を渡す
 					// ことで、1 プロセスがレジストリの全 site を処理できる

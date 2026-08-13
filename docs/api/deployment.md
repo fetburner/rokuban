@@ -31,10 +31,12 @@
 
 | 要件 | 詳細 |
 |---|---|
-| `X-Forwarded-Host` の解釈 | Host allowlist（`internal/api.AllowedHosts`）の検証対象を、ヘッダーがあればそちらに切り替える。無ければ `Host` を使う |
+| `X-Forwarded-Host` の解釈 | `server.trust_forwarded_host: true` を明示した構成に限り、Host allowlist（`internal/api.AllowedHosts`）の検証対象をヘッダーの値に切り替える。既定（false）では常に `Host` を使う |
 | ルート相対パスの徹底 | API・アセット参照はすべてドメインを含まないルート相対パス（`/api/...`） |
 | WebSocket 不使用 | SSE は `proxy_buffering off` だけで通る。WebSocket のアップグレード要件を持ち込まない |
 | SPA フォールバック | Go 側の catch-all で `index.html` を返す |
+
+`X-Forwarded-Host` の解釈は **`server.trust_forwarded_host` による opt-in**（既定 false）。DNS rebinding の攻撃ページは Rokuban と同一オリジンとして扱われるため任意のリクエストヘッダーを付けられ、前段にプロキシが存在しない直接露出構成（`--all` の既定構成）でこのヘッダーを無条件に信頼すると、Host allowlist（§認証 帰結3）を自己申告値で素通りできてしまう。信頼できるプロキシが必ず前段に居り、かつそのプロキシが外来の `X-Forwarded-Host` を上書きする構成でだけ有効にする。判断の詳細と設定キーは [configuration.md](../configuration.md) §server.allowed_hosts を参照。
 
 ### 検討したが実装しないもの
 
@@ -82,3 +84,8 @@ nginx リファレンス構成例をドキュメントに同梱する。カバ�
 - `X-Forwarded-Host` の解釈と `X-Forwarded-*` 系の棚卸し（検討したが実装しないもの）は
   M4-1（issue #89）。EPGStation#694（絶対 URL 生成が散らばって `X-Forwarded-Prefix`
   対応が後から効かなかった）が棚卸しの動機
+- M4-1 の実装は `X-Forwarded-Host` があれば無条件にそちらを検証対象にする形だった。
+  前段にプロキシが居ない直接露出構成でも同じ無条件解釈が効いてしまい、DNS rebinding
+  攻撃ページが allowlist に載る値を自己申告するだけで Host allowlist を素通りできる
+  欠陥があった。`server.trust_forwarded_host`（既定 false）による opt-in 化で修正
+  （issue #216）

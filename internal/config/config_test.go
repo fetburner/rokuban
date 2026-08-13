@@ -42,6 +42,11 @@ func TestLoad_Minimal(t *testing.T) {
 	if cfg.Server.Listen != ":40773" {
 		t.Errorf("server.listen = %q, want %q", cfg.Server.Listen, ":40773")
 	}
+	// server.trust_forwarded_host は既定 false（opt-in）。X-Forwarded-Host を
+	// 信頼しない安全側の初期値であること（issue #216）。
+	if cfg.Server.TrustForwardedHost {
+		t.Error("server.trust_forwarded_host default = true, want false")
+	}
 	if cfg.DB.Port != 5432 {
 		t.Errorf("db.port = %d, want %d", cfg.DB.Port, 5432)
 	}
@@ -468,6 +473,7 @@ func TestLoad_AllFieldsOverridden(t *testing.T) {
 server:
   listen: ":8080"
   allowed_hosts: [example.com, rokuban.local]
+  trust_forwarded_host: true
 db:
   host: db.example.com
   port: 5433
@@ -528,6 +534,9 @@ log:
 	}
 	if len(cfg.Server.AllowedHosts) != 2 {
 		t.Errorf("server.allowed_hosts len = %d, want 2", len(cfg.Server.AllowedHosts))
+	}
+	if !cfg.Server.TrustForwardedHost {
+		t.Error("server.trust_forwarded_host = false, want true")
 	}
 	if cfg.DB.Host != "db.example.com" {
 		t.Errorf("db.host = %q, want %q", cfg.DB.Host, "db.example.com")

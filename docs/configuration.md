@@ -36,6 +36,7 @@ Grafana Loki / Tempo の `-config.expand-env` と同じ、**YAML パース前の
 |---|---|---|
 | `server.listen` | `":40773"` | HTTP リッスンアドレス（mirakc の 40772 の隣） |
 | `server.allowed_hosts` | `[]` | Host ヘッダー allowlist（下記「server.allowed_hosts」） |
+| `server.trust_forwarded_host` | `false` | `X-Forwarded-Host` を allowed_hosts の検証対象にするか（下記「server.allowed_hosts」） |
 | `db.host` / `db.user` / `db.password` / `db.database` | —（必須） | PostgreSQL 接続情報 |
 | `db.port` | `5432` | |
 | `db.sslmode` | `disable` | |
@@ -149,11 +150,15 @@ Grafana Loki / Tempo の `-config.expand-env` と同じ、**YAML パース前の
 - `enqueue` サブコマンドは **site 束縛ジョブだけ** `--site` で投入先を選ぶ（未指定かつレジストリ 1 要素ならその 1 つ、2 要素以上なら必須）。`catalog-export` は site 非依存で `--site` を付けない（詳細は [operations.md](operations.md) §1「ジョブ化されたループの監視」）
 - `rescue` / `shadow-diff` は単一サイト用のまま。`mirakcs:` が 2 要素以上の構成では明示的なエラーで落ちる（多サイトでの意味論を決める書き手がまだいないため）
 
-### server.allowed_hosts は X-Forwarded-Host を優先する
+### server.allowed_hosts と server.trust_forwarded_host（X-Forwarded-Host は opt-in）
 
-`server.allowed_hosts` は Host ヘッダーの allowlist で、アプリ内に残る唯一のセキュリティ機構（DNS rebinding 対策、[api.md](api.md) §認証 帰結3）。localhost 系（`localhost` / `127.0.0.1` / `::1`）は、**`X-Forwarded-Host` が無く `Host` を直接使っているときに限り**、allowlist の設定に関わらず常に許可する。`X-Forwarded-Host` はクライアント側が自己申告できる値なので、転送値にも同じ緩和を適用すると `X-Forwarded-Host: localhost` で allowlist を素通りできてしまう。
+`server.allowed_hosts` は Host ヘッダーの allowlist で、アプリ内に残る唯一のセキュリティ機構（DNS rebinding 対策、[api.md](api.md) §認証 帰結3）。localhost 系（`localhost` / `127.0.0.1` / `::1`）は、**`X-Forwarded-Host` を検証対象にしておらず `Host` を直接使っているときに限り**、allowlist の設定に関わらず常に許可する。`X-Forwarded-Host` はクライアント側が自己申告できる値なので、転送値にも同じ緩和を適用すると `X-Forwarded-Host: localhost` で allowlist を素通りできてしまう。
 
-リバースプロキシ前段では `Host` がプロキシ自身の値（例: コンテナ内部の DNS 名）に書き換わり、元のクライアント向け Host は `X-Forwarded-Host` に移る。**`X-Forwarded-Host` があればそちらを検証対象にし、無ければ `Host` を使う**。nginx リファレンス構成では `proxy_set_header X-Forwarded-Host $host;` を設定し、`allowed_hosts` にはブラウザからアクセスする外部ホスト名（例: `rokuban.example.com`）を書く。**この構成では localhost 系の常時許可は効かなくなるので、nginx 経由で `http://localhost/` を見る運用なら `allowed_hosts` に明示的に列挙する。**
+**`X-Forwarded-Host` は `server.trust_forwarded_host: true` を明示した構成でのみ検証対象にする（既定 `false`）。** DNS rebinding の攻撃ページはブラウザから見て Rokuban と同一オリジンなので、CORS のプリフライトなしに任意のリクエストヘッダーを付けられる。前段にリバースプロキシが存在しない直接露出構成（`--all` の既定構成）で `X-Forwarded-Host` を無条件に信頼すると、攻撃ページが `X-Forwarded-Host: <allowlist に載っている値>`（`config.example.yml` に載る類の推測可能な名前）を自己申告するだけで allowlist を素通りできてしまう（issue #216）。前段に正しいリバースプロキシが居て、かつそのプロキシが外来の `X-Forwarded-Host` を必ず上書きする構成に限り、この設定を有効にしてよい。
+
+`trust_forwarded_host: true` の構成では、`Host` がプロキシ自身の値（例: コンテナ内部の DNS 名）に書き換わり、元のクライアント向け Host は `X-Forwarded-Host` に移ることを前提に、**`X-Forwarded-Host` があればそちらを検証対象にし、無ければ `Host` を使う**。nginx リファレンス構成では `proxy_set_header X-Forwarded-Host $host;` を設定し、`allowed_hosts` にはブラウザからアクセスする外部ホスト名（例: `rokuban.example.com`）を書く。**この構成では localhost 系の常時許可は効かなくなるので、nginx 経由で `http://localhost/` を見る運用なら `allowed_hosts` に明示的に列挙する。**
+
+`trust_forwarded_host` が既定の `false` のままの構成（直接露出）では `X-Forwarded-Host` を一切見ず、常に `Host` で検証する。リバースプロキシ構成でこれを有効にし忘れると `Host` がプロキシ自身の値のまま allowlist に弾かれるだけで、安全側に倒れる（実害は 400 で気付ける）。
 
 `X-Forwarded-For` / `X-Forwarded-Proto` / `X-Forwarded-Prefix` / `public_url` は解釈・設定項目とも持たない。理由は [api.md](api.md) §リバースプロキシ・フレンドリー要件「検討したが実装しないもの」を参照。
 
@@ -224,4 +229,4 @@ Grafana Loki / Tempo の `-config.expand-env` と同じ、**YAML パース前の
 - site 名の構文制約が River のキュー名制約と同一なのは、キュー名を site で修飾する issue #185 M4-13 のため。束縛されていない site 名が長さ検査の対象外である点は未検証のまま残っており、`internal/config.mirakcSiteNameMaxLen` を締める案は issue #185 のコメントで提起した。
 - **予約名 `catalog` / `thumbnails` の当初の根拠は成立しなくなったが、禁止自体は残した**（issue #186 のコメントで結論）。M4-11 導入時の根拠は「`rel_path` に `{site}/` を前置すると、この 2 つと衝突する site 名は削除 reconcile の孤児回収と rescue スキャンの走査対象から外れてしまう」だったが、実装された M4-14 の前置は `sites/{site}/`（site 名の前に固定の `sites/` を挟む形。[docs/storage.md](storage.md) §5「rel_path の名前空間」）になったため、site 名はトップレベルの `catalog/` / `thumbnails/` と直接衝突しなくなった。
 - `catalog-export` が `--site` を取らない決定は issue #200。多サイトでのロール配置（site 束縛 / 中央プロセスの分類）の決定は #138。
-- allowed_hosts の X-Forwarded-Host 優先は M4-1（issue #89）。webhook は M3-11（issue #73）。エンコードプロファイルの構造化（自由形式 cmd の不採用）は issue #64。
+- allowed_hosts の X-Forwarded-Host 優先は M4-1（issue #89）で導入したが、直接露出構成でも無条件に転送値を信頼する実装だったため、DNS rebinding 攻撃ページが allowlist に載る値を `X-Forwarded-Host` として自己申告するだけで allowlist を素通りできる欠陥があった。`server.trust_forwarded_host`（既定 false）による opt-in 化で修正（issue #216）。webhook は M3-11（issue #73）。エンコードプロファイルの構造化（自由形式 cmd の不採用）は issue #64。
