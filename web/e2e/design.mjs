@@ -617,6 +617,85 @@ log("\n=== ①' ホームの空セクション判定 ===")
   await context.close()
 }
 
+log("\n=== ①'' ホーム: 警告の種別ごとの色（琥珀 vs destructive） ===")
+{
+  // ブレーカーも同時に出すため withBreaker: true で開く（overage と drop は
+  // 既定フィクスチャに既に含まれている）。
+  const { context, page } = await open(desktop, 'light', screenOf('home'), { withBreaker: true })
+
+  // 容量超過（チューナー不足）= 琥珀。色はリンク（`<a>`）に付く。
+  const overageRow = page.locator('li', { hasText: 'チューナーが不足しています' }).first()
+  const overageColor = await computedOf(overageRow.locator('a').first(), 'color')
+  if (overageColor === null) {
+    ng.push('ホーム: チューナー不足の警告項目の文字色が取得できない')
+  } else if (!isAmber(overageColor.rgba)) {
+    ng.push(
+      `ホーム: チューナー不足の警告項目が琥珀でない（${overageColor.value} = ${overageColor.rgba}）`,
+    )
+  }
+
+  // サーキットブレーカー = destructive。リンクを持たないので色は <li> 自身に付く。
+  const breakerRow = page.locator('li', { hasText: 'ルール評価による予約の削除が停止中' }).first()
+  const breakerColor = await computedOf(breakerRow, 'color')
+  if (breakerColor === null) {
+    ng.push('ホーム: ブレーカーの警告項目の文字色が取得できない')
+  } else if (!isRed(breakerColor.rgba)) {
+    ng.push(
+      `ホーム: ブレーカーの警告項目が destructive でない（${breakerColor.value} = ${breakerColor.rgba}）`,
+    )
+  }
+
+  // ドロップ = destructive。色はリンクに付く。
+  const dropRow = page.locator('li', { hasText: 'クラシック音楽館: drop' }).first()
+  const dropColor = await computedOf(dropRow.locator('a').first(), 'color')
+  if (dropColor === null) {
+    ng.push('ホーム: ドロップの警告項目の文字色が取得できない')
+  } else if (!isRed(dropColor.rgba)) {
+    ng.push(`ホーム: ドロップの警告項目が destructive でない（${dropColor.value} = ${dropColor.rgba}）`)
+  }
+
+  log(
+    `  チューナー不足=${overageColor?.rgba} / ブレーカー=${breakerColor?.rgba} / ドロップ=${dropColor?.rgba}`,
+  )
+  await context.close()
+}
+
+// --- ①''' ホーム: 実時計でのクエリキー安定性（無限再取得の回帰検出） ---
+//
+// **時計を止めない。** このファイルの他の全判定は `page.clock.setFixedTime` で
+// 時計を止めており、それは「時計が動くことに起因する欠陥」（レンダーごとに
+// 変わる生の Date.now() をキャッシュキーに載せて無限再取得になる、等）を
+// 原理的に検出できない（レビューで発覚。実装 PR で `/api/capacity/overages` の
+// `start` に生の Date.now() を渡しており、時計を止めた判定は全部素通りしていた。
+// docs/frontend/home.md §経緯と失敗事例）。ここだけ時計を止めずに実際の要求回数
+// を数える。
+log("\n=== ①'''' ホーム: 実時計でのクエリキー安定性（無限再取得の回帰検出） ===")
+{
+  const context = await browser.newContext({
+    viewport: { width: desktop.width, height: desktop.height },
+    locale: 'ja-JP',
+    timezoneId: 'Asia/Tokyo',
+  })
+  const page = await context.newPage()
+  const overagesRequests = []
+  page.on('request', (req) => {
+    const url = new URL(req.url())
+    if (url.pathname === '/api/capacity/overages') overagesRequests.push(url.toString())
+  })
+  await installApiStubs(page)
+  await page.goto(URL_BASE + '/', { waitUntil: 'domcontentloaded' })
+  await page.waitForTimeout(2500)
+  log(`  /api/capacity/overages への実要求回数（実時計 2.5 秒）: ${overagesRequests.length}`)
+  if (overagesRequests.length > 3) {
+    ng.push(
+      `ホーム: 実時計で /api/capacity/overages への要求が ${overagesRequests.length} 回` +
+        '（無限再取得の疑い。start に生の Date.now() を渡していないか確認する。' +
+        'レビュー実測では 18〜37 回だった）',
+    )
+  }
+  await context.close()
+}
+
 // --- ② 色の機械判定 ---
 //
 // 判定は「この PR が変えた状態色ぜんぶ」を覆う。1 箇所でも判定の外に置くと、

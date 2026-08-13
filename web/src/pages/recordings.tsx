@@ -454,12 +454,8 @@ export function StatusBadge({ status }: { status: Recording['status'] }) {
 /**
  * DropBadges はドロップ統計をひと目で分かる形で出す。
  * 0 のものは出さないので、正常な録画ではバッジが 1 つも出ない。
- *
- * `pages/home.tsx`（ホームの「直近の完了」セクション）も同じ行の見た目を
- * 再利用するため export する（`StatusBadge` / `RecordingDetail` と同じ理由。
- * `pages/recording-detail.tsx` が既に前例）。
  */
-export function DropBadges({ summary }: { summary: DropSummary }) {
+function DropBadges({ summary }: { summary: DropSummary }) {
   const badges = [
     { label: 'drop', value: summary.drops },
     { label: 'error', value: summary.errors },

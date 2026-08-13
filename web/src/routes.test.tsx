@@ -150,6 +150,23 @@ describe('routeTree', () => {
       expect((router.state.matches.at(-1)!.search as { at?: unknown }).at).toBe(1700000000000)
     })
 
+    it('/?at=1e30（Date の定義域外）はリダイレクト後 /programs 側で undefined に落ちる', async () => {
+      // このタスクが `programsRoute` の `validateSearch` への新しい入口
+      // （`homeRoute` からのリダイレクト経由）を作った以上、その入口を通した
+      // ときも `parseProgramsSearch` の定義域チェック（`lib/programs-search.ts`
+      // の `parseAt`）が同じように効くことを固定する。`homeRoute` は値の形を
+      // 見ないので `/?at=1e30` も無条件で `/programs` へ転送し、検証は
+      // `/programs` 側に一本化されたまま保たれる。
+      const router = createRouter({
+        routeTree,
+        history: createMemoryHistory({ initialEntries: ['/?at=1e30'] }),
+      })
+      await router.load()
+
+      expect(router.state.location.pathname).toBe('/programs')
+      expect((router.state.matches.at(-1)!.search as { at?: unknown }).at).toBeUndefined()
+    })
+
     it('/programs?serviceId=... の serviceId は複数指定・混在配列を検証済みの配列に正規化する', async () => {
       // ?serviceId=1024&serviceId=abc&serviceId=0 のような、一部だけ不正な値が
       // 混ざった URL（手入力・古いブックマーク）でも、不正な要素だけを落として
