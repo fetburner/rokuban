@@ -312,9 +312,9 @@ func newServerCmd() *cobra.Command {
 					PeriodicJobs:         cfg.Worker.PeriodicJobs,
 					Queues:               cfg.Worker.Queues,
 					// 定期ジョブ（epg_sync / tuner_sync / ruler_pass / reconcile_pass /
-					// record_sweep / catalog_export / delete_reconcile）は worker 側が
-					// 投入する（mirakc に触るのも各ジョブのヒント経路をまとめるのも
-					// worker。riverClientFull は worker ロールがあるときにしか
+					// record_sweep / catalog_export / delete_reconcile / storage_sync）は
+					// worker 側が投入する（mirakc に触るのも各ジョブのヒント経路をまとめる
+					// のも worker。riverClientFull は worker ロールがあるときにしか
 					// 選ばれないので、ここは無条件に設定してよい）。
 					EpgSyncSite:       boundSite.Site,
 					TunerSyncSite:     boundSite.Site,
@@ -323,6 +323,7 @@ func newServerCmd() *cobra.Command {
 					RecordSweepSite:   boundSite.Site,
 					CatalogExport:     true,
 					DeleteReconcile:   true,
+					StorageSync:       true,
 				}
 				var clientErr error
 				riverClient, clientErr = worker.NewClient(pool, workers, clientCfg)

@@ -65,6 +65,13 @@ var enqueueJobs = map[string]enqueueJob{
 		RequiresSite: false,
 		NewArgs:      func(string) river.JobArgs { return worker.CatalogExportArgs{} },
 	},
+	"storage-sync": {
+		// catalog-export と同じ理由（アーカイブ/スクラッチが単一で Site を
+		// 持たない。issue #238 M7-5）。delete_reconcile とは異なり読み取り専用
+		// （statfs のみ）の観測なので、手動 enqueue の対象から外す理由がない。
+		RequiresSite: false,
+		NewArgs:      func(string) river.JobArgs { return worker.StorageSyncArgs{} },
+	},
 }
 
 // newEnqueueCmd は `rokuban enqueue <job>` サブコマンドを作る。

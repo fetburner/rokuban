@@ -62,6 +62,21 @@ S3 マウント（k8s-csi-s3 の geesefs/s3fs、AWS Mountpoint 等）では以�
 
 派生物（視聴用）だけ速いストレージに置きたくなった場合、originals / derivatives で 2 つのストレージルートを持つ小さな拡張で対応できる。現時点では単一ルートで始め、シークの体感が問題になったら足す（YAGNI）。
 
+### 残量の観測
+
+`storage.media_dir`（アーカイブ）と `storage.scratch_dir`（ローカルスクラッチ）の
+容量は、worker が定期的に statfs 相当で観測して `storage_sync` に射影し、
+`GET /api/storage` で読める（issue #238 M7-5）。api ロールはファイルシステムに
+依存しない（不変条件 1）ので、観測はファイルシステムを持つ worker の仕事に
+限る --- mirakc の recording.basedir（録画バッファ、上記「2 階層」表のエッジ側）は
+対象外で、Rokuban 自身が直接読み書きする 2 つのローカルパスだけを見る。
+
+`tuner_sync`（[docs/data.md](../data.md) §6.5）と同じ「使い捨てプロジェクション」の
+形を採る: 真実は常にファイルシステム側にあり、毎パス全量を作り直せる観測値
+なので全行 upsert で常に最新観測だけを保持する（過去の観測を積むログにはしない。
+不変条件 9）。`observed_at` の鮮度が「観測ループが止まっている」ことを示す唯一の
+手がかりになる（沈黙は保証ではない --- docs/data.md §6.5 の同じ姿勢）。
+
 ### rel_path の名前空間
 
 アーカイブ（`media_assets`）は `site` 列を持たず単一だが、原本の `rel_path` は mirakc の contentPath 由来でサイトスコープの名前である。2 サイトが同じ contentPath で録ると同じ実ファイルを取り合う（DB は `rel_path` の一意索引で片方の commit を落とすが、実ファイルは先に書いた方が上書きされて壊れる）ため、**原本は `sites/{site}/` を前置する**。

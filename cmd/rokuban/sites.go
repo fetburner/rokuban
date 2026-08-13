@@ -109,19 +109,20 @@ func registryNames(registry []config.MirakcSite) []string {
 // ちょうど 1 サイトへの束縛だけを許す。
 //
 // **worker** は今のところ site 単位の仕事（ingest/epg/reconciler/record_sweep）
-// と site 非依存の仕事（ruler/encode/thumbnail/cleanup。cleanup は
-// delete_reconcile/catalog_export のキュー、issue #185 M4-13）が同一ロールに
-// 同居しており、worker.Deps.Site / worker.ClientConfig の各 *Site フィールドが
-// いずれも単一の文字列であるため、2 サイト以上には束縛できない。
+// と site 非依存の仕事（ruler/encode/thumbnail/cleanup/storage。cleanup は
+// delete_reconcile/catalog_export、storage は storage_sync のキュー、issue #185
+// M4-13 / #238 M7-5）が同一ロールに同居しており、worker.Deps.Site /
+// worker.ClientConfig の各 *Site フィールドがいずれも単一の文字列であるため、
+// 2 サイト以上には束縛できない。
 //
 // 0 サイト（中央プロセス）は無条件には許さない --- `worker.RequiresSiteBinding`
 // が true（`worker.queues` が空、または ingest/epg/reconciler/watcher の
 // いずれかを含む）なら、届く site 単位のジョブが Deps.Site="" と一致せず
 // 全滅して再試行し続けるだけの構成になるので起動エラーにする。0 サイトの worker を
-// 許すのは `worker.queues` を ruler/encode/thumbnail/cleanup 等の site 非依存キューに
-// 絞ったときだけ（各 *ClientConfig.*Site フィールドは空文字列のままになり、
-// site 単位の定期ジョブ登録は自然に無効化される。worker.ClientConfig の
-// フィールドコメント参照）。
+// 許すのは `worker.queues` を ruler/encode/thumbnail/cleanup/storage 等の site
+// 非依存キューに絞ったときだけ（各 *ClientConfig.*Site フィールドは空文字列の
+// ままになり、site 単位の定期ジョブ登録は自然に無効化される。worker.ClientConfig
+// のフィールドコメント参照）。
 func validateSiteBinding(roles []string, bound []config.MirakcSite, queues []string) error {
 	if slices.Contains(roles, "watcher") && len(bound) != 1 {
 		return fmt.Errorf("--sites: watcher role requires exactly one bound site, got %d "+
@@ -135,9 +136,9 @@ func validateSiteBinding(roles []string, bound []config.MirakcSite, queues []str
 		if len(bound) == 0 && worker.RequiresSiteBinding(queues) {
 			return fmt.Errorf("--sites: worker role is unbound (central process) but worker.queues %v "+
 				"still includes site-bound queues (or is empty, meaning all queues); "+
-				"restrict worker.queues to site-independent queues (ruler/encode/thumbnail/cleanup/default --- "+
-				"catalog_export and delete_reconcile ride the cleanup queue) or bind to exactly one "+
-				"site with --sites (issue #185)", queues)
+				"restrict worker.queues to site-independent queues (ruler/encode/thumbnail/cleanup/storage/default --- "+
+				"catalog_export and delete_reconcile ride the cleanup queue, storage_sync rides the storage queue) "+
+				"or bind to exactly one site with --sites (issue #185)", queues)
 		}
 	}
 	return nil

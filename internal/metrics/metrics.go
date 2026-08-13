@@ -375,6 +375,20 @@ var (
 	})
 )
 
+// ストレージ観測（issue #238 M7-5）のメトリクス。
+var (
+	// StorageSyncLastSuccess は最後に成功したストレージ観測パスの時刻（UNIX 秒）。
+	// EpgSyncLastSuccess と同じ理由（このゲージがないと、observed_at が古いままの
+	// root が「観測が止まっている」のか「statfs が失敗し続けている」のか
+	// worker プロセス全体のログを見ずに区別できない）で持つ。site ラベルは
+	// 持たない --- アーカイブ/スクラッチは単一で site に従属しない
+	// （StorageSyncArgs のコメント参照）。
+	StorageSyncLastSuccess = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "rokuban_storage_sync_last_success_timestamp_seconds",
+		Help: "Unix time of the last successful storage usage sync (all configured roots observed). Use with time() to detect a stalled sync job.",
+	})
+)
+
 // ライブ視聴（HLS streamer、issue #91）のメトリクス。
 var (
 	// LiveActiveSessions はこのプロセスが現在持っているライブセッション（≒ ffmpeg
@@ -476,6 +490,8 @@ func NewRegistry(backlog prometheus.Collector) *prometheus.Registry {
 		DeleteReconcileDeleted,
 		DeleteReconcileBytes,
 		DeleteReconcileLastPass,
+
+		StorageSyncLastSuccess,
 
 		LiveActiveSessions,
 		LiveSessionStartFailures,

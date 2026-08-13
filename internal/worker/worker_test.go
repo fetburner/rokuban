@@ -239,6 +239,7 @@ func TestInsertOpts_UniqueStatesExcludeFinalized(t *testing.T) {
 		{"ruler_pass", RulerPassArgs{}.InsertOpts()},
 		{"reconcile_pass", ReconcilePassArgs{}.InsertOpts()},
 		{"catalog_export", CatalogExportArgs{}.InsertOpts()},
+		{"storage_sync", StorageSyncArgs{}.InsertOpts()},
 	}
 
 	for _, tt := range tests {
@@ -284,6 +285,7 @@ func TestInsertOpts_ByQueueForRenamedQueues(t *testing.T) {
 		{"record_sweep", RecordSweepArgs{}.InsertOpts(), true},
 		{"delete_reconcile", DeleteReconcileArgs{}.InsertOpts(), true},
 		{"catalog_export", CatalogExportArgs{}.InsertOpts(), true},
+		{"storage_sync", StorageSyncArgs{}.InsertOpts(), true},
 		{"ruler_pass (queue name unchanged, not required)", RulerPassArgs{}.InsertOpts(), false},
 	}
 	for _, tt := range tests {
@@ -678,6 +680,7 @@ func TestRequiresSiteBinding(t *testing.T) {
 		{"explicit reconciler", []string{reconcilerQueue}, true},
 		{"explicit watcher (record_sweep)", []string{recordSweepQueue}, true},
 		{"encode/thumbnail/cleanup/ruler only excludes site-bound queues", []string{encodeQueue, thumbnailQueue, cleanupQueue, rulerQueue}, false},
+		{"explicit storage does not require binding (site-independent, issue #238)", []string{storageQueue}, false},
 		{"encode/thumbnail plus one site-bound queue still requires binding", []string{encodeQueue, ingestQueue}, true},
 	}
 	for _, tt := range tests {
@@ -750,6 +753,7 @@ func TestPhysicalQueueName(t *testing.T) {
 		{"encode is NOT qualified", encodeQueue, "tokyo", "encode"},
 		{"thumbnail is NOT qualified", thumbnailQueue, "tokyo", "thumbnail"},
 		{"cleanup is NOT qualified", cleanupQueue, "tokyo", "cleanup"},
+		{"storage is NOT qualified (site-independent, issue #238)", storageQueue, "tokyo", "storage"},
 		{"default is NOT qualified", river.QueueDefault, "tokyo", "default"},
 	}
 	for _, tt := range tests {

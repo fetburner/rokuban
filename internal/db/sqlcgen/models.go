@@ -273,6 +273,15 @@ type SchemaInfo struct {
 	Value string
 }
 
+type StorageSync struct {
+	Root           string
+	Path           string
+	TotalBytes     int64
+	UsedBytes      int64
+	AvailableBytes int64
+	ObservedAt     time.Time
+}
+
 type TunerSync struct {
 	Site        string
 	TunerIndex  int32
