@@ -398,6 +398,78 @@ func TestLiveStreamer_UnknownProfile(t *testing.T) {
 	}
 }
 
+// Segment はセッションの起動待ちで無期限に滞留しない（issue #189 の項目 1）。
+// Playlist 側の waitForPlaylist と同じ playlistStartupTimeout で打ち切ることを
+// 固定する --- ここを直す前は、起動処理（runSession）がまだ s.ready を閉じて
+// いないセッションに対する Segment 要求は、リクエストしたクライアント自身が
+// 切断するまで戻らなかった（mirakc への接続がハングした場合の実害。docs/api.md
+// §ライブ視聴の HLS が前提とする idle GC はセッションが動き出してから効くもので、
+// 起動待ち自体には効かない）。
+func TestLiveStreamer_Segment_TimesOutWhenSessionNeverBecomesReady(t *testing.T) {
+	// 15 秒の実待ちはテストを不必要に遅くするので、この 1 本だけ短くする
+	// （罠: Playlist 用の待ちと定数を分けるとここが揃っているか気付けなくなる
+	// ので、必ず playlistStartupTimeout そのものを書き換える）。
+	prevTimeout := playlistStartupTimeout
+	playlistStartupTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { playlistStartupTimeout = prevTimeout })
+
+	mirakcSrv, _ := newFakeMirakcLiveServer(t)
+	ls, srv := newTestLiveStreamer(t, mirakcSrv.URL, baseLiveConfig(t))
+
+	// mirakc への接続がまだ終わっていない（起動処理 runSession が s.ready を
+	// 閉じていない）セッションを直接マップに注入する。getOrCreateSession 経由で
+	// 作ると呼び出し側もろとも ready を待ってしまい、Segment 単体の挙動を
+	// 検証できない。
+	const serviceID = int64(999)
+	s := &liveSession{
+		serviceID:  serviceID,
+		ready:      make(chan struct{}), // 意図的に閉じない = 起動待ちのまま
+		done:       make(chan struct{}),
+		lastAccess: time.Now(),
+		cancel:     func() {},
+	}
+	ls.mu.Lock()
+	ls.sessions[serviceID] = s
+	ls.mu.Unlock()
+	// newTestLiveStreamer が登録した t.Cleanup(ls.shutdown) は全セッションに対して
+	// stop()（cancel を呼んで <-s.done を待つ）を呼ぶ。この注入セッションは
+	// runSession を経ていない（s.done を閉じる者がいない）ため、何もしないと
+	// shutdown が無期限にハングする。t.Cleanup は LIFO なので、ここで後から
+	// 登録すれば shutdown より先に走り、s.done を閉じて詰まりを防げる。
+	t.Cleanup(func() { close(s.done) })
+
+	// テストのクライアント自身には十分大きいタイムアウトを設定する。直す前の
+	// 実装のまま実行しても、ここでテストプロセスがハングせずアサーション失敗
+	// （t.Fatalf）で終わるようにするための保険。
+	client := &http.Client{Timeout: 2 * time.Second}
+	segURL := fmt.Sprintf("%s/api/sites/%s/services/%d/live/segments/h264_seg00001.ts",
+		srv.URL, testLiveSite, serviceID)
+
+	start := time.Now()
+	resp, err := client.Get(segURL)
+	if err != nil {
+		t.Fatalf("GET segment: %v (segment request should time out with a response, not hang until the client gives up)", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	elapsed := time.Since(start)
+
+	if resp.StatusCode != http.StatusGatewayTimeout {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusGatewayTimeout)
+	}
+	if elapsed > 1*time.Second {
+		t.Errorf("segment request took %v, want bounded by playlistStartupTimeout (%v)", elapsed, playlistStartupTimeout)
+	}
+
+	// 起動待ちを諦めても close(s.ready) の性質は変えない --- セッション自体は
+	// 「起動中」のまま残る（このハンドラの都合でセッションを壊してはいけない。
+	// issue #189 の罠）。
+	select {
+	case <-s.ready:
+		t.Errorf("s.ready must not be closed by the handler giving up on waiting")
+	default:
+	}
+}
+
 // site が config.mirakc.site と一致しない要求は 404（DB を引かずパスだけで判定する）。
 func TestLiveStreamer_SiteMismatch(t *testing.T) {
 	mirakcSrv, state := newFakeMirakcLiveServer(t)
@@ -661,6 +733,14 @@ func TestLiveStreamer_NewLive_SweepsStaleSegmentDirAtStartup(t *testing.T) {
 	}
 	if _, err := os.Stat(staleDir); !os.IsNotExist(err) {
 		t.Errorf("stale session dir should be swept at startup, stat err = %v", err)
+	}
+	// **cfg.SegmentDir 自体は消さない（issue #189 の項目 2）。** SegmentDir に
+	// k8s emptyDir を直接マウントしている構成では、Linux はマウントポイント
+	// 自体への rmdir を EBUSY で拒む（Linux コンテナで実測済み。issue #189
+	// コメント参照）。中身だけを掃く実装なら、この構成でも起動時 sweep が
+	// SegmentDir 自体を rmdir しようとしないので EBUSY を踏まない。
+	if _, err := os.Stat(cfg.SegmentDir); err != nil {
+		t.Errorf("cfg.SegmentDir itself must survive the sweep (only its contents should be removed), stat err = %v", err)
 	}
 }
 

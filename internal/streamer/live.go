@@ -128,7 +128,7 @@ type LiveStreamer struct {
 // 何も登録しない（ffmpeg 無しの公式イメージで streamer ロールを起動する構成を
 // 壊さない。issue #91 の決定 2）。
 //
-// **cfg.SegmentDir を掃く（crash-only の後始末）。** ライブセッションは
+// **cfg.SegmentDir の中身を掃く（crash-only の後始末）。** ライブセッションは
 // このプロセスが唯一の書き手であり使い捨てなので、前回プロセスの残骸
 // （tmpfs はコンテナ再起動をまたいで残る --- ノード再起動でなければ消えない。
 // docs/api.md の従来の記述はここが誤りだった。レビューで指摘）が残っていても
@@ -141,15 +141,42 @@ func NewLive(mirakcClient *mirakc.Client, site string, cfg LiveConfig) *LiveStre
 
 func newLiveStreamer(client mirakcLiveClient, site string, cfg LiveConfig) *LiveStreamer {
 	if cfg.Enabled && cfg.SegmentDir != "" {
-		if err := os.RemoveAll(cfg.SegmentDir); err != nil {
-			slog.Warn("streamer: sweeping stale live segment dir at startup", "dir", cfg.SegmentDir, "err", err)
-		}
+		sweepStaleLiveSegments(cfg.SegmentDir)
 	}
 	return &LiveStreamer{
 		mirakc:   client,
 		site:     site,
 		cfg:      cfg,
 		sessions: make(map[int64]*liveSession),
+	}
+}
+
+// sweepStaleLiveSegments は dir の中身だけを消す（dir 自体には触れない。issue #189）。
+//
+// **dir 自体を os.RemoveAll すると、dir が k8s emptyDir を直接マウントした
+// マウントポイントそのものである構成で毎起動 slog.Warn が出る。** Linux では
+// マウントポイントに対する rmdir が EBUSY を返す（rmdir(2) の仕様どおり。
+// Linux コンテナで実測: 中身を全部消した後でも `os.RemoveAll(mountpoint)` は
+// "unlinkat ...: device or resource busy" を返した）。docs の推奨値
+// `/dev/shm/rokuban-live` のように tmpfs の**サブディレクトリ**を使う構成では
+// 該当しない --- サブディレクトリ自体はマウントポイントではないので rmdir できる。
+// 中身だけを個別に RemoveAll すれば、dir 自体の rmdir を一切試みないのでこの
+// 失敗が起きない（同じ Linux コンテナで実測して確認済み）。
+func sweepStaleLiveSegments(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			// 前回プロセスの残骸が無い（初回起動等）。掃く対象が無いだけで異常ではない。
+			return
+		}
+		slog.Warn("streamer: sweeping stale live segment dir at startup", "dir", dir, "err", err)
+		return
+	}
+	for _, entry := range entries {
+		if err := os.RemoveAll(filepath.Join(dir, entry.Name())); err != nil {
+			slog.Warn("streamer: sweeping stale live segment dir entry at startup",
+				"dir", dir, "entry", entry.Name(), "err", err)
+		}
 	}
 }
 
@@ -191,7 +218,15 @@ func (ls *LiveStreamer) Run(ctx context.Context) error {
 
 // playlistStartupTimeout は ffmpeg がプレイリストの初回書き出しを終えるまでの
 // 待ち時間。トランスコード開始からセグメント 1 本目が出るまでの遅延を吸収する。
-const playlistStartupTimeout = 15 * time.Second
+//
+// **Segment ハンドラの `<-s.ready` 待ちにも同じ値を使う**（issue #189）。
+// セッション起動（mirakc 接続 + ffmpeg exec）を待つ経路は Playlist と Segment の
+// 2 つがあり、片方だけ期限を持つと非対称になる --- 定数を分けると片方だけ直した
+// ときに気付けない（issue #189 の罠）ので、必ずこの 1 つを両方から参照する。
+//
+// var にしてあるのはテストからの上書き用（15 秒の実待ちはテストを不必要に
+// 遅くする）。運用者向けの設定キーではない。
+var playlistStartupTimeout = 15 * time.Second
 
 const playlistPollInterval = 100 * time.Millisecond
 
@@ -273,9 +308,25 @@ func (ls *LiveStreamer) Segment(w http.ResponseWriter, r *http.Request) {
 	// （クライアントはプレイリストで ready 待ちを経てからでないとセグメント名を
 	// 知り得ない）が、起動が異常に遅い・クライアントが古いセグメント名を
 	// 使い回す等の窓を防御的に塞ぐ。
+	//
+	// **playlistStartupTimeout で打ち切る（issue #189）。** セッションの起動は
+	// mirakc への接続（streamClient、全体タイムアウト無し）を含むため、mirakc が
+	// 応答しないと ready が閉じない。ctx.Done() だけだとこのリクエストのクライアントが
+	// 切るまでハンドラが占有し続ける --- Playlist 側の waitForPlaylist が同じ期限を
+	// 持つのに Segment だけ無期限なのは非対称なので揃える。
+	//
+	// **close(s.ready) の性質は変えない。** ここで諦めるのはこのハンドラの待ちだけで、
+	// セッションの起動 goroutine（runSession）はそのまま走り続ける。既に走っている
+	// 起動が完了すれば、後続の別リクエストは通常どおりそのセッションを使える。
 	select {
 	case <-s.ready:
 	case <-r.Context().Done():
+		return
+	case <-time.After(playlistStartupTimeout):
+		slog.Error("streamer: live segment session did not become ready in time",
+			"service_id", serviceID)
+		// Playlist 側の起動失敗と同じ扱い（同じステータス・同じ文言）に揃える。
+		http.Error(w, "live stream did not start in time", http.StatusGatewayTimeout)
 		return
 	}
 	if s.startErr != nil {

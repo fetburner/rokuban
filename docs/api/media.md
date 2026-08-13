@@ -179,8 +179,11 @@ GET /api/sites/{site}/services/{serviceId}/live/segments/{name}
   経路で全セッションを止め、ディレクトリも削除する。**tmpfs はノード再起動でしか
   消えない**（k8s の `emptyDir: {medium: Memory}` はコンテナ / Pod の再起動をまたいで
   残る）ため、SIGKILL によるクラッシュ（SIGTERM が効かない）の後始末はそれだけでは
-  終わらない --- 起動時（`NewLive`、HTTP リスナーが立つ前）に `live.segment_dir` 全体を
-  掃くことで、前回プロセスの残骸を毎起動で必ず消す
+  終わらない --- 起動時（`NewLive`、HTTP リスナーが立つ前）に `live.segment_dir` の
+  **中身**を掃くことで、前回プロセスの残骸を毎起動で必ず消す。**`segment_dir` 自体は
+  消さない** --- `emptyDir` を `segment_dir` に直接マウントする構成では、Linux は
+  マウントポイント自体への rmdir を EBUSY で拒むため（詳細は
+  [configuration.md](../configuration.md) §live）
 - **ffmpeg の LookPath 検査は `live.enabled: true` のときだけ行う。**公式イメージ
   （ffmpeg 無し）で streamer ロールを起動する構成（録画配信 / サムネイルのみ）を
   壊さない
