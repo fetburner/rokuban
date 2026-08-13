@@ -620,6 +620,86 @@ describe('LivePage / 録画予約による中断予測（issue #235 M7-2）', ()
     expect(screen.getByText(/から録画予約があります/)).toBeInTheDocument()
   })
 
+  /**
+   * `nowPlayingRefetchMs`（30 秒）の tick を跨いでも警告が消えないことを見る
+   * （レビューでの指摘。修正前は `interruptionQueryWindow` が丸めずに `nowMs`
+   * から素直に窓を組んでいたため、tick ごとに `useListPrograms` のクエリキーが
+   * 変わって react-query が新しいキャッシュエントリとして扱い、取得完了までの
+   * 間 `sameTypeProgramIds` が空集合に戻って警告が消えていた --- 実測: jsdom で
+   * 30038ms 後・実 Chromium で 28258ms 後に消失。この判定は修正前の実装で
+   * 実際に落ちることを確認済み）。
+   *
+   * **`GET /api/sites/{site}/programs` の応答にわざと 500ms の遅延を入れる。**
+   * レビュアーの実測でも「EPG 応答を 1200ms 遅らせて観測」とあるとおり、モック
+   * fetch が即時解決すると tick 直後の「新しいクエリキーが解決するまでの間」が
+   * 1ms 未満で終わり、後から 1 回だけ確認する形の assertion では消失が
+   * 観測できない（実際に遅延無しで最初に書いたところ、修正前の実装でも
+   * このテストが誤って緑になった）。遅延を入れたうえで**tick を跨ぐ間ずっと
+   * 100ms 間隔でポーリングし続け、一度も欠けないこと**を見る --- 後から 1 回
+   * 見るだけの assertion は「たまたま復帰していた瞬間を見た」だけになりうる。
+   *
+   * **実時間で待つ**（`setInterval` を fake timers 化すると react-query 内部の
+   * タイマーや testing-library の非同期ポーリングと絡んで不安定になったため、
+   * レビュアーと同じ「実時間で待つ」方式に倣った）。ただ real wall-clock
+   * 時刻をそのまま使うと、テスト実行のタイミングがたまたま 10 分グリッドの
+   * 境界の直前（残り 30 秒未満）だと、待っている間にグリッドが切り替わって
+   * クエリキーが変わり、無関係に flaky になる --- それを避けるため `Date.now`
+   * をグリッドの安全な位置（境界から 2 分後）を起点にした値へ差し替える
+   * （`performance.now()` で実際の経過時間だけ反映させるので、待つこと自体は
+   * 本物の real timer のまま）。
+   */
+  it(
+    '30 秒の tick を跨いでも警告が消えない（EPG 問い合わせの窓を 10 分グリッドに丸めているため）',
+    async () => {
+      const gridMs = 10 * 60_000
+      const rawBase = new Date('2026-01-01T00:00:00.000Z').getTime()
+      // グリッドの境界から 2 分進めた、境界に近すぎない安全な位置
+      const gridSafeBase = rawBase - (rawBase % gridMs) + 2 * 60_000
+      const perfStart = performance.now()
+      vi.spyOn(Date, 'now').mockImplementation(() => gridSafeBase + (performance.now() - perfStart))
+
+      const startAt = new Date(gridSafeBase + 30 * 60_000).toISOString()
+      stubFetch({
+        services: [service({ serviceId: 10, name: 'チャンネル A', channelType: 'GR' })],
+        programsByServiceId: {
+          10: [
+            program({
+              programId: 5,
+              serviceId: 10,
+              startAt,
+              endAt: new Date(gridSafeBase + 90 * 60_000).toISOString(),
+            }),
+          ],
+        },
+        reservations: [reservation({ programId: 5, site: 'default', startAt, skip: false })],
+      })
+      // programs 応答にだけ 500ms 遅らせる（上記コメントの理由）
+      const withoutDelay = globalThis.fetch as unknown as (
+        input: string | URL | Request,
+      ) => Promise<Response>
+      globalThis.fetch = vi.fn(async (input: string | URL | Request) => {
+        const url = new URL(String(input), 'http://localhost')
+        if (url.pathname === '/api/sites/default/programs') {
+          await new Promise((resolve) => setTimeout(resolve, 500))
+        }
+        return withoutDelay(input)
+      }) as unknown as typeof fetch
+
+      renderLive()
+
+      expect(await screen.findByText(/から録画予約があります/, undefined, { timeout: 5000 })).toBeInTheDocument()
+
+      // 30 秒の tick を跨いで、ずっと消えないことをポーリングで見る
+      // （後から 1 回見るだけでは、消えて戻った瞬間を見逃す）
+      const pollUntil = performance.now() + 32_000
+      while (performance.now() < pollUntil) {
+        expect(screen.queryByText(/から録画予約があります/)).toBeInTheDocument()
+        await new Promise((resolve) => setTimeout(resolve, 100))
+      }
+    },
+    45_000,
+  )
+
   it('近い録画予約が無いときは何も出さない（沈黙。「安全に見られます」等の肯定文言は無い）', async () => {
     stubFetch({ services: [service({ serviceId: 1, name: 'チャンネル A', channelType: 'GR' })] })
     const { queryClient } = renderLive()

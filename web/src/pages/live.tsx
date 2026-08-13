@@ -16,7 +16,7 @@ import { LivePlayer } from '@/components/live-player'
 import { Button } from '@/components/ui/button'
 import { useLiveCapability } from '@/lib/capabilities'
 import { currentProgramWindow, pickInitialServiceId } from '@/lib/live'
-import { interruptionLookaheadMs, upcomingInterruptingReservation } from '@/lib/live-interruption'
+import { interruptionQueryWindow, upcomingInterruptingReservation } from '@/lib/live-interruption'
 import { orderServices } from '@/lib/epg-grid'
 import { formatTime, isAiring } from '@/lib/format'
 import { useCurrentSite } from '@/lib/site'
@@ -176,13 +176,14 @@ export function LivePage() {
             .map((s) => s.serviceId),
     [orderedServices, selectedService],
   )
-  const interruptionWindow = useMemo(
-    () => ({
-      start: new Date(nowMs).toISOString(),
-      end: new Date(nowMs + interruptionLookaheadMs).toISOString(),
-    }),
-    [nowMs],
-  )
+  // 窓は 10 分グリッドに丸める（`interruptionQueryWindow` 参照）。**丸めずに
+  // `nowMs` から素直に組むと、`nowPlayingRefetchMs`（30 秒）ごとの tick で
+  // クエリキーが毎回変わり、react-query が新しいキャッシュエントリとして扱う
+  // ため、取得完了までの間 `sameTypeProgramIds` が空集合に戻って警告が一時的に
+  // 消える**（実測: jsdom で 30038ms 後・実 Chromium で 28258ms 後に消失。
+  // レビューでの指摘。`pages/live.test.tsx`「30 秒の tick を跨いでも警告が
+  // 消えない」参照）。丸めることで 10 分間は値が変わらず、キャッシュも保たれる。
+  const interruptionWindow = useMemo(() => interruptionQueryWindow(nowMs), [nowMs])
   const sameTypeProgramsQuery = useListPrograms(
     site,
     { start: interruptionWindow.start, end: interruptionWindow.end, serviceId: sameTypeServiceIds },

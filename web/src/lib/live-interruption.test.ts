@@ -1,11 +1,20 @@
 import { describe, expect, it } from 'vitest'
 
 import {
-  interruptionLookaheadMs,
+  interruptionQueryWindow,
   interruptionWarningMessage,
   upcomingInterruptingReservation,
   type InterruptingReservationCandidate,
 } from '@/lib/live-interruption'
+
+/**
+ * testLookaheadMs は境界テストが使う先読み窓。**実装の定数
+ * （`interruptionLookaheadMs`）を読まずリテラルで固定する** --- 定数と比較する
+ * テストは定数を変えても通ってしまい何も主張しない（CLAUDE.md「実装の定数と
+ * 比較するテストは何も主張していない」）。`upcomingInterruptingReservation` は
+ * `lookaheadMs` を引数に取れるので、この値を明示的に渡して境界を固定する。
+ */
+const testLookaheadMs = 2 * 60 * 60 * 1000
 
 /** 時刻はローカルの 0 時基準で組む（capacity.test.ts と同じ流儀）。 */
 const dayStart = new Date(2026, 6, 25, 0, 0, 0, 0)
@@ -59,8 +68,10 @@ describe('upcomingInterruptingReservation', () => {
   })
 
   it('窓の終了境界の直前（lookaheadMs - 1ms）は含む', () => {
-    const r = reservation({ startAt: new Date(nowMs + interruptionLookaheadMs - 1).toISOString() })
-    expect(upcomingInterruptingReservation([r], 'default', sameType, nowMs)).toBe(r)
+    const r = reservation({ startAt: new Date(nowMs + testLookaheadMs - 1).toISOString() })
+    expect(
+      upcomingInterruptingReservation([r], 'default', sameType, nowMs, testLookaheadMs),
+    ).toBe(r)
   })
 
   // --- 該当しないとき返さない方向（両方向のテスト） ---
@@ -76,8 +87,10 @@ describe('upcomingInterruptingReservation', () => {
   })
 
   it('窓の外（先読み時間を過ぎた予約）は除外する', () => {
-    const r = reservation({ startAt: new Date(nowMs + interruptionLookaheadMs).toISOString() })
-    expect(upcomingInterruptingReservation([r], 'default', sameType, nowMs)).toBeNull()
+    const r = reservation({ startAt: new Date(nowMs + testLookaheadMs).toISOString() })
+    expect(
+      upcomingInterruptingReservation([r], 'default', sameType, nowMs, testLookaheadMs),
+    ).toBeNull()
   })
 
   it('すでに始まっている予約（startAt < nowMs）は除外する', () => {
@@ -92,6 +105,41 @@ describe('upcomingInterruptingReservation', () => {
 
   it('予約が無ければ null', () => {
     expect(upcomingInterruptingReservation([], 'default', sameType, nowMs)).toBeNull()
+  })
+})
+
+describe('interruptionQueryWindow', () => {
+  const gridMs = 10 * 60_000
+  const lookaheadMs = 2 * 60 * 60_000
+
+  it('グリッド内で 30 秒（nowPlayingRefetchMs の tick 間隔）進めても窓の値が変わらない', () => {
+    // グリッドの先頭ちょうどだと「たまたま境界に乗っていた」だけで通ってしまう
+    // ことがあるため、先頭から 2 分進めた位置を基準にする
+    const base = nowMs + 2 * 60_000
+    const a = interruptionQueryWindow(base, lookaheadMs, gridMs)
+    const b = interruptionQueryWindow(base + 30_000, lookaheadMs, gridMs)
+    // react-query のクエリキーは値のハッシュで比較される（オブジェクト参照では
+    // ない）ため、文字列として一致すれば同じキャッシュエントリに解決する
+    expect(b).toEqual(a)
+  })
+
+  it('グリッドを跨ぐと窓は変わる（無限に固定されるわけではない）', () => {
+    const base = Math.floor(nowMs / gridMs) * gridMs
+    const beforeBoundary = interruptionQueryWindow(base + gridMs - 1, lookaheadMs, gridMs)
+    const afterBoundary = interruptionQueryWindow(base + gridMs, lookaheadMs, gridMs)
+    expect(afterBoundary).not.toEqual(beforeBoundary)
+  })
+
+  it('丸めた窓は常に実際の判定窓 [nowMs, nowMs + lookaheadMs) を包含する（境界含む）', () => {
+    // グリッド内の複数点で確認する（切り捨ての余りが最大の位置＝境界直前を含む）
+    for (const offsetMinutes of [0, 1, 5, 9, 9.9]) {
+      const t = nowMs + offsetMinutes * 60_000
+      const window = interruptionQueryWindow(t, lookaheadMs, gridMs)
+      const startMs = new Date(window.start).getTime()
+      const endMs = new Date(window.end).getTime()
+      expect(startMs).toBeLessThanOrEqual(t)
+      expect(endMs).toBeGreaterThanOrEqual(t + lookaheadMs)
+    }
   })
 })
 
