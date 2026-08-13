@@ -16,6 +16,20 @@ docker compose exec postgres psql -U rokuban -d rokuban -c \
 - `state=retryable` のまま進まない — mirakc への到達性か、
   `media_dir` の書き込み権限を確認する
 
+**「転送しているが遅いだけ」と「止まっている」は UI で見分けられる。** 録画一覧・
+録画詳細に取り込み状態が出る（「取り込み中 42%」/「取り込み中 1.2 GB（停滞）」/
+「取り込み待ち」。[frontend/recordings.md](../frontend/recordings.md)）。DB を直接
+見るなら次:
+
+```sh
+docker compose exec postgres psql -U rokuban -d rokuban -c \
+  "SELECT recording_id, written_bytes, expected_bytes, observed_at FROM recording_ingest_progress"
+```
+
+`observed_at` が現在時刻から離れていくなら転送は止まっている（進捗は 2 秒ごとに
+書き直される）。`written_bytes` が 0 に戻るのは異常ではない —— ジョブ再試行は部分
+ファイルを truncate してゼロから作り直す（[recording/ingest.md](../recording/ingest.md) §5.3）
+
 ### EPG 同期が一度しか走らない
 
 `river_job` の `epg_sync` に完了済みの行が残っていて `unique_key` を占有している。

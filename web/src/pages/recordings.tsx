@@ -36,6 +36,12 @@ import {
 import { Button } from '@/components/ui/button'
 import { shouldAutoLoadNextPage, shouldShowLoadMoreButton } from '@/lib/auto-load'
 import { formatBytes, formatDateTime, formatDuration } from '@/lib/format'
+import {
+  ingestDisplay,
+  ingestRefetchIntervalMs,
+  isIngestInFlight,
+  type IngestDisplay,
+} from '@/lib/ingest'
 import { domLayoutMeasurable } from '@/lib/list-virtualization'
 import {
   buildListRecordingsParams,
@@ -97,6 +103,14 @@ export function RecordingsPage() {
     queryFn: ({ pageParam }: { pageParam: RecordingsPageParam }) =>
       listRecordings({ ...listParams, ...pageParam }),
     initialPageParam: {} as RecordingsPageParam,
+    // 取り込み中（または録画中）の録画が読み込み済みのページにある間だけ定期
+    // 再取得する（issue #212）。SSE はヒントで真実ではない（不変条件 5）ので、
+    // 進捗は REST の再取得で収束させる。終わっている画面はポーリングしない ---
+    // 一覧は無限リストで、常時ポーリングすると積んだページ全部を取り直す。
+    refetchInterval: (q) =>
+      (q.state.data?.pages ?? []).some((page) => (unwrap(page) ?? []).some(isIngestInFlight))
+        ? ingestRefetchIntervalMs
+        : false,
     getNextPageParam: (lastPage) => {
       const data = unwrap(lastPage) ?? []
       if (data.length < pageSize) return undefined
@@ -375,6 +389,7 @@ function RecordingRow({ recording, trash }: { recording: Recording; trash: boole
             <div className="truncate text-sm">{recording.title || '（番組名なし）'}</div>
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
               <StatusBadge status={recording.status} />
+              <IngestBadge recording={recording} />
               <span className="shrink-0">{recording.serviceName}</span>
               <span className="shrink-0">{formatDateTime(recording.startAt)}</span>
               <span className="shrink-0">{formatDuration(recording.durationMs)}</span>
@@ -452,6 +467,76 @@ export function StatusBadge({ status }: { status: Recording['status'] }) {
 }
 
 /**
+ * IngestBadge は「原本をまだ取り込めていない」ことを一覧の行に出す（issue #212）。
+ *
+ * `status = finished` は mirakc の録画完了であって取り込み完了ではない。原本が
+ * コミットされるまでブラウザ再生も事後エンコードもできないが、それを表すものが
+ * `sizeBytes` の省略しか無かったため「止まっているのか進んでいるのか」が
+ * 分からなかった。
+ *
+ * **色は使わない**（`bg-muted` のまま）。停滞も含めて状況の説明であって、
+ * タリー（いま電波に乗っている）でも destructive（取り返しがつかない）でも
+ * ない --- 「色は信号のみ」（docs/frontend/design.md）に従い、停滞は文言で
+ * 言う。
+ *
+ * `originalDeleted`（取り込み済みだが原本が今は無い）はここには出さない ---
+ * 一覧の 1 行に常時出す種類の情報ではなく、展開後の「取り込み」欄
+ * （`RecordingDetail`）が引き受ける。
+ *
+ * 停滞判定に使う「今」はレンダリング時の `Date.now()`。時計そのものを刻んでは
+ * いないが、取り込み中の録画がある間は一覧が定期再取得され（`refetchInterval`）
+ * そのたびに再レンダリングされるので、進捗が止まっていれば数十秒のうちに
+ * 「停滞」へ変わる。
+ */
+export function IngestBadge({ recording }: { recording: Recording }) {
+  const display = ingestDisplay(recording, Date.now())
+  if (display === undefined || display.kind === 'originalDeleted') return null
+
+  const label =
+    display.kind === 'pending'
+      ? '取り込み待ち'
+      : display.percent !== undefined
+        ? `取り込み中 ${display.percent}%`
+        : `取り込み中 ${formatBytes(display.writtenBytes)}`
+
+  return (
+    <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[0.65rem] text-muted-foreground">
+      {display.kind === 'transferring' && display.stale ? `${label}（停滞）` : label}
+    </span>
+  )
+}
+
+/**
+ * ingestDetailText は展開後の「取り込み」欄の文言（issue #212）。
+ *
+ * 一覧のバッジ（`IngestBadge`）より一段詳しく、分母が取れていれば
+ * 「1.2 GB / 3.4 GB」まで出す。**分母が無いときに割合をでっち上げない**
+ * （mirakc が record の length を返さない構成があるため。`openapi.yaml` の
+ * `IngestProgress.expectedBytes`）。
+ *
+ * `originalDeleted` をここで言い切れるのは、サーバーが「`kind='original'` の
+ * 行が state を問わず存在するか」を見て `committed` を返しているから ---
+ * `sizeBytes` の省略だけを見ていた頃は未 ingest と区別できず、未 ingest の
+ * 録画に「削除済み」と読める表示が出ていた（issue #211）。
+ */
+function ingestDetailText(display: IngestDisplay): string {
+  switch (display.kind) {
+    case 'pending':
+      return '待機中（まだ原本を取り込んでいません）'
+    case 'originalDeleted':
+      return '完了（原本は削除済み）'
+    case 'transferring': {
+      const size =
+        display.expectedBytes !== undefined
+          ? `${formatBytes(display.writtenBytes)} / ${formatBytes(display.expectedBytes)}`
+          : formatBytes(display.writtenBytes)
+      const percent = display.percent !== undefined ? `（${display.percent}%）` : ''
+      return `${display.stale ? '転送中・停滞' : '転送中'} ${size}${percent}`
+    }
+  }
+}
+
+/**
  * DropBadges はドロップ統計をひと目で分かる形で出す。
  * 0 のものは出さないので、正常な録画ではバッジが 1 つも出ない。
  */
@@ -510,6 +595,7 @@ export function RecordingDetail({
 }) {
   const encodedAssets = recording.encodedAssets ?? []
   const hasOriginal = recording.sizeBytes !== undefined
+  const ingestState = ingestDisplay(recording, Date.now())
 
   return (
     <div className="flex flex-col gap-4 bg-muted/30 px-4 py-3 text-xs">
@@ -554,6 +640,15 @@ export function RecordingDetail({
         )}
         <dt className="text-muted-foreground">種別</dt>
         <dd>{sourceLabels[recording.source]}</dd>
+        {/* 取り込み（issue #212）。正常に完了して原本がある録画では
+            ingestDisplay が undefined を返すので、この行ごと出ない ---
+            言うことが無いときに「完了」とだけ書かれた行を並べない。 */}
+        {ingestState !== undefined && (
+          <>
+            <dt className="text-muted-foreground">取り込み</dt>
+            <dd>{ingestDetailText(ingestState)}</dd>
+          </>
+        )}
         {trash && recording.deletedAt && (
           <>
             <dt className="text-muted-foreground">削除日時</dt>

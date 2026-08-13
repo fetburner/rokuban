@@ -180,6 +180,13 @@ type RecordingEncodePolicy struct {
 	UpdatedAt      time.Time
 }
 
+type RecordingIngestProgress struct {
+	RecordingID   int64
+	WrittenBytes  int64
+	ExpectedBytes *int64
+	ObservedAt    time.Time
+}
+
 type Reservation struct {
 	ID                    int64
 	Site                  string

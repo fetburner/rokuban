@@ -174,6 +174,23 @@ statement のキャッシュが効く場面が少ない（キャッシュを維�
 （[data.md](../data.md) §5）を使うが、**エンジン（`internal/rulequery`）は
 共有しない**。理由は [data.md](../data.md) §5「録画検索は rulequery を共有しない」。
 
+### 取り込み状態は一覧の要素に載せる（別エンドポイントにしない）
+
+原本の取り込み（ingest）がどこまで進んだかは `Recording.ingest` として一覧要素と
+単体 GET の両方に載せる。**専用のエンドポイントを足さない** --- 取り込み中かどうかは
+「その録画が再生できるか」と同じ質問であり、一覧を引いた時点で答えが要る（別
+エンドポイントにすると、一覧の行数ぶん N+1 のリクエストになる）。
+
+api ロールは mirakc に問い合わせない（不変条件 1）ので、進捗の真実は worker が
+DB に残した観測（`recording_ingest_progress`）だけ。api は**毎リクエストでその行と
+`media_assets` / `record_sync` の有無から状態を導出する**（列に焼かない。不変条件 9）。
+状態の値の意味と、なぜ「リトライ中」を持たないかは `openapi.yaml` の
+`IngestProgress` と [recording/ingest.md](../recording/ingest.md) §5.6。
+
+**進捗は SSE で押さない。** SSE はヒントであって真実ではない（不変条件 5）ので、
+クライアントは取り込み中の録画がある間だけ一覧・単体 GET を再取得して収束させる
+（[frontend/recordings.md](../frontend/recordings.md)）。
+
 ### 録画単体: `GET /api/recordings/{id}`
 
 一覧要素と同形の 1 件（skip 理由・予約からの導線の着地先）。

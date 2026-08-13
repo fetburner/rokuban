@@ -54,6 +54,58 @@ type recordingListFields struct {
 	// AvailableEncodedAssets（observed、active のみ）とは異なり、pending な
 	// ジョブのプロファイルも含む。事後追加（issue #133）で増える唯一の経路。
 	EncodeProfiles []string
+
+	// HasOriginalAsset は kind='original' の media_assets 行が **state を問わず**
+	// 存在するか（issue #212）。OriginalSizeBytes（state <> 'deleted' の行だけを
+	// 見る）とはわざと述語が違う --- この差が「まだ取り込めていない」と
+	// 「取り込んだ後に削除した」を分ける（issue #211）。
+	HasOriginalAsset bool
+	// HasRecordSync は mirakc record の観測（record_sync）がこの録画に紐付いて
+	// いるか。原本も進捗も無いときに「取り込み待ち」と「そもそも取り込む対象が
+	// 無い」を分ける。
+	HasRecordSync bool
+	// IngestWrittenBytes / IngestExpectedBytes / IngestObservedAt は
+	// recording_ingest_progress の 1 行（無ければすべて nil）。
+	IngestWrittenBytes  *int64
+	IngestExpectedBytes *int64
+	IngestObservedAt    *time.Time
+}
+
+// ingestProgressFromFields は原本の取り込み状態を一覧行の素の事実から導出する
+// （issue #212）。**列に焼いた値ではなく毎回の導出**（不変条件 9: 毎パス
+// 作り直せる値は列にしない）。
+//
+// 優先順位が意味を持つ:
+//
+//  1. 原本 media_asset 行があれば committed。state='deleted' でも committed の
+//     ままにする --- 「取り込めなかった」と「取り込んだ後に消した」を混同しない
+//     ため（issue #211）。原本が**いま**あるかどうかは Recording.sizeBytes の
+//     有無が答える。原本行を進捗行より先に見るのは、コミット済みの録画に
+//     取り残された進捗行（別経路で原本が登録された場合など）が「取り込み中」を
+//     名乗らないようにするため（真実は media_assets 側。不変条件 5）。
+//  2. 進捗行があれば transferring。バイト数と観測時刻を添える。
+//  3. mirakc record の観測だけがあれば pending（取り込み待ち / 再試行待ち）。
+//  4. どれでもなければ unknown。
+//
+// 「リトライ中」を pending と区別する値は返さない（openapi.yaml の
+// IngestProgress.state の説明参照）。
+func ingestProgressFromFields(r recordingListFields) IngestProgress {
+	switch {
+	case r.HasOriginalAsset:
+		return IngestProgress{State: Committed}
+	case r.IngestWrittenBytes != nil:
+		written := *r.IngestWrittenBytes
+		return IngestProgress{
+			State:         Transferring,
+			WrittenBytes:  &written,
+			ExpectedBytes: r.IngestExpectedBytes,
+			ObservedAt:    r.IngestObservedAt,
+		}
+	case r.HasRecordSync:
+		return IngestProgress{State: Pending}
+	default:
+		return IngestProgress{State: Unknown}
+	}
 }
 
 // encodedAssetRow は available_encoded_assets（jsonb_agg）1 要素の JSON 形。
@@ -100,6 +152,11 @@ func recordingFromListFields(r recordingListFields, includeDeletedAt bool) (Reco
 			Scrambled: r.DropScrambled,
 		}
 	}
+	// 原本の取り込み状態（issue #212）。**常に載せる**（省略しない）---
+	// 省略を「取り込み済み」とも「不明」とも読める曖昧な状態にしないため。
+	// 導出の根拠は ingestProgressFromFields の doc コメント参照。
+	ingest := ingestProgressFromFields(r)
+	rec.Ingest = &ingest
 	// 再生可能な encoded 派生物（observed）。空 `[]`/nil なら省略（omitempty）。
 	//
 	// `EncodedAssets`（profile + sizeBytes）と `EncodedProfiles`（profile
