@@ -182,7 +182,8 @@ encode:
 // mirakc: を書かないため。issue #183 の「罠」）ので、ここで数えるのは
 // db.* (4) + storage.media_dir (1) の 5 件。mirakc/mirakcs のどちらも
 // 無い場合の検出は validateMirakcRegistry が別のエラーとして行う
-// （TestLoad_MirakcRegistry_NeitherSet が確認する）。
+// （TestLoad_MirakcRegistry の "neither mirakc nor mirakcs set is an error"
+// が確認する）。
 func TestLoad_MissingRequiredKeys(t *testing.T) {
 	path := writeConfig(t, `
 log:
@@ -277,6 +278,42 @@ mirakc:
 		}
 		if !strings.Contains(err.Error(), "mirakc.url is required") {
 			t.Errorf("error = %v, want mention of mirakc.url is required", err)
+		}
+	})
+
+	// 「キーが書かれたか」の境界。detectMirakcKeyWritten は goccy/go-yaml が
+	// null をポインタの nil にデコードすることに乗っているので、依存している
+	// 分岐をリポジトリ側で固定する（この 2 件が無いと、goccy の挙動が変わった
+	// ときに `mirakcs:` 構成が一斉に相互排他エラーになる形で初めて気付く）。
+	t.Run("bare mirakc: key with no value counts as unwritten", func(t *testing.T) {
+		path := writeConfig(t, mirakcsBase+`
+mirakc:
+mirakcs:
+  - site: tokyo
+    url: http://mirakc-tokyo:40772
+`)
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(cfg.Registry()) != 1 || cfg.Registry()[0].Site != "tokyo" {
+			t.Errorf("Registry() = %v, want the one-element mirakcs registry", cfg.Registry())
+		}
+	})
+
+	t.Run("empty mirakc: {} counts as written", func(t *testing.T) {
+		path := writeConfig(t, mirakcsBase+`
+mirakc: {}
+mirakcs:
+  - site: tokyo
+    url: http://mirakc-tokyo:40772
+`)
+		_, err := Load(path)
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "must not both be set") {
+			t.Errorf("error = %v, want mention of mutual exclusion", err)
 		}
 	})
 

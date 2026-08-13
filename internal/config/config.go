@@ -722,8 +722,13 @@ func defaults() Config {
 
 var vld = validator.New(validator.WithRequiredStructEnabled())
 
-// detectMirakcKeyWritten は展開済み YAML に `mirakc:` キーが書かれていたかを返す
-// （中身が空（`mirakc:` だけ）の場合は「書かれていない」とみなす）。
+// detectMirakcKeyWritten は展開済み YAML に `mirakc:` キーが書かれていたかを返す。
+//
+// **キーだけ書いて値が無い `mirakc:`（null）は「書かれていない」、空マップの
+// `mirakc: {}` は「書かれた」になる。** goccy/go-yaml が null をポインタの nil に
+// デコードするかどうかに乗った挙動なので、リポジトリ側で固定しておく
+// （TestLoad_MirakcRegistry の "bare mirakc: key with no value counts as unwritten"
+// / "empty mirakc: {} counts as written"）。
 //
 // defaults() が Mirakc.Site を埋めてしまうため、相互排他の判定に必要な「書いたか
 // どうか」は Unmarshal 後の Config からは復元できない。ここだけキーの有無を見る。
