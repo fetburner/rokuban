@@ -132,8 +132,8 @@ func TestListRecordings(t *testing.T) {
 	if pending.SizeBytes != nil {
 		t.Errorf("un-ingested recording should omit sizeBytes, got %v", pending.SizeBytes)
 	}
-	if pending.EncodedProfiles != nil {
-		t.Errorf("un-ingested recording should omit encodedProfiles, got %v", pending.EncodedProfiles)
+	if pending.EncodedAssets != nil {
+		t.Errorf("un-ingested recording should omit encodedAssets, got %v", pending.EncodedAssets)
 	}
 	if pending.Status != "recording" {
 		t.Errorf("status = %q, want recording", pending.Status)
@@ -145,7 +145,8 @@ func TestListRecordings(t *testing.T) {
 	}
 }
 
-// ListRecordings は active な encoded プロファイル名を返すこと（ブラウザ再生用）。
+// ListRecordings は active な encoded 派生物（プロファイル名 + サイズ）を返すこと
+// （ブラウザ再生用。issue #236 M7-3 で単なる名前の配列からサイズ付きに変わった）。
 func TestListRecordings_EncodedProfiles(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	srv := newAPIServer(t, pool)
@@ -207,11 +208,18 @@ func TestListRecordings_EncodedProfiles(t *testing.T) {
 	if rec == nil {
 		t.Fatal("recording not found")
 	}
-	if rec.EncodedProfiles == nil {
-		t.Fatal("encodedProfiles is nil")
+	if rec.EncodedAssets == nil {
+		t.Fatal("encodedAssets is nil")
 	}
-	if len(*rec.EncodedProfiles) != 2 || (*rec.EncodedProfiles)[0] != "h264" || (*rec.EncodedProfiles)[1] != "h265" {
-		t.Errorf("encodedProfiles = %v, want [h264 h265]", *rec.EncodedProfiles)
+	assets := *rec.EncodedAssets
+	if len(assets) != 2 {
+		t.Fatalf("encodedAssets = %+v, want 2 elements", assets)
+	}
+	if assets[0].Profile != "h264" || assets[0].SizeBytes == nil || *assets[0].SizeBytes != 100 {
+		t.Errorf("encodedAssets[0] = %+v, want {h264 100}", assets[0])
+	}
+	if assets[1].Profile != "h265" || assets[1].SizeBytes == nil || *assets[1].SizeBytes != 80 {
+		t.Errorf("encodedAssets[1] = %+v, want {h265 80}", assets[1])
 	}
 }
 
@@ -684,7 +692,7 @@ func TestGetRecording_NotFound(t *testing.T) {
 }
 
 // ごみ箱の録画も 200 で返す（メディア配信の 404 契約とは別の判断。
-// openapi.yaml の getRecording description）。ただし encodedProfiles は
+// openapi.yaml の getRecording description）。ただし encodedAssets は
 // 一覧の trash=true と同じく省略する（プレイヤーを出さないので揃える必要が
 // 無い。docs/frontend/recordings.md）。
 func TestGetRecording_Trash(t *testing.T) {
@@ -718,8 +726,8 @@ func TestGetRecording_Trash(t *testing.T) {
 	if got.DeletedAt == nil {
 		t.Error("trash の録画は deletedAt を含むべき")
 	}
-	if got.EncodedProfiles != nil {
-		t.Errorf("trash の録画は encodedProfiles を省略するべき、got %v", got.EncodedProfiles)
+	if got.EncodedAssets != nil {
+		t.Errorf("trash の録画は encodedAssets を省略するべき、got %v", got.EncodedAssets)
 	}
 }
 

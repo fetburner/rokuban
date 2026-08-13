@@ -32,8 +32,8 @@ HEAD /api/recordings/{id}/thumbnail         →  ヘッダーのみ
 （`customInstance` が `response.json()` を呼ぶ）ためバイナリ配信では誤った
 クライアントが生成される。UI は URL を `<video>` の src や `<img>` の src、
 保存リンクに直接使い、生成フックを経由しない。守るべきスキーマがないので
-生成物から得るものもない。利用可能なプロファイル名は `Recording.encodedProfiles`
-（一覧 API）で返す。
+生成物から得るものもない。利用可能なプロファイル（名前 + サイズ）は
+`Recording.encodedAssets`（一覧 API）で返す。
 
 **`internal/streamer` の所有物として実装する。** api ロールはファイルシステムに
 依存しない（不変条件 1）ため、バイト転送はロールとして分ける。monolith では

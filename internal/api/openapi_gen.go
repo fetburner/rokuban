@@ -679,6 +679,20 @@ type EncodeProfileSummary struct {
 // EncodeProfileSummaryContainer 出力コンテナ（表示用。未注入なら省略）。
 type EncodeProfileSummaryContainer string
 
+// EncodedAsset defines model for EncodedAsset.
+type EncodedAsset struct {
+	Profile string `json:"profile"`
+
+	// SizeBytes encoded 派生物の実サイズ。`media_assets.size_bytes` は NOT NULL
+	// なので active な行が存在する限り常に付く（未検証の断言にしないため:
+	// `internal/db/migrations/00002_schema_v1.sql` の CHECK 制約が根拠、
+	// 実行時計測ではない）。省略可能にしているのは、サイズが取れない
+	// 資産があっても選択肢そのものは隠さない（ドロップ統計の「分類できな
+	// かった PID」と同じ判断。docs/frontend/recordings.md）という UI 側の
+	// 表示規律を型で表現するため。
+	SizeBytes *int64 `json:"sizeBytes,omitempty"`
+}
+
 // ErrorResponse defines model for ErrorResponse.
 type ErrorResponse struct {
 	Error string `json:"error"`
@@ -851,19 +865,27 @@ type Recording struct {
 	// recordings.encode_profiles）。ingest 完了時に一度だけ焼き込まれ、以後は
 	// `POST /api/recordings/{id}/encode-profiles` による事後追加（凍結の例外。
 	// docs/storage.md §6「原本 TS の保持ポリシー」）でのみ増える。
-	// `encodedProfiles`（observed、再生可能なもの）とは異なり、まだ完了して
+	// `encodedAssets`（observed、再生可能なもの）とは異なり、まだ完了して
 	// いない pending なジョブのプロファイルも含む --- UI が「追加済み」を
 	// 判定するのに使う。空配列は省略可。
 	EncodeProfiles *[]string `json:"encodeProfiles,omitempty"`
 
-	// EncodedProfiles 再生可能な encoded 派生物のプロファイル名（media_assets の active のみ）。
+	// EncodedAssets 再生可能な encoded 派生物（media_assets の active のみ）。
 	// ブラウザ再生は GET /api/recordings/{id}/file?profile=<name> を使う。
-	// desired（encode_profiles）ではなく observed。空配列は省略可。
-	EncodedProfiles *[]string  `json:"encodedProfiles,omitempty"`
-	EndedAt         *time.Time `json:"endedAt,omitempty"`
-	EventId         int        `json:"eventId"`
-	Id              int64      `json:"id"`
-	NetworkId       int        `json:"networkId"`
+	// desired（encodeProfiles）ではなく observed。空配列は省略可。
+	//
+	// issue #236（M7-3）でプロファイル名だけの配列（旧 `encodedProfiles:
+	// string[]`）から置き換えた --- 操作点（プロファイルセレクタ・
+	// ダウンロードリンク・VLC リンク）にサイズを常置するには、プロファイル
+	// 名だけでは足りない。名前のみを使っていた既存の消費先（再生可否判定・
+	// プロファイルセレクタの選択肢）は `encodedAssets.map(a => a.profile)`
+	// で復元できるため、名前配列と資産配列を並存させる形は取らなかった
+	// （同じ情報の二重表現を避ける）。
+	EncodedAssets *[]EncodedAsset `json:"encodedAssets,omitempty"`
+	EndedAt       *time.Time      `json:"endedAt,omitempty"`
+	EventId       int             `json:"eventId"`
+	Id            int64           `json:"id"`
+	NetworkId     int             `json:"networkId"`
 
 	// QualityEvents recording.failed / record-broken / bcas_anomaly の履歴
 	QualityEvents *[]map[string]interface{} `json:"qualityEvents,omitempty"`

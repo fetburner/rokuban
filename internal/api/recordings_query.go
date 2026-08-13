@@ -158,7 +158,7 @@ func channelTypeStrings(vs []ListRecordingsParamsChannelType) []string {
 	return out
 }
 
-// recordingsSelectColumns / recordingsAvailableEncodedProfilesSelect /
+// recordingsSelectColumns / recordingsAvailableEncodedAssetsSelect /
 // recordingsFromJoins は `GET /api/recordings`（buildRecordingsQuery）と
 // `GET /api/recordings/{id}`（queryRecordingByID）が共有する SELECT リストと
 // FROM/JOIN 節。openapi.yaml は単体 GET を「一覧要素と同形」とコミットしている
@@ -166,7 +166,7 @@ func channelTypeStrings(vs []ListRecordingsParamsChannelType) []string {
 // 手書きの文字列で別々に SQL を組んでいた最初の実装では、一方に列を足しても
 // もう一方は静かに古い形のまま残り続けても `Scan` 呼び出し自体は（列数が
 // 揃っている限り）コンパイルも実行も通ってしまう --- `encode_profiles`
-// （issue #159）や `available_encoded_profiles`（issue #133）のように過去に
+// （issue #159）や `available_encoded_assets`（issue #133）のように過去に
 // 列が増えた表なので、次に一覧側だけ列を足したときに同じ drift が再発しうる
 // （issue #232 のレビュー指摘）。共有の定数に切り出すことで、列を足す変更は
 // 両方のクエリに自動的に効く。
@@ -184,7 +184,7 @@ const (
     COALESCE(d.scrambled, 0)::bigint    AS drop_scrambled,
     COALESCE(p.encode_profiles, '{}')::text[] AS encode_profiles`
 
-	// recordingsAvailableEncodedProfilesSelect はブラウザ再生用の観測列（active な
+	// recordingsAvailableEncodedAssetsSelect はブラウザ再生用の観測列（active な
 	// encoded のみ）。先頭にカンマを持つので recordingsSelectColumns の直後に
 	// そのまま連結できる。
 	//
@@ -195,15 +195,28 @@ const (
 	// Go 側で捨てるかという別の手段で辿り着いている。手段が違う理由は
 	// 一覧側は trash という絞り込み軸を静的に知っているため SQL 自体を
 	// 分岐できるが、単体 GET は行を読むまで trash かどうかが分からないため。
-	recordingsAvailableEncodedProfilesSelect = `,
+	//
+	// jsonb_agg で profile と size_bytes を同じ行に載せる（issue #236 M7-3。
+	// プロファイル名の配列 + サイズの並行配列という 2 本の index 揺れやすい
+	// 配列にしなかった理由 --- 片方だけ ORDER BY を書き忘れると添字が
+	// ずれるが、jsonb_agg は 1 要素が 1 行の全情報を持つのでその種の drift が
+	// 構造的に起きない）。size_bytes は media_assets の NOT NULL 列なので
+	// active な行がある限り必ず入る。
+	recordingsAvailableEncodedAssetsSelect = `,
     (
-        SELECT coalesce(array_agg(e.profile ORDER BY e.profile), '{}')::text[]
+        SELECT coalesce(
+            jsonb_agg(
+                jsonb_build_object('profile', e.profile, 'sizeBytes', e.size_bytes)
+                ORDER BY e.profile
+            ),
+            '[]'::jsonb
+        )
         FROM media_assets e
         WHERE e.recording_id = r.id
           AND e.kind = 'encoded'
           AND e.state = 'active'
           AND e.profile IS NOT NULL
-    ) AS available_encoded_profiles`
+    ) AS available_encoded_assets`
 
 	// recordingsFromJoins は両クエリ共通の FROM + JOIN 節。
 	recordingsFromJoins = `
@@ -226,7 +239,7 @@ LEFT JOIN LATERAL (
 // 射影は ListRecordings / ListTrashRecordings（internal/db/queries/recordings.sql・
 // recordings_trash.sql）と同じ列を明示的に並べる（r.* ではなく列名を書くのは、
 // この SELECT リストが queryRecordings の Scan 呼び出しの順序をそのまま決める
-// ため）。available_encoded_profiles は trash のときだけ省く ---
+// ため）。available_encoded_assets は trash のときだけ省く ---
 // ListTrashRecordings がそれを意図的に射影しない（ごみ箱では配信 3 クエリが
 // deleted_at IS NOT NULL を理由に必ず 404 になるため）のと同じ区別。
 //
@@ -328,18 +341,18 @@ func buildRecordingsQuery(f recordingsFilter) (string, []any, error) {
 		orderDir = "DESC"
 	}
 
-	availableProfilesSelect := ""
+	availableAssetsSelect := ""
 	if !f.Trash {
 		// ListRecordings（internal/db/queries/recordings.sql）と同じ形。
 		// ブラウザ再生用の観測（active な encoded のみ）。trash のときだけ省く
-		// 理由は recordingsAvailableEncodedProfilesSelect のコメント参照。
-		availableProfilesSelect = recordingsAvailableEncodedProfilesSelect
+		// 理由は recordingsAvailableEncodedAssetsSelect のコメント参照。
+		availableAssetsSelect = recordingsAvailableEncodedAssetsSelect
 	}
 
 	limitPlaceholder := arg(f.Limit)
 
 	sql := `
-SELECT` + recordingsSelectColumns + availableProfilesSelect + recordingsFromJoins + `
+SELECT` + recordingsSelectColumns + availableAssetsSelect + recordingsFromJoins + `
 WHERE ` + where.String() + `
 ORDER BY r.program_start_at ` + orderDir + `, r.id ` + orderDir + `
 LIMIT ` + limitPlaceholder
@@ -382,7 +395,7 @@ LIMIT ` + limitPlaceholder
 
 // queryRecordingByID は GET /api/recordings/{id} の単体取得。
 // 一覧（queryRecordings）と同じ射影（recordingsSelectColumns /
-// recordingsAvailableEncodedProfilesSelect / recordingsFromJoins、この 2 つの
+// recordingsAvailableEncodedAssetsSelect / recordingsFromJoins、この 2 つの
 // クエリの共有元）を使うが、絞り込み軸が id 固定のためキーセットカーソルも
 // 動的 WHERE ビルダも要らない --- trgm 式 GIN が問題になる可変な組み合わせが
 // 存在しない（queryRecordings のコメント参照）ので、単純な静的クエリで十分。
@@ -396,7 +409,7 @@ LIMIT ` + limitPlaceholder
 // 見つからなければ (Recording{}, false, nil) を返す。
 func queryRecordingByID(ctx context.Context, pool *pgxpool.Pool, id int64) (Recording, bool, error) {
 	const sql = `
-SELECT` + recordingsSelectColumns + recordingsAvailableEncodedProfilesSelect + recordingsFromJoins + `
+SELECT` + recordingsSelectColumns + recordingsAvailableEncodedAssetsSelect + recordingsFromJoins + `
 WHERE r.id = $1 AND r.purged_at IS NULL`
 
 	var fields recordingListFields
@@ -408,7 +421,7 @@ WHERE r.id = $1 AND r.purged_at IS NULL`
 		&fields.OriginalSizeBytes,
 		&fields.DropPackets, &fields.DropDrops, &fields.DropErrors, &fields.DropScrambled,
 		&fields.EncodeProfiles,
-		&fields.AvailableEncodedProfiles,
+		&fields.AvailableEncodedAssets,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -417,11 +430,11 @@ WHERE r.id = $1 AND r.purged_at IS NULL`
 		return Recording{}, false, fmt.Errorf("querying recording %d: %w", id, err)
 	}
 
-	// ごみ箱の行では一覧の trash=true と同じく encodedProfiles を出さない
+	// ごみ箱の行では一覧の trash=true と同じく encodedAssets を出さない
 	// （プレイヤーを出さないので揃える必要が無い。openapi.yaml の
 	// getRecording description、docs/frontend/recordings.md）。
 	if fields.DeletedAt != nil {
-		fields.AvailableEncodedProfiles = nil
+		fields.AvailableEncodedAssets = nil
 	}
 
 	rec, err := recordingFromListFields(fields, true)
@@ -456,7 +469,7 @@ func queryRecordings(ctx context.Context, pool *pgxpool.Pool, f recordingsFilter
 			&fields.EncodeProfiles,
 		}
 		if !f.Trash {
-			scanArgs = append(scanArgs, &fields.AvailableEncodedProfiles)
+			scanArgs = append(scanArgs, &fields.AvailableEncodedAssets)
 		}
 		if err := rows.Scan(scanArgs...); err != nil {
 			return nil, fmt.Errorf("scanning recording row: %w", err)

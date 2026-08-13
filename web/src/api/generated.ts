@@ -190,6 +190,20 @@ export const RecordingStatus = {
 
 export type RecordingQualityEventsItem = { [key: string]: unknown };
 
+export interface EncodedAsset {
+  profile: string;
+  /**
+     * encoded 派生物の実サイズ。`media_assets.size_bytes` は NOT NULL
+     * なので active な行が存在する限り常に付く（未検証の断言にしないため:
+     * `internal/db/migrations/00002_schema_v1.sql` の CHECK 制約が根拠、
+     * 実行時計測ではない）。省略可能にしているのは、サイズが取れない
+     * 資産があっても選択肢そのものは隠さない（ドロップ統計の「分類できな
+     * かった PID」と同じ判断。docs/frontend/recordings.md）という UI 側の
+     * 表示規律を型で表現するため。
+     */
+  sizeBytes?: number;
+}
+
 export interface DropSummary {
   packets: number;
   drops: number;
@@ -225,17 +239,25 @@ export interface Recording {
   /** 原本の実サイズ。ingest 済み（media_assets 行あり）の場合のみ */
   sizeBytes?: number;
   /**
-     * 再生可能な encoded 派生物のプロファイル名（media_assets の active のみ）。
+     * 再生可能な encoded 派生物（media_assets の active のみ）。
      * ブラウザ再生は GET /api/recordings/{id}/file?profile=<name> を使う。
-     * desired（encode_profiles）ではなく observed。空配列は省略可。
+     * desired（encodeProfiles）ではなく observed。空配列は省略可。
+     *
+     * issue #236（M7-3）でプロファイル名だけの配列（旧 `encodedProfiles:
+     * string[]`）から置き換えた --- 操作点（プロファイルセレクタ・
+     * ダウンロードリンク・VLC リンク）にサイズを常置するには、プロファイル
+     * 名だけでは足りない。名前のみを使っていた既存の消費先（再生可否判定・
+     * プロファイルセレクタの選択肢）は `encodedAssets.map(a => a.profile)`
+     * で復元できるため、名前配列と資産配列を並存させる形は取らなかった
+     * （同じ情報の二重表現を避ける）。
      */
-  encodedProfiles?: string[];
+  encodedAssets?: EncodedAsset[];
   /**
      * 凍結された「望ましい」エンコードプロファイル一覧（desired。
      * recordings.encode_profiles）。ingest 完了時に一度だけ焼き込まれ、以後は
      * `POST /api/recordings/{id}/encode-profiles` による事後追加（凍結の例外。
      * docs/storage.md §6「原本 TS の保持ポリシー」）でのみ増える。
-     * `encodedProfiles`（observed、再生可能なもの）とは異なり、まだ完了して
+     * `encodedAssets`（observed、再生可能なもの）とは異なり、まだ完了して
      * いない pending なジョブのプロファイルも含む --- UI が「追加済み」を
      * 判定するのに使う。空配列は省略可。
      */
@@ -3674,8 +3696,8 @@ export const getGetRecordingUrl = (id: number,) => {
  * #135）は 404。** ファイルが既に無く、通常一覧・ごみ箱一覧のどちらにも
  * 現れない行なので、単体 GET だけ見える形にしない。
  *
- * ごみ箱の行では一覧と同じく `encodedProfiles` を省略する
- * （`available_encoded_profiles` を射影しない一覧の規律と揃える。
+ * ごみ箱の行では一覧と同じく `encodedAssets` を省略する
+ * （`available_encoded_assets` を射影しない一覧の規律と揃える。
  * プレイヤーを出さないので揃える必要が無い）。
  * @summary Get a single recording by id
  */

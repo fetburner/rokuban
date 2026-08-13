@@ -145,7 +145,7 @@ describe('RecordingDetailPage', () => {
   // （recordings.test.tsx「再生できる録画」）と同じ観測項目を単体ページでも見る。
   it('通常の録画は再生・サムネイル・原本リンク・削除操作が一覧の展開と同等に出る', async () => {
     createFakeServer({
-      recording: sampleRecording({ encodedProfiles: ['web'], sizeBytes: 1_000_000 }),
+      recording: sampleRecording({ encodedAssets: [{ profile: 'web', sizeBytes: 500_000 }], sizeBytes: 1_000_000 }),
     })
 
     renderAt('/recordings/3')
@@ -154,7 +154,8 @@ describe('RecordingDetailPage', () => {
     expect(await screen.findByRole('region', { name: '再生' })).toBeInTheDocument()
     expect(document.querySelector('video')).toBeInTheDocument()
     expect(document.querySelector('img[src="/api/recordings/3/thumbnail"]')).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'ダウンロード / VLC' })).toBeInTheDocument()
+    // issue #236（M7-3）: ダウンロード / VLC リンクは押す前にサイズを常置する
+    expect(screen.getByRole('link', { name: /ダウンロード \/ VLC \(976\.6 KB\)/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'ごみ箱へ' })).toBeInTheDocument()
   })
 
@@ -168,14 +169,14 @@ describe('RecordingDetailPage', () => {
 
   // ごみ箱の録画も 200 で返る（getRecording の openapi.yaml description の決定）
   // が、単体ページでも一覧の展開と同じ規律で再生系を一切出さない（M3-18、
-  // issue #232 の受け入れ「一覧の規律と一致する」）。encodedProfiles /
+  // issue #232 の受け入れ「一覧の規律と一致する」）。encodedAssets /
   // sizeBytes を敢えて持たせても出ないことを見て、判定が deletedAt の有無で
   // 効いていることを確かめる。
   it('ごみ箱の録画は 200 で開くが再生系を一切出さない', async () => {
     createFakeServer({
       recording: sampleRecording({
         deletedAt: '2026-01-02T00:00:00Z',
-        encodedProfiles: ['web'],
+        encodedAssets: [{ profile: 'web', sizeBytes: 500_000 }],
         sizeBytes: 1_000_000,
       }),
     })
@@ -189,7 +190,7 @@ describe('RecordingDetailPage', () => {
     expect(screen.queryByRole('region', { name: '再生' })).not.toBeInTheDocument()
     expect(document.querySelector('video')).not.toBeInTheDocument()
     expect(document.querySelector('img')).not.toBeInTheDocument()
-    expect(screen.queryByRole('link', { name: 'ダウンロード / VLC' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /ダウンロード \/ VLC/ })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: '復元' })).toBeInTheDocument()
   })
 
@@ -201,7 +202,7 @@ describe('RecordingDetailPage', () => {
   it('ごみ箱へ移すと、ナビゲーションなしで自分自身が再生系無しの表示に更新される', async () => {
     const user = userEvent.setup()
     createFakeServer({
-      recording: sampleRecording({ encodedProfiles: ['web'], sizeBytes: 1_000_000 }),
+      recording: sampleRecording({ encodedAssets: [{ profile: 'web', sizeBytes: 500_000 }], sizeBytes: 1_000_000 }),
     })
 
     renderAt('/recordings/3')

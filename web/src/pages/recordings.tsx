@@ -308,7 +308,7 @@ function ViewTab({
  * 揃えていない）。
  *
  * 出し分けは 2 条件: ごみ箱では出さない（配信側が `deleted_at IS NOT NULL` を
- * 404 にする契約なので出しても必ず失敗する）。`encodedProfiles` が空でも
+ * 404 にする契約なので出しても必ず失敗する）。`encodedAssets` が空でも
  * 出さない（`RecordingPlayer` が実際に `<video>` を描くかどうかと同じ条件 ---
  * 原本だけがある録画は VLC リンクしか出さないので「再生」ボタンの対象ではない）。
  */
@@ -329,7 +329,7 @@ function RecordingRow({ recording, trash }: { recording: Recording; trash: boole
   // 0 に戻せば、次に非 0 になるのは再び Play を押したときだけになる。
   const [focusPlayerToken, setFocusPlayerToken] = useState(0)
 
-  const playable = !trash && (recording.encodedProfiles ?? []).length > 0
+  const playable = !trash && (recording.encodedAssets ?? []).length > 0
 
   return (
     <div className="border-b border-border">
@@ -506,7 +506,7 @@ export function RecordingDetail({
   /** 再生ボタンから展開されたときにインクリメントされる（RecordingRow）。 */
   focusPlayerToken?: number
 }) {
-  const encodedProfiles = recording.encodedProfiles ?? []
+  const encodedAssets = recording.encodedAssets ?? []
   const hasOriginal = recording.sizeBytes !== undefined
 
   return (
@@ -516,14 +516,15 @@ export function RecordingDetail({
         deleted_at IS NOT NULL を 404 にする（docs/api.md §メディア配信）。
         再生・サムネイル・原本リンクはどれも配信経路を叩くので、ごみ箱では
         そもそも出さない（M3-18）。復元してから見る。
-        ListTrashRecordings が available_encoded_profiles を射影しないままなのも
+        ListTrashRecordings が available_encoded_assets を射影しないままなのも
         この理由による（プレイヤーを出さないので揃える必要がない）。
       */}
-      {!trash && (encodedProfiles.length > 0 || hasOriginal) && (
+      {!trash && (encodedAssets.length > 0 || hasOriginal) && (
         <RecordingPlayer
           recordingId={recording.id}
-          encodedProfiles={encodedProfiles}
+          encodedAssets={encodedAssets}
           hasOriginal={hasOriginal}
+          originalSizeBytes={recording.sizeBytes}
           focusToken={focusPlayerToken}
         />
       )}

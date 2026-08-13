@@ -718,7 +718,7 @@ describe('RecordingsPage invalidate', () => {
         sampleRecording({
           id: 3,
           title: '再生できる録画',
-          encodedProfiles: ['web'],
+          encodedAssets: [{ profile: 'web', sizeBytes: 500_000 }],
           sizeBytes: 1_000_000,
         }),
       ],
@@ -732,7 +732,8 @@ describe('RecordingsPage invalidate', () => {
     expect(await screen.findByRole('region', { name: '再生' })).toBeInTheDocument()
     expect(document.querySelector('video')).toBeInTheDocument()
     expect(document.querySelector('img[src="/api/recordings/3/thumbnail"]')).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'ダウンロード / VLC' })).toBeInTheDocument()
+    // issue #236（M7-3）: ダウンロード / VLC リンクは押す前にサイズを常置する
+    expect(screen.getByRole('link', { name: /ダウンロード \/ VLC \(976\.6 KB\)/ })).toBeInTheDocument()
   })
 
   it('ごみ箱では 404 になるサムネイル・プレイヤー・原本リンクを一切出さない', async () => {
@@ -743,7 +744,7 @@ describe('RecordingsPage invalidate', () => {
           id: 9,
           title: '捨てられた再生可能録画',
           deletedAt: '2026-01-03T00:00:00Z',
-          encodedProfiles: ['web'],
+          encodedAssets: [{ profile: 'web', sizeBytes: 500_000 }],
           sizeBytes: 1_000_000,
         }),
       ],
@@ -761,14 +762,43 @@ describe('RecordingsPage invalidate', () => {
     expect(screen.queryByRole('region', { name: '再生' })).not.toBeInTheDocument()
     expect(document.querySelector('video')).not.toBeInTheDocument()
     expect(document.querySelector('img')).not.toBeInTheDocument()
-    expect(screen.queryByRole('link', { name: 'ダウンロード / VLC' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /ダウンロード \/ VLC/ })).not.toBeInTheDocument()
     expect(screen.queryByText('VLC 等で開く')).not.toBeInTheDocument()
+  })
+})
+
+// issue #236（M7-3）: サイズが取れない資産でも選択肢そのものは隠さない
+// （サイズだけ省く。ドロップ統計の「分類できなかった PID」と同じ判断）。
+// ページ全体（サーバー応答 → 展開 → RecordingPlayer 描画）を通した確認は
+// component 単体のテスト（recording-player.test.tsx）と役割が異なる ---
+// ここでは実際の Recording 応答形（`encodedAssets` の要素が `sizeBytes` を
+// 省略した JSON）を経由しても機能（プロファイル選択）が消えないことを見る。
+describe('RecordingsPage サイズが取れない資産（値札、issue #236）', () => {
+  it('encoded 資産の sizeBytes が省略されていても、プロファイル名は出るがサイズは出さない', async () => {
+    const user = userEvent.setup()
+    createFakeRecordingsServer({
+      library: [
+        sampleRecording({
+          id: 50,
+          title: 'サイズ不明の録画',
+          encodedAssets: [{ profile: 'web' }],
+        }),
+      ],
+    })
+
+    renderPage()
+    await user.click(await screen.findByText('サイズ不明の録画'))
+
+    const region = await screen.findByRole('region', { name: '再生' })
+    expect(document.querySelector('video')).toBeInTheDocument()
+    expect(within(region).getByText('web')).toBeInTheDocument()
+    expect(region.textContent).not.toMatch(/\d+(\.\d+)? (B|KB|MB|GB|TB)/)
   })
 })
 
 // issue #227（M5-4）: 最頻操作の「再生」を行右端の固定幅ボタンに独立させる
 // （行タップ = 展開の 1 段下に埋めない）。出し分けは両方向で確認する ---
-// ごみ箱では出さない（配信側が 404 にする契約）/ encodedProfiles が空でも
+// ごみ箱では出さない（配信側が 404 にする契約）/ encodedAssets が空でも
 // 出さない（`RecordingPlayer` が実際に <video> を描く条件と一致させる）。
 describe('RecordingsPage 再生ボタン', () => {
   it('encoded がある録画には再生ボタンが出て、押すと展開されプレイヤーへフォーカス要求を出す', async () => {
@@ -785,7 +815,7 @@ describe('RecordingsPage 再生ボタン', () => {
         sampleRecording({
           id: 3,
           title: '再生できる録画',
-          encodedProfiles: ['web'],
+          encodedAssets: [{ profile: 'web', sizeBytes: 500_000 }],
           sizeBytes: 1_000_000,
         }),
       ],
@@ -826,7 +856,7 @@ describe('RecordingsPage 再生ボタン', () => {
         sampleRecording({
           id: 30,
           title: '再生開始しない録画',
-          encodedProfiles: ['web'],
+          encodedAssets: [{ profile: 'web', sizeBytes: 500_000 }],
           sizeBytes: 1_000_000,
         }),
       ],
@@ -851,7 +881,7 @@ describe('RecordingsPage 再生ボタン', () => {
           id: 31,
           title: 'ごみ箱の録画',
           deletedAt: '2026-01-04T00:00:00Z',
-          encodedProfiles: ['web'],
+          encodedAssets: [{ profile: 'web', sizeBytes: 500_000 }],
           sizeBytes: 1_000_000,
         }),
       ],
@@ -873,7 +903,7 @@ describe('RecordingsPage 再生ボタン', () => {
         sampleRecording({
           id: 32,
           title: 'エンコード無し録画',
-          encodedProfiles: [],
+          encodedAssets: [],
           sizeBytes: 1_000_000,
         }),
       ],
@@ -895,7 +925,7 @@ describe('RecordingsPage 再生ボタン', () => {
         sampleRecording({
           id: 40,
           title: '開閉を繰り返す録画',
-          encodedProfiles: ['web'],
+          encodedAssets: [{ profile: 'web', sizeBytes: 500_000 }],
           sizeBytes: 1_000_000,
         }),
       ],

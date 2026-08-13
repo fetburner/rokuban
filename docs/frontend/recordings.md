@@ -44,16 +44,35 @@ prop で 1 段ずつ配線する形（`onMutated` のような穴）は採らな
 ネイティブ `<video controls>` の src に渡す。HLS / hls.js は使わない（家庭 LAN の
 オンデマンドではセグメント化のコストに見合わない。決定は [api.md](../api.md)）。
 
-- 利用可能なプロファイルは `Recording.encodedProfiles`（active な encoded のみ）。複数なら
-  セレクタ。encoded が無ければプレイヤーは出さず、原本があるときだけ VLC 向けリンクを出す
+- 利用可能なプロファイルは `Recording.encodedAssets`（active な encoded のみ。各要素は
+  `profile` + `sizeBytes`）。複数ならセレクタ。encoded が無ければプレイヤーは出さず、
+  原本があるときだけ VLC 向けリンクを出す
 - **再生位置は localStorage**（キー: 録画 ID + プロファイル）。サーバー側視聴履歴は作らない
   （下記「経緯と失敗事例」）
 - 原本 TS はブラウザでは再生せず、ダウンロード / VLC リンクとして残す
 - **ごみ箱ビューではサムネイル・プレイヤー・原本リンクを一切出さない。**
   配信側（`GetOriginalMediaAssetForServing` 等）は `recordings.deleted_at IS NOT NULL`
   を 404 にする契約（[api.md](../api.md) §メディア配信）なので、出しても必ず 404 になる。
-  復元してから見る運用にする。ごみ箱一覧が `encodedProfiles` を射影しないままなのも
+  復元してから見る運用にする。ごみ箱一覧が `encodedAssets` を射影しないままなのも
   同じ理由（プレイヤーを出さないので揃える必要がない）
+
+### 操作点にサイズを常置する（値札、issue #236 M7-3）
+
+**資源を消費する操作には実行前に値札。値札は事実（実測サイズ）のみ**（転送時間の
+見積などは書かない）。プロファイルセレクタの各選択肢（`<option>`）・ダウンロード
+リンク・VLC リンクのすべてに `formatBytes`（`lib/format.ts`）のサイズを常置する
+（`components/recording-player.tsx` の `assetOptionLabel`）。プロファイルが 1 つ
+（= セレクタ自体を出さない）でも、押す前にサイズを見せるという方針は変わらないため
+キャプションとして常に出す。
+
+**サイズが取れない資産は隠すのではなくサイズだけ省く。** `EncodedAsset.sizeBytes`
+（openapi.yaml）は省略可能な形にしてある --- 選択肢（プロファイル名）自体は
+分類の失敗（ここではサイズの欠落）を理由に隠さない。ドロップ統計の「分類できな
+かった PID は種別を空にして PID 数値だけ出す」（下記「ドロップ統計」節）と同じ
+判断。`media_assets.size_bytes` は NOT NULL なので active な encoded 行がある限り
+実際には常にサイズが付く（`internal/db/migrations/00002_schema_v1.sql` の CHECK
+制約が根拠）が、型としては省略可能にしてこの表示規律をテストで固定している
+（`recording-player.test.tsx`）。
 
 ### 再生ボタンは行右端に独立させる
 
@@ -79,7 +98,7 @@ prop で 1 段ずつ配線する形（`onMutated` のような穴）は採らな
 
 - **ごみ箱では出さない。** 配信側が `deleted_at IS NOT NULL` を 404 にする契約なので、
   出しても必ず失敗する
-- **`encodedProfiles` が空なら出さない。** `RecordingPlayer` が実際に `<video>` を
+- **`encodedAssets` が空なら出さない。** `RecordingPlayer` が実際に `<video>` を
   描くかどうかの条件と一致させる（原本だけがある録画は VLC リンクしか出さないので、
   「再生」ボタンの対象ではない）
 
