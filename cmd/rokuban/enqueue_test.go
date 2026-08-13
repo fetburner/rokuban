@@ -186,6 +186,35 @@ func TestRunEnqueue_CatalogExport(t *testing.T) {
 	}
 }
 
+// encode-reconcile も投入できること（issue #163）。`worker.periodic_jobs: false`
+// の構成ではこの経路（CronJob → enqueue）が定期パスの唯一の契機になるので、
+// 投入できること自体が受け入れ条件の一部になる。
+func TestRunEnqueue_EncodeReconcile(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	var out bytes.Buffer
+	if err := runEnqueue(ctx, pool, "encode-reconcile", "", &out); err != nil {
+		t.Fatalf("runEnqueue: %v", err)
+	}
+	if !strings.Contains(out.String(), "inserted job") {
+		t.Errorf("output = %q, want to contain %q", out.String(), "inserted job")
+	}
+	if strings.Contains(out.String(), "for site") {
+		t.Errorf("output = %q, site-independent job must not mention site", out.String())
+	}
+
+	var count int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM river_job WHERE kind = 'encode_reconcile'`,
+	).Scan(&count); err != nil {
+		t.Fatalf("counting encode_reconcile jobs: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("encode_reconcile job count = %d, want 1", count)
+	}
+}
+
 // storage-sync も投入できること（issue #238 M7-5）。catalog-export と同じく
 // site 非依存なので site は空で渡す。
 func TestRunEnqueue_StorageSync(t *testing.T) {
@@ -311,10 +340,11 @@ func TestResolveEnqueueJobSite(t *testing.T) {
 
 // enqueueJobs の分類が一貫していること。RequiresSite の集合が「次にジョブを
 // 足す人がどちらかを更新し忘れる」経路にならないよう、現状の契約を固定する
-// （issue #200）。catalog-export と storage-sync（issue #238 M7-5）が site 非依存。
+// （issue #200）。catalog-export と storage-sync（issue #238 M7-5）、
+// encode-reconcile（issue #163）が site 非依存。
 func TestEnqueueJobs_SiteClassification(t *testing.T) {
 	independent := sortedJobNamesBySite(false)
-	wantIndependent := []string{"catalog-export", "storage-sync"}
+	wantIndependent := []string{"catalog-export", "encode-reconcile", "storage-sync"}
 	if strings.Join(independent, ",") != strings.Join(wantIndependent, ",") {
 		t.Errorf("site-independent jobs = %v, want %v", independent, wantIndependent)
 	}

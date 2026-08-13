@@ -55,6 +55,9 @@ func TestNewRegistry_ExposesRequiredMetrics(t *testing.T) {
 	LiveSessionStartFailures.WithLabelValues("session_limit").Inc()
 	LiveIdleGCReclaimed.Add(1)
 	LiveIdleGCLastPass.SetToCurrentTime()
+	EncodeReconcileLastPass.SetToCurrentTime()
+	EncodeReconcileCandidates.Set(0)
+	EncodeReconcileUnsatisfiable.WithLabelValues("h264").Set(0)
 
 	families, err := reg.Gather()
 	if err != nil {
@@ -99,6 +102,12 @@ func TestNewRegistry_ExposesRequiredMetrics(t *testing.T) {
 		"rokuban_live_session_start_failures_total",
 		"rokuban_live_idle_gc_reclaimed_total",
 		"rokuban_live_idle_gc_last_pass_timestamp_seconds",
+		// issue #163: encode の desired−observed 定期パス。バックストップ自身が
+		// 黙って止まる / 窓に張り付く / 設定から消えたプロファイルで落とす、の
+		// 3 通りの黙り方に対応する（internal/worker/encode_reconcile.go）。
+		"rokuban_encode_reconcile_last_pass_timestamp_seconds",
+		"rokuban_encode_reconcile_candidates",
+		"rokuban_encode_reconcile_unsatisfiable",
 	}
 	for _, name := range required {
 		if !got[name] {

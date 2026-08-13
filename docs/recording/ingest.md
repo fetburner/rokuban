@@ -128,7 +128,15 @@ pull 完了後に書き込みバイト数を HEAD の Content-Length と照合 �
 
 **同一トランザクションでの投入はしない。** `media_assets` のコミット**後**に、ベストエフォートのヒントとしてエンコードジョブを投入する（`IngestWorker.Work` → `EnqueueMissingEncodes`。`ingest.go` の `enqueueMissingEncodesFromContext` 呼び出し）。投入に失敗してもログのみで、コミット済みの ingest は巻き戻さない。
 
-このヒント投入の失敗とエッジ record の削除成功（`DeleteRecord`。上記「層 3」）が両方起きると、その差分を埋め直す定期ループが無いためヒントは失われたままになる（`EnqueueMissingEncodes` の呼び出し元は ingest 完了時のヒントと `POST /api/recordings/{id}/encode-profiles` のみ）。この穴は [#163](https://github.com/fetburner/rokuban/issues/163) で追跡する。
+**落としたヒントは定期パスが埋める。** ヒント投入の失敗とエッジ record の削除成功（`DeleteRecord`。上記「層 3」）が両方起きると、そのヒントは二度と飛ばない —— エッジに record が残っていないので record_sweep も ingest ジョブを再投入しない。ヒントだけに頼ると、コミット済みの録画が誰にも再投入されず黙ってエンコードされないまま残る。これを塞ぐのが `encode_reconcile` ジョブ（`internal/worker/encode_reconcile.go`、既定 15 分周期）で、desired（`recording_encode_policy.encode_profiles`）− observed（active な `encoded` の `media_assets`）の差分を定期的に取り直して `EnqueueMissingEncodes` を呼ぶ。真実は DB の状態であって「ヒントが飛んだかどうか」ではない（不変条件 5）。
+
+対象は「原本（`kind='original'`）が active でコミット済み」かつ「ごみ箱に入っていない」録画に限る（ingest 未完了の録画とユーザーが捨てた録画を掘り起こさない）。エンコードは site の属性を持たない（アーカイブもプロファイルも単一）ので、このジョブは record_sweep のような site 単位ではなく全体で 1 本。`worker.periodic_jobs: false` の構成では `rokuban enqueue encode-reconcile` を CronJob から叩く（[operations/monitoring.md](../operations/monitoring.md) の CronJob 一覧）。
+
+**繰り返すパスは「投入しても必ず失敗する仕事」を作ってはならない。** ヒントは一度きりなので、設定から消えたプロファイルを投入して `unknown encode profile` で失敗させるのは運用者への通知として妥当だが、15 分ごとに同じことをすると失敗を無限に作り続ける。定期パスは desired を**現在の `encode.profiles` に存在する名前だけ**に絞る。落とした録画は数えて出す（`rokuban_encode_reconcile_unsatisfiable`。プロファイルを改名すると、その名前で凍結済みの過去録画が一斉にここへ落ちる）。
+
+**挙動の変更**: このパスが入るまで、25 回失敗して discarded になった encode ジョブはそこで止まっていた。これからは `encoded` が生まれない限り 15 分ごとに投入し直す（River の一意制約は pending 状態にしか効かず、discarded 済みの引数には合流しない）。真実は River のジョブ履歴ではなく `media_assets` の有無なのでレベルトリガーとしては意図通りだが、**恒久的に失敗するエンコードは「静かに諦める」から「延々と再試行する」に変わる**。
+
+**既知の限界**: 候補は `recording_id` 昇順で 1000 件に切る。このパス自身は候補を減らさない（減らすのは encode の完了）ため、永久に満たせない候補が先頭に溜まると窓を占有し、それより後ろの録画に到達しない（収束は主張しない）。窓が埋まったパスは Warn ログと `rokuban_encode_reconcile_candidates` が上限に張り付くことで見える。[#326](https://github.com/fetburner/rokuban/issues/326) で追う。
 
 ---
 

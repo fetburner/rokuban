@@ -211,6 +211,12 @@ func NewWorkers(deps *Deps) *river.Workers {
 	river.AddWorker(workers, &EncodeEnqueueHintWorker{
 		Pool: deps.Pool,
 	})
+	river.AddWorker(workers, &EncodeReconcileWorker{
+		Pool: deps.Pool,
+		// desired の絞り込みにプロファイル名だけを使う（EncodeWorker と同じ
+		// 設定を読む。EncodeReconcileArgs.InsertOpts のコメント参照）。
+		Profiles: deps.Encode,
+	})
 	river.AddWorker(workers, &EpgSyncWorker{
 		MirakcClient:   deps.MirakcClient,
 		Pool:           deps.Pool,
@@ -510,6 +516,15 @@ type ClientConfig struct {
 	// DeleteReconcileInterval は削除 reconcile の間隔。0 なら既定値（15 分）。
 	DeleteReconcileInterval time.Duration
 
+	// EncodeReconcile が true なら encode の desired−observed 定期パス
+	// （issue #163）を定期ジョブとして登録する（PeriodicJobs が true のときのみ）。
+	// CatalogExport / DeleteReconcile と同じくサイト非依存
+	// （エンコードは site の属性を持たない。EncodeReconcileArgs のコメント参照）。
+	EncodeReconcile bool
+
+	// EncodeReconcileInterval は encode reconcile の間隔。0 なら既定値（15 分）。
+	EncodeReconcileInterval time.Duration
+
 	// StorageSync が true ならストレージ観測（issue #238 M7-5）を定期ジョブとして
 	// 登録する（PeriodicJobs が true のときのみ）。CatalogExport / DeleteReconcile と
 	// 同じくサイト非依存（観測対象は単一の MediaDir / ScratchDir）。
@@ -520,7 +535,8 @@ type ClientConfig struct {
 
 	// PeriodicJobs が false なら、EpgSyncSite / TunerSyncSite / RulerPassSite /
 	// ReconcilePassSite / RecordSweepSite / CatalogExport / DeleteReconcile /
-	// StorageSync が設定されていても River の PeriodicJobs を一切登録しない。
+	// EncodeReconcile / StorageSync が設定されていても River の PeriodicJobs を
+	// 一切登録しない。
 	// k8s では false にして、CronJob が
 	// `rokuban enqueue` を叩く形に委ねる（docs/data.md §2「定期実行の契機は
 	// デプロイ形態に委ねる」。設定キーは worker.periodic_jobs、既定 true）。
@@ -685,6 +701,19 @@ func buildRiverConfig(workers *river.Workers, cfg ClientConfig) (*river.Config, 
 				river.PeriodicInterval(interval),
 				func() (river.JobArgs, *river.InsertOpts) {
 					return DeleteReconcileArgs{}, nil
+				},
+				&river.PeriodicJobOpts{RunOnStart: true},
+			))
+		}
+		if cfg.EncodeReconcile {
+			interval := cfg.EncodeReconcileInterval
+			if interval <= 0 {
+				interval = defaultEncodeReconcileInterval
+			}
+			riverCfg.PeriodicJobs = append(riverCfg.PeriodicJobs, river.NewPeriodicJob(
+				river.PeriodicInterval(interval),
+				func() (river.JobArgs, *river.InsertOpts) {
+					return EncodeReconcileArgs{}, nil
 				},
 				&river.PeriodicJobOpts{RunOnStart: true},
 			))

@@ -522,9 +522,39 @@ type JobInserter interface {
 // （active encoded media_assets）の差分を埋める encode ジョブを投入する。
 //
 // レベルトリガー: 呼び出し側は「いつでも」呼んでよい。既に asset があるプロファイル
-// や pending なジョブはスキップされる（UniqueOpts）。ingest 成功後のヒント投入と、
-// 将来の reconcile ループの両方から使う。
+// や pending なジョブはスキップされる（UniqueOpts）。ingest 成功後のヒント投入と
+// `POST /api/recordings/{id}/encode-profiles` のヒントジョブから使う。
+//
+// **プロファイル名が現在の設定に存在するかは見ない。** 一度きりのヒント経路では
+// それでよい --- 設定から消えたプロファイルの投入は EncodeWorker が
+// `unknown encode profile` で失敗させ、その失敗が運用者への通知になる。
+// 15 分ごとに繰り返す定期パスが同じことをすると失敗を無限に作り続けるので、
+// そちらは EnqueueMissingEncodesForKnownProfiles を使う。
 func EnqueueMissingEncodes(ctx context.Context, inserter JobInserter, pool *pgxpool.Pool, recordingID int64) error {
+	return enqueueMissingEncodes(ctx, inserter, pool, recordingID, nil)
+}
+
+// EnqueueMissingEncodesForKnownProfiles は EnqueueMissingEncodes と同じ判定を
+// 行うが、投入対象を known（現在の encode.profiles の名前）に含まれる
+// プロファイルだけに絞る。encode の定期 reconcile パス
+// （EncodeReconcileWorker）が使う。
+//
+// known が空なら 1 件も投入しない（設定にプロファイルが 1 つも無い構成では、
+// 投入しても EncodeWorker が全部弾く）。判定を 2 か所に分けないため、絞り込み
+// 以外のロジック（原本の有無・ポリシー行の有無・observed の確認）は
+// EnqueueMissingEncodes と同じ 1 つの実装を通る。
+func EnqueueMissingEncodesForKnownProfiles(ctx context.Context, inserter JobInserter, pool *pgxpool.Pool, recordingID int64, known []string) error {
+	set := make(map[string]struct{}, len(known))
+	for _, name := range known {
+		set[name] = struct{}{}
+	}
+	return enqueueMissingEncodes(ctx, inserter, pool, recordingID, set)
+}
+
+// enqueueMissingEncodes は上 2 つの実装本体。known が nil なら desired を絞らない
+// （nil と空マップは意味が違う: 空マップは「投入してよいプロファイルが 1 つも
+// 無い」）。
+func enqueueMissingEncodes(ctx context.Context, inserter JobInserter, pool *pgxpool.Pool, recordingID int64, known map[string]struct{}) error {
 	if inserter == nil {
 		return fmt.Errorf("encode enqueue: inserter is nil")
 	}
@@ -558,6 +588,11 @@ func EnqueueMissingEncodes(ctx context.Context, inserter JobInserter, pool *pgxp
 	for _, name := range policy.EncodeProfiles {
 		if name == "" {
 			continue
+		}
+		if known != nil {
+			if _, ok := known[name]; !ok {
+				continue
+			}
 		}
 		_, err := q.GetActiveEncodedMediaAssetID(ctx, sqlcgen.GetActiveEncodedMediaAssetIDParams{
 			RecordingID: recordingID,
