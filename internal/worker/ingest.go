@@ -183,6 +183,24 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[IngestJobArgs]) 
 		return fmt.Errorf("determining rel_path: %w", err)
 	}
 
+	// os.Create（次の数行）は宛先を truncate してから中身を書き始める。
+	// media_assets の一意索引（rel_path, WHERE state <> 'deleted'）は commit
+	// 時の INSERT で初めて効くので、事前チェックなしだと「別の active な
+	// media_asset が既にこの rel_path を使っている」場合に、先行の実ファイルを
+	// truncate して上書きしてから 23505 で落ちる。DB は先行の録画を
+	// active のまま指し続けるのに実体は新しい録画のもの、という不変条件 3
+	// （コミット = DB 行）の逆（DB 行はあるのに実体が別物）が作れてしまう
+	// （PR #196 のレビューで実測。issue #197）。
+	//
+	// checkRelPathConflict のガードはここで転送そのものを始めさせない
+	// ことで先行ファイルを保護する。
+	if conflictRecordingID, err := w.checkRelPathConflict(ctx, relPath); err != nil {
+		return fmt.Errorf("checking rel_path conflict: %w", err)
+	} else if conflictRecordingID != 0 {
+		return fmt.Errorf("ingest: rel_path %q is already used by an active media_asset (recording_id=%d); refusing to overwrite its file (recording_id=%d)",
+			relPath, conflictRecordingID, recordingID)
+	}
+
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
 		return fmt.Errorf("creating directory %s: %w", filepath.Dir(fullPath), err)
 	}
@@ -317,6 +335,36 @@ func (w *IngestWorker) hasOriginalMediaAsset(ctx context.Context, recordingID in
 		return false, nil
 	}
 	return false, fmt.Errorf("querying media_assets: %w", err)
+}
+
+// checkRelPathConflict は relPath を既に使っている active な media_asset が
+// あれば、その recording_id を返す（無ければ 0, nil）。Work が os.Create の
+// 前に呼び、宛先を書き始める前に「よくある事故を安く防ぐ」ための先読み
+// （issue #197）。
+//
+// **これは正しさの根拠ではない。** この SELECT と実際の CreateMediaAsset の
+// INSERT の間には TOCTOU の窓があり、2 つの ingest ジョブがほぼ同時にこの
+// チェックを通過して両方が転送を始めることは起こりうる。正しさの根拠は
+// 常に media_assets の一意索引（CREATE UNIQUE INDEX ON media_assets (rel_path)
+// WHERE state <> 'deleted'、00002_schema_v1.sql）であり、レベルトリガー
+// （CLAUDE.md 不変条件 5）の原則どおり、ここでの先読みが外れても最終的な
+// INSERT が 23505 で確実に片方を落とす。この関数を「一意索引を通す前の
+// ゲート」以上の役割にしない --- 一意索引を緩めたり INSERT のエラー処理を
+// 弱めたりする理由には使わない。
+//
+// WHERE state <> 'deleted' はその一意索引の述語と同じにする。削除済み
+// （state='deleted'）の行が使っていた rel_path は正当に再利用できるので、
+// ここで引っかけて誤って失敗させてはいけない。
+func (w *IngestWorker) checkRelPathConflict(ctx context.Context, relPath string) (int64, error) {
+	q := sqlcgen.New(w.Pool)
+	row, err := q.GetActiveMediaAssetByRelPath(ctx, relPath)
+	if err != nil {
+		if errors.Is(err, pgx5.ErrNoRows) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("querying media_assets: %w", err)
+	}
+	return row.RecordingID, nil
 }
 
 func (w *IngestWorker) lookupRecordingID(ctx context.Context, args IngestJobArgs) (int64, error) {

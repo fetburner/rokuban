@@ -11,6 +11,19 @@ RETURNING id;
 SELECT id FROM media_assets
 WHERE recording_id = $1 AND kind = 'original';
 
+-- ingest の宛先事前チェック用（issue #197）。os.Create で宛先ファイルを開く前に、
+-- 別の active な media_asset が同じ rel_path を既に使っていないかを確認する。
+-- **正しさの根拠ではない**（先読みと実際の INSERT の間に別ジョブが commit
+-- しうる TOCTOU の窓がある）。正しさの根拠は
+-- CREATE UNIQUE INDEX ON media_assets (rel_path) WHERE state <> 'deleted'
+-- （00002_schema_v1.sql）であり、ここが競合を見逃してもそちらが 23505 で守る。
+-- ここでの WHERE state <> 'deleted' はその一意索引の述語と同じにする ---
+-- 削除済みの行が使っていた rel_path は正当に再利用できるので、削除済み行と
+-- 衝突させてはいけない。該当行が無ければ pgx.ErrNoRows を返す。
+-- name: GetActiveMediaAssetByRelPath :one
+SELECT id, recording_id FROM media_assets
+WHERE rel_path = $1 AND state <> 'deleted';
+
 -- encode / thumbnail が読む原本(パスとサイズ)。active のみ。tombstone や未 commit は対象外。
 -- name: GetActiveOriginalMediaAsset :one
 SELECT id, rel_path, size_bytes

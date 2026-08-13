@@ -105,6 +105,14 @@ pull 完了後に書き込みバイト数を HEAD の Content-Length と照合 �
 
 `media_assets` に `kind='original'` の行が既にコミットされていれば、ジョブは転送を行わず、エッジ record の削除だけを再試行して終わる（`IngestWorker.hasOriginalMediaAsset`）。エッジ record の削除は失敗してもログのみで ingest 自体は成功扱いにしているため、mirakc 側に record が残ったまま record_sweep 経由で同じ record の ingest ジョブが再投入されうる。ここで止めないと `os.Create` がコミット済みファイルを 0 バイトに切り詰めて全量を再ダウンロードし、streamer が不変条件 3（コミット = DB 行）に反して欠けたファイルを配ることになる。
 
+#### 宛先 rel_path の事前チェック: 先読みは正しさの根拠ではない
+
+上の冪等性チェックが守るのは「同じ recording_id の 2 度目の ingest」だけである。**別の recording_id が同じ rel_path を算出するケース**（同一サイト内で `contentPath` が偶然重複する等）はこれでは守れない: `os.Create`（宛先を開いて truncate する）は `media_assets` へのコミットより前に走るので、事前チェックが無いと「先行の active な media_asset が使っている実ファイルを、後発の ingest が truncate して自分の TS で上書きしてから、`media_assets_rel_path_idx`（`rel_path` の一意索引、`WHERE state <> 'deleted'`。`00002_schema_v1.sql`）の 23505 でようやく失敗する」という壊れ方をする。エラーは返るが、その時点で先行ファイルは既に別番組の中身に置き換わっている。DB は先行の録画を `active` のまま指し続けるので、「DB は active、実体は別番組」という不変条件 3（コミット = DB 行の逆: DB 行はあるのに実体が別物）に反する状態ができてしまう（PR #196 のレビューで実測、issue #197）。
+
+`IngestWorker.Work` は `determineRelPath` の直後・`os.Create` の前に `checkRelPathConflict`（`GetActiveMediaAssetByRelPath`、`internal/db/queries/media_assets.sql`）でこの rel_path を使う active な `media_asset` が無いことを確認し、あれば転送を始めずにジョブを失敗させる。一意索引と同じ `WHERE state <> 'deleted'` の述語で引くため、削除済み（tombstone）の行が使っていた rel_path は正当に再利用できる。
+
+**この先読みは「正しさの根拠」ではない。** 先読みの SELECT と実際の `CreateMediaAsset` の INSERT の間には TOCTOU の窓があるため、2 つの ingest ジョブがほぼ同時にこのチェックを通過して両方が転送を始めることは構造的にありうる。正しさの根拠は今までどおり `media_assets` の一意索引であり（レベルトリガー、不変条件 5）、先読みが競合を見逃しても最終的な INSERT が 23505 で確実に片方を落とす。先読みは「よくある事故（同一サイト内の contentPath 重複）を安く防いで、先行ファイルの誤上書きを減らす」ためだけの最適化であり、これを理由に一意索引を緩めたり `CreateMediaAsset` のエラー処理を弱めたりしてはならない。
+
 ### 5.4 負荷分担: worker
 
 `records/{id}/stream` の負荷が乗るのは worker（ingest ジョブ、KEDA で 0〜N）であり、reconciler は数百件のメタデータ diff を回すだけの軽いジョブのまま。ただし**本当のボトルネックはクラウド側ではなくエッジ側**:

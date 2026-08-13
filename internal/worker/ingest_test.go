@@ -1906,3 +1906,222 @@ func TestIngestWorker_TwoSitesSameContentPath_DoNotCollide(t *testing.T) {
 		t.Errorf("site-b rel_path = %q, want %q", assetB.RelPath, "sites/site-b/"+sharedContentPath)
 	}
 }
+
+// --- issue #197: os.Create が宛先ファイルを truncate してから一意性を知る
+// （既存の active な media_asset を壊して 23505 で落ちる）の回帰テスト。
+
+// TestIngestWorker_RelPathConflict_RefusesWithoutCorruptingExistingFile は
+// issue #197 の受け入れ基準 1 項目目を固定する: 同じ rel_path になる 2 つ目の
+// ingest が、先行の実ファイルを壊さずに失敗する。
+//
+// 修正前（determineRelPath の直後の事前チェックを外す）は、2 つ目の
+// Work() が os.Create で先行の実ファイル（21 バイトの「正しい」中身）を
+// 0 バイトに truncate し、新しい TS（tsDataB）で上書きしてから
+// media_assets の一意索引違反（23505）でようやく失敗する --- つまり
+// エラーは返るが、その時点で先行ファイルは既に壊れている。「両方失敗する」
+// だけでは検知できないため、このテストは失敗後に**先行ファイルの中身を
+// 実際に読んで**元のバイト列のままであることを確認する。
+func TestIngestWorker_RelPathConflict_RefusesWithoutCorruptingExistingFile(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+
+	// 先行: 既に active な media_asset として commit 済みの録画（別の
+	// recording_id）。実ファイルは既存の「正しい」中身を持つ。
+	existingRecordingID := insertTestRecordingForSite(t, pool, "default", 301)
+	const conflictRelPath = "sites/default/shared/conflict.m2ts"
+	q := sqlcgen.New(pool)
+	if _, err := q.CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
+		RecordingID: existingRecordingID,
+		Kind:        "original",
+		RelPath:     conflictRelPath,
+		SizeBytes:   21,
+	}); err != nil {
+		t.Fatalf("creating existing media_asset: %v", err)
+	}
+
+	existingContent := []byte("existing-untouched-01") // 21 バイト
+	if len(existingContent) != 21 {
+		t.Fatalf("test fixture bug: existingContent must be 21 bytes, got %d", len(existingContent))
+	}
+	conflictFullPath := filepath.Join(mediaDir, "sites", "default", "shared", "conflict.m2ts")
+	if err := os.MkdirAll(filepath.Dir(conflictFullPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(conflictFullPath, existingContent, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// 新規: 同じ contentPath（→ 同じ site 前置後の rel_path）を持つ別の録画。
+	newRecordingID := insertTestRecordingForSite(t, pool, "default", 302)
+	insertTestRecordSyncForSite(t, pool, "default", newRecordingID, "rec-conflict-new", 327361024000302)
+
+	tsDataNew := makeTSData(20)
+	var streamRequests atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
+			streamRequests.Add(1)
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsDataNew)))
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(tsDataNew)
+		case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsDataNew)))
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
+			record := mirakc.Record{
+				Recording: mirakc.RecordInfo{Options: mirakc.Options{ContentPath: strPtr("shared/conflict.m2ts")}},
+				Content:   mirakc.ContentInfo{Path: "/recording/shared/conflict.m2ts"},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(record)
+		case r.Method == http.MethodDelete:
+			result := mirakc.RecordRemovalResult{RecordRemoved: true, ContentRemoved: true}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(result)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	w := &IngestWorker{
+		MirakcClient: mirakc.NewClient(srv.URL, nil),
+		Pool:         pool,
+		MediaDir:     mediaDir,
+		StallTimeout: 5 * time.Second,
+	}
+
+	job := &river.Job[IngestJobArgs]{
+		JobRow: &rivertype.JobRow{},
+		Args:   IngestJobArgs{Site: "default", RecordID: "rec-conflict-new"},
+	}
+
+	err := w.Work(ctx, job)
+	if err == nil {
+		t.Fatal("Work() error = nil, want an explicit failure for a conflicting rel_path")
+	}
+	if !strings.Contains(err.Error(), "rel_path") {
+		t.Errorf("Work() error = %v, want it to mention the conflicting rel_path", err)
+	}
+
+	// 核心のアサーション: 先行の実ファイルは中身まで元のままである
+	// （サイズが同じだけでは truncate → 途中まで書いた場合を見逃す）。
+	gotContent, err := os.ReadFile(conflictFullPath)
+	if err != nil {
+		t.Fatalf("reading pre-existing file after failed Work(): %v", err)
+	}
+	if !bytes.Equal(gotContent, existingContent) {
+		t.Errorf("pre-existing file was modified: got %q, want unchanged %q", gotContent, existingContent)
+	}
+
+	// 転送そのものが始まっていないこと（「開始してから失敗」ではなく
+	// 「開始前に失敗」であることの確認）。
+	if got := streamRequests.Load(); got != 0 {
+		t.Errorf("stream requests = %d, want 0 (transfer must not start when rel_path already conflicts)", got)
+	}
+
+	// 新規録画側は media_asset がコミットされていない。
+	var newAssetCount int
+	if err := pool.QueryRow(ctx,
+		"SELECT count(*) FROM media_assets WHERE recording_id = $1", newRecordingID,
+	).Scan(&newAssetCount); err != nil {
+		t.Fatalf("counting media_assets for new recording: %v", err)
+	}
+	if newAssetCount != 0 {
+		t.Errorf("media_assets rows for new recording = %d, want 0 (must not commit on conflict)", newAssetCount)
+	}
+
+	// 先行録画側の行は変わらず 1 のまま。
+	var existingAssetCount int
+	if err := pool.QueryRow(ctx,
+		"SELECT count(*) FROM media_assets WHERE recording_id = $1", existingRecordingID,
+	).Scan(&existingAssetCount); err != nil {
+		t.Fatalf("counting media_assets for existing recording: %v", err)
+	}
+	if existingAssetCount != 1 {
+		t.Errorf("media_assets rows for existing recording = %d, want 1 (untouched)", existingAssetCount)
+	}
+}
+
+// TestIngestWorker_RelPathConflict_AllowsReuseAfterDeleted は issue #197 の
+// 受け入れ基準 2 項目目（罠: state <> 'deleted' の条件を落とさない）を固定する:
+// 同じ rel_path を持つ既存行が state='deleted'（tombstone）の場合は、その
+// rel_path を新しい ingest が正当に再利用できる --- 既存の削除済み行を
+// 「active な衝突」として誤って弾いてはいけない。
+//
+// checkRelPathConflict の `AND state <> 'deleted'` を落とす（例えば無条件で
+// rel_path 一致を見る）と、このテストは "Work() error" で失敗する
+// （tombstone を衝突と誤認して転送を始めずに落ちる）。
+func TestIngestWorker_RelPathConflict_AllowsReuseAfterDeleted(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+
+	// 先行: 同じ rel_path を使っていたが、既に削除済み（tombstone）の行。
+	deletedRecordingID := insertTestRecordingForSite(t, pool, "default", 311)
+	const reusedRelPath = "sites/default/shared/reused.m2ts"
+	q := sqlcgen.New(pool)
+	deletedAssetID, err := q.CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
+		RecordingID: deletedRecordingID,
+		Kind:        "original",
+		RelPath:     reusedRelPath,
+		SizeBytes:   9,
+	})
+	if err != nil {
+		t.Fatalf("creating tombstoned media_asset: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		"UPDATE media_assets SET state = 'deleted', deleted_at = now() WHERE id = $1", deletedAssetID,
+	); err != nil {
+		t.Fatalf("marking media_asset deleted: %v", err)
+	}
+
+	// 新規: 同じ rel_path になる録画。
+	newRecordingID := insertTestRecordingForSite(t, pool, "default", 312)
+	insertTestRecordSyncForSite(t, pool, "default", newRecordingID, "rec-reuse-new", 327361024000312)
+
+	tsData := makeTSData(15)
+	srv := mirakcRecordServer(t, tsData, strPtr("shared/reused.m2ts"), "/recording/shared/reused.m2ts")
+
+	w := &IngestWorker{
+		MirakcClient: mirakc.NewClient(srv.URL, nil),
+		Pool:         pool,
+		MediaDir:     mediaDir,
+		StallTimeout: 5 * time.Second,
+	}
+
+	job := &river.Job[IngestJobArgs]{
+		JobRow: &rivertype.JobRow{},
+		Args:   IngestJobArgs{Site: "default", RecordID: "rec-reuse-new"},
+	}
+
+	if err := w.Work(ctx, job); err != nil {
+		t.Fatalf("Work() error = %v, want nil (a tombstoned rel_path must be reusable)", err)
+	}
+
+	fullPath := filepath.Join(mediaDir, "sites", "default", "shared", "reused.m2ts")
+	data, err := os.ReadFile(fullPath)
+	if err != nil {
+		t.Fatalf("reading output file: %v", err)
+	}
+	if len(data) != len(tsData) {
+		t.Errorf("file size = %d, want %d", len(data), len(tsData))
+	}
+
+	asset, err := q.GetActiveOriginalMediaAsset(ctx, newRecordingID)
+	if err != nil {
+		t.Fatalf("GetActiveOriginalMediaAsset: %v", err)
+	}
+	if asset.RelPath != reusedRelPath {
+		t.Errorf("new media_asset rel_path = %q, want %q", asset.RelPath, reusedRelPath)
+	}
+}
