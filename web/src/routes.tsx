@@ -3,7 +3,11 @@ import { createRootRoute, createRoute, Outlet, redirect } from '@tanstack/react-
 import { AppShell } from './components/app-shell'
 import { SiteGate } from './components/site-gate'
 import { parseProgramsSearch, type ProgramsPageSearch } from './lib/programs-search'
-import { parseRecordingsSearch, type RecordingsPageSearch } from './lib/recording-search'
+import {
+  parseRecordingsSearch,
+  parseRuleId,
+  type RecordingsPageSearch,
+} from './lib/recording-search'
 import { HomePage } from './pages/home'
 import { LivePage } from './pages/live'
 import { ProgramsPage } from './pages/programs'
@@ -97,14 +101,22 @@ export type SearchPageSearch = {
 const searchRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/search',
-  // 不正な値（数値に変換できない・NaN・Infinity）は undefined に落とす。
+  // 不正な値（数値に変換できない・非整数・NaN・Infinity）は undefined に落とす。
   // 存在しないルール id を積んだ壊れたリンクを踏んでも、検索画面は
-  // 「ruleId 指定なし」の通常の検索フォームとして開ける
-  validateSearch: (search: Record<string, unknown>): SearchPageSearch => {
-    const raw = search.ruleId
-    const n = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : NaN
-    return Number.isFinite(n) ? { ruleId: n } : {}
-  },
+  // 「ruleId 指定なし」の通常の検索フォームとして開ける。
+  //
+  // **落とす次元にも `undefined` を明示代入する**（`parseRecordingsSearch` /
+  // `/live` の `serviceId` と同じ形。issue #194）。TanStack Router は非 strict
+  // モードで `{ ...生の location.search, ...validateSearch の戻り値 }` の順に
+  // 合成するので、キーを省略すると生の値（`/search?ruleId=abc` なら文字列
+  // `"abc"`）がそのまま残り、`pages/search.tsx` が `ruleId !== undefined` を
+  // 真と判断して `GET /api/rules/abc` を発火させていた。
+  //
+  // `parseRuleId` は `/recordings` の `ruleId`（`lib/recording-search.ts`）と
+  // 同じ `rules.id` を扱うキーなので、パースの流儀をそちらと共有する。
+  validateSearch: (search: Record<string, unknown>): SearchPageSearch => ({
+    ruleId: parseRuleId(search.ruleId),
+  }),
   component: SearchPage,
 })
 

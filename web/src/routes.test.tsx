@@ -37,28 +37,47 @@ describe('routeTree', () => {
     expect(search?.options.component).toBe(SearchPage)
   })
 
-  it('/search の ruleId は不正な値だと undefined に落ちる', () => {
-    // ルール画面 → 検索画面のプレビュー導線（`<Link to="/search" search={{ ruleId }}>`）
-    // の契約。消費側（プレビュー実装）はまだ無いが、双方が互いを見ずに実装
-    // できるようこの検証だけ先に固定する
-    const search = routeTree.children as unknown as {
-      options: {
-        path?: string
-        validateSearch?: (search: Record<string, unknown>) => { ruleId?: number }
-      }
-    }[]
-    const validateSearch = search.find((route) => route.options.path === '/search')?.options
-      .validateSearch
-    if (!validateSearch) throw new Error('/search route に validateSearch が無い')
+  it('/search?ruleId=abc は useSearch の戻り値に文字列を残さない', async () => {
+    // **`validateSearch` を直接呼ぶだけでは検出できない。** TanStack Router は
+    // 非 strict モードで `{ ...生の location.search, ...validateSearch の戻り値 }`
+    // の順に合成するので、`validateSearch` が**キーを省略**すると生の値
+    // （文字列 "abc"）がそのまま残る（`/live` の serviceId と同じ罠。issue #194）。
+    // 落とす次元にも undefined を明示代入して初めて消える
+    const router = createRouter({
+      routeTree,
+      history: createMemoryHistory({ initialEntries: ['/search?ruleId=abc'] }),
+    })
+    await router.load()
 
-    expect(validateSearch({ ruleId: 42 })).toEqual({ ruleId: 42 })
-    // URL の生値は文字列で来る（JSON.parse できる数字文字列は router 側で
-    // 既に数値化されるが、それに頼らず文字列でも受けられることを確かめる）
-    expect(validateSearch({ ruleId: '42' })).toEqual({ ruleId: 42 })
-    expect(validateSearch({ ruleId: 'abc' })).toEqual({})
-    expect(validateSearch({ ruleId: Number.NaN })).toEqual({})
-    expect(validateSearch({ ruleId: Number.POSITIVE_INFINITY })).toEqual({})
-    expect(validateSearch({})).toEqual({})
+    const search = router.state.matches.at(-1)!.search as { ruleId?: unknown }
+    expect(search.ruleId).toBeUndefined()
+    // 正しい値は通る（両方向を見る）
+    const ok = createRouter({
+      routeTree,
+      history: createMemoryHistory({ initialEntries: ['/search?ruleId=42'] }),
+    })
+    await ok.load()
+    expect((ok.state.matches.at(-1)!.search as { ruleId?: unknown }).ruleId).toBe(42)
+  })
+
+  it('/search の ruleId は非整数・NaN・Infinity も落とす', async () => {
+    for (const raw of ['1.5', 'NaN', 'Infinity', '-Infinity']) {
+      const router = createRouter({
+        routeTree,
+        history: createMemoryHistory({ initialEntries: [`/search?ruleId=${raw}`] }),
+      })
+      await router.load()
+      expect((router.state.matches.at(-1)!.search as { ruleId?: unknown }).ruleId).toBe(undefined)
+    }
+  })
+
+  it('/search を ruleId 無しで開くと undefined のまま', async () => {
+    const router = createRouter({
+      routeTree,
+      history: createMemoryHistory({ initialEntries: ['/search'] }),
+    })
+    await router.load()
+    expect((router.state.matches.at(-1)!.search as { ruleId?: unknown }).ruleId).toBeUndefined()
   })
 
   it('/live?serviceId=abc は useSearch の戻り値に文字列を残さない', async () => {

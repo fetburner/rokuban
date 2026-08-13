@@ -206,10 +206,9 @@ validateSearch(...))`）、`validateSearch` の戻り値を「生の（未検証
 代入する**（キーを省略しない）。`{ ...x, k: undefined }` はどちらの合成方式で見ても
 実際に上書きになるため、これで確実に消える。
 
-`/live` の `serviceId` は `{ serviceId: ... ?? undefined }` の形に揃えてある
+`/live` の `serviceId` と `/search` の `ruleId` はどちらもこの形に揃えてある
 （`routes.tsx`。`routes.test.tsx` が `router.state.matches` の `search` を直接見て
-固定している）。`/search` の `ruleId` には同じ漏れが残っている
-（下記「経緯と失敗事例」）。
+固定している。経緯は下記「経緯と失敗事例」）。
 
 ### 一覧は自前で組んだ `useInfiniteQuery`
 
@@ -492,5 +491,6 @@ worker 側の実装詳細であって `GET /api/storage` の契約に含まれ�
   （`Number.isFinite(n) ? { ruleId: n } : {}`）で同じ経路で漏れることを
   PR #193 のレビューで確認した（`{ ruleId: "abc" }` が `useSearch()` に
   そのまま届く）。`/live` の `serviceId` は M4-4（#92）で明示代入の形に揃えた。
-  `/search` の `ruleId` と `parseRuleId` の非整数は
-  [issue #194](https://github.com/fetburner/rokuban/issues/194) に残っている
+  `/search` の `ruleId` は [issue #194](https://github.com/fetburner/rokuban/issues/194)
+  で同じ形に揃え、`routes.tsx` の `parseRuleId`（`lib/recording-search.ts` の
+  既存の関数を共有）に一本化した

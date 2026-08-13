@@ -104,8 +104,13 @@ function parseEnum<T extends string>(raw: unknown, allowed: readonly T[]): T | u
  * （`RuleId` は Go 側 `int64` にバインドされる）なので、`1.5` のような非整数は
  * サーバーへ送ると 400 になる。`Number.isFinite` だけでは非整数を通してしまう
  * ため `Number.isInteger` も見る。
+ *
+ * `routes.tsx` の `/search` の `ruleId`（`?ruleId=N` でルールの条件を検索画面へ
+ * 写す導線。issue #24 M2-11、issue #194 で明示 `undefined` に揃えた）も同じ
+ * `rules.id` を扱うキーなので、ここを共有してパースの流儀が 2 箇所に分岐しない
+ * ようにする。
  */
-function parseRuleId(raw: unknown): number | undefined {
+export function parseRuleId(raw: unknown): number | undefined {
   const n = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : NaN
   return Number.isFinite(n) && Number.isInteger(n) ? n : undefined
 }
