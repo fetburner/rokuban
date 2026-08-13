@@ -26,10 +26,16 @@ const ALLOW = new Map([
     'ジャンルの淡色は Tailwind 標準パレットの 50 / 950 に限定するという既存の規律' +
       '（docs/frontend/programs.md）。16 ジャンルぶんの色相をトークンにはしない',
   ],
-  // 以下 3 つの `black` は「テーマの色」ではない。映像が来ていない領域と、
+  // 以下 4 つの `black` は「テーマの色」ではない。映像が来ていない領域と、
   // 背後を沈める幕であって、ライト/ダークで変わってはいけない。
   ['src/components/recording-player.tsx', '<video> のレターボックス（映像の無い領域）は黒で固定する'],
   ['src/components/live-player.tsx', '<video> のレターボックス（映像の無い領域）は黒で固定する'],
+  [
+    'src/pages/live.tsx',
+    '選択画面（LiveSelectionPreview）は再生ボタンを押すまで `LivePlayer` を' +
+      'マウントしない（issue #234 M7-1）。同じ寸法・同じ黒地にして、押した瞬間の' +
+      'レイアウトシフト/フラッシュを避ける --- live-player.tsx と同じ理由',
+  ],
   ['src/components/ui/alert-dialog.tsx', 'ダイアログの幕（shadcn 生成物）。背後を沈める黒で、地の色ではない'],
 ])
 

@@ -240,6 +240,141 @@ async function mockLiveRoutes(page, mode) {
   })
 }
 
+/**
+ * clickPlay は選択画面（issue #234 M7-1）の「再生」ボタンを押す。
+ *
+ * `pages/live.tsx` はチャンネルを選んだだけでは `LivePlayer` をマウントしない
+ * （probe もセッションも起こさない。⓪ が直接見る）。①〜⑦は「再生」を押した
+ * 後の挙動を見るものなので、`page.goto` の直後にこれを呼んで初めて
+ * `LivePlayer` が現れる。
+ */
+async function clickPlay(page) {
+  await page.getByRole('button', { name: /再生/ }).click()
+}
+
+/**
+ * runConsentCheck は⓪（選択と視聴開始の分離。issue #234 M7-1）を検証する。
+ *
+ * この判定が本来見たいのは「タップだけではプレイリスト/セグメント要求が飛ばない」
+ * こと自体であり、実データ（H.264/AAC）や実再生は要らない --- ①〜⑦と違って
+ * ffmpeg フィクスチャに依存せず、bundled Chromium だけで常に測れる。
+ * `web/e2e/README.md`「判定を足すときの規律」どおり、この判定を足す前の実装
+ * （チャンネルをタップした瞬間に probe する版）で実際に落ちることを確認済み
+ * （PR 本文の変異リスト参照）。
+ */
+async function runConsentCheck() {
+  const browser = await chromium.launch()
+  try {
+    const page = await browser.newPage({ viewport: { width: 960, height: 640 } })
+    const requestLog = []
+    page.on('request', (req) => requestLog.push(req.url()))
+
+    await page.route('**/api/capabilities', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ live: true }),
+      }),
+    )
+    // 実データは要らない --- 要求そのものの有無だけを見る（decode まではしない）
+    await page.route('**/live/playlist.m3u8*', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/vnd.apple.mpegurl',
+        body: '#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:2\n#EXTINF:2.0,\nsegments/segment_000.ts\n#EXT-X-ENDLIST\n',
+      }),
+    )
+    await page.route('**/live/segments/*', (route) =>
+      route.fulfill({ status: 200, contentType: 'video/mp2t', body: Buffer.from([0x47]) }),
+    )
+
+    await page.goto(`${BASE_URL}/live?serviceId=${SERVICE_A}`, { waitUntil: 'networkidle' })
+
+    const requestsAfterOpen = requestLog.filter(
+      (u) => u.includes('/live/playlist.m3u8') || u.includes('/live/segments/'),
+    )
+    log(`  直開き直後のプレイリスト/セグメント要求数: ${requestsAfterOpen.length}`)
+    if (requestsAfterOpen.length > 0) {
+      ng.push(
+        `⓪ 直開きだけでプレイリスト/セグメント要求が ${requestsAfterOpen.length} 件飛んだ` +
+          '（選択は再生ボタンで開始する契約に反する）',
+      )
+    }
+
+    const playButton = page.getByRole('button', { name: /再生/ })
+    if ((await playButton.count()) === 0) {
+      ng.push('⓪ 「再生」ボタンが見つからない')
+      return
+    }
+
+    requestLog.length = 0
+    await playButton.click()
+    let fired = false
+    try {
+      await page.waitForFunction(
+        () =>
+          window.performance
+            .getEntriesByType('resource')
+            .some((r) => r.name.includes('/live/playlist.m3u8')),
+        undefined,
+        { timeout: 10000 },
+      )
+      fired = true
+    } catch {
+      fired = false
+    }
+    log(`  再生ボタン押下後にプレイリスト要求が飛んだ: ${fired ? 'YES' : 'NO'}`)
+    if (!fired) ng.push('⓪ 「再生」ボタンを押してもプレイリスト要求が飛ばない')
+
+    // --- ⓪' 再生中に別チャンネルへ切り替えても、押していない方の playlist/
+    // segment 要求が飛ばない ---
+    //
+    // レビューで発見された穴（PR #259）: 再生状態のリセットを `useEffect` で
+    // 行うと、`selectedServiceId` が A→B に変わった直後の 1 コミットだけ古い
+    // 再生中フラグが残っていて `LivePlayer` が B の serviceId で透過的に
+    // マウントされ、その 1 回の probe が実際に飛ぶ（`AbortController.abort()`
+    // では取り消せない --- `internal/streamer/live.go` のセッションは
+    // `context.WithCancel(context.Background())` で回る）。「A を再生 → B の
+    // チャンネルリンクをクリック（再生は押さない）→ B 向け要求が 0 件」を
+    // 確認することで、この透過マウント自体が起きないことを実ブラウザで固定する
+    if (fired) {
+      requestLog.length = 0
+      await page
+        .locator(`nav[aria-label="チャンネル一覧"] a[href*="serviceId=${SERVICE_B}"]`)
+        .click()
+      // 「再生」ボタンが B 向けに再表示される（= 選択状態に戻った）のを待つことで、
+      // 一連の再レンダー（切替の 1 回目のコミット・再生状態のリセット）が
+      // 落ち着いたことを確認する。ここで待たずに数えると「まだ再レンダーが
+      // 済んでいないだけ」を「透過マウントが起きなかった」と誤って合格にする
+      await page.getByRole('button', { name: /再生/ }).waitFor({ timeout: 10000 })
+      const composedB = await composedServiceId(SERVICE_B)
+      const bRequestsWithoutPlay = requestLog.filter((u) =>
+        u.includes(`/services/${composedB}/live/`),
+      )
+      log(
+        `  B のリンクを押しただけ（再生は押さない）での B 向け要求数: ` +
+          `${bRequestsWithoutPlay.length}`,
+      )
+      if (bRequestsWithoutPlay.length > 0) {
+        ng.push(
+          `⓪' 再生中に別チャンネルへ切り替えると、押していない B へ` +
+            `${bRequestsWithoutPlay.length} 件の要求が飛んだ（選択と視聴開始の分離が` +
+            '切替の瞬間には成立していない）',
+        )
+      }
+    }
+  } finally {
+    await browser.close()
+  }
+}
+
+log('\n=== ⓪ 選択と視聴開始の分離（issue #234 M7-1。ffmpeg 不要） ===')
+try {
+  await runConsentCheck()
+} catch (err) {
+  ng.push(`⓪ の検証中に例外が発生した: ${err.message}`)
+}
+
 const hasFixture = ensureFixture()
 if (!hasFixture) {
   log('ffmpeg が見つからないため、フィクスチャを生成できない。①②③④⑤ をすべて測れないとして報告する')
@@ -271,6 +406,9 @@ async function runChromiumChecks(browser) {
   await mockLiveRoutes(page, mode)
 
   await page.goto(`${BASE_URL}/live?serviceId=${SERVICE_A}`, { waitUntil: 'networkidle' })
+  // 選択と視聴開始の分離（issue #234 M7-1）。「再生」を押すまで <video> は
+  // 存在しない --- ⓪ がこの分離自体を検証し、①〜⑤ は押した後の挙動を見る
+  await clickPlay(page)
   await page.waitForSelector('video', { timeout: 15000 })
 
   // --- ① hls.js の動的 import チャンクが実際にリクエストされる ---
@@ -332,10 +470,26 @@ async function runChromiumChecks(browser) {
   ).length
   log(`  切替前の A 向けセグメント要求数: ${requestsBeforeSwitchCount}`)
 
-  requestLog.length = 0
   await page
     .locator(`nav[aria-label="チャンネル一覧"] a[href*="serviceId=${SERVICE_B}"]`)
     .click()
+  // 選択と視聴開始の分離（issue #234 M7-1）。チャンネルを切り替えると選択状態
+  // （再生ボタン）に戻る --- 同意はチャンネルごとに必要なので、B の
+  // LivePlayer を起こすにはここでも「再生」を押す。
+  //
+  // **`requestLog` のクリアは、この「再生」ボタンが見えるのを待った後にする。**
+  // ボタンが見えている = A の `LivePlayer` は（切替時の 1 回目の cleanup と、
+  // 再生状態が落ちたことによる 2 回目の cleanup の両方を経て）確実に
+  // unmount 済みということなので、ここで初めて「以降 A への要求が無い」の
+  // 観測窓を開く。クリアを先にしてクリックを後にすると、クリア直後・クリック
+  // 処理が実際に効くまでの数 ms の間に A 自身の自然なセグメント要求（バッファ
+  // 継続のための次セグメント取得）が発火してクリア後の配列に載ることがあり、
+  // それを cleanup 未実施の「残存要求」と誤認するレースになる（実測: この
+  // 順序にする前は毎回ちょうど 1 件、A 向けの要求が「残存」として検出された）
+  const playButtonForB = page.getByRole('button', { name: /再生/ })
+  await playButtonForB.waitFor()
+  requestLog.length = 0
+  await playButtonForB.click()
   await page.waitForFunction(segmentsRequested, [SITE, composedB], { timeout: 10000 })
   // 切り替え後もしばらく要求が続くかもしれない旧チャンネルの要求を数える余地を
   // 与える（hls.js の非同期な内部タイマーが 1 フレームだけ遅れて発火する
@@ -357,6 +511,7 @@ async function runChromiumChecks(browser) {
   mode.playlist = 'error'
   mode.playlistErrorBody = 'too many concurrent live sessions on this process'
   await page.goto(`${BASE_URL}/live?serviceId=${SERVICE_A}`, { waitUntil: 'networkidle' })
+  await clickPlay(page)
   let errorShown = false
   try {
     await page.getByText('too many concurrent live sessions on this process').waitFor({
@@ -407,6 +562,7 @@ if (hasFixture) {
       const chromePage = await chromeBrowser.newPage({ viewport: { width: 960, height: 640 } })
       await mockLiveRoutes(chromePage, { playlist: 'ok' })
       await chromePage.goto(`${BASE_URL}/live?serviceId=${SERVICE_A}`, { waitUntil: 'networkidle' })
+      await clickPlay(chromePage)
       await chromePage.waitForFunction(mseAttached, undefined, { timeout: 15000 })
       await chromePage.evaluate(() => document.querySelector('video').play())
       const before = await chromePage.evaluate(() => ({
@@ -453,6 +609,7 @@ if (hasFixture) {
     page.on('request', (req) => requestLog.push(req.url()))
     await mockLiveRoutes(page, { playlist: 'ok' })
     await page.goto(`${BASE_URL}/live?serviceId=${SERVICE_A}`, { waitUntil: 'networkidle' })
+    await clickPlay(page)
 
     // 経路が決まる（どちらかの分岐が `<video>` に何かを渡す）まで待つ。
     // ここで待たずに数えると「まだ hls.js を要求していないだけ」を
@@ -547,6 +704,7 @@ if (hasFixture) {
       const page = await browser.newPage({ viewport: { width: 960, height: 640 } })
       await mockLiveRoutes(page, { playlist: 'ok', segments })
       await page.goto(`${BASE_URL}/live?serviceId=${SERVICE_A}`, { waitUntil: 'domcontentloaded' })
+      await clickPlay(page)
 
       let shown = false
       try {

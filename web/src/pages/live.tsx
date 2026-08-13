@@ -1,10 +1,12 @@
-import { Link, useNavigate, useSearch as useRouteSearch } from '@tanstack/react-router'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { Link, useSearch as useRouteSearch } from '@tanstack/react-router'
+import { Play } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
 
 import { useListPrograms, useListServices, type ProgramListItem, type Service } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
 import { EmptyState, ErrorState, ListSkeleton, PageHeader } from '@/components/page'
 import { LivePlayer } from '@/components/live-player'
+import { Button } from '@/components/ui/button'
 import { useLiveCapability } from '@/lib/capabilities'
 import { currentProgramWindow, pickInitialServiceId } from '@/lib/live'
 import { orderServices } from '@/lib/epg-grid'
@@ -28,18 +30,6 @@ import { cn } from '@/lib/utils'
  * （レビュー #190 の指摘）。
  */
 const nowPlayingRefetchMs = 30_000
-
-/**
- * channelSwitchDebounceMs はチャンネル切り替えのデバウンス幅。
- *
- * 実配値（`live.idle_timeout` 既定 30 秒 / `live.max_sessions` 既定 4）では、
- * ザッピングのたびに前のセッションがすぐには解放されない（レビュー #190 の
- * 指摘。docs/frontend.md の該当節参照）。デバウンスは「本当に見たいチャンネル
- * が決まるまで、途中で通り過ぎたチャンネルの probe / セッションを起こさない」
- * ための緩和であり、idle GC の遅延自体は変えない。サーバー側の即時解放 API は
- * #191 へ切り出し済みで、この PR（UI のみ）の範囲外
- */
-const channelSwitchDebounceMs = 400
 
 type ChannelGroup = { channelType: string; services: Service[] }
 
@@ -70,7 +60,7 @@ function groupByChannelType(ordered: readonly Service[]): ChannelGroup[] {
 }
 
 /**
- * LivePage はライブ視聴画面（M4-4）。
+ * LivePage はライブ視聴画面（M4-4。選択と視聴開始の分離は M7-1）。
  *
  * 「チャンネル一覧から選んでブラウザ再生、画質切り替え程度で良い」
  * （docs/frontend.md §ライブ視聴）という方針どおり、機能は絞る。プロファイル
@@ -82,15 +72,27 @@ function groupByChannelType(ordered: readonly Service[]): ChannelGroup[] {
  * 選択中のチャンネルは `?serviceId=` に持つ（`pages/search.tsx` の `?ruleId` と
  * 同じ形）。これにより特定チャンネルへの直リンクが作れる。チャンネルを切り替える
  * ナビゲーションは `replace` にし、ザッピングでブラウザ履歴が積み上がらないように
- * する（実際のナビゲーションは `channelSwitchDebounceMs` だけデバウンスする。
- * 下記 `selectChannel` 参照）。
+ * する。
+ *
+ * **「選ぶ」と「流す」を別のタップに分ける（issue #234 M7-1）。** チャンネルを
+ * 選ぶこと自体は probe もセッション（チューナー確保 + ffmpeg 起動）も起こさない
+ * ---「いま放送中」の表示とチャンネル種別だけを見せ、`LivePlayer` は「再生」ボタンを
+ * 押すまでマウントしない。確認ダイアログは使わない --- 選択状態の画面そのものが
+ * 値札であり、再生は 1 タップで足りる（ダイアログを重ねると、チューナーが有限で
+ * ないデスクトップ LAN の利用者にまで摩擦を強いる。docs/frontend.md
+ * §ライブ視聴「選択と視聴開始の分離」参照）。
+ *
+ * デバウンスは持たない。以前はザッピングのたびに probe / セッションが走っていた
+ * ため「通り過ぎたチャンネル」を掴まないための緩和として 400ms のデバウンスを
+ * 挟んでいたが、選択自体がコスト 0 になった今はデバウンスする対象（probe /
+ * セッション開始）がチャンネル選択の瞬間には発生しない。デバウンスの存在理由が
+ * 消えたので削除した（issue #234 の受け入れ 4）。
  */
 export function LivePage() {
   const liveCapability = useLiveCapability()
   const site = useCurrentSite()
   const services = useListServices(site)
   const routeSearch = useRouteSearch({ from: '/live' })
-  const navigate = useNavigate()
 
   const orderedServices = useMemo(() => orderServices(unwrap(services.data) ?? []), [services.data])
   const groups = useMemo(() => groupByChannelType(orderedServices), [orderedServices])
@@ -98,40 +100,37 @@ export function LivePage() {
   const selectedServiceId = pickInitialServiceId(orderedServices, routeSearch.serviceId)
   const selectedService = orderedServices.find((s) => s.serviceId === selectedServiceId)
 
-  // pendingServiceId はチャンネル一覧のハイライト専用。LivePlayer に渡す実際の
-  // selectedServiceId（= URL の ?serviceId=）とは切り離す --- クリック直後の
-  // 見た目の反応と、実際に probe / セッションを起こすタイミング（デバウンス後）を
-  // 分けるため。URL 側（selectedServiceId）が変わったら追従させる
-  const [pendingServiceId, setPendingServiceId] = useState(selectedServiceId)
-  useEffect(() => {
-    setPendingServiceId(selectedServiceId)
-  }, [selectedServiceId])
-
-  const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  useEffect(
-    () => () => {
-      if (debounceTimer.current !== null) clearTimeout(debounceTimer.current)
-    },
-    [],
-  )
-
-  /**
-   * selectChannel はチャンネル切り替えをデバウンスする。
-   *
-   * ハイライト（`pendingServiceId`）は即座に切り替えて操作感を保ちつつ、実際の
-   * ナビゲーション（= `LivePlayer` への `serviceId` 反映 = probe / セッション
-   * 開始）は `channelSwitchDebounceMs` の間に別のチャンネルが押されなかった
-   * ときだけ行う（最後の選択だけが勝つ latest-wins）。連続してザップしても、
-   * 通り過ぎたチャンネルの分だけセッションが積まれない
-   */
-  function selectChannel(serviceId: number) {
-    setPendingServiceId(serviceId)
-    if (debounceTimer.current !== null) clearTimeout(debounceTimer.current)
-    debounceTimer.current = setTimeout(() => {
-      debounceTimer.current = null
-      void navigate({ to: '/live', search: { serviceId }, replace: true })
-    }, channelSwitchDebounceMs)
+  // playingServiceId は「再生」ボタンで明示的に視聴を始めたチャンネルの serviceId。
+  // `null` なら未再生（選択状態）。**選択（selectedServiceId）と一致するときだけ
+  // 再生中とみなす** --- 直リンク・ブックマークで来た場合（issue #234 の含むもの 3）も、
+  // チャンネル一覧で別のチャンネルへ切り替えた場合も、同意はチャンネルごとに 1 回
+  // ずつ必要というのが構造で同意を取る設計の要点。
+  //
+  // **この判定は effect ではなくレンダー中に行う（React の「レンダー中に state を
+  // 調整する」パターン）。** 当初は `useEffect(() => setIsPlaying(false),
+  // [selectedServiceId])` で「選択が変わったら false に戻す」を実装していたが、
+  // これは 1 コミットぶん透過的にバグる --- passive effect は子（LivePlayer）→親
+  // （LivePage）の順に走るため、チャンネルを A→B へ切り替えた直後のコミットでは
+  // 「`selectedServiceId` は B に変わっているが `isPlaying` はまだ前の値（true）」
+  // という状態で一度レンダーされ、その 1 回だけ `<LivePlayer serviceId={B}>` が
+  // マウントされて probe（チューナー確保 + ffmpeg 起動）を投げてしまう ---
+  // その直後に `LivePage` 側の reset effect が走って `isPlaying` を false に戻し
+  // `LivePlayer` は unmount されるが、**このコミットで実際に飛んだネットワーク要求
+  // 自体は取り消せない**（`internal/streamer/live.go` のセッションは
+  // `context.WithCancel(context.Background())` で回るため、クライアント側の
+  // `AbortController.abort()` はセッション自体を止めない）。押していないチャンネルの
+  // チューナー + ffmpeg が idle GC まで 30〜45 秒残る（レビューでの指摘。jsdom と
+  // 実ブラウザ（`rokuban server --roles api` の実バイナリ）の両方で実際に
+  // `/live/playlist.m3u8` への fetch が飛ぶことを確認された）。
+  //
+  // レンダー中に判定すれば、`selectedServiceId` が変わった**その場のレンダーで**
+  // 「再生中でない」が確定するので、`<LivePlayer>` が異なる serviceId で透過的に
+  // マウントされる中間コミット自体が存在しない。
+  const [playingServiceId, setPlayingServiceId] = useState<number | null>(null)
+  if (playingServiceId !== null && playingServiceId !== selectedServiceId) {
+    setPlayingServiceId(null)
   }
+  const isPlaying = playingServiceId !== null && playingServiceId === selectedServiceId
 
   // nowMs は「いま」を一定間隔で更新するティック。Date.now() を毎レンダー呼ぶだけでは
   // 再レンダーの理由にならず、番組が終わっても表示が切り替わらない。
@@ -187,14 +186,28 @@ export function LivePage() {
       ) : (
         <div className="flex flex-col gap-4 p-4 lg:flex-row lg:items-start">
           <div className="flex min-w-0 flex-1 flex-col gap-2">
-            <LivePlayer
-              site={site}
-              networkId={selectedService.networkId}
-              serviceId={selectedService.serviceId}
-            />
+            {isPlaying ? (
+              <LivePlayer
+                site={site}
+                networkId={selectedService.networkId}
+                serviceId={selectedService.serviceId}
+              />
+            ) : (
+              <LiveSelectionPreview
+                serviceName={selectedService.name}
+                onPlay={() => setPlayingServiceId(selectedService.serviceId)}
+              />
+            )}
             <div>
               <div className="flex items-center gap-2">
                 <p className="font-medium">{selectedService.name}</p>
+                {/* チャンネル種別（GR/BS/CS）は選択のコストを判断する手がかり
+                    （issue #234 の含むもの 1）。「チューナーが空いている」等の
+                    保証はしない中立の事実表示 --- mirakc には Rokuban から見えない
+                    消費者がいる（docs/data.md §6.5 と同じ下界主義。CLAUDE.md「罠」）。 */}
+                <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[0.65rem] font-medium text-muted-foreground">
+                  {channelTypeLabel(selectedService.channelType)}
+                </span>
                 {nowPlaying && <OnAirBadge />}
               </div>
               {nowPlaying ? (
@@ -229,23 +242,19 @@ export function LivePage() {
                   <ul className="flex flex-col gap-1">
                     {group.services.map((s) => (
                       <li key={`${s.networkId}-${s.serviceId}`}>
+                        {/* チャンネルを選ぶこと自体はコスト 0（probe もセッションも
+                            起こさない）なので、デバウンスも onClick での介入も無い
+                            --- 通常のクリックナビゲーションのまま（issue #234）。
+                            `replace` はザッピングでブラウザ履歴が積み上がらない
+                            ようにするため。 */}
                         <Link
                           to="/live"
                           search={{ serviceId: s.serviceId }}
                           replace
-                          onClick={(e) => {
-                            // 修飾クリック（新規タブ等）・中クリック・右クリックは
-                            // ブラウザの既定動作に任せる。デバウンスするのは
-                            // 「その場で選び直す」通常のクリックだけ
-                            if (e.defaultPrevented || e.button !== 0) return
-                            if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
-                            e.preventDefault()
-                            selectChannel(s.serviceId)
-                          }}
-                          aria-current={s.serviceId === pendingServiceId ? 'page' : undefined}
+                          aria-current={s.serviceId === selectedServiceId ? 'page' : undefined}
                           className={cn(
                             'flex min-h-11 w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm transition-colors hover:bg-muted',
-                            s.serviceId === pendingServiceId && 'bg-muted font-medium',
+                            s.serviceId === selectedServiceId && 'bg-muted font-medium',
                           )}
                         >
                           {s.channelType === 'GR' && s.remoteControlKeyId > 0 && (
@@ -265,6 +274,35 @@ export function LivePage() {
         </div>
       )}
     </>
+  )
+}
+
+/**
+ * LiveSelectionPreview は「選択」段階の表示（issue #234 M7-1）。
+ *
+ * `LivePlayer` と同じ寸法（`aspect-video` の黒地）にして、再生ボタンを押した
+ * 瞬間のレイアウトシフトを避ける。probe もセッションもここでは起こさない ---
+ * 「再生」ボタンを押した後に呼び出し側が `LivePlayer` をマウントするまで、
+ * ネットワーク要求は一切発生しない（チャンネル切り替えの中間コミットも含む。
+ * `playingServiceId` の判定をレンダー中に落とす必要があった理由も同じ ---
+ * `LivePage` のコメント参照）。`pages/live.test.tsx`「再生中に別チャンネルへ
+ * 切り替えると選択状態に戻る（同意はチャンネルごとに必要）」の
+ * `playlistFetchCallCount()` の assertion と `web/e2e/live.mjs` ⓪' で実測済み。
+ */
+function LiveSelectionPreview({
+  serviceName,
+  onPlay,
+}: {
+  serviceName: string
+  onPlay: () => void
+}) {
+  return (
+    <div className="relative flex aspect-video w-full max-w-3xl items-center justify-center rounded bg-black">
+      <Button type="button" size="lg" aria-label={`${serviceName}を再生`} onClick={onPlay}>
+        <Play data-icon="inline-start" />
+        再生
+      </Button>
+    </div>
   )
 }
 
