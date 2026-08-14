@@ -1399,6 +1399,134 @@ for (const theme of themes) {
   await context.close()
 }
 
+// --- ⑥ Button: フォーカスリング / border-color は遷移しない・hover の色と
+//     active の押下フィードバックは遷移する（issue #294） ---
+//
+// `transition-all` は `box-shadow`（focus-visible の ring-3）と
+// `focus-visible:border-ring`（1px 罫線の border-color）の**両方**を
+// 遷移対象に含めてしまい、キーボードフォーカスの瞬間にリングの縁までが
+// アニメーションで出現する（WCAG のフォーカス可視・「Focus rings that
+// animate in」という tell）。border-color は ring の外側の淡い box-shadow
+// より内側にある最も鮮明な縁なので、box-shadow だけ外しても border-color が
+// 残れば「リングが遷移していない」は満たせない（レビューで実測: alpha
+// 0 → 0.0073 → 0.88 → 1 と 150ms かけてフェードインしていた）。
+//
+// **jsdom では測れない。** CSS transition が実際に走るかどうかはブラウザの
+// transition エンジンでしか観測できない --- `transition-property` という
+// 文字列がクラス名に含まれているかを読むテストは「そのユーティリティを
+// 書いた」ことしか確認できず、**実際に発火するか**（他のクラスに上書きされて
+// いないか・ブラウザが実際に transitionstart を上げるか）までは保証しない。
+// ここでは実際の `transitionstart` イベント（発火したプロパティ名つき）を
+// ボタン要素自身に張った listener で観測する。
+//
+// 3 方向を見る: ① focus-visible で box-shadow / outline / border-*-color が
+// 遷移**しない**こと、② hover で背景色の遷移が従来どおり**起きる**こと
+// （issue の受け入れ基準）、③ active で `translate`（`active:...:translate-y-px`
+// の押下フィードバック）が遷移**すること** --- Tailwind v4 は
+// `translate-y-px` を `transform` ではなく `translate` プロパティへ
+// コンパイルするため、挙げるプロパティを間違えると「押下フィードバックを
+// 残すつもりが実際には何も遷移しない」という死んだ意図になり得る
+// （レビューで実測して発覚）。①だけでなく③も持たせることで、将来
+// `translate` がクラス列から静かに落ちても検出できる。
+log('\n=== ⑥ Button: フォーカスリング / border-color / hover / active の遷移（issue #294） ===')
+{
+  const { context, page } = await open(desktop, 'light', screenOf('search'))
+  const button = page.getByRole('button', { name: '検索' })
+  if ((await button.count()) === 0) {
+    ng.push('フォーカスリング: 検索ボタン（shared Button）が見つからない')
+  } else {
+    // listener はボタン要素自身に張る（document + capture ではない）。
+    // transitionstart はバブルするので、対象要素に直接張れば document まで
+    // 遡る理由が無く、他要素の transition と混ざる余地も無くなる。
+    await button.first().evaluate((el) => {
+      el.__transitioned = []
+      el.addEventListener('transitionstart', (e) => el.__transitioned.push(e.propertyName))
+    })
+    const readTransitioned = () => button.first().evaluate((el) => el.__transitioned)
+    const resetTransitioned = () =>
+      button.first().evaluate((el) => {
+        el.__transitioned = []
+      })
+
+    // border-*-color は `border-color`（ショートハンド）ではなく
+    // `border-top-color` 等のロングハンドで上がる（実測）。`outline` も
+    // `outline-color` / `outline-width` / `outline-style` のロングハンドで
+    // 上がりうる（実測: transition-all のもとで `outline-width` が上がった）
+    // ので、どちらも前方一致で拾う。box-shadow はロングハンドを持たないので
+    // 完全一致でよい。
+    const isRingLike = (p) =>
+      p === 'box-shadow' || p.startsWith('outline') || (p.startsWith('border-') && p.endsWith('-color'))
+
+    // Playwright の `.focus()` は script からの `element.focus()` で、実際の
+    // Tab 走査ではないが、ページ読み込み後まだ一度もポインタ操作をしていない
+    // 状態でのプログラム的フォーカスは Chromium で :focus-visible を伴う。
+    // それを前提にせず、次の行で実際に :focus-visible が付いたかを確認して
+    // いるので、前提が崩れていれば「遷移していない」ではなく専用の NG で落ちる
+    // （検証していない前提を持たない --- CLAUDE.md「測っていない挙動を断言しない」）。
+    await button.first().focus()
+    const isFocusVisible = await button.first().evaluate((el) => el.matches(':focus-visible'))
+    if (!isFocusVisible) {
+      ng.push(
+        'フォーカスリング: 検索ボタンに :focus-visible が付かない（判定の前提が崩れている。' +
+          'focus() の呼び方を見直す）',
+      )
+    } else {
+      // transition-all（既定 150ms）や border-color が残っていれば
+      // box-shadow / outline* / border-*-color の transitionstart が飛ぶ。
+      // 150ms を安全側に見て待つ
+      await page.waitForTimeout(400)
+      const transitioned = await readTransitioned()
+      log(`  :focus-visible で遷移したプロパティ: [${transitioned.join(', ') || '(なし)'}]`)
+      for (const prop of transitioned.filter(isRingLike)) {
+        ng.push(
+          `フォーカスリング: :focus-visible で ${prop} が遷移している` +
+            '（box-shadow・outline・border-*-color は遷移対象から外す）',
+        )
+      }
+    }
+
+    // 両方向: hover の色遷移は従来どおり効くこと（issue の受け入れ基準）
+    await button.first().evaluate((el) => el.blur())
+    await page.mouse.move(0, 0)
+    await resetTransitioned()
+    await button.first().hover()
+    await page.waitForTimeout(400)
+    const hoverTransitioned = await readTransitioned()
+    log(`  hover で遷移したプロパティ: [${hoverTransitioned.join(', ') || '(なし)'}]`)
+    if (!hoverTransitioned.includes('background-color') && !hoverTransitioned.includes('color')) {
+      ng.push(
+        'フォーカスリング: hover で色（background-color / color）の遷移が起きていない' +
+          '（transition-all を外した副作用で色遷移まで消えていないか確認する）',
+      )
+    }
+
+    // active の押下フィードバック（`translate-y-px`）は遷移**すること**。
+    // ここが無いと、将来 `translate` がクラス列から落ちても気付けない
+    // （このレビューで実際に `transform`（誤り）のまま気付かれずにいた）。
+    await resetTransitioned()
+    const box = await button.first().boundingBox()
+    if (box === null) {
+      ng.push('フォーカスリング: 検索ボタンの座標が取れず active を再現できない')
+    } else {
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+      await page.mouse.down()
+      await page.waitForTimeout(400)
+      const activeTransitioned = await readTransitioned()
+      log(`  active で遷移したプロパティ: [${activeTransitioned.join(', ') || '(なし)'}]`)
+      if (!activeTransitioned.includes('translate')) {
+        ng.push(
+          'フォーカスリング: active で translate の遷移が起きていない' +
+            '（`active:...:translate-y-px` の押下フィードバックが snap している。' +
+            'Tailwind v4 は translate-y-px を transform ではなく translate に' +
+            'コンパイルするので、遷移対象に挙げるなら translate で挙げる）',
+        )
+      }
+      await page.mouse.up()
+    }
+  }
+  await context.close()
+}
+
 // 数値は docs に転記しない（転記した瞬間に二重管理になる）。docs は
 // 「ここで測る」とだけ言い、実際の数値はこの出力が権威。
 log('\n=== 測ったコントラスト ===')
