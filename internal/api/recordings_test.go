@@ -148,6 +148,40 @@ func TestListRecordings(t *testing.T) {
 	}
 }
 
+// 一覧の射影（recordingsFromJoins、internal/api/recordings_query.go）は
+// `a.state <> 'deleted'` で結合するため、`state = 'deleting'`（unlink 待ち）の
+// 原本でも sizeBytes が付き「原本あり」に見える --- 一方サーバーの 409 判定
+// （GetActiveOriginalMediaAsset）は `state = 'active'` だけを見るので、この
+// 非対称の上でボタンを押すと決定的に 409 になる。openapi.yaml の 409
+// description と docs/storage/retention.md はこの契約を根拠に文言を書いている
+// ため、射影が `state = 'active'` に絞られてこのテストが落ちたら、その docs も
+// 合わせて直す必要がある。
+func TestListRecordings_DeletingOriginal_StillShowsSizeBytes(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := newAPIServer(t, pool)
+
+	id := seedRecording(t, pool, "原本 unlink 待ち", time.Now().Truncate(time.Second), "finished", 401)
+	seedIngested(t, pool, id, 500, nil)
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE media_assets SET state = 'deleting'
+		 WHERE recording_id = $1 AND kind = 'original'`, id,
+	); err != nil {
+		t.Fatalf("marking original deleting: %v", err)
+	}
+
+	var got []Recording
+	resp := getJSON(t, srv.URL+"/api/recordings", &got)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	if len(got) != 1 {
+		t.Fatalf("recordings = %d, want 1", len(got))
+	}
+	if got[0].SizeBytes == nil || *got[0].SizeBytes != 500 {
+		t.Errorf("sizeBytes = %v, want 500 (deleting original still counted as present in the list projection)", got[0].SizeBytes)
+	}
+}
+
 // ListRecordings は active な encoded 派生物（プロファイル名 + サイズ）を返すこと
 // （ブラウザ再生用。issue #236 M7-3 で単なる名前の配列からサイズ付きに変わった）。
 func TestListRecordings_EncodedProfiles(t *testing.T) {
