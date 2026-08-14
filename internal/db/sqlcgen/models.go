@@ -199,11 +199,6 @@ type Reservation struct {
 	DedupSimilarity       pgtype.Float4
 }
 
-type ReservationRuleMatch struct {
-	ReservationID int64
-	RuleID        int64
-}
-
 type Rule struct {
 	ID               int64
 	Name             string

@@ -102,27 +102,6 @@ func (q *Queries) DeleteReleasedReservationsBySiteAndProgramIDs(ctx context.Cont
 	return items, nil
 }
 
-const deleteReservationRuleMatchesBySite = `-- name: DeleteReservationRuleMatchesBySite :exec
-DELETE FROM reservation_rule_matches
-WHERE reservation_id IN (SELECT id FROM reservations WHERE site = $1)
-`
-
-// reservation_rule_matches はサイト内の予約に紐づく行を毎パス全消しして入れ直す
-// （insertReservationRuleMatchesSQL のコメント参照。この表には SSE 用の行トリガーが
-// ないので差分書き込みは要求されない）。
-//
-// 対象を「今回マッチした programId」に絞ると、ルールを削除ではなく無効化した
-// （ListEnabledRules から外れる）、あるいはルールの条件を変えてマッチしなくなったが
-// intent/overrides のおかげで予約行自体は生き残っている、という経路で古いマッチ行が
-// 掃除されずに残り続ける（導出表が毎パス作り直されない = CLAUDE.md 不変条件 9 違反。
-// ルール自体の削除は reservation_rule_matches.rule_id の FK CASCADE で救われるので
-// ここでは対象外でよい）。サイト単位の予約に紐づく行を無条件で全消しすることで、
-// 「今回マッチしなかった」を含めて正しく反映する。
-func (q *Queries) DeleteReservationRuleMatchesBySite(ctx context.Context, site string) error {
-	_, err := q.db.Exec(ctx, deleteReservationRuleMatchesBySite, site)
-	return err
-}
-
 const deleteReservationsBySiteAndProgramIDs = `-- name: DeleteReservationsBySiteAndProgramIDs :execrows
 
 DELETE FROM reservations r
@@ -138,12 +117,11 @@ type DeleteReservationsBySiteAndProgramIDsParams struct {
 	ProgramIds []int64
 }
 
-// UpsertReservationsFromRulerPass と InsertReservationRuleMatches は
-// jsonb_to_recordset / unnest を使う集合演算 1 文で、sqlc の組み込みアナライザ
-// （実 DB 接続なしのカタログ解析）がこれらの動的レコード型を解決できないため
-// （`column "program_id" does not exist` / `function unnest(unknown, unknown)
-// does not exist` で generate が失敗する）、rulequery パッケージの流儀に倣って
-// internal/ruler/sql.go に生 SQL として置き、pgxpool 経由で直接実行する。
+// UpsertReservationsFromRulerPass は jsonb_to_recordset を使う集合演算 1 文で、
+// sqlc の組み込みアナライザ（実 DB 接続なしのカタログ解析）がこの動的レコード型を
+// 解決できないため（`column "program_id" does not exist` で generate が失敗する）、
+// rulequery パッケージの流儀に倣って internal/ruler/sql.go に生 SQL として置き、
+// pgxpool 経由で直接実行する。
 // ルール・program_intents のどちらからも desired でなくなった予約のうち、
 // 「ルール x EPG」由来と区別できないものを削除する（導出削除。呼び出し側で
 // サーキットブレーカーの閾値判定を先に行うこと）。ユーザーが投資を手放す書き込みを
@@ -357,41 +335,6 @@ func (q *Queries) ListProgramSnapshotProgramIDsBySiteAndProgramIDs(ctx context.C
 			return nil, err
 		}
 		items = append(items, program_id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listReservationIDsBySiteAndProgramIDs = `-- name: ListReservationIDsBySiteAndProgramIDs :many
-SELECT id, program_id FROM reservations
-WHERE site = $1 AND program_id = ANY($2::bigint[])
-`
-
-type ListReservationIDsBySiteAndProgramIDsParams struct {
-	Site       string
-	ProgramIds []int64
-}
-
-type ListReservationIDsBySiteAndProgramIDsRow struct {
-	ID        int64
-	ProgramID int64
-}
-
-func (q *Queries) ListReservationIDsBySiteAndProgramIDs(ctx context.Context, arg ListReservationIDsBySiteAndProgramIDsParams) ([]ListReservationIDsBySiteAndProgramIDsRow, error) {
-	rows, err := q.db.Query(ctx, listReservationIDsBySiteAndProgramIDs, arg.Site, arg.ProgramIds)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []ListReservationIDsBySiteAndProgramIDsRow
-	for rows.Next() {
-		var i ListReservationIDsBySiteAndProgramIDsRow
-		if err := rows.Scan(&i.ID, &i.ProgramID); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
