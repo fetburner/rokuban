@@ -1,9 +1,9 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
-import type { CircuitBreaker } from '@/api/generated'
+import { getListCircuitBreakersQueryKey, type CircuitBreaker } from '@/api/generated'
 import { CircuitBreakerBanner } from '@/components/circuit-breaker-banner'
 import { ToastProvider } from '@/components/toaster'
 
@@ -14,13 +14,14 @@ function renderBanner() {
       mutations: { retry: false },
     },
   })
-  return render(
+  const utils = render(
     <QueryClientProvider client={queryClient}>
       <ToastProvider>
         <CircuitBreakerBanner />
       </ToastProvider>
     </QueryClientProvider>,
   )
+  return { ...utils, queryClient }
 }
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -30,8 +31,17 @@ function jsonResponse(body: unknown, status = 200): Response {
   })
 }
 
-/** fetch をトピック別に振り分けるスタブ。一覧取得と resume 呼び出しの両方に応答する。 */
-function stubFetch(opts: { list: CircuitBreaker[]; resume?: 'success' | 'error' }) {
+/**
+ * fetch をトピック別に振り分けるスタブ。一覧取得と resume 呼び出しの両方に応答する。
+ * `listSequence` を渡すと GET のたびに順番に返す（末尾に達したら最後の要素を使い続ける）。
+ * サーバー側の一覧が並び順を保証しない（Go の map 由来など）ケースを模すのに使う。
+ */
+function stubFetch(opts: {
+  list: CircuitBreaker[]
+  listSequence?: CircuitBreaker[][]
+  resume?: 'success' | 'error'
+}) {
+  let listCallCount = 0
   const fn = vi.fn((input: string | URL | Request, _init?: RequestInit) => {
     const url = String(input)
     if (url.includes('/resume')) {
@@ -39,6 +49,11 @@ function stubFetch(opts: { list: CircuitBreaker[]; resume?: 'success' | 'error' 
         return Promise.resolve(jsonResponse({ error: '発動していません' }, 404))
       }
       return Promise.resolve(new Response(null, { status: 204 }))
+    }
+    if (opts.listSequence) {
+      const idx = Math.min(listCallCount, opts.listSequence.length - 1)
+      listCallCount += 1
+      return Promise.resolve(jsonResponse(opts.listSequence[idx]))
     }
     return Promise.resolve(jsonResponse(opts.list))
   })
@@ -201,5 +216,55 @@ describe('CircuitBreakerBanner', () => {
     // 失敗しても発動中の表示自体は消えない(黙って成功したように見せない)
     expect(screen.getByText('ルール評価による予約の削除が停止中')).toBeInTheDocument()
     expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('同名ブレーカーが 2 サイトで発動しているとき、行の展開状態が site ごとに独立している（issue #293）', async () => {
+    // name だけが同じで site が異なる 2 行。pending の値を変えておき、
+    // 再取得後も「どちらの行が展開されているか」を内容で追跡できるようにする。
+    const siteA: CircuitBreaker = { ...trippedBreaker, site: 'default', pending: 3 }
+    const siteB: CircuitBreaker = {
+      ...trippedBreaker,
+      site: 'second-site',
+      pending: 7,
+      detail: { total: 1, programs: [{ programId: 201, title: '別サイトの番組' }] },
+    }
+    // 2 回目の GET はサーバー側の並び順が保証されない前提で、順序が入れ替わって
+    // 返ってくる想定にする（同一 name が重複する key では、並び順の入れ替わりが
+    // 「間違った行が展開状態を引き継ぐ」形で症状に出る）。
+    const fetchMock = stubFetch({
+      list: [siteA, siteB],
+      listSequence: [
+        [siteA, siteB],
+        [siteB, siteA],
+      ],
+    })
+    const user = userEvent.setup()
+    const { queryClient } = renderBanner()
+
+    const rows = await screen.findAllByRole('listitem')
+    expect(rows).toHaveLength(2)
+    const rowA = rows.find((row) => within(row).queryByText(/保留 3 件/))
+    const rowB = rows.find((row) => within(row).queryByText(/保留 7 件/))
+    if (!rowA || !rowB) throw new Error('site A / site B の行が見つからない')
+
+    // site B（2 番目の行）だけを展開する。site A は折りたたんだままにする。
+    await user.click(within(rowB).getByRole('button', { name: '内訳を見る' }))
+    expect(within(rowB).getByRole('button', { name: '内訳を隠す' })).toBeInTheDocument()
+    expect(within(rowA).getByRole('button', { name: '内訳を見る' })).toBeInTheDocument()
+
+    // SSE の breakers トピックによる invalidate 相当（不変条件 5: イベントは
+    // ヒント、真実は再取得で確定する）。
+    await queryClient.invalidateQueries({ queryKey: getListCircuitBreakersQueryKey() })
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+
+    const rowsAfter = screen.getAllByRole('listitem')
+    const rowAAfter = rowsAfter.find((row) => within(row).queryByText(/保留 3 件/))
+    const rowBAfter = rowsAfter.find((row) => within(row).queryByText(/保留 7 件/))
+    if (!rowAAfter || !rowBAfter) throw new Error('再取得後に site A / site B の行が見つからない')
+
+    // 展開していなかった site A は再取得後も折りたたまれたままのはず。
+    expect(within(rowAAfter).getByRole('button', { name: '内訳を見る' })).toBeInTheDocument()
+    // 展開していた site B は再取得後も展開されたままのはず。
+    expect(within(rowBAfter).getByRole('button', { name: '内訳を隠す' })).toBeInTheDocument()
   })
 })
