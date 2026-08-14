@@ -155,6 +155,12 @@ function createFakeRecordingsServer(options: {
   // 差し替える（既定は 204 成功）。409 のときサーバーの英語文字列を UI が
   // そのまま出さないことを確認するテスト用。
   encodePostResponse?: () => Response
+  // deleteResponse / restoreResponse は DELETE /api/recordings/{id} と
+  // POST /api/recordings/{id}/restore の応答を差し替える（既定はどちらも
+  // 成功）。失敗トーストが従来どおり出ることを確認するテスト用
+  // （issue #297: 成功トーストを無音化しても失敗トーストは残る）。
+  deleteResponse?: () => Response
+  restoreResponse?: () => Response
 }) {
   let library = [...(options.library ?? [])]
   let trash = [...(options.trash ?? [])]
@@ -162,6 +168,8 @@ function createFakeRecordingsServer(options: {
   const encodeProfiles = options.encodeProfiles ?? []
   const rules = options.rules ?? []
   const encodePostResponse = options.encodePostResponse
+  const deleteResponse = options.deleteResponse
+  const restoreResponse = options.restoreResponse
 
   function paginate(url: URL, all: Recording[]): Recording[] {
     const q = url.searchParams.get('q')
@@ -220,6 +228,7 @@ function createFakeRecordingsServer(options: {
 
     const deleteMatch = /^\/api\/recordings\/(\d+)$/.exec(url.pathname)
     if (deleteMatch && method === 'DELETE') {
+      if (deleteResponse) return Promise.resolve(deleteResponse())
       const id = Number(deleteMatch[1])
       const idx = library.findIndex((r) => r.id === id)
       if (idx === -1) return Promise.resolve(jsonResponse({ error: 'not found' }, 404))
@@ -230,6 +239,7 @@ function createFakeRecordingsServer(options: {
 
     const restoreMatch = /^\/api\/recordings\/(\d+)\/restore$/.exec(url.pathname)
     if (restoreMatch && method === 'POST') {
+      if (restoreResponse) return Promise.resolve(restoreResponse())
       const id = Number(restoreMatch[1])
       const idx = trash.findIndex((r) => r.id === id)
       if (idx === -1) return Promise.resolve(jsonResponse({ error: 'not found' }, 404))
@@ -770,6 +780,89 @@ describe('RecordingsPage invalidate', () => {
     expect(document.querySelector('img')).not.toBeInTheDocument()
     expect(screen.queryByRole('link', { name: /ダウンロード \/ VLC/ })).not.toBeInTheDocument()
     expect(screen.queryByText(/VLC 等で開く/)).not.toBeInTheDocument()
+  })
+})
+
+// issue #297: ごみ箱送り・復元の効果（一覧からの消失/復帰）は
+// 「RecordingsPage invalidate」の各テストで既に確認済み --- ライブラリと
+// ごみ箱は mode で完全に分かれた別クエリなので、送り込む/戻す操作は必ず
+// 現在の一覧から対象を外す。ここでは成功トーストの有無だけを見る。
+describe('RecordingsPage 成功トーストの無音化 (issue #297)', () => {
+  it('ごみ箱へ移すと Undo 付きトーストが出て、「元に戻す」で一覧に復帰する', async () => {
+    const user = userEvent.setup()
+    createFakeRecordingsServer({ library: [sampleRecording({ id: 3, title: '戻せる録画' })] })
+
+    renderPage()
+    await user.click(await screen.findByText('戻せる録画'))
+    await user.click(screen.getByRole('button', { name: 'ごみ箱へ' }))
+
+    await waitFor(() => expect(screen.queryByText('戻せる録画')).not.toBeInTheDocument())
+    // ごみ箱送りは復元で即座に取り消せる安価な操作なので、素の成功通知の
+    // 代わりに Undo 付きトーストにする（`pages/programs.tsx` の予約作成 +
+    // 取消と同じ形）。
+    expect(await screen.findByText('ごみ箱に移しました')).toBeInTheDocument()
+
+    // Undo を呼んだ時点で、元の行（と RecordingActions 自身）はすでに
+    // アンマウントされている（一覧から消えたため）。それでも復元が効くこと
+    // ---「マウント中の行だけが Undo できる」という抜け穴を作っていないこと
+    // ---を確認する。
+    await user.click(screen.getByRole('button', { name: '元に戻す' }))
+
+    // Undo（復元）自体は常に画面に見える効果（ライブラリへの復帰）しか
+    // 起こさないので、無音化されている（下のテストと同じ判断）。ここでは
+    // 復帰そのものを確認する。
+    expect(await screen.findByText('戻せる録画')).toBeInTheDocument()
+  })
+
+  it('復元しても成功トーストは出ない', async () => {
+    const user = userEvent.setup()
+    createFakeRecordingsServer({
+      trash: [sampleRecording({ id: 4, title: '静かに戻る録画', deletedAt: '2026-01-02T00:00:00Z' })],
+    })
+
+    renderPage()
+    await user.click(await screen.findByRole('button', { name: 'ごみ箱' }))
+    await user.click(await screen.findByText('静かに戻る録画'))
+    await user.click(screen.getByRole('button', { name: '復元' }))
+
+    // 効果（ごみ箱一覧から消えてライブラリに戻る）は「復元の後、ごみ箱
+    // 一覧から消えてライブラリに戻る」で確認済み。復元は一覧内展開なら mode
+    // の絞り込みに引っかかって必ず現在の一覧から消え、単体ページなら
+    // 「復元」/「ごみ箱へ」ボタンが入れ替わるので、常に画面に見える。
+    // 追加で言うことも無いので成功トーストは無音化する。
+    await waitFor(() => expect(screen.queryByText('静かに戻る録画')).not.toBeInTheDocument())
+    expect(screen.queryByText('復元しました')).not.toBeInTheDocument()
+  })
+
+  it('ごみ箱へ移す操作が失敗すれば失敗トーストは出る', async () => {
+    const user = userEvent.setup()
+    createFakeRecordingsServer({
+      library: [sampleRecording({ id: 5, title: '消せない録画' })],
+      deleteResponse: () => jsonResponse({ error: 'server error' }, 500),
+    })
+
+    renderPage()
+    await user.click(await screen.findByText('消せない録画'))
+    await user.click(screen.getByRole('button', { name: 'ごみ箱へ' }))
+
+    expect(await screen.findByText('削除に失敗しました')).toBeInTheDocument()
+    expect(screen.getByText('消せない録画')).toBeInTheDocument()
+  })
+
+  it('復元操作が失敗すれば失敗トーストは出る', async () => {
+    const user = userEvent.setup()
+    createFakeRecordingsServer({
+      trash: [sampleRecording({ id: 6, title: '戻せない録画', deletedAt: '2026-01-02T00:00:00Z' })],
+      restoreResponse: () => jsonResponse({ error: 'server error' }, 500),
+    })
+
+    renderPage()
+    await user.click(await screen.findByRole('button', { name: 'ごみ箱' }))
+    await user.click(await screen.findByText('戻せない録画'))
+    await user.click(screen.getByRole('button', { name: '復元' }))
+
+    expect(await screen.findByText('復元に失敗しました')).toBeInTheDocument()
+    expect(screen.getByText('戻せない録画')).toBeInTheDocument()
   })
 })
 

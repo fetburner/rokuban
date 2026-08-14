@@ -160,22 +160,35 @@ function deleteRuleWarning(rule: Rule): string {
 }
 
 /**
- * deleteRuleResultMessage は削除後のトーストの文言を組み立てる。
+ * deleteRuleResultMessage は削除後のトーストの文言を組み立てる。`undefined` は
+ * 「言うことが無いので出さない」を意味する（呼び出し側はそのときトースト
+ * 自体を出さない）。
  *
- * 削除 API が返す内訳（削除した予約 / 編集済みのため残った予約）をそのまま出す
+ * RulesPage はフィルタもページングも持たない一覧なので、削除された行が
+ * 一覧から消えることそのものは常に画面に見える（issue #297）。**素の
+ * 「ルールを削除しました」はこの可視な効果の重複でしかないので無音化する。**
+ * 一方、削除 API が返す内訳（削除した予約 / 編集済みのため残った予約）は
+ * RulesPage のどこにも出ない別の事実 --- 予約は /recordings 側にしかなく
  * （`docs/recording/reservation-model.md` §4.3「ルール削除の UX は可視化で
- * 解決する」）。残った予約は定義上「ユーザーが自分で触ったもの」だけ
- * なので、件数は常に少なく 1 件ずつ説明できる。
+ * 解決する」）、ここで言わなければ利用者には見えない。内訳が両方 0 件
+ * （＝言うことが無い）のときだけ無音にし、どちらかが 1 件以上あるときは
+ * 残す。残った予約は定義上「ユーザーが自分で触ったもの」だけなので、
+ * 件数は常に少なく 1 件ずつ説明できる。
  *
- * **両方 0 件なら数字を出さない。** 予約が 1 件も無かったルールに
- * 「（予約 0 件を削除）」と添えても読み手の判断は変わらず、ノイズが増えるだけ。
- * 応答が読めなかった場合（`unwrap` が undefined）も同じ文言に落とす
- * —— 削除自体は成功しているので、そこで黙るのは間違い。
+ * **Undo にはしない。** 削除確認ダイアログ（`deleteRuleWarning`）が既に
+ * 「取り消せません」と明言しており、実際 dedupe 有効なルールは削除で
+ * 履歴のスコープが失われる（同じ条件で作り直しても新しい id になり
+ * 引き継がれない）。Undo ボタンで「作り直す」を提供すると、この非可逆性を
+ * 覆すかのような期待を持たせてしまう。
+ *
+ * 応答が読めなかった場合（`unwrap` が undefined）は内訳が分からず「言う
+ * ことが無い」と断定できないので、素の文言に落とす —— 削除自体は
+ * 成功しているので、そこで黙るのは間違い。
  */
-function deleteRuleResultMessage(res: DeleteRuleResponse | undefined): string {
+function deleteRuleResultMessage(res: DeleteRuleResponse | undefined): string | undefined {
   if (!res) return 'ルールを削除しました'
   if (res.deletedReservations === 0 && res.detachedReservations === 0) {
-    return 'ルールを削除しました'
+    return undefined
   }
   if (res.detachedReservations > 0) {
     return `ルールを削除しました（予約 ${res.deletedReservations} 件を削除、${res.detachedReservations} 件は編集済みのため残しました）`
@@ -209,7 +222,8 @@ function RuleRow({ rule, onEdit }: { rule: Rule; onEdit: () => void }) {
       { id: rule.id },
       {
         onSuccess: (res) => {
-          toast({ message: deleteRuleResultMessage(unwrap(res)) })
+          const message = deleteRuleResultMessage(unwrap(res))
+          if (message !== undefined) toast({ message })
           void queryClient.invalidateQueries({ queryKey: getListRulesQueryKey() })
         },
         onError: (err) =>
@@ -362,6 +376,19 @@ function RuleForm(props: RuleFormProps) {
 
   // 実際の作成/更新リクエスト。条件なしガードを通過した（or 元々条件が
   // あった）後の、保存の本体だけを持つ。
+  //
+  // 作成・更新とも成功トーストは出さない（issue #297）。`onSaved` がフォームを
+  // 閉じ、`invalidate` が一覧を再取得するので、新規行の出現／既存行の内容
+  // 更新はその場で画面に現れる --- RulesPage はフィルタもページングも
+  // 持たない一覧なので、この効果が画面外になることはない。ナビゲーションも
+  // 起きない（フォームが閉じて同じ RulesPage に留まる）ので「効果を見ないまま
+  // 次の画面に行ってしまう」経路も無い。
+  //
+  // Undo（予約作成のような）にもしない。作成・更新は名前・条件・エンコード
+  // 設定を複数フィールド分書き込む操作で、予約のワンタップや削除の
+  // ワンタップとは重みが違う --- 誤タップで即座に取り消したくなる操作では
+  // ない。取り消したければ、削除は既存の overflow メニュー + 確認ダイアログ
+  // が、更新のやり直しは「編集」が既にある。
   const doSave = () => {
     const data = buildRuleInput(draft, meta, props.mode === 'edit' ? props.rule : undefined)
     if (props.mode === 'create') {
@@ -369,7 +396,6 @@ function RuleForm(props: RuleFormProps) {
         { data },
         {
           onSuccess: () => {
-            toast({ message: 'ルールを作成しました' })
             void invalidate()
             props.onSaved()
           },
@@ -382,7 +408,6 @@ function RuleForm(props: RuleFormProps) {
         { id: props.rule.id, data },
         {
           onSuccess: () => {
-            toast({ message: 'ルールを更新しました' })
             void invalidate()
             props.onSaved()
           },
