@@ -319,10 +319,32 @@ func TestAddRecordingEncodeProfiles_NoPolicyRowButOriginalActive_Returns204(t *t
 	}
 }
 
+// wantEncodeProfiles409Message は #271 で確定させた 409 メッセージのリテラル。
+// 旧文言 "no encodable original media asset (deleted or being deleted); cannot
+// add encode profiles" は「未 ingest」（original 行自体が無いケース）を
+// 「削除済みか削除中」だと誤誘導していたため、削除・deleting・未 ingest の
+// いずれもありうることが伝わる文言に直した（実装の定数と比較すると意味が無い
+// ため、期待値はリテラルで書く）。
+const wantEncodeProfiles409Message = "original media asset not active (deleted, deleting, or not yet ingested); cannot add encode profiles"
+
+// decodeErrorResponse はレスポンスボディを ErrorResponse として読む。
+func decodeErrorResponse(t *testing.T, resp *http.Response) ErrorResponse {
+	t.Helper()
+	var body ErrorResponse
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decoding error response: %v", err)
+	}
+	return body
+}
+
 // 原本が未 ingest（GetActiveOriginalMediaAsset が ErrNoRows）の録画への事後追加は
 // 409 を返し、encode_profiles を変更せず、ジョブも投入しないこと（issue #133
 // の受け入れ 3 個目 --- EnqueueMissingEncodes 単体はこのケースで黙って no-op に
 // なるため、api 層で明示的に検査していることの固定）。
+//
+// メッセージ本文も固定する（issue #271）。「未 ingest」は削除済みでも
+// deleting でもないので、旧文言 "deleted or being deleted" はこのケースに
+// 対して不正確だった。
 func TestAddRecordingEncodeProfiles_NoOriginal_Returns409(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	riverClient, err := worker.NewInsertOnlyClient(pool)
@@ -342,6 +364,9 @@ func TestAddRecordingEncodeProfiles_NoOriginal_Returns409(t *testing.T) {
 	resp := postEncodeProfiles(t, encodeProfilesURL(srv.URL, id), []string{"h264"})
 	if resp.StatusCode != http.StatusConflict {
 		t.Fatalf("status = %d, want 409", resp.StatusCode)
+	}
+	if body := decodeErrorResponse(t, resp); body.Error != wantEncodeProfiles409Message {
+		t.Errorf("error message = %q, want %q", body.Error, wantEncodeProfiles409Message)
 	}
 	if got := getRecordingEncodeProfiles(t, pool, id); len(got) != 0 {
 		t.Errorf("encode_profiles after 409 = %v, want unchanged (empty)", got)
@@ -379,6 +404,9 @@ func TestAddRecordingEncodeProfiles_OriginalDeleted_Returns409(t *testing.T) {
 	resp := postEncodeProfiles(t, encodeProfilesURL(srv.URL, id), []string{"h264"})
 	if resp.StatusCode != http.StatusConflict {
 		t.Fatalf("status = %d, want 409", resp.StatusCode)
+	}
+	if body := decodeErrorResponse(t, resp); body.Error != wantEncodeProfiles409Message {
+		t.Errorf("error message = %q, want %q", body.Error, wantEncodeProfiles409Message)
 	}
 	if got := getRecordingEncodeProfiles(t, pool, id); len(got) != 0 {
 		t.Errorf("encode_profiles after 409 = %v, want unchanged (empty)", got)
@@ -420,6 +448,12 @@ func TestAddRecordingEncodeProfiles_OriginalDeleting_Returns409(t *testing.T) {
 	resp := postEncodeProfiles(t, encodeProfilesURL(srv.URL, id), []string{"h264"})
 	if resp.StatusCode != http.StatusConflict {
 		t.Fatalf("status = %d, want 409（deleting の原本でエンコードを走らせてはいけない）", resp.StatusCode)
+	}
+	// メッセージ本文も固定する（issue #271）。deleting は「削除済み」ではないので
+	// 旧文言 "deleted or being deleted" のうち "being deleted" 側で辛うじて
+	// カバーされていたが、新文言でも deleting が含意されていることを確認する。
+	if body := decodeErrorResponse(t, resp); body.Error != wantEncodeProfiles409Message {
+		t.Errorf("error message = %q, want %q", body.Error, wantEncodeProfiles409Message)
 	}
 	if got := getRecordingEncodeProfiles(t, pool, id); len(got) != 0 {
 		t.Errorf("encode_profiles after 409 = %v, want unchanged (empty)", got)

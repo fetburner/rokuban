@@ -16,6 +16,7 @@ import {
   type DropSummary,
   type Recording,
 } from '@/api/generated'
+import { ApiError } from '@/api/client'
 import { apiErrorMessage, unwrap } from '@/api/unwrap'
 import { RecordingFilters } from '@/components/recording-filters'
 import { RecordingPlayer } from '@/components/recording-player'
@@ -985,7 +986,19 @@ function AddEncodeProfilesAction({ recording }: { recording: Recording }) {
                     toast({ message: 'エンコードを依頼しました' })
                   },
                   onError: (err) =>
-                    toast({ message: apiErrorMessage(err) ?? 'エンコードの依頼に失敗しました' }),
+                    toast({
+                      message:
+                        // 409 はサーバー側のメッセージが英語かつ「削除済みとは
+                        // 限らない」複数原因の hedge 文言（AddRecordingEncodeProfiles
+                        // の doc コメント参照）なので、そのまま出さず 409 専用の
+                        // 日本語文言に翻訳する。hasOriginal の近似が破れて
+                        // 「原本あり」に見えるボタンを押しても 409 になりうる
+                        // （上記 doc コメントの `state = 'deleting'` の説明）ため、
+                        // ここで初めてこの状態を利用者に伝える。
+                        err instanceof ApiError && err.status === 409
+                          ? '原本の状態が変わったため追加できませんでした（削除済み・削除処理中・未取り込みのいずれか）。画面を更新してから再度お試しください。'
+                          : (apiErrorMessage(err) ?? 'エンコードの依頼に失敗しました'),
+                    }),
                 },
               )
             }}
