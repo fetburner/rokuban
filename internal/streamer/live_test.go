@@ -1777,13 +1777,25 @@ func TestLiveStreamer_LeaveHint_SiteMismatch(t *testing.T) {
 	mirakcSrv, _ := newFakeMirakcLiveServer(t)
 	_, srv := newTestLiveStreamer(t, mirakcSrv.URL, baseLiveConfig(t))
 
-	resp, err := http.Post(fmt.Sprintf("%s/api/sites/other-site/services/1/live/leave", srv.URL), "", nil)
+	resp, err := http.Post(fmt.Sprintf("%s/api/sites/other-site/networks/0/services/1/live/leave", srv.URL), "", nil)
 	if err != nil {
 		t.Fatalf("POST leave: %v", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+
+	// 対照: 同じ URL 形で site だけを正しくすると 404 にならない。これが無いと
+	// 「ルート自体が存在しない」（= URL の綴り間違い）でも 404 になり、site 判定を
+	// 無効化しても落ちないテストになる（レビューで実際にその状態だった）。
+	ok, err := http.Post(fmt.Sprintf("%s/api/sites/%s/networks/0/services/1/live/leave", srv.URL, testLiveSite), "", nil)
+	if err != nil {
+		t.Fatalf("POST leave (matching site): %v", err)
+	}
+	defer func() { _ = ok.Body.Close() }()
+	if ok.StatusCode == http.StatusNotFound {
+		t.Errorf("matching site status = 404; the route must exist, otherwise the 404 above proves nothing")
 	}
 }
 

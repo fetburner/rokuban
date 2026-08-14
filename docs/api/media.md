@@ -156,7 +156,8 @@ mirakc が要求する Mirakurun 合成 service id（`networkId * 100_000 + serv
 離脱の受け口を置くが、**「セッションを閉じる API」にはできない**。
 
 ```
-POST /api/sites/{site}/services/{serviceId}/live/leave  → 204 No Content（常に）
+POST /api/sites/{site}/networks/{networkId}/services/{serviceId}/live/leave
+  → 204 No Content（常に）
 ```
 
 - **止めるのではなく idle 期限を「いま + 短い猶予」に詰める。** ライブセッションは
@@ -166,15 +167,17 @@ POST /api/sites/{site}/services/{serviceId}/live/leave  → 204 No Content（常
   更新して期限が元に戻る --- **ヒントは収束を速めるだけで、「誰かが見ているか」と
   いう真実は既存の観測（セグメント要求）が持つ**。レベルトリガー（不変条件 5）と
   同じ形であり、クライアントの identity も参照カウントも要らない
-- **宛先は `(site, serviceId)`。** セッション ID は導入しない（この節の決定）。
+- **宛先は `(site, networkId, serviceId)`。** セッション ID は導入しない（この節の決定）。
   固定深さも保つので前段の consistent hash 鍵の取り出しはそのまま効く
 - **セッションを作らない。** 該当セッションが無ければ何もせず 204（存在を漏らさず、
   `sendBeacon` に再送の材料も与えない）。**POST なのは `navigator.sendBeacon` が
   POST しか出せないから** --- モバイル Safari では `unload` が発火しないので、
   ページ離脱時に届く送信手段はこれしかない
 - **猶予は設定キーにせず `live.profiles[].segment_seconds` から導出する**
-  （`3 × 最長の segment_seconds + 2s`、`live.idle_timeout` で上限クリップ。既定
-  8 秒）。守るべき性質は「猶予 > 生きている視聴者の次の要求が来るまでの間隔」で、
+  （`3 × 最長の segment_seconds + 2s`。既定 8 秒。**`idle_timeout` でクリップしない**
+  --- クリップすると `segment_seconds: 6` + `idle_timeout: 2s` のような設定で猶予が
+  セグメント長を下回る。猶予が `idle_timeout` 以上になる設定ではヒントが no-op に
+  なる方へ倒す。理由は `leaveGrace` の doc コメント）。守るべき性質は「猶予 > 生きている視聴者の次の要求が来るまでの間隔」で、
   その間隔を決めているのはセグメント長そのもの。独立したキーにすると
   `segment_seconds: 6` と 1 秒の猶予のような組み合わせが書けてしまい、**leave が
   「他人の視聴を切る道具」に化ける**。導出ならその組み合わせは表現不可能になる
