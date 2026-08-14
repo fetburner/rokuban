@@ -5,7 +5,7 @@
 `reservations`（desired）と `schedule_sync`（observed: `GET /api/recording/schedules` の観測結果）の差分を POST/DELETE で消す、レベルトリガーの宣言的同期ループ。
 
 - **tags 対応付け**: mirakc schedule の `tags` に programId を埋め込む（例: `program:1234`）。手動で mirakc に入れられた schedule との判別もタグで可能。programId は EPG にある間ずっと安定なのに対し、`reservations.id` は ruler の導出削除・再実体化で変わりうる不安定な値なので tag には使わない（不変条件 9「導出器が作るキーを宛先にしない」。末尾「経緯と失敗事例」）。旧形式（`rokuban:reservation=1234`）の schedule は下記「tags の不一致」の再作成でレベルトリガーに新形式へ移行する
-- **contentPath 生成**: `recording.basedir` 相対パス必須。ファイル名テンプレート（[contentpath.md](contentpath.md)）の展開もここで行う。生成はテンプレートから初回作成時のみ行い、以後の再作成（後述の差分反映）は observed（mirakc に登録済みの schedule）の contentPath を引き継ぐことで実質固定される（`reservations.base` に生成値を書き戻すコードは無い）
+- **contentPath 生成**: `recording.basedir` 相対パス必須。ファイル名テンプレート（[contentpath.md](contentpath.md)）の展開もここで行う。生成はテンプレートから初回作成時のみ行い、以後の再作成（後述の差分反映）は、明示 override（`overrides.contentPath`）があればその値、無ければ observed（mirakc に登録済みの schedule）の contentPath を引き継ぐことで実質固定される（`reservations.base` に生成値を書き戻すコードは無い）
 - **冪等**: 何度落ちても再実行で収束する。時刻精度もプロセス生存性も要求されない
 - **終了済み番組は作らない**: 番組の終了時刻（`program_snapshots.start_at + duration_ms`）を過ぎた予約には `POST` しない。放置すると mirakc が数秒で `need-rescheduling` として failed にし、`recordings` に content_length=0 の failed 行を量産する。判定は「番組終了後の GC」（[ruler.md](ruler.md)）とは別物の、never-scheduled の試行行の記録（`recordNeverScheduled`）と同じ式・同じ材料を使う——ずらすと同じ予約が毎パス作成対象のまま残って POST を撃ち続ける
 
@@ -30,7 +30,7 @@ reconciler は存在の突き合わせだけでなく、**effective options と 
 | フィールド | 差分対象 | 理由 |
 |---|---|---|
 | `priority` | **する** | チューナー調停の優先度。ルール編集・overrides 編集の実質的な唯一の変更対象 |
-| `contentPath` | **しない**（observed の contentPath を引き継ぐ） | 下記 |
+| `contentPath` | **`overrides.contentPath` が明示指定されているときだけする**（テンプレート生成値はしない） | 下記 |
 | `preFilters` / `postFilters` | 現状しない | 常に空で運用しており差分が生じない |
 | `logFilter` | しない | 未使用 |
 | `tags` | **する**（不一致のときだけ） | 下記 |
@@ -41,9 +41,17 @@ reconciler は存在の突き合わせだけでなく、**effective options と 
 
 **`contentPath` は初回生成値を固定し、以後変更しない。** ただし固定の実体は `reservations.base` への書き戻しではない —— `base` / `reservations` の列に contentPath を焼く書き手は存在しない。実際に固定を実現しているのは、再作成時に observed の contentPath を引き継ぐこと（`internal/reconciler/reconciler.go` の `recreateSchedule`。下記「再作成の POST は observed の contentPath を引き継ぐ」参照）で、schedule が mirakc 側で外部に削除されて observed が無くなった場合（EPG が一度消えて再実体化した等）は、次パスがテンプレートから新規生成する通常の作成として扱われる —— 「固定」は「同一 schedule の再作成の間」だけ有効な機構上の性質であり、schedule 自体が消えて張り直された場合には及ばない。reconciler は番組名からパスを生成するため、EPG の番組名が変われば生成結果も変わる。これを差分と見なすと **EPG 更新のたびに schedule が消えて作り直される** churn になる。差分書き込みという設計は desired が安定していることを前提として要求する（同率 priority のタイを全順序で潰したのと同じクラスの問題。§3.1）。ファイル名を変えたい場合はユーザーが overrides で明示的に指定する。
 
-ただしこの決定には未解決の一貫性の穴がある: **churn の原因は「テンプレートから生成された」パスが EPG の番組名変更で動くことで、ユーザーが `overrides.contentPath` に明示指定した値は動かない**。にもかかわらず現状は両者を区別せず差分対象外にしているため、既存予約の contentPath を上書きしても schedule には反映されない（priority も同時に変えれば道連れで反映される、という一貫性のない挙動になる）。`opts.ContentPath != nil` のときだけ差分対象にする改良が考えられるが、未実装のまま提起にとどめている。
+差分対象にするのは `opts.ContentPath` が非 nil かつ非空のときだけ。desired は `SanitizeContentPath(*opts.ContentPath)`、比較相手は observed の生値（POST する値と比較する値を同じにして 1 パスで収束させる）。この区別に列も伝播も要らないのは、`reservations.base` に contentPath を載せる書き手が存在しない（ruler の `computeBase` が意図的に除外している）ため、effective の非 nil = ユーザーの明示指定と同値になるから。**ruler が base に contentPath を載せた瞬間にこの同値が崩れ、テンプレート生成値が差分に混ざって churn が戻る**（これが今でも先に浮かぶ壊し方）。
 
-**再作成の POST は observed の `contentPath` を引き継ぐ**（テンプレートから再生成しない）。「差分と見なさない」だけでは priority 変更で再作成するときに何を入れるかが決まらない。再生成すると EPG の番組名が変わっていれば別のパスになり、**priority を変えただけでファイル名が変わる**という副作用になる。引き継げば「初回生成値に固定し以後変更しない」が文字どおり保たれる。引き継ぐ値は自分が書いたものの往復だが、mirakc 側を直接触られていた場合の保険として `SanitizeContentPath` は通す。
+テンプレート生成値は従来どおり固定。EPG の番組名で動く値を差分にすると EPG 更新のたびに DELETE+POST になる（上記の理由のとおり）。
+
+override の削除（reset）は既存 schedule に反映しない。戻り先がテンプレート生成値（安定でない値）なので、反映すると churn が戻る。set は常に反映・reset は常に非反映で、priority を同時に触ったかどうかには左右されない。
+
+再作成は `state == "scheduled"` の allowlist の下でだけ起きるので、録画開始後の変更は反映されない（未反映は `rokuban_reconcile_pending_diff{action="update_deferred"}`）。ファイルが 1 バイトも書かれていない schedule だけを張り替えるので、宛先変更で原本が取り残される経路は無い。
+
+比較は mirakc が `options.contentPath` をそのまま返すことに依存する（**未検証**。実 mirakc での確認は [runbook/troubleshooting.md](../runbook/troubleshooting.md) を参照）。正規化して返す実装だと毎パス再作成になるので、`rokuban_reconcile_pending_diff{action="update"}` がゼロに戻らないことと `reason=content_path` の再作成ログの反復で観測する。
+
+**再作成の POST は observed の `contentPath` を引き継ぐ**（テンプレートから再生成しない）。「差分と見なさない」だけでは priority 変更で再作成するときに何を入れるかが決まらない。再生成すると EPG の番組名が変わっていれば別のパスになり、**priority を変えただけでファイル名が変わる**という副作用になる。引き継げば「初回生成値に固定し以後変更しない」が文字どおり保たれる。引き継ぐ値は自分が書いたものの往復だが、mirakc 側を直接触られていた場合の保険として `SanitizeContentPath` は通す。明示 override があるときだけそれが observed への引き継ぎに勝ち、その場合もテンプレート再生成には落ちない（決定は `explicitContentPath` の 1 箇所に集約してある）。
 
 #### 再作成のガード
 
@@ -80,5 +88,4 @@ schedule が消えたまま次のパスまで残る。レベルトリガーで�
 - **再作成ガードは当初 blocklist**（「`tracking` / `recording` の予約は触らない」）だった。issue #19 のコメントで allowlist に変えた（理由は本文のとおり）
 - **`MaxRecreatesPerPass` の見積もり誤り**: 当初の「再作成が走るのは『ユーザーが優先度を変えたとき』だけなので、この単純なガードで足りる」という見積もりは**予約単位の編集を想定していて、ルール単位の編集を数えていなかった**
 - **「DELETE 成功 → POST 失敗を `quality_events` に記録する」案**: `quality_events` は `recordings` テーブルの列で、まだ開始していない番組には recordings 行が存在しないため書く先がなく、実装できなかった（issue #19 のコメント）
-- **contentPath の一貫性の穴**（本文「未解決の一貫性の穴」）は、決定を変える話なので M2-4 では実装せず issue #19 のコメントに提起した
 - reconciler のジョブ化（常駐シングルトン → `ReconcilePassWorker`）は issue #24 M2-17
