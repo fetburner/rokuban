@@ -796,6 +796,11 @@ func TestRunPass_DedupeRecordIntentThenNewRecordingSuppressesAgain(t *testing.T)
 	// R1 の題名が完全一致のままだと、後で入れる R2（P3 と完全一致）と類似度
 	// 1.0 で並び、tie-break の rec.id ASC で先に入った R1（古い録画）が勝って
 	// しまう。それでは「新しい録画が抑制元になる」ことを検証できない。
+	//
+	// 実際の運用でも同じ tie-break が効く: 題名が毎回完全一致するシリーズは
+	// 複数の録画が similarity 1.0 で並び、dedup_match_recording_id には
+	// rec.id ASC で最古の録画が入る（実測）。「なぜスキップされたか」の説明に
+	// 常に最新の録画が出るとは限らない。
 	if _, err := pool.Exec(ctx,
 		`UPDATE recordings SET title = '再放送テスト 第2話' WHERE id = $1`, f.recordingID,
 	); err != nil {
@@ -803,9 +808,17 @@ func TestRunPass_DedupeRecordIntentThenNewRecordingSuppressesAgain(t *testing.T)
 	}
 
 	// precondition: R1 と「再放送テスト 第1話」（P2/P3 の題名）の類似度が
-	// (閾値, 1.0) に収まることを直接測って固定する。ここが崩れると、R1 が
-	// 閾値未満でそもそも候補にならなかったり、逆に 1.0 になって R2 との
-	// 一意な勝者が保証されなくなったりして、このテストが空虚に通る側に倒れる。
+	// (閾値, 1.0) に収まることを直接測って固定する。この guard を外しても
+	// テストは空虚には通らない（どちらの向きに崩れても別のアサーションで
+	// 落ちることを実測済み）: 類似度を 1.0 まで戻す（tie）と
+	// assertDedupeEvidence(res3, &newRec) が dedup_match_recording_id の不一致
+	// で落ち、閾値未満まで下げると 1 パス目後の precondition（本関数の
+	// 「precondition: base.skip should be true after first pass」）で落ちる。
+	// guard が変えるのは「落ちるかどうか」ではなく「どこで・何の名前で落ちる
+	// か」——2 つの既に検出可能な失敗を、この 1 箇所の早い失敗にまとめて
+	// 潰す防御の重複であり、削ってよいという意味ではない（後で誰かが
+	// このテストを読んで「evidence assertion が守っているから安全」と誤読し、
+	// 上の 2 箇所を弱めることを防ぐ）。
 	var r1Similarity float64
 	if err := pool.QueryRow(ctx,
 		`SELECT similarity(title, '再放送テスト 第1話') FROM recordings WHERE id = $1`, f.recordingID,
