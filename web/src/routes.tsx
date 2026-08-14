@@ -2,6 +2,7 @@ import { createRootRoute, createRoute, Outlet, redirect } from '@tanstack/react-
 
 import { AppShell } from './components/app-shell'
 import { SiteGate } from './components/site-gate'
+import { parsePositiveIntId } from './lib/positive-id'
 import { parseProgramsSearch, type ProgramsPageSearch } from './lib/programs-search'
 import {
   parseRecordingsSearch,
@@ -199,11 +200,16 @@ const liveRoute = createRoute({
   // いまの唯一の読者（`pickInitialServiceId`）は厳密比較なので実害は無いが、
   // `serviceId` を `livePlaylistURL` に直接渡す読者が 1 人増えた瞬間に
   // `/api/.../services/abc/live/playlist.m3u8` が飛ぶ
-  validateSearch: (search: Record<string, unknown>): LivePageSearch => {
-    const raw = search.serviceId
-    const n = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : NaN
-    return { serviceId: Number.isInteger(n) && n > 0 ? n : undefined }
-  },
+  //
+  // `parsePositiveIntId`（`lib/positive-id.ts`）を使う（issue #275）。以前は
+  // `Number.isInteger(n) && n > 0` だけを見ており、`Number.MAX_SAFE_INTEGER` を
+  // 超える値が黙って別の値に丸まる経路（`Number('9007199254740993')` が既に
+  // `9007199254740992` になる）を塞いでいなかった。`ruleId`（`lib/recording-search.ts`
+  // の `parseRuleId`）と同じ「シーケンス/SI 由来で 1 以上しか存在しない識別子」の
+  // 流儀なので、この PR で共有ヘルパーへ寄せた。
+  validateSearch: (search: Record<string, unknown>): LivePageSearch => ({
+    serviceId: parsePositiveIntId(search.serviceId),
+  }),
   component: LivePage,
 })
 

@@ -71,6 +71,27 @@ describe('routeTree', () => {
     }
   })
 
+  // issue #275: `parseRuleId` が空文字を 0 に、安全整数の外を黙って丸めていた。
+  // `validateSearch` 経由（`parseRuleId` の単体テストだけでは呼び出し側で本当に
+  // 守られているか分からない）で固定する。
+  it('/search の ruleId は空文字・0 以下・安全整数の外も落とす（issue #275）', async () => {
+    for (const raw of ['', '0', '-1', '1e30', '9007199254740993']) {
+      const router = createRouter({
+        routeTree,
+        history: createMemoryHistory({ initialEntries: [`/search?ruleId=${raw}`] }),
+      })
+      await router.load()
+      expect((router.state.matches.at(-1)!.search as { ruleId?: unknown }).ruleId).toBe(undefined)
+    }
+    // 指数表記は数値として一意なので通す（parseAt と同じ流儀）
+    const ok = createRouter({
+      routeTree,
+      history: createMemoryHistory({ initialEntries: ['/search?ruleId=1e3'] }),
+    })
+    await ok.load()
+    expect((ok.state.matches.at(-1)!.search as { ruleId?: unknown }).ruleId).toBe(1000)
+  })
+
   it('/search を ruleId 無しで開くと undefined のまま', async () => {
     const router = createRouter({
       routeTree,
@@ -78,6 +99,27 @@ describe('routeTree', () => {
     })
     await router.load()
     expect((router.state.matches.at(-1)!.search as { ruleId?: unknown }).ruleId).toBeUndefined()
+  })
+
+  // issue #275: `/recordings` の `ruleId` も `parseRuleId`（`lib/recording-search.ts`
+  // の `parseRecordingsSearch`）を経由するので、`/search` と同じ経路の穴が
+  // `validateSearch` レベルで塞がっていることを固定する。
+  it('/recordings の ruleId は空文字・0 以下・安全整数の外も落とす（issue #275）', async () => {
+    for (const raw of ['', '0', '-1', '1e30', '9007199254740993']) {
+      const router = createRouter({
+        routeTree,
+        history: createMemoryHistory({ initialEntries: [`/recordings?ruleId=${raw}`] }),
+      })
+      await router.load()
+      expect((router.state.matches.at(-1)!.search as { ruleId?: unknown }).ruleId).toBe(undefined)
+    }
+    // 正しい値・指数表記は通る（両方向を見る）
+    const ok = createRouter({
+      routeTree,
+      history: createMemoryHistory({ initialEntries: ['/recordings?ruleId=1e3'] }),
+    })
+    await ok.load()
+    expect((ok.state.matches.at(-1)!.search as { ruleId?: unknown }).ruleId).toBe(1000)
   })
 
   it('/live?serviceId=abc は useSearch の戻り値に文字列を残さない', async () => {
@@ -104,8 +146,12 @@ describe('routeTree', () => {
     expect((ok.state.matches.at(-1)!.search as { serviceId?: unknown }).serviceId).toBe(1024)
   })
 
-  it('/live の serviceId は非整数・0 以下も落とす', async () => {
-    for (const raw of ['1.5', '0', '-1', 'Infinity']) {
+  it('/live の serviceId は非整数・0 以下・安全整数の外も落とす', async () => {
+    // issue #275: `/live` の serviceId パーサを `parsePositiveIntId`
+    // （`lib/positive-id.ts`）へ寄せた。以前は `Number.isInteger(n) && n > 0` だけを
+    // 見ており、`Number.MAX_SAFE_INTEGER` を超える値が黙って別の値に丸まる経路
+    // （`9007199254740993` → `9007199254740992`）を塞いでいなかった。
+    for (const raw of ['1.5', '0', '-1', 'Infinity', '1e30', '9007199254740993']) {
       const router = createRouter({
         routeTree,
         history: createMemoryHistory({ initialEntries: [`/live?serviceId=${raw}`] }),
