@@ -22,6 +22,7 @@ import {
   type Service,
 } from '@/api/generated'
 import { formatDateTime } from '@/lib/format'
+import { parsePositiveIntId } from '@/lib/positive-id'
 import { genreCodeLabel } from '@/lib/program-search'
 
 /** RecordingsPageSearch は `/recordings` の URL クエリパラメータ（検証済み）。 */
@@ -100,19 +101,20 @@ function parseEnum<T extends string>(raw: unknown, allowed: readonly T[]): T | u
 }
 
 /**
- * parseRuleId は `ruleId` を整数として受け取る。`rules.id` は `bigint` PK
- * （`RuleId` は Go 側 `int64` にバインドされる）なので、`1.5` のような非整数は
- * サーバーへ送ると 400 になる。`Number.isFinite` だけでは非整数を通してしまう
- * ため `Number.isInteger` も見る。
+ * parseRuleId は `ruleId` を「正の安全整数」として受け取る（`lib/positive-id.ts` の
+ * `parsePositiveIntId`）。`rules.id` は `bigint` PK（Go 側 `int64` にバインドされる）
+ * かつシーケンス由来で 1 以上しか存在しないが、`parsePositiveIntId` は受理範囲を
+ * `bigint` の全域ではなく `1..Number.MAX_SAFE_INTEGER` へ意図的に狭める。
+ * `Number.MAX_SAFE_INTEGER` を超える値は JS の `number` で正確に表せず、
+ * サーバーに存在する `rules.id` そのものではなく「丸められた別の値」になる
+ * ため、狭い方に倒して落とす。
  *
  * `routes.tsx` の `/search` の `ruleId`（`?ruleId=N` でルールの条件を検索画面へ
- * 写す導線。issue #24 M2-11、issue #194 で明示 `undefined` に揃えた）も同じ
- * `rules.id` を扱うキーなので、ここを共有してパースの流儀が 2 箇所に分岐しない
- * ようにする。
+ * 写す導線。issue #24 M2-11、issue #194 で明示 `undefined` に揃えた）と `/live` の
+ * `serviceId` も同じ `parsePositiveIntId` を使うので、パースの流儀が分岐しない。
  */
 export function parseRuleId(raw: unknown): number | undefined {
-  const n = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : NaN
-  return Number.isFinite(n) && Number.isInteger(n) ? n : undefined
+  return parsePositiveIntId(raw)
 }
 
 /** parseIsoDate は日時として解釈できる文字列を ISO 8601（UTC）へ正規化する。 */

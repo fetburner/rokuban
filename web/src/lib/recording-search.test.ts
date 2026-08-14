@@ -78,7 +78,8 @@ describe('parseRecordingsSearch', () => {
   })
 
   // rules.id は bigint（Go 側 int64 バインド）なので、非整数を送ると 400 になる。
-  // Number.isFinite だけでは 1.5 を通してしまうので Number.isInteger も見る。
+  // Number.isFinite だけでは 1.5 を通してしまうので Number.isSafeInteger も見る
+  // （isInteger も含む上位互換。issue #275 で isSafeInteger に揃えた）。
   it('非整数の ruleId は落とす', () => {
     expect(parseRecordingsSearch({ ruleId: 1.5 })).toEqual({})
     expect(parseRecordingsSearch({ ruleId: '1.5' })).toEqual({})
@@ -88,6 +89,42 @@ describe('parseRecordingsSearch', () => {
   it('from/to は解釈できる日時なら ISO 8601（UTC）へ正規化する', () => {
     const result = parseRecordingsSearch({ from: '2026-01-01T09:00:00+09:00' })
     expect(result.from).toBe('2026-01-01T00:00:00.000Z')
+  })
+
+  // issue #275: parseRuleId が空文字を 0 に、非安全整数を黙って丸めていた。
+  // 直す前の実装ではそれぞれ ''→0, '0'→0, '-1'→-1, '1e30'→1e+30,
+  // '9007199254740993'→9007199254740992 を返していた（実測。丸めが
+  // 「別のルールを指す値」を黙って作っていた）。
+  it.each<[string, unknown]>([
+    ['空文字列は「欠落」であり id 0 ではない', ''],
+    ['空白のみも同様', '   '],
+    ['0 はルール id として存在しない（シーケンス由来で 1 以上）', 0],
+    ['0（文字列）', '0'],
+    ['負値も同様に存在しない', -1],
+    ['負値（文字列）', '-1'],
+    ['安全整数の外は「別の id に丸まった値」であり利用者が書いた id ではない', 1e30],
+    ['安全整数の外（文字列）', '1e30'],
+    // 数値リテラルとして書くと oxlint(no-loss-of-precision) に引っかかる
+    // （リテラル自体が構文解析時に丸まる、というこのテストの主張と同じ理由）ので
+    // `Number()` 経由で同じ丸め後の値を作る。
+    ['MAX_SAFE_INTEGER を超える値は黙って別の値に丸まる経路を塞ぐ', Number('9007199254740993')],
+    ['同上（文字列）', '9007199254740993'],
+    ['数値に変換できない文字列', 'not-a-number'],
+    ['数値でも文字列でもない値', true],
+  ])('%s は undefined に落ちる', (_label, raw) => {
+    expect(parseRecordingsSearch({ ruleId: raw }).ruleId).toBeUndefined()
+  })
+
+  // 指数表記は数値として一意なので通す（parseAt と同じ流儀。文字列形の門
+  // （`/^\d+$/` 等）を足すと `+5` や前後空白まで落ちてしまう一方、指数表記を
+  // 拒む理由にはならない）。
+  it.each<[string, unknown, number]>([
+    ['整数', 1, 1],
+    ['整数（文字列）', '1', 1],
+    ['指数表記', 1e3, 1000],
+    ['指数表記（文字列）', '1e3', 1000],
+  ])('%s は通す', (_label, raw, expected) => {
+    expect(parseRecordingsSearch({ ruleId: raw }).ruleId).toBe(expected)
   })
 })
 
