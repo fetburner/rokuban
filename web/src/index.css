@@ -230,24 +230,24 @@
  * 全域に効かせる（`html` の tabular-nums と同じ集約方針。
  * docs/frontend/design.md「走査線は 3 箇所限定」の直後の節を参照）。
  *
- * **`animation: none` ではなく継続時間を切り詰める。** Tailwind の
- * `animate-pulse`（読み込み中の `Skeleton`）は `50%` にだけ `opacity: .5`
- * を持ち、0%/100% は素の不透明度（1）に戻る --- 継続時間をほぼ 0 にして
- * `iteration-count` を 1 に固定すれば、`infinite` の明滅が 1 周だけ
- * 一瞬で終わり、素の不透明度（1 = 判読できる）に落ち着く。`e2e/design.mjs`
- * ⑦ が縮退後の `Skeleton` の `opacity` を実測し、判読できない値に落ちて
- * いないかを機械判定する（実測値そのものはその出力が権威。ここには書かない）。
+ * **`animation: none` ではなく継続時間を切り詰める。** ノブを
+ * `*-duration`（+ `iteration-count`）に絞ることで、ライブラリごとの
+ * アンマウント/完了検知の仕組み（`transitionend` 系のイベントか、
+ * `Element.getAnimations()` か等）を個別に調べて安全性を確認する必要が
+ * 無くなる --- アニメーション/トランジション自体は最後まで「起きて」おり、
+ * 継続時間だけが切り詰まっている状態を保てる。
  *
- * base-ui のポップオーバー/ダイアログ（`slide-in-from-*` / `zoom-in-95` /
- * `fade-in-0` の開閉）は `transitionend` / `animationend` のイベントでは
- * なく `Element.getAnimations()` を `Promise.all` で待って開閉の
- * アンマウントを確定させる（`@base-ui/react` の内部実装
- * `useAnimationsFinished`）。継続時間をほぼ 0 にしても Animation
- * オブジェクト自体は生成され `finished` が解決するため、この経路は壊れない
- * ---逆に `animation: none` で丸ごと消すと `getAnimations()` が常に
- * 空配列になり、この確認ができなくなる。**`web/src` 自体は
- * `transitionend` / `animationend` を 1 箇所も listen していない**
- * （2026-08 時点でグレップ 0 件）ので、そちらの経路を壊す心配もない。
+ * 効果は実測で確認している。Tailwind の `animate-pulse`（読み込み中の
+ * `Skeleton`）は `50%` にだけ `opacity: .5` を持ち、0%/100% は素の
+ * 不透明度（1）に戻る --- `iteration-count` を 1 に固定すれば、`infinite`
+ * の明滅が 1 周だけ一瞬で終わり、素の不透明度（1 = 判読できる）に落ち着く。
+ * `e2e/design.mjs` ⑦ が縮退後の `Skeleton` の `opacity` を実測し、
+ * 判読できない値に落ちていないかを機械判定する（実測値そのものはその
+ * 出力が権威。ここには書かない）。
+ *
+ * **`web/src` 自体は `transitionend` / `animationend` を 1 箇所も
+ * listen していない**（2026-08 時点でグレップ 0 件）ので、その経路への
+ * 影響は考えなくてよい。
  */
 @media (prefers-reduced-motion: reduce) {
   *,

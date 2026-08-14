@@ -215,17 +215,6 @@ tabular-nums の実効性（どの書体が実際に等幅を作るか）は
 そのものの動きは無いが、読み込み中（`Skeleton`）は走査線とは無関係に
 `animate-pulse`（不透明度の明滅）を持つ。**
 
-## アニメーションは `prefers-reduced-motion` で縮退する
-
-`animate-pulse`（`Skeleton`）・`animate-spin`（読み込み中のボタン）・
-ポップオーバー/ダイアログの `slide-in-from-*` / `zoom-in-95` / `fade-in-0`・
-`Button` の押下フィードバック（`translate`）が動きの発生源。個別のクラスへ
-毎回縮退を書き足すのではなく、`html` の `tabular-nums` と同じ方針で
-`web/src/index.css` の 1 ブロック（`@media (prefers-reduced-motion: reduce)`）
-に集約し、`animation-duration` / `transition-duration` をほぼ 0 に切り詰める
-（`animation: none` にはしない --- 理由は `index.css` のコメント参照）。
-実ブラウザでの縮退・非縮退の両方向の確認は `web/e2e/design.mjs` が権威。
-
 3 箇所以外に走査線クラス（`scanlines` / `tally-scanlines`）が無いことは
 `web/tests/scanline-usage.test.ts` が固定する（`scanlines` は `index.css`
 定義 + `components/page.tsx`、`tally-scanlines` は `index.css` 定義 +
@@ -236,6 +225,21 @@ tabular-nums の実効性（どの書体が実際に等幅を作るか）は
 ```sh
 grep -rln --include='*.ts' --include='*.tsx' --include='*.css' 'scanlines' web/src | grep -v '\.test\.'
 ```
+
+## アニメーションは `prefers-reduced-motion` で縮退する
+
+`animate-pulse`（`Skeleton`）・`animate-spin`（読み込み中のボタン）・
+ポップオーバー/ダイアログの `slide-in-from-*` / `zoom-in-95` / `fade-in-0`・
+`Button` の押下フィードバック（`translate`）が動きの発生源（他にも
+あり得るが、洗い出しは網羅していない --- 例えば `recording-player.tsx` の
+`scrollIntoView({ behavior: 'smooth' })` は JS 指定の `behavior` が
+`scroll-behavior` の CSS 指定より優先されるため、下記の一括対応では
+縮退しない。未対応）。個別のクラスへ毎回縮退を書き足すのではなく、
+`html` の `tabular-nums` と同じ方針で `web/src/index.css` の 1 ブロック
+（`@media (prefers-reduced-motion: reduce)`）に集約し、
+`animation-duration` / `transition-duration` をほぼ 0 に切り詰める
+（`animation: none` にはしない --- 理由は `index.css` のコメント参照）。
+実ブラウザでの縮退・非縮退の両方向の確認は `web/e2e/design.mjs` が権威。
 
 ## 角は立てる
 
