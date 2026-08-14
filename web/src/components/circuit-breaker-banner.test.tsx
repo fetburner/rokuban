@@ -34,7 +34,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 /**
  * fetch をトピック別に振り分けるスタブ。一覧取得と resume 呼び出しの両方に応答する。
  * `listSequence` を渡すと GET のたびに順番に返す（末尾に達したら最後の要素を使い続ける）。
- * サーバー側の一覧が並び順を保証しない（Go の map 由来など）ケースを模すのに使う。
+ * 一覧に含まれる行の集合が GET のたびに変わる（発動・再開で増減する）ケースを模すのに使う。
  */
 function stubFetch(opts: {
   list: CircuitBreaker[]
@@ -220,7 +220,7 @@ describe('CircuitBreakerBanner', () => {
 
   it('同名ブレーカーが 2 サイトで発動しているとき、行の展開状態が site ごとに独立している（issue #293）', async () => {
     // name だけが同じで site が異なる 2 行。pending の値を変えておき、
-    // 再取得後も「どちらの行が展開されているか」を内容で追跡できるようにする。
+    // どちらの行かを内容で追跡できるようにする。
     const siteA: CircuitBreaker = { ...trippedBreaker, site: 'default', pending: 3 }
     const siteB: CircuitBreaker = {
       ...trippedBreaker,
@@ -228,20 +228,29 @@ describe('CircuitBreakerBanner', () => {
       pending: 7,
       detail: { total: 1, programs: [{ programId: 201, title: '別サイトの番組' }] },
     }
-    // 2 回目の GET はサーバー側の並び順が保証されない前提で、順序が入れ替わって
-    // 返ってくる想定にする（同一 name が重複する key では、並び順の入れ替わりが
-    // 「間違った行が展開状態を引き継ぐ」形で症状に出る）。
+    // `GET /api/breakers` は `ORDER BY site, name`（internal/db/queries/circuit_breakers.sql）
+    // で常に決定的な順序を返すので、並び順を入れ替えたりはしない。ここでは
+    // site A が再開されて一覧から消える、という通常運用（resume）で集合の
+    // 大きさが変わるケースを再現する。同名 (name) の別行が消えるとき、
+    // 生き残った行（site B）の展開状態が正しく引き継がれるかを見る。
     const fetchMock = stubFetch({
       list: [siteA, siteB],
       listSequence: [
         [siteA, siteB],
-        [siteB, siteA],
+        [siteB],
       ],
     })
     const user = userEvent.setup()
     const { queryClient } = renderBanner()
 
-    const rows = await screen.findAllByRole('listitem')
+    // 内訳の <li>（programId ごと）も role="listitem" を持つので、
+    // バナー行だけを「保留 N 件」の文言で絞り込む。
+    const findRows = async () =>
+      (await screen.findAllByRole('listitem')).filter((row) =>
+        within(row).queryByText(/保留 \d+ 件/),
+      )
+
+    const rows = await findRows()
     expect(rows).toHaveLength(2)
     const rowA = rows.find((row) => within(row).queryByText(/保留 3 件/))
     const rowB = rows.find((row) => within(row).queryByText(/保留 7 件/))
@@ -253,18 +262,18 @@ describe('CircuitBreakerBanner', () => {
     expect(within(rowA).getByRole('button', { name: '内訳を見る' })).toBeInTheDocument()
 
     // SSE の breakers トピックによる invalidate 相当（不変条件 5: イベントは
-    // ヒント、真実は再取得で確定する）。
+    // ヒント、真実は再取得で確定する）。site A が再開されて一覧から消える。
     await queryClient.invalidateQueries({ queryKey: getListCircuitBreakersQueryKey() })
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
 
-    const rowsAfter = screen.getAllByRole('listitem')
-    const rowAAfter = rowsAfter.find((row) => within(row).queryByText(/保留 3 件/))
+    const rowsAfter = await findRows()
+    expect(rowsAfter).toHaveLength(1)
     const rowBAfter = rowsAfter.find((row) => within(row).queryByText(/保留 7 件/))
-    if (!rowAAfter || !rowBAfter) throw new Error('再取得後に site A / site B の行が見つからない')
+    if (!rowBAfter) throw new Error('再取得後に site B の行が見つからない')
 
-    // 展開していなかった site A は再取得後も折りたたまれたままのはず。
-    expect(within(rowAAfter).getByRole('button', { name: '内訳を見る' })).toBeInTheDocument()
-    // 展開していた site B は再取得後も展開されたままのはず。
+    // site A が消えても、生き残った site B の展開状態は保たれるはず
+    // （key が name だけだと、消えた行の fiber が誤って site B に
+    // 再利用され、展開状態が失われる）。
     expect(within(rowBAfter).getByRole('button', { name: '内訳を隠す' })).toBeInTheDocument()
   })
 })
