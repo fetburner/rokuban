@@ -1,3 +1,4 @@
+/// <reference types="node" />
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createMemoryHistory, createRouter, RouterProvider } from '@tanstack/react-router'
 import { act, render, screen, waitFor, within } from '@testing-library/react'
@@ -8,6 +9,31 @@ import type { CapacityOverage, ProgramListItem, Reservation, Service } from '@/a
 import { ToastProvider } from '@/components/toaster'
 import { dayOrigin } from '@/lib/day-offset'
 import { routeTree } from '@/routes'
+
+/**
+ * 「今」を昼間の安定した瞬間に固定する（issue #274）。
+ *
+ * `windowOrigin()`（下）は now を **時刻境界に切り捨てる**（日境界ではない）。
+ * 壁時計が現地 23 時台だと、切り捨てた起点 + 1 時間の番組（`soon`）が暦日を
+ * またいでしまい、`DayStrip` の「いま見ている日」（スクロール位置からの導出。
+ * `program-list.tsx` の `onVisibleDayChange`）が 1（明日）になる。すると
+ * 「今日」のセル（`dayButtons[0]`）から `aria-current` が外れ、それを見ている
+ * テストが壁時計依存で落ちる（このファイル実行時の TZ・時刻に依存していた）。
+ *
+ * `shouldAdvanceTime: true` は実時間の経過に追従してフェイクの時計も進める
+ * ため、`setTimeout` に依存する `userEvent` の内部待ちや TanStack Query の
+ * 解決を止めない（素の `vi.useFakeTimers()` はこのファイルの他のテストを
+ * 壊すことを確認済み。CLAUDE.md のテスト規律どおり実際に壊して確かめた）。
+ *
+ * 固定先（UTC 07:00 = JST 16:00）は `Asia/Tokyo` / `UTC` / `America/New_York`
+ * / `Europe/London` / `Asia/Kolkata` / `Pacific/Auckland` のいずれで実行しても
+ * 現地時刻が 22 時を超えない（= `soon` が暦日をまたがない）ことを確認して
+ * 選んだ。深夜（23 時台）の実挙動そのものは別途固定のテストで検証する
+ * （「ProgramsPage の日付ハイライト（深夜の暦日またぎ）」参照）。
+ */
+vi.useFakeTimers({ shouldAdvanceTime: true })
+const pinnedNow = new Date('2026-08-14T07:00:00Z')
+vi.setSystemTime(pinnedNow)
 
 /**
  * ページは「今」を時刻境界に切り捨てた時刻を時間窓の起点にする。テストの番組も
@@ -1227,6 +1253,72 @@ describe('ProgramsPage の at パラメータ（容量バッジからの導線�
     const dayGroup = screen.getByRole('group', { name: '日付' })
     // at が落とされているので、日付ジャンプは起きず「今日」のまま
     expect(within(dayGroup).getAllByRole('button')[0]).toHaveAttribute('aria-current', 'date')
+  })
+})
+
+/**
+ * 深夜（現地 23 時台）の暦日またぎを実挙動として固定する（issue #274）。
+ *
+ * `dayOrigin(0)`（`lib/day-offset.ts`）は「今日」の窓の起点を **now を時刻境界
+ * （0 時ではない）に切り捨てた時刻**にする。現地 23 時台だとその起点 + 1 時間
+ * （最初に見える番組の時刻）が暦日としては翌日になり、`ProgramList` が
+ * スクロール位置から導く「いま見ている日」（`onVisibleDayChange`
+ * → `programs.tsx` の `visibleDay` → `DayStrip` の `current`）が 1（明日）に
+ * なる。時刻を 23:13 JST に固定して実測したところ、`aria-current="date"` は
+ * 消えるのではなく **「今日」ではなく「翌日」のセルに付く**
+ * （`dayButtons[0]` は null、`dayButtons[1]` が `"date"`）。これは狙った仕様
+ * ではなく、`dayOrigin` が窓の連続性のために意図的に時刻境界を使うことの
+ * 副作用として今後も起き続ける実挙動なので、偶然 23 時台に実行したときにだけ
+ * 観測される状態から、恒久的な判定に変える。
+ *
+ * 「23 時台」は `process.env.TZ`（Node の Date が実際に解決に使うローカル
+ * タイムゾーン）に対しての現地時刻なので、`vi.setSystemTime` で瞬間を固定
+ * するだけでは足りない --- このファイル自体を別の TZ（`America/New_York` 等）
+ * で実行すると、同じ瞬間でも現地時刻は 23 時台にならない。このテストは
+ * 「JST 23 時台」という具体的な再現条件を固定するのが目的なので、
+ * `process.env.TZ` も明示的に `Asia/Tokyo` に切り替える（他のテストへ
+ * 影響しないよう `afterEach` で元に戻す）。
+ */
+describe('ProgramsPage の日付ハイライト（深夜の暦日またぎ）', () => {
+  const originalTz = process.env.TZ
+
+  afterEach(() => {
+    // `process.env.TZ = undefined` は文字列 "undefined" を代入してしまい
+    // （Node の既知の挙動）、TZ 未設定だった環境を壊す。未設定だったときは
+    // 削除で戻す
+    if (originalTz === undefined) {
+      delete process.env.TZ
+    } else {
+      process.env.TZ = originalTz
+    }
+    // 他のテストへ影響しないよう、ファイル全体で固定した昼間の瞬間へ戻す
+    vi.setSystemTime(pinnedNow)
+  })
+
+  it('現地 23 時台（JST）では「いま見ている日」が翌日になり、今日のセルではなく翌日のセルに aria-current が付く', async () => {
+    process.env.TZ = 'Asia/Tokyo'
+    vi.setSystemTime(new Date('2026-08-14T23:13:00+09:00'))
+    const nightOrigin = new Date()
+    nightOrigin.setMinutes(0, 0, 0)
+    // dayOrigin(0) と同じ切り捨て（時刻境界）で起点を作り、+1 時間の番組を置く
+    // ---「最初の窓（6 時間）にも入る直近の番組」という allPrograms の soon と
+    // 同じ役目。ここでは実行時刻に依存させず 23:13 JST に固定して置く。
+    const nightSoon = programAtAbsolute(
+      301,
+      1024,
+      nightOrigin.getTime() + 3_600_000,
+      '深夜またぎの番組',
+    )
+    stubApi([], [], [nightSoon])
+    renderPage()
+
+    expect(await screen.findByText('深夜またぎの番組')).toBeInTheDocument()
+    const dayGroup = screen.getByRole('group', { name: '日付' })
+    const dayButtons = within(dayGroup).getAllByRole('button')
+
+    // 「いま見ている日」の導出（スクロール位置ベース）が確定するまで待ってから見る
+    await waitFor(() => expect(dayButtons[1]).toHaveAttribute('aria-current', 'date'))
+    expect(dayButtons[0]).not.toHaveAttribute('aria-current')
   })
 })
 
