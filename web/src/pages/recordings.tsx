@@ -783,24 +783,31 @@ export function RecordingActions({ recording, trash }: { recording: Recording; t
   // 現在の一覧（library）から消えるため。`useRestoreRecording` の
   // `mutate` はコンポーネントに束縛された `useMutation` の内部状態を経由する
   // ため、渡した `onSuccess`/`onError` がアンマウント後も確実に呼ばれる保証を
-  // 前提にできない（実測: アンマウント後に `mutate` を呼ぶと fetch 自体は
-  // 飛ぶが、渡した onSuccess が呼ばれないまま止まるケースがあった）。
-  // 生成された素の関数（`restoreRecordingRequest`）を直接呼び、
-  // `queryClient`（`useQueryClient()` はマウント状態に依存しない安定した
-  // 参照）で invalidate する形にして、この依存を断つ。
+  // 前提にできない（実測: `recordings.test.tsx`「ごみ箱へ移すと Undo 付き
+  // トーストが出て、「元に戻す」で一覧に復帰する」を `useRestoreRecording` の
+  // `mutate` 経由に戻して壊すと、リクエストは飛ぶが渡した onSuccess が
+  // 呼ばれないまま行が一覧に戻ってこず、アサーションで落ちる）。生成された
+  // 素の関数（`restoreRecordingRequest`）を直接呼び、`queryClient`
+  // （`useQueryClient()` はマウント状態に依存しない安定した参照）で
+  // invalidate する形にして、この依存を断つ。
   //
-  // 復元の効果は必ず画面に見える --- 一覧内展開なら invalidate 後の再取得で
-  // mode（library/trash）の絞り込みに引っかかって行が現在の一覧から消え、
-  // 単体ページ（recording-detail.tsx）なら trash 判定が反転してボタン・
-  // 削除日時表示が入れ替わる。追加で言うことも無いので成功トーストは
-  // 無音化する（issue #297）。失敗は一覧からは分からない新しい情報なので残す。
-  const restore = (onSuccess?: () => void) => {
+  // 復元の効果は「復元」ボタン本体からの呼び出しでは必ず画面に見える ---
+  // 一覧内展開なら invalidate 後の再取得で mode（library/trash）の絞り込みに
+  // 引っかかって行が現在の一覧から消え、単体ページ（recording-detail.tsx）
+  // なら trash 判定が反転してボタン・削除日時表示が入れ替わる。追加で言う
+  // ことも無いので成功トーストは無音化する（issue #297）。
+  //
+  // **Undo 経由の呼び出しは事情が違う。** トーストは最大 6 秒後、かつ別の
+  // 画面へ遷移した後にも押せるので、そのときは復元の効果を画面上で確認
+  // できるとは限らない（対象の一覧をもう見ていないことがある）うえ、
+  // 成功トーストも出さないので追加のフィードバックも無い。ここでは
+  // 「Undo ボタンを押した」こと自体（ボタンが消える）を操作の完了通知として
+  // 扱い、割り切っている --- 失敗時は場所を問わず追える情報（`復元に
+  // 失敗しました`）を出す。
+  const restore = () => {
     setRestoring(true)
     restoreRecordingRequest(recordingId)
-      .then(() => {
-        invalidate()
-        onSuccess?.()
-      })
+      .then(() => invalidate())
       .catch(() => toast({ message: '復元に失敗しました' }))
       .finally(() => setRestoring(false))
   }

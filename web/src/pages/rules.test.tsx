@@ -549,11 +549,14 @@ describe('RulesPage 削除は overflow メニュー', () => {
   })
 })
 
-// issue #297: 作成・更新・削除の効果はいずれも一覧の同じ行として画面に
-// 現れる（RulesPage はフィルタもページングも持たない）ので、素の成功
-// トーストは無音化する。失敗は一覧からは分からない新しい情報なので残す。
+// issue #297: 削除・更新の効果は一覧の同じ行として画面に現れる
+// （RulesPage はフィルタもページングも持たない）ので、素の成功トーストは
+// 無音化する。作成は `ListRules` が `priority DESC, id ASC` で並べるため
+// 新しい行がフォールドの外に入りうり、画面外になりうる効果はトーストを
+// 残す（issue #297 が認める例外）。失敗は一覧からは分からない新しい情報
+// なので、いずれも残す。
 describe('RulesPage 成功トーストの無音化 (issue #297)', () => {
-  it('作成に成功しても成功トーストは出ず、新しい行が一覧に現れる', async () => {
+  it('作成に成功すると成功トーストが出る（新しい行は並び順次第でフォールドの外に入りうる）', async () => {
     const { postBodies } = stubApi([])
     const user = userEvent.setup()
     renderPage()
@@ -566,12 +569,12 @@ describe('RulesPage 成功トーストの無音化 (issue #297)', () => {
     await user.click(screen.getByRole('button', { name: '保存' }))
     await waitFor(() => expect(postBodies.length).toBe(1))
 
-    // 効果（新しい行が一覧に現れる、フォームが閉じて「ルールを作成」ボタンに
-    // 戻る）が常に画面に見えることを確認したうえで、成功トーストが出ない
-    // ことを確認する。
+    // 新しい行が一覧に現れ、フォームが閉じて「ルールを作成」ボタンに戻る
+    // こと自体は確認しつつ、その効果が画面外になりうる（優先度順で下の方に
+    // 入る）ため成功トーストは残ることを確認する。
     expect(await screen.findByText('できたルール')).toBeInTheDocument()
     expect(await screen.findByRole('button', { name: 'ルールを作成' })).toBeInTheDocument()
-    expect(screen.queryByText('ルールを作成しました')).not.toBeInTheDocument()
+    expect(await screen.findByText('ルールを作成しました')).toBeInTheDocument()
   })
 
   it('更新に成功しても成功トーストは出ず、一覧の同じ行に反映される', async () => {
