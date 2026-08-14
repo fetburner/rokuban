@@ -778,3 +778,107 @@ func TestRunPass_DedupeHistoryLeavesScopeOnRuleDelete(t *testing.T) {
 	// 根拠 2 列は**新しい**録画を指す（旧ルールの履歴が復活したのではない）。
 	assertDedupeEvidence(t, res3, &newRec)
 }
+
+// 15. 「履歴（recordings）側の除外印は作らない」（docs/recording/ruler.md §3.1）の
+// 根拠になっているのは「1 本録れた時点でその録画が新しい抑制元になり、以降の
+// 再放送はまた弾かれる」という一過性である。この経路 —— action='record' で
+// 個別に勝たせた番組が実際に録れた結果、その録画が次の抑制元になること ——
+// を測っているテストはこれまで無かった。TestRunPass_DedupeHistoryLeavesScopeOnRuleDelete
+// の段階 3 が測っているのは「ルール削除→作り直し」の経路で、ここで測るのは
+// 「意図で録らせた 1 本が次の抑制元になる」別の経路である。
+func TestRunPass_DedupeRecordIntentThenNewRecordingSuppressesAgain(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	f := setupDedupeFixture(t, pool, ctx)
+
+	// R1（フィクスチャの録画）の題名を、P2/P3 と完全一致ではなく閾値は超える
+	// が 1.0 未満の類似度まで弱める。P3 は P2 と同一題名にする（下記）ので、
+	// R1 の題名が完全一致のままだと、後で入れる R2（P3 と完全一致）と類似度
+	// 1.0 で並び、tie-break の rec.id ASC で先に入った R1（古い録画）が勝って
+	// しまう。それでは「新しい録画が抑制元になる」ことを検証できない。
+	//
+	// 実際の運用でも同じ tie-break が効く: 題名が毎回完全一致するシリーズは
+	// 複数の録画が similarity 1.0 で並び、dedup_match_recording_id には
+	// rec.id ASC で最古の録画が入る（実測）。「なぜスキップされたか」の説明に
+	// 常に最新の録画が出るとは限らない。
+	if _, err := pool.Exec(ctx,
+		`UPDATE recordings SET title = '再放送テスト 第2話' WHERE id = $1`, f.recordingID,
+	); err != nil {
+		t.Fatalf("weakening R1's title: %v", err)
+	}
+
+	// precondition: R1 と「再放送テスト 第1話」（P2/P3 の題名）の類似度が
+	// (閾値, 1.0) に収まることを直接測って固定する。この guard を外しても
+	// テストは空虚には通らない（どちらの向きに崩れても別のアサーションで
+	// 落ちることを実測済み）: 類似度を 1.0 まで戻す（tie）と
+	// assertDedupeEvidence(res3, &newRec) が dedup_match_recording_id の不一致
+	// で落ち、閾値未満まで下げると 1 パス目後の precondition（本関数の
+	// 「precondition: base.skip should be true after first pass」）で落ちる。
+	// guard が変えるのは「落ちるかどうか」ではなく「どこで・何の名前で落ちる
+	// か」——2 つの既に検出可能な失敗を、この 1 箇所の早い失敗にまとめて
+	// 潰す防御の重複であり、削ってよいという意味ではない（後で誰かが
+	// このテストを読んで「evidence assertion が守っているから安全」と誤読し、
+	// 上の 2 箇所を弱めることを防ぐ）。
+	var r1Similarity float64
+	if err := pool.QueryRow(ctx,
+		`SELECT similarity(title, '再放送テスト 第1話') FROM recordings WHERE id = $1`, f.recordingID,
+	).Scan(&r1Similarity); err != nil {
+		t.Fatalf("querying R1 similarity: %v", err)
+	}
+	if r1Similarity <= float64(dedupeFixtureThreshold) || r1Similarity >= 1.0 {
+		t.Fatalf("precondition: R1 similarity to the exact title = %v, want in (%v, 1.0) "+
+			"so that R2 becomes the unique winner later", r1Similarity, dedupeFixtureThreshold)
+	}
+
+	r := ruler.New([]string{testSite}, pool, nil)
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("first pass: %v", err)
+	}
+	res, ok := getReservation(t, pool, ctx, f.programID)
+	if !ok {
+		t.Fatal("reservation not created")
+	}
+	if !baseSkip(t, res.Base) {
+		t.Fatalf("precondition: base.skip should be true after first pass (base = %s)", res.Base)
+	}
+
+	// ユーザーが「録れ」と指定して個別に勝たせる（EPGStation#473 のうち予約側で
+	// 実装済みの経路。docs/recording/ruler.md §3.1）。
+	if _, err := pool.Exec(ctx, `
+INSERT INTO program_intents (site, program_id, action)
+VALUES ($1, $2, 'record')`,
+		testSite, f.programID); err != nil {
+		t.Fatalf("inserting program_intents fixture: %v", err)
+	}
+	action := db.IntentRecord
+	eff, err := db.EffectiveOptions(res.Base, nil, &action)
+	if err != nil {
+		t.Fatalf("EffectiveOptions with record intent: %v", err)
+	}
+	if eff.Skip != nil && *eff.Skip {
+		t.Fatalf("precondition: effective skip should be false once the user's record intent wins (base = %s)", res.Base)
+	}
+
+	// P2 が実際に録れた: 同一題名・別イベントの後続放送 P3 が EPG に現れ、P2 を
+	// 録った実績 R2（(network_id, service_id, event_id) は P2 自身のもの。
+	// insertProgram は event_id 0 で番組を作るので、それに合わせる）が積まれる。
+	const programID3 = 4011
+	const eventID3 int32 = 9001
+	p3Start := f.start.Add(7 * 24 * time.Hour)
+	insertProgramWithEvent(t, pool, ctx, programID3, "再放送テスト 第1話", p3Start, eventID3)
+	newRec := insertRecordingForEvent(t, pool, ctx, &f.ruleID, "再放送テスト 第1話", f.start, 0)
+
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("second pass: %v", err)
+	}
+	res3, ok := getReservation(t, pool, ctx, programID3)
+	if !ok {
+		t.Fatal("reservation not created for the later broadcast")
+	}
+	if !baseSkip(t, res3.Base) {
+		t.Errorf("base.skip = false after a real recording landed on the record-intent path (base = %s); "+
+			"1 本録れれば以降の再放送はまた弾かれるはずである", res3.Base)
+	}
+	// 根拠 2 列は**新しい**録画 R2 を指す（古い R1 が抑制元のままではない）。
+	assertDedupeEvidence(t, res3, &newRec)
+}
