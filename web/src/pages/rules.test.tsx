@@ -467,6 +467,12 @@ describe('RulesPage 削除は overflow メニュー', () => {
     await user.click(await screen.findByRole('menuitem', { name: '削除' }))
 
     await screen.findByText('ルール「ニュース」を削除しますか？')
+    // 本文そのものを固定する（存在チェックだけだと、この文言が空や別の
+    // 表現に変わっても気付けない --- 他の破壊的確認と同じ「取り消せません」
+    // の語彙を使っていることも含めて固定する）。
+    expect(
+      screen.getByText('ルールの設定を削除します。取り消せません。'),
+    ).toBeInTheDocument()
     expect(screen.queryByText(/重複排除の履歴も一緒に外れます/)).not.toBeInTheDocument()
   })
 

@@ -150,7 +150,7 @@ export function RulesPage() {
  * ので、ここは本文（`AlertDialogDescription`）だけを返す。
  */
 function deleteRuleWarning(rule: Rule): string {
-  const base = '削除すると元に戻せません。'
+  const base = 'ルールの設定を削除します。取り消せません。'
   if (!rule.dedupeEnabled) return base
   return (
     `${base}このルールの重複排除の履歴も一緒に外れます。同じ条件で作り直しても引き継がれないので、` +
