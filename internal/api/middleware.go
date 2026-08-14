@@ -47,14 +47,33 @@ var infraPaths = map[string]bool{
 // 途中の何者かが書ける）なので、`localhost` を騙って allowlist を素通り
 // できてしまう（実際の TCP 接続相手が localhost であることが前提の緩和
 // なので、転送された値には適用できない）。
+//
+// リクエストラインが absolute-form（`GET http://host/path HTTP/1.1`）だと
+// `net/http` は `r.URL.Host` を `r.Host` として採用し、`Host` ヘッダーは
+// 一致するか否かに関わらず常に `r.Header` から削除する（`net/http` の
+// `readRequest`）。そのためハンドラ側から「リクエストラインと `Host`
+// ヘッダーが食い違うか」を見分ける手段は無く、`r.Header.Get("Host")` は
+// サーバー側では常に空文字になる。この allowlist を「`Host` ヘッダーの
+// 検証」だと言い切るには、absolute-form 自体を拒否するしかない。
+// origin サーバーに absolute-form を送るのはプロキシだけで、ブラウザ・
+// `curl`（プロキシ未経由）は origin-form しか送らないため、拒否しても
+// 壊れる正当な利用者は居ない。
 func AllowedHosts(allowedHosts []string, trustForwardedHost bool) func(http.Handler) http.Handler {
+	normalizedAllowedHosts := make([]string, len(allowedHosts))
+	for i, h := range allowedHosts {
+		normalizedAllowedHosts[i] = normalizeHost(h)
+	}
 	return func(next http.Handler) http.Handler {
-		if len(allowedHosts) == 0 {
+		if len(normalizedAllowedHosts) == 0 {
 			return next
 		}
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if infraPaths[r.URL.Path] {
 				next.ServeHTTP(w, r)
+				return
+			}
+			if r.URL.Host != "" {
+				http.Error(w, "invalid host", http.StatusBadRequest)
 				return
 			}
 			var forwarded string
@@ -64,11 +83,11 @@ func AllowedHosts(allowedHosts []string, trustForwardedHost bool) func(http.Hand
 			}
 			var host string
 			if isForwarded {
-				host = stripPort(forwarded)
+				host = normalizeHost(stripPort(forwarded))
 			} else {
-				host = stripPort(r.Host)
+				host = normalizeHost(stripPort(r.Host))
 			}
-			allowed := slices.Contains(allowedHosts, host)
+			allowed := slices.Contains(normalizedAllowedHosts, host)
 			if !isForwarded {
 				allowed = allowed || slices.Contains(alwaysAllowedHosts, host)
 			}
@@ -79,6 +98,43 @@ func AllowedHosts(allowedHosts []string, trustForwardedHost bool) func(http.Hand
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// normalizeHost は Host allowlist の比較に使う正規化を行う。ASCII 範囲だけの
+// 小文字化と、末尾ドット 1 個の除去だけを行う。
+//
+// Unicode の case folding（`strings.ToLower`）は使わない。fail-open になり
+// うるためで、たとえば `strings.ToLower("K")`（ケルビン記号）は `"k"`
+// を返すので、非 ASCII の `Host` が `allowed_hosts` の ASCII ホスト名に
+// 一致してしまう。ホスト名の case-insensitive は ASCII の範囲の規則
+// （RFC 4343）なので、正規化も ASCII に限る。
+//
+// 末尾ドットは DNS 上 `rokuban.local.` と `rokuban.local` が同じ名前で
+// あることに対応する（絶対 FQDN 表記の利用者や、一部プロキシがそのまま
+// `Host` に載せてくる）。落とすのは 1 個だけで、`..` のような不正な形は
+// 正規化しない（DNS 名として無効なので通す理由が無い）。
+func normalizeHost(host string) string {
+	trimmed := host
+	if n := len(trimmed); n >= 2 && trimmed[n-1] == '.' {
+		trimmed = trimmed[:n-1]
+	}
+	needsLower := false
+	for i := 0; i < len(trimmed); i++ {
+		if c := trimmed[i]; c >= 'A' && c <= 'Z' {
+			needsLower = true
+			break
+		}
+	}
+	if !needsLower {
+		return trimmed
+	}
+	b := []byte(trimmed)
+	for i, c := range b {
+		if c >= 'A' && c <= 'Z' {
+			b[i] = c + ('a' - 'A')
+		}
+	}
+	return string(b)
 }
 
 // forwardedHost は `X-Forwarded-Host` ヘッダーから Host allowlist 検証に
