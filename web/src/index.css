@@ -225,6 +225,41 @@
 }
 
 /*
+ * OS で「動きを減らす」を設定したユーザーには、個々のアニメーション/
+ * トランジションのクラスへ毎回縮退を書き足すのではなく、ここ 1 箇所で
+ * 全域に効かせる（`html` の tabular-nums と同じ集約方針。
+ * docs/frontend/design.md「走査線は 3 箇所限定」の直後の節を参照）。
+ *
+ * **`animation: none` ではなく継続時間を切り詰める。** Tailwind の
+ * `animate-pulse`（読み込み中の `Skeleton`）は `50%` にだけ `opacity: .5`
+ * を持ち、0%/100% は素の不透明度（1）に戻る --- 継続時間をほぼ 0 にして
+ * `iteration-count` を 1 に固定すれば、`infinite` の明滅が 1 周だけ
+ * 一瞬で終わり、素の不透明度（1 = 判読できる）に落ち着く。`e2e/design.mjs`
+ * ⑦ が縮退後の `Skeleton` の `opacity` を実測し、判読できない値に落ちて
+ * いないかを機械判定する（実測値そのものはその出力が権威。ここには書かない）。
+ *
+ * base-ui のポップオーバー/ダイアログ（`slide-in-from-*` / `zoom-in-95` /
+ * `fade-in-0` の開閉）は `transitionend` / `animationend` のイベントでは
+ * なく `Element.getAnimations()` を `Promise.all` で待って開閉の
+ * アンマウントを確定させる（`@base-ui/react` の内部実装
+ * `useAnimationsFinished`）。継続時間をほぼ 0 にしても Animation
+ * オブジェクト自体は生成され `finished` が解決するため、この経路は壊れない
+ * ---逆に `animation: none` で丸ごと消すと `getAnimations()` が常に
+ * 空配列になり、この確認ができなくなる。**`web/src` 自体は
+ * `transitionend` / `animationend` を 1 箇所も listen していない**
+ * （2026-08 時点でグレップ 0 件）ので、そちらの経路を壊す心配もない。
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/*
  * 走査線ユーティリティ。**使ってよいのは空状態・読み込み中・ON AIR の 3 箇所だけ**
  * （docs/frontend/design.md「走査線は 3 箇所限定」）。全面に敷くとキッチュに転ぶ。
  *
