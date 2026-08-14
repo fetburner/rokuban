@@ -70,10 +70,10 @@ func newServerCmd() *cobra.Command {
 				return err
 			}
 			// site 名を site 単位のキューに修飾したときに River の 64 文字上限を
-			// 超えないことを検証する（issue #185 の「罠」。
-			// internal/config.mirakcSiteNameMaxLen（64）はこの修飾を見込んでいない
-			// ため、`reconciler_` のような長い prefix が付く分だけ実質の上限は
-			// site 名の側で短くなる。worker.ValidateSiteForQueueNames 参照）。
+			// 超えないことを検証する。internal/config はレジストリの site 名を
+			// ロード時に既にこの上限の範囲（config.MirakcSiteNameMaxLen）で検査
+			// しているので、ここは site 名が config 以外の経路から来る場合に
+			// 備えた最後の砦（worker.ValidateSiteForQueueNames の doc コメント参照）。
 			for _, s := range bound {
 				if err := worker.ValidateSiteForQueueNames(s.Site); err != nil {
 					return err

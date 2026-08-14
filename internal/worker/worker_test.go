@@ -804,10 +804,7 @@ func TestValidateSiteForQueueNames(t *testing.T) {
 		}
 	})
 
-	t.Run("mirakcSiteNameMaxLen(64) alone would accept a name that breaks reconciler's queue", func(t *testing.T) {
-		// internal/config はキュー修飾を見込んでいないので 64 文字までは通す。
-		// ValidateSiteForQueueNames はその差分を検出する側であることを示す
-		// （config 側のテストではなく、ここでの検証範囲を明示するための対照）。
+	t.Run("a 64-char site name is rejected once qualified (config no longer permits it; this is the non-config last line of defence)", func(t *testing.T) {
 		site := strings.Repeat("a", 64)
 		if err := ValidateSiteForQueueNames(site); err == nil {
 			t.Fatal("expected error for a 64-char site name once queue-qualified, got nil")

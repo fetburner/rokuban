@@ -200,7 +200,11 @@ func validateSiteName(name string) []string {
 		errs = append(errs, fmt.Sprintf("site name %q must match %s", name, mirakcSiteNamePattern.String()))
 	}
 	if len(name) > MirakcSiteNameMaxLen {
-		errs = append(errs, fmt.Sprintf("site name %q exceeds %d characters", name, MirakcSiteNameMaxLen))
+		errs = append(errs, fmt.Sprintf(
+			"site name %q exceeds %d characters (River's queue name limit is 64 characters, and "+
+				"site-bound queues carry a prefix such as \"reconciler_\"; the site name itself "+
+				"must leave room for that prefix)",
+			name, MirakcSiteNameMaxLen))
 	}
 	if reservedSiteNames[name] {
 		errs = append(errs, fmt.Sprintf("site name %q is reserved", name))
