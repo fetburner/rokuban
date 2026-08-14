@@ -221,22 +221,34 @@ describe('RulesPage 条件編集', () => {
     expect(body.times).toEqual([{ weekdays: 127, startSec: 75600, endSec: 82800 }])
   })
 
-  it('条件が無いまま保存しようとすると確認を挟む', async () => {
+  it('条件が無いまま保存しようとすると確認ダイアログを挟み、キャンセルすると送信されない', async () => {
     const { postBodies } = stubApi([])
     const user = userEvent.setup()
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
     renderPage()
 
     await user.click(await screen.findByRole('button', { name: 'ルールを作成' }))
     await user.type(screen.getByLabelText('名前'), '条件なしルール')
-    await user.click(screen.getByRole('button', { name: '保存' }))
 
-    expect(confirmSpy).toHaveBeenCalled()
-    // confirm が false を返したので送信されていない
+    // 保存を押しただけでは送信されない（確認ダイアログを開くだけ）
+    await user.click(screen.getByRole('button', { name: '保存' }))
+    expect(await screen.findByText('条件を指定せずに保存しますか？')).toBeInTheDocument()
     expect(postBodies.length).toBe(0)
 
-    confirmSpy.mockReturnValue(true)
-    await user.click(screen.getByRole('button', { name: '保存' }))
+    // キャンセルすると閉じるだけで送信されない。フォームも編集可能なまま
+    // 残る（半端な送信状態にならない --- 「保存中…」のまま固まったり、
+    // 保存ボタンが disabled のまま残って連打すらできない、ということがない）。
+    await user.click(screen.getByRole('button', { name: 'キャンセル' }))
+    await waitFor(() =>
+      expect(screen.queryByText('条件を指定せずに保存しますか？')).not.toBeInTheDocument(),
+    )
+    expect(postBodies.length).toBe(0)
+    const saveButton = screen.getByRole('button', { name: '保存' })
+    expect(saveButton).not.toBeDisabled()
+    expect(saveButton).toHaveTextContent('保存')
+
+    // 再度保存を押すと同じ確認が出て、今度は確定すると送信される
+    await user.click(saveButton)
+    await user.click(await screen.findByRole('button', { name: '保存する' }))
     await waitFor(() => expect(postBodies.length).toBe(1))
   })
 
@@ -351,10 +363,9 @@ describe('RulesPage 削除は overflow メニュー', () => {
     expect(screen.queryByRole('menuitem', { name: '削除' })).not.toBeInTheDocument()
   })
 
-  it('overflow を開くと「削除」が menuitem として出て、選ぶと確認の上で削除される', async () => {
+  it('overflow を開くと「削除」が menuitem として出て、選ぶと確認ダイアログの上で削除される', async () => {
     stubApi()
     const user = userEvent.setup()
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
     renderPage()
 
     await screen.findByText('ニュース')
@@ -363,7 +374,15 @@ describe('RulesPage 削除は overflow メニュー', () => {
     const deleteItem = await screen.findByRole('menuitem', { name: '削除' })
     await user.click(deleteItem)
 
-    expect(confirmSpy).toHaveBeenCalledWith('ルール「ニュース」を削除しますか？')
+    expect(await screen.findByText('ルール「ニュース」を削除しますか？')).toBeInTheDocument()
+    // ダイアログを開いただけでは DELETE は飛ばない
+    const deleteCallsBeforeConfirm = (
+      globalThis.fetch as unknown as ReturnType<typeof vi.fn>
+    ).mock.calls.filter((call: unknown[]) => (call[1] as RequestInit | undefined)?.method === 'DELETE')
+    expect(deleteCallsBeforeConfirm.length).toBe(0)
+
+    await user.click(screen.getByRole('button', { name: '削除する' }))
+
     // 予約が 1 件も無いルール（内訳 0 件）は数字を添えない。
     expect(await screen.findByText('ルールを削除しました')).toBeInTheDocument()
     await waitFor(() => expect(screen.queryByText('ニュース')).not.toBeInTheDocument())
@@ -376,12 +395,12 @@ describe('RulesPage 削除は overflow メニュー', () => {
   it('削除のトーストに予約の内訳（削除 / 残った件数）が出る', async () => {
     stubApi([sampleRule], { deletedReservations: 3, detachedReservations: 2 })
     const user = userEvent.setup()
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     renderPage()
 
     await screen.findByText('ニュース')
     await user.click(screen.getByRole('button', { name: 'ルール「ニュース」のその他の操作' }))
     await user.click(await screen.findByRole('menuitem', { name: '削除' }))
+    await user.click(await screen.findByRole('button', { name: '削除する' }))
 
     expect(
       await screen.findByText('ルールを削除しました（予約 3 件を削除、2 件は編集済みのため残しました）'),
@@ -393,12 +412,12 @@ describe('RulesPage 削除は overflow メニュー', () => {
   it('残った予約が 0 件でも、削除した予約があれば件数を出す', async () => {
     stubApi([sampleRule], { deletedReservations: 4, detachedReservations: 0 })
     const user = userEvent.setup()
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     renderPage()
 
     await screen.findByText('ニュース')
     await user.click(screen.getByRole('button', { name: 'ルール「ニュース」のその他の操作' }))
     await user.click(await screen.findByRole('menuitem', { name: '削除' }))
+    await user.click(await screen.findByRole('button', { name: '削除する' }))
 
     expect(await screen.findByText('ルールを削除しました（予約 4 件を削除）')).toBeInTheDocument()
   })
@@ -410,23 +429,30 @@ describe('RulesPage 削除は overflow メニュー', () => {
   it('重複排除が有効なルールの削除確認に、履歴が外れることと「編集」への案内が出る', async () => {
     stubApi([ruleWithConditions])
     const user = userEvent.setup()
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
     renderPage()
 
     await screen.findByText('平日ニュース')
     await user.click(screen.getByRole('button', { name: 'ルール「平日ニュース」のその他の操作' }))
     await user.click(await screen.findByRole('menuitem', { name: '削除' }))
 
-    const message = confirmSpy.mock.calls[0][0] as string
-    expect(message).toContain('ルール「平日ニュース」を削除しますか？')
-    expect(message).toContain('重複排除の履歴も一緒に外れます')
-    expect(message).toContain('作り直しても引き継がれない')
-    expect(message).toContain('「編集」')
+    expect(await screen.findByText('ルール「平日ニュース」を削除しますか？')).toBeInTheDocument()
+    const description = screen.getByText(/重複排除の履歴も一緒に外れます/)
+    expect(description.textContent).toContain('重複排除の履歴も一緒に外れます')
+    expect(description.textContent).toContain('作り直しても引き継がれない')
+    expect(description.textContent).toContain('「編集」')
     // 被害の大きさを docs より強く書かない（過剰録画は一過性で、新ルールの
     // 下で 1 本録れれば以降は再び弾かれる ——
     // TestRunPass_DedupeHistoryLeavesScopeOnRuleDelete 段階 3 の測定）。
-    expect(message).toContain('1 本録れれば以降はまた弾かれます')
-    expect(message).not.toContain('窓の中の再放送を録り直します')
+    expect(description.textContent).toContain('1 本録れれば以降はまた弾かれます')
+    expect(description.textContent).not.toContain('窓の中の再放送を録り直します')
+
+    // 確認せずにキャンセルする（副作用の大きい操作なので、この時点では
+    // まだ削除されていないことを確認する）。
+    await user.click(screen.getByRole('button', { name: 'キャンセル' }))
+    const deleteCalls = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.filter(
+      (call: unknown[]) => (call[1] as RequestInit | undefined)?.method === 'DELETE',
+    )
+    expect(deleteCalls.length).toBe(0)
   })
 
   // 反対方向: 重複排除を使っていないルールでは警告を出さない
@@ -434,28 +460,31 @@ describe('RulesPage 削除は overflow メニュー', () => {
   it('重複排除が無効なルールの削除確認には履歴の警告を出さない', async () => {
     stubApi([sampleRule])
     const user = userEvent.setup()
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
     renderPage()
 
     await screen.findByText('ニュース')
     await user.click(screen.getByRole('button', { name: 'ルール「ニュース」のその他の操作' }))
     await user.click(await screen.findByRole('menuitem', { name: '削除' }))
 
-    expect(confirmSpy.mock.calls[0][0]).toBe('ルール「ニュース」を削除しますか？')
+    await screen.findByText('ルール「ニュース」を削除しますか？')
+    expect(screen.queryByText(/重複排除の履歴も一緒に外れます/)).not.toBeInTheDocument()
   })
 
   it('確認をキャンセルすると削除されない', async () => {
     stubApi()
     const user = userEvent.setup()
-    vi.spyOn(window, 'confirm').mockReturnValue(false)
     renderPage()
 
     await screen.findByText('ニュース')
     await user.click(screen.getByRole('button', { name: 'ルール「ニュース」のその他の操作' }))
     await user.click(await screen.findByRole('menuitem', { name: '削除' }))
+    await user.click(await screen.findByRole('button', { name: 'キャンセル' }))
 
     // DELETE が飛んでいないことを確認する（行が残っていることでも分かるが、
     // ネットワーク呼び出しの有無を直接見て確定させる）
+    await waitFor(() =>
+      expect(screen.queryByText('ルール「ニュース」を削除しますか？')).not.toBeInTheDocument(),
+    )
     const deleteCalls = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.filter(
       (call: unknown[]) => (call[1] as RequestInit | undefined)?.method === 'DELETE',
     )
