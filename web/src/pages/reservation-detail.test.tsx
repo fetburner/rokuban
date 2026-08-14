@@ -3,7 +3,7 @@ import { RouterProvider, createMemoryHistory, createRouter } from '@tanstack/rea
 import { render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
-import type { Reservation } from '@/api/generated'
+import type { Reservation, Rule } from '@/api/generated'
 import { ToastProvider } from '@/components/toaster'
 import { routeTree } from '@/routes'
 
@@ -26,6 +26,19 @@ function baseReservation(overrides: Partial<Reservation> = {}): Reservation {
   }
 }
 
+function sampleRule(overrides: Partial<Rule> = {}): Rule {
+  return {
+    id: 1,
+    name: 'サンプルルール',
+    enabled: true,
+    priority: 0,
+    keepOriginal: 'always',
+    createdAt: dayStart.toISOString(),
+    updatedAt: dayStart.toISOString(),
+    ...overrides,
+  }
+}
+
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -35,22 +48,31 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 /**
  * stubFetch は AppShell（`/api/breakers`）・詳細画面本体・重なり警告
- * （`GET /api/sites/{site}/programs/{programId}/overlaps`）への問い合わせを
- * 振り分ける。`reservationOf` は `(site, programId)` から返す予約を引く関数で、
- * 再実体化（同じ `(site, programId)` でも呼び出しごとに違う `id` を返す）を
- * シミュレートできるようにする。`sites`（既定 `['default']`）は `<SiteGate>`
- * が返す `GET /api/sites` の応答 --- URL の `$site` と異なる値を渡せるように
- * している（下記「ゲート済み site と URL の site が違う」テスト参照）。
+ * （`GET /api/sites/{site}/programs/{programId}/overlaps`）・ルール一覧
+ * （`GET /api/rules`）・エンコードプロファイル一覧（`GET /api/encode-profiles`）
+ * への問い合わせを振り分ける。`reservationOf` は `(site, programId)` から
+ * 返す予約を引く関数で、再実体化（同じ `(site, programId)` でも呼び出しごとに
+ * 違う `id` を返す）をシミュレートできるようにする。`sites`（既定
+ * `['default']`）は `<SiteGate>` が返す `GET /api/sites` の応答 --- URL の
+ * `$site` と異なる値を渡せるようにしている（下記「ゲート済み site と URL の
+ * site が違う」テスト参照）。`rules`（既定 `[]`）はルール名の解決先
+ * （issue #300、`pages/recordings.tsx` の `RuleSection` と同じ `useListRules`
+ * キャッシュを引く）。
  */
 function stubFetch(
   reservationOf: (site: string, programId: number) => Reservation | null,
   sites: string[] = ['default'],
+  rules: Rule[] = [],
 ) {
   const fetchMock = vi.fn((input: string | URL | Request) => {
     const url = new URL(String(input), 'http://localhost')
     if (url.pathname === '/api/breakers') return Promise.resolve(jsonResponse([]))
     // SiteGate（routes.tsx）が全ルートの手前で待つ（issue #184 M4-12）。
     if (url.pathname === '/api/sites') return Promise.resolve(jsonResponse(sites))
+    if (url.pathname === '/api/rules') return Promise.resolve(jsonResponse(rules))
+    // EncodeOverridesEditor（エンコードと保持セクション）が必ず引く。
+    // 中身はこのファイルのテストの関心事ではないので既定は空配列。
+    if (url.pathname === '/api/encode-profiles') return Promise.resolve(jsonResponse([]))
 
     const reservationMatch = /^\/api\/sites\/([^/]+)\/programs\/(\d+)\/reservation$/.exec(
       url.pathname,
@@ -94,6 +116,9 @@ describe('ReservationDetailPage', () => {
   // 予約が ruler の導出削除・再実体化で id を変えても、同じ URL がそのまま解決する
   // ことを、生成された TanStack Query フックの実際のクエリキー
   // （getGetProgramReservationQueryKey、id を含まない）を通して確認する。
+  // `programId` はこの URL の宛先であって画面のフィールドではない（issue #300、
+  // 「programId をフィールドとして出さない」テスト参照）ので、ここでは資源の
+  // 同定がタイトルの表示で確認できれば足りる。
   it('/reservations/$site/$programId が (site, programId) だけで解決する', async () => {
     stubFetch((site, programId) =>
       site === 'default' && programId === 300000 ? baseReservation() : null,
@@ -102,7 +127,6 @@ describe('ReservationDetailPage', () => {
     renderAt('/reservations/default/300000')
 
     expect(await screen.findByText('テスト番組')).toBeInTheDocument()
-    expect(screen.getByText('300000')).toBeInTheDocument()
   })
 
   // 核心: 予約行が再実体化されて id が変わっても、同じ URL のまま
@@ -200,5 +224,93 @@ describe('ReservationDetailPage', () => {
       String(c[0]).includes('/programs/300000/overlaps'),
     )
     expect(String(overlapsCall?.[0])).toBe('/api/sites/osaka/programs/300000/overlaps')
+  })
+
+  // issue #300: 状態は一覧（`pages/reservations.tsx` の `stateLabels`）と同じ
+  // 日本語ラベルで出る。生の `reservation.state`（'detached' 等）をそのまま
+  // 出すと、一覧では「ルール外」と読める状態がここでは読めなくなる。
+  it('状態は一覧と同じ日本語ラベルで出る（生の state 値ではない）', async () => {
+    stubFetch((site, programId) =>
+      site === 'default' && programId === 300000
+        ? baseReservation({ state: 'detached' })
+        : null,
+    )
+
+    renderAt('/reservations/default/300000')
+
+    expect(await screen.findByText('ルール外')).toBeInTheDocument()
+    expect(screen.queryByText('detached')).not.toBeInTheDocument()
+  })
+
+  // issue #300: ルールは名前で出す。ルール一覧（`useListRules`）に該当ルール
+  // があれば名前をリンクテキストにし、リンク先はルールの実質的な編集画面
+  // `/search?ruleId=N`（`pages/recordings.tsx` の `RuleSection` と同じ着地先）。
+  it('ルールは名前で出て、名前は /search?ruleId= のルール編集画面へのリンクになる', async () => {
+    stubFetch(
+      (site, programId) =>
+        site === 'default' && programId === 300000
+          ? baseReservation({ source: 'rule', ruleId: 7 })
+          : null,
+      ['default'],
+      [sampleRule({ id: 7, name: 'ゆう6かがわ' })],
+    )
+
+    renderAt('/reservations/default/300000')
+
+    const link = await screen.findByRole('link', { name: 'ゆう6かがわ' })
+    expect(link).toHaveAttribute('href', '/search?ruleId=7')
+    expect(screen.queryByText('#7')).not.toBeInTheDocument()
+  })
+
+  // issue #300: ルール一覧にまだ該当ルールが無い間（一覧が未解決・失敗、また
+  // は返ってきた一覧にその id がまだ無い一時的な状態）だけ `#N` に落ちる。
+  it('ルール一覧に該当ルールが無い間は #N に落ちる', async () => {
+    stubFetch(
+      (site, programId) =>
+        site === 'default' && programId === 300000
+          ? baseReservation({ source: 'rule', ruleId: 42 })
+          : null,
+      ['default'],
+      [],
+    )
+
+    renderAt('/reservations/default/300000')
+
+    expect(await screen.findByRole('link', { name: '#42' })).toHaveAttribute(
+      'href',
+      '/search?ruleId=42',
+    )
+  })
+
+  // issue #300: programId は URL の宛先であって利用者が読むフィールドでは
+  // ない。フィールドとして出さない。
+  it('programId をフィールドとして出さない', async () => {
+    stubFetch((site, programId) =>
+      site === 'default' && programId === 300000 ? baseReservation() : null,
+    )
+
+    renderAt('/reservations/default/300000')
+
+    await screen.findByText('テスト番組')
+    expect(screen.queryByText('programId')).not.toBeInTheDocument()
+    expect(screen.queryByText('300000')).not.toBeInTheDocument()
+  })
+
+  // issue #300: 画面に issue 番号・設定キー名が出ない。実装の経緯・設定ファイル
+  // のキー名は開発者向けの実装メモであって、利用者が読む画面には出さない。
+  it('画面に issue 番号・設定キー名が出ない', async () => {
+    stubFetch((site, programId) =>
+      site === 'default' && programId === 300000 ? baseReservation() : null,
+    )
+
+    renderAt('/reservations/default/300000')
+
+    await screen.findByText('テスト番組')
+    // エンコードプロファイル一覧（既定で空配列に stub 済み）の解決を待って
+    // から判定する。解決前に判定すると「まだ何も出ていない」空虚な成功になる。
+    await screen.findByText(/エンコードプロファイルが設定されていません/)
+
+    expect(screen.queryByText(/#19/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/config\.encode\.profiles/)).not.toBeInTheDocument()
   })
 })
