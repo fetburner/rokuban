@@ -38,8 +38,8 @@ UI: 上書き中のフィールドにマーカー表示 + フィールド単位/
 |---|---|---|---|
 | `skip` | base: ruler の重複排除だけが立てる。ユーザーの「録るな」は overrides ではなく `program_intents.action` が担う | `effective.skip` が mirakc への同期対象の判定（`listDesired`）を決める | §4.2 / [ruler.md](ruler.md) §3.1「重複排除」 |
 | `priority` | base: 勝者ルール / overrides: ユーザー | mirakc schedule の再作成（DELETE + POST）で反映。**録画開始後の recorder には効かない可能性が高い** | [reconciler.md](reconciler.md) §3.2「予約オプションの差分反映」 |
-| `contentPath` | overrides のみ（ルール側に対応するフィールドは無い） | **既存の schedule には反映されない**（churn を避けるため差分対象外で、初回生成値に固定される）。まだ schedule が作られていない予約にだけ効く | [reconciler.md](reconciler.md) §3.2「contentPath は初回生成値を固定」 |
-| `filenameTemplate` | base: ルールの `filename_template` / overrides: ユーザー | schedule 初回作成時の contentPath 生成に使う（`contentPath` と両方指定された場合は `contentPath` が勝つ）。既存の schedule には反映されない | [contentpath.md](contentpath.md)（記法・使えるフィールド・検証） |
+| `contentPath` | overrides のみ（ルール側に対応するフィールドは無い） | **明示指定した値は既存の schedule にも反映される**（次の reconcile が DELETE + POST で張り替える。`state == "scheduled"` の間だけ = 録画開始後は反映されない）。テンプレート生成値（`filenameTemplate` / 既定形式）は初回生成値に固定され、EPG の番組名が変わっても動かない。override の削除（reset）は既存 schedule には反映されない。空文字は API が 400 で拒否する（消すのは `reset`） | [reconciler.md](reconciler.md) §3.2「予約オプションの差分反映」 |
+| `filenameTemplate` | base: ルールの `filename_template` / overrides: ユーザー | schedule 初回作成時の contentPath 生成に使う（`contentPath` と両方指定された場合は `contentPath` が勝つ）。既存の schedule には反映されない —— `contentPath` と違い、展開結果が EPG の番組名で動くため（上記） | [contentpath.md](contentpath.md)（記法・使えるフィールド・検証） |
 | `encodeProfiles` | base: ルール / overrides: ユーザー | **ingest が原本をコミットする tx の中で `recording_encode_policy` 行として焼かれる（凍結される）瞬間まで効く**（§4.5） | §4.5 / [ストレージ](../storage.md) §6 |
 | `keepOriginal` | 同上 | 同上 | 同上 |
 
@@ -180,7 +180,8 @@ api が行を直接消さない理由は ruler 側の GC ロジックと同じ: 
 各フィールドが録画開始後にいつまで効くかは §4.2「予約オプション一覧」の表にまとめてある。要点:
 
 - `priority` は schedule の再作成で反映されるが、録画開始後の recorder には効かない可能性が高い
-- `contentPath` / `filenameTemplate` は既存の schedule には反映されない（まだ schedule が作られていない予約にだけ効く）
+- `contentPath`（明示指定）は `state == "scheduled"` の間なら既存の schedule にも反映される（録画開始後は反映されない）
+- `filenameTemplate` とテンプレート生成の contentPath は既存の schedule には反映されない（初回生成値に固定。まだ schedule が作られていない予約にだけ効く）
 - `encodeProfiles` / `keepOriginal` は **ingest が原本 media_asset をコミットする tx の中で `recording_encode_policy` 行の INSERT として焼かれる（凍結される）瞬間まで効く**。録画開始後の変更でも、放送終了・ingest 完了より前ならこの録画に反映される。**ingest 完了後の変更はこの録画には反映されない**（次にルールがマッチする別の録画には反映される）
 
 UI で「開始後に意味を持つフィールド」を区別表示する。この内容は overrides API のフィールド説明（`openapi.yaml`）にも同じことを書く --- API だけを見ている利用者が「上書きしたのに反映されない」で詰まらないようにするため。
