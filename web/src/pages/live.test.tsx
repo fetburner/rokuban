@@ -182,6 +182,19 @@ function playlistFetchCallCount(): number {
   return calls.filter(([url]) => String(url).includes('/live/playlist.m3u8')).length
 }
 
+/**
+ * leaveHintURLs は離脱ヒント（issue #191）が飛んだ宛先の一覧。
+ *
+ * jsdom には `navigator.sendBeacon` が無いので、`sendLiveLeaveHint` は
+ * `keepalive` つきの POST にフォールバックする --- つまりこの fetch モックに
+ * 現れる（beacon 経路そのものは `components/live-player.test.tsx` が
+ * 差し替えた `sendBeacon` で、実ブラウザでの到達は `web/e2e/live.mjs` ⑧が見る）。
+ */
+function leaveHintURLs(): string[] {
+  const calls = (globalThis.fetch as unknown as { mock: { calls: [string][] } }).mock.calls
+  return calls.map(([url]) => String(url)).filter((url) => url.includes('/live/leave'))
+}
+
 afterEach(() => {
   vi.restoreAllMocks()
 })
@@ -552,6 +565,36 @@ describe('LivePage', () => {
     // （`pages/live.tsx` の `playingServiceId` 参照）。件数が増えていなければ、
     // B 向けの LivePlayer が一度もマウントされなかったと言える
     expect(playlistFetchCallCount()).toBe(playlistCallsAfterA)
+  })
+
+  it('再生中に別チャンネルへ切り替えると、離れた側に離脱ヒントが飛ぶ（issue #191）', async () => {
+    const user = userEvent.setup()
+    stubFetch({
+      services: [
+        service({ serviceId: 10, name: 'チャンネル A' }),
+        service({ serviceId: 20, name: 'チャンネル B' }),
+      ],
+      programsByServiceId: {
+        10: [program({ serviceId: 10, name: 'A の番組' })],
+        20: [program({ serviceId: 20, name: 'B の番組' })],
+      },
+    })
+    renderLive('/live?serviceId=10')
+    await screen.findByText('A の番組')
+
+    await user.click(screen.getByRole('button', { name: /再生/ }))
+    // 再生（LivePlayer のマウント）が実際に起きたことを待ってから判定する ---
+    // 起きていなければ「ヒントが飛ばない」ではなく「見てすらいない」になり、
+    // 以降の assertion が空虚になる
+    await screen.findByText(/接続できません/)
+    expect(leaveHintURLs()).toEqual([])
+
+    await user.click(screen.getByRole('link', { name: /チャンネル B/ }))
+    await waitFor(() => expect(screen.getByText('B の番組')).toBeInTheDocument())
+
+    // 離れた側（A = networkId 1 / serviceId 10）にだけ飛ぶ。B（serviceId 20）へ
+    // 飛ばしてはならない --- そちらは「これから見るかもしれない」チャンネルである
+    expect(leaveHintURLs()).toEqual(['/api/sites/default/networks/1/services/10/live/leave'])
   })
 
   it(

@@ -203,17 +203,14 @@ func (ls *LiveStreamer) Mount(r chi.Router) {
 	const base = "/api/sites/{site}/networks/{networkId}/services/{serviceId}/live"
 	r.Get(base+"/playlist.m3u8", ls.Playlist)
 	r.Get(base+"/segments/{name}", ls.Segment)
+	r.Post(base+"/leave", ls.Leave)
 }
 
 // Run は idle GC ループを ctx が Done になるまで回す。ctx が Done になったら
 // 保持している全セッションを止めて（mirakc の接続も閉じる = チューナー解放）から
 // 返る。notifier.EventHub.Run と同じ形で eg.Go から呼ぶことを想定する。
 func (ls *LiveStreamer) Run(ctx context.Context) error {
-	interval := ls.cfg.IdleTimeout / 2
-	if interval < time.Second {
-		interval = time.Second
-	}
-	ticker := time.NewTicker(interval)
+	ticker := time.NewTicker(ls.gcInterval())
 	defer ticker.Stop()
 
 	for {
@@ -225,6 +222,78 @@ func (ls *LiveStreamer) Run(ctx context.Context) error {
 			ls.reapIdle()
 		}
 	}
+}
+
+// gcInterval は idle GC ループの刻みを返す。
+//
+// **刻みは「先に来る方の期限」に合わせる = min(IdleTimeout, leaveGrace) / 2。**
+// IdleTimeout/2 のままだと、離脱ヒントで idle 期限を「いま + 猶予」に詰めても
+// 次の GC パスが来るまで（既定 30s/2 = 15 秒）回収されず、ヒントの効果が刻みに
+// 飲まれる。逆に leaveGrace だけを見ると、猶予が IdleTimeout より長い設定
+// （ヒントが no-op になる設定）で刻みが IdleTimeout より粗くなり、**ヒントと
+// 無関係な通常の idle GC まで遅くなる** --- min はどちらの劣化も防ぐ。
+// 下限 1 秒は、極端に短い設定でループが busy loop 化するのを防ぐため。
+func (ls *LiveStreamer) gcInterval() time.Duration {
+	interval := ls.cfg.IdleTimeout
+	if grace := ls.cfg.leaveGrace(); grace < interval {
+		interval = grace
+	}
+	interval /= 2
+	if interval < time.Second {
+		interval = time.Second
+	}
+	return interval
+}
+
+// leaveGrace は離脱ヒント（Leave）を受けたときに idle 期限を詰める先までの猶予。
+//
+// **設定キーにせず `live.profiles[].segment_seconds` から導出する。** 守るべき
+// 性質は「猶予 > 生きている視聴者の次の要求が来るまでの間隔」で、**定常状態の**
+// その間隔を決めているのはセグメント長そのもの（プレイリスト再取得もセグメント
+// 取得も last-access を更新し、どちらもおおむねセグメント長の周期で来る）。
+//
+// **定常状態でない区間 --- セッションの起動待ち --- では、間隔を決めているのは
+// セグメント長ではなく playlistStartupTimeout（最大 15 秒）である。**そこは
+// この値を大きくして守るのではなく、待っている側が touch し続けることで
+// 「無音区間」自体を無くして守る（waitReadyTouching の doc コメント。
+// レビュー指摘で 504 を実測した経路）--- 猶予に起動待ちを織り込むと、
+// ヒントの効き（既定 8 秒での解放）がその分そのまま鈍る。独立した
+// 設定キーにすると `segment_seconds: 6` と `leave_grace: 1s` のような組み合わせが
+// 書けてしまい、**leave が「他人の視聴を切る道具」に化ける**（issue #191 の罠）。
+// 導出にすればその組み合わせは表現不可能になる。
+//
+// 係数 3 + マージン 2 秒は「連続 3 回ぶんの取りこぼしを許す」という選択で、
+// 既定（segment_seconds: 2）で 8 秒。**実クライアントの要求間隔を測った値では
+// ない**（未検証）--- セグメント長より短くならないことだけが要件で、そこには
+// 大きな余裕がある。
+//
+// **IdleTimeout でクリップしない（レビュー指摘。issue #191）。** 初版は
+// `min(3×segment+2s, IdleTimeout)` にしていたが、これは `segment_seconds: 6` +
+// `idle_timeout: 2s`（`internal/api/api_test.go` に実在する組み合わせ）のような
+// 設定で猶予 2 秒 < セグメント長 6 秒となり、**この関数が持つべき唯一の性質
+// （猶予 > セグメント長）を、docs がそう書いている当の場所で破っていた**。
+//
+// 実害が出ていなかったのは hintLeave の「前へ進めない」clamp が吸収していた
+// ためで（クリップ後は必ず `grace == IdleTimeout` になり、詰め先が「いま」に
+// なって no-op に落ちる。`TestLiveStreamer_LeaveHint_ClippedGraceIsNoOp` で
+// 固定）、**2 つの安全装置が絡んで初めて安全**という状態だった。clamp を将来
+// 触った瞬間に「他人の視聴を切る道具」が出現する。ここでは値そのものが常に
+// 性質を満たすようにし、猶予が IdleTimeout 以上になる設定では
+// **ヒントが no-op になる**（= 何も起こらない）方へ倒す。
+//
+// 設定バリデーションで `idle_timeout > 3×segment+2s` を要求する案は採らない。
+// 「速く解放したいので idle_timeout を短くする」は運用者の正当な意思であり、
+// **config の値の組で起動を止めるのは重い**（[docs/configuration.md] の
+// 「config と DB の境界」= 運用者の意思を否定しない）。導出側で守れば、危険な
+// 組み合わせの帰結は起動失敗ではなく「ヒントが効かないだけ」で済む。
+func (c LiveConfig) leaveGrace() time.Duration {
+	longestSegment := 0
+	for _, p := range c.Profiles {
+		if p.SegmentSeconds > longestSegment {
+			longestSegment = p.SegmentSeconds
+		}
+	}
+	return time.Duration(3*longestSegment)*time.Second + 2*time.Second
 }
 
 // playlistStartupTimeout は元々「ffmpeg がプレイリストの初回書き出しを終える
@@ -285,7 +354,7 @@ func (ls *LiveStreamer) Playlist(w http.ResponseWriter, r *http.Request) {
 	s.touch()
 
 	playlistPath := filepath.Join(s.dir, profile.Name+".m3u8")
-	content, ok := waitForPlaylist(r.Context(), playlistPath, playlistStartupTimeout)
+	content, ok := waitForPlaylist(r.Context(), s, playlistPath, playlistStartupTimeout)
 	if !ok {
 		slog.Error("streamer: live playlist did not appear in time",
 			"service_id", serviceID, "profile", profile.Name, "dir", s.dir)
@@ -352,15 +421,14 @@ func (ls *LiveStreamer) Segment(w http.ResponseWriter, r *http.Request) {
 	// **close(s.ready) の性質は変えない。** ここで諦めるのはこのハンドラの待ちだけで、
 	// セッションの起動 goroutine（runSession）はそのまま走り続ける。既に走っている
 	// 起動が完了すれば、後続の別リクエストは通常どおりそのセッションを使える。
-	select {
-	case <-s.ready:
-	case <-r.Context().Done():
-		return
-	case <-time.After(playlistStartupTimeout):
-		slog.Error("streamer: live segment session did not become ready in time",
-			"service_id", serviceID)
-		// Playlist 側の起動失敗と同じ扱い（同じステータス・同じ文言）に揃える。
-		http.Error(w, "live stream did not start in time", http.StatusGatewayTimeout)
+	if err := waitReadyTouching(r.Context(), s, playlistStartupTimeout); err != nil {
+		if errors.Is(err, errStartupTimeout) {
+			slog.Error("streamer: live segment session did not become ready in time",
+				"service_id", serviceID)
+			// Playlist 側の起動失敗と同じ扱い（同じステータス・同じ文言）に揃える。
+			http.Error(w, "live stream did not start in time", http.StatusGatewayTimeout)
+		}
+		// ctx のキャンセル（クライアントが切った）は何も書かずに戻る。
 		return
 	}
 	if s.startErr != nil {
@@ -384,6 +452,57 @@ func (ls *LiveStreamer) Segment(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "video/mp2t")
 	w.Header().Set("Cache-Control", "no-store")
 	http.ServeFile(w, r, path)
+}
+
+// Leave は POST /api/sites/{site}/networks/{networkId}/services/{serviceId}/live/leave
+// を処理する。
+//
+// **これは停止命令ではなく「離脱のヒント」である。** ライブセッションはサービス
+// 単位で共有される（同じチャンネルを別の部屋で見ている視聴者は同じ ffmpeg・同じ
+// チューナーを使う。docs/api.md §「資源同定: セッション ID を持たない」）ので、
+// 離れた側の要求でセッションを止める形にすると**別の視聴者の再生を一方的に切れて
+// しまう**。代わりに idle 期限を「いま + leaveGrace」に詰めるだけにする ---
+// 他に視聴者がいれば、その人の次のセグメント / プレイリスト要求が last-access を
+// 更新して期限が元に戻る。ヒントは収束を速めるだけで、「誰かが見ているか」という
+// 真実は既存の観測（セグメント要求）が持つ --- レベルトリガー（不変条件 5）と
+// 同じ形。
+//
+// **セッションを作らない。** 該当サービスのセッションが無ければ何もしない
+// （未開始・回収済みのどちらでも同じ）。**常に 204 を返す**（存在の有無を
+// 漏らさず、`navigator.sendBeacon` に再送の材料も与えない）。
+//
+// 宛先は**プレイリスト / セグメントと同じ資源同定**（`(site, networkId, serviceId)`。
+// id は SI の値で、mirakc 合成 id への変換は resolveRequest が行う。issue #217）---
+// セッション ID は URL にもクッキーにも置かない（issue #56）。この口も DB を
+// 引かない（issue #91 の決定 3）。
+func (ls *LiveStreamer) Leave(w http.ResponseWriter, r *http.Request) {
+	serviceID, ok := ls.resolveRequest(w, r)
+	if !ok {
+		return
+	}
+
+	ls.mu.Lock()
+	s, ok := ls.sessions[serviceID]
+	ls.mu.Unlock()
+	if !ok {
+		metrics.LiveLeaveHints.WithLabelValues("no_session").Inc()
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	grace := ls.cfg.leaveGrace()
+	if !s.hintLeave(time.Now(), grace, ls.cfg.IdleTimeout) {
+		// 期限は動かなかった（設定上ヒントが効かない / 連打の 2 発目以降）。
+		// **`deadline_shortened` に数えない** --- 数えると「ヒントで詰めた数」と
+		// 「実際に効いた数」が混ざり、idle GC 回収数と対で読めなくなる。
+		metrics.LiveLeaveHints.WithLabelValues("no_effect").Inc()
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	metrics.LiveLeaveHints.WithLabelValues("deadline_shortened").Inc()
+	slog.Info("streamer: live leave hint received, shortening idle deadline",
+		"service_id", serviceID, "grace", grace)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // resolveRequest はパスから (site, networkId, serviceId) を取り出し、site が
@@ -463,13 +582,16 @@ func writeSessionError(w http.ResponseWriter, err error) {
 // waitForPlaylist は path に有効な HLS プレイリストが書かれるまでポーリングし、
 // 読めたらその内容を返す。タイムアウトまたは ctx のキャンセルで ok=false を返す。
 //
+// **ポーリングのたびに s を touch する**（待っている客も客。waitReadyTouching の
+// doc コメントに理由と実測）。
+//
 // **存在だけでなく内容も見る。** `os.Stat` の成否だけを見ると、ffmpeg が
 // `-hls_flags temp_file` を使わずに（あるいは偽 ffmpeg がアトミックでない書き方を
 // していて）ファイルへ直接書き込み中の途中の内容を配ってしまう窓がある
 // （レビューで発見。CI が確率的に flaky になった原因）。少なくとも 1 本の
 // セグメントを指す `#EXTINF` 行が現れるまで待つことで、書き込み途中の空/不完全な
 // 内容を配らない。
-func waitForPlaylist(ctx context.Context, path string, timeout time.Duration) ([]byte, bool) {
+func waitForPlaylist(ctx context.Context, s *liveSession, path string, timeout time.Duration) ([]byte, bool) {
 	deadline := time.Now().Add(timeout)
 	for {
 		if data, err := os.ReadFile(path); err == nil && bytes.Contains(data, []byte("#EXTINF")) {
@@ -482,6 +604,11 @@ func waitForPlaylist(ctx context.Context, path string, timeout time.Duration) ([
 		case <-ctx.Done():
 			return nil, false
 		case <-time.After(playlistPollInterval):
+			// **待っている客も客**（waitReadyTouching の doc コメント参照）。
+			// ここが無音のままだと、この区間に届いた離脱ヒントが idle 期限を
+			// 詰め、プレイリストを待っている視聴者ごとセッションが回収される
+			// （実測: 504。issue #191 のレビュー指摘）。
+			s.touch()
 		}
 	}
 }
@@ -508,6 +635,72 @@ func (s *liveSession) touch() {
 	s.mu.Lock()
 	s.lastAccess = time.Now()
 	s.mu.Unlock()
+}
+
+// hintLeave は離脱ヒントを反映する。idle 期限が「now + grace」になるところまで
+// lastAccess を**巻き戻す**。
+//
+// **前へ進める方向には決して動かさない。** grace が idleTimeout 以上の設定
+// （あるいは既にもっと古い lastAccess を持つセッション）でこれを無条件に代入
+// すると、ヒントが**延命の道具**になる --- 「離れた」と言うだけでセッションを
+// 引き延ばせてしまい、意味が反転する。巻き戻しだけを許すことで、ヒントの
+// 最悪ケースは「何も起こらない」になる。
+//
+// この後に誰かが touch() すれば lastAccess は now に戻り、猶予も元の
+// idleTimeout に戻る（他の視聴者がいる場合の自己修復。Leave の doc コメント参照）。
+//
+// 戻り値は**実際に期限を動かしたか**。動かさなかった（＝ヒントが no-op だった）
+// ケースは 2 つあり、どちらもメトリクスでは `no_effect` として数える:
+// 猶予が IdleTimeout 以上の設定（leaveGrace のコメント参照）と、連打の 2 発目
+// 以降（既に詰めた期限より後ろにしか詰められない）。
+func (s *liveSession) hintLeave(now time.Time, grace, idleTimeout time.Duration) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	shortened := now.Add(grace - idleTimeout)
+	if !shortened.Before(s.lastAccess) {
+		return false
+	}
+	s.lastAccess = shortened
+	return true
+}
+
+// waitReadyTouching は s の起動完了（close(s.ready)）を、**待っている間ずっと
+// s を touch しながら**待つ。timeout / ctx.Done で打ち切る。
+//
+// **待っている客も客である**（issue #191 のレビュー指摘）。ハンドラが
+// `<-s.ready` や waitForPlaylist で待っている区間は「誰も要求していない無音区間」
+// に見えるが、実際にはそのセッションを待っている視聴者がそこにいる。last-access が
+// 止まったままだと、その区間に届いた離脱ヒント（他人のものでも、自分のタブが
+// hidden になったものでも）が idle 期限を猶予まで詰め、**起動待ちの視聴者ごと
+// セッションが回収される**（実測: 起動待ち 4 秒・猶予 2 秒の構成で、ヒント送出の
+// 約 2 秒後に回収され、待っていた視聴者は 504 を受け取った。
+// `TestLiveStreamer_LeaveHint_DoesNotKillASessionThatIsStillStartingUp`）。
+//
+// **GC 側に「起動中は回収しない」という例外を作る形は採らない。** 実測した失敗は
+// ready が閉じた**後**のプレイリスト待ちで起きており、「起動中」を ready で
+// 判定する例外はそこを覆えない。加えて、例外は「回収されない状態」を新設する
+// ので、mirakc がハングして ready が永久に閉じないときにセッションが回収不能に
+// なる（チューナーを掴んだまま max_sessions を食い潰す）。ここで touch すれば、
+// 真実は last-access 1 つのまま（不変条件 5 のレベルトリガー）で、待ちが
+// 終われば自動的に通常の idle 判定に戻る --- 待ちは playlistStartupTimeout で
+// 上限が付いているので、これで延命できるのも高々その時間である。
+func waitReadyTouching(ctx context.Context, s *liveSession, timeout time.Duration) error {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(playlistPollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.ready:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline.C:
+			return errStartupTimeout
+		case <-ticker.C:
+			s.touch()
+		}
+	}
 }
 
 func (s *liveSession) idleSince(now time.Time) time.Duration {
@@ -555,12 +748,8 @@ func (ls *LiveStreamer) getOrCreateSession(ctx context.Context, serviceID int64)
 	ls.mu.Lock()
 	if s, ok := ls.sessions[serviceID]; ok {
 		ls.mu.Unlock()
-		select {
-		case <-s.ready:
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(playlistStartupTimeout):
-			return nil, errStartupTimeout
+		if err := waitReadyTouching(ctx, s, playlistStartupTimeout); err != nil {
+			return nil, err
 		}
 		if s.startErr != nil {
 			return nil, s.startErr
@@ -590,12 +779,8 @@ func (ls *LiveStreamer) getOrCreateSession(ctx context.Context, serviceID int64)
 
 	go ls.runSession(sessionCtx, s)
 
-	select {
-	case <-s.ready:
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case <-time.After(playlistStartupTimeout):
-		return nil, errStartupTimeout
+	if err := waitReadyTouching(ctx, s, playlistStartupTimeout); err != nil {
+		return nil, err
 	}
 	if s.startErr != nil {
 		return nil, s.startErr
@@ -690,9 +875,14 @@ func (ls *LiveStreamer) runSession(ctx context.Context, s *liveSession) {
 // 変わっていない」のか「本当に GC 対象が無かった」のかを区別できない
 // （レビューで指摘。issue #91 の受け入れ条件）。
 func (ls *LiveStreamer) reapIdle() {
+	ls.reapIdleAt(time.Now())
+}
+
+// reapIdleAt は reapIdle の本体。「いま」を引数で受けるのは、離脱ヒントで詰めた
+// 期限の前後（now+猶予 の直前と直後）をテストが実時間を待たずに踏むため。
+func (ls *LiveStreamer) reapIdleAt(now time.Time) {
 	defer metrics.LiveIdleGCLastPass.SetToCurrentTime()
 
-	now := time.Now()
 	ls.mu.Lock()
 	var idle []*liveSession
 	for id, s := range ls.sessions {

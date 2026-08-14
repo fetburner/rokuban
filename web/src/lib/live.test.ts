@@ -5,9 +5,11 @@ import {
   claimsHlsPlaylistSupport,
   classifyLiveLoadError,
   currentProgramWindow,
+  liveLeaveURL,
   livePlaylistURL,
   pickInitialServiceId,
   probeLivePlaylist,
+  sendLiveLeaveHint,
   supportsNativeHls,
 } from '@/lib/live'
 
@@ -71,6 +73,66 @@ const measuredCanPlayType: Record<string, Record<string, string>> = {
 function canPlayTypeOf(engine: string): (type: string) => string {
   return (type) => measuredCanPlayType[engine]?.[type] ?? ''
 }
+
+describe('liveLeaveURL', () => {
+  it('プレイリストと同じ (site, networkId, serviceId) の固定深さで、セッション ID を持たない', () => {
+    // 期待値はリテラル（実装の式と比較すると何も主張しない）。
+    expect(liveLeaveURL('default', 32736, 1024)).toBe(
+      '/api/sites/default/networks/32736/services/1024/live/leave',
+    )
+    // プレイリストと同じ接頭辞（前段の consistent hash 鍵の取り出しが同じ
+    // 正規表現で効く。docs/operations.md §5）
+    expect(
+      liveLeaveURL('default', 32736, 1024).startsWith(
+        '/api/sites/default/networks/32736/services/1024/live/',
+      ),
+    ).toBe(true)
+  })
+
+  it('site をエスケープする', () => {
+    expect(liveLeaveURL('a/b', 1, 2)).toBe('/api/sites/a%2Fb/networks/1/services/2/live/leave')
+  })
+})
+
+describe('sendLiveLeaveHint', () => {
+  it('sendBeacon があれば sendBeacon で送る（fetch は使わない）', () => {
+    const beacon = vi.fn(() => true)
+    vi.stubGlobal('navigator', { sendBeacon: beacon })
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+
+    sendLiveLeaveHint('default', 32736, 1024)
+
+    expect(beacon).toHaveBeenCalledWith('/api/sites/default/networks/32736/services/1024/live/leave')
+    // ページ離脱の瞬間に投げるので、ドキュメント破棄で中断されうる fetch は使わない
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('sendBeacon が無い環境では keepalive つきの POST に落とす', async () => {
+    vi.stubGlobal('navigator', {})
+    const fetchMock = vi.fn(() => Promise.resolve(new Response(null, { status: 204 })))
+    vi.stubGlobal('fetch', fetchMock)
+
+    sendLiveLeaveHint('default', 32736, 1024)
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/sites/default/networks/32736/services/1024/live/leave', {
+      method: 'POST',
+      keepalive: true,
+    })
+  })
+
+  it('送信に失敗しても投げない（離脱時の失敗は見せる画面がもう無い）', async () => {
+    vi.stubGlobal('navigator', {})
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.reject(new TypeError('Failed to fetch'))),
+    )
+
+    expect(() => sendLiveLeaveHint('default', 1, 2)).not.toThrow()
+    // 未処理の rejection にもしない（catch が付いていること）
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  })
+})
 
 describe('supportsNativeHls', () => {
   it('WebKit だけが true（セグメントの video/mp2t を demux できるのは WebKit だけ）', () => {

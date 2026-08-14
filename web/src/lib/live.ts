@@ -34,6 +34,48 @@ export function livePlaylistURL(
 }
 
 /**
+ * liveLeaveURL は「このチャンネルを見るのをやめた」というヒントの宛先。
+ *
+ * プレイリスト / セグメントと同じ `(site, networkId, serviceId)` の固定深さ
+ * （セッション ID は URL にもクッキーにも持たない）。id は `livePlaylistURL` と
+ * 同じく **SI の値そのもの**を置く（合成は streamer 側。issue #217）。
+ */
+export function liveLeaveURL(site: string, networkId: number, serviceId: number): string {
+  return (
+    `/api/sites/${encodeURIComponent(site)}` +
+    `/networks/${networkId}/services/${serviceId}/live/leave`
+  )
+}
+
+/**
+ * sendLiveLeaveHint は離脱のヒントを 1 回送る（失敗は無視する）。
+ *
+ * **これは停止命令ではない。** サーバー側はこれを受けてもセッションを止めず、
+ * idle 期限を短い猶予まで詰めるだけ --- 同じチャンネルを見ている別の視聴者が
+ * いれば、その人の次のセグメント要求が期限を元に戻す（`internal/streamer/live.go`
+ * の `Leave`）。したがって「送れなかった」も「余計に送った」も壊れない：前者は
+ * 従来どおり `live.idle_timeout` で回収され、後者は自分の次の要求が期限を戻す。
+ *
+ * **`navigator.sendBeacon` を優先する。** ページ離脱の瞬間（`pagehide` /
+ * `visibilitychange`）に投げる必要があり、その時点の `fetch` はドキュメントの
+ * 破棄で中断されうる。`sendBeacon` はブラウザが送信を引き取るのでこの窓を持たない
+ * （POST しか出せないので、サーバー側もこの口を POST にしてある）。無い環境
+ * （jsdom・古いブラウザ）では `keepalive: true` の `fetch` に落とす。
+ */
+export function sendLiveLeaveHint(site: string, networkId: number, serviceId: number): void {
+  const url = liveLeaveURL(site, networkId, serviceId)
+  if (typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
+    // 本文は無い（宛先の URL が全ての情報を持つ）。戻り値の false（キュー拒否）は
+    // 無視する --- 送れなくても idle GC が従来どおり回収する
+    navigator.sendBeacon(url)
+    return
+  }
+  void fetch(url, { method: 'POST', keepalive: true }).catch(() => {
+    // 離脱時の失敗はユーザーに見せる意味がない（見せる画面がもう無い）
+  })
+}
+
+/**
  * livePlaylistMimeType は streamer がプレイリストに付ける Content-Type
  * （`internal/streamer/live.go`）。
  */

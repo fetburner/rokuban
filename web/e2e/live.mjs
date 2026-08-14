@@ -361,30 +361,55 @@ try {
 
 const hasFixture = ensureFixture()
 if (!hasFixture) {
-  log('ffmpeg が見つからないため、フィクスチャを生成できない。①②③④⑤ をすべて測れないとして報告する')
-  skipped.push('ffmpeg が無いため①②③④⑤すべて未測定')
+  log('ffmpeg が見つからないため、フィクスチャを生成できない。①②③④⑤⑧ をすべて測れないとして報告する')
+  skipped.push('ffmpeg が無いため①②③④⑤⑧すべて未測定')
 }
 
 if (hasFixture) {
   const browser = await chromium.launch()
-  // ①②④⑤ の途中で何が例外を投げても NG として報告し、後続の ③（別ブラウザ）を
+  // ①②④⑤⑧ の途中で何が例外を投げても NG として報告し、後続の ③（別ブラウザ）を
   // 続行する（クラッシュさせない）。実際に「壊してみる」検証で、native HLS
   // 判定を誤らせると `waitForFunction` が例外で落ちることを確認した経緯があるため
   try {
     await runChromiumChecks(browser)
   } catch (err) {
-    ng.push(`①②④⑤ の検証中に例外が発生した: ${err.message}`)
+    ng.push(`①②④⑤⑧ の検証中に例外が発生した: ${err.message}`)
   } finally {
     await browser.close()
   }
 }
 
-/** runChromiumChecks は bundled Chromium で測れる①②④⑤を実行する。 */
+/** runChromiumChecks は bundled Chromium で測れる①②④⑤⑧を実行する。 */
 async function runChromiumChecks(browser) {
   const page = await browser.newPage({ viewport: { width: 960, height: 640 } })
 
   const requestLog = []
   page.on('request', (req) => requestLog.push(req.url()))
+
+  // 離脱ヒント（⑧、issue #191）は `navigator.sendBeacon` で飛ぶ。**requestLog とは
+  // 別に溜める** --- ④ は観測窓を作るために requestLog を途中でクリアするが、
+  // ヒントはまさにそのクリアの直前（チャンネル切り替えの cleanup）で飛ぶので、
+  // 同じ配列に入れると必ず消える。sendBeacon が実際にネットワーク要求として出て
+  // いるか（jsdom では原理的に測れない）を見るのがこの判定の目的である
+  const leaveLog = []
+  page.on('request', (req) => {
+    if (req.url().includes('/live/leave')) leaveLog.push(`${req.method()} ${req.url()}`)
+  })
+  /**
+   * countLeaves は今までに観測した「その serviceId 向けの離脱ヒント」の件数。
+   *
+   * **⑧ は累積の有無ではなく「チャンネル切り替えを跨いで増えたか」で判定する。**
+   * 累積が 1 件以上あることだけを見ると、切り替えと無関係に飛んだヒント
+   * （タブが一瞬 hidden になった等、`visibilitychange` 由来のもの）で合格して
+   * しまい、**送信をやめる実装でも緑になりうる**（レビュー指摘）。差分で見れば、
+   * その回の切り替えが実際にヒントを出したことしか合格の理由にならない。
+   */
+  const countLeaves = (serviceId) =>
+    leaveLog.filter(
+      (entry) =>
+        entry.startsWith(`POST ${BASE_URL}/api/sites/${SITE}/networks/`) &&
+        entry.endsWith(`/services/${serviceId}/live/leave`),
+    ).length
 
   const mode = { playlist: 'ok' }
   await mockLiveRoutes(page, mode)
@@ -450,6 +475,9 @@ async function runChromiumChecks(browser) {
   const requestsBeforeSwitchCount = requestLog.filter((u) => u.includes(segmentsA)).length
   log(`  切替前の A 向けセグメント要求数: ${requestsBeforeSwitchCount}`)
 
+  // ⑧ の基準値。**クリックの直前**に取る（切り替えを跨いだ増分だけを見るため）。
+  const leavesBeforeSwitch = { a: countLeaves(SERVICE_A), b: countLeaves(SERVICE_B) }
+
   await page
     .locator(`nav[aria-label="チャンネル一覧"] a[href*="serviceId=${SERVICE_B}"]`)
     .click()
@@ -482,6 +510,32 @@ async function runChromiumChecks(browser) {
       `④ チャンネル切替後も旧チャンネル（${SERVICE_A}）へのセグメント要求が` +
         `${staleRequestsAfterSwitch.length} 件続いた（cleanup が破棄していない）`,
     )
+  }
+
+  // --- ⑧ 離脱ヒントが実ブラウザから実際に飛ぶ（issue #191） ---
+  log('\n=== ⑧ チャンネル切り替え時の離脱ヒント（sendBeacon） ===')
+  // **jsdom では原理的に測れない部分がここにある。** `navigator.sendBeacon` は
+  // jsdom に存在しないので、ユニットテスト（`live-player.test.tsx`）が見ているのは
+  // 「差し替えた sendBeacon が呼ばれたか」という配線だけ。実ブラウザが本当に
+  // ネットワーク要求として送出するか（キューに載せて捨てないか）はここでしか出ない。
+  // **増分で見る**（累積の有無では、送信をやめる実装でも切り替えと無関係な
+  // ヒント 1 件で緑になりうる。`countLeaves` のコメント参照）。
+  const gainedA = countLeaves(SERVICE_A) - leavesBeforeSwitch.a
+  const gainedB = countLeaves(SERVICE_B) - leavesBeforeSwitch.b
+  log(`  切替前の leave 件数: A=${leavesBeforeSwitch.a} B=${leavesBeforeSwitch.b}`)
+  log(`  切替で増えた leave 件数: A=${gainedA} B=${gainedB}`)
+  log(`  観測した leave 要求: ${leaveLog.length === 0 ? '（なし）' : leaveLog.join(', ')}`)
+  if (gainedA < 1) {
+    ng.push(
+      `⑧ チャンネル切替で旧チャンネル（${SERVICE_A}）への離脱ヒント` +
+        `（POST .../live/leave）が増えていない（切替前 ${leavesBeforeSwitch.a} 件、` +
+        `切替後 ${countLeaves(SERVICE_A)} 件）`,
+    )
+  }
+  // 新しく見ているチャンネル（B）に送ってはならない --- 送ると自分の視聴の
+  // idle 期限を自分で詰めることになる
+  if (gainedB > 0) {
+    ng.push(`⑧ これから見るチャンネル（${SERVICE_B}）にも離脱ヒントが ${gainedB} 件飛んでいる`)
   }
 
   // --- ⑤ 503（本文つき）でエラー文言が出る。再読み込みで復帰する ---
