@@ -20,7 +20,6 @@ import (
 	"slices"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/breaker"
@@ -154,12 +153,13 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 	}
 
 	// winner: programId ごとの勝者ルール（最初にマッチした = priority DESC, id ASC
-	// の全順序で最初のルール）。allMatches: マッチした全ルール（reservation_rule_matches
-	// 用。勝敗と無関係）。ListEnabledRules は既に priority DESC, id ASC で来るので、
-	// 最初に書き込んだルールが常に勝者になる（docs/recording.md §3.1「複数ルール解決」）。
+	// の全順序で最初のルール）。ListEnabledRules は既に priority DESC, id ASC で
+	// 来るので、最初に書き込んだルールが常に勝者になる
+	// （docs/recording.md §3.1「複数ルール解決」）。負けたルールは reservations
+	// のどの列にも供給しないので保持しない --- 必要になれば enabled ルールを
+	// rulequery.MatchProgramIDsForRule で回せば同じ集合が作り直せる。
 	ruleByID := make(map[int64]sqlcgen.Rule, len(rules))
 	winner := make(map[int64]int64)
-	allMatches := make(map[int64][]int64)
 	for _, rule := range rules {
 		ruleByID[rule.ID] = rule
 		matched, err := rulequery.MatchProgramIDsForRule(ctx, r.pool, site, rule.ID)
@@ -170,7 +170,6 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 			if _, exists := winner[programID]; !exists {
 				winner[programID] = rule.ID
 			}
-			allMatches[programID] = append(allMatches[programID], rule.ID)
 		}
 	}
 
@@ -367,10 +366,6 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 		} else {
 			updated++
 		}
-	}
-
-	if err := rewriteRuleMatches(ctx, tx, site, allMatches, skipIntent); err != nil {
-		return fmt.Errorf("rewriting reservation_rule_matches: %w", err)
 	}
 
 	// ユーザー（運用者）が投資を手放す書き込みをしない限り起きない削除を先に、
@@ -583,66 +578,6 @@ func (r *Ruler) stillProjectedSubset(ctx context.Context, q *sqlcgen.Queries, si
 		Site:       site,
 		ProgramIds: candidates,
 	})
-}
-
-// rewriteRuleMatches は reservation_rule_matches を今回のマッチ結果で書き換える。
-// この表に SSE 用の行トリガーはないため、reservations と違い差分書き込みは要求されない
-// （毎パス全部書き直してよい。docs/recording.md §3.1「複数ルール解決」）。
-//
-// 削除はサイト単位の全消し（DeleteReservationRuleMatchesBySite）でなければならない。
-// 「今回マッチした programId」だけを対象にすると、ルールを削除ではなく無効化した
-// （ListEnabledRules から外れる）、あるいはルールの条件を変えてマッチしなくなったが
-// intent/overrides のおかげで予約行が生き残っている、という経路で古いマッチ行が
-// 消されずに残り続ける（導出表を毎パス作り直せていない = CLAUDE.md 不変条件 9 違反。
-// ルール自体の削除は FK CASCADE で救われるのでここでは対象外）。
-//
-// 挿入対象は「ルールにマッチし、かつ intent.skip で desired から除外されていない」番組。
-// skip された番組は予約行そのものを持たないため、マッチのトレースを紐づける先がない。
-func rewriteRuleMatches(ctx context.Context, tx pgx.Tx, site string, allMatches map[int64][]int64, skipIntent map[int64]struct{}) error {
-	q := sqlcgen.New(tx)
-	if err := q.DeleteReservationRuleMatchesBySite(ctx, site); err != nil {
-		return fmt.Errorf("deleting old reservation_rule_matches: %w", err)
-	}
-
-	programIDs := make([]int64, 0, len(allMatches))
-	for programID := range allMatches {
-		if _, skipped := skipIntent[programID]; skipped {
-			continue
-		}
-		programIDs = append(programIDs, programID)
-	}
-	if len(programIDs) == 0 {
-		return nil
-	}
-
-	reservationRows, err := q.ListReservationIDsBySiteAndProgramIDs(ctx, sqlcgen.ListReservationIDsBySiteAndProgramIDsParams{
-		Site:       site,
-		ProgramIds: programIDs,
-	})
-	if err != nil {
-		return fmt.Errorf("listing reservation ids: %w", err)
-	}
-
-	reservationIDByProgram := make(map[int64]int64, len(reservationRows))
-	for _, row := range reservationRows {
-		reservationIDByProgram[row.ProgramID] = row.ID
-	}
-
-	var matchReservationIDs, matchRuleIDs []int64
-	for programID, ruleIDs := range allMatches {
-		reservationID, ok := reservationIDByProgram[programID]
-		if !ok {
-			// 対応する予約行がない（skip 済み or この直前の削除で消えた等）。
-			// マッチの記録先がないので静かにスキップする。
-			continue
-		}
-		for _, ruleID := range ruleIDs {
-			matchReservationIDs = append(matchReservationIDs, reservationID)
-			matchRuleIDs = append(matchRuleIDs, ruleID)
-		}
-	}
-
-	return insertReservationRuleMatches(ctx, tx, matchReservationIDs, matchRuleIDs)
 }
 
 // computeBase は勝者ルールから reservations.base（jsonb）を組む。

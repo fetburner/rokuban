@@ -1,4 +1,4 @@
-> [docs/schema.md](../schema.md)（索引）の分割本文。`rules` 一式（`rules` + 条件の子テーブル 6 つ + `reservation_rule_matches`）。DDL の権威は `internal/db/migrations/00006_rules.sql`（dedupe の値域 CHECK は `00016_dedupe_range_check.sql`）。エンジン側の意味論（評価・重複排除・サイトの扱い）は [録画エンジン](../recording.md) §3・§3.1。
+> [docs/schema.md](../schema.md)（索引）の分割本文。`rules` 一式（`rules` + 条件の子テーブル 6 つ）。DDL の権威は `internal/db/migrations/00006_rules.sql`（dedupe の値域 CHECK は `00016_dedupe_range_check.sql`）。エンジン側の意味論（評価・重複排除・サイトの扱い）は [録画エンジン](../recording.md) §3・§3.1。
 
 ## rules — 録画ルール（永続資産）
 
@@ -122,20 +122,12 @@ CREATE TABLE rule_sites (
 - **`rule_sites` 未指定 = 全サイト。** 実体化はマッチした全サイトで N 予約（複数録画 → ドロップ統計で選別する運用を一級とする。[録画エンジン](../recording.md) §3.1「サイトの扱い」）。サイト名は安定識別子でリネームは運用作業
 - **`rule_sites.site` に FK は張らない。** サイトのレジストリは設定ファイルにあり（§1「サイトスコープ」）、外部に真実があるものは存在を制約できない。**書き込み時のレジストリ照合も現状は無い**: 未知の site 名（タイポ含む）はそのまま保存され、黙ってどのサイトにも一致しない条件になる（`validateRuleInput` は site を検査せず、挿入は空文字列を捨てるだけ）
 
-## reservation_rule_matches — 全マッチの逆引き（導出）
-
-```sql
-CREATE TABLE reservation_rule_matches (
-    reservation_id bigint NOT NULL REFERENCES reservations (id) ON DELETE CASCADE,
-    rule_id        bigint NOT NULL REFERENCES rules (id) ON DELETE CASCADE,
-    PRIMARY KEY (reservation_id, rule_id)
-);
-
-CREATE INDEX ON reservation_rule_matches (rule_id);
-```
-
-- `reservations.rule_id` が持つのは**勝者ルール**のみ。マッチした**全**ルールはこの中間テーブルに入る。「このルールが今どの予約を生んでいるか」の逆引き（ルール削除の影響プレビュー）に使う
-- ruler が毎パス書き換える導出状態なので、FK は**両側** `ON DELETE CASCADE`（base 内の配列に埋め込む案は却下した）
+- **`reservations.rule_id` が持つのは勝者ルールのみ。** 負けたルールは記録しない ---
+  `DeleteReservationsByRuleWithoutIntent` / `CountReservationsByRuleWithIntent`
+  （`internal/db/queries/rules.sql`）はどちらも `reservations.rule_id`（勝者）で
+  引くので、負けたルールを削除も無効化もしても予約は 1 行も変わらない。全マッチの
+  逆引きが必要になれば、enabled ルールを `rulequery.MatchProgramIDsForRule` で
+  回せば同じ集合が作り直せる（ruler が毎パスやっている計算そのもの）
 
 ## 他テーブルへの FK（`00006` で追加）
 
@@ -150,8 +142,7 @@ ALTER TABLE recordings ADD CONSTRAINT recordings_rule_id_fkey
 
 ## 経緯と失敗事例
 
-- `rules` 一式は M2-1（issue #3 / #24）の成果物（`00006`）。`reservation_rule_matches` を
-  中間テーブルにする決定は issue #3 のコメント
+- `rules` 一式は M2-1（issue #3 / #24）の成果物（`00006`）
 - **dedupe の値域 CHECK（`00016`）はコードレビューで発覚した欠落。** `00006` の CHECK は
   `dedupe_enabled = false OR dedupe_threshold IS NOT NULL` しか見ておらず、値そのものの
   範囲は API 層にも DB 層にも無かった。恒真トラップ（閾値 0）は M2-5 のサーキット

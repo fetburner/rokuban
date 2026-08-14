@@ -41,12 +41,11 @@ SELECT program_id FROM reservations WHERE site = $1;
 SELECT program_id FROM program_snapshots
 WHERE site = $1 AND program_id = ANY(sqlc.arg(program_ids)::bigint[]);
 
--- UpsertReservationsFromRulerPass と InsertReservationRuleMatches は
--- jsonb_to_recordset / unnest を使う集合演算 1 文で、sqlc の組み込みアナライザ
--- （実 DB 接続なしのカタログ解析）がこれらの動的レコード型を解決できないため
--- （`column "program_id" does not exist` / `function unnest(unknown, unknown)
--- does not exist` で generate が失敗する）、rulequery パッケージの流儀に倣って
--- internal/ruler/sql.go に生 SQL として置き、pgxpool 経由で直接実行する。
+-- UpsertReservationsFromRulerPass は jsonb_to_recordset を使う集合演算 1 文で、
+-- sqlc の組み込みアナライザ（実 DB 接続なしのカタログ解析）がこの動的レコード型を
+-- 解決できないため（`column "program_id" does not exist` で generate が失敗する）、
+-- rulequery パッケージの流儀に倣って internal/ruler/sql.go に生 SQL として置き、
+-- pgxpool 経由で直接実行する。
 
 -- name: DeleteReservationsBySiteAndProgramIDs :execrows
 -- ルール・program_intents のどちらからも desired でなくなった予約のうち、
@@ -147,10 +146,6 @@ WHERE r.site = $1 AND r.program_id = ANY(sqlc.arg(program_ids)::bigint[])
   )
 RETURNING r.program_id;
 
--- name: ListReservationIDsBySiteAndProgramIDs :many
-SELECT id, program_id FROM reservations
-WHERE site = $1 AND program_id = ANY(sqlc.arg(program_ids)::bigint[]);
-
 -- name: ListEpgProgramIDsBySiteAndProgramIDs :many
 -- 削除候補（desired から外れた既存予約）のうち、EPG プロジェクションに
 -- まだ番組がある = ルールが「マッチしなくなった」と確信を持って判定できるものだけを
@@ -158,21 +153,6 @@ WHERE site = $1 AND program_id = ANY(sqlc.arg(program_ids)::bigint[]);
 -- 凍結する（docs/schema.md「射影にある間は更新、消えたら凍結」を削除判定にも適用）。
 SELECT program_id FROM epg_programs
 WHERE site = $1 AND program_id = ANY(sqlc.arg(program_ids)::bigint[]);
-
--- name: DeleteReservationRuleMatchesBySite :exec
--- reservation_rule_matches はサイト内の予約に紐づく行を毎パス全消しして入れ直す
--- （insertReservationRuleMatchesSQL のコメント参照。この表には SSE 用の行トリガーが
--- ないので差分書き込みは要求されない）。
---
--- 対象を「今回マッチした programId」に絞ると、ルールを削除ではなく無効化した
--- （ListEnabledRules から外れる）、あるいはルールの条件を変えてマッチしなくなったが
--- intent/overrides のおかげで予約行自体は生き残っている、という経路で古いマッチ行が
--- 掃除されずに残り続ける（導出表が毎パス作り直されない = CLAUDE.md 不変条件 9 違反。
--- ルール自体の削除は reservation_rule_matches.rule_id の FK CASCADE で救われるので
--- ここでは対象外でよい）。サイト単位の予約に紐づく行を無条件で全消しすることで、
--- 「今回マッチしなかった」を含めて正しく反映する。
-DELETE FROM reservation_rule_matches
-WHERE reservation_id IN (SELECT id FROM reservations WHERE site = $1);
 
 -- サーキットブレーカー（M2-5）発動時に breaker.Sample へ詰める「何を消そうとしていたか」の
 -- タイトルスナップショットを引く。programId だけでは手動確認する人間が判断できないため
