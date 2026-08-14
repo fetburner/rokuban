@@ -170,12 +170,17 @@ E2E_URL=http://localhost:4173 pnpm e2e:design
   到達すること。`<video>` に `tabIndex` を明示すると（jsdom の focus spy
   では検出できない形で）Tab 走査から外れてしまう退行が M5-4（issue #227）
   で実際に一度起きたため、ここで実ブラウザから固定している
-- 共通 `Button` のフォーカスリング（`:focus-visible` の `ring-3`）が遷移
-  **しない**こと。`transition-all` は CSS が実際に発火するかどうかまでは
-  jsdom はもちろん `getComputedStyle` の 1 回読みでも確認できないため、
-  実ブラウザで `transitionstart` イベント（プロパティ名つき）を観測する ---
-  box-shadow / outline が遷移対象に上がったら NG。両方向として hover の
-  背景色の遷移が従来どおり起きることも同じ手で確認する
+- 共通 `Button` のフォーカスリング（`:focus-visible` の `ring-3` = box-shadow、
+  および `border-ring` = 1px 罫線の border-color）が遷移**しない**こと。
+  `transition-all` は CSS が実際に発火するかどうかまでは jsdom はもちろん
+  `getComputedStyle` の 1 回読みでも確認できないため、ボタン要素に張った
+  `transitionstart` イベント（プロパティ名つき）を実ブラウザで観測する ---
+  box-shadow / outline* / border-*-color のいずれかが遷移対象に上がったら
+  NG（border-color だけを見落としたレビュー指摘が実際にあったため、
+  ロングハンド込みで前方一致を掛けている）。同じ手で両方向を確認する:
+  hover の背景色の遷移は従来どおり起きること、`active:...:translate-y-px`
+  の押下フィードバック（Tailwind v4 では `translate` プロパティにコンパイル
+  される）は遷移し**続ける**こと
 - 測ったコントラストの表。**数値の権威はこの出力**で、docs には転記しない
 - モバイルの「その他」ポップオーバー（`components/app-shell.tsx` の `MoreMenu`）
   を開いた状態の判定。固定されたボトムバーの上に浮くオーバーレイなので、
