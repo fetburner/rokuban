@@ -70,7 +70,7 @@ EPG 更新完了で `reservationManage.updateAll()` を呼び、全手動予約�
 #### 重複排除（再放送スキップ）
 
 - EPGStation#704 の教訓: 囲み文字（:heavy_multiplication_x::heavy_multiplication_x:等）を一律除去する正規化は「前編/後編」の区別まで消して誤判定する。**記号除去 + 完全一致ではなく、pg_trgm の類似度ベース**で設計する（閾値はルール単位で調整可能に）
-- EPGStation#473 の要望（この番組を重複扱いにする / しないを手動で上書きする）のうち、**予約側は実装済み**: `program_intents.action = 'record'` が dedup の `base.skip` に勝つ合成として `db.EffectiveOptions` が解く（§4.2）。**履歴（`recordings`）側の手動オーバーライドは未実装** —— すでに `finished` になった録画を後から「重複としてカウントしない」と印を付ける経路（列・API）は無い。ここは実装前の方針文のまま残す
+- EPGStation#473 の要望（この番組を重複扱いにする / しないを手動で上書きする）のうち、**予約側は実装済み**: `program_intents.action = 'record'` が dedup の `base.skip` に勝つ合成として `db.EffectiveOptions` が解く（§4.2）。**履歴（`recordings`）側の除外印は作らない** —— 誤って抑制された放送は予約側の `action = 'record'` で個別に勝たせればよく、**1 本録れた時点でその録画が新しい抑制元になって以降の再放送はまた弾かれる**（下記「ルールの削除は履歴のスコープを消す」と同じ一過性。`TestRunPass_DedupeRecordIntentThenNewRecordingSuppressesAgain`）ので、特定の録画を比較対象から外す印は同じ状態に恒久の構造を足すだけになる。抑制が 1 本外しても止まらないのは閾値がそのシリーズに対して低いときで、それを直すのは印ではなく `rules.dedupe_threshold` / `dedupe_window` である（外した次に録れた 1 本が同じ抑制元になる）。逆向き（録れていない番組を今後スキップさせる）は紐づける `recording_id` が無く、意味は予約側の `action = 'skip'` そのもの。境界: 予約側の印は射影に出ている放送にしか付けられないので、まだ EPG に無い先の放送を先回りして「重複扱いにしない」とは言えない。
 - 判定に使った根拠（マッチした履歴、類似度）を予約に記録し、UI で「なぜスキップされたか」を説明可能にする
 
 実装は `internal/ruler/dedupe.go`（候補の集合を jsonb で渡す集合演算 1 文）。判定規約:
