@@ -1,8 +1,10 @@
 package api
 
 import (
+	"bufio"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -730,6 +732,239 @@ func TestAllowedHosts_LocalhostAlwaysAllowed(t *testing.T) {
 				t.Errorf("status = %d, want 200", resp.StatusCode)
 			}
 		})
+	}
+}
+
+// alwaysAllowedHosts（localhost 系の常時許可）は既に正規形であるべきで、
+// 将来の編集で非正規形（大文字・末尾ドット付き）が混入していないことを
+// 固定する。正規化を通した結果が自分自身と一致しなければ、
+// alwaysAllowedHosts への一致判定がこの表の意図どおりに働かない。
+func TestAllowedHosts_AlwaysAllowedHostsAreNormalizeHostFixedPoints(t *testing.T) {
+	for _, host := range alwaysAllowedHosts {
+		if got := normalizeHost(host); got != host {
+			t.Errorf("normalizeHost(%q) = %q, want %q (fixed point)", host, got, host)
+		}
+	}
+}
+
+// Host ヘッダーの大文字・小文字の違いは allowlist の一致に影響しない
+// （DNS/HTTP のホスト名は case-insensitive）。
+func TestAllowedHosts_CaseInsensitiveMatch(t *testing.T) {
+	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	for _, host := range []string{"ROKUBAN.LOCAL", "Rokuban.local"} {
+		t.Run(host, func(t *testing.T) {
+			req, err := http.NewRequest("GET", srv.URL+"/api/version", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Host = host
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			if resp.StatusCode != http.StatusOK {
+				t.Errorf("status = %d, want 200（Host の大文字・小文字は無視すべき）", resp.StatusCode)
+			}
+		})
+	}
+}
+
+// allowed_hosts 側に大文字を書いた運用者でも Host が一致すること
+// （設定側の正規化。片側だけ正規化すると運用者が大文字で書いた
+// だけで全リクエストが 400 になる）。
+func TestAllowedHosts_ConfigSideCaseIsNormalized(t *testing.T) {
+	router := NewRouter(RouterConfig{AllowedHosts: []string{"Rokuban.local"}})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	req, err := http.NewRequest("GET", srv.URL+"/api/version", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "rokuban.local"
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200（allowed_hosts に大文字を書いても一致すべき）", resp.StatusCode)
+	}
+}
+
+// 末尾ドット（絶対 FQDN 表記）は DNS 上同じ名前なので許可する。
+func TestAllowedHosts_TrailingDotIsNormalized(t *testing.T) {
+	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	req, err := http.NewRequest("GET", srv.URL+"/api/version", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "rokuban.local."
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200（末尾ドット付きの絶対 FQDN も一致すべき）", resp.StatusCode)
+	}
+}
+
+// trust_forwarded_host: true の経路でも同じ正規化が効く
+// （片側だけ直すと、同じホスト名がプロキシ有無で結果が変わってしまう）。
+func TestAllowedHosts_ForwardedHostIsNormalized(t *testing.T) {
+	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}, TrustForwardedHost: true})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	req, err := http.NewRequest("GET", srv.URL+"/api/version", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "internal-proxy.example.com"
+	req.Header.Set("X-Forwarded-Host", "ROKUBAN.LOCAL.")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200（X-Forwarded-Host にも正規化が掛かるべき）", resp.StatusCode)
+	}
+}
+
+// 正規化は「通す方向」にしか効いてはならない。allowlist 内のホスト名を
+// 部分文字列として含むだけの別ホストは、正規化を足しても引き続き拒否する
+// （fail-open にしていないことの回帰確認。両方向で確認する）。
+func TestAllowedHosts_SuffixAndPrefixStillRejected(t *testing.T) {
+	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	for _, host := range []string{"rokuban.local.evil.com", "evil-rokuban.local"} {
+		t.Run(host, func(t *testing.T) {
+			req, err := http.NewRequest("GET", srv.URL+"/api/version", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Host = host
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Errorf("status = %d, want 400（%s は allowlist に一致してはいけない）", resp.StatusCode, host)
+			}
+		})
+	}
+}
+
+// ホスト名の case-insensitive は ASCII の範囲の規則（RFC 4343）に限る。
+// Unicode の case folding（strings.ToLower）を使うと、非 ASCII 文字が
+// ASCII の allowlist に fail-open で一致してしまう
+// （strings.ToLower("K")、U+212A KELVIN SIGN、は "k" を返す）。
+//
+// この非 ASCII バイト列は `Host` ヘッダーとしては net/http のサーバー側
+// 検証（httpguts.ValidHostHeader / validHostByte）がそもそも弾く
+// （"malformed Host header"）ため、`Host` 経由では HTTP 層で AllowedHosts
+// に到達する前に落ちる。normalizeHost を直接呼んで確認する。
+//
+// ただし `X-Forwarded-Host` は `Host` と違い、net/http のサーバー側検証が
+// `httpguts.ValidHeaderFieldValue` しか掛からず、0x80 以上のバイトを
+// 弾かない。そのためこの非 ASCII バイト列は `trust_forwarded_host: true`
+// の経路では実際に normalizeHost まで到達する（この経路の end-to-end 確認は
+// TestAllowedHosts_ForwardedHostNonASCIICaseFoldingDoesNotBypassAllowlist）。
+func TestNormalizeHost_NonASCIICaseFoldingIsNotFolded(t *testing.T) {
+	// 'k' の代わりに U+212A (KELVIN SIGN) を使う。strings.ToLower はこれを
+	// 'k' に畳み込むが、ASCII のみの正規化では畳み込まれてはいけない。
+	nonASCII := "ro\u212Auban.local"
+	if got := normalizeHost(nonASCII); got == "rokuban.local" {
+		t.Errorf("normalizeHost(%q) = %q, want it NOT to fold to %q (strings.ToLower would)", nonASCII, got, "rokuban.local")
+	}
+}
+
+// nonASCIIForwardedHost は 'k' の代わりに U+212A (KELVIN SIGN) を使う。
+// strings.ToLower はこれを 'k' に畳み込むが、ASCII のみの正規化では
+// 畳み込まれてはいけない。
+const nonASCIIForwardedHost = "roKuban.local"
+
+// レビュー指摘の再現: `X-Forwarded-Host` は `Host` と違い、net/http の
+// サーバー側検証が `httpguts.ValidHeaderFieldValue` しか掛からず、0x80
+// 以上のバイトを弾かない（`Host` 専用の `validHostByte` はここには掛から
+// ない）。そのためこの非 ASCII バイト列は `trust_forwarded_host: true` の
+// 経路では実際に normalizeHost まで到達し、strings.ToLower への先祖返りは
+// fail-open（200）として観測できる
+// （TestNormalizeHost_NonASCIICaseFoldingIsNotFolded だけでは検出できない
+// 経路の end-to-end 確認）。
+func TestAllowedHosts_ForwardedHostNonASCIICaseFoldingDoesNotBypassAllowlist(t *testing.T) {
+	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}, TrustForwardedHost: true})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	req, err := http.NewRequest("GET", srv.URL+"/api/version", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "internal-proxy.example.com"
+	req.Header.Set("X-Forwarded-Host", nonASCIIForwardedHost)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400（X-Forwarded-Host 経由の非 ASCII case folding で allowlist を満たせてはいけない）", resp.StatusCode)
+	}
+}
+
+// レビュー指摘の再現（issue #280 の nc 再現そのもの）。net/http は
+// absolute-form の request-target（`GET http://host/path HTTP/1.1`）が
+// 来ると r.URL.Host を r.Host として採用し、Host ヘッダーは（リクエスト
+// ラインと一致するかに関わらず）常に r.Header から削除する。「Host
+// ヘッダーの allowlist」という前提のままこの経路を受け付けると、Host
+// ヘッダーが allowlist 外でもリクエストラインに allowlist 内のホストを
+// 書くだけで検証をすり抜けられてしまう。この経路を無条件 400 で塞いで
+// いることを、実際に生の HTTP バイト列を送って確認する（nc と等価）。
+func TestAllowedHosts_AbsoluteFormRequestTargetRejected(t *testing.T) {
+	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	conn, err := net.Dial("tcp", srv.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	raw := "GET http://rokuban.local/api/version HTTP/1.1\r\n" +
+		"Host: attacker.example.com\r\n" +
+		"Connection: close\r\n\r\n"
+	if _, err := conn.Write([]byte(raw)); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400（absolute-form の request-target は無条件で拒否すべき）", resp.StatusCode)
 	}
 }
 
