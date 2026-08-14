@@ -21,6 +21,16 @@ import {
 import { EmptyState, ErrorState, ListSkeleton, PageHeader } from '@/components/page'
 import { summarizeRuleConditions } from '@/components/rule-condition-summary'
 import { useToast } from '@/components/toaster'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
@@ -118,7 +128,7 @@ export function RulesPage() {
 }
 
 /**
- * deleteRuleConfirmMessage は削除の確認文を組み立てる。
+ * deleteRuleWarning は削除確認ダイアログの説明文を組み立てる。
  *
  * 重複排除を有効にしたルールでは、削除で**履歴が比較のスコープから外れる**
  * ことを事前に伝える。`recordings.rule_id` はルール削除で NULL に落ち、同じ
@@ -135,13 +145,15 @@ export function RulesPage() {
  *
  * 件数は出さない。削除前に「何件の録画がスコープから外れるか」を数える API は
  * 無いうえ、件数は行動を変えない（引き継がれないという質の情報で足りる）。
+ *
+ * 見出し（「ルール『NAME』を削除しますか？」）は `AlertDialogTitle` 側が持つ
+ * ので、ここは本文（`AlertDialogDescription`）だけを返す。
  */
-function deleteRuleConfirmMessage(rule: Rule): string {
-  const head = `ルール「${rule.name}」を削除しますか？`
-  if (!rule.dedupeEnabled) return head
+function deleteRuleWarning(rule: Rule): string {
+  const base = 'ルールの設定を削除します。取り消せません。'
+  if (!rule.dedupeEnabled) return base
   return (
-    `${head}\n\n` +
-    'このルールの重複排除の履歴も一緒に外れます。同じ条件で作り直しても引き継がれないので、' +
+    `${base}このルールの重複排除の履歴も一緒に外れます。同じ条件で作り直しても引き継がれないので、` +
     '次の再放送を録り直します（新しいルールで 1 本録れれば以降はまた弾かれます）。' +
     '条件を変えたいだけなら「編集」で上書きしてください。'
   )
@@ -188,9 +200,11 @@ function RuleRow({ rule, onEdit }: { rule: Rule; onEdit: () => void }) {
   const toast = useToast()
   const queryClient = useQueryClient()
   const deleteRule = useDeleteRule()
+  const [confirmOpen, setConfirmOpen] = useState(false)
 
   const remove = () => {
-    if (!window.confirm(deleteRuleConfirmMessage(rule))) return
+    // ダイアログは AlertDialogAction（AlertDialogPrimitive.Close ラップ）が
+    // クリックで自動的に閉じるので、ここでは実行の確定のみ行う。
     deleteRule.mutate(
       { id: rule.id },
       {
@@ -282,7 +296,7 @@ function RuleRow({ rule, onEdit }: { rule: Rule; onEdit: () => void }) {
               <DropdownMenuItem
                 variant="destructive"
                 disabled={deleteRule.isPending}
-                onClick={remove}
+                onClick={() => setConfirmOpen(true)}
               >
                 <Trash2 />
                 削除
@@ -291,6 +305,26 @@ function RuleRow({ rule, onEdit }: { rule: Rule; onEdit: () => void }) {
           </DropdownMenu>
         </div>
       </div>
+
+      {/* AlertDialogTrigger ではなく open を直接制御する: トリガーは
+          overflow メニューの中の menuitem であり、選択するとメニュー自体は
+          閉じる。ダイアログの開閉をメニューの寿命に結び付けず、ここで
+          独立に持つ（issue #295: ルール削除の確認を他の破壊的操作と同じ
+          AlertDialog に揃える）。 */}
+      <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>ルール「{rule.name}」を削除しますか？</AlertDialogTitle>
+            <AlertDialogDescription>{deleteRuleWarning(rule)}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>キャンセル</AlertDialogCancel>
+            <AlertDialogAction variant="destructive" onClick={remove}>
+              削除する
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }
@@ -321,26 +355,14 @@ function RuleForm(props: RuleFormProps) {
 
   const formError = draftError(draft) ?? ruleMetaError(meta)
   const pending = createRule.isPending || updateRule.isPending
+  const [matchAllConfirmOpen, setMatchAllConfirmOpen] = useState(false)
 
   const invalidate = () =>
     queryClient.invalidateQueries({ queryKey: getListRulesQueryKey() })
 
-  const save = () => {
-    if (formError !== undefined) return
-
-    // 条件が 1 つも無いルールは全番組にマッチする。編集フォームは条件の
-    // どの次元も必須にしていない（何も指定しない = 「絞り込まない」が
-    // 正しい状態でありうる、検索画面と同じ設計）ため、保存を止めるのではなく
-    // 明示的な確認を挟む。既に削除で同じ window.confirm パターンを使っており、
-    // 一覧の要約表示（`summarizeRuleConditions` が空配列 → 警告バッジ）と
-    // 合わせて「見えない事故」にならないよう二重に手当てする。
-    if (Object.keys(buildSearchRequest(draft)).length === 0) {
-      const proceed = window.confirm(
-        '条件を 1 つも指定していません。このまま保存すると、すべての番組が録画対象になります。続けますか？',
-      )
-      if (!proceed) return
-    }
-
+  // 実際の作成/更新リクエスト。条件なしガードを通過した（or 元々条件が
+  // あった）後の、保存の本体だけを持つ。
+  const doSave = () => {
     const data = buildRuleInput(draft, meta, props.mode === 'edit' ? props.rule : undefined)
     if (props.mode === 'create') {
       createRule.mutate(
@@ -369,6 +391,28 @@ function RuleForm(props: RuleFormProps) {
         },
       )
     }
+  }
+
+  // 条件が 1 つも無いルールは全番組にマッチする。編集フォームは条件の
+  // どの次元も必須にしていない（何も指定しない = 「絞り込まない」が
+  // 正しい状態でありうる、検索画面と同じ設計）ため、保存を止めるのではなく
+  // 明示的な確認を挟む。一覧の要約表示（`summarizeRuleConditions` が
+  // 空配列 → 警告バッジ）と合わせて「見えない事故」にならないよう二重に
+  // 手当てする。
+  //
+  // 確認は `AlertDialog`（非同期）に挟むので、ここでは判定だけ行い、
+  // 実際の送信（`doSave`）はダイアログの「保存する」を押した時にだけ走る。
+  // キャンセルすれば `mutate` は一度も呼ばれず、フォームは編集可能なまま
+  // 残る（保留中の送信も disabled のままの入力もない）。
+  const save = () => {
+    if (formError !== undefined) return
+
+    if (Object.keys(buildSearchRequest(draft)).length === 0) {
+      setMatchAllConfirmOpen(true)
+      return
+    }
+
+    doSave()
   }
 
   return (
@@ -446,6 +490,21 @@ function RuleForm(props: RuleFormProps) {
         {/* 削除はルール行の overflow メニューに移した（issue #227）。編集フォームは
             保存・キャンセルという主操作だけを持つ。 */}
       </div>
+
+      <AlertDialog open={matchAllConfirmOpen} onOpenChange={setMatchAllConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>条件を指定せずに保存しますか？</AlertDialogTitle>
+            <AlertDialogDescription>
+              条件を 1 つも指定していません。このまま保存すると、すべての番組が録画対象になります。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>キャンセル</AlertDialogCancel>
+            <AlertDialogAction onClick={doSave}>保存する</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </form>
   )
 }
