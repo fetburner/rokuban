@@ -404,9 +404,12 @@ async function runChromiumChecks(browser) {
    * しまい、**送信をやめる実装でも緑になりうる**（レビュー指摘）。差分で見れば、
    * その回の切り替えが実際にヒントを出したことしか合格の理由にならない。
    */
-  const countLeaves = (composed) =>
-    leaveLog.filter((entry) => entry === `POST ${BASE_URL}/api/sites/${SITE}/services/${composed}/live/leave`)
-      .length
+  const countLeaves = (serviceId) =>
+    leaveLog.filter(
+      (entry) =>
+        entry.startsWith(`POST ${BASE_URL}/api/sites/${SITE}/networks/`) &&
+        entry.endsWith(`/services/${serviceId}/live/leave`),
+    ).length
 
   const mode = { playlist: 'ok' }
   await mockLiveRoutes(page, mode)
@@ -473,7 +476,7 @@ async function runChromiumChecks(browser) {
   log(`  切替前の A 向けセグメント要求数: ${requestsBeforeSwitchCount}`)
 
   // ⑧ の基準値。**クリックの直前**に取る（切り替えを跨いだ増分だけを見るため）。
-  const leavesBeforeSwitch = { a: countLeaves(composedA), b: countLeaves(composedB) }
+  const leavesBeforeSwitch = { a: countLeaves(SERVICE_A), b: countLeaves(SERVICE_B) }
 
   await page
     .locator(`nav[aria-label="チャンネル一覧"] a[href*="serviceId=${SERVICE_B}"]`)
@@ -517,16 +520,16 @@ async function runChromiumChecks(browser) {
   // ネットワーク要求として送出するか（キューに載せて捨てないか）はここでしか出ない。
   // **増分で見る**（累積の有無では、送信をやめる実装でも切り替えと無関係な
   // ヒント 1 件で緑になりうる。`countLeaves` のコメント参照）。
-  const gainedA = countLeaves(composedA) - leavesBeforeSwitch.a
-  const gainedB = countLeaves(composedB) - leavesBeforeSwitch.b
+  const gainedA = countLeaves(SERVICE_A) - leavesBeforeSwitch.a
+  const gainedB = countLeaves(SERVICE_B) - leavesBeforeSwitch.b
   log(`  切替前の leave 件数: A=${leavesBeforeSwitch.a} B=${leavesBeforeSwitch.b}`)
   log(`  切替で増えた leave 件数: A=${gainedA} B=${gainedB}`)
   log(`  観測した leave 要求: ${leaveLog.length === 0 ? '（なし）' : leaveLog.join(', ')}`)
   if (gainedA < 1) {
     ng.push(
-      `⑧ チャンネル切替で旧チャンネル（${SERVICE_A} = 合成 id ${composedA}）への` +
-        `離脱ヒント（POST .../live/leave）が増えていない（切替前 ${leavesBeforeSwitch.a} 件、` +
-        `切替後 ${countLeaves(composedA)} 件）`,
+      `⑧ チャンネル切替で旧チャンネル（${SERVICE_A}）への離脱ヒント` +
+        `（POST .../live/leave）が増えていない（切替前 ${leavesBeforeSwitch.a} 件、` +
+        `切替後 ${countLeaves(SERVICE_A)} 件）`,
     )
   }
   // 新しく見ているチャンネル（B）に送ってはならない --- 送ると自分の視聴の

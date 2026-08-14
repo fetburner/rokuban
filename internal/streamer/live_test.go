@@ -1359,7 +1359,9 @@ func TestLiveStreamer_LeaveHint_DoesNotKillASessionThatIsStillStartingUp(t *test
 	defer cancel()
 	go func() { _ = ls.Run(ctx) }()
 
-	const serviceID = int64(93)
+	// networkId 0 = mirakc の合成 id が serviceId と一致する（偽 mirakc が
+	// 返す disconnected の id と直接比較できる）。
+	const serviceID = 93
 	type result struct {
 		status int
 		took   time.Duration
@@ -1367,7 +1369,7 @@ func TestLiveStreamer_LeaveHint_DoesNotKillASessionThatIsStillStartingUp(t *test
 	got := make(chan result, 1)
 	go func() {
 		start := time.Now()
-		resp, err := http.Get(playlistURL(srv.URL, serviceID, "h264"))
+		resp, err := http.Get(playlistURL(srv.URL, 0, serviceID, "h264"))
 		if err != nil {
 			got <- result{0, time.Since(start)}
 			return
@@ -1389,7 +1391,7 @@ func TestLiveStreamer_LeaveHint_DoesNotKillASessionThatIsStillStartingUp(t *test
 	// **Playlist が touch() を打った後**にヒントを送る（それより前だと直後の
 	// touch() がヒントを打ち消してしまい、この窓を踏まない）。
 	time.Sleep(700 * time.Millisecond)
-	if code := postLeave(t, srv.URL, serviceID); code != http.StatusNoContent {
+	if code := postLeave(t, srv.URL, 0, serviceID); code != http.StatusNoContent {
 		t.Fatalf("POST leave = %d, want 204", code)
 	}
 
@@ -1410,7 +1412,7 @@ func TestLiveStreamer_LeaveHint_DoesNotKillASessionThatIsStillStartingUp(t *test
 
 	// 逆方向: 起動待ちが終われば、ヒントは普通に効く（待ちの touch が
 	// セッションを永久に免疫にしてしまっていない）。
-	if code := postLeave(t, srv.URL, serviceID); code != http.StatusNoContent {
+	if code := postLeave(t, srv.URL, 0, serviceID); code != http.StatusNoContent {
 		t.Fatalf("POST leave (after startup) = %d, want 204", code)
 	}
 	select {
@@ -1435,8 +1437,8 @@ func TestLiveStreamer_LeaveHint_ClippedGraceIsNoOp(t *testing.T) {
 	}
 	ls, srv := newTestLiveStreamer(t, mirakcSrv.URL, cfg)
 
-	const serviceID = int64(66)
-	segURL := firstSegmentURL(t, playlistURL(srv.URL, serviceID, "h264"))
+	const serviceID = 66
+	segURL := firstSegmentURL(t, playlistURL(srv.URL, 0, serviceID, "h264"))
 	if got := ls.sessionCount(); got != 1 {
 		t.Fatalf("sessionCount before the hint = %d, want 1", got)
 	}
@@ -1470,7 +1472,7 @@ func TestLiveStreamer_LeaveHint_ClippedGraceIsNoOp(t *testing.T) {
 	// B が離脱ヒントを投げる。A は見続けている。
 	shortenedBefore := counterValue(t, metrics.LiveLeaveHints.WithLabelValues("deadline_shortened"))
 	noEffectBefore := counterValue(t, metrics.LiveLeaveHints.WithLabelValues("no_effect"))
-	if code := postLeave(t, srv.URL, serviceID); code != http.StatusNoContent {
+	if code := postLeave(t, srv.URL, 0, serviceID); code != http.StatusNoContent {
 		t.Fatalf("POST leave = %d, want 204", code)
 	}
 	// **効かなかったヒントを「詰めた」と数えない**（メトリクスは実際に起きたことを
@@ -1618,13 +1620,29 @@ func TestLiveStreamer_LeaveHint_DoesNotStopTheSession(t *testing.T) {
 	cfg := baseLiveConfig(t)
 	ls, srv := newTestLiveStreamer(t, mirakcSrv.URL, cfg)
 
-	const serviceID = 77
-	segURL := firstSegmentURL(t, playlistURL(srv.URL, 0, serviceID, "h264"))
+	// **networkId を 0 以外にする唯一のテスト。** ヒントの宛先はプレイリスト /
+	// セグメントと同じ `(site, networkId, serviceId)` で、mirakc 合成 id への変換も
+	// 同じ resolveRequest を通る（issue #217）。networkId が宛先の一部として
+	// 効いていることを、下の「別 networkId のヒントは届かない」で確かめる。
+	const networkID, serviceID = 4, 77
+	segURL := firstSegmentURL(t, playlistURL(srv.URL, networkID, serviceID, "h264"))
 	if got := ls.sessionCount(); got != 1 {
 		t.Fatalf("sessionCount before the hint = %d, want 1", got)
 	}
 
-	if code := postLeave(t, srv.URL, 0, serviceID); code != http.StatusNoContent {
+	// 同じ serviceId でも networkId が違えば別サービスなので、このセッションには
+	// 届かない（`no_session` として 204 を返すだけ）。届いてしまうと、隣の
+	// ネットワークの視聴者がこのセッションの期限を詰められることになる。
+	noSessionBefore := counterValue(t, metrics.LiveLeaveHints.WithLabelValues("no_session"))
+	if code := postLeave(t, srv.URL, networkID+1, serviceID); code != http.StatusNoContent {
+		t.Fatalf("POST leave (other network) = %d, want 204", code)
+	}
+	if got := counterValue(t, metrics.LiveLeaveHints.WithLabelValues("no_session")); got != noSessionBefore+1 {
+		t.Errorf("rokuban_live_leave_hints_total{result=no_session} = %v, want %v (a hint addressed to another networkId must not reach this session)",
+			got, noSessionBefore+1)
+	}
+
+	if code := postLeave(t, srv.URL, networkID, serviceID); code != http.StatusNoContent {
 		t.Fatalf("POST leave = %d, want 204", code)
 	}
 	now := time.Now()
