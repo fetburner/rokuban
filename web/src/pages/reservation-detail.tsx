@@ -18,7 +18,7 @@ import { ReservationSkipReason } from '@/components/reservation-skip-reason'
 import { useToast } from '@/components/toaster'
 import { Button } from '@/components/ui/button'
 import { formatDateTime, formatDuration } from '@/lib/format'
-import { stateLabels } from '@/pages/reservations'
+import { stateLabels } from '@/lib/reservation-labels'
 
 /**
  * reservationDetailQueryKey は単体ページ自身のクエリキー。

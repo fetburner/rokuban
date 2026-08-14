@@ -9,20 +9,8 @@ import { EmptyState, ErrorState, ListSkeleton, PageHeader } from '@/components/p
 import { ReservationSkipBadge } from '@/components/reservation-skip-reason'
 import { coveringWindow } from '@/lib/capacity'
 import { formatDateTime, formatDuration } from '@/lib/format'
+import { stateLabels } from '@/lib/reservation-labels'
 import { cn } from '@/lib/utils'
-
-/**
- * stateLabels は reservations.state の表示名（docs/schema.md §3）。
- *
- * 予約詳細（`pages/reservation-detail.tsx`）もこの表示名で状態を出す ---
- * 一覧と詳細で同じ状態が別の表記（生の enum 値など）で出ると利用者が
- * 混乱するので、ここでの定義を export してそのまま再利用する（issue #300）。
- */
-export const stateLabels: Record<Reservation['state'], string> = {
-  active: '有効',
-  detached: 'ルール外',
-  orphaned: 'EPG から消失',
-}
 
 export function ReservationsPage() {
   const query = useListReservations()
