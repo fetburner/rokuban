@@ -21,7 +21,11 @@
   doc コメント）を roles の分だけ合計する。monolith（`--all`）は全ロール分の合計になる。
   `db.max_conns` を明示指定する場合、watcher/worker/notifier はプロセスの生存期間中コネクションを
   1 本専有し続ける（advisory lock / River の LISTEN）ため、専有分の合計 + 他の仕事のための余地 1 本を
-  下回ると起動時 fail-fast する（`internal/db.minRequiredConns`）
+  下回ると起動時 fail-fast する（`internal/db.minRequiredConns`）。**worker のこの専有分は固定 1 本
+  ではない** --- River の LISTEN 用の 1 本に加えて、実行中の ingest ジョブ 1 本ごとに rel_path の
+  advisory lock 用コネクションを転送が終わるまで長期保持する（`internal/worker/relpath_lock.go`、
+  docs/recording/ingest.md §5.3）。多サイト構成で site 数 × ingest 並列が効くので、`db.max_conns`
+  を絞る運用ではこの分も見込んで余地を確保すること
 - **API 系クエリに `statement_timeout`** を設定する。クエリ単位の context timeout だと「付け忘れた 1 本」が
   必ず生まれるため、接続の `RuntimeParams`（起動パケットの session default）で一括適用する
   （`db.api_statement_timeout`、未指定なら 30s）。**api ロールを含むプロセスのプール全体に適用される**

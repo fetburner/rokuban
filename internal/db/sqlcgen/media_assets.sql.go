@@ -138,7 +138,8 @@ SELECT recording_id FROM media_assets
 WHERE rel_path = $1 AND state <> 'deleted'
 `
 
-// ingest の宛先事前チェック用（issue #197）。os.Create で宛先ファイルを開く前に、
+// ingest の宛先事前チェック用（issue #197）。worker/ingest.go の Work が
+// rel_path の advisory lock を取得した後・os.Create で宛先ファイルを開く前に、
 // 別のまだ削除されていない（state <> 'deleted'。'active' に限らず、
 // delete_reconcile の unlink 前後の中間状態である 'deleting' も含む）
 // media_asset が同じ rel_path を既に使っていないかを確認する。名前を
@@ -146,9 +147,16 @@ WHERE rel_path = $1 AND state <> 'deleted'
 // クエリ（state = 'active' を厳密に見る）と述語が違うことを名前からも
 // 分かるようにするため（PR #267 のレビュー指摘: "active" という語だと
 // 'deleting' 行にも発火する事実とずれる）。
-// **正しさの根拠ではない**（先読みと実際の INSERT の間に別ジョブが commit
-// しうる TOCTOU の窓がある。窓に落ちると両方が transfer を始めうるので、
-// 先行ファイルの破損まではこの SELECT では守れない）。正しさの根拠は
+//
+// **ingest 対 ingest に関しては、これはもはや先読みではなく決着そのもの**
+// （issue #281）。Work はこの SELECT を呼ぶ前に同じ relPath の advisory lock
+// を commit まで保持し続けるので、他の ingest ジョブがこの relPath への
+// 転送を同時に始めることはもう起こらない。ここで拾うのは「別の recording が
+// 過去にこの rel_path を使って既にコミットした」という恒久的な衝突である。
+// **ただし delete_reconcile の状態遷移に対しては、従来どおりヒントのまま**
+// --- delete_reconcile は advisory lock を取らないので、この SELECT と
+// 実際の CreateMediaAsset の INSERT の間に 'deleting' → 'deleted' の遷移が
+// 進む TOCTOU の窓は残る。正しさの根拠は常に
 // CREATE UNIQUE INDEX ON media_assets (rel_path) WHERE state <> 'deleted'
 // （00002_schema_v1.sql）であり、ここが競合を見逃しても最終的な INSERT が
 // 23505 で media_assets の行の一意性だけは確実に守る。ここでの
