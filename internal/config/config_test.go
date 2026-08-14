@@ -413,6 +413,39 @@ mirakcs:
 		}
 	})
 
+	// site 名の上限は 53 文字（River のキュー名上限 64 から、site 修飾される論理
+	// キューのうち最長の prefix `reconciler_`（11 文字）を引いた値。
+	// MirakcSiteNameMaxLen のコメント参照）。レジストリに載っているだけで
+	// `--sites` に束縛されていない site 名も、ロード時のこの検査の対象になる。
+	t.Run("site name of exactly 53 characters (MirakcSiteNameMaxLen) is accepted", func(t *testing.T) {
+		name53 := strings.Repeat("a", 53)
+		path := writeConfig(t, mirakcsBase+`
+mirakcs:
+  - site: "`+name53+`"
+    url: http://a:40772
+`)
+		_, err := Load(path)
+		if err != nil {
+			t.Fatalf("unexpected error for a 53-char site name: %v", err)
+		}
+	})
+
+	t.Run("site name of 54 characters (one over MirakcSiteNameMaxLen) is rejected at load time", func(t *testing.T) {
+		name54 := strings.Repeat("a", 54)
+		path := writeConfig(t, mirakcsBase+`
+mirakcs:
+  - site: "`+name54+`"
+    url: http://a:40772
+`)
+		_, err := Load(path)
+		if err == nil {
+			t.Fatal("expected error for a 54-char site name, got nil")
+		}
+		if !strings.Contains(err.Error(), name54) {
+			t.Errorf("error = %v, want mention of the offending site name", err)
+		}
+	})
+
 	t.Run("missing url in a mirakcs entry is an error", func(t *testing.T) {
 		path := writeConfig(t, mirakcsBase+`
 mirakcs:
