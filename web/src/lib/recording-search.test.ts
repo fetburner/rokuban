@@ -78,7 +78,8 @@ describe('parseRecordingsSearch', () => {
   })
 
   // rules.id は bigint（Go 側 int64 バインド）なので、非整数を送ると 400 になる。
-  // Number.isFinite だけでは 1.5 を通してしまうので Number.isInteger も見る。
+  // Number.isFinite だけでは 1.5 を通してしまうので Number.isSafeInteger も見る
+  // （isInteger も含む上位互換。issue #275 で isSafeInteger に揃えた）。
   it('非整数の ruleId は落とす', () => {
     expect(parseRecordingsSearch({ ruleId: 1.5 })).toEqual({})
     expect(parseRecordingsSearch({ ruleId: '1.5' })).toEqual({})

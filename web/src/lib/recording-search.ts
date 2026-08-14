@@ -103,9 +103,11 @@ function parseEnum<T extends string>(raw: unknown, allowed: readonly T[]): T | u
 /**
  * parseRuleId は `ruleId` を「正の安全整数」として受け取る（`lib/positive-id.ts` の
  * `parsePositiveIntId`）。`rules.id` は `bigint` PK（Go 側 `int64` にバインドされる）
- * かつシーケンス由来で 1 以上しか存在しないので、`parsePositiveIntId` が課す
- * 「空文字/空白は先に弾く・`Number.isSafeInteger`・`n > 0`」の 3 条件がそのまま
- * `rules.id` の定義域と一致する。
+ * かつシーケンス由来で 1 以上しか存在しないが、`parsePositiveIntId` は受理範囲を
+ * `bigint` の全域ではなく `1..Number.MAX_SAFE_INTEGER` へ意図的に狭める。
+ * `Number.MAX_SAFE_INTEGER` を超える値は JS の `number` で正確に表せず、
+ * サーバーに存在する `rules.id` そのものではなく「丸められた別の値」になる
+ * ため、狭い方に倒して落とす。
  *
  * `routes.tsx` の `/search` の `ruleId`（`?ruleId=N` でルールの条件を検索画面へ
  * 写す導線。issue #24 M2-11、issue #194 で明示 `undefined` に揃えた）と `/live` の
