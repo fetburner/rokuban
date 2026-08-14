@@ -877,16 +877,57 @@ func TestAllowedHosts_SuffixAndPrefixStillRejected(t *testing.T) {
 // ASCII の allowlist に fail-open で一致してしまう
 // （strings.ToLower("K")、U+212A KELVIN SIGN、は "k" を返す）。
 //
-// この非 ASCII バイト列は net/http のサーバー側 Host ヘッダー検証
-// （validHostByte）がそもそも弾く（"malformed Host header"）ため、HTTP 層
-// 経由では AllowedHosts に到達する前に落ちてしまい、strings.ToLower への
-// 先祖返りを検出できない。normalizeHost を直接呼んで確認する。
+// この非 ASCII バイト列は `Host` ヘッダーとしては net/http のサーバー側
+// 検証（httpguts.ValidHostHeader / validHostByte）がそもそも弾く
+// （"malformed Host header"）ため、`Host` 経由では HTTP 層で AllowedHosts
+// に到達する前に落ちる。normalizeHost を直接呼んで確認する。
+//
+// ただし `X-Forwarded-Host` は `Host` と違い、net/http のサーバー側検証が
+// `httpguts.ValidHeaderFieldValue` しか掛からず、0x80 以上のバイトを
+// 弾かない。そのためこの非 ASCII バイト列は `trust_forwarded_host: true`
+// の経路では実際に normalizeHost まで到達する（この経路の end-to-end 確認は
+// TestAllowedHosts_ForwardedHostNonASCIICaseFoldingDoesNotBypassAllowlist）。
 func TestNormalizeHost_NonASCIICaseFoldingIsNotFolded(t *testing.T) {
 	// 'k' の代わりに U+212A (KELVIN SIGN) を使う。strings.ToLower はこれを
 	// 'k' に畳み込むが、ASCII のみの正規化では畳み込まれてはいけない。
 	nonASCII := "ro\u212Auban.local"
 	if got := normalizeHost(nonASCII); got == "rokuban.local" {
 		t.Errorf("normalizeHost(%q) = %q, want it NOT to fold to %q (strings.ToLower would)", nonASCII, got, "rokuban.local")
+	}
+}
+
+// nonASCIIForwardedHost は 'k' の代わりに U+212A (KELVIN SIGN) を使う。
+// strings.ToLower はこれを 'k' に畳み込むが、ASCII のみの正規化では
+// 畳み込まれてはいけない。
+const nonASCIIForwardedHost = "roKuban.local"
+
+// レビュー指摘の再現: `X-Forwarded-Host` は `Host` と違い、net/http の
+// サーバー側検証が `httpguts.ValidHeaderFieldValue` しか掛からず、0x80
+// 以上のバイトを弾かない（`Host` 専用の `validHostByte` はここには掛から
+// ない）。そのためこの非 ASCII バイト列は `trust_forwarded_host: true` の
+// 経路では実際に normalizeHost まで到達し、strings.ToLower への先祖返りは
+// fail-open（200）として観測できる
+// （TestNormalizeHost_NonASCIICaseFoldingIsNotFolded だけでは検出できない
+// 経路の end-to-end 確認）。
+func TestAllowedHosts_ForwardedHostNonASCIICaseFoldingDoesNotBypassAllowlist(t *testing.T) {
+	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}, TrustForwardedHost: true})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	req, err := http.NewRequest("GET", srv.URL+"/api/version", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "internal-proxy.example.com"
+	req.Header.Set("X-Forwarded-Host", nonASCIIForwardedHost)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400（X-Forwarded-Host 経由の非 ASCII case folding で allowlist を満たせてはいけない）", resp.StatusCode)
 	}
 }
 
