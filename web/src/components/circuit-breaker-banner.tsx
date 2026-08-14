@@ -80,7 +80,7 @@ export function CircuitBreakerBanner() {
       </p>
       <ul className="divide-y divide-destructive/20">
         {breakers.map((breaker) => (
-          <BreakerRow key={breaker.name} breaker={breaker} />
+          <BreakerRow key={`${breaker.site}:${breaker.name}`} breaker={breaker} />
         ))}
       </ul>
     </div>
