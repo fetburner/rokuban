@@ -178,10 +178,13 @@ type ListUnsatisfiableEncodeProfilesRow struct {
 // 数を出さないと「エンコードされない録画」が静かに増える（過去に塞いだ
 // 症状そのものを、別の原因で再現してしまう）。
 //
-// ここに数えられる録画の原本は until_encoded_deletable_originals（00032）に
-// とっても永久に「揃っていない」ため、削除エンジンは原本を保持し続ける
-// （安全側の仕様。docs/storage/retention.md §保持ポリシー）。この数はその
-// 「回収されない原本」の件数でもある。
+// この値はプロファイル名別の該当録画数で、keep_original を問わず数える
+// （`always` の録画も含むので「回収されない原本の件数」そのものではない。
+// 1 録画が複数の消えたプロファイルを凍結していれば複数のラベルにまたがって
+// 数えられるため、ラベル間で単純合計すると録画数を超える）。この中の
+// until_encoded 録画は until_encoded_deletable_originals（00032）にとっても
+// 永久に「揃っていない」ため、原本が回収されない
+// （docs/storage/retention.md §保持ポリシー）。
 //
 // `want.profile::text` の明示キャストは必須（sqlc は unnest 由来の列型を
 // 推論できず interface{} で生成する。CLAUDE.md「sqlc は式の型を推論しきれない」）。

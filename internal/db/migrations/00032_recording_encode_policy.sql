@@ -66,11 +66,15 @@ WHERE a.kind = 'original'
   -- 意図したエンコードが 1 つも存在しない録画の原本が一斉に削除可能になる。
   -- config の 1 行の編集が原本ファイルという不可逆な喪失を引き起こす経路を
   -- 開けるより、容量が回収されない（可逆 --- プロファイル名を戻せば次の
-  -- reconcile で揃う）方を選ぶ。したがって「凍結済み desired に、現在の設定に
-  -- 存在しないプロファイルが含まれる」録画は、このビューにとって永久に
-  -- 「揃っていない」ため原本を保持し続ける。該当件数は
-  -- ListUnsatisfiableEncodeProfiles（internal/db/queries/encode_reconcile.sql）が
-  -- 可視化する（docs/storage/retention.md §保持ポリシー）。
+  -- reconcile で揃う）方を選ぶ。したがって「凍結済み desired に含まれる、
+  -- 現在の設定に存在しないプロファイルについて、その名前の active な encoded が
+  -- まだ無い」録画は、このビューにとって永久に「揃っていない」ため原本を保持し
+  -- 続ける（その encoded が既にコミット済みなら、view はプロファイル名が現在の
+  -- 設定にあるかを見ないので通常どおり削除対象になる --- 永久に保持されるのは
+  -- 「意図したエンコードが 1 つも存在しない」録画に限る）。該当件数は
+  -- ListUnsatisfiableEncodeProfiles（internal/db/queries/encode_reconcile.sql、
+  -- 同じく active な encoded の NOT EXISTS を条件に持つ）が可視化する
+  -- （docs/storage/retention.md §保持ポリシー）。
   --
   -- 同じ「desired が全部揃っているか」の述語は
   -- ListRecordingsMissingEncodes / ListUnsatisfiableEncodeProfiles にもあるが、
