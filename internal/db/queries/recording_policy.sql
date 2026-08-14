@@ -19,11 +19,21 @@
 -- 参照にも使わない）。program_snapshots で (network_id, service_id, event_id)
 -- → program_id を引き、reservations を program_id で結合する。
 --
--- program_snapshots は放送後 GC される寿命の短い表（docs/storage.md §6 参照）
--- だが、ingest は録画終了直後に走るため、この JOIN が失敗するのは
--- 「そもそも予約が無い録画」（手動起動）か「GC が想定より早く走った」場合に
--- 限られる。前者は日常的に起きるので呼び出し側は :one の pgx.ErrNoRows を
--- 期待して分岐する。
+-- program_snapshots は放送後 epg.retention_grace（既定 24h）で GC される寿命の
+-- 短い表（docs/storage.md §6 参照）で、ingest は通常なら録画終了直後に走る。
+-- この JOIN が失敗する原因は 3 つある:
+--
+--   1. そもそも予約が無い録画（手動起動）。日常的に起きるので呼び出し側は
+--      :one の pgx.ErrNoRows を期待して分岐する
+--   2. GC が想定より早く走った、または予約が恒久的に削除された
+--   3. **GC は設計どおりに走ったが、ingest がエッジの滞留で猶予を跨いで遅れた**
+--      （issue #214）。エッジのリングバッファは回線断・クラウド側障害での
+--      N 日の滞留を前提にサイジングするので、これは異常系ではなく設計が
+--      明示的に許容するシナリオ。docs/storage.md §6「凍結が依存する寿命と、
+--      エッジの滞留の交点」
+--
+-- 3 を「ingest は録画終了直後に走るので起こらない」と書いていたのが #214 の
+-- 発端なので、この列挙を「〜に限られる」の形に戻さない。
 -- name: GetReservationEncodePolicyByEvent :one
 SELECT sqlc.embed(r), i.action AS intent_action, o.overrides AS overrides
 FROM program_snapshots ps

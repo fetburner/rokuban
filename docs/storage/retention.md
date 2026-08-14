@@ -12,9 +12,9 @@
 
 **予約をどのキーで引くか**: `resolveAndSnapshotEncodePolicy` は予約を `reservations.id` への FK ではなく、放送イベントキー `(site, network_id, service_id, event_id)` で引く。`reservations.id` は ruler の導出削除・再実体化（EPG フリッカー、ルール編集、dedup）で変わりうる不安定な値（CLAUDE.md 不変条件 9「identity」: 導出器が作るキーで引かない）で、録画開始から ingest 完了までの窓（番組の尺ぶん、数時間）でこれが起きると FK は予約を見失う。放送イベントキーは `recordings` が録画開始時から凍結して持つ列（導出器が作るキーではない）なので、予約の再実体化を跨いでも変わらない。
 
-具体的には `program_snapshots` で `(network_id, service_id, event_id)` → `program_id` を引き、`reservations` を `program_id` で結合する（`GetReservationEncodePolicyByEvent`、`internal/db/queries/recording_policy.sql`）。`program_snapshots` は放送後 `epg.retention_grace`（既定 24h）で GC される寿命の短い表（[スキーマ](../schema.md) §3「射影にある間は更新、消えたら凍結」）だが、ingest は録画終了直後 --- GC の猶予期間より十分前 --- に走るため、この前提は通常経路では効かない。
+具体的には `program_snapshots` で `(network_id, service_id, event_id)` → `program_id` を引き、`reservations` を `program_id` で結合する（`GetReservationEncodePolicyByEvent`、`internal/db/queries/recording_policy.sql`）。`program_snapshots` は放送後 `epg.retention_grace`（既定 24h）で GC される寿命の短い表（[スキーマ](../schema.md) §3「射影にある間は更新、消えたら凍結」）で、ingest は通常なら録画終了直後 --- GC の猶予期間より十分前 --- に走る。**ただし「通常なら」であって、滞留の設計はこれを超える遅延を明示的に許容している**（下記「凍結が依存する寿命と、エッジの滞留の交点」）。
 
-`recordings.source`（`DeriveRecordingSource`、`internal/db/recording_source.go`）はこの JOIN 失敗の異常度を判定する軸として使える場面が半分しかない。`source = 'rule'` は「作成時点で予約があり、かつ `program_intents.action = 'record'` の行が無かった」を意味するので、JOIN が失敗するのは常に異常系（GC が想定より早く走った、または予約が恒久的に削除された）で `slog.Warn` に識別子（site/network_id/service_id/event_id）と recording_id を残す。一方 `source = 'manual'` は「intent が `action = 'record'` だった（予約の有無に関わらず）」と「そもそも予約が最初から無かった」（手動起動、日常的）という区別できない 2 つの経路を 1 つの値に潰しているため、JOIN 失敗が異常かどうか判定できない。前者（ユーザーが手動予約して encodeProfiles を指定した録画）で解決に失敗すると静かにエンコードされない状態がそのまま残ってしまうので、`source = 'manual'` でも黙って return せず `slog.Info` に同じ識別子を残す。
+`recordings.source`（`DeriveRecordingSource`、`internal/db/recording_source.go`）はこの JOIN 失敗の異常度を判定する軸として使える場面が半分しかない。`source = 'rule'` は「作成時点で予約があり、かつ `program_intents.action = 'record'` の行が無かった」を意味するので、JOIN が失敗するのは常に「**予約はあったのに引けなくなった**」を意味し、`slog.Warn` に識別子（site/network_id/service_id/event_id）と recording_id を残す。原因は 3 つ: (a) GC が想定より早く走った、(b) 予約が恒久的に削除された、(c) **GC は設計どおりに走ったが ingest が猶予を跨いで遅れた**（下記「凍結が依存する寿命と、エッジの滞留の交点」。異常系ではなく設計が許容するシナリオだが、エンコードが投入されない点は同じ）。一方 `source = 'manual'` は「intent が `action = 'record'` だった（予約の有無に関わらず）」と「そもそも予約が最初から無かった」（手動起動、日常的）という区別できない 2 つの経路を 1 つの値に潰しているため、JOIN 失敗が異常かどうか判定できない。前者（ユーザーが手動予約して encodeProfiles を指定した録画）で解決に失敗すると静かにエンコードされない状態がそのまま残ってしまうので、`source = 'manual'` でも黙って return せず `slog.Info` に同じ識別子を残す。
 
 **retention reconcile ループ**（worker の cleanup 系ジョブ）が定期的に走り、次を**すべて**満たす原本アセットを削除する:
 
@@ -23,6 +23,37 @@
 3. 原本を入力とする実行中・再試行中のジョブがない
 
 命令的なジョブチェーン（最後のエンコードジョブが削除ジョブを投入）だと、複数プロファイル時の「全部終わったら」の fan-in・途中失敗・再実行で壊れやすい。レベルトリガーなら「観測された派生物の集合 >= 望ましい集合」を毎回評価するだけで、どこで落ちても収束する。
+
+### 凍結が依存する寿命と、エッジの滞留の交点
+
+凍結の JOIN 先（`program_snapshots` と、そこへの FK CASCADE で連なる `reservations` / `program_intents` / `program_overrides`）の**行の寿命は放送の時計**で決まる（`start_at + duration_ms` + `epg.retention_grace`）。一方、その最後の読者である ingest がいつ走るかは**エッジの排出の時計**で決まり、エッジのリングバッファは「回線断・クラウド側障害で未 ingest の record が N 日分溜まる」ことを前提にサイジングする（[運用](../operations.md) §4「録画バッファのサイジング」）。2 つの時計の間には制約が書かれていない。交点はこう書ける:
+
+> **encode 意図が生き残る滞留の上限は `epg.retention_grace`（既定 24h）であって、リングバッファの N 日ではない。滞留を N 日まで許すつもりなら `epg.retention_grace >= N` にする。**
+
+GC 済みのスナップショットの上で ingest が走った場合に何が起きるか（括弧内は確認しているテスト）:
+
+- encode policy は既定値 `keep_original='always'` / `encode_profiles=[]` で凍結される（`TestIngestWorker_SnapshotGCedBeyondGrace_FreezesDefaults` / `TestIngestWorker_NoReservation_LeavesEncodePolicyDefault`）。**原本は残るのでデータは失われず、エンコードだけが投入されない**
+- 落ちるのは encode 意図だけではない。復帰時に `recordings` 行を作る `internal/watcher` の `createRecording` も同じ GC 済みの予約を引くので、ルール由来の録画でも `source` が `manual` に倒れ `rule_id` が NULL になる（`TestProcessRecord_ReservationGCedBeyondGrace_SourceManual`）
+- したがって**その録画のログは `slog.Warn` ではなく `slog.Info`** になる（`TestIngestWorker_LogsInfoWhenManualSourceReservationUnresolvable`）。上記「`source = 'rule'` なら Warn」が実際に出るのは、**録画開始時には予約が生きていて、ingest だけが猶予を跨いで遅れた**場合（上の原因 (c) のうち観測が届いていたぶん）に限られる。この 2 段（GC → `manual` → Info）を 1 本で通すテストは無い（パッケージ境界。上記 2 テストの合成である）
+- 事後回復は `POST /api/recordings/{id}/encode-profiles`（下記「凍結の例外: 事後追加」。追加のみ）**だけ**。**`encode_reconcile`（desired−observed の定期パス。[ingest](../recording/ingest.md) §5.5）はこのケースを回復しない** —— `ListRecordingsMissingEncodes`（`internal/db/queries/encode_reconcile.sql`）が `cardinality(encode_profiles) > 0` を要求するので、既定値（`encode_profiles = '{}'`）で凍結された録画はそもそも候補に入らない。desired が空である以上「欠けている派生物」も無く、バックストップとしては正しい振る舞いだが、**失われた意図は誰も取り戻さない**
+
+**GC 側を滞留と連動させる案（未 ingest の `record_sync` が指す放送イベントのスナップショットを刈らない）は採らない。** 留め置きの根拠にできるのは `record_sync` 行であり、それは watcher が mirakc を観測して初めて作られる（`internal/watcher/watcher.go` の `processRecord` 入口の `AcquireRecordSync` が status を問わず作り、`Sweep` は進行中の record も列挙する）。したがって:
+
+- **断が始まる前に一度でも観測された record にはアンカーがある** —— この分は案 1 でも留め置ける（`status='recording'` の段階で観測されていれば足りる）
+- **断の最中に始まった録画にはアンカーが無い。** 行ができるのは復帰後で、そのときには GC は済んでいる（`runGC` は ruler のサイトパスが失敗しても実行され、削除条件は時計の比較だけ）
+
+つまり**正しい分割は「リンクが生きているか」ではなく「その record の観測が届いていたか」**で、数日の断ではその大半が未観測になるので、案 1 は主要部分を塞げない。加えて `DeleteEndedProgramSnapshots`（この表から行を消す唯一の経路。`internal/db/queries/program_snapshots.sql`）が `record_sync` の状態に依存し、ingest が恒久的に完了しない record がスナップショットと予約を無期限にピン留めする漏れができる。
+
+同じ理由で**凍結を録画開始時へ前倒す案も採らない**（`recordings` 行の生成も watcher の観測に依存するので、断の最中に始まった録画ではクラウドから見た「録画開始時」が「復帰時」になる）。加えて[録画エンジン](../recording.md) §4.5 の「録画開始後の変更でも ingest 完了までは効く」を失う。`epg.retention_grace` を上げることは、この 2 案が塞げる範囲と塞げない未観測ぶんの両方を 1 つの数で覆う。
+
+**ただし「上げれば済む」ではない。既定は上げない** —— コストは滞留を N 日許す構成にだけ課す:
+
+- `reservations` / `program_snapshots` / `program_intents` / `program_overrides` の行が「予約された番組数 × N 日」ぶん長く残る。時間窓で絞らずこれらを読む経路がある（`ListCapacityDemand` / `ListCapacityDemandAllSites`）
+- **同じキーが EPG 射影のローリングウィンドウも駆動する。** `cfg.Epg.RetentionGrace` は ruler の GC と EPG 射影の `PruneEpgPrograms`（`internal/worker/epg.go`）の**両方**に渡される（`cmd/rokuban/server.go`）ので、N 日にすると `epg_programs` に**予約の有無に関わらず全サービスの放送済み番組**が N 日ぶん残る。ルール照合（`internal/rulequery` の `MatchProgramIDs`）は時間で絞らないのでその放送済み番組も拾い、終了済み番組の予約に対して reconciler の `programEnded` 分岐と `recordNeverScheduled` が**永続表 `recordings` に never-scheduled 行**を作る窓が 24h から N 日に広がる。**行がどれだけ増えるかは未検証**（この節の他の記述と違い、測っていない）
+
+滞留を見張るメトリクスと閾値は[運用](../operations.md) §4 にある。
+
+**「クラウド側障害」と「回線断」を同じ結論で括らない。** 上の帰結が決定論的に成り立つのは「GC は動き続けたが ingest が猶予を跨いで遅れた」場合であって、ruler ごと止まる障害（worker 全停止・DB 到達不能）では**断のあいだ GC も進まない**。復帰時は sweep + ingest と `ruler_pass` の競争になり、ingest が先に走れば意図は守られる。どちらになるかはジョブの実行順に依存する（未検証）。
 
 ### 安全性
 
@@ -105,4 +136,5 @@
 - 予約を放送イベントキーで引く形は issue #149。旧実装は `recordings.reservation_id`（bigint FK、`ON DELETE SET NULL`）で予約を引いており、録画開始から ingest 完了までの窓で ruler の導出削除・再実体化が起きると FK が NULL に落ち、「予約が無い」と誤認して encode policy を凍結し損なっていた（ログにも出ない）。列自体は issue #158 で削除。導出器が作るキーで引く同族の失敗は #53 / #98 / #99
 - 空の `encode_profiles` で「全称量化が空集合に自明に真」となり原本が即座に消える罠は issue #103 で特定。ガードを名前付き述語 1 箇所に置く形は issue #160 —— それ以前は issue #104 で入れたガードが 5 複製の 1 つ（入口）にしか入っておらずドリフトしていた
 - エンコードプロファイルの事後追加（凍結の例外）は issue #133。未凍結（`internal/inplace.Register` 由来）の録画の扱いは issue #159 のレビューで発見
+- 「凍結が依存する寿命と、エッジの滞留の交点」は issue #214。docs 全体のレビューで見つかった設計前提の衝突で、コードのバグ報告ではない。**片方の doc が「ingest は GC 猶予より前に走る」と書き、もう片方が「N 日分の滞留を吸収する」と書いていて、互いを見ていなかった。** GC を `record_sync` と連動させる案・凍結を録画開始へ前倒す案は、どちらも滞留の主因である回線断の**未観測ぶん**（断の最中に始まった録画。クラウド側にアンカーが無い）を塞げないことが分かったので採らず、`epg.retention_grace` とリングバッファの N 日の関係として書いた。**初版は「クラウド側にアンカーが無い」を無条件に書いていた** —— 断の前に観測済みの record にはアンカーがある（`AcquireRecordSync` は status を問わず行を作る）ので、正しい分割は「リンクが生きているか」ではなく「その record の観測が届いていたか」。同じ PR で「未 ingest 滞留のアラートは回線断への備え」と書いていた 3 箇所（`internal/db/queries/metrics.sql` / [アラート設計](../operations/alerts.md) / [ストレージ契約](contract.md)）も、この結論と衝突したまま残っていたので直した **契約側（`openapi.yaml` の overrides の `keepOriginal` / `encodeProfiles` の description）だけは「ingest 完了より前なら反映される」と無条件に約束したまま残っている** —— 偽であることは確認済みだが、`openapi.yaml` は同時に 1 本の PR しか触れず生成物 2 系統の再生成を伴うので、issue #329 に切り出した。
 - `recordings.purged_at` は issue #135。復元と物理削除の競合の閉じ方（適用の瞬間の再評価と `stat` 確認）は issue #105

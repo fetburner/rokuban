@@ -31,10 +31,23 @@ type GetUningestedRecordBacklogRow struct {
 
 // 未 ingest の record（エッジに滞留しているぶん）の件数とバイト数。
 //
-// 「録画は終わったが Rokuban 側にコミットされていない」もの。回線断や
-// クラウド側障害で ingest が詰まるとここが増え続け、エッジの録画バッファを
-// 食い潰す（issue #4 のサイジングコメント）。エッジディスク残量アラートと
-// 対で使う。
+// 「録画は終わったが Rokuban 側にコミットされていない」もの。ingest が詰まると
+// ここが増え続け、エッジの録画バッファを食い潰す（issue #4 のサイジング
+// コメント）。エッジディスク残量アラートと対で使う。
+//
+// **数えるのは「finished として観測できた record」だけ。** record_sync の行は
+// watcher が mirakc を観測して初めて作られ・更新される（internal/watcher の
+// processRecord）ので、エッジ↔クラウドの回線が切れている間は
+//
+//   - 断の最中に始まった録画 —— 行そのものが無い
+//   - 断が始まった時点で status='recording' だった録画 —— 行はあるが
+//     'finished' への更新が復帰後になるので下の WHERE に掛からない
+//
+// のどちらも数に入らず、**断のあいだこの値は平らなまま**になる。
+// 回線断の検知は滞留量ではなく rokuban_sweep_last_pass_timestamp_seconds /
+// rokuban_epg_sync_last_success_timestamp_seconds の停滞で行う
+// （docs/operations.md §4。断が epg.retention_grace を超えると encode 意図が
+// 落ちる交点も同節）。
 //
 // コミット = media_assets 行なので、その不在で判定する。ファイルの有無は見ない
 // （不変条件 3）。content_length は mirakc の観測値で NULL のこともある。

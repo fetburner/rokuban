@@ -613,15 +613,25 @@ func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath st
 // 引いてから reservations を program_id で結合する
 // （internal/db/queries/recording_policy.sql）。
 //
-// program_snapshots は放送後 GC される寿命の短い表（docs/storage.md §6）だが、
-// ingest は録画終了直後（GC の猶予期間より十分前）に走るので、この GC 前提は
-// 通常経路では効かない。
+// program_snapshots は放送後 epg.retention_grace（既定 24h）で GC される寿命の
+// 短い表（docs/storage.md §6）で、ingest は通常なら録画終了直後 --- GC の猶予
+// より十分前 --- に走る。**ただし「通常なら」であって、エッジのリングバッファは
+// これを超える滞留（回線断・クラウド側障害で N 日）を前提にサイジングする**
+// （docs/operations.md §4）。猶予を跨いで遅れた ingest はここで予約を引けず、
+// 既定値で凍結される —— この交点と、GC 側を滞留と連動させない理由は
+// docs/storage.md §6「凍結が依存する寿命と、エッジの滞留の交点」にある
+// （issue #214。この一文が「通常経路では効かない」と断言していたことが
+// #214 の発端そのものなので、断言に戻さない）。
 //
 // recordings.source（internal/db/recording_source.go の DeriveRecordingSource）
 // は「引けなかった」の異常度を判定する軸として使えない: 'rule' は「作成時点で
 // 予約があり、かつ program_intents.action='record' の行が無かった」を意味する
-// ので、'rule' で JOIN が失敗するのは常に異常系（GC が想定より早く走った、
-// または予約が恒久的に削除された）。しかし 'manual' は「intent が
+// ので、'rule' で JOIN が失敗するのは常に「予約はあったのに引けなくなった」を
+// 意味する。原因は 3 つあり、網羅はしていない前提で列挙する: (a) GC が想定より
+// 早く走った、(b) 予約が恒久的に削除された、(c) GC は設計どおり走ったが
+// ingest が猶予を跨いで遅れた（上記の交点。issue #214 で仕様として受け入れた
+// 劣化でありバグではない --- が、エンコードが投入されない点は同じなので
+// 人間が見るべき事象であることは変わらない）。しかし 'manual' は「intent が
 // action='record' だった（予約の有無に関わらず）」と「そもそも予約が最初から
 // 無かった（手動で mirakc に起こされた録画等、日常的）」の 2 つの独立した
 // 経路を 1 つの値に潰している（同ファイルのコメント参照）ため、'manual' の
@@ -630,8 +640,13 @@ func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath st
 // issue #149 が問題にした「静かにエンコードされない」が残る。区別できない
 // 以上、どちらの source でも黙って return せず識別子
 // （site/network_id/service_id/event_id）と recordingID をログに残す。
-// 'rule' は slog.Warn（常に異常）、'manual' は slog.Info（日常的なケースと
-// 異常なケースが混在するため騒がしくしない）に分ける。
+// 'rule' は slog.Warn（常に「予約はあったのに引けなくなった」）、'manual' は
+// slog.Info（日常的なケースと異常なケースが混在するため騒がしくしない）に
+// 分ける。なお #214 の交点のうち回線断で復帰したぶんは、復帰時に recordings 行を
+// 作る watcher の createRecording も同じ GC 済みの予約を引くので source が
+// 'manual' に倒れる --- つまり **Warn が出るのは「録画開始時には予約が生きて
+// いて、ingest だけが猶予を跨いで遅れた」場合**であり、回線断のぶんは Info 側に
+// 落ちる（docs/storage.md §6）。
 //
 // # 解決に失敗しても凍結する（issue #159）
 //
@@ -715,8 +730,9 @@ func (w *IngestWorker) resolveAndSnapshotEncodePolicy(ctx context.Context, q *sq
 			return fmt.Errorf("loading reservation encode policy for recording %d (site=%s network_id=%d service_id=%d event_id=%d): %w",
 				recordingID, rec.Site, rec.NetworkID, rec.ServiceID, rec.EventID, err)
 		}
-		// source='rule' は常に異常系（doc コメント「予約をどのキーで引くか」
-		// 参照）なので Warn、source='manual' は日常的なケース（予約が最初から
+		// source='rule' は常に「予約はあったのに引けなくなった」（doc コメント
+		// 「予約をどのキーで引くか」の 3 原因を参照。issue #214 の交点を含む）
+		// なので Warn、source='manual' は日常的なケース（予約が最初から
 		// 無い）と異常なケース（intent action='record' だったが予約が
 		// 恒久的に削除された）が混在するので Info に落とす。どちらの source
 		// でも黙って return しない —— 判別できないことをログの欠落で
