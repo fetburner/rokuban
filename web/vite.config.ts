@@ -21,5 +21,13 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     setupFiles: ['./src/test/setup.ts'],
+    // 実行環境の TZ に依存する落ち方をなくすため、テストプロセス全体の
+    // ローカルタイムゾーンを固定する（issue #274）。`programs.test.tsx` の
+    // 「今」を時刻境界に切り捨てるフィクスチャ（`windowOrigin` / 本番の
+    // `dayOrigin(0)`）は、実行時の壁時計が現地 23 時台だと暦日をまたいで
+    // しまい、TZ によって間欠的に落ちていた。固定先を JST にしたのは
+    // 恣意的な選択ではなく、その回帰テスト（深夜 23:13 の実挙動）が
+    // JST を前提に書かれているため。
+    env: { TZ: 'Asia/Tokyo' },
   },
 })
