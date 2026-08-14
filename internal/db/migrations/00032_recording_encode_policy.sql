@@ -60,6 +60,22 @@ WHERE a.kind = 'original'
   AND p.keep_original = 'until_encoded'
   AND r.deleted_at IS NULL
   AND cardinality(p.encode_profiles) > 0
+  -- p.encode_profiles（desired）はここで現在の設定（encode.profiles）と
+  -- 突き合わせない。これは絞り忘れではなく安全側の仕様として確定している ---
+  -- 突き合わせを入れると、設定ファイルでプロファイル名を改名 / 削除しただけで、
+  -- 意図したエンコードが 1 つも存在しない録画の原本が一斉に削除可能になる。
+  -- config の 1 行の編集が原本ファイルという不可逆な喪失を引き起こす経路を
+  -- 開けるより、容量が回収されない（可逆 --- プロファイル名を戻せば次の
+  -- reconcile で揃う）方を選ぶ。したがって「凍結済み desired に、現在の設定に
+  -- 存在しないプロファイルが含まれる」録画は、このビューにとって永久に
+  -- 「揃っていない」ため原本を保持し続ける。該当件数は
+  -- ListUnsatisfiableEncodeProfiles（internal/db/queries/encode_reconcile.sql）が
+  -- 可視化する（docs/storage/retention.md §保持ポリシー）。
+  --
+  -- 同じ「desired が全部揃っているか」の述語は
+  -- ListRecordingsMissingEncodes / ListUnsatisfiableEncodeProfiles にもあるが、
+  -- そちらは現在の設定で絞る。この非対称は意図的で、揃えない理由は
+  -- encode_reconcile.sql のヘッダに書いてある。
   AND NOT EXISTS (
     SELECT 1 FROM unnest(p.encode_profiles) AS want(profile)
     WHERE NOT EXISTS (

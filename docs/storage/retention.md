@@ -24,6 +24,8 @@
 
 命令的なジョブチェーン（最後のエンコードジョブが削除ジョブを投入）だと、複数プロファイル時の「全部終わったら」の fan-in・途中失敗・再実行で壊れやすい。レベルトリガーなら「観測された派生物の集合 >= 望ましい集合」を毎回評価するだけで、どこで落ちても収束する。
 
+上記 2 の「desired な派生物」は凍結時点の `encode_profiles` であり、現在の `encode.profiles` 設定とは突き合わせない。プロファイルを改名・削除して現在の設定に存在しなくなった desired を凍結している録画は、`until_encoded` でも原本を保持し続ける（満たせない desired に対して原本を捨てないのが仕様 --- 設定の 1 行の編集で原本という不可逆な資産が削除可能になる方を避ける）。該当件数は `rokuban_encode_reconcile_unsatisfiable` で見える。
+
 ### 凍結が依存する寿命と、エッジの滞留の交点
 
 凍結の JOIN 先（`program_snapshots` と、そこへの FK CASCADE で連なる `reservations` / `program_intents` / `program_overrides`）の**行の寿命は放送の時計**で決まる（`start_at + duration_ms` + `epg.retention_grace`）。一方、その最後の読者である ingest がいつ走るかは**エッジの排出の時計**で決まり、エッジのリングバッファは「回線断・クラウド側障害で未 ingest の record が N 日分溜まる」ことを前提にサイジングする（[運用](../operations.md) §4「録画バッファのサイジング」）。2 つの時計の間には制約が書かれていない。交点はこう書ける:
