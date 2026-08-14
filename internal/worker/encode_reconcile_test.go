@@ -578,6 +578,14 @@ func TestEncodeReconcileWorker_RowLimitCapsWorkPerPass(t *testing.T) {
 	if got := promtestutil.ToFloat64(metrics.EncodeReconcileCandidates); got != 2 {
 		t.Errorf("candidates gauge = %v, want 2 (equal to RowLimit)", got)
 	}
+	// 最後に完走したパスの時刻が更新されること（TestEncodeReconcileWorker_
+	// RowLimitLeavesLaterRecordingsUnreached が固定していたアサーションを移設。
+	// これが無いと EncodeReconcileLastPass.SetToCurrentTime の呼び出しを消しても
+	// パッケージ全体のテストが green のまま通ってしまい、停止したパスが
+	// 検出できなくなる）。
+	if got := promtestutil.ToFloat64(metrics.EncodeReconcileLastPass); got == 0 {
+		t.Error("last-pass gauge was not set; a stalled pass would be undetectable")
+	}
 }
 
 // TestEncodeReconcileWorker_EmptyProfileConfigIsVisibleNotSilent は、
