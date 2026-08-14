@@ -212,7 +212,7 @@ function ProfileMultiSelect({
   if (profiles.length === 0) {
     return (
       <p className="text-xs text-muted-foreground">
-        設定にエンコードプロファイルがありません（config.encode.profiles）
+        エンコードプロファイルが設定されていません。管理者に設定を依頼してください。
       </p>
     )
   }

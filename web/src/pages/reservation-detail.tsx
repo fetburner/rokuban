@@ -4,6 +4,7 @@ import { ArrowLeft } from 'lucide-react'
 
 import {
   useGetProgramReservation,
+  useListRules,
   usePatchProgramOverrides,
   usePutProgramIntent,
   type ProgramOverridesInput,
@@ -17,6 +18,7 @@ import { ReservationSkipReason } from '@/components/reservation-skip-reason'
 import { useToast } from '@/components/toaster'
 import { Button } from '@/components/ui/button'
 import { formatDateTime, formatDuration } from '@/lib/format'
+import { stateLabels } from '@/pages/reservations'
 
 /**
  * reservationDetailQueryKey は単体ページ自身のクエリキー。
@@ -47,7 +49,8 @@ function reservationDetailQueryKey(site: string, programId: number) {
  * ルール由来予約と手動予約を 1 画面で扱える（EPGStation は編集画面が分裂している）。
  *
  * encodeProfiles / keepOriginal は M3 で worker が消費するため編集可能
- * （issue #68）。priority など mirakc 差分が必要な項目は #19 解決後に足す。
+ * （issue #68）。priority など mirakc への差分反映が必要な項目は、
+ * その反映経路がまだ無いため表示のみで編集は足していない。
  *
  * ルートとクエリは `(site, programId)` を宛先にする（issue #99）。
  * `reservations.id` は ruler の導出削除・再実体化で変わりうる不安定な値なので、
@@ -136,7 +139,7 @@ export function ReservationDetailPage() {
           </section>
 
           <Fields title="予約">
-            <Field label="状態" value={reservation.state} />
+            <Field label="状態" value={stateLabels[reservation.state]} />
             <Field label="種別" value={reservation.source === 'manual' ? '手動' : 'ルール'} />
             {/* 予約行が残っているのに録画されない状態は、それ自体が説明を要する。
                 重複排除なら根拠（録画 id と類似度）まで出す（issue #24 M2-6）。 */}
@@ -144,17 +147,12 @@ export function ReservationDetailPage() {
               <Field label="録画" value={<ReservationSkipReason reservation={reservation} />} />
             )}
             {reservation.ruleId !== undefined && (
-              <Field label="ルール" value={`#${reservation.ruleId}`} />
+              <Field label="ルール" value={<RuleName ruleId={reservation.ruleId} />} />
             )}
-            <Field label="programId" value={String(reservation.programId)} />
           </Fields>
 
           <Fields title="録画の設定">
-            <Field
-              label="優先度"
-              value={overrideValue(reservation, 'priority') ?? '既定'}
-              note="#19 の解決後に編集できるようにする"
-            />
+            <Field label="優先度" value={overrideValue(reservation, 'priority') ?? '既定'} />
             <Field label="保存先パス" value="自動生成" />
           </Fields>
 
@@ -186,6 +184,36 @@ export function ReservationDetailPage() {
 function overrideValue(reservation: Reservation, key: string): string | undefined {
   const value = reservation.overrides?.[key]
   return value === undefined || value === null ? undefined : String(value)
+}
+
+/**
+ * RuleName はこの予約を生んだルールへの導線（issue #300）。
+ *
+ * `pages/recordings.tsx` の `RuleSection` と同じ手を使う ---
+ * `useListRules()`（パラメータなし = 常に全件）のキャッシュから名前を引く。
+ * `/rules` に単一ルートは無く、ルールの実質的な編集画面は `/search?ruleId=N`
+ * （`RulesPage` の「検索しながら編集」と同じ着地先）なので、リンク先もそこに揃える。
+ *
+ * `rules.find` が見つからない間（一覧が未解決・失敗、または一覧にまだ無い）は
+ * `#N` に落とす --- ルールが削除された場合は `reservations.rule_id` の FK が
+ * `ON DELETE SET NULL` なので `Reservation.ruleId` 自体が省略され、呼び出し側
+ * （`reservation.ruleId !== undefined` の分岐）がこのフィールドごと出さない。
+ */
+function RuleName({ ruleId }: { ruleId: number }) {
+  const query = useListRules()
+  const rules = unwrap(query.data) ?? []
+  const rule = rules.find((r) => r.id === ruleId)
+  const label = rule?.name ?? `#${ruleId}`
+
+  return (
+    <Link
+      to="/search"
+      search={{ ruleId }}
+      className="text-primary underline-offset-2 hover:underline"
+    >
+      {label}
+    </Link>
+  )
 }
 
 function Fields({ title, children }: { title: string; children: React.ReactNode }) {
