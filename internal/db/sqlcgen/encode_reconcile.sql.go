@@ -65,8 +65,22 @@ type ListRecordingsMissingEncodesParams struct {
 //     として原本を残す方向（安全側）に効くが、このパスにとっては投入しても
 //     EncodeWorker が弾くだけのゴミになる（EncodeReconcileWorker の doc コメント）
 //
-// 述語をスキーマ側の名前に寄せる話は #325 で追う（このパスの粒度は録画単位で、
-// view の粒度はアセット単位なので、寄せるなら view の切り直しが要る）。
+// 述語をスキーマ側の名前に寄せる案は検討した上で見送ることを決定済み。理由は 2 つ:
+//
+//  1. 粒度が違う。このパスの粒度は録画単位で、view の粒度はアセット単位
+//     （削除エンジン固有の keep_original / サムネイル条件が畳み込まれている）。
+//     寄せるなら view の切り直し（マイグレーション）が要る。
+//  2. 本質的な理由。上の差分（known_profiles で絞るかどうか）は補集合ではなく、
+//     両側とも今の挙動が正しい仕様として確定している。共通の述語にするには
+//     known_profiles を引数に取る必要があり、view は引数を取れないので SQL 関数に
+//     なる --- そうするとドリフトのリスクが述語の本体から呼び出し側の引数の
+//     渡し方へ移るだけで、しかもそちらの方が読んで気付きにくい（呼び出し側 2 箇所を
+//     突き合わせないと分からない）。寄せることはドリフトを減らさない。
+//
+// したがって 3 箇所（この述語、until_encoded_deletable_originals、下の
+// ListUnsatisfiableEncodeProfiles）は共通化せず、この非対称を仕様として
+// コメントに固定する。ドリフトの検出は internal/worker のテストが担う
+// （同じフィクスチャで両側の答えが食い違うことを固定する）。
 // ListRecordingsMissingEncodes は「原本が active でコミット済み、かつ
 // known_profiles に含まれる desired のうち少なくとも 1 つについて active な
 // encoded が無い」録画を recording_id 昇順で返す。
@@ -102,6 +116,10 @@ type ListRecordingsMissingEncodesParams struct {
 // （internal/config の TestEncodeConfig_ProfileNames_EmptyIsNonNil、
 // internal/worker の TestEncodeReconcileWorker_EmptyProfileConfigIsVisibleNotSilent
 // が両側から固定している）。
+//
+// until_encoded_deletable_originals（00032）は known_profiles で絞らない。
+// これは意図的な非対称（安全側の仕様。上の「名前付き述語」節と
+// docs/storage/retention.md §保持ポリシー）であって揃え忘れではない。
 func (q *Queries) ListRecordingsMissingEncodes(ctx context.Context, arg ListRecordingsMissingEncodesParams) ([]int64, error) {
 	rows, err := q.db.Query(ctx, listRecordingsMissingEncodes, arg.KnownProfiles, arg.RowLimit)
 	if err != nil {
@@ -157,8 +175,16 @@ type ListUnsatisfiableEncodeProfilesRow struct {
 //
 // 落とす判断（上のクエリ）と落としたことを見せる責務を分けている。プロファイルを
 // 改名 / 削除するとその名前で凍結済みの過去録画が一斉にここへ落ちるので、
-// 数を出さないと「エンコードされない録画」が静かに増える（issue #163 が塞いだ
+// 数を出さないと「エンコードされない録画」が静かに増える（過去に塞いだ
 // 症状そのものを、別の原因で再現してしまう）。
+//
+// この値はプロファイル名別の該当録画数で、keep_original を問わず数える
+// （`always` の録画も含むので「回収されない原本の件数」そのものではない。
+// 1 録画が複数の消えたプロファイルを凍結していれば複数のラベルにまたがって
+// 数えられるため、ラベル間で単純合計すると録画数を超える）。この中の
+// until_encoded 録画は until_encoded_deletable_originals（00032）にとっても
+// 永久に「揃っていない」ため、原本が回収されない
+// （docs/storage/retention.md §保持ポリシー）。
 //
 // `want.profile::text` の明示キャストは必須（sqlc は unnest 由来の列型を
 // 推論できず interface{} で生成する。CLAUDE.md「sqlc は式の型を推論しきれない」）。
