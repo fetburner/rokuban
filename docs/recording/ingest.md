@@ -140,6 +140,57 @@ pull 完了後に書き込みバイト数を HEAD の Content-Length と照合 �
 
 **既知の限界**: 候補は `recording_id` 昇順で 1000 件に切る。このパス自身は候補を減らさない（減らすのは encode の完了）ため、永久に満たせない候補が先頭に溜まると窓を占有し、それより後ろの録画に到達しない（収束は主張しない）。窓が埋まったパスは Warn ログと `rokuban_encode_reconcile_candidates` が上限に張り付くことで見える。[#326](https://github.com/fetburner/rokuban/issues/326) で追う。
 
+### 5.6 転送の途中経過を見せる
+
+`recordings.status = finished` は **mirakc の録画完了**であって取り込み完了ではない。原本が
+コミットされるまでブラウザ再生も事後エンコードもできないが、その時間帯を表すものが
+`sizeBytes` の省略しか無かったため、遅い回線（実測で数百 KB/s 台）では**止まっているのか
+進んでいるのか判別できなかった**。ingest worker は転送中に
+`recording_ingest_progress`（[schema/recordings.md](../schema/recordings.md) §5 の衛星表）へ
+書けたバイト数を写し、api はそれを `Recording.ingest` として返す。
+
+**進捗の置き場は衛星表**（ジョブ引数でも `record_sync` でもない）。理由は 3 つとも別方向:
+
+- ジョブ引数（`river_job.args`）に持たせると UI が River の内部表を読むことになる
+- `record_sync` は mirakc 側の観測で書き手は watcher。転送の進捗は Rokuban 側のファイルに
+  何バイト書けたかなので、1 表 2 書き手になる（不変条件 12）
+- `recordings` 本体の列にすると、書き手が脊椎（watcher / reconciler）でない状態が脊椎に
+  混ざる（不変条件 13）
+
+**分母は `record_sync.content_length`**（watcher が mirakc record の `content.length` として
+観測済みの値）。転送開始時に読んで衛星表へ写す。HEAD の `Content-Length` は転送完了後の
+照合（層 3）にしか取っておらず転送中には使えない。ファイル stat は api ロールが
+ファイルシステムに触れない（不変条件 1）ので分母にできない。mirakc が length を返さない
+record では分母を NULL のままにし、UI は % を出さずバイト数だけを出す（でっち上げた分母を
+置かない）。
+
+**「リトライ中」を「取り込み待ち」と区別する値は API に持たない。** 区別するには
+`river_job` を API 契約に露出させるか、失敗の観測という別寿命の値を進捗行に混ぜる
+（不変条件 9 / 12）必要がある。代わりに `observed_at`（進捗を最後に観測した時刻）を返し、
+停滞はその古さで読ませる。UI の停滞しきい値は 60 秒 —— 既定のストール検知
+（`ingest.stall_timeout` = 30 秒）で正常に再接続している往復を「停滞」と呼ばないため
+（`web/src/lib/ingest.ts` の `ingestStaleAfterMs`）。
+
+**API の状態は 4 値で、原本 `media_assets` 行の有無を最優先に導出する**（列に焼いた値では
+ない。`internal/api/recordings.go` の `ingestProgressFromFields`）。`kind='original'` の行が
+`state` を問わず存在すれば `committed` —— `state='deleted'`（取り込んだ後に削除した）でも
+`committed` のままにするのは、**「取り込めなかった」と「取り込んだ後に消した」を混同しない**
+ため（[#211](https://github.com/fetburner/rokuban/issues/211) の症状。原本が**いま**あるかは
+`sizeBytes` の有無が答える）。取り残された進捗行がコミット済みの録画に「取り込み中」を
+名乗らないのも、この優先順位による（真実は `media_assets` 側。不変条件 5）。
+
+**`pending`（取り込み待ち）の根拠は、watcher が ingest ジョブを投入する条件と同じ述語に
+揃える**（`record_sync.status = 'finished'`）。`record_sync` 行の**存在**を根拠にしては
+ならない —— 行は `failed` / `canceled` の record にも作られ、Rokuban はこの行を消さない
+（本番に `DELETE FROM record_sync` の経路は無い）ので、ingest ジョブが一度も投入されない
+録画が**永久に「取り込み待ち」を名乗る**。`pending` は「これから来る」の断定なので、
+来る根拠が述語として書けないものを入れない（この誤りを一度実装して指摘された。
+[frontend/recordings.md](../frontend/recordings.md) の「経緯と失敗事例」）。
+
+**途中ファイルのサイズを `sizeBytes` に混ぜない**（不変条件 3。コミット = DB 行）。
+進捗は `ingest.writtenBytes` という別のフィールドで、原本 `media_assets` 行が生まれる
+tx の中で進捗行が消える。
+
 ---
 
 ## 6. B-CAS 復号の責務境界

@@ -93,6 +93,12 @@ type IngestWorker struct {
 	MediaDir     string
 	StallTimeout time.Duration
 
+	// ProgressInterval は recording_ingest_progress を書き直す最短間隔
+	// （issue #212）。0 は「未設定」で ingestProgressInterval に解決する
+	// （resolveProgressInterval）。テストが転送の途中経過を観測するために
+	// 短くできるようにしてあるだけで、運用上は既定のままでよい。
+	ProgressInterval time.Duration
+
 	// Site はこのワーカープロセス自身の site（config.mirakc.site）。Work は
 	// これと args.Site を verifySite で照合してから mirakc/FS に触る
 	// （issue #139）。空なら db.DefaultSite に解決する（verifySite 参照）。
@@ -121,6 +127,16 @@ func (w *IngestWorker) resolveStallTimeout() time.Duration {
 	return w.StallTimeout
 }
 
+// resolveProgressInterval は設定された ProgressInterval があればそれを、
+// なければ既定の ingestProgressInterval を返す（resolveStallTimeout と同じ
+// 「0 は未設定」の規約）。
+func (w *IngestWorker) resolveProgressInterval() time.Duration {
+	if w.ProgressInterval == 0 {
+		return ingestProgressInterval
+	}
+	return w.ProgressInterval
+}
+
 // Work は ingest ジョブを実行する。ストリーム取得・TS 統計収集・DB コミット・エッジ削除を行う。
 func (w *IngestWorker) Work(ctx context.Context, job *river.Job[IngestJobArgs]) error {
 	args := job.Args
@@ -143,7 +159,7 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[IngestJobArgs]) 
 
 	stallTimeout := w.resolveStallTimeout()
 
-	recordingID, err := w.lookupRecordingID(ctx, args)
+	recordingID, expectedBytes, err := w.lookupIngestTarget(ctx, args)
 	if err != nil {
 		return fmt.Errorf("looking up recording_id: %w", err)
 	}
@@ -169,6 +185,13 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[IngestJobArgs]) 
 		// record の削除（下記）の再試行であり、それが完了すれば ingest の
 		// 目的（コミット済み・record 削除済み）は満たされている。
 		result = "success"
+		// 前回の実行が転送の途中で死に、その後別経路（internal/inplace.Register
+		// など）で原本がコミットされた場合、進捗行だけが取り残される。原本行が
+		// ある録画の進捗表示は API 側が無視する（原本の有無が真実。不変条件 5）
+		// ので害は無いが、掃除できる場所で掃除しておく。
+		if delErr := sqlcgen.New(w.Pool).DeleteRecordingIngestProgress(ctx, recordingID); delErr != nil {
+			log.Warn("ingest: failed to clear stale transfer progress", "recording_id", recordingID, "err", delErr)
+		}
 		// 原本があるなら encode の desired−observed も埋める（ヒント。真実は
 		// EnqueueMissingEncodes のレベルトリガー判定。issue #65）。
 		enqueueMissingEncodesFromContext(ctx, w.Pool, recordingID)
@@ -218,6 +241,26 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[IngestJobArgs]) 
 
 	counter := tsstat.NewCounter(f)
 
+	// 転送の途中経過を recording_ingest_progress に写す（issue #212）。行の存在
+	// そのものが「転送中」の主張なので（不変条件 10）、1 バイトも流れる前に
+	// 1 行書いてから始める --- 遅い回線で最初の 1 バイトが来るまで数十秒かかる
+	// ことがあり、そこが「何も起きていないように見える」時間帯そのものだから。
+	progress := &ingestProgressReporter{
+		pool:          w.Pool,
+		recordingID:   recordingID,
+		expectedBytes: expectedBytes,
+		interval:      w.resolveProgressInterval(),
+		log:           log,
+	}
+	progress.report(ctx, 0, true)
+	// progressWriter は counter の外側に置く（io.Copy → progressWriter →
+	// counter → f）。TS 統計は counter が数えるので、ここでは書けたバイト数を
+	// 数えるだけ。
+	dst := &progressWriter{
+		w:       counter,
+		onWrite: func(written int64) { progress.report(ctx, written, false) },
+	}
+
 	var offset int64
 	for attempt := 0; ; attempt++ {
 		stallCtx, stallCancel := context.WithCancel(ctx)
@@ -243,7 +286,7 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[IngestJobArgs]) 
 
 		timer := time.AfterFunc(stallTimeout, func() { stallCancel() })
 		sr := &stallReader{r: body, timer: timer, d: stallTimeout}
-		n, copyErr := io.Copy(counter, sr)
+		n, copyErr := io.Copy(dst, sr)
 		timer.Stop()
 		stallCancel()
 		_ = body.Close()
@@ -265,6 +308,12 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[IngestJobArgs]) 
 		log.Warn("ingest: transfer interrupted, retrying with Range",
 			"offset", offset, "attempt", attempt, "err", copyErr)
 	}
+
+	// 転送は終わったがまだコミットしていない。ここから先（HEAD 照合・
+	// commit）で落ちるとジョブは再試行に回るので、最後に観測した値を間引き
+	// 無しで焼いておく --- そうしないと「転送は終わっているのに 2 秒前の値の
+	// まま止まって見える」状態で再試行待ちに入る。
+	progress.report(ctx, offset, true)
 
 	expectedLen, err := w.MirakcClient.HeadRecordStream(ctx, args.RecordID)
 	if err != nil {
@@ -384,19 +433,27 @@ func (w *IngestWorker) checkRelPathConflict(ctx context.Context, relPath string)
 	return conflictRecordingID, nil
 }
 
-func (w *IngestWorker) lookupRecordingID(ctx context.Context, args IngestJobArgs) (int64, error) {
+// lookupIngestTarget は record_sync から転送先の recording_id と、進捗の分母に
+// 使う content_length を 1 回のクエリで読む。
+//
+// content_length は watcher が mirakc record から観測した値（record.content.length）
+// で、mirakc が返さなければ nil。分母をここから取るのは、転送中に使える唯一の
+// 材料だから --- HEAD の Content-Length は転送完了後の照合（層 3）にしか取って
+// おらず、ファイル stat は api ロールが読めない（不変条件 1）。nil のときは
+// 進捗をバイト数だけで出し、% は出さない（issue #212）。
+func (w *IngestWorker) lookupIngestTarget(ctx context.Context, args IngestJobArgs) (recordingID int64, expectedBytes *int64, err error) {
 	q := sqlcgen.New(w.Pool)
-	recID, err := q.GetRecordSyncRecordingID(ctx, sqlcgen.GetRecordSyncRecordingIDParams{
+	row, err := q.GetRecordSyncIngestTarget(ctx, sqlcgen.GetRecordSyncIngestTargetParams{
 		Site:     args.Site,
 		RecordID: args.RecordID,
 	})
 	if err != nil {
-		return 0, fmt.Errorf("querying record_sync: %w", err)
+		return 0, nil, fmt.Errorf("querying record_sync: %w", err)
 	}
-	if recID == nil {
-		return 0, fmt.Errorf("record_sync (%s, %s) has no recording_id", args.Site, args.RecordID)
+	if row.RecordingID == nil {
+		return 0, nil, fmt.Errorf("record_sync (%s, %s) has no recording_id", args.Site, args.RecordID)
 	}
-	return *recID, nil
+	return *row.RecordingID, row.ContentLength, nil
 }
 
 // determineRelPath は保存先の相対パスと、それを解決した絶対パスを返す。
@@ -500,6 +557,13 @@ func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath st
 	})
 	if err != nil {
 		return fmt.Errorf("inserting media_asset: %w", err)
+	}
+
+	// 進捗行（issue #212）は原本の INSERT と同じ tx で消す。コミット = DB 行
+	// （不変条件 3）なので、原本行が生まれる瞬間に進捗行が消えることで
+	// 「原本があるのに取り込み中」という中間状態が読者から見えない。
+	if err := q.DeleteRecordingIngestProgress(ctx, recordingID); err != nil {
+		return fmt.Errorf("clearing ingest progress: %w", err)
 	}
 
 	// 原本のコミットと同じ tx で「この録画の望ましい最終状態」を焼く

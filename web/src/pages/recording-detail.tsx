@@ -7,7 +7,8 @@ import { unwrap } from '@/api/unwrap'
 import { ErrorState, ListSkeleton } from '@/components/page'
 import { Button } from '@/components/ui/button'
 import { formatBytes, formatDateTime, formatDuration } from '@/lib/format'
-import { RecordingDetail, StatusBadge } from '@/pages/recordings'
+import { hasLiveIngestProgress, ingestRefetchIntervalMs } from '@/lib/ingest'
+import { IngestBadge, RecordingDetail, StatusBadge } from '@/pages/recordings'
 
 /**
  * recordingDetailQueryKey は単体ページ自身のクエリキー。
@@ -58,7 +59,21 @@ export function RecordingDetailPage() {
   const idNum = Number(id)
   const [thumbFailed, setThumbFailed] = useState(false)
 
-  const query = useGetRecording(idNum, { query: { queryKey: recordingDetailQueryKey(idNum) } })
+  // 進捗の数字が動いている間だけ定期再取得する（issue #212。一覧側の
+  // useInfiniteQuery と同じ判定・同じ間隔）。SSE はヒントなので、進捗は REST の
+  // 再取得で収束させる（不変条件 5）。止めた後は lib/events.ts の 60 秒
+  // invalidate が収束させる（hasLiveIngestProgress 参照）。
+  const query = useGetRecording(idNum, {
+    query: {
+      queryKey: recordingDetailQueryKey(idNum),
+      refetchInterval: (q) => {
+        const rec = unwrap(q.state.data)
+        return rec !== undefined && hasLiveIngestProgress(rec, Date.now())
+          ? ingestRefetchIntervalMs
+          : false
+      },
+    },
+  })
   const recording = unwrap(query.data)
   // ごみ箱の録画（deletedAt 付き）も 200 で返る（getRecording の openapi.yaml
   // description）。この真偽で一覧の展開と同じ規律（再生系を出さない）を適用する。
@@ -101,6 +116,7 @@ export function RecordingDetailPage() {
               <h2 className="text-lg font-medium">{recording.title || '（番組名なし）'}</h2>
               <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
                 <StatusBadge status={recording.status} />
+                <IngestBadge recording={recording} />
                 <span className="shrink-0">{recording.serviceName}</span>
                 <span className="shrink-0">{formatDateTime(recording.startAt)}</span>
                 <span className="shrink-0">{formatDuration(recording.durationMs)}</span>

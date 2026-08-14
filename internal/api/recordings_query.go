@@ -183,7 +183,37 @@ const (
     COALESCE(d.drops, 0)::bigint        AS drop_drops,
     COALESCE(d.errors, 0)::bigint       AS drop_errors,
     COALESCE(d.scrambled, 0)::bigint    AS drop_scrambled,
-    COALESCE(p.encode_profiles, '{}')::text[] AS encode_profiles`
+    COALESCE(p.encode_profiles, '{}')::text[] AS encode_profiles,
+    -- ingest（原本の取り込み）の状態を導出するための素の事実（issue #212）。
+    -- state そのものを SQL で CASE に潰さず 3 つの事実として出すのは、
+    -- 導出（ingestProgressFromFields）を DB なしで単体テストできる形に
+    -- 保つため。
+    --
+    -- has_original_asset は上の LEFT JOIN a とは述語が違う（a は
+    -- state <> 'deleted' で絞るが、こちらは state を問わない）。**この違いが
+    -- 「まだ取り込めていない」と「取り込んだ後に削除した」を分ける唯一の材料**
+    -- なので、a.id IS NOT NULL で代用してはならない（issue #211）。
+    EXISTS (
+        SELECT 1 FROM media_assets o
+        WHERE o.recording_id = r.id AND o.kind = 'original'
+    ) AS has_original_asset,
+    -- has_ingestable_record の述語は **watcher が ingest ジョブを投入する条件と
+    -- 同じもの**を見る（internal/watcher/watcher.go の
+    -- record.Recording.Status == "finished"）。record_sync.status は mirakc の
+    -- recordingStatus そのまま（CHECK 無し。docs/schema/record-sync.md）。
+    --
+    -- **status で絞らずに行の存在だけを見てはならない。** record_sync 行は
+    -- failed / canceled の record にも作られ、Rokuban はこの行を消さない
+    -- （本番に DELETE FROM record_sync の経路は無い）ので、絞らないと
+    -- 「ingest ジョブが永久に来ない録画」が永久に pending を名乗る
+    -- （= UI が来ない未来を断定する。issue #211 と同じ形の誤り）。
+    EXISTS (
+        SELECT 1 FROM record_sync rs
+        WHERE rs.recording_id = r.id AND rs.status = 'finished'
+    ) AS has_ingestable_record,
+    ip.written_bytes  AS ingest_written_bytes,
+    ip.expected_bytes AS ingest_expected_bytes,
+    ip.observed_at    AS ingest_observed_at`
 
 	// recordingsAvailableEncodedAssetsSelect はブラウザ再生用の観測列（active な
 	// encoded のみ）。先頭にカンマを持つので recordingsSelectColumns の直後に
@@ -225,6 +255,7 @@ FROM recordings r
 LEFT JOIN media_assets a
     ON a.recording_id = r.id AND a.kind = 'original' AND a.state <> 'deleted'
 LEFT JOIN recording_encode_policy p ON p.recording_id = r.id
+LEFT JOIN recording_ingest_progress ip ON ip.recording_id = r.id
 LEFT JOIN LATERAL (
     SELECT sum(packets) AS packets, sum(drops) AS drops,
            sum(errors) AS errors, sum(scrambled) AS scrambled
@@ -422,6 +453,8 @@ WHERE r.id = $1 AND r.purged_at IS NULL`
 		&fields.OriginalSizeBytes,
 		&fields.DropPackets, &fields.DropDrops, &fields.DropErrors, &fields.DropScrambled,
 		&fields.EncodeProfiles,
+		&fields.HasOriginalAsset, &fields.HasIngestableRecord,
+		&fields.IngestWrittenBytes, &fields.IngestExpectedBytes, &fields.IngestObservedAt,
 		&fields.AvailableEncodedAssets,
 	)
 	if err != nil {
@@ -468,6 +501,8 @@ func queryRecordings(ctx context.Context, pool *pgxpool.Pool, f recordingsFilter
 			&fields.OriginalSizeBytes,
 			&fields.DropPackets, &fields.DropDrops, &fields.DropErrors, &fields.DropScrambled,
 			&fields.EncodeProfiles,
+			&fields.HasOriginalAsset, &fields.HasIngestableRecord,
+			&fields.IngestWrittenBytes, &fields.IngestExpectedBytes, &fields.IngestObservedAt,
 		}
 		if !f.Trash {
 			scanArgs = append(scanArgs, &fields.AvailableEncodedAssets)

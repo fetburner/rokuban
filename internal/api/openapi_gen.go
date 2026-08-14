@@ -79,6 +79,30 @@ func (e EncodeProfileSummaryContainer) Valid() bool {
 	}
 }
 
+// Defines values for IngestProgressState.
+const (
+	Committed    IngestProgressState = "committed"
+	Pending      IngestProgressState = "pending"
+	Transferring IngestProgressState = "transferring"
+	Unknown      IngestProgressState = "unknown"
+)
+
+// Valid indicates whether the value is a known member of the IngestProgressState enum.
+func (e IngestProgressState) Valid() bool {
+	switch e {
+	case Committed:
+		return true
+	case Pending:
+		return true
+	case Transferring:
+		return true
+	case Unknown:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ProgramIntentInputAction.
 const (
 	Record ProgramIntentInputAction = "record"
@@ -746,6 +770,94 @@ type HealthResponse struct {
 	Status string `json:"status"`
 }
 
+// IngestProgress defines model for IngestProgress.
+type IngestProgress struct {
+	// ExpectedBytes 転送の分母。`record_sync.content_length`（watcher が mirakc record の
+	// `content.length` として観測した値）を転送開始時に写したもの。mirakc が
+	// length を返していなければ**省略する** --- でっち上げた分母を置かない。
+	// 省略時、UI は % を出さず `writtenBytes` だけを出す。
+	ExpectedBytes *int64 `json:"expectedBytes,omitempty"`
+
+	// ObservedAt 進捗を最後に観測した時刻。`state = transferring` のときだけ付く。
+	// 現在時刻との差が開いていれば転送は停滞している。
+	ObservedAt *time.Time `json:"observedAt,omitempty"`
+
+	// State 原本の取り込みの粗い状態。**サーバー側で DB 行から毎回導出する**
+	// （列に焼いた値ではない）。優先順に:
+	//
+	// - `committed`: `kind='original'` の `media_assets` 行が存在する。
+	//   取り込みは少なくとも 1 回完了した。その原本が**いま**あるかどうかは
+	//   `sizeBytes` の有無で見る（`state='deleted'` の原本でもここは
+	//   `committed` のまま --- 「取り込めなかった」と「取り込んだ後に
+	//   消した」を混同しないため。issue #211）
+	// - `transferring`: 原本行が無く、転送の進捗行がある。`writtenBytes` /
+	//   `observedAt` が付く。`observedAt` が古いまま止まっていれば停滞して
+	//   いる（River のバックオフ待ち・ストール）
+	// - `pending`: 原本行も進捗行も無く、**ingest ジョブが投入される
+	//   はずの** mirakc record の観測（`record_sync.status = 'finished'`。
+	//   watcher が ingest を投入する条件と同じ述語）がある。取り込み待ち、
+	//   または失敗して再試行待ち
+	// - `unknown`: 上のどれでもない。取り込みが始まった観測が無い ---
+	//   mirakc record が観測されていないか、record が `finished` でない
+	//   （録画中・`failed`・`canceled`。**この録画に ingest ジョブは
+	//   投入されない**）
+	//
+	// **`pending` は「これから来る」の断定なので、来る根拠が無いものは
+	// 入れない。** `record_sync` 行の存在だけを根拠にすると、`failed` /
+	// `canceled` の録画（ingest が一度も投入されず、`record_sync` 行も
+	// 消えない）が永久に「取り込み待ち」を名乗る。
+	//
+	// **「リトライ中」を `pending` と区別する値は持たない。** 区別するには
+	// River の `river_job` を API 契約に露出させる（内部実装の露出）か、
+	// 失敗の観測という別寿命の値を進捗行に混ぜる（不変条件 9 / 12）
+	// 必要があり、どちらも取らなかった。停滞は `observedAt` の古さで読む。
+	State IngestProgressState `json:"state"`
+
+	// WrittenBytes 転送先ファイルに書けたバイト数。`state = transferring` のときだけ付く。
+	//
+	// **これは「いまファイルに書けているバイト数」であって累積の転送実績
+	// ではない。** ジョブ再試行（部分ファイルを truncate してゼロから
+	// 作り直す。docs/recording/ingest.md §5.3 の層 2）で 0 に戻ることが
+	// ある。戻りを隠さないのは、隠すと「進んでいるのに終わらない」に見えて
+	// 実際に起きているやり直しが観測できなくなるため。
+	//
+	// **`sizeBytes`（原本の実サイズ）とは別のフィールドである。** コミット =
+	// DB 行（不変条件 3）なので、コミット前の途中ファイルのサイズを
+	// `sizeBytes` に混ぜない。
+	WrittenBytes *int64 `json:"writtenBytes,omitempty"`
+}
+
+// IngestProgressState 原本の取り込みの粗い状態。**サーバー側で DB 行から毎回導出する**
+// （列に焼いた値ではない）。優先順に:
+//
+//   - `committed`: `kind='original'` の `media_assets` 行が存在する。
+//     取り込みは少なくとも 1 回完了した。その原本が**いま**あるかどうかは
+//     `sizeBytes` の有無で見る（`state='deleted'` の原本でもここは
+//     `committed` のまま --- 「取り込めなかった」と「取り込んだ後に
+//     消した」を混同しないため。issue #211）
+//   - `transferring`: 原本行が無く、転送の進捗行がある。`writtenBytes` /
+//     `observedAt` が付く。`observedAt` が古いまま止まっていれば停滞して
+//     いる（River のバックオフ待ち・ストール）
+//   - `pending`: 原本行も進捗行も無く、**ingest ジョブが投入される
+//     はずの** mirakc record の観測（`record_sync.status = 'finished'`。
+//     watcher が ingest を投入する条件と同じ述語）がある。取り込み待ち、
+//     または失敗して再試行待ち
+//   - `unknown`: 上のどれでもない。取り込みが始まった観測が無い ---
+//     mirakc record が観測されていないか、record が `finished` でない
+//     （録画中・`failed`・`canceled`。**この録画に ingest ジョブは
+//     投入されない**）
+//
+// **`pending` は「これから来る」の断定なので、来る根拠が無いものは
+// 入れない。** `record_sync` 行の存在だけを根拠にすると、`failed` /
+// `canceled` の録画（ingest が一度も投入されず、`record_sync` 行も
+// 消えない）が永久に「取り込み待ち」を名乗る。
+//
+// **「リトライ中」を `pending` と区別する値は持たない。** 区別するには
+// River の `river_job` を API 契約に露出させる（内部実装の露出）か、
+// 失敗の観測という別寿命の値を進捗行に混ぜる（不変条件 9 / 12）
+// 必要があり、どちらも取らなかった。停滞は `observedAt` の古さで読む。
+type IngestProgressState string
+
 // OverlappingReservation defines model for OverlappingReservation.
 type OverlappingReservation struct {
 	DurationMs int64     `json:"durationMs"`
@@ -923,11 +1035,12 @@ type Recording struct {
 	// 足しても消してはならない。`encodedAssets.map(a => a.profile)` と
 	// 常に一致する。
 	// Deprecated: this property has been marked as deprecated upstream, but no `x-deprecated-reason` was set
-	EncodedProfiles *[]string  `json:"encodedProfiles,omitempty"`
-	EndedAt         *time.Time `json:"endedAt,omitempty"`
-	EventId         int        `json:"eventId"`
-	Id              int64      `json:"id"`
-	NetworkId       int        `json:"networkId"`
+	EncodedProfiles *[]string       `json:"encodedProfiles,omitempty"`
+	EndedAt         *time.Time      `json:"endedAt,omitempty"`
+	EventId         int             `json:"eventId"`
+	Id              int64           `json:"id"`
+	Ingest          *IngestProgress `json:"ingest,omitempty"`
+	NetworkId       int             `json:"networkId"`
 
 	// QualityEvents recording.failed / record-broken / bcas_anomaly の履歴
 	QualityEvents *[]map[string]interface{} `json:"qualityEvents,omitempty"`
@@ -940,7 +1053,11 @@ type Recording struct {
 	// （issue #184 M4-12）、クライアントはこの値で区別する。
 	Site string `json:"site"`
 
-	// SizeBytes 原本の実サイズ。ingest 済み（media_assets 行あり）の場合のみ
+	// SizeBytes 原本の実サイズ。ingest 済み（media_assets 行あり）の場合のみ。
+	// 省略は「まだ取り込めていない」と「取り込んだ後に削除した」の両方を
+	// 含むので、区別が要るときは `ingest.state` を見る（issue #211 /
+	// #212）。**転送中の途中ファイルのサイズはここに混ぜない**（コミット =
+	// DB 行。不変条件 3）--- 途中経過は `ingest.writtenBytes`。
 	SizeBytes *int64          `json:"sizeBytes,omitempty"`
 	Source    RecordingSource `json:"source"`
 

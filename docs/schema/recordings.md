@@ -145,6 +145,26 @@ CREATE TABLE recording_encode_policy (
 - **`recording_id` は `recordings.id`（脊椎の PK）への FK で、`recordings` と同時に生まれて同時に死ぬ**（不変条件 12）。until_encoded の CHECK（`00020` から移設）は空プロファイルの until_encoded を表現不可能にする
 - backfill（`00032`）は原本削除エンジンの view `until_encoded_deletable_originals` が参照する JOIN 先をこの表に付け替えた際に、原本 media_asset（`kind = 'original'`）の有無で「凍結済みかどうか」を判定して行を作った（列の値そのものは判定に使わない。不変条件 9）
 
+### recording_ingest_progress — 転送の途中経過（衛星表）
+
+原本の取り込み（ingest）が「どこまで書けたか」を持つ。書き手は ingest worker
+（`internal/worker/ingest_progress.go`）だけ。
+
+```sql
+CREATE TABLE recording_ingest_progress (
+    recording_id   bigint      PRIMARY KEY REFERENCES recordings (id) ON DELETE CASCADE,
+    written_bytes  bigint      NOT NULL CHECK (written_bytes >= 0),
+    expected_bytes bigint      CHECK (expected_bytes IS NULL OR expected_bytes >= 0),
+    observed_at    timestamptz NOT NULL DEFAULT now()
+);
+```
+
+- **行の存在そのものが「転送中」を意味する**（不変条件 10）。転送していないことを表す行は作らない。消えるのは 2 経路だけ —— 原本 `media_assets` を INSERT する tx（コミット = DB 行なので、原本行が生まれる瞬間に進捗行が消え、「原本があるのに取り込み中」が読者から見えない）と、`recordings` 行の削除（`ON DELETE CASCADE`）
+- **書き手は脊椎（watcher / reconciler）ではない**ので本体の列にしない（不変条件 13。`recording_encode_policy` と同じ判断）。`record_sync` にも載せない —— あちらは mirakc 側の観測で書き手は watcher、こちらは Rokuban 側のファイルに何バイト書けたかで、1 表 2 書き手になる（不変条件 12）
+- **`written_bytes` は単調増加しない。** ジョブ内リトライ（Range 再開）では積み上がるが、ジョブ再試行は部分ファイルを truncate してゼロから作り直す（[recording/ingest.md](../recording/ingest.md) §5.3 の層 2）ので 0 に戻る。「いまファイルに書けているバイト数」の観測であって累積の転送実績ではない
+- **`expected_bytes` は `record_sync.content_length` のコピー**（転送開始時に読む）。mirakc が length を返さなければ NULL のままにする —— でっち上げた分母を置かない
+- ジョブが失敗して River のバックオフ待ちに入ると、行は `observed_at` が古いまま残る。これは意図した挙動で、`river_job` を API 契約に露出させない代わりに停滞を読ませる唯一の材料になる（[recording/ingest.md](../recording/ingest.md) §5.6）
+
 ## 6. media_assets — メディアアセット（永続資産）
 
 録画に紐づくファイルの台帳。**この行の存在が「公開済み」の定義**（ストレージ契約ルール 3）。
