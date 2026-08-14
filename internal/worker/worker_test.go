@@ -15,6 +15,7 @@ import (
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
 
+	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -771,10 +772,10 @@ func TestPhysicalQueueName(t *testing.T) {
 }
 
 // ValidateSiteForQueueNames は、site 修飾後のキュー名が River の 64 文字上限
-// （riverQueueNameMaxLen）を超えると起動時エラーにする（issue #185 の「罠」:
-// internal/config.mirakcSiteNameMaxLen（64）はこの修飾を見込んでいないため、
-// `reconciler_`（11 文字）のような長い prefix が付く分だけ実質の上限は
-// site 名の側で 64 より短くなる）。
+// （riverQueueNameMaxLen）を超えると起動時エラーにする。config.MirakcSiteNameMaxLen
+// はこの上限を見込んで既に 53 に締められている（TestSiteBoundQueueNames_
+// FitWithinMirakcSiteNameMaxLen 参照）が、ValidateSiteForQueueNames は site 名が
+// config 以外の経路から来る場合の最後の砦として独立に検査する。
 func TestValidateSiteForQueueNames(t *testing.T) {
 	t.Run("short site name is fine", func(t *testing.T) {
 		if err := ValidateSiteForQueueNames("tokyo"); err != nil {
@@ -803,15 +804,33 @@ func TestValidateSiteForQueueNames(t *testing.T) {
 		}
 	})
 
-	t.Run("mirakcSiteNameMaxLen(64) alone would accept a name that breaks reconciler's queue", func(t *testing.T) {
-		// internal/config はキュー修飾を見込んでいないので 64 文字までは通す。
-		// ValidateSiteForQueueNames はその差分を検出する側であることを示す
-		// （config 側のテストではなく、ここでの検証範囲を明示するための対照）。
+	t.Run("a 64-char site name is rejected once qualified (config no longer permits it; this is the non-config last line of defence)", func(t *testing.T) {
 		site := strings.Repeat("a", 64)
 		if err := ValidateSiteForQueueNames(site); err == nil {
 			t.Fatal("expected error for a 64-char site name once queue-qualified, got nil")
 		}
 	})
+}
+
+// TestSiteBoundQueueNames_FitWithinMirakcSiteNameMaxLen は、
+// config.MirakcSiteNameMaxLen が ValidateSiteForQueueNames の上位集合であることを
+// 機械的に固定する。config は worker を import できない（逆方向のみ許される）ので、
+// 両方が見える worker 側にこの関係のテストを置く。
+//
+// siteBoundQueueNames のどの論理名についても、site 名を
+// config.MirakcSiteNameMaxLen まで許してキュー修飾しても riverQueueNameMaxLen を
+// 超えないことを検査する。破ると（siteBoundQueueNames に `reconciler` より
+// 長い論理名を足す、または config.MirakcSiteNameMaxLen を大きくする）、config の
+// ロード時検査を通った site 名が ValidateSiteForQueueNames で落ちる、つまり
+// 「起動できるはずの設定が、束縛した瞬間に初めて起動エラーになる」状態に戻る。
+func TestSiteBoundQueueNames_FitWithinMirakcSiteNameMaxLen(t *testing.T) {
+	for _, base := range siteBoundQueueNames {
+		qualifiedLen := len(base) + 1 + config.MirakcSiteNameMaxLen
+		if qualifiedLen > riverQueueNameMaxLen {
+			t.Errorf("queue %q: len(%q)=%d + 1(separator) + config.MirakcSiteNameMaxLen(%d) = %d exceeds riverQueueNameMaxLen(%d)",
+				base, base, len(base), config.MirakcSiteNameMaxLen, qualifiedLen, riverQueueNameMaxLen)
+		}
+	}
 }
 
 type noOpArgs struct{}

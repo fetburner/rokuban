@@ -167,8 +167,17 @@ func (c Config) Registry() []MirakcSite {
 // （issue #183 の「罠」）。
 var mirakcSiteNamePattern = regexp.MustCompile(`^[a-z0-9]([_-]?[a-z0-9])*$`)
 
-// mirakcSiteNameMaxLen は site 名の最大長（River のキュー名制約と同一。上記参照）。
-const mirakcSiteNameMaxLen = 64
+// MirakcSiteNameMaxLen は site 名の最大長。
+//
+// River のキュー名の上限（internal/worker.riverQueueNameMaxLen、64 文字）から、
+// site 単位のキュー（internal/worker.siteBoundQueueNames = ingest/epg/
+// reconciler/watcher）を qualifyQueueName で `<base>_<site>` に修飾したときの
+// prefix のうち最長のもの（`reconciler_`、11 文字。base の中で `reconciler` が
+// 最長のため）を引いた値: 64 - 11 = 53。**siteBoundQueueNames に `reconciler`
+// より長い論理名が増えたら、この 53 を引き直す必要がある**
+// （internal/worker.TestSiteBoundQueueNames_FitWithinMirakcSiteNameMaxLen が
+// この関係を機械的に固定している）。
+const MirakcSiteNameMaxLen = 53
 
 // reservedSiteNames は実在する予約ディレクトリと衝突する site 名。
 //
@@ -190,8 +199,12 @@ func validateSiteName(name string) []string {
 	if !mirakcSiteNamePattern.MatchString(name) {
 		errs = append(errs, fmt.Sprintf("site name %q must match %s", name, mirakcSiteNamePattern.String()))
 	}
-	if len(name) > mirakcSiteNameMaxLen {
-		errs = append(errs, fmt.Sprintf("site name %q exceeds %d characters", name, mirakcSiteNameMaxLen))
+	if len(name) > MirakcSiteNameMaxLen {
+		errs = append(errs, fmt.Sprintf(
+			"site name %q exceeds %d characters (River's queue name limit is 64 characters, and "+
+				"site-bound queues carry a prefix such as \"reconciler_\"; the site name itself "+
+				"must leave room for that prefix)",
+			name, MirakcSiteNameMaxLen))
 	}
 	if reservedSiteNames[name] {
 		errs = append(errs, fmt.Sprintf("site name %q is reserved", name))

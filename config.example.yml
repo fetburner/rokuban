@@ -45,7 +45,7 @@ mirakc:
 
 # 複数 mirakc。`mirakc:` の代わりにこちらを使う。
 # `mirakc:` は `mirakcs:` の 1 要素と等価に解決される糖衣なので、両方を同時に
-# 書くと起動エラーになる。site 名は ^[a-z0-9]([_-]?[a-z0-9])*$ / 64 文字以内、
+# 書くと起動エラーになる。site 名は ^[a-z0-9]([_-]?[a-z0-9])*$ / 53 文字以内、
 # catalog / thumbnails は予約名で使えない。プロセスがどのサイトに束縛されるかは
 # `rokuban server --sites <site>` で指定する（config キーではない）。
 # mirakcs:

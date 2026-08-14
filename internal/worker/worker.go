@@ -385,10 +385,14 @@ func physicalQueueName(logical, boundSite string) string {
 }
 
 // ValidateSiteForQueueNames は、site を site 単位のキューに修飾したときに
-// River のキュー名の上限（riverQueueNameMaxLen、64 文字）を超えないことを検査する
-// （issue #185 の「罠」: `mirakcSiteNameMaxLen`（internal/config、64）は
-// このキュー修飾を見込んでいないため、`reconciler_` のような長い prefix が付く分だけ
-// 実質の上限は site 名の側で 64 より短くなる。この差分をここで検証する）。
+// River のキュー名の上限（riverQueueNameMaxLen、64 文字）を超えないことを検査する。
+//
+// internal/config はレジストリに書かれた site 名をロード時にこの上限の範囲で
+// 検査している（config.MirakcSiteNameMaxLen。TestSiteBoundQueueNames_
+// FitWithinMirakcSiteNameMaxLen が、config 側の上限が ValidateSiteForQueueNames の
+// 上位集合であることを固定している）。ValidateSiteForQueueNames はそれとは独立に、
+// site 名が config 以外の経路（コマンドライン引数・環境変数等）から来る場合に
+// 備えた最後の砦として残す。
 //
 // cmd/rokuban が --sites で束縛した各サイト、および `rokuban enqueue --site` で
 // 指定されたサイトについて、起動時 / 投入前に呼ぶ。
@@ -398,7 +402,7 @@ func ValidateSiteForQueueNames(site string) error {
 		if len(name) > riverQueueNameMaxLen {
 			return fmt.Errorf(
 				"site %q: queue name %q (%d chars) would exceed River's %d character limit "+
-					"once site-qualified (issue #185); shorten the site name",
+					"once site-qualified; shorten the site name",
 				site, name, len(name), riverQueueNameMaxLen)
 		}
 	}
