@@ -1399,6 +1399,91 @@ for (const theme of themes) {
   await context.close()
 }
 
+// --- ⑥ Button: フォーカスリングは遷移しない / hover の色遷移は保つ（issue #294） ---
+//
+// `transition-all` は `box-shadow`（focus-visible の ring）と `outline` も
+// 遷移対象に含めてしまい、キーボードフォーカスの瞬間にリングがアニメーションで
+// 出現する（WCAG のフォーカス可視・「Focus rings that animate in」という tell）。
+//
+// **jsdom では測れない。** CSS transition が実際に走るかどうかはブラウザの
+// transition エンジンでしか観測できない --- `transition-property` という
+// 文字列がクラス名に含まれているかを読むテストは「そのユーティリティを
+// 書いた」ことしか確認できず、**実際に発火するか**（他のクラスに上書きされて
+// いないか・ブラウザが実際に transitionstart を上げるか）までは保証しない。
+// ここでは実際の `transitionstart` イベント（発火したプロパティ名つき）を
+// 実ブラウザで観測する --- computed style を 1 度だけ読んで「差があるはず」と
+// 決め打つより、ブラウザの transition ライフサイクルそのものに聞く方が
+// タイミング依存の flaky さが無い。
+//
+// 両方向を見る: ① focus-visible で box-shadow / outline が遷移**しない**こと、
+// ② hover で背景色の遷移が従来どおり**起きる**こと（issue の受け入れ基準）。
+log('\n=== ⑥ Button: フォーカスリングの遷移 / hover 色遷移（issue #294） ===')
+{
+  const { context, page } = await open(desktop, 'light', screenOf('search'))
+  const button = page.getByRole('button', { name: '検索' })
+  if ((await button.count()) === 0) {
+    ng.push('フォーカスリング: 検索ボタン（shared Button）が見つからない')
+  } else {
+    await page.evaluate(() => {
+      window.__transitioned = []
+      document.addEventListener(
+        'transitionstart',
+        (e) => window.__transitioned.push(e.propertyName),
+        true,
+      )
+    })
+    // Playwright の `.focus()` は script からの `element.focus()` で、実際の
+    // Tab 走査ではないが、ページ読み込み後まだ一度もポインタ操作をしていない
+    // 状態でのプログラム的フォーカスは Chromium で :focus-visible を伴う。
+    // それを前提にせず、次の行で実際に :focus-visible が付いたかを確認して
+    // いるので、前提が崩れていれば「遷移していない」ではなく専用の NG で落ちる
+    // （検証していない前提を持たない --- CLAUDE.md「測っていない挙動を断言しない」）。
+    await button.first().focus()
+    const isFocusVisible = await button.first().evaluate((el) => el.matches(':focus-visible'))
+    if (!isFocusVisible) {
+      ng.push(
+        'フォーカスリング: 検索ボタンに :focus-visible が付かない（判定の前提が崩れている。' +
+          'focus() の呼び方を見直す）',
+      )
+    } else {
+      // transition-all（既定 150ms）が残っていれば box-shadow / outline の
+      // transitionstart が飛ぶ。150ms を安全側に見て待つ
+      await page.waitForTimeout(400)
+      const transitioned = await page.evaluate(() => window.__transitioned)
+      log(`  :focus-visible で遷移したプロパティ: [${transitioned.join(', ') || '(なし)'}]`)
+      // `outline` は `outline-color` / `outline-width` / `outline-style` の
+      // ロングハンドでも上がりうる（実測: transition-all のもとでは
+      // `outline-width` が上がった）ので前方一致で拾う。box-shadow はロング
+      // ハンドを持たないので完全一致でよい。
+      const ringLike = transitioned.filter((p) => p === 'box-shadow' || p.startsWith('outline'))
+      for (const prop of ringLike) {
+        ng.push(
+          `フォーカスリング: :focus-visible で ${prop} が遷移している` +
+            '（transition-all の再発。box-shadow と outline は遷移対象から外す）',
+        )
+      }
+    }
+
+    // 両方向: hover の色遷移は従来どおり効くこと（issue の受け入れ基準）
+    await button.first().evaluate((el) => el.blur())
+    await page.mouse.move(0, 0)
+    await page.evaluate(() => {
+      window.__transitioned = []
+    })
+    await button.first().hover()
+    await page.waitForTimeout(400)
+    const hoverTransitioned = await page.evaluate(() => window.__transitioned)
+    log(`  hover で遷移したプロパティ: [${hoverTransitioned.join(', ') || '(なし)'}]`)
+    if (!hoverTransitioned.includes('background-color') && !hoverTransitioned.includes('color')) {
+      ng.push(
+        'フォーカスリング: hover で色（background-color / color）の遷移が起きていない' +
+          '（transition-all を外した副作用で色遷移まで消えていないか確認する）',
+      )
+    }
+  }
+  await context.close()
+}
+
 // 数値は docs に転記しない（転記した瞬間に二重管理になる）。docs は
 // 「ここで測る」とだけ言い、実際の数値はこの出力が権威。
 log('\n=== 測ったコントラスト ===')
