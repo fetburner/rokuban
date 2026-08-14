@@ -49,8 +49,9 @@ function reservationDetailQueryKey(site: string, programId: number) {
  * ルール由来予約と手動予約を 1 画面で扱える（EPGStation は編集画面が分裂している）。
  *
  * encodeProfiles / keepOriginal は M3 で worker が消費するため編集可能
- * （issue #68）。priority など mirakc への差分反映が必要な項目は、
- * その反映経路がまだ無いため表示のみで編集は足していない。
+ * （issue #68）。priority は reconciler が mirakc への差分反映を持つが
+ * （優先度差分での schedules 再作成）、編集 UI をまだ作っていないため
+ * 表示のみに留めている。UI を足すこと自体は別タスク。
  *
  * ルートとクエリは `(site, programId)` を宛先にする（issue #99）。
  * `reservations.id` は ruler の導出削除・再実体化で変わりうる不安定な値なので、

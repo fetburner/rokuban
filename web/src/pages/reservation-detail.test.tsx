@@ -226,20 +226,24 @@ describe('ReservationDetailPage', () => {
     expect(String(overlapsCall?.[0])).toBe('/api/sites/osaka/programs/300000/overlaps')
   })
 
-  // issue #300: 状態は一覧（`pages/reservations.tsx` の `stateLabels`）と同じ
-  // 日本語ラベルで出る。生の `reservation.state`（'detached' 等）をそのまま
-  // 出すと、一覧では「ルール外」と読める状態がここでは読めなくなる。
-  it('状態は一覧と同じ日本語ラベルで出る（生の state 値ではない）', async () => {
+  // issue #300: 状態は一覧（`lib/reservation-labels.ts` の `stateLabels`）と同じ
+  // 日本語ラベルで出る。生の `reservation.state`（'active' 等）をそのまま
+  // 出すと、一覧では「有効」「ルール外」「EPG から消失」と読める状態がここでは
+  // 読めなくなる。3 状態すべてを固定する --- `active` だけを見て通すテストは
+  // `stateLabels.active` を書き換えても落ちないので何も保証しない。
+  it.each([
+    ['active', '有効'],
+    ['detached', 'ルール外'],
+    ['orphaned', 'EPG から消失'],
+  ] as const)('状態 %s は一覧と同じ日本語ラベル「%s」で出る（生の state 値ではない）', async (state, label) => {
     stubFetch((site, programId) =>
-      site === 'default' && programId === 300000
-        ? baseReservation({ state: 'detached' })
-        : null,
+      site === 'default' && programId === 300000 ? baseReservation({ state }) : null,
     )
 
     renderAt('/reservations/default/300000')
 
-    expect(await screen.findByText('ルール外')).toBeInTheDocument()
-    expect(screen.queryByText('detached')).not.toBeInTheDocument()
+    expect(await screen.findByText(label)).toBeInTheDocument()
+    expect(screen.queryByText(state)).not.toBeInTheDocument()
   })
 
   // issue #300: ルールは名前で出す。ルール一覧（`useListRules`）に該当ルール

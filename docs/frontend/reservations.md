@@ -37,7 +37,27 @@ overrides の編集はこの画面の担当で、番組行の展開パネル自�
 予約 overrides の PATCH は「既存 override + このパッチ + ルールの base」をマージした
 実効値で判定するため、`keepOriginal` だけを送る・`encodeProfiles` だけを reset する
 という 1 リクエストでは見えない組み合わせも実効値としては空プロファイルなら弾かれる。
-priority など mirakc 差分が必要な項目は reconciler が差分を反映してから編集可能にする。
+priority は reconciler が mirakc への差分反映（優先度差分での schedules 再作成）を
+既に持っているが、編集 UI はまだ無い --- 値は表示のみで、編集を足すのは別タスク。
+
+**状態・ルールも内部値ではなく利用者が読める形で出す。** `reservation.state` は
+生の enum 値を出さず、予約一覧（`pages/reservations.tsx` の `stateLabels`。
+`lib/reservation-labels.ts` に切り出して一覧・詳細で共有）と同じ日本語ラベルに
+する。`reservation.programId` は URL の宛先であって利用者が読むフィールドでは
+ないので、詳細画面のフィールドとしては出さない。
+
+## 予約詳細 → ルールの導線
+
+「録画 → ルールの導線」（[recordings.md](recordings.md) §録画 → ルールの導線）と
+同じ手を予約詳細（`reservation.ruleId` があるときだけ「ルール」フィールドを出す）
+にも使う --- `useListRules()`（パラメータなし = 常に全件）のキャッシュから名前を
+引き、`rules.find` が見つからない間だけ `#N` に落とす。ルール専用の単体取得
+（`GET /api/rules/{id}` / `useGetRule`）は使わない。
+
+原則「固有名詞はリンク」に従い、ルールの識別（名前 or `#N`）そのものをリンク
+テキストにする。`/rules` に単一ルート（`/rules/{id}`）は無いので、リンク先は
+`/search?ruleId=N`（`RulesPage` の「検索しながら編集」と同じ着地先、ルールの
+実質的な編集画面）。
 
 ## 予約が録られない理由を出す
 
@@ -107,6 +127,4 @@ search param）に不足区間の開始時刻を積んだ `Link` にする。
 - skip 理由の録画参照・容量不足バッジのリンク化は M6-5（issue #233）。「固有名詞は
   リンク」の原則で、押せない参照だった 2 箇所に導線を足した
 - 予約 overrides の PATCH を実効値で判定する仕様は issue #104
-- priority などの編集解禁の前提（reconciler の差分反映）は
-  [issue #19](https://github.com/fetburner/rokuban/issues/19)
 - skip バッジと判定根拠の表示は M2-6 の受け入れ条件だった
