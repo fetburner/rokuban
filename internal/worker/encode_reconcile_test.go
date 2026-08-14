@@ -324,6 +324,65 @@ func TestListRecordingsMissingEncodes(t *testing.T) {
 	}
 }
 
+// TestUnknownDesiredProfile_PredicateAsymmetry は「desired が全部揃っているか」
+// という同じ形の述語が 3 箇所（このパスの ListRecordingsMissingEncodes /
+// ListUnsatisfiableEncodeProfiles、削除エンジンの
+// until_encoded_deletable_originals view）にあり、known_profiles で絞るかどうかで
+// 意図的に食い違っていることを固定する回帰テスト（決定は
+// internal/db/queries/encode_reconcile.sql のヘッダと
+// docs/storage/retention.md §保持ポリシー）。
+//
+// フィクスチャは 1 件の録画で共通: keep_original='until_encoded'、desired が
+// 現在の設定に無いプロファイル（"gone"）だけ、原本・サムネイルは active。
+//
+//   - 方向 A: このパスの候補（現在の設定で絞る）には含まれない --- 投入しても
+//     EncodeWorker が弾くだけのゴミになるため
+//   - 方向 B: 削除エンジンの候補（絞らない）には含まれず、原本は active のまま
+//     残る --- 「設定から消えたプロファイルを凍結している録画の原本は永久に
+//     保持する」が安全側の仕様であり、絞り込みを追加すると config の 1 行の
+//     編集で原本が削除可能になってしまうため
+//
+// この 2 つのアサーションが将来「述語を揃えよう」とした変更を両側から検出する
+// 装置になっている。
+func TestUnknownDesiredProfile_PredicateAsymmetry(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	mediaDir := t.TempDir()
+	recordingID := insertTestRecording(t, pool)
+
+	originalID := seedOriginalAsset(t, pool, mediaDir, recordingID, "asym325/orig.m2ts", []byte("data"))
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindThumbnail, nil, "asym325/thumb.jpg", []byte("jpg"))
+	markRecordingUntilEncoded(t, pool, recordingID, []string{"gone"})
+
+	// 方向 A: 候補クエリ（known_profiles で絞る）に現れない。
+	q := sqlcgen.New(pool)
+	candidates, err := q.ListRecordingsMissingEncodes(context.Background(), sqlcgen.ListRecordingsMissingEncodesParams{
+		KnownProfiles: []string{"h264"},
+		RowLimit:      encodeReconcileRowLimit,
+	})
+	if err != nil {
+		t.Fatalf("ListRecordingsMissingEncodes: %v", err)
+	}
+	if slices.Contains(candidates, recordingID) {
+		t.Errorf("ListRecordingsMissingEncodes candidates = %v, recording %d (desired profile %q not in current config) must not be a candidate",
+			candidates, recordingID, "gone")
+	}
+
+	// 方向 B: 削除エンジンを 1 パス回しても、この録画の原本は消えない
+	// （until_encoded_deletable_originals は known_profiles で絞らないので、
+	// 「desired が揃っている」という判定に永久に到達しない）。
+	dw := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	if err := dw.Work(context.Background(), nil); err != nil {
+		t.Fatalf("DeleteReconcileWorker.Work: %v", err)
+	}
+	if got := assetState(t, pool, originalID); got != "active" {
+		t.Errorf("original state after delete reconcile = %q, want active "+
+			"(a config typo/rename must not make this original deletable; it must stay until the profile is re-encoded or restored)", got)
+	}
+}
+
 // 候補が 0 件のパスでも成功すること（通常運転はこちら）。
 func TestEncodeReconcileWorker_NoCandidates(t *testing.T) {
 	pool := setupTestPool(t)
