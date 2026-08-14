@@ -184,8 +184,8 @@ record では分母を NULL のままにし、UI は % を出さずバイト数�
 ならない —— 行は `failed` / `canceled` の record にも作られ、Rokuban はこの行を消さない
 （本番に `DELETE FROM record_sync` の経路は無い）ので、ingest ジョブが一度も投入されない
 録画が**永久に「取り込み待ち」を名乗る**。`pending` は「これから来る」の断定なので、
-来る根拠が述語として書けないものを入れない（この誤りを一度実装して指摘された。
-[frontend/recordings.md](../frontend/recordings.md) の「経緯と失敗事例」）。
+来る根拠が述語として書けないものを入れない（表示側の規律は
+[frontend/recordings.md](../frontend/recordings.md)「取り込み中であることを画面に出す」）。
 
 **途中ファイルのサイズを `sizeBytes` に混ぜない**（不変条件 3。コミット = DB 行）。
 進捗は `ingest.writtenBytes` という別のフィールドで、原本 `media_assets` 行が生まれる

@@ -9,7 +9,7 @@
 ```sql
 CREATE TABLE recordings (
     id                bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    rule_id           bigint,        -- トレーサビリティ。00006 で FK 追加済み
+    rule_id           bigint,        -- トレーサビリティ。rules への FK（ON DELETE SET NULL）
     source            text   NOT NULL CHECK (source IN ('rule', 'manual')),
     site              text   NOT NULL,  -- どのサイトで録画したか（履歴として snapshot）
 
@@ -45,11 +45,11 @@ CREATE TABLE recordings (
 
     -- ごみ箱（録画単位の論理削除。原本 + 派生物 + サムネイルのグループごと）
     deleted_at        timestamptz,
-    -- 即時物理削除の要求印（00018）。ファイルは消さない。
+    -- 即時物理削除の要求印。ファイルは消さない。
     -- 削除 reconcile が `purge_after <= now()` を拾って unlink する。
     -- 猶予経過による通常 purge とは独立した「前倒し」の合図。
     purge_after       timestamptz,
-    -- 「完全削除が完了した」不可逆な事実（00024）。削除 reconcile が
+    -- 「完全削除が完了した」不可逆な事実。削除 reconcile が
     -- パス末尾で、ごみ箱条件を満たしかつ物理削除待ちの media_assets が 1 行も
     -- 残っていない録画に一度だけ立てる。ごみ箱ビュー（ListTrashRecordings）は
     -- この列も IS NULL であることを要求するので、purge が完了した録画は
@@ -74,7 +74,7 @@ CREATE INDEX ON recordings (purged_at) WHERE purged_at IS NULL;  -- ごみ箱一
 
 - watcher が mirakc record を初観測（SSE または全量突き合わせ）→ record の program / service ペイロードからスナップショットして INSERT、`record_sync` 行から参照
 - `recording.failed` で record が存在しないケース（start-recording-failed 等）→ status = `failed` の行を作り quality_events に理由を記録。**録画されなかった試行も履歴に残る**
-- **番組終了時点で捕獲の試みが一度も記録されなかった場合** → reconciler（`recordNeverScheduled`）が status = `failed` の行を作り、`never_scheduled = true`（`00033`）を立てたうえで quality_events に `recording.never-scheduled`（内訳付き）を記録する。watcher の 2 経路（mirakc 由来の失敗）とは書き手が異なる唯一の経路で、`recordings` に書き手が 2 人（watcher / reconciler）いることになるが、直列化契約は下記「同一イベントの重複防止」の一意索引が担う（不変条件 12「1 つの表に書き手が 2 人いるのも同じ兆候」への回答）
+- **番組終了時点で捕獲の試みが一度も記録されなかった場合** → reconciler（`recordNeverScheduled`）が status = `failed` の行を作り、`never_scheduled = true` を立てたうえで quality_events に `recording.never-scheduled`（内訳付き）を記録する。watcher の 2 経路（mirakc 由来の失敗）とは書き手が異なる唯一の経路で、`recordings` に書き手が 2 人（watcher / reconciler）いることになるが、直列化契約は下記「同一イベントの重複防止」の一意索引が担う（不変条件 12「1 つの表に書き手が 2 人いるのも同じ兆候」への回答）
 - 同一 active-event に上記の failed 行（mirakc 由来・never-scheduled のどちらでも）が既にある状態で、後から成功 record が初観測されたとき → failed 行を supersede してから新しい行を INSERT する（下記「同一イベントの重複防止」の `superseded_at` 参照）
 - ingest の完了は recordings の status ではなく **`media_assets` 行の有無**で表現する（コミット = DB 行。冗長な状態カラムを持たない）
 
@@ -88,7 +88,15 @@ CREATE INDEX ON recordings (purged_at) WHERE purged_at IS NULL;  -- ごみ箱一
 - **`status` に 5 値目（`never-scheduled` 等）を足さない。** このスキーマでは「失敗の種別」はもともと `quality_events` の管轄で、`status` は粗い帰結だけを持つ（mirakc 由来の失敗も理由は `status` ではなく `quality_events` にある）。never-scheduled は失敗の**理由**なので、`status='failed'` + `quality_events` に `recording.never-scheduled` が既存の型に合致する。`canceled` を独立させた論法（「分かっている 2 つの事実を同じ値に潰すと一覧が嘘をつく」）の再演に見えるが違う --- 区別（mirakc 由来か reconciler 由来か、そしてその理由）は quality_events に保存されるので嘘にならない
 - never-scheduled 行は「`media_assets` を 1 行も持たない録画」になる。ユーザーがこれをごみ箱送り（`deleted_at` を立てる）にした場合でも、`media_assets` が 0 行なら `MarkPurgedRecordings` の `NOT EXISTS` 判定は空集合で自明に真になり、正しく完全削除の対象として扱われる（[storage.md](../storage.md) §7 参照）
 
-**never-scheduled 行の識別:** 型付き列 `never_scheduled boolean`（`00033`）で機械的に判別できる。**書き手は `CreateNeverScheduledRecording`（reconciler）だけで、値は行と同時に生まれて不変。** `CreateFailedRecording`（mirakc 由来の途中失敗、watcher）の `ON CONFLICT DO UPDATE` は前パスの never-scheduled 行に in-place で上書きすることがあるが、この列には触れない —— quality_events を追記するだけで never_scheduled は変えない（除外が「二度と復帰しない」という `CreateNeverScheduledRecording` の `ON CONFLICT DO NOTHING` との対を保つ。この不変性を守った経緯は末尾「経緯と失敗事例」）。`quality_events` の配列要素に `event = "recording.never-scheduled"`（`internal/db.QualityEventNeverScheduled`）を持つマーカーは**消していない** —— いつ・どの理由で never-scheduled と判定したかの内訳ログとして引き続き積むが、クエリ軸としては使わない（[principles.md](principles.md) §8「型の規律」。かつて WHERE 軸に使っていた違反の経緯は末尾「経緯と失敗事例」）。API の `orphaned` 表示（`GetReservationFull` の `never_recorded`）と `ListReservationsForSyncEvaluation` 等の同期除外は、`never_scheduled_events` VIEW（`00030` で作成、`00033` でこの列ベースに置き換え）が定義する核（`status='failed'` + `never_scheduled`）を共有する。差は表示側だけが持つ live 限定（`deleted_at` / `superseded_at` が NULL）で、同期除外はこれを見ない —— mirakc 由来の途中失敗からの再試行を妨げないためで、意図的な差である（[reservations.md](reservations.md) §3 参照）。特定の予約に紐づけたい読者（表示・エンコード方針の解決等）は放送イベントキー `(site, network_id, service_id, event_id)` で `program_snapshots` 経由に `reservations` を引く —— `reservations.id` を宛先にした旧 `reservation_id` 列は同じ族のバグを繰り返し生んだため列自体を削除した（不変条件 9「identity」。[invariants.md](../invariants.md) §9）。
+#### never-scheduled 行の識別
+
+型付き列 `never_scheduled boolean` で機械的に判別できる。
+
+1. **書き手は `CreateNeverScheduledRecording`（reconciler）だけで、値は行と同時に生まれて不変。** `CreateFailedRecording`（mirakc 由来の途中失敗、watcher）の `ON CONFLICT DO UPDATE` は前パスの never-scheduled 行に in-place で上書きすることがあるが、この列には触れず quality_events を追記するだけ
+2. **「実観測が推論を上書きする」side（`CreateFailedRecording` が `false` に落とす経路）を足してはならない。** 除外が「二度と復帰しない」という `CreateNeverScheduledRecording` の `ON CONFLICT DO NOTHING` との対を崩す
+3. **判定軸は型付き列であって `quality_events` ではない。** `event = "recording.never-scheduled"`（`internal/db.QualityEventNeverScheduled`）のマーカーは**消していない**が、内訳ログとして積むだけでクエリ軸には使わない。jsonb の中身への `EXISTS(jsonb_array_elements(...))` を core ロジックの WHERE 軸にすると、「そのテーブル自身のロジックが中身を一切使わない不透明なペイロード」という自前の規則への静かな違反になる（[principles.md](principles.md) §8「型の規律」）
+4. **表示と同期除外は `never_scheduled_events` VIEW の核（`status='failed'` + `never_scheduled`）を共有する。** 差は表示側だけが持つ live 限定（`deleted_at` / `superseded_at` が NULL）で、同期除外は見ない —— mirakc 由来の途中失敗からの再試行を妨げないための意図的な差（[reservations.md](reservations.md) §3）
+5. **特定の予約に紐づけたい読者（表示・エンコード方針の解決等）は、放送イベントキー `(site, network_id, service_id, event_id)` で `program_snapshots` 経由に `reservations` を引く。** `reservations.id` を宛先にした列を持ってはならない（不変条件 9「identity」。[invariants.md](../invariants.md) §9）
 
 ### ごみ箱
 
@@ -100,7 +108,7 @@ CREATE INDEX ON recordings (purged_at) WHERE purged_at IS NULL;  -- ごみ箱一
 - 物理削除後も recordings 行と media_assets の tombstone は残る → ごみ箱を空にしても録画履歴・ドロップ統計・重複排除は壊れない
 - API: `DELETE /api/recordings/{id}` / `POST .../restore` / `POST .../purge` / `GET /api/recordings?trash=true`
 
-### 同一イベントの重複防止（`00003` / `00023`）
+### 同一イベントの重複防止
 
 ```sql
 CREATE UNIQUE INDEX recordings_unique_active_event
@@ -142,8 +150,8 @@ CREATE TABLE recording_encode_policy (
 
 - **行の存在そのものが「凍結済み」を意味する**（不変条件 10）。凍結前はこの録画に対応する行が無く、`keep_original NOT NULL DEFAULT 'always'` のような列の既定値では「まだ凍結されていない」と「空として凍結された」を区別できなかった（recordings 本体にあった旧列の問題そのもの）。凍結後の行は空プロファイルであっても必ず INSERT される（`encode_profiles = '{}'` の行が存在しうる）
 - **書き手は脊椎（watcher / reconciler）ではない**。ingest worker（`internal/worker/ingest.go` の `resolveAndSnapshotEncodePolicy`）が原本 media_asset をコミットする tx の中で凍結し、api（`POST /api/recordings/{id}/encode-profiles`）が追記方向にのみ書き換える。詳細は [storage.md](../storage.md) §6「原本 TS の保持ポリシー」参照
-- **`recording_id` は `recordings.id`（脊椎の PK）への FK で、`recordings` と同時に生まれて同時に死ぬ**（不変条件 12）。until_encoded の CHECK（`00020` から移設）は空プロファイルの until_encoded を表現不可能にする
-- backfill（`00032`）は原本削除エンジンの view `until_encoded_deletable_originals` が参照する JOIN 先をこの表に付け替えた際に、原本 media_asset（`kind = 'original'`）の有無で「凍結済みかどうか」を判定して行を作った（列の値そのものは判定に使わない。不変条件 9）
+- **`recording_id` は `recordings.id`（脊椎の PK）への FK で、`recordings` と同時に生まれて同時に死ぬ**（不変条件 12）。until_encoded の CHECK は空プロファイルの until_encoded を表現不可能にする
+- 既存録画への backfill は、原本 media_asset（`kind = 'original'`）の**有無**で「凍結済みかどうか」を判定して行を作る。列の値そのものは判定に使わない（不変条件 9）
 
 ### recording_ingest_progress — 転送の途中経過（衛星表）
 
@@ -201,29 +209,3 @@ CREATE UNIQUE INDEX ON media_assets (rel_path) WHERE state <> 'deleted';
 - **deleted への遷移後も行は消さない**（tombstone）。`drop_stats` と元サイズは原本削除後も UI で見られる
 - 物理削除に至る 3 ソース（ごみ箱の猶予超過 / `until_encoded` の派生物完備 / 孤児回収）はすべて 1 本の削除 reconcile ループに集約し、一括削除サーキットブレーカーをループ全体に 1 つかける
 
-## 経緯と失敗事例
-
-- 「録画品質の実測」を履歴の目的に据えたのは issue #2、ごみ箱・削除エンジンの形は issue #4
-  のコメント。ごみ箱の実装は M3-7（issue #69）、削除 reconcile は M3-8、即時 purge
-  （`purge_after`、`00018`）は M3-7、`purged_at`（`00024`）は issue #135
-- **不変条件 13 の言語化**（issue #156）: `recordings` の書き手が 5 人（watcher / reconciler /
-  ingest worker / api / delete reconcile）まで増えても不変条件 12 では止まらなかった。
-  `recording_encode_policy` への切り出しは issue #159。実害と判定基準は
-  [invariants.md](../invariants.md) §13
-- **status の 4 値目 `canceled`** は issue #130（`00021`）、**never-scheduled の設計**
-  （`status` に 5 値目を足さない・`superseded_at` による supersede）は issue #98 /
-  issue #129 症状 2（`superseded_at` は `00023`）
-- **`never_scheduled` の型付き列昇格**（issue #161、`00033`）: かつては `quality_events` の
-  中身への `EXISTS(jsonb_array_elements(...))` が同期除外・重なり判定・容量判定という core
-  ロジックの WHERE 軸になっており、`quality_events` を「そのテーブル自身のロジックが中身を
-  一切使わない不透明なペイロード」とする自前の規則への静かな違反だった。`00033` で
-  `never_scheduled boolean` に昇格して解消（`never_scheduled_events` VIEW は issue #157 /
-  `00030` で作成）。レビューで一度「実観測が推論を上書きする」side として
-  `CreateFailedRecording` が `false` に落とす経路を入れたが、これは求められていない本番挙動の
-  変更であり、除外が「二度と復帰しない」という `CreateNeverScheduledRecording` の
-  `ON CONFLICT DO NOTHING` との対を崩すため削除した。旧 jsonb 版でもマーカーは `||` で
-  追記されるだけで判定は変わらず true のままだったので、この不変性は移行前と同じ挙動である
-- **`reservation_id` 列の削除**（issue #158）: `reservations.id` を宛先にした FK
-  （`ON DELETE SET NULL`）は、ruler の導出削除・再実体化のたびに不安定な id を追いかけ続ける
-  バグを 6 回生んだ（issue #29 / #53 / #98 / #99 / #149 / #152。
-  [invariants.md](../invariants.md) §9「identity」）

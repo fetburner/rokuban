@@ -705,8 +705,8 @@ export function RecordingDetail({
  * **取得の「回数」はここに書かない。** 回数は `QueryClient` の `staleTime`
  * 依存で、本番（`main.tsx` の `staleTime: 30_000`）とテストの `renderPage`
  * （未指定 = 0）では設定が違うため、同じ操作でも一致しない。ハーネスで測った
- * 回数を一般の挙動として書いた版はレビューで差し戻された（測定値と経緯は
- * `docs/frontend/recordings.md` §経緯と失敗事例）。
+ * 回数を一般の挙動として書かない（実測値と規律は
+ * `docs/frontend/recordings.md`「録画 → ルールの導線」）。
  *
  * **`rules.find` が見つからない場合は `#N` 表記に落とす。** これは「ルールが
  * 削除された」ケースではない --- `recordings.rule_id` は `rules` への FK が
