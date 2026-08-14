@@ -151,12 +151,17 @@ function createFakeRecordingsServer(options: {
   services?: Service[]
   encodeProfiles?: EncodeProfileSummary[]
   rules?: Rule[]
+  // encodePostResponse は POST /api/recordings/{id}/encode-profiles の応答を
+  // 差し替える（既定は 204 成功）。409 のときサーバーの英語文字列を UI が
+  // そのまま出さないことを確認するテスト用。
+  encodePostResponse?: () => Response
 }) {
   let library = [...(options.library ?? [])]
   let trash = [...(options.trash ?? [])]
   const services = options.services ?? [sampleService()]
   const encodeProfiles = options.encodeProfiles ?? []
   const rules = options.rules ?? []
+  const encodePostResponse = options.encodePostResponse
 
   function paginate(url: URL, all: Recording[]): Recording[] {
     const q = url.searchParams.get('q')
@@ -243,6 +248,7 @@ function createFakeRecordingsServer(options: {
 
     const encodeMatch = /^\/api\/recordings\/(\d+)\/encode-profiles$/.exec(url.pathname)
     if (encodeMatch && method === 'POST') {
+      if (encodePostResponse) return Promise.resolve(encodePostResponse())
       const id = Number(encodeMatch[1])
       const body: { profiles?: string[] } = init?.body ? JSON.parse(String(init.body)) : {}
       library = library.map((r) =>
@@ -1062,6 +1068,40 @@ describe('AddEncodeProfilesAction', () => {
     ).toBeInTheDocument()
     expect(screen.queryByText(/削除済み/)).not.toBeInTheDocument()
     expect(screen.queryByRole('checkbox')).not.toBeInTheDocument()
+  })
+
+  // issue #271: 409 は「原本が active でない」の 3 パターン（削除済み・
+  // deleting・未 ingest）のいずれもあり得る hedge 文言で、サーバーは英語の
+  // まま返す（internal/api/recordings.go）。`hasOriginal` の近似が破れて
+  // 「原本あり」に見えるボタンを押しても deleting 経路で決定的に 409 になり
+  // うる（doc コメント参照）ので、実際にこの英語文字列が画面に出ないことを
+  // 固定する。
+  it('409 応答は英語のサーバー文字列を出さず、日本語の文言に翻訳する', async () => {
+    const user = userEvent.setup()
+    const rawEnglishMessage =
+      'original media asset not active (deleted, deleting, or not yet ingested); cannot add encode profiles'
+    createFakeRecordingsServer({
+      library: [
+        sampleRecording({ id: 16, title: '原本 deleting 中', sizeBytes: 500, encodeProfiles: [] }),
+      ],
+      encodeProfiles: [{ name: 'h264' }],
+      encodePostResponse: () => jsonResponse({ error: rawEnglishMessage }, 409),
+    })
+
+    renderPage()
+    await user.click(await screen.findByText('原本 deleting 中'))
+    await user.click(await screen.findByRole('checkbox', { name: 'h264' }))
+    await user.click(screen.getByRole('button', { name: '追加エンコードを依頼' }))
+
+    // 日本語のトーストが出るまで待ってから確認する（クエリの解決を待たずに
+    // アサーションが通る「非同期の空虚な成功」を避ける）。
+    expect(
+      await screen.findByText(
+        '原本の状態が変わったため追加できませんでした（削除済み・削除処理中・未取り込みのいずれか）。画面を更新してから再度お試しください。',
+      ),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(rawEnglishMessage)).not.toBeInTheDocument()
+    expect(screen.queryByText(/deleted, deleting, or not yet ingested/)).not.toBeInTheDocument()
   })
 
   it('ごみ箱では追加エンコードのコントロールを一切出さない', async () => {

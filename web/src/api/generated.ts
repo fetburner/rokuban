@@ -4298,8 +4298,11 @@ export const getAddRecordingEncodeProfilesUrl = (id: number,) => {
  * dedup）で書き、全置換にはしない --- 誤って他プロファイルの指定を消す事故を
  * 避けるため。
  *
- * 原本が既に削除済み（`keep_original=until_encoded` でエンコード完了後に
- * 原本削除 reconcile が消した等）の録画には 409 を返す。この場合
+ * 原本の media_assets 行が `state = 'active'` でない録画には 409 を返す。
+ * これは次のいずれかに当たる --- 本当に削除済み（`keep_original=until_encoded`
+ * でエンコード完了後に原本削除 reconcile が消した等）、`state = 'deleting'`
+ * （unlink 待ち。一覧では「原本あり」に見えるが事後追加は決定的に 409 になる）、
+ * またはそもそも ingest が完了しておらず original 行自体が無い。この場合
  * `EnqueueMissingEncodes` は黙って no-op になるため、api 層で明示的に
  * 検査してサイレントな失敗にしない。
  *

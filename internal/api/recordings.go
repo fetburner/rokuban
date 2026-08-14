@@ -315,9 +315,10 @@ func (h *Server) PurgeRecording(ctx context.Context, req PurgeRecordingRequestOb
 // このクエリが既定値 'always' で行を新規に作る --- 「原本が active なのに
 // 事後追加ができない」という issue #133 が解いた問題の再発を避けるため。
 //
-// 原本が既に削除済み（GetActiveOriginalMediaAsset が ErrNoRows）なら 409 を返す。
-// EnqueueMissingEncodes は単体だとこのケースで黙って return するため
-// （サイレント no-op）、ここで明示的に検査する。
+// 原本が active でない（GetActiveOriginalMediaAsset が ErrNoRows --- 削除済み・
+// state='deleting'（unlink 待ち）・そもそも ingest が未完了で original 行が
+// 無い、のいずれか）なら 409 を返す。EnqueueMissingEncodes は単体だとこの
+// ケースで黙って return するため（サイレント no-op）、ここで明示的に検査する。
 //
 // encode_profiles の更新と encode_enqueue_hint ジョブの投入は同一トランザクション
 // で行う（insertEncodeEnqueueHint。rules.go の insertRulerPassHint と同じ
@@ -347,16 +348,19 @@ func (h *Server) AddRecordingEncodeProfiles(ctx context.Context, req AddRecordin
 		return nil, fmt.Errorf("loading recording %d: %w", req.Id, err)
 	}
 
-	// 原本削除済みなら 409（罠: EnqueueMissingEncodes 単体はここで黙って no-op に
-	// なるため、サイレントな失敗にしないよう api 層で先に検査する）。
+	// 原本が active でないなら 409（罠: EnqueueMissingEncodes 単体はここで黙って
+	// no-op になるため、サイレントな失敗にしないよう api 層で先に検査する）。
 	if _, err := q.GetActiveOriginalMediaAsset(ctx, req.Id); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			// 「削除済み」に限らず deleting（unlink 待ち）も含む --- 一覧の射影は
-			// state <> 'deleted' なので UI 側は deleting を「原本あり」と見て
-			// ボタンを出しうる（issue #105 の経路で active に戻ることもある）。
-			// その場合ここに落ちるので、文言は両方を含む形にする。
+			// ここに落ちる原因は「削除済み」に限らない --- state = 'deleting'
+			// （unlink 待ち。一覧の射影は state <> 'deleted' なので UI 側は
+			// 「原本あり」と見てボタンを出しうる。issue #105 の経路で active に
+			// 戻ることもある）、あるいはそもそも ingest が完了しておらず
+			// original 行自体が無い、のいずれもここに来る。3 パターンを区別する
+			// 追加クエリのコストに見合わないため区別はしないが、文言は
+			// 「削除済みとは限らない」ことが伝わる形にする。
 			return AddRecordingEncodeProfiles409JSONResponse{
-				Error: "no encodable original media asset (deleted or being deleted); cannot add encode profiles",
+				Error: "original media asset not active (deleted, deleting, or not yet ingested); cannot add encode profiles",
 			}, nil
 		}
 		return nil, fmt.Errorf("loading original media asset for recording %d: %w", req.Id, err)
