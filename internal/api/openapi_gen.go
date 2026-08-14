@@ -937,10 +937,19 @@ type ProgramOverridesInput struct {
 	// schedule が作られていない予約にだけ効く（docs/recording.md §4.5）。
 	ContentPath *string `json:"contentPath,omitempty"`
 
-	// EncodeProfiles ingest が原本をコミットする tx の中で recordings に焼かれる瞬間まで
-	// 効く。録画開始後の変更でも、放送終了・ingest 完了より前ならこの
-	// 録画に反映されるが、ingest 完了後の変更はこの録画には反映されない
-	// （docs/recording/reservation-model.md §4.5）。
+	// EncodeProfiles ingest が原本をコミットする tx の中で recording_encode_policy 行の
+	// INSERT として焼かれる（凍結される）瞬間まで効く。録画開始後の変更でも、
+	// 放送終了・ingest 完了より前ならこの録画に反映されるが、ingest 完了後の
+	// 変更はこの録画には反映されない（docs/recording/reservation-model.md
+	// §4.5）。
+	//
+	// **「ingest 完了より前なら必ず反映される」ではない** --- 凍結の導出元
+	// （program_snapshots と CASCADE で連なる予約系の表）は放送終了 +
+	// `epg.retention_grace`（既定 24h）で GC されるため、エッジに record が
+	// 滞留して ingest がそれを超えて遅れると、指定は効かず既定値
+	// （keepOriginal=always / encodeProfiles=[]）で凍結される（原本は残る
+	// がエンコードは投入されない。docs/storage/retention.md §6「凍結が
+	// 依存する寿命と、エッジの滞留の交点」）。
 	EncodeProfiles *[]string `json:"encodeProfiles,omitempty"`
 
 	// FilenameTemplate Go text/template のテンプレート文字列。既存の schedule には
@@ -948,10 +957,19 @@ type ProgramOverridesInput struct {
 	// （docs/recording.md §4.5）。
 	FilenameTemplate *string `json:"filenameTemplate,omitempty"`
 
-	// KeepOriginal ingest が原本をコミットする tx の中で recordings に焼かれる瞬間まで
-	// 効く。録画開始後の変更でも、放送終了・ingest 完了より前ならこの
-	// 録画に反映されるが、ingest 完了後の変更はこの録画には反映されない
-	// （docs/recording/reservation-model.md §4.5）。
+	// KeepOriginal ingest が原本をコミットする tx の中で recording_encode_policy 行の
+	// INSERT として焼かれる（凍結される）瞬間まで効く。録画開始後の変更でも、
+	// 放送終了・ingest 完了より前ならこの録画に反映されるが、ingest 完了後の
+	// 変更はこの録画には反映されない（docs/recording/reservation-model.md
+	// §4.5）。
+	//
+	// **「ingest 完了より前なら必ず反映される」ではない** --- 凍結の導出元
+	// （program_snapshots と CASCADE で連なる予約系の表）は放送終了 +
+	// `epg.retention_grace`（既定 24h）で GC されるため、エッジに record が
+	// 滞留して ingest がそれを超えて遅れると、指定は効かず既定値
+	// （keepOriginal=always / encodeProfiles=[]）で凍結される（原本は残る
+	// がエンコードは投入されない。docs/storage/retention.md §6「凍結が
+	// 依存する寿命と、エッジの滞留の交点」）。
 	KeepOriginal *ProgramOverridesInputKeepOriginal `json:"keepOriginal,omitempty"`
 
 	// Priority mirakc の schedule に反映される（reconciler が DELETE + POST で
@@ -964,10 +982,19 @@ type ProgramOverridesInput struct {
 	Reset *[]ProgramOverridesInputReset `json:"reset,omitempty"`
 }
 
-// ProgramOverridesInputKeepOriginal ingest が原本をコミットする tx の中で recordings に焼かれる瞬間まで
-// 効く。録画開始後の変更でも、放送終了・ingest 完了より前ならこの
-// 録画に反映されるが、ingest 完了後の変更はこの録画には反映されない
-// （docs/recording/reservation-model.md §4.5）。
+// ProgramOverridesInputKeepOriginal ingest が原本をコミットする tx の中で recording_encode_policy 行の
+// INSERT として焼かれる（凍結される）瞬間まで効く。録画開始後の変更でも、
+// 放送終了・ingest 完了より前ならこの録画に反映されるが、ingest 完了後の
+// 変更はこの録画には反映されない（docs/recording/reservation-model.md
+// §4.5）。
+//
+// **「ingest 完了より前なら必ず反映される」ではない** --- 凍結の導出元
+// （program_snapshots と CASCADE で連なる予約系の表）は放送終了 +
+// `epg.retention_grace`（既定 24h）で GC されるため、エッジに record が
+// 滞留して ingest がそれを超えて遅れると、指定は効かず既定値
+// （keepOriginal=always / encodeProfiles=[]）で凍結される（原本は残る
+// がエンコードは投入されない。docs/storage/retention.md §6「凍結が
+// 依存する寿命と、エッジの滞留の交点」）。
 type ProgramOverridesInputKeepOriginal string
 
 // ProgramOverridesInputReset defines model for ProgramOverridesInput.Reset.
