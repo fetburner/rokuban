@@ -3,9 +3,17 @@ import { RouterProvider, createMemoryHistory, createRouter } from '@tanstack/rea
 import { render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
+import type { Recording, Reservation } from '@/api/generated'
 import { ToastProvider } from '@/components/toaster'
 import { SearchPage } from '@/pages/search'
 import { routeTree } from '@/routes'
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
 
 /**
  * stubSitesFetch は `GET /api/sites` にだけ応答し、他のパスは空配列で返す
@@ -16,12 +24,75 @@ function stubSitesFetch() {
   globalThis.fetch = vi.fn((input: string | URL | Request) => {
     const url = new URL(String(input), 'http://localhost')
     const body = url.pathname === '/api/sites' ? ['default'] : []
-    return Promise.resolve(
-      new Response(JSON.stringify(body), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      }),
-    )
+    return Promise.resolve(jsonResponse(body))
+  }) as unknown as typeof fetch
+}
+
+/**
+ * stubDetailFetch は `stubSitesFetch` に加えて、詳細ルート
+ * （`/recordings/$id` ・ `/reservations/$site/$programId`）が実際に描画するのに
+ * 必要な単体取得エンドポイントをスキーマに沿った形で返す。
+ *
+ * **`[]` を返すだけでは足りない。** `GET /api/recordings/{id}` /
+ * `GET /api/sites/{site}/programs/{programId}/reservation` は配列ではなく単一
+ * オブジェクトを返す契約なので、`[]` を渡すと `recording.startAt` /
+ * `reservation.durationMs` が `undefined` になり、`formatDateTime` /
+ * `formatDuration`（`lib/format.ts`）が `new Date(undefined)` を
+ * `Intl.DateTimeFormat.format` に渡して `RangeError: Invalid time value` を
+ * 投げる。このエラーはどのルートも `errorComponent` を持たないため
+ * `<HeadContent />` を含む rootRoute の component ごと汎用のフォールバック
+ * 画面に置き換わり、`document.title` は空文字になる（`routes.tsx` の
+ * `<HeadContent />` 直前のコメント参照）。`[]` スタブのままだと、詳細ルートの
+ * title アサーションはこのクラッシュが起こる前の 28ms ほどの過渡状態を
+ * 掴んで通ってしまう「非同期の空虚な成功」になる（CLAUDE.md テスト規律）。
+ * `GET /api/sites/{site}/programs/{programId}/overlaps` も同じ理由で
+ * `{ count: 0, reservations: [] }` の形が要る（`ProgramOverlapWarning` が
+ * `overlaps.count` / `overlaps.reservations.map` を読むため）。
+ */
+function stubDetailFetch() {
+  const recording: Recording = {
+    id: 1,
+    site: 'default',
+    source: 'manual',
+    serviceName: 'テスト放送局',
+    channelType: 'GR',
+    channel: '1',
+    networkId: 1,
+    serviceId: 1,
+    eventId: 1,
+    title: '録画詳細テスト番組',
+    startAt: '2026-01-01T00:00:00Z',
+    durationMs: 1_800_000,
+    status: 'finished',
+    createdAt: '2026-01-01T00:30:00Z',
+  }
+  const reservation: Reservation = {
+    id: 1,
+    site: 'default',
+    programId: 1,
+    source: 'manual',
+    state: 'active',
+    title: '予約詳細テスト番組',
+    startAt: '2026-01-01T00:00:00Z',
+    durationMs: 1_800_000,
+    createdAt: '2026-01-01T00:00:00Z',
+    updatedAt: '2026-01-01T00:00:00Z',
+    skip: false,
+  }
+
+  globalThis.fetch = vi.fn((input: string | URL | Request) => {
+    const url = new URL(String(input), 'http://localhost')
+    if (url.pathname === '/api/sites') return Promise.resolve(jsonResponse(['default']))
+    if (/^\/api\/recordings\/\d+$/.test(url.pathname)) {
+      return Promise.resolve(jsonResponse(recording))
+    }
+    if (/^\/api\/sites\/[^/]+\/programs\/\d+\/reservation$/.test(url.pathname)) {
+      return Promise.resolve(jsonResponse(reservation))
+    }
+    if (/^\/api\/sites\/[^/]+\/programs\/\d+\/overlaps$/.test(url.pathname)) {
+      return Promise.resolve(jsonResponse({ count: 0, reservations: [] }))
+    }
+    return Promise.resolve(jsonResponse([]))
   }) as unknown as typeof fetch
 }
 
@@ -290,20 +361,10 @@ describe('routeTree', () => {
     // jsdom は window.scrollTo を実装していない。ルーターのスクロール復元が
     // 呼ぶため、置いておかないと関係のない例外がログを埋める
     window.scrollTo = vi.fn()
-
-    globalThis.fetch = vi.fn((input: string | URL | Request) => {
-      const url = new URL(String(input), 'http://localhost')
-      // SiteGate（routes.tsx）が全ルートの手前で GET /api/sites を待つ
-      // （issue #184 M4-12）。空配列を返すと「利用可能なサイトがありません」に
-      // 落ちて検索フォームまで辿り着けないため、他のパスとは別に応答する。
-      const body = url.pathname === '/api/sites' ? ['default'] : []
-      return Promise.resolve(
-        new Response(JSON.stringify(body), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        }),
-      )
-    }) as unknown as typeof fetch
+    // SiteGate（routes.tsx）が全ルートの手前で GET /api/sites を待つ
+    // （issue #184 M4-12）。空配列を返すと「利用可能なサイトがありません」に
+    // 落ちて検索フォームまで辿り着けない。
+    stubSitesFetch()
 
     const router = createRouter({
       routeTree,
@@ -331,9 +392,27 @@ describe('routeTree', () => {
     expect(links[0]).toHaveAttribute('aria-current', 'page')
   })
 
+  /**
+   * `waitFor` は最初にポーリングした時点で偽陽性になりうる ---
+   * 詳細ルート（`/recordings/$id` ・ `/reservations/$site/$programId`）は
+   * react-query の取得が解決した直後の 1 レンダーだけ正しい title を出し、
+   * その次のレンダーでクラッシュして title が空文字に落ちることがある
+   * （`stubDetailFetch` のコメント参照。`[]` のような形の合わないスタブを
+   * 渡すとこれが起こる）。`waitFor` の 1 回目のポーリングがその一瞬を
+   * 掴むと、画面が実際にはクラッシュしているのにアサーションだけ通る
+   * （CLAUDE.md テスト規律「非同期の空虚な成功に注意する」）。ここでは
+   * 期待値に届いたことを確認した後、少し待って同じ値のままであることも
+   * 確認することで、一過性の値ではなく定常状態であることを固定する。
+   */
+  async function expectSteadyTitle(expected: string) {
+    await waitFor(() => expect(document.title).toBe(expected))
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    expect(document.title).toBe(expected)
+  }
+
   it('ルートを変えると document.title が画面ごとに変わる（issue #304）', async () => {
     window.scrollTo = vi.fn()
-    stubSitesFetch()
+    stubDetailFetch()
 
     const router = createRouter({
       routeTree,
@@ -354,33 +433,42 @@ describe('routeTree', () => {
     // に加え、issue の一覧には無いが同じ理由（`document.title` はナビゲーション
     // だけでは前の値に戻らない）で `/live` と詳細 2 ルートも見る。
     await router.navigate({ to: '/' })
-    await waitFor(() => expect(document.title).toBe('ホーム · 録番'))
+    await expectSteadyTitle('ホーム · 録番')
 
     await router.navigate({ to: '/programs' })
-    await waitFor(() => expect(document.title).toBe('番組 · 録番'))
+    await expectSteadyTitle('番組 · 録番')
 
     await router.navigate({ to: '/recordings' })
-    await waitFor(() => expect(document.title).toBe('録画 · 録番'))
+    await expectSteadyTitle('録画 · 録番')
 
     await router.navigate({ to: '/reservations' })
-    await waitFor(() => expect(document.title).toBe('予約 · 録番'))
+    await expectSteadyTitle('予約 · 録番')
 
     await router.navigate({ to: '/search' })
-    await waitFor(() => expect(document.title).toBe('検索 · 録番'))
+    await expectSteadyTitle('検索 · 録番')
 
     await router.navigate({ to: '/rules' })
-    await waitFor(() => expect(document.title).toBe('ルール · 録番'))
+    await expectSteadyTitle('ルール · 録番')
 
     await router.navigate({ to: '/live' })
-    await waitFor(() => expect(document.title).toBe('ライブ · 録番'))
+    await expectSteadyTitle('ライブ · 録番')
 
+    // 録画名を積んでいないので、単体取得のスタブが実在の録画を返す限り
+    // `id` の値そのものは何でもよい。ただし `[]` のような形の合わない
+    // レスポンスだとページがクラッシュして title が空文字に落ちる
+    // （`stubDetailFetch` 参照）。それを検知するのが `expectSteadyTitle`。
     await router.navigate({ to: '/recordings/$id', params: { id: '1' } })
-    await waitFor(() => expect(document.title).toBe('録画の詳細 · 録番'))
+    await expectSteadyTitle('録画の詳細 · 録番')
+    // ページ本体が実際に描画されている（クラッシュ後の汎用フォールバック
+    // 画面ではない）ことも確認する --- title が定常でも、たまたま別の理由で
+    // 空でない title を返す壊れ方だと `expectSteadyTitle` だけでは拾えない。
+    expect(await screen.findByText('録画詳細テスト番組')).toBeInTheDocument()
 
     await router.navigate({
       to: '/reservations/$site/$programId',
       params: { site: 'default', programId: '1' },
     })
-    await waitFor(() => expect(document.title).toBe('予約の詳細 · 録番'))
+    await expectSteadyTitle('予約の詳細 · 録番')
+    expect(await screen.findByText('予約詳細テスト番組')).toBeInTheDocument()
   })
 })

@@ -30,7 +30,21 @@ const rootRoute = createRootRoute({
     <>
       {/* HeadContent が各ルートの `head` を実際の <title>/<meta> に描く。React 19
           はツリーのどこに描いても <head> へ hoist するので、AppShell の中でよい
-          （SSR ではないので位置そのものに意味は無い）。 */}
+          （SSR ではないので位置そのものに意味は無い）。
+          ただし `<HeadContent />` 自身がこの component（root route）の一部
+          なので、子ルートの component がレンダー中に例外を投げ、かつどの
+          ルートも `errorComponent` を持たない場合、この component ごと
+          （`<HeadContent />` も含めて）汎用のフォールバック画面に差し替わり、
+          `document.title` は「積み忘れへの保険」（下記 `head` の既定値）にすら
+          戻らず空文字になる（`<title>` 要素自体が無くなるため。実測: `head`
+          未設定の `errorComponent` 無しルートがレンダーで例外を投げると、
+          コンソールに `Warning: The following error wasn't caught by any
+          route!` が出て body が丸ごと入れ替わる）。今のところどのルートも
+          `errorComponent` を持たないので、この置き換えはどのルートの詳細
+          画面が例外を投げても起こりうる --- 詳細ルートのテスト
+          （`routes.test.tsx`）が、この 28ms 程度の過渡状態でアサーションが
+          偽陽性で通らないよう、レンダーが収束してからの再アサートを入れて
+          いるのはこのため。 */}
       <HeadContent />
       <AppShell>
         {/* SiteGate は Outlet だけを囲む。ナビゲーション（サイドバー/ボトムタブ）と
@@ -169,13 +183,17 @@ const reservationsRoute = createRoute({
 const reservationDetailRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/reservations/$site/$programId',
-  // 番組名は `useGetProgramReservation`（react-query。ルートの loader ではなく
-  // コンポーネント側で取得する）が解決するまで無い。`head` はルーターの
-  // マッチ確定と同時に評価されるためこの取得を待てず、番組名を積むと
-  // 解決前は `undefined · 録番` が一瞬出る（CLAUDE.md
-  // テスト規律「非同期の空虚な成功に注意する」と同じ穴）。`pages/
+  // `head` は Awaitable（`loader` が積む `loaderData` を待って動的な値を
+  // 返せる）だが、このルートに `loader` は無い --- 番組名は
+  // `useGetProgramReservation`（react-query。コンポーネント側で取得する）が
+  // 持っていて、`head` からは見えない。今の構成には待てる対象がそもそも無い、
+  // というだけで、`loader` を足せば動的な題名も原理的には積める。ここでは
+  // その架け替え（loader を新設し、コンポーネント側の react-query 取得と
+  // 二重管理させない）をこの issue の範囲外とし、`pages/
   // reservation-detail.tsx` の `<h1>` と同じ「予約の詳細」という画面の
-  // 識別子に留め、番組名は本文の `<h2>` に任せる。
+  // 識別子に留めた（番組名を積むと、無い間 `undefined · 録番` が一瞬出る
+  // ことにもなる。CLAUDE.md テスト規律「非同期の空虚な成功に注意する」と
+  // 同じ穴）。番組名は本文の `<h2>` に任せる。
   head: () => ({ meta: [{ title: pageTitle('予約の詳細') }] }),
   component: ReservationDetailPage,
 })
@@ -205,8 +223,9 @@ const recordingsRoute = createRoute({
 const recordingDetailRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/recordings/$id',
-  // 録画名は `useGetRecording`（react-query）が解決するまで無い。
-  // `reservationDetailRoute` と同じ理由で番組名は積まず、`pages/
+  // 録画名は `useGetRecording`（react-query。コンポーネント側で取得する）が
+  // 持っていて、`loader` を持たないこのルートの `head` からは見えない
+  // （`reservationDetailRoute` と同じ理由。詳細はそちらのコメント）。`pages/
   // recording-detail.tsx` の `<h1>` と同じ「録画の詳細」に留める。
   head: () => ({ meta: [{ title: pageTitle('録画の詳細') }] }),
   component: RecordingDetailPage,
@@ -249,9 +268,12 @@ const liveRoute = createRoute({
   }),
   // `pages/live.tsx` の `<PageHeader title="ライブ">` と同じ表記。issue #304 は
   // Playwright で確認した 6 ルートを挙げているが、`/live` だけ `head` を
-  // 積まないと「直前に居たルートのタイトルが残る」（`document.title` は
-  // ナビゲーションだけでは自動で戻らないため）という一覧より悪い状態に
-  // なるので、主要ルートと同じ扱いにする。
+  // 積まないと、`headContentUtils.js` が末端の match から見て最初に見つかった
+  // title を使う仕様上、上記 rootRoute の既定（画面名の付かない「録番」だけ）に
+  // 落ちる（実測: ルール → `/live` で `document.title === '録番'`。「直前の
+  // ルールのタイトルが残る」わけではない --- rootRoute の既定はフロアとして
+  // 必ず勝つ）。それでも画面を名乗れない既定のままにする理由は無いので、
+  // 主要ルートと同じ扱いにする。
   head: () => ({ meta: [{ title: pageTitle('ライブ') }] }),
   component: LivePage,
 })
