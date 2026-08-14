@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -491,6 +492,21 @@ func effectivePriority(defaultPriority int, opts db.ReservationOptions) int {
 	return defaultPriority
 }
 
+// explicitContentPath はユーザーが overrides.contentPath に明示指定した値を
+// サニタイズ済みで返す。ok=false は「明示指定が無い」= テンプレート生成に委ねる。
+//
+// effective の ContentPath が非 nil であることが「ユーザーが書いた」と同値である
+// のは、reservations.base に contentPath を載せる書き手が存在しないため
+// （ruler の computeBase が意図的に除外している）。ruler が base に contentPath を
+// 載せるようになったらこの同値が崩れ、テンプレート生成値が差分対象に混ざって
+// #19 が潰した churn が戻る。
+func explicitContentPath(opts db.ReservationOptions) (string, bool) {
+	if opts.ContentPath == nil || *opts.ContentPath == "" {
+		return "", false
+	}
+	return contentpath.SanitizeContentPath(*opts.ContentPath), true
+}
+
 // resolveContentPath は予約から新規に生成する contentPath を返す。
 // 初回作成（createSchedule）から呼ばれるほか、再作成（recreateSchedule）が
 // observed の contentPath を引き継げなかった場合（nil・空文字）の
@@ -568,16 +584,23 @@ func (r *Reconciler) createSchedule(ctx context.Context, d desiredReservation) e
 type recreateCandidate struct {
 	d        desiredReservation
 	observed mirakc.Schedule
+	// reason は再作成の契機（"priority" / "tag" / "content_path" を立った順に
+	// 連結したもの）。recreateSchedule の Info ログに載せる —— mirakc が
+	// contentPath をそのまま返さない実装だった場合、この理由が反復して
+	// 出続けることが唯一の観測手段になる（explicitContentPath のコメント参照）。
+	reason string
 }
 
-// recreateChanged は effective options（priority）と観測結果（priority /
-// reservation tag）の差分を DELETE→POST の再作成で消す。存在の有無ではなく
-// 内容の差分なので、呼び出し元の create/delete ループとは独立に走る
-// （docs/recording.md §3.2、issue #19）。
+// recreateChanged は effective options（priority / contentPath の明示指定）と
+// 観測結果（priority / reservation tag / contentPath）の差分を DELETE→POST の
+// 再作成で消す。存在の有無ではなく内容の差分なので、呼び出し元の create/delete
+// ループとは独立に走る（docs/recording.md §3.2、issue #19）。
 //
-// 差分対象は priority と reservation tag のみ。contentPath は差分対象にしない
-// （EPG の番組名が変わるたびに schedule が消えて作り直される churn になるため。
-// recreateSchedule 側で observed の contentPath をそのまま引き継ぐ）。
+// 差分対象は priority・reservation tag・明示指定された contentPath
+// （explicitContentPath が ok を返す場合のみ）。テンプレート生成の contentPath
+// （filenameTemplate 展開・既定形式）は差分対象にしない（EPG の番組名が変わる
+// たびに schedule が消えて作り直される churn になるため。recreateSchedule 側で
+// 明示指定が無ければ observed の contentPath をそのまま引き継ぐ）。
 //
 // 戻り値は (recreated, updateDiff, stateGuarded, limitCarriedOver)。
 // updateDiff は検出した差分のうち **このパスで反映しようとした** 件数
@@ -615,10 +638,35 @@ func (r *Reconciler) recreateChanged(
 		// 残ると録画が別の予約に紐付く。
 		tagProgramID, hasNewTag := mirakc.FindProgramTag(s.Tags)
 		tagMismatch := !hasNewTag || tagProgramID != d.res.ProgramID
-		if !priorityMismatch && !tagMismatch {
+
+		// contentPath は明示指定（overrides.contentPath）があるときだけ比較する。
+		// 比較の左辺は observed の生値（再サニタイズしない） — POST する値
+		// （wantContentPath）と比較する値を同一にすることで、SanitizeContentPath
+		// の冪等性に依存せず 1 パスで収束する。明示指定が無いとき（reset された
+		// 場合を含む）は何も比較しない。テンプレート展開を desired として計算する
+		// 式をここに書くと #19 が潰した churn が戻る。
+		wantContentPath, hasExplicitContentPath := explicitContentPath(d.opts)
+		var observedContentPath string
+		if s.Options.ContentPath != nil {
+			observedContentPath = *s.Options.ContentPath
+		}
+		contentPathMismatch := hasExplicitContentPath && observedContentPath != wantContentPath
+
+		if !priorityMismatch && !tagMismatch && !contentPathMismatch {
 			continue
 		}
-		candidates = append(candidates, recreateCandidate{d: d, observed: s})
+
+		var reasons []string
+		if priorityMismatch {
+			reasons = append(reasons, "priority")
+		}
+		if tagMismatch {
+			reasons = append(reasons, "tag")
+		}
+		if contentPathMismatch {
+			reasons = append(reasons, "content_path")
+		}
+		candidates = append(candidates, recreateCandidate{d: d, observed: s, reason: strings.Join(reasons, ",")})
 	}
 
 	// ガードは state の allowlist。scheduled 以外（tracking/recording/
@@ -645,7 +693,7 @@ func (r *Reconciler) recreateChanged(
 			limitCarriedOver++
 			continue
 		}
-		if err := r.recreateSchedule(ctx, c.d, c.observed); err != nil {
+		if err := r.recreateSchedule(ctx, c.d, c.observed, c.reason); err != nil {
 			slog.Error("reconciler: recreating schedule",
 				"reservation_id", c.d.res.ID, "program_id", c.d.res.ProgramID, "err", err)
 			continue
@@ -660,21 +708,24 @@ func (r *Reconciler) recreateChanged(
 // recreateSchedule は 1 件の schedule を DELETE→POST で再作成する。
 // mirakc に schedule の更新 API がない（GET/POST/GET{id}/DELETE{id} の 4 つだけ）
 // ための回避策で、その間 schedule が存在しない窓ができる。
-func (r *Reconciler) recreateSchedule(ctx context.Context, d desiredReservation, observed mirakc.Schedule) error {
+//
+// contentPath の決定は 3 分岐で、順序が意味を持つ:
+//  1. 明示 override（overrides.contentPath）があればそれが最優先。
+//     explicitContentPath 経由にすることで、テンプレート再生成（resolveContentPath
+//     が先に buildContentPath を通す）には絶対に落ちない — テンプレートが壊れて
+//     いても、明示指定がある限り再作成が失敗しないことが経路として担保される。
+//  2. 無ければ observed の contentPath を引き継ぐ（従来どおり。base に書き戻す
+//     経路は無いので、これがテンプレート再生成を避ける唯一の手段）。
+//  3. observed も nil・空文字なら、初回作成と同じ生成経路にフォールバックする。
+func (r *Reconciler) recreateSchedule(ctx context.Context, d desiredReservation, observed mirakc.Schedule, reason string) error {
 	res, opts := d.res, d.opts
 
-	// contentPath は observed の contentPath を引き継いで固定する
-	// （base に書き戻す経路は無い。docs/recording/reconciler.md §「予約オプションの
-	// 差分反映」）。再作成では contentPath をテンプレートから再生成せず、
-	// observed（= 自分が過去に書いた値が往復してきたもの）をそのまま使う。
-	// 再生成すると EPG の番組名変更が priority 変更の副作用として
-	// ファイル名を変えてしまう。SanitizeContentPath を通すのは、mirakc 側を
-	// 直接触られていた場合の保険（安いので）。
-	//
-	// observed の contentPath が nil・空文字のときだけ、初回作成と同じ生成経路に
-	// フォールバックする。
 	var contentPath string
-	if observed.Options.ContentPath != nil && *observed.Options.ContentPath != "" {
+	if cp, ok := explicitContentPath(opts); ok {
+		contentPath = cp
+	} else if observed.Options.ContentPath != nil && *observed.Options.ContentPath != "" {
+		// SanitizeContentPath を通すのは、mirakc 側を直接触られていた場合の保険
+		// （安いので）。
 		contentPath = contentpath.SanitizeContentPath(*observed.Options.ContentPath)
 	} else {
 		cp, err := resolveContentPath(res, d.snap, opts)
@@ -721,6 +772,7 @@ func (r *Reconciler) recreateSchedule(ctx context.Context, d desiredReservation,
 		"program_id", res.ProgramID,
 		"priority", priority,
 		"content_path", contentPath,
+		"reason", reason,
 	)
 	return nil
 }
