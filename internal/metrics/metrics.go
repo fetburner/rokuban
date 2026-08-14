@@ -400,14 +400,18 @@ var (
 	// EncodeReconcileCandidates は直近のパスが見た候補件数（desired なのに
 	// active な encoded が無い録画）。
 	//
-	// **上限（encodeReconcileRowLimit）に張り付いたら、それより後ろの
-	// recording_id には到達していない**（候補は recording_id 昇順で切られ、
-	// このパスは候補を減らさないため。EncodeReconcileWorker の doc コメント
-	// 「窓は回らない」参照）。エンコード実行中の録画も候補に数えるので、
+	// **上限（encodeReconcileRowLimit）に張り付いている = バックログが上限以上
+	// ある**ことを意味する（候補は recording_id 昇順で切られるため）。窓は
+	// パスをまたいで回る（EncodeReconcileWorker.resumeAfter。doc コメント
+	// 「窓を回す」参照）ので、張り付いていても到達性は失われない --- 次パスは
+	// 続きから見る。窓が埋まっているバックログのある系では、このゲージは
+	// 末尾を越えたパスで周期的に 0 まで落ちる（1 周が終わった観測）。
+	// 「張り付いているか」を見たいなら `max_over_time` で瞬間的な 0 を均す
+	// （docs/operations/monitoring.md）。エンコード実行中の録画も候補に数えるので、
 	// 0 でないこと自体は異常ではない。
 	EncodeReconcileCandidates = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "rokuban_encode_reconcile_candidates",
-		Help: "Recordings seen by the last encode-reconcile pass that still lack an active encoded asset. If this sits at the pass row limit, recordings beyond it are not being reached.",
+		Help: "Recordings seen by the last encode-reconcile pass that still lack an active encoded asset. Sitting at the pass row limit means the backlog is at least that large, not that recordings beyond it are unreachable (the window resumes from where the previous pass stopped). This gauge periodically dips to 0 as the window wraps around; use max_over_time to see the backlog size.",
 	})
 
 	// EncodeReconcileUnsatisfiable は「凍結済みの desired が現在の

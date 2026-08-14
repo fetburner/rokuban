@@ -40,7 +40,8 @@
 
 -- ListRecordingsMissingEncodes は「原本が active でコミット済み、かつ
 -- known_profiles に含まれる desired のうち少なくとも 1 つについて active な
--- encoded が無い」録画を recording_id 昇順で返す。
+-- encoded が無い」録画のうち recording_id が after_recording_id より大きいものを
+-- recording_id 昇順で返す。
 --
 -- 条件の意味:
 --   * recording_encode_policy に行がある = エンコードポリシーが凍結済み
@@ -58,11 +59,17 @@
 --     until_encoded_deletable_originals（00032）が同じ述語を持つのと同じ理由
 --   * want.profile = ANY(known_profiles) = 現在の設定に存在するプロファイルだけを
 --     欠落判定の対象にする。設定から消えたプロファイルを候補に含めると、投入しても
---     EncodeWorker が `unknown encode profile` で弾く（encode.go）録画が
---     recording_id 昇順の窓を恒久的に占有し、それより後ろの録画に到達しなくなる
---     （EncodeReconcileWorker の doc コメント「窓は回らない」）。空文字列の
---     プロファイル名がここで自動的に落ちるのも同じ仕組み（設定側の名前は
---     必須検証済みなので known_profiles に空文字列は入らない）
+--     EncodeWorker が `unknown encode profile` で弾く（encode.go）録画が窓を
+--     恒久的に占有し続ける（他の候補が減らない限り）。空文字列のプロファイル名が
+--     ここで自動的に落ちるのも同じ仕組み（設定側の名前は必須検証済みなので
+--     known_profiles に空文字列は入らない）
+--   * p.recording_id > after_recording_id = 呼び出し側（EncodeReconcileWorker）が
+--     持つ、プロセスローカルな再開位置。前パスが LIMIT ちょうどまで埋まったなら
+--     続きから、そうでなければ 0（先頭）から見る。窓が「毎パス先頭から」ではなく
+--     「前回止まった位置の続きから」開くことで、候補が一度も減らない最悪条件
+--     （録画単位の恒久失敗が LIMIT 件を超える）でも有限パス数で全候補に到達する
+--     （EncodeReconcileWorker の doc コメント「窓を回す」）。recording_id は PK
+--     なのでこの keyset 述語はそのまま索引に乗る。
 --
 -- **known_profiles は non-NULL でなければならない。** `x = ANY(NULL::text[])` は
 -- false ではなく NULL なので、NULL（Go 側の nil スライス）を渡すと EXISTS が
@@ -82,7 +89,8 @@
 SELECT p.recording_id
 FROM recording_encode_policy p
 JOIN recordings r ON r.id = p.recording_id
-WHERE cardinality(p.encode_profiles) > 0
+WHERE p.recording_id > sqlc.arg('after_recording_id')::bigint
+  AND cardinality(p.encode_profiles) > 0
   AND r.deleted_at IS NULL
   AND EXISTS (
     SELECT 1 FROM media_assets o
