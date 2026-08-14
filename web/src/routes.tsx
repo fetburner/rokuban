@@ -1,7 +1,8 @@
-import { createRootRoute, createRoute, Outlet, redirect } from '@tanstack/react-router'
+import { createRootRoute, createRoute, HeadContent, Outlet, redirect } from '@tanstack/react-router'
 
 import { AppShell } from './components/app-shell'
 import { SiteGate } from './components/site-gate'
+import { pageTitle } from './lib/document-title'
 import { parsePositiveIntId } from './lib/positive-id'
 import { parseProgramsSearch, type ProgramsPageSearch } from './lib/programs-search'
 import {
@@ -20,14 +21,25 @@ import { RulesPage } from './pages/rules'
 import { SearchPage } from './pages/search'
 
 const rootRoute = createRootRoute({
+  // 各ルートが `head` で自分の画面名を積むので、ここは「積み忘れ」への保険
+  // （issue #304。子の `head` が無ければこの既定に落ちる。TanStack Router は
+  // 末端から見て最初に見つかったタイトルを使うので、子が定義すればここは
+  // 上書きされる）。
+  head: () => ({ meta: [{ title: '録番' }] }),
   component: () => (
-    <AppShell>
-      {/* SiteGate は Outlet だけを囲む。ナビゲーション（サイドバー/ボトムタブ）と
-          サーキットブレーカーバナーは site に依存しないので、サイト解決を待たせない。 */}
-      <SiteGate>
-        <Outlet />
-      </SiteGate>
-    </AppShell>
+    <>
+      {/* HeadContent が各ルートの `head` を実際の <title>/<meta> に描く。React 19
+          はツリーのどこに描いても <head> へ hoist するので、AppShell の中でよい
+          （SSR ではないので位置そのものに意味は無い）。 */}
+      <HeadContent />
+      <AppShell>
+        {/* SiteGate は Outlet だけを囲む。ナビゲーション（サイドバー/ボトムタブ）と
+            サーキットブレーカーバナーは site に依存しないので、サイト解決を待たせない。 */}
+        <SiteGate>
+          <Outlet />
+        </SiteGate>
+      </AppShell>
+    </>
   ),
 })
 
@@ -63,6 +75,9 @@ const homeRoute = createRoute({
       throw redirect({ to: '/programs', search: true, replace: true })
     }
   },
+  // ナビ（`components/app-shell.tsx` の `navItems`）・`PageHeader` と同じ
+  // 「ホーム」を使う。
+  head: () => ({ meta: [{ title: pageTitle('ホーム') }] }),
   component: HomePage,
 })
 
@@ -80,6 +95,8 @@ const programsRoute = createRoute({
   path: '/programs',
   validateSearch: (search: Record<string, unknown>): ProgramsPageSearch =>
     parseProgramsSearch(search),
+  // `pages/programs.tsx` の `<PageHeader title="番組">` と同じ表記。
+  head: () => ({ meta: [{ title: pageTitle('番組') }] }),
   component: ProgramsPage,
 })
 
@@ -118,18 +135,24 @@ const searchRoute = createRoute({
   validateSearch: (search: Record<string, unknown>): SearchPageSearch => ({
     ruleId: parseRuleId(search.ruleId),
   }),
+  // `pages/search.tsx` の `<PageHeader title="検索">` と同じ表記。
+  head: () => ({ meta: [{ title: pageTitle('検索') }] }),
   component: SearchPage,
 })
 
 const rulesRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/rules',
+  // `pages/rules.tsx` の `<PageHeader title="ルール">` と同じ表記。
+  head: () => ({ meta: [{ title: pageTitle('ルール') }] }),
   component: RulesPage,
 })
 
 const reservationsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/reservations',
+  // `pages/reservations.tsx` の `<PageHeader title="予約">` と同じ表記。
+  head: () => ({ meta: [{ title: pageTitle('予約') }] }),
   component: ReservationsPage,
 })
 
@@ -146,6 +169,14 @@ const reservationsRoute = createRoute({
 const reservationDetailRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/reservations/$site/$programId',
+  // 番組名は `useGetProgramReservation`（react-query。ルートの loader ではなく
+  // コンポーネント側で取得する）が解決するまで無い。`head` はルーターの
+  // マッチ確定と同時に評価されるためこの取得を待てず、番組名を積むと
+  // 解決前は `undefined · 録番` が一瞬出る（CLAUDE.md
+  // テスト規律「非同期の空虚な成功に注意する」と同じ穴）。`pages/
+  // reservation-detail.tsx` の `<h1>` と同じ「予約の詳細」という画面の
+  // 識別子に留め、番組名は本文の `<h2>` に任せる。
+  head: () => ({ meta: [{ title: pageTitle('予約の詳細') }] }),
   component: ReservationDetailPage,
 })
 
@@ -160,6 +191,8 @@ const recordingsRoute = createRoute({
   path: '/recordings',
   validateSearch: (search: Record<string, unknown>): RecordingsPageSearch =>
     parseRecordingsSearch(search),
+  // `pages/recordings.tsx` の `<PageHeader title="録画">` と同じ表記。
+  head: () => ({ meta: [{ title: pageTitle('録画') }] }),
   component: RecordingsPage,
 })
 
@@ -172,6 +205,10 @@ const recordingsRoute = createRoute({
 const recordingDetailRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/recordings/$id',
+  // 録画名は `useGetRecording`（react-query）が解決するまで無い。
+  // `reservationDetailRoute` と同じ理由で番組名は積まず、`pages/
+  // recording-detail.tsx` の `<h1>` と同じ「録画の詳細」に留める。
+  head: () => ({ meta: [{ title: pageTitle('録画の詳細') }] }),
   component: RecordingDetailPage,
 })
 
@@ -210,6 +247,12 @@ const liveRoute = createRoute({
   validateSearch: (search: Record<string, unknown>): LivePageSearch => ({
     serviceId: parsePositiveIntId(search.serviceId),
   }),
+  // `pages/live.tsx` の `<PageHeader title="ライブ">` と同じ表記。issue #304 は
+  // Playwright で確認した 6 ルートを挙げているが、`/live` だけ `head` を
+  // 積まないと「直前に居たルートのタイトルが残る」（`document.title` は
+  // ナビゲーションだけでは自動で戻らないため）という一覧より悪い状態に
+  // なるので、主要ルートと同じ扱いにする。
+  head: () => ({ meta: [{ title: pageTitle('ライブ') }] }),
   component: LivePage,
 })
 

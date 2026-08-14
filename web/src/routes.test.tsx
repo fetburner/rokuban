@@ -1,11 +1,29 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RouterProvider, createMemoryHistory, createRouter } from '@tanstack/react-router'
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import { ToastProvider } from '@/components/toaster'
 import { SearchPage } from '@/pages/search'
 import { routeTree } from '@/routes'
+
+/**
+ * stubSitesFetch は `GET /api/sites` にだけ応答し、他のパスは空配列で返す
+ * `globalThis.fetch` のスタブ。`SiteGate`（routes.tsx）が全ルートの手前で
+ * サイト解決を待つため、これが無いとどのルートも開けない。
+ */
+function stubSitesFetch() {
+  globalThis.fetch = vi.fn((input: string | URL | Request) => {
+    const url = new URL(String(input), 'http://localhost')
+    const body = url.pathname === '/api/sites' ? ['default'] : []
+    return Promise.resolve(
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+  }) as unknown as typeof fetch
+}
 
 /**
  * 画面を作ってもルートとナビゲーションに繋がなければどこからも開けない。
@@ -311,5 +329,58 @@ describe('routeTree', () => {
     for (const link of links) expect(link).toHaveAttribute('href', '/search')
     // 現在地として示される
     expect(links[0]).toHaveAttribute('aria-current', 'page')
+  })
+
+  it('ルートを変えると document.title が画面ごとに変わる（issue #304）', async () => {
+    window.scrollTo = vi.fn()
+    stubSitesFetch()
+
+    const router = createRouter({
+      routeTree,
+      history: createMemoryHistory({ initialEntries: ['/'] }),
+    })
+    render(
+      <QueryClientProvider
+        client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+      >
+        <ToastProvider>
+          <RouterProvider router={router as never} />
+        </ToastProvider>
+      </QueryClientProvider>,
+    )
+
+    // どのルートも「画面名 · 録番」の形になる（index.html の固定 "Rokuban" の
+    // まま止まらない）。主要ルート（issue #304 が Playwright で確認した 6 つ）
+    // に加え、issue の一覧には無いが同じ理由（`document.title` はナビゲーション
+    // だけでは前の値に戻らない）で `/live` と詳細 2 ルートも見る。
+    await router.navigate({ to: '/' })
+    await waitFor(() => expect(document.title).toBe('ホーム · 録番'))
+
+    await router.navigate({ to: '/programs' })
+    await waitFor(() => expect(document.title).toBe('番組 · 録番'))
+
+    await router.navigate({ to: '/recordings' })
+    await waitFor(() => expect(document.title).toBe('録画 · 録番'))
+
+    await router.navigate({ to: '/reservations' })
+    await waitFor(() => expect(document.title).toBe('予約 · 録番'))
+
+    await router.navigate({ to: '/search' })
+    await waitFor(() => expect(document.title).toBe('検索 · 録番'))
+
+    await router.navigate({ to: '/rules' })
+    await waitFor(() => expect(document.title).toBe('ルール · 録番'))
+
+    await router.navigate({ to: '/live' })
+    await waitFor(() => expect(document.title).toBe('ライブ · 録番'))
+
+    await router.navigate({ to: '/recordings/$id', params: { id: '1' } })
+    await waitFor(() => expect(document.title).toBe('録画の詳細 · 録番'))
+
+    await router.navigate({
+      to: '/reservations/$site/$programId',
+      params: { site: 'default', programId: '1' },
+    })
+    await waitFor(() => expect(document.title).toBe('予約の詳細 · 録番'))
   })
 })
