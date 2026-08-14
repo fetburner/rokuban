@@ -24,6 +24,7 @@ import (
 	dto "github.com/prometheus/client_model/go"
 
 	"github.com/fetburner/rokuban/internal/api"
+	"github.com/fetburner/rokuban/internal/ffargs"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
 )
@@ -1804,7 +1805,7 @@ func TestBuildLiveFFmpegArgs(t *testing.T) {
 		{Name: "h264", VideoCodec: "libx264", AudioCodec: "aac", Height: 720, Preset: "veryfast", SegmentSeconds: 2, PlaylistSize: 6, ExtraArgs: []string{"-b:v", "2M"}},
 		{Name: "h264low", VideoCodec: "libx264", AudioCodec: "aac", Height: 360, SegmentSeconds: 4, PlaylistSize: 3},
 	}
-	args := BuildLiveFFmpegArgs(profiles, "/tmp/live/1")
+	args := BuildLiveFFmpegArgs(LiveConfig{Profiles: profiles}, "/tmp/live/1")
 
 	if !slices.Contains(args, "-i") {
 		t.Fatal("missing -i")
@@ -1877,6 +1878,122 @@ func TestBuildLiveFFmpegArgs(t *testing.T) {
 	joined := strings.Join(args, " ")
 	if strings.Contains(joined, "&&") || strings.Contains(joined, "|") {
 		t.Errorf("args look like a shell pipeline: %v", args)
+	}
+}
+
+// TestBuildLiveFFmpegArgs_HWAccelBeforeInput は live.hwaccel が
+// `-f mpegts -i pipe:0` より前に出ることを固定する。
+// 壊し方: 前置ブロックを入力の後ろへ移す。
+func TestBuildLiveFFmpegArgs_HWAccelBeforeInput(t *testing.T) {
+	cfg := LiveConfig{
+		HWAccel: &ffargs.HWAccel{Kind: "vaapi", Device: "/dev/dri/renderD128", OutputFormat: "vaapi"},
+		Profiles: []LiveProfile{
+			{Name: "h264", VideoCodec: "h264_vaapi", AudioCodec: "aac", Height: 720, Scaler: ffargs.ScalerVAAPI, SegmentSeconds: 2, PlaylistSize: 6},
+		},
+	}
+	args := BuildLiveFFmpegArgs(cfg, "/tmp/live/1")
+
+	hwIdx := slices.Index(args, "-hwaccel")
+	deviceIdx := slices.Index(args, "-hwaccel_device")
+	outputFormatIdx := slices.Index(args, "-hwaccel_output_format")
+	iIdx := slices.Index(args, "-i")
+	fMpegtsIdx := -1
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == "-f" && args[i+1] == "mpegts" {
+			fMpegtsIdx = i
+			break
+		}
+	}
+	if hwIdx < 0 || iIdx < 0 || fMpegtsIdx < 0 {
+		t.Fatalf("missing -hwaccel/-i/-f mpegts: %v", args)
+	}
+	if hwIdx >= fMpegtsIdx || fMpegtsIdx >= iIdx {
+		t.Errorf("expected -hwaccel < -f mpegts < -i, got hw=%d f_mpegts=%d i=%d: %v", hwIdx, fMpegtsIdx, iIdx, args)
+	}
+	if deviceIdx < 0 || args[deviceIdx+1] != "/dev/dri/renderD128" {
+		t.Errorf("missing -hwaccel_device value: %v", args)
+	}
+	if outputFormatIdx < 0 || args[outputFormatIdx+1] != "vaapi" {
+		t.Errorf("missing -hwaccel_output_format value: %v", args)
+	}
+	if got := args[hwIdx+1]; got != "vaapi" {
+		t.Errorf("-hwaccel value = %q, want vaapi", got)
+	}
+}
+
+// TestBuildLiveFFmpegArgs_PerProfileScalerAndQuality は各プロファイルの
+// scaler/品質が互いに漏れないことを固定する（2 本: vaapi+qp / software+crf）。
+// 壊し方: scale の append をループの外へ出す。
+func TestBuildLiveFFmpegArgs_PerProfileScalerAndQuality(t *testing.T) {
+	qp := 26
+	crf := 23
+	cfg := LiveConfig{
+		Profiles: []LiveProfile{
+			{Name: "hw", VideoCodec: "h264_vaapi", AudioCodec: "aac", Height: 720, Scaler: ffargs.ScalerVAAPI, QP: &qp, SegmentSeconds: 2, PlaylistSize: 6},
+			{Name: "sw", VideoCodec: "libx264", AudioCodec: "aac", Height: 360, Scaler: ffargs.ScalerSoftware, CRF: &crf, SegmentSeconds: 2, PlaylistSize: 6},
+		},
+	}
+	args := BuildLiveFFmpegArgs(cfg, "/tmp/live/1")
+
+	if !slices.Contains(args, "scale_vaapi=w=-2:h=720") {
+		t.Errorf("missing hw scale filter: %v", args)
+	}
+	if !slices.Contains(args, "scale=-2:360") {
+		t.Errorf("missing sw scale filter: %v", args)
+	}
+	// どちらの出力も両方のスタイルの filter を持ってはいけない。
+	if slices.Contains(args, "scale_vaapi=w=-2:h=360") {
+		t.Errorf("sw output must not carry the hw scale filter: %v", args)
+	}
+	if slices.Contains(args, "scale=-2:720") {
+		t.Errorf("hw output must not carry the sw scale filter: %v", args)
+	}
+	if !slices.Contains(args, "-qp") {
+		t.Errorf("missing -qp for hw profile: %v", args)
+	}
+	if !slices.Contains(args, "-crf") {
+		t.Errorf("missing -crf for sw profile: %v", args)
+	}
+	qpIdx := slices.Index(args, "-qp")
+	if qpIdx < 0 || args[qpIdx+1] != "26" {
+		t.Errorf("-qp value = %v, want 26", args)
+	}
+	crfIdx := slices.Index(args, "-crf")
+	if crfIdx < 0 || args[crfIdx+1] != "23" {
+		t.Errorf("-crf value = %v, want 23", args)
+	}
+}
+
+// TestBuildLiveFFmpegArgs_InputAndOutputExtraArgsPositions は
+// live.input_extra_args が -i より前、profile.extra_args が各出力の -f hls より
+// 前に来ることを固定する。壊し方: 入れ替える。
+func TestBuildLiveFFmpegArgs_InputAndOutputExtraArgsPositions(t *testing.T) {
+	cfg := LiveConfig{
+		InputExtraArgs: []string{"-re"},
+		Profiles: []LiveProfile{
+			{Name: "h264", VideoCodec: "libx264", AudioCodec: "aac", SegmentSeconds: 2, PlaylistSize: 6, ExtraArgs: []string{"-b:v", "2M"}},
+		},
+	}
+	args := BuildLiveFFmpegArgs(cfg, "/tmp/live/1")
+
+	reIdx := slices.Index(args, "-re")
+	iIdx := slices.Index(args, "-i")
+	bvIdx := slices.Index(args, "-b:v")
+	fHlsIdx := -1
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == "-f" && args[i+1] == "hls" {
+			fHlsIdx = i
+			break
+		}
+	}
+	if reIdx < 0 || iIdx < 0 || bvIdx < 0 || fHlsIdx < 0 {
+		t.Fatalf("missing -re/-i/-b:v/-f hls: %v", args)
+	}
+	if reIdx >= iIdx {
+		t.Errorf("live.input_extra_args (-re at %d) must come before -i (at %d): %v", reIdx, iIdx, args)
+	}
+	if bvIdx >= fHlsIdx {
+		t.Errorf("profile.extra_args (-b:v at %d) must come before -f hls (at %d): %v", bvIdx, fHlsIdx, args)
 	}
 }
 

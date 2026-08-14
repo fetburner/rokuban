@@ -18,6 +18,7 @@ import (
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/ffargs"
 	"github.com/fetburner/rokuban/internal/webhook"
 )
 
@@ -63,10 +64,178 @@ func TestBuildFFmpegArgs(t *testing.T) {
 	if !slices.Contains(args, "+faststart") {
 		t.Errorf("args missing extra_args: %v", args)
 	}
+	// extra_args は -f（コンテナ）の前に置く（issue #321: 旧位置は -f の後ろ
+	// だった。VOD と live の規則を 1 つにするための移動）。
+	fIdx := -1
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == "-f" && args[i+1] == "mp4" {
+			fIdx = i
+			break
+		}
+	}
+	extraIdx := slices.Index(args, "-movflags")
+	if fIdx < 0 || extraIdx < 0 {
+		t.Fatalf("missing -f mp4 / -movflags: %v", args)
+	}
+	if extraIdx >= fIdx {
+		t.Errorf("extra_args (-movflags at %d) must come before -f (at %d): %v", extraIdx, fIdx, args)
+	}
 	// 自由形式のシェルは組み立てない。
 	joined := strings.Join(args, " ")
 	if strings.Contains(joined, "&&") || strings.Contains(joined, "|") {
 		t.Errorf("args look like shell: %v", args)
+	}
+}
+
+// TestBuildFFmpegArgs_HWAccelBeforeInput は hwaccel ブロックが -i より前に来る
+// ことを固定する（issue #321）。壊し方: 前置ブロックの append を -i の対の後ろへ移す。
+func TestBuildFFmpegArgs_HWAccelBeforeInput(t *testing.T) {
+	p := config.EncodeProfile{
+		Name:       "h264_vaapi",
+		Container:  "mp4",
+		VideoCodec: "h264_vaapi",
+		AudioCodec: "aac",
+		Height:     720,
+		Scaler:     ffargs.ScalerVAAPI,
+		HWAccel: &ffargs.HWAccel{
+			Kind:         "vaapi",
+			Device:       "/dev/dri/renderD128",
+			OutputFormat: "vaapi",
+		},
+	}
+	args := BuildFFmpegArgs(p, "/in.m2ts", "/out.mp4")
+
+	hwIdx := slices.Index(args, "-hwaccel")
+	deviceIdx := slices.Index(args, "-hwaccel_device")
+	outputFormatIdx := slices.Index(args, "-hwaccel_output_format")
+	iIdx := slices.Index(args, "-i")
+	if hwIdx < 0 || deviceIdx < 0 || outputFormatIdx < 0 || iIdx < 0 {
+		t.Fatalf("missing -hwaccel/-hwaccel_device/-hwaccel_output_format/-i: %v", args)
+	}
+	if hwIdx >= iIdx || deviceIdx >= iIdx || outputFormatIdx >= iIdx {
+		t.Errorf("hwaccel block must come before -i: hwaccel=%d device=%d output_format=%d i=%d: %v",
+			hwIdx, deviceIdx, outputFormatIdx, iIdx, args)
+	}
+	if args[hwIdx+1] != "vaapi" {
+		t.Errorf("-hwaccel value = %q, want vaapi", args[hwIdx+1])
+	}
+	if args[deviceIdx+1] != "/dev/dri/renderD128" {
+		t.Errorf("-hwaccel_device value = %q, want /dev/dri/renderD128", args[deviceIdx+1])
+	}
+	if args[outputFormatIdx+1] != "vaapi" {
+		t.Errorf("-hwaccel_output_format value = %q, want vaapi", args[outputFormatIdx+1])
+	}
+	if !slices.Contains(args, "scale_vaapi=w=-2:h=720") {
+		t.Errorf("missing hw scale filter: %v", args)
+	}
+	if slices.Contains(args, "scale=-2:720") {
+		t.Errorf("must not also emit the software scale filter: %v", args)
+	}
+}
+
+// TestBuildFFmpegArgs_QP は qp が -qp として出て -crf は出ないことを固定する。
+// 壊し方: emit するフラグ名を -crf にする。
+func TestBuildFFmpegArgs_QP(t *testing.T) {
+	qp := 24
+	p := config.EncodeProfile{
+		Name:       "h264_vaapi",
+		Container:  "mp4",
+		VideoCodec: "h264_vaapi",
+		AudioCodec: "aac",
+		QP:         &qp,
+	}
+	args := BuildFFmpegArgs(p, "in", "out")
+	if slices.Contains(args, "-crf") {
+		t.Errorf("-crf must not be emitted when only qp is set: %v", args)
+	}
+	qpIdx := slices.Index(args, "-qp")
+	if qpIdx < 0 {
+		t.Fatalf("missing -qp: %v", args)
+	}
+	if args[qpIdx+1] != "24" {
+		t.Errorf("-qp value = %q, want 24", args[qpIdx+1])
+	}
+}
+
+// TestBuildFFmpegArgs_InputAndOutputExtraArgsPositions は input_extra_args が
+// -i より前、extra_args が -c:v より後かつ -f/-progress より前に来ることを固定する
+// （issue #321）。壊し方: 2 つの append 先を入れ替える（罠そのものの回帰）。
+func TestBuildFFmpegArgs_InputAndOutputExtraArgsPositions(t *testing.T) {
+	p := config.EncodeProfile{
+		Name:           "h264",
+		Container:      "mp4",
+		VideoCodec:     "libx264",
+		AudioCodec:     "aac",
+		InputExtraArgs: []string{"-re"},
+		ExtraArgs:      []string{"-movflags", "+faststart"},
+	}
+	args := BuildFFmpegArgs(p, "/in.m2ts", "/out.mp4")
+
+	reIdx := slices.Index(args, "-re")
+	iIdx := slices.Index(args, "-i")
+	cvIdx := slices.Index(args, "-c:v")
+	movflagsIdx := slices.Index(args, "-movflags")
+	fIdx := -1
+	progressIdx := slices.Index(args, "-progress")
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == "-f" && args[i+1] == "mp4" {
+			fIdx = i
+			break
+		}
+	}
+	if reIdx < 0 || iIdx < 0 || cvIdx < 0 || movflagsIdx < 0 || fIdx < 0 || progressIdx < 0 {
+		t.Fatalf("missing one of -re/-i/-c:v/-movflags/-f/-progress: %v", args)
+	}
+	if reIdx >= iIdx {
+		t.Errorf("input_extra_args (-re at %d) must come before -i (at %d): %v", reIdx, iIdx, args)
+	}
+	if movflagsIdx <= cvIdx {
+		t.Errorf("extra_args (-movflags at %d) must come after -c:v (at %d): %v", movflagsIdx, cvIdx, args)
+	}
+	if movflagsIdx >= fIdx || movflagsIdx >= progressIdx {
+		t.Errorf("extra_args (-movflags at %d) must come before -f (at %d) and -progress (at %d): %v",
+			movflagsIdx, fIdx, progressIdx, args)
+	}
+}
+
+// TestBuildFFmpegArgs_AppOwnedTail は、ユーザーが渡せる引数を最大に積んでも
+// アプリ所有の末尾（-f/-progress pipe:1/-loglevel error/出力パス）が動かないことを
+// 固定する。壊し方: ユーザー引数を末尾の後ろに append する。
+func TestBuildFFmpegArgs_AppOwnedTail(t *testing.T) {
+	p := config.EncodeProfile{
+		Name:           "h264",
+		Container:      "mp4",
+		VideoCodec:     "libx264",
+		AudioCodec:     "aac",
+		InputExtraArgs: []string{"-re"},
+		ExtraArgs:      []string{"-movflags", "+faststart", "-an"},
+	}
+	args := BuildFFmpegArgs(p, "/in.m2ts", "/out.mp4")
+
+	if args[len(args)-1] != "/out.mp4" {
+		t.Errorf("last arg = %q, want output path", args[len(args)-1])
+	}
+	if got := args[len(args)-3]; got != "-loglevel" {
+		t.Errorf("args[-3] = %q, want -loglevel", got)
+	}
+	progressCount := 0
+	yCount := 0
+	for i, a := range args {
+		if a == "-progress" {
+			progressCount++
+			if i+1 >= len(args) || args[i+1] != "pipe:1" {
+				t.Errorf("-progress target = %v, want pipe:1", args)
+			}
+		}
+		if a == "-y" {
+			yCount++
+		}
+	}
+	if progressCount != 1 {
+		t.Errorf("-progress count = %d, want 1: %v", progressCount, args)
+	}
+	if yCount != 1 {
+		t.Errorf("-y count = %d, want 1: %v", yCount, args)
 	}
 }
 

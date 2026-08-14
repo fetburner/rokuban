@@ -22,6 +22,7 @@ import (
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/contentpath"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/ffargs"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/webhook"
@@ -342,29 +343,46 @@ func (w *EncodeWorker) commitEncoded(ctx context.Context, recordingID int64, pro
 //
 // 自由形式の cmd 文字列は受け取らない（issue #64 / #65）。input / output は
 // 呼び出し側が絶対パスで渡す。進捗は -progress pipe:1（stdout）で出す。
+//
+// argv の順序（issue #321 決定コメント §3）:
+//
+//	-hide_banner -nostats -y                      # アプリ
+//	[hwaccel ブロック] [input_extra_args…]         # -i より前
+//	-i INPUT
+//	-c:v VC -c:a AC
+//	[-vf <scaler が決めた filter>]                 # height>0 のときだけ、常に 1 個
+//	[-crf N | -qp N] [-preset P]
+//	[extra_args…]                                  # ユーザー（出力側）
+//	-f CONTAINER -progress pipe:1 -loglevel error OUTPUT  # アプリ所有の末尾
+//
+// **extra_args は -f の前に置く。** 以前は -f の後ろだった（旧位置に依存する
+// config は無い前提 --- -f は ffargs.CommonReservedFlags の予約フラグなので
+// ユーザーが相対順序に依存する余地は無い）。VOD と live で「ユーザーのオプション
+// はコーデック/品質/スケール指定の後・アプリ所有の末尾の前」という 1 つの規則に
+// するための移動（BuildLiveFFmpegArgs と同じ形にする）。
 func BuildFFmpegArgs(profile config.EncodeProfile, input, output string) []string {
 	args := []string{
 		"-hide_banner",
 		"-nostats",
 		"-y",
-		"-i", input,
+	}
+	args = append(args, ffargs.PreInput(profile.HWAccel, profile.InputExtraArgs)...)
+	args = append(args, "-i", input)
+	args = append(args,
 		"-c:v", profile.VideoCodec,
 		"-c:a", profile.AudioCodec,
+	)
+	if filter, ok := ffargs.ScaleArgs(profile.Scaler, profile.Height); ok {
+		args = append(args, "-vf", filter)
 	}
-	if profile.Height > 0 {
-		// 幅はアスペクト比維持（偶数に丸める -2）。
-		args = append(args, "-vf", fmt.Sprintf("scale=-2:%d", profile.Height))
-	}
-	if profile.CRF != nil {
-		args = append(args, "-crf", strconv.Itoa(*profile.CRF))
-	}
+	args = append(args, ffargs.QualityArgs(profile.CRF, profile.QP)...)
 	if profile.Preset != "" {
 		args = append(args, "-preset", profile.Preset)
 	}
-	args = append(args, "-f", profile.Container)
 	if len(profile.ExtraArgs) > 0 {
 		args = append(args, profile.ExtraArgs...)
 	}
+	args = append(args, "-f", profile.Container)
 	// -progress pipe:1 は stdout に key=value。stderr はログのみ。
 	args = append(args, "-progress", "pipe:1", "-loglevel", "error", output)
 	return args

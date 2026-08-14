@@ -132,9 +132,25 @@ encode:
   #     video_codec: libx264
   #     audio_codec: aac
   #     height: 1080             # 0 or omit = スケールしない
-  #     crf: 23                  # optional
+  #     crf: 23                  # qp との同時指定は起動エラー
   #     preset: medium           # optional
-  #     extra_args: []           # 末尾に追加する ffmpeg 引数（自由形式 cmd 全体は禁止）
+  #     extra_args: []           # コーデック/品質/スケールの後・アプリ所有の末尾
+                                 # （-f/-progress/出力パス）の前（自由形式 cmd 全体は禁止）
+  #   # VAAPI（Intel/AMD）。device のマウントはデプロイ側の話 --- k8s なら
+  #   # resources.limits、Docker なら --device。**起動時に device の存在は検査しない**
+  #   # ので、無い device を書いたプロファイルはジョブ失敗として現れる
+  #   - name: h264_vaapi
+  #     container: mp4
+  #     video_codec: h264_vaapi
+  #     audio_codec: aac
+  #     height: 720
+  #     scaler: vaapi            # software（既定）| vaapi。height があるときだけ効く
+  #     qp: 24                   # VAAPI は -crf を解さない（crf との同時指定は起動エラー）
+  #     hwaccel:                 # このブロックだけが -i より前に出る
+  #       kind: vaapi            # -hwaccel vaapi
+  #       device: /dev/dri/renderD128   # -hwaccel_device（例示）
+  #       output_format: vaapi   # -hwaccel_output_format（scale_vaapi へ HW フレームで渡す）
+  #     input_extra_args: []     # -i の直前に足す引数（自由形式 cmd 全体は禁止）
 
 # ライブ視聴（streamer ロールのみ使う）
 live:
@@ -158,6 +174,15 @@ live:
   # tuner_priority: 1              # mirakc への X-Mirakurun-Priority。ruler の schedule
                                  # 既定 priority（10）より低く保ち、チューナー枯渇時に
                                  # 録画側を勝たせる
+  # hwaccel:                     # -i より前に出る唯一のブロック。**live セクション直下
+                                 # に置く（プロファイル毎ではない）** --- ライブは 1 回の
+                                 # ffmpeg で入力 1 本・出力 N 本なので、プロファイル毎に
+                                 # 持たせると「プロファイル 2 つが別の hwaccel を要求する」
+                                 # という表現できない設定が書けてしまう
+  #   kind: vaapi
+  #   device: /dev/dri/renderD128
+  #   output_format: vaapi
+  # input_extra_args: []         # `-f mpegts -i pipe:0` の直前に足す引数
   # profiles:
   #   - name: h264                 # `?profile=` から参照する名前
   #     video_codec: libx264       # ISDB-T の映像は MPEG-2 なのでブラウザの HLS 経路
@@ -167,6 +192,15 @@ live:
   #     preset: veryfast          # optional
   #     segment_seconds: 2        # 0 なら既定値 2
   #     playlist_size: 6          # 0 なら既定値 6
+  #   # VAAPI（scaler/crf/qp はプロファイル毎 --- 出力側オプションなので出力ごとに違ってよい）
+  #   - name: h264_vaapi
+  #     video_codec: h264_vaapi
+  #     audio_codec: aac
+  #     height: 720
+  #     scaler: vaapi
+  #     qp: 26
+  #     segment_seconds: 2
+  #     playlist_size: 6
 
 # 汎用 webhook（EPGStation の複数種外部コマンドを 1 本の HTTP POST に置き換える）
 webhook:

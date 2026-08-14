@@ -12,6 +12,8 @@ import (
 	"github.com/drone/envsubst"
 	"github.com/go-playground/validator/v10"
 	"github.com/goccy/go-yaml"
+
+	"github.com/fetburner/rokuban/internal/ffargs"
 )
 
 // Config はアプリケーション全体の設定。
@@ -362,7 +364,53 @@ type EncodeConfig struct {
 // EncodeProfile は構造化エンコードプロファイルの定義。
 //
 // 自由形式の cmd 文字列は採らない（EPGStation の命令的テンプレートを繰り返さない。
-// issue #64）。worker がこのフィールドから ffmpeg 引数を組み立てる（M3-3）。
+// issue #64）。worker がこのフィールドから ffmpeg 引数を組み立てる（M3-3、
+// M3-3 拡張版 issue #321 が HW エンコードの構造化フィールドを追加）。
+//
+// # 追加したキーの命名の理由（issue #321 決定コメント）
+//
+//  1. hwaccel はネストしたブロック（*ffargs.HWAccel）であり、hwaccel_kind の
+//     ようなフラット 3 本にしない。ブロックの存在そのものが「-i の前に出す」と
+//     いう主張になる（不変条件 10）。フラットだと「device だけ書いた」状態が
+//     「何も出さない」と区別できず、掃除する規則が要る。ポインタなので
+//     `hwaccel:`（値なし）は nil、`hwaccel: {}` は「書いた」で kind is required
+//     になる（detectMirakcKeyWritten が固定している goccy/go-yaml の挙動と同じ）。
+//  2. scaler は「系統の名前」であって filter 文字列ではない。`-vf` /
+//     `video_filter` というキーは永久に作らない。filtergraph は第 2 の
+//     コマンド言語で、`scale_vaapi=...,drawtext=...` と書けた時点で cmd を
+//     別名で解禁したのと同じになる。幾何の入力は height 1 本に保つ。
+//  3. height + HW スケールでソフトの scale=-2:H が出ないのは検査ではなく構造。
+//     filter を作る経路が ffargs.ScaleArgs(scaler, height) の 1 本だけで、
+//     返るのは常に filter 1 個。「両方 append する」コードが書けなければ
+//     両方は出ない。
+//  4. 品質は crf / qp の 2 キー排他。quality: {mode, value} は採らない。
+//     キー名がエンコーダ自身のオプション名そのものなので、系統が増えるたびに
+//     腐るマッピング表が要らない。両方書いたら起動エラー（優先順位を
+//     覚えさせない。ffargs.ValidateVideo）。
+//  5. -global_quality / -cq / -q:v はキーにしない。extra_args が届く位置
+//     （コーデック指定より後ろ）には構造を足さない、という基準（下記）に従う。
+//     届く綴りを今フィールドにすると、テストされていない綴りが増えるだけ
+//     （不変条件 11: 書き手のいない形は決めない）。
+//  6. extra_args は改名しない。位置が変わっていないから意味も変わっていない
+//     （**ただし位置は 1 点だけ変わる**: `-f`（コンテナ）の後ろから前に移した
+//     ---VOD と live で「ユーザーのオプションはコーデック/品質/スケール指定の
+//     後・アプリ所有の末尾の前」という 1 つの規則にするため。`-f` は
+//     ffargs.CommonReservedFlags に入っているので、ユーザーが旧位置に依存する
+//     余地は無い）。対称性のために既存の全 config を壊す価値はないので、
+//     新しい方（input 側）の名前に位置を入れる: input_extra_args
+//     （ffmpeg 用語の input options の位置）。
+//  7. アプリが握り続けるもの: -y / -i / 入出力パス / -f / -progress pipe:1 /
+//     -loglevel error。ユーザーが書けるのは「位置が固定されたオプション列」
+//     だけで、コマンド文字列ではない。予約フラグの denylist（起動エラー・
+//     全件列挙。ffargs.CommonReservedFlags/ReservedFlagsLive）と、裸の位置
+//     引数の禁止（ffargs.ValidateExtraArgs）の 2 段で守る。
+//  8. device の存在は起動時に検査しない。公式イメージと device の無い CI が
+//     落ちる。無い device を書いたプロファイルはジョブ失敗でよい（マウントは
+//     k8s resources.limits / Docker --device の話でこの構造体の外）。
+//
+// scaler が受け付ける値の集合は「filter の綴りを実際に確かめた系統」に限る
+// （ffargs.AllowedScalers の doc コメント参照。未検証の綴りを黙って許すより
+// 系統ごと除外する）。
 type EncodeProfile struct {
 	// Name はルール / overrides から参照する一意な名前。
 	Name string `yaml:"name"`
@@ -379,14 +427,30 @@ type EncodeProfile struct {
 	// Height はスケール先の高さ。0 または省略ならスケールしない。
 	Height int `yaml:"height"`
 
-	// CRF は品質指定（任意。未設定は nil）。
+	// Scaler はスケール filter の系統（既定 ""=software。ffargs.Scaler）。
+	// height が 0 のときに書くと起動エラー（何も主張しないキーを黙って無視
+	// しない。不変条件 10 と同じ形）。
+	Scaler ffargs.Scaler `yaml:"scaler"`
+
+	// CRF は品質指定（任意。未設定は nil）。qp との同時指定は起動エラー。
 	CRF *int `yaml:"crf"`
+
+	// QP は品質指定（任意。未設定は nil）。VAAPI 等 crf を解さないエンコーダ用。
+	// crf との同時指定は起動エラー（優先順位を実行時に決めさせない）。
+	QP *int `yaml:"qp"`
 
 	// Preset はエンコーダの preset（任意。空なら付けない）。
 	Preset string `yaml:"preset"`
 
-	// ExtraArgs は組み立てた ffmpeg 引数の末尾に追加する引数（任意）。
-	// 自由形式のコマンド全体は受け取らない。
+	// HWAccel は -i より前に出す唯一のブロック（任意。nil なら何も出さない）。
+	HWAccel *ffargs.HWAccel `yaml:"hwaccel"`
+
+	// InputExtraArgs は -i の直前に追加する引数（任意。入力側）。
+	InputExtraArgs []string `yaml:"input_extra_args"`
+
+	// ExtraArgs は組み立てた ffmpeg 引数に追加する引数（任意。出力側 ---
+	// コーデック/品質/スケール指定の後、アプリ所有の末尾（-f/-progress/出力
+	// パス）の前）。自由形式のコマンド全体は受け取らない。
 	ExtraArgs []string `yaml:"extra_args"`
 }
 
@@ -466,6 +530,36 @@ func (c EncodeConfig) validate() error {
 			return fmt.Errorf("encode.profiles[%d] (%s): height must be >= 0, got %d",
 				i, p.Name, p.Height)
 		}
+		if err := validateEncodeProfileFFArgs(p); err != nil {
+			return fmt.Errorf("encode.profiles[%d] (%s): %w", i, p.Name, err)
+		}
+	}
+	return nil
+}
+
+// validateEncodeProfileFFArgs は VOD プロファイル 1 件ぶんの ffargs 検査
+// （scaler/height/crf/qp、hwaccel ブロック、extra_args/input_extra_args の
+// 予約フラグ・裸の位置引数）をまとめる。live.profiles 側の同種の検査
+// （validateLiveProfileFFArgs）と同じ ffargs 関数を通すことで、片側だけ直る
+// 事故を防ぐ（issue #321 決定コメント §5）。
+func validateEncodeProfileFFArgs(p EncodeProfile) error {
+	var errs []string
+	if err := ffargs.ValidateVideo(p.Scaler, p.Height, p.CRF, p.QP); err != nil {
+		errs = append(errs, err.Error())
+	}
+	if err := p.HWAccel.Validate(); err != nil {
+		errs = append(errs, err.Error())
+	}
+	// extra_args と input_extra_args の両方を検査し、1 回のエラーに全件出す
+	// （どちらか片方だけを検査する実装ミスをテストで検出できるように）。
+	if err := ffargs.ValidateExtraArgs("extra_args", p.ExtraArgs, ffargs.CommonReservedFlags); err != nil {
+		errs = append(errs, err.Error())
+	}
+	if err := ffargs.ValidateExtraArgs("input_extra_args", p.InputExtraArgs, ffargs.CommonReservedFlags); err != nil {
+		errs = append(errs, err.Error())
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("%s", strings.Join(errs, "; "))
 	}
 	return nil
 }
@@ -518,6 +612,20 @@ type LiveConfig struct {
 	// HLS §実装 参照）。
 	TunerPriority int `yaml:"tuner_priority" validate:"gte=0"`
 
+	// HWAccel は -i より前に出す唯一のブロック（任意。nil なら何も出さない）。
+	//
+	// **プロファイル毎ではなく live セクション直下に置く。** ライブは 1 回の
+	// ffmpeg で入力 1 本・出力 N 本であり、-hwaccel は入力側のオプション。
+	// プロファイル毎に持たせると「プロファイル 2 つが別の hwaccel を要求する」
+	// という表現できない設定が書けてしまう --- セクション直下に置けばそれが
+	// 表現不可能になる（不変条件 10「CHECK で禁止するより表現不可能にする」。
+	// issue #321 決定コメント §1）。
+	HWAccel *ffargs.HWAccel `yaml:"hwaccel"`
+
+	// InputExtraArgs は `-i` の直前に追加する引数（任意。入力側。HWAccel と
+	// 同じ理由でプロファイル毎ではなく live セクション直下）。
+	InputExtraArgs []string `yaml:"input_extra_args"`
+
 	Profiles []LiveProfile `yaml:"profiles"`
 }
 
@@ -529,6 +637,9 @@ type LiveConfig struct {
 // 経路（hls.js/MSE）は事実上再生できないため、H.264 へのトランスコードは前提とする
 // （mirakc フィルタ + `-c copy` では受信端末を満たさない。issue #91 の決定コメント）。
 // 自由形式の cmd 文字列は採らない（encode.profiles と同じ方針）。
+//
+// **scaler / crf / qp はプロファイル毎に持つ**（HWAccel/InputExtraArgs とは対照的
+// --- これらは出力側オプションなので出力ごとに違ってよい。issue #321 決定コメント §1）。
 type LiveProfile struct {
 	// Name はクエリ（`?profile=`）から参照する一意な名前。ライブのセグメント
 	// ファイル名の接頭辞にも使う（1 プロセス内で複数プロファイルの出力を同じ
@@ -542,6 +653,16 @@ type LiveProfile struct {
 	// Height はスケール先の高さ。0 または省略ならスケールしない。
 	Height int `yaml:"height"`
 
+	// Scaler はスケール filter の系統（既定 ""=software。ffargs.Scaler）。
+	// height が 0 のときに書くと起動エラー。
+	Scaler ffargs.Scaler `yaml:"scaler"`
+
+	// CRF は品質指定（任意。未設定は nil）。qp との同時指定は起動エラー。
+	CRF *int `yaml:"crf"`
+
+	// QP は品質指定（任意。未設定は nil）。crf との同時指定は起動エラー。
+	QP *int `yaml:"qp"`
+
 	Preset string `yaml:"preset"`
 
 	// SegmentSeconds は 1 セグメントの長さ。0 なら既定値（2）。
@@ -551,7 +672,8 @@ type LiveProfile struct {
 	// 古いセグメントは削除する（-hls_flags delete_segments）。0 なら既定値（6）。
 	PlaylistSize int `yaml:"playlist_size"`
 
-	// ExtraArgs は組み立てた ffmpeg 引数の末尾に追加する引数（任意）。
+	// ExtraArgs は組み立てた ffmpeg 引数に追加する引数（任意。出力側 ---
+	// コーデック/品質/スケール指定の後、`-f hls` の前）。
 	ExtraArgs []string `yaml:"extra_args"`
 }
 
@@ -609,6 +731,12 @@ func (c LiveConfig) validate() error {
 	if c.TunerPriority < 0 {
 		return fmt.Errorf("live.tuner_priority must be >= 0, got %d", c.TunerPriority)
 	}
+	if err := c.HWAccel.Validate(); err != nil {
+		return fmt.Errorf("live.hwaccel: %w", err)
+	}
+	if err := ffargs.ValidateExtraArgs("live.input_extra_args", c.InputExtraArgs, ffargs.ReservedFlagsLive); err != nil {
+		return err
+	}
 
 	seen := make(map[string]struct{}, len(c.Profiles))
 	for i, p := range c.Profiles {
@@ -640,6 +768,12 @@ func (c LiveConfig) validate() error {
 		if p.PlaylistSize < 1 {
 			return fmt.Errorf("live.profiles[%d] (%s): playlist_size must be >= 1, got %d",
 				i, p.Name, p.PlaylistSize)
+		}
+		if err := ffargs.ValidateVideo(p.Scaler, p.Height, p.CRF, p.QP); err != nil {
+			return fmt.Errorf("live.profiles[%d] (%s): %w", i, p.Name, err)
+		}
+		if err := ffargs.ValidateExtraArgs("extra_args", p.ExtraArgs, ffargs.ReservedFlagsLive); err != nil {
+			return fmt.Errorf("live.profiles[%d] (%s): %w", i, p.Name, err)
 		}
 	}
 	return nil
