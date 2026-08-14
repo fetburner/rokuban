@@ -4,7 +4,7 @@
 
 ### 3.1 ruler（ルール評価 → 予約生成）
 
-EPG プロジェクションの番組をルールと突き合わせ、`reservations`（desired state）の base を生成・更新する。手動予約もルール由来の予約も同じテーブルに入り、区別は `program_intents.action`（`record` の有無）から導出する。
+EPG プロジェクションの番組をルールと突き合わせ、`reservations`（desired state）の base を生成・更新する。手動予約もルール由来の予約も同じテーブルに入り、区別は `program_intents.action`（`record` の有無）から導出する。**列に保存してはならない** --- 導出器が不可逆に書き換え、永続資産（録画履歴の `source`）に漏れる（[reservation-model.md](reservation-model.md) §4.4）。
 
 **ルールエンジンは Rokuban 側に置く**。mirakc はルールベース自動予約をスコープ外と明言しており（contrib にサンプルがある）、まさに「ルール = サーバー、録画エンジン = エッジ」という分割を想定した作りになっている。
 
@@ -128,7 +128,6 @@ NID/SID は放送規格のスコープでサイトに依存しないため、地
 
 #### 経緯と失敗事例
 
-- 手動予約とルール由来予約の区別を `program_intents.action` から導出する形は issue #26（`reservations.source` 列の不具合。[reservation-model.md](reservation-model.md) 末尾「経緯と失敗事例」）の帰結
 - GC は当初 3 表それぞれに別々の DELETE 文があり、表ごとに違うスナップショット列を見てドリフトしていた（表ごとに違う時刻で GC していた）。issue #27 で `program_snapshots` への `ON DELETE CASCADE` FK による 1 本の DELETE（`DeleteEndedProgramSnapshots`）に集約した
 - `recordings.reservation_id` 列（GC 当時は `ON DELETE SET NULL`）は issue #158 で列自体を削除した
 - 重複排除（`internal/ruler/dedupe.go`）の実装は M2-6

@@ -29,10 +29,10 @@
    - クエリ軸（WHERE / JOIN に使う列）は型付きカラム、可変・詳細ペイロードは `jsonb`
    - **jsonb を許すのは「そのテーブル自身のロジックが中身を一切使わない不透明なペイロード」のときだけ**（[録画エンジン](../recording.md) §4.2「jsonb を許す条件」）。内容でクエリするなら型付き列
    - 不透明なペイロードには**内容を検査する CHECK も置かない**。「クエリはしないが制約はする」という中途半端な状態を作らない。同じ理由でマージも SQL（`||` / `- keys`）ではなく Go 側で型付きに行う
-   - 違反の実例と解消: `recordings.quality_events`（jsonb）の `recording.never-scheduled` マーカーを同期除外・重なり判定・容量判定の WHERE 軸にしていたのは「内容でクエリするなら型付き列」への違反で、`never_scheduled boolean`（`00033`）に昇格して解消した。`quality_events` 自身は内訳ログとして残す（消さない。経緯は [recordings.md](recordings.md) 末尾「経緯と失敗事例」）
+   - まだやりがちな違反: `recordings.quality_events`（jsonb）の中身への `EXISTS(jsonb_array_elements(...))` を core ロジックの WHERE 軸にすること。判定軸には型付き列（`never_scheduled boolean`）を使い、`quality_events` は内訳ログとして残す（[recordings.md](recordings.md)「never-scheduled 行の識別」）
    - **PostgreSQL 15 以上**を前提とする（`UNIQUE NULLS NOT DISTINCT` が 15 で導入）
 9. **表は行の寿命で割る**（[CLAUDE.md](../../CLAUDE.md) 不変条件 12）
-   - **1 表 = 1 つの書き手 = 1 つの寿命。** 原則 6 は列の粒度なので、行に寿命が混ざるケースを網に掛けられない。`reservations` に 3 つの寿命が同居していた実例と分離の経緯は [invariants.md](../invariants.md) §12 と [reservations.md](reservations.md) 末尾「経緯と失敗事例」
+   - **1 表 = 1 つの書き手 = 1 つの寿命。** 原則 6 は列の粒度なので、行に寿命が混ざるケースを網に掛けられない。`reservations` に 3 つの寿命が同居していた実例は [invariants.md](../invariants.md) §12
    - 新しい列を足すときは「**この値はこの行と同時に生まれて同時に死ぬか**」を問う。違えば `(site, program_id)` を主キーにした別表にする
    - **この寿命チェックは永続表に対して盲目**（[CLAUDE.md](../../CLAUDE.md) 不変条件 13）。**recordings 本体は「試行の帰結の観測」だけを持つ脊椎で、脊椎（watcher / reconciler）以外のループが書く状態は `recording_id` を FK に持つ衛星表（`media_assets` がその形）に置く。** 境界（`deleted_at` / `superseded_at` は衛星に出せない等）は [invariants.md](../invariants.md) §13
 10. **形を固定する前に、その形を決める判定基準を書く**（[CLAUDE.md](../../CLAUDE.md) 不変条件 11）

@@ -46,5 +46,5 @@ erDiagram
 - **observed**: `schedule_sync` / `record_sync`（mirakc の観測。短命・使い捨て）
 - **永続資産**: `recordings` / `media_assets` / `drop_stats`。`recording_encode_policy` は `recordings` を指す衛星表（行の存在 = 凍結済み）。`recording_ingest_progress` も同じく衛星表で、行の存在 = 原本を転送中（コミットで消える）
 - `program_intents` / `program_overrides` と `reservations` は互いに FK では対応しない。三者はいずれも共通の `(site, program_id)` で `program_snapshots` への FK（`ON DELETE CASCADE`）を持つことで結びつく（Phase 1）。**意図が skip で、かつ上書きが無い番組は `reservations` に行を持たない**（overrides があれば skip でも行は残る。detached として保持。§3.5）ため、常に 1:1 ではない
-- `reservations.rule_id` は**勝者ルール**のみ。マッチした全ルールは `reservation_rule_matches` に入る（[schema/rules.md](schema/rules.md)）。各表の変更履歴は該当ファイル末尾の「経緯と失敗事例」に、マイグレーションの一覧は `internal/db/migrations/` にある
+- `reservations.rule_id` は**勝者ルール**のみ。マッチした全ルールは `reservation_rule_matches` に入る（[schema/rules.md](schema/rules.md)）。マイグレーションの一覧は `internal/db/migrations/` が権威
 
