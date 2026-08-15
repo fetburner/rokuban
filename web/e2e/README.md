@@ -166,8 +166,9 @@ E2E_URL=http://localhost:4173 pnpm e2e:design
     作っているか**を DOM の実測幅で見る（`docs/frontend/stack.md`
     「フォントは英数字と和文で 2 書体を使い分ける」）
 - 色以外にも、jsdom では原理的に測れないキーボード到達性を 1 件持つ:
-  録画一覧を行本体（Enter）で展開したあと、Tab 2 回以内に `<video>` へ
-  到達すること。`<video>` に `tabIndex` を明示すると（jsdom の focus spy
+  録画一覧の行リンクを Enter で開いて詳細（`/recordings/$id`）へ遷移し、
+  詳細で Tab 走査だけで `<video>` へ到達すること（視聴は詳細ページに寄せる）。
+  `<video>` に `tabIndex` を明示すると（jsdom の focus spy
   では検出できない形で）Tab 走査から外れてしまう退行が M5-4（issue #227）
   で実際に一度起きたため、ここで実ブラウザから固定している
 - 共通 `Button` のフォーカスリング（`:focus-visible` の `ring-3` = box-shadow、

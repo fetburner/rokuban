@@ -11,9 +11,9 @@ import { routeTree } from '@/routes'
  * 取り込み（ingest）進捗の表示（issue #212）。
  *
  * 録画単体ページ（`/recordings/{id}`）越しに見る --- ヘッダーのバッジ
- * （`IngestBadge`）と展開部の「取り込み」欄（`RecordingDetail`）の両方が
- * 1 回の描画で観測でき、しかも `RecordingDetail` は一覧の行展開と同じ部品
- * なので、一覧側の表示も同じコードで担保される。
+ * （`IngestBadge`）と本体の「取り込み」欄（`RecordingDetail`）の両方が
+ * 1 回の描画で観測できる。`IngestBadge` は一覧の行でも同じコードで描くので、
+ * 一覧側のバッジ表示も同じコードで担保される。
  *
  * ファイルを `recordings.test.tsx` と分けているのは、あちらが一覧
  * （`GET /api/recordings`）専用の大きなフェイクサーバーを持っており、
