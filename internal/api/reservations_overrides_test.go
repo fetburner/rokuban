@@ -549,6 +549,72 @@ func TestPatchProgramOverrides_InvalidFields_Returns400(t *testing.T) {
 		t.Fatalf("negative priority: status = %d, want 400", resp3.StatusCode)
 	}
 	_ = resp3.Body.Close()
+
+	// 空文字の contentPath は保存が成功するが reconciler の差分対象から外れて
+	// 何も反映されない状態になる（explicitContentPath、internal/reconciler）ため、
+	// 保存時点で拒否する（issue #312）。override を消すのは reset。
+	resp4 := doPatch(t, srv, overridesPath(programID), `{"contentPath":""}`)
+	if resp4.StatusCode != http.StatusBadRequest {
+		t.Fatalf("empty contentPath: status = %d, want 400", resp4.StatusCode)
+	}
+	_ = resp4.Body.Close()
+}
+
+// insertProgramSnapshotOnly は program_snapshots だけを作る（reservations 行は
+// 作らない）。overrides API が (site, programId) を自身の宛先に持ち、既存
+// schedule（導出射影である schedule_sync）の有無に依存しないことの確認に使う
+// （issue #312 の方針決定 (b): B 案（schedule の有無で拒否）を採らなかったこと
+// の明文化）。
+func insertProgramSnapshotOnly(t *testing.T, pool *pgxpool.Pool, ctx context.Context, programID int64, networkID, serviceID int32) {
+	t.Helper()
+	start := time.Now().Add(24 * time.Hour)
+	if _, err := pool.Exec(ctx, `
+INSERT INTO program_snapshots (
+  site, program_id, title, start_at, duration_ms,
+  network_id, service_id, channel_type, channel, event_id, service_name
+)
+VALUES ('default', $1, 'テスト番組', $2, 1800000, $3, $4, 'GR', '27', $5, 'テスト局')`,
+		programID, start, networkID, serviceID, int32(programID%100000)); err != nil {
+		t.Fatalf("inserting program_snapshot fixture: %v", err)
+	}
+}
+
+// schedule どころか reservations 行すら無い（EPG 射影にだけ番組がある）予約に
+// contentPath を明示指定しても 200 系で成功すること。B 案（schedule_sync の有無で
+// 拒否する）を採らなかったことの直接の確認 — 拒否条件を導出射影に依存させると
+// 「同じ PATCH が reconcile パスとの競走で結果が時刻で変わる」契約劣化が起きる
+// （issue #312 の方針決定）。
+func TestPatchProgramOverrides_ContentPathWithoutExistingSchedule_Succeeds(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	router := api.NewRouter(api.RouterConfig{Pool: pool})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	const programID int64 = 1900000190099999
+	insertProgramSnapshotOnly(t, pool, ctx, programID, 19000, 1900)
+
+	resp := doPatch(t, srv, overridesPath(programID), `{"contentPath":"custom/x"}`)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("contentPath patch with no existing reservation/schedule: status = %d, want 204", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+
+	q := sqlcgen.New(pool)
+	row, err := q.GetProgramOverrides(ctx, sqlcgen.GetProgramOverridesParams{Site: "default", ProgramID: programID})
+	if err != nil {
+		t.Fatalf("getting program overrides: %v", err)
+	}
+	var stored struct {
+		ContentPath *string `json:"contentPath"`
+	}
+	if err := json.Unmarshal(row.Overrides, &stored); err != nil {
+		t.Fatalf("unmarshalling overrides: %v", err)
+	}
+	if stored.ContentPath == nil || *stored.ContentPath != "custom/x" {
+		t.Errorf("stored contentPath = %v, want %q", stored.ContentPath, "custom/x")
+	}
 }
 
 // 12. programId が EPG プロジェクションに無い PATCH は 400（旧: 存在しない予約への

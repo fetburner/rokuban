@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -30,6 +31,12 @@ import (
 )
 
 // makeTSData は指定バイト数の 188 バイト境界に揃った TS データを生成する。
+//
+// **添字の純関数である**: パケット i の中身は packets（総数）に依存しない
+// ので、makeTSData(30) は makeTSData(50) のバイト単位の前置になる。2 つの
+// 転送を区別可能なバイト列で比較したいテストは makeTSData ではなく
+// makeTSDataFill を使う（issue #281 のレビュー指摘: 長さ比較に退化した
+// バイト比較が rename を commit 前に移す変異を見逃していた）。
 func makeTSData(packets int) []byte {
 	data := make([]byte, packets*188)
 	for i := 0; i < packets; i++ {
@@ -38,6 +45,26 @@ func makeTSData(packets int) []byte {
 		data[off+1] = 0x01
 		data[off+2] = 0x00
 		data[off+3] = 0x10 | byte(i%16)
+	}
+	return data
+}
+
+// makeTSDataFill は makeTSData と同じ TS パケットヘッダ（sync byte 0x47 等、
+// tsstat が読む先頭 4 バイト）を持ちつつ、ペイロード（各パケットの残り 184
+// バイト）を fill で塗りつぶした TS データを生成する。fill には 0x10〜0x1F
+// （ヘッダ 4 バイト目が取りうる範囲）と衝突しない値を渡すこと。
+//
+// 2 本の並行 ingest を区別可能なバイト列で比較するために使う ---
+// makeTSData(30) は makeTSData(50) のバイト単位の前置なので、長さの異なる
+// makeTSData だけでは「先行ファイルが後発のバイトで上書きされていないか」を
+// 全バイト比較しても実は前置一致で通ってしまう変異を見逃す。
+func makeTSDataFill(packets int, fill byte) []byte {
+	data := makeTSData(packets)
+	for i := 0; i < packets; i++ {
+		off := i * 188
+		for j := off + 4; j < off+188; j++ {
+			data[j] = fill
+		}
 	}
 	return data
 }
@@ -2276,5 +2303,255 @@ func TestIngestWorker_RelPathConflict_AllowsReuseAfterDeleted(t *testing.T) {
 	}
 	if asset.RelPath != reusedRelPath {
 		t.Errorf("new media_asset rel_path = %q, want %q", asset.RelPath, reusedRelPath)
+	}
+}
+
+// --- issue #281: コミット前の転送が宛先パスを in-place で触る（#197 の残余
+// TOCTOU）の回帰テスト群。方針は「宛先へ直接書く現行の形（os.Create）を維持
+// したまま、転送を始める前に rel_path の Postgres advisory lock を取る」
+// （一時ファイル・rename・予約行は導入しない。docs/recording/ingest.md §5.3）。
+
+// TestIngestWorker_ConcurrentSameRelPath_LoserNeverOpensStream は、同じ
+// contentPath を持つ 2 つの recording を並行実行したとき、advisory lock を
+// 取れなかった側（B）が mirakc のストリームを一度も開かずに失敗し、先に
+// ロックを取った側（A）の宛先ファイルが A 自身のバイトのまま（B に触られて
+// いない）ことを固定する。
+//
+// A と B には makeTSDataFill で区別可能なペイロード（互いの前置にならない）を
+// 与える --- makeTSData は添字の純関数なので、無地の makeTSData 同士だと
+// 短い方が長い方のバイト前置になり、「後発が先行ファイルを上書きしていないか」
+// の検証が長さ比較に退化してしまう（PR #338 のレビュー指摘）。
+//
+// 壊し方（コンパイルは通る）:
+//  1. acquireRelPathLock の呼び出しを os.Create の後ろへ移す
+//     → B が /records/{B}/stream を叩いてしまい、bStreamRequests のアサーションで落ちる
+//  2. acquired を無視して常に続行する（if !acquired { ... } を消す）
+//     → 同じく B がストリームを開いてしまい、アサーションで落ちる
+func TestIngestWorker_ConcurrentSameRelPath_LoserNeverOpensStream(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	mediaDir := t.TempDir()
+
+	const relContentPath = "shared/race.m2ts"
+	// A と B は**同じパケット数**（同じ長さ）にする。長さを変えると
+	// 「後発が先行ファイルを上書きしていないか」の検証が長さ比較だけでも
+	// たまたま通ってしまう（PR #338 のレビュー指摘の逆側）。長さを揃えた上で
+	// fill だけを変えることで、バイト内容の比較そのものが load-bearing に
+	// なる --- 何らかの理由で B が最後まで書き切ってしまう変異が起きても、
+	// 長さは A と一致したまま中身だけが違う状態になり、bytes.Equal による
+	// 全バイト比較でなければ検出できない。
+	tsDataA := makeTSDataFill(30, 0xAA)
+	tsDataB := makeTSDataFill(30, 0xBB)
+
+	reachedMidTransfer := make(chan struct{})
+	releaseTransfer := make(chan struct{})
+	var aStreamRequests atomic.Int64
+
+	srvA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
+			aStreamRequests.Add(1)
+			flusher, _ := w.(http.Flusher)
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsDataA)))
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(tsDataA[:188]) // 1 パケットだけ先に流し、B を試す間だけ止める
+			if flusher != nil {
+				flusher.Flush()
+			}
+			close(reachedMidTransfer)
+			<-releaseTransfer
+			_, _ = w.Write(tsDataA[188:])
+
+		case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsDataA)))
+			w.WriteHeader(http.StatusOK)
+
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
+			record := mirakc.Record{
+				Recording: mirakc.RecordInfo{Options: mirakc.Options{ContentPath: strPtr(relContentPath)}},
+				Content:   mirakc.ContentInfo{Path: "/recording/" + relContentPath},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(record)
+
+		case r.Method == http.MethodDelete:
+			result := mirakc.RecordRemovalResult{RecordRemoved: true, ContentRemoved: true}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(result)
+
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	// release より先に登録すると、A の t.Fatalf が release の前に走ったとき
+	// srvA.Close() がブロック中のハンドラを待ってデッドロックする
+	// （PR #338 のレビューで 120 秒超のハングとして観測された）。t.Cleanup は
+	// LIFO なので、後で登録する release 系のクリーンアップが先に実行される。
+	t.Cleanup(srvA.Close)
+
+	var bStreamRequests atomic.Int64
+	srvB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
+			bStreamRequests.Add(1)
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsDataB)))
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(tsDataB)
+
+		case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsDataB)))
+			w.WriteHeader(http.StatusOK)
+
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
+			record := mirakc.Record{
+				Recording: mirakc.RecordInfo{Options: mirakc.Options{ContentPath: strPtr(relContentPath)}},
+				Content:   mirakc.ContentInfo{Path: "/recording/" + relContentPath},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(record)
+
+		case r.Method == http.MethodDelete:
+			result := mirakc.RecordRemovalResult{RecordRemoved: true, ContentRemoved: true}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(result)
+
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srvB.Close)
+
+	recA := insertTestRecordingForSite(t, pool, "default", 501)
+	insertTestRecordSyncForSite(t, pool, "default", recA, "rec-race-a", 327361024000501)
+	recB := insertTestRecordingForSite(t, pool, "default", 502)
+	insertTestRecordSyncForSite(t, pool, "default", recB, "rec-race-b", 327361024000502)
+
+	wA := &IngestWorker{MirakcClient: mirakc.NewClient(srvA.URL, nil), Pool: pool, MediaDir: mediaDir, StallTimeout: 5 * time.Second}
+	wB := &IngestWorker{MirakcClient: mirakc.NewClient(srvB.URL, nil), Pool: pool, MediaDir: mediaDir, StallTimeout: 5 * time.Second}
+
+	jobA := &river.Job[IngestJobArgs]{JobRow: &rivertype.JobRow{}, Args: IngestJobArgs{Site: "default", RecordID: "rec-race-a"}}
+	jobB := &river.Job[IngestJobArgs]{JobRow: &rivertype.JobRow{}, Args: IngestJobArgs{Site: "default", RecordID: "rec-race-b"}}
+
+	errACh := make(chan error, 1)
+	go func() { errACh <- wA.Work(context.Background(), jobA) }()
+
+	// release は t.Cleanup で登録する（どの t.Fatalf よりも実行上先に走る。
+	// 上の t.Cleanup(srvA.Close) より後に登録することで LIFO の実行順を保証する）。
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseTransfer) }) }
+	t.Cleanup(release)
+
+	<-reachedMidTransfer // A がロックを取得しストリームを開いている（B はまだ試していない）
+
+	errB := wB.Work(context.Background(), jobB)
+	if errB == nil {
+		t.Fatal("Work() (B) error = nil, want an error (rel_path is locked by A's in-flight transfer)")
+	}
+	if got := bStreamRequests.Load(); got != 0 {
+		t.Errorf("B's mirakc stream requests = %d, want 0 (B must lose at the lock, before ever opening the stream)", got)
+	}
+
+	release()
+	errA := <-errACh
+	if errA != nil {
+		t.Fatalf("Work() (A) error: %v", errA)
+	}
+
+	fullPath := filepath.Join(mediaDir, "sites", "default", relContentPath)
+	gotData, err := os.ReadFile(fullPath)
+	if err != nil {
+		t.Fatalf("reading committed file: %v", err)
+	}
+	if !bytes.Equal(gotData, tsDataA) {
+		t.Errorf("committed file content is not exactly A's bytes (len got=%d want=%d)", len(gotData), len(tsDataA))
+	}
+	if bytes.Contains(gotData, []byte{0xBB}) {
+		t.Error("committed file contains B's fill byte; B must never have written to the destination")
+	}
+
+	var bAssetCount int
+	if err := pool.QueryRow(context.Background(),
+		"SELECT count(*) FROM media_assets WHERE recording_id = $1", recB,
+	).Scan(&bAssetCount); err != nil {
+		t.Fatalf("counting media_assets for B: %v", err)
+	}
+	if bAssetCount != 0 {
+		t.Errorf("media_assets rows for B = %d, want 0 (B must not have committed)", bAssetCount)
+	}
+}
+
+// TestIngestWorker_ReleasesRelPathLockAfterCommit は、ingest 成功後に
+// rel_path の advisory lock が解放されていることを固定する。ingest が使った
+// のとは別の独立したプール（別セッション）から同じキーの
+// pg_try_advisory_lock が true を返せば、解放されている証拠になる。
+//
+// 壊し方: acquireRelPathLock の release から pg_advisory_unlock の呼び出しを
+// 消し conn.Release() だけ残す → ロックが保持されたまま残り、検証用の
+// 独立プールから pg_try_advisory_lock が false を返すため
+// "rel_path advisory lock still held" で落ちる（確認済み。もし通ってしまう
+// なら pgxpool が Release でセッション状態を暗黙に捨てているということなので、
+// その事実を PR 本文に書く）。
+func TestIngestWorker_ReleasesRelPathLockAfterCommit(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+
+	tsData := makeTSData(10)
+	srv := newFullTransferServer(t, tsData, "test/lock-release.m2ts")
+	mc := mirakc.NewClient(srv.URL, nil)
+
+	mediaDir := t.TempDir()
+	w := &IngestWorker{MirakcClient: mc, Pool: pool, MediaDir: mediaDir, StallTimeout: 5 * time.Second}
+
+	recordingID := insertTestRecording(t, pool)
+	insertTestRecordSync(t, pool, recordingID, "rec-lock-release")
+
+	job := &river.Job[IngestJobArgs]{
+		JobRow: &rivertype.JobRow{},
+		Args:   IngestJobArgs{Site: "default", RecordID: "rec-lock-release"},
+	}
+	if err := w.Work(context.Background(), job); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+
+	const relPath = "sites/default/test/lock-release.m2ts"
+	key := relPathLockKey(relPath)
+
+	// ingest が使ったのとは独立したプール（新しい物理コネクション・新しい
+	// セッション）で確認する --- 同じプールを再利用すると、たまたま同じ
+	// コネクションが再利用された場合に「同じセッションが自分の持つロックを
+	// 再度要求する」形になり得るため、解放の有無を正しく判定できない。
+	//
+	// **接続先は pool.Config() から複製する（testutil.DatabaseURL(t) の生 URL
+	// ではない）。** advisory lock は Postgres では database スコープ
+	// （pg_locks.database で見える）なので、testutil.DatabaseURL(t) が指す
+	// ベース DB（ROKUBAN_TEST_DATABASE_URL そのもの）と、setupTestPool が
+	// 実際に使うパッケージ専用 DB（testutil.ensurePackageTestDatabase が
+	// 導出する別データベース）は別物 --- 生 URL に繋ぐと常に無関係な
+	// database の advisory lock 名前空間を見ることになり、release の有無に
+	// 関わらず常に「解放されている」という偽陰性を返す（このテストを書く
+	// 過程で実際に踏んだ: 一度目はこのミスで壊れた実装でも見た目上パスした）。
+	verifyPool, err := pgxpool.NewWithConfig(context.Background(), pool.Config())
+	if err != nil {
+		t.Fatalf("creating verification pool: %v", err)
+	}
+	defer verifyPool.Close()
+
+	var stillFree bool
+	if err := verifyPool.QueryRow(context.Background(), "SELECT pg_try_advisory_lock($1)", key).Scan(&stillFree); err != nil {
+		t.Fatalf("checking rel_path lock free: %v", err)
+	}
+	if !stillFree {
+		t.Fatal("rel_path advisory lock still held after ingest completed (release did not call pg_advisory_unlock)")
+	}
+	if _, err := verifyPool.Exec(context.Background(), "SELECT pg_advisory_unlock($1)", key); err != nil {
+		t.Fatalf("releasing verification lock: %v", err)
 	}
 }

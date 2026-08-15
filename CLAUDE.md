@@ -14,6 +14,8 @@ go test ./...
 golangci-lint run
 ```
 
+**Node のバージョンは `.node-version`（22.x）に固定してある。** nodenv などでその Node に pnpm の shim が無ければ `corepack pnpm ...`（`packageManager` フィールドに従う）で直接呼べる。oxlint の native binding は optional dependency の engines 判定でインストール時にだけ絞り込まれるため、古い Node で `pnpm install --frozen-lockfile` すると警告なしにバインディングが欠落する。
+
 ```bash
 cd web
 pnpm install

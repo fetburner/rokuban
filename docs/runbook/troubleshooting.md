@@ -150,6 +150,18 @@ curl -s http://localhost:40773/api/reservations/12 | jq '{state, skip, dedupMatc
 - どちらでもない — `rokuban_reconcile_pending_diff{action="create"}` が減らないなら
   mirakc が作成を拒否している。`reconciler: creating schedule` の ERROR を見る
 
+### `overrides.contentPath` を明示指定したのに既存 schedule のパスが変わらない・毎パス再作成される
+
+`overrides.contentPath` の反映（[reconciler.md](../recording/reconciler.md) §3.2「予約オプションの差分反映」）は、mirakc が `GET /api/recording/schedules` で `options.contentPath` を POST した値のまま返す（正規化しない）ことに依存する。この依存は**未検証**（テストのモックは POST した値をそのまま返すため、この前提が破れていることをテストでは検出できない）。
+
+```sh
+curl -s http://localhost:9090/api/v1/query --data-urlencode \
+  'query=rokuban_reconcile_pending_diff{action="update"}' | jq
+```
+
+- `action="update"` がゼロに戻らず、`reconciler: recreated schedule` の Info ログで同じ `reservation_id` に対して `reason=content_path` が反復しているなら、mirakc が contentPath をそのまま返していない（比較が収束しない = 毎パス DELETE→POST になっている）。実 mirakc に対して `GET /api/recording/schedules` の応答を直接見て、POST した `contentPath` と一致するか確認する
+- `action="update_deferred"` 側に出ているだけなら、`scheduled` 以外の状態（録画中等）で allowlist に見送られているだけで異常ではない
+
 ### `/api/capacity/overages` が常に空
 
 `tuner_sync` の射影が空だと**何も主張しない**設計なので、超過が無いのか判定が

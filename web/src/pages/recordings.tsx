@@ -6,13 +6,13 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   getListRecordingsQueryKey,
   listRecordings,
+  restoreRecording as restoreRecordingRequest,
   useAddRecordingEncodeProfiles,
   useDeleteRecording,
   useListEncodeProfiles,
   useListRecordingDropStats,
   useListRules,
   usePurgeRecording,
-  useRestoreRecording,
   type DropSummary,
   type Recording,
 } from '@/api/generated'
@@ -761,10 +761,10 @@ function RuleSection({ ruleId }: { ruleId: number }) {
 export function RecordingActions({ recording, trash }: { recording: Recording; trash: boolean }) {
   const recordingId = recording.id
   const [purgeConfirmOpen, setPurgeConfirmOpen] = useState(false)
+  const [restoring, setRestoring] = useState(false)
   const queryClient = useQueryClient()
   const toast = useToast()
   const deleteRecording = useDeleteRecording()
-  const restoreRecording = useRestoreRecording()
   const purgeRecording = usePurgeRecording()
 
   const invalidate = () => {
@@ -776,8 +776,43 @@ export function RecordingActions({ recording, trash }: { recording: Recording; t
     void queryClient.invalidateQueries({ queryKey: ['/api/recordings'] })
   }
 
-  const busy =
-    deleteRecording.isPending || restoreRecording.isPending || purgeRecording.isPending
+  // restore は「復元」ボタン本体と、ごみ箱送りトーストの Undo（下記）の
+  // 両方から呼ぶ。後者は、Undo を呼んだ時点で元のごみ箱送りを起こした行
+  // （とこの RecordingActions 自身）がすでにアンマウントされていることがある
+  // --- 一覧内展開でごみ箱へ送ると、invalidate 後の再取得でその行自体が
+  // 現在の一覧（library）から消えるため。`useRestoreRecording` の
+  // `mutate` はコンポーネントに束縛された `useMutation` の内部状態を経由する
+  // ため、渡した `onSuccess`/`onError` がアンマウント後も確実に呼ばれる保証を
+  // 前提にできない（実測: `recordings.test.tsx`「ごみ箱へ移すと Undo 付き
+  // トーストが出て、「元に戻す」で一覧に復帰する」を `useRestoreRecording` の
+  // `mutate` 経由に戻して壊すと、リクエストは飛ぶが渡した onSuccess が
+  // 呼ばれないまま行が一覧に戻ってこず、アサーションで落ちる）。生成された
+  // 素の関数（`restoreRecordingRequest`）を直接呼び、`queryClient`
+  // （`useQueryClient()` はマウント状態に依存しない安定した参照）で
+  // invalidate する形にして、この依存を断つ。
+  //
+  // 復元の効果は「復元」ボタン本体からの呼び出しでは必ず画面に見える ---
+  // 一覧内展開なら invalidate 後の再取得で mode（library/trash）の絞り込みに
+  // 引っかかって行が現在の一覧から消え、単体ページ（recording-detail.tsx）
+  // なら trash 判定が反転してボタン・削除日時表示が入れ替わる。追加で言う
+  // ことも無いので成功トーストは無音化する（issue #297）。
+  //
+  // **Undo 経由の呼び出しは事情が違う。** トーストは最大 6 秒後、かつ別の
+  // 画面へ遷移した後にも押せるので、そのときは復元の効果を画面上で確認
+  // できるとは限らない（対象の一覧をもう見ていないことがある）うえ、
+  // 成功トーストも出さないので追加のフィードバックも無い。ここでは
+  // 「Undo ボタンを押した」こと自体（ボタンが消える）を操作の完了通知として
+  // 扱い、割り切っている --- 失敗時は場所を問わず追える情報（`復元に
+  // 失敗しました`）を出す。
+  const restore = () => {
+    setRestoring(true)
+    restoreRecordingRequest(recordingId)
+      .then(() => invalidate())
+      .catch(() => toast({ message: '復元に失敗しました' }))
+      .finally(() => setRestoring(false))
+  }
+
+  const busy = deleteRecording.isPending || restoring || purgeRecording.isPending
 
   if (!trash) {
     return (
@@ -794,7 +829,17 @@ export function RecordingActions({ recording, trash }: { recording: Recording; t
                 {
                   onSuccess: () => {
                     invalidate()
-                    toast({ message: 'ごみ箱に移しました' })
+                    // ごみ箱送りの効果（一覧からの消失 / 単体ページのボタン
+                    // 入れ替え）は restore と同じ理由で常に画面に見えるが、
+                    // ごみ箱送りは復元で即座に取り消せる安価な操作なので、
+                    // 素の成功通知の代わりに Undo 付きトーストにする
+                    // （`pages/programs.tsx` の予約作成 + 取消と同じ形。
+                    // issue #297 が指す理想形）。復元と違ってここは Undo を
+                    // 提供する側なので silence だけでは終わらせない。
+                    toast({
+                      message: 'ごみ箱に移しました',
+                      action: { label: '元に戻す', onClick: () => restore() },
+                    })
                   },
                   onError: () => toast({ message: '削除に失敗しました' }),
                 },
@@ -822,18 +867,7 @@ export function RecordingActions({ recording, trash }: { recording: Recording; t
         variant="secondary"
         size="sm"
         disabled={busy}
-        onClick={() => {
-          restoreRecording.mutate(
-            { id: recordingId },
-            {
-              onSuccess: () => {
-                invalidate()
-                toast({ message: '復元しました' })
-              },
-              onError: () => toast({ message: '復元に失敗しました' }),
-            },
-          )
-        }}
+        onClick={() => restore()}
       >
         復元
       </Button>

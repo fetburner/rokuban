@@ -25,6 +25,13 @@
 //   ⑤ 録画一覧の行を Enter で展開したあと、キーボードの Tab だけで
 //      `<video>` に到達できるか（`tabIndex={-1}` を付けると jsdom の
 //      focus spy は通り続けるが実ブラウザの Tab 走査から外れる）
+//   ⑥ 共通 Button のフォーカスリング / border-color は遷移しない・hover の
+//      色と active の押下フィードバックは遷移する（issue #294）
+//   ⑦ アニメーション/トランジションが `prefers-reduced-motion: reduce` で
+//      縮退し、既定（no-preference）では従来どおり動くこと（両方向。
+//      issue #296）。Skeleton の `animate-pulse` / 予約実行中ボタンの
+//      `animate-spin` / ポップオーバーの `slide-in`・`zoom-in` / Button の
+//      `translate` 遷移を見る
 //
 // **mirakc も実チューナーも DB も要らない。** API は `page.route` でブラウザ側から
 // 丸ごと差し替える（e2e/live.mjs が HLS でやっているのと同じ手）。サーバーには
@@ -170,7 +177,7 @@ const breakers = [
  */
 async function installApiStubs(
   page,
-  { withBreaker = false, delayPath = null, delayMs = 0, emptyHome = false } = {},
+  { withBreaker = false, delayPath = null, delayMs = 0, emptyHome = false, delayIntentMs = 0 } = {},
 ) {
   await page.route('**/api/**', async (route) => {
     const url = new URL(route.request().url())
@@ -180,6 +187,14 @@ async function installApiStubs(
 
     if (delayPath !== null && p === delayPath) {
       await new Promise((r) => setTimeout(r, delayMs))
+    }
+    // `delayIntentMs`: 予約（`PUT .../intent`）のレスポンスを遅らせるフック。
+    // programId ごとに違う path なので、`delayPath` のような完全一致では
+    // 都度 programId を割り出す必要が出てしまう --- どの番組の「予約」を
+    // 押しても同じように `pending`（`ProgramRow` の `animate-spin`）を
+    // 観測したいので、末尾一致で拾う。
+    if (delayIntentMs > 0 && route.request().method() === 'PUT' && /\/intent$/.test(p)) {
+      await new Promise((r) => setTimeout(r, delayIntentMs))
     }
 
     // SSE は 204 で「つなぎ直さずに諦めさせる」。text/event-stream を返すと
@@ -1525,6 +1540,234 @@ log('\n=== ⑥ Button: フォーカスリング / border-color / hover / active 
     }
   }
   await context.close()
+}
+
+// --- ⑦ アニメーション: prefers-reduced-motion で縮退する（issue #296） ---
+//
+// jsdom は `prefers-reduced-motion` の matchMedia も CSS の実際の適用も測れない
+// （README §デザイン冒頭）。Playwright の `reducedMotion` コンテキストオプションで
+// OS の設定をエミュレートし、`getComputedStyle` の実測をオラクルにする。
+//
+// **両方向を見る。** 縮退側だけを見る判定は、動きを恒久的に殺した実装
+// （`no-preference` でも動かない）を通してしまう --- CLAUDE.md テスト規律
+// 「分岐を直したら両方向を確認する」と同型の穴。
+//
+// 対象は issue が挙げる 4 箇所: Skeleton の `animate-pulse`、予約実行中の
+// ボタンの `animate-spin`、モバイル「その他」ポップオーバー（`ui/popover.tsx`）の
+// `slide-in-from-*` / `zoom-in-95`、共通 `Button` の押下フィードバック
+// （`active:...:translate-y-px` の `transition`）。
+log('\n=== ⑦ アニメーション: prefers-reduced-motion の縮退（issue #296） ===')
+
+// 縮退後の継続時間はほぼ 0（`index.css` は 0.01ms）、既定の継続時間は
+// どれも 100ms 以上（ポップオーバー 100ms / Button 150ms / spin 1s / pulse 2s）
+// なので、50ms を境に両方向をまとめて判定できる。
+const REDUCE_THRESHOLD_MS = 50
+
+/** parseCssTime は `"150ms"` / `"0.15s"` / カンマ区切り（複数プロパティ）を ms にする。 */
+function parseCssTime(v) {
+  const first = (v ?? '').split(',')[0].trim()
+  // Chromium は極小の値（0.01ms 相当）を指数表記でシリアライズする
+  // （実測: `1e-05s`）。仮数部に `e±N` を許す形にしておかないと、縮退後の
+  // 値そのものが「読めない」で null になり、判定が意図と逆に落ちる。
+  const m = /^([\d.]+(?:e[-+]?\d+)?)(m?s)$/i.exec(first)
+  if (m === null) return null
+  return m[2].toLowerCase() === 's' ? Number(m[1]) * 1000 : Number(m[1])
+}
+
+/** motionOf は要素の animation-duration / transition-duration / opacity をまとめて読む。 */
+async function motionOf(locator) {
+  if ((await locator.count()) === 0) return null
+  return locator.first().evaluate((el) => {
+    const cs = getComputedStyle(el)
+    return {
+      animationDuration: cs.animationDuration,
+      transitionDuration: cs.transitionDuration,
+      opacity: cs.opacity,
+    }
+  })
+}
+
+/** newMotionContext は `open()` と違い `reducedMotion` を指定できる素の context。 */
+async function newMotionContext(viewport, reducedMotion) {
+  const context = await browser.newContext({
+    viewport: { width: viewport.width, height: viewport.height },
+    locale: 'ja-JP',
+    timezoneId: 'Asia/Tokyo',
+    colorScheme: 'light',
+    deviceScaleFactor: 2,
+    reducedMotion,
+  })
+  const page = await context.newPage()
+  await page.clock.setFixedTime(FIXED_NOW)
+  return { context, page }
+}
+
+for (const reducedMotion of ['reduce', 'no-preference']) {
+  const isReduced = reducedMotion === 'reduce'
+
+  // --- Skeleton の animate-pulse（読み込み中） ---
+  {
+    const { context, page } = await newMotionContext(desktop, reducedMotion)
+    await installApiStubs(page, { delayPath: '/api/recordings', delayMs: 5000 })
+    await page.goto(URL_BASE + '/recordings', { waitUntil: 'domcontentloaded' })
+    const skeleton = page.locator('.animate-pulse').first()
+    await skeleton.waitFor({ timeout: 5000 }).catch(() => {
+      ng.push(`[${reducedMotion}] Skeleton の .animate-pulse が見つからない`)
+    })
+    const m = await motionOf(skeleton)
+    if (m === null) {
+      ng.push(`[${reducedMotion}] Skeleton（.animate-pulse）が見つからない`)
+    } else {
+      const ms = parseCssTime(m.animationDuration)
+      log(
+        `  [${reducedMotion}] Skeleton animation-duration=${m.animationDuration} ` +
+          `opacity=${m.opacity}`,
+      )
+      if (isReduced) {
+        if (ms === null || ms > REDUCE_THRESHOLD_MS) {
+          ng.push(
+            `[reduce] Skeleton の animate-pulse が縮退していない` +
+              `（animation-duration=${m.animationDuration}）`,
+          )
+        }
+        // 縮退後に不可視・不読になっていないか（`animation: none` ではなく
+        // 継続時間を切り詰める判断の理由そのもの。index.css のコメント参照）。
+        if (Number(m.opacity) < 0.5) {
+          ng.push(
+            `[reduce] Skeleton が縮退後に不透明度 ${m.opacity} まで下がり判読できない`,
+          )
+        }
+      } else if (ms === null || ms < REDUCE_THRESHOLD_MS) {
+        ng.push(
+          `[no-preference] Skeleton の animate-pulse が既定（2s 周期）のまま動いていない` +
+            `（animation-duration=${m.animationDuration}）`,
+        )
+      }
+    }
+    await context.close()
+  }
+
+  // --- 予約実行中ボタンの animate-spin ---
+  {
+    const { context, page } = await newMotionContext(desktop, reducedMotion)
+    await installApiStubs(page, { delayIntentMs: 1500 })
+    await page.goto(URL_BASE + '/programs', { waitUntil: 'domcontentloaded' })
+    const row = page.locator('li[data-program-id]').first()
+    await row.waitFor({ timeout: 15000 }).catch(() => {})
+    // `getByRole('button', { name: '予約' })` は使えない --- クリックした
+    // 瞬間に `pending` へ切り替わり、ボタンの文言がアイコンのみ（アクセシブル
+    // 名が空）に変わるため、名前ベースの locator は再解決のたびに一致を失い、
+    // 後続の `.locator('.animate-spin')` が黙って 0 件を返す（実際にこの
+    // ハーネスで踏んだ: `getByRole` 版は reduce/no-preference の両方で
+    // 「.animate-spin が出ない」を出し続けていた）。行の中の予約ボタンは
+    // 構造（`.border-l` の中の `<button>`）で掴む --- 文言が変わっても
+    // 同じ DOM ノードを指し続ける。
+    const reserveButton = row.locator('.border-l button')
+    if ((await reserveButton.count()) === 0) {
+      ng.push(`[${reducedMotion}] 「予約」ボタンが見つからない（animate-spin 判定）`)
+    } else {
+      // issue #310: 予約ボタンは既定で visibility:hidden で、細ポインタでは
+      // 行の :hover でだけ立つ（この desktop コンテキストは hover:hover +
+      // pointer:fine）。行をホバーして可視にしてからでないと `.click()` が
+      // アクショナビリティ待ちでタイムアウトする。
+      await row.hover()
+      await reserveButton.click()
+      const spinner = reserveButton.locator('.animate-spin')
+      await spinner.waitFor({ timeout: 2000 }).catch(() => {
+        ng.push(`[${reducedMotion}] 予約実行中に .animate-spin が出ない`)
+      })
+      const m = await motionOf(spinner)
+      if (m === null) {
+        ng.push(`[${reducedMotion}] 予約実行中のスピナー（.animate-spin）が見つからない`)
+      } else {
+        const ms = parseCssTime(m.animationDuration)
+        log(`  [${reducedMotion}] スピナー animation-duration=${m.animationDuration}`)
+        if (isReduced) {
+          if (ms === null || ms > REDUCE_THRESHOLD_MS) {
+            ng.push(
+              `[reduce] .animate-spin が縮退していない（animation-duration=${m.animationDuration}）`,
+            )
+          }
+        } else if (ms === null || ms < REDUCE_THRESHOLD_MS) {
+          ng.push(
+            `[no-preference] .animate-spin が既定（1s 周期）のまま動いていない` +
+              `（animation-duration=${m.animationDuration}）`,
+          )
+        }
+      }
+    }
+    await context.close()
+  }
+
+  // --- モバイル「その他」ポップオーバーの slide-in-from-* / zoom-in-95 ---
+  {
+    const { context, page } = await newMotionContext(mobile, reducedMotion)
+    await installApiStubs(page)
+    await page.goto(URL_BASE + '/programs', { waitUntil: 'domcontentloaded' })
+    const nav = page.locator('nav[aria-label="主ナビゲーション"]').last()
+    const trigger = nav.getByRole('button', { name: 'その他' })
+    await trigger.waitFor({ timeout: 10000 }).catch(() => {})
+    if ((await trigger.count()) === 0) {
+      ng.push(`[${reducedMotion}] 「その他」トリガーが見つからない（ポップオーバー判定）`)
+    } else {
+      await trigger.click()
+      const menu = page.getByRole('dialog', { name: 'その他のナビゲーション' })
+      await menu.waitFor({ timeout: 5000 }).catch(() => {
+        ng.push(`[${reducedMotion}] 「その他」ポップオーバーが開かない`)
+      })
+      const m = await motionOf(menu)
+      if (m === null) {
+        ng.push(`[${reducedMotion}] ポップオーバー要素が見つからない`)
+      } else {
+        const ms = parseCssTime(m.animationDuration)
+        log(`  [${reducedMotion}] ポップオーバー animation-duration=${m.animationDuration}`)
+        if (isReduced) {
+          if (ms === null || ms > REDUCE_THRESHOLD_MS) {
+            ng.push(
+              `[reduce] ポップオーバーの slide-in/zoom-in が縮退していない` +
+                `（animation-duration=${m.animationDuration}）`,
+            )
+          }
+        } else if (ms === null || ms < REDUCE_THRESHOLD_MS) {
+          ng.push(
+            `[no-preference] ポップオーバーの slide-in/zoom-in が既定のまま動いていない` +
+              `（animation-duration=${m.animationDuration}）`,
+          )
+        }
+      }
+    }
+    await context.close()
+  }
+
+  // --- 共通 Button の押下フィードバック（translate）の transition ---
+  {
+    const { context, page } = await newMotionContext(desktop, reducedMotion)
+    await installApiStubs(page)
+    await page.goto(URL_BASE + '/search', { waitUntil: 'domcontentloaded' })
+    const button = page.getByRole('button', { name: '検索' })
+    await button.waitFor({ timeout: 10000 }).catch(() => {})
+    const m = await motionOf(button)
+    if (m === null) {
+      ng.push(`[${reducedMotion}] 検索ボタンが見つからない（Button 遷移判定）`)
+    } else {
+      const ms = parseCssTime(m.transitionDuration)
+      log(`  [${reducedMotion}] Button transition-duration=${m.transitionDuration}`)
+      if (isReduced) {
+        if (ms === null || ms > REDUCE_THRESHOLD_MS) {
+          ng.push(
+            `[reduce] Button の transition-duration が縮退していない` +
+              `（${m.transitionDuration}）`,
+          )
+        }
+      } else if (ms === null || ms < REDUCE_THRESHOLD_MS) {
+        ng.push(
+          `[no-preference] Button の transition-duration が既定（150ms）のまま動いていない` +
+            `（${m.transitionDuration}）`,
+        )
+      }
+    }
+    await context.close()
+  }
 }
 
 // 数値は docs に転記しない（転記した瞬間に二重管理になる）。docs は

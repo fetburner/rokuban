@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	pgx5 "github.com/jackc/pgx/v5"
@@ -41,13 +42,14 @@ const (
 	// encodeReconcileRowLimit は 1 パスで拾う候補録画の既定上限
 	// （EncodeReconcileWorker.RowLimit で上書きできる）。
 	//
-	// 際限なく積み上げて encodeReconcileTimeout を食い潰すのを避けるための
-	// 安全弁。**ただし deleteReconcileRowLimit と役割は同じでも性質が違う** ---
-	// あちらは拾った候補をそのパスが消して減らすので窓の先頭が必ず進むが、
-	// こちらは候補を消すのが encode ジョブ側なので、パス自身は候補を 1 件も
-	// 減らさない。「永久に満たせない候補」が先頭に溜まると窓を恒久的に占有し、
-	// それより後ろの recording_id には到達しない（EncodeReconcileWorker の
-	// doc コメント「窓は回らない」）。
+	// **deleteReconcileRowLimit と役割は同じでも性質が違う** --- あちらは拾った
+	// 候補をそのパスが消して減らすので窓の先頭が必ず進むが、こちらは候補を消すのが
+	// encode ジョブ側なので、パス自身は候補を 1 件も減らさない。以前はこの非対称が
+	// 「永久に満たせない候補が先頭に溜まると窓を恒久的に占有する」という到達性の
+	// 穴になっていたが、EncodeReconcileWorker.resumeAfter が窓を回すことでコストと
+	// 被覆を分離した。**この定数は今は純粋なコストのつまみ**（1 パスあたりの DB
+	// ラウンドトリップ数の上限）で、値を変えても被覆の保証（EncodeReconcileWorker
+	// の doc コメント「窓を回す」の C1/C2/C3）は変わらない。
 	encodeReconcileRowLimit = 1000
 )
 
@@ -156,25 +158,42 @@ func (EncodeReconcileArgs) InsertOpts() river.InsertOpts {
 // 恒久失敗の代表格（設定から消えたプロファイル）は下記の絞り込みで投入対象から
 // 外しているので、ここに残るのは入力ファイルの破損など録画単位の失敗である。
 //
-// # 窓は回らない（既知の限界。#326 で追う）
+// # 窓を回す
 //
-// 候補は recording_id 昇順 + LIMIT（RowLimit）で切る。このパスは候補を減らさない
-// （減らすのは encode ジョブ側）ので、**永久に満たせない候補が先頭に溜まると窓を
-// 恒久的に占有し、それより後ろの録画には到達しない**。「設定から消えた
-// プロファイル」はこの恒久候補を過去録画に一斉に作るので、desired を
+// 候補は recording_id 昇順 + LIMIT（RowLimit）で切る。このパス自身は候補を
+// 減らさない（減らすのは encode ジョブ側）ので、「毎パス先頭から」窓を開くと
+// 永久に満たせない候補（録画単位の恒久失敗。入力ファイルの破損など）が先頭に
+// 溜まったとき、それより後ろの録画に到達できなくなる。これを避けるため、
+// 窓は「前パスが止まった位置の続きから」開き、末尾に達したら先頭へ戻る
+// （resumeAfter、プロセスローカル。永続化しない）。「設定から消えたプロファイル」
+// はこの恒久候補を過去録画に一斉に作る唯一の系統的な原因だが、desired を
 // known_profiles（現在の encode.profiles）で絞って候補から外している ---
 // 投入しても EncodeWorker が `unknown encode profile` で弾くだけ（encode.go）で、
 // 何も前進しないため。落とした数は metrics.EncodeReconcileUnsatisfiable と
 // ログに出す（黙って落とすと、このパスが塞いだはずの症状「エンコードされない
 // 録画が静かに増える」を別の原因で再現してしまう）。
 //
-// 録画単位の恒久失敗（入力ファイルの破損など）が RowLimit 件を超えた場合の
-// 到達不能は**残っている**。収束は主張しない: 窓が埋まったパスは Warn ログと
-// metrics.EncodeReconcileCandidates（上限に張り付く）で見える形にしてある。
-// **2 パス回しても後ろに到達しない**ことは
-// TestEncodeReconcileWorker_RowLimitLeavesLaterRecordingsUnreached が固定している
-// （1 パスだけ回すテストでは「1 パスが LIMIT で切れる」しか言えず、それは
-// #326 を解消しても真のままなので限界の裏付けにならない）。
+// 判定基準（RowLimit の値 L に依存しない形で書く。L = 1 パスの行上限、
+// S = 候補集合）:
+//
+//   - C1（被覆）: S が増減しない最悪条件下でも、S の任意の要素は連続する
+//     ceil(|S|/L)+1 回のパスのどこかで examine される。+1 は「ちょうど L 件で
+//     埋まったパス」と「まだ続きがあるパス」を追加の問い合わせなしに区別
+//     できないための 1 パス分の余裕（下記コメント参照）。
+//     TestEncodeReconcileWorker_WindowRotatesPastStuckCandidates が固定する。
+//   - C2（コスト）: 1 パスが examine する候補数は L を超えない。
+//     TestEncodeReconcileWorker_RowLimitCapsWorkPerPass が固定する。
+//   - C3（通常運転で不活性）: 候補数が L 未満なら resumeAfter は常に 0 のままで、
+//     投入対象・件数・順序は今日と一致する。既存の 3 つの回帰テスト
+//     （TestEncodeReconcile_ReenqueuesAfterLostHintAndDeletedEdgeRecord /
+//     _DoesNotDoubleEnqueue / TestEncodeReconcileWorker_SkipsProfilesMissingFromConfig）
+//     が無変更で通ることで固定する。
+//
+// **保証しない範囲（プロセスローカル）**: resumeAfter は永続化しない。パスの
+// 周期より高頻度でプロセスが再起動する構成では C1 は成立しない --- ただし
+// そのとき挙動は「毎パス先頭から」= 導入前と同じに戻るだけで、**悪化する経路は
+// 無い**（未検証: 実際に高頻度再起動する構成での挙動は測っていない。上記は
+// 再開位置がゼロ値に戻るという実装の性質からの推論である）。
 //
 // site 照合ガード（issue #139）は不要: EncodeReconcileArgs は site を持たず、
 // mirakc にもファイルにも触れない（DB 読み + River Insert のみ）。どの site に
@@ -197,6 +216,15 @@ type EncodeReconcileWorker struct {
 	// RowLimit は 1 パスで拾う候補の上限。0 なら encodeReconcileRowLimit。
 	// 上限に張り付いたときの挙動をテストから再現するために可変にしてある。
 	RowLimit int32
+
+	// resumeAfter は次のパスが候補を探し始める位置（この recording_id より
+	// 大きい候補から見る。0 = 先頭から）。プロセスローカルで永続化しない
+	// （上の doc コメント「窓を回す」参照）。ワーカーはプロセス生存期間中
+	// 1 インスタンスが river.AddWorker に登録されて使い回されるので、この値は
+	// パスをまたいで残る。atomic にしてあるのは、River がどの goroutine で
+	// パスを実行するかに依存しないため（UniqueOpts が pending 中 1 本に
+	// 合流させるので同時実行は起きないが、可視性の議論を残さない方が安い）。
+	resumeAfter atomic.Int64
 }
 
 // Timeout は River の既定（1 分）より長い上限を与える。理由は
@@ -234,12 +262,20 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, _ *river.Job[EncodeRec
 	}
 	known := w.Profiles.ProfileNames()
 
+	// after は今パスが窓を開く位置（この recording_id より大きい候補から見る）。
+	// resumeAfter はプロセスローカルなので、このワーカーインスタンスが前パスも
+	// 実行していない（例: パスごとに新しいインスタンスを作った）場合は常に 0 に
+	// 戻り、窓は回らない（EncodeReconcileWorker の doc コメント「窓を回す」参照）。
+	after := w.resumeAfter.Load()
+
 	q := sqlcgen.New(w.Pool)
 	candidates, err := q.ListRecordingsMissingEncodes(ctx, sqlcgen.ListRecordingsMissingEncodesParams{
-		KnownProfiles: known,
-		RowLimit:      rowLimit,
+		AfterRecordingID: after,
+		KnownProfiles:    known,
+		RowLimit:         rowLimit,
 	})
 	if err != nil {
+		// 再開位置は触らない。次パスが同じ位置から引き直す。
 		return fmt.Errorf("listing recordings missing encodes: %w", err)
 	}
 
@@ -255,18 +291,33 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, _ *river.Job[EncodeRec
 	metrics.EncodeReconcileCandidates.Set(float64(len(candidates)))
 	metrics.EncodeReconcileLastPass.SetToCurrentTime()
 
-	// 窓が埋まったパスは、それより後ろの recording_id を**見ていない**。
-	// 収束を主張できないので黙って終わらせない（上の doc コメント参照）。
-	if int32(len(candidates)) >= rowLimit {
-		slog.Warn("encode_reconcile: candidate window is full; recordings beyond the last one in this pass were not examined",
-			"row_limit", rowLimit, "last_recording_id", candidates[len(candidates)-1])
+	// 窓を回す: ちょうど上限まで埋まったパスは続きが残っているかもしれないので
+	// 最後に見た id から再開する。上限に届かなかった（0 件を含む）パスは候補集合の
+	// 末尾まで見たので先頭へ戻す。1 件の投入失敗（上の failed）は再開位置に
+	// 影響させない --- 巻き戻った後のパスでまた examine されるので、投入失敗の
+	// ためだけの特別扱いは要らない。
+	windowFull := int32(len(candidates)) >= rowLimit
+	var resumeAfter int64
+	if windowFull {
+		resumeAfter = candidates[len(candidates)-1]
+	}
+	w.resumeAfter.Store(resumeAfter)
+
+	// 窓が埋まったパスは、それより後ろの recording_id をこのパスでは見ていない。
+	// 次パスが resume_after から続きを見る（黙って終わらせない。上の doc コメント
+	// 参照）。resume_after は回転が実際に進んでいることを運用側から確かめる
+	// 唯一の手段（プロセスが再起動を繰り返す構成では常に 0 に留まり、それも
+	// ここに現れる）。
+	if windowFull {
+		slog.Warn("encode_reconcile: candidate window is full; the next pass resumes from resume_after",
+			"row_limit", rowLimit, "last_recording_id", candidates[len(candidates)-1], "resume_after", resumeAfter)
 	}
 
 	w.reportUnsatisfiable(ctx, q, known)
 
 	if len(candidates) > 0 || failed > 0 {
 		slog.Info("encode_reconcile: pass complete",
-			"candidates", len(candidates), "failed", failed, "row_limit", rowLimit)
+			"candidates", len(candidates), "failed", failed, "row_limit", rowLimit, "resume_after", resumeAfter)
 	}
 	return nil
 }

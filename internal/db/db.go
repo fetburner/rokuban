@@ -32,7 +32,11 @@ const defaultAPIStatementTimeout = 30 * time.Second
 //     notifier がそれぞれ別に 1 本ずつではない）。これに加え、設定されたキューの
 //     MaxWorkers（ingest/encode/thumbnail の合計は通常数本、ruler/reconciler/epg_sync/
 //     record_sweep 等の定期ジョブ専用キューは MaxWorkers 1）を合わせても世帯スケールでは
-//     十分な余裕がある
+//     十分な余裕がある。**加えて、実行中の ingest 1 本ごとに rel_path advisory lock 用の
+//     コネクションを 1 本、転送が終わるまで長期保持する**（internal/worker/relpath_lock.go、
+//     docs/recording/ingest.md §5.3）。ingest の同時実行は site あたり 1〜2 にキャップ
+//     されているが、多サイト構成では site 数 × ingest 並列がここに乗る点に注意
+//     （`db.max_conns` を絞る運用ではこの分も見込む）
 //   - watcher (3): リーダー選出の advisory lock 用に 1 本を保持し続け、record 処理の
 //     短いクエリが散発する
 //   - notifier (3): LISTEN 用に 1 本を保持し続けるだけ
