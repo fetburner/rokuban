@@ -144,10 +144,10 @@ function programAtAbsolute(
   }
 }
 
-function reservation(id: number, programId: number, title: string): Reservation {
+function reservation(id: number, programId: number, title: string, site = 'default'): Reservation {
   return {
     id,
-    site: 'default',
+    site,
     programId,
     source: 'manual',
     state: 'active',
@@ -385,6 +385,21 @@ async function overagesSettled(queryClient: QueryClient): Promise<void> {
   })
 }
 
+/**
+ * reservationsSettled は予約のクエリが成功し終わるまで待つ。
+ *
+ * 「予約済みにならない」ことの確認はこれを通してから行う。予約は番組とは別クエリ
+ * （`useListReservations`）で取り、結合はクエリ解決後なので、待たずに不在を見ると
+ * 予約が届く前の「まだ未予約」状態を見て通ってしまう（クエリの解決順に依存する）。
+ */
+async function reservationsSettled(queryClient: QueryClient): Promise<void> {
+  await waitFor(() => {
+    const queries = queryClient.getQueryCache().findAll({ queryKey: ['/api/reservations'] })
+    expect(queries).not.toHaveLength(0)
+    expect(queries.map((q) => q.state.status)).toEqual(queries.map(() => 'success'))
+  })
+}
+
 describe('ProgramsPage の表示形式', () => {
   it('lg 未満ではグリッドを出さず、切り替えも見せない', async () => {
     stubApi()
@@ -502,6 +517,20 @@ describe('ProgramsPage の表示形式', () => {
     expect(notReserved).not.toHaveAttribute('data-reserved')
   })
 
+  it('別サイトにしか予約が無い番組は「予約済み」にならない（issue #324）', async () => {
+    // 現在サイト（default）には予約が無く、同じ programId の予約は別サイト
+    // （other）にだけある。programId は放送イベントから決まるので 2 サイトで
+    // 一致するが、別サイトの予約を現在サイトの番組表に重ねてはいけない。
+    stubApi([reservation(77, soon.programId, 'ニュース7', 'other')])
+    stubMatchMedia(false)
+    const { queryClient } = renderPage()
+    await reservationsSettled(queryClient)
+
+    // 現在サイトの予約は無いので「予約」ボタンのまま（「取消」にならない）
+    expect((await screen.findAllByRole('button', { name: '予約' })).length).toBeGreaterThan(0)
+    expect(screen.queryByRole('button', { name: '取消' })).not.toBeInTheDocument()
+  })
+
   it('グリッドのセルを押すと、リストと同じ行で予約できる', async () => {
     stubApi()
     stubMatchMedia(true)
@@ -544,6 +573,19 @@ describe('ProgramsPage の容量超過の帯', () => {
     expect(band.style.height).toBe(cell?.style.height)
     // 不足本数と詰まった種別まで出す
     expect(screen.getByText('チューナー不足（BS が 1 本）')).toBeInTheDocument()
+  })
+
+  it('別サイトの超過区間は帯として描かない（issue #324）', async () => {
+    // 同じ時間帯の超過だが site が現在サイト（default）でない。判定はサイトごとに
+    // 独立している（docs/data.md §6.5）ので、別サイトのチューナー不足を現在サイトの
+    // 番組表に重ねてはいけない。
+    stubApi([], [overage(1, 2, { site: 'other' })])
+    stubMatchMedia(true)
+    const { queryClient } = renderPage()
+    await openGrid()
+    await overagesSettled(queryClient)
+
+    expect(screen.queryByTestId('capacity-band')).not.toBeInTheDocument()
   })
 
   it('超過区間が無ければ帯を出さない（沈黙を肯定にしない）', async () => {

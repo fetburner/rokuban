@@ -335,7 +335,12 @@ export function ProgramsPage() {
     },
     { query: { enabled: showGrid } },
   )
-  const overages = useMemo(() => unwrap(overagesQuery.data) ?? [], [overagesQuery.data])
+  // 一覧 API は全サイトの区間を返すが、帯は現在サイトの EPG に重ねるため
+  // 現在サイトだけに絞る。CapacityBands 自身は渡された区間を描くことに専念する。
+  const overages = useMemo(
+    () => (unwrap(overagesQuery.data) ?? []).filter((overage) => overage.site === site),
+    [overagesQuery.data, site],
+  )
 
   // 窓は開区間なので境界をまたぐ番組が隣接する 2 つの窓に現れる。programId で潰す。
   // サーバーが選択済みの serviceId で絞るので、これ以上の適用点は要らない。
@@ -404,11 +409,18 @@ export function ProgramsPage() {
   // 意図（PUT .../intent）は reservations 行を同期的に作らない（issue #29）ので、
   // サーバーの値だけを見ると予約直後の一覧に反映が数秒遅れる。actions.isReserved
   // が楽観的な上書きをこの Set の上に重ねる。
+  //
+  // 一覧は全サイトの予約を返す（不変条件 1）が、番組表は現在サイトの EPG を
+  // 描くので現在サイトの予約だけを重ねる。programId は放送イベントから決まり
+  // 2 サイトで一致しうるので、site で突き合わせないと別サイトの予約で「予約済み」に
+  // なる（ライブの中断予測と同じ絞り込み。lib/live-interruption.ts。issue #324）。
   const serverReservedProgramIds = useMemo(() => {
     const set = new Set<number>()
-    for (const r of unwrap(reservations.data) ?? []) set.add(r.programId)
+    for (const r of unwrap(reservations.data) ?? []) {
+      if (r.site === site) set.add(r.programId)
+    }
     return set
-  }, [reservations.data])
+  }, [reservations.data, site])
 
   // 番組が 1 件でもあるサービスだけをチップに出す（issue #17 の S3）。
   // マルチ編成のないサブサービスは番組を持たないので自動的に消える。
