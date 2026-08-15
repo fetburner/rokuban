@@ -67,43 +67,78 @@ const services: Service[] = [
 ]
 
 function stubApi(
-  rules: Rule[] = [sampleRule],
+  initialRules: Rule[] = [sampleRule],
   // 削除 API が返す内訳。既定は 0 件（大半のテストは内訳に関心が無い）。
   deleteImpact: { deletedReservations: number; detachedReservations: number } = {
     deletedReservations: 0,
     detachedReservations: 0,
   },
+  // 作成・更新・削除を意図的に失敗させる（issue #297: 無音化した成功トーストの
+  // 反対側 --- 失敗トーストは従来どおり出ることを確認するため）。既定では
+  // 失敗させない。
+  failures: { create?: number; update?: number; delete?: number } = {},
 ) {
   const putBodies: { id: number; body: RuleInput }[] = []
   const postBodies: RuleInput[] = []
   const deletedIds: number[] = []
+  // 作成・更新を状態に反映する --- invalidate 後の再取得で「新しい行が
+  // 一覧に現れる」「更新後の内容が一覧に反映される」ことを確認するテストのため
+  // （GET のたびに現在の状態を返す）。
+  let state = [...initialRules]
 
   globalThis.fetch = vi.fn((input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input), 'http://localhost')
     const method = init?.method ?? 'GET'
 
     if (url.pathname === '/api/rules' && method === 'GET') {
-      // 削除は状態を持って反映する --- invalidate 後の再取得で一覧から
-      // 消えることを確認するテストのため（GET のたびに現在の状態を返す）。
-      return Promise.resolve(jsonResponse(rules.filter((r) => !deletedIds.includes(r.id))))
+      return Promise.resolve(jsonResponse(state.filter((r) => !deletedIds.includes(r.id))))
     }
     if (url.pathname === '/api/rules' && method === 'POST') {
+      if (failures.create !== undefined) {
+        return Promise.resolve(jsonResponse({ error: 'サーバーが作成を拒否しました' }, failures.create))
+      }
       const body = JSON.parse(String(init?.body)) as RuleInput
       postBodies.push(body)
-      return Promise.resolve(
-        jsonResponse({ ...body, id: 99, createdAt: '2026-08-01T00:00:00Z', updatedAt: '2026-08-01T00:00:00Z' }),
-      )
+      const created: Rule = {
+        ...body,
+        id: 99,
+        createdAt: '2026-08-01T00:00:00Z',
+        updatedAt: '2026-08-01T00:00:00Z',
+        // Rule は priority/keepOriginal/enabled を必須にするが RuleInput は
+        // 任意（サーバー側の既定値埋めを前提にした契約）なので、フェイクでも
+        // 同じ既定値をここで埋める。
+        priority: body.priority ?? 0,
+        keepOriginal: body.keepOriginal ?? 'always',
+        enabled: body.enabled ?? true,
+      }
+      state = [...state, created]
+      return Promise.resolve(jsonResponse(created))
     }
     const putMatch = /^\/api\/rules\/(\d+)$/.exec(url.pathname)
     if (putMatch && method === 'PATCH') {
+      if (failures.update !== undefined) {
+        return Promise.resolve(jsonResponse({ error: 'サーバーが更新を拒否しました' }, failures.update))
+      }
       const id = Number(putMatch[1])
       const body = JSON.parse(String(init?.body)) as RuleInput
       putBodies.push({ id, body })
-      return Promise.resolve(
-        jsonResponse({ ...body, id, createdAt: '2026-07-01T00:00:00Z', updatedAt: '2026-08-01T00:00:00Z' }),
-      )
+      const existing = state.find((r) => r.id === id)
+      const updated: Rule = {
+        ...body,
+        id,
+        createdAt: existing?.createdAt ?? '2026-07-01T00:00:00Z',
+        updatedAt: '2026-08-01T00:00:00Z',
+        priority: body.priority ?? 0,
+        keepOriginal: body.keepOriginal ?? 'always',
+        enabled: body.enabled ?? true,
+      }
+      state = state.map((r) => (r.id === id ? updated : r))
+      return Promise.resolve(jsonResponse(updated))
     }
     if (putMatch && method === 'DELETE') {
+      if (failures.delete !== undefined) {
+        return Promise.resolve(jsonResponse({ error: 'サーバーが削除を拒否しました' }, failures.delete))
+      }
       const id = Number(putMatch[1])
       deletedIds.push(id)
       return Promise.resolve(jsonResponse({ id, ...deleteImpact }))
@@ -383,9 +418,12 @@ describe('RulesPage 削除は overflow メニュー', () => {
 
     await user.click(screen.getByRole('button', { name: '削除する' }))
 
-    // 予約が 1 件も無いルール（内訳 0 件）は数字を添えない。
-    expect(await screen.findByText('ルールを削除しました')).toBeInTheDocument()
+    // 削除された行が一覧から消えることそのものが常に画面に見える
+    // （RulesPage はフィルタもページングも持たない）ので、内訳が 0/0 の
+    // ときは成功トーストを無音化する（issue #297）。行の消失で削除が
+    // 効いたことを確認する。
     await waitFor(() => expect(screen.queryByText('ニュース')).not.toBeInTheDocument())
+    expect(screen.queryByText('ルールを削除しました')).not.toBeInTheDocument()
   })
 
   // 削除 API の内訳（削除 N 件 / 編集済みのため残った M 件）をトーストに出す
@@ -508,5 +546,97 @@ describe('RulesPage 削除は overflow メニュー', () => {
 
     await screen.findByLabelText('名前')
     expect(screen.queryByRole('button', { name: '削除' })).not.toBeInTheDocument()
+  })
+})
+
+// issue #297: 削除・更新の効果は一覧の同じ行として画面に現れる
+// （RulesPage はフィルタもページングも持たない）ので、素の成功トーストは
+// 無音化する。作成は `ListRules` が `priority DESC, id ASC` で並べるため
+// 新しい行がフォールドの外に入りうり、画面外になりうる効果はトーストを
+// 残す（issue #297 が認める例外）。失敗は一覧からは分からない新しい情報
+// なので、いずれも残す。
+describe('RulesPage 成功トーストの無音化 (issue #297)', () => {
+  it('作成に成功すると成功トーストが出る（新しい行は並び順次第でフォールドの外に入りうる）', async () => {
+    const { postBodies } = stubApi([])
+    const user = userEvent.setup()
+    renderPage()
+
+    await user.click(await screen.findByRole('button', { name: 'ルールを作成' }))
+    await user.type(screen.getByLabelText('名前'), 'できたルール')
+    await user.click(screen.getByRole('button', { name: '条件を追加' }))
+    await user.type(screen.getByLabelText('テキスト条件 1 の値'), 'キーワード')
+
+    await user.click(screen.getByRole('button', { name: '保存' }))
+    await waitFor(() => expect(postBodies.length).toBe(1))
+
+    // 新しい行が一覧に現れ、フォームが閉じて「ルールを作成」ボタンに戻る
+    // こと自体は確認しつつ、その効果が画面外になりうる（優先度順で下の方に
+    // 入る）ため成功トーストは残ることを確認する。
+    expect(await screen.findByText('できたルール')).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'ルールを作成' })).toBeInTheDocument()
+    expect(await screen.findByText('ルールを作成しました')).toBeInTheDocument()
+  })
+
+  it('更新に成功しても成功トーストは出ず、一覧の同じ行に反映される', async () => {
+    const { putBodies } = stubApi([ruleWithConditions])
+    const user = userEvent.setup()
+    renderPage()
+
+    await screen.findByText('平日ニュース')
+    await user.click(screen.getByRole('button', { name: '編集' }))
+    await screen.findByLabelText('テキスト条件 1 の値')
+
+    const nameInput = screen.getByLabelText('名前')
+    await user.clear(nameInput)
+    await user.type(nameInput, '改名した平日ニュース')
+    await user.click(screen.getByRole('button', { name: '保存' }))
+    await waitFor(() => expect(putBodies.length).toBe(1))
+
+    expect(await screen.findByText('改名した平日ニュース')).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: '編集' })).toBeInTheDocument()
+    expect(screen.queryByText('ルールを更新しました')).not.toBeInTheDocument()
+  })
+
+  it('作成に失敗すれば失敗トーストは出る（フォームも開いたまま残る）', async () => {
+    stubApi([], undefined, { create: 500 })
+    const user = userEvent.setup()
+    renderPage()
+
+    await user.click(await screen.findByRole('button', { name: 'ルールを作成' }))
+    await user.type(screen.getByLabelText('名前'), '失敗するルール')
+    await user.click(screen.getByRole('button', { name: '条件を追加' }))
+    await user.type(screen.getByLabelText('テキスト条件 1 の値'), 'キーワード')
+    await user.click(screen.getByRole('button', { name: '保存' }))
+
+    expect(await screen.findByText('サーバーが作成を拒否しました')).toBeInTheDocument()
+    // 失敗時はフォームが送信前のまま残る（半端な状態で消えない）
+    expect(screen.getByLabelText('名前')).toBeInTheDocument()
+  })
+
+  it('更新に失敗すれば失敗トーストは出る', async () => {
+    stubApi([ruleWithConditions], undefined, { update: 500 })
+    const user = userEvent.setup()
+    renderPage()
+
+    await screen.findByText('平日ニュース')
+    await user.click(screen.getByRole('button', { name: '編集' }))
+    await screen.findByLabelText('テキスト条件 1 の値')
+    await user.click(screen.getByRole('button', { name: '保存' }))
+
+    expect(await screen.findByText('サーバーが更新を拒否しました')).toBeInTheDocument()
+  })
+
+  it('削除に失敗すれば失敗トーストは出て、行は一覧に残る', async () => {
+    stubApi([sampleRule], undefined, { delete: 500 })
+    const user = userEvent.setup()
+    renderPage()
+
+    await screen.findByText('ニュース')
+    await user.click(screen.getByRole('button', { name: 'ルール「ニュース」のその他の操作' }))
+    await user.click(await screen.findByRole('menuitem', { name: '削除' }))
+    await user.click(await screen.findByRole('button', { name: '削除する' }))
+
+    expect(await screen.findByText('サーバーが削除を拒否しました')).toBeInTheDocument()
+    expect(screen.getByText('ニュース')).toBeInTheDocument()
   })
 })
