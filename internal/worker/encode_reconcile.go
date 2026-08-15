@@ -176,14 +176,14 @@ func (EncodeReconcileArgs) InsertOpts() river.InsertOpts {
 // 判定基準（RowLimit の値 L に依存しない形で書く。L = 1 パスの行上限、
 // S = 候補集合）:
 //
-//   - C1（被覆）: S が一度も減らない最悪条件下でも、S の任意の要素は連続する
+//   - C1（被覆）: S が増減しない最悪条件下でも、S の任意の要素は連続する
 //     ceil(|S|/L)+1 回のパスのどこかで examine される。+1 は「ちょうど L 件で
 //     埋まったパス」と「まだ続きがあるパス」を追加の問い合わせなしに区別
 //     できないための 1 パス分の余裕（下記コメント参照）。
 //     TestEncodeReconcileWorker_WindowRotatesPastStuckCandidates が固定する。
 //   - C2（コスト）: 1 パスが examine する候補数は L を超えない。
 //     TestEncodeReconcileWorker_RowLimitCapsWorkPerPass が固定する。
-//   - C3（通常運転で不活性）: 候補数が L 以下なら resumeAfter は常に 0 のままで、
+//   - C3（通常運転で不活性）: 候補数が L 未満なら resumeAfter は常に 0 のままで、
 //     投入対象・件数・順序は今日と一致する。既存の 3 つの回帰テスト
 //     （TestEncodeReconcile_ReenqueuesAfterLostHintAndDeletedEdgeRecord /
 //     _DoesNotDoubleEnqueue / TestEncodeReconcileWorker_SkipsProfilesMissingFromConfig）
@@ -294,23 +294,21 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, _ *river.Job[EncodeRec
 	// 窓を回す: ちょうど上限まで埋まったパスは続きが残っているかもしれないので
 	// 最後に見た id から再開する。上限に届かなかった（0 件を含む）パスは候補集合の
 	// 末尾まで見たので先頭へ戻す。1 件の投入失敗（上の failed）は再開位置に
-	// 影響させない --- 次の巻き戻りでまた examine されるので、投入失敗のためだけの
-	// 特別扱いは要らない。
+	// 影響させない --- 巻き戻った後のパスでまた examine されるので、投入失敗の
+	// ためだけの特別扱いは要らない。
+	windowFull := int32(len(candidates)) >= rowLimit
 	var resumeAfter int64
-	if int32(len(candidates)) >= rowLimit {
+	if windowFull {
 		resumeAfter = candidates[len(candidates)-1]
-		w.resumeAfter.Store(resumeAfter)
-	} else {
-		resumeAfter = 0
-		w.resumeAfter.Store(resumeAfter)
 	}
+	w.resumeAfter.Store(resumeAfter)
 
 	// 窓が埋まったパスは、それより後ろの recording_id をこのパスでは見ていない。
 	// 次パスが resume_after から続きを見る（黙って終わらせない。上の doc コメント
 	// 参照）。resume_after は回転が実際に進んでいることを運用側から確かめる
 	// 唯一の手段（プロセスが再起動を繰り返す構成では常に 0 に留まり、それも
 	// ここに現れる）。
-	if int32(len(candidates)) >= rowLimit {
+	if windowFull {
 		slog.Warn("encode_reconcile: candidate window is full; the next pass resumes from resume_after",
 			"row_limit", rowLimit, "last_recording_id", candidates[len(candidates)-1], "resume_after", resumeAfter)
 	}

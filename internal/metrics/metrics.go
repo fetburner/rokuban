@@ -411,13 +411,13 @@ var (
 	// |S| が L のちょうど倍数のときだけ**（例: |S|=3, L=2 なら 6 パスの値は
 	// [2 1 2 1 2 1] で 0 には一度もならない。TestEncodeReconcileWorker_
 	// WindowRotatesPastStuckCandidates は L=1 で回しているため `|S| mod L` が
-	// 恒等的に 0 になる特殊ケースしか観測していない）。「張り付いているか」
-	// （バックログの大きさ）を見たいなら `max_over_time` で瞬間的な下振れを均す
+	// 恒等的に 0 になる特殊ケースしか観測していない）。窓が継続して埋まって
+	// いるかを見たいなら `max_over_time` で瞬間的な下振れを均す
 	// （docs/operations/monitoring.md）。エンコード実行中の録画も候補に数えるので、
 	// 0 でないこと自体は異常ではない。
 	EncodeReconcileCandidates = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "rokuban_encode_reconcile_candidates",
-		Help: "Recordings seen by the last encode-reconcile pass that still lack an active encoded asset. Sitting at the pass row limit means the backlog is at least that large, not that recordings beyond it are unreachable (the window resumes from where the previous pass stopped). This gauge periodically dips below the row limit as the window wraps around (to backlog size mod row limit, which is 0 only when the backlog is an exact multiple); use max_over_time to see the backlog size.",
+		Help: "Recordings seen by the last encode-reconcile pass that still lack an active encoded asset. Sitting at the pass row limit means the backlog is at least that large, not that recordings beyond it are unreachable (the window resumes from where the previous pass stopped). For a stable backlog, this gauge periodically dips below the row limit as the window wraps around (to backlog size mod row limit, which is 0 only when the backlog is an exact multiple); use max_over_time to see whether the window remains full.",
 	})
 
 	// EncodeReconcileUnsatisfiable は「凍結済みの desired が現在の
