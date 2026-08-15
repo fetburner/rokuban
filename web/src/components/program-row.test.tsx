@@ -1,4 +1,4 @@
-import { screen, waitFor } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -219,5 +219,59 @@ describe('ProgramRow の外向き導線（issue #229）', () => {
     await waitFor(() => expect(screen.queryByText('詳細を読み込み中…')).not.toBeInTheDocument())
 
     expect(screen.queryByRole('link', { name: '予約の詳細' })).not.toBeInTheDocument()
+  })
+})
+
+describe('ProgramRow の予約ボタンの可視性配線（issue #310）', () => {
+  // 実際の可視性（visibility が :hover / :focus-visible / pointer メディア特性で
+  // 実際に変わること）は jsdom では測れない --- 唯一の判定は
+  // e2e/reserve-visibility.mjs（web/e2e/README.md）。ここで見るのは、その
+  // CSS が依存する配線（`group` / `peer` マーカーと `data-testid`）が
+  // 消えていないことだけ。マーカーが消えると e2e はセレクタが見つからず
+  // 即座に落ちるが、原因調査の手間を減らすため、より速い jsdom 側にも
+  // 同じ配線を固定しておく。
+  it('行トグルが `peer` を持ち、予約ボタンの wrapper が `data-testid="program-row-reserve"` を持つ', async () => {
+    stubFetch()
+    renderInRouter(
+      <ProgramRow
+        program={program()}
+        reserved={false}
+        pending={false}
+        onReserve={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    )
+
+    const title = await screen.findByText('対象番組')
+    const toggle = title.closest('button')
+    expect(toggle).not.toBeNull()
+    expect(toggle).toHaveClass('peer')
+
+    const reserveWrapper = screen.getByTestId('program-row-reserve')
+    // ホバー / フォーカス駆動の可視性が乗る `group`（行コンテナ）と
+    // `peer-aria-expanded`（タッチ側）の両方の基準点が生きていることを、
+    // wrapper が行トグルの後続の兄弟であることで確認する --- `peer-*` は
+    // 「先行する兄弟」にしか効かないため、順序が入れ替わると壊れる。
+    expect(toggle?.nextElementSibling).toBe(reserveWrapper)
+    expect(reserveWrapper.parentElement).toHaveClass('group')
+
+    expect(within(reserveWrapper).getByRole('button', { name: '予約' })).toBeInTheDocument()
+  })
+
+  it('予約済みの行でも「取消」ボタンが同じ wrapper（program-row-reserve）に入る', async () => {
+    stubFetch()
+    renderInRouter(
+      <ProgramRow
+        program={program()}
+        reserved={true}
+        pending={false}
+        onReserve={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    )
+
+    await screen.findByText('対象番組')
+    const reserveWrapper = screen.getByTestId('program-row-reserve')
+    expect(within(reserveWrapper).getByRole('button', { name: '取消' })).toBeInTheDocument()
   })
 })

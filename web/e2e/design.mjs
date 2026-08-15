@@ -1666,6 +1666,11 @@ for (const reducedMotion of ['reduce', 'no-preference']) {
     if ((await reserveButton.count()) === 0) {
       ng.push(`[${reducedMotion}] 「予約」ボタンが見つからない（animate-spin 判定）`)
     } else {
+      // issue #310: 予約ボタンは既定で visibility:hidden で、細ポインタでは
+      // 行の :hover でだけ立つ（この desktop コンテキストは hover:hover +
+      // pointer:fine）。行をホバーして可視にしてからでないと `.click()` が
+      // アクショナビリティ待ちでタイムアウトする。
+      await row.hover()
       await reserveButton.click()
       const spinner = reserveButton.locator('.animate-spin')
       await spinner.waitFor({ timeout: 2000 }).catch(() => {
