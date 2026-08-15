@@ -36,6 +36,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/fetburner/rokuban/internal/ffargs"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
 )
@@ -62,15 +63,31 @@ type LiveConfig struct {
 	// TunerPriority は mirakc への X-Mirakurun-Priority に載せる値。
 	TunerPriority int
 
+	// HWAccel は `-i` より前に出す唯一のブロック（プロファイル毎ではなく
+	// LiveConfig 直下。config.LiveConfig.HWAccel と同じ理由 --- 1 回の ffmpeg
+	// で入力 1 本・出力 N 本のため、プロファイル毎には表現しない）。
+	HWAccel *ffargs.HWAccel
+
+	// InputExtraArgs は `-f mpegts -i pipe:0` の直前に追加する引数。
+	InputExtraArgs []string
+
 	Profiles []LiveProfile
 }
 
 // LiveProfile は 1 レンディションの HLS トランスコード設定。
 type LiveProfile struct {
-	Name           string
-	VideoCodec     string
-	AudioCodec     string
-	Height         int
+	Name       string
+	VideoCodec string
+	AudioCodec string
+	Height     int
+
+	// Scaler はスケール filter の系統（config.LiveProfile.Scaler と同じ ffargs.Scaler）。
+	Scaler ffargs.Scaler
+
+	// CRF / QP は品質指定（config.LiveProfile と同じく相互排他。両方 nil も可）。
+	CRF *int
+	QP  *int
+
 	Preset         string
 	SegmentSeconds int
 	PlaylistSize   int
@@ -833,7 +850,7 @@ func (ls *LiveStreamer) runSession(ctx context.Context, s *liveSession) {
 	}
 	defer func() { _ = body.Close() }()
 
-	args := BuildLiveFFmpegArgs(ls.cfg.Profiles, dir)
+	args := BuildLiveFFmpegArgs(ls.cfg, dir)
 	cmd := exec.CommandContext(ctx, ls.cfg.FFmpeg, args...)
 	cmd.Stdin = body
 	stderr := newCappedWriter(stderrCap)
@@ -986,26 +1003,44 @@ func (w *cappedWriter) String() string {
 // **字幕（ARIB caption）を map しない** --- Debian 系の ffmpeg は arib_caption
 // デコーダを持たず、既定のストリーム選択だと「Decoder (codec arib_caption) not
 // found」で exit 1 になる（実 mirakc の地上波 TS で観測）。
-func BuildLiveFFmpegArgs(profiles []LiveProfile, dir string) []string {
+//
+// argv の順序（issue #321 決定コメント §3）:
+//
+//	-hide_banner -nostats -loglevel error
+//	[cfg.HWAccel ブロック]                          # 入力 1 本ぶん、1 回だけ
+//	-probesize 5M -analyzeduration 3M
+//	[cfg.InputExtraArgs…]
+//	-f mpegts -i pipe:0
+//	  ── プロファイルごとに繰り返し ──
+//	  -map 0:v:0 -map 0:a:0  -c:v  -c:a
+//	  [-vf <scaler>]  [-crf|-qp]  [-preset]
+//	  -force_key_frames expr:…
+//	  [profile.extra_args…]                         # ユーザー（出力側）
+//	  -f hls ... OUT.m3u8                            # アプリ所有の末尾
+func BuildLiveFFmpegArgs(cfg LiveConfig, dir string) []string {
 	args := []string{
 		"-hide_banner", "-nostats", "-loglevel", "error",
+	}
+	args = append(args, cfg.HWAccel.Args()...)
+	args = append(args,
 		// pipe の MPEG-TS は PAT/PMT が揃うまで寸法 0x0 に見える窓がある。
 		// 既定 probesize だと誤判定しやすいので少し延ばす。playlistStartupTimeout
 		// （15s）を食いつぶさないよう、analyzeduration は数秒に留める。
 		"-probesize", "5M",
 		"-analyzeduration", "3M",
-		"-f", "mpegts",
-		"-i", "pipe:0",
-	}
-	for _, p := range profiles {
+	)
+	args = append(args, cfg.InputExtraArgs...)
+	args = append(args, "-f", "mpegts", "-i", "pipe:0")
+	for _, p := range cfg.Profiles {
 		// 映像・音声だけ。字幕 / データ放送は捨てる（上記 arib_caption）。
 		// -map は output 単位のオプションなので、ループの前に 1 組だけ置くと
 		// 最初の .m3u8 にしか適用されず、2 本目以降は自動ストリーム選択に戻る。
 		args = append(args, "-map", "0:v:0", "-map", "0:a:0")
 		args = append(args, "-c:v", p.VideoCodec, "-c:a", p.AudioCodec)
-		if p.Height > 0 {
-			args = append(args, "-vf", fmt.Sprintf("scale=-2:%d", p.Height))
+		if filter, ok := ffargs.ScaleArgs(p.Scaler, p.Height); ok {
+			args = append(args, "-vf", filter)
 		}
+		args = append(args, ffargs.QualityArgs(p.CRF, p.QP)...)
 		if p.Preset != "" {
 			args = append(args, "-preset", p.Preset)
 		}

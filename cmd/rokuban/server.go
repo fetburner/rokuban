@@ -183,31 +183,10 @@ func newServerCmd() *cobra.Command {
 							return toolErr
 						}
 
-						liveProfiles := make([]streamer.LiveProfile, 0, len(cfg.Live.Profiles))
-						for _, p := range cfg.Live.Profiles {
-							liveProfiles = append(liveProfiles, streamer.LiveProfile{
-								Name:           p.Name,
-								VideoCodec:     p.VideoCodec,
-								AudioCodec:     p.AudioCodec,
-								Height:         p.Height,
-								Preset:         p.Preset,
-								SegmentSeconds: p.SegmentSeconds,
-								PlaylistSize:   p.PlaylistSize,
-								ExtraArgs:      p.ExtraArgs,
-							})
-						}
 						// live.enabled かつ streamer ロールならちょうど 1 サイトへの束縛が
 						// 保証済み（上の事前検査）なので boundSite を使ってよい。
 						liveMirakcClient := mirakc.NewClient(boundSite.URL, nil)
-						liveStreamer := streamer.NewLive(liveMirakcClient, boundSite.Site, streamer.LiveConfig{
-							Enabled:       true,
-							FFmpeg:        cfg.Live.FFmpeg,
-							SegmentDir:    cfg.Live.SegmentDir,
-							MaxSessions:   cfg.Live.MaxSessions,
-							IdleTimeout:   cfg.Live.IdleTimeout,
-							TunerPriority: cfg.Live.TunerPriority,
-							Profiles:      liveProfiles,
-						})
+						liveStreamer := streamer.NewLive(liveMirakcClient, boundSite.Site, convertLiveConfig(cfg.Live))
 						mounters = append(mounters, liveStreamer)
 						// idle GC ループ。ctx（egCtx）が終わったら全セッションを止めて
 						// mirakc の接続を閉じる（チューナー解放。crash-only の唯一の

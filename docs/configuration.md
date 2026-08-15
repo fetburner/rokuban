@@ -60,14 +60,15 @@ Grafana Loki / Tempo の `-config.expand-env` と同じ、**YAML パース前の
 | `encode.ffmpeg` / `encode.ffprobe` | `ffmpeg` / `ffprobe` | PATH 検索。フルパス指定可（下記「ffmpeg の存在検査」） |
 | `encode.concurrency` | `1` | encode キューの MaxWorkers（ingest とは独立） |
 | `encode.thumbnail_concurrency` | `1` | thumbnail キューの MaxWorkers |
-| `encode.profiles` | `[]` | 構造化エンコードプロファイル（形は `config.example.yml`。下記「config と DB の境界」） |
+| `encode.profiles` | `[]` | 構造化エンコードプロファイル（形は `config.example.yml`。下記「config と DB の境界」「encode/live の HW エンコード」） |
 | `live.enabled` | `false` | ライブ視聴のルートを登録するか（下記「live」） |
 | `live.ffmpeg` | `ffmpeg` | PATH 検索 |
 | `live.segment_dir` | —（`enabled: true` なら必須） | HLS セグメントの書き出し先（下記「live」） |
 | `live.max_sessions` | `4` | プロセスローカルの同時セッション上限（同上） |
 | `live.idle_timeout` | `30s` | サービス単位の idle GC 猶予 |
 | `live.tuner_priority` | `1` | mirakc への X-Mirakurun-Priority（同上） |
-| `live.profiles` | —（`enabled: true` なら 1 つ以上必須） | HLS 用プロファイル（形は `config.example.yml`。`segment_seconds` 既定 2 / `playlist_size` 既定 6） |
+| `live.hwaccel` / `live.input_extra_args` | なし | live セクション直下の HW アクセラレーションブロック / 入力側追加引数（下記「encode/live の HW エンコード」） |
+| `live.profiles` | —（`enabled: true` なら 1 つ以上必須） | HLS 用プロファイル（`scaler` / `crf` / `qp` を含む形は `config.example.yml`。`segment_seconds` 既定 2 / `playlist_size` 既定 6） |
 | `webhook.url` | `""`（no-op） | POST 先（下記「webhook のイベントとペイロード」） |
 | `webhook.secret` | `""` | 非空なら `X-Rokuban-Webhook-Secret` ヘッダに載せる |
 | `webhook.timeout` | `5s` | 1 回の HTTP 要求タイムアウト。失敗時は同期で 1 回だけ再試行 |
@@ -122,6 +123,43 @@ Grafana Loki / Tempo の `-config.expand-env` と同じ、**YAML パース前の
 - `live.idle_timeout` はサービス単位の idle GC 猶予。この時間セグメント要求が来なければ ffmpeg を止める（クライアント 1 人ごとの生存は追わない）。**離脱ヒント（`POST .../live/leave`）を受けたときに詰める短い猶予は設定キーにしない** --- `3 × 最長の live.profiles[].segment_seconds + 2s`（既定 8 秒）として導出する。**`idle_timeout` ではクリップしない** --- クリップすると `segment_seconds: 6` + `idle_timeout: 2s` のような設定で猶予がセグメント長を下回り、leave が「他人の視聴を切る道具」に化ける。猶予が `idle_timeout` 以上になる設定では、ヒントは詰める先が「いま」より後ろにならないので no-op になる（起動を止めるより運用者の意思を尊重する）。この猶予は「生きている視聴者の次の要求が来るまでの間隔」より長くなければならず、その間隔を決めているのはセグメント長そのものなので、独立したキーにすると 2 つの値が矛盾する組み合わせを運用者が書けてしまう（[api.md](api.md) §ライブ視聴の HLS「離脱は『ヒント』であって停止命令ではない」。config と DB の境界と同じく、**別の値から必ず導けるものはキーにしない**）
 - `live.tuner_priority` は mirakc への X-Mirakurun-Priority。ruler が生成する schedule の既定 priority（10）より低く保つことで、チューナー枯渇時に録画側を常に勝たせる（[recording.md](recording.md) §2「チューナー調停」）。**Rokuban はこの不等式を強制しない** --- ルールの priority は DB 側（`rules.priority`、既定 10）でユーザーが自由に変えられ、ライブ側の `live.tuner_priority` は config 側なので、両者を跨いで比較検証する権威がどちらにも無い。ユーザーがルールの priority を 0 や 1 まで下げると、この既定値のままではライブが録画に勝ってしまう。運用者が両方の値を意識して選ぶ前提とする
 - `live.profiles` は `encode.profiles` とは別の構造体 --- HLS はセグメント長・プレイリスト長という VOD には無い制約を持つ。`name` は `?profile=` から参照する一意な名前で、英数字・ハイフン・アンダースコアのみ（セグメントファイル名の接頭辞に使うため）。ISDB-T の映像は MPEG-2 でブラウザの HLS 経路では事実上再生できないため、H.264 への変換が前提
+
+### encode/live の HW エンコード
+
+構造化のまま HW エンコード（VAAPI 等）を表現する。追加するキーは「`extra_args` では構造的に届かない位置（`-i` より前のオプションと、アプリが `-vf` を握っているスケール filter）」に限る --- コーデック指定より後ろのオプション（`extra_args` が既に出ている位置）は既存のキーで足りるので構造化しない。
+
+| キー | 説明 |
+|---|---|
+| `encode.profiles[].scaler` / `live.profiles[].scaler` | スケール filter の系統名（`-vf` の filter 文字列そのものではない）。既定 `""`（= `software`）。**許す値は `software` と `vaapi` のみ** --- qsv / cuda はこの環境の ffmpeg で `scale_qsv` / `scale_cuda` の綴りを確認できておらず未検証のため除外してある。`height` が 0 のときに書くと起動エラー |
+| `encode.profiles[].qp` / `live.profiles[].qp` | `-qp`（品質指定）。`crf` との同時指定は起動エラー（優先順位を実行時に決めさせない） |
+| `encode.profiles[].hwaccel` | プロファイル毎の `-i` 前置ブロック（`kind` 必須 / `device` / `output_format` 任意）。VOD はプロファイルごとに入力を開き直すため、プロファイル単位で持たせられる |
+| `live.hwaccel` | **`live.profiles[]` 内ではなく `live:` 直下**。ライブは 1 回の ffmpeg で入力 1 本・出力 N 本なので、プロファイル毎に持たせると「プロファイル 2 つが別の hwaccel を要求する」という表現できない設定が書けてしまう --- セクション直下に置けばそれが表現不可能になる |
+| `encode.profiles[].input_extra_args` / `live.input_extra_args` | `-i`（VOD）/ `-f mpegts -i pipe:0`（live）の直前に追加する引数 |
+| `encode.profiles[].extra_args` / `live.profiles[].extra_args` | 既存キー。改名していない --- ただし VOD 側は位置が 1 点だけ動く（下記） |
+
+argv の順序（VOD）:
+
+```
+-hide_banner -nostats -y                                      # アプリ
+[-hwaccel K] [-hwaccel_device D] [-hwaccel_output_format F]   # hwaccel ブロック
+[input_extra_args…]                                            # ユーザー（入力側）
+-i INPUT                                                       # アプリ
+-c:v VC -c:a AC
+[-vf <scaler が決めた filter>]                                 # height>0 のときだけ、常に 1 個
+[-crf N | -qp N] [-preset P]
+[extra_args…]                                                  # ユーザー（出力側）
+-f CONTAINER -progress pipe:1 -loglevel error OUTPUT           # アプリ所有の末尾
+```
+
+argv の順序（live）は同じ規則を入力 1 本・出力 N 本の形に展開したもの: `live.hwaccel` → `-probesize`/`-analyzeduration` → `live.input_extra_args` → `-f mpegts -i pipe:0` のあと、プロファイルごとに `-map` `-c:v`/`-c:a` → `[-vf]` → `[-crf|-qp]` → `[-preset]` → `-force_key_frames` → `profile.extra_args` → `-f hls ...`。
+
+**`extra_args` の位置が 1 点だけ動いた。** VOD 側は以前 `-f`（コンテナ）の後ろだったが、今は前に移った --- 「ユーザーのオプションはコーデック/品質/スケール指定の後・アプリ所有の末尾の前」という規則を VOD と live で 1 つにするため。`-f` は下記の allowlist に含まれないので、この移動でユーザーが相対順序に依存していた挙動が変わることはない。
+
+**起動エラーになる組み合わせ**: `crf` と `qp` の同時指定 / 未知の `scaler` / `height` が 0 なのに `scaler` を書く / `hwaccel` ブロックがあるのに `kind` が空 / `crf`・`qp` の負値。
+
+**`extra_args` / `input_extra_args` は値の個数まで既知の allowlist だけを受け付ける。** 値を取らないのは `-an` `-vn` `-sn` `-dn` `-shortest` `-nostdin` `-re`、直後の 1 トークンを値として取るのは `-movflags` `-map` `-global_quality` `-cq` `-q:v` `-b:v` `-b:a` `-probesize` `-analyzeduration` `-extra_hw_frames`。それ以外と裸の位置引数は起動エラーになる。値を取らないフラグも明示しているため、`["-an", "/tmp/evil.mp4"]` のように 2 本目の出力パスをフラグの値に見せかけることはできない。`-filter:v:0` / `-lavfi` のような filtergraph の別名・ストリーム指定子付き表記も allowlist 外であり、完全一致の denylist が別名を取りこぼす形は採らない。
+
+**範囲外**: device ノードのマウントはデプロイ側（k8s `resources.limits` / Docker `--device`）。**`hwaccel.device` の存在は起動時に検査しない** --- 公式イメージや device の無い CI を壊す。無い device を書いたプロファイルはジョブ / セッションの失敗として現れる。`-global_quality` / `-cq` / `-q:v` のような、コーデック指定より後ろに出せる（= `extra_args` で届く）品質オプションはキー化しない。
 
 ### mirakc は単一オブジェクト
 
@@ -212,7 +250,7 @@ Grafana Loki / Tempo の `-config.expand-env` と同じ、**YAML パース前の
 
 **config = デプロイ環境の性質**（そのホスト/クラスタを再構築すると変わるもの）。**DB = 運用中に UI から変えたい意思**（ルール・予約・視聴履歴）。
 
-この原則により**エンコードプロファイルは config 側**に落ちる。プロファイルの実体は「その環境の ffmpeg ビルドと HW (VAAPI/QSV/NVENC) で何ができるか」であり、`ffmpeg` パスと同じデプロイ属性。DB のルールからは名前参照とし、ルール保存時に存在検証（なければ **400**）。自由形式の cmd 文字列は採らない（構造化フィールドから worker が引数を組み立てる）。
+この原則により**エンコードプロファイルは config 側**に落ちる。プロファイルの実体は「その環境の ffmpeg ビルドと HW (VAAPI/QSV/NVENC) で何ができるか」であり、`ffmpeg` パスと同じデプロイ属性。DB のルールからは名前参照とし、ルール保存時に存在検証（なければ **400**）。自由形式の cmd 文字列は採らない（構造化フィールドから worker が引数を組み立てる）。HW エンコードも同じ構造化フィールドで表す（下記「encode/live の HW エンコード」）。**`-vf`（filtergraph）を直接書けるキーも作らない** --- filtergraph は第 2 のコマンド言語であり、`scale_vaapi=...,drawtext=...` のような式が書けた時点で cmd を別名で解禁したのと同じになる。
 
 ## 運用補助
 

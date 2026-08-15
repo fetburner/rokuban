@@ -847,6 +847,486 @@ encode:
 	})
 }
 
+// buildEncodeHWConfig は encode.profiles[0] に extra を追記した完全な config を返す
+// （extra は 6 スペースインデント、末尾改行込みの YAML 行）。
+func buildEncodeHWConfig(extra string) string {
+	return `
+db:
+  host: localhost
+  user: rokuban
+  password: secret
+  database: rokuban
+mirakc:
+  url: http://mirakc.local:40772
+storage:
+  media_dir: /mnt/media
+encode:
+  profiles:
+    - name: h264
+      container: mp4
+      video_codec: libx264
+      audio_codec: aac
+` + extra
+}
+
+// buildLiveHWConfig は live.profiles[0] に extra を追記した完全な config を返す
+// （extra は 6 スペースインデント、末尾改行込みの YAML 行）。
+func buildLiveHWConfig(extra string) string {
+	return `
+db:
+  host: localhost
+  user: rokuban
+  password: secret
+  database: rokuban
+mirakc:
+  url: http://mirakc.local:40772
+storage:
+  media_dir: /mnt/media
+live:
+  enabled: true
+  segment_dir: /dev/shm/rokuban-live
+  profiles:
+    - name: h264
+      video_codec: libx264
+      audio_codec: aac
+` + extra
+}
+
+// TestLoad_HWEncodeFields_EncodeAndLive は encode.profiles と live.profiles の
+// 両方で同じ ffargs 検査（crf/qp 排他・scaler の許容集合・scaler without
+// height）が働くことを、同じテーブルで両方に対して回して確認する。片側だけ
+// 検査を実装し忘れる事故をこのテーブルが検出する（issue #321 決定コメント §6
+// 「encode と live を同じテーブルで回して片側の書き忘れを不可能にする」）。
+// 壊し方は各サブテストのコメント参照。
+//
+// **hwaccel はここに含めない。** encode.profiles[].hwaccel はプロファイル毎
+// だが live.hwaccel は live セクション直下（issue #321 決定コメント §1: ライブは
+// 入力 1 本なのでプロファイル毎には表現しない）で YAML 上の置き場所が違うため、
+// 「profile 本体に追記する」という同じテーブルの形が使えない。hwaccel の検査は
+// TestLoad_EncodeProfileHWAccel / TestLoad_LiveHWAccel で別に固定する。
+func TestLoad_HWEncodeFields_EncodeAndLive(t *testing.T) {
+	cases := []struct {
+		name    string
+		extra   string
+		wantErr bool
+		wantMsg string
+	}{
+		{
+			// 壊し方: crf を勝たせて nil を返す（ValidateVideo の crf!=nil&&qp!=nil を消す）。
+			name:    "crf and qp together is a startup error",
+			extra:   "      crf: 23\n      qp: 24\n",
+			wantErr: true,
+			wantMsg: "qp",
+		},
+		{
+			// 壊し方: 未知値を software に落とす（Scaler.allowed の判定を消す）。
+			name:    "unknown scaler value names the allowed set",
+			extra:   "      height: 720\n      scaler: qsv\n",
+			wantErr: true,
+			wantMsg: "vaapi",
+		},
+		{
+			// 壊し方: height<=0 の検査を消す。
+			name:    "scaler without height is a startup error",
+			extra:   "      scaler: vaapi\n",
+			wantErr: true,
+			wantMsg: "height",
+		},
+		{
+			// 壊し方: 明示的な software も height 0 を許すよう分岐を変える。
+			name:    "explicit software scaler without height is still an error",
+			extra:   "      scaler: software\n",
+			wantErr: true,
+			wantMsg: "height",
+		},
+		{
+			name:    "negative crf is an error",
+			extra:   "      crf: -1\n",
+			wantErr: true,
+			wantMsg: "crf",
+		},
+		{
+			name:    "negative qp is an error",
+			extra:   "      qp: -1\n",
+			wantErr: true,
+			wantMsg: "qp",
+		},
+	}
+
+	builders := []struct {
+		name  string
+		build func(extra string) string
+	}{
+		{"encode", buildEncodeHWConfig},
+		{"live", buildLiveHWConfig},
+	}
+
+	for _, b := range builders {
+		for _, c := range cases {
+			t.Run(b.name+"/"+c.name, func(t *testing.T) {
+				path := writeConfig(t, b.build(c.extra))
+				_, err := Load(path)
+				if c.wantErr && err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if !c.wantErr && err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if c.wantErr && c.wantMsg != "" && !strings.Contains(err.Error(), c.wantMsg) {
+					t.Errorf("error = %v, want mention of %q", err, c.wantMsg)
+				}
+			})
+		}
+	}
+}
+
+// TestLoad_EncodeProfileHWAccel は encode.profiles[].hwaccel（プロファイル毎の
+// ブロック）の検査を固定する。壊し方: HWAccel.Validate 呼び出しを消す /
+// kind の空チェックを消す。
+func TestLoad_EncodeProfileHWAccel(t *testing.T) {
+	cases := []struct {
+		name    string
+		extra   string
+		wantErr bool
+		wantMsg string
+	}{
+		{
+			name:    "hwaccel: {} (kind missing) is a startup error",
+			extra:   "      hwaccel: {}\n",
+			wantErr: true,
+			wantMsg: "kind",
+		},
+		{
+			name:    "hwaccel device without kind is still an error",
+			extra:   "      hwaccel:\n        device: /dev/dri/renderD128\n",
+			wantErr: true,
+			wantMsg: "kind",
+		},
+		{
+			// ブロック経由でフラグを密輸させない。
+			name:    "hwaccel kind smuggling a flag is an error",
+			extra:   "      hwaccel:\n        kind: \"-y\"\n",
+			wantErr: true,
+		},
+		{
+			name:    "hwaccel with kind only is accepted",
+			extra:   "      height: 720\n      scaler: vaapi\n      hwaccel:\n        kind: vaapi\n",
+			wantErr: false,
+		},
+		{
+			name:    "hwaccel with kind, device, output_format is accepted",
+			extra:   "      height: 720\n      scaler: vaapi\n      hwaccel:\n        kind: vaapi\n        device: /dev/dri/renderD128\n        output_format: vaapi\n",
+			wantErr: false,
+		},
+		{
+			// bare `hwaccel:` (no value) はブロックを「書いていない」扱いになる
+			// （*ffargs.HWAccel が nil のまま。config.detectMirakcKeyWritten が
+			// 固定している goccy/go-yaml の挙動と同じ）。
+			name:    "bare hwaccel key with no value is not written",
+			extra:   "      hwaccel:\n",
+			wantErr: false,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			path := writeConfig(t, buildEncodeHWConfig(c.extra))
+			_, err := Load(path)
+			if c.wantErr && err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !c.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if c.wantErr && c.wantMsg != "" && !strings.Contains(err.Error(), c.wantMsg) {
+				t.Errorf("error = %v, want mention of %q", err, c.wantMsg)
+			}
+		})
+	}
+}
+
+// TestLoad_LiveHWAccel は live.hwaccel（live セクション直下、プロファイル毎では
+// ない）の検査を固定する。壊し方は TestLoad_EncodeProfileHWAccel と同じ。
+func TestLoad_LiveHWAccel(t *testing.T) {
+	baseWithProfile := `
+db:
+  host: localhost
+  user: rokuban
+  password: secret
+  database: rokuban
+mirakc:
+  url: http://mirakc.local:40772
+storage:
+  media_dir: /mnt/media
+live:
+  enabled: true
+  segment_dir: /dev/shm/rokuban-live
+`
+	profile := `  profiles:
+    - name: h264
+      video_codec: libx264
+      audio_codec: aac
+`
+
+	cases := []struct {
+		name    string
+		extra   string
+		wantErr bool
+		wantMsg string
+	}{
+		{
+			name:    "hwaccel: {} (kind missing) is a startup error",
+			extra:   "  hwaccel: {}\n",
+			wantErr: true,
+			wantMsg: "kind",
+		},
+		{
+			name:    "hwaccel device without kind is still an error",
+			extra:   "  hwaccel:\n    device: /dev/dri/renderD128\n",
+			wantErr: true,
+			wantMsg: "kind",
+		},
+		{
+			name:    "hwaccel kind smuggling a flag is an error",
+			extra:   "  hwaccel:\n    kind: \"-y\"\n",
+			wantErr: true,
+		},
+		{
+			name:    "hwaccel with kind, device, output_format is accepted",
+			extra:   "  hwaccel:\n    kind: vaapi\n    device: /dev/dri/renderD128\n    output_format: vaapi\n",
+			wantErr: false,
+		},
+		{
+			name:    "bare hwaccel key with no value is not written",
+			extra:   "  hwaccel:\n",
+			wantErr: false,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			path := writeConfig(t, baseWithProfile+c.extra+profile)
+			_, err := Load(path)
+			if c.wantErr && err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !c.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if c.wantErr && c.wantMsg != "" && !strings.Contains(err.Error(), c.wantMsg) {
+				t.Errorf("error = %v, want mention of %q", err, c.wantMsg)
+			}
+		})
+	}
+}
+
+// TestLoad_ArgumentAllowlist_AllLists は 4 つの追加引数リストが実際の YAML
+// 位置から allowlist 検査に到達することを固定する。特に live の入力側は
+// profile 内ではなく live 直下にある。
+func TestLoad_ArgumentAllowlist_AllLists(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{
+			name: "encode profile extra_args",
+			yaml: buildEncodeHWConfig("      extra_args: [\"-i\", \"in\"]\n"),
+			want: "-i",
+		},
+		{
+			name: "encode profile input_extra_args",
+			yaml: buildEncodeHWConfig("      input_extra_args: [\"-y\"]\n"),
+			want: "-y",
+		},
+		{
+			name: "live profile extra_args",
+			yaml: buildLiveHWConfig("      extra_args: [\"-i\", \"in\"]\n"),
+			want: "-i",
+		},
+		{
+			name: "live input_extra_args",
+			yaml: strings.Replace(buildLiveHWConfig(""), "  profiles:\n", "  input_extra_args: [\"-y\"]\n  profiles:\n", 1),
+			want: "-y",
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := Load(writeConfig(t, c.yaml))
+			if err == nil {
+				t.Fatalf("expected app-owned flag %q to be rejected", c.want)
+			}
+			if !strings.Contains(err.Error(), c.want) {
+				t.Errorf("error = %v, want mention of %q", err, c.want)
+			}
+		})
+	}
+}
+
+// TestLoad_ExtraArgsRejectOutputInjection は値を取らないフラグの直後に 2 本目の
+// 出力パスを置く経路を VOD / live の両方で拒否する。
+func TestLoad_ExtraArgsRejectOutputInjection(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		yaml string
+	}{
+		{"encode", buildEncodeHWConfig("      extra_args: [\"-an\", \"/tmp/evil.mp4\"]\n")},
+		{"live profile", buildLiveHWConfig("      extra_args: [\"-shortest\", \"/tmp/evil.mp4\"]\n")},
+		{
+			"live input",
+			strings.Replace(buildLiveHWConfig(""), "  profiles:\n", "  input_extra_args: [\"-vn\", \"/tmp/evil.mp4\"]\n  profiles:\n", 1),
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if _, err := Load(writeConfig(t, c.yaml)); err == nil {
+				t.Fatal("expected second output path to be rejected")
+			}
+		})
+	}
+}
+
+// TestLoad_BarePositionalArgs_EncodeAndLive は裸の位置引数（2 個目の出力
+// ファイルパスの密輸経路）を拒否し、正当な形（許可済みの値付きフラグ・
+// ブールフラグ・ストリームセレクタ値）は通すことを固定する。
+func TestLoad_BarePositionalArgs_EncodeAndLive(t *testing.T) {
+	cases := []struct {
+		name    string
+		extra   string
+		wantErr bool
+	}{
+		{
+			name:    "single bare positional argument",
+			extra:   "      extra_args: [\"/tmp/evil.mp4\"]\n",
+			wantErr: true,
+		},
+		{
+			name:    "bare positional argument trailing a flag value",
+			extra:   "      extra_args: [\"-movflags\", \"+faststart\", \"/tmp/evil.mp4\"]\n",
+			wantErr: true,
+		},
+		{
+			name:    "flag with a value is allowed",
+			extra:   "      extra_args: [\"-movflags\", \"+faststart\"]\n",
+			wantErr: false,
+		},
+		{
+			name:    "bare boolean flag is allowed",
+			extra:   "      extra_args: [\"-an\"]\n",
+			wantErr: false,
+		},
+		{
+			name:    "stream selector value is allowed",
+			extra:   "      extra_args: [\"-map\", \"0:a:1\"]\n",
+			wantErr: false,
+		},
+	}
+
+	for _, b := range []struct {
+		name  string
+		build func(extra string) string
+	}{
+		{"encode", buildEncodeHWConfig},
+		{"live", buildLiveHWConfig},
+	} {
+		for _, c := range cases {
+			t.Run(b.name+"/"+c.name, func(t *testing.T) {
+				path := writeConfig(t, b.build(c.extra))
+				_, err := Load(path)
+				if c.wantErr && err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if !c.wantErr && err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+			})
+		}
+	}
+}
+
+// TestLoad_RejectsCmdKey_EncodeAndLive は encode.profiles / live.profiles の
+// どちらでも `cmd:` が未知キーとして落ちることを固定する（自由形式の cmd
+// 文字列は今日すでに強制的に拒否されている --- loadFromString が
+// yaml.Strict() を通しており、strict は配列要素の中まで再帰するため。
+// 実測: 現 HEAD の loader に食わせると
+// `parsing config: [16:7] unknown field "cmd"` のように行・桁付きで落ちる）。
+// 壊し方: loadFromString から yaml.Strict() を外す（両方が素通りする）。
+func TestLoad_RejectsCmdKey_EncodeAndLive(t *testing.T) {
+	for _, b := range []struct {
+		name  string
+		build func(extra string) string
+	}{
+		{"encode", buildEncodeHWConfig},
+		{"live", buildLiveHWConfig},
+	} {
+		t.Run(b.name, func(t *testing.T) {
+			path := writeConfig(t, b.build("      cmd: \"ffmpeg -i {{input}} {{output}}\"\n"))
+			_, err := Load(path)
+			if err == nil {
+				t.Fatal("expected error for unknown field cmd")
+			}
+			if !strings.Contains(err.Error(), "unknown field") || !strings.Contains(err.Error(), "cmd") {
+				t.Errorf("error = %v, want mention of unknown field \"cmd\"", err)
+			}
+		})
+	}
+}
+
+// TestLoad_VAAPIExample_LoadsWithoutDeviceCheck は config.example.yml の VAAPI
+// プロファイル相当を、`/dev/dri` の無い環境（この CI 含む）で Load してエラーに
+// ならないことを主張する。壊し方: hwaccel.device の os.Stat 検査を足す（罠が
+// 禁じている実装を入れた瞬間に落ちる --- device の存在は起動時に検査しない。
+// issue #321 決定コメント §2-8）。
+func TestLoad_VAAPIExample_LoadsWithoutDeviceCheck(t *testing.T) {
+	if _, err := os.Stat("/dev/dri"); err == nil {
+		t.Skip("this environment has /dev/dri; the point of this test is to run where it does not exist")
+	}
+
+	path := writeConfig(t, `
+db:
+  host: localhost
+  user: rokuban
+  password: secret
+  database: rokuban
+mirakc:
+  url: http://mirakc.local:40772
+storage:
+  media_dir: /mnt/media
+encode:
+  profiles:
+    - name: h264_vaapi
+      container: mp4
+      video_codec: h264_vaapi
+      audio_codec: aac
+      height: 720
+      scaler: vaapi
+      qp: 24
+      hwaccel:
+        kind: vaapi
+        device: /dev/dri/renderD128
+        output_format: vaapi
+      input_extra_args: []
+live:
+  enabled: true
+  segment_dir: /dev/shm/rokuban-live
+  hwaccel:
+    kind: vaapi
+    device: /dev/dri/renderD128
+    output_format: vaapi
+  input_extra_args: []
+  profiles:
+    - name: h264_vaapi
+      video_codec: h264_vaapi
+      audio_codec: aac
+      height: 720
+      scaler: vaapi
+      qp: 26
+      segment_seconds: 2
+      playlist_size: 6
+`)
+	if _, err := Load(path); err != nil {
+		t.Fatalf("Load with a VAAPI profile referencing a nonexistent device must not fail: %v", err)
+	}
+}
+
 func TestLoad_Live(t *testing.T) {
 	base := `
 db:
