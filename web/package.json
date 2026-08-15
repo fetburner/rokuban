@@ -16,7 +16,8 @@
     "e2e:live": "node e2e/live.mjs",
     "e2e:design": "node e2e/design.mjs",
     "e2e:badge-links": "node e2e/badge-links.mjs",
-    "e2e:sse-refresh": "node e2e/sse-refresh.mjs"
+    "e2e:sse-refresh": "node e2e/sse-refresh.mjs",
+    "e2e:reserve-visibility": "node e2e/reserve-visibility.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.6.0",

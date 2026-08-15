@@ -15,7 +15,7 @@
 | §7 | **observed**: `record_sync`（mirakc record の観測）と `drop_stats` | [schema/record-sync.md](schema/record-sync.md) |
 | §8 | jsonb ドキュメント形式（base / overrides / quality_events の形） | [schema/jsonb.md](schema/jsonb.md) |
 | §9 §9.5 | **使い捨てキャッシュ**: `epg_services` / `epg_programs`（EPG 射影）/ `tuner_sync`（チューナー射影） | [schema/projections.md](schema/projections.md) |
-| — | **永続資産**: `rules` 一式（`rules` + 条件の子テーブル 6 つ + `reservation_rule_matches`） | [schema/rules.md](schema/rules.md) |
+| — | **永続資産**: `rules` 一式（`rules` + 条件の子テーブル 6 つ） | [schema/rules.md](schema/rules.md) |
 | §10 §11 | マイグレーションの権威の所在 / 未決事項 | [schema/future.md](schema/future.md) |
 
 ## 2. 全体図
@@ -29,8 +29,6 @@ erDiagram
     rules ||--o{ rule_times : "rule_id"
     rules ||--o{ rule_sites : "rule_id"
     rules ||--o{ reservations : "rule_id (勝者ルール)"
-    rules ||--o{ reservation_rule_matches : "rule_id (全マッチ)"
-    reservations ||--o{ reservation_rule_matches : "reservation_id"
     program_snapshots ||--o| reservations : "(site, program_id) FK, ON DELETE CASCADE"
     program_snapshots ||--o| program_intents : "(site, program_id) FK, ON DELETE CASCADE"
     program_snapshots ||--o| program_overrides : "(site, program_id) FK, ON DELETE CASCADE"
@@ -46,5 +44,5 @@ erDiagram
 - **observed**: `schedule_sync` / `record_sync`（mirakc の観測。短命・使い捨て）
 - **永続資産**: `recordings` / `media_assets` / `drop_stats`。`recording_encode_policy` は `recordings` を指す衛星表（行の存在 = 凍結済み）。`recording_ingest_progress` も同じく衛星表で、行の存在 = 原本を転送中（コミットで消える）
 - `program_intents` / `program_overrides` と `reservations` は互いに FK では対応しない。三者はいずれも共通の `(site, program_id)` で `program_snapshots` への FK（`ON DELETE CASCADE`）を持つことで結びつく（Phase 1）。**意図が skip で、かつ上書きが無い番組は `reservations` に行を持たない**（overrides があれば skip でも行は残る。detached として保持。§3.5）ため、常に 1:1 ではない
-- `reservations.rule_id` は**勝者ルール**のみ。マッチした全ルールは `reservation_rule_matches` に入る（[schema/rules.md](schema/rules.md)）。マイグレーションの一覧は `internal/db/migrations/` が権威
+- `reservations.rule_id` が持つのは**勝者ルール**のみ。負けたルールは記録しない —— 勝者以外は `base` に何も供給しないので、削除も無効化も予約を変えない（[schema/rules.md](schema/rules.md)）。マイグレーションの一覧は `internal/db/migrations/` が権威
 

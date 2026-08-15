@@ -63,7 +63,7 @@ HTTP リスナーは常に 1 本立てる。OpenAPI には載せない（text fo
 | `rokuban_delete_reconcile_bytes_total{source}` | Counter | 物理削除で解放したバイト数 |
 | `rokuban_delete_reconcile_last_pass_timestamp_seconds` | Gauge | 最後に成功した削除 reconcile パスの時刻 |
 | `rokuban_encode_reconcile_last_pass_timestamp_seconds` | Gauge | 最後に完走した encode reconcile パスの時刻。**このパスはヒントを落とした録画を拾うバックストップなので、止まっても症状が静か**（[ingest](../recording/ingest.md) §5.5） |
-| `rokuban_encode_reconcile_candidates` | Gauge | 直近パスが見た「原本があるのに encoded が無い」録画数。エンコード実行中の録画も数えるので非ゼロは異常ではないが、**候補上限（1000）に張り付いたらそれより後ろの録画に到達していない**（同 §5.5「既知の限界」） |
+| `rokuban_encode_reconcile_candidates` | Gauge | 直近パスが見た「原本があるのに encoded が無い」録画数。エンコード実行中の録画も数えるので非ゼロは異常ではない。窓はパスをまたいで回るので、**候補上限（1000）に張り付いてもそれより後ろの録画への到達性は失われない**（次パスが続きから見る）。バックログが窓を埋めている系では末尾を越えたパスでこのゲージが上限を下回る（バックログ件数 mod 1000。ちょうど倍数のときだけ 0 になる。0 まで落ちることは一般には期待できない）。窓が継続して埋まっているかを見たいなら `max_over_time(rokuban_encode_reconcile_candidates[1h])` を使う（同 §5.5） |
 | `rokuban_encode_reconcile_unsatisfiable{profile}` | Gauge | 凍結済みの desired が現在の `encode.profiles` に無い録画数。**非ゼロ = プロファイルの改名 / 削除でその名前の過去録画が永久にエンコードされない**（投入しても `unknown encode profile` で弾かれるので、パスは投入せず数えるだけにしている） |
 | `rokuban_storage_sync_last_success_timestamp_seconds` | Gauge | **全 root を観測できた**パスの時刻。1 root でも失敗した部分成功では進まない（下の per-root ゲージと対で見る） |
 | `rokuban_storage_root_last_success_timestamp_seconds{root}` | Gauge | root（`media` / `scratch`）ごとに最後に観測できた時刻。片方だけ恒久的に壊れているケースをここで特定する（下記「沈黙は保証ではない」）。**この鮮度でアラートを組んでよい** --- `storage.scratch_dir` を空にして root を観測対象から外すと、次のパスで `{root="scratch"}` の系列自体が消える（凍結した値が残って恒久的な偽陽性になることはない） |

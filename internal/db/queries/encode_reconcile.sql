@@ -21,12 +21,27 @@
 --     として原本を残す方向（安全側）に効くが、このパスにとっては投入しても
 --     EncodeWorker が弾くだけのゴミになる（EncodeReconcileWorker の doc コメント）
 --
--- 述語をスキーマ側の名前に寄せる話は #325 で追う（このパスの粒度は録画単位で、
--- view の粒度はアセット単位なので、寄せるなら view の切り直しが要る）。
+-- 述語をスキーマ側の名前に寄せる案は検討した上で見送ることを決定済み。理由は 2 つ:
+--
+--   1. 粒度が違う。このパスの粒度は録画単位で、view の粒度はアセット単位
+--      （削除エンジン固有の keep_original / サムネイル条件が畳み込まれている）。
+--      寄せるなら view の切り直し（マイグレーション）が要る。
+--   2. 本質的な理由。上の差分（known_profiles で絞るかどうか）は補集合ではなく、
+--      両側とも今の挙動が正しい仕様として確定している。共通の述語にするには
+--      known_profiles を引数に取る必要があり、view は引数を取れないので SQL 関数に
+--      なる --- そうするとドリフトのリスクが述語の本体から呼び出し側の引数の
+--      渡し方へ移るだけで、しかもそちらの方が読んで気付きにくい（呼び出し側 2 箇所を
+--      突き合わせないと分からない）。寄せることはドリフトを減らさない。
+--
+-- したがって 3 箇所（この述語、until_encoded_deletable_originals、下の
+-- ListUnsatisfiableEncodeProfiles）は共通化せず、この非対称を仕様として
+-- コメントに固定する。ドリフトの検出は internal/worker のテストが担う
+-- （同じフィクスチャで両側の答えが食い違うことを固定する）。
 
 -- ListRecordingsMissingEncodes は「原本が active でコミット済み、かつ
 -- known_profiles に含まれる desired のうち少なくとも 1 つについて active な
--- encoded が無い」録画を recording_id 昇順で返す。
+-- encoded が無い」録画のうち recording_id が after_recording_id より大きいものを
+-- recording_id 昇順で返す。
 --
 -- 条件の意味:
 --   * recording_encode_policy に行がある = エンコードポリシーが凍結済み
@@ -44,11 +59,17 @@
 --     until_encoded_deletable_originals（00032）が同じ述語を持つのと同じ理由
 --   * want.profile = ANY(known_profiles) = 現在の設定に存在するプロファイルだけを
 --     欠落判定の対象にする。設定から消えたプロファイルを候補に含めると、投入しても
---     EncodeWorker が `unknown encode profile` で弾く（encode.go）録画が
---     recording_id 昇順の窓を恒久的に占有し、それより後ろの録画に到達しなくなる
---     （EncodeReconcileWorker の doc コメント「窓は回らない」）。空文字列の
---     プロファイル名がここで自動的に落ちるのも同じ仕組み（設定側の名前は
---     必須検証済みなので known_profiles に空文字列は入らない）
+--     EncodeWorker が `unknown encode profile` で弾く（encode.go）録画が窓を
+--     恒久的に占有し続ける（他の候補が減らない限り）。空文字列のプロファイル名が
+--     ここで自動的に落ちるのも同じ仕組み（設定側の名前は必須検証済みなので
+--     known_profiles に空文字列は入らない）
+--   * p.recording_id > after_recording_id = 呼び出し側（EncodeReconcileWorker）が
+--     持つ、プロセスローカルな再開位置。前パスが LIMIT ちょうどまで埋まったなら
+--     続きから、そうでなければ 0（先頭）から見る。窓が「毎パス先頭から」ではなく
+--     「前回止まった位置の続きから」開くことで、候補が一度も減らない最悪条件
+--     （録画単位の恒久失敗が LIMIT 件を超える）でも有限パス数で全候補に到達する
+--     （EncodeReconcileWorker の doc コメント「窓を回す」）。recording_id は PK
+--     なのでこの keyset 述語はそのまま索引に乗る。
 --
 -- **known_profiles は non-NULL でなければならない。** `x = ANY(NULL::text[])` は
 -- false ではなく NULL なので、NULL（Go 側の nil スライス）を渡すと EXISTS が
@@ -60,11 +81,16 @@
 -- internal/worker の TestEncodeReconcileWorker_EmptyProfileConfigIsVisibleNotSilent
 -- が両側から固定している）。
 --
+-- until_encoded_deletable_originals（00032）は known_profiles で絞らない。
+-- これは意図的な非対称（安全側の仕様。上の「名前付き述語」節と
+-- docs/storage/retention.md §保持ポリシー）であって揃え忘れではない。
+--
 -- name: ListRecordingsMissingEncodes :many
 SELECT p.recording_id
 FROM recording_encode_policy p
 JOIN recordings r ON r.id = p.recording_id
-WHERE cardinality(p.encode_profiles) > 0
+WHERE p.recording_id > sqlc.arg('after_recording_id')::bigint
+  AND cardinality(p.encode_profiles) > 0
   AND r.deleted_at IS NULL
   AND EXISTS (
     SELECT 1 FROM media_assets o
@@ -92,8 +118,16 @@ LIMIT sqlc.arg('row_limit');
 --
 -- 落とす判断（上のクエリ）と落としたことを見せる責務を分けている。プロファイルを
 -- 改名 / 削除するとその名前で凍結済みの過去録画が一斉にここへ落ちるので、
--- 数を出さないと「エンコードされない録画」が静かに増える（issue #163 が塞いだ
+-- 数を出さないと「エンコードされない録画」が静かに増える（過去に塞いだ
 -- 症状そのものを、別の原因で再現してしまう）。
+--
+-- この値はプロファイル名別の該当録画数で、keep_original を問わず数える
+-- （`always` の録画も含むので「回収されない原本の件数」そのものではない。
+-- 1 録画が複数の消えたプロファイルを凍結していれば複数のラベルにまたがって
+-- 数えられるため、ラベル間で単純合計すると録画数を超える）。この中の
+-- until_encoded 録画は until_encoded_deletable_originals（00032）にとっても
+-- 永久に「揃っていない」ため、原本が回収されない
+-- （docs/storage/retention.md §保持ポリシー）。
 --
 -- name: ListUnsatisfiableEncodeProfiles :many
 -- `want.profile::text` の明示キャストは必須（sqlc は unnest 由来の列型を

@@ -107,15 +107,19 @@ pull 完了後に書き込みバイト数を HEAD の Content-Length と照合 �
 
 `media_assets` に `kind='original'` の行が既にコミットされていれば、ジョブは転送を行わず、エッジ record の削除だけを再試行して終わる（`IngestWorker.hasOriginalMediaAsset`）。エッジ record の削除は失敗してもログのみで ingest 自体は成功扱いにしているため、mirakc 側に record が残ったまま record_sweep 経由で同じ record の ingest ジョブが再投入されうる。ここで止めないと `os.Create` がコミット済みファイルを 0 バイトに切り詰めて全量を再ダウンロードし、streamer が不変条件 3（コミット = DB 行）に反して欠けたファイルを配ることになる。
 
-#### 宛先 rel_path の事前チェック: 先読みは正しさの根拠ではない
+#### 宛先 rel_path の排他: 一意索引が効く前に決着させる
 
-上の冪等性チェックが守るのは「同じ recording_id の 2 度目の ingest」だけである。**別の recording_id が同じ rel_path を算出するケース**（同一サイト内で `contentPath` が偶然重複する等）はこれでは守れない: `os.Create`（宛先を開いて truncate する）は `media_assets` へのコミットより前に走るので、事前チェックが無いと「先行のまだ削除されていない `media_asset` が使っている実ファイルを、後発の ingest が truncate して自分の TS で上書きしてから、`media_assets_rel_path_idx`（`rel_path` の一意索引、`WHERE state <> 'deleted'`。`00002_schema_v1.sql`）の 23505 でようやく失敗する」という壊れ方をする。エラーは返るが、その時点で先行ファイルは既に別番組の中身に置き換わっている。DB は先行の録画をそのまま指し続けるので、「DB は active、実体は別番組」という不変条件 3（コミット = DB 行の逆: DB 行はあるのに実体が別物）に反する状態ができてしまう（PR #196 のレビューで実測、issue #197）。
+`media_assets` の一意索引（`rel_path`, `WHERE state <> 'deleted'`）が効くのは `commit` の INSERT の瞬間だが、宛先へのバイトはそれより前に落ちる（[storage/contract.md](../storage/contract.md) §3 ルール 3 の順序そのもの --- コピー完了 → 行の登録）。**したがって順序では実ファイルを守れない。** 別の `recording_id` が同じ rel_path を算出するケース（同一サイト内で `contentPath` が偶然重複する等）で 2 つの ingest ジョブがほぼ同時に走ると、両方が `os.Create` で宛先を開き、先にコミットした側のファイルを後発が上書きしうる（PR #196 のレビューで実測、issue #197）。
 
-`state <> 'deleted'` は `active` だけでなく `deleting`（[storage/retention.md](../storage/retention.md) 参照。delete_reconcile が `active → deleting → unlink → deleted` の 3 段階で物理削除する途中の状態）も含む。`deleting` 行は unlink 前・unlink 失敗中は実ファイルがまだ存在し、かつごみ箱から復元されて削除条件に該当しなくなった `deleting` 行はファイルの現存確認の上で `active` に戻される（`resolveUnqualifiedDeletingAsset`）。したがって `deleting` の rel_path を見逃すと、同じ「DB は active、実体は別番組」が `deleting` 経由でも再生産されるため、事前チェックは `active` に限らず `deleting` も衝突として扱う。
+これを閉じるため、`IngestWorker.Work` は `determineRelPath` の直後・`os.Create` より前・mirakc のストリームを開くより前に、`rel_path` のハッシュをキーにした **Postgres のセッションレベル advisory lock** を `pg_try_advisory_lock`（ノンブロッキング）で取得し、`commit` まで保持する。負けた側はバイトを 1 つも書かずに失敗し、River のバックオフで再試行する。
 
-`IngestWorker.Work` は `determineRelPath` の直後・`os.Create` の前に `checkRelPathConflict`（`GetLiveMediaAssetByRelPath`、`internal/db/queries/media_assets.sql`）でこの rel_path を使う、まだ削除されていない `media_asset` が無いことを確認し、あれば転送を始めずにジョブを失敗させる。一意索引と同じ `WHERE state <> 'deleted'` の述語で引くため、削除済み（tombstone）の行が使っていた rel_path は正当に再利用できる。
+- **セッションレベルであってトランザクションレベルではない。** 転送は数時間かかりうるので、トランザクションロック（`pg_advisory_xact_lock`）だと同じ長さのトランザクションを開き続けることになる。セッションロックはコネクションの生存期間にだけ紐づくので、`commit` は別の短命なトランザクションとして自由に行える
+- **ノンブロッキングであってブロッキング版（`pg_advisory_lock`）ではない。** ブロッキング版だと、ingest のキュー枠（site あたり 1〜2、下記 §5.4）を「待ち」で丸ごと塞いでしまう
+- **先読み（`checkRelPathConflict`、`GetLiveMediaAssetByRelPath`）はロックの下へ移した。** これにより **ingest 対 ingest に関してはもはや先読みではなく決着そのものになる** --- ロックを保持している間、他の ingest ジョブは同じ rel_path への転送を開始できないので、この SELECT の結果は `commit` まで安定する。ここで拾うのは「別の（今 transfer 中ではない）recording が過去にこの rel_path を使って既にコミットした」という恒久的な衝突であり、`state <> 'deleted'` の述語（`active` に限らず、delete_reconcile の unlink 前後の中間状態である `deleting` も含む）は変えていない。**ただし delete_reconcile の状態遷移に対しては、従来どおりヒントのまま** --- delete_reconcile は rel_path の advisory lock を取らないので、この SELECT と実際の `CreateMediaAsset` の INSERT の間に `deleting` → `deleted` の遷移が進む TOCTOU の窓は残る
+- **行の一意性の最後の砦は今も一意索引**（レベルトリガー、不変条件 5）。ロックはその代替ではなく、一意索引が効くより前の窓を閉じるためだけにある
+- **正直に書く劣化モード**: 転送中にロック用コネクションが死ぬと、ロックは早期に解放される。その窓はロック導入前と同じ TOCTOU に戻るだけで、新しい壊れ方を作るものではない（単調な改善であって完全な排他の証明ではない）
 
-**この先読みは「正しさの根拠」ではない。** 先読みの SELECT と実際の `CreateMediaAsset` の INSERT の間には TOCTOU の窓があるため、2 つの ingest ジョブがほぼ同時にこのチェックを通過して両方が転送を始めることは構造的にありうる。正しさの根拠は今までどおり `media_assets` の一意索引であり（レベルトリガー、不変条件 5）、先読みが競合を見逃しても最終的な INSERT が 23505 で `media_assets` の**行の一意性**は確実に守る（2 つの recording_id が同じ rel_path を指す行を両方コミットすることはない）。ただし守るのは行の一意性だけで、TOCTOU の窓に両方が落ちた場合は両方が `os.Create` で相手のファイルを truncate しうるため、**実ファイルの破損までは一意索引でも守られない**。先読みは「よくある事故（同一サイト内の contentPath 重複）を安く防いで、先行ファイルの誤上書きを減らす」ためだけの最適化であり、これを理由に一意索引を緩めたり `CreateMediaAsset` のエラー処理を弱めたりしてはならない。
+**今でも先に浮かぶ案が壊すもの**: 一時ファイル + `os.Rename` で宛先を作る案は採らない --- rename は S3 マウントの一部（AWS Mountpoint）に存在せず、他（geesefs/s3fs）では数十 GB の実コピーになる（[storage/contract.md](../storage/contract.md) §2）。commit を先にして rename を後にすると、rename が恒久失敗したとき行が指す唯一の実体が一時ファイルのまま残り、`active` 行の実体欠落を検出する経路が無いまま孤児回収に食われる。
 
 ### 5.4 負荷分担: worker
 
@@ -138,7 +142,7 @@ pull 完了後に書き込みバイト数を HEAD の Content-Length と照合 �
 
 **挙動の変更**: このパスが入るまで、25 回失敗して discarded になった encode ジョブはそこで止まっていた。これからは `encoded` が生まれない限り 15 分ごとに投入し直す（River の一意制約は pending 状態にしか効かず、discarded 済みの引数には合流しない）。真実は River のジョブ履歴ではなく `media_assets` の有無なのでレベルトリガーとしては意図通りだが、**恒久的に失敗するエンコードは「静かに諦める」から「延々と再試行する」に変わる**。
 
-**既知の限界**: 候補は `recording_id` 昇順で 1000 件に切る。このパス自身は候補を減らさない（減らすのは encode の完了）ため、永久に満たせない候補が先頭に溜まると窓を占有し、それより後ろの録画に到達しない（収束は主張しない）。窓が埋まったパスは Warn ログと `rokuban_encode_reconcile_candidates` が上限に張り付くことで見える。[#326](https://github.com/fetburner/rokuban/issues/326) で追う。
+**窓を回す**: 候補は `recording_id` 昇順で 1000 件に切る。このパス自身は候補を減らさない（減らすのは encode の完了）ため、「毎パス先頭から」窓を開くと永久に満たせない候補（録画単位の恒久失敗）が先頭に溜まったとき、それより後ろの録画に到達できなくなる。これを避けるため、窓は前パスが止まった位置の続きから開き、末尾に達したら先頭へ戻る（再開位置はプロセスローカルで永続化しない）。1000 件はこれにより「1 パスのコストの上限」という意味だけを持つ純粋なつまみになり、被覆は候補集合の大きさに応じて有限パス数で完了する。窓が埋まったパスは `rokuban_encode_reconcile_candidates` ゲージと、`resume_after` フィールドを持つ Warn / pass-complete Info ログ（回転が実際に進んでいることを確かめる唯一の手段）で見える。再開位置を失う（プロセス再起動）と挙動は「毎パス先頭から」に戻るだけで、悪化はしない。
 
 ### 5.6 転送の途中経過を見せる
 

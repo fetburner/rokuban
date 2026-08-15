@@ -103,6 +103,12 @@ type IngestWorker struct {
 	// これと args.Site を verifySite で照合してから mirakc/FS に触る
 	// （issue #139）。空なら db.DefaultSite に解決する（verifySite 参照）。
 	Site string
+
+	// RelPathLockTimeout は rel_path advisory lock の取得（pool.Acquire と
+	// pg_try_advisory_lock）に与える上限。0 は「未設定」で
+	// defaultRelPathLockTimeout に解決する（StallTimeout / ProgressInterval と
+	// 同じ規約。resolveRelPathLockTimeout 参照）。
+	RelPathLockTimeout time.Duration
 }
 
 // Timeout は River の総時間タイムアウトを無効化する。
@@ -135,6 +141,16 @@ func (w *IngestWorker) resolveProgressInterval() time.Duration {
 		return ingestProgressInterval
 	}
 	return w.ProgressInterval
+}
+
+// resolveRelPathLockTimeout は設定された RelPathLockTimeout があればそれを、
+// なければ既定の defaultRelPathLockTimeout を返す（resolveStallTimeout /
+// resolveProgressInterval と同じ「0 は未設定」の規約）。
+func (w *IngestWorker) resolveRelPathLockTimeout() time.Duration {
+	if w.RelPathLockTimeout == 0 {
+		return defaultRelPathLockTimeout
+	}
+	return w.RelPathLockTimeout
 }
 
 // Work は ingest ジョブを実行する。ストリーム取得・TS 統計収集・DB コミット・エッジ削除を行う。
@@ -206,22 +222,33 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[IngestJobArgs]) 
 		return fmt.Errorf("determining rel_path: %w", err)
 	}
 
-	// os.Create（次の数行）は宛先を truncate してから中身を書き始める。
-	// media_assets の一意索引（rel_path, WHERE state <> 'deleted'）は commit
-	// 時の INSERT で初めて効くので、事前チェックなしだと「別の生きている
-	// （state <> 'deleted' の。'active' に限らず、削除処理中の 'deleting' も
-	// 含む）media_asset が既にこの rel_path を使っている」場合に、先行の
-	// 実ファイルを truncate して上書きしてから 23505 で落ちる。DB は先行の
-	// 録画をそのまま指し続けるのに実体は新しい録画のもの、という不変条件 3
-	// （コミット = DB 行）の逆（DB 行はあるのに実体が別物）が作れてしまう
-	// （PR #196 のレビューで実測。issue #197）。'deleting' を見逃す（例えば
-	// 'active' だけを見る）と、delete_reconcile が unlink 前に持つその
-	// ファイルを上書きしてしまい、後から resolveUnqualifiedDeletingAsset が
-	// ファイルの現存を根拠にその行を active へ復元しうるため、同じ壊れ方が
-	// 再生産される（PR #267 のレビューで指摘）。
+	// rel_path の advisory lock を、mirakc のストリームを開く（下の
+	// StreamRecord）より前・os.Create より前に取る。media_assets の一意索引
+	// （rel_path, WHERE state <> 'deleted'）が効くのは commit の INSERT の
+	// 瞬間だが、宛先へのバイトはそれより前に落ちる（docs/storage/contract.md
+	// §3 ルール 3 の順序そのもの）。順序だけでは実ファイルを守れないので、
+	// 排他を索引より前に置く（docs/recording/ingest.md §5.3）。
 	//
-	// checkRelPathConflict のガードはここで転送そのものを始めさせない
-	// ことで先行ファイルを保護する。
+	// 負けた側（acquired=false）はバイトを 1 つも書かずに失敗し、River の
+	// バックオフで再試行する。ロックは commit まで defer で保持し続ける。
+	release, acquired, err := acquireRelPathLock(ctx, w.Pool, relPath, w.resolveRelPathLockTimeout())
+	if err != nil {
+		return fmt.Errorf("acquiring rel_path lock: %w", err)
+	}
+	if !acquired {
+		log.Warn("ingest: rel_path is being transferred by another ingest job, deferring", "rel_path", relPath)
+		return fmt.Errorf("ingest: rel_path %q is being transferred by another ingest job; deferring (recording_id=%d)", relPath, recordingID)
+	}
+	defer release()
+
+	// checkRelPathConflict はロックの下（＝転送開始前だが排他は既に確定した後）
+	// で引く。ロックを持っている間は他の ingest がこの rel_path を狙って
+	// 転送を始めることはできないので、ここでの SELECT の結果は commit まで
+	// 安定する --- **ingest 対 ingest に関してはもはや先読みではなく決着その
+	// もの**（doc コメント参照）。ここで拾うのは「別の（今 transfer 中では
+	// ない）recording が過去にこの rel_path を使って既にコミットした」という
+	// 恒久的な衝突（contentPath 重複、issue #197）で、これは delete_reconcile
+	// の状態遷移に対しては引き続きヒント（TOCTOU が残る）でしかない。
 	if conflictRecordingID, err := w.checkRelPathConflict(ctx, relPath); err != nil {
 		return fmt.Errorf("checking rel_path conflict: %w", err)
 	} else if conflictRecordingID != 0 {
@@ -394,23 +421,28 @@ func (w *IngestWorker) hasOriginalMediaAsset(ctx context.Context, recordingID in
 // checkRelPathConflict は relPath を既に使っている、まだ削除されていない
 // （state <> 'deleted'。'active' に限らず、削除処理中の 'deleting' も含む）
 // media_asset があれば、その recording_id を返す（無ければ 0, nil）。Work が
-// os.Create の前に呼び、宛先を書き始める前に「よくある事故を安く防ぐ」ための
-// 先読み（issue #197）。
+// rel_path の advisory lock を取得した後・os.Create の前に呼ぶ。
 //
-// **これは正しさの根拠ではない。** この SELECT と実際の CreateMediaAsset の
-// INSERT の間には TOCTOU の窓があり、2 つの ingest ジョブがほぼ同時にこの
-// チェックを通過して両方が転送を始めることは起こりうる（その場合、両方が
-// os.Create で相手のファイルを truncate しうるので、先行ファイルが守られる
-// 保証はここには無い）。正しさの根拠は常に media_assets の一意索引
-// （CREATE UNIQUE INDEX ON media_assets (rel_path) WHERE state <> 'deleted'、
-// 00002_schema_v1.sql）であり、レベルトリガー（CLAUDE.md 不変条件 5）の
-// 原則どおり、ここでの先読みが外れても最終的な INSERT が 23505 で
-// media_assets の行の一意性だけは確実に守る（= 2 つの recording_id が同じ
-// rel_path を指す行を両方コミットすることはない）。ただし INSERT が守るのは
-// あくまで DB 行の一意性であり、TOCTOU の窓に落ちた場合の実ファイルの
-// 破損までは守らない --- この関数を「一意索引を通す前の安価なゲート」以上の
-// 役割にしない。一意索引を緩めたり INSERT のエラー処理を弱めたりする理由には
-// 使わない。
+// **ingest 対 ingest に関しては、これはもはや「先読み」ではなく決着そのもの
+// である。** Work はこの関数を呼ぶ前に同じ relPath の advisory lock を
+// commit まで保持し続けるので（acquireRelPathLock）、他の ingest ジョブは
+// この関数が実行されている間、同じ relPath への転送を一切開始できない ---
+// したがってこの SELECT の結果（衝突の有無）は、この ingest が commit する
+// 瞬間まで安定する。ここで拾うのは「別の（今 transfer 中ではない）
+// recording が過去にこの rel_path を使って既にコミットした」という恒久的な
+// 衝突（同一サイト内の contentPath 重複、issue #197）であり、advisory lock
+// を取っていない別の recording が同時に同じ relPath へ転送を始めることは
+// もう起こらない。
+//
+// **ただし delete_reconcile の状態遷移に対しては、従来どおりヒントのまま
+// である。** delete_reconcile は rel_path の advisory lock を取らないので、
+// この SELECT と実際の CreateMediaAsset の INSERT の間に delete_reconcile が
+// 'deleting' → 'deleted' の遷移を進める TOCTOU の窓は残る。正しさの根拠は
+// 常に media_assets の一意索引（CREATE UNIQUE INDEX ON media_assets
+// (rel_path) WHERE state <> 'deleted'、00002_schema_v1.sql）であり、
+// レベルトリガー（CLAUDE.md 不変条件 5）の原則どおり、この関数を「一意索引を
+// 通す前の安価なゲート」以上の役割にしない。一意索引を緩めたり INSERT の
+// エラー処理を弱めたりする理由には使わない。
 //
 // WHERE state <> 'deleted' はその一意索引の述語と同じにする。削除済み
 // （state='deleted'）の行が使っていた rel_path は正当に再利用できるので、

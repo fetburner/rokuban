@@ -10,6 +10,35 @@ import { dayOrigin } from '@/lib/day-offset'
 import { routeTree } from '@/routes'
 
 /**
+ * 「今」を昼間の安定した瞬間に固定する（issue #274）。
+ *
+ * `windowOrigin()`（下）は now を **時刻境界に切り捨てる**（日境界ではない）。
+ * 壁時計が現地 23 時台だと、切り捨てた起点 + 1 時間の番組（`soon`）が暦日を
+ * またいでしまい、`DayStrip` の「いま見ている日」（スクロール位置からの導出。
+ * `program-list.tsx` の `onVisibleDayChange`）が 1（明日）になる。すると
+ * 「今日」のセル（`dayButtons[0]`）から `aria-current` が外れ、それを見ている
+ * テストが壁時計依存で落ちる。
+ *
+ * `vi.setSystemTime` は**瞬間**を固定するだけで、そこから導かれる現地時刻は
+ * プロセスの TZ 次第（`07:00 UTC` は `Asia/Tokyo` なら昼、`Etc/GMT+8` なら
+ * ちょうど 23 時になる、というように offset 次第でどの瞬間を選んでも危険な
+ * TZ が必ず存在する）。そのため TZ 自体をテストプロセス全体で
+ * `Asia/Tokyo` に固定している（`vite.config.ts` の `test.env.TZ`）。ここでは
+ * その固定された JST の上で危険域（23 時台）を避けた瞬間を選ぶだけでよい。
+ *
+ * `shouldAdvanceTime: true` は実時間の経過に追従してフェイクの時計も進める
+ * ため、`setTimeout` に依存する `userEvent` の内部待ちや TanStack Query の
+ * 解決を止めない（素の `vi.useFakeTimers()` はこのファイルの他のテストを
+ * 壊すことを確認済み。CLAUDE.md のテスト規律どおり実際に壊して確かめた）。
+ *
+ * 深夜（23 時台）の実挙動そのものは別途固定のテストで検証する
+ * （「ProgramsPage の日付ハイライト（深夜、起点 + 1 時間の暦日またぎ）」参照）。
+ */
+vi.useFakeTimers({ shouldAdvanceTime: true })
+const pinnedNow = new Date('2026-08-14T12:00:00+09:00')
+vi.setSystemTime(pinnedNow)
+
+/**
  * ページは「今」を時刻境界に切り捨てた時刻を時間窓の起点にする。テストの番組も
  * 同じ起点から組み立てて、リスト（6 時間窓）とグリッド（24 時間窓）の違いが
  * 見えるように配置する。
@@ -1227,6 +1256,58 @@ describe('ProgramsPage の at パラメータ（容量バッジからの導線�
     const dayGroup = screen.getByRole('group', { name: '日付' })
     // at が落とされているので、日付ジャンプは起きず「今日」のまま
     expect(within(dayGroup).getAllByRole('button')[0]).toHaveAttribute('aria-current', 'date')
+  })
+})
+
+/**
+ * 深夜（JST 23 時台）に「今日」の起点 + 1 時間が暦日をまたぐことを実挙動
+ * として固定する（issue #274）。
+ *
+ * `dayOrigin(0)`（`lib/day-offset.ts`）は「今日」の窓の起点を **now を時刻境界
+ * （0 時ではない）に切り捨てた時刻**にする。現地 23 時台だとその起点 + 1 時間
+ * （最初に見える番組の時刻）が暦日としては翌日になり、`ProgramList` が
+ * スクロール位置から導く「いま見ている日」（`onVisibleDayChange`
+ * → `programs.tsx` の `visibleDay` → `DayStrip` の `current`）が 1（明日）に
+ * なる。時刻を 23:13 JST に固定して実測したところ、`aria-current="date"` は
+ * 消えるのではなく **「今日」ではなく「翌日」のセルに付く**
+ * （`dayButtons[0]` は null、`dayButtons[1]` が `"date"`）。これは狙った仕様
+ * ではなく、`dayOrigin` が窓の連続性のために意図的に時刻境界を使うことの
+ * 副作用として今後も起き続ける実挙動なので、偶然 23 時台に実行したときにだけ
+ * 観測される状態から、恒久的な判定に変える。
+ *
+ * 「23 時台」はテストプロセスのローカルタイムゾーン（`vite.config.ts` の
+ * `test.env.TZ` で `Asia/Tokyo` に固定済み）に対しての現地時刻なので、ここでは
+ * `vi.setSystemTime` で瞬間を JST 23:13 に固定するだけでよい。
+ */
+describe('ProgramsPage の日付ハイライト（深夜、起点 + 1 時間の暦日またぎ）', () => {
+  afterEach(() => {
+    // 他のテストへ影響しないよう、ファイル全体で固定した昼間の瞬間へ戻す
+    vi.setSystemTime(pinnedNow)
+  })
+
+  it('JST 23 時台では「いま見ている日」が翌日になり、今日のセルではなく翌日のセルに aria-current が付く', async () => {
+    vi.setSystemTime(new Date('2026-08-14T23:13:00+09:00'))
+    const nightOrigin = new Date()
+    nightOrigin.setMinutes(0, 0, 0)
+    // dayOrigin(0) と同じ切り捨て（時刻境界）で起点を作り、+1 時間の番組を置く
+    // ---「最初の窓（6 時間）にも入る直近の番組」という allPrograms の soon と
+    // 同じ役目。ここでは実行時刻に依存させず 23:13 JST に固定して置く。
+    const nightSoon = programAtAbsolute(
+      301,
+      1024,
+      nightOrigin.getTime() + 3_600_000,
+      '深夜またぎの番組',
+    )
+    stubApi([], [], [nightSoon])
+    renderPage()
+
+    expect(await screen.findByText('深夜またぎの番組')).toBeInTheDocument()
+    const dayGroup = screen.getByRole('group', { name: '日付' })
+    const dayButtons = within(dayGroup).getAllByRole('button')
+
+    // 「いま見ている日」の導出（スクロール位置ベース）が確定するまで待ってから見る
+    await waitFor(() => expect(dayButtons[1]).toHaveAttribute('aria-current', 'date'))
+    expect(dayButtons[0]).not.toHaveAttribute('aria-current')
   })
 })
 

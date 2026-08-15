@@ -307,6 +307,14 @@ func parseProgramOverridesInput(in ProgramOverridesInput) ([]func(*db.Reservatio
 		setFields[Priority] = struct{}{}
 	}
 	if in.ContentPath != nil {
+		// 空文字は「明示指定なし」に潰れて reconciler の差分対象から外れる
+		// （explicitContentPath、internal/reconciler/reconciler.go）ため、保存は
+		// 成功するが何も起きないケースになる。既存 schedule の有無は見ない —
+		// api は射影の状態（schedule_sync）に依存しない（不変条件 1）。override を
+		// 消すのは reset。
+		if *in.ContentPath == "" {
+			return nil, nil, fmt.Errorf(`contentPath must not be empty (use reset: ["contentPath"] to clear it)`)
+		}
 		v := *in.ContentPath
 		setters = append(setters, func(o *db.ReservationOptions) { o.ContentPath = &v })
 		setFields[ContentPath] = struct{}{}

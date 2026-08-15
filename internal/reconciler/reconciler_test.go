@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -634,6 +635,355 @@ func TestReconciler_RecreateKeepsObservedContentPath(t *testing.T) {
 	if got.Options.ContentPath == nil || *got.Options.ContentPath != want {
 		t.Errorf("recreated contentPath = %v, want %q (observed value carried over, not regenerated)",
 			got.Options.ContentPath, want)
+	}
+}
+
+// setContentPathOverride は program_overrides.overrides に contentPath を書き込む
+// （setPriorityOverride と同じ形）。
+func setContentPathOverride(t *testing.T, ctx context.Context, q *sqlcgen.Queries, res sqlcgen.Reservation, contentPath string) {
+	t.Helper()
+	overrides, err := json.Marshal(map[string]string{"contentPath": contentPath})
+	if err != nil {
+		t.Fatalf("marshalling overrides: %v", err)
+	}
+	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
+		Site:      "default",
+		ProgramID: res.ProgramID,
+		Overrides: overrides,
+	}); err != nil {
+		t.Fatalf("setting contentPath override: %v", err)
+	}
+}
+
+// --- 明示指定した overrides.contentPath の既存 schedule への反映（issue #312）---
+
+// 明示指定した overrides.contentPath **のみ**（priority には触れない）を
+// 既存 schedule に反映すること。#312 の受け入れ条件の本体: 無関係なフィールド
+// （priority）を同時に変えなくても contentPath の変更が反映される。
+func TestReconciler_RecreatesOnExplicitContentPathOverride(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	mock := newMockMirakc()
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+
+	mc := mirakc.NewClient(srv.URL, nil)
+	q := sqlcgen.New(pool)
+
+	startAt := time.Now().Add(1 * time.Hour)
+	res := createReservation(t, ctx, q, 100000500019300, "明示パス反映", startAt)
+
+	rec := reconciler.New("default", mc, pool, nil)
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass (1st): %v", err)
+	}
+
+	setContentPathOverride(t, ctx, q, res, "custom/explicit")
+
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass (2nd): %v", err)
+	}
+
+	if calls := mock.getDeleteCalls(); countInt64(calls, res.ProgramID) != 1 {
+		t.Errorf("delete calls for program %d = %v, want exactly 1", res.ProgramID, calls)
+	}
+	if calls := mock.getPostCalls(); countInt64(calls, res.ProgramID) != 2 {
+		t.Errorf("post calls for program %d = %v, want exactly 2 (create + recreate)", res.ProgramID, calls)
+	}
+
+	got, ok := mock.getSchedules()[res.ProgramID]
+	if !ok {
+		t.Fatal("schedule missing after recreate")
+	}
+	want := contentpath.SanitizeContentPath("custom/explicit")
+	if got.Options.ContentPath == nil || *got.Options.ContentPath != want {
+		t.Errorf("contentPath after recreate = %v, want %q", got.Options.ContentPath, want)
+	}
+	if got.Options.Priority != 10 {
+		t.Errorf("priority after recreate = %d, want unchanged default 10", got.Options.Priority)
+	}
+}
+
+// 明示指定した override が SanitizeContentPath で変わる値でも、収束は 1 パスで
+// 終わり churn しないこと（比較を観測の生値でなくサニタイズ前の値と行うと、
+// 述語が永久に立ち続けて毎パス再作成になる）。
+func TestReconciler_ExplicitContentPathConvergesInOnePass(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	mock := newMockMirakc()
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+
+	mc := mirakc.NewClient(srv.URL, nil)
+	q := sqlcgen.New(pool)
+
+	startAt := time.Now().Add(1 * time.Hour)
+	res := createReservation(t, ctx, q, 100000500019301, "サニタイズで収束", startAt)
+
+	rec := reconciler.New("default", mc, pool, nil)
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass (1st): %v", err)
+	}
+
+	// SanitizeContentPath を通すと変わる値（".." を含む）にする。
+	setContentPathOverride(t, ctx, q, res, "/custom/../explicit")
+
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass (2nd): %v", err)
+	}
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass (3rd): %v", err)
+	}
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass (4th): %v", err)
+	}
+
+	if calls := mock.getDeleteCalls(); countInt64(calls, res.ProgramID) != 1 {
+		t.Errorf("delete calls for program %d = %v, want exactly 1 (must converge after the 2nd pass)", res.ProgramID, calls)
+	}
+	if calls := mock.getPostCalls(); countInt64(calls, res.ProgramID) != 2 {
+		t.Errorf("post calls for program %d = %v, want exactly 2 (must not churn on later passes)", res.ProgramID, calls)
+	}
+}
+
+// #19 が潰した churn が生きていることの非回帰: overrides.contentPath を明示
+// 指定していない予約は、EPG の番組名（title）が変わってもテンプレート生成の
+// contentPath が差分対象にならず、再作成が起きないこと。
+func TestReconciler_TemplateContentPathDoesNotChurnOnTitleChange(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	mock := newMockMirakc()
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+
+	mc := mirakc.NewClient(srv.URL, nil)
+	q := sqlcgen.New(pool)
+
+	startAt := time.Now().Add(1 * time.Hour)
+	oldTitle := "旧番組名"
+	newTitle := "新番組名"
+	res := createReservation(t, ctx, q, 100000500019302, oldTitle, startAt)
+
+	rec := reconciler.New("default", mc, pool, nil)
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass (1st): %v", err)
+	}
+
+	before, ok := mock.getSchedules()[res.ProgramID]
+	if !ok {
+		t.Fatal("schedule not created")
+	}
+	if before.Options.ContentPath == nil || !strings.Contains(*before.Options.ContentPath, oldTitle) {
+		t.Fatalf("initial contentPath = %v, want it to contain the old title %q (test would pass vacuously otherwise)",
+			before.Options.ContentPath, oldTitle)
+	}
+
+	// programId / startAt は据え置きで title だけを EPG 更新のシミュレーションとして
+	// 差し替える（UpsertProgramSnapshot は ON CONFLICT (site, program_id) で更新する）。
+	if err := q.UpsertProgramSnapshot(ctx, sqlcgen.UpsertProgramSnapshotParams{
+		Site:        "default",
+		ProgramID:   res.ProgramID,
+		Title:       newTitle,
+		StartAt:     startAt,
+		DurationMs:  1800000,
+		NetworkID:   10000,
+		ServiceID:   5000,
+		ChannelType: "GR",
+		Channel:     "27",
+		EventID:     int32(res.ProgramID % 100000),
+		ServiceName: "テスト局",
+	}); err != nil {
+		t.Fatalf("updating program snapshot title: %v", err)
+	}
+
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass (2nd): %v", err)
+	}
+
+	if calls := mock.getDeleteCalls(); len(calls) != 0 {
+		t.Errorf("title change alone should not trigger any DELETE, got %v", calls)
+	}
+	if calls := mock.getPostCalls(); countInt64(calls, res.ProgramID) != 1 {
+		t.Errorf("title change alone should not trigger a recreate POST, got post calls %v", calls)
+	}
+
+	after := mock.getSchedules()[res.ProgramID]
+	if after.Options.ContentPath == nil || !strings.Contains(*after.Options.ContentPath, oldTitle) {
+		t.Errorf("contentPath after title change = %v, want it to still contain the old title %q (unchanged)",
+			after.Options.ContentPath, oldTitle)
+	}
+	if after.Options.ContentPath != nil && strings.Contains(*after.Options.ContentPath, newTitle) {
+		t.Errorf("contentPath after title change = %v, must not contain the new title %q (would mean it churned)",
+			*after.Options.ContentPath, newTitle)
+	}
+}
+
+// state=recording の schedule は明示指定した contentPath があっても一切触らない
+// こと（priority と同じ allowlist を通ること）。
+func TestReconciler_ExplicitContentPathDeferredWhileRecording(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	mock := newMockMirakc()
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+
+	mc := mirakc.NewClient(srv.URL, nil)
+	q := sqlcgen.New(pool)
+
+	startAt := time.Now().Add(1 * time.Hour)
+	res := createReservation(t, ctx, q, 100000500019303, "録画中に明示パス", startAt)
+
+	rec := reconciler.New("default", mc, pool, nil)
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass (1st): %v", err)
+	}
+
+	mock.mu.Lock()
+	s := mock.schedules[res.ProgramID]
+	s.State = mirakc.ScheduleStateRecording
+	mock.schedules[res.ProgramID] = s
+	mock.mu.Unlock()
+
+	setContentPathOverride(t, ctx, q, res, "custom/deferred")
+
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass (2nd): %v", err)
+	}
+
+	if calls := mock.getDeleteCalls(); len(calls) != 0 {
+		t.Errorf("state=recording schedule should not be deleted for a contentPath change, got %v", calls)
+	}
+	if got := gaugeValue(t, "update"); got != 0 {
+		t.Errorf("pending_diff{action=update} = %v, want 0 (deferred by the state guard)", got)
+	}
+	if got := gaugeValue(t, "update_deferred"); got != 1 {
+		t.Errorf("pending_diff{action=update_deferred} = %v, want 1", got)
+	}
+}
+
+// override の削除（reset 相当）は既存 schedule に反映しないこと（意図した
+// 非対称。#312 の決定 (e)）。同時に priority を変えて再作成の契機を作っても、
+// contentPath はテンプレート生成値に戻らず、明示指定していた値のまま
+// （従来の observed 引き継ぎ経路）残ることを確かめる。
+func TestReconciler_ResetContentPathOverrideKeepsRegisteredPath(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	mock := newMockMirakc()
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+
+	mc := mirakc.NewClient(srv.URL, nil)
+	q := sqlcgen.New(pool)
+
+	startAt := time.Now().Add(1 * time.Hour)
+	res := createReservation(t, ctx, q, 100000500019304, "reset非反映", startAt)
+
+	rec := reconciler.New("default", mc, pool, nil)
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass (1st): %v", err)
+	}
+
+	setContentPathOverride(t, ctx, q, res, "custom/before-reset")
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass (2nd, apply explicit contentPath): %v", err)
+	}
+	deletesAfterSet := countInt64(mock.getDeleteCalls(), res.ProgramID)
+	registeredPath := contentpath.SanitizeContentPath("custom/before-reset")
+	if got := mock.getSchedules()[res.ProgramID]; got.Options.ContentPath == nil || *got.Options.ContentPath != registeredPath {
+		t.Fatalf("contentPath after explicit set = %v, want %q", got.Options.ContentPath, registeredPath)
+	}
+
+	// override 行を「reset」相当（contentPath override を消し、代わりに priority を
+	// 上書きする）に書き換える。program_overrides を丸ごと書き換えるのは
+	// PatchProgramOverrides の reset がフィールド単位で行う操作の直接表現
+	// （internal/api/program_overrides.go の resetOverridesField 参照）。
+	overrides, err := json.Marshal(map[string]int{"priority": 33})
+	if err != nil {
+		t.Fatalf("marshalling overrides: %v", err)
+	}
+	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
+		Site:      "default",
+		ProgramID: res.ProgramID,
+		Overrides: overrides,
+	}); err != nil {
+		t.Fatalf("resetting contentPath override: %v", err)
+	}
+
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass (3rd, after reset): %v", err)
+	}
+
+	deletesAfterReset := countInt64(mock.getDeleteCalls(), res.ProgramID)
+	if deletesAfterReset != deletesAfterSet+1 {
+		t.Errorf("delete calls after reset+priority change = %d, want %d (priority change alone should still trigger a recreate)",
+			deletesAfterReset, deletesAfterSet+1)
+	}
+
+	got := mock.getSchedules()[res.ProgramID]
+	if got.Options.Priority != 33 {
+		t.Errorf("priority after reset = %d, want 33", got.Options.Priority)
+	}
+	if got.Options.ContentPath == nil || *got.Options.ContentPath != registeredPath {
+		t.Errorf("contentPath after reset = %v, want unchanged %q (reset must not fall back to the template)",
+			got.Options.ContentPath, registeredPath)
+	}
+}
+
+// contentPath のみを契機にした再作成の DELETE が、大量削除サーキットブレーカー
+// （breaker.ReconcileTotalLoss、全損シグネチャ）の勘定に混ざらないこと。
+// MaxDeletesPerPass は internal/reconciler.Config には既に存在しない
+// （撤去済み。docs/recording/reconciler.md 参照）ので、ここで守るべきなのは
+// 「再作成の DELETE が RunPass の toDelete に混ざらない」という性質そのもの。
+func TestReconciler_ContentPathRecreateDoesNotTripBreaker(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	mock := newMockMirakc()
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+
+	mc := mirakc.NewClient(srv.URL, nil)
+	q := sqlcgen.New(pool)
+
+	startAt := time.Now().Add(1 * time.Hour)
+	res := createReservation(t, ctx, q, 100000500019305, "breaker非計上", startAt)
+
+	rec := reconciler.New("default", mc, pool, nil)
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass (create): %v", err)
+	}
+
+	setContentPathOverride(t, ctx, q, res, "custom/breaker-check")
+
+	tripsBefore := promtestutil.ToFloat64(metrics.ReconcileCircuitBreakerTrips)
+
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass (recreate): %v", err)
+	}
+
+	if tripsAfter := promtestutil.ToFloat64(metrics.ReconcileCircuitBreakerTrips); tripsAfter != tripsBefore {
+		t.Errorf("circuit breaker tripped by contentPath-triggered recreate delete: before=%v after=%v", tripsBefore, tripsAfter)
+	}
+
+	var breakerRows int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM circuit_breakers WHERE site = 'default' AND name = $1`,
+		string(breaker.ReconcileTotalLoss),
+	).Scan(&breakerRows); err != nil {
+		t.Fatalf("querying circuit_breakers: %v", err)
+	}
+	if breakerRows != 0 {
+		t.Errorf("circuit_breakers has %d row(s) for %s, want 0 (recreate deletes must not count toward total-loss)",
+			breakerRows, breaker.ReconcileTotalLoss)
+	}
+
+	if calls := mock.getDeleteCalls(); countInt64(calls, res.ProgramID) != 1 {
+		t.Errorf("delete calls for program %d = %v, want exactly 1", res.ProgramID, calls)
 	}
 }
 

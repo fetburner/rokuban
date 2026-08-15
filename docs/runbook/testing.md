@@ -38,3 +38,10 @@ MIRAKC_URL=http://192.168.1.10:40772 \
 ROKUBAN_TEST_TS_FILE=/path/to/clean.m2ts \
   go test ./test/integration/ -v
 ```
+
+**mock では検出できない前提が未検証のまま残ることがある。** 例えば reconciler の
+`overrides.contentPath` の既存 schedule への反映は、mirakc が `GET /api/recording/schedules`
+で `options.contentPath` を POST した値のまま返すことに依存するが、テストの mock は
+入力をそのまま返すのでこの前提が破れていても検出できない。この種の依存を触ったときは
+`GET /api/recording/schedules` の実応答を実 mirakc に対して直接確認する
+（症状と観測手段は [troubleshooting.md](troubleshooting.md) の該当項目）。

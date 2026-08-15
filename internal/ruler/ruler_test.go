@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
 	"testing"
 	"time"
 
@@ -817,28 +816,15 @@ func TestRunPass_CircuitBreakerBlocksBulkDelete(t *testing.T) {
 	}
 }
 
-// ruleMatchCount は reservation_rule_matches のうち reservationID に紐づく行数を返す。
-func ruleMatchCount(t *testing.T, pool *pgxpool.Pool, ctx context.Context, reservationID int64) int {
-	t.Helper()
-	var count int
-	if err := pool.QueryRow(ctx,
-		`SELECT count(*) FROM reservation_rule_matches WHERE reservation_id = $1`, reservationID,
-	).Scan(&count); err != nil {
-		t.Fatalf("counting reservation_rule_matches: %v", err)
-	}
-	return count
-}
-
-// 修正 2 の回帰テスト: ルールを削除ではなく無効化した（ListEnabledRules から外れる）
-// あとも、reservation_rule_matches の古いマッチ行が掃除されずに残り続けないか。
+// ルールを削除ではなく無効化しても（ListEnabledRules から外れる）、
+// program_overrides を持つ予約行は同一 id のまま detached（rule_id = NULL）として
+// 生き残ることの回帰テスト。
 //
 // program_overrides を先に足しておくことで、ルール無効化後も予約行自体（reservation_id）は
-// detached として生存させる。修正前の rewriteRuleMatches は「今回マッチした programId」
-// だけを対象に DELETE していたため、ルールが 1 件もマッチしなくなった今回のパスでは
-// programIDs が空になり、この予約に紐づく古いマッチ行が一切触られずに残り続けた
-// （CLAUDE.md 不変条件 9「導出は毎パス作り直す」違反）。ルール自体の削除は FK CASCADE
-// で救われるので対象外だが、無効化はここでしか掃除されない。
-func TestRunPass_RewriteRuleMatches_ClearsStaleMatchAfterRuleDisabled(t *testing.T) {
+// detached として生存させる。この経路は TestRunPass_EpgUnmatchNullsRuleIDButInvestmentBlocksRelease
+// （EPG 欠損による rule_id NULL 化）とは別で、ルール無効化によって winner から
+// 一切マッチしなくなる経路をカバーするのはこのテストだけ。
+func TestRunPass_DisablingRuleDetachesReservationWithInvestment(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
@@ -868,9 +854,6 @@ func TestRunPass_RewriteRuleMatches_ClearsStaleMatchAfterRuleDisabled(t *testing
 	if !ok {
 		t.Fatal("reservation should be created initially (rule matches)")
 	}
-	if got := ruleMatchCount(t, pool, ctx, res.ID); got != 1 {
-		t.Fatalf("reservation_rule_matches count before disabling = %d, want 1", got)
-	}
 
 	// ルールを削除ではなく無効化する。
 	if _, err := pool.Exec(ctx, `UPDATE rules SET enabled = false WHERE id = $1`, ruleID); err != nil {
@@ -889,61 +872,6 @@ func TestRunPass_RewriteRuleMatches_ClearsStaleMatchAfterRuleDisabled(t *testing
 	}
 	if res2.ID != res.ID {
 		t.Fatalf("reservation id changed: %d -> %d (test assumption broken: the row must survive, not be recreated)", res.ID, res2.ID)
-	}
-	// 核心: reservation_id は消えていない（生きている）のに、もうマッチしていない
-	// ルールの古い行が残っていないこと。
-	if got := ruleMatchCount(t, pool, ctx, res2.ID); got != 0 {
-		t.Errorf("reservation_rule_matches count after disabling the rule = %d, want 0 (stale match rows must be cleared every pass)", got)
-	}
-}
-
-// 受け入れ基準 9: reservation_rule_matches に、勝敗と無関係にマッチした全ルールが
-// 記録される。
-func TestRunPass_RecordsAllRuleMatches(t *testing.T) {
-	pool := testutil.SetupDB(t)
-	ctx := context.Background()
-
-	insertService(t, pool, ctx)
-	start := time.Now().Add(24 * time.Hour).Truncate(time.Second)
-	insertProgram(t, pool, ctx, 9001, "複数マッチ", start)
-
-	lowID := insertRule(t, pool, ctx, "low", 5)
-	insertRuleKeyword(t, pool, ctx, lowID, "複数マッチ")
-	highID := insertRule(t, pool, ctx, "high", 20)
-	insertRuleKeyword(t, pool, ctx, highID, "複数マッチ")
-
-	r := ruler.New([]string{testSite}, pool, nil)
-	if err := r.RunPass(ctx); err != nil {
-		t.Fatalf("RunPass: %v", err)
-	}
-
-	res, ok := getReservation(t, pool, ctx, 9001)
-	if !ok {
-		t.Fatal("reservation not created")
-	}
-
-	rows, err := pool.Query(ctx,
-		`SELECT rule_id FROM reservation_rule_matches WHERE reservation_id = $1 ORDER BY rule_id`, res.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rows.Close()
-	var got []int64
-	for rows.Next() {
-		var rid int64
-		if err := rows.Scan(&rid); err != nil {
-			t.Fatal(err)
-		}
-		got = append(got, rid)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatal(err)
-	}
-
-	want := []int64{lowID, highID}
-	sort.Slice(want, func(i, j int) bool { return want[i] < want[j] })
-	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
-		t.Errorf("reservation_rule_matches rule_ids = %v, want %v", got, want)
 	}
 }
 

@@ -148,22 +148,3 @@ func upsertReservationsFromPass(ctx context.Context, tx pgx.Tx, site string, row
 	}
 	return results, nil
 }
-
-// insertReservationRuleMatchesSQL は reservation_rule_matches を集合演算 1 文で追加する。
-// 呼び出し側が対象 reservation_id の既存行を先に削除してから呼ぶ（このテーブルには
-// SSE 用の行トリガーがないため、reservations と違い差分書き込みは要求されない。
-// 「毎パス書き換え」でよい — docs/recording.md §3.1「複数ルール解決」）。
-const insertReservationRuleMatchesSQL = `
-INSERT INTO reservation_rule_matches (reservation_id, rule_id)
-SELECT * FROM unnest($1::bigint[], $2::bigint[])
-`
-
-func insertReservationRuleMatches(ctx context.Context, tx pgx.Tx, reservationIDs, ruleIDs []int64) error {
-	if len(reservationIDs) == 0 {
-		return nil
-	}
-	if _, err := tx.Exec(ctx, insertReservationRuleMatchesSQL, reservationIDs, ruleIDs); err != nil {
-		return fmt.Errorf("inserting reservation_rule_matches: %w", err)
-	}
-	return nil
-}

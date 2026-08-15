@@ -932,9 +932,10 @@ type ProgramOverlaps struct {
 // 変更しない。同じフィールドを値と `reset` の両方に書いたら 400、
 // `reset` に未知のフィールド名があっても 400（docs/recording.md §4.2）。
 type ProgramOverridesInput struct {
-	// ContentPath 既存の schedule には反映されない。churn を避けるため差分対象外で、
-	// 初回生成値に固定されるため（docs/recording.md §3.2）。まだ
-	// schedule が作られていない予約にだけ効く（docs/recording.md §4.5）。
+	// ContentPath 明示指定した値は既存の schedule にも反映される（reconciler が
+	// DELETE + POST で張り替える）。ただし録画が始まった schedule には
+	// 反映されない（docs/recording.md §4.5）。空文字は 400（override を
+	// 消すのは `reset`。消しても既存 schedule のパスは変わらない）。
 	ContentPath *string `json:"contentPath,omitempty"`
 
 	// EncodeProfiles ingest が原本をコミットする tx の中で recording_encode_policy 行の
@@ -954,7 +955,8 @@ type ProgramOverridesInput struct {
 
 	// FilenameTemplate Go text/template のテンプレート文字列。既存の schedule には
 	// 反映されず、まだ schedule が作られていない予約にだけ効く
-	// （docs/recording.md §4.5）。
+	// （docs/recording.md §4.5）。`contentPath` を明示指定すればそちらは
+	// 既存の schedule にも反映される（このフィールドとの違い）。
 	FilenameTemplate *string `json:"filenameTemplate,omitempty"`
 
 	// KeepOriginal ingest が原本をコミットする tx の中で recording_encode_policy 行の

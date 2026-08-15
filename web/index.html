@@ -10,7 +10,10 @@
     <!-- viewport-fit=cover がないと env(safe-area-inset-*) が 0 になり、
          ボトムタブが iOS のホームインジケータと重なる -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <title>Rokuban</title>
+    <!-- JS 起動後は各ルートの head（routes.tsx）が画面名付きの録番の
+         タイトルに書き換える。ここは JS 読み込み中だけ見える既定値なので、
+         UI 本体の表記（サイドバー/ボトムタブの「録番」）に揃える。 -->
+    <title>録番</title>
   </head>
   <body>
     <div id="root"></div>
