@@ -361,6 +361,7 @@ function ProgramCell({
   const { program } = placed
   const genre = genreLabel(program.genres[0])
   // 予約済みであることは色ではなく名前でも伝える（色だけの情報にしない）。
+  // 読み上げ用だけでなく、セルの中にも見える「予約」を置く。
   const label = [
     formatTime(program.startAt),
     program.name,
@@ -383,13 +384,26 @@ function ProgramCell({
       className={cn(
         'absolute inset-x-0 overflow-hidden border-b border-l-2 border-b-border px-1.5 py-0.5 text-left hover:brightness-95 dark:hover:brightness-125',
         genreTint(program.genres[0]),
-        reserved && 'ring-1 ring-primary ring-inset',
+        // 輪は選択中だけ。予約済みに同じ ring-primary を足すと、差が太さだけに
+        // なりジャンルの左罫と選択中の両方に紛れる。
         selected && 'ring-2 ring-primary ring-inset',
       )}
       style={{ top: rect.topPx, height: rect.heightPx }}
     >
       {reserved && (
-        <span className="absolute top-0.5 right-0.5 size-1.5 rounded-full bg-primary" />
+        <>
+          {/* 5 分セル（10px）でも残る印。点は高さ 6px でグリッド全体ではほぼ消える */}
+          <span
+            aria-hidden
+            className="pointer-events-none absolute inset-y-0 right-0 w-1 bg-foreground"
+          />
+          <span
+            aria-hidden
+            className="absolute top-0 right-1 z-[1] rounded-sm bg-foreground px-0.5 text-[10px] leading-none text-background"
+          >
+            予約
+          </span>
+        </>
       )}
       <span className="block text-[10px] leading-tight text-muted-foreground">
         {formatTime(program.startAt)}

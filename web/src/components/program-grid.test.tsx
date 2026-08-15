@@ -171,8 +171,24 @@ describe('ProgramGrid', () => {
 
     expect(cell(1)).toHaveAttribute('data-reserved', 'true')
     expect(cell(1).getAttribute('aria-label')).toContain('予約済み')
+    // 見える「予約」。aria-label だけだと読み上げ専用で、グリッドを眺めても
+    // 分からない（issue #307）。
+    expect(cell(1)).toHaveTextContent('予約')
     expect(cell(2)).not.toHaveAttribute('data-reserved')
     expect(cell(2).getAttribute('aria-label')).not.toContain('予約済み')
+    expect(cell(2)).not.toHaveTextContent('予約')
+  })
+
+  it('5 分の予約済み番組でも見える「予約」が残る', () => {
+    renderGrid({
+      programs: [program(1, 1024, 19 * 60, 5)],
+      reservations: new Set([1]),
+    })
+
+    // セルの高さに下限は無い（5 分 = 10px）。overflow で本文が切れても
+    // 印そのものは DOM に残す（実寸は e2e/grid-reserved.mjs が測る）。
+    expect(cell(1).style.height).toBe('10px')
+    expect(cell(1)).toHaveTextContent('予約')
   })
 
   it('ジャンルが aria-label に入る（色だけの情報にしない）', () => {
