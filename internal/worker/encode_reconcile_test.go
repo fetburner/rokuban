@@ -309,6 +309,23 @@ func TestListRecordingsMissingEncodes(t *testing.T) {
 			got, missing, encodedGone, complete, noProfiles, incomplete, originalGone, trashed, renamed, emptyProfile)
 	}
 
+	// AfterRecordingID（#326 の窓の回転が使う keyset 述語）: missing の id より
+	// 後ろだけを見ると、missing 自身は落ちて encodedGone だけが残る。
+	if missing >= encodedGone {
+		t.Fatalf("expected missing (%d) < encodedGone (%d) for this assertion to mean anything", missing, encodedGone)
+	}
+	gotAfter, err := q.ListRecordingsMissingEncodes(ctx, sqlcgen.ListRecordingsMissingEncodesParams{
+		AfterRecordingID: missing,
+		KnownProfiles:    []string{"h264", "h265"},
+		RowLimit:         encodeReconcileRowLimit,
+	})
+	if err != nil {
+		t.Fatalf("ListRecordingsMissingEncodes with AfterRecordingID: %v", err)
+	}
+	if !slices.Equal(gotAfter, []int64{encodedGone}) {
+		t.Errorf("candidates with AfterRecordingID=%d = %v, want [%d]", missing, gotAfter, encodedGone)
+	}
+
 	// 落とした側（(h)/(i)）は数えて見せる --- 黙って落とすと「エンコードされない
 	// 録画」が静かに増える。
 	unsat, err := q.ListUnsatisfiableEncodeProfiles(ctx, []string{"h264", "h265"})
@@ -443,52 +460,129 @@ func TestEncodeReconcileWorker_SkipsProfilesMissingFromConfig(t *testing.T) {
 	}
 }
 
-// TestEncodeReconcileWorker_RowLimitLeavesLaterRecordingsUnreached は、
-// 「窓は回らない」という既知の限界（EncodeReconcileWorker の doc コメント）が
-// 実際にその通りであること、そしてそれが**見える**ことを固定する。
+// TestEncodeReconcileWorker_WindowRotatesPastStuckCandidates は #326 の判定基準
+// C1（被覆）を固定する: 候補集合が一度も減らない（＝どの候補も永久に満たせない
+// 恒久失敗と等価）最悪条件下でも、窓が前パスの続きから開くことで、有限パス数の
+// うちに全候補が examine されること。
 //
-// これは望ましい挙動を主張するテストではなく、doc コメントに書いた限界が
-// 事実であることの裏付けである（測っていない挙動を断言しない）。限界を
-// 解消したら（#326）このテストは落ちるので、そのとき doc コメントと一緒に
-// 書き換える。
+// 以前はここで「窓は回らない」という既知の限界（1 パスだけ回すと 2 件目に届かない）
+// を固定していたが、#326 でその限界を解消したので反転させた --- 削除ではなく
+// 反転して名前も主張に合わせる（テスト規律: 落としたテストではなく直したテスト
+// として残す）。
 //
-// **パスは 2 回回す。** 1 回だけだと固定できるのは「1 パスが LIMIT で切れる」
-// までで、それは #326 を解消しても真のまま（窓を回す実装でも 1 パスの取得件数は
-// LIMIT のまま）なので、限界そのもの ---「**次のパスでも**到達しない」--- の
-// 裏付けにならない。2 パス目を回すと、#326 の候補 1（カーソルで窓を回す）でも
-// 候補 2（恒久失敗を候補から隔離する）でも 2 件目に到達するようになるため、
-// このテストが落ちて書き換えを促す。カーソル案を Work に仮実装して確認済み
-// （1 パスのままでは PASS のまま = 修正を検出できない）。
-func TestEncodeReconcileWorker_RowLimitLeavesLaterRecordingsUnreached(t *testing.T) {
+// **同一ワーカーインスタンスを全パスで使い回す。** resumeAfter は
+// EncodeReconcileWorker のフィールド（プロセスローカル）なので、パスごとに
+// 新しいインスタンスを作るとテストが空虚に通る --- 作り直しは常に resumeAfter
+// がゼロ値の新しいワーカーを使うことになり、「毎パス先頭から」= 修正前の挙動に
+// 戻ってしまう。
+func TestEncodeReconcileWorker_WindowRotatesPastStuckCandidates(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
 	}
 	mediaDir := t.TempDir()
-	first := seedRecordingWithOriginal(t, pool, mediaDir, "lim/1.m2ts", []string{"h265"}, []byte("x"))
-	second := seedRecordingWithOriginal(t, pool, mediaDir, "lim/2.m2ts", []string{"h265"}, []byte("x"))
-	if first > second {
-		t.Fatalf("expected the first seeded recording to have the lower id (%d > %d)", first, second)
+	first := seedRecordingWithOriginal(t, pool, mediaDir, "rot/1.m2ts", []string{"h265"}, []byte("x"))
+	second := seedRecordingWithOriginal(t, pool, mediaDir, "rot/2.m2ts", []string{"h265"}, []byte("x"))
+	third := seedRecordingWithOriginal(t, pool, mediaDir, "rot/3.m2ts", []string{"h265"}, []byte("x"))
+	if first >= second || second >= third {
+		t.Fatalf("expected ascending recording ids, got first=%d second=%d third=%d", first, second, third)
 	}
 
-	// 1 件目は投入されるが encoded は生まれない（このテストは encode を走らせない）
-	// ので、次パスでも 1 件目が候補の先頭に居座る --- 「永久に満たせない候補」と
-	// 同じ状況を作っている。
+	// encode は一切走らせない。候補は一度も減らない = 恒久失敗と同じ状況。
 	w := &EncodeReconcileWorker{Pool: pool, Profiles: encodeConfigWith("h265"), RowLimit: 1}
+
+	// パス 1: 1 件目にだけ投入される。
 	runEncodeReconcilePass(t, pool, w)
+	if got := countEncodeJobs(t, pool, first, "h265"); got != 1 {
+		t.Fatalf("pass 1: encode jobs for first = %d, want 1", got)
+	}
+	if got := countEncodeJobs(t, pool, second, "h265"); got != 0 {
+		t.Fatalf("pass 1: encode jobs for second = %d, want 0", got)
+	}
+
+	// パス 2: 窓が回って 2 件目に届く。
+	runEncodeReconcilePass(t, pool, w)
+	if got := countEncodeJobs(t, pool, second, "h265"); got != 1 {
+		t.Fatalf("pass 2: encode jobs for second = %d, want 1 (the window must rotate past the stuck first candidate)", got)
+	}
+	if got := countEncodeJobs(t, pool, third, "h265"); got != 0 {
+		t.Fatalf("pass 2: encode jobs for third = %d, want 0", got)
+	}
+
+	// パス 3: 3 件目に届く。
+	runEncodeReconcilePass(t, pool, w)
+	if got := countEncodeJobs(t, pool, third, "h265"); got != 1 {
+		t.Fatalf("pass 3: encode jobs for third = %d, want 1", got)
+	}
+
+	// 巻き戻りの観測は river_job の件数では見えない（UniqueOpts が pending 中の
+	// 1 本に合流させるため、1 件目に再投入してもジョブ数は増えない）。
+	// 1 件目の river_job 行を削除してから巻き戻りを起こし、復活することで
+	// 「もう一度 examine された」ことを見る。
+	if _, err := pool.Exec(context.Background(),
+		`DELETE FROM river_job WHERE kind = 'encode' AND (args->>'recording_id')::bigint = $1 AND args->>'profile' = 'h265'`,
+		first); err != nil {
+		t.Fatalf("deleting first recording's river_job row: %v", err)
+	}
+	if got := countEncodeJobs(t, pool, first, "h265"); got != 0 {
+		t.Fatalf("after delete: encode jobs for first = %d, want 0 (setup for the rewind check)", got)
+	}
+
+	// パス 4: 3 件目より後ろに候補は無い。窓は末尾を越えて空になる
+	// （まだ先頭には戻っていない）。1 件目は resumeAfter=third より手前なので
+	// このパスでは見ていない。
+	runEncodeReconcilePass(t, pool, w)
+	if got := promtestutil.ToFloat64(metrics.EncodeReconcileCandidates); got != 0 {
+		t.Fatalf("pass 4: candidates gauge = %v, want 0 (window ran past the end)", got)
+	}
+	if got := countEncodeJobs(t, pool, first, "h265"); got != 0 {
+		t.Fatalf("pass 4: encode jobs for first = %d, want 0 (not yet rewound)", got)
+	}
+
+	// パス 5: 先頭へ巻き戻り、1 件目がもう一度 examine されて復活する。
+	runEncodeReconcilePass(t, pool, w)
+	if got := countEncodeJobs(t, pool, first, "h265"); got != 1 {
+		t.Errorf("pass 5: encode jobs for first = %d, want 1 (the window must wrap around to the beginning)", got)
+	}
+}
+
+// TestEncodeReconcileWorker_RowLimitCapsWorkPerPass は #326 の判定基準 C2
+// （コスト）を固定する: 候補が RowLimit を超えていても、1 パスが examine するのは
+// ちょうど RowLimit 件までであること。
+func TestEncodeReconcileWorker_RowLimitCapsWorkPerPass(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	mediaDir := t.TempDir()
+	first := seedRecordingWithOriginal(t, pool, mediaDir, "cap/1.m2ts", []string{"h265"}, []byte("x"))
+	second := seedRecordingWithOriginal(t, pool, mediaDir, "cap/2.m2ts", []string{"h265"}, []byte("x"))
+	third := seedRecordingWithOriginal(t, pool, mediaDir, "cap/3.m2ts", []string{"h265"}, []byte("x"))
+	if first >= second || second >= third {
+		t.Fatalf("expected ascending recording ids, got first=%d second=%d third=%d", first, second, third)
+	}
+
+	w := &EncodeReconcileWorker{Pool: pool, Profiles: encodeConfigWith("h265"), RowLimit: 2}
 	runEncodeReconcilePass(t, pool, w)
 
 	if got := countEncodeJobs(t, pool, first, "h265"); got != 1 {
-		t.Errorf("encode jobs for the first recording = %d, want 1", got)
+		t.Errorf("encode jobs for first = %d, want 1", got)
 	}
-	// 2 件目には 2 パス目でも到達しない（窓が回らない）。
-	if got := countEncodeJobs(t, pool, second, "h265"); got != 0 {
-		t.Errorf("encode jobs for the recording beyond the window = %d, want 0", got)
+	if got := countEncodeJobs(t, pool, second, "h265"); got != 1 {
+		t.Errorf("encode jobs for second = %d, want 1", got)
 	}
-	// 窓に張り付いたことがゲージから見えること（運用側の検出手段）。
-	if got := promtestutil.ToFloat64(metrics.EncodeReconcileCandidates); got != 1 {
-		t.Errorf("candidates gauge = %v, want 1 (equal to the row limit = window is full)", got)
+	// 3 件目は RowLimit=2 を超えるのでこのパスでは examine されない。
+	if got := countEncodeJobs(t, pool, third, "h265"); got != 0 {
+		t.Errorf("encode jobs for third = %d, want 0 (a single pass must not examine more than RowLimit candidates)", got)
 	}
+	if got := promtestutil.ToFloat64(metrics.EncodeReconcileCandidates); got != 2 {
+		t.Errorf("candidates gauge = %v, want 2 (equal to RowLimit)", got)
+	}
+	// 最後に完走したパスの時刻が更新されること（TestEncodeReconcileWorker_
+	// RowLimitLeavesLaterRecordingsUnreached が固定していたアサーションを移設。
+	// これが無いと EncodeReconcileLastPass.SetToCurrentTime の呼び出しを消しても
+	// パッケージ全体のテストが green のまま通ってしまい、停止したパスが
+	// 検出できなくなる）。
 	if got := promtestutil.ToFloat64(metrics.EncodeReconcileLastPass); got == 0 {
 		t.Error("last-pass gauge was not set; a stalled pass would be undetectable")
 	}

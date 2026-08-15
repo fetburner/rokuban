@@ -69,9 +69,10 @@ WHERE a.kind = 'original'
   -- reconcile で揃う）方を選ぶ。したがって「凍結済み desired に含まれる、
   -- 現在の設定に存在しないプロファイルについて、その名前の active な encoded が
   -- まだ無い」録画は、このビューにとって永久に「揃っていない」ため原本を保持し
-  -- 続ける（その encoded が既にコミット済みなら、view はプロファイル名が現在の
-  -- 設定にあるかを見ないので通常どおり削除対象になる --- 永久に保持されるのは
-  -- 「意図したエンコードが 1 つも存在しない」録画に限る）。該当件数は
+  -- 続ける。トリガーするのは「消えたプロファイルが 1 つも存在しない」ではなく
+  -- 「消えたプロファイルのうち 1 つでも active な encoded が無い」こと ---
+  -- 例えば desired={h264,gone} で現在の設定が {h264} のとき、h264 の active な
+  -- encoded が既にあっても gone の encoded が無ければ原本は保持される。該当件数は
   -- ListUnsatisfiableEncodeProfiles（internal/db/queries/encode_reconcile.sql、
   -- 同じく active な encoded の NOT EXISTS を条件に持つ）が可視化する
   -- （docs/storage/retention.md §保持ポリシー）。
