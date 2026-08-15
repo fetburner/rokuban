@@ -222,13 +222,13 @@ describe('ProgramRow の外向き導線（issue #229）', () => {
   })
 })
 
-describe('ProgramRow の予約ボタンの可視性配線（issue #310）', () => {
-  // 実際の可視性（visibility が :hover / :focus-visible / pointer メディア特性で
-  // 実際に変わること）は jsdom では測れない --- 唯一の判定は
-  // e2e/reserve-visibility.mjs（web/e2e/README.md）。ここで見るのは、その
-  // CSS が依存する配線（`group` / `peer` マーカーと `data-testid`）が
-  // 消えていないことだけ。マーカーが消えると e2e はセレクタが見つからず
-  // 即座に落ちるが、原因調査の手間を減らすため、より速い jsdom 側にも
+describe('ProgramRow の予約列の開閉配線（issue #310）', () => {
+  // 実際の開閉（列幅が :hover / :focus-visible / pointer メディア特性で
+  // w-0 ↔ w-20 に変わること）は jsdom では測れない（レイアウトを持たない）
+  // --- 唯一の判定は e2e/reserve-visibility.mjs（web/e2e/README.md）。ここで
+  // 見るのは、その CSS が依存する配線（`group` / `peer` マーカーと
+  // `data-testid`）が消えていないことだけ。マーカーが消えると e2e はセレクタが
+  // 見つからず即座に落ちるが、原因調査の手間を減らすため、より速い jsdom 側にも
   // 同じ配線を固定しておく。
   it('行トグルが `peer` を持ち、予約ボタンの wrapper が `data-testid="program-row-reserve"` を持つ', async () => {
     stubFetch()
