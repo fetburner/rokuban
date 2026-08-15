@@ -292,6 +292,33 @@ pnpm build && pnpm preview --port 4173 --strictPort &
 E2E_URL=http://localhost:4173 pnpm e2e:reserve-visibility
 ```
 
+### 番組表グリッドの予約済み印（`grid-reserved.mjs`）
+
+番組表グリッドで予約済みがジャンルの淡い塗りに埋もれる（issue #307）。
+見える印が `ring-1`（1px）と `size-1.5`（6px）の点だけで、「予約済み」は
+`aria-label` にしか無い。選択中は同じ `ring-primary` の `ring-2` なので、
+差は太さだけ。`pnpm test` の既存判定は `data-reserved` と `aria-label` だけを
+見ており、見た目の差は見ていない。
+
+jsdom は色も要素の大きさも測れないので、ここが唯一の判定手段。見るのは:
+
+- ① 予約済みセルに、aria ではない見える「予約」がある。箱が 6px の点より
+  大きい（幅 16px 以上）。同じジャンルの未予約セルには無い
+- ② 5 分（10px）の予約済みセルでも印が消えない --- 見える「予約」、または
+  セルの高さの 8 割以上を覆う縦の帯
+- ③ 予約済み（未選択）と選択中（未予約）は別の形。予約済みだけに見える
+  「予約」がある
+- ④ 印の色はタリー / 琥珀 / destructive ではない（色は信号のみ）
+
+`design.mjs` と同じ手（`/api/**` を `page.route` で丸ごと差し替え、時刻は
+`page.clock.setFixedTime` で固定）。⓪（配っている bundle と `dist/` の一致）
+も自分で確認する。
+
+```sh
+pnpm build && pnpm preview --port 4173 --strictPort &
+E2E_URL=http://localhost:4173 pnpm e2e:grid-reserved
+```
+
 ## CI では回さない
 
 実サーバーと実 mirakc のデータに依存するため、CI には載せない。**ローカルでの受け入れ確認**の
