@@ -228,7 +228,7 @@ grep -rln --include='*.ts' --include='*.tsx' --include='*.css' 'scanlines' web/s
 
 ## アニメーションは `prefers-reduced-motion` で縮退する
 
-`animate-pulse`（`Skeleton`）・`animate-spin`（読み込み中のボタン）・
+`animate-pulse`（`Skeleton`）・
 ポップオーバー/ダイアログの `slide-in-from-*` / `zoom-in-95` / `fade-in-0`・
 `Button` の押下フィードバック（`translate`）が動きの発生源（他にも
 あり得るが、洗い出しは網羅していない --- 例えば `recording-player.tsx` の

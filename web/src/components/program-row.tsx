@@ -1,5 +1,5 @@
 import { Link } from '@tanstack/react-router'
-import { ChevronDown, Loader2 } from 'lucide-react'
+import { ChevronDown } from 'lucide-react'
 import { useState } from 'react'
 
 import { useGetProgram, type ProgramListItem, type ProgramOverridesInput } from '@/api/generated'
@@ -214,13 +214,13 @@ export function ProgramRow({
             onClick={reserved ? onCancel : handleReserve}
             className="min-h-11 w-full rounded-none"
           >
-            {pending ? (
-              <Loader2 className="size-4 animate-spin" />
-            ) : reserved ? (
-              '取消'
-            ) : (
-              '予約'
-            )}
+            {/* 送信中でもスピナーを重ねない。楽観更新（programs.tsx
+                useReservationActions）がタップ即座にこのラベル・色へ確定させ、
+                送信中は `disabled:opacity-50` の淡い dim だけが手掛かりになる ---
+                スピナーは楽観更新の確定表示を 1 フレーム覆い隠し、高速応答時に
+                点滅していた（issue #298 で実測）。dim は Button の
+                `transition opacity` でネットワーク速度に自然に追従する。 */}
+            {reserved ? '取消' : '予約'}
           </Button>
         </div>
       </div>

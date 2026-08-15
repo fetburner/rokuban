@@ -191,7 +191,7 @@ E2E_URL=http://localhost:4173 pnpm e2e:design
   （バーの下に隠れていないか）。開いた状態のショットも `more-menu-open-*.png`
   として出る
 - `prefers-reduced-motion: reduce` で主要な動き（Skeleton の
-  `animate-pulse`・予約実行中ボタンの `animate-spin`・ポップオーバーの
+  `animate-pulse`・ポップオーバーの
   `slide-in-from-*`/`zoom-in-95`・共通 `Button` の `translate` 遷移）が
   縮退し、既定（`no-preference`）では従来どおり動くこと。**両方向**を見る
   --- 縮退側だけの判定は、動きを恒久的に殺した実装も通してしまう。
