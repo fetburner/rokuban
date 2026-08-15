@@ -3,7 +3,7 @@ import { Check, ChevronDown } from 'lucide-react'
 import { useMemo, useState } from 'react'
 
 import type { Service } from '@/api/generated'
-import { orderServices } from '@/lib/epg-grid'
+import { channelTypeLabel, groupByChannelType, orderServices } from '@/lib/epg-grid'
 import { cn } from '@/lib/utils'
 
 /**
@@ -18,48 +18,6 @@ import { cn } from '@/lib/utils'
 
 /** searchThreshold を超える候補数のときだけ絞り込み欄を出す。少数のときは検索欄が邪魔なだけ。 */
 const searchThreshold = 15
-
-/**
- * channelTypeLabels は channelType の日本語表記。
- *
- * 未知の種別が来てもコードをそのまま出す（lib/genre.ts と同じ規律 —
- * 分類の失敗を分類済みに見せない。「その他」に丸めない）。
- */
-const channelTypeLabels: Record<string, string> = {
-  GR: '地上波',
-  BS: 'BS',
-  CS: 'CS',
-  SKY: 'SKY',
-}
-
-function channelTypeLabel(channelType: string): string {
-  return channelTypeLabels[channelType] ?? channelType
-}
-
-type ChannelGroup = {
-  channelType: string
-  services: Service[]
-}
-
-/**
- * groupByChannelType は種別ごとの連続した塊にまとめる。
- *
- * 入力は orderServices ですでに種別順（GR → BS → CS → SKY）に並んでいる前提なので、
- * 独自の並び替えはせず、隣接する要素の channelType が変わったところで区切るだけでよい。
- * これによりグリッドの列順と食い違う 2 つ目の並び順を作らずに済む。
- */
-function groupByChannelType(ordered: readonly Service[]): ChannelGroup[] {
-  const groups: ChannelGroup[] = []
-  for (const service of ordered) {
-    const last = groups[groups.length - 1]
-    if (last && last.channelType === service.channelType) {
-      last.services.push(service)
-    } else {
-      groups.push({ channelType: service.channelType, services: [service] })
-    }
-  }
-  return groups
-}
 
 export function ChannelPicker({
   services,

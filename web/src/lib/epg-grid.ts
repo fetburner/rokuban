@@ -191,3 +191,47 @@ export function orderServices(services: readonly Service[]): Service[] {
       a.serviceId - b.serviceId,
   )
 }
+
+/**
+ * channelTypeLabels は channelType の日本語表記。
+ *
+ * 未知の種別が来てもコードをそのまま出す（lib/genre.ts と同じ規律 —
+ * 分類の失敗を分類済みに見せない。「その他」に丸めない）。
+ */
+const channelTypeLabels: Record<string, string> = {
+  GR: '地上波',
+  BS: 'BS',
+  CS: 'CS',
+  SKY: 'SKY',
+}
+
+/** channelTypeLabel は channelType の日本語表記を返す（未知の種別はコードのまま）。 */
+export function channelTypeLabel(channelType: string): string {
+  return channelTypeLabels[channelType] ?? channelType
+}
+
+/** ChannelGroup は同じ channelType の連続した塊。 */
+export type ChannelGroup = {
+  channelType: string
+  services: Service[]
+}
+
+/**
+ * groupByChannelType は種別ごとの連続した塊にまとめる。
+ *
+ * 入力は orderServices ですでに種別順（GR → BS → CS → SKY）に並んでいる前提なので、
+ * 独自の並び替えはせず、隣接する要素の channelType が変わったところで区切るだけでよい。
+ * これによりグリッドの列順と食い違う 2 つ目の並び順を作らずに済む。
+ */
+export function groupByChannelType(ordered: readonly Service[]): ChannelGroup[] {
+  const groups: ChannelGroup[] = []
+  for (const service of ordered) {
+    const last = groups[groups.length - 1]
+    if (last && last.channelType === service.channelType) {
+      last.services.push(service)
+    } else {
+      groups.push({ channelType: service.channelType, services: [service] })
+    }
+  }
+  return groups
+}

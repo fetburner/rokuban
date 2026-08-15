@@ -7,7 +7,6 @@ import {
   useListReservations,
   useListServices,
   type ProgramListItem,
-  type Service,
 } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
 import { EmptyState, ErrorState, ListSkeleton, PageHeader } from '@/components/page'
@@ -17,7 +16,7 @@ import { Button } from '@/components/ui/button'
 import { useLiveCapability } from '@/lib/capabilities'
 import { currentProgramWindow, pickInitialServiceId } from '@/lib/live'
 import { interruptionQueryWindow, upcomingInterruptingReservation } from '@/lib/live-interruption'
-import { orderServices } from '@/lib/epg-grid'
+import { channelTypeLabel, groupByChannelType, orderServices } from '@/lib/epg-grid'
 import { formatTime, isAiring } from '@/lib/format'
 import { useCurrentSite } from '@/lib/site'
 import { cn } from '@/lib/utils'
@@ -38,34 +37,6 @@ import { cn } from '@/lib/utils'
  * （レビュー #190 の指摘）。
  */
 const nowPlayingRefetchMs = 30_000
-
-type ChannelGroup = { channelType: string; services: Service[] }
-
-/** channelTypeLabels は channelType の日本語表記（components/channel-picker.tsx と同じ表）。 */
-const channelTypeLabels: Record<string, string> = {
-  GR: '地上波',
-  BS: 'BS',
-  CS: 'CS',
-  SKY: 'SKY',
-}
-
-function channelTypeLabel(channelType: string): string {
-  return channelTypeLabels[channelType] ?? channelType
-}
-
-/** groupByChannelType は種別ごとの連続した塊にまとめる（orderServices 済みの入力を前提）。 */
-function groupByChannelType(ordered: readonly Service[]): ChannelGroup[] {
-  const groups: ChannelGroup[] = []
-  for (const service of ordered) {
-    const last = groups[groups.length - 1]
-    if (last && last.channelType === service.channelType) {
-      last.services.push(service)
-    } else {
-      groups.push({ channelType: service.channelType, services: [service] })
-    }
-  }
-  return groups
-}
 
 /**
  * LivePage はライブ視聴画面（M4-4。選択と視聴開始の分離は M7-1。録画予約による
