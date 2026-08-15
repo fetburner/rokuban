@@ -19,7 +19,6 @@ import {
   ListRecordingsSource,
   ListRecordingsStatus,
   type ListRecordingsParams,
-  type Service,
 } from '@/api/generated'
 import { formatDateTime } from '@/lib/format'
 import { parsePositiveIntId } from '@/lib/positive-id'
@@ -30,8 +29,8 @@ export type RecordingsPageSearch = {
   q?: string
   /** ARIB ジャンル大分類（lv1、0〜15）。複数可、OR。 */
   genre?: number[]
-  /** チャンネル（サービス）。複数可、OR。 */
-  serviceId?: number[]
+  /** チャンネル（`<site>:<serviceId>`）。複数可、OR。 */
+  service?: string[]
   status?: ListRecordingsStatus
   source?: ListRecordingsSource
   /** 特定ルール由来の録画に絞る（ルール一覧の「このルールの録画」導線から） */
@@ -96,6 +95,17 @@ function parseIntArray(raw: unknown, opts?: { min?: number; max?: number }): num
   return values.length > 0 ? values : undefined
 }
 
+const recordingServicePattern = /^[a-z0-9](?:[_-]?[a-z0-9])*:([1-9][0-9]*)$/
+
+function parseRecordingServices(raw: unknown): string[] | undefined {
+  const values = toRawValues(raw).filter((value): value is string => {
+    if (typeof value !== 'string') return false
+    const match = recordingServicePattern.exec(value)
+    return match !== null && Number(match[1]) <= 2_147_483_647
+  })
+  return values.length > 0 ? values : undefined
+}
+
 function parseEnum<T extends string>(raw: unknown, allowed: readonly T[]): T | undefined {
   return typeof raw === 'string' && (allowed as readonly string[]).includes(raw) ? (raw as T) : undefined
 }
@@ -150,7 +160,7 @@ export function parseRecordingsSearch(search: Record<string, unknown>): Recordin
   return {
     q: typeof search.q === 'string' && search.q.trim() !== '' ? search.q : undefined,
     genre: parseIntArray(search.genre, { min: 0, max: 15 }),
-    serviceId: parseIntArray(search.serviceId),
+    service: parseRecordingServices(search.service),
     status: parseEnum(search.status, recordingStatusValues),
     source: parseEnum(search.source, recordingSourceValues),
     ruleId: parseRuleId(search.ruleId),
@@ -172,7 +182,7 @@ export function hasAnyRecordingsCondition(search: RecordingsPageSearch): boolean
   return (
     (search.q !== undefined && search.q.trim() !== '') ||
     (search.genre?.length ?? 0) > 0 ||
-    (search.serviceId?.length ?? 0) > 0 ||
+    (search.service?.length ?? 0) > 0 ||
     search.status !== undefined ||
     search.source !== undefined ||
     search.ruleId !== undefined ||
@@ -195,8 +205,8 @@ export function buildListRecordingsParams(
 
   if (search.q !== undefined && search.q.trim() !== '') params.q = search.q
   if (search.genre !== undefined && search.genre.length > 0) params.genre = search.genre
-  if (search.serviceId !== undefined && search.serviceId.length > 0) {
-    params.serviceId = search.serviceId
+  if (search.service !== undefined && search.service.length > 0) {
+    params.service = search.service
   }
   if (search.status !== undefined) params.status = search.status
   if (search.source !== undefined) params.source = search.source
@@ -264,7 +274,7 @@ function periodLabel(from: string | undefined, to: string | undefined): string {
  */
 export function describeRecordingsFilters(
   search: RecordingsPageSearch,
-  serviceById: ReadonlyMap<number, Service>,
+  serviceLabelByKey: ReadonlyMap<string, string>,
 ): RecordingsFilterChip[] {
   const chips: RecordingsFilterChip[] = []
 
@@ -279,14 +289,13 @@ export function describeRecordingsFilters(
     })
   }
 
-  for (const serviceId of search.serviceId ?? []) {
-    const name = serviceById.get(serviceId)?.name ?? `チャンネル #${serviceId}`
+  for (const service of search.service ?? []) {
     chips.push({
-      key: `service-${serviceId}`,
-      label: `チャンネル: ${name}`,
+      key: `service-${service}`,
+      label: `チャンネル: ${serviceLabelByKey.get(service) ?? service}`,
       clear: (s) => {
-        const next = (s.serviceId ?? []).filter((id) => id !== serviceId)
-        return { ...s, serviceId: next.length > 0 ? next : undefined }
+        const next = (s.service ?? []).filter((key) => key !== service)
+        return { ...s, service: next.length > 0 ? next : undefined }
       },
     })
   }

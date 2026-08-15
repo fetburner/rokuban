@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,6 +17,11 @@ import (
 
 // recordingsFilter は GET /api/recordings の絞り込み + キーセットページング軸
 // （issue #136）。ゼロ値のフィールドは「絞り込みなし」を表す。
+type serviceRef struct {
+	Site      string
+	ServiceID int32
+}
+
 type recordingsFilter struct {
 	Trash bool
 
@@ -23,7 +30,10 @@ type recordingsFilter struct {
 
 	Genres       []int16
 	ChannelTypes []string
-	ServiceIDs   []int32
+	// Services はチャンネル絞り込みの複合キー (site, serviceId)。同じ serviceId を
+	// 複数サイトで受信していても site を跨がないため、素の serviceId ではなく
+	// (site, serviceId) で引く（issue #283）。
+	Services []serviceRef
 
 	Status ListRecordingsParamsStatus
 	Source ListRecordingsParamsSource
@@ -60,6 +70,8 @@ const (
 	genreLv1Min = 0
 	genreLv1Max = 15
 )
+
+var recordingServicePattern = regexp.MustCompile(`^([a-z0-9](?:[_-]?[a-z0-9])*):([1-9][0-9]*)$`)
 
 // recordingsFilterFromParams は ListRecordingsParams（openapi_gen.go の生成型）を
 // recordingsFilter に変換する。不正な入力（before/beforeId が片方だけ、limit が
@@ -112,7 +124,19 @@ func recordingsFilterFromParams(p ListRecordingsParams) (recordingsFilter, strin
 		}
 		f.ChannelTypes = channelTypeStrings(*p.ChannelType)
 	}
-	f.ServiceIDs = int32Slice(p.ServiceId)
+	if p.Service != nil {
+		for _, value := range *p.Service {
+			match := recordingServicePattern.FindStringSubmatch(value)
+			if match == nil {
+				return recordingsFilter{}, fmt.Sprintf("invalid service %q (want <site>:<positive serviceId>)", value)
+			}
+			serviceID, err := strconv.ParseInt(match[2], 10, 32)
+			if err != nil {
+				return recordingsFilter{}, fmt.Sprintf("invalid service %q: serviceId is out of range", value)
+			}
+			f.Services = append(f.Services, serviceRef{Site: match[1], ServiceID: int32(serviceID)})
+		}
+	}
 	if p.Status != nil {
 		if !p.Status.Valid() {
 			return recordingsFilter{}, fmt.Sprintf("invalid status %q", *p.Status)
@@ -337,8 +361,12 @@ func buildRecordingsQuery(f recordingsFilter) (string, []any, error) {
 	if len(f.ChannelTypes) > 0 {
 		and("r.channel_type = ANY(" + arg(f.ChannelTypes) + ")")
 	}
-	if len(f.ServiceIDs) > 0 {
-		and("r.service_id = ANY(" + arg(f.ServiceIDs) + ")")
+	if len(f.Services) > 0 {
+		clauses := make([]string, len(f.Services))
+		for i, service := range f.Services {
+			clauses[i] = "(r.site = " + arg(service.Site) + " AND r.service_id = " + arg(service.ServiceID) + ")"
+		}
+		and("(" + strings.Join(clauses, " OR ") + ")")
 	}
 	if f.Status != "" {
 		and("r.status = " + arg(string(f.Status)))

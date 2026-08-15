@@ -57,6 +57,7 @@ function sampleRule(overrides: Partial<Rule> = {}): Rule {
  */
 function createFakeServer(options: {
   recording: Recording | null
+  sites?: string[]
   encodeProfiles?: EncodeProfileSummary[]
   rules?: Rule[]
   /** rulesResponse はルール一覧の解決を遅延させるテスト用。 */
@@ -68,6 +69,7 @@ function createFakeServer(options: {
   encodePostResponse?: () => Response
 }) {
   let recording = options.recording
+  const sites = options.sites ?? ['default']
   const encodeProfiles = options.encodeProfiles ?? []
   const rules = options.rules ?? []
   const rulesResponse = options.rulesResponse
@@ -81,7 +83,7 @@ function createFakeServer(options: {
 
     if (url.pathname === '/api/breakers') return Promise.resolve(jsonResponse([]))
     // SiteGate（routes.tsx）が全ルートの手前で待つ（issue #184 M4-12）。
-    if (url.pathname === '/api/sites') return Promise.resolve(jsonResponse(['default']))
+    if (url.pathname === '/api/sites') return Promise.resolve(jsonResponse(sites))
     if (url.pathname === '/api/encode-profiles') return Promise.resolve(jsonResponse(encodeProfiles))
     if (url.pathname === '/api/rules' && method === 'GET') {
       return rulesResponse ? rulesResponse() : Promise.resolve(jsonResponse(rules))
@@ -204,6 +206,28 @@ describe('RecordingDetailPage', () => {
 
     await screen.findByRole('region', { name: '再生' })
     expect(playSpy).not.toHaveBeenCalled()
+  })
+
+  // issue #283: 多サイトのときは詳細のチャンネル欄にも site を出す。
+  it('多サイトのときは詳細のチャンネル欄に site を出す', async () => {
+    createFakeServer({
+      sites: ['default', 'site2'],
+      recording: sampleRecording({ site: 'site2' }),
+    })
+
+    renderAt('/recordings/3')
+
+    const channel = await screen.findByText('チャンネル')
+    expect(within(channel.parentElement as HTMLElement).getByText(/site2/)).toBeInTheDocument()
+  })
+
+  it('単一サイトのときは詳細に site を出さない', async () => {
+    createFakeServer({ sites: ['default'], recording: sampleRecording() })
+
+    renderAt('/recordings/3')
+
+    await screen.findByText('チャンネル')
+    expect(screen.queryByText(/default/)).not.toBeInTheDocument()
   })
 
   it('存在しない id は「録画が見つかりません」を表示する', async () => {

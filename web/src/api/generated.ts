@@ -978,7 +978,12 @@ qTarget?: ListRecordingsQTarget;
  */
 genre?: number[];
 channelType?: ListRecordingsChannelTypeItem[];
-serviceId?: number[];
+/**
+ * `<site>:<serviceId>` の複合キー。複数指定は OR。同じ serviceId を受信する
+ * 別サイトは一致しない。
+ * @items.pattern ^[a-z0-9](?:[_-]?[a-z0-9])*:([1-9][0-9]*)$
+ */
+service?: string[];
 /**
  * recordings.status の CHECK と一致させた 4 値（'canceled' は 00021 で
  * CHECK に追加済み）。
@@ -3675,7 +3680,7 @@ export const getListRecordingsUrl = (params?: ListRecordingsParams,) => {
   const normalizedParams = new URLSearchParams();
 
   Object.entries(params || {}).forEach(([key, value]) => {
-    const explodeParameters = ["genre","channelType","serviceId"];
+    const explodeParameters = ["genre","channelType","service"];
 
     if (Array.isArray(value) && explodeParameters.includes(key)) {
       value.forEach((v) => {
@@ -3714,8 +3719,10 @@ export const getListRecordingsUrl = (params?: ListRecordingsParams,) => {
  *   「録画検索は rulequery を共有しない」
  * - `genre` は `genre_lv1`（ジャンル大分類。`genres` から生成列で導出）との
  *   重なりで絞る（複数指定は OR）
- * - `channelType` / `serviceId` は複数指定可（`style: form, explode: true`。
- *   `?serviceId=1&serviceId=2`）
+ * - `channelType` / `service` は複数指定可（`style: form, explode: true`）。
+ *   `service` は `<site>:<serviceId>` の複合キー（例:
+ *   `?service=tokyo:1024&service=takamatsu:1032`）で、同じ `serviceId` を受信する
+ *   別サイトの録画を混ぜない
  * - `status` / `source` / `ruleId` は録画自身の観測・出自での絞り込み
  * - `from` / `to` は `program_start_at` の範囲（`from` 以上 `to` 未満）
  *

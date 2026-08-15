@@ -1386,7 +1386,10 @@ type ListRecordingsParams struct {
 	// Genre genre_lv1（ジャンル大分類）との重なり。複数指定可
 	Genre       *[]int                             `form:"genre,omitempty" json:"genre,omitempty"`
 	ChannelType *[]ListRecordingsParamsChannelType `form:"channelType,omitempty" json:"channelType,omitempty"`
-	ServiceId   *[]int                             `form:"serviceId,omitempty" json:"serviceId,omitempty"`
+
+	// Service `<site>:<serviceId>` の複合キー。複数指定は OR。同じ serviceId を受信する
+	// 別サイトは一致しない。
+	Service *[]string `form:"service,omitempty" json:"service,omitempty"`
 
 	// Status recordings.status の CHECK と一致させた 4 値（'canceled' は 00021 で
 	// CHECK に追加済み）。
@@ -1924,15 +1927,15 @@ func (siw *ServerInterfaceWrapper) ListRecordings(w http.ResponseWriter, r *http
 		return
 	}
 
-	// ------------- Optional query parameter "serviceId" -------------
+	// ------------- Optional query parameter "service" -------------
 
-	err = runtime.BindQueryParameterWithOptions("form", true, false, "serviceId", r.URL.Query(), &params.ServiceId, runtime.BindQueryParameterOptions{Type: "array", Format: ""})
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "service", r.URL.Query(), &params.Service, runtime.BindQueryParameterOptions{Type: "array", Format: ""})
 	if err != nil {
 		var requiredError *runtime.RequiredParameterError
 		if errors.As(err, &requiredError) {
-			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "serviceId"})
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "service"})
 		} else {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "serviceId", Err: err})
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "service", Err: err})
 		}
 		return
 	}

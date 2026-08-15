@@ -1,8 +1,14 @@
 import { Popover as PopoverPrimitive } from '@base-ui/react/popover'
+import { useQueries } from '@tanstack/react-query'
 import { ChevronDown, Search as SearchIcon, X } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 
-import { ListRecordingsOrder, useListServices, type Service } from '@/api/generated'
+import {
+  getListServicesQueryOptions,
+  ListRecordingsOrder,
+  useListSites,
+  type Service,
+} from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
 import { ChannelPicker } from '@/components/channel-picker'
 import { Chip } from '@/components/ui/chip'
@@ -19,7 +25,6 @@ import {
   statusLabels,
   type RecordingsPageSearch,
 } from '@/lib/recording-search'
-import { useCurrentSite } from '@/lib/site'
 
 /** キーワード入力の debounce（ms）。1 文字ごとに URL を書き換えて履歴を汚さない。 */
 const KEYWORD_DEBOUNCE_MS = 300
@@ -41,16 +46,25 @@ export function RecordingFilters({
   search: RecordingsPageSearch
   onChange: Update
 }) {
-  const site = useCurrentSite()
-  const services = useListServices(site)
-  const serviceList = useMemo(() => unwrap(services.data) ?? [], [services.data])
-  const serviceById = useMemo(() => {
-    const map = new Map<number, Service>()
-    for (const s of serviceList) map.set(s.serviceId, s)
-    return map
-  }, [serviceList])
+  const sitesQuery = useListSites()
+  const sites = unwrap(sitesQuery.data) ?? []
+  const serviceQueries = useQueries({
+    queries: sites.map((site) => getListServicesQueryOptions(site)),
+  })
 
-  const chips = useMemo(() => describeRecordingsFilters(search, serviceById), [search, serviceById])
+  const serviceList: Service[] = []
+  const siteByService = new Map<Service, string>()
+  const serviceLabelByKey = new Map<string, string>()
+  for (const [i, query] of serviceQueries.entries()) {
+    const site = sites[i]
+    for (const service of unwrap(query.data) ?? []) {
+      serviceList.push(service)
+      siteByService.set(service, site)
+      serviceLabelByKey.set(`${site}:${service.serviceId}`, `${service.name} (${site})`)
+    }
+  }
+
+  const chips = describeRecordingsFilters(search, serviceLabelByKey)
 
   return (
     <div className="flex flex-col gap-2 border-t border-border px-4 py-2">
@@ -62,8 +76,9 @@ export function RecordingFilters({
         <FilterPanel
           search={search}
           services={serviceList}
-          servicesPending={services.isPending}
-          servicesError={services.isError}
+          siteByService={siteByService}
+          servicesPending={sitesQuery.isPending || serviceQueries.some((q) => q.isPending)}
+          servicesError={sitesQuery.isError || serviceQueries.some((q) => q.isError)}
           onChange={onChange}
         />
         <OrderSelect
@@ -177,19 +192,24 @@ function OrderSelect({
 function FilterPanel({
   search,
   services,
+  siteByService,
   servicesPending,
   servicesError,
   onChange,
 }: {
   search: RecordingsPageSearch
   services: Service[]
+  /** 各 Service がどの site の一覧に由来するか。ChannelPicker の複合キーに使う。 */
+  siteByService: ReadonlyMap<Service, string>
   servicesPending: boolean
   servicesError: boolean
   onChange: Update
 }) {
   const [open, setOpen] = useState(false)
-  const selectedServiceIds = useMemo(() => new Set(search.serviceId ?? []), [search.serviceId])
+  const selectedServices = useMemo(() => new Set(search.service ?? []), [search.service])
   const selectedGenres = useMemo(() => new Set(search.genre ?? []), [search.genre])
+  const multiSite = useMemo(() => new Set(siteByService.values()).size > 1, [siteByService])
+  const serviceKey = (s: Service) => `${siteByService.get(s) ?? ''}:${s.serviceId}`
 
   return (
     <PopoverPrimitive.Root open={open} onOpenChange={setOpen}>
@@ -222,9 +242,11 @@ function FilterPanel({
               ) : (
                 <ChannelPicker
                   services={services}
-                  selected={selectedServiceIds}
+                  selected={selectedServices}
+                  keyOf={serviceKey}
+                  secondaryLabel={multiSite ? (s) => siteByService.get(s) : undefined}
                   onChange={(next) =>
-                    onChange((s) => ({ ...s, serviceId: next.size > 0 ? [...next] : undefined }))
+                    onChange((s) => ({ ...s, service: next.size > 0 ? [...next] : undefined }))
                   }
                 />
               )}

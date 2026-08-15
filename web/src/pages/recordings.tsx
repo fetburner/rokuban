@@ -12,6 +12,7 @@ import {
   useListEncodeProfiles,
   useListRecordingDropStats,
   useListRules,
+  useListSites,
   usePurgeRecording,
   type DropSummary,
   type Recording,
@@ -65,6 +66,12 @@ export function RecordingsPage() {
   const [mode, setMode] = useState<ViewMode>('library')
   const trash = mode === 'trash'
 
+  // 多サイトのときだけ行に site を出す（同じ (networkId, serviceId) を 2 サイトで
+  // 受けたとき行を見分ける材料が site しか無い。issue #283）。単一サイトでは
+  // 「default」がノイズになるだけなので出さない。レジストリは SiteGate が既に
+  // 取得済み（同じクエリキー）。
+  const showSite = (unwrap(useListSites().data) ?? []).length > 1
+
   // 検索条件は URL に載せる（リロード・共有・戻るで同じ結果になる。
   // docs/frontend.md「録画検索は /recordings に同居する」）。タブ（ライブラリ /
   // ごみ箱）は条件と直交する別の軸なので URL には載せず、ここでは component
@@ -75,15 +82,9 @@ export function RecordingsPage() {
     // debounce（キーワード）・チップの個別解除のどちらも history を汚さないよう
     // 常に replace で書く（docs/frontend.md「debounce と URL 同期で履歴を汚さない」）。
     //
-    // **updater の引数は「全ルートの search を合成した型」で来る**（TanStack Router
-    // の `ParamsReducerFn`）。`/live` が同じ名前の `serviceId` を単数（`number`）で
-    // 持つため、合成後は `number | number[]` になり `RecordingsPageSearch` に
-    // そのままは代入できない。この関数が呼ばれるのは `/recordings` に居るときだけ
-    // で、そのとき実際に入っているのは `parseRecordingsSearch` が検証した形なので、
-    // ここで絞ってから updater に渡す
     void navigate({
       to: '/recordings',
-      search: (prev) => updater(prev as RecordingsPageSearch),
+      search: (prev) => updater(prev),
       replace: true,
     })
   }
@@ -246,7 +247,7 @@ export function RecordingsPage() {
           <ul>
             {recordings.map((r) => (
               <li key={r.id}>
-                <RecordingRow recording={r} trash={trash} />
+                <RecordingRow recording={r} trash={trash} showSite={showSite} />
               </li>
             ))}
           </ul>
@@ -318,7 +319,16 @@ function ViewTab({
  * 抱える理由が無くなった。ごみ箱・`encodedAssets` が空の行も同じく詳細へリンクし、
  * 再生系の出し分け（`deleted_at` / encoded の有無）は詳細側の規律に任せる。
  */
-function RecordingRow({ recording, trash }: { recording: Recording; trash: boolean }) {
+function RecordingRow({
+  recording,
+  trash,
+  showSite,
+}: {
+  recording: Recording
+  trash: boolean
+  /** 多サイトのときだけ site を出す（issue #283）。 */
+  showSite: boolean
+}) {
   const [thumbFailed, setThumbFailed] = useState(false)
 
   return (
@@ -359,6 +369,11 @@ function RecordingRow({ recording, trash }: { recording: Recording; trash: boole
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
           <StatusBadge status={recording.status} />
           <IngestBadge recording={recording} />
+          {showSite && (
+            <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[0.65rem]">
+              {recording.site}
+            </span>
+          )}
           <span className="shrink-0">{recording.serviceName}</span>
           <span className="shrink-0">{formatDateTime(recording.startAt)}</span>
           <span className="shrink-0">{formatDuration(recording.durationMs)}</span>
@@ -526,6 +541,7 @@ export function RecordingDetail({
   const encodedAssets = recording.encodedAssets ?? []
   const hasOriginal = recording.sizeBytes !== undefined
   const ingestState = ingestDisplay(recording, Date.now())
+  const showSite = (unwrap(useListSites().data) ?? []).length > 1
 
   return (
     <div className="flex flex-col gap-4 bg-muted/30 px-4 py-3 text-xs">
@@ -554,6 +570,7 @@ export function RecordingDetail({
         <dt className="text-muted-foreground">チャンネル</dt>
         <dd>
           {recording.serviceName} ({recording.channelType}/{recording.channel})
+          {showSite ? ` · ${recording.site}` : ''}
         </dd>
         {recording.startedAt && (
           <>

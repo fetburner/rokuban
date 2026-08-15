@@ -39,10 +39,18 @@ function jsonResponse(body: unknown): Response {
 function renderFilters(
   initial: RecordingsPageSearch = emptyRecordingsSearch(),
   services: Service[] = [service()],
+  otherSites: Record<string, Service[]> = {},
 ) {
+  const servicesBySite = { default: services, ...otherSites }
   globalThis.fetch = vi.fn((input: string | URL | Request) => {
     const url = new URL(String(input), 'http://localhost')
-    if (url.pathname === '/api/sites/default/services') return Promise.resolve(jsonResponse(services))
+    if (url.pathname === '/api/sites') {
+      return Promise.resolve(jsonResponse(Object.keys(servicesBySite)))
+    }
+    const match = /^\/api\/sites\/([^/]+)\/services$/.exec(url.pathname)
+    if (match && match[1] in servicesBySite) {
+      return Promise.resolve(jsonResponse(servicesBySite[match[1] as keyof typeof servicesBySite]))
+    }
     return Promise.resolve(new Response('not found', { status: 404 }))
   }) as unknown as typeof fetch
 
@@ -203,18 +211,23 @@ describe('RecordingFilters 絞り込みパネル', () => {
     expect(getCurrent().genre).toBeUndefined()
   })
 
-  it('チャンネルは ChannelPicker を経由して serviceId に反映される', async () => {
+  it('全サイトのチャンネルを site ごとに並べ、複合キーを search に反映する', async () => {
     const user = userEvent.setup()
-    const { getCurrent } = renderFilters(emptyRecordingsSearch(), [service()])
+    const { getCurrent } = renderFilters(
+      emptyRecordingsSearch(),
+      [service()],
+      { site2: [service()] },
+    )
 
     await user.click(screen.getByRole('button', { name: /絞り込み/ }))
     const panel = await screen.findByRole('dialog', { name: '絞り込み' })
 
     await user.click(within(panel).getByRole('button', { name: /チャンネル/ }))
     const channelDialog = await screen.findByRole('dialog', { name: 'チャンネル' })
-    await user.click(within(channelDialog).getByRole('button', { name: /ＮＨＫ総合/ }))
+    expect(await within(channelDialog).findByRole('button', { name: /ＮＨＫ総合.*default/ })).toBeInTheDocument()
+    await user.click(within(channelDialog).getByRole('button', { name: /ＮＨＫ総合.*site2/ }))
 
-    await waitFor(() => expect(getCurrent().serviceId).toEqual([1024]))
+    await waitFor(() => expect(getCurrent().service).toEqual(['site2:1024']))
   })
 
   // from/to は純関数（isoToLocalDateTimeInput / localDateTimeInputToIso）は

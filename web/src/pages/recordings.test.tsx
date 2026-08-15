@@ -137,6 +137,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 function createFakeRecordingsServer(options: {
   library?: Recording[]
   trash?: Recording[]
+  sites?: string[]
   services?: Service[]
   encodeProfiles?: EncodeProfileSummary[]
   rules?: Rule[]
@@ -153,6 +154,7 @@ function createFakeRecordingsServer(options: {
 }) {
   let library = [...(options.library ?? [])]
   let trash = [...(options.trash ?? [])]
+  const sites = options.sites ?? ['default']
   const services = options.services ?? [sampleService()]
   const encodeProfiles = options.encodeProfiles ?? []
   const rules = options.rules ?? []
@@ -204,8 +206,10 @@ function createFakeRecordingsServer(options: {
 
     if (url.pathname === '/api/breakers') return Promise.resolve(jsonResponse([]))
     // SiteGate（routes.tsx）が全ルートの手前で待つ（issue #184 M4-12）。
-    if (url.pathname === '/api/sites') return Promise.resolve(jsonResponse(['default']))
-    if (url.pathname === '/api/sites/default/services') return Promise.resolve(jsonResponse(services))
+    if (url.pathname === '/api/sites') return Promise.resolve(jsonResponse(sites))
+    if (/^\/api\/sites\/[^/]+\/services$/.test(url.pathname)) {
+      return Promise.resolve(jsonResponse(services))
+    }
     if (url.pathname === '/api/encode-profiles') return Promise.resolve(jsonResponse(encodeProfiles))
     if (url.pathname === '/api/rules' && method === 'GET') return Promise.resolve(jsonResponse(rules))
 
@@ -441,6 +445,35 @@ describe('RecordingsPage 行は詳細へのリンク (issue #311)', () => {
   })
 })
 
+// issue #283: 多サイトでは行に site を出す（同じ (networkId, serviceId) を
+// 2 サイトで受けたとき、行を見分ける材料が site しか無い）。単一サイトでは
+// 「default」がノイズになるだけなので出さない。
+describe('RecordingsPage 行の site 表示 (issue #283)', () => {
+  it('複数サイトのときは各行に site を出す', async () => {
+    createFakeRecordingsServer({
+      sites: ['default', 'site2'],
+      library: [sampleRecording({ id: 5, title: 'site2 の録画', site: 'site2' })],
+    })
+
+    renderPage()
+
+    const row = (await screen.findByRole('link', { name: 'site2 の録画' })).closest('div')
+    expect(within(row as HTMLElement).getByText('site2')).toBeInTheDocument()
+  })
+
+  it('単一サイトのときは site を出さない（default はノイズ）', async () => {
+    createFakeRecordingsServer({
+      sites: ['default'],
+      library: [sampleRecording({ id: 6, title: '単一サイトの録画', site: 'default' })],
+    })
+
+    renderPage()
+
+    await screen.findByRole('link', { name: '単一サイトの録画' })
+    expect(screen.queryByText('default')).not.toBeInTheDocument()
+  })
+})
+
 describe('RecordingsPage 検索条件', () => {
   it('条件ありの 0 件と条件なしの 0 件で文言が違う', async () => {
     const user = userEvent.setup()
@@ -595,7 +628,7 @@ describe('RecordingsPage 検索条件', () => {
 
     await waitFor(() => {
       const last = recordingsRequests(server.fetchMock).at(-1)
-      expect(last?.searchParams.getAll('serviceId')).toEqual(['5168'])
+      expect(last?.searchParams.getAll('service')).toEqual(['default:5168'])
     })
   })
 
