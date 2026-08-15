@@ -1,6 +1,6 @@
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useSearch as useRouteSearch, useNavigate } from '@tanstack/react-router'
-import { ChevronDown, Play, Trash2 } from 'lucide-react'
+import { ChevronRight, Trash2 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import {
@@ -311,138 +311,67 @@ function ViewTab({
 /**
  * RecordingRow は録画一覧の 1 行。
  *
- * 行本体のタップは従来どおり詳細（メタデータ・削除系操作を含む全体）を展開する。
- * それとは別に、最頻操作である「再生」を行右端の固定幅ボタンに独立させる
- * （issue #227。予約行の予約ボタンと同じ配置文法 --- `program-row.tsx` の
- * 「予約ボタンは行本体と分離した固定幅」参照）。以前は再生も他のメタデータと
- * 同じ「展開」の 1 段下に埋もれていた。
- *
- * **再生ボタンは「展開してプレイヤーへスクロール + フォーカス」であって
- * 「即再生」ではない。** `<video preload="metadata">` はメタデータだけを
- * 先読みするが、実際の再生開始（`.play()` に相当する処理）はブラウザが
- * 本編データの取得を始める重い操作で、M7 の値札方針（コストのかかる操作を
- * 暗黙に始めない）と衝突する。行のボタンをワンタップしただけで本編の転送が
- * 始まると、一覧をスクロール中の誤タップがそのまま通信量になる。ネイティブ
- * `<video controls>` の再生ボタンをもう一段挟むことで、実際のデータ転送は
- * 利用者の最後の明示的なクリックに紐付く（予約のワンタップ + トーストとは
- * 非対称だが、予約は DB 行を作るだけで安価、再生は帯域を伴うため意図的に
- * 揃えていない）。
- *
- * 出し分けは 2 条件: ごみ箱では出さない（配信側が `deleted_at IS NOT NULL` を
- * 404 にする契約なので出しても必ず失敗する）。`encodedAssets` が空でも
- * 出さない（`RecordingPlayer` が実際に `<video>` を描くかどうかと同じ条件 ---
- * 原本だけがある録画は VLC リンクしか出さないので「再生」ボタンの対象ではない）。
+ * 行本体は詳細（`/recordings/$id`）への全面カバーリンク（予約一覧
+ * `reservations.tsx` と同じ配置文法）。視聴・削除・エンコードは詳細ページに
+ * 寄せ、一覧はインライン展開も常時「再生」列も持たない（issue #311）--- 詳細と
+ * 展開が同じ `RecordingDetail` を共有していたので、一覧に同じプレイヤーを二重に
+ * 抱える理由が無くなった。ごみ箱・`encodedAssets` が空の行も同じく詳細へリンクし、
+ * 再生系の出し分け（`deleted_at` / encoded の有無）は詳細側の規律に任せる。
  */
 function RecordingRow({ recording, trash }: { recording: Recording; trash: boolean }) {
-  const [expanded, setExpanded] = useState(false)
   const [thumbFailed, setThumbFailed] = useState(false)
-  // プレイヤーへのフォーカス要求。値そのものに意味は無く、変化を検知する
-  // トークンとして使う（同じ値を渡し続けても再度スクロール/フォーカスしたい
-  // ケース --- 展開済みの行でもう一度「再生」を押した場合 --- を拾うため）。
-  //
-  // **行を閉じるたびに 0 へ戻す。** `RecordingDetail`（延いては
-  // `RecordingPlayer`）は `expanded` の真偽で mount/unmount される。0 に
-  // 戻さず値を残したまま次に「行本体タップ」で開き直すと、Play を経由せず
-  // 開いただけなのに新しくマウントされた `RecordingPlayer` の初回 effect が
-  // 古いトークン（非 0）を見てフォーカス/スクロールを要求してしまう ---
-  // 「Play を押したときだけプレイヤーへ連れて行く」という決定が、行本体
-  // タップという別の経路でも起きる意図しない再発火になる。閉じた時点で
-  // 0 に戻せば、次に非 0 になるのは再び Play を押したときだけになる。
-  const [focusPlayerToken, setFocusPlayerToken] = useState(0)
-
-  const playable = !trash && (recording.encodedAssets ?? []).length > 0
 
   return (
-    <div className="border-b border-border">
-      <div className="flex items-stretch">
-        <button
-          type="button"
-          aria-expanded={expanded}
-          onClick={() => {
-            // updater 関数の中に副作用（setFocusPlayerToken）を書かない ---
-            // React の state updater は純粋であることが要求され、StrictMode
-            // では dev ビルドで 2 回呼ばれる。今回の副作用は定数 0 の代入で
-            // 冪等なので実害は無いが、次にここへ副作用を足す人が踏む形を
-            // 残さない。読み取りと副作用はハンドラ本体で行う
-            const next = !expanded
-            setExpanded(next)
-            if (!next) setFocusPlayerToken(0)
-          }}
-          className="flex min-h-14 min-w-0 flex-1 items-center gap-3 px-4 py-2.5 text-left hover:bg-muted/50"
-        >
-          {/*
-            サムネイルは openapi 外の streamer 経路（/api/recordings/{id}/thumbnail）。
-            未生成時は 404 → onError でプレースホルダ。hasThumbnail 列は持たない（M3-4）。
-            ごみ箱の録画は配信側が deleted_at IS NOT NULL を 404 にする契約（docs/api.md
-            §メディア配信）なので、そもそもリクエストを出さずプレースホルダ固定にする
-            （M3-18: 未生成と 404 で区別が付かない曖昧さもこれで消える）。
-          */}
-          <div className="size-12 shrink-0 overflow-hidden rounded bg-muted">
-            {!trash && !thumbFailed ? (
-              <img
-                src={`/api/recordings/${recording.id}/thumbnail`}
-                alt=""
-                className="size-full object-cover"
-                loading="lazy"
-                onError={() => setThumbFailed(true)}
-              />
-            ) : (
-              <div className="size-full bg-muted" aria-hidden />
-            )}
-          </div>
-          <div className="min-w-0 flex-1">
-            <div className="truncate text-sm">{recording.title || '（番組名なし）'}</div>
-            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-              <StatusBadge status={recording.status} />
-              <IngestBadge recording={recording} />
-              <span className="shrink-0">{recording.serviceName}</span>
-              <span className="shrink-0">{formatDateTime(recording.startAt)}</span>
-              <span className="shrink-0">{formatDuration(recording.durationMs)}</span>
-              {recording.sizeBytes !== undefined && (
-                <span className="shrink-0">{formatBytes(recording.sizeBytes)}</span>
-              )}
-              {trash && recording.deletedAt && (
-                <span className="shrink-0">削除 {formatDateTime(recording.deletedAt)}</span>
-              )}
-              {recording.dropSummary && <DropBadges summary={recording.dropSummary} />}
-            </div>
-          </div>
-          <ChevronDown
-            className={cn(
-              'size-4 shrink-0 text-muted-foreground transition-transform',
-              expanded && 'rotate-180',
-            )}
+    <div className="relative flex min-h-14 items-center gap-3 border-b border-border px-4 py-2.5 hover:bg-muted/50">
+      {/* 行本体は詳細（/recordings/$id）への全面カバーリンク（予約一覧
+          `reservations.tsx` と同じ配置文法）。`position: relative` の親を
+          containing block にして、リンクだけを見えない全面の層に退避させる ---
+          サムネイル・バッジ列・chevron は通常フローに残す。子を持たないので
+          accessible name は aria-label で渡す（children から計算できない）。 */}
+      <Link
+        to="/recordings/$id"
+        params={{ id: String(recording.id) }}
+        aria-label={recording.title || '（番組名なし）'}
+        className="absolute inset-0"
+      />
+      {/*
+        サムネイルは openapi 外の streamer 経路（/api/recordings/{id}/thumbnail）。
+        未生成時は 404 → onError でプレースホルダ。hasThumbnail 列は持たない（M3-4）。
+        ごみ箱の録画は配信側が deleted_at IS NOT NULL を 404 にする契約（docs/api.md
+        §メディア配信）なので、そもそもリクエストを出さずプレースホルダ固定にする
+        （M3-18: 未生成と 404 で区別が付かない曖昧さもこれで消える）。
+      */}
+      <div className="size-12 shrink-0 overflow-hidden rounded bg-muted">
+        {!trash && !thumbFailed ? (
+          <img
+            src={`/api/recordings/${recording.id}/thumbnail`}
+            alt=""
+            className="size-full object-cover"
+            loading="lazy"
+            onError={() => setThumbFailed(true)}
           />
-        </button>
-
-        {/* 再生ボタンは行本体と分離した固定幅。最小 44px のタップ領域を確保する
-            （program-row.tsx の予約ボタンと同じ配置文法）。 */}
-        {playable && (
-          <div className="flex w-20 shrink-0 items-center justify-center border-l border-border">
-            <Button
-              type="button"
-              size="sm"
-              className="min-h-11 w-full rounded-none"
-              aria-label={`${recording.title || '（番組名なし）'}を再生`}
-              onClick={() => {
-                setExpanded(true)
-                setFocusPlayerToken((t) => t + 1)
-              }}
-            >
-              <Play data-icon="inline-start" />
-              再生
-            </Button>
-          </div>
+        ) : (
+          <div className="size-full bg-muted" aria-hidden />
         )}
       </div>
-
-      {expanded && (
-        <RecordingDetail
-          recording={recording}
-          trash={trash}
-          focusPlayerToken={focusPlayerToken}
-        />
-      )}
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-sm">{recording.title || '（番組名なし）'}</div>
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+          <StatusBadge status={recording.status} />
+          <IngestBadge recording={recording} />
+          <span className="shrink-0">{recording.serviceName}</span>
+          <span className="shrink-0">{formatDateTime(recording.startAt)}</span>
+          <span className="shrink-0">{formatDuration(recording.durationMs)}</span>
+          {recording.sizeBytes !== undefined && (
+            <span className="shrink-0">{formatBytes(recording.sizeBytes)}</span>
+          )}
+          {trash && recording.deletedAt && (
+            <span className="shrink-0">削除 {formatDateTime(recording.deletedAt)}</span>
+          )}
+          {recording.dropSummary && <DropBadges summary={recording.dropSummary} />}
+        </div>
+      </div>
+      <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
     </div>
   )
 }
@@ -485,7 +414,7 @@ export function StatusBadge({ status }: { status: Recording['status'] }) {
  * 言う。
  *
  * `originalDeleted`（取り込み済みだが原本が今は無い）はここには出さない ---
- * 一覧の 1 行に常時出す種類の情報ではなく、展開後の「取り込み」欄
+ * 一覧の 1 行に常時出す種類の情報ではなく、詳細ページの「取り込み」欄
  * （`RecordingDetail`）が引き受ける。
  *
  * 停滞判定に使う「今」はレンダリング時の `Date.now()`。時計そのものを刻んでは
@@ -512,7 +441,7 @@ export function IngestBadge({ recording }: { recording: Recording }) {
 }
 
 /**
- * ingestDetailText は展開後の「取り込み」欄の文言（issue #212）。
+ * ingestDetailText は詳細ページの「取り込み」欄の文言（issue #212）。
  *
  * 一覧のバッジ（`IngestBadge`）より一段詳しく、分母が取れていれば
  * 「1.2 GB / 3.4 GB」まで出す。**分母が無いときに割合をでっち上げない**
@@ -570,9 +499,8 @@ function DropBadges({ summary }: { summary: DropSummary }) {
 
 /**
  * RecordingDetail は録画 1 件の詳細本体（プレイヤー・メタデータ・操作）。
- * 一覧の行展開（`RecordingRow`）と単体ページ（`pages/recording-detail.tsx`）の
- * 両方が使う共通部品 --- 「再生・操作が一覧の展開と同等に機能する」を、
- * 実装を分岐させずに実現するため。
+ * 単体ページ（`pages/recording-detail.tsx`）が使う。一覧はインライン展開せず、
+ * 行本体から単体ページへ移動する（issue #311）。
  *
  * 単体ページはここで行われる削除 / 復元 / 完全削除 / 追加エンコードのどの
  * mutate が成功しても自分自身を再描画したいが、それを prop で 1 段ずつ手渡す
@@ -591,12 +519,9 @@ function DropBadges({ summary }: { summary: DropSummary }) {
 export function RecordingDetail({
   recording,
   trash,
-  focusPlayerToken,
 }: {
   recording: Recording
   trash: boolean
-  /** 再生ボタンから展開されたときにインクリメントされる（RecordingRow）。 */
-  focusPlayerToken?: number
 }) {
   const encodedAssets = recording.encodedAssets ?? []
   const hasOriginal = recording.sizeBytes !== undefined
@@ -618,7 +543,6 @@ export function RecordingDetail({
           encodedAssets={encodedAssets}
           hasOriginal={hasOriginal}
           originalSizeBytes={recording.sizeBytes}
-          focusToken={focusPlayerToken}
         />
       )}
 
@@ -696,18 +620,10 @@ export function RecordingDetail({
  * **ルール名の解決は `useListRules` のキャッシュから引く（単体取得の
  * `GET /api/rules/{id}` / `useGetRule` はあるが使わない）。** `RulesPage` が
  * `useListRules()`（パラメータなし = 常に全件）で一覧を引く設計に既に乗って
- * いるので、録画の展開ごとに個別の 1 件取得を増やす理由がない。`/rules` を
+ * いるので、録画ごとに個別の 1 件取得を増やす理由がない。`/rules` を
  * 経由していればキャッシュに乗っており、していなければここで引く（後者は
- * 下記の `#N` → ルール名の差し替えとして見える）。展開行が何行あっても引くのは
- * 同じ `queryKey`（`/api/rules`）の 1 本のクエリで、行ごとの取得は発行しない
- * --- `recordings.test.tsx`「展開行が複数あってもルール一覧クエリを共有し、
- * 行ごとの個別取得を発行しない」で固定した。
- *
- * **取得の「回数」はここに書かない。** 回数は `QueryClient` の `staleTime`
- * 依存で、本番（`main.tsx` の `staleTime: 30_000`）とテストの `renderPage`
- * （未指定 = 0）では設定が違うため、同じ操作でも一致しない。ハーネスで測った
- * 回数を一般の挙動として書かない（実測値と規律は
- * `docs/frontend/recordings.md`「録画 → ルールの導線」）。
+ * 下記の `#N` → ルール名の差し替えとして見える）。同じ `queryKey`
+ * （`/api/rules`）の 1 本のクエリで、`ruleId` ごとの取得は発行しない。
  *
  * **`rules.find` が見つからない場合は `#N` 表記に落とす。** これは「ルールが
  * 削除された」ケースではない --- `recordings.rule_id` は `rules` への FK が
@@ -717,8 +633,8 @@ export function RecordingDetail({
  * が空を返す間、つまり一覧クエリが未解決 / 失敗（どちらも `query.data` が
  * `undefined`）か、返ってきた一覧にその id がまだ無い（新しく作られたルール等）
  * という一時的な状態。未解決の場合に `#N` → ルール名へ差し替わることは
- * `recordings.test.tsx`「ルール一覧が未解決の間は #N を出し、解決後にルール名へ
- * 差し替わる」で固定した。
+ * `recording-detail.test.tsx`「ルール一覧が未解決の間は #N を出し、解決後に
+ * ルール名へ差し替わる」で固定した。
  *
  * 原則「固有名詞はリンク」（issue #221）に従い、ルールの識別（名前 or
  * `#N`）そのものをリンクテキストにする --- 装飾テキストの隣にリンクを
@@ -777,29 +693,27 @@ export function RecordingActions({ recording, trash }: { recording: Recording; t
   }
 
   // restore は「復元」ボタン本体と、ごみ箱送りトーストの Undo（下記）の
-  // 両方から呼ぶ。後者は、Undo を呼んだ時点で元のごみ箱送りを起こした行
-  // （とこの RecordingActions 自身）がすでにアンマウントされていることがある
-  // --- 一覧内展開でごみ箱へ送ると、invalidate 後の再取得でその行自体が
-  // 現在の一覧（library）から消えるため。`useRestoreRecording` の
-  // `mutate` はコンポーネントに束縛された `useMutation` の内部状態を経由する
-  // ため、渡した `onSuccess`/`onError` がアンマウント後も確実に呼ばれる保証を
-  // 前提にできない（実測: `recordings.test.tsx`「ごみ箱へ移すと Undo 付き
-  // トーストが出て、「元に戻す」で一覧に復帰する」を `useRestoreRecording` の
-  // `mutate` 経由に戻して壊すと、リクエストは飛ぶが渡した onSuccess が
-  // 呼ばれないまま行が一覧に戻ってこず、アサーションで落ちる）。生成された
+  // 両方から呼ぶ。後者は、Undo を呼んだ時点で元のごみ箱送りを起こした
+  // RecordingActions 自身がすでにアンマウントされていることがある --- トーストは
+  // 別の画面へ遷移した後にも押せるので、そのとき詳細ページ（と RecordingActions）は
+  // 画面に無い。`useRestoreRecording` の `mutate` はコンポーネントに束縛された
+  // `useMutation` の内部状態を経由するため、渡した `onSuccess`/`onError` が
+  // アンマウント後も確実に呼ばれる保証を前提にできない（実測: `recording-detail.test.tsx`
+  // 「ごみ箱へ移すと Undo 付きトーストが出て、「元に戻す」でライブラリ表示に戻る」を
+  // `useRestoreRecording` の `mutate` 経由に戻して壊すと、リクエストは飛ぶが渡した
+  // onSuccess が呼ばれないまま表示が戻らず、アサーションで落ちる）。生成された
   // 素の関数（`restoreRecordingRequest`）を直接呼び、`queryClient`
   // （`useQueryClient()` はマウント状態に依存しない安定した参照）で
   // invalidate する形にして、この依存を断つ。
   //
   // 復元の効果は「復元」ボタン本体からの呼び出しでは必ず画面に見える ---
-  // 一覧内展開なら invalidate 後の再取得で mode（library/trash）の絞り込みに
-  // 引っかかって行が現在の一覧から消え、単体ページ（recording-detail.tsx）
-  // なら trash 判定が反転してボタン・削除日時表示が入れ替わる。追加で言う
-  // ことも無いので成功トーストは無音化する（issue #297）。
+  // 単体ページ（recording-detail.tsx）で trash 判定が反転してボタン・削除日時
+  // 表示が入れ替わる。追加で言うことも無いので成功トーストは無音化する
+  // （issue #297）。
   //
   // **Undo 経由の呼び出しは事情が違う。** トーストは最大 6 秒後、かつ別の
   // 画面へ遷移した後にも押せるので、そのときは復元の効果を画面上で確認
-  // できるとは限らない（対象の一覧をもう見ていないことがある）うえ、
+  // できるとは限らない（対象の録画をもう見ていないことがある）うえ、
   // 成功トーストも出さないので追加のフィードバックも無い。ここでは
   // 「Undo ボタンを押した」こと自体（ボタンが消える）を操作の完了通知として
   // 扱い、割り切っている --- 失敗時は場所を問わず追える情報（`復元に
@@ -829,8 +743,8 @@ export function RecordingActions({ recording, trash }: { recording: Recording; t
                 {
                   onSuccess: () => {
                     invalidate()
-                    // ごみ箱送りの効果（一覧からの消失 / 単体ページのボタン
-                    // 入れ替え）は restore と同じ理由で常に画面に見えるが、
+                    // ごみ箱送りの効果（単体ページのボタン入れ替え）は
+                    // restore と同じ理由で常に画面に見えるが、
                     // ごみ箱送りは復元で即座に取り消せる安価な操作なので、
                     // 素の成功通知の代わりに Undo 付きトーストにする
                     // （`pages/programs.tsx` の予約作成 + 取消と同じ形。

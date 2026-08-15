@@ -820,9 +820,9 @@ paths:
         404 契約（`recordings.deleted_at IS NOT NULL` を 404 にする。
         docs/api/media.md）とメタデータの可視性は別の判断 --- 一覧が
         `trash=true` で既にごみ箱の録画のメタデータを 200 で返しているため、
-        単体 GET だけ厳しくする理由が無い。フロントはこの `deletedAt` を見て
-        再生系（プレイヤー・原本リンク）を出さない（一覧の展開と同じ規律。
-        docs/frontend/recordings.md）。
+        単体 GET だけ厳しくする理由が無い。単体ページ（`/recordings/$id`）は
+        この `deletedAt` を見て再生系（プレイヤー・原本リンク）を出さない
+        （docs/frontend/recordings.md）。
 
         **完全削除（purge）済みの tombstone（`purged_at` が立った行、issue
         #135）は 404。** ファイルが既に無く、通常一覧・ごみ箱一覧のどちらにも

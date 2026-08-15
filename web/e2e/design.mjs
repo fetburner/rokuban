@@ -22,9 +22,9 @@
 //      - ボトムタブが常に 4 個か
 //      - 開いたポップオーバーがビューポート内に収まるか
 //      - ポップオーバーがトリガーの上端より上に出るか（バーの下に隠れていないか）
-//   ⑤ 録画一覧の行を Enter で展開したあと、キーボードの Tab だけで
-//      `<video>` に到達できるか（`tabIndex={-1}` を付けると jsdom の
-//      focus spy は通り続けるが実ブラウザの Tab 走査から外れる）
+//   ⑤ 録画一覧の行リンクを Enter で開いて詳細（/recordings/$id）へ遷移し、
+//      詳細でキーボードの Tab だけで `<video>` に到達できるか（`tabIndex={-1}` を
+//      付けると jsdom の focus spy は通り続けるが実ブラウザの Tab 走査から外れる）
 //   ⑥ 共通 Button のフォーカスリング / border-color は遷移しない・hover の
 //      色と active の押下フィードバックは遷移する（issue #294）
 //   ⑦ アニメーション/トランジションが `prefers-reduced-motion: reduce` で
@@ -139,12 +139,10 @@ const overages = [
 
 const recordings = [
   { id: 11, site: SITE, source: 'rule', serviceName: 'NHK総合', channelType: 'GR', channel: '27', networkId: 32736, serviceId: 1024, eventId: 11, title: 'ニュース７', startAt: iso(nowMs - 600_000), durationMs: 1_800_000, status: 'recording', createdAt: iso(nowMs - 600_000), startedAt: iso(nowMs - 600_000) },
-  // encodedAssets を持たせて再生ボタン（issue #227）・<video> が実ブラウザで
-  // 出ることを撮る。`encodedProfiles`（非推奨の後方互換フィールド）だけでは
-  // `RecordingPlayer` が <video> を出さない（`encodedAssets` を見るため）ので
-  // 両方持たせる --- 過去このフィクスチャが `encodedProfiles` だけだったため、
-  // e2e/design.mjs ⑤（キーボード到達性）が「Enter で展開してもプレイヤーが
-  // 出ない」で落ちていた（M8-3 の実装確認中に発見・修正。本題とは無関係）。
+  // encodedAssets を持たせて詳細ページ（/recordings/$id）で <video> が実ブラウザで
+  // 出ることを撮る（キーボード到達性の判定 ⑤）。`encodedProfiles`（非推奨の後方
+  // 互換フィールド）だけでは `RecordingPlayer` が <video> を出さない
+  // （`encodedAssets` を見るため）ので両方持たせる。
   { id: 12, site: SITE, source: 'manual', serviceName: 'ＮＨＫＢＳ', channelType: 'BS', channel: 'BS15_0', networkId: 4, serviceId: 101, eventId: 12, title: 'クラシック音楽館', startAt: iso(nowMs - 26 * HOUR), durationMs: 5_400_000, status: 'finished', sizeBytes: 8_123_456_789, createdAt: iso(nowMs - 26 * HOUR), dropSummary: { drops: 12, errors: 0, scrambled: 3 }, encodedProfiles: ['hevc-1080p'], encodedAssets: [{ profile: 'hevc-1080p', sizeBytes: 2_345_678_901 }] },
   { id: 13, site: SITE, source: 'rule', serviceName: 'テレビ大阪', channelType: 'GR', channel: '18', networkId: 32738, serviceId: 1040, eventId: 13, title: 'アニメ劇場', startAt: iso(nowMs - 50 * HOUR), durationMs: 1_800_000, status: 'failed', createdAt: iso(nowMs - 50 * HOUR) },
   { id: 14, site: SITE, source: 'rule', serviceName: 'NHKEテレ', channelType: 'GR', channel: '26', networkId: 32737, serviceId: 1032, eventId: 14, title: '連続テレビ小説', startAt: iso(nowMs - 74 * HOUR), durationMs: 900_000, status: 'finished', sizeBytes: 1_234_567_890, createdAt: iso(nowMs - 74 * HOUR) },
@@ -224,6 +222,14 @@ async function installApiStubs(
       const filtered = status ? source.filter((r) => r.status === status) : source
       const sorted = [...filtered].sort((a, b) => Date.parse(b.startAt) - Date.parse(a.startAt))
       return json(sorted.slice(0, limit))
+    }
+    // 録画単体（`/recordings/$id`、issue #232）。キーボード到達性の判定（⑤）が
+    // 詳細ページの `<video>` を見るために引く。ごみ箱の録画は無いのでここでは
+    // 常に 200（一覧のフィクスチャから引く）。
+    const recMatch = /^\/api\/recordings\/(\d+)$/.exec(p)
+    if (recMatch && route.request().method() === 'GET') {
+      const rec = recordings.find((r) => r.id === Number(recMatch[1]))
+      return rec ? json(rec) : route.fulfill({ status: 404 })
     }
     if (/^\/api\/recordings\/\d+\/drop-stats$/.test(p)) return json([])
     // サムネイルは 404 に落として実装側のプレースホルダを撮る（画像を作らない）
@@ -1368,30 +1374,39 @@ for (const theme of themes) {
   await context.close()
 }
 
-// --- ⑤ 録画一覧: 展開後にキーボードだけでプレイヤーへ到達できるか ---
+// --- ⑤ 録画詳細: キーボードだけで <video> へ到達できるか ---
 //
 // jsdom では測れない領域（web/e2e/README.md §デザイン）。`<video>` に
 // `tabIndex={-1}` を付けると、プログラムからの `.focus()` は変わらず効く
 // ため jsdom のユニットテスト（focus spy）は通り続けるが、実ブラウザの
 // キーボード Tab 走査からは完全に外れる（M5-4 / issue #227 でこの属性を
-// 一度入れて実際に壊した退行そのもの）。**行本体タップ（Enter）で展開する
-// 経路**を使う --- 再生ボタンのクリックは JS の `.focus()` を直接呼ぶため、
-// `tabIndex` の有無に関係なく activeElement が動いてしまい、Tab 走査の
-// 検証としては成立しない。
+// 一度入れて実際に壊した退行そのもの）。視聴は詳細ページ（/recordings/$id）に
+// 寄せた（issue #311）ので、到達性の判定もそこへ移した --- 一覧は展開も
+// プレイヤーも持たない。ページ先頭からの Tab 走査で `<video>` に止まるかを見る
+// （行の展開経路が無くなったので、旧判定を一覧に残すと直後に赤のままになる）。
 {
   const { context, page } = await open(desktop, 'light', screenOf('recordings'))
   const row = page.locator('li', { hasText: 'クラシック音楽館' })
-  const rowToggle = row.locator('button[aria-expanded]').first()
-  if ((await rowToggle.count()) === 0) {
-    ng.push('キーボード到達性: encoded 付き録画の行が見つからない')
+  const detailLink = row.getByRole('link', { name: 'クラシック音楽館' })
+  if ((await detailLink.count()) === 0) {
+    ng.push('キーボード到達性: encoded 付き録画の詳細リンクが見つからない')
   } else {
-    await rowToggle.focus()
+    // 旧実装の常時「再生」列が残っていないことを、実ブラウザでも見る。
+    if ((await row.getByRole('button', { name: /再生/ }).count()) > 0) {
+      ng.push('録画一覧: 常時の「再生」ボタンが残っている')
+    }
+    await detailLink.focus()
     await page.keyboard.press('Enter')
+    await page.waitForURL('**/recordings/12', { timeout: 5000 }).catch(() => {})
     await page.locator('video').first().waitFor({ timeout: 5000 }).catch(() => {})
     if ((await page.locator('video').count()) === 0) {
-      ng.push('キーボード到達性: Enter で展開してもプレイヤーが出ない')
+      ng.push('キーボード到達性: 詳細ページに <video> が出ない')
     } else {
-      const maxPresses = 2
+      // ページ先頭から Tab 走査する。「戻る」など先行の Tab stop があるので
+      // 上限は緩める --- 見たいのは「<video> がいつか Tab 順に現れる
+      // （tabIndex={-1} で外れていない）」ことで、正確な回数ではない。
+      await page.evaluate(() => document.activeElement instanceof HTMLElement && document.activeElement.blur())
+      const maxPresses = 12
       let reachedAt = null
       for (let i = 1; i <= maxPresses; i++) {
         await page.keyboard.press('Tab')
@@ -1401,12 +1416,12 @@ for (const theme of themes) {
           break
         }
       }
-      log(`  キーボード到達性: 行本体展開 → Tab ${reachedAt ?? `${maxPresses}+`} 回で video`)
+      log(`  キーボード到達性: 詳細ページで Tab ${reachedAt ?? `${maxPresses}+`} 回で video`)
       if (reachedAt === null) {
         ng.push(
-          `キーボード到達性: 展開後 Tab ${maxPresses} 回以内に <video> へ到達しない` +
-            '（<video> に tabIndex を明示していないか確認する。M5-4 で一度この属性を' +
-            '付けて実際に壊した退行）',
+          `キーボード到達性: 詳細ページで Tab ${maxPresses} 回以内に <video> へ到達しない` +
+            '（<video> に tabIndex={-1} を付けて Tab 順から外していないか確認する。' +
+            'M5-4 で一度この属性を付けて実際に壊した退行）',
         )
       }
     }

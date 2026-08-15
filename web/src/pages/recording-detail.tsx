@@ -50,9 +50,9 @@ function recordingDetailQueryKey(id: number) {
  * ingest（watcher）が一度作ったら変わらない不可逆な事実の id なので、
  * `/reservations/$site/$programId` と違って id をそのまま URL に使ってよい。
  *
- * 本体（プレイヤー・メタデータ・削除系操作）は一覧の行展開
- * （`pages/recordings.tsx` の `RecordingDetail`）と同じ部品を再利用する ---
- * 「再生・操作が一覧の展開と同等に機能する」を、実装を 2 系統に分けずに満たす。
+ * 本体（プレイヤー・メタデータ・削除系操作）は
+ * `pages/recordings.tsx` の `RecordingDetail` を使う。一覧はインライン展開せず、
+ * 行本体からこの単体ページへ移動する（issue #311）。
  */
 export function RecordingDetailPage() {
   const { id } = useParams({ from: '/recordings/$id' })
@@ -76,7 +76,7 @@ export function RecordingDetailPage() {
   })
   const recording = unwrap(query.data)
   // ごみ箱の録画（deletedAt 付き）も 200 で返る（getRecording の openapi.yaml
-  // description）。この真偽で一覧の展開と同じ規律（再生系を出さない）を適用する。
+  // description）。この真偽で再生系を出さない規律（下記 RecordingDetail）を適用する。
   const trash = recording?.deletedAt != null
 
   return (

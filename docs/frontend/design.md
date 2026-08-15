@@ -263,8 +263,7 @@ grep -rln --include='*.ts' --include='*.tsx' --include='*.css' 'scanlines' web/s
 `@base-ui/react` の `Menu` を shadcn の作法でラップした標準部品）。** ルール一覧の
 削除（稀・破壊的）はこれに乗せ、検索で開く/編集という主操作とは同格に並べない。
 新しい破壊的・稀な操作を行に足すときは、新しい overflow の作法を都度作らずこの
-部品を再利用する。逆方向（頻度が高いのに埋もれている操作を「一等地」へ引き上げる）
-の実装例は [recordings.md](recordings.md) の再生ボタン。
+部品を再利用する。
 
 ## 合否は画素で測る
 

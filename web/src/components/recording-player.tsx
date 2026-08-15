@@ -24,16 +24,6 @@ type RecordingPlayerProps = {
   /** 原本 TS の実サイズ。`hasOriginal` のときだけ渡され、ダウンロード / VLC リンクに常置する。 */
   originalSizeBytes?: number
   className?: string
-  /**
-   * 変化するたびに `<video>` へスクロール + フォーカスする（値そのものに
-   * 意味は無いトークン。録画一覧の「再生」ボタンから展開されたときに
-   * インクリメントされる。`pages/recordings.tsx` の `RecordingRow`
-   * 参照）。**`.play()` は呼ばない** --- 呼ぶと本編データの取得が
-   * 暗黙に始まってしまう（M7 の値札方針。詳細は呼び出し元のコメント）。
-   * 実際の再生開始はネイティブ `<video controls>` への利用者の
-   * もう一段のクリックに委ねる。
-   */
-  focusToken?: number
 }
 
 /**
@@ -46,7 +36,6 @@ export function RecordingPlayer({
   hasOriginal = false,
   originalSizeBytes,
   className,
-  focusToken,
 }: RecordingPlayerProps) {
   // `encodedAssets` の参照が変わらない限り再計算しない --- 素の `.map()` だと
   // 毎レンダーで新しい配列になり、下の useEffect の依存配列がレンダーごとに
@@ -54,7 +43,6 @@ export function RecordingPlayer({
   // 限りループにはならないが、無駄な再実行を避ける）。
   const profiles = useMemo(() => encodedAssets.map((a) => a.profile), [encodedAssets])
   const [profile, setProfile] = useState(profiles[0] ?? '')
-  const videoRef = useRef<HTMLVideoElement>(null)
   // プロファイル切替時に load したあとだけ currentTime を復元する
   const restorePending = useRef(true)
   // timeupdate 間引き用: 直近に保存した Math.floor(currentTime)。null は未保存
@@ -71,18 +59,6 @@ export function RecordingPlayer({
     restorePending.current = true
     lastSavedSecond.current = null
   }, [recordingId, profile])
-
-  // `focusToken` が変わるたびに video 要素へスクロール + フォーカスする。
-  // `scrollIntoView` は jsdom に実装が無い（web/e2e/README.md 参照。この効果は
-  // 実ブラウザでしか測れない領域）ので optional call にして落ちないようにする。
-  useEffect(() => {
-    if (!focusToken) return
-    const v = videoRef.current
-    if (!v) return
-    v.scrollIntoView?.({ block: 'center', behavior: 'smooth' })
-    v.focus()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [focusToken])
 
   if (profiles.length === 0) {
     return (
@@ -140,7 +116,6 @@ export function RecordingPlayer({
 
       <video
         key={`${recordingId}:${profile}`}
-        ref={videoRef}
         controls
         playsInline
         preload="metadata"
