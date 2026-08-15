@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest'
 import type { Service } from '@/api/generated'
 import {
   axisHeightPx,
+  channelTypeLabel,
+  groupByChannelType,
   groupProgramsByService,
   hourTicks,
   orderServices,
@@ -206,5 +208,22 @@ describe('orderServices', () => {
     const input = [service(1032, 'GR', 4), service(1024, 'GR', 1)]
     orderServices(input)
     expect(input.map((s) => s.serviceId)).toEqual([1032, 1024])
+  })
+
+  it('並び替え済みのサービスを種別ごとにまとめ、表示名を返す', () => {
+    const groups = groupByChannelType(
+      orderServices([
+        service(400, 'BS', 4),
+        service(1024, 'GR', 4),
+        service(1032, 'GR', 1),
+      ]),
+    )
+
+    expect(groups.map((group) => [group.channelType, group.services.map((s) => s.serviceId)])).toEqual([
+      ['GR', [1032, 1024]],
+      ['BS', [400]],
+    ])
+    expect(channelTypeLabel('GR')).toBe('地上波')
+    expect(channelTypeLabel('UNKNOWN')).toBe('UNKNOWN')
   })
 })
