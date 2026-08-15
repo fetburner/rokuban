@@ -145,66 +145,73 @@ export function ProgramRow({
           />
         </button>
 
-        {/* 予約ボタンは行本体と分離した固定幅。最小 44px のタップ領域を確保する。
+        {/* 予約ボタンは行本体と分離した右端の列。最小 44px のタップ領域を確保する。
             issue #310: 常時は出さず、ホバー / フォーカスした行（細ポインタ）か
-            展開中の行だけ立てる。**列の幅（w-20）は常に確保したまま可視性だけを
-            切り替える** --- 幅・高さを変えると仮想化（program-list.tsx の
-            measureElement）の再計測とレイアウトシフトの両方を引き起こす。
+            展開中の行だけ立てる。
+            **列は畳んで（w-0）ホバー / フォーカス / 展開で開く（w-20）。**
+            開くと行トグル（flex-1）が縮み、その右端にあるシェブロンが左へ
+            スライドして予約ボタンのスペースを空ける。常時 w-20 を確保していた
+            旧版（見た目の空きが不恰好）から、この開閉方式に変えた（オーナー
+            承認済み。docs/frontend/reservations.md）。
+            横方向は開くたびにタイトルの truncate 位置が動く（受け入れ済みの
+            トレードオフ）が、**縦方向のレイアウトシフトは起こさない** ---
+            予約ボタンは min-h-11（44px）で行の min-h-14（56px）より低いので
+            行の高さは変わらず、仮想化（program-list.tsx の measureElement）の
+            再計測を誘発しない。
             「取消」（予約済み行）も同じ規則に従う（下のマークアップは reserved
             で分岐しない 1 つの wrapper なので自動的に揃う）。
-            **`opacity-0` ではなく `invisible`（visibility:hidden）を使う** ---
-            opacity は見た目を消すだけでヒットテストと tab 順序には残るため、
-            折りたたみ行の右端 80×56px が「見えないタップ標的」になり、
-            スクロール中に予約ボタンへ誤って触れないための分離（このコンポーネント
-            冒頭の doc コメント）を自ら壊してしまう（レビューで実測: 生座標への
-            素タップで PUT intent が飛ぶことを確認）。visibility は独立の
-            プロパティなので幅 w-20 はそのまま確保される（レイアウトに影響しない）。
+            **畳んだ間は w-0 + overflow-hidden で中のボタンをクリップする** ---
+            幅 0 の領域はヒットテストの標的を持たないので、折りたたみ行の右端を
+            生座標でタップしても予約は成立しない（スクロール中に予約ボタンへ
+            誤って触れないための分離を保つ。旧版が `opacity-0` で踏んだ
+            「見えないタップ標的」の欠陥をここでも避ける）。
               - 細ポインタ（hover:hover かつ pointer:fine）の :hover:
-                `pointer-fine:group-hover:visible`
+                `pointer-fine:group-hover:w-20`
               - キーボードは **ポインタ種別で条件分けしない**（無条件）:
                 `.group` の中に :focus-visible な要素（行トグル、あるいは
                 Tab で予約ボタン自身に進んだ後はそのボタン自身）があれば
-                `group-has-[:focus-visible]:visible` で出す。行トグルへ Tab
-                で入ると visible になり、次の Tab でそのまま予約ボタンへ進める。
+                `group-has-[:focus-visible]:w-20` で開く。行トグルへ Tab
+                で入ると列が開き、次の Tab でそのまま予約ボタンへ進める。
                 ここを `pointer-fine:` で縛ると、タッチスクリーン + 外付け
                 キーボードや pointer:none の環境でフォーカスは乗るのに
-                visibility は hidden のまま（フォーカス可視だが操作不能）
-                という状態を作ってしまう（WCAG 2.4.7 / 2.4.11 相当の欠陥。
-                レビュー指摘）。
+                列は畳まれたまま（フォーカス可視だが操作不能）という状態を
+                作ってしまう（WCAG 2.4.7 / 2.4.11 相当の欠陥。レビュー指摘）。
                 **`group-focus-within`（ANY フォーカス）ではなく
                 `group-has-[:focus-visible]`（キーボード等由来の「見える」
                 フォーカスだけ）を使う** --- 行トグルをマウスでクリック /
                 タッチでタップした直後もその要素は（見た目のリング無しで）
                 フォーカスを持ち続けるため、`:focus-within` だと「折りたたみ
-                直したのにマウス操作の名残りだけで見えたまま」になる
+                直したのにマウス操作の名残りだけで開いたまま」になる
                 （e2e で実際に検出。行を展開→タップ/クリックで折りたたむ
-                → まだ見える、という回帰）。:focus-visible はブラウザが
+                → まだ開いている、という回帰）。:focus-visible はブラウザが
                 「直近の入力手段」から見た目のリングを出すべきかを判定する
                 ものなので、ポインタ操作直後のフォーカスでは false になり
                 この回帰が起きない
-              - 展開中（aria-expanded="true"）も同様に無条件で出す
-                （`peer-aria-expanded:visible`）。タッチ / 粗いポインタでの
+              - 展開中（aria-expanded="true"）も同様に無条件で開く
+                （`peer-aria-expanded:w-20`）。タッチ / 粗いポインタでの
                 「展開中の行だけ出す」はこれで満たされる。加えて、細ポインタでも
                 展開パネル（`.group` の外の兄弟）内で encodeProfiles /
                 keepOriginal を操作している間は行ヘッダの :hover /
                 :focus-within が外れて予約ボタンが消えてしまうため、展開中は
-                ポインタ種別を問わず出したままにする（「予約を押した時点で
-                反映される」という展開パネルの案内と矛盾しないように） */}
+                ポインタ種別を問わず開いたままにする（「予約を押した時点で
+                反映される」という展開パネルの案内と矛盾しないように）。
+            境界（`border-l`）は畳んでいる間は出さず開いたときだけ足す ---
+            w-0 のままだと右端に 1px の縦線が浮いて見えるため。 */}
         <div
-          // e2e（web/e2e/reserve-visibility.mjs）がこの要素の実描画（visibility /
+          // e2e（web/e2e/reserve-visibility.mjs）がこの要素の実描画（列幅 /
           // hit-testing）を測る。jsdom は CSS のメディア特性（hover / pointer）も
-          // visibility の実描画も評価しないため、可視性そのものはユニットテスト
+          // 実レイアウトの幅も評価しないため、開閉そのものはユニットテスト
           // では検証できない --- ここの data-testid は design.mjs の
           // `program-row-time` と同じ理由（クラス名でセレクタを組むと、その
           // ユーティリティクラスが移っただけで別の要素を測ったまま通ってしまう）
           // で付けている。
           data-testid="program-row-reserve"
           className={cn(
-            'flex w-20 shrink-0 items-center justify-center border-l border-border',
-            'invisible',
-            'pointer-fine:group-hover:visible',
-            'group-has-[:focus-visible]:visible',
-            'peer-aria-expanded:visible',
+            'flex w-0 shrink-0 items-center justify-center overflow-hidden border-border',
+            'transition-[width] duration-150 motion-reduce:transition-none',
+            'pointer-fine:group-hover:w-20 pointer-fine:group-hover:border-l',
+            'group-has-[:focus-visible]:w-20 group-has-[:focus-visible]:border-l',
+            'peer-aria-expanded:w-20 peer-aria-expanded:border-l',
           )}
         >
           <Button
