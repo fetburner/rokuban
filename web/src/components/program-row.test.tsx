@@ -275,3 +275,47 @@ describe('ProgramRow の予約ボタンの可視性配線（issue #310）', () =
     expect(within(reserveWrapper).getByRole('button', { name: '取消' })).toBeInTheDocument()
   })
 })
+
+describe('ProgramRow の送信中フィードバック（issue #298）', () => {
+  // 送信中（pending）はスピナーを重ねず、楽観更新で確定したラベルを出したまま
+  // ボタンを disabled にする。スピナーは楽観更新の確定表示を 1 フレーム覆い隠して
+  // 高速応答時に点滅していた（#298 実測）ため削除した。disabled 中の淡い dim
+  // （Button の `disabled:opacity-50` + `transition opacity`）が送信中の唯一の
+  // 手掛かりで、これはネットワーク速度に自然に追従する（jsdom では実測できない
+  // ので、ここで見るのはラベルと disabled と「スピナーが無い」ことだけ）。
+  it('予約実行中（pending かつ楽観 reserved）はスピナーを出さず「取消」を disabled で保つ', async () => {
+    stubFetch()
+    renderInRouter(
+      <ProgramRow
+        program={program()}
+        reserved={true}
+        pending={true}
+        onReserve={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    )
+
+    await screen.findByText('対象番組')
+    const reserveWrapper = screen.getByTestId('program-row-reserve')
+    expect(reserveWrapper.querySelector('.animate-spin')).toBeNull()
+    expect(within(reserveWrapper).getByRole('button', { name: '取消' })).toBeDisabled()
+  })
+
+  it('取消実行中（pending かつ楽観未予約）はスピナーを出さず「予約」を disabled で保つ', async () => {
+    stubFetch()
+    renderInRouter(
+      <ProgramRow
+        program={program()}
+        reserved={false}
+        pending={true}
+        onReserve={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    )
+
+    await screen.findByText('対象番組')
+    const reserveWrapper = screen.getByTestId('program-row-reserve')
+    expect(reserveWrapper.querySelector('.animate-spin')).toBeNull()
+    expect(within(reserveWrapper).getByRole('button', { name: '予約' })).toBeDisabled()
+  })
+})
