@@ -68,7 +68,7 @@ Grafana Loki / Tempo の `-config.expand-env` と同じ、**YAML パース前の
 | `live.idle_timeout` | `30s` | サービス単位の idle GC 猶予 |
 | `live.tuner_priority` | `1` | mirakc への X-Mirakurun-Priority（同上） |
 | `live.hwaccel` / `live.input_extra_args` | なし | live セクション直下の HW アクセラレーションブロック / 入力側追加引数（下記「encode/live の HW エンコード」） |
-| `live.profiles` | —（`enabled: true` なら 1 つ以上必須） | HLS 用プロファイル（形は `config.example.yml`。`segment_seconds` 既定 2 / `playlist_size` 既定 6） |
+| `live.profiles` | —（`enabled: true` なら 1 つ以上必須） | HLS 用プロファイル（`scaler` / `crf` / `qp` を含む形は `config.example.yml`。`segment_seconds` 既定 2 / `playlist_size` 既定 6） |
 | `webhook.url` | `""`（no-op） | POST 先（下記「webhook のイベントとペイロード」） |
 | `webhook.secret` | `""` | 非空なら `X-Rokuban-Webhook-Secret` ヘッダに載せる |
 | `webhook.timeout` | `5s` | 1 回の HTTP 要求タイムアウト。失敗時は同期で 1 回だけ再試行 |
@@ -153,11 +153,11 @@ argv の順序（VOD）:
 
 argv の順序（live）は同じ規則を入力 1 本・出力 N 本の形に展開したもの: `live.hwaccel` → `-probesize`/`-analyzeduration` → `live.input_extra_args` → `-f mpegts -i pipe:0` のあと、プロファイルごとに `-map` `-c:v`/`-c:a` → `[-vf]` → `[-crf|-qp]` → `[-preset]` → `-force_key_frames` → `profile.extra_args` → `-f hls ...`。
 
-**`extra_args` の位置が 1 点だけ動いた。** VOD 側は以前 `-f`（コンテナ）の後ろだったが、今は前に移った --- 「ユーザーのオプションはコーデック/品質/スケール指定の後・アプリ所有の末尾の前」という規則を VOD と live で 1 つにするため。`-f` は下記の予約フラグなので、この移動でユーザーが相対順序に依存していた挙動が変わることはない。
+**`extra_args` の位置が 1 点だけ動いた。** VOD 側は以前 `-f`（コンテナ）の後ろだったが、今は前に移った --- 「ユーザーのオプションはコーデック/品質/スケール指定の後・アプリ所有の末尾の前」という規則を VOD と live で 1 つにするため。`-f` は下記の allowlist に含まれないので、この移動でユーザーが相対順序に依存していた挙動が変わることはない。
 
 **起動エラーになる組み合わせ**: `crf` と `qp` の同時指定 / 未知の `scaler` / `height` が 0 なのに `scaler` を書く / `hwaccel` ブロックがあるのに `kind` が空 / `crf`・`qp` の負値。
 
-**アプリ所有トークンは `extra_args` / `input_extra_args` に書けない。** `-i` `-y` `-n` `-f` `-c:v` `-c:a` `-codec:v` `-codec:a` `-vf` `-filter:v` `-filter_complex` `-crf` `-qp` `-preset` `-progress` `-loglevel` `-hwaccel` `-hwaccel_device` `-hwaccel_output_format`（live は加えて `-force_key_frames` `-hls_time` `-hls_list_size` `-hls_flags` `-hls_segment_filename` `-hls_base_url`）の予約フラグは起動エラーになる。加えて、`-` で始まらないトークンは直前が `-` で始まるトークンでなければならない（裸の位置引数の禁止 --- 2 個目の出力ファイルパスを密輸する経路を、denylist とは別の規則で塞ぐ）。
+**`extra_args` / `input_extra_args` は値の個数まで既知の allowlist だけを受け付ける。** 値を取らないのは `-an` `-vn` `-sn` `-dn` `-shortest` `-nostdin` `-re`、直後の 1 トークンを値として取るのは `-movflags` `-map` `-global_quality` `-cq` `-q:v` `-b:v` `-b:a` `-probesize` `-analyzeduration` `-extra_hw_frames`。それ以外と裸の位置引数は起動エラーになる。値を取らないフラグも明示しているため、`["-an", "/tmp/evil.mp4"]` のように 2 本目の出力パスをフラグの値に見せかけることはできない。`-filter:v:0` / `-lavfi` のような filtergraph の別名・ストリーム指定子付き表記も allowlist 外であり、完全一致の denylist が別名を取りこぼす形は採らない。
 
 **範囲外**: device ノードのマウントはデプロイ側（k8s `resources.limits` / Docker `--device`）。**`hwaccel.device` の存在は起動時に検査しない** --- 公式イメージや device の無い CI を壊す。無い device を書いたプロファイルはジョブ / セッションの失敗として現れる。`-global_quality` / `-cq` / `-q:v` のような、コーデック指定より後ろに出せる（= `extra_args` で届く）品質オプションはキー化しない。
 

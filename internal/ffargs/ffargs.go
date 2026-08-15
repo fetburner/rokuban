@@ -208,49 +208,42 @@ func PreInput(hw *HWAccel, inputExtraArgs []string) []string {
 	return args
 }
 
-// CommonReservedFlags はアプリが位置を握っているため、extra_args /
-// input_extra_args に書けないフラグの集合（VOD・live 共通分）。
-//
-// **denylist だけでなく「裸の位置引数の禁止」（ValidateExtraArgs）と組み合わせて
-// 初めて塞がる。** denylist は「知っているフラグ名」しか弾けないので、2 個目の
-// 出力ファイルパスのような裸の引数は別ルールが要る。
-var CommonReservedFlags = []string{
-	"-i", "-y", "-n", "-f",
-	"-c:v", "-c:a", "-codec:v", "-codec:a",
-	"-vf", "-filter:v", "-filter_complex",
-	"-crf", "-qp", "-preset",
-	"-progress", "-loglevel",
-	"-hwaccel", "-hwaccel_device", "-hwaccel_output_format",
+// extraArgTakesValue は extra_args / input_extra_args に書ける ffmpeg
+// オプションと、そのオプションが直後の 1 トークンを値として消費するかを表す。
+// 値を取らないフラグも明示することで、`-an /tmp/evil.mp4` のように 2 本目の
+// 出力パスを boolean フラグの値に見せかけることを防ぐ。
+var extraArgTakesValue = map[string]bool{
+	"-an": false, "-vn": false, "-sn": false, "-dn": false,
+	"-shortest": false, "-nostdin": false, "-re": false,
+	"-movflags": true, "-map": true,
+	"-global_quality": true, "-cq": true, "-q:v": true,
+	"-b:v": true, "-b:a": true,
+	"-probesize": true, "-analyzeduration": true, "-extra_hw_frames": true,
 }
 
-// ReservedFlagsLive は CommonReservedFlags に、live（HLS）だけがアプリ所有として
-// 握る出力オプションを加えた集合。
-var ReservedFlagsLive = append(append([]string{}, CommonReservedFlags...),
-	"-force_key_frames",
-	"-hls_time", "-hls_list_size", "-hls_flags", "-hls_segment_filename", "-hls_base_url",
-)
-
-// ValidateExtraArgs は args が (1) reserved のいずれとも一致するフラグを含まず、
-// (2) 裸の位置引数（`-` で始まらないトークンの直前が `-` で始まるトークンでない）
-// を含まないことを検査する。見つかった問題は全件 1 つのエラーにまとめて返す
-// （規約 4）。label はエラーメッセージの接頭辞（"extra_args" 等）。
-func ValidateExtraArgs(label string, args []string, reserved []string) error {
-	reservedSet := make(map[string]bool, len(reserved))
-	for _, r := range reserved {
-		reservedSet[r] = true
-	}
-
+// ValidateExtraArgs は args が許可済みオプションと、そのオプションが要求する値の
+// 組だけで構成されていることを検査する。未知のオプションと裸の位置引数は拒否する。
+// 見つかった問題は全件 1 つのエラーにまとめて返す（規約 4）。label はエラー
+// メッセージの接頭辞（"extra_args" 等）。
+func ValidateExtraArgs(label string, args []string) error {
 	var errs []string
-	for i, a := range args {
-		if strings.HasPrefix(a, "-") {
-			if reservedSet[a] {
-				errs = append(errs, fmt.Sprintf("%s[%d]: %q is a reserved flag", label, i, a))
-			}
+	for i := 0; i < len(args); {
+		takesValue, ok := extraArgTakesValue[args[i]]
+		if !ok {
+			errs = append(errs, fmt.Sprintf("%s[%d]: %q is not an allowed option", label, i, args[i]))
+			i++
 			continue
 		}
-		if i == 0 || !strings.HasPrefix(args[i-1], "-") {
-			errs = append(errs, fmt.Sprintf("%s[%d]: bare positional argument %q is not allowed", label, i, a))
+		if !takesValue {
+			i++
+			continue
 		}
+		if i+1 == len(args) {
+			errs = append(errs, fmt.Sprintf("%s[%d]: %q requires a value", label, i, args[i]))
+			i++
+			continue
+		}
+		i += 2
 	}
 	if len(errs) > 0 {
 		return fmt.Errorf("%s", strings.Join(errs, "; "))

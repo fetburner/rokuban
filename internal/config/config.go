@@ -394,16 +394,14 @@ type EncodeConfig struct {
 //  6. extra_args は改名しない。位置が変わっていないから意味も変わっていない
 //     （**ただし位置は 1 点だけ変わる**: `-f`（コンテナ）の後ろから前に移した
 //     ---VOD と live で「ユーザーのオプションはコーデック/品質/スケール指定の
-//     後・アプリ所有の末尾の前」という 1 つの規則にするため。`-f` は
-//     ffargs.CommonReservedFlags に入っているので、ユーザーが旧位置に依存する
-//     余地は無い）。対称性のために既存の全 config を壊す価値はないので、
-//     新しい方（input 側）の名前に位置を入れる: input_extra_args
-//     （ffmpeg 用語の input options の位置）。
+//     後・アプリ所有の末尾の前」という 1 つの規則にするため。`-f` は許可済み
+//     オプションに含まれないので、ユーザーが旧位置に依存する余地は無い）。
+//     対称性のために既存の全 config を壊す価値はないので、新しい方（input 側）
+//     の名前に位置を入れる: input_extra_args（ffmpeg 用語の input options の位置）。
 //  7. アプリが握り続けるもの: -y / -i / 入出力パス / -f / -progress pipe:1 /
-//     -loglevel error。ユーザーが書けるのは「位置が固定されたオプション列」
-//     だけで、コマンド文字列ではない。予約フラグの denylist（起動エラー・
-//     全件列挙。ffargs.CommonReservedFlags/ReservedFlagsLive）と、裸の位置
-//     引数の禁止（ffargs.ValidateExtraArgs）の 2 段で守る。
+//     -loglevel error。ユーザーが書けるのは ffargs.ValidateExtraArgs が値の個数まで
+//     把握する allowlist のオプション列だけで、コマンド文字列ではない。値を取らない
+//     `-an` 等も明示するため、直後に 2 本目の出力パスを密輸できない。
 //  8. device の存在は起動時に検査しない。公式イメージと device の無い CI が
 //     落ちる。無い device を書いたプロファイルはジョブ失敗でよい（マウントは
 //     k8s resources.limits / Docker --device の話でこの構造体の外）。
@@ -445,10 +443,10 @@ type EncodeProfile struct {
 	// HWAccel は -i より前に出す唯一のブロック（任意。nil なら何も出さない）。
 	HWAccel *ffargs.HWAccel `yaml:"hwaccel"`
 
-	// InputExtraArgs は -i の直前に追加する引数（任意。入力側）。
+	// InputExtraArgs は -i の直前に追加する許可済み引数（任意。入力側）。
 	InputExtraArgs []string `yaml:"input_extra_args"`
 
-	// ExtraArgs は組み立てた ffmpeg 引数に追加する引数（任意。出力側 ---
+	// ExtraArgs は組み立てた ffmpeg 引数に追加する許可済み引数（任意。出力側 ---
 	// コーデック/品質/スケール指定の後、アプリ所有の末尾（-f/-progress/出力
 	// パス）の前）。自由形式のコマンド全体は受け取らない。
 	ExtraArgs []string `yaml:"extra_args"`
@@ -539,9 +537,8 @@ func (c EncodeConfig) validate() error {
 
 // validateEncodeProfileFFArgs は VOD プロファイル 1 件ぶんの ffargs 検査
 // （scaler/height/crf/qp、hwaccel ブロック、extra_args/input_extra_args の
-// 予約フラグ・裸の位置引数）をまとめる。live.profiles 側の同種の検査
-// （validateLiveProfileFFArgs）と同じ ffargs 関数を通すことで、片側だけ直る
-// 事故を防ぐ（issue #321 決定コメント §5）。
+// allowlist）をまとめる。live.profiles 側も同じ ffargs 関数を通すことで、
+// 片側だけ直る事故を防ぐ（issue #321 決定コメント §5）。
 func validateEncodeProfileFFArgs(p EncodeProfile) error {
 	var errs []string
 	if err := ffargs.ValidateVideo(p.Scaler, p.Height, p.CRF, p.QP); err != nil {
@@ -552,10 +549,10 @@ func validateEncodeProfileFFArgs(p EncodeProfile) error {
 	}
 	// extra_args と input_extra_args の両方を検査し、1 回のエラーに全件出す
 	// （どちらか片方だけを検査する実装ミスをテストで検出できるように）。
-	if err := ffargs.ValidateExtraArgs("extra_args", p.ExtraArgs, ffargs.CommonReservedFlags); err != nil {
+	if err := ffargs.ValidateExtraArgs("extra_args", p.ExtraArgs); err != nil {
 		errs = append(errs, err.Error())
 	}
-	if err := ffargs.ValidateExtraArgs("input_extra_args", p.InputExtraArgs, ffargs.CommonReservedFlags); err != nil {
+	if err := ffargs.ValidateExtraArgs("input_extra_args", p.InputExtraArgs); err != nil {
 		errs = append(errs, err.Error())
 	}
 	if len(errs) > 0 {
@@ -622,8 +619,8 @@ type LiveConfig struct {
 	// issue #321 決定コメント §1）。
 	HWAccel *ffargs.HWAccel `yaml:"hwaccel"`
 
-	// InputExtraArgs は `-i` の直前に追加する引数（任意。入力側。HWAccel と
-	// 同じ理由でプロファイル毎ではなく live セクション直下）。
+	// InputExtraArgs は `-i` の直前に追加する許可済み引数（任意。入力側。
+	// HWAccel と同じ理由でプロファイル毎ではなく live セクション直下）。
 	InputExtraArgs []string `yaml:"input_extra_args"`
 
 	Profiles []LiveProfile `yaml:"profiles"`
@@ -672,8 +669,8 @@ type LiveProfile struct {
 	// 古いセグメントは削除する（-hls_flags delete_segments）。0 なら既定値（6）。
 	PlaylistSize int `yaml:"playlist_size"`
 
-	// ExtraArgs は組み立てた ffmpeg 引数に追加する引数（任意。出力側 ---
-	// コーデック/品質/スケール指定の後、`-f hls` の前）。
+	// ExtraArgs は組み立てた ffmpeg 引数に追加する許可済み引数（任意。
+	// 出力側 --- コーデック/品質/スケール指定の後、`-f hls` の前）。
 	ExtraArgs []string `yaml:"extra_args"`
 }
 
@@ -734,7 +731,7 @@ func (c LiveConfig) validate() error {
 	if err := c.HWAccel.Validate(); err != nil {
 		return fmt.Errorf("live.hwaccel: %w", err)
 	}
-	if err := ffargs.ValidateExtraArgs("live.input_extra_args", c.InputExtraArgs, ffargs.ReservedFlagsLive); err != nil {
+	if err := ffargs.ValidateExtraArgs("live.input_extra_args", c.InputExtraArgs); err != nil {
 		return err
 	}
 
@@ -772,7 +769,7 @@ func (c LiveConfig) validate() error {
 		if err := ffargs.ValidateVideo(p.Scaler, p.Height, p.CRF, p.QP); err != nil {
 			return fmt.Errorf("live.profiles[%d] (%s): %w", i, p.Name, err)
 		}
-		if err := ffargs.ValidateExtraArgs("extra_args", p.ExtraArgs, ffargs.ReservedFlagsLive); err != nil {
+		if err := ffargs.ValidateExtraArgs("extra_args", p.ExtraArgs); err != nil {
 			return fmt.Errorf("live.profiles[%d] (%s): %w", i, p.Name, err)
 		}
 	}

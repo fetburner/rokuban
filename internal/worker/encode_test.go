@@ -131,6 +131,15 @@ func TestBuildFFmpegArgs_HWAccelBeforeInput(t *testing.T) {
 	if slices.Contains(args, "scale=-2:720") {
 		t.Errorf("must not also emit the software scale filter: %v", args)
 	}
+	vfCount := 0
+	for _, arg := range args {
+		if arg == "-vf" {
+			vfCount++
+		}
+	}
+	if vfCount != 1 {
+		t.Errorf("-vf count = %d, want 1: %v", vfCount, args)
+	}
 }
 
 // TestBuildFFmpegArgs_QP は qp が -qp として出て -crf は出ないことを固定する。

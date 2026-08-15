@@ -135,7 +135,8 @@ encode:
   #     crf: 23                  # qp との同時指定は起動エラー
   #     preset: medium           # optional
   #     extra_args: []           # コーデック/品質/スケールの後・アプリ所有の末尾
-                                 # （-f/-progress/出力パス）の前（自由形式 cmd 全体は禁止）
+                                 # （-f/-progress/出力パス）の前。許可済みオプションのみ
+                                 # （自由形式 cmd 全体は禁止。docs/configuration.md 参照）
   #   # VAAPI（Intel/AMD）。device のマウントはデプロイ側の話 --- k8s なら
   #   # resources.limits、Docker なら --device。**起動時に device の存在は検査しない**
   #   # ので、無い device を書いたプロファイルはジョブ失敗として現れる
@@ -150,7 +151,7 @@ encode:
   #       kind: vaapi            # -hwaccel vaapi
   #       device: /dev/dri/renderD128   # -hwaccel_device（例示）
   #       output_format: vaapi   # -hwaccel_output_format（scale_vaapi へ HW フレームで渡す）
-  #     input_extra_args: []     # -i の直前に足す引数（自由形式 cmd 全体は禁止）
+  #     input_extra_args: []     # -i の直前に足す許可済み引数（自由形式 cmd 全体は禁止）
 
 # ライブ視聴（streamer ロールのみ使う）
 live:
@@ -182,7 +183,7 @@ live:
   #   kind: vaapi
   #   device: /dev/dri/renderD128
   #   output_format: vaapi
-  # input_extra_args: []         # `-f mpegts -i pipe:0` の直前に足す引数
+  # input_extra_args: []         # `-f mpegts -i pipe:0` の直前に足す許可済み引数
   # profiles:
   #   - name: h264                 # `?profile=` から参照する名前
   #     video_codec: libx264       # ISDB-T の映像は MPEG-2 なのでブラウザの HLS 経路

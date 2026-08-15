@@ -177,45 +177,78 @@ func TestPreInput_NilHWAccel(t *testing.T) {
 }
 
 func TestValidateExtraArgs(t *testing.T) {
-	reserved := CommonReservedFlags
-
-	t.Run("every reserved flag is individually rejected", func(t *testing.T) {
-		for _, flag := range reserved {
+	t.Run("app-owned flags are individually rejected", func(t *testing.T) {
+		for _, flag := range []string{
+			"-i", "-y", "-n", "-f", "-c:v", "-c:a", "-codec:v", "-codec:a",
+			"-vf", "-filter:v", "-filter_complex", "-crf", "-qp", "-preset",
+			"-progress", "-loglevel", "-hwaccel", "-hwaccel_device", "-hwaccel_output_format",
+			"-force_key_frames", "-hls_time", "-hls_list_size", "-hls_flags",
+			"-hls_segment_filename", "-hls_base_url",
+		} {
 			t.Run(flag, func(t *testing.T) {
-				if err := ValidateExtraArgs("extra_args", []string{flag}, reserved); err == nil {
-					t.Fatalf("expected %q to be rejected as reserved", flag)
+				if err := ValidateExtraArgs("extra_args", []string{flag}); err == nil {
+					t.Fatalf("expected %q to be rejected", flag)
 				}
 			})
 		}
 	})
 
 	t.Run("bare positional argument alone is rejected", func(t *testing.T) {
-		if err := ValidateExtraArgs("extra_args", []string{"/tmp/evil.mp4"}, reserved); err == nil {
+		if err := ValidateExtraArgs("extra_args", []string{"/tmp/evil.mp4"}); err == nil {
 			t.Fatal("expected bare positional argument to be rejected")
 		}
 	})
 	t.Run("bare positional argument after a flag value is rejected", func(t *testing.T) {
-		if err := ValidateExtraArgs("extra_args", []string{"-movflags", "+faststart", "/tmp/evil.mp4"}, reserved); err == nil {
+		if err := ValidateExtraArgs("extra_args", []string{"-movflags", "+faststart", "/tmp/evil.mp4"}); err == nil {
 			t.Fatal("expected trailing bare positional argument to be rejected")
 		}
 	})
 	t.Run("flag with a value is allowed", func(t *testing.T) {
-		if err := ValidateExtraArgs("extra_args", []string{"-movflags", "+faststart"}, reserved); err != nil {
+		if err := ValidateExtraArgs("extra_args", []string{"-movflags", "+faststart"}); err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
 	})
 	t.Run("bare boolean flag is allowed", func(t *testing.T) {
-		if err := ValidateExtraArgs("extra_args", []string{"-an"}, reserved); err != nil {
+		if err := ValidateExtraArgs("extra_args", []string{"-an"}); err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
 	})
 	t.Run("map with a stream selector value is allowed", func(t *testing.T) {
-		if err := ValidateExtraArgs("extra_args", []string{"-map", "0:a:1"}, reserved); err != nil {
+		if err := ValidateExtraArgs("extra_args", []string{"-map", "0:a:1"}); err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
 	})
+	t.Run("boolean flag cannot consume an output path", func(t *testing.T) {
+		for _, flag := range []string{"-an", "-vn", "-shortest", "-nostdin", "--"} {
+			t.Run(flag, func(t *testing.T) {
+				if err := ValidateExtraArgs("extra_args", []string{flag, "/tmp/evil.mp4"}); err == nil {
+					t.Fatalf("expected output path after %q to be rejected", flag)
+				}
+			})
+		}
+	})
+	t.Run("filtergraph aliases and app-owned aliases are rejected", func(t *testing.T) {
+		for _, args := range [][]string{
+			{"-filter:v:0", "scale=-2:100"},
+			{"-lavfi", "movie=/etc/passwd[v]"},
+			{"-vcodec", "libx264"},
+			{"-acodec", "aac"},
+			{"-v", "debug"},
+		} {
+			t.Run(args[0], func(t *testing.T) {
+				if err := ValidateExtraArgs("extra_args", args); err == nil {
+					t.Fatalf("expected %q to be rejected", args[0])
+				}
+			})
+		}
+	})
+	t.Run("unknown option is rejected", func(t *testing.T) {
+		if err := ValidateExtraArgs("extra_args", []string{"-unknown", "value"}); err == nil {
+			t.Fatal("expected unknown option to be rejected")
+		}
+	})
 	t.Run("all violations are listed in one error", func(t *testing.T) {
-		err := ValidateExtraArgs("extra_args", []string{"-i", "in", "-y"}, reserved)
+		err := ValidateExtraArgs("extra_args", []string{"-i", "in", "-y"})
 		if err == nil {
 			t.Fatal("expected error")
 		}
@@ -223,15 +256,14 @@ func TestValidateExtraArgs(t *testing.T) {
 			t.Errorf("error = %v, want both -i and -y mentioned", err)
 		}
 	})
-	t.Run("live reserved set additionally rejects hls flags", func(t *testing.T) {
-		if err := ValidateExtraArgs("extra_args", []string{"-hls_time"}, ReservedFlagsLive); err == nil {
-			t.Fatal("expected -hls_time to be rejected under the live reserved set")
+	t.Run("app-owned hls flag is rejected", func(t *testing.T) {
+		if err := ValidateExtraArgs("extra_args", []string{"-hls_time", "2"}); err == nil {
+			t.Fatal("expected -hls_time to be rejected")
 		}
 	})
-	t.Run("hls flags are not rejected under the VOD (common) reserved set", func(t *testing.T) {
-		// -hls_time は VOD には無関係なので共通集合には含まれない。
-		if err := ValidateExtraArgs("extra_args", []string{"-hls_time", "2"}, CommonReservedFlags); err != nil {
-			t.Errorf("unexpected error: %v", err)
+	t.Run("allowed option requires its value", func(t *testing.T) {
+		if err := ValidateExtraArgs("extra_args", []string{"-movflags"}); err == nil {
+			t.Fatal("expected -movflags without a value to be rejected")
 		}
 	})
 }

@@ -1118,43 +1118,75 @@ live:
 	}
 }
 
-// TestLoad_ReservedFlags_EncodeAndLive は extra_args / input_extra_args に
-// 予約フラグを書くと起動エラーになり、両方のリストの違反が 1 回のエラーに
-// まとめて出ることを固定する。encode と live の両方を同じテーブルで回す
-// （上と同じ理由）。壊し方: extra_args だけ検査する（input_extra_args の
-// 行が落ちる）。
-func TestLoad_ReservedFlags_EncodeAndLive(t *testing.T) {
-	// -i は extra_args 側、-y は input_extra_args 側に置く。片方だけ検査する
-	// 実装ミスがあれば、どちらかのトークンがエラーメッセージから消える。
-	extra := "      extra_args: [\"-i\", \"in\"]\n      input_extra_args: [\"-y\"]\n"
-
-	for _, b := range []struct {
-		name  string
-		build func(extra string) string
+// TestLoad_ArgumentAllowlist_AllLists は 4 つの追加引数リストが実際の YAML
+// 位置から allowlist 検査に到達することを固定する。特に live の入力側は
+// profile 内ではなく live 直下にある。
+func TestLoad_ArgumentAllowlist_AllLists(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+		want string
 	}{
-		{"encode", buildEncodeHWConfig},
-		{"live", buildLiveHWConfig},
-	} {
-		t.Run(b.name, func(t *testing.T) {
-			path := writeConfig(t, b.build(extra))
-			_, err := Load(path)
+		{
+			name: "encode profile extra_args",
+			yaml: buildEncodeHWConfig("      extra_args: [\"-i\", \"in\"]\n"),
+			want: "-i",
+		},
+		{
+			name: "encode profile input_extra_args",
+			yaml: buildEncodeHWConfig("      input_extra_args: [\"-y\"]\n"),
+			want: "-y",
+		},
+		{
+			name: "live profile extra_args",
+			yaml: buildLiveHWConfig("      extra_args: [\"-i\", \"in\"]\n"),
+			want: "-i",
+		},
+		{
+			name: "live input_extra_args",
+			yaml: strings.Replace(buildLiveHWConfig(""), "  profiles:\n", "  input_extra_args: [\"-y\"]\n  profiles:\n", 1),
+			want: "-y",
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := Load(writeConfig(t, c.yaml))
 			if err == nil {
-				t.Fatal("expected error for reserved flags in extra_args/input_extra_args")
+				t.Fatalf("expected app-owned flag %q to be rejected", c.want)
 			}
-			if !strings.Contains(err.Error(), "-i") {
-				t.Errorf("error = %v, want mention of -i (from extra_args)", err)
+			if !strings.Contains(err.Error(), c.want) {
+				t.Errorf("error = %v, want mention of %q", err, c.want)
 			}
-			if !strings.Contains(err.Error(), "-y") {
-				t.Errorf("error = %v, want mention of -y (from input_extra_args)", err)
+		})
+	}
+}
+
+// TestLoad_ExtraArgsRejectOutputInjection は値を取らないフラグの直後に 2 本目の
+// 出力パスを置く経路を VOD / live の両方で拒否する。
+func TestLoad_ExtraArgsRejectOutputInjection(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		yaml string
+	}{
+		{"encode", buildEncodeHWConfig("      extra_args: [\"-an\", \"/tmp/evil.mp4\"]\n")},
+		{"live profile", buildLiveHWConfig("      extra_args: [\"-shortest\", \"/tmp/evil.mp4\"]\n")},
+		{
+			"live input",
+			strings.Replace(buildLiveHWConfig(""), "  profiles:\n", "  input_extra_args: [\"-vn\", \"/tmp/evil.mp4\"]\n  profiles:\n", 1),
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if _, err := Load(writeConfig(t, c.yaml)); err == nil {
+				t.Fatal("expected second output path to be rejected")
 			}
 		})
 	}
 }
 
 // TestLoad_BarePositionalArgs_EncodeAndLive は裸の位置引数（2 個目の出力
-// ファイルパスの密輸経路）を拒否し、正当な形（値付きフラグ・裸のブール
-// フラグ・ストリームセレクタ値）は通すことを固定する。壊し方: 要素 1 個の
-// ときだけ拒否する（2 行目の "値付きフラグの直後" ケースが素通りする）。
+// ファイルパスの密輸経路）を拒否し、正当な形（許可済みの値付きフラグ・
+// ブールフラグ・ストリームセレクタ値）は通すことを固定する。
 func TestLoad_BarePositionalArgs_EncodeAndLive(t *testing.T) {
 	cases := []struct {
 		name    string

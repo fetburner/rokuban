@@ -356,8 +356,8 @@ func (w *EncodeWorker) commitEncoded(ctx context.Context, recordingID int64, pro
 //	-f CONTAINER -progress pipe:1 -loglevel error OUTPUT  # アプリ所有の末尾
 //
 // **extra_args は -f の前に置く。** 以前は -f の後ろだった（旧位置に依存する
-// config は無い前提 --- -f は ffargs.CommonReservedFlags の予約フラグなので
-// ユーザーが相対順序に依存する余地は無い）。VOD と live で「ユーザーのオプション
+// config は無い前提 --- -f は許可済みオプションに含まれないので、ユーザーが
+// 相対順序に依存する余地は無い）。VOD と live で「ユーザーのオプション
 // はコーデック/品質/スケール指定の後・アプリ所有の末尾の前」という 1 つの規則に
 // するための移動（BuildLiveFFmpegArgs と同じ形にする）。
 func BuildFFmpegArgs(profile config.EncodeProfile, input, output string) []string {
