@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest'
 
-import type { Service } from '@/api/generated'
 import { formatDateTime } from '@/lib/format'
 import {
   buildListRecordingsParams,
@@ -24,7 +23,7 @@ describe('parseRecordingsSearch', () => {
       parseRecordingsSearch({
         q: 'ニュース',
         genre: [0, 1],
-        serviceId: [1024],
+        service: ['default:1024'],
         status: 'failed',
         source: 'manual',
         ruleId: 5,
@@ -35,7 +34,7 @@ describe('parseRecordingsSearch', () => {
     ).toEqual({
       q: 'ニュース',
       genre: [0, 1],
-      serviceId: [1024],
+      service: ['default:1024'],
       status: 'failed',
       source: 'manual',
       ruleId: 5,
@@ -51,21 +50,30 @@ describe('parseRecordingsSearch', () => {
     const result = parseRecordingsSearch({
       q: 42, // 文字列でない
       genre: [99, -1, 2.5, 2], // 範囲外・非整数は落ちる。2 だけ残る
-      serviceId: ['abc', 5168], // 数値化できないものは落ちる
+      service: ['abc', 'default:5168'], // 複合キーでないものは落ちる
       status: 'bogus', // enum に無い
       source: 'nobody', // enum に無い
       ruleId: 'not-a-number',
       from: 'not-a-date',
       order: 'sideways',
     })
-    expect(result).toEqual({ genre: [2], serviceId: [5168] })
+    expect(result).toEqual({ genre: [2], service: ['default:5168'] })
   })
 
-  it('単一値（配列でない）の genre/serviceId は 1 要素の配列に正規化する', () => {
+  it('単一値（配列でない）の genre/service は 1 要素の配列に正規化する', () => {
     // ?genre=5 のような、リピートキーでない URL を手で叩いた場合。
-    expect(parseRecordingsSearch({ genre: 5, serviceId: 1024 })).toEqual({
+    expect(parseRecordingsSearch({ genre: 5, service: 'default:1024' })).toEqual({
       genre: [5],
-      serviceId: [1024],
+      service: ['default:1024'],
+    })
+  })
+
+  it('service は (site, serviceId) の複合キーを保つ', () => {
+    const search = parseRecordingsSearch({ service: ['default:1024', 'site2:1024'] })
+    expect(search).toEqual({ service: ['default:1024', 'site2:1024'] })
+    expect(buildListRecordingsParams(search, false)).toEqual({
+      trash: false,
+      service: ['default:1024', 'site2:1024'],
     })
   })
 
@@ -140,7 +148,7 @@ describe('hasAnyRecordingsCondition', () => {
   it.each<[string, RecordingsPageSearch]>([
     ['q', { q: 'ニュース' }],
     ['genre', { genre: [1] }],
-    ['serviceId', { serviceId: [1024] }],
+    ['service', { service: ['default:1024'] }],
     ['status', { status: 'failed' }],
     ['source', { source: 'manual' }],
     ['ruleId', { ruleId: 3 }],
@@ -165,7 +173,7 @@ describe('buildListRecordingsParams', () => {
     const search: RecordingsPageSearch = {
       q: 'ニュース',
       genre: [0, 1],
-      serviceId: [1024],
+      service: ['default:1024'],
       status: 'failed',
       source: 'manual',
       ruleId: 5,
@@ -177,7 +185,7 @@ describe('buildListRecordingsParams', () => {
       trash: false,
       q: 'ニュース',
       genre: [0, 1],
-      serviceId: [1024],
+      service: ['default:1024'],
       status: 'failed',
       source: 'manual',
       ruleId: 5,
@@ -217,37 +225,23 @@ describe('datetime-local と ISO の相互変換', () => {
 })
 
 describe('describeRecordingsFilters', () => {
-  const services = new Map<number, Service>([
-    [
-      1024,
-      {
-        networkId: 1,
-        serviceId: 1024,
-        name: 'ＮＨＫ総合',
-        channelType: 'GR',
-        channel: '27',
-        remoteControlKeyId: 1,
-        hasLogoData: false,
-        hasPrograms: true,
-      },
-    ],
-  ])
+  const services = new Map([['default:1024', 'ＮＨＫ総合 (default)']])
 
   it('条件が無ければチップも無い', () => {
     expect(describeRecordingsFilters(emptyRecordingsSearch(), services)).toEqual([])
   })
 
   it('ジャンル・チャンネルは値ごとに 1 チップになり、外すとその値だけ落ちる', () => {
-    const search: RecordingsPageSearch = { genre: [0, 1], serviceId: [1024] }
+    const search: RecordingsPageSearch = { genre: [0, 1], service: ['default:1024'] }
     const chips = describeRecordingsFilters(search, services)
     expect(chips.map((c) => c.label)).toEqual([
       'ジャンル: ニュース・報道',
       'ジャンル: スポーツ',
-      'チャンネル: ＮＨＫ総合',
+      'チャンネル: ＮＨＫ総合 (default)',
     ])
 
     const genreChip = chips.find((c) => c.key === 'genre-0')
-    expect(genreChip?.clear(search)).toEqual({ genre: [1], serviceId: [1024] })
+    expect(genreChip?.clear(search)).toEqual({ genre: [1], service: ['default:1024'] })
   })
 
   it('最後の 1 件を外すと配列キー自体が消える（空配列を残さない）', () => {
@@ -256,10 +250,10 @@ describe('describeRecordingsFilters', () => {
     expect(chips[0].clear(search)).toEqual({ genre: undefined })
   })
 
-  it('チャンネル名が分からない serviceId は番号で出す', () => {
-    const search: RecordingsPageSearch = { serviceId: [9999] }
+  it('チャンネル名が分からない service は複合キーで出す', () => {
+    const search: RecordingsPageSearch = { service: ['site2:9999'] }
     const chips = describeRecordingsFilters(search, services)
-    expect(chips[0].label).toBe('チャンネル: チャンネル #9999')
+    expect(chips[0].label).toBe('チャンネル: site2:9999')
   })
 
   it('状態・種別・ルール・期間はスカラーの 1 チップになる', () => {

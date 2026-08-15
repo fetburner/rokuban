@@ -25,6 +25,7 @@ type seedRecordingOpts struct {
 	start       time.Time
 	status      string
 	eventID     int32
+	site        string // 既定 db.DefaultSite
 	serviceID   int32
 	channelType string
 	genres      string // jsonb リテラル（空なら NULL）
@@ -46,6 +47,10 @@ func seedRecordingFull(t *testing.T, pool *pgxpool.Pool, o seedRecordingOpts) in
 	if serviceID == 0 {
 		serviceID = 5168
 	}
+	site := o.site
+	if site == "" {
+		site = db.DefaultSite
+	}
 	var description *string
 	if o.description != "" {
 		description = &o.description
@@ -57,7 +62,7 @@ func seedRecordingFull(t *testing.T, pool *pgxpool.Pool, o seedRecordingOpts) in
 	id, err := sqlcgen.New(pool).CreateRecording(context.Background(), sqlcgen.CreateRecordingParams{
 		RuleID:            o.ruleID,
 		Source:            source,
-		Site:              db.DefaultSite,
+		Site:              site,
 		NetworkID:         32678,
 		ServiceID:         serviceID,
 		EventID:           o.eventID,
@@ -181,7 +186,7 @@ func TestListRecordings_GenreFilter(t *testing.T) {
 	}
 }
 
-// channelType / serviceId は複数指定可。
+// channelType / service は複数指定可。
 func TestListRecordings_ChannelTypeAndServiceID(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	srv := newAPIServer(t, pool)
@@ -201,14 +206,45 @@ func TestListRecordings_ChannelTypeAndServiceID(t *testing.T) {
 		t.Fatalf("channelType=BS,CS got %v, want 2 件", titles)
 	}
 
-	titles = getRecordingsTitles(t, srv.URL, url.Values{"serviceId": {"100"}})
+	titles = getRecordingsTitles(t, srv.URL, url.Values{"service": {db.DefaultSite + ":100"}})
 	if len(titles) != 1 || titles[0] != "GR番組" {
-		t.Fatalf("serviceId=100 got %v, want [GR番組]", titles)
+		t.Fatalf("service=default:100 got %v, want [GR番組]", titles)
 	}
 
-	titles = getRecordingsTitles(t, srv.URL, url.Values{"serviceId": {"100", "200"}})
+	titles = getRecordingsTitles(t, srv.URL, url.Values{"service": {db.DefaultSite + ":100", db.DefaultSite + ":200"}})
 	if len(titles) != 2 {
-		t.Fatalf("serviceId=100,200 got %v, want 2 件", titles)
+		t.Fatalf("service=default:100,default:200 got %v, want 2 件", titles)
+	}
+}
+
+// service（チャンネル絞り込み）は (site, serviceId) で引く。同じ放送エリアを
+// 2 サイトで受けていて service_id が両サイトで一致していても、選んだ site の
+// 録画だけを返す（site を跨がない。issue #283）。
+func TestListRecordings_ServiceCrossSite(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := newAPIServer(t, pool)
+	base := time.Now().Truncate(time.Second)
+
+	// 2 サイトが同じ service_id=100 を受けている。
+	seedRecordingFull(t, pool, seedRecordingOpts{title: "default の 100", start: base, status: "finished", eventID: 1, site: db.DefaultSite, serviceID: 100})
+	seedRecordingFull(t, pool, seedRecordingOpts{title: "site2 の 100", start: base.Add(time.Minute), status: "finished", eventID: 2, site: "site2", serviceID: 100})
+
+	// default:100 を選んだら default の録画だけ（site2 の 100 は混ざらない）。
+	titles := getRecordingsTitles(t, srv.URL, url.Values{"service": {db.DefaultSite + ":100"}})
+	if len(titles) != 1 || titles[0] != "default の 100" {
+		t.Fatalf("service=default:100 got %v, want [default の 100]（site を跨がない）", titles)
+	}
+
+	// site2:100 を選んだら site2 の録画だけ。
+	titles = getRecordingsTitles(t, srv.URL, url.Values{"service": {"site2:100"}})
+	if len(titles) != 1 || titles[0] != "site2 の 100" {
+		t.Fatalf("service=site2:100 got %v, want [site2 の 100]", titles)
+	}
+
+	// 複数サイトの複合キーは OR で足せる。
+	titles = getRecordingsTitles(t, srv.URL, url.Values{"service": {db.DefaultSite + ":100", "site2:100"}})
+	if len(titles) != 2 {
+		t.Fatalf("service=default:100,site2:100 got %v, want 2 件", titles)
 	}
 }
 
@@ -425,6 +461,10 @@ func TestListRecordings_ValidationErrors(t *testing.T) {
 		{"genre above domain max", url.Values{"genre": {"16"}}},
 		{"genre negative", url.Values{"genre": {"-1"}}},
 		{"genre wraps int16 if not validated", url.Values{"genre": {"32768"}}},
+		{"service without site", url.Values{"service": {"100"}}},
+		{"service with invalid site", url.Values{"service": {"Tokyo:100"}}},
+		{"service with zero id", url.Values{"service": {"default:0"}}},
+		{"service id over int32", url.Values{"service": {"default:2147483648"}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -466,6 +506,7 @@ func TestListRecordings_ValidationErrors(t *testing.T) {
 		{"qTarget", url.Values{"qTarget": {"title"}}},
 		{"channelType", url.Values{"channelType": {"GR"}}},
 		{"order", url.Values{"order": {"asc"}}},
+		{"service", url.Values{"service": {"default:1"}}},
 	} {
 		resp := getJSON(t, recordingsURL(srv.URL, tt.params), nil)
 		if resp.StatusCode != http.StatusOK {

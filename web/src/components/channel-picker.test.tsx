@@ -30,7 +30,7 @@ async function openPicker(triggerName: RegExp | string): Promise<HTMLElement> {
 describe('ChannelPicker', () => {
   it('選択が無いとき、トリガーに「すべてのチャンネル」が出る', () => {
     render(
-      <ChannelPicker services={[service()]} selected={new Set()} onChange={vi.fn()} />,
+      <ChannelPicker services={[service()]} selected={new Set<number>()} onChange={vi.fn()} />,
     )
     expect(screen.getByRole('button', { name: 'チャンネル: すべて' })).toBeInTheDocument()
   })
@@ -54,7 +54,7 @@ describe('ChannelPicker', () => {
     ]
 
     const { rerender } = render(
-      <ChannelPicker services={services} selected={new Set()} onChange={vi.fn()} />,
+      <ChannelPicker services={services} selected={new Set<number>()} onChange={vi.fn()} />,
     )
     expect(screen.getByRole('button', { name: 'チャンネル: すべて' })).toBeInTheDocument()
     expect(screen.getByText('すべてのチャンネル')).toBeInTheDocument()
@@ -81,7 +81,7 @@ describe('ChannelPicker', () => {
       service({ serviceId: 1024, name: 'NHK総合', channelType: 'GR', remoteControlKeyId: 1 }),
       service({ serviceId: 2024, name: 'BS日テレ', channelType: 'BS', remoteControlKeyId: 141 }),
     ]
-    render(<ChannelPicker services={services} selected={new Set()} onChange={vi.fn()} />)
+    render(<ChannelPicker services={services} selected={new Set<number>()} onChange={vi.fn()} />)
 
     const dialog = await openPicker('チャンネル: すべて')
     expect(within(dialog).getByText('地上波')).toBeInTheDocument()
@@ -93,7 +93,7 @@ describe('ChannelPicker', () => {
   it('選ぶと onChange が選択を追加した集合で呼ばれ、ピッカーは閉じない', async () => {
     const onChange = vi.fn()
     const services = [service({ serviceId: 1024, name: 'NHK総合' })]
-    render(<ChannelPicker services={services} selected={new Set()} onChange={onChange} />)
+    render(<ChannelPicker services={services} selected={new Set<number>()} onChange={onChange} />)
 
     // 「閉じない」の確認は、必ず開いたことを確かめてから押して、まだ開いていることを見る。
     const dialog = await openPicker('チャンネル: すべて')
@@ -150,7 +150,7 @@ describe('ChannelPicker', () => {
 
   it('Esc で閉じ、フォーカスがトリガーに戻る', async () => {
     const services = [service({ serviceId: 1024, name: 'NHK総合' })]
-    render(<ChannelPicker services={services} selected={new Set()} onChange={vi.fn()} />)
+    render(<ChannelPicker services={services} selected={new Set<number>()} onChange={vi.fn()} />)
 
     await openPicker('チャンネル: すべて')
     const user = userEvent.setup()
@@ -167,7 +167,7 @@ describe('ChannelPicker', () => {
       service({ serviceId: 1003, name: 'GR3', channelType: 'GR', remoteControlKeyId: 3 }),
       service({ serviceId: 1001, name: 'GR1', channelType: 'GR', remoteControlKeyId: 1 }),
     ]
-    render(<ChannelPicker services={services} selected={new Set()} onChange={vi.fn()} />)
+    render(<ChannelPicker services={services} selected={new Set<number>()} onChange={vi.fn()} />)
 
     const dialog = await openPicker('チャンネル: すべて')
     const names = within(dialog)
@@ -187,7 +187,7 @@ describe('ChannelPicker', () => {
     const services = Array.from({ length: 15 }, (_, i) =>
       service({ serviceId: 1000 + i, name: `チャンネル${i}`, remoteControlKeyId: i + 1 }),
     )
-    render(<ChannelPicker services={services} selected={new Set()} onChange={vi.fn()} />)
+    render(<ChannelPicker services={services} selected={new Set<number>()} onChange={vi.fn()} />)
 
     await openPicker('チャンネル: すべて')
     expect(screen.queryByLabelText('チャンネルを絞り込む')).not.toBeInTheDocument()
@@ -197,7 +197,7 @@ describe('ChannelPicker', () => {
     const services = Array.from({ length: 16 }, (_, i) =>
       service({ serviceId: 1000 + i, name: `チャンネル${i}`, remoteControlKeyId: i + 1 }),
     )
-    render(<ChannelPicker services={services} selected={new Set()} onChange={vi.fn()} />)
+    render(<ChannelPicker services={services} selected={new Set<number>()} onChange={vi.fn()} />)
 
     await openPicker('チャンネル: すべて')
     expect(screen.getByLabelText('チャンネルを絞り込む')).toBeInTheDocument()
@@ -207,7 +207,7 @@ describe('ChannelPicker', () => {
     const services = Array.from({ length: 16 }, (_, i) =>
       service({ serviceId: 1000 + i, name: `チャンネル${i}`, remoteControlKeyId: i + 1 }),
     )
-    render(<ChannelPicker services={services} selected={new Set()} onChange={vi.fn()} />)
+    render(<ChannelPicker services={services} selected={new Set<number>()} onChange={vi.fn()} />)
 
     const dialog = await openPicker('チャンネル: すべて')
     expect(within(dialog).getByText('チャンネル1')).toBeInTheDocument()
@@ -225,7 +225,7 @@ describe('ChannelPicker', () => {
 
   it('GR で remoteControlKeyId > 0 のときリモコン番号を出す', async () => {
     const services = [service({ serviceId: 1024, name: 'NHK総合', remoteControlKeyId: 1 })]
-    render(<ChannelPicker services={services} selected={new Set()} onChange={vi.fn()} />)
+    render(<ChannelPicker services={services} selected={new Set<number>()} onChange={vi.fn()} />)
 
     const dialog = await openPicker('チャンネル: すべて')
     expect(within(dialog).getByText('1')).toBeInTheDocument()
@@ -236,7 +236,7 @@ describe('ChannelPicker', () => {
       // ServiceChannelType には無い値が来ても落とさない、という契約を確かめる
       service({ serviceId: 9001, name: '未知局', channelType: 'XX' as Service['channelType'] }),
     ]
-    render(<ChannelPicker services={services} selected={new Set()} onChange={vi.fn()} />)
+    render(<ChannelPicker services={services} selected={new Set<number>()} onChange={vi.fn()} />)
 
     const dialog = await openPicker('チャンネル: すべて')
     expect(within(dialog).getByText('XX')).toBeInTheDocument()

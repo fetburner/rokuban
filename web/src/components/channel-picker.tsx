@@ -19,24 +19,38 @@ import { cn } from '@/lib/utils'
 /** searchThreshold を超える候補数のときだけ絞り込み欄を出す。少数のときは検索欄が邪魔なだけ。 */
 const searchThreshold = 15
 
-export function ChannelPicker({
+/** defaultServiceKey は単一サイト（site 非依存）の呼び出し側が使う既定のキー。 */
+const defaultServiceKey = (s: Service) => s.serviceId
+
+export function ChannelPicker<K extends string | number>({
   services,
   selected,
   onChange,
+  keyOf,
+  secondaryLabel,
 }: {
   /** 候補。呼び出し側が絞り込み済みで渡す（並び順は保証されないので中で orderServices を通す）。 */
   services: Service[]
-  /** 選択中の serviceId 集合。空集合は「すべて」。 */
-  selected: ReadonlySet<number>
-  onChange: (next: ReadonlySet<number>) => void
+  /** 選択中のキー集合。空集合は「すべて」。 */
+  selected: ReadonlySet<K>
+  onChange: (next: ReadonlySet<K>) => void
+  /**
+   * keyOf は選択の identity。既定は serviceId 単体（単一サイト）。多サイトでは
+   * 同じ serviceId が別サイトに存在しうるため、呼び出し側が `<site>:<serviceId>`
+   * のような複合キーを渡す（issue #283）。
+   */
+  keyOf?: (s: Service) => K
+  /** secondaryLabel は各候補に添える補足（多サイトでは site 名）。 */
+  secondaryLabel?: (s: Service) => string | undefined
 }): React.ReactElement {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
+  const serviceKey = keyOf ?? (defaultServiceKey as (s: Service) => K)
 
   const ordered = useMemo(() => orderServices(services), [services])
   const selectedServices = useMemo(
-    () => ordered.filter((s) => selected.has(s.serviceId)),
-    [ordered, selected],
+    () => ordered.filter((s) => selected.has(serviceKey(s))),
+    [ordered, selected, serviceKey],
   )
 
   const filtered = useMemo(() => {
@@ -60,10 +74,10 @@ export function ChannelPicker({
   // （複数選ぶのに毎回開き直させないため。閉じるのは外側クリック / Esc）。
   const clearAll = () => onChange(new Set())
 
-  const toggle = (serviceId: number) => {
+  const toggle = (key: K) => {
     const next = new Set(selected)
-    if (next.has(serviceId)) next.delete(serviceId)
-    else next.add(serviceId)
+    if (next.has(key)) next.delete(key)
+    else next.add(key)
     onChange(next)
   }
 
@@ -130,19 +144,23 @@ export function ChannelPicker({
                   <div className="px-2 pt-2 pb-1 text-xs font-medium text-muted-foreground">
                     {channelTypeLabel(group.channelType)}
                   </div>
-                  {group.services.map((s) => (
-                    <ChannelOption
-                      key={`${s.networkId}-${s.serviceId}`}
-                      label={s.name}
-                      remoteControlKeyId={
-                        s.channelType === 'GR' && s.remoteControlKeyId > 0
-                          ? s.remoteControlKeyId
-                          : undefined
-                      }
-                      active={selected.has(s.serviceId)}
-                      onClick={() => toggle(s.serviceId)}
-                    />
-                  ))}
+                  {group.services.map((s) => {
+                    const key = serviceKey(s)
+                    return (
+                      <ChannelOption
+                        key={key}
+                        label={s.name}
+                        secondary={secondaryLabel?.(s)}
+                        remoteControlKeyId={
+                          s.channelType === 'GR' && s.remoteControlKeyId > 0
+                            ? s.remoteControlKeyId
+                            : undefined
+                        }
+                        active={selected.has(key)}
+                        onClick={() => toggle(key)}
+                      />
+                    )
+                  })}
                 </div>
               ))}
               {groups.length === 0 && (
@@ -160,11 +178,14 @@ export function ChannelPicker({
 
 function ChannelOption({
   label,
+  secondary,
   remoteControlKeyId,
   active,
   onClick,
 }: {
   label: string
+  /** 補足ラベル（多サイトの site 名など）。渡されたときだけ添える。 */
+  secondary?: string
   /** GR で `remoteControlKeyId > 0` のときだけ渡す。program-grid.tsx のヘッダと同じ見た目。 */
   remoteControlKeyId?: number
   active: boolean
@@ -198,6 +219,9 @@ function ChannelOption({
         </span>
       )}
       <span className="truncate">{label}</span>
+      {secondary !== undefined && (
+        <span className="ml-auto shrink-0 text-xs text-muted-foreground">{secondary}</span>
+      )}
     </button>
   )
 }
