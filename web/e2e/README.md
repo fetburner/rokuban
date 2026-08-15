@@ -249,6 +249,48 @@ E2E_URL=http://localhost:4173 pnpm e2e:sse-refresh
 
 `badge-links.mjs` と同じ ⓪（配っている bundle と `dist/` の一致）を自分で確認する。
 
+### 予約ボタンの可視性（`reserve-visibility.mjs`）
+
+番組リストの予約 / 取消ボタンを「ホバー / フォーカスした行・展開中の行」だけ
+立てる（issue #310。判断は [docs/frontend/reservations.md](../../docs/frontend/reservations.md)
+§番組リストの予約ボタンはホバー / フォーカスした行だけ立てる）。**この可視性は
+`:hover` / `:focus-visible` / `pointer:` メディア特性で駆動するので jsdom では
+原理的に測れない** --- `getComputedStyle().visibility` にクラス由来の値が乗らず、
+`pnpm test` は「常時見えたまま」というクラス名の変異を検出できない。単体側
+（`program-row.test.tsx`）が見るのは `group` / `peer` マーカーと `data-testid` の
+配線だけで、可視性そのものはここが唯一の判定手段。
+
+見るのは 4 状態（すべて実描画の `visibility` を `getComputedStyle` で直接読む。
+Playwright の `.isVisible()` は使わない --- opacity を見ないうえ、判定理由を
+残せない）:
+
+- ① 細ポインタ（既定の Chromium = hover:hover + pointer:fine）: ホバーも
+  フォーカスもしていない行は見えない / ホバー・`:focus-visible` で見える
+  （両方向）。あわせてホバー前後で行・予約列（`w-20`）の bounding box が
+  変わらない（CLS 無し）ことと、見えているときのワンタップ予約が実際に
+  `PUT .../intent` を飛ばすこと（可視性だけ切り替え、pointer-events を殺して
+  いない）を測る
+- ② 細ポインタで展開すると、行ヘッダから hover / focus が外れても見えたまま
+  （展開パネルは `.group` の外の兄弟なので `peer-aria-expanded` を pointer 種別で
+  縛らないことで担保）。折りたたみ直すと消える
+- ③ タッチ / 粗いポインタ（hasTouch + isMobile = hover:none + pointer:coarse）:
+  折りたたみ行は見えない・展開行だけ見える。加えて外付けキーボード想定で
+  `:focus-visible` だけでも見える（WCAG 2.4.7 / 2.4.11）
+- ④ 折りたたみ行の予約列を実座標へ `page.touchscreen.tap()` で生タップ
+  （ロケータのアクショナビリティ判定を迂回する）しても PUT が飛ばない・
+  トーストも出ない --- **これがレビューで見つかった欠陥そのもの**。`opacity-0`
+  では見えない 80×56px がヒットテストに残って予約が成立していた。`visibility`
+  はヒットテストと tab 順序から要素を外すので飛ばない
+
+`design.mjs` と同じ手（`/api/**` を `page.route` で丸ごと差し替え、時刻は
+`page.clock.setFixedTime` で固定）で mirakc も DB も要らない。⓪（配っている
+bundle と `dist/` の一致）も自分で確認する。
+
+```sh
+pnpm build && pnpm preview --port 4173 --strictPort &
+E2E_URL=http://localhost:4173 pnpm e2e:reserve-visibility
+```
+
 ## CI では回さない
 
 実サーバーと実 mirakc のデータに依存するため、CI には載せない。**ローカルでの受け入れ確認**の

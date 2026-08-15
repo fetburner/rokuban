@@ -96,13 +96,17 @@ export function ProgramRow({
 
   return (
     <div className="flex flex-col border-b border-border">
-      <div className="flex items-stretch">
+      <div className="group flex items-stretch">
         <button
           type="button"
           aria-expanded={expanded}
           aria-controls={detailId}
           onClick={() => setExpanded((v) => !v)}
-          className="flex min-h-14 min-w-0 flex-1 items-center gap-3 px-4 py-2.5 text-left hover:bg-muted/50"
+          // `peer` は右端の予約ボタン（タッチ / 粗いポインタでの表示条件が
+          // `aria-expanded` を見るため）が引くマーカー。この button 自身が
+          // `aria-expanded` を持ち、予約ボタンの列より DOM 上で先に来る
+          // 兄弟なので `peer-aria-expanded:` で引ける。
+          className="peer flex min-h-14 min-w-0 flex-1 items-center gap-3 px-4 py-2.5 text-left hover:bg-muted/50"
         >
           <div className="w-11 shrink-0 text-sm">
             {/* 放送中の行は**色を使わず**太さで立てる。理由は 2 つあり、どちらも
@@ -141,8 +145,68 @@ export function ProgramRow({
           />
         </button>
 
-        {/* 予約ボタンは行本体と分離した固定幅。最小 44px のタップ領域を確保する */}
-        <div className="flex w-20 shrink-0 items-center justify-center border-l border-border">
+        {/* 予約ボタンは行本体と分離した固定幅。最小 44px のタップ領域を確保する。
+            issue #310: 常時は出さず、ホバー / フォーカスした行（細ポインタ）か
+            展開中の行だけ立てる。**列の幅（w-20）は常に確保したまま可視性だけを
+            切り替える** --- 幅・高さを変えると仮想化（program-list.tsx の
+            measureElement）の再計測とレイアウトシフトの両方を引き起こす。
+            「取消」（予約済み行）も同じ規則に従う（下のマークアップは reserved
+            で分岐しない 1 つの wrapper なので自動的に揃う）。
+            **`opacity-0` ではなく `invisible`（visibility:hidden）を使う** ---
+            opacity は見た目を消すだけでヒットテストと tab 順序には残るため、
+            折りたたみ行の右端 80×56px が「見えないタップ標的」になり、
+            スクロール中に予約ボタンへ誤って触れないための分離（このコンポーネント
+            冒頭の doc コメント）を自ら壊してしまう（レビューで実測: 生座標への
+            素タップで PUT intent が飛ぶことを確認）。visibility は独立の
+            プロパティなので幅 w-20 はそのまま確保される（レイアウトに影響しない）。
+              - 細ポインタ（hover:hover かつ pointer:fine）の :hover:
+                `pointer-fine:group-hover:visible`
+              - キーボードは **ポインタ種別で条件分けしない**（無条件）:
+                `.group` の中に :focus-visible な要素（行トグル、あるいは
+                Tab で予約ボタン自身に進んだ後はそのボタン自身）があれば
+                `group-has-[:focus-visible]:visible` で出す。行トグルへ Tab
+                で入ると visible になり、次の Tab でそのまま予約ボタンへ進める。
+                ここを `pointer-fine:` で縛ると、タッチスクリーン + 外付け
+                キーボードや pointer:none の環境でフォーカスは乗るのに
+                visibility は hidden のまま（フォーカス可視だが操作不能）
+                という状態を作ってしまう（WCAG 2.4.7 / 2.4.11 相当の欠陥。
+                レビュー指摘）。
+                **`group-focus-within`（ANY フォーカス）ではなく
+                `group-has-[:focus-visible]`（キーボード等由来の「見える」
+                フォーカスだけ）を使う** --- 行トグルをマウスでクリック /
+                タッチでタップした直後もその要素は（見た目のリング無しで）
+                フォーカスを持ち続けるため、`:focus-within` だと「折りたたみ
+                直したのにマウス操作の名残りだけで見えたまま」になる
+                （e2e で実際に検出。行を展開→タップ/クリックで折りたたむ
+                → まだ見える、という回帰）。:focus-visible はブラウザが
+                「直近の入力手段」から見た目のリングを出すべきかを判定する
+                ものなので、ポインタ操作直後のフォーカスでは false になり
+                この回帰が起きない
+              - 展開中（aria-expanded="true"）も同様に無条件で出す
+                （`peer-aria-expanded:visible`）。タッチ / 粗いポインタでの
+                「展開中の行だけ出す」はこれで満たされる。加えて、細ポインタでも
+                展開パネル（`.group` の外の兄弟）内で encodeProfiles /
+                keepOriginal を操作している間は行ヘッダの :hover /
+                :focus-within が外れて予約ボタンが消えてしまうため、展開中は
+                ポインタ種別を問わず出したままにする（「予約を押した時点で
+                反映される」という展開パネルの案内と矛盾しないように） */}
+        <div
+          // e2e（web/e2e/reserve-visibility.mjs）がこの要素の実描画（visibility /
+          // hit-testing）を測る。jsdom は CSS のメディア特性（hover / pointer）も
+          // visibility の実描画も評価しないため、可視性そのものはユニットテスト
+          // では検証できない --- ここの data-testid は design.mjs の
+          // `program-row-time` と同じ理由（クラス名でセレクタを組むと、その
+          // ユーティリティクラスが移っただけで別の要素を測ったまま通ってしまう）
+          // で付けている。
+          data-testid="program-row-reserve"
+          className={cn(
+            'flex w-20 shrink-0 items-center justify-center border-l border-border',
+            'invisible',
+            'pointer-fine:group-hover:visible',
+            'group-has-[:focus-visible]:visible',
+            'peer-aria-expanded:visible',
+          )}
+        >
           <Button
             variant={reserved ? 'destructive' : 'default'}
             size="sm"
