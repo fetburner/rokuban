@@ -124,21 +124,14 @@ type Recording struct {
 	StartedAt         *time.Time      `json:"startedAt,omitempty"`
 	EndedAt           *time.Time      `json:"endedAt,omitempty"`
 	QualityEvents     json.RawMessage `json:"qualityEvents"`
-	// NeverScheduled は quality_events の recording.never-scheduled マーカーを
-	// 型付き列に昇格したもの（issue #161、00033）。落とすと rescue 後に
-	// never_scheduled_events VIEW（この列が核）がこの行を検出できなくなり、
-	// 同期除外・容量判定・重なり判定から漏れて POST を再送してしまう
-	// （issue #134 の再発。#143 が同じ形の教訓を supersededAt について残している）。
-	// 00033 より前に export された古い世代のカタログにはこのフィールド自体が
-	// 無いので、rescue 時は常にゼロ値 false で読める。**rescue 側
-	// （internal/catalog/rescue.go の applyDocument）はこの値をそのまま
-	// 書かず、quality_events のマーカーから導出した値との OR を取る** ---
-	// 古い世代のダンプは never-scheduled の事実を quality_events にしか
-	// 持たないため、フィールドが無いことを「never-scheduled でない」と
-	// 読み違えると同じ POST 再送の再発が古いダンプの rescue でだけ起きる。
-	NeverScheduled bool       `json:"neverScheduled,omitempty"`
-	DeletedAt      *time.Time `json:"deletedAt,omitempty"`
-	PurgeAfter     *time.Time `json:"purgeAfter,omitempty"`
+	// 欠測（旧 never-scheduled 擬似行）は issue #318 で recordings から
+	// never_scheduled_events 表へ移設され、recordings は観測された試行だけを
+	// 持つ。欠測は過去番組の観測なので、放送 + 猶予で消える snapshots や復旧後の
+	// 未来予約とは無関係になり、catalog の対象にしない。旧世代のカタログが
+	// quality_events に持つ recording.never-scheduled マーカーは、rescue 側が
+	// 検出して recordings に戻さずスキップする（rescue.go 参照）。
+	DeletedAt  *time.Time `json:"deletedAt,omitempty"`
+	PurgeAfter *time.Time `json:"purgeAfter,omitempty"`
 	// KeepOriginalLegacy / EncodeProfilesLegacy: issue #159 より前は
 	// recordings.keep_original / recordings.encode_profiles だった旧列。
 	// 現在は RecordingEncodePolicy（recording_encode_policy 衛星表）に切り出した
@@ -209,10 +202,10 @@ type DropStat struct {
 
 // ProgramSnapshot は program_snapshots の 1 行（意図・上書きの FK 先）。
 //
-// EventID / ServiceName は issue #98 で追加された列（00025）。
-// reconciler.recordNeverScheduled が recordings の never-scheduled 行を作る
-// ときの識別（network_id, service_id, event_id）と表示名に使うため、
-// 他のチャンネル識別列と同様に catalog の往復で失ってはならない。
+// EventID / ServiceName は issue #98 で追加された列（00025）。放送イベントの
+// 識別（network_id, service_id, event_id）と表示名に使うため、他のチャンネル
+// 識別列と同様に catalog の往復で失ってはならない（reconciler が欠測を書くとき、
+// および watcher が録画行を作るときに snapshot から引く）。
 // 古い世代の catalog には存在しないので omitempty（nil = 未対応 or 移行前）。
 //
 // **チャンネル・イベント識別 6 列はポインタのまま残す。** DB 側の

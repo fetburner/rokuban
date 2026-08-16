@@ -72,31 +72,33 @@ CREATE INDEX ON recordings (purged_at) WHERE purged_at IS NULL;  -- ごみ箱一
 
 ### 行の作られ方
 
+**`recordings` は mirakc が報告した録画試行だけを持つ。書き手は watcher だけ。**
+
 - watcher が mirakc record を初観測（SSE または全量突き合わせ）→ record の program / service ペイロードからスナップショットして INSERT、`record_sync` 行から参照
 - `recording.failed` で record が存在しないケース（start-recording-failed 等）→ status = `failed` の行を作り quality_events に理由を記録。**録画されなかった試行も履歴に残る**
-- **番組終了時点で捕獲の試みが一度も記録されなかった場合** → reconciler（`recordNeverScheduled`）が status = `failed` の行を作り、`never_scheduled = true` を立てたうえで quality_events に `recording.never-scheduled`（内訳付き）を記録する。watcher の 2 経路（mirakc 由来の失敗）とは書き手が異なる唯一の経路で、`recordings` に書き手が 2 人（watcher / reconciler）いることになるが、直列化契約は下記「同一イベントの重複防止」の一意索引が担う（不変条件 12「1 つの表に書き手が 2 人いるのも同じ兆候」への回答）
-- 同一 active-event に上記の failed 行（mirakc 由来・never-scheduled のどちらでも）が既にある状態で、後から成功 record が初観測されたとき → failed 行を supersede してから新しい行を INSERT する（下記「同一イベントの重複防止」の `superseded_at` 参照）
+- **番組終了時点で schedule が一度も観測されなかった場合は試行ではないため、`recordings` に行を作らない。** reconciler が後述の `never_scheduled_events` に欠測を書き、ライブラリには failed 録画として出さない
+- 同一 active-event に mirakc 由来の failed 行が既にある状態で、後から成功 record が初観測されたとき → failed 行を supersede してから新しい行を INSERT する（下記「同一イベントの重複防止」の `superseded_at` 参照）
 - ingest の完了は recordings の status ではなく **`media_assets` 行の有無**で表現する（コミット = DB 行。冗長な状態カラムを持たない）
 
 ### status の権威
 
-**`status` の権威は「mirakc が報告したレコードの状態」であって、「Rokuban から見た録画の帰結」ではない。** 値は mirakc の `GET /api/recording/records` の `recording.status` をそのまま転記したもので、4 値（`recording` / `finished` / `canceled` / `failed`）で閉じている（mirakc-core の `RecordingStatus` が 4 バリアントの網羅的 enum であることをソースで確認済み）。この権威は一段階だけ広がっている: mirakc が record を報告した行は報告値をそのまま持つ、reconciler が起こした行（never-scheduled）は `failed` + 理由は `quality_events` が権威、という 2 分岐。
+**`status` の権威は「mirakc が報告したレコードの状態」であって、「Rokuban から見た録画の帰結」ではない。** 値は mirakc の `GET /api/recording/records` の `recording.status` をそのまま転記したもので、4 値（`recording` / `finished` / `canceled` / `failed`）で閉じている（mirakc-core の `RecordingStatus` が 4 バリアントの網羅的 enum であることをソースで確認済み）。record の無い行は `status` を持たない。
 
 - `canceled` は**取消**（録画開始後にスケジュールが削除される等）で、`failed`（**失敗**）とは別の事実。`canceled` を `failed` に丸めると録画一覧が「失敗した」と嘘をつくので、独立した 4 値目として持つ
 - **これは不変条件 7「mirakc 固有の概念を永続テーブルに入れない」の違反ではない。** 既存 3 値（`recording`/`finished`/`failed`）はもともと mirakc の語彙であり、`canceled` の追加はその踏襲。不変条件 7 が禁じるのは mirakc の内部 ID・タグ形式・スケジュール状態（`RecordingScheduleState` 等）のような実装詳細に紐づく構造の持ち込みで、録画結果の語彙（成功/失敗/取消）はドメインの外部仕様として妥当な粒度
 - **未知の値（mirakc が将来値を追加した場合）は 5 値目を足さず `failed` に丸める。** `internal/watcher.normalizeRecordingStatus` が正規化し、生の値は `record_sync.status`（CHECK 無し）にそのまま残るので観測は失われない。丸めるのは「分かっている 2 つの事実を潰す」`canceled`→`failed` の丸めとは異なり、「何が起きたか分からない」という状態そのものが事実であるケースなので、粗い `failed` への集約を許容している。次に mirakc が値を足したら `internal/watcher` の ERROR ログを起点にこの CHECK と `openapi.yaml` の enum を更新すること
-- **`status` に 5 値目（`never-scheduled` 等）を足さない。** このスキーマでは「失敗の種別」はもともと `quality_events` の管轄で、`status` は粗い帰結だけを持つ（mirakc 由来の失敗も理由は `status` ではなく `quality_events` にある）。never-scheduled は失敗の**理由**なので、`status='failed'` + `quality_events` に `recording.never-scheduled` が既存の型に合致する。`canceled` を独立させた論法（「分かっている 2 つの事実を同じ値に潰すと一覧が嘘をつく」）の再演に見えるが違う --- 区別（mirakc 由来か reconciler 由来か、そしてその理由）は quality_events に保存されるので嘘にならない
-- never-scheduled 行は「`media_assets` を 1 行も持たない録画」になる。ユーザーがこれをごみ箱送り（`deleted_at` を立てる）にした場合でも、`media_assets` が 0 行なら `MarkPurgedRecordings` の `NOT EXISTS` 判定は空集合で自明に真になり、正しく完全削除の対象として扱われる（[storage.md](../storage.md) §7 参照）
+- **`status` に 5 値目（`never-scheduled` 等）を足さない。** schedule が一度も観測されなかった欠測は record の状態ではなく、後述の専用表で表す
 
-#### never-scheduled 行の識別
+### never_scheduled_events — schedule 欠測（永続の観測）
 
-型付き列 `never_scheduled boolean` で機械的に判別できる。
+主キーは放送イベント `(site, network_id, service_id, event_id)`。**行の存在 = 「番組終了時点で、このイベントの schedule が一度も観測されなかった」**（不変条件 10）。書き手は reconciler の `recordNeverScheduled` だけで、`ON CONFLICT DO NOTHING` により最初の観測を永続化する。
 
-1. **書き手は `CreateNeverScheduledRecording`（reconciler）だけで、値は行と同時に生まれて不変。** `CreateFailedRecording`（mirakc 由来の途中失敗、watcher）の `ON CONFLICT DO UPDATE` は前パスの never-scheduled 行に in-place で上書きすることがあるが、この列には触れず quality_events を追記するだけ
-2. **「実観測が推論を上書きする」side（`CreateFailedRecording` が `false` に落とす経路）を足してはならない。** 除外が「二度と復帰しない」という `CreateNeverScheduledRecording` の `ON CONFLICT DO NOTHING` との対を崩す
-3. **判定軸は型付き列であって `quality_events` ではない。** `event = "recording.never-scheduled"`（`internal/db.QualityEventNeverScheduled`）のマーカーは**消していない**が、内訳ログとして積むだけでクエリ軸には使わない。jsonb の中身への `EXISTS(jsonb_array_elements(...))` を core ロジックの WHERE 軸にすると、「そのテーブル自身のロジックが中身を一切使わない不透明なペイロード」という自前の規則への静かな違反になる（[principles.md](principles.md) §8「型の規律」）
-4. **表示と同期除外は `never_scheduled_events` VIEW の核（`status='failed'` + `never_scheduled`）を共有する。** 差は表示側だけが持つ live 限定（`deleted_at` / `superseded_at` が NULL）で、同期除外は見ない —— mirakc 由来の途中失敗からの再試行を妨げないための意図的な差（[reservations.md](reservations.md) §3）
-5. **特定の予約に紐づけたい読者（表示・エンコード方針の解決等）は、放送イベントキー `(site, network_id, service_id, event_id)` で `program_snapshots` 経由に `reservations` を引く。** `reservations.id` を宛先にした列を持ってはならない（不変条件 9「identity」。[invariants.md](../invariants.md) §9）
+- INSERT 条件は「番組終了」「今パスで schedule 非観測」「同じ放送イベントに live な `recordings` 行が無い」の積。live の定義は `recordings_unique_active_event` と同じ `deleted_at IS NULL AND superseded_at IS NULL`
+- `program_snapshots` への FK は張らない。snapshot は放送 + 猶予で GC されるが、欠測は永続の観測である。CASCADE で消すと GC 後に同期除外が外れ、終了済み予約が再び schedule 対象になる
+- `reservations.id` は持たない。予約は ruler の導出削除・再実体化で id が変わるため、読者も放送イベントキーで引く（不変条件 9「identity」）
+- 本物の record が後から来ても欠測行は消さない。録画は録画、欠測は欠測として両方残る。表示は本物の `recordings` 行の存在で orphaned を消すが、同期除外は欠測行の存在だけを見て終了済み予約を対象に戻さない（[reservations.md](reservations.md) §3）
+- mirakc 由来の `failed` は `recordings` にだけ現れ、この表には入らない。したがって録画途中の失敗からの再試行経路を妨げない
+- `observed_at` は reconciler が欠測を書いた時刻。同期除外・表示の判定軸は時刻ではなく行の存在だけ
 
 ### ごみ箱
 
@@ -122,9 +124,9 @@ CREATE UNIQUE INDEX recordings_unique_active_event
 
 INSERT で `ON CONFLICT` を使うクエリ（`CreateFailedRecording` / `UpsertInPlaceRecording`）は、この索引と述語を一字一句一致させる必要がある。ずれると Postgres が「there is no unique or exclusion constraint matching the ON CONFLICT specification」で落ちる。
 
-#### `superseded_at`: 本物の record が推論に必ず勝つ
+#### `superseded_at`: failed 行が後続 record に枠を譲る
 
-`need-rescheduling` 等で `status='failed'` の行がこの枠を占有したまま残っているところに、mirakc が同一 active-event を後で録り直して成功 record を報告することがある（delayed broadcast、mirakc 側の手動再録画等）。この成功 record は無条件で枠を得られなければならない —— 「本物の record が推論に必ず勝つ」という規則の最初の適用がこれで、推論由来の行（never-scheduled。`reconciler.recordNeverScheduled` が作る）にも同じ規則が及ぶ。never-scheduled 行自身の書き込み条件（`CreateNeverScheduledRecording` の `ON CONFLICT ... DO NOTHING`）がこの規則の適用そのもの --- 生きている行（本物の record でも前パスの never-scheduled 行でも）が既にあれば何もしない。
+`need-rescheduling` 等で `status='failed'` の行がこの枠を占有したまま残っているところに、mirakc が同一 active-event を後で録り直して成功 record を報告することがある（delayed broadcast、mirakc 側の手動再録画等）。この成功 record は無条件で枠を得られなければならない。欠測（`never_scheduled_events`）は別表なので supersede の対象ではない —— 本物の record が来ても欠測行は残り、`recordings` には試行行だけが増える。
 
 watcher の `createRecording`（`internal/watcher/watcher.go`）は `CreateRecording` の直前に `SupersedeFailedRecording`（`internal/db/queries/recordings.sql`）を呼び、同一 active-event に生きている（`deleted_at IS NULL AND superseded_at IS NULL`）`status='failed'` の行があれば `superseded_at = now()` を立てて枠を明け渡させる。この 2 つは意図的に別々の SQL 文にしてある —— 1 つの `WITH` 句にまとめると、Postgres は「`WITH` 内のデータ変更文は主クエリと同時並行に実行され順序不定」であるため、UPDATE が INSERT より先に確定する保証がなく、実機のテストで実際に一意制約違反を起こすことを確認した。
 

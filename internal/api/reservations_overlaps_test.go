@@ -53,28 +53,18 @@ INSERT INTO reservations (site, program_id) VALUES ('default', $1) RETURNING id`
 	return id
 }
 
-// seedNeverScheduledRecording は reconciler.recordNeverScheduled（issue #98）が
-// 実際に書く recordings 行を模す --- status='failed' + never_scheduled = true。
-// quality_events の recording.never-scheduled マーカーは内訳ログとして併存
-// する（issue #161）。GetProgramOverlaps 等、この行の存在に依存する API 層の
-// 挙動を確認するための直接 INSERT（reconciler パスは回さない）。
-func seedNeverScheduledRecording(
+// seedNeverScheduledEvent は reconciler.recordNeverScheduled が実際に書く
+// never_scheduled_events 行を模す。GetProgramOverlaps 等、この行の存在に依存
+// する API 層の挙動を確認するための直接 INSERT（reconciler パスは回さない）。
+func seedNeverScheduledEvent(
 	t *testing.T, pool *pgxpool.Pool, ctx context.Context,
 	site string, networkID, serviceID, eventID int32,
-	serviceName, channelType, channel, title string,
-	startAt time.Time, duration time.Duration,
 ) {
 	t.Helper()
-	qe := fmt.Sprintf(`[{"at":%q,"event":"recording.never-scheduled","reason":{}}]`, time.Now().Format(time.RFC3339Nano))
 	if _, err := pool.Exec(ctx, `
-INSERT INTO recordings (
-    source, site, network_id, service_id, event_id, service_name,
-    channel_type, channel, title, program_start_at, program_duration_ms,
-    status, quality_events, never_scheduled
-) VALUES ('manual', $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'failed', $11::jsonb, true)`,
-		site, networkID, serviceID, eventID, serviceName, channelType, channel, title,
-		startAt, duration.Milliseconds(), qe); err != nil {
-		t.Fatalf("seeding never-scheduled recording: %v", err)
+INSERT INTO never_scheduled_events (site, network_id, service_id, event_id)
+VALUES ($1, $2, $3, $4)`, site, networkID, serviceID, eventID); err != nil {
+		t.Fatalf("seeding never-scheduled event: %v", err)
 	}
 }
 
@@ -160,15 +150,9 @@ func TestGetProgramOverlaps_ExcludesSelf(t *testing.T) {
 	}
 }
 
-// 予約に紐づく never-scheduled の recordings 行（issue #98。「番組終了時点で
-// 捕獲の試みが一度も記録されなかった」という reconciler 自身の観測）がある
-// 予約は重なりの相手にならない。
-//
-// 旧テスト（TestGetProgramOverlaps_ExcludesOrphaned）は reservations.orphaned_at
-// を直接 UPDATE して「orphaned」を模していたが、#98 でその列自体が廃止され、
-// 観測は recordings の試行行に移った。ここでは reconciler.recordNeverScheduled
-// が実際に書く形（status='failed' + quality_events に
-// recording.never-scheduled）をそのまま模す。
+// 予約に紐づく欠測行（never_scheduled_events。「番組終了時点で schedule が
+// 一度も観測されなかった」という reconciler の観測）がある予約は重なりの相手に
+// ならない。reconciler.recordNeverScheduled が実際に書く欠測行を模す。
 func TestGetProgramOverlaps_ExcludesNeverScheduled(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
@@ -180,7 +164,7 @@ func TestGetProgramOverlaps_ExcludesNeverScheduled(t *testing.T) {
 	seedEpgProgram(t, pool, 231, 32678, 5168, 2, "never-scheduled になる番組", base.Add(30*time.Minute), false)
 
 	reserveViaAPI(t, srv.URL, pool, ctx, 231)
-	seedNeverScheduledRecording(t, pool, ctx, "default", 32678, 5168, 2, "テスト局", "GR", "27", "never-scheduled になる番組", base.Add(30*time.Minute), time.Hour)
+	seedNeverScheduledEvent(t, pool, ctx, "default", 32678, 5168, 2)
 
 	var got ProgramOverlaps
 	resp := getJSON(t, overlapsURL(srv.URL, 230), &got)
@@ -192,11 +176,9 @@ func TestGetProgramOverlaps_ExcludesNeverScheduled(t *testing.T) {
 	}
 }
 
-// 放送中の mirakc 由来の失敗（never-scheduled マーカー無し）は同期除外の対象
-// にならないので、重なり判定でも数える（issue #157 の回帰確認: 述語を
-// never_scheduled_events view に一本化しても status='failed' 全般に緩んで
-// いないか。TestGetProgramOverlaps_ExcludesNeverScheduled と対になる
-// 反転テスト）。
+// 放送中の mirakc 由来の失敗は欠測表に入らず同期除外の対象にならないので、
+// 重なり判定でも数える。TestGetProgramOverlaps_ExcludesNeverScheduled と対になる
+// 反転テスト。
 func TestGetProgramOverlaps_MidRecordingFailureNotExcluded(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()

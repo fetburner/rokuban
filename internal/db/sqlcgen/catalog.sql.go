@@ -423,7 +423,7 @@ func (q *Queries) CatalogListRecordingEncodePolicies(ctx context.Context, site *
 }
 
 const catalogListRecordings = `-- name: CatalogListRecordings :many
-SELECT id, rule_id, source, site, network_id, service_id, event_id, service_name, channel_type, channel, title, description, extended, genres, is_free, program_start_at, program_duration_ms, status, started_at, ended_at, quality_events, deleted_at, created_at, updated_at, purge_after, superseded_at, purged_at, never_scheduled, genre_lv1 FROM recordings
+SELECT id, rule_id, source, site, network_id, service_id, event_id, service_name, channel_type, channel, title, description, extended, genres, is_free, program_start_at, program_duration_ms, status, started_at, ended_at, quality_events, deleted_at, created_at, updated_at, purge_after, superseded_at, purged_at, genre_lv1 FROM recordings
 WHERE $1::text IS NULL OR site = $1
 ORDER BY id
 `
@@ -466,7 +466,6 @@ func (q *Queries) CatalogListRecordings(ctx context.Context, site *string) ([]Re
 			&i.PurgeAfter,
 			&i.SupersededAt,
 			&i.PurgedAt,
-			&i.NeverScheduled,
 			&i.GenreLv1,
 		); err != nil {
 			return nil, err
@@ -936,8 +935,7 @@ INSERT INTO recordings (
     program_start_at, program_duration_ms,
     status, started_at, ended_at,
     quality_events,
-    deleted_at, purge_after, superseded_at, purged_at, created_at, updated_at,
-    never_scheduled
+    deleted_at, purge_after, superseded_at, purged_at, created_at, updated_at
 ) OVERRIDING SYSTEM VALUE
 VALUES (
     $1, $2, $3, $4,
@@ -947,8 +945,7 @@ VALUES (
     $16, $17,
     $18, $19, $20,
     $21,
-    $22, $23, $24, $25, $26, $27,
-    $28
+    $22, $23, $24, $25, $26, $27
 )
 ON CONFLICT (id) DO UPDATE SET
     rule_id             = EXCLUDED.rule_id,
@@ -981,12 +978,7 @@ ON CONFLICT (id) DO UPDATE SET
     -- 要求する）。
     purged_at           = EXCLUDED.purged_at,
     created_at          = EXCLUDED.created_at,
-    updated_at          = EXCLUDED.updated_at,
-    -- never_scheduled を落とすと、rescue 後に never_scheduled_events VIEW
-    -- （この列が核。issue #161、00033）がこの行を検出できなくなり、同期除外・
-    -- 容量判定・重なり判定から漏れて POST を再送してしまう（issue #134 の
-    -- 再発。superseded_at / purged_at と同じ理由でここに列挙する）。
-    never_scheduled     = EXCLUDED.never_scheduled
+    updated_at          = EXCLUDED.updated_at
 `
 
 type CatalogUpsertRecordingParams struct {
@@ -1017,7 +1009,6 @@ type CatalogUpsertRecordingParams struct {
 	PurgedAt          *time.Time
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
-	NeverScheduled    bool
 }
 
 // keep_original / encode_profiles は issue #159 で recording_encode_policy
@@ -1052,7 +1043,6 @@ func (q *Queries) CatalogUpsertRecording(ctx context.Context, arg CatalogUpsertR
 		arg.PurgedAt,
 		arg.CreatedAt,
 		arg.UpdatedAt,
-		arg.NeverScheduled,
 	)
 	return err
 }

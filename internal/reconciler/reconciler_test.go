@@ -18,7 +18,6 @@ import (
 
 	"github.com/fetburner/rokuban/internal/breaker"
 	"github.com/fetburner/rokuban/internal/contentpath"
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
@@ -1242,56 +1241,38 @@ func setReservationDetached(t *testing.T, ctx context.Context, pool *pgxpool.Poo
 	}
 }
 
-// seedNeverScheduledRecording は reconciler.recordNeverScheduled を経由せず、
-// その関数が書く recordings 行（status='failed' + never_scheduled = true。
-// quality_events の recording.never-scheduled マーカーは内訳ログとして併存
-// する。issue #161）を直接 INSERT する。
-// ListReservationsForSyncEvaluation の never-scheduled 除外の判定だけを
-// 単体で固定したいテストで使う（旧 setReservationOrphaned の置き換え）。
-// createReservation と同じ規約（networkID=10000/serviceID=5000、event_id =
-// programID % 100000）でチャンネル識別を合わせるので、同じ res から作った
-// program_snapshot の行と (site, network_id, service_id, event_id) が一致する。
-func seedNeverScheduledRecording(t *testing.T, ctx context.Context, pool *pgxpool.Pool, res sqlcgen.Reservation) {
+// seedNeverScheduledEvent は reconciler.recordNeverScheduled を経由せず、
+// その関数が書く never_scheduled_events 行を直接 INSERT する。
+// ListReservationsForSyncEvaluation の欠測除外だけを単体で固定したいテストで
+// 使う。createReservation と同じ規約（networkID=10000/serviceID=5000、event_id =
+// programID % 100000）で program_snapshot の放送イベントキーと一致させる。
+func seedNeverScheduledEvent(t *testing.T, ctx context.Context, pool *pgxpool.Pool, res sqlcgen.Reservation) {
 	t.Helper()
-	eventID := res.ProgramID % 100000
-	qe := `[{"at":"2026-01-01T00:00:00Z","event":"recording.never-scheduled","reason":{}}]`
 	if _, err := pool.Exec(ctx, `
-INSERT INTO recordings (
-    source, site, network_id, service_id, event_id, service_name,
-    channel_type, channel, title, program_start_at, program_duration_ms,
-    status, quality_events, never_scheduled
-) VALUES ('manual', 'default', 10000, 5000, $1, 'テスト局', 'GR', '27', 'テスト番組', now(), 1800000, 'failed', $2::jsonb, true)`,
-		eventID, qe); err != nil {
-		t.Fatalf("seeding never-scheduled recording: %v", err)
+INSERT INTO never_scheduled_events (site, network_id, service_id, event_id)
+VALUES ('default', 10000, 5000, $1)`, res.ProgramID%100000); err != nil {
+		t.Fatalf("seeding never-scheduled event: %v", err)
 	}
 }
 
-// hasNeverScheduledRecording は指定の reservation に対応する放送イベント
-// (site, network_id, service_id, event_id) に never-scheduled の recordings
-// 行があるかどうかを返す（reconciler.recordNeverScheduled が実際に書いたか
-// どうかの確認に使う。internal/db/queries/reservations.sql の never-scheduled
-// 除外述語と同じ判定）。recordings.reservation_id は issue #158 で列自体を
-// 落としたので、createReservation と同じ規約（networkID=10000/serviceID=5000、
-// event_id=programID%100000。上記コメント参照）で放送イベントキーを組み立てて引く。
-func hasNeverScheduledRecording(t *testing.T, ctx context.Context, pool *pgxpool.Pool, res sqlcgen.Reservation) bool {
+// hasNeverScheduledEvent は指定の reservation に対応する放送イベントに欠測行が
+// あるかを返す。createReservation と同じ規約で放送イベントキーを組み立てる。
+func hasNeverScheduledEvent(t *testing.T, ctx context.Context, pool *pgxpool.Pool, res sqlcgen.Reservation) bool {
 	t.Helper()
 	var exists bool
 	if err := pool.QueryRow(ctx, `
 SELECT EXISTS (
-    SELECT 1 FROM recordings rec
-    WHERE rec.site = 'default' AND rec.network_id = 10000 AND rec.service_id = 5000
-      AND rec.event_id = $1
-      AND rec.status = 'failed'
-      AND rec.never_scheduled
+    SELECT 1 FROM never_scheduled_events
+    WHERE site = 'default' AND network_id = 10000 AND service_id = 5000 AND event_id = $1
 )`, res.ProgramID%100000).Scan(&exists); err != nil {
-		t.Fatalf("checking never-scheduled recording: %v", err)
+		t.Fatalf("checking never-scheduled event: %v", err)
 	}
 	return exists
 }
 
 // countRecordingsForReservation は指定の reservation に対応する放送イベントに
 // 紐づく recordings 行数を返す。冪等性（同じパスを 2 回回しても 2 行目を
-// 作らないこと。CLAUDE.md 不変条件 5）の確認に使う。hasNeverScheduledRecording
+// 作らないこと。CLAUDE.md 不変条件 5）の確認に使う。hasNeverScheduledEvent
 // と同じ理由で放送イベントキー経由に引く（recordings.reservation_id は
 // issue #158 で列自体を落とした）。
 func countRecordingsForReservation(t *testing.T, ctx context.Context, pool *pgxpool.Pool, res sqlcgen.Reservation) int {
@@ -1355,7 +1336,7 @@ func TestReconciler_ReservationWithNeverScheduledRecordingNotRescheduled(t *test
 
 	startAt := time.Now().Add(1 * time.Hour)
 	res := createReservation(t, ctx, q, 100000500019201, "never-scheduled予約", startAt)
-	seedNeverScheduledRecording(t, ctx, pool, res)
+	seedNeverScheduledEvent(t, ctx, pool, res)
 
 	rec := reconciler.New("default", mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
@@ -1435,12 +1416,12 @@ func TestReconciler_RecordsNeverScheduledForBothActiveAndDetachedReservations(t 
 		t.Fatalf("RunPass: %v", err)
 	}
 
-	if !hasNeverScheduledRecording(t, ctx, pool, activeRes) {
-		t.Error("active reservation has no never-scheduled recording, want one " +
-			"(ended program with no observed schedule must produce a never-scheduled recording)")
+	if !hasNeverScheduledEvent(t, ctx, pool, activeRes) {
+		t.Error("active reservation has no never-scheduled event, want one " +
+			"(ended program with no observed schedule must produce a missing-observation row)")
 	}
-	if !hasNeverScheduledRecording(t, ctx, pool, detachedRes) {
-		t.Error("detached reservation has no never-scheduled recording, want one " +
+	if !hasNeverScheduledEvent(t, ctx, pool, detachedRes) {
+		t.Error("detached reservation has no never-scheduled event, want one " +
 			"(detached must not be excluded — this was the #30 症状 2 bug: " +
 			"MarkReservationOrphaned only matched state = 'active')")
 	}
@@ -1457,8 +1438,8 @@ func TestReconciler_RecordsNeverScheduledForBothActiveAndDetachedReservations(t 
 // recordNeverScheduled に揃える。
 
 // 受け入れ基準: 終了時刻を過ぎた番組の予約には POST /api/recording/schedules
-// が呼ばれず、同じパスでその予約に never-scheduled の recordings 行が
-// 作られること。
+// が呼ばれず、同じパスでその放送イベントに never_scheduled_events 行が作られ、
+// recordings には擬似 failed 行が増えないこと。
 func TestReconciler_EndedProgramNotScheduled(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
@@ -1487,10 +1468,13 @@ func TestReconciler_EndedProgramNotScheduled(t *testing.T) {
 	if _, ok := mock.getSchedules()[res.ProgramID]; ok {
 		t.Error("ended program should not get a schedule created")
 	}
-	if !hasNeverScheduledRecording(t, ctx, pool, res) {
-		t.Error("no never-scheduled recording found, want one " +
-			"(the same pass's recordNeverScheduled must record the ended reservation as never-scheduled, " +
+	if !hasNeverScheduledEvent(t, ctx, pool, res) {
+		t.Error("no never-scheduled event found, want one " +
+			"(the same pass's recordNeverScheduled must record the missing observation, " +
 			"using the same programEnded predicate as the create-loop guard)")
+	}
+	if got := countRecordingsForReservation(t, ctx, pool, res); got != 0 {
+		t.Errorf("recordings count = %d, want 0 (missing schedule is not a recording attempt)", got)
 	}
 }
 
@@ -1525,7 +1509,7 @@ func TestReconciler_BroadcastingProgramStillScheduled(t *testing.T) {
 	if _, ok := mock.getSchedules()[res.ProgramID]; !ok {
 		t.Error("broadcasting program should still get a schedule created")
 	}
-	if hasNeverScheduledRecording(t, ctx, pool, res) {
+	if hasNeverScheduledEvent(t, ctx, pool, res) {
 		t.Error("unexpected never-scheduled recording (program is still broadcasting)")
 	}
 }
@@ -1555,18 +1539,17 @@ func TestReconciler_FutureProgramStillScheduled(t *testing.T) {
 	if n := countInt64(mock.getPostCalls(), res.ProgramID); n != 1 {
 		t.Errorf("POST /api/recording/schedules called %d times for a future program, want 1", n)
 	}
-	if hasNeverScheduledRecording(t, ctx, pool, res) {
+	if hasNeverScheduledEvent(t, ctx, pool, res) {
 		t.Error("unexpected never-scheduled recording (program has not started yet)")
 	}
 }
 
-// --- never-scheduled 行の冪等性・#59 の解消・GC 後の生存（issue #98）---
+// --- 欠測行の冪等性・#59 の解消・GC 後の生存 ---
 
 // 受け入れ基準: 番組終了時に schedule が観測されなかった予約について、
-// never-scheduled の recordings 行が 1 行だけ作られる。2 回パスを回しても
-// 2 行目が作られないこと（CLAUDE.md 不変条件 5: レベルトリガーは冪等でなければ
-// ならない）。
-func TestReconciler_NeverScheduledRecordingIsIdempotentAcrossPasses(t *testing.T) {
+// never_scheduled_events 行が 1 行だけ作られ、recordings 行は作られない。
+// 2 回パスを回しても変わらない（CLAUDE.md 不変条件 5）。
+func TestReconciler_NeverScheduledEventIsIdempotentAcrossPasses(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
@@ -1584,60 +1567,51 @@ func TestReconciler_NeverScheduledRecordingIsIdempotentAcrossPasses(t *testing.T
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass (1st): %v", err)
 	}
-	if got := countRecordingsForReservation(t, ctx, pool, res); got != 1 {
-		t.Fatalf("recordings count after 1st pass = %d, want 1", got)
+	if !hasNeverScheduledEvent(t, ctx, pool, res) {
+		t.Fatal("never-scheduled event missing after 1st pass")
+	}
+	if got := countRecordingsForReservation(t, ctx, pool, res); got != 0 {
+		t.Fatalf("recordings count after 1st pass = %d, want 0", got)
 	}
 
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass (2nd): %v", err)
 	}
-	if got := countRecordingsForReservation(t, ctx, pool, res); got != 1 {
-		t.Errorf("recordings count after 2nd pass = %d, want 1 (2 回目のパスで 2 行目を作ってはならない)", got)
+	if !hasNeverScheduledEvent(t, ctx, pool, res) {
+		t.Error("never-scheduled event missing after 2nd pass")
+	}
+	if got := countRecordingsForReservation(t, ctx, pool, res); got != 0 {
+		t.Errorf("recordings count after 2nd pass = %d, want 0", got)
 	}
 }
 
-// SQL レベルの冪等性: CreateNeverScheduledRecording を全く同じ入力で 2 回
-// 呼んでも 2 行目を作らない（ON CONFLICT ... DO NOTHING の直接確認）。
-//
-// TestReconciler_NeverScheduledRecordingIsIdempotentAcrossPasses（reconciler
-// 経由）は、1 回目のパスで作った never-scheduled 行のせいで
-// ListReservationsForSyncEvaluation の除外フィルタが 2 回目のパスの時点で
-// その予約自体を listDesired から除いてしまうため、実は
-// CreateNeverScheduledRecording 自身が 2 回呼ばれる状況を再現できていない
-// （呼び出しが 1 回しか起きない）。クエリ自身の防御を単体で確認するには
-// q を直接、同じ入力で 2 回叩く必要がある。
-func TestCreateNeverScheduledRecording_IdempotentOnDirectRetry(t *testing.T) {
+// SQL レベルの冪等性: CreateNeverScheduledEvent を同じ入力で 2 回呼んでも
+// 2 行目を作らない（ON CONFLICT DO NOTHING の直接確認）。reconciler 経由では
+// 1 回目の欠測行が 2 回目の listDesired から予約を除くため、クエリを直接叩く。
+func TestCreateNeverScheduledEvent_IdempotentOnDirectRetry(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 
-	startAt := time.Now().Add(-2 * time.Hour)
-	res := createReservation(t, ctx, q, 100000500019240, "直接冪等性確認", startAt)
-
-	params := sqlcgen.CreateNeverScheduledRecordingParams{
-		Source:            db.SourceManual,
-		Site:              "default",
-		NetworkID:         10000,
-		ServiceID:         5000,
-		EventID:           int32(res.ProgramID % 100000),
-		ServiceName:       "テスト局",
-		ChannelType:       "GR",
-		Channel:           "27",
-		Title:             "直接冪等性確認",
-		ProgramStartAt:    startAt,
-		ProgramDurationMs: 1800000,
-		QualityEvents:     json.RawMessage(`[{"at":"2026-01-01T00:00:00Z","event":"recording.never-scheduled","reason":{}}]`),
+	params := sqlcgen.CreateNeverScheduledEventParams{
+		Site:      "default",
+		NetworkID: 10000,
+		ServiceID: 5000,
+		EventID:   19240,
 	}
-	if _, err := q.CreateNeverScheduledRecording(ctx, params); err != nil {
-		t.Fatalf("1st CreateNeverScheduledRecording: %v", err)
+	rows, err := q.CreateNeverScheduledEvent(ctx, params)
+	if err != nil {
+		t.Fatalf("1st CreateNeverScheduledEvent: %v", err)
 	}
-	if _, err := q.CreateNeverScheduledRecording(ctx, params); err != nil {
-		t.Fatalf("2nd CreateNeverScheduledRecording: %v", err)
+	if rows != 1 {
+		t.Fatalf("1st rows = %d, want 1", rows)
 	}
-
-	if got := countRecordingsForReservation(t, ctx, pool, res); got != 1 {
-		t.Errorf("recordings count after 2 identical calls = %d, want 1 "+
-			"(ON CONFLICT ... DO NOTHING must make the 2nd call a no-op)", got)
+	rows, err = q.CreateNeverScheduledEvent(ctx, params)
+	if err != nil {
+		t.Fatalf("2nd CreateNeverScheduledEvent: %v", err)
+	}
+	if rows != 0 {
+		t.Errorf("2nd rows = %d, want 0", rows)
 	}
 }
 
@@ -1687,8 +1661,10 @@ RETURNING id`,
 	}
 
 	if got := countRecordingsForReservation(t, ctx, pool, res); got != 1 {
-		t.Errorf("recordings count = %d, want 1 (a never-scheduled row must not be created "+
-			"alongside an already-successful recording — this is #59)", got)
+		t.Errorf("recordings count = %d, want 1", got)
+	}
+	if hasNeverScheduledEvent(t, ctx, pool, res) {
+		t.Error("never-scheduled event created alongside an already-successful recording — this is #59")
 	}
 	var status string
 	if err := pool.QueryRow(ctx, `SELECT status FROM recordings WHERE id = $1`, recordingID).Scan(&status); err != nil {
@@ -1708,7 +1684,7 @@ RETURNING id`,
 // 対象外」）。ここでは reservations 行を直接 DELETE して同じ経路を再現する
 // （rule 削除の API を経由しなくても、reservations の削除経路はすべてこの
 // FK の挙動に帰着するため）。
-func TestReconciler_NeverScheduledRecordingSurvivesReservationDeletion(t *testing.T) {
+func TestReconciler_NeverScheduledEventSurvivesReservationDeletion(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
@@ -1726,8 +1702,8 @@ func TestReconciler_NeverScheduledRecordingSurvivesReservationDeletion(t *testin
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
-	if !hasNeverScheduledRecording(t, ctx, pool, res) {
-		t.Fatalf("precondition: never-scheduled recording must exist before deleting the reservation")
+	if !hasNeverScheduledEvent(t, ctx, pool, res) {
+		t.Fatalf("precondition: never-scheduled event must exist before deleting the reservation")
 	}
 
 	// ルール削除に伴う導出予約の物理削除を直接模す（internal/api/rules.go の
@@ -1737,14 +1713,11 @@ func TestReconciler_NeverScheduledRecordingSurvivesReservationDeletion(t *testin
 		t.Fatalf("deleting reservation: %v", err)
 	}
 
-	var count int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM recordings WHERE site = 'default' AND network_id = 10000 AND service_id = 5000 AND event_id = $1`,
-		res.ProgramID%100000).Scan(&count); err != nil {
-		t.Fatalf("counting recordings: %v", err)
+	if !hasNeverScheduledEvent(t, ctx, pool, res) {
+		t.Error("never-scheduled event must survive reservation deletion")
 	}
-	if count != 1 {
-		t.Errorf("recordings count after reservation deletion = %d, want 1 "+
-			"(the never-scheduled recording must survive the derived deletion of its reservation)", count)
+	if got := countRecordingsForReservation(t, ctx, pool, res); got != 0 {
+		t.Errorf("recordings count after reservation deletion = %d, want 0", got)
 	}
 }
 
@@ -1754,7 +1727,7 @@ func TestReconciler_NeverScheduledRecordingSurvivesReservationDeletion(t *testin
 // §3.7「recordings はこの FK の対象外。録画時点のスナップショットとして
 // 独立にコピーを持つ」）ので、program_snapshots → reservations の CASCADE が
 // 走っても影響を受けない。
-func TestReconciler_NeverScheduledRecordingSurvivesProgramSnapshotGC(t *testing.T) {
+func TestReconciler_NeverScheduledEventSurvivesProgramSnapshotGC(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
@@ -1772,8 +1745,8 @@ func TestReconciler_NeverScheduledRecordingSurvivesProgramSnapshotGC(t *testing.
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
-	if !hasNeverScheduledRecording(t, ctx, pool, res) {
-		t.Fatalf("precondition: never-scheduled recording must exist before GC")
+	if !hasNeverScheduledEvent(t, ctx, pool, res) {
+		t.Fatalf("precondition: never-scheduled event must exist before GC")
 	}
 
 	// ruler.runGC と同じ 1 本の DELETE（DeleteEndedProgramSnapshots）を直接
@@ -1790,14 +1763,11 @@ func TestReconciler_NeverScheduledRecordingSurvivesProgramSnapshotGC(t *testing.
 		t.Fatalf("precondition: GC must have deleted the reservation row")
 	}
 
-	var count int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM recordings WHERE site = 'default' AND network_id = 10000 AND service_id = 5000 AND event_id = $1`,
-		res.ProgramID%100000).Scan(&count); err != nil {
-		t.Fatalf("counting recordings: %v", err)
+	if !hasNeverScheduledEvent(t, ctx, pool, res) {
+		t.Error("never-scheduled event must survive program_snapshots GC")
 	}
-	if count != 1 {
-		t.Errorf("recordings count after program_snapshots GC = %d, want 1 "+
-			"(the never-scheduled recording must survive the GC of program_snapshots/reservations)", count)
+	if got := countRecordingsForReservation(t, ctx, pool, res); got != 0 {
+		t.Errorf("recordings count after program_snapshots GC = %d, want 0", got)
 	}
 }
 
@@ -2285,7 +2255,7 @@ func TestReconciler_NoStartDelayForNeverScheduledReservation(t *testing.T) {
 	// 開始時刻 + 猶予を過ぎているが終了前という、本来なら検出される窓。
 	startAt := time.Now().Add(-10 * time.Minute)
 	res := createReservation(t, ctx, q, 100000500030005, "never-scheduled開始遅延", startAt)
-	seedNeverScheduledRecording(t, ctx, pool, res)
+	seedNeverScheduledEvent(t, ctx, pool, res)
 
 	rec := reconciler.New("default", mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {

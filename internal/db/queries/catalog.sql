@@ -234,8 +234,7 @@ INSERT INTO recordings (
     program_start_at, program_duration_ms,
     status, started_at, ended_at,
     quality_events,
-    deleted_at, purge_after, superseded_at, purged_at, created_at, updated_at,
-    never_scheduled
+    deleted_at, purge_after, superseded_at, purged_at, created_at, updated_at
 ) OVERRIDING SYSTEM VALUE
 VALUES (
     $1, $2, $3, $4,
@@ -245,8 +244,7 @@ VALUES (
     $16, $17,
     $18, $19, $20,
     $21,
-    $22, $23, $24, $25, $26, $27,
-    $28
+    $22, $23, $24, $25, $26, $27
 )
 ON CONFLICT (id) DO UPDATE SET
     rule_id             = EXCLUDED.rule_id,
@@ -279,12 +277,7 @@ ON CONFLICT (id) DO UPDATE SET
     -- 要求する）。
     purged_at           = EXCLUDED.purged_at,
     created_at          = EXCLUDED.created_at,
-    updated_at          = EXCLUDED.updated_at,
-    -- never_scheduled を落とすと、rescue 後に never_scheduled_events VIEW
-    -- （この列が核。issue #161、00033）がこの行を検出できなくなり、同期除外・
-    -- 容量判定・重なり判定から漏れて POST を再送してしまう（issue #134 の
-    -- 再発。superseded_at / purged_at と同じ理由でここに列挙する）。
-    never_scheduled     = EXCLUDED.never_scheduled;
+    updated_at          = EXCLUDED.updated_at;
 
 -- recording_encode_policy 衛星表の rescue（issue #159）。凍結 = 行の INSERT
 -- という意味論を rescue でも保つ --- doc.RecordingEncodePolicies に載っている

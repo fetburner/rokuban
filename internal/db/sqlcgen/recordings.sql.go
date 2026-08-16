@@ -120,18 +120,10 @@ type CreateFailedRecordingParams struct {
 // ずれると「there is no unique or exclusion constraint matching」で落ちる）。
 // 一致させておくことで、この INSERT が狙う相手は常に「生きている」行
 // （superseded 済みの過去の failed 行ではない）になる。
-// ON CONFLICT の相手が前パスの never-scheduled 行（never_scheduled = true）で
-// あることもありうる（reconciler が「schedule 非観測」と判定した後に、mirakc
-// が実は録画を試みて failed を報告してくるケース）。**この経路で
-// never_scheduled を false に落とさない**（issue #161 のレビューで一度入れて
-// 削除した。#161 が求めていたのは quality_events マーカーの型付き列への
-// 昇格だけで、「in-place 更新で never_scheduled をリセットする」という本番
-// 挙動の変更は範囲外 --- 旧 jsonb 版でもマーカーは `||` で追記されるだけで
-// 判定は true のまま変わらなかった。リセットは
-// CreateNeverScheduledRecording の ON CONFLICT DO NOTHING と対で「二度と
-// 復帰しない」除外の意味論を崩し、reconciler.go の endGuarded が前提にする
-// 「1 パスで自己解消し、以後 listDesired から二度と戻らない」を壊す。
-// 挙動を変えるならこの PR ではなく別 issue で決定を取る）。
+// ON CONFLICT の相手は生きている（deleted_at / superseded_at が NULL）同一
+// active-event の failed 行で、mirakc からの繰り返し通知に同じ理由を積み増す。
+// 欠測は recordings に行を作らなくなった（never_scheduled_events 表に移設）ので、
+// ここで欠測行と衝突することはもう無い。
 func (q *Queries) CreateFailedRecording(ctx context.Context, arg CreateFailedRecordingParams) error {
 	_, err := q.db.Exec(ctx, createFailedRecording,
 		arg.RuleID,
@@ -155,92 +147,8 @@ func (q *Queries) CreateFailedRecording(ctx context.Context, arg CreateFailedRec
 	return err
 }
 
-const createNeverScheduledRecording = `-- name: CreateNeverScheduledRecording :execrows
-INSERT INTO recordings (
-    rule_id, source, site,
-    network_id, service_id, event_id, service_name,
-    channel_type, channel, title,
-    program_start_at, program_duration_ms,
-    status, quality_events, never_scheduled
-) VALUES (
-    $1, $2, $3,
-    $4, $5, $6, $7,
-    $8, $9, $10,
-    $11, $12,
-    'failed', $13, true
-)
-ON CONFLICT (site, network_id, service_id, event_id) WHERE deleted_at IS NULL AND superseded_at IS NULL
-DO NOTHING
-`
-
-type CreateNeverScheduledRecordingParams struct {
-	RuleID            *int64
-	Source            string
-	Site              string
-	NetworkID         int32
-	ServiceID         int32
-	EventID           int32
-	ServiceName       string
-	ChannelType       string
-	Channel           string
-	Title             string
-	ProgramStartAt    time.Time
-	ProgramDurationMs int64
-	QualityEvents     json.RawMessage
-}
-
-// issue #98 の決定: 「番組終了時点で捕獲の試みが一度も記録されなかった」という
-// reconciler 自身の観測を recordings の試行行として書く（reservations.orphaned_at
-// は廃止。00025）。呼び出し元は internal/reconciler の recordNeverScheduled のみ
-// （watcher の CreateFailedRecording とは別のクエリにしてある。理由は下記）。
-//
-// **書き込み条件は「その放送イベントに生きている recordings 行が無いこと」**
-// （issue #59 の解消）。ON CONFLICT ... DO NOTHING がこれを担う ---
-// recordings_unique_active_event（(site, network_id, service_id, event_id)
-// WHERE deleted_at IS NULL AND superseded_at IS NULL）に既に生きている行が
-// あれば何もしない。生きている行は「本物の record」（watcher が作った
-// recording/finished/canceled/failed のどれか）でも「前パスで作った
-// never-scheduled 行」でもよく、どちらであっても「この放送イベントについて
-// 既に何か記録されている」という同じ結論になる:
-//
-//   - 本物の record が既にある場合 → 成功録画（またはその他の観測）を
-//     never-scheduled 行が上書きすることはない（#59 本体の解消）
-//   - 前パスの never-scheduled 行が既にある場合 → 2 回目のパスで 2 行目を
-//     作らない（CLAUDE.md 不変条件 5: レベルトリガーの冪等性）
-//
-// CreateFailedRecording（handleRecordingFailed 用）と分けたのは、あちらは
-// ON CONFLICT で quality_events を追記する意味論（mirakc からの繰り返し通知に
-// 同じ理由が積み増されることを許容する）だから。never-scheduled は
-// reconciler が毎パス同じ内容を送るだけなので、DO NOTHING で「初回だけ書く」
-// 意味論にする方が正確（CreateFailedRecording の DO UPDATE を流用すると、
-// 猶予期間中は毎パス quality_events の配列が伸び続けてしまう）。
-//
-// never_scheduled（issue #161、00033）は quality_events のマーカーを型付き列に
-// 昇格したもので、この INSERT だけが true を書く。quality_events のマーカー
-// 自体は内訳ログとして引き続き積む（消さない）。
-func (q *Queries) CreateNeverScheduledRecording(ctx context.Context, arg CreateNeverScheduledRecordingParams) (int64, error) {
-	result, err := q.db.Exec(ctx, createNeverScheduledRecording,
-		arg.RuleID,
-		arg.Source,
-		arg.Site,
-		arg.NetworkID,
-		arg.ServiceID,
-		arg.EventID,
-		arg.ServiceName,
-		arg.ChannelType,
-		arg.Channel,
-		arg.Title,
-		arg.ProgramStartAt,
-		arg.ProgramDurationMs,
-		arg.QualityEvents,
-	)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
 const createRecording = `-- name: CreateRecording :one
+
 INSERT INTO recordings (
     rule_id, source, site,
     network_id, service_id, event_id, service_name,
@@ -280,6 +188,10 @@ type CreateRecordingParams struct {
 	EndedAt           *time.Time
 }
 
+// 「番組終了時点で schedule が一度も観測されなかった」欠測の記録は recordings
+// ではなく never_scheduled_events 表（放送イベントキー）の行の存在で表す
+// （CreateNeverScheduledEvent、internal/db/queries/reservations.sql）。
+// recordings は観測された試行だけを持つ脊椎に戻り、書き手は watcher 1 人になる。
 func (q *Queries) CreateRecording(ctx context.Context, arg CreateRecordingParams) (int64, error) {
 	row := q.db.QueryRow(ctx, createRecording,
 		arg.RuleID,
@@ -407,7 +319,7 @@ func (q *Queries) ListRecordingDropStats(ctx context.Context, recordingID int64)
 
 const listRecordings = `-- name: ListRecordings :many
 SELECT
-    r.id, r.rule_id, r.source, r.site, r.network_id, r.service_id, r.event_id, r.service_name, r.channel_type, r.channel, r.title, r.description, r.extended, r.genres, r.is_free, r.program_start_at, r.program_duration_ms, r.status, r.started_at, r.ended_at, r.quality_events, r.deleted_at, r.created_at, r.updated_at, r.purge_after, r.superseded_at, r.purged_at, r.never_scheduled, r.genre_lv1,
+    r.id, r.rule_id, r.source, r.site, r.network_id, r.service_id, r.event_id, r.service_name, r.channel_type, r.channel, r.title, r.description, r.extended, r.genres, r.is_free, r.program_start_at, r.program_duration_ms, r.status, r.started_at, r.ended_at, r.quality_events, r.deleted_at, r.created_at, r.updated_at, r.purge_after, r.superseded_at, r.purged_at, r.genre_lv1,
     a.size_bytes                        AS original_size_bytes,
     COALESCE(d.packets, 0)::bigint      AS drop_packets,
     COALESCE(d.drops, 0)::bigint        AS drop_drops,
@@ -466,7 +378,6 @@ type ListRecordingsRow struct {
 	PurgeAfter               *time.Time
 	SupersededAt             *time.Time
 	PurgedAt                 *time.Time
-	NeverScheduled           bool
 	GenreLv1                 []int16
 	OriginalSizeBytes        *int64
 	DropPackets              int64
@@ -534,7 +445,6 @@ func (q *Queries) ListRecordings(ctx context.Context, site string) ([]ListRecord
 			&i.PurgeAfter,
 			&i.SupersededAt,
 			&i.PurgedAt,
-			&i.NeverScheduled,
 			&i.GenreLv1,
 			&i.OriginalSizeBytes,
 			&i.DropPackets,

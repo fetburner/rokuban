@@ -12,11 +12,9 @@
 -- program_overrides との JOIN は ListReservationsFull
 -- (internal/db/queries/reservations.sql) と同じ形。
 --
--- never-scheduled 除外の述語は never_scheduled_events view（issue #157。
--- internal/db/migrations/00030_never_scheduled_events_view.sql）に一本化した
--- --- ListReservationsForSyncEvaluation
--- (internal/db/queries/reservations.sql) / ListCapacityDemand
--- (internal/db/queries/capacity.sql) と全く同じ NOT EXISTS になる。
+-- 欠測除外の述語は never_scheduled_events 表を放送イベントキーで引く NOT EXISTS
+-- で、ListReservationsForSyncEvaluation (internal/db/queries/reservations.sql) /
+-- ListCapacityDemand (internal/db/queries/capacity.sql) と全く同じ。
 -- 理由は internal/db/queries/reservations.sql のコメント参照。
 -- name: ListOverlappingReservations :many
 SELECT sqlc.embed(r), sqlc.embed(s), i.action AS intent_action, o.overrides AS overrides

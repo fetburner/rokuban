@@ -29,7 +29,7 @@ VALUES ($1, $2, $3, $4, $5, $6)`, testSite, index, name, types, available, fault
 // （title / 開始時刻 / 尺 / チャンネル識別）が program_snapshots に抽出された。
 //
 // event_id は他のテスト（TestLoad_ExcludesReservationsThatProduceNoSchedule の
-// 「番組が終了済み」ケース）が seedNeverScheduledRecording で recordings 行を
+// 「番組が終了済み」ケース）が seedNeverScheduledEvent で欠測行を
 // 作れるように、programID の下 5 桁から機械的に割り当てる（本番コードでの
 // programId 分解は禁止だが、テストフィクスチャの一意な ID 割り当てとしてのみ
 // 使う。internal/reconciler の createReservation ヘルパと同じ流儀）。
@@ -61,31 +61,24 @@ VALUES ($1, $2, $3)`,
 	}
 }
 
-// seedNeverScheduledRecording は reconciler.recordNeverScheduled（issue #98）が
-// 実際に書く recordings 行を模す --- status='failed' + never_scheduled = true。
-// quality_events の recording.never-scheduled マーカーは内訳ログとして併存
-// する（issue #161）。ListCapacityDemand がこの行の存在を「schedule を作らない
-// 予約」として除外することを確認するための直接 INSERT。
-func seedNeverScheduledRecording(t *testing.T, pool *pgxpool.Pool, networkID, serviceID, eventID int32) {
+// seedNeverScheduledEvent は reconciler.recordNeverScheduled が実際に書く
+// never_scheduled_events 行を模す。ListCapacityDemand がこの行の存在を
+// 「schedule を作らない予約」として除外することを確認するための直接 INSERT。
+func seedNeverScheduledEvent(t *testing.T, pool *pgxpool.Pool, networkID, serviceID, eventID int32) {
 	t.Helper()
 	ctx := context.Background()
-	qe := `[{"at":"2026-01-01T00:00:00Z","event":"recording.never-scheduled","reason":{}}]`
 	if _, err := pool.Exec(ctx, `
-INSERT INTO recordings (
-    source, site, network_id, service_id, event_id, service_name,
-    channel_type, channel, title, program_start_at, program_duration_ms,
-    status, quality_events, never_scheduled
-) VALUES ('manual', $1, $2, $3, $4, 'テスト局', 'GR', '25', 'テスト番組', now(), 1800000, 'failed', $5::jsonb, true)`,
-		testSite, networkID, serviceID, eventID, qe); err != nil {
-		t.Fatalf("seeding never-scheduled recording: %v", err)
+INSERT INTO never_scheduled_events (site, network_id, service_id, event_id)
+VALUES ($1, $2, $3, $4)`,
+		testSite, networkID, serviceID, eventID); err != nil {
+		t.Fatalf("seeding never-scheduled event: %v", err)
 	}
 }
 
 // seedMidRecordingFailure は handleRecordingFailed（internal/watcher）が作る形の
-// failed 行を模す --- never-scheduled マーカーは無い。ListCapacityDemand が
-// この行の存在で予約を需要から除外してはならないことを確認するための直接
-// INSERT（issue #157: never_scheduled_events view の述語が status='failed'
-// 全般に緩んでいないかの回帰確認）。
+// failed 行を模す --- 欠測ではない。ListCapacityDemand がこの行の存在で予約を
+// 需要から除外してはならないことを確認するための直接 INSERT（欠測除外は
+// never_scheduled_events 表だけを見て recordings の failed 行は見ない）。
 func seedMidRecordingFailure(t *testing.T, pool *pgxpool.Pool, networkID, serviceID, eventID int32) {
 	t.Helper()
 	ctx := context.Background()
@@ -181,13 +174,12 @@ func TestLoad_ExcludesReservationsThatProduceNoSchedule(t *testing.T) {
 		seed func(t *testing.T, pool *pgxpool.Pool, start time.Time)
 	}{
 		{
-			// 旧「state = orphaned」ケース。issue #98 で orphaned_at 列が
-			// 廃止されたため、reconciler.recordNeverScheduled が実際に書く形
-			// （recordings に never-scheduled 行がある）で模す。
-			name: "never-scheduled の recordings 行がある",
+			// 旧「state = orphaned」ケース。reconciler.recordNeverScheduled が
+			// 実際に書く never_scheduled_events 行で模す。
+			name: "never-scheduled の欠測行がある",
 			seed: func(t *testing.T, pool *pgxpool.Pool, start time.Time) {
 				seedReservation(t, pool, 101, "GR", "25", start, duration, "")
-				seedNeverScheduledRecording(t, pool, 32678, 5168, int32(101%100000))
+				seedNeverScheduledEvent(t, pool, 32678, 5168, int32(101%100000))
 			},
 		},
 		{

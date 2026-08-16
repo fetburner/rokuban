@@ -1039,6 +1039,115 @@ func TestMigration00033_BackfillsNeverScheduledFromQualityEventsMarker(t *testin
 	}
 }
 
+// TestMigration00038_MovesNeverScheduledRowsToDedicatedTable は、旧 recordings の
+// never_scheduled 擬似行だけを欠測表へ移し、mirakc 由来の failed 試行は
+// recordings に残す両方向を固定する。移行後は never_scheduled 列も擬似行も無く、
+// never_scheduled_events は VIEW ではなく snapshots と無関係な永続表になる。
+func TestMigration00038_MovesNeverScheduledRowsToDedicatedTable(t *testing.T) {
+	dbURL := testDatabaseURL(t)
+	ctx := context.Background()
+
+	if err := MigrateReset(ctx, dbURL); err != nil {
+		t.Fatalf("migrate reset: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := MigrateReset(ctx, dbURL); err != nil {
+			t.Errorf("cleanup migrate reset: %v", err)
+		}
+	})
+
+	subFS, err := fs.Sub(migrations, "migrations")
+	if err != nil {
+		t.Fatalf("getting migrations sub-FS: %v", err)
+	}
+	sqlDB, err := sql.Open("pgx", dbURL)
+	if err != nil {
+		t.Fatalf("opening database: %v", err)
+	}
+	defer func() { _ = sqlDB.Close() }()
+
+	provider, err := goose.NewProvider(goose.DialectPostgres, sqlDB, subFS)
+	if err != nil {
+		t.Fatalf("creating goose provider: %v", err)
+	}
+	if _, err := provider.UpTo(ctx, 37); err != nil {
+		t.Fatalf("migrating up to 00037: %v", err)
+	}
+
+	pool, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("connecting pool: %v", err)
+	}
+	defer pool.Close()
+
+	const site = "migration-38"
+	const missingEventID int32 = 601
+	const failedAttemptEventID int32 = 602
+	if _, err := pool.Exec(ctx, `
+INSERT INTO recordings (
+    source, site, network_id, service_id, event_id, service_name,
+    channel_type, channel, title, program_start_at, program_duration_ms,
+    status, quality_events, never_scheduled
+) VALUES
+    ('manual', $1, 32736, 1024, $2, 'テスト局', 'GR', '27', '欠測擬似行', now(), 1800000,
+     'failed', '[{"event":"recording.never-scheduled","reason":{}}]'::jsonb, true),
+    ('manual', $1, 32736, 1024, $3, 'テスト局', 'GR', '27', 'mirakc 由来の失敗', now(), 1800000,
+     'failed', '[{"event":"recording.failed","reason":{}}]'::jsonb, false)`,
+		site, missingEventID, failedAttemptEventID); err != nil {
+		t.Fatalf("seeding pre-00038 recordings: %v", err)
+	}
+
+	if _, err := provider.UpTo(ctx, 38); err != nil {
+		t.Fatalf("migrating up to 00038: %v", err)
+	}
+
+	var relationKind string
+	if err := pool.QueryRow(ctx, `SELECT relkind::text FROM pg_class WHERE oid = 'never_scheduled_events'::regclass`).Scan(&relationKind); err != nil {
+		t.Fatalf("querying never_scheduled_events relation kind: %v", err)
+	}
+	if relationKind != "r" {
+		t.Errorf("never_scheduled_events relkind = %q, want %q (ordinary table)", relationKind, "r")
+	}
+
+	var missingExists bool
+	if err := pool.QueryRow(ctx, `
+SELECT EXISTS (
+    SELECT 1 FROM never_scheduled_events
+    WHERE site=$1 AND network_id=32736 AND service_id=1024 AND event_id=$2
+)`, site, missingEventID).Scan(&missingExists); err != nil {
+		t.Fatalf("checking migrated missing event: %v", err)
+	}
+	if !missingExists {
+		t.Error("legacy never-scheduled row was not moved to never_scheduled_events")
+	}
+
+	var pseudoCount, failedAttemptCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM recordings WHERE site=$1 AND event_id=$2`, site, missingEventID).Scan(&pseudoCount); err != nil {
+		t.Fatalf("counting legacy pseudo-row: %v", err)
+	}
+	if pseudoCount != 0 {
+		t.Errorf("legacy pseudo-row count = %d, want 0", pseudoCount)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM recordings WHERE site=$1 AND event_id=$2`, site, failedAttemptEventID).Scan(&failedAttemptCount); err != nil {
+		t.Fatalf("counting real failed attempt: %v", err)
+	}
+	if failedAttemptCount != 1 {
+		t.Errorf("mirakc failed-attempt count = %d, want 1", failedAttemptCount)
+	}
+
+	var columnExists bool
+	if err := pool.QueryRow(ctx, `
+SELECT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema='public' AND table_name='recordings' AND column_name='never_scheduled'
+)`).Scan(&columnExists); err != nil {
+		t.Fatalf("checking never_scheduled column: %v", err)
+	}
+	if columnExists {
+		t.Error("recordings.never_scheduled still exists after migration")
+	}
+}
+
 func TestReservationOptions_Effective(t *testing.T) {
 	priority1 := 1
 	priority2 := 2

@@ -51,7 +51,7 @@ GC 済みのスナップショットの上で ingest が走った場合に何が
 **ただし「上げれば済む」ではない。既定は上げない** —— コストは滞留を N 日許す構成にだけ課す:
 
 - `reservations` / `program_snapshots` / `program_intents` / `program_overrides` の行が「予約された番組数 × N 日」ぶん長く残る。時間窓で絞らずこれらを読む経路がある（`ListCapacityDemand` / `ListCapacityDemandAllSites`）
-- **同じキーが EPG 射影のローリングウィンドウも駆動する。** `cfg.Epg.RetentionGrace` は ruler の GC と EPG 射影の `PruneEpgPrograms`（`internal/worker/epg.go`）の**両方**に渡される（`cmd/rokuban/server.go`）ので、N 日にすると `epg_programs` に**予約の有無に関わらず全サービスの放送済み番組**が N 日ぶん残る。ルール照合（`internal/rulequery` の `MatchProgramIDs`）は時間で絞らないのでその放送済み番組も拾い、終了済み番組の予約に対して reconciler の `programEnded` 分岐と `recordNeverScheduled` が**永続表 `recordings` に never-scheduled 行**を作る窓が 24h から N 日に広がる。**行がどれだけ増えるかは未検証**（この節の他の記述と違い、測っていない）
+- **同じキーが EPG 射影のローリングウィンドウも駆動する。** `cfg.Epg.RetentionGrace` は ruler の GC と EPG 射影の `PruneEpgPrograms`（`internal/worker/epg.go`）の**両方**に渡される（`cmd/rokuban/server.go`）ので、N 日にすると `epg_programs` に**予約の有無に関わらず全サービスの放送済み番組**が N 日ぶん残る。ルール照合（`internal/rulequery` の `MatchProgramIDs`）は時間で絞らないのでその放送済み番組も拾い、終了済み番組の予約に対して reconciler の `programEnded` 分岐と `recordNeverScheduled` が**永続表 `never_scheduled_events` に欠測行**を作る窓が 24h から N 日に広がる。**行がどれだけ増えるかは未検証**（この節の他の記述と違い、測っていない）
 
 滞留を見張るメトリクスと閾値は[運用](../operations.md) §4 にある。
 

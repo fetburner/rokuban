@@ -21,7 +21,7 @@
    - 例外は **`circuit_breakers`**（§3.6）。「誰かが確認した」は再取得できないので、このスキーマで唯一の意図的な非導出状態
 7. **意味を持たない行を作らない**（CLAUDE.md 不変条件 10）
    - **行の存在そのものを主張として使う**。空の上書きは「行が無い」（`program_overrides`）、停止していないブレーカーは「行が無い」（`circuit_breakers`）。詳細は [invariants.md](../invariants.md) §10
-   - **同じ述語を 2 箇所目のクエリファイルに書く前に view にする。** 述語の一致をコメント（「揃えること」）で守るのは、CHECK で禁止するより弱い —— view なら乖離が表現不可能になる（`program_investments`、`never_scheduled_events`）
+   - **同じ述語を 2 箇所目のクエリファイルに書く前に view にする。** 述語の一致をコメント（「揃えること」）で守るのは、CHECK で禁止するより弱い —— view なら乖離が表現不可能になる（`program_investments`）。ただし述語の正体が永続の観測なら、view で導出せず専用表の行の存在にする（`never_scheduled_events`）
 8. **型の規律**
    - 状態は Postgres の enum 型ではなく `text` + `CHECK`（enum 型はマイグレーションが面倒で利点が薄い）
    - 時刻はすべて `timestamptz`
@@ -29,7 +29,7 @@
    - クエリ軸（WHERE / JOIN に使う列）は型付きカラム、可変・詳細ペイロードは `jsonb`
    - **jsonb を許すのは「そのテーブル自身のロジックが中身を一切使わない不透明なペイロード」のときだけ**（[録画エンジン](../recording.md) §4.2「jsonb を許す条件」）。内容でクエリするなら型付き列
    - 不透明なペイロードには**内容を検査する CHECK も置かない**。「クエリはしないが制約はする」という中途半端な状態を作らない。同じ理由でマージも SQL（`||` / `- keys`）ではなく Go 側で型付きに行う
-   - まだやりがちな違反: `recordings.quality_events`（jsonb）の中身への `EXISTS(jsonb_array_elements(...))` を core ロジックの WHERE 軸にすること。判定軸には型付き列（`never_scheduled boolean`）を使い、`quality_events` は内訳ログとして残す（[recordings.md](recordings.md)「never-scheduled 行の識別」）
+   - まだやりがちな違反: `recordings.quality_events`（jsonb）の中身への `EXISTS(jsonb_array_elements(...))` を core ロジックの WHERE 軸にすること。欠測の判定軸は専用表 `never_scheduled_events` の行の存在にし、`recordings` は観測された試行だけを持つ（[recordings.md](recordings.md)「never_scheduled_events」）
    - **PostgreSQL 15 以上**を前提とする（`UNIQUE NULLS NOT DISTINCT` が 15 で導入）
 9. **表は行の寿命で割る**（[CLAUDE.md](../../CLAUDE.md) 不変条件 12）
    - **1 表 = 1 つの書き手 = 1 つの寿命。** 原則 6 は列の粒度なので、行に寿命が混ざるケースを網に掛けられない。`reservations` に 3 つの寿命が同居していた実例は [invariants.md](../invariants.md) §12

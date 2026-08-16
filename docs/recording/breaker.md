@@ -19,7 +19,7 @@
   - (b) 削除候補になる前提として EPG 射影に番組が残っている必要がある（射影から消えた番組の凍結は別の防御。EPG が復旧すれば次パスで自動的に解け、ラッチと違い人間の再開を待たない）
   - (c) **EPG 欠損中は投資を持つ行の `rule_id` が一斉に NULL に落ちる**ので、その最中にユーザーが投資を消すと、健全な EPG ならルール由来で残ったはずの予約がブレーカーの外で消える。EPG 復旧後の次パスでルールが作り直すので自己修復するが、この削除は「明示操作**からしか**説明できない」ものではない（`TestRunPass_EpgUnmatchNullsRuleIDButInvestmentBlocksRelease` が (c) の前半 = `rule_id` の NULL 化と、投資がある間は消えないことの両方を測っている）
 - **不変条件: 録画済みデータ（media_assets）に至る自動削除経路は retention reconcile のみ**。EPG・予約側の状態変化から録画物の削除に到達するパスを作らない
-- programId が EPG から消えた予約は即削除せず猶予を置く（mirakc 自身も removed-from-epg を理由付き failed として通知してくる）。なお導出値 `orphaned` はこの用途ではなく「番組終了後に schedule が観測されなかった」を意味し、`recordings` に never-scheduled 行が存在するかどうかから読むたびに導出する（[schema.md](../schema.md) §3）
+- programId が EPG から消えた予約は即削除せず猶予を置く（mirakc 自身も removed-from-epg を理由付き failed として通知してくる）。なお導出値 `orphaned` はこの用途ではなく「番組終了後に schedule が観測されなかった欠測があり、本物の録画試行が無い」を意味し、`never_scheduled_events` と `recordings` から読むたびに導出する（[schema.md](../schema.md) §3）
 
 ##### 止められる場所は ruler だけ
 

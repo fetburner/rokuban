@@ -7,75 +7,78 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
-// TestExportRescue_PreservesNeverScheduledRecording は issue #98 の never-scheduled
-// 行（recordings.status='failed' + never_scheduled = true。quality_events の
-// recording.never-scheduled マーカーは内訳ログとして併存する。issue #161）
-// が catalog の export/rescue を往復しても復元できることを確認する。
+// TestRescue_SkipsLegacyNeverScheduledPseudoRow は issue #318 より前に export
+// された catalog に残る欠測擬似行（recordings.status='failed' + quality_events の
+// recording.never-scheduled マーカー）を rescue が recordings に戻さないことを
+// 確認する。欠測は never_scheduled_events 表へ移設され、recordings は観測
+// された試行だけを持つ脊椎になった。擬似行を復元すると「試行でない行」が
+// ライブラリに failed として復活してしまう（issue #318 item 5）。
 //
-// #143 のレビューで申し送りされた教訓（recordings の「行の見え方を変える」変更は
-// catalog の往復を必ず確認する。superseded_at が CatalogUpsertRecording の
-// 列リストから漏れていて rescue が一意索引違反で落ちていた）は issue #161 でも
-// 再現した --- never_scheduled 列を CatalogUpsertRecording の列リストに足し
-// 忘れると、rescue 後は常に false になり、この関数末尾の
-// never_scheduled_events VIEW 検証が最初に落ちる形で踏んだ。
-func TestExportRescue_PreservesNeverScheduledRecording(t *testing.T) {
+// 同じダンプに含まれる本物の録画は従来どおり復元されることも合わせて確認する
+// （スキップが marker 付きの行だけに効いていること）。
+func TestRescue_SkipsLegacyNeverScheduledPseudoRow(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	q := sqlcgen.New(pool)
 
 	programStartAt := time.Date(2026, 8, 1, 21, 0, 0, 0, time.UTC)
 	programEndedAt := programStartAt.Add(30 * time.Minute)
-	reason, err := json.Marshal(map[string]any{"programEndedAt": programEndedAt})
-	if err != nil {
-		t.Fatalf("marshalling reason: %v", err)
-	}
-	qe, err := json.Marshal([]map[string]any{{
+	marker, err := json.Marshal([]map[string]any{{
 		"at":     programEndedAt,
 		"event":  "recording.never-scheduled",
-		"reason": json.RawMessage(reason),
+		"reason": json.RawMessage(`{}`),
 	}})
 	if err != nil {
 		t.Fatalf("marshalling quality_events: %v", err)
 	}
 
-	// recordings.reservation_id は issue #158 で列自体を落としたので、この試行行を
-	// 予約と結びつける材料は存在しない --- 「予約が既に GC された後の
-	// never-scheduled 行」であることも自然に模せる。
-	rows, err := q.CreateNeverScheduledRecording(ctx, sqlcgen.CreateNeverScheduledRecordingParams{
-		Source:            "rule",
-		Site:              "default",
-		NetworkID:         32736,
-		ServiceID:         1024,
-		EventID:           300,
-		ServiceName:       "NHK総合",
-		ChannelType:       "GR",
-		Channel:           "27",
-		Title:             "never-scheduled になった番組",
-		ProgramStartAt:    programStartAt,
-		ProgramDurationMs: 1800000,
-		QualityEvents:     qe,
-	})
-	if err != nil {
-		t.Fatalf("CreateNeverScheduledRecording: %v", err)
-	}
-	if rows != 1 {
-		t.Fatalf("CreateNeverScheduledRecording rows = %d, want 1", rows)
-	}
-
-	doc, err := Export(ctx, pool, "")
-	if err != nil {
-		t.Fatalf("Export: %v", err)
-	}
-	if len(doc.Recordings) != 1 {
-		t.Fatalf("exported recordings = %d, want 1", len(doc.Recordings))
-	}
-	exported := doc.Recordings[0]
-	if exported.Status != "failed" {
-		t.Errorf("exported status = %q, want %q", exported.Status, "failed")
+	doc := &Document{
+		Version:    Version,
+		ExportedAt: programStartAt,
+		Recordings: []Recording{
+			{
+				// 旧世代の欠測擬似行（marker 付き）。rescue でスキップされるはず。
+				ID:                1,
+				Source:            "rule",
+				Site:              "default",
+				NetworkID:         32736,
+				ServiceID:         1024,
+				EventID:           300,
+				ServiceName:       "NHK総合",
+				ChannelType:       "GR",
+				Channel:           "27",
+				Title:             "欠測になった番組",
+				IsFree:            true,
+				ProgramStartAt:    programStartAt,
+				ProgramDurationMs: 1800000,
+				Status:            "failed",
+				QualityEvents:     marker,
+				CreatedAt:         programStartAt,
+				UpdatedAt:         programStartAt,
+			},
+			{
+				// 本物の録画（marker 無し）。復元されるはず。
+				ID:                2,
+				Source:            "rule",
+				Site:              "default",
+				NetworkID:         32736,
+				ServiceID:         1024,
+				EventID:           301,
+				ServiceName:       "NHK総合",
+				ChannelType:       "GR",
+				Channel:           "27",
+				Title:             "録れた番組",
+				IsFree:            true,
+				ProgramStartAt:    programStartAt,
+				ProgramDurationMs: 1800000,
+				Status:            "finished",
+				QualityEvents:     json.RawMessage(`[]`),
+				CreatedAt:         programStartAt,
+				UpdatedAt:         programStartAt,
+			},
+		},
 	}
 
 	mediaDir := t.TempDir()
@@ -84,54 +87,34 @@ func TestExportRescue_PreservesNeverScheduledRecording(t *testing.T) {
 		t.Fatalf("Write: %v", err)
 	}
 	path := filepath.Join(genDir, DocumentFilename)
-	if _, err := pool.Exec(ctx, `TRUNCATE media_assets, recordings RESTART IDENTITY CASCADE`); err != nil {
-		t.Fatalf("truncate: %v", err)
-	}
 
 	result, err := RescueFile(ctx, pool, path)
 	if err != nil {
-		t.Fatalf("RescueFile: %v (never-scheduled 行が復元できないと disaster recovery が壊れる)", err)
+		t.Fatalf("RescueFile: %v", err)
 	}
 	if result.Recordings != 1 {
-		t.Errorf("rescued recordings = %d, want 1", result.Recordings)
+		t.Errorf("rescued recordings = %d, want 1 (欠測擬似行はスキップ、本物だけ復元)", result.Recordings)
 	}
 
-	var status string
-	var qualityEvents []byte
+	// 欠測擬似行（event_id=300）は recordings に無い。
+	var pseudoExists bool
 	if err := pool.QueryRow(ctx, `
-SELECT status, quality_events FROM recordings
-WHERE site = 'default' AND network_id = 32736 AND service_id = 1024 AND event_id = 300`,
-	).Scan(&status, &qualityEvents); err != nil {
-		t.Fatalf("querying rescued recording: %v", err)
+SELECT EXISTS (SELECT 1 FROM recordings WHERE site='default' AND network_id=32736 AND service_id=1024 AND event_id=300)`,
+	).Scan(&pseudoExists); err != nil {
+		t.Fatalf("checking pseudo-row: %v", err)
 	}
-	if status != "failed" {
-		t.Errorf("rescued status = %q, want %q", status, "failed")
+	if pseudoExists {
+		t.Error("欠測擬似行が recordings に復元された, want スキップ（recordings は試行だけを持つ）")
 	}
 
-	var neverScheduledFound bool
+	// 本物の録画（event_id=301）は復元されている。
+	var realExists bool
 	if err := pool.QueryRow(ctx, `
-SELECT EXISTS (
-    SELECT 1 FROM jsonb_array_elements($1::jsonb) qe
-    WHERE qe->>'event' = 'recording.never-scheduled'
-)`, qualityEvents).Scan(&neverScheduledFound); err != nil {
-		t.Fatalf("checking rescued quality_events: %v", err)
+SELECT EXISTS (SELECT 1 FROM recordings WHERE site='default' AND network_id=32736 AND service_id=1024 AND event_id=301)`,
+	).Scan(&realExists); err != nil {
+		t.Fatalf("checking real recording: %v", err)
 	}
-	if !neverScheduledFound {
-		t.Errorf("rescued quality_events does not contain the never-scheduled marker: %s", qualityEvents)
-	}
-
-	// 往復後も never_scheduled_events VIEW（00030）で検出できることを確認する
-	// --- ここが壊れると、rescue 後に同じ予約が desired へ復活して POST を
-	// 再送してしまう（issue #134 の再発）。
-	var matchesExclusionPredicate bool
-	if err := pool.QueryRow(ctx, `
-SELECT EXISTS (
-    SELECT 1 FROM never_scheduled_events
-    WHERE site = 'default' AND network_id = 32736 AND service_id = 1024 AND event_id = 300
-)`).Scan(&matchesExclusionPredicate); err != nil {
-		t.Fatalf("checking exclusion predicate: %v", err)
-	}
-	if !matchesExclusionPredicate {
-		t.Error("rescued never-scheduled recording does not match the sync-exclusion predicate")
+	if !realExists {
+		t.Error("本物の録画が復元されていない（スキップが marker 付きの行だけに効いていない）")
 	}
 }

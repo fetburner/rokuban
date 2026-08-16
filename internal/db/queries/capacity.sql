@@ -7,17 +7,13 @@
 --
 -- 絞り込みの分担:
 --   - never-scheduled 除外: reconciler が「番組終了かつ schedule 非観測」と
---     一度判定して recordings に never-scheduled 行を作った予約は、以後
---     schedule を作らない（= 需要にならない）ので落とす。旧実装は
---     orphaned_at IS NULL で絞っていたが、#98 でこの列を廃止し recordings の
---     試行行に置き換えた。述語自体は never_scheduled_events view
---     （issue #157。internal/db/migrations/00030_never_scheduled_events_view.sql）
---     に一本化し、ListReservationsForSyncEvaluation
---     （internal/db/queries/reservations.sql）と全く同じ NOT EXISTS になる ---
---     status='failed' 全般ではなく never-scheduled マーカーだけを見る理由も
---     同所のコメント参照（mirakc 由来の途中失敗からの再試行経路を壊さない
---     ため）。これ以上のフィルタに使ってはならない（docs/schema.md §3。
---     active / detached はどちらも同期対象）
+--     一度判定して never_scheduled_events 表に欠測行を作った予約は、以後
+--     schedule を作らない（= 需要にならない）ので落とす。述語は放送イベント
+--     キーで引く NOT EXISTS に一本化し、ListReservationsForSyncEvaluation
+--     （internal/db/queries/reservations.sql）と全く同じ。mirakc 由来の途中失敗は
+--     recordings にだけ現れるので除外されず、再試行経路を壊さない。これ以上の
+--     フィルタに使ってはならない（docs/schema.md §3。active / detached は
+--     どちらも同期対象）
 --   - `channel_type IS NOT NULL AND channel IS NOT NULL` という絞り込みはかつて
 --     ここにあった（00009 以前の残骸は物理チャンネルが分からないので需要に
 --     数えられない、という安全側の判断）。issue #101（00026）で
