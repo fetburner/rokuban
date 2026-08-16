@@ -351,7 +351,7 @@ function RecordingRow({
         §メディア配信）なので、そもそもリクエストを出さずプレースホルダ固定にする
         （M3-18: 未生成と 404 で区別が付かない曖昧さもこれで消える）。
       */}
-      <div className="size-12 shrink-0 overflow-hidden rounded bg-muted">
+      <div className="aspect-video h-12 shrink-0 overflow-hidden rounded bg-muted">
         {!trash && !thumbFailed ? (
           <img
             src={`/api/recordings/${recording.id}/thumbnail`}

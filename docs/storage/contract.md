@@ -111,6 +111,8 @@ S3 マウント（k8s-csi-s3 の geesefs/s3fs、AWS Mountpoint 等）では以�
   命令的チェーン（「ingest 成功 → 必ず thumbnail」）は採らない
 - **抽出位置（固定ポリシー）**: `seek = min(duration × 10%, 30s)`。duration は
   ffprobe が読む実ファイル長。取れなければ 0 秒（先頭フレーム）。設定キーは設けない
+- **画素縦横比**: ffmpeg で入力の SAR を偶数幅の正方形ピクセルへ焼き込んでから
+  JPEG 化する。JPEG の SAR を解釈しないブラウザでも anamorphic 映像を歪ませない
 - **ストレージ契約**: ffmpeg は `storage.scratch_dir` に JPEG を書き、完成後に
   メディアへストリームコピー + fsync → `media_assets` INSERT（`ON CONFLICT DO NOTHING`）
 - **相対パス**: `thumbnails/{recording_id}.jpg`（原本の contentPath に依存しない。

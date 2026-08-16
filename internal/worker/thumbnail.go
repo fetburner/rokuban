@@ -274,11 +274,16 @@ func (w *ThumbnailWorker) extractFrame(ctx context.Context, inputPath, outputPat
 	}
 	// -ss を -i の前に置き入力シーク（大容量 TS で速い）。
 	// -frames:v 1 で 1 枚、-q:v 2 で高品質 JPEG。
+	// SAR（ピクセル縦横比）を偶数幅の正方形ピクセルへ焼き込む。JPEG は SAR を
+	// 運ばないため、これが無いと anamorphic な地デジ（1440x1080 SAR 4:3 →
+	// DAR 16:9）がブラウザで横に潰れて見える。解像度は見ず SAR だけで正規化するので
+	// BS の 1920x1080 SAR 1:1 は no-op。setsar=1 は端数丸め後も正方形を保証する。
 	args := []string{
 		"-y",
 		"-ss", formatSeekSeconds(seek),
 		"-i", inputPath,
 		"-frames:v", "1",
+		"-vf", "scale=round(iw*sar/2)*2:ih,setsar=1",
 		"-q:v", "2",
 		outputPath,
 	}

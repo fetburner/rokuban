@@ -100,7 +100,7 @@ export function RecordingDetailPage() {
           <section className="flex gap-3">
             {/* サムネイルは一覧行と同じ規律: ごみ箱ではそもそもリクエストしない
                 （配信側が deleted_at IS NOT NULL を 404 にする契約。docs/api/media.md）。 */}
-            <div className="size-20 shrink-0 overflow-hidden rounded bg-muted">
+            <div className="aspect-video h-20 shrink-0 overflow-hidden rounded bg-muted">
               {!trash && !thumbFailed ? (
                 <img
                   src={`/api/recordings/${recording.id}/thumbnail`}

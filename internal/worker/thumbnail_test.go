@@ -588,6 +588,41 @@ func fakeThumbnailTools(t *testing.T, durationSec float64) func(ctx context.Cont
 	}
 }
 
+// TestExtractFrameBakesSAR は extractFrame が SAR（ピクセル縦横比）を正方形
+// ピクセルへ焼き込む scale フィルタを渡すことを保証する。JPEG は SAR を運ばない
+// ため、これが無いと anamorphic な地デジ（1440x1080 SAR 4:3 → DAR 16:9）が
+// ブラウザで横に潰れて見える。解像度はハードコードせず SAR だけで正規化する
+// （BS の 1920x1080 SAR 1:1 は no-op）ので、フィルタ式そのものを固定する。
+func TestExtractFrameBakesSAR(t *testing.T) {
+	var gotArgs []string
+	w := &ThumbnailWorker{
+		runCmd: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			gotArgs = args
+			return nil, nil
+		},
+	}
+	if err := w.extractFrame(context.Background(), "in.ts", "out.jpg", 3*time.Second); err != nil {
+		t.Fatalf("extractFrame: %v", err)
+	}
+	i := indexOfArg(gotArgs, "-vf")
+	if i < 0 || i+1 >= len(gotArgs) {
+		t.Fatalf("no -vf filter in args: %v", gotArgs)
+	}
+	const want = "scale=round(iw*sar/2)*2:ih,setsar=1"
+	if got := gotArgs[i+1]; got != want {
+		t.Errorf("-vf = %q, want %q", got, want)
+	}
+}
+
+func indexOfArg(args []string, want string) int {
+	for i, a := range args {
+		if a == want {
+			return i
+		}
+	}
+	return -1
+}
+
 func containsArg(args []string, substr string) bool {
 	for _, a := range args {
 		if strings.Contains(a, substr) {
