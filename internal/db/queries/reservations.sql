@@ -38,40 +38,30 @@ RETURNING *;
 -- 無い）ことがあるので両方 LEFT JOIN する。番組スナップショットは FK が
 -- あるので必ず存在する（INNER JOIN）。
 --
--- never_recorded は issue #98 で orphaned_at の代わりに導出する列（読むたびに
--- 評価。CLAUDE.md 不変条件 9）。
+-- never_recorded は orphaned_at の代わりに読むたび導出する列（CLAUDE.md
+-- 不変条件 9）。放送イベントキーで never_scheduled_events 表を引き、欠測行が
+-- あり、かつそのイベントに本物の recordings 行が 1 つも無いときだけ true。
 --
--- 述語は 3 つの条件の積で、それぞれ理由が違う:
---
---   1. **放送イベントで引く**（予約 id ではない）。reservations.id は ruler の
---      導出削除・再実体化で変わる不安定な値で、recordings.reservation_id
---      （issue #158 で列自体を削除済み）は当時 ON DELETE SET NULL だった。
---      予約 id で引くと予約が作り直された瞬間に表示が「録れた」に戻る
---      （不変条件 9 の identity。#53 / #99 と同じ話）
---   2. **never-scheduled マーカーに限る**。mirakc 由来の途中失敗
---      （handleRecordingFailed が作る failed 行）まで含めると、放送中の番組が
---      mirakc の再スケジュール待ちの間に「録れなかった」と表示される ---
---      旧 orphaned_at は「番組終了かつ schedule 非観測」でしか立たなかったので
---      これは退行にあたる。失敗そのものは録画一覧（recordings）に見えている
---   3. **live な行に限る**（deleted_at / superseded_at が NULL）。後から本物の
---      record が着地すると never-scheduled 行は supersede される（#129 /
---      #143 の「本物の record が推論に必ず勝つ」）ので、この条件があるだけで
---      「録れたのに orphaned のまま」（#59）が構造的に消える
---
--- 1 と 2 は never_scheduled_events VIEW（00030、issue #157）が定義する核で、
--- 同期除外 3 本（ListReservationsForSyncEvaluation / ListOverlappingReservations
--- / ListCapacityDemand）と共有する。3 の live 限定は表示側だけが VIEW の列に
--- 対して追加する --- 意図的な差なので VIEW の中に畳み込まない。
+-- recordings の照合は live 限定にしない。旧実装では後から本物の record が来ると
+-- never-scheduled 擬似行を永久に supersede していたため、ごみ箱操作後も orphaned
+-- に戻らなかった。同じ意味を `NOT EXISTS(recordings)` で保つ（#59「録れたのに
+-- orphaned のまま」の再発を防ぐ）。同期除外は recordings の有無を見ず、一度
+-- 欠測と書いたイベントを対象に戻さないので、表示とは意図的に別の述語である。
 -- name: GetReservationFull :one
 SELECT sqlc.embed(r), sqlc.embed(s), i.action AS intent_action, o.overrides AS overrides,
-       EXISTS (
+       (EXISTS (
            SELECT 1 FROM never_scheduled_events nse
            WHERE nse.site = r.site
              AND nse.network_id = s.network_id
              AND nse.service_id = s.service_id
              AND nse.event_id = s.event_id
-             AND nse.deleted_at IS NULL AND nse.superseded_at IS NULL
-       ) AS never_recorded
+       ) AND NOT EXISTS (
+           SELECT 1 FROM recordings rec
+           WHERE rec.site = r.site
+             AND rec.network_id = s.network_id
+             AND rec.service_id = s.service_id
+             AND rec.event_id = s.event_id
+       ))::boolean AS never_recorded
 FROM reservations r
 JOIN program_snapshots s ON s.site = r.site AND s.program_id = r.program_id
 LEFT JOIN program_intents i ON i.site = r.site AND i.program_id = r.program_id
@@ -87,14 +77,19 @@ WHERE r.id = $1;
 -- 変えたのと同じ論法）。never_recorded の導出は GetReservationFull と同じ。
 -- name: GetReservationFullBySiteAndProgramID :one
 SELECT sqlc.embed(r), sqlc.embed(s), i.action AS intent_action, o.overrides AS overrides,
-       EXISTS (
+       (EXISTS (
            SELECT 1 FROM never_scheduled_events nse
            WHERE nse.site = r.site
              AND nse.network_id = s.network_id
              AND nse.service_id = s.service_id
              AND nse.event_id = s.event_id
-             AND nse.deleted_at IS NULL AND nse.superseded_at IS NULL
-       ) AS never_recorded
+       ) AND NOT EXISTS (
+           SELECT 1 FROM recordings rec
+           WHERE rec.site = r.site
+             AND rec.network_id = s.network_id
+             AND rec.service_id = s.service_id
+             AND rec.event_id = s.event_id
+       ))::boolean AS never_recorded
 FROM reservations r
 JOIN program_snapshots s ON s.site = r.site AND s.program_id = r.program_id
 LEFT JOIN program_intents i ON i.site = r.site AND i.program_id = r.program_id
@@ -109,14 +104,19 @@ WHERE r.site = $1 AND r.program_id = $2;
 -- 入り交じり、同一サイト内の時系列を読み取りにくい。
 -- name: ListReservationsFull :many
 SELECT sqlc.embed(r), sqlc.embed(s), i.action AS intent_action, o.overrides AS overrides,
-       EXISTS (
+       (EXISTS (
            SELECT 1 FROM never_scheduled_events nse
            WHERE nse.site = r.site
              AND nse.network_id = s.network_id
              AND nse.service_id = s.service_id
              AND nse.event_id = s.event_id
-             AND nse.deleted_at IS NULL AND nse.superseded_at IS NULL
-       ) AS never_recorded
+       ) AND NOT EXISTS (
+           SELECT 1 FROM recordings rec
+           WHERE rec.site = r.site
+             AND rec.network_id = s.network_id
+             AND rec.service_id = s.service_id
+             AND rec.event_id = s.event_id
+       ))::boolean AS never_recorded
 FROM reservations r
 JOIN program_snapshots s ON s.site = r.site AND s.program_id = r.program_id
 LEFT JOIN program_intents i ON i.site = r.site AND i.program_id = r.program_id
@@ -149,9 +149,9 @@ ORDER BY r.site, s.start_at;
 -- now() 比較を SQL に持ち込むと、固定時刻を使うテスト（過去に書かれた
 -- fixture が「将来」のつもりで書いた日時が実行時点で過去になっている等。
 -- cmd/rokuban/shadowdiff_test.go で実例あり）が経過時間に依存して壊れる。
--- recordings の存在という「reconciler 自身が過去に書いた事実」を条件にすれば
--- テストの実行時刻に依存しない（reconciler が実際に never-scheduled 行を
--- 作らない限り除外されない）。
+-- never_scheduled_events 表の行の存在という「reconciler 自身が過去に書いた
+-- 事実」を条件にすればテストの実行時刻に依存しない（reconciler が実際に欠測
+-- 行を作らない限り除外されない）。
 --
 -- 旧名 ListSyncableReservationsBySite は「もう絞ってある」と約束してしまって
 -- いた。その約束を信じて shadow-diff（cmd/rokuban/shadowdiff.go）の書き手は
@@ -165,16 +165,12 @@ ORDER BY r.site, s.start_at;
 -- 番組の開始時刻・尺（reconciler の開始遅延検出に使う）は program_snapshots に
 -- 移設された（#27）ので JOIN する。FK があるので必ず存在する。
 --
--- never-scheduled 除外の述語は never_scheduled_events view（issue #157。
--- internal/db/migrations/00030_never_scheduled_events_view.sql）に一本化した
--- ---
--- overlaps.sql の ListOverlappingReservations / capacity.sql の
--- ListCapacityDemand と全く同じ NOT EXISTS になる。view はこの述語の live
--- 限定を持たない（deleted_at / superseded_at は列としてのみ出す）。表示用の
--- never_recorded（このファイルの GetReservationFull 等）が live 限定
--- （deleted_at IS NULL AND superseded_at IS NULL）を持つ意図的に別の述語
--- であることと対比すること --- 同期除外は一度 never-scheduled と判定された
--- 放送イベントを、その後 recordings 行が supersede されても対象に戻さない。
+-- 欠測除外の述語は never_scheduled_events 表を放送イベントキーで引く NOT EXISTS
+-- で、overlaps.sql の ListOverlappingReservations / capacity.sql の
+-- ListCapacityDemand と全く同じ。表示用の never_recorded（このファイルの
+-- GetReservationFull 等）が本物の recordings 行の不在も条件にする意図的に別の
+-- 述語であることと対比すること --- 同期除外は recordings の有無を見ず、一度
+-- 欠測と判定された放送イベントを、その後本物の record が来ても対象に戻さない。
 -- name: ListReservationsForSyncEvaluation :many
 SELECT sqlc.embed(r), sqlc.embed(s), i.action AS intent_action, o.overrides AS overrides
 FROM reservations r
@@ -189,7 +185,7 @@ WHERE r.site = $1
       -- （#53 が mirakc の tag を program:{programId} に移した理由。#99 も同じ）、
       -- recordings.reservation_id（issue #158 で列自体を削除済み）は当時 ON DELETE SET NULL だった。予約 id で
       -- 引くと、EPG フリッカーやルール編集で予約行が作り直された瞬間に
-      -- 「never-scheduled 行が無い」ことになり、終了済み予約が毎パス desired に
+      -- 「欠測行が無い」ことになり、終了済み予約が毎パス desired に
       -- 戻り続ける（CLAUDE.md 不変条件 9 の identity: 導出器が作るキーを
       -- 宛先にしない）。
       WHERE nse.site = r.site
@@ -198,6 +194,32 @@ WHERE r.site = $1
         AND nse.event_id = s.event_id
   )
 ORDER BY s.start_at;
+
+-- 「番組終了時点で schedule が一度も観測されなかった」欠測を記録する
+-- （issue #318。旧 CreateNeverScheduledRecording を置き換える）。書き手は
+-- reconciler.recordNeverScheduled だけ。行の存在＝欠測なので、宛先は放送
+-- イベント (site, network_id, service_id, event_id) の PK。
+--
+-- 書き込み条件は「その放送イベントに生きている recordings 行が無いこと」。
+-- live の定義は recordings_unique_active_event の部分述語と同じ
+--（deleted_at IS NULL AND superseded_at IS NULL）で、本物の record が先にあれば
+-- 欠測を書かない。ON CONFLICT DO NOTHING は前パスで既に書いた欠測、または
+-- 他パスとの競合で 2 行目を作らない（CLAUDE.md 不変条件 5: レベルトリガー）。
+-- :execrows で実際に INSERT できたか（1）条件不成立/既存か（0）を呼び出し側が
+-- 区別できる。
+-- name: CreateNeverScheduledEvent :execrows
+INSERT INTO never_scheduled_events (site, network_id, service_id, event_id)
+SELECT sqlc.arg('site'), sqlc.arg('network_id'), sqlc.arg('service_id'), sqlc.arg('event_id')
+WHERE NOT EXISTS (
+    SELECT 1 FROM recordings rec
+    WHERE rec.site = sqlc.arg('site')
+      AND rec.network_id = sqlc.arg('network_id')
+      AND rec.service_id = sqlc.arg('service_id')
+      AND rec.event_id = sqlc.arg('event_id')
+      AND rec.deleted_at IS NULL
+      AND rec.superseded_at IS NULL
+)
+ON CONFLICT (site, network_id, service_id, event_id) DO NOTHING;
 
 -- 番組終了後の GC は DeleteEndedProgramSnapshots（internal/db/queries/program_snapshots.sql）
 -- 1 本に集約された（#27）。reservations は program_snapshots への FK が

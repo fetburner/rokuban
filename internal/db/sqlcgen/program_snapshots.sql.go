@@ -120,10 +120,10 @@ type UpsertProgramSnapshotParams struct {
 // なる（移行前は ruler が reservations 側だけを更新しており、intents / overrides
 // 側が作成時のまま固まってドリフトしていた --- それが #27 の中身）。
 //
-// event_id / service_name は issue #98 で追加（00025）。never-scheduled 行
-// （reconciler.recordNeverScheduled が recordings に作る試行行）の識別
-// （network_id, service_id, event_id）と表示名に使う。他のチャンネル識別列と
-// 同じく EPG 射影から引き、mirakc の programId 内部構造は割り算しない。
+// event_id / service_name は issue #98 で追加（00025）。recordNeverScheduled が
+// never_scheduled_events に欠測を書くときの放送イベント識別、および watcher が
+// recordings を作るときの表示名に使う。他のチャンネル識別列と同じく EPG
+// 射影から引き、mirakc の programId 内部構造は割り算しない。
 func (q *Queries) UpsertProgramSnapshot(ctx context.Context, arg UpsertProgramSnapshotParams) error {
 	_, err := q.db.Exec(ctx, upsertProgramSnapshot,
 		arg.Site,

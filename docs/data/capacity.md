@@ -18,7 +18,7 @@
 
 **需要の単位は「異なる物理チャンネル数」**。予約件数ではない（同一物理チャンネルなら 1 本で相乗りできる）。副産物としてマルチ編成が自然に畳まれる --- サブサービスは同一チャンネルなので需要 1。
 
-数えるのは**reconciler が実際に schedule を作る予約だけ**。effective の `skip` が true の行と、never-scheduled（番組が終了したのに schedule が一度も観測されなかった事実）として導出される予約は需要にならない。never-scheduled は列ではなく、`recordings` の never-scheduled 行から読むたびに導出する（`never_scheduled_events` view。放送イベントキーで引く）。
+数えるのは**reconciler が実際に schedule を作る予約だけ**。effective の `skip` が true の行と、never-scheduled（番組が終了したのに schedule が一度も観測されなかった事実）の欠測行がある予約は需要にならない。欠測は `never_scheduled_events` 表を放送イベントキーで引く。mirakc 由来の failed 試行は `recordings` にだけ現れるので需要除外にはならず、再試行経路を妨げない。
 
 #### 縮約の条件は「隣接集合が同じ」であること
 
@@ -133,4 +133,4 @@ twin vertices の縮約も、実は前提が完全には成り立たない。mir
 ## 経緯と失敗事例
 
 - チューナー射影の設計は issue #21、実装は M2-10
-- 需要から除外する never-scheduled の判定は、当初 `reservations` の `orphaned` 状態（のちの `orphaned_at` 列）を見ていた。不可逆な観測を導出行に書いていたこの列は `recordings` の試行行へ移設・廃止され（issue #98）、述語は `never_scheduled_events` view（issue #157、`internal/db/migrations/00030_never_scheduled_events_view.sql`）に一本化された。現在は本文（「判定」の節）のとおり読むたびに導出する
+- 需要から除外する never-scheduled の判定は、当初 `reservations` の `orphaned` 状態（のちの `orphaned_at` 列）、次に `recordings` の擬似 failed 行から導出していた。現在は試行と欠測を分け、`never_scheduled_events` 専用表の行の存在を放送イベントキーで引く。`recordings` の failed 試行は除外条件に含めない

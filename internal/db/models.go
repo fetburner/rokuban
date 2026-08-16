@@ -259,13 +259,12 @@ type QualityEvent struct {
 	Reason json.RawMessage `json:"reason"`
 }
 
-// QualityEventNeverScheduled は quality_events.event の値（issue #98）。
-// reconciler.recordNeverScheduled が「番組終了時点で捕獲の試みが一度も記録
-// されなかった」ことを示すために書く。status を 5 値目に増やさず、失敗の
-// 理由を quality_events の管轄に留める決定（docs/schema/recordings.md「status
-// の権威」）の具体的な値。SQL 側（internal/db/queries/reservations.sql の
-// ListReservationsForSyncEvaluation 等）もこの文字列をリテラルで参照するので、
-// 変更する場合は両方揃えること。
+// QualityEventNeverScheduled は旧世代 catalog の quality_events.event の値。
+// 欠測は issue #318 で never_scheduled_events 表へ移設され、reconciler はもう
+// この値を書かない。issue #318 より前に export されたカタログには欠測が
+// quality_events マーカー付きの failed 行として残っているので、rescue
+// （internal/catalog.hasNeverScheduledMarker）がこの値でそれを検出し、
+// recordings に戻さずスキップするために引き続き使う。
 const QualityEventNeverScheduled = "recording.never-scheduled"
 
 // DefaultSite は設定が単一 mirakc のときのサイト名。

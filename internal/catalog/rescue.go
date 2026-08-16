@@ -241,13 +241,13 @@ func applyDocument(ctx context.Context, tx pgx.Tx, doc *Document) (*RescueResult
 		if len(qe) == 0 {
 			qe = []byte("[]")
 		}
-		// NeverScheduled は 00033（issue #161）より前に export された古い世代の
-		// カタログには存在せず、JSON に neverScheduled フィールドが無いとゼロ値
-		// false のまま読める（document.go の Recording.NeverScheduled コメント
-		// 参照）。quality_events のマーカーからの導出との OR を取ることで、
-		// 古い世代のダンプでも never-scheduled の事実を落とさない --- 新しい
-		// 世代のダンプでは両方 true になるだけで冪等。
-		neverScheduled := r.NeverScheduled || hasNeverScheduledMarker(qe)
+		// 旧カタログの never-scheduled 擬似行は recordings に戻さない。欠測は
+		// issue #318 で never_scheduled_events 表へ移設され、recordings は観測
+		// された試行だけを持つ。旧擬似行は media_assets を持たない契約なので、
+		// ここでスキップしても復元すべきファイルを失わない。
+		if hasNeverScheduledMarker(qe) {
+			continue
+		}
 		if err := q.CatalogUpsertRecording(ctx, sqlcgen.CatalogUpsertRecordingParams{
 			ID:                r.ID,
 			RuleID:            r.RuleID,
@@ -270,7 +270,6 @@ func applyDocument(ctx context.Context, tx pgx.Tx, doc *Document) (*RescueResult
 			StartedAt:         r.StartedAt,
 			EndedAt:           r.EndedAt,
 			QualityEvents:     qe,
-			NeverScheduled:    neverScheduled,
 			DeletedAt:         r.DeletedAt,
 			PurgeAfter:        r.PurgeAfter,
 			SupersededAt:      r.SupersededAt,
@@ -521,13 +520,12 @@ func upsertRule(ctx context.Context, q *sqlcgen.Queries, rule Rule) error {
 // hasNeverScheduledMarker は quality_events の配列要素に
 // db.QualityEventNeverScheduled マーカーがあるかを判定する。
 //
-// 00033（issue #161）より前に export された catalog ダンプは
-// Recording.NeverScheduled フィールド自体を持たず、rescue 時は常にゼロ値
-// false で読める。この関数はそのダンプでも never-scheduled の事実を
-// quality_events から救い出すために使う（applyDocument 参照）。壊れた JSON
-// （手で編集された等）は false を返して静かに諦める --- ここで rescue 全体を
-// 止めるのは、program_snapshots のスキップ判断（同じファイル内）と同様、
-// 導出データ 1 件のために永続資産の復旧を止める代償に見合わない。
+// issue #318 より前に export された catalog ダンプでは、欠測が recordings の
+// failed 擬似行 + このマーカーとして残っている。この関数で検出した旧擬似行は
+// applyDocument が recordings に戻さずスキップする。壊れた JSON（手で編集された
+// 等）は false を返して通常の録画として復元を試みる --- ここで rescue 全体を
+// 止めるのは、1 件の不透明な quality_events のために他の永続資産の復旧を止める
+// 代償に見合わない。
 func hasNeverScheduledMarker(qualityEvents json.RawMessage) bool {
 	if len(qualityEvents) == 0 {
 		return false

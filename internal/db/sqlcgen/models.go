@@ -78,12 +78,11 @@ type MediaAsset struct {
 }
 
 type NeverScheduledEvent struct {
-	Site         string
-	NetworkID    int32
-	ServiceID    int32
-	EventID      int32
-	DeletedAt    *time.Time
-	SupersededAt *time.Time
+	Site       string
+	NetworkID  int32
+	ServiceID  int32
+	EventID    int32
+	ObservedAt time.Time
 }
 
 type OrphanFile struct {
@@ -168,7 +167,6 @@ type Recording struct {
 	PurgeAfter        *time.Time
 	SupersededAt      *time.Time
 	PurgedAt          *time.Time
-	NeverScheduled    bool
 	GenreLv1          []int16
 }
 

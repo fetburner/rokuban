@@ -62,7 +62,7 @@ flowchart LR
 | effective | base + overrides。mirakc に同期され ingest/encode が参照するのは常にこれ | §4.2 同上 |
 | desired | あるべき schedule の集合。`reservations` が表す | §3.2 [reconciler.md](recording/reconciler.md) |
 | observed | mirakc から観測した現状（`GET /api/recording/schedules` の結果 = `schedule_sync`） | §3.2 同上 |
-| orphaned（導出値） | 番組終了後に schedule が観測されなかった予約。`recordings` の never-scheduled 行から読むたびに導出する | §4.3 / [schema.md](schema.md) §3 |
+| orphaned（導出値） | 番組終了後に schedule が観測されなかった予約。`never_scheduled_events` の欠測行があり、本物の `recordings` 行が無いときに導出する | §4.3 / [schema.md](schema.md) §3 |
 | active / detached（導出値） | `(rule_id, base)` から読むたびに導出。detached = かつてのルールが凍結した base で実質 manual | §4.3 §4.4 |
 
 > 関連ドキュメント: [overview.md](overview.md)（全体アーキテクチャ）/ [data.md](data.md)（データ層）/ [schema.md](schema.md)（スキーマ）/ [storage.md](storage.md)（メディアストレージ）/ [operations.md](operations.md)（運用）

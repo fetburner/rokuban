@@ -40,13 +40,13 @@ func TestReconciler_NeverScheduledExclusionSurvivesRematerialization(t *testing.
 		t.Fatalf("RunPass (1st): %v", err)
 	}
 
-	// 前提: never-scheduled 行ができ、次パスから desired に現れない。
+	// 前提: 欠測行ができ、次パスから desired に現れない。
 	rows, err := q.ListReservationsForSyncEvaluation(ctx, "default")
 	if err != nil {
 		t.Fatalf("ListReservationsForSyncEvaluation: %v", err)
 	}
 	if len(rows) != 0 {
-		t.Fatalf("precondition: desired = %d, want 0（never-scheduled 行で除外されるはず）", len(rows))
+		t.Fatalf("precondition: desired = %d, want 0（欠測行で除外されるはず）", len(rows))
 	}
 
 	// ruler の導出削除 → 再実体化を模す（同じ番組・新しい id）。
@@ -68,7 +68,7 @@ func TestReconciler_NeverScheduledExclusionSurvivesRematerialization(t *testing.
 		t.Fatalf("ListReservationsForSyncEvaluation (after rematerialization): %v", err)
 	}
 	if len(rows) != 0 {
-		t.Errorf("再実体化後の desired = %d, want 0 —— never-scheduled の除外が予約 id に依存している（放送イベントで引くべき）", len(rows))
+		t.Errorf("再実体化後の desired = %d, want 0 —— 欠測の除外が予約 id に依存している（放送イベントで引くべき）", len(rows))
 	}
 
 	full, err := q.GetReservationFull(ctx, res2.ID)
@@ -80,17 +80,11 @@ func TestReconciler_NeverScheduledExclusionSurvivesRematerialization(t *testing.
 	}
 }
 
-// 放送中の mirakc 由来の失敗では「録れなかった」表示にしないこと（issue #98）。
-// 同期除外（ListReservationsForSyncEvaluation）も同じマーカー限定を共有する
-// ので、この失敗で desired から除外されないことも合わせて確認する（issue #157:
-// never_scheduled_events view の述語が status='failed' 全般に緩んでいないか
-// の回帰確認。表示側と同期除外側の両方が同じ view を参照するので、この 1 つの
-// fixture で両方の消費者をカバーできる）。
-//
-// 旧 orphaned_at は「番組終了かつ schedule 非観測」でしか立たなかった。
-// never_recorded を「status='failed' の行があるか」で導出すると、放送中の番組が
-// mirakc の再スケジュール待ちの間に orphaned と表示されて退行する。
-// never-scheduled マーカーに限ることで避けている。
+// 放送中の mirakc 由来の失敗では「録れなかった」表示にしないこと。欠測は
+// never_scheduled_events 表にしか書かれないので、recordings に failed 行が
+// あるだけでは never_recorded は立たない（欠測行が無い）。同期除外も欠測表を
+// 引くだけなので、この失敗で desired から除外されないことも合わせて確認する
+// （mirakc の再スケジュール待ちの再試行経路を壊さない）。
 func TestReservation_MidRecordingFailureIsNotOrphanedDisplay(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
@@ -132,25 +126,21 @@ func TestReservation_MidRecordingFailureIsNotOrphanedDisplay(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Error("放送中の mirakc 由来の失敗（never-scheduled マーカー無し）で desired から除外された --- " +
-			"再試行経路が壊れている（never_scheduled_events view が status='failed' 全般まで拾っている疑い）")
+		t.Error("放送中の mirakc 由来の失敗で desired から除外された --- " +
+			"再試行経路が壊れている（欠測除外が recordings の failed 行まで拾っている疑い）")
 	}
 }
 
-// never-scheduled 行が supersede されたら「録れなかった」表示が消えること（#59 / #98）。
+// 後から本物の record が着地したら「録れなかった」表示が消えること（#59）、
+// ただし欠測行は残り、同期除外は外れないこと（issue #318）。
 //
-// 後から本物の record が着地すると never-scheduled 行は supersede される
-// （#129 / #143 の「本物の record が推論に必ず勝つ」）。表示の述語が live な行に
-// 限っているので、「録れたのに orphaned のまま」（#59）が構造的に消える。
-//
-// 一方で同期除外（ListReservationsForSyncEvaluation）は live 限定
-// （deleted_at / superseded_at）を持たない --- issue #157 が
-// never_scheduled_events VIEW（00030）に畳み込んではならないと明記した差。
-// supersede で表示（never_recorded）は変わっても、同期除外の対象（desired）は
-// 変わらないことをここで確認する。VIEW の WHERE に
-// `AND deleted_at IS NULL AND superseded_at IS NULL` を足すと、この予約が
-// 毎パス desired に戻り続ける経路が開き、このアサーションが落ちる。
-func TestReservation_SupersededNeverScheduledClearsOrphanedDisplay(t *testing.T) {
+// 欠測（never_scheduled_events）は永続の観測で、本物の record が来ても消さない
+// （録画は録画、欠測は欠測）。表示用 never_recorded は「欠測行がある AND その
+// 放送イベントに recordings 行が無い」で導出するので、本物の record が来た瞬間に
+// false になる（#59「録れたのに orphaned のまま」の構造的解消）。一方で同期除外は
+// 欠測行の存在だけを見るので、record が来ても desired には戻らない（終了済み
+// 予約を再スケジュールしない）。
+func TestReservation_RealRecordClearsOrphanedButKeepsMissingEvent(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
@@ -170,54 +160,64 @@ func TestReservation_SupersededNeverScheduledClearsOrphanedDisplay(t *testing.T)
 		t.Fatalf("GetReservationFull: %v", err)
 	}
 	if !full.NeverRecorded {
-		t.Fatalf("precondition: never_recorded = false, want true（never-scheduled 行ができているはず）")
+		t.Fatalf("precondition: never_recorded = false, want true（欠測行ができているはず）")
 	}
 
-	// 前提: never-scheduled 行がまだ live なので、同期除外も効いている。
+	// 前提: 欠測行があるので同期除外も効いている。
 	rows, err := q.ListReservationsForSyncEvaluation(ctx, "default")
 	if err != nil {
 		t.Fatalf("ListReservationsForSyncEvaluation: %v", err)
 	}
 	if len(rows) != 0 {
-		t.Fatalf("precondition: desired = %d, want 0（never-scheduled 行で除外されるはず）", len(rows))
+		t.Fatalf("precondition: desired = %d, want 0（欠測行で除外されるはず）", len(rows))
 	}
 
-	// 本物の record が着地して never-scheduled 行を supersede する。
-	n, err := q.SupersedeFailedRecording(ctx, sqlcgen.SupersedeFailedRecordingParams{
-		Site: "default", NetworkID: 10000, ServiceID: 5000, EventID: int32(700003 % 100000),
-	})
-	if err != nil || n != 1 {
-		t.Fatalf("SupersedeFailedRecording: rows=%d err=%v", n, err)
+	// 本物の record が同じ放送イベントに着地する（watcher の CreateRecording 相当）。
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO recordings (
+			source, site, network_id, service_id, event_id,
+			service_name, channel_type, channel, title, is_free,
+			program_start_at, program_duration_ms, status, started_at, ended_at
+		) VALUES ('manual', 'default', 10000, 5000, $1,
+			'テスト局', 'GR', '27', '後から録れた番組', true,
+			now() - interval '2 hours', 1800000, 'finished',
+			now() - interval '2 hours', now() - interval '90 minutes')
+	`, int32(700003%100000)); err != nil {
+		t.Fatalf("inserting real record: %v", err)
 	}
 
 	full, err = q.GetReservationFull(ctx, res.ID)
 	if err != nil {
-		t.Fatalf("GetReservationFull (after supersede): %v", err)
+		t.Fatalf("GetReservationFull (after real record): %v", err)
 	}
 	if full.NeverRecorded {
-		t.Error("never_recorded = true, want false —— supersede された never-scheduled 行で「録れなかった」と表示し続けている（#59 の再発）")
+		t.Error("never_recorded = true, want false —— 本物の record が来たのに「録れなかった」と表示し続けている（#59 の再発）")
 	}
 
-	// 表示（never_recorded）は supersede で変わるが、同期除外は live 限定を
-	// 持たないので変わらないはず（issue #157 の意図的な差）。
+	// 欠測行は残り、同期除外は変わらない。
+	var missingExists bool
+	if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM never_scheduled_events WHERE site='default' AND network_id=10000 AND service_id=5000 AND event_id=$1)`,
+		int32(700003%100000)).Scan(&missingExists); err != nil {
+		t.Fatalf("checking missing event: %v", err)
+	}
+	if !missingExists {
+		t.Error("欠測行が消えた, want 残存（本物の record が来ても欠測は欠測として残す）")
+	}
 	rows, err = q.ListReservationsForSyncEvaluation(ctx, "default")
 	if err != nil {
-		t.Fatalf("ListReservationsForSyncEvaluation (after supersede): %v", err)
+		t.Fatalf("ListReservationsForSyncEvaluation (after real record): %v", err)
 	}
 	if len(rows) != 0 {
-		t.Error("supersede 後の desired = 1, want 0 —— 同期除外が live 限定（superseded_at）を持ってしまっている（issue #157 が禁じた畳み込み）")
+		t.Error("本物の record 着地後の desired = 1, want 0 —— 同期除外が recordings の有無に依存してしまっている（終了済み予約が再スケジュールされる）")
 	}
 }
 
-// never-scheduled 行を論理削除（ごみ箱）しても同期除外が外れないこと（issue #157）。
-//
-// 表示用 never_recorded は live 限定（deleted_at IS NULL）を持つので、ごみ箱に
-// 入れた never-scheduled 行は表示上「録れた」扱いに戻ってよい。しかし同期除外
-// （ListReservationsForSyncEvaluation）は live 限定を持たない --- ユーザーが
-// ごみ箱に入れた・入れていないという操作で、reconciler が同じ番組の予約を
-// desired に戻して再スケジュールを試みてはならない。VIEW の WHERE に
-// `AND deleted_at IS NULL` を足すと、このアサーションが落ちる。
-func TestReservation_DeletedNeverScheduledDoesNotReenterSyncCandidates(t *testing.T) {
+// 本物の record をごみ箱に入れても「録れなかった」表示に戻らないこと（issue #318
+// で確定した「any 行」導出）。旧実装では本物の record が欠測行を永久に
+// supersede していたため、ごみ箱操作後も orphaned に戻らなかった。この意味を
+// 保つため、表示用 never_recorded の recordings 照合は live 限定を掛けない。
+// 同期除外も欠測行の存在だけを見るので、ごみ箱操作の影響を受けない。
+func TestReservation_TrashedRealRecordDoesNotReenterOrphaned(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
@@ -226,52 +226,57 @@ func TestReservation_DeletedNeverScheduledDoesNotReenterSyncCandidates(t *testin
 	defer srv.Close()
 
 	q := sqlcgen.New(pool)
-	res := createReservation(t, ctx, q, 700004, "ごみ箱に入れた番組", time.Now().Add(-2*time.Hour))
+	res := createReservation(t, ctx, q, 700004, "録れた後ごみ箱に入れた番組", time.Now().Add(-2*time.Hour))
 
 	r := reconciler.New("default", mirakc.NewClient(srv.URL, nil), pool, nil)
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
+
+	// 本物の record が着地。
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO recordings (
+			source, site, network_id, service_id, event_id,
+			service_name, channel_type, channel, title, is_free,
+			program_start_at, program_duration_ms, status, started_at, ended_at
+		) VALUES ('manual', 'default', 10000, 5000, $1,
+			'テスト局', 'GR', '27', '録れた後ごみ箱に入れた番組', true,
+			now() - interval '2 hours', 1800000, 'finished',
+			now() - interval '2 hours', now() - interval '90 minutes')
+	`, int32(700004%100000)); err != nil {
+		t.Fatalf("inserting real record: %v", err)
+	}
+
 	full, err := q.GetReservationFull(ctx, res.ID)
 	if err != nil {
 		t.Fatalf("GetReservationFull: %v", err)
 	}
-	if !full.NeverRecorded {
-		t.Fatalf("precondition: never_recorded = false, want true（never-scheduled 行ができているはず）")
+	if full.NeverRecorded {
+		t.Fatalf("precondition: never_recorded = true, want false（本物の record で消えているはず）")
 	}
 
-	rows, err := q.ListReservationsForSyncEvaluation(ctx, "default")
-	if err != nil {
-		t.Fatalf("ListReservationsForSyncEvaluation: %v", err)
-	}
-	if len(rows) != 0 {
-		t.Fatalf("precondition: desired = %d, want 0（never-scheduled 行で除外されるはず）", len(rows))
-	}
-
-	// never-scheduled 行を論理削除する（ごみ箱に入れる。recordings_trash.sql の
-	// SoftDeleteRecording と同じ更新。id を直接引く手段が無いので放送イベントで
-	// 更新する --- テスト用の直接更新であり、宛先のキーの話ではない）。
+	// 本物の record をごみ箱に入れる（SoftDeleteRecording 相当）。
 	if _, err := pool.Exec(ctx, `
 		UPDATE recordings SET deleted_at = now(), updated_at = now()
 		WHERE site = 'default' AND network_id = 10000 AND service_id = 5000
-		  AND event_id = $1 AND status = 'failed' AND deleted_at IS NULL
+		  AND event_id = $1 AND deleted_at IS NULL
 	`, int32(700004%100000)); err != nil {
-		t.Fatalf("soft-deleting never-scheduled recording: %v", err)
+		t.Fatalf("soft-deleting real record: %v", err)
 	}
 
 	full, err = q.GetReservationFull(ctx, res.ID)
 	if err != nil {
-		t.Fatalf("GetReservationFull (after soft-delete): %v", err)
+		t.Fatalf("GetReservationFull (after trash): %v", err)
 	}
 	if full.NeverRecorded {
-		t.Error("never_recorded = true, want false —— ごみ箱に入れた never-scheduled 行で「録れなかった」と表示し続けている（表示側の live 限定が効いていない）")
+		t.Error("never_recorded = true, want false —— ごみ箱操作で orphaned 表示に戻った（live 限定を掛けてしまっている。issue #318 の「any 行」導出）")
 	}
 
-	rows, err = q.ListReservationsForSyncEvaluation(ctx, "default")
+	rows, err := q.ListReservationsForSyncEvaluation(ctx, "default")
 	if err != nil {
-		t.Fatalf("ListReservationsForSyncEvaluation (after soft-delete): %v", err)
+		t.Fatalf("ListReservationsForSyncEvaluation (after trash): %v", err)
 	}
 	if len(rows) != 0 {
-		t.Error("ごみ箱に入れた後の desired = 1, want 0 —— 同期除外が live 限定（deleted_at）を持ってしまっている（issue #157 が禁じた畳み込み）")
+		t.Error("ごみ箱操作後の desired = 1, want 0 —— 同期除外が recordings の状態に依存してしまっている")
 	}
 }

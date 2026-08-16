@@ -121,13 +121,13 @@ EPG の変化・ルール編集でルールがマッチしなくなったとき:
 | `record` 意図も上書きもなし（`intent{skip}` のみ、または意図・上書きが一切ない） | 削除（通常の宣言的動作） |
 | **`record` 意図または上書きがある（= `program_investments` view に行がある）** | **削除せず detached 状態で保持**。`intent{skip}` があれば録画しない detached、それ以外は実質 manual として録画する |
 
-**`detached` は mirakc への同期対象から外してはならない**。「実質 manual として録画する」は、reconciler が schedule を作るという意味である。同期の可否を決めるのは state ではなく **`effective.skip`** である（`listDesired` はこれで絞る）。同期対象から除外してよいのは導出値 `orphaned`（= その放送イベントに never-scheduled の `recordings` 行がある。読むたびに導出する）だけ --- 番組が終了しているので schedule を作る意味がない。
+**`detached` は mirakc への同期対象から外してはならない**。「実質 manual として録画する」は、reconciler が schedule を作るという意味である。同期の可否を決めるのは state ではなく **`effective.skip`** である（`listDesired` はこれで絞る）。同期対象から除外してよいのは、その放送イベントに `never_scheduled_events` の欠測行がある予約だけ --- 番組が終了しているので schedule を作る意味がない。表示の `orphaned` はこの欠測に加えて本物の `recordings` 行が無いときに導出する。
 
 state は 2 種類の別の情報を答えている。いずれも列としては存在せず、API が読むたびに導出する（[スキーマ](../schema.md) §3「active / detached / orphaned は API が都度導出する」）:
 
 | 値 | 正体 |
 |---|---|
-| `orphaned` | 番組終了後に schedule が観測されなかったという**独立した観測事実**。`recordings` の never-scheduled 行から導出する |
+| `orphaned` | 番組終了後に schedule が観測されなかった欠測行があり、本物の録画試行が無い。`never_scheduled_events` と `recordings` から導出する |
 | `active` / `detached` | `(rule_id, base)` から**導出できる値**（`detached ⟺ rule_id IS NULL AND base IS NOT NULL`） |
 
 導出値を「同期対象か」のフィルタとして使ってはならない。`active` / `detached` は UI 表示（マーカー）のための派生値として扱う。**列に焼くと、実装は式ではなく前パスからの遷移を書くことになり、片側の分岐しか持たなくなる**（ルールを削除した経路は FK が先に `rule_id` を落とすので detached にならない、等。[invariants.md](../invariants.md) §9「式」）。
