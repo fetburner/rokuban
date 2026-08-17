@@ -1,8 +1,9 @@
 name: CI
 
 on:
+  # 全ブランチの commit で SHA イメージを publish する。tag は release.yml が持つので除外。
   push:
-    branches: [main]
+    branches: ['**']
   pull_request:
 
 jobs:
@@ -76,43 +77,12 @@ jobs:
         with:
           version: v2.12.2
 
-  docker:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          load: true
-          tags: rokuban:test
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-      # server --all は worker ロールを含み ffmpeg/ffprobe の起動時検査を通るため、
-      # スモークテストは ffmpeg 入りの Dockerfile.full で起動する（不変条件 4、Dockerfile.full 参照）。
-      # buildx の docker-container ドライバーは前段で --load したイメージを
-      # ローカルストアから直接見られない（FROM 解決がレジストリ pull になる）ため、
-      # ホストの docker engine を共有するプレーンな docker build を使う。
-      - run: docker build -f Dockerfile.full --build-arg BASE=rokuban:test -t rokuban:test-full .
-      # compose で postgres + rokuban を起動し、healthcheck が通ることを確認
-      - name: Smoke test
-        run: |
-          docker compose -f docker-compose.test.yml up --wait --wait-timeout 60
-          curl -sf http://localhost:40773/healthz
-      - name: Dump logs on failure
-        if: failure()
-        run: docker compose -f docker-compose.test.yml logs
-      - name: Cleanup
-        if: always()
-        run: docker compose -f docker-compose.test.yml down -v
-
-  # main への push で公式イメージ（ffmpeg 非同梱）を ghcr へ公開する。
-  # docker-compose.yml / Dockerfile.full の BASE が参照する :latest がここで供給される。
+  # 全ブランチの push で公式イメージ（ffmpeg 非同梱）を SHA タグで ghcr へ公開する。
   # arm64 は QEMU を避けてネイティブ runner でビルドし、arch ごとに SHA サフィックス付きで
   # push、publish-manifest でまとめる。タグ付けは docker/metadata-action に委ねる。
   publish-arch:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [test, lint, docker]
+    # pull_request（特に fork）では GITHUB_TOKEN に packages:write が無い。
+    if: github.event_name == 'push'
     permissions:
       contents: read
       packages: write
@@ -153,7 +123,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
 
   publish-manifest:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push'
     needs: publish-arch
     permissions:
       contents: read
@@ -171,8 +141,7 @@ jobs:
           images: ghcr.io/${{ github.repository }}
           tags: |
             type=raw,value=${{ github.sha }}
-            type=raw,value=latest,enable={{is_default_branch}}
-      # 各 arch イメージを 1 つの multi-arch manifest にまとめ、meta の全タグに付ける。
+      # 各 arch イメージを SHA タグの multi-arch manifest にまとめる。
       - name: Create multi-arch manifest
         run: |
           for tag in $TAGS; do
@@ -181,5 +150,68 @@ jobs:
           docker buildx imagetools create "${IMAGETOOLS_ARGS[@]}" \
             "ghcr.io/${{ github.repository }}:${{ github.sha }}-amd64" \
             "ghcr.io/${{ github.repository }}:${{ github.sha }}-arm64"
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+
+  docker:
+    needs: publish-manifest
+    permissions:
+      contents: read
+      packages: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # 公開した SHA タグそのものを検査する。migrate は ffmpeg 非同梱イメージ、
+      # server --all はその上に ffmpeg を積んだ Dockerfile.full で起動する。
+      - name: Prepare smoke-test images
+        run: |
+          docker pull "ghcr.io/${{ github.repository }}:${{ github.sha }}"
+          docker tag "ghcr.io/${{ github.repository }}:${{ github.sha }}" rokuban:test
+          docker build -f Dockerfile.full \
+            --build-arg "BASE=ghcr.io/${{ github.repository }}:${{ github.sha }}" \
+            -t rokuban:test-full .
+      - name: Smoke test
+        run: |
+          docker compose -f docker-compose.test.yml up --wait --wait-timeout 60
+          curl -sf http://localhost:40773/healthz
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose -f docker-compose.test.yml logs
+      - name: Cleanup
+        if: always()
+        run: docker compose -f docker-compose.test.yml down -v
+
+  publish-latest:
+    # SHA イメージを test / lint / smoke がすべて通った main だけ latest へ昇格する。
+    if: github.ref_name == github.event.repository.default_branch
+    needs: [test, lint, docker]
+    permissions:
+      contents: read
+      packages: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+      - name: Promote SHA image to latest
+        run: |
+          for tag in $TAGS; do
+            IMAGETOOLS_ARGS+=(-t "$tag")
+          done
+          docker buildx imagetools create "${IMAGETOOLS_ARGS[@]}" \
+            "ghcr.io/${{ github.repository }}:${{ github.sha }}"
         env:
           TAGS: ${{ steps.meta.outputs.tags }}
