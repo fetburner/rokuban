@@ -10,13 +10,13 @@ export ROKUBAN_TEST_DATABASE_URL="postgres://rokuban:<password>@localhost:5432/r
 go test ./...
 ```
 
-**この URL が指す DB は直接使われない。** `testutil.SetupDB` はここから
-**パッケージごとの DB 名を導出**（`rokuban_test_api` 等）し、プロセスごとに 1 回だけ
+**この URL が指す DB は直接使われない**。`testutil.SetupDB` はここから
+**パッケージごとの DB 名を導出**する（`rokuban_test_api` 等）。プロセスごとに 1 回だけ
 DROP → CREATE → マイグレーションしてから、各テストは TRUNCATE で空にする。
 
 - パッケージが DB を共有しないので `go test ./...` の並行実行で踏み合わない
-  （以前は advisory lock で直列化していたが、待たされた側が `lock_timeout` で
-  落ちて CI が flaky になっていた）
+  （以前は advisory lock で直列化していた）。待たされた側が `lock_timeout` で
+  落ちて CI が flaky になっていた
 - マイグレーションはテストごとではなくプロセスごとに 1 回なので速い
 - **派生 DB は実行後も残る**（次回の実行が DROP して作り直す）。失敗時の事後調査に使える。
   掃除したいときは:
@@ -39,9 +39,9 @@ ROKUBAN_TEST_TS_FILE=/path/to/clean.m2ts \
   go test ./test/integration/ -v
 ```
 
-**mock では検出できない前提が未検証のまま残ることがある。** 例えば reconciler の
-`overrides.contentPath` の既存 schedule への反映は、mirakc が `GET /api/recording/schedules`
-で `options.contentPath` を POST した値のまま返すことに依存するが、テストの mock は
+**mock では検出できない前提が未検証のまま残ることがある**。例えば reconciler の
+`overrides.contentPath` の既存 schedule への反映を考える。これは mirakc が `GET /api/recording/schedules`
+で `options.contentPath` を POST した値のまま返すことに依存する。テストの mock は
 入力をそのまま返すのでこの前提が破れていても検出できない。この種の依存を触ったときは
 `GET /api/recording/schedules` の実応答を実 mirakc に対して直接確認する
 （症状と観測手段は [troubleshooting.md](troubleshooting.md) の該当項目）。

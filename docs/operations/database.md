@@ -27,9 +27,9 @@
   docs/recording/ingest.md §5.3）。多サイト構成で site 数 × ingest 並列が効くので、`db.max_conns`
   を絞る運用ではこの分も見込んで余地を確保すること
 - **API 系クエリに `statement_timeout`** を設定する。クエリ単位の context timeout だと「付け忘れた 1 本」が
-  必ず生まれるため、接続の `RuntimeParams`（起動パケットの session default）で一括適用する
-  （`db.api_statement_timeout`、未指定なら 30s）。**api ロールを含むプロセスのプール全体に適用される**
-  ため、monolith で api と worker/watcher を同居させると worker 側のクエリにも同じ上限がかかる —
+  必ず生まれる。接続の `RuntimeParams`（起動パケットの session default）で一括適用する
+  （`db.api_statement_timeout`、未指定なら 30s）。**api ロールを含むプロセスのプール全体に適用される**。
+  monolith で api と worker/watcher を同居させると worker 側のクエリにも同じ上限がかかる。
   世帯スケールの通常クエリを十分に上回る値（既定 30s）にしてあるので実害は想定していないが、
   ロールを分離すれば worker 単独プロセスには一切適用されなくなる。`statement_timeout` は行ロック待ちにも
   効く（Postgres は「クエリの実行時間」と「ロック待ちの時間」を区別しない）ため、monolith で
@@ -38,23 +38,23 @@
 
 ### pooler 越しに置けるのは api ロールと streamer ロールだけ
 
-`db.pooler_compat: true` は PgBouncer / Neon pooler の **transaction pooling** 越しの接続を想定したモードで、
+`db.pooler_compat: true` は PgBouncer / Neon pooler の **transaction pooling** 越しの接続を想定したモード。
 pgx の prepared statement キャッシュを無効化する（`DefaultQueryExecMode` を `QueryExecModeExec` にする）。
 
 これはデプロイの契約であり、**pooler を通せるのは api ロールと streamer ロールだけ**である。
-worker（River の内部機構が使う LISTEN。`notifier.New` で作る 1 個の Listener を leadership の
-elector と job-available 通知が共有しており、elector と notifier がそれぞれ別に 1 本ずつではない。
-`riverqueue/river@v0.40.0/client.go` で確認済み）・watcher（advisory lock によるリーダー選出）・
-notifier（ブラウザへの SSE 配送のための LISTEN）はいずれもセッション状態に依存するため、
+worker は River の内部機構が LISTEN を使う。`notifier.New` で作る 1 個の Listener を leadership の
+elector と job-available 通知が共有している。elector と notifier がそれぞれ別に 1 本ずつではない
+（`riverqueue/river@v0.40.0/client.go` で確認済み）。watcher は advisory lock によるリーダー選出を使う。
+notifier はブラウザへの SSE 配送のために LISTEN を使う。いずれもセッション状態に依存する。
 transaction pooling で物理コネクションが要求ごとに入れ替わると構造的に壊れる（[data.md](../data.md) §2 / §3）。
 `internal/db.NewPool` は `pooler_compat: true` と worker/watcher/notifier のいずれかのロールの
 組み合わせを起動時エラーにする（fail-fast）。**streamer は LISTEN も advisory lock も長期状態も
-使わない**ため pooler と組み合わせてよい（`internal/streamer` で確認済み。バイト転送も
+使わない**。pooler と組み合わせてよい（`internal/streamer` で確認済み。バイト転送も
 X-Accel-Redirect か Go のファイル配信で、DB 接続を保持し続けない）。
 
-`db.api_statement_timeout` は接続の起動パケット（`RuntimeParams`）で渡すため、PgBouncer の
+`db.api_statement_timeout` は接続の起動パケット（`RuntimeParams`）で渡す。PgBouncer の
 `ignore_startup_parameters` 設定次第では接続拒否、または黙って無視される可能性がある。
-`pool.Ping` が失敗すれば起動時に大きく落ちるので気付けるが、api + pooler を組み合わせて
+`pool.Ping` が失敗すれば起動時に大きく落ちるので気付ける。api + pooler を組み合わせて
 運用する場合は `ignore_startup_parameters` に `statement_timeout` を含めない設定にしておく。
 
 ### EPG churn / autovacuum
@@ -78,7 +78,7 @@ monolith モードでは Postgres のデータディレクトリとエンコー�
 - **catalog エクスポート**: worker の定期ジョブが、コアデータを JSON でメディアストレージ自身の `catalog/` 配下に書き出す（日次 + 世代保持）。メディアが生き残る障害では catalog も一緒に生き残る。pg_dump に依存しない（distroless イメージに postgres クライアント不要）アプリレベルのエクスポート
   - **1 世代 = 1 ディレクトリ（`catalog/catalog-<時刻>/`）で、`manifest.json` を最後に書き終えたものだけが完成世代**。判定基準の詳細は [storage.md](../storage.md) §8
   - **健全性の確認は `rokuban catalog verify`**（DB に触らない。完成世代が 1 つも無ければ非ゼロ終了する）。何世代が完成しているか / rescue が使う世代 / 落ちた世代とその理由を出す。**`manifest.json` の存在を目視するだけでは確認にならない**（存在は必要条件でしかなく、完成判定はサイズと sha256 の照合まで含む）
-  - **`rokuban rescue` を健全性の確認に使わない。破壊的な操作である。** rescue は検証の後に必ず DB へ書き、live DB を catalog スナップショットで**上書きする**（`recordings.status` / `deleted_at` / `purged_at`、`media_assets.state` / `deleted_at` を catalog の値で上書きし、id シーケンスを巻き戻す）。健全な DB に対して実行すると、catalog を書き出した時点まで状態が巻き戻る（削除済み asset の復活を含む）。使うのは DB を失った後だけ
+  - **`rokuban rescue` を健全性の確認に使わない。破壊的な操作である**。rescue は検証の後に必ず DB へ書き、live DB を catalog スナップショットで**上書きする**。`recordings.status` / `deleted_at` / `purged_at`、`media_assets.state` / `deleted_at` を catalog の値で上書きし、id シーケンスを巻き戻す。健全な DB に対して実行すると、catalog を書き出した時点まで状態が巻き戻る（削除済み asset の復活を含む）。使うのは DB を失った後だけ
 - **pg_dump（推奨・非必須）**: フル忠実度が欲しい場合の日次 pg_dump 構成例をドキュメントに記載する
 - 世帯スケールでは catalog + 任意の pg_dump で十分。WAL アーカイビングは過剰
 

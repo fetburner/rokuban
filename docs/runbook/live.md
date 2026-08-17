@@ -24,14 +24,14 @@ docker compose exec rokuban rokuban server --all --config /config.yml
 1. ブラウザで `/live` を開き、チャンネルを選ぶ（この時点ではまだ何も始まらない
    --- issue #234 M7-1 で選択と視聴開始を分離した）。「再生」ボタンを押すと
    数秒で再生が始まる
-2. **iPhone の Safari で `/live` を開いて再生できることを確認する（未実施）。**
+2. **iPhone の Safari で `/live` を開いて再生できることを確認する（未実施）**。
    iPhone は `window.MediaSource` を持たない（`ManagedMediaSource` のみ。iPad と
-   違う）ため、**ネイティブ HLS 経路に入れないと iOS 17.1 未満では
+   違う）。**ネイティブ HLS 経路に入れないと iOS 17.1 未満では
    「このブラウザはライブ視聴（HLS）に対応していません」になる**。再生経路の
    判定（`supportsNativeHls`）は macOS の WebKit / Chromium / Chrome / Firefox
-   では実測して固定してある（`web/e2e/live.mjs` の⑥）が、**iOS 実機は誰も
-   確認していない** --- `canPlayType('video/mp2t')` の戻り値が macOS の WebKit と
-   同じ `'maybe'` である保証は無く、違っていた場合は hls.js 経路へ落ちる
+   では実測して固定してある（`web/e2e/live.mjs` の⑥）。**iOS 実機は誰も
+   確認していない**。`canPlayType('video/mp2t')` の戻り値が macOS の WebKit と
+   同じ `'maybe'` である保証は無い。違っていた場合は hls.js 経路へ落ちる
    （iOS 17.1 以降なら ManagedMediaSource で再生できるが、それ未満では
    `claimsHlsPlaylistSupport` の最後の砦で `<video>` に直接渡る形になる）。
    確認できる人が実機で開いて、①再生できること ②開発者ツールで
@@ -79,15 +79,15 @@ docker compose exec rokuban rokuban server --all --config /config.yml
    （ザッピングでセッションが積まれないようにする緩和）は選択自体がコスト 0 に
    なったことで存在理由が消え、削除した。押して留まったチャンネルの前セッションは
    離脱ヒントが届けば十数秒、届かなければ 30 秒強残る（上の 4）
-6. **実配信で一時停止しても誤ってエラーにならないことを確認する（未実施）。**
+6. **実配信で一時停止しても誤ってエラーにならないことを確認する（未実施）**。
    ネイティブ経路は `stalled` / `waiting` が猶予（12 秒）を超えたら失敗と見なすが、
-   WebKit は**一時停止した瞬間にも `stalled` を出す**ので、一度でも再生が
+   WebKit は**一時停止した瞬間にも `stalled` を出す**。そのため一度でも再生が
    始まった後の一時停止中は失敗と見なさないようにしてある
    （`live-player.tsx` の `watchNativeMedia`）。**この抑止をブラウザ側で
-   機械判定する手段は無い** --- `web/e2e/live.mjs` は一時停止を一度も作らない。
-   実装側の分岐は `live-player.test.tsx`（jsdom）が、ブラウザが実際に
-   pause 時に `stalled` を出し再開時に `waiting` を再送することは
-   レビュー時の WebKit 手動測定が根拠で、**実配信では未確認**（e2e の
+   機械判定する手段は無い**。`web/e2e/live.mjs` は一時停止を一度も作らない。
+   実装側の分岐は `live-player.test.tsx`（jsdom）が測る。ブラウザが実際に
+   pause 時に `stalled` を出し再開時に `waiting` を再送することは、
+   レビュー時の WebKit 手動測定が根拠である。**実配信では未確認**（e2e の
    フィクスチャは `-hls_list_size 0` 生成の `#EXT-X-ENDLIST` を持つ VOD 形で、
    実配信のローリングウィンドウとは挙動が違いうる）。実機で再生 →
    一時停止 → 30 秒放置 → エラー画面が出ないこと、再開して再生が続くことを見る
@@ -95,7 +95,7 @@ docker compose exec rokuban rokuban server --all --config /config.yml
 ### ② ブラウザ側の配線（mirakc 不要）
 
 `web/e2e/live.mjs`。HLS プレイリスト/セグメントは Playwright の `page.route`
-でブラウザ側から丸ごと差し替えるため、streamer 側は `live.enabled` を立てる
+でブラウザ側から丸ごと差し替える。streamer 側は `live.enabled` を立てる
 必要すら無い（サーバーは「サービス一覧を返す」以外の実仕事をしない）。
 `GET /api/capabilities` も同じく差し替えている --- 立てていないサーバーだと
 画面が「無効です」になって①〜⑦が全滅するため（issue #209）。
@@ -144,9 +144,9 @@ pnpm exec playwright install chromium webkit
    ①〜⑦は「再生」ボタンを押した後の挙動を見るものなので、`page.goto` の後に
    このボタンを押す手順を挟んでいる
 1. hls.js の動的 import チャンク（`assets/hls-*.js`）が実際に要求される
-2. MSE がアタッチされる（`video.currentSrc` が `blob:` になる。`src` は
-   hls.js が `sourceopen` 後に object URL を revoke するので短命であり、
-   これだけを見ると取り逃がす）
+2. MSE がアタッチされる。`video.currentSrc` が `blob:` になる。`src` は
+   hls.js が `sourceopen` 後に object URL を revoke するので短命である。
+   これだけを見ると取り逃がす
 3. **実 Chrome のみ**（`channel: 'chrome'`。bundled Chromium は H.264/AAC 非対応）:
    `video.play()` 後に `currentTime` が進み、`videoWidth > 0`
 4. チャンネル切替後、旧チャンネルへのセグメント要求が 0 件になる
@@ -166,13 +166,13 @@ pnpm exec playwright install chromium webkit
    同じ切り替え操作を観測する）。**jsdom では原理的に測れない** ---
    `navigator.sendBeacon` が jsdom に無いため、ユニットテストが見ているのは
    差し替えた関数が呼ばれたかという配線だけで、実ブラウザが本当にネットワーク
-   要求として送出するかはここでしか出ない。離れた側（A）にだけ飛び、これから
-   見るチャンネル（B）には飛ばないことも見る
+   要求として送出するかはここでしか出ない。離れた側（A）にだけ飛ぶことを見る。
+   これから見るチャンネル（B）には飛ばないことも見る
 
 初回実行は ffmpeg で固定フィクスチャ（testsrc + sine を H.264/AAC でエンコード
-した 40 秒ぶん）を生成し `os.tmpdir()` にキャッシュする（`E2E_LIVE_REBUILD_FIXTURE=1`
+した 40 秒ぶん）を生成する。`os.tmpdir()` にキャッシュする（`E2E_LIVE_REBUILD_FIXTURE=1`
 で強制再生成）。**ffmpeg が無い環境・Chrome が無い環境では、その判定だけを
-「未測定」として報告し（NG にはしない）残りは続行する。**
+「未測定」として報告し（NG にはしない）残りは続行する**。
 
 **この手段が実際に発見した回帰（2 件）**:
 
@@ -185,7 +185,7 @@ pnpm exec playwright install chromium webkit
    いなかった --- `canPlayType` が jsdom では常に `''` を返すため
 2. その修正（`'probably'` のみを対応と見なす）が**どの実ブラウザでも false**に
    なっていた。3 エンジンとも codecs 無しの m3u8 には `'maybe'` しか返さず、
-   codecs 付きなら 3 エンジンとも `'probably'` を返す --- 戻り値を決めているのは
+   codecs 付きなら 3 エンジンとも `'probably'` を返す。戻り値を決めているのは
    codecs の有無であってエンジンではない。**①〜⑤ が Chromium 系しか回して
    いなかったので、この回帰は e2e 緑のまま通った。**⑥（WebKit）を足して初めて
    機械判定できるようになった。判定は「プレイリストとセグメントの両方の
@@ -196,7 +196,7 @@ pnpm exec playwright install chromium webkit
 
 `web/e2e/checks.mjs` と同じ理由（実サーバー・実データ依存）。①は実 mirakc/
 実チューナーも要るため輪をかけて CI に載せられない。②のみなら理論上は
-サーバー + Postgres + Chrome があれば CI でも回せるが、実 Chrome チャンネルの
+サーバー + Postgres + Chrome があれば CI でも回せる。ただし、実 Chrome チャンネルの
 インストールと ffmpeg の用意が CI イメージに新しい依存を足すため、現時点では
 ローカル受け入れ確認の位置づけのままにしてある。
 

@@ -34,16 +34,16 @@ mirakc の `update-schedules` ジョブ（既定 08:21 / 20:21、timeout 10 分�
 ### 二重録画に注意
 
 Rokuban と EPGStation の両方に同じ番組の予約が入っていると、**同じ番組を 2 回録る**
-（tag が違うので互いに相手の schedule を消さない。reconciler は新旧いずれの
+（tag が違うので互いに相手の schedule を消さない）。reconciler は新旧いずれの
 rokuban tag（`program:{programId}` または旧形式 `rokuban:reservation=<id>`）も
-無い schedule を触らない）。ディスクとチューナーを二重に消費するので、シャドー
+無い schedule を触らない。ディスクとチューナーを二重に消費するので、シャドー
 運用中は片方だけに予約を入れる。
 
 ### shadow-diff で予約差分を確認する
 
 
 EPGStation 側の API の形は**実機（v2.10.0）で確認済み**。`GET /api/reserves` は
-`{ reserves: [...], total: n }` を返し、各要素は `programId`（数値の Mirakurun ID）/
+`{ reserves: [...], total: n }` を返す。各要素は `programId`（数値の Mirakurun ID）を持つ。ほかに
 `startAt` / `endAt`（UnixtimeMS）/ `isSkip` / `isConflict` / `isOverlap` /
 `isTimeSpecified` / `ruleId`（ルール由来のみ）を持つ。別バージョンで並走する場合は
 形が変わりうるので、最初に 1 回だけ確かめるとよい。
@@ -93,7 +93,7 @@ programId        title    startAt (JST)            reason
 | EPGStation 側が `isOverlap` | EPGStation の重複排除ロジックで除外された予約 |
 | Rokuban 側が skip 意図（`program_intents.action = 'skip'`） | Rokuban で除外した予約。EPGStation 側にだけ有るのは正常 |
 
-**`isConflict` は allowlist に入らない。** チューナー競合は両者で起きる条件が同じはずで、
+**`isConflict` は allowlist に入らない**。チューナー競合は両者で起きる条件が同じはずで、
 片方だけの予約に現れているなら `EPGStationOnly` / `RokubanOnly` として報告され、
 調査が必要。
 

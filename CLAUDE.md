@@ -14,7 +14,7 @@ go test ./...
 golangci-lint run
 ```
 
-**Node のバージョンは `.node-version`（22.x）に固定してある。** nodenv などでその Node に pnpm の shim が無ければ `corepack pnpm ...`（`packageManager` フィールドに従う）で直接呼べる。oxlint の native binding は optional dependency の engines 判定でインストール時にだけ絞り込まれるため、古い Node で `pnpm install --frozen-lockfile` すると警告なしにバインディングが欠落する。
+**Node のバージョンは `.node-version`（22.x）に固定してある**。nodenv などでその Node に pnpm の shim が無ければ `corepack pnpm ...`（`packageManager` フィールドに従う）で直接呼べる。oxlint の native binding は optional dependency の engines 判定でインストール時にだけ絞り込まれる。そのため古い Node で `pnpm install --frozen-lockfile` すると警告なしにバインディングが欠落する。
 
 ```bash
 cd web
@@ -25,7 +25,7 @@ pnpm build     # tsc -b && vite build。型エラーはここで出る
 pnpm exec orval  # openapi.yaml → web/src/api/generated.ts
 ```
 
-**`go test ./...` は Postgres を要求する。** `ROKUBAN_TEST_DATABASE_URL` を設定していないと DB を使うテストが落ちる（`internal/testutil` がパッケージごとに DB を作り、テストごとに TRUNCATE する）。ローカルなら `postgres://localhost:5432/postgres?sslmode=disable` で足りる。
+**`go test ./...` は Postgres を要求する**。`ROKUBAN_TEST_DATABASE_URL` を設定していないと DB を使うテストが落ちる（`internal/testutil` がパッケージごとに DB を作り、テストごとに TRUNCATE する）。ローカルなら `postgres://localhost:5432/postgres?sslmode=disable` で足りる。
 
 **sqlc は式の型を推論しきれないことがある。** `program_start_at + interval '...'` のような
 式に `::timestamptz` を明示しないと `int32` として生成され、`Scan` で必ず落ちる。
@@ -34,7 +34,12 @@ pnpm exec orval  # openapi.yaml → web/src/api/generated.ts
 **`oapi-codegen` / `golangci-lint` は PATH に無いことがある。**
 
 - `golangci-lint`: `$(go env GOPATH)/bin/golangci-lint`
-- `oapi-codegen`: `cd internal/api && go run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.8.0 --config=oapi-codegen.yaml ../../openapi.yaml`
+- `oapi-codegen`:
+
+  ```bash
+  cd internal/api && go run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.8.0 --config=oapi-codegen.yaml ../../openapi.yaml
+  ```
+
   - **`@version` 付きの `go run` は `go.mod` を汚さない。** ツールを `tool` ディレクティブで足すと indirect 依存が 15 個増え、ビルドツールのために Dependabot のアラート面が広がる。`sqlc` も同じくローカルバイナリ前提なので揃える
 
 ## 設計ドキュメント
@@ -43,7 +48,7 @@ pnpm exec orval  # openapi.yaml → web/src/api/generated.ts
 
 ### 資料マップ
 
-**タスクに関係する doc だけ読む。** 大きい doc は索引 + 分割本文になっているので、索引で節を特定してから該当ファイルだけ開く。**形（REST のパス・パラメータ / 設定キー / マイグレーション）の権威は `openapi.yaml` / `config.example.yml` / `internal/db/migrations/` にあり、docs は判断（なぜ）だけを持つ。**
+**タスクに関係する doc だけ読む。** 大きい doc は索引 + 分割本文になっているので、索引で節を特定してから該当ファイルだけ開く。**形（REST のパス・パラメータ / 設定キー / マイグレーション）の権威は `openapi.yaml` / `config.example.yml` / `internal/db/migrations/` にある**。**docs は判断（なぜ）だけを持つ。**
 
 | doc | 内容 | 形 |
 |---|---|---|
@@ -74,11 +79,11 @@ M0（歩く骨格）・M1（録れる）・M2（任せられる）・M5（名乗
 | M8 タスク分解: 見返せる（ホームとライブラリ）。サブ #240〜#242 + 判定基準の決定後に起票 3 件 | [#223](https://github.com/fetburner/rokuban/issues/223) |
 
 - **`reservations` と shadow-diff（#52 の出口基準を測る道具そのもの）を触るタスクは、#52 の並走中は着手しない。** 測定の連続性が切れる。並走が始まっているかは #52 を見て判断する（始まっていなければこの制約は効かない。「並走中は着手しない」と書いている issue #98 / #101 / #129 も同じ基準で判断する）
-- **streamer のスケールとライブ視聴の資源同定は [docs/operations.md](docs/operations.md) §5「streamer のスケール」と [docs/api.md](docs/api.md) §ライブ視聴の HLS に決まっている。** sticky は使わない / ライブの URL にセッション ID を置かない / 既定 replicas=1 は可逆にする、の 3 点。触るタスク（#91 / #94）は実装前にこの 2 節を読む
+- **streamer のスケールとライブ視聴の資源同定は [docs/operations.md](docs/operations.md) §5「streamer のスケール」と [docs/api.md](docs/api.md) §ライブ視聴の HLS に決まっている**。sticky は使わない / ライブの URL にセッション ID を置かない / 既定 replicas=1 は可逆にする、の 3 点。触るタスク（#91 / #94）は実装前にこの 2 節を読む
 
 ### タスク分解と issue
 
-**タスク分解を頼まれたら [docs/workflow.md](docs/workflow.md) §タスク分解と issue に従う。** 要点: マイルストーンごとにエピック 1 本 + 自己完結したサブ issue（`.github/ISSUE_TEMPLATE/` の `epic` / `sub-issue` テンプレート準拠）。
+**タスク分解を頼まれたら [docs/workflow.md](docs/workflow.md) §タスク分解と issue に従う**。要点: マイルストーンごとにエピック 1 本 + 自己完結したサブ issue（`.github/ISSUE_TEMPLATE/` の `epic` / `sub-issue` テンプレート準拠）。
 
 ### ドキュメントと issue の保守
 
@@ -133,14 +138,14 @@ M0（歩く骨格）・M1（録れる）・M2（任せられる）・M5（名乗
 
 **分類（ロール）や形（スキーマ・API）を先に固定して判定基準を後から書くと、基準が来た時点でやり直しになる**（M2 で 3 回。代償は [docs/invariants.md](docs/invariants.md)）。
 
-- **「最終形で切る」の対象は永続資産（`recordings` / `media_assets` / `drop_stats` / `rules`）と外から見える資源同定（API のパスと識別子）に限る。** 導出テーブル（`reservations` / `*_sync` / 射影）の列は、**それを書くコードと同じ PR で決める**（churn のコストが非対称）。
+- **「最終形で切る」の対象は永続資産（`recordings` / `media_assets` / `drop_stats` / `rules`）と外から見える資源同定（API のパスと識別子）に限る**。導出テーブル（`reservations` / `*_sync` / 射影）の列は、**それを書くコードと同じ PR で決める**（churn のコストが非対称）。
 - **将来への先払いは高い方（API の資源同定・キャッシュキー）から。** 安い方（DB 列）だけ先に払っても利益は出ない。
 
 チェック: 新しいテーブル・列・ロール・エンドポイントを足すとき「**これを書く / 使うコードは今あるか**」を問う。無ければ形を決めず、書き手と同じ PR に回す。
 
 #### 12. 表は行の寿命で割る
 
-**1 表 = 1 つの書き手 = 1 つの寿命。** 不変条件 9 は**列**の粒度なので、行に寿命が混ざっているケースを網に掛けられない（`reservations` に導出出力・番組スナップショット・不可逆な観測の 3 寿命が同居していた。経緯は invariants.md）。分割の軸を「予約という概念」に取ったので解消が 2 回に分かれた —— 軸を寿命に取れば 1 回で済む。
+**1 表 = 1 つの書き手 = 1 つの寿命**。不変条件 9 は**列**の粒度なので、行に寿命が混ざっているケースを網に掛けられない（`reservations` に導出出力・番組スナップショット・不可逆な観測の 3 寿命が同居していた。経緯は invariants.md）。分割の軸を「予約という概念」に取ったので解消が 2 回に分かれた —— 軸を寿命に取れば 1 回で済む。
 
 チェック: 新しい列を足すとき「**この値はこの行と同時に生まれて同時に死ぬか**」を問う。違えば `(site, program_id)` を主キーにした別表にする。1 つの表に書き手が 2 人いるのも同じ兆候。
 
@@ -161,9 +166,9 @@ M0（歩く骨格）・M1（録れる）・M2（任せられる）・M5（名乗
 - **doc コメント**: エクスポートされた関数・型・メソッド・定数には [Go Doc Comments](https://go.dev/doc/comment) 規約に従った doc コメントを書く。`// FuncName は〜` の形式で主語を識別子名にする。非公開でも他パッケージから呼ばれうる重要な関数には書く
 - **測っていない挙動を断言しない。** コメント・docs で実行時の挙動を書くなら、テスト名か測定値を
   併記する。書けないなら「未検証」と書く。**古い記述より悪いのは、一度も真でなかった記述**。
-  実例: 「`<video>` の error イベントに落ちる」（誰も error を聴いていない）/「動的ビルダ
+  実例: 「`<video>` の error イベントに落ちる」（誰も error を聴いていない）。「動的ビルダ
   なら常に具体的なプランになる」（prepared statement 経由で 6 回目に generic plan、0.7ms →
-  290ms）/「cleanup を掴む経路を塞ぐために独立させた」（塞いでいない）
+  290ms）。「cleanup を掴む経路を塞ぐために独立させた」（塞いでいない）
 
 ### テスト規律
 
@@ -184,7 +189,7 @@ M0（歩く骨格）・M1（録れる）・M2（任せられる）・M5（名乗
 - **非同期の空虚な成功に注意する。** 「何も表示されない」系のテストは、クエリが解決する前にアサーションが走って通ることがある。読み込み完了を待つ手段を入れてから、壊して落ちることを確認する
 - 分岐を直したら**両方向**で確認する（片側だけ見ると反転しても気付かない）
 - **jsdom が測れないもの（レイアウト・スクロール位置・要素の可視性）は、ユニットテストが
-  全部通っても何の保証にもならない。** この領域の機能は**実装より先に判定手段を作る** ——
+  全部通っても何の保証にもならない**。この領域の機能は**実装より先に判定手段を作る** ——
   実ブラウザで機械的に合否が出る形にしてから着手する（`web/e2e/`）。番組リストの遡行では、
   これを怠って「`pnpm test` が通った」を根拠に 3 回リリースし、3 回とも実機で壊れていた。
   壊れ方は毎回違ったが、いずれも jsdom では原理的に検出できないものだった（詳細は

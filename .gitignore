@@ -9,6 +9,15 @@
 # ローカル検証用の設定（環境固有の値を含む）
 /dev.local.yml
 
+# `go build -o rokuban` で作られるローカルバイナリ（30MB 超。追跡しない）。
+/rokuban
+
+# エディタのスワップ・一時ファイル。
+*.swp
+
+# ルートの docs-lint 用ツール（package.json / package-lock.json は追跡する）。
+/node_modules/
+
 # Claude Code のローカル状態。settings.local.json は各自の許可設定、
 # worktrees はエージェント実行用の一時ワークツリー（残ると数百 MB になり、
 # grep や `git add -A` を汚す）。

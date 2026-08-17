@@ -16,7 +16,7 @@ docker compose exec postgres psql -U rokuban -d rokuban -c \
 - `state=retryable` のまま進まない — mirakc への到達性か、
   `media_dir` の書き込み権限を確認する
 
-**「転送しているが遅いだけ」と「止まっている」は UI で見分けられる。** 録画一覧・
+**「転送しているが遅いだけ」と「止まっている」は UI で見分けられる**。録画一覧・
 録画詳細に取り込み状態が出る（「取り込み中 42%」/「取り込み中 1.2 GB（停滞）」/
 「取り込み待ち」。[frontend/recordings.md](../frontend/recordings.md)）。DB を直接
 見るなら次:
@@ -46,15 +46,15 @@ docker compose exec postgres psql -U rokuban -d rokuban -c \
 
 ### デプロイ直後、旧キューの残骸が `river_job` に残っている
 
-**実測（このリリースノートを書くために実バイナリで確認済み。手順は下記）**:
+**実測（このリリースノートを書くために実バイナリで確認済み。手順は下記）**。
 site 単位のキュー名を修飾する変更（`ingest` → `ingest_<site>` 等。
-[運用](../operations.md) の「`worker.queues` に書く名前は論理名」参照）と
-`delete_reconcile` / `catalog_export` の `default` → `cleanup` への移設は、
-デプロイ前に投入済みだった旧キューの行を新キューへ自動移行しない。
+[運用](../operations.md) の「`worker.queues` に書く名前は論理名」参照）がある。
+`delete_reconcile` / `catalog_export` の `default` → `cleanup` への移設もある。
+どちらも、デプロイ前に投入済みだった旧キューの行を新キューへ自動移行しない。
 
 **現在のコード（`UniqueOpts.ByQueue: true`、`internal/worker/worker.go` の
 `uniqueByQueue`）では、旧キューの残骸があっても新しいジョブの投入自体は
-ブロックされない** --- 一意キーがキュー名を含むため、旧キュー（キューを含まない
+ブロックされない**。一意キーがキュー名を含むため、旧キュー（キューを含まない
 鍵）と新キュー（キューを含む鍵）は別のハッシュになり衝突しない。実際に
 確認した挙動:
 
@@ -74,7 +74,7 @@ SELECT id, kind, queue, state FROM river_job ORDER BY id;
 --   3 | reconcile_pass | reconciler_tokyo | available   ← 新キュー。worker が正しく引く
 ```
 
-**それでも掃除は推奨する。** 旧キューの残骸（上の `id=1`）はどの worker も
+**それでも掃除は推奨する**。旧キューの残骸（上の `id=1`）はどの worker も
 購読しないキューに永久に残り、`state='available'` のまま滞留メトリクス
 （River のキュー長ダッシュボード等）を汚し続ける。デプロイ後に 1 回だけ
 次を実行する（`pendingJobStates` と同じ 5 状態すべてを対象にする。
@@ -92,9 +92,9 @@ docker compose exec postgres psql -U rokuban -d rokuban -c \
 ```
 
 **`worker.queues` に `default` を含めない中央 cleanup worker（例:
-`queues: [cleanup]`）を運用する構成では、`default` キューの残骸
+`queues: [cleanup]`）を運用する構成を考える**。**この構成では `default` キューの残骸
 （旧 `delete_reconcile` / `catalog_export`）はどの worker も購読しないままに
-なる。** `queue = 'default'` の分岐を上の DELETE から省略しないこと ---
+なる**。`queue = 'default'` の分岐を上の DELETE から省略しないこと。
 「`default` は引き続き購読対象なので掃除不要」という判断は、`default` を
 含む `worker.queues` を書いている構成にしか当てはまらない。
 
@@ -135,7 +135,7 @@ docker compose exec postgres psql -U rokuban -d rokuban -c \
   `periodStartAt` / `periodEndAt` で絞られている
 - ログに何も出ない — `worker.periodic_jobs` が false（`rokuban enqueue ruler-pass`）か、
   worker ロールが起動していない
-- **サーキットブレーカーは疑わなくてよい。** 止まるのは削除だけで、作成は続く
+- **サーキットブレーカーは疑わなくてよい**。止まるのは削除だけで、作成は続く
 
 ### 予約はあるのに mirakc に schedule が作られない
 
@@ -144,7 +144,7 @@ curl -s http://localhost:40773/api/reservations/12 | jq '{state, skip, dedupMatc
 ```
 
 - `skip: true` — 除外か重複排除。`dedupMatchRecordingId` / `dedupSimilarity` が
-  入っていれば重複排除（相手の録画 ID と類似度まで説明できる）、無ければ
+  入っていれば重複排除（相手の録画 ID と類似度まで説明できる）。無ければ
   ユーザーの除外（`program_intents.action = 'skip'`）
 - `state: "orphaned"` — 同期対象外（放送済み番組の予約は GC まで残る）
 - どちらでもない — `rokuban_reconcile_pending_diff{action="create"}` が減らないなら
@@ -152,14 +152,14 @@ curl -s http://localhost:40773/api/reservations/12 | jq '{state, skip, dedupMatc
 
 ### `overrides.contentPath` を明示指定したのに既存 schedule のパスが変わらない・毎パス再作成される
 
-`overrides.contentPath` の反映（[reconciler.md](../recording/reconciler.md) §3.2「予約オプションの差分反映」）は、mirakc が `GET /api/recording/schedules` で `options.contentPath` を POST した値のまま返す（正規化しない）ことに依存する。この依存は**未検証**（テストのモックは POST した値をそのまま返すため、この前提が破れていることをテストでは検出できない）。
+`overrides.contentPath` の反映（[reconciler.md](../recording/reconciler.md) §3.2「予約オプションの差分反映」）は、mirakc の挙動に依存する。mirakc が `GET /api/recording/schedules` で `options.contentPath` を POST した値のまま返す（正規化しない）ことが前提である。この依存は**未検証**（テストのモックは POST した値をそのまま返すため、この前提が破れていることをテストでは検出できない）。
 
 ```sh
 curl -s http://localhost:9090/api/v1/query --data-urlencode \
   'query=rokuban_reconcile_pending_diff{action="update"}' | jq
 ```
 
-- `action="update"` がゼロに戻らず、`reconciler: recreated schedule` の Info ログで同じ `reservation_id` に対して `reason=content_path` が反復しているなら、mirakc が contentPath をそのまま返していない（比較が収束しない = 毎パス DELETE→POST になっている）。実 mirakc に対して `GET /api/recording/schedules` の応答を直接見て、POST した `contentPath` と一致するか確認する
+- `action="update"` がゼロに戻らず、`reconciler: recreated schedule` の Info ログで同じ `reservation_id` に対して `reason=content_path` が反復していないか見る。反復しているなら mirakc が contentPath をそのまま返していない。これは比較が収束せず毎パス DELETE→POST になっていることを意味する。実 mirakc に対して `GET /api/recording/schedules` の応答を直接見て、POST した `contentPath` と一致するか確認する
 - `action="update_deferred"` 側に出ているだけなら、`scheduled` 以外の状態（録画中等）で allowlist に見送られているだけで異常ではない
 
 ### `/api/capacity/overages` が常に空
