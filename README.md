@@ -54,7 +54,7 @@ EPGStation の漸進的改善ではなく、ゼロベースで再設計する。
 ```sh
 cp .env.example .env
 $EDITOR .env          # MIRAKC_URL と POSTGRES_PASSWORD は必須
-docker compose up -d
+docker compose up -d  # 初回は公式イメージに ffmpeg を積んだ rokuban:full をローカルビルドする
 ```
 
 `http://localhost:40773` で UI が開く。手順と確認項目は
