@@ -47,7 +47,15 @@ services:
     command: ["migrate", "up", "--config", "/config.yml"]
 
   rokuban:
-    image: ${ROKUBAN_IMAGE:-ghcr.io/fetburner/rokuban:latest}
+    # server --all は worker ロールを含み ffmpeg を要求する（不変条件 4）。
+    # 公式イメージは ffmpeg 非同梱のまま保ち、Dockerfile.full をローカルビルドする。
+    # HW エンコード等で自前イメージを使うなら ROKUBAN_IMAGE で差し替える。
+    build:
+      context: .
+      dockerfile: Dockerfile.full
+      args:
+        BASE: ghcr.io/fetburner/rokuban:latest
+    image: ${ROKUBAN_IMAGE:-rokuban:full}
     restart: unless-stopped
     depends_on:
       migrate:

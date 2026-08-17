@@ -17,9 +17,15 @@ ingest が完走しない。HEAD はファイルのメタデータだけで応�
 ```sh
 cp .env.example .env
 $EDITOR .env          # MIRAKC_URL と POSTGRES_PASSWORD は必須
-docker compose up -d
+docker compose up -d  # 初回は公式イメージに ffmpeg を積んだ rokuban:full をローカルビルドする
 docker compose logs -f rokuban
 ```
+
+初回 `up` は `Dockerfile.full` を使って `rokuban:full` を組む（公式イメージ
+`ghcr.io/fetburner/rokuban` を pull し、その上に `apt-get install ffmpeg` するだけ。
+Go / Node のソースビルドは走らない）。ffmpeg を自分用にビルドするのは再配布では
+ないので、公式配布物は ffmpeg 非同梱のまま保てる（[docs/overview.md](../overview.md)）。
+HW エンコード等で自前イメージを使うなら `.env` の `ROKUBAN_IMAGE` で差し替える。
 
 `http://localhost:40773` で UI が開く。
 
