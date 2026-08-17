@@ -17,35 +17,18 @@ EPGStation の漸進的改善ではなく、ゼロベースで再設計する。
 [エッジ]                       [サーバー / クラウド]
 ┌────────────┐    ┌─────────────────────────────────────────┐
 │ mirakc      │◀──▶│ rokuban（Go、単一バイナリ）                  │
-│             │    │  ├ api:        REST + SSE、UI 配信(go:embed)│
-│             │    │  ├ ruler:      EPG差分→ルール評価→予約生成    │
-│             │    │  ├ reconciler: 予約 ⇄ mirakc schedules 同期 │
+│             │    │  ├ api:        REST、UI 配信(go:embed)        │
+│             │    │  ├ notifier:   NOTIFY 購読→ブラウザへ SSE 配信 │
 │             │    │  ├ watcher:    mirakc SSE購読→状態反映       │
 └────────────┘    │  └ streamer:   ライブ視聴 (mirakc→ffmpeg→HLS)│
    ▲               │ rokuban worker（別イメージ、0〜Nスケール）     │
-   │record pull    │  └ ingest / encode / thumbnail / cleanup    │
+   │record pull    │  └ ingest / encode / thumbnail / cleanup /  │
+   │               │    ruler_pass / reconcile_pass / epg_sync   │
    └───────────────├─────────────────────────────────────────┤
                    │ PostgreSQL（唯一のステートフル基盤）           │
                    │ ファイルシステム（クラウドでは CSI で S3）       │
                    └─────────────────────────────────────────┘
 ```
-
-## 設計ドキュメント
-
-| ドキュメント | 内容 |
-|---|---|
-| [docs/overview.md](docs/overview.md) | 全体アーキテクチャ |
-| [docs/recording.md](docs/recording.md) | 録画エンジン（索引。本文は `docs/recording/`） |
-| [docs/schema.md](docs/schema.md) | DB スキーマ v1（索引。本文は `docs/schema/`） |
-| [docs/data.md](docs/data.md) | データ層（索引。本文は `docs/data/`） |
-| [docs/storage.md](docs/storage.md) | メディアストレージ（索引。本文は `docs/storage/`） |
-| [docs/api.md](docs/api.md) | API 設計（索引。本文は `docs/api/`） |
-| [docs/frontend.md](docs/frontend.md) | フロントエンド（索引。本文は `docs/frontend/`） |
-| [docs/configuration.md](docs/configuration.md) | 設定 |
-| [docs/operations.md](docs/operations.md) | 運用（索引。本文は `docs/operations/`） |
-| [docs/runbook.md](docs/runbook.md) | 手動での動作確認手順（索引。本文は `docs/runbook/`） |
-
-大きい doc は索引 + 分割本文になっている。**節番号・節名は分割前のまま**なので、コードコメントの「recording.md §3.2」等は索引の表から該当ファイルを引ける。
 
 ## 使ってみる
 
@@ -60,9 +43,36 @@ docker compose up -d  # 初回は公式イメージに ffmpeg を積んだ rokub
 `http://localhost:40773` で UI が開く。手順と確認項目は
 [docs/runbook.md](docs/runbook.md) を参照。
 
+## ドキュメント
+
+### 使う人向け
+
+| ドキュメント | 内容 |
+|---|---|
+| [docs/configuration.md](docs/configuration.md) | 設定 |
+| [docs/operations.md](docs/operations.md) | 運用 |
+| [docs/runbook.md](docs/runbook.md) | 手動での動作確認手順 |
+
+### 開発する人向け
+
+| ドキュメント | 内容 |
+|---|---|
+| [docs/overview.md](docs/overview.md) | 全体アーキテクチャ |
+| [docs/recording.md](docs/recording.md) | 録画エンジン |
+| [docs/schema.md](docs/schema.md) | DB スキーマ |
+| [docs/data.md](docs/data.md) | データ層 |
+| [docs/storage.md](docs/storage.md) | メディアストレージ |
+| [docs/api.md](docs/api.md) | API 設計 |
+| [docs/frontend.md](docs/frontend.md) | フロントエンド |
+
+大きい文書は索引と分割本文で構成する。節番号・節名は分割前のままなので、
+コードコメントの「recording.md §3.2」などは索引から該当ファイルを引ける。
+
 ## ステータス
 
-M0（歩く骨格）〜 M2（ルールで任せられる）は完了。M3（エンコード・削除・移行）と M4（ロール分割・ライブ視聴・クラウド構成）は実装が進行中で、続く M5〜M8（UI 刷新）はタスク分解済み。最新の進捗は [CLAUDE.md](CLAUDE.md) の「タスクマップ」と GitHub issue を参照。
+番組表の閲覧、ルールによる自動予約、録画、録画の再生といった中核機能は動作する。
+エンコード・自動削除・EPGStation からの移行、k8s でのロール分割デプロイ、
+ライブ視聴は開発中。開発の詳細な進捗は [CLAUDE.md](CLAUDE.md) と GitHub issue を参照。
 
 ## ライセンス
 

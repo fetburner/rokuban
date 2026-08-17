@@ -21,9 +21,9 @@ docker compose up -d  # 初回は公式イメージに ffmpeg を積んだ rokub
 docker compose logs -f rokuban
 ```
 
-初回 `up` は `Dockerfile.full` を使って `rokuban:full` を組む（公式イメージ
+初回 `up` は `Dockerfile.full` を使って `rokuban:full` を組む。公式イメージ
 `ghcr.io/fetburner/rokuban` を pull し、その上に `apt-get install ffmpeg` するだけ。
-Go / Node のソースビルドは走らない）。ffmpeg を自分用にビルドするのは再配布では
+Go / Node のソースビルドは走らない。ffmpeg を自分用にビルドするのは再配布では
 ないので、公式配布物は ffmpeg 非同梱のまま保てる（[docs/overview.md](../overview.md)）。
 HW エンコード等で自前イメージを使うなら `.env` の `ROKUBAN_IMAGE` で差し替える。
 
@@ -59,7 +59,7 @@ compose 運用の設定は 2 箇所に分かれる。
    `.env` から変えられる
 
 **`media_dir` や `ruler.max_deletes_per_pass` のような恒久的な設定は
-`config.compose.yml` に書く。** `.env` に口があるのは環境ごとに変わる値だけで、
+`config.compose.yml` に書く**。`.env` に口があるのは環境ごとに変わる値だけで、
 それ以外のキーは `config.compose.yml` を直接編集する（書かれていないキーは
 既定値で動くので、変えたいキーを書き足す）。キーの網羅は
 [config.example.yml](../../config.example.yml) が権威、各値をどう決めるかの
@@ -102,11 +102,10 @@ volume 行を bind mount に差し替える。
 - `worker.periodic_jobs: false`（k8s 構成）ではどのジョブも自動投入されない。
   CronJob から `rokuban enqueue` で投入する
 
-手で即時実行できる。ジョブ名はハイフン区切り（`epg-sync` / `tuner-sync` /
-`ruler-pass` / `reconcile-pass` / `record-sweep` / `catalog-export` /
-`encode-reconcile` / `storage-sync`）。
-site 束縛ジョブは多サイトでは `--site` が必須。`catalog-export` /
-`encode-reconcile` / `storage-sync` だけ site 非依存で `--site` を付けない
+手で即時実行できる。ジョブ名はハイフン区切り。site 束縛ジョブ（`epg-sync` /
+`tuner-sync` / `ruler-pass` / `reconcile-pass` / `record-sweep`）は多サイトでは
+`--site` が必須。`catalog-export` / `encode-reconcile` / `storage-sync` は
+site 非依存で `--site` を付けない
 （[operations.md](../operations.md) §ジョブ化されたループの監視）。
 
 ```sh

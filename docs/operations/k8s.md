@@ -4,10 +4,10 @@
 
 ### ロールとキュー購読の関係
 
-**worker ロールだけが River のキューを引く。** 他のロールは、そのプロセスが実際に
+**worker ロールだけが River のキューを引く**。他のロールは、そのプロセスが実際に
 worker ロールを持つかどうかに関わらず、ジョブを実行しない。ロール分割デプロイで
 `--roles watcher` のような worker を含まない構成を組んだときに、
-起動時検査が実態より広い安心を与える経路が過去にあったため（末尾「経緯と将来の構想」）、
+起動時検査が実態より広い安心を与える経路が過去にあった（末尾「経緯と将来の構想」）。
 現在は次の 2 点で構造的に保証している:
 
 1. **watcher 単独プロセスは River クライアントを Start しない**（`--roles worker`
@@ -18,25 +18,25 @@ worker ロールを持つかどうかに関わらず、ジョブを実行しな�
    呼べない構成）を使う。watcher が必要とするのは ingest ジョブの投入だけであり、
    実行（キューの購読）ではないので、これで用は足りる
 2. **`worker.queues` は worker ロールが引くキューの絞り込みであり、既定（空）は
-   全キュー購読。** worker ロールが無いプロセスはこの設定に関わらずキューを
+   全キュー購読**。worker ロールが無いプロセスはこの設定に関わらずキューを
    一切引かない（[configuration.md](../configuration.md) の `worker.queues`）
 
 ffmpeg/ffprobe の起動時検査（不変条件 4）も、実際に encode/thumbnail キューを
 購読するときだけ行う（`worker.RequiresEncodeTools`）。`worker.queues` で
 encode/thumbnail を明示的に除外した worker Pod（例: ingest 専用 Pod）は ffmpeg
 の存在を要求されない。逆に既定（全キュー購読）や encode/thumbnail を含む設定では
-起動時に LookPath で検査し、無ければ即座に落ちる --- ffmpeg が無い環境で
+起動時に LookPath で検査し、無ければ即座に落ちる。ffmpeg が無い環境で
 encode/thumbnail ジョブが River の再試行を焼き続けてから気付く、という壊れ方を防ぐ。
 
-**`worker.queues` に書く名前は論理名（unqualified）である。** KEDA のスケーラが
-引くキュー名は物理名に修飾される場合がある: mirakc への到達性を要する site 単位の
-キュー（`ingest` / `epg`（`tuner_sync` も同じ）/ `reconciler` / `watcher`）だけ、
-プロセスが束縛されているサイト名で `<論理名>_<site>`（例: `ingest_tokyo`）に
-修飾される。`ruler` / `encode` / `thumbnail` / `cleanup`
+**`worker.queues` に書く名前は論理名（unqualified）である**。KEDA のスケーラが
+引くキュー名は物理名に修飾される場合がある。mirakc への到達性を要する site 単位の
+キュー（`ingest` / `epg`（`tuner_sync` も同じ）/ `reconciler` / `watcher`）だけが対象になる。
+修飾名はプロセスが束縛されているサイト名で `<論理名>_<site>`（例: `ingest_tokyo`）となる。
+`ruler` / `encode` / `thumbnail` / `cleanup`
 （`delete_reconcile` / `catalog_export` のキュー）/ `storage`（`storage_sync` の
-キュー）/ `default` は site に依存しないので
+キュー）/ `default`。これらは site に依存しないので
 修飾されない。修飾は `worker.queues` の
-設定値・未知キューのエラーメッセージのどちらにも現れない --- 設定・エラー文言は
+設定値・未知キューのエラーメッセージのどちらにも現れない。設定・エラー文言は
 常に論理名のままで、実際にキューを引くプロセス（KEDA のスケーラ定義や Prometheus の
 `river_job` メトリクス等）だけが物理名を見る。
 
@@ -53,8 +53,8 @@ encode/thumbnail ジョブが River の再試行を焼き続けてから気付�
 0 サイト束縛（中央プロセス、`server --sites=`）の worker は
 site 単位のキューを一切購読できない（`worker.RequiresSiteBinding` が起動時に
 強制する）。中央プロセスで動かせるのは `ruler` / `encode` / `thumbnail` /
-`cleanup` / `storage` / `default` に `worker.queues` を絞った構成だけである
---- ただし `cleanup` / `storage` は表の通りファイルシステムを要求するので、
+`cleanup` / `storage` / `default` に `worker.queues` を絞った構成だけである。
+ただし `cleanup` / `storage` は表の通りファイルシステムを要求するので、
 「0 サイト束縛」（mirakc の site 数の話）と「ファイルシステム不要」を混同しないこと。
 中央プロセスであっても media_dir/scratch_dir のマウントに到達できるノードで
 動かす必要がある。
@@ -62,7 +62,7 @@ site 単位のキューを一切購読できない（`worker.RequiresSiteBinding
 ### streamer のスケール
 
 **streamer は録画配信（VOD・サムネイル）とライブ視聴の両方を担うが、置き場所も
-スケールの仕方も別である。**ロールは分けない --- ロールを決めるのは「ソケットを
+スケールの仕方も別である**。ロールは分けない --- ロールを決めるのは「ソケットを
 持ち続けるか」だけで、mirakc を触るかどうかは判定軸に入らない
 （[overview.md](../overview.md) §ロール分類の基準）。同じロール・同じバイナリで、
 デプロイのパラメータだけが違う（`worker.queues` でキューごとに置き場所が決まるのと
@@ -77,7 +77,7 @@ site 単位のキューを一切購読できない（`worker.RequiresSiteBinding
 
 録画配信は完全にステートレスで（DB からアセットを解決して `http.ServeContent` で
 配るだけ。`internal/streamer`）、貼り付けるべき状態が無い。**sticky を Service /
-Ingress に書かない。**書くと、数 GB の Range 読みという最も分散させたい経路で
+Ingress に書かない**。書くと、数 GB の Range 読みという最も分散させたい経路で
 分散が効かなくなる。X-Accel-Redirect でバイト転送を前段に委ねる構成とも噛み合わない。
 
 アーカイブは単一である（[§4](storage.md) / [docs/storage.md](../storage.md) §5 の 2 階層。録画バッファは
@@ -91,53 +91,52 @@ Pod は site 非依存**で、どの Pod でもどの録画を配れる。`recor
 #### ライブ視聴は mirakc の隣、シャード鍵はサービスの同定子
 
 生 TS は 17 Mbps 連続なので WAN に出さない。**トランスコードは mirakc と同じサイトで
-行い、HLS になったものだけがサイトの外に出る。**
+行い、HLS になったものだけがサイトの外に出る**。
 
 セッションを Pod に貼り付ける代わりに、**前段で `(site, networkId, serviceId)` の
 consistent hash によって振る**。この鍵は既に資源同定の中にある
 （`/api/sites/{site}/networks/{networkId}/services/{serviceId}/...`。
-[api.md](../api.md) §ライブ視聴の HLS。SI の service_id は network をまたぐと
-一意でないので、鍵も 3 項になる）
-ので、レプリカを増やしても URL もクライアントも変わらない。
+[api.md](../api.md) §ライブ視聴の HLS）。SI の service_id は network をまたぐと
+一意でないので、鍵も 3 項になる。鍵が資源同定にあるので、レプリカを増やしても URL もクライアントも変わらない。
 
-- **cookie による affinity は使わない。**外部プレイヤー（VLC 等）は cookie を
-  持たない / OSS nginx に `sticky cookie` が無い（nginx-plus の機能）/
+- **cookie による affinity は使わない**。外部プレイヤー（VLC 等）は cookie を
+  持たない。OSS nginx に `sticky cookie` が無い（nginx-plus の機能）。
   ingress-nginx の既定 `affinity-mode: balanced` はスケール時に**生きている Pod
   からもクライアントを剥がす**
 - **同じチャンネルの視聴者は同じ Pod に落ちる**ので、ffmpeg 1 本・チューナー 1 本を
   共有する。チューナーは録画と取り合う唯一の共有資源なので、これは偶然の利益ではなく
   鍵をサービスの同定子に取る理由そのもの
-- **Pod が落ちても、ハッシュの担当が移っても自己修復する。**視聴者の再要求が新しい
+- **Pod が落ちても、ハッシュの担当が移っても自己修復する**。視聴者の再要求が新しい
   Pod に落ちてそこで ffmpeg が起き、旧 Pod は要求が来なくなるので idle GC が
   チューナーを解放する。クライアント側にセッションの概念が無いので、見えるのは
   再バッファリングだけ
 
 #### 既定を 1 にする根拠と、増やす判定基準
 
-**既定は replicas=1。**天井は Pod の CPU ではなく**サイトのチューナー数**である
+**既定は replicas=1**。天井は Pod の CPU ではなく**サイトのチューナー数**である
 （ライブ 1 本がチューナー 1 本を占有し、残りが録画に使われる）。1 サイトのチューナー
 数ぶんのトランスコードが 1 Pod に収まる間は、増やす理由が無い。
 
 収まらなくなったら **replica を増やし、前段に `(site, networkId, serviceId)` の consistent hash
-を設定するだけでよい。**URL・クライアント・API は変わらない。この可逆性を保つために
+を設定するだけでよい**。URL・クライアント・API は変わらない。この可逆性を保つために
 実装側で守るのは次の 3 点:
 
-1. **プレイリスト / セグメントの URL を固定深さにする。**前段が 1 つの nginx 変数で
+1. **プレイリスト / セグメントの URL を固定深さにする**。前段が 1 つの nginx 変数で
    鍵を取り出せる形にする。OSS nginx なら
    `map $uri $live_key { ~^/api/sites/(?<s>[^/]+)/networks/(?<n>[^/]+)/services/(?<sv>[^/]+)/live/ "$s/$n/$sv"; }`
    → `hash $live_key consistent;`。可変長パスやクエリ文字列に鍵を置くと書けない
    （ingress-nginx の `upstream-hash-by` で同じキャプチャがどう書けるかは未検証）
-2. **同時セッション上限はプロセスローカルであることを前提にする。**グローバルな
+2. **同時セッション上限はプロセスローカルであることを前提にする**。グローバルな
    天井はチューナー数であり、その裁定者は mirakc である。「アプリが握る唯一の
    グローバル上限」を作ると、レプリカを増やした瞬間に嘘になる
-3. **セッション数のメトリクスは per-process gauge にする。**Prometheus 側で sum
+3. **セッション数のメトリクスは per-process gauge にする**。Prometheus 側で sum
    する。1 Pod の値を全体として読む UI を作らない
 
 #### ライブのセグメントを録画バッファと同じディスクに置かない
 
 エッジの録画バッファ（mirakc `recording.basedir`）は「I/O 飽和 = ドロップ直結」で、
 要求は絶対帯域ではなくレイテンシである（[§4](storage.md)）。ライブの HLS セグメント書き出しが同じ
-ディスクに乗ると、**視聴が録画を壊す。**セグメントは数 MB × 数本なので tmpfs
+ディスクに乗ると、**視聴が録画を壊す**。セグメントは数 MB × 数本なので tmpfs
 （k8s なら `emptyDir: {medium: Memory}`）で足りる。Postgres datadir とエンコード
 scratch を分ける指針（[§3](database.md)）と同じ系列の規則。
 
@@ -156,9 +155,9 @@ Deployment 型で worker を運用する場合（またはその併用）の定�
 
 ### シングルトンロール: pg_advisory_lock リーダー選出
 
-watcher はシングルトンロール。`pg_try_advisory_lock` による監督ループでリーダー選出を行う（ruler / reconciler / record_sweep はジョブなので対象外。[データ層](../data.md) §2）。ただし watcher の singleton 性はもはや「正しさ」の要件ではなく、「mirakc に N 本の SSE を張らない」という接続数の配慮に過ぎない（`processRecord` は冪等化済み。[データ層](../data.md) §2、[録画エンジン](../recording.md) §3.3）:
+watcher はシングルトンロール。`pg_try_advisory_lock` による監督ループでリーダーを選出する（[データ層](../data.md) §2）。ruler / reconciler / record_sweep はジョブなので対象外。watcher の singleton 性はもはや「正しさ」の要件ではなく、「mirakc に N 本の SSE を張らない」という接続数の配慮に過ぎない。`processRecord` は冪等化済みである（[データ層](../data.md) §2、[録画エンジン](../recording.md) §3.3）:
 
-**watcher はサイトごとに 1。** advisory lock のキーはロール名だけでなく束縛サイトも含む（`watcher:<site>`）。多サイト構成で 2 サイトの watcher プロセスを立てると、両方が自分のサイトのロックを取得して両方の mirakc の SSE を購読する --- 同じロックキーだと片方が「role already held by another process」で待機に入り、負けた側の mirakc の SSE を誰も購読しなくなる（ログ上は正常に見えるので気付きにくい）。同一サイトで 2 プロセス立てた場合は従来どおり片方だけが動く。
+**watcher はサイトごとに 1**。advisory lock のキーはロール名だけでなく束縛サイトも含む（`watcher:<site>`）。多サイト構成で 2 サイトの watcher プロセスを立てると、両方が自分のサイトのロックを取得して両方の mirakc の SSE を購読する。同じロックキーだと片方が「role already held by another process」で待機に入り、負けた側の mirakc の SSE を誰も購読しなくなる（ログ上は正常に見えるので気付きにくい）。同一サイトで 2 プロセス立てた場合は従来どおり片方だけが動く。
 
 1. ロールごとに goroutine を立て、`pg_try_advisory_lock` を定期試行（15s + jitter）
 2. 取得したら child context でロール本体を起動
@@ -194,9 +193,9 @@ DB 接続失敗はエラーを握り潰さず fail-fast + 明示ログとする�
 #### `internal/role`（`RunSingleton`）は watcher 専用になったが畳まない（issue #24 M2-20）
 
 M2-17 / M2-18 で ruler / reconciler / record_sweep がジョブになり、利用箇所は
-`cmd/rokuban/server.go` の 1 箇所だけになった。それでも独立したパッケージとして残すのは、
-**「ソケットを connect し続ける」という形のロールが存在する限り必要な機構**であり
-（[overview.md](../overview.md) §ロール分類の基準）、リーダー選出の失敗モード
+`cmd/rokuban/server.go` の 1 箇所だけになった。それでも独立したパッケージとして残す。
+**「ソケットを connect し続ける」という形のロールが存在する限り必要な機構**だからである
+（[overview.md](../overview.md) §ロール分類の基準）。リーダー選出の失敗モード
 （heartbeat 喪失・split-brain・フェイルオーバー遅延）はテストで固定しておく価値が単独である。
 呼び出し元が 1 つであることは、機構の複雑さが 1 つに減ったという成果であって、削除の根拠ではない。
 
@@ -209,8 +208,8 @@ preemption 対策は上記の ScaledJob で十分であり、チャンク化の�
 #### 番号の対応
 
 - ロールとキュー購読の構造的保証は issue #113（`--roles watcher` 構成で起動時検査が実態より広い安心を与える経路があった）。
-- キュー名の site 修飾（`<論理名>_<site>`）・watcher の advisory lock キーの site 修飾（`watcher:<site>`）・`delete_reconcile` / `catalog_export` の `cleanup` キューへの配置は issue #185 M4-13。
+- キュー名の site 修飾（`<論理名>_<site>`）と watcher の advisory lock キーの site 修飾（`watcher:<site>`）は issue #185 M4-13。`delete_reconcile` / `catalog_export` の `cleanup` キューへの配置も同じ issue。
 - `--sites` フラグと `mirakcs:` レジストリは issue #183 M4-11。
-- streamer のスケール設計（sticky を使わない / consistent hash / 既定 replicas=1 の可逆性）は issue #56。ライブの資源同定 `/api/sites/{site}/services/{serviceId}/...` は M3-1（id 空間を一覧 API に揃えるため `networks/{networkId}/services/{serviceId}` に変えたのは issue #217）。ingress-nginx の `upstream-hash-by` で consistent hash の同じキャプチャがどう書けるかは M4-6 で実機確認するとされた（本文では未検証と記載）。
+- streamer のスケール設計（sticky を使わない / consistent hash / 既定 replicas=1 の可逆性）は issue #56。ライブの資源同定 `/api/sites/{site}/services/{serviceId}/...` は M3-1。id 空間を一覧 API に揃えるため `networks/{networkId}/services/{serviceId}` に変えたのは issue #217。ingress-nginx の `upstream-hash-by` で consistent hash の同じキャプチャがどう書けるかは M4-6 で実機確認するとされた（本文では未検証と記載）。
 - 録画配信の URL に site を持たない決定（`recordings.id` は surrogate）は issue #31。
 - watcher の `processRecord` 冪等化（singleton 性が「正しさ」の要件でなくなった）は M2-16。

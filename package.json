@@ -1,0 +1,12 @@
+{
+  "name": "rokuban-docs",
+  "private": true,
+  "scripts": {
+    "docs:lint": "textlint README.md CLAUDE.md docs/configuration.md docs/operations.md 'docs/operations/**/*.md' docs/runbook.md 'docs/runbook/**/*.md'",
+    "docs:lint:all": "textlint README.md CLAUDE.md 'docs/**/*.md'"
+  },
+  "devDependencies": {
+    "textlint": "15.8.0",
+    "textlint-rule-preset-ja-technical-writing": "12.0.2"
+  }
+}

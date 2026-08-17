@@ -9,7 +9,7 @@
 HTTP リスナーは常に 1 本立てる。OpenAPI には載せない（text format であり
 生成クライアントの対象外）。
 
-**`/metrics` と `/healthz` は Host allowlist を免除する。** 監視基盤は Pod IP や
+**`/metrics` と `/healthz` は Host allowlist を免除する**。監視基盤は Pod IP や
 サービス名で叩くため allowlist に載せようがない（IP は動的）。allowlist の内側に
 置くと k8s の liveness probe と Prometheus の scrape が 400 で落ちる。DNS rebinding が
 守ろうとしているのはブラウザ経由でデータを読み書きされることなので、機密を含まない
@@ -74,22 +74,22 @@ HTTP リスナーは常に 1 本立てる。OpenAPI には載せない（text fo
 | `rokuban_live_leave_hints_total{result}` | Counter | 離脱ヒントの受信数（`deadline_shortened` / `no_session` / `no_effect`）。**回収数と対で読む** --- ヒントは停止命令ではないので一致しない（差が開いていれば共有セッションが多い）。`no_effect` が定常的に出るなら「猶予 ≥ `live.idle_timeout`」でヒントが効かない設定 |
 | `rokuban_live_idle_gc_last_pass_timestamp_seconds` | Gauge | 最後に完走した idle GC パスの時刻 |
 
-**録画失敗は観測した時点で数える。** 予約の照会や mirakc への問い合わせより後に
+**録画失敗は観測した時点で数える**。予約の照会や mirakc への問い合わせより後に
 置くと、それらが失敗したときに取りこぼす（物事がうまくいっていないときこそ数えたい）。
 
-**`reconcile 差分数` はゲージ。** カウンタ（`..._schedules_total`）は単調増加なので
+**`reconcile 差分数` はゲージ**。カウンタ（`..._schedules_total`）は単調増加なので
 「収束しているか」を表せない。ゼロに戻らないまま続くのは reconcile が収束できて
 いないということで（mirakc が作成を拒否し続ける、サーキットブレーカーが削除を
 止めている等）、アラートすべきはゲージ側。
 
-**ゲージには「最後に成功した時刻」を必ず対で持つ。** ゲージは値が凍結するので、
+**ゲージには「最後に成功した時刻」を必ず対で持つ**。ゲージは値が凍結するので、
 `pending_diff` や `epg_programs_projected` だけでは「収束した」と「ループが動いて
 いない」を区別できない。シングルトンがロックを取れていない・定期ジョブが投入されなく
 なった場合を `time() - <last_*_timestamp> > 閾値` で検出する。実際に `UniqueOpts` の
 設定ミスで EPG の定期同期がワンショット化していた事故があり、この指標があれば
 気づけた。
 
-**滞留メトリクスは取得失敗時に 0 を報告しない。** 0 を出すと「滞留なし」と区別できず、
+**滞留メトリクスは取得失敗時に 0 を報告しない**。0 を出すと「滞留なし」と区別できず、
 滞留アラートを黙って無効化してしまう。代わりに専用のエラーカウンタを進める。
 
 PID 別のドロップ内訳はメトリクスにしない（PID × 録画数でカーディナリティが爆発する）。
@@ -111,7 +111,7 @@ mirakc の追従品質は EDCB ほどの長期実績がないため、品質メ�
 
 ### ジョブ化されたループの監視
 
-ruler / reconciler / record_sweep（watcher の 3 段構えのうち (c) 定期全量突き合わせ）は River のジョブなので、**「ループが止まっている」の検出は** advisory lock が取れているかではなく、**ジョブが投入され完走しているか**を見る。
+ruler / reconciler / record_sweep（watcher の 3 段構えのうち (c) 定期全量突き合わせ）は River のジョブである。**「ループが止まっている」の検出は** advisory lock が取れているかではなく、**ジョブが投入され完走しているか**を見る。
 
 | 見るもの | 意味 |
 |---|---|
@@ -130,7 +130,7 @@ ruler / reconciler / record_sweep（watcher の 3 段構えのうち (c) 定期�
 | site 束縛 | `epg-sync` / `tuner-sync` / `ruler-pass` / `reconcile-pass` / `record-sweep` | 多サイトでは必須（1 サイトなら省略可） | **サイトごとに 1 本**（`--site tokyo` 等） |
 | site 非依存 | `catalog-export` / `encode-reconcile` / `storage-sync` | **付けない**（付けるとエラー） | **全体で 1 本**（サイトごとに立てない） |
 
-`catalog-export` / `storage-sync` はアーカイブ（+ スクラッチ）が単一なので site の属性を持たない。`encode-reconcile` はエンコードのプロファイルとアーカイブがどちらも単一だから同じ扱い。サイトごとの CronJob から叩くと N 回投入される（River の一意制約で 1 本に合流はするが意図が読めない）。**`worker.periodic_jobs: false` の構成では `storage-sync` の CronJob を忘れると `storage_sync` が一度も投入されず、`GET /api/storage` が永遠に空配列を返す**（issue #238 のレビュー指摘）。**`encode-reconcile` を忘れた場合の症状は静かで、ヒントを落とした録画だけがエンコードされないまま残る**（[ingest](../recording/ingest.md) §5.5）。検出は `rokuban_encode_reconcile_last_pass_timestamp_seconds` の鮮度で行う（投入を忘れれば進まない）。
+`catalog-export` / `storage-sync` はアーカイブ（+ スクラッチ）が単一なので site の属性を持たない。`encode-reconcile` はエンコードのプロファイルとアーカイブがどちらも単一だから同じ扱い。サイトごとの CronJob から叩くと N 回投入される（River の一意制約で 1 本に合流はするが意図が読めない）。**`worker.periodic_jobs: false` の構成では `storage-sync` の CronJob を忘れると `storage_sync` が一度も投入されない**。`GET /api/storage` が永遠に空配列を返す（issue #238 のレビュー指摘）。**`encode-reconcile` を忘れた場合の症状は静かで、ヒントを落とした録画だけがエンコードされないまま残る**（[ingest](../recording/ingest.md) §5.5）。検出は `rokuban_encode_reconcile_last_pass_timestamp_seconds` の鮮度で行う（投入を忘れれば進まない）。
 
 **record_sweep には ruler / reconciler と違ってヒント経路（前倒し投入）がない**。定期投入だけが契機で、間隔は既定 5 分（`worker.RecordSweepInterval`、旧 watcher の `ReconcileInterval` を継承）。SSE 再接続をヒントにする案は検討したが、`internal/mirakc.Client.Subscribe` が再接続を内部に隠していて呼び出し側に通知できないため見送った（[録画エンジン](../recording.md) §3.3「record_sweep の起動契機」）。取りこぼしの実害は SSE の (a)(b) が大半を吸収し、record_sweep は定期パスとして収束させる保険という位置づけなので、5 分間隔で十分と判断している。
 
@@ -171,7 +171,7 @@ ruler / reconciler / record_sweep（watcher の 3 段構えのうち (c) 定期�
 
 ### 開始遅延検出器
 
-録画開始は mirakc に委譲済みで Rokuban 側から防ぐ手段はないが、mirakc 側の未知の不具合への保険として、**「開始時刻を過ぎたのに `recording.started` が観測されない予約」を reconcile ループで検出する**。EPGStation#724（チューナー再接続ハングで開始が 10 分遅延）のような事例に対応する。レベルトリガーの枠内で安価に実装できる。検出値は `rokuban_reconcile_start_delayed{site}` に出る（アラートの取り方は [アラート設計](alerts.md)）。
+録画開始は mirakc に委譲済みで Rokuban 側から防ぐ手段はない。mirakc 側の未知の不具合への保険として、**「開始時刻を過ぎたのに `recording.started` が観測されない予約」を reconcile ループで検出する**。EPGStation#724（チューナー再接続ハングで開始が 10 分遅延）のような事例に対応する。レベルトリガーの枠内で安価に実装できる。検出値は `rokuban_reconcile_start_delayed{site}` に出る（アラートの取り方は [アラート設計](alerts.md)）。
 
 ### 沈黙は保証ではない
 
@@ -184,7 +184,7 @@ ruler / reconciler / record_sweep（watcher の 3 段構えのうち (c) 定期�
 | `/api/capacity/overages` が空 | 収まるとは限らない。並走 EPGStation・ライブ視聴・EPG 収集は見えず、mirakc の `excluded_channels` は `/api/tuners` に載らないので**知る術がない** | `rokuban_tuners_projected` が 0 でないこと |
 | 同上（射影が空） | 射影が 1 行も無いサイトは**何も主張しない**ので、同期が壊れると警告が黙って消える | `tuner_sync` の行と `tuner_sync_last_success` の鮮度 |
 | `drop-stats` の `pidType` が無い | 分類できなかっただけで、ドロップ統計そのものは正しい | `packets` / `drops` は種別と独立に信頼できる |
-| `pidType` が `other` | 音声でないとは限らない（LATM AAC は `other` に落ちる） | 4K/8K を録ったなら疑う |
+| `pidType` が `other` | 音声の可能性がある（LATM AAC は `other` に落ちる） | 4K/8K を録ったなら疑う |
 | `/api/sites/{site}/programs/{programId}/overlaps` の `count = 0` | 録れるとは限らない（他サイトや mirakc の他の消費者は数えていない） | 重なりの手動確認（[docs/runbook/](../runbook.md) 側） |
 | `/api/breakers` が空 | 削除が正しかったとは限らない。**閾値を下回る削除は素通りする**し、明示操作由来の削除（`action="released"`）はそもそもブレーカーを通らない | `rokuban_ruler_reservations_total{action="deleted"}` の増え方 |
 | `rokuban_reconcile_start_delayed` が 0 | 録画が始まったことの確認ではない（猶予 3 分の内側は検出しない） | `recordings.started_at` |
@@ -192,7 +192,7 @@ ruler / reconciler / record_sweep（watcher の 3 段構えのうち (c) 定期�
 
 ### 経緯と失敗事例
 
-- `/metrics` エンドポイントは M1-9、開始遅延検出器は M2-7、record_sweep のジョブ化は M2-18、チューナー射影と `rokuban_capacity_overages` は M2-10、`catalog-export` が `--site` を取らない決定は issue #200。
-- **`rokuban_reconcile_circuit_breaker_trips_total` は M2-5 で意味が変わった**（メトリクス名は既存のダッシュボード・アラートを壊さないため据え置き）。以前は「1 パスの削除数が閾値を超えた」を数えていたが、その件数ベースの判定は誤発火しかしないので撤去し、今は「desired が空なのに自分の schedule が観測される」という全損シグネチャの発動を数える。`rokuban_circuit_breaker_tripped` ゲージと、ブレーカーのラッチ化（発動遷移だけを数える）も同じ M2-5。
+- `/metrics` エンドポイントは M1-9、開始遅延検出器は M2-7、record_sweep のジョブ化は M2-18。チューナー射影と `rokuban_capacity_overages` は M2-10、`catalog-export` が `--site` を取らない決定は issue #200。
+- **`rokuban_reconcile_circuit_breaker_trips_total` は M2-5 で意味が変わった**（メトリクス名は既存のダッシュボード・アラートを壊さないため据え置き）。以前は「1 パスの削除数が閾値を超えた」を数えていたが、その件数ベースの判定は誤発火しかしないので撤去した。今は「desired が空なのに自分の schedule が観測される」という全損シグネチャの発動を数える。`rokuban_circuit_breaker_tripped` ゲージと、ブレーカーのラッチ化（発動遷移だけを数える）も同じ M2-5。
 - `pending_diff` の `update` / `update_deferred` の分離は M2-4。
-- 「沈黙は保証ではない」の表は M2 の手動検証 runbook から移設した（`pidType` が `other` の音声 PID は `gots` の `IsAudioContent()` の値域に従っているだけで、自前の `stream_type` 表は作らない方針。観測したら 1 行で足せる）。
+- 「沈黙は保証ではない」の表は M2 の手動検証 runbook から移設した。`pidType` が `other` の音声 PID は `gots` の `IsAudioContent()` の値域に従っているだけで、自前の `stream_type` 表は作らない方針（観測したら 1 行で足せる）。
