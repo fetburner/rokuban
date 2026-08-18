@@ -32,9 +32,9 @@ const ingestProgressInterval = 2 * time.Second
 // エラーを返すと「進捗が書けなかった」という表示の都合で、転送済みのバイトを
 // 捨てて最初からやり直すことになる。
 //
-// 呼び出し元（IngestWorker.Work）は転送開始時に 1 度 report(0) を呼んでから
+// 呼び出し元（IngestWorker.Work）は start で転送開始を記録してから、
 // progressWriter 経由で継続的に report する。行の存在そのものが「転送中」の
-// 主張なので（不変条件 10）、0 バイトの初回書き込みにも意味がある。
+// 主張なので（不変条件 10）、0 バイトの start にも意味がある。
 type ingestProgressReporter struct {
 	pool        *pgxpool.Pool
 	recordingID int64
@@ -45,21 +45,38 @@ type ingestProgressReporter struct {
 	interval      time.Duration
 	log           *slog.Logger
 
-	// lastAt は直近に DB へ書いた時刻。ゼロ値は「まだ 1 度も書いていない」。
+	// lastAt は直近に進捗を DB へ書こうとした時刻。ゼロ値は「まだ進捗を
+	// 1 度も書いていない」。転送開始を表す start の書き込みは進捗ではないので
+	// この時計を進めない。
 	lastAt time.Time
 }
 
-// report は written バイト書けたことを記録する。前回の書き込みから interval
-// 未満しか経っていなければ何もしない（force が true のときは間隔を無視する）。
+// start は written_bytes=0 の行を作り、転送開始を記録する。
+// これは進捗の観測ではないため、report の間引き時計を進めない。
+func (r *ingestProgressReporter) start(ctx context.Context) {
+	r.write(ctx, 0)
+}
+
+// report は written バイト書けたことを記録する。前回の進捗書き込みから interval
+// 未満しか経っていなければ何もしない。
 //
 // io.Copy の 1 バッファ（32KiB）ごとに呼ばれる想定なので、間引きはここで行う。
-func (r *ingestProgressReporter) report(ctx context.Context, written int64, force bool) {
+func (r *ingestProgressReporter) report(ctx context.Context, written int64) {
 	now := time.Now()
-	if !force && !r.lastAt.IsZero() && now.Sub(r.lastAt) < r.interval {
+	if !r.lastAt.IsZero() && now.Sub(r.lastAt) < r.interval {
 		return
 	}
 	r.lastAt = now
+	r.write(ctx, written)
+}
 
+// flush は間隔を無視して最新の written バイトを記録する。
+func (r *ingestProgressReporter) flush(ctx context.Context, written int64) {
+	r.write(ctx, written)
+}
+
+// write は進捗行を書き直す。失敗はログだけに残し、ingest 本体を失敗させない。
+func (r *ingestProgressReporter) write(ctx context.Context, written int64) {
 	// ctx が既に死んでいるなら書きに行かない（ジョブのキャンセル時に無駄な
 	// クエリを投げない）。
 	if ctx.Err() != nil {
@@ -70,8 +87,7 @@ func (r *ingestProgressReporter) report(ctx context.Context, written int64, forc
 		WrittenBytes:  written,
 		ExpectedBytes: r.expectedBytes,
 	}); err != nil {
-		// 進捗が書けないこと自体は転送の失敗ではない。ログだけ残して続ける
-		// （最短でも interval に 1 回しか来ないのでログは溢れない）。
+		// 進捗が書けないこと自体は転送の失敗ではない。ログだけ残して続ける。
 		r.log.Warn("ingest: failed to record transfer progress",
 			"recording_id", r.recordingID, "written_bytes", written, "err", err)
 	}

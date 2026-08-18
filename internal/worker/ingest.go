@@ -279,13 +279,13 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[IngestJobArgs]) 
 		interval:      w.resolveProgressInterval(),
 		log:           log,
 	}
-	progress.report(ctx, 0, true)
+	progress.start(ctx)
 	// progressWriter は counter の外側に置く（io.Copy → progressWriter →
 	// counter → f）。TS 統計は counter が数えるので、ここでは書けたバイト数を
 	// 数えるだけ。
 	dst := &progressWriter{
 		w:       counter,
-		onWrite: func(written int64) { progress.report(ctx, written, false) },
+		onWrite: func(written int64) { progress.report(ctx, written) },
 	}
 
 	var offset int64
@@ -340,7 +340,7 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[IngestJobArgs]) 
 	// commit）で落ちるとジョブは再試行に回るので、最後に観測した値を間引き
 	// 無しで焼いておく --- そうしないと「転送は終わっているのに 2 秒前の値の
 	// まま止まって見える」状態で再試行待ちに入る。
-	progress.report(ctx, offset, true)
+	progress.flush(ctx, offset)
 
 	expectedLen, err := w.MirakcClient.HeadRecordStream(ctx, args.RecordID)
 	if err != nil {

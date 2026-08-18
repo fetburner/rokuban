@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -50,6 +51,35 @@ func setRecordSyncContentLength(t *testing.T, pool *pgxpool.Pool, recordID strin
 		`UPDATE record_sync SET content_length = $1 WHERE site = 'default' AND record_id = $2`,
 		length, recordID); err != nil {
 		t.Fatalf("setting record_sync.content_length: %v", err)
+	}
+}
+
+// TestIngestProgressReporter_ThrottlesContinuedWrites は、最初の進捗を記録した後の
+// Write が interval 内なら DB へ書かれないことを確認する。
+func TestIngestProgressReporter_ThrottlesContinuedWrites(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+
+	recordingID := insertTestRecording(t, pool)
+	reporter := &ingestProgressReporter{
+		pool:        pool,
+		recordingID: recordingID,
+		interval:    time.Hour,
+		log:         slog.Default(),
+	}
+
+	reporter.start(context.Background())
+	reporter.report(context.Background(), 1)
+	reporter.report(context.Background(), 2)
+
+	row, ok := readIngestProgress(t, pool, recordingID)
+	if !ok {
+		t.Fatal("progress row was not created")
+	}
+	if row.written != 1 {
+		t.Errorf("written_bytes = %d, want 1; continued Write was not throttled", row.written)
 	}
 }
 
@@ -111,9 +141,9 @@ func TestIngestWorker_ProgressVisibleDuringTransfer(t *testing.T) {
 		MirakcClient: mirakc.NewClient(srv.URL, nil),
 		MediaDir:     t.TempDir(),
 		StallTimeout: 30 * time.Second,
-		// 既定の 2 秒だと「転送中に見えるか」を測るためにテストが 2 秒待つ
-		// ことになる。間隔そのものは本題ではないので短くする。
-		ProgressInterval: time.Millisecond,
+		// 観測期限より長くし、最初の burst が転送開始直後の間引き期間内に
+		// 必ず収まるようにする。短くすると次の Write の時刻次第で症状を隠す。
+		ProgressInterval: time.Hour,
 		Pool:             pool,
 	}
 
