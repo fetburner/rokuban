@@ -81,6 +81,18 @@ func TestIngestProgressReporter_ThrottlesContinuedWrites(t *testing.T) {
 	if row.written != 1 {
 		t.Errorf("written_bytes = %d, want 1; continued Write was not throttled", row.written)
 	}
+
+	// 間隔を過ぎれば次の進捗を再び書く。常に最初の non-zero だけを残す
+	// ガードへ退行しても、直前のアサーションだけでは検出できない。
+	reporter.lastAt = time.Now().Add(-2 * time.Hour)
+	reporter.report(context.Background(), 3)
+	row, ok = readIngestProgress(t, pool, recordingID)
+	if !ok {
+		t.Fatal("progress row disappeared")
+	}
+	if row.written != 3 {
+		t.Errorf("written_bytes after interval = %d, want 3", row.written)
+	}
 }
 
 // TestIngestWorker_ProgressVisibleDuringTransfer は、転送の途中で
