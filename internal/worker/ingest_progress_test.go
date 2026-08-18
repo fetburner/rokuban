@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -50,6 +52,60 @@ func setRecordSyncContentLength(t *testing.T, pool *pgxpool.Pool, recordID strin
 		`UPDATE record_sync SET content_length = $1 WHERE site = 'default' AND record_id = $2`,
 		length, recordID); err != nil {
 		t.Fatalf("setting record_sync.content_length: %v", err)
+	}
+}
+
+// TestIngestProgressReporter_ThrottlesContinuedWrites は、最初の進捗を記録した後の
+// Write が interval 内なら DB へ書かれないことを確認する。
+func TestIngestProgressReporter_ThrottlesContinuedWrites(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+
+	recordingID := insertTestRecording(t, pool)
+	reporter := &ingestProgressReporter{
+		pool:        pool,
+		recordingID: recordingID,
+		interval:    time.Hour,
+		log:         slog.Default(),
+	}
+
+	reporter.start(context.Background())
+	reporter.report(context.Background(), 1)
+	reporter.report(context.Background(), 2)
+
+	row, ok := readIngestProgress(t, pool, recordingID)
+	if !ok {
+		t.Fatal("progress row was not created")
+	}
+	if row.written != 1 {
+		t.Errorf("written_bytes = %d, want 1; continued Write was not throttled", row.written)
+	}
+
+	// 間隔を過ぎれば次の進捗を再び書く。常に最初の non-zero だけを残す
+	// ガードへ退行しても、直前のアサーションだけでは検出できない。
+	reporter.lastAt = time.Now().Add(-2 * time.Hour)
+	reporter.report(context.Background(), 3)
+	row, ok = readIngestProgress(t, pool, recordingID)
+	if !ok {
+		t.Fatal("progress row disappeared")
+	}
+	if row.written != 3 {
+		t.Errorf("written_bytes after interval = %d, want 3", row.written)
+	}
+
+	// flush も DB 書き込みなので、直後の report は同じ interval 内として
+	// 間引く。さもないと接続再開時に 2 回続けて更新する。
+	reporter.lastAt = time.Now().Add(-2 * time.Hour)
+	reporter.flush(context.Background(), 4)
+	reporter.report(context.Background(), 5)
+	row, ok = readIngestProgress(t, pool, recordingID)
+	if !ok {
+		t.Fatal("progress row disappeared after flush")
+	}
+	if row.written != 4 {
+		t.Errorf("written_bytes immediately after flush = %d, want 4", row.written)
 	}
 }
 
@@ -111,9 +167,9 @@ func TestIngestWorker_ProgressVisibleDuringTransfer(t *testing.T) {
 		MirakcClient: mirakc.NewClient(srv.URL, nil),
 		MediaDir:     t.TempDir(),
 		StallTimeout: 30 * time.Second,
-		// 既定の 2 秒だと「転送中に見えるか」を測るためにテストが 2 秒待つ
-		// ことになる。間隔そのものは本題ではないので短くする。
-		ProgressInterval: time.Millisecond,
+		// 観測期限より長くし、最初の burst が転送開始直後の間引き期間内に
+		// 必ず収まるようにする。短くすると次の Write の時刻次第で症状を隠す。
+		ProgressInterval: time.Hour,
 		Pool:             pool,
 	}
 
@@ -175,6 +231,113 @@ func TestIngestWorker_ProgressVisibleDuringTransfer(t *testing.T) {
 	// 見せない。
 	if row, ok := readIngestProgress(t, pool, recordingID); ok {
 		t.Errorf("progress row still present after commit: %+v", row)
+	}
+}
+
+// TestIngestWorker_ProgressFlushesInterruptedBurst は、間引き期間内の burst 後に
+// 接続が切れ、その後の再開も全て失敗した場合に、最後にファイルへ書けた値が
+// 進捗行へ残ることを確認する。
+func TestIngestWorker_ProgressFlushesInterruptedBurst(t *testing.T) {
+	tsData := makeTSData(1000) // 188 KB
+	burst := len(tsData) / 2
+
+	var pool *pgxpool.Pool
+	var recordingID int64
+	var firstRetryOnce sync.Once
+	var firstRetryObservedAt time.Time
+	var firstRetryErr error
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
+			if r.Header.Get("Range") == "" {
+				w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsData)))
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write(tsData[:burst])
+				return
+			}
+
+			firstRetryOnce.Do(func() {
+				firstRetryErr = pool.QueryRow(context.Background(),
+					`SELECT observed_at FROM recording_ingest_progress WHERE recording_id = $1`,
+					recordingID).Scan(&firstRetryObservedAt)
+			})
+
+			// Range 再開は接続できるが 1 バイトも返さず切れる。接続失敗の
+			// バックオフを待たずにジョブ内リトライ上限へ到達させる。
+			// 現在値を誤って再 upsert したとき observed_at の差が確実に出るよう、
+			// 最初の観測より後に応答を閉じる。
+			time.Sleep(2 * time.Millisecond)
+			w.Header().Set("Content-Length", "1")
+			w.WriteHeader(http.StatusPartialContent)
+
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
+			record := mirakc.Record{
+				Recording: mirakc.RecordInfo{
+					Options: mirakc.Options{ContentPath: strPtr("test/interrupted-progress.m2ts")},
+				},
+				Content: mirakc.ContentInfo{Path: "/recording/test/interrupted-progress.m2ts"},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(record)
+
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	pool = setupTestPool(t)
+	if pool == nil {
+		return
+	}
+
+	w := &IngestWorker{
+		MirakcClient:     mirakc.NewClient(srv.URL, nil),
+		MediaDir:         t.TempDir(),
+		StallTimeout:     30 * time.Second,
+		ProgressInterval: time.Hour,
+		Pool:             pool,
+	}
+
+	recordingID = insertTestRecording(t, pool)
+	insertTestRecordSync(t, pool, recordingID, "rec-interrupted-progress")
+
+	err := w.Work(context.Background(), &river.Job[IngestJobArgs]{
+		JobRow: &rivertype.JobRow{},
+		Args:   IngestJobArgs{Site: "default", RecordID: "rec-interrupted-progress"},
+	})
+	if err == nil {
+		t.Fatal("Work() succeeded, want transfer failure")
+	}
+
+	row, ok := readIngestProgress(t, pool, recordingID)
+	if !ok {
+		t.Fatal("progress row was not created")
+	}
+	if row.written != int64(burst) {
+		t.Errorf("written_bytes after interrupted burst = %d, want %d", row.written, burst)
+	}
+
+	// 最初の Range 要求時点で直前の burst は flush 済み。その後の 0 バイト試行は
+	// 進捗ではないので、同じ値で observed_at を新しくしてはならない。
+	firstRetryOnce.Do(func() {})
+	if firstRetryErr != nil {
+		t.Fatalf("reading observed_at before zero-byte retries: %v", firstRetryErr)
+	}
+	if firstRetryObservedAt.IsZero() {
+		t.Fatal("first Range retry was not observed")
+	}
+	var finalObservedAt time.Time
+	if err := pool.QueryRow(context.Background(),
+		`SELECT observed_at FROM recording_ingest_progress WHERE recording_id = $1`,
+		recordingID).Scan(&finalObservedAt); err != nil {
+		t.Fatalf("reading observed_at after zero-byte retries: %v", err)
+	}
+	if !finalObservedAt.Equal(firstRetryObservedAt) {
+		t.Errorf("zero-byte retries refreshed observed_at: before=%s after=%s",
+			firstRetryObservedAt, finalObservedAt)
 	}
 }
 
