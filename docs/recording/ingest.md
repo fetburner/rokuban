@@ -154,8 +154,10 @@ pull 完了後に書き込みバイト数を HEAD の Content-Length と照合 �
 書けたバイト数を写し、api はそれを `Recording.ingest` として返す。転送開始を表す
 `written_bytes=0` は進捗の間引き時計に含めず、最初にファイルへ書けた値は直ちに記録する。
 その後の更新だけを最短 2 秒間隔にし、継続ストリームで DB 書き込みが Copy バッファ単位に
-増えないようにする（`TestIngestWorker_ProgressVisibleDuringTransfer` /
-`TestIngestProgressReporter_ThrottlesContinuedWrites`）。
+増えないようにする。接続断を含め 1 回の転送試行が終わるときは、間引かれていた最新値を
+記録してから再開または終了する（`TestIngestWorker_ProgressVisibleDuringTransfer` /
+`TestIngestProgressReporter_ThrottlesContinuedWrites` /
+`TestIngestWorker_ProgressFlushesInterruptedBurst`）。
 
 **進捗の置き場は衛星表**（ジョブ引数でも `record_sync` でもない）。理由は 3 つとも別方向:
 

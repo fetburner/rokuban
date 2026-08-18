@@ -320,6 +320,11 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[IngestJobArgs]) 
 
 		offset += n
 
+		// 1 回の転送試行が終わるたび、最後に書けた値を間引き無しで焼く。
+		// interval 内の burst 後に接続が切れ、その後の再開も全て失敗すると、
+		// ここで書かなければ最後の間引き前の値のままジョブが終わる。
+		progress.flush(ctx, offset)
+
 		if copyErr == nil {
 			break
 		}
@@ -335,12 +340,6 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[IngestJobArgs]) 
 		log.Warn("ingest: transfer interrupted, retrying with Range",
 			"offset", offset, "attempt", attempt, "err", copyErr)
 	}
-
-	// 転送は終わったがまだコミットしていない。ここから先（HEAD 照合・
-	// commit）で落ちるとジョブは再試行に回るので、最後に観測した値を間引き
-	// 無しで焼いておく --- そうしないと「転送は終わっているのに 2 秒前の値の
-	// まま止まって見える」状態で再試行待ちに入る。
-	progress.flush(ctx, offset)
 
 	expectedLen, err := w.MirakcClient.HeadRecordStream(ctx, args.RecordID)
 	if err != nil {

@@ -208,6 +208,78 @@ func TestIngestWorker_ProgressVisibleDuringTransfer(t *testing.T) {
 	}
 }
 
+// TestIngestWorker_ProgressFlushesInterruptedBurst は、間引き期間内の burst 後に
+// 接続が切れ、その後の再開も全て失敗した場合に、最後にファイルへ書けた値が
+// 進捗行へ残ることを確認する。
+func TestIngestWorker_ProgressFlushesInterruptedBurst(t *testing.T) {
+	tsData := makeTSData(1000) // 188 KB
+	burst := len(tsData) / 2
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
+			if r.Header.Get("Range") == "" {
+				w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsData)))
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write(tsData[:burst])
+				return
+			}
+
+			// Range 再開は接続できるが 1 バイトも返さず切れる。接続失敗の
+			// バックオフを待たずにジョブ内リトライ上限へ到達させる。
+			w.Header().Set("Content-Length", "1")
+			w.WriteHeader(http.StatusPartialContent)
+
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
+			record := mirakc.Record{
+				Recording: mirakc.RecordInfo{
+					Options: mirakc.Options{ContentPath: strPtr("test/interrupted-progress.m2ts")},
+				},
+				Content: mirakc.ContentInfo{Path: "/recording/test/interrupted-progress.m2ts"},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(record)
+
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+
+	w := &IngestWorker{
+		MirakcClient:     mirakc.NewClient(srv.URL, nil),
+		MediaDir:         t.TempDir(),
+		StallTimeout:     30 * time.Second,
+		ProgressInterval: time.Hour,
+		Pool:             pool,
+	}
+
+	recordingID := insertTestRecording(t, pool)
+	insertTestRecordSync(t, pool, recordingID, "rec-interrupted-progress")
+
+	err := w.Work(context.Background(), &river.Job[IngestJobArgs]{
+		JobRow: &rivertype.JobRow{},
+		Args:   IngestJobArgs{Site: "default", RecordID: "rec-interrupted-progress"},
+	})
+	if err == nil {
+		t.Fatal("Work() succeeded, want transfer failure")
+	}
+
+	row, ok := readIngestProgress(t, pool, recordingID)
+	if !ok {
+		t.Fatal("progress row was not created")
+	}
+	if row.written != int64(burst) {
+		t.Errorf("written_bytes after interrupted burst = %d, want %d", row.written, burst)
+	}
+}
+
 // TestIngestWorker_ProgressRemainsAfterFailure は、転送は終わったがコミットに
 // 至らなかったジョブが進捗行を残すことを確認する（issue #212）。
 //
