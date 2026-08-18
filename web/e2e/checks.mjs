@@ -64,15 +64,56 @@ const visibleTopRow = () =>
 
 const loadPreviousButton = () => page.getByRole('button', { name: /前を読み込む|を読み込む/ })
 
-// --- ① 日付を押したら、その日がハイライトされる ---
-log(`\n=== ① 日付ストリップ ===`)
+// --- ① 未キャッシュの日を押したら、その日へ跳ぶ ---
+// スケルトンに挿し替わって文書高さが潰れない（issue #299）/ ハイライトが移る /
+// 前の日の scrollY を引き継がず選んだ日の先頭に着地する、の 3 点を見る。
+log(`\n=== ① 日付ストリップ（未キャッシュ日へのジャンプ） ===`)
 const target = dayLabels[DAY_INDEX]
+// 下へスクロールしてから跳ぶ（issue #299 の再現手順。scrollY 引き継ぎの判定に要る）。
+// スクロールで進行方向の自動読み込みが走り、リストが伸びてから測る。
+await page.mouse.wheel(0, 1200)
+await page.waitForTimeout(1200)
+const heightBefore = await page.evaluate(() => Math.round(document.documentElement.scrollHeight))
+// 押下直後をフレーム単位で観測する。placeholderData が無いとクエリ作り直しで
+// `isPending` が即 true になり `ListSkeleton`（`animate-pulse` + `scanlines` の
+// 走査線 6 本）に挿し替わって、文書高さがビューポート（800px）まで潰れる。
+// この 1 フレームは localhost でも見える（issue #299）ので rAF で捕まえる。
+await page.evaluate(() => {
+  window.__jump = []
+  const tick = () => {
+    window.__jump.push({
+      h: Math.round(document.documentElement.scrollHeight),
+      skel: !!document.querySelector('.animate-pulse.scanlines'),
+      day: document
+        .querySelector('[role="group"][aria-label="日付"] button[aria-current="date"]')
+        ?.getAttribute('aria-label'),
+    })
+    if (window.__jump.length < 90) requestAnimationFrame(tick)
+  }
+  requestAnimationFrame(tick)
+})
 await dayCells.nth(DAY_INDEX).click()
 await page.waitForTimeout(2500)
+
+const jump = await page.evaluate(() => window.__jump)
+const sawSkeleton = jump.some((f) => f.skel)
+const minHeight = jump.length ? Math.min(...jump.map((f) => f.h)) : 0
+const firstTargetFrame = jump.findIndex((f) => f.day === target)
+const highlightReverted =
+  firstTargetFrame >= 0 && jump.slice(firstTargetFrame + 1).some((f) => f.day !== target)
 const highlighted = await currentDay()
-log(`  押した日付 : ${target}`)
-log(`  ハイライト : ${highlighted}`)
+const landedScrollY = await page.evaluate(() => Math.round(window.scrollY))
+log(`  押した日付   : ${target}`)
+log(`  ハイライト   : ${highlighted}`)
+log(`  跳ぶ前の高さ : ${heightBefore}px / 跳躍中の最小高さ: ${minHeight}px`)
+log(`  スケルトン   : ${sawSkeleton ? '出た' : '出ない'} / 着地 scrollY: ${landedScrollY}px`)
 if (highlighted !== target) ng.push(`① ハイライトが「${highlighted}」（期待「${target}」）`)
+if (highlightReverted) ng.push('① ハイライトが選んだ日から前の日へ一時的に戻った')
+if (sawSkeleton) ng.push('① 未キャッシュ日へのジャンプで ListSkeleton に挿し替わった')
+// 前のリストを残していれば高さは潰れない。ビューポート（+余白）まで落ちたら潰れた。
+if (minHeight <= 850) ng.push(`① ジャンプ中に文書高さが ${minHeight}px まで潰れた（前=${heightBefore}px）`)
+// 選んだ日の先頭行に着地する（前の日の scrollY=1200 付近を引き継がない）。
+if (landedScrollY > 200) ng.push(`① 着地 scrollY=${landedScrollY}px（前の日のスクロールを引き継いだ）`)
 
 // --- ② 遡行しても、見ている行が保たれる / フレーム跳ねが無い ---
 log(`\n=== ② 遡行（${REWINDS} 回） ===`)
