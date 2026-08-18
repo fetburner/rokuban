@@ -1,6 +1,6 @@
-import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query'
+import { keepPreviousData, useInfiniteQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useSearch as useRouteSearch } from '@tanstack/react-router'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import { CapacityBands } from '@/components/capacity-band'
 import { ChannelPicker } from '@/components/channel-picker'
@@ -278,6 +278,15 @@ export function ProgramsPage() {
     // グリッド表示中はリストの窓を追いかけない（同じ時間帯を 2 つの形で
     // 同時に取りに行かない）。戻ったときはキャッシュがそのまま出る。
     enabled: !showGrid,
+    // 日付ジャンプで originMs（＝ queryKey）が変わると infinite query が
+    // 作り直される。未キャッシュの日だと `isPending` が即 true になり、
+    // 下の分岐で `ProgramList` が `ListSkeleton` に挿し替わって文書高さが
+    // ビューポートまで潰れる（レイアウトシフト）。前のリストを残したまま
+    // 差し替えれば潰れない（`isPlaceholderData` の間は前の日のデータを見せ、
+    // 新しい日が届いたら差し替わる）。着地時に先頭へ戻す処理は下の
+    // `useLayoutEffect`（originMs 変化）が持つ。`pages/home.tsx` の容量超過
+    // クエリと同じ手。
+    placeholderData: keepPreviousData,
     queryFn: async ({ pageParam }) => {
       const { startMs, endMs } = pageParam
       const res = await listPrograms(site, {
@@ -474,6 +483,30 @@ export function ProgramsPage() {
     setAutoLoadFailed(false)
   }, [originMs, limitMs, selectedServiceIdParam])
 
+  // 日付ジャンプ（DayStrip・容量バッジ）で originMs が変わったら、リスト表示では
+  // スクロールを先頭へ戻して選んだ日の先頭行に着地させる。上の
+  // `placeholderData` で前のリストを残すようにしたぶん、以前スケルトン差し替えの
+  // 副作用（文書高さがビューポートまで潰れ scrollY がクランプされる）で起きていた
+  // 「先頭へ戻る」が起きなくなるので、ここで明示的に行う（さもないと前の日の
+  // scrollY を引き継いだまま新しい日のリストの途中に着地する）。初回マウントでは
+  // 動かさない（既に先頭）。グリッド表示はスクロール位置を `scrollToMs` が別に
+  // 決めるので除外する。計測できない環境（jsdom）では仮想化そのものを
+  // バイパスしているので何もしない（`components/program-list.tsx`）。
+  //
+  // `window.scrollTo` は `window.scrollY` を同期更新するが、`virtualizer` が
+  // 可視範囲に使う内部スクロール位置は非同期の 'scroll' イベントでしか更新
+  // されない（遡行のアンカー復元と同じ間隙。`docs/frontend/scroll.md`）。
+  // 直後に 'scroll' を同期発火させて、ペイント前に `virtualizer` を y=0 へ
+  // 追いつかせる。
+  const previousOriginMsRef = useRef(originMs)
+  useLayoutEffect(() => {
+    if (previousOriginMsRef.current === originMs) return
+    previousOriginMsRef.current = originMs
+    if (showGrid || !domLayoutMeasurable()) return
+    window.scrollTo(0, 0)
+    window.dispatchEvent(new Event('scroll'))
+  }, [originMs, showGrid])
+
   useEffect(() => {
     if (query.isFetchNextPageError) setAutoLoadFailed(true)
   }, [query.isFetchNextPageError])
@@ -629,7 +662,13 @@ export function ProgramsPage() {
                 programs={visiblePrograms}
                 serviceById={serviceById}
                 actions={actions}
-                onVisibleDayChange={setVisibleDay}
+                // プレースホルダ表示中（未キャッシュ日へジャンプして新しい日の
+                // データを待っている間）は前の日のデータが出ているので、その
+                // 可視範囲から「いま見ている日」を通知させない ---
+                // させると DayStrip のハイライトが跳んだ先から前の日へ一瞬
+                // 戻ってしまう。ジャンプ先は既に `selectDay` が `visibleDay` に
+                // 反映済みで、新しい日が届けば通知が再開して一致する。
+                onVisibleDayChange={query.isPlaceholderData ? undefined : setVisibleDay}
                 now={nowMs}
                 hasPreviousPage={query.hasPreviousPage}
                 isFetchingPreviousPage={query.isFetchingPreviousPage}
