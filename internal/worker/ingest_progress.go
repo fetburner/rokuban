@@ -70,8 +70,10 @@ func (r *ingestProgressReporter) report(ctx context.Context, written int64) {
 	r.write(ctx, written)
 }
 
-// flush は間隔を無視して最新の written バイトを記録する。
+// flush は間隔を無視して最新の written バイトを記録し、その時刻から次の
+// report の間引き間隔を数え直す。
 func (r *ingestProgressReporter) flush(ctx context.Context, written int64) {
+	r.lastAt = time.Now()
 	r.write(ctx, written)
 }
 

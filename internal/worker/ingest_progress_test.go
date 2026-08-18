@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -92,6 +93,19 @@ func TestIngestProgressReporter_ThrottlesContinuedWrites(t *testing.T) {
 	}
 	if row.written != 3 {
 		t.Errorf("written_bytes after interval = %d, want 3", row.written)
+	}
+
+	// flush も DB 書き込みなので、直後の report は同じ interval 内として
+	// 間引く。さもないと接続再開時に 2 回続けて更新する。
+	reporter.lastAt = time.Now().Add(-2 * time.Hour)
+	reporter.flush(context.Background(), 4)
+	reporter.report(context.Background(), 5)
+	row, ok = readIngestProgress(t, pool, recordingID)
+	if !ok {
+		t.Fatal("progress row disappeared after flush")
+	}
+	if row.written != 4 {
+		t.Errorf("written_bytes immediately after flush = %d, want 4", row.written)
 	}
 }
 
@@ -227,6 +241,12 @@ func TestIngestWorker_ProgressFlushesInterruptedBurst(t *testing.T) {
 	tsData := makeTSData(1000) // 188 KB
 	burst := len(tsData) / 2
 
+	var pool *pgxpool.Pool
+	var recordingID int64
+	var firstRetryOnce sync.Once
+	var firstRetryObservedAt time.Time
+	var firstRetryErr error
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
@@ -237,8 +257,17 @@ func TestIngestWorker_ProgressFlushesInterruptedBurst(t *testing.T) {
 				return
 			}
 
+			firstRetryOnce.Do(func() {
+				firstRetryErr = pool.QueryRow(context.Background(),
+					`SELECT observed_at FROM recording_ingest_progress WHERE recording_id = $1`,
+					recordingID).Scan(&firstRetryObservedAt)
+			})
+
 			// Range 再開は接続できるが 1 バイトも返さず切れる。接続失敗の
 			// バックオフを待たずにジョブ内リトライ上限へ到達させる。
+			// 現在値を誤って再 upsert したとき observed_at の差が確実に出るよう、
+			// 最初の観測より後に応答を閉じる。
+			time.Sleep(2 * time.Millisecond)
 			w.Header().Set("Content-Length", "1")
 			w.WriteHeader(http.StatusPartialContent)
 
@@ -259,7 +288,7 @@ func TestIngestWorker_ProgressFlushesInterruptedBurst(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	pool := setupTestPool(t)
+	pool = setupTestPool(t)
 	if pool == nil {
 		return
 	}
@@ -272,7 +301,7 @@ func TestIngestWorker_ProgressFlushesInterruptedBurst(t *testing.T) {
 		Pool:             pool,
 	}
 
-	recordingID := insertTestRecording(t, pool)
+	recordingID = insertTestRecording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-interrupted-progress")
 
 	err := w.Work(context.Background(), &river.Job[IngestJobArgs]{
@@ -289,6 +318,26 @@ func TestIngestWorker_ProgressFlushesInterruptedBurst(t *testing.T) {
 	}
 	if row.written != int64(burst) {
 		t.Errorf("written_bytes after interrupted burst = %d, want %d", row.written, burst)
+	}
+
+	// 最初の Range 要求時点で直前の burst は flush 済み。その後の 0 バイト試行は
+	// 進捗ではないので、同じ値で observed_at を新しくしてはならない。
+	firstRetryOnce.Do(func() {})
+	if firstRetryErr != nil {
+		t.Fatalf("reading observed_at before zero-byte retries: %v", firstRetryErr)
+	}
+	if firstRetryObservedAt.IsZero() {
+		t.Fatal("first Range retry was not observed")
+	}
+	var finalObservedAt time.Time
+	if err := pool.QueryRow(context.Background(),
+		`SELECT observed_at FROM recording_ingest_progress WHERE recording_id = $1`,
+		recordingID).Scan(&finalObservedAt); err != nil {
+		t.Fatalf("reading observed_at after zero-byte retries: %v", err)
+	}
+	if !finalObservedAt.Equal(firstRetryObservedAt) {
+		t.Errorf("zero-byte retries refreshed observed_at: before=%s after=%s",
+			firstRetryObservedAt, finalObservedAt)
 	}
 }
 

@@ -320,10 +320,13 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[IngestJobArgs]) 
 
 		offset += n
 
-		// 1 回の転送試行が終わるたび、最後に書けた値を間引き無しで焼く。
+		// バイトを書けた転送試行が終わるたび、最後の値を間引き無しで焼く。
 		// interval 内の burst 後に接続が切れ、その後の再開も全て失敗すると、
-		// ここで書かなければ最後の間引き前の値のままジョブが終わる。
-		progress.flush(ctx, offset)
+		// ここで書かなければ最後の間引き前の値のままジョブが終わる。0 バイトの
+		// 試行は進捗ではないので observed_at を新しくしない。
+		if n > 0 {
+			progress.flush(ctx, offset)
+		}
 
 		if copyErr == nil {
 			break
