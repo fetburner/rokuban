@@ -35,6 +35,7 @@
 | ルート相対パスの徹底 | API・アセット参照はすべてドメインを含まないルート相対パス（`/api/...`） |
 | WebSocket 不使用 | SSE は `proxy_buffering off` だけで通る。WebSocket のアップグレード要件を持ち込まない |
 | SPA フォールバック | Go 側の catch-all で `index.html` を返す |
+| keep-alive アイドル接続の上限 | サーバー自身が `IdleTimeout`（120 秒）でリクエスト間のアイドル接続を切る。**upstream keep-alive を有効にしているプロキシ構成では**（nginx なら `upstream` ブロックに `keepalive N` を書いた場合。書かなければ upstream には都度 `Connection: close` で繋ぐので無関係）、プロキシ側のアイドルタイムアウトを 120 秒以下に揃える。長く取ると、プロキシがまだ生きていると思っている接続をサーバー側が先に切る |
 
 `X-Forwarded-Host` の解釈は **`server.trust_forwarded_host` による opt-in**（既定 false）。DNS rebinding の攻撃ページは Rokuban と同一オリジンとして扱われるため任意のリクエストヘッダーを付けられ、前段にプロキシが存在しない直接露出構成（`--all` の既定構成）でこのヘッダーを無条件に信頼すると、Host allowlist（§認証 帰結3）を自己申告値で素通りできてしまう。信頼できるプロキシが必ず前段に居り、かつそのプロキシが外来の `X-Forwarded-Host` を上書きする構成でだけ有効にする。判断の詳細と設定キーは [configuration.md](../configuration.md) §server.allowed_hosts を参照。
 
