@@ -226,4 +226,5 @@ CREATE UNIQUE INDEX ON media_assets (rel_path) WHERE state <> 'deleted';
 - INSERT するのは worker（ingest / encode / thumbnail ジョブ）のみ。`ON CONFLICT` で冪等に
 - **deleted への遷移後も行は消さない**（tombstone）。`drop_stats` と元サイズは原本削除後も UI で見られる
 - 物理削除に至る 3 ソース（ごみ箱の猶予超過 / `until_encoded` の派生物完備 / 孤児回収）はすべて 1 本の削除 reconcile ループに集約し、一括削除サーキットブレーカーをループ全体に 1 つかける
+- **`missing_media_assets` は `media_assets` を指す衛星表**（`media_asset_id` を PK かつ FK に取り、`ON DELETE CASCADE`）。行の存在 = 直前の走査で `state = 'active'` なのに実体ファイルを観測できなかったという主張で、「観測できた」を表す行は作らない（不変条件 10）。書き手は削除 reconcile であって台帳を書く worker ではないので本体の列にしない（不変条件 13）。`rel_path` / `kind` は複製せず読み出しで JOIN する（不変条件 9）。**この表を根拠に `media_assets` を自動で消す経路は無い** —— 判定基準と 2 つの安全弁（エイジング / 全損シグネチャ）は [storage/retention.md](../storage/retention.md) §7「孤児回収の逆」が権威
 

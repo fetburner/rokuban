@@ -59,6 +59,8 @@ func TestNewRegistry_ExposesRequiredMetrics(t *testing.T) {
 	EncodeReconcileLastPass.SetToCurrentTime()
 	EncodeReconcileCandidates.Set(0)
 	EncodeReconcileUnsatisfiable.WithLabelValues("h264").Set(0)
+	MediaAssetsMissing.WithLabelValues("original").Set(0)
+	MissingAssetScanSuspectedStorageFailure.Add(1)
 
 	families, err := reg.Gather()
 	if err != nil {
@@ -111,6 +113,12 @@ func TestNewRegistry_ExposesRequiredMetrics(t *testing.T) {
 		"rokuban_encode_reconcile_last_pass_timestamp_seconds",
 		"rokuban_encode_reconcile_candidates",
 		"rokuban_encode_reconcile_unsatisfiable",
+		// issue #343: active な media_asset の実体無し検出。
+		// docs/operations/monitoring.md がこの 2 本を対で読む運用を約束して
+		// いるので、片方の登録漏れが黙って通らないようにここに載せる
+		// （ゲージが止まる条件はカウンタ側でしか分からない）。
+		"rokuban_media_assets_missing",
+		"rokuban_missing_asset_scan_suspected_storage_failure_total",
 	}
 	for _, name := range required {
 		if !got[name] {

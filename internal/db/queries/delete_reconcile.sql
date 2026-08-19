@@ -206,3 +206,43 @@ SELECT rel_path, first_seen FROM orphan_files;
 -- エイジング済みの孤児（first_seen が age_cutoff 以前）。
 -- name: ListAgedOrphanFiles :many
 SELECT rel_path FROM orphan_files WHERE first_seen <= sqlc.arg('age_cutoff')::timestamptz;
+
+-- 「active な media_asset の実体が無い」検出用（issue #343、
+-- docs/storage/retention.md §7「孤児回収の逆」）。orphan_files の判定
+-- （ListAllMediaAssetRelPaths）と対になる逆方向のクエリ: ここでは state が
+-- active な行だけを対象にする（deleting/deleted は物理削除の途中・完了
+-- なのでファイルが無くて当然であり検出対象ではない）。
+--
+-- このファイルの他のソースと違って row_limit を持たない。判定が差集合なので
+-- 入力を切ると答えが変わる（窓の外の行が「もう候補でない」と見なされて
+-- first_seen が毎パス消え、エイジングが永久に完了しない）。理由の全文は
+-- internal/worker/delete_reconcile.go の reconcileMissingAssets の
+-- doc コメント。
+-- name: ListActiveMediaAssets :many
+SELECT id, recording_id, rel_path, kind FROM media_assets WHERE state = 'active';
+
+-- 実体無し候補を記録する。既存行があれば first_seen を保持する
+-- （DO NOTHING。エイジングの起点は「最初に実体無しだと気づいた時刻」）。
+-- name: UpsertMissingMediaAsset :exec
+INSERT INTO missing_media_assets (media_asset_id) VALUES ($1)
+ON CONFLICT (media_asset_id) DO NOTHING;
+
+-- name: DeleteMissingMediaAsset :exec
+DELETE FROM missing_media_assets WHERE media_asset_id = $1;
+
+-- name: ListAllMissingMediaAssetIDs :many
+SELECT media_asset_id FROM missing_media_assets;
+
+-- エイジング済み（first_seen が age_cutoff 以前）で、なお active な行。
+-- rel_path / recording_id / kind は missing_media_assets に複製せず
+-- media_assets との JOIN で引く（不変条件 9）。JOIN で state = 'active' を
+-- 再確認するのは、対象行がその後 deleting/deleted に遷移した、または
+-- resolveUnqualifiedDeletingAsset 等で active に戻った場合に、報告の瞬間の
+-- 状態を見るため（適用の瞬間の再評価。不変条件 9）。
+-- name: ListAgedMissingMediaAssets :many
+SELECT m.media_asset_id AS id, a.recording_id, a.rel_path, a.kind, m.first_seen
+FROM missing_media_assets m
+JOIN media_assets a ON a.id = m.media_asset_id
+WHERE m.first_seen <= sqlc.arg('age_cutoff')::timestamptz
+  AND a.state = 'active'
+ORDER BY m.media_asset_id;

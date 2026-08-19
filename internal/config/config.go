@@ -818,6 +818,15 @@ type CleanupConfig struct {
 	// docs/storage.md §7「一括削除サーキットブレーカーはループ全体に 1 つ」）。
 	// 0 なら既定値（100）を使う。
 	MaxDeletesPerPass int `yaml:"max_deletes_per_pass"`
+
+	// MissingAssetAge は「state='active' なのに実体ファイルが無い」候補が
+	// `missing_media_assets` に記録されてから、確認済みとして報告（メトリクス /
+	// ログ）されるまでのエイジング期間。孤児回収の OrphanAge と同じ理由 ---
+	// 単発の走査揺れ・DB リストア直後の一時的な不整合を確認済みの異常と
+	// 区別する。0 なら既定値（24 時間）。自動削除の閾値ではない
+	// （docs/storage/retention.md §7「孤児回収の逆」。この検出は削除を一切
+	// 行わない）。
+	MissingAssetAge time.Duration `yaml:"missing_asset_age"`
 }
 
 // LogConfig はログ出力の設定。
