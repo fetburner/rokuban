@@ -331,16 +331,14 @@ describe('SearchPage', () => {
     expect(
       screen.queryByRole('button', { name: 'テキスト条件 1 を削除' }),
     ).not.toBeInTheDocument()
-    // 触れないまま検索すると「指定なし」になる、という意味を文言で示す
-    // （「時間帯」節が空のときに出す文言と同じ形）
-    expect(
-      screen.getByText('空欄のまま検索すると指定なし（すべての番組が対象）になります'),
-    ).toBeInTheDocument()
+    // 触れないままなら「指定なし」になる、という意味を文言で示す
+    // （「時間帯」節が空のときに出す文言と同じ形。`ConditionFields` は
+    // ルール画面も使うので画面固有の動詞を入れない ---
+    // rules.test.tsx「ルール作成フォームでも…」が同じ文言を固定している）
+    expect(screen.getByText('指定なし（すべての番組が対象）')).toBeInTheDocument()
 
     await userEvent.type(screen.getByLabelText('テキスト条件 1 の値'), 'ニュース')
-    expect(
-      screen.queryByText('空欄のまま検索すると指定なし（すべての番組が対象）になります'),
-    ).not.toBeInTheDocument()
+    expect(screen.queryByText('指定なし（すべての番組が対象）')).not.toBeInTheDocument()
   })
 
   it('1 行目に入力すると実体化し、「条件を追加」で 2 行目が増える', async () => {

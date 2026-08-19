@@ -256,6 +256,26 @@ describe('RulesPage 条件編集', () => {
     expect(body.times).toEqual([{ weekdays: 127, startSec: 75600, endSec: 82800 }])
   })
 
+  /**
+   * `ConditionFields` は検索画面とルール画面が共有するので、そこに置く文言は
+   * どちらの画面でも事実として正しくなければならない。検索向けの動詞
+   * （「検索すると」）を入れると、条件ゼロで**保存**すると全番組を録り続ける
+   * ルール画面では誤りになる（実際に一度入り込んで差し戻された）。
+   */
+  it('ルール作成フォームでも条件なしの意味が画面に依存しない文言で出る', async () => {
+    stubApi([])
+    const user = userEvent.setup()
+    renderPage()
+
+    await user.click(await screen.findByRole('button', { name: 'ルールを作成' }))
+
+    // テキスト条件・時間帯のどちらも「指定なし（すべての…が対象）」の形で、
+    // 画面ごとの動詞（検索する / 保存する）を含まない
+    expect(screen.getByText('指定なし（すべての番組が対象）')).toBeInTheDocument()
+    expect(screen.getByText('指定なし（すべての時間帯が対象）')).toBeInTheDocument()
+    expect(screen.queryByText(/検索すると/)).not.toBeInTheDocument()
+  })
+
   it('条件が無いまま保存しようとすると確認ダイアログを挟み、キャンセルすると送信されない', async () => {
     const { postBodies } = stubApi([])
     const user = userEvent.setup()

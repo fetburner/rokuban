@@ -121,9 +121,9 @@ function Section({
  * 初画面で打てる場所が無いという回帰だった。
  *
  * 配列が空でも `rows`（下）に見かけ上の 1 行を出し、そこへの入力（`update`）
- * が起きた瞬間だけ `draft.textMatches` に実体化する。触れないまま検索すれば
- * 「指定なし（全番組が対象）」のまま送られる、という既存の意味は変えない
- * （`draftError` は配列に実体が無い間は何も見ない）。
+ * が起きた瞬間だけ `draft.textMatches` に実体化する。触れないままなら
+ * 「指定なし（すべての番組が対象）」のまま送られる、という既存の意味は
+ * 変えない（`draftError` は配列に実体が無い間は何も見ない）。
  *
  * **配列が空の間は「条件を追加」ボタンと行の削除（X）を出さない。** 見かけ上
  * の 1 行目は既に `rows` が出しているので、実体の無い行に対してこれらの
@@ -174,9 +174,11 @@ function TextMatchFields({ draft, onChange, disabled }: FieldsProps) {
       }
     >
       {!hasRows && (
-        <p className="text-xs text-muted-foreground">
-          空欄のまま検索すると指定なし（すべての番組が対象）になります
-        </p>
+        // 「時間帯」節が空のときと同じ形にする。`ConditionFields` は検索と
+        // ルールの両方が使うので、動詞（検索する／保存する）を含めると
+        // 片方の画面で事実として誤る（ルール画面で条件ゼロは「検索したら
+        // 全件」ではなく「全番組を録り続ける」）。
+        <p className="text-xs text-muted-foreground">指定なし（すべての番組が対象）</p>
       )}
       <ul className="flex flex-col gap-3">
         {rows.map((match, index) => (

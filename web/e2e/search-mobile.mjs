@@ -130,10 +130,12 @@ async function checkViewport(viewport) {
   // --- ① 「検索」ボタンがビューポート内・ボトムタブの上に見えている ---
   const searchButton = page.getByRole('button', { name: '検索', exact: true })
   const buttonCount = await searchButton.count()
-  if (buttonCount === 0) {
-    ng.push(`①@${label}: 「検索」ボタンが見つからない`)
+  // 「1 本だけ」を要求する。0 本なら判定対象が無いし、2 本以上なら `.first()` が
+  // 黙って別の要素を測り、測っていないものを緑で報告してしまう（レビュー指摘）。
+  if (buttonCount !== 1) {
+    ng.push(`①@${label}: 「検索」ボタンがちょうど 1 本ではない（${buttonCount} 本）`)
   } else {
-    const buttonBox = await searchButton.first().boundingBox()
+    const buttonBox = await searchButton.boundingBox()
     if (buttonBox === null) {
       ng.push(`①@${label}: 「検索」ボタンの矩形が取れない（非表示扱い）`)
     } else {
@@ -165,13 +167,13 @@ async function checkViewport(viewport) {
   //        サービスチップ列より前に来る ---
   const textInput = page.getByLabel('テキスト条件 1 の値')
   const textInputCount = await textInput.count()
-  if (textInputCount === 0) {
+  if (textInputCount !== 1) {
     ng.push(
       `②@${label}: テキスト条件の入力欄が「条件を追加」を押さずには見えない` +
-        `（初画面に打つ場所が無い）`,
+        `（初画面に打つ場所が無い。見つかった数=${textInputCount}）`,
     )
   } else {
-    const textBox = await textInput.first().boundingBox()
+    const textBox = await textInput.boundingBox()
     const chipBox = await page.getByRole('button', { name: 'NHK総合' }).boundingBox()
     if (textBox === null || chipBox === null) {
       ng.push(`②@${label}: テキスト条件欄またはサービスチップの矩形が取れない`)
