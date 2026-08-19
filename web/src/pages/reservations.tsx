@@ -116,15 +116,18 @@ export function ReservationsPage() {
   )
 }
 
+/**
+ * StateBadge の `detached` の文字色は `text-foreground`（issue #308）。
+ * `text-muted-foreground` だと `bg-muted` との合成後コントラストがライトで
+ * 4.5 を割る（他の bg-muted 小バッジと同じ形）。
+ */
 function StateBadge({ state }: { state: Reservation['state'] }) {
   if (state === 'active') return null
   return (
     <span
       className={cn(
         'shrink-0 rounded px-1.5 py-0.5 text-[0.65rem]',
-        state === 'orphaned'
-          ? 'bg-destructive/10 text-destructive'
-          : 'bg-muted text-muted-foreground',
+        state === 'orphaned' ? 'bg-destructive/10 text-destructive' : 'bg-muted text-foreground',
       )}
     >
       {stateLabels[state]}

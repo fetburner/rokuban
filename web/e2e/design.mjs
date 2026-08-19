@@ -65,6 +65,9 @@ const log = (...a) => console.log(...a)
 // --- スタブ（API の応答） ---------------------------------------------------
 
 const SITE = 'default'
+// 2 サイト運用（`showSite`）の判定専用。`multiSite` オプション付きでしか
+// `/api/sites` に出さない --- 既定の全画面ショット/判定を単一サイトのまま保つため。
+const SITE2 = 'sub'
 const HOUR = 3_600_000
 
 const services = [
@@ -147,6 +150,37 @@ const recordings = [
   { id: 14, site: SITE, source: 'rule', serviceName: 'NHKEテレ', channelType: 'GR', channel: '26', networkId: 32737, serviceId: 1032, eventId: 14, title: '連続テレビ小説', startAt: iso(nowMs - 74 * HOUR), durationMs: 900_000, status: 'finished', sizeBytes: 1_234_567_890, createdAt: iso(nowMs - 74 * HOUR) },
 ]
 
+/**
+ * transferringRecording は site タグ（`showSite`）と `IngestBadge` の
+ * 合成後コントラストを測るための専用フィクスチャ（issue #308 のレビューで
+ * 判明した穴。`recordings` に site が 1 つしか無いので `showSite` が常に偽、
+ * どの録画にも `ingest` フィールドが無いので `IngestBadge` が一度も描画され
+ * ない）。`multiSite` + `extraRecording` オプション付きのときだけ一覧に混ぜる
+ * ので、既定の全画面ショット/判定には影響しない。
+ */
+const transferringRecording = {
+  id: 15,
+  site: SITE2,
+  source: 'manual',
+  serviceName: 'テレビ神奈川',
+  channelType: 'GR',
+  channel: '13',
+  networkId: 32739,
+  serviceId: 1048,
+  eventId: 15,
+  title: 'ローカル番組',
+  startAt: iso(nowMs - 10 * HOUR),
+  durationMs: 1_800_000,
+  status: 'finished',
+  createdAt: iso(nowMs - 10 * HOUR),
+  ingest: {
+    state: 'transferring',
+    writtenBytes: 600_000_000,
+    expectedBytes: 1_000_000_000,
+    observedAt: iso(nowMs - 5_000),
+  },
+}
+
 const rules = [
   { id: 1, name: '朝ドラ', enabled: true, priority: 10, keepOriginal: 'always', textMatches: [{ field: 'name', kind: 'contains', value: '連続テレビ小説' }], createdAt: iso(nowMs - 100 * HOUR), updatedAt: iso(nowMs - 100 * HOUR) },
   { id: 2, name: '（条件なし）', enabled: false, priority: 20, keepOriginal: 'until_encoded', createdAt: iso(nowMs - 100 * HOUR), updatedAt: iso(nowMs - 100 * HOUR) },
@@ -171,10 +205,24 @@ const breakers = [
  * `emptyHome` はホーム（M8-3）の「全セクションが空」を撮る/判定するための
  * フック。予約・容量超過・録画をすべて空にする（ブレーカーは元々 `withBreaker`
  * が制御している）。
+ *
+ * `multiSite` / `extraRecording` は録画一覧の site タグ（`showSite`）と
+ * `IngestBadge` の合成後コントラストを測るための専用フック（issue #308）。
+ * `showSite` は `/api/sites` が 2 件以上返すときだけ真になり、`IngestBadge` は
+ * `ingest` フィールドを持つ録画がないと一度も描画されない --- 既定のフィク
+ * スチャはどちらも満たさないので、これらを付けたときだけ `transferringRecording`
+ * （2 つ目の site）を一覧に混ぜる。既定の全画面ショット/判定は影響を受けない。
  */
 async function installApiStubs(
   page,
-  { withBreaker = false, delayPath = null, delayMs = 0, emptyHome = false } = {},
+  {
+    withBreaker = false,
+    delayPath = null,
+    delayMs = 0,
+    emptyHome = false,
+    multiSite = false,
+    extraRecording = false,
+  } = {},
 ) {
   await page.route('**/api/**', async (route) => {
     const url = new URL(route.request().url())
@@ -188,7 +236,7 @@ async function installApiStubs(
     // SSE は 204 で「つなぎ直さずに諦めさせる」。text/event-stream を返すと
     // 接続が開いたままになり networkidle に到達しない
     if (p === '/api/events') return route.fulfill({ status: 204 })
-    if (p === '/api/sites') return json([SITE])
+    if (p === '/api/sites') return json(multiSite ? [SITE, SITE2] : [SITE])
     // ライブへの導線（主ナビの「ライブ」・/live 画面）はサーバーの live.enabled に
     // 連動する（issue #209）。ここは「有効なデプロイ」の見た目を撮るための判定なので
     // true を返す --- 返さないと主ナビが 5 項目になり、/live はチャンネル一覧ではなく
@@ -206,7 +254,11 @@ async function installApiStubs(
       // 既定の録画一覧（`pages/recordings.tsx`）は status を付けずに常に
       // limit=50 を送るので、ここでの絞り込みはそちらの見た目に影響しない。
       // 実サーバーの既定（program_start_at 降順）に合わせて並べ替えてから絞る。
-      const source = emptyHome ? [] : recordings
+      const source = emptyHome
+        ? []
+        : extraRecording
+          ? [...recordings, transferringRecording]
+          : recordings
       const status = url.searchParams.get('status')
       const limit = Number(url.searchParams.get('limit') ?? source.length)
       const filtered = status ? source.filter((r) => r.status === status) : source
@@ -874,6 +926,49 @@ for (const theme of themes) {
         ng.push(`[${theme}] ${name} の地が無彩でない（チャンネル差 ${chroma(worst)}。${worst}）`)
       }
     }
+    await context.close()
+  }
+
+  // --- 録画一覧: site タグ・IngestBadge の合成後コントラスト（issue #308 の
+  //     レビューで判明した穴） ---
+  //
+  // 上のブロックの「完了バッジ」判定は `StatusBadge` の `finished` しか見ておらず、
+  // PR 本文はそれを「録画の muted バッジ」全体の判定として書いていたが、実際には
+  // site タグ（`showSite` が真になる 2 サイト以上でしか出ない）と `IngestBadge`
+  // （`ingest` フィールドを持つ録画がないと出ない）は既定のフィクスチャでは
+  // 一度も描画されず、`text-muted-foreground` に戻す変異が入っても緑のまま
+  // 通っていた。`multiSite` + `extraRecording` で両方を一度に描画させて測る。
+  {
+    const { context, page } = await open(desktop, theme, screenOf('recordings'), {
+      multiSite: true,
+      extraRecording: true,
+    })
+
+    const siteTag = page.locator('ul span', { hasText: new RegExp(`^${SITE2}$`) })
+    const siteTagBg = await computedOf(siteTag, 'background-color')
+    const siteTagFg = await computedOf(siteTag, 'color')
+    if (siteTagFg === null || siteTagBg === null) {
+      ng.push(`[${theme}] 録画一覧の site タグが見つからない（showSite が効いていない?）`)
+    } else {
+      if (siteTagBg.rgba[3] < 200) {
+        ng.push(`[${theme}] 録画一覧の site タグの地が塗りでない（不透明度 ${siteTagBg.rgba[3]}/255。${siteTagBg.value}）`)
+      }
+      checkContrast(theme, '録画一覧の site タグの文字 / muted の塗り', siteTagFg.rgba, siteTagFg, minTextContrast)
+    }
+
+    // ingest.state = transferring かつ expectedBytes 有りなので文言は「取り込み中 NN%」
+    const ingestBadge = page.locator('ul span', { hasText: /^取り込み中/ })
+    const ingestBg = await computedOf(ingestBadge, 'background-color')
+    const ingestFg = await computedOf(ingestBadge, 'color')
+    if (ingestFg === null || ingestBg === null) {
+      ng.push(`[${theme}] IngestBadge が見つからない（ingestDisplay が undefined を返している?）`)
+    } else {
+      if (ingestBg.rgba[3] < 200) {
+        ng.push(`[${theme}] IngestBadge の地が塗りでない（不透明度 ${ingestBg.rgba[3]}/255。${ingestBg.value}）`)
+      }
+      checkContrast(theme, 'IngestBadge の文字 / muted の塗り', ingestFg.rgba, ingestFg, minTextContrast)
+    }
+
     await context.close()
   }
 

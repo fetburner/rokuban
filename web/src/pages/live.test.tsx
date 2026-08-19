@@ -425,7 +425,30 @@ describe('LivePage', () => {
     // チャンネル一覧側の見出し（`groupByChannelType` の小見出し）にも同じ文字列
     // "BS" が出るため、`getAllByText` で件数だけを見る（両方合わせて 2 件になる
     // ---見出し 1 + 情報欄バッジ 1）
-    expect(screen.getAllByText('BS')).toHaveLength(2)
+    const matches = screen.getAllByText('BS')
+    expect(matches).toHaveLength(2)
+    // 情報欄バッジは <span>（見出しは <p>）。text-muted-foreground だと
+    // bg-muted との合成後コントラストがライトで 4.5 を割る（issue #308）。
+    // jsdom は色を測れないので、退行防止としてはクラス名のリテラル比較まで
+    // （実測は e2e:design の担当）。
+    const badge = matches.find((el) => el.tagName === 'SPAN')
+    expect(badge).toBeDefined()
+    expect(badge!.className).toContain('text-foreground')
+    expect(badge!.className).not.toContain('text-muted-foreground')
+  })
+
+  it('チャンネル一覧のリモコン番号タグは text-foreground（issue #308。text-muted-foreground だと bg-muted との合成後コントラストがライトで 4.5 を割る）', async () => {
+    stubFetch({
+      services: [service({ serviceId: 1, name: 'チャンネル A', remoteControlKeyId: 3 })],
+    })
+    renderLive()
+
+    const link = await screen.findByRole('link', { name: /チャンネル A/ })
+    // jsdom は色を測れないので、退行防止としてはクラス名のリテラル比較まで
+    // （実測は e2e:design の担当）。
+    const badge = within(link).getByText('3')
+    expect(badge.className).toContain('text-foreground')
+    expect(badge.className).not.toContain('text-muted-foreground')
   })
 
   it('チャンネル一覧の別チャンネルを押すと選択が切り替わる', async () => {

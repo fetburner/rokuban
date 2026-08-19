@@ -126,6 +126,16 @@ function stubViewport(
 }
 
 describe('ProgramGrid', () => {
+  it('GR のリモコン番号タグは text-foreground（issue #308。text-muted-foreground だと bg-muted との合成後コントラストがライトで 4.5 を割る）', () => {
+    renderGrid({ services: [service(1024, 'NHK総合')] })
+
+    // jsdom は色を測れないので、退行防止としてはクラス名のリテラル比較まで
+    // （実測は e2e:design の担当）。
+    const badge = screen.getByText('1')
+    expect(badge.className).toContain('text-foreground')
+    expect(badge.className).not.toContain('text-muted-foreground')
+  })
+
   it('番組の位置と高さが放送時刻に対応する', () => {
     renderGrid({
       programs: [program(1, 1024, 19 * 60, 60), program(2, 1024, 20 * 60, 30)],

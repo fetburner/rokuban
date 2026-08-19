@@ -363,6 +363,20 @@ describe('RulesPage 条件編集', () => {
     expect(screen.getByText('番組名に「ニュース」を含む')).toBeInTheDocument()
   })
 
+  it('無効なルールに「無効」バッジが出る', async () => {
+    stubApi([{ ...sampleRule, enabled: false }])
+    renderPage()
+
+    await screen.findByText('ニュース')
+    const badge = screen.getByText('無効')
+    expect(badge).toBeInTheDocument()
+    // text-muted-foreground だと bg-muted との合成後コントラストがライトで
+    // 4.5 を割る（issue #308）。jsdom は色を測れないので、退行防止としては
+    // クラス名のリテラル比較まで（実測は e2e:design の担当）。
+    expect(badge.className).toContain('text-foreground')
+    expect(badge.className).not.toContain('text-muted-foreground')
+  })
+
   it('「検索しながら編集」リンクが /search?ruleId=<id> を指す', async () => {
     stubApi([ruleWithConditions])
     renderPage()

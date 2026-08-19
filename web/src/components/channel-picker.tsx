@@ -214,7 +214,10 @@ function ChannelOption({
         />
       </span>
       {remoteControlKeyId !== undefined && (
-        <span className="shrink-0 rounded bg-muted px-1 text-[10px] text-muted-foreground">
+        // 文字色は text-foreground（issue #308）。text-muted-foreground だと
+        // bg-muted との合成後コントラストがライトで 4.5 を割る（他の bg-muted
+        // 小バッジと同じ形）。
+        <span className="shrink-0 rounded bg-muted px-1 text-[10px] text-foreground">
           {remoteControlKeyId}
         </span>
       )}
