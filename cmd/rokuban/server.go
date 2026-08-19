@@ -112,6 +112,23 @@ func newHTTPServer(addr string, handler http.Handler, readHeaderTimeout, idleTim
 	}
 }
 
+// warnIfAllowedHostsEmpty は server.allowed_hosts が空のまま起動したときに
+// WARN ログを出す。
+//
+// 空は Host ヘッダー検証（DNS rebinding 対策。アプリ内に認証を持たないため、
+// これがある構成での唯一の防壁 —— internal/api.AllowedHosts のコメント参照）を
+// 丸ごとスキップする「意図した緩和」（LAN 内から IP で直叩きする開発／小規模
+// 構成向け）だが、docker-compose の既定構成（.env に `ROKUBAN_ALLOWED_HOSTS` を
+// 設定しない）でも同じ形になる。この場合利用者が意識せず、非信頼 LAN や
+// ポートフォワード環境で無認証・DNS rebinding 保護なしのサーバーを公開ポートに
+// 全開にしてしまう（issue #374）。空でなければ何もしない。
+func warnIfAllowedHostsEmpty(logger *slog.Logger, allowedHosts []string) {
+	if len(allowedHosts) > 0 {
+		return
+	}
+	logger.Warn("server.allowed_hosts is empty: Host header validation (DNS rebinding protection) is disabled; set server.allowed_hosts before exposing this port beyond localhost")
+}
+
 func newServerCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "server",
@@ -126,6 +143,7 @@ func newServerCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			warnIfAllowedHostsEmpty(slog.Default(), cfg.Server.AllowedHosts)
 
 			// このプロセスが束縛される mirakc サイトを --sites から決める
 			// （config キーにしない。issue #183 M4-11「含むもの」4）。
