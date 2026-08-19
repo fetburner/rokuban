@@ -1199,7 +1199,7 @@ type Rule struct {
 	Priority      int                     `json:"priority"`
 	Services      *[]RuleService          `json:"services,omitempty"`
 
-	// Sites 空または省略 = 全サイト。指定する各要素は GET /api/sites が返す既知の site 名でなければならず、レジストリに無い名前（タイポ含む）や空文字列は 400 になる。
+	// Sites 空または省略 = 全サイト。指定する各要素は GET /api/sites が返す既知の site 名でなければならず、レジストリに無い名前（タイポ含む）や空文字列は 400 になる。更新では、そのルールに既に保存されている site 名だけは既知として扱う（GET で得た sites を載せ直す更新が、レジストリから site が消えた後も通るように）。
 	Sites       *[]string         `json:"sites,omitempty"`
 	TextMatches *[]RuleTextMatch  `json:"textMatches,omitempty"`
 	Times       *[]RuleTimeWindow `json:"times,omitempty"`
@@ -1248,7 +1248,7 @@ type RuleInput struct {
 	Priority      *int                    `json:"priority,omitempty"`
 	Services      *[]RuleService          `json:"services,omitempty"`
 
-	// Sites 空または省略 = 全サイト。指定する各要素は GET /api/sites が返す既知の site 名でなければならず、レジストリに無い名前（タイポ含む）や空文字列は 400 になる。
+	// Sites 空または省略 = 全サイト。指定する各要素は GET /api/sites が返す既知の site 名でなければならず、レジストリに無い名前（タイポ含む）や空文字列は 400 になる。更新では、そのルールに既に保存されている site 名だけは既知として扱う（GET で得た sites を載せ直す更新が、レジストリから site が消えた後も通るように）。
 	Sites       *[]string         `json:"sites,omitempty"`
 	TextMatches *[]RuleTextMatch  `json:"textMatches,omitempty"`
 	Times       *[]RuleTimeWindow `json:"times,omitempty"`

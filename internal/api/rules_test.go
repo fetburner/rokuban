@@ -452,13 +452,13 @@ func TestRuleSites_EmptyElementRejected(t *testing.T) {
 	}
 }
 
-// レジストリから site が消えたあとに残る既存行は、書き込み時照合の対象外（掃除しない）
-// だが、その行を含むボディを再送する更新は 400 になる（docs/recording/ruler.md
-// §サイトの扱い、docs/schema/rules.md の rule_sites 節）。web の編集フォームは保存済みの
-// sites を常に載せ直すので、これは「レジストリから site が消えたルールは名前を直すだけの
-// 編集も含めて UI から保存できなくなる」という実挙動になる。docs の記述をこの挙動に
-// 固定するための回帰テスト。
-func TestRuleSites_RegistryDriftLocksOutRoundTripUpdate(t *testing.T) {
+// レジストリから site が消えたあとに残る既存行は書き込み時照合の対象外（掃除しない）。
+// クライアントは GET で得た sites をそのまま載せ直して PATCH する（web の編集フォームも
+// この形）ので、保存済みの名前を照合対象にすると「消えた site を持つルールは名前や
+// 優先度を直すだけの編集も一切保存できない」というロックアウトになる。保存済みの名前は
+// 免除し、**新しく足された未知の名前だけ** 400 にすることを両方向で確認する
+// （docs/schema/rules.md の rule_sites 節）。
+func TestRuleSites_RegistryDriftAllowsRoundTripUpdate(t *testing.T) {
 	pool := testutil.SetupDB(t)
 
 	// tokyo がまだレジストリにある間に作成する。
@@ -495,21 +495,81 @@ func TestRuleSites_RegistryDriftLocksOutRoundTripUpdate(t *testing.T) {
 	srvAfter := httptest.NewServer(routerAfter)
 	defer srvAfter.Close()
 
-	// web の編集フォームと同じ「保存済み sites をそのまま載せ直す」PATCH。
-	roundTripBody := map[string]any{
-		"name":  "site-later-removed",
-		"sites": []string{"tokyo"},
+	patch := func(t *testing.T, bodyMap map[string]any) (int, Rule) {
+		t.Helper()
+		b, err := json.Marshal(bodyMap)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req, err := http.NewRequest(http.MethodPatch, srvAfter.URL+"/api/rules/"+itoa(created.Id), bytes.NewReader(b))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = res.Body.Close() }()
+		var out Rule
+		if res.StatusCode == http.StatusOK {
+			if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return res.StatusCode, out
 	}
-	raw, _ = json.Marshal(roundTripBody)
-	req, _ := http.NewRequest(http.MethodPatch, srvAfter.URL+"/api/rules/"+itoa(created.Id), bytes.NewReader(raw))
-	req.Header.Set("Content-Type", "application/json")
-	updateResp, err := http.DefaultClient.Do(req)
+
+	// 保存済みの sites をそのまま載せ直す read-modify-write な PATCH（名前だけ変える）は
+	// 通り、消えた site も残る。
+	status, updated := patch(t, map[string]any{
+		"name":  "renamed-while-site-missing",
+		"sites": []string{"tokyo"},
+	})
+	if status != http.StatusOK {
+		t.Fatalf("round-trip update after site removed from registry status = %d, want 200", status)
+	}
+	if updated.Name != "renamed-while-site-missing" {
+		t.Errorf("name after round-trip update = %q, want renamed-while-site-missing", updated.Name)
+	}
+	if updated.Sites == nil || !slices.Equal(*updated.Sites, []string{"tokyo"}) {
+		t.Errorf("sites after round-trip update = %v, want [tokyo]", updated.Sites)
+	}
+
+	// 免除は「保存済みの名前」に限る。新しく未知の名前を足す PATCH は 400。
+	status, _ = patch(t, map[string]any{
+		"name":  "renamed-while-site-missing",
+		"sites": []string{"tokyo", "toukyou"},
+	})
+	if status != http.StatusBadRequest {
+		t.Fatalf("adding a new unknown site status = %d, want 400", status)
+	}
+
+	// 免除はルール単位。保存済みでない消えた site 名は他のルールでも通らない。
+	otherBody := map[string]any{"name": "other-rule", "sites": []string{"osaka"}}
+	rawOther, _ := json.Marshal(otherBody)
+	otherResp, err := http.Post(srvAfter.URL+"/api/rules", "application/json", bytes.NewReader(rawOther))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = updateResp.Body.Close() }()
-	if updateResp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("round-trip update after site removed from registry status = %d, want 400 (docs/recording/ruler.md §サイトの扱い)", updateResp.StatusCode)
+	var other Rule
+	if err := json.NewDecoder(otherResp.Body).Decode(&other); err != nil {
+		t.Fatal(err)
+	}
+	_ = otherResp.Body.Close()
+	if otherResp.StatusCode != http.StatusCreated {
+		t.Fatalf("other rule create status = %d, want 201", otherResp.StatusCode)
+	}
+	rawOther, _ = json.Marshal(map[string]any{"name": "other-rule", "sites": []string{"tokyo"}})
+	otherReq, _ := http.NewRequest(http.MethodPatch, srvAfter.URL+"/api/rules/"+itoa(other.Id), bytes.NewReader(rawOther))
+	otherReq.Header.Set("Content-Type", "application/json")
+	otherUpdate, err := http.DefaultClient.Do(otherReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = otherUpdate.Body.Close() }()
+	if otherUpdate.StatusCode != http.StatusBadRequest {
+		t.Fatalf("borrowing another rule's missing site status = %d, want 400", otherUpdate.StatusCode)
 	}
 }
 
