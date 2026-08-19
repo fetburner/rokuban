@@ -2,7 +2,12 @@ import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-quer
 import { act, render } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { epgRefreshIntervalMs, operationalRefreshIntervalMs, useServerEvents } from '@/lib/events'
+import {
+  epgRefreshIntervalMs,
+  operationalRefreshIntervalMs,
+  storageRefreshIntervalMs,
+  useServerEvents,
+} from '@/lib/events'
 
 /**
  * EventSourceStub は jsdom に無い EventSource を埋める。最後に作られたインスタンスを
@@ -76,6 +81,8 @@ const programListKey = ['/api/programs', 'infinite', 0, 1, undefined]
  * 先頭要素を一覧と揃えてあるので運用状態グループ（60 秒）に入る。
  */
 const reservationDetailKey = ['/api/reservations', 'detail', 'tokyo', 300000]
+/** ストレージ残高（`components/storage-balance.tsx`）のキー。 */
+const storageKey = ['/api/storage']
 
 /** fetchCounts は監視中のクエリが実際に何回 fetch されたかを数える。 */
 type FetchCounts = {
@@ -83,10 +90,11 @@ type FetchCounts = {
   reservationDetail: number
   epg: number
   programList: number
+  storage: number
 }
 
 /**
- * ActiveQueries は観測者付きのクエリを 4 本張る。観測者が居ないと invalidate は
+ * ActiveQueries は観測者付きのクエリを 5 本張る。観測者が居ないと invalidate は
  * stale 化するだけで fetch を起こさないので、「再取得が実際に走ったか」を見る
  * テストではこちらを使う。
  */
@@ -119,6 +127,13 @@ function ActiveQueries({ counts }: { counts: FetchCounts }) {
       return Promise.resolve([])
     },
   })
+  useQuery({
+    queryKey: storageKey,
+    queryFn: () => {
+      counts.storage += 1
+      return Promise.resolve([])
+    },
+  })
   return null
 }
 
@@ -146,7 +161,13 @@ async function renderLevelPaths() {
     // 増分は必ず invalidate 由来になる
     defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: Infinity } },
   })
-  const counts: FetchCounts = { reservations: 0, reservationDetail: 0, epg: 0, programList: 0 }
+  const counts: FetchCounts = {
+    reservations: 0,
+    reservationDetail: 0,
+    epg: 0,
+    programList: 0,
+    storage: 0,
+  }
   const view = render(
     <QueryClientProvider client={queryClient}>
       <Subscriber />
@@ -156,7 +177,13 @@ async function renderLevelPaths() {
   await advance(0)
   // 初回 fetch を観測してから始める。ここが 0 のままだと、以降の「増えた」が
   // 何も測っていないことになる
-  expect(counts).toEqual({ reservations: 1, reservationDetail: 1, epg: 1, programList: 1 })
+  expect(counts).toEqual({
+    reservations: 1,
+    reservationDetail: 1,
+    epg: 1,
+    programList: 1,
+    storage: 1,
+  })
   return { queryClient, counts, view }
 }
 
@@ -249,6 +276,43 @@ describe('useServerEvents', () => {
     expect(epgRefreshIntervalMs).toBe(600_000)
   })
 
+  it('SSE が来なくてもストレージ残高は専用の周期で取り直す', async () => {
+    vi.useFakeTimers()
+    const { counts } = await renderLevelPaths()
+
+    // 299 秒では動かない（周期より短い時間で通ってしまうテストにしない）
+    await advance(299_000)
+    expect(counts.storage).toBe(1)
+    // 同じ時点で運用状態（60 秒周期）は 5 回取り直されている --- storage が
+    // 運用状態の周期に紛れ込んでいないことの確認
+    expect(counts.reservations).toBe(5)
+
+    await advance(1_000)
+    expect(counts.storage).toBe(2)
+    // 周期は定数ではなくリテラルで押さえる（定数を変えても通るテストにしない）
+    expect(storageRefreshIntervalMs).toBe(300_000)
+  })
+
+  it('storage にはトピックが無く、SSE イベントでは取り直されない', () => {
+    globalThis.EventSource = EventSourceStub as unknown as typeof EventSource
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: Infinity } },
+    })
+    queryClient.setQueryData(storageKey, [])
+    renderSubscriber(queryClient)
+
+    expect(isStale(queryClient, storageKey)).toBe(false)
+
+    // どのトピックを撃っても storage は無効化されない（対応する SSE トピックを
+    // 持たないグループなので、定期 invalidate だけが回復経路になる）
+    EventSourceStub.last?.emit('reservations')
+    EventSourceStub.last?.emit('recordings')
+    EventSourceStub.last?.emit('breakers')
+    EventSourceStub.last?.emit('epg')
+
+    expect(isStale(queryClient, storageKey)).toBe(false)
+  })
+
   it('epg のイベントで番組リスト（手書きのクエリキー）も取り直す', () => {
     globalThis.EventSource = EventSourceStub as unknown as typeof EventSource
     const queryClient = new QueryClient({
@@ -291,13 +355,27 @@ describe('useServerEvents', () => {
     // 初回接続の open では取り直さない（各クエリの mount 時の取得と二重になる）
     EventSourceStub.last?.emit('open')
     await advance(0)
-    expect(counts).toEqual({ reservations: 1, reservationDetail: 1, epg: 1, programList: 1 })
+    expect(counts).toEqual({
+      reservations: 1,
+      reservationDetail: 1,
+      epg: 1,
+      programList: 1,
+      storage: 1,
+    })
 
-    // 切断 → 再接続。切断中に飛んだ通知は再送されないので、周期を待たずに取り直す
+    // 切断 → 再接続。切断中に飛んだ通知は再送されないので、周期を待たずに取り直す。
+    // storage は SSE トピックを持たないが、再接続時の全グループ invalidate は
+    // topic の有無を見ずに queryGroups 全体を回すのでここも取り直される
     EventSourceStub.last?.emit('error')
     EventSourceStub.last?.emit('open')
     await advance(0)
 
-    expect(counts).toEqual({ reservations: 2, reservationDetail: 2, epg: 2, programList: 2 })
+    expect(counts).toEqual({
+      reservations: 2,
+      reservationDetail: 2,
+      epg: 2,
+      programList: 2,
+      storage: 2,
+    })
   })
 })

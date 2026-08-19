@@ -23,12 +23,42 @@ export const operationalRefreshIntervalMs = 60_000
 export const epgRefreshIntervalMs = 600_000
 
 /**
+ * storageRefreshIntervalMs はストレージ残高（`/api/storage`）を取り直す周期
+ * （ミリ秒、5 分）。
+ *
+ * `/api/storage` はディスクの statfs 観測の射影であって、worker の観測ループが
+ * 書き換えたときにしか値が変わらない。運用状態（60 秒）と同じ周期で回しても、
+ * 同じ値を余分に引くだけで得るものが無い ---
+ * 観測自体がそれより速く更新されない（`lib/storage-forecast.ts` の
+ * `observationStaleAfterMs` doc コメントが記す `internal/worker/storage.go` の
+ * `defaultStorageSyncInterval` は実質 5 分固定）。
+ *
+ * それでもこの値を worker の定数から輸入しない（同 doc コメントと同じ立場:
+ * `GET /api/storage` の契約に入っていない実装詳細に結合すると、worker 側だけが
+ * 変わってフロントが追随できなくなる）。5 分は独立に選んだ固定値で、運用状態
+ * （60 秒）より長い一方、EPG（10 分）ほど長くする理由もない（`/api/storage` は
+ * 番組表グリッドのような大きな応答ではないので、短くする側のコストが小さい）
+ * （テスト: events.test.tsx「SSE が来なくてもストレージ残高は専用の周期で
+ * 取り直す」）。
+ *
+ * SSE のトピックは持たない。`storage_sync` は行トリガーの対象にしていない
+ * （observed_at は毎パス全量 upsert されるだけで、行トリガーにすると statfs の
+ * 頻度そのものに通知量が結合する）ので、この定期 invalidate が唯一の回復経路
+ * になる（`docs/api/sse.md` 参照）。
+ */
+export const storageRefreshIntervalMs = 5 * 60_000
+
+/**
  * QueryGroup は 1 つの SSE トピックと、それによって無効化するクエリキーの
  * 接頭辞、そして SSE が届かなかったときに取り直す周期の組。
  */
 type QueryGroup = {
-  /** SSE のトピック名。 */
-  topic: string
+  /**
+   * SSE のトピック名。`undefined` は「対応する SSE トピックを持たず、定期
+   * invalidate だけで収束させる」グループ（`storage` がこれ。理由は
+   * {@link storageRefreshIntervalMs} 参照）。
+   */
+  topic?: string
   /** invalidate 対象のクエリキーの接頭辞（orval のキーは `[url, params]`）。 */
   prefixes: string[]
   /** SSE が 1 通も届かなくても、この周期で invalidate する。 */
@@ -74,6 +104,11 @@ const queryGroups: QueryGroup[] = [
     prefixes: ['/api/sites/', '/api/programs'],
     refreshIntervalMs: epgRefreshIntervalMs,
   },
+  {
+    // topic を持たない --- storageRefreshIntervalMs の doc コメント参照。
+    prefixes: ['/api/storage'],
+    refreshIntervalMs: storageRefreshIntervalMs,
+  },
 ]
 
 /** invalidateGroup は 1 グループ分のクエリキー接頭辞をまとめて invalidate する。 */
@@ -113,6 +148,9 @@ export function useServerEvents() {
     }
 
     for (const group of queryGroups) {
+      // topic が無いグループ（storage）は SSE を購読しない --- 定期 invalidate
+      // だけで収束させる（storageRefreshIntervalMs の doc コメント参照）
+      if (group.topic === undefined) continue
       listen(group.topic, () => invalidateGroup(queryClient, group))
     }
 
