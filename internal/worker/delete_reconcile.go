@@ -53,10 +53,12 @@ const (
 	// missingAssetLogBudget は 1 パスで reportAgedMissingAssets が Warn ログを
 	// 個別に出す件数の上限。件数（rokuban_media_assets_missing）は既にメトリクス
 	// が持っているので、ログの役目は同定（media_asset_id / rel_path）だけ ---
-	// エイジング済み候補が defaultDeleteReconcileInterval（既定 15 分）ごとに
-	// 無制限に再送されると、劣化したマウントを長時間放置したケースで 1 日
-	// 数十万行の Warn が出続ける（孤児側の deleteReconcileNotifyBudget と同様、
-	// 予算超過分は「and N more」の 1 行にまとめる）。
+	// エイジング済み候補は解消するまで defaultDeleteReconcileInterval（既定
+	// 15 分 = 1 日 96 パス）ごとに全件が再送されるので、上限が無ければ
+	// 「候補数 × 96」行/日になる（劣化したマウントを放置すると候補数は
+	// active な media_assets 全件まで伸びうる。実測はしていない算術）。
+	// 超過分は件数だけを 1 行にまとめる。deleteReconcileNotifyBudget が
+	// 時間の予算なのに対し、こちらは件数の予算（別物）。
 	missingAssetLogBudget = 20
 
 	// deleteReconcileRowLimit はソースごとに 1 パスで拾う行数の上限。
@@ -613,6 +615,14 @@ func (w *DeleteReconcileWorker) reconcileOrphanCandidates(ctx context.Context, q
 // 行を missing_media_assets に記録する（issue #343、孤児回収の逆方向）。
 // ファイルを消さず、media_assets も一切書き換えない（記録のみ）。
 //
+// 走査を逆向きに再利用すると walkMediaFiles の除外（catalog.Subdir の
+// SkipDir）の誤りの向きが反転する: 孤児方向では除外されたパスは「孤児候補に
+// しない」＝削除しない側に倒れるが、逆方向では除外されたパスの資産が
+// 恒久的に「実体無し」と誤報される（15 分ごとの Warn + ゲージが下がらない。
+// 削除はしないので被害は騒音のみ）。今日は catalog/ がトップレベルの予約
+// ディレクトリなので該当する rel_path は存在しないが（docs/storage/contract.md
+// §5）、walkMediaFiles に除外を足すときはこちら側の誤報を先に確認する。
+//
 // reconcileOrphanCandidates は走査より前に ListAllMediaAssetRelPaths を読むが、
 // ここでの ListActiveMediaAssets は走査より後に読む（呼び出し順序どおり）。
 // そのため走査の途中でコミットされた資産は、この 1 パスでは一時的に
@@ -685,10 +695,11 @@ func (w *DeleteReconcileWorker) reconcileMissingAssets(ctx context.Context, q *s
 // （「ファイルが無い」は削除の必要条件であって十分条件ではない。
 // docs/storage/retention.md §7「孤児回収の逆」）。
 //
-// 個別 Warn ログは missingAssetLogBudget 件で打ち切り、超過分は「and N more」
-// の 1 行にまとめる --- 対象が解消するまで defaultDeleteReconcileInterval
-// ごとに同じ全件が再送され続けるため（件数自体は Reset 後の
-// MediaAssetsMissing ゲージが持つので、ログは同定だけを担えばよい）。
+// 個別 Warn ログは missingAssetLogBudget 件で打ち切り、超過分は件数だけを
+// 載せた 1 行（属性 logged / and_more）にまとめる --- 対象が解消するまで
+// defaultDeleteReconcileInterval ごとに同じ全件が再送され続けるため
+// （件数自体は Reset 後の MediaAssetsMissing ゲージが持つので、ログは同定
+// だけを担えばよい）。
 func (w *DeleteReconcileWorker) reportAgedMissingAssets(ctx context.Context, q *sqlcgen.Queries, age time.Duration) error {
 	aged, err := q.ListAgedMissingMediaAssets(ctx, time.Now().Add(-age))
 	if err != nil {
@@ -810,6 +821,9 @@ func (w *DeleteReconcileWorker) deleteOrphanFile(q *sqlcgen.Queries, relPath str
 
 // walkMediaFiles は mediaDir 配下の通常ファイルを列挙する。catalog.Subdir
 // （災害復旧用メタデータ）はメディアアセットではないので走査から除く。
+//
+// 除外を足すときは reconcileMissingAssets の doc コメントを読む --- この結果は
+// 孤児方向と実体無し方向の両方が使い、除外の誤りの向きが二者で反対になる。
 func walkMediaFiles(mediaDir string, fn func(relPath string, info fs.FileInfo)) error {
 	catalogDir := filepath.Join(mediaDir, catalog.Subdir)
 	return filepath.Walk(mediaDir, func(path string, info fs.FileInfo, err error) error {

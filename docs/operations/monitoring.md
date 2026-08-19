@@ -63,7 +63,7 @@ HTTP リスナーは常に 1 本立てる。OpenAPI には載せない（text fo
 | `rokuban_delete_reconcile_bytes_total{source}` | Counter | 物理削除で解放したバイト数 |
 | `rokuban_delete_reconcile_last_pass_timestamp_seconds` | Gauge | 最後に成功した削除 reconcile パスの時刻 |
 | `rokuban_media_assets_missing{kind}` | Gauge | `state='active'` なのに実体ファイルが無いと確認できた media_asset 数（kind 別。孤児回収の逆方向。[ストレージ](../storage/retention.md) §7「孤児回収の逆」）。単発の走査揺れでは増減しない（`missing_asset_age` 連続後に確定）。**ゼロは「大丈夫」の証明ではない** --- 下記「沈黙は保証ではない」参照 |
-| `rokuban_missing_asset_scan_suspected_storage_failure_total` | Counter | 上記の検出パスが「1 件もファイルを観測しなかったのに active な行が存在する」形でスキップされた回数。**進んでいる間は `rokuban_media_assets_missing` が更新されず前回値のまま凍結する**（マウント失敗・空マウントを疑う） |
+| `rokuban_missing_asset_scan_suspected_storage_failure_total` | Counter | 上記の検出パスが「1 件もファイルを観測しなかったのに active な行が存在する」形でスキップされた回数。**進んでいる間は `rokuban_media_assets_missing` が更新されず前回値のまま凍結する**（マウント失敗・空マウントを疑う）。**この形は「資産が本当に全部消えた」小規模系（active が数件しか無くその全件が消えた等）でも発動し、真の異常をゲージから隠す** --- 安全側の判断としては正しいが、進んだら「マウントか、全損そのものか」の両方を見る |
 | `rokuban_encode_reconcile_last_pass_timestamp_seconds` | Gauge | 最後に完走した encode reconcile パスの時刻。**このパスはヒントを落とした録画を拾うバックストップなので、止まっても症状が静か**（[ingest](../recording/ingest.md) §5.5） |
 | `rokuban_encode_reconcile_candidates` | Gauge | 直近パスが見た「原本があるのに encoded が無い」録画数。エンコード実行中の録画も数えるので非ゼロは異常ではない。窓はパスをまたいで回るので、**候補上限（1000）に張り付いてもそれより後ろの録画への到達性は失われない**（次パスが続きから見る）。バックログが窓を埋めている系では末尾を越えたパスでこのゲージが上限を下回る（バックログ件数 mod 1000。ちょうど倍数のときだけ 0 になる。0 まで落ちることは一般には期待できない）。窓が継続して埋まっているかを見たいなら `max_over_time(rokuban_encode_reconcile_candidates[1h])` を使う（同 §5.5） |
 | `rokuban_encode_reconcile_unsatisfiable{profile}` | Gauge | 凍結済みの desired が現在の `encode.profiles` に無い録画数。**非ゼロ = プロファイルの改名 / 削除でその名前の過去録画が永久にエンコードされない**（投入しても `unknown encode profile` で弾かれるので、パスは投入せず数えるだけにしている） |
@@ -191,7 +191,7 @@ ruler / reconciler / record_sweep（watcher の 3 段構えのうち (c) 定期�
 | `/api/breakers` が空 | 削除が正しかったとは限らない。**閾値を下回る削除は素通りする**し、明示操作由来の削除（`action="released"`）はそもそもブレーカーを通らない | `rokuban_ruler_reservations_total{action="deleted"}` の増え方 |
 | `rokuban_reconcile_start_delayed` が 0 | 録画が始まったことの確認ではない（猶予 3 分の内側は検出しない） | `recordings.started_at` |
 | `GET /api/storage` に root が載っている | 最新の観測とは限らない。1 root の statfs 失敗時は前回の観測行をそのまま残すため、行の存在だけでは「観測が続いている」ことを保証しない | 各要素の `observedAt` の鮮度 / `rokuban_storage_root_last_success_timestamp_seconds{root}` |
-| `rokuban_media_assets_missing` が 0（または全 kind の系列が消えている） | 「実体無しの資産が無い」を意味しない。マウントが落ちている・空マウントを疑ったパスは記録自体を見送るため、その間はこのゲージが前回値のまま凍結する | `rokuban_missing_asset_scan_suspected_storage_failure_total` が増えていないこと |
+| `rokuban_media_assets_missing` が 0（または全 kind の系列が消えている） | 「実体無しの資産が無い」を意味しない。マウントが落ちている・空マウントを疑ったパスは記録自体を見送るため、その間はこのゲージが前回値のまま凍結する。**疑いを経ずに凍結する経路もある** --- 走査エラー・DB エラーでパスが途中 return した場合はゲージに触れないまま終わり、疑いのカウンタも進まない | `rokuban_missing_asset_scan_suspected_storage_failure_total` が増えていないこと **かつ** `rokuban_delete_reconcile_last_pass_timestamp_seconds` が進んでいること（前者は疑い経路、後者はエラー経路の凍結を捕まえる） |
 
 ### 経緯と失敗事例
 

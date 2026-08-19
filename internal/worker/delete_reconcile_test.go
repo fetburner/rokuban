@@ -1765,6 +1765,10 @@ func TestDeleteReconcileWorker_MissingAsset_SuspectedMountFailure_FreezesGauge(t
 	}
 
 	const sentinel = 42
+	// 番兵はプロセス内のゲージに残るので、このテストの外へ漏らさない
+	// （今は後続テストが必ず Reset を通るが、-run で部分実行すると
+	// 順序依存になる）。
+	t.Cleanup(metrics.MediaAssetsMissing.Reset)
 	metrics.MediaAssetsMissing.WithLabelValues("original").Set(sentinel)
 	suspectedBefore := promtestutil.ToFloat64(metrics.MissingAssetScanSuspectedStorageFailure)
 
