@@ -367,6 +367,30 @@ pnpm build && pnpm preview --port 4173 --strictPort &
 E2E_URL=http://localhost:4173 pnpm e2e:programs-bottom-nav
 ```
 
+### 検索の主操作がモバイル初画面に届くか（`search-mobile.mjs`）
+
+`/search` は条件フォームの大半をチップ列（サービス・チャンネル種別・ジャンル・
+時間帯）が占める（issue #305）。「390px 幅の初画面で『検索』ボタンがボトムタブに
+隠れない」「テキスト条件の入力がサービスチップより先に届く」はどちらも実レイアウトの
+上下関係そのもので、jsdom の `getBoundingClientRect()`（常に 0 を返す）では測れない。
+
+見るのは、`page.goto` 直後に**一切スクロールせず**:
+
+- ① 「検索」ボタンの矩形がビューポート内に収まり、モバイルのボトムタブ
+  （`nav[aria-label="主ナビゲーション"]`）と重なっていないこと
+- ② テキスト条件 1 行目の値入力が「条件を追加」を押さずに直接見えており、
+  サービスのチップ列より前（画面の上）にあること
+- ③ ②はデスクトップ（1280px）でも確認する --- issue 本文が「デスクトップでは
+  ボタンは見えるが、キーワードは同じく一段奥」と言っているため
+
+`design.mjs` と同じ手（`/api/**` を `page.route` で丸ごと差し替え）で mirakc も
+DB も要らない。⓪（配っている bundle と `dist/` の一致）も自分で確認する。
+
+```sh
+pnpm build && pnpm preview --port 4173 --strictPort &
+E2E_URL=http://localhost:4173 pnpm e2e:search-mobile
+```
+
 ## CI では回さない
 
 実サーバーと実 mirakc のデータに依存するため、CI には載せない。**ローカルでの受け入れ確認**の

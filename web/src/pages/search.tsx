@@ -213,8 +213,16 @@ export function SearchPage() {
           submit()
         }}
       >
-        <ConditionFields draft={draft} onChange={setDraft} />
-
+        {/*
+         * 主操作（検索・条件をクリア）は条件の入力欄より前に置く（issue #305）。
+         * `ConditionFields` はサービス・ジャンル・時間帯などのチップが画面の
+         * 大半を占めるため、以前はこのブロックが `ConditionFields` の後ろに
+         * あり、390px 幅ではスクロールしないとボトムタブの上に出てこなかった。
+         * 条件を試す画面なので「まず送信できる状態を見せ、絞り込みは下に続く」
+         * という並びに変える --- 条件を追加する操作自体は `ConditionFields`
+         * 先頭のテキスト条件が担うので、ここで先に出しても
+         * 「サービスチップ列より先に届く」という受け入れ基準は変わらない。
+         */}
         <div className="flex flex-col gap-2">
           {/* 送れない理由は押せないボタンの隣に出す。ボタンだけ無効にすると
               「なぜ押せないのか」が分からない */}
@@ -240,6 +248,8 @@ export function SearchPage() {
             </Button>
           </div>
         </div>
+
+        <ConditionFields draft={draft} onChange={setDraft} />
       </form>
 
       <RuleCostSummary

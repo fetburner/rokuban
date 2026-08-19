@@ -277,6 +277,39 @@ async function addKeyword(value: string, mode: '正規表現' | 'キーワード
 }
 
 describe('SearchPage', () => {
+  /**
+   * issue #305: 初画面で「条件を追加」を押さなくてもテキスト条件が打てて、
+   * その入力欄がサービスのチップ列より DOM 順で前に来ることを確認する。
+   *
+   * `addKeyword`（上の helper）は「条件を追加」を押してから打つ経路なので、
+   * ここでは意図的に使わず `screen.getByLabelText` で直接見つけて打つ ---
+   * それ自体がこのテストの主張（「条件を追加」を経由しなくても届く）になる。
+   */
+  it('「条件を追加」を押さなくてもテキスト条件が打て、サービスチップより前に来る', async () => {
+    const { searchBodies } = stubApi()
+    renderPage()
+
+    const serviceChip = await screen.findByRole('button', { name: 'NHK総合' })
+    // 「条件を追加」を押さずに、常時出ているはずの 1 行目を直接見つけて打つ。
+    const textInput = screen.getByLabelText('テキスト条件 1 の値')
+
+    // DOM 順でテキスト条件がサービスチップより前に来る（この画面は縦に
+    // 積むだけのレイアウトなので、DOM 順がそのまま見た目の上下関係になる。
+    // 実レイアウトでの可視性・重なりは jsdom では測れないため、その部分は
+    // web/e2e/search-mobile.mjs が担う）。
+    expect(
+      textInput.compareDocumentPosition(serviceChip) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0)
+
+    await userEvent.type(textInput, 'ニュース')
+    await userEvent.click(screen.getByRole('button', { name: '検索' }))
+
+    expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+    expect(searchBodies).toEqual([
+      { textMatches: [{ target: 'name', mode: 'keyword', value: 'ニュース' }] },
+    ])
+  })
+
   it('検索前の案内と 0 件の案内を混同しない', async () => {
     stubApi()
     renderPage()
@@ -448,7 +481,10 @@ describe('SearchPage', () => {
 
     expect(screen.getByText('条件を指定して検索してください')).toBeInTheDocument()
     expect(screen.queryByText('ニュース7')).not.toBeInTheDocument()
-    expect(screen.queryByLabelText('テキスト条件 1 の値')).not.toBeInTheDocument()
+    // テキスト条件の 1 行目は「条件を追加」を押さなくても常に見かけ上出ている
+    // ため存在チェックはできない（issue #305）。クリア後に入っていた値まで
+    // 引き継いでいないことを、値が空であることで確かめる。
+    expect(screen.getByLabelText('テキスト条件 1 の値')).toHaveValue('')
   })
 
   describe('値札（コストの見込み）', () => {
@@ -763,8 +799,9 @@ describe('SearchPage', () => {
 
       expect(await screen.findByText(/ルール #999 が見つかりません/)).toBeInTheDocument()
       // 見つからない以上、条件フォームは空のまま（存在しないルールの条件を
-      // 捏造しない）
-      expect(screen.queryByLabelText('テキスト条件 1 の値')).not.toBeInTheDocument()
+      // 捏造しない）。1 行目は「条件を追加」を押さなくても常に見かけ上出て
+      // いるため（issue #305）、存在ではなく値が空であることで確かめる。
+      expect(screen.getByLabelText('テキスト条件 1 の値')).toHaveValue('')
     })
 
     it('条件を変更して上書き保存すると PATCH に変更後の条件が乗り、画面に留まる（核心）', async () => {

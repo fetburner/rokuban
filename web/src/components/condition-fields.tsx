@@ -111,12 +111,36 @@ function Section({
   )
 }
 
+/**
+ * TextMatchFields はテキスト条件の入力。
+ *
+ * **1 行目は「条件を追加」を押さなくても常に編集できる**（issue #305）。
+ * 以前は `draft.textMatches` が空の間、この節は「指定なし」という文言だけを
+ * 出し、実際に打てる欄は「条件を追加」を押した先にしかなかった --- 検索・
+ * ルールいずれの画面でもこの節は `ConditionFields` の先頭に来るのに、
+ * 初画面で打てる場所が無いという回帰だった。
+ *
+ * 配列が空でも `rows`（下）に見かけ上の 1 行を出し、そこへの入力（`update`）
+ * が起きた瞬間だけ `draft.textMatches` に実体化する。触れないまま検索すれば
+ * 「指定なし（全番組が対象）」のまま送られる、という既存の意味は変えない
+ * （`draftError` は配列に実体が無い間は何も見ない）。
+ */
 function TextMatchFields({ draft, onChange, disabled }: FieldsProps) {
   const update = (index: number, patch: Partial<TextMatchDraft>) =>
-    onChange((d) => ({
-      ...d,
-      textMatches: d.textMatches.map((m, i) => (i === index ? { ...m, ...patch } : m)),
-    }))
+    onChange((d) =>
+      index < d.textMatches.length
+        ? {
+            ...d,
+            textMatches: d.textMatches.map((m, i) => (i === index ? { ...m, ...patch } : m)),
+          }
+        : // まだ実体の無い見かけ上の行（下の `rows` のフォールバック）への
+          // 最初の操作。実体化して配列に加える。
+          { ...d, textMatches: [...d.textMatches, { ...newTextMatch(), ...patch }] },
+    )
+
+  // 配列が空でも 1 行目は見かけ上出す。「条件を追加」で新規行を作ってからで
+  // ないと打てない、という 1 クリック分の迂回を無くすため。
+  const rows = draft.textMatches.length > 0 ? draft.textMatches : [newTextMatch()]
 
   return (
     <Section
@@ -127,105 +151,106 @@ function TextMatchFields({ draft, onChange, disabled }: FieldsProps) {
           variant="outline"
           size="sm"
           disabled={disabled}
-          onClick={() => onChange((d) => ({ ...d, textMatches: [...d.textMatches, newTextMatch()] }))}
+          onClick={() =>
+            onChange((d) =>
+              // 配列が空のときは何もしない --- 1 行目は上の `rows` が既に
+              // 見かけ上出しているので、ここで追加すると「見えている行」と
+              // 「実際に増える行」が食い違う（2 行目以降を追加したいときは、
+              // まず 1 行目に何か入力して実体化させてから押す）。
+              d.textMatches.length === 0
+                ? d
+                : { ...d, textMatches: [...d.textMatches, newTextMatch()] },
+            )
+          }
         >
           条件を追加
         </Button>
       }
     >
-      {draft.textMatches.length === 0 ? (
-        <p className="text-xs text-muted-foreground">指定なし（すべての番組が対象）</p>
-      ) : (
-        <ul className="flex flex-col gap-3">
-          {draft.textMatches.map((match, index) => (
-            <li
-              key={index}
-              className="flex flex-col gap-2 rounded-lg border border-border p-3"
-            >
-              <div className="flex gap-2">
-                {/* 見出しは短く、読み上げの名前は行番号込みにする（同じ見出しの
-                    入力が行ごとに増えるため、名前が重複すると指し示せない） */}
-                <Field label="対象" className="w-28 shrink-0">
-                  <Select
-                    aria-label={`テキスト条件 ${index + 1} の対象`}
-                    value={match.target}
-                    disabled={disabled}
-                    onChange={(e) =>
-                      update(index, { target: e.target.value as RuleTextMatchTarget })
-                    }
-                  >
-                    {Object.entries(textTargetLabels).map(([value, label]) => (
-                      <option key={value} value={value}>
-                        {label}
-                      </option>
-                    ))}
-                  </Select>
-                </Field>
-                <Field label="モード" className="w-28 shrink-0">
-                  <Select
-                    aria-label={`テキスト条件 ${index + 1} のモード`}
-                    value={match.mode}
-                    disabled={disabled}
-                    onChange={(e) => update(index, { mode: e.target.value as RuleTextMatchMode })}
-                  >
-                    {Object.entries(textModeLabels).map(([value, label]) => (
-                      <option key={value} value={value}>
-                        {label}
-                      </option>
-                    ))}
-                  </Select>
-                </Field>
-                <Field label="値" className="min-w-0 flex-1">
-                  <Input
-                    aria-label={`テキスト条件 ${index + 1} の値`}
-                    value={match.value}
-                    placeholder={match.mode === 'regex' ? '^ニュース' : 'ニュース'}
-                    disabled={disabled}
-                    onChange={(e) => update(index, { value: e.target.value })}
-                  />
-                </Field>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  aria-label={`テキスト条件 ${index + 1} を削除`}
-                  className="mt-4 shrink-0"
+      <ul className="flex flex-col gap-3">
+        {rows.map((match, index) => (
+          <li key={index} className="flex flex-col gap-2 rounded-lg border border-border p-3">
+            <div className="flex gap-2">
+              {/* 見出しは短く、読み上げの名前は行番号込みにする（同じ見出しの
+                  入力が行ごとに増えるため、名前が重複すると指し示せない） */}
+              <Field label="対象" className="w-28 shrink-0">
+                <Select
+                  aria-label={`テキスト条件 ${index + 1} の対象`}
+                  value={match.target}
                   disabled={disabled}
-                  onClick={() =>
-                    onChange((d) => ({
-                      ...d,
-                      textMatches: d.textMatches.filter((_, i) => i !== index),
-                    }))
-                  }
+                  onChange={(e) => update(index, { target: e.target.value as RuleTextMatchTarget })}
                 >
-                  <X />
-                </Button>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <Chip
-                  active={match.caseSensitive}
+                  {Object.entries(textTargetLabels).map(([value, label]) => (
+                    <option key={value} value={value}>
+                      {label}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+              <Field label="モード" className="w-28 shrink-0">
+                <Select
+                  aria-label={`テキスト条件 ${index + 1} のモード`}
+                  value={match.mode}
                   disabled={disabled}
-                  onClick={() => update(index, { caseSensitive: !match.caseSensitive })}
+                  onChange={(e) => update(index, { mode: e.target.value as RuleTextMatchMode })}
                 >
-                  大文字小文字を区別
-                </Chip>
-                <Chip
-                  active={match.negate}
+                  {Object.entries(textModeLabels).map(([value, label]) => (
+                    <option key={value} value={value}>
+                      {label}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+              <Field label="値" className="min-w-0 flex-1">
+                <Input
+                  aria-label={`テキスト条件 ${index + 1} の値`}
+                  value={match.value}
+                  placeholder={match.mode === 'regex' ? '^ニュース' : 'ニュース'}
                   disabled={disabled}
-                  onClick={() => update(index, { negate: !match.negate })}
-                >
-                  除外
-                </Chip>
-              </div>
-              {match.mode === 'regex' && (
-                <p className="text-xs text-muted-foreground">
-                  Postgres の POSIX ARE。先読み・後読みは使えません
-                </p>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
+                  onChange={(e) => update(index, { value: e.target.value })}
+                />
+              </Field>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                aria-label={`テキスト条件 ${index + 1} を削除`}
+                className="mt-4 shrink-0"
+                disabled={disabled}
+                onClick={() =>
+                  onChange((d) => ({
+                    ...d,
+                    textMatches: d.textMatches.filter((_, i) => i !== index),
+                  }))
+                }
+              >
+                <X />
+              </Button>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Chip
+                active={match.caseSensitive}
+                disabled={disabled}
+                onClick={() => update(index, { caseSensitive: !match.caseSensitive })}
+              >
+                大文字小文字を区別
+              </Chip>
+              <Chip
+                active={match.negate}
+                disabled={disabled}
+                onClick={() => update(index, { negate: !match.negate })}
+              >
+                除外
+              </Chip>
+            </div>
+            {match.mode === 'regex' && (
+              <p className="text-xs text-muted-foreground">
+                Postgres の POSIX ARE。先読み・後読みは使えません
+              </p>
+            )}
+          </li>
+        ))}
+      </ul>
     </Section>
   )
 }
