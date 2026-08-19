@@ -51,7 +51,11 @@ ALTER TABLE recordings DROP COLUMN purge_after;
 -- 旧 recordings_purge_after_idx に相当する索引は作らない。即時要求は行そのもの
 -- なので、下の EXISTS は主キー索引で引ける（行数も「猶予を待てない要求」の数
 -- しかない）。旧索引は `recordings (purge_after) WHERE purge_after IS NOT NULL`
--- で、下の OR の中では単独では選ばれず BitmapOr 経由しかなかった。
+-- で、下の OR（`purge_after <= now() OR deleted_at <= grace_cutoff`）の中では
+-- 単独では選ばれず BitmapOr 経由しかなかった
+-- （20 万行・1/37 が purge_after 非 NULL の合成データで EXPLAIN を実測。
+-- `Bitmap Heap Scan` の下が `BitmapOr` → 両索引への `Bitmap Index Scan` で、
+-- 片方だけを使う実行計画にはならなかった）。
 
 -- ごみ箱腕の名前付き述語（00029）を新しい形に置き換える。`<= now()` の比較を
 -- 捨て、「要求の行があるか」だけを見る。

@@ -4,7 +4,7 @@
 
 **録画試行の永続履歴**。成功だけでなく失敗（`recording.failed`）も行として残す — 「録画品質の実測」と再放送待ち判断の入力になる。番組情報は mirakc record / schedule の program ペイロードから**非正規化スナップショット**し、EPG テーブルにも mirakc にも依存せず自己完結する。
 
-**recordings に新しく列を足すときの基準は「試行の帰結の観測だけを持つ脊椎であること」**（不変条件 13）。`media_assets`（下記 §6）はこの表を `recording_id` で指す衛星表 —— 判定基準・境界は [invariants.md](../invariants.md) §13。`keep_original` / `encode_profiles`（予約オプションの効力スナップショット。ingest worker が凍結し api が追記する）も同じ基準で衛星表 `recording_encode_policy` に切り出してある（下記「recording_encode_policy — 原本保持ポリシーの凍結」参照）。「今すぐ完全削除してほしい」というユーザーの要求（api が立てて api が取り消す）も同じ基準で衛星表 `recording_purge_requests` にある（下記「ごみ箱」参照）。書き手が脊椎（watcher / reconciler）ではなく別の状態機械（ingest worker の凍結・api の事後追加 / 削除要求）である列は recordings 本体に残さない。**「隣に `deleted_at` があるから」は根拠にならない** —— あの 2 列（`deleted_at` / `superseded_at`）が本体にあるのは部分一意索引の述語が参照するからで、既存のテナントであることを根拠にすると間借りが次の間借りを正当化する。
+**recordings に新しく列を足すときの基準は「試行の帰結の観測だけを持つ脊椎であること」**（不変条件 13）。`media_assets`（下記 §6）はこの表を `recording_id` で指す衛星表 —— 判定基準・境界は [invariants.md](../invariants.md) §13。`keep_original` / `encode_profiles`（予約オプションの効力スナップショット。ingest worker が凍結し api が追記する）も同じ基準で衛星表 `recording_encode_policy` に切り出してある（下記「recording_encode_policy — 原本保持ポリシーの凍結」参照）。「今すぐ完全削除してほしい」というユーザーの要求（api が立てて api が取り消す）も同じ基準で衛星表 `recording_purge_requests` にある（下記「recording_purge_requests — 即時完全削除の要求（衛星表）」参照）。書き手が脊椎（watcher / reconciler）ではなく別の状態機械（ingest worker の凍結・api の事後追加 / 削除要求）である列は recordings 本体に残さない。**「隣に `deleted_at` があるから」は根拠にならない** —— あの 2 列（`deleted_at` / `superseded_at`）が本体にあるのは部分一意索引の述語が参照するからで、既存のテナントであることを根拠にすると間借りが次の間借りを正当化する。
 
 ```sql
 CREATE TABLE recordings (
@@ -106,6 +106,17 @@ CREATE INDEX ON recordings (purged_at) WHERE purged_at IS NULL;  -- ごみ箱一
   - `deleted_at + 猶予期間（既定 30 日）` 経過
 - 物理削除後も recordings 行と media_assets の tombstone は残る → ごみ箱を空にしても録画履歴・ドロップ統計・重複排除は壊れない
 - API: `DELETE /api/recordings/{id}` / `POST .../restore` / `POST .../purge` / `GET /api/recordings?trash=true`
+
+即時要求の表の形・書き手の判断は下記「recording_purge_requests — 即時完全削除の要求（衛星表）」参照。
+
+### recording_purge_requests — 即時完全削除の要求（衛星表）
+
+```sql
+CREATE TABLE recording_purge_requests (
+    recording_id bigint PRIMARY KEY REFERENCES recordings (id) ON DELETE CASCADE,
+    requested_at timestamptz NOT NULL DEFAULT now()
+);
+```
 
 **即時要求は `recordings` の列ではなく `recording_purge_requests` 衛星表に置く。行の存在 = 要求、取り消しは DELETE**（不変条件 10 / 13）。理由は書き手 —— この要求を定常運用で立てるのも取り消すのも api ロールで、`recordings` 本体を書く watcher / reconciler（試行の帰結の観測）ではない（rescue は別枠 —— 災害復旧で catalog ダンプから全表を書き戻すので、この表も他の表と同じように書く）。「`deleted_at` が本体にあるから隣に置く」は根拠にならない: `deleted_at` / `superseded_at` が本体に残っているのは部分一意索引 `recordings_unique_active_event` の述語がこの 2 列を参照し、述語が他表を参照できないからで、即時要求はその述語に出ない（枠が明くのは `deleted_at` / `superseded_at` だけ）。
 
