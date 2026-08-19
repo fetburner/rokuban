@@ -78,8 +78,11 @@ const browser = await chromium.launch()
 /**
  * openStubbed は `/api/**` を丸ごと差し替えたページを開く。カウンタ（`counts`）は
  * ページごとに新しくするので、増分はそのページの回復経路だけを表す。
+ *
+ * `overrides` はパス名 -> レスポンス JSON 文字列の対応。既定のスタブ（`[]` 等）で
+ * 画面が要求を満たせないエンドポイントだけ個別に上書きする。
  */
-async function openStubbed(pathname, label) {
+async function openStubbed(pathname, label, overrides = {}) {
   counts = new Map()
   const p = await browser.newPage({ viewport: { width: 1280, height: 800 } })
   p.on('pageerror', (e) => {
@@ -100,7 +103,8 @@ async function openStubbed(pathname, label) {
       return
     }
     const body =
-      requested === '/api/capabilities'
+      overrides[requested] ??
+      (requested === '/api/capabilities'
         ? '{"encode":false,"live":false,"storage":false}'
         : requested === '/api/version'
           ? '{"version":"e2e"}'
@@ -110,7 +114,7 @@ async function openStubbed(pathname, label) {
               ? JSON.stringify(reservation)
               : /\/overlaps$/.test(requested)
                 ? '{"count":0,"reservations":[]}'
-                : '[]'
+                : '[]')
     await route.fulfill({ status: 200, headers: { 'content-type': 'application/json' }, body })
   })
   // 時計を握ってから開く。10 分を実時間で待たない
@@ -161,6 +165,29 @@ check('初回: 予約詳細', count(detail), 1)
 await detailPage.clock.runFor(operationalMs)
 await detailPage.waitForTimeout(500)
 check('60 秒後: 予約詳細（運用状態グループ）', count(detail), 2)
+
+// ストレージ残高（components/storage-balance.tsx。設置先は pages/recordings.tsx の
+// 1 箇所だけ）。SSE トピックを持たず、専用の 5 分周期の定期 invalidate だけで
+// 収束することを実ブラウザで確認する（docs/api/sse.md の実測値と対応させる）。
+log('\n=== ストレージ残高（/recordings）===')
+const storageMs = 300_000 // events.ts の storageRefreshIntervalMs と同じ値をリテラルで書く
+const storagePage = await openStubbed('/recordings', '録画一覧 / ストレージ残高', {
+  '/api/storage':
+    '[{"root":"media","path":"/data/media","totalBytes":1000000000000,' +
+    '"usedBytes":400000000000,"availableBytes":600000000000,' +
+    '"observedAt":"2026-08-19T00:00:00.000Z"}]',
+})
+
+log('初回ロード後:', Object.fromEntries([...counts.entries()].sort()))
+check('初回: ストレージ', count('/api/storage'), 1)
+
+await storagePage.clock.runFor(storageMs)
+await storagePage.waitForTimeout(500)
+check('5 分後: ストレージ', count('/api/storage'), 2)
+
+await storagePage.clock.runFor(storageMs)
+await storagePage.waitForTimeout(500)
+check('10 分後: ストレージ', count('/api/storage'), 3)
 
 await browser.close()
 if (ng.length > 0) {

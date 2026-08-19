@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-quer
 import { act, render } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { getGetStorageQueryKey } from '@/api/generated'
 import {
   epgRefreshIntervalMs,
   operationalRefreshIntervalMs,
@@ -81,8 +82,12 @@ const programListKey = ['/api/programs', 'infinite', 0, 1, undefined]
  * 先頭要素を一覧と揃えてあるので運用状態グループ（60 秒）に入る。
  */
 const reservationDetailKey = ['/api/reservations', 'detail', 'tokyo', 300000]
-/** ストレージ残高（`components/storage-balance.tsx`）のキー。 */
-const storageKey = ['/api/storage']
+/**
+ * ストレージ残高（`components/storage-balance.tsx`）のキー。手書きではなく
+ * 生成キーを import する --- 手書きだと画面が実際に使っているキーとの
+ * ずれを検出できない（`web/e2e/sse-refresh.mjs` の「実ブラウザ」参照）。
+ */
+const storageKey = getGetStorageQueryKey()
 
 /** fetchCounts は監視中のクエリが実際に何回 fetch されたかを数える。 */
 type FetchCounts = {

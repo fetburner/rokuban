@@ -81,7 +81,7 @@ window focus も別操作も起きない」画面は、`staleTime` だけでは�
 |---|---|---|---|
 | 運用状態 | `/api/reservations` `/api/capacity/overages` `/api/recordings` `/api/breakers` | 60 秒 | 応答が小さく、変化が速い |
 | EPG | `/api/sites/`（番組表グリッド・サービス一覧・重なり）+ `/api/programs`（番組リストの手書きキー） | 10 分 | 数十チャンネル x 24 時間の大きな時間窓を 1 回で取る。EPG 同期ジョブ自体が分オーダーでしか動かないので、短周期で回しても得るものが無い |
-| ストレージ | `/api/storage` | 5 分 | ディスクの statfs 観測の射影で、worker の観測ループが書き換えたときにしか値が変わらない。運用状態（60 秒）と同じ周期にしても同じ値を余分に引くだけで得るものが無い一方、応答は軽量なので EPG（10 分）ほど長くする理由もない。SSE のトピックは持たない --- `storage_sync` は行トリガーの対象にしていないため（statfs の頻度そのものに通知量を結合させたくない）、この定期 invalidate が唯一の収束経路 |
+| ストレージ | `/api/storage` | 5 分 | ディスクの statfs 観測の射影で、worker の観測ループが書き換えたときにしか値が変わらない。運用状態（60 秒）と同じ周期にしても同じ値を余分に引くだけで得るものが無い一方、応答は軽量なので EPG（10 分）ほど長くする理由もない。SSE のトピックは持たない --- `storage_sync` は行トリガーの対象にしていないため（statfs の頻度そのものに通知量を結合させたくない）。SSE トピックからの invalidate は持たないので、収束はこの定期 invalidate に加えて、再接続時の全グループ invalidate と mount / window focus に依る |
 
 **キーの先頭要素がグループの所属を決める。** 接頭辞の照合はクエリキーの先頭要素に対する
 前方一致なので、**URL が `/api/sites/...` でも先頭要素が `'/api/reservations'` なら
@@ -123,7 +123,9 @@ window focus も別操作も起きない」画面は、`staleTime` だけでは�
   SSE を張ったまま 1 通も送らず、`/api/**` のリクエスト数を数える。実測は
   60 秒で `/api/reservations` `/api/breakers` が 1 → 2、10 分で
   `/api/sites/{site}/programs` `/api/sites/{site}/services` が 1 → 2、
-  `/api/reservations` が 11（10 分ぶんの 10 回 + 初回）
+  `/api/reservations` が 11（10 分ぶんの 10 回 + 初回）。`/api/storage`
+  （`/recordings` に設置している `StorageBalance`）は 5 分で 1 → 2、10 分で
+  2 → 3
 
 **実 notifier に対する収束時間と、切断時に実際の `EventSource` が `error` → `open` を
 この順で出すことは未計測**（仕様上はそうなる。再接続の経路を確かめているのはスタブの方だけ）。

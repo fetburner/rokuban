@@ -41,16 +41,19 @@ export const epgRefreshIntervalMs = 600_000
  * （テスト: events.test.tsx「SSE が来なくてもストレージ残高は専用の周期で
  * 取り直す」）。
  *
- * SSE のトピックは持たない。`storage_sync` は行トリガーの対象にしていない
- * （observed_at は毎パス全量 upsert されるだけで、行トリガーにすると statfs の
- * 頻度そのものに通知量が結合する）ので、この定期 invalidate が唯一の回復経路
- * になる（`docs/api/sse.md` 参照）。
+ * SSE トピックからの invalidate は持たない。`storage_sync` は行トリガーの対象に
+ * していない（observed_at は毎パス全量 upsert されるだけで、行トリガーにすると
+ * statfs の頻度そのものに通知量が結合する）ため。収束はこの定期 invalidate に
+ * 加えて、再接続時の全グループ invalidate（{@link useServerEvents} 参照。topic の
+ * 有無を見ずに queryGroups 全体を回す）と mount / window focus に依る
+ * （テスト: events.test.tsx「再接続したら切断中の変更を全グループ取り直す」。
+ * `docs/api/sse.md` 参照）。
  */
 export const storageRefreshIntervalMs = 5 * 60_000
 
 /**
- * QueryGroup は 1 つの SSE トピックと、それによって無効化するクエリキーの
- * 接頭辞、そして SSE が届かなかったときに取り直す周期の組。
+ * QueryGroup は SSE トピック（無い場合もある）と、それによって無効化するクエリ
+ * キーの接頭辞、そして SSE が届かなかったときに取り直す周期の組。
  */
 type QueryGroup = {
   /**
@@ -67,6 +70,8 @@ type QueryGroup = {
 
 /**
  * queryGroups は SSE のトピックと、それによって無効化するクエリキーの接頭辞の対応。
+ * トピックを持たないグループ（`storage`）は SSE を購読せず、定期 invalidate
+ * （加えて再接続時の全グループ invalidate）だけで収束させる。
  *
  * サーバーが配るのは「どのデータが変わったか」のヒントだけで、変更内容は載っていない。
  * 受け取ったら該当クエリを invalidate し、真実は REST から取り直す（レベルトリガー）。
