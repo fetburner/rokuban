@@ -107,10 +107,11 @@ CREATE INDEX ON recordings (purged_at) WHERE purged_at IS NULL;  -- ごみ箱一
 - 物理削除後も recordings 行と media_assets の tombstone は残る → ごみ箱を空にしても録画履歴・ドロップ統計・重複排除は壊れない
 - API: `DELETE /api/recordings/{id}` / `POST .../restore` / `POST .../purge` / `GET /api/recordings?trash=true`
 
-**即時要求は `recordings` の列ではなく `recording_purge_requests` 衛星表に置く。行の存在 = 要求、取り消しは DELETE**（不変条件 10 / 13）。理由は書き手 —— この要求を立てるのも取り消すのも api ロールで、`recordings` 本体を書く watcher / reconciler（試行の帰結の観測）ではない。「`deleted_at` が本体にあるから隣に置く」は根拠にならない: `deleted_at` / `superseded_at` が本体に残っているのは部分一意索引 `recordings_unique_active_event` の述語がこの 2 列を参照し、述語が他表を参照できないからで、即時要求はその述語に出ない（枠が明くのは `deleted_at` / `superseded_at` だけ）。
+**即時要求は `recordings` の列ではなく `recording_purge_requests` 衛星表に置く。行の存在 = 要求、取り消しは DELETE**（不変条件 10 / 13）。理由は書き手 —— この要求を定常運用で立てるのも取り消すのも api ロールで、`recordings` 本体を書く watcher / reconciler（試行の帰結の観測）ではない（rescue は別枠 —— 災害復旧で catalog ダンプから全表を書き戻すので、この表も他の表と同じように書く）。「`deleted_at` が本体にあるから隣に置く」は根拠にならない: `deleted_at` / `superseded_at` が本体に残っているのは部分一意索引 `recordings_unique_active_event` の述語がこの 2 列を参照し、述語が他表を参照できないからで、即時要求はその述語に出ない（枠が明くのは `deleted_at` / `superseded_at` だけ）。
 
 - 完了後（`purged_at`）に要求行を掃除する経路は作らない。掃除役を足すと削除 reconcile が 2 人目の書き手になる（不変条件 12）。「ユーザーが即時削除を要求した」は完了後も真なので tombstone と一緒に残す
 - `requested_at` は「いつ要求されたか」だけを持ち、判定には使わない。ここを `<= now()` で比較し始めたら、実質 boolean を timestamptz で持っていた旧列（`recordings.purge_after`）に戻る
+- **復元（`deleted_at` を消す + 要求行を DELETE）は 1 文のデータ変更 CTE ではなくトランザクション内の 2 文で書く。** CTE はアーム全体が 1 つのスナップショットを共有するため、行ロックで UPDATE アームが待たされている間に commit された要求行が DELETE アームから見えず、「復元は成功したのに要求行だけ残る」が観測される。残った要求行はその場では何も起こさないが、次の普通の論理削除で猶予をバイパスする。2 文なら DELETE が UPDATE の後に新しいスナップショットを取るので要求行が見える
 
 ### 同一イベントの重複防止
 

@@ -190,31 +190,40 @@ func (q *Queries) MarkRecordingPurgeRequested(ctx context.Context, id int64) (Ma
 }
 
 const restoreRecording = `-- name: RestoreRecording :one
-WITH restored AS (
-    UPDATE recordings
-    SET deleted_at = NULL,
-        updated_at = now()
-    WHERE id = $1 AND deleted_at IS NOT NULL AND purged_at IS NULL
-    RETURNING id
-), withdrawn AS (
-    DELETE FROM recording_purge_requests
-    WHERE recording_id IN (SELECT id FROM restored)
-    RETURNING recording_id
-)
-SELECT id FROM restored
+
+UPDATE recordings
+SET deleted_at = NULL,
+    updated_at = now()
+WHERE id = $1 AND deleted_at IS NOT NULL AND purged_at IS NULL
+RETURNING id
 `
 
-// 復元。ごみ箱に入っている行だけを対象にする。
-// deleted_at を消し、即時 purge 要求の行を消す（要求の取り消し）。
+// 復元の 2 文（api の RestoreRecording ハンドラが 1 トランザクションで順に流す）。
+//
+// 2 表を 1 文のデータ変更 CTE で書くのは**やめた**。CTE の全アームは文全体で
+// 1 つのスナップショットを共有するので、`recordings` の行ロックで UPDATE アームが
+// 待たされて成功しても、DELETE アームは待っている間に別トランザクションが
+// commit した要求行を見られない。**1 文にしても「復元は成功したのに即時要求だけ
+// 残る」は観測される**（`TestRestoreRecording_ConcurrentPurgeRequest_Withdrawn` を
+// 旧 CTE 実装に戻すとこのアサーションで落ちる、を確認済み）。残った要求行は
+// trash_deletable_recordings が `deleted_at IS NOT NULL` を要求するのでその場では
+// 何も起こさないが、次の普通の soft-delete で 30 日の猶予をバイパスして即時 purge
+// の対象になる —— ユーザーは即時削除を要求していないのに。
+//
+// 2 文に割ると、DELETE は UPDATE が返った**後に新しいスナップショット**を取るので
+// （READ COMMITTED）、UPDATE がロック待ちしている間に commit された要求行が見える。
+// 「23505 で UPDATE が落ちたら DELETE も巻き戻る」という CTE で得ていた性質は
+// トランザクションが保つ。
+//
+// 先に `SELECT ... FOR UPDATE` で明示的に行を掴む形も試したが、上のテストは
+// ロック文を消しても通る（実測）—— 窓を閉じているのは 2 文に割ったことなので、
+// 効果を測れない文は置かない。
+// ごみ箱に入っている行だけを対象に deleted_at を消す。
 // 同一イベントに生きている録画がある場合は unique partial index で 23505。
 // purged_at が立っている行（完全削除が完了した tombstone、issue #135）は
 // 対象外 —— WHERE に条件を足して 0 行にし、既存の 404 経路に落とす。
 // ファイルは二度と戻らないので、それをライブラリに戻すと「再生できない
 // 録画」が並んでしまう。
-//
-// 2 表を 1 文で書くのは、復元が「ごみ箱から出す」と「即時要求を取り消す」の
-// 両方でしか意味を持たないため。別の文に割ると、23505 で UPDATE が落ちたのに
-// DELETE だけ通った / 逆に要求だけ残った状態が観測されうる。
 func (q *Queries) RestoreRecording(ctx context.Context, id int64) (int64, error) {
 	row := q.db.QueryRow(ctx, restoreRecording, id)
 	var id_2 int64
@@ -247,4 +256,17 @@ func (q *Queries) SoftDeleteRecording(ctx context.Context, id int64) (SoftDelete
 	var i SoftDeleteRecordingRow
 	err := row.Scan(&i.ID, &i.DeletedAt)
 	return i, err
+}
+
+const withdrawRecordingPurgeRequest = `-- name: WithdrawRecordingPurgeRequest :exec
+DELETE FROM recording_purge_requests WHERE recording_id = $1
+`
+
+// 即時 purge 要求の取り消し（不変条件 10: 取り消しは DELETE）。
+// 上の UPDATE が 0 行だった（ごみ箱に無い / purge 済み）ときは**呼ばない** ——
+// 404 を返しながら「消してと言った事実」だけ黙って取り消してはいけない
+// （TestRestoreRecording_NotInTrash_KeepsPurgeRequest）。
+func (q *Queries) WithdrawRecordingPurgeRequest(ctx context.Context, recordingID int64) error {
+	_, err := q.db.Exec(ctx, withdrawRecordingPurgeRequest, recordingID)
+	return err
 }

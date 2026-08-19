@@ -272,9 +272,22 @@ func (h *Server) DeleteRecording(ctx context.Context, req DeleteRecordingRequest
 // RestoreRecording はごみ箱から録画を復元する。
 // deleted_at を消し、即時 purge 要求の行を消すだけ（ファイル操作ゼロ）。
 // 同一イベントに生きている録画があると 409。
+//
+// 2 表の更新を 1 文のデータ変更 CTE ではなく**トランザクション内の 2 文**で流す。
+// CTE ではアーム全体が 1 つのスナップショットを共有するため、UPDATE アームが
+// 行ロックで待たされている間に commit された即時要求の行が DELETE アームから
+// 見えず、「復元は 204 なのに要求行だけ残る」が観測された
+// （TestRestoreRecording_ConcurrentPurgeRequest_Withdrawn。窓の閉じ方と残った
+// 要求行の害は internal/db/queries/recordings_trash.sql のコメント）。
 func (h *Server) RestoreRecording(ctx context.Context, req RestoreRecordingRequestObject) (RestoreRecordingResponseObject, error) {
-	_, err := sqlcgen.New(h.pool).RestoreRecording(ctx, req.Id)
+	tx, err := h.pool.Begin(ctx)
 	if err != nil {
+		return nil, fmt.Errorf("beginning transaction to restore recording %d: %w", req.Id, err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	q := sqlcgen.New(tx)
+	if _, err := q.RestoreRecording(ctx, req.Id); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return RestoreRecording404JSONResponse{Error: "recording not in trash"}, nil
 		}
@@ -285,6 +298,15 @@ func (h *Server) RestoreRecording(ctx context.Context, req RestoreRecordingReque
 			}, nil
 		}
 		return nil, fmt.Errorf("restoring recording %d: %w", req.Id, err)
+	}
+	// ここまで来たのは UPDATE が 1 行返したとき（= 実際にごみ箱から出したとき）
+	// だけ。0 行なら上で 404 して return しているので、要求だけ黙って取り消す
+	// ことはない。
+	if err := q.WithdrawRecordingPurgeRequest(ctx, req.Id); err != nil {
+		return nil, fmt.Errorf("withdrawing purge request for recording %d: %w", req.Id, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("committing restore of recording %d: %w", req.Id, err)
 	}
 	return RestoreRecording204Response{}, nil
 }

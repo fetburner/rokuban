@@ -23,14 +23,15 @@
 -- 形）。「要求していない」を表す行は存在しえないので、false と NULL の
 -- 取り違えも掃除の規則も要らない。取り消し（restore）は DELETE。
 --
--- 書き手は api だけにする。purge 完了後（purged_at）にこの行を掃除する経路は
--- 作らない --- 削除 reconcile を 2 人目の書き手にすると 1 表 1 書き手
+-- 定常運用の書き手は api だけにする。purge 完了後（purged_at）にこの行を掃除
+-- する経路は作らない --- 削除 reconcile を 2 人目の書き手にすると 1 表 1 書き手
 -- （不変条件 12）が崩れる。「ユーザーが即時削除を要求した」は完了後も真で
 -- あり続けるので、tombstone と一緒に残す。
+-- （rescue は別枠 --- 災害復旧で catalog ダンプから全表を書き戻すので、この表も
+-- 他の表と同じように書く。定常運用のループではない。）
 CREATE TABLE recording_purge_requests (
     -- ON DELETE CASCADE: 録画行が物理的に消えた後の「その録画を今すぐ消して
-    -- ほしい」は何も主張していない（不変条件 10）。recording_encode_policy が
-    -- CASCADE を付けていないのは凍結ポリシーが履歴として意味を持つため。
+    -- ほしい」は何も主張していない（不変条件 10）。
     recording_id bigint PRIMARY KEY REFERENCES recordings (id) ON DELETE CASCADE,
     -- いつ要求されたか。**判定には使わない**（判定は行の存在だけ）。読み手は
     -- catalog の export / rescue で、往復の間この事実を落とさないために持つ。

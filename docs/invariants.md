@@ -47,6 +47,7 @@ CLAUDE.md の不変条件 9〜13 は「チェック」の一文だけを持つ�
 - `program_overrides`: 空の上書き = 行が無い（`{}` の行を作らない）
 - `circuit_breakers`: 行の存在 = 発動中（「停止していない」を表す行は無い）。再開は DELETE
 - `recording_encode_policy` / `recording_ingest_progress`: 行の存在 = 凍結済み / 転送中。列の既定値では「まだ」と「空として確定した」が区別できない
+- `recording_purge_requests`: 行の存在 = 「猶予を待たず今すぐ消してほしい」。取り消し（復元）は DELETE。timestamptz の列で持っていた頃は書く値が常に `now()` で、`<= now()` でしか読まないのに「未来の予約削除」に見えていた
 
 「あってはいけない組み合わせ」は **CHECK で禁止するより表現不可能にする**方が強い。CHECK は覚えておくべき規則だが、表現不可能なら忘れようがない。
 
