@@ -692,7 +692,7 @@ export interface RuleInput {
      */
   genres?: number[];
   times?: RuleTimeWindow[];
-  /** 空または省略 = 全サイト */
+  /** 空または省略 = 全サイト。指定する各要素は GET /api/sites が返す既知の site 名でなければならず、レジストリに無い名前（タイポ含む）や空文字列は 400 になる。更新では、そのルールに既に保存されている site 名だけは既知として扱う（GET で得た sites を載せ直す更新が、レジストリから site が消えた後も通るように）。免除は更新対象のルール単位なので **作成では効かない** —— 既存ルールの sites をそのまま載せて別のルールを作る（フォーク）場合、レジストリから消えた site 名は 400 になる。 */
   sites?: string[];
   dedupeEnabled?: boolean;
   /**

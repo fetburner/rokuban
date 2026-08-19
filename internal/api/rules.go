@@ -57,7 +57,17 @@ func (h *Server) CreateRule(ctx context.Context, req CreateRuleRequestObject) (C
 	if req.Body == nil {
 		return CreateRule400JSONResponse{Error: "request body is required"}, nil
 	}
-	if err := h.validateRuleInput(ctx, *req.Body); err != nil {
+	// create には保存済みの sites が無いので、レジストリ全件だけが権威になる。
+	//
+	// 免除（validateRuleSites の savedSites）は「そのルールに保存済みの名前」で切って
+	// いるため、既存ルールを下敷きに別のルールを作る経路（検索画面のフォーク。
+	// GET で得た sites を preserve してここに載せる）には効かない。レジストリから site が
+	// 消えるとフォークだけが 400 になり、sites は条件 UI に無いので UI 内の復旧手段も
+	// 無い（TestRuleSites_RegistryDriftRejectsFork が測っている）。免除の切り方を
+	// 「クライアントが GET で読んで載せ直した名前」に寄せるか web 側で明示的に外させるかは
+	// API の形 / UI の形を決める判断なので、実装せず issue に提起している
+	// （docs/schema/rules.md の rule_sites 節）。
+	if err := h.validateRuleInput(ctx, *req.Body, nil); err != nil {
 		return CreateRule400JSONResponse{Error: err.Error()}, nil
 	}
 
@@ -98,7 +108,26 @@ func (h *Server) UpdateRule(ctx context.Context, req UpdateRuleRequestObject) (U
 	if req.Body == nil {
 		return UpdateRule400JSONResponse{Error: "request body is required"}, nil
 	}
-	if err := h.validateRuleInput(ctx, *req.Body); err != nil {
+	// 保存済みの sites はレジストリ照合を免除する（validateRuleSites 参照）。tx の外で
+	// 読むが、免除集合は「受け付ける名前」を広げるだけで、しかも広げる先はこのルールが
+	// 直前まで持っていた名前に限られる。並行 PATCH が同じルールの sites を入れ替えた場合の
+	// 結果は 2 つの PATCH が逆順に届いたのと同じ（子テーブルは全置換で後勝ち）なので、
+	// tx 内に入れても変わらない。
+	//
+	// **検証は GetRule より前**（既存の順序だが、免除を入れたことで意味が付いた）。
+	// 存在しないルールでは savedRuleSites が空集合になるので免除が何も広げず、
+	// 「存在しない id + 未知 site」は 404 ではなく 400 unknown site になる
+	// （TestUpdateRule_UnknownSiteBeatsNotFound。妥当な入力なら 404 に落ちる）。
+	// 404 を先に返したいなら、免除集合の読みも GetRule の後に動かすこと。
+	var savedSites map[string]struct{}
+	if req.Body.Sites != nil {
+		var err error
+		savedSites, err = savedRuleSites(ctx, sqlcgen.New(h.pool), req.Id)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if err := h.validateRuleInput(ctx, *req.Body, savedSites); err != nil {
 		return UpdateRule400JSONResponse{Error: err.Error()}, nil
 	}
 
@@ -276,10 +305,60 @@ func (h *Server) validateEncodeProfiles(names []string) error {
 	return nil
 }
 
+// validateRuleSites は sites の各要素が site レジストリ（config.mirakc/mirakcs、
+// h.sites）に存在することを検査する。api は不変条件 1 によりどの site にも束縛されないので、
+// 権威は h.knownSite が参照するレジストリ全件であり、mirakc への問い合わせも FS 依存もしない。
+// 空文字列も未知の site 名と同じ扱いで 400 にする --- 「絞り込みたい」意図を持つ要素が黙って
+// 「全サイト」に反転するのを防ぐ（validateEncodeProfiles が空名を拒否する流儀に揃える）。
+// 全サイトを意図するなら sites 全体を省略・空配列にする（FK を張らない代わりの書き込み時
+// 照合であり、CHECK ではなく 400 で拒否する）。
+//
+// savedSites はそのルールに保存済みの rule_sites（create では nil）。**保存済みの名前は
+// レジストリに無くても通す。** 照合が狙うタイポは定義上「保存済みに無い新しい名前」なので
+// 検出力は落ちず、レジストリから site が消えたときに保存済みの値をそのまま載せ直す
+// read-modify-write な更新（優先度や名前だけ直したい編集を含む）が全部 400 になるのを防ぐ
+// --- 消えた site の掃除はこの照合の仕事ではない。両方向は
+// TestRuleSites_RegistryDriftAllowsRoundTripUpdate が押さえている。
+//
+// 免除の境界は**ルールの同一性**であり「クライアントが GET で読んで載せ直した名前」では
+// ない。そのため savedSites が nil な create（フォークを含む）は同じ read-modify-write でも
+// 400 になる（CreateRule のコメントと TestRuleSites_RegistryDriftRejectsFork）。
+func (h *Server) validateRuleSites(sitesIn []string, savedSites map[string]struct{}) error {
+	for _, site := range sitesIn {
+		if site == "" {
+			return errors.New("sites must not contain empty names")
+		}
+		if h.knownSite(site) {
+			continue
+		}
+		if _, saved := savedSites[site]; saved {
+			continue
+		}
+		return fmt.Errorf("unknown site %q", site)
+	}
+	return nil
+}
+
+// savedRuleSites は ruleID に保存済みの rule_sites を集合で返す。
+// 存在しないルールでは空集合になる（404 判定は呼び出し側の GetRule が担う）。
+func savedRuleSites(ctx context.Context, q *sqlcgen.Queries, ruleID int64) (map[string]struct{}, error) {
+	rows, err := q.ListRuleSites(ctx, ruleID)
+	if err != nil {
+		return nil, fmt.Errorf("listing saved rule sites: %w", err)
+	}
+	set := make(map[string]struct{}, len(rows))
+	for _, r := range rows {
+		set[r.Site] = struct{}{}
+	}
+	return set, nil
+}
+
 // validateRuleInput はルール create/update の入力を検査する。
 // encodeProfiles の存在検証は h.encodeProfiles（config から注入）を使う。
 // 集合が nil のときは名前検証をスキップする（テストの部分構成）。
-func (h *Server) validateRuleInput(ctx context.Context, in RuleInput) error {
+// savedSites は sites のレジストリ照合を免除する保存済みの site 名（create では nil。
+// validateRuleSites 参照）。
+func (h *Server) validateRuleInput(ctx context.Context, in RuleInput, savedSites map[string]struct{}) error {
 	if strings.TrimSpace(in.Name) == "" {
 		return errors.New("name is required")
 	}
@@ -330,6 +409,11 @@ func (h *Server) validateRuleInput(ctx context.Context, in RuleInput) error {
 					return fmt.Errorf("invalid regex %q (POSIX ARE; lookbehind is not supported): %w", m.Value, err)
 				}
 			}
+		}
+	}
+	if in.Sites != nil {
+		if err := h.validateRuleSites(*in.Sites, savedSites); err != nil {
+			return err
 		}
 	}
 	if in.FilenameTemplate != nil && *in.FilenameTemplate != "" {
@@ -514,8 +598,12 @@ func replaceRuleChildren(ctx context.Context, q *sqlcgen.Queries, ruleID int64, 
 	}
 	if in.Sites != nil {
 		for _, site := range *in.Sites {
+			// validateRuleSites がすでに空文字列を 400 で拒否しているので、
+			// CreateRule/UpdateRule 経由では到達しない。将来この関数に検証を通らない
+			// 経路が増えたときは黙って落とさずエラーにする（黙って落とすと
+			// 「保存は成功したが絞り込み条件が消えている」になる）。
 			if site == "" {
-				continue
+				return errors.New("rule site must not be empty")
 			}
 			if err := q.InsertRuleSite(ctx, sqlcgen.InsertRuleSiteParams{
 				RuleID: ruleID,

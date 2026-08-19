@@ -766,6 +766,12 @@ function RuleEditForm({
     // その意図（別の名前を選んだ）を尊重してそのまま使う。
     const trimmed = meta.name.trim()
     const name = trimmed === sourceRule.name.trim() ? `${trimmed} のコピー` : trimmed
+    // preserve した `sites` は `POST /api/rules` に載る。API の「保存済み site 名は
+    // レジストリ照合を免除する」はルール単位で PATCH にしか効かないので、レジストリから
+    // site が消えた後はこの経路だけが 400 `unknown site` になり、`sites` は条件 UI に
+    // 無いのでユーザーは画面内で外せない（未解決。docs/frontend/search.md §「UI が
+    // 持たない次元は勝手に埋めない」）。落として送るのは禁止 —— 絞り込みが無音で
+    // 全サイトに反転する。
     const input = buildRuleInput(draft, { ...meta, name }, sourceRule)
     createRule.mutate(
       { data: input },
