@@ -270,7 +270,7 @@ func (h *Server) DeleteRecording(ctx context.Context, req DeleteRecordingRequest
 }
 
 // RestoreRecording はごみ箱から録画を復元する。
-// deleted_at を消し purge_requested を下ろすだけ（ファイル操作ゼロ）。
+// deleted_at を消し、即時 purge 要求の行を消すだけ（ファイル操作ゼロ）。
 // 同一イベントに生きている録画があると 409。
 func (h *Server) RestoreRecording(ctx context.Context, req RestoreRecordingRequestObject) (RestoreRecordingResponseObject, error) {
 	_, err := sqlcgen.New(h.pool).RestoreRecording(ctx, req.Id)
@@ -289,8 +289,8 @@ func (h *Server) RestoreRecording(ctx context.Context, req RestoreRecordingReque
 	return RestoreRecording204Response{}, nil
 }
 
-// PurgeRecording は即時物理削除の要求印を立てる。
-// purge_requested = true を書き、未 soft-delete なら deleted_at も立てる。
+// PurgeRecording は即時物理削除の要求を記録する。
+// recording_purge_requests に行を入れ、未 soft-delete なら deleted_at も立てる。
 // ファイルは消さない（M3-8 の削除 reconcile が拾う）。
 func (h *Server) PurgeRecording(ctx context.Context, req PurgeRecordingRequestObject) (PurgeRecordingResponseObject, error) {
 	_, err := sqlcgen.New(h.pool).MarkRecordingPurgeRequested(ctx, req.Id)

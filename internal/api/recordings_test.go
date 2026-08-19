@@ -614,7 +614,8 @@ func TestRestoreRecording_NotInTrash(t *testing.T) {
 	}
 }
 
-// purge は purge_requested を立て、必要なら soft-delete も兼ねる。ファイルは消さない。
+// purge は recording_purge_requests に行を入れ、必要なら soft-delete も兼ねる。
+// ファイルは消さない。
 func TestPurgeRecording_MarksPurgeRequested(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	srv := newAPIServer(t, pool)
@@ -627,20 +628,36 @@ func TestPurgeRecording_MarksPurgeRequested(t *testing.T) {
 		t.Fatalf("purge status = %d, want 204", resp.StatusCode)
 	}
 
-	// DB に deleted_at と purge_requested が立っていること（ファイル I/O は無い）
+	// DB に deleted_at が立ち、要求の行ができていること（ファイル I/O は無い）
 	var deletedAt *time.Time
-	var purgeRequested bool
 	err := pool.QueryRow(ctx,
-		`SELECT deleted_at, purge_requested FROM recordings WHERE id = $1`, id,
-	).Scan(&deletedAt, &purgeRequested)
+		`SELECT deleted_at FROM recordings WHERE id = $1`, id,
+	).Scan(&deletedAt)
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
 	if deletedAt == nil {
 		t.Error("purge should also soft-delete (deleted_at set)")
 	}
-	if !purgeRequested {
-		t.Error("purge_requested should be true")
+	purgeRequestCount := func() int {
+		t.Helper()
+		var n int
+		if err := pool.QueryRow(ctx,
+			`SELECT count(*) FROM recording_purge_requests WHERE recording_id = $1`, id,
+		).Scan(&n); err != nil {
+			t.Fatalf("query recording_purge_requests: %v", err)
+		}
+		return n
+	}
+	if got := purgeRequestCount(); got != 1 {
+		t.Errorf("recording_purge_requests rows = %d, want 1", got)
+	}
+	// requested_at は最初の要求のまま据え置く（下の 2 回目の purge で見る）。
+	var firstRequestedAt time.Time
+	if err := pool.QueryRow(ctx,
+		`SELECT requested_at FROM recording_purge_requests WHERE recording_id = $1`, id,
+	).Scan(&firstRequestedAt); err != nil {
+		t.Fatalf("query requested_at: %v", err)
 	}
 
 	// ごみ箱に出る
@@ -650,10 +667,23 @@ func TestPurgeRecording_MarksPurgeRequested(t *testing.T) {
 		t.Fatalf("trash after purge = %+v", trash)
 	}
 
-	// 冪等
+	// 冪等。行は増えず、requested_at も上書きされない。
 	resp = doRecordingMethod(t, http.MethodPost, fmt.Sprintf("%s/api/recordings/%d/purge", srv.URL, id))
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("second purge status = %d, want 204", resp.StatusCode)
+	}
+	if got := purgeRequestCount(); got != 1 {
+		t.Errorf("recording_purge_requests rows after second purge = %d, want 1", got)
+	}
+	var secondRequestedAt time.Time
+	if err := pool.QueryRow(ctx,
+		`SELECT requested_at FROM recording_purge_requests WHERE recording_id = $1`, id,
+	).Scan(&secondRequestedAt); err != nil {
+		t.Fatalf("query requested_at after second purge: %v", err)
+	}
+	if !secondRequestedAt.Equal(firstRequestedAt) {
+		t.Errorf("requested_at after second purge = %v, want %v (再要求で上書きしない)",
+			secondRequestedAt, firstRequestedAt)
 	}
 
 	// 存在しない
@@ -662,19 +692,62 @@ func TestPurgeRecording_MarksPurgeRequested(t *testing.T) {
 		t.Fatalf("missing purge status = %d, want 404", resp.StatusCode)
 	}
 
-	// restore で purge_requested も下りる
+	// restore で要求の行も消える（取り消し = DELETE）
 	resp = doRecordingMethod(t, http.MethodPost, fmt.Sprintf("%s/api/recordings/%d/restore", srv.URL, id))
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("restore after purge status = %d", resp.StatusCode)
 	}
 	err = pool.QueryRow(ctx,
-		`SELECT deleted_at, purge_requested FROM recordings WHERE id = $1`, id,
-	).Scan(&deletedAt, &purgeRequested)
+		`SELECT deleted_at FROM recordings WHERE id = $1`, id,
+	).Scan(&deletedAt)
 	if err != nil {
 		t.Fatalf("query after restore: %v", err)
 	}
-	if deletedAt != nil || purgeRequested {
-		t.Errorf("after restore deleted_at=%v purge_requested=%v, want nil/false", deletedAt, purgeRequested)
+	if deletedAt != nil {
+		t.Errorf("after restore deleted_at=%v, want nil", deletedAt)
+	}
+	if got := purgeRequestCount(); got != 0 {
+		t.Errorf("recording_purge_requests rows after restore = %d, want 0", got)
+	}
+}
+
+// restore が 0 行（ごみ箱に無い / purge 済み）のとき、即時削除の要求は消えない。
+// RestoreRecording は 2 表を 1 文で書くので、recordings 側が 0 行なら
+// recording_purge_requests の DELETE も 0 行でなければならない --- DELETE を
+// UPDATE の結果と無関係な `WHERE recording_id = $1` に書き換えると、404 を
+// 返しながら要求だけ黙って取り消される（purge 済み tombstone で「消してと
+// 言った事実」が消える）。
+func TestRestoreRecording_NotInTrash_KeepsPurgeRequest(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := newAPIServer(t, pool)
+	ctx := context.Background()
+
+	id := seedRecording(t, pool, "purge 済み", time.Now().Truncate(time.Second), "finished", 14)
+
+	resp := doRecordingMethod(t, http.MethodPost, fmt.Sprintf("%s/api/recordings/%d/purge", srv.URL, id))
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("purge status = %d, want 204", resp.StatusCode)
+	}
+	// 削除 reconcile が完全削除を終えた状態（purged_at）にする。restore は
+	// この行を対象外にする（0 行 → 404）。
+	if _, err := pool.Exec(ctx,
+		`UPDATE recordings SET purged_at = now() WHERE id = $1`, id); err != nil {
+		t.Fatalf("marking purged: %v", err)
+	}
+
+	resp = doRecordingMethod(t, http.MethodPost, fmt.Sprintf("%s/api/recordings/%d/restore", srv.URL, id))
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("restore of a purged recording status = %d, want 404", resp.StatusCode)
+	}
+
+	var n int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM recording_purge_requests WHERE recording_id = $1`, id,
+	).Scan(&n); err != nil {
+		t.Fatalf("query recording_purge_requests: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("recording_purge_requests rows after a 404 restore = %d, want 1 (要求は取り消されない)", n)
 	}
 }
 

@@ -4105,8 +4105,8 @@ export const getRestoreRecordingUrl = (id: number,) => {
 }
 
 /**
- * `deleted_at` を消し、即時削除の要求印（`purge_requested`）を下ろすだけ
- * （ファイル操作ゼロ・即時）。
+ * `deleted_at` を消し、即時削除の要求（`recording_purge_requests` の行）を
+ * 取り消すだけ（ファイル操作ゼロ・即時）。
  * ごみ箱に入っていない、または行が無い場合は 404。
  * 同一イベントに生きている録画があると partial unique index で衝突し 409。
  * @summary Restore a soft-deleted recording from trash
@@ -4199,9 +4199,9 @@ export const getPurgeRecordingUrl = (id: number,) => {
 }
 
 /**
- * 即時物理削除の要求印。`purge_requested` を立て、未 soft-delete なら
- * `deleted_at` も同時に立てる。**ファイルは消さない**（M3-8 の削除 reconcile
- * がこの印を拾って unlink する）。既に印が付いていても冪等に 204。
+ * 即時物理削除の要求。`recording_purge_requests` に行を入れ、未 soft-delete
+ * なら `deleted_at` も同時に立てる。**ファイルは消さない**（M3-8 の削除
+ * reconcile がこの要求を拾って unlink する）。既に要求済みでも冪等に 204。
  * @summary Mark a recording for immediate physical purge
  */
 export const purgeRecording = async (id: number, options?: RequestInit): Promise<purgeRecordingResponse> => {

@@ -100,13 +100,19 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateRecording (unfrozen): %v", err)
 	}
-	// M3-7 の tombstone / 即時 purge 意図（issue #319 で boolean 化）も
-	// catalog で保護する。
+	// M3-7 の tombstone / 即時 purge 意図も catalog で保護する。即時要求は
+	// recording_purge_requests 衛星表の行の存在で表す。
 	deletedAt := time.Date(2026, 7, 30, 0, 0, 0, 0, time.UTC)
+	purgeRequestedAt := time.Date(2026, 7, 30, 0, 5, 0, 0, time.UTC)
 	if _, err := pool.Exec(ctx, `
-		UPDATE recordings SET deleted_at = $2, purge_requested = true WHERE id = $1
+		UPDATE recordings SET deleted_at = $2 WHERE id = $1
 	`, recID, deletedAt); err != nil {
-		t.Fatalf("mark recording purge: %v", err)
+		t.Fatalf("soft-delete recording: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO recording_purge_requests (recording_id, requested_at) VALUES ($1, $2)
+	`, recID, purgeRequestedAt); err != nil {
+		t.Fatalf("insert recording_purge_requests: %v", err)
 	}
 
 	pidType := "video"
@@ -161,8 +167,17 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 	if frozen == nil {
 		t.Fatalf("exported recordings = %+v, want id=%d present", doc.Recordings, recID)
 	}
-	if frozen.DeletedAt == nil || !frozen.DeletedAt.Equal(deletedAt) || !frozen.PurgeRequested {
-		t.Fatalf("exported tombstone deletedAt=%v purgeRequested=%v", frozen.DeletedAt, frozen.PurgeRequested)
+	if frozen.DeletedAt == nil || !frozen.DeletedAt.Equal(deletedAt) {
+		t.Fatalf("exported tombstone deletedAt=%v", frozen.DeletedAt)
+	}
+	// 即時 purge の要求は Recording の列ではなく専用の配列に載る。載っていない
+	// 録画（未凍結の方）には行が無いことも見る --- 「要求なし」を既定値の行で
+	// 埋めると、rescue が要求していない録画まで猶予を飛ばして消す。
+	if len(doc.RecordingPurgeRequests) != 1 ||
+		doc.RecordingPurgeRequests[0].RecordingID != recID ||
+		!doc.RecordingPurgeRequests[0].RequestedAt.Equal(purgeRequestedAt) {
+		t.Fatalf("exported recordingPurgeRequests = %+v, want [{%d %v}]",
+			doc.RecordingPurgeRequests, recID, purgeRequestedAt)
 	}
 	if len(doc.MediaAssets) != 1 || doc.MediaAssets[0].ID != assetID {
 		t.Fatalf("exported media_assets = %+v", doc.MediaAssets)
@@ -256,13 +271,30 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 		t.Errorf("unfrozen recording gained a recording_encode_policy row (count=%d), want 0", unfrozenPolicyCount)
 	}
 	var gotDeletedAt *time.Time
-	var gotPurgeRequested bool
-	if err := pool.QueryRow(ctx, `SELECT deleted_at, purge_requested FROM recordings WHERE id = $1`, recID).
-		Scan(&gotDeletedAt, &gotPurgeRequested); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT deleted_at FROM recordings WHERE id = $1`, recID).
+		Scan(&gotDeletedAt); err != nil {
 		t.Fatalf("query recording tombstone: %v", err)
 	}
-	if gotDeletedAt == nil || !gotDeletedAt.Equal(deletedAt) || !gotPurgeRequested {
-		t.Errorf("rescued tombstone deletedAt=%v purgeRequested=%v, want deletedAt=%v/true", gotDeletedAt, gotPurgeRequested, deletedAt)
+	if gotDeletedAt == nil || !gotDeletedAt.Equal(deletedAt) {
+		t.Errorf("rescued tombstone deletedAt=%v, want %v", gotDeletedAt, deletedAt)
+	}
+	var gotRequestedAt *time.Time
+	if err := pool.QueryRow(ctx,
+		`SELECT requested_at FROM recording_purge_requests WHERE recording_id = $1`, recID,
+	).Scan(&gotRequestedAt); err != nil {
+		t.Fatalf("query recording_purge_requests: %v", err)
+	}
+	if gotRequestedAt == nil || !gotRequestedAt.Equal(purgeRequestedAt) {
+		t.Errorf("rescued purge request requested_at = %v, want %v", gotRequestedAt, purgeRequestedAt)
+	}
+	var unfrozenPurgeCount int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM recording_purge_requests WHERE recording_id = $1`, unfrozenRecID,
+	).Scan(&unfrozenPurgeCount); err != nil {
+		t.Fatalf("query recording_purge_requests for unfrozen: %v", err)
+	}
+	if unfrozenPurgeCount != 0 {
+		t.Errorf("recording without a purge request gained a row (count=%d), want 0", unfrozenPurgeCount)
 	}
 
 	var gotAssetID, gotSize int64

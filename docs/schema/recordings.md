@@ -4,7 +4,7 @@
 
 **録画試行の永続履歴**。成功だけでなく失敗（`recording.failed`）も行として残す — 「録画品質の実測」と再放送待ち判断の入力になる。番組情報は mirakc record / schedule の program ペイロードから**非正規化スナップショット**し、EPG テーブルにも mirakc にも依存せず自己完結する。
 
-**recordings に新しく列を足すときの基準は「試行の帰結の観測だけを持つ脊椎であること」**（不変条件 13）。`media_assets`（下記 §6）はこの表を `recording_id` で指す衛星表 —— 判定基準・境界は [invariants.md](../invariants.md) §13。`keep_original` / `encode_profiles`（予約オプションの効力スナップショット。ingest worker が凍結し api が追記する）も同じ基準で衛星表 `recording_encode_policy` に切り出してある（下記「recording_encode_policy — 原本保持ポリシーの凍結」参照）。書き手が脊椎（watcher / reconciler）ではなく別の状態機械（ingest worker の凍結・api の事後追加）である列は recordings 本体に残さない。
+**recordings に新しく列を足すときの基準は「試行の帰結の観測だけを持つ脊椎であること」**（不変条件 13）。`media_assets`（下記 §6）はこの表を `recording_id` で指す衛星表 —— 判定基準・境界は [invariants.md](../invariants.md) §13。`keep_original` / `encode_profiles`（予約オプションの効力スナップショット。ingest worker が凍結し api が追記する）も同じ基準で衛星表 `recording_encode_policy` に切り出してある（下記「recording_encode_policy — 原本保持ポリシーの凍結」参照）。「今すぐ完全削除してほしい」というユーザーの要求（api が立てて api が取り消す）も同じ基準で衛星表 `recording_purge_requests` にある（下記「ごみ箱」参照）。書き手が脊椎（watcher / reconciler）ではなく別の状態機械（ingest worker の凍結・api の事後追加 / 削除要求）である列は recordings 本体に残さない。**「隣に `deleted_at` があるから」は根拠にならない** —— あの 2 列（`deleted_at` / `superseded_at`）が本体にあるのは部分一意索引の述語が参照するからで、既存のテナントであることを根拠にすると間借りが次の間借りを正当化する。
 
 ```sql
 CREATE TABLE recordings (
@@ -45,12 +45,8 @@ CREATE TABLE recordings (
 
     -- ごみ箱（録画単位の論理削除。原本 + 派生物 + サムネイルのグループごと）
     deleted_at        timestamptz,
-    -- 即時物理削除の要求印。ファイルは消さない。
-    -- 削除 reconcile が「印が立っているか」だけを見て unlink する（時刻は
-    -- 持たない --- 常に「今すぐ」しか書かないので timestamptz は実質 boolean
-    -- だった。CLAUDE.md 不変条件 9）。
-    -- 猶予経過による通常 purge とは独立した「前倒し」の合図。
-    purge_requested   boolean NOT NULL DEFAULT false,
+    -- 即時物理削除の要求はここには無い（recording_purge_requests 衛星表。
+    -- 下記「ごみ箱」参照）。
     -- 「完全削除が完了した」不可逆な事実。削除 reconcile が
     -- パス末尾で、ごみ箱条件を満たしかつ物理削除待ちの media_assets が 1 行も
     -- 残っていない録画に一度だけ立てる。ごみ箱ビュー（ListTrashRecordings）は
@@ -65,7 +61,6 @@ CREATE TABLE recordings (
 CREATE INDEX ON recordings (program_start_at DESC);        -- ライブラリ一覧
 CREATE INDEX ON recordings (network_id, service_id, event_id);
 CREATE INDEX ON recordings (deleted_at) WHERE deleted_at IS NOT NULL;  -- ごみ箱ビュー
-CREATE INDEX ON recordings (id) WHERE purge_requested;  -- 即時 purge
 CREATE INDEX ON recordings (purged_at) WHERE purged_at IS NULL;  -- ごみ箱一覧の絞り込み
 -- 履歴ベース重複排除は title の trgm 類似度で判定するが、GIN は張っていない。
 -- gin_trgm_ops が加速するのは % / <% / LIKE / 正規表現で、similarity() の関数呼び出しには
@@ -104,13 +99,18 @@ CREATE INDEX ON recordings (purged_at) WHERE purged_at IS NULL;  -- ごみ箱一
 
 ### ごみ箱
 
-- UI の削除 = `deleted_at` を立てるだけ。ファイルには触れない。復元 = `deleted_at` を消し `purge_requested` を下げるだけ
-- 「今すぐ完全削除」= `purge_requested = true` を立てるだけ（未 soft-delete なら `deleted_at` も同時に立てる）。**ファイルは消さない**
+- UI の削除 = `deleted_at` を立てるだけ。ファイルには触れない。復元 = `deleted_at` を消し、即時削除の要求行を消すだけ
+- 「今すぐ完全削除」= `recording_purge_requests` に行を入れるだけ（未 soft-delete なら `deleted_at` も同時に立てる）。**ファイルは消さない**
 - 物理削除は削除 reconcile ループが次のいずれかを拾ってアセット単位で実行する:
-  - `purge_requested`（即時要求）
+  - `recording_purge_requests` に行がある（即時要求）
   - `deleted_at + 猶予期間（既定 30 日）` 経過
 - 物理削除後も recordings 行と media_assets の tombstone は残る → ごみ箱を空にしても録画履歴・ドロップ統計・重複排除は壊れない
 - API: `DELETE /api/recordings/{id}` / `POST .../restore` / `POST .../purge` / `GET /api/recordings?trash=true`
+
+**即時要求は `recordings` の列ではなく `recording_purge_requests` 衛星表に置く。行の存在 = 要求、取り消しは DELETE**（不変条件 10 / 13）。理由は書き手 —— この要求を立てるのも取り消すのも api ロールで、`recordings` 本体を書く watcher / reconciler（試行の帰結の観測）ではない。「`deleted_at` が本体にあるから隣に置く」は根拠にならない: `deleted_at` / `superseded_at` が本体に残っているのは部分一意索引 `recordings_unique_active_event` の述語がこの 2 列を参照し、述語が他表を参照できないからで、即時要求はその述語に出ない（枠が明くのは `deleted_at` / `superseded_at` だけ）。
+
+- 完了後（`purged_at`）に要求行を掃除する経路は作らない。掃除役を足すと削除 reconcile が 2 人目の書き手になる（不変条件 12）。「ユーザーが即時削除を要求した」は完了後も真なので tombstone と一緒に残す
+- `requested_at` は「いつ要求されたか」だけを持ち、判定には使わない。ここを `<= now()` で比較し始めたら、実質 boolean を timestamptz で持っていた旧列（`recordings.purge_after`）に戻る
 
 ### 同一イベントの重複防止
 

@@ -32,6 +32,7 @@ type RescueResult struct {
 	Rules                   int
 	Recordings              int
 	RecordingEncodePolicies int
+	RecordingPurgeRequests  int
 	MediaAssets             int
 	DropStats               int
 	ProgramSnapshots        int
@@ -52,9 +53,10 @@ type RescueResult struct {
 	// の件数。RecordingEncodePolicies にも含まれる（内訳として別に数える）。
 	RestoredLegacyEncodePolicies int
 
-	// RestoredLegacyPurgeRequests は #319 より前に export された catalog ダンプ
-	// （Recording.PurgeAfterLegacy が non-nil）から PurgeRequested へ前送りした
-	// 件数。黙って切り捨てず、呼び出し側が報告できるように数える。
+	// RestoredLegacyPurgeRequests は recordings.purge_after が本体列だった頃の
+	// ダンプ（Recording.PurgeAfterLegacy が non-nil）から
+	// recording_purge_requests へ前送りした件数。RecordingPurgeRequests にも
+	// 含まれる（内訳として別に数える）。
 	RestoredLegacyPurgeRequests int
 }
 
@@ -241,6 +243,10 @@ func applyDocument(ctx context.Context, tx pgx.Tx, doc *Document) (*RescueResult
 		res.ProgramOverrides++
 	}
 
+	// 実際に recordings へ書いた id。衛星表（FK 先）を書く前に、この集合に
+	// 入っていない録画を弾くために持つ。never-scheduled 擬似行のように
+	// 「recordings に戻さない」判断をした録画の衛星行を書くと FK で落ちる。
+	upsertedRecordings := map[int64]struct{}{}
 	for _, r := range doc.Recordings {
 		qe := r.QualityEvents
 		if len(qe) == 0 {
@@ -252,16 +258,6 @@ func applyDocument(ctx context.Context, tx pgx.Tx, doc *Document) (*RescueResult
 		// ここでスキップしても復元すべきファイルを失わない。
 		if hasNeverScheduledMarker(qe) {
 			continue
-		}
-		// #319 より前に export されたダンプは PurgeRequested を持たず（キーが
-		// 無いので unmarshal 後もゼロ値の false のまま）、旧列の値は
-		// PurgeAfterLegacy に残っている。前送りしないと「今すぐ完全削除」の
-		// 要求が黙って失われる（migration 00039 backfill と同じ基準: 値では
-		// なく non-nil かどうかだけを見る）。
-		purgeRequested := r.PurgeRequested
-		if !purgeRequested && r.PurgeAfterLegacy != nil {
-			purgeRequested = true
-			res.RestoredLegacyPurgeRequests++
 		}
 		if err := q.CatalogUpsertRecording(ctx, sqlcgen.CatalogUpsertRecordingParams{
 			ID:                r.ID,
@@ -286,7 +282,6 @@ func applyDocument(ctx context.Context, tx pgx.Tx, doc *Document) (*RescueResult
 			EndedAt:           r.EndedAt,
 			QualityEvents:     qe,
 			DeletedAt:         r.DeletedAt,
-			PurgeRequested:    purgeRequested,
 			SupersededAt:      r.SupersededAt,
 			PurgedAt:          r.PurgedAt,
 			CreatedAt:         r.CreatedAt,
@@ -295,6 +290,59 @@ func applyDocument(ctx context.Context, tx pgx.Tx, doc *Document) (*RescueResult
 			return nil, fmt.Errorf("upserting recording %d: %w", r.ID, err)
 		}
 		res.Recordings++
+		upsertedRecordings[r.ID] = struct{}{}
+	}
+
+	// recording_purge_requests は recordings への FK を持つので recordings の
+	// upsert より後に書く。doc.RecordingPurgeRequests に載っていない録画には
+	// 何も書かない --- 「即時削除の要求は無い」は行の不在そのものが意味を持つ
+	// （不変条件 10）。
+	explicitPurgeRequests := map[int64]struct{}{}
+	for _, p := range doc.RecordingPurgeRequests {
+		if _, ok := upsertedRecordings[p.RecordingID]; !ok {
+			continue
+		}
+		if err := q.CatalogUpsertRecordingPurgeRequest(ctx, sqlcgen.CatalogUpsertRecordingPurgeRequestParams{
+			RecordingID: p.RecordingID,
+			RequestedAt: p.RequestedAt,
+		}); err != nil {
+			return nil, fmt.Errorf("upserting recording_purge_request %d: %w", p.RecordingID, err)
+		}
+		res.RecordingPurgeRequests++
+		explicitPurgeRequests[p.RecordingID] = struct{}{}
+	}
+
+	// recordings.purge_after が本体列だった頃のダンプ（recordingPurgeRequests
+	// キー自体が無く、旧列の値が Recording.PurgeAfterLegacy に残っている）の
+	// 後方互換。前送りしないと「今すぐ完全削除」の要求が黙って失われ、その
+	// 録画はごみ箱に残ったまま猶予超過を待つ挙動に変わる。
+	//
+	// 早く消える側に倒すのは、この印がユーザーの明示的な要求（ごみ箱の猶予を
+	// 待たないでほしい）であり、rescue が意図の取り違えを起こすなら
+	// 「要求どおり消す」より「要求を無かったことにする」方が説明しにくいため。
+	// ダンプは purged_at も同時に復元するので、既に完全削除が終わっていた録画が
+	// 前送りで二重に消されることはない（restore はできないままになる）。
+	//
+	// 判定は migration の backfill と同じ基準（値ではなく non-nil かどうかだけを
+	// 見る。旧実装が書いた値は常に now() だった）。
+	for _, r := range doc.Recordings {
+		if _, ok := explicitPurgeRequests[r.ID]; ok {
+			continue // 新しいダンプで既に明示的な行がある
+		}
+		if r.PurgeAfterLegacy == nil {
+			continue // 要求が無かった、または新しいダンプ（旧キー自体が無い）
+		}
+		if _, ok := upsertedRecordings[r.ID]; !ok {
+			continue
+		}
+		if err := q.CatalogUpsertRecordingPurgeRequest(ctx, sqlcgen.CatalogUpsertRecordingPurgeRequestParams{
+			RecordingID: r.ID,
+			RequestedAt: *r.PurgeAfterLegacy,
+		}); err != nil {
+			return nil, fmt.Errorf("restoring legacy recording_purge_request %d: %w", r.ID, err)
+		}
+		res.RecordingPurgeRequests++
+		res.RestoredLegacyPurgeRequests++
 	}
 
 	// recording_encode_policy（issue #159）は recordings への FK を持つので

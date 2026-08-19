@@ -12,6 +12,20 @@ import (
 )
 
 // Version は catalog JSON のスキーマ版。破壊的変更で上げる。
+//
+// **列や JSON キーの引っ越し（同じ事実を別のキー・別の配列に移すこと）は
+// 破壊的変更として数えない。** この版は ReadManifest / read が「自分より新しい
+// 版は読めない」で**拒否する**ゲートに使われる（manifest.go）。上げると、
+// 新しいバイナリが書いたダンプは古いバイナリで rescue できなくなる ——
+// 災害復旧で古いバイナリしか手元にない状況を作りたくない。
+//
+// 代わりに、引っ越したキーは旧キーを読み続ける（Recording の *Legacy
+// フィールド群）ことで「旧ダンプ × 新バイナリ」を守る。逆向き
+// （新ダンプ × 旧バイナリ）は旧バイナリが知らないキーを黙って無視するので、
+// 引っ越した事実は落ちる —— 即時削除の要求（recordingPurgeRequests）が
+// 落ちた場合、その録画はごみ箱に残って猶予超過で消える（要求より遅く消える
+// 側に倒れる）。録画本体・アセット・tombstone は旧キーのまま残る。
+// 読めない方（版を上げる）よりこちらを選ぶ。
 const Version = 1
 
 // Subdir は media_dir 配下の catalog ディレクトリ名。
@@ -36,6 +50,7 @@ type Document struct {
 	Rules                   []Rule                  `json:"rules"`
 	Recordings              []Recording             `json:"recordings"`
 	RecordingEncodePolicies []RecordingEncodePolicy `json:"recordingEncodePolicies"`
+	RecordingPurgeRequests  []RecordingPurgeRequest `json:"recordingPurgeRequests"`
 	MediaAssets             []MediaAsset            `json:"mediaAssets"`
 	DropStats               []DropStat              `json:"dropStats"`
 	ProgramSnapshots        []ProgramSnapshot       `json:"programSnapshots"`
@@ -131,20 +146,16 @@ type Recording struct {
 	// quality_events に持つ recording.never-scheduled マーカーは、rescue 側が
 	// 検出して recordings に戻さずスキップする（rescue.go 参照）。
 	DeletedAt *time.Time `json:"deletedAt,omitempty"`
-	// PurgeRequested は「今すぐ完全削除してほしい」という要求印（issue #319）。
-	// 旧世代のカタログは timestamptz の `purgeAfter` を持っていたが、実質
-	// boolean だった値を型で正直にした。旧ダンプにはこの JSON キー自体が無く、
-	// unmarshal は未知でも欠けているキーも同じく無視するので、このフィールドは
-	// ゼロ値（false）のまま復元される。それだけでは「印は無かった」と取り違えて
-	// 旧ダンプの要求が黙って失われるため、rescue 側は PurgeAfterLegacy
-	// （旧キー `purgeAfter` をそのまま受け取るフィールド）が non-nil なら
-	// PurgeRequested へ前送りする（KeepOriginalLegacy と同じ形。rescue.go 参照）。
-	PurgeRequested bool `json:"purgeRequested,omitempty"`
-	// PurgeAfterLegacy は issue #319 より前の旧列 `recordings.purge_after`
-	// （timestamptz）をそのまま受け取る。新しい export はこのフィールドを書かない
-	// （常に nil で omit される）。旧ダンプは値そのものではなく non-nil かどうか
-	// だけを見て PurgeRequested へ前送りする（migration 00039 の backfill --- 値は
-	// 使わず `purge_after IS NOT NULL` だけを見る --- と同じ基準）。
+	// PurgeAfterLegacy は recordings.purge_after が本体列だった頃の旧ダンプの
+	// `purgeAfter` キーをそのまま受け取る。即時削除の要求は
+	// recording_purge_requests 衛星表に移ったので、新しい export はこのフィールドを
+	// 書かない（常に nil で omit される）。
+	//
+	// 落とすと旧ダンプの rescue で「今すぐ完全削除」の要求が黙って失われる
+	// （ごみ箱に残ったまま猶予超過を待つ挙動に変わる）。rescue 側は値そのもの
+	// ではなく non-nil かどうかだけを見て要求の行へ前送りする（migration の
+	// backfill --- 値は使わず `purge_after IS NOT NULL` だけを見る --- と同じ
+	// 基準。rescue.go 参照）。
 	PurgeAfterLegacy *time.Time `json:"purgeAfter,omitempty"`
 	// KeepOriginalLegacy / EncodeProfilesLegacy: issue #159 より前は
 	// recordings.keep_original / recordings.encode_profiles だった旧列。
@@ -187,6 +198,18 @@ type RecordingEncodePolicy struct {
 	EncodeProfiles []string  `json:"encodeProfiles"`
 	CreatedAt      time.Time `json:"createdAt"`
 	UpdatedAt      time.Time `json:"updatedAt"`
+}
+
+// RecordingPurgeRequest は recording_purge_requests の 1 行（「ごみ箱の猶予を
+// 待たず今すぐ完全削除してほしい」というユーザーの要求）。
+//
+// **行の有無そのものが意味を持つ**（不変条件 10）。この録画の RecordingID が
+// Document.RecordingPurgeRequests に載っていなければ「要求は無い」であり、
+// rescue はそれを既定値の行で埋めない。RequestedAt は判定には使わない
+// （判定は行の存在だけ）。
+type RecordingPurgeRequest struct {
+	RecordingID int64     `json:"recordingId"`
+	RequestedAt time.Time `json:"requestedAt"`
 }
 
 // MediaAsset は media_assets の 1 行。

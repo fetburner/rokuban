@@ -319,7 +319,7 @@ func (q *Queries) ListRecordingDropStats(ctx context.Context, recordingID int64)
 
 const listRecordings = `-- name: ListRecordings :many
 SELECT
-    r.id, r.rule_id, r.source, r.site, r.network_id, r.service_id, r.event_id, r.service_name, r.channel_type, r.channel, r.title, r.description, r.extended, r.genres, r.is_free, r.program_start_at, r.program_duration_ms, r.status, r.started_at, r.ended_at, r.quality_events, r.deleted_at, r.created_at, r.updated_at, r.superseded_at, r.purged_at, r.genre_lv1, r.purge_requested,
+    r.id, r.rule_id, r.source, r.site, r.network_id, r.service_id, r.event_id, r.service_name, r.channel_type, r.channel, r.title, r.description, r.extended, r.genres, r.is_free, r.program_start_at, r.program_duration_ms, r.status, r.started_at, r.ended_at, r.quality_events, r.deleted_at, r.created_at, r.updated_at, r.superseded_at, r.purged_at, r.genre_lv1,
     a.size_bytes                        AS original_size_bytes,
     COALESCE(d.packets, 0)::bigint      AS drop_packets,
     COALESCE(d.drops, 0)::bigint        AS drop_drops,
@@ -378,7 +378,6 @@ type ListRecordingsRow struct {
 	SupersededAt             *time.Time
 	PurgedAt                 *time.Time
 	GenreLv1                 []int16
-	PurgeRequested           bool
 	OriginalSizeBytes        *int64
 	DropPackets              int64
 	DropDrops                int64
@@ -445,7 +444,6 @@ func (q *Queries) ListRecordings(ctx context.Context, site string) ([]ListRecord
 			&i.SupersededAt,
 			&i.PurgedAt,
 			&i.GenreLv1,
-			&i.PurgeRequested,
 			&i.OriginalSizeBytes,
 			&i.DropPackets,
 			&i.DropDrops,

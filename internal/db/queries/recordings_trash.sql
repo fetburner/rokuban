@@ -1,5 +1,6 @@
--- ごみ箱（論理削除 / 復元 / 即時 purge 印）。M3-7 / issue #69。issue #319 で
--- 即時 purge 印を timestamptz から boolean（purge_requested）に変更した。
+-- ごみ箱（論理削除 / 復元 / 即時 purge 要求）。M3-7 / issue #69。
+-- 即時 purge 要求は recording_purge_requests 衛星表の**行の存在**で表す
+-- （旧 recordings.purge_after。移設の理由はマイグレーションのコメント）。
 -- 物理 unlink はしない（M3-8）。api ロールは DB だけ触る。
 
 -- 論理削除。既に deleted_at が立っていても COALESCE で据え置き（冪等）。
@@ -12,30 +13,52 @@ WHERE id = $1
 RETURNING id, deleted_at;
 
 -- 復元。ごみ箱に入っている行だけを対象にする。
--- deleted_at を消し、purge_requested を下ろす（即時 purge 印も取り消す）。
+-- deleted_at を消し、即時 purge 要求の行を消す（要求の取り消し）。
 -- 同一イベントに生きている録画がある場合は unique partial index で 23505。
 -- purged_at が立っている行（完全削除が完了した tombstone、issue #135）は
 -- 対象外 —— WHERE に条件を足して 0 行にし、既存の 404 経路に落とす。
 -- ファイルは二度と戻らないので、それをライブラリに戻すと「再生できない
 -- 録画」が並んでしまう。
+--
+-- 2 表を 1 文で書くのは、復元が「ごみ箱から出す」と「即時要求を取り消す」の
+-- 両方でしか意味を持たないため。別の文に割ると、23505 で UPDATE が落ちたのに
+-- DELETE だけ通った / 逆に要求だけ残った状態が観測されうる。
 -- name: RestoreRecording :one
-UPDATE recordings
-SET deleted_at       = NULL,
-    purge_requested  = false,
-    updated_at       = now()
-WHERE id = $1 AND deleted_at IS NOT NULL AND purged_at IS NULL
-RETURNING id;
+WITH restored AS (
+    UPDATE recordings
+    SET deleted_at = NULL,
+        updated_at = now()
+    WHERE id = $1 AND deleted_at IS NOT NULL AND purged_at IS NULL
+    RETURNING id
+), withdrawn AS (
+    DELETE FROM recording_purge_requests
+    WHERE recording_id IN (SELECT id FROM restored)
+    RETURNING recording_id
+)
+SELECT id FROM restored;
 
 -- 即時物理削除の要求。ファイルは消さない。
 -- purge は soft-delete も兼ねる（まだごみ箱に入っていなければ deleted_at を立てる）。
--- 既に印が立っていてもそのまま true を書く（冪等に再要求できる）。
+-- 既に要求の行があれば何もしない（DO NOTHING）。冪等に再要求できるが、
+-- requested_at は最初の要求のまま据え置く（「いつ要求されたか」を後の再要求で
+-- 上書きしない）。
+--
+-- 存在しない録画には 0 行（recordings 側の UPDATE が 0 行 → 主クエリも 0 行 →
+-- :one が pgx.ErrNoRows → API が 404）。
 -- name: MarkRecordingPurgeRequested :one
-UPDATE recordings
-SET deleted_at       = COALESCE(deleted_at, now()),
-    purge_requested  = true,
-    updated_at       = now()
-WHERE id = $1
-RETURNING id, deleted_at, purge_requested;
+WITH trashed AS (
+    UPDATE recordings
+    SET deleted_at = COALESCE(deleted_at, now()),
+        updated_at = now()
+    WHERE id = $1
+    RETURNING id, deleted_at
+), requested AS (
+    INSERT INTO recording_purge_requests (recording_id)
+    SELECT id FROM trashed
+    ON CONFLICT (recording_id) DO NOTHING
+    RETURNING recording_id
+)
+SELECT id, deleted_at FROM trashed;
 
 -- ごみ箱一覧。ListRecordings と同じく原本サイズ + drop 合計は載せるが、
 -- available_encoded_profiles（再生可能な encoded プロファイル名）は意図的に
