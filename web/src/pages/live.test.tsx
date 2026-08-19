@@ -450,6 +450,13 @@ describe('LivePage', () => {
         .filter((el) => el.getAttribute('aria-current') === 'page')
       expect(current).toHaveLength(1)
       expect(current[0]).toHaveTextContent('BS の局')
+      // `web/e2e/live.mjs` ⓪ は「選択中リンクの href に要求した組が載っている」
+      // ことで新形式が実ブラウザで効いたと判定する。その前提（href に networkId
+      // が載る）をここでも固定しておく --- 載らなくなれば e2e は落ちるが、
+      // それはブラウザとサーバーを用意しないと分からない
+      const href = current[0].getAttribute('href') ?? ''
+      expect(href).toContain('networkId=2')
+      expect(href).toContain('serviceId=100')
     })
 
     it('networkId 無しの旧 ?serviceId= 単独リンクは、その serviceId を持つ最初のサービス（network 1）へフォールバックする', async () => {

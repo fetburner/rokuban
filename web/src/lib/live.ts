@@ -147,7 +147,7 @@ export function claimsHlsPlaylistSupport(canPlayType: (type: string) => string):
  * `networkId * 100000 + serviceId` の合成 id を発明した理由そのもの。
  * `GET /api/sites/{site}/services` は GR / BS / CS を混ぜて返すので、同じ
  * `serviceId` を持つサービスが 2 つ返る構成がありうる）。`pages/live.tsx` の
- * `playingServiceId`（再生中チャンネルの記憶）と選択中チャンネルの一致判定は、
+ * `playingKey`（再生中チャンネルの記憶）と選択中チャンネルの一致判定は、
  * この複合キーで比較する --- `serviceId` だけで比較すると、別 network の
  * 同じ `serviceId` へ切り替えても「同じチャンネル」と誤認して再生状態を
  * 引き継いでしまう。
@@ -169,6 +169,12 @@ export function liveServiceKey(networkId: number, serviceId: number): string {
  * 挙動と同じ）。この場合に選ばれる network は一覧の順序に依存し、意図した
  * network と食い違いうるが、`networkId` を持たないリンクという入力そのものが
  * network を同定できないので、これは仕様であり不具合ではない。
+ *
+ * **`serviceId` の無い `?networkId=` 単独は `networkId` を完全に無視する**
+ * （その network 内で選び直すことはしない --- `networkId` だけでは 1 局に
+ * 定まらないので、選ぶ規則が「その network の番組を持つ先頭」という別の規則に
+ * なる。`?networkId=` 単独を作る導線は無い）。`lib/live.test.ts`
+ * 「networkId だけの指定は無視して番組を持つ先頭にフォールバックする」で固定。
  *
  * 上記のいずれでも一致するサービスが見つからない（無効な指定・未指定・
  * 一致しない組）ときは、番組を持つ先頭のサービスへフォールバックする ---

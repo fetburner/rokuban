@@ -73,7 +73,7 @@ docker compose exec rokuban rokuban server --all --config /config.yml
    `too many concurrent live sessions on this process` が、チューナー自体が
    枯渇した場合は 503 `live stream unavailable` が返る（画面には
    「チューナー不足または同時視聴数の上限」+ 30 秒待つ案内が出る）。**チャンネル
-   選択自体（`?serviceId=` を切り替えるだけ）はセッションを起こさない**
+   選択自体（`?networkId=&serviceId=` を切り替えるだけ）はセッションを起こさない**
    （issue #234 M7-1）ため、ここで積まれるのは実際に「再生」を押した本数だけで、
    通り過ぎただけのチャンネルは対象外 --- 以前あった 400ms のデバウンス
    （ザッピングでセッションが積まれないようにする緩和）は選択自体がコスト 0 に
@@ -104,6 +104,14 @@ docker compose exec rokuban rokuban server --all --config /config.yml
 9001 / 9002）。ライブの URL に載るのも SI の `(network_id, service_id)` そのもの
 なので、合成 id への読み替えは要らない。
 
+**`E2E_LIVE_NETWORK_ID`（既定 `1`）は投入した行の `network_id` と揃える。**
+⓪ が `/live?networkId=&serviceId=` の新形式で直開きするため、ここが食い違うと
+一致するサービスが無く「番組を持つ先頭」へフォールバックする。⓪ はそれを
+検出できるよう**選ばれたチャンネルそのものを assert する**（チャンネル一覧の
+`aria-current="page"` がちょうど 1 件で、その `href` に要求した組が載っている
+こと）。この assert が無いと、要求件数の判定だけは通り続けて「新形式を
+実ブラウザで踏んだ」という主張だけが嘘になる。
+
 準備（初回のみ）:
 
 ```sh
@@ -126,7 +134,7 @@ VALUES ('default', 900101, 1, 9001, 1, now() - interval '5 minutes', 3600000, no
 cd web && pnpm build
 go build -o /tmp/rokuban ./cmd/rokuban
 /tmp/rokuban server --roles api --config dev.local.yml &
-E2E_LIVE_SERVICE_A=9001 E2E_LIVE_SERVICE_B=9002 node web/e2e/live.mjs
+E2E_LIVE_NETWORK_ID=1 E2E_LIVE_SERVICE_A=9001 E2E_LIVE_SERVICE_B=9002 node web/e2e/live.mjs
 ```
 
 ブラウザは初回だけ取得する（**WebKit も要る**。⑥がそれでしか測れない）。
@@ -137,12 +145,18 @@ pnpm exec playwright install chromium webkit
 
 判定する点（詳細はスクリプト冒頭のコメント）:
 
-0. **選択と視聴開始の分離（issue #234 M7-1）**: `/live?serviceId=` を開いた
-   直後はプレイリスト/セグメント要求が 0 件（`page.route` で観測）で、「再生」
-   ボタンを押して初めて要求が飛ぶ。ffmpeg 不要（フィクスチャを使わない）で
+0. **選択と視聴開始の分離（issue #234 M7-1）**: `/live?networkId=&serviceId=` を
+   開いた直後はプレイリスト/セグメント要求が 0 件（`page.route` で観測）で、
+   「再生」ボタンを押して初めて要求が飛ぶ。**併せて、その `(networkId, serviceId)`
+   の組が実際に選ばれたことを見る**（チャンネル一覧の `aria-current="page"` が
+   ちょうど 1 件で、`href` に要求した組が載っている）--- 新形式を実ブラウザで
+   踏む唯一の判定なので、`E2E_LIVE_NETWORK_ID` の不一致で黙ってフォールバック
+   していないことをここで確かめる（1 件でなく 2 件付くのは `serviceId` 単独で
+   同定していたときの壊れ方そのもの）。ffmpeg 不要（フィクスチャを使わない）で
    bundled Chromium だけで測れるため、①〜⑦と異なりゲートしていない。
    ①〜⑦は「再生」ボタンを押した後の挙動を見るものなので、`page.goto` の後に
-   このボタンを押す手順を挟んでいる
+   このボタンを押す手順を挟んでいる（①〜⑦の `page.goto` は旧 `?serviceId=`
+   単独のままで、フォールバック経路を通る）
 1. hls.js の動的 import チャンク（`assets/hls-*.js`）が実際に要求される
 2. MSE がアタッチされる。`video.currentSrc` が `blob:` になる。`src` は
    hls.js が `sourceopen` 後に object URL を revoke するので短命である。

@@ -11,11 +11,14 @@
 //     E2E_LIVE_SERVICE_A / E2E_LIVE_SERVICE_B の 2 つの serviceId が
 //     epg_services に存在する（DB へ直接 INSERT すれば足りる。mirakc からの
 //     実 EPG 同期は不要）
+//   - E2E_LIVE_NETWORK_ID がその 2 行の `network_id` と一致している（既定 1）。
+//     ⓪ が `?networkId=&serviceId=` で直開きし、**選ばれたチャンネルが要求
+//     どおりか**を assert するので、食い違うとそこで落ちる
 //   - ffmpeg が PATH にある（固定 HLS フィクスチャの生成に使う。生成は
 //     初回だけで、以降は `os.tmpdir()` にキャッシュされる）
 //
 // 詳しい手順・準備の SQL 例は docs/runbook/live.md §②。使い方だけ：
-//   E2E_LIVE_SERVICE_A=9001 E2E_LIVE_SERVICE_B=9002 pnpm e2e:live
+//   E2E_LIVE_NETWORK_ID=1 E2E_LIVE_SERVICE_A=9001 E2E_LIVE_SERVICE_B=9002 pnpm e2e:live
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
 import os from 'node:os'
@@ -26,9 +29,14 @@ const BASE_URL = process.env.E2E_URL ?? 'http://localhost:40773'
 const SITE = process.env.E2E_LIVE_SITE ?? 'default'
 const SERVICE_A = process.env.E2E_LIVE_SERVICE_A ?? '9001'
 const SERVICE_B = process.env.E2E_LIVE_SERVICE_B ?? '9002'
-// docs/runbook/live.md §② の投入例は A/B とも network_id=1。新形式の
-// `?networkId=&serviceId=`（issue #291）を実ブラウザで一度も踏んでいなかった
-// 穴を塞ぐため、⓪' はこの形式で開く（レビューでの指摘）
+// docs/runbook/live.md §② の投入例は A/B とも network_id=1（runbook 側にも
+// この env が既定 1 として書いてある）。新形式の `?networkId=&serviceId=`
+// （issue #291）を実ブラウザで一度も踏んでいなかった穴を塞ぐため、⓪ はこの
+// 形式で開く（レビューでの指摘）。**フィクスチャの network_id と食い違ったまま
+// 黙って通らないよう、⓪ は「選ばれたチャンネルが要求どおりか」も assert する**
+// --- 要求件数だけを見ていると、不一致で `pickInitialService` の「番組を持つ
+// 先頭」フォールバックに落ちても緑になり、「新形式を実ブラウザで踏んだ」という
+// 主張だけが嘘になる
 const NETWORK_ID = process.env.E2E_LIVE_NETWORK_ID ?? '1'
 
 const FIXTURE_DIR = path.join(os.tmpdir(), 'rokuban-e2e-live-fixture')
@@ -243,6 +251,10 @@ async function clickPlay(page) {
 
 /**
  * runConsentCheck は⓪（選択と視聴開始の分離。issue #234 M7-1）を検証する。
+ * 併せて `?networkId=&serviceId=` の新形式（issue #291）で直開きし、**その組が
+ * 実際に選ばれたこと**を選択中の印（`aria-current="page"`）で確認する ---
+ * ⓪ の残りは要求件数しか見ないので、この assert が無いと env とフィクスチャの
+ * `network_id` が食い違ったまま緑になる（NETWORK_ID の宣言部のコメント）。
  *
  * この判定が本来見たいのは「タップだけではプレイリスト/セグメント要求が飛ばない」
  * こと自体であり、実データ（H.264/AAC）や実再生は要らない --- ①〜⑦と違って
@@ -291,6 +303,42 @@ async function runConsentCheck() {
       ng.push(
         `⓪ 直開きだけでプレイリスト/セグメント要求が ${requestsAfterOpen.length} 件飛んだ` +
           '（選択は再生ボタンで開始する契約に反する）',
+      )
+    }
+
+    // **要求した組（networkId + serviceId）が実際に選ばれたことを assert する。**
+    // 一覧が描画されるのを待ってから数える --- 描画前に数えると「まだ描かれて
+    // いない」を「印が付いていない」と取り違える（非同期の空虚な成功の逆）
+    try {
+      await page.waitForSelector('nav[aria-label="チャンネル一覧"] a', { timeout: 10000 })
+    } catch {
+      ng.push(
+        '⓪ チャンネル一覧が描画されない（E2E_LIVE_SERVICE_A / _B が epg_services に' +
+          '無い可能性。docs/runbook/live.md §② の投入例）',
+      )
+      return
+    }
+    const currentLinks = page.locator('nav[aria-label="チャンネル一覧"] a[aria-current="page"]')
+    const currentCount = await currentLinks.count()
+    const currentHref =
+      currentCount > 0 ? ((await currentLinks.first().getAttribute('href')) ?? '') : ''
+    log(`  選択中の印（aria-current="page"）: ${currentCount} 件 href=${currentHref || '（無し）'}`)
+    if (currentCount !== 1) {
+      // 2 件付くのは `serviceId` 単独で同定していたときの壊れ方そのもの
+      // （同じ serviceId を持つ別 network の行にも印が付く。issue #291）
+      ng.push(`⓪ 選択中の印が ${currentCount} 件ある（1 件でなければ複合キーでの同定が効いていない）`)
+    }
+    if (
+      !(
+        currentHref.includes(`networkId=${NETWORK_ID}`) &&
+        currentHref.includes(`serviceId=${SERVICE_A}`)
+      )
+    ) {
+      ng.push(
+        `⓪ 選択されたチャンネルが要求（networkId=${NETWORK_ID} serviceId=${SERVICE_A}）と` +
+          `違う（選択中リンクの href: ${currentHref || '（無し）'}）。` +
+          'E2E_LIVE_NETWORK_ID が epg_services の network_id と一致しているか確認する' +
+          '（一致しないと「番組を持つ先頭」フォールバックに落ちる）',
       )
     }
 

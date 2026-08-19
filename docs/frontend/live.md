@@ -33,13 +33,26 @@ Rokuban 自体のライブ視聴は「チャンネル一覧から選んでブラ
 **SI の `serviceId` 単独では network をまたぐと一意でない。** Mirakurun が
 `networkId * 100000 + serviceId` の合成 id を発明した理由そのもので、
 `GET /api/sites/{site}/services` は GR / BS / CS を混ぜて返すため、同じ
-`serviceId` を持つサービスが 2 つ返る構成がありうる。チャンネルの同定は
-`networkId` + `serviceId` の組で行う（`lib/live.ts` の `pickInitialService` /
-`liveServiceKey`）。`networkId` を持たない旧 `?serviceId=` 単独のリンク・
-ブックマークは「その `serviceId` を持つ最初のサービス」へフォールバックする
-（この場合に選ばれる network は一覧の順序に依存しうるが、`networkId` を運ばない
-入力そのものが network を同定できないので仕様である）。番組リスト
-（`components/program-row.tsx`）の「ライブで見る」リンクも `networkId` を渡す。
+`serviceId` を持つサービスが 2 つ返る構成がありうる。**`/live` の選択の同定
+（初期選択・選択中のハイライトと `aria-current`・再生中チャンネルの記憶・中断予測の
+応答の絞り込み）は `networkId` + `serviceId` の組で行う**（`lib/live.ts` の
+`pickInitialService` / `liveServiceKey`）。`networkId` を持たない旧 `?serviceId=`
+単独のリンク・ブックマークは「その `serviceId` を持つ最初のサービス」へ
+フォールバックする（この場合に選ばれる network は一覧の順序に依存しうるが、
+`networkId` を運ばない入力そのものが network を同定できないので仕様である）。
+番組リスト（`components/program-row.tsx`）の「ライブで見る」リンクも
+`networkId` を渡す。
+
+**未解決: 番組表と録画の絞り込みは `serviceId` 単独のまま。** 同じ画面から出る
+「この局の番組表」リンク（`/programs` の `?serviceId=` は `/recordings` と同じ
+複数可の配列）と、録画の絞り込み（`lib/recording-search.ts` の `service` =
+`<site>:<serviceId>`）は `networkId` を運ばない。上の複合キーはライブの選択に
+だけ効いており、これらの面では `serviceId` が network をまたいで衝突する構成で
+別 network のサービスの番組・録画も混ざる。ライブから先に直したのは、ここだけが
+**選択中のハイライトが 2 行に付く**という目に見える壊れ方をしていたためで、
+番組表・録画側の混入は目視では気付けない（`pages/live.test.tsx`
+「networkId + serviceId を指定すると、その network のチャンネルだけが選ばれる」が
+その壊れ方を固定している）。
 
 **「選ぶ」（`?networkId=&serviceId=` を変える）と「流す」（`LivePlayer` をマウントする）を
 別のタップに分ける。** チャンネルを選ぶこと自体は probe も
@@ -345,6 +358,15 @@ EPGStation・KonomiTV には構造的にできない表示。
 値であり、別サイトの同じ番号の番組と取り違えないよう `site` の一致も見る
 （docs/schema.md §1 の設計原則）。
 
+- **EPG 問い合わせは `serviceId` の配列だけで投げ、応答を `(networkId, serviceId)`
+  の組で絞り直す。** 同じチャンネル種別のサービスは複数 network にまたがりうるので、
+  `GET /api/sites/{site}/programs` の `networkId`（単一の整数）ではこの問い合わせを
+  表現できない。一方サーバーは `serviceId` だけを AND するため、選択中と別 network・
+  別種別のサービスがたまたま同じ `serviceId` を持つと、その番組が
+  `sameTypeProgramIds` に混入して**存在しない中断警告**を出しうる（SI の
+  `serviceId` は network をまたぐと一意でない。上記「フロントエンド実装」）。
+  応答側を `liveServiceKey`（`networkId` + `serviceId`）の集合で絞ることで閉じる
+  --- 種別一致の判定自体はサーバーに任せたまま、混入だけを落とす
 - **先読みの時間窓は 2 時間。** 視聴を選ぶ／始める瞬間の判断材料として出す表示
   なので、窓は「これから見始める 1 回の視聴」がカバーする範囲に合わせる。1 番組
   （30 分〜1 時間）を見ている間に次の番組の録画が競合し得ることまでは見せたいが、
@@ -391,8 +413,10 @@ EPGStation・KonomiTV には構造的にできない表示。
 加えて `interruptionQueryWindow` が tick を跨いでも窓の値を保つこと・グリッドを
 跨げば変わること・常に判定窓の上位集合であること）、`pages/live.test.tsx`
 「録画予約による中断予測」（選択状態・視聴中画面の両方に出る / skip・別チャンネル
-種別では出ない、の end-to-end wiring。加えて 30 秒の tick を実時間で跨いでも
-警告が消え続けないことをポーリングで確認）、
+種別では出ない、の end-to-end wiring。加えて「別 network の同じ serviceId の番組
+では中断警告を誤って出さない」で上記の応答側の絞り込みを固定する --- 絞り込みを
+外すと落ちる。30 秒の tick を実時間で跨いでも警告が消え続けないこともポーリングで
+確認）、
 `components/live-interruption-warning.test.tsx`（`reservation` が null のとき
 **描画そのものが無いこと**を `toBeEmptyDOMElement()` で見る --- 文言の regex
 一致だけでは、指定した語を含まない別の肯定文言への変異を検出できない。

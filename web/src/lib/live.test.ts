@@ -241,6 +241,28 @@ describe('pickInitialService', () => {
     ).toBe('最初に見つかる方')
   })
 
+  /**
+   * `?networkId=` 単独（`serviceId` 無し）は `networkId` を無視する。この挙動を
+   * 固定しておくと、将来「その network 内で選ぶ」に変えるのが意識的な変更になる
+   * （レビューでの指摘）。実装が `services.find((s) => s.networkId === networkId)`
+   * を先に試す形に変わればこのテストは落ちる。
+   */
+  it('networkId だけの指定は無視して番組を持つ先頭にフォールバックする', () => {
+    const services = [
+      makeService({ networkId: 1, serviceId: 100, hasPrograms: false, name: 'network 1 の局' }),
+      makeService({ networkId: 2, serviceId: 200, hasPrograms: true, name: 'network 2 の局' }),
+    ]
+    // network 2 を指定しても「番組を持つ先頭」で決まる（たまたま network 2 が
+    // 選ばれるのを合格と誤認しないよう、network 1 を指定した場合も同じ結果に
+    // なることを見る）
+    expect(pickInitialService(services, { networkId: 2, serviceId: undefined })?.name).toBe(
+      'network 2 の局',
+    )
+    expect(pickInitialService(services, { networkId: 1, serviceId: undefined })?.name).toBe(
+      'network 2 の局',
+    )
+  })
+
   it('要求した id が存在しなければ番組を持つ先頭にフォールバックする', () => {
     const services = [
       makeService({ serviceId: 1, hasPrograms: false }),
