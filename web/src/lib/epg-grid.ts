@@ -235,3 +235,55 @@ export function groupByChannelType(ordered: readonly Service[]): ChannelGroup[] 
   }
   return groups
 }
+
+/**
+ * disambiguationParts はサービスを区別する候補の材料。上から順に足していき、
+ * 名前が重複するグループ内で一意になったところで止める。programId を分解して
+ * 作れる値（networkId・serviceId を逆算するもの）ではなく、API が `Service`
+ * として既に返している値だけを使う（issue #306）。ワンセグ / サブサービスは
+ * 主サービスと同じリモコン番号・物理チャンネルで並ぶことがあり、その場合だけ
+ * 最後の `serviceId` まで進んで区別する。
+ */
+const disambiguationParts: ((s: Service) => string)[] = [
+  (s) =>
+    s.remoteControlKeyId > 0
+      ? `${channelTypeLabel(s.channelType)} ${s.remoteControlKeyId}`
+      : channelTypeLabel(s.channelType),
+  (s) => s.channel,
+  (s) => `#${s.serviceId}`,
+]
+
+/**
+ * serviceDisambiguator は名前が重複するサービスに補助ラベルを与える。
+ *
+ * 検索・ルールのサービスチップは名前だけを表示していたため、ワンセグ /
+ * サブサービスが同じ名前で複数並ぶとどれを選んでいるか分からなかった
+ * （issue #306）。名前が重複していないサービスには何も返さない ---
+ * 区別が要らない大多数のチップに常時ラベルを付けて読みにくくしないため。
+ *
+ * 戻り値の関数は、渡した `services` と同じ配列の要素で呼ぶことを前提にする
+ * （呼び出しごとにグループを作り直す）。
+ */
+export function serviceDisambiguator(
+  services: readonly Service[],
+): (service: Service) => string | undefined {
+  const groups = new Map<string, Service[]>()
+  for (const s of services) {
+    const group = groups.get(s.name)
+    if (group) group.push(s)
+    else groups.set(s.name, [s])
+  }
+
+  const labelOf = new Map<Service, string>()
+  for (const group of groups.values()) {
+    if (group.length <= 1) continue
+    let labels = group.map(() => '')
+    for (const part of disambiguationParts) {
+      labels = group.map((s, i) => (labels[i] === '' ? part(s) : `${labels[i]} ・ ${part(s)}`))
+      if (new Set(labels).size === group.length) break
+    }
+    group.forEach((s, i) => labelOf.set(s, labels[i]))
+  }
+
+  return (service) => labelOf.get(service)
+}

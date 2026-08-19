@@ -9,6 +9,7 @@ import {
   hourTicks,
   orderServices,
   pxToTime,
+  serviceDisambiguator,
   spanToPx,
   timeToPx,
   visibleColumnRange,
@@ -225,5 +226,78 @@ describe('orderServices', () => {
     ])
     expect(channelTypeLabel('GR')).toBe('地上波')
     expect(channelTypeLabel('UNKNOWN')).toBe('UNKNOWN')
+  })
+})
+
+describe('serviceDisambiguator', () => {
+  const service = (overrides: Partial<Service> & { serviceId: number }): Service => ({
+    networkId: 32736,
+    name: '瀬戸内海放送',
+    channelType: 'GR',
+    channel: '27',
+    remoteControlKeyId: 5,
+    hasLogoData: false,
+    hasPrograms: true,
+    ...overrides,
+  })
+
+  it('名前が重複しないサービスには何も返さない', () => {
+    const services = [
+      service({ serviceId: 1024, name: 'NHK総合' }),
+      service({ serviceId: 1032, name: 'NHKEテレ' }),
+    ]
+    const disambiguate = serviceDisambiguator(services)
+
+    expect(disambiguate(services[0])).toBeUndefined()
+    expect(disambiguate(services[1])).toBeUndefined()
+  })
+
+  it('リモコン番号が違えば地上波の種別とリモコン番号だけで区別する', () => {
+    // 同名だがリモコン番号が違う（= 実際は別の局・別の中継局）ケース。
+    // 物理チャンネルや serviceId まで見なくても 1 段目で解決できることを確認する
+    // （2 段目・3 段目まで進んだら値が変わってしまうので検証になる）。
+    const services = [
+      service({ serviceId: 1024, remoteControlKeyId: 5, channel: '27' }),
+      service({ serviceId: 1032, remoteControlKeyId: 12, channel: '27' }),
+    ]
+    const disambiguate = serviceDisambiguator(services)
+
+    expect(disambiguate(services[0])).toBe('地上波 5')
+    expect(disambiguate(services[1])).toBe('地上波 12')
+  })
+
+  it('リモコン番号まで同じワンセグ/サブサービスは物理チャンネルで区別する', () => {
+    const services = [
+      service({ serviceId: 1024, remoteControlKeyId: 5, channel: '27' }),
+      service({ serviceId: 1025, remoteControlKeyId: 5, channel: '95' }),
+    ]
+    const disambiguate = serviceDisambiguator(services)
+
+    expect(disambiguate(services[0])).toBe('地上波 5 ・ 27')
+    expect(disambiguate(services[1])).toBe('地上波 5 ・ 95')
+  })
+
+  it('リモコン番号・物理チャンネルまで同じなら serviceId で区別する', () => {
+    const services = [
+      service({ serviceId: 1024, remoteControlKeyId: 5, channel: '27' }),
+      service({ serviceId: 1025, remoteControlKeyId: 5, channel: '27' }),
+    ]
+    const disambiguate = serviceDisambiguator(services)
+
+    expect(disambiguate(services[0])).toBe('地上波 5 ・ 27 ・ #1024')
+    expect(disambiguate(services[1])).toBe('地上波 5 ・ 27 ・ #1025')
+  })
+
+  it('3 局以上の重複でも全員が区別できる（issue #306 の実例）', () => {
+    const services = [
+      service({ serviceId: 1, remoteControlKeyId: 5, channel: '27' }),
+      service({ serviceId: 2, remoteControlKeyId: 5, channel: '27' }),
+      service({ serviceId: 3, remoteControlKeyId: 6, channel: '30' }),
+    ]
+    const disambiguate = serviceDisambiguator(services)
+    const labels = services.map((s) => disambiguate(s))
+
+    expect(new Set(labels).size).toBe(3)
+    expect(labels.every((l) => l !== undefined)).toBe(true)
   })
 })

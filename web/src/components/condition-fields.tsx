@@ -12,6 +12,7 @@ import { unwrap } from '@/api/unwrap'
 import { Button } from '@/components/ui/button'
 import { Chip } from '@/components/ui/chip'
 import { Field, Input, Select } from '@/components/ui/field'
+import { serviceDisambiguator } from '@/lib/epg-grid'
 import { useCurrentSite } from '@/lib/site'
 import {
   allWeekdays,
@@ -310,6 +311,13 @@ function ServiceFields({
       (s) => s.networkId === service.networkId && s.serviceId === service.serviceId,
     )
 
+  // 同じ名前のサービス（ワンセグ / サブサービス等）が並ぶとき、リモコン番号・
+  // 物理チャンネル・serviceId から補助ラベルを作る（issue #306）。ここでだけ
+  // 作るのは、`useMemo` に回すと呼び出し側 2 画面（検索・ルール）それぞれで
+  // 依存配列を揃える手間が増えるため（サービス一覧自体は services クエリの
+  // 側でキャッシュされており、ここは軽い再計算で済む）。
+  const disambiguate = serviceDisambiguator(services)
+
   return (
     <Section title="サービス">
       {isError ? (
@@ -320,31 +328,38 @@ function ServiceFields({
         <p className="text-xs text-muted-foreground">サービスがありません</p>
       ) : (
         <div role="group" aria-label="サービス" className="flex flex-wrap gap-2">
-          {services.map((service) => (
-            <Chip
-              key={`${service.networkId}-${service.serviceId}`}
-              active={selected(service)}
-              disabled={disabled}
-              onClick={() =>
-                onChange((d) => ({
-                  ...d,
-                  services: selected(service)
-                    ? d.services.filter(
-                        (s) =>
-                          !(
-                            s.networkId === service.networkId && s.serviceId === service.serviceId
-                          ),
-                      )
-                    : [
-                        ...d.services,
-                        { networkId: service.networkId, serviceId: service.serviceId },
-                      ],
-                }))
-              }
-            >
-              {service.name}
-            </Chip>
-          ))}
+          {services.map((service) => {
+            const secondary = disambiguate(service)
+            return (
+              <Chip
+                key={`${service.networkId}-${service.serviceId}`}
+                active={selected(service)}
+                disabled={disabled}
+                onClick={() =>
+                  onChange((d) => ({
+                    ...d,
+                    services: selected(service)
+                      ? d.services.filter(
+                          (s) =>
+                            !(
+                              s.networkId === service.networkId &&
+                              s.serviceId === service.serviceId
+                            ),
+                        )
+                      : [
+                          ...d.services,
+                          { networkId: service.networkId, serviceId: service.serviceId },
+                        ],
+                  }))
+                }
+              >
+                {service.name}
+                {secondary !== undefined && (
+                  <span className="ml-1 opacity-70">（{secondary}）</span>
+                )}
+              </Chip>
+            )
+          })}
         </div>
       )}
     </Section>
