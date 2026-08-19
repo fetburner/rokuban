@@ -129,6 +129,12 @@ func newHTTPServer(addr string, handler http.Handler, readHeaderTimeout, idleTim
 // --roles worker や --roles notifier だけのプロセスでも同じ条件で WARN が出る
 // のは意図どおり（compose 既定構成に限らず、ロール分割デプロイの全 Pod に対する
 // チェックとして機能する）。
+//
+// 判定（`len(allowedHosts) > 0`）は internal/api.AllowedHosts が検証を丸ごと
+// スキップする条件（`internal/api/middleware.go` の `len(normalizedAllowedHosts)
+// == 0`）と同じでなければ意味が無い。middleware 側が空要素を除去するなどの変更を
+// すると、警告だけが黙って乖離する（「防壁は無いが警告も出ない」構成が作れる）。
+// middleware のスキップ条件を触るときはここも合わせる。
 func warnIfAllowedHostsEmpty(logger *slog.Logger, allowedHosts []string) {
 	if len(allowedHosts) > 0 {
 		return

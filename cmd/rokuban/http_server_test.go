@@ -65,7 +65,7 @@ func TestServerSlowHeaderConnectionIsClosed(t *testing.T) {
 	// この harness は allowed_hosts のテストと同じもの（実プロセス起動の経路が
 	// 1 本しかないので使い回す）。allowed_hosts の設定はこのテストの経路には
 	// 影響しない —— ヘッダーを送り切らないので Host の検証まで到達しない。
-	base, _ := startServerForAllowedHosts(t, "  allowed_hosts: [rokuban.local]\n", "")
+	base, _ := startServerForAllowedHosts(t, []string{"rokuban.local"}, "")
 
 	addr := strings.TrimPrefix(base, "http://")
 	conn, err := net.Dial("tcp", addr)

@@ -48,9 +48,10 @@ func TestWarnIfAllowedHostsEmpty_NonEmptyLogsNothing(t *testing.T) {
 // 配線ミスと同型）。「第 2 引数を決め打ちにする」変異は、この片方向だけでは
 // 決め打ち先が偶然「空」であれば検出できない ―― 下の
 // TestServerAllowedHostsNonEmpty_NoWarnAtStartup と組みで初めて捕まえられる
-// （PR #397 レビューで実測: `nil` 決め打ちはこのテストだけでは緑のまま通った）。
+// （実測: 第 2 引数を `nil` に決め打ちする変異を入れると、落ちるのは下のテスト
+// だけでこのテストは緑のまま通った）。
 func TestServerAllowedHostsEmpty_WarnsAtStartup(t *testing.T) {
-	_, logs := startServerForAllowedHosts(t, "", "")
+	_, logs := startServerForAllowedHosts(t, nil, "")
 
 	if !strings.Contains(logs.String(), "server.allowed_hosts is empty") {
 		t.Errorf("startup log = %q, want a WARN mentioning empty server.allowed_hosts", logs.String())
@@ -70,7 +71,7 @@ func TestServerAllowedHostsEmpty_WarnsAtStartup(t *testing.T) {
 // 「allowed_hosts を正しく設定した利用者にも毎回 WARN が出る」という壊れ方が
 // CI 緑のまま残ってしまう。
 func TestServerAllowedHostsNonEmpty_NoWarnAtStartup(t *testing.T) {
-	_, logs := startServerForAllowedHosts(t, "  allowed_hosts: [rokuban.local]\n", "")
+	_, logs := startServerForAllowedHosts(t, []string{"rokuban.local"}, "")
 
 	if strings.Contains(logs.String(), "server.allowed_hosts is empty") {
 		t.Errorf("startup log = %q, want no WARN mentioning empty server.allowed_hosts when allowed_hosts is set", logs.String())
