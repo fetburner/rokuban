@@ -30,6 +30,12 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl
 COPY --from=backend /rokuban /usr/local/bin/rokuban
+# storage.media_dir の既定値（config.example.yml）に合わせたマウント点。
+# Docker は「空の named volume を初回マウントするとき、マウント点の内容
+# （所有権含む）をボリュームにコピーする」ため、ここで nobody 所有にして
+# おけばクリーンな named volume でも ingest / サムネイル生成が書き込める。
+# bind mount やホスト側で chown 済みの volume では効かないが無害。
+RUN mkdir -p /mnt/media && chown nobody:nogroup /mnt/media
 USER nobody
 EXPOSE 40773
 ENTRYPOINT ["rokuban"]
