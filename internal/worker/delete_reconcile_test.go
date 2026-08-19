@@ -1506,6 +1506,10 @@ func TestDeleteReconcileWorker_MissingAsset_WithinAge_RecordedButNotReported(t *
 		t.Fatalf("seeding asset without a file: %v", err)
 	}
 
+	// プロセス内のゲージに残るので、このテストの外へ漏らさない
+	// （他のテストと順序非依存にする）。
+	t.Cleanup(metrics.MediaAssetsMissing.Reset)
+
 	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, MissingAssetAge: 24 * time.Hour}
 	if err := w.Work(context.Background(), nil); err != nil {
 		t.Fatalf("Work() error: %v", err)
@@ -1555,6 +1559,8 @@ func TestDeleteReconcileWorker_MissingAsset_AgedOut_ReportedWithoutDeleting(t *t
 		t.Fatalf("seeding aged missing-asset record: %v", err)
 	}
 
+	t.Cleanup(metrics.MediaAssetsMissing.Reset)
+
 	before := promtestutil.ToFloat64(metrics.MissingAssetScanSuspectedStorageFailure)
 
 	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, MissingAssetAge: 24 * time.Hour}
@@ -1573,8 +1579,69 @@ func TestDeleteReconcileWorker_MissingAsset_AgedOut_ReportedWithoutDeleting(t *t
 	}
 }
 
+// cleanup.missing_asset_age の設定値が実際に反映されていることを検証する。
+// 既存のエイジング系テストはいずれも MissingAssetAge に既定値
+// (defaultMissingAssetAge = 24h) と同じ値を渡しているため、設定を無視して
+// 既定値にフォールバックする実装でも見分けがつかない（CLAUDE.md「実装の
+// 定数と比較するテストは何も主張していない」）。ここでは既定値と区別できる
+// 短い値 (1h) を渡し、first_seen を 2h 前にすることで「既定 24h では未エイジ
+// ングだが設定した 1h ではエイジング済み」という向きで検証する。
+//
+// このテストが検出すべき変異: Work が w.MissingAssetAge を無視して
+// defaultMissingAssetAge を使う。その場合 2h 前の候補は 24h 未満なので
+// 報告されず、最後のアサーションが落ちる。
+func TestDeleteReconcileWorker_MissingAsset_ConfiguredAge_ShorterThanDefault_Reported(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+
+	otherRecordingID := insertTestRecording(t, pool)
+	seedOriginalAsset(t, pool, mediaDir, otherRecordingID, "present/original.m2ts", []byte("data"))
+
+	recordingID := insertTestRecordingWithEventID(t, pool, 6)
+	q := sqlcgen.New(pool)
+	assetID, err := q.CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
+		RecordingID: recordingID,
+		Kind:        db.AssetKindOriginal,
+		RelPath:     "gone/configured-age.m2ts",
+		SizeBytes:   4,
+	})
+	if err != nil {
+		t.Fatalf("seeding asset without a file: %v", err)
+	}
+	// 既定 24h では未エイジングだが、設定する 1h ではエイジング済みになる
+	// 経過時間。
+	if _, err := pool.Exec(context.Background(),
+		"INSERT INTO missing_media_assets (media_asset_id, first_seen) VALUES ($1, $2)",
+		assetID, time.Now().Add(-2*time.Hour)); err != nil {
+		t.Fatalf("seeding aged missing-asset record: %v", err)
+	}
+
+	t.Cleanup(metrics.MediaAssetsMissing.Reset)
+
+	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, MissingAssetAge: 1 * time.Hour}
+	if err := w.Work(context.Background(), nil); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+
+	if got := assetState(t, pool, assetID); got != "active" {
+		t.Errorf("asset state = %q, want active (missing-file detection never deletes)", got)
+	}
+	if got := promtestutil.ToFloat64(metrics.MediaAssetsMissing.WithLabelValues("original")); got != 1 {
+		t.Errorf("MediaAssetsMissing{kind=original} = %v, want 1 (configured 1h age must be honored, not the 24h default)", got)
+	}
+}
+
 // missing_media_assets の候補は、対象ファイルが後から見つかると掃除される
-// （孤児回収の「登録された行を掃除する」と対になる逆方向）。
+// （孤児回収の「登録された行を掃除する」と対になる逆方向）。この解消は
+// メトリクスにも反映される必要がある --- reportAgedMissingAssets の
+// metrics.MediaAssetsMissing.Reset() を削っても、1 パスだけの検証では
+// 「一度も Set されていないので偶然 0」を見分けられない。1 パス目でエイジ
+// ング済み候補を報告させてゲージを 1 に上げ、2 パス目でファイルを復元して
+// ゲージが 0 に戻ることまで確認する（CLAUDE.md「壊す場所を、実際に壊れる
+// 経路の上に置く」）。
+//
+// このテストが検出すべき変異: reportAgedMissingAssets から Reset() を削る。
+// その場合 2 パス目でも 1 パス目の値 (1) が残り、最後のアサーションが落ちる。
 func TestDeleteReconcileWorker_MissingAsset_FileReappears_ClearsCandidate(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
@@ -1594,10 +1661,21 @@ func TestDeleteReconcileWorker_MissingAsset_FileReappears_ClearsCandidate(t *tes
 	if err != nil {
 		t.Fatalf("seeding asset without a file: %v", err)
 	}
+	// エイジング窓を過ぎた記録として投入し、1 パス目で報告対象にする。
 	if _, err := pool.Exec(context.Background(),
-		"INSERT INTO missing_media_assets (media_asset_id, first_seen) VALUES ($1, now())",
-		assetID); err != nil {
+		"INSERT INTO missing_media_assets (media_asset_id, first_seen) VALUES ($1, $2)",
+		assetID, time.Now().Add(-48*time.Hour)); err != nil {
 		t.Fatalf("seeding missing-asset candidate: %v", err)
+	}
+
+	t.Cleanup(metrics.MediaAssetsMissing.Reset)
+
+	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, MissingAssetAge: 24 * time.Hour}
+	if err := w.Work(context.Background(), nil); err != nil {
+		t.Fatalf("Work() (pass 1) error: %v", err)
+	}
+	if got := promtestutil.ToFloat64(metrics.MediaAssetsMissing.WithLabelValues("original")); got != 1 {
+		t.Fatalf("MediaAssetsMissing{kind=original} after pass 1 = %v, want 1 (aged candidate must be reported)", got)
 	}
 
 	// ファイルが復元された(バックアップからの手動復元等)。
@@ -1609,9 +1687,8 @@ func TestDeleteReconcileWorker_MissingAsset_FileReappears_ClearsCandidate(t *tes
 		t.Fatal(err)
 	}
 
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
 	if err := w.Work(context.Background(), nil); err != nil {
-		t.Fatalf("Work() error: %v", err)
+		t.Fatalf("Work() (pass 2) error: %v", err)
 	}
 
 	var count int
@@ -1621,6 +1698,9 @@ func TestDeleteReconcileWorker_MissingAsset_FileReappears_ClearsCandidate(t *tes
 	}
 	if count != 0 {
 		t.Errorf("missing_media_assets count = %d, want 0 (file reappeared, candidate must be cleared)", count)
+	}
+	if got := promtestutil.ToFloat64(metrics.MediaAssetsMissing.WithLabelValues("original")); got != 0 {
+		t.Errorf("MediaAssetsMissing{kind=original} after pass 2 = %v, want 0 (resolved candidate must clear the gauge, not just leave it stale)", got)
 	}
 }
 
@@ -1824,6 +1904,7 @@ func TestDeleteReconcileWorker_MissingAsset_ReportLogBudget_CapsWarnLines(t *tes
 	prevLogger := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
 	t.Cleanup(func() { slog.SetDefault(prevLogger) })
+	t.Cleanup(metrics.MediaAssetsMissing.Reset)
 
 	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, MissingAssetAge: 24 * time.Hour}
 	if err := w.Work(context.Background(), nil); err != nil {
@@ -1882,6 +1963,8 @@ func TestDeleteReconcileWorker_MissingAsset_AssetNoLongerActive_NotReported(t *t
 		"UPDATE media_assets SET state = 'deleted', deleted_at = now() WHERE id = $1", assetID); err != nil {
 		t.Fatalf("marking asset deleted out of band: %v", err)
 	}
+
+	t.Cleanup(metrics.MediaAssetsMissing.Reset)
 
 	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, MissingAssetAge: 24 * time.Hour}
 	if err := w.Work(context.Background(), nil); err != nil {
