@@ -31,10 +31,14 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
       ca-certificates curl
 COPY --from=backend /rokuban /usr/local/bin/rokuban
 # storage.media_dir の既定値（config.example.yml）に合わせたマウント点。
-# Docker は「空の named volume を初回マウントするとき、マウント点の内容
+# Docker は「空の named volume をマウントするとき、マウント点の内容
 # （所有権含む）をボリュームにコピーする」ため、ここで nobody 所有にして
-# おけばクリーンな named volume でも ingest / サムネイル生成が書き込める。
-# bind mount やホスト側で chown 済みの volume では効かないが無害。
+# おけば空の named volume でも nobody から書き込める（実測: CI の
+# "Media mount point is writable as nobody" ステップ。touch のみで
+# ingest / サムネイル生成そのものは実行していない）。
+# 一度でも内容が書き込まれた volume にはこのコピーアップは効かない
+# （実機確認: docs/runbook/troubleshooting.md 参照）。bind mount や
+# ホスト側で chown 済みの volume にも効かないが、上書きしないので無害。
 RUN mkdir -p /mnt/media && chown nobody:nogroup /mnt/media
 USER nobody
 EXPOSE 40773

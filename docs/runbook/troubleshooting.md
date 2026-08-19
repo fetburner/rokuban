@@ -14,7 +14,21 @@ docker compose exec postgres psql -U rokuban -d rokuban -c \
 - `errors` に **`context deadline exceeded`** — River の総時間タイムアウト。
   ingest は無効化してあるので、出るなら設定が壊れている
 - `state=retryable` のまま進まない — mirakc への到達性か、
-  `media_dir` の書き込み権限を確認する
+  `media_dir` の書き込み権限を確認する。イメージ側で `/mnt/media` を
+  nobody 所有にする修正は、**volume に一度でも何か
+  書き込まれていると効かない**（実機確認: root 所有のまま書き込んだ
+  volume に修正後イメージをマウントしても所有権は変わらず
+  permission denied のまま。書き込みが一度も無い空の volume なら
+  修正後イメージのマウントだけで直る）。旧イメージで一度でも起動した
+  media volume が root 所有のままなら、コンテナを落としてから
+  volume を直接 chown する。
+
+  ```sh
+  docker compose down
+  docker run --rm --user 0 --entrypoint chown \
+    -v <project>_media:/mnt/media <image> 65534:65534 /mnt/media
+  docker compose up -d
+  ```
 
 **「転送しているが遅いだけ」と「止まっている」は UI で見分けられる**。録画一覧・
 録画詳細に取り込み状態が出る（「取り込み中 42%」/「取り込み中 1.2 GB（停滞）」/

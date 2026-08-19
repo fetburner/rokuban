@@ -83,6 +83,20 @@ volume 行を bind mount に差し替える。
 コンテナ内のパス（`/mnt/media`）を変えないかぎり `config.compose.yml` の
 `storage.media_dir` はそのままでよい。
 
+**bind mount には Dockerfile 側の所有権修正（`/mnt/media` を nobody 所有で
+焼き込む）が効かない**。named volume の copy-up はボリューム管理領域だけの
+挙動で、bind mount はホスト側のディレクトリの所有権をそのまま見せるため。
+ホスト側のディレクトリを事前に uid/gid `65534`（`nobody:nogroup`、rokuban
+コンテナの実行ユーザー）で書き込めるようにしておくこと。
+
+```sh
+sudo mkdir -p /mnt/nas/rokuban-media
+sudo chown 65534:65534 /mnt/nas/rokuban-media
+```
+
+chown できない共有ストレージ（一部の NAS 等）では、代わりに compose 側で
+`rokuban` サービスに `user:` を指定してホスト側の既存 uid/gid に合わせる。
+
 ## 定期ジョブの周期とヒント
 
 ルールを作ってから録画が始まるまでの待ち時間はほぼこの表で決まる。**定期パスが真実**で、ヒントは投入を早めるだけ
