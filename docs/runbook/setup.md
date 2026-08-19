@@ -96,6 +96,13 @@ sudo chown 65534:65534 /mnt/nas/rokuban-media
 
 chown できない共有ストレージ（一部の NAS 等）では、代わりに compose 側で
 `rokuban` サービスに `user:` を指定してホスト側の既存 uid/gid に合わせる。
+**この回避策は未検証**（計測環境が Docker Desktop for Mac で、bind mount の
+所有権がホストと一致しないため測れていない）。
+
+**`user:` を使うのは bind mount のときだけにする。** named volume では
+copy-up が `nobody` 所有を焼くので、`user:` を 65534 以外にすると逆に書けなく
+なる。実測: 空の named volume を `--user 1000:1000` でマウントすると、
+マウント点は `nobody:nogroup` のままで `touch` が `Permission denied` になった。
 
 ## 定期ジョブの周期とヒント
 

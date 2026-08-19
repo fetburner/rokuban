@@ -33,11 +33,17 @@ COPY --from=backend /rokuban /usr/local/bin/rokuban
 # storage.media_dir の既定値（config.example.yml）に合わせたマウント点。
 # Docker は「空の named volume をマウントするとき、マウント点の内容
 # （所有権含む）をボリュームにコピーする」ため、ここで nobody 所有にして
-# おけば空の named volume でも nobody から書き込める（実測: CI の
-# "Media mount point is writable as nobody" ステップ。touch のみで
-# ingest / サムネイル生成そのものは実行していない）。
+# おけば空の named volume でも nobody から書き込める。
+# これが無いと media_dir に書く全ループが落ちる。**フレッシュな構成で最初に
+# 落ちるのは catalog_export**（RunOnStart の定期ジョブなので、録画が 1 件も
+# 無い起動直後に走る）。ingest / サムネイル生成 / エンコードも同じ理由で
+# 落ちるが、そちらは録画ができるまで走らない。
+# 実測: CI の "catalog_export wrote to the media volume" ステップ（実バイナリが
+# nobody として os.MkdirAll + os.Create する経路）と、その前段の
+# "Media and scratch dirs are writable as nobody" probe。
 # 一度でも内容が書き込まれた volume にはこのコピーアップは効かない
-# （実機確認: docs/runbook/troubleshooting.md 参照）。bind mount や
+# （復旧手順は docs/runbook/troubleshooting.md の
+# 「media_dir に書けない」。chown は -R が必要）。bind mount や
 # ホスト側で chown 済みの volume にも効かないが、上書きしないので無害。
 RUN mkdir -p /mnt/media && chown nobody:nogroup /mnt/media
 USER nobody

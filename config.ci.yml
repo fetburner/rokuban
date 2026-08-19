@@ -6,4 +6,8 @@ db:
 mirakc:
   url: http://localhost:40772
 storage:
-  media_dir: /tmp/media
+  # 既定値と同じパスにする。docker-compose.test.yml がここにフレッシュな
+  # named volume をマウントし、起動直後の catalog_export が実バイナリとして
+  # nobody で書き込めることを smoke test で検査する（/tmp のような 1777 の
+  # ディレクトリだと、マウント点の所有権の不具合を通してしまう）。
+  media_dir: /mnt/media

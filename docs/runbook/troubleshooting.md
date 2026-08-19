@@ -2,6 +2,60 @@
 
 ## 詰まったとき
 
+### `media_dir` に書けない（`permission denied`）
+
+**録画が 1 件も無くても、起動直後に `river_job` にエラーが出る**のがこの症状の
+最初の形。`catalog_export` は起動時に 1 回走る定期ジョブなので、`media_dir` に
+書けない構成ではこれが最初に落ちる（ingest・サムネイル生成・エンコードも同じ
+理由で落ちるが、そちらは録画ができるまで走らない）。`/healthz` は通り続けるので、
+ジョブ側を見ないと気付けない。
+
+```sh
+docker compose exec postgres psql -U rokuban -d rokuban -c \
+  "SELECT id, kind, state, attempt, errors FROM river_job
+     WHERE state IN ('retryable', 'discarded') ORDER BY id DESC LIMIT 5"
+```
+
+`catalog_export` が `state=retryable` で次のエラーを持っていればこれ。
+
+```text
+creating catalog dir: mkdir /mnt/media/catalog: permission denied
+```
+
+実測: 所有権を焼く前のイメージで `docker-compose.test.yml` を起動したときの
+`river_job` 行。このとき `/healthz` は `{"status":"ok"}` を返し続けた。
+
+イメージは `/mnt/media` を実行ユーザー所有で焼いてある（uid/gid `65534` =
+`nobody:nogroup`）。**空の** named volume なら手当ては要らない。Docker の
+copy-up がマウント点の所有権を volume 側にコピーするため。所有権を焼く前の
+イメージで**起動しただけ**の volume も、書き込みが一度も無ければ空である。
+イメージを上げ直すだけで直る（実測: 空 volume を旧イメージでマウントすると
+`/mnt/media` は `root:root`。そのあと修正後イメージでマウントすると
+`nobody:nogroup` になり `touch` が通る）。
+
+**手当てが要るのは volume に既に中身がある場合**。典型は、この不具合を踏んで
+compose 側で `user: "0:0"` を当てて回避した volume。root のまま録画やカタログを
+書いてしまっている。copy-up は空の volume にしか効かないので、イメージを
+上げ直しても所有権は変わらない。
+
+`chown` は **`-R` でかける**。`/mnt/media` だけを chown しても配下の
+`catalog/` などが root 所有のまま残る。`os.MkdirAll` は既存ディレクトリに
+`nil` を返すので、ファイル作成で同じ `permission denied` になる。
+
+実測: root で `catalog/` を書いた volume では、非再帰 `chown` 後も
+`touch /mnt/media/catalog/probe` が `Permission denied` になった。
+`chown -R` 後は成功した。
+
+```sh
+docker compose down   # user: "0:0" を当てて回避していたら、この機に消す
+docker run --rm --user 0 --entrypoint chown \
+  -v <project>_media:/mnt/media <image> -R 65534:65534 /mnt/media
+docker compose up -d
+```
+
+bind mount には copy-up が無いので、ホスト側を先に用意する
+（[setup.md](setup.md) の「録画の保存先」）。
+
 ### `ingest: transfer complete` が出ない
 
 ```sh
@@ -13,22 +67,8 @@ docker compose exec postgres psql -U rokuban -d rokuban -c \
   HEAD だけ試すと成功するので騙されやすい
 - `errors` に **`context deadline exceeded`** — River の総時間タイムアウト。
   ingest は無効化してあるので、出るなら設定が壊れている
-- `state=retryable` のまま進まない — mirakc への到達性か、
-  `media_dir` の書き込み権限を確認する。イメージ側で `/mnt/media` を
-  nobody 所有にする修正は、**volume に一度でも何か
-  書き込まれていると効かない**（実機確認: root 所有のまま書き込んだ
-  volume に修正後イメージをマウントしても所有権は変わらず
-  permission denied のまま。書き込みが一度も無い空の volume なら
-  修正後イメージのマウントだけで直る）。旧イメージで一度でも起動した
-  media volume が root 所有のままなら、コンテナを落としてから
-  volume を直接 chown する。
-
-  ```sh
-  docker compose down
-  docker run --rm --user 0 --entrypoint chown \
-    -v <project>_media:/mnt/media <image> 65534:65534 /mnt/media
-  docker compose up -d
-  ```
+- `state=retryable` のまま進まない — mirakc への到達性か、`media_dir` の
+  書き込み権限（上記「`media_dir` に書けない」）を確認する
 
 **「転送しているが遅いだけ」と「止まっている」は UI で見分けられる**。録画一覧・
 録画詳細に取り込み状態が出る（「取り込み中 42%」/「取り込み中 1.2 GB（停滞）」/
