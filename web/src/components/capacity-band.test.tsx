@@ -108,7 +108,7 @@ describe('CapacityBands', () => {
     // 自前で時刻 → px を計算すると（オフセットの取り違え・分/時間の混同で）ここがずれる
     expect(rendered?.style.top).toBe(cell(1).style.top)
     expect(rendered?.style.height).toBe(cell(1).style.height)
-    expect(rendered?.style.top).toBe('2400px')
+    expect(rendered?.style.top).toBe('9999px')
     expect(rendered?.style.height).toBe('120px')
   })
 
