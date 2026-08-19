@@ -319,6 +319,34 @@ pnpm build && pnpm preview --port 4173 --strictPort &
 E2E_URL=http://localhost:4173 pnpm e2e:grid-reserved
 ```
 
+### モバイル番組リストとボトムタブの重なり（`programs-bottom-nav.mjs`）
+
+390px 幅で番組リストを開くと、スクロールせずに見える範囲で行がボトムタブに
+半分だけ隠れる（issue #303）。`main` の `padding-bottom`（`--bottom-nav-height`）は
+ドキュメント最下端まで実際にスクロールしたときにしか重なりを防げず、初回表示
+（1px もスクロールしていない状態）では 1 時間窓ぶんの番組が既にビューポートより
+長いことがあるため、この穴は構造的に空いている。jsdom は `getBoundingClientRect`
+を計算しない（常に 0 を返す）ため、この重なりは原理的にユニットテストでは
+検出できない。
+
+見るのは:
+
+- ① 390×844・初回表示（スクロールなし）で、上端は見えるが下端がボトムタブに
+  食い込んでいる行が無いこと
+- ② ドキュメント最下端まで実際にスクロールしても重ならないこと（`main` の
+  `padding-bottom` が元から保証する状態の回帰確認）
+- ③ 1280px（ボトムタブが無い画面幅）では補正が何もしない（`scrollY` が 0 の
+  まま）こと --- 補正の実装ミスでデスクトップにも効いてしまう退行を防ぐ
+
+`design.mjs` と同じ手（`/api/**` を `page.route` で丸ごと差し替え、時刻は
+`page.clock.setFixedTime` で固定）。⓪（配っている bundle と `dist/` の一致）
+も自分で確認する。
+
+```sh
+pnpm build && pnpm preview --port 4173 --strictPort &
+E2E_URL=http://localhost:4173 pnpm e2e:programs-bottom-nav
+```
+
 ## CI では回さない
 
 実サーバーと実 mirakc のデータに依存するため、CI には載せない。**ローカルでの受け入れ確認**の

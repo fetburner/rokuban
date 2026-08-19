@@ -224,6 +224,11 @@ function BottomTabs() {
   return (
     <nav
       aria-label="主ナビゲーション"
+      // `data-testid`: `components/program-list.tsx` の初回表示タブ回避
+      // （issue #303）が、このタブの実際の描画位置（border 込みの上端）を
+      // 直接測るための目印。`main` の `padding-bottom`（`--bottom-nav-height`）
+      // から逆算すると border の 1px がずれる。
+      data-testid="bottom-nav"
       className="fixed inset-x-0 bottom-0 z-20 border-t border-border bg-background/95 pb-[var(--bottom-nav-inset)] backdrop-blur md:hidden"
     >
       <ul className="flex">
