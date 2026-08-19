@@ -30,6 +30,15 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl
 COPY --from=backend /rokuban /usr/local/bin/rokuban
+# storage.media_dir の既定値（config.example.yml）に合わせたマウント点。
+# 空の named volume をマウントすると Docker がマウント点の所有権を volume 側へ
+# コピーするので、ここで nobody 所有にしておけば media_dir に書く全ループ
+# （最初に走るのは RunOnStart の catalog_export）が nobody から書ける。
+# 実測: CI の "Media and scratch dirs are writable as nobody" と
+# "catalog_export wrote to the media volume" ステップ。
+# 効かない条件（書き込み済み volume / bind mount）と復旧手順は
+# docs/runbook/troubleshooting.md の「media_dir に書けない」。
+RUN mkdir -p /mnt/media && chown nobody:nogroup /mnt/media
 USER nobody
 EXPOSE 40773
 ENTRYPOINT ["rokuban"]

@@ -1,5 +1,6 @@
 # CI スモークテスト用。docker compose -f docker-compose.test.yml up --wait で
-# 全サービスの healthcheck が通れば成功。
+# 全サービスの healthcheck が通り、かつ catalog_export が media volume へ
+# 書けていれば成功（healthz はジョブが落ちても通るため後者を別に見る）。
 services:
   postgres:
     image: postgres:17
@@ -33,6 +34,12 @@ services:
       - "40773:40773"
     volumes:
       - ./config.ci.yml:/config.yml:ro
+      # storage.media_dir をフレッシュな named volume にする。起動直後に
+      # RunOnStart で走る catalog_export が、実バイナリとして nobody で
+      # ここへ os.MkdirAll + os.Create する（CI の
+      # "catalog_export wrote to the media volume" ステップが検証する）。
+      # healthz はジョブが落ちても通るので、ジョブ状態の明示アサートが要る。
+      - media:/mnt/media
     command: ["server", "--all", "--config", "/config.yml"]
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:40773/healthz"]
@@ -40,3 +47,6 @@ services:
       interval: 2s
       timeout: 3s
       retries: 15
+
+volumes:
+  media:

@@ -207,10 +207,48 @@ jobs:
           cache-from: type=gha,scope=amd64
       # server --all はその上に ffmpeg を積んだ Dockerfile.full で起動する。
       - run: docker build -f Dockerfile.full --build-arg BASE=rokuban:test -t rokuban:test-full .
+      # /mnt/media（storage.media_dir 既定値）と /var/tmp/rokuban
+      # （storage.scratch_dir 既定値）が実行ユーザーから書けること。
+      # 修正前のイメージでは media 側が Permission denied で落ちる。
+      # uid も一緒に主張するのは、Dockerfile.full 末尾の `USER nobody` が
+      # 将来落ちたときにこのステップが名前だけ嘘のまま pass しないため
+      # （root なら書けてしまう）。scratch_dir 側はベースイメージの /var/tmp が
+      # 1777 であることに依存しているだけなので、イメージを差し替えたときに
+      # 黙って壊れないようここで一緒に押さえる。
+      - name: Media and scratch dirs are writable as nobody
+        run: |
+          docker volume create rokuban-media-probe
+          docker run --rm --entrypoint sh -v rokuban-media-probe:/mnt/media rokuban:test-full \
+            -c 'test "$(id -u)" = 65534 && mkdir -p /mnt/media/probe/nested && touch /mnt/media/probe/nested/file && mkdir -p /var/tmp/rokuban'
+      - name: Remove probe volume
+        if: always()
+        run: docker volume rm -f rokuban-media-probe
       - name: Smoke test
         run: |
           docker compose -f docker-compose.test.yml up --wait --wait-timeout 60
           curl -sf http://localhost:40773/healthz
+      # 上の probe は touch/mkdir であって Go の os.MkdirAll / os.Create を
+      # 通っていない。catalog_export は RunOnStart の定期ジョブなので、
+      # 起動直後に実バイナリが nobody として media volume へ世代ディレクトリを
+      # 書く。healthz はジョブが落ちても通るため、ジョブ状態を明示的に見る。
+      # 修正前のイメージではここが state=retryable + permission denied になる。
+      - name: catalog_export wrote to the media volume
+        run: |
+          for _ in $(seq 1 30); do
+            state=$(docker compose -f docker-compose.test.yml exec -T postgres \
+              psql -U rokuban -d rokuban -tAc \
+              "SELECT state FROM river_job WHERE kind='catalog_export' ORDER BY id DESC LIMIT 1")
+            case "$state" in
+              completed) break ;;
+            esac
+            sleep 2
+          done
+          docker compose -f docker-compose.test.yml exec -T postgres \
+            psql -U rokuban -d rokuban -c \
+            "SELECT id, kind, state, attempt, errors FROM river_job WHERE kind='catalog_export'"
+          test "$state" = completed
+          docker compose -f docker-compose.test.yml exec -T rokuban \
+            sh -c 'test -f "$(ls -d /mnt/media/catalog/catalog-*/ | tail -1)/manifest.json"'
       - name: Dump logs on failure
         if: failure()
         run: docker compose -f docker-compose.test.yml logs

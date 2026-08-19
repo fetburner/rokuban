@@ -83,6 +83,27 @@ volume 行を bind mount に差し替える。
 コンテナ内のパス（`/mnt/media`）を変えないかぎり `config.compose.yml` の
 `storage.media_dir` はそのままでよい。
 
+**bind mount には Dockerfile 側の所有権修正（`/mnt/media` を nobody 所有で
+焼き込む）が効かない**。named volume の copy-up はボリューム管理領域だけの
+挙動で、bind mount はホスト側のディレクトリの所有権をそのまま見せるため。
+ホスト側のディレクトリを事前に uid/gid `65534`（`nobody:nogroup`、rokuban
+コンテナの実行ユーザー）で書き込めるようにしておくこと。
+
+```sh
+sudo mkdir -p /mnt/nas/rokuban-media
+sudo chown 65534:65534 /mnt/nas/rokuban-media
+```
+
+chown できない共有ストレージ（一部の NAS 等）では、代わりに compose 側で
+`rokuban` サービスに `user:` を指定してホスト側の既存 uid/gid に合わせる。
+**この回避策は未検証**（計測環境が Docker Desktop for Mac で、bind mount の
+所有権がホストと一致しないため測れていない）。
+
+**`user:` を使うのは bind mount のときだけにする。** named volume では
+copy-up が `nobody` 所有を焼くので、`user:` を 65534 以外にすると逆に書けなく
+なる。実測: 空の named volume を `--user 1000:1000` でマウントすると、
+マウント点は `nobody:nogroup` のままで `touch` が `Permission denied` になった。
+
 ## 定期ジョブの周期とヒント
 
 ルールを作ってから録画が始まるまでの待ち時間はほぼこの表で決まる。**定期パスが真実**で、ヒントは投入を早めるだけ
