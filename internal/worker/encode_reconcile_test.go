@@ -75,8 +75,6 @@ func TestEncodeReconcile_ReenqueuesAfterLostHintAndDeletedEdgeRecord(t *testing.
 	setReservationBase(t, pool, res.ID, `{"keepOriginal":"always","encodeProfiles":["h265"]}`)
 
 	recordingID := insertTestRecordingForReservation(t, pool, programID)
-	// program_id をこのテストが扱っている programID に一致させる
-	// （insertTestRecordSync は固定値をハードコードしており対応しない）。
 	insertTestRecordSyncForSite(t, pool, "default", recordingID, "rec-163-lost-hint", programID)
 
 	tsData := makeTSData(20)
