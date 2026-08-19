@@ -222,6 +222,33 @@ describe('useServerEvents', () => {
     expect(isStale(queryClient, ['/api/recordings'])).toBe(false)
   })
 
+  // トピック名と代表キーはリテラルで書く（実装の queryGroups を import すると
+  // 「トピックの書き忘れ・書き間違い」を一緒に見逃す）。撃ったトピックのキーだけが
+  // stale になることを見るので、トピックの取り違えも検出できる
+  const topicKeys = {
+    reservations: ['/api/reservations', { start: 'a' }],
+    recordings: ['/api/recordings', { start: 'a' }],
+    breakers: ['/api/breakers'],
+    epg: ['/api/sites/tokyo/programs', { start: 'a' }],
+  } as const
+  const topics = Object.keys(topicKeys) as (keyof typeof topicKeys)[]
+
+  it.each(topics)('%s のトピックは購読されていて、そのグループだけを無効化する', (topic) => {
+    globalThis.EventSource = EventSourceStub as unknown as typeof EventSource
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: Infinity } },
+    })
+    for (const key of Object.values(topicKeys)) queryClient.setQueryData(key, [])
+    renderSubscriber(queryClient)
+    for (const key of Object.values(topicKeys)) expect(isStale(queryClient, key)).toBe(false)
+
+    EventSourceStub.last?.emit(topic)
+
+    for (const other of topics) {
+      expect(isStale(queryClient, topicKeys[other])).toBe(other === topic)
+    }
+  })
+
   it('購読を解除すると接続を閉じる', () => {
     globalThis.EventSource = EventSourceStub as unknown as typeof EventSource
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })

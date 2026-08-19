@@ -28,24 +28,22 @@ export const epgRefreshIntervalMs = 600_000
  *
  * `/api/storage` はディスクの statfs 観測の射影であって、worker の観測ループが
  * 書き換えたときにしか値が変わらない。運用状態（60 秒）と同じ周期で回しても、
- * 同じ値を余分に引くだけで得るものが無い ---
- * 観測自体がそれより速く更新されない（`lib/storage-forecast.ts` の
- * `observationStaleAfterMs` doc コメントが記す `internal/worker/storage.go` の
- * `defaultStorageSyncInterval` は実質 5 分固定）。
- *
- * それでもこの値を worker の定数から輸入しない（同 doc コメントと同じ立場:
- * `GET /api/storage` の契約に入っていない実装詳細に結合すると、worker 側だけが
- * 変わってフロントが追随できなくなる）。5 分は独立に選んだ固定値で、運用状態
- * （60 秒）より長い一方、EPG（10 分）ほど長くする理由もない（`/api/storage` は
- * 番組表グリッドのような大きな応答ではないので、短くする側のコストが小さい）
+ * 同じ値を余分に引くだけで得るものが無い。一方で EPG（10 分）ほど長くする理由も
+ * ない（番組表グリッドのような大きな応答ではないので、短くする側のコストが
+ * 小さい）。その 2 つの間に挟んで 5 分を選ぶ
  * （テスト: events.test.tsx「SSE が来なくてもストレージ残高は専用の周期で
  * 取り直す」）。
+ *
+ * worker の観測周期（`internal/worker/storage.go`）から輸入はしない ---
+ * `lib/storage-forecast.ts` の `observationStaleAfterMs` と同じ立場で、
+ * `GET /api/storage` の契約に入っていない実装詳細に結合すると、worker 側だけが
+ * 変わってフロントが追随できなくなる。
  *
  * SSE トピックからの invalidate は持たない。`storage_sync` は行トリガーの対象に
  * していない（observed_at は毎パス全量 upsert されるだけで、行トリガーにすると
  * statfs の頻度そのものに通知量が結合する）ため。収束はこの定期 invalidate に
- * 加えて、再接続時の全グループ invalidate（{@link useServerEvents} 参照。topic の
- * 有無を見ずに queryGroups 全体を回す）と mount / window focus に依る
+ * 加えて、再接続時の全グループ invalidate（{@link useServerEvents} 参照。topic が
+ * `null` かどうかを見ずに queryGroups 全体を回す）と mount / window focus に依る
  * （テスト: events.test.tsx「再接続したら切断中の変更を全グループ取り直す」。
  * `docs/api/sse.md` 参照）。
  */
@@ -57,11 +55,15 @@ export const storageRefreshIntervalMs = 5 * 60_000
  */
 type QueryGroup = {
   /**
-   * SSE のトピック名。`undefined` は「対応する SSE トピックを持たず、定期
-   * invalidate だけで収束させる」グループ（`storage` がこれ。理由は
+   * SSE のトピック名。`null` は「対応する SSE トピックを持たず、定期 invalidate
+   * だけで収束させる」グループ（`storage` がこれ。理由は
    * {@link storageRefreshIntervalMs} 参照）。
+   *
+   * optional にはしない --- optional だと「トピックを書き忘れた」グループが型でも
+   * テストでも通り、SSE の購読を静かに失う。`null` を明示的に書かせることで、
+   * 省略は型エラーのまま、意図した「トピック無し」だけが書ける。
    */
-  topic?: string
+  topic: string | null
   /** invalidate 対象のクエリキーの接頭辞（orval のキーは `[url, params]`）。 */
   prefixes: string[]
   /** SSE が 1 通も届かなくても、この周期で invalidate する。 */
@@ -110,7 +112,8 @@ const queryGroups: QueryGroup[] = [
     refreshIntervalMs: epgRefreshIntervalMs,
   },
   {
-    // topic を持たない --- storageRefreshIntervalMs の doc コメント参照。
+    // トピックを持たない --- storageRefreshIntervalMs の doc コメント参照。
+    topic: null,
     prefixes: ['/api/storage'],
     refreshIntervalMs: storageRefreshIntervalMs,
   },
@@ -153,9 +156,9 @@ export function useServerEvents() {
     }
 
     for (const group of queryGroups) {
-      // topic が無いグループ（storage）は SSE を購読しない --- 定期 invalidate
+      // topic が null のグループ（storage）は SSE を購読しない --- 定期 invalidate
       // だけで収束させる（storageRefreshIntervalMs の doc コメント参照）
-      if (group.topic === undefined) continue
+      if (group.topic === null) continue
       listen(group.topic, () => invalidateGroup(queryClient, group))
     }
 
