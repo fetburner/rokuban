@@ -70,6 +70,43 @@ jobs:
       # POSTGRES_USER はこのインスタンスの initdb 時に作られる初期ロールなので CREATE DATABASE 権限を持つ。
       - run: go test ./... -timeout 5m
 
+  # 生成物（sqlc/oapi-codegen/orval）が openapi.yaml / マイグレーションからの再生成と一致するかを
+  # 検証する。生成物はコミット済みなので他 job（build/test）は再生成漏れがあっても普通に緑になる。
+  # ツール版は CLAUDE.md §ビルド・テストに固定した版に合わせる（版がずれると偽陽性で赤くなる）。
+  generated-diff:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: web
+      # sqlc は go.mod の依存に入れず、golangci-lint と同じくローカルバイナリ前提（CLAUDE.md）。
+      # CI では都度その版をインストールして GOPATH/bin を PATH に足す。
+      - run: go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1
+      - run: echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - run: sqlc generate
+      # oapi-codegen は tool ディレクティブで go.mod を汚さないよう go run @version で呼ぶ（CLAUDE.md）。
+      - run: go run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.8.0 --config=oapi-codegen.yaml ../../openapi.yaml
+        working-directory: internal/api
+      - run: pnpm exec orval
+        working-directory: web
+      # 新規ファイル（generated.ts のような単一ファイルでなく、sqlcgen 配下でクエリ追加により
+      # ファイルが増減するケース）も検出するため git add -A で拾ってから差分を見る。
+      - name: 再生成漏れがあれば失敗させる
+        run: |
+          git add -A -- internal/db/sqlcgen internal/api/openapi_gen.go web/src/api/generated.ts
+          git diff --cached --exit-code -- internal/db/sqlcgen internal/api/openapi_gen.go web/src/api/generated.ts
+
   lint:
     runs-on: ubuntu-latest
     steps:
