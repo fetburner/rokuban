@@ -23,19 +23,30 @@ Rokuban 自体のライブ視聴は「チャンネル一覧から選んでブラ
 その上に足す」）ため、モバイルからの入口を別に用意する必要が生じ結局 2 箇所になる。
 `/live` はチャンネル一覧（`GET /api/sites/{site}/services`）+ プレイヤー + いま放送中の番組
 （既存 EPG API の時間窓クエリ。専用 API は足していない）という 1 画面で構成する
-（`pages/live.tsx`）。選択中のチャンネルは `?serviceId=` に持つ（`routes.tsx` の
+（`pages/live.tsx`）。選択中のチャンネルは `?networkId=&serviceId=` に持つ（`routes.tsx` の
 `validateSearch` が不正な値に `undefined` を**明示代入**して落とす。省略では
 消えない --- [recordings.md](recordings.md)「TanStack Router の `validateSearch` は
 無効な値を『省略』しても消えない」）。
 チャンネル一覧のリンクは `replace` にし、ザッピングでブラウザ履歴が積み上がらない
 ようにする。
 
-**「選ぶ」（`?serviceId=` を変える）と「流す」（`LivePlayer` をマウントする）を
+**SI の `serviceId` 単独では network をまたぐと一意でない。** Mirakurun が
+`networkId * 100000 + serviceId` の合成 id を発明した理由そのもので、
+`GET /api/sites/{site}/services` は GR / BS / CS を混ぜて返すため、同じ
+`serviceId` を持つサービスが 2 つ返る構成がありうる。チャンネルの同定は
+`networkId` + `serviceId` の組で行う（`lib/live.ts` の `pickInitialService` /
+`liveServiceKey`）。`networkId` を持たない旧 `?serviceId=` 単独のリンク・
+ブックマークは「その `serviceId` を持つ最初のサービス」へフォールバックする
+（この場合に選ばれる network は一覧の順序に依存しうるが、`networkId` を運ばない
+入力そのものが network を同定できないので仕様である）。番組リスト
+（`components/program-row.tsx`）の「ライブで見る」リンクも `networkId` を渡す。
+
+**「選ぶ」（`?networkId=&serviceId=` を変える）と「流す」（`LivePlayer` をマウントする）を
 別のタップに分ける。** チャンネルを選ぶこと自体は probe も
 セッション（チューナー確保 + ffmpeg 起動）も起こさない --- チャンネル一覧・
 いま放送中の番組・チャンネル種別（GR/BS/CS）の表示だけで、`LivePlayer` は
-「再生」ボタンを押すまでマウントしない（`pages/live.tsx` の `playingServiceId`。
-`selectedServiceId` と一致するときだけ再生中とみなす）。確認ダイアログは使わない
+「再生」ボタンを押すまでマウントしない（`pages/live.tsx` の `playingKey`。
+`selectedKey` と一致するときだけ再生中とみなす）。確認ダイアログは使わない
 --- 選択状態の画面そのものが値札であり、再生は 1 タップで足りる。摩擦をコストに
 比例させる方針上、デスクトップ LAN でも再生 1 押しより増やさない（ダイアログを
 重ねると、チューナーが有限でない環境の利用者にまで同じ摩擦を強いる）。
@@ -43,7 +54,7 @@ Rokuban 自体のライブ視聴は「チャンネル一覧から選んでブラ
 [data.md](../data.md) §6.5 と同じ規律 --- mirakc には Rokuban から見えない
 消費者がいる）。
 
-`playingServiceId` と `selectedServiceId` の一致判定は**レンダー中に行う**（effect
+`playingKey` と `selectedKey` の一致判定は**レンダー中に行う**（effect
 ではない）。これは直リンク・ブックマークで来た場合だけでなく、チャンネル一覧で
 他のチャンネルへ切り替えた場合も同じで、**同意はチャンネルの選択ごとに 1 回必要**
 という設計の要点そのものである --- 一度再生した後に別チャンネルへザップし、また
@@ -51,7 +62,7 @@ Rokuban 自体のライブ視聴は「チャンネル一覧から選んでブラ
 再開しない。**この判定を `useEffect` で「選択が変わったら false に戻す」形にすると、
 1 コミットぶん透過的にバグる**（レビューでの指摘。実測: A 再生中に B へ切り替えると、
 jsdom でも実ブラウザでも B 向けの `playlist.m3u8` への要求が 1 件飛ぶ）--- passive
-effect は子（`LivePlayer`）→親（`LivePage`）の順に走るため、`selectedServiceId` が
+effect は子（`LivePlayer`）→親（`LivePage`）の順に走るため、`selectedKey` が
 B に変わった直後の 1 コミットだけ古い再生中フラグが残っていて `<LivePlayer
 serviceId={B}>` が透過的にマウントされ probe を投げてしまい、その直後に親の
 reset effect が走って unmount してももう遅い（`internal/streamer/live.go` の
@@ -60,11 +71,11 @@ reset effect が走って unmount してももう遅い（`internal/streamer/liv
 チューナー + ffmpeg が残る。**離脱ヒントを送っても縮むだけで 0 にはならない** ---
 押していないチャンネルを掴む時間は「猶予（既定 8 秒）+ GC 周期」であって、
 掴まないのとは違う）。レンダー中に判定すれば
-`selectedServiceId` が変わった**その場のレンダーで**「再生中でない」が確定し、
+`selectedKey` が変わった**その場のレンダーで**「再生中でない」が確定し、
 異なる serviceId で透過的にマウントされる中間コミット自体が存在しない
-（詳細は `pages/live.tsx` の `playingServiceId` 定義部のコメント）。
+（詳細は `pages/live.tsx` の `playingKey` 定義部のコメント）。
 
-**直リンク・ブックマーク（`/live?serviceId=` の直開き）も選択状態で止まる。**
+**直リンク・ブックマーク（`/live?networkId=&serviceId=` の直開き）も選択状態で止まる。**
 再生開始の同意を取る構造は、通常のチャンネル一覧からの選択と直リンクで区別しない
 --- 直開きだけ自動再生にすると「タップで選んだときは同意が要るが URL 経由なら
 要らない」という一貫しない規則になり、番組行の「ライブで見る」等の外部導線
@@ -271,7 +282,7 @@ in-flight `fetch` を `AbortController` で中断、hls.js の `destroy()` /
 いう事態自体が起きなくなった。**
 `?serviceId=` を切り替えるだけでは probe もセッション開始も走らないため、
 チャンネル一覧を何度触っても掴まれるチューナーは 0 のまま増えない --- ただし
-これは `playingServiceId` と `selectedServiceId` の一致判定をレンダー中に行う
+これは `playingKey` と `selectedKey` の一致判定をレンダー中に行う
 実装でのみ真になる（上記「フロントエンド実装」の同じ節参照）。`useEffect` で
 「選択が変わったら false に戻す」形にすると、切替直後の 1 コミットだけ押していない
 チャンネルへ透過的に probe が飛ぶ（実測は同節）。ザッピング緩和のためのデバウンス

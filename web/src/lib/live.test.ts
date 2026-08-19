@@ -7,7 +7,8 @@ import {
   currentProgramWindow,
   liveLeaveURL,
   livePlaylistURL,
-  pickInitialServiceId,
+  liveServiceKey,
+  pickInitialService,
   probeLivePlaylist,
   sendLiveLeaveHint,
   supportsNativeHls,
@@ -181,10 +182,63 @@ function makeService(overrides: Partial<Service>): Service {
   }
 }
 
-describe('pickInitialServiceId', () => {
-  it('要求した id が一覧に存在すればそれを使う', () => {
-    const services = [makeService({ serviceId: 1 }), makeService({ serviceId: 2 })]
-    expect(pickInitialServiceId(services, 2)).toBe(2)
+describe('liveServiceKey', () => {
+  it('networkId と serviceId を組にした文字列を返す', () => {
+    expect(liveServiceKey(1, 2)).toBe('1-2')
+  })
+
+  it('networkId が異なれば serviceId が同じでも別のキーになる', () => {
+    expect(liveServiceKey(1, 100)).not.toBe(liveServiceKey(2, 100))
+  })
+})
+
+describe('pickInitialService', () => {
+  it('networkId + serviceId が両方一致するサービスを使う', () => {
+    const services = [
+      makeService({ networkId: 1, serviceId: 100 }),
+      makeService({ networkId: 2, serviceId: 200 }),
+    ]
+    expect(pickInitialService(services, { networkId: 2, serviceId: 200 })).toBe(services[1])
+  })
+
+  /**
+   * issue #291: SI の `serviceId` は network をまたぐと一意でない
+   * （Mirakurun が合成 id を発明した理由そのもの）。同じ `serviceId` を 2 つの
+   * network が持つ構成で、`networkId` まで指定すればその network のサービスが
+   * 選ばれることを固定する --- `services.find((s) => s.serviceId === ...)` に
+   * 戻す変異（`networkId` を無視する）だとこのテストは落ちる（先頭の network 1
+   * が選ばれてしまう）。
+   */
+  it('同じ serviceId を 2 network が持つとき、networkId で正しい方を選ぶ', () => {
+    const services = [
+      makeService({ networkId: 1, serviceId: 100, name: 'network 1 の局' }),
+      makeService({ networkId: 2, serviceId: 100, name: 'network 2 の局' }),
+    ]
+    expect(pickInitialService(services, { networkId: 2, serviceId: 100 })?.name).toBe(
+      'network 2 の局',
+    )
+    expect(pickInitialService(services, { networkId: 1, serviceId: 100 })?.name).toBe(
+      'network 1 の局',
+    )
+  })
+
+  it('networkId が一致しない組では番組を持つ先頭にフォールバックする（無効な指定と同じ扱い）', () => {
+    const services = [
+      makeService({ networkId: 1, serviceId: 100, hasPrograms: false }),
+      makeService({ networkId: 2, serviceId: 200, hasPrograms: true }),
+    ]
+    // network 9 に serviceId 100 は存在しない（network 1 のものと取り違えない）
+    expect(pickInitialService(services, { networkId: 9, serviceId: 100 })).toBe(services[1])
+  })
+
+  it('networkId 未指定（旧 ?serviceId= 単独のリンク）は、その serviceId を持つ最初のサービスへフォールバックする', () => {
+    const services = [
+      makeService({ networkId: 1, serviceId: 100, name: '最初に見つかる方' }),
+      makeService({ networkId: 2, serviceId: 100, name: '2 番目' }),
+    ]
+    expect(
+      pickInitialService(services, { networkId: undefined, serviceId: 100 })?.name,
+    ).toBe('最初に見つかる方')
   })
 
   it('要求した id が存在しなければ番組を持つ先頭にフォールバックする', () => {
@@ -192,7 +246,9 @@ describe('pickInitialServiceId', () => {
       makeService({ serviceId: 1, hasPrograms: false }),
       makeService({ serviceId: 2, hasPrograms: true }),
     ]
-    expect(pickInitialServiceId(services, 999)).toBe(2)
+    expect(
+      pickInitialService(services, { networkId: undefined, serviceId: 999 }),
+    ).toBe(services[1])
   })
 
   it('未指定でも番組を持つ先頭にフォールバックする', () => {
@@ -200,7 +256,9 @@ describe('pickInitialServiceId', () => {
       makeService({ serviceId: 1, hasPrograms: false }),
       makeService({ serviceId: 2, hasPrograms: true }),
     ]
-    expect(pickInitialServiceId(services, undefined)).toBe(2)
+    expect(
+      pickInitialService(services, { networkId: undefined, serviceId: undefined }),
+    ).toBe(services[1])
   })
 
   it('番組を持つサービスが無ければ先頭を使う', () => {
@@ -208,11 +266,13 @@ describe('pickInitialServiceId', () => {
       makeService({ serviceId: 5, hasPrograms: false }),
       makeService({ serviceId: 6, hasPrograms: false }),
     ]
-    expect(pickInitialServiceId(services, undefined)).toBe(5)
+    expect(
+      pickInitialService(services, { networkId: undefined, serviceId: undefined }),
+    ).toBe(services[0])
   })
 
   it('サービスが 1 件も無ければ undefined', () => {
-    expect(pickInitialServiceId([], 1)).toBeUndefined()
+    expect(pickInitialService([], { networkId: undefined, serviceId: 1 })).toBeUndefined()
   })
 })
 
