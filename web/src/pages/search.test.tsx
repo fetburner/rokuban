@@ -317,6 +317,93 @@ describe('SearchPage', () => {
   })
 
   /**
+   * レビュー指摘: 主操作を `ConditionFields` の前に移した変更は `pnpm test` に
+   * 一切掛かっていなかった（並びだけ元に戻しても 29/29 green だった）。上の
+   * テストの `compareDocumentPosition` はテキスト欄とサービスチップの比較で、
+   * 主操作の位置は見ていない。座標ではなく DOM 順なので jsdom で測れる ---
+   * 将来の refactor で黙って末尾に戻るのを CI で止める。
+   */
+  it('主操作（検索）は条件の先頭セクション（テキスト条件）より DOM 順で前にある', async () => {
+    stubApi()
+    renderPage()
+
+    const searchButton = await screen.findByRole('button', { name: '検索' })
+    const firstSectionHeading = screen.getByRole('heading', { name: 'テキスト条件' })
+
+    expect(
+      searchButton.compareDocumentPosition(firstSectionHeading) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0)
+  })
+
+  /**
+   * レビュー指摘（issue #305 の差し戻し）: 主操作を上に出しただけでは「押した
+   * 結果」（値札・件数・結果）が縦カラムの末尾に残り、390px では押しても折り目の
+   * 中で何も変わらない（実測: クリック後も `scrollY = 0`、件数行は折り目の 335px
+   * 下）。送信の決着時に結果の先頭へスクロールとフォーカスを移して対にする。
+   *
+   * **jsdom はスクロール位置を測れない**（`scrollIntoView` はスタブ。
+   * test/setup.ts）。ここで固定するのは「呼ばれる相手が結果セクションであること」
+   * と「フォーカスが移ること」だけで、実際に折り目の中に入るかは
+   * `web/e2e/search-mobile.mjs` の④が実ブラウザで測る。
+   */
+  it('検索の決着時に結果セクションへスクロールとフォーカスを移す', async () => {
+    stubApi()
+    const scrolled: Element[] = []
+    const spy = vi
+      .spyOn(Element.prototype, 'scrollIntoView')
+      .mockImplementation(function (this: Element) {
+        scrolled.push(this)
+      })
+
+    try {
+      renderPage()
+      await screen.findByRole('button', { name: 'NHK総合' })
+
+      const results = screen.getByRole('region', { name: '検索結果' })
+      // 描画だけでは動かさない（押していないのにスクロールが起きるのは別の欠陥）
+      expect(scrolled).toEqual([])
+
+      await addKeyword('ニュース')
+      await userEvent.click(screen.getByRole('button', { name: '検索' }))
+      expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+
+      expect(scrolled).toEqual([results])
+      expect(results).toHaveFocus()
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  /**
+   * 上の裏側（両方向）: `?ruleId=N` で開いたときの自動検索では移さない。
+   * ユーザーが押していない検索で飛ばすと、ページを開いた瞬間に条件フォームが
+   * 画面外へ出る。
+   */
+  it('?ruleId の自動検索では結果セクションへ移さない', async () => {
+    stubApi({ rules: [ruleFixture] })
+    const scrolled: Element[] = []
+    const spy = vi
+      .spyOn(Element.prototype, 'scrollIntoView')
+      .mockImplementation(function (this: Element) {
+        scrolled.push(this)
+      })
+
+    try {
+      renderPage(['/search?ruleId=7'])
+
+      // 自動検索が済んだ（結果が出ている）状態まで待ってから見る。待たずに
+      // 見ると「まだ検索が解決していない」だけで通る空虚な成功になる。
+      expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+
+      expect(scrolled).toEqual([])
+      expect(screen.getByRole('region', { name: '検索結果' })).not.toHaveFocus()
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  /**
    * レビュー指摘（issue #305 の差し戻し）: 見かけ上の 1 行目は実体が無い間、
    * 「条件を追加」ボタンも削除（X）ボタンも出さない。実体の無い行に対して
    * これらを出すと、押しても・消しても何も起きない死んだコントロールになる。

@@ -120,13 +120,54 @@ export function SearchPage() {
 
   const error = draftError(draft)
 
+  /**
+   * resultsRef は「押した結果」の先頭（`検索結果` セクション）。主操作を条件
+   * フォームの先頭に上げた代償として、押しても折り目の中では何も変わらない
+   * （件数・値札・結果はチップ列全部の下）状態になったため、送信のたびに
+   * ここへスクロールとフォーカスを移す。
+   *
+   * **実測値**（390x844・テキスト条件「ニュース」・結果 20 件）: 移す前は
+   * クリック後も `window.scrollY = 0` のままで、件数行は y=1179（折り目 844 の
+   * 335px 下）。移した後は `scrollY = 1130` で件数行 y=49・結果 1 件目 y=81。
+   * 実ブラウザでの合否判定は `web/e2e/search-mobile.mjs` の④。
+   *
+   * **移動先は結果の先頭（件数行）で、値札と保存はその直前に残す。** 値札を
+   * 保存の隣に常置する判断（`RuleCostSummary` のコメント）を動かさずに、
+   * 押した結果を折り目に入れるため。同じ実測で値札は y=-68、
+   * 「この条件でルールを作成」は y=-4 --- 折り目の外だが数十 px 上にあり、
+   * 保存へ戻る動線では従来どおり両者が並んで目に入る。
+   *
+   * `pendingResultScrollRef` で「ユーザーが押した送信」だけに限る ---
+   * `?ruleId=N` で開いたときの自動検索（上のハイドレーション effect）で
+   * 飛ばすと、ページを開いた瞬間に条件フォームが画面外へ出てしまう。
+   */
+  const resultsRef = useRef<HTMLElement>(null)
+  const pendingResultScrollRef = useRef(false)
+
   // 送れない下書きは 2 つの層で止める。ボタンの無効化だけだと、Enter による
   // 暗黙の送信（既定ボタンが無効でも submit が届きうる）が素通りする。
   const submit = () => {
     if (error !== undefined) return
     setVisibleCount(pageSize)
+    pendingResultScrollRef.current = true
     search.mutate({ site, data: buildSearchRequest(draft) })
   }
+
+  // 検索が決着した（成功・失敗のどちらでも）フレームで移す。0 件・失敗も
+  // 「押した結果」なので、成功だけに絞らない。`status` を依存に置くのは
+  // 2 回目の検索でも pending → success と遷移して effect が再び走るため。
+  useEffect(() => {
+    if (!pendingResultScrollRef.current) return
+    if (search.status === 'idle' || search.status === 'pending') return
+    pendingResultScrollRef.current = false
+    const el = resultsRef.current
+    if (el === null) return
+    // jsdom は scrollIntoView を実装していない（test/setup.ts でスタブ）。
+    el.scrollIntoView({ block: 'start' })
+    // 読み上げにも「押した結果」の位置を伝える。スクロールは上で済んでいるので
+    // preventScroll でブラウザ既定の再スクロール（scroll-margin を無視する）を止める。
+    el.focus({ preventScroll: true })
+  }, [search.status])
 
   const ids = unwrap(search.data) ?? []
 
@@ -222,6 +263,13 @@ export function SearchPage() {
          * という並びに変える --- 条件を追加する操作自体は `ConditionFields`
          * 先頭のテキスト条件が担うので、ここで先に出しても
          * 「サービスチップ列より先に届く」という受け入れ基準は変わらない。
+         *
+         * **上に出しただけでは足りない。** 「押した結果」（値札・件数・結果）は
+         * この 1 本の縦カラムの末尾に残るので、主操作を上端へ動かしても総
+         * スクロール量は変わらず、負担が送信前から送信後に移るだけになる
+         * （押しても折り目の中では `検索中…` の一瞬のラベル変化しか起きない）。
+         * 送信のたびに結果の先頭へスクロールとフォーカスを移すことで対にする
+         * （上の `resultsRef`）。
          */}
         <div className="flex flex-col gap-2">
           {/* 送れない理由は押せないボタンの隣に出す。ボタンだけ無効にすると
@@ -275,41 +323,64 @@ export function SearchPage() {
         <CreateRuleSection draft={draft} draftError={error} />
       )}
 
-      {search.isIdle ? (
-        // 「まだ検索していない」と「0 件」は別の事実。同じ文言にすると
-        // 条件の書き方が悪いのか該当がないのかが分からない
-        <EmptyState>条件を指定して検索してください</EmptyState>
-      ) : search.isPending ? (
-        <ListSkeleton />
-      ) : search.isError ? (
-        <SearchError error={search.error} />
-      ) : ids.length === 0 ? (
-        <EmptyState>条件に一致する番組がありません</EmptyState>
-      ) : (
-        <>
-          <p className="px-4 py-2 text-xs text-muted-foreground">
-            {/* 件数は 1 つの文字列にする（JSX で連結するとテキストノードが分かれ、
-                読み上げも「37」「件」と切れる） */}
-            {visibleCount < ids.length
-              ? `${ids.length} 件（番組 ID 順）— ${visibleCount} 件を表示`
-              : `${ids.length} 件（番組 ID 順）`}
-          </p>
-          <SearchResultList ids={ids.slice(0, visibleCount)} serviceById={serviceById} />
-          {visibleCount < ids.length && (
-            <div className="px-4 py-6">
-              <Button
-                type="button"
-                variant="outline"
-                size="lg"
-                className="w-full"
-                onClick={() => setVisibleCount((c) => c + pageSize)}
-              >
-                さらに表示
-              </Button>
-            </div>
-          )}
-        </>
-      )}
+      {/*
+       * 送信後のスクロール・フォーカスの移動先（上の `resultsRef`）。
+       * `tabIndex={-1}` はキーボードの tab 順を変えない（プログラムからだけ
+       * フォーカスできる）。`scrollMarginTop` はページヘッダ（`sticky`）と
+       * サーキットブレーカーのバナー（同）の高さぶん --- これが無いと結果の
+       * 先頭が両者の下に潜り、スクロールしたのに件数行が見えない。
+       * `--page-header-height` は `PageHeader` が共通の親（`<main>`）に実測値を
+       * 書き出しており、その子であるこのセクションに継承される。
+       * `outline-none` はフォーカスリングを消すためで、キーボード操作の助けを
+       * 削ってはいない --- tab では到達しない要素であり、リングは結果一覧全体を
+       * 囲う巨大な枠になる（`recording-filters.tsx` 等のコンテナと同じ流儀）。
+       */}
+      <section
+        ref={resultsRef}
+        aria-label="検索結果"
+        tabIndex={-1}
+        className="outline-none"
+        style={{
+          scrollMarginTop:
+            'calc(var(--breaker-banner-height, 0px) + var(--page-header-height, 0px))',
+        }}
+      >
+        {search.isIdle ? (
+          // 「まだ検索していない」と「0 件」は別の事実。同じ文言にすると
+          // 条件の書き方が悪いのか該当がないのかが分からない
+          <EmptyState>条件を指定して検索してください</EmptyState>
+        ) : search.isPending ? (
+          <ListSkeleton />
+        ) : search.isError ? (
+          <SearchError error={search.error} />
+        ) : ids.length === 0 ? (
+          <EmptyState>条件に一致する番組がありません</EmptyState>
+        ) : (
+          <>
+            <p className="px-4 py-2 text-xs text-muted-foreground">
+              {/* 件数は 1 つの文字列にする（JSX で連結するとテキストノードが分かれ、
+                  読み上げも「37」「件」と切れる） */}
+              {visibleCount < ids.length
+                ? `${ids.length} 件（番組 ID 順）— ${visibleCount} 件を表示`
+                : `${ids.length} 件（番組 ID 順）`}
+            </p>
+            <SearchResultList ids={ids.slice(0, visibleCount)} serviceById={serviceById} />
+            {visibleCount < ids.length && (
+              <div className="px-4 py-6">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="lg"
+                  className="w-full"
+                  onClick={() => setVisibleCount((c) => c + pageSize)}
+                >
+                  さらに表示
+                </Button>
+              </div>
+            )}
+          </>
+        )}
+      </section>
     </>
   )
 }
