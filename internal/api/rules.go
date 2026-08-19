@@ -279,13 +279,14 @@ func (h *Server) validateEncodeProfiles(names []string) error {
 // validateRuleSites は sites の各要素が site レジストリ（config.mirakc/mirakcs、
 // h.sites）に存在することを検査する（issue #315）。api は不変条件 1 によりどの site
 // にも束縛されないので、権威は h.knownSite が参照するレジストリ全件であり、mirakc への
-// 問い合わせも FS 依存もしない。空文字列は「未指定 = 全サイト」の個別要素ではなく、
-// replaceRuleChildren が挿入時に無視する既存の規約に合わせてここでもスキップする
+// 問い合わせも FS 依存もしない。空文字列も未知の site 名と同じ扱いで 400 にする ---
+// 「絞り込みたい」意図を持つ要素が黙って「全サイト」に反転するのを防ぐ（validateEncodeProfiles
+// が空名を拒否する流儀に揃える）。全サイトを意図するなら sites 全体を省略・空配列にする
 // （FK を張らない代わりの書き込み時照合であり、CHECK ではなく 400 で拒否する）。
 func (h *Server) validateRuleSites(sitesIn []string) error {
 	for _, site := range sitesIn {
 		if site == "" {
-			continue
+			return errors.New("sites must not contain empty names")
 		}
 		if !h.knownSite(site) {
 			return fmt.Errorf("unknown site %q", site)
@@ -537,6 +538,8 @@ func replaceRuleChildren(ctx context.Context, q *sqlcgen.Queries, ruleID int64, 
 	}
 	if in.Sites != nil {
 		for _, site := range *in.Sites {
+			// validateRuleSites がすでに空文字列を 400 で拒否しているので、
+			// CreateRule/UpdateRule 経由では到達しない。防御的にここでも保持する。
 			if site == "" {
 				continue
 			}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -329,7 +330,6 @@ func TestRuleSites_UnknownSiteRejected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("unknown site status = %d, want 400", resp.StatusCode)
 	}
@@ -337,6 +337,7 @@ func TestRuleSites_UnknownSiteRejected(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&errBody); err != nil {
 		t.Fatal(err)
 	}
+	_ = resp.Body.Close()
 	if !strings.Contains(errBody.Error, "unknown site") {
 		t.Errorf("error body = %q, want mention of unknown site", errBody.Error)
 	}
@@ -355,7 +356,9 @@ func TestRuleSites_UnknownSiteRejected(t *testing.T) {
 		t.Fatalf("rules were persisted despite unknown site: %+v", list)
 	}
 
-	// レジストリにある site 名 → 201
+	// レジストリにある site 名 → 201。かつ、その sites が実際に保存されていること
+	// （201 を返しつつ sites を落とす実装でも通ってしまわないように、ステータスだけでなく
+	// レスポンスの sites の中身まで確認する）。
 	goodBody := map[string]any{
 		"name":  "known-sites",
 		"sites": []string{"tokyo", "osaka"},
@@ -365,13 +368,16 @@ func TestRuleSites_UnknownSiteRejected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("known sites status = %d, want 201", resp.StatusCode)
 	}
 	var created Rule
 	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
 		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if created.Sites == nil || !slices.Equal(*created.Sites, []string{"osaka", "tokyo"}) {
+		t.Fatalf("created.Sites = %v, want [osaka tokyo]", created.Sites)
 	}
 
 	// rule_sites 空（未指定 = 全サイト）→ 201
@@ -381,12 +387,12 @@ func TestRuleSites_UnknownSiteRejected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("omitted sites status = %d, want 201", resp.StatusCode)
 	}
 
-	// update でも同じ照合が効く → 未知 site で 400、既存の rule_sites は変わらない。
+	// update でも同じ照合が効く → 未知 site で 400。
 	updateBody := map[string]any{
 		"name":  "known-sites",
 		"sites": []string{"toukyou"},
@@ -398,9 +404,112 @@ func TestRuleSites_UnknownSiteRejected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("update with unknown site status = %d, want 400", resp.StatusCode)
+	}
+
+	// 400 の後、既存の rule_sites が変わっていないことを実際に GET して確認する
+	// （validate は tx の外なので今は自明に不変だが、将来 tx 内に移す変更を止める資産にする）。
+	getResp, err := http.Get(srv.URL + "/api/rules/" + itoa(created.Id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = getResp.Body.Close() }()
+	var afterFailedUpdate Rule
+	if err := json.NewDecoder(getResp.Body).Decode(&afterFailedUpdate); err != nil {
+		t.Fatal(err)
+	}
+	if afterFailedUpdate.Sites == nil || !slices.Equal(*afterFailedUpdate.Sites, []string{"osaka", "tokyo"}) {
+		t.Fatalf("sites after rejected update = %v, want unchanged [osaka tokyo]", afterFailedUpdate.Sites)
+	}
+}
+
+// sites に空文字列要素があると 400 になることを確認する（issue #315 のレビューで発見:
+// 空文字列を黙って無視すると「絞り込みたい」意図が黙って「全サイト」に反転する。
+// validateEncodeProfiles が空名を拒否する流儀に揃える）。
+func TestRuleSites_EmptyElementRejected(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	router := NewRouter(RouterConfig{
+		Pool:  pool,
+		Sites: []string{"tokyo", "osaka"},
+	})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	body := map[string]any{
+		"name":  "empty-site-element",
+		"sites": []string{"tokyo", ""},
+	}
+	raw, _ := json.Marshal(body)
+	resp, err := http.Post(srv.URL+"/api/rules", "application/json", bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("empty site element status = %d, want 400", resp.StatusCode)
+	}
+}
+
+// レジストリから site が消えたあとに残る既存行は、書き込み時照合の対象外（掃除しない）
+// だが、その行を含むボディを再送する更新は 400 になる（docs/recording/ruler.md
+// §サイトの扱い、docs/schema/rules.md の rule_sites 節）。web の編集フォームは保存済みの
+// sites を常に載せ直すので、これは「レジストリから site が消えたルールは名前を直すだけの
+// 編集も含めて UI から保存できなくなる」という実挙動になる。docs の記述をこの挙動に
+// 固定するための回帰テスト。
+func TestRuleSites_RegistryDriftLocksOutRoundTripUpdate(t *testing.T) {
+	pool := testutil.SetupDB(t)
+
+	// tokyo がまだレジストリにある間に作成する。
+	routerBefore := NewRouter(RouterConfig{
+		Pool:  pool,
+		Sites: []string{"tokyo", "osaka"},
+	})
+	srvBefore := httptest.NewServer(routerBefore)
+	defer srvBefore.Close()
+
+	body := map[string]any{
+		"name":  "site-later-removed",
+		"sites": []string{"tokyo"},
+	}
+	raw, _ := json.Marshal(body)
+	resp, err := http.Post(srvBefore.URL+"/api/rules", "application/json", bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create status = %d, want 201", resp.StatusCode)
+	}
+	var created Rule
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+
+	// tokyo がレジストリから消えたプロセスに切り替える（同じ DB、別 config を模す）。
+	routerAfter := NewRouter(RouterConfig{
+		Pool:  pool,
+		Sites: []string{"osaka"},
+	})
+	srvAfter := httptest.NewServer(routerAfter)
+	defer srvAfter.Close()
+
+	// web の編集フォームと同じ「保存済み sites をそのまま載せ直す」PATCH。
+	roundTripBody := map[string]any{
+		"name":  "site-later-removed",
+		"sites": []string{"tokyo"},
+	}
+	raw, _ = json.Marshal(roundTripBody)
+	req, _ := http.NewRequest(http.MethodPatch, srvAfter.URL+"/api/rules/"+itoa(created.Id), bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	updateResp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = updateResp.Body.Close() }()
+	if updateResp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("round-trip update after site removed from registry status = %d, want 400 (docs/recording/ruler.md §サイトの扱い)", updateResp.StatusCode)
 	}
 }
 
