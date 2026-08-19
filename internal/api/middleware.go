@@ -174,6 +174,14 @@ func forwardedHost(r *http.Request) (string, bool) {
 // `"::1"` と `"[::1]"` の両方を含めているのはこの振る舞いに対応する
 // ためで、ここを変えるときは `TestAllowedHosts_LocalhostAlwaysAllowed`
 // の `[::1]:40773` サブテストが崩れないことを確認する。
+//
+// 空ポート（`"rokuban.local:"`）も isNumericPort が false を返すため、
+// 数値でないポートと同じ fail-closed 側に落ちる（入力をそのまま返し、
+// 呼び出し元の allowlist 比較で不一致になり拒否される）。RFC 9110 の
+// `port = *DIGIT` は空ポートを構文上有効（既定ポートの意）としているが、
+// 空ポートだけを許可側に戻す特別扱いは isNumericPort に分岐を増やす
+// だけで、それで救う正当な利用者がいるかは未検証。分岐を増やさない側
+// （他の非数値ポートと同じ拒否）に倒している。
 func stripPort(hostport string) string {
 	host, port, err := net.SplitHostPort(hostport)
 	if err != nil || !isNumericPort(port) {

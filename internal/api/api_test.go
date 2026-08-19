@@ -135,6 +135,32 @@ func TestAllowedHosts_NonNumericPortRejected(t *testing.T) {
 	}
 }
 
+// stripPort の fail-closed 化は X-Forwarded-Host 経由でも効く必要がある
+// （非数値ポートで allowlist を欺く経路は Host 単体には限らない。実際に
+// 転送経路側の穴が起きた事例がある。issue #216）。
+func TestAllowedHosts_ForwardedHostNonNumericPortRejected(t *testing.T) {
+	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}, TrustForwardedHost: true})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	req, err := http.NewRequest("GET", srv.URL+"/api/version", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "internal-proxy.example.com"
+	req.Header.Set("X-Forwarded-Host", "rokuban.local:evil.com")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d（port が数値でない X-Forwarded-Host は拒否すべき）", resp.StatusCode, http.StatusBadRequest)
+	}
+}
+
 // 正当な数値ポート付きの Host は従来どおり通す（fail-closed 化の回帰確認）。
 func TestAllowedHosts_NumericPortStillAllowed(t *testing.T) {
 	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}})
@@ -168,6 +194,7 @@ func TestStripPort(t *testing.T) {
 	}{
 		{"rokuban.local:8080", "rokuban.local"},
 		{"rokuban.local:evil.com", "rokuban.local:evil.com"},
+		{"rokuban.local:", "rokuban.local:"},
 		{"rokuban.local", "rokuban.local"},
 		{"[::1]", "[::1]"},
 		{"[::1]:40773", "::1"},
