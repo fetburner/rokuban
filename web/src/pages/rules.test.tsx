@@ -228,8 +228,8 @@ describe('RulesPage 条件編集', () => {
 
     await user.type(screen.getByLabelText('名前'), 'テストルール')
 
-    // テキスト条件
-    await user.click(screen.getByRole('button', { name: '条件を追加' }))
+    // テキスト条件（1 行目は「条件を追加」を押さなくても常に編集できる。
+    // issue #305。押すと 2 行目が増え、その値が空のまま保存できなくなる）
     await user.type(screen.getByLabelText('テキスト条件 1 の値'), 'ニュース')
 
     // ジャンル（サービス一覧の読み込みを待ってから操作する）
@@ -563,7 +563,6 @@ describe('RulesPage 成功トーストの無音化 (issue #297)', () => {
 
     await user.click(await screen.findByRole('button', { name: 'ルールを作成' }))
     await user.type(screen.getByLabelText('名前'), 'できたルール')
-    await user.click(screen.getByRole('button', { name: '条件を追加' }))
     await user.type(screen.getByLabelText('テキスト条件 1 の値'), 'キーワード')
 
     await user.click(screen.getByRole('button', { name: '保存' }))
@@ -604,7 +603,6 @@ describe('RulesPage 成功トーストの無音化 (issue #297)', () => {
 
     await user.click(await screen.findByRole('button', { name: 'ルールを作成' }))
     await user.type(screen.getByLabelText('名前'), '失敗するルール')
-    await user.click(screen.getByRole('button', { name: '条件を追加' }))
     await user.type(screen.getByLabelText('テキスト条件 1 の値'), 'キーワード')
     await user.click(screen.getByRole('button', { name: '保存' }))
 

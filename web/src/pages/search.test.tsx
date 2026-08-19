@@ -261,19 +261,25 @@ function renderPage(initialEntries: string[] = ['/search']) {
 }
 
 /**
- * addKeyword はテキスト条件を 1 つ足して値を入れる。
+ * addKeyword はテキスト条件の 1 行目に値を入れる（既存の唯一の条件として使う
+ * ヘルパー。2 行目以降を足すテストは別に「条件を追加」を明示的に押す）。
  *
- * ルーター経由の描画（`renderInRouter`）は初回マッチの解決が非同期なので、
- * `render` 直後の同期 `getByRole` は「まだ何も描かれていない」瞬間を掴みうる。
- * ここで `findByRole` にしておけば、呼び出し側で毎回 `findByRole` を先に
+ * 1 行目は「条件を追加」を押さなくても常に編集できる（issue #305）ため、
+ * ここでボタンを押す必要は無い --- 押すと 2 行目が増えてしまい、その 2 行目
+ * の値が空のまま `draftError` に落ちて検索できなくなる。ルーター経由の描画
+ * （`renderInRouter`）は初回マッチの解決が非同期なので、`render` 直後の同期
+ * `getByLabelText` は「まだ何も描かれていない」瞬間を掴みうる。ここで
+ * `findByLabelText` にしておけば、呼び出し側で毎回 `findByRole` を先に
  * 挟まなくても安全に使える。
  */
 async function addKeyword(value: string, mode: '正規表現' | 'キーワード' = 'キーワード') {
-  await userEvent.click(await screen.findByRole('button', { name: '条件を追加' }))
   if (mode === '正規表現') {
-    await userEvent.selectOptions(screen.getByLabelText('テキスト条件 1 のモード'), '正規表現')
+    await userEvent.selectOptions(
+      await screen.findByLabelText('テキスト条件 1 のモード'),
+      '正規表現',
+    )
   }
-  await userEvent.type(screen.getByLabelText('テキスト条件 1 の値'), value)
+  await userEvent.type(await screen.findByLabelText('テキスト条件 1 の値'), value)
 }
 
 describe('SearchPage', () => {
@@ -308,6 +314,88 @@ describe('SearchPage', () => {
     expect(searchBodies).toEqual([
       { textMatches: [{ target: 'name', mode: 'keyword', value: 'ニュース' }] },
     ])
+  })
+
+  /**
+   * レビュー指摘（issue #305 の差し戻し）: 見かけ上の 1 行目は実体が無い間、
+   * 「条件を追加」ボタンも削除（X）ボタンも出さない。実体の無い行に対して
+   * これらを出すと、押しても・消しても何も起きない死んだコントロールになる。
+   */
+  it('テキスト条件が空の間は「条件を追加」も削除（X）も出さない', async () => {
+    stubApi()
+    renderPage()
+
+    await screen.findByRole('button', { name: 'NHK総合' })
+
+    expect(screen.queryByRole('button', { name: '条件を追加' })).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: 'テキスト条件 1 を削除' }),
+    ).not.toBeInTheDocument()
+    // 触れないまま検索すると「指定なし」になる、という意味を文言で示す
+    // （「時間帯」節が空のときに出す文言と同じ形）
+    expect(
+      screen.getByText('空欄のまま検索すると指定なし（すべての番組が対象）になります'),
+    ).toBeInTheDocument()
+
+    await userEvent.type(screen.getByLabelText('テキスト条件 1 の値'), 'ニュース')
+    expect(
+      screen.queryByText('空欄のまま検索すると指定なし（すべての番組が対象）になります'),
+    ).not.toBeInTheDocument()
+  })
+
+  it('1 行目に入力すると実体化し、「条件を追加」で 2 行目が増える', async () => {
+    stubApi()
+    renderPage()
+
+    await screen.findByRole('button', { name: 'NHK総合' })
+
+    // 実体化前: 見かけ上の行は 1 本、削除ボタンは無い
+    expect(screen.getAllByLabelText(/^テキスト条件 \d+ の値$/)).toHaveLength(1)
+    expect(
+      screen.queryByRole('button', { name: 'テキスト条件 1 を削除' }),
+    ).not.toBeInTheDocument()
+
+    await userEvent.type(screen.getByLabelText('テキスト条件 1 の値'), 'ニュース')
+
+    // 実体化後: 削除ボタンが現れ、「条件を追加」も現れる
+    expect(
+      await screen.findByRole('button', { name: 'テキスト条件 1 を削除' }),
+    ).toBeInTheDocument()
+    const addButton = await screen.findByRole('button', { name: '条件を追加' })
+    expect(screen.getAllByLabelText(/^テキスト条件 \d+ の値$/)).toHaveLength(1)
+
+    await userEvent.click(addButton)
+
+    // 実際に行が増える（この分岐を `false` に固定しても全テスト green だった
+    // ---レビュー指摘 --- ので、行数をリテラルで固定する）
+    expect(screen.getAllByLabelText(/^テキスト条件 \d+ の値$/)).toHaveLength(2)
+    expect(screen.getByLabelText('テキスト条件 2 の値')).toHaveValue('')
+  })
+
+  /**
+   * レビュー指摘: 値を入力せずにチップ（対象・モード・大文字小文字・除外）
+   * だけ触ると、値が空の行が実体化して `draftError` に落ち検索できなくなる。
+   * X が効くことで、そこから空の状態に戻れることを確認する。
+   */
+  it('値を入れずにチップだけ押すと検索できなくなるが、削除（X）で空の状態に戻れる', async () => {
+    stubApi()
+    renderPage()
+
+    await screen.findByRole('button', { name: 'NHK総合' })
+
+    await userEvent.click(screen.getByRole('button', { name: '除外' }))
+
+    expect(await screen.findByText('テキスト条件の値を入力してください')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '検索' })).toBeDisabled()
+
+    const deleteButton = await screen.findByRole('button', { name: 'テキスト条件 1 を削除' })
+    await userEvent.click(deleteButton)
+
+    expect(screen.queryByText('テキスト条件の値を入力してください')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '検索' })).not.toBeDisabled()
+    expect(
+      screen.queryByRole('button', { name: 'テキスト条件 1 を削除' }),
+    ).not.toBeInTheDocument()
   })
 
   it('検索前の案内と 0 件の案内を混同しない', async () => {

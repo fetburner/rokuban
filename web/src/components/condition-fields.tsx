@@ -124,6 +124,13 @@ function Section({
  * が起きた瞬間だけ `draft.textMatches` に実体化する。触れないまま検索すれば
  * 「指定なし（全番組が対象）」のまま送られる、という既存の意味は変えない
  * （`draftError` は配列に実体が無い間は何も見ない）。
+ *
+ * **配列が空の間は「条件を追加」ボタンと行の削除（X）を出さない。** 見かけ上
+ * の 1 行目は既に `rows` が出しているので、実体の無い行に対してこれらの
+ * ボタンを出すと「押しても何も起きない」死んだコントロールになる（レビュー
+ * 指摘）。実体化（`index < draft.textMatches.length`）した行にだけ出す ---
+ * これは「チップだけ押して実体化し、値が空のまま `draftError` に落ちた」
+ * ときの戻り道にもなる（X が効くようになる）。
  */
 function TextMatchFields({ draft, onChange, disabled }: FieldsProps) {
   const update = (index: number, patch: Partial<TextMatchDraft>) =>
@@ -138,35 +145,39 @@ function TextMatchFields({ draft, onChange, disabled }: FieldsProps) {
           { ...d, textMatches: [...d.textMatches, { ...newTextMatch(), ...patch }] },
     )
 
+  const hasRows = draft.textMatches.length > 0
   // 配列が空でも 1 行目は見かけ上出す。「条件を追加」で新規行を作ってからで
   // ないと打てない、という 1 クリック分の迂回を無くすため。
-  const rows = draft.textMatches.length > 0 ? draft.textMatches : [newTextMatch()]
+  const rows = hasRows ? draft.textMatches : [newTextMatch()]
 
   return (
     <Section
       title="テキスト条件"
       action={
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          disabled={disabled}
-          onClick={() =>
-            onChange((d) =>
-              // 配列が空のときは何もしない --- 1 行目は上の `rows` が既に
-              // 見かけ上出しているので、ここで追加すると「見えている行」と
-              // 「実際に増える行」が食い違う（2 行目以降を追加したいときは、
-              // まず 1 行目に何か入力して実体化させてから押す）。
-              d.textMatches.length === 0
-                ? d
-                : { ...d, textMatches: [...d.textMatches, newTextMatch()] },
-            )
-          }
-        >
-          条件を追加
-        </Button>
+        // 配列が空の間はボタン自体を出さない。1 行目は上の `rows` が既に
+        // 見かけ上出しているので、押しても増えない（＝何も起きない）ボタンを
+        // 見せない。1 行目に何か入力して実体化すれば現れ、2 行目以降を追加
+        // できる。
+        hasRows ? (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={disabled}
+            onClick={() =>
+              onChange((d) => ({ ...d, textMatches: [...d.textMatches, newTextMatch()] }))
+            }
+          >
+            条件を追加
+          </Button>
+        ) : undefined
       }
     >
+      {!hasRows && (
+        <p className="text-xs text-muted-foreground">
+          空欄のまま検索すると指定なし（すべての番組が対象）になります
+        </p>
+      )}
       <ul className="flex flex-col gap-3">
         {rows.map((match, index) => (
           <li key={index} className="flex flex-col gap-2 rounded-lg border border-border p-3">
@@ -210,22 +221,29 @@ function TextMatchFields({ draft, onChange, disabled }: FieldsProps) {
                   onChange={(e) => update(index, { value: e.target.value })}
                 />
               </Field>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                aria-label={`テキスト条件 ${index + 1} を削除`}
-                className="mt-4 shrink-0"
-                disabled={disabled}
-                onClick={() =>
-                  onChange((d) => ({
-                    ...d,
-                    textMatches: d.textMatches.filter((_, i) => i !== index),
-                  }))
-                }
-              >
-                <X />
-              </Button>
+              {
+                // 実体の無い見かけ上の行には出さない。無いものを消す
+                // ボタンは「押しても何も起きない」死んだコントロールになる
+                // （レビュー指摘）。
+                index < draft.textMatches.length && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    aria-label={`テキスト条件 ${index + 1} を削除`}
+                    className="mt-4 shrink-0"
+                    disabled={disabled}
+                    onClick={() =>
+                      onChange((d) => ({
+                        ...d,
+                        textMatches: d.textMatches.filter((_, i) => i !== index),
+                      }))
+                    }
+                  >
+                    <X />
+                  </Button>
+                )
+              }
             </div>
             <div className="flex flex-wrap gap-2">
               <Chip
