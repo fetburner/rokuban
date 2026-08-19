@@ -44,6 +44,12 @@ type ListActiveMediaAssetsRow struct {
 // （ListAllMediaAssetRelPaths）と対になる逆方向のクエリ: ここでは state が
 // active な行だけを対象にする（deleting/deleted は物理削除の途中・完了
 // なのでファイルが無くて当然であり検出対象ではない）。
+//
+// このファイルの他のソースと違って row_limit を持たない。判定が差集合なので
+// 入力を切ると答えが変わる（窓の外の行が「もう候補でない」と見なされて
+// first_seen が毎パス消え、エイジングが永久に完了しない）。理由の全文は
+// internal/worker/delete_reconcile.go の reconcileMissingAssets の
+// doc コメント。
 func (q *Queries) ListActiveMediaAssets(ctx context.Context) ([]ListActiveMediaAssetsRow, error) {
 	rows, err := q.db.Query(ctx, listActiveMediaAssets)
 	if err != nil {

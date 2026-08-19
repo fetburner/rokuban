@@ -622,6 +622,9 @@ func (w *DeleteReconcileWorker) reconcileOrphanCandidates(ctx context.Context, q
 // 削除はしないので被害は騒音のみ）。今日は catalog/ がトップレベルの予約
 // ディレクトリなので該当する rel_path は存在しないが（docs/storage/contract.md
 // §5）、walkMediaFiles に除外を足すときはこちら側の誤報を先に確認する。
+// 除外と同型の穴が「走査が降りないディレクトリ」の側にもある --- filepath.Walk
+// は symlink を辿らないので、ディレクトリ成分が symlink の構成では配下の資産が
+// 同じ形で誤報される（walkMediaFiles の doc コメント。未検証）。
 //
 // reconcileOrphanCandidates は走査より前に ListAllMediaAssetRelPaths を読むが、
 // ここでの ListActiveMediaAssets は走査より後に読む（呼び出し順序どおり）。
@@ -645,12 +648,32 @@ func (w *DeleteReconcileWorker) reconcileOrphanCandidates(ctx context.Context, q
 // rokuban_media_assets_missing ゲージ）だけ続けると、metrics.go /
 // docs/operations/monitoring.md が約束する「疑わしい間はゲージが凍結する」が
 // 実装のどこにも存在しない記述になる。
+//
+// # ListActiveMediaAssets に deleteReconcileRowLimit を掛けない理由
+//
+// このファイルの他のソースは全部 deleteReconcileRowLimit で括っているが、
+// ここだけは全件を読む。**この判定は差集合なので、入力を切ると答えが変わる**
+// --- 窓の外に落ちた active 行はこのパスの candidates に入らず、下の掃除
+// ループが「もう候補でない」と見なして既存の missing_media_assets 行を消して
+// しまう。first_seen が毎パス失われるので、active が窓を超えている系では
+// エイジングが永久に完了せず何も報告されない（他のソースは「拾えた分だけ
+// 消す」で正しさが保たれるので窓で足りる。差集合ではないため）。
+//
+// 作業量の上限は候補数（実体が無い行の数）であって active 全件ではない ---
+// 健全な系では候補 0 件で、増える I/O はこの SELECT 1 回だけ。部分マウント
+// 障害（walkMediaFiles の doc コメント）では候補が active 全件近くまで伸び、
+// 15 分ごとに同じ件数の UPSERT が削除本体と同じジョブの中で走る。それが
+// 問題になるなら直し方は入力を切ることではなく UPSERT を 1 文にまとめること。
 func (w *DeleteReconcileWorker) reconcileMissingAssets(ctx context.Context, q *sqlcgen.Queries, seenOnDisk map[string]struct{}) (bool, error) {
 	active, err := q.ListActiveMediaAssets(ctx)
 	if err != nil {
 		return false, fmt.Errorf("listing active media assets: %w", err)
 	}
 	if len(active) == 0 {
+		// active が 1 件も無いパスでは下の掃除ループに入らないので、残っている
+		// missing_media_assets 行はこのパスでは掃除されない。報告側
+		// （ListAgedMissingMediaAssets）が state='active' で弾くので害は無く、
+		// active が 1 件でもあるパスで回収される（意図的）。
 		return false, nil
 	}
 	if len(seenOnDisk) == 0 {
@@ -824,6 +847,16 @@ func (w *DeleteReconcileWorker) deleteOrphanFile(q *sqlcgen.Queries, relPath str
 //
 // 除外を足すときは reconcileMissingAssets の doc コメントを読む --- この結果は
 // 孤児方向と実体無し方向の両方が使い、除外の誤りの向きが二者で反対になる。
+//
+// filepath.Walk は symlink を辿らないので、mediaDir 配下のディレクトリ成分が
+// symlink になっている構成（`media/sites -> /mnt/nas/sites` のような合成）では
+// そのサブツリーに降りない。ingest / streamer は字句解決（mediapath.Resolve）
+// なのでそこへ書けて読めるが、走査からは見えない --- 除外（SkipDir）と同型の
+// 穴で、こちらは設定だけで作れる。孤児方向では安全側（消さない）に倒れ、
+// 実体無し方向では配下の資産が恒久的に誤報される（未検証。symlink を張った
+// 構成でのテストは無い）。symlink を辿る形にはしていない: 循環と、
+// mediaDir の外を指す symlink の扱い（rel_path が mediaDir の外のファイルを
+// 指すことになる）を先に決める必要があり、この検出器の範囲を超える。
 func walkMediaFiles(mediaDir string, fn func(relPath string, info fs.FileInfo)) error {
 	catalogDir := filepath.Join(mediaDir, catalog.Subdir)
 	return filepath.Walk(mediaDir, func(path string, info fs.FileInfo, err error) error {
