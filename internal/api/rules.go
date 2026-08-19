@@ -58,6 +58,15 @@ func (h *Server) CreateRule(ctx context.Context, req CreateRuleRequestObject) (C
 		return CreateRule400JSONResponse{Error: "request body is required"}, nil
 	}
 	// create には保存済みの sites が無いので、レジストリ全件だけが権威になる。
+	//
+	// 免除（validateRuleSites の savedSites）は「そのルールに保存済みの名前」で切って
+	// いるため、既存ルールを下敷きに別のルールを作る経路（検索画面のフォーク。
+	// GET で得た sites を preserve してここに載せる）には効かない。レジストリから site が
+	// 消えるとフォークだけが 400 になり、sites は条件 UI に無いので UI 内の復旧手段も
+	// 無い（TestRuleSites_RegistryDriftRejectsFork が測っている）。免除の切り方を
+	// 「クライアントが GET で読んで載せ直した名前」に寄せるか web 側で明示的に外させるかは
+	// API の形 / UI の形を決める判断なので、実装せず issue に提起している
+	// （docs/schema/rules.md の rule_sites 節）。
 	if err := h.validateRuleInput(ctx, *req.Body, nil); err != nil {
 		return CreateRule400JSONResponse{Error: err.Error()}, nil
 	}
@@ -104,6 +113,12 @@ func (h *Server) UpdateRule(ctx context.Context, req UpdateRuleRequestObject) (U
 	// 直前まで持っていた名前に限られる。並行 PATCH が同じルールの sites を入れ替えた場合の
 	// 結果は 2 つの PATCH が逆順に届いたのと同じ（子テーブルは全置換で後勝ち）なので、
 	// tx 内に入れても変わらない。
+	//
+	// **検証は GetRule より前**（既存の順序だが、免除を入れたことで意味が付いた）。
+	// 存在しないルールでは savedRuleSites が空集合になるので免除が何も広げず、
+	// 「存在しない id + 未知 site」は 404 ではなく 400 unknown site になる
+	// （TestUpdateRule_UnknownSiteBeatsNotFound。妥当な入力なら 404 に落ちる）。
+	// 404 を先に返したいなら、免除集合の読みも GetRule の後に動かすこと。
 	var savedSites map[string]struct{}
 	if req.Body.Sites != nil {
 		var err error
@@ -304,6 +319,10 @@ func (h *Server) validateEncodeProfiles(names []string) error {
 // read-modify-write な更新（優先度や名前だけ直したい編集を含む）が全部 400 になるのを防ぐ
 // --- 消えた site の掃除はこの照合の仕事ではない。両方向は
 // TestRuleSites_RegistryDriftAllowsRoundTripUpdate が押さえている。
+//
+// 免除の境界は**ルールの同一性**であり「クライアントが GET で読んで載せ直した名前」では
+// ない。そのため savedSites が nil な create（フォークを含む）は同じ read-modify-write でも
+// 400 になる（CreateRule のコメントと TestRuleSites_RegistryDriftRejectsFork）。
 func (h *Server) validateRuleSites(sitesIn []string, savedSites map[string]struct{}) error {
 	for _, site := range sitesIn {
 		if site == "" {

@@ -573,6 +573,125 @@ func TestRuleSites_RegistryDriftAllowsRoundTripUpdate(t *testing.T) {
 	}
 }
 
+// 免除は「そのルールに保存済みの名前」なので、**create には効かない**。検索画面の
+// 「別の新しいルールとして保存」（フォーク。POST /api/rules に preserve した sites を
+// 載せる）は、レジストリから site が消えた後は 400 になる。これは意図した現状であり
+// （免除の切り方を変えるか、web 側で明示的に外させるかは #315 で判断を仰いでいる）、
+// docs/schema/rules.md の rule_sites 節と docs/frontend/search.md が同じことを書いている。
+// 挙動を測らずに docs に書かないためのテストなので、そちらを変えるならここも落ちる。
+func TestRuleSites_RegistryDriftRejectsFork(t *testing.T) {
+	pool := testutil.SetupDB(t)
+
+	// tokyo がまだレジストリにある間に「フォーク元」を作る。
+	srvBefore := httptest.NewServer(NewRouter(RouterConfig{
+		Pool:  pool,
+		Sites: []string{"tokyo", "osaka"},
+	}))
+	defer srvBefore.Close()
+
+	raw, _ := json.Marshal(map[string]any{"name": "fork-source", "sites": []string{"tokyo"}})
+	resp, err := http.Post(srvBefore.URL+"/api/rules", "application/json", bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var source Rule
+	if err := json.NewDecoder(resp.Body).Decode(&source); err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("fork source create status = %d, want 201", resp.StatusCode)
+	}
+	if source.Sites == nil || !slices.Equal(*source.Sites, []string{"tokyo"}) {
+		t.Fatalf("fork source sites = %v, want [tokyo]", source.Sites)
+	}
+
+	// tokyo がレジストリから消えたプロセスに切り替える。
+	srvAfter := httptest.NewServer(NewRouter(RouterConfig{
+		Pool:  pool,
+		Sites: []string{"osaka"},
+	}))
+	defer srvAfter.Close()
+
+	// web のフォークが送るボディ（GET で得た sites をそのまま preserve して POST）。
+	rawFork, _ := json.Marshal(map[string]any{
+		"name":  source.Name + " のコピー",
+		"sites": *source.Sites,
+	})
+	forkResp, err := http.Post(srvAfter.URL+"/api/rules", "application/json", bytes.NewReader(rawFork))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = forkResp.Body.Close() }()
+	if forkResp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("fork after site removed from registry status = %d, want 400", forkResp.StatusCode)
+	}
+	var forkErr ErrorResponse
+	if err := json.NewDecoder(forkResp.Body).Decode(&forkErr); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(forkErr.Error, `unknown site "tokyo"`) {
+		t.Errorf(`fork error body = %q, want mention of unknown site "tokyo"`, forkErr.Error)
+	}
+
+	// 同じ site を持つ元ルールの PATCH（上書き保存）は通り続ける —— 壊れているのは
+	// フォーク経路だけで、免除そのものは効いている。
+	rawPatch, _ := json.Marshal(map[string]any{"name": "fork-source", "sites": *source.Sites})
+	patchReq, err := http.NewRequest(http.MethodPatch, srvAfter.URL+"/api/rules/"+itoa(source.Id), bytes.NewReader(rawPatch))
+	if err != nil {
+		t.Fatal(err)
+	}
+	patchReq.Header.Set("Content-Type", "application/json")
+	patchResp, err := http.DefaultClient.Do(patchReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = patchResp.Body.Close() }()
+	if patchResp.StatusCode != http.StatusOK {
+		t.Fatalf("overwrite of the fork source status = %d, want 200", patchResp.StatusCode)
+	}
+}
+
+// PATCH は「存在しない id + 未知 site」に 404 ではなく 400 を返す（validateRuleInput が
+// GetRule より前）。免除集合を tx の外で読むこの実装では、存在しないルールの savedRuleSites
+// が空集合になることに依存しているので、この順序には意味がある（順序を入れ替えるなら、
+// 404 を先に返す実装として意識的にやること）。UpdateRule のコメントと対になるテスト。
+func TestUpdateRule_UnknownSiteBeatsNotFound(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := httptest.NewServer(NewRouter(RouterConfig{
+		Pool:  pool,
+		Sites: []string{"tokyo"},
+	}))
+	defer srv.Close()
+
+	patch := func(t *testing.T, body map[string]any) int {
+		t.Helper()
+		raw, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req, err := http.NewRequest(http.MethodPatch, srv.URL+"/api/rules/999999", bytes.NewReader(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = res.Body.Close() }()
+		return res.StatusCode
+	}
+
+	if status := patch(t, map[string]any{"name": "ghost", "sites": []string{"toukyou"}}); status != http.StatusBadRequest {
+		t.Errorf("missing rule + unknown site status = %d, want 400", status)
+	}
+	// 入力が妥当なら 404 に落ちる（400 が全部を飲み込んでいるわけではない）。
+	if status := patch(t, map[string]any{"name": "ghost", "sites": []string{"tokyo"}}); status != http.StatusNotFound {
+		t.Errorf("missing rule + known site status = %d, want 404", status)
+	}
+}
+
 func itoa(n int64) string {
 	if n == 0 {
 		return "0"
