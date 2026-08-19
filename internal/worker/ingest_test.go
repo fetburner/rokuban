@@ -596,6 +596,18 @@ func insertTestRecording(t *testing.T, pool *pgxpool.Pool) int64 {
 	return id
 }
 
+// noProgramRecordSyncProgramID は insertTestRecordSync が使う固定の program_id。
+// 呼び出し側は insertTestRecording（program_snapshots を作らない）で録画だけを
+// 用意していることを前提にしており、この値は意図的にどの program_snapshots
+// 行とも対応しない。テストが扱っている番組（insertProgramSnapshotAndReservation /
+// insertTestRecordingForReservation に渡した programID）と record_sync を
+// 対応させたい場合は insertTestRecordSyncForSite を使うこと（対応させないまま
+// insertTestRecordSync を使うと、record_sync.program_id を読む将来の実装に対する
+// テストが黙って空虚な PASS になる）。
+const noProgramRecordSyncProgramID = 327361024000001
+
+// insertTestRecordSync は番組と対応しない record_sync 行を 1 件作る
+// （noProgramRecordSyncProgramID 参照）。
 func insertTestRecordSync(t *testing.T, pool *pgxpool.Pool, recordingID int64, recordID string) {
 	t.Helper()
 	q := sqlcgen.New(pool)
@@ -603,7 +615,7 @@ func insertTestRecordSync(t *testing.T, pool *pgxpool.Pool, recordingID int64, r
 		Site:        "default",
 		RecordID:    recordID,
 		RecordingID: &recordingID,
-		ProgramID:   327361024000001,
+		ProgramID:   noProgramRecordSyncProgramID,
 		Status:      "finished",
 		Tags:        []string{},
 	}); err != nil {
@@ -660,6 +672,51 @@ func insertTestRecordSyncForSite(t *testing.T, pool *pgxpool.Pool, site string, 
 		Tags:        []string{},
 	}); err != nil {
 		t.Fatalf("inserting test record_sync (site=%s): %v", site, err)
+	}
+}
+
+// TestRecordSyncFixture_ProgramIDMatchesRecordingBroadcastEvent は、番組を
+// 扱っているテスト（insertProgramSnapshotAndReservation +
+// insertTestRecordingForReservation）が record_sync を作るとき、
+// insertTestRecordSyncForSite で渡した programID が実際にその録画と同じ放送
+// イベントを指す program_snapshots 行を指していることを確認する。
+//
+// insertTestRecordSync（program_id を固定値でハードコードする汎用ヘルパ）を
+// ここで使うと、record_sync.program_id はこのテストの programID とは無関係な
+// 値になり、record_sync → program_snapshots の JOIN がこの録画の放送イベント
+// キーとは異なる行（あるいは存在しない行）を指す。それを検出する。
+func TestRecordSyncFixture_ProgramIDMatchesRecordingBroadcastEvent(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+
+	programID := int64(900000000285001)
+	insertProgramSnapshotAndReservation(t, pool, programID, "フィクスチャ確認番組")
+	recordingID := insertTestRecordingForReservation(t, pool, programID)
+	insertTestRecordSyncForSite(t, pool, "default", recordingID, "rec-fixture-check", programID)
+
+	var recNetworkID, recServiceID, recEventID int32
+	if err := pool.QueryRow(ctx,
+		"SELECT network_id, service_id, event_id FROM recordings WHERE id = $1", recordingID,
+	).Scan(&recNetworkID, &recServiceID, &recEventID); err != nil {
+		t.Fatalf("querying recording broadcast event key: %v", err)
+	}
+
+	var snapNetworkID, snapServiceID, snapEventID int32
+	if err := pool.QueryRow(ctx,
+		`SELECT ps.network_id, ps.service_id, ps.event_id
+		 FROM record_sync rs
+		 JOIN program_snapshots ps ON ps.site = rs.site AND ps.program_id = rs.program_id
+		 WHERE rs.recording_id = $1`, recordingID,
+	).Scan(&snapNetworkID, &snapServiceID, &snapEventID); err != nil {
+		t.Fatalf("querying record_sync's program_snapshots via program_id: %v", err)
+	}
+
+	if recNetworkID != snapNetworkID || recServiceID != snapServiceID || recEventID != snapEventID {
+		t.Errorf("record_sync.program_id resolves to broadcast event (%d,%d,%d), want the recording's own (%d,%d,%d)",
+			snapNetworkID, snapServiceID, snapEventID, recNetworkID, recServiceID, recEventID)
 	}
 }
 
@@ -1141,7 +1198,9 @@ func TestIngestWorker_SnapshotsEncodePolicyFromRuleBase(t *testing.T) {
 	setReservationBase(t, pool, res.ID, `{"keepOriginal":"until_encoded","encodeProfiles":["h265"]}`)
 
 	recordingID := insertTestRecordingForReservation(t, pool, programID)
-	insertTestRecordSync(t, pool, recordingID, "rec-policy-base")
+	// program_id をこのテストが扱っている programID に一致させる
+	// （insertTestRecordSync は固定値をハードコードしており対応しない）。
+	insertTestRecordSyncForSite(t, pool, "default", recordingID, "rec-policy-base", programID)
 
 	tsData := makeTSData(20)
 	srv := newFullTransferServer(t, tsData, "test/policy-base.m2ts")
@@ -1214,7 +1273,9 @@ func TestIngestWorker_SnapshotsEncodePolicyFromOverride(t *testing.T) {
 	})
 
 	recordingID := insertTestRecordingForReservation(t, pool, programID)
-	insertTestRecordSync(t, pool, recordingID, "rec-policy-override")
+	// program_id をこのテストが扱っている programID に一致させる
+	// （insertTestRecordSync は固定値をハードコードしており対応しない）。
+	insertTestRecordSyncForSite(t, pool, "default", recordingID, "rec-policy-override", programID)
 
 	tsData := makeTSData(20)
 	srv := newFullTransferServer(t, tsData, "test/policy-override.m2ts")
@@ -1294,7 +1355,9 @@ func TestIngestWorker_ClampsUntilEncodedWithEmptyProfiles(t *testing.T) {
 	})
 
 	recordingID := insertTestRecordingForReservation(t, pool, programID)
-	insertTestRecordSync(t, pool, recordingID, "rec-policy-drift")
+	// program_id をこのテストが扱っている programID に一致させる
+	// （insertTestRecordSync は固定値をハードコードしており対応しない）。
+	insertTestRecordSyncForSite(t, pool, "default", recordingID, "rec-policy-drift", programID)
 
 	tsData := makeTSData(20)
 	srv := newFullTransferServer(t, tsData, "test/policy-drift.m2ts")
@@ -1535,7 +1598,9 @@ func TestIngestWorker_SnapshotsEncodePolicy_SurvivesReservationRematerialization
 
 	// watcher.createRecording が録画開始時に放送イベントキーを焼いた状態を模す。
 	recordingID := insertTestRecordingForReservation(t, pool, programID)
-	insertTestRecordSync(t, pool, recordingID, "rec-policy-rematerialized")
+	// program_id をこのテストが扱っている programID に一致させる
+	// （insertTestRecordSync は固定値をハードコードしており対応しない）。
+	insertTestRecordSyncForSite(t, pool, "default", recordingID, "rec-policy-rematerialized", programID)
 
 	// ruler の導出削除 → 再実体化を模す（同じ番組・新しい id）。旧実装は
 	// recordings.reservation_id（当時 FK の ON DELETE SET NULL。issue #158 で
@@ -1607,7 +1672,9 @@ func TestIngestWorker_LogsWarnWhenRuleSourceReservationUnresolvable(t *testing.T
 	programID := int64(900000000000005)
 	res := insertProgramSnapshotAndReservation(t, pool, programID, "恒久削除予約番組")
 	recordingID := insertTestRecordingForReservation(t, pool, programID)
-	insertTestRecordSync(t, pool, recordingID, "rec-policy-rule-gone")
+	// program_id をこのテストが扱っている programID に一致させる
+	// （insertTestRecordSync は固定値をハードコードしており対応しない）。
+	insertTestRecordSyncForSite(t, pool, "default", recordingID, "rec-policy-rule-gone", programID)
 
 	// 予約が恒久的に削除された（または GC が想定より早く走った）場合を模す
 	// （再実体化しない。TestIngestWorker_SnapshotsEncodePolicy_SurvivesReservationRematerialization
