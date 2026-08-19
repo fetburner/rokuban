@@ -396,8 +396,9 @@ async function computedVar(locator, varName) {
 const screens = [
   // ホーム（M8-3, issue #242）は `/` を新設で受け取り、番組表は `/programs` へ
   // 移設した。フィクスチャは「いま録画中」1 件・「今夜〜明日の予約」窓に入る
-  // 予約複数件・容量超過 1 件（→「警告」）・「直近の完了」複数件を持つので、
-  // 4 セクションすべてが一度に撮れる。
+  // 予約複数件・容量超過 1 件・失敗録画 1 件（id 13「アニメ劇場」、recency 窓の
+  // 内側）（いずれも→「警告」）・「直近の完了」複数件を持つので、4 セクション
+  // すべてが一度に撮れる。
   { name: 'home', path: '/', wait: 'text=いま録画中' },
   { name: 'programs', path: '/programs', wait: 'li[data-program-id], [data-testid="program-grid-now-line"]' },
   { name: 'reservations', path: '/reservations', wait: 'text=チューナー不足' },
