@@ -84,20 +84,36 @@
 （`FAILED_RECORDING_SCAN_LIMIT`。ドロップ検出のような表示/検出の分離が要る
 理由がここには無いので、値だけ他の上限と共有せず独立した定数にしてある）。
 
+**取った失敗録画のうち、警告に出すのは recency 窓（`FAILED_RECORDING_WARNING_WINDOW_MS`。
+`startAt` 基準で 7 日）の中だけにする。** 他の警告材料（ブレーカーは発動中のみ・
+容量超過は今夜〜明日の窓・ドロップは「直近 20 件の完了」で実質 recency がある）は
+どれも自然に消えるが、失敗だけは `FAILED_RECORDING_SCAN_LIMIT` 件に収まる限り
+いつの失敗でも出続け、稼働の長いサーバーでは警告セクションが古い失敗で常時
+埋まってしまう（issue の受け入れ基準も「直近の」失敗録画と言っている）。値
+（7 日）は実測ではなく他の上限と同じ性質の恣意的な上限。
+
 **行では予定尺（`durationMs`。番組の放送尺のスナップショット）と実際に録れた
 尺（`startedAt`〜`endedAt`）を区別する。** 録画が開始した直後に終わった失敗
 （実際は 0 分に近いのに `durationMs` は番組の予定尺のまま）を予定尺だけで
 表示すると「ほぼ予定通り録れた」ように誤読できる（実機観測: 開始・終了が同じ秒
-なのに表示尺は番組の予定尺だった）。`startedAt`/`endedAt` が両方無い場合
-（mirakc に録画開始さえ記録されなかった失敗）は実際尺がそもそも定義できないので
-「未開始」と明示し、実際尺は主張しない。
+なのに表示尺は番組の予定尺だった）。`startedAt` / `endedAt` は独立に書かれる
+（`UpdateRecordingStatus` は `started_at` を無条件に、`ended_at` は非 NULL の
+ときだけ書く）ので 3 通りある --- 両方あり（実際尺を出す）/ `startedAt` のみ
+（mirakc の failed record に `endTime` が無かった場合。開始した事実はあるが
+実際尺は主張しない）/ 両方無し（mirakc に録画開始さえ記録されなかった失敗。
+「未開始」と明示する）。
 
-**失敗理由は `quality_events`（追記専用の履歴）の最新要素の `reason` があれば
-それを出し、無ければ「理由不明」と沈黙を区別する。** `reason` は mirakc の生の
-理由をそのまま保持したもので（不変条件 7）、文字列とオブジェクトの両方が
-ありうる（`recording.failed` は文字列、`record-broken` はオブジェクト）ので、
-文字列はそのまま、それ以外は録画単体ページの「品質イベント」欄と同じ流儀
-（`JSON.stringify`）で読める形にする。
+**失敗理由は `quality_events`（追記専用の履歴）の失敗系イベント（`recording.failed`
+/ `recording.record-broken`）の最後の要素の `reason` があればそれを出し、無ければ
+「理由不明」と沈黙を区別する。** 最後の要素そのものではなく失敗系に絞るのは、
+`quality_events` に `bcas_anomaly` も混ざるため（末尾が `bcas_anomaly` だと
+直前の失敗理由を読み飛ばす）。`reason` は mirakc の生の理由をそのまま保持した
+もので（不変条件 7）、書き手はどちらもオブジェクト --- `recording.failed` は
+`{ type, message?, osError?, exitCode? }`（`mirakc.FailedReason`。discriminated
+union）を `json.Marshal` したもの、`recording.record-broken` は
+`{ reason: string }`。それぞれ `type` / `reason` を読み、期待した形でない場合
+（未知の `event` を含む）だけ録画単体ページの「品質イベント」欄と同じ流儀
+（`JSON.stringify`）で読める形にフォールバックする。
 
 ### 容量超過クエリの `start` はレンダー時刻を量子化してから渡す
 

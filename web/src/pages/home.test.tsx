@@ -123,7 +123,12 @@ type Fixtures = {
    * 「直近の完了」に表示し、ドロップ警告は全件から拾う。
    */
   finished?: Recording[]
-  /** 失敗録画（`status=failed&limit=20`）。全件を警告セクションに出す。 */
+  /**
+   * 失敗録画（`status=failed&limit=20`）。取得した全件のうち
+   * `FAILED_RECORDING_WARNING_WINDOW_MS`（recency 窓）の中だけを警告セクションに
+   * 出す。既定の `recording()` の `startAt` は「今」の 1 時間前なので窓には
+   * 必ず収まる。
+   */
   failed?: Recording[]
   reservations?: Reservation[]
   breakers?: CircuitBreaker[]
@@ -489,19 +494,94 @@ describe('ホーム: 失敗録画が警告に出る（issue #301）', () => {
     expect(screen.queryByText(/実際/)).not.toBeInTheDocument()
   })
 
-  it('failed 理由が qualityEvents にあればそれを出す', async () => {
+  it('startedAt だけが記録されている失敗は「未開始」と潰さず、実際尺も主張しない', async () => {
+    // レビュー指摘: `UpdateRecordingStatus`（internal/db/queries/recordings.sql）は
+    // `started_at` を無条件に、`ended_at` は非 NULL のときだけ書くので、mirakc の
+    // failed record に `endTime` が無ければ `startedAt` だけが立つ行がある。
+    // これを「未開始」と言うのは、開始した事実がある録画に「開始していない」と
+    // 言う新しい嘘になる（issue #301 が問題にしているのと同じ種類の食い違い）。
+    stubApi({
+      failed: [
+        recording(9, '終了未記録の録画', 'failed', {
+          durationMs: 5 * 60_000,
+          startedAt: iso(-30 * 60_000),
+          endedAt: undefined,
+        }),
+      ],
+    })
+    renderHome()
+
+    const row = await screen.findByText(/終了未記録の録画: 録画失敗/)
+    expect(row.textContent).not.toMatch(/未開始/)
+    expect(row.textContent).not.toMatch(/実際/)
+  })
+
+  it('failed 理由（recording.failed。オブジェクトの type フィールド）を出す', async () => {
+    // internal/watcher/watcher.go の handleRecordingFailed は
+    // json.Marshal(data.Reason) で書き、data.Reason は
+    // mirakc.FailedReason（{type, message?, osError?, exitCode?}）なので
+    // 素の文字列にはならない。
     stubApi({
       failed: [
         recording(9, '理由ありの失敗', 'failed', {
           qualityEvents: [
-            { at: iso(-HOUR), event: 'recording.failed', reason: 'start-recording-failed' },
+            { at: iso(-HOUR), event: 'recording.failed', reason: { type: 'tuner-unavailable' } },
           ],
         }),
       ],
     })
     renderHome()
 
-    expect(await screen.findByText(/理由: start-recording-failed/)).toBeInTheDocument()
+    expect(await screen.findByText(/理由: tuner-unavailable/)).toBeInTheDocument()
+  })
+
+  it('failed 理由（recording.record-broken。オブジェクトの reason フィールド）を出す', async () => {
+    // internal/watcher/watcher.go の handleRecordBroken は
+    // map[string]string{"reason": data.Reason} で書く。
+    stubApi({
+      failed: [
+        recording(9, '録画中に壊れた失敗', 'failed', {
+          qualityEvents: [
+            { at: iso(-HOUR), event: 'recording.record-broken', reason: { reason: 'io-error' } },
+          ],
+        }),
+      ],
+    })
+    renderHome()
+
+    expect(await screen.findByText(/理由: io-error/)).toBeInTheDocument()
+  })
+
+  it('失敗系イベントが期待した形を持たない未知のケースは JSON へフォールバックする', async () => {
+    stubApi({
+      failed: [
+        recording(9, '未知の形の失敗', 'failed', {
+          qualityEvents: [{ at: iso(-HOUR), event: 'recording.failed', reason: 'unexpected' }],
+        }),
+      ],
+    })
+    renderHome()
+
+    expect(await screen.findByText(/理由: "unexpected"/)).toBeInTheDocument()
+  })
+
+  it('quality_events の最後の要素が bcas_anomaly でも、その前の失敗理由を読む', async () => {
+    // quality_events は recording.failed / record-broken / bcas_anomaly が
+    // 混ざる追記専用の履歴なので、「最後の要素」だけを見ると失敗理由が
+    // bcas_anomaly（reason 無し）に上書きされる。
+    stubApi({
+      failed: [
+        recording(9, '複数イベントの失敗', 'failed', {
+          qualityEvents: [
+            { at: iso(-2 * HOUR), event: 'recording.failed', reason: { type: 'io-error' } },
+            { at: iso(-HOUR), event: 'bcas_anomaly' },
+          ],
+        }),
+      ],
+    })
+    renderHome()
+
+    expect(await screen.findByText(/理由: io-error/)).toBeInTheDocument()
   })
 
   it('failed 理由が無ければ「理由不明」と沈黙を区別する', async () => {
@@ -519,6 +599,19 @@ describe('ホーム: 失敗録画が警告に出る（issue #301）', () => {
 
     const link = await screen.findByRole('link', { name: /失敗した番組/ })
     expect(link).toHaveAttribute('href', '/recordings/9')
+  })
+
+  it('recency 窓の外にある古い失敗は警告に出ない（issue の受け入れ基準「直近の」失敗録画）', async () => {
+    stubApi({
+      failed: [
+        recording(9, '古い失敗', 'failed', { startAt: iso(-30 * 24 * HOUR) }),
+        recording(10, '直近の失敗', 'failed', { startAt: iso(-HOUR) }),
+      ],
+    })
+    renderHome()
+
+    expect(await screen.findByText(/直近の失敗: 録画失敗/)).toBeInTheDocument()
+    expect(screen.queryByText(/古い失敗: 録画失敗/)).not.toBeInTheDocument()
   })
 })
 

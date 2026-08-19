@@ -69,6 +69,20 @@ const DROP_WARNING_SCAN_LIMIT = 20
 const FAILED_RECORDING_SCAN_LIMIT = 20
 
 /**
+ * FAILED_RECORDING_WARNING_WINDOW_MS は警告に出す失敗録画の recency 窓（レビュー
+ * 指摘）。他の警告材料（ブレーカーは発動中のみ・容量超過は今夜〜明日の窓・
+ * ドロップは「直近 20 件の完了」で実質 recency がある）はどれも自然に消えるが、
+ * 失敗だけは `FAILED_RECORDING_SCAN_LIMIT` 件に収まる限り**いつの失敗でも
+ * 出続けてしまう**。稼働の長いサーバーでは警告セクションが古い失敗で常時
+ * 埋まり、警告全体の情報価値が下がる（issue #301 の受け入れ基準も「直近の」
+ * 失敗録画と言っている）。窓は録画の `startAt`（番組の放送開始。失敗の場合も
+ * 必ず持つ --- `startedAt` と違い欠けることが無い）で判定する。値（7 日）は
+ * 実測ではなく「1〜2 週間動かして異常が無いか確認する」運用サイクルに対して
+ * 「今日気付くべき失敗」を残す側に振った恣意的な上限（他の上限と同じ性質）。
+ */
+const FAILED_RECORDING_WARNING_WINDOW_MS = 7 * 24 * 3_600_000
+
+/**
  * HomePage はホーム（`/`。M8-3, issue #242）。
  *
  * 起動して最初に見えるのが番組表（「これから録るもの」）だと、運用が安定した
@@ -112,8 +126,8 @@ const FAILED_RECORDING_SCAN_LIMIT = 20
  * 録画が実際には開始しなかった失敗（`startedAt`/`endedAt` が無い）と、
  * 開始した直後に終わった失敗（両方あるが差が小さい）を同じ「予定尺」表示に
  * 潰すと、後者が「ほぼ予定通り録れた」ように見えてしまう。失敗理由は
- * `qualityEvents`（最新の要素の `reason`）にあれば出し、無ければ「理由不明」
- * と沈黙を区別する（`failureReasonText` 参照）。
+ * `qualityEvents`（失敗系イベントの最後の要素の `reason`）にあれば出し、
+ * 無ければ「理由不明」と沈黙を区別する（`failureReasonText` 参照）。
  */
 export function HomePage() {
   // nowMs はこのレンダーの間で一貫させる（`pages/programs.tsx` と同じ規律。
@@ -213,11 +227,18 @@ export function HomePage() {
     (o) => new Date(o.endAt).getTime() > nowMs,
   )
 
+  // 失敗録画は `FAILED_RECORDING_SCAN_LIMIT` 件に収まる限りいつの失敗でも警告に
+  // 出続けてしまうので、ここで recency 窓へ絞る
+  // （`FAILED_RECORDING_WARNING_WINDOW_MS` の doc コメント参照）。
+  const recentFailedRecordings = failedRecordings.filter(
+    (r) => new Date(r.startAt).getTime() >= nowMs - FAILED_RECORDING_WARNING_WINDOW_MS,
+  )
+
   const warnings = buildWarnings({
     breakers: unwrap(breakersQuery.data) ?? [],
     overages: activeOverages,
     dropCandidates: finishedRecordings,
-    failedRecordings,
+    failedRecordings: recentFailedRecordings,
   })
 
   // セクションごとの可視性はそのセクション自身のクエリの解決だけを待つ
@@ -447,11 +468,13 @@ type WarningItem = {
  * 「直近の完了」に**表示する分（先頭 `RECENT_FINISHED_LIMIT` 件）に切る前**の
  * リスト --- 表示件数を絞っても警告の検出範囲まで連動して狭まらないようにする
  * ため（呼び出し元の doc コメント参照）。`failedRecordings` は
- * `limit=FAILED_RECORDING_SCAN_LIMIT` で取った失敗録画の全件で、こちらは
- * 「直近の完了」のような表示専用セクションを持たないので表示/検出の区別は無い。
+ * `limit=FAILED_RECORDING_SCAN_LIMIT` で取った失敗録画のうち、呼び出し元で
+ * さらに `FAILED_RECORDING_WARNING_WINDOW_MS` の recency 窓へ絞り込んだもの
+ * （表示専用セクションを持たないので表示/検出の区別は無いが、警告としての
+ * recency は要る）。
  *
- * 容量超過は呼び出し元で「実際の今より後に終わる」ものへ絞り込み済みなので、
- * ここで追加の時間フィルタはしない。
+ * 容量超過・失敗録画はいずれも呼び出し元で時間フィルタ済みなので、ここでは
+ * 追加の時間フィルタはしない。
  */
 function buildWarnings({
   breakers,
@@ -523,18 +546,26 @@ function buildWarnings({
  * 開始した直後に終わった失敗（実際は 0 分に近いのに `durationMs` は番組の
  * 予定尺のまま）が「ほぼ予定通り録れた」ように見えてしまう。
  *
- * `startedAt` / `endedAt` はどちらか一方だけが欠けることは無い
- * （`UpdateRecordingStatus` が両方揃ってから書く。片方だけ立つ経路が無い）が、
- * **両方とも欠けることはある** --- mirakc に録画開始さえ記録されなかった失敗
- * （`start-recording-failed` 等）は `started_at` を一度も持たない
- * （`internal/watcher/watcher.go` の `handleRecordingFailed` /
- * `CreateFailedRecording` 参照）。この場合は「実際に何秒録れたか」がそもそも
- * 定義できないので、実際尺は出さず予定尺だけを「未開始」と明示する。
+ * `startedAt` と `endedAt` は独立に書かれるので、`startedAt` だけが立って
+ * `endedAt` が無い行がある（レビューで発覚。以前のコメントは「両方揃ってから
+ * 書く」と逆を断言していた）。`UpdateRecordingStatus`
+ * （`internal/db/queries/recordings.sql`）は `started_at` を無条件に
+ * `COALESCE` で埋め、`ended_at` は渡された値が非 NULL のときだけ書く。呼び
+ * 出し元の `Watcher.updateRecordingStatus`（`internal/watcher/watcher.go`）は
+ * `record.Recording.EndTime`（`*mirakc.Milliseconds` で nil を取りうる）を
+ * そのまま渡すので、mirakc の failed record に `endTime` が無ければ failed
+ * 行でも `startedAt` だけが立つ。したがって 3 通りを区別する: 両方あり
+ * （実際尺が定義できる）/ `startedAt` のみ（開始した事実はあるが終了時刻が無く、
+ * 実際尺は主張できない）/ 両方無し（mirakc に録画開始さえ記録されなかった失敗。
+ * 「未開始」）。
  */
 function failedDurationText(recording: Recording): string {
   if (recording.startedAt && recording.endedAt) {
     const actualMs = new Date(recording.endedAt).getTime() - new Date(recording.startedAt).getTime()
     return `実際 ${formatDuration(actualMs)} / 予定 ${formatDuration(recording.durationMs)}`
+  }
+  if (recording.startedAt) {
+    return `予定 ${formatDuration(recording.durationMs)}・開始のみ記録（終了未記録）`
   }
   return `予定 ${formatDuration(recording.durationMs)}・未開始`
 }
@@ -544,21 +575,50 @@ function failedDurationText(recording: Recording): string {
  *
  * **材料が無ければ「理由不明」と明示し、沈黙とは区別する**（issue #301）。
  * `qualityEvents` は追記専用の履歴（`recordings.quality_events`。
- * `docs/schema/recordings.md` §5）なので、複数件あれば最後の要素が最新の
- * 記録。`reason` は mirakc の生の理由をそのまま保持したもので（不変条件 7:
- * mirakc 固有の概念を構造化カラムにしない）、文字列（例:
- * `recording.failed` の `"start-recording-failed"`）と、キーを持つ
- * オブジェクト（例: `record-broken` の `{ reason: "..." }`）の両方がありうる
- * ---
- * 文字列はそのまま、それ以外は `pages/recordings.tsx` の「品質イベント」欄と
- * 同じ流儀（`JSON.stringify`）で読める形にする。
+ * `docs/schema/recordings.md` §5）で `recording.failed` /
+ * `recording.record-broken` / `bcas_anomaly` が混ざるので、**最後の要素では
+ * なく失敗系イベントの最後の要素**を見る（末尾が `bcas_anomaly` だと最後の
+ * 失敗理由を読み飛ばす）。
+ *
+ * `reason` の形は書き手（`event` の値）で決まり、いずれもオブジェクトで
+ * 素の文字列を書く経路は無い（以前のコメントは「`recording.failed` は文字列」
+ * と書いていたが、書き手を辿ると逆でどちらもオブジェクト）:
+ * - `recording.failed`: `internal/watcher/watcher.go` の
+ *   `handleRecordingFailed` が `json.Marshal(data.Reason)` で書く。
+ *   `data.Reason` は `mirakc.FailedReason`
+ *   （`internal/mirakc/types.go`。discriminated union で `type` フィールドを
+ *   持つ）なので `reason.type` を読む。
+ * - `recording.record-broken`: 同ファイルの `handleRecordBroken` が
+ *   `map[string]string{"reason": data.Reason}` で書くので `reason.reason`
+ *   を読む。
+ *
+ * 上記どちらでもない `event`、または期待した形（`type` / `reason` フィールド
+ * が無い）は `pages/recordings.tsx` の「品質イベント」欄と同じ流儀
+ * （`JSON.stringify`）で読める形にフォールバックする。
  */
 function failureReasonText(recording: Recording): string {
   const events = recording.qualityEvents
   if (events === undefined || events.length === 0) return '理由不明'
-  const reason = events[events.length - 1]?.reason
+  const failureEvent = events.findLast(
+    (e) => e['event'] === 'recording.failed' || e['event'] === 'recording.record-broken',
+  )
+  if (failureEvent === undefined) return '理由不明'
+  const reason = failureEvent['reason']
   if (reason === undefined || reason === null) return '理由不明'
-  return typeof reason === 'string' ? reason : JSON.stringify(reason)
+
+  if (typeof reason === 'object' && !Array.isArray(reason)) {
+    const record = reason as Record<string, unknown>
+    if (failureEvent['event'] === 'recording.failed' && typeof record['type'] === 'string') {
+      return record['type']
+    }
+    if (
+      failureEvent['event'] === 'recording.record-broken' &&
+      typeof record['reason'] === 'string'
+    ) {
+      return record['reason']
+    }
+  }
+  return JSON.stringify(reason)
 }
 
 /**
