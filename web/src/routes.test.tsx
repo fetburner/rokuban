@@ -252,6 +252,68 @@ describe('routeTree', () => {
     }
   })
 
+  /**
+   * issue #291: SI の `serviceId` は network をまたぐと一意でないため、選択の
+   * 同定に `networkId` を追加した。`serviceId` と同じ流儀
+   * （`parsePositiveIntId` を経由し、落とす次元にも `undefined` を明示代入）で
+   * パースされることを固定する --- キーを省略する変異だと、`/live?networkId=abc`
+   * の文字列 "abc" が `useSearch` の戻り値に残ってしまい、このテストが落ちる
+   * （issue #194 型。上記 `/live?serviceId=abc` のテストと同じ罠）。
+   */
+  it('/live?networkId=&serviceId= は両方を検証済みの number にする', async () => {
+    const router = createRouter({
+      routeTree,
+      history: createMemoryHistory({ initialEntries: ['/live?networkId=32736&serviceId=1024'] }),
+    })
+    await router.load()
+
+    const search = router.state.matches.at(-1)!.search as {
+      networkId?: unknown
+      serviceId?: unknown
+    }
+    expect(search.networkId).toBe(32736)
+    expect(search.serviceId).toBe(1024)
+  })
+
+  it('/live?networkId=abc は useSearch の戻り値に文字列を残さない', async () => {
+    const router = createRouter({
+      routeTree,
+      history: createMemoryHistory({ initialEntries: ['/live?networkId=abc&serviceId=1024'] }),
+    })
+    await router.load()
+
+    const search = router.state.matches.at(-1)!.search as { networkId?: unknown }
+    expect(search.networkId).toBeUndefined()
+  })
+
+  it('/live の networkId は非整数・0 以下・安全整数の外も落とす', async () => {
+    for (const raw of ['1.5', '0', '-1', 'Infinity', '1e30', '9007199254740993']) {
+      const router = createRouter({
+        routeTree,
+        history: createMemoryHistory({ initialEntries: [`/live?networkId=${raw}&serviceId=1024`] }),
+      })
+      await router.load()
+      expect((router.state.matches.at(-1)!.search as { networkId?: unknown }).networkId).toBe(
+        undefined,
+      )
+    }
+  })
+
+  it('/live?serviceId= 単独（networkId 無し）でも serviceId は通る（旧リンクとの後方互換）', async () => {
+    const router = createRouter({
+      routeTree,
+      history: createMemoryHistory({ initialEntries: ['/live?serviceId=1024'] }),
+    })
+    await router.load()
+
+    const search = router.state.matches.at(-1)!.search as {
+      networkId?: unknown
+      serviceId?: unknown
+    }
+    expect(search.networkId).toBeUndefined()
+    expect(search.serviceId).toBe(1024)
+  })
+
   describe('ホーム新設（M8-3, issue #242）: 旧 URL のリダイレクト', () => {
     it('裸の / はホームのまま（リダイレクトしない）', async () => {
       const router = createRouter({

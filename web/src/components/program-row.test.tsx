@@ -125,11 +125,17 @@ describe('ProgramRow の外向き導線（issue #229）', () => {
     expect(screen.queryAllByRole('link')).toHaveLength(0)
   })
 
-  it('放送中の番組を展開すると「ライブで見る」が出て /live?serviceId= （SI の serviceId）へのリンクになる', async () => {
+  /**
+   * issue #291: SI の `serviceId` は network をまたぐと一意でないため、「ライブで
+   * 見る」は `networkId` も渡す --- `serviceId` 単独では選んだのと違う network の
+   * チャンネルを指しうる。href のクエリ文字列を個別に検証する（キーの順序に
+   * 依存する文字列一致にはしない）。
+   */
+  it('放送中の番組を展開すると「ライブで見る」が出て /live?networkId=&serviceId= （SI の networkId / serviceId）へのリンクになる', async () => {
     stubFetch()
     renderInRouter(
       <ProgramRow
-        program={airingProgram({ serviceId: 1024 })}
+        program={airingProgram({ networkId: 32736, serviceId: 1024 })}
         reserved={false}
         pending={false}
         onReserve={vi.fn()}
@@ -140,7 +146,11 @@ describe('ProgramRow の外向き導線（issue #229）', () => {
     await expandRow()
 
     const link = await screen.findByRole('link', { name: 'ライブで見る' })
-    expect(link).toHaveAttribute('href', '/live?serviceId=1024')
+    const href = link.getAttribute('href') ?? ''
+    expect(href.startsWith('/live?')).toBe(true)
+    const params = new URLSearchParams(href.slice('/live?'.length))
+    expect(params.get('networkId')).toBe('32736')
+    expect(params.get('serviceId')).toBe('1024')
   })
 
   it('放送中でない番組を展開しても「ライブで見る」は出ない', async () => {

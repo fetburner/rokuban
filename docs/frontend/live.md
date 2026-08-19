@@ -23,19 +23,45 @@ Rokuban 自体のライブ視聴は「チャンネル一覧から選んでブラ
 その上に足す」）ため、モバイルからの入口を別に用意する必要が生じ結局 2 箇所になる。
 `/live` はチャンネル一覧（`GET /api/sites/{site}/services`）+ プレイヤー + いま放送中の番組
 （既存 EPG API の時間窓クエリ。専用 API は足していない）という 1 画面で構成する
-（`pages/live.tsx`）。選択中のチャンネルは `?serviceId=` に持つ（`routes.tsx` の
+（`pages/live.tsx`）。選択中のチャンネルは `?networkId=&serviceId=` に持つ（`routes.tsx` の
 `validateSearch` が不正な値に `undefined` を**明示代入**して落とす。省略では
 消えない --- [recordings.md](recordings.md)「TanStack Router の `validateSearch` は
 無効な値を『省略』しても消えない」）。
 チャンネル一覧のリンクは `replace` にし、ザッピングでブラウザ履歴が積み上がらない
 ようにする。
 
-**「選ぶ」（`?serviceId=` を変える）と「流す」（`LivePlayer` をマウントする）を
+**SI の `serviceId` 単独では network をまたぐと一意でない。** Mirakurun が
+`networkId * 100000 + serviceId` の合成 id を発明した理由そのもので、
+`GET /api/sites/{site}/services` は GR / BS / CS を混ぜて返すため、同じ
+`serviceId` を持つサービスが 2 つ返る構成がありうる。**`/live` の選択の同定
+（初期選択・選択中のハイライトと `aria-current`・再生中チャンネルの記憶・中断予測の
+応答の絞り込み）は `networkId` + `serviceId` の組で行う**（`lib/live.ts` の
+`pickInitialService` / `liveServiceKey`）。`networkId` を持たない旧 `?serviceId=`
+単独のリンク・ブックマークは「その `serviceId` を持つ最初のサービス」へ
+フォールバックする（この場合に選ばれる network は一覧の順序に依存しうるが、
+`networkId` を運ばない入力そのものが network を同定できないので仕様である）。
+番組リスト（`components/program-row.tsx`）の「ライブで見る」リンクも
+`networkId` を渡す。
+
+**未解決: 番組表と録画の絞り込みは `serviceId` 単独のまま。** 同じ画面から出る
+「この局の番組表」リンク（`/programs` の `?serviceId=` は `/recordings` と同じ
+複数可の配列）と、録画の絞り込み（`lib/recording-search.ts` の `service` =
+`<site>:<serviceId>`）は `networkId` を運ばない。上の複合キーはライブの選択に
+だけ効いており、これらの面では `serviceId` が network をまたいで衝突する構成で
+別 network のサービスの番組・録画も混ざる。ライブから先に直したのは、ここだけが
+**選択中のハイライトが 2 行に付く**という目に見える壊れ方をするためである
+（`pages/live.test.tsx`「networkId + serviceId を指定すると、その network の
+チャンネルだけが選ばれる」がその壊れ方を固定している）。番組表・録画側の混入は
+目視では気付けない。**実運用の EPG でこの衝突が起きているかは未検証**
+--- 上の「2 行に付く」は、同じ `serviceId` を 2 network が持つフィクスチャで
+示した条件付きの壊れ方であって、実デプロイでの観測ではない。
+
+**「選ぶ」（`?networkId=&serviceId=` を変える）と「流す」（`LivePlayer` をマウントする）を
 別のタップに分ける。** チャンネルを選ぶこと自体は probe も
 セッション（チューナー確保 + ffmpeg 起動）も起こさない --- チャンネル一覧・
 いま放送中の番組・チャンネル種別（GR/BS/CS）の表示だけで、`LivePlayer` は
-「再生」ボタンを押すまでマウントしない（`pages/live.tsx` の `playingServiceId`。
-`selectedServiceId` と一致するときだけ再生中とみなす）。確認ダイアログは使わない
+「再生」ボタンを押すまでマウントしない（`pages/live.tsx` の `playingKey`。
+`selectedKey` と一致するときだけ再生中とみなす）。確認ダイアログは使わない
 --- 選択状態の画面そのものが値札であり、再生は 1 タップで足りる。摩擦をコストに
 比例させる方針上、デスクトップ LAN でも再生 1 押しより増やさない（ダイアログを
 重ねると、チューナーが有限でない環境の利用者にまで同じ摩擦を強いる）。
@@ -43,7 +69,7 @@ Rokuban 自体のライブ視聴は「チャンネル一覧から選んでブラ
 [data.md](../data.md) §6.5 と同じ規律 --- mirakc には Rokuban から見えない
 消費者がいる）。
 
-`playingServiceId` と `selectedServiceId` の一致判定は**レンダー中に行う**（effect
+`playingKey` と `selectedKey` の一致判定は**レンダー中に行う**（effect
 ではない）。これは直リンク・ブックマークで来た場合だけでなく、チャンネル一覧で
 他のチャンネルへ切り替えた場合も同じで、**同意はチャンネルの選択ごとに 1 回必要**
 という設計の要点そのものである --- 一度再生した後に別チャンネルへザップし、また
@@ -51,7 +77,7 @@ Rokuban 自体のライブ視聴は「チャンネル一覧から選んでブラ
 再開しない。**この判定を `useEffect` で「選択が変わったら false に戻す」形にすると、
 1 コミットぶん透過的にバグる**（レビューでの指摘。実測: A 再生中に B へ切り替えると、
 jsdom でも実ブラウザでも B 向けの `playlist.m3u8` への要求が 1 件飛ぶ）--- passive
-effect は子（`LivePlayer`）→親（`LivePage`）の順に走るため、`selectedServiceId` が
+effect は子（`LivePlayer`）→親（`LivePage`）の順に走るため、`selectedKey` が
 B に変わった直後の 1 コミットだけ古い再生中フラグが残っていて `<LivePlayer
 serviceId={B}>` が透過的にマウントされ probe を投げてしまい、その直後に親の
 reset effect が走って unmount してももう遅い（`internal/streamer/live.go` の
@@ -60,11 +86,11 @@ reset effect が走って unmount してももう遅い（`internal/streamer/liv
 チューナー + ffmpeg が残る。**離脱ヒントを送っても縮むだけで 0 にはならない** ---
 押していないチャンネルを掴む時間は「猶予（既定 8 秒）+ GC 周期」であって、
 掴まないのとは違う）。レンダー中に判定すれば
-`selectedServiceId` が変わった**その場のレンダーで**「再生中でない」が確定し、
+`selectedKey` が変わった**その場のレンダーで**「再生中でない」が確定し、
 異なる serviceId で透過的にマウントされる中間コミット自体が存在しない
-（詳細は `pages/live.tsx` の `playingServiceId` 定義部のコメント）。
+（詳細は `pages/live.tsx` の `playingKey` 定義部のコメント）。
 
-**直リンク・ブックマーク（`/live?serviceId=` の直開き）も選択状態で止まる。**
+**直リンク・ブックマーク（`/live?networkId=&serviceId=` の直開き）も選択状態で止まる。**
 再生開始の同意を取る構造は、通常のチャンネル一覧からの選択と直リンクで区別しない
 --- 直開きだけ自動再生にすると「タップで選んだときは同意が要るが URL 経由なら
 要らない」という一貫しない規則になり、番組行の「ライブで見る」等の外部導線
@@ -269,9 +295,9 @@ in-flight `fetch` を `AbortController` で中断、hls.js の `destroy()` /
 
 **選択と視聴開始を分離したことで、「ザッピングのたびにセッションが積まれる」と
 いう事態自体が起きなくなった。**
-`?serviceId=` を切り替えるだけでは probe もセッション開始も走らないため、
+`?networkId=&serviceId=` を切り替えるだけでは probe もセッション開始も走らないため、
 チャンネル一覧を何度触っても掴まれるチューナーは 0 のまま増えない --- ただし
-これは `playingServiceId` と `selectedServiceId` の一致判定をレンダー中に行う
+これは `playingKey` と `selectedKey` の一致判定をレンダー中に行う
 実装でのみ真になる（上記「フロントエンド実装」の同じ節参照）。`useEffect` で
 「選択が変わったら false に戻す」形にすると、切替直後の 1 コミットだけ押していない
 チャンネルへ透過的に probe が飛ぶ（実測は同節）。ザッピング緩和のためのデバウンス
@@ -334,6 +360,15 @@ EPGStation・KonomiTV には構造的にできない表示。
 値であり、別サイトの同じ番号の番組と取り違えないよう `site` の一致も見る
 （docs/schema.md §1 の設計原則）。
 
+- **EPG 問い合わせは `serviceId` の配列だけで投げ、応答を `(networkId, serviceId)`
+  の組で絞り直す。** 同じチャンネル種別のサービスは複数 network にまたがりうるので、
+  `GET /api/sites/{site}/programs` の `networkId`（単一の整数）ではこの問い合わせを
+  表現できない。一方サーバーは `serviceId` だけを AND するため、選択中と別 network・
+  別種別のサービスがたまたま同じ `serviceId` を持つと、その番組が
+  `sameTypeProgramIds` に混入して**存在しない中断警告**を出しうる（SI の
+  `serviceId` は network をまたぐと一意でない。上記「フロントエンド実装」）。
+  応答側を `liveServiceKey`（`networkId` + `serviceId`）の集合で絞ることで閉じる
+  --- 種別一致の判定自体はサーバーに任せたまま、混入だけを落とす
 - **先読みの時間窓は 2 時間。** 視聴を選ぶ／始める瞬間の判断材料として出す表示
   なので、窓は「これから見始める 1 回の視聴」がカバーする範囲に合わせる。1 番組
   （30 分〜1 時間）を見ている間に次の番組の録画が競合し得ることまでは見せたいが、
@@ -380,8 +415,10 @@ EPGStation・KonomiTV には構造的にできない表示。
 加えて `interruptionQueryWindow` が tick を跨いでも窓の値を保つこと・グリッドを
 跨げば変わること・常に判定窓の上位集合であること）、`pages/live.test.tsx`
 「録画予約による中断予測」（選択状態・視聴中画面の両方に出る / skip・別チャンネル
-種別では出ない、の end-to-end wiring。加えて 30 秒の tick を実時間で跨いでも
-警告が消え続けないことをポーリングで確認）、
+種別では出ない、の end-to-end wiring。加えて「別 network の同じ serviceId の番組
+では中断警告を誤って出さない」で上記の応答側の絞り込みを固定する --- 絞り込みを
+外すと落ちる。30 秒の tick を実時間で跨いでも警告が消え続けないこともポーリングで
+確認）、
 `components/live-interruption-warning.test.tsx`（`reservation` が null のとき
 **描画そのものが無いこと**を `toBeEmptyDOMElement()` で見る --- 文言の regex
 一致だけでは、指定した語を含まない別の肯定文言への変異を検出できない。

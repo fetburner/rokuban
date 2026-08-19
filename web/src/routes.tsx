@@ -233,7 +233,14 @@ const recordingDetailRoute = createRoute({
 
 /** LivePageSearch は `/live` のクエリパラメータ。 */
 export type LivePageSearch = {
-  /** 視聴中のチャンネル（省略時は番組を持つ先頭のサービスに落ちる。`lib/live.ts` の `pickInitialServiceId`）。 */
+  /**
+   * 視聴中チャンネルの network（省略時は `serviceId` 単独で最初に一致した
+   * サービスへフォールバックする。SI の `serviceId` は network をまたぐと
+   * 一意でないため、本来はこの `networkId` との組で同定する。`lib/live.ts` の
+   * `pickInitialService`）。
+   */
+  networkId?: number
+  /** 視聴中のチャンネル（省略時は番組を持つ先頭のサービスに落ちる。`lib/live.ts` の `pickInitialService`）。 */
   serviceId?: number
 }
 
@@ -253,7 +260,7 @@ const liveRoute = createRoute({
   // `{ ...生の location.search, ...validateSearch の戻り値 }` の順に合成するので、
   // キーを省略すると生の値（`/live?serviceId=abc` なら文字列 `"abc"`）がそのまま
   // 残り、`LivePageSearch` の `serviceId?: number` という型が実行時に嘘になる。
-  // いまの唯一の読者（`pickInitialServiceId`）は厳密比較なので実害は無いが、
+  // いまの唯一の読者（`pickInitialService`）は厳密比較なので実害は無いが、
   // `serviceId` を `livePlaylistURL` に直接渡す読者が 1 人増えた瞬間に
   // `/api/.../services/abc/live/playlist.m3u8` が飛ぶ
   //
@@ -263,7 +270,12 @@ const liveRoute = createRoute({
   // `9007199254740992` になる）を塞いでいなかった。`ruleId`（`lib/recording-search.ts`
   // の `parseRuleId`）と同じ「シーケンス/SI 由来で 1 以上しか存在しない識別子」の
   // 流儀なので、この PR で共有ヘルパーへ寄せた。
+  //
+  // `networkId` も同じ流儀でパースする（SI の `networkId` も 1 以上しか存在しない。
+  // issue #291）。壊れた/古い `networkId` を踏んでも `undefined` に落ち、
+  // `serviceId` 単独の旧リンクと同じフォールバック（`pickInitialService`）に乗る。
   validateSearch: (search: Record<string, unknown>): LivePageSearch => ({
+    networkId: parsePositiveIntId(search.networkId),
     serviceId: parsePositiveIntId(search.serviceId),
   }),
   // `pages/live.tsx` の `<PageHeader title="ライブ">` と同じ表記。issue #304 は

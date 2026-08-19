@@ -79,8 +79,8 @@ export function ProgramRow({
   // now の評価タイミングは「展開されて描画される瞬間（＋その後の再レンダー）」で
   // 足りるとし、専用の tick タイマーは持たない。
   //
-  // 理由: このリンクは番組 ID を運ばず `serviceId`（チャンネル）だけを渡すので、
-  // 境界を挟んで多少ズレても遷移先を誤ることはない --- 遷移先の /live 画面が
+  // 理由: このリンクは番組 ID を運ばず `networkId` + `serviceId`（チャンネル）
+  // だけを渡すので、境界を挟んで多少ズレても遷移先を誤ることはない --- 遷移先の /live 画面が
   // 自前で「いま何が流れているか」を再取得して表示するので、真実はそちら側に
   // ある（issue #229 の指示どおり）。
   //
@@ -245,7 +245,10 @@ export function ProgramRow({
               {showLiveLink && (
                 <Link
                   to="/live"
-                  search={{ serviceId: program.serviceId }}
+                  // `networkId` も渡す --- SI の `serviceId` は network をまたぐと
+                  // 一意でないため（issue #291）、`serviceId` 単独では選んだのと
+                  // 違う network のチャンネルを指しうる。
+                  search={{ networkId: program.networkId, serviceId: program.serviceId }}
                   className="text-primary underline-offset-2 hover:underline"
                 >
                   ライブで見る

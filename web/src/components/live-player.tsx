@@ -293,7 +293,7 @@ export function LivePlayer({ site, networkId, serviceId, className }: LivePlayer
   // 発火点は 2 系統:
   //
   //   - **cleanup**: チャンネル切り替え・再生停止・画面遷移（アンマウント）。
-  //     `pages/live.tsx` は切り替え時に `playingServiceId` を落として
+  //     `pages/live.tsx` は切り替え時に `playingKey` を落として
   //     `LivePlayer` を外すので、切り替えはここを必ず通る
   //   - **`pagehide` / `visibilitychange`（hidden）**: タブ・ウィンドウを閉じる、
   //     別アプリへ切り替える等。**`unload` は使わない** --- モバイル Safari では

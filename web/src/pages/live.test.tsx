@@ -163,7 +163,15 @@ function stubFetch(options: {
       // 複数サービスを一度に渡すため `getAll` で読む --- 既存の単一指定
       // （`?serviceId=1`）も `getAll` は 1 要素の配列として返すので後方互換。
       const serviceIds = url.searchParams.getAll('serviceId').map(Number)
-      const list = serviceIds.flatMap((id) => programsByServiceId[id] ?? [])
+      let list = serviceIds.flatMap((id) => programsByServiceId[id] ?? [])
+      // `networkId` が付いていれば AND で絞り込む（issue #291: 同じ serviceId を
+      // 2 network が持つフィクスチャで、意図した network の番組だけを返すため。
+      // `programsByServiceId` のフィクスチャ側で `program.networkId` を
+      // network ごとに変えて区別する）。
+      const networkIdParam = url.searchParams.get('networkId')
+      if (networkIdParam !== null) {
+        list = list.filter((p) => String(p.networkId) === networkIdParam)
+      }
       return Promise.resolve(new Response(JSON.stringify(list), { status: 200 }))
     }
     return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }))
@@ -390,6 +398,121 @@ describe('LivePage', () => {
     expect(await screen.findByText('A の番組')).toBeInTheDocument()
   })
 
+  /**
+   * issue #291: SI の `serviceId` は network をまたぐと一意でない（Mirakurun が
+   * `networkId * 100000 + serviceId` の合成 id を発明した理由そのもの）。
+   * `GET /api/sites/{site}/services` が GR/BS 混在で同じ `serviceId` を持つ
+   * サービスを 2 つ返す構成のフィクスチャで、`?networkId=&serviceId=` の両方が
+   * 揃っているときに正しい network のチャンネルが選ばれることを固定する ---
+   * `orderedServices.find((s) => s.serviceId === selectedServiceId)`
+   * （networkId を無視して先頭一致を返す）へ戻す変異だと、常に network 1 の
+   * 「GR の局」が選ばれてこのテストは落ちる。
+   */
+  describe('同じ serviceId を持つサービスが複数 network に存在するとき（issue #291）', () => {
+    function crossNetworkServices() {
+      return [
+        service({ networkId: 1, serviceId: 100, name: 'GR の局', channelType: 'GR' }),
+        service({ networkId: 2, serviceId: 100, name: 'BS の局', channelType: 'BS' }),
+      ]
+    }
+    function crossNetworkPrograms() {
+      return {
+        100: [
+          program({ networkId: 1, serviceId: 100, name: 'GR の番組' }),
+          program({ networkId: 2, serviceId: 100, name: 'BS の番組' }),
+        ],
+      }
+    }
+
+    it('networkId + serviceId を指定すると、その network のチャンネルだけが選ばれる（network 1 側）', async () => {
+      stubFetch({ services: crossNetworkServices(), programsByServiceId: crossNetworkPrograms() })
+      renderLive('/live?networkId=1&serviceId=100')
+
+      expect(await screen.findByText('GR の番組')).toBeInTheDocument()
+      expect(screen.queryByText('BS の番組')).not.toBeInTheDocument()
+      const nav = screen.getByRole('navigation', { name: 'チャンネル一覧' })
+      const current = within(nav)
+        .getAllByRole('link')
+        .filter((el) => el.getAttribute('aria-current') === 'page')
+      expect(current).toHaveLength(1)
+      expect(current[0]).toHaveTextContent('GR の局')
+    })
+
+    it('networkId + serviceId を指定すると、その network のチャンネルだけが選ばれる（network 2 側）', async () => {
+      stubFetch({ services: crossNetworkServices(), programsByServiceId: crossNetworkPrograms() })
+      renderLive('/live?networkId=2&serviceId=100')
+
+      expect(await screen.findByText('BS の番組')).toBeInTheDocument()
+      expect(screen.queryByText('GR の番組')).not.toBeInTheDocument()
+      const nav = screen.getByRole('navigation', { name: 'チャンネル一覧' })
+      const current = within(nav)
+        .getAllByRole('link')
+        .filter((el) => el.getAttribute('aria-current') === 'page')
+      expect(current).toHaveLength(1)
+      expect(current[0]).toHaveTextContent('BS の局')
+      // `web/e2e/live.mjs` ⓪ は「選択中リンクの href に要求した組が載っている」
+      // ことで新形式が実ブラウザで効いたと判定する。その前提（href に networkId
+      // が載る）をここでも固定しておく --- 載らなくなれば e2e は落ちるが、
+      // それはブラウザとサーバーを用意しないと分からない
+      const href = current[0].getAttribute('href') ?? ''
+      expect(href).toContain('networkId=2')
+      expect(href).toContain('serviceId=100')
+    })
+
+    it('networkId 無しの旧 ?serviceId= 単独リンクは、その serviceId を持つ最初のサービス（network 1）へフォールバックする', async () => {
+      stubFetch({ services: crossNetworkServices(), programsByServiceId: crossNetworkPrograms() })
+      renderLive('/live?serviceId=100')
+
+      expect(await screen.findByText('GR の番組')).toBeInTheDocument()
+      expect(screen.queryByText('BS の番組')).not.toBeInTheDocument()
+    })
+
+    it('「再生」を押すと、選んだ network の (networkId, serviceId) でプレイリストを取りに行く', async () => {
+      const user = userEvent.setup()
+      stubFetch({ services: crossNetworkServices(), programsByServiceId: crossNetworkPrograms() })
+      renderLive('/live?networkId=2&serviceId=100')
+      await screen.findByText('BS の番組')
+
+      await user.click(screen.getByRole('button', { name: /再生/ }))
+
+      await waitFor(() => expect(playlistFetchCalled()).toBe(true))
+      const calls = (globalThis.fetch as unknown as { mock: { calls: [string][] } }).mock.calls
+      const playlistCall = calls.find(([url]) => String(url).includes('/live/playlist.m3u8'))
+      expect(playlistCall?.[0]).toContain('/networks/2/services/100/')
+    })
+
+    /**
+     * `playingKey`（再生状態の同定）も `liveServiceKey`（`networkId` + `serviceId`
+     * の組）で判定する（`pages/live.tsx` の `playingKey` 定義部のコメント）。
+     * `serviceId` 単独で判定すると、GR（network 1）を再生中に同じ `serviceId` の
+     * BS（network 2）へ切り替えたとき「同じチャンネル」と誤認し、GR 向けの
+     * `LivePlayer`（接続できません、のエラー表示）を押していない BS へそのまま
+     * 引き継いでしまう --- これは選択（`aria-current`）とは別の判定なので、
+     * `aria-current` 側だけを固定した上のテストでは捕まらない。
+     */
+    it('再生中に同じ serviceId の別 network へ切り替えると選択状態に戻る', async () => {
+      const user = userEvent.setup()
+      stubFetch({ services: crossNetworkServices(), programsByServiceId: crossNetworkPrograms() })
+      renderLive('/live?networkId=1&serviceId=100')
+      await screen.findByText('GR の番組')
+
+      await user.click(screen.getByRole('button', { name: /再生/ }))
+      await screen.findByText(/接続できません/)
+      const callsAfterGr = playlistFetchCallCount()
+      expect(callsAfterGr).toBeGreaterThan(0)
+
+      await user.click(screen.getByRole('link', { name: /BS の局/ }))
+      await waitFor(() => expect(screen.getByText('BS の番組')).toBeInTheDocument())
+
+      // BS へ切り替わったら選択状態（再生ボタン）に戻り、GR のエラー表示は消える
+      expect(screen.getByRole('button', { name: /再生/ })).toBeInTheDocument()
+      expect(screen.queryByText(/接続できません/)).not.toBeInTheDocument()
+      // 押していない BS の playlist を一度も取りに行かない（引き継いでいれば
+      // GR のときと同様に probe が飛び、この件数が増える）
+      expect(playlistFetchCallCount()).toBe(callsAfterGr)
+    })
+  })
+
   it('いま放送中の番組が無いときは代わりの文言を出す', async () => {
     stubFetch({ services: [service({ serviceId: 1, name: 'チャンネル A' })] })
     renderLive()
@@ -562,7 +685,7 @@ describe('LivePage', () => {
     // B の serviceId で透過的にマウントされ、その 1 回の probe が実際に飛ぶ
     // （実測: jsdom でもこの fetch モックに `/services/{B の serviceId}/live/
     // playlist.m3u8` への呼び出しが記録される）。判定はレンダー中の調整で防ぐ
-    // （`pages/live.tsx` の `playingServiceId` 参照）。件数が増えていなければ、
+    // （`pages/live.tsx` の `playingKey` 参照）。件数が増えていなければ、
     // B 向けの LivePlayer が一度もマウントされなかったと言える
     expect(playlistFetchCallCount()).toBe(playlistCallsAfterA)
   })
@@ -801,6 +924,46 @@ describe('LivePage / 録画予約による中断予測（issue #235 M7-2）', ()
       reservations: [reservation({ programId: 6, site: 'default', startAt, skip: false })],
     })
     const { queryClient } = renderLive('/live?serviceId=10')
+
+    await screen.findByRole('button', { name: /再生/ })
+    await interruptionSettled(queryClient)
+    expect(screen.queryByText(/録画予約/)).not.toBeInTheDocument()
+  })
+
+  /**
+   * issue #291 と同じ根: 中断予測の EPG 問い合わせ（`sameTypeProgramsQuery`）は
+   * `serviceId` の配列だけをサーバーに渡す（`networkId` は持たない --- 複数
+   * network の同じ種別のサービスを一度に問い合わせるため）。`serviceId` が
+   * network をまたいで衝突すると、選択中とは別 network・別 channelType の
+   * サービスの番組も応答に混入しうる（サーバーは `serviceId` だけを AND する
+   * ため）。`pages/live.tsx` の `sameTypeProgramIds` から `liveServiceKey` に
+   * よる絞り込みを外す変異を当てると、この番組（に付いた予約）が候補集合に
+   * 混入し、存在しない中断警告を出してこのテストが落ちる。
+   */
+  it('別 network の同じ serviceId の番組では中断警告を誤って出さない（issue #291 と同じ根）', async () => {
+    const startAt = new Date(Date.now() + 30 * 60_000).toISOString()
+    stubFetch({
+      services: [
+        service({ networkId: 1, serviceId: 100, name: 'GR の局', channelType: 'GR' }),
+        service({ networkId: 2, serviceId: 100, name: 'BS の局', channelType: 'BS' }),
+      ],
+      programsByServiceId: {
+        // GR（network 1）ではなく BS（network 2）の番組にだけ予約が付く。
+        // `serviceId` は両方 100 で衝突しているため、`networkId` を見ずに
+        // `serviceId` だけで突き合わせると GR 選択時にもこの番組が混入する
+        100: [
+          program({
+            programId: 6,
+            networkId: 2,
+            serviceId: 100,
+            startAt,
+            endAt: new Date(Date.now() + 90 * 60_000).toISOString(),
+          }),
+        ],
+      },
+      reservations: [reservation({ programId: 6, site: 'default', startAt, skip: false })],
+    })
+    const { queryClient } = renderLive('/live?networkId=1&serviceId=100')
 
     await screen.findByRole('button', { name: /再生/ })
     await interruptionSettled(queryClient)

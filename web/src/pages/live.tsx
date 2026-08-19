@@ -14,7 +14,7 @@ import { LiveInterruptionWarning } from '@/components/live-interruption-warning'
 import { LivePlayer } from '@/components/live-player'
 import { Button } from '@/components/ui/button'
 import { useLiveCapability } from '@/lib/capabilities'
-import { currentProgramWindow, pickInitialServiceId } from '@/lib/live'
+import { currentProgramWindow, liveServiceKey, pickInitialService } from '@/lib/live'
 import { interruptionQueryWindow, upcomingInterruptingReservation } from '@/lib/live-interruption'
 import { channelTypeLabel, groupByChannelType, orderServices } from '@/lib/epg-grid'
 import { formatTime, isAiring } from '@/lib/format'
@@ -49,10 +49,13 @@ const nowPlayingRefetchMs = 30_000
  * 出すと「機能しないコントロール」になるため、既定プロファイル（先頭）に
  * 固定する。
  *
- * 選択中のチャンネルは `?serviceId=` に持つ（`pages/search.tsx` の `?ruleId` と
- * 同じ形）。これにより特定チャンネルへの直リンクが作れる。チャンネルを切り替える
- * ナビゲーションは `replace` にし、ザッピングでブラウザ履歴が積み上がらないように
- * する。
+ * 選択中のチャンネルは `?networkId=&serviceId=` に持つ。SI の `serviceId` は
+ * network をまたぐと一意でないため（`lib/live.ts` の `pickInitialService` の
+ * doc コメント参照。issue #291）、同定には両方を使う。`networkId` を持たない
+ * 旧 `?serviceId=` 単独のリンクは「その `serviceId` を持つ最初のサービス」へ
+ * フォールバックする。これにより特定チャンネルへの直リンクが作れる。チャンネルを
+ * 切り替えるナビゲーションは `replace` にし、ザッピングでブラウザ履歴が
+ * 積み上がらないようにする。
  *
  * **「選ぶ」と「流す」を別のタップに分ける（issue #234 M7-1）。** チャンネルを
  * 選ぶこと自体は probe もセッション（チューナー確保 + ffmpeg 起動）も起こさない
@@ -77,14 +80,33 @@ export function LivePage() {
   const orderedServices = useMemo(() => orderServices(unwrap(services.data) ?? []), [services.data])
   const groups = useMemo(() => groupByChannelType(orderedServices), [orderedServices])
 
-  const selectedServiceId = pickInitialServiceId(orderedServices, routeSearch.serviceId)
-  const selectedService = orderedServices.find((s) => s.serviceId === selectedServiceId)
+  // **`serviceId` 単独では network をまたぐ同名 id を区別できない**ため、選択の
+  // 同定は `Service` オブジェクトそのもの（`networkId` + `serviceId` の組）で行う
+  // （`lib/live.ts` の `pickInitialService` の doc コメント。issue #291）。
+  // `orderedServices.find((s) => s.serviceId === selectedServiceId)` のように
+  // `serviceId` だけで一覧から再検索すると、同じ `serviceId` を持つ別 network の
+  // サービスが先に一致し、選んだのと違う network のチャンネルを指してしまう
+  // （aria-current のハイライトも 2 行に付く。`pages/live.test.tsx`
+  // 「networkId + serviceId を指定すると、その network のチャンネルだけが
+  // 選ばれる」で固定した。実運用の EPG で衝突が起きているかは未検証）。
+  const selectedService = pickInitialService(orderedServices, {
+    networkId: routeSearch.networkId,
+    serviceId: routeSearch.serviceId,
+  })
+  const selectedServiceId = selectedService?.serviceId
+  const selectedKey =
+    selectedService !== undefined
+      ? liveServiceKey(selectedService.networkId, selectedService.serviceId)
+      : undefined
 
-  // playingServiceId は「再生」ボタンで明示的に視聴を始めたチャンネルの serviceId。
-  // `null` なら未再生（選択状態）。**選択（selectedServiceId）と一致するときだけ
-  // 再生中とみなす** --- 直リンク・ブックマークで来た場合（issue #234 の含むもの 3）も、
-  // チャンネル一覧で別のチャンネルへ切り替えた場合も、同意はチャンネルごとに 1 回
-  // ずつ必要というのが構造で同意を取る設計の要点。
+  // playingKey は「再生」ボタンで明示的に視聴を始めたチャンネルの複合キー
+  // （`liveServiceKey`。`serviceId` 単独ではなく `networkId` も含める --- 同じ
+  // `serviceId` を持つ別 network のチャンネルへ切り替えたときに「同じチャンネル」
+  // と誤認して再生状態を引き継がないため）。`null` なら未再生（選択状態）。
+  // **選択（selectedKey）と一致するときだけ再生中とみなす** --- 直リンク・
+  // ブックマークで来た場合（issue #234 の含むもの 3）も、チャンネル一覧で別の
+  // チャンネルへ切り替えた場合も、同意はチャンネルごとに 1 回ずつ必要というのが
+  // 構造で同意を取る設計の要点。
   //
   // **この判定は effect ではなくレンダー中に行う（React の「レンダー中に state を
   // 調整する」パターン）。** 当初は `useEffect(() => setIsPlaying(false),
@@ -106,11 +128,11 @@ export function LivePage() {
   // レンダー中に判定すれば、`selectedServiceId` が変わった**その場のレンダーで**
   // 「再生中でない」が確定するので、`<LivePlayer>` が異なる serviceId で透過的に
   // マウントされる中間コミット自体が存在しない。
-  const [playingServiceId, setPlayingServiceId] = useState<number | null>(null)
-  if (playingServiceId !== null && playingServiceId !== selectedServiceId) {
-    setPlayingServiceId(null)
+  const [playingKey, setPlayingKey] = useState<string | null>(null)
+  if (playingKey !== null && playingKey !== selectedKey) {
+    setPlayingKey(null)
   }
-  const isPlaying = playingServiceId !== null && playingServiceId === selectedServiceId
+  const isPlaying = playingKey !== null && playingKey === selectedKey
 
   // nowMs は「いま」を一定間隔で更新するティック。Date.now() を毎レンダー呼ぶだけでは
   // 再レンダーの理由にならず、番組が終わっても表示が切り替わらない。
@@ -123,7 +145,14 @@ export function LivePage() {
   const window_ = currentProgramWindow(nowMs)
   const nowPlayingQuery = useListPrograms(
     site,
-    { start: window_.start, end: window_.end, serviceId: selectedServiceId !== undefined ? [selectedServiceId] : undefined },
+    {
+      start: window_.start,
+      end: window_.end,
+      // `networkId` も渡す --- `serviceId` 単独では同じ id を持つ別 network の
+      // 番組も一致してしまう（issue #291 と同じ根）。
+      networkId: selectedService?.networkId,
+      serviceId: selectedServiceId !== undefined ? [selectedServiceId] : undefined,
+    },
     { query: { enabled: selectedServiceId !== undefined } },
   )
   const nowPlaying = useMemo(() => {
@@ -138,14 +167,32 @@ export function LivePage() {
   // 突き合わせる必要がある。`serviceId` に同じ種別のサービスだけを渡すことで、
   // サーバー側に絞り込みを任せる（クライアントで全番組を持って channelType を
   // 引き直すより軽い）。
-  const sameTypeServiceIds = useMemo(
+  const sameTypeServices = useMemo(
     () =>
       selectedService === undefined
         ? []
-        : orderedServices
-            .filter((s) => s.channelType === selectedService.channelType)
-            .map((s) => s.serviceId),
+        : orderedServices.filter((s) => s.channelType === selectedService.channelType),
     [orderedServices, selectedService],
+  )
+  // 重複を潰す --- 同じ種別の中で 2 network が同じ `serviceId` を持つ構成では
+  // `?serviceId=100&serviceId=100` になる。サーバーは IN なので応答は変わらないが、
+  // react-query のキーが一覧の並びで揺れるのを避ける
+  const sameTypeServiceIds = useMemo(
+    () => [...new Set(sameTypeServices.map((s) => s.serviceId))],
+    [sameTypeServices],
+  )
+  // **クエリは `networkId` を持たない**（`serviceId` の配列だけをサーバーに渡す
+  // ---複数 network の同じ種別のサービスを一度に問い合わせるので単一の
+  // `networkId` では表現できない）。そのため `serviceId` が network をまたいで
+  // 衝突すると（issue #291 と同じ根）、意図しない network の番組も応答に混入する
+  // ---サーバーは `serviceId` だけを AND するため、選択中と別 network・別
+  // channelType のサービスがたまたま同じ `serviceId` を持てば、その番組が
+  // `sameTypeProgramIds` に入り込み、存在しない中断警告を出しうる。
+  // `liveServiceKey`（`networkId` + `serviceId` の組）で応答側を絞り込むことで
+  // 閉じる。
+  const sameTypeKeys = useMemo(
+    () => new Set(sameTypeServices.map((s) => liveServiceKey(s.networkId, s.serviceId))),
+    [sameTypeServices],
   )
   // 窓は 10 分グリッドに丸める（`interruptionQueryWindow` 参照）。**丸めずに
   // `nowMs` から素直に組むと、`nowPlayingRefetchMs`（30 秒）ごとの tick で
@@ -161,8 +208,13 @@ export function LivePage() {
     { query: { enabled: sameTypeServiceIds.length > 0 } },
   )
   const sameTypeProgramIds = useMemo(
-    () => new Set((unwrap(sameTypeProgramsQuery.data) ?? []).map((p) => p.programId)),
-    [sameTypeProgramsQuery.data],
+    () =>
+      new Set(
+        (unwrap(sameTypeProgramsQuery.data) ?? [])
+          .filter((p) => sameTypeKeys.has(liveServiceKey(p.networkId, p.serviceId)))
+          .map((p) => p.programId),
+      ),
+    [sameTypeProgramsQuery.data, sameTypeKeys],
   )
   // 予約一覧は絞り込みパラメータを持たない（`GET /api/reservations` は全サイトを
   // 返す。docs/api.md）。SSE の `reservations` トピックは既にこのクエリキーの
@@ -207,7 +259,7 @@ export function LivePage() {
       ) : orderedServices.length === 0 ? (
         <EmptyState>チャンネルがありません</EmptyState>
       ) : selectedService === undefined ? (
-        // pickInitialServiceId はサービスが 1 件以上あれば必ず何かを返すので
+        // pickInitialService はサービスが 1 件以上あれば必ず何かを返すので
         // ここには来ないはずだが、型上 undefined を許すため防御的に置く
         <EmptyState>チャンネルを選んでください</EmptyState>
       ) : (
@@ -222,7 +274,9 @@ export function LivePage() {
             ) : (
               <LiveSelectionPreview
                 serviceName={selectedService.name}
-                onPlay={() => setPlayingServiceId(selectedService.serviceId)}
+                onPlay={() =>
+                  setPlayingKey(liveServiceKey(selectedService.networkId, selectedService.serviceId))
+                }
               />
             )}
             <div>
@@ -281,12 +335,25 @@ export function LivePage() {
                             ようにするため。 */}
                         <Link
                           to="/live"
-                          search={{ serviceId: s.serviceId }}
+                          search={{ networkId: s.networkId, serviceId: s.serviceId }}
                           replace
-                          aria-current={s.serviceId === selectedServiceId ? 'page' : undefined}
+                          // ハイライト・aria-current の同定も `networkId` +
+                          // `serviceId` の組で行う --- `serviceId` 単独では、同じ
+                          // `serviceId` を持つ別 network のサービスにも付いてしまう
+                          // （issue #291。同じ `serviceId` を 2 network が持つ
+                          // 構成では 2 行に aria-current が付く ---
+                          // `pages/live.test.tsx`「networkId + serviceId を
+                          // 指定すると、その network のチャンネルだけが選ばれる」
+                          // で固定した。実運用の EPG で衝突が起きているかは未検証）。
+                          aria-current={
+                            liveServiceKey(s.networkId, s.serviceId) === selectedKey
+                              ? 'page'
+                              : undefined
+                          }
                           className={cn(
                             'flex min-h-11 w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm transition-colors hover:bg-muted',
-                            s.serviceId === selectedServiceId && 'bg-muted font-medium',
+                            liveServiceKey(s.networkId, s.serviceId) === selectedKey &&
+                              'bg-muted font-medium',
                           )}
                         >
                           {s.channelType === 'GR' && s.remoteControlKeyId > 0 && (
@@ -316,7 +383,7 @@ export function LivePage() {
  * 瞬間のレイアウトシフトを避ける。probe もセッションもここでは起こさない ---
  * 「再生」ボタンを押した後に呼び出し側が `LivePlayer` をマウントするまで、
  * ネットワーク要求は一切発生しない（チャンネル切り替えの中間コミットも含む。
- * `playingServiceId` の判定をレンダー中に落とす必要があった理由も同じ ---
+ * `playingKey` の判定をレンダー中に落とす必要があった理由も同じ ---
  * `LivePage` のコメント参照）。`pages/live.test.tsx`「再生中に別チャンネルへ
  * 切り替えると選択状態に戻る（同意はチャンネルごとに必要）」の
  * `playlistFetchCallCount()` の assertion と `web/e2e/live.mjs` ⓪' で実測済み。
