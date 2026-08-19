@@ -7,12 +7,13 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
 
-// listenLocal は各テスト用に新しい TCP リスナーを 1 本立てて、そのアドレス
-// 文字列を返す。
+// listenLocal は各テスト用にループバック上のポート未指定で新しい TCP リスナーを
+// 1 本立てて返す。アドレスは呼び出し側が l.Addr().String() で取る。
 func listenLocal(t *testing.T) net.Listener {
 	t.Helper()
 	l, err := net.Listen("tcp", "127.0.0.1:0")
@@ -20,6 +21,90 @@ func listenLocal(t *testing.T) net.Listener {
 		t.Fatalf("net.Listen: %v", err)
 	}
 	return l
+}
+
+// TestNewProductionHTTPServer_UsesReviewedTimeouts は、本番の入口
+// newProductionHTTPServer が返す *http.Server に載るタイムアウトを固定する。
+//
+// 期待値は httpReadHeaderTimeout / httpIdleTimeout ではなくリテラルで書く
+// （CLAUDE.md「実装の定数と比較するテストは何も主張していない」）。これで
+// 定数の値の劣化と、newProductionHTTPServer 内で 2 つの定数を入れ替える変異の
+// 両方が落ちる。
+func TestNewProductionHTTPServer_UsesReviewedTimeouts(t *testing.T) {
+	srv := newProductionHTTPServer("127.0.0.1:0", http.NotFoundHandler())
+
+	if srv.ReadHeaderTimeout != 10*time.Second {
+		t.Errorf("ReadHeaderTimeout = %v, want 10s", srv.ReadHeaderTimeout)
+	}
+	if srv.IdleTimeout != 120*time.Second {
+		t.Errorf("IdleTimeout = %v, want 2m", srv.IdleTimeout)
+	}
+	// WriteTimeout を設定しない判断（SSE / HLS を切らない）も本番の入口で固定する。
+	// 動作側の裏付けは TestNewHTTPServer_LongRunningHandlerNotCutByIdleTimeout。
+	if srv.WriteTimeout != 0 {
+		t.Errorf("WriteTimeout = %v, want 0（SSE・HLS の長寿命レスポンスを切らないため設定しない）", srv.WriteTimeout)
+	}
+}
+
+// TestServerSlowHeaderConnectionIsClosed は、`rokuban server --roles api` を実
+// プロセスと同じ経路で起動し、その listen ソケットに slow-header の生 TCP
+// プローブを当てて、本番の配線が ReadHeaderTimeout を実際に持っていることを
+// 確認する。
+//
+// **newProductionHTTPServer を直接呼ぶのではなく、newServerCmd の中にある
+// 「srv := newProductionHTTPServer(cfg.Server.Listen, ...)」の 1 行の上を通すのが
+// 要点。** newHTTPServer を直接呼ぶ 3 本のユニットテストはこの行を通らないので、
+// この行が生の &http.Server{} に戻る変異を検出できない（allowed_hosts_test.go の
+// startServerForAllowedHosts の doc コメントにある #209 / #216 と同型 —— 配線 1 行
+// が CI 全緑のまま壊れる）。
+//
+// 上限は「本番の 10 秒より十分大きく、劣化・入れ替えより十分小さい」20 秒に取る。
+// 正確な値は TestNewProductionHTTPServer_UsesReviewedTimeouts が固定するので、
+// ここは配線が生きていることだけを見る。
+func TestServerSlowHeaderConnectionIsClosed(t *testing.T) {
+	// この harness は allowed_hosts のテストと同じもの（実プロセス起動の経路が
+	// 1 本しかないので使い回す）。allowed_hosts の設定はこのテストの経路には
+	// 影響しない —— ヘッダーを送り切らないので Host の検証まで到達しない。
+	base := startServerForAllowedHosts(t, "")
+
+	addr := strings.TrimPrefix(base, "http://")
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("net.Dial(%s): %v", addr, err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	if _, err := conn.Write([]byte("GET /api/version HTTP/1.1\r\nHost: rokuban.local\r\n")); err != nil {
+		t.Fatalf("writing partial request: %v", err)
+	}
+
+	const waitDeadline = 20 * time.Second
+	if err := conn.SetReadDeadline(time.Now().Add(waitDeadline)); err != nil {
+		t.Fatalf("SetReadDeadline: %v", err)
+	}
+
+	buf := make([]byte, 1)
+	start := time.Now()
+	_, readErr := conn.Read(buf)
+	elapsed := time.Since(start)
+
+	if readErr == nil {
+		t.Fatalf("expected the server to close the slow-header connection, got a successful read after %v", elapsed)
+	}
+	var netErr net.Error
+	if errors.As(readErr, &netErr) && netErr.Timeout() {
+		t.Fatalf("the real server did not close the slow-header connection within %v: %v "+
+			"(cmd/rokuban/server.go の srv := newProductionHTTPServer(...) の行が ReadHeaderTimeout を"+
+			"載せていないか、10 秒より大きい値になっている)", waitDeadline, readErr)
+	}
+
+	// 本番の ReadHeaderTimeout は 10 秒なので、数秒で切られるのは「別の理由で
+	// 落ちた」か「値が劇的に縮んだ」のどちらか。どちらもこのテストの主張が
+	// 空虚になるので落とす。
+	if elapsed < 5*time.Second {
+		t.Fatalf("connection closed after only %v; expected it to be held open for close to the production "+
+			"ReadHeaderTimeout (10s) before being cut (read error: %v)", elapsed, readErr)
+	}
 }
 
 // TestNewHTTPServer_SlowHeaderConnectionIsClosed は、リクエストヘッダーを送り
