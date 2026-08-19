@@ -606,18 +606,74 @@ func insertTestRecording(t *testing.T, pool *pgxpool.Pool) int64 {
 // テストが黙って空虚な PASS になる）。
 const noProgramRecordSyncProgramID = 327361024000001
 
-// recordingBroadcastEventKey は recordings 行の放送イベントキー
-// (network_id, service_id, event_id) を返す。insertTestRecordSync /
-// insertTestRecordSyncForSite が record_sync.program_id と recordings の
-// 対応を検査するのに使う。
-func recordingBroadcastEventKey(t *testing.T, pool *pgxpool.Pool, recordingID int64) (networkID, serviceID, eventID int32) {
+// recordingBroadcastEventKey は recordings 行の site と放送イベントキー
+// (network_id, service_id, event_id) を返す。
+// assertRecordSyncProgramMatchesRecording が record_sync.program_id と
+// recordings の対応を検査するのに使う。site も返すのは、検査側が
+// program_snapshots を引く site を固定値で書かないため（録画が
+// insertTestRecordingForSite で "tokyo" などに作られていると、'default' 固定の
+// 検査はその録画の番組を見落とす）。
+func recordingBroadcastEventKey(t *testing.T, pool *pgxpool.Pool, recordingID int64) (site string, networkID, serviceID, eventID int32) {
 	t.Helper()
 	if err := pool.QueryRow(context.Background(),
-		"SELECT network_id, service_id, event_id FROM recordings WHERE id = $1", recordingID,
-	).Scan(&networkID, &serviceID, &eventID); err != nil {
+		"SELECT site, network_id, service_id, event_id FROM recordings WHERE id = $1", recordingID,
+	).Scan(&site, &networkID, &serviceID, &eventID); err != nil {
 		t.Fatalf("querying recording broadcast event key (recording_id=%d): %v", recordingID, err)
 	}
-	return networkID, serviceID, eventID
+	return site, networkID, serviceID, eventID
+}
+
+// assertRecordSyncProgramMatchesRecording は「record_sync.program_id は
+// recordingID の録画が対象にしている番組を指している」という record_sync
+// フィクスチャの不変条件を**両方向**で検査する。helperName はエラーメッセージに
+// 出す呼び出し元ヘルパ名。
+//
+// 検査する 2 方向:
+//   - (site, programID) が program_snapshots に解決する場合、その放送イベント
+//     キーが recordings 行と一致すること（別の番組を指していないこと）
+//   - 解決しない場合、録画側の放送イベントにも program_snapshots が無いこと
+//     （テストが番組を scope に持っているのに record_sync がどの番組も
+//     指していない = issue #285 が報告した状態そのもの）
+//
+// どちらの方向も欠かすと、record_sync.program_id を読む実装のテストが黙って
+// 空虚な PASS になる。落ちることの確認は、いずれかの呼び出しを
+// insertTestRecordSync に差し戻す / 古い programID を渡す変異で行う。
+func assertRecordSyncProgramMatchesRecording(t *testing.T, pool *pgxpool.Pool, helperName, site string, recordingID, programID int64) {
+	t.Helper()
+	recSite, recNetworkID, recServiceID, recEventID := recordingBroadcastEventKey(t, pool, recordingID)
+
+	var snapNetworkID, snapServiceID, snapEventID int32
+	err := pool.QueryRow(context.Background(),
+		"SELECT network_id, service_id, event_id FROM program_snapshots WHERE site = $1 AND program_id = $2",
+		site, programID,
+	).Scan(&snapNetworkID, &snapServiceID, &snapEventID)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		var hasSnapshot bool
+		if err := pool.QueryRow(context.Background(),
+			`SELECT EXISTS(
+				SELECT 1 FROM program_snapshots
+				WHERE site = $1 AND network_id = $2 AND service_id = $3 AND event_id = $4
+			)`, recSite, recNetworkID, recServiceID, recEventID,
+		).Scan(&hasSnapshot); err != nil {
+			t.Fatalf("checking program_snapshots for recording %d's broadcast event: %v", recordingID, err)
+		}
+		if hasSnapshot {
+			t.Fatalf("%s: programID %d (site=%s) does not resolve to any program_snapshots row, but recording %d "+
+				"has a program_snapshots row for its broadcast event (site=%s, network_id=%d, service_id=%d, event_id=%d); "+
+				"this test has a program in scope, pass that program's programID to insertTestRecordSyncForSite",
+				helperName, programID, site, recordingID, recSite, recNetworkID, recServiceID, recEventID)
+		}
+	case err != nil:
+		t.Fatalf("querying program_snapshots (site=%s, program_id=%d): %v", site, programID, err)
+	default:
+		if recNetworkID != snapNetworkID || recServiceID != snapServiceID || recEventID != snapEventID {
+			t.Fatalf("%s: programID %d (site=%s) resolves to program_snapshots broadcast event (%d,%d,%d), "+
+				"but recording %d has (%d,%d,%d) -- record_sync would point at the wrong program",
+				helperName, programID, site, snapNetworkID, snapServiceID, snapEventID,
+				recordingID, recNetworkID, recServiceID, recEventID)
+		}
+	}
 }
 
 // insertTestRecordSync は番組と対応しない record_sync 行を 1 件作る
@@ -639,22 +695,7 @@ func insertTestRecordSync(t *testing.T, pool *pgxpool.Pool, recordingID int64, r
 		t.Fatalf("inserting test record_sync: %v", err)
 	}
 
-	networkID, serviceID, eventID := recordingBroadcastEventKey(t, pool, recordingID)
-	var hasSnapshot bool
-	if err := pool.QueryRow(context.Background(),
-		`SELECT EXISTS(
-			SELECT 1 FROM program_snapshots
-			WHERE site = 'default' AND network_id = $1 AND service_id = $2 AND event_id = $3
-		)`, networkID, serviceID, eventID,
-	).Scan(&hasSnapshot); err != nil {
-		t.Fatalf("checking program_snapshots for recording %d's broadcast event: %v", recordingID, err)
-	}
-	if hasSnapshot {
-		t.Fatalf("insertTestRecordSync: recording %d has a program_snapshots row for its broadcast event "+
-			"(network_id=%d, service_id=%d, event_id=%d); this test has a program in scope, use "+
-			"insertTestRecordSyncForSite with that programID instead of insertTestRecordSync",
-			recordingID, networkID, serviceID, eventID)
-	}
+	assertRecordSyncProgramMatchesRecording(t, pool, "insertTestRecordSync", "default", recordingID, noProgramRecordSyncProgramID)
 }
 
 // insertTestRecordingForSite は insertTestRecording の site 指定版。
@@ -693,11 +734,12 @@ func insertTestRecordingForSite(t *testing.T, pool *pgxpool.Pool, site string, e
 }
 
 // insertTestRecordSyncForSite は insertTestRecordSync の site / programID 指定版
-// （insertTestRecordingForSite と対で使う）。programID が (site, program_id) で
-// 実在する program_snapshots 行を指している場合、その行の放送イベントキーが
-// recordingID の recordings 行と一致することを検査する。programID が
-// insertTestRecordingForSite など番組を持たないテストの独自の数値
-// （実在する program_snapshots を指さない）なら検査はスキップされる。
+// （insertTestRecordingForSite と対で使う）。programID と recordingID の対応は
+// assertRecordSyncProgramMatchesRecording が両方向で検査する ——
+// programID が実在する program_snapshots 行を指しているならその放送イベントキーが
+// recordings 行と一致すること、指していないなら録画側の放送イベントにも
+// program_snapshots が無いこと（番組を持たないテストが独自の数値を渡す場合は
+// 後者で通る）。
 func insertTestRecordSyncForSite(t *testing.T, pool *pgxpool.Pool, site string, recordingID int64, recordID string, programID int64) {
 	t.Helper()
 	q := sqlcgen.New(pool)
@@ -712,24 +754,7 @@ func insertTestRecordSyncForSite(t *testing.T, pool *pgxpool.Pool, site string, 
 		t.Fatalf("inserting test record_sync (site=%s): %v", site, err)
 	}
 
-	var snapNetworkID, snapServiceID, snapEventID int32
-	err := pool.QueryRow(context.Background(),
-		"SELECT network_id, service_id, event_id FROM program_snapshots WHERE site = $1 AND program_id = $2",
-		site, programID,
-	).Scan(&snapNetworkID, &snapServiceID, &snapEventID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return
-	}
-	if err != nil {
-		t.Fatalf("querying program_snapshots (site=%s, program_id=%d): %v", site, programID, err)
-	}
-
-	recNetworkID, recServiceID, recEventID := recordingBroadcastEventKey(t, pool, recordingID)
-	if recNetworkID != snapNetworkID || recServiceID != snapServiceID || recEventID != snapEventID {
-		t.Fatalf("insertTestRecordSyncForSite: programID %d (site=%s) resolves to program_snapshots broadcast "+
-			"event (%d,%d,%d), but recording %d has (%d,%d,%d) -- record_sync would point at the wrong program",
-			programID, site, snapNetworkID, snapServiceID, snapEventID, recordingID, recNetworkID, recServiceID, recEventID)
-	}
+	assertRecordSyncProgramMatchesRecording(t, pool, "insertTestRecordSyncForSite", site, recordingID, programID)
 }
 
 func TestIngestWorker_JobReexecution(t *testing.T) {
