@@ -276,6 +276,24 @@ func (h *Server) validateEncodeProfiles(names []string) error {
 	return nil
 }
 
+// validateRuleSites は sites の各要素が site レジストリ（config.mirakc/mirakcs、
+// h.sites）に存在することを検査する（issue #315）。api は不変条件 1 によりどの site
+// にも束縛されないので、権威は h.knownSite が参照するレジストリ全件であり、mirakc への
+// 問い合わせも FS 依存もしない。空文字列は「未指定 = 全サイト」の個別要素ではなく、
+// replaceRuleChildren が挿入時に無視する既存の規約に合わせてここでもスキップする
+// （FK を張らない代わりの書き込み時照合であり、CHECK ではなく 400 で拒否する）。
+func (h *Server) validateRuleSites(sitesIn []string) error {
+	for _, site := range sitesIn {
+		if site == "" {
+			continue
+		}
+		if !h.knownSite(site) {
+			return fmt.Errorf("unknown site %q", site)
+		}
+	}
+	return nil
+}
+
 // validateRuleInput はルール create/update の入力を検査する。
 // encodeProfiles の存在検証は h.encodeProfiles（config から注入）を使う。
 // 集合が nil のときは名前検証をスキップする（テストの部分構成）。
@@ -330,6 +348,11 @@ func (h *Server) validateRuleInput(ctx context.Context, in RuleInput) error {
 					return fmt.Errorf("invalid regex %q (POSIX ARE; lookbehind is not supported): %w", m.Value, err)
 				}
 			}
+		}
+	}
+	if in.Sites != nil {
+		if err := h.validateRuleSites(*in.Sites); err != nil {
+			return err
 		}
 	}
 	if in.FilenameTemplate != nil && *in.FilenameTemplate != "" {

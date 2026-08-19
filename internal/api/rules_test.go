@@ -306,6 +306,104 @@ func TestCreateRule_UnknownEncodeProfile(t *testing.T) {
 	}
 }
 
+// rule_sites に未知の site 名（タイポ含む）があると create/update が 400 になり、
+// レジストリにある site 名と rule_sites 空（全サイト）は従来どおり通ることを確認する
+// （issue #315。書き込み時のレジストリ照合が無いと、タイポがログを読まないと原因に
+// 辿り着けない「意図したサイトで録られない」に化ける）。
+func TestRuleSites_UnknownSiteRejected(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	router := NewRouter(RouterConfig{
+		Pool:  pool,
+		Sites: []string{"tokyo", "osaka"},
+	})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	// 未知の site 名 → 400（保存されない）
+	badBody := map[string]any{
+		"name":  "typo-site",
+		"sites": []string{"tokyo", "toukyou"},
+	}
+	raw, _ := json.Marshal(badBody)
+	resp, err := http.Post(srv.URL+"/api/rules", "application/json", bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unknown site status = %d, want 400", resp.StatusCode)
+	}
+	var errBody ErrorResponse
+	if err := json.NewDecoder(resp.Body).Decode(&errBody); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(errBody.Error, "unknown site") {
+		t.Errorf("error body = %q, want mention of unknown site", errBody.Error)
+	}
+
+	// 未知 site を含むルールが保存されていないことを確認する（一覧が空のまま）。
+	listResp, err := http.Get(srv.URL + "/api/rules")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = listResp.Body.Close() }()
+	var list []Rule
+	if err := json.NewDecoder(listResp.Body).Decode(&list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 0 {
+		t.Fatalf("rules were persisted despite unknown site: %+v", list)
+	}
+
+	// レジストリにある site 名 → 201
+	goodBody := map[string]any{
+		"name":  "known-sites",
+		"sites": []string{"tokyo", "osaka"},
+	}
+	raw, _ = json.Marshal(goodBody)
+	resp, err = http.Post(srv.URL+"/api/rules", "application/json", bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("known sites status = %d, want 201", resp.StatusCode)
+	}
+	var created Rule
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+
+	// rule_sites 空（未指定 = 全サイト）→ 201
+	allSitesBody := map[string]any{"name": "all-sites"}
+	raw, _ = json.Marshal(allSitesBody)
+	resp, err = http.Post(srv.URL+"/api/rules", "application/json", bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("omitted sites status = %d, want 201", resp.StatusCode)
+	}
+
+	// update でも同じ照合が効く → 未知 site で 400、既存の rule_sites は変わらない。
+	updateBody := map[string]any{
+		"name":  "known-sites",
+		"sites": []string{"toukyou"},
+	}
+	raw, _ = json.Marshal(updateBody)
+	req, _ := http.NewRequest(http.MethodPatch, srv.URL+"/api/rules/"+itoa(created.Id), bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("update with unknown site status = %d, want 400", resp.StatusCode)
+	}
+}
+
 func itoa(n int64) string {
 	if n == 0 {
 		return "0"

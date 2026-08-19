@@ -1199,7 +1199,7 @@ type Rule struct {
 	Priority      int                     `json:"priority"`
 	Services      *[]RuleService          `json:"services,omitempty"`
 
-	// Sites 空または省略 = 全サイト
+	// Sites 空または省略 = 全サイト。指定する各要素は GET /api/sites が返す既知の site 名でなければならず、レジストリに無い名前（タイポ含む）は 400 になる。
 	Sites       *[]string         `json:"sites,omitempty"`
 	TextMatches *[]RuleTextMatch  `json:"textMatches,omitempty"`
 	Times       *[]RuleTimeWindow `json:"times,omitempty"`
@@ -1248,7 +1248,7 @@ type RuleInput struct {
 	Priority      *int                    `json:"priority,omitempty"`
 	Services      *[]RuleService          `json:"services,omitempty"`
 
-	// Sites 空または省略 = 全サイト
+	// Sites 空または省略 = 全サイト。指定する各要素は GET /api/sites が返す既知の site 名でなければならず、レジストリに無い名前（タイポ含む）は 400 になる。
 	Sites       *[]string         `json:"sites,omitempty"`
 	TextMatches *[]RuleTextMatch  `json:"textMatches,omitempty"`
 	Times       *[]RuleTimeWindow `json:"times,omitempty"`

@@ -120,7 +120,7 @@ CREATE TABLE rule_sites (
 ```
 
 - **`rule_sites` 未指定 = 全サイト。** 実体化はマッチした全サイトで N 予約（複数録画 → ドロップ統計で選別する運用を一級とする。[録画エンジン](../recording.md) §3.1「サイトの扱い」）。サイト名は安定識別子でリネームは運用作業
-- **`rule_sites.site` に FK は張らない。** サイトのレジストリは設定ファイルにあり（§1「サイトスコープ」）、外部に真実があるものは存在を制約できない。**書き込み時のレジストリ照合も現状は無い**: 未知の site 名（タイポ含む）はそのまま保存され、黙ってどのサイトにも一致しない条件になる（`validateRuleInput` は site を検査せず、挿入は空文字列を捨てるだけ）
+- **`rule_sites.site` に FK は張らない。** サイトのレジストリは設定ファイルにあり（§1「サイトスコープ」）、外部に真実があるものは存在を制約できない。**書き込み時のレジストリ照合は `validateRuleInput`（`internal/api/rules.go`）が担う**: 各 site 名をそのプロセスが読んでいる `config.mirakc` / `mirakcs` レジストリ（`GET /api/sites` と同じ一覧）に照合し、未知（タイポ含む）なら 400 で拒否する。空文字列は「未指定 = 全サイト」の個別要素ではなく、挿入時に無視される（従来どおり）。レジストリから site が消えたあとに残る既存行はこの照合の対象外
 
 - **`reservations.rule_id` が持つのは勝者ルールのみ。** 負けたルールは記録しない ---
   `DeleteReservationsByRuleWithoutIntent` / `CountReservationsByRuleWithIntent`

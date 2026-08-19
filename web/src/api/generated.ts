@@ -692,7 +692,7 @@ export interface RuleInput {
      */
   genres?: number[];
   times?: RuleTimeWindow[];
-  /** 空または省略 = 全サイト */
+  /** 空または省略 = 全サイト。指定する各要素は GET /api/sites が返す既知の site 名でなければならず、レジストリに無い名前（タイポ含む）は 400 になる。 */
   sites?: string[];
   dedupeEnabled?: boolean;
   /**
