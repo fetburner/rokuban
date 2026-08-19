@@ -50,6 +50,15 @@ const (
 	// ないため長さを揃える必要はなく、通知の遅れを抑える短めの値にしている。
 	defaultMissingAssetAge = 24 * time.Hour
 
+	// missingAssetLogBudget は 1 パスで reportAgedMissingAssets が Warn ログを
+	// 個別に出す件数の上限。件数（rokuban_media_assets_missing）は既にメトリクス
+	// が持っているので、ログの役目は同定（media_asset_id / rel_path）だけ ---
+	// エイジング済み候補が defaultDeleteReconcileInterval（既定 15 分）ごとに
+	// 無制限に再送されると、劣化したマウントを長時間放置したケースで 1 日
+	// 数十万行の Warn が出続ける（孤児側の deleteReconcileNotifyBudget と同様、
+	// 予算超過分は「and N more」の 1 行にまとめる）。
+	missingAssetLogBudget = 20
+
 	// deleteReconcileRowLimit はソースごとに 1 パスで拾う行数の上限。
 	// 際限なく積み上げてタイムアウトするのを避けるための安全弁で、
 	// サーキットブレーカーの閾値（既定 100）より十分大きく取る。
@@ -261,11 +270,21 @@ func (w *DeleteReconcileWorker) Work(ctx context.Context, _ *river.Job[DeleteRec
 	if err != nil {
 		return fmt.Errorf("reconciling orphan candidates: %w", err)
 	}
-	if err := w.reconcileMissingAssets(ctx, q, seenOnDisk); err != nil {
+	missingAssetsSuspected, err := w.reconcileMissingAssets(ctx, q, seenOnDisk)
+	if err != nil {
 		return fmt.Errorf("reconciling missing assets: %w", err)
 	}
-	if err := w.reportAgedMissingAssets(ctx, q, missingAssetAge); err != nil {
-		return fmt.Errorf("reporting aged missing assets: %w", err)
+	// 疑わしいパス（全損シグネチャ）では記録そのものを見送っているので、
+	// 報告（Warn ログ・rokuban_media_assets_missing）も合わせて止める。
+	// ここで無条件に呼ぶと、reconcileMissingAssets が今パスの記録を止めた
+	// 一方で reportAgedMissingAssets が「前回までに確認済みだった候補」を
+	// 毎パス出し続けてしまい、metrics.go / docs/operations/monitoring.md が
+	// 約束する「凍結する」が実装のどこにも実在しない記述になる
+	// （疑わしい間はゲージを含む報告そのものを止める、という設計判断）。
+	if !missingAssetsSuspected {
+		if err := w.reportAgedMissingAssets(ctx, q, missingAssetAge); err != nil {
+			return fmt.Errorf("reporting aged missing assets: %w", err)
+		}
 	}
 
 	trashRows, err := q.ListTrashMediaAssetsToDelete(ctx, sqlcgen.ListTrashMediaAssetsToDeleteParams{
@@ -594,6 +613,13 @@ func (w *DeleteReconcileWorker) reconcileOrphanCandidates(ctx context.Context, q
 // 行を missing_media_assets に記録する（issue #343、孤児回収の逆方向）。
 // ファイルを消さず、media_assets も一切書き換えない（記録のみ）。
 //
+// reconcileOrphanCandidates は走査より前に ListAllMediaAssetRelPaths を読むが、
+// ここでの ListActiveMediaAssets は走査より後に読む（呼び出し順序どおり）。
+// そのため走査の途中でコミットされた資産は、この 1 パスでは一時的に
+// 「実体無し」の偽候補になりうる —— この窓も MissingAssetAge のエイジングが
+// 埋める（次パスでファイルが観測されれば候補は掃除され、確認済みとして
+// 報告される前に消える）。
+//
 // マウントが落ちている・空マウントのときに全 active 行を「実体無し」と
 // 報告して騒がないよう、seenOnDisk が空（この走査で 1 件もファイルを
 // 観測できなかった）のに active な行が存在するケースを形で検知して丸ごと
@@ -602,19 +628,26 @@ func (w *DeleteReconcileWorker) reconcileOrphanCandidates(ctx context.Context, q
 // ブレーカーではなく単なる観測の記録なので、ラッチは持たず今パスの記録を
 // 見送るだけでよい）。既存の missing_media_assets 行にも一切触れない ---
 // 前回までの確認済み状態をこの疑わしいパスの結果で上書きしないため。
-func (w *DeleteReconcileWorker) reconcileMissingAssets(ctx context.Context, q *sqlcgen.Queries, seenOnDisk map[string]struct{}) error {
+//
+// 戻り値の bool は今パスが疑わしいパス（全損シグネチャ発動）だったかを
+// 呼び出し元（Work）に伝える。呼び出し元はこれを見て reportAgedMissingAssets
+// の呼び出し自体を止める --- 記録を見送りながら報告（Warn ログ・
+// rokuban_media_assets_missing ゲージ）だけ続けると、metrics.go /
+// docs/operations/monitoring.md が約束する「疑わしい間はゲージが凍結する」が
+// 実装のどこにも存在しない記述になる。
+func (w *DeleteReconcileWorker) reconcileMissingAssets(ctx context.Context, q *sqlcgen.Queries, seenOnDisk map[string]struct{}) (bool, error) {
 	active, err := q.ListActiveMediaAssets(ctx)
 	if err != nil {
-		return fmt.Errorf("listing active media assets: %w", err)
+		return false, fmt.Errorf("listing active media assets: %w", err)
 	}
 	if len(active) == 0 {
-		return nil
+		return false, nil
 	}
 	if len(seenOnDisk) == 0 {
 		slog.Warn("delete_reconcile: filesystem walk observed zero files while active media_assets rows exist; suspecting a storage mount failure, skipping missing-asset check for this pass",
 			"active_assets", len(active))
 		metrics.MissingAssetScanSuspectedStorageFailure.Inc()
-		return nil
+		return true, nil
 	}
 
 	candidates := make(map[int64]struct{})
@@ -624,13 +657,13 @@ func (w *DeleteReconcileWorker) reconcileMissingAssets(ctx context.Context, q *s
 		}
 		candidates[a.ID] = struct{}{}
 		if err := q.UpsertMissingMediaAsset(ctx, a.ID); err != nil {
-			return fmt.Errorf("recording missing-asset candidate %d: %w", a.ID, err)
+			return false, fmt.Errorf("recording missing-asset candidate %d: %w", a.ID, err)
 		}
 	}
 
 	existingIDs, err := q.ListAllMissingMediaAssetIDs(ctx)
 	if err != nil {
-		return fmt.Errorf("listing missing-asset candidates: %w", err)
+		return false, fmt.Errorf("listing missing-asset candidates: %w", err)
 	}
 	for _, id := range existingIDs {
 		if _, stillCandidate := candidates[id]; stillCandidate {
@@ -639,10 +672,10 @@ func (w *DeleteReconcileWorker) reconcileMissingAssets(ctx context.Context, q *s
 		// もう実体無し候補でない（ファイルが見つかった、またはこの資産自体が
 		// もう active でなくなった等）。掃除する。
 		if err := q.DeleteMissingMediaAsset(ctx, id); err != nil {
-			return fmt.Errorf("clearing stale missing-asset record %d: %w", id, err)
+			return false, fmt.Errorf("clearing stale missing-asset record %d: %w", id, err)
 		}
 	}
-	return nil
+	return false, nil
 }
 
 // reportAgedMissingAssets は missing_media_assets のうち first_seen が age を
@@ -651,6 +684,11 @@ func (w *DeleteReconcileWorker) reconcileMissingAssets(ctx context.Context, q *s
 // missing_media_assets のどちらも書き換えない --- 自動削除は行わない
 // （「ファイルが無い」は削除の必要条件であって十分条件ではない。
 // docs/storage/retention.md §7「孤児回収の逆」）。
+//
+// 個別 Warn ログは missingAssetLogBudget 件で打ち切り、超過分は「and N more」
+// の 1 行にまとめる --- 対象が解消するまで defaultDeleteReconcileInterval
+// ごとに同じ全件が再送され続けるため（件数自体は Reset 後の
+// MediaAssetsMissing ゲージが持つので、ログは同定だけを担えばよい）。
 func (w *DeleteReconcileWorker) reportAgedMissingAssets(ctx context.Context, q *sqlcgen.Queries, age time.Duration) error {
 	aged, err := q.ListAgedMissingMediaAssets(ctx, time.Now().Add(-age))
 	if err != nil {
@@ -658,11 +696,17 @@ func (w *DeleteReconcileWorker) reportAgedMissingAssets(ctx context.Context, q *
 	}
 
 	counts := make(map[string]int, 3)
-	for _, a := range aged {
+	for i, a := range aged {
 		counts[a.Kind]++
-		slog.Warn("delete_reconcile: active media asset has no file on disk",
-			"media_asset_id", a.ID, "recording_id", a.RecordingID, "rel_path", a.RelPath,
-			"kind", a.Kind, "first_seen", a.FirstSeen)
+		if i < missingAssetLogBudget {
+			slog.Warn("delete_reconcile: active media asset has no file on disk",
+				"media_asset_id", a.ID, "recording_id", a.RecordingID, "rel_path", a.RelPath,
+				"kind", a.Kind, "first_seen", a.FirstSeen)
+		}
+	}
+	if len(aged) > missingAssetLogBudget {
+		slog.Warn("delete_reconcile: suppressing further missing-asset log lines this pass",
+			"logged", missingAssetLogBudget, "and_more", len(aged)-missingAssetLogBudget)
 	}
 
 	// EncodeReconcileUnsatisfiable と同じパターン: Reset してから現在の

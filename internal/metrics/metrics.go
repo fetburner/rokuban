@@ -387,11 +387,13 @@ var (
 	// missing_media_assets の first_seen が MissingAssetAge を超えて連続して
 	// いること --- 単発の観測揺れでは増減しない。**ゼロは「大丈夫」の証明では
 	// ない** --- ファイルシステムの走査が 1 件もファイルを観測しなかったパス
-	// （マウント失敗・空マウントの疑い）はこの検出自体をスキップするため、
-	// その間はこのゲージが更新されず前回値のまま凍結する
-	// （下記 MissingAssetScanSuspectedStorageFailure と対で見る）。
-	// EncodeReconcileUnsatisfiable と同じパターンで、該当 0 件の kind は
-	// ラベルの系列自体が消える（0 を出さない）。
+	// （マウント失敗・空マウントの疑い）は DeleteReconcileWorker.Work がこの
+	// パスの報告呼び出し自体（reportAgedMissingAssets、このゲージの Reset を
+	// 含む）を丸ごとスキップするため、その間はこのゲージが更新されず前回値の
+	// まま凍結する（下記 MissingAssetScanSuspectedStorageFailure と対で見る。
+	// TestDeleteReconcileWorker_MissingAsset_SuspectedMountFailure_FreezesGauge
+	// で実測）。EncodeReconcileUnsatisfiable と同じパターンで、該当 0 件の
+	// kind はラベルの系列自体が消える（0 を出さない）。
 	MediaAssetsMissing = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "rokuban_media_assets_missing",
 		Help: "Active media_assets rows confirmed to have no file on disk, by kind. Not a deletion candidate list — file-missing is necessary but not sufficient for deletion.",
@@ -400,9 +402,11 @@ var (
 	// MissingAssetScanSuspectedStorageFailure は上記の検出パス自体が
 	// 「ファイルシステム走査が 1 件も観測しなかったのに active な
 	// media_assets が存在する」という形（全損シグネチャと同種、件数の閾値
-	// ではない）でスキップされた回数。**このカウンタが進んでいる間は
-	// MediaAssetsMissing は更新されない**ため、増加を検出したら実際の
-	// マウント状態を確認する。
+	// ではない）でスキップされた回数。**このカウンタが進んでいるパスでは
+	// MediaAssetsMissing の更新（reportAgedMissingAssets の呼び出し自体）が
+	// 止まる**ため、増加を検出したら実際のマウント状態を確認する
+	// （TestDeleteReconcileWorker_MissingAsset_SuspectedMountFailure_FreezesGauge
+	// で実測）。
 	MissingAssetScanSuspectedStorageFailure = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "rokuban_missing_asset_scan_suspected_storage_failure_total",
 		Help: "Times the missing-asset scan saw zero files on disk while active media_assets rows exist, and skipped reporting for that pass (suspected mount failure or empty mount).",
