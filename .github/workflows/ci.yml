@@ -90,14 +90,15 @@ jobs:
           cache-dependency-path: web/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
         working-directory: web
-      # sqlc は go.mod の依存に入れず、golangci-lint と同じくローカルバイナリ前提（CLAUDE.md）。
-      # CI では都度その版をインストールして GOPATH/bin を PATH に足す。
+      # sqlc / oapi-codegen は go.mod の依存に入れず、golangci-lint と同じくローカルバイナリ
+      # 前提（CLAUDE.md）。CI では都度その版をインストールして GOPATH/bin を PATH に足す。
       - run: go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1
+      - run: go install github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.8.0
       - run: echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       - run: sqlc generate
-      # oapi-codegen は tool ディレクティブで go.mod を汚さないよう go run @version で呼ぶ（CLAUDE.md）。
-      - run: go run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.8.0 --config=oapi-codegen.yaml ../../openapi.yaml
-        working-directory: internal/api
+      # internal/api/gen.go の //go:generate directive をそのまま踏む。ここで直接
+      # oapi-codegen を呼ぶと directive の増減・フラグ変更を検知できないまま緑になる。
+      - run: go generate ./internal/api/
       - run: pnpm exec orval
         working-directory: web
       # 新規ファイル（generated.ts のような単一ファイルでなく、sqlcgen 配下でクエリ追加により
@@ -105,7 +106,8 @@ jobs:
       - name: 再生成漏れがあれば失敗させる
         run: |
           git add -A -- internal/db/sqlcgen internal/api/openapi_gen.go web/src/api/generated.ts
-          git diff --cached --exit-code -- internal/db/sqlcgen internal/api/openapi_gen.go web/src/api/generated.ts
+          git diff --cached --exit-code -- internal/db/sqlcgen internal/api/openapi_gen.go web/src/api/generated.ts \
+            || { echo "::error::生成物が古い。sqlc generate / go generate ./internal/api/ / (cd web && pnpm exec orval) を実行してコミットしてください"; exit 1; }
 
   lint:
     runs-on: ubuntu-latest
