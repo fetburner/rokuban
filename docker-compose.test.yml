@@ -1,5 +1,6 @@
 # CI スモークテスト用。docker compose -f docker-compose.test.yml up --wait で
-# 全サービスの healthcheck が通れば成功。
+# 全サービスの healthcheck が通り、かつ catalog_export が media volume へ
+# 書けていれば成功（healthz はジョブが落ちても通るため後者を別に見る）。
 services:
   postgres:
     image: postgres:17

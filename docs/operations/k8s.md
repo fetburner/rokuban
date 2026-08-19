@@ -59,6 +59,11 @@ site 単位のキューを一切購読できない（`worker.RequiresSiteBinding
 中央プロセスであっても media_dir/scratch_dir のマウントに到達できるノードで
 動かす必要がある。
 
+未解決: PVC マウントの所有権。イメージは `/mnt/media` を実行ユーザー（uid/gid
+`65534`）所有で焼いてあるが、これが効くのは Docker の named volume の copy-up
+経由だけである。PVC には copy-up が無いので、`fsGroup` などで所有権を与えない
+限り `permission denied` になる（`securityContext` の推奨値は未決）。
+
 ### streamer のスケール
 
 **streamer は録画配信（VOD・サムネイル）とライブ視聴の両方を担うが、置き場所も

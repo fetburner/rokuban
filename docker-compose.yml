@@ -6,7 +6,8 @@
 #
 # 手順は docs/runbook.md を参照。
 #
-# CI のスモークテストは docker-compose.test.yml（mirakc なしで healthcheck だけ見る）。
+# CI のスモークテストは docker-compose.test.yml（mirakc なしで、healthcheck に
+# 加えて media volume への書き込み（catalog_export）まで見る）。
 
 services:
   postgres:
