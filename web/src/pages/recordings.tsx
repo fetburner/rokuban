@@ -370,8 +370,8 @@ function RecordingRow({
           <StatusBadge status={recording.status} />
           <IngestBadge recording={recording} />
           {showSite && (
-            // 文字色は text-foreground を明示（bg-muted 小バッジの合成後コントラスト
-            // 対策。docs/frontend/design.md「コントラストは毎回測る」）。
+            /* 文字色は text-foreground を明示（bg-muted 小バッジの合成後コントラスト
+               対策。docs/frontend/design.md「コントラストは毎回測る」）。 */
             <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[0.65rem] text-foreground">
               {recording.site}
             </span>

@@ -111,34 +111,55 @@ zinc はわずかに寒色（hue ≈ 286、chroma ≤ 0.016）で、これが「
 
 下限を割ると分かっていて直さないものは、`design.mjs` の `knownGaps` に**理由込みで**
 書く。合否には数えないが、実行するたびに「既知の不足」として出る。黙って下限を
-下げる形は取らない。いまそこに載っているのは 1 件:
+下げる形は取らない。いまそこに載っているのは 2 件:
 
 - **失敗バッジ（`text-destructive` / `bg-destructive/10`、ライト）。**
   destructive は shadcn 既定のままにする決定なので触っていない。明度を下げると
   タリーレッドと見分けが付かなくなるので、直すなら色相ごと動かす判断が要る
   （実測値は `e2e:design` の出力に出る）
+- **一覧の行の hover 中の副情報（`hover:bg-muted/50` + `text-muted-foreground`、
+  ライト）。** hover 中しか出ない組み合わせなので Lighthouse の監査対象には入らない
+  が、実測すると下限を僅かに割る（実測値は `e2e:design` の出力に出る）。直すには
+  4 画面（録画一覧・予約一覧・ホーム・番組リスト）の行の副情報を一斉に
+  `text-foreground` へ上げることになり、常時表示の階層（本文 = foreground /
+  副情報 = muted）が hover のあいだ崩れる。どちらを取るかは別で決める
 
-`bg-muted` + `text-muted-foreground` の小さいバッジは、地・文字とも走査線グレー側の
-段を経由するとライトで 4.5 を割る。走査線グレーの値そのものは動かさず、**この組み
-合わせで文字を出す箇所はすべて `text-foreground` にして直した**（録画一覧の
-「完了」・取り込みバッジ・site タグ、番組リストの sticky 日付見出し、番組表グリッド
-とチャンネルピッカーのリモコン番号タグ、予約一覧の `StateBadge`/`ReservationSkipBadge`、
-ルール一覧の「無効」、ライブのチャンネル種別タグ・チャンネル一覧のリモコン番号タグ、
-chip / day-strip の hover）--- foreground は地の無彩 3 値の一部で信号色ではないので
-「色は信号のみ」とは矛盾しない。新しく `bg-muted` の小バッジを足すときはこの手を
-最初から使う。chip（`components/ui/chip.tsx`）・day-strip（`components/day-strip.tsx`）
-は常時ではなく hover で `bg-muted` が乗る形で、Lighthouse は hover を測らないので
-合否の対象ではないが、同じ組み合わせである以上揃えて `hover:text-foreground` を
-対にしてある。
+`bg-muted` + `text-muted-foreground` は、地・文字とも走査線グレー側の段を経由する
+ためライトで 4.5 を割る。走査線グレーの値そのものは動かさず、**次に挙げる箇所を
+`text-foreground` にして直した**（録画一覧の「完了」・取り込みバッジ・site タグ、
+番組リストの sticky 日付見出し、番組表グリッドとチャンネルピッカーのリモコン番号
+タグ、予約一覧の `StateBadge`/`ReservationSkipBadge`、ルール一覧の「無効」、ライブの
+チャンネル種別タグ・チャンネル一覧のリモコン番号タグ、chip / day-strip の hover）
+--- foreground は地の無彩 3 値の一部で信号色ではないので「色は信号のみ」とは矛盾
+しない。新しく `bg-muted` の小バッジを足すときはこの手を最初から使う。
+chip（`components/ui/chip.tsx`）・day-strip（`components/day-strip.tsx`）は常時では
+なく hover で `bg-muted` が乗る形で、Lighthouse は hover を測らないので合否の対象では
+ないが、同じ組み合わせである以上揃えて `hover:text-foreground` を対にしてある。
 
-境界: 検索の `RuleSourceBanner`（`pages/search.tsx`）の**読み込み中の枝**だけ
-`bg-muted/40` + `text-muted-foreground` が残っている（ルールが解決した本体は
-`text-muted-foreground` を持たず、エラーの枝は `text-destructive`）。読み込み中は
-非同期で一瞬しか出ないため `e2e:design` の判定には載せていない --- `bg-muted` /
-`bg-muted/80` の実測値（`e2e:design` の出力）から外挿すると、面が薄いほど比は
-高く出て下限は超える方向だが、差はごく僅かでアプリ中で最も下限に近い部類になる。
-**この読み込み中の枝そのものは実測していない**（未検証、外挿による推測）。判定を
-足すか実測するまでは「同じ手で直した」扱いにしない。
+**上の列挙は「直した箇所」で、`bg-muted` 系の面に muted の文字が乗る箇所の網羅では
+ない。** この節は一度「この組み合わせで文字を出す箇所はすべて直した」と書いて、
+実際には行の hover と詳細パネルが残っていた --- **docs で数え上げを維持しようと
+すると必ず嘘になる**。網羅の権威は `e2e:design` の出力の側に置く。そこに出ていない
+組み合わせは「測っていない」であって「通っている」ではない。いま分かっている残りは:
+
+- **測ってあり、下限を僅かに割る**: 一覧の行の hover（`hover:bg-muted/50`）に乗る
+  副情報（`components/program-row.tsx` / `pages/recordings.tsx` /
+  `pages/reservations.tsx` / `pages/home.tsx` の 4 画面。放送局名・日時・尺が
+  `text-muted-foreground` のまま）。代表として録画一覧の行を `e2e:design` が実際に
+  hover して測り、上記のとおり `knownGaps` に載せてある。Lighthouse は hover を
+  測らないので監査の合否には出ない
+- **測ってあり、下限を満たす**: 録画詳細（`/recordings/$id`）の `bg-muted/30` の
+  パネルに乗る説明文・`<dt>` 群・品質イベント（`RecordingDetail`。一覧はインライン
+  展開を持たないので、この面が出るのは詳細ページだけ）。hover と違って**常時見えるので
+  Lighthouse の監査対象**に入るため、`e2e:design` が同じパネルの `<dt>` を測っている
+  （同じ面・同じトークン対なので説明文・品質イベントも同値）
+- **測っていない（未検証）**: 検索の `RuleSourceBanner`（`pages/search.tsx`）の
+  読み込み中の枝（`bg-muted/40`。ルールが解決した本体は `text-muted-foreground` を
+  持たず、エラーの枝は `text-destructive`）と、エンコード対象プロファイルの行の
+  hover（`components/encode-settings-fields.tsx` の `hover:bg-muted/60` +
+  コンテナ名の `text-muted-foreground`）。どちらも一瞬 / hover 中しか出ないため
+  判定に載せていない。**他の不透明度の実測値から外挿もしない** --- 判定を足すまでは
+  「同じ手で直した」扱いにも「通っている」扱いにもしない
 
 モバイル番組のチャンネルピッカートリガー（`bg-background` + `text-foreground`）は
 上記のバッジ群とは別の組み合わせで、他所（地の無彩 3 値そのものの対）で測っている

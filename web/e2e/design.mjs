@@ -12,6 +12,8 @@
 //      - チューナー不足・ルールの「条件なし」が琥珀か
 //      - 番組リストの時刻に信号色が付いて**いない**か
 //      - 現在時刻の線と札がタリーレッドか / 容量超過の帯の罫線が琥珀か
+//      - `bg-muted` 系の面（塗り / `/80` の sticky 見出し / `/50` の行 hover /
+//        `/30` の詳細パネル）に乗る文字
 //      - 上記すべての WCAG コントラスト（文字 4.5 / 面と線 3）
 //   ③ 和文が実際に Noto Sans JP で、英数字が実際に Geist で描画されているか
 //      （CDP `CSS.getPlatformFontsForNode`）と、和文まじりの文字列でも
@@ -810,6 +812,14 @@ const knownGaps = new Map([
       '明度を下げるとタリーレッドと見分けが付かなくなるので、直すなら色相ごと動かす判断が要る' +
       '（実測値は上の表に出る。ここには書かない --- 2 通りの数字を持たないため）',
   ],
+  [
+    'light/一覧の行の hover 中の副情報の文字 / muted の半透明地',
+    'hover 中だけの組み合わせで Lighthouse の監査対象に入らない（常時見える面は下限を満たす）。' +
+      '直すには一覧の行の副情報の文字色を 4 画面（録画・予約・ホーム・番組リスト）で' +
+      '一斉に上げることになり、常時表示の階層（本文 = foreground / 副情報 = muted）が ' +
+      'hover のあいだ崩れる。どちらを取るかは別で決める --- 割っている量は僅かなので、' +
+      'ここに載せて見えるようにしたうえで据え置く（実測値は上の表に出る）',
+  ],
 ])
 
 /** contrasts は測ったコントラストを表として溜める（合否とは別に、数値を人に見せる）。 */
@@ -972,6 +982,94 @@ for (const theme of themes) {
     await context.close()
   }
 
+  // --- 録画一覧: 行の hover 中の副情報（`hover:bg-muted/50` + `text-muted-foreground`） ---
+  //
+  // 一覧の行は hover で `bg-muted/50` を敷き、その上に副情報（放送局名・日時・尺）が
+  // `text-muted-foreground` のまま乗る。**Lighthouse は hover を測らない**ので
+  // 監査には出ないが、`bg-muted` + `text-muted-foreground` と同族の組み合わせで
+  // あることは変わらないので、下限を割るかどうかは推測せず実測する（割っている。
+  // 直さない判断は `knownGaps` に理由付きで載せてある）。同じ組み方は予約一覧・
+  // ホーム・番組リストの行にもあるが、地・文字のトークンと不透明度が同一なので
+  // 代表として録画一覧の行で 1 回測る。
+  {
+    const { context, page } = await open(desktop, theme, screenOf('recordings'))
+    const row = page.locator('li').filter({ hasText: 'クラシック音楽館' }).first()
+    // 副情報のうち、明示的な文字色を持たない素の span（バッジは text-foreground を
+    // 明示しているので別の組み合わせになる）。
+    const sub = row.locator('span', { hasText: /^ＮＨＫＢＳ$/ }).first()
+    if ((await sub.count()) === 0) {
+      ng.push(`[${theme}] 録画一覧の行の副情報（放送局名）が見つからない`)
+    } else {
+      const before = await sub.evaluate(readColor, 'color')
+      await row.hover()
+      // hover の背景は `transition-colors` を持たないので即時に乗るが、
+      // 合成後の画素を読む前に 1 フレーム待つ
+      await page.waitForTimeout(150)
+      const after = await sub.evaluate(readColor, 'color')
+      log(`  [${theme}] 一覧の行の副情報 文字=${after.value} / 乗っている面 hover 前=${before.backdrop} → hover 中=${after.backdrop}`)
+      // **hover が本当に効いていることをここで検査する。** 効いていなければ
+      // 測っているのは通常時の面で、「hover を測った」と言えるのに数字は
+      // 通常時のもの、という空虚な成功になる（design.md「判定を足したことと、
+      // それが効いていることは別」と同じ形の穴）
+      const changed = [0, 1, 2].some((i) => Math.abs(after.backdrop[i] - before.backdrop[i]) >= 1)
+      if (!changed) {
+        ng.push(
+          `[${theme}] 録画一覧の行を hover しても副情報が乗る面が変わらない（${after.backdrop}）` +
+            ' --- hover の淡い地が効いていないか、locator が行の外を掴んでいる',
+        )
+      } else {
+        checkContrast(
+          theme,
+          '一覧の行の hover 中の副情報の文字 / muted の半透明地',
+          after.rgba,
+          after,
+          minTextContrast,
+        )
+      }
+    }
+    await context.close()
+  }
+
+  // --- 録画詳細: `bg-muted/30` のパネルに乗る muted の文字 ---
+  //
+  // 詳細（`/recordings/$id`）の本体は `bg-muted/30` の面で、その上の説明文・
+  // `<dt>` 群・品質イベントが `text-muted-foreground` のまま乗る（`RecordingDetail`。
+  // 一覧はインライン展開を持たないので、この面が出るのは詳細ページだけ）。hover と
+  // 違って**常時見えるので Lighthouse の監査対象**に入る。代表として `<dt>`
+  // 「チャンネル」を測る（同じパネル・同じトークン対なので説明文・品質イベントも
+  // 同値になる）。`screens` には足さない --- 足すと全画面ショットが 1 画面ぶん
+  // 増える。判定に必要なのは path と目印だけなので、ここで組んで渡す。
+  {
+    const detailScreen = { name: 'recording-detail', path: '/recordings/12', wait: 'text=チャンネル' }
+    const { context, page } = await open(desktop, theme, detailScreen)
+    const dt = page.locator('dt', { hasText: /^チャンネル$/ }).first()
+    const fg = await computedOf(dt, 'color')
+    log(`  [${theme}] 録画詳細のパネルの文字=${fg?.value} ${fg?.rgba} / 乗っている面=${fg?.backdrop}`)
+    if (fg === null) {
+      ng.push(`[${theme}] 録画詳細の <dt> が見つからない`)
+    } else {
+      // 面が半透明（`bg-muted/30`）なので、遡って合成できていないと甘い数字が出る。
+      // ページの地と一致したら合成が効いていない
+      const ground = await computedOf(page.locator('body'), 'background-color')
+      const sameAsGround =
+        ground !== null && [0, 1, 2].every((i) => Math.abs(fg.backdrop[i] - ground.backdrop[i]) < 1)
+      if (sameAsGround) {
+        ng.push(
+          `[${theme}] 録画詳細のパネルの文字が乗る面がページの地と同じ（${fg.backdrop}）` +
+            ' --- bg-muted/30 の合成が効いていない',
+        )
+      }
+      checkContrast(
+        theme,
+        '録画詳細のパネルの文字 / muted の半透明地',
+        fg.rgba,
+        fg,
+        minTextContrast,
+      )
+    }
+    await context.close()
+  }
+
   // --- 予約一覧: チューナー不足 = 琥珀（淡い地の上で読めるか） ---
   {
     const { context, page } = await open(desktop, theme, screenOf('reservations'))
@@ -1047,9 +1145,14 @@ for (const theme of themes) {
   // `backdrop` を使わないと、地の上での比だけを見てしまい甘い数字が出る
   // （「コントラストは毎回測る」参照）。文字色は `text-foreground` に直した
   // ので、`text-muted-foreground` に戻す変異が入ったらここで落ちる。
+  //
+  // 引くのは `data-testid`（`program-row-time` と同じ流儀）。`h2` の 1 番目で
+  // 引くと「/programs の既定ビューが list」「/programs 上の h2 が日付見出しの
+  // 1 種類だけ」の 2 つに依存し、将来 PageHeader 等に h2 が入ったときに
+  // **別の要素を測ったまま通る**。
   {
     const { context, page } = await open(desktop, theme, screenOf('programs'))
-    const heading = page.locator('h2').first()
+    const heading = page.locator('[data-testid="program-list-date-heading"]').first()
     const fg = await computedOf(heading, 'color')
     log(`  [${theme}] 番組リストの日付見出し 文字=${fg?.value} ${fg?.rgba} / 乗っている面=${fg?.backdrop}`)
     if (fg === null) {

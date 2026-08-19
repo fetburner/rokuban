@@ -292,9 +292,9 @@ export function LivePage() {
                           )}
                         >
                           {s.channelType === 'GR' && s.remoteControlKeyId > 0 && (
-                            // 文字色は text-foreground（bg-muted 小バッジの合成後
-                            // コントラスト対策。docs/frontend/design.md
-                            // 「コントラストは毎回測る」）。
+                            /* 文字色は text-foreground（bg-muted 小バッジの合成後
+                               コントラスト対策。docs/frontend/design.md
+                               「コントラストは毎回測る」）。 */
                             <span className="shrink-0 rounded bg-muted px-1 text-[10px] text-foreground">
                               {s.remoteControlKeyId}
                             </span>
