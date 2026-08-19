@@ -158,10 +158,41 @@ func forwardedHost(r *http.Request) (string, bool) {
 	return strings.TrimSpace(first), true
 }
 
+// stripPort は "host:port" 形式の入力から port 部分を取り除く。
+//
+// `net.SplitHostPort` はコロンの位置だけで分解し、port 部分が数値である
+// ことを検証しない。そのため `rokuban.local:evil.com` のような入力は
+// host="rokuban.local" / port="evil.com" に分解されてしまい、
+// allowlist の比較に host だけを使うと `evil.com` が黙って切り落とされる
+// （fail-open）。port が数値でない場合は host/port の分解自体が無効と
+// みなし、**入力をそのまま返す**（fail-closed）。呼び出し元の allowlist
+// 比較では "rokuban.local:evil.com" 全体が比較対象になり、一致せず拒否
+// される。
+//
+// この関数は `[::1]` のように port を持たない入力（`net.SplitHostPort`
+// がエラーを返す）でも入力をそのまま返す。`alwaysAllowedHosts` に
+// `"::1"` と `"[::1]"` の両方を含めているのはこの振る舞いに対応する
+// ためで、ここを変えるときは `TestAllowedHosts_LocalhostAlwaysAllowed`
+// の `[::1]:40773` サブテストが崩れないことを確認する。
 func stripPort(hostport string) string {
-	host, _, err := net.SplitHostPort(hostport)
-	if err != nil {
+	host, port, err := net.SplitHostPort(hostport)
+	if err != nil || !isNumericPort(port) {
 		return hostport
 	}
 	return host
+}
+
+// isNumericPort は s が 1 文字以上の数字だけで構成されるかを判定する。
+// `net.SplitHostPort` は port 部分の内容を検証しないため、この関数が
+// stripPort の fail-closed 判定を担う。
+func isNumericPort(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }

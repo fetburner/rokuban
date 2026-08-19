@@ -108,6 +108,80 @@ func TestAllowedHosts_InvalidHost(t *testing.T) {
 	}
 }
 
+// `net.SplitHostPort` は port 部分が数値かどうかを検証しないため、
+// `Host: rokuban.local:evil.com` は host="rokuban.local" / port="evil.com"
+// に分解されてしまう。stripPort が port の数値性を検証していないと、
+// allowlist の比較には "rokuban.local" だけが渡って一致し、
+// allowlist を素通りする（issue #344）。
+func TestAllowedHosts_NonNumericPortRejected(t *testing.T) {
+	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	req, err := http.NewRequest("GET", srv.URL+"/api/version", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "rokuban.local:evil.com"
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d（port が数値でない Host は拒否すべき）", resp.StatusCode, http.StatusBadRequest)
+	}
+}
+
+// 正当な数値ポート付きの Host は従来どおり通す（fail-closed 化の回帰確認）。
+func TestAllowedHosts_NumericPortStillAllowed(t *testing.T) {
+	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	req, err := http.NewRequest("GET", srv.URL+"/api/version", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "rokuban.local:8080"
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want %d（数値ポート付きの Host は通すべき）", resp.StatusCode, http.StatusOK)
+	}
+}
+
+// stripPort 単体の入出力を固定する。特に `[::1]` は port を持たない
+// 入力として入力をそのまま返す必要がある（alwaysAllowedHosts の
+// "::1" / "[::1]" 両立を前提にしている）。
+func TestStripPort(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"rokuban.local:8080", "rokuban.local"},
+		{"rokuban.local:evil.com", "rokuban.local:evil.com"},
+		{"rokuban.local", "rokuban.local"},
+		{"[::1]", "[::1]"},
+		{"[::1]:40773", "::1"},
+		{"localhost", "localhost"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			if got := stripPort(tt.in); got != tt.want {
+				t.Errorf("stripPort(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
 // リバースプロキシ前段では Host がプロキシ自身の値に書き換わり、元の
 // クライアント向け Host は X-Forwarded-Host に移る。TrustForwardedHost を
 // opt-in した構成（信頼できるプロキシが必ず前段に居る）では、X-Forwarded-Host
