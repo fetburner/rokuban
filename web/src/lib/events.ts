@@ -23,12 +23,47 @@ export const operationalRefreshIntervalMs = 60_000
 export const epgRefreshIntervalMs = 600_000
 
 /**
- * QueryGroup は 1 つの SSE トピックと、それによって無効化するクエリキーの
- * 接頭辞、そして SSE が届かなかったときに取り直す周期の組。
+ * storageRefreshIntervalMs はストレージ残高（`/api/storage`）を取り直す周期
+ * （ミリ秒、5 分）。
+ *
+ * `/api/storage` はディスクの statfs 観測の射影であって、worker の観測ループが
+ * 書き換えたときにしか値が変わらない。運用状態（60 秒）と同じ周期で回しても、
+ * 同じ値を余分に引くだけで得るものが無い。一方で EPG（10 分）ほど長くする理由も
+ * ない（番組表グリッドのような大きな応答ではないので、短くする側のコストが
+ * 小さい）。その 2 つの間に挟んで 5 分を選ぶ
+ * （テスト: events.test.tsx「SSE が来なくてもストレージ残高は専用の周期で
+ * 取り直す」）。
+ *
+ * worker の観測周期（`internal/worker/storage.go`）から輸入はしない ---
+ * `lib/storage-forecast.ts` の `observationStaleAfterMs` と同じ立場で、
+ * `GET /api/storage` の契約に入っていない実装詳細に結合すると、worker 側だけが
+ * 変わってフロントが追随できなくなる。
+ *
+ * SSE トピックからの invalidate は持たない。`storage_sync` は行トリガーの対象に
+ * していない（observed_at は毎パス全量 upsert されるだけで、行トリガーにすると
+ * statfs の頻度そのものに通知量が結合する）ため。収束はこの定期 invalidate に
+ * 加えて、再接続時の全グループ invalidate（{@link useServerEvents} 参照。topic が
+ * `null` かどうかを見ずに queryGroups 全体を回す）と mount / window focus に依る
+ * （テスト: events.test.tsx「再接続したら切断中の変更を全グループ取り直す」。
+ * `docs/api/sse.md` 参照）。
+ */
+export const storageRefreshIntervalMs = 5 * 60_000
+
+/**
+ * QueryGroup は SSE トピック（無い場合もある）と、それによって無効化するクエリ
+ * キーの接頭辞、そして SSE が届かなかったときに取り直す周期の組。
  */
 type QueryGroup = {
-  /** SSE のトピック名。 */
-  topic: string
+  /**
+   * SSE のトピック名。`null` は「対応する SSE トピックを持たず、定期 invalidate
+   * だけで収束させる」グループ（`storage` がこれ。理由は
+   * {@link storageRefreshIntervalMs} 参照）。
+   *
+   * optional にはしない --- optional だと「トピックを書き忘れた」グループが型でも
+   * テストでも通り、SSE の購読を静かに失う。`null` を明示的に書かせることで、
+   * 省略は型エラーのまま、意図した「トピック無し」だけが書ける。
+   */
+  topic: string | null
   /** invalidate 対象のクエリキーの接頭辞（orval のキーは `[url, params]`）。 */
   prefixes: string[]
   /** SSE が 1 通も届かなくても、この周期で invalidate する。 */
@@ -37,6 +72,8 @@ type QueryGroup = {
 
 /**
  * queryGroups は SSE のトピックと、それによって無効化するクエリキーの接頭辞の対応。
+ * トピックを持たないグループ（`storage`）は SSE を購読せず、定期 invalidate
+ * （加えて再接続時の全グループ invalidate）だけで収束させる。
  *
  * サーバーが配るのは「どのデータが変わったか」のヒントだけで、変更内容は載っていない。
  * 受け取ったら該当クエリを invalidate し、真実は REST から取り直す（レベルトリガー）。
@@ -73,6 +110,12 @@ const queryGroups: QueryGroup[] = [
     // SSE の epg イベントでも定期 invalidate でも取り直されない
     prefixes: ['/api/sites/', '/api/programs'],
     refreshIntervalMs: epgRefreshIntervalMs,
+  },
+  {
+    // トピックを持たない --- storageRefreshIntervalMs の doc コメント参照。
+    topic: null,
+    prefixes: ['/api/storage'],
+    refreshIntervalMs: storageRefreshIntervalMs,
   },
 ]
 
@@ -113,6 +156,9 @@ export function useServerEvents() {
     }
 
     for (const group of queryGroups) {
+      // topic が null のグループ（storage）は SSE を購読しない --- 定期 invalidate
+      // だけで収束させる（storageRefreshIntervalMs の doc コメント参照）
+      if (group.topic === null) continue
       listen(group.topic, () => invalidateGroup(queryClient, group))
     }
 
