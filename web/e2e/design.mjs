@@ -826,6 +826,24 @@ for (const theme of themes) {
       )
     }
 
+    // 完了バッジ（issue #308）。`bg-muted` + `text-muted-foreground` だと
+    // ライトで 4.5 を割ったため、文字色を `text-foreground` に直した
+    // （docs/frontend/design.md 参照）。ここは色の判定（isRed 等）は無く、
+    // 「地が塗り（不透明）であること」と「文字とのコントラストが下限を
+    // 満たすこと」だけを見る --- `text-muted-foreground` に戻す変異が
+    // 入ったらここで落ちる。
+    const finished = page.locator('ul span', { hasText: /^完了$/ })
+    const finishedBg = await computedOf(finished, 'background-color')
+    const finishedFg = await computedOf(finished, 'color')
+    if (finishedFg === null || finishedBg === null) {
+      ng.push(`[${theme}] 完了バッジが見つからない`)
+    } else {
+      if (finishedBg.rgba[3] < 200) {
+        ng.push(`[${theme}] 完了バッジの地が塗りでない（不透明度 ${finishedBg.rgba[3]}/255。${finishedBg.value}）`)
+      }
+      checkContrast(theme, '完了バッジの文字 / muted の塗り', finishedFg.rgba, finishedFg, minTextContrast)
+    }
+
     // 地は無彩。body だけを見ると「body に bg-background が当たっているか」しか
     // 言えないので、実際に面を持つ要素を回す。
     //
@@ -923,6 +941,26 @@ for (const theme of themes) {
     // タリーにしてはならない。`text-tally` に戻したらここで落ちる
     if (colored > 0) {
       ng.push(`[${theme}] 番組リストの時刻に信号色が付いている（${colored} 件。太さで示す規律）`)
+    }
+    await context.close()
+  }
+
+  // --- 番組リスト: sticky 日付見出し（issue #308） ---
+  //
+  // `bg-muted/80` の半透明地の上に文字が乗る（`components/program-list.tsx`）。
+  // 半透明なので `computedOf` の `readColor` が祖先まで遡って合成した
+  // `backdrop` を使わないと、地の上での比だけを見てしまい甘い数字が出る
+  // （「コントラストは毎回測る」参照）。文字色は `text-foreground` に直した
+  // ので、`text-muted-foreground` に戻す変異が入ったらここで落ちる。
+  {
+    const { context, page } = await open(desktop, theme, screenOf('programs'))
+    const heading = page.locator('h2').first()
+    const fg = await computedOf(heading, 'color')
+    log(`  [${theme}] 番組リストの日付見出し 文字=${fg?.value} ${fg?.rgba} / 乗っている面=${fg?.backdrop}`)
+    if (fg === null) {
+      ng.push(`[${theme}] 番組リストの日付見出しが見つからない`)
+    } else {
+      checkContrast(theme, '番組リストの日付見出しの文字 / muted の半透明地', fg.rgba, fg, minTextContrast)
     }
     await context.close()
   }
