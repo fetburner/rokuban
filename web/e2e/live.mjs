@@ -26,6 +26,10 @@ const BASE_URL = process.env.E2E_URL ?? 'http://localhost:40773'
 const SITE = process.env.E2E_LIVE_SITE ?? 'default'
 const SERVICE_A = process.env.E2E_LIVE_SERVICE_A ?? '9001'
 const SERVICE_B = process.env.E2E_LIVE_SERVICE_B ?? '9002'
+// docs/runbook/live.md §② の投入例は A/B とも network_id=1。新形式の
+// `?networkId=&serviceId=`（issue #291）を実ブラウザで一度も踏んでいなかった
+// 穴を塞ぐため、⓪' はこの形式で開く（レビューでの指摘）
+const NETWORK_ID = process.env.E2E_LIVE_NETWORK_ID ?? '1'
 
 const FIXTURE_DIR = path.join(os.tmpdir(), 'rokuban-e2e-live-fixture')
 const SEGMENTS_DIR = path.join(FIXTURE_DIR, 'segments')
@@ -273,7 +277,11 @@ async function runConsentCheck() {
       route.fulfill({ status: 200, contentType: 'video/mp2t', body: Buffer.from([0x47]) }),
     )
 
-    await page.goto(`${BASE_URL}/live?serviceId=${SERVICE_A}`, { waitUntil: 'networkidle' })
+    // `?networkId=&serviceId=` の新形式（issue #291）を実ブラウザで踏む
+    // ---他の ①〜⑦ は旧 `?serviceId=` 単独（フォールバック経路）のみを通るため
+    await page.goto(`${BASE_URL}/live?networkId=${NETWORK_ID}&serviceId=${SERVICE_A}`, {
+      waitUntil: 'networkidle',
+    })
 
     const requestsAfterOpen = requestLog.filter(
       (u) => u.includes('/live/playlist.m3u8') || u.includes('/live/segments/'),

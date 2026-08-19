@@ -280,7 +280,7 @@ in-flight `fetch` を `AbortController` で中断、hls.js の `destroy()` /
 
 **選択と視聴開始を分離したことで、「ザッピングのたびにセッションが積まれる」と
 いう事態自体が起きなくなった。**
-`?serviceId=` を切り替えるだけでは probe もセッション開始も走らないため、
+`?networkId=&serviceId=` を切り替えるだけでは probe もセッション開始も走らないため、
 チャンネル一覧を何度触っても掴まれるチューナーは 0 のまま増えない --- ただし
 これは `playingKey` と `selectedKey` の一致判定をレンダー中に行う
 実装でのみ真になる（上記「フロントエンド実装」の同じ節参照）。`useEffect` で

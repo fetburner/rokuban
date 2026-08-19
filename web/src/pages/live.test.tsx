@@ -473,6 +473,37 @@ describe('LivePage', () => {
       const playlistCall = calls.find(([url]) => String(url).includes('/live/playlist.m3u8'))
       expect(playlistCall?.[0]).toContain('/networks/2/services/100/')
     })
+
+    /**
+     * `playingKey`（再生状態の同定）も `liveServiceKey`（`networkId` + `serviceId`
+     * の組）で判定する（`pages/live.tsx` の `playingKey` 定義部のコメント）。
+     * `serviceId` 単独で判定すると、GR（network 1）を再生中に同じ `serviceId` の
+     * BS（network 2）へ切り替えたとき「同じチャンネル」と誤認し、GR 向けの
+     * `LivePlayer`（接続できません、のエラー表示）を押していない BS へそのまま
+     * 引き継いでしまう --- これは選択（`aria-current`）とは別の判定なので、
+     * `aria-current` 側だけを固定した上のテストでは捕まらない。
+     */
+    it('再生中に同じ serviceId の別 network へ切り替えると選択状態に戻る', async () => {
+      const user = userEvent.setup()
+      stubFetch({ services: crossNetworkServices(), programsByServiceId: crossNetworkPrograms() })
+      renderLive('/live?networkId=1&serviceId=100')
+      await screen.findByText('GR の番組')
+
+      await user.click(screen.getByRole('button', { name: /再生/ }))
+      await screen.findByText(/接続できません/)
+      const callsAfterGr = playlistFetchCallCount()
+      expect(callsAfterGr).toBeGreaterThan(0)
+
+      await user.click(screen.getByRole('link', { name: /BS の局/ }))
+      await waitFor(() => expect(screen.getByText('BS の番組')).toBeInTheDocument())
+
+      // BS へ切り替わったら選択状態（再生ボタン）に戻り、GR のエラー表示は消える
+      expect(screen.getByRole('button', { name: /再生/ })).toBeInTheDocument()
+      expect(screen.queryByText(/接続できません/)).not.toBeInTheDocument()
+      // 押していない BS の playlist を一度も取りに行かない（引き継いでいれば
+      // GR のときと同様に probe が飛び、この件数が増える）
+      expect(playlistFetchCallCount()).toBe(callsAfterGr)
+    })
   })
 
   it('いま放送中の番組が無いときは代わりの文言を出す', async () => {
@@ -886,6 +917,46 @@ describe('LivePage / 録画予約による中断予測（issue #235 M7-2）', ()
       reservations: [reservation({ programId: 6, site: 'default', startAt, skip: false })],
     })
     const { queryClient } = renderLive('/live?serviceId=10')
+
+    await screen.findByRole('button', { name: /再生/ })
+    await interruptionSettled(queryClient)
+    expect(screen.queryByText(/録画予約/)).not.toBeInTheDocument()
+  })
+
+  /**
+   * issue #291 と同じ根: 中断予測の EPG 問い合わせ（`sameTypeProgramsQuery`）は
+   * `serviceId` の配列だけをサーバーに渡す（`networkId` は持たない --- 複数
+   * network の同じ種別のサービスを一度に問い合わせるため）。`serviceId` が
+   * network をまたいで衝突すると、選択中とは別 network・別 channelType の
+   * サービスの番組も応答に混入しうる（サーバーは `serviceId` だけを AND する
+   * ため）。`pages/live.tsx` の `sameTypeProgramIds` から `liveServiceKey` に
+   * よる絞り込みを外す変異を当てると、この番組（に付いた予約）が候補集合に
+   * 混入し、存在しない中断警告を出してこのテストが落ちる。
+   */
+  it('別 network の同じ serviceId の番組では中断警告を誤って出さない（issue #291 と同じ根）', async () => {
+    const startAt = new Date(Date.now() + 30 * 60_000).toISOString()
+    stubFetch({
+      services: [
+        service({ networkId: 1, serviceId: 100, name: 'GR の局', channelType: 'GR' }),
+        service({ networkId: 2, serviceId: 100, name: 'BS の局', channelType: 'BS' }),
+      ],
+      programsByServiceId: {
+        // GR（network 1）ではなく BS（network 2）の番組にだけ予約が付く。
+        // `serviceId` は両方 100 で衝突しているため、`networkId` を見ずに
+        // `serviceId` だけで突き合わせると GR 選択時にもこの番組が混入する
+        100: [
+          program({
+            programId: 6,
+            networkId: 2,
+            serviceId: 100,
+            startAt,
+            endAt: new Date(Date.now() + 90 * 60_000).toISOString(),
+          }),
+        ],
+      },
+      reservations: [reservation({ programId: 6, site: 'default', startAt, skip: false })],
+    })
+    const { queryClient } = renderLive('/live?networkId=1&serviceId=100')
 
     await screen.findByRole('button', { name: /再生/ })
     await interruptionSettled(queryClient)

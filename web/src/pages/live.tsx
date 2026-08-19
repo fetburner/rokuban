@@ -165,14 +165,29 @@ export function LivePage() {
   // 突き合わせる必要がある。`serviceId` に同じ種別のサービスだけを渡すことで、
   // サーバー側に絞り込みを任せる（クライアントで全番組を持って channelType を
   // 引き直すより軽い）。
-  const sameTypeServiceIds = useMemo(
+  const sameTypeServices = useMemo(
     () =>
       selectedService === undefined
         ? []
-        : orderedServices
-            .filter((s) => s.channelType === selectedService.channelType)
-            .map((s) => s.serviceId),
+        : orderedServices.filter((s) => s.channelType === selectedService.channelType),
     [orderedServices, selectedService],
+  )
+  const sameTypeServiceIds = useMemo(
+    () => sameTypeServices.map((s) => s.serviceId),
+    [sameTypeServices],
+  )
+  // **クエリは `networkId` を持たない**（`serviceId` の配列だけをサーバーに渡す
+  // ---複数 network の同じ種別のサービスを一度に問い合わせるので単一の
+  // `networkId` では表現できない）。そのため `serviceId` が network をまたいで
+  // 衝突すると（issue #291 と同じ根）、意図しない network の番組も応答に混入する
+  // ---サーバーは `serviceId` だけを AND するため、選択中と別 network・別
+  // channelType のサービスがたまたま同じ `serviceId` を持てば、その番組が
+  // `sameTypeProgramIds` に入り込み、存在しない中断警告を出しうる。
+  // `liveServiceKey`（`networkId` + `serviceId` の組）で応答側を絞り込むことで
+  // 閉じる。
+  const sameTypeKeys = useMemo(
+    () => new Set(sameTypeServices.map((s) => liveServiceKey(s.networkId, s.serviceId))),
+    [sameTypeServices],
   )
   // 窓は 10 分グリッドに丸める（`interruptionQueryWindow` 参照）。**丸めずに
   // `nowMs` から素直に組むと、`nowPlayingRefetchMs`（30 秒）ごとの tick で
@@ -188,8 +203,13 @@ export function LivePage() {
     { query: { enabled: sameTypeServiceIds.length > 0 } },
   )
   const sameTypeProgramIds = useMemo(
-    () => new Set((unwrap(sameTypeProgramsQuery.data) ?? []).map((p) => p.programId)),
-    [sameTypeProgramsQuery.data],
+    () =>
+      new Set(
+        (unwrap(sameTypeProgramsQuery.data) ?? [])
+          .filter((p) => sameTypeKeys.has(liveServiceKey(p.networkId, p.serviceId)))
+          .map((p) => p.programId),
+      ),
+    [sameTypeProgramsQuery.data, sameTypeKeys],
   )
   // 予約一覧は絞り込みパラメータを持たない（`GET /api/reservations` は全サイトを
   // 返す。docs/api.md）。SSE の `reservations` トピックは既にこのクエリキーの
