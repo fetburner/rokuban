@@ -556,8 +556,15 @@ function buildWarnings({
  * そのまま渡すので、mirakc の failed record に `endTime` が無ければ failed
  * 行でも `startedAt` だけが立つ。したがって 3 通りを区別する: 両方あり
  * （実際尺が定義できる）/ `startedAt` のみ（開始した事実はあるが終了時刻が無く、
- * 実際尺は主張できない）/ 両方無し（mirakc に録画開始さえ記録されなかった失敗。
- * 「未開始」）。
+ * 実際尺は主張できない）/ 両方無し（**rokuban が録画の開始を観測していない**。
+ * 「未開始」と出す）。
+ *
+ * 3 つ目で mirakc 側の事実（「mirakc が録画を開始しなかった」）は主張しない
+ * （レビュー指摘）。`started_at` を書くのは record を観測した
+ * `Watcher.updateRecordingStatus` だけで、`CreateFailedRecording`
+ * （`internal/db/queries/recordings.sql`）は書かないので、**record の観測より
+ * 先に `recording.failed` の SSE が届いた**窓でも両方無しの形になる。データが
+ * 支えているのは「rokuban が開始を観測していない」までで、その先は測っていない。
  */
 function failedDurationText(recording: Recording): string {
   if (recording.startedAt && recording.endedAt) {
@@ -622,10 +629,16 @@ function failureReasonText(recording: Recording): string {
 }
 
 /**
- * WarningRow は 1 件の警告。サーキットブレーカーと直近のドロップは「取り返しが
- * つかない/止まっている」意味の destructive、チューナー不足は容量バッジ
- * （`components/capacity-shortfall-badge.tsx`）と同じ warning（琥珀）に揃える
- * （docs/frontend/design.md「色は信号のみ」。同じ事実は同じ色で言う）。
+ * WarningRow は 1 件の警告。サーキットブレーカー・直近のドロップ・失敗録画は
+ * 「取り返しがつかない/止まっている」意味の destructive、チューナー不足は容量
+ * バッジ（`components/capacity-shortfall-badge.tsx`）と同じ warning（琥珀）に
+ * 揃える（docs/frontend/design.md「色は信号のみ」。同じ事実は同じ色で言う）。
+ *
+ * **失敗録画（`kind: 'failed'`）は destructive 側。** design.md の表が
+ * destructive を「取り返しがつかない・壊れた（失敗・ドロップ・…）」と定めており、
+ * 録画が失われたことは後から取り返せない --- 琥珀（「これから足りない」の予告）
+ * とは別の事実なので、色でも分ける（種別 × 色は `pages/home.test.tsx`
+ * 「警告項目は種別ごとに固定の色クラスを持つ」と `e2e/design.mjs` ①'' が固定する）。
  */
 function WarningRow({ warning }: { warning: WarningItem }) {
   const amber = warning.kind === 'overage'

@@ -100,8 +100,18 @@
 （`UpdateRecordingStatus` は `started_at` を無条件に、`ended_at` は非 NULL の
 ときだけ書く）ので 3 通りある --- 両方あり（実際尺を出す）/ `startedAt` のみ
 （mirakc の failed record に `endTime` が無かった場合。開始した事実はあるが
-実際尺は主張しない）/ 両方無し（mirakc に録画開始さえ記録されなかった失敗。
-「未開始」と明示する）。
+実際尺は主張しない）/ 両方無し（**rokuban が開始を観測していない**。「未開始」と
+明示する）。3 つ目で mirakc 側の事実（「mirakc が録画を開始しなかった」）は
+主張しない --- `started_at` を書くのは record を観測した経路だけで
+`CreateFailedRecording` は書かないので、record の観測より先に `recording.failed`
+の SSE が届いた窓でも同じ形になる。
+
+**未解決: `?status=failed` は superseded 済みの failed 行を含む**（`GET
+/api/recordings` は `superseded_at` を絞らず、API にも出していない）。本物の
+record が観測されて置き換わった擬似 failed 行が recency 窓のあいだ警告に残り、
+ユーザーには消す手段が無い（実際は録れているのに「録画失敗」と出る）。警告は
+「異常はないか」に答える場所なので、この偽陽性のコストは一覧より高い。フロント
+単独では絞れないので API 側の判断が要る。
 
 **失敗理由は `quality_events`（追記専用の履歴）の失敗系イベント（`recording.failed`
 / `recording.record-broken`）の最後の要素の `reason` があればそれを出し、無ければ
