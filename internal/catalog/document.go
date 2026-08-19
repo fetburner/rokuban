@@ -130,8 +130,13 @@ type Recording struct {
 	// 未来予約とは無関係になり、catalog の対象にしない。旧世代のカタログが
 	// quality_events に持つ recording.never-scheduled マーカーは、rescue 側が
 	// 検出して recordings に戻さずスキップする（rescue.go 参照）。
-	DeletedAt  *time.Time `json:"deletedAt,omitempty"`
-	PurgeAfter *time.Time `json:"purgeAfter,omitempty"`
+	DeletedAt *time.Time `json:"deletedAt,omitempty"`
+	// PurgeRequested は「今すぐ完全削除してほしい」という要求印（issue #319）。
+	// 旧世代のカタログは timestamptz の `purgeAfter` を持っていたが、実質
+	// boolean だった値を型で正直にした。旧ダンプにはこのキー自体が無いので
+	// omitempty で false として復元される（=「印は無かった」。ファイルの
+	// 安全側に倒れる。落としても不可逆な事実は失われない）。
+	PurgeRequested bool `json:"purgeRequested,omitempty"`
 	// KeepOriginalLegacy / EncodeProfilesLegacy: issue #159 より前は
 	// recordings.keep_original / recordings.encode_profiles だった旧列。
 	// 現在は RecordingEncodePolicy（recording_encode_policy 衛星表）に切り出した

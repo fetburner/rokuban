@@ -271,7 +271,7 @@ func applyDocument(ctx context.Context, tx pgx.Tx, doc *Document) (*RescueResult
 			EndedAt:           r.EndedAt,
 			QualityEvents:     qe,
 			DeletedAt:         r.DeletedAt,
-			PurgeAfter:        r.PurgeAfter,
+			PurgeRequested:    r.PurgeRequested,
 			SupersededAt:      r.SupersededAt,
 			PurgedAt:          r.PurgedAt,
 			CreatedAt:         r.CreatedAt,

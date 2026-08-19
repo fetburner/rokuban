@@ -13,7 +13,7 @@ import (
 
 const listTrashRecordings = `-- name: ListTrashRecordings :many
 SELECT
-    r.id, r.rule_id, r.source, r.site, r.network_id, r.service_id, r.event_id, r.service_name, r.channel_type, r.channel, r.title, r.description, r.extended, r.genres, r.is_free, r.program_start_at, r.program_duration_ms, r.status, r.started_at, r.ended_at, r.quality_events, r.deleted_at, r.created_at, r.updated_at, r.purge_after, r.superseded_at, r.purged_at, r.genre_lv1,
+    r.id, r.rule_id, r.source, r.site, r.network_id, r.service_id, r.event_id, r.service_name, r.channel_type, r.channel, r.title, r.description, r.extended, r.genres, r.is_free, r.program_start_at, r.program_duration_ms, r.status, r.started_at, r.ended_at, r.quality_events, r.deleted_at, r.created_at, r.updated_at, r.superseded_at, r.purged_at, r.genre_lv1, r.purge_requested,
     a.size_bytes                        AS original_size_bytes,
     COALESCE(d.packets, 0)::bigint      AS drop_packets,
     COALESCE(d.drops, 0)::bigint        AS drop_drops,
@@ -59,10 +59,10 @@ type ListTrashRecordingsRow struct {
 	DeletedAt         *time.Time
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
-	PurgeAfter        *time.Time
 	SupersededAt      *time.Time
 	PurgedAt          *time.Time
 	GenreLv1          []int16
+	PurgeRequested    bool
 	OriginalSizeBytes *int64
 	DropPackets       int64
 	DropDrops         int64
@@ -134,10 +134,10 @@ func (q *Queries) ListTrashRecordings(ctx context.Context, site string) ([]ListT
 			&i.DeletedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
-			&i.PurgeAfter,
 			&i.SupersededAt,
 			&i.PurgedAt,
 			&i.GenreLv1,
+			&i.PurgeRequested,
 			&i.OriginalSizeBytes,
 			&i.DropPackets,
 			&i.DropDrops,
@@ -155,42 +155,42 @@ func (q *Queries) ListTrashRecordings(ctx context.Context, site string) ([]ListT
 	return items, nil
 }
 
-const markRecordingPurgeAfter = `-- name: MarkRecordingPurgeAfter :one
+const markRecordingPurgeRequested = `-- name: MarkRecordingPurgeRequested :one
 UPDATE recordings
-SET deleted_at  = COALESCE(deleted_at, now()),
-    purge_after = now(),
-    updated_at  = now()
+SET deleted_at       = COALESCE(deleted_at, now()),
+    purge_requested  = true,
+    updated_at       = now()
 WHERE id = $1
-RETURNING id, deleted_at, purge_after
+RETURNING id, deleted_at, purge_requested
 `
 
-type MarkRecordingPurgeAfterRow struct {
-	ID         int64
-	DeletedAt  *time.Time
-	PurgeAfter *time.Time
+type MarkRecordingPurgeRequestedRow struct {
+	ID             int64
+	DeletedAt      *time.Time
+	PurgeRequested bool
 }
 
 // 即時物理削除の要求。ファイルは消さない。
 // purge は soft-delete も兼ねる（まだごみ箱に入っていなければ deleted_at を立てる）。
-// 既に purge_after が立っていても now() で上書き（冪等に再要求できる）。
-func (q *Queries) MarkRecordingPurgeAfter(ctx context.Context, id int64) (MarkRecordingPurgeAfterRow, error) {
-	row := q.db.QueryRow(ctx, markRecordingPurgeAfter, id)
-	var i MarkRecordingPurgeAfterRow
-	err := row.Scan(&i.ID, &i.DeletedAt, &i.PurgeAfter)
+// 既に印が立っていてもそのまま true を書く（冪等に再要求できる）。
+func (q *Queries) MarkRecordingPurgeRequested(ctx context.Context, id int64) (MarkRecordingPurgeRequestedRow, error) {
+	row := q.db.QueryRow(ctx, markRecordingPurgeRequested, id)
+	var i MarkRecordingPurgeRequestedRow
+	err := row.Scan(&i.ID, &i.DeletedAt, &i.PurgeRequested)
 	return i, err
 }
 
 const restoreRecording = `-- name: RestoreRecording :one
 UPDATE recordings
-SET deleted_at  = NULL,
-    purge_after = NULL,
-    updated_at  = now()
+SET deleted_at       = NULL,
+    purge_requested  = false,
+    updated_at       = now()
 WHERE id = $1 AND deleted_at IS NOT NULL AND purged_at IS NULL
 RETURNING id
 `
 
 // 復元。ごみ箱に入っている行だけを対象にする。
-// deleted_at と purge_after の両方を消す（即時 purge 印も取り消す）。
+// deleted_at を消し、purge_requested を下ろす（即時 purge 印も取り消す）。
 // 同一イベントに生きている録画がある場合は unique partial index で 23505。
 // purged_at が立っている行（完全削除が完了した tombstone、issue #135）は
 // 対象外 —— WHERE に条件を足して 0 行にし、既存の 404 経路に落とす。
@@ -217,7 +217,8 @@ type SoftDeleteRecordingRow struct {
 	DeletedAt *time.Time
 }
 
-// ごみ箱（論理削除 / 復元 / 即時 purge 印）。M3-7 / issue #69。
+// ごみ箱（論理削除 / 復元 / 即時 purge 印）。M3-7 / issue #69。issue #319 で
+// 即時 purge 印を timestamptz から boolean（purge_requested）に変更した。
 // 物理 unlink はしない（M3-8）。api ロールは DB だけ触る。
 // 論理削除。既に deleted_at が立っていても COALESCE で据え置き（冪等）。
 // 行が無ければ 0 行（:one なので pgx.ErrNoRows → API が 404）。

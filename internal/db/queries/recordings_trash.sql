@@ -1,4 +1,5 @@
--- ごみ箱（論理削除 / 復元 / 即時 purge 印）。M3-7 / issue #69。
+-- ごみ箱（論理削除 / 復元 / 即時 purge 印）。M3-7 / issue #69。issue #319 で
+-- 即時 purge 印を timestamptz から boolean（purge_requested）に変更した。
 -- 物理 unlink はしない（M3-8）。api ロールは DB だけ触る。
 
 -- 論理削除。既に deleted_at が立っていても COALESCE で据え置き（冪等）。
@@ -11,7 +12,7 @@ WHERE id = $1
 RETURNING id, deleted_at;
 
 -- 復元。ごみ箱に入っている行だけを対象にする。
--- deleted_at と purge_after の両方を消す（即時 purge 印も取り消す）。
+-- deleted_at を消し、purge_requested を下ろす（即時 purge 印も取り消す）。
 -- 同一イベントに生きている録画がある場合は unique partial index で 23505。
 -- purged_at が立っている行（完全削除が完了した tombstone、issue #135）は
 -- 対象外 —— WHERE に条件を足して 0 行にし、既存の 404 経路に落とす。
@@ -19,22 +20,22 @@ RETURNING id, deleted_at;
 -- 録画」が並んでしまう。
 -- name: RestoreRecording :one
 UPDATE recordings
-SET deleted_at  = NULL,
-    purge_after = NULL,
-    updated_at  = now()
+SET deleted_at       = NULL,
+    purge_requested  = false,
+    updated_at       = now()
 WHERE id = $1 AND deleted_at IS NOT NULL AND purged_at IS NULL
 RETURNING id;
 
 -- 即時物理削除の要求。ファイルは消さない。
 -- purge は soft-delete も兼ねる（まだごみ箱に入っていなければ deleted_at を立てる）。
--- 既に purge_after が立っていても now() で上書き（冪等に再要求できる）。
--- name: MarkRecordingPurgeAfter :one
+-- 既に印が立っていてもそのまま true を書く（冪等に再要求できる）。
+-- name: MarkRecordingPurgeRequested :one
 UPDATE recordings
-SET deleted_at  = COALESCE(deleted_at, now()),
-    purge_after = now(),
-    updated_at  = now()
+SET deleted_at       = COALESCE(deleted_at, now()),
+    purge_requested  = true,
+    updated_at       = now()
 WHERE id = $1
-RETURNING id, deleted_at, purge_after;
+RETURNING id, deleted_at, purge_requested;
 
 -- ごみ箱一覧。ListRecordings と同じく原本サイズ + drop 合計は載せるが、
 -- available_encoded_profiles（再生可能な encoded プロファイル名）は意図的に

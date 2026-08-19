@@ -262,19 +262,22 @@ func TestDeleteReconcileWorker_TrashWithinRetention_NotDeleted(t *testing.T) {
 	}
 }
 
-// purge_after は猶予期間を無視して即時削除する。
-func TestDeleteReconcileWorker_PurgeAfterImmediate_Deletes(t *testing.T) {
+// purge_requested は猶予期間を無視して即時削除する（issue #319: 時刻比較
+// `purge_after <= now()` から要求印 boolean へ変更。deleted_at はまだ猶予
+// （30 日）の中の「たった今」にしておき、purge_requested 単独が猶予を
+// バイパスすることを確認する ---
+// 実装を「印ではなく時刻比較」に戻すと deleted_at が猶予内のため削除されず
+// このテストが落ちる）。
+func TestDeleteReconcileWorker_PurgeRequestedImmediate_Deletes(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	recordingID := insertTestRecording(t, pool)
 
 	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "purge/now.m2ts", []byte("data"))
 
-	// SQL 側は DB の now() と比較する。Docker VM とホストの時計が数十 ms
-	// ずれても確実に「今すぐ」の側へ入るよう、安全に過去の時刻を使う。
-	purgeAt := time.Now().Add(-time.Hour)
+	recent := time.Now()
 	if _, err := pool.Exec(context.Background(),
-		"UPDATE recordings SET deleted_at = $1, purge_after = $1 WHERE id = $2", purgeAt, recordingID); err != nil {
+		"UPDATE recordings SET deleted_at = $1, purge_requested = true WHERE id = $2", recent, recordingID); err != nil {
 		t.Fatalf("marking recording for immediate purge: %v", err)
 	}
 
@@ -284,7 +287,7 @@ func TestDeleteReconcileWorker_PurgeAfterImmediate_Deletes(t *testing.T) {
 	}
 
 	if got := assetState(t, pool, assetID); got != "deleted" {
-		t.Errorf("asset state = %q, want deleted (purge_after should bypass retention)", got)
+		t.Errorf("asset state = %q, want deleted (purge_requested should bypass retention even though deleted_at is recent)", got)
 	}
 }
 
@@ -301,11 +304,9 @@ func TestDeleteReconcileWorker_ZeroAssetRecording_PurgeMarksAndFiresWebhookOnce(
 	recordingID := insertTestRecording(t, pool)
 	// media_assets は 1 行も作らない。
 
-	// SQL 側は DB の now() と比較する。Docker VM とホストの時計が数十 ms
-	// ずれても確実に「今すぐ」の側へ入るよう、安全に過去の時刻を使う。
-	purgeAt := time.Now().Add(-time.Hour)
+	purgeAt := time.Now()
 	if _, err := pool.Exec(context.Background(),
-		"UPDATE recordings SET deleted_at = $1, purge_after = $1 WHERE id = $2", purgeAt, recordingID); err != nil {
+		"UPDATE recordings SET deleted_at = $1, purge_requested = true WHERE id = $2", purgeAt, recordingID); err != nil {
 		t.Fatalf("marking recording for immediate purge: %v", err)
 	}
 
@@ -1062,7 +1063,7 @@ func TestDeleteReconcileQueries_ReferenceNamedPredicatesNotDuplicatedText(t *tes
 	for _, needle := range []string{
 		"r.keep_original",
 		"cardinality(r.encode_profiles)",
-		"r.purge_after",
+		"r.purge_requested",
 		"r.deleted_at IS NOT NULL",
 	} {
 		if strings.Contains(text, needle) {

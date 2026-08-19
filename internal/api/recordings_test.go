@@ -614,8 +614,8 @@ func TestRestoreRecording_NotInTrash(t *testing.T) {
 	}
 }
 
-// purge は purge_after を立て、必要なら soft-delete も兼ねる。ファイルは消さない。
-func TestPurgeRecording_MarksPurgeAfter(t *testing.T) {
+// purge は purge_requested を立て、必要なら soft-delete も兼ねる。ファイルは消さない。
+func TestPurgeRecording_MarksPurgeRequested(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	srv := newAPIServer(t, pool)
 	ctx := context.Background()
@@ -627,19 +627,20 @@ func TestPurgeRecording_MarksPurgeAfter(t *testing.T) {
 		t.Fatalf("purge status = %d, want 204", resp.StatusCode)
 	}
 
-	// DB に deleted_at と purge_after が立っていること（ファイル I/O は無い）
-	var deletedAt, purgeAfter *time.Time
+	// DB に deleted_at と purge_requested が立っていること（ファイル I/O は無い）
+	var deletedAt *time.Time
+	var purgeRequested bool
 	err := pool.QueryRow(ctx,
-		`SELECT deleted_at, purge_after FROM recordings WHERE id = $1`, id,
-	).Scan(&deletedAt, &purgeAfter)
+		`SELECT deleted_at, purge_requested FROM recordings WHERE id = $1`, id,
+	).Scan(&deletedAt, &purgeRequested)
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
 	if deletedAt == nil {
 		t.Error("purge should also soft-delete (deleted_at set)")
 	}
-	if purgeAfter == nil {
-		t.Error("purge_after should be set")
+	if !purgeRequested {
+		t.Error("purge_requested should be true")
 	}
 
 	// ごみ箱に出る
@@ -661,19 +662,19 @@ func TestPurgeRecording_MarksPurgeAfter(t *testing.T) {
 		t.Fatalf("missing purge status = %d, want 404", resp.StatusCode)
 	}
 
-	// restore で purge_after も消える
+	// restore で purge_requested も下りる
 	resp = doRecordingMethod(t, http.MethodPost, fmt.Sprintf("%s/api/recordings/%d/restore", srv.URL, id))
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("restore after purge status = %d", resp.StatusCode)
 	}
 	err = pool.QueryRow(ctx,
-		`SELECT deleted_at, purge_after FROM recordings WHERE id = $1`, id,
-	).Scan(&deletedAt, &purgeAfter)
+		`SELECT deleted_at, purge_requested FROM recordings WHERE id = $1`, id,
+	).Scan(&deletedAt, &purgeRequested)
 	if err != nil {
 		t.Fatalf("query after restore: %v", err)
 	}
-	if deletedAt != nil || purgeAfter != nil {
-		t.Errorf("after restore deleted_at=%v purge_after=%v, want both nil", deletedAt, purgeAfter)
+	if deletedAt != nil || purgeRequested {
+		t.Errorf("after restore deleted_at=%v purge_requested=%v, want nil/false", deletedAt, purgeRequested)
 	}
 }
 

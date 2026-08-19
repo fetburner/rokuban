@@ -234,7 +234,7 @@ INSERT INTO recordings (
     program_start_at, program_duration_ms,
     status, started_at, ended_at,
     quality_events,
-    deleted_at, purge_after, superseded_at, purged_at, created_at, updated_at
+    deleted_at, purge_requested, superseded_at, purged_at, created_at, updated_at
 ) OVERRIDING SYSTEM VALUE
 VALUES (
     $1, $2, $3, $4,
@@ -268,7 +268,7 @@ ON CONFLICT (id) DO UPDATE SET
     ended_at            = EXCLUDED.ended_at,
     quality_events      = EXCLUDED.quality_events,
     deleted_at          = EXCLUDED.deleted_at,
-    purge_after         = EXCLUDED.purge_after,
+    purge_requested     = EXCLUDED.purge_requested,
     -- superseded_at を落とすと、復旧時に superseded 行が live に戻って
     -- recordings_unique_active_event に衝突する（issue #129 症状 2）。
     superseded_at       = EXCLUDED.superseded_at,

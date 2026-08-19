@@ -217,7 +217,7 @@ type ListTrashMediaAssetsToDeleteRow struct {
 	Kind        string
 }
 
-// ごみ箱の猶予超過、または「今すぐ完全削除」（purge_after）の対象
+// ごみ箱の猶予超過、または「今すぐ完全削除」（purge_requested）の対象
 // （名前付き述語 trash_deletable_recordings への参照。issue #160）。
 func (q *Queries) ListTrashMediaAssetsToDelete(ctx context.Context, arg ListTrashMediaAssetsToDeleteParams) ([]ListTrashMediaAssetsToDeleteRow, error) {
 	rows, err := q.db.Query(ctx, listTrashMediaAssetsToDelete, arg.GraceCutoff, arg.RowLimit)
@@ -404,8 +404,8 @@ type MarkPurgedRecordingsRow struct {
 //
 // 削除 reconcile のパス末尾（trash / until_encoded / pending 経路すべてが
 // 物理 unlink を終えた後）で 1 回だけ呼ぶ。ごみ箱条件は名前付き述語
-// trash_deletable_recordings への参照（issue #160）。purge_after だけを
-// 条件にすると、30 日猶予超過の経路（purge_after が NULL のまま完全削除に
+// trash_deletable_recordings への参照（issue #160）。purge_requested だけを
+// 条件にすると、30 日猶予超過の経路（purge_requested が false のまま完全削除に
 // 到達する）を拾い損なう —— この区別は述語の定義側に集約されている。
 //
 // recordings を起点に引く（media_assets を起点にすると、アセットを 1 行も

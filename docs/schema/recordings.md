@@ -46,9 +46,11 @@ CREATE TABLE recordings (
     -- ごみ箱（録画単位の論理削除。原本 + 派生物 + サムネイルのグループごと）
     deleted_at        timestamptz,
     -- 即時物理削除の要求印。ファイルは消さない。
-    -- 削除 reconcile が `purge_after <= now()` を拾って unlink する。
+    -- 削除 reconcile が「印が立っているか」だけを見て unlink する（時刻は
+    -- 持たない --- 常に「今すぐ」しか書かないので timestamptz は実質 boolean
+    -- だった。CLAUDE.md 不変条件 9）。
     -- 猶予経過による通常 purge とは独立した「前倒し」の合図。
-    purge_after       timestamptz,
+    purge_requested   boolean NOT NULL DEFAULT false,
     -- 「完全削除が完了した」不可逆な事実。削除 reconcile が
     -- パス末尾で、ごみ箱条件を満たしかつ物理削除待ちの media_assets が 1 行も
     -- 残っていない録画に一度だけ立てる。ごみ箱ビュー（ListTrashRecordings）は
@@ -63,7 +65,7 @@ CREATE TABLE recordings (
 CREATE INDEX ON recordings (program_start_at DESC);        -- ライブラリ一覧
 CREATE INDEX ON recordings (network_id, service_id, event_id);
 CREATE INDEX ON recordings (deleted_at) WHERE deleted_at IS NOT NULL;  -- ごみ箱ビュー
-CREATE INDEX ON recordings (purge_after) WHERE purge_after IS NOT NULL;  -- 即時 purge
+CREATE INDEX ON recordings (id) WHERE purge_requested;  -- 即時 purge
 CREATE INDEX ON recordings (purged_at) WHERE purged_at IS NULL;  -- ごみ箱一覧の絞り込み
 -- 履歴ベース重複排除は title の trgm 類似度で判定するが、GIN は張っていない。
 -- gin_trgm_ops が加速するのは % / <% / LIKE / 正規表現で、similarity() の関数呼び出しには
@@ -102,10 +104,10 @@ CREATE INDEX ON recordings (purged_at) WHERE purged_at IS NULL;  -- ごみ箱一
 
 ### ごみ箱
 
-- UI の削除 = `deleted_at` を立てるだけ。ファイルには触れない。復元 = `deleted_at`（と `purge_after`）を消すだけ
-- 「今すぐ完全削除」= `purge_after = now()` を立てるだけ（未 soft-delete なら `deleted_at` も同時に立てる）。**ファイルは消さない**
+- UI の削除 = `deleted_at` を立てるだけ。ファイルには触れない。復元 = `deleted_at` を消し `purge_requested` を下げるだけ
+- 「今すぐ完全削除」= `purge_requested = true` を立てるだけ（未 soft-delete なら `deleted_at` も同時に立てる）。**ファイルは消さない**
 - 物理削除は削除 reconcile ループが次のいずれかを拾ってアセット単位で実行する:
-  - `purge_after IS NOT NULL AND purge_after <= now()`（即時要求）
+  - `purge_requested`（即時要求）
   - `deleted_at + 猶予期間（既定 30 日）` 経過
 - 物理削除後も recordings 行と media_assets の tombstone は残る → ごみ箱を空にしても録画履歴・ドロップ統計・重複排除は壊れない
 - API: `DELETE /api/recordings/{id}` / `POST .../restore` / `POST .../purge` / `GET /api/recordings?trash=true`

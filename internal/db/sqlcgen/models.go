@@ -164,10 +164,10 @@ type Recording struct {
 	DeletedAt         *time.Time
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
-	PurgeAfter        *time.Time
 	SupersededAt      *time.Time
 	PurgedAt          *time.Time
 	GenreLv1          []int16
+	PurgeRequested    bool
 }
 
 type RecordingEncodePolicy struct {

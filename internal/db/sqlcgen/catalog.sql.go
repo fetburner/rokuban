@@ -423,7 +423,7 @@ func (q *Queries) CatalogListRecordingEncodePolicies(ctx context.Context, site *
 }
 
 const catalogListRecordings = `-- name: CatalogListRecordings :many
-SELECT id, rule_id, source, site, network_id, service_id, event_id, service_name, channel_type, channel, title, description, extended, genres, is_free, program_start_at, program_duration_ms, status, started_at, ended_at, quality_events, deleted_at, created_at, updated_at, purge_after, superseded_at, purged_at, genre_lv1 FROM recordings
+SELECT id, rule_id, source, site, network_id, service_id, event_id, service_name, channel_type, channel, title, description, extended, genres, is_free, program_start_at, program_duration_ms, status, started_at, ended_at, quality_events, deleted_at, created_at, updated_at, superseded_at, purged_at, genre_lv1, purge_requested FROM recordings
 WHERE $1::text IS NULL OR site = $1
 ORDER BY id
 `
@@ -463,10 +463,10 @@ func (q *Queries) CatalogListRecordings(ctx context.Context, site *string) ([]Re
 			&i.DeletedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
-			&i.PurgeAfter,
 			&i.SupersededAt,
 			&i.PurgedAt,
 			&i.GenreLv1,
+			&i.PurgeRequested,
 		); err != nil {
 			return nil, err
 		}
@@ -935,7 +935,7 @@ INSERT INTO recordings (
     program_start_at, program_duration_ms,
     status, started_at, ended_at,
     quality_events,
-    deleted_at, purge_after, superseded_at, purged_at, created_at, updated_at
+    deleted_at, purge_requested, superseded_at, purged_at, created_at, updated_at
 ) OVERRIDING SYSTEM VALUE
 VALUES (
     $1, $2, $3, $4,
@@ -969,7 +969,7 @@ ON CONFLICT (id) DO UPDATE SET
     ended_at            = EXCLUDED.ended_at,
     quality_events      = EXCLUDED.quality_events,
     deleted_at          = EXCLUDED.deleted_at,
-    purge_after         = EXCLUDED.purge_after,
+    purge_requested     = EXCLUDED.purge_requested,
     -- superseded_at を落とすと、復旧時に superseded 行が live に戻って
     -- recordings_unique_active_event に衝突する（issue #129 症状 2）。
     superseded_at       = EXCLUDED.superseded_at,
@@ -1004,7 +1004,7 @@ type CatalogUpsertRecordingParams struct {
 	EndedAt           *time.Time
 	QualityEvents     json.RawMessage
 	DeletedAt         *time.Time
-	PurgeAfter        *time.Time
+	PurgeRequested    bool
 	SupersededAt      *time.Time
 	PurgedAt          *time.Time
 	CreatedAt         time.Time
@@ -1038,7 +1038,7 @@ func (q *Queries) CatalogUpsertRecording(ctx context.Context, arg CatalogUpsertR
 		arg.EndedAt,
 		arg.QualityEvents,
 		arg.DeletedAt,
-		arg.PurgeAfter,
+		arg.PurgeRequested,
 		arg.SupersededAt,
 		arg.PurgedAt,
 		arg.CreatedAt,
