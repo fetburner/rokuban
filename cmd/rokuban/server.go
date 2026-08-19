@@ -47,38 +47,56 @@ var (
 
 const (
 	// httpReadHeaderTimeout はリクエストヘッダーを読み切るまでの上限。Rokuban は
-	// nginx 等のリバースプロキシを必須にせず `--all` で直接インターネットに
-	// 触れうる LAN 機器としても動く（docs/api/deployment.md §単一バイナリの
-	// 自己完結）ため、この下限はアプリ自身が持つ必要がある。無ければヘッダー送信を
-	// 極端に遅くするクライアントが接続と goroutine を無期限に握り、多重接続で
-	// ファイルディスクリプタ／メモリを枯渇させられる（issue #368）。
+	// nginx 等のリバースプロキシを必須にせず `--all` で単体動作することを要件に
+	// しており（docs/api/deployment.md §単一バイナリの自己完結）、前段プロキシの
+	// タイムアウトを前提にできない構成で直接 listen しうる。この下限はアプリ
+	// 自身が持つ必要がある。無ければヘッダー送信を極端に遅くするクライアントが
+	// 接続と goroutine を無期限に握り、多重接続でファイルディスクリプタ／メモリを
+	// 枯渇させられる（issue #368）。
 	//
 	// 10 秒は LAN 上のブラウザ・mirakc・リバースプロキシいずれの通常のヘッダー
 	// 送信（実質数 ms 未満）を壊さない一方、slow-header 接続を有限時間で切る
 	// 基準として mirakc クライアント側の responseHeaderTimeout
 	// （internal/mirakc/client.go の 30 秒。応答待ちなので許容が広い）より
-	// 短く取った。
+	// 短く取った。TestNewHTTPServer_SlowHeaderConnectionIsClosed で確認。
 	httpReadHeaderTimeout = 10 * time.Second
 
 	// httpIdleTimeout は keep-alive 接続がリクエストとリクエストの間で無期限に
 	// 張られたままにならないための上限。net/http の IdleTimeout は「次の
 	// リクエストの到着待ち」の間だけ働き、ハンドラが応答を書き続けている間
 	// （SSE の hub.Run や HLS のセグメント配信）は対象にならないため、WriteTimeout
-	// を一律に設定する場合と異なり長寿命配信を切らない。ReadTimeout を設定
-	// していないため明示しないと無期限になる。
+	// を一律に設定する場合と異なり長寿命配信を切らない —— この主張は
+	// TestNewHTTPServer_LongRunningHandlerNotCutByIdleTimeout で、ハンドラが
+	// IdleTimeout を超えて書き続ける間も接続が切られないことを実測して確認して
+	// ある。アイドルな keep-alive 接続が期限で切られる側は
+	// TestNewHTTPServer_IdleConnectionIsClosedByIdleTimeout で確認。ReadTimeout
+	// を設定していないため明示しないと無期限になる。
 	httpIdleTimeout = 120 * time.Second
+
+	// httpMaxHeaderBytes は明示的に設定しない（net/http の既定である
+	// DefaultMaxHeaderBytes = 1MiB を使う）。通常のブラウザ・mirakc・
+	// リバースプロキシが送るヘッダーは数 KB 程度で 1MiB に遠く及ばず、
+	// slow-header 接続そのものは既に httpReadHeaderTimeout が有限時間で切るので、
+	// ヘッダーサイズ側に別の上限を追加する理由が無いと判断した（issue #368
+	// 「含むもの」2）。
 )
 
 // newHTTPServer は Rokuban の HTTP サーバーを共通のタイムアウト設定で構築する。
+// readHeaderTimeout / idleTimeout を引数で受けるのは、本番では
+// httpReadHeaderTimeout / httpIdleTimeout をリテラルの秒〜分オーダーの値として
+// 渡す一方、テストは同じ配線を数百 ms オーダーの値で通してタイムアウト動作を
+// 実測できるようにするため（実装の定数をテストが直接参照すると、定数を変えても
+// 落ちないテストになってしまう）。
+//
 // WriteTimeout は意図的に設定しない —— SSE（notifier）・HLS（streamer）は
 // レスポンスを長時間書き続けるため、一律の WriteTimeout はこれらを途中で
 // 切断してしまう（エンドポイント特性ごとの判断が要る。issue #368「罠」）。
-func newHTTPServer(addr string, handler http.Handler) *http.Server {
+func newHTTPServer(addr string, handler http.Handler, readHeaderTimeout, idleTimeout time.Duration) *http.Server {
 	return &http.Server{
 		Addr:              addr,
 		Handler:           handler,
-		ReadHeaderTimeout: httpReadHeaderTimeout,
-		IdleTimeout:       httpIdleTimeout,
+		ReadHeaderTimeout: readHeaderTimeout,
+		IdleTimeout:       idleTimeout,
 	}
 }
 
@@ -248,7 +266,7 @@ func newServerCmd() *cobra.Command {
 					routerCfg.Mounter = mounters
 				}
 
-				srv := newHTTPServer(cfg.Server.Listen, api.NewRouter(routerCfg))
+				srv := newHTTPServer(cfg.Server.Listen, api.NewRouter(routerCfg), httpReadHeaderTimeout, httpIdleTimeout)
 
 				eg.Go(func() error {
 					slog.Info("starting http server", "addr", cfg.Server.Listen)
