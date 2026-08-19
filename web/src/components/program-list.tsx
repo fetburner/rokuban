@@ -16,7 +16,6 @@ import { dayKey, formatDate } from '@/lib/format'
 import { domLayoutMeasurable } from '@/lib/list-virtualization'
 import { findProgramIndex, programKeyAt } from '@/lib/program-list-key'
 import { captureAnchor, type AnchorSnapshot } from '@/lib/scroll-preservation'
-import { computeInitialTabClearanceScroll } from '@/lib/tab-clearance'
 import { firstIndexForDayOffset, visibleDayOffset } from '@/lib/visible-day'
 
 /**
@@ -447,94 +446,6 @@ export const ProgramList = forwardRef<
           totalSizePx - (virtualItems[virtualItems.length - 1].end - scrollMarginRef.current),
         )
       : 0
-
-  /**
-   * 初回表示（1px もスクロールしていない状態）で、モバイルのボトムタブの裏に
-   * 「上端は見えているが下端だけ隠れている」行があれば、それを完全に上へ
-   * 追い出す（issue #303）。
-   *
-   * `main` の `padding-bottom`（`--bottom-nav-height`。`components/app-shell.tsx`）
-   * は**ドキュメント最下端までスクロールしたとき**にしかこの重なりを防げない
-   * ---
-   * ネイティブの最大スクロール位置は常にその予約領域の直前でコンテンツの下端が
-   * 揃うようクランプされるためである。しかし 1 時間窓ぶんの番組がすでに
-   * ビューポートより長いことがあり、初回表示（scrollY=0）ではまだその
-   * クランプが効いていない。たまたま行の境界がタブの上端とずれた位置に来ると、
-   * 時刻や「予約」ボタンを含む行がタブの裏に半分だけ隠れた状態でユーザーの
-   * 目に入る。
-   *
-   * タブの上端は `main` の `padding-bottom`（`border-t` を含まない意図上の
-   * 高さ）から逆算せず、`[data-testid="bottom-nav"]` を直接測る --- `nav` 自身の
-   * `border-t border-border`（1px）ぶん、実際の描画上の上端が `padding-bottom`
-   * からの逆算より 1px 高い位置に来ることを実機で確認したため（この 1px を
-   * 逆算のまま許容すると、補正してもなお 1px だけ重なりが残ってしまう）。
-   *
-   * 判定・補正量の計算は `lib/tab-clearance.ts` の純関数
-   * （`computeInitialTabClearanceScroll`）に切り出してある。ここでの役割は
-   * DOM を読んで渡すことと、`window.scrollBy` を実行することだけ
-   * （jsdom はレイアウトを計算しないため、この副作用自体は単体テストで検証
-   * できない。`lib/scroll-preservation.ts` の `captureAnchor` と同じ切り分け）。
-   *
-   * 1 度だけ試みる --- 実機で確認した再現手順が「開いてスクロールせずに見る」
-   * だったため初回表示に限定し、日付ジャンプ後の再チェックは今回のスコープ外
-   * とする。`window.scrollY !== 0` なら（ユーザーが既に操作している）何もしない。
-   */
-  const initialTabClearanceAppliedRef = useRef(false)
-  useLayoutEffect(() => {
-    if (initialTabClearanceAppliedRef.current) return
-    if (renderAll) return // jsdom はレイアウトを計算できない
-    if (programs.length === 0) return
-    if (window.scrollY !== 0) {
-      // ユーザーが既にスクロールしている（＝初回表示の機会は過ぎた）ので、
-      // 行が揃うのを待たずに諦める。
-      initialTabClearanceAppliedRef.current = true
-      return
-    }
-
-    // `virtualizer` は初回コミットではまだ範囲を計算していないことがあり、
-    // その場合 `renderedIndices` が空で行が 1 つも DOM に無い。次のコミット
-    // （`virtualItems` の変化で再度この effect が走る）まで確定させない。
-    const rowRects = [...(listRef.current?.querySelectorAll<HTMLElement>('[data-program-id]') ?? [])].map(
-      (el) => el.getBoundingClientRect(),
-    )
-    if (rowRects.length === 0) return
-
-    initialTabClearanceAppliedRef.current = true
-
-    // `components/app-shell.tsx` の `BottomTabs`。`md` 以上（ボトムタブが
-    // 無い画面幅）では `md:hidden`（`display: none`）になり、
-    // `getBoundingClientRect()` は高さ 0 の矩形を返す --- その場合は
-    // 自然に何もしない。
-    const navRect = document.querySelector('[data-testid="bottom-nav"]')?.getBoundingClientRect()
-    if (navRect === undefined || navRect.height <= 0) return
-    const tabTopPx = navRect.top
-
-    // 実際に測った行を使って 1 回分の補正を試みる。呼ぶたびに実 DOM を測り直す
-    // （`getBoundingClientRect` は `window.scrollBy` 直後の実際のスクロール位置を
-    // 即座に反映するので、React の再レンダーを待たずに正しい値が読める）。
-    const applyOnce = (): number => {
-      const rects = [...(listRef.current?.querySelectorAll<HTMLElement>('[data-program-id]') ?? [])].map(
-        (el) => el.getBoundingClientRect(),
-      )
-      const d = computeInitialTabClearanceScroll(rects, tabTopPx)
-      if (d <= 0) return 0
-      window.scrollBy(0, d)
-      // `virtualizer` が可視範囲の計算に使う内部スクロール位置は、ブラウザの
-      // 'scroll' イベント（`window.scrollBy` に対して非同期に発火する）を受けて
-      // はじめて更新される。他のスクロール補正（`alignRowTop` 呼び出し箇所）と
-      // 同じ理由で、同期的に発火させてペイント前に追いつかせる。
-      window.dispatchEvent(new Event('scroll'))
-      return d
-    }
-
-    if (applyOnce() <= 0) return
-    // 1 回目は、まだ実測（`measureElement`）が済んでいない行を見積もりのまま
-    // 数えていることがあり、その後の再レンダーで行の高さが補正されて数 px
-    // ずれることがある（`alignRowTop` の呼び出し側が 2 回連続で呼ぶのと同じ
-    // 理由。上記コメント「フレーム跳ね」参照）。同じ処理をもう一度行い、
-    // 残った分を追加で補正する。
-    applyOnce()
-  }, [programs, renderAll, virtualItems.length])
 
   // 「いま見ている日」は可視範囲の先頭インデックスから導く（日付ヘッダへの
   // IntersectionObserver ではない ---

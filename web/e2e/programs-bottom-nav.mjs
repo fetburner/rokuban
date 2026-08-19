@@ -1,24 +1,30 @@
 // モバイルの番組リスト末行がボトムタブに隠れる問題（issue #303）の受け入れ判定。
 //
-// `main` の `padding-bottom`（`--bottom-nav-height`）はドキュメント最下端まで
-// スクロールしたときにしか重なりを防げない --- 番組表は 1 時間窓ぶんの番組が
-// 初回表示（スクロール前）で既にビューポートより長いことがあり、その場合
-// たまたま行の境界がボトムタブの上端とずれた位置に来ると、時刻や「予約」
-// ボタンを含む行がタブの裏に半分だけ隠れる。jsdom は `getBoundingClientRect`
-// を計算しないため（常に 0 を返す）、この重なりは原理的にユニットテストでは
-// 検出できない（e2e/README.md）。
+// **経緯**: 最初の実装は「初回表示（scrollY=0）に限って重なりを検出したら
+// `window.scrollBy` で押し出す」方式だった。しかしページ全体スクロール +
+// `fixed` なタブという組み合わせでは、リストの先頭行は常にその日付ヘッダ
+// （`sticky`）の直下に隙間なく続くため、末尾側の重なりを消すのに必要な分だけ
+// スクロールすると、**その量とちょうど同じだけ先頭行が日付ヘッダの裏へ食い込む**
+// （実機計測で確認: 末尾の重なり 29px を消す補正が先頭行に同じ 29px の食い込みを
+// 新たに作った）。単一のスクロール位置で両端の重なりを同時に消すことはできないので、
+// この方式は削除した（詳細は `docs/frontend/scroll.md`「ボトムタブの裏に隠れる行」）。
+//
+// 現在ここで見ているのは、実際に直した原因 --- `--bottom-nav-height`
+// （`web/src/index.css`）がボトムタブの実際の描画高さ（`border-t` 1px を含む）と
+// 食い違っていたため、`main` の `padding-bottom` がドキュメント最下端まで
+// スクロールしてもタブの実寸に 1px 足りていなかった --- が直っているかどうか。
+// jsdom は `getBoundingClientRect` を計算しないため（常に 0 を返す）、この重なりは
+// 原理的にユニットテストでは検出できない（e2e/README.md）。
 //
 // 見るのは:
 //   ⓪ 配っている bundle が dist/ の現物と一致するか
-//   ① 390×844 で `/programs` を開き、**スクロールせずに**見える範囲で、
-//      行がボトムタブに一部だけ隠れていない（上端は見えるが下端がタブに
-//      食い込んでいる行が無い）こと
-//   ② ドキュメント最下端まで実際にスクロールしても、①と同じ意味で重ならない
-//      こと（`main` の `padding-bottom` が本来保証する状態が壊れていないことの
-//      回帰確認）
-//   ③ `lg` 以上（ボトムタブが無い画面幅）では、この補正が何も動かさない
-//      （スクロール位置が 0 のまま）こと --- 補正の実装ミスでデスクトップにも
-//      効いてしまう退行を防ぐ
+//   ① `--bottom-nav-height`（`main` の `padding-bottom` に使われる）が、ボトムタブの
+//      実際の描画高さ（border 込み）と一致すること --- 直した原因そのものの確認。
+//      1px でもずれれば、②はドキュメント最下端で必ず重なりを再現する
+//   ② ドキュメント最下端まで実際にスクロールしても、行がボトムタブに食い込んで
+//      いないこと。**かつ**その余白（最終行の下端からタブ上端までの距離）が
+//      負でないことを、0px ちょうどで通る脆いアサーションにせず、①で直した
+//      `--bottom-nav-height` の値そのものと突き合わせて確認する
 //
 // **mirakc も実チューナーも DB も要らない。** `/api/**` を `page.route` で
 // ブラウザ側から丸ごと差し替える（e2e/design.mjs と同じ手）。
@@ -70,8 +76,8 @@ const service = {
 /**
  * programsFor は要求された窓を 30 分番組で埋める。1 時間窓（`pages/programs.tsx`
  * の `windowHours`）だけで既に 390×844 のビューポートより長くなる密度にして
- * ある --- 密度が薄いと初回表示で 1 画面に収まってしまい、①の再現条件
- * （スクロール前から重なりが起きる）が成立しない。
+ * ある --- 密度が薄いと初回表示で 1 画面に収まってしまい、末尾での重なりの
+ * 再現条件が成立しない。
  */
 function programsFor(startISO, endISO) {
   const start = Date.parse(startISO)
@@ -151,8 +157,7 @@ const browser = await chromium.launch()
 
 /**
  * findOverlappingRow は、現在描かれている行のうち「上端は見えているが下端が
- * ボトムタブに食い込んでいる」行を探す（`lib/tab-clearance.ts` の
- * `computeInitialTabClearanceScroll` と同じ判定条件）。無ければ `null`。
+ * ボトムタブに食い込んでいる」行を探す。無ければ `null`。
  */
 async function findOverlappingRow(page) {
   return page.evaluate(() => {
@@ -179,57 +184,49 @@ async function findOverlappingRow(page) {
   })
 }
 
-// --- ① 390×844、スクロールせずに見た状態で重なりが無い ---
-log('\n=== ① 390×844・初回表示（スクロールなし）でボトムタブに隠れる行が無い ===')
+const context = await browser.newContext({
+  viewport: { width: 390, height: 844 },
+  locale: 'ja-JP',
+  timezoneId: 'Asia/Tokyo',
+  deviceScaleFactor: 2,
+})
+const page = await context.newPage()
+await page.clock.setFixedTime(FIXED_NOW)
+await installApiStubs(page)
+await page.goto(URL_BASE + '/programs', { waitUntil: 'domcontentloaded' })
+await page.locator('li[data-program-id]').first().waitFor({ timeout: 15000 })
+await page.evaluate(() => document.fonts.ready)
+await page.waitForTimeout(500)
+
+// --- ① `--bottom-nav-height` がボトムタブの実際の描画高さ（border 込み）と一致する ---
+log('\n=== ① --bottom-nav-height がボトムタブの実測高さと一致する ===')
 {
-  const context = await browser.newContext({
-    viewport: { width: 390, height: 844 },
-    locale: 'ja-JP',
-    timezoneId: 'Asia/Tokyo',
-    deviceScaleFactor: 2,
+  const measured = await page.evaluate(() => {
+    const navRect = document.querySelector('[data-testid="bottom-nav"]')?.getBoundingClientRect()
+    // カスタムプロパティ自体は `calc()` / `var()` を含む生の文字列のままなので
+    // `getPropertyValue('--bottom-nav-height')` は解決済みの px にならない。
+    // `main` は `padding-bottom: var(--bottom-nav-height)` なので、そちらの
+    // 計算済み `paddingBottom`（ブラウザが calc/var を解決した px 文字列）を読む。
+    const main = document.querySelector('main')
+    const varPx = main ? Number.parseFloat(getComputedStyle(main).paddingBottom) : Number.NaN
+    return { navHeight: navRect?.height ?? null, varPx }
   })
-  const page = await context.newPage()
-  await page.clock.setFixedTime(FIXED_NOW)
-  await installApiStubs(page)
-  await page.goto(URL_BASE + '/programs', { waitUntil: 'domcontentloaded' })
-  await page.locator('li[data-program-id]').first().waitFor({ timeout: 15000 })
-  await page.evaluate(() => document.fonts.ready)
-  await page.waitForTimeout(500)
-
-  const scrollY = await page.evaluate(() => window.scrollY)
-  log(`  scrollY（補正後）: ${scrollY}`)
-
-  const result = await findOverlappingRow(page)
-  if (!result.navPresent) {
-    ng.push('① ボトムタブ（[data-testid="bottom-nav"]）が見つからない・高さ 0')
-  } else if (result.overlap) {
+  log(`  nav 実測高さ        : ${measured.navHeight}`)
+  log(`  --bottom-nav-height : ${measured.varPx}`)
+  if (measured.navHeight === null) {
+    ng.push('① ボトムタブ（[data-testid="bottom-nav"]）が見つからない')
+  } else if (Math.abs(measured.navHeight - measured.varPx) > 0.5) {
     ng.push(
-      `① 初回表示で行がボトムタブに食い込んでいる: 「${result.overlap.text}」` +
-        `（top=${result.overlap.top.toFixed(1)}, bottom=${result.overlap.bottom.toFixed(1)}, タブ上端=${result.overlap.navTop.toFixed(1)}）`,
+      `① --bottom-nav-height（${measured.varPx}px）がボトムタブの実測高さ（${measured.navHeight}px）と一致しない`,
     )
   } else {
-    log('  食い込んでいる行は無い（期待どおり）')
+    log('  一致（期待どおり）')
   }
-  await context.close()
 }
 
-// --- ② ドキュメント最下端まで実際にスクロールしても重ならない（回帰確認） ---
+// --- ② ドキュメント最下端まで実際にスクロールしても重ならない ---
 log('\n=== ② 最下端までスクロールしても重ならない（`main` の padding-bottom の回帰確認） ===')
 {
-  const context = await browser.newContext({
-    viewport: { width: 390, height: 844 },
-    locale: 'ja-JP',
-    timezoneId: 'Asia/Tokyo',
-    deviceScaleFactor: 2,
-  })
-  const page = await context.newPage()
-  await page.clock.setFixedTime(FIXED_NOW)
-  await installApiStubs(page)
-  await page.goto(URL_BASE + '/programs', { waitUntil: 'domcontentloaded' })
-  await page.locator('li[data-program-id]').first().waitFor({ timeout: 15000 })
-  await page.evaluate(() => document.fonts.ready)
-  await page.waitForTimeout(500)
-
   // 8 日ぶんのローリングウィンドウ全体を読み終えるまで、成長が止まるまで
   // 繰り返しスクロールする（`pages/programs.tsx` の `selectableDays`）。
   let prevHeight = -1
@@ -261,34 +258,28 @@ log('\n=== ② 最下端までスクロールしても重ならない（`main` �
   } else {
     log('  食い込んでいる行は無い（期待どおり）')
   }
-  await context.close()
-}
 
-// --- ③ lg 以上（ボトムタブが無い）ではスクロール位置を動かさない ---
-log('\n=== ③ 1280px（ボトムタブが無い）では補正が何もしない ===')
-{
-  const context = await browser.newContext({
-    viewport: { width: 1280, height: 900 },
-    locale: 'ja-JP',
-    timezoneId: 'Asia/Tokyo',
+  // 余白がたまたま 0px ちょうどで通っているだけの状態（①が壊れれば必ずここも
+  // 壊れる、余裕ゼロの回帰確認）を避けるため、最終行の下端からタブ上端までの
+  // 距離が負でないことも直接見る。
+  const gap = await page.evaluate(() => {
+    const navTop = document.querySelector('[data-testid="bottom-nav"]')?.getBoundingClientRect()?.top
+    const rows = [...document.querySelectorAll('li[data-program-id]')]
+    const lastBottom = rows.length > 0 ? rows[rows.length - 1].getBoundingClientRect().bottom : null
+    if (navTop === undefined || lastBottom === null) return null
+    return navTop - lastBottom
   })
-  const page = await context.newPage()
-  await page.clock.setFixedTime(FIXED_NOW)
-  await installApiStubs(page)
-  await page.goto(URL_BASE + '/programs', { waitUntil: 'domcontentloaded' })
-  await page.locator('li[data-program-id]').first().waitFor({ timeout: 15000 })
-  await page.evaluate(() => document.fonts.ready)
-  await page.waitForTimeout(500)
-
-  const scrollY = await page.evaluate(() => window.scrollY)
-  log(`  scrollY: ${scrollY}`)
-  if (scrollY !== 0) {
-    ng.push(`③ 1280px でも scrollY が 0 のままであるべきだが ${scrollY} だった（補正が誤って動いている）`)
+  log(`  最終行下端からタブ上端までの余白: ${gap}px`)
+  if (gap === null) {
+    ng.push('② 最終行またはボトムタブが見つからず余白を測れない')
+  } else if (gap < 0) {
+    ng.push(`② 最終行下端からタブ上端までの余白が負（${gap}px）--- 重なっている`)
   } else {
-    log('  scrollY は 0 のまま（期待どおり）')
+    log('  余白は負ではない（期待どおり）')
   }
-  await context.close()
 }
+
+await context.close()
 
 log('\n=== 結果 ===')
 if (ng.length === 0) log('  すべて期待どおり')
