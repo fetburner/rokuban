@@ -200,9 +200,12 @@ async function installApiStubs(
     if (p === '/api/reservations') return json(emptyHome ? [] : reservations)
     if (p === '/api/capacity/overages') return json(emptyHome ? [] : overages)
     if (p === '/api/recordings') {
-      // ホーム（M8-3）は `status` / `limit` を実際に付けて問い合わせる
-      // （`いま録画中` = status=recording、完了録画 = status=finished&limit=20 の
-      // 1 本で、「直近の完了」の表示はその先頭 6 件に切られる）。
+      // ホーム（M8-3）は `status` / `limit` を実際に付けて 3 本問い合わせる
+      // （`いま録画中` = status=recording、完了録画 = status=finished&limit=20 で
+      // 「直近の完了」の表示はその先頭 6 件に切られる、失敗録画 =
+      // status=failed&limit=20 で警告セクションへの追加項目になる）。
+      // フィクスチャの id 13「アニメ劇場」が `status: 'failed'` かつ recency 窓
+      // （7 日）の内側なので、ホームの警告には実際にその行が出る。
       // 既定の録画一覧（`pages/recordings.tsx`）は status を付けずに常に
       // limit=50 を送るので、ここでの絞り込みはそちらの見た目に影響しない。
       // 実サーバーの既定（program_start_at 降順）に合わせて並べ替えてから絞る。
@@ -393,8 +396,9 @@ async function computedVar(locator, varName) {
 const screens = [
   // ホーム（M8-3, issue #242）は `/` を新設で受け取り、番組表は `/programs` へ
   // 移設した。フィクスチャは「いま録画中」1 件・「今夜〜明日の予約」窓に入る
-  // 予約複数件・容量超過 1 件（→「警告」）・「直近の完了」複数件を持つので、
-  // 4 セクションすべてが一度に撮れる。
+  // 予約複数件・容量超過 1 件・失敗録画 1 件（id 13「アニメ劇場」、recency 窓の
+  // 内側）（いずれも→「警告」）・「直近の完了」複数件を持つので、4 セクション
+  // すべてが一度に撮れる。
   { name: 'home', path: '/', wait: 'text=いま録画中' },
   { name: 'programs', path: '/programs', wait: 'li[data-program-id], [data-testid="program-grid-now-line"]' },
   { name: 'reservations', path: '/reservations', wait: 'text=チューナー不足' },
@@ -666,8 +670,20 @@ log("\n=== ①'' ホーム: 警告の種別ごとの色（琥珀 vs destructive�
     ng.push(`ホーム: ドロップの警告項目が destructive でない（${dropColor.value} = ${dropColor.rgba}）`)
   }
 
+  // 失敗録画 = destructive（録画が失われたことは取り返しがつかない）。色はリンク
+  // に付く。フィクスチャの id 13「アニメ劇場」が `status: 'failed'`。
+  const failedRow = page.locator('li', { hasText: 'アニメ劇場: 録画失敗' }).first()
+  const failedColor = await computedOf(failedRow.locator('a').first(), 'color')
+  if (failedColor === null) {
+    ng.push('ホーム: 失敗録画の警告項目の文字色が取得できない（行が出ていない可能性）')
+  } else if (!isRed(failedColor.rgba)) {
+    ng.push(
+      `ホーム: 失敗録画の警告項目が destructive でない（${failedColor.value} = ${failedColor.rgba}）`,
+    )
+  }
+
   log(
-    `  チューナー不足=${overageColor?.rgba} / ブレーカー=${breakerColor?.rgba} / ドロップ=${dropColor?.rgba}`,
+    `  チューナー不足=${overageColor?.rgba} / ブレーカー=${breakerColor?.rgba} / ドロップ=${dropColor?.rgba} / 失敗録画=${failedColor?.rgba}`,
   )
   await context.close()
 }

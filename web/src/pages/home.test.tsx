@@ -20,6 +20,13 @@ const HOUR = 3_600_000
 const DROP_WARNING_SCAN_LIMIT = 20
 
 /**
+ * ホームが失敗録画を取るときに送る `limit`（`pages/home.tsx` の
+ * `FAILED_RECORDING_SCAN_LIMIT`）。上記 `DROP_WARNING_SCAN_LIMIT` と同じ理由で
+ * リテラルにしてある。
+ */
+const FAILED_RECORDING_SCAN_LIMIT = 20
+
+/**
  * HomePage は `Date.now()` を直接呼ぶ（`pages/programs.tsx` と同じ規律。注入口を
  * 持たない）。フィクスチャの `nowMs` と実際の `Date.now()` を一致させないと、
  * 窓判定（今夜〜明日の予約）がフィクスチャの時刻を「はるか過去」として全除外して
@@ -116,11 +123,25 @@ type Fixtures = {
    * 「直近の完了」に表示し、ドロップ警告は全件から拾う。
    */
   finished?: Recording[]
+  /**
+   * 失敗録画（`status=failed&limit=20`）。取得した全件のうち
+   * `FAILED_RECORDING_WARNING_WINDOW_MS`（recency 窓）の中だけを警告セクションに
+   * 出す。既定の `recording()` の `startAt` は「今」の 1 時間前なので窓には
+   * 必ず収まる。
+   */
+  failed?: Recording[]
   reservations?: Reservation[]
   breakers?: CircuitBreaker[]
   overages?: CapacityOverage[]
   /** 特定パスの応答を意図的に遅延させ、読み込み中の状態を作るためのフック。 */
   pendingPaths?: Set<string>
+  /**
+   * `/api/recordings` の**特定の `status` だけ**を遅延させるフック。ホームは同じ
+   * パスへ 3 本（`recording` / `finished` / `failed`）投げるので、`pendingPaths`
+   * （パス単位）では 1 本だけを未解決にできない --- 「警告の材料 4 本のうち
+   * 失敗録画だけが遅れている」を作るために `status` 単位の口が要る。
+   */
+  pendingRecordingStatuses?: Set<string>
   /**
    * 特定パスの **2 回目以降**の呼び出しだけを遅延させるフック。クエリキーが
    * 進んだ瞬間（時境界の越え際）に前のデータを見せ続けるかを、確定的に測る
@@ -133,12 +154,12 @@ type Fixtures = {
 }
 
 /**
- * stubApi はホームが叩く 5 本の GET を振り分ける。`/api/recordings` は `status`
- * クエリで「いま録画中」「完了録画（表示 + ドロップ検出）」を分ける
- * （サーバーの絞り込みを模す）。
+ * stubApi はホームが叩く 6 本の GET を振り分ける。`/api/recordings` は `status`
+ * クエリで「いま録画中」「完了録画（表示 + ドロップ検出）」「失敗録画（警告）」を
+ * 分ける（サーバーの絞り込みを模す）。
  */
 function stubApi(fixtures: Fixtures) {
-  const pendingResolvers: Array<{ path: string; done: boolean; run: () => void }> = []
+  const pendingResolvers: Array<{ key: string; done: boolean; run: () => void }> = []
   const callCounts = new Map<string, number>()
   const fetchMock = vi.fn((input: string | URL | Request) => {
     const url = new URL(String(input), 'http://localhost')
@@ -155,6 +176,9 @@ function stubApi(fixtures: Fixtures) {
         if (status === 'finished' && limit === String(DROP_WARNING_SCAN_LIMIT)) {
           return jsonResponse(fixtures.finished ?? [])
         }
+        if (status === 'failed' && limit === String(FAILED_RECORDING_SCAN_LIMIT)) {
+          return jsonResponse(fixtures.failed ?? [])
+        }
         return jsonResponse([])
       }
       if (p === '/api/reservations') return jsonResponse(fixtures.reservations ?? [])
@@ -163,12 +187,18 @@ function stubApi(fixtures: Fixtures) {
       throw new Error(`unexpected fetch: ${p}`)
     }
 
+    // `/api/recordings` は 3 本（status ごと）が同じパスに来るので、遅延の識別子は
+    // status まで含めた鍵にする（`unresolvedCount` もこの鍵で数える）。
+    const recordingStatus = p === '/api/recordings' ? url.searchParams.get('status') : null
+    const pendingKey = recordingStatus === null ? p : `${p}?status=${recordingStatus}`
     const isPending =
       fixtures.pendingPaths?.has(p) ||
+      (recordingStatus !== null &&
+        fixtures.pendingRecordingStatuses?.has(recordingStatus) === true) ||
       (fixtures.pendingAfterFirstCall?.has(p) === true && callCount > 1)
     if (isPending) {
       return new Promise<Response>((resolve) => {
-        pendingResolvers.push({ path: p, done: false, run: () => resolve(respond()) })
+        pendingResolvers.push({ key: pendingKey, done: false, run: () => resolve(respond()) })
       })
     }
     return Promise.resolve(respond())
@@ -184,14 +214,16 @@ function stubApi(fixtures: Fixtures) {
       }
     },
     /**
-     * unresolvedCount は `path` 宛で**まだ解決していない**応答の数。
+     * unresolvedCount は `key` 宛で**まだ解決していない**応答の数。`key` はパス
+     * （`/api/reservations`）か、`/api/recordings` なら status 付き
+     * （`/api/recordings?status=failed`）。
      *
      * 「未解決のまま」を前提に書いたテストが、遅延の仕掛けが静かに効かなく
      * なった（= 即答するようになった）ときに空虚な成功へ転ぶのを防ぐための
      * ガード。前提そのものを assert できるようにしておく。
      */
-    unresolvedCount: (path: string) =>
-      pendingResolvers.filter((e) => e.path === path && !e.done).length,
+    unresolvedCount: (key: string) =>
+      pendingResolvers.filter((e) => e.key === key && !e.done).length,
   }
 }
 
@@ -377,12 +409,18 @@ describe('ホーム: 警告セクション', () => {
     expect(screen.queryByRole('heading', { name: '警告' })).not.toBeInTheDocument()
   })
 
-  it('警告項目は種別ごとに固定の色クラスを持つ（チューナー不足=warning、ブレーカー/ドロップ=destructive）', async () => {
+  it('警告項目は種別ごとに固定の色クラスを持つ（チューナー不足=warning、ブレーカー/ドロップ/失敗録画=destructive）', async () => {
     // jsdom は実描画色を計算しないので、当たっているクラスだけを見る
     // （実画素は e2e/design.mjs が見る。`pages/reservations.test.tsx` の
     // 「警告の信号色」と同じ流儀）。文字列 key の前方一致で種別を推測する
     // 実装は、key の書式を変えただけで色が黙って壊れる（レビュー指摘）ので、
     // `WarningItem.kind` を経由していることをここで固定する。
+    //
+    // 失敗録画も同じ契約に入れる（レビュー指摘: `WarningKind` に 'failed' を
+    // 足したのに色 × 種別の主張が無く、`amber` の条件に 'failed' を混ぜても
+    // 全テストが緑だった）。録画が失われたことは取り返しがつかないので
+    // destructive 側（`docs/frontend/design.md`「色は信号のみ」の表が
+    // destructive を「失敗・ドロップ・…」と定めている）。
     stubApi({
       breakers: [breaker('ruler_deletes')],
       overages: [overage(2 * HOUR, 3 * HOUR)],
@@ -391,12 +429,14 @@ describe('ホーム: 警告セクション', () => {
           dropSummary: { packets: 1000, drops: 12, errors: 0, scrambled: 3 },
         }),
       ],
+      failed: [recording(10, '失敗した録画', 'failed')],
     })
     renderHome()
 
     const overageRow = (await screen.findByText(/チューナーが不足しています/)).closest('li')
     const breakerRow = screen.getByText(/ルール評価による予約の削除が停止中/).closest('li')
     const dropRow = screen.getByText(/ドロップのある録画: drop 12/).closest('li')
+    const failedRow = screen.getByText(/失敗した録画: 録画失敗/).closest('li')
 
     // 色クラスは、リンクを持つ行（チューナー不足）では中の `<a>` に、
     // リンクを持たない行（ブレーカー・ドロップ）では `<li>` 自身に付く
@@ -406,11 +446,214 @@ describe('ホーム: 警告セクション', () => {
     const colorElement = (row: HTMLElement | null) => row?.querySelector('a') ?? row
     expect(colorElement(overageRow)?.className).toMatch(/bg-warning\/10/)
     expect(colorElement(overageRow)?.className).toMatch(/text-warning/)
-    for (const row of [breakerRow, dropRow]) {
+    for (const row of [breakerRow, dropRow, failedRow]) {
       const el = colorElement(row)
       expect(el?.className).toMatch(/text-destructive/)
       expect(el?.className).not.toMatch(/bg-warning/)
     }
+  })
+})
+
+describe('ホーム: 失敗録画が警告に出る（issue #301）', () => {
+  it('失敗録画があれば警告セクションに出る', async () => {
+    stubApi({
+      failed: [recording(9, '失敗した番組', 'failed')],
+    })
+    renderHome()
+
+    expect(await screen.findByRole('heading', { name: '警告' })).toBeInTheDocument()
+    expect(screen.getByText(/失敗した番組: 録画失敗/)).toBeInTheDocument()
+  })
+
+  it('失敗録画が無ければ警告に出ない（両方向）', async () => {
+    stubApi({
+      finished: [recording(9, 'きれいな録画', 'finished')],
+    })
+    renderHome()
+
+    expect(await screen.findByRole('heading', { name: '直近の完了' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: '警告' })).not.toBeInTheDocument()
+    expect(screen.queryByText(/録画失敗/)).not.toBeInTheDocument()
+  })
+
+  it('開始・終了の両方が記録されている失敗は、予定尺と実際に録れた尺を区別して出す', async () => {
+    // 開始と終了が同じ秒（実際は 0 分）なのに、予定尺（5 分。issue #301 の実機
+    // 観測と同じ値）だけを見ると「ほぼ予定通り録れた」ように誤読できてしまう。
+    const startedAndEnded = iso(-30 * 60_000)
+    stubApi({
+      failed: [
+        recording(9, '直後に切れた録画', 'failed', {
+          durationMs: 5 * 60_000,
+          startedAt: startedAndEnded,
+          endedAt: startedAndEnded,
+        }),
+      ],
+    })
+    renderHome()
+
+    // 実際尺（0 分）と予定尺（5 分）の両方が別々に出る --- 予定尺だけの表示に
+    // 潰すと「実際 0分」が消え、この変異でテストが落ちる。
+    expect(
+      await screen.findByText(/直後に切れた録画: 録画失敗（実際 0分・予定 5分/),
+    ).toBeInTheDocument()
+  })
+
+  it('開始が観測されていない失敗は「未開始」と出し、実際尺は主張しない', async () => {
+    stubApi({
+      failed: [
+        recording(9, '開始が観測されていない録画', 'failed', {
+          durationMs: 5 * 60_000,
+          startedAt: undefined,
+          endedAt: undefined,
+        }),
+      ],
+    })
+    renderHome()
+
+    expect(
+      await screen.findByText(/開始が観測されていない録画: 録画失敗（予定 5分・未開始/),
+    ).toBeInTheDocument()
+    // 「実際」という言葉は、開始の観測が無い以上出さない（実際尺が定義できない）
+    expect(screen.queryByText(/実際/)).not.toBeInTheDocument()
+  })
+
+  it('startedAt だけが記録されている失敗は「未開始」と潰さず、実際尺も主張しない', async () => {
+    // レビュー指摘: `UpdateRecordingStatus`（internal/db/queries/recordings.sql）は
+    // `started_at` を無条件に、`ended_at` は非 NULL のときだけ書くので、mirakc の
+    // failed record に `endTime` が無ければ `startedAt` だけが立つ行がある。
+    // これを「未開始」と言うのは、開始した事実がある録画に「開始していない」と
+    // 言う新しい嘘になる（issue #301 が問題にしているのと同じ種類の食い違い）。
+    stubApi({
+      failed: [
+        recording(9, '終了未記録の録画', 'failed', {
+          durationMs: 5 * 60_000,
+          startedAt: iso(-30 * 60_000),
+          endedAt: undefined,
+        }),
+      ],
+    })
+    renderHome()
+
+    const row = await screen.findByText(/終了未記録の録画: 録画失敗/)
+    expect(row.textContent).not.toMatch(/未開始/)
+    expect(row.textContent).not.toMatch(/実際/)
+  })
+
+  it('failed 理由（recording.failed。オブジェクトの type フィールド）を出す', async () => {
+    // internal/watcher/watcher.go の handleRecordingFailed は
+    // json.Marshal(data.Reason) で書き、data.Reason は
+    // mirakc.FailedReason（{type, message?, osError?, exitCode?}）なので
+    // 素の文字列にはならない。
+    stubApi({
+      failed: [
+        recording(9, '理由ありの失敗', 'failed', {
+          qualityEvents: [
+            { at: iso(-HOUR), event: 'recording.failed', reason: { type: 'tuner-unavailable' } },
+          ],
+        }),
+      ],
+    })
+    renderHome()
+
+    expect(await screen.findByText(/理由: tuner-unavailable/)).toBeInTheDocument()
+  })
+
+  it('failed 理由（recording.record-broken。オブジェクトの reason フィールド）を出す', async () => {
+    // internal/watcher/watcher.go の handleRecordBroken は
+    // map[string]string{"reason": data.Reason} で書く。
+    stubApi({
+      failed: [
+        recording(9, '録画中に壊れた失敗', 'failed', {
+          qualityEvents: [
+            { at: iso(-HOUR), event: 'recording.record-broken', reason: { reason: 'io-error' } },
+          ],
+        }),
+      ],
+    })
+    renderHome()
+
+    expect(await screen.findByText(/理由: io-error/)).toBeInTheDocument()
+  })
+
+  it('失敗系イベントが期待した形を持たない未知のケースは JSON へフォールバックする', async () => {
+    stubApi({
+      failed: [
+        recording(9, '未知の形の失敗', 'failed', {
+          qualityEvents: [{ at: iso(-HOUR), event: 'recording.failed', reason: 'unexpected' }],
+        }),
+      ],
+    })
+    renderHome()
+
+    expect(await screen.findByText(/理由: "unexpected"/)).toBeInTheDocument()
+  })
+
+  it('quality_events の最後の要素が bcas_anomaly でも、その前の失敗理由を読む', async () => {
+    // quality_events は recording.failed / record-broken / bcas_anomaly が
+    // 混ざる追記専用の履歴なので、「最後の要素」だけを見ると失敗理由が
+    // bcas_anomaly（reason 無し）に上書きされる。
+    stubApi({
+      failed: [
+        recording(9, '複数イベントの失敗', 'failed', {
+          qualityEvents: [
+            { at: iso(-2 * HOUR), event: 'recording.failed', reason: { type: 'io-error' } },
+            { at: iso(-HOUR), event: 'bcas_anomaly' },
+          ],
+        }),
+      ],
+    })
+    renderHome()
+
+    expect(await screen.findByText(/理由: io-error/)).toBeInTheDocument()
+  })
+
+  it('failed 理由が無ければ「理由不明」と沈黙を区別する', async () => {
+    stubApi({
+      failed: [recording(9, '理由なしの失敗', 'failed', { qualityEvents: [] })],
+    })
+    renderHome()
+
+    expect(await screen.findByText(/理由: 理由不明/)).toBeInTheDocument()
+  })
+
+  it('失敗理由のフィールドが空文字なら JSON へ落とさず「理由不明」に寄せる', async () => {
+    // レビュー指摘: mirakc.FailedReason.Type に omitempty は無いので
+    // `{"type":""}` はあり得る形。JSON フォールバックに落とすと
+    // 「理由: {"type":""}」になり、材料が無い（沈黙）ことと区別できる
+    // 文言にならない。
+    stubApi({
+      failed: [
+        recording(9, '空の理由の失敗', 'failed', {
+          qualityEvents: [{ at: iso(-HOUR), event: 'recording.failed', reason: { type: '' } }],
+        }),
+      ],
+    })
+    renderHome()
+
+    const row = await screen.findByText(/空の理由の失敗: 録画失敗/)
+    expect(row.textContent).toMatch(/理由: 理由不明/)
+    expect(row.textContent).not.toMatch(/\{/)
+  })
+
+  it('失敗録画は録画単体ページへの導線を持つ', async () => {
+    stubApi({ failed: [recording(9, '失敗した番組', 'failed')] })
+    renderHome()
+
+    const link = await screen.findByRole('link', { name: /失敗した番組/ })
+    expect(link).toHaveAttribute('href', '/recordings/9')
+  })
+
+  it('recency 窓の外にある古い失敗は警告に出ない（issue の受け入れ基準「直近の」失敗録画）', async () => {
+    stubApi({
+      failed: [
+        recording(9, '古い失敗', 'failed', { startAt: iso(-30 * 24 * HOUR) }),
+        recording(10, '直近の失敗', 'failed', { startAt: iso(-HOUR) }),
+      ],
+    })
+    renderHome()
+
+    expect(await screen.findByText(/直近の失敗: 録画失敗/)).toBeInTheDocument()
+    expect(screen.queryByText(/古い失敗: 録画失敗/)).not.toBeInTheDocument()
   })
 })
 
@@ -475,9 +718,9 @@ describe('ホーム: セクションごとに独立して読み込み、空セ�
     expect(await screen.findByRole('heading', { name: '今夜〜明日の予約' })).toBeInTheDocument()
   })
 
-  it('警告は 3 本（ブレーカー・容量超過・ドロップ検出）すべての解決を待つ', async () => {
+  it('警告は 4 本（ブレーカー・容量超過・ドロップ検出・失敗録画）すべての解決を待つ: 容量超過が遅い場合', async () => {
     // 「静かに空へ縮退させる」側（容量超過）が遅れているだけでも、既に届いた
-    // ブレーカー 1 件だけで警告セクションを早出ししない（3 本の合成なので、
+    // ブレーカー 1 件だけで警告セクションを早出ししない（4 本の合成なので、
     // 未解決の 1 本があるうちは「まだ分からない」のまま）。
     const { resolvePending } = stubApi({
       breakers: [breaker('ruler_deletes')],
@@ -492,6 +735,55 @@ describe('ホーム: セクションごとに独立して読み込み、空セ�
 
     expect(await screen.findByRole('heading', { name: '警告' })).toBeInTheDocument()
     expect(screen.getByText(/ルール評価による予約の削除が停止中/)).toBeInTheDocument()
+  })
+
+  /**
+   * 4 本目（失敗録画）も同じ網に掛ける（レビュー指摘: `failedQuery.isPending` を
+   * `warningsPending` から外しても、他の 3 本を固定したこのテストは緑のままだった）。
+   *
+   * 守っている挙動は 2 つ: 失敗録画だけが遅れているとき (a) 既に届いたブレーカー
+   * 1 件で警告セクションを早出ししない、(b) 「表示できる項目がありません」を先に
+   * 出してから警告が後出しで現れることがない。どちらも `warningsPending` に
+   * `failedQuery.isPending` が入っていないと壊れる。
+   */
+  it('警告は 4 本（ブレーカー・容量超過・ドロップ検出・失敗録画）すべての解決を待つ: 失敗録画が遅い場合', async () => {
+    const { resolvePending, unresolvedCount } = stubApi({
+      breakers: [breaker('ruler_deletes')],
+      pendingRecordingStatuses: new Set(['failed']),
+    })
+    renderHome()
+
+    await new Promise((r) => setTimeout(r, 50))
+    // 遅延の仕掛けが実際に効いていることを前提として assert する（即答に
+    // 戻ったら以下の不在は空虚な成功になる）。
+    expect(unresolvedCount('/api/recordings?status=failed')).toBe(1)
+    expect(screen.queryByRole('heading', { name: '警告' })).not.toBeInTheDocument()
+
+    resolvePending()
+
+    expect(await screen.findByRole('heading', { name: '警告' })).toBeInTheDocument()
+    expect(screen.getByText(/ルール評価による予約の削除が停止中/)).toBeInTheDocument()
+  })
+
+  it('失敗録画だけが未解決のうちは、単一の空状態（表示できる項目がありません）も出さない', async () => {
+    // 他の 5 本が全部 0 件で解決していても、失敗録画が未解決なら「空である」と
+    // まだ言い切れない --- 言ってしまうと、空状態を出したあとに警告が後出しで
+    // 現れる（`allSettled` は `warningsPending` を経由して 4 本目に依存する）。
+    const { resolvePending, unresolvedCount } = stubApi({
+      failed: [recording(9, '後から届いた失敗', 'failed')],
+      pendingRecordingStatuses: new Set(['failed']),
+    })
+    renderHome()
+
+    await new Promise((r) => setTimeout(r, 50))
+    expect(unresolvedCount('/api/recordings?status=failed')).toBe(1)
+    expect(screen.queryByText('表示できる項目がありません')).not.toBeInTheDocument()
+
+    resolvePending()
+
+    // 解決したら警告として出る（「たまたま速すぎて見えなかった」の排除）
+    expect(await screen.findByText(/後から届いた失敗: 録画失敗/)).toBeInTheDocument()
+    expect(screen.queryByText('表示できる項目がありません')).not.toBeInTheDocument()
   })
 
   it('全セクションが未解決の間は、見出しも単一の空状態も出さない', async () => {

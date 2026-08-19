@@ -58,6 +58,31 @@ const RECENT_FINISHED_LIMIT = 6
 const DROP_WARNING_SCAN_LIMIT = 20
 
 /**
+ * FAILED_RECORDING_SCAN_LIMIT は警告に出す失敗録画（`status=failed`）を取る
+ * 範囲。**「直近の完了」「ドロップ警告」の限度とは無関係の別の定数にする**
+ * （issue #301）--- 失敗はホームに専用の表示欄を持たず「警告」セクションへの
+ * 追加項目として出すだけなので、表示件数と検出範囲を分ける理由（上記
+ * `DROP_WARNING_SCAN_LIMIT` の doc コメント）はここには無いが、他の 2 つの
+ * 上限と値だけ共有すると「表示件数を変えたら失敗の遡り幅まで連動する」将来の
+ * 罠を先に埋めてしまう。値自体は他の上限と同じく実測ではない恣意的な上限。
+ */
+const FAILED_RECORDING_SCAN_LIMIT = 20
+
+/**
+ * FAILED_RECORDING_WARNING_WINDOW_MS は警告に出す失敗録画の recency 窓（レビュー
+ * 指摘）。他の警告材料（ブレーカーは発動中のみ・容量超過は今夜〜明日の窓・
+ * ドロップは「直近 20 件の完了」で実質 recency がある）はどれも自然に消えるが、
+ * 失敗だけは `FAILED_RECORDING_SCAN_LIMIT` 件に収まる限り**いつの失敗でも
+ * 出続けてしまう**。稼働の長いサーバーでは警告セクションが古い失敗で常時
+ * 埋まり、警告全体の情報価値が下がる（issue #301 の受け入れ基準も「直近の」
+ * 失敗録画と言っている）。窓は録画の `startAt`（番組の放送開始。失敗の場合も
+ * 必ず持つ --- `startedAt` と違い欠けることが無い）で判定する。値（7 日）は
+ * 実測ではなく「1〜2 週間動かして異常が無いか確認する」運用サイクルに対して
+ * 「今日気付くべき失敗」を残す側に振った恣意的な上限（他の上限と同じ性質）。
+ */
+const FAILED_RECORDING_WARNING_WINDOW_MS = 7 * 24 * 3_600_000
+
+/**
  * HomePage はホーム（`/`。M8-3, issue #242）。
  *
  * 起動して最初に見えるのが番組表（「これから録るもの」）だと、運用が安定した
@@ -75,7 +100,7 @@ const DROP_WARNING_SCAN_LIMIT = 20
  *
  * **セクションごとの可視性はそのセクション自身のクエリの解決だけを待つ。**
  * 「全セクションが空」（`allEmpty`）の判定だけが全クエリの解決を待つ ---
- * 5 本のうち最も遅い 1 本（絞り込みを持たない `GET /api/reservations` など）に
+ * 6 本のうち最も遅い 1 本（絞り込みを持たない `GET /api/reservations` など）に
  * 「いま録画中」のような最も見たいセクションまで引きずられて隠れる半径を
  * 小さくするため（レビュー指摘）。一方で「まだ解決していないセクションを
  * 0 件として隠す」ことはしない --- 個別のクエリが解決する前に「空だから隠す」を
@@ -85,12 +110,24 @@ const DROP_WARNING_SCAN_LIMIT = 20
  *
  * 取得が失敗した場合は空扱いにせず、そのセクションだけ取得失敗を表示する
  * （空白のセクションを「異常なし」と取り違えさせないため）。ただし警告
- * セクションの材料（サーキットブレーカー・容量超過・完了録画のドロップ統計）は、
- * 他の画面（`CircuitBreakerBanner` / 予約一覧の容量バッジ）と同じ「取得失敗は
- * 警告が無いことにする」流儀に揃える --- `docs/data.md` §6.5 が言う「既知の
- * 盲点は警告を見逃す方向に偏っている」を承知のうえで、既存の踏襲先が同じ判断を
- * している。完了録画の一覧は「直近の完了」の表示と警告の材料を兼ねるので、
- * それが失敗したときは前者にエラーを出し、後者は黙って警告なしに縮退する。
+ * セクションの材料（サーキットブレーカー・容量超過・完了録画のドロップ統計・
+ * 失敗録画）は、他の画面（`CircuitBreakerBanner` / 予約一覧の容量バッジ）と
+ * 同じ「取得失敗は警告が無いことにする」流儀に揃える --- `docs/data.md` §6.5 が
+ * 言う「既知の盲点は警告を見逃す方向に偏っている」を承知のうえで、既存の
+ * 踏襲先が同じ判断をしている。完了録画の一覧は「直近の完了」の表示と警告の
+ * 材料を兼ねるので、それが失敗したときは前者にエラーを出し、後者は黙って
+ * 警告なしに縮退する。
+ *
+ * **失敗録画（`status=failed`）はホームに専用の一覧を持たず、「警告」への
+ * 追加項目としてのみ出す**（issue #301）。「直近の完了」は
+ * `status=finished` の絞り込みなので failed 行はそもそも混ざらず、既存の
+ * 4 セクション構成を変えずに済む。行では予定尺（`durationMs`。番組の放送尺の
+ * スナップショット）と実際に録れた尺（`startedAt`〜`endedAt`）を区別する ---
+ * 録画が実際には開始しなかった失敗（`startedAt`/`endedAt` が無い）と、
+ * 開始した直後に終わった失敗（両方あるが差が小さい）を同じ「予定尺」表示に
+ * 潰すと、後者が「ほぼ予定通り録れた」ように見えてしまう。失敗理由は
+ * `qualityEvents`（失敗系イベントの最後の要素の `reason`）にあれば出し、
+ * 無ければ「理由不明」と沈黙を区別する（`failureReasonText` 参照）。
  */
 export function HomePage() {
   // nowMs はこのレンダーの間で一貫させる（`pages/programs.tsx` と同じ規律。
@@ -128,6 +165,13 @@ export function HomePage() {
     status: 'finished',
     limit: DROP_WARNING_SCAN_LIMIT,
   })
+  // 失敗録画（issue #301）。表示専用のセクションは持たず「警告」への追加項目
+  // としてのみ使うので、`finishedQuery` のような「表示 + 検出の兼用」は無い ---
+  // 取る範囲がそのまま警告に出す範囲になる。
+  const failedQuery = useListRecordings({
+    status: 'failed',
+    limit: FAILED_RECORDING_SCAN_LIMIT,
+  })
   const reservationsQuery = useListReservations()
   const breakersQuery = useListCircuitBreakers()
   const overagesQuery = useListCapacityOverages(
@@ -159,6 +203,7 @@ export function HomePage() {
   // `nowMs` 依存で効かないので、素朴に毎レンダー計算する。
   const finishedRecordings = unwrap(finishedQuery.data) ?? []
   const recentFinished = finishedRecordings.slice(0, RECENT_FINISHED_LIMIT)
+  const failedRecordings = unwrap(failedQuery.data) ?? []
 
   const upcomingReservations = (unwrap(reservationsQuery.data) ?? [])
     .filter((r) => {
@@ -182,21 +227,32 @@ export function HomePage() {
     (o) => new Date(o.endAt).getTime() > nowMs,
   )
 
+  // 失敗録画は `FAILED_RECORDING_SCAN_LIMIT` 件に収まる限りいつの失敗でも警告に
+  // 出続けてしまうので、ここで recency 窓へ絞る
+  // （`FAILED_RECORDING_WARNING_WINDOW_MS` の doc コメント参照）。
+  const recentFailedRecordings = failedRecordings.filter(
+    (r) => new Date(r.startAt).getTime() >= nowMs - FAILED_RECORDING_WARNING_WINDOW_MS,
+  )
+
   const warnings = buildWarnings({
     breakers: unwrap(breakersQuery.data) ?? [],
     overages: activeOverages,
     dropCandidates: finishedRecordings,
+    failedRecordings: recentFailedRecordings,
   })
 
   // セクションごとの可視性はそのセクション自身のクエリの解決だけを待つ
-  // （上記 doc コメント参照）。警告は 3 本のクエリの合成なので、そのいずれかが
+  // （上記 doc コメント参照）。警告は 4 本のクエリの合成なので、そのいずれかが
   // 未解決なら「まだ言わない」。
   const recordingSectionVisible =
     !recordingQuery.isPending && (recordingQuery.isError || recordingsInProgress.length > 0)
   const reservationSectionVisible =
     !reservationsQuery.isPending && (reservationsQuery.isError || shownReservations.length > 0)
   const warningsPending =
-    breakersQuery.isPending || overagesQuery.isPending || finishedQuery.isPending
+    breakersQuery.isPending ||
+    overagesQuery.isPending ||
+    finishedQuery.isPending ||
+    failedQuery.isPending
   const warningSectionVisible = !warningsPending && warnings.length > 0
   const finishedSectionVisible =
     !finishedQuery.isPending && (finishedQuery.isError || recentFinished.length > 0)
@@ -385,9 +441,9 @@ function ReservationRow({ reservation }: { reservation: Reservation }) {
 }
 
 /** WarningKind はホーム「警告」セクションの項目の種別。表示色と、色を選ぶ判断の両方をこれ 1 つに一本化する。 */
-type WarningKind = 'breaker' | 'overage' | 'drop'
+type WarningKind = 'breaker' | 'overage' | 'drop' | 'failed'
 
-/** WarningItem はホーム「警告」セクションの 1 件（サーキットブレーカー / チューナー不足 / ドロップ）。 */
+/** WarningItem はホーム「警告」セクションの 1 件（サーキットブレーカー / チューナー不足 / ドロップ / 失敗録画）。 */
 type WarningItem = {
   key: string
   /**
@@ -403,26 +459,33 @@ type WarningItem = {
 }
 
 /**
- * buildWarnings はサーキットブレーカー・容量超過・ドロップ統計から
+ * buildWarnings はサーキットブレーカー・容量超過・ドロップ統計・失敗録画から
  * ホームの「警告」セクションの項目を組む（issue #242 着手宣言コメントの決定：
- * 新しい API を作らず、既存の取得結果だけを材料にする）。
+ * 新しい API を作らず、既存の取得結果だけを材料にする。失敗録画も既存の
+ * `GET /api/recordings?status=failed` の絞り込みだけで足りる。issue #301）。
  *
  * `dropCandidates` は `limit=DROP_WARNING_SCAN_LIMIT` で取った完了録画の全件で、
  * 「直近の完了」に**表示する分（先頭 `RECENT_FINISHED_LIMIT` 件）に切る前**の
  * リスト --- 表示件数を絞っても警告の検出範囲まで連動して狭まらないようにする
- * ため（呼び出し元の doc コメント参照）。
+ * ため（呼び出し元の doc コメント参照）。`failedRecordings` は
+ * `limit=FAILED_RECORDING_SCAN_LIMIT` で取った失敗録画のうち、呼び出し元で
+ * さらに `FAILED_RECORDING_WARNING_WINDOW_MS` の recency 窓へ絞り込んだもの
+ * （表示専用セクションを持たないので表示/検出の区別は無いが、警告としての
+ * recency は要る）。
  *
- * 容量超過は呼び出し元で「実際の今より後に終わる」ものへ絞り込み済みなので、
- * ここで追加の時間フィルタはしない。
+ * 容量超過・失敗録画はいずれも呼び出し元で時間フィルタ済みなので、ここでは
+ * 追加の時間フィルタはしない。
  */
 function buildWarnings({
   breakers,
   overages,
   dropCandidates,
+  failedRecordings,
 }: {
   breakers: readonly CircuitBreaker[]
   overages: readonly CapacityOverage[]
   dropCandidates: readonly Recording[]
+  failedRecordings: readonly Recording[]
 }): WarningItem[] {
   const items: WarningItem[] = []
 
@@ -431,6 +494,15 @@ function buildWarnings({
       key: `breaker:${breaker.site}:${breaker.name}`,
       kind: 'breaker',
       message: `${describeBreakerName(breaker.name)}が停止中（保留 ${breaker.pending} 件）`,
+    })
+  }
+
+  for (const recording of failedRecordings) {
+    items.push({
+      key: `failed:${recording.id}`,
+      kind: 'failed',
+      message: `${recording.title || '（番組名なし）'}: 録画失敗（${failedDurationText(recording)} / 理由: ${failureReasonText(recording)}）`,
+      link: { to: '/recordings/$id', id: recording.id },
     })
   }
 
@@ -467,10 +539,111 @@ function buildWarnings({
 }
 
 /**
- * WarningRow は 1 件の警告。サーキットブレーカーと直近のドロップは「取り返しが
- * つかない/止まっている」意味の destructive、チューナー不足は容量バッジ
- * （`components/capacity-shortfall-badge.tsx`）と同じ warning（琥珀）に揃える
- * （docs/frontend/design.md「色は信号のみ」。同じ事実は同じ色で言う）。
+ * failedDurationText は失敗録画の警告メッセージに載せる尺の文言。
+ *
+ * **予定尺（`durationMs`。番組の放送尺のスナップショット）と実際に録れた尺
+ * （`startedAt`〜`endedAt`）を区別する**（issue #301）。区別しないと、録画が
+ * 開始した直後に終わった失敗（実際は 0 分に近いのに `durationMs` は番組の
+ * 予定尺のまま）が「ほぼ予定通り録れた」ように見えてしまう。
+ *
+ * `startedAt` と `endedAt` は独立に書かれるので、`startedAt` だけが立って
+ * `endedAt` が無い行がある（レビューで発覚。以前のコメントは「両方揃ってから
+ * 書く」と逆を断言していた）。`UpdateRecordingStatus`
+ * （`internal/db/queries/recordings.sql`）は `started_at` を無条件に
+ * `COALESCE` で埋め、`ended_at` は渡された値が非 NULL のときだけ書く。呼び
+ * 出し元の `Watcher.updateRecordingStatus`（`internal/watcher/watcher.go`）は
+ * `record.Recording.EndTime`（`*mirakc.Milliseconds` で nil を取りうる）を
+ * そのまま渡すので、mirakc の failed record に `endTime` が無ければ failed
+ * 行でも `startedAt` だけが立つ。したがって 3 通りを区別する: 両方あり
+ * （実際尺が定義できる）/ `startedAt` のみ（開始した事実はあるが終了時刻が無く、
+ * 実際尺は主張できない）/ 両方無し（**rokuban が録画の開始を観測していない**。
+ * 「未開始」と出す）。
+ *
+ * 3 つ目で mirakc 側の事実（「mirakc が録画を開始しなかった」）は主張しない
+ * （レビュー指摘）。`started_at` を書くのは record を観測した
+ * `Watcher.updateRecordingStatus` だけで、`CreateFailedRecording`
+ * （`internal/db/queries/recordings.sql`）は書かないので、**record の観測より
+ * 先に `recording.failed` の SSE が届いた**窓でも両方無しの形になる。データが
+ * 支えているのは「rokuban が開始を観測していない」までで、その先は測っていない。
+ *
+ * 3 通りの中の区切りはどれも `・` に揃える（レビュー指摘）。警告メッセージ全体が
+ * `（尺 / 理由: …）` の形で ` / ` を「尺と理由の境目」に使っているので、尺の中でも
+ * ` / ` を使うと 1 行に 2 種類の意味のスラッシュが並ぶ。
+ */
+function failedDurationText(recording: Recording): string {
+  if (recording.startedAt && recording.endedAt) {
+    const actualMs = new Date(recording.endedAt).getTime() - new Date(recording.startedAt).getTime()
+    return `実際 ${formatDuration(actualMs)}・予定 ${formatDuration(recording.durationMs)}`
+  }
+  if (recording.startedAt) {
+    return `予定 ${formatDuration(recording.durationMs)}・開始のみ記録（終了未記録）`
+  }
+  return `予定 ${formatDuration(recording.durationMs)}・未開始`
+}
+
+/**
+ * failureReasonText は失敗録画の理由を `qualityEvents` から取り出す。
+ *
+ * **材料が無ければ「理由不明」と明示し、沈黙とは区別する**（issue #301）。
+ * `qualityEvents` は追記専用の履歴（`recordings.quality_events`。
+ * `docs/schema/recordings.md` §5）で `recording.failed` /
+ * `recording.record-broken` / `bcas_anomaly` が混ざるので、**最後の要素では
+ * なく失敗系イベントの最後の要素**を見る（末尾が `bcas_anomaly` だと最後の
+ * 失敗理由を読み飛ばす）。
+ *
+ * `reason` の形は書き手（`event` の値）で決まり、いずれもオブジェクトで
+ * 素の文字列を書く経路は無い（以前のコメントは「`recording.failed` は文字列」
+ * と書いていたが、書き手を辿ると逆でどちらもオブジェクト）:
+ * - `recording.failed`: `internal/watcher/watcher.go` の
+ *   `handleRecordingFailed` が `json.Marshal(data.Reason)` で書く。
+ *   `data.Reason` は `mirakc.FailedReason`
+ *   （`internal/mirakc/types.go`。discriminated union で `type` フィールドを
+ *   持つ）なので `reason.type` を読む。
+ * - `recording.record-broken`: 同ファイルの `handleRecordBroken` が
+ *   `map[string]string{"reason": data.Reason}` で書くので `reason.reason`
+ *   を読む。
+ *
+ * 上記どちらでもない `event`、または期待した形（`type` / `reason` フィールド
+ * が無い）は `pages/recordings.tsx` の「品質イベント」欄と同じ流儀
+ * （`JSON.stringify`）で読める形にフォールバックする。
+ *
+ * **読んだフィールドが空文字なら「理由不明」に寄せる**（レビュー指摘）。
+ * `mirakc.FailedReason.Type` に `omitempty` は無いので `{"type":""}` は
+ * あり得る形だが、それを `JSON.stringify` でそのまま出すと「理由: {"type":""}」に
+ * なり、材料が無い（沈黙）ことと区別できる文言にならない。
+ */
+function failureReasonText(recording: Recording): string {
+  const events = recording.qualityEvents
+  if (events === undefined || events.length === 0) return '理由不明'
+  const failureEvent = events.findLast(
+    (e) => e['event'] === 'recording.failed' || e['event'] === 'recording.record-broken',
+  )
+  if (failureEvent === undefined) return '理由不明'
+  const reason = failureEvent['reason']
+  if (reason === undefined || reason === null) return '理由不明'
+
+  if (typeof reason === 'object' && !Array.isArray(reason)) {
+    const record = reason as Record<string, unknown>
+    // 上の findLast が `event` を 2 種類に絞っているので、`recording.failed`
+    // でなければ `recording.record-broken`。
+    const field = failureEvent['event'] === 'recording.failed' ? 'type' : 'reason'
+    const value = record[field]
+    if (typeof value === 'string') return value === '' ? '理由不明' : value
+  }
+  return JSON.stringify(reason)
+}
+
+/**
+ * WarningRow は 1 件の警告。サーキットブレーカー・直近のドロップ・失敗録画は
+ * 「取り返しがつかない/止まっている」意味の destructive、チューナー不足は容量
+ * バッジ（`components/capacity-shortfall-badge.tsx`）と同じ warning（琥珀）に
+ * 揃える（docs/frontend/design.md「色は信号のみ」。同じ事実は同じ色で言う）。
+ *
+ * **失敗録画（`kind: 'failed'`）は destructive 側。** design.md の表が
+ * destructive を「取り返しがつかない・壊れた（失敗・ドロップ・…）」と定めており、
+ * 録画が失われたことは後から取り返せない --- 琥珀（「これから足りない」の予告）
+ * とは別の事実なので、色でも分ける（種別 × 色は `pages/home.test.tsx`
+ * 「警告項目は種別ごとに固定の色クラスを持つ」と `e2e/design.mjs` ①'' が固定する）。
  */
 function WarningRow({ warning }: { warning: WarningItem }) {
   const amber = warning.kind === 'overage'
