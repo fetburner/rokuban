@@ -259,9 +259,17 @@ async function clickPlay(page) {
  * この判定が本来見たいのは「タップだけではプレイリスト/セグメント要求が飛ばない」
  * こと自体であり、実データ（H.264/AAC）や実再生は要らない --- ①〜⑦と違って
  * ffmpeg フィクスチャに依存せず、bundled Chromium だけで常に測れる。
- * `web/e2e/README.md`「判定を足すときの規律」どおり、この判定を足す前の実装
- * （チャンネルをタップした瞬間に probe する版）で実際に落ちることを確認済み
- * （PR 本文の変異リスト参照）。
+ *
+ * `web/e2e/README.md`「判定を足すときの規律」に沿って、2 つの assert をそれぞれ
+ * 実際に落として確認してある:
+ *   - 要求件数のほう（0 件であること）は、この判定を足す前の実装（チャンネルを
+ *     タップした瞬間に probe する版）で落ちる
+ *   - 選択中の印のほうは、`E2E_LIVE_NETWORK_ID=2`（フィクスチャは network_id=1）
+ *     で実サーバー + 実 Chromium に当てると
+ *     `⓪ 選択されたチャンネルが要求（networkId=2 serviceId=9001）と違う` で
+ *     exit 1 になる。一致させた `E2E_LIVE_NETWORK_ID=1` では
+ *     `選択中の印（aria-current="page"）: 1 件 href=/live?networkId=1&serviceId=9001`
+ *     が出て通る（要求件数の判定は両方で通るので、落ちたのはこの assert だけ）
  */
 async function runConsentCheck() {
   const browser = await chromium.launch()

@@ -86,7 +86,9 @@ export function LivePage() {
   // `orderedServices.find((s) => s.serviceId === selectedServiceId)` のように
   // `serviceId` だけで一覧から再検索すると、同じ `serviceId` を持つ別 network の
   // サービスが先に一致し、選んだのと違う network のチャンネルを指してしまう
-  // （aria-current のハイライトも 2 行に付いた）。
+  // （aria-current のハイライトも 2 行に付く。`pages/live.test.tsx`
+  // 「networkId + serviceId を指定すると、その network のチャンネルだけが
+  // 選ばれる」で固定した。実運用の EPG で衝突が起きているかは未検証）。
   const selectedService = pickInitialService(orderedServices, {
     networkId: routeSearch.networkId,
     serviceId: routeSearch.serviceId,
@@ -172,8 +174,11 @@ export function LivePage() {
         : orderedServices.filter((s) => s.channelType === selectedService.channelType),
     [orderedServices, selectedService],
   )
+  // 重複を潰す --- 同じ種別の中で 2 network が同じ `serviceId` を持つ構成では
+  // `?serviceId=100&serviceId=100` になる。サーバーは IN なので応答は変わらないが、
+  // react-query のキーが一覧の並びで揺れるのを避ける
   const sameTypeServiceIds = useMemo(
-    () => sameTypeServices.map((s) => s.serviceId),
+    () => [...new Set(sameTypeServices.map((s) => s.serviceId))],
     [sameTypeServices],
   )
   // **クエリは `networkId` を持たない**（`serviceId` の配列だけをサーバーに渡す
@@ -335,8 +340,11 @@ export function LivePage() {
                           // ハイライト・aria-current の同定も `networkId` +
                           // `serviceId` の組で行う --- `serviceId` 単独では、同じ
                           // `serviceId` を持つ別 network のサービスにも付いてしまう
-                          // （issue #291。この一覧が実際に GR/BS/CS を混ぜて返す
-                          // 構成では 2 行に aria-current が付いていた）。
+                          // （issue #291。同じ `serviceId` を 2 network が持つ
+                          // 構成では 2 行に aria-current が付く ---
+                          // `pages/live.test.tsx`「networkId + serviceId を
+                          // 指定すると、その network のチャンネルだけが選ばれる」
+                          // で固定した。実運用の EPG で衝突が起きているかは未検証）。
                           aria-current={
                             liveServiceKey(s.networkId, s.serviceId) === selectedKey
                               ? 'page'

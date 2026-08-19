@@ -104,7 +104,7 @@ docker compose exec rokuban rokuban server --all --config /config.yml
 9001 / 9002）。ライブの URL に載るのも SI の `(network_id, service_id)` そのもの
 なので、合成 id への読み替えは要らない。
 
-**`E2E_LIVE_NETWORK_ID`（既定 `1`）は投入した行の `network_id` と揃える。**
+**`E2E_LIVE_NETWORK_ID`（既定 `1`）は投入した行の `network_id` と揃える**。
 ⓪ が `/live?networkId=&serviceId=` の新形式で直開きするため、ここが食い違うと
 一致するサービスが無く「番組を持つ先頭」へフォールバックする。⓪ はそれを
 検出できるよう**選ばれたチャンネルそのものを assert する**（チャンネル一覧の
@@ -146,14 +146,15 @@ pnpm exec playwright install chromium webkit
 判定する点（詳細はスクリプト冒頭のコメント）:
 
 0. **選択と視聴開始の分離（issue #234 M7-1）**: `/live?networkId=&serviceId=` を
-   開いた直後はプレイリスト/セグメント要求が 0 件（`page.route` で観測）で、
+   開いた直後はプレイリスト/セグメント要求が 0 件（`page.route` で観測）。
    「再生」ボタンを押して初めて要求が飛ぶ。**併せて、その `(networkId, serviceId)`
-   の組が実際に選ばれたことを見る**（チャンネル一覧の `aria-current="page"` が
-   ちょうど 1 件で、`href` に要求した組が載っている）--- 新形式を実ブラウザで
-   踏む唯一の判定なので、`E2E_LIVE_NETWORK_ID` の不一致で黙ってフォールバック
-   していないことをここで確かめる（1 件でなく 2 件付くのは `serviceId` 単独で
-   同定していたときの壊れ方そのもの）。ffmpeg 不要（フィクスチャを使わない）で
-   bundled Chromium だけで測れるため、①〜⑦と異なりゲートしていない。
+   の組が実際に選ばれたことも見る**。チャンネル一覧の `aria-current="page"` が
+   ちょうど 1 件で、その `href` に要求した組が載っていることを確かめる。
+   新形式を実ブラウザで踏む唯一の判定なので、`E2E_LIVE_NETWORK_ID` の不一致で
+   黙ってフォールバックしていないことはここでしか出ない。1 件でなく 2 件付くのは
+   `serviceId` 単独で同定していたときの壊れ方（`pages/live.test.tsx` で固定）。
+   ffmpeg 不要（フィクスチャを使わない）で bundled Chromium だけで測れるため、
+   ①〜⑦と異なりゲートしていない。
    ①〜⑦は「再生」ボタンを押した後の挙動を見るものなので、`page.goto` の後に
    このボタンを押す手順を挟んでいる（①〜⑦の `page.goto` は旧 `?serviceId=`
    単独のままで、フォールバック経路を通る）
