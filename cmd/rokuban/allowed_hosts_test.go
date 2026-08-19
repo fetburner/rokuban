@@ -1,17 +1,49 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
+// syncLogBuffer is a mutex-protected io.Writer for capturing slog output.
+//
+// A plain bytes.Buffer races here: startServerForAllowedHosts wires it as
+// slog's default output while the server goroutine keeps logging
+// ("starting server", "shutting down", ...) for as long as the process
+// runs, and the test goroutine reads it (via String) while that server is
+// still up. internal/worker と internal/reconciler の同型ログキャプチャは
+// いずれも同期呼び出しのログしか見ておらず、この前例にはならない
+// （PR #397 レビュー参照）。
+type syncLogBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncLogBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncLogBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
 // startServerForAllowedHosts は `rokuban server --roles api` を実プロセスと同じ経路
-// （root コマンド → newServerCmd の RunE）で起動し、疎通した base URL を返す。
+// （root コマンド → newServerCmd の RunE）で起動し、疎通した base URL と、起動中に
+// slog.Default() へ書かれたログを返す。allowedHostsLine は server: ブロックに
+// そのまま挿入する `  allowed_hosts: [...]` 行（空文字列なら allowed_hosts を
+// 書かない = 空の既定構成）。
 //
 // **`api.NewRouter` を直接叩かず、config ファイルからコマンドを起動するのが要点。**
 // `server.AllowedHosts` / `server.TrustForwardedHost` を `api.RouterConfig` に渡す
@@ -19,10 +51,12 @@ import (
 // `internal/api` のユニットテスト（`api.NewRouter(RouterConfig{...})` を直接呼ぶ）や
 // `internal/config` のユニットテスト（YAML → 構造体までしか見ない）はどちらもこの
 // 配線行の上を通らない。`cfg.Server.TrustForwardedHost` を `true` に決め打ちする
-// 変異を入れても、config → RouterConfig の間の 1 行が検証されていなければ CI は
-// 全緑のまま #216 の脆弱性が復活しうる（issue #209 の `LiveEnabled` 配線ミスと同型。
-// `capabilities_test.go` の `runServerForCapabilities` のコメント参照）。
-func startServerForAllowedHosts(t *testing.T, serverExtra string) string {
+// 変異や、`warnIfAllowedHostsEmpty` への引数を決め打ちする変異を入れても、
+// config → 配線の間の 1 行が検証されていなければ CI は全緑のまま #216 の脆弱性や
+// allowed_hosts の警告漏れ・過剰発火が復活しうる（issue #209 の `LiveEnabled`
+// 配線ミスと同型。`capabilities_test.go` の `runServerForCapabilities` のコメント
+// 参照）。
+func startServerForAllowedHosts(t *testing.T, allowedHostsLine, serverExtra string) (string, *syncLogBuffer) {
 	t.Helper()
 
 	pool := testutil.SetupDB(t)
@@ -39,8 +73,7 @@ func startServerForAllowedHosts(t *testing.T, serverExtra string) string {
 	path := writeServerTestConfig(t, fmt.Sprintf(`
 server:
   listen: "127.0.0.1:%d"
-  allowed_hosts: [rokuban.local]
-%s
+%s%s
 db:
   host: %s
   port: %d
@@ -52,7 +85,12 @@ mirakc:
   url: http://mirakc.invalid:40772
 storage:
   media_dir: /tmp/rokuban-allowed-hosts-test-media
-`, port, serverExtra, connCfg.Host, connCfg.Port, connCfg.User, password, connCfg.Database))
+`, port, allowedHostsLine, serverExtra, connCfg.Host, connCfg.Port, connCfg.User, password, connCfg.Database))
+
+	logs := &syncLogBuffer{}
+	prevLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(prevLogger) })
 
 	ctx, cancel := context.WithCancel(context.Background())
 	// exited は「コマンドが返った」ことを表す。起動待ちの側と Cleanup の側の 2 箇所
@@ -83,7 +121,7 @@ storage:
 		if err == nil {
 			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
-				return base
+				return base, logs
 			}
 			t.Fatalf("GET /healthz = %d, want 200", resp.StatusCode)
 		}
@@ -128,7 +166,7 @@ func requestWithHostHeaders(t *testing.T, baseURL, host, forwardedHost string) i
 // に決め打ちする変異を検出する唯一のテスト（internal/api・internal/config の
 // ユニットテストはこの配線行の上を通らない）。
 func TestServerAllowedHosts_DefaultDoesNotTrustForwardedHost(t *testing.T) {
-	base := startServerForAllowedHosts(t, "")
+	base, _ := startServerForAllowedHosts(t, "  allowed_hosts: [rokuban.local]\n", "")
 
 	status := requestWithHostHeaders(t, base, "attacker-controlled.example.com", "rokuban.local")
 	if status != http.StatusBadRequest {
@@ -140,7 +178,7 @@ func TestServerAllowedHosts_DefaultDoesNotTrustForwardedHost(t *testing.T) {
 // 上のテストとの両方向確認: server.trust_forwarded_host: true を明示した
 // リバースプロキシ構成では、従来どおり X-Forwarded-Host を検証対象にして通す。
 func TestServerAllowedHosts_OptInTrustsForwardedHost(t *testing.T) {
-	base := startServerForAllowedHosts(t, "  trust_forwarded_host: true")
+	base, _ := startServerForAllowedHosts(t, "  allowed_hosts: [rokuban.local]\n", "  trust_forwarded_host: true")
 
 	status := requestWithHostHeaders(t, base, "internal-proxy.example.com", "rokuban.local")
 	if status != http.StatusOK {

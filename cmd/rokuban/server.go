@@ -122,6 +122,13 @@ func newHTTPServer(addr string, handler http.Handler, readHeaderTimeout, idleTim
 // 設定しない）でも同じ形になる。この場合利用者が意識せず、非信頼 LAN や
 // ポートフォワード環境で無認証・DNS rebinding 保護なしのサーバーを公開ポートに
 // 全開にしてしまう（issue #374）。空でなければ何もしない。
+//
+// 呼び出しは resolveRoles の後・ロール分岐より前に置く。OpenAPI から生成される
+// ルートはロールに関わらず生えるため（このファイル内 LiveEnabled 付近のコメント
+// 参照）、Host allowlist はどのロール構成でも防壁として効いている。そのため
+// --roles worker や --roles notifier だけのプロセスでも同じ条件で WARN が出る
+// のは意図どおり（compose 既定構成に限らず、ロール分割デプロイの全 Pod に対する
+// チェックとして機能する）。
 func warnIfAllowedHostsEmpty(logger *slog.Logger, allowedHosts []string) {
 	if len(allowedHosts) > 0 {
 		return

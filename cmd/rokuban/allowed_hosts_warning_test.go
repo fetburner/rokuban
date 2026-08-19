@@ -2,15 +2,9 @@ package main
 
 import (
 	"bytes"
-	"context"
-	"fmt"
 	"log/slog"
-	"net/http"
 	"strings"
 	"testing"
-	"time"
-
-	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 // TestWarnIfAllowedHostsEmpty_EmptyLogsWarning は、allowed_hosts が空のときに
@@ -49,82 +43,36 @@ func TestWarnIfAllowedHostsEmpty_NonEmptyLogsNothing(t *testing.T) {
 //
 // warnIfAllowedHostsEmpty 単体のテストは、newServerCmd の RunE がそれを
 // cfg.Server.AllowedHosts と slog.Default() で実際に呼んでいることまでは検証
-// しない。呼び出しを消す・引数を決め打ちにする変異は単体テストの上を通らず
-// CI が緑のまま残ってしまう（allowed_hosts_test.go の startServerForAllowedHosts
-// の doc コメントにある配線ミスと同型）。そのためここでは実プロセスを起動し、
-// slog のデフォルト出力先を差し替えて WARN が実際に書かれることを確認する。
+// しない。呼び出しを消す変異は単体テストの上を通らず CI が緑のまま残ってしまう
+// （allowed_hosts_test.go の startServerForAllowedHosts の doc コメントにある
+// 配線ミスと同型）。「第 2 引数を決め打ちにする」変異は、この片方向だけでは
+// 決め打ち先が偶然「空」であれば検出できない ―― 下の
+// TestServerAllowedHostsNonEmpty_NoWarnAtStartup と組みで初めて捕まえられる
+// （PR #397 レビューで実測: `nil` 決め打ちはこのテストだけでは緑のまま通った）。
 func TestServerAllowedHostsEmpty_WarnsAtStartup(t *testing.T) {
-	pool := testutil.SetupDB(t)
-	connCfg := pool.Config().ConnConfig
-	port := freePort(t)
+	_, logs := startServerForAllowedHosts(t, "", "")
 
-	password := connCfg.Password
-	if password == "" {
-		password = "unused-under-trust-auth"
+	if !strings.Contains(logs.String(), "server.allowed_hosts is empty") {
+		t.Errorf("startup log = %q, want a WARN mentioning empty server.allowed_hosts", logs.String())
 	}
+}
 
-	path := writeServerTestConfig(t, fmt.Sprintf(`
-server:
-  listen: "127.0.0.1:%d"
-db:
-  host: %s
-  port: %d
-  user: %s
-  password: %s
-  database: %s
-  sslmode: disable
-mirakc:
-  url: http://mirakc.invalid:40772
-storage:
-  media_dir: /tmp/rokuban-allowed-hosts-warning-test-media
-`, port, connCfg.Host, connCfg.Port, connCfg.User, password, connCfg.Database))
+// TestServerAllowedHostsNonEmpty_NoWarnAtStartup は上のテストとの両方向確認:
+// allowed_hosts を明示的に設定した実プロセスは起動時に WARN を出さない。
+//
+// これが無いと、cmd/rokuban/server.go の
+//
+//	warnIfAllowedHostsEmpty(slog.Default(), nil)
+//
+// のように第 2 引数を `cfg.Server.AllowedHosts` から `nil` へ決め打ちする変異が
+// 検出されない。空の既定構成でも決め打ちの nil でも WARN は出るので、
+// TestServerAllowedHostsEmpty_WarnsAtStartup だけでは両者を区別できず、
+// 「allowed_hosts を正しく設定した利用者にも毎回 WARN が出る」という壊れ方が
+// CI 緑のまま残ってしまう。
+func TestServerAllowedHostsNonEmpty_NoWarnAtStartup(t *testing.T) {
+	_, logs := startServerForAllowedHosts(t, "  allowed_hosts: [rokuban.local]\n", "")
 
-	var logBuf bytes.Buffer
-	prevLogger := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
-	t.Cleanup(func() { slog.SetDefault(prevLogger) })
-
-	ctx, cancel := context.WithCancel(context.Background())
-	exited := make(chan struct{})
-	var exitErr error
-	go func() {
-		root := newRootCmd()
-		root.SetArgs([]string{"server", "--roles", "api", "--config", path})
-		exitErr = root.ExecuteContext(ctx)
-		close(exited)
-	}()
-	t.Cleanup(func() {
-		cancel()
-		select {
-		case <-exited:
-		case <-time.After(30 * time.Second):
-			t.Error("server did not shut down within 30s")
-		}
-	})
-
-	base := fmt.Sprintf("http://127.0.0.1:%d", port)
-	// /healthz は Host allowlist を免除しているので、疎通確認に使える。
-	deadline := time.Now().Add(20 * time.Second)
-	for {
-		resp, err := http.Get(base + "/healthz")
-		if err == nil {
-			_ = resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
-				break
-			}
-			t.Fatalf("GET /healthz = %d, want 200", resp.StatusCode)
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("server never answered on %s: %v", base, err)
-		}
-		select {
-		case <-exited:
-			t.Fatalf("server exited before answering: %v", exitErr)
-		case <-time.After(50 * time.Millisecond):
-		}
-	}
-
-	if !strings.Contains(logBuf.String(), "server.allowed_hosts is empty") {
-		t.Errorf("startup log = %q, want a WARN mentioning empty server.allowed_hosts", logBuf.String())
+	if strings.Contains(logs.String(), "server.allowed_hosts is empty") {
+		t.Errorf("startup log = %q, want no WARN mentioning empty server.allowed_hosts when allowed_hosts is set", logs.String())
 	}
 }
