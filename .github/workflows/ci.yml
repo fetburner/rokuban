@@ -7,6 +7,28 @@ on:
   pull_request:
 
 jobs:
+  web-test:
+    runs-on: ubuntu-latest
+    # vitest がハングしても既定の 6h でランナーを占有させない（go test の -timeout と同じ狙い）。
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: web
+      # コンポーネント／lib のロジック回帰は CI では Vitest でしか止まらない（build は型エラーしか
+      # 拾わない。web/e2e/ もロジック回帰を止めうるが、CI では回さずローカル専用）。
+      # Go toolchain も postgres service も要らないので独立した job にして test job の信号と混ぜない。
+      - run: pnpm test
+        working-directory: web
+
   test:
     runs-on: ubuntu-latest
     services:
