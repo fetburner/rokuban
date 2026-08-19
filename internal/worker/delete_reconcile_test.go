@@ -1976,6 +1976,66 @@ func TestDeleteReconcileWorker_MissingAsset_AssetNoLongerActive_NotReported(t *t
 	}
 }
 
+// 上のテストの裏側: active でなくなった資産の候補行は「active が 1 件でもある
+// パス」で実際に回収されること。reconcileMissingAssets の掃除ループは
+// len(active) == 0 の early return より後ろにあるので、active が 0 件のパスでは
+// 古い候補行が残る（報告側が state='active' で弾くので無害）。その「後で
+// 回収される」という約束が実在することを直接測る --- 掃除ループを止めると
+// 候補行が永久に残り、missing_media_assets が単調増加する。
+//
+// このテストが検出すべき変異: reconcileMissingAssets の掃除ループ
+// （ListAllMissingMediaAssetIDs 以降）を消す / DeleteMissingMediaAsset の
+// 呼び出しを飛ばす。どちらも最後のアサーションが落ちる。
+func TestDeleteReconcileWorker_MissingAsset_StaleCandidate_CollectedWhenActiveExists(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+
+	// 掃除ループに入るための条件を作る: active な資産が 1 件以上あり、かつ
+	// ディスク上でファイルが 1 件以上観測される（全損シグネチャを踏まない）。
+	otherRecordingID := insertTestRecording(t, pool)
+	seedOriginalAsset(t, pool, mediaDir, otherRecordingID, "present/original.m2ts", []byte("data"))
+
+	recordingID := insertTestRecordingWithEventID(t, pool, 7)
+	q := sqlcgen.New(pool)
+	assetID, err := q.CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
+		RecordingID: recordingID,
+		Kind:        db.AssetKindOriginal,
+		RelPath:     "gone/stale.m2ts",
+		SizeBytes:   4,
+	})
+	if err != nil {
+		t.Fatalf("seeding asset without a file: %v", err)
+	}
+	if _, err := pool.Exec(context.Background(),
+		"INSERT INTO missing_media_assets (media_asset_id, first_seen) VALUES ($1, $2)",
+		assetID, time.Now().Add(-48*time.Hour)); err != nil {
+		t.Fatalf("seeding aged missing-asset record: %v", err)
+	}
+	// このワーカーの外で active でなくなった（＝ListActiveMediaAssets に
+	// 現れないので今パスの candidates に入らない）。行が消えていないので
+	// FK の ON DELETE CASCADE では掃除されず、掃除ループだけが回収できる。
+	if _, err := pool.Exec(context.Background(),
+		"UPDATE media_assets SET state = 'deleted', deleted_at = now() WHERE id = $1", assetID); err != nil {
+		t.Fatalf("marking asset deleted out of band: %v", err)
+	}
+
+	t.Cleanup(metrics.MediaAssetsMissing.Reset)
+
+	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, MissingAssetAge: 24 * time.Hour}
+	if err := w.Work(context.Background(), nil); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+
+	var count int
+	if err := pool.QueryRow(context.Background(),
+		"SELECT count(*) FROM missing_media_assets WHERE media_asset_id = $1", assetID).Scan(&count); err != nil {
+		t.Fatalf("querying missing_media_assets: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("missing_media_assets count = %d, want 0 (the asset is no longer active, so the candidate row must be collected on a pass that has at least one active asset)", count)
+	}
+}
+
 // 削除 reconcile は record_sweep と同じ理由で River 既定より長い上限を持つ。
 func TestDeleteReconcileWorker_HasGenerousTimeout(t *testing.T) {
 	w := &DeleteReconcileWorker{}
