@@ -1,30 +1,36 @@
-// モバイルの番組リスト末行がボトムタブに隠れる問題（issue #303）の受け入れ判定。
+// `--bottom-nav-height`（`web/src/index.css`）がボトムタブの実際の描画高さと
+// 一致しているかの受け入れ判定。
 //
-// **経緯**: 最初の実装は「初回表示（scrollY=0）に限って重なりを検出したら
-// `window.scrollBy` で押し出す」方式だった。しかしページ全体スクロール +
-// `fixed` なタブという組み合わせでは、リストの先頭行は常にその日付ヘッダ
-// （`sticky`）の直下に隙間なく続くため、末尾側の重なりを消すのに必要な分だけ
-// スクロールすると、**その量とちょうど同じだけ先頭行が日付ヘッダの裏へ食い込む**
-// （実機計測で確認: 末尾の重なり 29px を消す補正が先頭行に同じ 29px の食い込みを
-// 新たに作った）。単一のスクロール位置で両端の重なりを同時に消すことはできないので、
-// この方式は削除した（詳細は `docs/frontend/scroll.md`「ボトムタブの裏に隠れる行」）。
+// **この判定は「行がボトムタブに隠れる」症状そのものを見ていない。** 390×844 の
+// 実測では、`--bottom-nav-height` から上辺の境界線ぶんが落ちていた状態でも、
+// ドキュメント最下端までスクロールしたときの余白はちょうど 0px（末行の下端が
+// タブの上端に接する）で、隠れていた画素は無かった。落ちていたのは
+// 「タブの実寸ぶんを確保する」という計算の正しさと、その 1px ぶんの余裕だけ。
 //
-// 現在ここで見ているのは、実際に直した原因 --- `--bottom-nav-height`
-// （`web/src/index.css`）がボトムタブの実際の描画高さ（`border-t` 1px を含む）と
-// 食い違っていたため、`main` の `padding-bottom` がドキュメント最下端まで
-// スクロールしてもタブの実寸に 1px 足りていなかった --- が直っているかどうか。
-// jsdom は `getBoundingClientRect` を計算しないため（常に 0 を返す）、この重なりは
-// 原理的にユニットテストでは検出できない（e2e/README.md）。
+// 一方、**行がタブの裏に半分入る症状は初回表示や任意のスクロール位置で今も起きる**
+// （下の④が毎回その量を実測して表示する。上記の実測では 29px）。これはページ全体
+// スクロール + `fixed` なタブというレイアウトの性質で、この変数を直しても消えない
+// （詳細は `docs/frontend/scroll.md`「ボトムタブの裏に隠れる行」）。
+//
+// jsdom は `getBoundingClientRect` を計算しない（常に 0 を返す）ので、ここで見る
+// 値はどれもユニットテストでは原理的に取れない。
 //
 // 見るのは:
 //   ⓪ 配っている bundle が dist/ の現物と一致するか
-//   ① `--bottom-nav-height`（`main` の `padding-bottom` に使われる）が、ボトムタブの
-//      実際の描画高さ（border 込み）と一致すること --- 直した原因そのものの確認。
-//      1px でもずれれば、②はドキュメント最下端で必ず重なりを再現する
-//   ② ドキュメント最下端まで実際にスクロールしても、行がボトムタブに食い込んで
-//      いないこと。**かつ**その余白（最終行の下端からタブ上端までの距離）が
-//      負でないことを、0px ちょうどで通る脆いアサーションにせず、①で直した
-//      `--bottom-nav-height` の値そのものと突き合わせて確認する
+//   ① `main` の計算済み `padding-bottom`（= `--bottom-nav-height`）が、ボトムタブの
+//      実際の描画高さ（border 込み）と一致すること。**上辺の境界線ぶんを落とすと
+//      64px 対 65px で落ちる**（実測で確認済み）。タブ本体の高さ・padding・border を
+//      変えたのに計算を直さなかった場合もここで落ちる
+//   ② 最下端までスクロールしたとき、`main` の内容ボックスの下端がタブの上端より
+//      下に来ていないこと。①の帰結を実レイアウトで見るもので、**①に加えて
+//      「`main` が文書の最下端の箱である」（下に高さを持つ兄弟が無い）ことも
+//      確認する**。①と同じ変異（境界線ぶんを落とす）で 780px 対 779px で落ちる
+//   ③ 最下端までスクロールしたとき、どの行もタブの上端をまたいでいないこと。
+//      **これは余裕ゼロの回帰確認で、検出力は無い** --- 上記のとおり境界線ぶんが
+//      落ちていた状態でも余白は 0px で、またいでいる行は無かった（修正前でも通る）。
+//      それでも置いてあるのは、①②が捉えない別種の壊れ方（タブの高さは合っている
+//      のに行が絶対配置でせり出す等）に対する網として
+//   ④ 初回表示でタブの裏に入っている画素数の実測値（**表示のみ。合否には影響しない**）
 //
 // **mirakc も実チューナーも DB も要らない。** `/api/**` を `page.route` で
 // ブラウザ側から丸ごと差し替える（e2e/design.mjs と同じ手）。
@@ -74,10 +80,10 @@ const service = {
 }
 
 /**
- * programsFor は要求された窓を 30 分番組で埋める。1 時間窓（`pages/programs.tsx`
- * の `windowHours`）だけで既に 390×844 のビューポートより長くなる密度にして
- * ある --- 密度が薄いと初回表示で 1 画面に収まってしまい、末尾での重なりの
- * 再現条件が成立しない。
+ * programsFor は要求された窓を 30 分番組で埋める。`pages/programs.tsx` の
+ * `windowHours`（6 時間）ぶんだけで 390×844 のビューポートより長くなる密度に
+ * なる --- 密度が薄いと 1 画面に収まってしまい、最下端でも初回表示でも
+ * タブとの関係を測れない。
  */
 function programsFor(startISO, endISO) {
   const start = Date.parse(startISO)
@@ -156,31 +162,47 @@ log('  一致（このサーバーは自分のビルドを配っている）')
 const browser = await chromium.launch()
 
 /**
- * findOverlappingRow は、現在描かれている行のうち「上端は見えているが下端が
- * ボトムタブに食い込んでいる」行を探す。無ければ `null`。
+ * measure はボトムタブ・`main`・描かれている行の幾何を 1 回のフレームで読む。
+ * 行の下端は DOM 順の最後ではなく `Math.max` で取る（仮想化リストの DOM 順が
+ * 視覚順と一致するかどうかに依存しないため）。
  */
-async function findOverlappingRow(page) {
+async function measure(page) {
   return page.evaluate(() => {
-    const navRect = document
-      .querySelector('[data-testid="bottom-nav"]')
-      ?.getBoundingClientRect()
-    if (!navRect || navRect.height <= 0) return { navPresent: false, overlap: null }
-    const rows = [...document.querySelectorAll('li[data-program-id]')]
-    for (const row of rows) {
-      const r = row.getBoundingClientRect()
-      if (r.top < navRect.top && r.bottom > navRect.top) {
-        return {
-          navPresent: true,
-          overlap: {
-            text: row.innerText.replace(/\s+/g, ' ').slice(0, 80),
-            top: r.top,
-            bottom: r.bottom,
-            navTop: navRect.top,
-          },
-        }
-      }
+    const nav = document.querySelector('[data-testid="bottom-nav"]')
+    const main = document.querySelector('main')
+    if (!nav || !main) return { navPresent: false }
+    const navRect = nav.getBoundingClientRect()
+    if (navRect.height <= 0) return { navPresent: false }
+    const mainRect = main.getBoundingClientRect()
+    const mainPaddingBottom = Number.parseFloat(getComputedStyle(main).paddingBottom)
+    const rows = [...document.querySelectorAll('li[data-program-id]')].map((row) => ({
+      rect: row.getBoundingClientRect(),
+      text: row.innerText.replace(/\s+/g, ' ').slice(0, 60),
+    }))
+    // 「上端は見えているが下端がタブに食い込んでいる」行（= 半分だけ隠れて
+    // ユーザーの目に入る行）。r.bottom === navRect.top（接するだけ）は隠れて
+    // いないので含めない。
+    const straddling = rows
+      .filter((r) => r.rect.top < navRect.top && r.rect.bottom > navRect.top)
+      .map((r) => ({
+        text: r.text,
+        top: r.rect.top,
+        bottom: r.rect.bottom,
+        hidden: r.rect.bottom - navRect.top,
+      }))
+    return {
+      navPresent: true,
+      navTop: navRect.top,
+      navHeight: navRect.height,
+      mainPaddingBottom,
+      // `main` が下に確保している余白の内側の端。ここがタブの上端より下に
+      // 来ていたら、確保量がタブの実寸に足りていない。
+      mainContentBottom: mainRect.bottom - mainPaddingBottom,
+      rowCount: rows.length,
+      lowestRowBottom: rows.length > 0 ? Math.max(...rows.map((r) => r.rect.bottom)) : null,
+      straddling,
+      atBottom: Math.abs(window.scrollY - (document.documentElement.scrollHeight - window.innerHeight)) < 2,
     }
-    return { navPresent: true, overlap: null }
   })
 }
 
@@ -198,34 +220,47 @@ await page.locator('li[data-program-id]').first().waitFor({ timeout: 15000 })
 await page.evaluate(() => document.fonts.ready)
 await page.waitForTimeout(500)
 
+const initial = await measure(page)
+if (!initial.navPresent) {
+  ng.push('ボトムタブ（[data-testid="bottom-nav"]）が見つからない・高さ 0')
+}
+
 // --- ① `--bottom-nav-height` がボトムタブの実際の描画高さ（border 込み）と一致する ---
 log('\n=== ① --bottom-nav-height がボトムタブの実測高さと一致する ===')
-{
-  const measured = await page.evaluate(() => {
-    const navRect = document.querySelector('[data-testid="bottom-nav"]')?.getBoundingClientRect()
-    // カスタムプロパティ自体は `calc()` / `var()` を含む生の文字列のままなので
-    // `getPropertyValue('--bottom-nav-height')` は解決済みの px にならない。
-    // `main` は `padding-bottom: var(--bottom-nav-height)` なので、そちらの
-    // 計算済み `paddingBottom`（ブラウザが calc/var を解決した px 文字列）を読む。
-    const main = document.querySelector('main')
-    const varPx = main ? Number.parseFloat(getComputedStyle(main).paddingBottom) : Number.NaN
-    return { navHeight: navRect?.height ?? null, varPx }
-  })
-  log(`  nav 実測高さ        : ${measured.navHeight}`)
-  log(`  --bottom-nav-height : ${measured.varPx}`)
-  if (measured.navHeight === null) {
-    ng.push('① ボトムタブ（[data-testid="bottom-nav"]）が見つからない')
-  } else if (Math.abs(measured.navHeight - measured.varPx) > 0.5) {
+if (initial.navPresent) {
+  // カスタムプロパティ自体は `calc()` / `var()` を含む生の文字列のままなので
+  // `getPropertyValue('--bottom-nav-height')` は解決済みの px にならない。
+  // `main` は `padding-bottom: var(--bottom-nav-height)` なので、そちらの
+  // 計算済み `paddingBottom`（ブラウザが calc/var を解決した px 文字列）を読む。
+  log(`  nav 実測高さ（border 込み）: ${initial.navHeight}px`)
+  log(`  main の padding-bottom     : ${initial.mainPaddingBottom}px`)
+  if (Math.abs(initial.navHeight - initial.mainPaddingBottom) > 0.5) {
     ng.push(
-      `① --bottom-nav-height（${measured.varPx}px）がボトムタブの実測高さ（${measured.navHeight}px）と一致しない`,
+      `① main の padding-bottom（${initial.mainPaddingBottom}px。= --bottom-nav-height）がボトムタブの実測高さ（${initial.navHeight}px）と一致しない --- index.css の --bottom-nav-height の計算がタブの実寸とずれている`,
     )
   } else {
     log('  一致（期待どおり）')
   }
 }
 
-// --- ② ドキュメント最下端まで実際にスクロールしても重ならない ---
-log('\n=== ② 最下端までスクロールしても重ならない（`main` の padding-bottom の回帰確認） ===')
+// --- ④ 初回表示でタブの裏に入っている量（表示のみ。合否には影響しない） ---
+log('\n=== ④ 初回表示でタブの裏に入っている量（未解決。表示のみ） ===')
+if (initial.navPresent) {
+  if (initial.straddling.length === 0) {
+    log('  タブの上端をまたいでいる行は無い')
+  } else {
+    for (const s of initial.straddling) {
+      log(
+        `  「${s.text}」が ${s.hidden.toFixed(1)}px タブの裏に入っている（top=${s.top.toFixed(1)}, bottom=${s.bottom.toFixed(1)}, タブ上端=${initial.navTop.toFixed(1)}）`,
+      )
+    }
+    log('  --- これは `--bottom-nav-height` の問題ではなく直っていない。')
+    log('      ページ全体スクロール + fixed なタブという前提を変えないと消えない')
+    log('      （docs/frontend/scroll.md「ボトムタブの裏に隠れる行」）')
+  }
+}
+
+// --- 最下端まで実際にスクロールする ---
 {
   // 8 日ぶんのローリングウィンドウ全体を読み終えるまで、成長が止まるまで
   // 繰り返しスクロールする（`pages/programs.tsx` の `selectableDays`）。
@@ -246,36 +281,49 @@ log('\n=== ② 最下端までスクロールしても重ならない（`main` �
     prevHeight = h
   }
   await page.waitForTimeout(300)
+}
 
-  const result = await findOverlappingRow(page)
-  if (!result.navPresent) {
-    ng.push('② ボトムタブが見つからない・高さ 0')
-  } else if (result.overlap) {
+const bottom = await measure(page)
+if (!bottom.navPresent) {
+  ng.push('最下端でボトムタブが見つからない・高さ 0')
+} else if (!bottom.atBottom) {
+  ng.push('最下端までスクロールできていない（この状態の②③は何も主張しない）')
+}
+
+// --- ② 最下端で `main` の確保した余白がタブの上端まで届いている ---
+log('\n=== ② 最下端で main の確保した余白がタブの上端まで届いている ===')
+if (bottom.navPresent && bottom.atBottom) {
+  log(`  main の内容ボックス下端: ${bottom.mainContentBottom}px`)
+  log(`  タブの上端            : ${bottom.navTop}px`)
+  if (bottom.mainContentBottom > bottom.navTop + 0.5) {
     ng.push(
-      `② 最下端までスクロールしても行がボトムタブに食い込んでいる: 「${result.overlap.text}」` +
-        `（top=${result.overlap.top.toFixed(1)}, bottom=${result.overlap.bottom.toFixed(1)}, タブ上端=${result.overlap.navTop.toFixed(1)}）`,
+      `② 最下端で main の内容ボックス下端（${bottom.mainContentBottom}px）がタブの上端（${bottom.navTop}px）より下にある --- 確保量がタブの実寸に足りていない（差 ${(bottom.mainContentBottom - bottom.navTop).toFixed(1)}px）`,
     )
   } else {
-    log('  食い込んでいる行は無い（期待どおり）')
+    log('  届いている（期待どおり）')
   }
+}
 
-  // 余白がたまたま 0px ちょうどで通っているだけの状態（①が壊れれば必ずここも
-  // 壊れる、余裕ゼロの回帰確認）を避けるため、最終行の下端からタブ上端までの
-  // 距離が負でないことも直接見る。
-  const gap = await page.evaluate(() => {
-    const navTop = document.querySelector('[data-testid="bottom-nav"]')?.getBoundingClientRect()?.top
-    const rows = [...document.querySelectorAll('li[data-program-id]')]
-    const lastBottom = rows.length > 0 ? rows[rows.length - 1].getBoundingClientRect().bottom : null
-    if (navTop === undefined || lastBottom === null) return null
-    return navTop - lastBottom
-  })
-  log(`  最終行下端からタブ上端までの余白: ${gap}px`)
-  if (gap === null) {
-    ng.push('② 最終行またはボトムタブが見つからず余白を測れない')
-  } else if (gap < 0) {
-    ng.push(`② 最終行下端からタブ上端までの余白が負（${gap}px）--- 重なっている`)
+// --- ③ 最下端でタブの上端をまたいでいる行が無い（余裕ゼロの回帰確認） ---
+log('\n=== ③ 最下端でタブの上端をまたいでいる行が無い（余裕ゼロの回帰確認） ===')
+if (bottom.navPresent && bottom.atBottom) {
+  log(`  最も下の行の下端: ${bottom.lowestRowBottom}px`)
+  log(
+    `  タブ上端までの余白: ${bottom.lowestRowBottom === null ? '(行が無い)' : (bottom.navTop - bottom.lowestRowBottom).toFixed(1) + 'px'}`,
+  )
+  // ここに「余白 >= 1px」のような下限を置かない。上の余白の実測 1px は
+  // リストの下端（`ul` の下端）と `main` の内容ボックス下端の間の 1px 差から
+  // 来ており、この変数の計算とは無関係なので、期待値にすると意味の無い数字を
+  // 固定することになる（②が確保量そのものを見ている）。
+  if (bottom.lowestRowBottom === null) {
+    ng.push('③ 行が 1 つも描かれていない')
+  } else if (bottom.straddling.length > 0) {
+    const s = bottom.straddling[0]
+    ng.push(
+      `③ 最下端で行がタブの裏に ${s.hidden.toFixed(1)}px 入っている: 「${s.text}」（top=${s.top.toFixed(1)}, bottom=${s.bottom.toFixed(1)}, タブ上端=${bottom.navTop.toFixed(1)}）`,
+    )
   } else {
-    log('  余白は負ではない（期待どおり）')
+    log('  またいでいる行は無い（期待どおり。ただし修正前も 0px で通っていた）')
   }
 }
 

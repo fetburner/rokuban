@@ -202,20 +202,30 @@
 @layer base {
   :root {
     /* モバイルのボトムタブが占める高さ。タブ本体（min-h-14 = 3.5rem）+
-       border-t（1px。components/app-shell.tsx の BottomTabs）に
-       セーフエリアぶんを足す。iOS のホームインジケータと重ならないように
-       env(safe-area-inset-bottom) を使い、Android のジェスチャーナビの
+       上辺の境界線 + セーフエリアぶん。iOS のホームインジケータと重ならない
+       ように env(safe-area-inset-bottom) を使い、Android のジェスチャーナビの
        下端スワイプ領域から離すため最低 8px を確保する。
        （index.html の viewport に viewport-fit=cover が必要）
 
-       border の 1px を落としていたことがある --- `main` の `padding-bottom`
-       がこの変数で確保する高さと、ボトムタブの実際の描画上の高さ
-       （border 込み）が 1px 食い違い、ドキュメント最下端までスクロールしても
-       末行がタブの下 1px に潜る不具合を起こした（`toaster.tsx` の Toast も
-       同じ変数で持ち上げているため同様に 1px 潜っていた）。この変数は
-       ボトムタブの実際の描画高さと常に一致させる。 */
+       `--bottom-nav-border` は `components/app-shell.tsx` の `BottomTabs` が
+       自分の `border-top-width` にも使う。**同じ値をここと nav の 2 箇所に
+       書かないため**に変数にしてある（この変数を 3px にしたビルドで nav の
+       実測高さと `main` の `padding-bottom` が揃って 67px になることを確認
+       済み）。以前は境界線ぶんがこの計算から落ちていて、`main` の
+       `padding-bottom`（64px）がタブの実際の描画高さ（65px）に 1px 足りて
+       いなかった --- 390×844 の実測では、ドキュメント最下端までスクロール
+       したとき末行の下端がタブの上端とちょうど接しており（余白 0px）、
+       **隠れていた画素は無かったが余裕も無かった**。
+
+       タブ本体の高さ（`min-h-14`）を変えたり padding を足したりすると、この
+       計算は追従しない。それを見るのは `web/e2e/programs-bottom-nav.mjs` の
+       ①②で（`min-h-14` → `min-h-16` の変異で両方落ちることを確認済み）、
+       **どちらも CI では回らない**（e2e/README.md「CI では回さない」）。 */
     --bottom-nav-inset: max(env(safe-area-inset-bottom), 8px);
-    --bottom-nav-height: calc(3.5rem + 1px + var(--bottom-nav-inset));
+    --bottom-nav-border: 1px;
+    --bottom-nav-height: calc(
+      3.5rem + var(--bottom-nav-border) + var(--bottom-nav-inset)
+    );
   }
   * {
     @apply border-border outline-ring/50;

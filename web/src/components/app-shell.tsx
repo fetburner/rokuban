@@ -225,11 +225,13 @@ function BottomTabs() {
     <nav
       aria-label="主ナビゲーション"
       // `data-testid`: `web/e2e/programs-bottom-nav.mjs` がこのタブの実際の
-      // 描画位置（border 込みの上端）を直接測るための目印。`main` の
-      // `padding-bottom`（`--bottom-nav-height`）は border を含めて計算して
-      // あるので、これと実測が一致するかどうかがそのまま回帰確認になる。
+      // 描画高さ（border 込み）を直接測り、`main` の `padding-bottom`
+      // （`--bottom-nav-height`）と一致するかを見るための目印。
       data-testid="bottom-nav"
-      className="fixed inset-x-0 bottom-0 z-20 border-t border-border bg-background/95 pb-[var(--bottom-nav-inset)] backdrop-blur md:hidden"
+      // 上辺の境界線の太さは `--bottom-nav-border`（index.css）から取る。
+      // `--bottom-nav-height` が同じ変数を足しているので、太さを変えても
+      // `main` の下パディングが自動で追従する（同じ 1px を 2 箇所に書かない）。
+      className="fixed inset-x-0 bottom-0 z-20 border-t-[length:var(--bottom-nav-border)] border-border bg-background/95 pb-[var(--bottom-nav-inset)] backdrop-blur md:hidden"
     >
       <ul className="flex">
         {primary.map(({ to, label, icon: Icon }) => {
@@ -361,7 +363,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         {/* サーキットブレーカー発動中はどのページでも見えるよう、
             ルーティングされる children の外・全ページ共通の位置に置く */}
         <CircuitBreakerBanner />
-        {/* ボトムタブに隠れないよう、モバイルでは下に余白を足す */}
+        {/* モバイルではボトムタブの実寸ぶんを下に確保する。**これが重なりを
+            防ぐのはドキュメント最下端までスクロールしたときだけ**で、それ以外の
+            スクロール位置での重なりは別の問題（未解決。
+            docs/frontend/scroll.md「ボトムタブの裏に隠れる行」） */}
         <main className="min-w-0 flex-1 pb-[var(--bottom-nav-height)] md:pb-0">
           {children}
         </main>
