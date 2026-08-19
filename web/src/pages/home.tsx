@@ -565,11 +565,15 @@ function buildWarnings({
  * （`internal/db/queries/recordings.sql`）は書かないので、**record の観測より
  * 先に `recording.failed` の SSE が届いた**窓でも両方無しの形になる。データが
  * 支えているのは「rokuban が開始を観測していない」までで、その先は測っていない。
+ *
+ * 3 通りの中の区切りはどれも `・` に揃える（レビュー指摘）。警告メッセージ全体が
+ * `（尺 / 理由: …）` の形で ` / ` を「尺と理由の境目」に使っているので、尺の中でも
+ * ` / ` を使うと 1 行に 2 種類の意味のスラッシュが並ぶ。
  */
 function failedDurationText(recording: Recording): string {
   if (recording.startedAt && recording.endedAt) {
     const actualMs = new Date(recording.endedAt).getTime() - new Date(recording.startedAt).getTime()
-    return `実際 ${formatDuration(actualMs)} / 予定 ${formatDuration(recording.durationMs)}`
+    return `実際 ${formatDuration(actualMs)}・予定 ${formatDuration(recording.durationMs)}`
   }
   if (recording.startedAt) {
     return `予定 ${formatDuration(recording.durationMs)}・開始のみ記録（終了未記録）`
@@ -602,6 +606,11 @@ function failedDurationText(recording: Recording): string {
  * 上記どちらでもない `event`、または期待した形（`type` / `reason` フィールド
  * が無い）は `pages/recordings.tsx` の「品質イベント」欄と同じ流儀
  * （`JSON.stringify`）で読める形にフォールバックする。
+ *
+ * **読んだフィールドが空文字なら「理由不明」に寄せる**（レビュー指摘）。
+ * `mirakc.FailedReason.Type` に `omitempty` は無いので `{"type":""}` は
+ * あり得る形だが、それを `JSON.stringify` でそのまま出すと「理由: {"type":""}」に
+ * なり、材料が無い（沈黙）ことと区別できる文言にならない。
  */
 function failureReasonText(recording: Recording): string {
   const events = recording.qualityEvents
@@ -615,15 +624,11 @@ function failureReasonText(recording: Recording): string {
 
   if (typeof reason === 'object' && !Array.isArray(reason)) {
     const record = reason as Record<string, unknown>
-    if (failureEvent['event'] === 'recording.failed' && typeof record['type'] === 'string') {
-      return record['type']
-    }
-    if (
-      failureEvent['event'] === 'recording.record-broken' &&
-      typeof record['reason'] === 'string'
-    ) {
-      return record['reason']
-    }
+    // 上の findLast が `event` を 2 種類に絞っているので、`recording.failed`
+    // でなければ `recording.record-broken`。
+    const field = failureEvent['event'] === 'recording.failed' ? 'type' : 'reason'
+    const value = record[field]
+    if (typeof value === 'string') return value === '' ? '理由不明' : value
   }
   return JSON.stringify(reason)
 }

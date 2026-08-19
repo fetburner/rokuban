@@ -494,7 +494,7 @@ describe('ホーム: 失敗録画が警告に出る（issue #301）', () => {
     // 実際尺（0 分）と予定尺（5 分）の両方が別々に出る --- 予定尺だけの表示に
     // 潰すと「実際 0分」が消え、この変異でテストが落ちる。
     expect(
-      await screen.findByText(/直後に切れた録画: 録画失敗（実際 0分 \/ 予定 5分/),
+      await screen.findByText(/直後に切れた録画: 録画失敗（実際 0分・予定 5分/),
     ).toBeInTheDocument()
   })
 
@@ -614,6 +614,25 @@ describe('ホーム: 失敗録画が警告に出る（issue #301）', () => {
     renderHome()
 
     expect(await screen.findByText(/理由: 理由不明/)).toBeInTheDocument()
+  })
+
+  it('失敗理由のフィールドが空文字なら JSON へ落とさず「理由不明」に寄せる', async () => {
+    // レビュー指摘: mirakc.FailedReason.Type に omitempty は無いので
+    // `{"type":""}` はあり得る形。JSON フォールバックに落とすと
+    // 「理由: {"type":""}」になり、材料が無い（沈黙）ことと区別できる
+    // 文言にならない。
+    stubApi({
+      failed: [
+        recording(9, '空の理由の失敗', 'failed', {
+          qualityEvents: [{ at: iso(-HOUR), event: 'recording.failed', reason: { type: '' } }],
+        }),
+      ],
+    })
+    renderHome()
+
+    const row = await screen.findByText(/空の理由の失敗: 録画失敗/)
+    expect(row.textContent).toMatch(/理由: 理由不明/)
+    expect(row.textContent).not.toMatch(/\{/)
   })
 
   it('失敗録画は録画単体ページへの導線を持つ', async () => {
