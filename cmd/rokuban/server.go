@@ -45,6 +45,43 @@ var (
 	singletonRoles = []string{"watcher"}
 )
 
+const (
+	// httpReadHeaderTimeout はリクエストヘッダーを読み切るまでの上限。Rokuban は
+	// nginx 等のリバースプロキシを必須にせず `--all` で直接インターネットに
+	// 触れうる LAN 機器としても動く（docs/api/deployment.md §単一バイナリの
+	// 自己完結）ため、この下限はアプリ自身が持つ必要がある。無ければヘッダー送信を
+	// 極端に遅くするクライアントが接続と goroutine を無期限に握り、多重接続で
+	// ファイルディスクリプタ／メモリを枯渇させられる（issue #368）。
+	//
+	// 10 秒は LAN 上のブラウザ・mirakc・リバースプロキシいずれの通常のヘッダー
+	// 送信（実質数 ms 未満）を壊さない一方、slow-header 接続を有限時間で切る
+	// 基準として mirakc クライアント側の responseHeaderTimeout
+	// （internal/mirakc/client.go の 30 秒。応答待ちなので許容が広い）より
+	// 短く取った。
+	httpReadHeaderTimeout = 10 * time.Second
+
+	// httpIdleTimeout は keep-alive 接続がリクエストとリクエストの間で無期限に
+	// 張られたままにならないための上限。net/http の IdleTimeout は「次の
+	// リクエストの到着待ち」の間だけ働き、ハンドラが応答を書き続けている間
+	// （SSE の hub.Run や HLS のセグメント配信）は対象にならないため、WriteTimeout
+	// を一律に設定する場合と異なり長寿命配信を切らない。ReadTimeout を設定
+	// していないため明示しないと無期限になる。
+	httpIdleTimeout = 120 * time.Second
+)
+
+// newHTTPServer は Rokuban の HTTP サーバーを共通のタイムアウト設定で構築する。
+// WriteTimeout は意図的に設定しない —— SSE（notifier）・HLS（streamer）は
+// レスポンスを長時間書き続けるため、一律の WriteTimeout はこれらを途中で
+// 切断してしまう（エンドポイント特性ごとの判断が要る。issue #368「罠」）。
+func newHTTPServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: httpReadHeaderTimeout,
+		IdleTimeout:       httpIdleTimeout,
+	}
+}
+
 func newServerCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "server",
@@ -211,7 +248,7 @@ func newServerCmd() *cobra.Command {
 					routerCfg.Mounter = mounters
 				}
 
-				srv := &http.Server{Addr: cfg.Server.Listen, Handler: api.NewRouter(routerCfg)}
+				srv := newHTTPServer(cfg.Server.Listen, api.NewRouter(routerCfg))
 
 				eg.Go(func() error {
 					slog.Info("starting http server", "addr", cfg.Server.Listen)
