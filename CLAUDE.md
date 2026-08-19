@@ -42,6 +42,8 @@ pnpm exec orval  # openapi.yaml → web/src/api/generated.ts
 
   - **`@version` 付きの `go run` は `go.mod` を汚さない。** ツールを `tool` ディレクティブで足すと indirect 依存が 15 個増え、ビルドツールのために Dependabot のアラート面が広がる。`sqlc` も同じくローカルバイナリ前提なので揃える
 
+**`.github/workflows/ci.yml` の `generated-diff` ジョブが sqlc / oapi-codegen の版を固定してインストールする**。3 生成物はいずれもヘッダにツール版を書く（`sqlc v1.31.1` / `version v2.8.0` / `orval v8.22.0`）。そのためローカルの版がずれると差分が出て CI が偽陽性で赤くなる。版を上げるときは `generated-diff` の pin とこの節（oapi-codegen の版）の両方を同じ PR で揃える。
+
 ## 設計ドキュメント
 
 **設計の権威は docs/ にある。** 実装中に設計判断を変えたくなったら実装せず issue にコメントで提起する。
