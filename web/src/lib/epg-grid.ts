@@ -237,6 +237,12 @@ export function groupByChannelType(ordered: readonly Service[]): ChannelGroup[] 
 }
 
 /**
+ * serviceKey はサービスチップの identity（`condition-fields.tsx` の `key` と同じ組）。
+ * `Service` の値は再取得のたびに別オブジェクトになるので、引き当てはこの組で行う。
+ */
+const serviceKey = (s: Service) => `${s.networkId}-${s.serviceId}`
+
+/**
  * disambiguationParts はサービスを区別する候補の材料。上から順に足していき、
  * 名前が重複するグループ内で一意になったところで止める。programId を分解して
  * 作れる値（networkId・serviceId を逆算するもの）ではなく、API が `Service`
@@ -256,7 +262,7 @@ const disambiguationParts: ((s: Service) => string)[] = [
   // (channelType, remoteControlKeyId, channel, serviceId) が全部一致しても
   // networkId が違うサービス（別ネットワークの同名同 serviceId）を、
   // `#${serviceId}` だけでは区別できない穴が残っていた。
-  (s) => `#${s.networkId}-${s.serviceId}`,
+  (s) => `#${serviceKey(s)}`,
 ]
 
 /**
@@ -267,8 +273,9 @@ const disambiguationParts: ((s: Service) => string)[] = [
  * （issue #306）。名前が重複していないサービスには何も返さない ---
  * 区別が要らない大多数のチップに常時ラベルを付けて読みにくくしないため。
  *
- * 戻り値の関数は、渡した `services` と同じ配列の要素で呼ぶことを前提にする
- * （呼び出しごとにグループを作り直す）。
+ * 引き当ては `serviceKey`（= チップの identity）なので、渡した配列と同じ
+ * オブジェクトで呼ぶ必要はない（テスト「渡した配列とは別オブジェクトでも
+ * 同じ (networkId, serviceId) なら引ける」）。
  */
 export function serviceDisambiguator(
   services: readonly Service[],
@@ -280,7 +287,7 @@ export function serviceDisambiguator(
     else groups.set(s.name, [s])
   }
 
-  const labelOf = new Map<Service, string>()
+  const labelOf = new Map<string, string>()
   for (const group of groups.values()) {
     if (group.length <= 1) continue
     let labels = group.map(() => '')
@@ -288,8 +295,8 @@ export function serviceDisambiguator(
       labels = group.map((s, i) => (labels[i] === '' ? part(s) : `${labels[i]} ・ ${part(s)}`))
       if (new Set(labels).size === group.length) break
     }
-    group.forEach((s, i) => labelOf.set(s, labels[i]))
+    group.forEach((s, i) => labelOf.set(serviceKey(s), labels[i]))
   }
 
-  return (service) => labelOf.get(service)
+  return (service) => labelOf.get(serviceKey(service))
 }

@@ -288,6 +288,50 @@ describe('serviceDisambiguator', () => {
     expect(disambiguate(services[1])).toBe('地上波 5 ・ 27 ・ #32736-1025')
   })
 
+  // mirakc は BS/CS のサービスに remoteControlKeyId を返さないため、`Service`
+  // には常にゼロ値の 0 が載る（`internal/mirakc/types.go` の素の int →
+  // `epg_services.remote_control_key_id` は NOT NULL → `internal/api/epg.go`
+  // がそのまま 0 を返す）。つまり BS/CS のサービスは全件が
+  // `remoteControlKeyId > 0` の**偽側**を通る = 本番の主経路であり、
+  // 同名サブサービスが並ぶ族（issue #306 の報告そのもの）もここでしか描かれない。
+  // 以下 2 件は「0 をリモコン番号として出さない」ことを期待値のリテラルで固定する
+  // （この 2 件が無いと `> 0` を `>= 0` に反転しても全テストが緑のままだった）。
+  it('リモコン番号を持たない BS は種別だけを出す（0 を番号として出さない）', () => {
+    const services = [
+      service({ serviceId: 101, channelType: 'BS', remoteControlKeyId: 0, channel: 'BS15_0' }),
+      service({ serviceId: 102, channelType: 'BS', remoteControlKeyId: 0, channel: 'BS23_0' }),
+    ]
+    const disambiguate = serviceDisambiguator(services)
+
+    expect(disambiguate(services[0])).toBe('BS ・ BS15_0')
+    expect(disambiguate(services[1])).toBe('BS ・ BS23_0')
+  })
+
+  it('リモコン番号を持たない BS と CS は種別だけで区別できる', () => {
+    const services = [
+      service({ serviceId: 101, channelType: 'BS', remoteControlKeyId: 0, channel: 'BS15_0' }),
+      service({ serviceId: 102, channelType: 'CS', remoteControlKeyId: 0, channel: 'CS24' }),
+    ]
+    const disambiguate = serviceDisambiguator(services)
+
+    expect(disambiguate(services[0])).toBe('BS')
+    expect(disambiguate(services[1])).toBe('CS')
+  })
+
+  it('渡した配列とは別オブジェクトでも同じ (networkId, serviceId) なら引ける', () => {
+    // 引き当てをオブジェクト同一性でやると、`useListServices` の再取得で
+    // 別オブジェクトになった瞬間にラベルが全部消える。キーはチップの identity
+    // （networkId, serviceId）にしてあるので、複製でも同じラベルが出る。
+    const services = [
+      service({ serviceId: 1024, remoteControlKeyId: 5, channel: '27' }),
+      service({ serviceId: 1025, remoteControlKeyId: 5, channel: '95' }),
+    ]
+    const disambiguate = serviceDisambiguator(services)
+
+    expect(disambiguate({ ...services[0] })).toBe('地上波 5 ・ 27')
+    expect(disambiguate({ ...services[1] })).toBe('地上波 5 ・ 95')
+  })
+
   it('3 局以上の重複でも全員が区別できる（issue #306 の実例）', () => {
     const services = [
       service({ serviceId: 1, remoteControlKeyId: 5, channel: '27' }),
