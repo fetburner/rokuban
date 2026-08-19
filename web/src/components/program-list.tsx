@@ -609,10 +609,9 @@ export const ProgramList = forwardRef<
                   「前を読み込む」ボタンは通常のフローに戻したので（5 回目の
                   修正）、ここに足し込む分はもう無い */}
               {showDateHeader[index] && (
-                // 文字色は text-foreground（issue #308）。text-muted-foreground だと
-                // bg-muted/80 との合成後コントラストがライトで 4.5 を割る
-                // （pnpm e2e:design で実測）。muted は淡い地としてだけ使い、字は
-                // 通常の本文と同じ濃さにする。
+                // 文字色は text-foreground（bg-muted/80 との合成後コントラスト対策。
+                // docs/frontend/design.md「コントラストは毎回測る」）。muted は淡い
+                // 地としてだけ使い、字は通常の本文と同じ濃さにする。
                 <h2 className="sticky top-[var(--page-header-height,0px)] z-[5] border-y border-border bg-muted/80 px-4 py-1.5 text-xs font-medium text-foreground backdrop-blur">
                   {formatDate(program.startAt)}
                 </h2>

@@ -28,7 +28,9 @@ export function Chip({
         'shrink-0 rounded-full border px-3 py-1.5 text-xs transition-colors disabled:pointer-events-none disabled:opacity-50',
         active
           ? 'border-primary bg-primary text-primary-foreground'
-          : 'border-border text-muted-foreground hover:bg-muted',
+          // hover:text-foreground は hover:bg-muted と対（合成後コントラスト対策。
+          // docs/frontend/design.md「コントラストは毎回測る」）。
+          : 'border-border text-muted-foreground hover:bg-muted hover:text-foreground',
       )}
     >
       {children}

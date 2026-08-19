@@ -239,9 +239,8 @@ function RuleRow({ rule, onEdit }: { rule: Rule; onEdit: () => void }) {
           <div className="flex flex-wrap items-center gap-2">
             <span className="truncate text-sm font-medium">{rule.name}</span>
             {!rule.enabled && (
-              // 文字色は text-foreground（issue #308）。text-muted-foreground だと
-              // bg-muted との合成後コントラストがライトで 4.5 を割る（他の
-              // bg-muted 小バッジと同じ形）。
+              // 文字色は text-foreground（bg-muted 小バッジの合成後コントラスト
+              // 対策。docs/frontend/design.md「コントラストは毎回測る」）。
               <span className="rounded bg-muted px-1.5 py-0.5 text-[0.65rem] text-foreground">
                 無効
               </span>
