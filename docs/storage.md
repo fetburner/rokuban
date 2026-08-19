@@ -10,7 +10,7 @@
 | 節 | 内容 | ファイル |
 |---|---|---|
 | §1〜5 §5.1 | S3 SDK を持たない / FUSE 越し S3 の制約 / **ストレージ契約（4 つのルール）** / クラウド側のマウント選択肢 / 2 階層（録画バッファとアーカイブ・サイジング指針）/ rel_path の名前空間 / サムネイル | [storage/contract.md](storage/contract.md) |
-| §6 §7 | **原本 TS の保持ポリシー**（encode policy の凍結とその例外の権威はここ）/ **削除エンジン**（削除可否の述語 / ごみ箱 / 孤児回収の安全弁） | [storage/retention.md](storage/retention.md) |
+| §6 §7 | **原本 TS の保持ポリシー**（encode policy の凍結とその例外の権威はここ）/ **削除エンジン**（削除可否の述語 / ごみ箱 / 孤児回収の安全弁 / その逆方向の実体無し検出） | [storage/retention.md](storage/retention.md) |
 | §8 | catalog エクスポートと rescue（災害復旧） | [storage/rescue.md](storage/rescue.md) |
 
 読む順の目安:

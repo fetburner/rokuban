@@ -263,6 +263,7 @@ func NewWorkers(deps *Deps) *river.Workers {
 		OrphanMTimeGrace:  deps.Cleanup.OrphanMTimeGrace,
 		OrphanAge:         deps.Cleanup.OrphanAge,
 		MaxDeletesPerPass: deps.Cleanup.MaxDeletesPerPass,
+		MissingAssetAge:   deps.Cleanup.MissingAssetAge,
 		Webhook:           deps.Webhook,
 	})
 	river.AddWorker(workers, &StorageSyncWorker{

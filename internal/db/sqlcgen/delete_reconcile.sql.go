@@ -10,6 +10,15 @@ import (
 	"time"
 )
 
+const deleteMissingMediaAsset = `-- name: DeleteMissingMediaAsset :exec
+DELETE FROM missing_media_assets WHERE media_asset_id = $1
+`
+
+func (q *Queries) DeleteMissingMediaAsset(ctx context.Context, mediaAssetID int64) error {
+	_, err := q.db.Exec(ctx, deleteMissingMediaAsset, mediaAssetID)
+	return err
+}
+
 const deleteOrphanFile = `-- name: DeleteOrphanFile :exec
 DELETE FROM orphan_files WHERE rel_path = $1
 `
@@ -17,6 +26,96 @@ DELETE FROM orphan_files WHERE rel_path = $1
 func (q *Queries) DeleteOrphanFile(ctx context.Context, relPath string) error {
 	_, err := q.db.Exec(ctx, deleteOrphanFile, relPath)
 	return err
+}
+
+const listActiveMediaAssets = `-- name: ListActiveMediaAssets :many
+SELECT id, recording_id, rel_path, kind FROM media_assets WHERE state = 'active'
+`
+
+type ListActiveMediaAssetsRow struct {
+	ID          int64
+	RecordingID int64
+	RelPath     string
+	Kind        string
+}
+
+// 「active な media_asset の実体が無い」検出用（issue #343、
+// docs/storage/retention.md §7「孤児回収の逆」）。orphan_files の判定
+// （ListAllMediaAssetRelPaths）と対になる逆方向のクエリ: ここでは state が
+// active な行だけを対象にする（deleting/deleted は物理削除の途中・完了
+// なのでファイルが無くて当然であり検出対象ではない）。
+func (q *Queries) ListActiveMediaAssets(ctx context.Context) ([]ListActiveMediaAssetsRow, error) {
+	rows, err := q.db.Query(ctx, listActiveMediaAssets)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListActiveMediaAssetsRow
+	for rows.Next() {
+		var i ListActiveMediaAssetsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.RecordingID,
+			&i.RelPath,
+			&i.Kind,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAgedMissingMediaAssets = `-- name: ListAgedMissingMediaAssets :many
+SELECT m.media_asset_id AS id, a.recording_id, a.rel_path, a.kind, m.first_seen
+FROM missing_media_assets m
+JOIN media_assets a ON a.id = m.media_asset_id
+WHERE m.first_seen <= $1::timestamptz
+  AND a.state = 'active'
+ORDER BY m.media_asset_id
+`
+
+type ListAgedMissingMediaAssetsRow struct {
+	ID          int64
+	RecordingID int64
+	RelPath     string
+	Kind        string
+	FirstSeen   time.Time
+}
+
+// エイジング済み（first_seen が age_cutoff 以前）で、なお active な行。
+// rel_path / recording_id / kind は missing_media_assets に複製せず
+// media_assets との JOIN で引く（不変条件 9）。JOIN で state = 'active' を
+// 再確認するのは、対象行がその後 deleting/deleted に遷移した、または
+// resolveUnqualifiedDeletingAsset 等で active に戻った場合に、報告の瞬間の
+// 状態を見るため（適用の瞬間の再評価。不変条件 9）。
+func (q *Queries) ListAgedMissingMediaAssets(ctx context.Context, ageCutoff time.Time) ([]ListAgedMissingMediaAssetsRow, error) {
+	rows, err := q.db.Query(ctx, listAgedMissingMediaAssets, ageCutoff)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListAgedMissingMediaAssetsRow
+	for rows.Next() {
+		var i ListAgedMissingMediaAssetsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.RecordingID,
+			&i.RelPath,
+			&i.Kind,
+			&i.FirstSeen,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listAgedOrphanFiles = `-- name: ListAgedOrphanFiles :many
@@ -63,6 +162,30 @@ func (q *Queries) ListAllMediaAssetRelPaths(ctx context.Context) ([]string, erro
 			return nil, err
 		}
 		items = append(items, rel_path)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAllMissingMediaAssetIDs = `-- name: ListAllMissingMediaAssetIDs :many
+SELECT media_asset_id FROM missing_media_assets
+`
+
+func (q *Queries) ListAllMissingMediaAssetIDs(ctx context.Context) ([]int64, error) {
+	rows, err := q.db.Query(ctx, listAllMissingMediaAssetIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []int64
+	for rows.Next() {
+		var media_asset_id int64
+		if err := rows.Scan(&media_asset_id); err != nil {
+			return nil, err
+		}
+		items = append(items, media_asset_id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -486,6 +609,18 @@ func (q *Queries) RevertMediaAssetToActive(ctx context.Context, arg RevertMediaA
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const upsertMissingMediaAsset = `-- name: UpsertMissingMediaAsset :exec
+INSERT INTO missing_media_assets (media_asset_id) VALUES ($1)
+ON CONFLICT (media_asset_id) DO NOTHING
+`
+
+// 実体無し候補を記録する。既存行があれば first_seen を保持する
+// （DO NOTHING。エイジングの起点は「最初に実体無しだと気づいた時刻」）。
+func (q *Queries) UpsertMissingMediaAsset(ctx context.Context, mediaAssetID int64) error {
+	_, err := q.db.Exec(ctx, upsertMissingMediaAsset, mediaAssetID)
+	return err
 }
 
 const upsertOrphanFile = `-- name: UpsertOrphanFile :exec

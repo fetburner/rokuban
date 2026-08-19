@@ -77,6 +77,11 @@ type MediaAsset struct {
 	UpdatedAt   time.Time
 }
 
+type MissingMediaAsset struct {
+	MediaAssetID int64
+	FirstSeen    time.Time
+}
+
 type NeverScheduledEvent struct {
 	Site       string
 	NetworkID  int32

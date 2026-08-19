@@ -229,6 +229,9 @@ cleanup:
                                  # 手動で
                                  #  POST /api/sites/{site}/breakers/delete_reconcile/resume
                                  # するまで止まり続ける）。0 なら既定値（100）
+  missing_asset_age: 24h         # 「active なのに実体ファイルが無い」候補が確認済みとして
+                                 # メトリクス/ログに出るまでのエイジング期間（自動削除はしない）。
+                                 # 0 なら既定値（24 時間）
 
 # ログ
 log:

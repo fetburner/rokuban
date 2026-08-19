@@ -43,6 +43,13 @@ const (
 	// defaultDeleteReconcileMaxPerPass は一括削除サーキットブレーカーの既定閾値。
 	defaultDeleteReconcileMaxPerPass = 100
 
+	// defaultMissingAssetAge は「active なのに実体が無い」候補が確認済みとして
+	// 報告されるまでの既定エイジング期間（issue #343）。孤児回収の
+	// defaultOrphanAge と同じ理由（単発の走査揺れ・DB リストア直後の一時的な
+	// 不整合を確認済みの異常と区別する）で持つが、削除を目的とした猶予では
+	// ないため長さを揃える必要はなく、通知の遅れを抑える短めの値にしている。
+	defaultMissingAssetAge = 24 * time.Hour
+
 	// deleteReconcileRowLimit はソースごとに 1 パスで拾う行数の上限。
 	// 際限なく積み上げてタイムアウトするのを避けるための安全弁で、
 	// サーキットブレーカーの閾値（既定 100）より十分大きく取る。
@@ -146,6 +153,7 @@ type DeleteReconcileWorker struct {
 	OrphanMTimeGrace  time.Duration
 	OrphanAge         time.Duration
 	MaxDeletesPerPass int
+	MissingAssetAge   time.Duration
 
 	// Webhook は録画ライフサイクル通知用クライアント（M3-11）。nil 可。
 	Webhook *webhook.Client
@@ -177,6 +185,10 @@ func (w *DeleteReconcileWorker) Work(ctx context.Context, _ *river.Job[DeleteRec
 	maxPerPass := w.MaxDeletesPerPass
 	if maxPerPass <= 0 {
 		maxPerPass = defaultDeleteReconcileMaxPerPass
+	}
+	missingAssetAge := w.MissingAssetAge
+	if missingAssetAge <= 0 {
+		missingAssetAge = defaultMissingAssetAge
 	}
 
 	q := sqlcgen.New(w.Pool)
@@ -243,8 +255,17 @@ func (w *DeleteReconcileWorker) Work(ctx context.Context, _ *river.Job[DeleteRec
 	}
 
 	// 孤児候補の記録/解除はファイルを消さないので、ブレーカーとは無関係に毎回行う。
-	if err := w.reconcileOrphanCandidates(ctx, q, orphanMTimeGrace); err != nil {
+	// 同じ 1 回の走査結果（seenOnDisk）を「active なのに実体が無い」検出
+	// （逆方向。issue #343）にも使う --- 2 回目の全量ディレクトリ走査を避ける。
+	seenOnDisk, err := w.reconcileOrphanCandidates(ctx, q, orphanMTimeGrace)
+	if err != nil {
 		return fmt.Errorf("reconciling orphan candidates: %w", err)
+	}
+	if err := w.reconcileMissingAssets(ctx, q, seenOnDisk); err != nil {
+		return fmt.Errorf("reconciling missing assets: %w", err)
+	}
+	if err := w.reportAgedMissingAssets(ctx, q, missingAssetAge); err != nil {
+		return fmt.Errorf("reporting aged missing assets: %w", err)
 	}
 
 	trashRows, err := q.ListTrashMediaAssetsToDelete(ctx, sqlcgen.ListTrashMediaAssetsToDeleteParams{
@@ -514,10 +535,15 @@ func (w *DeleteReconcileWorker) pendingDerivativeJobRecordingIDs(ctx context.Con
 // mtime が新しいファイル（OrphanMTimeGrace 以内）は候補にしない。
 // 既に孤児でなくなった（登録された、またはファイルが消えた）行は掃除する。
 // ファイルは一切消さない（記録のみ）。
-func (w *DeleteReconcileWorker) reconcileOrphanCandidates(ctx context.Context, q *sqlcgen.Queries, mtimeGrace time.Duration) error {
+//
+// 戻り値はこの 1 回の走査で実際にディスク上で観測した全 rel_path の集合
+// （孤児かどうかを問わない）。reconcileMissingAssets が同じ走査結果を使って
+// 逆方向（active なのに実体が無い行）を検出するため（issue #343。2 回目の
+// 全量ディレクトリ走査を避ける）。
+func (w *DeleteReconcileWorker) reconcileOrphanCandidates(ctx context.Context, q *sqlcgen.Queries, mtimeGrace time.Duration) (map[string]struct{}, error) {
 	known, err := q.ListAllMediaAssetRelPaths(ctx)
 	if err != nil {
-		return fmt.Errorf("listing known rel paths: %w", err)
+		return nil, fmt.Errorf("listing known rel paths: %w", err)
 	}
 	knownSet := make(map[string]struct{}, len(known))
 	for _, k := range known {
@@ -525,8 +551,10 @@ func (w *DeleteReconcileWorker) reconcileOrphanCandidates(ctx context.Context, q
 	}
 
 	mtimeCutoff := time.Now().Add(-mtimeGrace)
+	seenOnDisk := make(map[string]struct{})
 	candidates := make(map[string]struct{})
 	if err := walkMediaFiles(w.MediaDir, func(relPath string, info fs.FileInfo) {
+		seenOnDisk[relPath] = struct{}{}
 		if _, ok := knownSet[relPath]; ok {
 			return
 		}
@@ -535,18 +563,18 @@ func (w *DeleteReconcileWorker) reconcileOrphanCandidates(ctx context.Context, q
 		}
 		candidates[relPath] = struct{}{}
 	}); err != nil {
-		return fmt.Errorf("walking media dir: %w", err)
+		return nil, fmt.Errorf("walking media dir: %w", err)
 	}
 
 	for relPath := range candidates {
 		if err := q.UpsertOrphanFile(ctx, relPath); err != nil {
-			return fmt.Errorf("recording orphan candidate %q: %w", relPath, err)
+			return nil, fmt.Errorf("recording orphan candidate %q: %w", relPath, err)
 		}
 	}
 
 	existing, err := q.ListAllOrphanFiles(ctx)
 	if err != nil {
-		return fmt.Errorf("listing orphan files: %w", err)
+		return nil, fmt.Errorf("listing orphan files: %w", err)
 	}
 	for _, o := range existing {
 		if _, stillCandidate := candidates[o.RelPath]; stillCandidate {
@@ -555,8 +583,94 @@ func (w *DeleteReconcileWorker) reconcileOrphanCandidates(ctx context.Context, q
 		// もう孤児候補でない（media_assets に登録された、mtime が新しくなった
 		// はずはないが再走査で見えなくなった＝ファイルが消えた等）。掃除する。
 		if err := q.DeleteOrphanFile(ctx, o.RelPath); err != nil {
-			return fmt.Errorf("clearing stale orphan record %q: %w", o.RelPath, err)
+			return nil, fmt.Errorf("clearing stale orphan record %q: %w", o.RelPath, err)
 		}
+	}
+	return seenOnDisk, nil
+}
+
+// reconcileMissingAssets は orphan 検出と同じ 1 回の走査結果（seenOnDisk）を
+// 使い、state='active' な media_assets のうちディスク上で観測されなかった
+// 行を missing_media_assets に記録する（issue #343、孤児回収の逆方向）。
+// ファイルを消さず、media_assets も一切書き換えない（記録のみ）。
+//
+// マウントが落ちている・空マウントのときに全 active 行を「実体無し」と
+// 報告して騒がないよう、seenOnDisk が空（この走査で 1 件もファイルを
+// 観測できなかった）のに active な行が存在するケースを形で検知して丸ごと
+// 見送る（reconciler の全損シグネチャ breaker.ReconcileTotalLoss と同じ
+// 考え方 --- 件数の閾値ではなく形で見る。ただしここは削除を止める
+// ブレーカーではなく単なる観測の記録なので、ラッチは持たず今パスの記録を
+// 見送るだけでよい）。既存の missing_media_assets 行にも一切触れない ---
+// 前回までの確認済み状態をこの疑わしいパスの結果で上書きしないため。
+func (w *DeleteReconcileWorker) reconcileMissingAssets(ctx context.Context, q *sqlcgen.Queries, seenOnDisk map[string]struct{}) error {
+	active, err := q.ListActiveMediaAssets(ctx)
+	if err != nil {
+		return fmt.Errorf("listing active media assets: %w", err)
+	}
+	if len(active) == 0 {
+		return nil
+	}
+	if len(seenOnDisk) == 0 {
+		slog.Warn("delete_reconcile: filesystem walk observed zero files while active media_assets rows exist; suspecting a storage mount failure, skipping missing-asset check for this pass",
+			"active_assets", len(active))
+		metrics.MissingAssetScanSuspectedStorageFailure.Inc()
+		return nil
+	}
+
+	candidates := make(map[int64]struct{})
+	for _, a := range active {
+		if _, ok := seenOnDisk[a.RelPath]; ok {
+			continue
+		}
+		candidates[a.ID] = struct{}{}
+		if err := q.UpsertMissingMediaAsset(ctx, a.ID); err != nil {
+			return fmt.Errorf("recording missing-asset candidate %d: %w", a.ID, err)
+		}
+	}
+
+	existingIDs, err := q.ListAllMissingMediaAssetIDs(ctx)
+	if err != nil {
+		return fmt.Errorf("listing missing-asset candidates: %w", err)
+	}
+	for _, id := range existingIDs {
+		if _, stillCandidate := candidates[id]; stillCandidate {
+			continue
+		}
+		// もう実体無し候補でない（ファイルが見つかった、またはこの資産自体が
+		// もう active でなくなった等）。掃除する。
+		if err := q.DeleteMissingMediaAsset(ctx, id); err != nil {
+			return fmt.Errorf("clearing stale missing-asset record %d: %w", id, err)
+		}
+	}
+	return nil
+}
+
+// reportAgedMissingAssets は missing_media_assets のうち first_seen が age を
+// 超えて連続して記録されている（単発の走査揺れではない）行を、確認済みの
+// 異常として Warn ログとメトリクスに出す（issue #343）。media_assets /
+// missing_media_assets のどちらも書き換えない --- 自動削除は行わない
+// （「ファイルが無い」は削除の必要条件であって十分条件ではない。
+// docs/storage/retention.md §7「孤児回収の逆」）。
+func (w *DeleteReconcileWorker) reportAgedMissingAssets(ctx context.Context, q *sqlcgen.Queries, age time.Duration) error {
+	aged, err := q.ListAgedMissingMediaAssets(ctx, time.Now().Add(-age))
+	if err != nil {
+		return fmt.Errorf("listing aged missing-asset candidates: %w", err)
+	}
+
+	counts := make(map[string]int, 3)
+	for _, a := range aged {
+		counts[a.Kind]++
+		slog.Warn("delete_reconcile: active media asset has no file on disk",
+			"media_asset_id", a.ID, "recording_id", a.RecordingID, "rel_path", a.RelPath,
+			"kind", a.Kind, "first_seen", a.FirstSeen)
+	}
+
+	// EncodeReconcileUnsatisfiable と同じパターン: Reset してから現在の
+	// パスで見た kind だけ Set する。該当 0 件の kind はラベルの系列自体が
+	// 消える（0 を出さない）。
+	metrics.MediaAssetsMissing.Reset()
+	for kind, n := range counts {
+		metrics.MediaAssetsMissing.WithLabelValues(kind).Set(float64(n))
 	}
 	return nil
 }

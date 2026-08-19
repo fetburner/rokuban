@@ -14,11 +14,13 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/fetburner/rokuban/internal/breaker"
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/webhook"
 )
 
@@ -1443,6 +1445,282 @@ func TestDeleteReconcileWorker_ResumesStuckDeletingRow(t *testing.T) {
 	}
 	if fileExists(full) {
 		t.Error("stuck asset file still exists, want removed")
+	}
+}
+
+// active な media_asset の実体が無いことを検出する経路が無かった問題（issue #343）。
+//
+// ファイルが存在する間は候補として記録しない。もう一つ別の active 資産に実
+// ファイルを置いておくことで、下記の「ゼロ件観測で全損シグネチャ扱いになり
+// スキップする」安全弁を踏まないようにする（そちらは別テストで確認する）。
+func TestDeleteReconcileWorker_MissingAsset_FilePresent_NotRegistered(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+
+	recordingID := insertTestRecording(t, pool)
+	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "present/original.m2ts", []byte("data"))
+
+	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	if err := w.Work(context.Background(), nil); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+
+	if got := assetState(t, pool, assetID); got != "active" {
+		t.Errorf("asset state = %q, want active (file is present, must not be touched)", got)
+	}
+	var count int
+	if err := pool.QueryRow(context.Background(),
+		"SELECT count(*) FROM missing_media_assets WHERE media_asset_id = $1", assetID).Scan(&count); err != nil {
+		t.Fatalf("querying missing_media_assets: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("missing_media_assets count = %d, want 0 (file exists on disk)", count)
+	}
+}
+
+// ファイルが無い active な資産は missing_media_assets に候補として記録
+// されるが、エイジング窓を過ぎるまでは Warn ログ・メトリクスに出ない
+// （単発の走査揺れを確認済みの異常と区別する。孤児回収の OrphanAge と同じ
+// 非対称）。media_assets 自体には一切触れない（自動削除しない）。
+func TestDeleteReconcileWorker_MissingAsset_WithinAge_RecordedButNotReported(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+
+	// 全損シグネチャ（ゼロ件観測）を踏まないよう、実体のある資産を 1 つ
+	// 別に置く。
+	otherRecordingID := insertTestRecording(t, pool)
+	seedOriginalAsset(t, pool, mediaDir, otherRecordingID, "present/original.m2ts", []byte("data"))
+
+	recordingID := insertTestRecordingWithEventID(t, pool, 3)
+	q := sqlcgen.New(pool)
+	assetID, err := q.CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
+		RecordingID: recordingID,
+		Kind:        db.AssetKindOriginal,
+		RelPath:     "gone/original.m2ts",
+		SizeBytes:   4,
+	})
+	if err != nil {
+		t.Fatalf("seeding asset without a file: %v", err)
+	}
+
+	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, MissingAssetAge: 24 * time.Hour}
+	if err := w.Work(context.Background(), nil); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+
+	if got := assetState(t, pool, assetID); got != "active" {
+		t.Errorf("asset state = %q, want active (missing-file detection never deletes)", got)
+	}
+	var count int
+	if err := pool.QueryRow(context.Background(),
+		"SELECT count(*) FROM missing_media_assets WHERE media_asset_id = $1", assetID).Scan(&count); err != nil {
+		t.Fatalf("querying missing_media_assets: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("missing_media_assets count = %d, want 1 (candidate must be recorded even before aging out)", count)
+	}
+	if got := promtestutil.ToFloat64(metrics.MediaAssetsMissing.WithLabelValues("original")); got != 0 {
+		t.Errorf("MediaAssetsMissing{kind=original} = %v, want 0 (not aged out yet, must not be reported)", got)
+	}
+}
+
+// エイジング窓を過ぎた実体無し候補は Warn ログ相当のメトリクスに反映される。
+// first_seen をあらかじめ過去に投入し、14 日待たずに検証する
+// （TestDeleteReconcileWorker_Orphan_AgedOut_Deletes と同じ手法）。
+func TestDeleteReconcileWorker_MissingAsset_AgedOut_ReportedWithoutDeleting(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+
+	otherRecordingID := insertTestRecording(t, pool)
+	seedOriginalAsset(t, pool, mediaDir, otherRecordingID, "present/original.m2ts", []byte("data"))
+
+	recordingID := insertTestRecordingWithEventID(t, pool, 4)
+	q := sqlcgen.New(pool)
+	assetID, err := q.CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
+		RecordingID: recordingID,
+		Kind:        db.AssetKindOriginal,
+		RelPath:     "gone/aged.m2ts",
+		SizeBytes:   4,
+	})
+	if err != nil {
+		t.Fatalf("seeding asset without a file: %v", err)
+	}
+	// エイジング窓を過ぎた記録として直接投入する。
+	if _, err := pool.Exec(context.Background(),
+		"INSERT INTO missing_media_assets (media_asset_id, first_seen) VALUES ($1, $2)",
+		assetID, time.Now().Add(-48*time.Hour)); err != nil {
+		t.Fatalf("seeding aged missing-asset record: %v", err)
+	}
+
+	before := promtestutil.ToFloat64(metrics.MissingAssetScanSuspectedStorageFailure)
+
+	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, MissingAssetAge: 24 * time.Hour}
+	if err := w.Work(context.Background(), nil); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+
+	if got := assetState(t, pool, assetID); got != "active" {
+		t.Errorf("asset state = %q, want active (missing-file detection never deletes)", got)
+	}
+	if got := promtestutil.ToFloat64(metrics.MediaAssetsMissing.WithLabelValues("original")); got != 1 {
+		t.Errorf("MediaAssetsMissing{kind=original} = %v, want 1 (aged out, must be reported)", got)
+	}
+	if got := promtestutil.ToFloat64(metrics.MissingAssetScanSuspectedStorageFailure); got != before {
+		t.Errorf("MissingAssetScanSuspectedStorageFailure changed from %v to %v, want unchanged (a real file was observed this pass)", before, got)
+	}
+}
+
+// missing_media_assets の候補は、対象ファイルが後から見つかると掃除される
+// （孤児回収の「登録された行を掃除する」と対になる逆方向）。
+func TestDeleteReconcileWorker_MissingAsset_FileReappears_ClearsCandidate(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+
+	otherRecordingID := insertTestRecording(t, pool)
+	seedOriginalAsset(t, pool, mediaDir, otherRecordingID, "present/original.m2ts", []byte("data"))
+
+	recordingID := insertTestRecordingWithEventID(t, pool, 5)
+	relPath := "reappears/original.m2ts"
+	q := sqlcgen.New(pool)
+	assetID, err := q.CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
+		RecordingID: recordingID,
+		Kind:        db.AssetKindOriginal,
+		RelPath:     relPath,
+		SizeBytes:   4,
+	})
+	if err != nil {
+		t.Fatalf("seeding asset without a file: %v", err)
+	}
+	if _, err := pool.Exec(context.Background(),
+		"INSERT INTO missing_media_assets (media_asset_id, first_seen) VALUES ($1, now())",
+		assetID); err != nil {
+		t.Fatalf("seeding missing-asset candidate: %v", err)
+	}
+
+	// ファイルが復元された(バックアップからの手動復元等)。
+	full := filepath.Join(mediaDir, filepath.FromSlash(relPath))
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(full, []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	if err := w.Work(context.Background(), nil); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+
+	var count int
+	if err := pool.QueryRow(context.Background(),
+		"SELECT count(*) FROM missing_media_assets WHERE media_asset_id = $1", assetID).Scan(&count); err != nil {
+		t.Fatalf("querying missing_media_assets: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("missing_media_assets count = %d, want 0 (file reappeared, candidate must be cleared)", count)
+	}
+}
+
+// マウントが落ちている・空マウントの疑い（この走査で 1 件もファイルを
+// 観測できなかった）のときは、全 active 行を「実体無し」と報告して騒がない
+// --- 形で検知して丸ごとスキップし、既存の確認済み状態も上書きしない
+// （issue #343 の受け入れ基準）。
+func TestDeleteReconcileWorker_MissingAsset_EmptyMediaDir_SkipsSuspectedMountFailure(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir() // 空。MediaDir 配下に一切ファイルが無い状態を模す。
+
+	recordingID := insertTestRecording(t, pool)
+	q := sqlcgen.New(pool)
+	assetID, err := q.CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
+		RecordingID: recordingID,
+		Kind:        db.AssetKindOriginal,
+		RelPath:     "would-be/original.m2ts",
+		SizeBytes:   4,
+	})
+	if err != nil {
+		t.Fatalf("seeding asset without a file: %v", err)
+	}
+
+	before := promtestutil.ToFloat64(metrics.MissingAssetScanSuspectedStorageFailure)
+
+	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	if err := w.Work(context.Background(), nil); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+
+	if got := assetState(t, pool, assetID); got != "active" {
+		t.Errorf("asset state = %q, want active", got)
+	}
+	var count int
+	if err := pool.QueryRow(context.Background(),
+		"SELECT count(*) FROM missing_media_assets WHERE media_asset_id = $1", assetID).Scan(&count); err != nil {
+		t.Fatalf("querying missing_media_assets: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("missing_media_assets count = %d, want 0 (zero-file scan must not record any candidate)", count)
+	}
+	if got := promtestutil.ToFloat64(metrics.MissingAssetScanSuspectedStorageFailure); got != before+1 {
+		t.Errorf("MissingAssetScanSuspectedStorageFailure = %v, want %v (must increment when the scan sees zero files while active assets exist)", got, before+1)
+	}
+}
+
+// 上と対になる負例: MediaDir が空でも active な media_assets 行そのものが
+// 無ければ、何もすることが無いので全損シグネチャ扱いにする必要はない
+// （疑わしいパスとして数えない）。
+func TestDeleteReconcileWorker_MissingAsset_EmptyMediaDirNoActiveAssets_DoesNotTripSuspicion(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+
+	before := promtestutil.ToFloat64(metrics.MissingAssetScanSuspectedStorageFailure)
+
+	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	if err := w.Work(context.Background(), nil); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+
+	if got := promtestutil.ToFloat64(metrics.MissingAssetScanSuspectedStorageFailure); got != before {
+		t.Errorf("MissingAssetScanSuspectedStorageFailure changed from %v to %v, want unchanged (no active media_assets rows means nothing to be suspicious about)", before, got)
+	}
+}
+
+// 既に確認済み(エイジング済み)だった候補は、その後のパスがゼロ件観測
+// (マウント失敗の疑い)になっても消されない --- 疑わしいパスの結果で
+// 前回までの確認済み状態を上書きしない。
+func TestDeleteReconcileWorker_MissingAsset_SuspectedMountFailure_DoesNotClearExistingCandidates(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+
+	recordingID := insertTestRecording(t, pool)
+	q := sqlcgen.New(pool)
+	assetID, err := q.CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
+		RecordingID: recordingID,
+		Kind:        db.AssetKindOriginal,
+		RelPath:     "gone/original.m2ts",
+		SizeBytes:   4,
+	})
+	if err != nil {
+		t.Fatalf("seeding asset without a file: %v", err)
+	}
+	if _, err := pool.Exec(context.Background(),
+		"INSERT INTO missing_media_assets (media_asset_id, first_seen) VALUES ($1, now())",
+		assetID); err != nil {
+		t.Fatalf("seeding missing-asset candidate: %v", err)
+	}
+
+	// mediaDir は空のまま(この資産の実ファイルも他の資産も一切無い) ---
+	// このパスはゼロ件観測になり全損シグネチャでスキップされるはず。
+	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	if err := w.Work(context.Background(), nil); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+
+	var count int
+	if err := pool.QueryRow(context.Background(),
+		"SELECT count(*) FROM missing_media_assets WHERE media_asset_id = $1", assetID).Scan(&count); err != nil {
+		t.Fatalf("querying missing_media_assets: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("missing_media_assets count = %d, want 1 (a suspected mount failure must not clear existing confirmed-missing candidates)", count)
 	}
 }
 

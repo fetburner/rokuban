@@ -381,6 +381,32 @@ var (
 		Name: "rokuban_delete_reconcile_last_pass_timestamp_seconds",
 		Help: "Unix time of the last successful delete-reconcile pass. Use with time() to detect a stalled pass.",
 	})
+
+	// MediaAssetsMissing は state='active' なのに実体ファイルが無いと確認できた
+	// media_asset の件数（kind 別。issue #343）。「確認できた」は
+	// missing_media_assets の first_seen が MissingAssetAge を超えて連続して
+	// いること --- 単発の観測揺れでは増減しない。**ゼロは「大丈夫」の証明では
+	// ない** --- ファイルシステムの走査が 1 件もファイルを観測しなかったパス
+	// （マウント失敗・空マウントの疑い）はこの検出自体をスキップするため、
+	// その間はこのゲージが更新されず前回値のまま凍結する
+	// （下記 MissingAssetScanSuspectedStorageFailure と対で見る）。
+	// EncodeReconcileUnsatisfiable と同じパターンで、該当 0 件の kind は
+	// ラベルの系列自体が消える（0 を出さない）。
+	MediaAssetsMissing = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "rokuban_media_assets_missing",
+		Help: "Active media_assets rows confirmed to have no file on disk, by kind. Not a deletion candidate list — file-missing is necessary but not sufficient for deletion.",
+	}, []string{"kind"})
+
+	// MissingAssetScanSuspectedStorageFailure は上記の検出パス自体が
+	// 「ファイルシステム走査が 1 件も観測しなかったのに active な
+	// media_assets が存在する」という形（全損シグネチャと同種、件数の閾値
+	// ではない）でスキップされた回数。**このカウンタが進んでいる間は
+	// MediaAssetsMissing は更新されない**ため、増加を検出したら実際の
+	// マウント状態を確認する。
+	MissingAssetScanSuspectedStorageFailure = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "rokuban_missing_asset_scan_suspected_storage_failure_total",
+		Help: "Times the missing-asset scan saw zero files on disk while active media_assets rows exist, and skipped reporting for that pass (suspected mount failure or empty mount).",
+	})
 )
 
 // encode の desired−observed 定期 reconcile（internal/worker/encode_reconcile.go）の
@@ -606,6 +632,8 @@ func NewRegistry(backlog prometheus.Collector) *prometheus.Registry {
 		DeleteReconcileDeleted,
 		DeleteReconcileBytes,
 		DeleteReconcileLastPass,
+		MediaAssetsMissing,
+		MissingAssetScanSuspectedStorageFailure,
 
 		EncodeReconcileLastPass,
 		EncodeReconcileCandidates,
