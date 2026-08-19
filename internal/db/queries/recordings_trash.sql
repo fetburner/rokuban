@@ -29,9 +29,23 @@ RETURNING id, deleted_at;
 -- 「23505 で UPDATE が落ちたら DELETE も巻き戻る」という CTE で得ていた性質は
 -- トランザクションが保つ。
 --
--- 先に `SELECT ... FOR UPDATE` で明示的に行を掴む形も試したが、上のテストは
--- ロック文を消しても通る（実測）—— 窓を閉じているのは 2 文に割ったことなので、
--- 効果を測れない文は置かない。
+-- ただし**2 文に割っただけでは窓は閉じない**。DELETE が 0 行だった（まだ要求が
+-- 無い）ときロックは何も残らない（READ COMMITTED に述語ロックは無い）ので、
+-- 「DELETE の後・COMMIT の前」に要求行が commit されれば同じ害が出る。それを
+-- 塞いでいるのは**要求行を入れる経路が対象の recordings 行を先にロックすること**
+-- で、下の MarkRecordingPurgeRequested は CTE の UPDATE アームがそれを兼ねている
+-- （restore が行ロックを持っている間 purge が待たされることは
+-- TestPurgeRecording_SerializedBehindRestoreRowLock で見ている）。
+-- **要件: この表に INSERT する経路を足すときは recordings 行を先にロックする。**
+-- 一括 purge を `INSERT INTO recording_purge_requests SELECT id FROM recordings
+-- WHERE deleted_at IS NOT NULL ON CONFLICT DO NOTHING` と素直に書くと recordings
+-- 行をロックしないので、上の窓が黙って開き直る（そして
+-- TestRestoreRecording_ConcurrentPurgeRequest_Withdrawn は blocker 側が
+-- `UPDATE recordings` してからロックを握る形なので、この回帰を検出しない）。
+--
+-- 復元側に `SELECT ... FOR UPDATE` を足す形は採らない。上の UPDATE 自身が同じ行の
+-- 行ロックを取るので、その手前に FOR UPDATE を置いても掴むロックは増えない
+-- （冗長）。
 
 -- ごみ箱に入っている行だけを対象に deleted_at を消す。
 -- 同一イベントに生きている録画がある場合は unique partial index で 23505。
@@ -61,6 +75,11 @@ DELETE FROM recording_purge_requests WHERE recording_id = $1;
 --
 -- 存在しない録画には 0 行（recordings 側の UPDATE が 0 行 → 主クエリも 0 行 →
 -- :one が pgx.ErrNoRows → API が 404）。
+--
+-- **CTE の `trashed`（recordings の UPDATE）は soft-delete を兼ねるだけでなく、
+-- 「要求行を入れる前に対象の recordings 行をロックする」という要件も兼ねている**
+-- （上の WithdrawRecordingPurgeRequest 前のブロックと 00039 のコメント参照）。
+-- INSERT だけの経路に単純化すると、復元の窓が開き直る。
 -- name: MarkRecordingPurgeRequested :one
 WITH trashed AS (
     UPDATE recordings

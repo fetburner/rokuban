@@ -751,8 +751,9 @@ func TestRestoreRecording_NotInTrash_KeepsPurgeRequest(t *testing.T) {
 }
 
 // waitForLockWaiter は current_database() 内で行ロックを待っているセッションが
-// 現れるまでポーリングする（sleep での決め打ちを避けるため）。
-func waitForLockWaiter(t *testing.T, pool *pgxpool.Pool) {
+// 現れるまでポーリングする（sleep での決め打ちを避けるため）。who は現れるはずの
+// 待ち手の名前（失敗メッセージに出す）。
+func waitForLockWaiter(t *testing.T, pool *pgxpool.Pool, who string) {
 	t.Helper()
 	ctx := context.Background()
 	deadline := time.Now().Add(10 * time.Second)
@@ -770,7 +771,7 @@ func waitForLockWaiter(t *testing.T, pool *pgxpool.Pool) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	t.Fatal("行ロックを待つセッションが現れなかった（restore がロック待ちに入っていない）")
+	t.Fatalf("行ロックを待つセッションが現れなかった（%s がロック待ちに入っていない）", who)
 }
 
 // 復元中に別トランザクションが即時削除を要求しても、復元が成功したなら要求行は
@@ -823,7 +824,7 @@ func TestRestoreRecording_ConcurrentPurgeRequest_Withdrawn(t *testing.T) {
 	}()
 
 	// restore が行ロック待ちに入るのを待つ。
-	waitForLockWaiter(t, pool)
+	waitForLockWaiter(t, pool, "restore")
 
 	// 待たせている間に即時削除の要求を commit する。
 	if _, err := blocker.Exec(ctx,
@@ -864,6 +865,122 @@ func TestRestoreRecording_ConcurrentPurgeRequest_Withdrawn(t *testing.T) {
 	if leftover != 0 {
 		t.Errorf("recording_purge_requests rows after a successful restore = %d, want 0"+
 			"（復元が成功したのに即時要求だけ残ると、次の soft-delete で猶予をバイパスする）", leftover)
+	}
+}
+
+// 逆向きのオラクル: 復元が recordings の行ロックを持っている間、purge は
+// **ロック待ちで直列化される**。
+//
+// 上の TestRestoreRecording_ConcurrentPurgeRequest_Withdrawn は blocker 側が
+// 自分で `UPDATE recordings` してロックを握る形なので、purge 側の経路が
+// recordings をロックするかどうかを測っていない。窓を実際に閉じているのは
+// 「要求行を入れる経路が対象の recordings 行を先にロックする」ことなので
+// （復元の DELETE が 0 行のときロックは何も残らない ---
+// internal/db/queries/recordings_trash.sql のコメント）、それをここで見る。
+//
+// 一括 purge を `INSERT INTO recording_purge_requests SELECT id FROM recordings
+// WHERE ...` のように recordings をロックしない形で書き足すと、この
+// waitForLockWaiter が 10 秒で落ちる（要求行の INSERT が待たずに通ってしまう）。
+// MarkRecordingPurgeRequested の CTE から `trashed` アームを外して
+// INSERT だけにしても同じ。
+//
+// purge が直列化された結果は「204 / 要求行が 1 行残る」——復元の後に来た
+// 「今すぐ消して」を黙って捨てないこと（復元の DELETE に食われないこと）も
+// ここで同時に見ている。
+func TestPurgeRecording_SerializedBehindRestoreRowLock(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := newAPIServer(t, pool)
+	ctx := context.Background()
+
+	id := seedRecording(t, pool, "復元中の purge", time.Now().Truncate(time.Second), "finished", 40)
+	resp := doRecordingMethod(t, http.MethodDelete, fmt.Sprintf("%s/api/recordings/%d", srv.URL, id))
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete status = %d, want 204", resp.StatusCode)
+	}
+
+	// 復元の 1 文目だけを進めた状態を作る（recordings の行ロックを保持したまま
+	// 止まっているセッション）。
+	restoreTx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin restore tx: %v", err)
+	}
+	defer func() { _ = restoreTx.Rollback(ctx) }()
+	if _, err := restoreTx.Exec(ctx,
+		`UPDATE recordings SET deleted_at = NULL, updated_at = now() WHERE id = $1`, id); err != nil {
+		t.Fatalf("restore tx UPDATE: %v", err)
+	}
+
+	type purgeResult struct {
+		status int
+		err    error
+	}
+	done := make(chan purgeResult, 1)
+	go func() {
+		r, err := http.Post(fmt.Sprintf("%s/api/recordings/%d/purge", srv.URL, id), "", nil)
+		if err != nil {
+			done <- purgeResult{err: err}
+			return
+		}
+		_ = r.Body.Close()
+		done <- purgeResult{status: r.StatusCode}
+	}()
+
+	// ここが本体のアサーション: purge は recordings 行をロックしようとして待つ。
+	waitForLockWaiter(t, pool, "purge")
+
+	// 待たせている間に要求行が入っていないことを確認する（ロック待ちなのだから
+	// まだ INSERT は済んでいない）。
+	var duringLock int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM recording_purge_requests WHERE recording_id = $1`, id,
+	).Scan(&duringLock); err != nil {
+		t.Fatalf("query recording_purge_requests while locked: %v", err)
+	}
+	if duringLock != 0 {
+		t.Errorf("recording_purge_requests rows while restore holds the row lock = %d, want 0"+
+			"（要求行を入れる経路が recordings 行をロックしていない）", duringLock)
+	}
+
+	// 復元の 2 文目（要求行の DELETE。この時点では 0 行）を流して commit。
+	if _, err := restoreTx.Exec(ctx,
+		`DELETE FROM recording_purge_requests WHERE recording_id = $1`, id); err != nil {
+		t.Fatalf("restore tx DELETE: %v", err)
+	}
+	if err := restoreTx.Commit(ctx); err != nil {
+		t.Fatalf("restore tx commit: %v", err)
+	}
+
+	select {
+	case res := <-done:
+		if res.err != nil {
+			t.Fatalf("purge request: %v", res.err)
+		}
+		if res.status != http.StatusNoContent {
+			t.Fatalf("purge status = %d, want 204", res.status)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("purge が 10 秒で返らなかった")
+	}
+
+	var leftover int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM recording_purge_requests WHERE recording_id = $1`, id,
+	).Scan(&leftover); err != nil {
+		t.Fatalf("query recording_purge_requests: %v", err)
+	}
+	if leftover != 1 {
+		t.Errorf("recording_purge_requests rows after the serialized purge = %d, want 1"+
+			"（復元の後に来た即時削除の要求を捨ててはいけない）", leftover)
+	}
+
+	// purge は soft-delete も兼ねるので、復元が消した deleted_at を立て直している。
+	var deletedAt *time.Time
+	if err := pool.QueryRow(ctx,
+		`SELECT deleted_at FROM recordings WHERE id = $1`, id).Scan(&deletedAt); err != nil {
+		t.Fatalf("query deleted_at: %v", err)
+	}
+	if deletedAt == nil {
+		t.Error("after the serialized purge deleted_at = nil, want non-nil（purge は soft-delete も兼ねる）")
 	}
 }
 

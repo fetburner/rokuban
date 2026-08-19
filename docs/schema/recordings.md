@@ -46,7 +46,8 @@ CREATE TABLE recordings (
     -- ごみ箱（録画単位の論理削除。原本 + 派生物 + サムネイルのグループごと）
     deleted_at        timestamptz,
     -- 即時物理削除の要求はここには無い（recording_purge_requests 衛星表。
-    -- 下記「ごみ箱」参照）。
+    -- 下記「recording_purge_requests」節参照）。
+
     -- 「完全削除が完了した」不可逆な事実。削除 reconcile が
     -- パス末尾で、ごみ箱条件を満たしかつ物理削除待ちの media_assets が 1 行も
     -- 残っていない録画に一度だけ立てる。ごみ箱ビュー（ListTrashRecordings）は
@@ -123,6 +124,7 @@ CREATE TABLE recording_purge_requests (
 - 完了後（`purged_at`）に要求行を掃除する経路は作らない。掃除役を足すと削除 reconcile が 2 人目の書き手になる（不変条件 12）。「ユーザーが即時削除を要求した」は完了後も真なので tombstone と一緒に残す
 - `requested_at` は「いつ要求されたか」だけを持ち、判定には使わない。ここを `<= now()` で比較し始めたら、実質 boolean を timestamptz で持っていた旧列（`recordings.purge_after`）に戻る
 - **復元（`deleted_at` を消す + 要求行を DELETE）は 1 文のデータ変更 CTE ではなくトランザクション内の 2 文で書く。** CTE はアーム全体が 1 つのスナップショットを共有するため、行ロックで UPDATE アームが待たされている間に commit された要求行が DELETE アームから見えず、「復元は成功したのに要求行だけ残る」が観測される。残った要求行はその場では何も起こさないが、次の普通の論理削除で猶予をバイパスする。2 文なら DELETE が UPDATE の後に新しいスナップショットを取るので要求行が見える
+- **この表に行を入れる経路は、対象の `recordings` 行を先にロックする**（個別 purge は `recordings` の UPDATE アームがそれを兼ねている）。復元を 2 文に割っただけでは窓は閉じない —— DELETE が 0 行だったときロックは何も残らないので（READ COMMITTED に述語ロックは無い）、ロックせずに INSERT する経路（例: 一括 purge を `INSERT ... SELECT` で書く）を足すと、復元の DELETE 後・COMMIT 前に commit された要求行が残り、猶予バイパスが再発する
 
 ### 同一イベントの重複防止
 

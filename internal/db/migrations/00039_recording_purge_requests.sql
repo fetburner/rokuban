@@ -29,6 +29,19 @@
 -- あり続けるので、tombstone と一緒に残す。
 -- （rescue は別枠 --- 災害復旧で catalog ダンプから全表を書き戻すので、この表も
 -- 他の表と同じように書く。定常運用のループではない。）
+--
+-- **要件: この表に行を入れる経路は、対象の recordings 行を先にロックする。**
+-- MarkRecordingPurgeRequested は CTE の UPDATE アームがそれを兼ねている。
+-- ロックせずに INSERT する経路（例: 一括 purge を `INSERT INTO
+-- recording_purge_requests SELECT id FROM recordings WHERE deleted_at IS NOT
+-- NULL ON CONFLICT DO NOTHING` と素直に書く）を足すと、復元（recordings の
+-- UPDATE → 要求行の DELETE の 2 文）の DELETE が済んだ後・COMMIT する前に
+-- 要求行が commit されうる。復元は 204 を返し deleted_at も NULL なのに要求行が
+-- 1 行残り、次の普通の論理削除で猶予をバイパスして即時 purge の対象になる
+-- （ユーザーは即時削除を要求していない）。復元を 2 文に割ったのは「ロック待ちの
+-- 間に commit された要求行を見える」ようにするためで、窓を閉じているのは
+-- 書き手側のこのロック順（存在しない行への DELETE はロックを何も残さない ---
+-- READ COMMITTED に述語ロックは無い）。
 CREATE TABLE recording_purge_requests (
     -- ON DELETE CASCADE: 録画行が物理的に消えた後の「その録画を今すぐ消して
     -- ほしい」は何も主張していない（不変条件 10）。
@@ -56,6 +69,12 @@ ALTER TABLE recordings DROP COLUMN purge_after;
 -- （20 万行・1/37 が purge_after 非 NULL の合成データで EXPLAIN を実測。
 -- `Bitmap Heap Scan` の下が `BitmapOr` → 両索引への `Bitmap Index Scan` で、
 -- 片方だけを使う実行計画にはならなかった）。
+-- 実測はこの旧計画の形までで、**新しい形の計画が旧 BitmapOr より速いことは
+-- 測っていない（未検証）**。新しい形は `deleted_at IS NOT NULL` の部分索引で
+-- ごみ箱行を走査し、行ごとに主キーの EXISTS を評価するので、コストは
+-- **ごみ箱に入っている行数に線形**。この述語を読むのは定期 reconcile
+-- （delete_reconcile）だけなので許容する。対話的な経路がこの述語を読み始めたら
+-- 測り直す。
 
 -- ごみ箱腕の名前付き述語（00029）を新しい形に置き換える。`<= now()` の比較を
 -- 捨て、「要求の行があるか」だけを見る。

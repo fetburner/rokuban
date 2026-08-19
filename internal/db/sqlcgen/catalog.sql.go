@@ -1123,8 +1123,11 @@ type CatalogUpsertRecordingPurgeRequestParams struct {
 
 // recording_purge_requests 衛星表の rescue。要求 = 行の存在という意味論を
 // rescue でも保つ --- doc.RecordingPurgeRequests に載っている録画だけ INSERT し、
-// 載っていない録画には何もしない（recordings 側の upsert より後に呼ぶので、
-// 行が無い = 要求なしのまま復元される）。
+// 載っていない録画には何もしない（**空 DB からの復元では**、行が無い = 要求なし
+// のまま復元される）。rescue は upsert only で DELETE しないので、live DB に対して
+// 実行するとダンプに無い要求行はそのまま残る --- recording_encode_policy と同じ
+// 制約（rescue が上書きするものの粒度は docs/operations/database.md
+// §バックアップ）。rescue は DB を失った後にだけ使う操作なので実装は変えない。
 func (q *Queries) CatalogUpsertRecordingPurgeRequest(ctx context.Context, arg CatalogUpsertRecordingPurgeRequestParams) error {
 	_, err := q.db.Exec(ctx, catalogUpsertRecordingPurgeRequest, arg.RecordingID, arg.RequestedAt)
 	return err

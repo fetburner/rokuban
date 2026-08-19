@@ -409,8 +409,13 @@ func TestMigrateUp_PurgeRequestBackfill(t *testing.T) {
 	).Scan(&gotPurgeAfterA); err != nil {
 		t.Fatalf("querying recordings after down migration (A): %v", err)
 	}
+	// 値まで見る（存在だけを見ると、Down の UPDATE を SET purge_after = now() に
+	// 変えて requested_at を捨てても通ってしまう）。
 	if gotPurgeAfterA == nil {
-		t.Errorf("recording A purge_after after down = nil, want non-NULL (印が立っていた行は復元されるべき)")
+		t.Errorf("recording A purge_after after down = nil, want %v (印が立っていた行は復元されるべき)", past)
+	} else if !gotPurgeAfterA.Equal(past) {
+		t.Errorf("recording A purge_after after down = %v, want %v (requested_at をそのまま書き戻す)",
+			gotPurgeAfterA, past)
 	}
 
 	if err := pool.QueryRow(ctx,

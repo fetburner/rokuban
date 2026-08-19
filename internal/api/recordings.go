@@ -277,8 +277,15 @@ func (h *Server) DeleteRecording(ctx context.Context, req DeleteRecordingRequest
 // CTE ではアーム全体が 1 つのスナップショットを共有するため、UPDATE アームが
 // 行ロックで待たされている間に commit された即時要求の行が DELETE アームから
 // 見えず、「復元は 204 なのに要求行だけ残る」が観測された
-// （TestRestoreRecording_ConcurrentPurgeRequest_Withdrawn。窓の閉じ方と残った
-// 要求行の害は internal/db/queries/recordings_trash.sql のコメント）。
+// （TestRestoreRecording_ConcurrentPurgeRequest_Withdrawn）。
+//
+// ただし窓を閉じているのは 2 文に割ったことではない。DELETE が 0 行だったとき
+// ロックは何も残らないので（READ COMMITTED に述語ロックは無い）、実際に閉じて
+// いるのは**要求行を入れる経路が先に対象の recordings 行をロックすること** ——
+// MarkRecordingPurgeRequested の CTE の UPDATE アームがそれを兼ねている
+// （TestPurgeRecording_SerializedBehindRestoreRowLock）。ロックしない INSERT
+// 経路を足すと猶予バイパスが再発する。詳細は
+// internal/db/queries/recordings_trash.sql のコメント。
 func (h *Server) RestoreRecording(ctx context.Context, req RestoreRecordingRequestObject) (RestoreRecordingResponseObject, error) {
 	tx, err := h.pool.Begin(ctx)
 	if err != nil {
