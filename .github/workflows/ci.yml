@@ -101,12 +101,17 @@ jobs:
       - run: go generate ./internal/api/
       - run: pnpm exec orval
         working-directory: web
-      # 新規ファイル（generated.ts のような単一ファイルでなく、sqlcgen 配下でクエリ追加により
-      # ファイルが増減するケース）も検出するため git add -A で拾ってから差分を見る。
+      # 新規ファイル（クエリ追加で sqlcgen 配下のファイルが増える等）も検出するため
+      # git add -A で拾ってから差分を見る。パスは絞らない —— 出力先を列挙すると
+      # sqlc.yaml の out / oapi-codegen.yaml の output / orval.config.ts の target が
+      # 変わったとき（orval の mode: split で生成先が増えたとき等）に、このジョブが
+      # 黙って緑のまま検知力を失う。ここで拾いすぎる untracked は .gitignore 側で
+      # 除外する（node_modules 等は既に無視されており、他のステップは追跡ファイルを
+      # 変えない）。
       - name: 再生成漏れがあれば失敗させる
         run: |
-          git add -A -- internal/db/sqlcgen internal/api/openapi_gen.go web/src/api/generated.ts
-          git diff --cached --exit-code -- internal/db/sqlcgen internal/api/openapi_gen.go web/src/api/generated.ts \
+          git add -A
+          git diff --cached --exit-code \
             || { echo "::error::生成物が古い。sqlc generate / go generate ./internal/api/ / (cd web && pnpm exec orval) を実行してコミットしてください"; exit 1; }
 
   lint:
