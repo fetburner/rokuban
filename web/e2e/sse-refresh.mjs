@@ -171,11 +171,16 @@ check('60 秒後: 予約詳細（運用状態グループ）', count(detail), 2)
 // 収束することを実ブラウザで確認する（docs/api/sse.md の実測値と対応させる）。
 log('\n=== ストレージ残高（/recordings）===')
 const storageMs = 300_000 // events.ts の storageRefreshIntervalMs と同じ値をリテラルで書く
+// observedAt は実行時刻から 1 分前にする。`page.clock.install()` は実時刻を初期値に
+// するので、固定日付を書くと storage-forecast.ts の observationStaleAfterMs（1 時間）を
+// 必ず超え、「観測が古い可能性」の表示を測ることになる。判定はリクエスト数だけなので
+// 合否は変わらないが、正常な観測が載っている画面を測る。
+const observedAt = new Date(Date.now() - 60_000).toISOString()
 const storagePage = await openStubbed('/recordings', '録画一覧 / ストレージ残高', {
   '/api/storage':
     '[{"root":"media","path":"/data/media","totalBytes":1000000000000,' +
     '"usedBytes":400000000000,"availableBytes":600000000000,' +
-    '"observedAt":"2026-08-19T00:00:00.000Z"}]',
+    `"observedAt":"${observedAt}"}]`,
 })
 
 log('初回ロード後:', Object.fromEntries([...counts.entries()].sort()))
