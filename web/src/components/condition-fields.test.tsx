@@ -68,13 +68,23 @@ function stubServicesFetch() {
   return fetchMock
 }
 
-// 補助ラベルは名前と別のテキストノード（<span>）に置くため、アクセシブル
-// ネームの計算でノード間に空白が入る。1034 はリモコン番号だけで他 2 件と
-// 区別できるが、同じグループ内の表記を揃えるため物理チャンネルまで付く。
+// 補助ラベルは名前と別のテキストノード（<span>）に置く。ここでは表示テキスト
+// （textContent）で比較する --- アクセシブルネームはノード間の空白の入り方が
+// 計算エンジン依存で、jsdom（dom-accessibility-api）の結果が実ブラウザと一致
+// する保証はない。1034 はリモコン番号だけで他 2 件と区別できるが、同じグループ
+// 内の表記を揃えるため物理チャンネルまで付く。
 const label = {
-  a: '瀬戸内海放送 （地上波 5 ・ 21）',
-  b: '瀬戸内海放送 （地上波 5 ・ 95）',
-  c: '瀬戸内海放送 （地上波 12 ・ 30）',
+  a: '瀬戸内海放送（地上波 5 ・ 21）',
+  b: '瀬戸内海放送（地上波 5 ・ 95）',
+  c: '瀬戸内海放送（地上波 12 ・ 30）',
+}
+
+function findChipByText(group: HTMLElement, text: string): HTMLElement {
+  const chip = within(group)
+    .getAllByRole('button')
+    .find((el) => el.textContent === text)
+  if (!chip) throw new Error(`チップが見つからない: ${text}`)
+  return chip
 }
 
 describe('ConditionFields のサービスチップ', () => {
@@ -101,9 +111,9 @@ describe('ConditionFields のサービスチップ', () => {
     // 1032 と 1033 はリモコン番号まで同じ（ワンセグ/サブサービス相当）なので
     // 物理チャンネルまで見て区別する。1034 はリモコン番号だけで区別できるが、
     // 同じグループの表記を揃えるため物理チャンネルまで付く。
-    expect(within(group).getByRole('button', { name: label.a })).toBeInTheDocument()
-    expect(within(group).getByRole('button', { name: label.b })).toBeInTheDocument()
-    expect(within(group).getByRole('button', { name: label.c })).toBeInTheDocument()
+    expect(findChipByText(group, label.a)).toBeInTheDocument()
+    expect(findChipByText(group, label.b)).toBeInTheDocument()
+    expect(findChipByText(group, label.c)).toBeInTheDocument()
   })
 
   it('補助ラベルの付いたチップを押すと、そのサービスだけが選択・解除される', async () => {
@@ -112,7 +122,7 @@ describe('ConditionFields のサービスチップ', () => {
     renderInRouter(<ConditionFields draft={emptyDraft()} onChange={onChange} />)
 
     const group = await screen.findByRole('group', { name: 'サービス' })
-    fireEvent.click(within(group).getByRole('button', { name: label.b }))
+    fireEvent.click(findChipByText(group, label.b))
 
     expect(onChange).toHaveBeenCalledTimes(1)
     const updater = onChange.mock.calls[0][0] as (d: SearchDraft) => SearchDraft

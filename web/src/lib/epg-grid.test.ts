@@ -284,8 +284,8 @@ describe('serviceDisambiguator', () => {
     ]
     const disambiguate = serviceDisambiguator(services)
 
-    expect(disambiguate(services[0])).toBe('地上波 5 ・ 27 ・ #1024')
-    expect(disambiguate(services[1])).toBe('地上波 5 ・ 27 ・ #1025')
+    expect(disambiguate(services[0])).toBe('地上波 5 ・ 27 ・ #32736-1024')
+    expect(disambiguate(services[1])).toBe('地上波 5 ・ 27 ・ #32736-1025')
   })
 
   it('3 局以上の重複でも全員が区別できる（issue #306 の実例）', () => {

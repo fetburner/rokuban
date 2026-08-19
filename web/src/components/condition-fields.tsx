@@ -312,11 +312,8 @@ function ServiceFields({
     )
 
   // 同じ名前のサービス（ワンセグ / サブサービス等）が並ぶとき、リモコン番号・
-  // 物理チャンネル・serviceId から補助ラベルを作る（issue #306）。ここでだけ
-  // 作るのは、`useMemo` に回すと呼び出し側 2 画面（検索・ルール）それぞれで
-  // 依存配列を揃える手間が増えるため（サービス一覧自体は services クエリの
-  // 側でキャッシュされており、ここは軽い再計算で済む）。
-  const disambiguate = serviceDisambiguator(services)
+  // 物理チャンネル・serviceId から補助ラベルを作る（issue #306）。
+  const disambiguate = useMemo(() => serviceDisambiguator(services), [services])
 
   return (
     <Section title="サービス">
@@ -354,9 +351,7 @@ function ServiceFields({
                 }
               >
                 {service.name}
-                {secondary !== undefined && (
-                  <span className="ml-1 opacity-70">（{secondary}）</span>
-                )}
+                {secondary !== undefined && <span className="ml-1">（{secondary}）</span>}
               </Chip>
             )
           })}

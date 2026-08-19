@@ -242,7 +242,8 @@ export function groupByChannelType(ordered: readonly Service[]): ChannelGroup[] 
  * 作れる値（networkId・serviceId を逆算するもの）ではなく、API が `Service`
  * として既に返している値だけを使う（issue #306）。ワンセグ / サブサービスは
  * 主サービスと同じリモコン番号・物理チャンネルで並ぶことがあり、その場合だけ
- * 最後の `serviceId` まで進んで区別する。
+ * 最後の `networkId` + `serviceId` まで進んで区別する。最後の材料はチップの
+ * identity と同じ組なので、名前が重複するグループ内では必ず一意になる。
  */
 const disambiguationParts: ((s: Service) => string)[] = [
   (s) =>
@@ -250,7 +251,12 @@ const disambiguationParts: ((s: Service) => string)[] = [
       ? `${channelTypeLabel(s.channelType)} ${s.remoteControlKeyId}`
       : channelTypeLabel(s.channelType),
   (s) => s.channel,
-  (s) => `#${s.serviceId}`,
+  // チップの identity（`condition-fields.tsx` の key）と同じ組を最後の材料にする。
+  // これにより「グループ内で一意になったら止める」が構造的に必ず真になる ---
+  // (channelType, remoteControlKeyId, channel, serviceId) が全部一致しても
+  // networkId が違うサービス（別ネットワークの同名同 serviceId）を、
+  // `#${serviceId}` だけでは区別できない穴が残っていた。
+  (s) => `#${s.networkId}-${s.serviceId}`,
 ]
 
 /**

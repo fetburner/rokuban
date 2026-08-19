@@ -25,7 +25,12 @@ export function Chip({
       disabled={disabled}
       onClick={onClick}
       className={cn(
-        'shrink-0 rounded-full border px-3 py-1.5 text-xs transition-colors disabled:pointer-events-none disabled:opacity-50',
+        // shrink-0 は隣接するチップを圧縮せず折り返しに回すためのもの。
+        // それとは別に、1 つのチップの内容が親の幅そのものを超える場合
+        // （長い局名 + 補助ラベル。issue #306）は max-w-full + break-words で
+        // チップ自身の中で改行させる --- これが無いと flex-basis: auto が
+        // 内容の最大幅を要求し、ページ全体が横スクロールする
+        'max-w-full shrink-0 rounded-full border px-3 py-1.5 text-xs break-words transition-colors disabled:pointer-events-none disabled:opacity-50',
         active
           ? 'border-primary bg-primary text-primary-foreground'
           // hover:text-foreground は hover:bg-muted と対（合成後コントラスト対策。
