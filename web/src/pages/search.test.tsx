@@ -261,22 +261,228 @@ function renderPage(initialEntries: string[] = ['/search']) {
 }
 
 /**
- * addKeyword はテキスト条件を 1 つ足して値を入れる。
+ * addKeyword はテキスト条件の 1 行目に値を入れる（既存の唯一の条件として使う
+ * ヘルパー。2 行目以降を足すテストは別に「条件を追加」を明示的に押す）。
  *
- * ルーター経由の描画（`renderInRouter`）は初回マッチの解決が非同期なので、
- * `render` 直後の同期 `getByRole` は「まだ何も描かれていない」瞬間を掴みうる。
- * ここで `findByRole` にしておけば、呼び出し側で毎回 `findByRole` を先に
+ * 1 行目は「条件を追加」を押さなくても常に編集できる（issue #305）ため、
+ * ここでボタンを押す必要は無い --- 押すと 2 行目が増えてしまい、その 2 行目
+ * の値が空のまま `draftError` に落ちて検索できなくなる。ルーター経由の描画
+ * （`renderInRouter`）は初回マッチの解決が非同期なので、`render` 直後の同期
+ * `getByLabelText` は「まだ何も描かれていない」瞬間を掴みうる。ここで
+ * `findByLabelText` にしておけば、呼び出し側で毎回 `findByRole` を先に
  * 挟まなくても安全に使える。
  */
 async function addKeyword(value: string, mode: '正規表現' | 'キーワード' = 'キーワード') {
-  await userEvent.click(await screen.findByRole('button', { name: '条件を追加' }))
   if (mode === '正規表現') {
-    await userEvent.selectOptions(screen.getByLabelText('テキスト条件 1 のモード'), '正規表現')
+    await userEvent.selectOptions(
+      await screen.findByLabelText('テキスト条件 1 のモード'),
+      '正規表現',
+    )
   }
-  await userEvent.type(screen.getByLabelText('テキスト条件 1 の値'), value)
+  await userEvent.type(await screen.findByLabelText('テキスト条件 1 の値'), value)
 }
 
 describe('SearchPage', () => {
+  /**
+   * issue #305: 初画面で「条件を追加」を押さなくてもテキスト条件が打てて、
+   * その入力欄がサービスのチップ列より DOM 順で前に来ることを確認する。
+   *
+   * `addKeyword`（上の helper）は「条件を追加」を押してから打つ経路なので、
+   * ここでは意図的に使わず `screen.getByLabelText` で直接見つけて打つ ---
+   * それ自体がこのテストの主張（「条件を追加」を経由しなくても届く）になる。
+   */
+  it('「条件を追加」を押さなくてもテキスト条件が打て、サービスチップより前に来る', async () => {
+    const { searchBodies } = stubApi()
+    renderPage()
+
+    const serviceChip = await screen.findByRole('button', { name: 'NHK総合' })
+    // 「条件を追加」を押さずに、常時出ているはずの 1 行目を直接見つけて打つ。
+    const textInput = screen.getByLabelText('テキスト条件 1 の値')
+
+    // DOM 順でテキスト条件がサービスチップより前に来る（この画面は縦に
+    // 積むだけのレイアウトなので、DOM 順がそのまま見た目の上下関係になる。
+    // 実レイアウトでの可視性・重なりは jsdom では測れないため、その部分は
+    // web/e2e/search-mobile.mjs が担う）。
+    expect(
+      textInput.compareDocumentPosition(serviceChip) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0)
+
+    await userEvent.type(textInput, 'ニュース')
+    await userEvent.click(screen.getByRole('button', { name: '検索' }))
+
+    expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+    expect(searchBodies).toEqual([
+      { textMatches: [{ target: 'name', mode: 'keyword', value: 'ニュース' }] },
+    ])
+  })
+
+  /**
+   * レビュー指摘: 主操作を `ConditionFields` の前に移した変更は `pnpm test` に
+   * 一切掛かっていなかった（並びだけ元に戻しても 29/29 green だった）。上の
+   * テストの `compareDocumentPosition` はテキスト欄とサービスチップの比較で、
+   * 主操作の位置は見ていない。座標ではなく DOM 順なので jsdom で測れる ---
+   * 将来の refactor で黙って末尾に戻るのを CI で止める。
+   */
+  it('主操作（検索）は条件の先頭セクション（テキスト条件）より DOM 順で前にある', async () => {
+    stubApi()
+    renderPage()
+
+    const searchButton = await screen.findByRole('button', { name: '検索' })
+    const firstSectionHeading = screen.getByRole('heading', { name: 'テキスト条件' })
+
+    expect(
+      searchButton.compareDocumentPosition(firstSectionHeading) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0)
+  })
+
+  /**
+   * レビュー指摘（issue #305 の差し戻し）: 主操作を上に出しただけでは「押した
+   * 結果」（値札・件数・結果）が縦カラムの末尾に残り、390px では押しても折り目の
+   * 中で何も変わらない（実測: クリック後も `scrollY = 0`、件数行は折り目の 335px
+   * 下）。送信の決着時に結果の先頭へスクロールとフォーカスを移して対にする。
+   *
+   * **jsdom はスクロール位置を測れない**（`scrollIntoView` はスタブ。
+   * test/setup.ts）。ここで固定するのは「呼ばれる相手が結果セクションであること」
+   * と「フォーカスが移ること」だけで、実際に折り目の中に入るかは
+   * `web/e2e/search-mobile.mjs` の④が実ブラウザで測る。
+   */
+  it('検索の決着時に結果セクションへスクロールとフォーカスを移す', async () => {
+    stubApi()
+    const scrolled: Element[] = []
+    const spy = vi
+      .spyOn(Element.prototype, 'scrollIntoView')
+      .mockImplementation(function (this: Element) {
+        scrolled.push(this)
+      })
+
+    try {
+      renderPage()
+      await screen.findByRole('button', { name: 'NHK総合' })
+
+      const results = screen.getByRole('region', { name: '検索結果' })
+      // 描画だけでは動かさない（押していないのにスクロールが起きるのは別の欠陥）
+      expect(scrolled).toEqual([])
+
+      await addKeyword('ニュース')
+      await userEvent.click(screen.getByRole('button', { name: '検索' }))
+      expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+
+      expect(scrolled).toEqual([results])
+      expect(results).toHaveFocus()
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  /**
+   * 上の裏側（両方向）: `?ruleId=N` で開いたときの自動検索では移さない。
+   * ユーザーが押していない検索で飛ばすと、ページを開いた瞬間に条件フォームが
+   * 画面外へ出る。
+   */
+  it('?ruleId の自動検索では結果セクションへ移さない', async () => {
+    stubApi({ rules: [ruleFixture] })
+    const scrolled: Element[] = []
+    const spy = vi
+      .spyOn(Element.prototype, 'scrollIntoView')
+      .mockImplementation(function (this: Element) {
+        scrolled.push(this)
+      })
+
+    try {
+      renderPage(['/search?ruleId=7'])
+
+      // 自動検索が済んだ（結果が出ている）状態まで待ってから見る。待たずに
+      // 見ると「まだ検索が解決していない」だけで通る空虚な成功になる。
+      expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+
+      expect(scrolled).toEqual([])
+      expect(screen.getByRole('region', { name: '検索結果' })).not.toHaveFocus()
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  /**
+   * レビュー指摘（issue #305 の差し戻し）: 見かけ上の 1 行目は実体が無い間、
+   * 「条件を追加」ボタンも削除（X）ボタンも出さない。実体の無い行に対して
+   * これらを出すと、押しても・消しても何も起きない死んだコントロールになる。
+   */
+  it('テキスト条件が空の間は「条件を追加」も削除（X）も出さない', async () => {
+    stubApi()
+    renderPage()
+
+    await screen.findByRole('button', { name: 'NHK総合' })
+
+    expect(screen.queryByRole('button', { name: '条件を追加' })).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: 'テキスト条件 1 を削除' }),
+    ).not.toBeInTheDocument()
+    // 触れないままなら「指定なし」になる、という意味を文言で示す
+    // （「時間帯」節が空のときに出す文言と同じ形。`ConditionFields` は
+    // ルール画面も使うので画面固有の動詞を入れない ---
+    // rules.test.tsx「ルール作成フォームでも…」が同じ文言を固定している）
+    expect(screen.getByText('指定なし（すべての番組が対象）')).toBeInTheDocument()
+
+    await userEvent.type(screen.getByLabelText('テキスト条件 1 の値'), 'ニュース')
+    expect(screen.queryByText('指定なし（すべての番組が対象）')).not.toBeInTheDocument()
+  })
+
+  it('1 行目に入力すると実体化し、「条件を追加」で 2 行目が増える', async () => {
+    stubApi()
+    renderPage()
+
+    await screen.findByRole('button', { name: 'NHK総合' })
+
+    // 実体化前: 見かけ上の行は 1 本、削除ボタンは無い
+    expect(screen.getAllByLabelText(/^テキスト条件 \d+ の値$/)).toHaveLength(1)
+    expect(
+      screen.queryByRole('button', { name: 'テキスト条件 1 を削除' }),
+    ).not.toBeInTheDocument()
+
+    await userEvent.type(screen.getByLabelText('テキスト条件 1 の値'), 'ニュース')
+
+    // 実体化後: 削除ボタンが現れ、「条件を追加」も現れる
+    expect(
+      await screen.findByRole('button', { name: 'テキスト条件 1 を削除' }),
+    ).toBeInTheDocument()
+    const addButton = await screen.findByRole('button', { name: '条件を追加' })
+    expect(screen.getAllByLabelText(/^テキスト条件 \d+ の値$/)).toHaveLength(1)
+
+    await userEvent.click(addButton)
+
+    // 実際に行が増える（この分岐を `false` に固定しても全テスト green だった
+    // ---レビュー指摘 --- ので、行数をリテラルで固定する）
+    expect(screen.getAllByLabelText(/^テキスト条件 \d+ の値$/)).toHaveLength(2)
+    expect(screen.getByLabelText('テキスト条件 2 の値')).toHaveValue('')
+  })
+
+  /**
+   * レビュー指摘: 値を入力せずにチップ（対象・モード・大文字小文字・除外）
+   * だけ触ると、値が空の行が実体化して `draftError` に落ち検索できなくなる。
+   * X が効くことで、そこから空の状態に戻れることを確認する。
+   */
+  it('値を入れずにチップだけ押すと検索できなくなるが、削除（X）で空の状態に戻れる', async () => {
+    stubApi()
+    renderPage()
+
+    await screen.findByRole('button', { name: 'NHK総合' })
+
+    await userEvent.click(screen.getByRole('button', { name: '除外' }))
+
+    expect(await screen.findByText('テキスト条件の値を入力してください')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '検索' })).toBeDisabled()
+
+    const deleteButton = await screen.findByRole('button', { name: 'テキスト条件 1 を削除' })
+    await userEvent.click(deleteButton)
+
+    expect(screen.queryByText('テキスト条件の値を入力してください')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '検索' })).not.toBeDisabled()
+    expect(
+      screen.queryByRole('button', { name: 'テキスト条件 1 を削除' }),
+    ).not.toBeInTheDocument()
+  })
+
   it('検索前の案内と 0 件の案内を混同しない', async () => {
     stubApi()
     renderPage()
@@ -448,7 +654,10 @@ describe('SearchPage', () => {
 
     expect(screen.getByText('条件を指定して検索してください')).toBeInTheDocument()
     expect(screen.queryByText('ニュース7')).not.toBeInTheDocument()
-    expect(screen.queryByLabelText('テキスト条件 1 の値')).not.toBeInTheDocument()
+    // テキスト条件の 1 行目は「条件を追加」を押さなくても常に見かけ上出ている
+    // ため存在チェックはできない（issue #305）。クリア後に入っていた値まで
+    // 引き継いでいないことを、値が空であることで確かめる。
+    expect(screen.getByLabelText('テキスト条件 1 の値')).toHaveValue('')
   })
 
   describe('値札（コストの見込み）', () => {
@@ -763,8 +972,9 @@ describe('SearchPage', () => {
 
       expect(await screen.findByText(/ルール #999 が見つかりません/)).toBeInTheDocument()
       // 見つからない以上、条件フォームは空のまま（存在しないルールの条件を
-      // 捏造しない）
-      expect(screen.queryByLabelText('テキスト条件 1 の値')).not.toBeInTheDocument()
+      // 捏造しない）。1 行目は「条件を追加」を押さなくても常に見かけ上出て
+      // いるため（issue #305）、存在ではなく値が空であることで確かめる。
+      expect(screen.getByLabelText('テキスト条件 1 の値')).toHaveValue('')
     })
 
     it('条件を変更して上書き保存すると PATCH に変更後の条件が乗り、画面に留まる（核心）', async () => {

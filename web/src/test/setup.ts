@@ -25,6 +25,14 @@ globalThis.ResizeObserver ??= ResizeObserverStub
 // jsdom がすでに「投げるだけ」の実装を持っているため `??=` では上書きできない。
 window.scrollTo = (() => {}) as typeof window.scrollTo
 
+// jsdom は Element.prototype.scrollIntoView を**そもそも持っていない**
+// （`'scrollIntoView' in el === false`。呼ぶと TypeError で落ちる）。
+// SearchPage（pages/search.tsx）が検索の決着時に結果の先頭へ移すために呼ぶ。
+// **スクロールが実際に起きたかは jsdom では判定できない**（レイアウトが無い）。
+// 呼ばれたことだけをテストで固定し、位置そのものの合否は実ブラウザ
+// （web/e2e/search-mobile.mjs の④）で見る。
+Element.prototype.scrollIntoView = function (this: Element) {}
+
 // jsdom は HTMLMediaElement.prototype.load を実装していない。LivePlayer
 // （components/live-player.tsx）が破棄時に呼ぶ（次のチャンネルへセグメント要求が
 // 残らないようにするため）。window.scrollTo と同じ理由でスタブする。

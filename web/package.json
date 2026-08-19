@@ -19,7 +19,8 @@
     "e2e:sse-refresh": "node e2e/sse-refresh.mjs",
     "e2e:reserve-visibility": "node e2e/reserve-visibility.mjs",
     "e2e:programs-bottom-nav": "node e2e/programs-bottom-nav.mjs",
-    "e2e:grid-reserved": "node e2e/grid-reserved.mjs"
+    "e2e:grid-reserved": "node e2e/grid-reserved.mjs",
+    "e2e:search-mobile": "node e2e/search-mobile.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.6.0",

@@ -228,8 +228,8 @@ describe('RulesPage 条件編集', () => {
 
     await user.type(screen.getByLabelText('名前'), 'テストルール')
 
-    // テキスト条件
-    await user.click(screen.getByRole('button', { name: '条件を追加' }))
+    // テキスト条件（1 行目は「条件を追加」を押さなくても常に編集できる。
+    // issue #305。押すと 2 行目が増え、その値が空のまま保存できなくなる）
     await user.type(screen.getByLabelText('テキスト条件 1 の値'), 'ニュース')
 
     // ジャンル（サービス一覧の読み込みを待ってから操作する）
@@ -254,6 +254,26 @@ describe('RulesPage 条件編集', () => {
     ])
     expect(body.genres).toEqual([1])
     expect(body.times).toEqual([{ weekdays: 127, startSec: 75600, endSec: 82800 }])
+  })
+
+  /**
+   * `ConditionFields` は検索画面とルール画面が共有するので、そこに置く文言は
+   * どちらの画面でも事実として正しくなければならない。検索向けの動詞
+   * （「検索すると」）を入れると、条件ゼロで**保存**すると全番組を録り続ける
+   * ルール画面では誤りになる（実際に一度入り込んで差し戻された）。
+   */
+  it('ルール作成フォームでも条件なしの意味が画面に依存しない文言で出る', async () => {
+    stubApi([])
+    const user = userEvent.setup()
+    renderPage()
+
+    await user.click(await screen.findByRole('button', { name: 'ルールを作成' }))
+
+    // テキスト条件・時間帯のどちらも「指定なし（すべての…が対象）」の形で、
+    // 画面ごとの動詞（検索する / 保存する）を含まない
+    expect(screen.getByText('指定なし（すべての番組が対象）')).toBeInTheDocument()
+    expect(screen.getByText('指定なし（すべての時間帯が対象）')).toBeInTheDocument()
+    expect(screen.queryByText(/検索すると/)).not.toBeInTheDocument()
   })
 
   it('条件が無いまま保存しようとすると確認ダイアログを挟み、キャンセルすると送信されない', async () => {
@@ -563,7 +583,6 @@ describe('RulesPage 成功トーストの無音化 (issue #297)', () => {
 
     await user.click(await screen.findByRole('button', { name: 'ルールを作成' }))
     await user.type(screen.getByLabelText('名前'), 'できたルール')
-    await user.click(screen.getByRole('button', { name: '条件を追加' }))
     await user.type(screen.getByLabelText('テキスト条件 1 の値'), 'キーワード')
 
     await user.click(screen.getByRole('button', { name: '保存' }))
@@ -604,7 +623,6 @@ describe('RulesPage 成功トーストの無音化 (issue #297)', () => {
 
     await user.click(await screen.findByRole('button', { name: 'ルールを作成' }))
     await user.type(screen.getByLabelText('名前'), '失敗するルール')
-    await user.click(screen.getByRole('button', { name: '条件を追加' }))
     await user.type(screen.getByLabelText('テキスト条件 1 の値'), 'キーワード')
     await user.click(screen.getByRole('button', { name: '保存' }))
 
