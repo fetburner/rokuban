@@ -58,6 +58,17 @@ const RECENT_FINISHED_LIMIT = 6
 const DROP_WARNING_SCAN_LIMIT = 20
 
 /**
+ * FAILED_RECORDING_SCAN_LIMIT は警告に出す失敗録画（`status=failed`）を取る
+ * 範囲。**「直近の完了」「ドロップ警告」の限度とは無関係の別の定数にする**
+ * （issue #301）--- 失敗はホームに専用の表示欄を持たず「警告」セクションへの
+ * 追加項目として出すだけなので、表示件数と検出範囲を分ける理由（上記
+ * `DROP_WARNING_SCAN_LIMIT` の doc コメント）はここには無いが、他の 2 つの
+ * 上限と値だけ共有すると「表示件数を変えたら失敗の遡り幅まで連動する」将来の
+ * 罠を先に埋めてしまう。値自体は他の上限と同じく実測ではない恣意的な上限。
+ */
+const FAILED_RECORDING_SCAN_LIMIT = 20
+
+/**
  * HomePage はホーム（`/`。M8-3, issue #242）。
  *
  * 起動して最初に見えるのが番組表（「これから録るもの」）だと、運用が安定した
@@ -75,7 +86,7 @@ const DROP_WARNING_SCAN_LIMIT = 20
  *
  * **セクションごとの可視性はそのセクション自身のクエリの解決だけを待つ。**
  * 「全セクションが空」（`allEmpty`）の判定だけが全クエリの解決を待つ ---
- * 5 本のうち最も遅い 1 本（絞り込みを持たない `GET /api/reservations` など）に
+ * 6 本のうち最も遅い 1 本（絞り込みを持たない `GET /api/reservations` など）に
  * 「いま録画中」のような最も見たいセクションまで引きずられて隠れる半径を
  * 小さくするため（レビュー指摘）。一方で「まだ解決していないセクションを
  * 0 件として隠す」ことはしない --- 個別のクエリが解決する前に「空だから隠す」を
@@ -85,12 +96,24 @@ const DROP_WARNING_SCAN_LIMIT = 20
  *
  * 取得が失敗した場合は空扱いにせず、そのセクションだけ取得失敗を表示する
  * （空白のセクションを「異常なし」と取り違えさせないため）。ただし警告
- * セクションの材料（サーキットブレーカー・容量超過・完了録画のドロップ統計）は、
- * 他の画面（`CircuitBreakerBanner` / 予約一覧の容量バッジ）と同じ「取得失敗は
- * 警告が無いことにする」流儀に揃える --- `docs/data.md` §6.5 が言う「既知の
- * 盲点は警告を見逃す方向に偏っている」を承知のうえで、既存の踏襲先が同じ判断を
- * している。完了録画の一覧は「直近の完了」の表示と警告の材料を兼ねるので、
- * それが失敗したときは前者にエラーを出し、後者は黙って警告なしに縮退する。
+ * セクションの材料（サーキットブレーカー・容量超過・完了録画のドロップ統計・
+ * 失敗録画）は、他の画面（`CircuitBreakerBanner` / 予約一覧の容量バッジ）と
+ * 同じ「取得失敗は警告が無いことにする」流儀に揃える --- `docs/data.md` §6.5 が
+ * 言う「既知の盲点は警告を見逃す方向に偏っている」を承知のうえで、既存の
+ * 踏襲先が同じ判断をしている。完了録画の一覧は「直近の完了」の表示と警告の
+ * 材料を兼ねるので、それが失敗したときは前者にエラーを出し、後者は黙って
+ * 警告なしに縮退する。
+ *
+ * **失敗録画（`status=failed`）はホームに専用の一覧を持たず、「警告」への
+ * 追加項目としてのみ出す**（issue #301）。「直近の完了」は
+ * `status=finished` の絞り込みなので failed 行はそもそも混ざらず、既存の
+ * 4 セクション構成を変えずに済む。行では予定尺（`durationMs`。番組の放送尺の
+ * スナップショット）と実際に録れた尺（`startedAt`〜`endedAt`）を区別する ---
+ * 録画が実際には開始しなかった失敗（`startedAt`/`endedAt` が無い）と、
+ * 開始した直後に終わった失敗（両方あるが差が小さい）を同じ「予定尺」表示に
+ * 潰すと、後者が「ほぼ予定通り録れた」ように見えてしまう。失敗理由は
+ * `qualityEvents`（最新の要素の `reason`）にあれば出し、無ければ「理由不明」
+ * と沈黙を区別する（`failureReasonText` 参照）。
  */
 export function HomePage() {
   // nowMs はこのレンダーの間で一貫させる（`pages/programs.tsx` と同じ規律。
@@ -128,6 +151,13 @@ export function HomePage() {
     status: 'finished',
     limit: DROP_WARNING_SCAN_LIMIT,
   })
+  // 失敗録画（issue #301）。表示専用のセクションは持たず「警告」への追加項目
+  // としてのみ使うので、`finishedQuery` のような「表示 + 検出の兼用」は無い ---
+  // 取る範囲がそのまま警告に出す範囲になる。
+  const failedQuery = useListRecordings({
+    status: 'failed',
+    limit: FAILED_RECORDING_SCAN_LIMIT,
+  })
   const reservationsQuery = useListReservations()
   const breakersQuery = useListCircuitBreakers()
   const overagesQuery = useListCapacityOverages(
@@ -159,6 +189,7 @@ export function HomePage() {
   // `nowMs` 依存で効かないので、素朴に毎レンダー計算する。
   const finishedRecordings = unwrap(finishedQuery.data) ?? []
   const recentFinished = finishedRecordings.slice(0, RECENT_FINISHED_LIMIT)
+  const failedRecordings = unwrap(failedQuery.data) ?? []
 
   const upcomingReservations = (unwrap(reservationsQuery.data) ?? [])
     .filter((r) => {
@@ -186,17 +217,21 @@ export function HomePage() {
     breakers: unwrap(breakersQuery.data) ?? [],
     overages: activeOverages,
     dropCandidates: finishedRecordings,
+    failedRecordings,
   })
 
   // セクションごとの可視性はそのセクション自身のクエリの解決だけを待つ
-  // （上記 doc コメント参照）。警告は 3 本のクエリの合成なので、そのいずれかが
+  // （上記 doc コメント参照）。警告は 4 本のクエリの合成なので、そのいずれかが
   // 未解決なら「まだ言わない」。
   const recordingSectionVisible =
     !recordingQuery.isPending && (recordingQuery.isError || recordingsInProgress.length > 0)
   const reservationSectionVisible =
     !reservationsQuery.isPending && (reservationsQuery.isError || shownReservations.length > 0)
   const warningsPending =
-    breakersQuery.isPending || overagesQuery.isPending || finishedQuery.isPending
+    breakersQuery.isPending ||
+    overagesQuery.isPending ||
+    finishedQuery.isPending ||
+    failedQuery.isPending
   const warningSectionVisible = !warningsPending && warnings.length > 0
   const finishedSectionVisible =
     !finishedQuery.isPending && (finishedQuery.isError || recentFinished.length > 0)
@@ -385,9 +420,9 @@ function ReservationRow({ reservation }: { reservation: Reservation }) {
 }
 
 /** WarningKind はホーム「警告」セクションの項目の種別。表示色と、色を選ぶ判断の両方をこれ 1 つに一本化する。 */
-type WarningKind = 'breaker' | 'overage' | 'drop'
+type WarningKind = 'breaker' | 'overage' | 'drop' | 'failed'
 
-/** WarningItem はホーム「警告」セクションの 1 件（サーキットブレーカー / チューナー不足 / ドロップ）。 */
+/** WarningItem はホーム「警告」セクションの 1 件（サーキットブレーカー / チューナー不足 / ドロップ / 失敗録画）。 */
 type WarningItem = {
   key: string
   /**
@@ -403,14 +438,17 @@ type WarningItem = {
 }
 
 /**
- * buildWarnings はサーキットブレーカー・容量超過・ドロップ統計から
+ * buildWarnings はサーキットブレーカー・容量超過・ドロップ統計・失敗録画から
  * ホームの「警告」セクションの項目を組む（issue #242 着手宣言コメントの決定：
- * 新しい API を作らず、既存の取得結果だけを材料にする）。
+ * 新しい API を作らず、既存の取得結果だけを材料にする。失敗録画も既存の
+ * `GET /api/recordings?status=failed` の絞り込みだけで足りる。issue #301）。
  *
  * `dropCandidates` は `limit=DROP_WARNING_SCAN_LIMIT` で取った完了録画の全件で、
  * 「直近の完了」に**表示する分（先頭 `RECENT_FINISHED_LIMIT` 件）に切る前**の
  * リスト --- 表示件数を絞っても警告の検出範囲まで連動して狭まらないようにする
- * ため（呼び出し元の doc コメント参照）。
+ * ため（呼び出し元の doc コメント参照）。`failedRecordings` は
+ * `limit=FAILED_RECORDING_SCAN_LIMIT` で取った失敗録画の全件で、こちらは
+ * 「直近の完了」のような表示専用セクションを持たないので表示/検出の区別は無い。
  *
  * 容量超過は呼び出し元で「実際の今より後に終わる」ものへ絞り込み済みなので、
  * ここで追加の時間フィルタはしない。
@@ -419,10 +457,12 @@ function buildWarnings({
   breakers,
   overages,
   dropCandidates,
+  failedRecordings,
 }: {
   breakers: readonly CircuitBreaker[]
   overages: readonly CapacityOverage[]
   dropCandidates: readonly Recording[]
+  failedRecordings: readonly Recording[]
 }): WarningItem[] {
   const items: WarningItem[] = []
 
@@ -431,6 +471,15 @@ function buildWarnings({
       key: `breaker:${breaker.site}:${breaker.name}`,
       kind: 'breaker',
       message: `${describeBreakerName(breaker.name)}が停止中（保留 ${breaker.pending} 件）`,
+    })
+  }
+
+  for (const recording of failedRecordings) {
+    items.push({
+      key: `failed:${recording.id}`,
+      kind: 'failed',
+      message: `${recording.title || '（番組名なし）'}: 録画失敗（${failedDurationText(recording)} / 理由: ${failureReasonText(recording)}）`,
+      link: { to: '/recordings/$id', id: recording.id },
     })
   }
 
@@ -464,6 +513,52 @@ function buildWarnings({
   }
 
   return items
+}
+
+/**
+ * failedDurationText は失敗録画の警告メッセージに載せる尺の文言。
+ *
+ * **予定尺（`durationMs`。番組の放送尺のスナップショット）と実際に録れた尺
+ * （`startedAt`〜`endedAt`）を区別する**（issue #301）。区別しないと、録画が
+ * 開始した直後に終わった失敗（実際は 0 分に近いのに `durationMs` は番組の
+ * 予定尺のまま）が「ほぼ予定通り録れた」ように見えてしまう。
+ *
+ * `startedAt` / `endedAt` はどちらか一方だけが欠けることは無い
+ * （`UpdateRecordingStatus` が両方揃ってから書く。片方だけ立つ経路が無い）が、
+ * **両方とも欠けることはある** --- mirakc に録画開始さえ記録されなかった失敗
+ * （`start-recording-failed` 等）は `started_at` を一度も持たない
+ * （`internal/watcher/watcher.go` の `handleRecordingFailed` /
+ * `CreateFailedRecording` 参照）。この場合は「実際に何秒録れたか」がそもそも
+ * 定義できないので、実際尺は出さず予定尺だけを「未開始」と明示する。
+ */
+function failedDurationText(recording: Recording): string {
+  if (recording.startedAt && recording.endedAt) {
+    const actualMs = new Date(recording.endedAt).getTime() - new Date(recording.startedAt).getTime()
+    return `実際 ${formatDuration(actualMs)} / 予定 ${formatDuration(recording.durationMs)}`
+  }
+  return `予定 ${formatDuration(recording.durationMs)}・未開始`
+}
+
+/**
+ * failureReasonText は失敗録画の理由を `qualityEvents` から取り出す。
+ *
+ * **材料が無ければ「理由不明」と明示し、沈黙とは区別する**（issue #301）。
+ * `qualityEvents` は追記専用の履歴（`recordings.quality_events`。
+ * `docs/schema/recordings.md` §5）なので、複数件あれば最後の要素が最新の
+ * 記録。`reason` は mirakc の生の理由をそのまま保持したもので（不変条件 7:
+ * mirakc 固有の概念を構造化カラムにしない）、文字列（例:
+ * `recording.failed` の `"start-recording-failed"`）と、キーを持つ
+ * オブジェクト（例: `record-broken` の `{ reason: "..." }`）の両方がありうる
+ * ---
+ * 文字列はそのまま、それ以外は `pages/recordings.tsx` の「品質イベント」欄と
+ * 同じ流儀（`JSON.stringify`）で読める形にする。
+ */
+function failureReasonText(recording: Recording): string {
+  const events = recording.qualityEvents
+  if (events === undefined || events.length === 0) return '理由不明'
+  const reason = events[events.length - 1]?.reason
+  if (reason === undefined || reason === null) return '理由不明'
+  return typeof reason === 'string' ? reason : JSON.stringify(reason)
 }
 
 /**

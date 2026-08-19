@@ -20,6 +20,13 @@ const HOUR = 3_600_000
 const DROP_WARNING_SCAN_LIMIT = 20
 
 /**
+ * ホームが失敗録画を取るときに送る `limit`（`pages/home.tsx` の
+ * `FAILED_RECORDING_SCAN_LIMIT`）。上記 `DROP_WARNING_SCAN_LIMIT` と同じ理由で
+ * リテラルにしてある。
+ */
+const FAILED_RECORDING_SCAN_LIMIT = 20
+
+/**
  * HomePage は `Date.now()` を直接呼ぶ（`pages/programs.tsx` と同じ規律。注入口を
  * 持たない）。フィクスチャの `nowMs` と実際の `Date.now()` を一致させないと、
  * 窓判定（今夜〜明日の予約）がフィクスチャの時刻を「はるか過去」として全除外して
@@ -116,6 +123,8 @@ type Fixtures = {
    * 「直近の完了」に表示し、ドロップ警告は全件から拾う。
    */
   finished?: Recording[]
+  /** 失敗録画（`status=failed&limit=20`）。全件を警告セクションに出す。 */
+  failed?: Recording[]
   reservations?: Reservation[]
   breakers?: CircuitBreaker[]
   overages?: CapacityOverage[]
@@ -133,9 +142,9 @@ type Fixtures = {
 }
 
 /**
- * stubApi はホームが叩く 5 本の GET を振り分ける。`/api/recordings` は `status`
- * クエリで「いま録画中」「完了録画（表示 + ドロップ検出）」を分ける
- * （サーバーの絞り込みを模す）。
+ * stubApi はホームが叩く 6 本の GET を振り分ける。`/api/recordings` は `status`
+ * クエリで「いま録画中」「完了録画（表示 + ドロップ検出）」「失敗録画（警告）」を
+ * 分ける（サーバーの絞り込みを模す）。
  */
 function stubApi(fixtures: Fixtures) {
   const pendingResolvers: Array<{ path: string; done: boolean; run: () => void }> = []
@@ -154,6 +163,9 @@ function stubApi(fixtures: Fixtures) {
         if (status === 'recording') return jsonResponse(fixtures.recording ?? [])
         if (status === 'finished' && limit === String(DROP_WARNING_SCAN_LIMIT)) {
           return jsonResponse(fixtures.finished ?? [])
+        }
+        if (status === 'failed' && limit === String(FAILED_RECORDING_SCAN_LIMIT)) {
+          return jsonResponse(fixtures.failed ?? [])
         }
         return jsonResponse([])
       }
@@ -411,6 +423,102 @@ describe('ホーム: 警告セクション', () => {
       expect(el?.className).toMatch(/text-destructive/)
       expect(el?.className).not.toMatch(/bg-warning/)
     }
+  })
+})
+
+describe('ホーム: 失敗録画が警告に出る（issue #301）', () => {
+  it('失敗録画があれば警告セクションに出る', async () => {
+    stubApi({
+      failed: [recording(9, '失敗した番組', 'failed')],
+    })
+    renderHome()
+
+    expect(await screen.findByRole('heading', { name: '警告' })).toBeInTheDocument()
+    expect(screen.getByText(/失敗した番組: 録画失敗/)).toBeInTheDocument()
+  })
+
+  it('失敗録画が無ければ警告に出ない（両方向）', async () => {
+    stubApi({
+      finished: [recording(9, 'きれいな録画', 'finished')],
+    })
+    renderHome()
+
+    expect(await screen.findByRole('heading', { name: '直近の完了' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: '警告' })).not.toBeInTheDocument()
+    expect(screen.queryByText(/録画失敗/)).not.toBeInTheDocument()
+  })
+
+  it('開始・終了の両方が記録されている失敗は、予定尺と実際に録れた尺を区別して出す', async () => {
+    // 開始と終了が同じ秒（実際は 0 分）なのに、予定尺（5 分。issue #301 の実機
+    // 観測と同じ値）だけを見ると「ほぼ予定通り録れた」ように誤読できてしまう。
+    const startedAndEnded = iso(-30 * 60_000)
+    stubApi({
+      failed: [
+        recording(9, '直後に切れた録画', 'failed', {
+          durationMs: 5 * 60_000,
+          startedAt: startedAndEnded,
+          endedAt: startedAndEnded,
+        }),
+      ],
+    })
+    renderHome()
+
+    // 実際尺（0 分）と予定尺（5 分）の両方が別々に出る --- 予定尺だけの表示に
+    // 潰すと「実際 0分」が消え、この変異でテストが落ちる。
+    expect(
+      await screen.findByText(/直後に切れた録画: 録画失敗（実際 0分 \/ 予定 5分/),
+    ).toBeInTheDocument()
+  })
+
+  it('録画が一度も開始しなかった失敗は「未開始」と出し、実際尺は主張しない', async () => {
+    stubApi({
+      failed: [
+        recording(9, '開始できなかった録画', 'failed', {
+          durationMs: 5 * 60_000,
+          startedAt: undefined,
+          endedAt: undefined,
+        }),
+      ],
+    })
+    renderHome()
+
+    expect(
+      await screen.findByText(/開始できなかった録画: 録画失敗（予定 5分・未開始/),
+    ).toBeInTheDocument()
+    // 「実際」という言葉は、開始した事実が無い以上出さない
+    expect(screen.queryByText(/実際/)).not.toBeInTheDocument()
+  })
+
+  it('failed 理由が qualityEvents にあればそれを出す', async () => {
+    stubApi({
+      failed: [
+        recording(9, '理由ありの失敗', 'failed', {
+          qualityEvents: [
+            { at: iso(-HOUR), event: 'recording.failed', reason: 'start-recording-failed' },
+          ],
+        }),
+      ],
+    })
+    renderHome()
+
+    expect(await screen.findByText(/理由: start-recording-failed/)).toBeInTheDocument()
+  })
+
+  it('failed 理由が無ければ「理由不明」と沈黙を区別する', async () => {
+    stubApi({
+      failed: [recording(9, '理由なしの失敗', 'failed', { qualityEvents: [] })],
+    })
+    renderHome()
+
+    expect(await screen.findByText(/理由: 理由不明/)).toBeInTheDocument()
+  })
+
+  it('失敗録画は録画単体ページへの導線を持つ', async () => {
+    stubApi({ failed: [recording(9, '失敗した番組', 'failed')] })
+    renderHome()
+
+    const link = await screen.findByRole('link', { name: /失敗した番組/ })
+    expect(link).toHaveAttribute('href', '/recordings/9')
   })
 })
 
