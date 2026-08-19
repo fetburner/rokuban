@@ -102,6 +102,18 @@ func Export(ctx context.Context, pool *pgxpool.Pool, site string) (*Document, er
 		})
 	}
 
+	purgeRequests, err := q.CatalogListRecordingPurgeRequests(ctx, siteFilter)
+	if err != nil {
+		return nil, fmt.Errorf("listing recording_purge_requests: %w", err)
+	}
+	doc.RecordingPurgeRequests = make([]RecordingPurgeRequest, 0, len(purgeRequests))
+	for _, p := range purgeRequests {
+		doc.RecordingPurgeRequests = append(doc.RecordingPurgeRequests, RecordingPurgeRequest{
+			RecordingID: p.RecordingID,
+			RequestedAt: p.RequestedAt,
+		})
+	}
+
 	assets, err := q.CatalogListMediaAssets(ctx, siteFilter)
 	if err != nil {
 		return nil, fmt.Errorf("listing media_assets: %w", err)
@@ -314,7 +326,6 @@ func recordingFromRow(r sqlcgen.Recording) Recording {
 		EndedAt:           r.EndedAt,
 		QualityEvents:     r.QualityEvents,
 		DeletedAt:         r.DeletedAt,
-		PurgeAfter:        r.PurgeAfter,
 		SupersededAt:      r.SupersededAt,
 		PurgedAt:          r.PurgedAt,
 		CreatedAt:         r.CreatedAt,

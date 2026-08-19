@@ -262,20 +262,25 @@ func TestDeleteReconcileWorker_TrashWithinRetention_NotDeleted(t *testing.T) {
 	}
 }
 
-// purge_after は猶予期間を無視して即時削除する。
-func TestDeleteReconcileWorker_PurgeAfterImmediate_Deletes(t *testing.T) {
+// 即時削除の要求（recording_purge_requests の行）は猶予期間を無視して削除する。
+// deleted_at はまだ猶予（30 日）の中の「たった今」にしておき、要求の行**単独**が
+// 猶予をバイパスすることを確認する --- 述語の即時腕を時刻比較に戻すと
+// （deleted_at が猶予内なので）削除されず落ちる。
+func TestDeleteReconcileWorker_PurgeRequestedImmediate_Deletes(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	recordingID := insertTestRecording(t, pool)
 
 	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "purge/now.m2ts", []byte("data"))
 
-	// SQL 側は DB の now() と比較する。Docker VM とホストの時計が数十 ms
-	// ずれても確実に「今すぐ」の側へ入るよう、安全に過去の時刻を使う。
-	purgeAt := time.Now().Add(-time.Hour)
+	recent := time.Now()
 	if _, err := pool.Exec(context.Background(),
-		"UPDATE recordings SET deleted_at = $1, purge_after = $1 WHERE id = $2", purgeAt, recordingID); err != nil {
-		t.Fatalf("marking recording for immediate purge: %v", err)
+		"UPDATE recordings SET deleted_at = $1 WHERE id = $2", recent, recordingID); err != nil {
+		t.Fatalf("soft-deleting recording: %v", err)
+	}
+	if _, err := pool.Exec(context.Background(),
+		"INSERT INTO recording_purge_requests (recording_id) VALUES ($1)", recordingID); err != nil {
+		t.Fatalf("requesting immediate purge: %v", err)
 	}
 
 	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, TrashRetention: 30 * 24 * time.Hour}
@@ -284,7 +289,7 @@ func TestDeleteReconcileWorker_PurgeAfterImmediate_Deletes(t *testing.T) {
 	}
 
 	if got := assetState(t, pool, assetID); got != "deleted" {
-		t.Errorf("asset state = %q, want deleted (purge_after should bypass retention)", got)
+		t.Errorf("asset state = %q, want deleted (an immediate purge request should bypass retention even though deleted_at is recent)", got)
 	}
 }
 
@@ -301,12 +306,14 @@ func TestDeleteReconcileWorker_ZeroAssetRecording_PurgeMarksAndFiresWebhookOnce(
 	recordingID := insertTestRecording(t, pool)
 	// media_assets は 1 行も作らない。
 
-	// SQL 側は DB の now() と比較する。Docker VM とホストの時計が数十 ms
-	// ずれても確実に「今すぐ」の側へ入るよう、安全に過去の時刻を使う。
-	purgeAt := time.Now().Add(-time.Hour)
+	recent := time.Now()
 	if _, err := pool.Exec(context.Background(),
-		"UPDATE recordings SET deleted_at = $1, purge_after = $1 WHERE id = $2", purgeAt, recordingID); err != nil {
-		t.Fatalf("marking recording for immediate purge: %v", err)
+		"UPDATE recordings SET deleted_at = $1 WHERE id = $2", recent, recordingID); err != nil {
+		t.Fatalf("soft-deleting recording: %v", err)
+	}
+	if _, err := pool.Exec(context.Background(),
+		"INSERT INTO recording_purge_requests (recording_id) VALUES ($1)", recordingID); err != nil {
+		t.Fatalf("requesting immediate purge: %v", err)
 	}
 
 	// 前提確認: purge 前はごみ箱に見えているはず（アセットが無くても
@@ -1062,7 +1069,7 @@ func TestDeleteReconcileQueries_ReferenceNamedPredicatesNotDuplicatedText(t *tes
 	for _, needle := range []string{
 		"r.keep_original",
 		"cardinality(r.encode_profiles)",
-		"r.purge_after",
+		"FROM recording_purge_requests",
 		"r.deleted_at IS NOT NULL",
 	} {
 		if strings.Contains(text, needle) {

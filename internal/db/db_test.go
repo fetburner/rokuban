@@ -282,6 +282,152 @@ func TestMigrateUp_RecordingEncodePolicyBackfill(t *testing.T) {
 	}
 }
 
+// purgeRequestMigrationVersion は recordings.purge_after を
+// recording_purge_requests 衛星表へ移すマイグレーションの goose バージョン番号。
+// ファイル名の連番プレフィックスと一致させる。
+const purgeRequestMigrationVersion = 39
+
+// TestMigrateUp_PurgeRequestBackfill は上記マイグレーションのデータ引き継ぎを
+// 検証する。Up の backfill INSERT と Down の書き戻し UPDATE はどちらを消しても
+// internal/db 以下の他のテストは全部 pass する（スキーマの形だけを見ているので、
+// 移設前の行が持っていた要求が消えても誰も気付かない）。
+//
+// goose で 1 つ前まで適用した「移設前」のスキーマ（recordings.purge_after が
+// timestamptz 列として存在する）にフィクスチャを直接書き込み、移設後の
+// recording_purge_requests の中身を確認する。Down で purge_after への書き戻りも
+// 確認する。
+func TestMigrateUp_PurgeRequestBackfill(t *testing.T) {
+	dbURL := testDatabaseURL(t)
+	ctx := context.Background()
+
+	if err := MigrateReset(ctx, dbURL); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = MigrateReset(context.Background(), dbURL)
+	})
+
+	// --- 00038 まで（purge_after が列として存在する「移設前」のスキーマ）を適用 ---
+	if err := runGooseMigration(ctx, dbURL, func(ctx context.Context, p *goose.Provider) error {
+		_, err := p.UpTo(ctx, purgeRequestMigrationVersion-1)
+		return err
+	}); err != nil {
+		t.Fatalf("migrating up to version %d: %v", purgeRequestMigrationVersion-1, err)
+	}
+
+	pool, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("connecting pool: %v", err)
+	}
+	defer pool.Close()
+
+	insertLegacyRecording := func(eventID int32, purgeAfter *time.Time) int64 {
+		t.Helper()
+		var id int64
+		if err := pool.QueryRow(ctx, `
+			INSERT INTO recordings (
+				source, site, network_id, service_id, event_id, service_name,
+				channel_type, channel, title, program_start_at, program_duration_ms,
+				status, purge_after
+			) VALUES (
+				'manual', 'default', 32736, 1024, $1, 'テスト局',
+				'GR', '27', 'purge-requested-test', now(), 1800000,
+				'finished', $2
+			) RETURNING id`,
+			eventID, purgeAfter,
+		).Scan(&id); err != nil {
+			t.Fatalf("inserting legacy recording: %v", err)
+		}
+		return id
+	}
+
+	// timestamptz はマイクロ秒精度なので、往復で Equal を比較する値は
+	// あらかじめ切り捨てておく（切り捨てないと round-trip で必ず落ちる）。
+	past := time.Now().Add(-24 * time.Hour).UTC().Truncate(time.Microsecond)
+	// A: 旧列に印が付いていた行（過去の purge_after）。
+	recA := insertLegacyRecording(1, &past)
+	// B: 印が付いていない行（purge_after IS NULL）。
+	recB := insertLegacyRecording(2, nil)
+
+	// --- 00039 を適用（backfill を含む） ---
+	if err := runGooseMigration(ctx, dbURL, func(ctx context.Context, p *goose.Provider) error {
+		_, err := p.UpTo(ctx, purgeRequestMigrationVersion)
+		return err
+	}); err != nil {
+		t.Fatalf("migrating up to version %d: %v", purgeRequestMigrationVersion, err)
+	}
+
+	queryPurgeRequestedAt := func(recordingID int64) *time.Time {
+		t.Helper()
+		var got *time.Time
+		if err := pool.QueryRow(ctx,
+			"SELECT requested_at FROM recording_purge_requests WHERE recording_id = $1", recordingID,
+		).Scan(&got); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil
+			}
+			t.Fatalf("querying recording_purge_requests for %d: %v", recordingID, err)
+		}
+		return got
+	}
+
+	// A: 行ができ、旧列の時刻がそのまま requested_at に入る。
+	if got := queryPurgeRequestedAt(recA); got == nil {
+		t.Errorf("recording A (purge_after set): no recording_purge_requests row, want one")
+	} else if !got.Equal(past) {
+		t.Errorf("recording A requested_at = %v, want %v (旧列の時刻をそのまま移す)", got, past)
+	}
+	// B: 行はできない（「要求していない」を表す行を作らない）。
+	if got := queryPurgeRequestedAt(recB); got != nil {
+		t.Errorf("recording B (purge_after NULL): recording_purge_requests row requested_at = %v, want no row", got)
+	}
+
+	// recordings から purge_after 列が落ちていること。
+	var colCount int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM information_schema.columns
+		WHERE table_name = 'recordings' AND column_name = 'purge_after'
+	`).Scan(&colCount); err != nil {
+		t.Fatalf("querying information_schema.columns: %v", err)
+	}
+	if colCount != 0 {
+		t.Errorf("recordings still has purge_after column after migration %d (count=%d)",
+			purgeRequestMigrationVersion, colCount)
+	}
+
+	// --- Down: purge_after へ書き戻ること ---
+	if err := runGooseMigration(ctx, dbURL, func(ctx context.Context, p *goose.Provider) error {
+		_, err := p.DownTo(ctx, purgeRequestMigrationVersion-1)
+		return err
+	}); err != nil {
+		t.Fatalf("migrating down to version %d: %v", purgeRequestMigrationVersion-1, err)
+	}
+
+	var gotPurgeAfterA, gotPurgeAfterB *time.Time
+	if err := pool.QueryRow(ctx,
+		"SELECT purge_after FROM recordings WHERE id = $1", recA,
+	).Scan(&gotPurgeAfterA); err != nil {
+		t.Fatalf("querying recordings after down migration (A): %v", err)
+	}
+	// 値まで見る（存在だけを見ると、Down の UPDATE を SET purge_after = now() に
+	// 変えて requested_at を捨てても通ってしまう）。
+	if gotPurgeAfterA == nil {
+		t.Errorf("recording A purge_after after down = nil, want %v (印が立っていた行は復元されるべき)", past)
+	} else if !gotPurgeAfterA.Equal(past) {
+		t.Errorf("recording A purge_after after down = %v, want %v (requested_at をそのまま書き戻す)",
+			gotPurgeAfterA, past)
+	}
+
+	if err := pool.QueryRow(ctx,
+		"SELECT purge_after FROM recordings WHERE id = $1", recB,
+	).Scan(&gotPurgeAfterB); err != nil {
+		t.Fatalf("querying recordings after down migration (B): %v", err)
+	}
+	if gotPurgeAfterB != nil {
+		t.Errorf("recording B purge_after after down = %v, want NULL", gotPurgeAfterB)
+	}
+}
+
 func TestNewPool(t *testing.T) {
 	dbURL := testDatabaseURL(t)
 	ctx := context.Background()

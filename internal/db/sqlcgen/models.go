@@ -164,7 +164,6 @@ type Recording struct {
 	DeletedAt         *time.Time
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
-	PurgeAfter        *time.Time
 	SupersededAt      *time.Time
 	PurgedAt          *time.Time
 	GenreLv1          []int16
@@ -183,6 +182,11 @@ type RecordingIngestProgress struct {
 	WrittenBytes  int64
 	ExpectedBytes *int64
 	ObservedAt    time.Time
+}
+
+type RecordingPurgeRequest struct {
+	RecordingID int64
+	RequestedAt time.Time
 }
 
 type Reservation struct {

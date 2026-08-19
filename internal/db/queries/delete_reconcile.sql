@@ -118,7 +118,8 @@ WHERE a.id = sqlc.arg('id')
     SELECT 1 FROM until_encoded_deletable_originals v WHERE v.asset_id = a.id
   );
 
--- ごみ箱の猶予超過、または「今すぐ完全削除」（purge_after）の対象
+-- ごみ箱の猶予超過、または「今すぐ完全削除」の要求（recording_purge_requests
+-- の行）の対象
 -- （名前付き述語 trash_deletable_recordings への参照。issue #160）。
 -- name: ListTrashMediaAssetsToDelete :many
 SELECT a.id, a.recording_id, a.rel_path, a.size_bytes, a.kind
@@ -145,9 +146,9 @@ LIMIT sqlc.arg('row_limit');
 --
 -- 削除 reconcile のパス末尾（trash / until_encoded / pending 経路すべてが
 -- 物理 unlink を終えた後）で 1 回だけ呼ぶ。ごみ箱条件は名前付き述語
--- trash_deletable_recordings への参照（issue #160）。purge_after だけを
--- 条件にすると、30 日猶予超過の経路（purge_after が NULL のまま完全削除に
--- 到達する）を拾い損なう —— この区別は述語の定義側に集約されている。
+-- trash_deletable_recordings への参照（issue #160）。即時削除の要求だけを
+-- 条件にすると、30 日猶予超過の経路（要求の行が無いまま完全削除に到達する）を
+-- 拾い損なう —— この区別は述語の定義側に集約されている。
 --
 -- recordings を起点に引く（media_assets を起点にすると、アセットを 1 行も
 -- 持ったことがない録画が NOT EXISTS の対象になりようがなく、永久に拾えない。

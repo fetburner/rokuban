@@ -207,11 +207,12 @@ type Recording struct {
 	EncodeProfiles    []string        `db:"encode_profiles"`
 	QualityEvents     json.RawMessage `db:"quality_events"`
 	DeletedAt         *time.Time      `db:"deleted_at"`
-	// PurgeAfter は即時物理削除の要求印（M3-7）。M3-8 の削除 reconcile が拾う。
-	// ファイル操作はここには無い（api ロールは DB のみ）。
-	PurgeAfter *time.Time `db:"purge_after"`
-	CreatedAt  time.Time  `db:"created_at"`
-	UpdatedAt  time.Time  `db:"updated_at"`
+	// 即時物理削除の要求（「猶予を待たず今すぐ消して」）はここには無い。
+	// api ロールが書き、api ロールが取り消す状態なので recordings 本体
+	// （試行の帰結の観測）ではなく recording_purge_requests 衛星表の
+	// 行の存在で表す（不変条件 13。migration のコメント参照）。
+	CreatedAt time.Time `db:"created_at"`
+	UpdatedAt time.Time `db:"updated_at"`
 }
 
 // RecordSync は mirakc record の観測。

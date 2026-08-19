@@ -422,8 +422,39 @@ func (q *Queries) CatalogListRecordingEncodePolicies(ctx context.Context, site *
 	return items, nil
 }
 
+const catalogListRecordingPurgeRequests = `-- name: CatalogListRecordingPurgeRequests :many
+SELECT q.recording_id, q.requested_at
+FROM recording_purge_requests q
+JOIN recordings r ON r.id = q.recording_id
+WHERE $1::text IS NULL OR r.site = $1
+ORDER BY q.recording_id
+`
+
+// recording_purge_requests 衛星表（旧 recordings.purge_after）。行が無い録画は
+// 「即時削除を要求していない」で正しい --- rescue 側もこのリストに現れなかった
+// recordings.id には何も書かないので、要求の有無がそのまま往復する。
+func (q *Queries) CatalogListRecordingPurgeRequests(ctx context.Context, site *string) ([]RecordingPurgeRequest, error) {
+	rows, err := q.db.Query(ctx, catalogListRecordingPurgeRequests, site)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []RecordingPurgeRequest
+	for rows.Next() {
+		var i RecordingPurgeRequest
+		if err := rows.Scan(&i.RecordingID, &i.RequestedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const catalogListRecordings = `-- name: CatalogListRecordings :many
-SELECT id, rule_id, source, site, network_id, service_id, event_id, service_name, channel_type, channel, title, description, extended, genres, is_free, program_start_at, program_duration_ms, status, started_at, ended_at, quality_events, deleted_at, created_at, updated_at, purge_after, superseded_at, purged_at, genre_lv1 FROM recordings
+SELECT id, rule_id, source, site, network_id, service_id, event_id, service_name, channel_type, channel, title, description, extended, genres, is_free, program_start_at, program_duration_ms, status, started_at, ended_at, quality_events, deleted_at, created_at, updated_at, superseded_at, purged_at, genre_lv1 FROM recordings
 WHERE $1::text IS NULL OR site = $1
 ORDER BY id
 `
@@ -463,7 +494,6 @@ func (q *Queries) CatalogListRecordings(ctx context.Context, site *string) ([]Re
 			&i.DeletedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
-			&i.PurgeAfter,
 			&i.SupersededAt,
 			&i.PurgedAt,
 			&i.GenreLv1,
@@ -935,7 +965,7 @@ INSERT INTO recordings (
     program_start_at, program_duration_ms,
     status, started_at, ended_at,
     quality_events,
-    deleted_at, purge_after, superseded_at, purged_at, created_at, updated_at
+    deleted_at, superseded_at, purged_at, created_at, updated_at
 ) OVERRIDING SYSTEM VALUE
 VALUES (
     $1, $2, $3, $4,
@@ -945,7 +975,7 @@ VALUES (
     $16, $17,
     $18, $19, $20,
     $21,
-    $22, $23, $24, $25, $26, $27
+    $22, $23, $24, $25, $26
 )
 ON CONFLICT (id) DO UPDATE SET
     rule_id             = EXCLUDED.rule_id,
@@ -969,7 +999,6 @@ ON CONFLICT (id) DO UPDATE SET
     ended_at            = EXCLUDED.ended_at,
     quality_events      = EXCLUDED.quality_events,
     deleted_at          = EXCLUDED.deleted_at,
-    purge_after         = EXCLUDED.purge_after,
     -- superseded_at を落とすと、復旧時に superseded 行が live に戻って
     -- recordings_unique_active_event に衝突する（issue #129 症状 2）。
     superseded_at       = EXCLUDED.superseded_at,
@@ -1004,7 +1033,6 @@ type CatalogUpsertRecordingParams struct {
 	EndedAt           *time.Time
 	QualityEvents     json.RawMessage
 	DeletedAt         *time.Time
-	PurgeAfter        *time.Time
 	SupersededAt      *time.Time
 	PurgedAt          *time.Time
 	CreatedAt         time.Time
@@ -1038,7 +1066,6 @@ func (q *Queries) CatalogUpsertRecording(ctx context.Context, arg CatalogUpsertR
 		arg.EndedAt,
 		arg.QualityEvents,
 		arg.DeletedAt,
-		arg.PurgeAfter,
 		arg.SupersededAt,
 		arg.PurgedAt,
 		arg.CreatedAt,
@@ -1079,6 +1106,30 @@ func (q *Queries) CatalogUpsertRecordingEncodePolicy(ctx context.Context, arg Ca
 		arg.CreatedAt,
 		arg.UpdatedAt,
 	)
+	return err
+}
+
+const catalogUpsertRecordingPurgeRequest = `-- name: CatalogUpsertRecordingPurgeRequest :exec
+INSERT INTO recording_purge_requests (recording_id, requested_at)
+VALUES ($1, $2)
+ON CONFLICT (recording_id) DO UPDATE SET
+    requested_at = EXCLUDED.requested_at
+`
+
+type CatalogUpsertRecordingPurgeRequestParams struct {
+	RecordingID int64
+	RequestedAt time.Time
+}
+
+// recording_purge_requests 衛星表の rescue。要求 = 行の存在という意味論を
+// rescue でも保つ --- doc.RecordingPurgeRequests に載っている録画だけ INSERT し、
+// 載っていない録画には何もしない（**空 DB からの復元では**、行が無い = 要求なし
+// のまま復元される）。rescue は upsert only で DELETE しないので、live DB に対して
+// 実行するとダンプに無い要求行はそのまま残る --- recording_encode_policy と同じ
+// 制約（rescue が上書きするものの粒度は docs/operations/database.md
+// §バックアップ）。rescue は DB を失った後にだけ使う操作なので実装は変えない。
+func (q *Queries) CatalogUpsertRecordingPurgeRequest(ctx context.Context, arg CatalogUpsertRecordingPurgeRequestParams) error {
+	_, err := q.db.Exec(ctx, catalogUpsertRecordingPurgeRequest, arg.RecordingID, arg.RequestedAt)
 	return err
 }
 
