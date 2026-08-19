@@ -133,10 +133,19 @@ type Recording struct {
 	DeletedAt *time.Time `json:"deletedAt,omitempty"`
 	// PurgeRequested は「今すぐ完全削除してほしい」という要求印（issue #319）。
 	// 旧世代のカタログは timestamptz の `purgeAfter` を持っていたが、実質
-	// boolean だった値を型で正直にした。旧ダンプにはこのキー自体が無いので
-	// omitempty で false として復元される（=「印は無かった」。ファイルの
-	// 安全側に倒れる。落としても不可逆な事実は失われない）。
+	// boolean だった値を型で正直にした。旧ダンプにはこの JSON キー自体が無く、
+	// unmarshal は未知でも欠けているキーも同じく無視するので、このフィールドは
+	// ゼロ値（false）のまま復元される。それだけでは「印は無かった」と取り違えて
+	// 旧ダンプの要求が黙って失われるため、rescue 側は PurgeAfterLegacy
+	// （旧キー `purgeAfter` をそのまま受け取るフィールド）が non-nil なら
+	// PurgeRequested へ前送りする（KeepOriginalLegacy と同じ形。rescue.go 参照）。
 	PurgeRequested bool `json:"purgeRequested,omitempty"`
+	// PurgeAfterLegacy は issue #319 より前の旧列 `recordings.purge_after`
+	// （timestamptz）をそのまま受け取る。新しい export はこのフィールドを書かない
+	// （常に nil で omit される）。旧ダンプは値そのものではなく non-nil かどうか
+	// だけを見て PurgeRequested へ前送りする（migration 00039 の backfill --- 値は
+	// 使わず `purge_after IS NOT NULL` だけを見る --- と同じ基準）。
+	PurgeAfterLegacy *time.Time `json:"purgeAfter,omitempty"`
 	// KeepOriginalLegacy / EncodeProfilesLegacy: issue #159 より前は
 	// recordings.keep_original / recordings.encode_profiles だった旧列。
 	// 現在は RecordingEncodePolicy（recording_encode_policy 衛星表）に切り出した

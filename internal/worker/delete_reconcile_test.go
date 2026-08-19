@@ -304,9 +304,9 @@ func TestDeleteReconcileWorker_ZeroAssetRecording_PurgeMarksAndFiresWebhookOnce(
 	recordingID := insertTestRecording(t, pool)
 	// media_assets は 1 行も作らない。
 
-	purgeAt := time.Now()
+	recent := time.Now()
 	if _, err := pool.Exec(context.Background(),
-		"UPDATE recordings SET deleted_at = $1, purge_requested = true WHERE id = $2", purgeAt, recordingID); err != nil {
+		"UPDATE recordings SET deleted_at = $1, purge_requested = true WHERE id = $2", recent, recordingID); err != nil {
 		t.Fatalf("marking recording for immediate purge: %v", err)
 	}
 

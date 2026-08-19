@@ -51,6 +51,11 @@ type RescueResult struct {
 	// （Recording.KeepOriginalLegacy が non-nil）から復元した recording_encode_policy
 	// の件数。RecordingEncodePolicies にも含まれる（内訳として別に数える）。
 	RestoredLegacyEncodePolicies int
+
+	// RestoredLegacyPurgeRequests は #319 より前に export された catalog ダンプ
+	// （Recording.PurgeAfterLegacy が non-nil）から PurgeRequested へ前送りした
+	// 件数。黙って切り捨てず、呼び出し側が報告できるように数える。
+	RestoredLegacyPurgeRequests int
 }
 
 // RescueLatest は media_dir/catalog/ の**最新の完成世代**を読んで DB に冪等
@@ -248,6 +253,16 @@ func applyDocument(ctx context.Context, tx pgx.Tx, doc *Document) (*RescueResult
 		if hasNeverScheduledMarker(qe) {
 			continue
 		}
+		// #319 より前に export されたダンプは PurgeRequested を持たず（キーが
+		// 無いので unmarshal 後もゼロ値の false のまま）、旧列の値は
+		// PurgeAfterLegacy に残っている。前送りしないと「今すぐ完全削除」の
+		// 要求が黙って失われる（migration 00039 backfill と同じ基準: 値では
+		// なく non-nil かどうかだけを見る）。
+		purgeRequested := r.PurgeRequested
+		if !purgeRequested && r.PurgeAfterLegacy != nil {
+			purgeRequested = true
+			res.RestoredLegacyPurgeRequests++
+		}
 		if err := q.CatalogUpsertRecording(ctx, sqlcgen.CatalogUpsertRecordingParams{
 			ID:                r.ID,
 			RuleID:            r.RuleID,
@@ -271,7 +286,7 @@ func applyDocument(ctx context.Context, tx pgx.Tx, doc *Document) (*RescueResult
 			EndedAt:           r.EndedAt,
 			QualityEvents:     qe,
 			DeletedAt:         r.DeletedAt,
-			PurgeRequested:    r.PurgeRequested,
+			PurgeRequested:    purgeRequested,
 			SupersededAt:      r.SupersededAt,
 			PurgedAt:          r.PurgedAt,
 			CreatedAt:         r.CreatedAt,

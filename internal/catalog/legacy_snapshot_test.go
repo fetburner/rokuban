@@ -241,4 +241,92 @@ func TestRescue_RestoresLegacyEncodePolicyFromPreIssue159Dump(t *testing.T) {
 	}
 }
 
+// TestRescue_RestoresLegacyPurgeRequestedFromPreIssue319Dump は issue #319 より前に
+// export された catalog ダンプ（recordings.purge_after がまだ timestamptz 列
+// だった頃。PurgeRequested キー自体が無いので unmarshal 後もゼロ値の false のまま、
+// 旧列の値は Recording.PurgeAfterLegacy に残る。document.go 参照）を rescue すると、
+// 旧列に印が付いていた（non-nil）録画だけ PurgeRequested へ前送りされることを
+// 確認する。
+//
+// 直す前の実装（Recording から PurgeAfterLegacy を持たせず、旧キーを黙って無視する
+// だけ）はこの往復で「今すぐ完全削除」の要求を黙って失っていた --- アップグレード前に
+// 即時削除を要求した録画が、印を失って猶予期間まで消えなくなる（PR #388 レビュー
+// で指摘）。
+func TestRescue_RestoresLegacyPurgeRequestedFromPreIssue319Dump(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	base := time.Now().Add(-2 * time.Hour)
+	legacyPurgeAfter := time.Now().Add(-1 * time.Hour)
+	deletedAt := time.Now().Add(-90 * time.Minute)
+
+	doc := &Document{
+		Version:    Version,
+		ExportedAt: time.Now().UTC(),
+		Recordings: []Recording{
+			{
+				// 旧列に印が付いていた録画（即時完全削除を要求済み）。
+				ID: 9201, Source: "manual", Site: "default",
+				NetworkID: 32736, ServiceID: 1024, EventID: 1001,
+				ServiceName: "NHK総合", ChannelType: "GR", Channel: "27",
+				Title: "旧ダンプ・即時削除要求", IsFree: true,
+				ProgramStartAt: base, ProgramDurationMs: 1800000,
+				Status:           "finished",
+				DeletedAt:        &deletedAt,
+				PurgeAfterLegacy: &legacyPurgeAfter,
+				CreatedAt:        base, UpdatedAt: base,
+			},
+			{
+				// 旧列に印が付いていなかった録画（通常のごみ箱猶予のまま）。
+				ID: 9202, Source: "manual", Site: "default",
+				NetworkID: 32736, ServiceID: 1024, EventID: 1002,
+				ServiceName: "NHK総合", ChannelType: "GR", Channel: "27",
+				Title: "旧ダンプ・印なし", IsFree: true,
+				ProgramStartAt: base, ProgramDurationMs: 1800000,
+				Status:           "finished",
+				DeletedAt:        &deletedAt,
+				PurgeAfterLegacy: nil,
+				CreatedAt:        base, UpdatedAt: base,
+			},
+		},
+	}
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	result, err := applyDocument(ctx, tx, doc)
+	if err != nil {
+		t.Fatalf("applyDocument: %v", err)
+	}
+	if result.Recordings != 2 {
+		t.Fatalf("Recordings = %d, want 2", result.Recordings)
+	}
+	if result.RestoredLegacyPurgeRequests != 1 {
+		t.Errorf("RestoredLegacyPurgeRequests = %d, want 1 (only the recording with PurgeAfterLegacy set)",
+			result.RestoredLegacyPurgeRequests)
+	}
+
+	var got9201, got9202 bool
+	if err := tx.QueryRow(ctx,
+		`SELECT purge_requested FROM recordings WHERE id = $1`, 9201,
+	).Scan(&got9201); err != nil {
+		t.Fatalf("querying purge_requested for 9201: %v", err)
+	}
+	if !got9201 {
+		t.Errorf("purge_requested for 9201 (had legacy purge_after) = %v, want true", got9201)
+	}
+
+	if err := tx.QueryRow(ctx,
+		`SELECT purge_requested FROM recordings WHERE id = $1`, 9202,
+	).Scan(&got9202); err != nil {
+		t.Fatalf("querying purge_requested for 9202: %v", err)
+	}
+	if got9202 {
+		t.Errorf("purge_requested for 9202 (no legacy purge_after) = %v, want false", got9202)
+	}
+}
+
 func ptrString(s string) *string { return &s }

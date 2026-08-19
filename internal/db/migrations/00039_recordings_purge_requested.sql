@@ -4,13 +4,12 @@
 -- `timestamptz` かつ `<= now()` の比較で実装しており、これは実質 boolean。
 -- `deleted_at`（可逆な捨てた時刻）/ `superseded_at`（不可逆な枠明け渡し）/
 -- `purged_at`（不可逆な完全削除の完了）と並べて 4 つ目の「時刻」に見えるが、
--- 未来の予約削除としては使っておらず、書く値は常に「今」しかない
--- （CLAUDE.md 不変条件 9: 導出値と不可逆な事実を同じ列に載せない ---
--- ここでは「時刻に見える弱い印」を型で正直にする）。
+-- 未来の予約削除としては使っておらず、書く値は常に「今」しかない。
 --
--- 印なので boolean にする。RestoreRecording が false に落とす（時刻を消す
--- のではなく印を下ろす）。削除 reconcile の即時腕は「印が立っているか」だけを
--- 見て `<= now()` の比較をやめる。猶予腕（deleted_at + 設定日数）は変えない。
+-- 印なので boolean にする（時刻に見える弱い印を型で正直にする）。
+-- RestoreRecording が false に落とす（時刻を消すのではなく印を下ろす）。
+-- 削除 reconcile の即時腕は「印が立っているか」だけを見て
+-- `<= now()` の比較をやめる。猶予腕（deleted_at + 設定日数）は変えない。
 ALTER TABLE recordings
     ADD COLUMN purge_requested boolean NOT NULL DEFAULT false;
 
@@ -21,9 +20,11 @@ DROP INDEX IF EXISTS recordings_purge_after_idx;
 ALTER TABLE recordings DROP COLUMN purge_after;
 
 -- 部分一意索引 recordings_unique_active_event の述語（deleted_at / superseded_at）
--- には触れない --- 枠が明くのはあの 2 列だけで、即時印はそれに影響しない
--- （CLAUDE.md 不変条件 13 の境界）。ここは削除 reconcile が即時対象を拾うための
--- 単なる絞り込み用の部分索引。
+-- には触れない --- 枠が明くのはあの 2 列だけで、即時印はそれに影響しない。
+-- 本体列に置く判断自体は issue #319 の決定（api が書く印だが recordings 本体に
+-- 置く）で、不変条件 13 の境界（deleted_at / superseded_at が部分一意索引の
+-- 述語に出るから本体に残す）とは別の理由。ここは削除 reconcile が即時対象を
+-- 拾うために置いておく部分索引（プランが実際にこれを使うかは未検証）。
 CREATE INDEX recordings_purge_requested_idx
     ON recordings (id) WHERE purge_requested;
 

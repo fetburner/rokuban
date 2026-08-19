@@ -282,6 +282,136 @@ func TestMigrateUp_RecordingEncodePolicyBackfill(t *testing.T) {
 	}
 }
 
+// purgeRequestedMigrationVersion は 00039_recordings_purge_requested.sql の
+// goose バージョン番号。ファイル名の連番プレフィックスと一致させる。
+const purgeRequestedMigrationVersion = 39
+
+// TestMigrateUp_PurgeRequestedBackfill は issue #319 の 00039 マイグレーションの
+// データ引き継ぎを検証する（レビュー指摘: Up の backfill UPDATE と Down の書き戻し
+// UPDATE を両方コメントアウトしても internal/db 以下のテストは全部 pass していた
+// --- 引き継ぎは何も検証されていなかった）。
+//
+// goose で 00038 まで適用した「移設前」のスキーマ（recordings.purge_after が
+// timestamptz 列として存在する）にフィクスチャを直接書き込み、00039 を適用した
+// 後の purge_requested の値を確認する。Down で purge_after への書き戻りも確認する。
+func TestMigrateUp_PurgeRequestedBackfill(t *testing.T) {
+	dbURL := testDatabaseURL(t)
+	ctx := context.Background()
+
+	if err := MigrateReset(ctx, dbURL); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = MigrateReset(context.Background(), dbURL)
+	})
+
+	// --- 00038 まで（purge_after が列として存在する「移設前」のスキーマ）を適用 ---
+	if err := runGooseMigration(ctx, dbURL, func(ctx context.Context, p *goose.Provider) error {
+		_, err := p.UpTo(ctx, purgeRequestedMigrationVersion-1)
+		return err
+	}); err != nil {
+		t.Fatalf("migrating up to version %d: %v", purgeRequestedMigrationVersion-1, err)
+	}
+
+	pool, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("connecting pool: %v", err)
+	}
+	defer pool.Close()
+
+	insertLegacyRecording := func(eventID int32, purgeAfter *time.Time) int64 {
+		t.Helper()
+		var id int64
+		if err := pool.QueryRow(ctx, `
+			INSERT INTO recordings (
+				source, site, network_id, service_id, event_id, service_name,
+				channel_type, channel, title, program_start_at, program_duration_ms,
+				status, purge_after
+			) VALUES (
+				'manual', 'default', 32736, 1024, $1, 'テスト局',
+				'GR', '27', 'purge-requested-test', now(), 1800000,
+				'finished', $2
+			) RETURNING id`,
+			eventID, purgeAfter,
+		).Scan(&id); err != nil {
+			t.Fatalf("inserting legacy recording: %v", err)
+		}
+		return id
+	}
+
+	past := time.Now().Add(-24 * time.Hour)
+	// A: 旧列に印が付いていた行（過去の purge_after）。
+	recA := insertLegacyRecording(1, &past)
+	// B: 印が付いていない行（purge_after IS NULL）。
+	recB := insertLegacyRecording(2, nil)
+
+	// --- 00039 を適用（backfill を含む） ---
+	if err := runGooseMigration(ctx, dbURL, func(ctx context.Context, p *goose.Provider) error {
+		_, err := p.UpTo(ctx, purgeRequestedMigrationVersion)
+		return err
+	}); err != nil {
+		t.Fatalf("migrating up to version %d: %v", purgeRequestedMigrationVersion, err)
+	}
+
+	queryPurgeRequested := func(recordingID int64) bool {
+		t.Helper()
+		var got bool
+		if err := pool.QueryRow(ctx,
+			"SELECT purge_requested FROM recordings WHERE id = $1", recordingID,
+		).Scan(&got); err != nil {
+			t.Fatalf("querying purge_requested for %d: %v", recordingID, err)
+		}
+		return got
+	}
+
+	if got := queryPurgeRequested(recA); !got {
+		t.Errorf("recording A (purge_after set): purge_requested = %v, want true", got)
+	}
+	if got := queryPurgeRequested(recB); got {
+		t.Errorf("recording B (purge_after NULL): purge_requested = %v, want false", got)
+	}
+
+	// recordings から purge_after 列が落ちていること。
+	var colCount int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM information_schema.columns
+		WHERE table_name = 'recordings' AND column_name = 'purge_after'
+	`).Scan(&colCount); err != nil {
+		t.Fatalf("querying information_schema.columns: %v", err)
+	}
+	if colCount != 0 {
+		t.Errorf("recordings still has purge_after column after migration %d (count=%d)",
+			purgeRequestedMigrationVersion, colCount)
+	}
+
+	// --- Down: purge_after へ書き戻ること ---
+	if err := runGooseMigration(ctx, dbURL, func(ctx context.Context, p *goose.Provider) error {
+		_, err := p.DownTo(ctx, purgeRequestedMigrationVersion-1)
+		return err
+	}); err != nil {
+		t.Fatalf("migrating down to version %d: %v", purgeRequestedMigrationVersion-1, err)
+	}
+
+	var gotPurgeAfterA, gotPurgeAfterB *time.Time
+	if err := pool.QueryRow(ctx,
+		"SELECT purge_after FROM recordings WHERE id = $1", recA,
+	).Scan(&gotPurgeAfterA); err != nil {
+		t.Fatalf("querying recordings after down migration (A): %v", err)
+	}
+	if gotPurgeAfterA == nil {
+		t.Errorf("recording A purge_after after down = nil, want non-NULL (印が立っていた行は復元されるべき)")
+	}
+
+	if err := pool.QueryRow(ctx,
+		"SELECT purge_after FROM recordings WHERE id = $1", recB,
+	).Scan(&gotPurgeAfterB); err != nil {
+		t.Fatalf("querying recordings after down migration (B): %v", err)
+	}
+	if gotPurgeAfterB != nil {
+		t.Errorf("recording B purge_after after down = %v, want NULL", gotPurgeAfterB)
+	}
+}
+
 func TestNewPool(t *testing.T) {
 	dbURL := testDatabaseURL(t)
 	ctx := context.Background()
