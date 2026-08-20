@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -156,15 +157,121 @@ func TestListRecordingsEncodeStatus(t *testing.T) {
 	}
 }
 
+// TestListRecordingsEncodeStatus_TrashOmitsEncodeStatus は、ごみ箱の録画では
+// encodeStatus を丸ごと省略することを HTTP 経路（DELETE → GET trash=true /
+// GET 単体）で固定する（issue #316 のレビューで判明: queued に「来る根拠」が
+// 無いまま出ていた --- EncodeReconcileWorker は deleted_at IS NULL で絞って
+// ごみ箱の録画にジョブを二度と投入しない）。running な試行行があっても
+// 省略する（削除後にその試行が本当に終わるかは api ロールには分からない
+// --- api は worker の状態を問い合わせない。不変条件 1）。
+func TestListRecordingsEncodeStatus_TrashOmitsEncodeStatus(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := newAPIServer(t, pool)
+	base := time.Now().Truncate(time.Second)
+
+	id := seedRecording(t, pool, "捨てる録画", base, "finished", 1)
+	seedIngested(t, pool, id, 1000, nil)
+	setEncodeProfiles(t, pool, id, []string{"h264", "h265"})
+	seedEncodeAttempt(t, pool, id, "h265", "running", nil)
+
+	if resp := doRecordingMethod(t, http.MethodDelete, fmt.Sprintf("%s/api/recordings/%d", srv.URL, id)); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete status = %d, want 204", resp.StatusCode)
+	}
+
+	var trash []Recording
+	if resp := getJSON(t, srv.URL+"/api/recordings?trash=true", &trash); resp.StatusCode != http.StatusOK {
+		t.Fatalf("trash list status = %d", resp.StatusCode)
+	}
+	if len(trash) != 1 || trash[0].Id != id {
+		t.Fatalf("trash = %+v, want id=%d", trash, id)
+	}
+	if trash[0].EncodeStatus != nil {
+		t.Errorf("trash: encodeStatus = %+v, want omitted (nil)", *trash[0].EncodeStatus)
+	}
+
+	var single Recording
+	if resp := getJSON(t, srv.URL+"/api/recordings/"+itoa(id), &single); resp.StatusCode != http.StatusOK {
+		t.Fatalf("single status = %d", resp.StatusCode)
+	}
+	if single.EncodeStatus != nil {
+		t.Errorf("single (trash): encodeStatus = %+v, want omitted (nil)", *single.EncodeStatus)
+	}
+}
+
+// TestListRecordingsEncodeStatus_UnknownProfileOmittedWhenConfigured は、
+// api が config.encode.profiles を注入している（RouterConfig.EncodeProfileNames
+// が non-nil）とき、設定から消えたプロファイルは試行行が無い限り queued を
+// 名乗らないことを固定する。EncodeReconcileWorker の
+// EnqueueMissingEncodesForKnownProfiles / ListUnsatisfiableEncodeProfiles が
+// 「恒久的に満たせない」と数えている集合と同じものを、世帯向けの画面が
+// 「待ち」と言ってしまう食い違いを塞ぐ（issue #316 のレビューで判明）。
+// 試行行が既にある（削除前に始まっていた失敗）なら、設定に残っていなくても
+// そのまま出す --- それは断定ではなく観測なので規律の対象外。
+func TestListRecordingsEncodeStatus_UnknownProfileOmittedWhenConfigured(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, EncodeProfileNames: []string{"h264"}}))
+	t.Cleanup(srv.Close)
+	base := time.Now().Truncate(time.Second)
+
+	id := seedRecording(t, pool, "設定変更後", base, "finished", 1)
+	seedIngested(t, pool, id, 1000, nil)
+	setEncodeProfiles(t, pool, id, []string{"h264", "vp9"})
+	seedEncodeAttempt(t, pool, id, "vp9", "failed", nil)
+
+	var rec Recording
+	if resp := getJSON(t, srv.URL+"/api/recordings/"+itoa(id), &rec); resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	if rec.EncodeStatus == nil {
+		t.Fatalf("encodeStatus is nil, want h264=queued, vp9=failed")
+	}
+	statusByProfile := map[string]EncodeJobStatusState{}
+	for _, s := range *rec.EncodeStatus {
+		statusByProfile[s.Profile] = s.State
+	}
+	if len(statusByProfile) != 2 {
+		t.Fatalf("encodeStatus = %+v, want exactly 2 entries", *rec.EncodeStatus)
+	}
+	if statusByProfile["h264"] != EncodeJobStatusStateQueued {
+		t.Errorf("h264 state = %q, want queued", statusByProfile["h264"])
+	}
+	if statusByProfile["vp9"] != EncodeJobStatusStateFailed {
+		t.Errorf("vp9 state = %q, want failed (observed attempt row, not a promise)", statusByProfile["vp9"])
+	}
+
+	// vp9 の試行行を消すと（例えば別プロファイルへの再構成後）、設定に無い
+	// vp9 は queued を名乗らず消える。
+	if _, err := pool.Exec(context.Background(),
+		`DELETE FROM recording_encode_attempts WHERE recording_id = $1 AND profile = 'vp9'`, id); err != nil {
+		t.Fatalf("clearing vp9 attempt: %v", err)
+	}
+	rec = Recording{}
+	if resp := getJSON(t, srv.URL+"/api/recordings/"+itoa(id), &rec); resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	if rec.EncodeStatus == nil || len(*rec.EncodeStatus) != 1 {
+		t.Fatalf("encodeStatus = %+v, want exactly 1 entry (h264 only)", rec.EncodeStatus)
+	}
+	if (*rec.EncodeStatus)[0].Profile != "h264" {
+		t.Errorf("encodeStatus[0].Profile = %q, want h264 (vp9 must not appear without an attempt row)", (*rec.EncodeStatus)[0].Profile)
+	}
+}
+
 // TestEncodeJobStatusesFromFields は導出を DB なしで固定する
 // （encodeJobStatusesFromFields、issue #316）。
+//
+// 「来る根拠」が無い queued を出さない 2 パターン（ごみ箱 / 設定から消えた
+// プロファイル）も、DB を経由せず直接 recordingListFields を組み立てて
+// 固定する（trash / unknownProfiles ケース参照）。
 func TestEncodeJobStatusesFromFields(t *testing.T) {
 	for _, tc := range []struct {
-		name    string
-		desired []string
-		done    []string
-		attempt map[string]string // profile -> state ("running"/"failed")
-		want    map[string]EncodeJobStatusState
+		name          string
+		desired       []string
+		done          []string
+		attempt       map[string]string // profile -> state ("running"/"failed")
+		deleted       bool
+		knownProfiles map[string]struct{} // nil = 検証オフ（既存の規約と揃える）
+		want          map[string]EncodeJobStatusState
 	}{
 		{
 			name:    "プロファイル未設定",
@@ -204,9 +311,41 @@ func TestEncodeJobStatusesFromFields(t *testing.T) {
 				"aac":  EncodeJobStatusStateQueued,
 			},
 		},
+		{
+			name:    "ごみ箱の録画は試行行があっても丸ごと省略",
+			desired: []string{"h264", "h265"},
+			attempt: map[string]string{"h265": "running"},
+			deleted: true,
+			want:    map[string]EncodeJobStatusState{},
+		},
+		{
+			name:          "設定から消えたプロファイルは試行行が無ければ省略",
+			desired:       []string{"h264", "vp9"},
+			knownProfiles: map[string]struct{}{"h264": {}},
+			want:          map[string]EncodeJobStatusState{"h264": EncodeJobStatusStateQueued},
+		},
+		{
+			name:          "設定から消えたプロファイルでも試行行があればそのまま出す",
+			desired:       []string{"h264", "vp9"},
+			attempt:       map[string]string{"vp9": "failed"},
+			knownProfiles: map[string]struct{}{"h264": {}},
+			want: map[string]EncodeJobStatusState{
+				"h264": EncodeJobStatusStateQueued,
+				"vp9":  EncodeJobStatusStateFailed,
+			},
+		},
+		{
+			name:    "knownProfiles が nil なら未知名の判定をスキップする",
+			desired: []string{"vp9"},
+			want:    map[string]EncodeJobStatusState{"vp9": EncodeJobStatusStateQueued},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fields := recordingListFields{ID: 1, EncodeProfiles: tc.desired}
+			if tc.deleted {
+				now := time.Now()
+				fields.DeletedAt = &now
+			}
 			if len(tc.attempt) > 0 {
 				rows := make([]encodeAttemptRow, 0, len(tc.attempt))
 				for profile, state := range tc.attempt {
@@ -219,7 +358,7 @@ func TestEncodeJobStatusesFromFields(t *testing.T) {
 				fields.EncodeAttempts = b
 			}
 
-			got, err := encodeJobStatusesFromFields(fields, tc.done)
+			got, err := encodeJobStatusesFromFields(fields, tc.done, tc.knownProfiles)
 			if err != nil {
 				t.Fatalf("encodeJobStatusesFromFields: %v", err)
 			}

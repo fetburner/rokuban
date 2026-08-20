@@ -2,11 +2,14 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
@@ -142,6 +145,13 @@ func installSlowFakeFFmpeg(t *testing.T, sleepSeconds int) (ffmpegPath string) {
 // failed に上書きされず running のまま残ることを固定する
 // （shouldNotifyEncodeFailure と同じ判定を試行状態の観測にも揃える。issue #316）。
 //
+// この判定を実際に load-bearing にしているのは attemptWriteContext ---
+// markEncodeAttemptFailed の書き込みは job の ctx から切り離してあるので、
+// encode.go の `if !shouldNotifyEncodeFailure(...) { return }` を削除すると
+// キャンセル後でも書き込みが成功して failed に上書きされ、このテストが落ちる
+// （切り離していなければ、書き込み自体がキャンセル済み ctx で失敗して偶然
+// running のまま残り、ガードを消しても検出できない）。
+//
 // ctx は ffmpeg 実行中（running 行を書いた後）にキャンセルする ---
 // 事前キャンセルだと markEncodeAttemptRunning 自身の DB 書き込みが ctx に
 // 紐付いて失敗し、行が一度も書かれないため検証にならない（上記
@@ -208,5 +218,87 @@ func TestEncodeWorker_AttemptRow_CtxCanceledLeavesRunning(t *testing.T) {
 	}
 	if state != "running" {
 		t.Errorf("state = %q, want running (ctx cancel must not mark failed)", state)
+	}
+}
+
+// TestTruncateEncodeAttemptError_MultibyteBoundary は、バイト単位で切り詰めた
+// 位置がマルチバイト文字の内側に落ちる入力でも、結果が常に有効な UTF-8 に
+// なることを固定する（issue #316 のレビューで判明: 生のバイトスライスは
+// Postgres が拒否する不正な UTF-8 を作り得た）。
+//
+// "日" は UTF-8 で 3 バイト。1000 回繰り返すと 3000 バイトで、
+// encodeAttemptErrorMaxLen(2000) バイト目はちょうど文字の内側に落ちる
+// （2000 = 3*666 + 2）。
+func TestTruncateEncodeAttemptError_MultibyteBoundary(t *testing.T) {
+	msg := strings.Repeat("日", 1000)
+	if len(msg) <= encodeAttemptErrorMaxLen {
+		t.Fatalf("test fixture too short: %d bytes, want > %d", len(msg), encodeAttemptErrorMaxLen)
+	}
+
+	got := truncateEncodeAttemptError(msg)
+
+	if !utf8.ValidString(got) {
+		t.Fatalf("truncateEncodeAttemptError(...) = %q, not valid UTF-8", got)
+	}
+	if len(got) == 0 {
+		t.Error("truncateEncodeAttemptError(...) = \"\", want a non-empty truncated message")
+	}
+	if len(got) > encodeAttemptErrorMaxLen {
+		t.Errorf("len(got) = %d, want <= %d", len(got), encodeAttemptErrorMaxLen)
+	}
+}
+
+// TestTruncateEncodeAttemptError_ShortMessageUnchanged は上限未満の入力が
+// そのまま返ることを固定する（truncateEncodeAttemptError_MultibyteBoundary の
+// 逆方向 --- 短い入力まで削ってしまわないこと）。
+func TestTruncateEncodeAttemptError_ShortMessageUnchanged(t *testing.T) {
+	msg := "short ascii error"
+	if got := truncateEncodeAttemptError(msg); got != msg {
+		t.Errorf("truncateEncodeAttemptError(%q) = %q, want unchanged", msg, got)
+	}
+}
+
+// TestEncodeWorker_AttemptRow_FailedOnFailure_MultibyteTruncation は、2000
+// バイトを超える日本語（マルチバイト）エラーでも recording_encode_attempts に
+// state='failed' の行が実際に書けることを固定する。バイト単位のスライスは
+// 文字境界の内側で切れて不正な UTF-8 を作り、Postgres がその INSERT/UPDATE を
+// 拒否するので、修正前はこの行が一度も書けず running のまま残った
+// （実機で「失敗が失敗として見えなくなる」形の再現。issue #316 のレビューで
+// 判明）。
+func TestEncodeWorker_AttemptRow_FailedOnFailure_MultibyteTruncation(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	mediaDir := t.TempDir()
+	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "x/attempt-fail-multibyte.m2ts", nil, []byte("data"))
+
+	w := &EncodeWorker{Pool: pool}
+	longMsg := strings.Repeat("日", 1000)
+	w.markEncodeAttemptFailed(context.Background(), recordingID, "h264", errors.New(longMsg))
+
+	state, ok := encodeAttemptState(t, pool, recordingID, "h264")
+	if !ok {
+		t.Fatalf("recording_encode_attempts row missing after failure with long multibyte error; want state=failed (byte-boundary truncation must not produce invalid UTF-8)")
+	}
+	if state != "failed" {
+		t.Errorf("state = %q, want failed", state)
+	}
+
+	var errMsg *string
+	if err := pool.QueryRow(context.Background(),
+		`SELECT error FROM recording_encode_attempts WHERE recording_id = $1 AND profile = $2`,
+		recordingID, "h264",
+	).Scan(&errMsg); err != nil {
+		t.Fatalf("reading error column: %v", err)
+	}
+	if errMsg == nil || *errMsg == "" {
+		t.Fatalf("error = %v, want a non-empty truncated message", errMsg)
+	}
+	if !utf8.ValidString(*errMsg) {
+		t.Errorf("error column is not valid UTF-8: %q", *errMsg)
+	}
+	if len(*errMsg) > encodeAttemptErrorMaxLen {
+		t.Errorf("len(error) = %d, want <= %d", len(*errMsg), encodeAttemptErrorMaxLen)
 	}
 }

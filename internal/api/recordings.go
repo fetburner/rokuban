@@ -172,12 +172,34 @@ type encodeAttemptRow struct {
 //
 //   - `recording_encode_attempts` に行があれば、その `state`（running/failed）
 //     をそのまま使う
-//   - 行が無ければ `queued`（試行がまだ始まっていない）
+//   - 行が無ければ `queued`（試行がまだ始まっていない） --- ただし「来る根拠」が
+//     無いものは queued と名乗らせない（下記 2 点。docs/recording/ingest.md
+//     §5.6 が `pending` に課した規律と同じ）
+//
+// 「来る根拠」が無いので queued を出さない 2 パターン:
+//
+//  1. ごみ箱の録画（r.DeletedAt が非 nil）。EncodeReconcileWorker の
+//     EnqueueMissingEncodesForKnownProfiles / ListRecordingsMissingEncodes は
+//     deleted_at IS NULL で絞っており、ごみ箱の録画にジョブは二度と投入されない
+//     （internal/worker/encode_reconcile.go 参照）。EncodedAssets/プレイヤーを
+//     trash で出さないのと揃え、試行状態も丸ごと省略する。running/failed の
+//     行が既にあれば（削除前に始まっていた試行）それはそのまま出す ---
+//     過去の観測は「来る」という断定ではないので規律の対象外。
+//  2. knownProfiles が non-nil（api ロールが config.encode.profiles を注入
+//     している）で、そのプロファイルが現在の config に存在しない。設定から
+//     消えたプロファイルは EnqueueMissingEncodesForKnownProfiles が投入対象から
+//     外している恒久的に満たせない集合（`ListUnsatisfiableEncodeProfiles` が
+//     数えているのと同じ集合）なので、試行行が無いものは省略する。knownProfiles
+//     が nil（テストの部分構成などで注入が無い）ときはこの判定をスキップする
+//     （既存の「nil = 検証オフ」規約と揃える）。
 //
 // 戻り値は desired の並び順を保つ（EncodeProfiles と同じ順序で見えることを
 // 期待するテストのため）。
-func encodeJobStatusesFromFields(r recordingListFields, done []string) ([]EncodeJobStatus, error) {
+func encodeJobStatusesFromFields(r recordingListFields, done []string, knownProfiles map[string]struct{}) ([]EncodeJobStatus, error) {
 	if len(r.EncodeProfiles) == 0 {
+		return nil, nil
+	}
+	if r.DeletedAt != nil {
 		return nil, nil
 	}
 
@@ -202,23 +224,32 @@ func encodeJobStatusesFromFields(r recordingListFields, done []string) ([]Encode
 		if _, ok := doneSet[profile]; ok {
 			continue
 		}
-		state := EncodeJobStatusStateQueued
 		if s, ok := attempts[profile]; ok {
+			state := EncodeJobStatusStateQueued
 			switch s {
 			case "running":
 				state = EncodeJobStatusStateRunning
 			case "failed":
 				state = EncodeJobStatusStateFailed
 			}
+			statuses = append(statuses, EncodeJobStatus{Profile: profile, State: state})
+			continue
 		}
-		statuses = append(statuses, EncodeJobStatus{Profile: profile, State: state})
+		if knownProfiles != nil {
+			if _, known := knownProfiles[profile]; !known {
+				continue
+			}
+		}
+		statuses = append(statuses, EncodeJobStatus{Profile: profile, State: EncodeJobStatusStateQueued})
 	}
 	return statuses, nil
 }
 
 // recordingFromListFields は一覧行を API の Recording に写す。
 // includeDeletedAt が true のときだけ deletedAt を載せる（ごみ箱一覧向け）。
-func recordingFromListFields(r recordingListFields, includeDeletedAt bool) (Recording, error) {
+// knownProfiles は encodeJobStatusesFromFields に渡す（doc コメント参照。
+// nil なら「設定から消えたプロファイル」の判定をスキップする）。
+func recordingFromListFields(r recordingListFields, includeDeletedAt bool, knownProfiles map[string]struct{}) (Recording, error) {
 	rec := Recording{
 		Id:          r.ID,
 		Site:        r.Site,
@@ -294,7 +325,7 @@ func recordingFromListFields(r recordingListFields, includeDeletedAt bool) (Reco
 	}
 	// 完了していないエンコードプロファイルの試行状態（issue #316）。空なら
 	// 省略（プロファイル未設定・全プロファイル完了済みのどちらでも省略）。
-	statuses, err := encodeJobStatusesFromFields(r, encodedProfileNames)
+	statuses, err := encodeJobStatusesFromFields(r, encodedProfileNames, knownProfiles)
 	if err != nil {
 		return Recording{}, err
 	}
@@ -329,7 +360,7 @@ func (h *Server) ListRecordings(ctx context.Context, req ListRecordingsRequestOb
 		return ListRecordings400JSONResponse{Error: errMsg}, nil
 	}
 
-	result, err := queryRecordings(ctx, h.pool, f)
+	result, err := queryRecordings(ctx, h.pool, f, h.encodeProfiles)
 	if err != nil {
 		return nil, fmt.Errorf("listing recordings: %w", err)
 	}
@@ -344,7 +375,7 @@ func (h *Server) ListRecordings(ctx context.Context, req ListRecordingsRequestOb
 // description 参照）。purged_at が立った tombstone（issue #135）は 404
 // （queryRecordingByID 参照）。
 func (h *Server) GetRecording(ctx context.Context, req GetRecordingRequestObject) (GetRecordingResponseObject, error) {
-	rec, ok, err := queryRecordingByID(ctx, h.pool, req.Id)
+	rec, ok, err := queryRecordingByID(ctx, h.pool, req.Id, h.encodeProfiles)
 	if err != nil {
 		return nil, fmt.Errorf("getting recording %d: %w", req.Id, err)
 	}

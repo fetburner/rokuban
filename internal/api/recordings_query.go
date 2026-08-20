@@ -484,7 +484,7 @@ LIMIT ` + limitPlaceholder
 // ごみ箱一覧のどちらにも現れない行なので、単体 GET だけ見える形にしない。
 //
 // 見つからなければ (Recording{}, false, nil) を返す。
-func queryRecordingByID(ctx context.Context, pool *pgxpool.Pool, id int64) (Recording, bool, error) {
+func queryRecordingByID(ctx context.Context, pool *pgxpool.Pool, id int64, knownProfiles map[string]struct{}) (Recording, bool, error) {
 	const sql = `
 SELECT` + recordingsSelectColumns + recordingsAvailableEncodedAssetsSelect + recordingsFromJoins + `
 WHERE r.id = $1 AND r.purged_at IS NULL`
@@ -517,14 +517,14 @@ WHERE r.id = $1 AND r.purged_at IS NULL`
 		fields.AvailableEncodedAssets = nil
 	}
 
-	rec, err := recordingFromListFields(fields, true)
+	rec, err := recordingFromListFields(fields, true, knownProfiles)
 	if err != nil {
 		return Recording{}, false, err
 	}
 	return rec, true, nil
 }
 
-func queryRecordings(ctx context.Context, pool *pgxpool.Pool, f recordingsFilter) ([]Recording, error) {
+func queryRecordings(ctx context.Context, pool *pgxpool.Pool, f recordingsFilter, knownProfiles map[string]struct{}) ([]Recording, error) {
 	sql, args, err := buildRecordingsQuery(f)
 	if err != nil {
 		return nil, err
@@ -557,7 +557,7 @@ func queryRecordings(ctx context.Context, pool *pgxpool.Pool, f recordingsFilter
 		if err := rows.Scan(scanArgs...); err != nil {
 			return nil, fmt.Errorf("scanning recording row: %w", err)
 		}
-		rec, err := recordingFromListFields(fields, f.Trash)
+		rec, err := recordingFromListFields(fields, f.Trash, knownProfiles)
 		if err != nil {
 			return nil, err
 		}

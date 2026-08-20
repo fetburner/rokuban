@@ -1674,16 +1674,21 @@ components:
           description: |
             **サーバー側で recording_encode_attempts（衛星表）から毎回導出する**
             （列に焼いた値ではない）。River の river_job は直接露出しない
-            （docs/recording/ingest.md §5.6 と同じ判断。理由は
-            internal/db/migrations/00041_recording_encode_attempts.sql の
-            doc コメント参照）。
+            （docs/schema.md の recording_encode_attempts の節を参照。
+            docs/recording/ingest.md §5.6 と共通なのは「river_job を露出しない」
+            ことだけで、§5.6 の「リトライ中と待ちを区別しない」判断とは逆に
+            この表は区別する）。
 
             - `queued`: まだ試行が始まっていない（既定）。**恒久的に失敗する
               プロファイル（例: 設定から消えたプロファイル）は EncodeWorker が
               一度失敗させたあとは再投入されないため `failed` のまま留まる
               --- ただし入力ファイル破損など録画単位の失敗は
               EncodeReconcileWorker が 15 分ごとに再投入するので `failed` と
-              `queued`/`running` を繰り返すことがある**
+              `queued`/`running` を繰り返すことがある**。「来る根拠」の無い
+              `queued` は出さない --- ごみ箱の録画（ジョブが二度と投入されない）
+              と、api が現在の設定にあるプロファイル一覧を知っていて、かつ
+              そのプロファイルが設定から消えていて試行行も無い場合は、この
+              プロファイルの要素自体が省略される
             - `running`: いま ffmpeg が走っている
             - `failed`: 直前の試行が失敗した。再試行されればまた
               `queued`/`running` に戻る（`failed` は「二度と来ない」の断定

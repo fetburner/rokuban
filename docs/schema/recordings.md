@@ -208,9 +208,10 @@ CREATE TABLE recording_encode_attempts (
 
 - **行の存在そのものが「running か failed のどちらかを主張している」ことを意味する**（不変条件 10）。「待っている（queued）」を表す行は作らない ―― queued は API 側で「desired にあって行が無い」として導出する
 - **書き手は脊椎（watcher / reconciler）ではない**ので本体の列にしない（不変条件 13。`recording_ingest_progress` と同じ判断）
-- **River の `river_job` は読まない。** `river_job` の state を直接引く設計も検討したが、`EncodeReconcileWorker` は discarded になった encode ジョブを 15 分ごとに再投入し続けるため、river の「いま」の state だけでは「一度も失敗していない」と「直前に失敗して再投入された直後」を見分けられない。この表は `EncodeWorker` が試行の開始・成功・失敗をそのタイミングで明示的に書くので、river の内部状態（リトライ回数・バックオフ）を一切露出させずに済む（[recording/ingest.md](../recording/ingest.md) §5.6 と同じ判断）
-- 消えるのは 2 経路だけ ―― 派生物 `media_assets` を INSERT した直後（コミット = DB 行なので、資産が生まれた瞬間に試行行が消え、「完了しているのに失敗中」が読者から見えない）と、`recordings` 行の削除（`ON DELETE CASCADE`）
-- PK が `(recording_id, profile)` の複合なのは、1 録画に複数プロファイルを事後追加できる（issue #133）ため
+- **River の `river_job` は読まない。** `river_job` の state を直接引く設計も検討したが、`EncodeReconcileWorker` は「encoded が無い」観測が続く限り discarded になった encode ジョブを 15 分ごとに再投入し続ける（録画単位の恒久失敗、入力ファイルの破損など）ものの、恒久失敗の代表格である「設定から消えたプロファイル」は `known_profiles` の絞り込みで投入対象から外しており、そちらは一度失敗させたあとは再投入されない（`internal/worker/encode_reconcile.go`）。どちらにしても river の「いま」の state だけでは「一度も失敗していない」と「直前に失敗して再投入された直後」を見分けられない。この表は `EncodeWorker` が試行の開始・成功・失敗をそのタイミングで明示的に書くので、river の内部状態（リトライ回数・バックオフ）を一切露出させずに済む。[recording/ingest.md](../recording/ingest.md) §5.6 と共通なのは「`river_job` を露出しない」ことだけ ―― §5.6 は「リトライ中」と「取り込み待ち」を区別しないと決めたが、この表は逆に running/failed を持たせて区別する
+- 消えるのは 2 経路だけ ―― `EncodeWorker.runEncode` の defer が成功時に試行行を消す（DELETE は派生物 INSERT の直後ではなく、間に webhook 通知が入り同一トランザクションでもない。「完了しているのに失敗中」が読者から見えないのは、API 側が encoded 資産のあるプロファイルを試行状態の対象から先に除外しているため）と、`recordings` 行の削除（`ON DELETE CASCADE`）
+- PK が `(recording_id, profile)` の複合なのは、1 録画に複数プロファイルを事後追加できるため
+- `error` / `attempted_at` は `EncodeWorker` が書くだけで、API にはまだ読み手がいない（`EncodeJobStatus` は `profile` / `state` のみ）。`recording_ingest_progress` の `observed_at` のような停滞判定はこの表には無い ―― 読めるようにするなら、それを使う API/フロントと同じ PR で決める（不変条件 11）
 
 ## 6. media_assets — メディアアセット（永続資産）
 

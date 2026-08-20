@@ -150,8 +150,10 @@ func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[EncodeJobAr
 	// 成功（media_asset 行を作った）か失敗かで消す/failed に上書きする。
 	// shouldNotifyEncodeFailure と**同じ判定関数**を使う（bespoke な条件を
 	// もう 1 つ増やさない）--- ctx キャンセル（River の停止・タイムアウト）は
-	// ジョブの失敗扱いにしないので running のまま残し、次の実行が上書きする
-	// （recording_ingest_progress の「停滞」表現と同じ考え方）。
+	// ジョブの失敗扱いにしないので running のまま残し、次の実行が上書きする。
+	// markEncodeAttemptFailed の書き込みは job の ctx から切り離してある
+	// （attemptWriteContext）ので、running が残るのはこのガードのおかげで、
+	// 「DB 書き込み自体が ctx キャンセルで失敗する」という偶然ではない。
 	w.markEncodeAttemptRunning(ctx, args.RecordingID, args.Profile)
 	defer func() {
 		if err == nil {
@@ -312,6 +314,37 @@ func (w *EncodeWorker) notify(ctx context.Context, ev webhook.Event) {
 // バッジの文言ではなく将来の詳細欄向けの補助情報なので、切り詰めても実害はない）。
 const encodeAttemptErrorMaxLen = 2000
 
+// encodeAttemptWriteTimeout は recording_encode_attempts への書き込み
+// （試行状態の観測）に使うタイムアウト。job の ctx から切り離す
+// （attemptWriteContext）理由を参照。
+const encodeAttemptWriteTimeout = 5 * time.Second
+
+// attemptWriteContext は recording_encode_attempts への書き込み用に、job の
+// ctx から切り離した（ただし無期限には待たない）ctx を返す。
+//
+// markEncodeAttemptFailed の呼び出しは shouldNotifyEncodeFailure と同じ
+// ガード（ctx キャンセル時は呼ばない）の後段にあるが、書き込み自体が job の
+// ctx に紐付いていると「ガードが無くても、キャンセル済み ctx での DB 書き込みが
+// 失敗するので running が残る」という偶然の結果とガードが区別できなくなる
+// （レビュー issue #316 で判明）。切り離すことでガードを実際に load-bearing に
+// する --- ガードを外すと、キャンセル後でも書き込みが成功して failed に
+// 上書きされ、テストが検出できる。
+func attemptWriteContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), encodeAttemptWriteTimeout)
+}
+
+// truncateEncodeAttemptError は msg を encodeAttemptErrorMaxLen バイト以内に
+// 切り詰める。バイト境界で切ると末尾がマルチバイト文字の途中で切れて不正な
+// UTF-8 になり得る（Postgres が INSERT/UPDATE を拒否し、試行行が書けなくなる
+// --- 失敗が「エンコード中」のまま見え続ける）。strings.ToValidUTF8 で末尾の
+// 不完全なシーケンスを取り除く。
+func truncateEncodeAttemptError(msg string) string {
+	if len(msg) <= encodeAttemptErrorMaxLen {
+		return msg
+	}
+	return strings.ToValidUTF8(msg[:encodeAttemptErrorMaxLen], "")
+}
+
 // markEncodeAttemptRunning は recording_encode_attempts に running を書く
 // （issue #316）。失敗はログのみ --- この表は表示専用の観測で、書き込みに
 // 失敗してもエンコード本体（ffmpeg 実行・media_assets への commit）は続けられる。
@@ -328,13 +361,13 @@ func (w *EncodeWorker) markEncodeAttemptRunning(ctx context.Context, recordingID
 
 // markEncodeAttemptFailed は recording_encode_attempts に failed を書く
 // （issue #316）。失敗はログのみ（markEncodeAttemptRunning と同じ理由）。
+// 書き込みは job の ctx から切り離す（attemptWriteContext 参照）。
 func (w *EncodeWorker) markEncodeAttemptFailed(ctx context.Context, recordingID int64, profile string, encodeErr error) {
-	msg := encodeErr.Error()
-	if len(msg) > encodeAttemptErrorMaxLen {
-		msg = msg[:encodeAttemptErrorMaxLen]
-	}
+	msg := truncateEncodeAttemptError(encodeErr.Error())
+	writeCtx, cancel := attemptWriteContext(ctx)
+	defer cancel()
 	q := sqlcgen.New(w.Pool)
-	if err := q.UpsertRecordingEncodeAttemptFailed(ctx, sqlcgen.UpsertRecordingEncodeAttemptFailedParams{
+	if err := q.UpsertRecordingEncodeAttemptFailed(writeCtx, sqlcgen.UpsertRecordingEncodeAttemptFailedParams{
 		RecordingID: recordingID,
 		Profile:     profile,
 		Error:       &msg,
