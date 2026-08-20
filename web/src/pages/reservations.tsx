@@ -84,7 +84,10 @@ export function ReservationsPage() {
                 />
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-sm">{r.title || '（番組名なし）'}</div>
-                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <div
+                    data-testid="reservation-secondary"
+                    className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground"
+                  >
                     <span className="shrink-0">{r.serviceName}</span>
                     <span className="shrink-0">{formatDateTime(r.startAt)}</span>
                     <span className="shrink-0">{formatDuration(r.durationMs)}</span>
@@ -107,7 +110,10 @@ export function ReservationsPage() {
                     />
                   </div>
                 </div>
-                <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
+                <ChevronRight
+                  data-testid="reservation-chevron"
+                  className="size-4 shrink-0 text-muted-foreground"
+                />
               </li>
             )
           })}

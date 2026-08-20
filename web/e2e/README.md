@@ -410,6 +410,32 @@ pnpm build && pnpm preview --port 4173 --strictPort &
 E2E_URL=http://localhost:4173 pnpm e2e:search-mobile
 ```
 
+### 予約一覧の副情報がシェブロンに重ならないか（`reservations-mobile.mjs`）
+
+予約一覧の行の副情報（局名・日時・尺・状態バッジ）が折り返さないコンテナに
+`shrink-0` の可変幅要素を並べていると、モバイル幅で長い局名 + 状態バッジの
+組み合わせがシェブロンに重なる（issue #302 のレビュー指摘）。折り返し・
+overflow・要素間の重なりは jsdom（`getBoundingClientRect()` が常に 0 を返す）
+では原理的に測れないので、既存の単体テスト（`pages/reservations.test.tsx`）は
+「局名の文字列が行の中に居る」ことしか見ておらず、この壊れ方を検出できない。
+
+見るのは 360px 幅（レビューの実測条件）で:
+
+- ① 副情報コンテナ（`[data-testid="reservation-secondary"]`）が横方向に
+  オーバーフローしていない（`scrollWidth <= clientWidth`）
+- ② 副情報の各子要素の右端がシェブロン（`[data-testid="reservation-chevron"]`）
+  の左端を超えていない --- ①はコンテナが中身を外に漏らしていないことしか見ないので、
+  コンテナの外形自体が食い込む場合を捕まえるにはこちらが要る
+- ③ ページ全体が横スクロールしない（退行の網。単体では①②の代わりにならない）
+
+`design.mjs` と同じ手（`/api/**` を `page.route` で丸ごと差し替え）で mirakc も
+DB も要らない。⓪（配っている bundle と `dist/` の一致）も自分で確認する。
+
+```sh
+pnpm build && pnpm preview --port 4173 --strictPort &
+E2E_URL=http://localhost:4173 pnpm e2e:reservations-mobile
+```
+
 ## CI では回さない
 
 実サーバーと実 mirakc のデータに依存するため、CI には載せない。**ローカルでの受け入れ確認**の
