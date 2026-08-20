@@ -76,6 +76,25 @@ type recordingListFields struct {
 	IngestObservedAt    *time.Time
 }
 
+// utcTimePtr は timestamptz の scan 結果を UTC の Location に正規化する。
+//
+// queryRecordings（一覧、pgx.QueryExecModeExec で text protocol）は timestamptz を
+// セッションの TimeZone（Postgres の TimeZone GUC。ローカル環境で既定が UTC
+// でないことがある）で Location 付きに decode するが、queryRecordingByID
+// （単体、既定の prepared/binary protocol）は time.Unix 経由で decode し
+// プロセスの time.Local を Location に使う。同じ instant でも Location が
+// 違うと `encoding/json` の RFC3339 出力（オフセット部分）が一致しない
+// （issue #366）。両経路が必ず通る recordingFromListFields でここに正規化する
+// ことで、実行モード・セッション TimeZone・プロセス TZ のいずれにも
+// 依存しない wire representation にする。
+func utcTimePtr(t *time.Time) *time.Time {
+	if t == nil {
+		return nil
+	}
+	u := t.UTC()
+	return &u
+}
+
 // ingestProgressFromFields は原本の取り込み状態を一覧行の素の事実から導出する
 // （issue #212）。**列に焼いた値ではなく毎回の導出**（不変条件 9: 毎パス
 // 作り直せる値は列にしない）。
@@ -113,7 +132,7 @@ func ingestProgressFromFields(r recordingListFields) IngestProgress {
 			State:         Transferring,
 			WrittenBytes:  &written,
 			ExpectedBytes: r.IngestExpectedBytes,
-			ObservedAt:    r.IngestObservedAt,
+			ObservedAt:    utcTimePtr(r.IngestObservedAt),
 		}
 	case r.HasIngestableRecord:
 		return IngestProgress{State: Pending}
@@ -145,16 +164,16 @@ func recordingFromListFields(r recordingListFields, includeDeletedAt bool) (Reco
 		EventId:     int(r.EventID),
 		Title:       r.Title,
 		Description: r.Description,
-		StartAt:     r.ProgramStartAt,
+		StartAt:     r.ProgramStartAt.UTC(),
 		DurationMs:  r.ProgramDurationMs,
 		Status:      RecordingStatus(r.Status),
-		StartedAt:   r.StartedAt,
-		EndedAt:     r.EndedAt,
+		StartedAt:   utcTimePtr(r.StartedAt),
+		EndedAt:     utcTimePtr(r.EndedAt),
 		SizeBytes:   r.OriginalSizeBytes,
-		CreatedAt:   r.CreatedAt,
+		CreatedAt:   r.CreatedAt.UTC(),
 	}
 	if includeDeletedAt {
-		rec.DeletedAt = r.DeletedAt
+		rec.DeletedAt = utcTimePtr(r.DeletedAt)
 	}
 	// ドロップ統計は ingest 済み（media_assets 行がある）録画にしか存在しない。
 	// 未 ingest と「統計が全部 0」を区別できるよう、原本が無ければ省略する。

@@ -779,7 +779,8 @@ type IngestProgress struct {
 	ExpectedBytes *int64 `json:"expectedBytes,omitempty"`
 
 	// ObservedAt 進捗を最後に観測した時刻。`state = transferring` のときだけ付く。
-	// 現在時刻との差が開いていれば転送は停滞している。
+	// 現在時刻との差が開いていれば転送は停滞している。常に UTC
+	// （"Z" 終端の RFC3339）で返す。
 	ObservedAt *time.Time `json:"observedAt,omitempty"`
 
 	// State 原本の取り込みの粗い状態。**サーバー側で DB 行から毎回導出する**
@@ -1027,11 +1028,13 @@ type ProgramSearchRequestChannelTypes string
 type Recording struct {
 	Channel     string               `json:"channel"`
 	ChannelType RecordingChannelType `json:"channelType"`
-	CreatedAt   time.Time            `json:"createdAt"`
+
+	// CreatedAt 常に UTC（"Z" 終端の RFC3339）で返す。
+	CreatedAt time.Time `json:"createdAt"`
 
 	// DeletedAt 論理削除時刻。ごみ箱一覧（`trash=true`）と `GET /api/recordings/{id}`
 	// （ごみ箱の録画も 200 で返す）でのみ出現する。通常一覧・生きている
-	// 行では省略（NULL）。
+	// 行では省略（NULL）。常に UTC（"Z" 終端の RFC3339）で返す。
 	DeletedAt   *time.Time   `json:"deletedAt,omitempty"`
 	Description *string      `json:"description,omitempty"`
 	DropSummary *DropSummary `json:"dropSummary,omitempty"`
@@ -1064,12 +1067,14 @@ type Recording struct {
 	// 足しても消してはならない。`encodedAssets.map(a => a.profile)` と
 	// 常に一致する。
 	// Deprecated: this property has been marked as deprecated upstream, but no `x-deprecated-reason` was set
-	EncodedProfiles *[]string       `json:"encodedProfiles,omitempty"`
-	EndedAt         *time.Time      `json:"endedAt,omitempty"`
-	EventId         int             `json:"eventId"`
-	Id              int64           `json:"id"`
-	Ingest          *IngestProgress `json:"ingest,omitempty"`
-	NetworkId       int             `json:"networkId"`
+	EncodedProfiles *[]string `json:"encodedProfiles,omitempty"`
+
+	// EndedAt 録画の実終了時刻。常に UTC（"Z" 終端の RFC3339）で返す。
+	EndedAt   *time.Time      `json:"endedAt,omitempty"`
+	EventId   int             `json:"eventId"`
+	Id        int64           `json:"id"`
+	Ingest    *IngestProgress `json:"ingest,omitempty"`
+	NetworkId int             `json:"networkId"`
 
 	// QualityEvents recording.failed / record-broken / bcas_anomaly の履歴
 	QualityEvents *[]map[string]interface{} `json:"qualityEvents,omitempty"`
@@ -1090,10 +1095,10 @@ type Recording struct {
 	SizeBytes *int64          `json:"sizeBytes,omitempty"`
 	Source    RecordingSource `json:"source"`
 
-	// StartAt 番組の放送開始時刻
+	// StartAt 番組の放送開始時刻。常に UTC（"Z" 終端の RFC3339）で返す。
 	StartAt time.Time `json:"startAt"`
 
-	// StartedAt 録画の実開始時刻
+	// StartedAt 録画の実開始時刻。常に UTC（"Z" 終端の RFC3339）で返す。
 	StartedAt *time.Time      `json:"startedAt,omitempty"`
 	Status    RecordingStatus `json:"status"`
 	Title     string          `json:"title"`

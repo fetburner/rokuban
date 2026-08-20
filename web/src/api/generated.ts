@@ -310,7 +310,8 @@ export interface IngestProgress {
   expectedBytes?: number;
   /**
      * 進捗を最後に観測した時刻。`state = transferring` のときだけ付く。
-     * 現在時刻との差が開いていれば転送は停滞している。
+     * 現在時刻との差が開いていれば転送は停滞している。常に UTC
+     * （"Z" 終端の RFC3339）で返す。
      */
   observedAt?: string;
 }
@@ -333,12 +334,13 @@ export interface Recording {
   eventId: number;
   title: string;
   description?: string;
-  /** 番組の放送開始時刻 */
+  /** 番組の放送開始時刻。常に UTC（"Z" 終端の RFC3339）で返す。 */
   startAt: string;
   durationMs: number;
   status: RecordingStatus;
-  /** 録画の実開始時刻 */
+  /** 録画の実開始時刻。常に UTC（"Z" 終端の RFC3339）で返す。 */
   startedAt?: string;
+  /** 録画の実終了時刻。常に UTC（"Z" 終端の RFC3339）で返す。 */
   endedAt?: string;
   /**
      * 原本の実サイズ。ingest 済み（media_assets 行あり）の場合のみ。
@@ -387,9 +389,10 @@ export interface Recording {
   /**
      * 論理削除時刻。ごみ箱一覧（`trash=true`）と `GET /api/recordings/{id}`
      * （ごみ箱の録画も 200 で返す）でのみ出現する。通常一覧・生きている
-     * 行では省略（NULL）。
+     * 行では省略（NULL）。常に UTC（"Z" 終端の RFC3339）で返す。
      */
   deletedAt?: string;
+  /** 常に UTC（"Z" 終端の RFC3339）で返す。 */
   createdAt: string;
 }
 
