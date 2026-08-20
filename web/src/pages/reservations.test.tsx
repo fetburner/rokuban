@@ -412,4 +412,37 @@ describe('予約一覧の局名表示（issue #302）', () => {
     expect(within(rows[0]!).getByText('NHK総合')).toBeInTheDocument()
     expect(within(rows[1]!).getByText('NHK Eテレ')).toBeInTheDocument()
   })
+
+  /**
+   * 行本体のリンクは `absolute inset-0` の空の `Link` なので、accessible name は
+   * `aria-label`（= `rowLabel`）が唯一の情報源。上のテストは「行の中に局名の
+   * テキストが居る」ことしか見ておらず、**リンク走査**（スクリーンリーダーの
+   * リンク一覧・キーボード）では局名が読めないままでも通る（レビュー実測:
+   * `aria-label` に局名が無い実装で 2 本のリンク名は
+   * `["同じ番組名 7/25 19:00 1時間","同じ番組名 7/25 20:00 1時間"]`）。
+   * 同時刻・別局（同名ニュースの裏かぶり）にすると 2 本の名前は完全に一致し、
+   * 局名以外に差が無くなる。
+   */
+  it('同時刻・別局でも行本体リンクを局名を含む名前で一意に引ける', async () => {
+    renderWith(
+      [
+        reservation(1, '同じ番組名', 19 * 60, 60, 'default', 'NHK総合'),
+        reservation(2, '同じ番組名', 19 * 60, 60, 'default', 'NHK Eテレ'),
+      ],
+      [],
+    )
+
+    expect(await screen.findAllByText('同じ番組名')).toHaveLength(2)
+
+    // 名前による検索で 1 本に絞れる（局名が名前に入っていなければ 2 本に
+    // 当たって getByRole が投げる、または当たらずに投げる）
+    expect(screen.getByRole('link', { name: /NHK総合/ })).toHaveAttribute(
+      'href',
+      '/reservations/default/10',
+    )
+    expect(screen.getByRole('link', { name: /NHK Eテレ/ })).toHaveAttribute(
+      'href',
+      '/reservations/default/20',
+    )
+  })
 })

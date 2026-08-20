@@ -148,6 +148,20 @@ describe('ReservationDetailPage', () => {
     expect(screen.getByText(/NHK総合/)).toBeInTheDocument()
   })
 
+  // 局名が空文字のときに裸の区切りが残らない。`serviceName` は openapi で
+  // required だが空文字を禁じていないので、無条件連結（`{serviceName} · ...`）だと
+  // 先頭に「· 」が出る。期待値はリテラルで書く（実装の式と比べても何も主張しない）。
+  it('局名が空文字なら先頭に裸の中点を出さない', async () => {
+    stubFetch((site, programId) =>
+      site === 'default' && programId === 300000 ? baseReservation({ serviceName: '' }) : null,
+    )
+
+    renderAt('/reservations/default/300000')
+
+    expect(await screen.findByText('テスト番組')).toBeInTheDocument()
+    expect(screen.getByText('7/25 00:00 · 30分')).toBeInTheDocument()
+  })
+
   // 核心: 予約行が再実体化されて id が変わっても、同じ URL のまま
   // （ナビゲーションもクエリキーの変更も無く）新しい内容に更新される。
   // reservations.id をクエリキーやルートパラメータに使っていれば、この経路は

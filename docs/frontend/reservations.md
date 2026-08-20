@@ -122,9 +122,18 @@ search param）に不足区間の開始時刻を積んだ `Link` にする。
   DOM 順）に乗り、行本体リンクより手前に来てクリックが届く（Bootstrap の
   `stretched-link` と同じ手）。バッジ・行本体、どちらも `<li>` の子で入れ子ではない
 - 行本体のリンクは子要素を持たない（`absolute inset-0` の空の `Link`）ため、
-  accessible name は `aria-label` で明示する（タイトル・時刻・時間・state。skip /
-  容量バッジの文言は含めない --- それらは通常フロー要素として残るので、ブラウズ
-  （矢印キー走査）では読める）
+  accessible name は `aria-label` で明示する。**採否の基準は「行を一意に識別できる情報か」**
+  --- タイトル・局名・時刻・時間・state は入れる。skip / 容量バッジの文言は入れない
+  （識別情報ではなく、かつ通常フロー要素として残るのでブラウズ（矢印キー走査）では
+  読める）。局名を落とすと**同時刻・別局（同名ニュースの裏かぶり）で 2 本のリンク名が
+  完全に一致する** --- 「行の中に局名のテキストが居る」ことを見るテストはこの状態でも
+  通るので、`getByRole('link', { name: ... })` で名前検索そのものを見る
+- 副情報の行（局名・時刻・尺・state・skip・容量バッジ）は **`flex-wrap` で折り返す**。
+  折り返さない実装では 360px 幅で長い局名 + 状態バッジが右端の chevron に食い込む
+  （`flex items-center gap-2` に戻して再ビルドし実測: overflow 37px / 25px、子の右端
+  353 > chevron 左端 328）。`recordings.tsx` / `home.tsx` も同じ形。jsdom は overflow も
+  要素の重なりも測れないため、判定は実ブラウザ（`web/e2e/reservations-mobile.mjs`。
+  手順は `web/e2e/README.md`）に置く
 - **バッジ側の読み上げの規律は変えていない。** `<a>` の accessible name は
   `aria-hidden` な子を無視し `sr-only` な子は含めて計算されるので、外側を `span` から
   `Link` に替えても計算される名前（時刻を主語にした文）は変わらない

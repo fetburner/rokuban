@@ -129,9 +129,17 @@ export function ReservationDetailPage() {
         <div className="flex flex-col gap-6 px-4 py-4">
           <section>
             <h2 className="text-lg font-medium">{reservation.title || '（番組名なし）'}</h2>
+            {/* 局名・開始時刻・尺を中点でつなぐ。`serviceName` は API では required
+                だが空文字を禁じてはいないので、空の成分を落としてから join する
+                （無条件連結だと先頭に裸の `·` が残る）。 */}
             <p className="mt-1 text-sm text-muted-foreground">
-              {reservation.serviceName} · {formatDateTime(reservation.startAt)} ·{' '}
-              {formatDuration(reservation.durationMs)}
+              {[
+                reservation.serviceName,
+                formatDateTime(reservation.startAt),
+                formatDuration(reservation.durationMs),
+              ]
+                .filter((s) => s !== '')
+                .join(' · ')}
             </p>
             {/* この予約が作られたあとで他の予約が増え、重なりが生じることもあるので
                 詳細画面でも常に出す（issue #24 M2-8。件数だけ・断定なし）。 */}
