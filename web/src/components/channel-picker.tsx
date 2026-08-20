@@ -214,7 +214,9 @@ function ChannelOption({
         />
       </span>
       {remoteControlKeyId !== undefined && (
-        <span className="shrink-0 rounded bg-muted px-1 text-[10px] text-muted-foreground">
+        /* 文字色は text-foreground（bg-muted 小バッジの合成後コントラスト対策。
+           docs/frontend/design.md「コントラストは毎回測る」）。 */
+        <span className="shrink-0 rounded bg-muted px-1 text-[10px] text-foreground">
           {remoteControlKeyId}
         </span>
       )}

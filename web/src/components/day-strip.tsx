@@ -92,7 +92,9 @@ function DayCell({
           ? 'border-primary bg-primary text-primary-foreground'
           : isWeekend
             ? 'border-border font-medium text-foreground hover:bg-muted'
-            : 'border-border text-muted-foreground hover:bg-muted',
+            // hover:text-foreground は hover:bg-muted と対（合成後コントラスト対策。
+            // docs/frontend/design.md「コントラストは毎回測る」）。
+            : 'border-border text-muted-foreground hover:bg-muted hover:text-foreground',
       )}
     >
       <span aria-hidden="true" className="flex flex-col items-center leading-tight">

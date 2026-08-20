@@ -25,6 +25,9 @@ function skipReason(reservation: Reservation): 'dedupe' | 'excluded' | null {
  * 予約行が残っているのに録画されない状態は、それ自体が説明を要する
  * （docs/recording.md §3.1「なぜスキップされたかを説明可能にする」）。
  * skip でなければ何も描画しない（`StateBadge` と同じ「余計な枠を出さない」流儀）。
+ *
+ * 文字色は `text-foreground`（bg-muted 小バッジの合成後コントラスト対策。
+ * docs/frontend/design.md「コントラストは毎回測る」）。
  */
 export function ReservationSkipBadge({ reservation }: { reservation: Reservation }) {
   const reason = skipReason(reservation)
@@ -34,7 +37,7 @@ export function ReservationSkipBadge({ reservation }: { reservation: Reservation
     <span
       className={cn(
         'flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[0.65rem]',
-        'bg-muted text-muted-foreground',
+        'bg-muted text-foreground',
       )}
     >
       {reason === 'dedupe' ? (

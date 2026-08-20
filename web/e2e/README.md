@@ -156,7 +156,11 @@ E2E_URL=http://localhost:4173 pnpm e2e:design
   **人が見て判断するための成果物**で、機械が比較するものではない
 - 合否（exit code）。以下をすべて実画素・実描画で判定する:
   - 状態色（塗りか文字か / 赤か琥珀か）・地の無彩性・**WCAG コントラスト**
-    （文字は 4.5、面と線は 3 が下限）
+    （文字は 4.5、面と線は 3 が下限）。`bg-muted` 系の淡い面に乗る文字は、
+    塗り・`/80` の sticky 日付見出し・`/30` の録画詳細パネルに加えて
+    **hover 中の面**（一覧の行の `hover:bg-muted/50`）まで測る --- Lighthouse は
+    hover を測らないので、監査に出ない面はここでしか押さえられない
+    （下限を割っているものは `knownGaps` に理由込みで載る）
   - **和文が実際に Noto Sans JP、英数字が実際に Geist で描画されているか**
     （CDP `CSS.getPlatformFontsForNode` で番組リストの行（`li[data-program-id]`）
     の実使用フォントを見る --- `main` や `body` のようなブロック要素だけを

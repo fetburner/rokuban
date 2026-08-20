@@ -370,7 +370,9 @@ function RecordingRow({
           <StatusBadge status={recording.status} />
           <IngestBadge recording={recording} />
           {showSite && (
-            <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[0.65rem]">
+            /* 文字色は text-foreground を明示（bg-muted 小バッジの合成後コントラスト
+               対策。docs/frontend/design.md「コントラストは毎回測る」）。 */
+            <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[0.65rem] text-foreground">
               {recording.site}
             </span>
           )}
@@ -399,6 +401,10 @@ function RecordingRow({
  * 塗り（`bg-tally` + 紙白の文字）、destructive は「取り返しがつかない」なので
  * 文字と淡い地（`text-destructive` + `bg-destructive/10`）。同じ赤でも、
  * 塗られているかどうかで「いま電波に乗っている」と「壊れた」を見分けられる。
+ *
+ * `finished` の文字色は `text-foreground`（bg-muted 小バッジの合成後コントラスト
+ * 対策。docs/frontend/design.md「コントラストは毎回測る」）。foreground は色では
+ * なく地の無彩 3 値の一部なので「色は信号のみ」は破っていない。
  */
 export function StatusBadge({ status }: { status: Recording['status'] }) {
   return (
@@ -407,7 +413,7 @@ export function StatusBadge({ status }: { status: Recording['status'] }) {
         'shrink-0 rounded px-1.5 py-0.5 text-[0.65rem]',
         status === 'failed' && 'bg-destructive/10 text-destructive',
         status === 'recording' && 'bg-tally font-medium text-tally-foreground',
-        status === 'finished' && 'bg-muted text-muted-foreground',
+        status === 'finished' && 'bg-muted text-foreground',
       )}
     >
       {statusLabels[status]}
@@ -426,7 +432,9 @@ export function StatusBadge({ status }: { status: Recording['status'] }) {
  * **色は使わない**（`bg-muted` のまま）。停滞も含めて状況の説明であって、
  * タリー（いま電波に乗っている）でも destructive（取り返しがつかない）でも
  * ない --- 「色は信号のみ」（docs/frontend/design.md）に従い、停滞は文言で
- * 言う。
+ * 言う。文字色は `text-foreground`（bg-muted 小バッジの合成後コントラスト対策。
+ * 同 doc「コントラストは毎回測る」。foreground は地の無彩 3 値の一部で色では
+ * ないので、この方針とは矛盾しない）。
  *
  * `originalDeleted`（取り込み済みだが原本が今は無い）はここには出さない ---
  * 一覧の 1 行に常時出す種類の情報ではなく、詳細ページの「取り込み」欄
@@ -449,7 +457,7 @@ export function IngestBadge({ recording }: { recording: Recording }) {
         : `取り込み中 ${formatBytes(display.writtenBytes)}`
 
   return (
-    <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[0.65rem] text-muted-foreground">
+    <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[0.65rem] text-foreground">
       {display.kind === 'transferring' && display.stale ? `${label}（停滞）` : label}
     </span>
   )

@@ -45,6 +45,11 @@ describe('ReservationSkipBadge', () => {
     )
     expect(screen.getByText('重複')).toBeInTheDocument()
     expect(screen.queryByText('除外')).not.toBeInTheDocument()
+    // text-muted-foreground だと bg-muted との合成後コントラストがライトで
+    // 4.5 を割る（issue #308）。jsdom は色を測れないので、退行防止としては
+    // クラス名のリテラル比較まで（実測は e2e:design の担当）。
+    expect(screen.getByText('重複').className).toContain('text-foreground')
+    expect(screen.getByText('重複').className).not.toContain('text-muted-foreground')
   })
 
   // 根拠の有無で 2 つの経路を区別する（skip が立つ経路は重複排除だけではない）。

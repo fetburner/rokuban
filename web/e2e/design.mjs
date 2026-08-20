@@ -12,6 +12,8 @@
 //      - チューナー不足・ルールの「条件なし」が琥珀か
 //      - 番組リストの時刻に信号色が付いて**いない**か
 //      - 現在時刻の線と札がタリーレッドか / 容量超過の帯の罫線が琥珀か
+//      - `bg-muted` 系の面（塗り / `/80` の sticky 見出し / `/50` の行 hover /
+//        `/30` の詳細パネル）に乗る文字
 //      - 上記すべての WCAG コントラスト（文字 4.5 / 面と線 3）
 //   ③ 和文が実際に Noto Sans JP で、英数字が実際に Geist で描画されているか
 //      （CDP `CSS.getPlatformFontsForNode`）と、和文まじりの文字列でも
@@ -65,6 +67,9 @@ const log = (...a) => console.log(...a)
 // --- スタブ（API の応答） ---------------------------------------------------
 
 const SITE = 'default'
+// 2 サイト運用（`showSite`）の判定専用。`multiSite` オプション付きでしか
+// `/api/sites` に出さない --- 既定の全画面ショット/判定を単一サイトのまま保つため。
+const SITE2 = 'sub'
 const HOUR = 3_600_000
 
 const services = [
@@ -147,6 +152,37 @@ const recordings = [
   { id: 14, site: SITE, source: 'rule', serviceName: 'NHKEテレ', channelType: 'GR', channel: '26', networkId: 32737, serviceId: 1032, eventId: 14, title: '連続テレビ小説', startAt: iso(nowMs - 74 * HOUR), durationMs: 900_000, status: 'finished', sizeBytes: 1_234_567_890, createdAt: iso(nowMs - 74 * HOUR) },
 ]
 
+/**
+ * transferringRecording は site タグ（`showSite`）と `IngestBadge` の
+ * 合成後コントラストを測るための専用フィクスチャ（issue #308 のレビューで
+ * 判明した穴。`recordings` に site が 1 つしか無いので `showSite` が常に偽、
+ * どの録画にも `ingest` フィールドが無いので `IngestBadge` が一度も描画され
+ * ない）。`multiSite` + `extraRecording` オプション付きのときだけ一覧に混ぜる
+ * ので、既定の全画面ショット/判定には影響しない。
+ */
+const transferringRecording = {
+  id: 15,
+  site: SITE2,
+  source: 'manual',
+  serviceName: 'テレビ神奈川',
+  channelType: 'GR',
+  channel: '13',
+  networkId: 32739,
+  serviceId: 1048,
+  eventId: 15,
+  title: 'ローカル番組',
+  startAt: iso(nowMs - 10 * HOUR),
+  durationMs: 1_800_000,
+  status: 'finished',
+  createdAt: iso(nowMs - 10 * HOUR),
+  ingest: {
+    state: 'transferring',
+    writtenBytes: 600_000_000,
+    expectedBytes: 1_000_000_000,
+    observedAt: iso(nowMs - 5_000),
+  },
+}
+
 const rules = [
   { id: 1, name: '朝ドラ', enabled: true, priority: 10, keepOriginal: 'always', textMatches: [{ field: 'name', kind: 'contains', value: '連続テレビ小説' }], createdAt: iso(nowMs - 100 * HOUR), updatedAt: iso(nowMs - 100 * HOUR) },
   { id: 2, name: '（条件なし）', enabled: false, priority: 20, keepOriginal: 'until_encoded', createdAt: iso(nowMs - 100 * HOUR), updatedAt: iso(nowMs - 100 * HOUR) },
@@ -171,10 +207,24 @@ const breakers = [
  * `emptyHome` はホーム（M8-3）の「全セクションが空」を撮る/判定するための
  * フック。予約・容量超過・録画をすべて空にする（ブレーカーは元々 `withBreaker`
  * が制御している）。
+ *
+ * `multiSite` / `extraRecording` は録画一覧の site タグ（`showSite`）と
+ * `IngestBadge` の合成後コントラストを測るための専用フック（issue #308）。
+ * `showSite` は `/api/sites` が 2 件以上返すときだけ真になり、`IngestBadge` は
+ * `ingest` フィールドを持つ録画がないと一度も描画されない --- 既定のフィク
+ * スチャはどちらも満たさないので、これらを付けたときだけ `transferringRecording`
+ * （2 つ目の site）を一覧に混ぜる。既定の全画面ショット/判定は影響を受けない。
  */
 async function installApiStubs(
   page,
-  { withBreaker = false, delayPath = null, delayMs = 0, emptyHome = false } = {},
+  {
+    withBreaker = false,
+    delayPath = null,
+    delayMs = 0,
+    emptyHome = false,
+    multiSite = false,
+    extraRecording = false,
+  } = {},
 ) {
   await page.route('**/api/**', async (route) => {
     const url = new URL(route.request().url())
@@ -188,7 +238,7 @@ async function installApiStubs(
     // SSE は 204 で「つなぎ直さずに諦めさせる」。text/event-stream を返すと
     // 接続が開いたままになり networkidle に到達しない
     if (p === '/api/events') return route.fulfill({ status: 204 })
-    if (p === '/api/sites') return json([SITE])
+    if (p === '/api/sites') return json(multiSite ? [SITE, SITE2] : [SITE])
     // ライブへの導線（主ナビの「ライブ」・/live 画面）はサーバーの live.enabled に
     // 連動する（issue #209）。ここは「有効なデプロイ」の見た目を撮るための判定なので
     // true を返す --- 返さないと主ナビが 5 項目になり、/live はチャンネル一覧ではなく
@@ -209,7 +259,11 @@ async function installApiStubs(
       // 既定の録画一覧（`pages/recordings.tsx`）は status を付けずに常に
       // limit=50 を送るので、ここでの絞り込みはそちらの見た目に影響しない。
       // 実サーバーの既定（program_start_at 降順）に合わせて並べ替えてから絞る。
-      const source = emptyHome ? [] : recordings
+      const source = emptyHome
+        ? []
+        : extraRecording
+          ? [...recordings, transferringRecording]
+          : recordings
       const status = url.searchParams.get('status')
       const limit = Number(url.searchParams.get('limit') ?? source.length)
       const filtered = status ? source.filter((r) => r.status === status) : source
@@ -774,6 +828,14 @@ const knownGaps = new Map([
       '明度を下げるとタリーレッドと見分けが付かなくなるので、直すなら色相ごと動かす判断が要る' +
       '（実測値は上の表に出る。ここには書かない --- 2 通りの数字を持たないため）',
   ],
+  [
+    'light/一覧の行の hover 中の副情報の文字 / muted の半透明地',
+    'hover 中だけの組み合わせで Lighthouse の監査対象に入らない（常時見える面は下限を満たす）。' +
+      '直すには一覧の行の副情報の文字色を 4 画面（録画・予約・ホーム・番組リスト）で' +
+      '一斉に上げることになり、常時表示の階層（本文 = foreground / 副情報 = muted）が ' +
+      'hover のあいだ崩れる。どちらを取るかは別で決める --- 割っている量は僅かなので、' +
+      'ここに載せて見えるようにしたうえで据え置く（実測値は上の表に出る）',
+  ],
 ])
 
 /** contrasts は測ったコントラストを表として溜める（合否とは別に、数値を人に見せる）。 */
@@ -842,6 +904,24 @@ for (const theme of themes) {
       )
     }
 
+    // 完了バッジ（issue #308）。`bg-muted` + `text-muted-foreground` だと
+    // ライトで 4.5 を割ったため、文字色を `text-foreground` に直した
+    // （docs/frontend/design.md 参照）。ここは色の判定（isRed 等）は無く、
+    // 「地が塗り（不透明）であること」と「文字とのコントラストが下限を
+    // 満たすこと」だけを見る --- `text-muted-foreground` に戻す変異が
+    // 入ったらここで落ちる。
+    const finished = page.locator('ul span', { hasText: /^完了$/ })
+    const finishedBg = await computedOf(finished, 'background-color')
+    const finishedFg = await computedOf(finished, 'color')
+    if (finishedFg === null || finishedBg === null) {
+      ng.push(`[${theme}] 完了バッジが見つからない`)
+    } else {
+      if (finishedBg.rgba[3] < 200) {
+        ng.push(`[${theme}] 完了バッジの地が塗りでない（不透明度 ${finishedBg.rgba[3]}/255。${finishedBg.value}）`)
+      }
+      checkContrast(theme, '完了バッジの文字 / muted の塗り', finishedFg.rgba, finishedFg, minTextContrast)
+    }
+
     // 地は無彩。body だけを見ると「body に bg-background が当たっているか」しか
     // 言えないので、実際に面を持つ要素を回す。
     //
@@ -871,6 +951,137 @@ for (const theme of themes) {
       if (chroma(worst) > 8) {
         ng.push(`[${theme}] ${name} の地が無彩でない（チャンネル差 ${chroma(worst)}。${worst}）`)
       }
+    }
+    await context.close()
+  }
+
+  // --- 録画一覧: site タグ・IngestBadge の合成後コントラスト（issue #308 の
+  //     レビューで判明した穴） ---
+  //
+  // 上のブロックの「完了バッジ」判定は `StatusBadge` の `finished` しか見ておらず、
+  // PR 本文はそれを「録画の muted バッジ」全体の判定として書いていたが、実際には
+  // site タグ（`showSite` が真になる 2 サイト以上でしか出ない）と `IngestBadge`
+  // （`ingest` フィールドを持つ録画がないと出ない）は既定のフィクスチャでは
+  // 一度も描画されず、`text-muted-foreground` に戻す変異が入っても緑のまま
+  // 通っていた。`multiSite` + `extraRecording` で両方を一度に描画させて測る。
+  {
+    const { context, page } = await open(desktop, theme, screenOf('recordings'), {
+      multiSite: true,
+      extraRecording: true,
+    })
+
+    const siteTag = page.locator('ul span', { hasText: new RegExp(`^${SITE2}$`) })
+    const siteTagBg = await computedOf(siteTag, 'background-color')
+    const siteTagFg = await computedOf(siteTag, 'color')
+    if (siteTagFg === null || siteTagBg === null) {
+      ng.push(`[${theme}] 録画一覧の site タグが見つからない（showSite が効いていない?）`)
+    } else {
+      if (siteTagBg.rgba[3] < 200) {
+        ng.push(`[${theme}] 録画一覧の site タグの地が塗りでない（不透明度 ${siteTagBg.rgba[3]}/255。${siteTagBg.value}）`)
+      }
+      checkContrast(theme, '録画一覧の site タグの文字 / muted の塗り', siteTagFg.rgba, siteTagFg, minTextContrast)
+    }
+
+    // ingest.state = transferring かつ expectedBytes 有りなので文言は「取り込み中 NN%」
+    const ingestBadge = page.locator('ul span', { hasText: /^取り込み中/ })
+    const ingestBg = await computedOf(ingestBadge, 'background-color')
+    const ingestFg = await computedOf(ingestBadge, 'color')
+    if (ingestFg === null || ingestBg === null) {
+      ng.push(`[${theme}] IngestBadge が見つからない（ingestDisplay が undefined を返している?）`)
+    } else {
+      if (ingestBg.rgba[3] < 200) {
+        ng.push(`[${theme}] IngestBadge の地が塗りでない（不透明度 ${ingestBg.rgba[3]}/255。${ingestBg.value}）`)
+      }
+      checkContrast(theme, 'IngestBadge の文字 / muted の塗り', ingestFg.rgba, ingestFg, minTextContrast)
+    }
+
+    await context.close()
+  }
+
+  // --- 録画一覧: 行の hover 中の副情報（`hover:bg-muted/50` + `text-muted-foreground`） ---
+  //
+  // 一覧の行は hover で `bg-muted/50` を敷き、その上に副情報（放送局名・日時・尺）が
+  // `text-muted-foreground` のまま乗る。**Lighthouse は hover を測らない**ので
+  // 監査には出ないが、`bg-muted` + `text-muted-foreground` と同族の組み合わせで
+  // あることは変わらないので、下限を割るかどうかは推測せず実測する（割っている。
+  // 直さない判断は `knownGaps` に理由付きで載せてある）。同じ組み方は予約一覧・
+  // ホーム・番組リストの行にもあるが、地・文字のトークンと不透明度が同一なので
+  // 代表として録画一覧の行で 1 回測る。
+  {
+    const { context, page } = await open(desktop, theme, screenOf('recordings'))
+    const row = page.locator('li').filter({ hasText: 'クラシック音楽館' }).first()
+    // 副情報のうち、明示的な文字色を持たない素の span（バッジは text-foreground を
+    // 明示しているので別の組み合わせになる）。
+    const sub = row.locator('span', { hasText: /^ＮＨＫＢＳ$/ }).first()
+    if ((await sub.count()) === 0) {
+      ng.push(`[${theme}] 録画一覧の行の副情報（放送局名）が見つからない`)
+    } else {
+      const before = await sub.evaluate(readColor, 'color')
+      await row.hover()
+      // hover の背景は `transition-colors` を持たないので即時に乗るが、
+      // 合成後の画素を読む前に 1 フレーム待つ
+      await page.waitForTimeout(150)
+      const after = await sub.evaluate(readColor, 'color')
+      log(`  [${theme}] 一覧の行の副情報 文字=${after.value} / 乗っている面 hover 前=${before.backdrop} → hover 中=${after.backdrop}`)
+      // **hover が本当に効いていることをここで検査する。** 効いていなければ
+      // 測っているのは通常時の面で、「hover を測った」と言えるのに数字は
+      // 通常時のもの、という空虚な成功になる（design.md「判定を足したことと、
+      // それが効いていることは別」と同じ形の穴）
+      const changed = [0, 1, 2].some((i) => Math.abs(after.backdrop[i] - before.backdrop[i]) >= 1)
+      if (!changed) {
+        ng.push(
+          `[${theme}] 録画一覧の行を hover しても副情報が乗る面が変わらない（${after.backdrop}）` +
+            ' --- hover の淡い地が効いていないか、locator が行の外を掴んでいる',
+        )
+      } else {
+        checkContrast(
+          theme,
+          '一覧の行の hover 中の副情報の文字 / muted の半透明地',
+          after.rgba,
+          after,
+          minTextContrast,
+        )
+      }
+    }
+    await context.close()
+  }
+
+  // --- 録画詳細: `bg-muted/30` のパネルに乗る muted の文字 ---
+  //
+  // 詳細（`/recordings/$id`）の本体は `bg-muted/30` の面で、その上の説明文・
+  // `<dt>` 群・品質イベントが `text-muted-foreground` のまま乗る（`RecordingDetail`。
+  // 一覧はインライン展開を持たないので、この面が出るのは詳細ページだけ）。hover と
+  // 違って**常時見えるので Lighthouse の監査対象**に入る。代表として `<dt>`
+  // 「チャンネル」を測る（同じパネル・同じトークン対なので説明文・品質イベントも
+  // 同値になる）。`screens` には足さない --- 足すと全画面ショットが 1 画面ぶん
+  // 増える。判定に必要なのは path と目印だけなので、ここで組んで渡す。
+  {
+    const detailScreen = { name: 'recording-detail', path: '/recordings/12', wait: 'text=チャンネル' }
+    const { context, page } = await open(desktop, theme, detailScreen)
+    const dt = page.locator('dt', { hasText: /^チャンネル$/ }).first()
+    const fg = await computedOf(dt, 'color')
+    log(`  [${theme}] 録画詳細のパネルの文字=${fg?.value} ${fg?.rgba} / 乗っている面=${fg?.backdrop}`)
+    if (fg === null) {
+      ng.push(`[${theme}] 録画詳細の <dt> が見つからない`)
+    } else {
+      // 面が半透明（`bg-muted/30`）なので、遡って合成できていないと甘い数字が出る。
+      // ページの地と一致したら合成が効いていない
+      const ground = await computedOf(page.locator('body'), 'background-color')
+      const sameAsGround =
+        ground !== null && [0, 1, 2].every((i) => Math.abs(fg.backdrop[i] - ground.backdrop[i]) < 1)
+      if (sameAsGround) {
+        ng.push(
+          `[${theme}] 録画詳細のパネルの文字が乗る面がページの地と同じ（${fg.backdrop}）` +
+            ' --- bg-muted/30 の合成が効いていない',
+        )
+      }
+      checkContrast(
+        theme,
+        '録画詳細のパネルの文字 / muted の半透明地',
+        fg.rgba,
+        fg,
+        minTextContrast,
+      )
     }
     await context.close()
   }
@@ -939,6 +1150,31 @@ for (const theme of themes) {
     // タリーにしてはならない。`text-tally` に戻したらここで落ちる
     if (colored > 0) {
       ng.push(`[${theme}] 番組リストの時刻に信号色が付いている（${colored} 件。太さで示す規律）`)
+    }
+    await context.close()
+  }
+
+  // --- 番組リスト: sticky 日付見出し（issue #308） ---
+  //
+  // `bg-muted/80` の半透明地の上に文字が乗る（`components/program-list.tsx`）。
+  // 半透明なので `computedOf` の `readColor` が祖先まで遡って合成した
+  // `backdrop` を使わないと、地の上での比だけを見てしまい甘い数字が出る
+  // （「コントラストは毎回測る」参照）。文字色は `text-foreground` に直した
+  // ので、`text-muted-foreground` に戻す変異が入ったらここで落ちる。
+  //
+  // 引くのは `data-testid`（`program-row-time` と同じ流儀）。`h2` の 1 番目で
+  // 引くと「/programs の既定ビューが list」「/programs 上の h2 が日付見出しの
+  // 1 種類だけ」の 2 つに依存し、将来 PageHeader 等に h2 が入ったときに
+  // **別の要素を測ったまま通る**。
+  {
+    const { context, page } = await open(desktop, theme, screenOf('programs'))
+    const heading = page.locator('[data-testid="program-list-date-heading"]').first()
+    const fg = await computedOf(heading, 'color')
+    log(`  [${theme}] 番組リストの日付見出し 文字=${fg?.value} ${fg?.rgba} / 乗っている面=${fg?.backdrop}`)
+    if (fg === null) {
+      ng.push(`[${theme}] 番組リストの日付見出しが見つからない`)
+    } else {
+      checkContrast(theme, '番組リストの日付見出しの文字 / muted の半透明地', fg.rgba, fg, minTextContrast)
     }
     await context.close()
   }

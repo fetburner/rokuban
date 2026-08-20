@@ -609,7 +609,16 @@ export const ProgramList = forwardRef<
                   「前を読み込む」ボタンは通常のフローに戻したので（5 回目の
                   修正）、ここに足し込む分はもう無い */}
               {showDateHeader[index] && (
-                <h2 className="sticky top-[var(--page-header-height,0px)] z-[5] border-y border-border bg-muted/80 px-4 py-1.5 text-xs font-medium text-muted-foreground backdrop-blur">
+                /* 文字色は text-foreground（bg-muted/80 との合成後コントラスト対策。
+                   docs/frontend/design.md「コントラストは毎回測る」）。muted は淡い
+                   地としてだけ使い、字は通常の本文と同じ濃さにする。
+                   data-testid は e2e/design.mjs がこの見出しを一意に引くための目印
+                   --- `h2` の 1 番目で引くと将来 PageHeader 等に h2 が入ったときに
+                   別の要素を測ったまま通る。 */
+                <h2
+                  data-testid="program-list-date-heading"
+                  className="sticky top-[var(--page-header-height,0px)] z-[5] border-y border-border bg-muted/80 px-4 py-1.5 text-xs font-medium text-foreground backdrop-blur"
+                >
                   {formatDate(program.startAt)}
                 </h2>
               )}

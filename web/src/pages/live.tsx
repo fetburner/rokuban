@@ -285,8 +285,10 @@ export function LivePage() {
                 {/* チャンネル種別（GR/BS/CS）は選択のコストを判断する手がかり
                     （issue #234 の含むもの 1）。「チューナーが空いている」等の
                     保証はしない中立の事実表示 --- mirakc には Rokuban から見えない
-                    消費者がいる（docs/data.md §6.5 と同じ下界主義。CLAUDE.md「罠」）。 */}
-                <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[0.65rem] font-medium text-muted-foreground">
+                    消費者がいる（docs/data.md §6.5 と同じ下界主義。CLAUDE.md「罠」）。
+                    文字色は text-foreground（bg-muted 小バッジの合成後コントラスト
+                    対策。docs/frontend/design.md「コントラストは毎回測る」）。 */}
+                <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[0.65rem] font-medium text-foreground">
                   {channelTypeLabel(selectedService.channelType)}
                 </span>
                 {nowPlaying && <OnAirBadge />}
@@ -357,7 +359,10 @@ export function LivePage() {
                           )}
                         >
                           {s.channelType === 'GR' && s.remoteControlKeyId > 0 && (
-                            <span className="shrink-0 rounded bg-muted px-1 text-[10px] text-muted-foreground">
+                            /* 文字色は text-foreground（bg-muted 小バッジの合成後
+                               コントラスト対策。docs/frontend/design.md
+                               「コントラストは毎回測る」）。 */
+                            <span className="shrink-0 rounded bg-muted px-1 text-[10px] text-foreground">
                               {s.remoteControlKeyId}
                             </span>
                           )}

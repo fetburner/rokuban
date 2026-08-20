@@ -382,4 +382,17 @@ describe('予約一覧の信号色', () => {
     expect(badge).toHaveClass('text-destructive')
     expect(badge.className).not.toMatch(/warning|tally/)
   })
+
+  it('ルール外は text-foreground（issue #308。text-muted-foreground だと bg-muted との合成後コントラストがライトで 4.5 を割る）', async () => {
+    renderWith(
+      [{ ...reservation(1, 'ルールから外れた番組', 19 * 60, 60), state: 'detached' as const }],
+      [],
+    )
+
+    // jsdom は色を測れないので、退行防止としてはクラス名のリテラル比較まで
+    // （実測は e2e:design の担当）。
+    const badge = await screen.findByText('ルール外')
+    expect(badge.className).toContain('text-foreground')
+    expect(badge.className).not.toContain('text-muted-foreground')
+  })
 })
