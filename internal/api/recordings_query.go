@@ -208,6 +208,23 @@ const (
     COALESCE(d.errors, 0)::bigint       AS drop_errors,
     COALESCE(d.scrambled, 0)::bigint    AS drop_scrambled,
     COALESCE(p.encode_profiles, '{}')::text[] AS encode_profiles,
+    -- 完了していないエンコードプロファイルの試行状態（issue #316）。
+    -- state そのものを SQL で CASE に潰さず recording_encode_attempts の生の
+    -- 行を jsonb_agg で出すのは、ingest の has_original_asset 等と同じ理由
+    -- --- 導出（encodeJobStatusesFromFields）を DB なしで単体テストできる
+    -- 形に保つため。行が無いプロファイル（queued）は Go 側で
+    -- encode_profiles − encoded_profiles − ここの行、として導出する。
+    (
+        SELECT coalesce(
+            jsonb_agg(
+                jsonb_build_object('profile', ea.profile, 'state', ea.state)
+                ORDER BY ea.profile
+            ),
+            '[]'::jsonb
+        )
+        FROM recording_encode_attempts ea
+        WHERE ea.recording_id = r.id
+    ) AS encode_attempts,
     -- ingest（原本の取り込み）の状態を導出するための素の事実（issue #212）。
     -- state そのものを SQL で CASE に潰さず 3 つの事実として出すのは、
     -- 導出（ingestProgressFromFields）を DB なしで単体テストできる形に
@@ -467,7 +484,7 @@ LIMIT ` + limitPlaceholder
 // ごみ箱一覧のどちらにも現れない行なので、単体 GET だけ見える形にしない。
 //
 // 見つからなければ (Recording{}, false, nil) を返す。
-func queryRecordingByID(ctx context.Context, pool *pgxpool.Pool, id int64) (Recording, bool, error) {
+func queryRecordingByID(ctx context.Context, pool *pgxpool.Pool, id int64, knownProfiles map[string]struct{}) (Recording, bool, error) {
 	const sql = `
 SELECT` + recordingsSelectColumns + recordingsAvailableEncodedAssetsSelect + recordingsFromJoins + `
 WHERE r.id = $1 AND r.purged_at IS NULL`
@@ -481,6 +498,7 @@ WHERE r.id = $1 AND r.purged_at IS NULL`
 		&fields.OriginalSizeBytes,
 		&fields.DropPackets, &fields.DropDrops, &fields.DropErrors, &fields.DropScrambled,
 		&fields.EncodeProfiles,
+		&fields.EncodeAttempts,
 		&fields.HasOriginalAsset, &fields.HasIngestableRecord,
 		&fields.IngestWrittenBytes, &fields.IngestExpectedBytes, &fields.IngestObservedAt,
 		&fields.AvailableEncodedAssets,
@@ -499,14 +517,14 @@ WHERE r.id = $1 AND r.purged_at IS NULL`
 		fields.AvailableEncodedAssets = nil
 	}
 
-	rec, err := recordingFromListFields(fields, true)
+	rec, err := recordingFromListFields(fields, true, knownProfiles)
 	if err != nil {
 		return Recording{}, false, err
 	}
 	return rec, true, nil
 }
 
-func queryRecordings(ctx context.Context, pool *pgxpool.Pool, f recordingsFilter) ([]Recording, error) {
+func queryRecordings(ctx context.Context, pool *pgxpool.Pool, f recordingsFilter, knownProfiles map[string]struct{}) ([]Recording, error) {
 	sql, args, err := buildRecordingsQuery(f)
 	if err != nil {
 		return nil, err
@@ -529,6 +547,7 @@ func queryRecordings(ctx context.Context, pool *pgxpool.Pool, f recordingsFilter
 			&fields.OriginalSizeBytes,
 			&fields.DropPackets, &fields.DropDrops, &fields.DropErrors, &fields.DropScrambled,
 			&fields.EncodeProfiles,
+			&fields.EncodeAttempts,
 			&fields.HasOriginalAsset, &fields.HasIngestableRecord,
 			&fields.IngestWrittenBytes, &fields.IngestExpectedBytes, &fields.IngestObservedAt,
 		}
@@ -538,7 +557,7 @@ func queryRecordings(ctx context.Context, pool *pgxpool.Pool, f recordingsFilter
 		if err := rows.Scan(scanArgs...); err != nil {
 			return nil, fmt.Errorf("scanning recording row: %w", err)
 		}
-		rec, err := recordingFromListFields(fields, f.Trash)
+		rec, err := recordingFromListFields(fields, f.Trash, knownProfiles)
 		if err != nil {
 			return nil, err
 		}

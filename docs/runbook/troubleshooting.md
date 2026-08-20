@@ -85,6 +85,27 @@ docker compose exec postgres psql -U rokuban -d rokuban -c \
 これより粗くなる）。`written_bytes` が 0 に戻るのは異常ではない —— ジョブ再試行は部分
 ファイルを truncate してゼロから作り直す（[recording/ingest.md](../recording/ingest.md) §5.3）
 
+### エンコードが失敗している（理由を知りたい）
+
+一覧・詳細のバッジは「`h264: エンコード失敗`」までしか言わない。**失敗の理由と
+最後に試した時刻は API に出さない**（プロファイル名以上の内部情報を配らない）ので、
+運用者は DB を直接見る:
+
+```sh
+docker compose exec postgres psql -U rokuban -d rokuban -c \
+  "SELECT recording_id, profile, state, error, attempted_at FROM recording_encode_attempts ORDER BY attempted_at DESC LIMIT 20"
+```
+
+- `error` は ffmpeg の失敗メッセージを含む先頭 2000 バイト（`EncodeWorker` が
+  切り詰める。全文は worker のログ）
+- `state='running'` のまま `attempted_at` が古い —— worker が実行中に落ちた行。
+  再投入されれば上書きされる。**この行を掃除する回収器は無い**（設定から消えた
+  プロファイルで River のリトライも尽きていると残り続ける）
+- `error` に `unknown encode profile` —— 設定から消えたプロファイル。
+  `config.encode.profiles` に戻すか、その録画の `recording_encode_policy` から
+  外す（[schema/recordings.md](../schema/recordings.md) の
+  `recording_encode_attempts` 節）
+
 ### EPG 同期が一度しか走らない
 
 `river_job` の `epg_sync` に完了済みの行が残っていて `unique_key` を占有している。

@@ -67,7 +67,7 @@ func TestRecordingFromListFields_NormalizesTimestampsToUTC(t *testing.T) {
 		HasIngestableRecord: true,
 	}
 
-	rec, err := recordingFromListFields(fields, true)
+	rec, err := recordingFromListFields(fields, true, nil)
 	if err != nil {
 		t.Fatalf("recordingFromListFields: %v", err)
 	}

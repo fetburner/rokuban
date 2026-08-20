@@ -61,6 +61,27 @@ func (e CircuitBreakerName) Valid() bool {
 	}
 }
 
+// Defines values for EncodeJobStatusState.
+const (
+	EncodeJobStatusStateFailed  EncodeJobStatusState = "failed"
+	EncodeJobStatusStateQueued  EncodeJobStatusState = "queued"
+	EncodeJobStatusStateRunning EncodeJobStatusState = "running"
+)
+
+// Valid indicates whether the value is a known member of the EncodeJobStatusState enum.
+func (e EncodeJobStatusState) Valid() bool {
+	switch e {
+	case EncodeJobStatusStateFailed:
+		return true
+	case EncodeJobStatusStateQueued:
+		return true
+	case EncodeJobStatusStateRunning:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for EncodeProfileSummaryContainer.
 const (
 	Mkv EncodeProfileSummaryContainer = "mkv"
@@ -723,6 +744,63 @@ type DropSummary struct {
 	Scrambled int64 `json:"scrambled"`
 }
 
+// EncodeJobStatus defines model for EncodeJobStatus.
+type EncodeJobStatus struct {
+	Profile string `json:"profile"`
+
+	// State **サーバー側で recording_encode_attempts（衛星表）から毎回導出する**
+	// （列に焼いた値ではない）。River の river_job は直接露出しない
+	// （docs/schema.md の recording_encode_attempts の節を参照。
+	// docs/recording/ingest.md §5.6 と共通なのは「river_job を露出しない」
+	// ことだけで、§5.6 の「リトライ中と待ちを区別しない」判断とは逆に
+	// この表は区別する）。
+	//
+	// - `queued`: まだ 1 度も試行が始まっていない（試行行が無い状態）。
+	//   **一度 `running`/`failed` を書いた行は成功するまで消えないので、
+	//   失敗後に `queued` へ戻ることはない**。「来る根拠」の無い
+	//   `queued` は出さない --- ごみ箱の録画（ジョブが二度と投入されない）
+	//   と、api が現在の設定にあるプロファイル一覧を知っていて、かつ
+	//   そのプロファイルが設定から消えていて試行行も無い場合は、この
+	//   プロファイルの要素自体が省略される
+	// - `running`: いま ffmpeg が走っている
+	// - `failed`: 直前の試行が失敗した。**`failed` は「二度と来ない」の
+	//   断定ではない** --- 失敗したジョブはジョブキューの既定のリトライ
+	//   上限（25 回。上書きしていない）まで再実行され、その各試行の先頭で
+	//   `running` に戻る。上限に達した後も、encoded 資産が無い状態が続く
+	//   限り EncodeReconcileWorker が 15 分ごとに再投入する。例外は設定
+	//   から消えたプロファイルで、これは EncodeReconcileWorker の既知
+	//   プロファイル絞り込みが投入対象から外すため、リトライ上限に達した
+	//   ところで `failed` に留まる（**`failed` に固定されるのはリトライを
+	//   使い切った後で、最初の失敗の時点ではない**）
+	State EncodeJobStatusState `json:"state"`
+}
+
+// EncodeJobStatusState **サーバー側で recording_encode_attempts（衛星表）から毎回導出する**
+// （列に焼いた値ではない）。River の river_job は直接露出しない
+// （docs/schema.md の recording_encode_attempts の節を参照。
+// docs/recording/ingest.md §5.6 と共通なのは「river_job を露出しない」
+// ことだけで、§5.6 の「リトライ中と待ちを区別しない」判断とは逆に
+// この表は区別する）。
+//
+//   - `queued`: まだ 1 度も試行が始まっていない（試行行が無い状態）。
+//     **一度 `running`/`failed` を書いた行は成功するまで消えないので、
+//     失敗後に `queued` へ戻ることはない**。「来る根拠」の無い
+//     `queued` は出さない --- ごみ箱の録画（ジョブが二度と投入されない）
+//     と、api が現在の設定にあるプロファイル一覧を知っていて、かつ
+//     そのプロファイルが設定から消えていて試行行も無い場合は、この
+//     プロファイルの要素自体が省略される
+//   - `running`: いま ffmpeg が走っている
+//   - `failed`: 直前の試行が失敗した。**`failed` は「二度と来ない」の
+//     断定ではない** --- 失敗したジョブはジョブキューの既定のリトライ
+//     上限（25 回。上書きしていない）まで再実行され、その各試行の先頭で
+//     `running` に戻る。上限に達した後も、encoded 資産が無い状態が続く
+//     限り EncodeReconcileWorker が 15 分ごとに再投入する。例外は設定
+//     から消えたプロファイルで、これは EncodeReconcileWorker の既知
+//     プロファイル絞り込みが投入対象から外すため、リトライ上限に達した
+//     ところで `failed` に留まる（**`failed` に固定されるのはリトライを
+//     使い切った後で、最初の失敗の時点ではない**）
+type EncodeJobStatusState string
+
 // EncodeProfileSummary defines model for EncodeProfileSummary.
 type EncodeProfileSummary struct {
 	// Container 出力コンテナ（表示用。未注入なら省略）。
@@ -1048,6 +1126,22 @@ type Recording struct {
 	// いない pending なジョブのプロファイルも含む --- UI が「追加済み」を
 	// 判定するのに使う。空配列は省略可。
 	EncodeProfiles *[]string `json:"encodeProfiles,omitempty"`
+
+	// EncodeStatus 完了していないエンコードプロファイルの試行状態（issue #316）。
+	// `encodeProfiles`（desired）のうち `encodedAssets`（observed、
+	// 再生可能）にまだ現れていないプロファイルだけを列挙する ---
+	// 完了したプロファイルはここに出さず `encodedAssets` の存在で示す
+	// （2 つの配列に同じプロファイルが同時に出ることはない）。
+	//
+	// プロファイルを 1 つも設定していない録画・全プロファイルが完了
+	// 済みの録画では省略する（空配列は返さない。機能しないキュー画面や
+	// 空の進捗バーを出さない判断はサーバー側のこの省略で表現する）。
+	//
+	// `%` は含まない --- 進捗の数値は ffmpeg の `-progress pipe:1` から
+	// ログにしか出しておらず（`internal/worker/encode.go` の
+	// `parseFFmpegProgress`。値は計算に使っていない）、出すと決めるなら
+	// それを読む API と同じ PR で決める。
+	EncodeStatus *[]EncodeJobStatus `json:"encodeStatus,omitempty"`
 
 	// EncodedAssets 再生可能な encoded 派生物（media_assets の active のみ）。
 	// ブラウザ再生は GET /api/recordings/{id}/file?profile=<name> を使う。

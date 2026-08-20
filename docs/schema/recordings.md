@@ -191,6 +191,28 @@ CREATE TABLE recording_ingest_progress (
 - **`expected_bytes` は `record_sync.content_length` のコピー**（転送開始時に読む）。mirakc が length を返さなければ NULL のままにする —— でっち上げた分母を置かない
 - ジョブが失敗して River のバックオフ待ちに入ると、行は `observed_at` が古いまま残る。これは意図した挙動で、`river_job` を API 契約に露出させない代わりに停滞を読ませる唯一の材料になる（[recording/ingest.md](../recording/ingest.md) §5.6）
 
+### recording_encode_attempts — encode ジョブの直近の試行状態（衛星表）
+
+desired（`recording_encode_policy.encode_profiles`）と observed（`media_assets` の active な encoded）の差だけでは「まだ来ていない」としか言えず、「いま走っている」と「失敗して再試行待ち」を区別できない。この表はその区別だけを持つ。書き手は `EncodeWorker`（`internal/worker/encode.go`）だけ。
+
+```sql
+CREATE TABLE recording_encode_attempts (
+    recording_id bigint      NOT NULL REFERENCES recordings (id) ON DELETE CASCADE,
+    profile      text        NOT NULL,
+    state        text        NOT NULL CHECK (state IN ('running', 'failed')),
+    error        text,
+    attempted_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (recording_id, profile)
+);
+```
+
+- **行の存在そのものが「running か failed のどちらかを主張している」ことを意味する**（不変条件 10）。「待っている（queued）」を表す行は作らない ―― queued は API 側で「desired にあって行が無い」として導出する
+- **書き手は脊椎（watcher / reconciler）ではない**ので本体の列にしない（不変条件 13。`recording_ingest_progress` と同じ判断）
+- **River の `river_job` は読まない。** `river_job` の state を直接引く設計も検討したが、`EncodeReconcileWorker` は「encoded が無い」観測が続く限り discarded になった encode ジョブを 15 分ごとに再投入し続ける（録画単位の恒久失敗、入力ファイルの破損など）ものの、恒久失敗の代表格である「設定から消えたプロファイル」は `known_profiles` の絞り込みで投入対象から外しており、そちらは River のリトライ（`EncodeJobArgs.InsertOpts` は MaxAttempts を上書きしていないので既定の 25 回）を使い切って discarded になった後は再投入されない（`internal/worker/encode_reconcile.go`）。**「一度失敗したら再投入されない」ではない** —— `EncodeWorker` は unknown profile を普通のエラー（`river.JobCancel` ではない）で返すだけなので、その 25 回の各試行で `markEncodeAttemptRunning` が先に走り、`running` と `failed` を往復する。往復の長さは River 既定のバックオフ `attempt^4` 秒（`DefaultClientRetryPolicy`）の合計で 2〜3 週間のオーダー ―― 実行時計測ではなく既定ポリシーからの算術。どちらにしても river の「いま」の state だけでは「一度も失敗していない」と「直前に失敗して再投入された直後」を見分けられない。この表は `EncodeWorker` が試行の開始・成功・失敗をそのタイミングで明示的に書くので、river の内部状態（リトライ回数・バックオフ）を一切露出させずに済む。[recording/ingest.md](../recording/ingest.md) §5.6 と共通なのは「`river_job` を露出しない」ことだけ ―― §5.6 は「リトライ中」と「取り込み待ち」を区別しないと決めたが、この表は逆に running/failed を持たせて区別する
+- 消えるのは 2 経路だけ ―― `EncodeWorker.runEncode` の defer が成功時に試行行を消す（DELETE は派生物 INSERT の直後ではなく、間に webhook 通知が入り同一トランザクションでもない。「完了しているのに失敗中」が読者から見えないのは、API 側が encoded 資産のあるプロファイルを試行状態の対象から先に除外しているため）と、`recordings` 行の削除（`ON DELETE CASCADE`）
+- PK が `(recording_id, profile)` の複合なのは、1 録画に複数プロファイルを事後追加できるため
+- `error` / `attempted_at` の読み手は **API ではなく運用者の SELECT**（[runbook/troubleshooting.md](../runbook/troubleshooting.md)「エンコードが失敗している」。`recording_ingest_progress` を運用者が読むのと同じ立場）。`EncodeJobStatus` は `profile` / `state` だけを配る ―― 失敗理由は ffmpeg の内部情報で、クライアントに配る契約に載せると切り詰め方や書式が API 互換の対象になる。`recording_ingest_progress` の `observed_at` のような停滞判定をこの表に持たせるなら、それを使う API/フロントと同じ PR で決める（不変条件 11）。**`state='running'` のまま残る行を掃除する回収器は無い**（worker が実行中に落ち、かつ再投入もされない組み合わせ）。塞ぐなら `attempted_at` を根拠にできるが、判定基準（何秒で見捨てるか）を決めていないので作っていない
+
 ## 6. media_assets — メディアアセット（永続資産）
 
 録画に紐づくファイルの台帳。**この行の存在が「公開済み」の定義**（ストレージ契約ルール 3）。

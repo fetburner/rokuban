@@ -71,6 +71,12 @@ function isStale(queryClient: QueryClient, key: readonly unknown[]): boolean {
 }
 
 const reservationsKey = ['/api/reservations', { start: 'a' }]
+/**
+ * 録画一覧のキー。予約と同じ運用状態グループ（60 秒）に属するが、グループの
+ * 定義は別行なので予約のカウントでは「録画も 60 秒で取り直す」を主張できない
+ * （`docs/frontend/recordings.md` のエンコード状態の収束がこれに依っている）。
+ */
+const recordingsKey = ['/api/recordings', { limit: 50 }]
 const epgKey = ['/api/sites/tokyo/programs', { start: 'a' }]
 /**
  * 番組リスト（pages/programs.tsx の useInfiniteQuery）のキー。URL ではなく手書きなので、
@@ -92,6 +98,7 @@ const storageKey = getGetStorageQueryKey()
 /** fetchCounts は監視中のクエリが実際に何回 fetch されたかを数える。 */
 type FetchCounts = {
   reservations: number
+  recordings: number
   reservationDetail: number
   epg: number
   programList: number
@@ -99,7 +106,7 @@ type FetchCounts = {
 }
 
 /**
- * ActiveQueries は観測者付きのクエリを 5 本張る。観測者が居ないと invalidate は
+ * ActiveQueries は観測者付きのクエリを 6 本張る。観測者が居ないと invalidate は
  * stale 化するだけで fetch を起こさないので、「再取得が実際に走ったか」を見る
  * テストではこちらを使う。
  */
@@ -108,6 +115,13 @@ function ActiveQueries({ counts }: { counts: FetchCounts }) {
     queryKey: reservationsKey,
     queryFn: () => {
       counts.reservations += 1
+      return Promise.resolve([])
+    },
+  })
+  useQuery({
+    queryKey: recordingsKey,
+    queryFn: () => {
+      counts.recordings += 1
       return Promise.resolve([])
     },
   })
@@ -168,6 +182,7 @@ async function renderLevelPaths() {
   })
   const counts: FetchCounts = {
     reservations: 0,
+    recordings: 0,
     reservationDetail: 0,
     epg: 0,
     programList: 0,
@@ -184,6 +199,7 @@ async function renderLevelPaths() {
   // 何も測っていないことになる
   expect(counts).toEqual({
     reservations: 1,
+    recordings: 1,
     reservationDetail: 1,
     epg: 1,
     programList: 1,
@@ -269,9 +285,14 @@ describe('useServerEvents', () => {
     // 59 秒では動かない（周期より短い時間で通ってしまうテストにしない）
     await advance(59_000)
     expect(counts.reservations).toBe(1)
+    expect(counts.recordings).toBe(1)
 
     await advance(1_000)
     expect(counts.reservations).toBe(2)
+    // 録画一覧も同じ 60 秒で取り直す。エンコード状態（encodeStatus）は専用の
+    // SSE トピックも NOTIFY も持たず、この周期だけが収束経路なので、予約とは
+    // 別に数える（docs/frontend/recordings.md）
+    expect(counts.recordings).toBe(2)
     // 周期は定数ではなくリテラルで押さえる（定数を変えても通るテストにしない）
     expect(operationalRefreshIntervalMs).toBe(60_000)
   })
@@ -372,11 +393,15 @@ describe('useServerEvents', () => {
 
     await advance(3 * 60_000)
     expect(counts.reservations).toBe(1)
+    // 録画一覧も止まる（エンコード状態の収束がこの周期しか持たないので、
+    // 「背面では止まる」は録画側でも主張しておく。docs/frontend/recordings.md）
+    expect(counts.recordings).toBe(1)
 
     // 「何も起きないまま成功」でないことを、同じ観測方法で反対側を見て確かめる
     visibility.mockReturnValue('visible')
     await advance(60_000)
     expect(counts.reservations).toBe(2)
+    expect(counts.recordings).toBe(2)
     visibility.mockRestore()
   })
 
@@ -389,6 +414,7 @@ describe('useServerEvents', () => {
     await advance(0)
     expect(counts).toEqual({
       reservations: 1,
+      recordings: 1,
       reservationDetail: 1,
       epg: 1,
       programList: 1,
@@ -404,6 +430,7 @@ describe('useServerEvents', () => {
 
     expect(counts).toEqual({
       reservations: 2,
+      recordings: 2,
       reservationDetail: 2,
       epg: 2,
       programList: 2,

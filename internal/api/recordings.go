@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"time"
 
@@ -54,6 +55,11 @@ type recordingListFields struct {
 	// AvailableEncodedAssets（observed、active のみ）とは異なり、pending な
 	// ジョブのプロファイルも含む。事後追加（issue #133）で増える唯一の経路。
 	EncodeProfiles []string
+	// EncodeAttempts は recording_encode_attempts（衛星表）の行を jsonb_agg
+	// した生 JSON（issue #316）。`[]`（試行中/失敗中のプロファイルが無い）と
+	// nil を区別しない --- どちらも encodeJobStatusesFromFields で「完了して
+	// いないプロファイルはすべて queued」という結果になる。
+	EncodeAttempts json.RawMessage
 
 	// HasOriginalAsset は kind='original' の media_assets 行が **state を問わず**
 	// 存在するか（issue #212）。OriginalSizeBytes（state <> 'deleted' の行だけを
@@ -148,9 +154,116 @@ type encodedAssetRow struct {
 	SizeBytes int64  `json:"sizeBytes"`
 }
 
+// encodeAttemptRow は encode_attempts（jsonb_agg）1 要素の JSON 形。
+// jsonb_build_object のキー（'profile' / 'state'）と一致させる。
+type encodeAttemptRow struct {
+	Profile string `json:"profile"`
+	State   string `json:"state"`
+}
+
+// encodeJobStatusesFromFields は完了していないエンコードプロファイルの試行
+// 状態を一覧行の素の事実から導出する（issue #316）。**列に焼いた値ではなく
+// 毎回の導出**（不変条件 9: recording_encode_attempts の生の行から
+// state を再構成するだけで、queued かどうかまで含めた最終形は保存しない）。
+//
+// 対象は `encodeProfiles`（desired）のうち `encodedProfiles`（observed、
+// 引数 done として渡す）にまだ現れていないプロファイルだけ。完了した
+// プロファイルはここに出さない --- `encodedAssets` の存在が「完了」を
+// 表すので、同じ情報を 2 つの配列で主張しない。
+//
+//   - `recording_encode_attempts` に行があれば、その `state`（running/failed）
+//     をそのまま使う
+//   - 行が無ければ `queued`（試行がまだ始まっていない） --- ただし「来る根拠」が
+//     無いものは queued と名乗らせない（下記 2 点。docs/recording/ingest.md
+//     §5.6 が `pending` に課した規律と同じ）
+//
+// 「来る根拠」が無いので queued を出さない 2 パターン:
+//
+//  1. ごみ箱の録画（r.DeletedAt が非 nil）。EncodeReconcileWorker の
+//     EnqueueMissingEncodesForKnownProfiles / ListRecordingsMissingEncodes は
+//     deleted_at IS NULL で絞っており、ごみ箱の録画にジョブは二度と投入されない
+//     （internal/worker/encode_reconcile.go 参照）。EncodedAssets/プレイヤーを
+//     trash で出さないのと揃え、**running/failed の行が既にあっても
+//     （削除前に始まっていた試行）試行状態を丸ごと省略する** --- 削除後に
+//     その試行が本当に終わるかは api ロールには分からない（不変条件 1: api は
+//     worker に問い合わせない）。実装は先頭の DeletedAt ガード 1 つで、
+//     TestListRecordingsEncodeStatus_TrashOmitsEncodeStatus（running な試行行
+//     付き）と TestEncodeJobStatusesFromFields の「ごみ箱の録画は試行行が
+//     あっても丸ごと省略」が固定している。
+//  2. knownProfiles が non-nil（api ロールが config.encode.profiles を注入
+//     している）で、そのプロファイルが現在の config に存在しない。設定から
+//     消えたプロファイルは EnqueueMissingEncodesForKnownProfiles が投入対象から
+//     外している恒久的に満たせない集合（`ListUnsatisfiableEncodeProfiles` が
+//     数えているのと同じ集合）なので、試行行が無いものは省略する。ただし
+//     running/failed の行が既にあれば設定に残っていなくてもそのまま出す ---
+//     過去の観測は「来る」という断定ではないので規律の対象外
+//     （TestListRecordingsEncodeStatus_UnknownProfileOmittedWhenConfigured）。
+//     knownProfiles が nil（テストの部分構成などで注入が無い）ときはこの判定を
+//     スキップする（既存の「nil = 検証オフ」規約と揃える）。
+//
+// 戻り値は desired の並び順を保つ（TestEncodeJobStatusesFromFields_PreservesDesiredOrder。
+// 試行行の map を回して組み立てると順序が非決定になるので、EncodeProfiles を
+// 回す実装であることをテストが押さえている）。
+func encodeJobStatusesFromFields(r recordingListFields, done []string, knownProfiles map[string]struct{}) ([]EncodeJobStatus, error) {
+	if len(r.EncodeProfiles) == 0 {
+		return nil, nil
+	}
+	if r.DeletedAt != nil {
+		return nil, nil
+	}
+
+	doneSet := make(map[string]struct{}, len(done))
+	for _, p := range done {
+		doneSet[p] = struct{}{}
+	}
+
+	attempts := make(map[string]string)
+	if len(r.EncodeAttempts) > 0 {
+		var rows []encodeAttemptRow
+		if err := json.Unmarshal(r.EncodeAttempts, &rows); err != nil {
+			return nil, fmt.Errorf("decoding encode_attempts for recording %d: %w", r.ID, err)
+		}
+		for _, row := range rows {
+			attempts[row.Profile] = row.State
+		}
+	}
+
+	var statuses []EncodeJobStatus
+	for _, profile := range r.EncodeProfiles {
+		if _, ok := doneSet[profile]; ok {
+			continue
+		}
+		if s, ok := attempts[profile]; ok {
+			// 未知の state は queued に倒さず省略する。queued は「これから来る」
+			// という断定（上記 2 パターンの規律そのもの）なので、意味の分からない
+			// 観測を一番強い主張に写すのが一番危ない。recording_encode_attempts の
+			// CHECK 制約が running/failed に絞っているので現状は到達不能。
+			switch s {
+			case "running":
+				statuses = append(statuses, EncodeJobStatus{Profile: profile, State: EncodeJobStatusStateRunning})
+			case "failed":
+				statuses = append(statuses, EncodeJobStatus{Profile: profile, State: EncodeJobStatusStateFailed})
+			default:
+				slog.Warn("recordings: unknown encode attempt state, omitting",
+					"recording_id", r.ID, "profile", profile, "state", s)
+			}
+			continue
+		}
+		if knownProfiles != nil {
+			if _, known := knownProfiles[profile]; !known {
+				continue
+			}
+		}
+		statuses = append(statuses, EncodeJobStatus{Profile: profile, State: EncodeJobStatusStateQueued})
+	}
+	return statuses, nil
+}
+
 // recordingFromListFields は一覧行を API の Recording に写す。
 // includeDeletedAt が true のときだけ deletedAt を載せる（ごみ箱一覧向け）。
-func recordingFromListFields(r recordingListFields, includeDeletedAt bool) (Recording, error) {
+// knownProfiles は encodeJobStatusesFromFields に渡す（doc コメント参照。
+// nil なら「設定から消えたプロファイル」の判定をスキップする）。
+func recordingFromListFields(r recordingListFields, includeDeletedAt bool, knownProfiles map[string]struct{}) (Recording, error) {
 	rec := Recording{
 		Id:          r.ID,
 		Site:        r.Site,
@@ -200,6 +313,7 @@ func recordingFromListFields(r recordingListFields, includeDeletedAt bool) (Reco
 	// ORDER BY を書き忘れたときに添字がずれる drift が起こり得るが、
 	// 同じ `rows` から Go 側で両方を導出する形ではその種の drift は構造的に
 	// 起こらない。
+	var encodedProfileNames []string
 	if len(r.AvailableEncodedAssets) > 0 {
 		var rows []encodedAssetRow
 		if err := json.Unmarshal(r.AvailableEncodedAssets, &rows); err != nil {
@@ -214,6 +328,7 @@ func recordingFromListFields(r recordingListFields, includeDeletedAt bool) (Reco
 			}
 			rec.EncodedAssets = &assets
 			rec.EncodedProfiles = &profiles
+			encodedProfileNames = profiles
 		}
 	}
 	// 凍結された desired 一覧。空なら省略（omitempty）。UI が「追加済み」を
@@ -221,6 +336,15 @@ func recordingFromListFields(r recordingListFields, includeDeletedAt bool) (Reco
 	if len(r.EncodeProfiles) > 0 {
 		profiles := slices.Clone(r.EncodeProfiles)
 		rec.EncodeProfiles = &profiles
+	}
+	// 完了していないエンコードプロファイルの試行状態（issue #316）。空なら
+	// 省略（プロファイル未設定・全プロファイル完了済みのどちらでも省略）。
+	statuses, err := encodeJobStatusesFromFields(r, encodedProfileNames, knownProfiles)
+	if err != nil {
+		return Recording{}, err
+	}
+	if len(statuses) > 0 {
+		rec.EncodeStatus = &statuses
 	}
 	if len(r.QualityEvents) > 0 {
 		var events []map[string]any
@@ -250,7 +374,7 @@ func (h *Server) ListRecordings(ctx context.Context, req ListRecordingsRequestOb
 		return ListRecordings400JSONResponse{Error: errMsg}, nil
 	}
 
-	result, err := queryRecordings(ctx, h.pool, f)
+	result, err := queryRecordings(ctx, h.pool, f, h.encodeProfiles)
 	if err != nil {
 		return nil, fmt.Errorf("listing recordings: %w", err)
 	}
@@ -265,7 +389,7 @@ func (h *Server) ListRecordings(ctx context.Context, req ListRecordingsRequestOb
 // description 参照）。purged_at が立った tombstone（issue #135）は 404
 // （queryRecordingByID 参照）。
 func (h *Server) GetRecording(ctx context.Context, req GetRecordingRequestObject) (GetRecordingResponseObject, error) {
-	rec, ok, err := queryRecordingByID(ctx, h.pool, req.Id)
+	rec, ok, err := queryRecordingByID(ctx, h.pool, req.Id, h.encodeProfiles)
 	if err != nil {
 		return nil, fmt.Errorf("getting recording %d: %w", req.Id, err)
 	}

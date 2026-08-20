@@ -194,6 +194,36 @@ DB に残した観測（`recording_ingest_progress`）だけ。api は**毎リ�
 すると、`pending` が恒久的に残りうる（`record_sync` 行は消えない）ためポーリングが
 止まらない。
 
+### エンコードの試行状態も一覧の要素に載せる
+
+未完了のエンコードプロファイルの状態は `Recording.encodeStatus` として一覧要素と
+単体 GET の両方に載せる。取り込み状態（上記）と同じ 3 点を同じ理由で決めている ---
+**別エンドポイントにしない**（「この録画のエンコードは進んでいるのか」は一覧を
+引いた時点で答えが要る質問で、分けると行数ぶんの N+1 になる）、**毎リクエスト
+導出する**（真実は worker が書いた `recording_encode_attempts` の行で、api は
+それと `media_assets` の active な `encoded` から毎回組み立てる。列に焼かない。
+不変条件 9）、**SSE で押さない**（専用トピックも NOTIFY も持たず、既存の
+`recordings` グループの 60 秒 invalidate で収束させる。不変条件 5）。
+
+取り込み状態と違う点は 2 つある。
+
+- **完了したプロファイルは出さない。** `encodedAssets` の存在が「完了」を表すので、
+  同じ情報を 2 つの配列で主張しない（`encodeStatus` は desired − observed の差だけ）。
+- **`queued` は「来る根拠」があるものにしか付けない。** api ロールは worker にも
+  mirakc にも問い合わせない（不変条件 1）ので、「来る」と言えるかどうかは DB と
+  自分の設定だけで決める必要がある。ごみ箱の録画（reconciler が `deleted_at IS NULL`
+  で絞るのでジョブは二度と投入されない）と、`config.encode.profiles` から消えた
+  プロファイル（reconciler の `known_profiles` 絞り込みが投入対象から外す）は、
+  その要素自体を省略する --- 進捗の無いプログレスバーを出さないのと同じ判断
+  （[frontend/recordings.md](../frontend/recordings.md)）。**「設定を読む」判定を
+  api に置いたのはここだけで、mirakc への問い合わせは足していない。**
+
+`running`/`failed` の各値の意味と、失敗が固定される条件は `openapi.yaml` の
+`EncodeJobStatus`。表そのものの判断は
+[schema/recordings.md](../schema/recordings.md) の `recording_encode_attempts` 節。
+失敗理由（`error`）と最後の試行時刻（`attempted_at`）は**契約に載せない** ---
+読み手は運用者の SELECT（[runbook/troubleshooting.md](../runbook/troubleshooting.md)）。
+
 ### 録画単体: `GET /api/recordings/{id}`
 
 一覧要素と同形の 1 件（skip 理由・予約からの導線の着地先）。

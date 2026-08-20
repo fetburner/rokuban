@@ -118,7 +118,10 @@ func (w *EncodeWorker) Work(ctx context.Context, job *river.Job[EncodeJobArgs]) 
 }
 
 // runEncode は encode ジョブの本体。
-func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[EncodeJobArgs]) error {
+//
+// err は名前付き戻り値 --- 直後の defer（試行状態の観測、issue #316）が
+// 全ての return 文の結果を横取りして recording_encode_attempts に反映するため。
+func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[EncodeJobArgs]) (err error) {
 	args := job.Args
 	log := slog.With("recording_id", args.RecordingID, "profile", args.Profile)
 
@@ -129,7 +132,9 @@ func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[EncodeJobAr
 		metrics.EncodeJobs.WithLabelValues(result).Inc()
 	}()
 
-	// 冪等: 既に active な encoded があれば何もしない。
+	// 冪等: 既に active な encoded があれば何もしない。リークした古い試行行
+	// （不変条件 10: 完了しているのに failed/running を名乗る行を残さない）が
+	// あれば掃除する。
 	already, err := w.hasActiveEncoded(ctx, args.RecordingID, args.Profile)
 	if err != nil {
 		return fmt.Errorf("checking existing encoded asset: %w", err)
@@ -137,8 +142,29 @@ func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[EncodeJobAr
 	if already {
 		log.Info("encode: encoded asset already committed, skipping")
 		result = "success"
+		w.clearEncodeAttempt(ctx, args.RecordingID, args.Profile)
 		return nil
 	}
+
+	// この試行の観測（issue #316）。running を書き、この呼び出しが返るときに
+	// 成功（media_asset 行を作った）か失敗かで消す/failed に上書きする。
+	// shouldNotifyEncodeFailure と**同じ判定関数**を使う（bespoke な条件を
+	// もう 1 つ増やさない）--- ctx キャンセル（River の停止・タイムアウト）は
+	// ジョブの失敗扱いにしないので running のまま残し、次の実行が上書きする。
+	// markEncodeAttemptFailed の書き込みは job の ctx から切り離してある
+	// （attemptWriteContext）ので、running が残るのはこのガードのおかげで、
+	// 「DB 書き込み自体が ctx キャンセルで失敗する」という偶然ではない。
+	w.markEncodeAttemptRunning(ctx, args.RecordingID, args.Profile)
+	defer func() {
+		if err == nil {
+			w.clearEncodeAttempt(ctx, args.RecordingID, args.Profile)
+			return
+		}
+		if !shouldNotifyEncodeFailure(err, ctx.Err()) {
+			return
+		}
+		w.markEncodeAttemptFailed(ctx, args.RecordingID, args.Profile, err)
+	}()
 
 	profile, ok := w.Profiles.Profile(args.Profile)
 	if !ok {
@@ -280,6 +306,103 @@ func (w *EncodeWorker) notify(ctx context.Context, ev webhook.Event) {
 	if err := w.Webhook.Notify(ctx, ev); err != nil {
 		slog.Error("webhook notify failed",
 			"type", ev.Type, "recording_id", ev.RecordingID, "err", err)
+	}
+}
+
+// encodeAttemptErrorMaxLen は recording_encode_attempts.error に書くバイト数の
+// 上限。ffmpeg の stderr を丸ごと含むエラーが際限なく育つのを防ぐ。
+//
+// 読み手は API ではなく運用者の SELECT（docs/runbook/troubleshooting.md
+// 「エンコードが失敗している」）。全文は worker のログに出ているので、
+// ここで切り詰めても失われる情報は無い。
+const encodeAttemptErrorMaxLen = 2000
+
+// encodeAttemptWriteTimeout は recording_encode_attempts への書き込み
+// （試行状態の観測）に使うタイムアウト。job の ctx から切り離す
+// （attemptWriteContext）理由を参照。
+const encodeAttemptWriteTimeout = 5 * time.Second
+
+// attemptWriteContext は recording_encode_attempts への書き込み用に、job の
+// ctx から切り離した（ただし無期限には待たない）ctx を返す。
+// 使うのは markEncodeAttemptFailed と clearEncodeAttempt の 2 箇所
+// （それぞれの doc コメントに切り離す理由がある）。
+//
+// markEncodeAttemptFailed の呼び出しは shouldNotifyEncodeFailure と同じ
+// ガード（ctx キャンセル時は呼ばない）の後段にあるが、書き込み自体が job の
+// ctx に紐付いていると「ガードが無くても、キャンセル済み ctx での DB 書き込みが
+// 失敗するので running が残る」という偶然の結果とガードが区別できなくなる
+// （レビュー issue #316 で判明）。切り離すことでガードを実際に load-bearing に
+// する --- ガードを外すと、キャンセル後でも書き込みが成功して failed に
+// 上書きされ、テストが検出できる。
+func attemptWriteContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), encodeAttemptWriteTimeout)
+}
+
+// truncateEncodeAttemptError は msg を encodeAttemptErrorMaxLen バイト以内に
+// 切り詰める。バイト境界で切ると末尾がマルチバイト文字の途中で切れて不正な
+// UTF-8 になり得る（Postgres が INSERT/UPDATE を拒否し、試行行が書けなくなる
+// --- 失敗が「エンコード中」のまま見え続ける）。strings.ToValidUTF8 で末尾の
+// 不完全なシーケンスを取り除く。
+func truncateEncodeAttemptError(msg string) string {
+	if len(msg) <= encodeAttemptErrorMaxLen {
+		return msg
+	}
+	return strings.ToValidUTF8(msg[:encodeAttemptErrorMaxLen], "")
+}
+
+// markEncodeAttemptRunning は recording_encode_attempts に running を書く
+// （issue #316）。失敗はログのみ --- この表は表示専用の観測で、書き込みに
+// 失敗してもエンコード本体（ffmpeg 実行・media_assets への commit）は続けられる。
+func (w *EncodeWorker) markEncodeAttemptRunning(ctx context.Context, recordingID int64, profile string) {
+	q := sqlcgen.New(w.Pool)
+	if err := q.UpsertRecordingEncodeAttemptRunning(ctx, sqlcgen.UpsertRecordingEncodeAttemptRunningParams{
+		RecordingID: recordingID,
+		Profile:     profile,
+	}); err != nil {
+		slog.Warn("encode: marking attempt running failed",
+			"recording_id", recordingID, "profile", profile, "err", err)
+	}
+}
+
+// markEncodeAttemptFailed は recording_encode_attempts に failed を書く
+// （issue #316）。失敗はログのみ（markEncodeAttemptRunning と同じ理由）。
+// 書き込みは job の ctx から切り離す（attemptWriteContext 参照）。
+func (w *EncodeWorker) markEncodeAttemptFailed(ctx context.Context, recordingID int64, profile string, encodeErr error) {
+	msg := truncateEncodeAttemptError(encodeErr.Error())
+	writeCtx, cancel := attemptWriteContext(ctx)
+	defer cancel()
+	q := sqlcgen.New(w.Pool)
+	if err := q.UpsertRecordingEncodeAttemptFailed(writeCtx, sqlcgen.UpsertRecordingEncodeAttemptFailedParams{
+		RecordingID: recordingID,
+		Profile:     profile,
+		Error:       &msg,
+	}); err != nil {
+		slog.Warn("encode: marking attempt failed failed",
+			"recording_id", recordingID, "profile", profile, "err", err)
+	}
+}
+
+// clearEncodeAttempt は recording_encode_attempts の行を消す（issue #316）。
+// 呼ぶのは runEncode の defer（成功時。commitEncoded と webhook 通知の後で、
+// 派生物 INSERT の直後ではない）と、既に active な encoded がある冪等スキップ
+// 経路。失敗はログのみ（markEncodeAttemptRunning と同じ理由）。
+//
+// 書き込みは job の ctx から切り離す（attemptWriteContext）。commitEncoded の
+// 成功後〜defer の間（webhook 通知を挟む）に ctx がキャンセルされると、job の
+// ctx では DELETE が失敗して running を主張する行が恒久的に残る --- この
+// プロファイルは active な encoded を持つので ListRecordingsMissingEncodes の
+// 候補から外れ、冪等スキップ経路の掃除も二度と走らない（不変条件 10:
+// 何も主張していない/嘘の行を残さない）。
+func (w *EncodeWorker) clearEncodeAttempt(ctx context.Context, recordingID int64, profile string) {
+	writeCtx, cancel := attemptWriteContext(ctx)
+	defer cancel()
+	q := sqlcgen.New(w.Pool)
+	if err := q.DeleteRecordingEncodeAttempt(writeCtx, sqlcgen.DeleteRecordingEncodeAttemptParams{
+		RecordingID: recordingID,
+		Profile:     profile,
+	}); err != nil {
+		slog.Warn("encode: clearing attempt failed",
+			"recording_id", recordingID, "profile", profile, "err", err)
 	}
 }
 

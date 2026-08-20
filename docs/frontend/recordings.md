@@ -168,6 +168,53 @@ API は後方互換を保つ（docs/api/rest.md §契約の保護）--- 旧バ�
 対象にしてはならない** --- `record_sync` 行が消えない以上「未完了」は恒久的に残り
 うるので、失敗録画が 1 件でも読み込み済みページにあればポーリングが恒久化する。
 
+## エンコードの待ち・実行中・失敗を画面に出す
+
+`Recording.encodeProfiles`（desired）と `Recording.encodedAssets`（observed、
+再生可能なもの）の差だけでは「まだ来ていない」としか言えず、いま走っているのか
+失敗して再試行待ちなのかを区別できなかった。`Recording.encodeStatus`
+（openapi.yaml。desired のうち observed にまだ現れていないプロファイルだけを
+`queued` / `running` / `failed` のいずれかで列挙する）をバッジで出す
+（`EncodeStatusBadges`。一覧の行と単体ページのヘッダー、`IngestBadge` の隣）。
+
+- **`%` は出さない。** 進捗の数値は ffmpeg の `-progress pipe:1` からログにしか
+  出しておらず（`internal/worker/encode.go` の `parseFFmpegProgress`。値は
+  計算に使っていない）、出すと決めるならそれを読む API と同じ PR で決める
+- **プロファイル未設定・全プロファイル完了済みの録画では `encodeStatus` が
+  省略される**ので、`EncodeStatusBadges` は何も描かない --- 機能しないキュー
+  画面や空の進捗バーを出さない判断はサーバー側のこの省略で表現されており、
+  フロントはそれをそのまま描くだけでよい
+- **`failed` だけ destructive**（`bg-destructive/10` + `text-destructive`。
+  `DropBadges` と同じ判断: 実害があるので色で目立たせる）。`queued` /
+  `running` は `IngestBadge` と同じ `bg-muted`（状況の説明であって信号ではない。
+  [design.md](design.md)「色は信号のみ」）
+- **バッジにはプロファイル名を前置する**（`h264: エンコード失敗`）。事後追加で
+  複数プロファイルを依頼した録画では「どのプロファイルが失敗したか」が言えないと
+  運用判断に使えない（ドロップ統計の種別列と同じ判断）
+- **`queued` は「来る根拠」があるものしか出ない**（サーバー側の導出。ごみ箱の
+  録画とプロファイル自体が丸ごと省略されるので、フロントは何もフィルタしない）。
+  `failed` は「二度と来ない」の断定でもない --- River の既定リトライと、録画単位の
+  恒久失敗（入力ファイルの破損など）に対する `EncodeReconcileWorker` の 15 分ごとの
+  再投入のたびに `running` へ戻る（`queued` へは戻らない --- 試行行は成功するまで
+  消えないので `queued` は初回試行の前だけ）。判断の詳細は
+  [schema/recordings.md](../schema/recordings.md) の `recording_encode_attempts`
+  節
+- ホームに出す場合は失敗録画と同じ「異常」の置き場に合わせる想定だが、本機能
+  自体はホームへの統合を含まない --- 一覧・単体ページで沈黙と区別できれば足りるため
+- **専用の SSE トピックも NOTIFY も持たない。** 収束は既存の
+  `operationalRefreshIntervalMs`（`/api/recordings` を再取得する 60 秒周期。
+  `web/src/lib/events.ts`）に乗せるだけで、`recording_encode_attempts` から
+  DB 通知を出す経路は無い --- `queued`→`running`→`failed` の遷移は、**前面タブ
+  なら最大 60 秒遅れて**画面に反映される。**背面タブでは定期取得を投げない**
+  （`useServerEvents` の `document.visibilityState === 'hidden'` ガード）ので、
+  前面に戻るまで止まる（復帰時は `refetchOnWindowFocus` が拾う）。この 2 つは
+  `web/src/lib/events.test.tsx` の「SSE が来なくても運用状態のクエリは 60 秒
+  周期で取り直す」（`counts.recordings` でも数えている --- `/api/recordings` が
+  同じ 60 秒グループに属することを、予約のカウントとは別に押さえる）と「背面
+  タブでは定期取得を投げず、前面に戻ると再開する」が固定している。
+  `storageRefreshIntervalMs` の `topic: null` と同じ「専用トピックを持たず既存の
+  再取得に乗せる」判断
+
 ## ドロップ統計はバッジ + 展開
 
 録画一覧に drop / error / scrambled を色付きバッジで出す。**0 のものは出さない**ので
