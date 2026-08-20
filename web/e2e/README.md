@@ -482,6 +482,40 @@ pnpm build && pnpm preview --port 4173 --strictPort &
 E2E_URL=http://localhost:4173 pnpm e2e:cls
 ```
 
+### チップの横あふれ（`chip-overflow.mjs`）
+
+サービスチップに補助ラベル（同名のワンセグ / サブサービスを見分けるための
+リモコン番号・物理チャンネル・serviceId。issue #306）を足すと、名前だけなら
+収まっていたチップが親の幅を超える。`Chip` は `shrink-0` を持つので
+**flex-basis が内容の最大幅を要求し、ページ全体が横に伸びる**。jsdom は
+`scrollWidth` / `clientWidth` を計算しない（常に 0）ので、この壊れ方は
+`pnpm test` が全部通っても検出できない。
+
+見るのは 320px 幅（実機で最も狭い層）で 3 点:
+
+- ① `/search` の条件フォームに長い局名 + 補助ラベルのチップを流し込んでも
+  `document.documentElement` が横スクロールしない。**`Chip` から `max-w-full`
+  を外すと落ちる**（実測: 有り 320 / 320、無し 448 / 320）
+- ② 解き方が「チップの中で折り返す」であること（切り落としでも隠しでもない）。
+  チップの箱がビューポートに収まり、箱の中で内容があふれておらず、実際に 2 行に
+  なっている。`max-w-full` を外すと①と一緒に落ちる
+- ③ `Chip` は共有プリミティブなので、録画一覧の絞り込みにある短いピル
+  （状態 5 件 / 種別 3 件 / ジャンル 16 件）が丸ピルのまま 1 行であること。
+  ①の対策が他画面の見た目を変えていないことを逆方向から見る。ポップオーバーが
+  ビューポートに収まることも合わせて測る
+
+**`break-words` は入れていない。** ①②を `break-words` 無しでも測ったが差が出な
+かった（和文は文字間で折り返せる）。長い ASCII 1 語での挙動は未検証。
+
+`design.mjs` と同じ手（`/api/**` を `page.route` で丸ごと差し替え、時刻は
+`page.clock.setFixedTime` で固定）。⓪（配っている bundle と `dist/` の一致）
+も自分で確認する。
+
+```sh
+pnpm build && pnpm preview --port 4173 --strictPort &
+E2E_URL=http://localhost:4173 pnpm e2e:chip-overflow
+```
+
 ## CI では回さない
 
 実サーバーと実 mirakc のデータに依存するため、CI には載せない。**ローカルでの受け入れ確認**の

@@ -12,6 +12,7 @@ import { unwrap } from '@/api/unwrap'
 import { Button } from '@/components/ui/button'
 import { Chip } from '@/components/ui/chip'
 import { Field, Input, Select } from '@/components/ui/field'
+import { serviceDisambiguator } from '@/lib/service-label'
 import { useCurrentSite } from '@/lib/site'
 import {
   allWeekdays,
@@ -310,6 +311,10 @@ function ServiceFields({
       (s) => s.networkId === service.networkId && s.serviceId === service.serviceId,
     )
 
+  // 同じ名前のサービス（ワンセグ / サブサービス等）が並ぶとき、リモコン番号・
+  // 物理チャンネル・serviceId から補助ラベルを作る（issue #306）。
+  const disambiguate = useMemo(() => serviceDisambiguator(services), [services])
+
   return (
     <Section title="サービス">
       {isError ? (
@@ -320,31 +325,36 @@ function ServiceFields({
         <p className="text-xs text-muted-foreground">サービスがありません</p>
       ) : (
         <div role="group" aria-label="サービス" className="flex flex-wrap gap-2">
-          {services.map((service) => (
-            <Chip
-              key={`${service.networkId}-${service.serviceId}`}
-              active={selected(service)}
-              disabled={disabled}
-              onClick={() =>
-                onChange((d) => ({
-                  ...d,
-                  services: selected(service)
-                    ? d.services.filter(
-                        (s) =>
-                          !(
-                            s.networkId === service.networkId && s.serviceId === service.serviceId
-                          ),
-                      )
-                    : [
-                        ...d.services,
-                        { networkId: service.networkId, serviceId: service.serviceId },
-                      ],
-                }))
-              }
-            >
-              {service.name}
-            </Chip>
-          ))}
+          {services.map((service) => {
+            const secondary = disambiguate(service)
+            return (
+              <Chip
+                key={`${service.networkId}-${service.serviceId}`}
+                active={selected(service)}
+                disabled={disabled}
+                onClick={() =>
+                  onChange((d) => ({
+                    ...d,
+                    services: selected(service)
+                      ? d.services.filter(
+                          (s) =>
+                            !(
+                              s.networkId === service.networkId &&
+                              s.serviceId === service.serviceId
+                            ),
+                        )
+                      : [
+                          ...d.services,
+                          { networkId: service.networkId, serviceId: service.serviceId },
+                        ],
+                  }))
+                }
+              >
+                {service.name}
+                {secondary !== undefined && <span className="ml-1">（{secondary}）</span>}
+              </Chip>
+            )
+          })}
         </div>
       )}
     </Section>

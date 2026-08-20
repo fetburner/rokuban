@@ -25,7 +25,15 @@ export function Chip({
       disabled={disabled}
       onClick={onClick}
       className={cn(
-        'shrink-0 rounded-full border px-3 py-1.5 text-xs transition-colors disabled:pointer-events-none disabled:opacity-50',
+        // shrink-0 は隣接するチップを圧縮せず折り返しに回すためのもの。
+        // それとは別に max-w-full が要る --- 1 つのチップの内容が親の幅そのものを
+        // 超えると（長い局名 + 補助ラベル。issue #306）shrink-0 の flex-basis が
+        // 内容の最大幅を要求し、ページ全体が横に伸びる。実ブラウザ 320px での実測は
+        // `e2e/chip-overflow.mjs` の①（max-w-full 有り: documentElement の
+        // scrollWidth 320 / clientWidth 320、外すと 448 / 320）。
+        // break-words は入れていない --- 同じ実測で有無の差が出なかった（和文は
+        // 文字間で折り返せるため）。長い ASCII 1 語での挙動は未検証。
+        'max-w-full shrink-0 rounded-full border px-3 py-1.5 text-xs transition-colors disabled:pointer-events-none disabled:opacity-50',
         active
           ? 'border-primary bg-primary text-primary-foreground'
           // hover:text-foreground は hover:bg-muted と対（合成後コントラスト対策。
