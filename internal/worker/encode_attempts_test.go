@@ -302,3 +302,37 @@ func TestEncodeWorker_AttemptRow_FailedOnFailure_MultibyteTruncation(t *testing.
 		t.Errorf("len(error) = %d, want <= %d", len(*errMsg), encodeAttemptErrorMaxLen)
 	}
 }
+
+// TestEncodeWorker_ClearAttempt_SurvivesCanceledCtx は、成功時の DELETE が
+// job の ctx のキャンセルに巻き込まれないことを固定する（issue #316 の
+// レビューで判明）。
+//
+// 成功パスの clearEncodeAttempt は commitEncoded と webhook 通知（HTTP、
+// タイムアウトまで待つ）の後の defer で走るので、その間に River が停止して
+// ctx がキャンセルされ得る。job の ctx をそのまま渡していると DELETE が
+// 失敗し、encoded 資産があるのに running を主張する行が恒久的に残る ---
+// そのプロファイルは ListRecordingsMissingEncodes の候補から外れるので、
+// 冪等スキップ経路の掃除も二度と走らない（不変条件 10）。
+// clearEncodeAttempt から attemptWriteContext を外すとこのテストが落ちる。
+func TestEncodeWorker_ClearAttempt_SurvivesCanceledCtx(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	mediaDir := t.TempDir()
+	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "x/attempt-clear-canceled.m2ts", nil, []byte("data"))
+
+	w := &EncodeWorker{Pool: pool}
+	w.markEncodeAttemptRunning(context.Background(), recordingID, "h264")
+	if state, ok := encodeAttemptState(t, pool, recordingID, "h264"); !ok || state != "running" {
+		t.Fatalf("fixture: state = %q, ok = %v, want running", state, ok)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	w.clearEncodeAttempt(ctx, recordingID, "h264")
+
+	if state, ok := encodeAttemptState(t, pool, recordingID, "h264"); ok {
+		t.Errorf("attempt row remains (state = %q) after clearEncodeAttempt with canceled ctx; want deleted", state)
+	}
+}

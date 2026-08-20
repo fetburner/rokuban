@@ -204,7 +204,9 @@ API は後方互換を保つ（docs/api/rest.md §契約の保護）--- 旧バ�
   `operationalRefreshIntervalMs`（`/api/recordings` を再取得する 60 秒周期。
   `web/src/lib/events.ts`）に乗せるだけで、`recording_encode_attempts` から
   DB 通知を出す経路は無い --- `queued`→`running`→`failed` の遷移は最大 60 秒
-  遅れて画面に反映される（`storageRefreshIntervalMs` の `topic: null` と同じ
+  遅れて画面に反映される（この 60 秒周期は
+  `web/src/lib/events.test.tsx` の「SSE が来なくても運用状態のクエリは 60 秒
+  周期で取り直す」が固定している。`storageRefreshIntervalMs` の `topic: null` と同じ
   「専用トピックを持たず既存の再取得に乗せる」判断）
 
 ## ドロップ統計はバッジ + 展開

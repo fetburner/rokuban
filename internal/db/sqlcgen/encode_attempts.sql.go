@@ -18,8 +18,11 @@ type DeleteRecordingEncodeAttemptParams struct {
 	Profile     string
 }
 
-// 試行行を消す。派生物 media_asset を INSERT する直後に呼ぶことで、
-// 「完了しているのに失敗中」という中間状態を読者に見せない（不変条件 3）。
+// 試行行を消す。呼ぶのは runEncode の defer（成功時）で、commitEncoded の
+// 直後ではない --- 間に webhook 通知（HTTP、タイムアウトまで待つ）が入り、
+// 同一トランザクションでもない。「完了しているのに失敗中」という中間状態を
+// 読者に見せないのは、この DELETE の速さではなく API 側が encoded 資産のある
+// プロファイルを encodeJobStatusesFromFields の対象から先に除外しているため。
 // 行が無くても成功する（冪等）。EncodeWorker の冪等スキップ経路（既に active
 // な encoded がある）でも、リークした古い試行行を掃除するために呼ぶ。
 func (q *Queries) DeleteRecordingEncodeAttempt(ctx context.Context, arg DeleteRecordingEncodeAttemptParams) error {

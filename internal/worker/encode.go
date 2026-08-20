@@ -321,6 +321,8 @@ const encodeAttemptWriteTimeout = 5 * time.Second
 
 // attemptWriteContext は recording_encode_attempts への書き込み用に、job の
 // ctx から切り離した（ただし無期限には待たない）ctx を返す。
+// 使うのは markEncodeAttemptFailed と clearEncodeAttempt の 2 箇所
+// （それぞれの doc コメントに切り離す理由がある）。
 //
 // markEncodeAttemptFailed の呼び出しは shouldNotifyEncodeFailure と同じ
 // ガード（ctx キャンセル時は呼ばない）の後段にあるが、書き込み自体が job の
@@ -378,11 +380,21 @@ func (w *EncodeWorker) markEncodeAttemptFailed(ctx context.Context, recordingID 
 }
 
 // clearEncodeAttempt は recording_encode_attempts の行を消す（issue #316）。
-// 派生物 media_asset を INSERT した直後、または既に active な encoded がある
-// 冪等スキップ経路で呼ぶ。失敗はログのみ（markEncodeAttemptRunning と同じ理由）。
+// 呼ぶのは runEncode の defer（成功時。commitEncoded と webhook 通知の後で、
+// 派生物 INSERT の直後ではない）と、既に active な encoded がある冪等スキップ
+// 経路。失敗はログのみ（markEncodeAttemptRunning と同じ理由）。
+//
+// 書き込みは job の ctx から切り離す（attemptWriteContext）。commitEncoded の
+// 成功後〜defer の間（webhook 通知を挟む）に ctx がキャンセルされると、job の
+// ctx では DELETE が失敗して running を主張する行が恒久的に残る --- この
+// プロファイルは active な encoded を持つので ListRecordingsMissingEncodes の
+// 候補から外れ、冪等スキップ経路の掃除も二度と走らない（不変条件 10:
+// 何も主張していない/嘘の行を残さない）。
 func (w *EncodeWorker) clearEncodeAttempt(ctx context.Context, recordingID int64, profile string) {
+	writeCtx, cancel := attemptWriteContext(ctx)
+	defer cancel()
 	q := sqlcgen.New(w.Pool)
-	if err := q.DeleteRecordingEncodeAttempt(ctx, sqlcgen.DeleteRecordingEncodeAttemptParams{
+	if err := q.DeleteRecordingEncodeAttempt(writeCtx, sqlcgen.DeleteRecordingEncodeAttemptParams{
 		RecordingID: recordingID,
 		Profile:     profile,
 	}); err != nil {

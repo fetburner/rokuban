@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"time"
 
@@ -182,19 +183,27 @@ type encodeAttemptRow struct {
 //     EnqueueMissingEncodesForKnownProfiles / ListRecordingsMissingEncodes は
 //     deleted_at IS NULL で絞っており、ごみ箱の録画にジョブは二度と投入されない
 //     （internal/worker/encode_reconcile.go 参照）。EncodedAssets/プレイヤーを
-//     trash で出さないのと揃え、試行状態も丸ごと省略する。running/failed の
-//     行が既にあれば（削除前に始まっていた試行）それはそのまま出す ---
-//     過去の観測は「来る」という断定ではないので規律の対象外。
+//     trash で出さないのと揃え、**running/failed の行が既にあっても
+//     （削除前に始まっていた試行）試行状態を丸ごと省略する** --- 削除後に
+//     その試行が本当に終わるかは api ロールには分からない（不変条件 1: api は
+//     worker に問い合わせない）。実装は先頭の DeletedAt ガード 1 つで、
+//     TestListRecordingsEncodeStatus_TrashOmitsEncodeStatus（running な試行行
+//     付き）と TestEncodeJobStatusesFromFields の「ごみ箱の録画は試行行が
+//     あっても丸ごと省略」が固定している。
 //  2. knownProfiles が non-nil（api ロールが config.encode.profiles を注入
 //     している）で、そのプロファイルが現在の config に存在しない。設定から
 //     消えたプロファイルは EnqueueMissingEncodesForKnownProfiles が投入対象から
 //     外している恒久的に満たせない集合（`ListUnsatisfiableEncodeProfiles` が
-//     数えているのと同じ集合）なので、試行行が無いものは省略する。knownProfiles
-//     が nil（テストの部分構成などで注入が無い）ときはこの判定をスキップする
-//     （既存の「nil = 検証オフ」規約と揃える）。
+//     数えているのと同じ集合）なので、試行行が無いものは省略する。ただし
+//     running/failed の行が既にあれば設定に残っていなくてもそのまま出す ---
+//     過去の観測は「来る」という断定ではないので規律の対象外
+//     （TestListRecordingsEncodeStatus_UnknownProfileOmittedWhenConfigured）。
+//     knownProfiles が nil（テストの部分構成などで注入が無い）ときはこの判定を
+//     スキップする（既存の「nil = 検証オフ」規約と揃える）。
 //
-// 戻り値は desired の並び順を保つ（EncodeProfiles と同じ順序で見えることを
-// 期待するテストのため）。
+// 戻り値は desired の並び順を保つ（TestEncodeJobStatusesFromFields_PreservesDesiredOrder。
+// 試行行の map を回して組み立てると順序が非決定になるので、EncodeProfiles を
+// 回す実装であることをテストが押さえている）。
 func encodeJobStatusesFromFields(r recordingListFields, done []string, knownProfiles map[string]struct{}) ([]EncodeJobStatus, error) {
 	if len(r.EncodeProfiles) == 0 {
 		return nil, nil
@@ -225,14 +234,19 @@ func encodeJobStatusesFromFields(r recordingListFields, done []string, knownProf
 			continue
 		}
 		if s, ok := attempts[profile]; ok {
-			state := EncodeJobStatusStateQueued
+			// 未知の state は queued に倒さず省略する。queued は「これから来る」
+			// という断定（上記 2 パターンの規律そのもの）なので、意味の分からない
+			// 観測を一番強い主張に写すのが一番危ない。recording_encode_attempts の
+			// CHECK 制約が running/failed に絞っているので現状は到達不能。
 			switch s {
 			case "running":
-				state = EncodeJobStatusStateRunning
+				statuses = append(statuses, EncodeJobStatus{Profile: profile, State: EncodeJobStatusStateRunning})
 			case "failed":
-				state = EncodeJobStatusStateFailed
+				statuses = append(statuses, EncodeJobStatus{Profile: profile, State: EncodeJobStatusStateFailed})
+			default:
+				slog.Warn("recordings: unknown encode attempt state, omitting",
+					"recording_id", r.ID, "profile", profile, "state", s)
 			}
-			statuses = append(statuses, EncodeJobStatus{Profile: profile, State: state})
 			continue
 		}
 		if knownProfiles != nil {

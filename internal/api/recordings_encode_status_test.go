@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 	"time"
 
@@ -339,6 +340,15 @@ func TestEncodeJobStatusesFromFields(t *testing.T) {
 			desired: []string{"vp9"},
 			want:    map[string]EncodeJobStatusState{"vp9": EncodeJobStatusStateQueued},
 		},
+		{
+			// CHECK 制約（state IN ('running','failed')）で現状は到達不能だが、
+			// 倒れる向きを固定する: 意味の分からない観測を「これから来る」
+			// （queued = 一番強い主張）に写さず省略する。
+			name:    "未知の state は queued に倒さず省略する",
+			desired: []string{"h264"},
+			attempt: map[string]string{"h264": "bogus"},
+			want:    map[string]EncodeJobStatusState{},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fields := recordingListFields{ID: 1, EncodeProfiles: tc.desired}
@@ -375,5 +385,46 @@ func TestEncodeJobStatusesFromFields(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestEncodeJobStatusesFromFields_PreservesDesiredOrder は encodeStatus の
+// 並びが desired（recordings.encode_profiles）の並びであることを固定する
+// （上の表テストは結果を map に潰すので順序を主張していない）。
+//
+// 落ち方: 試行行の map（attempts）を回して組み立てる実装に差し替えると、Go の
+// map 反復順が乱択なので 8 要素では実質必ず落ちる（一致確率 1/8! = 1/40320）。
+// 名前順にソートする実装でも落ちる（desired をアルファベット順でない並びに
+// してある）。
+func TestEncodeJobStatusesFromFields_PreservesDesiredOrder(t *testing.T) {
+	desired := []string{"zzz", "aaa", "mmm", "done", "bbb", "yyy", "ccc", "xxx", "ddd"}
+	attempt := map[string]string{
+		"zzz": "running", "aaa": "failed", "mmm": "running", "bbb": "failed",
+		"yyy": "running", "ccc": "failed", "xxx": "running", "ddd": "failed",
+	}
+	rows := make([]encodeAttemptRow, 0, len(attempt))
+	for profile, state := range attempt {
+		rows = append(rows, encodeAttemptRow{Profile: profile, State: state})
+	}
+	b, err := json.Marshal(rows)
+	if err != nil {
+		t.Fatalf("marshaling attempts: %v", err)
+	}
+
+	got, err := encodeJobStatusesFromFields(
+		recordingListFields{ID: 1, EncodeProfiles: desired, EncodeAttempts: b},
+		[]string{"done"}, nil)
+	if err != nil {
+		t.Fatalf("encodeJobStatusesFromFields: %v", err)
+	}
+
+	// 完了済み（done）だけが抜けた、desired と同じ並び。
+	want := []string{"zzz", "aaa", "mmm", "bbb", "yyy", "ccc", "xxx", "ddd"}
+	gotProfiles := make([]string, len(got))
+	for i, s := range got {
+		gotProfiles[i] = s.Profile
+	}
+	if !slices.Equal(gotProfiles, want) {
+		t.Errorf("profile order = %v, want %v (desired order, completed profiles removed)", gotProfiles, want)
 	}
 }
