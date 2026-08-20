@@ -287,26 +287,48 @@ export function HomePage() {
   const allEmpty = allSettled && !anyVisible
 
   /**
-   * needsPlaceholder は「まだ解決していないが、より下に来るはずの後続セクションが
-   * 先に解決して見えてしまっている」セクションの索引集合（issue #309。読み込み中
-   * のレイアウトシフト対策）。
+   * showReservationPlaceholder は「まだ解決していない『今夜〜明日の予約』の手前で、
+   * より下に来るはずの後続セクション（警告・直近の完了）が先に解決して見えて
+   * しまっている」ときに立つ（issue #309。読み込み中のレイアウトシフト対策）。
    *
    * 4 本のクエリは順不同で解決する（`GET /api/reservations` は絞り込みが無く
    * 遅くなりやすい一方、`GET /api/recordings?status=recording` は速いことが多い、
    * というように応答順は保証されない）。表示順は常に固定（いま録画中 → 今夜〜明日
    * の予約 → 警告 → 直近の完了）なので、後続のセクションが先に見えている状態で
    * 先行のセクションが後から解決すると、その節が**既に描画済みの後続セクションの
-   * 上に挿し込まれ**、後続を下へ押す。Layout Instability API は「既に描画済みの
-   * 要素が動く」ことだけを数える（新しく挿し込まれた要素自身は前の位置を持たない
-   * ので、それ自体は動きとして数えない）ので、この「上に挿し込まれる」形だけが
-   * 実際に CLS を作る --- 末尾への追記（後ろに何も描画されていない位置に現れる）
-   * は既存の要素を一切動かさないので無償。
+   * 上に挿し込まれ**、後続を下へ押す。
+   *
+   * **Layout Instability API は「既に描画済みの要素が動くこと」を全部数える** ---
+   * 新しい要素の挿入で既描画の要素が押し下げられる場合も、既描画の要素の消失・
+   * 縮小で後続が引き上げられる場合も同じだけ数える（新しく挿し込まれた要素自身は
+   * 前の位置を持たないので、それ自体が「動いた」と数えられることはない）。無償
+   * なのは、後ろに既描画の要素が無い位置での出現・消滅・成長だけ（レビュー指摘。
+   * 以前のコメントは「上に挿し込まれる形だけが CLS を作る」と書いており、消失
+   * 側を測っていなかった）。
    *
    * 対策は、後続に既に見えているセクションがある間だけ、まだ解決していない先行
    * セクションに行数ぶんのプレースホルダを先に描いておくこと --- 実データが
    * 届いたときは「無 → 実データの高さ」ではなく「プレースホルダ → 実データの
-   * 高さ」の差分に縮む。後続に何も見えていない間はプレースホルダを出さない
-   * （末尾への追記のまま無償にしておく）。
+   * 高さ」の差分に縮む。
+   *
+   * **この賭けは「0 件で解決しても構わない」と言えるセクションでしか成立しない。**
+   * プレースホルダは 0 件で解決すると実データに置き換わらずただ消えるので、消えた
+   * 分だけ後続の既描画セクションが引き上がる --- 上記のとおりこれも「既描画要素の
+   * 移動」として数えられ、対策のつもりが新しいシフトを作る（レビューで実測:
+   * 「いま録画中」「警告」がどちらも 0 件で解決するシナリオで 0.000002 → 0.1107、
+   * しきい値 0.10 を超えて悪化した）。
+   *
+   * **「いま録画中」「警告」にはプレースホルダを出さない。** `warningsPending`
+   * は「直近の完了」（表示順で最後）の解決を含むので、警告の解決は「直近の完了」
+   * より早くならない --- 正常なサーバーでは警告は 0 件が既定状態なので、出すたび
+   * にほぼ必ず賭けが外れる。「いま録画中」も日中の大半は 0 件。**「今夜〜明日の
+   * 予約」はアクティブな録画サーバーでは 0 件が相対的に稀という判断でこの賭けを
+   * 残すが、0 件になれば同じリスクが残ることは未検証で承知のうえ。** 賭けを完全
+   * に無くすには「表示順どおりの prefix 描画」（後続セクションを、先行セクション
+   * が解決するまで描かない）まで踏む必要があり、それは
+   * `docs/frontend/home.md`「セクションの可視性は個別に」を変える設計判断になる
+   * ためこの PR の範囲では採らない。「直近の完了」は表示順の最後尾で、後続に
+   * 既描画の要素が無いのでそもそも賭けが要らない。
    *
    * **`<section>` と見出し（`<h2>`）はこのプレースホルダに含めない。** そのセクション
    * 自身のクエリが解決して`〜SectionVisible` が立つまでは見出しも出さない ---
@@ -322,15 +344,8 @@ export function HomePage() {
    * の可視性は個別に」）。ここで足すのはこのプレースホルダの表示だけで、実データは
    * これまでと同じくそのセクション自身のクエリが解決するまで出さない。
    */
-  const sectionOrder = [
-    { pending: recordingQuery.isPending, visible: recordingSectionVisible },
-    { pending: reservationsQuery.isPending, visible: reservationSectionVisible },
-    { pending: warningsPending, visible: warningSectionVisible },
-    { pending: finishedQuery.isPending, visible: finishedSectionVisible },
-  ]
-  const needsPlaceholder = sectionOrder.map(
-    (s, i) => s.pending && sectionOrder.slice(i + 1).some((later) => later.visible),
-  )
+  const showReservationPlaceholder =
+    reservationsQuery.isPending && (warningSectionVisible || finishedSectionVisible)
 
   return (
     <>
@@ -343,7 +358,6 @@ export function HomePage() {
         <EmptyState>表示できる項目がありません</EmptyState>
       ) : (
         <div className="flex flex-col divide-y divide-border">
-          {!recordingSectionVisible && needsPlaceholder[0] && <SectionSkeleton rows={2} />}
           {recordingSectionVisible && (
             <section aria-labelledby="home-recording">
               <h2 id="home-recording" className="px-4 pt-4 pb-2 text-sm font-semibold">
@@ -361,7 +375,7 @@ export function HomePage() {
             </section>
           )}
 
-          {!reservationSectionVisible && needsPlaceholder[1] && <SectionSkeleton rows={2} />}
+          {showReservationPlaceholder && <SectionSkeleton rows={2} />}
           {reservationSectionVisible && (
             <section aria-labelledby="home-reservations">
               <h2 id="home-reservations" className="px-4 pt-4 pb-2 text-sm font-semibold">
@@ -391,7 +405,6 @@ export function HomePage() {
             </section>
           )}
 
-          {!warningSectionVisible && needsPlaceholder[2] && <SectionSkeleton rows={2} rowClassName="h-8" />}
           {warningSectionVisible && (
             <section aria-labelledby="home-warnings">
               <h2 id="home-warnings" className="px-4 pt-4 pb-2 text-sm font-semibold">
@@ -405,7 +418,6 @@ export function HomePage() {
             </section>
           )}
 
-          {!finishedSectionVisible && needsPlaceholder[3] && <SectionSkeleton rows={2} />}
           {finishedSectionVisible && (
             <section aria-labelledby="home-finished">
               <h2 id="home-finished" className="px-4 pt-4 pb-2 text-sm font-semibold">
@@ -431,18 +443,23 @@ export function HomePage() {
 }
 
 /**
- * SectionSkeleton はホームの各セクションで `needsPlaceholder`（上記）が立った
- * ときの読み込み中プレースホルダ。**見出し（`<h2>`）は含めない** ---
+ * SectionSkeleton はホームの「今夜〜明日の予約」で `showReservationPlaceholder`
+ * （上記）が立ったときの読み込み中プレースホルダ。**見出し（`<h2>`）は含めない** ---
  * `<section>` と見出しはそのセクション自身のクエリが解決して実データが確定する
  * まで出さない（見出しの出現を「解決した」目印に使っている既存のテストと、
  * 「0 件のセクションは文言も出さず消す」という既存の意味の両方を保つため）。
- * このプレースホルダの役目は、行数ぶんのおおよその高さを先に確保しておくことだけ。
+ *
+ * `rows`（行数）は実際の予約件数とは無関係の**固定 2 行**（解決していない
+ * セクションの実際の行数はまだ分からないので、行数ぶんの高さを予約すること自体
+ * できない）。高さ（`h-14`）も実測ではなく `ReservationRow` の `min-h-14` に
+ * 寄せただけの恣意的な値 --- 他の恣意的な上限（`RESERVATION_LIMIT` 等）と同じ
+ * 性質で、実データの高さとぴったり一致することは保証しない。
  */
-function SectionSkeleton({ rows, rowClassName = 'h-14' }: { rows: number; rowClassName?: string }) {
+function SectionSkeleton({ rows }: { rows: number }) {
   return (
     <div className="flex flex-col gap-2 px-4 pb-4">
       {Array.from({ length: rows }, (_, i) => (
-        <Skeleton key={i} className={rowClassName} />
+        <Skeleton key={i} className="h-14" />
       ))}
     </div>
   )
