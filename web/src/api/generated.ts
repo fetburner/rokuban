@@ -788,6 +788,12 @@ export interface Reservation {
   state: ReservationState;
   overrides?: ReservationOverrides;
   title: string;
+  /**
+     * 番組スナップショット（program_snapshots.service_name）由来のチャンネル
+     * 表示名。同じタイトルが日付・局違いで並ぶと区別できないため（issue #302）、
+     * recordings と同じ形でここにも載せる。
+     */
+  serviceName: string;
   startAt: string;
   durationMs: number;
   createdAt: string;

@@ -73,6 +73,7 @@ function stubDetailFetch() {
     source: 'manual',
     state: 'active',
     title: '予約詳細テスト番組',
+    serviceName: 'テスト放送局',
     startAt: '2026-01-01T00:00:00Z',
     durationMs: 1_800_000,
     createdAt: '2026-01-01T00:00:00Z',

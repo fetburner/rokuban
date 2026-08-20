@@ -47,6 +47,7 @@ function reservation(overrides: Partial<Reservation> = {}): Reservation {
     source: 'rule',
     state: 'active',
     title: '予約',
+    serviceName: 'テスト局',
     startAt: new Date(Date.now() + 30 * 60_000).toISOString(),
     durationMs: 3600_000,
     createdAt: new Date().toISOString(),

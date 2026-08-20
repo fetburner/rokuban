@@ -46,16 +46,21 @@ export function ReservationsPage() {
           {reservations.map((r) => {
             // 行本体のリンクの accessible name。子要素を持たない絶対配置の
             // リンク（下記）にするため、children から自動で組めない分を明示する。
-            // skip / 容量バッジのテキストは含めない --- それらは行の中の通常
-            // フロー要素として残り、ブラウズ（矢印キー走査）では読めるので、
-            // 1 つの長いリンク名に押し込む必要はない。
+            // 採否の基準は「行を一意に識別できるか」--- 局名は同タイトル・別局
+            // （同名ニュースの裏かぶり）を分ける唯一の情報なので、時刻・尺・state と
+            // 並べてここに入れる（issue #302）。skip / 容量バッジの文言は識別情報
+            // ではなく、かつ行の中の通常フロー要素として残ってブラウズ（矢印キー
+            // 走査）では読めるので、1 つの長いリンク名に押し込む必要はない。
             const rowLabel = [
               r.title || '（番組名なし）',
+              r.serviceName,
               formatDateTime(r.startAt),
               formatDuration(r.durationMs),
               r.state === 'active' ? null : stateLabels[r.state],
             ]
-              .filter((s): s is string => s !== null)
+              // 空文字も落とす（`serviceName` は API では required だが空文字を
+              // 禁じてはいないので、裸の区切りが名前に残らないようにする）
+              .filter((s): s is string => s !== null && s !== '')
               .join(' ')
 
             return (
@@ -84,7 +89,11 @@ export function ReservationsPage() {
                 />
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-sm">{r.title || '（番組名なし）'}</div>
-                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <div
+                    data-testid="reservation-secondary"
+                    className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground"
+                  >
+                    <span className="shrink-0">{r.serviceName}</span>
                     <span className="shrink-0">{formatDateTime(r.startAt)}</span>
                     <span className="shrink-0">{formatDuration(r.durationMs)}</span>
                     <StateBadge state={r.state} />
@@ -106,7 +115,10 @@ export function ReservationsPage() {
                     />
                   </div>
                 </div>
-                <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
+                <ChevronRight
+                  data-testid="reservation-chevron"
+                  className="size-4 shrink-0 text-muted-foreground"
+                />
               </li>
             )
           })}

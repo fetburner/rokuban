@@ -1,4 +1,4 @@
-import { screen, waitFor } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { CapacityOverage, CircuitBreaker, Recording, Reservation } from '@/api/generated'
@@ -79,6 +79,7 @@ function reservation(id: number, title: string, startOffsetMs: number, overrides
     source: 'manual',
     state: 'active',
     title,
+    serviceName: 'テスト局',
     startAt: iso(startOffsetMs),
     durationMs: HOUR,
     createdAt: iso(-HOUR),
@@ -305,6 +306,29 @@ describe('ホーム: 今夜〜明日の予約の窓', () => {
     expect(screen.queryByText('予約 11')).not.toBeInTheDocument()
     const link = screen.getByRole('link', { name: '予約をすべて見る' })
     expect(link).toHaveAttribute('href', '/reservations')
+  })
+})
+
+// issue #302: 同じタイトルの番組が日付・局違いで並ぶと局名なしでは区別でき
+// ない。タイトルが重複するため `getByText` は使わず、`findAllByText` で
+// 得た 2 つのタイトル要素からそれぞれの行（`<li>`）を辿って局名を確認する。
+describe('ホーム: 今夜〜明日の予約に局名を出す（issue #302）', () => {
+  it('同タイトル・別局の予約を局名で区別できる', async () => {
+    stubApi({
+      reservations: [
+        reservation(1, '同じ番組名', 2 * HOUR, { serviceName: 'NHK総合' }),
+        reservation(2, '同じ番組名', 4 * HOUR, { serviceName: 'NHK Eテレ' }),
+      ],
+    })
+    renderHome()
+
+    const titles = await screen.findAllByText('同じ番組名')
+    expect(titles).toHaveLength(2)
+    const rows = titles.map((el) => el.closest('li'))
+    expect(rows[0]).not.toBeNull()
+    expect(rows[1]).not.toBeNull()
+    expect(within(rows[0]!).getByText('NHK総合')).toBeInTheDocument()
+    expect(within(rows[1]!).getByText('NHK Eテレ')).toBeInTheDocument()
   })
 })
 

@@ -431,6 +431,7 @@ function ReservationRow({ reservation }: { reservation: Reservation }) {
       >
         <span className="truncate text-sm">{reservation.title || '（番組名なし）'}</span>
         <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+          <span className="shrink-0">{reservation.serviceName}</span>
           <span className="shrink-0">{formatDateTime(reservation.startAt)}</span>
           <span className="shrink-0">{formatDuration(reservation.durationMs)}</span>
           <ReservationSkipBadge reservation={reservation} />

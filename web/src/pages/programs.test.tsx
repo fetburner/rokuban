@@ -152,6 +152,7 @@ function reservation(id: number, programId: number, title: string, site = 'defau
     source: 'manual',
     state: 'active',
     title,
+    serviceName: 'テスト局',
     startAt: new Date(origin + 3_600_000).toISOString(),
     durationMs: 3_600_000,
     createdAt: new Date(origin).toISOString(),
