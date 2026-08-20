@@ -1462,7 +1462,7 @@ components:
         description:
           type: string
         startAt:
-          description: 番組の放送開始時刻
+          description: 番組の放送開始時刻。常に UTC（"Z" 終端の RFC3339）で返す。
           type: string
           format: date-time
         durationMs:
@@ -1472,10 +1472,11 @@ components:
           type: string
           enum: [recording, finished, canceled, failed]
         startedAt:
-          description: 録画の実開始時刻
+          description: 録画の実開始時刻。常に UTC（"Z" 終端の RFC3339）で返す。
           type: string
           format: date-time
         endedAt:
+          description: 録画の実終了時刻。常に UTC（"Z" 終端の RFC3339）で返す。
           type: string
           format: date-time
         sizeBytes:
@@ -1538,10 +1539,11 @@ components:
           description: |
             論理削除時刻。ごみ箱一覧（`trash=true`）と `GET /api/recordings/{id}`
             （ごみ箱の録画も 200 で返す）でのみ出現する。通常一覧・生きている
-            行では省略（NULL）。
+            行では省略（NULL）。常に UTC（"Z" 終端の RFC3339）で返す。
           type: string
           format: date-time
         createdAt:
+          description: 常に UTC（"Z" 終端の RFC3339）で返す。
           type: string
           format: date-time
 
@@ -1616,7 +1618,8 @@ components:
         observedAt:
           description: |
             進捗を最後に観測した時刻。`state = transferring` のときだけ付く。
-            現在時刻との差が開いていれば転送は停滞している。
+            現在時刻との差が開いていれば転送は停滞している。常に UTC
+            （"Z" 終端の RFC3339）で返す。
           type: string
           format: date-time
 
