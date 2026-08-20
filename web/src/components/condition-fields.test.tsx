@@ -116,7 +116,7 @@ describe('ConditionFields のサービスチップ', () => {
     expect(findChipByText(group, label.c)).toBeInTheDocument()
   })
 
-  it('補助ラベルの付いたチップを押すと、そのサービスだけが選択・解除される', async () => {
+  it('補助ラベルの付いたチップを押すと、そのサービスだけが選択される', async () => {
     stubServicesFetch()
     const onChange = vi.fn()
     renderInRouter(<ConditionFields draft={emptyDraft()} onChange={onChange} />)
@@ -129,5 +129,53 @@ describe('ConditionFields のサービスチップ', () => {
     const next = updater(emptyDraft())
     // 押したのは serviceId 1033（同名・同リモコン番号の 1032 ではない）。
     expect(next.services).toEqual([{ networkId: 32676, serviceId: 1033 }])
+  })
+
+  it('補助ラベルの付いたチップを押すと、そのサービスだけが解除される', async () => {
+    stubServicesFetch()
+    const onChange = vi.fn()
+    // 1033（label.b）だけを選択済みにしておく。1032（label.a）は同名・同
+    // リモコン番号の隣なので、filter の述語が (networkId, serviceId) の
+    // 組ではなく一方だけを見ていると、label.a を押したときに 1033 まで
+    // 一緒に消える取り違えを次のテストで捕まえられる。
+    const draft: SearchDraft = {
+      ...emptyDraft(),
+      services: [{ networkId: 32676, serviceId: 1033 }],
+    }
+    renderInRouter(<ConditionFields draft={draft} onChange={onChange} />)
+
+    const group = await screen.findByRole('group', { name: 'サービス' })
+    fireEvent.click(findChipByText(group, label.b))
+
+    expect(onChange).toHaveBeenCalledTimes(1)
+    const updater = onChange.mock.calls[0][0] as (d: SearchDraft) => SearchDraft
+    const next = updater(draft)
+    expect(next.services).toEqual([])
+  })
+
+  it('選択済みのチップの隣（同名・同リモコン番号）を押しても、選択済みのチップは解除されない', async () => {
+    stubServicesFetch()
+    const onChange = vi.fn()
+    const draft: SearchDraft = {
+      ...emptyDraft(),
+      services: [{ networkId: 32676, serviceId: 1033 }],
+    }
+    renderInRouter(<ConditionFields draft={draft} onChange={onChange} />)
+
+    const group = await screen.findByRole('group', { name: 'サービス' })
+    fireEvent.click(findChipByText(group, label.a))
+
+    expect(onChange).toHaveBeenCalledTimes(1)
+    const updater = onChange.mock.calls[0][0] as (d: SearchDraft) => SearchDraft
+    const next = updater(draft)
+    // 1033 は選択済みのまま残り、1032 が追加される（filter の述語の取り違えなら
+    // ここで 1033 も一緒に消えるか、1032 が追加されない）。
+    expect(next.services).toEqual(
+      expect.arrayContaining([
+        { networkId: 32676, serviceId: 1033 },
+        { networkId: 32676, serviceId: 1032 },
+      ]),
+    )
+    expect(next.services).toHaveLength(2)
   })
 })

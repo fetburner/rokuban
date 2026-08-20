@@ -253,7 +253,10 @@ const serviceKey = (s: Service) => `${s.networkId}-${s.serviceId}`
  */
 const disambiguationParts: ((s: Service) => string)[] = [
   (s) =>
-    s.remoteControlKeyId > 0
+    // リモコン番号は地上波の資源同定（channel-picker.tsx のバッジと同じ判定）。
+    // BS/CS は mirakc が 0 を返す（実測はテスト「リモコン番号を持たない BS/CS」
+    // 参照）ため今のところ通らないが、判定は明示しておく。
+    s.channelType === 'GR' && s.remoteControlKeyId > 0
       ? `${channelTypeLabel(s.channelType)} ${s.remoteControlKeyId}`
       : channelTypeLabel(s.channelType),
   (s) => s.channel,

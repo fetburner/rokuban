@@ -318,6 +318,22 @@ describe('serviceDisambiguator', () => {
     expect(disambiguate(services[1])).toBe('CS')
   })
 
+  // channel-picker.tsx のリモコン番号バッジは `channelType === 'GR'` も見て
+  // いる（BS/CS には意味を持たない番号のため）。同じ材料を使う以上、こちらの
+  // 判定も揃える。mirakc は BS/CS に 0 を返す（上のコメント参照）ので今の
+  // 主経路では踏まないが、`channelType === 'GR'` を落として `> 0` だけに
+  // 戻すと、mirakc が将来 BS/CS に非ゼロを返した場合にここだけ黒く落ちる。
+  it('BS がリモコン番号を持っていても番号を出さない（GR 限定の判定）', () => {
+    const services = [
+      service({ serviceId: 101, channelType: 'BS', remoteControlKeyId: 4, channel: 'BS15_0' }),
+      service({ serviceId: 102, channelType: 'BS', remoteControlKeyId: 4, channel: 'BS23_0' }),
+    ]
+    const disambiguate = serviceDisambiguator(services)
+
+    expect(disambiguate(services[0])).toBe('BS ・ BS15_0')
+    expect(disambiguate(services[1])).toBe('BS ・ BS23_0')
+  })
+
   it('渡した配列とは別オブジェクトでも同じ (networkId, serviceId) なら引ける', () => {
     // 引き当てをオブジェクト同一性でやると、`useListServices` の再取得で
     // 別オブジェクトになった瞬間にラベルが全部消える。キーはチップの identity
