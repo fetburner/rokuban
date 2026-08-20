@@ -168,6 +168,38 @@ API は後方互換を保つ（docs/api/rest.md §契約の保護）--- 旧バ�
 対象にしてはならない** --- `record_sync` 行が消えない以上「未完了」は恒久的に残り
 うるので、失敗録画が 1 件でも読み込み済みページにあればポーリングが恒久化する。
 
+## エンコードの待ち・実行中・失敗を画面に出す
+
+`Recording.encodeProfiles`（desired）と `Recording.encodedAssets`（observed、
+再生可能なもの）の差だけでは「まだ来ていない」としか言えず、いま走っているのか
+失敗して再試行待ちなのかを区別できなかった。`Recording.encodeStatus`
+（openapi.yaml。desired のうち observed にまだ現れていないプロファイルだけを
+`queued` / `running` / `failed` のいずれかで列挙する）をバッジで出す
+（`EncodeStatusBadges`。一覧の行と単体ページのヘッダー、`IngestBadge` の隣）。
+
+- **`%` は出さない。** 進捗の数値は ffmpeg の `-progress pipe:1` からログにしか
+  出しておらず（`internal/worker/encode.go` の `parseFFmpegProgress`。値は
+  計算に使っていない）、出すと決めるならそれを読む API と同じ PR で決める
+- **プロファイル未設定・全プロファイル完了済みの録画では `encodeStatus` が
+  省略される**ので、`EncodeStatusBadges` は何も描かない --- 機能しないキュー
+  画面や空の進捗バーを出さない判断はサーバー側のこの省略で表現されており、
+  フロントはそれをそのまま描くだけでよい
+- **`failed` だけ destructive**（`bg-destructive/10` + `text-destructive`。
+  `DropBadges` と同じ判断: 実害があるので色で目立たせる）。`queued` /
+  `running` は `IngestBadge` と同じ `bg-muted`（状況の説明であって信号ではない。
+  [design.md](design.md)「色は信号のみ」）
+- **バッジにはプロファイル名を前置する**（`h264: エンコード失敗`）。事後追加
+  （issue #133）で複数プロファイルを依頼した録画では「どのプロファイルが
+  失敗したか」が言えないと運用判断に使えない（ドロップ統計の種別列と同じ判断）
+- **`failed` は「二度と来ない」の断定ではない。** 恒久的に失敗し続けるプロファイル
+  では `EncodeReconcileWorker` が 15 分ごとに再投入するため、`failed` と
+  `queued`/`running` を繰り返すことがある（サーバー側の判断の詳細は
+  [schema/recordings.md](../schema/recordings.md) の `recording_encode_attempts`
+  節）
+- ホームに出す場合は失敗録画（#301）と同じ「異常」の置き場に合わせる想定だが、
+  本機能自体はホームへの統合を含まない --- 一覧・単体ページで沈黙と区別できれば
+  足りるため
+
 ## ドロップ統計はバッジ + 展開
 
 録画一覧に drop / error / scrambled を色付きバッジで出す。**0 のものは出さない**ので

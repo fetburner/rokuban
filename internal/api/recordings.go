@@ -54,6 +54,11 @@ type recordingListFields struct {
 	// AvailableEncodedAssets（observed、active のみ）とは異なり、pending な
 	// ジョブのプロファイルも含む。事後追加（issue #133）で増える唯一の経路。
 	EncodeProfiles []string
+	// EncodeAttempts は recording_encode_attempts（衛星表）の行を jsonb_agg
+	// した生 JSON（issue #316）。`[]`（試行中/失敗中のプロファイルが無い）と
+	// nil を区別しない --- どちらも encodeJobStatusesFromFields で「完了して
+	// いないプロファイルはすべて queued」という結果になる。
+	EncodeAttempts json.RawMessage
 
 	// HasOriginalAsset は kind='original' の media_assets 行が **state を問わず**
 	// 存在するか（issue #212）。OriginalSizeBytes（state <> 'deleted' の行だけを
@@ -148,6 +153,69 @@ type encodedAssetRow struct {
 	SizeBytes int64  `json:"sizeBytes"`
 }
 
+// encodeAttemptRow は encode_attempts（jsonb_agg）1 要素の JSON 形。
+// jsonb_build_object のキー（'profile' / 'state'）と一致させる。
+type encodeAttemptRow struct {
+	Profile string `json:"profile"`
+	State   string `json:"state"`
+}
+
+// encodeJobStatusesFromFields は完了していないエンコードプロファイルの試行
+// 状態を一覧行の素の事実から導出する（issue #316）。**列に焼いた値ではなく
+// 毎回の導出**（不変条件 9: recording_encode_attempts の生の行から
+// state を再構成するだけで、queued かどうかまで含めた最終形は保存しない）。
+//
+// 対象は `encodeProfiles`（desired）のうち `encodedProfiles`（observed、
+// 引数 done として渡す）にまだ現れていないプロファイルだけ。完了した
+// プロファイルはここに出さない --- `encodedAssets` の存在が「完了」を
+// 表すので、同じ情報を 2 つの配列で主張しない。
+//
+//   - `recording_encode_attempts` に行があれば、その `state`（running/failed）
+//     をそのまま使う
+//   - 行が無ければ `queued`（試行がまだ始まっていない）
+//
+// 戻り値は desired の並び順を保つ（EncodeProfiles と同じ順序で見えることを
+// 期待するテストのため）。
+func encodeJobStatusesFromFields(r recordingListFields, done []string) ([]EncodeJobStatus, error) {
+	if len(r.EncodeProfiles) == 0 {
+		return nil, nil
+	}
+
+	doneSet := make(map[string]struct{}, len(done))
+	for _, p := range done {
+		doneSet[p] = struct{}{}
+	}
+
+	attempts := make(map[string]string)
+	if len(r.EncodeAttempts) > 0 {
+		var rows []encodeAttemptRow
+		if err := json.Unmarshal(r.EncodeAttempts, &rows); err != nil {
+			return nil, fmt.Errorf("decoding encode_attempts for recording %d: %w", r.ID, err)
+		}
+		for _, row := range rows {
+			attempts[row.Profile] = row.State
+		}
+	}
+
+	var statuses []EncodeJobStatus
+	for _, profile := range r.EncodeProfiles {
+		if _, ok := doneSet[profile]; ok {
+			continue
+		}
+		state := EncodeJobStatusStateQueued
+		if s, ok := attempts[profile]; ok {
+			switch s {
+			case "running":
+				state = EncodeJobStatusStateRunning
+			case "failed":
+				state = EncodeJobStatusStateFailed
+			}
+		}
+		statuses = append(statuses, EncodeJobStatus{Profile: profile, State: state})
+	}
+	return statuses, nil
+}
+
 // recordingFromListFields は一覧行を API の Recording に写す。
 // includeDeletedAt が true のときだけ deletedAt を載せる（ごみ箱一覧向け）。
 func recordingFromListFields(r recordingListFields, includeDeletedAt bool) (Recording, error) {
@@ -200,6 +268,7 @@ func recordingFromListFields(r recordingListFields, includeDeletedAt bool) (Reco
 	// ORDER BY を書き忘れたときに添字がずれる drift が起こり得るが、
 	// 同じ `rows` から Go 側で両方を導出する形ではその種の drift は構造的に
 	// 起こらない。
+	var encodedProfileNames []string
 	if len(r.AvailableEncodedAssets) > 0 {
 		var rows []encodedAssetRow
 		if err := json.Unmarshal(r.AvailableEncodedAssets, &rows); err != nil {
@@ -214,6 +283,7 @@ func recordingFromListFields(r recordingListFields, includeDeletedAt bool) (Reco
 			}
 			rec.EncodedAssets = &assets
 			rec.EncodedProfiles = &profiles
+			encodedProfileNames = profiles
 		}
 	}
 	// 凍結された desired 一覧。空なら省略（omitempty）。UI が「追加済み」を
@@ -221,6 +291,15 @@ func recordingFromListFields(r recordingListFields, includeDeletedAt bool) (Reco
 	if len(r.EncodeProfiles) > 0 {
 		profiles := slices.Clone(r.EncodeProfiles)
 		rec.EncodeProfiles = &profiles
+	}
+	// 完了していないエンコードプロファイルの試行状態（issue #316）。空なら
+	// 省略（プロファイル未設定・全プロファイル完了済みのどちらでも省略）。
+	statuses, err := encodeJobStatusesFromFields(r, encodedProfileNames)
+	if err != nil {
+		return Recording{}, err
+	}
+	if len(statuses) > 0 {
+		rec.EncodeStatus = &statuses
 	}
 	if len(r.QualityEvents) > 0 {
 		var events []map[string]any

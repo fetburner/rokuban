@@ -37,6 +37,7 @@ import {
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import { shouldAutoLoadNextPage, shouldShowLoadMoreButton } from '@/lib/auto-load'
+import { encodeJobStatusLabel } from '@/lib/encode-status'
 import { formatBytes, formatDateTime, formatDuration } from '@/lib/format'
 import {
   hasLiveIngestProgress,
@@ -386,6 +387,7 @@ function RecordingRow({
             <span className="shrink-0">削除 {formatDateTime(recording.deletedAt)}</span>
           )}
           {recording.dropSummary && <DropBadges summary={recording.dropSummary} />}
+          <EncodeStatusBadges recording={recording} />
         </div>
       </div>
       <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
@@ -514,6 +516,45 @@ function DropBadges({ summary }: { summary: DropSummary }) {
           className="shrink-0 rounded bg-destructive/10 px-1.5 py-0.5 text-[0.65rem] text-destructive"
         >
           {b.label} {b.value.toLocaleString()}
+        </span>
+      ))}
+    </>
+  )
+}
+
+/**
+ * EncodeStatusBadges は完了していないエンコードプロファイルの試行状態を出す
+ * （issue #316。`Recording.encodeStatus`）。プロファイルを設定していない録画・
+ * 全プロファイルが完了済みの録画では `encodeStatus` が省略され、このコンポーネント
+ * は何も出さない --- 機能しないキュー画面や空の進捗バーを出さない判断（下記
+ * `docs/frontend/recordings.md`）はサーバー側の省略で表現されており、ここは
+ * それをそのまま描くだけ。
+ *
+ * `failed` だけ destructive（`DropBadges` と同じ判断: 実害があるので色で
+ * 目立たせる）。`queued` / `running` は `IngestBadge` と同じ `bg-muted`
+ * （状況の説明であって信号ではない。docs/frontend/design.md「色は信号のみ」）。
+ *
+ * プロファイル名を前置するのは、事後追加（issue #133）で複数プロファイルを
+ * 依頼した録画では「どのプロファイルが失敗したか」が言えないと運用判断に
+ * 使えないため（ドロップ統計の種別列と同じ判断）。
+ */
+export function EncodeStatusBadges({ recording }: { recording: Recording }) {
+  const statuses = recording.encodeStatus ?? []
+  if (statuses.length === 0) return null
+
+  return (
+    <>
+      {statuses.map((s) => (
+        <span
+          key={s.profile}
+          className={cn(
+            'shrink-0 rounded px-1.5 py-0.5 text-[0.65rem]',
+            s.state === 'failed'
+              ? 'bg-destructive/10 text-destructive'
+              : 'bg-muted text-foreground',
+          )}
+        >
+          {s.profile}: {encodeJobStatusLabel(s.state)}
         </span>
       ))}
     </>

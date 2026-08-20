@@ -174,6 +174,14 @@ type Recording struct {
 	GenreLv1          []int16
 }
 
+type RecordingEncodeAttempt struct {
+	RecordingID int64
+	Profile     string
+	State       string
+	Error       *string
+	AttemptedAt time.Time
+}
+
 type RecordingEncodePolicy struct {
 	RecordingID    int64
 	KeepOriginal   string

@@ -8,7 +8,7 @@ import { ErrorState, ListSkeleton } from '@/components/page'
 import { Button } from '@/components/ui/button'
 import { formatBytes, formatDateTime, formatDuration } from '@/lib/format'
 import { hasLiveIngestProgress, ingestRefetchIntervalMs } from '@/lib/ingest'
-import { IngestBadge, RecordingDetail, StatusBadge } from '@/pages/recordings'
+import { EncodeStatusBadges, IngestBadge, RecordingDetail, StatusBadge } from '@/pages/recordings'
 
 /**
  * recordingDetailQueryKey は単体ページ自身のクエリキー。
@@ -117,6 +117,7 @@ export function RecordingDetailPage() {
               <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
                 <StatusBadge status={recording.status} />
                 <IngestBadge recording={recording} />
+                <EncodeStatusBadges recording={recording} />
                 <span className="shrink-0">{recording.serviceName}</span>
                 <span className="shrink-0">{formatDateTime(recording.startAt)}</span>
                 <span className="shrink-0">{formatDuration(recording.durationMs)}</span>
