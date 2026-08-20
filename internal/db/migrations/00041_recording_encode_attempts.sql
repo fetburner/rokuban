@@ -25,8 +25,12 @@
 -- 「encoded が無い」という観測が続く限り 15 分ごとに再投入し続けるが、これは
 -- 録画単位の恒久失敗（入力ファイルの破損など）に限る --- 恒久失敗の代表格
 -- （設定から消えたプロファイル）は known_profiles の絞り込みで投入対象から
--- 除外しているので、そちらは一度失敗させたあとは再投入されない
--- （internal/worker/encode_reconcile.go）。どちらにしても river_job の「いま」の
+-- 除外しているので、そちらは River のリトライ（EncodeJobArgs.InsertOpts は
+-- MaxAttempts を上書きしていないので既定の 25 回）を使い切って discarded に
+-- なった後は再投入されない（internal/worker/encode_reconcile.go）。「一度
+-- 失敗したら再投入されない」ではない --- EncodeWorker は unknown profile を
+-- 普通のエラーで返すだけなので、その 25 回の各試行で running を書き直す。
+-- どちらにしても river_job の「いま」の
 -- state だけでは「一度も失敗していない」と「直前に失敗して再投入された直後」を
 -- 見分けられない。この表は EncodeWorker が試行の開始・成功・失敗をそのタイミング
 -- で明示的に書くので、river の内部状態（リトライ回数・バックオフ）を一切

@@ -370,6 +370,12 @@ function RecordingRow({
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
           <StatusBadge status={recording.status} />
           <IngestBadge recording={recording} />
+          {/* エンコード失敗は StatusBadge / IngestBadge と同じ「この録画の
+              パイプラインがどこで止まっているか」なので隣に置く。メタデータ列の
+              末尾（DropBadges の後）に置くと、狭い端末で失敗バッジが 2 行目
+              以降に回る（親は flex-wrap なので隠れはしない）。単体ページの
+              ヘッダーも同じ並び。docs/frontend/recordings.md */}
+          <EncodeStatusBadges recording={recording} />
           {showSite && (
             /* 文字色は text-foreground を明示（bg-muted 小バッジの合成後コントラスト
                対策。docs/frontend/design.md「コントラストは毎回測る」）。 */
@@ -387,7 +393,6 @@ function RecordingRow({
             <span className="shrink-0">削除 {formatDateTime(recording.deletedAt)}</span>
           )}
           {recording.dropSummary && <DropBadges summary={recording.dropSummary} />}
-          <EncodeStatusBadges recording={recording} />
         </div>
       </div>
       <ChevronRight className="size-4 shrink-0 text-muted-foreground" />

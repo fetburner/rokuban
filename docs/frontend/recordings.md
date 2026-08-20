@@ -193,9 +193,10 @@ API は後方互換を保つ（docs/api/rest.md §契約の保護）--- 旧バ�
   運用判断に使えない（ドロップ統計の種別列と同じ判断）
 - **`queued` は「来る根拠」があるものしか出ない**（サーバー側の導出。ごみ箱の
   録画とプロファイル自体が丸ごと省略されるので、フロントは何もフィルタしない）。
-  `failed` は「二度と来ない」の断定でもない --- 録画単位の恒久失敗（入力ファイルの
-  破損など）は `EncodeReconcileWorker` が 15 分ごとに再投入するため、`failed` と
-  `queued`/`running` を繰り返すことがある。判断の詳細は
+  `failed` は「二度と来ない」の断定でもない --- River の既定リトライと、録画単位の
+  恒久失敗（入力ファイルの破損など）に対する `EncodeReconcileWorker` の 15 分ごとの
+  再投入のたびに `running` へ戻る（`queued` へは戻らない --- 試行行は成功するまで
+  消えないので `queued` は初回試行の前だけ）。判断の詳細は
   [schema/recordings.md](../schema/recordings.md) の `recording_encode_attempts`
   節
 - ホームに出す場合は失敗録画と同じ「異常」の置き場に合わせる想定だが、本機能
@@ -203,11 +204,16 @@ API は後方互換を保つ（docs/api/rest.md §契約の保護）--- 旧バ�
 - **専用の SSE トピックも NOTIFY も持たない。** 収束は既存の
   `operationalRefreshIntervalMs`（`/api/recordings` を再取得する 60 秒周期。
   `web/src/lib/events.ts`）に乗せるだけで、`recording_encode_attempts` から
-  DB 通知を出す経路は無い --- `queued`→`running`→`failed` の遷移は最大 60 秒
-  遅れて画面に反映される（この 60 秒周期は
+  DB 通知を出す経路は無い --- `queued`→`running`→`failed` の遷移は、**前面タブ
+  なら最大 60 秒遅れて**画面に反映される。**背面タブでは定期取得を投げない**
+  （`useServerEvents` の `document.visibilityState === 'hidden'` ガード）ので、
+  前面に戻るまで止まる（復帰時は `refetchOnWindowFocus` が拾う）。この 2 つは
   `web/src/lib/events.test.tsx` の「SSE が来なくても運用状態のクエリは 60 秒
-  周期で取り直す」が固定している。`storageRefreshIntervalMs` の `topic: null` と同じ
-  「専用トピックを持たず既存の再取得に乗せる」判断）
+  周期で取り直す」（`counts.recordings` でも数えている --- `/api/recordings` が
+  同じ 60 秒グループに属することを、予約のカウントとは別に押さえる）と「背面
+  タブでは定期取得を投げず、前面に戻ると再開する」が固定している。
+  `storageRefreshIntervalMs` の `topic: null` と同じ「専用トピックを持たず既存の
+  再取得に乗せる」判断
 
 ## ドロップ統計はバッジ + 展開
 

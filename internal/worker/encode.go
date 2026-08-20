@@ -309,9 +309,12 @@ func (w *EncodeWorker) notify(ctx context.Context, ev webhook.Event) {
 	}
 }
 
-// encodeAttemptErrorMaxLen は recording_encode_attempts.error に書く文字数の
-// 上限。ffmpeg の stderr を丸ごと含むエラーが際限なく育つのを防ぐ（表示は
-// バッジの文言ではなく将来の詳細欄向けの補助情報なので、切り詰めても実害はない）。
+// encodeAttemptErrorMaxLen は recording_encode_attempts.error に書くバイト数の
+// 上限。ffmpeg の stderr を丸ごと含むエラーが際限なく育つのを防ぐ。
+//
+// 読み手は API ではなく運用者の SELECT（docs/runbook/troubleshooting.md
+// 「エンコードが失敗している」）。全文は worker のログに出ているので、
+// ここで切り詰めても失われる情報は無い。
 const encodeAttemptErrorMaxLen = 2000
 
 // encodeAttemptWriteTimeout は recording_encode_attempts への書き込み
