@@ -13,7 +13,7 @@ import {
   type Reservation,
 } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
-import { EmptyState, ListSkeleton, PageHeader } from '@/components/page'
+import { EmptyState, ListSkeleton, PageHeader, Skeleton } from '@/components/page'
 import { ReservationSkipBadge } from '@/components/reservation-skip-reason'
 import { describeBreakerName } from '@/lib/breaker'
 import { shortageRangeMessage } from '@/lib/capacity'
@@ -286,6 +286,52 @@ export function HomePage() {
 
   const allEmpty = allSettled && !anyVisible
 
+  /**
+   * needsPlaceholder は「まだ解決していないが、より下に来るはずの後続セクションが
+   * 先に解決して見えてしまっている」セクションの索引集合（issue #309。読み込み中
+   * のレイアウトシフト対策）。
+   *
+   * 4 本のクエリは順不同で解決する（`GET /api/reservations` は絞り込みが無く
+   * 遅くなりやすい一方、`GET /api/recordings?status=recording` は速いことが多い、
+   * というように応答順は保証されない）。表示順は常に固定（いま録画中 → 今夜〜明日
+   * の予約 → 警告 → 直近の完了）なので、後続のセクションが先に見えている状態で
+   * 先行のセクションが後から解決すると、その節が**既に描画済みの後続セクションの
+   * 上に挿し込まれ**、後続を下へ押す。Layout Instability API は「既に描画済みの
+   * 要素が動く」ことだけを数える（新しく挿し込まれた要素自身は前の位置を持たない
+   * ので、それ自体は動きとして数えない）ので、この「上に挿し込まれる」形だけが
+   * 実際に CLS を作る --- 末尾への追記（後ろに何も描画されていない位置に現れる）
+   * は既存の要素を一切動かさないので無償。
+   *
+   * 対策は、後続に既に見えているセクションがある間だけ、まだ解決していない先行
+   * セクションに行数ぶんのプレースホルダを先に描いておくこと --- 実データが
+   * 届いたときは「無 → 実データの高さ」ではなく「プレースホルダ → 実データの
+   * 高さ」の差分に縮む。後続に何も見えていない間はプレースホルダを出さない
+   * （末尾への追記のまま無償にしておく）。
+   *
+   * **`<section>` と見出し（`<h2>`）はこのプレースホルダに含めない。** そのセクション
+   * 自身のクエリが解決して`〜SectionVisible` が立つまでは見出しも出さない ---
+   * 見出しの文言・`role="heading"` は「このセクションに言うことがある」という
+   * 主張そのもので、まだ解決していない間に先出しすると、見出しの出現を
+   * 「解決した」目印として使っている既存のテスト（`pages/home.test.tsx`「容量
+   * 超過クエリのキーが進み、新キーが未解決のままでも警告セクションは残る」）が
+   * 実データより前のプレースホルダを捉えてしまい、待ち合わせが崩れる（レビューで
+   * 実際に落ちた）。行だけのプレースホルダなら、見出しは以前と同じく実データの
+   * 解決と同時にしか現れない。
+   *
+   * **セクションの可視性そのものは変えない**（`docs/frontend/home.md`「セクション
+   * の可視性は個別に」）。ここで足すのはこのプレースホルダの表示だけで、実データは
+   * これまでと同じくそのセクション自身のクエリが解決するまで出さない。
+   */
+  const sectionOrder = [
+    { pending: recordingQuery.isPending, visible: recordingSectionVisible },
+    { pending: reservationsQuery.isPending, visible: reservationSectionVisible },
+    { pending: warningsPending, visible: warningSectionVisible },
+    { pending: finishedQuery.isPending, visible: finishedSectionVisible },
+  ]
+  const needsPlaceholder = sectionOrder.map(
+    (s, i) => s.pending && sectionOrder.slice(i + 1).some((later) => later.visible),
+  )
+
   return (
     <>
       <PageHeader title="ホーム" />
@@ -297,6 +343,7 @@ export function HomePage() {
         <EmptyState>表示できる項目がありません</EmptyState>
       ) : (
         <div className="flex flex-col divide-y divide-border">
+          {!recordingSectionVisible && needsPlaceholder[0] && <SectionSkeleton rows={2} />}
           {recordingSectionVisible && (
             <section aria-labelledby="home-recording">
               <h2 id="home-recording" className="px-4 pt-4 pb-2 text-sm font-semibold">
@@ -314,6 +361,7 @@ export function HomePage() {
             </section>
           )}
 
+          {!reservationSectionVisible && needsPlaceholder[1] && <SectionSkeleton rows={2} />}
           {reservationSectionVisible && (
             <section aria-labelledby="home-reservations">
               <h2 id="home-reservations" className="px-4 pt-4 pb-2 text-sm font-semibold">
@@ -343,6 +391,7 @@ export function HomePage() {
             </section>
           )}
 
+          {!warningSectionVisible && needsPlaceholder[2] && <SectionSkeleton rows={2} rowClassName="h-8" />}
           {warningSectionVisible && (
             <section aria-labelledby="home-warnings">
               <h2 id="home-warnings" className="px-4 pt-4 pb-2 text-sm font-semibold">
@@ -356,6 +405,7 @@ export function HomePage() {
             </section>
           )}
 
+          {!finishedSectionVisible && needsPlaceholder[3] && <SectionSkeleton rows={2} />}
           {finishedSectionVisible && (
             <section aria-labelledby="home-finished">
               <h2 id="home-finished" className="px-4 pt-4 pb-2 text-sm font-semibold">
@@ -377,6 +427,24 @@ export function HomePage() {
         </div>
       )}
     </>
+  )
+}
+
+/**
+ * SectionSkeleton はホームの各セクションで `needsPlaceholder`（上記）が立った
+ * ときの読み込み中プレースホルダ。**見出し（`<h2>`）は含めない** ---
+ * `<section>` と見出しはそのセクション自身のクエリが解決して実データが確定する
+ * まで出さない（見出しの出現を「解決した」目印に使っている既存のテストと、
+ * 「0 件のセクションは文言も出さず消す」という既存の意味の両方を保つため）。
+ * このプレースホルダの役目は、行数ぶんのおおよその高さを先に確保しておくことだけ。
+ */
+function SectionSkeleton({ rows, rowClassName = 'h-14' }: { rows: number; rowClassName?: string }) {
+  return (
+    <div className="flex flex-col gap-2 px-4 pb-4">
+      {Array.from({ length: rows }, (_, i) => (
+        <Skeleton key={i} className={rowClassName} />
+      ))}
+    </div>
   )
 }
 

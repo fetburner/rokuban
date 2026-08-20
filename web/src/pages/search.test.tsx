@@ -337,6 +337,28 @@ describe('SearchPage', () => {
   })
 
   /**
+   * issue #309: 検索モバイルの読み込み CLS が要改善域だった。サービス一覧の
+   * 取得は非同期（「読み込み中…」からチップの複数行へ描画が入れ替わる）だが、
+   * チャンネル種別・ジャンル・時間帯・放送時間などの他の節は同期的に描かれる。
+   * サービスがチャンネル種別等より DOM 順で前にあると、サービスの高さが変わる
+   * たびに既に描画済みの後続の節を下へ押す（Layout Instability API が捉える
+   * シフト）。`<ConditionFields>` の並びをサービスが最後（放送時間より後）に
+   * なるよう変えたので、それを固定する --- jsdom は実際のシフト量を測れない
+   * ので、判定は DOM 順の主張だけに留める（実測は `web/e2e/cls.mjs`）。
+   */
+  it('サービスのチップ列は同期的に描かれる節（チャンネル種別・放送時間）より DOM 順で後にある（issue #309）', async () => {
+    stubApi()
+    renderPage()
+
+    const serviceGroup = await screen.findByRole('group', { name: 'サービス' })
+    const durationHeading = screen.getByRole('heading', { name: '放送時間' })
+
+    expect(
+      durationHeading.compareDocumentPosition(serviceGroup) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0)
+  })
+
+  /**
    * レビュー指摘（issue #305 の差し戻し）: 主操作を上に出しただけでは「押した
    * 結果」（値札・件数・結果）が縦カラムの末尾に残り、390px では押しても折り目の
    * 中で何も変わらない（実測: クリック後も `scrollY = 0`、件数行は折り目の 335px

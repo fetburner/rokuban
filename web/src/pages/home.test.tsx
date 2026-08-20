@@ -831,6 +831,88 @@ describe('ホーム: セクションごとに独立して読み込み、空セ�
 })
 
 /**
+ * issue #309: 4 本のクエリは順不同で解決するが、表示順は固定（いま録画中 →
+ * 今夜〜明日の予約 → 警告 → 直近の完了）。後続のセクションが先に解決して見えて
+ * いる状態で先行のセクションが後から解決すると、その節が既に描画済みの後続
+ * セクションの**上に**挿し込まれ、後続を下へ押す（読み込み中のレイアウトシフト。
+ * Lighthouse でホームのデスクトップに要改善域の CLS が出た実測）。
+ *
+ * jsdom はレイアウトを計算しないので実際のシフト量そのものはここでは測れない
+ * （`web/e2e/cls.mjs` が実ブラウザ側の判定）。ここで固定するのは、その対策
+ * （先行セクションのプレースホルダ）が**いつ出て、いつ出ないか**という DOM 構造
+ * の規律 --- 出しすぎるとかえって別の場所でシフトを増やし、出さないと対策に
+ * ならない。
+ */
+describe('ホーム: 読み込み中のレイアウトシフト対策（プレースホルダ、issue #309）', () => {
+  it('後続セクション（警告・予約）が先に見えている間、まだ解決していない「いま録画中」に行のプレースホルダを出す（見出しは出さない）', async () => {
+    const { resolvePending, unresolvedCount } = stubApi({
+      recording: [recording(1, '録画中の番組', 'recording')],
+      breakers: [breaker('ruler_deletes')],
+      reservations: [reservation(2, '今夜の予約', 2 * HOUR)],
+      pendingRecordingStatuses: new Set(['recording']),
+    })
+    const { container } = renderHome()
+
+    // 後続 2 セクションが先に解決して見えている状態を作る。
+    expect(await screen.findByRole('heading', { name: '警告' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '今夜〜明日の予約' })).toBeInTheDocument()
+    // 遅延の仕掛けが実際に効いていることを前提として assert する（即答に
+    // 戻ったら以下の「見出しが無い」は空虚な成功になる）。
+    expect(unresolvedCount('/api/recordings?status=recording')).toBe(1)
+
+    // 「いま録画中」は未解決なので見出しは出ない（0 件セクションと同じ扱いを保つ
+    // --- 見出しの出現は「解決した」ことの主張のまま）。
+    expect(screen.queryByRole('heading', { name: 'いま録画中' })).not.toBeInTheDocument()
+    // その代わり、行数ぶんのプレースホルダ（Skeleton = `.scanlines`）が出ている。
+    // 警告・予約セクションはどちらも解決済みで Skeleton を使わないので、
+    // ここに出る `.scanlines` は「いま録画中」のプレースホルダだけのはず。
+    expect(container.querySelectorAll('.scanlines')).toHaveLength(2)
+
+    resolvePending()
+
+    // 解決したら見出し + 実データに切り替わり、プレースホルダは消える。
+    expect(await screen.findByRole('heading', { name: 'いま録画中' })).toBeInTheDocument()
+    expect(screen.getByText('録画中の番組')).toBeInTheDocument()
+    expect(container.querySelectorAll('.scanlines')).toHaveLength(0)
+    // 見出しが 2 重に残っていないことも確認する(プレースホルダ側が消え切って
+    // いない変異はここで拾える)。
+    expect(screen.getAllByRole('heading', { name: 'いま録画中' })).toHaveLength(1)
+  })
+
+  it('後続（直近の完了）がまだ見えていない間は、未解決の警告にプレースホルダを出さない（末尾への追記は無償のまま）', async () => {
+    // いま録画中・今夜〜明日の予約は解決して見えている。警告はブレーカーの
+    // 応答だけが遅れて未解決だが、警告より後ろに来る「直近の完了」も
+    // （`finishedQuery` を共用するため）まだ 0 件のまま解決していて見えていない
+    // --- 警告の後ろに現在描画されている要素は無いので、警告が後から現れても
+    // 何も押さない。プレースホルダで先取りする対策コストを払う必要が無い
+    // ケースであることを固定する（`needsPlaceholder` は「後続に**見えている**
+    // セクションがあるか」だけを見るので、後続が未解決・0 件のどちらでも
+    // 立たない）。
+    const { resolvePending, unresolvedCount } = stubApi({
+      recording: [recording(1, '録画中の番組', 'recording')],
+      reservations: [reservation(2, '今夜の予約', 2 * HOUR)],
+      breakers: [breaker('ruler_deletes')],
+      pendingPaths: new Set(['/api/breakers']),
+    })
+    const { container } = renderHome()
+
+    expect(await screen.findByRole('heading', { name: 'いま録画中' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '今夜〜明日の予約' })).toBeInTheDocument()
+    // 遅延の仕掛けが実際に効いていることを前提として assert する。
+    expect(unresolvedCount('/api/breakers')).toBe(1)
+
+    expect(screen.queryByRole('heading', { name: '警告' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: '直近の完了' })).not.toBeInTheDocument()
+    // 2 セクションぶんの実データが既に描画されているが、それらは Skeleton を
+    // 使わない --- 警告用のプレースホルダも出ていないので合計 0。
+    expect(container.querySelectorAll('.scanlines')).toHaveLength(0)
+
+    resolvePending()
+    expect(await screen.findByRole('heading', { name: '警告' })).toBeInTheDocument()
+  })
+})
+
+/**
  * must-fix（レビュー）: 容量超過クエリの `start` に生の `Date.now()` を渡すと、
  * レンダーごとにキャッシュキーが変わり無限に再取得し続ける（docs/frontend/home.md
  * §経緯と失敗事例。実測: stub 即答で 4 秒に 37 回、実サーバー相当の遅延では

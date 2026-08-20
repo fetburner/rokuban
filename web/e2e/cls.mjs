@@ -1,0 +1,273 @@
+// 読み込み中のレイアウトシフト（CLS）の受け入れ判定（issue #309）。
+//
+// **CLS はレイアウトそのものの指標なので jsdom では原理的に測れない**
+// （`getBoundingClientRect()` が常に 0 を返す。web/e2e/README.md「jsdom が
+// 測れないもの」）。ここが唯一の判定手段になる。
+//
+// ブラウザの Layout Instability API（`PerformanceObserver({type:
+// 'layout-shift'})`）で `hadRecentInput === false` の `value` を単純合計する。
+// **これは Lighthouse が実際に報告する CLS の近似であって同一ではない**
+// （Lighthouse は session window でグルーピングしてその最大値を採る。ここでは
+// windowing をせず全期間の単純合計を見る）。単純合計は session window の
+// 最大値より大きくなることしかないので、ここで 0.10 以下なら Lighthouse の
+// 値も 0.10 以下になる --- 逆方向の保証はしない（未検証）。
+//
+// 見るのは issue #309 の受け入れ基準の 2 点:
+//   ① /search をモバイル幅（390x844）で開き、サービス一覧の取得を遅延させた
+//      状態（Lighthouse のスロットル下を模す）で読み込み中の CLS が 0.10 以下
+//   ② /home をデスクトップ幅（1280x900）で開き、6 本の GET をすべて遅延させた
+//      状態で読み込み中の CLS が 0.10 以下（「セクションが空→載る」「ListSkeleton
+//      → 本文の入れ替え」の両方を踏む）
+//
+// ①のサービス数は issue 本文が言う実測（NHK 総合だけの e2e フィクスチャでは
+// 再現しない小さすぎる数）に近づけるため、地上波 + BS + CS 相当の 24 局を用意する
+// --- 2 局だけの `search-mobile.mjs` のフィクスチャではチップが 1 行に収まって
+// しまい、直す前の実装でも再現しない。
+//
+// **mirakc も実チューナーも DB も要らない。** API は `page.route` で丸ごと
+// 差し替える（design.mjs と同じ手）。
+//
+//   pnpm build && pnpm preview --port 4173 --strictPort &
+//   E2E_URL=http://localhost:4173 node e2e/cls.mjs
+//
+// 合格なら exit 0、1 つでも NG なら exit 1。
+import { readdirSync } from 'node:fs'
+import path from 'node:path'
+import { chromium } from 'playwright'
+
+const URL_BASE = process.env.E2E_URL ?? 'http://localhost:4173'
+const SITE = 'default'
+const CLS_THRESHOLD = 0.1
+/** サービス一覧・ホームの各 GET に足す遅延（ms）。Lighthouse のスロットル下の RTT を模す。 */
+const NETWORK_DELAY_MS = 400
+
+const ng = []
+const log = (...a) => console.log(...a)
+
+/** services は地上波 + BS + CS 相当の 24 局（issue 本文の再現に要る件数）。 */
+const services = Array.from({ length: 24 }, (_, i) => ({
+  networkId: 32736 + i,
+  serviceId: 1024 + i,
+  name: `テスト局${i + 1}`,
+  channelType: i < 12 ? 'GR' : i < 18 ? 'BS' : 'CS',
+  channel: String(i + 1),
+  remoteControlKeyId: i + 1,
+  hasLogoData: false,
+  hasPrograms: true,
+}))
+
+function json(route, body) {
+  return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) })
+}
+
+async function delay(ms) {
+  await new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/** installClsObserver は layout-shift の合計値を `window.__clsTotal` に積む。 */
+async function installClsObserver(page) {
+  await page.addInitScript(() => {
+    window.__clsTotal = 0
+    try {
+      new PerformanceObserver((list) => {
+        for (const entry of list.getEntries()) {
+          if (!entry.hadRecentInput) window.__clsTotal += entry.value
+        }
+      }).observe({ type: 'layout-shift', buffered: true })
+    } catch {
+      // 実装していないブラウザ（Chromium 系以外）では計測不能。
+      window.__clsTotal = undefined
+    }
+  })
+}
+
+async function readCls(page) {
+  return page.evaluate(() => window.__clsTotal)
+}
+
+/**
+ * verifyBundleMatches は他スクリプトと同じ前提確認（web/e2e/README.md「配って
+ * いる bundle が dist/ の現物と一致するか」）。
+ */
+function verifyBundleMatches(servedHtml) {
+  const served = /assets\/(index-[^"]+\.js)/.exec(servedHtml)?.[1]
+  let local
+  try {
+    local = readdirSync(path.join(process.cwd(), 'dist', 'assets')).find((f) =>
+      /^index-.*\.js$/.test(f),
+    )
+  } catch {
+    local = undefined
+  }
+  return { served, local, matches: served !== undefined && served === local }
+}
+
+log('\n=== ⓪ 前提条件 ===')
+{
+  const rootHtml = await fetch(URL_BASE + '/').then((r) => r.text())
+  const bundle = verifyBundleMatches(rootHtml)
+  if (!bundle.matches) {
+    log(`NG  ⓪ 配っている bundle（${bundle.served ?? '不明'}）が dist/assets/（${bundle.local ?? '不明'}）と違う`)
+    log('    別プロセス・古いビルドを測っている。以降の判定に意味が無いので打ち切る')
+    process.exit(1)
+  }
+  log(`OK  ⓪ 配っている bundle は自分の dist（${bundle.served}）`)
+}
+
+const browser = await chromium.launch()
+
+// --- ① /search（モバイル 390x844）: サービス一覧の取得を遅延 -------------------
+log('\n=== ① /search モバイル（サービス一覧を遅延） ===')
+{
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 } })
+  const page = await context.newPage()
+  await installClsObserver(page)
+  await page.route('**/api/**', async (route) => {
+    const p = new URL(route.request().url()).pathname
+    if (p === '/api/events') return route.fulfill({ status: 204 })
+    if (p === '/api/sites') return json(route, [SITE])
+    if (p === '/api/capabilities') return json(route, { live: false })
+    if (p === `/api/sites/${SITE}/services`) {
+      await delay(NETWORK_DELAY_MS)
+      return json(route, services)
+    }
+    return json(route, [])
+  })
+
+  await page.goto(URL_BASE + '/search', { waitUntil: 'domcontentloaded' })
+  // サービス一覧が届いて再レイアウトが収まるまで待つ。
+  await page.getByRole('button', { name: 'テスト局1', exact: true }).waitFor({ timeout: 15000 })
+  await page.waitForTimeout(500)
+
+  const cls = await readCls(page)
+  log(`  CLS（累積、windowing なしの近似）: ${cls}`)
+  if (cls === undefined) {
+    ng.push('①: このブラウザでは layout-shift が計測できない（判定不能）')
+  } else if (cls > CLS_THRESHOLD) {
+    ng.push(`①: /search モバイルの読み込み CLS が ${cls.toFixed(3)}（しきい値 ${CLS_THRESHOLD} 超）`)
+  }
+
+  await context.close()
+}
+
+// --- ② /home（デスクトップ 1280x900）: 6 本の GET をすべて遅延 -----------------
+log('\n=== ② /home デスクトップ（全 GET を遅延） ===')
+{
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const page = await context.newPage()
+  await installClsObserver(page)
+
+  const now = new Date('2026-08-20T12:00:00.000Z')
+  await page.clock.setFixedTime(now)
+
+  const recordings = Array.from({ length: 3 }, (_, i) => ({
+    id: i + 1,
+    site: SITE,
+    source: 'manual',
+    serviceName: `テスト局${i + 1}`,
+    channelType: 'GR',
+    channel: String(i + 1),
+    networkId: 32736 + i,
+    serviceId: 1024 + i,
+    eventId: i + 1,
+    title: `録画中の番組 ${i + 1}`,
+    startAt: new Date(now.getTime() - 3_600_000).toISOString(),
+    durationMs: 3_600_000,
+    status: 'recording',
+    createdAt: new Date(now.getTime() - 3_600_000).toISOString(),
+  }))
+  const reservations = Array.from({ length: 5 }, (_, i) => ({
+    id: i + 1,
+    site: SITE,
+    programId: (i + 1) * 10,
+    source: 'manual',
+    state: 'active',
+    title: `予約 ${i + 1}`,
+    serviceName: `テスト局${i + 1}`,
+    startAt: new Date(now.getTime() + (i + 1) * 3_600_000).toISOString(),
+    durationMs: 1_800_000,
+    createdAt: new Date(now.getTime() - 3_600_000).toISOString(),
+    updatedAt: new Date(now.getTime() - 3_600_000).toISOString(),
+    skip: false,
+  }))
+  const finished = Array.from({ length: 6 }, (_, i) => ({
+    id: 100 + i,
+    site: SITE,
+    source: 'manual',
+    serviceName: `テスト局${i + 1}`,
+    channelType: 'GR',
+    channel: String(i + 1),
+    networkId: 32736 + i,
+    serviceId: 1024 + i,
+    eventId: 100 + i,
+    title: `完了した番組 ${i + 1}`,
+    startAt: new Date(now.getTime() - (i + 2) * 3_600_000).toISOString(),
+    durationMs: 3_600_000,
+    status: 'finished',
+    createdAt: new Date(now.getTime() - (i + 2) * 3_600_000).toISOString(),
+  }))
+
+  // 6 本の GET の応答タイミングをずらす（実サーバーへの複数リクエストが必ず同時に
+  // 揃うとは限らないことを模す。全部同じ遅延だと「セクションが順番に食い違って
+  // 挿し直される」経路を通さないまま緑になる）。
+  const routeDelays = {
+    '/api/reservations': NETWORK_DELAY_MS,
+    '/api/breakers': NETWORK_DELAY_MS + 150,
+    '/api/capacity/overages': NETWORK_DELAY_MS + 250,
+  }
+  const routeBodies = {
+    '/api/reservations': reservations,
+    '/api/breakers': [],
+    '/api/capacity/overages': [],
+  }
+
+  await page.route('**/api/**', async (route) => {
+    const url = new URL(route.request().url())
+    const p = url.pathname
+    if (p === '/api/events') return route.fulfill({ status: 204 })
+    if (p === '/api/sites') return json(route, [SITE])
+    if (p === '/api/capabilities') return json(route, { live: false })
+    if (p === '/api/recordings') {
+      const status = url.searchParams.get('status')
+      if (status === 'recording') {
+        await delay(NETWORK_DELAY_MS + 350)
+        return json(route, recordings)
+      }
+      if (status === 'finished') {
+        await delay(NETWORK_DELAY_MS + 50)
+        return json(route, finished)
+      }
+      await delay(NETWORK_DELAY_MS)
+      return json(route, [])
+    }
+    if (routeDelays[p] !== undefined) {
+      await delay(routeDelays[p])
+      return json(route, routeBodies[p])
+    }
+    return json(route, [])
+  })
+
+  await page.goto(URL_BASE + '/', { waitUntil: 'domcontentloaded' })
+  // 全セクションの決着を待つ（最も遅いクエリの遅延 + 余裕）。
+  await page.waitForTimeout(NETWORK_DELAY_MS + 600)
+  await page.getByText('録画中の番組 1').waitFor({ timeout: 15000 })
+  await page.waitForTimeout(500)
+
+  const cls = await readCls(page)
+  log(`  CLS（累積、windowing なしの近似）: ${cls}`)
+  if (cls === undefined) {
+    ng.push('②: このブラウザでは layout-shift が計測できない（判定不能）')
+  } else if (cls > CLS_THRESHOLD) {
+    ng.push(`②: /home デスクトップの読み込み CLS が ${cls.toFixed(3)}（しきい値 ${CLS_THRESHOLD} 超）`)
+  }
+
+  await context.close()
+}
+
+await browser.close()
+
+log('\n=== 結果 ===')
+if (ng.length === 0) log('  すべて期待どおり')
+else ng.forEach((f) => log('  NG: ' + f))
+
+process.exit(ng.length === 0 ? 0 : 1)

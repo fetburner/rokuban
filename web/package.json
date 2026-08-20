@@ -21,7 +21,8 @@
     "e2e:programs-bottom-nav": "node e2e/programs-bottom-nav.mjs",
     "e2e:grid-reserved": "node e2e/grid-reserved.mjs",
     "e2e:search-mobile": "node e2e/search-mobile.mjs",
-    "e2e:reservations-mobile": "node e2e/reservations-mobile.mjs"
+    "e2e:reservations-mobile": "node e2e/reservations-mobile.mjs",
+    "e2e:cls": "node e2e/cls.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.6.0",

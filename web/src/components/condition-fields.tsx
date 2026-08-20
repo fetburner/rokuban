@@ -64,6 +64,19 @@ type FieldsProps = {
  *
  * `disabled` はルール保存中などフォーム全体を止めたいときに使う。全ての
  * input / select / Chip / Button に伝播する。
+ *
+ * **`ServiceFields` は最後に置く**（issue #309。読み込み中のレイアウトシフト
+ * 対策）。以前は `TextMatchFields` の直後に置いていたが、サービス一覧の取得は
+ * 他の節（チャンネル種別・ジャンル・時間帯・…）と違って非同期で、「読み込み中…」
+ * の 1 行からチップの複数行へ描画が入れ替わると、既にレイアウト済みの後続の節を
+ * 下へ押す（Lighthouse の CLS が検索モバイルで要改善域まで出た実測）。Layout
+ * Instability API は「既に描画済みの要素が動く」ことだけを数え、「まだ無かった
+ * 要素が新しく挿し込まれて後続を押す」場合しか動きとして数えない --- 逆に言えば
+ * **後ろに何も描画されていない位置でなら、要素が育っても押される側が無い**。
+ * `ServiceFields` を他の節より後ろに動かすと、チップ列が伸びても押される
+ * 既描画の兄弟がその位置には無くなる（フォーム最下部・モバイルでは折り目の外に
+ * 出ることが多い）。他の節との間に依存は無いので、並びを変えても意味は変わらない
+ * --- 判定は `web/e2e/cls.mjs`①（直す前の実装で実際に落ちることを確認済み）。
  */
 export function ConditionFields({ draft, onChange, disabled }: FieldsProps): React.ReactElement {
   const site = useCurrentSite()
@@ -73,20 +86,20 @@ export function ConditionFields({ draft, onChange, disabled }: FieldsProps): Rea
   return (
     <>
       <TextMatchFields draft={draft} onChange={onChange} disabled={disabled} />
+      <ChannelTypeFields draft={draft} onChange={onChange} disabled={disabled} />
+      <GenreFields draft={draft} onChange={onChange} disabled={disabled} />
+      <TimeWindowFields draft={draft} onChange={onChange} disabled={disabled} />
+      <ScalarFields draft={draft} onChange={onChange} disabled={disabled} />
       <ServiceFields
         draft={draft}
         services={serviceList}
         // 取得中と失敗を区別する。空のチップ列を「サービスが無い」と
-        // 読ませない（サービスは条件の一次元なので、無いのと分からないのは違う）
+        // 読ませない(サービスは条件の一次元なので、無いのと分からないのは違う)
         isPending={services.isPending}
         isError={services.isError}
         onChange={onChange}
         disabled={disabled}
       />
-      <ChannelTypeFields draft={draft} onChange={onChange} disabled={disabled} />
-      <GenreFields draft={draft} onChange={onChange} disabled={disabled} />
-      <TimeWindowFields draft={draft} onChange={onChange} disabled={disabled} />
-      <ScalarFields draft={draft} onChange={onChange} disabled={disabled} />
     </>
   )
 }

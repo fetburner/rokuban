@@ -440,6 +440,40 @@ pnpm build && pnpm preview --port 4173 --strictPort &
 E2E_URL=http://localhost:4173 pnpm e2e:reservations-mobile
 ```
 
+### 読み込み中のレイアウトシフト（`cls.mjs`）
+
+CLS（Cumulative Layout Shift）はレイアウトそのものの指標なので、jsdom
+（`getBoundingClientRect()` が常に 0 を返す）では原理的に測れない --- Lighthouse で
+検索モバイル・ホームデスクトップに要改善域の CLS が出た（issue #309）ことの唯一の
+判定手段になる。
+
+ブラウザの Layout Instability API（`PerformanceObserver({type: 'layout-shift'})`）で
+`hadRecentInput === false` の `value` を単純合計する。**これは Lighthouse が実際に
+報告する CLS の近似であって同一ではない**（Lighthouse は session window でグルーピング
+してその最大値を採るが、ここでは windowing をせず全期間の単純合計を見る --- 単純合計は
+session window の最大値より大きくなることしかないので、ここで 0.10 以下なら Lighthouse
+の値も 0.10 以下になる。逆方向の保証はしない、未検証）。
+
+見るのは:
+
+- ① `/search` をモバイル幅（390x844）で開き、サービス一覧の取得を遅延させた状態
+  （Lighthouse のスロットル下を模す）で読み込み中の CLS が 0.10 以下
+- ② `/home` をデスクトップ幅（1280x900）で開き、6 本の GET をすべて（かつタイミングを
+  ずらして）遅延させた状態で読み込み中の CLS が 0.10 以下
+
+①のサービス数は 24 局（地上波 + BS + CS 相当）にしてある --- 2 局だけでは 390px でも
+チップが 1 行に収まってしまい、直す前の実装でも再現しない。②は 6 本の遅延を同じ値に
+揃えていない --- 全部同じだと「セクションが順番に食い違って挿し直される」経路
+（`pages/home.tsx` の `needsPlaceholder`）を通さないまま緑になる。
+
+`design.mjs` と同じ手（`/api/**` を `page.route` で丸ごと差し替え）で mirakc も
+DB も要らない。⓪（配っている bundle と `dist/` の一致）も自分で確認する。
+
+```sh
+pnpm build && pnpm preview --port 4173 --strictPort &
+E2E_URL=http://localhost:4173 pnpm e2e:cls
+```
+
 ## CI では回さない
 
 実サーバーと実 mirakc のデータに依存するため、CI には載せない。**ローカルでの受け入れ確認**の
