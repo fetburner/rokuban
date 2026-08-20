@@ -337,6 +337,39 @@ describe('SearchPage', () => {
   })
 
   /**
+   * issue #309: 検索モバイルの読み込み CLS が要改善域だった。サービス一覧の
+   * 取得は非同期（「読み込み中…」からチップの複数行へ描画が入れ替わる）だが、
+   * チャンネル種別・ジャンル・時間帯・放送時間などの他の節は同期的に描かれる。
+   * サービスがチャンネル種別等より DOM 順で前にあると、サービスの高さが変わる
+   * たびに既に描画済みの後続の節を下へ押す（Layout Instability API が捉える
+   * シフト）。`<ConditionFields>` の並びをサービスが最後になるよう変えたので、
+   * それを固定する --- jsdom は実際のシフト量を測れないので、判定は DOM 順の
+   * 主張だけに留める（実測は `web/e2e/cls.mjs`）。
+   *
+   * **比較相手は同期節の最初（`チャンネル種別`）と最後（`期間`）の両方**。
+   * `放送時間` だけと比べると、`ScalarFields` の中（無料放送 → 放送時間 →
+   * 期間）に `ServiceFields` が差し込まれる「半端に戻る」変異を素通りさせる
+   * （その変異を実際に作って、`放送時間` との比較は通るのに `期間` との比較が
+   * AssertionError で落ちることを確認した）。
+   */
+  it('サービスのチップ列は同期的に描かれる節（チャンネル種別 … 期間）より DOM 順で後にある（issue #309）', async () => {
+    stubApi()
+    renderPage()
+
+    const serviceGroup = await screen.findByRole('group', { name: 'サービス' })
+    // 同期節の最初と最後。サービスはこの両方より後ろでなければならない。
+    const channelTypeHeading = screen.getByRole('heading', { name: 'チャンネル種別' })
+    const periodHeading = screen.getByRole('heading', { name: '期間' })
+
+    expect(
+      channelTypeHeading.compareDocumentPosition(serviceGroup) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0)
+    expect(
+      periodHeading.compareDocumentPosition(serviceGroup) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0)
+  })
+
+  /**
    * レビュー指摘（issue #305 の差し戻し）: 主操作を上に出しただけでは「押した
    * 結果」（値札・件数・結果）が縦カラムの末尾に残り、390px では押しても折り目の
    * 中で何も変わらない（実測: クリック後も `scrollY = 0`、件数行は折り目の 335px

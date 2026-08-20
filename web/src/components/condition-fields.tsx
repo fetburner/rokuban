@@ -64,6 +64,28 @@ type FieldsProps = {
  *
  * `disabled` はルール保存中などフォーム全体を止めたいときに使う。全ての
  * input / select / Chip / Button に伝播する。
+ *
+ * **`ServiceFields` は最後に置く**（issue #309。読み込み中のレイアウトシフト
+ * 対策）。以前は `TextMatchFields` の直後に置いていたが、サービス一覧の取得は
+ * 他の節（チャンネル種別・ジャンル・時間帯・…）と違って非同期で、「読み込み中…」
+ * の 1 行からチップの複数行へ描画が入れ替わると、既にレイアウト済みの後続の節を
+ * 下へ押す（Lighthouse の CLS が検索モバイルで要改善域まで出た実測）。Layout
+ * Instability API は「既に描画済みの要素が動くこと」を全部数える --- 新しい
+ * 要素の挿入で既描画の要素が押し下げられる場合も、既描画の要素の消失・縮小で
+ * 後続が引き上げられる場合も同じだけ数える（新しく挿し込まれた要素自身は前の
+ * 位置を持たないので、それ自体が「動いた」と数えられることはない）。無償なのは
+ * **後ろに既描画の要素が無い位置での出現・消滅・成長だけ**。`ServiceFields` を
+ * 他の節より後ろに動かすと、チップ列が伸びたときに**押される側が折り目の外に
+ * 出る**（フォームの最下部なので、モバイルでは折り目の 183px 下 --- 実測で
+ * 390x844 のチップ列 top=1027）。**押される既描画の兄弟が無くなるわけではない**
+ * --- `pages/search.tsx` は `<form>` の後ろに値札・ルール保存・検索結果を同じ
+ * 縦カラムで積んでいるので、シフトは 0 にならず小さくなるだけ（実測: 390x844 で
+ * 0、1280x900 で 0.00093、縦長の 390x1180 で 0.024。しきい値 0.10 以下）。
+ * **フォームが短くなる変更（節の折りたたみ・サービスより下の要素を上へ移す）は
+ * この前提を崩す**ので `web/e2e/cls.mjs` を測り直す。他の節との間に依存は無い
+ * ので、並びを変えても意味は変わらない --- 判定は `web/e2e/cls.mjs`①（直す前の
+ * 実装で実際に落ちることを確認済み）。サービスが最下部に来る動線上の代償を
+ * 受け入れた判断は `docs/frontend/search.md`。
  */
 export function ConditionFields({ draft, onChange, disabled }: FieldsProps): React.ReactElement {
   const site = useCurrentSite()
@@ -73,6 +95,10 @@ export function ConditionFields({ draft, onChange, disabled }: FieldsProps): Rea
   return (
     <>
       <TextMatchFields draft={draft} onChange={onChange} disabled={disabled} />
+      <ChannelTypeFields draft={draft} onChange={onChange} disabled={disabled} />
+      <GenreFields draft={draft} onChange={onChange} disabled={disabled} />
+      <TimeWindowFields draft={draft} onChange={onChange} disabled={disabled} />
+      <ScalarFields draft={draft} onChange={onChange} disabled={disabled} />
       <ServiceFields
         draft={draft}
         services={serviceList}
@@ -83,10 +109,6 @@ export function ConditionFields({ draft, onChange, disabled }: FieldsProps): Rea
         onChange={onChange}
         disabled={disabled}
       />
-      <ChannelTypeFields draft={draft} onChange={onChange} disabled={disabled} />
-      <GenreFields draft={draft} onChange={onChange} disabled={disabled} />
-      <TimeWindowFields draft={draft} onChange={onChange} disabled={disabled} />
-      <ScalarFields draft={draft} onChange={onChange} disabled={disabled} />
     </>
   )
 }

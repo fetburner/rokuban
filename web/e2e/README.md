@@ -440,6 +440,48 @@ pnpm build && pnpm preview --port 4173 --strictPort &
 E2E_URL=http://localhost:4173 pnpm e2e:reservations-mobile
 ```
 
+### 読み込み中のレイアウトシフト（`cls.mjs`）
+
+CLS（Cumulative Layout Shift）はレイアウトそのものの指標なので、jsdom
+（`getBoundingClientRect()` が常に 0 を返す）では原理的に測れない --- Lighthouse で
+検索に要改善域の CLS が出たことの唯一の判定手段になる。
+
+ブラウザの Layout Instability API（`PerformanceObserver({type: 'layout-shift'})`）で
+`hadRecentInput === false` の `value` を単純合計する。**これは Lighthouse が実際に
+報告する CLS の近似であって同一ではない**（Lighthouse は session window でグルーピング
+してその最大値を採るが、ここでは windowing をせず全期間の単純合計を見る --- 単純合計は
+session window の最大値より大きくなることしかないので、ここで 0.10 以下なら Lighthouse
+の値も 0.10 以下になる。逆方向の保証はしない、未検証）。
+
+見るのは検索（`/search`。`components/condition-fields.tsx`）の 2 点:
+
+- ① モバイル幅（390x844）でサービス一覧の取得を遅延させた状態（Lighthouse の
+  スロットル下を模す）で読み込み中の CLS が 0.10 以下
+- ② デスクトップ幅（1280x900）で①と同じ遅延を掛けた状態で 0.10 以下 --- ラボ計測は
+  検索デスクトップも 0.087（しきい値の一歩手前）を報告しており、`ConditionFields` の
+  対策の根拠はビューポート依存の議論（「押される側が折り目の外に出る」）なので、
+  モバイルだけでは踏んでいない
+
+サービス数は 24 局（地上波 + BS + CS 相当）にしてある --- 2 局だけでは 390px でも
+チップが 1 行に収まってしまい、直す前の実装でも再現しない。**直す前の
+`condition-fields.tsx`（`ServiceFields` が `TextMatchFields` の直後）では①が 0.165、
+②が 0.033 で、①が実際に落ちる。**
+
+**ホーム（`/`）はここでは見ない。** ラボ計測はホームのデスクトップでも 0.111
+（スロットル時のみ）を報告しているが、原因は「4 セクションの表示順は固定なのに解決順は
+不定で、後続セクションが先に見えている状態で先行セクションが実データごと上に挿し込まれる」
+形で、対策には `docs/frontend/home.md`「セクションの可視性は個別に」を変える設計判断が
+要る。判定手段（この形のフィクスチャ）ごとその判断のあとに足す --- しきい値を超えたまま
+緑にできない判定を置くと、この受け入れ全体が「常に赤いので誰も見ない」ものになる。
+
+`design.mjs` と同じ手（`/api/**` を `page.route` で丸ごと差し替え）で mirakc も
+DB も要らない。⓪（配っている bundle と `dist/` の一致）も自分で確認する。
+
+```sh
+pnpm build && pnpm preview --port 4173 --strictPort &
+E2E_URL=http://localhost:4173 pnpm e2e:cls
+```
+
 ## CI では回さない
 
 実サーバーと実 mirakc のデータに依存するため、CI には載せない。**ローカルでの受け入れ確認**の
