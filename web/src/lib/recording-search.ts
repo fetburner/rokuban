@@ -86,6 +86,13 @@ function toRawValues(raw: unknown): unknown[] {
  * 数値に変換できない要素・範囲外の要素は落とす（丸めない）。結果が空なら
  * `undefined`（「指定なし」を空配列という意味を持たない値で表現しない --- 不変条件 10
  * の精神をリクエスト同様クエリ状態にも適用する）。
+ *
+ * `Number.isSafeInteger` までは見ない --- 現在の唯一の呼び先（`genre`、
+ * `min: 0, max: 15`）は範囲が小さく固定されているため、`Number.MAX_SAFE_INTEGER`
+ * を超える値が丸まって範囲内の値に化けることは無い（IEEE754 の丸め誤差は
+ * 値の大きさに比例して増えるので、巨大な数値が丸まって 0〜15 に落ちてくることは
+ * ない）。範囲を持たない・上限が大きい呼び先を足すときは `lib/positive-id.ts` の
+ * `parsePositiveIntId` の丸め対策（issue #345）を見直す。
  */
 function parseIntArray(raw: unknown, opts?: { min?: number; max?: number }): number[] | undefined {
   const values = toRawValues(raw)
@@ -95,6 +102,10 @@ function parseIntArray(raw: unknown, opts?: { min?: number; max?: number }): num
   return values.length > 0 ? values : undefined
 }
 
+// `[1-9][0-9]*` は先頭 0 を許さないので `0` 自体を落とす（`n > 0`）。桁数を
+// 絞らず `Number(match[1]) <= 2_147_483_647` で上限を見るだけで済むのは、
+// この上限が `Number.MAX_SAFE_INTEGER` より 6 桁以上小さく、IEEE754 の丸め誤差が
+// 効き始める大きさに達する前に上限チェックで落ちるため（issue #345）。
 const recordingServicePattern = /^[a-z0-9](?:[_-]?[a-z0-9])*:([1-9][0-9]*)$/
 
 function parseRecordingServices(raw: unknown): string[] | undefined {

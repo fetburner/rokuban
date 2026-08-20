@@ -68,6 +68,18 @@ describe('parseRecordingsSearch', () => {
     })
   })
 
+  // issue #345: service の serviceId 部分は正規表現 `[1-9][0-9]*` で先頭 0
+  // （＝ 0 そのもの）を落とし、`<= 2_147_483_647` の上限チェックで
+  // Number.MAX_SAFE_INTEGER 域の丸めが効き始める前に落ちる（単数側
+  // `parsePositiveIntId` と同じ n > 0 / 安全整数の趣旨を、既に別の形で満たす）。
+  it('serviceId 部分が 0 や上限超の service は落とす（丸めない）', () => {
+    expect(
+      parseRecordingsSearch({
+        service: ['default:0', 'default:99999999999999999999', 'default:1024'],
+      }),
+    ).toEqual({ service: ['default:1024'] })
+  })
+
   it('service は (site, serviceId) の複合キーを保つ', () => {
     const search = parseRecordingsSearch({ service: ['default:1024', 'site2:1024'] })
     expect(search).toEqual({ service: ['default:1024', 'site2:1024'] })
