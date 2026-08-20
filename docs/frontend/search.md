@@ -35,8 +35,7 @@
   主サービスと同じ名前で並ぶことがあり、名前だけではどれを選んでいるか
   分からない。材料は `Service` が既に返す識別子（リモコン番号 →
   物理チャンネル → `networkId` + `serviceId` の順）だけを使い、programId は
-  分解しない ---
-  材料の出所（リモコン番号）は番組表のチャンネルピッカー（`channel-picker.tsx`）が
+  分解しない。材料の出所（リモコン番号）は番組表のチャンネルピッカー（`channel-picker.tsx`）が
   リモコン番号バッジに使っているものと同じ。ただしピッカー自体は名前の重複を
   区別する対象ではない（`ChannelPicker` の `secondaryLabel` に
   `serviceDisambiguator` を渡せば同じ見分け方を持ち込めるが、対象外）。
