@@ -58,14 +58,20 @@ const disambiguationParts: ((s: Service) => string)[] = [
  * オブジェクトで呼ぶ必要はない（テスト「渡した配列とは別オブジェクトでも
  * 同じ (networkId, serviceId) なら引ける」）。
  *
- * `hasPrograms: false` のサブサービスは番組に一度もマッチしないルールを
- * 組める（`openapi.yaml` の `Service.hasPrograms` の意図どおり、絞り込まず
- * 一覧に残す）。同名グループのうち番組を持たない側だけ「番組なし」を足すのは、
- * これがなければ「一意になったがどちらが主サービスか分からない」状態のまま
- * 50% の確率で踏むため（issue #306 の実害）。ただし `hasPrograms` はマルチ
- * 編成が始まれば反転する状態で identity ではないので、`disambiguationParts`
- * には入れない --- 一意性の判定（`new Set(labels).size === group.length`）は
- * 識別子だけで完結させ、この段は判定後に**表示のヒントとしてだけ**上乗せする。
+ * いま番組を持たないサービス（`hasPrograms: false`）だけを条件にしたルールは、
+ * 今は 1 件もマッチしない（`openapi.yaml` の `Service.hasPrograms` の定義からの
+ * 演繹。API 自体はそのサービスも参照できるよう絞り込まない）。そこで**同名
+ * グループが混在するとき**（`hasPrograms` が true の側と false の側の両方が
+ * いるとき）だけ、false 側に「番組なし」を足してどちらが主サービスかのヒントに
+ * する（テスト「同名グループのうち番組を持たない側だけ『番組なし』を足す」）。
+ * 全員が false のグループ（初回 EPG 取得前は全サービスが false になる）では
+ * 区別に何も寄与しないので出さない（テスト「同名グループ全員が番組を持たない
+ * なら『番組なし』は付かない」）。
+ *
+ * `hasPrograms` はマルチ編成が始まれば反転する状態で identity ではないので、
+ * `disambiguationParts` には入れない --- 一意性の判定
+ * （`new Set(labels).size === group.length`）は識別子だけで完結させ、この段は
+ * 判定後に**表示のヒントとしてだけ**上乗せする。
  */
 export function serviceDisambiguator(
   services: readonly Service[],
@@ -93,11 +99,17 @@ export function serviceDisambiguator(
       labels = parts.map((ps) => ps.filter((p) => p !== '').join(' ・ '))
       if (new Set(labels).size === group.length) break
     }
-    // 識別子で一意になった後に「番組なし」を上乗せする。段の有無判定
-    // （空文字を飛ばす）を識別子側と揃えるので、ここでも空文字は起きない
-    // （group.length > 1 なので識別子の段は必ず 1 つ以上通る）。
+    // 識別子で一意になった後に「番組なし」を上乗せする。上乗せするのは
+    // **同名グループに番組を持つ側がいるとき**（= 混在グループ）の、持たない側
+    // だけ。全員が false のグループ（初回 EPG 取得前は全サービスが false）では
+    // 「どちらが主サービスか」のヒントにならず区別にも寄与しないので出さない
+    // （テスト「同名グループ全員が番組を持たないなら『番組なし』は付かない」）。
+    const hasPrimary = group.some((s) => s.hasPrograms)
     group.forEach((s, i) => {
-      labelOf.set(serviceKey(s), s.hasPrograms ? labels[i] : `${labels[i]} ・ 番組なし`)
+      labelOf.set(
+        serviceKey(s),
+        hasPrimary && !s.hasPrograms ? `${labels[i]} ・ 番組なし` : labels[i],
+      )
     })
   }
 

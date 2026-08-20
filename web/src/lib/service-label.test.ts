@@ -193,4 +193,23 @@ describe('serviceDisambiguator', () => {
     expect(disambiguate(services[0])).toBe('地上波 5')
     expect(disambiguate(services[1])).toBe('地上波 12')
   })
+
+  it('同名グループ全員が番組を持たないなら「番組なし」は付かない', () => {
+    // 「番組なし」は混在グループの false 側に付けるヒントなので、全員 false の
+    // グループでは区別に何も寄与せず、どちらが主サービスかも言えない。
+    // 全員 false は本番で起きる:
+    // ① 初回 EPG 取得前は全サービスが hasPrograms: false になる
+    //    （`openapi.yaml` の `Service.hasPrograms` の定義）
+    // ② 同名のワンセグ / サブサービスが 2 本並び、どちらも番組を持たない族
+    // 上乗せの条件から `group.some((s) => s.hasPrograms)` を落とすと（= 以前の
+    // 「false なら全員に付ける」実装に戻すと）ここが落ちる。
+    const services = [
+      service({ serviceId: 1024, remoteControlKeyId: 5, channel: '27', hasPrograms: false }),
+      service({ serviceId: 1025, remoteControlKeyId: 5, channel: '95', hasPrograms: false }),
+    ]
+    const disambiguate = serviceDisambiguator(services)
+
+    expect(disambiguate(services[0])).toBe('地上波 5 ・ 27')
+    expect(disambiguate(services[1])).toBe('地上波 5 ・ 95')
+  })
 })
