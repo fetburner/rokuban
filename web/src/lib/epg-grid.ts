@@ -254,8 +254,13 @@ const serviceKey = (s: Service) => `${s.networkId}-${s.serviceId}`
 const disambiguationParts: ((s: Service) => string)[] = [
   (s) =>
     // リモコン番号は地上波の資源同定（channel-picker.tsx のバッジと同じ判定）。
-    // BS/CS は mirakc が 0 を返す（実測はテスト「リモコン番号を持たない BS/CS」
-    // 参照）ため今のところ通らないが、判定は明示しておく。
+    // BS/CS には意味を持たない番号なので channelType でも絞る
+    // （テスト「BS がリモコン番号を持っていても番号を出さない」）。地上波でも
+    // 0 は存在しないリモコン番号（mirakc が返さなかったときのゼロ値。
+    // `internal/mirakc/types.go` の素の int → `epg_services.remote_control_key_id`
+    // は NOT NULL → `internal/api/epg.go` がそのまま 0 を返す）なので、
+    // 「地上波 0」と書かずに種別だけを出す
+    // （テスト「リモコン番号 0 の地上波は種別だけを出す」）。
     s.channelType === 'GR' && s.remoteControlKeyId > 0
       ? `${channelTypeLabel(s.channelType)} ${s.remoteControlKeyId}`
       : channelTypeLabel(s.channelType),
@@ -293,9 +298,17 @@ export function serviceDisambiguator(
   const labelOf = new Map<string, string>()
   for (const group of groups.values()) {
     if (group.length <= 1) continue
+    // 段を配列に積み、空の段だけを落として連結する。連結の判定を
+    // 「ここまでのラベルが空文字か」で代理すると、ある段が空文字を返したときに
+    // 区切りだけが残る（`地上波 5 ・  ・ #32736-1024`）。今の API 契約では
+    // `channel` も `channelType` も required なので空にはならないが、
+    // 段の有無で判定しておけば形が崩れない
+    // （テスト「材料が空文字の段は区切りごと飛ばす」）。
+    const parts = group.map<string[]>(() => [])
     let labels = group.map(() => '')
     for (const part of disambiguationParts) {
-      labels = group.map((s, i) => (labels[i] === '' ? part(s) : `${labels[i]} ・ ${part(s)}`))
+      group.forEach((s, i) => parts[i].push(part(s)))
+      labels = parts.map((ps) => ps.filter((p) => p !== '').join(' ・ '))
       if (new Set(labels).size === group.length) break
     }
     group.forEach((s, i) => labelOf.set(serviceKey(s), labels[i]))

@@ -288,14 +288,32 @@ describe('serviceDisambiguator', () => {
     expect(disambiguate(services[1])).toBe('地上波 5 ・ 27 ・ #32736-1025')
   })
 
-  // mirakc は BS/CS のサービスに remoteControlKeyId を返さないため、`Service`
-  // には常にゼロ値の 0 が載る（`internal/mirakc/types.go` の素の int →
-  // `epg_services.remote_control_key_id` は NOT NULL → `internal/api/epg.go`
-  // がそのまま 0 を返す）。つまり BS/CS のサービスは全件が
-  // `remoteControlKeyId > 0` の**偽側**を通る = 本番の主経路であり、
+  // 判定は `channelType === 'GR' && remoteControlKeyId > 0` の 2 条件で、
+  // 落ちる経路が別なので固定するテストも分ける。
+  //
+  // (1) `remoteControlKeyId > 0` を殺すには GR かつ 0 のフィクスチャが要る。
+  // BS/CS のフィクスチャでは前置の `channelType === 'GR'` で短絡して
+  // `> 0` に到達しないので、`>= 0` に反転しても落ちない。
+  it('リモコン番号 0 の地上波は種別だけを出す（0 を番号として出さない）', () => {
+    // mirakc が remoteControlKeyId を返さないと `Service` にはゼロ値の 0 が載る
+    // （`internal/mirakc/types.go` の素の int →
+    // `epg_services.remote_control_key_id` は NOT NULL → `internal/api/epg.go`
+    // がそのまま 0 を返す）。「地上波 0」は存在しないリモコン番号なので、
+    // 期待値をリテラルで固定して `> 0` を `>= 0` に反転すると落ちるようにする。
+    const services = [
+      service({ serviceId: 1024, channelType: 'GR', remoteControlKeyId: 0, channel: '27' }),
+      service({ serviceId: 1025, channelType: 'GR', remoteControlKeyId: 0, channel: '95' }),
+    ]
+    const disambiguate = serviceDisambiguator(services)
+
+    expect(disambiguate(services[0])).toBe('地上波 ・ 27')
+    expect(disambiguate(services[1])).toBe('地上波 ・ 95')
+  })
+
+  // (2) 以下 2 件が固定しているのは `channelType === 'GR'` の**偽側**
+  // ---- BS/CS には番号を出さず種別だけを出すこと。BS/CS のサービスは
+  // remoteControlKeyId が全件 0 なので（上のコメント参照）これが本番の主経路で、
   // 同名サブサービスが並ぶ族（issue #306 の報告そのもの）もここでしか描かれない。
-  // 以下 2 件は「0 をリモコン番号として出さない」ことを期待値のリテラルで固定する
-  // （この 2 件が無いと `> 0` を `>= 0` に反転しても全テストが緑のままだった）。
   it('リモコン番号を持たない BS は種別だけを出す（0 を番号として出さない）', () => {
     const services = [
       service({ serviceId: 101, channelType: 'BS', remoteControlKeyId: 0, channel: 'BS15_0' }),
@@ -332,6 +350,20 @@ describe('serviceDisambiguator', () => {
 
     expect(disambiguate(services[0])).toBe('BS ・ BS15_0')
     expect(disambiguate(services[1])).toBe('BS ・ BS23_0')
+  })
+
+  it('材料が空文字の段は区切りごと飛ばす', () => {
+    // 今の API 契約では `channel` は required なので空文字は来ない（= 防御）。
+    // 段の連結を「ここまでのラベルが空文字か」で代理すると、この入力で
+    // `地上波 5 ・  ・ #32736-1024` のように区切りだけが残る。
+    const services = [
+      service({ serviceId: 1024, remoteControlKeyId: 5, channel: '' }),
+      service({ serviceId: 1025, remoteControlKeyId: 5, channel: '' }),
+    ]
+    const disambiguate = serviceDisambiguator(services)
+
+    expect(disambiguate(services[0])).toBe('地上波 5 ・ #32736-1024')
+    expect(disambiguate(services[1])).toBe('地上波 5 ・ #32736-1025')
   })
 
   it('渡した配列とは別オブジェクトでも同じ (networkId, serviceId) なら引ける', () => {
