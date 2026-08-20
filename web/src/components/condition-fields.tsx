@@ -12,7 +12,7 @@ import { unwrap } from '@/api/unwrap'
 import { Button } from '@/components/ui/button'
 import { Chip } from '@/components/ui/chip'
 import { Field, Input, Select } from '@/components/ui/field'
-import { serviceDisambiguator } from '@/lib/epg-grid'
+import { serviceDisambiguator } from '@/lib/service-label'
 import { useCurrentSite } from '@/lib/site'
 import {
   allWeekdays,

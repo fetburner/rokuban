@@ -254,4 +254,52 @@ describe('ConditionFields のサービスチップ', () => {
       { networkId: 32677, serviceId: 1033 },
     ])
   })
+
+  it('番組を持たない同名サービスには「番組なし」を足す（issue #306 のレビュー指摘）', async () => {
+    // 主サービス（hasPrograms: true）とサブサービス（false）が同じリモコン
+    // 番号・物理チャンネルで並ぶ族。識別子だけでは一意になるが、どちらが
+    // 主サービスかは伝わらないため、番組を持たない側にヒントを足す。
+    const servicesWithSub: Service[] = [
+      {
+        networkId: 32736,
+        serviceId: 1024,
+        name: '瀬戸内海放送',
+        channelType: 'GR',
+        channel: '27',
+        remoteControlKeyId: 5,
+        hasLogoData: false,
+        hasPrograms: true,
+      },
+      {
+        networkId: 32736,
+        serviceId: 1032,
+        name: '瀬戸内海放送',
+        channelType: 'GR',
+        channel: '27',
+        remoteControlKeyId: 5,
+        hasLogoData: false,
+        hasPrograms: false,
+      },
+    ]
+    globalThis.fetch = vi.fn(() =>
+      Promise.resolve(
+        new Response(JSON.stringify(servicesWithSub), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      ),
+    ) as unknown as typeof fetch
+    renderInRouter(<ConditionFields draft={emptyDraft()} onChange={() => {}} />)
+
+    const group = await screen.findByRole('group', { name: 'サービス' })
+    // textContent で比較する（アクセシブルネームはノード間の空白の入り方が
+    // 計算エンジン依存で jsdom が実ブラウザと一致する保証はないため。
+    // 上の `label` 定数と同じ規律）。
+    expect(
+      findChipByText(group, '瀬戸内海放送（地上波 5 ・ 27 ・ #32736-1024）'),
+    ).toBeInTheDocument()
+    expect(
+      findChipByText(group, '瀬戸内海放送（地上波 5 ・ 27 ・ #32736-1032 ・ 番組なし）'),
+    ).toBeInTheDocument()
+  })
 })
