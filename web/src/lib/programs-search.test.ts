@@ -47,6 +47,22 @@ describe('parseProgramsSearch', () => {
     expect(parseProgramsSearch({ serviceId: [1.5, 1024] })).toEqual({ serviceId: [1024] })
   })
 
+  // issue #345: Number.MAX_SAFE_INTEGER を超える値は Number() の時点で既に
+  // 別の値に丸まる（`Number.MAX_SAFE_INTEGER + 2` は `Number.MAX_SAFE_INTEGER + 1`
+  // に丸まる）。丸めた値を「利用者が指定した id」として通すと、別の serviceId を
+  // 指してしまう。リテラルではなく式で書くのは oxlint の
+  // `no-loss-of-precision`（数値リテラルの丸めそのものを警告する規則）を
+  // 誤って踏まないため --- ここでは丸めが起きることこそテストの主張。
+  const unsafeId = Number.MAX_SAFE_INTEGER + 2
+  it('安全整数を超える要素は丸めずに落とす', () => {
+    expect(parseProgramsSearch({ serviceId: [unsafeId, 1024] })).toEqual({
+      serviceId: [1024],
+    })
+    expect(parseProgramsSearch({ serviceId: [unsafeId] })).toEqual({
+      serviceId: undefined,
+    })
+  })
+
   // `at`（issue #233 M6-5 の容量バッジ導線）。omit-on-invalid の罠は `serviceId` と
   // 同じなので、キー自体は常に存在させる。
   it('at が無ければ明示的に undefined になる', () => {

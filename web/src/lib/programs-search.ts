@@ -12,6 +12,7 @@
  */
 
 import { ServiceChannelType, type Service } from '@/api/generated'
+import { parsePositiveIntId } from '@/lib/positive-id'
 
 /** ProgramsPageSearch は `/`（番組表）の URL クエリパラメータ（検証済み）。 */
 export type ProgramsPageSearch = {
@@ -36,18 +37,26 @@ function toRawValues(raw: unknown): unknown[] {
 /**
  * parseServiceIds は URL の値を検証済みの serviceId 配列にする。
  *
- * 数値に変換できない要素・0 以下の要素は落とす（丸めない。`serviceId` は
- * `services.service_id` の PK で正の整数）。重複を除き昇順にソートする ---
- * `pages/programs.tsx` の `ChannelPicker` は `Set` で選択を持つため反復順が
- * 選び方の履歴に依存し、URL に手で書く順序も揃わない。順序が揺れると同じ選択でも
- * queryKey / URL が変わって無限に再取得されるおそれがあるため、パースの時点で
- * 正準形にする。結果が空なら `undefined`（「すべて」を空配列という意味を持たない
- * 値で表現しない。不変条件 10 の精神）。
+ * 要素ごとに `lib/positive-id.ts` の `parsePositiveIntId` を適用する ---
+ * `serviceId` は `services.service_id` の PK で正の安全整数しか存在しない識別子
+ * であり、単数側（`parseRuleId` / `/live` の `serviceId`）と同じ形（issue #275）。
+ * `Number.isSafeInteger` を見ないと `Number.MAX_SAFE_INTEGER` を超える値が
+ * 黙って別の値に丸まる（実測: `9007199254740993` は `Number()` の時点で既に
+ * `9007199254740992` になる。`parsePositiveIntId` の doc コメント参照）。
+ *
+ * 不正な要素は配列ごとではなく要素だけ落とす --- 複数チャンネル絞り込みの一部が
+ * 壊れたリンク由来でも、残りの有効な絞り込みは活かす（`?serviceId=abc,1024` を
+ * 「絞り込みなし」に落とすより「1024 に絞る」の方が意図に近い）。重複を除き
+ * 昇順にソートする --- `pages/programs.tsx` の `ChannelPicker` は `Set` で選択を
+ * 持つため反復順が選び方の履歴に依存し、URL に手で書く順序も揃わない。順序が
+ * 揺れると同じ選択でも queryKey / URL が変わって無限に再取得されるおそれがある
+ * ため、パースの時点で正準形にする。結果が空なら `undefined`（「すべて」を
+ * 空配列という意味を持たない値で表現しない。不変条件 10 の精神）。
  */
 function parseServiceIds(raw: unknown): number[] | undefined {
   const values = toRawValues(raw)
-    .map((v) => (typeof v === 'number' ? v : typeof v === 'string' ? Number(v) : NaN))
-    .filter((n) => Number.isFinite(n) && Number.isInteger(n) && n > 0)
+    .map((v) => parsePositiveIntId(v))
+    .filter((n): n is number => n !== undefined)
   const unique = [...new Set(values)].sort((a, b) => a - b)
   return unique.length > 0 ? unique : undefined
 }
