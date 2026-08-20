@@ -20,6 +20,7 @@ function reservation(
   startMinutes: number,
   durationMinutes: number,
   site = 'default',
+  serviceName = 'テスト局',
 ): Reservation {
   return {
     id,
@@ -28,6 +29,7 @@ function reservation(
     source: 'manual',
     state: 'active',
     title,
+    serviceName,
     startAt: at(startMinutes),
     durationMs: durationMinutes * 60_000,
     createdAt: at(0),
@@ -381,5 +383,33 @@ describe('予約一覧の信号色', () => {
     const badge = await screen.findByText('EPG から消失')
     expect(badge).toHaveClass('text-destructive')
     expect(badge.className).not.toMatch(/warning|tally/)
+  })
+})
+
+/**
+ * 予約一覧に局名（`program_snapshots.service_name` 由来）が出ること（issue #302）。
+ *
+ * 同じタイトルの番組が日付・局違いで並ぶと局名なしでは区別できないのが issue の
+ * 観測そのものなので、**同タイトル 2 件を局名だけで見分けられる**ことを主張する。
+ * タイトルが重複するため `row()` ヘルパー（`getByText` は一意な文字列前提）は
+ * 使わず、`findAllByText` で得た 2 つのタイトル要素からそれぞれの行を辿る。
+ */
+describe('予約一覧の局名表示（issue #302）', () => {
+  it('同タイトル・別局の予約を局名で区別できる', async () => {
+    renderWith(
+      [
+        reservation(1, '同じ番組名', 19 * 60, 60, 'default', 'NHK総合'),
+        reservation(2, '同じ番組名', 20 * 60, 60, 'default', 'NHK Eテレ'),
+      ],
+      [],
+    )
+
+    const titles = await screen.findAllByText('同じ番組名')
+    expect(titles).toHaveLength(2)
+    const rows = titles.map((el) => el.closest('li'))
+    expect(rows[0]).not.toBeNull()
+    expect(rows[1]).not.toBeNull()
+    expect(within(rows[0]!).getByText('NHK総合')).toBeInTheDocument()
+    expect(within(rows[1]!).getByText('NHK Eテレ')).toBeInTheDocument()
   })
 })

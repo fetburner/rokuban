@@ -85,6 +85,7 @@ export function ReservationsPage() {
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-sm">{r.title || '（番組名なし）'}</div>
                   <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <span className="shrink-0">{r.serviceName}</span>
                     <span className="shrink-0">{formatDateTime(r.startAt)}</span>
                     <span className="shrink-0">{formatDuration(r.durationMs)}</span>
                     <StateBadge state={r.state} />

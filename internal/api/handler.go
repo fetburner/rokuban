@@ -209,12 +209,13 @@ func reservationFromRow(r sqlcgen.Reservation, snap sqlcgen.ProgramSnapshot, ove
 		// site を返すのは容量超過の判定がサイトごとに独立しているため
 		// （docs/data.md §6.5）。クライアントに単一サイト前提の定数を持たせると、
 		// 多サイト化のときに「他サイトの不足を自分の不足として出す」形で静かに壊れる。
-		Skip:       opts.IsSkipped(),
-		Title:      snap.Title,
-		StartAt:    snap.StartAt,
-		DurationMs: snap.DurationMs,
-		CreatedAt:  r.CreatedAt,
-		UpdatedAt:  r.UpdatedAt,
+		Skip:        opts.IsSkipped(),
+		Title:       snap.Title,
+		ServiceName: snap.ServiceName,
+		StartAt:     snap.StartAt,
+		DurationMs:  snap.DurationMs,
+		CreatedAt:   r.CreatedAt,
+		UpdatedAt:   r.UpdatedAt,
 	}
 	if r.RuleID != nil {
 		res.RuleId = r.RuleID

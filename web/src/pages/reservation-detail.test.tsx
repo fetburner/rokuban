@@ -17,6 +17,7 @@ function baseReservation(overrides: Partial<Reservation> = {}): Reservation {
     source: 'manual',
     state: 'active',
     title: 'テスト番組',
+    serviceName: 'テスト局',
     startAt: dayStart.toISOString(),
     durationMs: 30 * 60_000,
     createdAt: dayStart.toISOString(),
@@ -127,6 +128,24 @@ describe('ReservationDetailPage', () => {
     renderAt('/reservations/default/300000')
 
     expect(await screen.findByText('テスト番組')).toBeInTheDocument()
+  })
+
+  // issue #302: 予約詳細に局名を出す。同じタイトルが日付・局違いで並ぶと
+  // 予約一覧・ホームでは区別できても、詳細画面単体では局名が無いと
+  // どの局の予約かが分からない。
+  it('局名（program_snapshots.service_name 由来）を出す', async () => {
+    stubFetch((site, programId) =>
+      site === 'default' && programId === 300000
+        ? baseReservation({ serviceName: 'NHK総合' })
+        : null,
+    )
+
+    renderAt('/reservations/default/300000')
+
+    expect(await screen.findByText('テスト番組')).toBeInTheDocument()
+    // 局名は日時・尺と同じ <p> 内で中点区切りのテキストになる（`getByText` の
+    // 完全一致はこの要素全体の文字列にしか当たらないため、部分一致で見る）。
+    expect(screen.getByText(/NHK総合/)).toBeInTheDocument()
   })
 
   // 核心: 予約行が再実体化されて id が変わっても、同じ URL のまま
