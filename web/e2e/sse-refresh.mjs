@@ -129,6 +129,43 @@ const page = await openStubbed('/programs', '番組表')
 
 const programs = '/api/sites/tokyo/programs'
 const services = '/api/sites/tokyo/services'
+const programsWallTime = await page.evaluate(() => Date.now())
+
+/**
+ * advanceOneOperationalCycle は仮想時計を運用状態 1 周期ぶん進め、その周期で
+ * `/programs` が再取得する予約とブレーカーのレスポンスが完了してから返す。
+ *
+ * `runFor(540_000)` で 9 周期を一気に発火した計測では 20 回中 5 回、予約の
+ * refetch が 1〜2 本発行されなかった。route entry だけ待つ実装も、fulfill を
+ * 100ms 遅らせた計測で前サイクルの予約・ブレーカーが 18 本 abort されたため、
+ * in-flight の重なりを除けない。`response.finished()` で本文受信まで待ち、続く
+ * ブラウザ往復で fetch の継続処理を進める形では、同じ 100ms 遅延で番組表区間の
+ * abort は 0 本だった。`setSystemTime` はタイマーを発火せず壁時計だけ戻すため、
+ * interval の経過は保ったまま、1 周期ずつ settle した計測で仮想 5 分時点に
+ * programs が 1 から 2 へ増えた壁時計由来の別 fetch も除く。ここまで同期して
+ * から次の仮想 60 秒へ進む。
+ *
+ * 待つのは各周期の 2 レスポンスだけで、期待総数まではポーリングしない。
+ * 周期短縮は最後の `=== 11` / `=== 2` に余剰、周期延長は waitForResponse の
+ * timeout または最後の厳密比較に不足として現れる。
+ */
+async function advanceOneOperationalCycle() {
+  const responses = ['/api/reservations', '/api/breakers'].map((expectedPath) =>
+    page
+      .waitForResponse(
+        (response) => new URL(response.url()).pathname === expectedPath,
+        { timeout: 2000 },
+      )
+      .then(async (response) => {
+        const error = await response.finished()
+        if (error !== null) throw error
+      }),
+  )
+  await page.clock.runFor(operationalMs)
+  await Promise.all(responses)
+  await page.clock.setSystemTime(programsWallTime)
+}
+
 log('初回ロード後:', Object.fromEntries([...counts.entries()].sort()))
 check('初回: 予約', count('/api/reservations'), 1)
 check('初回: 番組リスト', count(programs), 1)
@@ -138,15 +175,19 @@ if (ng.length > 0) {
   process.exit(1)
 }
 
-// 運用状態は 60 秒で取り直す。EPG はまだ動かない
-await page.clock.runFor(operationalMs)
-await page.waitForTimeout(500)
+// 運用状態は 60 秒で取り直す。1 周期進めて着弾を待つ。EPG はまだ動かない
+await advanceOneOperationalCycle()
 check('60 秒後: 予約', count('/api/reservations'), 2)
 check('60 秒後: ブレーカー', count('/api/breakers'), 2)
 check('60 秒後: 番組リスト（まだ増えない）', count(programs), 1)
 
-// 10 分でちょうど EPG の 1 周。運用状態はこの間に 10 回
-await page.clock.runFor(epgMs - operationalMs)
+// 10 分でちょうど EPG の 1 周。運用状態はこの間にさらに 9 回（計 10 回）。
+// まとめて runFor せず 1 周期ずつ settle する理由は advanceOneOperationalCycle 参照
+for (let i = 0; i < epgMs / operationalMs - 1; i++) {
+  await advanceOneOperationalCycle()
+}
+// 最後の 1 周期で EPG（programs / services）も 1 回だけ発火する。固定待ちは
+// EPG の着弾ぶんだけで、期待総数まではポーリングしない
 await page.waitForTimeout(500)
 check('10 分後: 番組リスト', count(programs), 2)
 check('10 分後: サービス一覧', count(services), 2)
