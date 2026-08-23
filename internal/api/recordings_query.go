@@ -387,6 +387,12 @@ func buildRecordingsQuery(f recordingsFilter) (string, []any, error) {
 	}
 	if f.Status != "" {
 		and("r.status = " + arg(string(f.Status)))
+		// 通常一覧の status=failed だけは、本物の record に置き換わった擬似
+		// failed 行によるホーム警告の偽陽性を防ぐ。無条件一覧・trash 一覧は
+		// 履歴を維持するため絞らない（docs/frontend/home.md）。
+		if !f.Trash && f.Status == ListRecordingsParamsStatusFailed {
+			and("r.superseded_at IS NULL")
+		}
 	}
 	if f.Source != "" {
 		and("r.source = " + arg(string(f.Source)))

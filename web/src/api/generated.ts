@@ -1079,6 +1079,11 @@ service?: string[];
 /**
  * recordings.status の CHECK と一致させた 4 値（'canceled' は 00021 で
  * CHECK に追加済み）。
+ *
+ * `status=failed` は通常一覧（`trash=false`）に限り supersede 済みの
+ * failed 行を返さない。本物の record が観測されて置き換わった擬似
+ * failed 行を「録画失敗」として返さないため（ホームの警告が偽陽性を
+ * 出し続けるのを防ぐ）。無条件一覧・`trash=true` は履歴として両行を残す。
  */
 status?: ListRecordingsStatus;
 source?: ListRecordingsSource;

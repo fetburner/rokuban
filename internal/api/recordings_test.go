@@ -148,6 +148,49 @@ func TestListRecordings(t *testing.T) {
 	}
 }
 
+// TestListRecordings_FailedFilterExcludesSuperseded は `?status=failed` から
+// supersede 済み行だけを除き、無条件一覧には置換前後の履歴を残すことを固定する。
+func TestListRecordings_FailedFilterExcludesSuperseded(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := newAPIServer(t, pool)
+
+	base := time.Now().Truncate(time.Second)
+	// watcher の createRecording と同じ順序: 生きた failed 行を supersede してから
+	// 同一 active-event の成功行を作る。
+	const eventID = 700
+	seedRecording(t, pool, "擬似失敗（置換済み）", base.Add(-time.Hour), "failed", eventID)
+	n, err := sqlcgen.New(pool).SupersedeFailedRecording(context.Background(), sqlcgen.SupersedeFailedRecordingParams{
+		Site:      db.DefaultSite,
+		NetworkID: 32678,
+		ServiceID: 5168,
+		EventID:   eventID,
+	})
+	if err != nil || n != 1 {
+		t.Fatalf("SupersedeFailedRecording: rows=%d err=%v", n, err)
+	}
+	seedRecording(t, pool, "本物の成功", base, "finished", eventID)
+
+	// `?status=failed` は superseded 済みの failed 行を返さない（0 件）。
+	var failedOnly []Recording
+	resp := getJSON(t, srv.URL+"/api/recordings?status=failed", &failedOnly)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	if len(failedOnly) != 0 {
+		t.Errorf("?status=failed = %d rows, want 0 (superseded failed row must be excluded)", len(failedOnly))
+	}
+
+	// 無条件一覧は履歴 2 行（supersede 元 + supersede 先）を残す。
+	var all []Recording
+	resp = getJSON(t, srv.URL+"/api/recordings", &all)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	if len(all) != 2 {
+		t.Errorf("unconditional list = %d rows, want 2 (both history rows retained)", len(all))
+	}
+}
+
 // 一覧の射影（recordingsFromJoins、internal/api/recordings_query.go）は
 // `a.state <> 'deleted'` で結合するため、`state = 'deleting'`（unlink 待ち）の
 // 原本でも sizeBytes が付き「原本あり」に見える --- 一方サーバーの 409 判定
