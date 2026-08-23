@@ -276,16 +276,21 @@ describe('RulesPage 条件編集', () => {
     expect(screen.queryByText(/検索すると/)).not.toBeInTheDocument()
   })
 
-  it('条件が無いまま保存しようとすると確認ダイアログを挟み、キャンセルすると送信されない', async () => {
+  it('1 行目の値を全消しして条件ゼロに戻すと確認ダイアログを挟む', async () => {
     const { postBodies } = stubApi([])
     const user = userEvent.setup()
     renderPage()
 
     await user.click(await screen.findByRole('button', { name: 'ルールを作成' }))
     await user.type(screen.getByLabelText('名前'), '条件なしルール')
+    const textInput = screen.getByLabelText('テキスト条件 1 の値')
+    await user.type(textInput, 'ニュース')
+    await user.clear(textInput)
 
-    // 保存を押しただけでは送信されない（確認ダイアログを開くだけ）
-    await user.click(screen.getByRole('button', { name: '保存' }))
+    // 全消しした 1 行目は条件として残らないので、保存は確認ダイアログを開ける。
+    const saveButton = screen.getByRole('button', { name: '保存' })
+    expect(saveButton).not.toBeDisabled()
+    await user.click(saveButton)
     expect(await screen.findByText('条件を指定せずに保存しますか？')).toBeInTheDocument()
     expect(postBodies.length).toBe(0)
 
@@ -297,7 +302,6 @@ describe('RulesPage 条件編集', () => {
       expect(screen.queryByText('条件を指定せずに保存しますか？')).not.toBeInTheDocument(),
     )
     expect(postBodies.length).toBe(0)
-    const saveButton = screen.getByRole('button', { name: '保存' })
     expect(saveButton).not.toBeDisabled()
     expect(saveButton).toHaveTextContent('保存')
 

@@ -490,30 +490,84 @@ describe('SearchPage', () => {
     expect(screen.getByLabelText('テキスト条件 2 の値')).toHaveValue('')
   })
 
-  /**
-   * レビュー指摘: 値を入力せずにチップ（対象・モード・大文字小文字・除外）
-   * だけ触ると、値が空の行が実体化して `draftError` に落ち検索できなくなる。
-   * X が効くことで、そこから空の状態に戻れることを確認する。
-   */
-  it('値を入れずにチップだけ押すと検索できなくなるが、削除（X）で空の状態に戻れる', async () => {
+  it('1 行目の値を全消しすると未実体化に戻り、検索できる', async () => {
     stubApi()
+    const user = userEvent.setup()
     renderPage()
 
     await screen.findByRole('button', { name: 'NHK総合' })
+    const input = screen.getByLabelText('テキスト条件 1 の値')
+    await user.type(input, 'ニュース')
+    expect(screen.getByRole('button', { name: '検索' })).not.toBeDisabled()
 
-    await userEvent.click(screen.getByRole('button', { name: '除外' }))
-
-    expect(await screen.findByText('テキスト条件の値を入力してください')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '検索' })).toBeDisabled()
-
-    const deleteButton = await screen.findByRole('button', { name: 'テキスト条件 1 を削除' })
-    await userEvent.click(deleteButton)
+    await user.clear(input)
 
     expect(screen.queryByText('テキスト条件の値を入力してください')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: '検索' })).not.toBeDisabled()
+    expect(screen.getByText('指定なし（すべての番組が対象）')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '条件を追加' })).not.toBeInTheDocument()
     expect(
       screen.queryByRole('button', { name: 'テキスト条件 1 を削除' }),
     ).not.toBeInTheDocument()
+  })
+
+  it('値が空の 1 行目で除外・対象・モードを変えても未実体化のまま検索できる', async () => {
+    stubApi()
+    const user = userEvent.setup()
+    renderPage()
+
+    await screen.findByRole('button', { name: 'NHK総合' })
+    const searchButton = screen.getByRole('button', { name: '検索' })
+
+    await user.click(screen.getByRole('button', { name: '除外' }))
+    expect(searchButton).not.toBeDisabled()
+    await user.selectOptions(screen.getByLabelText('テキスト条件 1 の対象'), 'description')
+    expect(searchButton).not.toBeDisabled()
+    await user.selectOptions(screen.getByLabelText('テキスト条件 1 のモード'), 'regex')
+    expect(searchButton).not.toBeDisabled()
+
+    expect(screen.queryByText('テキスト条件の値を入力してください')).not.toBeInTheDocument()
+    expect(screen.getByText('指定なし（すべての番組が対象）')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '条件を追加' })).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: 'テキスト条件 1 を削除' }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('未実体化の 1 行目で選んだ除外を、値の入力時に保持して送る', async () => {
+    const { searchBodies } = stubApi()
+    const user = userEvent.setup()
+    renderPage()
+
+    await screen.findByRole('button', { name: 'NHK総合' })
+    await user.click(screen.getByRole('button', { name: '除外' }))
+    await user.type(screen.getByLabelText('テキスト条件 1 の値'), 'ニュース')
+    await user.click(screen.getByRole('button', { name: '検索' }))
+
+    await waitFor(() => expect(searchBodies).toHaveLength(1))
+    expect(searchBodies[0]).toEqual({
+      textMatches: [{ target: 'name', mode: 'keyword', value: 'ニュース', negate: true }],
+    })
+  })
+
+  it('複数行では 1 行目の値を全消ししても行を残す', async () => {
+    stubApi()
+    const user = userEvent.setup()
+    renderPage()
+
+    await screen.findByRole('button', { name: 'NHK総合' })
+    await user.type(screen.getByLabelText('テキスト条件 1 の値'), 'ニュース')
+    await user.click(screen.getByRole('button', { name: '条件を追加' }))
+    await user.type(screen.getByLabelText('テキスト条件 2 の値'), 'ドラマ')
+
+    await user.clear(screen.getByLabelText('テキスト条件 1 の値'))
+
+    expect(screen.getAllByLabelText(/^テキスト条件 \d+ の値$/)).toHaveLength(2)
+    expect(screen.getByLabelText('テキスト条件 1 の値')).toHaveValue('')
+    expect(screen.getByLabelText('テキスト条件 2 の値')).toHaveValue('ドラマ')
+    expect(
+      screen.getByRole('button', { name: 'テキスト条件 1 を削除' }),
+    ).toBeInTheDocument()
   })
 
   it('検索前の案内と 0 件の案内を混同しない', async () => {

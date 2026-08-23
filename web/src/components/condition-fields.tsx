@@ -1,5 +1,5 @@
 import { X } from 'lucide-react'
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 
 import {
   useListServices,
@@ -143,35 +143,49 @@ function Section({
  * ルールいずれの画面でもこの節は `ConditionFields` の先頭に来るのに、
  * 初画面で打てる場所が無いという回帰だった。
  *
- * 配列が空でも `rows`（下）に見かけ上の 1 行を出し、そこへの入力（`update`）
- * が起きた瞬間だけ `draft.textMatches` に実体化する。触れないままなら
- * 「指定なし（すべての番組が対象）」のまま送られる、という既存の意味は
- * 変えない（`draftError` は配列に実体が無い間は何も見ない）。
+ * 配列が空でも見かけ上の 1 行を出すが、値が空の間は `draft.textMatches`
+ * に実体化しない。対象・モード・チップの選択はローカル state に保持し、値を
+ * 入れた瞬間にその選択ごと実体化する。値の全消しでも選択をローカルへ戻すため、
+ * 検索・保存を空値で止めず、再入力時にユーザーの選択も失わない。
+ *
+ * この非実体化は単一行だけに適用する。複数行の 1 行を空にする操作は編集中の
+ * 位置を保つ必要があるので、行を勝手に消さない。明示的な削除（X）は選択も
+ * 捨てる操作としてローカル state を既定値へ戻す。
  *
  * **配列が空の間は「条件を追加」ボタンと行の削除（X）を出さない。** 見かけ上
  * の 1 行目は既に `rows` が出しているので、実体の無い行に対してこれらの
- * ボタンを出すと「押しても何も起きない」死んだコントロールになる（レビュー
- * 指摘）。実体化（`index < draft.textMatches.length`）した行にだけ出す ---
- * これは「チップだけ押して実体化し、値が空のまま `draftError` に落ちた」
- * ときの戻り道にもなる（X が効くようになる）。
+ * ボタンを出すと「押しても何も起きない」死んだコントロールになる。
  */
 function TextMatchFields({ draft, onChange, disabled }: FieldsProps) {
-  const update = (index: number, patch: Partial<TextMatchDraft>) =>
-    onChange((d) =>
-      index < d.textMatches.length
-        ? {
-            ...d,
-            textMatches: d.textMatches.map((m, i) => (i === index ? { ...m, ...patch } : m)),
-          }
-        : // まだ実体の無い見かけ上の行（下の `rows` のフォールバック）への
-          // 最初の操作。実体化して配列に加える。
-          { ...d, textMatches: [...d.textMatches, { ...newTextMatch(), ...patch }] },
-    )
+  const [unmaterialized, setUnmaterialized] = useState<TextMatchDraft>(newTextMatch)
+
+  const update = (index: number, patch: Partial<TextMatchDraft>) => {
+    const next = { ...(draft.textMatches[index] ?? unmaterialized), ...patch }
+
+    if (index === 0 && draft.textMatches.length <= 1 && next.value === '') {
+      setUnmaterialized(next)
+      if (draft.textMatches.length === 1) {
+        onChange((d) => ({ ...d, textMatches: [] }))
+      }
+      return
+    }
+
+    if (draft.textMatches.length === 0) {
+      setUnmaterialized(newTextMatch())
+      onChange((d) => ({ ...d, textMatches: [next] }))
+      return
+    }
+
+    onChange((d) => ({
+      ...d,
+      textMatches: d.textMatches.map((m, i) => (i === index ? { ...m, ...patch } : m)),
+    }))
+  }
 
   const hasRows = draft.textMatches.length > 0
   // 配列が空でも 1 行目は見かけ上出す。「条件を追加」で新規行を作ってからで
   // ないと打てない、という 1 クリック分の迂回を無くすため。
-  const rows = hasRows ? draft.textMatches : [newTextMatch()]
+  const rows = hasRows ? draft.textMatches : [unmaterialized]
 
   return (
     <Section
@@ -258,12 +272,13 @@ function TextMatchFields({ draft, onChange, disabled }: FieldsProps) {
                     aria-label={`テキスト条件 ${index + 1} を削除`}
                     className="mt-4 shrink-0"
                     disabled={disabled}
-                    onClick={() =>
+                    onClick={() => {
+                      if (draft.textMatches.length === 1) setUnmaterialized(newTextMatch())
                       onChange((d) => ({
                         ...d,
                         textMatches: d.textMatches.filter((_, i) => i !== index),
                       }))
-                    }
+                    }}
                   >
                     <X />
                   </Button>
