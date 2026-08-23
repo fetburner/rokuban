@@ -114,15 +114,13 @@
 「チューナー不足」が下へ押し下げられる --- 件数上限は入れていない（押し下げが
 実運用で問題になるかは未検証。問題になるなら上限より並びの入れ替えが先）。
 
-**未解決: `?status=failed` は superseded 済みの failed 行を含む**（`GET
-/api/recordings` は `superseded_at` を絞らず、API にも出していない）。本物の
-record が観測されて置き換わった擬似 failed 行が recency 窓のあいだ警告に残り、
-ユーザーには消す手段が無い。症状は 2 つの形で出る --- 実際は録れているのに
-「録画失敗」と出る形と、**同じ番組が警告に 2 行並ぶ形**（本物の record も failed
-だった場合。擬似行は `quality_events` を持つので「理由あり」、置き換えで作られた
-行は `CreateRecording` が `quality_events` を運ばないので同じ番組が「理由不明」で
-もう 1 行出る）。警告は「異常はないか」に答える場所なので、この偽陽性のコストは
-一覧より高い。フロント単独では絞れないので API 側の判断が要る。
+**`?status=failed`（通常一覧）は supersede 済みの failed 行を返さない**（API 側で
+`superseded_at IS NULL` を絞る。`internal/api/recordings_query.go`。判定は
+`TestListRecordings_FailedFilterExcludesSuperseded`）。本物の record が観測されて
+置き換わった擬似 failed 行を警告が拾わないので、実際は録れているのに「録画失敗」と
+出る偽陽性と、同じ番組が警告に 2 行並ぶ形（擬似行 + 置換で作られた行）はどちらも
+起きない。無条件一覧・`trash=true` は履歴として両行を残す（`docs/schema/recordings.md`）
+ので、フロントは追加の絞り込みをしない。
 
 **失敗理由は `quality_events`（追記専用の履歴）の失敗系イベント（`recording.failed`
 / `recording.record-broken`）の最後の要素の `reason` があればそれを出し、無ければ
