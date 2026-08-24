@@ -1491,8 +1491,9 @@ type ListRecordingsParams struct {
 	Genre       *[]int                             `form:"genre,omitempty" json:"genre,omitempty"`
 	ChannelType *[]ListRecordingsParamsChannelType `form:"channelType,omitempty" json:"channelType,omitempty"`
 
-	// Service `<site>:<serviceId>` の複合キー。複数指定は OR。同じ serviceId を受信する
-	// 別サイトは一致しない。
+	// Service 新形式は `<site>:<networkId>:<serviceId>` で network まで厳密に一致する。
+	// 旧 `<site>:<serviceId>` は後方互換で、site 内では network を問わない。
+	// networkId / serviceId は 1..2147483647。複数指定は OR。
 	Service *[]string `form:"service,omitempty" json:"service,omitempty"`
 
 	// Status recordings.status の CHECK と一致させた 4 値（'canceled' は 00021 で
@@ -1548,11 +1549,17 @@ type ListProgramsParams struct {
 
 	// End 時間窓の終了（この時刻より前に始まる番組が対象）。start からの幅は最大 7 日
 	End       time.Time `form:"end" json:"end"`
-	NetworkId *int      `form:"networkId,omitempty" json:"networkId,omitempty"`
+	NetworkId *int32    `form:"networkId,omitempty" json:"networkId,omitempty"`
 
-	// ServiceId 複数指定可（`?serviceId=1&serviceId=2`）。`?serviceId=1` は 1 要素の配列として
-	// 解釈されるのでワイヤ上は後方互換。未指定なら絞り込みなし。
-	ServiceId *[]int `form:"serviceId,omitempty" json:"serviceId,omitempty"`
+	// ServiceId 後方互換の serviceId 単独フィルタ。複数指定可
+	// （`?serviceId=1&serviceId=2`）。networkId を伴わなければ network を問わず
+	// serviceId が一致する番組を返す。networkId を伴えばその network 内で絞る。
+	// 厳密な複数サービス指定には `service` を使う。
+	ServiceId *[]int32 `form:"serviceId,omitempty" json:"serviceId,omitempty"`
+
+	// Service `<networkId>:<serviceId>` の組（各 ID は 1..2147483647）。複数指定は OR。
+	// `networkId` または `serviceId` との同時指定は 400。
+	Service *[]string `form:"service,omitempty" json:"service,omitempty"`
 }
 
 // AddRecordingEncodeProfilesJSONRequestBody defines body for AddRecordingEncodeProfiles for application/json ContentType.
@@ -2587,7 +2594,7 @@ func (siw *ServerInterfaceWrapper) ListPrograms(w http.ResponseWriter, r *http.R
 
 	// ------------- Optional query parameter "networkId" -------------
 
-	err = runtime.BindQueryParameterWithOptions("form", true, false, "networkId", r.URL.Query(), &params.NetworkId, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "networkId", r.URL.Query(), &params.NetworkId, runtime.BindQueryParameterOptions{Type: "integer", Format: "int32"})
 	if err != nil {
 		var requiredError *runtime.RequiredParameterError
 		if errors.As(err, &requiredError) {
@@ -2607,6 +2614,19 @@ func (siw *ServerInterfaceWrapper) ListPrograms(w http.ResponseWriter, r *http.R
 			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "serviceId"})
 		} else {
 			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "serviceId", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "service" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "service", r.URL.Query(), &params.Service, runtime.BindQueryParameterOptions{Type: "array", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "service"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "service", Err: err})
 		}
 		return
 	}

@@ -628,7 +628,7 @@ describe('RecordingsPage 検索条件', () => {
 
     await waitFor(() => {
       const last = recordingsRequests(server.fetchMock).at(-1)
-      expect(last?.searchParams.getAll('service')).toEqual(['default:5168'])
+      expect(last?.searchParams.getAll('service')).toEqual(['default:32736:5168'])
     })
   })
 

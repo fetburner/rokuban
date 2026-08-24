@@ -1049,12 +1049,26 @@ start: string;
  * 時間窓の終了（この時刻より前に始まる番組が対象）。start からの幅は最大 7 日
  */
 end: string;
+/**
+ * @minimum 1
+ * @maximum 2147483647
+ */
 networkId?: number;
 /**
- * 複数指定可（`?serviceId=1&serviceId=2`）。`?serviceId=1` は 1 要素の配列として
- * 解釈されるのでワイヤ上は後方互換。未指定なら絞り込みなし。
+ * 後方互換の serviceId 単独フィルタ。複数指定可
+ * （`?serviceId=1&serviceId=2`）。networkId を伴わなければ network を問わず
+ * serviceId が一致する番組を返す。networkId を伴えばその network 内で絞る。
+ * 厳密な複数サービス指定には `service` を使う。
+ * @items.minimum 1
+ * @items.maximum 2147483647
  */
 serviceId?: number[];
+/**
+ * `<networkId>:<serviceId>` の組（各 ID は 1..2147483647）。複数指定は OR。
+ * `networkId` または `serviceId` との同時指定は 400。
+ * @items.pattern ^[1-9][0-9]*:[1-9][0-9]*$
+ */
+service?: string[];
 };
 
 export type ListRecordingsParams = {
@@ -1071,9 +1085,10 @@ qTarget?: ListRecordingsQTarget;
 genre?: number[];
 channelType?: ListRecordingsChannelTypeItem[];
 /**
- * `<site>:<serviceId>` の複合キー。複数指定は OR。同じ serviceId を受信する
- * 別サイトは一致しない。
- * @items.pattern ^[a-z0-9](?:[_-]?[a-z0-9])*:([1-9][0-9]*)$
+ * 新形式は `<site>:<networkId>:<serviceId>` で network まで厳密に一致する。
+ * 旧 `<site>:<serviceId>` は後方互換で、site 内では network を問わない。
+ * networkId / serviceId は 1..2147483647。複数指定は OR。
+ * @items.pattern ^[a-z0-9](?:[_-]?[a-z0-9])*:(?:[1-9][0-9]*:)?[1-9][0-9]*$
  */
 service?: string[];
 /**
@@ -2947,7 +2962,7 @@ export const getListProgramsUrl = (site: string,
   const normalizedParams = new URLSearchParams();
 
   Object.entries(params || {}).forEach(([key, value]) => {
-    const explodeParameters = ["serviceId"];
+    const explodeParameters = ["serviceId","service"];
 
     if (Array.isArray(value) && explodeParameters.includes(key)) {
       value.forEach((v) => {
@@ -3817,9 +3832,9 @@ export const getListRecordingsUrl = (params?: ListRecordingsParams,) => {
  * - `genre` は `genre_lv1`（ジャンル大分類。`genres` から生成列で導出）との
  *   重なりで絞る（複数指定は OR）
  * - `channelType` / `service` は複数指定可（`style: form, explode: true`）。
- *   `service` は `<site>:<serviceId>` の複合キー（例:
- *   `?service=tokyo:1024&service=takamatsu:1032`）で、同じ `serviceId` を受信する
- *   別サイトの録画を混ぜない
+ *   `service` の新形式は `<site>:<networkId>:<serviceId>`（例:
+ *   `?service=tokyo:4:101`）で network まで厳密に一致する。旧形式
+ *   `<site>:<serviceId>` は後方互換として残し、site 内で network を問わない
  * - `status` / `source` / `ruleId` は録画自身の観測・出自での絞り込み
  * - `from` / `to` は `program_start_at` の範囲（`from` 以上 `to` 未満）
  *

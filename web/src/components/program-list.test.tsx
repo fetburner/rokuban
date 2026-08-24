@@ -15,9 +15,9 @@ import { SiteContext } from '@/lib/site'
 
 const dayStart = new Date(2026, 6, 25, 0, 0, 0, 0).getTime()
 
-const services = new Map<number, Service>([
+const services = new Map<string, Service>([
   [
-    1024,
+    '32736:1024',
     {
       networkId: 32736,
       serviceId: 1024,
@@ -97,7 +97,7 @@ function renderList(
         <ProgramList
           ref={extra.ref}
           programs={programs}
-          serviceById={services}
+          serviceByKey={services}
           actions={reservationActions}
           onVisibleDayChange={extra.onVisibleDayChange}
           now={extra.now}

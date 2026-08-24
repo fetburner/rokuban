@@ -96,11 +96,12 @@ function program(
   serviceId: number,
   startOffsetHours: number,
   name: string,
+  networkId = 32736,
 ): ProgramListItem {
   const startAt = origin + startOffsetHours * 3_600_000
   return {
     programId,
-    networkId: 32736,
+    networkId,
     serviceId,
     eventId: programId,
     startAt: new Date(startAt).toISOString(),
@@ -116,7 +117,7 @@ function program(
 /** 1 時間後の番組。リストの最初の窓（6 時間）にもグリッドの窓にも入る。 */
 const soon = program(1, 1024, 1, 'ニュース7')
 /** 同時刻・別サービスの番組。グリッドでは横に並ぶ。 */
-const alsoSoon = program(2, 1032, 1, '手話ニュース')
+const alsoSoon = program(2, 1032, 1, '手話ニュース', 32737)
 /** 8 時間後の番組。リストの最初の窓には入らず、グリッド（24 時間）には入る。 */
 const later = program(3, 1024, 8, '深夜ドラマ')
 
@@ -290,12 +291,23 @@ function stubApi(
       if (override) return Promise.resolve(override)
       const start = new Date(url.searchParams.get('start') ?? 0).getTime()
       const end = new Date(url.searchParams.get('end') ?? 0).getTime()
+      const networkId = url.searchParams.get('networkId')
       const serviceIds = url.searchParams.getAll('serviceId').map(Number)
+      const services = url.searchParams.getAll('service').map((value) => {
+        const [network, service] = value.split(':').map(Number)
+        return { networkId: network, serviceId: service }
+      })
       const matched = programs.filter(
         (p) =>
           new Date(p.endAt).getTime() > start &&
           new Date(p.startAt).getTime() < end &&
-          (serviceIds.length === 0 || serviceIds.includes(p.serviceId)),
+          (services.length > 0
+            ? services.some(
+                (service) =>
+                  service.networkId === p.networkId && service.serviceId === p.serviceId,
+              )
+            : (networkId === null || Number(networkId) === p.networkId) &&
+              (serviceIds.length === 0 || serviceIds.includes(p.serviceId))),
       )
       return Promise.resolve(jsonResponse(matched))
     }
@@ -804,7 +816,7 @@ describe('ProgramsPage のチャンネル複数選択', () => {
     expect(screen.getByText('手話ニュース')).toBeInTheDocument()
   })
 
-  it('チャンネルを選ぶと API に serviceId が付く（サーバー側で絞る）', async () => {
+  it('チャンネルを選ぶと API に厳密な service が付き旧 serviceId は付かない', async () => {
     const fetchMock = stubApi()
     stubMatchMedia(true)
     renderPage()
@@ -821,9 +833,7 @@ describe('ProgramsPage のチャンネル複数選択', () => {
     await waitFor(() => expect(screen.queryByText('手話ニュース')).not.toBeInTheDocument())
 
     // グリッドのクエリは選択済みの状態で初めて有効になる。選択を変えてから
-    // グリッドへ切り替える順序にしないと、グリッド側だけ serviceId が
-    // 付かないバグが再発しても、リストのクエリ（選択変更で既に再取得済み）
-    // だけを見ていては気付けない
+    // グリッドへ切り替え、リスト・グリッドとも厳密な service だけを送ることを見る。
     await userEvent.keyboard('{Escape}')
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     await userEvent.click(screen.getByRole('button', { name: '番組表' }))
@@ -837,8 +847,49 @@ describe('ProgramsPage のチャンネル複数選択', () => {
       .filter((url) => url.pathname === '/api/sites/default/programs')
     expect(requestsAfterSelection.length).toBeGreaterThan(0)
     expect(
-      requestsAfterSelection.every((url) => url.searchParams.getAll('serviceId').includes('1024')),
+      requestsAfterSelection.every(
+        (url) =>
+          url.searchParams.getAll('service').includes('32736:1024') &&
+          url.searchParams.getAll('serviceId').length === 0,
+      ),
     ).toBe(true)
+  })
+
+  it('旧 serviceId ワイルドカードでも別 network の同じ serviceId を別列・別名で描く', async () => {
+    const bs: Service = {
+      ...services[0],
+      networkId: 4,
+      serviceId: 101,
+      name: 'BS 101',
+      channelType: 'BS',
+    }
+    const cs: Service = {
+      ...services[0],
+      networkId: 6,
+      serviceId: 101,
+      name: 'CS 101',
+      channelType: 'CS',
+    }
+    stubApi(
+      [],
+      [],
+      [program(101, 101, 1, 'BS の番組', 4), program(102, 101, 1, 'CS の番組', 6)],
+      undefined,
+      undefined,
+      [bs, cs],
+    )
+    stubMatchMedia(true)
+    renderPage('/programs?serviceId=101')
+
+    expect(await screen.findByRole('button', { name: 'チャンネル: 2 局を選択中' })).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: '番組表' }))
+    await screen.findByTestId('program-grid')
+
+    expect(screen.getByText('BS 101')).toBeInTheDocument()
+    expect(screen.getByText('CS 101')).toBeInTheDocument()
+    expect(screen.getAllByText('BS の番組')).toHaveLength(1)
+    expect(screen.getAllByText('CS の番組')).toHaveLength(1)
+    expect(screen.getAllByTestId('program-grid-column')).toHaveLength(2)
   })
 
   it('グリッド表示で、選んだ局だけが列になる', async () => {
@@ -888,22 +939,41 @@ describe('ProgramsPage のチャンネル絞り込みの URL 化（issue #231）
     expect(screen.queryByText('手話ニュース')).not.toBeInTheDocument()
   })
 
-  it('チャンネルを選ぶと URL の ?serviceId= に反映される（history を汚さず replace）', async () => {
+  it('チャンネルを選ぶと URL の厳密な ?service= に反映される（history を汚さず replace）', async () => {
     stubApi()
     const { router } = renderPage()
 
     expect(await screen.findByText('ニュース7')).toBeInTheDocument()
-    expect(router.state.location.search).toEqual({ serviceId: undefined })
+    expect(router.state.location.search.service).toBeUndefined()
+    expect(router.state.location.search.serviceId).toBeUndefined()
 
     await userEvent.click(screen.getByRole('button', { name: 'チャンネル: すべて' }))
     const dialog = await screen.findByRole('dialog', { name: 'チャンネル' })
     await userEvent.click(within(dialog).getByText('NHK総合'))
 
-    await waitFor(() => expect(router.state.location.search).toEqual({ serviceId: [1024] }))
+    await waitFor(() => {
+      expect(router.state.location.search.service).toEqual(['32736:1024'])
+      expect(router.state.location.search.serviceId).toBeUndefined()
+    })
 
     // history を汚さない（replace）。積んだままだと「戻る」で絞り込み変更が
     // 1 手ずつ再生されてしまう
     expect(router.history.length).toBe(1)
+  })
+
+  it('旧 ?serviceId= からピッカーを操作すると厳密な service へ移し serviceId を消す', async () => {
+    stubApi()
+    const { router } = renderPage('/programs?serviceId=1024')
+
+    expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'チャンネル: NHK総合' }))
+    const dialog = await screen.findByRole('dialog', { name: 'チャンネル' })
+    await userEvent.click(within(dialog).getByText('NHKEテレ'))
+
+    await waitFor(() => {
+      expect(router.state.location.search.service).toEqual(['32736:1024', '32737:1032'])
+      expect(router.state.location.search.serviceId).toBeUndefined()
+    })
   })
 
   it('不正な値（?serviceId=abc）は絞り込みなしに落ちて開ける（壊れたリンクを踏んでも画面は開く）', async () => {

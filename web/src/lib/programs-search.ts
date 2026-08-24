@@ -2,11 +2,9 @@
  * 番組表（`/programs`。ホーム新設（M8-3）前は `/` だった）のチャンネル絞り込み
  * （URL の `search`）の型と純関数（issue #231）。
  *
- * `serviceId` は `/recordings` と同じ形（`number[]`。複数可・OR・空集合は
- * 「すべて」で `undefined`）を使う（`lib/recording-search.ts` の
- * `RecordingsPageSearch.serviceId` に前例）。URL 化するのはこの 1 次元だけ ---
- * `dayOffset` 等の他の状態（ジャンプ先の日・表示形式）は component state のまま
- * 残す（issue #231 の決定。載せるかどうかは別の判断で、今回のスコープではない）。
+ * 新しい選択は `service=<networkId>:<serviceId>` の文字列配列で運ぶ。`serviceId`
+ * 単独と `networkId + serviceId` は既存 URL の後方互換入力として残す。URL 化するのは
+ * チャンネル選択と `at` だけで、`dayOffset` 等の表示状態は component state のまま。
  *
  * React に依存しないのはテストのため（`lib/recording-search.ts` と同じ理由）。
  */
@@ -14,9 +12,13 @@
 import { ServiceChannelType, type Service } from '@/api/generated'
 import { parsePositiveIntId } from '@/lib/positive-id'
 
-/** ProgramsPageSearch は `/`（番組表）の URL クエリパラメータ（検証済み）。 */
+/** ProgramsPageSearch は `/programs` の URL クエリパラメータ（検証済み）。 */
 export type ProgramsPageSearch = {
-  /** 絞り込み中のチャンネル（サービス）。複数可、OR。空集合（＝すべて）は `undefined`。 */
+  /** 後方互換の単一 network 指定。serviceId と組み合わせればその network 内で絞る。 */
+  networkId?: number
+  /** 厳密なチャンネル組（`<networkId>:<serviceId>`）。複数可、OR。 */
+  service?: string[]
+  /** 後方互換の serviceId 単独指定。network を問わない。 */
   serviceId?: number[]
   /**
    * ジャンプ先の時刻（epoch ms）。容量不足バッジ（`components/capacity-shortfall-badge.tsx`）
@@ -34,15 +36,49 @@ function toRawValues(raw: unknown): unknown[] {
   return Array.isArray(raw) ? raw : [raw]
 }
 
+const maxInt32Id = 2_147_483_647
+
+function parseInt32Id(raw: unknown): number | undefined {
+  const n = parsePositiveIntId(raw)
+  return n !== undefined && n <= maxInt32Id ? n : undefined
+}
+
+/** programServiceKey は番組表で使う厳密なサービスキーを返す。 */
+export function programServiceKey(networkId: number, serviceId: number): string {
+  return `${networkId}:${serviceId}`
+}
+
+/** parseProgramServiceKey は `<networkId>:<serviceId>` を検証して分解する。 */
+export function parseProgramServiceKey(
+  value: string,
+): { networkId: number; serviceId: number } | undefined {
+  const match = /^([1-9][0-9]*):([1-9][0-9]*)$/.exec(value)
+  if (match === null) return undefined
+  const networkId = parseInt32Id(match[1])
+  const serviceId = parseInt32Id(match[2])
+  return networkId !== undefined && serviceId !== undefined ? { networkId, serviceId } : undefined
+}
+
+function parseProgramServices(raw: unknown): string[] | undefined {
+  const refs = new Map<string, { networkId: number; serviceId: number }>()
+  for (const value of toRawValues(raw)) {
+    if (typeof value !== 'string') continue
+    const ref = parseProgramServiceKey(value)
+    if (ref === undefined) continue
+    refs.set(programServiceKey(ref.networkId, ref.serviceId), ref)
+  }
+  const sorted = [...refs.values()].sort(
+    (a, b) => a.networkId - b.networkId || a.serviceId - b.serviceId,
+  )
+  return sorted.length > 0 ? sorted.map((ref) => programServiceKey(ref.networkId, ref.serviceId)) : undefined
+}
+
 /**
  * parseServiceIds は URL の値を検証済みの serviceId 配列にする。
  *
- * 要素ごとに `lib/positive-id.ts` の `parsePositiveIntId` を適用する ---
- * `serviceId` は `services.service_id` の PK で正の安全整数しか存在しない識別子
- * であり、単数側（`parseRuleId` / `/live` の `serviceId`）と同じ形（issue #275）。
- * `Number.isSafeInteger` を見ないと `Number.MAX_SAFE_INTEGER` を超える値が
- * 黙って別の値に丸まる（実測: `9007199254740993` は `Number()` の時点で既に
- * `9007199254740992` になる。`parsePositiveIntId` の doc コメント参照）。
+ * 要素ごとに `lib/positive-id.ts` の `parsePositiveIntId` を適用し、DB / Go の
+ * `integer` と同じ int32 上限を重ねる。`parsePositiveIntId` だけでは safe integer
+ * まで通すため、上限チェックを省くと Go 側へ渡すとき別の値へ切り詰められる。
  *
  * 不正な要素は配列ごとではなく要素だけ落とす --- 複数チャンネル絞り込みの一部が
  * 壊れたリンク由来でも、残りの有効な絞り込みは活かす（`?serviceId=abc,1024` を
@@ -55,7 +91,7 @@ function toRawValues(raw: unknown): unknown[] {
  */
 function parseServiceIds(raw: unknown): number[] | undefined {
   const values = toRawValues(raw)
-    .map((v) => parsePositiveIntId(v))
+    .map((v) => parseInt32Id(v))
     .filter((n): n is number => n !== undefined)
   const unique = [...new Set(values)].sort((a, b) => a - b)
   return unique.length > 0 ? unique : undefined
@@ -123,6 +159,8 @@ function parseAt(raw: unknown): number | undefined {
  */
 export function parseProgramsSearch(search: Record<string, unknown>): ProgramsPageSearch {
   return {
+    networkId: parseInt32Id(search.networkId),
+    service: parseProgramServices(search.service),
     serviceId: parseServiceIds(search.serviceId),
     at: parseAt(search.at),
   }
@@ -160,11 +198,11 @@ export function serviceIdsFromSet(selected: ReadonlySet<number>): number[] | und
  * `ChannelOption` のリモコン番号バッジ（`channelType === 'GR' &&
  * remoteControlKeyId > 0` のときだけ出す）を抑止する。
  */
-function placeholderService(serviceId: number): Service {
+function placeholderService(networkId: number, serviceId: number): Service {
   return {
-    networkId: 0,
+    networkId,
     serviceId,
-    name: `チャンネル #${serviceId}`,
+    name: networkId === 0 ? `チャンネル #${serviceId}` : `チャンネル #${networkId}:${serviceId}`,
     channelType: ServiceChannelType.GR,
     channel: '',
     remoteControlKeyId: 0,
@@ -195,14 +233,21 @@ function placeholderService(serviceId: number): Service {
  */
 export function pickerServiceDomain(
   filterable: readonly Service[],
-  selected: ReadonlySet<number>,
-  serviceById: ReadonlyMap<number, Service>,
+  selected: ReadonlySet<string>,
+  serviceByKey: ReadonlyMap<string, Service>,
 ): Service[] {
-  const map = new Map<number, Service>()
-  for (const s of filterable) map.set(s.serviceId, s)
-  for (const id of selected) {
-    if (map.has(id)) continue
-    map.set(id, serviceById.get(id) ?? placeholderService(id))
+  const map = new Map<string, Service>()
+  for (const service of filterable) {
+    map.set(programServiceKey(service.networkId, service.serviceId), service)
+  }
+  for (const key of selected) {
+    if (map.has(key)) continue
+    const parts = key.split(':')
+    if (parts.length !== 2) continue
+    const networkId = parts[0] === '0' ? 0 : parseInt32Id(parts[0])
+    const serviceId = parseInt32Id(parts[1])
+    if (networkId === undefined || serviceId === undefined) continue
+    map.set(key, serviceByKey.get(key) ?? placeholderService(networkId, serviceId))
   }
   return [...map.values()]
 }

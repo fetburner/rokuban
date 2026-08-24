@@ -227,7 +227,30 @@ describe('RecordingFilters 絞り込みパネル', () => {
     expect(await within(channelDialog).findByRole('button', { name: /ＮＨＫ総合.*default/ })).toBeInTheDocument()
     await user.click(within(channelDialog).getByRole('button', { name: /ＮＨＫ総合.*site2/ }))
 
-    await waitFor(() => expect(getCurrent().service).toEqual(['site2:1024']))
+    await waitFor(() => expect(getCurrent().service).toEqual(['site2:1:1024']))
+  })
+
+  it('同一 site・serviceId の別 network を独立選択し、旧形式は両方を選択中に見せる', async () => {
+    const user = userEvent.setup()
+    const bs = service({ networkId: 4, serviceId: 101, name: '同名チャンネル', channelType: 'BS' })
+    const cs = service({ networkId: 6, serviceId: 101, name: '同名チャンネル', channelType: 'CS' })
+    const { getCurrent } = renderFilters({ service: ['default:101'] }, [bs, cs])
+
+    expect(
+      await screen.findByText('チャンネル: serviceId 101 (default・network指定なし)'),
+    ).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /絞り込み/ }))
+    const panel = await screen.findByRole('dialog', { name: '絞り込み' })
+    expect(within(panel).getByRole('button', { name: 'チャンネル: 2 局を選択中' })).toBeInTheDocument()
+
+    await user.click(within(panel).getByRole('button', { name: /チャンネル/ }))
+    const channelDialog = await screen.findByRole('dialog', { name: 'チャンネル' })
+    const options = within(channelDialog).getAllByRole('button', { name: /同名チャンネル/ })
+    expect(options).toHaveLength(2)
+    expect(options.map((option) => option.getAttribute('aria-pressed'))).toEqual(['true', 'true'])
+
+    await user.click(options[1])
+    await waitFor(() => expect(getCurrent().service).toEqual(['default:4:101']))
   })
 
   // from/to は純関数（isoToLocalDateTimeInput / localDateTimeInputToIso）は

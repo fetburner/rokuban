@@ -250,15 +250,26 @@ WHERE site = $1
     OR cardinality($5::integer[]) = 0
     OR service_id = ANY($5::integer[])
   )
+  AND (
+    coalesce(cardinality($6::integer[]), 0) = 0
+    OR EXISTS (
+      SELECT 1
+      FROM generate_subscripts($6::integer[], 1) AS i
+      WHERE ($6::integer[])[i] = epg_programs.network_id
+        AND ($7::integer[])[i] = epg_programs.service_id
+    )
+  )
 ORDER BY start_at, network_id, service_id
 `
 
 type ListEpgProgramsForListParams struct {
-	Site        string
-	WindowEnd   time.Time
-	WindowStart time.Time
-	NetworkID   *int32
-	ServiceIds  []int32
+	Site            string
+	WindowEnd       time.Time
+	WindowStart     time.Time
+	NetworkID       *int32
+	ServiceIds      []int32
+	ExactNetworkIds []int32
+	ExactServiceIds []int32
 }
 
 type ListEpgProgramsForListRow struct {
@@ -279,8 +290,11 @@ type ListEpgProgramsForListRow struct {
 // 一覧向けの軽い形。extended / video / audios は返さない（1 行あたり数 KB になり
 // 時間窓を広げたときの転送量が跳ねるため。詳細は GetEpgProgram で取る）。
 //
-// service_ids は複数指定可（サーバー側のチャンネル絞り込み）。空/NULL なら条件ごと
-// 効かせない（＝絞り込みなし）。呼び出し元は Go 側の未指定を nil スライスとして渡す。
+// service_ids は後方互換の serviceId 単独フィルタ。network_id が NULL なら network を
+// 問わない。exact_network_ids / exact_service_ids は同じ添字が 1 組で、呼び出し側が
+// 必ず同じ長さにして渡す。複数組は OR。空/NULL ならその条件を効かせない。
+// `unnest(a, b)` は sqlc の組み込み analyzer が解決できないため、start_delay.sql と
+// 同じ generate_subscripts + 添字参照を使う。
 func (q *Queries) ListEpgProgramsForList(ctx context.Context, arg ListEpgProgramsForListParams) ([]ListEpgProgramsForListRow, error) {
 	rows, err := q.db.Query(ctx, listEpgProgramsForList,
 		arg.Site,
@@ -288,6 +302,8 @@ func (q *Queries) ListEpgProgramsForList(ctx context.Context, arg ListEpgProgram
 		arg.WindowStart,
 		arg.NetworkID,
 		arg.ServiceIds,
+		arg.ExactNetworkIds,
+		arg.ExactServiceIds,
 	)
 	if err != nil {
 		return nil, err

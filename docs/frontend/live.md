@@ -43,18 +43,17 @@ Rokuban 自体のライブ視聴は「チャンネル一覧から選んでブラ
 番組リスト（`components/program-row.tsx`）の「ライブで見る」リンクも
 `networkId` を渡す。
 
-**未解決: 番組表と録画の絞り込みは `serviceId` 単独のまま。** 同じ画面から出る
-「この局の番組表」リンク（`/programs` の `?serviceId=` は `/recordings` と同じ
-複数可の配列）と、録画の絞り込み（`lib/recording-search.ts` の `service` =
-`<site>:<serviceId>`）は `networkId` を運ばない。上の複合キーはライブの選択に
-だけ効いており、これらの面では `serviceId` が network をまたいで衝突する構成で
-別 network のサービスの番組・録画も混ざる。ライブから先に直したのは、ここだけが
-**選択中のハイライトが 2 行に付く**という目に見える壊れ方をするためである
-（`pages/live.test.tsx`「networkId + serviceId を指定すると、その network の
-チャンネルだけが選ばれる」がその壊れ方を固定している）。番組表・録画側の混入は
-目視では気付けない。**実運用の EPG でこの衝突が起きているかは未検証**
---- 上の「2 行に付く」は、同じ `serviceId` を 2 network が持つフィクスチャで
-示した条件付きの壊れ方であって、実デプロイでの観測ではない。
+**番組表と録画の絞り込みも network を含む厳密形式を持つ。** 高松の地上波だけを
+受信する実運用 mirakc では 19 サービス中の重複は 0 件だったが、この測定は GR の
+範囲しか覆わない。公式割当には BS `(network_id=4, service_id=101)` と 110 度 CS
+`(network_id=6, service_id=101)` の実例があり、GR / BS / CS を混ぜる一般の構成では
+`serviceId` 単独を identity にできない。
+
+「この局の番組表」は 1 局だけなので、既存 `/programs` の `networkId + serviceId` で
+厳密に運ぶ。番組表ピッカーの複数選択は `service=<networkId>:<serviceId>` の配列、
+録画の絞り込みは `service=<site>:<networkId>:<serviceId>` を使う。旧番組表 URL の
+`serviceId` 単独と旧録画 URL の `<site>:<serviceId>` は後方互換入力として残し、
+network を問わない従来の意味を維持する。
 
 **「選ぶ」（`?networkId=&serviceId=` を変える）と「流す」（`LivePlayer` をマウントする）を
 別のタップに分ける。** チャンネルを選ぶこと自体は probe も

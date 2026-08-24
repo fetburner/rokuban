@@ -80,6 +80,35 @@ describe('parseRecordingsSearch', () => {
     ).toEqual({ service: ['default:1024'] })
   })
 
+  it('service は新しい (site, networkId, serviceId) と旧 (site, serviceId) を保つ', () => {
+    const search = parseRecordingsSearch({
+      service: ['default:4:101', 'default:101', 'site2:6:101'],
+    })
+    expect(search).toEqual({
+      service: ['default:4:101', 'default:101', 'site2:6:101'],
+    })
+    expect(buildListRecordingsParams(search, false)).toEqual({
+      trash: false,
+      service: ['default:4:101', 'default:101', 'site2:6:101'],
+    })
+  })
+
+  it('service の networkId/serviceId が0・先頭0・int32上限超なら要素を落とす', () => {
+    expect(
+      parseRecordingsSearch({
+        service: [
+          'default:0:101',
+          'default:04:101',
+          'default:4:0',
+          'default:4:0101',
+          'default:2147483648:101',
+          'default:4:2147483648',
+          'default:4:101',
+        ],
+      }),
+    ).toEqual({ service: ['default:4:101'] })
+  })
+
   it('service は (site, serviceId) の複合キーを保つ', () => {
     const search = parseRecordingsSearch({ service: ['default:1024', 'site2:1024'] })
     expect(search).toEqual({ service: ['default:1024', 'site2:1024'] })

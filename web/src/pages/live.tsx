@@ -303,12 +303,14 @@ export function LivePage() {
               ) : !nowPlayingQuery.isPending ? (
                 <p className="text-sm text-muted-foreground">いま放送中の番組の情報はありません</p>
               ) : null}
-              {/* ライブ ⇄ 番組表の導線（issue #231）。番組表の `?serviceId=` は
-                  `/recordings` と同じ形（複数可の配列）なので、1 局分の配列を渡す。
-                  宛先は `/programs`（ホーム新設（M8-3）前は `/` だった）。 */}
+              {/* 1 局の導線は既存 API の networkId + serviceId で厳密に表せる。
+                  新しい複数組の service パラメータは番組表ピッカーから使う。 */}
               <Link
                 to="/programs"
-                search={{ serviceId: [selectedService.serviceId] }}
+                search={{
+                  networkId: selectedService.networkId,
+                  serviceId: [selectedService.serviceId],
+                }}
                 className="mt-1 inline-block text-sm text-primary underline-offset-2 hover:underline"
               >
                 この局の番組表

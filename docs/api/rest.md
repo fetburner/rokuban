@@ -76,7 +76,8 @@ HTML 200 に分かれると、この規則を覚えていられない。
 
 窓の最大幅を超えたら 400 を返し、**無言の切り詰めはしない**
 （切り詰めると「全部取れた」と誤解される）。窓の重なり判定・幅の上限・
-`serviceId` の複数指定の形は openapi.yaml の description が権威。
+`service=<networkId>:<serviceId>` の厳密な複数指定、後方互換の `networkId` /
+`serviceId`、および両形式の排他条件は openapi.yaml の description が権威。
 
 #### サービス一覧は `hasPrograms` を足すが、それでは絞らない
 

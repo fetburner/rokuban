@@ -362,7 +362,7 @@ describe('LivePage', () => {
     expect(await screen.findByText('B の番組')).toBeInTheDocument()
   })
 
-  it('視聴中チャンネルの「この局の番組表」は番組表の ?serviceId= へ遷移する（issue #231）', async () => {
+  it('視聴中チャンネルの「この局の番組表」は既存の ?networkId=&serviceId= で厳密な一局へ遷移する', async () => {
     stubFetch({
       services: [
         service({ serviceId: 10, name: 'チャンネル A' }),
@@ -377,11 +377,9 @@ describe('LivePage', () => {
     expect(await screen.findByText('B の番組')).toBeInTheDocument()
 
     const link = screen.getByRole('link', { name: 'この局の番組表' })
-    // 配列は既定のシリアライズ（JSON.stringify）で 1 パラメータに載る
-    // （`?serviceId=[20]` が URL エンコードされた形）。往復して正しく戻ることは
-    // 別途 lib/programs-search.test.ts と routes.test.tsx で見ている。宛先は
-    // `/programs`（ホーム新設（M8-3）前は `/` だった）。
-    expect(link).toHaveAttribute('href', '/programs?serviceId=%5B20%5D')
+    // 1 局の導線は既存 API の networkId + serviceId で厳密に表現できる。
+    // 配列は既定のシリアライズ（JSON.stringify）で 1 パラメータに載る。
+    expect(link).toHaveAttribute('href', '/programs?networkId=1&serviceId=%5B20%5D')
   })
 
   it('存在しない serviceId を指定すると番組を持つ先頭にフォールバックする', async () => {
