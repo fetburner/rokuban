@@ -43,18 +43,18 @@ Rokuban 自体のライブ視聴は「チャンネル一覧から選んでブラ
 番組リスト（`components/program-row.tsx`）の「ライブで見る」リンクも
 `networkId` を渡す。
 
-**未解決: 番組表と録画の絞り込みは `serviceId` 単独のまま。** 同じ画面から出る
-「この局の番組表」リンク（`/programs` の `?serviceId=` は `/recordings` と同じ
-複数可の配列）と、録画の絞り込み（`lib/recording-search.ts` の `service` =
-`<site>:<serviceId>`）は `networkId` を運ばない。上の複合キーはライブの選択に
-だけ効いており、これらの面では `serviceId` が network をまたいで衝突する構成で
-別 network のサービスの番組・録画も混ざる。ライブから先に直したのは、ここだけが
-**選択中のハイライトが 2 行に付く**という目に見える壊れ方をするためである
-（`pages/live.test.tsx`「networkId + serviceId を指定すると、その network の
-チャンネルだけが選ばれる」がその壊れ方を固定している）。番組表・録画側の混入は
-目視では気付けない。**実運用の EPG でこの衝突が起きているかは未検証**
---- 上の「2 行に付く」は、同じ `serviceId` を 2 network が持つフィクスチャで
-示した条件付きの壊れ方であって、実デプロイでの観測ではない。
+**番組表と録画の絞り込みは `serviceId` 単独の形を維持する。** 同じ画面から出る
+「この局の番組表」リンク（`/programs` の `?serviceId=` は複数可の配列）と、録画の
+絞り込み（`lib/recording-search.ts` の `service` = `<site>:<serviceId>`）は
+`networkId` を運ばない。実運用の mirakc `GET /api/services` を `serviceId` ごとの
+`networkId` 集合として集計した結果は **19 サービス中、network をまたぐ重複 0 件**
+だったため、既存のリンク・共有 URL・API の形は変えない。
+
+ただし SI の性質上、同一 site で同じ `serviceId` を複数 network が持つ構成に変われば、
+番組表と録画一覧には別 network の番組・録画が混ざる。受信構成や BS / CS の編成が
+変わったときは、`epg_services` を `(site, service_id)` で集約して異なる `network_id` が
+複数ないかを再測定する。重複が観測された場合は、既存の `serviceId` 単独 URL の扱いを
+維持したまま、`(networkId, serviceId)` の組を運べる形を先に決める。
 
 **「選ぶ」（`?networkId=&serviceId=` を変える）と「流す」（`LivePlayer` をマウントする）を
 別のタップに分ける。** チャンネルを選ぶこと自体は probe も
