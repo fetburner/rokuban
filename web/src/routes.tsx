@@ -96,11 +96,9 @@ const homeRoute = createRoute({
 })
 
 /**
- * 番組表のチャンネル絞り込みは URL の `?serviceId=` に持つ（issue #231）。
- * `/recordings` の `serviceId` と同じ形（`number[]`。複数可・OR）で、絞り込み
- * 済みの番組表への深いリンクや共有ができるようにする。壊れた値は
- * `parseProgramsSearch`（`/recordings` の `parseRecordingsSearch` と同じ流儀）が
- * 落とすので、壊れたリンクを踏んでも「絞り込みなし」で開ける。
+ * 番組表の新しいチャンネル絞り込みは `?service=<networkId>:<serviceId>` に持つ。
+ * 旧 `networkId` / `serviceId` も後方互換入力として検証する。壊れた値は
+ * `parseProgramsSearch` が要素ごとに落とすので、壊れたリンクでも画面は開く。
  *
  * ルートは `/programs`（M8-3 でホームに `/` を譲った。上記 `homeRoute` 参照）。
  */

@@ -29,7 +29,7 @@ export type RecordingsPageSearch = {
   q?: string
   /** ARIB ジャンル大分類（lv1、0〜15）。複数可、OR。 */
   genre?: number[]
-  /** チャンネル（`<site>:<serviceId>`）。複数可、OR。 */
+  /** チャンネル。新形式 `<site>:<networkId>:<serviceId>`、旧形式 `<site>:<serviceId>`。 */
   service?: string[]
   status?: ListRecordingsStatus
   source?: ListRecordingsSource
@@ -102,17 +102,23 @@ function parseIntArray(raw: unknown, opts?: { min?: number; max?: number }): num
   return values.length > 0 ? values : undefined
 }
 
-// `[1-9][0-9]*` は先頭 0 を許さないので `0` 自体を落とす（`n > 0`）。桁数を
-// 絞らず `Number(match[1]) <= 2_147_483_647` で上限を見るだけで済むのは、
-// この上限が `Number.MAX_SAFE_INTEGER` より 6 桁以上小さく、IEEE754 の丸め誤差が
-// 効き始める大きさに達する前に上限チェックで落ちるため（issue #345）。
-const recordingServicePattern = /^[a-z0-9](?:[_-]?[a-z0-9])*:([1-9][0-9]*)$/
+// 新形式 `<site>:<networkId>:<serviceId>` と旧 `<site>:<serviceId>` を同じ
+// パターンで受ける。各 ID は先頭 0 のない10進数に限定し、`parsePositiveIntId` の
+// safe integer 検証に DB / Go の int32 上限を重ねる。
+const recordingServicePattern = /^[a-z0-9](?:[_-]?[a-z0-9])*:(?:([1-9][0-9]*):)?([1-9][0-9]*)$/
 
 function parseRecordingServices(raw: unknown): string[] | undefined {
   const values = toRawValues(raw).filter((value): value is string => {
     if (typeof value !== 'string') return false
     const match = recordingServicePattern.exec(value)
-    return match !== null && Number(match[1]) <= 2_147_483_647
+    if (match === null) return false
+    const networkId = match[1] === undefined ? undefined : parsePositiveIntId(match[1])
+    const serviceId = parsePositiveIntId(match[2])
+    return (
+      serviceId !== undefined &&
+      serviceId <= 2_147_483_647 &&
+      (match[1] === undefined || (networkId !== undefined && networkId <= 2_147_483_647))
+    )
   })
   return values.length > 0 ? values : undefined
 }

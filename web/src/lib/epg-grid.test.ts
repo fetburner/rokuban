@@ -151,8 +151,9 @@ describe('visibleColumnRange', () => {
 })
 
 describe('groupProgramsByService', () => {
-  const program = (programId: number, serviceId: number, startMinutes: number) => ({
+  const program = (programId: number, serviceId: number, startMinutes: number, networkId = 32736) => ({
     programId,
+    networkId,
     serviceId,
     startAt: new Date(at(startMinutes)).toISOString(),
     endAt: new Date(at(startMinutes + 30)).toISOString(),
@@ -165,11 +166,22 @@ describe('groupProgramsByService', () => {
       program(3, 2048, 18 * 60),
     ])
 
-    expect([...grouped.keys()].sort()).toEqual([1024, 2048])
-    expect(grouped.get(1024)?.map((p) => p.program.programId)).toEqual([1, 2])
-    expect(grouped.get(1024)?.[0].startMs).toBe(at(18 * 60))
-    expect(grouped.get(1024)?.[0].endMs).toBe(at(18 * 60 + 30))
-    expect(grouped.get(2048)?.map((p) => p.program.programId)).toEqual([3])
+    expect([...grouped.keys()].sort()).toEqual(['32736:1024', '32736:2048'])
+    expect(grouped.get('32736:1024')?.map((p) => p.program.programId)).toEqual([1, 2])
+    expect(grouped.get('32736:1024')?.[0].startMs).toBe(at(18 * 60))
+    expect(grouped.get('32736:1024')?.[0].endMs).toBe(at(18 * 60 + 30))
+    expect(grouped.get('32736:2048')?.map((p) => p.program.programId)).toEqual([3])
+  })
+
+  it('network が異なれば同じ serviceId でも別のグループにする', () => {
+    const grouped = groupProgramsByService([
+      program(1, 101, 18 * 60, 4),
+      program(2, 101, 18 * 60, 6),
+    ])
+
+    expect([...grouped.keys()].sort()).toEqual(['4:101', '6:101'])
+    expect(grouped.get('4:101')?.map((p) => p.program.programId)).toEqual([1])
+    expect(grouped.get('6:101')?.map((p) => p.program.programId)).toEqual([2])
   })
 })
 

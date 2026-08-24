@@ -19,8 +19,32 @@ describe('parseProgramsSearch', () => {
 
   it('有効な値をそのまま受け取る（重複を除き昇順にソートする）', () => {
     expect(parseProgramsSearch({ serviceId: [1032, 1024, 1032] })).toEqual({
+      service: undefined,
       serviceId: [1024, 1032],
     })
+  })
+
+  it('厳密な service 組を重複除去し networkId, serviceId 順に正準化する', () => {
+    expect(parseProgramsSearch({ service: ['6:101', '4:101', '6:101', '4:102'] })).toEqual({
+      service: ['4:101', '4:102', '6:101'],
+      serviceId: undefined,
+    })
+  })
+
+  it('service の不正値・0・先頭0・int32上限超を要素ごとに落とす', () => {
+    expect(
+      parseProgramsSearch({
+        service: ['bad', '0:101', '04:101', '4:0', '4:0101', '2147483648:101', '4:2147483648', '4:101'],
+      }),
+    ).toEqual({ service: ['4:101'], serviceId: undefined })
+  })
+
+  it('service と serviceId が無ければ両方を明示的に undefined にする', () => {
+    const result = parseProgramsSearch({})
+    expect(result.service).toBeUndefined()
+    expect(result.serviceId).toBeUndefined()
+    expect('service' in result).toBe(true)
+    expect('serviceId' in result).toBe(true)
   })
 
   it('単一値（配列でない ?serviceId=1024）は 1 要素の配列に正規化する', () => {
@@ -176,45 +200,60 @@ describe('pickerServiceDomain', () => {
   const nhk = service({ serviceId: 1024, name: 'NHK総合' })
   const etv = service({ serviceId: 1032, name: 'NHKEテレ', remoteControlKeyId: 2 })
   // hasPrograms: false（サブサービス等）なので filterable には入らないが、
-  // serviceById（EPG プロジェクション全体）には実在する
+  // serviceByKey（EPG プロジェクション全体）には実在する
   const sub = service({ serviceId: 1040, name: 'サブサービス', hasPrograms: false })
 
-  const serviceById = new Map([
-    [nhk.serviceId, nhk],
-    [etv.serviceId, etv],
-    [sub.serviceId, sub],
+  const serviceByKey = new Map([
+    ['1:1024', nhk],
+    ['1:1032', etv],
+    ['1:1040', sub],
   ])
 
+  it('同じ serviceId の別 network を別候補として保つ', () => {
+    const bs = service({ networkId: 4, serviceId: 101, name: 'BS 101', channelType: ServiceChannelType.BS })
+    const cs = service({ networkId: 6, serviceId: 101, name: 'CS 101', channelType: ServiceChannelType.CS })
+    const result = pickerServiceDomain(
+      [bs, cs],
+      new Set(),
+      new Map([
+        ['4:101', bs],
+        ['6:101', cs],
+      ]),
+    )
+
+    expect(result).toEqual([bs, cs])
+  })
+
   it('選択が無ければ filterable のまま', () => {
-    expect(pickerServiceDomain([nhk, etv], new Set(), serviceById)).toEqual([nhk, etv])
+    expect(pickerServiceDomain([nhk, etv], new Set(), serviceByKey)).toEqual([nhk, etv])
   })
 
   it('選択が filterable に含まれていれば重複を作らない', () => {
-    const result = pickerServiceDomain([nhk, etv], new Set([1024]), serviceById)
+    const result = pickerServiceDomain([nhk, etv], new Set(['1:1024']), serviceByKey)
     expect(result).toHaveLength(2)
   })
 
-  it('filterable に無いが serviceById に実在する選択は実名で候補に加わる（must-fix の核心）', () => {
+  it('filterable に無いが serviceByKey に実在する選択は実名で候補に加わる（must-fix の核心）', () => {
     // hasPrograms: false の局（サブサービス等）への深いリンク。この局は
     // filterable（候補の生成元）に居ないが、選択（URL からの外部入力）には
     // 居るので、ピッカーが「0 件選択（＝すべて）」に見えてはならない
-    const result = pickerServiceDomain([nhk, etv], new Set([1040]), serviceById)
+    const result = pickerServiceDomain([nhk, etv], new Set(['1:1040']), serviceByKey)
     expect(result.map((s) => s.serviceId)).toContain(1040)
     expect(result.find((s) => s.serviceId === 1040)).toEqual(sub)
   })
 
-  it('serviceById にも無い選択はプレースホルダー（チャンネル #<id>）になる', () => {
+  it('serviceByKey にも無い選択はプレースホルダー（チャンネル #<id>）になる', () => {
     // EPG から消えた局・実在しない id を含む古いブックマーク・共有リンク。
     // 名前は引けないが「何かで絞られている」ことは読める必要がある
     // （`describeRecordingsFilters` と同じ流儀）
-    const result = pickerServiceDomain([nhk, etv], new Set([9999]), serviceById)
+    const result = pickerServiceDomain([nhk, etv], new Set(['0:9999']), serviceByKey)
     const placeholder = result.find((s) => s.serviceId === 9999)
     expect(placeholder?.name).toBe('チャンネル #9999')
     expect(placeholder?.hasPrograms).toBe(false)
   })
 
   it('複数選択（実在・プレースホルダーの混在）を両方とも候補に加える', () => {
-    const result = pickerServiceDomain([nhk, etv], new Set([1040, 9999]), serviceById)
+    const result = pickerServiceDomain([nhk, etv], new Set(['1:1040', '0:9999']), serviceByKey)
     expect(result.map((s) => s.serviceId).sort((a, b) => a - b)).toEqual([1024, 1032, 1040, 9999])
   })
 })

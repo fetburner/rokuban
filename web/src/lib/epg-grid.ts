@@ -12,6 +12,7 @@
  */
 
 import type { Service } from '@/api/generated'
+import { programServiceKey } from '@/lib/programs-search'
 
 const msPerHour = 3_600_000
 
@@ -151,18 +152,19 @@ export type PlacedProgram<P extends { startAt: string; endAt: string }> = {
  * 可視判定が番組数 x 再描画回数の parse になる。
  */
 export function groupProgramsByService<
-  P extends { serviceId: number; startAt: string; endAt: string },
->(programs: readonly P[]): Map<number, PlacedProgram<P>[]> {
-  const byService = new Map<number, PlacedProgram<P>[]>()
+  P extends { networkId: number; serviceId: number; startAt: string; endAt: string },
+>(programs: readonly P[]): Map<string, PlacedProgram<P>[]> {
+  const byService = new Map<string, PlacedProgram<P>[]>()
   for (const program of programs) {
     const placed: PlacedProgram<P> = {
       program,
       startMs: new Date(program.startAt).getTime(),
       endMs: new Date(program.endAt).getTime(),
     }
-    const list = byService.get(program.serviceId)
+    const key = programServiceKey(program.networkId, program.serviceId)
+    const list = byService.get(key)
     if (list) list.push(placed)
-    else byService.set(program.serviceId, [placed])
+    else byService.set(key, [placed])
   }
   for (const list of byService.values()) list.sort((a, b) => a.startMs - b.startMs)
   return byService

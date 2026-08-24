@@ -15,6 +15,7 @@ import { ProgramRow } from '@/components/program-row'
 import { dayKey, formatDate } from '@/lib/format'
 import { domLayoutMeasurable } from '@/lib/list-virtualization'
 import { findProgramIndex, programKeyAt } from '@/lib/program-list-key'
+import { programServiceKey } from '@/lib/programs-search'
 import { captureAnchor, type AnchorSnapshot } from '@/lib/scroll-preservation'
 import { firstIndexForDayOffset, visibleDayOffset } from '@/lib/visible-day'
 
@@ -255,7 +256,7 @@ export const ProgramList = forwardRef<
   ProgramListHandle,
   {
     programs: ProgramListItem[]
-    serviceById: Map<number, Service>
+    serviceByKey: Map<string, Service>
     actions: ReservationActions
     /**
      * 可視範囲の先頭の番組が変わるたびに「いま見ている日」の dayOffset を通知する。
@@ -290,7 +291,7 @@ export const ProgramList = forwardRef<
 >(function ProgramList(
   {
     programs,
-    serviceById,
+    serviceByKey,
     actions,
     onVisibleDayChange,
     now,
@@ -624,7 +625,9 @@ export const ProgramList = forwardRef<
               )}
               <ProgramRow
                 program={program}
-                serviceName={serviceById.get(program.serviceId)?.name}
+                serviceName={
+                  serviceByKey.get(programServiceKey(program.networkId, program.serviceId))?.name
+                }
                 reserved={reserved}
                 pending={actions.isBusy(program.programId)}
                 onReserve={(overrides) => actions.reserve(program, overrides)}

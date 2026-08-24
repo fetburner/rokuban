@@ -125,22 +125,22 @@ Android のジェスチャーナビは左右端からの横スワイプが「戻
   `PageHeader` のタイトル行右端（`actions`）に置く。
   **グリッド表示中もトリガーを出したままにする** --- 選択はグリッドの
   列にも効くので、隠すと解除手段のない 1 列グリッドになる
-- チャンネルは**複数選択**（`ChannelPicker` は `ReadonlySet<number>`。空集合 =
-  すべて）。「見たい局だけをグリッドの列にする」という使い方に直結するため
-- **絞り込みは URL の `?serviceId=` に持つ**（`lib/programs-search.ts` の
-  `ProgramsPageSearch`。`/recordings` の `serviceId?: number[]` と同じ形。
-  複数可・OR・空集合は `undefined` で表す）。絞り込み済みの番組表への深いリンク・
-  共有ができる。`dayOffset`（ジャンプ先の日）・`view`（表示形式）は URL 化せず
-  component state のまま --- 今回 URL 化したのは `serviceId` だけで、他の次元を
-  載せるかは別の判断。ピッカー操作は `replace` で navigate する
-  （`recording-filters.tsx` の絞り込み更新と同じ規律。1 局ずつ選ぶたびに
-  history を汚さない --- 積んだままだと「戻る」で絞り込み変更が 1 手ずつ
-  再生されてしまう）
-- **絞り込みはサーバー側でかける。** 選択した `serviceId`（複数可。
-  [api.md](../api.md) の「EPG の読み取り」）を `programs.tsx` から渡し、返るのは
-  選択したサービスの番組だけになる。100 サービス規模で無絞り込みの 24 時間ぶんが
-  実測 1.7 MB になり、全件取得してからクライアント側で絞る形は維持できない
-  ため
+- チャンネルは**複数選択**（`ChannelPicker` は厳密な
+  `<networkId>:<serviceId>` の `ReadonlySet<string>`。空集合 = すべて）。
+  「見たい局だけをグリッドの列にする」という使い方に直結するため
+- **新しく作る絞り込み URL は `?service=<networkId>:<serviceId>` に持つ。**
+  `lib/programs-search.ts` の `ProgramsPageSearch.service` が複数可・OR・空集合を
+  `undefined` で表す。`service` と旧 `networkId` / `serviceId` の混在は意味が曖昧なので
+  API は 400 にする。旧 `serviceId` 単独は network を問わず、旧
+  `networkId + serviceId` はその network 内で絞る従来の意味を維持する。
+  ピッカーを操作した時点で厳密形式へ移し、旧キーは明示的に `undefined` にする。
+  複合キー配列は networkId・serviceId 順に正準化し、選択履歴で URL / queryKey を
+  揺らさない。`dayOffset`（ジャンプ先の日）・`view`（表示形式）は URL 化しない。
+  ピッカー操作は `replace` で navigate し、1 局ずつ選ぶたびに history を汚さない
+- **絞り込みはサーバー側でかける。** 選択した `(networkId, serviceId)` の組を
+  `programs.tsx` から渡し、返るのは選択したサービスの番組だけになる。
+  100 サービス規模で無絞り込みの 24 時間ぶんが実測 1.7 MB になり、全件取得してから
+  クライアント側で絞る形は維持できないため
 - **ピッカーの候補は `Service.hasPrograms` から作る。** 表示中の（絞り込んだ後の）
   番組から候補を導くと、1 局に絞った瞬間に候補がその 1 局だけになり、他局へ
   直接切り替えられなくなる。`hasPrograms` は絞り込みの入力に一切依存しない
@@ -148,22 +148,17 @@ Android のジェスチャーナビは左右端からの横スワイプが「戻
   グリッドの列は絞り込んだ後の番組（サーバーの返り値そのもの）から導く ---
   選んだ局がそのまま列になればよく、独立させる理由が無い
 - **ピッカーが実際に表示・列挙できる集合は「候補（`hasPrograms` から作る
-  `filterableServices`） ∪ 現在選択中の serviceId」。** 選択が URL 化された
-  時点で「外から入る値」になり、`selected ⊆ filterableServices`（この PR
-  以前は選択の唯一の生成元がピッカー自身だったため構造的に成り立っていた）
-  という前提が消える（閉世界 → 開世界）。候補に無い serviceId の選択を無視すると、
-  トリガーのラベルが選択 0 件（「すべて」）に見え、かつ候補にも出ないので個別に
-  外す手段が無くなる（issue #231 のレビューで判明）。`lib/programs-search.ts` の
-  `pickerServiceDomain` が両者の和を作る --- 混ぜているのは検索結果ではなく URL
-  からの外部入力なので、直前の「候補は `hasPrograms` から作る」（検索結果から
-  候補を導かない）とは矛盾しない。名前が引けない id（EPG から消えた局・実在
-  しない id を含む古いブックマーク・共有リンク）は `チャンネル #<id>` に落とす
-  （`lib/recording-search.ts` の `describeRecordingsFilters` と同じ流儀）
+  `filterableServices`）∪ 現在選択中の複合キー」。** 選択は URL から入るため、候補に
+  無い値も無視しない。旧 `serviceId` ワイルドカードは、現在のサービス一覧で一致する
+  全 network の複合キーへ表示上だけ展開する。名前が引けない古いブックマークは
+  `チャンネル #<id>` に落とし、個別に解除できる形を維持する。`pickerServiceDomain` は
+  filterable と選択中キーの和を作り、同じ serviceId の別 network を同じ候補へ潰さない
 - sticky な小見出しの `top` はハードコードしない。`PageHeader` が
   `ResizeObserver` で実測して `--page-header-height` を親要素に書き出す
   （フィルタ行の増減や文字サイズでずれる）
-- **ライブ視聴（`/live`）からは「この局の番組表」で `?serviceId=` 付きの番組表へ
-  飛べる。** 逆方向（番組表 → ライブ）はページ単位の導線を置かない ---
+- **ライブ視聴（`/live`）からは「この局の番組表」で既存の
+  `?networkId=&serviceId=` を使い、厳密な 1 局へ飛べる。** 1 局の導線には新しい
+  複数組パラメータは不要。逆方向（番組表 → ライブ）はページ単位の導線を置かない ---
   放送中の番組の展開に「ライブで見る」を出す導線は行（`ProgramRow`）単位の担当
   （issue #229）にする。ページ全体に 2 つ目のライブ導線を足すと、複数
   チャンネルを絞り込んでいるとき・放送中の番組が絞り込みの外にあるときに
@@ -224,7 +219,7 @@ Android のジェスチャーナビは左右端からの横スワイプが「戻
   keepOriginal 欄）はここを引き継がない
 
 `now` の判定は「展開されて描画される瞬間（とその後の再レンダー）」で行い、専用の
-tick タイマーは持たない。このリンクは番組 ID を運ばず `serviceId` だけを渡すため、
+tick タイマーは持たない。このリンクは番組 ID を運ばず `networkId` + `serviceId` を渡すため、
 番組境界を挟んで多少ズレても遷移先を誤らない --- 遷移先の `/live` 画面が自前で
 「いま何が流れているか」を再取得するので、真実はそちら側にある。
 

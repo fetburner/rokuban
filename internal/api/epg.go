@@ -51,13 +51,36 @@ func (h *Server) ListPrograms(ctx context.Context, req ListProgramsRequestObject
 	if msg := windowError(req.Params.Start, req.Params.End); msg != "" {
 		return ListPrograms400JSONResponse{Error: msg}, nil
 	}
+	if req.Params.Service != nil && (req.Params.NetworkId != nil || req.Params.ServiceId != nil) {
+		return ListPrograms400JSONResponse{Error: "service cannot be combined with networkId or serviceId"}, nil
+	}
+
+	legacyNetworkID, msg := positiveInt32Ptr(req.Params.NetworkId, "networkId")
+	if msg != "" {
+		return ListPrograms400JSONResponse{Error: msg}, nil
+	}
+	legacyServiceIDs, msg := positiveInt32Slice(req.Params.ServiceId, "serviceId")
+	if msg != "" {
+		return ListPrograms400JSONResponse{Error: msg}, nil
+	}
+
+	var exactNetworkIDs, exactServiceIDs []int32
+	if req.Params.Service != nil {
+		var parseMessage string
+		exactNetworkIDs, exactServiceIDs, parseMessage = parseNetworkServiceRefs(*req.Params.Service)
+		if parseMessage != "" {
+			return ListPrograms400JSONResponse{Error: parseMessage}, nil
+		}
+	}
 
 	rows, err := sqlcgen.New(h.pool).ListEpgProgramsForList(ctx, sqlcgen.ListEpgProgramsForListParams{
-		Site:        req.Site,
-		WindowStart: req.Params.Start,
-		WindowEnd:   req.Params.End,
-		NetworkID:   int32Ptr(req.Params.NetworkId),
-		ServiceIds:  int32Slice(req.Params.ServiceId),
+		Site:            req.Site,
+		WindowStart:     req.Params.Start,
+		WindowEnd:       req.Params.End,
+		NetworkID:       legacyNetworkID,
+		ServiceIds:      legacyServiceIDs,
+		ExactNetworkIds: exactNetworkIDs,
+		ExactServiceIds: exactServiceIDs,
 	})
 	if err != nil {
 		return nil, err
@@ -141,26 +164,26 @@ func windowError(start, end time.Time) string {
 	return ""
 }
 
-func int32Ptr(v *int) *int32 {
+func positiveInt32Ptr(v *int32, name string) (*int32, string) {
 	if v == nil {
-		return nil
+		return nil, ""
 	}
-	n := int32(*v)
-	return &n
+	if *v <= 0 {
+		return nil, fmt.Sprintf("%s must be a positive 32-bit integer", name)
+	}
+	return v, ""
 }
 
-// int32Slice は未指定（nil）を nil スライスのまま通す。ListEpgProgramsForList
-// 側の `service_ids IS NULL` 判定と対応させ、絞り込みなしを素通しさせるため
-// 空スライスへ丸めない。
-func int32Slice(v *[]int) []int32 {
+func positiveInt32Slice(v *[]int32, name string) ([]int32, string) {
 	if v == nil {
-		return nil
+		return nil, ""
 	}
-	out := make([]int32, len(*v))
-	for i, n := range *v {
-		out[i] = int32(n)
+	for _, n := range *v {
+		if n <= 0 {
+			return nil, fmt.Sprintf("%s must contain positive 32-bit integers", name)
+		}
 	}
-	return out
+	return *v, ""
 }
 
 func genreLv1List(lv1 []int16) []int {

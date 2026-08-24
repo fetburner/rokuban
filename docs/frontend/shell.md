@@ -138,7 +138,7 @@ UI に一切現れない」という意味ではない。**切れ目は「その
 | **行が運ぶ**（`GET /api/reservations` / `/api/recordings` / `/api/capacity/overages` / `/api/breakers`） | ホーム・予約一覧・録画一覧・ブレーカーバナー | **全サイトの行が混ざって出る**（api は site に束縛されない --- 不変条件 1、[api.md](../api.md)「site では絞らない」）。行から始まる操作は行の `site` を使う: 予約詳細への遷移（`/reservations/$site/$programId`）・容量バッジの交差判定・ブレーカー再開 |
 | **URL が運ぶ** | 予約詳細（`/reservations/$site/$programId`） | 行から持ってきた site をそのまま資源同定に使う。取消・上書き・重複警告もその site |
 | **出所が無い**（mirakc に「何があるか」を訊く入口） | 番組表・検索・ライブ / 検索とルールの条件フォームのサービス選択肢 | ここだけ `useCurrentSite()` = **先頭サイト固定**。ここから始まる操作（番組表からの予約・スキップ・番組詳細）も現在サイトを引き継ぐ |
-| **レジストリが運ぶ** | 録画検索のチャンネル選択肢 | `GET /api/sites` の全 site からサービス一覧を引き、`<site>:<serviceId>` を選択の identity にする。同じ `serviceId` を受信する別 site は別の選択肢であり、録画一覧の述語も `(site, service_id)` で引く |
+| **レジストリが運ぶ** | 録画検索のチャンネル選択肢 | `GET /api/sites` の全 site からサービス一覧を引き、`<site>:<networkId>:<serviceId>` を新しい選択の identity にする。同じ `serviceId` の別 network / site は別の選択肢で、録画一覧の述語も `(site, network_id, service_id)` で引く。旧 `<site>:<serviceId>` は network を問わない後方互換入力 |
 | **site を持たない資源** | ルール一覧・エンコードプロファイル・ストレージ残高・能力・録画詳細 | `/api/rules` / `/api/encode-profiles` / `/api/storage` / `/api/capabilities` に site は無い（アーカイブ用ストレージが単一なのは [api.md](../api.md)）。録画詳細（`/recordings/$id`）も id が site 非依存だが、観測対象の録画が運ぶ `site` は多サイト構成で表示する。ストレージ残高はこの単一の観測に、上段の全サイト分の録画・予約から作った見込みを重ねる（`components/storage-balance.tsx`。site で絞らない） |
 
 **`/api/sites/{site}/...` という URL の形は判別子にならない。** ブレーカー再開
@@ -151,7 +151,7 @@ UI に一切現れない」という意味ではない。**切れ目は「その
 1 つの画面が複数の段にまたがることもある。`/rules` はルール行そのものは site を
 持たない（`GET /api/rules`）が、条件フォームのサービス選択肢は先頭サイト
 （`components/condition-fields.tsx`）。`/recordings` は一覧もチャンネル選択肢も
-全サイトを対象にし、選択肢と述語を `(site, serviceId)` で結ぶ。
+全サイトを対象にし、新しく作る選択肢と述語を `(site, networkId, serviceId)` で結ぶ。
 
 **現在サイトを持つ画面が上段の一覧（全サイト）を重ねるときは、その画面の側で
 `site` を突き合わせる。** 例はライブの中断予測 --- 全サイトの予約を受け取ってから

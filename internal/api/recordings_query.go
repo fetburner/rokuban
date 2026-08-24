@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
@@ -19,6 +18,7 @@ import (
 // （issue #136）。ゼロ値のフィールドは「絞り込みなし」を表す。
 type serviceRef struct {
 	Site      string
+	NetworkID *int32
 	ServiceID int32
 }
 
@@ -30,9 +30,9 @@ type recordingsFilter struct {
 
 	Genres       []int16
 	ChannelTypes []string
-	// Services はチャンネル絞り込みの複合キー (site, serviceId)。同じ serviceId を
-	// 複数サイトで受信していても site を跨がないため、素の serviceId ではなく
-	// (site, serviceId) で引く（issue #283）。
+	// Services はチャンネル絞り込み。NetworkID があれば
+	// (site, networkId, serviceId) で厳密一致し、nil なら旧形式として
+	// (site, serviceId) で network を問わない。
 	Services []serviceRef
 
 	Status ListRecordingsParamsStatus
@@ -71,7 +71,7 @@ const (
 	genreLv1Max = 15
 )
 
-var recordingServicePattern = regexp.MustCompile(`^([a-z0-9](?:[_-]?[a-z0-9])*):([1-9][0-9]*)$`)
+var recordingServicePattern = regexp.MustCompile(`^([a-z0-9](?:[_-]?[a-z0-9])*):(?:([1-9][0-9]*):)?([1-9][0-9]*)$`)
 
 // recordingsFilterFromParams は ListRecordingsParams（openapi_gen.go の生成型）を
 // recordingsFilter に変換する。不正な入力（before/beforeId が片方だけ、limit が
@@ -128,13 +128,21 @@ func recordingsFilterFromParams(p ListRecordingsParams) (recordingsFilter, strin
 		for _, value := range *p.Service {
 			match := recordingServicePattern.FindStringSubmatch(value)
 			if match == nil {
-				return recordingsFilter{}, fmt.Sprintf("invalid service %q (want <site>:<positive serviceId>)", value)
+				return recordingsFilter{}, fmt.Sprintf("invalid service %q (want <site>:<serviceId> or <site>:<networkId>:<serviceId>)", value)
 			}
-			serviceID, err := strconv.ParseInt(match[2], 10, 32)
+			serviceID, err := parsePositiveInt32(match[3])
 			if err != nil {
-				return recordingsFilter{}, fmt.Sprintf("invalid service %q: serviceId is out of range", value)
+				return recordingsFilter{}, fmt.Sprintf("invalid service %q: serviceId %v", value, err)
 			}
-			f.Services = append(f.Services, serviceRef{Site: match[1], ServiceID: int32(serviceID)})
+			var networkID *int32
+			if match[2] != "" {
+				n, err := parsePositiveInt32(match[2])
+				if err != nil {
+					return recordingsFilter{}, fmt.Sprintf("invalid service %q: networkId %v", value, err)
+				}
+				networkID = &n
+			}
+			f.Services = append(f.Services, serviceRef{Site: match[1], NetworkID: networkID, ServiceID: serviceID})
 		}
 	}
 	if p.Status != nil {
@@ -381,7 +389,11 @@ func buildRecordingsQuery(f recordingsFilter) (string, []any, error) {
 	if len(f.Services) > 0 {
 		clauses := make([]string, len(f.Services))
 		for i, service := range f.Services {
-			clauses[i] = "(r.site = " + arg(service.Site) + " AND r.service_id = " + arg(service.ServiceID) + ")"
+			clause := "(r.site = " + arg(service.Site)
+			if service.NetworkID != nil {
+				clause += " AND r.network_id = " + arg(*service.NetworkID)
+			}
+			clauses[i] = clause + " AND r.service_id = " + arg(service.ServiceID) + ")"
 		}
 		and("(" + strings.Join(clauses, " OR ") + ")")
 	}

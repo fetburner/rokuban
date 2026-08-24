@@ -43,18 +43,17 @@ Rokuban 自体のライブ視聴は「チャンネル一覧から選んでブラ
 番組リスト（`components/program-row.tsx`）の「ライブで見る」リンクも
 `networkId` を渡す。
 
-**番組表と録画の絞り込みは `serviceId` 単独の形を維持する。** 同じ画面から出る
-「この局の番組表」リンク（`/programs` の `?serviceId=` は複数可の配列）と、録画の
-絞り込み（`lib/recording-search.ts` の `service` = `<site>:<serviceId>`）は
-`networkId` を運ばない。実運用の mirakc `GET /api/services` を `serviceId` ごとの
-`networkId` 集合として集計した結果は **19 サービス中、network をまたぐ重複 0 件**
-だったため、既存のリンク・共有 URL・API の形は変えない。
+**番組表と録画の絞り込みも network を含む厳密形式を持つ。** 高松の地上波だけを
+受信する実運用 mirakc では 19 サービス中の重複は 0 件だったが、この測定は GR の
+範囲しか覆わない。公式割当には BS `(network_id=4, service_id=101)` と 110 度 CS
+`(network_id=6, service_id=101)` の実例があり、GR / BS / CS を混ぜる一般の構成では
+`serviceId` 単独を identity にできない。
 
-ただし SI の性質上、同一 site で同じ `serviceId` を複数 network が持つ構成に変われば、
-番組表と録画一覧には別 network の番組・録画が混ざる。受信構成や BS / CS の編成が
-変わったときは、`epg_services` を `(site, service_id)` で集約して異なる `network_id` が
-複数ないかを再測定する。重複が観測された場合は、既存の `serviceId` 単独 URL の扱いを
-維持したまま、`(networkId, serviceId)` の組を運べる形を先に決める。
+「この局の番組表」は 1 局だけなので、既存 `/programs` の `networkId + serviceId` で
+厳密に運ぶ。番組表ピッカーの複数選択は `service=<networkId>:<serviceId>` の配列、
+録画の絞り込みは `service=<site>:<networkId>:<serviceId>` を使う。旧番組表 URL の
+`serviceId` 単独と旧録画 URL の `<site>:<serviceId>` は後方互換入力として残し、
+network を問わない従来の意味を維持する。
 
 **「選ぶ」（`?networkId=&serviceId=` を変える）と「流す」（`LivePlayer` をマウントする）を
 別のタップに分ける。** チャンネルを選ぶこと自体は probe も

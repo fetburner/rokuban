@@ -14,6 +14,7 @@ import { ChannelPicker } from '@/components/channel-picker'
 import { Chip } from '@/components/ui/chip'
 import { Field, Input } from '@/components/ui/field'
 import { genreCodeLabel, genreCodes } from '@/lib/program-search'
+import { serviceDisambiguator } from '@/lib/service-label'
 import {
   clearRecordingsFilters,
   describeRecordingsFilters,
@@ -54,14 +55,38 @@ export function RecordingFilters({
 
   const serviceList: Service[] = []
   const siteByService = new Map<Service, string>()
-  const serviceLabelByKey = new Map<string, string>()
   for (const [i, query] of serviceQueries.entries()) {
     const site = sites[i]
     for (const service of unwrap(query.data) ?? []) {
       serviceList.push(service)
       siteByService.set(service, site)
-      serviceLabelByKey.set(`${site}:${service.serviceId}`, `${service.name} (${site})`)
     }
+  }
+
+  const disambiguate = serviceDisambiguator(serviceList)
+  const serviceLabelByKey = new Map<string, string>()
+  const legacyServices = new Map<string, Service[]>()
+  for (const service of serviceList) {
+    const site = siteByService.get(service) ?? ''
+    const disambiguator = disambiguate(service)
+    const suffix = [site, disambiguator].filter((part) => part !== undefined && part !== '').join('・')
+    serviceLabelByKey.set(
+      `${site}:${service.networkId}:${service.serviceId}`,
+      suffix === '' ? service.name : `${service.name} (${suffix})`,
+    )
+    const legacyKey = `${site}:${service.serviceId}`
+    const group = legacyServices.get(legacyKey)
+    if (group) group.push(service)
+    else legacyServices.set(legacyKey, [service])
+  }
+  for (const [key, group] of legacyServices) {
+    const site = siteByService.get(group[0]) ?? ''
+    serviceLabelByKey.set(
+      key,
+      group.length === 1
+        ? `${group[0].name} (${site})`
+        : `serviceId ${group[0].serviceId} (${site}・network指定なし)`,
+    )
   }
 
   const chips = describeRecordingsFilters(search, serviceLabelByKey)
@@ -206,10 +231,35 @@ function FilterPanel({
   onChange: Update
 }) {
   const [open, setOpen] = useState(false)
-  const selectedServices = useMemo(() => new Set(search.service ?? []), [search.service])
+  const selectedServices = useMemo(() => {
+    const selected = new Set<string>()
+    for (const value of search.service ?? []) {
+      const parts = value.split(':')
+      if (parts.length === 3) {
+        selected.add(value)
+        continue
+      }
+      if (parts.length !== 2) continue
+      const [site, serviceId] = parts
+      for (const service of services) {
+        if (siteByService.get(service) === site && String(service.serviceId) === serviceId) {
+          selected.add(`${site}:${service.networkId}:${service.serviceId}`)
+        }
+      }
+    }
+    return selected
+  }, [search.service, services, siteByService])
   const selectedGenres = useMemo(() => new Set(search.genre ?? []), [search.genre])
   const multiSite = useMemo(() => new Set(siteByService.values()).size > 1, [siteByService])
-  const serviceKey = (s: Service) => `${siteByService.get(s) ?? ''}:${s.serviceId}`
+  const disambiguate = useMemo(() => serviceDisambiguator(services), [services])
+  const serviceKey = (service: Service) =>
+    `${siteByService.get(service) ?? ''}:${service.networkId}:${service.serviceId}`
+  const secondaryLabel = (service: Service): string | undefined => {
+    const parts = [multiSite ? siteByService.get(service) : undefined, disambiguate(service)].filter(
+      (part): part is string => part !== undefined && part !== '',
+    )
+    return parts.length > 0 ? parts.join('・') : undefined
+  }
 
   return (
     <PopoverPrimitive.Root open={open} onOpenChange={setOpen}>
@@ -244,9 +294,12 @@ function FilterPanel({
                   services={services}
                   selected={selectedServices}
                   keyOf={serviceKey}
-                  secondaryLabel={multiSite ? (s) => siteByService.get(s) : undefined}
+                  secondaryLabel={secondaryLabel}
                   onChange={(next) =>
-                    onChange((s) => ({ ...s, service: next.size > 0 ? [...next] : undefined }))
+                    onChange((s) => ({
+                      ...s,
+                      service: next.size > 0 ? [...next].sort() : undefined,
+                    }))
                   }
                 />
               )}
