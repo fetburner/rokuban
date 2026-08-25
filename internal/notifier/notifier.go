@@ -12,6 +12,7 @@ package notifier
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -20,6 +21,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/fetburner/rokuban/internal/serverevent"
 )
 
 const (
@@ -36,12 +39,34 @@ const (
 	heartbeatInterval = 25 * time.Second
 
 	// clientBuffer は 1 クライアントあたりの送信バッファ。
-	// 溢れたら捨てる（ヒントなので、取りこぼしは staleTime 経過後の再取得で回復する）。
+	// 溢れたら捨てる。invalidate は定期再取得で回復し、進捗は次の値で上書きされる。
 	clientBuffer = 16
 
 	// listenRetryInterval は LISTEN コネクションが切れたときの再接続間隔。
 	listenRetryInterval = 5 * time.Second
 )
+
+type serverEvent struct {
+	name        string
+	data        string
+	coalesceKey string
+}
+
+func decodeNotification(payload string) serverEvent {
+	var progress serverevent.EncodeProgressEvent
+	if json.Unmarshal([]byte(payload), &progress) == nil && progress.Type == serverevent.EncodeProgressEventType {
+		return serverEvent{
+			name:        serverevent.EncodeProgressEventType,
+			data:        payload,
+			coalesceKey: fmt.Sprintf("%s:%d:%s", serverevent.EncodeProgressEventType, progress.RecordingID, progress.Profile),
+		}
+	}
+	return serverEvent{
+		name:        payload,
+		data:        fmt.Sprintf(`{"topic":%q}`, payload),
+		coalesceKey: "topic:" + payload,
+	}
+}
 
 // EventHub は Postgres の NOTIFY を購読し、接続中の SSE クライアントへ配る。
 //
@@ -96,7 +121,7 @@ func (h *EventHub) waitListening(ctx context.Context) error {
 	}
 }
 
-// Subscribe はトピックを受け取るチャネルと、購読を解除する関数を返す。
+// Subscribe は NOTIFY payload を受け取るチャネルと、購読を解除する関数を返す。
 func (h *EventHub) Subscribe() (<-chan string, func()) {
 	ch := make(chan string, clientBuffer)
 
@@ -114,7 +139,7 @@ func (h *EventHub) Subscribe() (<-chan string, func()) {
 	}
 }
 
-// Publish は全クライアントにトピックを配る。
+// Publish は全クライアントに NOTIFY payload を配る。
 // バッファが埋まっているクライアントには送らずに捨てる。
 func (h *EventHub) Publish(topic string) {
 	h.mu.Lock()
@@ -124,7 +149,7 @@ func (h *EventHub) Publish(topic string) {
 		case ch <- topic:
 		default:
 			// 詰まっているクライアントのために全体を止めない。
-			// 落とした通知はクライアントの staleTime 経過後の再取得で回復する。
+			// invalidate は定期再取得、進捗は次の値で回復する。
 		}
 	}
 }
@@ -207,18 +232,20 @@ func (h *EventHub) listenOnce(ctx context.Context, pool *pgxpool.Pool) error {
 	return h.coalesce(ctx, topics, waitErr)
 }
 
-// coalesce は届いたトピックを coalesceWindow の間まとめてから Publish する。
+// coalesce は届いた payload を coalesceWindow の間まとめてから Publish する。
 //
-// トリガーは行単位で発火するため同じトピックが連続して届く。クライアントにとっては
-// 「このデータが変わった」が 1 回伝われば十分なので、窓の中で重複を潰す。
+// 通常トピックはトピック名、進捗は recording_id + profile をキーに重複を潰す。
+// 進捗を payload 全体でキーにすると値が変わるたびに別イベントとして溜まるため、
+// 区間中の最新値だけを残す。
 func (h *EventHub) coalesce(ctx context.Context, topics <-chan string, waitErr <-chan error) error {
-	pending := make(map[string]struct{})
+	pending := make(map[string]string)
 	var flushAt <-chan time.Time
 
 	for {
 		select {
-		case topic := <-topics:
-			pending[topic] = struct{}{}
+		case payload := <-topics:
+			event := decodeNotification(payload)
+			pending[event.coalesceKey] = payload
 			if flushAt == nil {
 				flushAt = time.After(coalesceWindow)
 			}
@@ -230,9 +257,9 @@ func (h *EventHub) coalesce(ctx context.Context, topics <-chan string, waitErr <
 			return fmt.Errorf("waiting for notification: %w", err)
 
 		case <-flushAt:
-			for topic := range pending {
-				h.Publish(topic)
-				delete(pending, topic)
+			for key, payload := range pending {
+				h.Publish(payload)
+				delete(pending, key)
 			}
 			flushAt = nil
 
@@ -253,8 +280,8 @@ func (h *EventHub) Mount(r chi.Router) {
 
 // eventsHandler は SSE (/api/events) を配信する http.Handler を返す。
 //
-// 配るのはトピック名だけで、変更内容は載せない。クライアントは該当クエリを
-// invalidate して REST から取り直す（レベルトリガー）。
+// 通常トピックは event 名と topic data にし、クライアントが REST を invalidate する。
+// encode-progress だけは型付き JSON data をそのまま配送する揮発テレメトリ。
 func eventsHandler(hub *EventHub) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		flusher, ok := w.(http.Flusher)
@@ -284,13 +311,14 @@ func eventsHandler(hub *EventHub) http.HandlerFunc {
 		ctx := r.Context()
 		for {
 			select {
-			case topic, open := <-topics:
+			case payload, open := <-topics:
 				if !open {
 					return
 				}
+				event := decodeNotification(payload)
 				// EventSource は data が空のイベントを dispatch しないため、
 				// event 名と併せて data も送る。
-				if _, err := fmt.Fprintf(w, "event: %s\ndata: {\"topic\":%q}\n\n", topic, topic); err != nil {
+				if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event.name, event.data); err != nil {
 					return
 				}
 				flusher.Flush()

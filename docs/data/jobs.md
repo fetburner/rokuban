@@ -80,7 +80,18 @@ kind + args だけで組み立てられ、Queue を含まない（`ByArgs` と `
 
 NOTIFY はコミット時にのみ配送される組み込み pub/sub。各コンポーネントは NOTIFY を「何か変わった」のヒントとして受け、**実データは必ずテーブルから読み直す**（レベルトリガー）。通知の取りこぼしは定期 reconcile で収束するため、配送保証に依存しない。
 
-フロントエンド（[フロントエンドアーキテクチャ](../frontend.md) 参照）の SSE も同じ構造: SSE イベントは TanStack Query の `invalidateQueries` に徹し、真実は常に REST から再取得する。
+**狭い例外は、テーブルに載せない揮発テレメトリ（エンコード進捗）だけ。** ffmpeg の
+`out_time` を実入力 duration に対する割合にして最大 1 回/秒で NOTIFY し、notifier の
+EventHub が接続中のブラウザへ SSE として渡す。**テーブルへ保存しない**のは、秒単位で
+変わる復元不要の値を永続化すると再起動後に WAL・dead tuple・vacuum 対象を増やすため。
+**完了判定には使わない**のは、NOTIFY に配送保証が無く、切断・遅参・notifier 停止で
+欠落しても真実は `recording_encode_attempts` / `media_assets` の再読で復元できなければ
+ならないため（不変条件 5）。
+
+フロントエンド（[フロントエンドアーキテクチャ](../frontend.md) 参照）の SSE も同じ構造:
+durable な状態のイベントは TanStack Query の `invalidateQueries` に徹し、真実は常に REST
+から再取得する。エンコード進捗だけは上記の揮発テレメトリとして payload を直接表示し、
+durable 状態が `running` でなくなれば破棄する。
 
 **ブラウザへの SSE 配送 (`/api/events`) の担い手は notifier ロール**（api ではない）。api ロールは mirakc にもファイルシステムにも依存しない（不変条件 1）のと同じ理由で、長寿命接続である LISTEN セッションも持たない --- サーバーレス（scale-to-zero）に載せるためには、そもそも常駐前提の LISTEN を api に置けない。notifier は「Postgres を LISTEN してブラウザへ配り直すだけ」の小さな常駐プロセスとして分離してある。
 

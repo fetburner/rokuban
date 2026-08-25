@@ -38,6 +38,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { shouldAutoLoadNextPage, shouldShowLoadMoreButton } from '@/lib/auto-load'
 import { encodeJobStatusLabel } from '@/lib/encode-status'
+import { useEncodeProgress } from '@/lib/events'
 import { formatBytes, formatDateTime, formatDuration } from '@/lib/format'
 import {
   hasLiveIngestProgress,
@@ -545,6 +546,15 @@ function DropBadges({ summary }: { summary: DropSummary }) {
  */
 export function EncodeStatusBadges({ recording }: { recording: Recording }) {
   const statuses = recording.encodeStatus ?? []
+  const runningProfiles = useMemo(
+    () =>
+      (recording.encodeStatus ?? [])
+        .filter((status) => status.state === 'running')
+        .map((status) => status.profile),
+    [recording.encodeStatus],
+  )
+  const progress = useEncodeProgress(recording.id, runningProfiles)
+
   if (statuses.length === 0) return null
 
   return (
@@ -559,7 +569,11 @@ export function EncodeStatusBadges({ recording }: { recording: Recording }) {
               : 'bg-muted text-foreground',
           )}
         >
-          {s.profile}: {encodeJobStatusLabel(s.state)}
+          {s.profile}:{' '}
+          {encodeJobStatusLabel(
+            s.state,
+            s.state === 'running' ? progress.get(s.profile) : undefined,
+          )}
         </span>
       ))}
     </>

@@ -239,7 +239,10 @@ func thumbnailSeek(duration time.Duration) time.Duration {
 }
 
 func (w *ThumbnailWorker) probeDuration(ctx context.Context, inputPath string) (time.Duration, error) {
-	ffprobe := w.FFprobe
+	return probeDuration(ctx, w.FFprobe, inputPath, w.commandOutput)
+}
+
+func probeDuration(ctx context.Context, ffprobe, inputPath string, run func(context.Context, string, ...string) ([]byte, error)) (time.Duration, error) {
 	if ffprobe == "" {
 		ffprobe = "ffprobe"
 	}
@@ -249,7 +252,7 @@ func (w *ThumbnailWorker) probeDuration(ctx context.Context, inputPath string) (
 		"-of", "default=noprint_wrappers=1:nokey=1",
 		inputPath,
 	}
-	out, err := w.commandOutput(ctx, ffprobe, args...)
+	out, err := run(ctx, ffprobe, args...)
 	if err != nil {
 		return 0, err
 	}
@@ -302,6 +305,10 @@ func (w *ThumbnailWorker) commandOutput(ctx context.Context, name string, args .
 	if w.runCmd != nil {
 		return w.runCmd(ctx, name, args...)
 	}
+	return commandOutput(ctx, name, args...)
+}
+
+func commandOutput(ctx context.Context, name string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {

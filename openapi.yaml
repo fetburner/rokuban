@@ -1565,10 +1565,10 @@ components:
             済みの録画では省略する（空配列は返さない。機能しないキュー画面や
             空の進捗バーを出さない判断はサーバー側のこの省略で表現する）。
 
-            `%` は含まない --- 進捗の数値は ffmpeg の `-progress pipe:1` から
-            ログにしか出しておらず（`internal/worker/encode.go` の
-            `parseFFmpegProgress`。値は計算に使っていない）、出すと決めるなら
-            それを読む API と同じ PR で決める。
+            `%` は含まない --- この REST モデルは `queued` / `running` /
+            `failed` / 完了を復元する durable な状態だけを持つ。実行中の割合は
+            notifier の `/api/events` が `encode-progress` SSE として配送する
+            揮発テレメトリで、テーブルにも OpenAPI にも保存しない。
           type: array
           items:
             $ref: "#/components/schemas/EncodeJobStatus"

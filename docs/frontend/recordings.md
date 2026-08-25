@@ -177,9 +177,10 @@ API は後方互換を保つ（docs/api/rest.md §契約の保護）--- 旧バ�
 `queued` / `running` / `failed` のいずれかで列挙する）をバッジで出す
 （`EncodeStatusBadges`。一覧の行と単体ページのヘッダー、`IngestBadge` の隣）。
 
-- **`%` は出さない。** 進捗の数値は ffmpeg の `-progress pipe:1` からログにしか
-  出しておらず（`internal/worker/encode.go` の `parseFFmpegProgress`。値は
-  計算に使っていない）、出すと決めるならそれを読む API と同じ PR で決める
+- **`running` は進捗イベントを受け取るまで `%` を出さない。** worker が実入力を
+  ffprobe して得た duration を分母にし、ffmpeg の `-progress pipe:1` の `out_time`
+  から割合を作る。duration を取得できない場合や SSE を取りこぼした場合は
+  架空の割合で埋めず「エンコード中」のままにする
 - **プロファイル未設定・全プロファイル完了済みの録画では `encodeStatus` が
   省略される**ので、`EncodeStatusBadges` は何も描かない --- 機能しないキュー
   画面や空の進捗バーを出さない判断はサーバー側のこの省略で表現されており、
@@ -201,19 +202,19 @@ API は後方互換を保つ（docs/api/rest.md §契約の保護）--- 旧バ�
   節
 - ホームに出す場合は失敗録画と同じ「異常」の置き場に合わせる想定だが、本機能
   自体はホームへの統合を含まない --- 一覧・単体ページで沈黙と区別できれば足りるため
-- **専用の SSE トピックも NOTIFY も持たない。** 収束は既存の
+- **完了・失敗の真実は引き続き REST の `encodeStatus` / `encodedAssets`。**
+  `encode-progress` SSE は接続中だけ届く揮発テレメトリで、`running` の文言に割合を
+  重ねるためだけに使う。durable 状態が `running` でなくなったら最後の値を破棄し、
+  `progress=end` や 100% だけで完了を断定しない
+- **進捗はテーブルへ保存しない。** 再起動後に不要な秒単位の値で WAL・dead tuple・
+  vacuum 対象を増やさず、worker → PostgreSQL NOTIFY → notifier の EventHub → SSE
+  という best-effort 経路で最大 1 回/秒だけ運ぶ。画面を途中から開いた場合は REST
+  由来の `running` を先に出し、次のイベントから割合を表示する
+- `queued` / `running` / `failed` の収束は既存の
   `operationalRefreshIntervalMs`（`/api/recordings` を再取得する 60 秒周期。
-  `web/src/lib/events.ts`）に乗せるだけで、`recording_encode_attempts` から
-  DB 通知を出す経路は無い --- `queued`→`running`→`failed` の遷移は、**前面タブ
-  なら最大 60 秒遅れて**画面に反映される。**背面タブでは定期取得を投げない**
-  （`useServerEvents` の `document.visibilityState === 'hidden'` ガード）ので、
-  前面に戻るまで止まる（復帰時は `refetchOnWindowFocus` が拾う）。この 2 つは
-  `web/src/lib/events.test.tsx` の「SSE が来なくても運用状態のクエリは 60 秒
-  周期で取り直す」（`counts.recordings` でも数えている --- `/api/recordings` が
-  同じ 60 秒グループに属することを、予約のカウントとは別に押さえる）と「背面
-  タブでは定期取得を投げず、前面に戻ると再開する」が固定している。
-  `storageRefreshIntervalMs` の `topic: null` と同じ「専用トピックを持たず既存の
-  再取得に乗せる」判断
+  `web/src/lib/events.ts`）にも乗る。背面タブでは定期取得を投げず、前面へ戻ったときは
+  `refetchOnWindowFocus` が拾う。進捗イベントを取りこぼしても durable 状態の完了・
+  失敗判定はこの再取得で正しく収束する
 
 ## ドロップ統計はバッジ + 展開
 

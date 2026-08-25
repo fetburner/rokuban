@@ -1,8 +1,10 @@
 package worker
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -303,6 +305,31 @@ func TestEncodedRelPath(t *testing.T) {
 	}
 	if strings.Count(got, "/") != 0 {
 		t.Errorf("profile must not introduce hierarchy: %q", got)
+	}
+}
+
+func TestParseFFmpegProgress_OutTimeMSIsMicroseconds(t *testing.T) {
+	var logs bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&logs, nil))
+
+	parseFFmpegProgress(strings.NewReader("out_time_ms=1000000\nprogress=end\n"), log, nil)
+
+	if !strings.Contains(logs.String(), "out_time_ms=1000 progress=end") {
+		t.Fatalf("out_time_ms must convert ffmpeg microseconds to milliseconds, log=%q", logs.String())
+	}
+}
+
+func TestParseFFmpegProgress_ReportsOutTime(t *testing.T) {
+	var got []time.Duration
+	parseFFmpegProgress(
+		strings.NewReader("out_time_ms=1000000\nprogress=continue\nout_time_us=2500000\nprogress=end\n"),
+		slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)),
+		func(outTime time.Duration) { got = append(got, outTime) },
+	)
+
+	want := []time.Duration{time.Second, 2500 * time.Millisecond}
+	if !slices.Equal(got, want) {
+		t.Fatalf("reported out times = %v, want %v", got, want)
 	}
 }
 

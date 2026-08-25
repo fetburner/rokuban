@@ -7,6 +7,7 @@ import {
   epgRefreshIntervalMs,
   operationalRefreshIntervalMs,
   storageRefreshIntervalMs,
+  useEncodeProgress,
   useServerEvents,
 } from '@/lib/events'
 
@@ -40,14 +41,31 @@ class EventSourceStub {
     this.closed = true
   }
 
-  emit(type: string): void {
-    for (const listener of this.listeners.get(type) ?? []) listener(new Event(type))
+  emit(type: string, data?: string): void {
+    const event = data === undefined ? new Event(type) : new MessageEvent(type, { data })
+    for (const listener of this.listeners.get(type) ?? []) listener(event)
   }
 }
 
 function Subscriber() {
   useServerEvents()
   return null
+}
+
+const progressProfiles = {
+  mobile: ['mobile'],
+  desktop: ['desktop'],
+} as const
+
+function ProgressProbe({
+  recordingId,
+  profile = 'mobile',
+}: {
+  recordingId: number
+  profile?: keyof typeof progressProfiles
+}) {
+  const progress = useEncodeProgress(recordingId, progressProfiles[profile])
+  return <div data-testid={`${recordingId}-${profile}`}>{progress.get(profile) ?? 'unknown'}</div>
 }
 
 /** renderSubscriber は SSE の購読だけを持つ最小のツリーを描く。 */
@@ -215,6 +233,59 @@ afterEach(() => {
 })
 
 describe('useServerEvents', () => {
+  it('encode-progress の payload を録画とプロファイル別の揮発値として受け取る', () => {
+    globalThis.EventSource = EventSourceStub as unknown as typeof EventSource
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const view = render(
+      <QueryClientProvider client={queryClient}>
+        <Subscriber />
+        <ProgressProbe recordingId={42} />
+      </QueryClientProvider>,
+    )
+
+    expect(view.getByText('unknown')).toBeInTheDocument()
+    act(() => {
+      EventSourceStub.last?.emit(
+        'encode-progress',
+        JSON.stringify({
+          type: 'encode-progress',
+          recordingId: 42,
+          profile: 'mobile',
+          progress: 0.25,
+        }),
+      )
+    })
+    expect(view.getByText('0.25')).toBeInTheDocument()
+  })
+
+  it('録画 ID と profile が異なる進捗を混ぜない', () => {
+    globalThis.EventSource = EventSourceStub as unknown as typeof EventSource
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const view = render(
+      <QueryClientProvider client={queryClient}>
+        <Subscriber />
+        <ProgressProbe recordingId={42} />
+        <ProgressProbe recordingId={42} profile="desktop" />
+        <ProgressProbe recordingId={43} />
+      </QueryClientProvider>,
+    )
+
+    act(() => {
+      EventSourceStub.last?.emit(
+        'encode-progress',
+        JSON.stringify({
+          type: 'encode-progress',
+          recordingId: 42,
+          profile: 'mobile',
+          progress: 0.25,
+        }),
+      )
+    })
+    expect(view.getByTestId('42-mobile')).toHaveTextContent('0.25')
+    expect(view.getByTestId('42-desktop')).toHaveTextContent('unknown')
+    expect(view.getByTestId('43-mobile')).toHaveTextContent('unknown')
+  })
+
   it('reservations のイベントで容量超過も取り直す（予約集合からの導出値）', () => {
     globalThis.EventSource = EventSourceStub as unknown as typeof EventSource
     const queryClient = new QueryClient({

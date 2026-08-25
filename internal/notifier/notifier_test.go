@@ -3,6 +3,7 @@ package notifier
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/fetburner/rokuban/internal/api"
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/serverevent"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -25,23 +27,36 @@ const defaultSite = db.DefaultSite
 // （既定 10 分）までハングし、CI が「どのテストが原因か分からない失敗」になる。
 const sseTimeout = 15 * time.Second
 
-// readSSEEvent は次の SSE イベントの event 名を、期限付きで返す。
-func readSSEEvent(t *testing.T, r *bufio.Reader) string {
+// readSSEMessage は次の SSE イベントの event 名と data を期限付きで返す。
+type sseMessage struct {
+	name string
+	data string
+}
+
+func readSSEMessage(t *testing.T, r *bufio.Reader) sseMessage {
 	t.Helper()
 	type result struct {
-		name string
-		err  error
+		message sseMessage
+		err     error
 	}
 	ch := make(chan result, 1)
 	go func() {
+		var message sseMessage
 		for {
 			line, err := r.ReadString('\n')
 			if err != nil {
 				ch <- result{err: err}
 				return
 			}
-			if name, ok := strings.CutPrefix(strings.TrimRight(line, "\r\n"), "event: "); ok {
-				ch <- result{name: name}
+			line = strings.TrimRight(line, "\r\n")
+			if name, ok := strings.CutPrefix(line, "event: "); ok {
+				message.name = name
+			}
+			if data, ok := strings.CutPrefix(line, "data: "); ok {
+				message.data = data
+			}
+			if line == "" && message.name != "" {
+				ch <- result{message: message}
 				return
 			}
 		}
@@ -51,11 +66,16 @@ func readSSEEvent(t *testing.T, r *bufio.Reader) string {
 		if got.err != nil {
 			t.Fatalf("reading SSE stream: %v", got.err)
 		}
-		return got.name
+		return got.message
 	case <-time.After(sseTimeout):
 		t.Fatalf("timed out after %s waiting for an SSE event", sseTimeout)
-		return ""
+		return sseMessage{}
 	}
+}
+
+func readSSEEvent(t *testing.T, r *bufio.Reader) string {
+	t.Helper()
+	return readSSEMessage(t, r).name
 }
 
 // openSSE は /api/events に接続し、retry 行を読み終えた状態の Reader を返す。
@@ -274,6 +294,43 @@ func TestEvents_ExplicitNotify(t *testing.T) {
 	}
 }
 
+func TestEvents_EncodeProgressNotify(t *testing.T) {
+	hub := NewEventHub()
+	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{Mounter: hub}))
+	t.Cleanup(srv.Close)
+
+	reader := openSSE(t, srv.URL)
+	waitForClients(t, hub, 1)
+
+	payload := `{"type":"encode-progress","recordingId":42,"profile":"mobile","progress":0.25}`
+	hub.Publish(payload)
+	got := readSSEMessage(t, reader)
+	if got.name != "encode-progress" {
+		t.Errorf("event = %q, want encode-progress", got.name)
+	}
+	if got.data != payload {
+		t.Errorf("data = %q, want %q", got.data, payload)
+	}
+}
+
+func TestEvents_EncodeProgressFromPostgres(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	hub, srv := startNotifier(t, pool)
+
+	reader := openSSE(t, srv.URL)
+	waitForClients(t, hub, 1)
+	waitListening(t, hub)
+
+	payload := `{"type":"encode-progress","recordingId":42,"profile":"mobile","progress":0.25}`
+	if err := sqlcgen.New(pool).NotifyTopic(context.Background(), payload); err != nil {
+		t.Fatalf("NotifyTopic: %v", err)
+	}
+	got := readSSEMessage(t, reader)
+	if got.name != "encode-progress" || got.data != payload {
+		t.Fatalf("SSE = %+v, want encode-progress with %s", got, payload)
+	}
+}
+
 // 複数クライアントに同じトピックが配られること。
 func TestEvents_FanOut(t *testing.T) {
 	pool := testutil.SetupDB(t)
@@ -368,6 +425,83 @@ func TestEventHub_Coalesce(t *testing.T) {
 
 	if got["recordings"] != 1 || got["reservations"] != 1 {
 		t.Errorf("coalesced counts = %v, want each exactly 1", got)
+	}
+
+	cancel()
+	<-done
+}
+
+func TestEventHub_CoalescesEncodeProgressByRecordingAndProfile(t *testing.T) {
+	hub := NewEventHub()
+	sub, unsubscribe := hub.Subscribe()
+	defer unsubscribe()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	topics := make(chan string)
+	waitErr := make(chan error, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = hub.coalesce(ctx, topics, waitErr)
+	}()
+
+	first := `{"type":"encode-progress","recordingId":42,"profile":"mobile","progress":0.25}`
+	latest := `{"type":"encode-progress","recordingId":42,"profile":"mobile","progress":0.75}`
+	topics <- first
+	topics <- latest
+
+	select {
+	case got := <-sub:
+		if got != latest {
+			t.Errorf("progress = %q, want latest %q", got, latest)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for progress")
+	}
+	select {
+	case extra := <-sub:
+		t.Errorf("unexpected stale progress %q", extra)
+	case <-time.After(2 * coalesceWindow):
+	}
+
+	cancel()
+	<-done
+}
+
+func TestEventHub_DoesNotMixEncodeProgressProfiles(t *testing.T) {
+	hub := NewEventHub()
+	sub, unsubscribe := hub.Subscribe()
+	defer unsubscribe()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	topics := make(chan string)
+	waitErr := make(chan error, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = hub.coalesce(ctx, topics, waitErr)
+	}()
+
+	topics <- `{"type":"encode-progress","recordingId":42,"profile":"mobile","progress":0.25}`
+	topics <- `{"type":"encode-progress","recordingId":42,"profile":"desktop","progress":0.5}`
+
+	profiles := map[string]bool{}
+	for len(profiles) < 2 {
+		select {
+		case payload := <-sub:
+			var event serverevent.EncodeProgressEvent
+			if err := json.Unmarshal([]byte(payload), &event); err != nil {
+				t.Fatal(err)
+			}
+			profiles[event.Profile] = true
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out; profiles = %v", profiles)
+		}
+	}
+	if !profiles["mobile"] || !profiles["desktop"] {
+		t.Fatalf("profiles = %v, want mobile and desktop", profiles)
 	}
 
 	cancel()
