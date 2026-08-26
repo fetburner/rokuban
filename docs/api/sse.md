@@ -2,7 +2,9 @@
 
 ## SSE (`/api/events`) --- ヒント配送、状態の真実は REST から再取得
 
-サーバー → クライアントの一方向プッシュ。役割は**「どのデータが変わったか」のヒント配送だけ**。
+サーバー → クライアントの一方向プッシュ。基本の役割は**「どのデータが変わったか」のヒント配送**。
+例外は、次の通知で上書きされ再起動後に復元する必要もない揮発テレメトリ
+（`encode-progress`）だけで、接続中の表示に payload を直接使ってよい。
 
 **実装は `internal/notifier` ロールの所有物。** api ロールは mirakc にもファイルシステムにも
 依存しない（不変条件 1）のと同じ理由で、長寿命接続である SSE も持たない。api は desired
@@ -29,6 +31,11 @@ monolith（`--all`）では `internal/api.RouterConfig.Mounter` 経由で stream
 | `breakers` | `circuit_breakers` の行トリガー | ブレーカー一覧（バナー） |
 | `rules` | `rules` の行トリガー | （現在クライアントは購読していない。notifier は選別せず全トピックを転送する — `web/src/lib/events.ts` の `queryGroups` が購読の一覧） |
 
+`encode-progress` は invalidate トピックではなく型付きイベント。`recordingId + profile` を
+識別子、実入力 duration に対する割合を payload に持ち、EventHub はこの識別子ごとに
+区間中の最新値へ縮約する。通常トピックの payload 全体を event 名にする従来形式とは
+入口で分けるため、値の違う進捗が別キーとして溜まったり JSON が event 名になったりしない。
+
 **通知の出し方はテーブルの書き込み量で分ける。**
 
 - **行トリガー**（`reservations` / `recordings` / `media_assets`）: 書き手が通知を忘れる種類のバグを
@@ -47,6 +54,9 @@ retry: 3000
 event: recordings
 data: {"topic":"recordings"}
 
+event: encode-progress
+data: {"type":"encode-progress","recordingId":42,"profile":"mobile","progress":0.25}
+
 : ping
 ```
 
@@ -54,8 +64,9 @@ data: {"topic":"recordings"}
 - 25 秒ごとにコメント行（`: ping`）を送る。リバースプロキシ・CDN のアイドルタイムアウト対策
 - `X-Accel-Buffering: no` を付ける。nginx がイベントを溜め込むのを防ぐ
 - クライアントのバッファが埋まっていたら通知を**捨てる**。詰まった 1 クライアントのために
-  全体を止めない。落とした通知はクライアント側の定期 invalidate で回復する（下記
-  「レベルトリガーの対称性」）
+  全体を止めない。落とした invalidate はクライアント側の定期再取得で回復する（下記
+  「レベルトリガーの対称性」）。進捗は次の値が上書きするまで不明でよく、欠落自体に
+  状態の意味を持たせない
 - LISTEN コネクションが切れたら 5 秒後に再接続する。切断中の変更も同様に回復する
 
 ### レベルトリガーの対称性
@@ -64,7 +75,12 @@ data: {"topic":"recordings"}
 
 1. SSE イベントを受信したら、該当クエリの `invalidateQueries` を実行
 2. 真実は常に REST から再取得
-3. **プッシュの中身を直接信頼して画面状態を書き換えることはしない**
+3. **durable な状態について、プッシュの中身を直接信頼して画面状態を書き換えない**
+
+狭い例外として、`encode-progress` の割合だけはメモリ上へ直接置く。この値は完了・失敗を
+主張せず、REST の `encodeStatus` が `running` でなくなれば破棄される。秒単位の値を
+テーブルへ保存すると、再起動後に不要な情報のために WAL・dead tuple・vacuum 対象を
+増やす一方、配送保証を足しても完了判定の真実にはできないため。
 
 プッシュデータを信頼して手元状態を書き換える設計（Socket.IO 時代の EPGStation）より壊れ方が大幅に単純になる。
 

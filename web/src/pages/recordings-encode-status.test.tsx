@@ -1,10 +1,12 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RouterProvider, createMemoryHistory, createRouter } from '@tanstack/react-router'
-import { render, screen } from '@testing-library/react'
+import { act, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { Recording } from '@/api/generated'
 import { ToastProvider } from '@/components/toaster'
+import { useServerEvents } from '@/lib/events'
+import { EncodeStatusBadges } from '@/pages/recordings'
 import { routeTree } from '@/routes'
 
 /**
@@ -14,6 +16,37 @@ import { routeTree } from '@/routes'
  * ヘッダーのバッジ（`EncodeStatusBadges`）と一覧の行の両方が同じコードで
  * 描かれることを担保する。
  */
+
+class EventSourceStub {
+  static last: EventSourceStub | null = null
+  private listeners = new Map<string, Set<(event: Event) => void>>()
+
+  constructor(_url: string) {
+    EventSourceStub.last = this
+  }
+
+  addEventListener(type: string, listener: (event: Event) => void): void {
+    const set = this.listeners.get(type) ?? new Set()
+    set.add(listener)
+    this.listeners.set(type, set)
+  }
+
+  removeEventListener(type: string, listener: (event: Event) => void): void {
+    this.listeners.get(type)?.delete(listener)
+  }
+
+  close(): void {}
+
+  emit(type: string, data: string): void {
+    const event = new MessageEvent(type, { data })
+    for (const listener of this.listeners.get(type) ?? []) listener(event)
+  }
+}
+
+function ServerEvents() {
+  useServerEvents()
+  return null
+}
 
 function sampleRecording(overrides: Partial<Recording> = {}): Recording {
   return {
@@ -45,6 +78,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 function renderRecording(recording: Recording) {
   window.scrollTo = vi.fn()
+  globalThis.EventSource = EventSourceStub as unknown as typeof EventSource
   globalThis.fetch = vi.fn((input: string | URL | Request) => {
     const url = new URL(String(input), 'http://localhost')
     if (url.pathname === '/api/breakers') return Promise.resolve(jsonResponse([]))
@@ -66,6 +100,7 @@ function renderRecording(recording: Recording) {
   })
   render(
     <QueryClientProvider client={queryClient}>
+      <ServerEvents />
       <ToastProvider>
         <RouterProvider router={router as never} />
       </ToastProvider>
@@ -76,6 +111,7 @@ function renderRecording(recording: Recording) {
 /** renderList は録画一覧（`/recordings`）を描画する（一覧行のバッジ確認用）。 */
 function renderList(recordings: Recording[]) {
   window.scrollTo = vi.fn()
+  globalThis.EventSource = EventSourceStub as unknown as typeof EventSource
   globalThis.fetch = vi.fn((input: string | URL | Request) => {
     const url = new URL(String(input), 'http://localhost')
     if (url.pathname === '/api/sites') return Promise.resolve(jsonResponse(['default']))
@@ -90,6 +126,7 @@ function renderList(recordings: Recording[]) {
   })
   render(
     <QueryClientProvider client={queryClient}>
+      <ServerEvents />
       <ToastProvider>
         <RouterProvider router={router as never} />
       </ToastProvider>
@@ -116,6 +153,112 @@ describe('エンコード試行状態の表示', () => {
     expect(screen.getByText('aac: エンコード失敗')).toBeInTheDocument()
   })
 
+  it('途中参加では running を先に出し、次の SSE 進捗から百分率を出す', async () => {
+    renderRecording(
+      sampleRecording({
+        encodeProfiles: ['mobile'],
+        encodeStatus: [{ profile: 'mobile', state: 'running' }],
+      }),
+    )
+
+    expect(await screen.findByText('mobile: エンコード中')).toBeInTheDocument()
+    act(() => {
+      EventSourceStub.last?.emit(
+        'encode-progress',
+        JSON.stringify({
+          type: 'encode-progress',
+          recordingId: 3,
+          profile: 'mobile',
+          progress: 0.429,
+        }),
+      )
+    })
+    expect(screen.getByText('mobile: エンコード中 42%')).toBeInTheDocument()
+  })
+
+  it('画面未表示中に届いた値を、後から開いた running に流用しない', () => {
+    globalThis.EventSource = EventSourceStub as unknown as typeof EventSource
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const view = render(
+      <QueryClientProvider client={queryClient}>
+        <ServerEvents />
+      </QueryClientProvider>,
+    )
+
+    act(() => {
+      EventSourceStub.last?.emit(
+        'encode-progress',
+        JSON.stringify({
+          type: 'encode-progress',
+          recordingId: 3,
+          profile: 'mobile',
+          progress: 0.5,
+        }),
+      )
+    })
+    view.rerender(
+      <QueryClientProvider client={queryClient}>
+        <ServerEvents />
+        <EncodeStatusBadges
+          recording={sampleRecording({
+            encodeProfiles: ['mobile'],
+            encodeStatus: [{ profile: 'mobile', state: 'running' }],
+          })}
+        />
+      </QueryClientProvider>,
+    )
+
+    expect(screen.getByText('mobile: エンコード中')).toBeInTheDocument()
+    expect(screen.queryByText('mobile: エンコード中 50%')).not.toBeInTheDocument()
+  })
+
+  it('durable 状態が running でなくなったら最後の進捗を破棄する', () => {
+    globalThis.EventSource = EventSourceStub as unknown as typeof EventSource
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const running = sampleRecording({
+      encodeProfiles: ['mobile'],
+      encodeStatus: [{ profile: 'mobile', state: 'running' }],
+    })
+    const view = render(
+      <QueryClientProvider client={queryClient}>
+        <ServerEvents />
+        <EncodeStatusBadges recording={running} />
+      </QueryClientProvider>,
+    )
+
+    act(() => {
+      EventSourceStub.last?.emit(
+        'encode-progress',
+        JSON.stringify({
+          type: 'encode-progress',
+          recordingId: 3,
+          profile: 'mobile',
+          progress: 0.5,
+        }),
+      )
+    })
+    expect(screen.getByText('mobile: エンコード中 50%')).toBeInTheDocument()
+
+    view.rerender(
+      <QueryClientProvider client={queryClient}>
+        <ServerEvents />
+        <EncodeStatusBadges
+          recording={{ ...running, encodeStatus: [{ profile: 'mobile', state: 'failed' }] }}
+        />
+      </QueryClientProvider>,
+    )
+    expect(screen.getByText('mobile: エンコード失敗')).toBeInTheDocument()
+
+    view.rerender(
+      <QueryClientProvider client={queryClient}>
+        <ServerEvents />
+        <EncodeStatusBadges recording={running} />
+      </QueryClientProvider>,
+    )
+    expect(screen.getByText('mobile: エンコード中')).toBeInTheDocument()
+    expect(screen.queryByText('mobile: エンコード中 50%')).not.toBeInTheDocument()
+  })
+
   it('encodeStatus が省略されているときは何も出さない（プロファイル未設定・全完了済みの両方に使う）', async () => {
     renderRecording(sampleRecording({ encodeStatus: undefined }))
 
@@ -139,6 +282,31 @@ describe('エンコード試行状態の表示', () => {
 })
 
 describe('録画一覧のエンコードバッジ', () => {
+  it('一覧行の running も SSE 進捗で更新する', async () => {
+    renderList([
+      sampleRecording({
+        id: 21,
+        title: '進捗がある録画',
+        encodeProfiles: ['mobile'],
+        encodeStatus: [{ profile: 'mobile', state: 'running' }],
+      }),
+    ])
+
+    expect(await screen.findByText('mobile: エンコード中')).toBeInTheDocument()
+    act(() => {
+      EventSourceStub.last?.emit(
+        'encode-progress',
+        JSON.stringify({
+          type: 'encode-progress',
+          recordingId: 21,
+          profile: 'mobile',
+          progress: 0.5,
+        }),
+      )
+    })
+    expect(screen.getByText('mobile: エンコード中 50%')).toBeInTheDocument()
+  })
+
   it('失敗しているプロファイルがある録画は行を展開しなくても分かる', async () => {
     renderList([
       sampleRecording({

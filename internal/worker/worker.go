@@ -205,6 +205,7 @@ func NewWorkers(deps *Deps) *river.Workers {
 		MediaDir:   deps.MediaDir,
 		ScratchDir: deps.ScratchDir,
 		FFmpeg:     deps.Encode.FFmpeg,
+		FFprobe:    deps.Encode.FFprobe,
 		Profiles:   deps.Encode,
 		Webhook:    deps.Webhook,
 	})

@@ -1,5 +1,5 @@
 import { useQueryClient, type QueryClient } from '@tanstack/react-query'
-import { useEffect } from 'react'
+import { useCallback, useEffect, useSyncExternalStore } from 'react'
 
 /**
  * operationalRefreshIntervalMs は運用状態（予約・録画・ブレーカー・容量超過）を
@@ -132,6 +132,107 @@ function invalidateGroup(queryClient: QueryClient, group: QueryGroup): void {
   }
 }
 
+type EncodeProgressSnapshot = ReadonlyMap<number, ReadonlyMap<string, number>>
+
+const emptyEncodeProgress = new Map<string, number>()
+let encodeProgressSnapshot: EncodeProgressSnapshot = new Map()
+const encodeProgressListeners = new Set<() => void>()
+const activeEncodeProfiles = new Map<number, Map<string, number>>()
+
+function emitEncodeProgressChange(): void {
+  for (const listener of encodeProgressListeners) listener()
+}
+
+function retainActiveEncodeProgress(recordingId: number): void {
+  const current = encodeProgressSnapshot.get(recordingId)
+  if (current === undefined) return
+  const active = activeEncodeProfiles.get(recordingId)
+  const retained = new Map([...current].filter(([profile]) => (active?.get(profile) ?? 0) > 0))
+  if (retained.size === current.size) return
+  const next = new Map(encodeProgressSnapshot)
+  if (retained.size === 0) next.delete(recordingId)
+  else next.set(recordingId, retained)
+  encodeProgressSnapshot = next
+  emitEncodeProgressChange()
+}
+
+function publishEncodeProgress(recordingId: number, profile: string, progress: number): void {
+  if ((activeEncodeProfiles.get(recordingId)?.get(profile) ?? 0) === 0) return
+  const profiles = new Map(encodeProgressSnapshot.get(recordingId) ?? [])
+  profiles.set(profile, progress)
+  const next = new Map(encodeProgressSnapshot)
+  next.set(recordingId, profiles)
+  encodeProgressSnapshot = next
+  emitEncodeProgressChange()
+}
+
+function clearAllEncodeProgress(): void {
+  if (encodeProgressSnapshot.size === 0) return
+  encodeProgressSnapshot = new Map()
+  emitEncodeProgressChange()
+}
+
+function subscribeEncodeProgress(
+  recordingId: number,
+  runningProfiles: readonly string[],
+  listener: () => void,
+): () => void {
+  encodeProgressListeners.add(listener)
+  const active = activeEncodeProfiles.get(recordingId) ?? new Map<string, number>()
+  activeEncodeProfiles.set(recordingId, active)
+  for (const profile of runningProfiles) active.set(profile, (active.get(profile) ?? 0) + 1)
+  retainActiveEncodeProgress(recordingId)
+
+  return () => {
+    encodeProgressListeners.delete(listener)
+    for (const profile of runningProfiles) {
+      const count = (active.get(profile) ?? 0) - 1
+      if (count > 0) active.set(profile, count)
+      else active.delete(profile)
+    }
+    if (active.size === 0) activeEncodeProfiles.delete(recordingId)
+    retainActiveEncodeProgress(recordingId)
+  }
+}
+
+/** useEncodeProgress は durable 状態が running のプロファイルの揮発進捗を返す。 */
+export function useEncodeProgress(
+  recordingId: number,
+  runningProfiles: readonly string[],
+): ReadonlyMap<string, number> {
+  const subscribe = useCallback(
+    (listener: () => void) => subscribeEncodeProgress(recordingId, runningProfiles, listener),
+    [recordingId, runningProfiles],
+  )
+  const snapshot = useSyncExternalStore(subscribe, () => encodeProgressSnapshot)
+  return snapshot.get(recordingId) ?? emptyEncodeProgress
+}
+
+function receiveEncodeProgress(event: Event): void {
+  if (!(event instanceof MessageEvent) || typeof event.data !== 'string') return
+  try {
+    const value: unknown = JSON.parse(event.data)
+    if (typeof value !== 'object' || value === null) return
+    const progress = value as Record<string, unknown>
+    if (
+      progress.type !== 'encode-progress' ||
+      typeof progress.recordingId !== 'number' ||
+      !Number.isSafeInteger(progress.recordingId) ||
+      typeof progress.profile !== 'string' ||
+      progress.profile === '' ||
+      typeof progress.progress !== 'number' ||
+      !Number.isFinite(progress.progress) ||
+      progress.progress < 0 ||
+      progress.progress > 1
+    ) {
+      return
+    }
+    publishEncodeProgress(progress.recordingId, progress.profile, progress.progress)
+  } catch {
+    // best-effort telemetry: malformed payload is ignored, durable state stays in REST.
+  }
+}
+
 /**
  * useServerEvents は /api/events を購読し、届いたトピックに対応するクエリを
  * invalidate する。加えて、SSE に依存しない 2 つのレベル経路を張る。
@@ -149,8 +250,8 @@ export function useServerEvents() {
 
   useEffect(() => {
     const source = new EventSource('/api/events')
-    const listeners: { type: string; handler: () => void }[] = []
-    const listen = (type: string, handler: () => void) => {
+    const listeners: { type: string; handler: (event: Event) => void }[] = []
+    const listen = (type: string, handler: (event: Event) => void) => {
       source.addEventListener(type, handler)
       listeners.push({ type, handler })
     }
@@ -161,6 +262,9 @@ export function useServerEvents() {
       if (group.topic === null) continue
       listen(group.topic, () => invalidateGroup(queryClient, group))
     }
+    // encode-progress だけは次の値で上書きされる揮発テレメトリなので、REST を
+    // invalidate せず payload を直接表示する。
+    listen('encode-progress', receiveEncodeProgress)
 
     // EventSource は切断されると自分で繋ぎ直すが、切断中に飛んだ通知は二度と
     // 来ない。error（= 切断ないし失敗）を見た後の open でだけ全部取り直す。
@@ -168,6 +272,7 @@ export function useServerEvents() {
     let disconnected = false
     listen('error', () => {
       disconnected = true
+      clearAllEncodeProgress()
     })
     listen('open', () => {
       if (!disconnected) return
@@ -178,6 +283,7 @@ export function useServerEvents() {
     return () => {
       for (const { type, handler } of listeners) source.removeEventListener(type, handler)
       source.close()
+      clearAllEncodeProgress()
     }
   }, [queryClient])
 

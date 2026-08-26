@@ -21,12 +21,17 @@ import type { EncodeJobStatusState } from '@/api/generated'
  * 戻らない。試行行は成功するまで消えないので `queued` は初回試行の前だけ）。
  * 詳細は internal/db/migrations/00041_recording_encode_attempts.sql 参照。
  */
-export function encodeJobStatusLabel(state: EncodeJobStatusState): string {
+export function encodeJobStatusLabel(
+  state: EncodeJobStatusState,
+  progress?: number,
+): string {
   switch (state) {
     case 'queued':
       return 'エンコード待ち'
     case 'running':
-      return 'エンコード中'
+      return progress === undefined
+        ? 'エンコード中'
+        : `エンコード中 ${Math.floor(Math.max(0, Math.min(progress, 1)) * 100)}%`
     case 'failed':
       return 'エンコード失敗'
   }

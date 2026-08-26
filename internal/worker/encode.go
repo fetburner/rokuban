@@ -75,11 +75,25 @@ type EncodeWorker struct {
 	MediaDir   string
 	ScratchDir string
 	FFmpeg     string
+	FFprobe    string
 	// Profiles は名前解決用。config.EncodeConfig.Profile を使う。
 	Profiles config.EncodeConfig
 
 	// Webhook は録画ライフサイクル通知用クライアント（M3-11）。nil 可。
 	Webhook *webhook.Client
+}
+
+// probeEncodeDuration は進捗の分母を timeout 以内に取得する。
+// 進捗は best-effort の観測なので、ffprobe の停止でエンコード開始を塞がない。
+func probeEncodeDuration(
+	ctx context.Context,
+	ffprobe, inputPath string,
+	timeout time.Duration,
+	run func(context.Context, string, ...string) ([]byte, error),
+) (time.Duration, error) {
+	probeCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	return probeDuration(probeCtx, ffprobe, inputPath, run)
 }
 
 // Timeout は River の総時間タイムアウトを無効化する。
@@ -185,6 +199,29 @@ func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[EncodeJobAr
 		return fmt.Errorf("original file %s: %w", inputPath, err)
 	}
 
+	duration, probeErr := probeEncodeDuration(
+		ctx, w.FFprobe, inputPath, encodeDurationProbeTimeout, commandOutput,
+	)
+	if probeErr != nil {
+		log.Warn("encode: probing input duration failed; progress percentage disabled", "err", probeErr)
+	}
+	var reportProgress func(time.Duration)
+	if duration > 0 {
+		reporter := encodeProgressReporter{
+			recordingID: args.RecordingID,
+			profile:     args.Profile,
+			duration:    duration,
+			interval:    encodeProgressInterval,
+			notify: func(ctx context.Context, payload string) error {
+				return sqlcgen.New(w.Pool).NotifyTopic(ctx, payload)
+			},
+			log: log,
+		}
+		var stopProgress context.CancelFunc
+		reportProgress, stopProgress = reporter.start(ctx)
+		defer stopProgress()
+	}
+
 	relPath, err := EncodedRelPath(orig.RelPath, profile.Name, profile.Container)
 	if err != nil {
 		return fmt.Errorf("building encoded rel_path: %w", err)
@@ -232,7 +269,7 @@ func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[EncodeJobAr
 	progressDone := make(chan struct{})
 	go func() {
 		defer close(progressDone)
-		parseFFmpegProgress(stdout, log)
+		parseFFmpegProgress(stdout, log, reportProgress)
 	}()
 
 	waitErr := cmd.Wait()
@@ -579,7 +616,7 @@ func pathBaseSlash(p string) string {
 //
 // out_time_ms / out_time_us をログに出す。単位表記はキー名に埋め込まれているので
 // バージョンで単位が変わってもキーが変われば追随できる（stderr の human 表示は見ない）。
-func parseFFmpegProgress(r io.Reader, log *slog.Logger) {
+func parseFFmpegProgress(r io.Reader, log *slog.Logger, onProgress func(time.Duration)) {
 	sc := bufio.NewScanner(r)
 	// 進捗行は短い。万一長い行があっても落とさないよう余裕を持たせる。
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -594,16 +631,18 @@ func parseFFmpegProgress(r io.Reader, log *slog.Logger) {
 		}
 		switch key {
 		case "out_time_ms":
-			// ffmpeg の out_time_ms は実際にはマイクロ秒単位の歴史的な誤名、
-			// という話もあるが、キー名をそのまま記録する（計算に使わない）。
+			// ffmpeg の out_time_ms は歴史的な誤名で、値はマイクロ秒単位。
 			if n, err := strconv.ParseInt(val, 10, 64); err == nil {
-				lastOutTimeMs = n
+				lastOutTimeMs = n / 1000
 			}
 		case "out_time_us":
 			if n, err := strconv.ParseInt(val, 10, 64); err == nil {
 				lastOutTimeMs = n / 1000
 			}
 		case "progress":
+			if onProgress != nil {
+				onProgress(time.Duration(lastOutTimeMs) * time.Millisecond)
+			}
 			// continue / end。end または 5 秒間隔でログ。
 			now := time.Now()
 			if val == "end" || lastLog.IsZero() || now.Sub(lastLog) >= 5*time.Second {
