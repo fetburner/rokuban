@@ -1321,6 +1321,145 @@ export function useHealthz<TData = Awaited<ReturnType<typeof healthz>>, TError =
 
 
 
+export type readyzResponse200 = {
+  data: HealthResponse
+  status: 200
+}
+
+export type readyzResponse503 = {
+  data: HealthResponse
+  status: 503
+}
+
+export type readyzResponseSuccess = (readyzResponse200) & {
+  headers: Headers;
+};
+export type readyzResponseError = (readyzResponse503) & {
+  headers: Headers;
+};
+
+export type readyzResponse = (readyzResponseSuccess | readyzResponseError)
+
+export const getReadyzUrl = () => {
+
+
+
+
+  return `/readyz`
+}
+
+/**
+ * **ロードバランサ（k8s の Service）向けの readiness 専用**。DB への
+ * ping が通れば 200、通らなければ 503 を返す。
+ *
+ * `/healthz`（liveness）とは目的が違うので分けている。liveness に依存
+ * チェックを入れると DB の瞬断で全 Pod が同時に再起動する（回復を待つ
+ * べき状況で、回復を最も妨げる挙動）。一方 readiness で DB を見ないと、
+ * DB に繋がっていない Pod に Service がトラフィックを振る窓が開く。
+ *
+ * **見るのは DB への ping だけで、mirakc への到達性は見ない**（不変条件
+ * 1「api ロールは mirakc に問い合わせない」。ハイブリッド構成では
+ * クラウド側 api から mirakc に到達できないのが正常状態）。
+ *
+ * `/healthz` / `/metrics` と同じく Host allowlist を免除する
+ * （probe は Pod IP で叩くので allowlist に載せようがない）。
+ *
+ * **`/metrics` と違ってこの spec に載せる**のは、JSON を返す
+ * リクエスト/レスポンスの契約であり、`/healthz` と同じ形だから
+ * （`/metrics` は Prometheus の text exposition format なので載せない）。
+ * フロントから呼ぶ面ではないので、生成クライアントの readyz は使われない。
+ * @summary Readiness check (DB ping)
+ */
+export const readyz = async ( options?: RequestInit): Promise<readyzResponse> => {
+
+  return customInstance<readyzResponse>(getReadyzUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getReadyzQueryKey = () => {
+    return [
+    `/readyz`
+    ] as const;
+    }
+
+
+export const getReadyzQueryOptions = <TData = Awaited<ReturnType<typeof readyz>>, TError = HealthResponse>( options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof readyz>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getReadyzQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof readyz>>> = ({ signal }) => readyz({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof readyz>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type ReadyzQueryResult = NonNullable<Awaited<ReturnType<typeof readyz>>>
+export type ReadyzQueryError = HealthResponse
+
+
+export function useReadyz<TData = Awaited<ReturnType<typeof readyz>>, TError = HealthResponse>(
+  options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof readyz>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof readyz>>,
+          TError,
+          Awaited<ReturnType<typeof readyz>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useReadyz<TData = Awaited<ReturnType<typeof readyz>>, TError = HealthResponse>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof readyz>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof readyz>>,
+          TError,
+          Awaited<ReturnType<typeof readyz>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useReadyz<TData = Awaited<ReturnType<typeof readyz>>, TError = HealthResponse>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof readyz>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary Readiness check (DB ping)
+ */
+
+export function useReadyz<TData = Awaited<ReturnType<typeof readyz>>, TError = HealthResponse>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof readyz>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getReadyzQueryOptions(options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
 export type getVersionResponse200 = {
   data: VersionResponse
   status: 200

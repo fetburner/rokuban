@@ -17,6 +17,44 @@ paths:
               schema:
                 $ref: "#/components/schemas/HealthResponse"
 
+  /readyz:
+    get:
+      operationId: readyz
+      summary: Readiness check (DB ping)
+      description: |
+        **ロードバランサ（k8s の Service）向けの readiness 専用**。DB への
+        ping が通れば 200、通らなければ 503 を返す。
+
+        `/healthz`（liveness）とは目的が違うので分けている。liveness に依存
+        チェックを入れると DB の瞬断で全 Pod が同時に再起動する（回復を待つ
+        べき状況で、回復を最も妨げる挙動）。一方 readiness で DB を見ないと、
+        DB に繋がっていない Pod に Service がトラフィックを振る窓が開く。
+
+        **見るのは DB への ping だけで、mirakc への到達性は見ない**（不変条件
+        1「api ロールは mirakc に問い合わせない」。ハイブリッド構成では
+        クラウド側 api から mirakc に到達できないのが正常状態）。
+
+        `/healthz` / `/metrics` と同じく Host allowlist を免除する
+        （probe は Pod IP で叩くので allowlist に載せようがない）。
+
+        **`/metrics` と違ってこの spec に載せる**のは、JSON を返す
+        リクエスト/レスポンスの契約であり、`/healthz` と同じ形だから
+        （`/metrics` は Prometheus の text exposition format なので載せない）。
+        フロントから呼ぶ面ではないので、生成クライアントの readyz は使われない。
+      responses:
+        "200":
+          description: Ready
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+        "503":
+          description: Not ready (DB ping failed)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+
   /api/version:
     get:
       operationId: getVersion

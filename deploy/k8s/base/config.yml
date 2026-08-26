@@ -1,0 +1,72 @@
+# 全 Pod が共有する config 本体。kustomize の configMapGenerator が ConfigMap
+# `rokuban-config` にする（ハッシュ suffix が付くので、この中身を変えると Pod
+# テンプレートが変わり、rollout が起きる。rokuban は config を起動時に 1 回しか
+# 読まないので、これが無いと設定変更が黙って効かない）。
+#
+# **Pod ごとに違うのは argv（`--roles` と `--sites`）だけ。** ここを Pod 別の
+# 設定にすると、サイトを増やすたびに ConfigMap が増える。
+#
+# **env（`${VAR}`）で渡すのは機微情報だけ。** それ以外は素の値を書き、環境ごとの
+# 差は overlay の patch で当てる（理由は docs/operations.md §5「マニフェストの
+# 配布形式」。`${VAR}` を増やすと k8s の service links が注入する env と名前が
+# 衝突しうる）。
+#
+# キーの網羅は config.example.yml が権威。
+
+server:
+  listen: ":40773"
+  # **base では締めて出荷し、緩めるのは overlay の仕事にする。** 空にすると Host
+  # 検証（DNS rebinding 対策）が無効になる --- アプリ内に認証が無いので、これが
+  # 唯一の防壁である（docs/api.md §認証）。base を空で出すと、Ingress を足す
+  # overlay 側でここを patch する義理が無いまま外に出てしまう。
+  # 実際のホスト名は overlay で patch する。
+  # /healthz /readyz /metrics は設定に関わらず免除される。
+  allowed_hosts: [rokuban.local]
+
+db:
+  host: postgres
+  port: 5432
+  user: rokuban
+  database: rokuban
+  # クラスタ内の Postgres に平文で繋ぐ前提。**マネージド / クラウドの Postgres に
+  # 向けるときは overlay で `require` にする**（allowed_hosts と違ってここを base で
+  # 締めると、TLS を持たない開発用 Postgres に繋げなくなり overlay 側の patch が
+  # 必須になる。締めるべき先が構成で変わるので base は緩い側に置く）。
+  sslmode: disable
+  # 唯一の機微情報。Secret → envFrom で入る。
+  #
+  # **折り畳みブロックスカラー（`>-`）で受ける。** 展開は YAML パースの前に走るので、
+  # 展開後の文字列が YAML の構文として解釈されうる。ブロックスカラーの中身は
+  # 引用符・記号を再解釈しないので、`'` `"` `\` `*abc` `{abc}` `a: b` `#` の
+  # いずれを含むパスワードでも通る（実測。クォートで囲む形は単一引用符なら `'`、
+  # 二重引用符なら `"` と `\` で全 Pod が起動しなくなる）。
+  #
+  # **制約は 2 つ。**
+  #   - 先頭・末尾の空白は落ちる（ブロックスカラーの仕様）
+  #   - **改行を含むパスワードは使えない。** 展開は生テキスト置換なので、値の中の
+  #     改行がブロックスカラーを終端する。実測: `abc\ndef` は
+  #     `parsing config: [56:1] non-map value is specified` で全 Pod が起動せず、
+  #     `abc\nlive:\n  enabled: true` は **live 節として読まれてしまう**
+  #     （config.yml に無い既知のトップレベルキーは strict でも弾かれない）。
+  #     末尾の改行 1 つだけは落ちるので安全（`--from-file` 運用向け）
+  # 判定は TestConfigMapConfigLoads / TestConfigMapPasswordWhitespaceIsTrimmed /
+  # TestConfigMapPasswordWithNewlineIsRejected。
+  password: >-
+    ${POSTGRES_PASSWORD}
+
+# 単一サイト構成。サイトを増やすときはここを `mirakcs:` の配列にして、site 束縛
+# Pod のセットを 1 組足す（`--sites <site>`）。api は site に束縛されないので、
+# api Deployment 側は書き換えなくてよい。
+mirakc:
+  url: http://mirakc:40772
+
+storage:
+  # api ロールはファイルシステムに依存しない（不変条件 1）ので、api Deployment に
+  # PVC は挿していない。media_dir を実際に読み書きする役（worker / streamer /
+  # cleanup）を足すときに PVC を足す。
+  media_dir: /mnt/media
+  scratch_dir: /var/tmp/rokuban
+
+log:
+  level: info
+  format: json

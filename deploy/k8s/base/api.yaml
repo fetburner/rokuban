@@ -1,0 +1,149 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rokuban-api
+  labels:
+    app.kubernetes.io/name: rokuban
+    app.kubernetes.io/component: api
+spec:
+  # api は中央（site 非依存）で水平にスケールする役。レベルトリガー設計により
+  # api は desired state を DB に書くだけなので、レプリカ間で調整するものが無い。
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rokuban
+      app.kubernetes.io/component: api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rokuban
+        app.kubernetes.io/component: api
+    spec:
+      # **同一 namespace の Service から env を注入させない**（service links）。
+      # rokuban の config は `${VAR}` を自分で展開するので、注入された env と
+      # 名前が衝突すると config のパースで全 Pod が落ちる（実測の壊れ方は
+      # docs/operations.md §5 と TestPodsDisableServiceLinks）。既定が true なので
+      # `${VAR}` を足した瞬間に再発しうる。DNS で引ける以上この注入に用は無い。
+      enableServiceLinks: false
+      # api は k8s API を叩かないので、既定 ServiceAccount のトークンを
+      # 配る理由が無い（`readOnlyRootFilesystem` / `capabilities: drop [ALL]` と
+      # 同じ系列の締め）。
+      automountServiceAccountToken: false
+      # SIGTERM を受けると `http.Server.Shutdown`（10s 上限。
+      # cmd/rokuban/server.go）で進行中のリクエストを捌いてから終わる。
+      # その 10s + preStop の 5s を包める値にしておく。
+      terminationGracePeriodSeconds: 30
+      # レプリカを別ノードに散らす。**ScheduleAnyway（soft）にする** ---
+      # DoNotSchedule だと 1 ノードの kind や単一ノードのエッジで 2 本目が
+      # 永久に Pending になる。
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: rokuban
+              app.kubernetes.io/component: api
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: api
+          # api ロールは ffmpeg を要求しない（不変条件 4）ので公式イメージのまま。
+          image: ghcr.io/fetburner/rokuban:latest
+          # **Pod ごとに違うのは argv だけ**（config は全 Pod 共通の ConfigMap）。
+          #
+          # `--sites=`（明示的な空）は「どのサイトにも束縛しない中央プロセス」。
+          # api は mirakc に問い合わせない（不変条件 1）ので束縛が不要で、これを
+          # 省くとレジストリに 2 サイト目を足した瞬間に
+          # 「--sites is required」で起動しなくなる。空を明示しておけば、
+          # サイトを増やすときにこの Deployment は書き換え不要になる。
+          args: ["server", "--roles", "api", "--sites=", "--config", "/etc/rokuban/config.yml"]
+          ports:
+            - name: http
+              containerPort: 40773
+          envFrom:
+            - secretRef:
+                name: rokuban-secrets
+          # readiness は DB を見る（/readyz）。Service の後ろに入れる判断なので、
+          # DB に繋がっていない Pod にトラフィックを振らせないため。
+          # `timeoutSeconds` はハンドラ側の上限（api.readyzTimeout = 2s）より長く
+          # する。同値以下だと kubelet が先に諦めるので、ハンドラが 503 として
+          # 答える経路（DB のハングを readiness の失敗に落とす）が一度も通らない。
+          #
+          # `failureThreshold` を 3 ではなく 6（6 × 5s = 30s）にしているのは、
+          # **プール飽和を全断に変えないため**。`pgxpool.Pool.Ping` はコネクションを
+          # 1 本取るので、全コネクションが長いクエリで埋まっている間は 503 に
+          # なりうる（未測定。`Acquire` が待つことからの帰結）。閾値が低いと
+          # 「DB が遅い」が「全レプリカが同時に Endpoints から抜ける = 全断」に化ける。
+          #
+          # **30s という値は測っていないので、テストは固定していない**（固定するのは
+          # 「1 回の失敗で外さない」= `failureThreshold >= 2` だけ。
+          # TestReadinessDoesNotEvictOnASingleFailure）。実測できる手段が立ったら
+          # そこで詰める。
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            timeoutSeconds: 4
+            failureThreshold: 6
+          # liveness は依存を見ない（/healthz）。ここで DB を見ると DB の瞬断で
+          # 全 Pod が同時に再起動する（docs/operations.md §5「healthz と readyz」）。
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          # **Endpoints からの離脱を待つための待機。** SIGTERM とほぼ同時に
+          # Endpoints からの削除が始まるが、kube-proxy / Ingress への伝播は
+          # プロセスの終了と競争する。伝播前にリスナが閉じると、その間の要求が
+          # connection refused になる（k8s では既知の race。ここでの緩和は
+          # 未測定）。sleep はイメージに入っている（`debian:bookworm-slim`）。
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "5"]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/rokuban
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            # api はファイルシステムに依存しない（不変条件 1）ので書き込み先が要らない。
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 96Mi
+            limits:
+              memory: 512Mi
+      volumes:
+        - name: config
+          configMap:
+            name: rokuban-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rokuban-api
+  labels:
+    app.kubernetes.io/name: rokuban
+    app.kubernetes.io/component: api
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: rokuban
+    app.kubernetes.io/component: api
+  ports:
+    - name: http
+      port: 40773
+      targetPort: http

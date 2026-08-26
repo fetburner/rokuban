@@ -14,14 +14,18 @@ var alwaysAllowedHosts = []string{"localhost", "127.0.0.1", "::1", "[::1]"}
 
 // infraPaths は Host 検証を免除するパス。
 //
-// ヘルスチェックと metrics は監視基盤が Pod IP やサービス名で叩くため、
-// allowlist に載せようがない（IP は動的）。allowlist の内側に置くと
-// k8s の liveness probe と Prometheus の scrape が 400 で落ちる。
+// ヘルスチェック（liveness の `/healthz` と readiness の `/readyz`）と metrics は
+// 監視基盤が Pod IP やサービス名で叩くため、allowlist に載せようがない
+// （IP は動的）。allowlist の内側に置くと k8s の liveness / readiness probe と
+// Prometheus の scrape が 400 で落ちる。readiness が 400 で落ちると Pod は
+// 永久に Service の後ろに入らないので、`/readyz` を免除し忘れると Deployment が
+// そもそも通らない。
 //
 // DNS rebinding が守ろうとしているのはブラウザ経由でデータを読み書きされる
 // ことなので、機密を含まないインフラ用エンドポイントを免除しても防壁は薄くならない。
 var infraPaths = map[string]bool{
 	"/healthz": true,
+	"/readyz":  true,
 	"/metrics": true,
 }
 

@@ -1,0 +1,39 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# 配布形式は素の kustomize（Helm chart は持たない）。理由は deploy/k8s/README.md。
+#
+# ここに置くのは「中央 1 式」のうち api だけ。notifier / watcher / streamer /
+# worker の ScaledJob / CronJob 群 / PVC / Prometheus は、受け入れを機械判定する
+# ハーネスが立ってから足す。判定手段が無いまま形を焼き込まないため。
+
+# **Secret は出荷しない**（`secret.example.yaml` は resources に入れない）。
+# プレースホルダを apply すると、外で作った本物のパスワードを上書きしてしまう。
+# 供給の仕方は secret.example.yaml のコメント。
+resources:
+  - migrate-job.yaml
+  - api.yaml
+  - pdb.yaml
+
+# **config 本体は generator で作る（素の ConfigMap にしない）。**
+# 名前に内容ハッシュが付くことが「config を変えたら rollout が起きる」の唯一の
+# 引き金になる（rokuban は config を起動時に 1 回しか読まない）。判断は
+# docs/operations.md §5「マニフェストの配布形式」、手順の副作用（Job の spec が
+# immutable なので delete が要る）は deploy/k8s/README.md。
+configMapGenerator:
+  - name: rokuban-config
+    files:
+      - config.yml
+    # `options: {disableNameSuffixHash: true}` を足さないこと。上記のとおり
+    # ハッシュが rollout の唯一の引き金なので、消すと設定変更が黙って効かなくなる
+    # （判定は TestGeneratorsKeepTheNameSuffixHash）。
+
+# overlay からロールごとに image を差し替えられるようにするための宣言。
+#
+# **ffmpeg を要する役（worker / ライブ視聴を使う streamer）は、この名前ではなく
+# 別の image 名を書く**（公式イメージは ffmpeg を含まない。Dockerfile.full で
+# セルフビルドしたものを指す）。kustomize の `images:` は image 名ごとの置換なので、
+# 名前を分けておかないと「ffmpeg 入りに差し替えたら api も一緒に変わる」になる。
+images:
+  - name: ghcr.io/fetburner/rokuban
+    newTag: latest

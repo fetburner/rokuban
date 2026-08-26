@@ -1,0 +1,24 @@
+# api を `replicas: 2` にしても、**PDB が無ければ `kubectl drain` は 2 本とも
+# 同時に退去させる**（PDB が無い Pod は無条件に evict できる）。ノード 1 台の
+# 退避・アップグレードで全断するので、水平にスケールさせた意味が消える。
+#
+# `minAvailable: 1` にしてあるので、drain は 1 本目を evict した後、2 本目が
+# Ready になるまでブロックする（実測: 1 ノードの kind で 2 本目の eviction が
+# `Cannot evict pod as it would violate the pod's disruption budget` になる）。
+#
+# **`maxUnavailable: 1` ではなく `minAvailable: 1` にする。** 前者は replicas を
+# 1 に落とした構成で「1 本しかないものを退去してよい」になり、可用性の主張が
+# レプリカ数に依存して静かに消える。
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: rokuban-api
+  labels:
+    app.kubernetes.io/name: rokuban
+    app.kubernetes.io/component: api
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rokuban
+      app.kubernetes.io/component: api

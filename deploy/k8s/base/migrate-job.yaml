@@ -1,0 +1,67 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: rokuban-migrate
+  labels:
+    app.kubernetes.io/name: rokuban
+    app.kubernetes.io/component: migrate
+spec:
+  # マイグレーションは Pod のレプリカ数に関係なく 1 回だけ走らせる
+  # （docker-compose.yml の migrate サービスと同じ役）。
+  backoffLimit: 3
+  # 完走した Job を自分で片付ける。Job の spec は immutable なので、残っていると
+  # 次のリリースで同名を apply できない（`kubectl apply` が field is immutable で
+  # 落ちる）。TTL の窓の内側で再 apply するときは delete してからにする
+  # （手順は deploy/k8s/README.md）。
+  #
+  # **TTL は失敗した Job にも効く**（Complete / Failed の両方が対象）。短くすると
+  # マイグレーション失敗の証拠（Job と Pod のログ）が消えて、api のエラーだけが
+  # 残る。1 時間は「深夜に失敗しても朝ログが残っている」側に振った値。
+  ttlSecondsAfterFinished: 3600
+  # ハングしたマイグレーション（DDL がロック待ちで止まる等）は `backoffLimit` では
+  # 止まらない --- 失敗も完了もしないので再試行の数に乗らない。10 分で打ち切る。
+  activeDeadlineSeconds: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rokuban
+        app.kubernetes.io/component: migrate
+    spec:
+      # Service 由来の env 注入を止める / SA トークンを配らない
+      # （理由は api.yaml の同じキー）。
+      enableServiceLinks: false
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          # ffmpeg を要求しない役なので公式イメージで足りる（不変条件 4）。
+          image: ghcr.io/fetburner/rokuban:latest
+          args: ["migrate", "up", "--config", "/etc/rokuban/config.yml"]
+          envFrom:
+            - secretRef:
+                name: rokuban-secrets
+          volumeMounts:
+            - name: config
+              mountPath: /etc/rokuban
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+      volumes:
+        - name: config
+          configMap:
+            name: rokuban-config
