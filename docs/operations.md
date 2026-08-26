@@ -10,7 +10,7 @@ Rokuban の監視・アラート・DB 運用・ストレージ運用・k8s 運�
 | §2 | **アラート設計**: scrambled / エッジディスク残量 / 大量削除サーキットブレーカー / 開始遅延 | [operations/alerts.md](operations/alerts.md) |
 | §3 | **DB 運用**: 輻輳時の隔離（プール上限 / statement_timeout）/ pooler 越しに置けるロール / autovacuum / datadir と scratch の分離 / バックアップ | [operations/database.md](operations/database.md) |
 | §4 | **ストレージ運用**: 録画バッファのサイジング / アーカイブの速度要件 / disaster recovery（catalog + rescue） | [operations/storage.md](operations/storage.md) |
-| §5 | **k8s 運用**: ロールとキュー購読の関係 / キューの site 修飾と置き場所 / **streamer のスケール** / KEDA ScaledJob / シングルトンロールのリーダー選出 / healthz | [operations/k8s.md](operations/k8s.md) |
+| §5 | **k8s 運用**: ロールとキュー購読の関係 / キューの site 修飾と置き場所 / **streamer のスケール** / KEDA ScaledJob / シングルトンロールのリーダー選出 / **マニフェストの配布形式（kustomize）** / healthz と readyz | [operations/k8s.md](operations/k8s.md) |
 
 読む順の目安:
 

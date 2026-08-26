@@ -156,6 +156,47 @@ jobs:
       - run: npm ci
       - run: npm run docs:lint
 
+  # deploy/k8s/ のマニフェスト検査（不変条件 8 はマニフェストにも適用する）。
+  #
+  # ここで見るのは「YAML として組めるか」（kustomize build）と「各オブジェクトが
+  # k8s のスキーマに合うか」（kubeconform）の 2 つだけ。**オブジェクト間の参照と
+  # ConfigMap の中身はどちらも見ない** --- 存在しない ConfigMap を envFrom に書いても
+  # 両方緑になる（実測。deploy/k8s/manifests_test.go の冒頭コメント）。
+  # そちらは go test ./deploy/k8s/（test ジョブ）が見る。
+  #
+  # ツールは版を固定する。runner イメージの同梱物に依存すると、イメージ更新で
+  # 黙って挙動が変わる（kustomize は runner に入っているが版が動く）。
+  manifests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install kustomize and kubeconform
+        run: |
+          curl -sSfL https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.8.1/kustomize_v5.8.1_linux_amd64.tar.gz \
+            | sudo tar xz -C /usr/local/bin kustomize
+          curl -sSfL https://github.com/yannh/kubeconform/releases/download/v0.8.0/kubeconform-linux-amd64.tar.gz \
+            | sudo tar xz -C /usr/local/bin kubeconform
+      # **build と検証をパイプで繋がない。** `run:` の既定シェルは `bash -e` で
+      # pipefail が付かないため、パイプの終了コードは kubeconform のものになる。
+      # kubeconform は標準入力が空でも exit 0 を返すので、kustomize build が
+      # エラーで何も出さなくてもジョブは緑になる（実測:
+      # `bash -e -c 'kustomize build /nonexistent | kubeconform -strict -summary -'`
+      # は「0 resource found parsing stdin」で exit 0）。
+      - name: Build manifests
+        run: |
+          kustomize build deploy/k8s/base > /tmp/base.yaml
+          kustomize build deploy/k8s/overlays/kind > /tmp/overlay-kind.yaml
+      # **スキーマの版も固定する。** 既定は master なので、リポジトリ側の変更ゼロで
+      # 上流 k8s のリリースだけで検査内容が動く。値は docs/runbook/k8s.md で
+      # 実機確認した版のマイナー（実機は v1.36.1。スキーマはマイナー単位で公開
+      # されている）。上げるときは両方を同じ PR で動かす。
+      # **CRD（KEDA の ScaledJob 等）はこの検査の外。** 今は CRD を使っていないので
+      # `-strict` のまま置く。CRD を足すときは `-schema-location` でスキーマを
+      # 渡すか `-ignore-missing-schemas` を付ける決定が要る（後者は未知の kind を
+      # 黙って飛ばすので、typo も一緒に飛ばす）。
+      - name: Validate against the Kubernetes schema
+        run: kubeconform -strict -summary -kubernetes-version 1.36.0 /tmp/base.yaml /tmp/overlay-kind.yaml
+
   # 全ブランチの push で公式イメージ（ffmpeg 非同梱）を SHA タグで ghcr へ公開する。
   # arm64 は QEMU を避けてネイティブ runner でビルドし、arch ごとに SHA サフィックス付きで
   # push、publish-manifest でまとめる。タグ付けは docker/metadata-action に委ねる。

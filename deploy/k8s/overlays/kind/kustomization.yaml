@@ -1,0 +1,31 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# kind での動作確認用（手順は docs/runbook/k8s.md）。
+#
+# **base の `images:` を実際に使う唯一の利用者。** ここを使わずに
+# `kustomize build base | sed 's|ghcr.io/...|...|'` で済ませると、overlay から
+# image を差し替えられるという決定が一度も通らないまま残る。
+#
+# `:latest` 以外のタグにしているのは、`latest` だと imagePullPolicy の既定が
+# Always になり、`kind load` で入れたローカルイメージではなく ghcr の公式
+# イメージを引いてしまうため。
+
+resources:
+  - ../../base
+
+images:
+  - name: ghcr.io/fetburner/rokuban
+    newName: rokuban
+    newTag: kind-test
+
+# 使い捨てのパスワード。base は Secret を出荷しないので、ここが唯一の供給元。
+# 実運用の overlay ではここに平文を書かない（`envs:` + .gitignore / SOPS /
+# sealed-secrets / External Secrets Operator）。
+#
+# generator なので名前にハッシュが付く。値を変えれば apply でそのまま rollout が
+# 起きる（外で `kubectl create secret` する形だと名前が変わらないので起きない）。
+secretGenerator:
+  - name: rokuban-secrets
+    literals:
+      - POSTGRES_PASSWORD=kindtest

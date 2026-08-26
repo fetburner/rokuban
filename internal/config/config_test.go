@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -1570,6 +1571,96 @@ func TestDBConfigDSN_QuotesValues(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			if got := tt.cfg.DSN(); got != tt.want {
 				t.Errorf("DSN() =\n  %s\nwant\n  %s", got, tt.want)
+			}
+		})
+	}
+}
+
+// 機微情報を `${VAR}` で受けるとき、**どの囲み方が値の中身に耐えるか**。
+//
+// 展開（envsubst）は YAML パースの前に生テキスト置換で走るので、展開後の文字列が
+// YAML の構文として解釈されうる。パスワードのような「中身を選べない値」を config に
+// 通す構成（k8s の ConfigMap + Secret。deploy/k8s/base/config.yml）は、この表の
+// どこに乗るかで壊れ方が決まる。
+//
+// 実測の要点:
+//   - 無クォート: `*` `{` で始まる値・`: ` を含む値でパースエラー
+//   - 単一引用符: `'` を含む値でパースエラー
+//   - 二重引用符: `"` と `\` を含む値でパースエラー
+//   - 折り畳みブロックスカラー（`>-`）: 記号はすべて通る。前後の空白は落ち、
+//     値の中の改行は構造を壊す（または別のキーとして読まれる）
+func TestSecretExpansionQuotingForms(t *testing.T) {
+	const tmpl = `
+db:
+  host: localhost
+  user: rokuban
+  database: rokuban
+  password: %s
+mirakc:
+  url: http://mirakc:40772
+storage:
+  media_dir: /mnt/media
+`
+	forms := map[string]string{
+		"bare":   "${POSTGRES_PASSWORD}",
+		"single": "'${POSTGRES_PASSWORD}'",
+		"double": `"${POSTGRES_PASSWORD}"`,
+		"folded": ">-\n    ${POSTGRES_PASSWORD}",
+	}
+	// 各形式で「通らない」パスワード。ここに挙げた値はパースエラーになるか、
+	// 別の値として読まれる（どちらも「運べない」）。
+	broken := map[string][]string{
+		"bare":   {"*abc", "{abc}", "a: b"},
+		"single": {"pa'ss"},
+		"double": {`pa"ss`, `pa\ss`},
+		"folded": {},
+	}
+	// どの形式でも通ってほしい値。
+	safe := []string{"s3cret", "p@ss#word", "pa=ss", "12345678"}
+
+	for form, placeholder := range forms {
+		t.Run(form, func(t *testing.T) {
+			path := writeConfig(t, fmt.Sprintf(tmpl, placeholder))
+
+			for _, pw := range safe {
+				t.Setenv("POSTGRES_PASSWORD", pw)
+				cfg, err := Load(path)
+				if err != nil {
+					t.Errorf("Load with %q = %v, want it to load", pw, err)
+					continue
+				}
+				if cfg.DB.Password != pw {
+					t.Errorf("db.password = %q, want %q", cfg.DB.Password, pw)
+				}
+			}
+
+			for _, pw := range broken[form] {
+				t.Setenv("POSTGRES_PASSWORD", pw)
+				cfg, err := Load(path)
+				if err == nil && cfg.DB.Password == pw {
+					t.Errorf("Load with %q succeeded; this form is documented as unable to carry it", pw)
+				}
+			}
+
+			if form != "folded" {
+				return
+			}
+			// 折り畳みブロックスカラーだけの性質（deploy/k8s/base/config.yml が
+			// この形を選んだ根拠）。記号は通り、空白は落ち、改行は運べない。
+			for _, pw := range []string{"*abc", "{abc}", "a: b", "pa'ss", `pa"ss`, `pa\ss`} {
+				t.Setenv("POSTGRES_PASSWORD", pw)
+				cfg, err := Load(path)
+				if err != nil || cfg.DB.Password != pw {
+					t.Errorf("folded form failed to carry %q: err=%v", pw, err)
+				}
+			}
+			t.Setenv("POSTGRES_PASSWORD", " padded ")
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatalf("Load with a padded password: %v", err)
+			}
+			if cfg.DB.Password != "padded" {
+				t.Errorf("db.password = %q, want %q (前後の空白は落ちる)", cfg.DB.Password, "padded")
 			}
 		})
 	}

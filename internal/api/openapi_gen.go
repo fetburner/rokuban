@@ -1681,6 +1681,9 @@ type ServerInterface interface {
 	// Healthz Health check
 	// (GET /healthz)
 	Healthz(w http.ResponseWriter, r *http.Request)
+	// Readyz Readiness check (DB ping)
+	// (GET /readyz)
+	Readyz(w http.ResponseWriter, r *http.Request)
 }
 
 // Unimplemented server implementation that returns http.StatusNotImplemented for each endpoint.
@@ -1882,6 +1885,12 @@ func (_ Unimplemented) GetVersion(w http.ResponseWriter, r *http.Request) {
 // Healthz Health check
 // (GET /healthz)
 func (_ Unimplemented) Healthz(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Readyz Readiness check (DB ping)
+// (GET /readyz)
+func (_ Unimplemented) Readyz(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -2981,6 +2990,20 @@ func (siw *ServerInterfaceWrapper) Healthz(w http.ResponseWriter, r *http.Reques
 	handler.ServeHTTP(w, r)
 }
 
+// Readyz operation middleware
+func (siw *ServerInterfaceWrapper) Readyz(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.Readyz(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 type UnescapedCookieParamError struct {
 	ParamName string
 	Err       error
@@ -3096,6 +3119,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/healthz", wrapper.Healthz)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/readyz", wrapper.Readyz)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/api/version", wrapper.GetVersion)
@@ -4294,6 +4320,41 @@ func (response Healthz200JSONResponse) VisitHealthzResponse(w http.ResponseWrite
 	return err
 }
 
+type ReadyzRequestObject struct {
+}
+
+type ReadyzResponseObject interface {
+	VisitReadyzResponse(w http.ResponseWriter) error
+}
+
+type Readyz200JSONResponse HealthResponse
+
+func (response Readyz200JSONResponse) VisitReadyzResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type Readyz503JSONResponse HealthResponse
+
+func (response Readyz503JSONResponse) VisitReadyzResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(503)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 // StrictServerInterface represents all server handlers.
 type StrictServerInterface interface {
 	// ListCircuitBreakers List tripped circuit breakers
@@ -4395,6 +4456,9 @@ type StrictServerInterface interface {
 	// Healthz Health check
 	// (GET /healthz)
 	Healthz(ctx context.Context, request HealthzRequestObject) (HealthzResponseObject, error)
+	// Readyz Readiness check (DB ping)
+	// (GET /readyz)
+	Readyz(ctx context.Context, request ReadyzRequestObject) (ReadyzResponseObject, error)
 }
 
 type StrictHandlerFunc func(ctx context.Context, w http.ResponseWriter, r *http.Request, request any) (any, error)
@@ -5318,6 +5382,30 @@ func (sh *strictHandler) Healthz(w http.ResponseWriter, r *http.Request) {
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(HealthzResponseObject); ok {
 		if err := validResponse.VisitHealthzResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// Readyz operation middleware
+func (sh *strictHandler) Readyz(w http.ResponseWriter, r *http.Request) {
+	var request ReadyzRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.Readyz(ctx, request.(ReadyzRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "Readyz")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ReadyzResponseObject); ok {
+		if err := validResponse.VisitReadyzResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

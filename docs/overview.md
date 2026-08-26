@@ -117,7 +117,9 @@ nginx は構成図上の「箱」ではなく、推奨デプロイパターン�
 
 ## イメージ戦略と配布物
 
-**公式配布物は ffmpeg を含まないコンテナイメージ（distroless/static、~40MB）と素のバイナリの 2 つだけ。** ffmpeg 入りイメージはユーザーが同梱の `Dockerfile.full` で自分用にビルドする（自分のためのビルドは再配布ではないので GPL 遵守事務・特許プールの問題が生じない）。
+**公式配布物は ffmpeg を含まないコンテナイメージと素のバイナリの 2 つだけ。** ffmpeg 入りイメージはユーザーが同梱の `Dockerfile.full` で自分用にビルドする（自分のためのビルドは再配布ではないので GPL 遵守事務・特許プールの問題が生じない）。
+
+ベースイメージは **`debian:bookworm-slim` + `ca-certificates` / `curl`**（`Dockerfile`。実行ユーザーは `nobody`）。同梱するのは `curl` 1 つだけで、これは Docker Compose の healthcheck が HTTP を叩く手段を必要とするため（`docker-compose.yml` の `curl -sf .../healthz`）。**distroless/static に置き換えると、そのまま healthcheck が壊れる。** 攻撃面を縮めたいという動機は正しいが、それは compose の healthcheck を別の手段に作り替える判断と一緒でなければ成立しない（Go 側に自己チェック用のサブコマンドを持たせる等）。イメージだけ差し替えるのは変更にならない。
 
 この判断を支える規律として、**ffmpeg / ffprobe の exec は worker と streamer ロールに閉じ込める**。api ロールが ffmpeg を要求した瞬間、公式イメージだけで動く構成（サーバーレス api 含む）が壊れる。「どのロールが ffmpeg を要求するか」がそのまま配布物の境界になっている。
 

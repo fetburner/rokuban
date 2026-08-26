@@ -145,11 +145,37 @@ consistent hash によって振る**。この鍵は既に資源同定の中に�
 （k8s なら `emptyDir: {medium: Memory}`）で足りる。Postgres datadir とエンコード
 scratch を分ける指針（[§3](database.md)）と同じ系列の規則。
 
+### マニフェストの配布形式: 素の kustomize
+
+参照実装は `deploy/k8s/` に置く。**Helm chart は持たない。** `values.yaml` は後から狭められない公開 API で、どの値を露出するかを決める前に形を固定することになる（不変条件 11）。加えてサイトごとの差分は argv（`--roles` / `--sites`）だけなので、overlay がサイト単位で薄く書ける。Helm が要るなら kustomize の出力を写す形で後から足す。
+
+**ConfigMap は 1 個で、全 Pod が同じ config.yml を共有する。Pod ごとに違うのは argv だけ**にする。ここを Pod 別の config キーにすると、サイトを増やすたびに ConfigMap が増える（[configuration.md](../configuration.md) の「ロール別 Deployment でも config は同一ファイルを共有する」が崩れる）。
+
+**config は generator で作る（素の ConfigMap にしない）。** rokuban は config を起動時に 1 回しか読まない（設定変更は再起動。[configuration.md](../configuration.md) §やらないこと）。素の ConfigMap は名前が変わらないので Pod テンプレートも変わらず、apply しても rollout が起きない --- つまり**設定変更が黙って効かない**。generator が付ける内容ハッシュが、この「読み直さない」という決定と apply を噛み合わせる唯一の部品である。
+
+**env（`${VAR}`）で渡すのは機微情報だけにする。** 非機微の値を env にすると、唯一の `envFrom`（Secret）へ非機微値を詰めることになる。環境差は overlay の patch で当てる。
+
+もう 1 つの理由は名前の衝突である。k8s は同一 namespace の Service ごとに `<SVCNAME>_PORT` / `<SVCNAME>_SERVICE_HOST` 等を全 Pod に注入する（service links）。`${VAR}` を増やすとこの注入と衝突しうる。実測: `postgres` Service が `POSTGRES_PORT=tcp://10.96.x.x:5432` を注入した。これが `port: ${POSTGRES_PORT:-5432}` に入り、api も migrate も config のパースで落ちた。Pod 側でも `enableServiceLinks: false` で注入を止める。
+
+**中央（site 非依存）の Pod には `--sites=`（明示的な空）を書く。** 省略しても単一サイト構成では動くが、レジストリに 2 サイト目を足した瞬間に起動しなくなる（束縛の暗黙の「全部」を許していない）。つまり気付くのが最も遅い形で壊れるので、単一サイト構成のうちから明示する。
+
+**Secret はマニフェストに出荷しない。** プレースホルダを `resources` に入れると、参照実装を apply するだけで外部管理の本物のパスワードを上書きしてしまう。上書きした瞬間は動いている Pod が死なない（env は起動時に読まれている）ので気付かず、次の rollout やノード退避で初めて全 Pod が起動不能になる --- そのときクラスタからパスワードも消えている。要求する形は apply されない参考ファイルに書き、供給は運用者（または overlay の generator）に委ねる。
+
+**レプリカを増やすだけでは可用性にならない。** PodDisruptionBudget が無い Pod は `kubectl drain` が無条件に退去させるので、ノード 1 台の退避・アップグレードで全レプリカが同時に落ちる。Service の後ろに置く役には PDB を対で書く。
+
+マニフェストの検査は「YAML として組めるか」（`kustomize build`）と「スキーマに合うか」（kubeconform）だけでは足りない。**オブジェクト間の参照はどちらも検出しない。** 存在しない ConfigMap を `envFrom` に書いても、probe が指す名前付きポートが消えても、Service の selector がどの Pod にも当たらなくても緑になる。ConfigMap に入れる config 本体の中身（strict なパーサが弾くキーの typo）も見ない。これらの検査は別に持つ（`deploy/k8s/manifests_test.go`）。
+
 ### worker: KEDA ScaledJob（長時間ジョブ保護）
 
 長時間バッチ（数時間のエンコード / ingest）には Deployment + HPA ではなく **KEDA ScaledJob** を使う。キューアイテムごとに k8s Job を起こす形にすると、**ジョブは完走するまで殺されない** --- スケールインは「新しい Job を起こさない」ことで実現され、実行中の犠牲者選定という問題自体が消える。
 
 River の at-least-once / 冪等性は「殺されても正しい」を保証済みであり、この決定は「殺されても安い」を足すもの。
+
+**ScaledJob はロールではなくキュー単位に作り、切る軸は「寿命 × site 束縛」の 2 つ。**
+
+- **長時間ジョブと短いジョブを混ぜない**（`ingest` / `encode` は実行中に殺せない、`ruler` / `reconciler` は殺してよい）。`terminationGracePeriodSeconds` が桁で違うので、混ぜると短い側に合わせて長いジョブが殺されるか、長い側に合わせて全体のスケールインが遅くなる
+- **site 束縛キューと site 非依存キューを混ぜない**。混ぜると中央のジョブがサイト側で起きる。結果、site 束縛キュー（`ingest_<site>` / `epg_<site>` / `reconciler_<site>` / `watcher_<site>`）の ScaledJob だけサイト数ぶん複製する
+- **スケーラが引くキュー名が site 修飾されていること**を確かめる。共有キューを見ていると、サイト A のスケーラがサイト B の滞留で Job を起こし、起きた Job は自分のサイトの仕事が無いまま終わってまた起きる
 
 ### Deployment 併用時: SIGTERM drain + pod-deletion-cost
 
@@ -171,7 +197,7 @@ watcher はシングルトンロール。`pg_try_advisory_lock` による監督�
 
 k8s の Lease API に依存しないため monolithic mode でも同じコードが動く（[データ層](../data.md) 参照）。フェイルオーバー遅延は最大 poll 間隔（〜15s）だが、いずれも定期 reconcile 前提のロールなので許容範囲。短時間の split-brain はシングルトンロールの仕事がすべて冪等（レベルトリガー + 冪等原則）であるため安全。
 
-### healthz: liveness のみ
+### healthz と readyz: liveness は依存を見ない、readiness は DB を見る
 
 `/healthz` は **liveness probe 専用**。依存サービス（DB・mirakc）の状態は一切チェックせず、プロセスが HTTP を返せる限り常に 200 を返す。
 
@@ -180,7 +206,16 @@ k8s の Lease API に依存しないため monolithic mode でも同じコード
 - liveness に依存チェックを入れると「依存ダウン → 全プロセス再起動ループ」になる（liveness probe の定番アンチパターン）
 - DB は起動時に fail-fast で検証済み。ランタイムの DB 断は各ロールがリトライ / クラッシュで対処する（crash-only 原則）
 
-mirakc の健全性は watcher が `observed_at` として DB に記録し、UI / アラートで可視化する。ロードバランサ向けの readiness が必要になったら `/readyz`（DB ping）を別エンドポイントとして追加する。
+mirakc の健全性は watcher が `observed_at` として DB に記録し、UI / アラートで可視化する。
+
+**readiness は `/readyz` に分けてあり、こちらは DB への ping を見る。** api を Service の後ろに置く以上、DB に繋がっていない Pod にトラフィックが振られる窓が実際に開くため。liveness と readiness で見るものが逆になるのは、問いが違うからである --- liveness は「このプロセスは再起動すべきか」、readiness は「今トラフィックを受けられるか」。
+
+- 見るのは DB への ping だけ。**mirakc への到達性は見ない**（不変条件 1。ハイブリッド構成ではクラウド側 api から mirakc に到達できないのが正常状態）
+- **プールが無ければ 503**（fail-closed）。実バイナリではプールは常にある（起動時に fail-fast する）ので、これはルータの組み立てを誤ったときに 200 で隠さないための保険
+- `pgxpool.Pool.Ping` はプールからコネクションを 1 本取る。したがってプールが飽和している間もタイムアウトして 503 になりうる（未測定。`Acquire` が待つことからの帰結）。**この応答から DB 断と輻輳は区別できない**
+- 輻輳で 503 が続くと**全レプリカが同時に Endpoints から抜ける**（同じ DB を見ているのでレプリカを増やしても同時に落ちる）。probe の `failureThreshold` を上げて猶予を作ってはいるが、これは遅らせるだけである。この形の全断が起きるなら閾値ではなく DB 側（プール上限・`statement_timeout`。[§3](database.md)）を見る
+- ハンドラ側にも応答の上限を持つ（probe の `timeoutSeconds` はそれより長くする。同値以下だと kubelet が先に諦めるので、ハンドラが 503 を返す経路が一度も通らない）
+- Host allowlist の免除対象に入れる。免除し忘れると readiness が 400 で落ち、Pod は永久に Service の後ろに入らない
 
 ### DB 接続失敗: fail-fast + 明示ログ
 

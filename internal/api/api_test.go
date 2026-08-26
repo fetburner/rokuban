@@ -760,6 +760,8 @@ func TestEvents_NotMountedForAPIOnly(t *testing.T) {
 }
 
 // /metrics と /healthz は Host allowlist を免除すること。
+// /readyz も同じく免除しているが、プール未設定では 503 を返す（このループの
+// 「200 が返る」という形に乗らない）ので TestReadyz_HostAllowlistExempt で見る。
 //
 // 監視基盤は Pod IP やサービス名で叩くため allowlist に載せようがない
 // （IP は動的）。allowlist の内側に置くと k8s の liveness probe と

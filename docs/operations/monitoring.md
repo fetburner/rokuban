@@ -9,9 +9,9 @@
 HTTP リスナーは常に 1 本立てる。OpenAPI には載せない（text format であり
 生成クライアントの対象外）。
 
-**`/metrics` と `/healthz` は Host allowlist を免除する**。監視基盤は Pod IP や
+**`/metrics` と `/healthz` / `/readyz` は Host allowlist を免除する**。監視基盤は Pod IP や
 サービス名で叩くため allowlist に載せようがない（IP は動的）。allowlist の内側に
-置くと k8s の liveness probe と Prometheus の scrape が 400 で落ちる。DNS rebinding が
+置くと k8s の liveness / readiness probe と Prometheus の scrape が 400 で落ちる。DNS rebinding が
 守ろうとしているのはブラウザ経由でデータを読み書きされることなので、機密を含まない
 インフラ用エンドポイントを免除しても防壁は薄くならない。
 
