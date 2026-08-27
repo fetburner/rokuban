@@ -239,11 +239,43 @@ schedule ではなくなる**ので、その旨を上の「0 が保証しない�
   つまり **`e2e_probe` は「長時間 Job」にはならない**ので、判定 3 の
   既定 producer は実物の encode ワークロードに対しては使えない
   （`E2E_ENCODE_PRODUCER` の差し替えが要る。判定 3 の冒頭コメント）。
-  判定 5 の positive control（滞留を作るだけ）は成立するはずだが、
-  **実物の worker 込みでは未測定**である --- `insert_probe_job` は
-  `max_attempts=1` で入れるので、実物の worker が掴むと 1 回の失敗で
-  `discarded` になり滞留が消える。KEDA のポーリングとの前後関係次第で
-  「滞留を作れない」に化けうる。
+  **判定 5 は `discarded` では壊れない。** 5.1 はサイト B の ScaledJob を
+  pause してから積むので誰も消化せず、5.3 は待ち行列ではなく「新しく現れた
+  Job 名」を見る（`checks/05` の 85-86 行 / 157-159 行）。ただし実物の worker
+  込みでハーネスを 1 周させた確認はまだ無い。
+- **判定 1.7 は `ruler` キュー（site 修飾されない）を引く消化側も要求する。**
+  判定が探す鍵は `epg_<site>` と `reconciler_<site>` の 2 つだけである。
+  ところが intent の PUT が入れるのは `ruler_pass` のヒントである
+  （`internal/api/rules.go` の `insertRulerPassHint`）。`reconcile_pass` は
+  その `ruler_pass` が入れる（`internal/worker/ruler_pass.go`）。
+  `ruler` を引く Pod が無いと 1.7 は TODO ではなく **240 秒待って FAIL** する。
+  しかもメッセージは「予約が mirakc に届かない … reservations=0」なので
+  **reconciler を疑わせる**。
+- **判定 3 は既定の producer では緑にならない。** `insert_probe_job` が入れる
+  `e2e_probe` は実物の worker には未登録 kind なので数秒で終わる。転び方は
+  「3.1 は PASS、3.2 / 3.3 / 3.4 が `completed` 分岐で TODO」になる。
+  TODO が 1 件でも `summary` は exit 2 を返す（受け入れの「全部緑」を満たさない）。
+  差し替え（`E2E_ENCODE_PRODUCER`）に足りないものは README が挙げていた
+  「メディアボリュームと最小の recording」だけではなく、次の 5 点である:
+    - `overlays/e2e/config.yml` に `encode:` セクションが無い（既定プロファイルは
+      存在しないので、profile 名を解決できる encode ジョブを 1 件も組み立てられない）
+    - ハーネスは `Dockerfile.full` のイメージを焼かない（`lib/cluster.sh` の
+      `build_images` と `kind load` は 2 つだけ）。`lib/env.sh` にタグも無く、
+      `overlays/e2e/kustomization.yaml` の `images:` も 1 本だけなので、
+      **build + `kind load` + overlay の 3 か所に手を入れる必要がある**
+    - `rokuban enqueue` に `encode` は無い（`EncodeJobArgs` は
+      `{recording_id, profile}`）。`insert_probe_job` と同じく直 INSERT になる
+    - メディアボリュームと、実ファイルを伴う `recordings` / `media_assets` の行
+    - **3.2 と 3.3 がそれぞれ `2 × pollingInterval` の窓を取る**ので、
+      エンコードは合計 4×pollingInterval 以上走り続ける必要がある
+    - 差し替え先は `command -v` か `declare -F` で検査される（`checks/03`）。
+      クラスタ内の `media_dir` に触る必要があるので、実質 `lib/kube.sh` に
+      関数を足す形になる
+- **前の周回が残した `retryable` 1 件で判定 2 が二重に落ちうる。** `retryable` は
+  滞留（`riverBacklogStates`）に数えられるので、2.2 の「待ち行列が空」が
+  180 秒粘って FAIL する。同時に `pendingJobStates` にも入るので、
+  `enqueue` が投入をスキップして 2.3 も落ちる。`--once` の Job がリーダーになれば River の
+  `JobScheduler` が昇格させるので自己回復するが、**その所要時間は測っていない**。
 - **トリガが数える River の状態は `available` / `retryable`。** ハーネスの
   「滞留」の定義（`lib/kube.sh` の `riverBacklogStates`）と同じ集合にすること。
   ずれると、失敗して指数バックオフ中（`scheduled`）のジョブ 1 件で判定 2 が

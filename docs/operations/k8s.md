@@ -200,6 +200,10 @@ River の at-least-once / 冪等性は「殺されても正しい」を保証済
 
 **キューは argv で絞る（`--queues`）。** ScaledJob はキュー単位に作るのに ConfigMap は 1 個である。キューを config キー（`worker.queues`）でしか指定できないと、ScaledJob の数だけ ConfigMap が増える（上記「マニフェストの配布形式」の決定が崩れる）。`--queues` と `worker.queues` の**両方指定は起動エラー**にしてある --- どちらが勝つかを覚えておく形にすると、monolith と k8s で購読集合の出所が分かれる。`--queues=`（明示的な空）も起動エラーである。「全キュー」に化けると、site 束縛キューまで掴んで `verifySite` で全滅する Pod が黙って生まれる。
 
+**この排他は共有 ConfigMap と結合している。** `--queues` を使う構成では、共有する config.yml に `worker.queues` を書いてはならない。書いた瞬間に、`--queues` を渡している worker Pod が**すべて**起動エラーになる。ConfigMap を 1 個に保つ決定（上記「マニフェストの配布形式」）と組み合わせると、この 1 行が全 worker を落とす形になるので、キューの指定は argv 側に一本化する。
+
+**スケーラが `retryable` を数えるので、バックオフ中のジョブに対して空振りの Job が起きる。** `retryable` の行は `scheduled_at` が来るまで claim できない。起きた Job は仕事を掴めず `--once-idle-timeout` で終了する。River の `JobScheduler` が昇格させれば次の Job が引くが、**昇格までの所要時間は測っていない**。実害は空振り Job の増加だけである。
+
 **「実行中の Job は殺されない」は無条件ではない。** `rollout.strategy` の書き方に依存する。KEDA (v2.20.2) が受け付ける値は `gradual` と `immediate` の 2 つ。kind での実測は次のとおり。
 
 | `rollout.strategy` | Pod テンプレートを更新したとき |
