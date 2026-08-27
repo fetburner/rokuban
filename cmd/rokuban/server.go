@@ -158,13 +158,36 @@ func newServerCmd() *cobra.Command {
 			}
 			warnIfAllowedHostsEmpty(slog.Default(), cfg.Server.AllowedHosts)
 
+			// このプロセスが引くキューを --queues と worker.queues から決める。
+			// 以降の判定（validateSiteBinding / RequiresEncodeTools /
+			// ClientConfig.Queues）はすべてこの解決済みの集合を見る ---
+			// 片方だけが config を直接見ると、argv で絞った Pod が
+			// 「絞ったつもりで検査だけ全キュー基準」になる（resolveWorkerQueues）。
+			queues, err := resolveWorkerQueues(cmd, cfg.Worker.Queues)
+			if err != nil {
+				return err
+			}
+			// **解決した集合を config に書き戻す。** 読み手が 3 か所
+			// （validateSiteBinding / RequiresEncodeTools / ClientConfig.Queues）
+			// あるので、どちらを読んでも同じ値になる形にしておく --- 1 か所だけ
+			// config を直接読む形が残ると、「argv で絞ったつもりで実は全キューを
+			// 引く Pod」が生まれ、site 束縛キューを掴んで verifySite で全滅する。
+			cfg.Worker.Queues = queues
+
+			// 1 件消化モード（KEDA ScaledJob の Job が自分で終了するための起動形態。
+			// worker.OnceGate、docs/operations.md §5）。
+			onceGate, onceIdleTimeout, err := resolveOnce(cmd, roles)
+			if err != nil {
+				return err
+			}
+
 			// このプロセスが束縛される mirakc サイトを --sites から決める
 			// （config キーにしない。issue #183 M4-11「含むもの」4）。
 			bound, err := resolveSiteBinding(cmd, cfg.Registry())
 			if err != nil {
 				return err
 			}
-			if err := validateSiteBinding(roles, bound, cfg.Worker.Queues); err != nil {
+			if err := validateSiteBinding(roles, bound, queues); err != nil {
 				return err
 			}
 			// site 名を site 単位のキューに修飾したときに River の 64 文字上限を
@@ -345,7 +368,7 @@ func newServerCmd() *cobra.Command {
 				// ffmpeg/ffprobe の存在検査は、実際に encode/thumbnail キューを
 				// 購読するときだけ行う（worker.queues で絞った ingest 専用 Pod 等に
 				// まで ffmpeg を要求しないため。issue #113 決定 C）。
-				if worker.RequiresEncodeTools(cfg.Worker.Queues) {
+				if worker.RequiresEncodeTools(queues) {
 					if toolErr := cfg.Encode.ValidateTools(); toolErr != nil {
 						return toolErr
 					}
@@ -388,7 +411,8 @@ func newServerCmd() *cobra.Command {
 					ThumbnailConcurrency: cfg.Encode.ThumbnailConcurrency,
 					EpgSyncInterval:      cfg.Epg.SyncInterval,
 					PeriodicJobs:         cfg.Worker.PeriodicJobs,
-					Queues:               cfg.Worker.Queues,
+					Queues:               queues,
+					Once:                 onceGate,
 					// 定期ジョブ（epg_sync / tuner_sync / ruler_pass / reconcile_pass /
 					// record_sweep / catalog_export / delete_reconcile /
 					// encode_reconcile / storage_sync）は
@@ -432,6 +456,34 @@ func newServerCmd() *cobra.Command {
 						slog.Error("stopping river client", "err", err)
 					}
 				}()
+
+				if onceGate != nil {
+					// 1 件消化モードの終了契機。ジョブ 1 件が Work を抜けたら
+					// （または 1 件も掴めないまま待ち時間を使い切ったら）
+					// **SIGTERM と同じ経路**で畳む --- stop() は
+					// signal.NotifyContext の ctx を cancel するので、eg.Wait() が
+					// 戻り、RunE の defer が LIFO で riverClient.Stop（drain）→
+					// pool.Close の順に片付ける。専用の終了経路を作らないので、
+					// drain の挙動がモード間で分岐しない。
+					//
+					// **ジョブが失敗しても nil を返す**（= exit 0）。リトライは
+					// River が持っており、k8s 側は backoffLimit: 0 で起こし直さない
+					// 前提なので、終了コードで失敗を表すと二重にリトライする形に
+					// なる（worker.ClientConfig.Once のコメント）。
+					//
+					// 未解決（実害が空振り Job 1 つぶんなので閉じていない）:
+					// Work を抜けてから stop() が River の producer を止めるまでの
+					// 間に次のジョブが fetch されると、この Job は 2 件消化して
+					// 終わる。MaxWorkers=1 なので同時には走らず、drain が待つので
+					// 打ち切られもしない。KEDA 側の「1 Job = 1 アイテム」の数が
+					// 1 つずれ、空振りの Job が 1 つ増えるだけである。
+					eg.Go(func() error {
+						outcome := onceGate.Wait(egCtx, onceIdleTimeout)
+						slog.Info("worker: once mode finished", "outcome", outcome.String())
+						stop()
+						return nil
+					})
+				}
 			}
 
 			// シングルトンロールは監督ループで管理する。
@@ -490,6 +542,18 @@ func newServerCmd() *cobra.Command {
 	cmd.Flags().StringSlice(siteFlagName, nil,
 		"mirakc sites this process is bound to (comma-separated). "+
 			"Omit to bind to the registry's sole entry; pass an empty value to run unbound (central process)")
+	// --queues / --once も --sites と同じ「起動形態」の軸（resolveWorkerQueues /
+	// onceFlagName のコメント）。--queues は config の worker.queues と
+	// 排他で、両方指定は起動エラーになる。
+	cmd.Flags().StringSlice(queuesFlagName, nil,
+		"queues the worker role pulls (comma-separated logical names). "+
+			"Mutually exclusive with worker.queues in the config file")
+	cmd.Flags().Bool(onceFlagName, false,
+		"exit after working a single job (for KEDA ScaledJob; requires --roles worker, "+
+			"exactly one queue and worker.periodic_jobs: false)")
+	cmd.Flags().Duration(onceIdleTimeoutFlagName, defaultOnceIdleTimeout,
+		"in --once mode, exit successfully if no job is claimed within this duration "+
+			"(never applies once a job is running)")
 
 	return cmd
 }

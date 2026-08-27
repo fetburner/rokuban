@@ -118,7 +118,9 @@ worker:
                                  # （River の PeriodicJobs はリーダーだけが投入するため、
                                  #  KEDA で 0 にスケールすると誰も投入しなくなる。docs/data.md §2）
   queues: []                     # 引くキューを絞る。空なら全部。
-                                 # ロールを増やさずに「ruler / reconciler だけ別 Pod」を実現するための knob
+                                 # ロールを増やさずに「ruler / reconciler だけ別 Pod」を実現するための knob。
+                                 # 同じものを `--queues` で argv からも指定でき、両方指定は起動エラー
+                                 # （k8s は ConfigMap 1 個を共有し Pod 差分を argv に寄せる。docs/operations.md §5）
 
 # エンコード（プロファイルはデプロイ属性。DB のルールからは名前参照）
 encode:

@@ -79,10 +79,11 @@ watcher / streamer の Deployment、worker の ScaledJob、投入側の CronJob�
 それを確認して残すのがこのハーネスの成果物である。この表は判定を足したり
 緑にしたりする人が更新する。
 
-**ただし、ワークロードを書けば緑になるわけではない。** 判定 2 と 3 は、
-いまの製品バイナリでは原理的に緑にできない（下記「先に決めること」）。
-「TODO なのは対象が無いからだ」とだけ読むと、ワークロードを書いてから
-その壁に当たる。
+**ワークロードを書けば緑になるわけではない。** 判定 2 と 3 が要求していた
+製品バイナリ側の 2 つ（Job の自己終了 / キューを argv で絞る手段）は
+`--once` と `--queues` で入ったが、判定 2.3 が要求する CronJob の schedule は
+まだ決まっていない（下記「先に決めること」）。「TODO なのは対象が無いからだ」
+とだけ読むと、ワークロードを書いてからその壁に当たる。
 
 判定 1.6 は `epg_<site>` を、判定 1.7 は `reconciler_<site>` を消化する側を
 それぞれ別に探す。1 つの鍵で両方を代表させると、epg の ScaledJob だけ先に
@@ -206,19 +207,26 @@ ScaledJob 自体の書き方（トリガの接続先・`rollout.strategy`・切�
 
 ### 先に決めること（マニフェストを書き始める前に）
 
-**次の 3 つは実装ではなく決定である。決めずに書き始めると、ワークロードが
-できても判定 2 / 3 が緑にならない。** 選択肢と根拠は M4-6c の issue に出して
-あるので、そちらを先に読むこと。
+**未解決: 判定 2.3 は CronJob が 180 秒以内に自然発火することを要求する。**
+epg_sync の実運用相当の間隔は 10 分なので、出荷する schedule のままだと
+2.3 が FAIL になる。`overlays/e2e` で毎分に patch する方針を採るなら、
+**判定 2 が測るのは出荷される schedule ではなくなる**ので、その旨を上の
+「0 が保証しないもの」に足し、「base は正気の schedule、e2e overlay は毎分」を
+`manifests_test.go` で固定すること。
 
-- **未解決: KEDA ScaledJob の Job は自分で終了しなければならないが、
-  `rokuban server --roles worker` は終了しない。** 判定 2.2 と 2.4 が
-  TODO ではなく **FAIL** になる
-- **未解決: ScaledJob をキュー単位に切る手段が無い。** `worker.queues` は
-  config キューだけで CLI フラグが無い。「ConfigMap は 1 個・Pod 差分は argv
-  だけ」という決定と両立しない。encode の中央 ScaledJob は起動すらしない
-- **未解決: 判定 2 は CronJob が 180 秒以内に自然発火することを要求する。**
-  epg_sync の実運用相当の間隔は 10 分なので、出荷する schedule のままだと
-  2.3 が FAIL になる
+決着済み（製品バイナリ側は入っている。ScaledJob / CronJob にはこう書く）:
+
+- **worker の Job は `--once` で 1 件消化して終了する。** `--roles worker` は
+  常駐するので、そのまま載せると Job が `succeeded` に到達せず判定 2.4 が
+  永久に FAIL する。`--once` は成功・失敗を問わず exit 0 なので
+  `backoffLimit: 0` / `restartPolicy: Never` と組ませる。
+  `--once-idle-timeout`（既定 30 秒）は **1 件も掴めなかった場合にしか効かない**
+- **キューは `--queues <名前>` で絞る**（config の `worker.queues` との両方指定は
+  起動エラー）。`--once` はちょうど 1 キューを要求する。中央の encode は
+  `--sites= --queues=encode`（`Dockerfile.full` のイメージ。公式イメージは
+  ffmpeg 非同梱で fail-fast する）
+- **`rokuban enqueue delete-reconcile` が使える。** 以前は enqueue に載って
+  おらず、`worker.periodic_jobs: false` ではこのパスが一度も走らなかった
 
 ### ハーネス側の契約と、残っている穴
 

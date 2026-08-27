@@ -1,10 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -141,6 +146,197 @@ storage:
 // 分岐点。ここが誤ると、--roles watcher 単独のプロセスが worker.NewWorkers の
 // フルのワーカー群（EncodeWorker/ThumbnailWorker を含む）を登録し、ffmpeg/ffprobe
 // を検査しないまま encode/thumbnail ジョブを実行しうる（不変条件 4 違反、issue #113）。
+// runServerCmdForTest は server サブコマンドの RunE を実際に走らせる。
+//
+// **単体の resolve* / validate* を直接呼ぶテストでは RunE の配線が検証できない**
+// （解決した値を渡し忘れて config を直接見ていても、resolveWorkerQueues の
+// 単体テストは通り続ける。CLAUDE.md「壊す場所を、実際に壊れる経路の上に置く」）。
+// DB を到達不能にしてあるので、起動検査を通った場合は
+// 「connecting to database」で落ちる --- どこまで進んだかがエラーの種類で分かる。
+func runServerCmdForTest(t *testing.T, configPath string, args ...string) error {
+	t.Helper()
+	cmd := newServerCmd()
+	// 本番では root の PersistentFlags から来る（cmd/rokuban/main.go）。
+	cmd.Flags().String("config", configPath, "")
+	cmd.SetArgs(args)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SilenceUsage = true
+	cmd.SilenceErrors = true
+	return cmd.Execute()
+}
+
+// 到達不能な DB（localhost:1）+ 2 サイトのレジストリ。
+const serverCmdTestConfig = `
+db:
+  host: 127.0.0.1
+  port: 1
+  user: rokuban
+  password: secret
+  database: rokuban
+mirakcs:
+  - site: tokyo
+    url: http://mirakc-tokyo:40772
+  - site: takamatsu
+    url: http://mirakc-takamatsu:40772
+storage:
+  media_dir: /mnt/media
+`
+
+// **--queues が RunE の配線に載っていること。** 中央（0 サイト束縛）の worker は
+// site 非依存キューに絞ったときだけ起動できる（validateSiteBinding）。
+// その判定が config だけを見ていると、`--queues=encode` を渡しても
+// 「全キュー購読の中央 worker」と見なされて起動できない --- KEDA の
+// encode ScaledJob（`--sites=`）が起動すらしないという形で現れる。
+//
+// 両方向を見る: --queues=encode なら DB まで到達し、--queues 無しなら
+// site 束縛の検査で（DB に触る前に）落ちる。
+func TestServerCmd_QueuesFlagUnblocksCentralEncodeWorker(t *testing.T) {
+	path := writeServerTestConfig(t, serverCmdTestConfig)
+
+	err := runServerCmdForTest(t, path, "--roles", "worker", "--sites=", "--queues=encode")
+	if err == nil {
+		t.Fatal("到達不能な DB を指しているので error を期待したが nil だった")
+	}
+	if !strings.Contains(err.Error(), "connecting to database") {
+		t.Errorf("err = %v, want to fail at the DB (= 起動検査を通ったこと)", err)
+	}
+
+	// 反対方向: --queues 無しの中央 worker は従来どおり起動エラー。
+	err = runServerCmdForTest(t, path, "--roles", "worker", "--sites=")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "--sites") {
+		t.Errorf("err = %v, want the site-binding error (DB に触る前に落ちること)", err)
+	}
+	if strings.Contains(err.Error(), "connecting to database") {
+		t.Errorf("err = %v: DB まで進んでいる（site 束縛の検査が効いていない）", err)
+	}
+}
+
+// **--once が RunE の配線に載っていること**（ロール検査が DB より前に効く）。
+func TestServerCmd_OnceRejectsExtraRoles(t *testing.T) {
+	path := writeServerTestConfig(t, serverCmdTestConfig)
+
+	err := runServerCmdForTest(t, path, "--roles", "worker,api", "--sites", "tokyo", "--once")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "--once") {
+		t.Errorf("err = %v, want the --once role error", err)
+	}
+	if strings.Contains(err.Error(), "connecting to database") {
+		t.Errorf("err = %v: DB まで進んでいる（--once のロール検査が効いていない）", err)
+	}
+}
+
+// writeOnceModeConfig は 1 件消化モードのテスト用 config を書く（実 DB を指す）。
+//
+// user / password が空のときにダミーを埋めるのは、ローカルの
+// ROKUBAN_TEST_DATABASE_URL が資格情報を持たない（trust 認証）ことがある一方で
+// config.DBConfig が両方を required にしているため。CI の URL は
+// `postgres://rokuban:rokuban@...` なのでこの分岐は通らない。
+func writeOnceModeConfig(t *testing.T) string {
+	t.Helper()
+	dbCfg := testutil.DatabaseConfig(t)
+	user := dbCfg.User
+	if user == "" {
+		user = os.Getenv("USER")
+	}
+	password := dbCfg.Password
+	if password == "" {
+		password = "unused"
+	}
+	return writeServerTestConfig(t, fmt.Sprintf(`
+server:
+  listen: "127.0.0.1:0"
+  allowed_hosts: []
+db:
+  host: %q
+  port: %d
+  user: %q
+  password: %q
+  database: %q
+  sslmode: %q
+mirakc:
+  url: http://127.0.0.1:1
+  site: home
+storage:
+  media_dir: %q
+worker:
+  periodic_jobs: false
+`, dbCfg.Host, dbCfg.Port, user, password, dbCfg.Database, dbCfg.SSLMode, t.TempDir()))
+}
+
+// runServerCmdBounded は server の RunE を走らせ、**有限時間で戻ること**まで見る。
+//
+// 1 件消化モードの主張はまさに「プロセスが終わる」ことなので、戻らない変異は
+// go test 全体のタイムアウト（panic ダンプ）ではなく、このテストの失敗として
+// 報告する。
+func runServerCmdBounded(t *testing.T, limit time.Duration, configPath string, args ...string) error {
+	t.Helper()
+	errCh := make(chan error, 1)
+	go func() { errCh <- runServerCmdForTest(t, configPath, args...) }()
+	select {
+	case err := <-errCh:
+		return err
+	case <-time.After(limit):
+		t.Fatalf("server が %s 以内に終了しない（--once の Job が終わらない形）", limit)
+		return nil
+	}
+}
+
+// **1 件消化モードのプロセスが実際に終了すること。** 判定 2.2 / 2.4 が要求する
+// 「0 → 1 → 0」の 0 に戻る側そのもので、これが無いと KEDA が起こした Job は
+// succeeded に到達しない。
+//
+// 実 DB を使って RunE を丸ごと走らせるのが要点 --- OnceGate の単体テストは
+// gate の論理しか見ておらず、**gate を River に登録して待つ配線**（server.go の
+// eg.Go）を検証できない。
+//
+// 両方向を見る:
+//   - 空キュー: --once-idle-timeout で終了する
+//   - 1 件入っている: そのジョブを消化して終了し、ジョブが completed になる
+func TestServerCmd_OnceModeTerminates(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	path := writeOnceModeConfig(t)
+
+	onceArgs := []string{"--roles", "worker", "--sites=", "--queues=cleanup", "--once"}
+
+	t.Run("空キューなら idle timeout で終了する", func(t *testing.T) {
+		args := append(append([]string{}, onceArgs...), "--once-idle-timeout=1s")
+		if err := runServerCmdBounded(t, 30*time.Second, path, args...); err != nil {
+			t.Fatalf("server --once: %v", err)
+		}
+	})
+
+	t.Run("1 件あれば消化して終了する", func(t *testing.T) {
+		var out bytes.Buffer
+		if err := runEnqueue(ctx, pool, "delete-reconcile", "", &out); err != nil {
+			t.Fatalf("runEnqueue: %v", err)
+		}
+
+		// **idle timeout を長く取る。** 短いと「消化して終わった」と
+		// 「掴めないまま時間切れで終わった」が区別できず、空虚な成功になる。
+		args := append(append([]string{}, onceArgs...), "--once-idle-timeout=60s")
+		if err := runServerCmdBounded(t, 60*time.Second, path, args...); err != nil {
+			t.Fatalf("server --once: %v", err)
+		}
+
+		var state string
+		if err := pool.QueryRow(ctx,
+			`SELECT state FROM river_job WHERE kind = 'delete_reconcile'`,
+		).Scan(&state); err != nil {
+			t.Fatalf("reading delete_reconcile state: %v", err)
+		}
+		if state != "completed" {
+			t.Errorf("delete_reconcile state = %q, want %q（消化せずに終わっている）", state, "completed")
+		}
+	})
+}
+
 func TestResolveRiverClientKind(t *testing.T) {
 	tests := []struct {
 		name  string

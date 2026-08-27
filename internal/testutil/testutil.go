@@ -121,6 +121,31 @@ func SetupDBPoolerCompat(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
+// DatabaseConfig はパッケージ用テスト DB の接続設定を返す（SetupDB と同じ DB）。
+//
+// プールではなく config.DBConfig が要るのは、**config ファイルを書いて
+// cmd/rokuban の RunE を実際に走らせるテスト**のため（起動時の配線は
+// resolve*/validate* を直接呼ぶテストでは検証できない）。SetupDB を呼んだ後に
+// 使うこと --- TRUNCATE は SetupDB 側が行う。
+func DatabaseConfig(t *testing.T) config.DBConfig {
+	t.Helper()
+	ctx := context.Background()
+	base := DatabaseURL(t)
+
+	packageTestDB.once.Do(func() {
+		packageTestDB.url, packageTestDB.err = ensurePackageTestDatabase(ctx, base)
+	})
+	if packageTestDB.err != nil {
+		t.Fatalf("preparing package test database: %v", packageTestDB.err)
+	}
+
+	cfg, err := dbConfigFromURL(packageTestDB.url)
+	if err != nil {
+		t.Fatalf("parsing package test database url: %v", err)
+	}
+	return cfg
+}
+
 // dbConfigFromURL は接続 URL を config.DBConfig に変換する。db.NewPool を経由
 // させるには DSN 文字列ではなく DBConfig が要るため、テスト DB の URL から組む。
 func dbConfigFromURL(raw string) (config.DBConfig, error) {
