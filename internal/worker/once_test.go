@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
 )
 
@@ -31,10 +32,10 @@ func onceWorkFunc(t *testing.T, g *OnceGate) func(func(context.Context) error) e
 // 現れる。そのまま呼ぶと go test 全体のタイムアウト（45 秒後の panic ダンプ）に
 // なり、何が壊れたのか出力から読めない --- ここで打ち切ってテストの失敗として
 // 報告する。
-func waitOutcome(t *testing.T, g *OnceGate, idleTimeout time.Duration) OnceOutcome {
+func waitOutcome(t *testing.T, g *OnceGate, idleTimeout time.Duration, events <-chan *river.Event) OnceOutcome {
 	t.Helper()
 	out := make(chan OnceOutcome, 1)
-	go func() { out <- g.Wait(context.Background(), idleTimeout) }()
+	go func() { out <- g.Wait(context.Background(), idleTimeout, events) }()
 	limit := idleTimeout + 5*time.Second
 	select {
 	case o := <-out:
@@ -58,7 +59,7 @@ func TestOnceGate_WaitReturnsJobDoneAfterOneJob(t *testing.T) {
 
 	go func() { _ = work(func(context.Context) error { return nil }) }()
 
-	if got := waitOutcome(t, g, 2*time.Second); got != OnceOutcomeJobDone {
+	if got := waitOutcome(t, g, 2*time.Second, nil); got != OnceOutcomeJobDone {
 		t.Errorf("Wait() = %v, want %v", got, OnceOutcomeJobDone)
 	}
 }
@@ -71,7 +72,7 @@ func TestOnceGate_WaitReturnsJobDoneAfterOneJob(t *testing.T) {
 func TestOnceGate_WaitReturnsIdleTimeoutWhenNothingClaimed(t *testing.T) {
 	g := NewOnceGate()
 
-	if got := waitOutcome(t, g, 20*time.Millisecond); got != OnceOutcomeIdleTimeout {
+	if got := waitOutcome(t, g, 20*time.Millisecond, nil); got != OnceOutcomeIdleTimeout {
 		t.Errorf("Wait() = %v, want %v", got, OnceOutcomeIdleTimeout)
 	}
 }
@@ -108,7 +109,7 @@ func TestOnceGate_IdleTimeoutDoesNotCutRunningJob(t *testing.T) {
 		fired <- time.Time{}
 
 		outcome := make(chan OnceOutcome, 1)
-		go func() { outcome <- g.wait(context.Background(), fired) }()
+		go func() { outcome <- g.wait(context.Background(), fired, nil) }()
 
 		select {
 		case got := <-outcome:
@@ -140,7 +141,7 @@ func TestOnceGate_MiddlewarePropagatesWorkerError(t *testing.T) {
 		t.Errorf("middleware が返したエラー = %v, want %v（握り潰すと River が completed で確定させる）", got, wantErr)
 	}
 
-	if got := waitOutcome(t, g, 2*time.Second); got != OnceOutcomeJobDone {
+	if got := waitOutcome(t, g, 2*time.Second, nil); got != OnceOutcomeJobDone {
 		t.Errorf("Wait() = %v, want %v（失敗でも 1 件消化として終わること）", got, OnceOutcomeJobDone)
 	}
 }
@@ -152,7 +153,7 @@ func TestOnceGate_WaitReturnsCanceledOnContextDone(t *testing.T) {
 		g := NewOnceGate()
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		if got := g.Wait(ctx, time.Hour); got != OnceOutcomeCanceled {
+		if got := g.Wait(ctx, time.Hour, nil); got != OnceOutcomeCanceled {
 			t.Errorf("Wait() = %v, want %v", got, OnceOutcomeCanceled)
 		}
 	})
@@ -172,10 +173,69 @@ func TestOnceGate_WaitReturnsCanceledOnContextDone(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		// 実行中でも ctx 終了なら戻る（drain は呼び出し側の riverClient.Stop が担う）。
-		if got := g.Wait(ctx, time.Hour); got != OnceOutcomeCanceled {
+		if got := g.Wait(ctx, time.Hour, nil); got != OnceOutcomeCanceled {
 			t.Errorf("Wait() = %v, want %v", got, OnceOutcomeCanceled)
 		}
 	})
+}
+
+// **worker に入らずに終わったジョブでも Wait が戻ること。** River の executor は
+// 未登録 kind のジョブを WorkUnit == nil で早期 return し、その時点では
+// WorkerMiddleware のチェーンをまだ組み立てていない（SubscribeOnceEvents の
+// コメント）。middleware だけを見ていると、Job は「1 件も claim していない」と
+// 誤認して idleTimeout の間そのキューを掴み続け、試行回数を潰す。
+//
+// このテストが検出すべき変異: wait から events の case を削る（Wait が
+// idleTimeout まで戻らず、waitOutcome が打ち切って落ちる）。
+func TestOnceGate_TerminalEventEndsWaitWithoutMiddleware(t *testing.T) {
+	g := NewOnceGate()
+	events := make(chan *river.Event, 1)
+	events <- &river.Event{Kind: river.EventKindJobFailed}
+
+	out := make(chan OnceOutcome, 1)
+	go func() { out <- g.Wait(context.Background(), 30*time.Second, events) }()
+	select {
+	case got := <-out:
+		if got != OnceOutcomeJobUnhandled {
+			t.Errorf("Wait() = %v, want %v", got, OnceOutcomeJobUnhandled)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Wait が戻らない（未登録 kind のジョブで Job が終わらない形）")
+	}
+}
+
+// **middleware を通ったジョブを job_unhandled と誤報しないこと。** 終了イベントは
+// worked なジョブでも飛ぶので、events の case で started を見直さないと
+// 「掴んで失敗させただけ」と読める出力になる（運用側が版ずれを疑い始める）。
+//
+// 20 回繰り返すのは、その再確認を削る変異を落とすため --- done / started /
+// events の 3 つが同時に準備できており、select はランダムに選ぶ。
+func TestOnceGate_WorkedJobIsNotReportedAsUnhandled(t *testing.T) {
+	for i := range 20 {
+		g := NewOnceGate()
+		work := onceWorkFunc(t, g)
+		if err := work(func(context.Context) error { return nil }); err != nil {
+			t.Fatalf("iteration %d: work: %v", i, err)
+		}
+
+		// worked なジョブの終了イベント（River は completed でもイベントを出す）。
+		events := make(chan *river.Event, 1)
+		events <- &river.Event{Kind: river.EventKindJobCompleted}
+
+		if got := waitOutcome(t, g, 30*time.Second, events); got != OnceOutcomeJobDone {
+			t.Fatalf("iteration %d: Wait() = %v, want %v", i, got, OnceOutcomeJobDone)
+		}
+	}
+}
+
+// 購読はしているが何も起きない場合、従来どおり idle timeout で戻ること
+// （events の case が「常に戻る」に化けていないことの反対方向）。
+func TestOnceGate_EmptyEventChannelStillTimesOut(t *testing.T) {
+	g := NewOnceGate()
+	events := make(chan *river.Event)
+	if got := waitOutcome(t, g, 20*time.Millisecond, events); got != OnceOutcomeIdleTimeout {
+		t.Errorf("Wait() = %v, want %v", got, OnceOutcomeIdleTimeout)
+	}
 }
 
 // OnceOutcome.String がログに出す名前を持つこと（運用側が

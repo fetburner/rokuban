@@ -36,8 +36,9 @@ E2E_ORACLES_ONLY=3 ./deploy/k8s/e2e/run.sh --oracles   # オラクルも一部�
 ではない。** `0` が保証**しない**もの:
 
 - **CronJob は `epg-sync --site <A>` の 1 本しか見ていない。** `rokuban enqueue`
-  の対象は 8 種ある。`worker.periodic_jobs: false` の下では全部が CronJob 側に
-  移るので、7 本欠けていても 0 になる
+  の対象は複数ある（一覧は `rokuban enqueue --help`）。
+  `worker.periodic_jobs: false` の下では全部が CronJob 側に移るので、
+  1 本を除いて全部欠けていても 0 になる
 - **ScaledJob は `epg_<site>` / `reconciler_<site>` / `encode` しか見ていない。**
   `ingest_<site>` / `watcher_<site>` が欠けていても 0 になる
 - **Deployment は役ごとの存在と「宣言した数だけ Ready」だけ。** サイトごとの
@@ -47,8 +48,7 @@ E2E_ORACLES_ONLY=3 ./deploy/k8s/e2e/run.sh --oracles   # オラクルも一部�
   届くかは誰も測っていない
 - **定期パスの網羅も見ていない。** `worker.periodic_jobs: false` の下では
   in-process の定期ジョブ 9 種が CronJob 側に移るが、判定が見るのは
-  `epg-sync` の 1 本だけ。`delete_reconcile` は `rokuban enqueue` に載って
-  いないので、そもそも CronJob にできない（扱いは未決）
+  `epg-sync` の 1 本だけ
 
 網羅を判定に入れるなら、`config.yml` の `mirakcs:` と `rokuban enqueue` の
 ジョブ表から期待集合を導く判定を足すことになる。**いまは足していない**
@@ -208,12 +208,12 @@ ScaledJob 自体の書き方（トリガの接続先・`rollout.strategy`・切�
 
 ### 先に決めること（マニフェストを書き始める前に）
 
-**未解決: 判定 2.3 は CronJob が 180 秒以内に自然発火することを要求する。**
+**判定 2.3 は CronJob が 180 秒以内に自然発火することを要求する。**
 epg_sync の実運用相当の間隔は 10 分なので、出荷する schedule のままだと
-2.3 が FAIL になる。`overlays/e2e` で毎分に patch する方針を採るなら、
-**判定 2 が測るのは出荷される schedule ではなくなる**。その旨を上の
-「0 が保証しないもの」に足すこと。あわせて「base は正気の schedule、
-e2e overlay は毎分」を `manifests_test.go` で固定する。
+2.3 が FAIL になる。**方針は決まっている**（base は実運用の間隔 /
+`overlays/e2e` で毎分に patch / 両方を `manifests_test.go` で固定）ので、
+マニフェストと一緒に実装する。このとき **判定 2 が測るのは出荷される
+schedule ではなくなる**ので、その旨を上の「0 が保証しないもの」に足すこと。
 
 決着済み（製品バイナリ側は入っている。ScaledJob / CronJob にはこう書く）:
 
@@ -231,10 +231,15 @@ e2e overlay は毎分」を `manifests_test.go` で固定する。
 
 ### ハーネス側の契約と、残っている穴
 
-- **未解決: `insert_probe_job` が入れる `e2e_probe` ジョブを実物の worker が
-  どう扱うかは未検証**（実物の worker が居る状態でハーネスを回したことがない）。
-  判定 3 の producer と判定 5 の positive control の**両方の土台**なので、
-  破れると 3 と 5 がまるごと使えない。**最初にここを確かめること。**
+- **`insert_probe_job` が入れる `e2e_probe` は、実物の worker には
+  「登録されていない kind」である。** 掴んだ worker は 1 回失敗させて試行回数を
+  1 つ潰す（実データには触れない）。`--once` の worker はそこで終了する
+  （ログの `outcome=job_unhandled`）。単体では
+  `TestServerCmd_OnceModeExitsOnUnhandledJobKind` が同じ形を固定している。
+  つまり **`e2e_probe` は「長時間 Job」にはならない**ので、判定 3 の
+  既定 producer は実物の encode ワークロードに対しては使えない
+  （`E2E_ENCODE_PRODUCER` の差し替えが要る。判定 3 の冒頭コメント）。
+  判定 5 の positive control（滞留を作るだけ）はこのままで成立する。
 - **トリガが数える River の状態は `available` / `retryable`。** ハーネスの
   「滞留」の定義（`lib/kube.sh` の `riverBacklogStates`）と同じ集合にすること。
   ずれると、失敗して指数バックオフ中（`scheduled`）のジョブ 1 件で判定 2 が

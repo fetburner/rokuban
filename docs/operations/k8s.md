@@ -182,12 +182,32 @@ River の at-least-once / 冪等性は「殺されても正しい」を保証済
 - ジョブ 1 件の Work を抜けたらプロセスを畳む。**成功・失敗を問わず exit 0**（リトライは River が持つので、k8s 側は `backoffLimit: 0` / `restartPolicy: Never` にして二重にリトライしない）
 - **実行中のジョブは打ち切らない。** `--once-idle-timeout`（既定 30 秒）は「1 件も掴めないまま待った時間」にしか効かないので、数時間のエンコードは対象にならない。KEDA が滞留を過大評価して起こした空振りの Job を終わらせるためだけの値である（`worker.OnceGate` / `TestOnceGate_IdleTimeoutDoesNotCutRunningJob`）
 - 引くキューはちょうど 1 つで、その `MaxWorkers` は 1 に落とす（KEDA 側が「1 Job = 1 アイテム」で数を合わせるため）。`worker.periodic_jobs: true` との併用は起動エラー —— 1 件で終わる Job がリーダーになると、定期投入の間隔が Job の起動回数で決まってしまう
+- argv の制約は 3 つで、いずれも起動エラーになる
+    - `--roles worker` 単独であること（常駐する役と同居させない）
+    - `--once-idle-timeout` が正の値であること
+    - `--once-idle-timeout` を `--once` 無しで書かないこと
+- encode の ScaledJob だけ `Dockerfile.full` のイメージを使う。公式イメージは ffmpeg を同梱しないので、encode / thumbnail キューを購読する worker は起動時に fail-fast する
 
-未解決: Work を抜けてから River の producer が止まるまでの間に次のジョブが fetch されると、1 つの Job が 2 件消化して終わりうる。同時には走らず（`MaxWorkers` が 1）、drain が待つので打ち切られもしないため、実害は KEDA の数が 1 つずれる（空振りの Job が 1 つ増える）ことだけである。この窓は閉じていない --- ただし `cleanup` に 2 件溜めて 3 回起動した実測ではいずれも 1 件で終了した。
+**停止の順序が「実行中を打ち切らない」を支えている。** 1 件消化モードは、先に River の graceful stop を撃つ（producer の fetch を止めて実行中を待つ）。そのあとでプロセスを畳む。畳む側は Start に渡した ctx の cancel である。River にとってはこれが `StopAndCancel` 相当のハードストップになる（`SoftStopTimeout` 未設定なので work ctx が start ctx を継ぐ）。逆順にすると実行中のジョブの ctx が即座に切れる（実測 2.6ms、試行回数が 1 つ潰れた）。順序は `TestStopOnceProcess` が固定している。
 
-失敗するジョブ（到達不能な mirakc への `epg_sync`）でも **exit 0** で、ジョブは River 側で未完了のまま残って次の Job が引き直すことを実バイナリで確認した。
+既知の窓: Work を抜けてから producer が止まるまでの間に次のジョブが fetch されると、1 つの Job が 2 件消化して終わりうる。`MaxWorkers` が 1 なので同時には走らない。上記の順序により打ち切られもしない。実害は KEDA の数が 1 つずれることだけである。実測では 25 回試してこの窓に入らなかった。**窓の中の挙動そのものは未測定**である。
+
+失敗するジョブ（到達不能な mirakc への `epg_sync`）でも **exit 0** になる。ジョブは River 側で未完了のまま（`attempt=1`）残る（`TestServerCmd_OnceModeExitsZeroOnJobFailure`）。**次の Job がそれを引き直すところまでは測っていない。**
+
+**登録されていない kind のジョブを掴んだ場合は 1 回失敗させて終了する**（ログの `outcome=job_unhandled`）。River の executor はこの場合ワーカーのミドルウェアを通らない。そのため購読した終了イベントで観測している（`worker.SubscribeOnceEvents`）。版ずれで踏む --- 新しいイメージの CronJob / api が、古い worker の知らない kind を投入する形である。`TestServerCmd_OnceModeExitsOnUnhandledJobKind` が固定している。
+
+**スケーラのクエリは `available` だけでなく `retryable` も数える。** 失敗したジョブを `retryable` から `available` に戻すのは River の `JobScheduler` である。これはリーダーに選出されたクライアントだけが動かす保守サービスである。ロール分割構成では常駐する River クライアントが 1 つも無い（api / watcher / `enqueue` はいずれも insert 専用で `Start` しない）。そのため `available` だけを数えると **失敗したジョブが永久に止まる** --- Job が起きないので誰も昇格させず、昇格しないので Job も起きない。
 
 **キューは argv で絞る（`--queues`）。** ScaledJob はキュー単位に作るのに ConfigMap は 1 個である。キューを config キー（`worker.queues`）でしか指定できないと、ScaledJob の数だけ ConfigMap が増える（上記「マニフェストの配布形式」の決定が崩れる）。`--queues` と `worker.queues` の**両方指定は起動エラー**にしてある --- どちらが勝つかを覚えておく形にすると、monolith と k8s で購読集合の出所が分かれる。`--queues=`（明示的な空）も起動エラーである。「全キュー」に化けると、site 束縛キューまで掴んで `verifySite` で全滅する Pod が黙って生まれる。
+
+### 定期投入: `rokuban enqueue` の CronJob
+
+`worker.periodic_jobs: false` で出荷し、定期ジョブは CronJob から `rokuban enqueue <ジョブ名>` で投入する。River の `PeriodicJobs` はリーダーだけが投入するので、worker が 0 にスケールする構成では誰も投入しなくなる（[§1](monitoring.md) 参照）。
+
+- **argv は平たい要素で書く。** `sh -c "rokuban enqueue ..."` でくるむと、判定ハーネスが投入側の CronJob を見つけられない。探索は argv の要素として `enqueue` と ジョブ名 と `--site <site>` を見る
+- 対象は `rokuban enqueue --help` が出す一覧が権威。site 束縛のもの（`--site` が要る）はサイトごとに 1 本ずつ作る
+- `enqueue` は同じジョブが待機中なら投入せず exit 0 を返すので、重ねて叩いても安全（CronJob が失敗扱いにならない）
+- **schedule は base に実運用の間隔を書く。** 受け入れ判定は 180 秒以内の自然発火を要求するので、判定用の overlay 側で毎分に patch する。両方を `deploy/k8s/manifests_test.go` で固定する --- base の値が判定の都合で短くなるのを防ぐため
 
 **「実行中の Job は殺されない」は無条件ではない。** `rollout.strategy` の書き方に依存する。KEDA (v2.20.2) が受け付ける値は `gradual` と `immediate` の 2 つ。kind での実測は次のとおり。
 
@@ -211,6 +231,8 @@ Deployment 型で worker を運用する場合（またはその併用）の定�
 
 - SIGTERM で **drain**（実行中ジョブは完走、新規 claim 停止）+ 長い `terminationGracePeriodSeconds`
 - busy な worker が `controller.kubernetes.io/pod-deletion-cost` を上げてスケールイン犠牲者から外れる
+
+**未解決: この drain はまだ配線されていない。** SIGTERM は `signal.NotifyContext` の ctx を cancel し、その ctx は River の `Start` に渡っている。`SoftStopTimeout` を設定していない限り work ctx は start ctx を継ぐ。つまり **cancel は `StopAndCancel` 相当のハードストップ**である（実測: 実行中ジョブの ctx が 2.6ms で切れ、試行回数が 1 つ潰れた）。Deployment 型 worker のローリング更新は、いま実行中のエンコードを打ち切る。1 件消化モードは停止の順序でこれを避けているが、常駐 worker の SIGTERM は避けていない。`river.Config.SoftStopTimeout` がその knob である。
 
 ### シングルトンロール: pg_advisory_lock リーダー選出
 

@@ -163,17 +163,10 @@ func newServerCmd() *cobra.Command {
 			// ClientConfig.Queues）はすべてこの解決済みの集合を見る ---
 			// 片方だけが config を直接見ると、argv で絞った Pod が
 			// 「絞ったつもりで検査だけ全キュー基準」になる（resolveWorkerQueues）。
-			queues, err := resolveWorkerQueues(cmd, cfg.Worker.Queues)
+			queues, err := resolveWorkerQueues(cmd, cfg.Worker.Queues, roles)
 			if err != nil {
 				return err
 			}
-			// **解決した集合を config に書き戻す。** 読み手が 3 か所
-			// （validateSiteBinding / RequiresEncodeTools / ClientConfig.Queues）
-			// あるので、どちらを読んでも同じ値になる形にしておく --- 1 か所だけ
-			// config を直接読む形が残ると、「argv で絞ったつもりで実は全キューを
-			// 引く Pod」が生まれ、site 束縛キューを掴んで verifySite で全滅する。
-			cfg.Worker.Queues = queues
-
 			// 1 件消化モード（KEDA ScaledJob の Job が自分で終了するための起動形態。
 			// worker.OnceGate、docs/operations.md §5）。
 			onceGate, onceIdleTimeout, err := resolveOnce(cmd, roles)
@@ -442,6 +435,16 @@ func newServerCmd() *cobra.Command {
 				}
 			}
 
+			// 1 件消化モードの購読は **Start より前**に張る（張る前に終わった
+			// ジョブのイベントを取りこぼさないため）。middleware だけでは
+			// 未登録 kind のジョブを観測できない（worker.SubscribeOnceEvents）。
+			var onceEvents <-chan *river.Event
+			if onceGate != nil {
+				var unsubscribe func()
+				onceEvents, unsubscribe = worker.SubscribeOnceEvents(riverClient)
+				defer unsubscribe()
+			}
+
 			if slices.Contains(roles, "worker") {
 				if startErr := riverClient.Start(ctx); startErr != nil {
 					return fmt.Errorf("starting river client: %w", startErr)
@@ -458,29 +461,27 @@ func newServerCmd() *cobra.Command {
 				}()
 
 				if onceGate != nil {
-					// 1 件消化モードの終了契機。ジョブ 1 件が Work を抜けたら
-					// （または 1 件も掴めないまま待ち時間を使い切ったら）
-					// **SIGTERM と同じ経路**で畳む --- stop() は
-					// signal.NotifyContext の ctx を cancel するので、eg.Wait() が
-					// 戻り、RunE の defer が LIFO で riverClient.Stop（drain）→
-					// pool.Close の順に片付ける。専用の終了経路を作らないので、
-					// drain の挙動がモード間で分岐しない。
+					// 1 件消化モードの終了契機。
+					//
+					// **停止の順序は stopOnceProcess が持つ**（graceful stop →
+					// プロセス畳み。逆順にすると実行中のジョブを打ち切る。
+					// River の Stop は StopInit で冪等なので、下の defer の Stop は
+					// そのまま無害な no-op になる）。
 					//
 					// **ジョブが失敗しても nil を返す**（= exit 0）。リトライは
 					// River が持っており、k8s 側は backoffLimit: 0 で起こし直さない
 					// 前提なので、終了コードで失敗を表すと二重にリトライする形に
 					// なる（worker.ClientConfig.Once のコメント）。
 					//
-					// 未解決（実害が空振り Job 1 つぶんなので閉じていない）:
-					// Work を抜けてから stop() が River の producer を止めるまでの
-					// 間に次のジョブが fetch されると、この Job は 2 件消化して
-					// 終わる。MaxWorkers=1 なので同時には走らず、drain が待つので
-					// 打ち切られもしない。KEDA 側の「1 Job = 1 アイテム」の数が
-					// 1 つずれ、空振りの Job が 1 つ増えるだけである。
+					// 既知の窓（実害が空振り Job 1 つぶんなので閉じていない）:
+					// Work を抜けてから Stop が producer を止めるまでの間に次の
+					// ジョブが fetch されると、この Job は 2 件消化して終わる。
+					// MaxWorkers=1 なので同時には走らず、上記の順序により
+					// 打ち切られもしない（実測 0/25 でこの窓には入らなかった）。
 					eg.Go(func() error {
-						outcome := onceGate.Wait(egCtx, onceIdleTimeout)
+						outcome := onceGate.Wait(egCtx, onceIdleTimeout, onceEvents)
 						slog.Info("worker: once mode finished", "outcome", outcome.String())
-						stop()
+						stopOnceProcess(ctx, riverClient.Stop, stop)
 						return nil
 					})
 				}
@@ -571,12 +572,24 @@ func resolveRoles(cmd *cobra.Command) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	// 同じ名前の重複は 1 つに畳む（`--sites tokyo,tokyo` /
+	// `--queues ingest,ingest` と揃える）。畳まないと 2 か所で困る:
+	// `--roles worker,worker --once` が「ちょうど worker 1 つ」の検査に
+	// 引っかかって紛らわしいエラーになり、db.NewPool のロール別 budget の
+	// 合計が二重に数えられる。
+	deduped := make([]string, 0, len(roles))
+	seen := make(map[string]bool, len(roles))
 	for _, r := range roles {
 		if !slices.Contains(allRoles, r) {
 			return nil, fmt.Errorf("unknown role: %q (valid: %s)", r, strings.Join(allRoles, ", "))
 		}
+		if seen[r] {
+			continue
+		}
+		seen[r] = true
+		deduped = append(deduped, r)
 	}
-	return roles, nil
+	return deduped, nil
 }
 
 // riverClientKind は roles から River クライアントの組み立て方を分類する。

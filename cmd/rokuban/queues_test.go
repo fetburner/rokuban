@@ -1,12 +1,17 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/spf13/cobra"
 )
+
+// workerRole は resolveWorkerQueues に渡す既定のロール集合（キューを引くのは
+// worker ロールだけなので、キュー解決のテストはこれを前提にする）。
+var workerRole = []string{"worker"}
 
 func newQueuesTestCmd(t *testing.T) *cobra.Command {
 	t.Helper()
@@ -21,7 +26,7 @@ func newQueuesTestCmd(t *testing.T) *cobra.Command {
 // （既存構成の挙動を変えない）。
 func TestResolveWorkerQueues_UnspecifiedUsesConfig(t *testing.T) {
 	cmd := newQueuesTestCmd(t)
-	got, err := resolveWorkerQueues(cmd, []string{"ruler", "reconciler"})
+	got, err := resolveWorkerQueues(cmd, []string{"ruler", "reconciler"}, workerRole)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -30,7 +35,7 @@ func TestResolveWorkerQueues_UnspecifiedUsesConfig(t *testing.T) {
 	}
 
 	// config も空なら空（= 全キュー）のまま。
-	empty, err := resolveWorkerQueues(newQueuesTestCmd(t), nil)
+	empty, err := resolveWorkerQueues(newQueuesTestCmd(t), nil, workerRole)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -45,7 +50,7 @@ func TestResolveWorkerQueues_FlagWins(t *testing.T) {
 	if err := cmd.Flags().Set(queuesFlagName, "encode"); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
-	got, err := resolveWorkerQueues(cmd, nil)
+	got, err := resolveWorkerQueues(cmd, nil, workerRole)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -62,7 +67,7 @@ func TestResolveWorkerQueues_DuplicatesAreFolded(t *testing.T) {
 	if err := cmd.Flags().Set(queuesFlagName, "ingest,ingest"); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
-	got, err := resolveWorkerQueues(cmd, nil)
+	got, err := resolveWorkerQueues(cmd, nil, workerRole)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -79,7 +84,7 @@ func TestResolveWorkerQueues_BothSpecified_IsError(t *testing.T) {
 	if err := cmd.Flags().Set(queuesFlagName, "encode"); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
-	_, err := resolveWorkerQueues(cmd, []string{"ruler"})
+	_, err := resolveWorkerQueues(cmd, []string{"ruler"}, workerRole)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -96,7 +101,7 @@ func TestResolveWorkerQueues_ExplicitEmpty_IsError(t *testing.T) {
 	if err := cmd.Flags().Set(queuesFlagName, ""); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
-	_, err := resolveWorkerQueues(cmd, nil)
+	_, err := resolveWorkerQueues(cmd, nil, workerRole)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -112,12 +117,78 @@ func TestResolveWorkerQueues_UnknownQueue_IsError(t *testing.T) {
 	if err := cmd.Flags().Set(queuesFlagName, "encode,bogus"); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
-	_, err := resolveWorkerQueues(cmd, nil)
+	_, err := resolveWorkerQueues(cmd, nil, workerRole)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
 	if !strings.Contains(err.Error(), "bogus") || !strings.Contains(err.Error(), "--"+queuesFlagName) {
 		t.Errorf("err = %v, want to mention the unknown name and --%s", err, queuesFlagName)
+	}
+}
+
+// **worker ロールが無いのに --queues を渡したら起動エラー。** キューを引くのは
+// worker ロールだけなので、`--roles api --queues=encode`（encode の ScaledJob の
+// argv からの写し間違い）は黙って何もしない Pod になる。`--once-idle-timeout` を
+// `--once` 無しで書いたときと同じ扱いにする。
+func TestResolveWorkerQueues_WithoutWorkerRole_IsError(t *testing.T) {
+	cmd := newQueuesTestCmd(t)
+	if err := cmd.Flags().Set(queuesFlagName, "encode"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	_, err := resolveWorkerQueues(cmd, nil, []string{"api"})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "no effect without the worker role") {
+		t.Errorf("err = %v, want to mention the missing worker role", err)
+	}
+
+	// --all 相当（worker を含む）なら通る。
+	cmd = newQueuesTestCmd(t)
+	if err := cmd.Flags().Set(queuesFlagName, "encode"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if _, err := resolveWorkerQueues(cmd, nil, allRoles); err != nil {
+		t.Errorf("unexpected error for --all: %v", err)
+	}
+}
+
+// `--queues=`（明示的な空）と config が同時に指定された場合、**空の方**を
+// 報告すること。順序を逆にすると「flag:  / config: ruler」という値の抜けた
+// 排他エラーになり、何を直せばよいか読めない。
+func TestResolveWorkerQueues_ExplicitEmptyWithConfig_ReportsEmpty(t *testing.T) {
+	cmd := newQueuesTestCmd(t)
+	if err := cmd.Flags().Set(queuesFlagName, ""); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	_, err := resolveWorkerQueues(cmd, []string{"ruler"}, workerRole)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "at least one queue") {
+		t.Errorf("err = %v, want the empty-value error（排他エラーではなく）", err)
+	}
+}
+
+// `--roles worker,worker` の重複が畳まれること。畳まないと --once の
+// 「ちょうど worker 1 つ」検査が紛らわしいエラーになり、db.NewPool の
+// ロール別 budget が二重に数えられる。
+func TestResolveRoles_FoldsDuplicates(t *testing.T) {
+	cmd := &cobra.Command{Use: "test"}
+	cmd.Flags().Bool("all", false, "")
+	cmd.Flags().StringSlice("roles", nil, "")
+	if err := cmd.Flags().Set("roles", "worker,worker"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	roles, err := resolveRoles(cmd)
+	if err != nil {
+		t.Fatalf("resolveRoles: %v", err)
+	}
+	if len(roles) != 1 || roles[0] != "worker" {
+		t.Errorf("roles = %v, want [worker]", roles)
+	}
+	if err := validateOnceMode(roles); err != nil {
+		t.Errorf("validateOnceMode(%v) = %v, want nil", roles, err)
 	}
 }
 
@@ -208,8 +279,9 @@ func TestResolveOnce(t *testing.T) {
 	if gate == nil {
 		t.Error("gate = nil, want non-nil")
 	}
-	if idle != defaultOnceIdleTimeout {
-		t.Errorf("idle = %s, want %s", idle, defaultOnceIdleTimeout)
+	// **実装の定数と比べない**（定数を変えても通るテストになる）。
+	if idle != 30*time.Second {
+		t.Errorf("idle = %s, want 30s", idle)
 	}
 
 	// --once-idle-timeout だけ: 起動エラー
@@ -232,6 +304,40 @@ func TestResolveOnce(t *testing.T) {
 	}
 	if _, _, err := resolveOnce(cmd, []string{"worker", "api"}); err == nil {
 		t.Fatal("expected error, got nil")
+	}
+}
+
+// **1 件消化モードの停止は「River を graceful に止めてからプロセスを畳む」順序で
+// あること。** プロセスの畳み（signal ctx の cancel）は River にとって
+// StopAndCancel 相当のハードストップなので、逆順にすると実行中のジョブが
+// 打ち切られる（数時間のエンコードを打ち切らないことが ScaledJob を選んだ理由
+// そのもの）。**この順序は振る舞いのテストでは守れない** --- 実行中のジョブが
+// 残る窓は実測 0/25 で踏めなかったので、順序を入れ替えても
+// TestServerCmd_OnceMode* は緑のままになる。だからここで直接固定する。
+//
+// あわせて、stopRiver に渡る ctx が cancel 済みでないことも見る。cancel 済みの
+// ctx を渡すと River の Stop は即座に戻り（ctx.Err()）、実行中を待たない。
+func TestStopOnceProcess(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	// 呼び出し側の ctx が既に終わっていても、graceful stop は待てなければならない。
+	cancel()
+
+	var order []string
+	var riverCtxAlive bool
+	stopRiver := func(stopCtx context.Context) error {
+		order = append(order, "river")
+		riverCtxAlive = stopCtx.Err() == nil
+		return nil
+	}
+	cancelProcess := func() { order = append(order, "process") }
+
+	stopOnceProcess(ctx, stopRiver, cancelProcess)
+
+	if strings.Join(order, ",") != "river,process" {
+		t.Errorf("停止の順序 = %v, want [river process]", order)
+	}
+	if !riverCtxAlive {
+		t.Error("stopRiver に cancel 済みの ctx が渡っている（Stop が実行中を待たずに戻る）")
 	}
 }
 

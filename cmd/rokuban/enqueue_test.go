@@ -285,6 +285,35 @@ func TestRunEnqueue_DeleteReconcile(t *testing.T) {
 	}
 }
 
+// delete-reconcile が待機中なら投入せず exit 0 相当（error が nil）であること。
+// **CronJob が唯一の投入者**になる構成では、前の周回のジョブがまだ available の
+// まま次の発火が来る形が普通に起きる（worker が 0 にスケールしていると誰も
+// 消化しない）。ruler-pass と同じ形（UniqueOpts による合流）で固定する。
+func TestRunEnqueue_DeleteReconcile_AlreadyPending_SkipsWithoutError(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	var first bytes.Buffer
+	if err := runEnqueue(ctx, pool, "delete-reconcile", "", &first); err != nil {
+		t.Fatalf("runEnqueue (1 回目): %v", err)
+	}
+
+	var second bytes.Buffer
+	if err := runEnqueue(ctx, pool, "delete-reconcile", "", &second); err != nil {
+		t.Fatalf("runEnqueue (2 回目) は合流して nil を返すこと: %v", err)
+	}
+
+	var count int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM river_job WHERE kind = 'delete_reconcile'`,
+	).Scan(&count); err != nil {
+		t.Fatalf("counting delete_reconcile jobs: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("delete_reconcile job count = %d, want 1（2 回目が合流していない）", count)
+	}
+}
+
 // 未知のジョブ名はエラーになること。
 func TestRunEnqueue_UnknownJob(t *testing.T) {
 	pool := testutil.SetupDB(t)

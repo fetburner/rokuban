@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 	"time"
@@ -66,12 +68,17 @@ const (
 //     「全キューを引く Pod」に化けると、site 束縛キューまで掴んで
 //     verifySite で全滅する構成が黙って生まれる
 //   - フラグと config の両方が非空 → 起動エラー（下記）
+//   - worker ロールが無い → 起動エラー。キューを引くのは worker ロールだけ
+//     （`--roles api --queues=encode` は encode の ScaledJob の argv からの
+//     写し間違いで起きうる形で、黙って何もしない Pod になる）。
+//     `--once-idle-timeout` を `--once` 無しで書いたときと同じ扱いにする ---
+//     効かないフラグを黙って無視しない
 //
 // **両方指定を勝ち負けで解決しない。** 黙って片方が勝つと、monolith
 // （config だけ）と k8s（argv だけ）で購読集合の出所が分かれ、「config を直したのに
 // 効かない」を起動ログ以外から知る手段が無くなる。fail-fast で落とす
 // （docs/operations.md §DB 接続失敗と同じ方針）。
-func resolveWorkerQueues(cmd *cobra.Command, configured []string) ([]string, error) {
+func resolveWorkerQueues(cmd *cobra.Command, configured []string, roles []string) ([]string, error) {
 	if !cmd.Flags().Changed(queuesFlagName) {
 		return configured, nil
 	}
@@ -79,15 +86,21 @@ func resolveWorkerQueues(cmd *cobra.Command, configured []string) ([]string, err
 	if err != nil {
 		return nil, err
 	}
+	// **空の検査を先に置く。** 後ろに置くと、config も指定されている場合に
+	// 「flag:  / config: ruler」という値の抜けたエラーになる。
+	if len(names) == 0 {
+		return nil, fmt.Errorf("--%s: pass at least one queue name (valid: %s); "+
+			"an empty value is rejected because it would silently mean \"all queues\"",
+			queuesFlagName, strings.Join(worker.AllQueueNames(), ", "))
+	}
 	if len(configured) > 0 {
 		return nil, fmt.Errorf("--%s and worker.queues are mutually exclusive "+
 			"(flag: %s / config: %s); the deployment must own exactly one of them",
 			queuesFlagName, strings.Join(names, ", "), strings.Join(configured, ", "))
 	}
-	if len(names) == 0 {
-		return nil, fmt.Errorf("--%s: pass at least one queue name (valid: %s); "+
-			"an empty value is rejected because it would silently mean \"all queues\"",
-			queuesFlagName, strings.Join(worker.AllQueueNames(), ", "))
+	if !slices.Contains(roles, "worker") {
+		return nil, fmt.Errorf("--%s has no effect without the worker role (got roles [%s]): "+
+			"only the worker role pulls queues", queuesFlagName, strings.Join(roles, ", "))
 	}
 
 	// 未知の名前はここで弾く（buildRiverConfig にも同じ検査があるが、そちらの
@@ -158,6 +171,29 @@ func resolveOnce(cmd *cobra.Command, roles []string) (*worker.OnceGate, time.Dur
 		return nil, 0, err
 	}
 	return worker.NewOnceGate(), idleTimeout, nil
+}
+
+// stopOnceProcess は 1 件消化モードの停止手順。
+//
+// **順序が意味を持つので 1 か所にまとめる。** stopRiver（riverClient.Stop）は
+// producer の fetch を止めて実行中のジョブを待つ graceful stop、cancelProcess
+// （signal.NotifyContext の stop）は Start に渡した ctx の cancel で、River に
+// とっては **StopAndCancel 相当のハードストップ**である（SoftStopTimeout を
+// 設定していないため work ctx が start ctx を継ぐ。river@v0.40.0/client.go の
+// workParentCtx）。逆順にすると実行中のジョブが打ち切られる。
+//
+// stopRiver に渡す ctx は cancel されないものにする。上限を付けないのは
+// 「実行中のジョブを打ち切らない」が ScaledJob を選んだ理由そのものだから
+// （数時間のエンコードを待つ）。行き詰まったときの逃げ道は SIGTERM で、
+// そのとき start ctx の cancel がハードストップにエスカレートする。
+//
+// 順序と ctx の扱いは TestStopOnceProcess が固定する（実行中のジョブが残る窓は
+// 実測 0/25 で踏めなかったので、ここを壊しても振る舞いのテストでは落ちない）。
+func stopOnceProcess(ctx context.Context, stopRiver func(context.Context) error, cancelProcess func()) {
+	if err := stopRiver(context.WithoutCancel(ctx)); err != nil {
+		slog.Error("stopping river client (once mode)", "err", err)
+	}
+	cancelProcess()
 }
 
 // resolveOnceIdleTimeout は 1 件消化モードの未 claim 待ち上限を返す。

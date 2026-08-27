@@ -109,7 +109,7 @@ Grafana Loki / Tempo の `-config.expand-env` と同じ、**YAML パース前の
 
 ### ffmpeg の存在検査
 
-`encode.ffmpeg` / `encode.ffprobe` は、worker ロールが encode/thumbnail キューを購読するときだけ LookPath で存在検査する。購読するのは `worker.queues`（または `--queues`）が空、または encode/thumbnail を含むときである。api ロールは呼ばない（不変条件 4）。`live.ffmpeg` は `live.enabled: true` の streamer 起動時だけ検査する。
+`encode.ffmpeg` / `encode.ffprobe` は、worker ロールが encode/thumbnail キューを購読するときだけ LookPath で存在検査する。購読するのは、絞り込みが無い（`worker.queues` が空で `--queues` も無い）か、encode/thumbnail を含むときである。api ロールは呼ばない（不変条件 4）。`live.ffmpeg` は `live.enabled: true` の streamer 起動時だけ検査する。
 
 ### live
 
@@ -264,6 +264,6 @@ argv の順序（live）は同じ規則を入力 1 本・出力 N 本の形に�
 
 - **env による config キーの自動オーバーライド**（viper/koanf の多層マージ）: どの値がどこから来たか追いにくくなる割に、この規模では利得がない
 - **設定ファイルの分割・include 機構**: 分離の必要があるのは機微情報だけで、それは env で足りる
-- **CLI フラグで設定値を渡すこと**: CLI フラグは `--config` のパスと `--all` / ロール選択などプロセスの起動形態に限定する
+- **CLI フラグで設定値を渡すこと**: CLI フラグは `--config` のパスと `--all` / ロール選択などプロセスの起動形態に限定する。例外は `--sites` と `--queues` の 2 つで、どちらも「このプロセスが何を担当するか」を表す起動形態である。`--queues` は config キー `worker.queues` と同じ値を取るが、その値自体がデプロイ時のパラメータであって環境の設定ではない。**両方指定は起動エラー**にして、値の出所が 2 つに分かれないようにしている。k8s のロール分割では ConfigMap 1 個を全 Pod で共有し、Pod ごとの差分を argv に寄せるため、この 2 つは argv 側に無いと ConfigMap が Pod セットの数だけ増える（[operations.md](operations.md) §5）
 - **SIGHUP 等のホットリロード**: 設定変更は再起動。crash-only + level-triggered 設計なら再起動は無害で、リロードは「どの値がいつから有効か」という追跡困難性を別の形で持ち込むだけ
 
