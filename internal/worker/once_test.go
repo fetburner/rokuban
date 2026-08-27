@@ -244,6 +244,47 @@ func TestOnceGate_ClosedEventChannelIsNotAJob(t *testing.T) {
 	}
 }
 
+// **実行中のジョブがあるときに購読が閉じても、完走を待つこと。** `waitDone` にも
+// 同じガードが要る --- 閉じたチャネルは永久に受信可能なので、`wait` 側だけを
+// 直すと「実行中なのに job_done」を報告する（打ち切りは呼び出し側の graceful
+// stop が防ぐが、ログの outcome がでっち上げになる）。
+//
+// 20 回繰り返すのは、`waitDone` のガードだけを外す変異を落とすため ---
+// `wait` の入口では `started` と閉じた `events` の両方が準備できており、
+// select が `events` を選んだ場合は `wait` 側のガードが先に効いて
+// `waitDone` に nil が渡る（そのとき変異は見えない）。
+func TestOnceGate_ClosedEventChannelDoesNotEndARunningJob(t *testing.T) {
+	for i := range 20 {
+		g := NewOnceGate()
+		work := onceWorkFunc(t, g)
+		events := make(chan *river.Event)
+		close(events)
+
+		release := make(chan struct{})
+		go func() { _ = work(func(context.Context) error { <-release; return nil }) }()
+		select {
+		case <-g.started:
+		case <-time.After(5 * time.Second):
+			close(release)
+			t.Fatalf("iteration %d: ジョブが Work に入らなかった", i)
+		}
+
+		outcome := make(chan OnceOutcome, 1)
+		go func() { outcome <- g.Wait(context.Background(), time.Hour, events) }()
+		select {
+		case got := <-outcome:
+			close(release)
+			t.Fatalf("iteration %d: 実行中のジョブがあるのに Wait が %v を返した（購読の close をジョブとして数えている）", i, got)
+		case <-time.After(20 * time.Millisecond):
+		}
+
+		close(release)
+		if got := <-outcome; got != OnceOutcomeJobDone {
+			t.Fatalf("iteration %d: Wait() = %v, want %v", i, got, OnceOutcomeJobDone)
+		}
+	}
+}
+
 // 購読が閉じても、その後 middleware から観測できるジョブでは job_done を返すこと
 // （第 2 の観測点を失っただけで、第 1 の観測点は生きている）。
 func TestOnceGate_ClosedEventChannelStillObservesMiddleware(t *testing.T) {

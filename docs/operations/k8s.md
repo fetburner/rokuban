@@ -188,7 +188,7 @@ River の at-least-once / 冪等性は「殺されても正しい」を保証済
     - `--once-idle-timeout` を `--once` 無しで書かないこと
 - encode の ScaledJob だけ `Dockerfile.full` のイメージを使う。公式イメージは ffmpeg を同梱しないので、encode / thumbnail キューを購読する worker は起動時に fail-fast する
 
-**停止の順序が「実行中を打ち切らない」を支えている。** 1 件消化モードは、先に River の graceful stop を撃つ（producer の fetch を止めて実行中を待つ）。そのあとでプロセスを畳む。畳む側は Start に渡した ctx の cancel である。River にとってはこれが `StopAndCancel` 相当のハードストップになる（`SoftStopTimeout` 未設定なので work ctx が start ctx を継ぐ）。逆順にすると実行中のジョブの ctx が即座に切れる（実測 2.6ms、試行回数が 1 つ潰れた）。順序は `TestStopOnceProcess` が固定している。
+**停止の順序が「実行中を打ち切らない」を支えている。** 1 件消化モードは、先に River の graceful stop を撃つ（producer の fetch を止めて実行中を待つ）。そのあとでプロセスを畳む。畳む側は Start に渡した ctx の cancel である。River にとってはこれが `StopAndCancel` 相当のハードストップになる（`SoftStopTimeout` 未設定なので work ctx が start ctx を継ぐ）。逆順にすると実行中のジョブの ctx が即座に切れ、試行回数が 1 つ潰れる（実測。桁は測定環境で振れるので数値は書かない --- 根拠は上の `workParentCtx` の実装である）。順序は `TestStopOnceProcess` が固定している。
 
 既知の窓: Work を抜けてから producer が止まるまでの間に次のジョブが fetch されると、1 つの Job が 2 件消化して終わりうる。`MaxWorkers` が 1 なので同時には走らない。打ち切られもしない --- これは上記の順序と River の実装（`Stop` は producer を止めてから実行中の完了を待つ）からの導出であって、測定ではない。実害は KEDA の数が 1 つずれることだけである。実測では 25 回試してこの窓に入らなかった。**窓の中の挙動そのものは未測定**である。
 
@@ -227,7 +227,7 @@ site 修飾と `rollout.strategy` は [deploy/k8s/e2e](../../deploy/k8s/e2e/READ
 - **argv は平たい要素で書く。** `sh -c "rokuban enqueue ..."` でくるむと、判定ハーネスが投入側の CronJob を見つけられない。探索は argv の要素として `enqueue` と ジョブ名 と `--site <site>` を見る
 - 対象は `rokuban enqueue --help` が出す一覧が権威。site 束縛のもの（`--site` が要る）はサイトごとに 1 本ずつ作る
 - `enqueue` は同じジョブが待機中なら投入せず exit 0 を返すので、重ねて叩いても安全（CronJob が失敗扱いにならない）
-- **schedule は base に実運用の間隔を書く。** 受け入れ判定は 180 秒以内の自然発火を要求するので、判定用の overlay 側で毎分に patch する。両方を `deploy/k8s/manifests_test.go` で固定する --- base の値が判定の都合で短くなるのを防ぐため
+- **schedule は base に実運用の間隔を書く。** 受け入れ判定は 180 秒以内の自然発火を要求するので、判定用の overlay 側で毎分に patch する。両方を `deploy/k8s/manifests_test.go` で固定すること --- base の値が判定の都合で短くなるのを防ぐため（**方針だけ決まっており、CronJob そのものと合わせてまだ実装されていない**）
 
 ### Deployment 併用時: SIGTERM drain + pod-deletion-cost
 
@@ -238,7 +238,7 @@ Deployment 型で worker を運用する場合（またはその併用）の定�
 
 1 件消化モードの graceful stop には**上限が無い**。SIGTERM は start ctx の cancel でハードストップにエスカレートさせるが、ctx を見ないワーカーはそれでも止まらない。最終的な上限は `terminationGracePeriodSeconds` 経過後の SIGKILL だけである。常駐 worker が持つ `Stop(30 秒)` の defer は、1 件消化モードでは先に graceful stop が完了するため到達しない。
 
-**未解決: この drain はまだ配線されていない。** SIGTERM は `signal.NotifyContext` の ctx を cancel し、その ctx は River の `Start` に渡っている。`SoftStopTimeout` を設定していない限り work ctx は start ctx を継ぐ。つまり **cancel は `StopAndCancel` 相当のハードストップ**である（実測: 実行中ジョブの ctx が 2.6ms で切れ、試行回数が 1 つ潰れた）。Deployment 型 worker のローリング更新は、いま実行中のエンコードを打ち切る。1 件消化モードは停止の順序でこれを避けているが、常駐 worker の SIGTERM は避けていない。`river.Config.SoftStopTimeout` がその knob である。
+**未解決: この drain はまだ配線されていない。** SIGTERM は `signal.NotifyContext` の ctx を cancel し、その ctx は River の `Start` に渡っている。`SoftStopTimeout` を設定していない限り work ctx は start ctx を継ぐ。つまり **cancel は `StopAndCancel` 相当のハードストップ**である（実測: 実行中ジョブの ctx が即座に切れ、試行回数が 1 つ潰れた）。Deployment 型 worker のローリング更新は、いま実行中のエンコードを打ち切る。1 件消化モードは停止の順序でこれを避けているが、常駐 worker の SIGTERM は避けていない。`river.Config.SoftStopTimeout` がその knob である。
 
 ### シングルトンロール: pg_advisory_lock リーダー選出
 

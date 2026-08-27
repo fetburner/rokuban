@@ -242,7 +242,7 @@ func TestServerCmd_OnceRejectsExtraRoles(t *testing.T) {
 // ROKUBAN_TEST_DATABASE_URL が資格情報を持たない（trust 認証）ことがある一方で
 // config.DBConfig が両方を required にしているため。CI の URL は
 // `postgres://rokuban:rokuban@...` なのでこの分岐は通らない。
-func writeOnceModeConfig(t *testing.T) string {
+func writeOnceModeConfig(t *testing.T, extra ...string) string {
 	t.Helper()
 	dbCfg := testutil.DatabaseConfig(t)
 	user := dbCfg.User
@@ -271,7 +271,8 @@ storage:
   media_dir: %q
 worker:
   periodic_jobs: false
-`, dbCfg.Host, dbCfg.Port, user, password, dbCfg.Database, dbCfg.SSLMode, t.TempDir()))
+%s`, dbCfg.Host, dbCfg.Port, user, password, dbCfg.Database, dbCfg.SSLMode, t.TempDir(),
+		strings.Join(extra, "\n")))
 }
 
 // syncBuffer は複数 goroutine から書かれるログを集める。サーバーは
@@ -431,7 +432,10 @@ func TestServerCmd_OnceModeExitsOnUnhandledJobKind(t *testing.T) {
 	ctx := context.Background()
 	path := writeOnceModeConfig(t)
 
-	// 製品の投入経路には無い kind なので DB へ直接入れる（ハーネスと同じ形）。
+	// 製品の投入経路には無い kind なので DB へ直接入れる（ハーネスの
+	// insert_probe_job と同じ形）。**max_attempts はハーネスの 1 ではなく 25 にする** ---
+	// 1 だと最初の失敗で discarded になり、壊れた実装でも掴み直せないので
+	// 下の attempt の主張が何も検出しなくなる。
 	if _, err := pool.Exec(ctx,
 		`INSERT INTO river_job (state, queue, kind, args, max_attempts, priority, scheduled_at)
 		 VALUES ('available', 'cleanup', 'e2e_probe', '{}'::jsonb, 25, 1, now())`,
@@ -459,6 +463,33 @@ func TestServerCmd_OnceModeExitsOnUnhandledJobKind(t *testing.T) {
 	}
 	if attempt != 1 {
 		t.Errorf("attempt = %d, want 1（同じ Job が掴み直して試行回数を潰している。state=%s）", attempt, state)
+	}
+}
+
+// **ffmpeg/ffprobe の存在検査が `--queues` に従うこと。** 検査が config の
+// `worker.queues` を見ていると、argv だけで絞った Pod（k8s の ScaledJob が
+// まさにこの形）に対して常に ffmpeg を要求し、**公式イメージ（ffmpeg 非同梱）の
+// worker が起動できなくなる**（`RequiresEncodeTools([])` は true）。
+//
+// 両方向を見る: `--queues=cleanup` は検査を通り、`--queues=encode` は落ちる。
+func TestServerCmd_EncodeToolCheckFollowsQueuesFlag(t *testing.T) {
+	testutil.SetupDB(t)
+	path := writeOnceModeConfig(t, `encode:
+  ffmpeg: /nonexistent/rokuban-test-ffmpeg
+  ffprobe: /nonexistent/rokuban-test-ffprobe`)
+
+	if _, err := runServerCmdBounded(t, 30*time.Second, path,
+		"--roles", "worker", "--sites=", "--queues=cleanup", "--once", "--once-idle-timeout=1s"); err != nil {
+		t.Fatalf("--queues=cleanup は ffmpeg を要求しないこと: %v", err)
+	}
+
+	_, err := runServerCmdBounded(t, 30*time.Second, path,
+		"--roles", "worker", "--sites=", "--queues=encode", "--once", "--once-idle-timeout=1s")
+	if err == nil {
+		t.Fatal("--queues=encode は ffmpeg の不在で落ちること: error を期待したが nil だった")
+	}
+	if !strings.Contains(err.Error(), "encode.ffmpeg") {
+		t.Errorf("err = %v, want the ffmpeg tool error", err)
 	}
 }
 

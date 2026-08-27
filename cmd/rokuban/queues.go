@@ -115,14 +115,14 @@ func resolveWorkerQueues(cmd *cobra.Command, configured []string, roles []string
 	seen := make(map[string]bool, len(names))
 	var unknown []string
 	for _, n := range names {
-		if !slices.Contains(valid, n) {
-			unknown = append(unknown, n)
-			continue
-		}
 		if seen[n] {
 			continue
 		}
 		seen[n] = true
+		if !slices.Contains(valid, n) {
+			unknown = append(unknown, n)
+			continue
+		}
 		resolved = append(resolved, n)
 	}
 	if len(unknown) > 0 {
@@ -197,8 +197,10 @@ func resolveOnce(cmd *cobra.Command, roles []string) (*worker.OnceGate, time.Dur
 // されないので `Stop` は nil しか返さない（`Stop` が非 nil を返すのは
 // 渡した ctx が終わったときだけ）。
 //
-// 順序と ctx の扱いは TestStopOnceProcess が固定する（実行中のジョブが残る窓は
-// 実測 0/25 で踏めなかったので、ここを壊しても振る舞いのテストでは落ちない）。
+// 順序と ctx の扱いは TestStopOnceProcess が固定する。**振る舞いのテストでは
+// 守れない** --- 実行中のジョブが残る窓は実測 0/25 で踏めなかったので、順序を
+// 入れ替えても、この関数の呼び出し自体を `stop()` 1 行に置き換えても、
+// 実 DB のテストは緑のままである。
 func stopOnceProcess(ctx context.Context, stopRiver func(context.Context) error, cancelProcess func()) {
 	if err := stopRiver(context.WithoutCancel(ctx)); err != nil {
 		slog.Error("stopping river client (once mode)", "err", err)

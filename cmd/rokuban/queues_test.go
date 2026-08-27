@@ -124,6 +124,19 @@ func TestResolveWorkerQueues_UnknownQueue_IsError(t *testing.T) {
 	if !strings.Contains(err.Error(), "bogus") || !strings.Contains(err.Error(), "--"+queuesFlagName) {
 		t.Errorf("err = %v, want to mention the unknown name and --%s", err, queuesFlagName)
 	}
+
+	// 未知の名前も重複を畳む（`bogus, bogus` と並べない）。
+	cmd = newQueuesTestCmd(t)
+	if err := cmd.Flags().Set(queuesFlagName, "bogus,bogus"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	_, err = resolveWorkerQueues(cmd, nil, workerRole)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if strings.Contains(err.Error(), "bogus, bogus") {
+		t.Errorf("err = %v, want the unknown list folded", err)
+	}
 }
 
 // **worker ロールが無いのに --queues を渡したら起動エラー。** キューを引くのは
@@ -184,6 +197,18 @@ func TestResolveWorkerQueues_ExplicitEmptyWithConfig_ReportsEmpty(t *testing.T) 
 	}
 	if !strings.Contains(err.Error(), "at least one queue") {
 		t.Errorf("err = %v, want the empty-value error（排他エラーではなく）", err)
+	}
+
+	// worker ロールが無い場合は、空より先にロールを報告する（検査の順序は
+	// 「フラグが効くか → 値が妥当か → config と衝突しないか」）。
+	cmd = newQueuesTestCmd(t)
+	if err := cmd.Flags().Set(queuesFlagName, ""); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if _, err := resolveWorkerQueues(cmd, nil, []string{"api"}); err == nil {
+		t.Fatal("expected error, got nil")
+	} else if !strings.Contains(err.Error(), "no effect without the worker role") {
+		t.Errorf("err = %v, want the role error", err)
 	}
 }
 

@@ -670,8 +670,9 @@ func buildRiverConfig(workers *river.Workers, cfg ClientConfig) (*river.Config, 
 		// `worker: subscribing to queues` とは別の行にする。あちらは KEDA の
 		// スケーラ定義と購読集合を突き合わせる運用者が見る行なので、形を変えない
 		// （issue #421 の「罠」）。
+		// キューはちょうど 1 つ（上の検査）なので単数で出す。
 		slog.Info("worker: once mode enabled (exits after one job)",
-			"queue", sortedQueueNames(physicalQueues))
+			"queue", sortedQueueNames(physicalQueues)[0])
 	}
 
 	if cfg.PeriodicJobs {
