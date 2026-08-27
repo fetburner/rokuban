@@ -81,9 +81,10 @@ watcher / streamer の Deployment、worker の ScaledJob、投入側の CronJob�
 
 **ワークロードを書けば緑になるわけではない。** 判定 2 と 3 が要求していた
 製品バイナリ側の 2 つ（Job の自己終了 / キューを argv で絞る手段）は
-`--once` と `--queues` で入ったが、判定 2.3 が要求する CronJob の schedule は
-まだ決まっていない（下記「先に決めること」）。「TODO なのは対象が無いからだ」
-とだけ読むと、ワークロードを書いてからその壁に当たる。
+`--once` と `--queues` で入った。残るのは判定 2.3 が要求する CronJob の
+schedule で、これはまだ決まっていない（下記「先に決めること」）。
+「TODO なのは対象が無いからだ」とだけ読むと、ワークロードを書いてから
+その壁に当たる。
 
 判定 1.6 は `epg_<site>` を、判定 1.7 は `reconciler_<site>` を消化する側を
 それぞれ別に探す。1 つの鍵で両方を代表させると、epg の ScaledJob だけ先に
@@ -210,9 +211,9 @@ ScaledJob 自体の書き方（トリガの接続先・`rollout.strategy`・切�
 **未解決: 判定 2.3 は CronJob が 180 秒以内に自然発火することを要求する。**
 epg_sync の実運用相当の間隔は 10 分なので、出荷する schedule のままだと
 2.3 が FAIL になる。`overlays/e2e` で毎分に patch する方針を採るなら、
-**判定 2 が測るのは出荷される schedule ではなくなる**ので、その旨を上の
-「0 が保証しないもの」に足し、「base は正気の schedule、e2e overlay は毎分」を
-`manifests_test.go` で固定すること。
+**判定 2 が測るのは出荷される schedule ではなくなる**。その旨を上の
+「0 が保証しないもの」に足すこと。あわせて「base は正気の schedule、
+e2e overlay は毎分」を `manifests_test.go` で固定する。
 
 決着済み（製品バイナリ側は入っている。ScaledJob / CronJob にはこう書く）:
 
