@@ -42,6 +42,24 @@ const (
 	// ScaledJob を選んだ理由そのもの。worker.OnceGate のコメント参照）。
 	onceIdleTimeoutFlagName = "once-idle-timeout"
 
+	// softStopTimeoutFlagName は SIGTERM を受けてから実行中のジョブを打ち切る
+	// までの猶予（River の `SoftStopTimeout`）のフラグ名。
+	//
+	// **config キーにしない。** k8s では ConfigMap は 1 個で全 Pod が同じ
+	// config.yml を共有する（docs/operations.md §マニフェストの配布形式）一方、
+	// この値は**ワークロードごとに桁で違う** --- 数時間の encode を載せる
+	// ScaledJob と、数秒で終わる ruler / reconciler では、対になる
+	// `terminationGracePeriodSeconds` が桁で違う（docs/operations.md §5
+	// 「長時間ジョブと短いジョブを混ぜない」）。config キーにすると、その
+	// 桁の違いを ConfigMap を増やさずには表現できない。`--queues` を argv に
+	// 寄せたのと同じ理由である。
+	//
+	// **対になる k8s 側の値と同じ Pod spec に並べて書けることが、この選択の
+	// 実益**でもある。真の上限は `terminationGracePeriodSeconds` 経過後の
+	// SIGKILL であり、それを超える猶予は実現されない（cmd/rokuban/server.go の
+	// shutdownBudget のコメント参照）。
+	softStopTimeoutFlagName = "soft-stop-timeout"
+
 	// defaultOnceIdleTimeout は onceIdleTimeoutFlagName の既定値。
 	//
 	// この値が効くのは KEDA が滞留を過大評価して Job を起こしすぎた
@@ -179,19 +197,24 @@ func resolveOnce(cmd *cobra.Command, roles []string) (*worker.OnceGate, time.Dur
 //
 // **順序が意味を持つので 1 か所にまとめる。** stopRiver（riverClient.Stop）は
 // producer の fetch を止めて実行中のジョブを待つ graceful stop、cancelProcess
-// （signal.NotifyContext の stop）は Start に渡した ctx の cancel で、River に
-// とっては **StopAndCancel 相当のハードストップ**である（SoftStopTimeout を
-// 設定していないため work ctx が start ctx を継ぐ。river@v0.40.0/client.go の
-// workParentCtx）。逆順にすると実行中のジョブが打ち切られる。
+// （signal.NotifyContext の stop）は Start に渡した ctx の cancel である。
 //
-// stopRiver に渡す ctx は cancel されないものにする。上限を付けないのは
+// **順序の理由は SoftStopTimeout の導入で変わった（危険度が下がった）。**
+// かつては work ctx が start ctx を継いでいたため、cancelProcess が
+// StopAndCancel 相当のハードストップになり、逆順にすると実行中のジョブが
+// **即座に**打ち切られた。いまは work ctx が start ctx から切り離されるので
+// （river@v0.40.0/client.go の workParentCtx。SoftStopTimeout > 0 のとき）、
+// 逆順でも打ち切りは soft stop の猶予まで遅れる。それでも順序はこのままにする
+// --- graceful stop を先に撃つほうが、猶予を消費せずに完走できる。
+//
+// stopRiver に渡す ctx は cancel されないものにする。ここで上限を付けないのは
 // 「実行中のジョブを打ち切らない」が ScaledJob を選んだ理由そのものだから
-// （数時間のエンコードを待つ）。**その代わり、この待ちには上限が無い。**
-// SIGTERM は start ctx の cancel でハードストップにエスカレートさせるが、
-// ctx を見ないワーカーはそれでも止まらないので、最終的な上限は k8s の
-// `terminationGracePeriodSeconds` 経過後の SIGKILL だけになる（常駐 worker が
-// 持つ RunE の `Stop(30 秒)` は、1 件消化モードでは先にこちらが完了するため
-// 到達しない）。
+// （数時間のエンコードを待つ）。**待ちの上限は River 側が持つ** ---
+// SoftStopTimeout の猶予が切れれば River が work ctx を cancel するので、
+// この Stop も戻ってくる。ctx を見ないワーカーはそれでも止まらないので、
+// 最終的な上限は k8s の `terminationGracePeriodSeconds` 経過後の SIGKILL に
+// なる（常駐 worker が持つ RunE の `Stop(shutdownBudget)` は、1 件消化モードでは
+// 先にこちらが完了するため到達しない）。
 //
 // エラーを握り潰さないのは作法として。現在の呼び出しでは ctx が cancel
 // されないので `Stop` は nil しか返さない（`Stop` が非 nil を返すのは
@@ -206,6 +229,38 @@ func stopOnceProcess(ctx context.Context, stopRiver func(context.Context) error,
 		slog.Error("stopping river client (once mode)", "err", err)
 	}
 	cancelProcess()
+}
+
+// resolveSoftStopTimeout は SIGTERM を受けてから実行中のジョブを打ち切るまでの
+// 猶予（worker.ClientConfig.SoftStopTimeout）を決める。
+//
+// 検査は 2 つで、どちらも「効かない / 意味が反転する値」を黙って受け取らない
+// ためにある（`--queues` / `--once-idle-timeout` と同じ方針）:
+//
+//   - worker ロールが無いプロセスでの指定は起動エラー。River クライアントを
+//     Start するのは worker ロールだけなので（resolveRiverClientKind）、
+//     `--roles watcher --soft-stop-timeout 5m` は何も待たずに畳む。
+//   - 0 以下は起動エラー。**0 は「無制限」ではなく「待たない」である** ---
+//     River は SoftStopTimeout が 0 のとき work ctx を start ctx から継ぐので、
+//     `--soft-stop-timeout 0` は SIGTERM を StopAndCancel 相当にする。
+//     「上限を外したい」つもりで書いた 0 が、意図と正反対の
+//     「実行中のジョブを即座に打ち切る」になる。
+func resolveSoftStopTimeout(cmd *cobra.Command, roles []string) (time.Duration, error) {
+	d, err := cmd.Flags().GetDuration(softStopTimeoutFlagName)
+	if err != nil {
+		return 0, err
+	}
+	if cmd.Flags().Changed(softStopTimeoutFlagName) && !slices.Contains(roles, "worker") {
+		return 0, fmt.Errorf("--%s has no effect without the worker role (got roles [%s]): "+
+			"only the worker role runs jobs to drain", softStopTimeoutFlagName, strings.Join(roles, ", "))
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("--%s must be positive, got %s: "+
+			"zero does not mean \"wait forever\" --- River inherits the work context from the "+
+			"start context when the soft stop timeout is unset, which makes SIGTERM cut running jobs immediately",
+			softStopTimeoutFlagName, d)
+	}
+	return d, nil
 }
 
 // resolveOnceIdleTimeout は 1 件消化モードの未 claim 待ち上限を返す。

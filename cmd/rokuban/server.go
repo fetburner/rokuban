@@ -75,7 +75,43 @@ const (
 	// TestNewHTTPServer_IdleConnectionIsClosedByIdleTimeout で確認。ReadTimeout
 	// を設定していないため明示しないと無期限になる。
 	httpIdleTimeout = 120 * time.Second
+
+	// httpShutdownTimeout は SIGTERM 後に進行中のリクエストを書き終えるのを待つ
+	// 上限（`http.Server.Shutdown`）。deploy/k8s の
+	// `terminationGracePeriodSeconds` はこれを包む長さでなければならない
+	// （`deploy/k8s/manifests_test.go` の TestTerminationBudgetCoversPreStop が
+	// 固定している。あちらは実装の定数を参照せずリテラルで書いてある）。
+	httpShutdownTimeout = 10 * time.Second
+
+	// hardStopGrace は soft stop の猶予が切れて River が work ctx を cancel した
+	// あと、**畳み終えるのを待つ**時間。
+	//
+	// ctx を切られた実行中のジョブが Work から戻り、River の completer が
+	// その結果（`available` への差し戻しとエラー行）を書き終えるまでに要する。
+	// **所要は測っていない。** プロセス自身が持つもう 1 つの停止予算
+	// （httpShutdownTimeout）と同じ大きさに揃えた、という相対関係だけを根拠に
+	// している。
+	hardStopGrace = 10 * time.Second
 )
+
+// shutdownBudget は SIGTERM を受けてからプロセスが自分で畳み終えるまでの上限を
+// 返す。**k8s の `terminationGracePeriodSeconds` はこれを包まなければならない。**
+//
+// 包まなかった場合に何が起きるかが、この値を「プロセス側の上限」として持つ
+// 理由である。SIGKILL は River の外なので、実行中のジョブの行は `running` の
+// まま残り、回収するのは `JobRescuer`（リーダーだけが動かす保守サービス）に
+// なる --- ロール分割構成では常駐する River クライアントが 1 つも無いので、
+// 誰も回収しない（docs/operations.md §5 のスケーラのクエリの節と同じ族の問題）。
+// 一方、プロセスが自分でエスカレートして畳めば、行は `available` に戻り、
+// 次に起きた worker が引き直せる。**「試行を 1 つ潰す」と「誰も引き直せない」の
+// 差**であって、どちらも避けられる場合の選択ではない。
+//
+// soft stop の猶予と HTTP の停止は**同時に**始まる（SIGTERM がどちらの契機にも
+// なる）ので、和ではなく max を取る。そのうえで、猶予が切れてから畳み終える
+// ぶん（hardStopGrace）を足す。
+func shutdownBudget(softStopTimeout time.Duration) time.Duration {
+	return max(softStopTimeout, httpShutdownTimeout) + hardStopGrace
+}
 
 // newProductionHTTPServer は本番の HTTP サーバーを構築する。
 //
@@ -170,6 +206,14 @@ func newServerCmd() *cobra.Command {
 			// 1 件消化モード（KEDA ScaledJob の Job が自分で終了するための起動形態。
 			// worker.OnceGate、docs/operations.md §5）。
 			onceGate, onceIdleTimeout, err := resolveOnce(cmd, roles)
+			if err != nil {
+				return err
+			}
+			// SIGTERM で実行中のジョブを打ち切らない（drain する）ための猶予。
+			// 1 件消化モードかどうかに関わらず効く --- `--once` の Job も
+			// ノード退避やローリング更新で SIGTERM を受ける（そのときの
+			// 停止経路は常駐 worker と同じ）。
+			softStopTimeout, err := resolveSoftStopTimeout(cmd, roles)
 			if err != nil {
 				return err
 			}
@@ -336,7 +380,7 @@ func newServerCmd() *cobra.Command {
 				})
 				eg.Go(func() error {
 					<-egCtx.Done()
-					shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+					shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), httpShutdownTimeout)
 					defer shutdownCancel()
 					return srv.Shutdown(shutdownCtx)
 				})
@@ -406,6 +450,7 @@ func newServerCmd() *cobra.Command {
 					PeriodicJobs:         cfg.Worker.PeriodicJobs,
 					Queues:               queues,
 					Once:                 onceGate,
+					SoftStopTimeout:      softStopTimeout,
 					// 定期ジョブ（epg_sync / tuner_sync / ruler_pass / reconcile_pass /
 					// record_sweep / catalog_export / delete_reconcile /
 					// encode_reconcile / storage_sync）は
@@ -459,9 +504,15 @@ func newServerCmd() *cobra.Command {
 					return fmt.Errorf("starting river client: %w", startErr)
 				}
 				defer func() {
-					stopCtx, stopCancel := context.WithTimeout(context.Background(), 30*time.Second)
+					// **上限は soft stop の猶予から導く。** 固定値にすると、
+					// `--soft-stop-timeout` を長くした構成で「River はまだ待って
+					// いるのにプロセスだけ先に抜ける」形になり、drain が黙って
+					// 打ち切られる（この待ちを抜けた先はプロセスの終了なので、
+					// 実行中のジョブは ctx すら切られずに消える = 行が `running`
+					// のまま残る）。shutdownBudget のコメント参照。
+					stopCtx, stopCancel := context.WithTimeout(context.Background(), shutdownBudget(softStopTimeout))
 					defer stopCancel()
-					// shutdown 中は呼び出し元に返す先がない。30 秒のタイムアウトを
+					// shutdown 中は呼び出し元に返す先がない。タイムアウトを
 					// 付けている以上「実行中のジョブが終わらずタイムアウトした」は
 					// 起こりうるので、握り潰さずログに残す（issue #58）。
 					if err := riverClient.Stop(stopCtx); err != nil {
@@ -564,6 +615,12 @@ func newServerCmd() *cobra.Command {
 	cmd.Flags().Duration(onceIdleTimeoutFlagName, defaultOnceIdleTimeout,
 		"in --once mode, exit successfully if no job is claimed within this duration "+
 			"(never applies once a job is running)")
+	// --soft-stop-timeout も同じ「起動形態」の軸（softStopTimeoutFlagName の
+	// コメント）。対になる k8s の terminationGracePeriodSeconds は
+	// shutdownBudget を包む長さにする。
+	cmd.Flags().Duration(softStopTimeoutFlagName, worker.DefaultSoftStopTimeout,
+		"how long a running job may keep going after SIGTERM before its context is cancelled "+
+			"(the pod's terminationGracePeriodSeconds must cover this)")
 
 	return cmd
 }

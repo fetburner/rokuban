@@ -33,6 +33,26 @@ const (
 	defaultTunerSyncInterval = 10 * time.Minute
 )
 
+// DefaultSoftStopTimeout は ClientConfig.SoftStopTimeout の既定値。
+//
+// **停止の合図（SIGTERM = Start に渡した ctx の cancel、または Stop の呼び出し）を
+// 受けてから、実行中のジョブを打ち切るまでの猶予**である。この時間内に終われば
+// ジョブは完走し、超えたら River が work ctx を cancel してハードストップに
+// エスカレートする（river@v0.40.0/client.go の softStopTimer）。
+//
+// 30 秒という値は、プロセスが既に持っていた停止予算（`riverClient.Stop` に
+// 与えていた 30 秒）と同じ大きさに揃えた、という連続性だけを根拠にしている。
+// **どのジョブが 30 秒で終わるかは測っていない。** 数時間かかる encode / ingest
+// は既定では完走できないので、それらを載せるデプロイは `--soft-stop-timeout` と
+// k8s の `terminationGracePeriodSeconds` を対で引き上げる
+// （docs/operations.md §5「Deployment 併用時」）。
+//
+// **0 を「無制限」の意味に使えない。** River は SoftStopTimeout が 0 のとき
+// work ctx を start ctx から継ぐので、0 は「待たない」（SIGTERM が即
+// StopAndCancel 相当になる）である。cmd/rokuban 側は `--soft-stop-timeout` の
+// 0 以下を起動エラーにし、buildRiverConfig は 0 をこの既定値に読み替える。
+const DefaultSoftStopTimeout = 30 * time.Second
+
 // pendingJobStates は「まだ終わっていない」ジョブの状態。
 //
 // UniqueOpts.ByState に渡して、一意化の対象を実行前・実行中に限定する。
@@ -556,6 +576,24 @@ type ClientConfig struct {
 	// 引かなくなる事故を防ぐ）。
 	Queues []string
 
+	// SoftStopTimeout は停止の合図を受けてから実行中のジョブを打ち切るまでの猶予。
+	// 0 なら既定値（DefaultSoftStopTimeout）。
+	//
+	// **これを設定しないと SIGTERM が drain にならない。** River は
+	// SoftStopTimeout が未設定（0）のとき work ctx を start ctx から継ぐので、
+	// `signal.NotifyContext` の ctx を `Start` に渡している構成では **SIGTERM が
+	// そのまま StopAndCancel 相当のハードストップになる**（river@v0.40.0/client.go
+	// の workParentCtx）。実行中のジョブは即座に ctx を切られ、試行回数を 1 つ
+	// 潰して `available` に戻る。0 を既定値に読み替えるのはこのためで、
+	// 「設定し忘れ」が最も危険な側に倒れないようにする。
+	//
+	// 効くのは停止の合図の種類を問わない（Start の ctx の cancel / Stop /
+	// StopAndCancel のいずれでも同じ）。したがって 1 件消化モードの正常終了
+	// （cmd/rokuban の stopOnceProcess が撃つ graceful stop）にも上限が付く ---
+	// 1 件消化した後に取りこぼしのジョブを掴んでいた場合、その完走を待つのは
+	// この猶予までである。
+	SoftStopTimeout time.Duration
+
 	// Once が非 nil なら 1 件消化モード（`rokuban server --once`）になる。
 	// KEDA ScaledJob が起こした k8s Job が自分で終了できるようにするための
 	// 起動形態で、ジョブ 1 件の Work を抜けたら（成功・失敗を問わず）
@@ -656,9 +694,15 @@ func buildRiverConfig(workers *river.Workers, cfg ClientConfig) (*river.Config, 
 	slog.Info("worker: subscribing to queues",
 		"queues", sortedQueueNames(physicalQueues), "bound_site", cfg.BoundSite)
 
+	softStopTimeout := cfg.SoftStopTimeout
+	if softStopTimeout <= 0 {
+		softStopTimeout = DefaultSoftStopTimeout
+	}
+
 	riverCfg := &river.Config{
-		Queues:  physicalQueues,
-		Workers: workers,
+		Queues:          physicalQueues,
+		Workers:         workers,
+		SoftStopTimeout: softStopTimeout,
 	}
 
 	if cfg.Once != nil {

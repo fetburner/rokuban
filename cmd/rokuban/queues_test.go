@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/fetburner/rokuban/internal/worker"
 )
 
 // workerRole は resolveWorkerQueues に渡す既定のロール集合（キューを引くのは
@@ -19,6 +21,7 @@ func newQueuesTestCmd(t *testing.T) *cobra.Command {
 	cmd.Flags().StringSlice(queuesFlagName, nil, "")
 	cmd.Flags().Bool(onceFlagName, false, "")
 	cmd.Flags().Duration(onceIdleTimeoutFlagName, defaultOnceIdleTimeout, "")
+	cmd.Flags().Duration(softStopTimeoutFlagName, worker.DefaultSoftStopTimeout, "")
 	return cmd
 }
 
@@ -383,13 +386,13 @@ func TestStopOnceProcess(t *testing.T) {
 	}
 }
 
-// server サブコマンドに --queues / --once / --once-idle-timeout が実際に
-// 生えていること。**このテストが無いと、フラグ登録を消しても
-// resolveWorkerQueues の単体テストは通り続ける**（フラグは
+// server サブコマンドに --queues / --once / --once-idle-timeout /
+// --soft-stop-timeout が実際に生えていること。**このテストが無いと、フラグ登録を
+// 消しても resolveWorkerQueues の単体テストは通り続ける**（フラグは
 // newQueuesTestCmd が自前で登録しているため）。
 func TestNewServerCmd_HasQueueAndOnceFlags(t *testing.T) {
 	cmd := newServerCmd()
-	for _, name := range []string{queuesFlagName, onceFlagName, onceIdleTimeoutFlagName} {
+	for _, name := range []string{queuesFlagName, onceFlagName, onceIdleTimeoutFlagName, softStopTimeoutFlagName} {
 		if cmd.Flags().Lookup(name) == nil {
 			t.Errorf("server サブコマンドに --%s が無い", name)
 		}
@@ -397,5 +400,71 @@ func TestNewServerCmd_HasQueueAndOnceFlags(t *testing.T) {
 	// 既定値も実バイナリ側の配線で確認する（テスト用 cmd の既定ではなく）。
 	if got := cmd.Flags().Lookup(onceIdleTimeoutFlagName).DefValue; got != "30s" {
 		t.Errorf("--%s の既定 = %q, want \"30s\"", onceIdleTimeoutFlagName, got)
+	}
+	// **既定値はリテラルで書く。** worker.DefaultSoftStopTimeout を参照すると、
+	// 定数を変えたときに何も主張しなくなる。ここを変えるときは
+	// docs/operations.md §5 の `terminationGracePeriodSeconds` の足し算と
+	// docker-compose.yml の stop_grace_period も同じ PR で揃える。
+	if got := cmd.Flags().Lookup(softStopTimeoutFlagName).DefValue; got != "30s" {
+		t.Errorf("--%s の既定 = %q, want \"30s\"", softStopTimeoutFlagName, got)
+	}
+}
+
+// **`--soft-stop-timeout` の 0 以下を受け取らないこと。**
+//
+// 0 は「無制限に待つ」ではなく「待たない」である --- River は
+// SoftStopTimeout が 0 のとき work ctx を start ctx から継ぐので、SIGTERM が
+// そのまま実行中のジョブの ctx を切る（この issue が直した壊れ方そのもの）。
+// 「上限を外す」つもりで書いた 0 が意図と正反対に効く形なので、黙って
+// 受け取らない。
+func TestResolveSoftStopTimeout_RejectsNonPositive(t *testing.T) {
+	for _, v := range []string{"0", "-1s"} {
+		cmd := newQueuesTestCmd(t)
+		if err := cmd.Flags().Set(softStopTimeoutFlagName, v); err != nil {
+			t.Fatalf("Set: %v", err)
+		}
+		got, err := resolveSoftStopTimeout(cmd, workerRole)
+		if err == nil {
+			t.Fatalf("--%s=%s: error を期待したが nil（%s が通っている）", softStopTimeoutFlagName, v, got)
+		}
+		if !strings.Contains(err.Error(), softStopTimeoutFlagName) {
+			t.Errorf("err = %v, want to name --%s", err, softStopTimeoutFlagName)
+		}
+	}
+
+	// 反対方向: 正の値はそのまま通る。
+	cmd := newQueuesTestCmd(t)
+	if err := cmd.Flags().Set(softStopTimeoutFlagName, "45s"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	got, err := resolveSoftStopTimeout(cmd, workerRole)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != 45*time.Second {
+		t.Errorf("timeout = %s, want 45s", got)
+	}
+}
+
+// **worker ロールが無いプロセスでの `--soft-stop-timeout` は起動エラー。**
+//
+// River クライアントを Start するのは worker ロールだけなので
+// （resolveRiverClientKind）、`--roles watcher --soft-stop-timeout 5m` は
+// 何も待たずに畳む。効かないフラグを黙って無視すると、ScaledJob の argv から
+// 写し間違えた Pod が「drain するつもりで drain しない」形になる
+// （`--queues` / `--once-idle-timeout` と同じ扱い）。
+func TestResolveSoftStopTimeout_RequiresWorkerRole(t *testing.T) {
+	cmd := newQueuesTestCmd(t)
+	if err := cmd.Flags().Set(softStopTimeoutFlagName, "45s"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if _, err := resolveSoftStopTimeout(cmd, []string{"watcher"}); err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	// 反対方向: 指定していなければ worker ロールが無くてもエラーにしない
+	// （既定値は全ロールの cmd に生えているので、指定の有無で判定する）。
+	if _, err := resolveSoftStopTimeout(newQueuesTestCmd(t), []string{"watcher"}); err != nil {
+		t.Errorf("未指定なら通ること: %v", err)
 	}
 }

@@ -573,6 +573,37 @@ func TestBuildRiverConfig_LogsSubscribedQueues(t *testing.T) {
 	}
 }
 
+// **SoftStopTimeout が未設定（0）でも river.Config に非 0 が載ること。**
+//
+// これは「設定し忘れ」が最も危険な側に倒れないための既定である。River は
+// SoftStopTimeout が 0 のとき work ctx を start ctx から継ぐので
+// （river@v0.40.0/client.go の workParentCtx）、0 のまま渡すと
+// `signal.NotifyContext` の ctx を Start に渡している構成で **SIGTERM が
+// 実行中のジョブを即座に打ち切る**。0 は「無制限」ではなく「待たない」である。
+//
+// SIGTERM が実際に drain になることは cmd/rokuban の
+// TestServerCmd_SigtermDrainsRunningJob が実 DB で測る。ここでは
+// 「0 を素通しさせない」ことだけを固定する。
+func TestBuildRiverConfig_SoftStopTimeoutIsNeverZero(t *testing.T) {
+	riverCfg, err := buildRiverConfig(NewWorkers(&Deps{}), ClientConfig{})
+	if err != nil {
+		t.Fatalf("buildRiverConfig: %v", err)
+	}
+	if riverCfg.SoftStopTimeout <= 0 {
+		t.Errorf("SoftStopTimeout = %s, want > 0（SIGTERM が実行中のジョブを即座に打ち切る）",
+			riverCfg.SoftStopTimeout)
+	}
+
+	// 明示した値はそのまま載る（既定に丸められない）。
+	explicit, err := buildRiverConfig(NewWorkers(&Deps{}), ClientConfig{SoftStopTimeout: 90 * time.Second})
+	if err != nil {
+		t.Fatalf("buildRiverConfig: %v", err)
+	}
+	if explicit.SoftStopTimeout != 90*time.Second {
+		t.Errorf("SoftStopTimeout = %s, want 90s", explicit.SoftStopTimeout)
+	}
+}
+
 // encode / thumbnail キューが allQueues に載り、concurrency が独立に効くこと
 // （issue #64。ワーカー本体は M3-3 / M3-4 で、枠だけ先に用意する）。
 func TestBuildRiverConfig_EncodeThumbnailConcurrency(t *testing.T) {

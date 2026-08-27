@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -244,6 +246,15 @@ func TestServerCmd_OnceRejectsExtraRoles(t *testing.T) {
 // `postgres://rokuban:rokuban@...` なのでこの分岐は通らない。
 func writeOnceModeConfig(t *testing.T, extra ...string) string {
 	t.Helper()
+	// 到達不能な mirakc（127.0.0.1:1）。1 件消化モードのテストは mirakc に
+	// 触らないジョブを使うか、触って失敗することを主張するかのどちらかである。
+	return writeWorkerTestConfig(t, "http://127.0.0.1:1", extra...)
+}
+
+// writeWorkerTestConfig は worker ロールのテスト用 config を書く（実 DB を指す）。
+// mirakcURL を差し替えられるので、mirakc に触るジョブを実際に完走させられる。
+func writeWorkerTestConfig(t *testing.T, mirakcURL string, extra ...string) string {
+	t.Helper()
 	dbCfg := testutil.DatabaseConfig(t)
 	user := dbCfg.User
 	if user == "" {
@@ -265,13 +276,13 @@ db:
   database: %q
   sslmode: %q
 mirakc:
-  url: http://127.0.0.1:1
+  url: %q
   site: home
 storage:
   media_dir: %q
 worker:
   periodic_jobs: false
-%s`, dbCfg.Host, dbCfg.Port, user, password, dbCfg.Database, dbCfg.SSLMode, t.TempDir(),
+%s`, dbCfg.Host, dbCfg.Port, user, password, dbCfg.Database, dbCfg.SSLMode, mirakcURL, t.TempDir(),
 		strings.Join(extra, "\n")))
 }
 
@@ -530,6 +541,243 @@ func TestServerCmd_OnceModeExitsZeroOnJobFailure(t *testing.T) {
 	if attempt != 1 {
 		t.Errorf("attempt = %d, want 1", attempt)
 	}
+}
+
+// **プロセスが `riverClient.Stop` を待つ上限は、必ず soft stop の猶予より
+// 長いこと。**
+//
+// 短いと、猶予の内側で完走するはずのジョブが「プロセスだけ先に抜ける」ことで
+// 打ち切られる。しかもその打ち切りは ctx の cancel ですらない（プロセスが
+// 終わるだけ）ので、行は `running` のまま残り、回収は `JobRescuer` に委ねる
+// ことになる --- ロール分割構成ではそれを動かす常駐クライアントが無い
+// （shutdownBudget のコメント）。
+//
+// **E2E（TestServerCmd_SigtermDrainsRunningJob）ではこれを測れない**: 猶予より
+// 長く走るジョブを実際に走らせる必要があり、テストの所要が猶予そのものになる。
+// 代わりにここで関係だけを固定する。期待値は実装の定数を参照せずリテラルで
+// 書く（参照すると両方を同時に変えたときに何も主張しなくなる）。
+func TestShutdownBudget_CoversTheSoftStop(t *testing.T) {
+	for _, soft := range []time.Duration{time.Second, 30 * time.Second, 60 * time.Second, 6 * time.Hour} {
+		if got := shutdownBudget(soft); got <= soft {
+			t.Errorf("shutdownBudget(%s) = %s, want > %s（猶予の内側の drain をプロセスが先に抜けて打ち切る）",
+				soft, got, soft)
+		}
+	}
+	// 既定（--soft-stop-timeout 30s）での値。**docs/operations.md §5 の
+	// `terminationGracePeriodSeconds` の足し算と deploy 側の数値がこれに
+	// 依存している**ので、変えるときは同じ PR で揃える。
+	if got := shutdownBudget(30 * time.Second); got != 40*time.Second {
+		t.Errorf("shutdownBudget(30s) = %s, want 40s", got)
+	}
+}
+
+// blockingMirakc は「掴まれたことが分かり、いつ応答するかをテストが決められる」
+// mirakc のモック。SIGTERM を受けた瞬間にジョブが**実行中**であることを保証する
+// ために要る --- 時間で待つと、ジョブが既に終わっていても緑になる（空虚な成功）。
+type blockingMirakc struct {
+	url string
+	// hit は最初の GET /api/services で閉じる。ジョブが mirakc に到達した
+	// ＝ River が Work に入っていることの観測点。
+	hit chan struct{}
+	// release を閉じると /api/services が空リストを返して epg_sync が完走する。
+	release chan struct{}
+}
+
+func newBlockingMirakc(t *testing.T) *blockingMirakc {
+	t.Helper()
+	m := &blockingMirakc{hit: make(chan struct{}), release: make(chan struct{})}
+	var once sync.Once
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/services" {
+			once.Do(func() { close(m.hit) })
+			select {
+			case <-m.release:
+			case <-r.Context().Done():
+				// ジョブの ctx が切れるとクライアントが接続を切る。
+				// エスカレート側のテストはここを通る。
+				return
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("[]"))
+	}))
+	t.Cleanup(srv.Close)
+	m.url = srv.URL
+	return m
+}
+
+// workerProc は startWorkerWithRunningJob が起こした server プロセス。
+type workerProc struct {
+	// terminate は SIGTERM と同じ経路（signal.NotifyContext に渡した ctx の
+	// cancel）でプロセスを畳む。
+	terminate func()
+
+	finished chan struct{} // RunE が戻ったら閉じる
+	err      error         // finished が閉じたあとだけ読んでよい
+}
+
+// wait は RunE が戻るのを待ち、その戻り値を返す。limit を超えたら失敗させる
+// （戻らない変異を go test 全体のタイムアウトではなくこのテストの失敗として
+// 報告する。runServerCmdBounded と同じ方針）。
+//
+// **複数回呼べる形にしてある。** t.Cleanup も同じ待ちをするので、
+// 「受け取ったら消える」チャネルにすると本体が受け取ったぶんだけ
+// cleanup 側が待ちぼうけになる。
+func (p *workerProc) wait(t *testing.T, limit time.Duration, what string) error {
+	t.Helper()
+	select {
+	case <-p.finished:
+		return p.err
+	case <-time.After(limit):
+		t.Fatalf("%s: server が %s 以内に終了しない", what, limit)
+		return nil
+	}
+}
+
+// startWorkerWithRunningJob は epg_sync を 1 件投入した worker を起動し、
+// **そのジョブが実行中になるまで待ってから**戻る。
+func startWorkerWithRunningJob(t *testing.T, pool *pgxpool.Pool, mock *blockingMirakc, softStop time.Duration) *workerProc {
+	t.Helper()
+	var out bytes.Buffer
+	if err := runEnqueue(context.Background(), pool, "epg-sync", "home", &out); err != nil {
+		t.Fatalf("runEnqueue: %v", err)
+	}
+	path := writeWorkerTestConfig(t, mock.url)
+
+	ctx, cancelFn := context.WithCancel(context.Background())
+	p := &workerProc{terminate: cancelFn, finished: make(chan struct{})}
+	go func() {
+		defer close(p.finished)
+		p.err = runServerCmdWithContext(t, ctx, path,
+			"--roles", "worker", "--sites", "home", "--queues=epg",
+			"--soft-stop-timeout="+softStop.String())
+	}()
+	// 主張が成立しなかったときに River クライアントを残さない。残すと
+	// 後続のテストが入れたジョブを掴んだり testutil.SetupDB の TRUNCATE と
+	// 競合したりして、1 件の失敗が連鎖して元の原因を隠す。
+	t.Cleanup(func() {
+		cancelFn()
+		select {
+		case <-p.finished:
+		case <-time.After(60 * time.Second):
+			t.Error("cancel してもサーバーが畳まれない（River クライアントが残る）")
+		}
+	})
+
+	select {
+	case <-mock.hit:
+	case <-p.finished:
+		t.Fatalf("epg_sync が走り出す前に server が終了した: %v", p.err)
+	case <-time.After(60 * time.Second):
+		t.Fatal("epg_sync が mirakc に到達しない（ジョブが実行中にならない）")
+	}
+	return p
+}
+
+// **SIGTERM が drain であること（実行中のジョブを打ち切らないこと）。**
+//
+// これが無いと、Deployment 型 worker のローリング更新・ノード退避が実行中の
+// エンコード（数時間）を打ち切る。症状は「デプロイしたらエンコードがやり直しに
+// なる」。River は `SoftStopTimeout` が未設定だと work ctx を start ctx から
+// 継ぐので、`signal.NotifyContext` の ctx を `Start` に渡しているこの構成では
+// **SIGTERM がそのまま StopAndCancel 相当になる**（river@v0.40.0/client.go の
+// workParentCtx）。
+//
+// RunE を丸ごと走らせるのが要点 --- `--soft-stop-timeout` → `worker.ClientConfig`
+// → `river.Config` の配線は、`buildRiverConfig` を直接見るテストでは検証できない
+// （フラグを ClientConfig に渡し忘れても、既定値で組まれた client がそこにある）。
+//
+// **`riverClient.Stop` に与える待ちの上限（shutdownBudget）はここでは測れない。**
+// 猶予より長い時間走るジョブを実際に走らせることになるので、テストの所要が
+// 猶予そのものになる。上限が猶予を包むことは TestShutdownBudget_CoversTheSoftStop
+// が別に固定し、実バイナリでの確認は docs/runbook/ に残す。
+//
+// **両方向を見る。** 猶予の内側なら完走し、猶予を超えたらエスカレートする
+// （＝待ちっぱなしにはならない）。
+func TestServerCmd_SigtermDrainsRunningJob(t *testing.T) {
+	// 実行中のジョブが SIGTERM の後に終わることを主張するので、cancel の
+	// あと**実際に時間を進めてから**完走させる。ハードストップ時の打ち切りは
+	// 実測 2.6ms なので、この 1 秒は 2 桁以上の余裕がある。
+	const drainDelay = time.Second
+
+	t.Run("猶予の内側なら実行中のジョブが完走する", func(t *testing.T) {
+		pool := testutil.SetupDB(t)
+		mock := newBlockingMirakc(t)
+		p := startWorkerWithRunningJob(t, pool, mock, 60*time.Second)
+
+		p.terminate() // = SIGTERM
+		time.Sleep(drainDelay)
+		close(mock.release)
+
+		if err := p.wait(t, 60*time.Second, "SIGTERM 後"); err != nil {
+			t.Fatalf("server: %v", err)
+		}
+
+		var state string
+		var errs string
+		if err := pool.QueryRow(context.Background(),
+			`SELECT state, coalesce(errors::text, '') FROM river_job WHERE kind = 'epg_sync'`,
+		).Scan(&state, &errs); err != nil {
+			t.Fatalf("reading epg_sync job: %v", err)
+		}
+		if state != "completed" {
+			t.Errorf("state = %q, want %q（SIGTERM が実行中のジョブを打ち切っている）。errors=%s",
+				state, "completed", errs)
+		}
+	})
+
+	t.Run("猶予を超えたらエスカレートする", func(t *testing.T) {
+		pool := testutil.SetupDB(t)
+		mock := newBlockingMirakc(t)
+		// mock.release は閉じない。ジョブは猶予を超えても終わらない。
+		const softStop = 2 * time.Second
+		p := startWorkerWithRunningJob(t, pool, mock, softStop)
+
+		start := time.Now()
+		p.terminate() // = SIGTERM
+		if err := p.wait(t, 60*time.Second, "猶予切れ（drain が無制限になっている）"); err != nil {
+			t.Fatalf("server: %v", err)
+		}
+		elapsed := time.Since(start)
+
+		// **待った側も見る。** 「終わった」だけを見ると、SIGTERM で即座に
+		// 打ち切る（＝この issue が直そうとしている壊れ方そのもの）でも通る。
+		if elapsed < softStop {
+			t.Errorf("SIGTERM から終了まで %s、want >= %s（猶予を待たずに打ち切っている）", elapsed, softStop)
+		}
+		// **上限も見る。** 下限だけだと、`--soft-stop-timeout` が River に
+		// 渡っておらず既定値（worker.DefaultSoftStopTimeout = 30 秒）で
+		// 待っている場合も通ってしまう --- フラグの配線を落とす変異が
+		// そのまま緑になる。8 秒は「2 秒の猶予と 30 秒の既定値を取り違えない」
+		// ための幅であって、測った値ではない。
+		if margin := 8 * time.Second; elapsed > softStop+margin {
+			t.Errorf("SIGTERM から終了まで %s、want < %s（--%s が River に渡っていない可能性）",
+				elapsed, softStop+margin, softStopTimeoutFlagName)
+		}
+
+		var state string
+		var errs string
+		if err := pool.QueryRow(context.Background(),
+			`SELECT state, coalesce(errors::text, '') FROM river_job WHERE kind = 'epg_sync'`,
+		).Scan(&state, &errs); err != nil {
+			t.Fatalf("reading epg_sync job: %v", err)
+		}
+		if state == "completed" {
+			t.Error("state = completed（終わっていないジョブが完了扱いになっている）")
+		}
+		// mock は release されないので、この要求が終わる道は ctx の cancel
+		// しかない（mirakc クライアントの responseHeaderTimeout は 30 秒で、
+		// softStop より桁が長い）。**エラーの原因も見る** --- 行が残っている
+		// だけなら、ジョブが起きなかった場合と区別が付かない。
+		//
+		// 実測の文言は `listing services: ... : stop initiated`。River が
+		// work ctx を cancel するときの cause（rivercommon.ErrStop）であって
+		// `context canceled` ではない --- start ctx をそのまま継いでいた頃
+		// （この issue の前）とは cause が変わる。
+		if !strings.Contains(errs, "listing services") {
+			t.Errorf("errors = %s, want to contain %q（mirakc 要求の途中で切られていない）", errs, "listing services")
+		}
+	})
 }
 
 // resolveRiverClientKind はロール指定が実際に実行する仕事を制約するための唯一の

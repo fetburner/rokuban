@@ -39,6 +39,39 @@ ROKUBAN_TEST_TS_FILE=/path/to/clean.m2ts \
   go test ./test/integration/ -v
 ```
 
+### SIGTERM の drain を実バイナリで確かめる
+
+`--soft-stop-timeout` を触ったときはこれを回す。**テストでは猶予より長く走る
+ジョブを実際に走らせられない**（テストの所要が猶予そのものになるため、
+`TestServerCmd_SigtermDrainsRunningJob` は猶予を数秒に絞って両方向を見ている）。
+既定の 30 秒を跨ぐ側は実バイナリでしか測れない。
+
+作るものは「ヘッダーだけ即返して**ボディを遅らせる** mirakc」である。ボディを
+遅らせるのは、mirakc クライアントの `ResponseHeaderTimeout`（30 秒）が先に
+効いてしまうためである。全体の上限は `http.Client.Timeout` の 60 秒なので、
+40 秒のジョブはこの形でしか作れない。
+
+```sh
+go build -o /tmp/rokuban ./cmd/rokuban
+# /api/services のボディを 40 秒遅らせる HTTP サーバーを 127.0.0.1:40799 に立てておく
+/tmp/rokuban migrate up --config /tmp/softstop-config.yml     # 使い捨ての DB を指す config
+/tmp/rokuban enqueue epg-sync --site home --config /tmp/softstop-config.yml
+/tmp/rokuban server --roles worker --sites home --queues=epg \
+  --soft-stop-timeout=60s --config /tmp/softstop-config.yml &
+# mirakc に要求が届いてから（= ジョブが実行中になってから）SIGTERM を撃つ
+kill -TERM $!
+```
+
+実測（2026-08-28。`--soft-stop-timeout` を 60s と 5s で 1 回ずつ）:
+
+| 猶予 | プロセスの終了 | `river_job` |
+|---|---|---|
+| 60s | SIGTERM の **40 秒後**（ジョブの完走を待った）・exit 0 | `completed` |
+| 5s | SIGTERM の **5 秒後**（猶予切れでエスカレート）・exit 0 | `available` / `attempt=1` / `error="… stop initiated"` |
+
+60s の側は**プロセス側の待ちが固定値ではないこと**も同時に見ている（かつての
+`Stop(30 秒)` のままなら 30 秒で先に抜け、ジョブは `running` のまま残る）。
+
 **mock では検出できない前提が未検証のまま残ることがある**。例えば reconciler の
 `overrides.contentPath` の既存 schedule への反映を考える。これは mirakc が `GET /api/recording/schedules`
 で `options.contentPath` を POST した値のまま返すことに依存する。テストの mock は
