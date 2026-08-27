@@ -602,11 +602,11 @@ func TestShutdownBudget_CoversTheSoftStop(t *testing.T) {
 				soft, got, soft)
 		}
 	}
-	// 既定（--soft-stop-timeout 30s）での値。**docs/operations.md §5 の
+	// 既定（--soft-stop-timeout 5s）での値。**docs/operations.md §5 の
 	// `terminationGracePeriodSeconds` の足し算と deploy 側の数値がこれに
 	// 依存している**ので、変えるときは同じ PR で揃える。
-	if got := shutdownBudget(30 * time.Second); got != 40*time.Second {
-		t.Errorf("shutdownBudget(30s) = %s, want 40s", got)
+	if got := shutdownBudget(5 * time.Second); got != 15*time.Second {
+		t.Errorf("shutdownBudget(5s) = %s, want 15s", got)
 	}
 }
 
@@ -843,14 +843,16 @@ func TestServerCmd_SigtermDrainsRunningJob(t *testing.T) {
 			t.Errorf("SIGTERM から終了まで %s、want >= %s（猶予を待たずに打ち切っている）", elapsed, softStop)
 		}
 		// **上限も見る。** 下限だけだと、`--soft-stop-timeout` が River に
-		// 渡っておらず既定値（worker.DefaultSoftStopTimeout = 30 秒）で
+		// 渡っておらず既定値（worker.DefaultSoftStopTimeout = 5 秒）で
 		// 待っている場合も通ってしまう --- フラグの配線を落とす変異が
 		// そのまま緑になる。
 		//
-		// 実測: 配線を落とす変異では 12 秒（River が 30 秒待つ一方で、
-		// プロセス側の待ち shutdownBudget(2s) が先に切れる）。正しい実装では
-		// 2.2 秒。5 秒はその間に引いた線であって、測った値ではない。
-		if margin := 5 * time.Second; elapsed > softStop+margin {
+		// **判別する 2 つの値が近いので、線の引き方に余裕が無い。** 正しい実装は
+		// 猶予（2 秒）ちょうどで戻り（実測 2.0034〜2.0114 秒）、配線を落とす変異は
+		// 既定値の 5 秒で戻る。線は 3.5 秒（= 2 秒 + 1.5 秒）に引いてある。
+		// **既定値を変えるならここも見直すこと** --- 既定が 2 秒に近づくと、
+		// この判定は何も主張しなくなる。
+		if margin := 1500 * time.Millisecond; elapsed > softStop+margin {
 			t.Errorf("SIGTERM から終了まで %s、want < %s（--%s が River に渡っていない可能性）",
 				elapsed, softStop+margin, softStopTimeoutFlagName)
 		}

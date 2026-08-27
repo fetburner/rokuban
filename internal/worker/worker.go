@@ -40,18 +40,28 @@ const (
 // ジョブは完走し、超えたら River が work ctx を cancel してハードストップに
 // エスカレートする（river@v0.40.0/client.go の softStopTimer）。
 //
-// 30 秒という値は、プロセスが既に持っていた停止予算（`riverClient.Stop` に
-// 与えていた 30 秒）と同じ大きさに揃えた、という連続性だけを根拠にしている。
-// **どのジョブが 30 秒で終わるかは測っていない。** 数時間かかる encode / ingest
-// は既定では完走できないので、それらを載せるデプロイは `--soft-stop-timeout` と
-// k8s の `terminationGracePeriodSeconds` を対で引き上げる
-// （docs/operations.md §5「Deployment 併用時」）。
+// **5 秒という値は「何も設定しなかった人が SIGKILL されない」ことだけを根拠に
+// している。** プラットフォーム側の既定の猶予は Docker が 10 秒、k8s が 30 秒で、
+// そのどちらの内側にも収まる長さを選んだ（実測: 猶予を使い切る停止でも 5.1 秒）。
+// **どのジョブが 5 秒で終わるかは測っていない。**
+//
+// 既定を長く（例えば 30 秒に）すると、猶予を書いていないデプロイで**プロセスが
+// 畳み終える前に SIGKILL が来る**。実測: 既定 30 秒のプロセスは停止に 30.09 秒
+// 必要で、k8s の既定猶予 30 秒に 0.09 秒負けた。負けると River の行は `running`
+// のまま残り、回収は `JobRescuer`（既定 1 時間。ロール分割構成では動かす常駐
+// クライアントが無いので誰も回収しない）に委ねられる --- **設定を間違えた人では
+// なく、何も書かなかった人に当たる**壊れ方である。この PR の前は同じ操作が
+// 「試行を 1 つ潰して即座に `available`」で済んでいたので、そこを退行させない。
+//
+// 数時間かかる encode / ingest は当然この既定では完走できない。それらを載せる
+// デプロイは `--soft-stop-timeout` と k8s の `terminationGracePeriodSeconds` を
+// **対で**引き上げる（docs/operations.md §5「Deployment 併用時」）。
 //
 // **0 を「無制限」の意味に使えない。** River は SoftStopTimeout が 0 のとき
 // work ctx を start ctx から継ぐので、0 は「待たない」（SIGTERM が即
 // StopAndCancel 相当になる）である。cmd/rokuban 側は `--soft-stop-timeout` の
 // 0 以下を起動エラーにし、buildRiverConfig は 0 をこの既定値に読み替える。
-const DefaultSoftStopTimeout = 30 * time.Second
+const DefaultSoftStopTimeout = 5 * time.Second
 
 // pendingJobStates は「まだ終わっていない」ジョブの状態。
 //

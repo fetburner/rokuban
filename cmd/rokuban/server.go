@@ -79,8 +79,8 @@ const (
 	// httpShutdownTimeout は SIGTERM 後に進行中のリクエストを書き終えるのを待つ
 	// 上限（`http.Server.Shutdown`）。
 	//
-	// **プロセスの停止予算では River の drain と直列に足す**（shutdownBudget の
-	// コメント参照）。`deploy/k8s/manifests_test.go` の
+	// **プロセスの停止予算では River の drain と足し合わせる**（重なって進むが、
+	// 上界は和になる。shutdownBudget のコメント参照）。`deploy/k8s/manifests_test.go` の
 	// TestTerminationBudgetCoversPreStop は同じ 10 という数字をリテラルで持って
 	// いる（実装の定数は参照していない --- 参照すると両方を同時に変えたときに
 	// 何も主張しなくなるため）。**したがってここを変えてもあのテストは緑のまま**
@@ -110,10 +110,15 @@ const (
 // 畳めば行は `available` に戻り、次に起きた worker が引き直せる。**「試行を
 // 1 つ潰す」と「誰も引き直せない」の差**である。
 //
-// **これはプロセス全体の停止予算ではない。** この待ちが始まるのは `eg.Wait()`
-// が戻ってから（= HTTP の Shutdown が終わってから）なので、SIGTERM から
-// プロセスが消えるまでの最悪値は `httpShutdownTimeout` とこの値の**和**になる。
-// k8s の `terminationGracePeriodSeconds` が包むべきはその和のほうである
+// **時計が 2 つあるので余裕が要る。** River の escalate は SIGTERM の瞬間から
+// 測る（`fetchCtx` が start ctx から派生し、その Done で soft stop タイマーが
+// 走り出す）が、この締切は `eg.Wait()` が戻ってから測る。同じ区間を別の原点で
+// 測っているので、`soft` ちょうどでは足りない。
+//
+// **これはプロセス全体の停止予算ではない。** 2 つの停止（HTTP と River の drain）
+// は SIGTERM を契機に**重なって**進むので実際の停止はもっと早いことが多いが、
+// この締切の原点が `eg.Wait()` の後にある以上、**上界は和**になる。k8s の
+// `terminationGracePeriodSeconds` が包むべきはその和のほうである
 // （docs/operations.md §5「Deployment 併用時」の足し算）。
 func shutdownBudget(softStopTimeout time.Duration) time.Duration {
 	return softStopTimeout + hardStopGrace
@@ -286,11 +291,33 @@ func newServerCmd() *cobra.Command {
 
 			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
+			// **1 発目を受けたらシグナルの登録を外す。** 外すまでの間、2 発目の
+			// SIGTERM / SIGINT は signal パッケージのチャネル（バッファ 1・
+			// 読み手はもう居ない）に落ちて捨てられ、既定動作（プロセス終了）が
+			// 抑止されたままになる。1 発目のあとに続くのは River の drain で、
+			// その長さは `--soft-stop-timeout` である --- encode を載せる構成には
+			// 数時間を推奨しているので、**その間ずっと Ctrl-C も `kill -TERM` も
+			// 効かない**（止める手段が SIGKILL だけになる）。
+			//
+			// **外す契機は「1 発目のシグナル」であって「畳み終えたところ」では
+			// ない。** 後者にすると、drain を errgroup の中で回す 1 件消化モード
+			// （stopOnceProcess）では畳み終えるまで外れず、**猶予を長く取る構成
+			// ほど逃げ道が無くなる**（数時間の猶予を勧めている先が ScaledJob =
+			// 1 件消化モードなので、一番効いてほしい構成で効かない）。
+			//
+			// 両モードとも TestServerCmd_SecondSigtermKillsDrainingProcess が
+			// 固定する。
+			context.AfterFunc(ctx, stop)
 
 			pool, err := db.NewPool(ctx, cfg.DB, roles)
 			if err != nil {
 				return err
 			}
+			// **River の drain より後に閉じる。** defer の LIFO でそうなっている
+			// （この defer より後に登録される stopRiverForShutdown が先に走る）。
+			// 順序が逆になると、ctx を切られたジョブの結果を River の completer が
+			// 書けず、行が `running` のまま残る --- この PR が避けようとしている
+			// 形そのものである。
 			defer pool.Close()
 
 			slog.Info("starting server", "roles", roles)
@@ -603,21 +630,6 @@ func newServerCmd() *cobra.Command {
 			})
 
 			err = eg.Wait()
-
-			// **シグナルの登録をここで外す**（`defer stop()` に任せない）。
-			//
-			// 外すまでの間、2 発目の SIGTERM / SIGINT は signal パッケージの
-			// チャネル（バッファ 1・読み手はもう居ない）に落ちて捨てられ、
-			// 既定動作（プロセス終了）が抑止されたままになる。この先に続くのは
-			// River の drain で、その長さは `--soft-stop-timeout` である ---
-			// encode を載せる構成には数時間を推奨しているので、**その間ずっと
-			// Ctrl-C も `kill -TERM` も効かない**（止める手段が SIGKILL だけに
-			// なる）。ここで外すと 2 発目は既定動作でプロセスを落とす。
-			//
-			// defer の `stop()` は早期 return 用にそのまま残す。`signal.Stop` も
-			// ctx の cancel も冪等なので二重に呼んでよい。
-			stop()
-
 			slog.Info("shutting down")
 			return err
 		},
