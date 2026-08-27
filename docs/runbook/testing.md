@@ -71,33 +71,70 @@ class H(http.server.BaseHTTPRequestHandler):
 http.server.ThreadingHTTPServer(("127.0.0.1", 40799), H).serve_forever()
 ```
 
-config は使い捨ての DB と `mirakc.url: http://127.0.0.1:40799` / `site: home` を指す
-ものを書く（`worker.periodic_jobs: false`）。
+config は使い捨ての DB とこのモックを指すものを書く。**`storage.media_dir` と
+`db.password` を省くと `migrate up` が起動時検査で落ちる**（password は空文字も
+拒否されるので、trust 認証でもダミーが要る）。
 
 ```sh
+DB=rokuban_softstop
+createdb -h localhost "$DB"
+cat > /tmp/softstop-config.yml <<EOF
+server:
+  listen: "127.0.0.1:40773"
+  allowed_hosts: []
+db:
+  host: localhost
+  port: 5432
+  user: $USER
+  password: unused
+  database: $DB
+  sslmode: disable
+mirakc:
+  url: http://127.0.0.1:40799
+  site: home
+storage:
+  media_dir: /tmp/softstop-media
+worker:
+  periodic_jobs: false
+EOF
+```
+
+**`bash` で回す**（`zsh` では `time wait` が何も出力しない）:
+
+```bash
+DB=rokuban_softstop CFG=/tmp/softstop-config.yml
 go build -o /tmp/rokuban ./cmd/rokuban
-CFG=/tmp/softstop-config.yml
 /tmp/rokuban migrate up --config $CFG
 /tmp/rokuban enqueue epg-sync --site home --config $CFG
 /tmp/rokuban server --roles worker --sites home --queues=epg \
   --soft-stop-timeout=60s --config $CFG & PID=$!
 # **ジョブが実行中になるまで待つ。** 待たずに撃つと claim 前に畳んで終わり、
 # 「完走した」も「打ち切られた」も観測できない（空虚な緑になる）
-until psql -h localhost -d rokuban_softstop -tAc \
+until psql -h localhost -d $DB -tAc \
   "select 1 from river_job where state = 'running'" | grep -q 1; do sleep 1; done
 kill -TERM $PID; time wait $PID
-psql -h localhost -d rokuban_softstop -tAc "select state, attempt, errors::text from river_job"
+# **kind で絞る。** epg_sync は完走時に ruler_pass を投入するので、絞らないと
+# その available 行が「打ち切られた」ように見える
+psql -h localhost -d $DB -tAc \
+  "select state, attempt, errors::text from river_job where kind = 'epg_sync'"
 ```
 
 実測（2026-08-28。`--soft-stop-timeout` を 60s と 5s で 1 回ずつ）:
 
 | 猶予 | プロセスの終了 | `river_job` |
 |---|---|---|
-| 60s | SIGTERM の **40 秒後**（ジョブの完走を待った）・exit 0 | `completed` |
-| 5s | SIGTERM の **5 秒後**（猶予切れでエスカレート）・exit 0 | `available` / `attempt=1` / `error="… stop initiated"` |
+| 60s | SIGTERM の **約 40 秒後**（ジョブの完走を待った）・exit 0 | `completed` |
+| 5s | SIGTERM の **5.0 秒後**（猶予切れでエスカレート）・exit 0 | `available` / `attempt=1` / `error="… stop initiated"` |
 
-60s の側は**プロセス側の待ちが固定値ではないこと**も同時に見ている（かつての
+60s の側が「約」なのは、`DELAY` がジョブの要求時刻から測られるのに対し、上の
+待ちが 1 秒刻みのポーリングだからである（その遅れぶん手前で終わる。実測 39.0 秒）。
+この側は**プロセス側の待ちが固定値ではないこと**も同時に見ている（かつての
 `Stop(30 秒)` のままなら 30 秒で先に抜け、ジョブは `running` のまま残る）。
+
+**2 発目の SIGTERM で強制終了できること**も同じ形で確かめられる。上の
+`kill -TERM $PID` の直後にもう一度撃つと、drain の途中でもプロセスが落ちる
+（実測: 2 発目の直後に exit 143）。1 発目のあとシグナルの登録を外していないと、
+猶予のあいだ Ctrl-C も `kill -TERM` も効かなくなる。
 
 **mock では検出できない前提が未検証のまま残ることがある**。例えば reconciler の
 `overrides.contentPath` の既存 schedule への反映を考える。これは mirakc が `GET /api/recording/schedules`

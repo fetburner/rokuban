@@ -603,6 +603,21 @@ func newServerCmd() *cobra.Command {
 			})
 
 			err = eg.Wait()
+
+			// **シグナルの登録をここで外す**（`defer stop()` に任せない）。
+			//
+			// 外すまでの間、2 発目の SIGTERM / SIGINT は signal パッケージの
+			// チャネル（バッファ 1・読み手はもう居ない）に落ちて捨てられ、
+			// 既定動作（プロセス終了）が抑止されたままになる。この先に続くのは
+			// River の drain で、その長さは `--soft-stop-timeout` である ---
+			// encode を載せる構成には数時間を推奨しているので、**その間ずっと
+			// Ctrl-C も `kill -TERM` も効かない**（止める手段が SIGKILL だけに
+			// なる）。ここで外すと 2 発目は既定動作でプロセスを落とす。
+			//
+			// defer の `stop()` は早期 return 用にそのまま残す。`signal.Stop` も
+			// ctx の cancel も冪等なので二重に呼んでよい。
+			stop()
+
 			slog.Info("shutting down")
 			return err
 		},

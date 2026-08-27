@@ -209,8 +209,9 @@ func resolveOnce(cmd *cobra.Command, roles []string) (*worker.OnceGate, time.Dur
 //
 // stopRiver に渡す ctx は cancel されないものにする。**この呼び出し自身に上限を
 // 置かない**のは、「実行中のジョブを打ち切らない」が ScaledJob を選んだ理由その
-// ものだからである（常駐 worker が持つ RunE の `stopRiverForShutdown` は、
-// 1 件消化モードでは先にこちらが完了するため到達しない）。
+// ものだからである（RunE の defer が呼ぶ `stopRiverForShutdown` は必ず実行される
+// が、1 件消化モードでは先にこちらが完了しているので、River の `Stop` が冪等な
+// ぶん無害な no-op になる）。
 //
 // **実際の上限は `--soft-stop-timeout` の猶予である。** 猶予が切れれば River が
 // work ctx を cancel するので、掴んでいたジョブは打ち切られる ---

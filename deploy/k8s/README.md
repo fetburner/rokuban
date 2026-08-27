@@ -16,6 +16,9 @@ overlays/kind/   kind での動作確認用（image の差し替え + 使い捨�
 - **notifier**。したがって `/api/events` の SSE は生えない。base を apply すると
   SPA は出るが、イベント購読は 404 になる
 - **watcher / streamer / worker の KEDA ScaledJob / CronJob 群 / PVC / Prometheus**
+  - worker を足すときは `terminationGracePeriodSeconds` の足し算に注意する。
+    api の値は worker ロールを持たない Pod の式である。worker では River の
+    drain（`--soft-stop-timeout`）が加わる（docs/operations.md §5）
 - **入口（Ingress）**。当面は `kubectl port-forward svc/rokuban-api 40773` で触る
 
 ## 前提

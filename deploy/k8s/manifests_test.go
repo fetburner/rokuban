@@ -1212,12 +1212,15 @@ func TestTerminationBudgetCoversPreStop(t *testing.T) {
 		t.Fatalf("preStop command %v has no duration to compare against the grace period", cmd)
 	}
 
-	// 10 は cmd/rokuban/server.go の Shutdown 予算。**実装の定数を参照せず
+	// 10 は cmd/rokuban/server.go の `httpShutdownTimeout`。**実装の定数を参照せず
 	// リテラルで書く**（参照すると両方を同時に変えたときに何も主張しなくなる）。
-	const shutdownBudgetSeconds = 10
-	if grace < sleep+shutdownBudgetSeconds {
-		t.Errorf("terminationGracePeriodSeconds = %d, want >= %d (preStop %ds + shutdown %ds)",
-			grace, sleep+shutdownBudgetSeconds, sleep, shutdownBudgetSeconds)
+	// 名前も向こうの識別子に揃える --- 同じファイルの `shutdownBudget()` は
+	// River の drain 予算（既定 40 秒）で別物なので、取り違えてこちらを 40 に
+	// 直すと、River を Start しない api Pod に無関係な猶予を要求することになる。
+	const httpShutdownSeconds = 10
+	if grace < sleep+httpShutdownSeconds {
+		t.Errorf("terminationGracePeriodSeconds = %d, want >= %d (preStop %ds + HTTP shutdown %ds)",
+			grace, sleep+httpShutdownSeconds, sleep, httpShutdownSeconds)
 	}
 }
 

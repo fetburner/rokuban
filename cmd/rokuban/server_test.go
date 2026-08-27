@@ -222,6 +222,42 @@ func TestServerCmd_QueuesFlagUnblocksCentralEncodeWorker(t *testing.T) {
 	}
 }
 
+// **--soft-stop-timeout の検査が RunE の配線に載っていること**（ロール検査が
+// DB より前に効く）。
+//
+// `resolveSoftStopTimeout` の単体テスト（queues_test.go）は「呼べば弾く」しか
+// 主張しない。**戻り値のエラーを握り潰す変異はそれでも緑になる**（実測: RunE を
+// `softStopTimeout, _ := resolveSoftStopTimeout(...)` にする変異は、この
+// テストを足す前は cmd/rokuban 全体が緑のままだった）。そのとき
+// `--roles watcher --soft-stop-timeout 5m` は黙って無視され、drain するつもりの
+// Pod が drain しない。`--queues` / `--once` が同じ形のテストを持っているのに、
+// このフラグだけ持っていなかった。
+func TestServerCmd_SoftStopTimeoutRequiresWorkerRoleInRunE(t *testing.T) {
+	path := writeServerTestConfig(t, serverCmdTestConfig)
+
+	err := runServerCmdForTest(t, path,
+		"--roles", "watcher", "--sites", "tokyo", "--soft-stop-timeout", "5m")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), softStopTimeoutFlagName) {
+		t.Errorf("err = %v, want the --%s role error", err, softStopTimeoutFlagName)
+	}
+	if strings.Contains(err.Error(), "connecting to database") {
+		t.Errorf("err = %v: DB まで進んでいる（検査が効いていない）", err)
+	}
+
+	// 反対方向: worker ロールなら検査を通り、DB まで到達する。
+	err = runServerCmdForTest(t, path,
+		"--roles", "worker", "--sites", "tokyo", "--soft-stop-timeout", "5m")
+	if err == nil {
+		t.Fatal("到達不能な DB を指しているので error を期待したが nil だった")
+	}
+	if !strings.Contains(err.Error(), "connecting to database") {
+		t.Errorf("err = %v, want to fail at the DB (= 起動検査を通ったこと)", err)
+	}
+}
+
 // **--once が RunE の配線に載っていること**（ロール検査が DB より前に効く）。
 func TestServerCmd_OnceRejectsExtraRoles(t *testing.T) {
 	path := writeServerTestConfig(t, serverCmdTestConfig)
@@ -571,6 +607,26 @@ func TestShutdownBudget_CoversTheSoftStop(t *testing.T) {
 	// 依存している**ので、変えるときは同じ PR で揃える。
 	if got := shutdownBudget(30 * time.Second); got != 40*time.Second {
 		t.Errorf("shutdownBudget(30s) = %s, want 40s", got)
+	}
+}
+
+// **HTTP の停止予算の値を固定する。**
+//
+// この定数はプロセスの停止予算の 1 項であり、k8s の
+// `terminationGracePeriodSeconds` に書く数値の内訳に入っている
+// （docs/operations.md §5「Deployment 併用時」の足し算）。**マニフェスト側の
+// テストはこれを検出できない** --- `deploy/k8s/manifests_test.go` は同じ 10 を
+// リテラルで持っており（実装の定数を参照すると両方を同時に変えたときに何も
+// 主張しなくなるため）、こちらを 5 分にする変異は cmd/rokuban も deploy/k8s も
+// 緑のままだった（実測）。そのとき api Pod は猶予 30 秒の途中で SIGKILL される。
+//
+// リテラルで書くのは「値が正しい」ことの主張ではなく、**この定数を変える人を
+// deploy/k8s と api.yaml の猶予に立ち寄らせる**ためである。
+func TestHTTPShutdownTimeout_IsPinnedToTheManifestBudget(t *testing.T) {
+	if httpShutdownTimeout != 10*time.Second {
+		t.Errorf("httpShutdownTimeout = %s, want 10s（変えるなら deploy/k8s/manifests_test.go の "+
+			"リテラルと deploy/k8s/base/api.yaml の terminationGracePeriodSeconds、"+
+			"docs/operations.md §5 の足し算も同じ PR で揃えること）", httpShutdownTimeout)
 	}
 }
 

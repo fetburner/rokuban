@@ -32,6 +32,13 @@ spec:
       # SIGTERM を受けると `http.Server.Shutdown`（10s 上限。
       # cmd/rokuban/server.go）で進行中のリクエストを捌いてから終わる。
       # その 10s + preStop の 5s を包める値にしておく。
+      #
+      # **これは worker ロールを持たない Pod の足し算である。** worker ロールの
+      # Pod（Deployment でも ScaledJob の Job Pod でも）は River の drain が
+      # 加わるので `+ --soft-stop-timeout + 10s` が要る。この YAML をテンプレート
+      # として写すときは docs/operations.md §5「Deployment 併用時」の足し算を
+      # 見ること --- 猶予が足りないと実行中のジョブが SIGKILL され、行が
+      # running のまま誰にも回収されない。
       terminationGracePeriodSeconds: 30
       # レプリカを別ノードに散らす。**ScheduleAnyway（soft）にする** ---
       # DoNotSchedule だと 1 ノードの kind や単一ノードのエッジで 2 本目が
