@@ -556,6 +556,9 @@ func TestServerCmd_OnceModeExitsZeroOnJobFailure(t *testing.T) {
 // 長く走るジョブを実際に走らせる必要があり、テストの所要が猶予そのものになる。
 // 代わりにここで関係だけを固定する。期待値は実装の定数を参照せずリテラルで
 // 書く（参照すると両方を同時に変えたときに何も主張しなくなる）。
+//
+// 実測: `return 30 * time.Second`（この PR が置き換えた固定値）に戻す変異で
+// 4 行とも赤くなることを確認した。
 func TestShutdownBudget_CoversTheSoftStop(t *testing.T) {
 	for _, soft := range []time.Duration{time.Second, 30 * time.Second, 60 * time.Second, 6 * time.Hour} {
 		if got := shutdownBudget(soft); got <= soft {
@@ -568,6 +571,37 @@ func TestShutdownBudget_CoversTheSoftStop(t *testing.T) {
 	// 依存している**ので、変えるときは同じ PR で揃える。
 	if got := shutdownBudget(30 * time.Second); got != 40*time.Second {
 		t.Errorf("shutdownBudget(30s) = %s, want 40s", got)
+	}
+}
+
+// **`riverClient.Stop` に渡す締切が、実際に soft stop の猶予から導かれている
+// こと。** shutdownBudget が正しくても、呼び出し側が固定値を渡していれば
+// 何の意味も無い --- 元の実装がまさに固定の 30 秒だった。
+//
+// **E2E では掛からない変異である**（TestServerCmd_SigtermDrainsRunningJob は
+// 猶予を 2 秒 / 60 秒で回すので、2 秒以上のどんな固定値でも緑になる）。実害が
+// 出るのは docs が encode に指示している `--soft-stop-timeout=6h` のような構成で、
+// そこでは固定値が drain を黙って打ち切る。だから固定値では通らない大きさ
+// （6 時間）で見る。
+//
+// 実測: `stopRiverForShutdown` の締切を `30*time.Second` に戻す変異で赤くなる
+// ことを確認した。
+func TestStopRiverForShutdown_DeadlineFollowsSoftStopTimeout(t *testing.T) {
+	const soft = 6 * time.Hour
+
+	var deadline time.Time
+	var hasDeadline bool
+	stopRiverForShutdown(func(stopCtx context.Context) error {
+		deadline, hasDeadline = stopCtx.Deadline()
+		return nil
+	}, soft)
+
+	if !hasDeadline {
+		t.Fatal("Stop に締切の無い ctx が渡っている（畳めないワーカーでプロセスが終わらなくなる）")
+	}
+	if remaining := time.Until(deadline); remaining <= soft {
+		t.Errorf("Stop の締切まで %s, want > %s（猶予の内側の drain をプロセスが先に抜けて打ち切る）",
+			remaining, soft)
 	}
 }
 
@@ -694,6 +728,13 @@ func startWorkerWithRunningJob(t *testing.T, pool *pgxpool.Pool, mock *blockingM
 //
 // **両方向を見る。** 猶予の内側なら完走し、猶予を超えたらエスカレートする
 // （＝待ちっぱなしにはならない）。
+//
+// 実測（変異を注入して赤くなることを確認済み）:
+//   - `river.Config.SoftStopTimeout` を 0 に戻す（この issue 以前の形）: 完走側が
+//     `state=available` / `error="… context canceled"` で赤。エスカレート側も
+//     「SIGTERM から終了まで 2.8ms」で赤
+//   - `ClientConfig.SoftStopTimeout` の代入を消す（フラグの配線落ち）:
+//     エスカレート側が 12 秒（上限判定）で赤
 func TestServerCmd_SigtermDrainsRunningJob(t *testing.T) {
 	// 実行中のジョブが SIGTERM の後に終わることを主張するので、cancel の
 	// あと**実際に時間を進めてから**完走させる。ハードストップ時の打ち切りは
@@ -748,9 +789,12 @@ func TestServerCmd_SigtermDrainsRunningJob(t *testing.T) {
 		// **上限も見る。** 下限だけだと、`--soft-stop-timeout` が River に
 		// 渡っておらず既定値（worker.DefaultSoftStopTimeout = 30 秒）で
 		// 待っている場合も通ってしまう --- フラグの配線を落とす変異が
-		// そのまま緑になる。8 秒は「2 秒の猶予と 30 秒の既定値を取り違えない」
-		// ための幅であって、測った値ではない。
-		if margin := 8 * time.Second; elapsed > softStop+margin {
+		// そのまま緑になる。
+		//
+		// 実測: 配線を落とす変異では 12 秒（River が 30 秒待つ一方で、
+		// プロセス側の待ち shutdownBudget(2s) が先に切れる）。正しい実装では
+		// 2.2 秒。5 秒はその間に引いた線であって、測った値ではない。
+		if margin := 5 * time.Second; elapsed > softStop+margin {
 			t.Errorf("SIGTERM から終了まで %s、want < %s（--%s が River に渡っていない可能性）",
 				elapsed, softStop+margin, softStopTimeoutFlagName)
 		}

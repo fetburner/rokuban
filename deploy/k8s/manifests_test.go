@@ -1175,6 +1175,18 @@ func TestReadinessDoesNotEvictOnASingleFailure(t *testing.T) {
 // つまり進行中のリクエストが切れる。api.yaml のコメントはこの足し算を根拠として
 // 書いているので、根拠と一緒に固定する（実測: grace を 3 にする変異はどのテストにも
 // 掛からなかった）。
+//
+// **worker ロールの Pod を足すときは、同じ検査をそちらにも掛けること。**
+// api は River クライアントを Start しないので足し算が 2 項で済んでいるが、
+// worker ロールの Pod では drain のぶんが増える:
+//
+//	grace >= preStop の sleep + 10s + --soft-stop-timeout + 10s
+//
+// 内訳と、包まなかったときに何が起きるか（行が `running` のまま残り、ロール分割
+// 構成では `JobRescuer` を動かす常駐クライアントが居ないので誰も回収しない）は
+// docs/operations.md §5「Deployment 併用時」にある。ここを worker Pod へ広げる
+// のは、worker の pod spec を書くタスクの担当である --- いま汎用のループを書いても
+// 対象が 0 件で、通るだけのテストになる。
 func TestTerminationBudgetCoversPreStop(t *testing.T) {
 	specs := podSpecs(loadBase(t))
 	spec, ok := specs[apiDeployment]

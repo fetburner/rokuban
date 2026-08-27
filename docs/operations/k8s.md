@@ -180,13 +180,13 @@ River の at-least-once / 冪等性は「殺されても正しい」を保証済
 **Job は 1 件消化して自分で終了する（`rokuban server --roles worker --once`）。** ScaledJob は Job の自己終了を前提にした機構である。常駐する `--roles worker` をそのまま載せると Job が `succeeded` に到達せず、「0 → 1 → 0」が成立しない。`--once` の形は次に固定してある。
 
 - ジョブ 1 件の Work を抜けたらプロセスを畳む。**成功・失敗を問わず exit 0**（リトライは River が持つので、k8s 側は `backoffLimit: 0` / `restartPolicy: Never` にして二重にリトライしない）
-- **実行中のジョブは打ち切らない。** `--once-idle-timeout`（既定 30 秒）は「1 件も掴めないまま待った時間」にしか効かないので、数時間のエンコードは対象にならない。KEDA が滞留を過大評価して起こした空振りの Job を終わらせるためだけの値である（`worker.OnceGate` / `TestOnceGate_IdleTimeoutDoesNotCutRunningJob`）
+- **`--once-idle-timeout`（既定 30 秒）は実行中のジョブを打ち切らない。** 「1 件も掴めないまま待った時間」にしか効かないので、数時間のエンコードは対象にならない。KEDA が滞留を過大評価して起こした空振りの Job を終わらせるためだけの値である（`worker.OnceGate` / `TestOnceGate_IdleTimeoutDoesNotCutRunningJob`）
+- **打ち切りうるのは SIGTERM のほうである。** ノード退避・ローリング更新で SIGTERM を受けた Job は、`--soft-stop-timeout`（既定 30 秒）を超えた時点で実行中のジョブの ctx を切る。**長時間キュー（`encode` / `ingest`）の ScaledJob では `--soft-stop-timeout` を明示する。** 既定のままだと、猶予を 300 秒に取った ScaledJob でも drain は 30 秒で終わる。`terminationGracePeriodSeconds` と対で引き上げること（下記「Deployment 併用時」の足し算）
 - 引くキューはちょうど 1 つで、その `MaxWorkers` は 1 に落とす（KEDA 側が「1 Job = 1 アイテム」で数を合わせるため）。`worker.periodic_jobs: true` との併用は起動エラー —— 1 件で終わる Job がリーダーになると、定期投入の間隔が Job の起動回数で決まってしまう
-- argv の制約は 4 つで、いずれも起動エラーになる
+- argv の制約は 3 つで、いずれも起動エラーになる
     - `--roles worker` 単独であること（常駐する役と同居させない）
     - `--once-idle-timeout` が正の値であること
     - `--once-idle-timeout` を `--once` 無しで書かないこと
-    - `--soft-stop-timeout` が正の値であること（0 は「無制限」ではなく「待たない」。下記「Deployment 併用時」）
 - encode の ScaledJob だけ `Dockerfile.full` のイメージを使う。公式イメージは ffmpeg を同梱しないので、encode / thumbnail キューを購読する worker は起動時に fail-fast する
 
 **停止の順序が「実行中を打ち切らない」を支えている。** 1 件消化モードは、先に River の graceful stop を撃つ（producer の fetch を止めて実行中を待つ）。そのあとでプロセスを畳む。畳む側は Start に渡した ctx の cancel である。順序は `TestStopOnceProcess` が固定している。
@@ -241,21 +241,26 @@ Deployment 型で worker を運用する場合（またはその併用）の定�
 
 **drain の猶予は `--soft-stop-timeout`（既定 30 秒、`river.Config.SoftStopTimeout`）である。** SIGTERM を受けてから実行中のジョブを打ち切るまでの時間で、その内側に終われば完走する。実バイナリで両方向を確認した。猶予 60 秒に対して、SIGTERM の 40 秒後に終わるジョブは `completed` になった。猶予 5 秒に対して、同じジョブは 5 秒で ctx を切られて `available` に戻った（`attempt=1` / `error="… stop initiated"`）。テストは `TestServerCmd_SigtermDrainsRunningJob`（実 DB + mirakc モック、両方向）。
 
-**0 は「無制限」ではなく「待たない」**なので起動エラーにしてある。River は `SoftStopTimeout` が 0 のとき work ctx を start ctx から継ぐ。`signal.NotifyContext` の ctx を `Start` に渡しているこの構成では、SIGTERM が `StopAndCancel` 相当になる（この節が長く「未解決」として抱えていた壊れ方そのもの）。
+`--soft-stop-timeout` の検査は 2 つあり、`--once` かどうかに関わらず全 `server` 起動に効く。**0 以下は起動エラー**、そして **worker ロールを持たないプロセスでの指定も起動エラー**である。キューを引くのは worker ロールだけなので、`--roles watcher --soft-stop-timeout 5m` は何も待たずに畳む。効かない argv を黙って無視すると、ScaledJob の argv から写し間違えた Pod が「drain するつもりで drain しない」形になる。
+
+**0 は「無制限」ではなく「待たない」**である。River は `SoftStopTimeout` が 0 のとき work ctx を start ctx から継ぐ。`signal.NotifyContext` の ctx を `Start` に渡しているこの構成では、SIGTERM が `StopAndCancel` 相当になる（この節が長く「未解決」として抱えていた壊れ方そのもの）。
 
 **真の上限は `terminationGracePeriodSeconds` 経過後の SIGKILL であり、それは River の外である。** したがって猶予は k8s 側の猶予の内側に置く。外に出すと、猶予が切れる前に SIGKILL が来て、実行中のジョブの行は `running` のまま残る。回収するのは `JobRescuer`（リーダーだけが動かす保守サービス）である。ロール分割構成では常駐する River クライアントが 1 つも無いので**誰も回収しない**（この節の「スケーラのクエリ」と同じ族の問題）。内側に置けば、プロセスが自分でエスカレートして行を `available` に戻してから終わる。**「試行を 1 つ潰す」と「誰も引き直せない」の差**である。
 
-書く数値は次の足し算で決める（`cmd/rokuban/server.go` の `shutdownBudget`。既定の 30 秒なら 40 秒）:
+**worker ロールを走らせる Pod** に書く数値は次の足し算で決める（既定の 30 秒なら preStop 抜きで 50 秒）:
 
 ```
-terminationGracePeriodSeconds >= preStop の sleep + max(--soft-stop-timeout, 10s) + 10s
+terminationGracePeriodSeconds >= preStop の sleep + 10s + --soft-stop-timeout + 10s
+                                                    HTTP            drain      畳み
 ```
 
-- `10s` が 2 つ出るのは別物である。**前者は HTTP の停止**（進行中のリクエストを書き終える `http.Server.Shutdown` の上限）で、SIGTERM を契機に drain と**同時に**始まるので和ではなく max を取る。**後者は猶予が切れたあと畳み終えるぶん**（ctx を切られたジョブが `Work` から戻り、River の completer が結果を書く）。**所要は測っていない** --- 前者と同じ大きさに揃えただけである
+- **worker ロールを持たない Pod では後ろ 2 項が落ちる**（River クライアントを Start するのは worker ロールだけ）。api がこれで、要求は `preStop の sleep + 10s` になる。実際の値は `deploy/k8s/base/api.yaml` の 30 秒で、`deploy/k8s/manifests_test.go` の `TestTerminationBudgetCoversPreStop` が固定している
+- 前の `10s` は **HTTP の停止**（進行中のリクエストを書き終える `http.Server.Shutdown` の上限）。**drain と直列に足す。** River の内部タイマーは SIGTERM と同時に走り出すが、プロセスが `Stop` を待ち始めるのは HTTP の停止が終わってからである。したがって最悪の壁時計は和になる。monolith ではこれは仮定ではない。SSE（`/api/events`）を掴んだクライアントが 1 つでも居れば `Shutdown` はこの上限を使い切る。`Shutdown` は実行中のリクエストの ctx を cancel しないので、ハンドラは自分の接続が切れるまで抜けないからである
+- 後ろの `10s` は**猶予が切れたあと畳み終えるぶん**（ctx を切られたジョブが `Work` から戻り、River の completer が結果を書く）。**所要は測っていない** --- HTTP の停止と同じ大きさに揃えただけである
 - 数時間のエンコード / ingest は既定の 30 秒では完走しない。**`--soft-stop-timeout` と `terminationGracePeriodSeconds` は対で引き上げる**（片方だけ上げても、短い側が先に効く）
-- 関係は `TestShutdownBudget_CoversTheSoftStop` が固定している。プロセス側の待ちが猶予より短いと、猶予の内側で完走するはずのジョブを**プロセスが先に抜けることで**打ち切る（このときジョブの ctx は cancel すらされないので、上記の「誰も回収しない」形になる）
+- プロセス側の待ちが猶予から導かれていることは `TestStopRiverForShutdown_DeadlineFollowsSoftStopTimeout` が固定している。猶予より長いことは `TestShutdownBudget_CoversTheSoftStop` が固定している。ここが固定値だと、猶予の内側で完走するはずのジョブを**プロセスが先に抜けることで**打ち切る（このときジョブの ctx は cancel すらされないので、上記の「誰も回収しない」形になる）
 
-`docker-compose.yml` の `stop_grace_period` も同じ関係で置いてある（monolith は `--soft-stop-timeout` を渡さないので既定の 30 秒 → 40 秒）。**Docker の既定は 10 秒**なので、書かないと drain の途中で SIGKILL される。
+`docker-compose.yml` の `stop_grace_period` も同じ足し算で置いてある（monolith は `--soft-stop-timeout` を渡さないので既定の 30 秒 → 50 秒）。**Docker の既定は 10 秒**なので、書かないと drain の途中で SIGKILL される。
 
 1 件消化モードの graceful stop にも同じ猶予が効く（`--once` の Job もノード退避やローリング更新で SIGTERM を受ける）。ジョブ 1 件を消化したあとの正常終了の経路も同じで、**取りこぼしのジョブ（上記「既知の窓」）を掴んでいた場合、その完走を待つのは猶予までである**。ctx を見ないワーカーはそれでも止まらないので、最終的な上限が SIGKILL であることは変わらない。
 

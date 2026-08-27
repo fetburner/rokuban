@@ -207,14 +207,19 @@ func resolveOnce(cmd *cobra.Command, roles []string) (*worker.OnceGate, time.Dur
 // 逆順でも打ち切りは soft stop の猶予まで遅れる。それでも順序はこのままにする
 // --- graceful stop を先に撃つほうが、猶予を消費せずに完走できる。
 //
-// stopRiver に渡す ctx は cancel されないものにする。ここで上限を付けないのは
-// 「実行中のジョブを打ち切らない」が ScaledJob を選んだ理由そのものだから
-// （数時間のエンコードを待つ）。**待ちの上限は River 側が持つ** ---
-// SoftStopTimeout の猶予が切れれば River が work ctx を cancel するので、
-// この Stop も戻ってくる。ctx を見ないワーカーはそれでも止まらないので、
-// 最終的な上限は k8s の `terminationGracePeriodSeconds` 経過後の SIGKILL に
-// なる（常駐 worker が持つ RunE の `Stop(shutdownBudget)` は、1 件消化モードでは
-// 先にこちらが完了するため到達しない）。
+// stopRiver に渡す ctx は cancel されないものにする。**この呼び出し自身に上限を
+// 置かない**のは、「実行中のジョブを打ち切らない」が ScaledJob を選んだ理由その
+// ものだからである（常駐 worker が持つ RunE の `stopRiverForShutdown` は、
+// 1 件消化モードでは先にこちらが完了するため到達しない）。
+//
+// **実際の上限は `--soft-stop-timeout` の猶予である。** 猶予が切れれば River が
+// work ctx を cancel するので、掴んでいたジョブは打ち切られる ---
+// 数時間のエンコードを載せるキューでは、既定の 30 秒では足りない
+// （docs/operations.md §5「Deployment 併用時」の対で引き上げる指針）。
+// **River が保証するのは work ctx の cancel までで、`Stop` が戻ることまでは
+// 保証しない**（ctx を見ないワーカーは止まらず、completer の停止待ちにも上限が
+// 無い。river@v0.40.0/client.go の `StopAllParallel` 直前の TODO）。最終的な
+// 上限は k8s の `terminationGracePeriodSeconds` 経過後の SIGKILL になる。
 //
 // エラーを握り潰さないのは作法として。現在の呼び出しでは ctx が cancel
 // されないので `Stop` は nil しか返さない（`Stop` が非 nil を返すのは

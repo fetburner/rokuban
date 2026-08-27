@@ -51,15 +51,42 @@ ROKUBAN_TEST_TS_FILE=/path/to/clean.m2ts \
 効いてしまうためである。全体の上限は `http.Client.Timeout` の 60 秒なので、
 40 秒のジョブはこの形でしか作れない。
 
+遅延モック（`python3 /tmp/mock-mirakc.py` で立てる。`/api/services` のボディだけを
+遅らせ、それ以外は空リストを即返す）:
+
+```python
+import http.server, time
+DELAY = 40
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = b"[]"
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers(); self.wfile.flush()
+        if self.path == "/api/services":
+            time.sleep(DELAY)
+        self.wfile.write(body)
+    def log_message(self, *a): pass
+http.server.ThreadingHTTPServer(("127.0.0.1", 40799), H).serve_forever()
+```
+
+config は使い捨ての DB と `mirakc.url: http://127.0.0.1:40799` / `site: home` を指す
+ものを書く（`worker.periodic_jobs: false`）。
+
 ```sh
 go build -o /tmp/rokuban ./cmd/rokuban
-# /api/services のボディを 40 秒遅らせる HTTP サーバーを 127.0.0.1:40799 に立てておく
-/tmp/rokuban migrate up --config /tmp/softstop-config.yml     # 使い捨ての DB を指す config
-/tmp/rokuban enqueue epg-sync --site home --config /tmp/softstop-config.yml
+CFG=/tmp/softstop-config.yml
+/tmp/rokuban migrate up --config $CFG
+/tmp/rokuban enqueue epg-sync --site home --config $CFG
 /tmp/rokuban server --roles worker --sites home --queues=epg \
-  --soft-stop-timeout=60s --config /tmp/softstop-config.yml &
-# mirakc に要求が届いてから（= ジョブが実行中になってから）SIGTERM を撃つ
-kill -TERM $!
+  --soft-stop-timeout=60s --config $CFG & PID=$!
+# **ジョブが実行中になるまで待つ。** 待たずに撃つと claim 前に畳んで終わり、
+# 「完走した」も「打ち切られた」も観測できない（空虚な緑になる）
+until psql -h localhost -d rokuban_softstop -tAc \
+  "select 1 from river_job where state = 'running'" | grep -q 1; do sleep 1; done
+kill -TERM $PID; time wait $PID
+psql -h localhost -d rokuban_softstop -tAc "select state, attempt, errors::text from river_job"
 ```
 
 実測（2026-08-28。`--soft-stop-timeout` を 60s と 5s で 1 回ずつ）:

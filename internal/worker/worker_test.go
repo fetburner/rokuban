@@ -584,6 +584,9 @@ func TestBuildRiverConfig_LogsSubscribedQueues(t *testing.T) {
 // SIGTERM が実際に drain になることは cmd/rokuban の
 // TestServerCmd_SigtermDrainsRunningJob が実 DB で測る。ここでは
 // 「0 を素通しさせない」ことだけを固定する。
+//
+// 実測: `SoftStopTimeout: 0` を river.Config に渡す変異で 2 行とも赤くなる
+// ことを確認した。
 func TestBuildRiverConfig_SoftStopTimeoutIsNeverZero(t *testing.T) {
 	riverCfg, err := buildRiverConfig(NewWorkers(&Deps{}), ClientConfig{})
 	if err != nil {

@@ -76,12 +76,12 @@ services:
       - "${ROKUBAN_PORT:-40773}:40773"
     # monolith（--all）で動かす。ロール分割デプロイは docs/operations.md を参照。
     command: ["server", "--all", "--config", "/config.yml"]
-    # SIGTERM から自分で畳み終えるまでの上限（--soft-stop-timeout の既定 30 秒
-    # + 畳み終えるぶん 10 秒）を包む長さ。**Docker の既定は 10 秒**なので、
-    # 書かないと実行中のジョブが drain の途中で SIGKILL され、River の行が
-    # running のまま残る（k8s の terminationGracePeriodSeconds と同じ関係。
-    # docs/operations.md §5「Deployment 併用時」）。
-    stop_grace_period: 40s
+    # SIGTERM から自分で畳み終えるまでの上限を包む長さ。内訳は HTTP の停止
+    # 10 秒 + --soft-stop-timeout の既定 30 秒 + 畳み終えるぶん 10 秒で、
+    # この 3 つは直列に起きうる（docs/operations.md §5「Deployment 併用時」の
+    # 足し算）。**Docker の既定は 10 秒**なので、書かないと実行中のジョブが
+    # drain の途中で SIGKILL され、River の行が running のまま残る。
+    stop_grace_period: 50s
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:40773/healthz"]
       start_period: 10s
