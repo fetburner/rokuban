@@ -206,30 +206,21 @@ ScaledJob 自体の書き方（トリガの接続先・`rollout.strategy`・切�
 
 ### 先に決めること（マニフェストを書き始める前に）
 
-**この 3 つは実装ではなく決定である。** 決めずに書き始めると、ワークロードが
-できても判定 2 / 3 が緑にならず、「ハーネスが間違っているのか自分のマニフェストが
-間違っているのか」を切り分けられない。
+**次の 3 つは実装ではなく決定である。決めずに書き始めると、ワークロードが
+できても判定 2 / 3 が緑にならない。** 選択肢と根拠は M4-6c の issue に出して
+あるので、そちらを先に読むこと。
 
 - **未解決: KEDA ScaledJob の Job は自分で終了しなければならないが、
-  `rokuban server --roles worker` は終了しない**（`cmd/rokuban/server.go` の
-  `eg.Wait()` で待ち続ける。one-shot のサブコマンドも無い）。したがって判定 2 は
-  (a) 2 周目以降は開始時点に active な Job が居て 2.2 が FAIL、(b) `succeeded` に
-  到達しないので 2.4 が FAIL になる。**TODO ではなく FAIL** なので「壊れている」と
-  報告される。1 件掴んで終了するモードを足すか、idle で終了させるか、worker を
-  Deployment + `ScaledObject` にして判定 2 / 3 を書き換えるか --- どれを採るかを
-  先に決める
-- **未解決: キュー単位に ScaledJob を切る手段が無い。** `worker.queues` は config
-  キューだけで CLI フラグが無い（`internal/config`）。一方
-  [docs/operations.md](../../../docs/operations.md) §5 は「ConfigMap は 1 個で、
-  Pod ごとに違うのは argv だけ」と決めている。両立しない。加えて encode の中央
-  ScaledJob（`--sites=`）は、`worker.queues` を絞らないと起動時に落ちる
-  （`cmd/rokuban/sites.go` の 0 サイト束縛の検査）。`--queues` フラグを足すか、
-  ScaledJob ごとに ConfigMap を分ける決定を書き足すか
+  `rokuban server --roles worker` は終了しない。** 判定 2.2 と 2.4 が
+  TODO ではなく **FAIL** になる
+- **未解決: ScaledJob をキュー単位に切る手段が無い。** `worker.queues` は
+  config キューだけで CLI フラグが無い。「ConfigMap は 1 個・Pod 差分は argv
+  だけ」という決定と両立しない。encode の中央 ScaledJob は起動すらしない
 - **未解決: 判定 2 は CronJob が 180 秒以内に自然発火することを要求する。**
   epg_sync の実運用相当の間隔は 10 分なので、出荷する schedule のままだと
-  2.3 が FAIL になる。`overlays/e2e` で schedule を毎分に patch する方針にする
-  なら、**判定 2 が測るのは出荷される schedule ではなくなる**ことを
-  「0 が保証しないもの」に足すこと
+  2.3 が FAIL になる
+
+### ハーネス側の契約と、残っている穴
 
 - **未解決: `insert_probe_job` が入れる `e2e_probe` ジョブを実物の worker が
   どう扱うかは未検証**（実物の worker が居る状態でハーネスを回したことがない）。
