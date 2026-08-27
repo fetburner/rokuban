@@ -1,0 +1,68 @@
+# オラクル自己検査用の身代わり（判定 3）。製品のマニフェストではない。
+#
+# 判定 3 が見ているのは「**実行中の** Job がスケールインで消えないか」なので、
+# 身代わりは「長く走る」ことだけできればよい。psql で 1 件掴んでから寝る。
+#
+# **`rollout.strategy: gradual` がこの fixture の主役**である。値ごとの挙動は
+# docs/operations.md §5「worker: KEDA ScaledJob」に実測がある。oracles.sh が
+# この 1 行を `immediate` に変えた版と、`rollout` ごと省いた版の 2 通りで、
+# 判定 3.3 が赤くなることを確かめている。
+apiVersion: keda.sh/v1alpha1
+kind: ScaledJob
+metadata:
+  name: e2e-fx-worker-encode
+  labels:
+    app.kubernetes.io/name: rokuban
+    app.kubernetes.io/component: worker
+    rokuban-e2e/fixture: "true"
+spec:
+  pollingInterval: 10
+  maxReplicaCount: 2
+  successfulJobsHistoryLimit: 5
+  failedJobsHistoryLimit: 5
+  rollout:
+    strategy: gradual
+  jobTargetRef:
+    backoffLimit: 0
+    template:
+      metadata:
+        labels:
+          rokuban-e2e/fixture: "true"
+      spec:
+        restartPolicy: Never
+        enableServiceLinks: false
+        # 実物の encode は途中で殺されてはならないので長い猶予を持つ。
+        # 身代わりも同じ性質にしておく（短いと、判定が「殺された」のか
+        # 「猶予が尽きた」のか区別できない）。
+        terminationGracePeriodSeconds: 300
+        containers:
+          - name: encode
+            image: postgres:17
+            env:
+              - name: POSTGRES_CONNECTION_STRING
+                valueFrom:
+                  secretKeyRef:
+                    name: e2e-keda-postgres
+                    key: POSTGRES_CONNECTION_STRING
+            command: ["/bin/sh", "-c"]
+            args:
+              - |
+                set -e
+                psql "$POSTGRES_CONNECTION_STRING" -v ON_ERROR_STOP=1 -c \
+                  "UPDATE river_job SET state='running', attempted_at=now()
+                   WHERE id = (SELECT id FROM river_job
+                               WHERE queue='encode' AND state IN ('available','retryable')
+                               ORDER BY id LIMIT 1)"
+                sleep 600
+            resources:
+              requests:
+                cpu: 20m
+                memory: 32Mi
+  triggers:
+    - type: postgresql
+      metadata:
+        query: >-
+          SELECT count(*) FROM river_job
+          WHERE queue = 'encode' AND state IN ('available','retryable')
+        targetQueryValue: "1"
+        connectionFromEnv: POSTGRES_CONNECTION_STRING

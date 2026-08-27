@@ -8,7 +8,7 @@ Service）が kind で上がり、api に到達できることを見る。判断
 [deploy/k8s/README.md](../../deploy/k8s/README.md)。
 
 **ロール分割デプロイ全体の受け入れ（KEDA / watcher の二重起動 / サイト間の
-独立）はここでは見ない。** 機械判定するハーネスを別に作る。
+独立）はここでは見ない。** 下の§受け入れ判定ハーネスが機械判定する。
 
 ### 前提
 
@@ -144,3 +144,69 @@ kubectl get pod -l app.kubernetes.io/component=api -o name   # Pod 名が入れ�
   作った Secret が要る。`kubectl get secret | grep rokuban-secrets` で見る
 - **api が `db.password is required` で落ちる**: Secret はあるが値が空。
   `kubectl get secret <名前> -o jsonpath='{.data}'` で中身を見る
+
+## 受け入れ判定ハーネス（kind + KEDA）
+
+ロール分割デプロイの受け入れ 5 項目を機械判定する。上の手順が「中央 1 式が
+上がること」を人間の目で見るのに対して、こちらは**合否が終了コードで出る**。
+設計と判定の中身は [deploy/k8s/e2e/README.md](../../deploy/k8s/e2e/README.md)。
+
+```sh
+./deploy/k8s/e2e/run.sh              # 5 項目を判定する（クラスタごと用意する）
+./deploy/k8s/e2e/run.sh --only 2,4   # 一部だけ
+./deploy/k8s/e2e/run.sh --oracles    # 判定そのものを検査する（変異注入）
+./deploy/k8s/e2e/run.sh --down       # クラスタを消す
+```
+
+終了コードは `0`（5 項目すべて緑）/ `1`（壊れている判定がある）/
+`2`（壊れてはいないが、まだ実装されていない判定がある）。
+
+**ワークロードが揃ったと言えるのは、このコマンドが 0 を返したとき**である。
+それまでは対象が無い判定が TODO で残り、2 が返る。項目ごとの現況は
+[deploy/k8s/e2e/README.md](../../deploy/k8s/e2e/README.md) の表が持つ
+（ここには書かない --- 判定を足す人が触るのはあちらなので、ここに写すと
+黙って古くなる）。
+
+mirakc は実機ではなくモックで確認している（同 README）。
+最後に通した環境: kind v0.32.0 / k8s v1.36.1 / KEDA v2.20.2（2026-08-26）。
+
+### CI では回さない
+
+**決定: 回さない。** `web/e2e/` と同じくローカル受け入れ確認の位置づけにする。
+
+- **いま回しても結果は毎回同じで、退行を捕まえる能力がない。** 意味を持ち
+  始めるのは残りのワークロードが入ってからである
+- そして意味を持ち始めた時点で**遅くなる**。判定 2 は CronJob の**自然な発火**
+  （分単位）を待ち、判定 3 / 5 は「起きないこと」を窓で見る。どちらも短縮が
+  効かない種類の待ちである。オラクル自己検査 `--oracles` はその待ちを含む判定を
+  何度もまわすので、体感で十数分かかる（正確には測っていない）
+- CI イメージに kind / KEDA / Postgres という新しい依存が増える
+
+**回さないなら「いつ誰が回すのか」を決めておく**（誰も回さない判定手段は無いのと
+同じ）。
+
+| いつ | 誰 | 何を見る |
+|---|---|---|
+| `deploy/k8s/` 配下を触る PR を出す前 | その PR の作者 | `run.sh` の終了コードが上がっていないこと（2 → 1 にしていない） |
+| ワークロード（Deployment / ScaledJob / CronJob）を足す PR ごと | その PR の作者 | `run.sh` で TODO が減り FAIL が出ていないこと |
+| ワークロードが出揃ったとき | その PR の作者 | `run.sh` が **0** を返すこと |
+| 判定・身代わり（`fixtures/`）を足す / 変えるとき | 変更した人 | `run.sh --oracles` が全部緑（判定が効いていること） |
+
+CI が見るのはクラスタが要らない範囲の 2 つで、どちらも `manifests` ジョブにある。
+1 つはハーネスが持つマニフェストが `kustomize build` + kubeconform を通ること。
+もう 1 つは `deploy/k8s/e2e/lib/selftest.sh`（対象の探索・watch ログの読み取り・
+終了コードのユニットテスト）と shellcheck である。**回さないものが腐るのを、
+せめてそこで止める。**
+
+### 詰まったとき（ハーネス）
+
+- **判定が全部 TODO で、しかも対象を作ったはずなのに TODO のまま**:
+  判定はラベル（`app.kubernetes.io/component=<役>`）と argv（`--sites <site>`）と
+  キュー名への言及で対象を引く。`kubectl get deploy,scaledjob,cronjob -n rokuban-e2e`
+  で、その 3 つのどれかに手掛かりが載っているか見る
+- **ScaledJob が `Ready=False / ScaledJobCheckFailed` のまま Job を起こさない**:
+  トリガの接続先を疑う。理由は [operations.md](../operations.md) §5「worker:
+  KEDA ScaledJob」。ログは
+  `kubectl -n keda logs deploy/keda-operator | grep -i error` で見る。
+  直しても spec が変わらないと再 reconcile されない。ScaledJob を作り直すのが早い
+- **クラスタを作り直したい**: `run.sh --fresh`（`--down` してから立て直す）

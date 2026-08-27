@@ -1,0 +1,52 @@
+# オラクル自己検査用の身代わり（判定 2 の投入側）。製品のマニフェストではない。
+#
+# **ScaledJob と別ファイルにしてある。** 同じファイルに入れると、KEDA の CRD を
+# 含むという理由でファイルごと kubeconform の対象外になり、素の CronJob まで
+# 検査から外れる（CI の manifests ジョブ）。
+# 投入側。`rokuban enqueue` を実物のバイナリで打つ --- ここを psql の INSERT に
+# すると、判定 2 が「CronJob が rokuban の投入経路を通せること」を見なくなる
+# （config の読み込み・site 解決・キュー修飾が全部落ちる）。
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: e2e-fx-cron-epg-sync-__SITE_A__
+  labels:
+    app.kubernetes.io/name: rokuban
+    app.kubernetes.io/component: cron
+    rokuban-e2e/fixture: "true"
+spec:
+  schedule: "* * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            rokuban-e2e/fixture: "true"
+        spec:
+          restartPolicy: Never
+          enableServiceLinks: false
+          automountServiceAccountToken: false
+          containers:
+            - name: enqueue
+              image: __IMAGE__
+              imagePullPolicy: IfNotPresent
+              args: ["enqueue", "epg-sync", "--site", "__SITE_A__", "--config", "/etc/rokuban/config.yml"]
+              envFrom:
+                - secretRef:
+                    name: rokuban-secrets
+              volumeMounts:
+                - name: config
+                  mountPath: /etc/rokuban
+                  readOnly: true
+              resources:
+                requests:
+                  cpu: 20m
+                  memory: 32Mi
+          volumes:
+            - name: config
+              configMap:
+                name: e2e-toolbox-config

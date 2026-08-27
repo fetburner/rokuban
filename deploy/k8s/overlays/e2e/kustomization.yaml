@@ -1,0 +1,33 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# 受け入れ判定ハーネス（deploy/k8s/e2e）が立てる 2 サイト構成。
+#
+# **overlays/kind との違いは「サイトが 2 つあること」だけではない。** 判定 5
+# （サイト B の滞留でサイト A の Job が起きない）は 1 サイトでは原理的に測れない
+# ので、ハーネスは常に 2 サイトで立てる。判定 2〜4 も同じクラスタで回すため、
+# サイト数を判定ごとに変えない（クラスタを立て直す時間の方が高い）。
+#
+# **Secret はここでも出荷しない。** ハーネスは同じパスワードを postgres 側にも
+# 渡す必要があるので、出どころを 1 つ（deploy/k8s/e2e/lib/env.sh の
+# E2E_PGPASSWORD）にして run.sh が `kubectl create secret` で供給する。
+# 理由は deploy/k8s/README.md §ここを使うハーネス。
+
+resources:
+  - ../../base
+
+namespace: rokuban-e2e
+
+images:
+  - name: ghcr.io/fetburner/rokuban
+    newName: rokuban
+    newTag: e2e
+
+# base の config.yml を 2 サイト構成で置き換える。**`behavior: replace`**
+# （merge ではない）--- merge だと base の `mirakc:`（単一サイト）が残り、
+# `mirakcs:` との排他で起動エラーになる。
+configMapGenerator:
+  - name: rokuban-config
+    behavior: replace
+    files:
+      - config.yml
