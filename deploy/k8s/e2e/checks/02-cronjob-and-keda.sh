@@ -27,7 +27,7 @@ cronjob="$(cronjob_enqueueing epg-sync "$E2E_SITE_A")"
 scaledjob="$(scaledjob_for_queue "$queue")"
 
 if discovery_is_ambiguous "$cronjob" || discovery_is_ambiguous "$scaledjob"; then
-  reason="判定対象が一意に決まらない（CronJob: ${cronjob:-なし} / ScaledJob: ${scaledjob:-なし}）"
+  reason="判定対象が一意に決まらない（CronJob: $(discovery_detail "${cronjob:-なし}") / ScaledJob: $(discovery_detail "${scaledjob:-なし}")）"
   fail "2.1" "$reason"
   fail "2.2" "$reason"
   fail "2.3" "$reason"
@@ -82,13 +82,25 @@ watch_file="$(mktemp)"
 trap 'watch_jobs_stop; rm -f "$watch_file" "$watch_file.pre" "$watch_file.err"' EXIT
 watch_jobs_start "$scaledjob" "$watch_file"
 
-before_schedule="$(k get cronjob "$cronjob" -o jsonpath='{.status.lastScheduleTime}')"
-before_inserted="$(psql_q "SELECT count(*) FROM river_job WHERE queue = '$queue'" | tr -d '[:space:]')"
+# **読めなかったことを既定値に潰さない。** `before_inserted` を空のまま
+# `${x:-0}` で比べると、`k exec` の一過性の失敗が「0 件だった」になり、
+# **CronJob の発火も投入も観測していないのに 2.3 が緑**になる（実測）。
+if ! before_schedule="$(k get cronjob "$cronjob" -o jsonpath='{.status.lastScheduleTime}')"; then
+  fail "2.3" "CronJob ${cronjob} の lastScheduleTime を読めない --- 発火を観測できない"
+  todo "2.4" "投入を観測していないので 0 → 1 → 0 も観測していない"
+  exit 0
+fi
+if ! before_inserted="$(psql_q "SELECT count(*) FROM river_job WHERE queue = '$queue'" | tr -d '[:space:]')" ||
+   [ -z "$before_inserted" ]; then
+  fail "2.3" "${queue} の現在のジョブ件数を読めない --- 投入を観測できない"
+  todo "2.4" "同上"
+  exit 0
+fi
 
 log_step "waiting for ${cronjob} to fire on its own schedule (up to 180s)"
 cronjob_fired() {
   local now
-  now="$(k get cronjob "$cronjob" -o jsonpath='{.status.lastScheduleTime}')"
+  now="$(k get cronjob "$cronjob" -o jsonpath='{.status.lastScheduleTime}')" || return 1
   [ -n "$now" ] && [ "$now" != "$before_schedule" ]
 }
 if ! retry_until 180 "the CronJob to fire" cronjob_fired; then
@@ -101,8 +113,9 @@ fi
 # （`rokuban enqueue` が失敗していても lastScheduleTime は進む）。
 inserted() {
   local now
-  now="$(psql_q "SELECT count(*) FROM river_job WHERE queue = '$queue'" | tr -d '[:space:]')"
-  [ "${now:-0}" -gt "${before_inserted:-0}" ]
+  now="$(psql_q "SELECT count(*) FROM river_job WHERE queue = '$queue'" | tr -d '[:space:]')" || return 1
+  [ -n "$now" ] || return 1
+  [ "$now" -gt "$before_inserted" ]
 }
 if retry_until 120 "a job to be inserted into ${queue}" inserted; then
   pass "2.3" "worker が 0 のまま CronJob が ${queue} にジョブを投入した"

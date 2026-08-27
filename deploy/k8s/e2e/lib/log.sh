@@ -40,7 +40,11 @@ log_section() {
 record() {
   local verdict="$1" id="$2"
   shift 2
-  local message="$*"
+  # **改行を潰すのはここの責任。** 結果ファイルは 1 行 1 レコードの TSV なので、
+  # メッセージに改行が混ざると集計が壊れる（実測: `PASS<TAB>fake` を含む文字列を
+  # 埋め込むと PASS 件数が水増しされ、plan の「記録しなかった」検出器も欺ける）。
+  # 呼び出し側で `tr` する規約にすると、付け忘れが必ず出る。
+  local message="${*//$'\n'/ }"
   printf '%s\t%s\t%s\n' "$verdict" "$id" "$message" >>"$E2E_RESULTS"
   case "$verdict" in
     PASS) printf '%s[ PASS ]%s %s %s\n' "$_c_pass" "$_c_off" "$id" "$message" ;;

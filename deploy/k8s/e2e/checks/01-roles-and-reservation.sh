@@ -45,10 +45,27 @@ assert_deployment_ready() {
   done
   # **母集団は name を引いたときと同じセレクタで取る。** ずれると、`$name` に
   # 無い Deployment のレプリカ数が和に入って、壊れていないのに赤くなる。
-  local selector="app.kubernetes.io/name=rokuban,app.kubernetes.io/component=$component"
+  local selector="app.kubernetes.io/name=rokuban,app.kubernetes.io/component=$component${E2E_FIXTURE_SCOPE:+,rokuban-e2e/fixture=true}"
   local desired ready
-  desired="$(k get deployments -l "$selector" -o jsonpath='{.items[*].spec.replicas}' | tr ' ' '+' | sed 's/+$//')"
-  ready="$(k get deployments -l "$selector" -o jsonpath='{.items[*].status.readyReplicas}' | tr ' ' '+' | sed 's/+$//')"
+  # **読めなかったことを 0 に潰さない。** 潰すと、両方読めなかったときに
+  # `0 == 0` で緑になる（bash は `$(( ))` に空文字を渡すと 0 にする）。
+  if ! desired="$(k get deployments -l "$selector" -o jsonpath='{.items[*].spec.replicas}')" ||
+     ! ready="$(k get deployments -l "$selector" -o jsonpath='{.items[*].status.readyReplicas}')"; then
+    fail "$id" "$component ($name): レプリカ数を読めない --- 判定が成立しない"
+    return
+  fi
+  desired="$(printf '%s' "$desired" | tr ' ' '+' | sed 's/+$//')"
+  ready="$(printf '%s' "$ready" | tr ' ' '+' | sed 's/+$//')"
+  if [ -z "$desired" ]; then
+    fail "$id" "$component ($name): spec.replicas が空 --- 判定が成立しない"
+    return
+  fi
+  # **0 レプリカを緑にしない。** 「宣言どおり」だけを見ると、役が 1 つも
+  # 動いていない構成（replicas: 0）が「全ロールが上がり」で PASS する。
+  if [ "$((desired))" -lt 1 ]; then
+    fail "$id" "$component ($name): replicas が 0 --- 役が 1 つも動いていない"
+    return
+  fi
   assert_eq "$id" "$((desired))" "$((${ready:-0}))" "$component ($name) の Ready レプリカ数が宣言どおり"
 }
 
@@ -76,19 +93,36 @@ fi
 # **worker が居ないうちは TODO**。ここで FAIL にすると、残りのワークロードを
 # 足していく途中で「まだ作っていない」と「作ったが壊れている」が同じ赤になる。
 
+# **1.6 と 1.7 は別のキューを対象にする。** 1.6 は epg_sync（`epg_<site>`）、
+# 1.7 は reconcile_pass（`reconciler_<site>`）を消化する側が要る。1 つの鍵で
+# 両方を代表させると、epg の ScaledJob だけ先に入った状態で **1.7 が
+# 「作っていないのに壊れている」（FAIL）に化ける** --- preflight_no_fixtures の
+# コメントが避けるべきと名指ししている形。
+# どちらのキューを 1 つの ScaledJob にまとめるかは判定側で決めない
+# （不変条件 11）。同じ ScaledJob が両方に一致するなら、それはそれで通る。
 epg_queue="epg_${E2E_SITE_A}"
+reconciler_queue="reconciler_${E2E_SITE_A}"
 epg_scaledjob="$(scaledjob_for_queue "$epg_queue")"
+reconciler_scaledjob="$(scaledjob_for_queue "$reconciler_queue")"
 
 if discovery_is_ambiguous "$epg_scaledjob"; then
-  reason="キュー ${epg_queue} に一致する ScaledJob が複数ある（$(discovery_detail "$epg_scaledjob")）--- どれを判定すべきか決まらない"
-  fail "1.6" "$reason"
-  fail "1.7" "$reason"
+  fail "1.6" "キュー ${epg_queue} に一致する ScaledJob が複数ある（$(discovery_detail "$epg_scaledjob")）--- どれを判定すべきか決まらない"
+  fail "1.7" "同上"
+  exit 0
+fi
+if discovery_is_ambiguous "$reconciler_scaledjob"; then
+  fail "1.6" "キュー ${reconciler_queue} に一致する ScaledJob が複数ある（$(discovery_detail "$reconciler_scaledjob")）--- どれを判定すべきか決まらない"
+  fail "1.7" "同上"
   exit 0
 fi
 if [ -z "$epg_scaledjob" ]; then
   todo "1.6" "番組表: キュー ${epg_queue} を引く KEDA ScaledJob がまだ無い（epg_sync を消化する worker が居ない）"
-  todo "1.7" "予約の mirakc 反映: 同上（reconcile_pass を消化する worker が居ない）"
+  todo "1.7" "予約の mirakc 反映: 番組表が無いので予約する番組を選べない"
   exit 0
+fi
+if [ -z "$reconciler_scaledjob" ]; then
+  todo "1.7" "予約の mirakc 反映: キュー ${reconciler_queue} を引く KEDA ScaledJob がまだ無い（reconcile_pass を消化する worker が居ない）"
+  reconciler_missing=1
 fi
 
 # **前の周回の結果を消してから測る。** クラスタは使い回す設計なので、
@@ -96,12 +130,22 @@ fi
 # reconcile_pass も一度も走らなくても 1.6 / 1.7 が緑になる（判定が
 # 「前回の残骸が見える」ことを主張するだけになる）。
 log_step "clearing the EPG projection and the mock's schedules"
-psql_q "DELETE FROM epg_programs WHERE site = '${E2E_SITE_A}'" >/dev/null
-psql_q "DELETE FROM epg_services WHERE site = '${E2E_SITE_A}'" >/dev/null
-mock_reset "$E2E_SITE_A"
+if ! psql_q "DELETE FROM epg_programs WHERE site = '${E2E_SITE_A}'" >/dev/null ||
+   ! psql_q "DELETE FROM epg_services WHERE site = '${E2E_SITE_A}'" >/dev/null ||
+   ! mock_reset "$E2E_SITE_A"; then
+  # 掃除に失敗したまま測ると、前回の残骸を見て緑になる。
+  fail "1.6" "測定前の掃除（EPG 射影 / モックの予約）に失敗した --- 前回の残骸を見てしまうので測らない"
+  fail "1.7" "同上"
+  exit 0
+fi
 
 log_step "enqueue epg-sync --site ${E2E_SITE_A}"
-tb_rokuban enqueue epg-sync --site "$E2E_SITE_A" >/dev/null 2>&1 || true
+if ! tb_rokuban enqueue epg-sync --site "$E2E_SITE_A" >/dev/null 2>&1; then
+  # ここを握ると、下のメッセージ「投入したが番組表が空」が嘘になる。
+  fail "1.6" "epg-sync を投入できない（rokuban enqueue が失敗）"
+  todo "1.7" "投入できていないので予約の反映を観測していない"
+  exit 0
+fi
 
 programs_json=""
 programs_count() {
@@ -127,7 +171,12 @@ if retry_until 240 "EPG projection to fill" programs_count; then
   pass "1.6" "番組表が見える（$(programs_count) 件）"
 else
   fail "1.6" "epg-sync を投入したが番組表が空のまま --- backlog=$(river_backlog "$epg_queue") jobs=$(jobs_owned_by_scaledjob "$epg_scaledjob")"
-  todo "1.7" "予約の mirakc 反映: 番組表が空なので予約する番組を選べない"
+  [ -n "${reconciler_missing:-}" ] || todo "1.7" "予約の mirakc 反映: 番組表が空なので予約する番組を選べない"
+  exit 0
+fi
+
+if [ -n "${reconciler_missing:-}" ]; then
+  # 1.7 は上で TODO 済み。ここから先は 1.7 のためだけの手順なので打たない。
   exit 0
 fi
 
@@ -137,9 +186,12 @@ print(json.load(sys.stdin)[0]["programId"])
 ')"
 
 log_step "PUT intent record for program ${program_id}"
-tb_curl -X PUT -H 'Host: rokuban.local' -H 'Content-Type: application/json' \
+if ! tb_curl -f -X PUT -H 'Host: rokuban.local' -H 'Content-Type: application/json' \
   -d '{"action":"record"}' \
-  "http://rokuban-api:40773/api/sites/${E2E_SITE_A}/programs/${program_id}/intent" >/dev/null 2>&1 || true
+  "http://rokuban-api:40773/api/sites/${E2E_SITE_A}/programs/${program_id}/intent" >/dev/null 2>&1; then
+  fail "1.7" "録画意図の PUT が失敗した（api が 2xx を返さない）"
+  exit 0
+fi
 
 # **この周回で PUT した番組そのものが mirakc に届いたか**を見る（件数ではなく
 # programId で照合する）。件数だと、別の番組の予約が 1 件でもあれば緑になる。

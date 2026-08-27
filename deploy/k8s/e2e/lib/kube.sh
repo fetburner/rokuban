@@ -77,9 +77,17 @@ ready_replicas() {
 # （不変条件 11: 形を固定する前に判定基準を書く）。ラベル
 # `app.kubernetes.io/component` は base が既に採っている規約である。
 deployments_with_component() {
-  k get deployments -l "app.kubernetes.io/name=rokuban,app.kubernetes.io/component=$1" \
+  k get deployments -l "app.kubernetes.io/name=rokuban,app.kubernetes.io/component=$1${E2E_FIXTURE_SCOPE:+,rokuban-e2e/fixture=true}" \
     -o jsonpath='{.items[*].metadata.name}' 2>/dev/null
 }
+
+# E2E_FIXTURE_SCOPE が立っている間、探索は**身代わりだけ**を見る。
+#
+# オラクル自己検査の身代わりは製品と同じ役ラベル・同じキュー名を名乗るので、
+# 製品のワークロードが入ると両方が一致して全部 AMBIGUOUS になる ---
+# **判定の有効性を確かめる唯一の手段が、確かめたい時（ワークロードを足す PR）に
+# 使えなくなる。** 常時除外にはしない（それをすると通常実行が身代わりを
+# 見落とし、preflight 0.5 の意味が消える）。
 
 # deployment_for_component_site <component> <site>
 #
@@ -93,7 +101,7 @@ deployments_with_component() {
 # FAIL にする」が 1 つの関数についてだけ偽になる。
 deployment_for_component_site() {
   local component="$1" site="$2" matches count
-  matches="$(k get deployments -l "app.kubernetes.io/name=rokuban,app.kubernetes.io/component=$component" \
+  matches="$(k get deployments -l "app.kubernetes.io/name=rokuban,app.kubernetes.io/component=$component${E2E_FIXTURE_SCOPE:+,rokuban-e2e/fixture=true}" \
     -o json 2>/dev/null | python3 -c '
 import json, sys
 site = sys.argv[1]
@@ -103,15 +111,21 @@ for item in doc.get("items", []):
         argv = c.get("command", []) + c.get("args", [])
         # **区切りまで見る。** 部分一致にすると、互いに接頭辞になっている
         # サイト名（home と home2）で取り違える。
-        hit = any(
-            (a == "--sites" and i + 1 < len(argv) and argv[i + 1] == site)
-            or a == f"--sites={site}"
-            for i, a in enumerate(argv)
-        )
+        # --sites は StringSlice なので --sites=a,b も受ける
+        # （cmd/rokuban/server.go）。要素完全一致だけ見ると、2 サイトを
+        # 1 プロセスに束ねた watcher が「まだ実装されていない」に化ける。
+        def values(a, i):
+            if a == "--sites" and i + 1 < len(argv):
+                return argv[i + 1].split(",")
+            if a.startswith("--sites="):
+                return a[len("--sites="):].split(",")
+            return []
+        hit = any(site in values(a, i) for i, a in enumerate(argv))
         if hit:
             print(item["metadata"]["name"])
             break
-' "$site" | tr '\n' ' ' | sed 's/ *$//')"
+' "$site" | tr '\n' ' ')"
+  matches="${matches% }"   # tr で付いた末尾の空白を落とす
   count="$(printf '%s' "$matches" | wc -w | tr -d ' ')"
   if [ "$count" -gt 1 ]; then
     printf '%s%s' "$discoveryAmbiguousPrefix" "$matches"
@@ -147,15 +161,19 @@ keda_installed() {
 scaledjobs_matching_queue() {
   local queue="$1"
   keda_installed || return 0
-  k get scaledjobs -o json 2>/dev/null | python3 -c '
-import json, sys
+  k get scaledjobs ${E2E_FIXTURE_SCOPE:+-l rokuban-e2e/fixture=true} -o json 2>/dev/null | python3 -c '
+import json, re, sys
 queue = sys.argv[1].replace("-", "_")
 doc = json.load(sys.stdin)
 for item in doc.get("items", []):
     item["metadata"].pop("annotations", None)
     item["metadata"].pop("managedFields", None)
     blob = json.dumps(item).replace("-", "_")
-    if queue in blob:
+    # **語境界まで見る。** 裸の部分一致だと encode が image 名
+    # ghcr.io/x/encoder:1 に、epg_sitea が epg_siteaa に当たる。
+    # 1 件しか一致しなければ曖昧にもならないので、**無関係な ScaledJob に
+    # 対して patch と delete を撃ってその結果を判定として報告する**。
+    if re.search(r"(?<![A-Za-z0-9_])" + re.escape(queue) + r"(?![A-Za-z0-9_])", blob):
         print(item["metadata"]["name"])
 ' "$queue"
 }
@@ -188,7 +206,8 @@ discovery_detail() {
 # 呼び出し側は discovery_is_ambiguous で見て **TODO ではなく FAIL** にすること。
 scaledjob_for_queue() {
   local queue="$1" matches count
-  matches="$(scaledjobs_matching_queue "$queue" | tr '\n' ' ' | sed 's/ *$//')"
+  matches="$(scaledjobs_matching_queue "$queue" | tr '\n' ' ')"
+  matches="${matches% }"   # tr で付いた末尾の空白を落とす
   count="$(printf '%s' "$matches" | wc -w | tr -d ' ')"
   if [ "$count" -gt 1 ]; then
     printf '%s%s' "$discoveryAmbiguousPrefix" "$matches"
@@ -208,7 +227,7 @@ scaledjob_for_queue() {
 # 含むだけの無関係な CronJob も拾う。要素単位で照合する。
 cronjob_enqueueing() {
   local job="$1" site="${2:-}" matches count
-  matches="$(k get cronjobs -o json 2>/dev/null | python3 -c '
+  matches="$(k get cronjobs ${E2E_FIXTURE_SCOPE:+-l rokuban-e2e/fixture=true} -o json 2>/dev/null | python3 -c '
 import json, sys
 job, site = sys.argv[1], sys.argv[2]
 doc = json.load(sys.stdin)
@@ -228,7 +247,8 @@ for item in doc.get("items", []):
                 continue
         print(item["metadata"]["name"])
         break
-' "$job" "$site" | tr '\n' ' ' | sed 's/ *$//')"
+' "$job" "$site" | tr '\n' ' ')"
+  matches="${matches% }"   # tr で付いた末尾の空白を落とす
   count="$(printf '%s' "$matches" | wc -w | tr -d ' ')"
   if [ "$count" -gt 1 ]; then
     printf '%s%s' "$discoveryAmbiguousPrefix" "$matches"
@@ -385,7 +405,11 @@ suspend_all_cronjobs() {
   local name
   for name in $(k get cronjobs -o jsonpath='{.items[?(@.spec.suspend!=true)].metadata.name}' 2>/dev/null); do
     k annotate cronjob "$name" "${suspendedByHarnessAnnotation}=true" --overwrite >/dev/null 2>&1 || continue
-    k patch cronjob "$name" -p '{"spec":{"suspend":true}}' >/dev/null 2>&1 || true
+    # patch が失敗したら印を戻す。印だけ付いて止まっていない CronJob が残ると、
+    # 判定 5 の前提（A への投入が窓に入らない）が黙って崩れる。
+    if ! k patch cronjob "$name" -p '{"spec":{"suspend":true}}' >/dev/null 2>&1; then
+      k annotate cronjob "$name" "${suspendedByHarnessAnnotation}-" >/dev/null 2>&1 || true
+    fi
   done
   local suspended
   suspended="$(k get cronjobs -o json 2>/dev/null | python3 -c '
@@ -399,8 +423,8 @@ print(" ".join(i["metadata"]["name"] for i in doc.get("items", [])
   fi
 }
 
-# restore_cronjobs は**ハーネスが止めたものだけ**を戻す。run.sh の preflight
-# からも呼ぶので、前回の中断で止まったままの CronJob もここで戻る。
+# restore_cronjobs は**ハーネスが止めたものだけ**を戻す。run.sh がクラスタを
+# 用意した直後にも呼ぶので、前回の中断で止まったままの CronJob もそこで戻る。
 restore_cronjobs() {
   local name
   for name in $(k get cronjobs -o json 2>/dev/null | python3 -c '
@@ -435,7 +459,8 @@ apply_template() {
   sed -e "s/__SITE_A__/${E2E_SITE_A}/g" \
       -e "s/__SITE_B__/${E2E_SITE_B}/g" \
       -e "s|__IMAGE__|${E2E_IMAGE}|g" \
-      -e "s|__MOCK_IMAGE__|${E2E_MOCK_IMAGE}|g" "$@" "$file" | k apply -f - >/dev/null
+      -e "s|__MOCK_IMAGE__|${E2E_MOCK_IMAGE}|g" \
+      -e "s|__BUILD_ID__|${E2E_BUILD_ID:-reused}|g" "$@" "$file" | k apply -f - >/dev/null
 }
 
 # delete_template <file> --- apply_template で当てたものを消す。
@@ -445,7 +470,8 @@ delete_template() {
   sed -e "s/__SITE_A__/${E2E_SITE_A}/g" \
       -e "s/__SITE_B__/${E2E_SITE_B}/g" \
       -e "s|__IMAGE__|${E2E_IMAGE}|g" \
-      -e "s|__MOCK_IMAGE__|${E2E_MOCK_IMAGE}|g" "$@" "$file" \
+      -e "s|__MOCK_IMAGE__|${E2E_MOCK_IMAGE}|g" \
+      -e "s|__BUILD_ID__|${E2E_BUILD_ID:-reused}|g" "$@" "$file" \
     | k delete --ignore-not-found -f - >/dev/null 2>&1 || true
 }
 
@@ -467,5 +493,8 @@ print(json.load(sys.stdin)[sys.argv[1]])
 # 前回届いた予約が残っていると判定 1.7 が「今回 1 件も送っていないのに緑」に
 # なる。
 mock_reset() {
+  # **失敗を握らない。** reset が効かないと、モックが持つ前回の予約で
+  # 判定 1.7 が「今回 1 件も送っていないのに緑」になる（programId は
+  # 時刻に依存しないので周回をまたいで同じ）。
   tb_curl -X POST "http://mirakc-$1:40772/mock/reset" >/dev/null
 }

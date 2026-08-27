@@ -39,7 +39,12 @@ if [ -z "$deploy" ]; then
   exit 0
 fi
 
-original="$(k get deployment "$deploy" -o jsonpath='{.spec.replicas}')"
+# 読めないまま既定 1 に潰すと、**製品の watcher を 1 に縮めて**終わる。
+if ! original="$(k get deployment "$deploy" -o jsonpath='{.spec.replicas}')" || [ -z "$original" ]; then
+  fail "4.1" "watcher (${deploy}) の spec.replicas を読めない --- 元に戻せないので触らない"
+  todo "4.2" "レプリカ数を変えられないので SSE 本数を観測していない"
+  exit 0
+fi
 restore() {
   log_step "restoring ${deploy} to ${original} replica(s)"
   k scale deployment "$deploy" --replicas="${original:-1}" >/dev/null 2>&1 || true

@@ -185,7 +185,9 @@ River の at-least-once / 冪等性は「殺されても正しい」を保証済
 | `immediate` | 実行中の Job が消える |
 | 省略 | 実行中の Job が消える |
 
-ScaledJob 本体への annotation だけでは消えない。KEDA が rollout と見なすのは Pod テンプレートの変更である。**つまり `rollout.strategy: gradual` は書き忘れてはならない 1 行である。** 運用でこれを踏むのはイメージのタグを上げたときなので、症状は「デプロイしたら録画のエンコードが飛ぶ」になる。上の「実行中の犠牲者選定という問題自体が消える」はこの一行に依存している。
+ScaledJob 本体への annotation だけでは消えない。KEDA が rollout と見なすのは Pod テンプレートの変更である。**つまり `rollout.strategy: gradual` は書き忘れてはならない 1 行である。**
+
+表と annotation の件は [deploy/k8s/e2e](../../deploy/k8s/e2e/README.md) の `O3.mut-rollout` / `O3.mut-omitted` で実測した。運用でこれを踏むのはイメージのタグを上げたときである。症状は「デプロイしたら録画のエンコードが飛ぶ」になる。上の「実行中の犠牲者選定という問題自体が消える」はこの一行に依存している。
 
 **postgresql トリガの接続先はクラスタ内 FQDN で書く。** 接続を張るのは Job の Pod ではなく **keda 名前空間の operator** なので、同じ名前空間のつもりで短い Service 名を書くと解決されない。このとき ScaledJob は `Ready=False / ScaledJobCheckFailed` のまま Job を一度も起こさず、**症状は「KEDA が壊れた」ではなく「いつまでもスケールしない」**になる（kind で実測）。
 

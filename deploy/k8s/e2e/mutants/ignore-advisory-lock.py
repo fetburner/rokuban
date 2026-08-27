@@ -33,7 +33,8 @@ def main() -> int:
         print(__doc__, file=sys.stderr)
         return 64
     path = pathlib.Path(sys.argv[1]) / TARGET
-    src = path.read_text()
+    # LC_ALL=C の環境でも読めるように明示する（leader.go は日本語を含む）。
+    src = path.read_text(encoding="utf-8")
     if OLD not in src:
         print(
             f"mutation target not found in {path}. "
@@ -41,7 +42,7 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
-    path.write_text(src.replace(OLD, NEW, 1))
+    path.write_text(src.replace(OLD, NEW, 1), encoding="utf-8")
     return 0
 
 

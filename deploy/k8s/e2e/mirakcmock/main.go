@@ -119,7 +119,7 @@ func newMock(networkID, serviceCount, programsPerService int, programDuration ti
 }
 
 type stats struct {
-	// EventsOpen は現在開いている /events の本数。判定 4 が読む唯一の値。
+	// EventsOpen は現在開いている /events の本数。判定 4 の本題。
 	EventsOpen int64 `json:"eventsOpen"`
 	// EventsTotal は起動からの /events 接続の延べ本数。0 のまま増えないことと
 	// 「1 本開いている」を区別するために出す（watcher が一度も繋いでいないのに
@@ -297,7 +297,7 @@ func (m *mock) events(w http.ResponseWriter, r *http.Request) {
 
 	open := m.eventsOpen.Add(1)
 	total := m.eventsTotal.Add(1)
-	defer m.eventsOpen.Add(-1)
+	defer func() { slog.Info("events unsubscribed", "open", m.eventsOpen.Add(-1)) }()
 	slog.Info("events subscribed", "open", open, "total", total, "remote", r.RemoteAddr)
 
 	// keepalive を送るのは、切断を検出するためではなく（それは Done で分かる）、
@@ -307,7 +307,8 @@ func (m *mock) events(w http.ResponseWriter, r *http.Request) {
 	for {
 		select {
 		case <-r.Context().Done():
-			slog.Info("events unsubscribed", "open", m.eventsOpen.Load()-1)
+			// 残り本数は defer の Add(-1) が返す値で出す（ここで引き算すると、
+			// 同時切断のときに嘘の数がログに出る）。
 			return
 		case <-ticker.C:
 			if _, err := fmt.Fprint(w, ":keepalive\n\n"); err != nil {

@@ -29,9 +29,24 @@ E2E_ORACLES_ONLY=3 ./deploy/k8s/e2e/run.sh --oracles   # オラクルも一部�
 なくなる。`TODO` のメッセージには**何が見つからなかったか**を書く（「未実装」
 とだけ書かない）。
 
-**`2` を `0` に丸めない。** ワークロードが揃ったと言えるのは 5 項目が全部緑に
-なったときなので、TODO が 1 つでも残っている限りこのハーネスは成功を返しては
-ならない。同じ理由で、`--only` で一部だけ回したときも 0 は返さない。
+**`2` を `0` に丸めない。** TODO が 1 つでも残っている限りこのハーネスは成功を
+返してはならない。同じ理由で、`--only` で一部だけ回したときも 0 は返さない。
+
+**ただし `0` は「受け入れ 5 項目を判定できた」であって「ワークロードが揃った」
+ではない。** `0` が保証**しない**もの:
+
+- **CronJob は `epg-sync --site <A>` の 1 本しか見ていない。** `rokuban enqueue`
+  の対象は 8 種ある。`worker.periodic_jobs: false` の下では全部が CronJob 側に
+  移るので、7 本欠けていても 0 になる
+- **ScaledJob は `epg_<site>` / `reconciler_<site>` / `encode` しか見ていない。**
+  `ingest_<site>` / `watcher_<site>` が欠けていても 0 になる
+- **Deployment は役ごとの存在と「宣言した数だけ Ready」だけ。** サイトごとの
+  網羅は見ていない（site B の watcher が無くても判定 1 は緑）
+
+網羅を判定に入れるなら、`config.yml` の `mirakcs:` と `rokuban enqueue` の
+ジョブ表から期待集合を導く判定を足すことになる。**いまは足していない**
+（何を CronJob にするかはワークロードを書く側の判断で、判定側が先に固定すると
+不変条件 11 に反する）。
 
 **判定が黙って死ぬのも 0 にしない。** 各判定は自分が記録するはずの id を
 `plan` で先に宣言し、宣言と記録が食い違えば集計側が FAIL を書き足す。これが
@@ -57,6 +72,11 @@ watcher / streamer の Deployment、worker の ScaledJob、投入側の CronJob�
 それを確認して残すのがこのハーネスの成果物である。ワークロードが揃ったと
 言えるのは `run.sh` が 0 を返したときになる。この表は判定を足したり緑に
 したりする人が更新する。
+
+判定 1.6 は `epg_<site>` を、判定 1.7 は `reconciler_<site>` を消化する側を
+それぞれ別に探す。1 つの鍵で両方を代表させると、epg の ScaledJob だけ先に
+入った状態で 1.7 が「作っていないのに壊れている」に化ける（同じ ScaledJob が
+両方に一致する構成でも通る。どうまとめるかは判定側で決めない）。
 
 判定は**名前ではなく振る舞いと argv で対象を引く**（`lib/kube.sh`）。
 `app.kubernetes.io/component=<役>` のラベル（base が既に採っている規約）と、
@@ -134,9 +154,9 @@ true のままだと、判定 2 が「worker が自分で投入して自分で�
 | `O4.mut-lock` | **`pg_try_advisory_lock` の戻り値を無視したイメージ**（`mutants/ignore-advisory-lock.py`） | 判定 4.2 が FAIL |
 | `O5.mut-queue` | サイト A のトリガから site 修飾を外す（`queue LIKE 'epg%'`） | 判定 5.2 が FAIL |
 
-実測（kind v0.32.0 / k8s v1.36.1 / KEDA v2.20.2）: `--oracles` は
-`PASS 15 / FAIL 0 / TODO 0` で終了コード 0。**上の変異はすべて実際に注入して、
-期待どおり判定が赤くなることを確認してある。**
+**上の変異はすべて実際に注入して、期待どおり判定が赤くなることを確認してある。**
+実測値（件数）は環境と対にして `docs/runbook/k8s.md` §受け入れ判定ハーネス に
+置いてある。ここには書かない（両方に書いたら片方だけ古くなった）。
 
 **効くことを確かめていない判定が 2 つある。** どちらも「変異表に無い」ことが
 そのまま意味なので、ここに明記しておく。
@@ -211,8 +231,11 @@ mirakcmock/            mirakc モック（Go。`go test ./deploy/k8s/e2e/...` �
 変更したら次の 2 つを回す:
 
 ```sh
+# どちらもリポジトリのルートから
 ./deploy/k8s/e2e/lib/selftest.sh   # クラスタ不要。CI でも回る
-shellcheck -x -e SC1091,SC2034,SC2317,SC2329 run.sh oracles.sh lib/*.sh checks/*.sh
+shellcheck -x -e SC1091,SC2034,SC2317,SC2329 \
+  deploy/k8s/e2e/run.sh deploy/k8s/e2e/oracles.sh \
+  deploy/k8s/e2e/lib/*.sh deploy/k8s/e2e/checks/*.sh
 ```
 
 SC2317 / SC2329（到達しない・使われないように見えるコード）を外しているのは、

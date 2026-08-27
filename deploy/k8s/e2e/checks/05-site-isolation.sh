@@ -31,7 +31,7 @@ sj_a="$(scaledjob_for_queue "$queue_a")"
 sj_b="$(scaledjob_for_queue "$queue_b")"
 
 if discovery_is_ambiguous "$sj_a" || discovery_is_ambiguous "$sj_b"; then
-  reason="判定対象の ScaledJob が一意に決まらない（${queue_a}: ${sj_a:-なし} / ${queue_b}: ${sj_b:-なし}）"
+  reason="判定対象の ScaledJob が一意に決まらない（${queue_a}: $(discovery_detail "${sj_a:-なし}") / ${queue_b}: $(discovery_detail "${sj_b:-なし}")）"
   fail "5.1" "$reason"
   fail "5.2" "$reason"
   fail "5.3" "$reason"
@@ -98,7 +98,10 @@ pass "5.1" "サイト B に滞留を作った（B=$(river_backlog "$queue_b") / 
 
 # ---- 5.2 A が起きないこと（negative assertion）-----------------------------
 
-polling="$(k get scaledjob "$sj_a" -o jsonpath='{.spec.pollingInterval}')"
+if ! polling="$(k get scaledjob "$sj_a" -o jsonpath='{.spec.pollingInterval}')"; then
+  log_step "pollingInterval を読めないので既定の 30s を使う"
+  polling=""
+fi
 window=$(( 3 * ${polling:-30} ))
 
 # **Job の「個数」で見ない。** KEDA は successfulJobsHistoryLimit を超えた Job を
@@ -115,8 +118,14 @@ deadline=$((SECONDS + window))
 # 出力に残せるよう、窓の中で見た最大値を持っておく。
 a_backlog_max=0
 while [ "$SECONDS" -lt "$deadline" ]; do
-  a_now="$(river_backlog "$queue_a")"
-  if [ "${a_now:-0}" -gt "$a_backlog_max" ]; then
+  # 読めなかったサンプルは「0 だった」ではない。測定できていないので落とす。
+  if ! a_now="$(river_backlog "$queue_a")" || [ -z "$a_now" ]; then
+    watch_jobs_stop
+    fail "5.2" "測定できない: サイト A の待ち行列を読めなかった"
+    todo "5.3" "5.2 が測定できていないので positive control を実施していない"
+    exit 0
+  fi
+  if [ "$a_now" -gt "$a_backlog_max" ]; then
     a_backlog_max="$a_now"
   fi
   if [ -n "$(observed_new_jobs "$watch_file")" ]; then

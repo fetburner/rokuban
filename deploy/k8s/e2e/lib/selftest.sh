@@ -63,6 +63,19 @@ K_FIXTURE="$(scaledjob_json "w-epg-sitea=epg_sitea" "w-epg-siteb=epg_siteb")"
 check "一意に決まれば名前を返す" "w-epg-sitea" "$(scaledjob_for_queue epg_sitea)"
 check "0 件なら空を返す" "" "$(scaledjob_for_queue encode)"
 
+# 語境界。`encode` が image 名 `ghcr.io/x/encoder:1` に、`epg_sitea` が
+# `epg_siteaa` に当たってはいけない（1 件しか一致しないと曖昧にもならず、
+# 無関係な ScaledJob を判定対象にしてしまう）。
+K_FIXTURE="$(python3 -c '
+import json
+print(json.dumps({"items": [{
+    "metadata": {"name": "w-epg-siteaa"},
+    "spec": {"triggers": [{"metadata": {"query": "queue = \x27epg_siteaa\x27"}}]},
+    "jobTargetRef": {"template": {"spec": {"containers": [{"image": "ghcr.io/x/encoder:1"}]}}},
+}]}))')"
+check "接頭辞が重なるキュー名を拾わない" "" "$(scaledjob_for_queue epg_sitea)"
+check "一般語が image 名に紛れていても拾わない" "" "$(scaledjob_for_queue encode)"
+
 # **この 3 行が今回の本題。** 複数一致は「空（= まだ実装されていない）」では
 # なく、曖昧であることが呼び出し側に届かなければならない。
 K_FIXTURE="$(scaledjob_json "w-a=epg_sitea" "w-a-dup=epg_sitea")"
@@ -126,6 +139,12 @@ check "argv の --sites で Deployment を引く" "w-sitea" "$(deployment_for_co
 
 K_FIXTURE="$(deployment_json "w-home2=server,--roles,watcher,--sites,home2")"
 check "Deployment 側も接頭辞で取り違えない" "" "$(deployment_for_component_site watcher home)"
+
+# `--sites` は StringSlice なのでカンマ区切りを受ける。束ねた watcher を
+# 「まだ実装されていない」に化けさせない。
+K_FIXTURE="$(deployment_json "w-both=server,--sites,sitea|siteb")"
+K_FIXTURE="${K_FIXTURE//|/,}"
+check "--sites のカンマ区切りを解釈する" "w-both" "$(deployment_for_component_site watcher siteb)"
 
 K_FIXTURE="$(deployment_json "w-a=server,--sites,sitea" "w-a2=server,--sites=sitea")"
 got="$(deployment_for_component_site watcher sitea)"

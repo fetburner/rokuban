@@ -32,7 +32,8 @@ E2E_MOCK_IMAGE="${E2E_MOCK_IMAGE:-mirakcmock:e2e}"
 E2E_SITE_A="sitea"
 E2E_SITE_B="siteb"
 
-E2E_TOOLBOX="e2e-toolbox"
+# ツールボックスは Deployment（scaffold.yaml の理由）。exec の宛先。
+E2E_TOOLBOX="deploy/e2e-toolbox"
 
 # KEDA の版は固定する。上流の最新を追うと、リポジトリ側の変更ゼロで判定の
 # 前提（ScaledJob の既定挙動）が動く。

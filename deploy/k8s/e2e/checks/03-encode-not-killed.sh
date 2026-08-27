@@ -106,19 +106,60 @@ if ! retry_until 240 "an encode job to start running" find_running_job; then
 fi
 pass "3.1" "encode Job が起きて実行中になった（${running_job}）"
 
-job_is_alive() {
-  local active deletion
-  active="$(k get job "$running_job" -o jsonpath='{.status.active}' 2>/dev/null)" || return 1
-  deletion="$(k get job "$running_job" -o jsonpath='{.metadata.deletionTimestamp}' 2>/dev/null)"
-  [ "${active:-0}" -ge 1 ] 2>/dev/null && [ -z "$deletion" ]
+# job_state_now は「生きている / 完走した / 消された」の 3 値を返す。
+#
+# **完走を「殺された」と報告しない。** 2 値（生きている / それ以外）にすると、
+# 窓の中で正常に終わった Job が `FAIL 実行中の encode Job が殺された` になる。
+# 身代わりは `sleep 600` なので窓の中で完走せず、この経路には変異が届かない
+# ---「変異が作らない状態」の族なので、ここは形で守る。**実物の encode に
+# 差し替えた人が最初に踏む。**
+job_state_now() {
+  local json active succeeded deletion
+  if ! json="$(k get job "$running_job" -o jsonpath='{.status.active}|{.status.succeeded}|{.metadata.deletionTimestamp}' 2>/dev/null)"; then
+    printf 'gone'
+    return
+  fi
+  active="${json%%|*}"; json="${json#*|}"
+  succeeded="${json%%|*}"; deletion="${json#*|}"
+  if [ -n "$deletion" ]; then
+    printf 'killed'
+  elif [ "${active:-0}" -ge 1 ] 2>/dev/null; then
+    printf 'alive'
+  elif [ "${succeeded:-0}" -ge 1 ] 2>/dev/null; then
+    printf 'completed'
+  else
+    printf 'gone'
+  fi
 }
+
+job_is_alive() { [ "$(job_state_now)" = "alive" ]; }
 job_state() {
-  k get job "$running_job" -o jsonpath='active={.status.active} deletionTimestamp={.metadata.deletionTimestamp}' 2>&1 \
+  k get job "$running_job" -o jsonpath='active={.status.active} succeeded={.status.succeeded} deletionTimestamp={.metadata.deletionTimestamp}' 2>&1 \
     || echo "（Job が消えている）"
 }
 
+# observe_survival <秒> --- 窓の間 Job を見張り、最初に alive でなくなった
+# 状態を返す（最後まで alive なら alive）。
+observe_survival() {
+  local deadline=$((SECONDS + $1)) state
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    state="$(job_state_now)"
+    if [ "$state" != "alive" ]; then
+      printf '%s' "$state"
+      return
+    fi
+    sleep 2
+  done
+  printf 'alive'
+}
+
 # KEDA が次に判断するまでの窓。既定は 30 秒（ScaledJob.spec.pollingInterval）。
-polling="$(k get scaledjob "$scaledjob" -o jsonpath='{.spec.pollingInterval}')"
+# pollingInterval が読めなかったときは既定（KEDA の既定は 30 秒）を使うが、
+# 黙って使わない。窓の長さは判定の強さそのもの。
+if ! polling="$(k get scaledjob "$scaledjob" -o jsonpath='{.spec.pollingInterval}')"; then
+  log_step "pollingInterval を読めないので既定の 30s を使う"
+  polling=""
+fi
 window=$(( 2 * ${polling:-30} ))
 
 # ---- 3.2 待ち行列が空になっても殺されない ---------------------------------
@@ -130,20 +171,18 @@ if ! retry_until 60 "the backlog to reach 0" backlog_empty; then
   log_step "backlog is still $(river_backlog "$queue")"
 fi
 
-deadline=$((SECONDS + window))
-killed=""
-while [ "$SECONDS" -lt "$deadline" ]; do
-  if ! job_is_alive; then
-    killed="$(job_state)"
-    break
-  fi
-  sleep 2
-done
-if [ -z "$killed" ]; then
-  pass "3.2" "待ち行列が空になっても実行中の encode Job は生きている（${window}s 観測）"
-else
-  fail "3.2" "待ち行列が空になったら実行中の encode Job が殺された --- ${killed}"
-fi
+outcome="$(observe_survival "$window")"
+case "$outcome" in
+  alive)
+    pass "3.2" "待ち行列が空になっても実行中の encode Job は生きている（${window}s 観測）" ;;
+  completed)
+    todo "3.2" "producer が作る Job が窓（${window}s）より短く、生存を観測できない --- E2E_ENCODE_PRODUCER を長時間かかるエンコードに差し替えること"
+    todo "3.3" "同上"
+    todo "3.4" "同上"
+    exit 0 ;;
+  *)
+    fail "3.2" "待ち行列が空になったら実行中の encode Job が殺された --- ${outcome}（$(job_state)）" ;;
+esac
 
 # ---- 3.3 ScaledJob を更新しても殺されない ---------------------------------
 #
@@ -162,20 +201,15 @@ else
   log_step "changing ${scaledjob}'s pod template (simulating a rollout)"
   k patch scaledjob "$scaledjob" --type=merge \
     -p "{\"spec\":{\"jobTargetRef\":{\"template\":{\"metadata\":{\"annotations\":{\"rokuban-e2e/probe\":\"$(date +%s)\"}}}}}}" >/dev/null
-  deadline=$((SECONDS + window))
-  killed=""
-  while [ "$SECONDS" -lt "$deadline" ]; do
-    if ! job_is_alive; then
-      killed="$(job_state)"
-      break
-    fi
-    sleep 2
-  done
-  if [ -z "$killed" ]; then
-    pass "3.3" "ScaledJob を更新しても実行中の encode Job は生きている（rollout.strategy=$(k get scaledjob "$scaledjob" -o jsonpath='{.spec.rollout.strategy}' || true)）"
-  else
-    fail "3.3" "ScaledJob の更新で実行中の encode Job が殺された --- ${killed}"
-  fi
+  outcome="$(observe_survival "$window")"
+  case "$outcome" in
+    alive)
+      pass "3.3" "ScaledJob を更新しても実行中の encode Job は生きている（rollout.strategy=$(k get scaledjob "$scaledjob" -o jsonpath='{.spec.rollout.strategy}' || true)）" ;;
+    completed)
+      todo "3.3" "更新の窓（${window}s）の中で Job が完走したので生存を観測できない" ;;
+    *)
+      fail "3.3" "ScaledJob の更新で実行中の encode Job が殺された --- ${outcome}（$(job_state)）" ;;
+  esac
 fi
 
 # ---- 3.4 positive control -------------------------------------------------

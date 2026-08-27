@@ -20,6 +20,10 @@ metadata:
     app.kubernetes.io/component: postgres
 spec:
   replicas: 1
+  # **Recreate。** emptyDir なので、RollingUpdate だと空・未マイグレートの
+  # 2 台目が立って Service が一瞬そちらへ振る。
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: rokuban-e2e
@@ -108,6 +112,11 @@ spec:
         app.kubernetes.io/name: rokuban-e2e
         app.kubernetes.io/component: mirakc
         rokuban-e2e/site: __SITE_A__
+      annotations:
+        # 焼き直したイメージで Pod を作り直すための印（lib/cluster.sh の
+        # E2E_BUILD_ID）。タグ固定 + IfNotPresent なので、これが無いと
+        # apply が no-op になり古いバイナリを測り続ける。
+        rokuban-e2e/build-id: "__BUILD_ID__"
     spec:
       enableServiceLinks: false
       containers:
@@ -171,6 +180,8 @@ spec:
         app.kubernetes.io/name: rokuban-e2e
         app.kubernetes.io/component: mirakc
         rokuban-e2e/site: __SITE_B__
+      annotations:
+        rokuban-e2e/build-id: "__BUILD_ID__"
     spec:
       enableServiceLinks: false
       containers:
@@ -215,38 +226,54 @@ spec:
 # 巻き込まれると、api が落ちているときに「mirakc に予約が届いていない」と
 # 「届いたか確かめられない」が同じ赤になる。
 #
+# **素の Pod ではなく Deployment にしてある。** Pod は spec が immutable なので
+# apply が no-op になり、イメージを焼き直しても古いバイナリの `rokuban enqueue`
+# を打ち続ける（build-id の annotation も効かない）。落ちても自己修復しない。
+#
 # config は run.sh が `deploy/k8s/overlays/e2e/config.yml` から作る素の
 # ConfigMap（`e2e-toolbox-config`）を読む。製品側の ConfigMap は
 # configMapGenerator でハッシュ名になるので、名前を固定できない。
-apiVersion: v1
-kind: Pod
+apiVersion: apps/v1
+kind: Deployment
 metadata:
   name: e2e-toolbox
   labels:
     app.kubernetes.io/name: rokuban-e2e
     app.kubernetes.io/component: toolbox
 spec:
-  enableServiceLinks: false
-  automountServiceAccountToken: false
-  restartPolicy: Never
-  containers:
-    - name: toolbox
-      image: __IMAGE__
-      imagePullPolicy: IfNotPresent
-      # ENTRYPOINT は rokuban なので command で上書きする。
-      command: ["sleep", "infinity"]
-      envFrom:
-        - secretRef:
-            name: rokuban-secrets
-      volumeMounts:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rokuban-e2e
+      app.kubernetes.io/component: toolbox
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rokuban-e2e
+        app.kubernetes.io/component: toolbox
+      annotations:
+        rokuban-e2e/build-id: "__BUILD_ID__"
+    spec:
+      enableServiceLinks: false
+      automountServiceAccountToken: false
+      containers:
+        - name: toolbox
+          image: __IMAGE__
+          imagePullPolicy: IfNotPresent
+          # ENTRYPOINT は rokuban なので command で上書きする。
+          command: ["sleep", "infinity"]
+          envFrom:
+            - secretRef:
+                name: rokuban-secrets
+          volumeMounts:
+            - name: config
+              mountPath: /etc/rokuban
+              readOnly: true
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+      volumes:
         - name: config
-          mountPath: /etc/rokuban
-          readOnly: true
-      resources:
-        requests:
-          cpu: 20m
-          memory: 32Mi
-  volumes:
-    - name: config
-      configMap:
-        name: e2e-toolbox-config
+          configMap:
+            name: e2e-toolbox-config

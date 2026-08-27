@@ -8,7 +8,10 @@
 # 出力から区別できない。**環境の不足は判定を 1 つも記録せずに落とす。**
 require_tools() {
   local missing=()
-  for cmd in kind kubectl kustomize docker go python3; do
+  # rsync は `--oracles` の変異イメージビルドが要求する。**先頭で見る** ---
+  # run_oracles の中で見ると、クラスタ作成・イメージビルド・KEDA 導入を全部
+  # 済ませた後に落ちる。
+  for cmd in kind kubectl kustomize docker go python3 rsync; do
     command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
   done
   if [ "${#missing[@]}" -gt 0 ]; then
@@ -66,22 +69,39 @@ cluster_delete() {
 #
 # モックは `go build` してから scratch に COPY する（Dockerfile のコメント参照）。
 # **context を一時ディレクトリにする**ので、ビルド生成物がリポジトリに残らない。
+# E2E_BUILD_ID は「このイメージはいつ焼いたか」の印。**Pod テンプレートに
+# 載せて、焼き直したら Pod が作り直されるようにする。**
+#
+# タグを固定（`:e2e`）+ `imagePullPolicy: IfNotPresent` にしてあるので、
+# イメージを焼き直しても Pod テンプレートは 1 バイトも変わらず、apply は
+# no-op になる。kubelet はイメージを Pod 作成時にしか解決しないので、
+# **クラスタを使い回すと、モックやツールボックスを直しても古いバイナリを
+# 測り続ける**（`--no-build` を用意している＝使い回しが常用なので日常的に踏む）。
+E2E_BUILD_ID=""
+
 build_images() {
   log_step "building ${E2E_IMAGE}"
-  docker build -t "$E2E_IMAGE" "$E2E_ROOT" >/dev/null
+  docker build -t "$E2E_IMAGE" "$E2E_ROOT" >/dev/null || return 1
 
   log_step "building ${E2E_MOCK_IMAGE}"
   local ctx
-  ctx="$(mktemp -d)"
+  ctx="$(mktemp -d)" || return 1
   # クラスタのノードは linux。ホストが darwin でも GOARCH は同じなので
   # そのまま使う。
-  (cd "$E2E_ROOT" && CGO_ENABLED=0 GOOS=linux go build -o "$ctx/mirakcmock" ./deploy/k8s/e2e/mirakcmock)
-  cp "$E2E_DIR/mirakcmock/Dockerfile" "$ctx/Dockerfile"
-  docker build -t "$E2E_MOCK_IMAGE" "$ctx" >/dev/null
+  if ! (cd "$E2E_ROOT" && CGO_ENABLED=0 GOOS=linux go build -o "$ctx/mirakcmock" ./deploy/k8s/e2e/mirakcmock) ||
+     ! cp "$E2E_DIR/mirakcmock/Dockerfile" "$ctx/Dockerfile" ||
+     ! docker build -t "$E2E_MOCK_IMAGE" "$ctx" >/dev/null; then
+    rm -rf "$ctx"
+    return 1
+  fi
   rm -rf "$ctx"
 
   log_step "loading images into kind"
-  kind load docker-image "$E2E_IMAGE" "$E2E_MOCK_IMAGE" --name "$E2E_CLUSTER" >/dev/null
+  kind load docker-image "$E2E_IMAGE" "$E2E_MOCK_IMAGE" --name "$E2E_CLUSTER" >/dev/null || return 1
+
+  # 焼いた印。apply_template がテンプレートに差し込む。
+  E2E_BUILD_ID="$(docker image inspect --format '{{.Id}}' "$E2E_IMAGE" 2>/dev/null | cut -c8-19)-$(docker image inspect --format '{{.Id}}' "$E2E_MOCK_IMAGE" 2>/dev/null | cut -c8-19)"
+  export E2E_BUILD_ID
 }
 
 # install_keda は KEDA を入れる。既に入っていれば版だけ確かめて飛ばす。
@@ -152,14 +172,12 @@ deploy_scaffold() {
   # 成り立たなくなる。
   log_step "applying scaffold (postgres / mirakc mocks / toolbox)"
   # **各段の失敗を戻り値に載せる。** 関数の戻り値が最後のコマンドだけだと、
-  # postgres が上がらなくても最後の `k wait pod/e2e-toolbox`（sleep infinity
-  # なのでほぼ必ず Ready）が 0 を返して素通りする。
+  # postgres が上がらなくても、最後のコマンドが 0 を返せば素通りする。
   apply_template "$E2E_DIR/cluster/scaffold.yaml" || return 1
   local dep
-  for dep in postgres "mirakc-${E2E_SITE_A}" "mirakc-${E2E_SITE_B}"; do
+  for dep in postgres "mirakc-${E2E_SITE_A}" "mirakc-${E2E_SITE_B}" e2e-toolbox; do
     k rollout status "deployment/$dep" --timeout=300s || return 1
   done
-  k wait --for=condition=ready "pod/$E2E_TOOLBOX" --timeout=300s || return 1
 }
 
 # preflight は「判定を走らせられる状態か」を確かめる。**ここだけは対象が
@@ -257,6 +275,13 @@ deploy_rokuban() {
   # **マイグレーションの失敗はここで止める**（preflight 0.4 でも見るが、
   # 240 秒待たせてから判定の赤として出すより早い）。
   k wait --for=condition=complete job/rokuban-migrate --timeout=300s || return 1
+  # **イメージを焼き直したなら api も作り直す。** 製品側の Pod テンプレートは
+  # ハーネスが触れない（base の管轄）ので、build-id の annotation を挿す手が
+  # 使えない。タグ固定 + IfNotPresent なので、これが無いとクラスタを使い回す
+  # 限り古い api を測り続ける。
+  if [ -n "${E2E_BUILD_ID:-}" ]; then
+    k rollout restart deployment/rokuban-api >/dev/null || return 1
+  fi
   # api の rollout は待つが、**失敗しても止めない**。api が上がらないこと
   # 自体が判定 1 の結果である。
   k rollout status deployment/rokuban-api --timeout=300s || true
