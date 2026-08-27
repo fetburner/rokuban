@@ -522,6 +522,81 @@ func TestConfigMapConfigFailsWithoutPassword(t *testing.T) {
 	}
 }
 
+// overlay が自前の config.yml を持つ場合、それも base と同じ主張の対象にする。
+//
+// **overlay の config.yml は `kustomize build` にも kubeconform にも見えない**
+// （ConfigMap の中身は不透明な文字列として運ばれる）。上の config 系テストは
+// どれも baseDir 決め打ちだったので、`behavior: replace` で base を丸ごと
+// 置き換える overlay は**どの検査も通らないまま**だった。そこを 1 文字 typo
+// すると strict な config.Load が unknown field で落ち、api も migration Job も
+// 全 Pod が CrashLoopBackOff になる --- このファイル冒頭が「クラスタに載せる
+// まで分からないから Go テストで見る」と書いている壊れ方そのもの。
+func TestOverlayConfigsLoad(t *testing.T) {
+	entries, err := os.ReadDir(overlaysDir)
+	if err != nil {
+		t.Fatalf("reading %s: %v", overlaysDir, err)
+	}
+	checked := 0
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		path := filepath.Join(overlaysDir, e.Name(), configFileName)
+		if _, err := os.Stat(path); err != nil {
+			// config.yml を持たない overlay（base のものをそのまま使う）は対象外。
+			continue
+		}
+		checked++
+		t.Run(e.Name(), func(t *testing.T) {
+			t.Setenv("POSTGRES_PASSWORD", "s3cret")
+			cfg, err := config.Load(path)
+			if err != nil {
+				t.Fatalf("config.Load(%s): %v", path, err)
+			}
+			if cfg.DB.Password != "s3cret" {
+				t.Errorf("db.password = %q, want the expanded secret", cfg.DB.Password)
+			}
+			if len(cfg.Server.AllowedHosts) == 0 {
+				t.Errorf("%s: server.allowed_hosts is empty; DNS rebinding protection would be off", path)
+			}
+
+			t.Setenv("POSTGRES_PASSWORD", "")
+			if _, err := config.Load(path); err == nil {
+				t.Errorf("%s: config.Load succeeded with an empty POSTGRES_PASSWORD, want fail-fast", path)
+			}
+		})
+	}
+	if checked == 0 {
+		t.Errorf("no overlay under %s ships its own %s (nothing was checked)", overlaysDir, configFileName)
+	}
+}
+
+// e2e overlay は受け入れ判定ハーネスの前提を 2 つ config に載せている。
+// **その 2 つは、載っていることを誰かが見ていないと黙って外れる。**
+//
+//   - 2 サイト: 判定 5（サイト B の滞留でサイト A の Job が起きない）は
+//     1 サイトでは原理的に測れない。減ると判定 5 は FAIL ではなく TODO に化ける
+//   - worker.periodic_jobs = false: true に戻ると、判定 2 が「worker が自分で
+//     投入して自分で消化した」だけでも緑になりうる（in-process の PeriodicJobs が
+//     投入してしまうので、CronJob が止まっていても待ち行列が埋まる）
+//
+// どちらも「判定の有効性が config の 1 行に依存している」形なので、上の
+// 汎用チェックとは別に名指しで固定する。
+func TestE2EOverlayConfigKeepsTheHarnessPremises(t *testing.T) {
+	t.Setenv("POSTGRES_PASSWORD", "s3cret")
+	path := filepath.Join(overlaysDir, "e2e", configFileName)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("config.Load(%s): %v", path, err)
+	}
+	if got := len(cfg.Mirakcs); got != 2 {
+		t.Errorf("%s declares %d mirakc site(s), want 2 (check 5 cannot be measured with one)", path, got)
+	}
+	if cfg.Worker.PeriodicJobs {
+		t.Errorf("%s has worker.periodic_jobs = true; check 2 would pass on in-process periodic jobs", path)
+	}
+}
+
 // base が Secret を出荷しないこと（参考ファイルは apply されないこと）。
 //
 // **プレースホルダの Secret を出荷すると、`kustomize build base | kubectl apply`

@@ -177,6 +177,22 @@ River の at-least-once / 冪等性は「殺されても正しい」を保証済
 - **site 束縛キューと site 非依存キューを混ぜない**。混ぜると中央のジョブがサイト側で起きる。結果、site 束縛キュー（`ingest_<site>` / `epg_<site>` / `reconciler_<site>` / `watcher_<site>`）の ScaledJob だけサイト数ぶん複製する
 - **スケーラが引くキュー名が site 修飾されていること**を確かめる。共有キューを見ていると、サイト A のスケーラがサイト B の滞留で Job を起こし、起きた Job は自分のサイトの仕事が無いまま終わってまた起きる
 
+**「実行中の Job は殺されない」は無条件ではない。** `rollout.strategy` の書き方に依存する。KEDA (v2.20.2) が受け付ける値は `gradual` と `immediate` の 2 つ。kind での実測は次のとおり。
+
+| `rollout.strategy` | Pod テンプレートを更新したとき |
+|---|---|
+| `gradual` | 実行中の Job は生き残る |
+| `immediate` | 実行中の Job が消える |
+| 省略 | 実行中の Job が消える |
+
+ScaledJob 本体への annotation だけでは消えない。KEDA が rollout と見なすのは Pod テンプレートの変更である。**つまり `rollout.strategy: gradual` は書き忘れてはならない 1 行である。**
+
+表と annotation の件は [deploy/k8s/e2e](../../deploy/k8s/e2e/README.md) の `O3.mut-rollout` / `O3.mut-omitted` で実測した。運用でこれを踏むのはイメージのタグを上げたときである。症状は「デプロイしたら録画のエンコードが飛ぶ」になる。上の「実行中の犠牲者選定という問題自体が消える」はこの一行に依存している。
+
+**postgresql トリガの接続先はクラスタ内 FQDN で書く。** 接続を張るのは Job の Pod ではなく **keda 名前空間の operator** なので、同じ名前空間のつもりで短い Service 名を書くと解決されない。このとき ScaledJob は `Ready=False / ScaledJobCheckFailed` のまま Job を一度も起こさず、**症状は「KEDA が壊れた」ではなく「いつまでもスケールしない」**になる（kind で実測）。
+
+site 修飾と `rollout.strategy` は [deploy/k8s/e2e](../../deploy/k8s/e2e/README.md) のハーネスが機械判定する（判定 5 / 3）。**接続先の FQDN には判定が無い** --- 症状はスケールしないことなので判定 2 / 3 / 5 の赤として現れるが、原因を名指しはしない。
+
 ### Deployment 併用時: SIGTERM drain + pod-deletion-cost
 
 Deployment 型で worker を運用する場合（またはその併用）の定石:

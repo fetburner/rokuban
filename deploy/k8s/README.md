@@ -116,14 +116,20 @@ Go テスト側は CRD でも Pod テンプレートを見つけて検査する�
 `spec.jobTargetRef.template` は対応済みで、未知の kind は
 `TestEveryWorkloadIsInspected` が落とす。
 
-## ここを使うハーネスへ
+## ここを使うハーネス
 
-受け入れを機械判定するハーネス（kind + KEDA）を書くときに、この 1 式が前提に
-していること:
+受け入れを機械判定するハーネスは [e2e/](e2e/README.md) にある
+（`./deploy/k8s/e2e/run.sh`）。手順と「CI で回さない決定」は
+[docs/runbook/k8s.md](../../docs/runbook/k8s.md) §受け入れ判定ハーネス。
+ハーネスが使う 2 サイト構成の overlay は `overlays/e2e`。
+
+この 1 式がハーネスに前提としていること:
 
 - **postgres と Secret の供給はハーネス側の責務。** base はどちらも出荷しない
 - **`kubectl delete job rokuban-migrate --ignore-not-found` → apply →
   `kubectl wait --for=condition=complete` の順序は必須**（上記「使い方」の理由）
-- **`overlays/kind` のパスワードと、ハーネスが立てる postgres のパスワードは
-  手で揃える必要がある**（突き合わせるものが無い。ハーネス側で 1 箇所から
-  両方に渡す形にするのが望ましい）
+- **パスワードの出どころは 1 つにする。** 突き合わせるものが無いので、ズレると
+  症状は「api が起動しない」だけになり、どちらが正なのか分からない。
+  `overlays/kind` は自分の secretGenerator に持っているが、ハーネスは
+  postgres 側にも同じ値を渡す必要があるため `overlays/e2e` に Secret を
+  置かず、`deploy/k8s/e2e/lib/env.sh` の 1 変数から run.sh が両方に配っている

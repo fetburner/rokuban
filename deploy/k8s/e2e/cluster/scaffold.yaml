@@ -1,0 +1,279 @@
+# ハーネスの足場。**製品のマニフェストではない**（deploy/k8s/base とは別物で、
+# ここにあるものが本番に出ることはない）。
+#
+# 中身は 3 つ:
+#   - 使い捨ての postgres（base は DB を出荷しない。本番の DB は外にある）
+#   - mirakc のモック 2 台（サイト A / B。deploy/k8s/e2e/mirakcmock）
+#   - ツールボックス Pod（判定が HTTP を叩き `rokuban enqueue` を打つ場所）
+#
+# **Secret（rokuban-secrets）はここに無い。** run.sh が
+# `deploy/k8s/e2e/lib/env.sh` の E2E_PGPASSWORD から 1 回だけ作り、postgres も
+# 製品 Pod も同じ Secret を読む（理由は deploy/k8s/README.md
+# §ここを使うハーネス）。
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  labels:
+    app.kubernetes.io/name: rokuban-e2e
+    app.kubernetes.io/component: postgres
+spec:
+  replicas: 1
+  # **Recreate。** emptyDir なので、RollingUpdate だと空・未マイグレートの
+  # 2 台目が立って Service が一瞬そちらへ振る。
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rokuban-e2e
+      app.kubernetes.io/component: postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rokuban-e2e
+        app.kubernetes.io/component: postgres
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: postgres
+          image: postgres:17
+          env:
+            - name: POSTGRES_USER
+              value: rokuban
+            - name: POSTGRES_DB
+              value: rokuban
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          envFrom:
+            # POSTGRES_PASSWORD。製品 Pod と同じ Secret を読む（上記）。
+            - secretRef:
+                name: rokuban-secrets
+          ports:
+            - name: postgres
+              containerPort: 5432
+          # **readiness を付ける。** docs/runbook/k8s.md が実測している
+          # 「api の RESTARTS が 1〜2 になる」は、postgres の Pod が接続を
+          # 受け付ける前に Ready になることが原因。ハーネスでそれが起きると、
+          # 判定 1 が「api が Ready になるまで」を待つ間に api が再起動を
+          # 繰り返し、待ち時間が環境の速さに依存する。
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "rokuban", "-d", "rokuban"]
+            initialDelaySeconds: 2
+            periodSeconds: 2
+            failureThreshold: 30
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+      volumes:
+        # 使い捨て。Pod が消えたら DB も消える（クラスタごと捨てる前提）。
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  labels:
+    app.kubernetes.io/name: rokuban-e2e
+    app.kubernetes.io/component: postgres
+spec:
+  selector:
+    app.kubernetes.io/name: rokuban-e2e
+    app.kubernetes.io/component: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mirakc-__SITE_A__
+  labels:
+    app.kubernetes.io/name: rokuban-e2e
+    app.kubernetes.io/component: mirakc
+    rokuban-e2e/site: __SITE_A__
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rokuban-e2e
+      app.kubernetes.io/component: mirakc
+      rokuban-e2e/site: __SITE_A__
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rokuban-e2e
+        app.kubernetes.io/component: mirakc
+        rokuban-e2e/site: __SITE_A__
+      annotations:
+        # 焼き直したイメージで Pod を作り直すための印（lib/cluster.sh の
+        # E2E_BUILD_ID）。タグ固定 + IfNotPresent なので、これが無いと
+        # apply が no-op になり古いバイナリを測り続ける。
+        rokuban-e2e/build-id: "__BUILD_ID__"
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: mirakcmock
+          image: __MOCK_IMAGE__
+          imagePullPolicy: IfNotPresent
+          # network-id をサイトごとに変える。同じにすると、両サイトの EPG が
+          # 同じ放送イベント (network_id, service_id, event_id) を名乗り、
+          # 判定 5 の「サイトを跨いだ取り違え」が site 列の有無に関係なく
+          # 見えなくなる。
+          args: ["-network-id=32736", "-name-prefix=__SITE_A__"]
+          ports:
+            - name: http
+              containerPort: 40772
+          readinessProbe:
+            httpGet:
+              path: /mock/stats
+              port: http
+            periodSeconds: 2
+            failureThreshold: 15
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mirakc-__SITE_A__
+  labels:
+    app.kubernetes.io/name: rokuban-e2e
+    app.kubernetes.io/component: mirakc
+spec:
+  selector:
+    app.kubernetes.io/name: rokuban-e2e
+    app.kubernetes.io/component: mirakc
+    rokuban-e2e/site: __SITE_A__
+  ports:
+    - name: http
+      port: 40772
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mirakc-__SITE_B__
+  labels:
+    app.kubernetes.io/name: rokuban-e2e
+    app.kubernetes.io/component: mirakc
+    rokuban-e2e/site: __SITE_B__
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rokuban-e2e
+      app.kubernetes.io/component: mirakc
+      rokuban-e2e/site: __SITE_B__
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rokuban-e2e
+        app.kubernetes.io/component: mirakc
+        rokuban-e2e/site: __SITE_B__
+      annotations:
+        rokuban-e2e/build-id: "__BUILD_ID__"
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: mirakcmock
+          image: __MOCK_IMAGE__
+          imagePullPolicy: IfNotPresent
+          args: ["-network-id=32737", "-name-prefix=__SITE_B__"]
+          ports:
+            - name: http
+              containerPort: 40772
+          readinessProbe:
+            httpGet:
+              path: /mock/stats
+              port: http
+            periodSeconds: 2
+            failureThreshold: 15
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mirakc-__SITE_B__
+  labels:
+    app.kubernetes.io/name: rokuban-e2e
+    app.kubernetes.io/component: mirakc
+spec:
+  selector:
+    app.kubernetes.io/name: rokuban-e2e
+    app.kubernetes.io/component: mirakc
+    rokuban-e2e/site: __SITE_B__
+  ports:
+    - name: http
+      port: 40772
+      targetPort: http
+---
+# ツールボックス。判定が HTTP を叩き `rokuban enqueue` を打つ場所。
+#
+# **製品の Pod（api 等）を踏み台にしない。** 観測手段が判定対象の生死に
+# 巻き込まれると、api が落ちているときに「mirakc に予約が届いていない」と
+# 「届いたか確かめられない」が同じ赤になる。
+#
+# **素の Pod ではなく Deployment にしてある。** Pod は spec が immutable なので
+# apply が no-op になり、イメージを焼き直しても古いバイナリの `rokuban enqueue`
+# を打ち続ける（build-id の annotation も効かない）。落ちても自己修復しない。
+#
+# config は run.sh が `deploy/k8s/overlays/e2e/config.yml` から作る素の
+# ConfigMap（`e2e-toolbox-config`）を読む。製品側の ConfigMap は
+# configMapGenerator でハッシュ名になるので、名前を固定できない。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: e2e-toolbox
+  labels:
+    app.kubernetes.io/name: rokuban-e2e
+    app.kubernetes.io/component: toolbox
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rokuban-e2e
+      app.kubernetes.io/component: toolbox
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rokuban-e2e
+        app.kubernetes.io/component: toolbox
+      annotations:
+        rokuban-e2e/build-id: "__BUILD_ID__"
+    spec:
+      enableServiceLinks: false
+      automountServiceAccountToken: false
+      containers:
+        - name: toolbox
+          image: __IMAGE__
+          imagePullPolicy: IfNotPresent
+          # ENTRYPOINT は rokuban なので command で上書きする。
+          command: ["sleep", "infinity"]
+          envFrom:
+            - secretRef:
+                name: rokuban-secrets
+          volumeMounts:
+            - name: config
+              mountPath: /etc/rokuban
+              readOnly: true
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+      volumes:
+        - name: config
+          configMap:
+            name: e2e-toolbox-config

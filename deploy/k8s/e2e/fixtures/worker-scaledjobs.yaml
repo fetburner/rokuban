@@ -1,0 +1,123 @@
+# オラクル自己検査用の**使い捨ての身代わり**。製品のマニフェストではない。
+#
+# 判定 2 / 5 が見ているのは「KEDA のトリガが site 修飾されたキューを見て、
+# 滞留があるときだけ Job を起こすか」であって、その Job が rokuban かどうかでは
+# ない。したがって身代わりの中身は psql 1 行で足りる --- **本物の
+# ワークロードをここで先に書かない**（書くと、判定が「自分で書いた正解」と
+# 突き合わせるだけになる）。
+#
+# 本物の worker が要るのは判定 4（advisory lock）だけで、そちらは
+# fixtures/watcher.yaml が rokuban のイメージを使う。
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledJob
+metadata:
+  name: e2e-fx-worker-epg-__SITE_A__
+  labels:
+    app.kubernetes.io/name: rokuban
+    app.kubernetes.io/component: worker
+    rokuban-e2e/fixture: "true"
+spec:
+  # 判定を待たせないため短くしてある。実物はもっと長くてよい（判定側は
+  # spec.pollingInterval を読んで窓を決める）。
+  pollingInterval: 10
+  maxReplicaCount: 3
+  successfulJobsHistoryLimit: 5
+  failedJobsHistoryLimit: 5
+  rollout:
+    strategy: gradual
+  jobTargetRef:
+    backoffLimit: 0
+    template:
+      metadata:
+        labels:
+          rokuban-e2e/fixture: "true"
+      spec:
+        restartPolicy: Never
+        enableServiceLinks: false
+        containers:
+          - name: worker
+            image: postgres:17
+            env:
+              - name: POSTGRES_CONNECTION_STRING
+                valueFrom:
+                  secretKeyRef:
+                    name: e2e-keda-postgres
+                    key: POSTGRES_CONNECTION_STRING
+            command: ["/bin/sh", "-c"]
+            args:
+              - |
+                set -e
+                psql "$POSTGRES_CONNECTION_STRING" -v ON_ERROR_STOP=1 -c \
+                  "UPDATE river_job SET state='completed', finalized_at=now()
+                   WHERE id = (SELECT id FROM river_job
+                               WHERE queue='epg___SITE_A__' AND state IN ('available','retryable')
+                               ORDER BY id LIMIT 1)"
+            resources:
+              requests:
+                cpu: 20m
+                memory: 32Mi
+  triggers:
+    - type: postgresql
+      metadata:
+        # **キュー名を site で修飾している**（判定 5 が見ているのはここ）。
+        query: >-
+          SELECT count(*) FROM river_job
+          WHERE queue = 'epg___SITE_A__' AND state IN ('available','retryable')
+        targetQueryValue: "1"
+        connectionFromEnv: POSTGRES_CONNECTION_STRING
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledJob
+metadata:
+  name: e2e-fx-worker-epg-__SITE_B__
+  labels:
+    app.kubernetes.io/name: rokuban
+    app.kubernetes.io/component: worker
+    rokuban-e2e/fixture: "true"
+spec:
+  pollingInterval: 10
+  maxReplicaCount: 3
+  successfulJobsHistoryLimit: 5
+  failedJobsHistoryLimit: 5
+  rollout:
+    strategy: gradual
+  jobTargetRef:
+    backoffLimit: 0
+    template:
+      metadata:
+        labels:
+          rokuban-e2e/fixture: "true"
+      spec:
+        restartPolicy: Never
+        enableServiceLinks: false
+        containers:
+          - name: worker
+            image: postgres:17
+            env:
+              - name: POSTGRES_CONNECTION_STRING
+                valueFrom:
+                  secretKeyRef:
+                    name: e2e-keda-postgres
+                    key: POSTGRES_CONNECTION_STRING
+            command: ["/bin/sh", "-c"]
+            args:
+              - |
+                set -e
+                psql "$POSTGRES_CONNECTION_STRING" -v ON_ERROR_STOP=1 -c \
+                  "UPDATE river_job SET state='completed', finalized_at=now()
+                   WHERE id = (SELECT id FROM river_job
+                               WHERE queue='epg___SITE_B__' AND state IN ('available','retryable')
+                               ORDER BY id LIMIT 1)"
+            resources:
+              requests:
+                cpu: 20m
+                memory: 32Mi
+  triggers:
+    - type: postgresql
+      metadata:
+        query: >-
+          SELECT count(*) FROM river_job
+          WHERE queue = 'epg___SITE_B__' AND state IN ('available','retryable')
+        targetQueryValue: "1"
+        connectionFromEnv: POSTGRES_CONNECTION_STRING
