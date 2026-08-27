@@ -158,13 +158,29 @@ func newServerCmd() *cobra.Command {
 			}
 			warnIfAllowedHostsEmpty(slog.Default(), cfg.Server.AllowedHosts)
 
+			// このプロセスが引くキューを --queues と worker.queues から決める。
+			// 以降の判定（validateSiteBinding / RequiresEncodeTools /
+			// ClientConfig.Queues）はすべてこの解決済みの集合を見る ---
+			// 片方だけが config を直接見ると、argv で絞った Pod が
+			// 「絞ったつもりで検査だけ全キュー基準」になる（resolveWorkerQueues）。
+			queues, err := resolveWorkerQueues(cmd, cfg.Worker.Queues, roles)
+			if err != nil {
+				return err
+			}
+			// 1 件消化モード（KEDA ScaledJob の Job が自分で終了するための起動形態。
+			// worker.OnceGate、docs/operations.md §5）。
+			onceGate, onceIdleTimeout, err := resolveOnce(cmd, roles)
+			if err != nil {
+				return err
+			}
+
 			// このプロセスが束縛される mirakc サイトを --sites から決める
 			// （config キーにしない。issue #183 M4-11「含むもの」4）。
 			bound, err := resolveSiteBinding(cmd, cfg.Registry())
 			if err != nil {
 				return err
 			}
-			if err := validateSiteBinding(roles, bound, cfg.Worker.Queues); err != nil {
+			if err := validateSiteBinding(roles, bound, queues); err != nil {
 				return err
 			}
 			// site 名を site 単位のキューに修飾したときに River の 64 文字上限を
@@ -345,7 +361,7 @@ func newServerCmd() *cobra.Command {
 				// ffmpeg/ffprobe の存在検査は、実際に encode/thumbnail キューを
 				// 購読するときだけ行う（worker.queues で絞った ingest 専用 Pod 等に
 				// まで ffmpeg を要求しないため。issue #113 決定 C）。
-				if worker.RequiresEncodeTools(cfg.Worker.Queues) {
+				if worker.RequiresEncodeTools(queues) {
 					if toolErr := cfg.Encode.ValidateTools(); toolErr != nil {
 						return toolErr
 					}
@@ -388,7 +404,8 @@ func newServerCmd() *cobra.Command {
 					ThumbnailConcurrency: cfg.Encode.ThumbnailConcurrency,
 					EpgSyncInterval:      cfg.Epg.SyncInterval,
 					PeriodicJobs:         cfg.Worker.PeriodicJobs,
-					Queues:               cfg.Worker.Queues,
+					Queues:               queues,
+					Once:                 onceGate,
 					// 定期ジョブ（epg_sync / tuner_sync / ruler_pass / reconcile_pass /
 					// record_sweep / catalog_export / delete_reconcile /
 					// encode_reconcile / storage_sync）は
@@ -419,6 +436,25 @@ func newServerCmd() *cobra.Command {
 			}
 
 			if slices.Contains(roles, "worker") {
+				// 1 件消化モードの購読は **Start より前**に張る（張る前に終わった
+				// ジョブのイベントを取りこぼさないため）。middleware だけでは
+				// 未登録 kind のジョブを観測できない（worker.SubscribeOnceEvents）。
+				//
+				// **worker ロールのガードの内側に置く。** River の Subscribe は
+				// 「ジョブを実行しないクライアント」に対して panic するので
+				// （river@v0.40.0/client.go の SubscribeConfig）、insert-only の
+				// クライアント（watcher 単独）や nil のクライアントに対して呼ぶと
+				// 起動エラーではなく panic になる。いまは validateOnceMode が
+				// ロールを worker 単独に限っているので到達しないが、その検査の
+				// 理由（常駐する役を巻き込まない）はクライアントの種類とは
+				// 無関係なので、緩めたときにここが踏まれる形にしない。
+				var onceEvents <-chan *river.Event
+				if onceGate != nil {
+					var unsubscribe func()
+					onceEvents, unsubscribe = worker.SubscribeOnceEvents(riverClient)
+					defer unsubscribe()
+				}
+
 				if startErr := riverClient.Start(ctx); startErr != nil {
 					return fmt.Errorf("starting river client: %w", startErr)
 				}
@@ -432,6 +468,32 @@ func newServerCmd() *cobra.Command {
 						slog.Error("stopping river client", "err", err)
 					}
 				}()
+
+				if onceGate != nil {
+					// 1 件消化モードの終了契機。
+					//
+					// **停止の順序は stopOnceProcess が持つ**（graceful stop →
+					// プロセス畳み。逆順にすると実行中のジョブを打ち切る。
+					// River の Stop は StopInit で冪等なので、下の defer の Stop は
+					// そのまま無害な no-op になる）。
+					//
+					// **ジョブが失敗しても nil を返す**（= exit 0）。リトライは
+					// River が持っており、k8s 側は backoffLimit: 0 で起こし直さない
+					// 前提なので、終了コードで失敗を表すと二重にリトライする形に
+					// なる（worker.ClientConfig.Once のコメント）。
+					//
+					// 既知の窓（実害が空振り Job 1 つぶんなので閉じていない）:
+					// Work を抜けてから Stop が producer を止めるまでの間に次の
+					// ジョブが fetch されると、この Job は 2 件消化して終わる。
+					// MaxWorkers=1 なので同時には走らず、上記の順序により
+					// 打ち切られもしない（実測 0/25 でこの窓には入らなかった）。
+					eg.Go(func() error {
+						outcome := onceGate.Wait(egCtx, onceIdleTimeout, onceEvents)
+						slog.Info("worker: once mode finished", "outcome", outcome.String())
+						stopOnceProcess(ctx, riverClient.Stop, stop)
+						return nil
+					})
+				}
 			}
 
 			// シングルトンロールは監督ループで管理する。
@@ -490,6 +552,18 @@ func newServerCmd() *cobra.Command {
 	cmd.Flags().StringSlice(siteFlagName, nil,
 		"mirakc sites this process is bound to (comma-separated). "+
 			"Omit to bind to the registry's sole entry; pass an empty value to run unbound (central process)")
+	// --queues / --once も --sites と同じ「起動形態」の軸（resolveWorkerQueues /
+	// onceFlagName のコメント）。--queues は config の worker.queues と
+	// 排他で、両方指定は起動エラーになる。
+	cmd.Flags().StringSlice(queuesFlagName, nil,
+		"queues the worker role pulls (comma-separated logical names). "+
+			"Mutually exclusive with worker.queues in the config file")
+	cmd.Flags().Bool(onceFlagName, false,
+		"exit after working a single job (for KEDA ScaledJob; requires --roles worker, "+
+			"exactly one queue and worker.periodic_jobs: false)")
+	cmd.Flags().Duration(onceIdleTimeoutFlagName, defaultOnceIdleTimeout,
+		"in --once mode, exit successfully if no job is claimed within this duration "+
+			"(never applies once a job is running)")
 
 	return cmd
 }
@@ -507,12 +581,27 @@ func resolveRoles(cmd *cobra.Command) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	// 同じ名前の重複は 1 つに畳む（`--sites tokyo,tokyo` /
+	// `--queues ingest,ingest` と揃える）。畳まないと
+	// `--roles worker,worker --once` が「ちょうど worker 1 つ」の検査に
+	// 引っかかり、「requires exactly the worker role, got [worker, worker]」
+	// という紛らわしいエラーになる。
+	//
+	// プール上限（db.maxConnsForRoles）は元から uniqueRoles で畳んでいるので、
+	// そちらは以前も二重計上していない。
+	deduped := make([]string, 0, len(roles))
+	seen := make(map[string]bool, len(roles))
 	for _, r := range roles {
 		if !slices.Contains(allRoles, r) {
 			return nil, fmt.Errorf("unknown role: %q (valid: %s)", r, strings.Join(allRoles, ", "))
 		}
+		if seen[r] {
+			continue
+		}
+		seen[r] = true
+		deduped = append(deduped, r)
 	}
-	return roles, nil
+	return deduped, nil
 }
 
 // riverClientKind は roles から River クライアントの組み立て方を分類する。

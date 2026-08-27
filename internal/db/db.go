@@ -178,9 +178,10 @@ func buildPoolConfig(cfg config.DBConfig, roles []string) (*pgxpool.Config, erro
 
 // maxConnsForRoles は roles から roleConnBudget の合計を算出する。
 //
-// roles は重複除去してから合算する。resolveRoles（cmd/rokuban/server.go）は
-// `--roles api,api` のような重複指定をそのまま通すため、重複除去しないと
-// 同じロールの budget を二重に数えてプール上限が過大になる（issue #90 レビュー）。
+// roles は重複除去してから合算する。重複除去しないと同じロールの budget を
+// 二重に数えてプール上限が過大になる（issue #90 レビュー）。resolveRoles
+// （cmd/rokuban/server.go）が `--roles api,api` を畳むようになった後も、
+// ここは多重防御として残す --- db.NewPool の呼び出し元は server だけではない。
 func maxConnsForRoles(roles []string) int32 {
 	var total int32
 	for r := range uniqueRoles(roles) {

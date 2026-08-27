@@ -243,6 +243,77 @@ func TestRunEnqueue_StorageSync(t *testing.T) {
 	}
 }
 
+// delete-reconcile も投入できること。**`worker.periodic_jobs: false`
+// （k8s の出荷値）ではこの経路が唯一の投入者**になるので、載っていないと
+// ごみ箱・孤児回収のパスが一度も走らない構成ができる。物理ストレージは単一の
+// media_dir で site に従属しないので site は空で渡す。
+func TestRunEnqueue_DeleteReconcile(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	var out bytes.Buffer
+	if err := runEnqueue(ctx, pool, "delete-reconcile", "", &out); err != nil {
+		t.Fatalf("runEnqueue: %v", err)
+	}
+	if !strings.Contains(out.String(), "inserted job") {
+		t.Errorf("output = %q, want to contain %q", out.String(), "inserted job")
+	}
+	if strings.Contains(out.String(), "for site") {
+		t.Errorf("output = %q, site-independent job must not mention site", out.String())
+	}
+
+	var count int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM river_job WHERE kind = 'delete_reconcile'`,
+	).Scan(&count); err != nil {
+		t.Fatalf("counting delete_reconcile jobs: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("delete_reconcile job count = %d, want 1", count)
+	}
+	// cleanup キューに乗ること（DeleteReconcileArgs.InsertOpts）。KEDA の
+	// スケーラはキュー名で引くので、ここがずれると CronJob が投入しても
+	// 誰も起きない。
+	var queue string
+	if err := pool.QueryRow(ctx,
+		`SELECT queue FROM river_job WHERE kind = 'delete_reconcile'`,
+	).Scan(&queue); err != nil {
+		t.Fatalf("reading delete_reconcile queue: %v", err)
+	}
+	if queue != "cleanup" {
+		t.Errorf("delete_reconcile queue = %q, want %q", queue, "cleanup")
+	}
+}
+
+// delete-reconcile が待機中なら投入せず exit 0 相当（error が nil）であること。
+// **CronJob が唯一の投入者**になる構成では、前の周回のジョブがまだ available の
+// まま次の発火が来る形が普通に起きる（worker が 0 にスケールしていると誰も
+// 消化しない）。ruler-pass と同じ形（UniqueOpts による合流）で固定する。
+func TestRunEnqueue_DeleteReconcile_AlreadyPending_SkipsWithoutError(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	var first bytes.Buffer
+	if err := runEnqueue(ctx, pool, "delete-reconcile", "", &first); err != nil {
+		t.Fatalf("runEnqueue (1 回目): %v", err)
+	}
+
+	var second bytes.Buffer
+	if err := runEnqueue(ctx, pool, "delete-reconcile", "", &second); err != nil {
+		t.Fatalf("runEnqueue (2 回目) は合流して nil を返すこと: %v", err)
+	}
+
+	var count int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM river_job WHERE kind = 'delete_reconcile'`,
+	).Scan(&count); err != nil {
+		t.Fatalf("counting delete_reconcile jobs: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("delete_reconcile job count = %d, want 1（2 回目が合流していない）", count)
+	}
+}
+
 // 未知のジョブ名はエラーになること。
 func TestRunEnqueue_UnknownJob(t *testing.T) {
 	pool := testutil.SetupDB(t)
@@ -341,10 +412,10 @@ func TestResolveEnqueueJobSite(t *testing.T) {
 // enqueueJobs の分類が一貫していること。RequiresSite の集合が「次にジョブを
 // 足す人がどちらかを更新し忘れる」経路にならないよう、現状の契約を固定する
 // （issue #200）。catalog-export と storage-sync（issue #238 M7-5）、
-// encode-reconcile（issue #163）が site 非依存。
+// encode-reconcile（issue #163）、delete-reconcile が site 非依存。
 func TestEnqueueJobs_SiteClassification(t *testing.T) {
 	independent := sortedJobNamesBySite(false)
-	wantIndependent := []string{"catalog-export", "encode-reconcile", "storage-sync"}
+	wantIndependent := []string{"catalog-export", "delete-reconcile", "encode-reconcile", "storage-sync"}
 	if strings.Join(independent, ",") != strings.Join(wantIndependent, ",") {
 		t.Errorf("site-independent jobs = %v, want %v", independent, wantIndependent)
 	}

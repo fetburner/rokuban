@@ -403,10 +403,17 @@ river_backlog() {
 # 経路を通すと UniqueOpts（epg_sync は ByQueue）で 2 件目以降が黙って消え、
 # 「滞留を作ったつもりで 1 件しか無い」になる。
 #
-# kind は e2e_probe。rokuban に登録されたワーカーが無い名前なので、実物の
-# worker が掴んでも実データには触れない**はず**だが、**未検証**である
-# （実物の worker が居る状態でハーネスを回したことがまだ無い）。worker の
-# ワークロードを足すときに最初に確かめること --- 破れると判定 5 の前提（A の待ち行列が空）が崩れる。
+# kind は e2e_probe。**rokuban に登録されたワーカーが無い名前**なので、実物の
+# worker が掴んだ場合は River の executor が「未登録 kind」として 1 回失敗させる
+# だけで、実データには触れない（`WorkUnit == nil` の早期 return。
+# 単体では cmd/rokuban の TestServerCmd_OnceModeExitsOnUnhandledJobKind が同じ形を固定）。
+# `--once` の worker はそこで終了する（outcome=job_unhandled）。
+#
+# 帰結が 2 つある。**このジョブは長時間 Job にならない**ので、判定 3 の既定
+# producer は実物の encode ワークロードには使えない（E2E_ENCODE_PRODUCER の
+# 差し替えが要る）。もう 1 つは max_attempts=1 との組み合わせで、1 回の失敗で
+# discarded になって滞留が消えることである --- 判定 5 が滞留を作れるかは
+# KEDA のポーリングとの前後関係次第で、**実物の worker 込みでは未測定**。
 insert_probe_job() {
   local queue="$1" count="${2:-1}"
   psql_q "INSERT INTO river_job (state, queue, kind, args, max_attempts, priority, scheduled_at)

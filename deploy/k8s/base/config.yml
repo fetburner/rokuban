@@ -60,6 +60,14 @@ db:
 mirakc:
   url: http://mirakc:40772
 
+# **定期ジョブは in-process では投入しない。** River の PeriodicJobs は
+# リーダーに選出されたクライアントだけが投入するので、worker を KEDA で 0 に
+# スケールする構成では誰も投入しなくなる（docs/data.md §2）。投入は CronJob の
+# `rokuban enqueue` が担う。1 件消化モード（`--once`）はこの値が false である
+# ことを要求する（`worker.OnceGate`）。
+worker:
+  periodic_jobs: false
+
 storage:
   # api ロールはファイルシステムに依存しない（不変条件 1）ので、api Deployment に
   # PVC は挿していない。media_dir を実際に読み書きする役（worker / streamer /

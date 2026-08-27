@@ -36,9 +36,12 @@ type enqueueJob struct {
 // 組み立てる索引。ジョブの Kind()（"epg_sync" / "ruler_pass" 等）とは別に、
 // CLI では読みやすい名前を使う。
 //
-// delete_reconcile はここに載せない。PeriodicJobs（または worker 側の定期）が
-// 投入するだけで、手動 enqueue の対象にしていない（catalog-export だけが
-// cleanup 系で enqueue 可能。issue #200 の洗い出し）。
+// **cleanup 系（catalog-export / delete-reconcile）も載せる。** かつて
+// delete_reconcile だけを外していたが、その根拠（PeriodicJobs が投入するので
+// 手動 enqueue は要らない）は `worker.periodic_jobs: false` のデプロイでは
+// 成り立たない --- k8s はこれを出荷値にしており、CronJob からの投入が唯一の
+// 経路になるので、載せないとごみ箱・孤児回収のパスが一度も走らない構成が
+// できる（encode-reconcile を載せたのと同じ論法。issue #163 / #200）。
 var enqueueJobs = map[string]enqueueJob{
 	"epg-sync": {
 		RequiresSite: true,
@@ -64,6 +67,12 @@ var enqueueJobs = map[string]enqueueJob{
 	"catalog-export": {
 		RequiresSite: false,
 		NewArgs:      func(string) river.JobArgs { return worker.CatalogExportArgs{} },
+	},
+	"delete-reconcile": {
+		// 物理ストレージは単一の media_dir で site に従属しない
+		// （worker.DeleteReconcileArgs のコメント。catalog-export と同じ位置づけ）。
+		RequiresSite: false,
+		NewArgs:      func(string) river.JobArgs { return worker.DeleteReconcileArgs{} },
 	},
 	"encode-reconcile": {
 		// エンコードは site の属性を持たない（アーカイブもプロファイルも単一。

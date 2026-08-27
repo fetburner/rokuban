@@ -105,11 +105,11 @@ Grafana Loki / Tempo の `-config.expand-env` と同じ、**YAML パース前の
 ### worker.periodic_jobs と worker.queues
 
 - `worker.periodic_jobs`: プロセス内で定期ジョブを投入するか。対象は epg_sync / tuner_sync / ruler_pass / reconcile_pass / record_sweep。catalog_export / delete_reconcile / encode_reconcile / storage_sync も対象。k8s では false にし、CronJob から `rokuban enqueue` で投入する（River の PeriodicJobs はリーダーだけが投入するため、KEDA で 0 にスケールすると誰も投入しなくなる。[data.md](data.md) §2）
-- `worker.queues`: worker ロールが引くキューを絞る。空なら全部。ロールを増やさずに「ruler / reconciler だけ別 Pod」を実現するための knob。書くのは物理名ではなく**論理名**。使えるのは `ingest` / `epg` / `ruler` / `reconciler` / `watcher` / `encode`。`thumbnail` / `cleanup` / `storage` / `default` も使える。site 単位のキューの物理名への展開・ロールとの関係（worker ロールが無いプロセスはこの設定に関わらずキューを引かない）は [operations.md](operations.md) §5 を参照
+- `worker.queues`: worker ロールが引くキューを絞る。空なら全部。ロールを増やさずに「ruler / reconciler だけ別 Pod」を実現するための knob。**同じものを `--queues` で argv からも指定でき、両方指定は起動エラー**（k8s では ConfigMap 1 個を全 Pod で共有し Pod ごとの差分を argv に寄せるため。[operations.md](operations.md) §5）。書くのは物理名ではなく**論理名**。使えるのは `ingest` / `epg` / `ruler` / `reconciler` / `watcher` / `encode`。`thumbnail` / `cleanup` / `storage` / `default` も使える。site 単位のキューの物理名への展開・ロールとの関係（worker ロールが無いプロセスはこの設定に関わらずキューを引かない）は [operations.md](operations.md) §5 を参照
 
 ### ffmpeg の存在検査
 
-`encode.ffmpeg` / `encode.ffprobe` は、worker ロールが encode/thumbnail キューを購読するときだけ LookPath で存在検査する。購読するのは `worker.queues` が空、または encode/thumbnail を含むときである。api ロールは呼ばない（不変条件 4）。`live.ffmpeg` は `live.enabled: true` の streamer 起動時だけ検査する。
+`encode.ffmpeg` / `encode.ffprobe` は、worker ロールが encode/thumbnail キューを購読するときだけ LookPath で存在検査する。購読するのは、絞り込みが無い（`worker.queues` が空で `--queues` も無い）か、encode/thumbnail を含むときである。api ロールは呼ばない（不変条件 4）。`live.ffmpeg` は `live.enabled: true` の streamer 起動時だけ検査する。
 
 ### live
 
@@ -187,7 +187,7 @@ argv の順序（live）は同じ規則を入力 1 本・出力 N 本の形に�
 - `--sites=`（明示的な空）は束縛なし = 中央プロセス
 - `--sites tokyo` は tokyo に束縛する。`--sites tokyo,tokyo` のような重複は 1 つに畳む（束縛数の判定が紛らわしいエラーにならないようにするため）
 - `watcher` ロールは 1 プロセス 1 サイトのループしか持たないため、束縛サイト数がちょうど 1 でなければ起動エラーになる。watcher の advisory lock のキーも束縛サイトで修飾される（`watcher:<site>`）ので、2 サイトそれぞれに 1 プロセスずつ立てれば両方が自分の mirakc の SSE を購読する
-- `worker` ロールは site 単位の仕事と site 非依存の仕事が同居している（`worker.Deps.Site` / `worker.ClientConfig` の各 `*Site` フィールドがいずれも単一文字列のため）。2 サイト以上の束縛は起動エラーになる。**0 サイト（中央プロセス）の束縛は `worker.queues` を site 非依存キューに絞ったときだけ許す**。`worker.queues` が空（既定=全キュー）のまま、または site 単位のキューを含んだまま 0 サイトで起動すると、届く site 単位のジョブが空文字列 site と一致せず全滅して再試行し続けるだけになる。そのため起動エラーにする。どのキューが site 単位か・物理キュー名への展開は [operations.md](operations.md) §5 を参照。**1 プロセスが N サイトの watcher / worker のループを回す形は書き手がまだいないので決めない**（不変条件 11）
+- `worker` ロールは site 単位の仕事と site 非依存の仕事が同居している（`worker.Deps.Site` / `worker.ClientConfig` の各 `*Site` フィールドがいずれも単一文字列のため）。2 サイト以上の束縛は起動エラーになる。**0 サイト（中央プロセス）の束縛は `worker.queues` / `--queues` を site 非依存キューに絞ったときだけ許す**。`worker.queues` が空（既定=全キュー）のまま、または site 単位のキューを含んだまま 0 サイトで起動すると、届く site 単位のジョブが空文字列 site と一致せず全滅して再試行し続けるだけになる。そのため起動エラーにする。どのキューが site 単位か・物理キュー名への展開は [operations.md](operations.md) §5 を参照。**1 プロセスが N サイトの watcher / worker のループを回す形は書き手がまだいないので決めない**（不変条件 11）
 - `enqueue` サブコマンドは **site 束縛ジョブだけ** `--site` で投入先を選ぶ（未指定かつレジストリ 1 要素ならその 1 つ、2 要素以上なら必須）。`catalog-export` は site 非依存で `--site` を付けない（詳細は [operations.md](operations.md) §1「ジョブ化されたループの監視」）
 - `rescue` / `shadow-diff` は単一サイト用のまま。`mirakcs:` が 2 要素以上の構成では明示的なエラーで落ちる（多サイトでの意味論を決める書き手がまだいないため）
 
@@ -264,6 +264,6 @@ argv の順序（live）は同じ規則を入力 1 本・出力 N 本の形に�
 
 - **env による config キーの自動オーバーライド**（viper/koanf の多層マージ）: どの値がどこから来たか追いにくくなる割に、この規模では利得がない
 - **設定ファイルの分割・include 機構**: 分離の必要があるのは機微情報だけで、それは env で足りる
-- **CLI フラグで設定値を渡すこと**: CLI フラグは `--config` のパスと `--all` / ロール選択などプロセスの起動形態に限定する
+- **CLI フラグで設定値を渡すこと**: CLI フラグは `--config` のパスと `--all` / ロール選択などプロセスの起動形態に限定する。例外は `--sites` と `--queues` の 2 つで、どちらも「このプロセスが何を担当するか」を表す起動形態である。`--queues` は config キー `worker.queues` と同じ値を取るが、その値自体がデプロイ時のパラメータであって環境の設定ではない。**両方指定は起動エラー**にして、値の出所が 2 つに分かれないようにしている。`--once` とその `--once-idle-timeout` も argv 側に置く --- 前者は起動形態そのもので、後者はその形態にしか意味を持たない値なので、config キーにすると常駐プロセスにも見える場所に置くことになる。k8s のロール分割では ConfigMap 1 個を全 Pod で共有し、Pod ごとの差分を argv に寄せるため、この 2 つは argv 側に無いと ConfigMap が Pod セットの数だけ増える（[operations.md](operations.md) §5）
 - **SIGHUP 等のホットリロード**: 設定変更は再起動。crash-only + level-triggered 設計なら再起動は無害で、リロードは「どの値がいつから有効か」という追跡困難性を別の形で持ち込むだけ
 

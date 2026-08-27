@@ -36,8 +36,9 @@ E2E_ORACLES_ONLY=3 ./deploy/k8s/e2e/run.sh --oracles   # オラクルも一部�
 ではない。** `0` が保証**しない**もの:
 
 - **CronJob は `epg-sync --site <A>` の 1 本しか見ていない。** `rokuban enqueue`
-  の対象は 8 種ある。`worker.periodic_jobs: false` の下では全部が CronJob 側に
-  移るので、7 本欠けていても 0 になる
+  の対象は複数ある（一覧は `rokuban enqueue --help`）。
+  `worker.periodic_jobs: false` の下では全部が CronJob 側に移るので、
+  1 本を除いて全部欠けていても 0 になる
 - **ScaledJob は `epg_<site>` / `reconciler_<site>` / `encode` しか見ていない。**
   `ingest_<site>` / `watcher_<site>` が欠けていても 0 になる
 - **Deployment は役ごとの存在と「宣言した数だけ Ready」だけ。** サイトごとの
@@ -47,8 +48,7 @@ E2E_ORACLES_ONLY=3 ./deploy/k8s/e2e/run.sh --oracles   # オラクルも一部�
   届くかは誰も測っていない
 - **定期パスの網羅も見ていない。** `worker.periodic_jobs: false` の下では
   in-process の定期ジョブ 9 種が CronJob 側に移るが、判定が見るのは
-  `epg-sync` の 1 本だけ。`delete_reconcile` は `rokuban enqueue` に載って
-  いないので、そもそも CronJob にできない（扱いは未決）
+  `epg-sync` の 1 本だけ
 
 網羅を判定に入れるなら、`config.yml` の `mirakcs:` と `rokuban enqueue` の
 ジョブ表から期待集合を導く判定を足すことになる。**いまは足していない**
@@ -79,8 +79,10 @@ watcher / streamer の Deployment、worker の ScaledJob、投入側の CronJob�
 それを確認して残すのがこのハーネスの成果物である。この表は判定を足したり
 緑にしたりする人が更新する。
 
-**ただし、ワークロードを書けば緑になるわけではない。** 判定 2 と 3 は、
-いまの製品バイナリでは原理的に緑にできない（下記「先に決めること」）。
+**ワークロードを書けば緑になるわけではない。** 判定 2 と 3 が要求していた
+製品バイナリ側の 2 つ（Job の自己終了 / キューを argv で絞る手段）は
+`--once` と `--queues` で入った。残るのは判定 2.3 が要求する CronJob の
+schedule で、**方針は決まっているが実装がまだ無い**（下記「先に決めること」）。
 「TODO なのは対象が無いからだ」とだけ読むと、ワークロードを書いてから
 その壁に当たる。
 
@@ -206,26 +208,74 @@ ScaledJob 自体の書き方（トリガの接続先・`rollout.strategy`・切�
 
 ### 先に決めること（マニフェストを書き始める前に）
 
-**次の 3 つは実装ではなく決定である。決めずに書き始めると、ワークロードが
-できても判定 2 / 3 が緑にならない。** 選択肢と根拠は M4-6c の issue に出して
-あるので、そちらを先に読むこと。
+**判定 2.3 は CronJob が 180 秒以内に自然発火することを要求する。**
+epg_sync の実運用相当の間隔は 10 分なので、出荷する schedule のままだと
+2.3 が FAIL になる。**方針は決まっている**（base は実運用の間隔 /
+`overlays/e2e` で毎分に patch / 両方を `manifests_test.go` で固定）ので、
+マニフェストと一緒に実装する。このとき **判定 2 が測るのは出荷される
+schedule ではなくなる**ので、その旨を上の「0 が保証しないもの」に足すこと。
 
-- **未解決: KEDA ScaledJob の Job は自分で終了しなければならないが、
-  `rokuban server --roles worker` は終了しない。** 判定 2.2 と 2.4 が
-  TODO ではなく **FAIL** になる
-- **未解決: ScaledJob をキュー単位に切る手段が無い。** `worker.queues` は
-  config キューだけで CLI フラグが無い。「ConfigMap は 1 個・Pod 差分は argv
-  だけ」という決定と両立しない。encode の中央 ScaledJob は起動すらしない
-- **未解決: 判定 2 は CronJob が 180 秒以内に自然発火することを要求する。**
-  epg_sync の実運用相当の間隔は 10 分なので、出荷する schedule のままだと
-  2.3 が FAIL になる
+決着済み（製品バイナリ側は入っている。ScaledJob / CronJob にはこう書く）:
+
+- **worker の Job は `--once` で 1 件消化して終了する。** `--roles worker` は
+  常駐するので、そのまま載せると Job が `succeeded` に到達せず判定 2.4 が
+  永久に FAIL する。`--once` は成功・失敗を問わず exit 0 なので
+  `backoffLimit: 0` / `restartPolicy: Never` と組ませる。
+  `--once-idle-timeout`（既定 30 秒）は **1 件も掴めなかった場合にしか効かない**
+- **キューは `--queues <名前>` で絞る**（config の `worker.queues` との両方指定は
+  起動エラー）。`--once` はちょうど 1 キューを要求する。中央の encode は
+  `--sites= --queues=encode`（`Dockerfile.full` のイメージ。公式イメージは
+  ffmpeg 非同梱で fail-fast する）
+- **`rokuban enqueue delete-reconcile` が使える。** 以前は enqueue に載って
+  おらず、`worker.periodic_jobs: false` ではこのパスが一度も走らなかった
 
 ### ハーネス側の契約と、残っている穴
 
-- **未解決: `insert_probe_job` が入れる `e2e_probe` ジョブを実物の worker が
-  どう扱うかは未検証**（実物の worker が居る状態でハーネスを回したことがない）。
-  判定 3 の producer と判定 5 の positive control の**両方の土台**なので、
-  破れると 3 と 5 がまるごと使えない。**最初にここを確かめること。**
+- **`insert_probe_job` が入れる `e2e_probe` は、実物の worker には
+  「登録されていない kind」である。** 掴んだ worker は 1 回失敗させて試行回数を
+  1 つ潰す（実データには触れない）。`--once` の worker はそこで終了する
+  （ログの `outcome=job_unhandled`）。単体では
+  `TestServerCmd_OnceModeExitsOnUnhandledJobKind` が同じ形を固定している。
+  つまり **`e2e_probe` は「長時間 Job」にはならない**ので、判定 3 の
+  既定 producer は実物の encode ワークロードに対しては使えない
+  （`E2E_ENCODE_PRODUCER` の差し替えが要る。判定 3 の冒頭コメント）。
+  **判定 5 は `discarded` では壊れない。** 5.1 はサイト B の ScaledJob を
+  pause してから積むので誰も消化せず、5.3 は待ち行列ではなく「新しく現れた
+  Job 名」を見る（`checks/05` の 85-86 行 / 157-159 行）。ただし実物の worker
+  込みでハーネスを 1 周させた確認はまだ無い。
+- **判定 1.7 は `ruler` キュー（site 修飾されない）を引く消化側も要求する。**
+  判定が探す鍵は `epg_<site>` と `reconciler_<site>` の 2 つだけである。
+  ところが intent の PUT が入れるのは `ruler_pass` のヒントである
+  （`internal/api/rules.go` の `insertRulerPassHint`）。`reconcile_pass` は
+  その `ruler_pass` が入れる（`internal/worker/ruler_pass.go`）。
+  `ruler` を引く Pod が無いと 1.7 は TODO ではなく **240 秒待って FAIL** する。
+  しかもメッセージは「予約が mirakc に届かない … reservations=0」なので
+  **reconciler を疑わせる**。
+- **判定 3 は既定の producer では緑にならない。** `insert_probe_job` が入れる
+  `e2e_probe` は実物の worker には未登録 kind なので数秒で終わる。転び方は
+  「3.1 は PASS、3.2 / 3.3 / 3.4 が `completed` 分岐で TODO」になる。
+  TODO が 1 件でも `summary` は exit 2 を返す（受け入れの「全部緑」を満たさない）。
+  差し替え（`E2E_ENCODE_PRODUCER`）に足りないものは README が挙げていた
+  「メディアボリュームと最小の recording」だけではなく、次の 5 点である:
+    - `overlays/e2e/config.yml` に `encode:` セクションが無い（既定プロファイルは
+      存在しないので、profile 名を解決できる encode ジョブを 1 件も組み立てられない）
+    - ハーネスは `Dockerfile.full` のイメージを焼かない（`lib/cluster.sh` の
+      `build_images` と `kind load` は 2 つだけ）。`lib/env.sh` にタグも無く、
+      `overlays/e2e/kustomization.yaml` の `images:` も 1 本だけなので、
+      **build + `kind load` + overlay の 3 か所に手を入れる必要がある**
+    - `rokuban enqueue` に `encode` は無い（`EncodeJobArgs` は
+      `{recording_id, profile}`）。`insert_probe_job` と同じく直 INSERT になる
+    - メディアボリュームと、実ファイルを伴う `recordings` / `media_assets` の行
+    - **3.2 と 3.3 がそれぞれ `2 × pollingInterval` の窓を取る**ので、
+      エンコードは合計 4×pollingInterval 以上走り続ける必要がある
+    - 差し替え先は `command -v` か `declare -F` で検査される（`checks/03`）。
+      クラスタ内の `media_dir` に触る必要があるので、実質 `lib/kube.sh` に
+      関数を足す形になる
+- **前の周回が残した `retryable` 1 件で判定 2 が二重に落ちうる。** `retryable` は
+  滞留（`riverBacklogStates`）に数えられるので、2.2 の「待ち行列が空」が
+  180 秒粘って FAIL する。同時に `pendingJobStates` にも入るので、
+  `enqueue` が投入をスキップして 2.3 も落ちる。`--once` の Job がリーダーになれば River の
+  `JobScheduler` が昇格させるので自己回復するが、**その所要時間は測っていない**。
 - **トリガが数える River の状態は `available` / `retryable`。** ハーネスの
   「滞留」の定義（`lib/kube.sh` の `riverBacklogStates`）と同じ集合にすること。
   ずれると、失敗して指数バックオフ中（`scheduled`）のジョブ 1 件で判定 2 が
@@ -241,8 +291,9 @@ ScaledJob 自体の書き方（トリガの接続先・`rollout.strategy`・切�
   ある。`$producer` は関数名でもコマンド文字列でも受ける（引用せずに展開する）
 - **未解決: 判定 3 の「実行中の encode Job を作る」手順は実物に依存する。**
   ハーネスの既定は River の encode キューに 1 行入れるだけである。身代わり
-  （長く寝る Job）ではこれで足りるが、**本物の encode ワークロードでこれが
-  長時間 Job になるかは未検証**。`E2E_ENCODE_PRODUCER` で差し替えられるように
+  （長く寝る Job）ではこれで足りるが、**本物の encode ワークロードでは長時間
+  Job にならない**（`e2e_probe` は未登録 kind なので 1 回の失敗で終わる。
+  上記）。`E2E_ENCODE_PRODUCER` で差し替えられるように
   してあるので、実際に時間のかかるエンコードを投入する手順に差し替えること。
   **判定そのもの（生存の観測と positive control）は身代わりで検証済み**なので、
   差し替えるのは「実行中の Job を 1 つ作る」ところだけでよい

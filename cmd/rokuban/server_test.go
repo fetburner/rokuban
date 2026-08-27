@@ -1,10 +1,17 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -134,6 +141,394 @@ storage:
 `)
 	if _, err := config.Load(path); err == nil {
 		t.Fatal("expected error, got nil")
+	}
+}
+
+// runServerCmdForTest は server サブコマンドの RunE を実際に走らせる。
+//
+// **単体の resolve* / validate* を直接呼ぶテストでは RunE の配線が検証できない**
+// （解決した値を渡し忘れて config を直接見ていても、resolveWorkerQueues の
+// 単体テストは通り続ける。CLAUDE.md「壊す場所を、実際に壊れる経路の上に置く」）。
+// DB を到達不能にしてあるので、起動検査を通った場合は
+// 「connecting to database」で落ちる --- どこまで進んだかがエラーの種類で分かる。
+func runServerCmdForTest(t *testing.T, configPath string, args ...string) error {
+	t.Helper()
+	return runServerCmdWithContext(t, context.Background(), configPath, args...)
+}
+
+// runServerCmdWithContext は ctx を RunE に渡して server サブコマンドを走らせる。
+// ctx を cancel するとサーバーは SIGTERM と同じ経路で畳む。
+func runServerCmdWithContext(t *testing.T, ctx context.Context, configPath string, args ...string) error {
+	t.Helper()
+	cmd := newServerCmd()
+	// 本番では root の PersistentFlags から来る（cmd/rokuban/main.go）。
+	cmd.Flags().String("config", configPath, "")
+	cmd.SetArgs(args)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SilenceUsage = true
+	cmd.SilenceErrors = true
+	return cmd.ExecuteContext(ctx)
+}
+
+// 到達不能な DB（localhost:1）+ 2 サイトのレジストリ。
+const serverCmdTestConfig = `
+db:
+  host: 127.0.0.1
+  port: 1
+  user: rokuban
+  password: secret
+  database: rokuban
+mirakcs:
+  - site: tokyo
+    url: http://mirakc-tokyo:40772
+  - site: takamatsu
+    url: http://mirakc-takamatsu:40772
+storage:
+  media_dir: /mnt/media
+`
+
+// **--queues が RunE の配線に載っていること。** 中央（0 サイト束縛）の worker は
+// site 非依存キューに絞ったときだけ起動できる（validateSiteBinding）。
+// その判定が config だけを見ていると、`--queues=encode` を渡しても
+// 「全キュー購読の中央 worker」と見なされて起動できない --- KEDA の
+// encode ScaledJob（`--sites=`）が起動すらしないという形で現れる。
+//
+// 両方向を見る: --queues=encode なら DB まで到達し、--queues 無しなら
+// site 束縛の検査で（DB に触る前に）落ちる。
+func TestServerCmd_QueuesFlagUnblocksCentralEncodeWorker(t *testing.T) {
+	path := writeServerTestConfig(t, serverCmdTestConfig)
+
+	err := runServerCmdForTest(t, path, "--roles", "worker", "--sites=", "--queues=encode")
+	if err == nil {
+		t.Fatal("到達不能な DB を指しているので error を期待したが nil だった")
+	}
+	if !strings.Contains(err.Error(), "connecting to database") {
+		t.Errorf("err = %v, want to fail at the DB (= 起動検査を通ったこと)", err)
+	}
+
+	// 反対方向: --queues 無しの中央 worker は従来どおり起動エラー。
+	err = runServerCmdForTest(t, path, "--roles", "worker", "--sites=")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "--sites") {
+		t.Errorf("err = %v, want the site-binding error (DB に触る前に落ちること)", err)
+	}
+	if strings.Contains(err.Error(), "connecting to database") {
+		t.Errorf("err = %v: DB まで進んでいる（site 束縛の検査が効いていない）", err)
+	}
+}
+
+// **--once が RunE の配線に載っていること**（ロール検査が DB より前に効く）。
+func TestServerCmd_OnceRejectsExtraRoles(t *testing.T) {
+	path := writeServerTestConfig(t, serverCmdTestConfig)
+
+	err := runServerCmdForTest(t, path, "--roles", "worker,api", "--sites", "tokyo", "--once")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "--once") {
+		t.Errorf("err = %v, want the --once role error", err)
+	}
+	if strings.Contains(err.Error(), "connecting to database") {
+		t.Errorf("err = %v: DB まで進んでいる（--once のロール検査が効いていない）", err)
+	}
+}
+
+// writeOnceModeConfig は 1 件消化モードのテスト用 config を書く（実 DB を指す）。
+//
+// user / password が空のときにダミーを埋めるのは、ローカルの
+// ROKUBAN_TEST_DATABASE_URL が資格情報を持たない（trust 認証）ことがある一方で
+// config.DBConfig が両方を required にしているため。CI の URL は
+// `postgres://rokuban:rokuban@...` なのでこの分岐は通らない。
+func writeOnceModeConfig(t *testing.T, extra ...string) string {
+	t.Helper()
+	dbCfg := testutil.DatabaseConfig(t)
+	user := dbCfg.User
+	if user == "" {
+		user = os.Getenv("USER")
+	}
+	password := dbCfg.Password
+	if password == "" {
+		password = "unused"
+	}
+	return writeServerTestConfig(t, fmt.Sprintf(`
+server:
+  listen: "127.0.0.1:0"
+  allowed_hosts: []
+db:
+  host: %q
+  port: %d
+  user: %q
+  password: %q
+  database: %q
+  sslmode: %q
+mirakc:
+  url: http://127.0.0.1:1
+  site: home
+storage:
+  media_dir: %q
+worker:
+  periodic_jobs: false
+%s`, dbCfg.Host, dbCfg.Port, user, password, dbCfg.Database, dbCfg.SSLMode, t.TempDir(),
+		strings.Join(extra, "\n")))
+}
+
+// syncBuffer は複数 goroutine から書かれるログを集める。サーバーは
+// runServerCmdBounded の中で別 goroutine が動かすので、素の bytes.Buffer だと
+// -race が拾う。
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// captureServerLogs は slog のデフォルトを差し替えてサーバーのログを集める。
+//
+// **outcome のラベルは docs / e2e README / runbook が名指ししている契約**
+// （`outcome=idle_timeout` と `outcome=job_done` と `outcome=job_unhandled` を
+// 運用側が読み分ける）。ラベルを見ないと、「終了した」だけを見るテストは
+// **でっち上げの理由で終了した**場合も緑になる --- 実際に `unsubscribe` の
+// 呼び出し位置を 1 行ずらす変異では、3 本のうち 2 本が緑のまま
+// `outcome=job_unhandled` を出していた。
+func captureServerLogs(t *testing.T) *syncBuffer {
+	t.Helper()
+	buf := &syncBuffer{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return buf
+}
+
+// assertOnceOutcome は 1 件消化モードの終了理由がログに出ていることを見る。
+func assertOnceOutcome(t *testing.T, logs *syncBuffer, want string) {
+	t.Helper()
+	if got := logs.String(); !strings.Contains(got, "outcome="+want) {
+		t.Errorf("ログに outcome=%s が無い。ログ:\n%s", want, got)
+	}
+}
+
+// runServerCmdBounded は server の RunE を走らせ、**有限時間で戻ること**まで見る。
+//
+// 1 件消化モードの主張はまさに「プロセスが終わる」ことなので、戻らない変異は
+// go test 全体のタイムアウト（panic ダンプ）ではなく、このテストの失敗として
+// 報告する。
+func runServerCmdBounded(t *testing.T, limit time.Duration, configPath string, args ...string) (time.Duration, error) {
+	t.Helper()
+	// **打ち切るときはサーバーを畳んでから返る。** goroutine を残すと、
+	// River クライアントが cleanup キューを購読したまま生き続け、後続のテストが
+	// 入れたジョブを掴んだり testutil.SetupDB の TRUNCATE と競合したりして、
+	// 1 件の失敗が連鎖して元の原因を隠す。
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	start := time.Now()
+	go func() { errCh <- runServerCmdWithContext(t, ctx, configPath, args...) }()
+	select {
+	case err := <-errCh:
+		return time.Since(start), err
+	case <-time.After(limit):
+		cancel()
+		select {
+		case <-errCh:
+		case <-time.After(30 * time.Second):
+			t.Error("cancel してもサーバーが畳まれない（River クライアントが残る）")
+		}
+		t.Fatalf("server が %s 以内に終了しない（--once の Job が終わらない形）", limit)
+		return 0, nil
+	}
+}
+
+// **1 件消化モードのプロセスが実際に終了すること。** 判定 2.2 / 2.4 が要求する
+// 「0 → 1 → 0」の 0 に戻る側そのもので、これが無いと KEDA が起こした Job は
+// succeeded に到達しない。
+//
+// 実 DB を使って RunE を丸ごと走らせるのが要点 --- OnceGate の単体テストは
+// gate の論理しか見ておらず、**gate を River に登録して待つ配線**（server.go の
+// eg.Go）を検証できない。
+//
+// 両方向を見る:
+//   - 空キュー: --once-idle-timeout で終了する
+//   - 1 件入っている: そのジョブを消化して終了し、ジョブが completed になる
+func TestServerCmd_OnceModeTerminates(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	path := writeOnceModeConfig(t)
+
+	onceArgs := []string{"--roles", "worker", "--sites=", "--queues=cleanup", "--once"}
+
+	t.Run("空キューなら idle timeout で終了する", func(t *testing.T) {
+		const idle = 2 * time.Second
+		logs := captureServerLogs(t)
+		args := append(append([]string{}, onceArgs...), "--once-idle-timeout="+idle.String())
+		elapsed, err := runServerCmdBounded(t, 30*time.Second, path, args...)
+		if err != nil {
+			t.Fatalf("server --once: %v", err)
+		}
+		assertOnceOutcome(t, logs, "idle_timeout")
+		// **待った時間も見る。** 「戻った」だけを見ると、idle timeout を
+		// 無視して即終了する変異（掴む前に畳む = ジョブを取りこぼす形）でも通る。
+		if elapsed < idle {
+			t.Errorf("elapsed = %s, want >= %s（指定した idle timeout を待っていない）", elapsed, idle)
+		}
+	})
+
+	t.Run("1 件あれば消化して終了する", func(t *testing.T) {
+		var out bytes.Buffer
+		if err := runEnqueue(ctx, pool, "delete-reconcile", "", &out); err != nil {
+			t.Fatalf("runEnqueue: %v", err)
+		}
+
+		// **idle timeout を長く取る。** 短いと「消化して終わった」と
+		// 「掴めないまま時間切れで終わった」が区別できず、空虚な成功になる。
+		logs := captureServerLogs(t)
+		args := append(append([]string{}, onceArgs...), "--once-idle-timeout=60s")
+		if _, err := runServerCmdBounded(t, 30*time.Second, path, args...); err != nil {
+			t.Fatalf("server --once: %v", err)
+		}
+		assertOnceOutcome(t, logs, "job_done")
+
+		var state string
+		if err := pool.QueryRow(ctx,
+			`SELECT state FROM river_job WHERE kind = 'delete_reconcile'`,
+		).Scan(&state); err != nil {
+			t.Fatalf("reading delete_reconcile state: %v", err)
+		}
+		if state != "completed" {
+			t.Errorf("delete_reconcile state = %q, want %q（消化せずに終わっている）", state, "completed")
+		}
+	})
+}
+
+// **未登録 kind のジョブを掴んでも Job が終わること。** River の executor は
+// 登録されていない kind を WorkUnit == nil で早期 return し、その時点では
+// WorkerMiddleware のチェーンをまだ組み立てていない（worker.SubscribeOnceEvents）。
+// middleware だけを見ていると、Job は「1 件も claim していない」と誤認したまま
+// idleTimeout の間そのキューを掴み続け、試行回数を潰す。
+//
+// 版ずれ（新しいイメージの CronJob / api が、古い worker の知らない kind を
+// 投入する）で起きうるほか、**受け入れ判定ハーネスの `insert_probe_job` が
+// 入れる `e2e_probe` がまさにこの形**である（deploy/k8s/e2e/lib/kube.sh）。
+//
+// 判定は 2 つ。**どちらも「戻った」だけでは足りない** --- 壊れていても
+// idleTimeout 後には戻る。(a) idleTimeout（60s）より十分短い時間で戻ること
+// （runServerCmdBounded の limit 20s がこれを担う）、(b) 試行を 1 回しか
+// 潰していないこと（壊れていると窓の中で何度も掴み直す）。
+func TestServerCmd_OnceModeExitsOnUnhandledJobKind(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	path := writeOnceModeConfig(t)
+
+	// 製品の投入経路には無い kind なので DB へ直接入れる（ハーネスの
+	// insert_probe_job と同じ形）。**max_attempts はハーネスの 1 ではなく 25 にする** ---
+	// 1 だと最初の失敗で discarded になり、壊れた実装でも掴み直せないので
+	// 下の attempt の主張が何も検出しなくなる。
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO river_job (state, queue, kind, args, max_attempts, priority, scheduled_at)
+		 VALUES ('available', 'cleanup', 'e2e_probe', '{}'::jsonb, 25, 1, now())`,
+	); err != nil {
+		t.Fatalf("inserting unhandled-kind job: %v", err)
+	}
+
+	// **idleTimeout（60s）より短い limit（20s）で打ち切ることが判定 (a) 本体。**
+	// これを超えると runServerCmdBounded が Fatalf で落ちるので、ここに
+	// elapsed の比較を足しても到達しない（何も主張しない 3 行になる）。
+	logs := captureServerLogs(t)
+	_, err := runServerCmdBounded(t, 20*time.Second, path,
+		"--roles", "worker", "--sites=", "--queues=cleanup", "--once", "--once-idle-timeout=60s")
+	if err != nil {
+		t.Fatalf("server --once: %v", err)
+	}
+	assertOnceOutcome(t, logs, "job_unhandled")
+
+	var attempt int
+	var state string
+	if err := pool.QueryRow(ctx,
+		`SELECT attempt, state FROM river_job WHERE kind = 'e2e_probe'`,
+	).Scan(&attempt, &state); err != nil {
+		t.Fatalf("reading e2e_probe job: %v", err)
+	}
+	if attempt != 1 {
+		t.Errorf("attempt = %d, want 1（同じ Job が掴み直して試行回数を潰している。state=%s）", attempt, state)
+	}
+}
+
+// **ffmpeg/ffprobe の存在検査が `--queues` に従うこと。** 検査が config の
+// `worker.queues` を見ていると、argv だけで絞った Pod（k8s の ScaledJob が
+// まさにこの形）に対して常に ffmpeg を要求し、**公式イメージ（ffmpeg 非同梱）の
+// worker が起動できなくなる**（`RequiresEncodeTools([])` は true）。
+//
+// 両方向を見る: `--queues=cleanup` は検査を通り、`--queues=encode` は落ちる。
+func TestServerCmd_EncodeToolCheckFollowsQueuesFlag(t *testing.T) {
+	testutil.SetupDB(t)
+	path := writeOnceModeConfig(t, `encode:
+  ffmpeg: /nonexistent/rokuban-test-ffmpeg
+  ffprobe: /nonexistent/rokuban-test-ffprobe`)
+
+	if _, err := runServerCmdBounded(t, 30*time.Second, path,
+		"--roles", "worker", "--sites=", "--queues=cleanup", "--once", "--once-idle-timeout=1s"); err != nil {
+		t.Fatalf("--queues=cleanup は ffmpeg を要求しないこと: %v", err)
+	}
+
+	_, err := runServerCmdBounded(t, 30*time.Second, path,
+		"--roles", "worker", "--sites=", "--queues=encode", "--once", "--once-idle-timeout=1s")
+	if err == nil {
+		t.Fatal("--queues=encode は ffmpeg の不在で落ちること: error を期待したが nil だった")
+	}
+	if !strings.Contains(err.Error(), "encode.ffmpeg") {
+		t.Errorf("err = %v, want the ffmpeg tool error", err)
+	}
+}
+
+// **失敗するジョブでもプロセスは exit 0。** リトライは River が持っており、
+// k8s 側は backoffLimit: 0 / restartPolicy: Never で起こし直さない前提なので、
+// 終了コードで失敗を表すと二重にリトライする形になる。
+//
+// 到達不能な mirakc への epg_sync で失敗させる（RunE を丸ごと通すので、
+// 「gate goroutine が nil を返す」だけでなく errgroup の畳み方も含めて見る）。
+func TestServerCmd_OnceModeExitsZeroOnJobFailure(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	path := writeOnceModeConfig(t)
+
+	var out bytes.Buffer
+	if err := runEnqueue(ctx, pool, "epg-sync", "home", &out); err != nil {
+		t.Fatalf("runEnqueue: %v", err)
+	}
+
+	// config の mirakc は 127.0.0.1:1（接続不能）なので epg_sync は必ず失敗する。
+	_, err := runServerCmdBounded(t, 30*time.Second, path,
+		"--roles", "worker", "--sites", "home", "--queues=epg", "--once", "--once-idle-timeout=60s")
+	if err != nil {
+		t.Fatalf("ジョブが失敗しても exit 0 であること: %v", err)
+	}
+
+	// ジョブは完了扱いにならず、River 側に再試行として残る。
+	var state string
+	var attempt int
+	if err := pool.QueryRow(ctx,
+		`SELECT state, attempt FROM river_job WHERE kind = 'epg_sync'`,
+	).Scan(&state, &attempt); err != nil {
+		t.Fatalf("reading epg_sync job: %v", err)
+	}
+	if state == "completed" {
+		t.Error("epg_sync が completed になっている（失敗が握り潰されている）")
+	}
+	if attempt != 1 {
+		t.Errorf("attempt = %d, want 1", attempt)
 	}
 }
 

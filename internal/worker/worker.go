@@ -555,6 +555,24 @@ type ClientConfig struct {
 	// 未知のキュー名が含まれる場合は起動時エラーにする（typo で静かに何も
 	// 引かなくなる事故を防ぐ）。
 	Queues []string
+
+	// Once が非 nil なら 1 件消化モード（`rokuban server --once`）になる。
+	// KEDA ScaledJob が起こした k8s Job が自分で終了できるようにするための
+	// 起動形態で、ジョブ 1 件の Work を抜けたら（成功・失敗を問わず）
+	// プロセスを畳む（OnceGate、docs/operations.md §5）。
+	//
+	// このモードでは buildRiverConfig が次の 3 つを強制する:
+	//
+	//   - 引くキューはちょうど 1 つ（ScaledJob はキュー単位に作るため）
+	//   - そのキューの MaxWorkers は 1（同時 claim を 1 件に抑える。
+	//     KEDA 側は「1 Job = 1 アイテム」で数を合わせている）
+	//   - PeriodicJobs は false（定期投入を Job の起動回数に委ねない）
+	//
+	// **ジョブの失敗をプロセスの終了コードに出さない。** リトライは River が
+	// 持っており、k8s 側は `backoffLimit: 0` / `restartPolicy: Never` で
+	// 起こし直さない前提なので、両方が再試行して二重にリトライする形を作らない
+	// （終了コードの決定は cmd/rokuban 側。OnceOutcome のコメント参照）。
+	Once *OnceGate
 }
 
 // buildRiverConfig は ClientConfig から river.Config を組み立てる。
@@ -593,6 +611,36 @@ func buildRiverConfig(workers *river.Workers, cfg ClientConfig) (*river.Config, 
 		}
 	}
 
+	if cfg.Once != nil {
+		// **1 キューだけ**を要求する。ScaledJob はキュー単位に作る（寿命 ×
+		// site 束縛で切る。docs/operations.md §5）ので、1 件消化モードの Job が
+		// 複数キューを引く形は KEDA 側に対応する定義が無い。加えて、複数キューを
+		// 許すと MaxWorkers=1 でもキューごとに 1 件ずつ掴めるため「同時 claim は
+		// 1 件」が成立しない（River の MaxWorkers はキュー単位）。
+		if len(queues) != 1 {
+			return nil, fmt.Errorf("once mode requires exactly one queue, got %d (%s): "+
+				"a KEDA ScaledJob is created per queue, so pass exactly one queue "+
+				"(--queues <name> or worker.queues); an empty setting means all queues",
+				len(queues), strings.Join(sortedQueueNames(queues), ", "))
+		}
+		// 定期投入を「Job が何回起きたか」に委ねない。River の PeriodicJobs は
+		// リーダーに選出されたクライアントだけが投入するので、1 件で終わる Job が
+		// リーダーになると投入の間隔が KEDA のスケール挙動で決まってしまう
+		// （RunOnStart のぶんが起動ごとに入る）。docs/data.md §2 が定期実行の
+		// 契機をデプロイ形態に委ねたのは CronJob に委ねるためであって、
+		// Job の起動回数に委ねるためではない。
+		if cfg.PeriodicJobs {
+			return nil, fmt.Errorf("once mode requires periodic jobs to be disabled " +
+				"(set worker.periodic_jobs: false and insert periodic jobs with the " +
+				"`rokuban enqueue` CronJobs instead)")
+		}
+		// 同時 claim を 1 件に抑える（config の *Concurrency より優先する）。
+		for name, qc := range queues {
+			qc.MaxWorkers = 1
+			queues[name] = qc
+		}
+	}
+
 	// river.Config.Queues は実際に SKIP LOCKED で引く物理キュー名でなければならない。
 	// ここで初めて論理名から物理名（`<base>_<site>`）に展開する（physicalQueueName）。
 	physicalQueues := make(map[string]river.QueueConfig, len(queues))
@@ -611,6 +659,20 @@ func buildRiverConfig(workers *river.Workers, cfg ClientConfig) (*river.Config, 
 	riverCfg := &river.Config{
 		Queues:  physicalQueues,
 		Workers: workers,
+	}
+
+	if cfg.Once != nil {
+		// ジョブの開始と終了を観測する唯一の手段として WorkerMiddleware を使う
+		// （River には「ジョブが claim された」イベントが無く、Subscribe で拾える
+		// のは完了後のイベントだけなので、「まだ 1 件も掴んでいない」と
+		// 「掴んで実行中」を区別できない）。
+		riverCfg.Middleware = []rivertype.Middleware{cfg.Once.Middleware()}
+		// `worker: subscribing to queues` とは別の行にする。あちらは KEDA の
+		// スケーラ定義と購読集合を突き合わせる運用者が見る行なので、形を変えない
+		// （issue #421 の「罠」）。
+		// キューはちょうど 1 つ（上の検査）なので単数で出す。
+		slog.Info("worker: once mode enabled (exits after one job)",
+			"queue", sortedQueueNames(physicalQueues)[0])
 	}
 
 	if cfg.PeriodicJobs {
