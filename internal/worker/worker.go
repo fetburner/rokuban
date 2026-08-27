@@ -668,8 +668,8 @@ func buildRiverConfig(workers *river.Workers, cfg ClientConfig) (*river.Config, 
 		// 「掴んで実行中」を区別できない）。
 		riverCfg.Middleware = []rivertype.Middleware{cfg.Once.Middleware()}
 		// `worker: subscribing to queues` とは別の行にする。あちらは KEDA の
-		// スケーラ定義と購読集合を突き合わせる運用者が見る行で、形を変えない
-		// （issue #185 の「罠」）。
+		// スケーラ定義と購読集合を突き合わせる運用者が見る行なので、形を変えない
+		// （issue #421 の「罠」）。
 		slog.Info("worker: once mode enabled (exits after one job)",
 			"queue", sortedQueueNames(physicalQueues))
 	}

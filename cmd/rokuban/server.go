@@ -435,17 +435,26 @@ func newServerCmd() *cobra.Command {
 				}
 			}
 
-			// 1 件消化モードの購読は **Start より前**に張る（張る前に終わった
-			// ジョブのイベントを取りこぼさないため）。middleware だけでは
-			// 未登録 kind のジョブを観測できない（worker.SubscribeOnceEvents）。
-			var onceEvents <-chan *river.Event
-			if onceGate != nil {
-				var unsubscribe func()
-				onceEvents, unsubscribe = worker.SubscribeOnceEvents(riverClient)
-				defer unsubscribe()
-			}
-
 			if slices.Contains(roles, "worker") {
+				// 1 件消化モードの購読は **Start より前**に張る（張る前に終わった
+				// ジョブのイベントを取りこぼさないため）。middleware だけでは
+				// 未登録 kind のジョブを観測できない（worker.SubscribeOnceEvents）。
+				//
+				// **worker ロールのガードの内側に置く。** River の Subscribe は
+				// 「ジョブを実行しないクライアント」に対して panic するので
+				// （river@v0.40.0/client.go の SubscribeConfig）、insert-only の
+				// クライアント（watcher 単独）や nil のクライアントに対して呼ぶと
+				// 起動エラーではなく panic になる。いまは validateOnceMode が
+				// ロールを worker 単独に限っているので到達しないが、その検査の
+				// 理由（常駐する役を巻き込まない）はクライアントの種類とは
+				// 無関係なので、緩めたときにここが踏まれる形にしない。
+				var onceEvents <-chan *river.Event
+				if onceGate != nil {
+					var unsubscribe func()
+					onceEvents, unsubscribe = worker.SubscribeOnceEvents(riverClient)
+					defer unsubscribe()
+				}
+
 				if startErr := riverClient.Start(ctx); startErr != nil {
 					return fmt.Errorf("starting river client: %w", startErr)
 				}
@@ -573,10 +582,13 @@ func resolveRoles(cmd *cobra.Command) ([]string, error) {
 		return nil, err
 	}
 	// 同じ名前の重複は 1 つに畳む（`--sites tokyo,tokyo` /
-	// `--queues ingest,ingest` と揃える）。畳まないと 2 か所で困る:
+	// `--queues ingest,ingest` と揃える）。畳まないと
 	// `--roles worker,worker --once` が「ちょうど worker 1 つ」の検査に
-	// 引っかかって紛らわしいエラーになり、db.NewPool のロール別 budget の
-	// 合計が二重に数えられる。
+	// 引っかかり、「requires exactly the worker role, got [worker, worker]」
+	// という紛らわしいエラーになる。
+	//
+	// プール上限（db.maxConnsForRoles）は元から uniqueRoles で畳んでいるので、
+	// そちらは以前も二重計上していない。
 	deduped := make([]string, 0, len(roles))
 	seen := make(map[string]bool, len(roles))
 	for _, r := range roles {

@@ -5,9 +5,11 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -272,6 +274,51 @@ worker:
 `, dbCfg.Host, dbCfg.Port, user, password, dbCfg.Database, dbCfg.SSLMode, t.TempDir()))
 }
 
+// syncBuffer は複数 goroutine から書かれるログを集める。サーバーは
+// runServerCmdBounded の中で別 goroutine が動かすので、素の bytes.Buffer だと
+// -race が拾う。
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// captureServerLogs は slog のデフォルトを差し替えてサーバーのログを集める。
+//
+// **outcome のラベルは docs / e2e README / runbook が名指ししている契約**
+// （`outcome=idle_timeout` と `outcome=job_done` と `outcome=job_unhandled` を
+// 運用側が読み分ける）。ラベルを見ないと、「終了した」だけを見るテストは
+// **でっち上げの理由で終了した**場合も緑になる --- 実際に `unsubscribe` の
+// 呼び出し位置を 1 行ずらす変異では、3 本のうち 2 本が緑のまま
+// `outcome=job_unhandled` を出していた。
+func captureServerLogs(t *testing.T) *syncBuffer {
+	t.Helper()
+	buf := &syncBuffer{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return buf
+}
+
+// assertOnceOutcome は 1 件消化モードの終了理由がログに出ていることを見る。
+func assertOnceOutcome(t *testing.T, logs *syncBuffer, want string) {
+	t.Helper()
+	if got := logs.String(); !strings.Contains(got, "outcome="+want) {
+		t.Errorf("ログに outcome=%s が無い。ログ:\n%s", want, got)
+	}
+}
+
 // runServerCmdBounded は server の RunE を走らせ、**有限時間で戻ること**まで見る。
 //
 // 1 件消化モードの主張はまさに「プロセスが終わる」ことなので、戻らない変異は
@@ -324,11 +371,13 @@ func TestServerCmd_OnceModeTerminates(t *testing.T) {
 
 	t.Run("空キューなら idle timeout で終了する", func(t *testing.T) {
 		const idle = 2 * time.Second
+		logs := captureServerLogs(t)
 		args := append(append([]string{}, onceArgs...), "--once-idle-timeout="+idle.String())
 		elapsed, err := runServerCmdBounded(t, 30*time.Second, path, args...)
 		if err != nil {
 			t.Fatalf("server --once: %v", err)
 		}
+		assertOnceOutcome(t, logs, "idle_timeout")
 		// **待った時間も見る。** 「戻った」だけを見ると、idle timeout を
 		// 無視して即終了する変異（掴む前に畳む = ジョブを取りこぼす形）でも通る。
 		if elapsed < idle {
@@ -344,10 +393,12 @@ func TestServerCmd_OnceModeTerminates(t *testing.T) {
 
 		// **idle timeout を長く取る。** 短いと「消化して終わった」と
 		// 「掴めないまま時間切れで終わった」が区別できず、空虚な成功になる。
+		logs := captureServerLogs(t)
 		args := append(append([]string{}, onceArgs...), "--once-idle-timeout=60s")
 		if _, err := runServerCmdBounded(t, 30*time.Second, path, args...); err != nil {
 			t.Fatalf("server --once: %v", err)
 		}
+		assertOnceOutcome(t, logs, "job_done")
 
 		var state string
 		if err := pool.QueryRow(ctx,
@@ -372,8 +423,9 @@ func TestServerCmd_OnceModeTerminates(t *testing.T) {
 // 入れる `e2e_probe` がまさにこの形**である（deploy/k8s/e2e/lib/kube.sh）。
 //
 // 判定は 2 つ。**どちらも「戻った」だけでは足りない** --- 壊れていても
-// idleTimeout 後には戻るので、(a) idleTimeout より十分早く戻ること、
-// (b) 試行を 1 回しか潰していないこと（壊れていると窓の中で何度も掴み直す）。
+// idleTimeout 後には戻る。(a) idleTimeout（60s）より十分短い時間で戻ること
+// （runServerCmdBounded の limit 20s がこれを担う）、(b) 試行を 1 回しか
+// 潰していないこと（壊れていると窓の中で何度も掴み直す）。
 func TestServerCmd_OnceModeExitsOnUnhandledJobKind(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
@@ -387,14 +439,16 @@ func TestServerCmd_OnceModeExitsOnUnhandledJobKind(t *testing.T) {
 		t.Fatalf("inserting unhandled-kind job: %v", err)
 	}
 
-	elapsed, err := runServerCmdBounded(t, 20*time.Second, path,
+	// **idleTimeout（60s）より短い limit（20s）で打ち切ることが判定 (a) 本体。**
+	// これを超えると runServerCmdBounded が Fatalf で落ちるので、ここに
+	// elapsed の比較を足しても到達しない（何も主張しない 3 行になる）。
+	logs := captureServerLogs(t)
+	_, err := runServerCmdBounded(t, 20*time.Second, path,
 		"--roles", "worker", "--sites=", "--queues=cleanup", "--once", "--once-idle-timeout=60s")
 	if err != nil {
 		t.Fatalf("server --once: %v", err)
 	}
-	if elapsed > 20*time.Second {
-		t.Errorf("elapsed = %s: idle timeout を待ってから終わっている（イベントで終われていない）", elapsed)
-	}
+	assertOnceOutcome(t, logs, "job_unhandled")
 
 	var attempt int
 	var state string

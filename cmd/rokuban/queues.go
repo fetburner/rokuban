@@ -24,7 +24,7 @@ const (
 	// に作るので、キューを config キーでしか指定できないと ScaledJob の数だけ
 	// ConfigMap が増え、その決定が崩れる。`internal/config` 自身も
 	// `worker.queues` を「デプロイ時のパラメータであって site の属性ではない」と
-	// 位置づけている（docs/configuration.md §mirakcs)。
+	// 位置づけている（docs/configuration.md §スキーマ構造）。
 	queuesFlagName = "queues"
 
 	// onceFlagName は 1 件消化モードのフラグ名。
@@ -86,8 +86,14 @@ func resolveWorkerQueues(cmd *cobra.Command, configured []string, roles []string
 	if err != nil {
 		return nil, err
 	}
-	// **空の検査を先に置く。** 後ろに置くと、config も指定されている場合に
-	// 「flag:  / config: ruler」という値の抜けたエラーになる。
+	// **検査の順序は「フラグが効くか → 値が妥当か → config と衝突しないか」。**
+	// 逆順にすると、直すべき点と違うものを報告する --- 排他を先に見ると
+	// `--roles api --queues=encode`（+ config 指定）が「排他」と言われ、
+	// 空の検査を後に回すと「flag:  / config: ruler」という値の抜けたエラーになる。
+	if !slices.Contains(roles, "worker") {
+		return nil, fmt.Errorf("--%s has no effect without the worker role (got roles [%s]): "+
+			"only the worker role pulls queues", queuesFlagName, strings.Join(roles, ", "))
+	}
 	if len(names) == 0 {
 		return nil, fmt.Errorf("--%s: pass at least one queue name (valid: %s); "+
 			"an empty value is rejected because it would silently mean \"all queues\"",
@@ -97,10 +103,6 @@ func resolveWorkerQueues(cmd *cobra.Command, configured []string, roles []string
 		return nil, fmt.Errorf("--%s and worker.queues are mutually exclusive "+
 			"(flag: %s / config: %s); the deployment must own exactly one of them",
 			queuesFlagName, strings.Join(names, ", "), strings.Join(configured, ", "))
-	}
-	if !slices.Contains(roles, "worker") {
-		return nil, fmt.Errorf("--%s has no effect without the worker role (got roles [%s]): "+
-			"only the worker role pulls queues", queuesFlagName, strings.Join(roles, ", "))
 	}
 
 	// 未知の名前はここで弾く（buildRiverConfig にも同じ検査があるが、そちらの
@@ -184,8 +186,16 @@ func resolveOnce(cmd *cobra.Command, roles []string) (*worker.OnceGate, time.Dur
 //
 // stopRiver に渡す ctx は cancel されないものにする。上限を付けないのは
 // 「実行中のジョブを打ち切らない」が ScaledJob を選んだ理由そのものだから
-// （数時間のエンコードを待つ）。行き詰まったときの逃げ道は SIGTERM で、
-// そのとき start ctx の cancel がハードストップにエスカレートする。
+// （数時間のエンコードを待つ）。**その代わり、この待ちには上限が無い。**
+// SIGTERM は start ctx の cancel でハードストップにエスカレートさせるが、
+// ctx を見ないワーカーはそれでも止まらないので、最終的な上限は k8s の
+// `terminationGracePeriodSeconds` 経過後の SIGKILL だけになる（常駐 worker が
+// 持つ RunE の `Stop(30 秒)` は、1 件消化モードでは先にこちらが完了するため
+// 到達しない）。
+//
+// エラーを握り潰さないのは作法として。現在の呼び出しでは ctx が cancel
+// されないので `Stop` は nil しか返さない（`Stop` が非 nil を返すのは
+// 渡した ctx が終わったときだけ）。
 //
 // 順序と ctx の扱いは TestStopOnceProcess が固定する（実行中のジョブが残る窓は
 // 実測 0/25 で踏めなかったので、ここを壊しても振る舞いのテストでは落ちない）。

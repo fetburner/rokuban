@@ -132,53 +132,69 @@ func (g *OnceGate) Wait(ctx context.Context, idleTimeout time.Duration, events <
 // ようにして、下の再確認が実際に効いていることを
 // TestOnceGate_IdleTimeoutDoesNotCutRunningJob が固定する。
 func (g *OnceGate) wait(ctx context.Context, timeout <-chan time.Time, events <-chan *river.Event) OnceOutcome {
-	select {
-	case <-ctx.Done():
-		return OnceOutcomeCanceled
-	case <-g.done:
-		return OnceOutcomeJobDone
-	case <-events:
-		// **middleware を通らずに終わったジョブ。** 未登録 kind がこれに当たる
-		// （SubscribeOnceEvents のコメント）。ここで終わらせないと、Job は
-		// idleTimeout の間そのキューを掴み続けて試行回数を潰す。
-		//
-		// started を見直すのは、worked なジョブの done と event が同時に
-		// 準備できたときに job_unhandled と誤報しないため（select は
-		// ランダムに選ぶ）。
+	for {
 		select {
+		case <-ctx.Done():
+			return OnceOutcomeCanceled
+		case <-g.done:
+			return OnceOutcomeJobDone
+		case _, ok := <-events:
+			if !ok {
+				// **購読が閉じたことを「ジョブが終わった」と読まない。** 閉じた
+				// チャネルは永久に受信可能なので、読み替えると Job が即座に
+				// 終了し、しかも outcome がでっち上げ（job_unhandled）になる
+				// （実測: 閉じたチャネルを渡すと job_unhandled が即返る）。
+				// River は unsubscribe と購読マネージャの停止で閉じる。
+				// 第 2 の観測点を失っただけなので、middleware の観測だけで待ち続ける。
+				events = nil
+				continue
+			}
+			// **middleware を通らずに終わったジョブ。** 未登録 kind がこれに当たる
+			// （SubscribeOnceEvents のコメント）。ここで終わらせないと、Job は
+			// idleTimeout の間そのキューを掴み続けて試行回数を潰す。
+			//
+			// started を見直すのは、worked なジョブの done と event が同時に
+			// 準備できたときに job_unhandled と誤報しないため（select は
+			// ランダムに選ぶ）。
+			select {
+			case <-g.started:
+				return g.waitDone(ctx, events)
+			default:
+				return OnceOutcomeJobUnhandled
+			}
 		case <-g.started:
 			return g.waitDone(ctx, events)
-		default:
-			return OnceOutcomeJobUnhandled
-		}
-	case <-g.started:
-		// claim 済み。下の waitDone へ落ちる。
-	case <-timeout:
-		// **タイマーと claim が同時に成立した場合は claim を優先する。**
-		// select は準備できた case をランダムに選ぶので、ここで started を
-		// 見直さないと、実行中のジョブを抱えたまま idle_timeout を返す ---
-		// 呼び出し側はそれを「空振りだった」と読む（打ち切り自体は呼び出し側の
-		// graceful stop が防ぐ。cmd/rokuban/server.go の once gate 参照）。
-		select {
-		case <-g.started:
-			// claim 済み。下の waitDone へ落ちる。
-		default:
-			return OnceOutcomeIdleTimeout
+		case <-timeout:
+			// **タイマーと claim が同時に成立した場合は claim を優先する。**
+			// select は準備できた case をランダムに選ぶので、ここで started を
+			// 見直さないと、実行中のジョブを抱えたまま idle_timeout を返す ---
+			// 呼び出し側はそれを「空振りだった」と読む（打ち切り自体は呼び出し側の
+			// graceful stop が防ぐ。cmd/rokuban/server.go の once gate 参照）。
+			select {
+			case <-g.started:
+				return g.waitDone(ctx, events)
+			default:
+				return OnceOutcomeIdleTimeout
+			}
 		}
 	}
-
-	return g.waitDone(ctx, events)
 }
 
 // waitDone は claim 済みのジョブが Work を抜けるまで待つ（タイムアウトなし）。
 func (g *OnceGate) waitDone(ctx context.Context, events <-chan *river.Event) OnceOutcome {
-	select {
-	case <-ctx.Done():
-		return OnceOutcomeCanceled
-	case <-g.done:
-		return OnceOutcomeJobDone
-	case <-events:
-		return OnceOutcomeJobDone
+	for {
+		select {
+		case <-ctx.Done():
+			return OnceOutcomeCanceled
+		case <-g.done:
+			return OnceOutcomeJobDone
+		case _, ok := <-events:
+			if !ok {
+				events = nil
+				continue
+			}
+			return OnceOutcomeJobDone
+		}
 	}
 }
 

@@ -17,8 +17,8 @@ worker ロールを持つかどうかに関わらず、ジョブを実行しな�
    ジョブの `InsertTx` 専用、`Queues` / `Workers` を持たないため `Start` 自体が
    呼べない構成）を使う。watcher が必要とするのは ingest ジョブの投入だけであり、
    実行（キューの購読）ではないので、これで用は足りる
-2. **`worker.queues` は worker ロールが引くキューの絞り込みであり、既定（空）は
-   全キュー購読**。worker ロールが無いプロセスはこの設定に関わらずキューを
+2. **`worker.queues`（同じ値を argv で渡す `--queues` も同義）は worker ロールが
+   引くキューの絞り込みであり、既定（どちらも無し）は全キュー購読**。worker ロールが無いプロセスはこの設定に関わらずキューを
    一切引かない（[configuration.md](../configuration.md) の `worker.queues`）
 
 ffmpeg/ffprobe の起動時検査（不変条件 4）も、実際に encode/thumbnail キューを
@@ -53,7 +53,7 @@ encode/thumbnail ジョブが River の再試行を焼き続けてから気付�
 0 サイト束縛（中央プロセス、`server --sites=`）の worker は
 site 単位のキューを一切購読できない（`worker.RequiresSiteBinding` が起動時に
 強制する）。中央プロセスで動かせるのは `ruler` / `encode` / `thumbnail` /
-`cleanup` / `storage` / `default` に `worker.queues` を絞った構成だけである。
+`cleanup` / `storage` / `default` に `worker.queues` / `--queues` を絞った構成だけである。
 ただし `cleanup` / `storage` は表の通りファイルシステムを要求するので、
 「0 サイト束縛」（mirakc の site 数の話）と「ファイルシステム不要」を混同しないこと。
 中央プロセスであっても media_dir/scratch_dir のマウントに到達できるノードで
@@ -190,7 +190,7 @@ River の at-least-once / 冪等性は「殺されても正しい」を保証済
 
 **停止の順序が「実行中を打ち切らない」を支えている。** 1 件消化モードは、先に River の graceful stop を撃つ（producer の fetch を止めて実行中を待つ）。そのあとでプロセスを畳む。畳む側は Start に渡した ctx の cancel である。River にとってはこれが `StopAndCancel` 相当のハードストップになる（`SoftStopTimeout` 未設定なので work ctx が start ctx を継ぐ）。逆順にすると実行中のジョブの ctx が即座に切れる（実測 2.6ms、試行回数が 1 つ潰れた）。順序は `TestStopOnceProcess` が固定している。
 
-既知の窓: Work を抜けてから producer が止まるまでの間に次のジョブが fetch されると、1 つの Job が 2 件消化して終わりうる。`MaxWorkers` が 1 なので同時には走らない。上記の順序により打ち切られもしない。実害は KEDA の数が 1 つずれることだけである。実測では 25 回試してこの窓に入らなかった。**窓の中の挙動そのものは未測定**である。
+既知の窓: Work を抜けてから producer が止まるまでの間に次のジョブが fetch されると、1 つの Job が 2 件消化して終わりうる。`MaxWorkers` が 1 なので同時には走らない。打ち切られもしない --- これは上記の順序と River の実装（`Stop` は producer を止めてから実行中の完了を待つ）からの導出であって、測定ではない。実害は KEDA の数が 1 つずれることだけである。実測では 25 回試してこの窓に入らなかった。**窓の中の挙動そのものは未測定**である。
 
 失敗するジョブ（到達不能な mirakc への `epg_sync`）でも **exit 0** になる。ジョブは River 側で未完了のまま（`attempt=1`）残る（`TestServerCmd_OnceModeExitsZeroOnJobFailure`）。**次の Job がそれを引き直すところまでは測っていない。**
 
@@ -199,15 +199,6 @@ River の at-least-once / 冪等性は「殺されても正しい」を保証済
 **スケーラのクエリは `available` だけでなく `retryable` も数える。** 失敗したジョブを `retryable` から `available` に戻すのは River の `JobScheduler` である。これはリーダーに選出されたクライアントだけが動かす保守サービスである。ロール分割構成では常駐する River クライアントが 1 つも無い（api / watcher / `enqueue` はいずれも insert 専用で `Start` しない）。そのため `available` だけを数えると **失敗したジョブが永久に止まる** --- Job が起きないので誰も昇格させず、昇格しないので Job も起きない。
 
 **キューは argv で絞る（`--queues`）。** ScaledJob はキュー単位に作るのに ConfigMap は 1 個である。キューを config キー（`worker.queues`）でしか指定できないと、ScaledJob の数だけ ConfigMap が増える（上記「マニフェストの配布形式」の決定が崩れる）。`--queues` と `worker.queues` の**両方指定は起動エラー**にしてある --- どちらが勝つかを覚えておく形にすると、monolith と k8s で購読集合の出所が分かれる。`--queues=`（明示的な空）も起動エラーである。「全キュー」に化けると、site 束縛キューまで掴んで `verifySite` で全滅する Pod が黙って生まれる。
-
-### 定期投入: `rokuban enqueue` の CronJob
-
-`worker.periodic_jobs: false` で出荷し、定期ジョブは CronJob から `rokuban enqueue <ジョブ名>` で投入する。River の `PeriodicJobs` はリーダーだけが投入するので、worker が 0 にスケールする構成では誰も投入しなくなる（[§1](monitoring.md) 参照）。
-
-- **argv は平たい要素で書く。** `sh -c "rokuban enqueue ..."` でくるむと、判定ハーネスが投入側の CronJob を見つけられない。探索は argv の要素として `enqueue` と ジョブ名 と `--site <site>` を見る
-- 対象は `rokuban enqueue --help` が出す一覧が権威。site 束縛のもの（`--site` が要る）はサイトごとに 1 本ずつ作る
-- `enqueue` は同じジョブが待機中なら投入せず exit 0 を返すので、重ねて叩いても安全（CronJob が失敗扱いにならない）
-- **schedule は base に実運用の間隔を書く。** 受け入れ判定は 180 秒以内の自然発火を要求するので、判定用の overlay 側で毎分に patch する。両方を `deploy/k8s/manifests_test.go` で固定する --- base の値が判定の都合で短くなるのを防ぐため
 
 **「実行中の Job は殺されない」は無条件ではない。** `rollout.strategy` の書き方に依存する。KEDA (v2.20.2) が受け付ける値は `gradual` と `immediate` の 2 つ。kind での実測は次のとおり。
 
@@ -225,12 +216,23 @@ ScaledJob 本体への annotation だけでは消えない。KEDA が rollout �
 
 site 修飾と `rollout.strategy` は [deploy/k8s/e2e](../../deploy/k8s/e2e/README.md) のハーネスが機械判定する（判定 5 / 3）。**接続先の FQDN には判定が無い** --- 症状はスケールしないことなので判定 2 / 3 / 5 の赤として現れるが、原因を名指しはしない。
 
+### 定期投入: `rokuban enqueue` の CronJob
+
+`worker.periodic_jobs: false` で出荷し、定期ジョブは CronJob から `rokuban enqueue <ジョブ名>` で投入する。River の `PeriodicJobs` はリーダーだけが投入するので、worker が 0 にスケールする構成では誰も投入しなくなる（[§1](monitoring.md) 参照）。
+
+- **argv は平たい要素で書く。** `sh -c "rokuban enqueue ..."` でくるむと、判定ハーネスが投入側の CronJob を見つけられない。探索は argv の要素として `enqueue` と ジョブ名 と `--site <site>` を見る
+- 対象は `rokuban enqueue --help` が出す一覧が権威。site 束縛のもの（`--site` が要る）はサイトごとに 1 本ずつ作る
+- `enqueue` は同じジョブが待機中なら投入せず exit 0 を返すので、重ねて叩いても安全（CronJob が失敗扱いにならない）
+- **schedule は base に実運用の間隔を書く。** 受け入れ判定は 180 秒以内の自然発火を要求するので、判定用の overlay 側で毎分に patch する。両方を `deploy/k8s/manifests_test.go` で固定する --- base の値が判定の都合で短くなるのを防ぐため
+
 ### Deployment 併用時: SIGTERM drain + pod-deletion-cost
 
 Deployment 型で worker を運用する場合（またはその併用）の定石:
 
 - SIGTERM で **drain**（実行中ジョブは完走、新規 claim 停止）+ 長い `terminationGracePeriodSeconds`
 - busy な worker が `controller.kubernetes.io/pod-deletion-cost` を上げてスケールイン犠牲者から外れる
+
+1 件消化モードの graceful stop には**上限が無い**。SIGTERM は start ctx の cancel でハードストップにエスカレートさせるが、ctx を見ないワーカーはそれでも止まらない。最終的な上限は `terminationGracePeriodSeconds` 経過後の SIGKILL だけである。常駐 worker が持つ `Stop(30 秒)` の defer は、1 件消化モードでは先に graceful stop が完了するため到達しない。
 
 **未解決: この drain はまだ配線されていない。** SIGTERM は `signal.NotifyContext` の ctx を cancel し、その ctx は River の `Start` に渡っている。`SoftStopTimeout` を設定していない限り work ctx は start ctx を継ぐ。つまり **cancel は `StopAndCancel` 相当のハードストップ**である（実測: 実行中ジョブの ctx が 2.6ms で切れ、試行回数が 1 つ潰れた）。Deployment 型 worker のローリング更新は、いま実行中のエンコードを打ち切る。1 件消化モードは停止の順序でこれを避けているが、常駐 worker の SIGTERM は避けていない。`river.Config.SoftStopTimeout` がその knob である。
 

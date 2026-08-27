@@ -228,6 +228,37 @@ func TestOnceGate_WorkedJobIsNotReportedAsUnhandled(t *testing.T) {
 	}
 }
 
+// **購読が閉じたことを「ジョブが終わった」と読まないこと。** 閉じたチャネルは
+// 永久に受信可能なので、読み替えると購読が閉じただけで Job が終了し、しかも
+// outcome が job_unhandled にでっち上がる（`unsubscribe` の呼び出し位置を
+// 1 行ずらすだけでこの形になり、サーバー側のテスト 3 本のうち 2 本は緑のままだった）。
+//
+// 閉じたチャネル + 短い idleTimeout なら idle_timeout が正解。
+func TestOnceGate_ClosedEventChannelIsNotAJob(t *testing.T) {
+	g := NewOnceGate()
+	events := make(chan *river.Event)
+	close(events)
+
+	if got := waitOutcome(t, g, 50*time.Millisecond, events); got != OnceOutcomeIdleTimeout {
+		t.Errorf("Wait() = %v, want %v（購読が閉じたことをジョブとして数えている）", got, OnceOutcomeIdleTimeout)
+	}
+}
+
+// 購読が閉じても、その後 middleware から観測できるジョブでは job_done を返すこと
+// （第 2 の観測点を失っただけで、第 1 の観測点は生きている）。
+func TestOnceGate_ClosedEventChannelStillObservesMiddleware(t *testing.T) {
+	g := NewOnceGate()
+	work := onceWorkFunc(t, g)
+	events := make(chan *river.Event)
+	close(events)
+
+	go func() { _ = work(func(context.Context) error { return nil }) }()
+
+	if got := waitOutcome(t, g, 2*time.Second, events); got != OnceOutcomeJobDone {
+		t.Errorf("Wait() = %v, want %v", got, OnceOutcomeJobDone)
+	}
+}
+
 // 購読はしているが何も起きない場合、従来どおり idle timeout で戻ること
 // （events の case が「常に戻る」に化けていないことの反対方向）。
 func TestOnceGate_EmptyEventChannelStillTimesOut(t *testing.T) {
@@ -248,6 +279,8 @@ func TestOnceOutcome_String(t *testing.T) {
 		{OnceOutcomeJobDone, "job_done"},
 		{OnceOutcomeIdleTimeout, "idle_timeout"},
 		{OnceOutcomeCanceled, "canceled"},
+		// docs と README が名指ししている文字列（`outcome=job_unhandled`）。
+		{OnceOutcomeJobUnhandled, "job_unhandled"},
 		{OnceOutcome(99), "unknown"},
 	} {
 		if got := tt.outcome.String(); got != tt.want {

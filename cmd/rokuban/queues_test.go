@@ -153,6 +153,23 @@ func TestResolveWorkerQueues_WithoutWorkerRole_IsError(t *testing.T) {
 	}
 }
 
+// worker ロールが無く、かつ config も指定されている場合は **ロールの方**を
+// 報告すること。排他を先に見ると「排他」と言われ、直すべき点（ロール）が
+// 出力から読めない。
+func TestResolveWorkerQueues_WithoutWorkerRoleAndConfig_ReportsRole(t *testing.T) {
+	cmd := newQueuesTestCmd(t)
+	if err := cmd.Flags().Set(queuesFlagName, "encode"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	_, err := resolveWorkerQueues(cmd, []string{"ruler"}, []string{"api"})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "no effect without the worker role") {
+		t.Errorf("err = %v, want the role error（排他エラーではなく）", err)
+	}
+}
+
 // `--queues=`（明示的な空）と config が同時に指定された場合、**空の方**を
 // 報告すること。順序を逆にすると「flag:  / config: ruler」という値の抜けた
 // 排他エラーになり、何を直せばよいか読めない。
@@ -171,8 +188,8 @@ func TestResolveWorkerQueues_ExplicitEmptyWithConfig_ReportsEmpty(t *testing.T) 
 }
 
 // `--roles worker,worker` の重複が畳まれること。畳まないと --once の
-// 「ちょうど worker 1 つ」検査が紛らわしいエラーになり、db.NewPool の
-// ロール別 budget が二重に数えられる。
+// 「ちょうど worker 1 つ」検査が引っかかり、紛らわしいエラーになる
+// （プール上限は db.maxConnsForRoles が元から畳んでいるので無関係）。
 func TestResolveRoles_FoldsDuplicates(t *testing.T) {
 	cmd := &cobra.Command{Use: "test"}
 	cmd.Flags().Bool("all", false, "")
