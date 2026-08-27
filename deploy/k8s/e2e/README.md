@@ -212,11 +212,13 @@ mirakcmock/            mirakc モック（Go。`go test ./deploy/k8s/e2e/...` �
 
 ```sh
 ./deploy/k8s/e2e/lib/selftest.sh   # クラスタ不要。CI でも回る
-shellcheck -x -e SC1091,SC2034,SC2329 run.sh oracles.sh lib/*.sh checks/*.sh
+shellcheck -x -e SC1091,SC2034,SC2317,SC2329 run.sh oracles.sh lib/*.sh checks/*.sh
 ```
 
-SC2329（未使用の関数）を外しているのは、判定の述語を `retry_until` と `trap` に
-**間接的に**渡す形が多いため。
+SC2317 / SC2329（到達しない・使われないように見えるコード）を外しているのは、
+判定の述語を `retry_until` と `trap` に**間接的に**渡す形が多いため。番号が
+2 つあるのは、shellcheck の版によってどちらで報告されるかが違うから（CI は
+版を固定している）。
 
 **`lib/` の純粋な部分にはテストがある**（対象の探索・watch ログの読み取り・
 終了コード）。そこが無かったせいで、レビュー修正で入れた「複数一致は FAIL」の

@@ -170,12 +170,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install kustomize and kubeconform
+      - name: Install kustomize, kubeconform and shellcheck
         run: |
           curl -sSfL https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.8.1/kustomize_v5.8.1_linux_amd64.tar.gz \
             | sudo tar xz -C /usr/local/bin kustomize
           curl -sSfL https://github.com/yannh/kubeconform/releases/download/v0.8.0/kubeconform-linux-amd64.tar.gz \
             | sudo tar xz -C /usr/local/bin kubeconform
+          # **shellcheck も版を固定する**（runner にも入っているが版が動く）。
+          # 実際、runner 同梱の版は「間接的にしか呼ばれない関数」を SC2329 では
+          # なく **SC2317** で報告し、手元では緑のジョブが赤くなった。
+          curl -sSfL https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz \
+            | sudo tar xJ -C /usr/local/bin --strip-components=1 shellcheck-v0.11.0/shellcheck
       # **build と検証をパイプで繋がない。** `run:` の既定シェルは `bash -e` で
       # pipefail が付かないため、パイプの終了コードは kubeconform のものになる。
       # kubeconform は標準入力が空でも exit 0 を返すので、kustomize build が
@@ -211,11 +216,13 @@ jobs:
       - name: e2e harness lib self-test
         run: ./deploy/k8s/e2e/lib/selftest.sh
       # ハーネスは全部シェルなので、静的検査もここで掛ける（runner に同梱）。
-      # SC2329（未使用の関数）を外しているのは、判定の述語を retry_until と
-      # trap に間接的に渡す形が多いため。
+      # SC2317 / SC2329（到達しない・使われないように見えるコード）を外して
+      # いるのは、判定の述語を retry_until と trap に間接的に渡す形が多いため。
+      # 番号が 2 つあるのは版によってどちらで報告されるかが違うから。
       - name: Shellcheck the e2e harness
         run: |
-          shellcheck -x -e SC1091,SC2034,SC2329 \
+          shellcheck --version
+          shellcheck -x -e SC1091,SC2034,SC2317,SC2329 \
             deploy/k8s/e2e/run.sh deploy/k8s/e2e/oracles.sh \
             deploy/k8s/e2e/lib/*.sh deploy/k8s/e2e/checks/*.sh
       # **受け入れ判定ハーネス（deploy/k8s/e2e）そのものは CI で回さない。**
