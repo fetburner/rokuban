@@ -327,5 +327,8 @@ run_oracles() {
   case ",$only," in *,4,*) with_fixture_scope oracle_check4 ;; esac
   case ",$only," in *,5,*) with_fixture_scope oracle_check5 ;; esac
   oracle_teardown
+  # trap を外す（外さないと summary の後にもう一度片付けが走り、
+  # 判定結果が `.. removing fixtures` の下に埋もれる）。
+  trap - EXIT
   summary
 }

@@ -11,10 +11,15 @@
 #   --fresh              クラスタを作り直してから始める
 #   E2E_ORACLES_ONLY=3   --oracles で検査する判定を絞る（既定 1,2,3,4,5）
 #
-# 終了コード（lib/log.sh の summary）:
-#   0  5 項目すべて緑
+# 終了コード:
+#   0  走らせた判定がすべて緑（--only などで絞ったときは 0 を返さない）
 #   1  壊れている判定がある（FAIL）
 #   2  壊れてはいないが、まだ実装されていない判定がある（TODO）
+#  64  使い方の誤り（--only の値が判定番号でない、未知のオプション）
+#  70  環境の不足・準備の失敗（道具が無い、クラスタを用意できない）
+#
+# **0 は「受け入れ 5 項目を判定できた」であって「ワークロードが網羅されている」
+# ではない**（0 が保証しないものは deploy/k8s/e2e/README.md に列挙してある）。
 #
 # **CI では回さない。** 理由と「いつ誰が回すのか」は docs/runbook/k8s.md
 # §受け入れ判定ハーネス。
@@ -60,7 +65,7 @@ while [ $# -gt 0 ]; do
     --fresh) do_fresh=1; shift ;;
     --oracles) mode="oracles"; shift ;;
     --down) mode="down"; shift ;;
-    -h|--help) sed -n '2,20p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help) sed -n '2,25p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) printf 'unknown option: %s\n' "$1" >&2; exit 64 ;;
   esac
 done

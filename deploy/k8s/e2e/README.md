@@ -42,6 +42,13 @@ E2E_ORACLES_ONLY=3 ./deploy/k8s/e2e/run.sh --oracles   # オラクルも一部�
   `ingest_<site>` / `watcher_<site>` が欠けていても 0 になる
 - **Deployment は役ごとの存在と「宣言した数だけ Ready」だけ。** サイトごとの
   網羅は見ていない（site B の watcher が無くても判定 1 は緑）
+- **役ごとの到達性は見ていない。** Service も Ingress も無い notifier でも、
+  Deployment が Ready なら判定 1.2 は緑になる。`/api/events` が notifier に
+  届くかは誰も測っていない
+- **定期パスの網羅も見ていない。** `worker.periodic_jobs: false` の下では
+  in-process の定期ジョブ 9 種が CronJob 側に移るが、判定が見るのは
+  `epg-sync` の 1 本だけ。`delete_reconcile` は `rokuban enqueue` に載って
+  いないので、そもそも CronJob にできない（扱いは未決）
 
 網羅を判定に入れるなら、`config.yml` の `mirakcs:` と `rokuban enqueue` の
 ジョブ表から期待集合を導く判定を足すことになる。**いまは足していない**
@@ -69,9 +76,13 @@ E2E_ORACLES_ONLY=3 ./deploy/k8s/e2e/run.sh --oracles   # オラクルも一部�
 
 **2〜5 が TODO なのは、対象のワークロードがまだ無いからである**（notifier /
 watcher / streamer の Deployment、worker の ScaledJob、投入側の CronJob）。
-それを確認して残すのがこのハーネスの成果物である。ワークロードが揃ったと
-言えるのは `run.sh` が 0 を返したときになる。この表は判定を足したり緑に
-したりする人が更新する。
+それを確認して残すのがこのハーネスの成果物である。この表は判定を足したり
+緑にしたりする人が更新する。
+
+**ただし、ワークロードを書けば緑になるわけではない。** 判定 2 と 3 は、
+いまの製品バイナリでは原理的に緑にできない（下記「先に決めること」）。
+「TODO なのは対象が無いからだ」とだけ読むと、ワークロードを書いてから
+その壁に当たる。
 
 判定 1.6 は `epg_<site>` を、判定 1.7 は `reconciler_<site>` を消化する側を
 それぞれ別に探す。1 つの鍵で両方を代表させると、epg の ScaledJob だけ先に
@@ -144,6 +155,14 @@ true のままだと、判定 2 が「worker が自分で投入して自分で�
 `pg_try_advisory_lock` の実効を見る判定なので、身代わりにすると製品のコードを
 一度も通らない。
 
+身代わりは製品と同じ役ラベル・同じキュー名を名乗るので、オラクル 2〜5 は
+**探索を身代わりに絞って**回す（`E2E_FIXTURE_SCOPE`）。絞らないと、製品の
+ワークロードが入った瞬間に両方が一致して全部 AMBIGUOUS になる。
+**ただし絞っているのは探索だけである。** River のキュー・mirakc モック・
+CronJob は製品と共有のまま。製品の CronJob が投入したジョブや、製品の
+ScaledJob が消化した滞留が、身代わりの観測に混ざりうる（未検証。いま製品の
+ワークロードが無いので踏んでいない）。**そのときは製品側を止めてから回すこと。**
+
 | 変異 | どこを壊すか | 期待 |
 |---|---|---|
 | `O1.mut-selector` | api Service のセレクタを外す（Pod は生きたまま Endpoints が空） | 判定 1.5 が FAIL |
@@ -185,6 +204,33 @@ ScaledJob 自体の書き方（トリガの接続先・`rollout.strategy`・切�
 [docs/operations.md](../../../docs/operations.md) §5「worker: KEDA ScaledJob」が
 権威。ここにはハーネス側の契約と未解決の穴だけ置く。
 
+### 先に決めること（マニフェストを書き始める前に）
+
+**この 3 つは実装ではなく決定である。** 決めずに書き始めると、ワークロードが
+できても判定 2 / 3 が緑にならず、「ハーネスが間違っているのか自分のマニフェストが
+間違っているのか」を切り分けられない。
+
+- **未解決: KEDA ScaledJob の Job は自分で終了しなければならないが、
+  `rokuban server --roles worker` は終了しない**（`cmd/rokuban/server.go` の
+  `eg.Wait()` で待ち続ける。one-shot のサブコマンドも無い）。したがって判定 2 は
+  (a) 2 周目以降は開始時点に active な Job が居て 2.2 が FAIL、(b) `succeeded` に
+  到達しないので 2.4 が FAIL になる。**TODO ではなく FAIL** なので「壊れている」と
+  報告される。1 件掴んで終了するモードを足すか、idle で終了させるか、worker を
+  Deployment + `ScaledObject` にして判定 2 / 3 を書き換えるか --- どれを採るかを
+  先に決める
+- **未解決: キュー単位に ScaledJob を切る手段が無い。** `worker.queues` は config
+  キューだけで CLI フラグが無い（`internal/config`）。一方
+  [docs/operations.md](../../../docs/operations.md) §5 は「ConfigMap は 1 個で、
+  Pod ごとに違うのは argv だけ」と決めている。両立しない。加えて encode の中央
+  ScaledJob（`--sites=`）は、`worker.queues` を絞らないと起動時に落ちる
+  （`cmd/rokuban/sites.go` の 0 サイト束縛の検査）。`--queues` フラグを足すか、
+  ScaledJob ごとに ConfigMap を分ける決定を書き足すか
+- **未解決: 判定 2 は CronJob が 180 秒以内に自然発火することを要求する。**
+  epg_sync の実運用相当の間隔は 10 分なので、出荷する schedule のままだと
+  2.3 が FAIL になる。`overlays/e2e` で schedule を毎分に patch する方針にする
+  なら、**判定 2 が測るのは出荷される schedule ではなくなる**ことを
+  「0 が保証しないもの」に足すこと
+
 - **未解決: `insert_probe_job` が入れる `e2e_probe` ジョブを実物の worker が
   どう扱うかは未検証**（実物の worker が居る状態でハーネスを回したことがない）。
   判定 3 の producer と判定 5 の positive control の**両方の土台**なので、
@@ -196,6 +242,12 @@ ScaledJob 自体の書き方（トリガの接続先・`rollout.strategy`・切�
 - **env の解決に失敗した ScaledJob は、原因を直しても spec が変わらなければ
   再 reconcile されない**（接続文字列を直した後も 3 分間
   `ScaledJobCheckFailed` のままだった。実測）。作り直すのが早い
+- **未解決: `E2E_ENCODE_PRODUCER` の差し替え先は、いまはまだ書けない。**
+  実 encode を 1 件作るには `recordings` / `media_assets` の行と実ファイルが要る。
+  しかし `rokuban enqueue` に `encode` は無く（あるのは DB を読んで投入する
+  `encode-reconcile`）、足場にメディア用のボリュームも無い。判定 3 を緑にする
+  には、まずメディアボリュームと最小の recording を仕込む手順を決める必要が
+  ある。`$producer` は関数名でもコマンド文字列でも受ける（引用せずに展開する）
 - **未解決: 判定 3 の「実行中の encode Job を作る」手順は実物に依存する。**
   ハーネスの既定は River の encode キューに 1 行入れるだけである。身代わり
   （長く寝る Job）ではこれで足りるが、**本物の encode ワークロードでこれが

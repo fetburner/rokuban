@@ -26,7 +26,7 @@ queue="epg_${E2E_SITE_A}"
 cronjob="$(cronjob_enqueueing epg-sync "$E2E_SITE_A")"
 scaledjob="$(scaledjob_for_queue "$queue")"
 
-if discovery_is_ambiguous "$cronjob" || discovery_is_ambiguous "$scaledjob"; then
+if discovery_is_unusable "$cronjob" || discovery_is_unusable "$scaledjob"; then
   reason="判定対象が一意に決まらない（CronJob: $(discovery_detail "${cronjob:-なし}") / ScaledJob: $(discovery_detail "${scaledjob:-なし}")）"
   fail "2.1" "$reason"
   fail "2.2" "$reason"
@@ -63,8 +63,13 @@ fi
 # だけでも通ってしまう。
 
 drained() {
-  [ "$(river_backlog "$queue")" = "0" ] && [ -z "$(k get jobs -l "scaledjob.keda.sh/name=${scaledjob}" \
-    -o jsonpath='{.items[?(@.status.active)].metadata.name}')" ]
+  local backlog active
+  # 読めなかったことを「0 だった」に潰さない（`-z` は kubectl のエラーでも真）。
+  backlog="$(river_backlog "$queue")" || return 1
+  [ "$backlog" = "0" ] || return 1
+  active="$(k get jobs -l "scaledjob.keda.sh/name=${scaledjob}" \
+    -o jsonpath='{.items[?(@.status.active)].metadata.name}')" || return 1
+  [ -z "$active" ]
 }
 if ! retry_until 180 "the queue and the worker jobs to drain" drained; then
   fail "2.2" "開始時点で worker が 0 になっていない --- backlog=$(river_backlog "$queue") jobs=$(jobs_owned_by_scaledjob "$scaledjob")"

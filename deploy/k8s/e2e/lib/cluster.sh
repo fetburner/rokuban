@@ -100,7 +100,17 @@ build_images() {
   kind load docker-image "$E2E_IMAGE" "$E2E_MOCK_IMAGE" --name "$E2E_CLUSTER" >/dev/null || return 1
 
   # 焼いた印。apply_template がテンプレートに差し込む。
-  E2E_BUILD_ID="$(docker image inspect --format '{{.Id}}' "$E2E_IMAGE" 2>/dev/null | cut -c8-19)-$(docker image inspect --format '{{.Id}}' "$E2E_MOCK_IMAGE" 2>/dev/null | cut -c8-19)"
+  #
+  # **読めなかったら落とす。** 空のまま連結すると `-` という定数になり、
+  # 「焼き直しても Pod が作り直されない」= この仕組みが黙って無効になる。
+  local app_id mock_id
+  app_id="$(docker image inspect --format '{{.Id}}' "$E2E_IMAGE" 2>/dev/null | cut -c8-19)"
+  mock_id="$(docker image inspect --format '{{.Id}}' "$E2E_MOCK_IMAGE" 2>/dev/null | cut -c8-19)"
+  if [ -z "$app_id" ] || [ -z "$mock_id" ]; then
+    printf 'could not read the built image ids\n' >&2
+    return 1
+  fi
+  E2E_BUILD_ID="${app_id}-${mock_id}"
   export E2E_BUILD_ID
 }
 
@@ -280,7 +290,11 @@ deploy_rokuban() {
   # 使えない。タグ固定 + IfNotPresent なので、これが無いとクラスタを使い回す
   # 限り古い api を測り続ける。
   if [ -n "${E2E_BUILD_ID:-}" ]; then
-    k rollout restart deployment/rokuban-api >/dev/null || return 1
+    # **名前で決め打ちしない**（判定側が名前を要求しないのと同じ理由）。
+    # base に役が増えたとき、api だけ作り直して他は古いバイナリのまま、
+    # という形になる --- 判定 4 は watcher の**バイナリ**を測る判定なので、
+    # 「watcher を直したのに反映されないがハーネスは緑」になる。
+    k rollout restart deployment -l app.kubernetes.io/name=rokuban >/dev/null || return 1
   fi
   # api の rollout は待つが、**失敗しても止めない**。api が上がらないこと
   # 自体が判定 1 の結果である。

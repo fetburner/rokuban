@@ -27,8 +27,8 @@ plan "4.1" "4.2"
 
 site="$E2E_SITE_A"
 deploy="$(deployment_for_component_site watcher "$site")"
-if discovery_is_ambiguous "$deploy"; then
-  reason="site ${site} に束縛された watcher Deployment が複数ある（$(discovery_detail "$deploy")）--- どれを判定すべきか決まらない"
+if discovery_is_unusable "$deploy"; then
+  reason="site ${site} に束縛された watcher Deployment を判定対象にできない（$(discovery_detail "$deploy")）--- 複数一致か、読み取り失敗"
   fail "4.1" "$reason"
   fail "4.2" "$reason"
   exit 0

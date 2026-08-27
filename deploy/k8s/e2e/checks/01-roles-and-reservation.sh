@@ -39,7 +39,7 @@ assert_deployment_ready() {
   fi
   for n in $name; do
     if ! retry_until 180 "$n rollout" k rollout status "deployment/$n" --timeout=10s; then
-      fail "$id" "$component ($n): rollout が完了しない --- $(k get pods -l "app.kubernetes.io/component=$component" --no-headers | tr '\n' ';')"
+      fail "$id" "$component ($n): rollout が完了しない --- $(k get pods -l "app.kubernetes.io/component=$component${E2E_FIXTURE_SCOPE:+,rokuban-e2e/fixture=true}" --no-headers)"
       return
     fi
   done
@@ -105,22 +105,26 @@ reconciler_queue="reconciler_${E2E_SITE_A}"
 epg_scaledjob="$(scaledjob_for_queue "$epg_queue")"
 reconciler_scaledjob="$(scaledjob_for_queue "$reconciler_queue")"
 
-if discovery_is_ambiguous "$epg_scaledjob"; then
-  fail "1.6" "キュー ${epg_queue} に一致する ScaledJob が複数ある（$(discovery_detail "$epg_scaledjob")）--- どれを判定すべきか決まらない"
+if discovery_is_unusable "$epg_scaledjob"; then
+  fail "1.6" "キュー ${epg_queue} を判定対象にできない（$(discovery_detail "$epg_scaledjob")）--- 複数一致か、読み取り失敗"
   fail "1.7" "同上"
   exit 0
 fi
-if discovery_is_ambiguous "$reconciler_scaledjob"; then
-  fail "1.6" "キュー ${reconciler_queue} に一致する ScaledJob が複数ある（$(discovery_detail "$reconciler_scaledjob")）--- どれを判定すべきか決まらない"
-  fail "1.7" "同上"
-  exit 0
+# **1.7 の対象が曖昧でも 1.6 は測れる。** 鍵を分けた理由（片方の欠落で
+# もう片方が巻き込まれない）を、曖昧の側でも守る。
+reconciler_ambiguous=""
+if discovery_is_unusable "$reconciler_scaledjob"; then
+  reconciler_ambiguous="キュー ${reconciler_queue} を判定対象にできない（$(discovery_detail "$reconciler_scaledjob")）--- 複数一致か、読み取り失敗"
 fi
 if [ -z "$epg_scaledjob" ]; then
   todo "1.6" "番組表: キュー ${epg_queue} を引く KEDA ScaledJob がまだ無い（epg_sync を消化する worker が居ない）"
   todo "1.7" "予約の mirakc 反映: 番組表が無いので予約する番組を選べない"
   exit 0
 fi
-if [ -z "$reconciler_scaledjob" ]; then
+if [ -n "$reconciler_ambiguous" ]; then
+  fail "1.7" "$reconciler_ambiguous"
+  reconciler_missing=1
+elif [ -z "$reconciler_scaledjob" ]; then
   todo "1.7" "予約の mirakc 反映: キュー ${reconciler_queue} を引く KEDA ScaledJob がまだ無い（reconcile_pass を消化する worker が居ない）"
   reconciler_missing=1
 fi

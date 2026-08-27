@@ -37,9 +37,17 @@ check() {
   fi
 }
 
-# k / kall を差し替える。$K_FIXTURE の中身をそのまま返す。
+# k / kall を差し替える。$K_FIXTURE の中身をそのまま返し、渡された引数を
+# **ファイル**に残す（探索の絞り込みを検査するため）。
+#
+# 変数に残さないのは、探索関数の多くが `$( )` の中で呼ばれるから ---
+# 子シェルの代入は親に届かない（この差分がまさにそれで 1 巡落とした）。
 K_FIXTURE=""
-k() { printf '%s' "$K_FIXTURE"; }
+K_ARGS_LOG="$(mktemp)"
+k() { printf '%s\n' "$*" >>"$K_ARGS_LOG"; printf '%s' "$K_FIXTURE"; }
+
+# last_k_args は直近の k 呼び出しの引数を返す。
+last_k_args() { tail -1 "$K_ARGS_LOG" 2>/dev/null; }
 kall() { return 0; }
 keda_installed() { return 0; }
 
@@ -74,6 +82,17 @@ print(json.dumps({"items": [{
     "jobTargetRef": {"template": {"spec": {"containers": [{"image": "ghcr.io/x/encoder:1"}]}}},
 }]}))')"
 check "接頭辞が重なるキュー名を拾わない" "" "$(scaledjob_for_queue epg_sitea)"
+
+# **名前だけでも拾える**こと。k8s の名前はハイフン区切りなので、正規化後の
+# 境界にアンダースコアを含めると一度も拾えない（製品の ScaledJob はキュー名が
+# トリガのクエリにしか無いので、クエリを壊した変異が TODO に化ける）。
+K_FIXTURE="$(python3 -c '
+import json
+print(json.dumps({"items": [{
+    "metadata": {"name": "rokuban-worker-epg-sitea"},
+    "spec": {"triggers": [{"metadata": {"query": "SELECT 0"}}]},
+}]}))')"
+check "ハイフン命名の名前だけでも拾える" "rokuban-worker-epg-sitea" "$(scaledjob_for_queue epg_sitea)"
 check "一般語が image 名に紛れていても拾わない" "" "$(scaledjob_for_queue encode)"
 
 # **この 3 行が今回の本題。** 複数一致は「空（= まだ実装されていない）」では
@@ -150,6 +169,56 @@ K_FIXTURE="$(deployment_json "w-a=server,--sites,sitea" "w-a2=server,--sites=sit
 got="$(deployment_for_component_site watcher sitea)"
 check "Deployment の複数一致も曖昧として報告される" "0" "$(discovery_is_ambiguous "$got"; echo $?)"
 
+# ---- E2E_FIXTURE_SCOPE -----------------------------------------------------
+#
+# **両方向を見る。** 掛からないとオラクルが製品を見てしまい、掛かりっぱなしだと
+# 通常実行が身代わりの残骸を見落とす（preflight 0.5 の存在理由が消える）。
+
+K_FIXTURE="$(scaledjob_json "w-epg-sitea=epg_sitea")"
+unset E2E_FIXTURE_SCOPE
+scaledjob_for_queue epg_sitea >/dev/null
+case "$(last_k_args)" in
+  *rokuban-e2e/fixture=true*) check "scope 無しでは身代わりに絞らない" "絞らない" "絞る" ;;
+  *) check "scope 無しでは身代わりに絞らない" "絞らない" "絞らない" ;;
+esac
+deployments_with_component watcher >/dev/null
+case "$(last_k_args)" in
+  *rokuban-e2e/fixture=true*) check "scope 無しの Deployment 探索も絞らない" "絞らない" "絞る" ;;
+  *) check "scope 無しの Deployment 探索も絞らない" "絞らない" "絞らない" ;;
+esac
+
+export E2E_FIXTURE_SCOPE=1
+scaledjob_for_queue epg_sitea >/dev/null
+case "$(last_k_args)" in
+  *rokuban-e2e/fixture=true*) check "scope 有りでは身代わりに絞る" "絞る" "絞る" ;;
+  *) check "scope 有りでは身代わりに絞る" "絞る" "絞らない" ;;
+esac
+deployments_with_component watcher >/dev/null
+case "$(last_k_args)" in
+  *rokuban-e2e/fixture=true*) check "scope 有りの Deployment 探索も絞る" "絞る" "絞る" ;;
+  *) check "scope 有りの Deployment 探索も絞る" "絞る" "絞らない" ;;
+esac
+K_FIXTURE="$(cronjob_json "cron-a=enqueue,epg-sync,--site,sitea")"
+cronjob_enqueueing epg-sync sitea >/dev/null
+case "$(last_k_args)" in
+  *rokuban-e2e/fixture=true*) check "scope 有りの CronJob 探索も絞る" "絞る" "絞る" ;;
+  *) check "scope 有りの CronJob 探索も絞る" "絞る" "絞らない" ;;
+esac
+unset E2E_FIXTURE_SCOPE
+
+# ---- 読めなかったとき（TODO に化けない）------------------------------------
+#
+# kubectl が失敗したときに空を返すと、呼び出し側は「対象がまだ無い」（TODO）と
+# 読む。preflight は起動時 1 回なので途中の API 断を拾えない。
+
+k_fail() { return 1; }
+k_orig_body="$(declare -f k)"
+k() { k_fail; }
+check "ScaledJob が読めないときは使えない扱い" "0" "$(discovery_is_unusable "$(scaledjob_for_queue epg_sitea)"; echo $?)"
+check "Deployment が読めないときは使えない扱い" "0" "$(discovery_is_unusable "$(deployment_for_component_site watcher sitea)"; echo $?)"
+check "CronJob が読めないときは使えない扱い" "0" "$(discovery_is_unusable "$(cronjob_enqueueing epg-sync sitea)"; echo $?)"
+eval "$k_orig_body"
+
 # ---- observed_new_jobs -----------------------------------------------------
 
 w="$(mktemp)"
@@ -221,13 +290,19 @@ with_fail()  { plan 1.1;      fail 1.1 broken; }
 with_todo()  { plan 1.1;      todo 1.1 "not yet"; }
 missing_one(){ plan 1.1 1.2;  pass 1.1 ok; }
 
+# **メッセージの改行で結果を捏造できないこと。** 結果ファイルは 1 行 1
+# レコードの TSV なので、改行を潰さないと PASS 件数が水増しされ、
+# 「記録しなかった」の検出器も欺ける（実測でそうなった）。
+newline_inject() { plan 1.1 1.2; pass 1.1 "$(printf 'x\nPASS\t1.2\tfake')"; }
+
 summary_case "全部 PASS なら 0" 0 "" all_pass
+summary_case "メッセージの改行で結果を捏造できない" 1 "記録しなかった" newline_inject
 summary_case "FAIL があれば 1" 1 "" with_fail
 summary_case "TODO があれば 2" 2 "" with_todo
 summary_case "宣言したのに記録が無ければ FAIL を書き足して 1" 1 "記録しなかった" missing_one
 E2E_PARTIAL_RUN_CASE="--only 4" summary_case "一部だけ走らせたなら 0 を返さない" 2 "" all_pass
 
-rm -f "$selftest_results"
+rm -f "$selftest_results" "$K_ARGS_LOG"
 
 if [ "$failures" -gt 0 ]; then
   printf '\n%d test(s) failed\n' "$failures"

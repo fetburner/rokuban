@@ -30,7 +30,7 @@ queue_b="epg_${E2E_SITE_B}"
 sj_a="$(scaledjob_for_queue "$queue_a")"
 sj_b="$(scaledjob_for_queue "$queue_b")"
 
-if discovery_is_ambiguous "$sj_a" || discovery_is_ambiguous "$sj_b"; then
+if discovery_is_unusable "$sj_a" || discovery_is_unusable "$sj_b"; then
   reason="判定対象の ScaledJob が一意に決まらない（${queue_a}: $(discovery_detail "${sj_a:-なし}") / ${queue_b}: $(discovery_detail "${sj_b:-なし}")）"
   fail "5.1" "$reason"
   fail "5.2" "$reason"
@@ -98,8 +98,9 @@ pass "5.1" "サイト B に滞留を作った（B=$(river_backlog "$queue_b") / 
 
 # ---- 5.2 A が起きないこと（negative assertion）-----------------------------
 
-if ! polling="$(k get scaledjob "$sj_a" -o jsonpath='{.spec.pollingInterval}')"; then
-  log_step "pollingInterval を読めないので既定の 30s を使う"
+# jsonpath はフィールドが無くても 0 で返る（checks/03 の同じ箇所参照）。
+if ! polling="$(k get scaledjob "$sj_a" -o jsonpath='{.spec.pollingInterval}')" || [ -z "$polling" ]; then
+  log_step "pollingInterval が読めない/未指定なので既定の 30s を使う"
   polling=""
 fi
 window=$(( 3 * ${polling:-30} ))

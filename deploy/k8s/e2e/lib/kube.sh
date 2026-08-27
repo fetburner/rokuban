@@ -101,8 +101,12 @@ deployments_with_component() {
 # FAIL にする」が 1 つの関数についてだけ偽になる。
 deployment_for_component_site() {
   local component="$1" site="$2" matches count
-  matches="$(k get deployments -l "app.kubernetes.io/name=rokuban,app.kubernetes.io/component=$component${E2E_FIXTURE_SCOPE:+,rokuban-e2e/fixture=true}" \
-    -o json 2>/dev/null | python3 -c '
+  local json
+  if ! json="$(k get deployments -l "app.kubernetes.io/name=rokuban,app.kubernetes.io/component=$component${E2E_FIXTURE_SCOPE:+,rokuban-e2e/fixture=true}" -o json 2>/dev/null)" || [ -z "$json" ]; then
+    printf '%s%s' "$discoveryUnreadablePrefix" "Deployment（component=${component}）を引けない"
+    return 0
+  fi
+  matches="$(printf '%s' "$json" | python3 -c '
 import json, sys
 site = sys.argv[1]
 doc = json.load(sys.stdin)
@@ -161,7 +165,12 @@ keda_installed() {
 scaledjobs_matching_queue() {
   local queue="$1"
   keda_installed || return 0
-  k get scaledjobs ${E2E_FIXTURE_SCOPE:+-l rokuban-e2e/fixture=true} -o json 2>/dev/null | python3 -c '
+  local json
+  if ! json="$(k get scaledjobs ${E2E_FIXTURE_SCOPE:+-l rokuban-e2e/fixture=true} -o json 2>/dev/null)" || [ -z "$json" ]; then
+    printf '%s' "$discoveryUnreadablePrefix"
+    return 0
+  fi
+  printf '%s' "$json" | python3 -c '
 import json, re, sys
 queue = sys.argv[1].replace("-", "_")
 doc = json.load(sys.stdin)
@@ -173,7 +182,14 @@ for item in doc.get("items", []):
     # ghcr.io/x/encoder:1 に、epg_sitea が epg_siteaa に当たる。
     # 1 件しか一致しなければ曖昧にもならないので、**無関係な ScaledJob に
     # 対して patch と delete を撃ってその結果を判定として報告する**。
-    if re.search(r"(?<![A-Za-z0-9_])" + re.escape(queue) + r"(?![A-Za-z0-9_])", blob):
+    #
+    # 境界クラスにアンダースコアを入れないこと。blob はハイフンを
+    # アンダースコアへ正規化した後なので、k8s の慣用名
+    # rokuban-worker-epg-sitea は rokuban_worker_epg_sitea になる。
+    # 外さないと**名前では一度も拾えず**、キュー名がトリガのクエリにしか
+    # 無い製品の ScaledJob は、クエリを typo した瞬間に FAIL ではなく
+    # TODO（まだ実装されていない）に化ける。
+    if re.search(r"(?<![A-Za-z0-9])" + re.escape(queue) + r"(?![A-Za-z0-9])", blob):
         print(item["metadata"]["name"])
 ' "$queue"
 }
@@ -189,15 +205,29 @@ for item in doc.get("items", []):
 # 判定側が一番避けたい壊れ方（壊れているのに TODO）そのものだったので、
 # 値の通り道を stdout 1 本に統一する。
 discoveryAmbiguousPrefix="AMBIGUOUS	"
+# **「読めなかった」も空にしない。** kubectl が失敗したときに空を返すと、
+# 呼び出し側は「対象がまだ無い」（TODO）と読む --- preflight を置いた理由
+# （環境の破損を「まだ実装されていない」にしない）が、起動時 1 回の検査では
+# 途中の API 断を拾えないので探索層でも守る。
+discoveryUnreadablePrefix="UNREADABLE	"
 
 # discovery_is_ambiguous <戻り値>
 discovery_is_ambiguous() {
   case "$1" in "${discoveryAmbiguousPrefix}"*) return 0 ;; *) return 1 ;; esac
 }
 
-# discovery_detail <戻り値> --- 曖昧だったときの説明（一致した名前の並び）。
+# discovery_is_unusable <戻り値> --- 曖昧 or 読めない（どちらも TODO ではなく FAIL）。
+discovery_is_unusable() {
+  case "$1" in
+    "${discoveryAmbiguousPrefix}"* | "${discoveryUnreadablePrefix}"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# discovery_detail <戻り値> --- 使えなかった理由（一致した名前の並び、または理由）。
 discovery_detail() {
-  printf '%s' "${1#"${discoveryAmbiguousPrefix}"}"
+  local v="${1#"${discoveryAmbiguousPrefix}"}"
+  printf '%s' "${v#"${discoveryUnreadablePrefix}"}"
 }
 
 # scaledjob_for_queue <river_queue>
@@ -207,6 +237,11 @@ discovery_detail() {
 scaledjob_for_queue() {
   local queue="$1" matches count
   matches="$(scaledjobs_matching_queue "$queue" | tr '\n' ' ')"
+  case "$matches" in
+    "${discoveryUnreadablePrefix}"*)
+      printf '%s%s' "$discoveryUnreadablePrefix" "ScaledJob を引けない（キュー ${queue}）"
+      return 0 ;;
+  esac
   matches="${matches% }"   # tr で付いた末尾の空白を落とす
   count="$(printf '%s' "$matches" | wc -w | tr -d ' ')"
   if [ "$count" -gt 1 ]; then
@@ -227,7 +262,12 @@ scaledjob_for_queue() {
 # 含むだけの無関係な CronJob も拾う。要素単位で照合する。
 cronjob_enqueueing() {
   local job="$1" site="${2:-}" matches count
-  matches="$(k get cronjobs ${E2E_FIXTURE_SCOPE:+-l rokuban-e2e/fixture=true} -o json 2>/dev/null | python3 -c '
+  local json
+  if ! json="$(k get cronjobs ${E2E_FIXTURE_SCOPE:+-l rokuban-e2e/fixture=true} -o json 2>/dev/null)" || [ -z "$json" ]; then
+    printf '%s%s' "$discoveryUnreadablePrefix" "CronJob を引けない"
+    return 0
+  fi
+  matches="$(printf '%s' "$json" | python3 -c '
 import json, sys
 job, site = sys.argv[1], sys.argv[2]
 doc = json.load(sys.stdin)
@@ -496,5 +536,6 @@ mock_reset() {
   # **失敗を握らない。** reset が効かないと、モックが持つ前回の予約で
   # 判定 1.7 が「今回 1 件も送っていないのに緑」になる（programId は
   # 時刻に依存しないので周回をまたいで同じ）。
-  tb_curl -X POST "http://mirakc-$1:40772/mock/reset" >/dev/null
+  # `-f` を付けて 4xx/5xx も失敗にする（curl は既定でステータスを見ない）。
+  tb_curl -f -X POST "http://mirakc-$1:40772/mock/reset" >/dev/null
 }

@@ -31,8 +31,8 @@ plan "3.1" "3.2" "3.3" "3.4"
 
 queue="encode"
 scaledjob="$(scaledjob_for_queue "$queue")"
-if discovery_is_ambiguous "$scaledjob"; then
-  reason="キュー ${queue} に一致する ScaledJob が複数ある（$(discovery_detail "$scaledjob")）--- どれを判定すべきか決まらない"
+if discovery_is_unusable "$scaledjob"; then
+  reason="キュー ${queue} を判定対象にできない（$(discovery_detail "$scaledjob")）--- 複数一致か、読み取り失敗"
   fail "3.1" "$reason"
   fail "3.2" "$reason"
   fail "3.3" "$reason"
@@ -114,19 +114,29 @@ pass "3.1" "encode Job が起きて実行中になった（${running_job}）"
 # ---「変異が作らない状態」の族なので、ここは形で守る。**実物の encode に
 # 差し替えた人が最初に踏む。**
 job_state_now() {
-  local json active succeeded deletion
-  if ! json="$(k get job "$running_job" -o jsonpath='{.status.active}|{.status.succeeded}|{.metadata.deletionTimestamp}' 2>/dev/null)"; then
-    printf 'gone'
+  local json active succeeded failed deletion
+  # **読めなかったことを結論にしない。** `k get` の一過性の失敗を `killed` に
+  # 畳むと、30 サンプルに 1 回のエラーでこの判定の本題が「殺された」になる
+  # （他の判定は読み失敗に「測定できない」を与えている。同じ扱いに揃える）。
+  if ! json="$(k get job "$running_job" \
+      -o jsonpath='{.status.active}|{.status.succeeded}|{.status.failed}|{.metadata.deletionTimestamp}' 2>/dev/null)"; then
+    printf 'unknown'
     return
   fi
   active="${json%%|*}"; json="${json#*|}"
-  succeeded="${json%%|*}"; deletion="${json#*|}"
+  succeeded="${json%%|*}"; json="${json#*|}"
+  failed="${json%%|*}"; deletion="${json#*|}"
   if [ -n "$deletion" ]; then
     printf 'killed'
   elif [ "${active:-0}" -ge 1 ] 2>/dev/null; then
     printf 'alive'
   elif [ "${succeeded:-0}" -ge 1 ] 2>/dev/null; then
     printf 'completed'
+  elif [ "${failed:-0}" -ge 1 ] 2>/dev/null; then
+    # Pod を作り直している最中（backoffLimit > 0）。**これは殺されたのでは
+    # ない** --- Pod ではなく Job を追うようにした理由そのものなので、
+    # ここで畳むと元の壊れ方に戻る。観測を続ける。
+    printf 'retrying'
   else
     printf 'gone'
   fi
@@ -134,20 +144,34 @@ job_state_now() {
 
 job_is_alive() { [ "$(job_state_now)" = "alive" ]; }
 job_state() {
-  k get job "$running_job" -o jsonpath='active={.status.active} succeeded={.status.succeeded} deletionTimestamp={.metadata.deletionTimestamp}' 2>&1 \
+  k get job "$running_job" -o jsonpath='active={.status.active} succeeded={.status.succeeded} failed={.status.failed} deletionTimestamp={.metadata.deletionTimestamp}' 2>&1 \
     || echo "（Job が消えている）"
 }
 
-# observe_survival <秒> --- 窓の間 Job を見張り、最初に alive でなくなった
-# 状態を返す（最後まで alive なら alive）。
+# observe_survival <秒> --- 窓の間 Job を見張り、最初に「生きていない」と
+# 確定した状態を返す（最後まで生きていれば alive）。
+#
+# `retrying`（Pod の作り直し）は生存とみなして観測を続ける。`unknown`（読めない）
+# は 1 サンプルで結論にせず、連続して読めなかったときだけ返す --- 一過性の
+# エラーで判定が動かないようにするため。
 observe_survival() {
-  local deadline=$((SECONDS + $1)) state
+  local deadline=$((SECONDS + $1)) state unknown_streak=0
   while [ "$SECONDS" -lt "$deadline" ]; do
     state="$(job_state_now)"
-    if [ "$state" != "alive" ]; then
-      printf '%s' "$state"
-      return
-    fi
+    case "$state" in
+      alive|retrying) unknown_streak=0 ;;
+      unknown)
+        unknown_streak=$((unknown_streak + 1))
+        if [ "$unknown_streak" -ge 3 ]; then
+          printf 'unknown'
+          return
+        fi
+        ;;
+      *)
+        printf '%s' "$state"
+        return
+        ;;
+    esac
     sleep 2
   done
   printf 'alive'
@@ -156,8 +180,10 @@ observe_survival() {
 # KEDA が次に判断するまでの窓。既定は 30 秒（ScaledJob.spec.pollingInterval）。
 # pollingInterval が読めなかったときは既定（KEDA の既定は 30 秒）を使うが、
 # 黙って使わない。窓の長さは判定の強さそのもの。
-if ! polling="$(k get scaledjob "$scaledjob" -o jsonpath='{.spec.pollingInterval}')"; then
-  log_step "pollingInterval を読めないので既定の 30s を使う"
+# jsonpath は**フィールドが無くても 0 で返る**ので、空かどうかも見る
+# （pollingInterval は任意。省略時の KEDA の既定は 30 秒）。
+if ! polling="$(k get scaledjob "$scaledjob" -o jsonpath='{.spec.pollingInterval}')" || [ -z "$polling" ]; then
+  log_step "pollingInterval が読めない/未指定なので既定の 30s を使う"
   polling=""
 fi
 window=$(( 2 * ${polling:-30} ))
@@ -178,6 +204,11 @@ case "$outcome" in
   completed)
     todo "3.2" "producer が作る Job が窓（${window}s）より短く、生存を観測できない --- E2E_ENCODE_PRODUCER を長時間かかるエンコードに差し替えること"
     todo "3.3" "同上"
+    todo "3.4" "同上"
+    exit 0 ;;
+  unknown)
+    fail "3.2" "測定できない: Job の状態を続けて読めない（$(job_state)）"
+    todo "3.3" "3.2 が測定できていないので観測していない"
     todo "3.4" "同上"
     exit 0 ;;
   *)
@@ -207,6 +238,8 @@ else
       pass "3.3" "ScaledJob を更新しても実行中の encode Job は生きている（rollout.strategy=$(k get scaledjob "$scaledjob" -o jsonpath='{.spec.rollout.strategy}' || true)）" ;;
     completed)
       todo "3.3" "更新の窓（${window}s）の中で Job が完走したので生存を観測できない" ;;
+    unknown)
+      fail "3.3" "測定できない: Job の状態を続けて読めない（$(job_state)）" ;;
     *)
       fail "3.3" "ScaledJob の更新で実行中の encode Job が殺された --- ${outcome}（$(job_state)）" ;;
   esac
