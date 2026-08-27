@@ -75,7 +75,77 @@ const (
 	// TestNewHTTPServer_IdleConnectionIsClosedByIdleTimeout で確認。ReadTimeout
 	// を設定していないため明示しないと無期限になる。
 	httpIdleTimeout = 120 * time.Second
+
+	// httpShutdownTimeout は SIGTERM 後に進行中のリクエストを書き終えるのを待つ
+	// 上限（`http.Server.Shutdown`）。
+	//
+	// **プロセスの停止予算では River の drain と足し合わせる**（重なって進むが、
+	// 上界は和になる。shutdownBudget のコメント参照）。`deploy/k8s/manifests_test.go` の
+	// TestTerminationBudgetCoversPreStop は同じ 10 という数字をリテラルで持って
+	// いる（実装の定数は参照していない --- 参照すると両方を同時に変えたときに
+	// 何も主張しなくなるため）。**したがってここを変えてもあのテストは緑のまま**
+	// なので、変えるときは向こうのリテラルと api.yaml の猶予も揃える。
+	httpShutdownTimeout = 10 * time.Second
+
+	// hardStopGrace は soft stop の猶予が切れて River が work ctx を cancel した
+	// あと、**畳み終えるのを待つ**時間。
+	//
+	// ctx を切られた実行中のジョブが Work から戻り、River の completer が
+	// その結果（`available` への差し戻しとエラー行）を書き終えるまでに要する。
+	// **所要は測っていない。** プロセス自身が持つもう 1 つの停止予算
+	// （httpShutdownTimeout）と同じ大きさに揃えた、という相対関係だけを根拠に
+	// している。
+	hardStopGrace = 10 * time.Second
 )
+
+// shutdownBudget は `riverClient.Stop` を待つ上限を返す。**soft stop の猶予より
+// 必ず長い。**
+//
+// 短いと、猶予の内側で完走するはずのジョブを**プロセスが先に抜けることで**
+// 打ち切る。しかもその打ち切りは ctx の cancel ですらない（プロセスが終わる
+// だけ）ので、行は `running` のまま残り、回収は `JobRescuer`（リーダーだけが
+// 動かす保守サービス）に委ねることになる --- ロール分割構成では常駐する River
+// クライアントが 1 つも無いので、誰も回収しない（docs/operations.md §5 の
+// スケーラのクエリの節と同じ族の問題）。一方、プロセスが自分でエスカレートして
+// 畳めば行は `available` に戻り、次に起きた worker が引き直せる。**「試行を
+// 1 つ潰す」と「誰も引き直せない」の差**である。
+//
+// **時計が 2 つあるので余裕が要る。** River の escalate は SIGTERM の瞬間から
+// 測る（`fetchCtx` が start ctx から派生し、その Done で soft stop タイマーが
+// 走り出す）が、この締切は `eg.Wait()` が戻ってから測る。同じ区間を別の原点で
+// 測っているので、`soft` ちょうどでは足りない。
+//
+// **これはプロセス全体の停止予算ではない。** 2 つの停止（HTTP と River の drain）
+// は SIGTERM を契機に**重なって**進むので実際の停止はもっと早いことが多いが、
+// この締切の原点が `eg.Wait()` の後にある以上、**上界は和**になる。k8s の
+// `terminationGracePeriodSeconds` が包むべきはその和のほうである
+// （docs/operations.md §5「Deployment 併用時」の足し算）。
+func shutdownBudget(softStopTimeout time.Duration) time.Duration {
+	return softStopTimeout + hardStopGrace
+}
+
+// stopRiverForShutdown は常駐 worker の停止で `riverClient.Stop` に与える締切を
+// 決めて呼ぶ。
+//
+// **締切を固定値にしない**ことがこの関数の全部である。固定だと、
+// `--soft-stop-timeout` を長く取った構成（数時間の encode を載せる ScaledJob /
+// Deployment）で「River はまだ猶予の内側なのにプロセスだけ先に抜ける」形になり、
+// drain が黙って固定値で打ち切られる（shutdownBudget のコメント）。
+//
+// **RunE の defer から切り出してあるのはテストのため。** 実 DB で測ろうとすると
+// 「猶予より長く走るジョブ」が要り、テストの所要が猶予そのものになる
+// （TestStopRiverForShutdown_DeadlineFollowsSoftStopTimeout と
+// TestServerCmd_SigtermDrainsRunningJob のコメント）。
+func stopRiverForShutdown(stopRiver func(context.Context) error, softStopTimeout time.Duration) {
+	stopCtx, cancel := context.WithTimeout(context.Background(), shutdownBudget(softStopTimeout))
+	defer cancel()
+	// shutdown 中は呼び出し元に返す先がない。タイムアウトを付けている以上
+	// 「実行中のジョブが終わらずタイムアウトした」は起こりうるので、
+	// 握り潰さずログに残す（issue #58）。
+	if err := stopRiver(stopCtx); err != nil {
+		slog.Error("stopping river client", "err", err)
+	}
+}
 
 // newProductionHTTPServer は本番の HTTP サーバーを構築する。
 //
@@ -173,6 +243,14 @@ func newServerCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// SIGTERM で実行中のジョブを打ち切らない（drain する）ための猶予。
+			// 1 件消化モードかどうかに関わらず効く --- `--once` の Job も
+			// ノード退避やローリング更新で SIGTERM を受ける（そのときの
+			// 停止経路は常駐 worker と同じ）。
+			softStopTimeout, err := resolveSoftStopTimeout(cmd, roles)
+			if err != nil {
+				return err
+			}
 
 			// このプロセスが束縛される mirakc サイトを --sites から決める
 			// （config キーにしない。issue #183 M4-11「含むもの」4）。
@@ -213,11 +291,33 @@ func newServerCmd() *cobra.Command {
 
 			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
+			// **1 発目を受けたらシグナルの登録を外す。** 外すまでの間、2 発目の
+			// SIGTERM / SIGINT は signal パッケージのチャネル（バッファ 1・
+			// 読み手はもう居ない）に落ちて捨てられ、既定動作（プロセス終了）が
+			// 抑止されたままになる。1 発目のあとに続くのは River の drain で、
+			// その長さは `--soft-stop-timeout` である --- encode を載せる構成には
+			// 数時間を推奨しているので、**その間ずっと Ctrl-C も `kill -TERM` も
+			// 効かない**（止める手段が SIGKILL だけになる）。
+			//
+			// **外す契機は「1 発目のシグナル」であって「畳み終えたところ」では
+			// ない。** 後者にすると、drain を errgroup の中で回す 1 件消化モード
+			// （stopOnceProcess）では畳み終えるまで外れず、**猶予を長く取る構成
+			// ほど逃げ道が無くなる**（数時間の猶予を勧めている先が ScaledJob =
+			// 1 件消化モードなので、一番効いてほしい構成で効かない）。
+			//
+			// 両モードとも TestServerCmd_SecondSigtermKillsDrainingProcess が
+			// 固定する。
+			context.AfterFunc(ctx, stop)
 
 			pool, err := db.NewPool(ctx, cfg.DB, roles)
 			if err != nil {
 				return err
 			}
+			// **River の drain より後に閉じる。** defer の LIFO でそうなっている
+			// （この defer より後に登録される stopRiverForShutdown が先に走る）。
+			// 順序が逆になると、ctx を切られたジョブの結果を River の completer が
+			// 書けず、行が `running` のまま残る --- この PR が避けようとしている
+			// 形そのものである。
 			defer pool.Close()
 
 			slog.Info("starting server", "roles", roles)
@@ -336,7 +436,7 @@ func newServerCmd() *cobra.Command {
 				})
 				eg.Go(func() error {
 					<-egCtx.Done()
-					shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+					shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), httpShutdownTimeout)
 					defer shutdownCancel()
 					return srv.Shutdown(shutdownCtx)
 				})
@@ -406,6 +506,7 @@ func newServerCmd() *cobra.Command {
 					PeriodicJobs:         cfg.Worker.PeriodicJobs,
 					Queues:               queues,
 					Once:                 onceGate,
+					SoftStopTimeout:      softStopTimeout,
 					// 定期ジョブ（epg_sync / tuner_sync / ruler_pass / reconcile_pass /
 					// record_sweep / catalog_export / delete_reconcile /
 					// encode_reconcile / storage_sync）は
@@ -458,24 +559,16 @@ func newServerCmd() *cobra.Command {
 				if startErr := riverClient.Start(ctx); startErr != nil {
 					return fmt.Errorf("starting river client: %w", startErr)
 				}
-				defer func() {
-					stopCtx, stopCancel := context.WithTimeout(context.Background(), 30*time.Second)
-					defer stopCancel()
-					// shutdown 中は呼び出し元に返す先がない。30 秒のタイムアウトを
-					// 付けている以上「実行中のジョブが終わらずタイムアウトした」は
-					// 起こりうるので、握り潰さずログに残す（issue #58）。
-					if err := riverClient.Stop(stopCtx); err != nil {
-						slog.Error("stopping river client", "err", err)
-					}
-				}()
+				defer func() { stopRiverForShutdown(riverClient.Stop, softStopTimeout) }()
 
 				if onceGate != nil {
 					// 1 件消化モードの終了契機。
 					//
 					// **停止の順序は stopOnceProcess が持つ**（graceful stop →
-					// プロセス畳み。逆順にすると実行中のジョブを打ち切る。
-					// River の Stop は StopInit で冪等なので、下の defer の Stop は
-					// そのまま無害な no-op になる）。
+					// プロセス畳み。逆順にすると、実行中のジョブが完走に使える
+					// 時間が soft stop の猶予まで縮む。River の Stop は StopInit
+					// で冪等なので、上の defer の Stop はそのまま無害な no-op に
+					// なる）。
 					//
 					// **ジョブが失敗しても nil を返す**（= exit 0）。リトライは
 					// River が持っており、k8s 側は backoffLimit: 0 で起こし直さない
@@ -485,8 +578,9 @@ func newServerCmd() *cobra.Command {
 					// 既知の窓（実害が空振り Job 1 つぶんなので閉じていない）:
 					// Work を抜けてから Stop が producer を止めるまでの間に次の
 					// ジョブが fetch されると、この Job は 2 件消化して終わる。
-					// MaxWorkers=1 なので同時には走らず、上記の順序により
-					// 打ち切られもしない（実測 0/25 でこの窓には入らなかった）。
+					// MaxWorkers=1 なので同時には走らない。**打ち切られるのは
+					// `--soft-stop-timeout` の猶予を超えたときだけ**である
+					// （実測 0/25 でこの窓には入らなかった）。
 					eg.Go(func() error {
 						outcome := onceGate.Wait(egCtx, onceIdleTimeout, onceEvents)
 						slog.Info("worker: once mode finished", "outcome", outcome.String())
@@ -564,6 +658,12 @@ func newServerCmd() *cobra.Command {
 	cmd.Flags().Duration(onceIdleTimeoutFlagName, defaultOnceIdleTimeout,
 		"in --once mode, exit successfully if no job is claimed within this duration "+
 			"(never applies once a job is running)")
+	// --soft-stop-timeout も同じ「起動形態」の軸（softStopTimeoutFlagName の
+	// コメント）。対になる k8s の terminationGracePeriodSeconds は
+	// shutdownBudget を包む長さにする。
+	cmd.Flags().Duration(softStopTimeoutFlagName, worker.DefaultSoftStopTimeout,
+		"how long a running job may keep going after SIGTERM before its context is cancelled "+
+			"(the pod's terminationGracePeriodSeconds must cover this)")
 
 	return cmd
 }

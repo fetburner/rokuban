@@ -1175,6 +1175,18 @@ func TestReadinessDoesNotEvictOnASingleFailure(t *testing.T) {
 // つまり進行中のリクエストが切れる。api.yaml のコメントはこの足し算を根拠として
 // 書いているので、根拠と一緒に固定する（実測: grace を 3 にする変異はどのテストにも
 // 掛からなかった）。
+//
+// **worker ロールの Pod を足すときは、同じ検査をそちらにも掛けること。**
+// api は River クライアントを Start しないので足し算が 2 項で済んでいるが、
+// worker ロールの Pod では drain のぶんが増える:
+//
+//	grace >= preStop の sleep + 10s + --soft-stop-timeout + 10s
+//
+// 内訳と、包まなかったときに何が起きるか（行が `running` のまま残り、ロール分割
+// 構成では `JobRescuer` を動かす常駐クライアントが居ないので誰も回収しない）は
+// docs/operations.md §5「Deployment 併用時」にある。ここを worker Pod へ広げる
+// のは、worker の pod spec を書くタスクの担当である --- いま汎用のループを書いても
+// 対象が 0 件で、通るだけのテストになる。
 func TestTerminationBudgetCoversPreStop(t *testing.T) {
 	specs := podSpecs(loadBase(t))
 	spec, ok := specs[apiDeployment]
@@ -1200,12 +1212,15 @@ func TestTerminationBudgetCoversPreStop(t *testing.T) {
 		t.Fatalf("preStop command %v has no duration to compare against the grace period", cmd)
 	}
 
-	// 10 は cmd/rokuban/server.go の Shutdown 予算。**実装の定数を参照せず
+	// 10 は cmd/rokuban/server.go の `httpShutdownTimeout`。**実装の定数を参照せず
 	// リテラルで書く**（参照すると両方を同時に変えたときに何も主張しなくなる）。
-	const shutdownBudgetSeconds = 10
-	if grace < sleep+shutdownBudgetSeconds {
-		t.Errorf("terminationGracePeriodSeconds = %d, want >= %d (preStop %ds + shutdown %ds)",
-			grace, sleep+shutdownBudgetSeconds, sleep, shutdownBudgetSeconds)
+	// 名前も向こうの識別子に揃える --- 同じファイルの `shutdownBudget()` は
+	// River の drain 予算（既定 40 秒）で別物なので、取り違えてこちらを 40 に
+	// 直すと、River を Start しない api Pod に無関係な猶予を要求することになる。
+	const httpShutdownSeconds = 10
+	if grace < sleep+httpShutdownSeconds {
+		t.Errorf("terminationGracePeriodSeconds = %d, want >= %d (preStop %ds + HTTP shutdown %ds)",
+			grace, sleep+httpShutdownSeconds, sleep, httpShutdownSeconds)
 	}
 }
 

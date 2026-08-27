@@ -41,6 +41,10 @@ services:
       # healthz はジョブが落ちても通るので、ジョブ状態の明示アサートが要る。
       - media:/mnt/media
     command: ["server", "--all", "--config", "/config.yml"]
+    # 本番の docker-compose.yml と同じ判断（停止予算を包む猶予）。テスト用なので
+    # 短くてよいが、書かないと teardown のたびに実行中のジョブが SIGKILL され、
+    # River の行が running のまま残る（docs/operations.md §5「Deployment 併用時」）。
+    stop_grace_period: 30s
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:40773/healthz"]
       start_period: 5s

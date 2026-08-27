@@ -191,6 +191,8 @@ ruler / reconciler / record_sweep（watcher の 3 段構えのうち (c) 定期�
 | `/api/breakers` が空 | 削除が正しかったとは限らない。**閾値を下回る削除は素通りする**し、明示操作由来の削除（`action="released"`）はそもそもブレーカーを通らない | `rokuban_ruler_reservations_total{action="deleted"}` の増え方 |
 | `rokuban_reconcile_start_delayed` が 0 | 録画が始まったことの確認ではない（猶予 3 分の内側は検出しない） | `recordings.started_at` |
 | `GET /api/storage` に root が載っている | 最新の観測とは限らない。1 root の statfs 失敗時は前回の観測行をそのまま残すため、行の存在だけでは「観測が続いている」ことを保証しない | 各要素の `observedAt` の鮮度 / `rokuban_storage_root_last_success_timestamp_seconds{root}` |
+| worker Pod の scrape が落ちた（`up == 0`） | 死んだとは限らない。**drain 中は HTTP を先に閉じてからジョブを走らせ続ける**ので、`--soft-stop-timeout` のあいだ `/metrics` も `/healthz` も落ちる（猶予を数時間に取る encode 構成では、その間ずっと）。停止のたびに出る | 同時刻に `stopping river client` の ERROR が出ていないこと |
+| `rokuban server` が exit 0 で終わった | drain が成功したとは限らない。`riverClient.Stop` の戻り値は ERROR ログに落としており、**終了コードには出ない**。予算切れで戻った場合、実行中だったジョブの行は `running` のまま残り、ロール分割構成では `JobRescuer` を動かす常駐クライアントが 1 つも無いので誰も回収しない（[§5](k8s.md)「Deployment 併用時」） | ログの `stopping river client`（ERROR）をアラート対象にする |
 | `rokuban_media_assets_missing` が 0（または全 kind の系列が消えている） | 「実体無しの資産が無い」を意味しない。マウントが落ちている・空マウントを疑ったパスは記録自体を見送るため、その間はこのゲージが前回値のまま凍結する。**疑いを経ずに凍結する経路もある** --- 走査エラー・DB エラーでパスが途中 return した場合はゲージに触れないまま終わり、疑いのカウンタも進まない | `rokuban_missing_asset_scan_suspected_storage_failure_total` が増えていないこと **かつ** `rokuban_delete_reconcile_last_pass_timestamp_seconds` が進んでいること（前者は疑い経路、後者はエラー経路の凍結を捕まえる） |
 
 ### 経緯と失敗事例

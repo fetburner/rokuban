@@ -76,6 +76,14 @@ services:
       - "${ROKUBAN_PORT:-40773}:40773"
     # monolith（--all）で動かす。ロール分割デプロイは docs/operations.md を参照。
     command: ["server", "--all", "--config", "/config.yml"]
+    # SIGTERM から自分で畳み終えるまでの上界（停止待ち 10 秒 +
+    # --soft-stop-timeout の既定 5 秒 + 畳み終えるぶん 10 秒）**より長く**取る。
+    # 等号にすると SIGKILL と同着になる（docs/operations.md §5「Deployment
+    # 併用時」の足し算）。**Docker の既定は 10 秒**なので、書かないと実行中の
+    # ジョブが drain の途中で SIGKILL され、River の行が running のまま残る
+    # （回収は JobRescuer の既定 1 時間待ち）。--all は停止待ちに ffmpeg の
+    # 終了待ちも含むので、ライブ視聴を使うなら実測して伸ばすこと。
+    stop_grace_period: 30s
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:40773/healthz"]
       start_period: 10s

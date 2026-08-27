@@ -33,6 +33,36 @@ const (
 	defaultTunerSyncInterval = 10 * time.Minute
 )
 
+// DefaultSoftStopTimeout は ClientConfig.SoftStopTimeout の既定値。
+//
+// **停止の合図（SIGTERM = Start に渡した ctx の cancel、または Stop の呼び出し）を
+// 受けてから、実行中のジョブを打ち切るまでの猶予**である。この時間内に終われば
+// ジョブは完走し、超えたら River が work ctx を cancel してハードストップに
+// エスカレートする（river@v0.40.0/client.go の softStopTimer）。
+//
+// **5 秒という値は「何も設定しなかった人が SIGKILL されない」ことだけを根拠に
+// している。** プラットフォーム側の既定の猶予は Docker が 10 秒、k8s が 30 秒で、
+// そのどちらの内側にも収まる長さを選んだ（実測: 猶予を使い切る停止でも 5.1 秒）。
+// **どのジョブが 5 秒で終わるかは測っていない。**
+//
+// 既定を長く（例えば 30 秒に）すると、猶予を書いていないデプロイで**プロセスが
+// 畳み終える前に SIGKILL が来る**。実測: 既定 30 秒のプロセスは停止に 30.09 秒
+// 必要で、k8s の既定猶予 30 秒に 0.09 秒負けた。負けると River の行は `running`
+// のまま残り、回収は `JobRescuer`（既定 1 時間。ロール分割構成では動かす常駐
+// クライアントが無いので誰も回収しない）に委ねられる --- **設定を間違えた人では
+// なく、何も書かなかった人に当たる**壊れ方である。この PR の前は同じ操作が
+// 「試行を 1 つ潰して即座に `available`」で済んでいたので、そこを退行させない。
+//
+// 数時間かかる encode / ingest は当然この既定では完走できない。それらを載せる
+// デプロイは `--soft-stop-timeout` と k8s の `terminationGracePeriodSeconds` を
+// **対で**引き上げる（docs/operations.md §5「Deployment 併用時」）。
+//
+// **0 を「無制限」の意味に使えない。** River は SoftStopTimeout が 0 のとき
+// work ctx を start ctx から継ぐので、0 は「待たない」（SIGTERM が即
+// StopAndCancel 相当になる）である。cmd/rokuban 側は `--soft-stop-timeout` の
+// 0 以下を起動エラーにし、buildRiverConfig は 0 をこの既定値に読み替える。
+const DefaultSoftStopTimeout = 5 * time.Second
+
 // pendingJobStates は「まだ終わっていない」ジョブの状態。
 //
 // UniqueOpts.ByState に渡して、一意化の対象を実行前・実行中に限定する。
@@ -556,6 +586,24 @@ type ClientConfig struct {
 	// 引かなくなる事故を防ぐ）。
 	Queues []string
 
+	// SoftStopTimeout は停止の合図を受けてから実行中のジョブを打ち切るまでの猶予。
+	// 0 なら既定値（DefaultSoftStopTimeout）。
+	//
+	// **これを設定しないと SIGTERM が drain にならない。** River は
+	// SoftStopTimeout が未設定（0）のとき work ctx を start ctx から継ぐので、
+	// `signal.NotifyContext` の ctx を `Start` に渡している構成では **SIGTERM が
+	// そのまま StopAndCancel 相当のハードストップになる**（river@v0.40.0/client.go
+	// の workParentCtx）。実行中のジョブは即座に ctx を切られ、試行回数を 1 つ
+	// 潰して `available` に戻る。0 を既定値に読み替えるのはこのためで、
+	// 「設定し忘れ」が最も危険な側に倒れないようにする。
+	//
+	// 効くのは停止の合図の種類を問わない（Start の ctx の cancel / Stop /
+	// StopAndCancel のいずれでも同じ）。したがって 1 件消化モードの正常終了
+	// （cmd/rokuban の stopOnceProcess が撃つ graceful stop）にも上限が付く ---
+	// 1 件消化した後に取りこぼしのジョブを掴んでいた場合、その完走を待つのは
+	// この猶予までである。
+	SoftStopTimeout time.Duration
+
 	// Once が非 nil なら 1 件消化モード（`rokuban server --once`）になる。
 	// KEDA ScaledJob が起こした k8s Job が自分で終了できるようにするための
 	// 起動形態で、ジョブ 1 件の Work を抜けたら（成功・失敗を問わず）
@@ -656,9 +704,15 @@ func buildRiverConfig(workers *river.Workers, cfg ClientConfig) (*river.Config, 
 	slog.Info("worker: subscribing to queues",
 		"queues", sortedQueueNames(physicalQueues), "bound_site", cfg.BoundSite)
 
+	softStopTimeout := cfg.SoftStopTimeout
+	if softStopTimeout <= 0 {
+		softStopTimeout = DefaultSoftStopTimeout
+	}
+
 	riverCfg := &river.Config{
-		Queues:  physicalQueues,
-		Workers: workers,
+		Queues:          physicalQueues,
+		Workers:         workers,
+		SoftStopTimeout: softStopTimeout,
 	}
 
 	if cfg.Once != nil {

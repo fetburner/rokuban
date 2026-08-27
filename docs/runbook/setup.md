@@ -29,6 +29,16 @@ HW エンコード等で自前イメージを使うなら `.env` の `ROKUBAN_IM
 
 `http://localhost:40773` で UI が開く。
 
+**自分の `docker-compose.yml` を持っている場合は `stop_grace_period` を確認する。**
+
+rokuban は SIGTERM を受けると実行中のジョブを `--soft-stop-timeout`（既定 5 秒）
+まで待ってから畳む。**Docker の既定の猶予は 10 秒**なので、既定のままなら収まるが、
+猶予を伸ばす（長いエンコードを守る）ときは `stop_grace_period` も対で伸ばす。
+足りないと `docker compose down` / `stop` のたびに実行中のジョブが SIGKILL される。
+その行は `running` のまま最大 1 時間（`JobRescuer` の既定）止まる。
+リポジトリの `docker-compose.yml` には 30 秒を書いてある
+（[docs/operations.md](../operations.md) §5「Deployment 併用時」の足し算）。
+
 正常なら起動から 30 秒ほどで EPG の全量同期が 1 回走る。
 
 ```
