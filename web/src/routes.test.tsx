@@ -300,7 +300,7 @@ describe('routeTree', () => {
     }
   })
 
-  it('/live?serviceId= 単独（networkId 無し）でも serviceId は通る（旧リンクとの後方互換）', async () => {
+  it('/live?serviceId= 単独（networkId 無し）でも validateSearch は値を通す（同定は pickInitialService の担当）', async () => {
     const router = createRouter({
       routeTree,
       history: createMemoryHistory({ initialEntries: ['/live?serviceId=1024'] }),
@@ -315,8 +315,8 @@ describe('routeTree', () => {
     expect(search.serviceId).toBe(1024)
   })
 
-  describe('ホーム新設（M8-3, issue #242）: 旧 URL のリダイレクト', () => {
-    it('裸の / はホームのまま（リダイレクトしない）', async () => {
+  describe('ホーム新設（M8-3, issue #242）', () => {
+    it('裸の / はホーム', async () => {
       const router = createRouter({
         routeTree,
         history: createMemoryHistory({ initialEntries: ['/'] }),
@@ -326,91 +326,27 @@ describe('routeTree', () => {
       expect(router.state.location.pathname).toBe('/')
     })
 
-    it('/?serviceId=... は /programs へリダイレクトし、useSearch の戻り値に文字列を残さない', async () => {
-      // `/live` と同じ罠（issue #194 型。docs/frontend.md「TanStack Router の
-      // validateSearch は無効な値を『省略』しても消えない」）。validateSearch を
-      // 直接呼ぶだけでは検出できない --- 非 strict モードは生の
-      // location.search の上に戻り値を重ねるので、キーを省略すると生の値が残る。
-      //
-      // 加えて、`?serviceId=` 付きの `/` は番組表（`/programs`）へリダイレクト
-      // される（旧 URL 救済。routes.tsx の homeRoute）ので、まず宛先が
-      // `/programs` になっていることも確認する。
-      const router = createRouter({
-        routeTree,
-        history: createMemoryHistory({ initialEntries: ['/?serviceId=abc'] }),
-      })
-      await router.load()
-
-      expect(router.state.location.pathname).toBe('/programs')
-      const search = router.state.matches.at(-1)!.search as { serviceId?: unknown }
-      expect(search.serviceId).toBeUndefined()
-      // 正しい値は通る（両方向を見る）
-      const ok = createRouter({
-        routeTree,
-        history: createMemoryHistory({ initialEntries: ['/?serviceId=1024'] }),
-      })
-      await ok.load()
-      expect(ok.state.location.pathname).toBe('/programs')
-      expect((ok.state.matches.at(-1)!.search as { serviceId?: unknown }).serviceId).toEqual([
-        1024,
-      ])
-    })
-
-    it('/?at=... も /programs へリダイレクトする', async () => {
-      const router = createRouter({
-        routeTree,
-        history: createMemoryHistory({ initialEntries: ['/?at=1700000000000'] }),
-      })
-      await router.load()
-
-      expect(router.state.location.pathname).toBe('/programs')
-      expect((router.state.matches.at(-1)!.search as { at?: unknown }).at).toBe(1700000000000)
-    })
-
-    it('/?at=1e30（Date の定義域外）はリダイレクト後 /programs 側で undefined に落ちる', async () => {
-      // このタスクが `programsRoute` の `validateSearch` への新しい入口
-      // （`homeRoute` からのリダイレクト経由）を作った以上、その入口を通した
-      // ときも `parseProgramsSearch` の定義域チェック（`lib/programs-search.ts`
-      // の `parseAt`）が同じように効くことを固定する。`homeRoute` は値の形を
-      // 見ないので `/?at=1e30` も無条件で `/programs` へ転送し、検証は
-      // `/programs` 側に一本化されたまま保たれる。
-      const router = createRouter({
-        routeTree,
-        history: createMemoryHistory({ initialEntries: ['/?at=1e30'] }),
-      })
-      await router.load()
-
-      expect(router.state.location.pathname).toBe('/programs')
-      expect((router.state.matches.at(-1)!.search as { at?: unknown }).at).toBeUndefined()
-    })
-
-    it('/programs?serviceId=... の serviceId は複数指定・混在配列を検証済みの配列に正規化する', async () => {
-      // ?serviceId=1024&serviceId=abc&serviceId=0 のような、一部だけ不正な値が
-      // 混ざった URL（手入力・古いブックマーク）でも、不正な要素だけを落として
-      // 開ける
+    it('/programs?service= は不正な要素だけを落として開く', async () => {
+      // 一部だけ不正な組が混ざった URL（手入力・壊れた共有リンク）でも、
+      // 不正な要素だけを落として画面は開く。
       const router = createRouter({
         routeTree,
         history: createMemoryHistory({
-          initialEntries: ['/programs?serviceId=1024&serviceId=abc&serviceId=0&serviceId=1032'],
+          initialEntries: ['/programs?service=400101&service=bad&service=0&service=600101'],
         }),
       })
       await router.load()
 
-      const search = router.state.matches.at(-1)!.search as { serviceId?: unknown }
-      expect(search.serviceId).toEqual([1024, 1032])
+      const search = router.state.matches.at(-1)!.search as { service?: unknown }
+      expect(search.service).toEqual([400101, 600101])
     })
 
-    it('「ホーム」ナビ（検索パラメータ無しの / への遷移）はリダイレクトループを起こさない', async () => {
-      // 敵対的レビューの懸念点そのもの: `/programs?serviceId=...` に居る状態で
-      // ナビの「ホーム」（`<Link to="/">`。検索パラメータを渡さない）を押すと、
-      // TanStack Router が旧ルートの search を新しい遷移に持ち越して
-      // `homeRoute` の beforeLoad が再び `/programs` へ弾き返す、という
-      // ループを疑いたくなる。実際には `navigate({ to: '/' })` は search を
-      // 明示しない限り引き継がない（TanStack Router の既定）ので、
-      // ホームに着地したままになることを固定する。
+    it('「ホーム」ナビ（検索パラメータ無しの / への遷移）は search を持ち越さない', async () => {
+      // `navigate({ to: '/' })` は search を明示しない限り引き継がない
+      // （TanStack Router の既定）ので、番組表の絞り込みがホームに漏れない。
       const router = createRouter({
         routeTree,
-        history: createMemoryHistory({ initialEntries: ['/programs?serviceId=1024'] }),
+        history: createMemoryHistory({ initialEntries: ['/programs?service=400101'] }),
       })
       await router.load()
       await router.navigate({ to: '/' })

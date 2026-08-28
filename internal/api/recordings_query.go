@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"regexp"
 	"strings"
 	"time"
 
@@ -14,14 +13,14 @@ import (
 	"github.com/fetburner/rokuban/internal/rulequery"
 )
 
-// recordingsFilter は GET /api/recordings の絞り込み + キーセットページング軸
-// （issue #136）。ゼロ値のフィールドは「絞り込みなし」を表す。
+// serviceRef は Service.id を DB の 2 列に分解した組。
 type serviceRef struct {
-	Site      string
-	NetworkID *int32
+	NetworkID int32
 	ServiceID int32
 }
 
+// recordingsFilter は GET /api/recordings の絞り込み + キーセットページング軸
+// （issue #136）。ゼロ値のフィールドは「絞り込みなし」を表す。
 type recordingsFilter struct {
 	Trash bool
 
@@ -30,9 +29,11 @@ type recordingsFilter struct {
 
 	Genres       []int16
 	ChannelTypes []string
-	// Services はチャンネル絞り込み。NetworkID があれば
-	// (site, networkId, serviceId) で厳密一致し、nil なら旧形式として
-	// (site, serviceId) で network を問わない。
+	// Sites はサイト絞り込み（軸内 OR）。空なら全サイト。
+	Sites []string
+	// Services はチャンネル絞り込み（軸内 OR）。`Service.id` を
+	// (networkId, serviceId) に分解した組で持つ。**site は含まない** ---
+	// site は別軸で、軸間は AND（openapi.yaml の `service` の description）。
 	Services []serviceRef
 
 	Status ListRecordingsParamsStatus
@@ -70,8 +71,6 @@ const (
 	genreLv1Min = 0
 	genreLv1Max = 15
 )
-
-var recordingServicePattern = regexp.MustCompile(`^([a-z0-9](?:[_-]?[a-z0-9])*):(?:([1-9][0-9]*):)?([1-9][0-9]*)$`)
 
 // recordingsFilterFromParams は ListRecordingsParams（openapi_gen.go の生成型）を
 // recordingsFilter に変換する。不正な入力（before/beforeId が片方だけ、limit が
@@ -124,25 +123,18 @@ func recordingsFilterFromParams(p ListRecordingsParams) (recordingsFilter, strin
 		}
 		f.ChannelTypes = channelTypeStrings(*p.ChannelType)
 	}
+	if p.Site != nil {
+		f.Sites = *p.Site
+	}
 	if p.Service != nil {
-		for _, value := range *p.Service {
-			match := recordingServicePattern.FindStringSubmatch(value)
-			if match == nil {
-				return recordingsFilter{}, fmt.Sprintf("invalid service %q (want <site>:<serviceId> or <site>:<networkId>:<serviceId>)", value)
-			}
-			serviceID, err := parsePositiveInt32(match[3])
-			if err != nil {
-				return recordingsFilter{}, fmt.Sprintf("invalid service %q: serviceId %v", value, err)
-			}
-			var networkID *int32
-			if match[2] != "" {
-				n, err := parsePositiveInt32(match[2])
-				if err != nil {
-					return recordingsFilter{}, fmt.Sprintf("invalid service %q: networkId %v", value, err)
-				}
-				networkID = &n
-			}
-			f.Services = append(f.Services, serviceRef{Site: match[1], NetworkID: networkID, ServiceID: serviceID})
+		networkIDs, serviceIDs, msg := splitServiceIDs(*p.Service)
+		if msg != "" {
+			return recordingsFilter{}, msg
+		}
+		for i := range networkIDs {
+			f.Services = append(f.Services, serviceRef{
+				NetworkID: networkIDs[i], ServiceID: serviceIDs[i],
+			})
 		}
 	}
 	if p.Status != nil {
@@ -324,10 +316,11 @@ LEFT JOIN LATERAL (
 // ListTrashRecordings がそれを意図的に射影しない（ごみ箱では配信 3 クエリが
 // deleted_at IS NOT NULL を理由に必ず 404 になるため）のと同じ区別。
 //
-// site では絞らない（全サイトを返す。issue #184 M4-12。api は不変条件 1 に
-// より site に束縛されない）。`?site=` のような絞り込みパラメータも持たない
-// （不変条件 11: 必要になった時点で足す。#136 のマージ後に決めた判断で、
-// 現状 site を欲しがる呼び出し元が無い）。
+// **既定は全サイト**（api は不変条件 1 により site に束縛されない）。`?site=`
+// はその上の絞り込みで、「束縛」ではない --- 束縛はプロセスがどの mirakc に
+// 触れるかの話で、絞り込みは読み出しの述語にすぎない。site 軸を service の
+// 識別子に混ぜないのは、混ぜると「あるサイトの録画を全部」がチャンネルの
+// 列挙でしか表せず、service だけが他の軸と違う意味論（組の選言）になるため。
 func buildRecordingsQuery(f recordingsFilter) (string, []any, error) {
 	if (f.Before == nil) != (f.BeforeID == nil) {
 		return "", nil, fmt.Errorf("before and beforeId must be given together")
@@ -351,7 +344,7 @@ func buildRecordingsQuery(f recordingsFilter) (string, []any, error) {
 
 	// 基底述語は現行 ListRecordings / ListTrashRecordings と揺れさせない
 	// （trash=false: r.deleted_at IS NULL、superseded_at は現行も絞っていないので
-	// 新たに絞らない）。site の絞り込みは持たない（上記コメント参照）。
+	// 新たに絞らない）。
 	if f.Trash {
 		and("r.deleted_at IS NOT NULL")
 		and("r.purged_at IS NULL")
@@ -386,16 +379,17 @@ func buildRecordingsQuery(f recordingsFilter) (string, []any, error) {
 	if len(f.ChannelTypes) > 0 {
 		and("r.channel_type = ANY(" + arg(f.ChannelTypes) + ")")
 	}
+	if len(f.Sites) > 0 {
+		and("r.site = ANY(" + arg(f.Sites) + ")")
+	}
 	if len(f.Services) > 0 {
-		clauses := make([]string, len(f.Services))
+		// 行値の IN。(network_id, service_id) の組で OR する形なので、
+		// network_id と service_id を別々に ANY で絞る（＝直積になる）形とは違う。
+		pairs := make([]string, len(f.Services))
 		for i, service := range f.Services {
-			clause := "(r.site = " + arg(service.Site)
-			if service.NetworkID != nil {
-				clause += " AND r.network_id = " + arg(*service.NetworkID)
-			}
-			clauses[i] = clause + " AND r.service_id = " + arg(service.ServiceID) + ")"
+			pairs[i] = "(" + arg(service.NetworkID) + ", " + arg(service.ServiceID) + ")"
 		}
-		and("(" + strings.Join(clauses, " OR ") + ")")
+		and("(r.network_id, r.service_id) IN (" + strings.Join(pairs, ", ") + ")")
 	}
 	if f.Status != "" {
 		and("r.status = " + arg(string(f.Status)))

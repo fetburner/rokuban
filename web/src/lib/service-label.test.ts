@@ -5,6 +5,7 @@ import { serviceDisambiguator } from '@/lib/service-label'
 
 describe('serviceDisambiguator', () => {
   const service = (overrides: Partial<Service> & { serviceId: number }): Service => ({
+    id: (overrides.networkId ?? 32736) * 100_000 + overrides.serviceId,
     networkId: 32736,
     name: '瀬戸内海放送',
     channelType: 'GR',
@@ -58,8 +59,8 @@ describe('serviceDisambiguator', () => {
     ]
     const disambiguate = serviceDisambiguator(services)
 
-    expect(disambiguate(services[0])).toBe('地上波 5 ・ 27 ・ #32736-1024')
-    expect(disambiguate(services[1])).toBe('地上波 5 ・ 27 ・ #32736-1025')
+    expect(disambiguate(services[0])).toBe('地上波 5 ・ 27 ・ #3273601024')
+    expect(disambiguate(services[1])).toBe('地上波 5 ・ 27 ・ #3273601025')
   })
 
   // 判定は `channelType === 'GR' && remoteControlKeyId > 0` の 2 条件で、
@@ -129,15 +130,15 @@ describe('serviceDisambiguator', () => {
   it('材料が空文字の段は区切りごと飛ばす', () => {
     // 今の API 契約では `channel` は required なので空文字は来ない（= 防御）。
     // 段の連結を「ここまでのラベルが空文字か」で代理すると、この入力で
-    // `地上波 5 ・  ・ #32736-1024` のように区切りだけが残る。
+    // `地上波 5 ・  ・ #3273601024` のように区切りだけが残る。
     const services = [
       service({ serviceId: 1024, remoteControlKeyId: 5, channel: '' }),
       service({ serviceId: 1025, remoteControlKeyId: 5, channel: '' }),
     ]
     const disambiguate = serviceDisambiguator(services)
 
-    expect(disambiguate(services[0])).toBe('地上波 5 ・ #32736-1024')
-    expect(disambiguate(services[1])).toBe('地上波 5 ・ #32736-1025')
+    expect(disambiguate(services[0])).toBe('地上波 5 ・ #3273601024')
+    expect(disambiguate(services[1])).toBe('地上波 5 ・ #3273601025')
   })
 
   it('渡した配列とは別オブジェクトでも同じ (networkId, serviceId) なら引ける', () => {
@@ -178,8 +179,8 @@ describe('serviceDisambiguator', () => {
     ]
     const disambiguate = serviceDisambiguator(services)
 
-    expect(disambiguate(services[0])).toBe('地上波 5 ・ 27 ・ #32736-1024')
-    expect(disambiguate(services[1])).toBe('地上波 5 ・ 27 ・ #32736-1032 ・ 番組なし')
+    expect(disambiguate(services[0])).toBe('地上波 5 ・ 27 ・ #3273601024')
+    expect(disambiguate(services[1])).toBe('地上波 5 ・ 27 ・ #3273601032 ・ 番組なし')
   })
 
   it('hasPrograms が両方 true なら「番組なし」は付かない', () => {

@@ -20,6 +20,7 @@ import { renderInRouter } from '@/test/router'
  */
 const services: Service[] = [
   {
+    id: 3273601024,
     networkId: 32736,
     serviceId: 1024,
     name: 'NTV',
@@ -30,6 +31,7 @@ const services: Service[] = [
     hasPrograms: true,
   },
   {
+    id: 3267601032,
     networkId: 32676,
     serviceId: 1032,
     name: '瀬戸内海放送',
@@ -40,6 +42,7 @@ const services: Service[] = [
     hasPrograms: true,
   },
   {
+    id: 3267601033,
     networkId: 32676,
     serviceId: 1033,
     name: '瀬戸内海放送',
@@ -51,6 +54,7 @@ const services: Service[] = [
     hasPrograms: true,
   },
   {
+    id: 3267701034,
     networkId: 32677,
     serviceId: 1034,
     name: '瀬戸内海放送',
@@ -63,6 +67,7 @@ const services: Service[] = [
   {
     // 32676/1033 と serviceId だけ同じで networkId が違う（別の親局のネットワーク）。
     // 物理チャンネルが違うので補助ラベルは物理チャンネルの段で一意になる。
+    id: 3267701033,
     networkId: 32677,
     serviceId: 1033,
     name: '瀬戸内海放送',
@@ -261,6 +266,7 @@ describe('ConditionFields のサービスチップ', () => {
     // 主サービスかは伝わらないため、番組を持たない側にヒントを足す。
     const servicesWithSub: Service[] = [
       {
+        id: 3273601024,
         networkId: 32736,
         serviceId: 1024,
         name: '瀬戸内海放送',
@@ -271,6 +277,7 @@ describe('ConditionFields のサービスチップ', () => {
         hasPrograms: true,
       },
       {
+        id: 3273601032,
         networkId: 32736,
         serviceId: 1032,
         name: '瀬戸内海放送',
@@ -296,10 +303,10 @@ describe('ConditionFields のサービスチップ', () => {
     // 計算エンジン依存で jsdom が実ブラウザと一致する保証はないため。
     // 上の `label` 定数と同じ規律）。
     expect(
-      findChipByText(group, '瀬戸内海放送（地上波 5 ・ 27 ・ #32736-1024）'),
+      findChipByText(group, '瀬戸内海放送（地上波 5 ・ 27 ・ #3273601024）'),
     ).toBeInTheDocument()
     expect(
-      findChipByText(group, '瀬戸内海放送（地上波 5 ・ 27 ・ #32736-1032 ・ 番組なし）'),
+      findChipByText(group, '瀬戸内海放送（地上波 5 ・ 27 ・ #3273601032 ・ 番組なし）'),
     ).toBeInTheDocument()
   })
 })

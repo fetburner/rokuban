@@ -236,6 +236,8 @@ cleanup:
                                  # 0 なら既定値（24 時間）
 
 # ログ
+# 未解決: 値は検証されるが slog に適用されていない。現状はどのロールも
+# log/slog のパッケージ既定（text 形式・Info 以上）で出力する。
 log:
   level: info                    # debug | info | warn | error
   format: json                   # json | text

@@ -44,6 +44,7 @@ const log = (...a) => console.log(...a)
 
 const services = [
   {
+    id: 3273601024,
     networkId: 32736,
     serviceId: 1024,
     name: 'NHK総合',
@@ -54,6 +55,7 @@ const services = [
     hasPrograms: true,
   },
   {
+    id: 3273701032,
     networkId: 32737,
     serviceId: 1032,
     name: 'NHKEテレ',

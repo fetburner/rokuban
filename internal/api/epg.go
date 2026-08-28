@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/mirakc"
 )
 
 // maxProgramWindow は GET /api/programs で受け付ける時間窓の最大幅。
@@ -30,6 +31,7 @@ func (h *Server) ListServices(ctx context.Context, req ListServicesRequestObject
 	result := make([]Service, 0, len(rows))
 	for _, s := range rows {
 		result = append(result, Service{
+			Id:                 mirakc.ServiceID(int(s.NetworkID), int(s.ServiceID)),
 			NetworkId:          int(s.NetworkID),
 			ServiceId:          int(s.ServiceID),
 			Name:               s.Name,
@@ -51,25 +53,14 @@ func (h *Server) ListPrograms(ctx context.Context, req ListProgramsRequestObject
 	if msg := windowError(req.Params.Start, req.Params.End); msg != "" {
 		return ListPrograms400JSONResponse{Error: msg}, nil
 	}
-	if req.Params.Service != nil && (req.Params.NetworkId != nil || req.Params.ServiceId != nil) {
-		return ListPrograms400JSONResponse{Error: "service cannot be combined with networkId or serviceId"}, nil
-	}
-
-	legacyNetworkID, msg := positiveInt32Ptr(req.Params.NetworkId, "networkId")
-	if msg != "" {
-		return ListPrograms400JSONResponse{Error: msg}, nil
-	}
-	legacyServiceIDs, msg := positiveInt32Slice(req.Params.ServiceId, "serviceId")
-	if msg != "" {
-		return ListPrograms400JSONResponse{Error: msg}, nil
-	}
-
+	// `?service=` は Service.id。DB は network_id / service_id を別々に持つので
+	// 分解してから述語に渡す（splitServiceIDs のコメント参照）。
 	var exactNetworkIDs, exactServiceIDs []int32
 	if req.Params.Service != nil {
-		var parseMessage string
-		exactNetworkIDs, exactServiceIDs, parseMessage = parseNetworkServiceRefs(*req.Params.Service)
-		if parseMessage != "" {
-			return ListPrograms400JSONResponse{Error: parseMessage}, nil
+		var msg string
+		exactNetworkIDs, exactServiceIDs, msg = splitServiceIDs(*req.Params.Service)
+		if msg != "" {
+			return ListPrograms400JSONResponse{Error: msg}, nil
 		}
 	}
 
@@ -77,8 +68,6 @@ func (h *Server) ListPrograms(ctx context.Context, req ListProgramsRequestObject
 		Site:            req.Site,
 		WindowStart:     req.Params.Start,
 		WindowEnd:       req.Params.End,
-		NetworkID:       legacyNetworkID,
-		ServiceIds:      legacyServiceIDs,
 		ExactNetworkIds: exactNetworkIDs,
 		ExactServiceIds: exactServiceIDs,
 	})
@@ -162,28 +151,6 @@ func windowError(start, end time.Time) string {
 		return fmt.Sprintf("time window must not exceed %d days", int(maxProgramWindow.Hours()/24))
 	}
 	return ""
-}
-
-func positiveInt32Ptr(v *int32, name string) (*int32, string) {
-	if v == nil {
-		return nil, ""
-	}
-	if *v <= 0 {
-		return nil, fmt.Sprintf("%s must be a positive 32-bit integer", name)
-	}
-	return v, ""
-}
-
-func positiveInt32Slice(v *[]int32, name string) ([]int32, string) {
-	if v == nil {
-		return nil, ""
-	}
-	for _, n := range *v {
-		if n <= 0 {
-			return nil, fmt.Sprintf("%s must contain positive 32-bit integers", name)
-		}
-	}
-	return *v, ""
 }
 
 func genreLv1List(lv1 []int16) []int {

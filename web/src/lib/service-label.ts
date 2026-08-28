@@ -13,7 +13,7 @@ import { channelTypeLabel } from '@/lib/epg-grid'
  * serviceKey はサービスチップの identity（`condition-fields.tsx` の `key` と同じ組）。
  * `Service` の値は再取得のたびに別オブジェクトになるので、引き当てはこの組で行う。
  */
-const serviceKey = (s: Service) => `${s.networkId}-${s.serviceId}`
+const serviceKey = (s: Service) => s.id
 
 /**
  * disambiguationParts はサービスを区別する候補の材料。上から順に足していき、
@@ -83,12 +83,12 @@ export function serviceDisambiguator(
     else groups.set(s.name, [s])
   }
 
-  const labelOf = new Map<string, string>()
+  const labelOf = new Map<number, string>()
   for (const group of groups.values()) {
     if (group.length <= 1) continue
     // 段を配列に積み、空の段だけを落として連結する。連結の判定を
     // 「ここまでのラベルが空文字か」で代理すると、ある段が空文字を返したときに
-    // 区切りだけが残る（`地上波 5 ・  ・ #32736-1024`）。今の API 契約では
+    // 区切りだけが残る（`地上波 5 ・  ・ #3273601024`）。今の API 契約では
     // `channel` も `channelType` も required なので空にはならないが、
     // 段の有無で判定しておけば形が崩れない
     // （テスト「材料が空文字の段は区切りごと飛ばす」）。

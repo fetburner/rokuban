@@ -30,7 +30,7 @@ const SITE = process.env.E2E_LIVE_SITE ?? 'default'
 const SERVICE_A = process.env.E2E_LIVE_SERVICE_A ?? '9001'
 const SERVICE_B = process.env.E2E_LIVE_SERVICE_B ?? '9002'
 // docs/runbook/live.md §② の投入例は A/B とも network_id=1（runbook 側にも
-// この env が既定 1 として書いてある）。新形式の `?networkId=&serviceId=`
+// この env が既定 1 として書いてある）。`?networkId=&serviceId=`
 // （issue #291）を実ブラウザで一度も踏んでいなかった穴を塞ぐため、⓪ はこの
 // 形式で開く（レビューでの指摘）。**フィクスチャの network_id と食い違ったまま
 // 黙って通らないよう、⓪ は「選ばれたチャンネルが要求どおりか」も assert する**
@@ -297,8 +297,8 @@ async function runConsentCheck() {
       route.fulfill({ status: 200, contentType: 'video/mp2t', body: Buffer.from([0x47]) }),
     )
 
-    // `?networkId=&serviceId=` の新形式（issue #291）を実ブラウザで踏む
-    // ---他の ①〜⑦ は旧 `?serviceId=` 単独（フォールバック経路）のみを通るため
+    // 同じ serviceId を持つ別 network が居る構成で、指定した組が選ばれること
+    // （issue #291）を実ブラウザで踏む
     await page.goto(`${BASE_URL}/live?networkId=${NETWORK_ID}&serviceId=${SERVICE_A}`, {
       waitUntil: 'networkidle',
     })
@@ -478,7 +478,7 @@ async function runChromiumChecks(browser) {
   const mode = { playlist: 'ok' }
   await mockLiveRoutes(page, mode)
 
-  await page.goto(`${BASE_URL}/live?serviceId=${SERVICE_A}`, { waitUntil: 'networkidle' })
+  await page.goto(`${BASE_URL}/live?networkId=${NETWORK_ID}&serviceId=${SERVICE_A}`, { waitUntil: 'networkidle' })
   // 選択と視聴開始の分離（issue #234 M7-1）。「再生」を押すまで <video> は
   // 存在しない --- ⓪ がこの分離自体を検証し、①〜⑤ は押した後の挙動を見る
   await clickPlay(page)
@@ -606,7 +606,7 @@ async function runChromiumChecks(browser) {
   log('\n=== ⑤ 503 エラー表示 → 再読み込みで復帰 ===')
   mode.playlist = 'error'
   mode.playlistErrorBody = 'too many concurrent live sessions on this process'
-  await page.goto(`${BASE_URL}/live?serviceId=${SERVICE_A}`, { waitUntil: 'networkidle' })
+  await page.goto(`${BASE_URL}/live?networkId=${NETWORK_ID}&serviceId=${SERVICE_A}`, { waitUntil: 'networkidle' })
   await clickPlay(page)
   let errorShown = false
   try {
@@ -657,7 +657,7 @@ if (hasFixture) {
     try {
       const chromePage = await chromeBrowser.newPage({ viewport: { width: 960, height: 640 } })
       await mockLiveRoutes(chromePage, { playlist: 'ok' })
-      await chromePage.goto(`${BASE_URL}/live?serviceId=${SERVICE_A}`, { waitUntil: 'networkidle' })
+      await chromePage.goto(`${BASE_URL}/live?networkId=${NETWORK_ID}&serviceId=${SERVICE_A}`, { waitUntil: 'networkidle' })
       await clickPlay(chromePage)
       await chromePage.waitForFunction(mseAttached, undefined, { timeout: 15000 })
       await chromePage.evaluate(() => document.querySelector('video').play())
@@ -704,7 +704,7 @@ if (hasFixture) {
     const requestLog = []
     page.on('request', (req) => requestLog.push(req.url()))
     await mockLiveRoutes(page, { playlist: 'ok' })
-    await page.goto(`${BASE_URL}/live?serviceId=${SERVICE_A}`, { waitUntil: 'networkidle' })
+    await page.goto(`${BASE_URL}/live?networkId=${NETWORK_ID}&serviceId=${SERVICE_A}`, { waitUntil: 'networkidle' })
     await clickPlay(page)
 
     // 経路が決まる（どちらかの分岐が `<video>` に何かを渡す）まで待つ。
@@ -799,7 +799,7 @@ if (hasFixture) {
     try {
       const page = await browser.newPage({ viewport: { width: 960, height: 640 } })
       await mockLiveRoutes(page, { playlist: 'ok', segments })
-      await page.goto(`${BASE_URL}/live?serviceId=${SERVICE_A}`, { waitUntil: 'domcontentloaded' })
+      await page.goto(`${BASE_URL}/live?networkId=${NETWORK_ID}&serviceId=${SERVICE_A}`, { waitUntil: 'domcontentloaded' })
       await clickPlay(page)
 
       let shown = false

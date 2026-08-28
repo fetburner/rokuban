@@ -94,6 +94,19 @@ export const ServiceChannelType = {
 } as const;
 
 export interface Service {
+  /**
+     * サービスの一意な識別子。`networkId * 100000 + serviceId`（Mirakurun /
+     * mirakc の `ServiceId` と同じ合成規則。権威は `internal/mirakc.ServiceID`）。
+     *
+     * **SI の `serviceId` は network をまたぐと一意でない**（BS 101 と
+     * 110度CS 101 は実在する衝突）ため、絞り込み・選択・キャッシュキーの
+     * identity にはこの値を使う。`?service=` に載るのもこの値。
+     *
+     * **int32 には収まらない**（networkId / serviceId とも 16bit なので
+     * 最大 65535 * 100000 + 65535 = 6,553,565,535）。JavaScript の
+     * safe integer には収まる。
+     */
+  id: number;
   networkId: number;
   serviceId: number;
   name: string;
@@ -420,24 +433,8 @@ export interface Recording {
      * 再生可能な encoded 派生物（media_assets の active のみ）。
      * ブラウザ再生は GET /api/recordings/{id}/file?profile=<name> を使う。
      * desired（encodeProfiles）ではなく observed。空配列は省略可。
-     *
-     * `encodedProfiles`（プロファイル名だけの配列、下記）にサイズを足した
-     * もの。両方とも同じ SELECT の結果から作るので、名前だけの配列と
-     * 資産の配列が食い違うことはない（`internal/api/recordings.go` の
-     * `recordingFromListFields` が同じ `rows` から両方を導出する）。
      */
   encodedAssets?: EncodedAsset[];
-  /**
-     * `encodedAssets`（上記）に置き換え済み。**後方互換のため残している**
-     * （docs/api/rest.md §契約の保護・docs/frontend/assets.md の
-     * 「UI と API のデプロイタイミングはずれ得るため API は後方互換を保つ」）。
-     * 旧バンドルを掴んだブラウザ（`immutable` な静的アセット、開いたままの
-     * タブ）はデプロイ後もこのフィールドだけを読むため、`encodedAssets` を
-     * 足しても消してはならない。`encodedAssets.map(a => a.profile)` と
-     * 常に一致する。
-     * @deprecated
-     */
-  encodedProfiles?: string[];
   /**
      * 凍結された「望ましい」エンコードプロファイル一覧（desired。
      * recordings.encode_profiles）。ingest 完了時に一度だけ焼き込まれ、以後は
@@ -1050,25 +1047,11 @@ start: string;
  */
 end: string;
 /**
- * @minimum 1
- * @maximum 2147483647
- */
-networkId?: number;
-/**
- * 後方互換の serviceId 単独フィルタ。複数指定可
- * （`?serviceId=1&serviceId=2`）。networkId を伴わなければ network を問わず
- * serviceId が一致する番組を返す。networkId を伴えばその network 内で絞る。
- * 厳密な複数サービス指定には `service` を使う。
+ * `Service.id`（`networkId * 100000 + serviceId`）。複数指定は OR。
  * @items.minimum 1
- * @items.maximum 2147483647
+ * @items.maximum 6553565535
  */
-serviceId?: number[];
-/**
- * `<networkId>:<serviceId>` の組（各 ID は 1..2147483647）。複数指定は OR。
- * `networkId` または `serviceId` との同時指定は 400。
- * @items.pattern ^[1-9][0-9]*:[1-9][0-9]*$
- */
-service?: string[];
+service?: number[];
 };
 
 export type ListRecordingsParams = {
@@ -1085,12 +1068,24 @@ qTarget?: ListRecordingsQTarget;
 genre?: number[];
 channelType?: ListRecordingsChannelTypeItem[];
 /**
- * 新形式は `<site>:<networkId>:<serviceId>` で network まで厳密に一致する。
- * 旧 `<site>:<serviceId>` は後方互換で、site 内では network を問わない。
- * networkId / serviceId は 1..2147483647。複数指定は OR。
- * @items.pattern ^[a-z0-9](?:[_-]?[a-z0-9])*:(?:[1-9][0-9]*:)?[1-9][0-9]*$
+ * mirakc サイト名。複数指定は OR。site 名の構文は
+ * `config.mirakc`/`mirakcs` レジストリと同じ（`internal/config` の
+ * `mirakcSiteNamePattern`）。レジストリに無い名前を渡してもエラーには
+ * せず 0 件になる --- 絞り込みは「あるものから選ぶ」操作なので、
+ * 存在しない値の指定は空の結果として素直に読める。
+ * @items.pattern ^[a-z0-9](?:[_-]?[a-z0-9])*$
  */
-service?: string[];
+site?: string[];
+/**
+ * `Service.id`（`networkId * 100000 + serviceId`）。複数指定は OR。
+ *
+ * **site は含めない**（`site` パラメータが別軸）。他の絞り込み軸と
+ * 同じく「軸内は OR、軸間は AND」で、`?site=tokyo&service=400101` は
+ * 「tokyo の BS 101」を意味する。
+ * @items.minimum 1
+ * @items.maximum 6553565535
+ */
+service?: number[];
 /**
  * recordings.status の CHECK と一致させた 4 値（'canceled' は 00021 で
  * CHECK に追加済み）。
@@ -3101,7 +3096,7 @@ export const getListProgramsUrl = (site: string,
   const normalizedParams = new URLSearchParams();
 
   Object.entries(params || {}).forEach(([key, value]) => {
-    const explodeParameters = ["serviceId","service"];
+    const explodeParameters = ["service"];
 
     if (Array.isArray(value) && explodeParameters.includes(key)) {
       value.forEach((v) => {
@@ -3931,7 +3926,7 @@ export const getListRecordingsUrl = (params?: ListRecordingsParams,) => {
   const normalizedParams = new URLSearchParams();
 
   Object.entries(params || {}).forEach(([key, value]) => {
-    const explodeParameters = ["genre","channelType","service"];
+    const explodeParameters = ["genre","channelType","site","service"];
 
     if (Array.isArray(value) && explodeParameters.includes(key)) {
       value.forEach((v) => {
@@ -3970,10 +3965,9 @@ export const getListRecordingsUrl = (params?: ListRecordingsParams,) => {
  *   「録画検索は rulequery を共有しない」
  * - `genre` は `genre_lv1`（ジャンル大分類。`genres` から生成列で導出）との
  *   重なりで絞る（複数指定は OR）
- * - `channelType` / `service` は複数指定可（`style: form, explode: true`）。
- *   `service` の新形式は `<site>:<networkId>:<serviceId>`（例:
- *   `?service=tokyo:4:101`）で network まで厳密に一致する。旧形式
- *   `<site>:<serviceId>` は後方互換として残し、site 内で network を問わない
+ * - `site` / `channelType` / `service` は複数指定可（`style: form,
+ *   explode: true`）。`service` は `Service.id`（例: `?service=400101`）。
+ *   **すべての軸は「軸内は OR、軸間は AND」**
  * - `status` / `source` / `ruleId` は録画自身の観測・出自での絞り込み
  * - `from` / `to` は `program_start_at` の範囲（`from` 以上 `to` 未満）
  *
@@ -3997,9 +3991,8 @@ export const getListRecordingsUrl = (params?: ListRecordingsParams,) => {
  * `ListTrashRecordings` の `deleted_at` 降順からの意図的な変更。理由は
  * docs/api.md「録画一覧: 絞り込み + キーセットページング」参照）。
  *
- * **全サイトの録画を返す**（issue #184 M4-12）。`site` での絞り込み
- * パラメータは持たない（不変条件 11: 必要になった時点で足す）。各要素の
- * `site` フィールドで区別する。
+ * **既定では全サイトの録画を返す**（issue #184 M4-12）。`?site=` で
+ * 絞り込める。各要素の `site` フィールドでも区別できる。
  * @summary List recordings
  */
 export const listRecordings = async (params?: ListRecordingsParams, options?: RequestInit): Promise<listRecordingsResponse> => {

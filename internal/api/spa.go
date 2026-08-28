@@ -49,6 +49,17 @@ func spaOrAPINotFound(spa http.Handler) http.HandlerFunc {
 	}
 }
 
+// writeBindError は生成ハンドラのパラメータ束縛エラーを ErrorResponse で返す。
+// 生成コードは *RequiredParamError / *InvalidParamFormatError などを渡してくる。
+// メッセージはそのまま載せる --- どのパラメータが不正かは利用者が直せる情報で、
+// 内部実装を漏らす類ではない（strconv のエラー文字列までは含むが、これは
+// 入力そのものの説明である）。
+func writeBindError(w http.ResponseWriter, _ *http.Request, err error) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusBadRequest)
+	_ = json.NewEncoder(w).Encode(ErrorResponse{Error: err.Error()})
+}
+
 // NewSPAHandler は Vite ビルド出力を配信する http.Handler を返す。
 // - /assets/* のハッシュ付きファイルには immutable キャッシュヘッダーを付与
 // - それ以外は no-cache（デプロイ直後に最新を返すため）

@@ -98,9 +98,8 @@ ORDER BY start_at, network_id, service_id;
 -- 一覧向けの軽い形。extended / video / audios は返さない（1 行あたり数 KB になり
 -- 時間窓を広げたときの転送量が跳ねるため。詳細は GetEpgProgram で取る）。
 --
--- service_ids は後方互換の serviceId 単独フィルタ。network_id が NULL なら network を
--- 問わない。exact_network_ids / exact_service_ids は同じ添字が 1 組で、呼び出し側が
--- 必ず同じ長さにして渡す。複数組は OR。空/NULL ならその条件を効かせない。
+-- exact_network_ids / exact_service_ids は同じ添字が 1 組で、呼び出し側が必ず
+-- 同じ長さにして渡す。複数組は OR。空/NULL ならその条件を効かせない。
 -- `unnest(a, b)` は sqlc の組み込み analyzer が解決できないため、start_delay.sql と
 -- 同じ generate_subscripts + 添字参照を使う。
 -- name: ListEpgProgramsForList :many
@@ -110,12 +109,6 @@ FROM epg_programs
 WHERE site = $1
   AND start_at < sqlc.arg(window_end)::timestamptz
   AND end_at   > sqlc.arg(window_start)::timestamptz
-  AND (sqlc.narg(network_id)::integer IS NULL OR network_id = sqlc.narg(network_id)::integer)
-  AND (
-    sqlc.arg(service_ids)::integer[] IS NULL
-    OR cardinality(sqlc.arg(service_ids)::integer[]) = 0
-    OR service_id = ANY(sqlc.arg(service_ids)::integer[])
-  )
   AND (
     coalesce(cardinality(sqlc.arg(exact_network_ids)::integer[]), 0) = 0
     OR EXISTS (

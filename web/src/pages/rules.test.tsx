@@ -55,6 +55,7 @@ const profiles: EncodeProfileSummary[] = [{ name: 'h264' }, { name: 'hevc' }]
 
 const services: Service[] = [
   {
+    id: 3273601024,
     networkId: 32736,
     serviceId: 1024,
     name: 'NHK総合',

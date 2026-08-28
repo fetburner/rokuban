@@ -8,6 +8,7 @@ import { orderServices } from '@/lib/epg-grid'
 
 function service(overrides: Partial<Service> = {}): Service {
   return {
+    id: (overrides.networkId ?? 32736) * 100_000 + (overrides.serviceId ?? 1024),
     networkId: 32736,
     serviceId: 1024,
     name: 'NHK総合1・東京',
@@ -39,7 +40,7 @@ describe('ChannelPicker', () => {
     render(
       <ChannelPicker
         services={[service({ serviceId: 1024, name: 'NHK総合1・東京' })]}
-        selected={new Set([1024])}
+        selected={new Set([3273601024])}
         onChange={vi.fn()}
       />,
     )
@@ -60,7 +61,7 @@ describe('ChannelPicker', () => {
     expect(screen.getByText('すべてのチャンネル')).toBeInTheDocument()
 
     rerender(
-      <ChannelPicker services={services} selected={new Set([1024])} onChange={vi.fn()} />,
+      <ChannelPicker services={services} selected={new Set([3273601024])} onChange={vi.fn()} />,
     )
     expect(screen.getByRole('button', { name: 'チャンネル: NHK総合' })).toBeInTheDocument()
     expect(screen.getByText('NHK総合')).toBeInTheDocument()
@@ -68,7 +69,7 @@ describe('ChannelPicker', () => {
     rerender(
       <ChannelPicker
         services={services}
-        selected={new Set([1024, 2024])}
+        selected={new Set([3273601024, 3273602024])}
         onChange={vi.fn()}
       />,
     )
@@ -100,7 +101,7 @@ describe('ChannelPicker', () => {
     const user = userEvent.setup()
     await user.click(within(dialog).getByText('NHK総合'))
 
-    expect(onChange).toHaveBeenCalledExactlyOnceWith(new Set([1024]))
+    expect(onChange).toHaveBeenCalledExactlyOnceWith(new Set([3273601024]))
     // 非同期の空虚な成功を避けるため、閉じていないことを waitFor で確かめる
     // （閉じるアニメーション等が挟まっても安定して判定できるようにする）。
     await waitFor(() => expect(screen.getByRole('dialog', { name: 'チャンネル' })).toBeInTheDocument())
@@ -125,19 +126,19 @@ describe('ChannelPicker', () => {
     await user.click(within(dialog).getByText('NHK総合'))
     rerender(<ChannelPicker services={services} selected={selected} onChange={onChange} />)
     await user.click(within(dialog).getByText('NHKEテレ'))
-    expect(selected).toEqual(new Set([1024, 1032]))
+    expect(selected).toEqual(new Set([3273601024, 3273601032]))
 
     rerender(<ChannelPicker services={services} selected={selected} onChange={onChange} />)
     // まだ開いている状態で、もう一度 NHK総合 を押すと外れる
     await user.click(within(dialog).getByText('NHK総合'))
-    expect(selected).toEqual(new Set([1032]))
+    expect(selected).toEqual(new Set([3273601032]))
   })
 
   it('「すべて」を押すと onChange が空集合で呼ばれ、ピッカーは閉じない', async () => {
     const onChange = vi.fn()
     const services = [service({ serviceId: 1024, name: 'NHK総合' })]
     render(
-      <ChannelPicker services={services} selected={new Set([1024])} onChange={onChange} />,
+      <ChannelPicker services={services} selected={new Set([3273601024])} onChange={onChange} />,
     )
 
     const dialog = await openPicker(/NHK総合/)

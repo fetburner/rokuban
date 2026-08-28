@@ -9,9 +9,12 @@ import { ToastProvider } from '@/components/toaster'
 import { routeTree } from '@/routes'
 
 function service(overrides: Partial<Service>): Service {
+  const networkId = overrides.networkId ?? 1
+  const serviceId = overrides.serviceId ?? 1
   return {
-    networkId: 1,
-    serviceId: 1,
+    id: networkId * 100_000 + serviceId,
+    networkId,
+    serviceId,
     name: 'サービス',
     channelType: 'GR',
     channel: '1',
@@ -159,20 +162,16 @@ function stubFetch(options: {
       return Promise.resolve(new Response(JSON.stringify(services), { status: 200 }))
     }
     if (url.pathname === '/api/sites/default/programs') {
-      // `?serviceId=` は複数指定可（orval のクエリシリアライズは同名パラメータの
-      // 繰り返し）。中断予測（issue #235）のクエリは同じチャンネル種別の
-      // 複数サービスを一度に渡すため `getAll` で読む --- 既存の単一指定
-      // （`?serviceId=1`）も `getAll` は 1 要素の配列として返すので後方互換。
-      const serviceIds = url.searchParams.getAll('serviceId').map(Number)
-      let list = serviceIds.flatMap((id) => programsByServiceId[id] ?? [])
-      // `networkId` が付いていれば AND で絞り込む（issue #291: 同じ serviceId を
-      // 2 network が持つフィクスチャで、意図した network の番組だけを返すため。
-      // `programsByServiceId` のフィクスチャ側で `program.networkId` を
-      // network ごとに変えて区別する）。
-      const networkIdParam = url.searchParams.get('networkId')
-      if (networkIdParam !== null) {
-        list = list.filter((p) => String(p.networkId) === networkIdParam)
-      }
+      // `?service=<Service.id>` は複数指定可（orval のクエリシリアライズは
+      // 同名パラメータの繰り返し）。サーバーは合成 id で厳密に絞るので、
+      // ここでも同じ規則で絞る --- serviceId だけで拾うと、同じ id を持つ
+      // 別 network の番組が混ざるフィクスチャ（issue #291）で実物と食い違う。
+      const ids = url.searchParams.getAll('service').map(Number)
+      const list = ids.flatMap((id) =>
+        (programsByServiceId[id % 100_000] ?? []).filter(
+          (p) => p.networkId === Math.floor(id / 100_000),
+        ),
+      )
       return Promise.resolve(new Response(JSON.stringify(list), { status: 200 }))
     }
     return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }))
@@ -347,7 +346,7 @@ describe('LivePage', () => {
     expect(currentLinks[0]).toHaveTextContent('メインサービス')
   })
 
-  it('?serviceId= で指定したチャンネルを選ぶ', async () => {
+  it('?networkId=&serviceId= で指定したチャンネルを選ぶ', async () => {
     stubFetch({
       services: [
         service({ serviceId: 10, name: 'チャンネル A' }),
@@ -357,12 +356,12 @@ describe('LivePage', () => {
         20: [program({ serviceId: 20, name: 'B の番組' })],
       },
     })
-    renderLive('/live?serviceId=20')
+    renderLive('/live?networkId=1&serviceId=20')
 
     expect(await screen.findByText('B の番組')).toBeInTheDocument()
   })
 
-  it('視聴中チャンネルの「この局の番組表」は既存の ?networkId=&serviceId= で厳密な一局へ遷移する', async () => {
+  it('視聴中チャンネルの「この局の番組表」は ?service=<Service.id> で厳密な一局へ遷移する', async () => {
     stubFetch({
       services: [
         service({ serviceId: 10, name: 'チャンネル A' }),
@@ -372,14 +371,14 @@ describe('LivePage', () => {
         20: [program({ serviceId: 20, name: 'B の番組' })],
       },
     })
-    renderLive('/live?serviceId=20')
+    renderLive('/live?networkId=1&serviceId=20')
 
     expect(await screen.findByText('B の番組')).toBeInTheDocument()
 
     const link = screen.getByRole('link', { name: 'この局の番組表' })
-    // 1 局の導線は既存 API の networkId + serviceId で厳密に表現できる。
-    // 配列は既定のシリアライズ（JSON.stringify）で 1 パラメータに載る。
-    expect(link).toHaveAttribute('href', '/programs?networkId=1&serviceId=%5B20%5D')
+    // 1 局の導線も番組表と同じ `Service.id` で表す。配列は既定の
+    // シリアライズ（JSON.stringify）で 1 パラメータに載る。
+    expect(link).toHaveAttribute('href', '/programs?service=%5B100020%5D')
   })
 
   it('存在しない serviceId を指定すると番組を持つ先頭にフォールバックする', async () => {
@@ -481,8 +480,8 @@ describe('LivePage', () => {
     })
 
     /**
-     * `playingKey`（再生状態の同定）も `liveServiceKey`（`networkId` + `serviceId`
-     * の組）で判定する（`pages/live.tsx` の `playingKey` 定義部のコメント）。
+     * `playingKey`（再生状態の同定）も `Service.id`（`networkId` と `serviceId`
+     * の合成）で判定する（`pages/live.tsx` の `playingKey` 定義部のコメント）。
      * `serviceId` 単独で判定すると、GR（network 1）を再生中に同じ `serviceId` の
      * BS（network 2）へ切り替えたとき「同じチャンネル」と誤認し、GR 向けの
      * `LivePlayer`（接続できません、のエラー表示）を押していない BS へそのまま
@@ -958,9 +957,9 @@ describe('LivePage / 録画予約による中断予測（issue #235 M7-2）', ()
    * network の同じ種別のサービスを一度に問い合わせるため）。`serviceId` が
    * network をまたいで衝突すると、選択中とは別 network・別 channelType の
    * サービスの番組も応答に混入しうる（サーバーは `serviceId` だけを AND する
-   * ため）。`pages/live.tsx` の `sameTypeProgramIds` から `liveServiceKey` に
-   * よる絞り込みを外す変異を当てると、この番組（に付いた予約）が候補集合に
-   * 混入し、存在しない中断警告を出してこのテストが落ちる。
+   * ため）。中断予測の EPG 問い合わせを `Service.id` の組ではなく `serviceId`
+   * だけで投げる変異を当てると、この番組（に付いた予約）が候補集合に混入し、
+   * 存在しない中断警告を出してこのテストが落ちる。
    */
   it('別 network の同じ serviceId の番組では中断警告を誤って出さない（issue #291 と同じ根）', async () => {
     const startAt = new Date(Date.now() + 30 * 60_000).toISOString()

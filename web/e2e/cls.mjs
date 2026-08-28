@@ -57,6 +57,7 @@ const log = (...a) => console.log(...a)
 
 /** services は地上波 + BS + CS 相当の 24 局（実測の再現に要る件数）。 */
 const services = Array.from({ length: 24 }, (_, i) => ({
+  id: (32736 + i) * 100_000 + (1024 + i),
   networkId: 32736 + i,
   serviceId: 1024 + i,
   name: `テスト局${i + 1}`,

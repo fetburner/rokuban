@@ -97,6 +97,7 @@ async function installApiStubs(page) {
     if (p === `/api/sites/${SITE}/services`) {
       return json([
         {
+          id: program.networkId * 100_000 + program.serviceId,
           networkId: program.networkId,
           serviceId: program.serviceId,
           name: 'NHK総合',

@@ -163,7 +163,7 @@ func (w *Watcher) Sweep(ctx context.Context) error {
 
 func (w *Watcher) processRecord(ctx context.Context, record mirakc.Record) error {
 	// tag は programId しか運ばない（#53）。「自分が予約した record か」は
-	// IsOurs（新旧タグ形式のいずれか）で判定し、reservation の特定は record 自身が
+	// IsOurs（rokuban のタグ）で判定し、reservation の特定は record 自身が
 	// 持つ Program.ID（tag のパースを経由しない、常に正確な値）で行う。
 	ours := mirakc.IsOurs(record.Tags)
 

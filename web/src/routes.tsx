@@ -1,4 +1,4 @@
-import { createRootRoute, createRoute, HeadContent, Outlet, redirect } from '@tanstack/react-router'
+import { createRootRoute, createRoute, HeadContent, Outlet } from '@tanstack/react-router'
 
 import { AppShell } from './components/app-shell'
 import { SiteGate } from './components/site-gate'
@@ -61,34 +61,10 @@ const rootRoute = createRootRoute({
  * `/` はホーム（M8-3, issue #242）。番組表は `/programs` へ移設した --- 起動して
  * 最初に見えるのが「これから録るもの」（番組表）ではなく「録れているか・今夜
  * なにが録れるか・見るものはあるか・異常はないか」に 1 画面で答える場所になる。
- *
- * **裸の `/` はホームへ、`?serviceId=` か `?at=` が付いた `/` だけ `/programs` へ
- * リダイレクトする（下記 `homeRoute` の `beforeLoad`）。** この 2 つは番組表固有の
- * クエリで、`/` が番組表だった頃に外部（共有・ブラウザ履歴）へ出た URL
- * （容量不足バッジの `?at=`・ライブ「この局の番組表」の `?serviceId=`）を救うため。
- * リポジトリ内の発行元はこの PR で `/programs` に直したので、リダイレクトが
- * 実際に効くのは外部に残った旧リンクだけになる。区別できない裸の `/` は新しい
- * 意味（ホーム）を優先する --- 番組表はナビの 2 番目にあるので、踏んだ人の
- * コストはクリック 1 回にとどまる。
  */
 const homeRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/',
-  // このルート自身は validateSearch を持たない（ホームは検証すべきクエリ次元を
-  // 持たない）。TanStack Router の非 strict モードは未検証の生の location.search
-  // をそのまま素通しするので、`beforeLoad` はここで `?serviceId=` / `?at=` の
-  // **有無**だけを見る（値の形は問わない --- 形の検証は `/programs` 側
-  // （`parseProgramsSearch`）の仕事のままにする。ここで検証すると「検証は
-  // 誰の仕事か」が 2 箇所に散る）。
-  beforeLoad: ({ search }) => {
-    const raw = search as Record<string, unknown>
-    if (raw.serviceId !== undefined || raw.at !== undefined) {
-      // `search: true` で現在の location.search をそのまま引き継ぐ。ここで
-      // 値を正規化・再構築しない --- `/programs` 側の `validateSearch` が
-      // 同じ生の search を検証するので、二重に検証を書かない。
-      throw redirect({ to: '/programs', search: true, replace: true })
-    }
-  },
   // ナビ（`components/app-shell.tsx` の `navItems`）・`PageHeader` と同じ
   // 「ホーム」を使う。
   head: () => ({ meta: [{ title: pageTitle('ホーム') }] }),
@@ -96,9 +72,8 @@ const homeRoute = createRoute({
 })
 
 /**
- * 番組表の新しいチャンネル絞り込みは `?service=<networkId>:<serviceId>` に持つ。
- * 旧 `networkId` / `serviceId` も後方互換入力として検証する。壊れた値は
- * `parseProgramsSearch` が要素ごとに落とすので、壊れたリンクでも画面は開く。
+ * 番組表のチャンネル絞り込みは `?service=<Service.id>` に持つ。壊れた
+ * 値は `parseProgramsSearch` が要素ごとに落とすので、壊れたリンクでも画面は開く。
  *
  * ルートは `/programs`（M8-3 でホームに `/` を譲った。上記 `homeRoute` 参照）。
  */
@@ -270,8 +245,8 @@ const liveRoute = createRoute({
   // 流儀なので、この PR で共有ヘルパーへ寄せた。
   //
   // `networkId` も同じ流儀でパースする（SI の `networkId` も 1 以上しか存在しない。
-  // issue #291）。壊れた/古い `networkId` を踏んでも `undefined` に落ち、
-  // `serviceId` 単独の旧リンクと同じフォールバック（`pickInitialService`）に乗る。
+  // issue #291）。壊れた値は `undefined` に落ち、`pickInitialService` の既定
+  // （番組を持つ先頭のサービス）に乗る。
   validateSearch: (search: Record<string, unknown>): LivePageSearch => ({
     networkId: parsePositiveIntId(search.networkId),
     serviceId: parsePositiveIntId(search.serviceId),
