@@ -6,10 +6,10 @@
 [operations.md](../operations.md) §5、マニフェスト側の注意は
 [deploy/k8s/README.md](../../deploy/k8s/README.md)。
 
-**この節が見るのは中央（api / notifier / streamer / migration Job / ConfigMap）
-までである。** worker は KEDA の `ScaledJob` なので、CRD の無いクラスタでは
-その部分だけが `no matches for kind "ScaledJob"` で失敗する（Deployment 側の
-apply は成功するので、**ジョブを誰も消化しない構成が黙って立つ**）。
+**この節が見るのは中央までである**（api / notifier / streamer / migration Job /
+ConfigMap）。worker は KEDA の `ScaledJob` なので、CRD の無いクラスタでは
+その部分だけが `no matches for kind "ScaledJob"` で失敗する。**Deployment 側の
+apply は成功するので、ジョブを誰も消化しない構成が黙って立つ。**
 KEDA 込みの確認は下の§受け入れ判定ハーネスが自動で行う。
 
 **ロール分割デプロイ全体の受け入れ（KEDA / watcher の二重起動 / サイト間の
@@ -199,10 +199,12 @@ mirakc は実機ではなくモックで確認している（同 README）。
 
 **`--oracles` は長い。** 判定 2 は CronJob の自然な発火（分単位）を待ち、
 判定 3 / 5 は「起きないこと」を窓で見る。変異のたびにその待ちを通るので、
-短縮が効かない。**製品のワークロードが入ってからさらに伸びた** --- O1 の変異
-（api の Service セレクタを外す）で判定 1.6 / 1.7 が実際に走るようになり、
-到達できない api を 240 秒ずつ待つ経路が増えたため（それ以前は対象が無くて
-即 TODO で抜けていた）。一部だけ見たいときは `E2E_ORACLES_ONLY=3`。
+短縮が効かない。
+
+**製品のワークロードが入ってからさらに伸びた。** O1 の変異（api の Service
+セレクタを外す）で判定 1.6 / 1.7 が実際に走るようになったためである。
+到達できない api を 240 秒ずつ待つ経路が増えた（それ以前は対象が無くて即
+TODO で抜けていた）。一部だけ見たいときは `E2E_ORACLES_ONLY=3`。
 
 **イメージのビルドを含めると初回はさらに数分かかる。** ffmpeg 入り
 （`Dockerfile.full`）を焼いて `kind load` する時間で、`--no-build` を付けた
@@ -254,8 +256,9 @@ CI が見るのはクラスタが要らない範囲の 3 つ。
   `kubectl -n keda logs deploy/keda-operator | grep -i error` で見る。
   直しても spec が変わらないと再 reconcile されない。ScaledJob を作り直すのが早い
 - **`--oracles` を中断した後、製品の Job が起きない / CronJob が止まっている**:
-  オラクル 2〜5 は製品のワークロードを止めてから回す（身代わりと同じキュー・
-  同じ mirakc モックを共有しているため。[deploy/k8s/e2e/README.md](../../deploy/k8s/e2e/README.md)）。
+  オラクル 2〜5 は製品のワークロードを止めてから回す。身代わりと同じキューと
+  同じ mirakc モックを共有しているためである
+  （[deploy/k8s/e2e/README.md](../../deploy/k8s/e2e/README.md)）。
   止めた印はクラスタ側の annotation（`rokuban-e2e/paused-by-harness`）にあり、
   **次の `run.sh` が起動時に戻す**。手で戻すなら
   `kubectl -n rokuban-e2e get scaledjobs,cronjobs,deployments -o json | grep paused-by-harness`

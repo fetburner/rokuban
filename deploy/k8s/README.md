@@ -18,18 +18,20 @@ schemas/         kubeconform に渡す CRD スキーマ（KEDA の ScaledJob）
 ```
 
 **base に site 名が一度も出てこない。** サイトを増やす差分は「`mirakcs:` に
-1 要素 + `site/` を 1 組生やす」だけになる（`overlays/e2e` が実例。判定は
-`workloads_test.go` の `TestBaseIsSiteIndependent`）。`site/` は site 名
-`default`（`mirakc:` 単一形式で site を書かなかったときの既定）で書いてあるので、
-**単一サイトの overlay は patch を 1 つも書かない**。
+1 要素 + `site/` を 1 組生やす」だけになる（`overlays/e2e` が実例）。
+判定は `workloads_test.go` の `TestBaseIsSiteIndependent`。
+
+`site/` は site 名 `default` で書いてある。`mirakc:` 単一形式で site を
+書かなかったときの既定がこれなので、**単一サイトの overlay は patch を
+1 つも書かない**。
 
 **まだ無いもの**:
 
 - **入口（Ingress）**。当面は `kubectl port-forward svc/rokuban-api 40773` で触る
-- **ライブ視聴の streamer**。**設計どおりには書けない** ---
+- **ライブ視聴の streamer**。**設計どおりには書けない。**
   docs/operations.md §5 は「録画配信は中央（site 非依存）、ライブはサイトごと」と
-  決めているが、`live.enabled: true` は **streamer ロールの全 Pod にちょうど 1
-  サイトの束縛を要求する**（`cmd/rokuban/server.go`）。ConfigMap は 1 個で全 Pod が
+  決めている。ところが `live.enabled: true` は **streamer ロールの全 Pod に
+  ちょうど 1 サイトの束縛を要求する**（`cmd/rokuban/server.go`）。ConfigMap は 1 個で全 Pod が
   同じ config.yml を共有するので、ライブを有効にした瞬間に中央の録画配信
   Deployment（`--sites=`）が起動しなくなる。**中央の録画配信にも
   `--sites <site>` を書けば動く**が、それは「録画配信は site 非依存」という
@@ -111,8 +113,8 @@ CRD が無いクラスタに apply すると、その部分だけが
 - **env で渡すのは機微情報だけ**（`${POSTGRES_PASSWORD}` の 1 つ）。それ以外の
   環境差は overlay で patch を当てる
 - **Pod ごとに違うのは argv だけ。** キューの絞り込みも argv（`--queues`）に
-  寄せてある --- config キー（`worker.queues`）でしか指定できないと ScaledJob の
-  数だけ ConfigMap が増える。**共有する config.yml に `worker.queues` を書くと、
+  寄せてある。config キー（`worker.queues`）でしか指定できないと、ScaledJob の
+  数だけ ConfigMap が増えるため。**共有する config.yml に `worker.queues` を書くと、
   `--queues` を渡している worker が全部起動エラーになる**（両方指定は排他）
 - **worker の Job は 1 件消化して自分で終了する**（`--once`）。ScaledJob は Job の
   自己終了を前提にした機構で、常駐する `--roles worker` を載せると
@@ -161,20 +163,25 @@ kind での動作確認手順は [docs/runbook/k8s.md](../../docs/runbook/k8s.md
 いずれも実測で両方緑だった（一覧は `manifests_test.go` の冒頭コメント）。
 壊れるのはクラスタに載せた後になる。
 
-**CRD（KEDA の `ScaledJob`）は `schemas/` に置いたスキーマで検査する**
-（`-ignore-missing-schemas` は未知の kind を黙って飛ばすので採らない。
-出どころと「`-strict` を効かせるための加工」は [schemas/README.md](schemas/README.md)）。
+**CRD（KEDA の `ScaledJob`）は `schemas/` に置いたスキーマで検査する。**
+`-ignore-missing-schemas` は未知の kind を黙って飛ばすので採らない。
+出どころと「`-strict` を効かせるための加工」は [schemas/README.md](schemas/README.md)。
 Go テスト側は CRD でも Pod テンプレートを見つけて検査する。`ScaledJob` の
 `spec.jobTargetRef.template` は対応済みで、未知の kind は
 `TestEveryWorkloadIsInspected` が落とす。
 
-**argv とキュー名の噛み合わせは `workloads_test.go` が見る**（`--queues` と
-トリガのクエリ / site 束縛キューの置き場所 / ffmpeg の要否とイメージ /
-`rokuban enqueue` の全ジョブに CronJob があること / overlay の JSON6902 patch が
-実際に site 名の位置を指していること）。**キューやジョブを足した日に、
-マニフェスト側の書き忘れがここで落ちる** --- 一覧は
-`internal/worker.AllQueueNames()` と `cmd/rokuban/enqueue.go` を権威にしてあり、
-テストに書き写していない。
+**argv とキュー名の噛み合わせは `workloads_test.go` が見る。** 見ているものは
+次のとおり。
+
+- `--queues` とトリガのクエリが同じ物理キュー名を指していること
+- site 束縛キューの ScaledJob が `site/` に居ること
+- ffmpeg を要る役だけが `Dockerfile.full` のイメージを指していること
+- `rokuban enqueue` の全ジョブに CronJob があること
+- overlay の JSON6902 patch が実際に site 名の位置を指していること
+
+**キューやジョブを足した日に、マニフェスト側の書き忘れがここで落ちる。**
+一覧は `internal/worker.AllQueueNames()` と `cmd/rokuban/enqueue.go` を
+権威にしてあり、テストに書き写していない。
 
 ## ここを使うハーネス
 

@@ -59,11 +59,11 @@ E2E_ORACLES_ONLY=3 ./deploy/k8s/e2e/run.sh --oracles   # オラクルも一部�
   deploy/k8s/README.md §まだ無いもの）。判定 1.4 が Ready を見ている
   `component=streamer` は録画配信のほうである
 - **レプリカ数と `resources.requests` は出荷値ではない。** `overlays/e2e` が
-  1 ノードの kind に収まるように削っている（notifier / streamer は 1、
-  requests は worker 10m / 常駐 25m）。**削らないと判定が
-  `Insufficient cpu` で止まる**（実測。ScaledJob は滞留 1 件ごとに Job を
-  起こすので、CronJob が毎分投入する構成では同時に十数個の Pod が要求される）。
-  出荷値は base 側で、`deploy/k8s/workloads_test.go` が見ている
+  1 ノードの kind に収まるように削っている。notifier / streamer は 1 で、
+  requests は worker 10m / 常駐 25m。**削らないと判定が
+  `Insufficient cpu` で止まる**（実測）。ScaledJob は滞留 1 件ごとに Job を
+  起こすので、CronJob が毎分投入する構成では Pod が十数個並ぶ。
+  出荷値は base 側にある
 - **`encode` の同時実行本数は出荷値ではない。** base は 2（`encode_reconcile` /
   `encode_enqueue_hint` が同じキューに載るので、長いエンコードの裏で詰まらせ
   ないため）だが、`overlays/e2e` は 1 に絞っている --- 判定 3 は active な Job の
@@ -74,12 +74,17 @@ E2E_ORACLES_ONLY=3 ./deploy/k8s/e2e/run.sh --oracles   # オラクルも一部�
   `ReadWriteOnce` に落としている。判定が緑でも「RWX が効いた」証拠にはならない
   （同じノード上のディレクトリを複数の Pod が開いているだけ）
 
-**網羅を判定に入れる代わりに、`go test ./deploy/k8s/` が形で見ている。**
-「全キューに ScaledJob があるか」「`rokuban enqueue` の全ジョブに CronJob が
-あるか」「トリガのクエリが物理キュー名か」は、クラスタを立てずに
-`internal/worker` と `cmd/rokuban/enqueue.go` を権威にして機械判定できる
-（`deploy/k8s/workloads_test.go`）。**このハーネスが見るのは、そこから先の
-「実際に動くか」だけである。**
+**網羅を判定に入れる代わりに、`go test ./deploy/k8s/` が形で見ている**
+（`deploy/k8s/workloads_test.go`）。クラスタを立てずに機械判定できるのは
+次の 3 つ。
+
+- 全キューに ScaledJob があるか
+- `rokuban enqueue` の全ジョブに CronJob があるか
+- トリガのクエリが物理キュー名か
+
+一覧の権威は `internal/worker` と `cmd/rokuban/enqueue.go` にある。
+
+**このハーネスが見るのは、そこから先の「実際に動くか」だけである。**
 
 **判定が黙って死ぬのも 0 にしない。** 各判定は自分が記録するはずの id を
 `plan` で先に宣言し、宣言と記録が食い違えば集計側が FAIL を書き足す。これが
@@ -193,11 +198,12 @@ true のままだと、判定 2 が「worker が自分で投入して自分で�
   滞留を、製品の `epg_sitea` の ScaledJob が消化した
 
 したがって**オラクル 2〜5 の間は製品のワークロードを止める**
-（`pause_product_workloads`。ScaledJob は pause、CronJob は suspend、watcher の
-Deployment は 0 レプリカ）。止めたものだけをクラスタ側の annotation で覚えて
-戻す --- 中断しても、次の `run.sh` が起動時に戻す。**オラクル 1 は含めない**
-（あちらは製品の役が上がっていることを見るオラクルなので、止めると判定 1.3 が
-「replicas が 0」で落ちる）。
+（`pause_product_workloads`）。ScaledJob は pause、CronJob は suspend、
+watcher の Deployment は 0 レプリカにする。止めたものだけをクラスタ側の
+annotation で覚えて戻すので、中断しても次の `run.sh` が起動時に戻す。
+
+**オラクル 1 は含めない。** あちらは製品の役が上がっていることを見る
+オラクルなので、止めると判定 1.3 が「replicas が 0」で落ちる。
 
 **判定 4 は止めないと嘘の緑になる。** 判定 4 が数えるのは mirakc モックの
 `/events` の同時接続数なので、製品の watcher が 1 本張っていると、身代わりが
@@ -225,8 +231,8 @@ Deployment は 0 レプリカ）。止めたものだけをクラスタ側の an
   壊して赤くする方法が思い付かなかった（3.3 と 3.4 は確かめてある）
 - **判定 1.6 / 1.7（番組表が見える / 予約が mirakc に反映される）には変異が
   無い。** 製品の worker が入ったので、両方とも実際に緑になることは確認済み
-  （`run.sh` の実測。それ以前は「緑になったことも赤になったこともない判定」
-  だった）。ただし**壊して赤くなることは確かめていない** --- 判定 4 が本物の
+  （`run.sh` の実測）。それ以前は「緑になったことも赤になったこともない判定」
+  だった。ただし**壊して赤くなることは確かめていない。** 判定 4 が本物の
   イメージで身代わりを立てているのと同じやり方（`fixtures/watcher.yaml`）で、
   `epg_sync` と `reconcile_pass` を消化する身代わりを足せば、ここも変異まで
   通せる
@@ -296,13 +302,14 @@ ScaledJob 自体の書き方（トリガの接続先・`rollout.strategy`・切�
   差し替えが噛み合わせているものは 5 つで、**どれか 1 つでも欠けると判定 3 は
   「殺された」ではなく TODO で抜ける**:
     - `overlays/e2e/config.yml` の `encode.profiles`（`e2e-slow`）。**狙って
-      遅くしてある** --- 3.2 と 3.3 がそれぞれ `2 × pollingInterval` の窓を
-      取るので、エンコードは合計 4×pollingInterval 以上走り続ける必要がある
-    - ffmpeg 入りイメージ（`lib/env.sh` の `E2E_FULL_IMAGE`、`lib/cluster.sh` の
-      build + `kind load`、`overlays/e2e/kustomization.yaml` の `images:`）
-    - media ボリュームの上の原本（`cluster/media-seed-job.yaml`。
-      **ツールボックスから書けない** --- 製品の PVC はツールボックスより後に
-      立つので、挿すと足場が Pending で止まる）
+      遅くしてある。** 3.2 と 3.3 がそれぞれ `2 × pollingInterval` の窓を
+      取るので、エンコードはその合計より長く走り続ける必要がある
+    - ffmpeg 入りイメージ。触る場所は 3 つある（`lib/env.sh` の
+      `E2E_FULL_IMAGE`、`lib/cluster.sh` の build と `kind load`、
+      `overlays/e2e/kustomization.yaml` の `images:`）
+    - media ボリュームの上の原本（`cluster/media-seed-job.yaml`）。
+      **ツールボックスからは書けない。** 製品の PVC はツールボックスより後に
+      立つので、挿すと足場が Pending で止まる
     - その原本を指す `recordings` / `media_assets` の行
     - `encode` キューへの直 INSERT（**`rokuban enqueue` に `encode` は無い**。
       あるのは DB を読んで投入する `encode-reconcile`）
