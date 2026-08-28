@@ -1,0 +1,399 @@
+# site 束縛キューの worker（KEDA ScaledJob）。サイト 1 つぶん。
+#
+# **site 束縛キューと site 非依存キューを混ぜない**（docs/operations.md §5）。
+# 混ぜると中央のジョブがサイト側で起きる。site 非依存のぶんは
+# `deploy/k8s/base/worker-scaledjobs.yaml` にあり、そちらは 1 組しか無い。
+#
+# **スケーラが引くキュー名が site 修飾されていること**が、この 4 本の要点である。
+# 物理キュー名は論理名と違い `<論理名>_<site>` になる（`internal/worker` の
+# `qualifyQueueName`）。共有キューを見ていると、**サイト A のスケーラがサイト B の
+# 滞留で Job を起こし、起きた Job は自分のサイトの仕事が無いまま `verifySite` で
+# 死んでまた起きる** --- CPU を焼き続けるだけで、症状は「B が遅い」ではなく
+# 「A のノードが埋まる」になる。受け入れ判定ハーネスの判定 5 がこれを見ている。
+#
+# 共通の規律（`--once` / `backoffLimit: 0` / `rollout.strategy: gradual` /
+# トリガが数える状態 / 接続先を FQDN にする理由）は
+# `deploy/k8s/base/worker-scaledjobs.yaml` の冒頭にまとめてある。
+#
+# **argv の 8 番目（index 7）が site 名**で、4 本とも同じ位置に揃えてある
+# （`site/kustomization.yaml` のコメント）。
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledJob
+metadata:
+  name: rokuban-worker-ingest
+  labels:
+    app.kubernetes.io/name: rokuban
+    app.kubernetes.io/component: worker
+    rokuban.fetburner.net/queue: ingest
+    rokuban.fetburner.net/site-scoped: "true"
+spec:
+  pollingInterval: 30
+  # 同時録画数ぶんの取り込みが並びうる。チューナー数の上限は mirakc 側にあるので、
+  # ここは「同時に走ってよい取り込みの本数」（`ingest.concurrency` の既定は 2）に
+  # 合わせた控えめな値にしておく。
+  maxReplicaCount: 4
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  scalingStrategy:
+    strategy: accurate
+  rollout:
+    strategy: gradual
+  jobTargetRef:
+    backoffLimit: 0
+    template:
+      metadata:
+        labels:
+          app.kubernetes.io/name: rokuban
+          app.kubernetes.io/component: worker
+      spec:
+        restartPolicy: Never
+        enableServiceLinks: false
+        automountServiceAccountToken: false
+        # **長時間ジョブ。** 10s + `--soft-stop-timeout` 30m + 10s を包む
+        # （docs/operations.md §5「Deployment 併用時」の足し算）。猶予の外に
+        # 出すと SIGKILL が先に来て、行が `running` のまま誰にも回収されない。
+        terminationGracePeriodSeconds: 1830
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 65534
+          runAsGroup: 65534
+          fsGroup: 65534
+          # **ScaledJob はキューアイテムごとに新しい Pod を作る。** 既定の
+          # `Always` だと、ジョブが起きるたびにアーカイブ全体の再帰 chown を
+          # 待つことになる（理由の全文は deploy/k8s/base/streamer.yaml）。
+          fsGroupChangePolicy: OnRootMismatch
+          seccompProfile:
+            type: RuntimeDefault
+        containers:
+          - name: worker
+            # ingest は mirakc から録画を引いてアーカイブへ書くだけで、
+            # TS のストリーム処理はしない（不変条件 6）。ffmpeg は要らない。
+            image: ghcr.io/fetburner/rokuban:latest
+            args:
+              - server
+              - --roles
+              - worker
+              - --once
+              - --queues
+              - ingest
+              - --sites
+              - default
+              - --soft-stop-timeout
+              - 30m
+              - --config
+              - /etc/rokuban/config.yml
+            env:
+              - name: POSTGRES_CONNECTION_STRING
+                valueFrom:
+                  secretKeyRef:
+                    name: rokuban-secrets
+                    key: POSTGRES_CONNECTION_STRING
+            envFrom:
+              - secretRef:
+                  name: rokuban-secrets
+            volumeMounts:
+              - name: config
+                mountPath: /etc/rokuban
+                readOnly: true
+              - name: media
+                mountPath: /mnt/media
+              - name: scratch
+                mountPath: /var/tmp/rokuban
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop: ["ALL"]
+            resources:
+              requests:
+                cpu: 50m
+                memory: 128Mi
+              limits:
+                memory: 512Mi
+        volumes:
+          - name: config
+            configMap:
+              name: rokuban-config
+          - name: media
+            persistentVolumeClaim:
+              claimName: rokuban-media
+          - name: scratch
+            emptyDir: {}
+  triggers:
+    - type: postgresql
+      metadata:
+        query: >-
+          SELECT count(*) FROM river_job WHERE queue = 'ingest_default' AND state IN ('available','retryable')
+        targetQueryValue: "1"
+        connectionFromEnv: POSTGRES_CONNECTION_STRING
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledJob
+metadata:
+  name: rokuban-worker-epg
+  labels:
+    app.kubernetes.io/name: rokuban
+    app.kubernetes.io/component: worker
+    rokuban.fetburner.net/queue: epg
+    rokuban.fetburner.net/site-scoped: "true"
+spec:
+  pollingInterval: 30
+  # epg_sync / tuner_sync はどちらも UniqueOpts{ByQueue} で合流するので、
+  # 待ち行列は 2 件を超えない。
+  maxReplicaCount: 2
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  scalingStrategy:
+    strategy: accurate
+  rollout:
+    strategy: gradual
+  jobTargetRef:
+    backoffLimit: 0
+    template:
+      metadata:
+        labels:
+          app.kubernetes.io/name: rokuban
+          app.kubernetes.io/component: worker
+      spec:
+        restartPolicy: Never
+        enableServiceLinks: false
+        automountServiceAccountToken: false
+        terminationGracePeriodSeconds: 30
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 65534
+          runAsGroup: 65534
+          seccompProfile:
+            type: RuntimeDefault
+        containers:
+          - name: worker
+            image: ghcr.io/fetburner/rokuban:latest
+            args:
+              - server
+              - --roles
+              - worker
+              - --once
+              - --queues
+              - epg
+              - --sites
+              - default
+              - --soft-stop-timeout
+              - 5s
+              - --config
+              - /etc/rokuban/config.yml
+            env:
+              - name: POSTGRES_CONNECTION_STRING
+                valueFrom:
+                  secretKeyRef:
+                    name: rokuban-secrets
+                    key: POSTGRES_CONNECTION_STRING
+            envFrom:
+              - secretRef:
+                  name: rokuban-secrets
+            volumeMounts:
+              - name: config
+                mountPath: /etc/rokuban
+                readOnly: true
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop: ["ALL"]
+            resources:
+              requests:
+                cpu: 50m
+                memory: 128Mi
+              limits:
+                memory: 512Mi
+        volumes:
+          - name: config
+            configMap:
+              name: rokuban-config
+  triggers:
+    - type: postgresql
+      metadata:
+        query: >-
+          SELECT count(*) FROM river_job WHERE queue = 'epg_default' AND state IN ('available','retryable')
+        targetQueryValue: "1"
+        connectionFromEnv: POSTGRES_CONNECTION_STRING
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledJob
+metadata:
+  name: rokuban-worker-reconciler
+  labels:
+    app.kubernetes.io/name: rokuban
+    app.kubernetes.io/component: worker
+    rokuban.fetburner.net/queue: reconciler
+    rokuban.fetburner.net/site-scoped: "true"
+spec:
+  pollingInterval: 30
+  maxReplicaCount: 2
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  scalingStrategy:
+    strategy: accurate
+  rollout:
+    strategy: gradual
+  jobTargetRef:
+    backoffLimit: 0
+    template:
+      metadata:
+        labels:
+          app.kubernetes.io/name: rokuban
+          app.kubernetes.io/component: worker
+      spec:
+        restartPolicy: Never
+        enableServiceLinks: false
+        automountServiceAccountToken: false
+        terminationGracePeriodSeconds: 30
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 65534
+          runAsGroup: 65534
+          seccompProfile:
+            type: RuntimeDefault
+        containers:
+          - name: worker
+            image: ghcr.io/fetburner/rokuban:latest
+            args:
+              - server
+              - --roles
+              - worker
+              - --once
+              - --queues
+              - reconciler
+              - --sites
+              - default
+              - --soft-stop-timeout
+              - 5s
+              - --config
+              - /etc/rokuban/config.yml
+            env:
+              - name: POSTGRES_CONNECTION_STRING
+                valueFrom:
+                  secretKeyRef:
+                    name: rokuban-secrets
+                    key: POSTGRES_CONNECTION_STRING
+            envFrom:
+              - secretRef:
+                  name: rokuban-secrets
+            volumeMounts:
+              - name: config
+                mountPath: /etc/rokuban
+                readOnly: true
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop: ["ALL"]
+            resources:
+              requests:
+                cpu: 50m
+                memory: 128Mi
+              limits:
+                memory: 512Mi
+        volumes:
+          - name: config
+            configMap:
+              name: rokuban-config
+  triggers:
+    - type: postgresql
+      metadata:
+        query: >-
+          SELECT count(*) FROM river_job WHERE queue = 'reconciler_default' AND state IN ('available','retryable')
+        targetQueryValue: "1"
+        connectionFromEnv: POSTGRES_CONNECTION_STRING
+---
+# `watcher` キュー（record_sweep）。**watcher ロールとは別物である** ---
+# 論理キュー名が `watcher` なだけで、これを引くのは worker ロールの Job である
+# （`internal/worker` の recordSweepQueue）。同じ名前の Deployment（watcher ロール）
+# は `site/watcher.yaml` にあり、そちらは常駐して mirakc の SSE を張る。
+apiVersion: keda.sh/v1alpha1
+kind: ScaledJob
+metadata:
+  name: rokuban-worker-record-sweep
+  labels:
+    app.kubernetes.io/name: rokuban
+    app.kubernetes.io/component: worker
+    rokuban.fetburner.net/queue: watcher
+    rokuban.fetburner.net/site-scoped: "true"
+spec:
+  pollingInterval: 30
+  maxReplicaCount: 2
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  scalingStrategy:
+    strategy: accurate
+  rollout:
+    strategy: gradual
+  jobTargetRef:
+    backoffLimit: 0
+    template:
+      metadata:
+        labels:
+          app.kubernetes.io/name: rokuban
+          app.kubernetes.io/component: worker
+      spec:
+        restartPolicy: Never
+        enableServiceLinks: false
+        automountServiceAccountToken: false
+        terminationGracePeriodSeconds: 30
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 65534
+          runAsGroup: 65534
+          seccompProfile:
+            type: RuntimeDefault
+        containers:
+          - name: worker
+            image: ghcr.io/fetburner/rokuban:latest
+            args:
+              - server
+              - --roles
+              - worker
+              - --once
+              - --queues
+              - watcher
+              - --sites
+              - default
+              - --soft-stop-timeout
+              - 5s
+              - --config
+              - /etc/rokuban/config.yml
+            env:
+              - name: POSTGRES_CONNECTION_STRING
+                valueFrom:
+                  secretKeyRef:
+                    name: rokuban-secrets
+                    key: POSTGRES_CONNECTION_STRING
+            envFrom:
+              - secretRef:
+                  name: rokuban-secrets
+            volumeMounts:
+              - name: config
+                mountPath: /etc/rokuban
+                readOnly: true
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop: ["ALL"]
+            resources:
+              requests:
+                cpu: 50m
+                memory: 128Mi
+              limits:
+                memory: 512Mi
+        volumes:
+          - name: config
+            configMap:
+              name: rokuban-config
+  triggers:
+    - type: postgresql
+      metadata:
+        query: >-
+          SELECT count(*) FROM river_job WHERE queue = 'watcher_default' AND state IN ('available','retryable')
+        targetQueryValue: "1"
+        connectionFromEnv: POSTGRES_CONNECTION_STRING

@@ -1,0 +1,322 @@
+# site 束縛の定期投入（`rokuban enqueue <ジョブ名> --site <site>`）。サイト 1 つぶん。
+#
+# 共通の規律（argv を平たく書く理由 / `enqueue` の冪等性 / base に実運用の
+# schedule を書く理由）は `deploy/k8s/base/cronjobs.yaml` の冒頭にまとめてある。
+#
+# **argv の 4 番目（index 3）が site 名**で、5 本とも同じ位置に揃えてある
+# （`site/kustomization.yaml` のコメント）。
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: rokuban-enqueue-epg-sync
+  labels:
+    app.kubernetes.io/name: rokuban
+    app.kubernetes.io/component: enqueue
+    rokuban.fetburner.net/site-scoped: "true"
+spec:
+  # in-process の既定は 10 分（internal/worker の defaultEpgSyncInterval）。
+  schedule: "*/10 * * * *"
+  startingDeadlineSeconds: 300
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: rokuban
+            app.kubernetes.io/component: enqueue
+        spec:
+          restartPolicy: Never
+          enableServiceLinks: false
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: enqueue
+              image: ghcr.io/fetburner/rokuban:latest
+              args: ["enqueue", "epg-sync", "--site", "default", "--config", "/etc/rokuban/config.yml"]
+              envFrom:
+                - secretRef:
+                    name: rokuban-secrets
+              volumeMounts:
+                - name: config
+                  mountPath: /etc/rokuban
+                  readOnly: true
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              resources:
+                requests:
+                  cpu: 20m
+                  memory: 32Mi
+                limits:
+                  memory: 128Mi
+          volumes:
+            - name: config
+              configMap:
+                name: rokuban-config
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: rokuban-enqueue-tuner-sync
+  labels:
+    app.kubernetes.io/name: rokuban
+    app.kubernetes.io/component: enqueue
+    rokuban.fetburner.net/site-scoped: "true"
+spec:
+  # in-process の既定は 10 分（internal/worker の defaultTunerSyncInterval）。
+  # チューナー構成の変更には mirakc の再起動が要るので更新頻度は低くてよい。
+  schedule: "*/10 * * * *"
+  startingDeadlineSeconds: 300
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: rokuban
+            app.kubernetes.io/component: enqueue
+        spec:
+          restartPolicy: Never
+          enableServiceLinks: false
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: enqueue
+              image: ghcr.io/fetburner/rokuban:latest
+              args: ["enqueue", "tuner-sync", "--site", "default", "--config", "/etc/rokuban/config.yml"]
+              envFrom:
+                - secretRef:
+                    name: rokuban-secrets
+              volumeMounts:
+                - name: config
+                  mountPath: /etc/rokuban
+                  readOnly: true
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              resources:
+                requests:
+                  cpu: 20m
+                  memory: 32Mi
+                limits:
+                  memory: 128Mi
+          volumes:
+            - name: config
+              configMap:
+                name: rokuban-config
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: rokuban-enqueue-ruler-pass
+  labels:
+    app.kubernetes.io/name: rokuban
+    app.kubernetes.io/component: enqueue
+    rokuban.fetburner.net/site-scoped: "true"
+spec:
+  # in-process の既定は 10 分（internal/worker の defaultRulerPassInterval）。
+  #
+  # **`ruler` キューは site 修飾されない**（`RulerPassArgs.Site` はクエリの
+  # 絞り込みで、キュー名には出ない。docs/operations.md §5 のキュー表）。
+  # つまり投入はサイトごとだが、消化するのは中央の ScaledJob 1 本である
+  # （`deploy/k8s/base/worker-scaledjobs.yaml`）。
+  schedule: "*/10 * * * *"
+  startingDeadlineSeconds: 300
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: rokuban
+            app.kubernetes.io/component: enqueue
+        spec:
+          restartPolicy: Never
+          enableServiceLinks: false
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: enqueue
+              image: ghcr.io/fetburner/rokuban:latest
+              args: ["enqueue", "ruler-pass", "--site", "default", "--config", "/etc/rokuban/config.yml"]
+              envFrom:
+                - secretRef:
+                    name: rokuban-secrets
+              volumeMounts:
+                - name: config
+                  mountPath: /etc/rokuban
+                  readOnly: true
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              resources:
+                requests:
+                  cpu: 20m
+                  memory: 32Mi
+                limits:
+                  memory: 128Mi
+          volumes:
+            - name: config
+              configMap:
+                name: rokuban-config
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: rokuban-enqueue-reconcile-pass
+  labels:
+    app.kubernetes.io/name: rokuban
+    app.kubernetes.io/component: enqueue
+    rokuban.fetburner.net/site-scoped: "true"
+spec:
+  # **in-process の既定は 30 秒だが、CronJob の分解能は 1 分である。**
+  # ここだけ「実運用の間隔 = 毎分」になるので、`overlays/e2e` の毎分 patch と
+  # 見分けが付かない。**判定 2 が測る CronJob は epg-sync のほうである**
+  # （`deploy/k8s/workloads_test.go` の TestCronSchedulesAreProductionValues が
+  # 見ているのもそちら）。
+  #
+  # レベルトリガー設計なので、投入が遅れても取りこぼしは次のパスが拾う
+  # （docs/recording.md）。30 秒との差は「予約が mirakc に届くまでの遅延の上限」に
+  # だけ効く。
+  schedule: "* * * * *"
+  # 毎分なので、取りこぼしを次の分まで引きずらない短い幅にする。
+  startingDeadlineSeconds: 45
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: rokuban
+            app.kubernetes.io/component: enqueue
+        spec:
+          restartPolicy: Never
+          enableServiceLinks: false
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: enqueue
+              image: ghcr.io/fetburner/rokuban:latest
+              args: ["enqueue", "reconcile-pass", "--site", "default", "--config", "/etc/rokuban/config.yml"]
+              envFrom:
+                - secretRef:
+                    name: rokuban-secrets
+              volumeMounts:
+                - name: config
+                  mountPath: /etc/rokuban
+                  readOnly: true
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              resources:
+                requests:
+                  cpu: 20m
+                  memory: 32Mi
+                limits:
+                  memory: 128Mi
+          volumes:
+            - name: config
+              configMap:
+                name: rokuban-config
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: rokuban-enqueue-record-sweep
+  labels:
+    app.kubernetes.io/name: rokuban
+    app.kubernetes.io/component: enqueue
+    rokuban.fetburner.net/site-scoped: "true"
+spec:
+  # in-process の既定は 5 分（internal/worker の defaultRecordSweepInterval）。
+  schedule: "*/5 * * * *"
+  startingDeadlineSeconds: 240
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: rokuban
+            app.kubernetes.io/component: enqueue
+        spec:
+          restartPolicy: Never
+          enableServiceLinks: false
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: enqueue
+              image: ghcr.io/fetburner/rokuban:latest
+              args: ["enqueue", "record-sweep", "--site", "default", "--config", "/etc/rokuban/config.yml"]
+              envFrom:
+                - secretRef:
+                    name: rokuban-secrets
+              volumeMounts:
+                - name: config
+                  mountPath: /etc/rokuban
+                  readOnly: true
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              resources:
+                requests:
+                  cpu: 20m
+                  memory: 32Mi
+                limits:
+                  memory: 128Mi
+          volumes:
+            - name: config
+              configMap:
+                name: rokuban-config

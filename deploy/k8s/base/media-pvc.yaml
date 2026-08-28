@@ -1,0 +1,35 @@
+# アーカイブ（`storage.media_dir`）の PVC。
+#
+# **アーカイブは単一である**（2 階層のうち下段。docs/storage.md §5）。録画バッファは
+# サイトごとのエッジにあるが、アーカイブは 1 つで、site 非依存の役（streamer /
+# encode / thumbnail / cleanup / storage）と site 束縛の ingest が同じものを見る。
+# したがって PVC も 1 本で、**複数 Pod が同時にマウントする** ---
+# `ReadWriteMany` が要る。
+#
+# **RWX を満たす CSI の同定はここではしない**（storageClassName を書いていないので
+# クラスタの既定が使われる）。実体の検証は別タスク（`docs/operations.md` §4）。
+# 単一ノードの kind では既定の `standard`（rancher.io/local-path）が RWX を
+# 拒否せずに束ねるので、ハーネスはこのまま通る --- **それは「RWX が効いている」
+# ことの証拠ではない**（同じノード上のディレクトリを 2 つの Pod が開いているだけ）。
+#
+# **未解決: マウントの所有権。** イメージは `/mnt/media` を実行ユーザー
+# （uid/gid 65534）所有で焼いてあるが、それが効くのは Docker の named volume の
+# copy-up 経由だけである。PVC には copy-up が無いので、この 1 式では
+# `fsGroup: 65534`（media をマウントする Pod の securityContext）で所有権を
+# 与えている。**`fsGroup` が効かない CSI ドライバではここが `permission denied`
+# になる**（docs/operations.md §5）。
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: rokuban-media
+  labels:
+    app.kubernetes.io/name: rokuban
+    app.kubernetes.io/component: media
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      # 参照実装としての最小値。実運用では録画の本数ぶんに合わせて overlay で
+      # patch する（縮小はできないので、増やす方向にだけ動かせる）。
+      storage: 32Gi

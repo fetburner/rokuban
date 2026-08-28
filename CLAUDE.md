@@ -27,6 +27,8 @@ pnpm exec orval  # openapi.yaml → web/src/api/generated.ts
 
 **`go test ./...` は Postgres を要求する**。`ROKUBAN_TEST_DATABASE_URL` を設定していないと DB を使うテストが落ちる（`internal/testutil` がパッケージごとに DB を作り、テストごとに TRUNCATE する）。ローカルなら `postgres://localhost:5432/postgres?sslmode=disable` で足りる。
 
+**docs を触ったら `npm run docs:lint` を回す**（textlint。CI の `docs-lint` ジョブと同じ）。**1 文 120 文字の上限が効く**ので、根拠を 1 文に詰め込むと落ちる。対象は README / CLAUDE.md / `docs/operations/**` / `docs/runbook/**` などで、`package.json` の `docs:lint` が権威。**Go のテストや `deploy/k8s/` の検査を全部回しても、この 1 つだけは別に落ちる**（実際に PR を出してから気付いた）。
+
 **sqlc は式の型を推論しきれないことがある。** `program_start_at + interval '...'` のような
 式に `::timestamptz` を明示しないと `int32` として生成され、`Scan` で必ず落ちる。
 式を SELECT に置くときは明示キャストを付ける。
@@ -77,7 +79,7 @@ M0（歩く骨格）・M1（録れる）・M2（任せられる）・M5（名乗
 |---|---|
 | M2 の出口基準の検証（EPGStation と 1〜2 週間並走し、予約差分がゼロ or 全件説明可能） | [#52](https://github.com/fetburner/rokuban/issues/52) |
 | M3 タスク分解: 置き換えられる（エンコード・削除・移行）。サブ #63〜#75 | [#62](https://github.com/fetburner/rokuban/issues/62) |
-| M4 タスク分解: 広げられる（ロール分割デプロイ・ライブ視聴・クラウド構成）。サブ #93 / #95〜#97 / #202 / #203 | [#88](https://github.com/fetburner/rokuban/issues/88) |
+| M4 タスク分解: 広げられる（ロール分割デプロイ・ライブ視聴・クラウド構成）。サブ #93 / #95〜#97 | [#88](https://github.com/fetburner/rokuban/issues/88) |
 | M8 タスク分解: 見返せる（ホームとライブラリ）。サブ #240〜#242 + 判定基準の決定後に起票 3 件 | [#223](https://github.com/fetburner/rokuban/issues/223) |
 
 - **`reservations` と shadow-diff（#52 の出口基準を測る道具そのもの）を触るタスクは、#52 の並走中は着手しない。** 測定の連続性が切れる。並走が始まっているかは #52 を見て判断する（始まっていなければこの制約は効かない。「並走中は着手しない」と書いている issue #98 / #101 / #129 も同じ基準で判断する）

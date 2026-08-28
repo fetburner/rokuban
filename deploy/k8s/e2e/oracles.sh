@@ -263,6 +263,10 @@ restore_api_service_selector() {
 
 oracle_teardown() {
   restore_api_service_selector
+  # **中断しても製品を止めたままにしない。** pause_product_workloads は
+  # クラスタ側の annotation に印を置くので、ここで戻し損ねても次の run.sh が
+  # 戻す（それでも、この trap で戻すほうが窓が短い）。
+  resume_product_workloads
   log_step "removing fixtures"
   delete_template "$E2E_DIR/fixtures/worker-scaledjobs.yaml"
   delete_template "$E2E_DIR/fixtures/cron-epg-sync.yaml"
@@ -284,9 +288,19 @@ oracle_tmp() {
 }
 
 # with_fixture_scope <関数> --- 探索を身代わりに絞ってオラクルを 1 本回す。
+#
+# **絞るだけでは足りないので、製品のワークロードも止める。** 絞っているのは
+# 「どのオブジェクトを判定対象にするか」だけで、River のキューも mirakc モックも
+# 共有のままである（実測で踏んだ 2 つは lib/kube.sh の pause_product_workloads）。
+#
+# **O1 は含めない。** あちらは製品の api / notifier / watcher / streamer が
+# 上がっていることを見るオラクルなので、止めると判定 1.3 が「replicas が 0」で
+# 落ちる。
 with_fixture_scope() {
   export E2E_FIXTURE_SCOPE=1
+  pause_product_workloads
   "$1"
+  resume_product_workloads
   unset E2E_FIXTURE_SCOPE
 }
 

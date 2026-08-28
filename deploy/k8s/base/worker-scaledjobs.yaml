@@ -1,0 +1,590 @@
+# site 非依存キューの worker（KEDA ScaledJob）。
+#
+# **1 キュー = 1 ScaledJob = 1 Job = 1 アイテム。**
+#
+#   - **ScaledJob はロールではなくキュー単位に作る**（docs/operations.md §5
+#     「worker: KEDA ScaledJob」）。切る軸は「寿命 × site 束縛」の 2 つで、
+#     長時間ジョブ（`encode`）と短いジョブ（`ruler` / `storage`）を混ぜない ---
+#     `terminationGracePeriodSeconds` が桁で違うので、混ぜると短い側に合わせて
+#     長いジョブが殺されるか、長い側に合わせて全体のスケールインが遅くなる
+#   - **site 束縛キューはここに無い**（`ingest` / `epg` / `reconciler` /
+#     `watcher`）。混ぜると中央のジョブがサイト側で起きる。それらは
+#     `deploy/k8s/site/` にサイト 1 組ぶんとして置いてある
+#   - **`--once` で 1 件消化して自分で終了する。** ScaledJob は Job の自己終了を
+#     前提にした機構で、常駐する `--roles worker` を載せると Job が `succeeded` に
+#     到達しない。`--once` は成功・失敗を問わず exit 0 なので、k8s 側は
+#     `backoffLimit: 0` / `restartPolicy: Never` にして二重にリトライしない
+#   - **キューは argv（`--queues`）で絞る。** ConfigMap は 1 個で全 Pod が同じ
+#     config.yml を共有するので、キューを config キー（`worker.queues`）で
+#     しか指定できないと ScaledJob の数だけ ConfigMap が増える。**共有する
+#     config.yml に `worker.queues` を書くと、`--queues` を渡している worker が
+#     すべて起動エラーになる**（両方指定は排他）
+#
+# **`default` キューの ScaledJob は無い。** 現在どのジョブも
+# `river.QueueDefault` に入らない（すべて `Queue:` を明示している。
+# internal/worker）。誰も入れないキューに ScaledJob を置くと、トリガが常に 0 を
+# 返すだけのオブジェクトが残る。**ジョブを 1 つでも default に入れたら
+# ここに 1 本足すこと** --- `deploy/k8s/workloads_test.go` の
+# TestScaledJobsCoverEveryQueue は `internal/worker` を走査していて、
+# `Queue: river.QueueDefault` が現れた日に落ちる。
+#
+# **トリガが数えるのは `available` と `retryable` の 2 つ。**
+# `retryable` を `available` に戻すのは River の `JobScheduler` で、これは
+# **リーダーに選出された常駐クライアントだけ**が動かす保守サービスである。
+# ロール分割構成では常駐する River クライアントが 1 つも無い（api / watcher /
+# `enqueue` はいずれも insert 専用で `Start` しない）ので、`available` だけを
+# 数えると失敗したジョブが永久に止まる --- Job が起きないので誰も昇格させず、
+# 昇格しないので Job も起きない。**受け入れ判定ハーネスの「滞留」の定義
+# （`deploy/k8s/e2e/lib/kube.sh` の `riverBacklogStates`）と同じ集合にすること。**
+#
+# **`rollout.strategy: gradual` は書き忘れてはならない 1 行である。**
+# 省略も `immediate` も、Pod テンプレートの更新で実行中の Job が消える（kind で
+# 実測。docs/operations.md §5 の表）。運用でこれを踏むのはイメージのタグを
+# 上げたときで、症状は「デプロイしたら録画のエンコードが飛ぶ」になる。
+#
+# **postgresql トリガの接続先は FQDN で書く。** 接続を張るのは Job の Pod では
+# なく keda 名前空間の operator なので、短い Service 名は operator 側の search
+# domain で解決されない。このとき ScaledJob は `Ready=False /
+# ScaledJobCheckFailed` のまま Job を一度も起こさず、**症状は「KEDA が壊れた」
+# ではなく「いつまでもスケールしない」**になる（kind で実測）。接続文字列は
+# Secret の `POSTGRES_CONNECTION_STRING`（`base/secret.example.yaml`）。
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledJob
+metadata:
+  name: rokuban-worker-ruler
+  labels:
+    app.kubernetes.io/name: rokuban
+    app.kubernetes.io/component: worker
+    rokuban.fetburner.net/queue: ruler
+spec:
+  pollingInterval: 30
+  # ruler_pass は UniqueOpts で合流するので、待ち行列に積み上がるのは高々
+  # 数件である。上限は「ヒントが刺さった直後に少し並ぶ」ぶんだけ。
+  maxReplicaCount: 3
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  scalingStrategy:
+    # 1 Job = 1 アイテムなので、待ち行列の件数がそのまま欲しい Job 数になる。
+    strategy: accurate
+  rollout:
+    strategy: gradual
+  jobTargetRef:
+    backoffLimit: 0
+    template:
+      metadata:
+        labels:
+          app.kubernetes.io/name: rokuban
+          app.kubernetes.io/component: worker
+      spec:
+        restartPolicy: Never
+        enableServiceLinks: false
+        automountServiceAccountToken: false
+        # preStop 0s + 停止待ち 10s + drain 5s + 畳み 10s = 25s（docs/operations.md
+        # §5「Deployment 併用時」の足し算）。**等号にしない。**
+        terminationGracePeriodSeconds: 30
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 65534
+          runAsGroup: 65534
+          seccompProfile:
+            type: RuntimeDefault
+        containers:
+          - name: worker
+            # ruler は DB しか見ない（docs/operations.md §5 のキュー表）ので
+            # 公式イメージで足りる。
+            image: ghcr.io/fetburner/rokuban:latest
+            args:
+              - server
+              - --roles
+              - worker
+              - --once
+              - --queues
+              - ruler
+              - --sites=
+              - --soft-stop-timeout
+              - 5s
+              - --config
+              - /etc/rokuban/config.yml
+            env:
+              # KEDA の postgresql トリガが読む接続文字列（`connectionFromEnv`）。
+              # **env として宣言するのは、参照解決の検査（manifests_test.go）に
+              # キー名を見せるため** --- `envFrom` だけだとキー名を誰も見ない。
+              - name: POSTGRES_CONNECTION_STRING
+                valueFrom:
+                  secretKeyRef:
+                    name: rokuban-secrets
+                    key: POSTGRES_CONNECTION_STRING
+            envFrom:
+              - secretRef:
+                  name: rokuban-secrets
+            volumeMounts:
+              - name: config
+                mountPath: /etc/rokuban
+                readOnly: true
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop: ["ALL"]
+            resources:
+              requests:
+                cpu: 50m
+                memory: 64Mi
+              limits:
+                memory: 256Mi
+        volumes:
+          - name: config
+            configMap:
+              name: rokuban-config
+  triggers:
+    - type: postgresql
+      metadata:
+        query: >-
+          SELECT count(*) FROM river_job WHERE queue = 'ruler' AND state IN ('available','retryable')
+        targetQueryValue: "1"
+        connectionFromEnv: POSTGRES_CONNECTION_STRING
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledJob
+metadata:
+  name: rokuban-worker-encode
+  labels:
+    app.kubernetes.io/name: rokuban
+    app.kubernetes.io/component: worker
+    rokuban.fetburner.net/queue: encode
+spec:
+  pollingInterval: 30
+  # **`encode` キューには 3 種類のジョブが載る。** 実エンコード（`encode`）に
+  # 加えて、`encode_reconcile`（ヒントを落とした録画を拾う 15 分ごとの
+  # バックストップ）と `encode_enqueue_hint`（録画が終わった直後の投入）である
+  # （internal/worker の各 InsertOpts）。
+  #
+  # **`1` にすると後ろの 2 つが実エンコードの裏で待たされる。** 1 件消化モード
+  # では 1 Job = 1 アイテムなので、数時間のエンコードが走っている間、KEDA は
+  # `maxReplicaCount - 実行中 = 0` と数えて新しい Job を起こさない ---
+  # ヒントを落とした録画を拾うための経路が、まさにその「時間のかかる
+  # エンコード」に塞がれる。レベルトリガーなので取りこぼしはしない（エンコードが
+  # 終われば次のパスが拾う）が、遅れはエンコードの長さぶんになる。
+  #
+  # **2 にしてある。** 代償は「実エンコードが 2 本同時に走りうる」こと ---
+  # CPU を 1 本に抑えたいなら 1 に落とし、上の遅れを受け入れること
+  # （`encode.concurrency` は 1 プロセス内の MaxWorkers なので、1 件消化モードでは
+  # 常に 1 であり、クラスタ全体の本数を決めるのはこちらである）。
+  maxReplicaCount: 2
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  scalingStrategy:
+    strategy: accurate
+  rollout:
+    strategy: gradual
+  jobTargetRef:
+    backoffLimit: 0
+    template:
+      metadata:
+        labels:
+          app.kubernetes.io/name: rokuban
+          app.kubernetes.io/component: worker
+      spec:
+        restartPolicy: Never
+        enableServiceLinks: false
+        automountServiceAccountToken: false
+        # **drain と対で引き上げる。** 10s + `--soft-stop-timeout` 1h + 10s を
+        # 包む（docs/operations.md §5）。片方だけ上げても短い側が先に効く。
+        # 猶予の外に出すと SIGKILL が先に来て、実行中のジョブの行が `running` の
+        # まま残る --- 回収する `JobRescuer` はリーダーだけが動かす保守サービス
+        # なので、ロール分割構成では**誰も回収しない**。
+        terminationGracePeriodSeconds: 3660
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 65534
+          runAsGroup: 65534
+          fsGroup: 65534
+          # **ScaledJob はキューアイテムごとに新しい Pod を作る。** 既定の
+          # `Always` だと、ジョブが起きるたびにアーカイブ全体の再帰 chown を
+          # 待つことになる（理由の全文は deploy/k8s/base/streamer.yaml）。
+          fsGroupChangePolicy: OnRootMismatch
+          seccompProfile:
+            type: RuntimeDefault
+        containers:
+          - name: worker
+            # **encode / thumbnail キューを購読する worker だけ ffmpeg 入りの
+            # イメージを使う**（公式イメージは ffmpeg を同梱しないので起動時に
+            # fail-fast する。`worker.RequiresEncodeTools`）。image 名を分けて
+            # あるのは、kustomize の `images:` が名前ごとの置換だからである ---
+            # 分けないと「ffmpeg 入りに差し替えたら api も一緒に変わる」になる。
+            image: ghcr.io/fetburner/rokuban-full:latest
+            args:
+              - server
+              - --roles
+              - worker
+              - --once
+              - --queues
+              - encode
+              - --sites=
+              - --soft-stop-timeout
+              - 1h
+              - --config
+              - /etc/rokuban/config.yml
+            env:
+              - name: POSTGRES_CONNECTION_STRING
+                valueFrom:
+                  secretKeyRef:
+                    name: rokuban-secrets
+                    key: POSTGRES_CONNECTION_STRING
+            envFrom:
+              - secretRef:
+                  name: rokuban-secrets
+            volumeMounts:
+              - name: config
+                mountPath: /etc/rokuban
+                readOnly: true
+              - name: media
+                mountPath: /mnt/media
+              # `readOnlyRootFilesystem: true` なので、スクラッチは明示的に
+              # 書ける場所を与える（`storage.scratch_dir`）。**アーカイブと
+              # 同じディスクに置かない**方針（docs/operations.md §3 / §4）を
+              # 満たすため、PVC ではなくノードローカルの emptyDir にする。
+              - name: scratch
+                mountPath: /var/tmp/rokuban
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop: ["ALL"]
+            resources:
+              requests:
+                cpu: 100m
+                memory: 256Mi
+              limits:
+                memory: 1Gi
+        volumes:
+          - name: config
+            configMap:
+              name: rokuban-config
+          - name: media
+            persistentVolumeClaim:
+              claimName: rokuban-media
+          - name: scratch
+            emptyDir: {}
+  triggers:
+    - type: postgresql
+      metadata:
+        query: >-
+          SELECT count(*) FROM river_job WHERE queue = 'encode' AND state IN ('available','retryable')
+        targetQueryValue: "1"
+        connectionFromEnv: POSTGRES_CONNECTION_STRING
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledJob
+metadata:
+  name: rokuban-worker-thumbnail
+  labels:
+    app.kubernetes.io/name: rokuban
+    app.kubernetes.io/component: worker
+    rokuban.fetburner.net/queue: thumbnail
+spec:
+  pollingInterval: 30
+  maxReplicaCount: 2
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  scalingStrategy:
+    strategy: accurate
+  rollout:
+    strategy: gradual
+  jobTargetRef:
+    backoffLimit: 0
+    template:
+      metadata:
+        labels:
+          app.kubernetes.io/name: rokuban
+          app.kubernetes.io/component: worker
+      spec:
+        restartPolicy: Never
+        enableServiceLinks: false
+        automountServiceAccountToken: false
+        # 10s + 60s + 10s を包む。encode と同じ ffmpeg でも、サムネイルは
+        # 1 フレームの seek + デコードなので桁が違う（**測ってはいない**。
+        # encode と同じ猶予を与えない理由がこちら側にある、という以上のことは
+        # 言えない）。
+        terminationGracePeriodSeconds: 90
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 65534
+          runAsGroup: 65534
+          fsGroup: 65534
+          # **ScaledJob はキューアイテムごとに新しい Pod を作る。** 既定の
+          # `Always` だと、ジョブが起きるたびにアーカイブ全体の再帰 chown を
+          # 待つことになる（理由の全文は deploy/k8s/base/streamer.yaml）。
+          fsGroupChangePolicy: OnRootMismatch
+          seccompProfile:
+            type: RuntimeDefault
+        containers:
+          - name: worker
+            image: ghcr.io/fetburner/rokuban-full:latest
+            args:
+              - server
+              - --roles
+              - worker
+              - --once
+              - --queues
+              - thumbnail
+              - --sites=
+              - --soft-stop-timeout
+              - 60s
+              - --config
+              - /etc/rokuban/config.yml
+            env:
+              - name: POSTGRES_CONNECTION_STRING
+                valueFrom:
+                  secretKeyRef:
+                    name: rokuban-secrets
+                    key: POSTGRES_CONNECTION_STRING
+            envFrom:
+              - secretRef:
+                  name: rokuban-secrets
+            volumeMounts:
+              - name: config
+                mountPath: /etc/rokuban
+                readOnly: true
+              - name: media
+                mountPath: /mnt/media
+              - name: scratch
+                mountPath: /var/tmp/rokuban
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop: ["ALL"]
+            resources:
+              requests:
+                cpu: 50m
+                memory: 128Mi
+              limits:
+                memory: 512Mi
+        volumes:
+          - name: config
+            configMap:
+              name: rokuban-config
+          - name: media
+            persistentVolumeClaim:
+              claimName: rokuban-media
+          - name: scratch
+            emptyDir: {}
+  triggers:
+    - type: postgresql
+      metadata:
+        query: >-
+          SELECT count(*) FROM river_job WHERE queue = 'thumbnail' AND state IN ('available','retryable')
+        targetQueryValue: "1"
+        connectionFromEnv: POSTGRES_CONNECTION_STRING
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledJob
+metadata:
+  name: rokuban-worker-cleanup
+  labels:
+    app.kubernetes.io/name: rokuban
+    app.kubernetes.io/component: worker
+    rokuban.fetburner.net/queue: cleanup
+spec:
+  pollingInterval: 30
+  # delete_reconcile と catalog_export はそれぞれ UniqueOpts で自分自身の重複を
+  # 防ぐので、「両方が同時に 1 本ずつ走れる」ぶんだけあればよい
+  # （internal/worker の defaultCleanupConcurrency と同じ根拠）。
+  maxReplicaCount: 2
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  scalingStrategy:
+    strategy: accurate
+  rollout:
+    strategy: gradual
+  jobTargetRef:
+    backoffLimit: 0
+    template:
+      metadata:
+        labels:
+          app.kubernetes.io/name: rokuban
+          app.kubernetes.io/component: worker
+      spec:
+        restartPolicy: Never
+        enableServiceLinks: false
+        automountServiceAccountToken: false
+        # 10s + 60s + 10s を包む。1 パスの削除件数はサーキットブレーカー
+        # （`cleanup.max_deletes_per_pass`）で上限があるので、猶予は
+        # 「アーカイブの walk が終わるまで」の側で決まる（**未測定**）。
+        terminationGracePeriodSeconds: 90
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 65534
+          runAsGroup: 65534
+          fsGroup: 65534
+          # **ScaledJob はキューアイテムごとに新しい Pod を作る。** 既定の
+          # `Always` だと、ジョブが起きるたびにアーカイブ全体の再帰 chown を
+          # 待つことになる（理由の全文は deploy/k8s/base/streamer.yaml）。
+          fsGroupChangePolicy: OnRootMismatch
+          seccompProfile:
+            type: RuntimeDefault
+        containers:
+          - name: worker
+            # cleanup（delete_reconcile / catalog_export）はファイルシステムを
+            # 要求するが ffmpeg は要求しない（`worker.RequiresEncodeTools` は
+            # encode / thumbnail だけ）。
+            image: ghcr.io/fetburner/rokuban:latest
+            args:
+              - server
+              - --roles
+              - worker
+              - --once
+              - --queues
+              - cleanup
+              - --sites=
+              - --soft-stop-timeout
+              - 60s
+              - --config
+              - /etc/rokuban/config.yml
+            env:
+              - name: POSTGRES_CONNECTION_STRING
+                valueFrom:
+                  secretKeyRef:
+                    name: rokuban-secrets
+                    key: POSTGRES_CONNECTION_STRING
+            envFrom:
+              - secretRef:
+                  name: rokuban-secrets
+            volumeMounts:
+              - name: config
+                mountPath: /etc/rokuban
+                readOnly: true
+              - name: media
+                mountPath: /mnt/media
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop: ["ALL"]
+            resources:
+              requests:
+                cpu: 50m
+                memory: 96Mi
+              limits:
+                memory: 512Mi
+        volumes:
+          - name: config
+            configMap:
+              name: rokuban-config
+          - name: media
+            persistentVolumeClaim:
+              claimName: rokuban-media
+  triggers:
+    - type: postgresql
+      metadata:
+        query: >-
+          SELECT count(*) FROM river_job WHERE queue = 'cleanup' AND state IN ('available','retryable')
+        targetQueryValue: "1"
+        connectionFromEnv: POSTGRES_CONNECTION_STRING
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledJob
+metadata:
+  name: rokuban-worker-storage
+  labels:
+    app.kubernetes.io/name: rokuban
+    app.kubernetes.io/component: worker
+    rokuban.fetburner.net/queue: storage
+spec:
+  pollingInterval: 30
+  maxReplicaCount: 1
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  scalingStrategy:
+    strategy: accurate
+  rollout:
+    strategy: gradual
+  jobTargetRef:
+    backoffLimit: 0
+    template:
+      metadata:
+        labels:
+          app.kubernetes.io/name: rokuban
+          app.kubernetes.io/component: worker
+      spec:
+        restartPolicy: Never
+        enableServiceLinks: false
+        automountServiceAccountToken: false
+        terminationGracePeriodSeconds: 30
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 65534
+          runAsGroup: 65534
+          fsGroup: 65534
+          # **ScaledJob はキューアイテムごとに新しい Pod を作る。** 既定の
+          # `Always` だと、ジョブが起きるたびにアーカイブ全体の再帰 chown を
+          # 待つことになる（理由の全文は deploy/k8s/base/streamer.yaml）。
+          fsGroupChangePolicy: OnRootMismatch
+          seccompProfile:
+            type: RuntimeDefault
+        containers:
+          - name: worker
+            image: ghcr.io/fetburner/rokuban:latest
+            args:
+              - server
+              - --roles
+              - worker
+              - --once
+              - --queues
+              - storage
+              - --sites=
+              - --soft-stop-timeout
+              - 5s
+              - --config
+              - /etc/rokuban/config.yml
+            env:
+              - name: POSTGRES_CONNECTION_STRING
+                valueFrom:
+                  secretKeyRef:
+                    name: rokuban-secrets
+                    key: POSTGRES_CONNECTION_STRING
+            envFrom:
+              - secretRef:
+                  name: rokuban-secrets
+            volumeMounts:
+              - name: config
+                mountPath: /etc/rokuban
+                readOnly: true
+              # storage_sync は media_dir と scratch_dir の両方を statfs する。
+              # **scratch は Pod ごとの emptyDir なので、報告される空き容量は
+              # その Pod が載ったノードの値である**（アーカイブと違って単一の
+              # 実体が無い）。
+              - name: media
+                mountPath: /mnt/media
+                readOnly: true
+              - name: scratch
+                mountPath: /var/tmp/rokuban
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop: ["ALL"]
+            resources:
+              requests:
+                cpu: 50m
+                memory: 64Mi
+              limits:
+                memory: 256Mi
+        volumes:
+          - name: config
+            configMap:
+              name: rokuban-config
+          - name: media
+            persistentVolumeClaim:
+              claimName: rokuban-media
+          - name: scratch
+            emptyDir: {}
+  triggers:
+    - type: postgresql
+      metadata:
+        query: >-
+          SELECT count(*) FROM river_job WHERE queue = 'storage' AND state IN ('available','retryable')
+        targetQueryValue: "1"
+        connectionFromEnv: POSTGRES_CONNECTION_STRING

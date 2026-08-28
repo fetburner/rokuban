@@ -1,0 +1,58 @@
+# kustomize に「ScaledJob の中の ConfigMap / Secret 参照」を教える。
+#
+# **これが無いと、generator が付けたハッシュ名に追随するのは kustomize が
+# 知っている kind（Deployment / Job / CronJob …）だけになる。** CRD の中身は
+# kustomize にとって不透明なので、`ScaledJob` の Pod テンプレートに書いた
+# `rokuban-config` はそのまま残り、実際の ConfigMap は
+# `rokuban-config-<hash>` になる。
+#
+# **症状は「apply は成功、Pod は永久に ContainerCreating」**である（実測。
+# `MountVolume.SetUp failed for volume "config" : configmap "rokuban-config"
+# not found`）。`kustomize build` も kubeconform も
+# `go test ./deploy/k8s/` も緑のまま通る --- Go テストは参照先を
+# **generator の宣言名**（`rokuban-config`）で解決するので、ハッシュの
+# 付き方までは見ていない。**kind に載せるまで分からない類そのもの。**
+#
+# 同じ穴が Secret 側にもある。`overlays/kind` は `secretGenerator` で
+# `rokuban-secrets` を作る（＝ハッシュ名が付く）ので、`envFrom` と
+# `secretKeyRef`（KEDA のトリガが読む接続文字列）の両方に要る。
+#
+# 参照の網羅は kustomize の既定 `nameReference` 設定の Deployment 版と
+# 同じ形にしてある。**Pod テンプレートに新しい参照の書き方を足したら、ここにも
+# 足すこと。**
+# **ラベルの側は同じ手では塞げない。** `configurations:` が効くのは
+# `nameReference` などの一部の変換だけで、overlay の `labels:`（LabelTransformer）
+# は自分が知っている Pod テンプレートの位置しか見ない。`commonLabels` にも
+# `templateLabels` にも `spec/jobTargetRef/template/metadata/labels` を足して
+# みたが、どちらも出力は変わらなかった（kustomize v5.8.1 で実測）。
+#
+# 帰結: **ScaledJob が起こす Job の Pod には overlay のラベルが乗らない。**
+# サイトごとに Pod を引きたいときは、KEDA が付ける
+# `scaledjob.keda.sh/name=<ScaledJob 名>` を使う（名前はサイトで分かれている）。
+nameReference:
+  - kind: ConfigMap
+    version: v1
+    fieldSpecs:
+      - path: spec/jobTargetRef/template/spec/volumes/configMap/name
+        kind: ScaledJob
+      - path: spec/jobTargetRef/template/spec/containers/envFrom/configMapRef/name
+        kind: ScaledJob
+      - path: spec/jobTargetRef/template/spec/containers/env/valueFrom/configMapKeyRef/name
+        kind: ScaledJob
+      - path: spec/jobTargetRef/template/spec/initContainers/envFrom/configMapRef/name
+        kind: ScaledJob
+      - path: spec/jobTargetRef/template/spec/initContainers/env/valueFrom/configMapKeyRef/name
+        kind: ScaledJob
+  - kind: Secret
+    version: v1
+    fieldSpecs:
+      - path: spec/jobTargetRef/template/spec/volumes/secret/secretName
+        kind: ScaledJob
+      - path: spec/jobTargetRef/template/spec/containers/envFrom/secretRef/name
+        kind: ScaledJob
+      - path: spec/jobTargetRef/template/spec/containers/env/valueFrom/secretKeyRef/name
+        kind: ScaledJob
+      - path: spec/jobTargetRef/template/spec/initContainers/envFrom/secretRef/name
+        kind: ScaledJob
+      - path: spec/jobTargetRef/template/spec/initContainers/env/valueFrom/secretKeyRef/name
+        kind: ScaledJob

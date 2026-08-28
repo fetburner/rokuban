@@ -59,10 +59,11 @@ site 単位のキューを一切購読できない（`worker.RequiresSiteBinding
 中央プロセスであっても media_dir/scratch_dir のマウントに到達できるノードで
 動かす必要がある。
 
-未解決: PVC マウントの所有権。イメージは `/mnt/media` を実行ユーザー（uid/gid
-`65534`）所有で焼いてあるが、これが効くのは Docker の named volume の copy-up
-経由だけである。PVC には copy-up が無いので、`fsGroup` などで所有権を与えない
-限り `permission denied` になる（`securityContext` の推奨値は未決）。
+**PVC マウントの所有権は `fsGroup` で与える。** イメージは `/mnt/media` を実行ユーザー（uid/gid `65534`）所有で焼いてある。ただしこれが効くのは Docker の named volume の copy-up 経由だけである。**PVC には copy-up が無い**ので、所有権を与えないと `permission denied` になる。
+
+参照実装は media をマウントする Pod に `securityContext.fsGroup: 65534` を書いている。対象は streamer と、`ingest` / `encode` / `thumbnail` / `cleanup` / `storage` の worker である。**kind（rancher.io/local-path）では実際に書けることを確認した** --- 受け入れ判定ハーネスの判定 3 が実際にエンコードを 1 件走らせて media に書く。**`fsGroup` を尊重しない CSI ドライバでは足りない**（そちらの手当ては未検証）。
+
+**`fsGroupChangePolicy: OnRootMismatch` も対で書く。** 既定の `Always` は Pod を起こす前にボリューム全体を再帰的に chown する。ScaledJob はキューアイテムごとに Pod を作るので、数 TB のアーカイブでは毎回それを待つことになる。**kind では出ない**（ボリュームが空なので一瞬で終わる）。
 
 ### streamer のスケール
 
@@ -77,6 +78,10 @@ site 単位のキューを一切購読できない（`worker.RequiresSiteBinding
 |---|---|---|---|---|
 | 録画配信 / サムネイル | メディアストレージの隣 | 水平（N） | 素の round-robin | 公式（ffmpeg 不要） |
 | ライブ視聴 | mirakc の隣（サイトごと） | 既定 1 | `(site, networkId, serviceId)` の consistent hash | `Dockerfile.full` |
+
+**未解決: この表のとおりには 1 式に書けない。** `live.enabled: true` は **streamer ロールの全 Pod にちょうど 1 サイトの束縛を要求する**（`cmd/rokuban/server.go`）。ライブは `boundSite` を使うので、束縛が 0 個でも 2 個でも成り立たない。
+
+config は全 Pod で 1 個共有なので、ライブを有効にした瞬間に**中央の録画配信 Deployment（`--sites=`）が起動しなくなる**。中央側にも `--sites <site>` を書けば動く（アーカイブは単一なので、どのサイトを書いても配れるものは変わらない）。ただしそれは「録画配信は site 非依存」という上の決定の暗黙の変更である。`deploy/k8s/` はライブの streamer を出荷していない。
 
 #### 録画配信はセッション親和性を必要としない
 
@@ -147,7 +152,14 @@ scratch を分ける指針（[§3](database.md)）と同じ系列の規則。
 
 ### マニフェストの配布形式: 素の kustomize
 
-参照実装は `deploy/k8s/` に置く。**Helm chart は持たない。** `values.yaml` は後から狭められない公開 API で、どの値を露出するかを決める前に形を固定することになる（不変条件 11）。加えてサイトごとの差分は argv（`--roles` / `--sites`）だけなので、overlay がサイト単位で薄く書ける。Helm が要るなら kustomize の出力を写す形で後から足す。
+参照実装は `deploy/k8s/` に置く。**中身の索引はそちらの [README](../../deploy/k8s/README.md)** で、ここには判断だけを置く。分け方は次の 2 つ:
+
+- **`base/` は中央（site 非依存）1 式。** api / notifier / 録画配信 streamer / media の PVC / migration Job / ConfigMap が入る。site 非依存キューの ScaledJob と、site 非依存ジョブの CronJob もこちら
+- **`site/` はサイト 1 組ぶん**（watcher / site 束縛キューの ScaledJob / site 束縛ジョブの CronJob）。overlay がサイトの数だけ生やす
+
+**base に site 名を書かない。** サイトを増やす差分を「`mirakcs:` に 1 要素 + Pod セット 1 組」に保つため。`site/` は site 名 `default`（`mirakc:` 単一形式で site を書かなかったときの既定）で書いてあり、単一サイトの overlay はそのまま使える。
+
+**Helm chart は持たない。** `values.yaml` は後から狭められない公開 API で、どの値を露出するかを決める前に形を固定することになる（不変条件 11）。加えてサイトごとの差分は argv（`--roles` / `--sites`）だけなので、overlay がサイト単位で薄く書ける。Helm が要るなら kustomize の出力を写す形で後から足す。
 
 **ConfigMap は 1 個で、全 Pod が同じ config.yml を共有する。Pod ごとに違うのは argv だけ**にする。ここを Pod 別の config キーにすると、サイトを増やすたびに ConfigMap が増える（[configuration.md](../configuration.md) の「ロール別 Deployment でも config は同一ファイルを共有する」が崩れる）。
 
@@ -230,7 +242,9 @@ site 修飾と `rollout.strategy` は [deploy/k8s/e2e](../../deploy/k8s/e2e/READ
 - **argv は平たい要素で書く。** `sh -c "rokuban enqueue ..."` でくるむと、判定ハーネスが投入側の CronJob を見つけられない。探索は argv の要素として `enqueue` と ジョブ名 と `--site <site>` を見る
 - 対象は `rokuban enqueue --help` が出す一覧が権威。site 束縛のもの（`--site` が要る）はサイトごとに 1 本ずつ作る
 - `enqueue` は同じジョブが待機中なら投入せず exit 0 を返すので、重ねて叩いても安全（CronJob が失敗扱いにならない）
-- **schedule は base に実運用の間隔を書く。** 受け入れ判定は 180 秒以内の自然発火を要求するので、判定用の overlay 側で毎分に patch する。両方を `deploy/k8s/manifests_test.go` で固定すること --- base の値が判定の都合で短くなるのを防ぐため（**方針だけ決まっており、CronJob そのものと合わせてまだ実装されていない**）
+- **schedule は base に実運用の間隔を書く。** 受け入れ判定は 180 秒以内の自然発火を要求するので、判定用の overlay 側で毎分に patch する。base の値が判定の都合で短くなるのを防ぐため、**両方を `deploy/k8s/workloads_test.go` が対で固定している**。**したがって判定 2 が測るのは出荷される schedule ではない**
+- **間隔は in-process の既定に合わせる**（`worker.periodic_jobs: true` の monolith）。揃っていないと「docker-compose では 15 分で走るのに k8s では走らない」形になる。`reconcile-pass` だけは合わせられない。in-process の既定は 30 秒だが CronJob の分解能は 1 分である。レベルトリガーなので取りこぼしは次のパスが拾い、差は「予約が mirakc に届くまでの遅延の上限」にだけ効く
+- **`rokuban enqueue` にあるジョブは全部 CronJob にする。** 1 つ落とすと、その定期パスが**一度も走らない構成**が黙って立つ（`worker.periodic_jobs: false` では投入経路がここしかない）。網羅は `deploy/k8s/workloads_test.go` の `TestCronJobsCoverEveryEnqueueJob` が見ている
 
 ### Deployment 併用時: SIGTERM drain + pod-deletion-cost
 
@@ -276,6 +290,10 @@ preStop の sleep + 10s + --soft-stop-timeout + 10s      ← 既定なら preSto
 ### シングルトンロール: pg_advisory_lock リーダー選出
 
 watcher はシングルトンロール。`pg_try_advisory_lock` による監督ループでリーダーを選出する（[データ層](../data.md) §2）。ruler / reconciler / record_sweep はジョブなので対象外。watcher の singleton 性はもはや「正しさ」の要件ではなく、「mirakc に N 本の SSE を張らない」という接続数の配慮に過ぎない。`processRecord` は冪等化済みである（[データ層](../data.md) §2、[録画エンジン](../recording.md) §3.3）:
+
+**したがって `replicas: 1`（`deploy/k8s/site/watcher.yaml`）は既定であって要件ではない。** 2 レプリカにしても壊れない --- 負けた側は待機したまま mirakc に繋がない。
+
+これは推測ではなく kind での実測である。受け入れ判定ハーネスの判定 4 が、2 レプリカのあいだ mirakc モックの `/events` の同時接続数を数えている（`deploy/k8s/e2e/checks/04-watcher-singleton.sh`）。最大値は 1 だった。
 
 **watcher はサイトごとに 1**。advisory lock のキーはロール名だけでなく束縛サイトも含む（`watcher:<site>`）。多サイト構成で 2 サイトの watcher プロセスを立てると、両方が自分のサイトのロックを取得して両方の mirakc の SSE を購読する。同じロックキーだと片方が「role already held by another process」で待機に入り、負けた側の mirakc の SSE を誰も購読しなくなる（ログ上は正常に見えるので気付きにくい）。同一サイトで 2 プロセス立てた場合は従来どおり片方だけが動く。
 

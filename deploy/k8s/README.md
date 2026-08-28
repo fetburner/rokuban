@@ -4,22 +4,43 @@
 [docs/operations/k8s.md](../../docs/operations/k8s.md) §マニフェストの配布形式）。
 
 ```
-base/            中央（site 非依存）の最小 1 式:
+base/            中央（site 非依存）1 式:
                  config.yml（configMapGenerator の入力）/ migration Job /
-                 api Deployment + Service + PodDisruptionBudget
-overlays/kind/   kind での動作確認用（image の差し替え + 使い捨てパスワード）
+                 api・notifier・streamer(録画配信) の Deployment + Service + PDB /
+                 media の PVC / site 非依存キューの KEDA ScaledJob /
+                 site 非依存ジョブの CronJob
+site/            **サイト 1 組ぶん**: watcher Deployment /
+                 site 束縛キュー（ingest・epg・reconciler・watcher）の ScaledJob /
+                 site 束縛ジョブの CronJob
+overlays/kind/   kind での動作確認用（base + site 1 組 + image の差し替え）
+overlays/e2e/    受け入れ判定ハーネス用（base + site 2 組）
+schemas/         kubeconform に渡す CRD スキーマ（KEDA の ScaledJob）
 ```
 
-**まだ無いもの**（受け入れを機械判定するハーネスが立ってから足す。判定手段が
-無いまま形を焼き込まないため）:
+**base に site 名が一度も出てこない。** サイトを増やす差分は「`mirakcs:` に
+1 要素 + `site/` を 1 組生やす」だけになる（`overlays/e2e` が実例）。
+判定は `workloads_test.go` の `TestBaseIsSiteIndependent`。
 
-- **notifier**。したがって `/api/events` の SSE は生えない。base を apply すると
-  SPA は出るが、イベント購読は 404 になる
-- **watcher / streamer / worker の KEDA ScaledJob / CronJob 群 / PVC / Prometheus**
-  - worker を足すときは `terminationGracePeriodSeconds` の足し算に注意する。
-    api の値は worker ロールを持たない Pod の式である。worker では River の
-    drain（`--soft-stop-timeout`）が加わる（docs/operations.md §5）
+`site/` は site 名 `default` で書いてある。`mirakc:` 単一形式で site を
+書かなかったときの既定がこれなので、**単一サイトの overlay は patch を
+1 つも書かない**。
+
+**まだ無いもの**:
+
 - **入口（Ingress）**。当面は `kubectl port-forward svc/rokuban-api 40773` で触る
+- **ライブ視聴の streamer**。**設計どおりには書けない。**
+  docs/operations.md §5 は「録画配信は中央（site 非依存）、ライブはサイトごと」と
+  決めている。ところが `live.enabled: true` は **streamer ロールの全 Pod に
+  ちょうど 1 サイトの束縛を要求する**（`cmd/rokuban/server.go`）。ConfigMap は 1 個で全 Pod が
+  同じ config.yml を共有するので、ライブを有効にした瞬間に中央の録画配信
+  Deployment（`--sites=`）が起動しなくなる。**中央の録画配信にも
+  `--sites <site>` を書けば動く**が、それは「録画配信は site 非依存」という
+  決定の暗黙の変更なので、ここでは実装せず issue に提起してある
+- **Prometheus の Operator 連携**（ServiceMonitor / PodMonitor）。常駐の Pod には
+  `prometheus.io/scrape` の annotation を付けてあるが、**ScaledJob が起こす Job の
+  Pod は数秒で消えるので scrape が間に合わない**。ジョブ側の観測は
+  `river_job` を読む滞留メトリクス（どのロールの `/metrics` にも出る）で行う
+  （docs/operations.md §1）
 
 ## 前提
 
@@ -48,15 +69,27 @@ Secret が無い状態で apply すると、Pod は `CreateContainerConfigError`
 
 ```sh
 # 1. 秘密（初回だけ。または overlay の secretGenerator で供給する）
+#    2 つ目のキーは KEDA の postgresql トリガが読む接続文字列（base/secret.example.yaml）。
 kubectl create secret generic rokuban-secrets \
-  --from-literal=POSTGRES_PASSWORD='...'
+  --from-literal=POSTGRES_PASSWORD='...' \
+  --from-literal=POSTGRES_CONNECTION_STRING='postgresql://rokuban:...@postgres.<ns>.svc.cluster.local:5432/rokuban?sslmode=disable'
 
-# 2. マイグレーション → api の順で通す
+# 2. マイグレーション → 中央 → サイトの順で通す
 kubectl delete job rokuban-migrate --ignore-not-found
 kustomize build base | kubectl apply -f -
 kubectl wait --for=condition=complete job/rokuban-migrate --timeout=300s
+kustomize build site | kubectl apply -f -   # 単一サイト（site 名 default）
 kubectl rollout status deployment/rokuban-api
 ```
+
+**`site/` は base と別に apply する。** 実際の運用では overlay
+（`overlays/kind` が単一サイトの実例）が両方を `resources` に持つので、
+apply は 1 回で済む。
+
+**KEDA が要る。** `site/` と base の worker は KEDA の `ScaledJob` である。
+CRD が無いクラスタに apply すると、その部分だけが
+`no matches for kind "ScaledJob"` で失敗する（Deployment 側の apply は成功する
+ので、**ジョブを誰も消化しない構成が黙って立つ**）。
 
 **この順序に意味がある。**
 
@@ -79,6 +112,23 @@ kubectl rollout status deployment/rokuban-api
   溜まったら `kubectl apply --prune`（ラベルセレクタ付き）か手で消す
 - **env で渡すのは機微情報だけ**（`${POSTGRES_PASSWORD}` の 1 つ）。それ以外の
   環境差は overlay で patch を当てる
+- **Pod ごとに違うのは argv だけ。** キューの絞り込みも argv（`--queues`）に
+  寄せてある。config キー（`worker.queues`）でしか指定できないと、ScaledJob の
+  数だけ ConfigMap が増えるため。**共有する config.yml に `worker.queues` を書くと、
+  `--queues` を渡している worker が全部起動エラーになる**（両方指定は排他）
+- **worker の Job は 1 件消化して自分で終了する**（`--once`）。ScaledJob は Job の
+  自己終了を前提にした機構で、常駐する `--roles worker` を載せると
+  「0 → 1 → 0」が成立しない。`--once` は成功・失敗を問わず exit 0 なので
+  `backoffLimit: 0` / `restartPolicy: Never` と組ませる（リトライは River が持つ）
+- **worker の `terminationGracePeriodSeconds` は drain を包む。**
+  `preStop の sleep + 10s + --soft-stop-timeout + 10s` より長くする
+  （[docs/operations.md](../../docs/operations.md) §5「Deployment 併用時」。
+  判定は `workloads_test.go` の `TestWorkerGraceCoversTheSoftStop`）。**api の
+  値をそのまま写さないこと** --- api は River クライアントを Start しないので、
+  足し算の後ろ 2 項が落ちている
+- **KEDA のトリガのクエリは物理キュー名で書く。** site 束縛キューは
+  `<論理名>_<site>` に修飾される。論理名のまま書くと**誰も入れないキューを
+  数え続けて永久にスケールしない**（判定は `TestScaledJobTriggersMatchTheirQueue`）
 
 この 2 つ（generator にする / env を機微に限る）の判断の根拠は
 [docs/operations/k8s.md](../../docs/operations/k8s.md) §マニフェストの配布形式。
@@ -113,11 +163,25 @@ kind での動作確認手順は [docs/runbook/k8s.md](../../docs/runbook/k8s.md
 いずれも実測で両方緑だった（一覧は `manifests_test.go` の冒頭コメント）。
 壊れるのはクラスタに載せた後になる。
 
-**CRD（KEDA の `ScaledJob` 等）は kubeconform の対象外。** 足すときは
-`-schema-location` か `-ignore-missing-schemas` の選択が要る（CI のコメント参照）。
+**CRD（KEDA の `ScaledJob`）は `schemas/` に置いたスキーマで検査する。**
+`-ignore-missing-schemas` は未知の kind を黙って飛ばすので採らない。
+出どころと「`-strict` を効かせるための加工」は [schemas/README.md](schemas/README.md)。
 Go テスト側は CRD でも Pod テンプレートを見つけて検査する。`ScaledJob` の
 `spec.jobTargetRef.template` は対応済みで、未知の kind は
 `TestEveryWorkloadIsInspected` が落とす。
+
+**argv とキュー名の噛み合わせは `workloads_test.go` が見る。** 見ているものは
+次のとおり。
+
+- `--queues` とトリガのクエリが同じ物理キュー名を指していること
+- site 束縛キューの ScaledJob が `site/` に居ること
+- ffmpeg を要る役だけが `Dockerfile.full` のイメージを指していること
+- `rokuban enqueue` の全ジョブに CronJob があること
+- overlay の JSON6902 patch が実際に site 名の位置を指していること
+
+**キューやジョブを足した日に、マニフェスト側の書き忘れがここで落ちる。**
+一覧は `internal/worker.AllQueueNames()` と `cmd/rokuban/enqueue.go` を
+権威にしてあり、テストに書き写していない。
 
 ## ここを使うハーネス
 

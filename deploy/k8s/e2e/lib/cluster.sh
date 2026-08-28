@@ -83,6 +83,14 @@ build_images() {
   log_step "building ${E2E_IMAGE}"
   docker build -t "$E2E_IMAGE" "$E2E_ROOT" >/dev/null || return 1
 
+  # **ffmpeg 入りも焼く。** encode / thumbnail の ScaledJob はこちらを指す
+  # （公式イメージは ffmpeg を同梱せず、encode キューを購読する worker は
+  # 起動時に fail-fast する）。焼かないと判定 3 は「encode Job が起きない」で
+  # 赤くなり、原因が「イメージが無い」だと出力から読めない。
+  log_step "building ${E2E_FULL_IMAGE} (ffmpeg)"
+  docker build -f "$E2E_ROOT/Dockerfile.full" --build-arg "BASE=${E2E_IMAGE}" \
+    -t "$E2E_FULL_IMAGE" "$E2E_ROOT" >/dev/null || return 1
+
   log_step "building ${E2E_MOCK_IMAGE}"
   local ctx
   ctx="$(mktemp -d)" || return 1
@@ -97,7 +105,8 @@ build_images() {
   rm -rf "$ctx"
 
   log_step "loading images into kind"
-  kind load docker-image "$E2E_IMAGE" "$E2E_MOCK_IMAGE" --name "$E2E_CLUSTER" >/dev/null || return 1
+  kind load docker-image "$E2E_IMAGE" "$E2E_FULL_IMAGE" "$E2E_MOCK_IMAGE" \
+    --name "$E2E_CLUSTER" >/dev/null || return 1
 
   # 焼いた印。apply_template がテンプレートに差し込む。
   #
@@ -110,6 +119,10 @@ build_images() {
     printf 'could not read the built image ids\n' >&2
     return 1
   fi
+  # ffmpeg 入りの id は足していない。**このイメージを使うのは ScaledJob の
+  # Job Pod だけ**で、Job は毎回新しく作られるので「Pod を作り直す印」が要らない
+  # （build-id の annotation が要るのは、テンプレートが変わらない Deployment /
+  # 足場の側だけである）。
   E2E_BUILD_ID="${app_id}-${mock_id}"
   export E2E_BUILD_ID
 }
@@ -144,6 +157,19 @@ install_keda() {
   fi
 }
 
+# e2e_postgres_connection_string は KEDA のトリガが使う接続文字列。
+#
+# **ホスト名は FQDN にする。** 接続を張るのは Job の Pod ではなく keda 名前空間の
+# operator なので、短い `postgres` は operator 側の search domain で解決されず
+# `lookup postgres on 10.96.0.10:53: no such host` になる（実測。KEDA v2.20.2）。
+# このとき ScaledJob は `Ready=False / ScaledJobCheckFailed` のまま Job を一度も
+# 起こさないので、症状は「KEDA が動かない」ではなく「いつまでも 0 のまま」になる。
+# **本物の ScaledJob でも同じ**（deploy/k8s/base/secret.example.yaml）。
+e2e_postgres_connection_string() {
+  printf 'postgresql://rokuban:%s@postgres.%s.svc.cluster.local:5432/rokuban?sslmode=disable' \
+    "$E2E_PGPASSWORD" "$E2E_NAMESPACE"
+}
+
 # deploy_scaffold は名前空間・Secret・postgres・mirakc モック・ツールボックスを立てる。
 deploy_scaffold() {
   log_step "creating namespace and secret"
@@ -151,8 +177,14 @@ deploy_scaffold() {
   # ScaledJobCheckFailed として現れて判定 2 / 3 / 5 が原因を名指ししない赤に
   # なる --- preflight を置いた理由（環境の破損を判定結果にしない）の対象。
   kall create namespace "$E2E_NAMESPACE" --dry-run=client -o yaml | kall apply -f - >/dev/null || return 1
+  # **`rokuban-secrets` はキーを 2 つ持つ。** POSTGRES_PASSWORD は config.yml が
+  # 展開するもの、POSTGRES_CONNECTION_STRING は**製品の ScaledJob** のトリガが
+  # `connectionFromEnv` で読むもの（deploy/k8s/base/secret.example.yaml）。
+  # 出どころは E2E_PGPASSWORD の 1 つのまま。片方だけ回すと、症状は
+  # 「api は動くがスケールしない」になる。
   k create secret generic rokuban-secrets \
     --from-literal=POSTGRES_PASSWORD="$E2E_PGPASSWORD" \
+    --from-literal=POSTGRES_CONNECTION_STRING="$(e2e_postgres_connection_string)" \
     --dry-run=client -o yaml | k apply -f - >/dev/null || return 1
   # KEDA の postgresql スケーラが読む接続文字列。
   #
@@ -168,7 +200,7 @@ deploy_scaffold() {
   # 症状は「KEDA が動かない」ではなく「いつまでも 0 のまま」になる。
   # 本物の ScaledJob でも同じ。
   k create secret generic e2e-keda-postgres \
-    --from-literal=POSTGRES_CONNECTION_STRING="postgresql://rokuban:${E2E_PGPASSWORD}@postgres.${E2E_NAMESPACE}.svc.cluster.local:5432/rokuban?sslmode=disable" \
+    --from-literal=POSTGRES_CONNECTION_STRING="$(e2e_postgres_connection_string)" \
     --dry-run=client -o yaml | k apply -f - >/dev/null || return 1
 
   # ツールボックス用の素の ConfigMap。製品側はハッシュ名なので名前を固定できない。
