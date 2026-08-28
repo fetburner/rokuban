@@ -28,6 +28,7 @@
 package capacity
 
 import (
+	"math/bits"
 	"slices"
 	"time"
 )
@@ -314,20 +315,12 @@ func evaluate(d [typeCount]int, caps [1 << typeCount]int) verdict {
 		if shortfall < best.shortfall {
 			continue
 		}
-		if shortfall == best.shortfall && popcount(uint8(a)) >= popcount(best.mask) {
+		if shortfall == best.shortfall && bits.OnesCount8(uint8(a)) >= bits.OnesCount8(best.mask) {
 			continue
 		}
 		best = verdict{shortfall: shortfall, mask: uint8(a)}
 	}
 	return best
-}
-
-func popcount(m uint8) int {
-	n := 0
-	for ; m != 0; m &= m - 1 {
-		n++
-	}
-	return n
 }
 
 // typeNames はビットマスクを ChannelTypes の順の種別名に戻す。

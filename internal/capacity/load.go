@@ -22,7 +22,7 @@ import (
 // （N 予約の決定に依存した性質。docs/data.md §6.5「判定はサイトごとに
 // 独立して行う」）。
 func Load(ctx context.Context, q *sqlcgen.Queries, site string) ([]Overage, error) {
-	demands, err := LoadDemand(ctx, q, site)
+	demands, err := loadDemand(ctx, q, site)
 	if err != nil {
 		return nil, err
 	}
@@ -37,7 +37,7 @@ func Load(ctx context.Context, q *sqlcgen.Queries, site string) ([]Overage, erro
 // LoadAllSites は Load の全サイト版。GET /api/capacity/overages が使う
 // （issue #184 M4-12）。
 func LoadAllSites(ctx context.Context, q *sqlcgen.Queries) ([]Overage, error) {
-	demands, err := LoadDemandAllSites(ctx, q)
+	demands, err := loadDemandAllSites(ctx, q)
 	if err != nil {
 		return nil, err
 	}
@@ -62,7 +62,7 @@ func tunersFromRows(rows []sqlcgen.TunerSync) []Tuner {
 	return tuners
 }
 
-// LoadDemand は需要になる予約だけを読み出す。
+// loadDemand は需要になる予約だけを読み出す。
 //
 // SQL 側で never-scheduled 除外（issue #98。旧 state <> 'orphaned'）と
 // チャンネルスナップショットの有無を絞り、effective.skip はここ（Go 側）で
@@ -73,7 +73,7 @@ func tunersFromRows(rows []sqlcgen.TunerSync) []Tuner {
 //
 // **数えるのは reconciler が実際に schedule を作る予約だけ**（issue #21 の実装メモ）。
 // skip が立っている予約は schedule が作られないのでチューナーを消費しない。
-func LoadDemand(ctx context.Context, q *sqlcgen.Queries, site string) ([]Demand, error) {
+func loadDemand(ctx context.Context, q *sqlcgen.Queries, site string) ([]Demand, error) {
 	rows, err := q.ListCapacityDemand(ctx, site)
 	if err != nil {
 		return nil, fmt.Errorf("listing capacity demand for site %s: %w", site, err)
@@ -92,8 +92,8 @@ func LoadDemand(ctx context.Context, q *sqlcgen.Queries, site string) ([]Demand,
 	return demands, nil
 }
 
-// LoadDemandAllSites は LoadDemand の全サイト版（issue #184 M4-12）。
-func LoadDemandAllSites(ctx context.Context, q *sqlcgen.Queries) ([]Demand, error) {
+// loadDemandAllSites は loadDemand の全サイト版（issue #184 M4-12）。
+func loadDemandAllSites(ctx context.Context, q *sqlcgen.Queries) ([]Demand, error) {
 	rows, err := q.ListCapacityDemandAllSites(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("listing capacity demand for all sites: %w", err)

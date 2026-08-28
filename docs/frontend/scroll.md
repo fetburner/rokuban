@@ -4,7 +4,7 @@
 
 番組リスト（[programs.md](programs.md)「番組リスト」）の時間窓の継ぎ足しと、
 先頭挿入時のスクロール位置の復元。窓の管理は `pages/programs.tsx`、仮想化と
-復元は `components/program-list.tsx`、純関数は `lib/previous-day-window.ts` /
+復元は `components/program-list.tsx`、純関数は `lib/program-list.ts` /
 `lib/scroll-preservation.ts`。
 
 **この領域は jsdom で原理的に検出できない壊れ方を繰り返した。** 「`pnpm test` が
@@ -16,7 +16,7 @@
 
 - **進行方向（先の時間）は 6 時間ぶんずつ（`windowHours`）の自動読み込み +
   ボタンの受け皿。遡行（前の時間）はボタンのみで、1 暦日（前日 0 時〜当日 0 時）
-  単位で読む**（`lib/previous-day-window.ts` の `previousDayWindow`）
+  単位で読む**（`lib/program-list.ts` の `previousDayWindow`）
 - 遡行の下限は「now を時で切り捨てた時刻」。下限に達したらボタンを出さない
 - 先頭挿入時のスクロール位置は、**アンカーの `programId` から挿入後の添字を
   引き直して `alignRowTop` を呼ぶ**方式で復元する（`components/program-list.tsx`）。
@@ -96,7 +96,7 @@
   時点で画面上のどこに見えていたか）を読む（まだ何も挿入されていないので実際に
   レイアウトされている DOM を安全に読める）。(2) `onLoadPrevious()` を呼ぶ。
   (3) `programs` の更新を検知したら、控えた `programId` から `findProgramIndex`
-  （`lib/program-list-key.ts`）で**挿入後の添字**を引き直し、
+  （`lib/program-list.ts`）で**挿入後の添字**を引き直し、
   `alignRowTop(newIndex, topPx)` を呼んでその行を「元々見えていた画面上の
   位置」に戻す
 - **DOM 要素を追いかけず、ライブラリの座標系に乗る。** `scrollToIndex`

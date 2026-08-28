@@ -118,21 +118,10 @@ func AllowedHosts(allowedHosts []string, trustForwardedHost bool) func(http.Hand
 // `Host` に載せてくる）。落とすのは 1 個だけで、`..` のような不正な形は
 // 正規化しない（DNS 名として無効なので通す理由が無い）。
 func normalizeHost(host string) string {
-	trimmed := host
-	if n := len(trimmed); n >= 2 && trimmed[n-1] == '.' {
-		trimmed = trimmed[:n-1]
+	if n := len(host); n >= 2 && host[n-1] == '.' {
+		host = host[:n-1]
 	}
-	needsLower := false
-	for i := 0; i < len(trimmed); i++ {
-		if c := trimmed[i]; c >= 'A' && c <= 'Z' {
-			needsLower = true
-			break
-		}
-	}
-	if !needsLower {
-		return trimmed
-	}
-	b := []byte(trimmed)
+	b := []byte(host)
 	for i, c := range b {
 		if c >= 'A' && c <= 'Z' {
 			b[i] = c + ('a' - 'A')

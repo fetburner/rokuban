@@ -505,6 +505,33 @@ func explicitContentPath(opts db.ReservationOptions) (string, bool) {
 	return contentpath.SanitizeContentPath(*opts.ContentPath), true
 }
 
+// buildContentPath は録画ファイルの content_path を組み立てる。
+//
+// template が空文字なら従来の固定形式（contentpath.GenerateContentPath。
+// 後方互換で挙動を変えない）を返す。非空なら text/template として
+// contentpath.Build で展開する。渡す contentpath.Data は program_snapshots の
+// title/channel/channelType から contentpath.NewData で組む — この時点で各
+// フィールドがパス成分としてサニタイズされるため、EPG データ（番組名等）に
+// "/" や ".." が混ざっても意図しない階層やパストラバーサルを構造的に作れない。
+// 最終的な拡張子付与とパス全体のサニタイズは contentpath.Build の責務。
+//
+// テンプレートは実行時にもエラーになりうる（未知フィールドの参照等。ありえ
+// ないはずだが）。推測せずそのままエラーを返す。
+func buildContentPath(snap sqlcgen.ProgramSnapshot, template string) (string, error) {
+	serviceID := int(snap.ServiceID)
+	if template == "" {
+		return contentpath.GenerateContentPath(snap.Title, snap.StartAt, serviceID), nil
+	}
+
+	data := contentpath.NewData(snap.Title, snap.StartAt, snap.Channel, serviceID, snap.ChannelType)
+
+	path, err := contentpath.Build(template, data)
+	if err != nil {
+		return "", fmt.Errorf("expanding filename template: %w", err)
+	}
+	return path, nil
+}
+
 // resolveContentPath は予約から新規に生成する contentPath を返す。
 // 初回作成（createSchedule）から呼ばれるほか、再作成（recreateSchedule）が
 // observed の contentPath を引き継げなかった場合（nil・空文字）の
@@ -629,13 +656,14 @@ func (r *Reconciler) recreateChanged(
 
 		wantPriority := effectivePriority(r.cfg.DefaultPriority, d.opts)
 		priorityMismatch := s.Options.Priority != wantPriority
-		// 新形式（program:{programId}）でない tag（旧形式の reservation ベース、
-		// または内容が食い違っている）も再作成の契機にする。旧形式のまま残っている
-		// schedule はこの分岐で新形式に移行する（レベルトリガー。#53 の決定）。
-		// tags は ingest が record と予約を突き合わせるのに使うため、古い tag が
-		// 残ると録画が別の予約に紐付く。
-		tagProgramID, hasNewTag := mirakc.FindProgramTag(s.Tags)
-		tagMismatch := !hasNewTag || tagProgramID != d.res.ProgramID
+		// tag の programId が予約とずれていたら再作成する。tags は ingest が
+		// record と予約を突き合わせるのに使うため、ずれたまま残ると録画が別の
+		// 予約に紐付く。
+		//
+		// tag が読めないケースはここに来ない（上の IsOurs が弾いている）ので、
+		// programID の比較だけでよい。
+		tagProgramID, _ := mirakc.FindProgramTag(s.Tags)
+		tagMismatch := tagProgramID != d.res.ProgramID
 
 		// contentPath は明示指定（overrides.contentPath）があるときだけ比較する。
 		// 比較の左辺は observed の生値（再サニタイズしない） — POST する値
