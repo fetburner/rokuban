@@ -74,7 +74,7 @@ Android のジェスチャーナビは左右端からの横スワイプが「戻
   読み込んでいない前の窓との重なりで一緒に返ってきた番組）がリストの先頭に混ざる。
   これを見せたままにすると、日付ヘッダと「いま見ている日」の導出（どちらも
   リストの先頭の番組から日を決める）が両方とも前日を指してしまう不具合を実機で
-  確認した。`lib/program-list-window.ts` の `filterProgramsFromListStart`
+  確認した。`lib/program-list.ts` の `filterProgramsFromListStart`
   で `pages/programs.tsx` 側が絞ってから `ProgramList` へ渡す。ただし
   `listStartMs` が遡行の下限（now を時で切り捨てた時刻）と一致するとき
   （＝今日を見ている、または遡行が下限まで達したとき）は絞り込まない ---
@@ -105,7 +105,7 @@ Android のジェスチャーナビは左右端からの横スワイプが「戻
 - **日付**（`components/day-strip.tsx` の `DayStrip`）は「いま見ている日」の
   表示 + ジャンプ先の指定の 2 つの概念に分けている。`dayOffset`（state）は
   タップして跳ぶ先、ハイライトは可視範囲の先頭の番組から導出した「いま見ている
-  日」（`onVisibleDayChange` / `lib/visible-day.ts` の純関数）で、ジャンプ先とは
+  日」（`onVisibleDayChange` / `lib/program-list.ts` の純関数）で、ジャンプ先とは
   別に表示しない ---
   タップ直後は一致するが、その後リストをスクロールすればハイライトだけが動く。
   **未キャッシュの日へ跳ぶ間も前のリストをプレースホルダとして残し、
@@ -125,19 +125,18 @@ Android のジェスチャーナビは左右端からの横スワイプが「戻
   `PageHeader` のタイトル行右端（`actions`）に置く。
   **グリッド表示中もトリガーを出したままにする** --- 選択はグリッドの
   列にも効くので、隠すと解除手段のない 1 列グリッドになる
-- チャンネルは**複数選択**（`ChannelPicker` は厳密な
-  `<networkId>:<serviceId>` の `ReadonlySet<string>`。空集合 = すべて）。
+- チャンネルは**複数選択**（`ChannelPicker` は `Service.id` の
+  `ReadonlySet<number>`。空集合 = すべて）。
   「見たい局だけをグリッドの列にする」という使い方に直結するため
-- **新しく作る絞り込み URL は `?service=<networkId>:<serviceId>` に持つ。**
+- **絞り込み URL は `?service=<Service.id>` に持つ。**
   `lib/programs-search.ts` の `ProgramsPageSearch.service` が複数可・OR・空集合を
-  `undefined` で表す。`service` と旧 `networkId` / `serviceId` の混在は意味が曖昧なので
-  API は 400 にする。旧 `serviceId` 単独は network を問わず、旧
-  `networkId + serviceId` はその network 内で絞る従来の意味を維持する。
-  ピッカーを操作した時点で厳密形式へ移し、旧キーは明示的に `undefined` にする。
-  複合キー配列は networkId・serviceId 順に正準化し、選択履歴で URL / queryKey を
-  揺らさない。`dayOffset`（ジャンプ先の日）・`view`（表示形式）は URL 化しない。
+  `undefined` で表す。**検証は openapi.yaml から生成した zod スキーマ
+  （`src/api/zod.ts`）に委ね、値域や正規表現を手で書き写さない**
+  （`lib/url-search.ts` が URL 固有の都合 --- 文字列で届く / 単一値と配列が
+  混ざる / 不正な要素だけ落とす --- だけを繋ぐ）。id 配列は昇順に正準化し、
+  選択履歴で URL / queryKey を揺らさない。`dayOffset`（ジャンプ先の日）・`view`（表示形式）は URL 化しない。
   ピッカー操作は `replace` で navigate し、1 局ずつ選ぶたびに history を汚さない
-- **絞り込みはサーバー側でかける。** 選択した `(networkId, serviceId)` の組を
+- **絞り込みはサーバー側でかける。** 選択した `Service.id` の配列を
   `programs.tsx` から渡し、返るのは選択したサービスの番組だけになる。
   100 サービス規模で無絞り込みの 24 時間ぶんが実測 1.7 MB になり、全件取得してから
   クライアント側で絞る形は維持できないため
@@ -148,17 +147,16 @@ Android のジェスチャーナビは左右端からの横スワイプが「戻
   グリッドの列は絞り込んだ後の番組（サーバーの返り値そのもの）から導く ---
   選んだ局がそのまま列になればよく、独立させる理由が無い
 - **ピッカーが実際に表示・列挙できる集合は「候補（`hasPrograms` から作る
-  `filterableServices`）∪ 現在選択中の複合キー」。** 選択は URL から入るため、候補に
-  無い値も無視しない。旧 `serviceId` ワイルドカードは、現在のサービス一覧で一致する
-  全 network の複合キーへ表示上だけ展開する。名前が引けない古いブックマークは
-  `チャンネル #<id>` に落とし、個別に解除できる形を維持する。`pickerServiceDomain` は
-  filterable と選択中キーの和を作り、同じ serviceId の別 network を同じ候補へ潰さない
+  `filterableServices`）∪ 現在選択中の id」。** 選択は URL から入るため、候補に
+  無い値も無視しない。名前が引けない古いブックマークは `チャンネル #<id>` に
+  落とし、個別に解除できる形を維持する（`pickerServiceDomain`）。同じ
+  `serviceId` の別 network は合成 id が違うので、同じ候補へ潰れない
 - sticky な小見出しの `top` はハードコードしない。`PageHeader` が
   `ResizeObserver` で実測して `--page-header-height` を親要素に書き出す
   （フィルタ行の増減や文字サイズでずれる）
-- **ライブ視聴（`/live`）からは「この局の番組表」で既存の
-  `?networkId=&serviceId=` を使い、厳密な 1 局へ飛べる。** 1 局の導線には新しい
-  複数組パラメータは不要。逆方向（番組表 → ライブ）はページ単位の導線を置かない ---
+- **ライブ視聴（`/live`）からは「この局の番組表」で厳密な 1 局へ飛べる。**
+  番組表と同じ `?service=<Service.id>` の 1 要素配列を使う（1 局のためだけの
+  別形式を持たない）。逆方向（番組表 → ライブ）はページ単位の導線を置かない ---
   放送中の番組の展開に「ライブで見る」を出す導線は行（`ProgramRow`）単位の担当
   （issue #229）にする。ページ全体に 2 つ目のライブ導線を足すと、複数
   チャンネルを絞り込んでいるとき・放送中の番組が絞り込みの外にあるときに
@@ -183,7 +181,7 @@ Android のジェスチャーナビは左右端からの横スワイプが「戻
   先頭へ `scrollToIndex` する**（`components/program-list.tsx` の
   `ProgramListHandle.scrollToDayOffset`。遡行のアンカー復元
   （[scroll.md](scroll.md)）と同じ `virtualizer.scrollToIndex` の機構）。
-  対象の添字は `lib/visible-day.ts` の
+  対象の添字は `lib/program-list.ts` の
   `firstIndexForDayOffset`（「可視範囲の先頭 → dayOffset」を導く
   `visibleDayOffset` と対になる、逆向きの純関数）で引く。見つからなければ
   （まだ読み込んでいない日）何もしない

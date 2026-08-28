@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -211,14 +212,15 @@ func TestListRecordings_ChannelTypeAndServiceID(t *testing.T) {
 		t.Fatalf("channelType=BS,CS got %v, want 2 件", titles)
 	}
 
-	titles = getRecordingsTitles(t, srv.URL, url.Values{"service": {db.DefaultSite + ":100"}})
+	titles = getRecordingsTitles(t, srv.URL, url.Values{"service": {"3267800100"}})
 	if len(titles) != 1 || titles[0] != "GR番組" {
-		t.Fatalf("service=default:100 got %v, want [GR番組]", titles)
+		t.Fatalf("service=3267800100 got %v, want [GR番組]", titles)
 	}
 
-	titles = getRecordingsTitles(t, srv.URL, url.Values{"service": {db.DefaultSite + ":100", db.DefaultSite + ":200"}})
+	titles = getRecordingsTitles(t, srv.URL,
+		url.Values{"service": {"3267800100", "3267800200"}})
 	if len(titles) != 2 {
-		t.Fatalf("service=default:100,default:200 got %v, want 2 件", titles)
+		t.Fatalf("service=3267800100,3267800200 got %v, want 2 件", titles)
 	}
 }
 
@@ -231,31 +233,56 @@ func TestListRecordings_ServiceCrossNetwork(t *testing.T) {
 	seedRecordingFull(t, pool, seedRecordingOpts{title: "CS 101", start: base.Add(time.Minute), status: "finished", eventID: 2, networkID: 6, serviceID: 101})
 	seedRecordingFull(t, pool, seedRecordingOpts{title: "site2 BS 101", start: base.Add(2 * time.Minute), status: "finished", eventID: 3, site: "site2", networkID: 4, serviceID: 101})
 
-	// 新3要素形式は network まで厳密に一致する。
-	titles := getRecordingsTitles(t, srv.URL, url.Values{"service": {db.DefaultSite + ":4:101"}})
+	// 合成 id は network まで厳密に一致する。
+	titles := getRecordingsTitles(t, srv.URL,
+		url.Values{"site": {db.DefaultSite}, "service": {"400101"}})
 	if len(titles) != 1 || titles[0] != "BS 101" {
-		t.Fatalf("service=default:4:101 got %v, want [BS 101]", titles)
+		t.Fatalf("site=default&service=400101 got %v, want [BS 101]", titles)
 	}
-	titles = getRecordingsTitles(t, srv.URL, url.Values{"service": {db.DefaultSite + ":6:101"}})
+	titles = getRecordingsTitles(t, srv.URL, url.Values{"service": {"600101"}})
 	if len(titles) != 1 || titles[0] != "CS 101" {
-		t.Fatalf("service=default:6:101 got %v, want [CS 101]", titles)
+		t.Fatalf("service=600101 got %v, want [CS 101]", titles)
 	}
 
-	// 旧2要素形式は site 内で network を問わない従来の意味を維持する。
-	titles = getRecordingsTitles(t, srv.URL, url.Values{"service": {db.DefaultSite + ":101"}})
+	// 同じ serviceId でも network が違えば別チャンネル（BS 101 と CS 101 は
+	// 実在する衝突）。組を 2 つ渡せば OR で両方返る。
+	titles = getRecordingsTitles(t, srv.URL,
+		url.Values{"site": {db.DefaultSite}, "service": {"400101", "600101"}})
 	if len(titles) != 2 {
-		t.Fatalf("service=default:101 got %v, want BS 101 and CS 101", titles)
+		t.Fatalf("service=400101,600101 got %v, want BS 101 and CS 101", titles)
 	}
 
-	// 新旧を同じ配列で指定した場合も OR。site はどちらの形式でも跨がない。
-	titles = getRecordingsTitles(t, srv.URL, url.Values{"service": {db.DefaultSite + ":4:101", "site2:101"}})
+	// **組の集合であって直積ではない。** network と service を別々に ANY で
+	// 絞る実装だと (4,102) と (6,101) まで一致してしまう。片方だけが共通の
+	// fixture では両者が同じ集合になるので、ここは両方ずらして固定する。
+	seedRecordingFull(t, pool, seedRecordingOpts{title: "BS 102", start: base.Add(3 * time.Minute), status: "finished", eventID: 4, networkID: 4, serviceID: 102})
+	seedRecordingFull(t, pool, seedRecordingOpts{title: "CS 102", start: base.Add(4 * time.Minute), status: "finished", eventID: 5, networkID: 6, serviceID: 102})
+	titles = getRecordingsTitles(t, srv.URL,
+		url.Values{"site": {db.DefaultSite}, "service": {"400101", "600102"}})
 	if len(titles) != 2 {
-		t.Fatalf("mixed exact/wildcard services got %v, want default BS 101 and site2 BS 101", titles)
+		t.Fatalf("service=400101,600102 got %v, want exactly BS 101 and CS 102 (直積なら 4 件になる)", titles)
+	}
+	for _, title := range titles {
+		if title == "BS 102" || title == "CS 101" {
+			t.Fatalf("service=400101,600102 に直積の組 %q が混ざった: %v", title, titles)
+		}
+	}
+
+	// site を絞らなければ全サイトの同じチャンネルが出る（軸間 AND・軸内 OR）。
+	titles = getRecordingsTitles(t, srv.URL, url.Values{"service": {"400101"}})
+	if len(titles) != 2 {
+		t.Fatalf("service=400101 without a site filter got %v, want default BS 101 and site2 BS 101", titles)
+	}
+	// site を足すとその site だけになる。
+	titles = getRecordingsTitles(t, srv.URL,
+		url.Values{"service": {"400101"}, "site": {db.DefaultSite}})
+	if len(titles) != 1 || titles[0] != "BS 101" {
+		t.Fatalf("site=default&service=400101 got %v, want [BS 101]", titles)
 	}
 }
 
-// service（チャンネル絞り込み）は (site, serviceId) で引く。同じ放送エリアを
-// 2 サイトで受けていて service_id が両サイトで一致していても、選んだ site の
+// service（チャンネル絞り込み）は (site, networkId, serviceId) で引く。同じ
+// 放送エリアを 2 サイトで受けていて組が両サイトで一致していても、選んだ site の
 // 録画だけを返す（site を跨がない。issue #283）。
 func TestListRecordings_ServiceCrossSite(t *testing.T) {
 	pool := testutil.SetupDB(t)
@@ -267,21 +294,30 @@ func TestListRecordings_ServiceCrossSite(t *testing.T) {
 	seedRecordingFull(t, pool, seedRecordingOpts{title: "site2 の 100", start: base.Add(time.Minute), status: "finished", eventID: 2, site: "site2", serviceID: 100})
 
 	// default:100 を選んだら default の録画だけ（site2 の 100 は混ざらない）。
-	titles := getRecordingsTitles(t, srv.URL, url.Values{"service": {db.DefaultSite + ":100"}})
+	titles := getRecordingsTitles(t, srv.URL,
+		url.Values{"site": {db.DefaultSite}, "service": {"3267800100"}})
 	if len(titles) != 1 || titles[0] != "default の 100" {
-		t.Fatalf("service=default:100 got %v, want [default の 100]（site を跨がない）", titles)
+		t.Fatalf("site=default&service=3267800100 got %v, want [default の 100]", titles)
 	}
 
-	// site2:100 を選んだら site2 の録画だけ。
-	titles = getRecordingsTitles(t, srv.URL, url.Values{"service": {"site2:100"}})
+	// site2 側を選んだら site2 の録画だけ。
+	titles = getRecordingsTitles(t, srv.URL,
+		url.Values{"site": {"site2"}, "service": {"3267800100"}})
 	if len(titles) != 1 || titles[0] != "site2 の 100" {
-		t.Fatalf("service=site2:100 got %v, want [site2 の 100]", titles)
+		t.Fatalf("site=site2&service=3267800100 got %v, want [site2 の 100]", titles)
 	}
 
-	// 複数サイトの複合キーは OR で足せる。
-	titles = getRecordingsTitles(t, srv.URL, url.Values{"service": {db.DefaultSite + ":100", "site2:100"}})
+	// site 軸も複数指定は OR。
+	titles = getRecordingsTitles(t, srv.URL,
+		url.Values{"site": {db.DefaultSite, "site2"}, "service": {"3267800100"}})
 	if len(titles) != 2 {
-		t.Fatalf("service=default:100,site2:100 got %v, want 2 件", titles)
+		t.Fatalf("site=default,site2 got %v, want 2 件", titles)
+	}
+
+	// site だけで絞れる（チャンネルを列挙しなくてよい。従来はできなかった）。
+	titles = getRecordingsTitles(t, srv.URL, url.Values{"site": {"site2"}})
+	if len(titles) != 1 || titles[0] != "site2 の 100" {
+		t.Fatalf("site=site2 alone got %v, want [site2 の 100]", titles)
 	}
 }
 
@@ -498,20 +534,28 @@ func TestListRecordings_ValidationErrors(t *testing.T) {
 		{"genre above domain max", url.Values{"genre": {"16"}}},
 		{"genre negative", url.Values{"genre": {"-1"}}},
 		{"genre wraps int16 if not validated", url.Values{"genre": {"32768"}}},
-		{"service without site", url.Values{"service": {"100"}}},
-		{"service with invalid site", url.Values{"service": {"Tokyo:100"}}},
-		{"service with zero id", url.Values{"service": {"default:0"}}},
-		{"service id over int32", url.Values{"service": {"default:2147483648"}}},
-		{"exact service with zero network", url.Values{"service": {"default:0:101"}}},
-		{"exact service with network over int32", url.Values{"service": {"default:2147483648:101"}}},
-		{"exact service with service over int32", url.Values{"service": {"default:4:2147483648"}}},
-		{"exact service with too many parts", url.Values{"service": {"default:4:101:1"}}},
+		{"service is not a number", url.Values{"service": {"abc"}}},
+		{"service is zero", url.Values{"service": {"0"}}},
+		{"service is negative", url.Values{"service": {"-1"}}},
+		// 上限超は 0 件になるのではなく、int32 への変換で巻き戻って実在する
+		// チャンネルに化ける（`429500003201024` の networkID 4295000032 は
+		// int32 で 32736 = 正規の `3273601024` と同じ組）。400 で止める。
+		{"service just over the maximum", url.Values{"service": {"6553565536"}}},
+		{"service aliasing a real channel via int32 wrap", url.Values{"service": {"429500003201024"}}},
+		{"service at the int64 edge", url.Values{"service": {"9007199254740991"}}},
+		{"service is the old composite form", url.Values{"service": {"default:4:101"}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			resp := getJSON(t, recordingsURL(srv.URL, tt.params), nil)
 			if resp.StatusCode != http.StatusBadRequest {
 				t.Fatalf("status = %d, want 400", resp.StatusCode)
+			}
+			// 束縛層のエラーもハンドラの 400 と同じ形（application/json の
+			// ErrorResponse）で返す --- 生成ハンドラの既定は http.Error で
+			// text/plain になり、フロントの apiErrorMessage が本文を読めない。
+			if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+				t.Errorf("Content-Type = %q, want application/json", ct)
 			}
 			var body ErrorResponse
 			if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
@@ -547,7 +591,11 @@ func TestListRecordings_ValidationErrors(t *testing.T) {
 		{"qTarget", url.Values{"qTarget": {"title"}}},
 		{"channelType", url.Values{"channelType": {"GR"}}},
 		{"order", url.Values{"order": {"asc"}}},
-		{"service", url.Values{"service": {"default:1"}}},
+		{"service", url.Values{"service": {"400001"}}},
+		// **上限ちょうどは通す。** 400 のケースだけ書くと、上限を下げる変異
+		// （実在しうる networkId=65535 のチャンネルを弾く）が緑のまま通る。
+		{"service at the maximum", url.Values{"service": {"6553565535"}}},
+		{"site", url.Values{"site": {"default"}}},
 	} {
 		resp := getJSON(t, recordingsURL(srv.URL, tt.params), nil)
 		if resp.StatusCode != http.StatusOK {

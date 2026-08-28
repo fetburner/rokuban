@@ -131,7 +131,16 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	handler := NewServer(cfg.Pool, cfg.RiverClient, cfg.Sites, cfg.EncodeProfileNames,
 		Capabilities{Live: cfg.LiveEnabled})
 	strict := NewStrictHandler(handler, nil)
-	HandlerFromMux(strict, r)
+	HandlerWithOptions(strict, ChiServerOptions{
+		BaseRouter: r,
+		// 生成ハンドラのパラメータ束縛が失敗したとき（`?limit=abc` のように
+		// 型が合わない、必須パラメータが無い）の応答。**既定は http.Error
+		// なので text/plain になる** --- ハンドラ側の 400 はすべて
+		// ErrorResponse（`{"error": ...}`）なのに、束縛失敗だけ形が違うと
+		// フロントの apiErrorMessage が本文を読めず「不明なエラー」に落ちる。
+		// 400 の本文を捨てない規約（docs/api/rest.md）は束縛層にも及ぶ。
+		ErrorHandlerFunc: writeBindError,
+	})
 
 	if cfg.DistFS != nil {
 		r.NotFound(spaOrAPINotFound(NewSPAHandler(cfg.DistFS)))

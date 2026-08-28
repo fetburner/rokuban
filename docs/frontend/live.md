@@ -33,15 +33,14 @@ Rokuban 自体のライブ視聴は「チャンネル一覧から選んでブラ
 **SI の `serviceId` 単独では network をまたぐと一意でない。** Mirakurun が
 `networkId * 100000 + serviceId` の合成 id を発明した理由そのもので、
 `GET /api/sites/{site}/services` は GR / BS / CS を混ぜて返すため、同じ
-`serviceId` を持つサービスが 2 つ返る構成がありうる。**`/live` の選択の同定
-（初期選択・選択中のハイライトと `aria-current`・再生中チャンネルの記憶・中断予測の
-応答の絞り込み）は `networkId` + `serviceId` の組で行う**（`lib/live.ts` の
-`pickInitialService` / `liveServiceKey`）。`networkId` を持たない旧 `?serviceId=`
-単独のリンク・ブックマークは「その `serviceId` を持つ最初のサービス」へ
-フォールバックする（この場合に選ばれる network は一覧の順序に依存しうるが、
-`networkId` を運ばない入力そのものが network を同定できないので仕様である）。
-番組リスト（`components/program-row.tsx`）の「ライブで見る」リンクも
-`networkId` を渡す。
+`serviceId` を持つサービスが 2 つ返る構成がありうる。**そこで API が合成 id を
+`Service.id`（`networkId * 100000 + serviceId`）として返し、画面内の同定は
+すべてこの 1 つの値で行う**（選択中のハイライトと `aria-current`・再生中
+チャンネルの記憶・中断予測の EPG 問い合わせ）。**`/live` の URL だけは
+`?networkId=&serviceId=` のまま**で、`pickInitialService` は両方揃ったときだけ
+厳密に一致させる（片方しか無い入力は network を同定できないので、既定
+＝番組を持つ先頭へ落とす）。番組リスト（`components/program-row.tsx`）の
+「ライブで見る」リンクも両方を渡す。
 
 **番組表と録画の絞り込みも network を含む厳密形式を持つ。** 高松の地上波だけを
 受信する実運用 mirakc では 19 サービス中の重複は 0 件だったが、この測定は GR の
@@ -49,11 +48,9 @@ Rokuban 自体のライブ視聴は「チャンネル一覧から選んでブラ
 `(network_id=6, service_id=101)` の実例があり、GR / BS / CS を混ぜる一般の構成では
 `serviceId` 単独を identity にできない。
 
-「この局の番組表」は 1 局だけなので、既存 `/programs` の `networkId + serviceId` で
-厳密に運ぶ。番組表ピッカーの複数選択は `service=<networkId>:<serviceId>` の配列、
-録画の絞り込みは `service=<site>:<networkId>:<serviceId>` を使う。旧番組表 URL の
-`serviceId` 単独と旧録画 URL の `<site>:<serviceId>` は後方互換入力として残し、
-network を問わない従来の意味を維持する。
+「この局の番組表」も番組表ピッカーの複数選択も録画の絞り込みも、同じ
+`?service=<Service.id>` の配列で運ぶ（1 局なら 1 要素）。録画では site が
+別軸（`?site=`）で、軸内は OR・軸間は AND。
 
 **「選ぶ」（`?networkId=&serviceId=` を変える）と「流す」（`LivePlayer` をマウントする）を
 別のタップに分ける。** チャンネルを選ぶこと自体は probe も
@@ -102,7 +99,7 @@ reset effect が走って unmount してももう遅い（`internal/streamer/liv
 ナビゲートする。
 
 **視聴中チャンネルの情報欄に「この局の番組表」リンクを置く。**
-`/programs`（番組表）の `?serviceId=` へ、視聴中の 1 局を配列 1 要素で渡す
+`/programs`（番組表）の `?service=` へ、視聴中の 1 局を配列 1 要素で渡す
 （[programs.md](programs.md)「番組リスト」の絞り込みと同じ形。`serviceId?: number[]`）。
 このリンクは通常の push ナビゲーション（`replace` にしない） --- チャンネル一覧の
 ザッピングとは違い 1 回だけの遷移なので、戻るボタンで視聴中チャンネルへ戻れる
@@ -359,15 +356,13 @@ EPGStation・KonomiTV には構造的にできない表示。
 値であり、別サイトの同じ番号の番組と取り違えないよう `site` の一致も見る
 （docs/schema.md §1 の設計原則）。
 
-- **EPG 問い合わせは `serviceId` の配列だけで投げ、応答を `(networkId, serviceId)`
-  の組で絞り直す。** 同じチャンネル種別のサービスは複数 network にまたがりうるので、
-  `GET /api/sites/{site}/programs` の `networkId`（単一の整数）ではこの問い合わせを
-  表現できない。一方サーバーは `serviceId` だけを AND するため、選択中と別 network・
-  別種別のサービスがたまたま同じ `serviceId` を持つと、その番組が
-  `sameTypeProgramIds` に混入して**存在しない中断警告**を出しうる（SI の
-  `serviceId` は network をまたぐと一意でない。上記「フロントエンド実装」）。
-  応答側を `liveServiceKey`（`networkId` + `serviceId`）の集合で絞ることで閉じる
-  --- 種別一致の判定自体はサーバーに任せたまま、混入だけを落とす
+- **EPG 問い合わせは `Service.id` の配列で投げる。** 同じチャンネル種別の
+  サービスは複数 network にまたがりうるが、合成 id なら 1 つのパラメータで
+  複数組を渡せる。サーバーが組で厳密に絞るので、応答をクライアント側で
+  絞り直す必要はない --- `serviceId` の配列だけで投げていた頃は、選択中と
+  別 network・別種別のサービスがたまたま同じ `serviceId` を持つと、その番組が
+  `sameTypeProgramIds` に混入して**存在しない中断警告**を出しうるので、
+  応答側の再フィルタが要った
 - **先読みの時間窓は 2 時間。** 視聴を選ぶ／始める瞬間の判断材料として出す表示
   なので、窓は「これから見始める 1 回の視聴」がカバーする範囲に合わせる。1 番組
   （30 分〜1 時間）を見ている間に次の番組の録画が競合し得ることまでは見せたいが、

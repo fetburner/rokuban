@@ -216,423 +216,7 @@ func newServerCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "server",
 		Short: "Start the rokuban server",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			roles, err := resolveRoles(cmd)
-			if err != nil {
-				return err
-			}
-
-			cfg, err := loadConfig(cmd)
-			if err != nil {
-				return err
-			}
-			warnIfAllowedHostsEmpty(slog.Default(), cfg.Server.AllowedHosts)
-
-			// このプロセスが引くキューを --queues と worker.queues から決める。
-			// 以降の判定（validateSiteBinding / RequiresEncodeTools /
-			// ClientConfig.Queues）はすべてこの解決済みの集合を見る ---
-			// 片方だけが config を直接見ると、argv で絞った Pod が
-			// 「絞ったつもりで検査だけ全キュー基準」になる（resolveWorkerQueues）。
-			queues, err := resolveWorkerQueues(cmd, cfg.Worker.Queues, roles)
-			if err != nil {
-				return err
-			}
-			// 1 件消化モード（KEDA ScaledJob の Job が自分で終了するための起動形態。
-			// worker.OnceGate、docs/operations.md §5）。
-			onceGate, onceIdleTimeout, err := resolveOnce(cmd, roles)
-			if err != nil {
-				return err
-			}
-			// SIGTERM で実行中のジョブを打ち切らない（drain する）ための猶予。
-			// 1 件消化モードかどうかに関わらず効く --- `--once` の Job も
-			// ノード退避やローリング更新で SIGTERM を受ける（そのときの
-			// 停止経路は常駐 worker と同じ）。
-			softStopTimeout, err := resolveSoftStopTimeout(cmd, roles)
-			if err != nil {
-				return err
-			}
-
-			// このプロセスが束縛される mirakc サイトを --sites から決める
-			// （config キーにしない。issue #183 M4-11「含むもの」4）。
-			bound, err := resolveSiteBinding(cmd, cfg.Registry())
-			if err != nil {
-				return err
-			}
-			if err := validateSiteBinding(roles, bound, queues); err != nil {
-				return err
-			}
-			// site 名を site 単位のキューに修飾したときに River の 64 文字上限を
-			// 超えないことを検証する。internal/config はレジストリの site 名を
-			// ロード時に既にこの上限の範囲（config.MirakcSiteNameMaxLen）で検査
-			// しているので、ここは site 名が config 以外の経路から来る場合に
-			// 備えた最後の砦（worker.ValidateSiteForQueueNames の doc コメント参照）。
-			for _, s := range bound {
-				if err := worker.ValidateSiteForQueueNames(s.Site); err != nil {
-					return err
-				}
-			}
-			// boundSite は「ちょうど 1 サイトに束縛されている」場合だけ非ゼロ値になる。
-			// 0 サイト（中央プロセス）では空のまま渡し、worker/watcher 側の既定の
-			// site 未設定規約（空文字列 = db.DefaultSite に解決 / 定期ジョブ未登録）に
-			// 委ねる。
-			var boundSite config.MirakcSite
-			if len(bound) == 1 {
-				boundSite = bound[0]
-			}
-			// live はライブ視聴セッションごとに mirakc へアクセスするため、streamer
-			// ロールが live.enabled で起動するにはちょうど 1 サイトへの束縛が要る
-			// （watcher と同じ理由。issue #91 のライブ資源同定はこのタスクの対象外だが、
-			// レジストリを導入した以上ここだけは壊さないための最小限の検査）。
-			if cfg.Live.Enabled && slices.Contains(roles, "streamer") && len(bound) != 1 {
-				return fmt.Errorf(
-					"live.enabled requires exactly one bound site for the streamer role, got %d (use --sites <site>)",
-					len(bound))
-			}
-
-			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
-			defer stop()
-			// **1 発目を受けたらシグナルの登録を外す。** 外すまでの間、2 発目の
-			// SIGTERM / SIGINT は signal パッケージのチャネル（バッファ 1・
-			// 読み手はもう居ない）に落ちて捨てられ、既定動作（プロセス終了）が
-			// 抑止されたままになる。1 発目のあとに続くのは River の drain で、
-			// その長さは `--soft-stop-timeout` である --- encode を載せる構成には
-			// 数時間を推奨しているので、**その間ずっと Ctrl-C も `kill -TERM` も
-			// 効かない**（止める手段が SIGKILL だけになる）。
-			//
-			// **外す契機は「1 発目のシグナル」であって「畳み終えたところ」では
-			// ない。** 後者にすると、drain を errgroup の中で回す 1 件消化モード
-			// （stopOnceProcess）では畳み終えるまで外れず、**猶予を長く取る構成
-			// ほど逃げ道が無くなる**（数時間の猶予を勧めている先が ScaledJob =
-			// 1 件消化モードなので、一番効いてほしい構成で効かない）。
-			//
-			// 両モードとも TestServerCmd_SecondSigtermKillsDrainingProcess が
-			// 固定する。
-			context.AfterFunc(ctx, stop)
-
-			pool, err := db.NewPool(ctx, cfg.DB, roles)
-			if err != nil {
-				return err
-			}
-			// **River の drain より後に閉じる。** defer の LIFO でそうなっている
-			// （この defer より後に登録される stopRiverForShutdown が先に走る）。
-			// 順序が逆になると、ctx を切られたジョブの結果を River の completer が
-			// 書けず、行が `running` のまま残る --- この PR が避けようとしている
-			// 形そのものである。
-			defer pool.Close()
-
-			slog.Info("starting server", "roles", roles)
-
-			eg, egCtx := errgroup.WithContext(ctx)
-
-			// HTTP リスナーはロールに関わらず 1 本立てる。ヘルスチェックと
-			// /metrics はどのロールでも scrape できる必要があるため
-			// （worker だけの Pod でも滞留メトリクスを取りたい）。
-			// SPA・SSE・バイト配信は担当ロールのときだけ登録する。
-			{
-				backlog := newBoundBacklogCollector(pool, bound)
-				routerCfg := api.RouterConfig{
-					AllowedHosts:       cfg.Server.AllowedHosts,
-					TrustForwardedHost: cfg.Server.TrustForwardedHost,
-					Pool:               pool,
-					// api は不変条件 1（mirakc にもファイルシステムにも依存しない）に
-					// より site に束縛されない。boundSite ではなくレジストリ全体を渡す
-					// ことで、1 プロセスがレジストリの全 site を処理できる
-					// （issue #184 M4-12）。
-					Sites:           registryNames(cfg.Registry()),
-					MetricsRegistry: metrics.NewRegistry(backlog),
-					// GET /api/capabilities に出すオプション機能（issue #209）。
-					// フロントはこれを見てライブへの導線を出すかどうかを決める。
-					//
-					// **ロールで囲わない。** OpenAPI 生成ルート（HandlerFromMux）は
-					// ロールに関わらず全プロセスに生えるので、api ロールの中だけで
-					// 代入すると、同じ config の別プロセス（notifier 単独など）に
-					// 聞いたときだけ live:false になる --- config → 公開面の値なのに
-					// 答えがプロセスの役割で変わる。Sites / MetricsRegistry を
-					// 無条件に渡しているのと同じ理由でここに置く（レビュー指摘）。
-					//
-					// 渡すのはこのプロセスが streamer ロールを持つかではなく config の
-					// 値。ロール分割構成では api と streamer は別プロセスだが config
-					// ファイルは共有する（docs/configuration.md §スキーマ構造）。
-					LiveEnabled: cfg.Live.Enabled,
-				}
-
-				if slices.Contains(roles, "api") {
-					distFS, subErr := fs.Sub(web.DistFS, "dist")
-					if subErr != nil {
-						return fmt.Errorf("embedded dist/ not found: %w", subErr)
-					}
-					routerCfg.DistFS = distFS
-
-					// ルール作成/更新/削除のヒントで ruler_pass を投入するための
-					// insert-only クライアント。api は mirakc に問い合わせず ffmpeg も
-					// 実行しない（不変条件）ため、worker.NewWorkers のフルのワーカー群は
-					// 登録しない（InsertTx だけできれば足りる。docs/recording.md §3.1）。
-					apiRiverClient, apiRiverErr := worker.NewInsertOnlyClient(pool)
-					if apiRiverErr != nil {
-						return apiRiverErr
-					}
-					routerCfg.RiverClient = apiRiverClient
-					// ルール保存時の encodeProfiles 存在検証用（名前集合だけ。
-					// ffmpeg の LookPath はしない。issue #64）。
-					routerCfg.EncodeProfileNames = cfg.Encode.ProfileNames()
-				}
-
-				// バイト配信は streamer、SSE のヒント配送は notifier の担当
-				// （不変条件 1、issue #24 M2-19）。api はどちらにも依存しない
-				// 純粋なリクエスト/レスポンス層になる。両方を同一プロセスに
-				// 同居させる場合（monolith / --all）は Mounters で束ねる。
-				var mounters api.Mounters
-				if slices.Contains(roles, "streamer") {
-					mounters = append(mounters, streamer.New(pool, streamer.Config{
-						MediaDir:      cfg.Storage.MediaDir,
-						AccelLocation: cfg.Storage.AccelLocation,
-					}))
-
-					// ライブ視聴（issue #91）。live.enabled が true のときだけ ffmpeg の
-					// LookPath 検査を行う --- 公式イメージ（ffmpeg 無し）で streamer を
-					// 起動する構成（録画配信 / サムネイルのみ）を壊さない
-					// （不変条件 4、cfg.Encode.ValidateTools の条件付き検査と同じ形）。
-					if cfg.Live.Enabled {
-						if toolErr := cfg.Live.ValidateTools(); toolErr != nil {
-							return toolErr
-						}
-
-						// live.enabled かつ streamer ロールならちょうど 1 サイトへの束縛が
-						// 保証済み（上の事前検査）なので boundSite を使ってよい。
-						liveMirakcClient := mirakc.NewClient(boundSite.URL, nil)
-						liveStreamer := streamer.NewLive(liveMirakcClient, boundSite.Site, convertLiveConfig(cfg.Live))
-						mounters = append(mounters, liveStreamer)
-						// idle GC ループ。ctx（egCtx）が終わったら全セッションを止めて
-						// mirakc の接続を閉じる（チューナー解放。crash-only の唯一の
-						// 例外の後始末。docs/overview.md §crash-only）。
-						eg.Go(func() error { return liveStreamer.Run(egCtx) })
-					}
-				}
-				if slices.Contains(roles, "notifier") {
-					// notifier はシングルトンではない。各レプリカが自分で LISTEN して
-					// 自分にぶら下がる SSE クライアントに配るだけなので、レプリカを
-					// 増やしても Redis アダプタ等の追加基盤は要らない（docs/data.md §3）。
-					hub := notifier.NewEventHub()
-					mounters = append(mounters, hub)
-					eg.Go(func() error {
-						if hubErr := hub.Run(egCtx, pool); hubErr != nil && !errors.Is(hubErr, context.Canceled) {
-							return fmt.Errorf("notifier: %w", hubErr)
-						}
-						return nil
-					})
-				}
-				if len(mounters) > 0 {
-					routerCfg.Mounter = mounters
-				}
-
-				srv := newProductionHTTPServer(cfg.Server.Listen, api.NewRouter(routerCfg))
-
-				eg.Go(func() error {
-					slog.Info("starting http server", "addr", cfg.Server.Listen)
-					if httpErr := srv.ListenAndServe(); httpErr != nil && !errors.Is(httpErr, http.ErrServerClosed) {
-						return fmt.Errorf("http server: %w", httpErr)
-					}
-					return nil
-				})
-				eg.Go(func() error {
-					<-egCtx.Done()
-					shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), httpShutdownTimeout)
-					defer shutdownCancel()
-					return srv.Shutdown(shutdownCtx)
-				})
-			}
-
-			// 汎用 webhook（M3-11）。URL 空なら no-op。worker（record_sweep）と
-			// watcher の両方から同じ Client を使う。
-			webhookClient := webhook.New(cfg.Webhook)
-
-			// River client（worker と watcher で共有）。
-			//
-			// ロールがそのプロセスの実行する仕事を決める（issue #113）。
-			// worker ロールが無いプロセスに worker.NewWorkers のフルのワーカー群
-			// （EncodeWorker/ThumbnailWorker を含む）を登録すると、ffmpeg/ffprobe を
-			// 検査しないまま encode/thumbnail ジョブを実行しうる（不変条件 4 違反）。
-			// resolveRiverClientKind がロールから組み立て方を一意に決め、
-			// watcher 単独では api ロールと同じ NewInsertOnlyClient（ingest ジョブの
-			// InsertTx 専用、Workers 登録なし・Start 不可）を使う。
-			var riverClient *river.Client[pgx5.Tx]
-			switch resolveRiverClientKind(roles) {
-			case riverClientFull:
-				// ffmpeg/ffprobe の存在検査は、実際に encode/thumbnail キューを
-				// 購読するときだけ行う（worker.queues で絞った ingest 専用 Pod 等に
-				// まで ffmpeg を要求しないため。issue #113 決定 C）。
-				if worker.RequiresEncodeTools(queues) {
-					if toolErr := cfg.Encode.ValidateTools(); toolErr != nil {
-						return toolErr
-					}
-				}
-				// worker.Deps.Site / worker.ClientConfig の各 *Site フィールドは
-				// boundSite から取る（issue #183 の「含むもの」5）。0 サイト束縛
-				// （中央プロセス）では boundSite がゼロ値になり、Site="" と
-				// *Site="" が既存の慣習通りに解釈される（Deps.Site="" は
-				// verifySite で db.DefaultSite に解決、ClientConfig の *Site="" は
-				// その定期ジョブを登録しない。worker.ClientConfig のフィールド
-				// コメント参照）。2 サイト以上の束縛では validateSiteBinding が
-				// worker ロールを起動エラーにしているので、ここに来るのは
-				// 0 または 1 サイト束縛のときだけ。
-				mc := mirakc.NewClient(boundSite.URL, nil)
-				workers := worker.NewWorkers(&worker.Deps{
-					MirakcClient:             mc,
-					Pool:                     pool,
-					MediaDir:                 cfg.Storage.MediaDir,
-					Site:                     boundSite.Site,
-					ScratchDir:               cfg.Storage.ScratchDir,
-					Encode:                   cfg.Encode,
-					EpgRetentionGrace:        cfg.Epg.RetentionGrace,
-					RulerRetentionGrace:      cfg.Epg.RetentionGrace,
-					RulerMaxDeletesPerPass:   cfg.Ruler.MaxDeletesPerPass,
-					ReconcileStartDelayGrace: cfg.Reconciler.StartDelayGrace,
-					IngestStallTimeout:       cfg.Ingest.StallTimeout,
-					Webhook:                  webhookClient,
-					Cleanup:                  cfg.Cleanup,
-				})
-				clientCfg := worker.ClientConfig{
-					// BoundSite は site 単位のキュー（ingest/epg/reconciler/watcher）を
-					// 物理名（`<base>_<site>`）に展開するのに使う（issue #185 M4-13）。
-					// boundSite.Site は 0 サイト束縛（中央プロセス）では空文字列のままで、
-					// worker.qualifyQueueName が db.DefaultSite に解決する --- 0 サイト
-					// 束縛の worker がこれらのキューを要求しないことは
-					// validateSiteBinding が起動時に強制している。
-					BoundSite:            boundSite.Site,
-					IngestConcurrency:    cfg.Ingest.Concurrency,
-					EncodeConcurrency:    cfg.Encode.Concurrency,
-					ThumbnailConcurrency: cfg.Encode.ThumbnailConcurrency,
-					EpgSyncInterval:      cfg.Epg.SyncInterval,
-					PeriodicJobs:         cfg.Worker.PeriodicJobs,
-					Queues:               queues,
-					Once:                 onceGate,
-					SoftStopTimeout:      softStopTimeout,
-					// 定期ジョブ（epg_sync / tuner_sync / ruler_pass / reconcile_pass /
-					// record_sweep / catalog_export / delete_reconcile /
-					// encode_reconcile / storage_sync）は
-					// worker 側が投入する（mirakc に触るのも各ジョブのヒント経路をまとめる
-					// のも worker。riverClientFull は worker ロールがあるときにしか
-					// 選ばれないので、ここは無条件に設定してよい）。
-					EpgSyncSite:       boundSite.Site,
-					TunerSyncSite:     boundSite.Site,
-					RulerPassSite:     boundSite.Site,
-					ReconcilePassSite: boundSite.Site,
-					RecordSweepSite:   boundSite.Site,
-					CatalogExport:     true,
-					DeleteReconcile:   true,
-					EncodeReconcile:   true,
-					StorageSync:       true,
-				}
-				var clientErr error
-				riverClient, clientErr = worker.NewClient(pool, workers, clientCfg)
-				if clientErr != nil {
-					return clientErr
-				}
-			case riverClientInsertOnly:
-				var clientErr error
-				riverClient, clientErr = worker.NewInsertOnlyClient(pool)
-				if clientErr != nil {
-					return clientErr
-				}
-			}
-
-			if slices.Contains(roles, "worker") {
-				// 1 件消化モードの購読は **Start より前**に張る（張る前に終わった
-				// ジョブのイベントを取りこぼさないため）。middleware だけでは
-				// 未登録 kind のジョブを観測できない（worker.SubscribeOnceEvents）。
-				//
-				// **worker ロールのガードの内側に置く。** River の Subscribe は
-				// 「ジョブを実行しないクライアント」に対して panic するので
-				// （river@v0.40.0/client.go の SubscribeConfig）、insert-only の
-				// クライアント（watcher 単独）や nil のクライアントに対して呼ぶと
-				// 起動エラーではなく panic になる。いまは validateOnceMode が
-				// ロールを worker 単独に限っているので到達しないが、その検査の
-				// 理由（常駐する役を巻き込まない）はクライアントの種類とは
-				// 無関係なので、緩めたときにここが踏まれる形にしない。
-				var onceEvents <-chan *river.Event
-				if onceGate != nil {
-					var unsubscribe func()
-					onceEvents, unsubscribe = worker.SubscribeOnceEvents(riverClient)
-					defer unsubscribe()
-				}
-
-				if startErr := riverClient.Start(ctx); startErr != nil {
-					return fmt.Errorf("starting river client: %w", startErr)
-				}
-				defer func() { stopRiverForShutdown(riverClient.Stop, softStopTimeout) }()
-
-				if onceGate != nil {
-					// 1 件消化モードの終了契機。
-					//
-					// **停止の順序は stopOnceProcess が持つ**（graceful stop →
-					// プロセス畳み。逆順にすると、実行中のジョブが完走に使える
-					// 時間が soft stop の猶予まで縮む。River の Stop は StopInit
-					// で冪等なので、上の defer の Stop はそのまま無害な no-op に
-					// なる）。
-					//
-					// **ジョブが失敗しても nil を返す**（= exit 0）。リトライは
-					// River が持っており、k8s 側は backoffLimit: 0 で起こし直さない
-					// 前提なので、終了コードで失敗を表すと二重にリトライする形に
-					// なる（worker.ClientConfig.Once のコメント）。
-					//
-					// 既知の窓（実害が空振り Job 1 つぶんなので閉じていない）:
-					// Work を抜けてから Stop が producer を止めるまでの間に次の
-					// ジョブが fetch されると、この Job は 2 件消化して終わる。
-					// MaxWorkers=1 なので同時には走らない。**打ち切られるのは
-					// `--soft-stop-timeout` の猶予を超えたときだけ**である
-					// （実測 0/25 でこの窓には入らなかった）。
-					eg.Go(func() error {
-						outcome := onceGate.Wait(egCtx, onceIdleTimeout, onceEvents)
-						slog.Info("worker: once mode finished", "outcome", outcome.String())
-						stopOnceProcess(ctx, riverClient.Stop, stop)
-						return nil
-					})
-				}
-			}
-
-			// シングルトンロールは監督ループで管理する。
-			// ロック取得を定期試行し、取得後は heartbeat で監視する。
-			for _, r := range roles {
-				if !slices.Contains(singletonRoles, r) {
-					continue
-				}
-				roleName := r
-				// lockName は advisory lock のキー（role.RunSingleton の第 3 引数）。
-				// watcher だけは site で修飾する（watcherLockName、issue #185 M4-13
-				// 「含むもの」8）。修飾しないと、多サイト構成で 2 つの watcher が
-				// 同じロックを取り合い、負けた側の mirakc の SSE を誰も購読しなくなる
-				// （issue #183 本文。負けた側は "role already held by another process"
-				// を出して 15 秒ごとにポーリングし続けるだけなので、ログ上は正常に見える）。
-				lockName := roleName
-				eg.Go(func() error {
-					roleFunc := func(ctx context.Context) error {
-						slog.Info("role started", "role", roleName)
-						<-ctx.Done()
-						slog.Info("role stopped", "role", roleName)
-						return ctx.Err()
-					}
-					switch roleName {
-					case "watcher":
-						// validateSiteBinding が watcher ロールを常にちょうど 1 サイト
-						// 束縛に限定しているので、ここでは boundSite が必ず埋まっている。
-						mc := mirakc.NewClient(boundSite.URL, nil)
-						w := watcher.New(boundSite.Site, mc, pool, riverClient, worker.NewIngestArgs, webhookClient)
-						roleFunc = w.Run
-						lockName = watcherLockName(boundSite.Site)
-					}
-					return role.RunSingleton(egCtx, pool, lockName, roleFunc, nil)
-				})
-			}
-
-			eg.Go(func() error {
-				<-egCtx.Done()
-				return nil
-			})
-
-			err = eg.Wait()
-			slog.Info("shutting down")
-			return err
-		},
+		RunE:  runServer,
 	}
 
 	cmd.Flags().Bool("all", false, "run all roles")
@@ -666,6 +250,433 @@ func newServerCmd() *cobra.Command {
 			"(the pod's terminationGracePeriodSeconds must cover this)")
 
 	return cmd
+}
+
+// runServer は server サブコマンドの本体。
+//
+// **コマンド定義から切り出してあるのは、フラグ登録を本体の直後に置くため**
+// （リテラルのままだと cmd.Flags() の並びが本体 400 行の向こう側になる）。
+// 中身は 1 本の直線のまま保つ --- ロールごとのブロックを関数に出すと、
+// この関数が積む defer（pool.Close / River の drain / unsubscribe）が
+// 切り出した先の return で走るようになり、**shutdown の LIFO 順序が壊れる**
+// （pool.Close が River の drain より先に走ると、ジョブ行が running のまま
+// 残る。db.NewPool 直後の defer のコメント参照）。
+func runServer(cmd *cobra.Command, _ []string) error {
+	roles, err := resolveRoles(cmd)
+	if err != nil {
+		return err
+	}
+
+	cfg, err := loadConfig(cmd)
+	if err != nil {
+		return err
+	}
+	warnIfAllowedHostsEmpty(slog.Default(), cfg.Server.AllowedHosts)
+
+	// このプロセスが引くキューを --queues と worker.queues から決める。
+	// 以降の判定（validateSiteBinding / RequiresEncodeTools /
+	// ClientConfig.Queues）はすべてこの解決済みの集合を見る ---
+	// 片方だけが config を直接見ると、argv で絞った Pod が
+	// 「絞ったつもりで検査だけ全キュー基準」になる（resolveWorkerQueues）。
+	queues, err := resolveWorkerQueues(cmd, cfg.Worker.Queues, roles)
+	if err != nil {
+		return err
+	}
+	// 1 件消化モード（KEDA ScaledJob の Job が自分で終了するための起動形態。
+	// worker.OnceGate、docs/operations.md §5）。
+	onceGate, onceIdleTimeout, err := resolveOnce(cmd, roles)
+	if err != nil {
+		return err
+	}
+	// SIGTERM で実行中のジョブを打ち切らない（drain する）ための猶予。
+	// 1 件消化モードかどうかに関わらず効く --- `--once` の Job も
+	// ノード退避やローリング更新で SIGTERM を受ける（そのときの
+	// 停止経路は常駐 worker と同じ）。
+	softStopTimeout, err := resolveSoftStopTimeout(cmd, roles)
+	if err != nil {
+		return err
+	}
+
+	// このプロセスが束縛される mirakc サイトを --sites から決める
+	// （config キーにしない。issue #183 M4-11「含むもの」4）。
+	bound, err := resolveSiteBinding(cmd, cfg.Registry())
+	if err != nil {
+		return err
+	}
+	if err := validateSiteBinding(roles, bound, queues); err != nil {
+		return err
+	}
+	// site 名を site 単位のキューに修飾したときに River の 64 文字上限を
+	// 超えないことを検証する。internal/config はレジストリの site 名を
+	// ロード時に既にこの上限の範囲（config.MirakcSiteNameMaxLen）で検査
+	// しているので、ここは site 名が config 以外の経路から来る場合に
+	// 備えた最後の砦（worker.ValidateSiteForQueueNames の doc コメント参照）。
+	for _, s := range bound {
+		if err := worker.ValidateSiteForQueueNames(s.Site); err != nil {
+			return err
+		}
+	}
+	// boundSite は「ちょうど 1 サイトに束縛されている」場合だけ非ゼロ値になる。
+	// 0 サイト（中央プロセス）では空のまま渡し、worker/watcher 側の既定の
+	// site 未設定規約（空文字列 = db.DefaultSite に解決 / 定期ジョブ未登録）に
+	// 委ねる。
+	var boundSite config.MirakcSite
+	if len(bound) == 1 {
+		boundSite = bound[0]
+	}
+	// live はライブ視聴セッションごとに mirakc へアクセスするため、streamer
+	// ロールが live.enabled で起動するにはちょうど 1 サイトへの束縛が要る
+	// （watcher と同じ理由。issue #91 のライブ資源同定はこのタスクの対象外だが、
+	// レジストリを導入した以上ここだけは壊さないための最小限の検査）。
+	if cfg.Live.Enabled && slices.Contains(roles, "streamer") && len(bound) != 1 {
+		return fmt.Errorf(
+			"live.enabled requires exactly one bound site for the streamer role, got %d (use --sites <site>)",
+			len(bound))
+	}
+
+	ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	// **1 発目を受けたらシグナルの登録を外す。** 外すまでの間、2 発目の
+	// SIGTERM / SIGINT は signal パッケージのチャネル（バッファ 1・
+	// 読み手はもう居ない）に落ちて捨てられ、既定動作（プロセス終了）が
+	// 抑止されたままになる。1 発目のあとに続くのは River の drain で、
+	// その長さは `--soft-stop-timeout` である --- encode を載せる構成には
+	// 数時間を推奨しているので、**その間ずっと Ctrl-C も `kill -TERM` も
+	// 効かない**（止める手段が SIGKILL だけになる）。
+	//
+	// **外す契機は「1 発目のシグナル」であって「畳み終えたところ」では
+	// ない。** 後者にすると、drain を errgroup の中で回す 1 件消化モード
+	// （stopOnceProcess）では畳み終えるまで外れず、**猶予を長く取る構成
+	// ほど逃げ道が無くなる**（数時間の猶予を勧めている先が ScaledJob =
+	// 1 件消化モードなので、一番効いてほしい構成で効かない）。
+	//
+	// 両モードとも TestServerCmd_SecondSigtermKillsDrainingProcess が
+	// 固定する。
+	context.AfterFunc(ctx, stop)
+
+	pool, err := db.NewPool(ctx, cfg.DB, roles)
+	if err != nil {
+		return err
+	}
+	// **River の drain より後に閉じる。** defer の LIFO でそうなっている
+	// （この defer より後に登録される stopRiverForShutdown が先に走る）。
+	// 順序が逆になると、ctx を切られたジョブの結果を River の completer が
+	// 書けず、行が `running` のまま残る --- この PR が避けようとしている
+	// 形そのものである。
+	defer pool.Close()
+
+	slog.Info("starting server", "roles", roles)
+
+	eg, egCtx := errgroup.WithContext(ctx)
+
+	// HTTP リスナーはロールに関わらず 1 本立てる。ヘルスチェックと
+	// /metrics はどのロールでも scrape できる必要があるため
+	// （worker だけの Pod でも滞留メトリクスを取りたい）。
+	// SPA・SSE・バイト配信は担当ロールのときだけ登録する。
+	{
+		backlog := newBoundBacklogCollector(pool, bound)
+		routerCfg := api.RouterConfig{
+			AllowedHosts:       cfg.Server.AllowedHosts,
+			TrustForwardedHost: cfg.Server.TrustForwardedHost,
+			Pool:               pool,
+			// api は不変条件 1（mirakc にもファイルシステムにも依存しない）に
+			// より site に束縛されない。boundSite ではなくレジストリ全体を渡す
+			// ことで、1 プロセスがレジストリの全 site を処理できる
+			// （issue #184 M4-12）。
+			Sites:           registryNames(cfg.Registry()),
+			MetricsRegistry: metrics.NewRegistry(backlog),
+			// GET /api/capabilities に出すオプション機能（issue #209）。
+			// フロントはこれを見てライブへの導線を出すかどうかを決める。
+			//
+			// **ロールで囲わない。** OpenAPI 生成ルート（HandlerWithOptions）は
+			// ロールに関わらず全プロセスに生えるので、api ロールの中だけで
+			// 代入すると、同じ config の別プロセス（notifier 単独など）に
+			// 聞いたときだけ live:false になる --- config → 公開面の値なのに
+			// 答えがプロセスの役割で変わる。Sites / MetricsRegistry を
+			// 無条件に渡しているのと同じ理由でここに置く（レビュー指摘）。
+			//
+			// 渡すのはこのプロセスが streamer ロールを持つかではなく config の
+			// 値。ロール分割構成では api と streamer は別プロセスだが config
+			// ファイルは共有する（docs/configuration.md §スキーマ構造）。
+			LiveEnabled: cfg.Live.Enabled,
+		}
+
+		if slices.Contains(roles, "api") {
+			distFS, subErr := fs.Sub(web.DistFS, "dist")
+			if subErr != nil {
+				return fmt.Errorf("embedded dist/ not found: %w", subErr)
+			}
+			routerCfg.DistFS = distFS
+
+			// ルール作成/更新/削除のヒントで ruler_pass を投入するための
+			// insert-only クライアント。api は mirakc に問い合わせず ffmpeg も
+			// 実行しない（不変条件）ため、worker.NewWorkers のフルのワーカー群は
+			// 登録しない（InsertTx だけできれば足りる。docs/recording.md §3.1）。
+			apiRiverClient, apiRiverErr := worker.NewInsertOnlyClient(pool)
+			if apiRiverErr != nil {
+				return apiRiverErr
+			}
+			routerCfg.RiverClient = apiRiverClient
+			// ルール保存時の encodeProfiles 存在検証用（名前集合だけ。
+			// ffmpeg の LookPath はしない。issue #64）。
+			routerCfg.EncodeProfileNames = cfg.Encode.ProfileNames()
+		}
+
+		// バイト配信は streamer、SSE のヒント配送は notifier の担当
+		// （不変条件 1、issue #24 M2-19）。api はどちらにも依存しない
+		// 純粋なリクエスト/レスポンス層になる。両方を同一プロセスに
+		// 同居させる場合（monolith / --all）は Mounters で束ねる。
+		var mounters api.Mounters
+		if slices.Contains(roles, "streamer") {
+			mounters = append(mounters, streamer.New(pool, streamer.Config{
+				MediaDir:      cfg.Storage.MediaDir,
+				AccelLocation: cfg.Storage.AccelLocation,
+			}))
+
+			// ライブ視聴（issue #91）。live.enabled が true のときだけ ffmpeg の
+			// LookPath 検査を行う --- 公式イメージ（ffmpeg 無し）で streamer を
+			// 起動する構成（録画配信 / サムネイルのみ）を壊さない
+			// （不変条件 4、cfg.Encode.ValidateTools の条件付き検査と同じ形）。
+			if cfg.Live.Enabled {
+				if toolErr := cfg.Live.ValidateTools(); toolErr != nil {
+					return toolErr
+				}
+
+				// live.enabled かつ streamer ロールならちょうど 1 サイトへの束縛が
+				// 保証済み（上の事前検査）なので boundSite を使ってよい。
+				liveMirakcClient := mirakc.NewClient(boundSite.URL, nil)
+				liveStreamer := streamer.NewLive(liveMirakcClient, boundSite.Site, convertLiveConfig(cfg.Live))
+				mounters = append(mounters, liveStreamer)
+				// idle GC ループ。ctx（egCtx）が終わったら全セッションを止めて
+				// mirakc の接続を閉じる（チューナー解放。crash-only の唯一の
+				// 例外の後始末。docs/overview.md §crash-only）。
+				eg.Go(func() error { return liveStreamer.Run(egCtx) })
+			}
+		}
+		if slices.Contains(roles, "notifier") {
+			// notifier はシングルトンではない。各レプリカが自分で LISTEN して
+			// 自分にぶら下がる SSE クライアントに配るだけなので、レプリカを
+			// 増やしても Redis アダプタ等の追加基盤は要らない（docs/data.md §3）。
+			hub := notifier.NewEventHub()
+			mounters = append(mounters, hub)
+			eg.Go(func() error {
+				if hubErr := hub.Run(egCtx, pool); hubErr != nil && !errors.Is(hubErr, context.Canceled) {
+					return fmt.Errorf("notifier: %w", hubErr)
+				}
+				return nil
+			})
+		}
+		if len(mounters) > 0 {
+			routerCfg.Mounter = mounters
+		}
+
+		srv := newProductionHTTPServer(cfg.Server.Listen, api.NewRouter(routerCfg))
+
+		eg.Go(func() error {
+			slog.Info("starting http server", "addr", cfg.Server.Listen)
+			if httpErr := srv.ListenAndServe(); httpErr != nil && !errors.Is(httpErr, http.ErrServerClosed) {
+				return fmt.Errorf("http server: %w", httpErr)
+			}
+			return nil
+		})
+		eg.Go(func() error {
+			<-egCtx.Done()
+			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), httpShutdownTimeout)
+			defer shutdownCancel()
+			return srv.Shutdown(shutdownCtx)
+		})
+	}
+
+	// 汎用 webhook（M3-11）。URL 空なら no-op。worker（record_sweep）と
+	// watcher の両方から同じ Client を使う。
+	webhookClient := webhook.New(cfg.Webhook)
+
+	// River client（worker と watcher で共有）。
+	//
+	// ロールがそのプロセスの実行する仕事を決める（issue #113）。
+	// worker ロールが無いプロセスに worker.NewWorkers のフルのワーカー群
+	// （EncodeWorker/ThumbnailWorker を含む）を登録すると、ffmpeg/ffprobe を
+	// 検査しないまま encode/thumbnail ジョブを実行しうる（不変条件 4 違反）。
+	// resolveRiverClientKind がロールから組み立て方を一意に決め、
+	// watcher 単独では api ロールと同じ NewInsertOnlyClient（ingest ジョブの
+	// InsertTx 専用、Workers 登録なし・Start 不可）を使う。
+	var riverClient *river.Client[pgx5.Tx]
+	switch resolveRiverClientKind(roles) {
+	case riverClientFull:
+		// ffmpeg/ffprobe の存在検査は、実際に encode/thumbnail キューを
+		// 購読するときだけ行う（worker.queues で絞った ingest 専用 Pod 等に
+		// まで ffmpeg を要求しないため。issue #113 決定 C）。
+		if worker.RequiresEncodeTools(queues) {
+			if toolErr := cfg.Encode.ValidateTools(); toolErr != nil {
+				return toolErr
+			}
+		}
+		// worker.Deps.Site / worker.ClientConfig の各 *Site フィールドは
+		// boundSite から取る（issue #183 の「含むもの」5）。0 サイト束縛
+		// （中央プロセス）では boundSite がゼロ値になり、Site="" と
+		// *Site="" が既存の慣習通りに解釈される（Deps.Site="" は
+		// verifySite で db.DefaultSite に解決、ClientConfig の *Site="" は
+		// その定期ジョブを登録しない。worker.ClientConfig のフィールド
+		// コメント参照）。2 サイト以上の束縛では validateSiteBinding が
+		// worker ロールを起動エラーにしているので、ここに来るのは
+		// 0 または 1 サイト束縛のときだけ。
+		mc := mirakc.NewClient(boundSite.URL, nil)
+		workers := worker.NewWorkers(&worker.Deps{
+			MirakcClient:             mc,
+			Pool:                     pool,
+			MediaDir:                 cfg.Storage.MediaDir,
+			Site:                     boundSite.Site,
+			ScratchDir:               cfg.Storage.ScratchDir,
+			Encode:                   cfg.Encode,
+			EpgRetentionGrace:        cfg.Epg.RetentionGrace,
+			RulerRetentionGrace:      cfg.Epg.RetentionGrace,
+			RulerMaxDeletesPerPass:   cfg.Ruler.MaxDeletesPerPass,
+			ReconcileStartDelayGrace: cfg.Reconciler.StartDelayGrace,
+			IngestStallTimeout:       cfg.Ingest.StallTimeout,
+			Webhook:                  webhookClient,
+			Cleanup:                  cfg.Cleanup,
+		})
+		clientCfg := worker.ClientConfig{
+			// BoundSite は site 単位のキュー（ingest/epg/reconciler/watcher）を
+			// 物理名（`<base>_<site>`）に展開するのに使う（issue #185 M4-13）。
+			// boundSite.Site は 0 サイト束縛（中央プロセス）では空文字列のままで、
+			// worker.qualifyQueueName が db.DefaultSite に解決する --- 0 サイト
+			// 束縛の worker がこれらのキューを要求しないことは
+			// validateSiteBinding が起動時に強制している。
+			BoundSite:            boundSite.Site,
+			IngestConcurrency:    cfg.Ingest.Concurrency,
+			EncodeConcurrency:    cfg.Encode.Concurrency,
+			ThumbnailConcurrency: cfg.Encode.ThumbnailConcurrency,
+			EpgSyncInterval:      cfg.Epg.SyncInterval,
+			PeriodicJobs:         cfg.Worker.PeriodicJobs,
+			Queues:               queues,
+			Once:                 onceGate,
+			SoftStopTimeout:      softStopTimeout,
+			// 定期ジョブ（epg_sync / tuner_sync / ruler_pass / reconcile_pass /
+			// record_sweep / catalog_export / delete_reconcile /
+			// encode_reconcile / storage_sync）は
+			// worker 側が投入する（mirakc に触るのも各ジョブのヒント経路をまとめる
+			// のも worker。riverClientFull は worker ロールがあるときにしか
+			// 選ばれないので、ここは無条件に設定してよい）。
+			EpgSyncSite:       boundSite.Site,
+			TunerSyncSite:     boundSite.Site,
+			RulerPassSite:     boundSite.Site,
+			ReconcilePassSite: boundSite.Site,
+			RecordSweepSite:   boundSite.Site,
+			CatalogExport:     true,
+			DeleteReconcile:   true,
+			EncodeReconcile:   true,
+			StorageSync:       true,
+		}
+		var clientErr error
+		riverClient, clientErr = worker.NewClient(pool, workers, clientCfg)
+		if clientErr != nil {
+			return clientErr
+		}
+	case riverClientInsertOnly:
+		var clientErr error
+		riverClient, clientErr = worker.NewInsertOnlyClient(pool)
+		if clientErr != nil {
+			return clientErr
+		}
+	}
+
+	if slices.Contains(roles, "worker") {
+		// 1 件消化モードの購読は **Start より前**に張る（張る前に終わった
+		// ジョブのイベントを取りこぼさないため）。middleware だけでは
+		// 未登録 kind のジョブを観測できない（worker.SubscribeOnceEvents）。
+		//
+		// **worker ロールのガードの内側に置く。** River の Subscribe は
+		// 「ジョブを実行しないクライアント」に対して panic するので
+		// （river@v0.40.0/client.go の SubscribeConfig）、insert-only の
+		// クライアント（watcher 単独）や nil のクライアントに対して呼ぶと
+		// 起動エラーではなく panic になる。いまは validateOnceMode が
+		// ロールを worker 単独に限っているので到達しないが、その検査の
+		// 理由（常駐する役を巻き込まない）はクライアントの種類とは
+		// 無関係なので、緩めたときにここが踏まれる形にしない。
+		var onceEvents <-chan *river.Event
+		if onceGate != nil {
+			var unsubscribe func()
+			onceEvents, unsubscribe = worker.SubscribeOnceEvents(riverClient)
+			defer unsubscribe()
+		}
+
+		if startErr := riverClient.Start(ctx); startErr != nil {
+			return fmt.Errorf("starting river client: %w", startErr)
+		}
+		defer func() { stopRiverForShutdown(riverClient.Stop, softStopTimeout) }()
+
+		if onceGate != nil {
+			// 1 件消化モードの終了契機。
+			//
+			// **停止の順序は stopOnceProcess が持つ**（graceful stop →
+			// プロセス畳み。逆順にすると、実行中のジョブが完走に使える
+			// 時間が soft stop の猶予まで縮む。River の Stop は StopInit
+			// で冪等なので、上の defer の Stop はそのまま無害な no-op に
+			// なる）。
+			//
+			// **ジョブが失敗しても nil を返す**（= exit 0）。リトライは
+			// River が持っており、k8s 側は backoffLimit: 0 で起こし直さない
+			// 前提なので、終了コードで失敗を表すと二重にリトライする形に
+			// なる（worker.ClientConfig.Once のコメント）。
+			//
+			// 既知の窓（実害が空振り Job 1 つぶんなので閉じていない）:
+			// Work を抜けてから Stop が producer を止めるまでの間に次の
+			// ジョブが fetch されると、この Job は 2 件消化して終わる。
+			// MaxWorkers=1 なので同時には走らない。**打ち切られるのは
+			// `--soft-stop-timeout` の猶予を超えたときだけ**である
+			// （実測 0/25 でこの窓には入らなかった）。
+			eg.Go(func() error {
+				outcome := onceGate.Wait(egCtx, onceIdleTimeout, onceEvents)
+				slog.Info("worker: once mode finished", "outcome", outcome.String())
+				stopOnceProcess(ctx, riverClient.Stop, stop)
+				return nil
+			})
+		}
+	}
+
+	// シングルトンロールは監督ループで管理する。
+	// ロック取得を定期試行し、取得後は heartbeat で監視する。
+	for _, r := range roles {
+		if !slices.Contains(singletonRoles, r) {
+			continue
+		}
+		roleName := r
+		// lockName は advisory lock のキー（role.RunSingleton の第 3 引数）。
+		// watcher だけは site で修飾する（watcherLockName、issue #185 M4-13
+		// 「含むもの」8）。修飾しないと、多サイト構成で 2 つの watcher が
+		// 同じロックを取り合い、負けた側の mirakc の SSE を誰も購読しなくなる
+		// （issue #183 本文。負けた側は "role already held by another process"
+		// を出して 15 秒ごとにポーリングし続けるだけなので、ログ上は正常に見える）。
+		lockName := roleName
+		eg.Go(func() error {
+			roleFunc := func(ctx context.Context) error {
+				slog.Info("role started", "role", roleName)
+				<-ctx.Done()
+				slog.Info("role stopped", "role", roleName)
+				return ctx.Err()
+			}
+			switch roleName {
+			case "watcher":
+				// validateSiteBinding が watcher ロールを常にちょうど 1 サイト
+				// 束縛に限定しているので、ここでは boundSite が必ず埋まっている。
+				mc := mirakc.NewClient(boundSite.URL, nil)
+				w := watcher.New(boundSite.Site, mc, pool, riverClient, worker.NewIngestArgs, webhookClient)
+				roleFunc = w.Run
+				lockName = watcherLockName(boundSite.Site)
+			}
+			return role.RunSingleton(egCtx, pool, lockName, roleFunc, nil)
+		})
+	}
+
+	eg.Go(func() error {
+		<-egCtx.Done()
+		return nil
+	})
+
+	err = eg.Wait()
+	slog.Info("shutting down")
+	return err
 }
 
 func resolveRoles(cmd *cobra.Command) ([]string, error) {

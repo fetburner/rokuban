@@ -166,8 +166,8 @@ type encodeAttemptRow struct {
 // 毎回の導出**（不変条件 9: recording_encode_attempts の生の行から
 // state を再構成するだけで、queued かどうかまで含めた最終形は保存しない）。
 //
-// 対象は `encodeProfiles`（desired）のうち `encodedProfiles`（observed、
-// 引数 done として渡す）にまだ現れていないプロファイルだけ。完了した
+// 対象は `encodeProfiles`（desired）のうち、完了済み（観測された encoded
+// アセット。引数 done）にまだ現れていないプロファイルだけ。完了した
 // プロファイルはここに出さない --- `encodedAssets` の存在が「完了」を
 // 表すので、同じ情報を 2 つの配列で主張しない。
 //
@@ -304,15 +304,6 @@ func recordingFromListFields(r recordingListFields, includeDeletedAt bool, known
 	ingest := ingestProgressFromFields(r)
 	rec.Ingest = &ingest
 	// 再生可能な encoded 派生物（observed）。空 `[]`/nil なら省略（omitempty）。
-	//
-	// `EncodedAssets`（profile + sizeBytes）と `EncodedProfiles`（profile
-	// だけ、後方互換のため残す。openapi.yaml の `encodedProfiles` description・
-	// docs/frontend/recordings.md 参照）は、必ずこの同じ `rows`（1 回の
-	// jsonb_agg の結果）から同時に作る。名前だけの配列とサイズ付きの配列を
-	// 別々の SQL 集約（2 本の array_agg/jsonb_agg）で作ると、片方だけ
-	// ORDER BY を書き忘れたときに添字がずれる drift が起こり得るが、
-	// 同じ `rows` から Go 側で両方を導出する形ではその種の drift は構造的に
-	// 起こらない。
 	var encodedProfileNames []string
 	if len(r.AvailableEncodedAssets) > 0 {
 		var rows []encodedAssetRow
@@ -321,14 +312,12 @@ func recordingFromListFields(r recordingListFields, includeDeletedAt bool, known
 		}
 		if len(rows) > 0 {
 			assets := make([]EncodedAsset, len(rows))
-			profiles := make([]string, len(rows))
+			encodedProfileNames = make([]string, len(rows))
 			for i, row := range rows {
 				assets[i] = EncodedAsset{Profile: row.Profile, SizeBytes: &row.SizeBytes}
-				profiles[i] = row.Profile
+				encodedProfileNames[i] = row.Profile
 			}
 			rec.EncodedAssets = &assets
-			rec.EncodedProfiles = &profiles
-			encodedProfileNames = profiles
 		}
 	}
 	// 凍結された desired 一覧。空なら省略（omitempty）。UI が「追加済み」を

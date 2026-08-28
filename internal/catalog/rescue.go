@@ -2,7 +2,6 @@ package catalog
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -11,7 +10,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 )
 
@@ -19,11 +17,7 @@ import (
 type RescueResult struct {
 	CatalogPath string
 	// Generation は復元に使った世代ディレクトリ名（docs/storage.md §8）。
-	// 旧形式のフラットファイルから復元したときは空。
 	Generation string
-	// LegacyCatalog は manifest を持たない旧形式のフラットファイルから復元した
-	// ことを示す。完成を検証できていないので、呼び出し側は必ず報告する。
-	LegacyCatalog bool
 	// RejectedSnapshots は完成判定に落ちて飛ばした世代（新しい順）。空でなければ
 	// 「最新に見えた世代を飛ばして古い世代へ落ちた」ということなので、黙って
 	// 成功させずに呼び出し側が報告する。
@@ -39,34 +33,20 @@ type RescueResult struct {
 	ProgramIntents          int
 	ProgramOverrides        int
 
-	// SkippedProgramSnapshots は識別子を持たない（#101 / 00026 より前に export
-	// された）ために復元をスキップした program_snapshots の件数。0 でない場合は
-	// 依存する program_intents / program_overrides も落ちている
-	// （SkippedProgramIntents / SkippedProgramOverrides）。黙って落とさず
-	// 呼び出し側が報告できるように数える。
+	// SkippedProgramSnapshots は識別子が壊れていて復元できなかった
+	// program_snapshots の件数。0 でなければ依存する program_intents /
+	// program_overrides も落ちている。黙って切り捨てず呼び出し側が報告する。
 	SkippedProgramSnapshots int
 	SkippedProgramIntents   int
 	SkippedProgramOverrides int
-
-	// RestoredLegacyEncodePolicies は #159 より前に export された catalog ダンプ
-	// （Recording.KeepOriginalLegacy が non-nil）から復元した recording_encode_policy
-	// の件数。RecordingEncodePolicies にも含まれる（内訳として別に数える）。
-	RestoredLegacyEncodePolicies int
-
-	// RestoredLegacyPurgeRequests は recordings.purge_after が本体列だった頃の
-	// ダンプ（Recording.PurgeAfterLegacy が non-nil）から
-	// recording_purge_requests へ前送りした件数。RecordingPurgeRequests にも
-	// 含まれる（内訳として別に数える）。
-	RestoredLegacyPurgeRequests int
 }
 
 // RescueLatest は media_dir/catalog/ の**最新の完成世代**を読んで DB に冪等
 // upsert する（完成判定は SelectLatest / VerifyGeneration。docs/storage.md §8）。
 //
 // 最新世代が不完全・checksum 不一致なら 1 つ前の完成世代へ落ちる。完成世代が
-// 無ければ manifest を持たない旧形式のフラットファイル、それも無ければ media_dir
-// を走査して認識できる動画ファイルを素の asset として in-place 登録する。
-// どの経路もファイル本体はコピー・変更しない。
+// 1 つも無ければ media_dir を走査して認識できる動画ファイルを素の asset として
+// in-place 登録する。どの経路もファイル本体はコピー・変更しない。
 func RescueLatest(ctx context.Context, pool *pgxpool.Pool, mediaDir, site string) (*RescueResult, error) {
 	sel, err := SelectLatest(mediaDir)
 	if sel != nil {
@@ -90,17 +70,11 @@ func RescueLatest(ctx context.Context, pool *pgxpool.Pool, mediaDir, site string
 		}
 		return nil, err
 	}
-	if sel.Legacy {
-		slog.Warn("rescue: falling back to a catalog file without a manifest "+
-			"(completeness cannot be verified)", "path", sel.DocumentPath)
-	}
-
 	result, err := RescueFile(ctx, pool, sel.DocumentPath)
 	if err != nil {
 		return nil, err
 	}
 	result.Generation = sel.Generation
-	result.LegacyCatalog = sel.Legacy
 	result.RejectedSnapshots = sel.Rejected
 	return result, nil
 }
@@ -134,19 +108,38 @@ func RescueFile(ctx context.Context, pool *pgxpool.Pool, path string) (*RescueRe
 	return result, nil
 }
 
-// snapshotKey は program_snapshots の主キー（site, program_id）。復元をスキップした
-// スナップショットに紐づく program_intents / program_overrides を落とすのに使う。
+// snapshotKey は program_snapshots の主キー。
 type snapshotKey struct {
 	site      string
 	programID int64
 }
 
+// insertableSnapshot は snapshot 行が DB の制約を通るかを返す。
+//
+// **見るのは DB が実際に拒否するものだけ**（`program_snapshots` に掛かっている
+// CHECK は 00026 の `channel_type IN ('GR','BS','CS','SKY')` 1 つだけ。他の列は
+// NOT NULL があるだけで、非空も正数も要求していない）。
+//
+// **「放送を同定できないから」で落としてはならない。** 行を落とすと FK 先を
+// 失う program_intents / program_overrides も連動して落ちる —— それは
+// 「この番組を録れ / 録るな」というユーザーが明示した意図であって、導出できない。
+// 空のサービス名（SDT が名前を持たない構成は実在し、`epg_services.name` にも
+// 非空制約は無い）程度で意図を捨てるのは釣り合わない。ここの責務は
+// 「1 行で INSERT が落ちてトランザクションごと巻き戻るのを防ぐ」ことに限る。
+func insertableSnapshot(s ProgramSnapshot) bool {
+	switch s.ChannelType {
+	case "GR", "BS", "CS", "SKY":
+		return true
+	default:
+		return false
+	}
+}
+
 func applyDocument(ctx context.Context, tx pgx.Tx, doc *Document) (*RescueResult, error) {
 	q := sqlcgen.New(tx)
 	res := &RescueResult{}
-	// 識別子を持たない（#101 / 00026 より前の）program_snapshots をスキップした
-	// キーの集合。FK 先を失う program_intents / program_overrides を連動して
-	// 落とすために使う。
+	// 復元できなかった program_snapshots のキー。FK 先を失う
+	// program_intents / program_overrides を連動して落とすために持つ。
 	skippedSnapshots := map[snapshotKey]struct{}{}
 
 	for _, rule := range doc.Rules {
@@ -157,29 +150,24 @@ func applyDocument(ctx context.Context, tx pgx.Tx, doc *Document) (*RescueResult
 	}
 
 	for _, s := range doc.ProgramSnapshots {
-		// program_snapshots のチャンネル・イベント識別 6 列は issue #101（00026）で
-		// NOT NULL 化されたが、catalog document 自体は DB より寿命が長い
-		// バックアップファイルなので、00026 より前に export された古い
-		// ダンプは依然 nil を持ちうる（document.go の ProgramSnapshot コメント参照）。
+		// **壊れた 1 行で災害復旧そのものを止めない。**
 		//
-		// **この行だけスキップして続行する。エラーで rescue 全体を止めない。**
+		// catalog は DB より寿命の長いバックアップファイルで、手で編集された・
+		// 書き込みが途中で切れた・将来の export にバグがある、といった経路で
+		// 識別子を欠く行が混ざりうる。`program_snapshots.channel_type` には
+		// 列挙の CHECK があるので、そのまま INSERT すると**トランザクションごと
+		// ロールバックして recordings も media_assets も 1 件も復元されない**
+		// （実測: `channel_type: null` の 1 行で
+		// TestApplyDocument_MalformedSnapshotIsSkipped の対象になった挙動）。
+		//
 		// program_snapshots は放送 + epg.retention_grace（既定 24h）で GC される
-		// 導出テーブルであり、識別子を持たないほど古いダンプの行は復元しても
-		// 次の GC で消える。一方 rescue が守るべきものは永続資産
-		// （recordings / media_assets / drop_stats / rules）で、それらはこの
-		// ループより後に復元される。1 行の導出データのために災害復旧そのものを
-		// 止めるのは釣り合わない。
-		//
-		// program_intents / program_overrides は program_snapshots への FK を
-		// 持つので、スキップした (site, program_id) に紐づくものは後続の
-		// ループでも落とす（FK 違反で 1 トランザクション全体が壊れるのを防ぐ）。
-		// 落とした件数は RescueResult に数えて呼び出し側が報告できるようにする
-		// （黙って切り捨てない）。
-		if s.NetworkID == nil || s.ServiceID == nil || s.ChannelType == nil ||
-			s.Channel == nil || s.EventID == nil || s.ServiceName == nil {
-			slog.Warn("rescue: skipping program_snapshot without channel/event identity "+
-				"(catalog dump predates issue #101)",
-				"site", s.Site, "program_id", s.ProgramID)
+		// 導出テーブルで、rescue が守るべき永続資産（recordings / media_assets /
+		// drop_stats / rules）はこのループより後に復元される。1 行の導出データの
+		// ために全部を失うのは釣り合わない --- 行を落として続行し、件数を
+		// RescueResult に数えて呼び出し側に報告させる（黙って切り捨てない）。
+		if !insertableSnapshot(s) {
+			slog.Warn("rescue: skipping program_snapshot the database would reject",
+				"site", s.Site, "program_id", s.ProgramID, "channel_type", s.ChannelType)
 			skippedSnapshots[snapshotKey{site: s.Site, programID: s.ProgramID}] = struct{}{}
 			res.SkippedProgramSnapshots++
 			continue
@@ -190,12 +178,12 @@ func applyDocument(ctx context.Context, tx pgx.Tx, doc *Document) (*RescueResult
 			Title:       s.Title,
 			StartAt:     s.StartAt,
 			DurationMs:  s.DurationMs,
-			NetworkID:   *s.NetworkID,
-			ServiceID:   *s.ServiceID,
-			ChannelType: *s.ChannelType,
-			Channel:     *s.Channel,
-			EventID:     *s.EventID,
-			ServiceName: *s.ServiceName,
+			NetworkID:   s.NetworkID,
+			ServiceID:   s.ServiceID,
+			ChannelType: s.ChannelType,
+			Channel:     s.Channel,
+			EventID:     s.EventID,
+			ServiceName: s.ServiceName,
 			UpdatedAt:   s.UpdatedAt,
 		}); err != nil {
 			return nil, fmt.Errorf("upserting program_snapshot %s/%d: %w", s.Site, s.ProgramID, err)
@@ -204,10 +192,8 @@ func applyDocument(ctx context.Context, tx pgx.Tx, doc *Document) (*RescueResult
 	}
 
 	for _, i := range doc.ProgramIntents {
-		// FK 先の program_snapshots をスキップしたものは一緒に落とす（上記参照）。
+		// FK 先の program_snapshots を落としたものは一緒に落とす（上記参照）。
 		if _, skipped := skippedSnapshots[snapshotKey{site: i.Site, programID: i.ProgramID}]; skipped {
-			slog.Warn("rescue: skipping program_intent whose program_snapshot was skipped",
-				"site", i.Site, "program_id", i.ProgramID)
 			res.SkippedProgramIntents++
 			continue
 		}
@@ -224,10 +210,8 @@ func applyDocument(ctx context.Context, tx pgx.Tx, doc *Document) (*RescueResult
 	}
 
 	for _, o := range doc.ProgramOverrides {
-		// FK 先の program_snapshots をスキップしたものは一緒に落とす（上記参照）。
+		// FK 先の program_snapshots を落としたものは一緒に落とす（上記参照）。
 		if _, skipped := skippedSnapshots[snapshotKey{site: o.Site, programID: o.ProgramID}]; skipped {
-			slog.Warn("rescue: skipping program_override whose program_snapshot was skipped",
-				"site", o.Site, "program_id", o.ProgramID)
 			res.SkippedProgramOverrides++
 			continue
 		}
@@ -243,21 +227,10 @@ func applyDocument(ctx context.Context, tx pgx.Tx, doc *Document) (*RescueResult
 		res.ProgramOverrides++
 	}
 
-	// 実際に recordings へ書いた id。衛星表（FK 先）を書く前に、この集合に
-	// 入っていない録画を弾くために持つ。never-scheduled 擬似行のように
-	// 「recordings に戻さない」判断をした録画の衛星行を書くと FK で落ちる。
-	upsertedRecordings := map[int64]struct{}{}
 	for _, r := range doc.Recordings {
 		qe := r.QualityEvents
 		if len(qe) == 0 {
 			qe = []byte("[]")
-		}
-		// 旧カタログの never-scheduled 擬似行は recordings に戻さない。欠測は
-		// issue #318 で never_scheduled_events 表へ移設され、recordings は観測
-		// された試行だけを持つ。旧擬似行は media_assets を持たない契約なので、
-		// ここでスキップしても復元すべきファイルを失わない。
-		if hasNeverScheduledMarker(qe) {
-			continue
 		}
 		if err := q.CatalogUpsertRecording(ctx, sqlcgen.CatalogUpsertRecordingParams{
 			ID:                r.ID,
@@ -290,18 +263,13 @@ func applyDocument(ctx context.Context, tx pgx.Tx, doc *Document) (*RescueResult
 			return nil, fmt.Errorf("upserting recording %d: %w", r.ID, err)
 		}
 		res.Recordings++
-		upsertedRecordings[r.ID] = struct{}{}
 	}
 
 	// recording_purge_requests は recordings への FK を持つので recordings の
 	// upsert より後に書く。doc.RecordingPurgeRequests に載っていない録画には
 	// 何も書かない --- 「即時削除の要求は無い」は行の不在そのものが意味を持つ
 	// （不変条件 10）。
-	explicitPurgeRequests := map[int64]struct{}{}
 	for _, p := range doc.RecordingPurgeRequests {
-		if _, ok := upsertedRecordings[p.RecordingID]; !ok {
-			continue
-		}
 		if err := q.CatalogUpsertRecordingPurgeRequest(ctx, sqlcgen.CatalogUpsertRecordingPurgeRequestParams{
 			RecordingID: p.RecordingID,
 			RequestedAt: p.RequestedAt,
@@ -309,47 +277,12 @@ func applyDocument(ctx context.Context, tx pgx.Tx, doc *Document) (*RescueResult
 			return nil, fmt.Errorf("upserting recording_purge_request %d: %w", p.RecordingID, err)
 		}
 		res.RecordingPurgeRequests++
-		explicitPurgeRequests[p.RecordingID] = struct{}{}
-	}
-
-	// recordings.purge_after が本体列だった頃のダンプ（recordingPurgeRequests
-	// キー自体が無く、旧列の値が Recording.PurgeAfterLegacy に残っている）の
-	// 後方互換。前送りしないと「今すぐ完全削除」の要求が黙って失われ、その
-	// 録画はごみ箱に残ったまま猶予超過を待つ挙動に変わる。
-	//
-	// 早く消える側に倒すのは、この印がユーザーの明示的な要求（ごみ箱の猶予を
-	// 待たないでほしい）であり、rescue が意図の取り違えを起こすなら
-	// 「要求どおり消す」より「要求を無かったことにする」方が説明しにくいため。
-	// ダンプは purged_at も同時に復元するので、既に完全削除が終わっていた録画が
-	// 前送りで二重に消されることはない（restore はできないままになる）。
-	//
-	// 判定は migration の backfill と同じ基準（値ではなく non-nil かどうかだけを
-	// 見る。旧実装が書いた値は常に now() だった）。
-	for _, r := range doc.Recordings {
-		if _, ok := explicitPurgeRequests[r.ID]; ok {
-			continue // 新しいダンプで既に明示的な行がある
-		}
-		if r.PurgeAfterLegacy == nil {
-			continue // 要求が無かった、または新しいダンプ（旧キー自体が無い）
-		}
-		if _, ok := upsertedRecordings[r.ID]; !ok {
-			continue
-		}
-		if err := q.CatalogUpsertRecordingPurgeRequest(ctx, sqlcgen.CatalogUpsertRecordingPurgeRequestParams{
-			RecordingID: r.ID,
-			RequestedAt: *r.PurgeAfterLegacy,
-		}); err != nil {
-			return nil, fmt.Errorf("restoring legacy recording_purge_request %d: %w", r.ID, err)
-		}
-		res.RecordingPurgeRequests++
-		res.RestoredLegacyPurgeRequests++
 	}
 
 	// recording_encode_policy（issue #159）は recordings への FK を持つので
 	// recordings の upsert より後に書く。doc.RecordingEncodePolicies に
 	// 載っていない録画には何も書かない --- 「未凍結」は行の不在そのものが
 	// 意味を持つ（不変条件 10）ので、既定値の行で埋めると凍結済みと誤認する。
-	explicitPolicies := map[int64]struct{}{}
 	for _, p := range doc.RecordingEncodePolicies {
 		profiles := p.EncodeProfiles
 		if profiles == nil {
@@ -365,51 +298,6 @@ func applyDocument(ctx context.Context, tx pgx.Tx, doc *Document) (*RescueResult
 			return nil, fmt.Errorf("upserting recording_encode_policy %d: %w", p.RecordingID, err)
 		}
 		res.RecordingEncodePolicies++
-		explicitPolicies[p.RecordingID] = struct{}{}
-	}
-
-	// #159 より前に export された catalog ダンプ（doc.RecordingEncodePolicies が
-	// 空。旧列 recordings.keep_original / encode_profiles の値が
-	// Recording.KeepOriginalLegacy / EncodeProfilesLegacy に残っている。
-	// document.go 参照）を rescue するときの後方互換。何もしないと、この
-	// ダンプの全録画で凍結済みポリシーが黙って失われる
-	// （削除エンジンが対象外になり、EnqueueMissingEncodes が no-op になり、
-	// 事後追加 API が既定値 'always' で上書きする）。
-	//
-	// migration 00032 backfill と同じ基準（原本 media_asset の有無で「凍結済みか」
-	// を判定する。列の値そのものは使わない。不変条件 9）を、DB ではなく
-	// このダンプ自身の doc.MediaAssets に対して適用する。
-	originalAssetRecordingIDs := map[int64]struct{}{}
-	for _, a := range doc.MediaAssets {
-		if a.Kind == "original" {
-			originalAssetRecordingIDs[a.RecordingID] = struct{}{}
-		}
-	}
-	for _, r := range doc.Recordings {
-		if _, ok := explicitPolicies[r.ID]; ok {
-			continue // 新しいダンプで既に明示的な行がある
-		}
-		if r.KeepOriginalLegacy == nil {
-			continue // 新しいダンプ（#159 以降）。旧列自体が無い
-		}
-		if _, hasOriginal := originalAssetRecordingIDs[r.ID]; !hasOriginal {
-			continue // 未凍結（原本が無い）。既定値の行で埋めない
-		}
-		profiles := r.EncodeProfilesLegacy
-		if profiles == nil {
-			profiles = []string{}
-		}
-		if err := q.CatalogUpsertRecordingEncodePolicy(ctx, sqlcgen.CatalogUpsertRecordingEncodePolicyParams{
-			RecordingID:    r.ID,
-			KeepOriginal:   *r.KeepOriginalLegacy,
-			EncodeProfiles: profiles,
-			CreatedAt:      r.CreatedAt,
-			UpdatedAt:      r.UpdatedAt,
-		}); err != nil {
-			return nil, fmt.Errorf("restoring legacy recording_encode_policy %d: %w", r.ID, err)
-		}
-		res.RecordingEncodePolicies++
-		res.RestoredLegacyEncodePolicies++
 	}
 
 	for _, a := range doc.MediaAssets {
@@ -578,29 +466,4 @@ func upsertRule(ctx context.Context, q *sqlcgen.Queries, rule Rule) error {
 		}
 	}
 	return nil
-}
-
-// hasNeverScheduledMarker は quality_events の配列要素に
-// db.QualityEventNeverScheduled マーカーがあるかを判定する。
-//
-// issue #318 より前に export された catalog ダンプでは、欠測が recordings の
-// failed 擬似行 + このマーカーとして残っている。この関数で検出した旧擬似行は
-// applyDocument が recordings に戻さずスキップする。壊れた JSON（手で編集された
-// 等）は false を返して通常の録画として復元を試みる --- ここで rescue 全体を
-// 止めるのは、1 件の不透明な quality_events のために他の永続資産の復旧を止める
-// 代償に見合わない。
-func hasNeverScheduledMarker(qualityEvents json.RawMessage) bool {
-	if len(qualityEvents) == 0 {
-		return false
-	}
-	var events []db.QualityEvent
-	if err := json.Unmarshal(qualityEvents, &events); err != nil {
-		return false
-	}
-	for _, e := range events {
-		if e.Event == db.QualityEventNeverScheduled {
-			return true
-		}
-	}
-	return false
 }

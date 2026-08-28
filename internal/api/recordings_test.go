@@ -135,9 +135,6 @@ func TestListRecordings(t *testing.T) {
 	if pending.EncodedAssets != nil {
 		t.Errorf("un-ingested recording should omit encodedAssets, got %v", pending.EncodedAssets)
 	}
-	if pending.EncodedProfiles != nil {
-		t.Errorf("un-ingested recording should omit (backward-compat) encodedProfiles, got %v", pending.EncodedProfiles)
-	}
 	if pending.Status != "recording" {
 		t.Errorf("status = %q, want recording", pending.Status)
 	}
@@ -300,81 +297,6 @@ func TestListRecordings_EncodedProfiles(t *testing.T) {
 	}
 	if assets[1].Profile != "h265" || assets[1].SizeBytes == nil || *assets[1].SizeBytes != 80 {
 		t.Errorf("encodedAssets[1] = %+v, want {h265 80}", assets[1])
-	}
-}
-
-// TestListRecordings_EncodedProfilesBackwardCompat は「旧 UI（`encodedProfiles`
-// だけを読むクライアント）が新 API でも動く」ことを固定する（issue #236 のレビュー
-// 指摘）。UI と API のデプロイタイミングはずれ得るため API は後方互換を保つ
-// （docs/api/rest.md §契約の保護）--- 旧バンドルを掴んだブラウザ（`immutable` な
-// 静的アセット、開いたままのタブ）は `encodedAssets` を知らず `encodedProfiles`
-// だけを読むので、`encodedAssets` を足した後もこのフィールドを消してはならない。
-func TestListRecordings_EncodedProfilesBackwardCompat(t *testing.T) {
-	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
-
-	base := time.Now().Truncate(time.Second)
-	id := seedRecording(t, pool, "後方互換確認", base, "finished", 20)
-	seedIngested(t, pool, id, 500, nil)
-
-	h264 := "h264"
-	h265 := "h265"
-	q := sqlcgen.New(pool)
-	if _, err := q.CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
-		RecordingID: id,
-		Kind:        db.AssetKindEncoded,
-		Profile:     &h264,
-		RelPath:     "compat_h264.mp4",
-		SizeBytes:   111,
-	}); err != nil {
-		t.Fatalf("seed h264: %v", err)
-	}
-	if _, err := q.CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
-		RecordingID: id,
-		Kind:        db.AssetKindEncoded,
-		Profile:     &h265,
-		RelPath:     "compat_h265.mp4",
-		SizeBytes:   222,
-	}); err != nil {
-		t.Fatalf("seed h265: %v", err)
-	}
-
-	var got []Recording
-	resp := getJSON(t, srv.URL+"/api/recordings", &got)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d", resp.StatusCode)
-	}
-	var rec *Recording
-	for i := range got {
-		if got[i].Id == id {
-			rec = &got[i]
-			break
-		}
-	}
-	if rec == nil {
-		t.Fatal("recording not found")
-	}
-
-	// 旧クライアントの経路: encodedAssets は無視して encodedProfiles だけを読む。
-	if rec.EncodedProfiles == nil {
-		t.Fatal("encodedProfiles is nil (旧 UI が読む唯一のフィールドが消えている)")
-	}
-	if got := *rec.EncodedProfiles; len(got) != 2 || got[0] != "h264" || got[1] != "h265" {
-		t.Errorf("encodedProfiles = %v, want [h264 h265]", got)
-	}
-
-	// encodedAssets と encodedProfiles は同じ rows から作るので常に一致する
-	// （名前だけの配列とサイズ付きの配列を別々の SQL 集約で作らないための保証）。
-	if rec.EncodedAssets == nil {
-		t.Fatal("encodedAssets is nil")
-	}
-	assetProfiles := make([]string, len(*rec.EncodedAssets))
-	for i, a := range *rec.EncodedAssets {
-		assetProfiles[i] = a.Profile
-	}
-	if !reflect.DeepEqual(assetProfiles, *rec.EncodedProfiles) {
-		t.Errorf("encodedAssets のプロファイル名 %v と encodedProfiles %v が食い違っている",
-			assetProfiles, *rec.EncodedProfiles)
 	}
 }
 
@@ -1190,9 +1112,6 @@ func TestGetRecording_Trash(t *testing.T) {
 	}
 	if got.EncodedAssets != nil {
 		t.Errorf("trash の録画は encodedAssets を省略するべき、got %v", got.EncodedAssets)
-	}
-	if got.EncodedProfiles != nil {
-		t.Errorf("trash の録画は（後方互換の）encodedProfiles も省略するべき、got %v", got.EncodedProfiles)
 	}
 }
 

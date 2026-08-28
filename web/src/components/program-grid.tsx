@@ -15,7 +15,7 @@ import {
 } from '@/lib/epg-grid'
 import { formatTime } from '@/lib/format'
 import { genreLabel, genreTint } from '@/lib/genre'
-import { programServiceKey } from '@/lib/programs-search'
+import { composeServiceId } from '@/lib/service-id'
 import { cn } from '@/lib/utils'
 
 /** 時間軸（左端の目盛り列）の幅。 */
@@ -273,7 +273,7 @@ export function ProgramGrid({
                 key={`${service.networkId}-${service.serviceId}`}
                 service={service}
                 leftPx={(columnRange.start + index) * epgColumnWidthPx}
-                placed={placedByService.get(programServiceKey(service.networkId, service.serviceId)) ?? []}
+                placed={placedByService.get(composeServiceId(service.networkId, service.serviceId)) ?? []}
                 axis={axis}
                 timeWindow={timeWindow}
                 reservationByProgramId={reservationByProgramId}

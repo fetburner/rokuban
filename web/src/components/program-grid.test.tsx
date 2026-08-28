@@ -22,6 +22,7 @@ function at(minutes: number): number {
 
 function service(serviceId: number, name: string): Service {
   return {
+    id: 32736 * 100_000 + serviceId,
     networkId: 32736,
     serviceId,
     name,

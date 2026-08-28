@@ -22,15 +22,28 @@ import {
 } from '@/api/generated'
 import { formatDateTime } from '@/lib/format'
 import { parsePositiveIntId } from '@/lib/positive-id'
+import { ListRecordingsQueryParams } from '@/api/zod'
 import { genreCodeLabel } from '@/lib/program-search'
+import { ascending, asInteger, validArray, validValue } from '@/lib/url-search'
+
+/**
+ * q は openapi.yaml から生成した `GET /api/recordings` のクエリスキーマ。
+ * enum / 値域 / 正規表現を持つ軸（genre / site / service / status / source）は
+ * ここが権威で、手で書き写さない。`order` / `ruleId` / `from` / `to` / `q` は
+ * URL 固有の扱い（安全整数の判定・ISO 8601 の正規化・空文字の扱い）が要るので
+ * 手書きのまま残している。
+ */
+const q = ListRecordingsQueryParams.shape
 
 /** RecordingsPageSearch は `/recordings` の URL クエリパラメータ（検証済み）。 */
 export type RecordingsPageSearch = {
   q?: string
   /** ARIB ジャンル大分類（lv1、0〜15）。複数可、OR。 */
   genre?: number[]
-  /** チャンネル。新形式 `<site>:<networkId>:<serviceId>`、旧形式 `<site>:<serviceId>`。 */
-  service?: string[]
+  /** mirakc サイト名。複数可、OR。 */
+  site?: string[]
+  /** `Service.id`。複数可、OR。site とは別軸（軸間は AND）。 */
+  service?: number[]
   status?: ListRecordingsStatus
   source?: ListRecordingsSource
   /** 特定ルール由来の録画に絞る（ルール一覧の「このルールの録画」導線から） */
@@ -73,54 +86,6 @@ export const sourceLabels: Record<ListRecordingsSource, string> = {
 /** emptyRecordingsSearch は条件を何も指定していない状態。 */
 export function emptyRecordingsSearch(): RecordingsPageSearch {
   return {}
-}
-
-function toRawValues(raw: unknown): unknown[] {
-  if (raw === undefined) return []
-  return Array.isArray(raw) ? raw : [raw]
-}
-
-/**
- * parseIntArray は URL の値を整数配列にする。
- *
- * 数値に変換できない要素・範囲外の要素は落とす（丸めない）。結果が空なら
- * `undefined`（「指定なし」を空配列という意味を持たない値で表現しない --- 不変条件 10
- * の精神をリクエスト同様クエリ状態にも適用する）。
- *
- * `Number.isSafeInteger` までは見ない --- 現在の唯一の呼び先（`genre`、
- * `min: 0, max: 15`）は範囲が小さく固定されているため、`Number.MAX_SAFE_INTEGER`
- * を超える値が丸まって範囲内の値に化けることは無い（IEEE754 の丸め誤差は
- * 値の大きさに比例して増えるので、巨大な数値が丸まって 0〜15 に落ちてくることは
- * ない）。範囲を持たない・上限が大きい呼び先を足すときは `lib/positive-id.ts` の
- * `parsePositiveIntId` の丸め対策（issue #345）を見直す。
- */
-function parseIntArray(raw: unknown, opts?: { min?: number; max?: number }): number[] | undefined {
-  const values = toRawValues(raw)
-    .map((v) => (typeof v === 'number' ? v : typeof v === 'string' ? Number(v) : NaN))
-    .filter((n) => Number.isFinite(n) && Number.isInteger(n))
-    .filter((n) => (opts?.min === undefined || n >= opts.min) && (opts?.max === undefined || n <= opts.max))
-  return values.length > 0 ? values : undefined
-}
-
-// 新形式 `<site>:<networkId>:<serviceId>` と旧 `<site>:<serviceId>` を同じ
-// パターンで受ける。各 ID は先頭 0 のない10進数に限定し、`parsePositiveIntId` の
-// safe integer 検証に DB / Go の int32 上限を重ねる。
-const recordingServicePattern = /^[a-z0-9](?:[_-]?[a-z0-9])*:(?:([1-9][0-9]*):)?([1-9][0-9]*)$/
-
-function parseRecordingServices(raw: unknown): string[] | undefined {
-  const values = toRawValues(raw).filter((value): value is string => {
-    if (typeof value !== 'string') return false
-    const match = recordingServicePattern.exec(value)
-    if (match === null) return false
-    const networkId = match[1] === undefined ? undefined : parsePositiveIntId(match[1])
-    const serviceId = parsePositiveIntId(match[2])
-    return (
-      serviceId !== undefined &&
-      serviceId <= 2_147_483_647 &&
-      (match[1] === undefined || (networkId !== undefined && networkId <= 2_147_483_647))
-    )
-  })
-  return values.length > 0 ? values : undefined
 }
 
 function parseEnum<T extends string>(raw: unknown, allowed: readonly T[]): T | undefined {
@@ -176,10 +141,29 @@ function parseIsoDate(raw: unknown): string | undefined {
 export function parseRecordingsSearch(search: Record<string, unknown>): RecordingsPageSearch {
   return {
     q: typeof search.q === 'string' && search.q.trim() !== '' ? search.q : undefined,
-    genre: parseIntArray(search.genre, { min: 0, max: 15 }),
-    service: parseRecordingServices(search.service),
-    status: parseEnum(search.status, recordingStatusValues),
-    source: parseEnum(search.source, recordingSourceValues),
+    genre: validArray<number>(q.genre.unwrap().element, search.genre, {
+      coerce: asInteger,
+      sort: ascending,
+    }),
+    // **`coerce: String` が要る。** TanStack Router の既定 `parseSearch`
+    // （`qss.toValue`）は `?site=123` を**数値** 123 にしてから渡すので、
+    // 文字列スキーマ（`zod.string().regex(...)`）が落としてしまう。site 名は
+    // `mirakcSiteNamePattern`（`^[a-z0-9]([_-]?[a-z0-9])*$`）上すべて数字でも
+    // 合法なので、`mirakcs: [{site: "123"}]` は実在しうる構成である。
+    // **`localeCompare` は使わない。** ロケール依存なので、同じ共有 URL が
+    // ブラウザによって違う並びになり、queryKey が食い違う（正準化の目的を
+    // 自分で壊す）。チップ側（`components/recording-filters.tsx`）の
+    // `Array.prototype.sort()` と同じコード単位順に揃える。
+    site: validArray<string>(q.site.unwrap().element, search.site, {
+      coerce: String,
+      sort: (a, b) => (a < b ? -1 : a > b ? 1 : 0),
+    }),
+    service: validArray<number>(q.service.unwrap().element, search.service, {
+      coerce: asInteger,
+      sort: ascending,
+    }),
+    status: validValue<ListRecordingsStatus>(q.status.unwrap(), search.status),
+    source: validValue<ListRecordingsSource>(q.source.unwrap(), search.source),
     ruleId: parseRuleId(search.ruleId),
     from: parseIsoDate(search.from),
     to: parseIsoDate(search.to),
@@ -199,6 +183,7 @@ export function hasAnyRecordingsCondition(search: RecordingsPageSearch): boolean
   return (
     (search.q !== undefined && search.q.trim() !== '') ||
     (search.genre?.length ?? 0) > 0 ||
+    (search.site?.length ?? 0) > 0 ||
     (search.service?.length ?? 0) > 0 ||
     search.status !== undefined ||
     search.source !== undefined ||
@@ -222,6 +207,7 @@ export function buildListRecordingsParams(
 
   if (search.q !== undefined && search.q.trim() !== '') params.q = search.q
   if (search.genre !== undefined && search.genre.length > 0) params.genre = search.genre
+  if (search.site !== undefined && search.site.length > 0) params.site = search.site
   if (search.service !== undefined && search.service.length > 0) {
     params.service = search.service
   }
@@ -291,7 +277,7 @@ function periodLabel(from: string | undefined, to: string | undefined): string {
  */
 export function describeRecordingsFilters(
   search: RecordingsPageSearch,
-  serviceLabelByKey: ReadonlyMap<string, string>,
+  serviceLabelById: ReadonlyMap<number, string>,
 ): RecordingsFilterChip[] {
   const chips: RecordingsFilterChip[] = []
 
@@ -306,10 +292,21 @@ export function describeRecordingsFilters(
     })
   }
 
+  for (const site of search.site ?? []) {
+    chips.push({
+      key: `site-${site}`,
+      label: `サイト: ${site}`,
+      clear: (s) => {
+        const next = (s.site ?? []).filter((v) => v !== site)
+        return { ...s, site: next.length > 0 ? next : undefined }
+      },
+    })
+  }
+
   for (const service of search.service ?? []) {
     chips.push({
       key: `service-${service}`,
-      label: `チャンネル: ${serviceLabelByKey.get(service) ?? service}`,
+      label: `チャンネル: ${serviceLabelById.get(service) ?? `チャンネル #${service}`}`,
       clear: (s) => {
         const next = (s.service ?? []).filter((key) => key !== service)
         return { ...s, service: next.length > 0 ? next : undefined }

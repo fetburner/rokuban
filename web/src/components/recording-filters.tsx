@@ -53,43 +53,31 @@ export function RecordingFilters({
     queries: sites.map((site) => getListServicesQueryOptions(site)),
   })
 
-  const serviceList: Service[] = []
-  const siteByService = new Map<Service, string>()
-  for (const [i, query] of serviceQueries.entries()) {
-    const site = sites[i]
+  // **`Service.id` で重複を潰す。** 同じチャンネルを 2 サイトで受けていても
+  // 選択肢は 1 つ（identity は合成 id で、site は別軸の `?site=`）。潰さないと
+  // ピッカーに同名の候補が site の数だけ並び、押しても同じ id が入るだけの
+  // 「押し分けられない選択肢」になる。
+  const serviceById = new Map<number, Service>()
+  for (const query of serviceQueries) {
     for (const service of unwrap(query.data) ?? []) {
-      serviceList.push(service)
-      siteByService.set(service, site)
+      if (!serviceById.has(service.id)) serviceById.set(service.id, service)
     }
   }
+  const serviceList: Service[] = [...serviceById.values()]
 
   const disambiguate = serviceDisambiguator(serviceList)
-  const serviceLabelByKey = new Map<string, string>()
-  const legacyServices = new Map<string, Service[]>()
+  // サービスの identity は `Service.id`。同じチャンネルを 2 サイトで受けていても
+  // 1 つの選択肢になる（site は別軸で絞る）ので、ラベルに site は入れない。
+  const serviceLabelById = new Map<number, string>()
   for (const service of serviceList) {
-    const site = siteByService.get(service) ?? ''
     const disambiguator = disambiguate(service)
-    const suffix = [site, disambiguator].filter((part) => part !== undefined && part !== '').join('・')
-    serviceLabelByKey.set(
-      `${site}:${service.networkId}:${service.serviceId}`,
-      suffix === '' ? service.name : `${service.name} (${suffix})`,
-    )
-    const legacyKey = `${site}:${service.serviceId}`
-    const group = legacyServices.get(legacyKey)
-    if (group) group.push(service)
-    else legacyServices.set(legacyKey, [service])
-  }
-  for (const [key, group] of legacyServices) {
-    const site = siteByService.get(group[0]) ?? ''
-    serviceLabelByKey.set(
-      key,
-      group.length === 1
-        ? `${group[0].name} (${site})`
-        : `serviceId ${group[0].serviceId} (${site}・network指定なし)`,
+    serviceLabelById.set(
+      service.id,
+      disambiguator === undefined || disambiguator === '' ? service.name : `${service.name} (${disambiguator})`,
     )
   }
 
-  const chips = describeRecordingsFilters(search, serviceLabelByKey)
+  const chips = describeRecordingsFilters(search, serviceLabelById)
 
   return (
     <div className="flex flex-col gap-2 border-t border-border px-4 py-2">
@@ -101,7 +89,7 @@ export function RecordingFilters({
         <FilterPanel
           search={search}
           services={serviceList}
-          siteByService={siteByService}
+          siteNames={sites}
           servicesPending={sitesQuery.isPending || serviceQueries.some((q) => q.isPending)}
           servicesError={sitesQuery.isError || serviceQueries.some((q) => q.isError)}
           onChange={onChange}
@@ -217,48 +205,37 @@ function OrderSelect({
 function FilterPanel({
   search,
   services,
-  siteByService,
+  siteNames,
   servicesPending,
   servicesError,
   onChange,
 }: {
   search: RecordingsPageSearch
   services: Service[]
-  /** 各 Service がどの site の一覧に由来するか。ChannelPicker の複合キーに使う。 */
-  siteByService: ReadonlyMap<Service, string>
+  /**
+   * siteNames はレジストリの site 名（`GET /api/sites`）。
+   *
+   * **サービス射影から導かない。** ある site の `epg_services` がまだ空
+   * （新設 site・直近の EPG 同期が失敗）だと、その site が候補から消え、
+   * 一覧にはその site の録画が出ているのに絞れなくなる。site の権威は
+   * レジストリであって EPG 射影ではない。
+   */
+  siteNames: string[]
   servicesPending: boolean
   servicesError: boolean
   onChange: Update
 }) {
   const [open, setOpen] = useState(false)
-  const selectedServices = useMemo(() => {
-    const selected = new Set<string>()
-    for (const value of search.service ?? []) {
-      const parts = value.split(':')
-      if (parts.length === 3) {
-        selected.add(value)
-        continue
-      }
-      if (parts.length !== 2) continue
-      const [site, serviceId] = parts
-      for (const service of services) {
-        if (siteByService.get(service) === site && String(service.serviceId) === serviceId) {
-          selected.add(`${site}:${service.networkId}:${service.serviceId}`)
-        }
-      }
-    }
-    return selected
-  }, [search.service, services, siteByService])
+  const selectedServices = useMemo(() => new Set(search.service ?? []), [search.service])
   const selectedGenres = useMemo(() => new Set(search.genre ?? []), [search.genre])
-  const multiSite = useMemo(() => new Set(siteByService.values()).size > 1, [siteByService])
+  const selectedSites = useMemo(() => new Set(search.site ?? []), [search.site])
+  // site は別軸（`?site=`）なので、チャンネルの補足ラベルには入れない。
+  // **同じチャンネルを 2 サイトで受けていても選択肢は 1 つ**（identity は
+  // `Service.id`）なので、そこに片方の site 名を添えると誤読させる。
   const disambiguate = useMemo(() => serviceDisambiguator(services), [services])
-  const serviceKey = (service: Service) =>
-    `${siteByService.get(service) ?? ''}:${service.networkId}:${service.serviceId}`
   const secondaryLabel = (service: Service): string | undefined => {
-    const parts = [multiSite ? siteByService.get(service) : undefined, disambiguate(service)].filter(
-      (part): part is string => part !== undefined && part !== '',
-    )
-    return parts.length > 0 ? parts.join('・') : undefined
+    const label = disambiguate(service)
+    return label === '' ? undefined : label
   }
 
   return (
@@ -293,17 +270,42 @@ function FilterPanel({
                 <ChannelPicker
                   services={services}
                   selected={selectedServices}
-                  keyOf={serviceKey}
                   secondaryLabel={secondaryLabel}
                   onChange={(next) =>
                     onChange((s) => ({
                       ...s,
-                      service: next.size > 0 ? [...next].sort() : undefined,
+                      service: next.size > 0 ? [...next].sort((a, b) => a - b) : undefined,
                     }))
                   }
                 />
               )}
             </section>
+
+            {/* site は 2 サイト以上のときだけ出す。1 サイト構成では選択肢が
+                1 つしかなく、絞る意味がない（機能しないコントロールは置かない）。 */}
+            {siteNames.length > 1 && (
+              <section className="flex flex-col gap-1.5">
+                <h3 className="text-xs font-medium text-muted-foreground">サイト</h3>
+                <div role="group" aria-label="サイト" className="flex flex-wrap gap-1.5">
+                  {siteNames.map((site) => (
+                    <Chip
+                      key={site}
+                      active={selectedSites.has(site)}
+                      onClick={() =>
+                        onChange((s) => {
+                          const next = selectedSites.has(site)
+                            ? (s.site ?? []).filter((v) => v !== site)
+                            : [...(s.site ?? []), site].sort()
+                          return { ...s, site: next.length > 0 ? next : undefined }
+                        })
+                      }
+                    >
+                      {site}
+                    </Chip>
+                  ))}
+                </div>
+              </section>
+            )}
 
             <section className="flex flex-col gap-1.5">
               <h3 className="text-xs font-medium text-muted-foreground">ジャンル</h3>

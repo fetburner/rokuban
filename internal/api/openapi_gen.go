@@ -1146,22 +1146,7 @@ type Recording struct {
 	// EncodedAssets 再生可能な encoded 派生物（media_assets の active のみ）。
 	// ブラウザ再生は GET /api/recordings/{id}/file?profile=<name> を使う。
 	// desired（encodeProfiles）ではなく observed。空配列は省略可。
-	//
-	// `encodedProfiles`（プロファイル名だけの配列、下記）にサイズを足した
-	// もの。両方とも同じ SELECT の結果から作るので、名前だけの配列と
-	// 資産の配列が食い違うことはない（`internal/api/recordings.go` の
-	// `recordingFromListFields` が同じ `rows` から両方を導出する）。
 	EncodedAssets *[]EncodedAsset `json:"encodedAssets,omitempty"`
-
-	// EncodedProfiles `encodedAssets`（上記）に置き換え済み。**後方互換のため残している**
-	// （docs/api/rest.md §契約の保護・docs/frontend/assets.md の
-	// 「UI と API のデプロイタイミングはずれ得るため API は後方互換を保つ」）。
-	// 旧バンドルを掴んだブラウザ（`immutable` な静的アセット、開いたままの
-	// タブ）はデプロイ後もこのフィールドだけを読むため、`encodedAssets` を
-	// 足しても消してはならない。`encodedAssets.map(a => a.profile)` と
-	// 常に一致する。
-	// Deprecated: this property has been marked as deprecated upstream, but no `x-deprecated-reason` was set
-	EncodedProfiles *[]string `json:"encodedProfiles,omitempty"`
 
 	// EndedAt 録画の実終了時刻。常に UTC（"Z" 終端の RFC3339）で返す。
 	EndedAt   *time.Time      `json:"endedAt,omitempty"`
@@ -1410,7 +1395,19 @@ type Service struct {
 	// このエンドポイント自体はこのフラグで絞り込まない —— ルールはまだ番組を持たない
 	// サービスも参照できる必要があり、絞り込むと「EPG プロジェクションのサービス
 	// 一覧」という定義に反する構成員を落とすことになる。
-	HasPrograms        bool   `json:"hasPrograms"`
+	HasPrograms bool `json:"hasPrograms"`
+
+	// Id サービスの一意な識別子。`networkId * 100000 + serviceId`（Mirakurun /
+	// mirakc の `ServiceId` と同じ合成規則。権威は `internal/mirakc.ServiceID`）。
+	//
+	// **SI の `serviceId` は network をまたぐと一意でない**（BS 101 と
+	// 110度CS 101 は実在する衝突）ため、絞り込み・選択・キャッシュキーの
+	// identity にはこの値を使う。`?service=` に載るのもこの値。
+	//
+	// **int32 には収まらない**（networkId / serviceId とも 16bit なので
+	// 最大 65535 * 100000 + 65535 = 6,553,565,535）。JavaScript の
+	// safe integer には収まる。
+	Id                 int64  `json:"id"`
 	Name               string `json:"name"`
 	NetworkId          int    `json:"networkId"`
 	RemoteControlKeyId int    `json:"remoteControlKeyId"`
@@ -1491,10 +1488,19 @@ type ListRecordingsParams struct {
 	Genre       *[]int                             `form:"genre,omitempty" json:"genre,omitempty"`
 	ChannelType *[]ListRecordingsParamsChannelType `form:"channelType,omitempty" json:"channelType,omitempty"`
 
-	// Service 新形式は `<site>:<networkId>:<serviceId>` で network まで厳密に一致する。
-	// 旧 `<site>:<serviceId>` は後方互換で、site 内では network を問わない。
-	// networkId / serviceId は 1..2147483647。複数指定は OR。
-	Service *[]string `form:"service,omitempty" json:"service,omitempty"`
+	// Site mirakc サイト名。複数指定は OR。site 名の構文は
+	// `config.mirakc`/`mirakcs` レジストリと同じ（`internal/config` の
+	// `mirakcSiteNamePattern`）。レジストリに無い名前を渡してもエラーには
+	// せず 0 件になる --- 絞り込みは「あるものから選ぶ」操作なので、
+	// 存在しない値の指定は空の結果として素直に読める。
+	Site *[]string `form:"site,omitempty" json:"site,omitempty"`
+
+	// Service `Service.id`（`networkId * 100000 + serviceId`）。複数指定は OR。
+	//
+	// **site は含めない**（`site` パラメータが別軸）。他の絞り込み軸と
+	// 同じく「軸内は OR、軸間は AND」で、`?site=tokyo&service=400101` は
+	// 「tokyo の BS 101」を意味する。
+	Service *[]int64 `form:"service,omitempty" json:"service,omitempty"`
 
 	// Status recordings.status の CHECK と一致させた 4 値（'canceled' は 00021 で
 	// CHECK に追加済み）。
@@ -1548,18 +1554,10 @@ type ListProgramsParams struct {
 	Start time.Time `form:"start" json:"start"`
 
 	// End 時間窓の終了（この時刻より前に始まる番組が対象）。start からの幅は最大 7 日
-	End       time.Time `form:"end" json:"end"`
-	NetworkId *int32    `form:"networkId,omitempty" json:"networkId,omitempty"`
+	End time.Time `form:"end" json:"end"`
 
-	// ServiceId 後方互換の serviceId 単独フィルタ。複数指定可
-	// （`?serviceId=1&serviceId=2`）。networkId を伴わなければ network を問わず
-	// serviceId が一致する番組を返す。networkId を伴えばその network 内で絞る。
-	// 厳密な複数サービス指定には `service` を使う。
-	ServiceId *[]int32 `form:"serviceId,omitempty" json:"serviceId,omitempty"`
-
-	// Service `<networkId>:<serviceId>` の組（各 ID は 1..2147483647）。複数指定は OR。
-	// `networkId` または `serviceId` との同時指定は 400。
-	Service *[]string `form:"service,omitempty" json:"service,omitempty"`
+	// Service `Service.id`（`networkId * 100000 + serviceId`）。複数指定は OR。
+	Service *[]int64 `form:"service,omitempty" json:"service,omitempty"`
 }
 
 // AddRecordingEncodeProfilesJSONRequestBody defines body for AddRecordingEncodeProfiles for application/json ContentType.
@@ -2048,6 +2046,19 @@ func (siw *ServerInterfaceWrapper) ListRecordings(w http.ResponseWriter, r *http
 			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "channelType"})
 		} else {
 			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "channelType", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "site" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "site", r.URL.Query(), &params.Site, runtime.BindQueryParameterOptions{Type: "array", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "site"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "site", Err: err})
 		}
 		return
 	}
@@ -2597,32 +2608,6 @@ func (siw *ServerInterfaceWrapper) ListPrograms(w http.ResponseWriter, r *http.R
 			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "end"})
 		} else {
 			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "end", Err: err})
-		}
-		return
-	}
-
-	// ------------- Optional query parameter "networkId" -------------
-
-	err = runtime.BindQueryParameterWithOptions("form", true, false, "networkId", r.URL.Query(), &params.NetworkId, runtime.BindQueryParameterOptions{Type: "integer", Format: "int32"})
-	if err != nil {
-		var requiredError *runtime.RequiredParameterError
-		if errors.As(err, &requiredError) {
-			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "networkId"})
-		} else {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "networkId", Err: err})
-		}
-		return
-	}
-
-	// ------------- Optional query parameter "serviceId" -------------
-
-	err = runtime.BindQueryParameterWithOptions("form", true, false, "serviceId", r.URL.Query(), &params.ServiceId, runtime.BindQueryParameterOptions{Type: "array", Format: ""})
-	if err != nil {
-		var requiredError *runtime.RequiredParameterError
-		if errors.As(err, &requiredError) {
-			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "serviceId"})
-		} else {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "serviceId", Err: err})
 		}
 		return
 	}

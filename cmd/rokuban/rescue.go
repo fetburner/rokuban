@@ -77,16 +77,8 @@ func runRescue(ctx context.Context, pool *pgxpool.Pool, mediaDir, site string, o
 		_, _ = fmt.Fprintf(out, "rescued from %s\n", result.CatalogPath)
 	}
 	// 「最新に見えたものを飛ばした」ことは黙って成功させない（docs/storage.md §8）。
-	// 世代ディレクトリと旧形式のフラットファイルは別物なので文言を分ける。
 	for _, r := range result.RejectedSnapshots {
-		if r.Generation {
-			_, _ = fmt.Fprintf(out, "  skipped incomplete generation %s: %s\n", r.Name, r.Reason)
-			continue
-		}
-		_, _ = fmt.Fprintf(out, "  skipped unreadable catalog file %s: %s\n", r.Name, r.Reason)
-	}
-	if result.LegacyCatalog {
-		_, _ = fmt.Fprintln(out, "  warning: this catalog has no manifest; completeness was not verified")
+		_, _ = fmt.Fprintf(out, "  skipped incomplete generation %s: %s\n", r.Name, r.Reason)
 	}
 	_, _ = fmt.Fprintf(out, "  rules:              %d\n", result.Rules)
 	_, _ = fmt.Fprintf(out, "  recordings:         %d\n", result.Recordings)
@@ -95,5 +87,13 @@ func runRescue(ctx context.Context, pool *pgxpool.Pool, mediaDir, site string, o
 	_, _ = fmt.Fprintf(out, "  program_snapshots:  %d\n", result.ProgramSnapshots)
 	_, _ = fmt.Fprintf(out, "  program_intents:    %d\n", result.ProgramIntents)
 	_, _ = fmt.Fprintf(out, "  program_overrides:  %d\n", result.ProgramOverrides)
+	// 落とした行は黙って切り捨てない。永続資産は復元できているので rescue 自体は
+	// 成功だが、ダンプが壊れている事実は運用者に伝える。
+	if result.SkippedProgramSnapshots > 0 {
+		_, _ = fmt.Fprintf(out,
+			"  warning: skipped %d program_snapshots the database would reject "+
+				"(and %d program_intents / %d program_overrides that referenced them)\n",
+			result.SkippedProgramSnapshots, result.SkippedProgramIntents, result.SkippedProgramOverrides)
+	}
 	return nil
 }

@@ -141,22 +141,6 @@ export function claimsHlsPlaylistSupport(canPlayType: (type: string) => string):
 }
 
 /**
- * liveServiceKey は「選択中」「再生中」の同一性判定に使う複合キー。
- *
- * **SI の `serviceId` 単独は network をまたぐと一意でない**（Mirakurun が
- * `networkId * 100000 + serviceId` の合成 id を発明した理由そのもの。
- * `GET /api/sites/{site}/services` は GR / BS / CS を混ぜて返すので、同じ
- * `serviceId` を持つサービスが 2 つ返る構成がありうる）。`pages/live.tsx` の
- * `playingKey`（再生中チャンネルの記憶）と選択中チャンネルの一致判定は、
- * この複合キーで比較する --- `serviceId` だけで比較すると、別 network の
- * 同じ `serviceId` へ切り替えても「同じチャンネル」と誤認して再生状態を
- * 引き継いでしまう。
- */
-export function liveServiceKey(networkId: number, serviceId: number): string {
-  return `${networkId}-${serviceId}`
-}
-
-/**
  * pickInitialService は `?networkId=&serviceId=` 検索パラメータから初期選択チャンネル
  * （`Service`）を決める。
  *
@@ -164,13 +148,14 @@ export function liveServiceKey(networkId: number, serviceId: number): string {
  * `networkId` も指定されていればその組で厳密一致するサービスを探す。一致すれば
  * それを使う。
  *
- * `networkId` が指定されていない（旧 `?serviceId=` 単独のリンク・ブックマーク）
- * ときは、**その `serviceId` を持つ最初のサービスへフォールバックする**（従来の
- * 挙動と同じ）。この場合に選ばれる network は一覧の順序に依存し、意図した
- * network と食い違いうるが、`networkId` を持たないリンクという入力そのものが
- * network を同定できないので、これは仕様であり不具合ではない。
+ * **`networkId` と `serviceId` は両方揃ったときだけ使う。** `serviceId` 単独では
+ * 1 局に定まらない（同じ id を別 network が持ちうる。issue #291）ので、
+ * 「その serviceId を持つ最初のサービス」を選ぶと一覧の順序次第で別の局に
+ * なる。片方しか無い入力は同定できない入力なので、既定（番組を持つ先頭）へ
+ * 落とす。`lib/live.test.ts`「networkId 未指定なら serviceId は使わず、番組を
+ * 持つ先頭へ落ちる」で固定。
  *
- * **`serviceId` の無い `?networkId=` 単独は `networkId` を完全に無視する**
+ * **`serviceId` の無い `?networkId=` 単独も同様に無視する**
  * （その network 内で選び直すことはしない --- `networkId` だけでは 1 局に
  * 定まらないので、選ぶ規則が「その network の番組を持つ先頭」という別の規則に
  * なる。`?networkId=` 単独を作る導線は無い）。`lib/live.test.ts`
@@ -188,11 +173,8 @@ export function pickInitialService(
   requested: { networkId: number | undefined; serviceId: number | undefined },
 ): Service | undefined {
   const { networkId, serviceId } = requested
-  if (serviceId !== undefined) {
-    const exact =
-      networkId !== undefined
-        ? services.find((s) => s.networkId === networkId && s.serviceId === serviceId)
-        : services.find((s) => s.serviceId === serviceId)
+  if (networkId !== undefined && serviceId !== undefined) {
+    const exact = services.find((s) => s.networkId === networkId && s.serviceId === serviceId)
     if (exact !== undefined) return exact
   }
   return services.find((s) => s.hasPrograms) ?? services[0]

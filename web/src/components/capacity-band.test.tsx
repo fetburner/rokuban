@@ -26,6 +26,7 @@ function iso(minutes: number): string {
 }
 
 const service: Service = {
+  id: 3273601024,
   networkId: 32736,
   serviceId: 1024,
   name: 'NHK総合',

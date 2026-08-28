@@ -53,6 +53,7 @@ const origin = windowOrigin()
 
 const services: Service[] = [
   {
+    id: 3273601024,
     networkId: 32736,
     serviceId: 1024,
     name: 'NHK総合',
@@ -63,6 +64,7 @@ const services: Service[] = [
     hasPrograms: true,
   },
   {
+    id: 3273701032,
     networkId: 32737,
     serviceId: 1032,
     name: 'NHKEテレ',
@@ -81,6 +83,7 @@ const services: Service[] = [
  * must-fix: ピッカーの定義域テスト用）。
  */
 const subService: Service = {
+  id: 3273601040,
   networkId: 32736,
   serviceId: 1040,
   name: 'NHK総合サブ',
@@ -291,23 +294,13 @@ function stubApi(
       if (override) return Promise.resolve(override)
       const start = new Date(url.searchParams.get('start') ?? 0).getTime()
       const end = new Date(url.searchParams.get('end') ?? 0).getTime()
-      const networkId = url.searchParams.get('networkId')
-      const serviceIds = url.searchParams.getAll('serviceId').map(Number)
-      const services = url.searchParams.getAll('service').map((value) => {
-        const [network, service] = value.split(':').map(Number)
-        return { networkId: network, serviceId: service }
-      })
+      const serviceIds = url.searchParams.getAll('service').map(Number)
       const matched = programs.filter(
         (p) =>
           new Date(p.endAt).getTime() > start &&
           new Date(p.startAt).getTime() < end &&
-          (services.length > 0
-            ? services.some(
-                (service) =>
-                  service.networkId === p.networkId && service.serviceId === p.serviceId,
-              )
-            : (networkId === null || Number(networkId) === p.networkId) &&
-              (serviceIds.length === 0 || serviceIds.includes(p.serviceId))),
+          (serviceIds.length === 0 ||
+            serviceIds.includes(p.networkId * 100_000 + p.serviceId)),
       )
       return Promise.resolve(jsonResponse(matched))
     }
@@ -816,7 +809,7 @@ describe('ProgramsPage のチャンネル複数選択', () => {
     expect(screen.getByText('手話ニュース')).toBeInTheDocument()
   })
 
-  it('チャンネルを選ぶと API に厳密な service が付き旧 serviceId は付かない', async () => {
+  it('チャンネルを選ぶと API に service（合成 id）が付く', async () => {
     const fetchMock = stubApi()
     stubMatchMedia(true)
     renderPage()
@@ -849,15 +842,15 @@ describe('ProgramsPage のチャンネル複数選択', () => {
     expect(
       requestsAfterSelection.every(
         (url) =>
-          url.searchParams.getAll('service').includes('32736:1024') &&
-          url.searchParams.getAll('serviceId').length === 0,
+          url.searchParams.getAll('service').includes('3273601024'),
       ),
     ).toBe(true)
   })
 
-  it('旧 serviceId ワイルドカードでも別 network の同じ serviceId を別列・別名で描く', async () => {
+  it('別 network の同じ serviceId は別列・別名で描く', async () => {
     const bs: Service = {
       ...services[0],
+      id: 400101,
       networkId: 4,
       serviceId: 101,
       name: 'BS 101',
@@ -865,6 +858,7 @@ describe('ProgramsPage のチャンネル複数選択', () => {
     }
     const cs: Service = {
       ...services[0],
+      id: 600101,
       networkId: 6,
       serviceId: 101,
       name: 'CS 101',
@@ -879,7 +873,7 @@ describe('ProgramsPage のチャンネル複数選択', () => {
       [bs, cs],
     )
     stubMatchMedia(true)
-    renderPage('/programs?serviceId=101')
+    renderPage('/programs?service=400101&service=600101')
 
     expect(await screen.findByRole('button', { name: 'チャンネル: 2 局を選択中' })).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: '番組表' }))
@@ -926,9 +920,9 @@ describe('ProgramsPage のチャンネル複数選択', () => {
  * ここでは URL との往復（深いリンクで開く / 選択が URL に反映される）だけを見る。
  */
 describe('ProgramsPage のチャンネル絞り込みの URL 化（issue #231）', () => {
-  it('?serviceId= 付きの URL で開くと、絞り込み済みの番組表がピッカーの表示と一致して開く', async () => {
+  it('?service= 付きの URL で開くと、絞り込み済みの番組表がピッカーの表示と一致して開く', async () => {
     stubApi()
-    renderPage('/programs?serviceId=1024')
+    renderPage('/programs?service=3273601024')
 
     // NHK総合（1024）に絞り込んだ状態で開く。ピッカーのラベルは URL の解決だけで
     // 決まる（データ取得を待たない）ので、先に番組の取得完了（データ取得の完了を
@@ -945,15 +939,13 @@ describe('ProgramsPage のチャンネル絞り込みの URL 化（issue #231）
 
     expect(await screen.findByText('ニュース7')).toBeInTheDocument()
     expect(router.state.location.search.service).toBeUndefined()
-    expect(router.state.location.search.serviceId).toBeUndefined()
 
     await userEvent.click(screen.getByRole('button', { name: 'チャンネル: すべて' }))
     const dialog = await screen.findByRole('dialog', { name: 'チャンネル' })
     await userEvent.click(within(dialog).getByText('NHK総合'))
 
     await waitFor(() => {
-      expect(router.state.location.search.service).toEqual(['32736:1024'])
-      expect(router.state.location.search.serviceId).toBeUndefined()
+      expect(router.state.location.search.service).toEqual([3273601024])
     })
 
     // history を汚さない（replace）。積んだままだと「戻る」で絞り込み変更が
@@ -961,9 +953,9 @@ describe('ProgramsPage のチャンネル絞り込みの URL 化（issue #231）
     expect(router.history.length).toBe(1)
   })
 
-  it('旧 ?serviceId= からピッカーを操作すると厳密な service へ移し serviceId を消す', async () => {
+  it('選択済みの URL からピッカーを操作すると組を足す', async () => {
     stubApi()
-    const { router } = renderPage('/programs?serviceId=1024')
+    const { router } = renderPage('/programs?service=3273601024')
 
     expect(await screen.findByText('ニュース7')).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: 'チャンネル: NHK総合' }))
@@ -971,14 +963,13 @@ describe('ProgramsPage のチャンネル絞り込みの URL 化（issue #231）
     await userEvent.click(within(dialog).getByText('NHKEテレ'))
 
     await waitFor(() => {
-      expect(router.state.location.search.service).toEqual(['32736:1024', '32737:1032'])
-      expect(router.state.location.search.serviceId).toBeUndefined()
+      expect(router.state.location.search.service).toEqual([3273601024, 3273701032])
     })
   })
 
-  it('不正な値（?serviceId=abc）は絞り込みなしに落ちて開ける（壊れたリンクを踏んでも画面は開く）', async () => {
+  it('不正な値（?service=abc）は絞り込みなしに落ちて開ける（壊れたリンクを踏んでも画面は開く）', async () => {
     stubApi()
-    renderPage('/programs?serviceId=abc')
+    renderPage('/programs?service=abc')
 
     expect(await screen.findByRole('button', { name: 'チャンネル: すべて' })).toBeInTheDocument()
     // 絞り込みなしなので両局の番組が出る（データ取得の完了を待ってから見る ---
@@ -1002,7 +993,7 @@ describe('ProgramsPage のチャンネル絞り込みの URL 化（issue #231）
 describe('ProgramsPage のピッカーの定義域（issue #231 のレビュー must-fix）', () => {
   it('filterableServices に無い局（hasPrograms: false）への深いリンクでも「すべて」に見えず、個別に解除できる', async () => {
     stubApi([], [], allPrograms, undefined, undefined, [subService])
-    renderPage('/programs?serviceId=1040')
+    renderPage('/programs?service=3273601040')
 
     // サブサービスは番組を持たないので一覧は空になる。だが「絞り込みで全部
     // 隠れている」ことがトリガーから読める必要がある
@@ -1021,15 +1012,15 @@ describe('ProgramsPage のピッカーの定義域（issue #231 のレビュー 
 
   it('services にも実在しない id への深いリンク（削除された局・壊れた共有リンク）は「チャンネル #<id>」で示され、個別に解除できる', async () => {
     stubApi()
-    renderPage('/programs?serviceId=9999')
+    renderPage('/programs?service=3273609999')
 
     expect(await screen.findByText('この時間帯の番組がありません')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'チャンネル: チャンネル #9999' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'チャンネル: チャンネル #3273609999' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'チャンネル: すべて' })).not.toBeInTheDocument()
 
-    await userEvent.click(screen.getByRole('button', { name: 'チャンネル: チャンネル #9999' }))
+    await userEvent.click(screen.getByRole('button', { name: 'チャンネル: チャンネル #3273609999' }))
     const dialog = await screen.findByRole('dialog', { name: 'チャンネル' })
-    await userEvent.click(within(dialog).getByText('チャンネル #9999'))
+    await userEvent.click(within(dialog).getByText('チャンネル #3273609999'))
     await waitFor(() =>
       expect(screen.getByRole('button', { name: 'チャンネル: すべて' })).toBeInTheDocument(),
     )
@@ -1113,7 +1104,7 @@ describe('ProgramsPage の遡行（前の時間窓の読み込み）', () => {
     const targetOriginMs = dayOrigin(2).getTime()
     // 前日深夜（targetOrigin の 1 時間前）は必ず「1 回押す」だけで届く位置に
     // 置く（遡行は 1 暦日＝前日 0 時〜当日 0 時ぶんを 1 回で読むので、24 時間
-    // 以内なら 1 回で届く。`lib/previous-day-window.ts`）。
+    // 以内なら 1 回で届く。`lib/program-list.ts`）。
     const lateTonight = programAtAbsolute(201, 1024, targetOriginMs - 3_600_000, '前日深夜の番組')
     stubApi([], [], [...allPrograms, lateTonight])
     renderPage()
@@ -1127,7 +1118,7 @@ describe('ProgramsPage の遡行（前の時間窓の読み込み）', () => {
     await waitFor(() => expect(screen.queryByText('ニュース7')).not.toBeInTheDocument())
     expect(screen.queryByText('前日深夜の番組')).not.toBeInTheDocument()
 
-    // ボタンのラベルには読み込む日付が入る（`lib/previous-day-window.ts` +
+    // ボタンのラベルには読み込む日付が入る（`lib/program-list.ts` +
     // `lib/format.ts` の `formatDate`）ので、日付部分は問わない正規表現で探す。
     // 正確な日付ラベルの形式そのものは `program-list.test.tsx` 側で確認済み。
     const loadPrevious = await screen.findByRole('button', { name: /^前を読み込む（.+）$/ })
@@ -1184,7 +1175,7 @@ describe('ProgramsPage の遡行（前の時間窓の読み込み）', () => {
    * そもそも `scrollToIndex` を呼ばない）。ここでは統合テストとして安全に確認できる
    * 範囲 --- 挿入前のリストが空（アンカーが 1 件も取れない）場合でもクラッシュせず
    * 前の窓の番組が増えること --- だけを見る。「控えた programId から新しい添字を
-   * 引く」部分自体は `lib/program-list-key.test.ts` の `findProgramIndex` で
+   * 引く」部分自体は `lib/program-list.test.ts` の `findProgramIndex` で
    * 純関数として両方向（見つかる／見つからない）をテスト済み。
    */
   it('挿入前のリストが空（アンカーが取れない）状態で「前を読み込む」を押しても、前の窓の番組が増える', async () => {

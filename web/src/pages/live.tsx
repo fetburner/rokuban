@@ -14,7 +14,7 @@ import { LiveInterruptionWarning } from '@/components/live-interruption-warning'
 import { LivePlayer } from '@/components/live-player'
 import { Button } from '@/components/ui/button'
 import { useLiveCapability } from '@/lib/capabilities'
-import { currentProgramWindow, liveServiceKey, pickInitialService } from '@/lib/live'
+import { currentProgramWindow, pickInitialService } from '@/lib/live'
 import { interruptionQueryWindow, upcomingInterruptingReservation } from '@/lib/live-interruption'
 import { channelTypeLabel, groupByChannelType, orderServices } from '@/lib/epg-grid'
 import { formatTime, isAiring } from '@/lib/format'
@@ -93,14 +93,10 @@ export function LivePage() {
     networkId: routeSearch.networkId,
     serviceId: routeSearch.serviceId,
   })
-  const selectedServiceId = selectedService?.serviceId
-  const selectedKey =
-    selectedService !== undefined
-      ? liveServiceKey(selectedService.networkId, selectedService.serviceId)
-      : undefined
+  const selectedKey = selectedService?.id
 
-  // playingKey は「再生」ボタンで明示的に視聴を始めたチャンネルの複合キー
-  // （`liveServiceKey`。`serviceId` 単独ではなく `networkId` も含める --- 同じ
+  // playingKey は「再生」ボタンで明示的に視聴を始めたチャンネルの `Service.id`
+  // （`serviceId` 単独では不足 --- 同じ
   // `serviceId` を持つ別 network のチャンネルへ切り替えたときに「同じチャンネル」
   // と誤認して再生状態を引き継がないため）。`null` なら未再生（選択状態）。
   // **選択（selectedKey）と一致するときだけ再生中とみなす** --- 直リンク・
@@ -128,7 +124,7 @@ export function LivePage() {
   // レンダー中に判定すれば、`selectedServiceId` が変わった**その場のレンダーで**
   // 「再生中でない」が確定するので、`<LivePlayer>` が異なる serviceId で透過的に
   // マウントされる中間コミット自体が存在しない。
-  const [playingKey, setPlayingKey] = useState<string | null>(null)
+  const [playingKey, setPlayingKey] = useState<number | null>(null)
   if (playingKey !== null && playingKey !== selectedKey) {
     setPlayingKey(null)
   }
@@ -148,12 +144,10 @@ export function LivePage() {
     {
       start: window_.start,
       end: window_.end,
-      // `networkId` も渡す --- `serviceId` 単独では同じ id を持つ別 network の
-      // 番組も一致してしまう（issue #291 と同じ根）。
-      networkId: selectedService?.networkId,
-      serviceId: selectedServiceId !== undefined ? [selectedServiceId] : undefined,
+      // 組で渡す --- `serviceId` は network をまたぐと一意でない（issue #291）。
+      service: selectedService ? [selectedService.id] : undefined,
     },
-    { query: { enabled: selectedServiceId !== undefined } },
+    { query: { enabled: selectedService !== undefined } },
   )
   const nowPlaying = useMemo(() => {
     const programs: ProgramListItem[] = unwrap(nowPlayingQuery.data) ?? []
@@ -174,24 +168,15 @@ export function LivePage() {
         : orderedServices.filter((s) => s.channelType === selectedService.channelType),
     [orderedServices, selectedService],
   )
-  // 重複を潰す --- 同じ種別の中で 2 network が同じ `serviceId` を持つ構成では
-  // `?serviceId=100&serviceId=100` になる。サーバーは IN なので応答は変わらないが、
-  // react-query のキーが一覧の並びで揺れるのを避ける
-  const sameTypeServiceIds = useMemo(
-    () => [...new Set(sameTypeServices.map((s) => s.serviceId))],
-    [sameTypeServices],
-  )
-  // **クエリは `networkId` を持たない**（`serviceId` の配列だけをサーバーに渡す
-  // ---複数 network の同じ種別のサービスを一度に問い合わせるので単一の
-  // `networkId` では表現できない）。そのため `serviceId` が network をまたいで
-  // 衝突すると（issue #291 と同じ根）、意図しない network の番組も応答に混入する
-  // ---サーバーは `serviceId` だけを AND するため、選択中と別 network・別
-  // channelType のサービスがたまたま同じ `serviceId` を持てば、その番組が
-  // `sameTypeProgramIds` に入り込み、存在しない中断警告を出しうる。
-  // `liveServiceKey`（`networkId` + `serviceId` の組）で応答側を絞り込むことで
-  // 閉じる。
-  const sameTypeKeys = useMemo(
-    () => new Set(sameTypeServices.map((s) => liveServiceKey(s.networkId, s.serviceId))),
+  // `service` は `Service.id` の配列で、サーバーが組で厳密に
+  // 絞る。**組で渡すので応答に別 network の番組は混ざらない** --- `serviceId`
+  // だけで問い合わせていた頃は、同じ id を持つ別 network・別 channelType の
+  // 番組が応答に入り、存在しない中断警告を出しうるので、クライアント側で
+  // 組を再フィルタする必要があった（issue #291 と同じ根）。
+  //
+  // 重複を潰して並びを固定するのは react-query のキーを安定させるため。
+  const sameTypeServiceParams = useMemo(
+    () => [...new Set(sameTypeServices.map((s) => s.id))].sort((a, b) => a - b),
     [sameTypeServices],
   )
   // 窓は 10 分グリッドに丸める（`interruptionQueryWindow` 参照）。**丸めずに
@@ -204,17 +189,16 @@ export function LivePage() {
   const interruptionWindow = useMemo(() => interruptionQueryWindow(nowMs), [nowMs])
   const sameTypeProgramsQuery = useListPrograms(
     site,
-    { start: interruptionWindow.start, end: interruptionWindow.end, serviceId: sameTypeServiceIds },
-    { query: { enabled: sameTypeServiceIds.length > 0 } },
+    { start: interruptionWindow.start, end: interruptionWindow.end, service: sameTypeServiceParams },
+    { query: { enabled: sameTypeServiceParams.length > 0 } },
   )
   const sameTypeProgramIds = useMemo(
     () =>
       new Set(
         (unwrap(sameTypeProgramsQuery.data) ?? [])
-          .filter((p) => sameTypeKeys.has(liveServiceKey(p.networkId, p.serviceId)))
           .map((p) => p.programId),
       ),
-    [sameTypeProgramsQuery.data, sameTypeKeys],
+    [sameTypeProgramsQuery.data],
   )
   // 予約一覧は絞り込みパラメータを持たない（`GET /api/reservations` は全サイトを
   // 返す。docs/api.md）。SSE の `reservations` トピックは既にこのクエリキーの
@@ -275,7 +259,7 @@ export function LivePage() {
               <LiveSelectionPreview
                 serviceName={selectedService.name}
                 onPlay={() =>
-                  setPlayingKey(liveServiceKey(selectedService.networkId, selectedService.serviceId))
+                  setPlayingKey(selectedService.id)
                 }
               />
             )}
@@ -303,13 +287,10 @@ export function LivePage() {
               ) : !nowPlayingQuery.isPending ? (
                 <p className="text-sm text-muted-foreground">いま放送中の番組の情報はありません</p>
               ) : null}
-              {/* 1 局の導線は既存 API の networkId + serviceId で厳密に表せる。
-                  新しい複数組の service パラメータは番組表ピッカーから使う。 */}
               <Link
                 to="/programs"
                 search={{
-                  networkId: selectedService.networkId,
-                  serviceId: [selectedService.serviceId],
+                  service: [selectedService.id],
                 }}
                 className="mt-1 inline-block text-sm text-primary underline-offset-2 hover:underline"
               >
@@ -350,13 +331,13 @@ export function LivePage() {
                           // 指定すると、その network のチャンネルだけが選ばれる」
                           // で固定した。実運用の EPG で衝突が起きているかは未検証）。
                           aria-current={
-                            liveServiceKey(s.networkId, s.serviceId) === selectedKey
+                            s.id === selectedKey
                               ? 'page'
                               : undefined
                           }
                           className={cn(
                             'flex min-h-11 w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm transition-colors hover:bg-muted',
-                            liveServiceKey(s.networkId, s.serviceId) === selectedKey &&
+                            s.id === selectedKey &&
                               'bg-muted font-medium',
                           )}
                         >

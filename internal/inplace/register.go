@@ -226,8 +226,5 @@ func checkAsset(mediaDir, realMediaDir string, asset Asset) (checkedAsset, error
 }
 
 func sameStringPointer(a, b *string) bool {
-	if a == nil || b == nil {
-		return a == nil && b == nil
-	}
-	return *a == *b
+	return a == b || (a != nil && b != nil && *a == *b)
 }

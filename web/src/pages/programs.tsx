@@ -35,14 +35,12 @@ import { dayOffsetForMs, dayOrigin } from '@/lib/day-offset'
 import { orderServices, type TimeAxis } from '@/lib/epg-grid'
 import { formatDate } from '@/lib/format'
 import { domLayoutMeasurable } from '@/lib/list-virtualization'
-import { filterProgramsFromListStart } from '@/lib/program-list-window'
 import {
-  parseProgramServiceKey,
   pickerServiceDomain,
-  programServiceKey,
   type ProgramsPageSearch,
 } from '@/lib/programs-search'
-import { previousDayWindow } from '@/lib/previous-day-window'
+import { composeServiceId } from '@/lib/service-id'
+import { filterProgramsFromListStart, previousDayWindow } from '@/lib/program-list'
 import { useCurrentSite } from '@/lib/site'
 import { lgMediaQuery, useMediaQuery } from '@/lib/use-media-query'
 
@@ -54,7 +52,7 @@ import { lgMediaQuery, useMediaQuery } from '@/lib/use-media-query'
  * 「次のページ」= 前回の end を start にした次の窓。
  *
  * **遡行（「前を読み込む」）はこの定数を使わない** ---
- * 1 暦日（前日 0 時〜当日 0 時）単位で読む（`lib/previous-day-window.ts` の
+ * 1 暦日（前日 0 時〜当日 0 時）単位で読む（`lib/program-list.ts` の
  * `previousDayWindow`）。理由は同ファイルの doc コメント参照（日付ヘッダの
  * 帯の増減による位置ずれを、境界を暦日に揃えることで構造的に防ぐため）。
  * 進行方向は増分読み込みとして機能しているだけで日付ヘッダの帯とは無関係
@@ -103,8 +101,8 @@ type ProgramView = 'list' | 'grid'
  */
 export function ProgramsPage() {
   const site = useCurrentSite()
-  // チャンネル絞り込みは URL に持つ。新しい選択は厳密な `?service=`、旧
-  // `?networkId=&serviceId=` は後方互換入力として読む。表示状態は component state。
+  // チャンネル絞り込みは URL の `?service=<Service.id>` に持つ。
+  // 表示状態は component state。
   // 検証（不正な値・0 以下の除去・重複除去・昇順ソート）は
   // `routes.tsx` の `validateSearch`（`lib/programs-search.ts` の
   // `parseProgramsSearch`）で済んでいるので、ここでは信頼して使う。
@@ -233,25 +231,7 @@ export function ProgramsPage() {
 
   const services = useListServices(site)
   const allServices = useMemo(() => unwrap(services.data) ?? [], [services.data])
-  const selectedServiceKeys = useMemo(() => {
-    const selected = new Set(search.service ?? [])
-    const legacyServiceIds = new Set(search.serviceId ?? [])
-    const matchedLegacyServiceIds = new Set<number>()
-    if (legacyServiceIds.size > 0 || search.networkId !== undefined) {
-      for (const service of allServices) {
-        if (search.networkId !== undefined && service.networkId !== search.networkId) continue
-        if (legacyServiceIds.size > 0 && !legacyServiceIds.has(service.serviceId)) continue
-        selected.add(programServiceKey(service.networkId, service.serviceId))
-        matchedLegacyServiceIds.add(service.serviceId)
-      }
-    }
-    for (const serviceId of legacyServiceIds) {
-      if (!matchedLegacyServiceIds.has(serviceId)) {
-        selected.add(programServiceKey(search.networkId ?? 0, serviceId))
-      }
-    }
-    return selected
-  }, [allServices, search.networkId, search.service, search.serviceId])
+  const selectedServiceIds = useMemo(() => new Set(search.service ?? []), [search.service])
   const reservations = useListReservations()
 
   // nowMs はこのレンダーの間で一貫させる。起点・上限・下限をそれぞれ別々に
@@ -269,11 +249,8 @@ export function ProgramsPage() {
   // 今回のスコープ外なので、クライアント側で now を不変条件として持つだけで足りる。
   const lowerBoundMs = dayOrigin(0, nowMs).getTime()
 
-  // API へ渡すサービス絞り込み。新しい service は厳密な組、networkId / serviceId は
-  // 後方互換入力であり、両方を同時には生成しない。
+  // API へ渡すサービス絞り込み（`Service.id`。複数は OR）。
   const selectedServiceParam = search.service
-  const legacyNetworkIdParam = search.networkId
-  const legacyServiceIdParam = search.serviceId
 
   // サーバーが選択に応じて絞るようになったので、queryKey にも選択を入れる。
   // 入れないと別の選択で取得した結果をそのまま再利用してしまう（日付や時間窓と
@@ -290,8 +267,6 @@ export function ProgramsPage() {
       'infinite',
       originMs,
       limitMs,
-      legacyNetworkIdParam,
-      legacyServiceIdParam,
       selectedServiceParam,
     ],
     initialPageParam: {
@@ -315,8 +290,6 @@ export function ProgramsPage() {
       const res = await listPrograms(site, {
         start: new Date(startMs).toISOString(),
         end: new Date(endMs).toISOString(),
-        networkId: legacyNetworkIdParam,
-        serviceId: legacyServiceIdParam,
         service: selectedServiceParam,
       })
       return { startMs, endMs, programs: unwrap(res) ?? [] }
@@ -330,7 +303,7 @@ export function ProgramsPage() {
     },
     // 遡行は明示的なボタンでのみ行う（ジェスチャにしない。理由は下の
     // 「前を読み込む」ボタンのコメント参照）。1 暦日（前日 0 時〜当日 0 時）
-    // ぶんを 1 回で読む（`lib/previous-day-window.ts`）。下限（now を時で
+    // ぶんを 1 回で読む（`lib/program-list.ts`）。下限（now を時で
     // 切り捨てた時刻）に達していたら `undefined`（`previousDayWindow` が
     // `null` を返す）でボタンごと消える。
     getPreviousPageParam: (first) => previousDayWindow(first.startMs, lowerBoundMs) ?? undefined,
@@ -345,8 +318,6 @@ export function ProgramsPage() {
     {
       start: new Date(originMs).toISOString(),
       end: new Date(gridEndMs).toISOString(),
-      networkId: legacyNetworkIdParam,
-      serviceId: legacyServiceIdParam,
       service: selectedServiceParam,
     },
     { query: { enabled: showGrid } },
@@ -423,7 +394,7 @@ export function ProgramsPage() {
   // 見せたままだと日付ヘッダと「いま見ている日」がどちらも前日を指す（実機で
   // 確認済みの不具合）。`listStartMs` が下限と一致するとき（＝今日を見ている、
   // または遡行が下限まで達したとき）は例外的に絞り込まない ---
-  // 放送中の番組を隠さないため。判定は `lib/program-list-window.ts` の純関数。
+  // 放送中の番組を隠さないため。判定は `lib/program-list.ts` の純関数。
   const visiblePrograms = useMemo(
     () => filterProgramsFromListStart(programs, listStartMs, lowerBoundMs),
     [programs, listStartMs, lowerBoundMs],
@@ -432,10 +403,10 @@ export function ProgramsPage() {
   // 絞り込む前の全サービスから作る。絞った側（filterableServices）から作ると、
   // hasPrograms が false の局の番組が来たとき（例えば選択直後にキャッシュが
   // まだ古い）名前が引けなくなる。
-  const serviceByKey = useMemo(() => {
-    const map = new Map<string, Service>()
+  const serviceById = useMemo(() => {
+    const map = new Map<number, Service>()
     for (const service of allServices) {
-      map.set(programServiceKey(service.networkId, service.serviceId), service)
+      map.set(service.id, service)
     }
     return map
   }, [allServices])
@@ -472,11 +443,11 @@ export function ProgramsPage() {
   )
 
   // URL から入った選択は候補（hasPrograms=true）の外にありうるため、両者の和を
-  // ピッカーへ渡す。旧 serviceId は一致する全 network の厳密キーへ表示上展開し、
+  // ピッカーへ渡す。選択中の id は候補に無くても表示上は残し、
   // 同じ serviceId の別 network を同じ候補へ潰さない。
   const pickerServices = useMemo(
-    () => pickerServiceDomain(filterableServices, selectedServiceKeys, serviceByKey),
-    [filterableServices, selectedServiceKeys, serviceByKey],
+    () => pickerServiceDomain(filterableServices, selectedServiceIds, serviceById),
+    [filterableServices, selectedServiceIds, serviceById],
   )
 
   // グリッドの列。番組を 1 つも持たないサービスは列にしない（空の列が数十本
@@ -484,11 +455,11 @@ export function ProgramsPage() {
   // 再描画で列が入れ替わらない。
   const gridServices = useMemo(() => {
     const withPrograms = new Set(
-      gridPrograms.map((program) => programServiceKey(program.networkId, program.serviceId)),
+      gridPrograms.map((program) => composeServiceId(program.networkId, program.serviceId)),
     )
     return orderServices(
       allServices.filter((service) =>
-        withPrograms.has(programServiceKey(service.networkId, service.serviceId)),
+        withPrograms.has(service.id),
       ),
     )
   }, [allServices, gridPrograms])
@@ -504,7 +475,7 @@ export function ProgramsPage() {
   // 前の窓での失敗を引きずらない。
   useEffect(() => {
     setAutoLoadFailed(false)
-  }, [originMs, limitMs, legacyNetworkIdParam, legacyServiceIdParam, selectedServiceParam])
+  }, [originMs, limitMs, selectedServiceParam])
 
   // 日付ジャンプ（DayStrip・容量バッジ）で originMs が変わったら、リスト表示では
   // スクロールを先頭へ戻して選んだ日の先頭行に着地させる。上の
@@ -616,20 +587,12 @@ export function ProgramsPage() {
                 なる（docs/frontend.md「番組リスト」）。 */}
             <ChannelPicker
               services={pickerServices}
-              selected={selectedServiceKeys}
-              keyOf={(service) => programServiceKey(service.networkId, service.serviceId)}
+              selected={selectedServiceIds}
               onChange={(next) => {
-                const exact = [...next]
-                  .map((key) => parseProgramServiceKey(key))
-                  .filter((ref): ref is { networkId: number; serviceId: number } => ref !== undefined)
-                  .sort((a, b) => a.networkId - b.networkId || a.serviceId - b.serviceId)
-                  .map((ref) => programServiceKey(ref.networkId, ref.serviceId))
-                updateSearch((s) => ({
-                  ...s,
-                  networkId: undefined,
-                  service: exact.length > 0 ? exact : undefined,
-                  serviceId: undefined,
-                }))
+                // 昇順に正準化する（`Set` の反復順は選び方の履歴に依存し、
+                // 順序が揺れると同じ選択でも queryKey / URL が変わる）。
+                const ids = [...next].sort((a, b) => a - b)
+                updateSearch((s) => ({ ...s, service: ids.length > 0 ? ids : undefined }))
               }}
             />
             {/* 表示形式の切り替えは `lg` 以上でのみ出す。CSS で隠すのではなく
@@ -654,7 +617,7 @@ export function ProgramsPage() {
           axis={axis}
           programs={gridPrograms}
           services={gridServices}
-          serviceByKey={serviceByKey}
+          serviceById={serviceById}
           overages={overages}
           actions={actions}
           scrollToMs={scrollToMs}
@@ -694,7 +657,7 @@ export function ProgramsPage() {
               <ProgramList
                 ref={programListRef}
                 programs={visiblePrograms}
-                serviceByKey={serviceByKey}
+                serviceById={serviceById}
                 actions={actions}
                 // プレースホルダ表示中（未キャッシュ日へジャンプして新しい日の
                 // データを待っている間）は前の日のデータが出ているので、その
@@ -946,7 +909,7 @@ function ProgramGridView({
   axis,
   programs,
   services,
-  serviceByKey,
+  serviceById,
   overages,
   actions,
   isPending,
@@ -956,7 +919,7 @@ function ProgramGridView({
   axis: TimeAxis
   programs: ProgramListItem[]
   services: Service[]
-  serviceByKey: Map<string, Service>
+  serviceById: Map<number, Service>
   /** チューナーが不足している区間。番組ではなく区間として帯に描く（M2-10）。 */
   overages: readonly CapacityOverage[]
   actions: ReservationActions
@@ -994,7 +957,7 @@ function ProgramGridView({
           <ProgramRow
             key={selected.programId}
             program={selected}
-            serviceName={serviceByKey.get(programServiceKey(selected.networkId, selected.serviceId))?.name}
+            serviceName={serviceById.get(composeServiceId(selected.networkId, selected.serviceId))?.name}
             reserved={actions.reservedProgramIds.has(selected.programId)}
             pending={actions.isBusy(selected.programId)}
             onReserve={(overrides) => actions.reserve(selected, overrides)}

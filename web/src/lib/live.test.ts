@@ -7,7 +7,6 @@ import {
   currentProgramWindow,
   liveLeaveURL,
   livePlaylistURL,
-  liveServiceKey,
   pickInitialService,
   probeLivePlaylist,
   sendLiveLeaveHint,
@@ -170,6 +169,7 @@ describe('claimsHlsPlaylistSupport', () => {
 
 function makeService(overrides: Partial<Service>): Service {
   return {
+    id: (overrides.networkId ?? 1) * 100_000 + (overrides.serviceId ?? 1),
     networkId: 1,
     serviceId: 1,
     name: 'test',
@@ -182,15 +182,6 @@ function makeService(overrides: Partial<Service>): Service {
   }
 }
 
-describe('liveServiceKey', () => {
-  it('networkId と serviceId を組にした文字列を返す', () => {
-    expect(liveServiceKey(1, 2)).toBe('1-2')
-  })
-
-  it('networkId が異なれば serviceId が同じでも別のキーになる', () => {
-    expect(liveServiceKey(1, 100)).not.toBe(liveServiceKey(2, 100))
-  })
-})
 
 describe('pickInitialService', () => {
   it('networkId + serviceId が両方一致するサービスを使う', () => {
@@ -231,14 +222,19 @@ describe('pickInitialService', () => {
     expect(pickInitialService(services, { networkId: 9, serviceId: 100 })).toBe(services[1])
   })
 
-  it('networkId 未指定（旧 ?serviceId= 単独のリンク）は、その serviceId を持つ最初のサービスへフォールバックする', () => {
+  // **networkId 単独では同定できないので serviceId ごと無視する。**
+  // 「その serviceId を持つ最初のサービス」を返す実装だと、同じ id を持つ
+  // 別 network のチャンネルを黙って選ぶ（issue #291 の根）。番組を持つ
+  // 先頭という既定へ落ちることを、その serviceId の持ち主が先頭ではない
+  // 並びで固定する。
+  it('networkId 未指定なら serviceId は使わず、番組を持つ先頭へ落ちる', () => {
     const services = [
-      makeService({ networkId: 1, serviceId: 100, name: '最初に見つかる方' }),
-      makeService({ networkId: 2, serviceId: 100, name: '2 番目' }),
+      makeService({ networkId: 1, serviceId: 100, name: 'serviceId 100 の持ち主', hasPrograms: false }),
+      makeService({ networkId: 2, serviceId: 200, name: '番組を持つ先頭', hasPrograms: true }),
     ]
     expect(
       pickInitialService(services, { networkId: undefined, serviceId: 100 })?.name,
-    ).toBe('最初に見つかる方')
+    ).toBe('番組を持つ先頭')
   })
 
   /**

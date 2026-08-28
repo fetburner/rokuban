@@ -11,6 +11,7 @@ import { SiteContext } from '@/lib/site'
 
 function service(overrides: Partial<Service> = {}): Service {
   return {
+    id: (overrides.networkId ?? 1) * 100_000 + (overrides.serviceId ?? 1024),
     networkId: 1,
     serviceId: 1024,
     name: 'ＮＨＫ総合',
@@ -211,12 +212,17 @@ describe('RecordingFilters 絞り込みパネル', () => {
     expect(getCurrent().genre).toBeUndefined()
   })
 
-  it('全サイトのチャンネルを site ごとに並べ、複合キーを search に反映する', async () => {
+  // **同じチャンネルを 2 サイトで受けていても選択肢は 1 つ**（identity は
+  // `Service.id`）。site は別軸なので、site チップで絞る。
+  it('全サイトで同じチャンネルは 1 つの選択肢になり、site は別軸で絞る', async () => {
     const user = userEvent.setup()
+    // 同じ id を両サイトが持つ局（畳まれる）と、site2 にしか無い局
+    // （**畳まれずに候補へ出る**）を混ぜる。後者が無いと「default の一覧しか
+    // 見ていない」実装でも緑になる。
     const { getCurrent } = renderFilters(
       emptyRecordingsSearch(),
       [service()],
-      { site2: [service()] },
+      { site2: [service(), service({ serviceId: 2048, name: 'site2 だけの局' })] },
     )
 
     await user.click(screen.getByRole('button', { name: /絞り込み/ }))
@@ -224,22 +230,63 @@ describe('RecordingFilters 絞り込みパネル', () => {
 
     await user.click(within(panel).getByRole('button', { name: /チャンネル/ }))
     const channelDialog = await screen.findByRole('dialog', { name: 'チャンネル' })
-    expect(await within(channelDialog).findByRole('button', { name: /ＮＨＫ総合.*default/ })).toBeInTheDocument()
-    await user.click(within(channelDialog).getByRole('button', { name: /ＮＨＫ総合.*site2/ }))
+    // 両サイトにある局は合成 id が同じなので候補は 1 つに畳まれる。
+    const shared = await within(channelDialog).findAllByRole('button', { name: /ＮＨＫ総合/ })
+    expect(shared).toHaveLength(1)
+    // site2 にしか無い局も候補に出る。
+    expect(within(channelDialog).getByRole('button', { name: /site2 だけの局/ })).toBeInTheDocument()
 
-    await waitFor(() => expect(getCurrent().service).toEqual(['site2:1:1024']))
+    await user.click(shared[0])
+    await waitFor(() => expect(getCurrent().service).toEqual([101024]))
   })
 
-  it('同一 site・serviceId の別 network を独立選択し、旧形式は両方を選択中に見せる', async () => {
+  // **両方向を見る。** 押して付くところだけ見ると、解除の分岐を no-op に
+  // しても緑のまま通る。並びも固定する --- 選択履歴で順序が揺れると
+  // 同じ選択でも URL / queryKey が変わる（`parseRecordingsSearch` が
+  // 昇順に正準化しているのと同じ理由）。
+  it('2 サイト構成では site チップで選択・解除でき、並びは昇順に揃う', async () => {
+    const user = userEvent.setup()
+    const { getCurrent } = renderFilters(emptyRecordingsSearch(), [service()], {
+      site2: [service()],
+    })
+
+    await user.click(screen.getByRole('button', { name: /絞り込み/ }))
+    const panel = await screen.findByRole('dialog', { name: '絞り込み' })
+    const siteGroup = within(panel).getByRole('group', { name: 'サイト' })
+
+    // **押した順ではなく昇順に並ぶ。** default → site2 の順に押すと、
+    // 追加を先頭に積む実装（[site, ...prev]）では ['site2', 'default'] に
+    // なるので、この順序でだけ両者を区別できる。
+    await user.click(within(siteGroup).getByRole('button', { name: 'default' }))
+    await waitFor(() => expect(getCurrent().site).toEqual(['default']))
+    await user.click(within(siteGroup).getByRole('button', { name: 'site2' }))
+    await waitFor(() => expect(getCurrent().site).toEqual(['default', 'site2']))
+
+    // もう一度押すと外れ、最後の 1 つを外すとキーごと消える。
+    await user.click(within(siteGroup).getByRole('button', { name: 'default' }))
+    await waitFor(() => expect(getCurrent().site).toEqual(['site2']))
+    await user.click(within(siteGroup).getByRole('button', { name: 'site2' }))
+    await waitFor(() => expect(getCurrent().site).toBeUndefined())
+  })
+
+  it('1 サイト構成では site の選択肢を出さない', async () => {
+    const user = userEvent.setup()
+    renderFilters(emptyRecordingsSearch(), [service()])
+
+    await user.click(screen.getByRole('button', { name: /絞り込み/ }))
+    const panel = await screen.findByRole('dialog', { name: '絞り込み' })
+    expect(within(panel).queryByRole('group', { name: 'サイト' })).not.toBeInTheDocument()
+  })
+
+  // serviceId は network をまたぐと一意でない（BS 101 と CS 101 は実在する衝突）。
+  // 組で選ぶので、片方だけを選択中にできる。
+  it('同一 site・serviceId の別 network を独立して選択・解除できる', async () => {
     const user = userEvent.setup()
     const bs = service({ networkId: 4, serviceId: 101, name: '同名チャンネル', channelType: 'BS' })
     const cs = service({ networkId: 6, serviceId: 101, name: '同名チャンネル', channelType: 'CS' })
-    const { getCurrent } = renderFilters({ service: ['default:101'] }, [bs, cs])
+    const { getCurrent } = renderFilters({ service: [400101, 600101] }, [bs, cs])
 
-    expect(
-      await screen.findByText('チャンネル: serviceId 101 (default・network指定なし)'),
-    ).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: /絞り込み/ }))
+    await user.click(await screen.findByRole('button', { name: /絞り込み/ }))
     const panel = await screen.findByRole('dialog', { name: '絞り込み' })
     expect(within(panel).getByRole('button', { name: 'チャンネル: 2 局を選択中' })).toBeInTheDocument()
 
@@ -249,8 +296,9 @@ describe('RecordingFilters 絞り込みパネル', () => {
     expect(options).toHaveLength(2)
     expect(options.map((option) => option.getAttribute('aria-pressed'))).toEqual(['true', 'true'])
 
+    // 片方（CS 側）を解除すると、もう片方（BS 側）だけが残る。
     await user.click(options[1])
-    await waitFor(() => expect(getCurrent().service).toEqual(['default:4:101']))
+    await waitFor(() => expect(getCurrent().service).toEqual([400101]))
   })
 
   // from/to は純関数（isoToLocalDateTimeInput / localDateTimeInputToIso）は

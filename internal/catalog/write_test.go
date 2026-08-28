@@ -53,9 +53,6 @@ func TestWriteAndSelectLatest(t *testing.T) {
 	if sel.Generation != wantName {
 		t.Errorf("selected generation = %q, want %q", sel.Generation, wantName)
 	}
-	if sel.Legacy {
-		t.Error("selected generation should not be marked legacy")
-	}
 	if sel.DocumentPath != filepath.Join(genDir, "catalog.json") {
 		t.Errorf("document path = %q", sel.DocumentPath)
 	}

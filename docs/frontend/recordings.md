@@ -74,15 +74,6 @@ prop で 1 段ずつ配線する形（`onMutated` のような穴）は採らな
 掛かっておらず `size_bytes` には無い）が、型としては
 省略可能にしてこの表示規律をテストで固定している（`recording-player.test.tsx`）。
 
-**`Recording.encodedProfiles`（プロファイル名だけの配列）は `encodedAssets` に
-サイズを足した後も残している。** UI と API のデプロイタイミングはずれ得るため
-API は後方互換を保つ（docs/api/rest.md §契約の保護）--- 旧バンドルを掴んだ
-ブラウザ（静的アセットは immutable、開いたままのタブも同じ）が新 API を叩いても
-`encodedProfiles` は変わらず届くので、プレイヤーの出し分けが黙って
-消えない。`encodedAssets` は同じ SELECT 結果から Go 側で `encodedProfiles` と
-同時に作るので、2 つが食い違うことはない（`internal/api/recordings.go` の
-`recordingFromListFields`）。
-
 ### 一覧の行は詳細へのリンクにする
 
 録画一覧はインライン展開も常時の「再生」列も持たず、行本体を
@@ -251,14 +242,13 @@ EPGStation にある「録画済みの検索」に対応する機能だが、`/s
 `lib/program-search.ts`（`/search` の下書き）とは意図的に分離している ---
 条件モデルを共有しないので、変換ロジックを共有する理由も無い。
 
-- **新しく選んだチャンネルは `<site>:<networkId>:<serviceId>` で URL と API に載せる。**
-  `serviceId` は network をまたいで一意でないため、`<site>:<serviceId>` では同じ site の
-  BS / CS 等が混ざりうる。旧 `<site>:<serviceId>` は共有済み URL の後方互換入力として
-  残し、その site 内で network を問わない従来の意味を維持する。旧形式で同じ
-  serviceId が複数 network にあれば、ピッカーは一致する全候補を選択中として見せる。
-  新旧形式は同じ `service` 配列で OR できる
+- **チャンネルは `Service.id` で、site は `?site=` で URL と API に載せる。**
+  `serviceId` は network をまたいで一意でないが、合成 id なら BS 101 と CS 101 を
+  独立に選択・解除できる。**site を identity に混ぜない** --- 混ぜると
+  「高松の録画を全部」がチャンネルの列挙でしか表せず、`service` だけが
+  他の軸と違う意味論（3 つ組の選言）になる。軸内は OR、軸間は AND
 - **チャンネル種別（`channelType`）・`qTarget` は UI に出さない。** チャンネルは
-  個々のサービスを選べる `<ChannelPicker>`（`serviceId`）の方が細かく絞れ、
+  個々のサービスを選べる `<ChannelPicker>`（`Service.id`）の方が細かく絞れ、
   種別だけの選択肢を並列に置く理由が無い。`qTarget` も UI 案に
   無い次元で、出しても検証できないコントロールを増やすだけ（「機能しない
   コントロールは置かない」の逆）。パラメータ自体は `ListRecordingsParams` に

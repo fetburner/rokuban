@@ -15,10 +15,10 @@ import { SiteContext } from '@/lib/site'
 
 const dayStart = new Date(2026, 6, 25, 0, 0, 0, 0).getTime()
 
-const services = new Map<string, Service>([
-  [
-    '32736:1024',
+const services = new Map<number, Service>([
+  [3273601024,
     {
+      id: 3273601024,
       networkId: 32736,
       serviceId: 1024,
       name: 'NHK総合',
@@ -97,7 +97,7 @@ function renderList(
         <ProgramList
           ref={extra.ref}
           programs={programs}
-          serviceByKey={services}
+          serviceById={services}
           actions={reservationActions}
           onVisibleDayChange={extra.onVisibleDayChange}
           now={extra.now}
@@ -304,7 +304,7 @@ describe('ProgramList', () => {
       // 「見つかる添字（offset 1 = 翌日の番組がある）」「見つからない添字
       // （offset 5 = その日の番組が無い）」のどちらを渡しても例外を投げず
       // 安全に呼べること --- 対応する純関数側の両方向は
-      // `lib/visible-day.test.ts` の `firstIndexForDayOffset` で検証済み。
+      // `lib/program-list.test.ts` の `firstIndexForDayOffset` で検証済み。
       expect(() => ref.current?.scrollToDayOffset(1)).not.toThrow()
       expect(() => ref.current?.scrollToDayOffset(5)).not.toThrow()
     })

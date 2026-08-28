@@ -19,38 +19,34 @@ import { cn } from '@/lib/utils'
 /** searchThreshold を超える候補数のときだけ絞り込み欄を出す。少数のときは検索欄が邪魔なだけ。 */
 const searchThreshold = 15
 
-/** defaultServiceKey は単一サイト（site 非依存）の呼び出し側が使う既定のキー。 */
-const defaultServiceKey = (s: Service) => s.serviceId
-
-export function ChannelPicker<K extends string | number>({
+/**
+ * ChannelPicker はチャンネルの複数選択。
+ *
+ * **選択の identity は `Service.id`**（`networkId * 100000 + serviceId`）。
+ * 呼び出し側がキーの作り方を選べるようにする（総称 + `keyOf` の注入）と、
+ * 画面ごとに違う複合キーが生えて区切り文字すら揃わなくなる。
+ */
+export function ChannelPicker({
   services,
   selected,
   onChange,
-  keyOf,
   secondaryLabel,
 }: {
   /** 候補。呼び出し側が絞り込み済みで渡す（並び順は保証されないので中で orderServices を通す）。 */
   services: Service[]
-  /** 選択中のキー集合。空集合は「すべて」。 */
-  selected: ReadonlySet<K>
-  onChange: (next: ReadonlySet<K>) => void
-  /**
-   * keyOf は選択の identity。既定は serviceId 単体（単一サイト）。多サイトでは
-   * 同じ serviceId が別サイトに存在しうるため、呼び出し側が `<site>:<serviceId>`
-   * のような複合キーを渡す（issue #283）。
-   */
-  keyOf?: (s: Service) => K
-  /** secondaryLabel は各候補に添える補足（多サイトでは site 名）。 */
+  /** 選択中の `Service.id` 集合。空集合は「すべて」。 */
+  selected: ReadonlySet<number>
+  onChange: (next: ReadonlySet<number>) => void
+  /** secondaryLabel は各候補に添える補足。 */
   secondaryLabel?: (s: Service) => string | undefined
 }): React.ReactElement {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
-  const serviceKey = keyOf ?? (defaultServiceKey as (s: Service) => K)
 
   const ordered = useMemo(() => orderServices(services), [services])
   const selectedServices = useMemo(
-    () => ordered.filter((s) => selected.has(serviceKey(s))),
-    [ordered, selected, serviceKey],
+    () => ordered.filter((s) => selected.has(s.id)),
+    [ordered, selected],
   )
 
   const filtered = useMemo(() => {
@@ -74,7 +70,7 @@ export function ChannelPicker<K extends string | number>({
   // （複数選ぶのに毎回開き直させないため。閉じるのは外側クリック / Esc）。
   const clearAll = () => onChange(new Set())
 
-  const toggle = (key: K) => {
+  const toggle = (key: number) => {
     const next = new Set(selected)
     if (next.has(key)) next.delete(key)
     else next.add(key)
@@ -145,7 +141,7 @@ export function ChannelPicker<K extends string | number>({
                     {channelTypeLabel(group.channelType)}
                   </div>
                   {group.services.map((s) => {
-                    const key = serviceKey(s)
+                    const key = s.id
                     return (
                       <ChannelOption
                         key={key}

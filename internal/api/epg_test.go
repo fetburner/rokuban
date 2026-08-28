@@ -126,6 +126,17 @@ func TestListServices(t *testing.T) {
 	if got[0].ChannelType != "GR" || got[0].Channel != "21" || !got[0].HasLogoData {
 		t.Errorf("service[0] = %+v", got[0])
 	}
+	// **id は合成規則そのもの**（networkId * 100000 + serviceId）。期待値は
+	// リテラルで書く --- mirakc.ServiceID を呼んで比べると、式を変えても
+	// 両辺が一緒に動いて何も主張しなくなる。`?service=` に載る値であり、
+	// フロントの選択・キャッシュキーの identity でもあるので、ここがずれると
+	// 全画面のチャンネル同定が静かに壊れる。
+	if got[0].Id != 3267605152 {
+		t.Errorf("ＲＳＫテレビ の id = %d, want 3267605152 (32676*100000+5152)", got[0].Id)
+	}
+	if got[1].Id != 3267805168 {
+		t.Errorf("ＯＨＫ の id = %d, want 3267805168 (32678*100000+5168)", got[1].Id)
+	}
 }
 
 // hasPrograms は射影全体で 1 件でも番組を持つかであり、絞り込み前の全サービス
@@ -216,82 +227,47 @@ func TestListPrograms_ServiceFilter(t *testing.T) {
 	seedEpgProgram(t, pool, 4, 4, 101, 1, "BS 101", base, false)
 	seedEpgProgram(t, pool, 5, 6, 101, 1, "CS 101", base, false)
 
-	// 単一の serviceId は 1 要素の配列として解釈される（後方互換）
 	var got []ProgramListItem
-	getJSON(t, programsURL(srv.URL, base, base.Add(time.Hour), "serviceId", "5168"), &got)
-	if len(got) != 1 || got[0].Name != "OHK" {
-		t.Fatalf("service-filtered = %+v, want only OHK", got)
+	// 上限ちょうど（65535*100000+65535）は通す。400 のケースだけでは、上限を
+	// 下げる変異（実在しうる networkId=65535 を弾く）が緑のまま通る。
+	if resp := getJSON(t, programsURL(srv.URL, base, base.Add(time.Hour), "service", "6553565535"), nil); resp.StatusCode != http.StatusOK {
+		t.Errorf("service=6553565535（上限ちょうど）status = %d, want 200", resp.StatusCode)
 	}
 
+	// service は (networkId, serviceId) の組を複数 OR できる。
 	got = nil
-	getJSON(t, programsURL(srv.URL, base, base.Add(time.Hour), "networkId", "32676"), &got)
-	if len(got) != 1 || got[0].Name != "RSK" {
-		t.Fatalf("network-filtered = %+v, want only RSK", got)
-	}
-
-	// serviceId を 2 つ渡すと両方の番組が返る（third は含まれない）
-	got = nil
-	getJSON(t, programsURL(srv.URL, base, base.Add(time.Hour))+"&serviceId=5168&serviceId=5152", &got)
-	names := map[string]bool{}
-	for _, p := range got {
-		names[p.Name] = true
-	}
-	if len(got) != 2 || !names["OHK"] || !names["RSK"] {
-		t.Fatalf("multi-service-filtered = %+v, want OHK and RSK only", got)
-	}
-
-	// serviceId 単独の旧形式は network を問わない。公式割当には BS (4, 101) と
-	// 110度CS (6, 101) の実例があるため、両方を返す従来の意味を維持する。
-	got = nil
-	getJSON(t, programsURL(srv.URL, base, base.Add(time.Hour), "serviceId", "101"), &got)
-	if len(got) != 2 || got[0].Name != "BS 101" || got[1].Name != "CS 101" {
-		t.Fatalf("legacy serviceId wildcard = %+v, want BS 101 and CS 101", got)
-	}
-
-	// 新しい service は (networkId, serviceId) の組を複数 OR できる。
-	got = nil
-	getJSON(t, programsURL(srv.URL, base, base.Add(time.Hour), "service", "4:101"), &got)
+	getJSON(t, programsURL(srv.URL, base, base.Add(time.Hour), "service", "400101"), &got)
 	if len(got) != 1 || got[0].Name != "BS 101" {
-		t.Fatalf("exact service 4:101 = %+v, want only BS 101", got)
+		t.Fatalf("exact service 400101 = %+v, want only BS 101", got)
 	}
 	got = nil
 	getJSON(t, programsURL(srv.URL, base, base.Add(time.Hour))+
-		"&service=6%3A101&service=32676%3A5152", &got)
+		"&service=600101&service=3267605152", &got)
 	if len(got) != 2 || got[0].Name != "CS 101" || got[1].Name != "RSK" {
 		t.Fatalf("exact services = %+v, want CS 101 and RSK", got)
 	}
 
-	// 既存 networkId + serviceId は従来どおり厳密な一組になる。
+	// serviceId は network をまたぐと一意でない。公式割当には BS (4, 101) と
+	// 110度CS (6, 101) の実例があり、組で指定した側だけが返ること
+	// （serviceId だけで両方拾わないこと）をここで固定する。
 	got = nil
-	getJSON(t, programsURL(srv.URL, base, base.Add(time.Hour), "networkId", "6", "serviceId", "101"), &got)
+	getJSON(t, programsURL(srv.URL, base, base.Add(time.Hour), "service", "600101"), &got)
 	if len(got) != 1 || got[0].Name != "CS 101" {
-		t.Fatalf("legacy networkId+serviceId = %+v, want only CS 101", got)
+		t.Fatalf("exact service 600101 = %+v, want only CS 101", got)
 	}
 
-	// 新旧を混ぜると AND/OR の意味が曖昧なので 400。
-	resp := getJSON(t, programsURL(srv.URL, base, base.Add(time.Hour), "service", "4:101", "serviceId", "101"), nil)
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("mixed service/serviceId status = %d, want 400", resp.StatusCode)
-	}
-
-	for _, value := range []string{"bad", "0:101", "4:0", "2147483648:101", "4:2147483648"} {
-		resp = getJSON(t, programsURL(srv.URL, base, base.Add(time.Hour), "service", value), nil)
+	// 組の形・範囲外は 400（無視・切り詰めにしない）。
+	for _, value := range []string{
+		"bad", "0", "-1", "4:101",
+		// 上限（internal/mirakc.MaxServiceID）超。"6553565536" は分解しても
+		// int32 に収まるので 0 件になるだけだが、"429500003201024" は
+		// networkID が int32 で巻き戻って実在の (32736, 1024) に化ける。
+		// どちらも 0 件・誤った行ではなく 400 で止める。
+		"6553565536", "429500003201024",
+	} {
+		resp := getJSON(t, programsURL(srv.URL, base, base.Add(time.Hour), "service", value), nil)
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Errorf("service=%q status = %d, want 400", value, resp.StatusCode)
-		}
-	}
-
-	for _, tt := range []struct {
-		key, value string
-	}{
-		{"networkId", "0"},
-		{"networkId", "2147483648"},
-		{"serviceId", "0"},
-		{"serviceId", "2147483648"},
-	} {
-		resp = getJSON(t, programsURL(srv.URL, base, base.Add(time.Hour), tt.key, tt.value), nil)
-		if resp.StatusCode != http.StatusBadRequest {
-			t.Errorf("%s=%q status = %d, want 400", tt.key, tt.value, resp.StatusCode)
 		}
 	}
 

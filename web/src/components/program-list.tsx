@@ -14,10 +14,14 @@ import { Button } from '@/components/ui/button'
 import { ProgramRow } from '@/components/program-row'
 import { dayKey, formatDate } from '@/lib/format'
 import { domLayoutMeasurable } from '@/lib/list-virtualization'
-import { findProgramIndex, programKeyAt } from '@/lib/program-list-key'
-import { programServiceKey } from '@/lib/programs-search'
+import { composeServiceId } from '@/lib/service-id'
 import { captureAnchor, type AnchorSnapshot } from '@/lib/scroll-preservation'
-import { firstIndexForDayOffset, visibleDayOffset } from '@/lib/visible-day'
+import {
+  findProgramIndex,
+  firstIndexForDayOffset,
+  programKeyAt,
+  visibleDayOffset,
+} from '@/lib/program-list'
 
 /**
  * ReservationActions は番組からの予約 / 取消と、番組ごとの実行中状態。
@@ -142,7 +146,7 @@ const overscanRows = 8
  * `onVisibleDayChange` は `DayStrip` のハイライト用に、可視範囲の先頭の番組が
  * 属する日を通知する。`virtualizer.range`（スクロール位置と `estimateSize` から
  * 計算され、`measureElement` の実測とは独立）の `startIndex` を使うので、
- * `renderAll` 分岐の影響を受けない。導出そのものは `lib/visible-day.ts` の
+ * `renderAll` 分岐の影響を受けない。導出そのものは `lib/program-list.ts` の
  * 純関数（`programs` と先頭インデックスと `now` から dayOffset を返す）に
  * 切り出してあり、スクロールへの実際の追従（jsdom はレイアウトを計算しないため
  * 検証できない）とは別にテストする。
@@ -161,7 +165,7 @@ const overscanRows = 8
  *    ので、実際にレイアウトされている DOM を安全に読める
  * 2. `onLoadPrevious()` を呼ぶ（`fetchPreviousPage()`。先頭に新しい窓が積まれる）
  * 3. `programs` が変わったら（挿入完了）、控えた programId から
- *    `findProgramIndex`（`lib/program-list-key.ts`）で**挿入後の添字**を引き直し、
+ *    `findProgramIndex`（`lib/program-list.ts`）で**挿入後の添字**を引き直し、
  *    `alignRowTop(newIndex, topPx)`（下記）でその行を「元々見えていた画面上の
  *    位置」に戻す
  *
@@ -249,20 +253,20 @@ const overscanRows = 8
  * `DayStrip` タップハンドラが、タップされた日が既に `dayOffset`（state）と
  * 一致するときにこれを呼ぶ（一致しない = 違う日へのジャンプなら、従来どおり
  * `dayOffset` を書き換えてクエリの起点を付け替える）。対象の番組の添字は
- * `lib/visible-day.ts` の `firstIndexForDayOffset`（`visibleDayOffset` と
+ * `lib/program-list.ts` の `firstIndexForDayOffset`（`visibleDayOffset` と
  * 対になる向きの純関数）で引く。詳細は上記 `ProgramListHandle` の doc コメント参照。
  */
 export const ProgramList = forwardRef<
   ProgramListHandle,
   {
     programs: ProgramListItem[]
-    serviceByKey: Map<string, Service>
+    serviceById: Map<number, Service>
     actions: ReservationActions
     /**
      * 可視範囲の先頭の番組が変わるたびに「いま見ている日」の dayOffset を通知する。
      * `DayStrip` のハイライトはここから来る値を表示するだけで、ジャンプ先
      * （`dayOffset` state）とは別物 —— スクロールで日をまたいでもジャンプ先は
-     * 変わらない。導出そのものは `lib/visible-day.ts` の純関数に切り出してある。
+     * 変わらない。導出そのものは `lib/program-list.ts` の純関数に切り出してある。
      */
     onVisibleDayChange?: (dayOffset: number) => void
     /** テストから現在時刻を固定するための注入口。省略時は `Date.now()`。 */
@@ -272,7 +276,7 @@ export const ProgramList = forwardRef<
     /** 遡行の取得中か。ボタンを無効化し、ラベルを「読み込み中…」に変える。 */
     isFetchingPreviousPage: boolean
     /**
-     * 次に「前を読み込む」で取得する日付（`lib/previous-day-window.ts` の
+     * 次に「前を読み込む」で取得する日付（`lib/program-list.ts` の
      * `previousDayWindow` から `pages/programs.tsx` が算出し、
      * `lib/format.ts` の `formatDate` で整形した文字列。例:「8/5(水)」）。
      * ボタンのラベルに「前を読み込む（8/5(水)）」の形で出す（押す前に何が
@@ -291,7 +295,7 @@ export const ProgramList = forwardRef<
 >(function ProgramList(
   {
     programs,
-    serviceByKey,
+    serviceById,
     actions,
     onVisibleDayChange,
     now,
@@ -626,7 +630,7 @@ export const ProgramList = forwardRef<
               <ProgramRow
                 program={program}
                 serviceName={
-                  serviceByKey.get(programServiceKey(program.networkId, program.serviceId))?.name
+                  serviceById.get(composeServiceId(program.networkId, program.serviceId))?.name
                 }
                 reserved={reserved}
                 pending={actions.isBusy(program.programId)}

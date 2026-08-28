@@ -12,7 +12,7 @@
  */
 
 import type { Service } from '@/api/generated'
-import { programServiceKey } from '@/lib/programs-search'
+import { composeServiceId } from '@/lib/service-id'
 
 const msPerHour = 3_600_000
 
@@ -153,15 +153,15 @@ export type PlacedProgram<P extends { startAt: string; endAt: string }> = {
  */
 export function groupProgramsByService<
   P extends { networkId: number; serviceId: number; startAt: string; endAt: string },
->(programs: readonly P[]): Map<string, PlacedProgram<P>[]> {
-  const byService = new Map<string, PlacedProgram<P>[]>()
+>(programs: readonly P[]): Map<number, PlacedProgram<P>[]> {
+  const byService = new Map<number, PlacedProgram<P>[]>()
   for (const program of programs) {
     const placed: PlacedProgram<P> = {
       program,
       startMs: new Date(program.startAt).getTime(),
       endMs: new Date(program.endAt).getTime(),
     }
-    const key = programServiceKey(program.networkId, program.serviceId)
+    const key = composeServiceId(program.networkId, program.serviceId)
     const list = byService.get(key)
     if (list) list.push(placed)
     else byService.set(key, [placed])

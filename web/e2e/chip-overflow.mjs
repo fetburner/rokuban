@@ -59,6 +59,7 @@ log(`OK  ⓪ 配っている bundle は自分の dist（${served}）`)
 const longName = '瀬戸内海放送デジタルテレビジョン臨時サブチャンネル'
 const services = [
   {
+    id: 3273601024,
     networkId: 32736,
     serviceId: 1024,
     name: longName,
@@ -69,6 +70,7 @@ const services = [
     hasPrograms: true,
   },
   {
+    id: 3273601025,
     networkId: 32736,
     serviceId: 1025,
     name: longName,

@@ -24,9 +24,6 @@ func TestParseProgramTag(t *testing.T) {
 		{"other:tag=42", 0, false},
 		{"program", 0, false},
 		{"", 0, false},
-		// 旧形式（M3-1 より前）は新形式パーサーでは意図的に解決しない
-		// （#53: recreateChanged がタグ不一致として再作成の契機にするため）。
-		{"rokuban:reservation=42", 0, false},
 	}
 	for _, tt := range tests {
 		id, ok := ParseProgramTag(tt.tag)
@@ -47,7 +44,6 @@ func TestFindProgramTag(t *testing.T) {
 		{"not found", []string{"foo", "bar"}, 0, false},
 		{"empty", nil, 0, false},
 		{"first match wins", []string{"program:1", "program:2"}, 1, true},
-		{"old format is not found", []string{"rokuban:reservation=7"}, 0, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -59,17 +55,19 @@ func TestFindProgramTag(t *testing.T) {
 	}
 }
 
-// IsOurs は新旧いずれの形式でも「自分が作った schedule」と認識する必要がある
-// （#53: 移行中に旧形式の schedule を外部産と誤認して削除対象から取りこぼさない）。
+// IsOurs は「自分が作った schedule だけ触る」という reconciler の不変条件の
+// 判定そのもの。外部産（rokuban の tag が無い schedule）を true にしてはならない
+// --- 削除ループがそれを消す。
 func TestIsOurs(t *testing.T) {
 	tests := []struct {
 		name string
 		tags []string
 		want bool
 	}{
-		{"new format", []string{"program:42"}, true},
-		{"old format", []string{"rokuban:reservation=42"}, true},
-		{"no rokuban tag", []string{"foo", "bar"}, false},
+		{"our tag", []string{"program:42"}, true},
+		{"our tag among others", []string{"foo", "program:42", "bar"}, true},
+		{"someone else's tag", []string{"foo", "bar"}, false},
+		{"malformed program tag is not ours", []string{"program:abc"}, false},
 		{"empty", nil, false},
 	}
 	for _, tt := range tests {

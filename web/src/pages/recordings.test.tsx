@@ -104,6 +104,7 @@ const sampleRecording = (overrides: Partial<Recording> = {}): Recording => ({
 })
 
 const sampleService = (overrides: Partial<Service> = {}): Service => ({
+  id: (overrides.networkId ?? 32736) * 100_000 + (overrides.serviceId ?? 5168),
   networkId: 32736,
   serviceId: 5168,
   name: 'ＯＨＫ',
@@ -628,7 +629,7 @@ describe('RecordingsPage 検索条件', () => {
 
     await waitFor(() => {
       const last = recordingsRequests(server.fetchMock).at(-1)
-      expect(last?.searchParams.getAll('service')).toEqual(['default:32736:5168'])
+      expect(last?.searchParams.getAll('service')).toEqual(['3273605168'])
     })
   })
 

@@ -166,11 +166,11 @@ describe('groupProgramsByService', () => {
       program(3, 2048, 18 * 60),
     ])
 
-    expect([...grouped.keys()].sort()).toEqual(['32736:1024', '32736:2048'])
-    expect(grouped.get('32736:1024')?.map((p) => p.program.programId)).toEqual([1, 2])
-    expect(grouped.get('32736:1024')?.[0].startMs).toBe(at(18 * 60))
-    expect(grouped.get('32736:1024')?.[0].endMs).toBe(at(18 * 60 + 30))
-    expect(grouped.get('32736:2048')?.map((p) => p.program.programId)).toEqual([3])
+    expect([...grouped.keys()].sort((a, b) => a - b)).toEqual([3273601024, 3273602048])
+    expect(grouped.get(3273601024)?.map((p) => p.program.programId)).toEqual([1, 2])
+    expect(grouped.get(3273601024)?.[0].startMs).toBe(at(18 * 60))
+    expect(grouped.get(3273601024)?.[0].endMs).toBe(at(18 * 60 + 30))
+    expect(grouped.get(3273602048)?.map((p) => p.program.programId)).toEqual([3])
   })
 
   it('network が異なれば同じ serviceId でも別のグループにする', () => {
@@ -179,9 +179,9 @@ describe('groupProgramsByService', () => {
       program(2, 101, 18 * 60, 6),
     ])
 
-    expect([...grouped.keys()].sort()).toEqual(['4:101', '6:101'])
-    expect(grouped.get('4:101')?.map((p) => p.program.programId)).toEqual([1])
-    expect(grouped.get('6:101')?.map((p) => p.program.programId)).toEqual([2])
+    expect([...grouped.keys()].sort((a, b) => a - b)).toEqual([400101, 600101])
+    expect(grouped.get(400101)?.map((p) => p.program.programId)).toEqual([1])
+    expect(grouped.get(600101)?.map((p) => p.program.programId)).toEqual([2])
   })
 })
 
@@ -191,6 +191,7 @@ describe('orderServices', () => {
     channelType: Service['channelType'],
     remoteControlKeyId: number,
   ): Service => ({
+    id: 32736 * 100_000 + serviceId,
     networkId: 32736,
     serviceId,
     name: `service ${serviceId}`,

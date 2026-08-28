@@ -35,6 +35,7 @@ const nowMs = FIXED_NOW.getTime()
 const iso = (ms) => new Date(ms).toISOString()
 
 const service = {
+  id: 3273601024,
   networkId: 32736,
   serviceId: 1024,
   name: 'NHK総合',

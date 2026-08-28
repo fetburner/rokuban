@@ -23,7 +23,7 @@ describe('parseRecordingsSearch', () => {
       parseRecordingsSearch({
         q: 'ニュース',
         genre: [0, 1],
-        service: ['default:1024'],
+        service: [3273601024],
         status: 'failed',
         source: 'manual',
         ruleId: 5,
@@ -34,7 +34,7 @@ describe('parseRecordingsSearch', () => {
     ).toEqual({
       q: 'ニュース',
       genre: [0, 1],
-      service: ['default:1024'],
+      service: [3273601024],
       status: 'failed',
       source: 'manual',
       ruleId: 5,
@@ -50,72 +50,76 @@ describe('parseRecordingsSearch', () => {
     const result = parseRecordingsSearch({
       q: 42, // 文字列でない
       genre: [99, -1, 2.5, 2], // 範囲外・非整数は落ちる。2 だけ残る
-      service: ['abc', 'default:5168'], // 複合キーでないものは落ちる
+      service: ['abc', 3273605168], // 数値化できないものは落ちる
       status: 'bogus', // enum に無い
       source: 'nobody', // enum に無い
       ruleId: 'not-a-number',
       from: 'not-a-date',
       order: 'sideways',
     })
-    expect(result).toEqual({ genre: [2], service: ['default:5168'] })
+    expect(result).toEqual({ genre: [2], service: [3273605168] })
   })
 
   it('単一値（配列でない）の genre/service は 1 要素の配列に正規化する', () => {
     // ?genre=5 のような、リピートキーでない URL を手で叩いた場合。
-    expect(parseRecordingsSearch({ genre: 5, service: 'default:1024' })).toEqual({
+    expect(parseRecordingsSearch({ genre: 5, service: 3273601024 })).toEqual({
       genre: [5],
-      service: ['default:1024'],
+      service: [3273601024],
     })
   })
 
-  // issue #345: service の serviceId 部分は正規表現 `[1-9][0-9]*` で先頭 0
-  // （＝ 0 そのもの）を落とし、`<= 2_147_483_647` の上限チェックで
-  // Number.MAX_SAFE_INTEGER 域の丸めが効き始める前に落ちる（単数側
-  // `parsePositiveIntId` と同じ n > 0 / 安全整数の趣旨を、既に別の形で満たす）。
-  it('serviceId 部分が 0 や上限超の service は落とす（丸めない）', () => {
+  // 検証は 2 段。値域（1..6553565535）は openapi.yaml 由来の zod スキーマが、
+  // 整数性（`1.5` を落とす）は `lib/url-search.ts` の `asInteger` が担う。
+  // 下の `unsafeId` を実際に落としているのは**値域の側** --- 合成 id の上限は
+  // 安全整数よりはるかに小さいので、丸めが起きる値はどのみち max で落ちる。
+  it('不正・0・負値・値域外の service は要素ごとに落とす（丸めない）', () => {
+    // Number.MAX_SAFE_INTEGER を超える値は Number() の時点で別の値に丸まる。
+    // 丸めた値を「利用者が指定した id」として通すと別チャンネルを指す。
+    const unsafeId = Number.MAX_SAFE_INTEGER + 2
     expect(
-      parseRecordingsSearch({
-        service: ['default:0', 'default:99999999999999999999', 'default:1024'],
-      }),
-    ).toEqual({ service: ['default:1024'] })
+      parseRecordingsSearch({ service: ['bad', 0, -1, 1.5, unsafeId, 3273601024] }),
+    ).toEqual({ service: [3273601024] })
   })
 
-  it('service は新しい (site, networkId, serviceId) と旧 (site, serviceId) を保つ', () => {
+  it('service は Service.id、site は別軸として保つ', () => {
     const search = parseRecordingsSearch({
-      service: ['default:4:101', 'default:101', 'site2:6:101'],
+      site: ['site2', 'default', 'site2'],
+      service: [600101, 400101],
     })
-    expect(search).toEqual({
-      service: ['default:4:101', 'default:101', 'site2:6:101'],
-    })
+    // どちらの軸も重複除去して正準化する（順序が揺れると queryKey が変わる）。
+    expect(search).toEqual({ site: ['default', 'site2'], service: [400101, 600101] })
     expect(buildListRecordingsParams(search, false)).toEqual({
       trash: false,
-      service: ['default:4:101', 'default:101', 'site2:6:101'],
+      site: ['default', 'site2'],
+      service: [400101, 600101],
     })
   })
 
-  it('service の networkId/serviceId が0・先頭0・int32上限超なら要素を落とす', () => {
-    expect(
-      parseRecordingsSearch({
-        service: [
-          'default:0:101',
-          'default:04:101',
-          'default:4:0',
-          'default:4:0101',
-          'default:2147483648:101',
-          'default:4:2147483648',
-          'default:4:101',
-        ],
-      }),
-    ).toEqual({ service: ['default:4:101'] })
+  // `Number('') === 0` なので、空文字を弾かないと `?genre=` が
+  // 「ニュース・報道（0）で絞る」に化ける。`genre` は zod 側が min(0) なので、
+  // `asNumber` の空文字判定がこの軸の唯一の防壁になる。
+  it('空文字の genre は 0 に化けず落ちる', () => {
+    expect(parseRecordingsSearch({ genre: '' })).toEqual({})
+    // 空白のみも同じ（`Number(' ') === 0`）。
+    expect(parseRecordingsSearch({ genre: '  ' })).toEqual({})
+    expect(parseRecordingsSearch({ genre: ['', '1'] })).toEqual({ genre: [1] })
   })
 
-  it('service は (site, serviceId) の複合キーを保つ', () => {
-    const search = parseRecordingsSearch({ service: ['default:1024', 'site2:1024'] })
-    expect(search).toEqual({ service: ['default:1024', 'site2:1024'] })
-    expect(buildListRecordingsParams(search, false)).toEqual({
-      trash: false,
-      service: ['default:1024', 'site2:1024'],
-    })
+  // ⑧ 単一値スキーマに配列が来たときは先頭を採る（`validValue` の契約）。
+  it('単一値の軸に配列が来たら先頭を採る', () => {
+    expect(parseRecordingsSearch({ status: ['finished', 'failed'] })).toEqual({ status: 'finished' })
+  })
+
+  it('site 名の構文に合わない要素は落とす', () => {
+    expect(parseRecordingsSearch({ site: ['Tokyo', '-bad', 'ok2'] })).toEqual({ site: ['ok2'] })
+  })
+
+  // TanStack Router の既定 parseSearch は `?site=123` を**数値**にして渡す。
+  // site 名は全数字でも構文上合法（internal/config の mirakcSiteNamePattern）
+  // なので、数値のまま文字列スキーマに掛けると実在の site が落ちる。
+  it('全数字の site 名（数値で届く）も受け取る', () => {
+    expect(parseRecordingsSearch({ site: 123 })).toEqual({ site: ['123'] })
+    expect(parseRecordingsSearch({ site: [123, 'tokyo'] })).toEqual({ site: ['123', 'tokyo'] })
   })
 
   it('空文字列の q は「指定なし」に落ちる', () => {
@@ -189,7 +193,8 @@ describe('hasAnyRecordingsCondition', () => {
   it.each<[string, RecordingsPageSearch]>([
     ['q', { q: 'ニュース' }],
     ['genre', { genre: [1] }],
-    ['service', { service: ['default:1024'] }],
+    ['service', { service: [3273601024] }],
+    ['site', { site: ['site2'] }],
     ['status', { status: 'failed' }],
     ['source', { source: 'manual' }],
     ['ruleId', { ruleId: 3 }],
@@ -214,7 +219,7 @@ describe('buildListRecordingsParams', () => {
     const search: RecordingsPageSearch = {
       q: 'ニュース',
       genre: [0, 1],
-      service: ['default:1024'],
+      service: [3273601024],
       status: 'failed',
       source: 'manual',
       ruleId: 5,
@@ -226,7 +231,7 @@ describe('buildListRecordingsParams', () => {
       trash: false,
       q: 'ニュース',
       genre: [0, 1],
-      service: ['default:1024'],
+      service: [3273601024],
       status: 'failed',
       source: 'manual',
       ruleId: 5,
@@ -266,14 +271,14 @@ describe('datetime-local と ISO の相互変換', () => {
 })
 
 describe('describeRecordingsFilters', () => {
-  const services = new Map([['default:1024', 'ＮＨＫ総合 (default)']])
+  const services = new Map<number, string>([[3273601024, 'ＮＨＫ総合 (default)']])
 
   it('条件が無ければチップも無い', () => {
     expect(describeRecordingsFilters(emptyRecordingsSearch(), services)).toEqual([])
   })
 
   it('ジャンル・チャンネルは値ごとに 1 チップになり、外すとその値だけ落ちる', () => {
-    const search: RecordingsPageSearch = { genre: [0, 1], service: ['default:1024'] }
+    const search: RecordingsPageSearch = { genre: [0, 1], service: [3273601024] }
     const chips = describeRecordingsFilters(search, services)
     expect(chips.map((c) => c.label)).toEqual([
       'ジャンル: ニュース・報道',
@@ -282,7 +287,7 @@ describe('describeRecordingsFilters', () => {
     ])
 
     const genreChip = chips.find((c) => c.key === 'genre-0')
-    expect(genreChip?.clear(search)).toEqual({ genre: [1], service: ['default:1024'] })
+    expect(genreChip?.clear(search)).toEqual({ genre: [1], service: [3273601024] })
   })
 
   it('最後の 1 件を外すと配列キー自体が消える（空配列を残さない）', () => {
@@ -291,10 +296,21 @@ describe('describeRecordingsFilters', () => {
     expect(chips[0].clear(search)).toEqual({ genre: undefined })
   })
 
-  it('チャンネル名が分からない service は複合キーで出す', () => {
-    const search: RecordingsPageSearch = { service: ['site2:9999'] }
+  // site 軸のチップ（ラベルと clear）。他の軸と同じく、押して消せること・
+  // 最後の 1 つを消したらキーごと undefined になることを見る。
+  it('site のチップを出し、押すとその値だけ消える', () => {
+    const search: RecordingsPageSearch = { site: ['default', 'site2'] }
     const chips = describeRecordingsFilters(search, services)
-    expect(chips[0].label).toBe('チャンネル: site2:9999')
+    const siteChips = chips.filter((c) => c.key.startsWith('site-'))
+    expect(siteChips.map((c) => c.label)).toEqual(['サイト: default', 'サイト: site2'])
+    expect(siteChips[0].clear(search).site).toEqual(['site2'])
+    expect(siteChips[0].clear({ site: ['default'] }).site).toBeUndefined()
+  })
+
+  it('チャンネル名が分からない service は id で出す', () => {
+    const search: RecordingsPageSearch = { service: [9999] }
+    const chips = describeRecordingsFilters(search, services)
+    expect(chips[0].label).toBe('チャンネル: チャンネル #9999')
   })
 
   it('状態・種別・ルール・期間はスカラーの 1 チップになる', () => {
@@ -340,5 +356,17 @@ describe('describeRecordingsFilters', () => {
   // キーワードはチップにしない（検索欄自体が値を表示しているため）。
   it('q はチップにならない', () => {
     expect(describeRecordingsFilters({ q: 'ニュース' }, services)).toEqual([])
+  })
+})
+
+// site の正準化はチップ側（`Array.prototype.sort()` = コード単位順）と
+// 一致していなければならない。`localeCompare` にするとロケール依存になり、
+// 同じ共有 URL がブラウザによって違う並びになる。
+describe('site の並びはチップ側と同じ正準形になる', () => {
+  it('コード単位順（localeCompare とは違う並びになる組で確認）', () => {
+    // 'a0b' < 'a_b' はコード単位順（'0' = 0x30 < '_' = 0x5F）。
+    // ICU の既定照合では逆順になる。
+    expect(parseRecordingsSearch({ site: ['a_b', 'a0b'] }).site).toEqual(['a0b', 'a_b'])
+    expect(['a_b', 'a0b'].sort()).toEqual(['a0b', 'a_b'])
   })
 })

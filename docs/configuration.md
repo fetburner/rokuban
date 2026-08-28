@@ -78,8 +78,12 @@ Grafana Loki / Tempo の `-config.expand-env` と同じ、**YAML パース前の
 | `cleanup.orphan_age` | `0`（= 14 日） | 孤児候補が実削除されるまでのエイジング期間 |
 | `cleanup.max_deletes_per_pass` | `0`（= 100） | 一括削除サーキットブレーカーの閾値。ソースを問わず 1 パス全体の合計に対して働く（ruler と同じラッチ式） |
 | `cleanup.missing_asset_age` | `0`（= 24 時間） | 「active なのに実体ファイルが無い」候補が確認済みとして報告されるまでのエイジング期間。自動削除はしない（[storage.md](storage.md) §7「孤児回収の逆」） |
-| `log.level` | `info` | debug / info / warn / error |
-| `log.format` | `json` | json / text |
+| `log.level` | `info` | debug / info / warn / error。**未解決: 値は検証されるが適用されていない**（下記） |
+| `log.format` | `json` | json / text。**未解決: 同上** |
+
+**未解決: `log.*` は読み込みと検証だけで、`slog` に適用されていない。** 現状はどのロールも
+`log/slog` のパッケージ既定（text 形式・Info 以上）で出力する。書き間違えると起動に失敗するが、
+正しく書いても出力は変わらない。**設定を書き換えて挙動が変わることを期待しないこと。**
 
 ### 必須キー
 
