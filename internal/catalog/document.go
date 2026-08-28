@@ -19,16 +19,19 @@ import (
 // 新しいバイナリが書いたダンプは古いバイナリで rescue できなくなる ——
 // 災害復旧で古いバイナリしか手元にない状況を作りたくない。
 //
-// 代わりに、引っ越したキーは旧キーを読み続ける（Recording の *Legacy
-// フィールド群）ことで「旧ダンプ × 新バイナリ」を守る。逆向き
-// （新ダンプ × 旧バイナリ）は旧バイナリが知らないキーを黙って無視するので、
-// 引っ越した事実は落ちる —— 即時削除の要求（recordingPurgeRequests）が
-// 落ちた場合、その録画はごみ箱に残って猶予超過で消える（要求より遅く消える
-// 側に倒れる）。録画本体・アセット・tombstone は旧キーのまま残る。
-// 読めない方（版を上げる）よりこちらを選ぶ。
+// 引っ越しで版を上げないぶん、「新ダンプ × 旧バイナリ」では旧バイナリが知らない
+// キーを黙って無視するので引っ越した事実は落ちる —— 即時削除の要求
+// （recordingPurgeRequests）が落ちた場合、その録画はごみ箱に残って猶予超過で
+// 消える（要求より遅く消える側に倒れる）。録画本体・アセット・tombstone は
+// 残る。読めない方（版を上げる）よりこちらを選ぶ。
 //
 // **落ちたときに安全側へ倒れない事実を新しいキーへ移すなら、版を上げる。**
 // この線引きは docs/storage/rescue.md §世代の完成判定 にある。
+//
+// **ただしゲートは片側であることに注意。** manifest.go が拒否するのは
+// 「自分より新しい版」だけで、下限は無い —— 版を上げても**古いダンプは
+// 引き続き読まれる**。「版を上げれば古い形式を拒否できる」は成り立たないので、
+// 古い形式を読ませたくないなら下限の検査を足す必要がある。
 const Version = 1
 
 // Subdir は media_dir 配下の catalog ディレクトリ名。
@@ -39,8 +42,6 @@ const Subdir = "catalog"
 const DefaultKeep = 7
 
 // FilenamePrefix は世代ディレクトリ名の接頭辞（`catalog-<UTC 時刻>`）。
-// 世代ディレクトリ導入前に書かれたフラットな `catalog-<UTC 時刻>.json` も
-// 同じ接頭辞を持つ。
 const FilenamePrefix = "catalog-"
 
 // Document は export / rescue で共有する catalog JSON の形。
@@ -142,47 +143,18 @@ type Recording struct {
 	StartedAt         *time.Time      `json:"startedAt,omitempty"`
 	EndedAt           *time.Time      `json:"endedAt,omitempty"`
 	QualityEvents     json.RawMessage `json:"qualityEvents"`
-	// 欠測（旧 never-scheduled 擬似行）は issue #318 で recordings から
-	// never_scheduled_events 表へ移設され、recordings は観測された試行だけを
+	// 欠測は never_scheduled_events 表が持ち、recordings は観測された試行だけを
 	// 持つ。欠測は過去番組の観測なので、放送 + 猶予で消える snapshots や復旧後の
-	// 未来予約とは無関係になり、catalog の対象にしない。旧世代のカタログが
-	// quality_events に持つ recording.never-scheduled マーカーは、rescue 側が
-	// 検出して recordings に戻さずスキップする（rescue.go 参照）。
+	// 未来予約とは無関係であり、catalog の対象にしない。
 	DeletedAt *time.Time `json:"deletedAt,omitempty"`
-	// PurgeAfterLegacy は recordings.purge_after が本体列だった頃の旧ダンプの
-	// `purgeAfter` キーをそのまま受け取る。即時削除の要求は
-	// recording_purge_requests 衛星表に移ったので、新しい export はこのフィールドを
-	// 書かない（常に nil で omit される）。
-	//
-	// 落とすと旧ダンプの rescue で「今すぐ完全削除」の要求が黙って失われる
-	// （ごみ箱に残ったまま猶予超過を待つ挙動に変わる）。rescue 側は値そのもの
-	// ではなく non-nil かどうかだけを見て要求の行へ前送りする（migration の
-	// backfill --- 値は使わず `purge_after IS NOT NULL` だけを見る --- と同じ
-	// 基準。rescue.go 参照）。
-	PurgeAfterLegacy *time.Time `json:"purgeAfter,omitempty"`
-	// KeepOriginalLegacy / EncodeProfilesLegacy: issue #159 より前は
-	// recordings.keep_original / recordings.encode_profiles だった旧列。
-	// 現在は RecordingEncodePolicy（recording_encode_policy 衛星表）に切り出した
-	// ため、新しい export はこの 2 フィールドを書かない（常に nil で omit
-	// される）。#159 より前に export された古いダンプは "keepOriginal" /
-	// "encodeProfiles" キーを常に持つので、rescue 側はこれが non-nil であることを
-	// 「旧ダンプである」判定に使い、migration 00032 backfill と同じ基準（原本
-	// media_asset の有無。列の値そのものは使わない）でこのダンプ内の
-	// doc.MediaAssets から recording_encode_policy 行を復元する
-	// （internal/catalog/rescue.go 参照）。落とすと旧ダンプの rescue で凍結済み
-	// ポリシーが黙って失われる（削除エンジンが対象外になり、事後追加は
-	// 既定値 'always' で上書きされる）。
-	KeepOriginalLegacy   *string  `json:"keepOriginal,omitempty"`
-	EncodeProfilesLegacy []string `json:"encodeProfiles,omitempty"`
 	// SupersededAt は「この行が active-event の枠を明け渡した」不可逆な事実
 	// （issue #129 症状 2）。落とすと rescue 側で superseded 行と生きている行が
 	// どちらも live に戻り、recordings_unique_active_event に衝突して復旧が
-	// 落ちる。古い世代のカタログには存在しないので omitempty（nil = live）。
+	// 落ちる。nil = live。
 	SupersededAt *time.Time `json:"supersededAt,omitempty"`
 	// PurgedAt は「完全削除が完了した」不可逆な事実（issue #135）。落とすと
 	// rescue 後にごみ箱ビュー（purged_at IS NULL を要求）が purge 済みの
-	// tombstone を再び蘇らせてしまう。古い世代のカタログには存在しないので
-	// omitempty（nil = 未 purge）。
+	// tombstone を再び蘇らせてしまう。nil = 未 purge。
 	PurgedAt  *time.Time `json:"purgedAt,omitempty"`
 	CreatedAt time.Time  `json:"createdAt"`
 	UpdatedAt time.Time  `json:"updatedAt"`
@@ -242,31 +214,27 @@ type DropStat struct {
 
 // ProgramSnapshot は program_snapshots の 1 行（意図・上書きの FK 先）。
 //
-// EventID / ServiceName は issue #98 で追加された列（00025）。放送イベントの
-// 識別（network_id, service_id, event_id）と表示名に使うため、他のチャンネル
-// 識別列と同様に catalog の往復で失ってはならない（reconciler が欠測を書くとき、
-// および watcher が録画行を作るときに snapshot から引く）。
-// 古い世代の catalog には存在しないので omitempty（nil = 未対応 or 移行前）。
+// 放送イベントの識別（network_id, service_id, event_id）と表示名は catalog の
+// 往復で失ってはならない（reconciler が欠測を書くとき、および watcher が録画行を
+// 作るときに snapshot から引く）。
 //
-// **チャンネル・イベント識別 6 列はポインタのまま残す。** DB 側の
-// program_snapshots は issue #101（00026）でこの 6 列を NOT NULL 化したが、
-// catalog document は DB より寿命が長い（ディスク上のバックアップファイルは
-// マイグレーションを追いかけない）。00026 より前に export された古い
-// catalog ダンプを rescue する経路では nil がありうるため、この Document 型
-// 自体は緩いままにする（applyDocument が nil を安全側でスキップする。
-// internal/catalog/rescue.go 参照）。
+// **識別 6 列は非ポインタだが、rescue はそれを信用しない。** ディスク上の
+// バックアップは手で編集されうるし、書き込みが途中で切れることもある。値が
+// 壊れていれば DB の CHECK に当たってトランザクションごと落ちるので、
+// applyDocument は upsert の前に validSnapshotIdentity で弾いて行を落とす
+// （internal/catalog/rescue.go 参照）。
 type ProgramSnapshot struct {
 	Site        string    `json:"site"`
 	ProgramID   int64     `json:"programId"`
 	Title       string    `json:"title"`
 	StartAt     time.Time `json:"startAt"`
 	DurationMs  int64     `json:"durationMs"`
-	NetworkID   *int32    `json:"networkId,omitempty"`
-	ServiceID   *int32    `json:"serviceId,omitempty"`
-	ChannelType *string   `json:"channelType,omitempty"`
-	Channel     *string   `json:"channel,omitempty"`
-	EventID     *int32    `json:"eventId,omitempty"`
-	ServiceName *string   `json:"serviceName,omitempty"`
+	NetworkID   int32     `json:"networkId"`
+	ServiceID   int32     `json:"serviceId"`
+	ChannelType string    `json:"channelType"`
+	Channel     string    `json:"channel"`
+	EventID     int32     `json:"eventId"`
+	ServiceName string    `json:"serviceName"`
 	UpdatedAt   time.Time `json:"updatedAt"`
 }
 

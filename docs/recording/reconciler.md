@@ -4,7 +4,7 @@
 
 `reservations`（desired）と `schedule_sync`（observed: `GET /api/recording/schedules` の観測結果）の差分を POST/DELETE で消す、レベルトリガーの宣言的同期ループ。
 
-- **tags 対応付け**: mirakc schedule の `tags` に programId を埋め込む（例: `program:1234`）。手動で mirakc に入れられた schedule との判別もタグで可能。programId は EPG にある間ずっと安定なのに対し、`reservations.id` は ruler の導出削除・再実体化で変わりうる不安定な値なので tag には使わない（不変条件 9「導出器が作るキーを宛先にしない」。末尾「経緯と失敗事例」）。旧形式（`rokuban:reservation=1234`）の schedule は下記「tags の不一致」の再作成でレベルトリガーに新形式へ移行する
+- **tags 対応付け**: mirakc schedule の `tags` に programId を埋め込む（例: `program:1234`）。手動で mirakc に入れられた schedule との判別もタグで可能。programId は EPG にある間ずっと安定なのに対し、`reservations.id` は ruler の導出削除・再実体化で変わりうる不安定な値なので tag には使わない（不変条件 9「導出器が作るキーを宛先にしない」）
 - **contentPath 生成**: `recording.basedir` 相対パス必須。ファイル名テンプレート（[contentpath.md](contentpath.md)）の展開もここで行う。生成はテンプレートから初回作成時のみ行い、以後の再作成（後述の差分反映）は、明示 override（`overrides.contentPath`）があればその値、無ければ observed（mirakc に登録済みの schedule）の contentPath を引き継ぐことで実質固定される（`reservations.base` に生成値を書き戻すコードは無い）
 - **冪等**: 何度落ちても再実行で収束する。時刻精度もプロセス生存性も要求されない
 - **終了済み番組は作らない**: 番組の終了時刻（`program_snapshots.start_at + duration_ms`）を過ぎた予約には `POST` しない。放置すると mirakc が数秒で `need-rescheduling` として failed にし、`recordings` に content_length=0 の failed 行を量産する。判定は「番組終了後の GC」（[ruler.md](ruler.md)）とは別物の、`never_scheduled_events` への欠測記録（`recordNeverScheduled`）と同じ式・同じ材料を使う——ずらすと同じ予約が毎パス作成対象のまま残って POST を撃ち続ける
@@ -35,9 +35,9 @@ reconciler は存在の突き合わせだけでなく、**effective options と 
 | `logFilter` | しない | 未使用 |
 | `tags` | **する**（不一致のときだけ） | 下記 |
 
-**`tags` の不一致も再作成の契機にする。** tags は ingest が record と予約を突き合わせる経路で、schedule に古い・別の値の tag が残っていると録画が別の予約に紐付くため、`priority` が一致していても tag が食い違えば再作成する。不一致判定は「tags が現行の `program:{programId}` 形式で desired な programId と一致するか」: 自分が作った schedule（`mirakc.IsOurs` が true）で、かつ `mirakc.FindProgramTag` の値が desired な `programId` と一致しないものすべてが再作成の対象になる。旧形式（reservation id を埋めた `rokuban:reservation=1234`）の schedule はこの分岐で新形式に移行する（専用の移行コードは無く、既存の DELETE→POST 機構がレベルトリガーで移行を完了させる）。programId は EPG にある間ずっと安定なので、正しくタグ付けされた schedule が「同じ予約」の生存中に不一致を起こすことはない。
+**`tags` の不一致も再作成の契機にする。** tags は ingest が record と予約を突き合わせる経路で、schedule に古い・別の値の tag が残っていると録画が別の予約に紐付くため、`priority` が一致していても tag が食い違えば再作成する。不一致判定は「tags の `program:{programId}` が desired な programId と一致するか」: 自分が作った schedule（`mirakc.IsOurs` が true）で、かつ `mirakc.FindProgramTag` の値が desired な `programId` と一致しないものすべてが再作成の対象になる。programId は EPG にある間ずっと安定なので、正しくタグ付けされた schedule が「同じ予約」の生存中に不一致を起こすことはない。
 
-**差分の対象にするのは自分が作った schedule だけ。** tag のない schedule（mirakc を直接叩いた・別のツールが作った）は観測はするが触らない。外部が作った schedule と取り合いになるのを避けるためで、既存の DELETE 側と同じ判定（`mirakc.IsOurs` が false なら対象外。新旧いずれかの形式の tag があれば true）。
+**差分の対象にするのは自分が作った schedule だけ。** tag のない schedule（mirakc を直接叩いた・別のツールが作った）は観測はするが触らない。外部が作った schedule と取り合いになるのを避けるためで、既存の DELETE 側と同じ判定（`mirakc.IsOurs` が false なら対象外。rokuban の tag があれば true）。
 
 **テンプレート生成の `contentPath` は初回生成値を固定し、以後変更しない**（`overrides.contentPath` で明示指定した値は差分反映の対象。下記参照）**。** ただし固定の実体は `reservations.base` への書き戻しではない —— `base` / `reservations` の列に contentPath を焼く書き手は存在しない。実際に固定を実現しているのは、再作成時に observed の contentPath を引き継ぐこと（`internal/reconciler/reconciler.go` の `recreateSchedule`。下記「再作成の POST は observed の contentPath を引き継ぐ」参照）で、schedule が mirakc 側で外部に削除されて observed が無くなった場合（EPG が一度消えて再実体化した等）は、次パスがテンプレートから新規生成する通常の作成として扱われる —— 「固定」は「同一 schedule の再作成の間」だけ有効な機構上の性質であり、schedule 自体が消えて張り直された場合には及ばない。reconciler は番組名からパスを生成するため、EPG の番組名が変われば生成結果も変わる。これを差分と見なすと **EPG 更新のたびに schedule が消えて作り直される** churn になる。差分書き込みという設計は desired が安定していることを前提として要求する（同率 priority のタイを全順序で潰したのと同じクラスの問題。§3.1）。ファイル名を変えたい場合はユーザーが overrides で明示的に指定する。
 
@@ -82,7 +82,6 @@ schedule が消えたまま次のパスまで残る。レベルトリガーで�
 
 #### 経緯と失敗事例
 
-- **tag は当初 reservation id を埋めていた**（`rokuban:reservation=1234`）。`reservations.id` は ruler の導出削除・再実体化で変わりうる不安定な値だったため、M3-1 で EPG にある間ずっと安定な programId に変えた（issue #53「導出器が作るキーを宛先にしない」）。移行コードは書かず、tags 不一致の再作成にレベルトリガーで移行を任せた
 - **「tags は不変」の見積もり誤り**: 当初の差分対象の表は「tags は reservation id で不変」として差分対象から外していた。これは「同じ予約に対しては不変」であって「同じ番組に対して不変」ではなく、予約が削除されて同じ番組に別の予約が作られると古い tag が残り、録画が別の予約に紐付く（issue #19 のコメント）
 - **終了済み番組への POST**: 終了済み判定を入れる前は failed 行の量産が実際に起きていた（issue #134。理由は本文のとおり）
 - **再作成ガードは当初 blocklist**（「`tracking` / `recording` の予約は触らない」）だった。issue #19 のコメントで allowlist に変えた（理由は本文のとおり）

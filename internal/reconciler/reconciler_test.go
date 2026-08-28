@@ -267,7 +267,7 @@ func TestReconciler_DeletesOrphanedSchedule(t *testing.T) {
 	mock.schedules[999] = mirakc.Schedule{
 		State:   "scheduled",
 		Program: mirakc.Program{ID: 999},
-		Tags:    []string{"rokuban:reservation=9999"},
+		Tags:    []string{mirakc.ProgramTag(999)},
 	}
 	srv := httptest.NewServer(mock)
 	defer srv.Close()
@@ -1862,7 +1862,7 @@ func TestReconciler_TotalLossSignatureTripsAndWithholdsDeletes(t *testing.T) {
 	mock.schedules[999] = mirakc.Schedule{
 		State:   "scheduled",
 		Program: mirakc.Program{ID: 999, Name: ptrString("全損番組")},
-		Tags:    []string{"rokuban:reservation=9999"},
+		Tags:    []string{mirakc.ProgramTag(999)},
 	}
 	srv := httptest.NewServer(mock)
 	defer srv.Close()
@@ -1924,8 +1924,6 @@ func TestReconciler_BulkDeleteWithRemainingReservationDoesNotTripBreaker(t *test
 	}
 
 	// もう desired にない自分のタグ付き schedule を 11 件（旧閾値 10 を超える）。
-	// 旧形式のタグのまま（意図的）: IsOurs が新旧どちらの形式も「自分が作った」と
-	// 認識することの回帰確認を兼ねる（#53 の移行方針）。
 	staleIDs := make([]int64, 0, 11)
 	for i := int64(0); i < 11; i++ {
 		id := int64(100000500019900) + i
@@ -1933,7 +1931,7 @@ func TestReconciler_BulkDeleteWithRemainingReservationDoesNotTripBreaker(t *test
 		mock.schedules[id] = mirakc.Schedule{
 			State:   "scheduled",
 			Program: mirakc.Program{ID: id},
-			Tags:    []string{fmt.Sprintf("rokuban:reservation=%d", 900000+i)},
+			Tags:    []string{mirakc.ProgramTag(id)},
 		}
 	}
 
@@ -1980,7 +1978,7 @@ func TestReconciler_TotalLossBreakerLatchesAcrossPasses(t *testing.T) {
 	mock.schedules[999] = mirakc.Schedule{
 		State:   "scheduled",
 		Program: mirakc.Program{ID: 999},
-		Tags:    []string{"rokuban:reservation=9999"},
+		Tags:    []string{mirakc.ProgramTag(999)},
 	}
 	srv := httptest.NewServer(mock)
 	defer srv.Close()
@@ -2024,7 +2022,7 @@ func TestReconciler_ResumeCircuitBreakerConverges(t *testing.T) {
 	mock.schedules[999] = mirakc.Schedule{
 		State:   "scheduled",
 		Program: mirakc.Program{ID: 999},
-		Tags:    []string{"rokuban:reservation=9999"},
+		Tags:    []string{mirakc.ProgramTag(999)},
 	}
 	srv := httptest.NewServer(mock)
 	defer srv.Close()

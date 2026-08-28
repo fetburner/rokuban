@@ -12,7 +12,7 @@
 | API パス | 常に相対パス `/api/*` を叩く。S3 配信時は CDN のパスベースルーティングで `/api/*` をバックエンド origin へ振り分ける（CORS 不要、実行時コンフィグ注入不要） |
 | SSE の振り分け | `/api/events` だけは `/api/*` の中でも例外で、**api（scale-to-zero）ではなく notifier（常駐）へ**ルーティングする。CDN のパスルーティングで最長一致的に `/api/events` を先に notifier origin へ、残りの `/api/*` を api origin へ振り分ける。タイムアウト・キャッシュ無効化の設定も必要。CDN を迂回して notifier に直接繋ぐ選択肢も残す |
 | キャッシュ規約 | ハッシュ付きアセット（`assets/*`）は `Cache-Control: immutable`、**それ以外はすべて no-cache**。go:embed モードでも同じヘッダを付けて挙動を揃える |
-| 後方互換 | UI と API のデプロイタイミングはずれ得るため API は後方互換を保つ。破壊的変更は OpenAPI 生成クライアントの差分として CI で検知 |
+| 後方互換 | UI と API のデプロイタイミングはずれ得るため、**運用開始後は** API の後方互換を保つ（運用開始前は保たない。[api/rest.md](../api/rest.md) §契約の保護）。破壊的変更は OpenAPI 生成クライアントの差分として CI で検知 |
 
 ## ハッシュを持たないファイルに no-cache を付け忘れない
 

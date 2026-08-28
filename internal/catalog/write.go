@@ -8,7 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 )
@@ -160,30 +160,10 @@ func uniqueGenerationName(dir, base string) (string, error) {
 	return "", fmt.Errorf("too many generations named %q", base)
 }
 
-// snapshot は catalog ディレクトリの 1 エントリ（世代ディレクトリ or 旧形式の
-// フラットなファイル）。
-type snapshot struct {
-	name string
-	// key は並べ替えキー。旧形式は拡張子を落として世代名と同じ土俵で比べる。
-	key string
-	// generation なら世代ディレクトリ、そうでなければ旧形式のフラットファイル。
-	generation bool
-}
-
-// sortSnapshotsDesc は新しい順（辞書順降順）に並べる。時刻が同着なら世代
-// ディレクトリを先（新しい側）に置く。
-func sortSnapshotsDesc(s []snapshot) {
-	sort.Slice(s, func(i, j int) bool {
-		if s[i].key != s[j].key {
-			return s[i].key > s[j].key
-		}
-		return s[i].generation && !s[j].generation
-	})
-}
-
-// scanSnapshots は catalogDir の世代ディレクトリと旧形式ファイルを新しい順に返す。
-// 残骸（catalog-*.tmp）の名前も別に返す。
-func scanSnapshots(catalogDir string) (snaps []snapshot, stale []string, err error) {
+// scanSnapshots は catalogDir の世代ディレクトリを新しい順（名前の辞書順降順 ---
+// 名前が `catalog-<UTC 時刻>` なので時刻順と一致する）に返す。残骸
+// （catalog-*.tmp）の名前も別に返す。
+func scanSnapshots(catalogDir string) (names []string, stale []string, err error) {
 	entries, err := os.ReadDir(catalogDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -198,44 +178,23 @@ func scanSnapshots(catalogDir string) (snaps []snapshot, stale []string, err err
 		}
 		switch {
 		case e.IsDir():
-			snaps = append(snaps, snapshot{name: name, key: name, generation: true})
+			names = append(names, name)
 		case strings.HasSuffix(name, ".tmp"):
-			// 世代ディレクトリ導入前の書き込み方式（一時名 → rename）の残骸。
+			// 書き込み途中（一時名 → rename）の残骸。
 			stale = append(stale, name)
-		case isCatalogJSON(name):
-			snaps = append(snaps, snapshot{name: name, key: strings.TrimSuffix(name, ".json")})
 		}
 	}
-	sortSnapshotsDesc(snaps)
-	return snaps, stale, nil
-}
-
-// verifySnapshot は 1 エントリの完成判定を行う。判定の唯一の入口にして、
-// Prune / SelectLatest / ListSnapshots が同じ基準で見るようにする。
-//
-// 世代ディレクトリは VerifyGeneration（manifest + サイズ + sha256）。旧形式の
-// フラットファイルは manifest を持たないので、**parse できることまでしか
-// 確かめられない**（docs/storage.md §8）。
-func verifySnapshot(catalogDir string, s snapshot) (*Manifest, error) {
-	path := filepath.Join(catalogDir, s.name)
-	if s.generation {
-		return VerifyGeneration(path)
-	}
-	if _, err := Load(path); err != nil {
-		return nil, err
-	}
-	return nil, nil
+	slices.Sort(names)
+	slices.Reverse(names)
+	return names, stale, nil
 }
 
 // Prune は catalogDir を掃除する（docs/storage.md §8「不完全世代の保持と掃除」）。
 //
-//   - 使えるもの（完成世代 + 旧形式のフラットファイル）を rescue の選択順
-//     （**完成世代が先、旧形式が後**。それぞれ新しい順）に keep 件残し、
-//     溢れた分を消す。厳密な時刻順ではない --- 検証できない旧形式ファイルの
-//     ために検証済みの完成世代を消さないため
-//   - 不完全な世代は「時刻順でそれより新しい使えるものがある」ときだけ消す。
+//   - 完成世代を新しい順に keep 件残し、溢れた分を消す
+//   - 不完全な世代は「時刻順でそれより新しい完成世代がある」ときだけ消す。
 //     最新側の不完全世代は**進行中のエクスポートかもしれない**ので残す
-//   - 旧方式の残骸（catalog-*.tmp）は消す
+//   - 書き込み途中の残骸（catalog-*.tmp）は消す
 //
 // **Prune を呼ぶのは Write の成功パスだけ**（エクスポートが失敗し続ける間は
 // 掃除も走らない）。docs/storage.md §8 に同じ但し書きがある。
@@ -246,7 +205,7 @@ func Prune(catalogDir string, keep int) error {
 		keep = DefaultKeep
 	}
 
-	snaps, stale, err := scanSnapshots(catalogDir)
+	names, stale, err := scanSnapshots(catalogDir)
 	if err != nil {
 		return err
 	}
@@ -254,38 +213,20 @@ func Prune(catalogDir string, keep int) error {
 		_ = os.Remove(filepath.Join(catalogDir, name))
 	}
 
-	var doomed []string
-	// 保持の順位は SelectLatest の選択順と同じにする（完成世代が先、旧形式は
-	// 最後）。時刻順だけで刈ると、検証できない旧形式ファイルのために検証済みの
-	// 完成世代を消しうる。
-	var generations, legacies []string
-	var usableSeen bool
-	for _, s := range snaps {
-		usable := true
-		if _, err := verifySnapshot(catalogDir, s); err != nil {
-			usable = false
-		}
-		if !usable {
-			// 不完全世代: 時刻順で新しい側に使えるものが 1 つでもあれば消す。
+	var doomed, complete []string
+	for _, name := range names {
+		if _, err := VerifyGeneration(filepath.Join(catalogDir, name)); err != nil {
+			// 不完全世代: 時刻順で新しい側に完成世代が 1 つでもあれば消す。
 			// 無ければ進行中のエクスポートかもしれないので残す。
-			if usableSeen {
-				doomed = append(doomed, s.name)
+			if len(complete) > 0 {
+				doomed = append(doomed, name)
 			}
 			continue
 		}
-		usableSeen = true
-		if s.generation {
-			generations = append(generations, s.name)
-		} else {
-			legacies = append(legacies, s.name)
-		}
+		complete = append(complete, name)
 	}
-
-	retained := make([]string, 0, len(generations)+len(legacies))
-	retained = append(retained, generations...)
-	retained = append(retained, legacies...)
-	if len(retained) > keep {
-		doomed = append(doomed, retained[keep:]...)
+	if len(complete) > keep {
+		doomed = append(doomed, complete[keep:]...)
 	}
 
 	for _, name := range doomed {
@@ -300,61 +241,49 @@ func Prune(catalogDir string, keep int) error {
 type Selection struct {
 	// DocumentPath は読むべき catalog 本体 JSON のパス。
 	DocumentPath string
-	// Generation は選んだ世代ディレクトリ名。旧形式なら空。
+	// Generation は選んだ世代ディレクトリ名。
 	Generation string
-	// Manifest は選んだ世代の完成宣言。旧形式なら nil。
+	// Manifest は選んだ世代の完成宣言。
 	Manifest *Manifest
-	// Legacy は manifest を持たない旧形式のフラットファイルを選んだことを示す
-	// （**完成を検証できていない**最後の手段。docs/storage.md §8）。
-	Legacy bool
 	// Rejected は選ばずに飛ばした世代とその理由（新しい順）。黙って古い世代へ
 	// 落ちないよう、呼び出し側が必ず報告できるように返す。
 	Rejected []RejectedSnapshot
 }
 
-// RejectedSnapshot は完成判定に落ちた世代（または読めなかった旧形式ファイル）。
+// RejectedSnapshot は完成判定に落ちた世代。
 type RejectedSnapshot struct {
-	Name string
-	// Generation は世代ディレクトリなら true、旧形式のフラットファイルなら
-	// false。運用者向けの文言を分けるために持つ（ファイルは世代ではない）。
-	Generation bool
-	Reason     string
+	Name   string
+	Reason string
 }
 
-// SnapshotStatus は catalog/ の 1 エントリを完成判定に掛けた結果。
+// SnapshotStatus は catalog/ の 1 世代を完成判定に掛けた結果。
 type SnapshotStatus struct {
-	// Name は世代ディレクトリ名、または旧形式のフラットファイル名。
+	// Name は世代ディレクトリ名。
 	Name string
-	// Generation は世代ディレクトリなら true。
-	Generation bool
-	// Complete は世代なら完成判定（manifest + サイズ + sha256）を通ったこと。
-	// 旧形式のフラットファイルは manifest を持たないので「parse できた」までしか
-	// 意味しない（Generation が false のときは Complete を完成の証明として
-	// 読まない。docs/storage.md §8）。
+	// Complete は完成判定（manifest + サイズ + sha256）を通ったこと。
 	Complete bool
 	// Reason は Complete が false のときの理由。
 	Reason string
-	// Manifest は完成世代の manifest（旧形式なら nil）。
+	// Manifest は完成世代の manifest（不完全なら nil）。
 	Manifest *Manifest
 }
 
-// ListSnapshots は media_dir/catalog/ の全エントリを **rescue と同じ優先順**
-// （完成世代が先、旧形式のフラットファイルが後。それぞれ新しい順）に並べ、
-// 1 つずつ完成判定に掛けた結果を返す。**DB には一切触らない。**
+// ListSnapshots は media_dir/catalog/ の全世代を新しい順に並べ、1 つずつ
+// 完成判定に掛けた結果を返す。**DB には一切触らない。**
 //
-// 最初に Complete が true になったエントリが、rescue が選ぶものと一致する
+// 最初に Complete が true になった世代が、rescue が選ぶものと一致する
 // （TestListSnapshots_FirstCompleteMatchesSelectLatest）。
 func ListSnapshots(mediaDir string) ([]SnapshotStatus, error) {
 	dir := Dir(mediaDir)
-	snaps, _, err := scanSnapshots(dir)
+	names, _, err := scanSnapshots(dir)
 	if err != nil {
 		return nil, err
 	}
 
-	out := make([]SnapshotStatus, 0, len(snaps))
-	for _, s := range orderSnapshots(snaps) {
-		st := SnapshotStatus{Name: s.name, Generation: s.generation, Complete: true}
-		m, err := verifySnapshot(dir, s)
+	out := make([]SnapshotStatus, 0, len(names))
+	for _, name := range names {
+		st := SnapshotStatus{Name: name, Complete: true}
+		m, err := VerifyGeneration(filepath.Join(dir, name))
 		if err != nil {
 			st.Complete = false
 			st.Reason = err.Error()
@@ -365,29 +294,10 @@ func ListSnapshots(mediaDir string) ([]SnapshotStatus, error) {
 	return out, nil
 }
 
-// orderSnapshots は新しい順に並んだ snaps を、rescue の優先順（完成世代が先、
-// 旧形式が後。それぞれ新しい順のまま）に並べ替える。
-func orderSnapshots(snaps []snapshot) []snapshot {
-	ordered := make([]snapshot, 0, len(snaps))
-	for _, s := range snaps {
-		if s.generation {
-			ordered = append(ordered, s)
-		}
-	}
-	for _, s := range snaps {
-		if !s.generation {
-			ordered = append(ordered, s)
-		}
-	}
-	return ordered
-}
-
 // SelectLatest は media_dir/catalog/ から**最新の完成世代**を選ぶ。
 //
 // 新しい順に完成判定（VerifyGeneration）を掛け、最初に通ったものを返す。最新が
-// 不完全なら 1 つ前の完成世代へ落ちる。完成世代が 1 つも無ければ、manifest を
-// 持たない旧形式のフラットファイル（世代ディレクトリ導入前の出力）を新しい順に
-// 読めるだけ読む。
+// 不完全なら 1 つ前の完成世代へ落ちる。
 //
 // 使えるものが 1 つも無ければ os.ErrNotExist を返すが、**Selection 自体は返す**
 // （飛ばした世代の理由を呼び出し側が報告できるようにする。「catalog が無い」と
@@ -402,20 +312,12 @@ func SelectLatest(mediaDir string) (*Selection, error) {
 	sel := &Selection{}
 	for _, st := range statuses {
 		if !st.Complete {
-			sel.Rejected = append(sel.Rejected, RejectedSnapshot{
-				Name: st.Name, Generation: st.Generation, Reason: st.Reason,
-			})
+			sel.Rejected = append(sel.Rejected, RejectedSnapshot{Name: st.Name, Reason: st.Reason})
 			continue
 		}
-		if st.Generation {
-			sel.DocumentPath = filepath.Join(dir, st.Name, st.Manifest.Document)
-			sel.Generation = st.Name
-			sel.Manifest = st.Manifest
-			return sel, nil
-		}
-		// 旧形式のフラットファイル。完成を検証できていない最後の手段。
-		sel.DocumentPath = filepath.Join(dir, st.Name)
-		sel.Legacy = true
+		sel.DocumentPath = filepath.Join(dir, st.Name, st.Manifest.Document)
+		sel.Generation = st.Name
+		sel.Manifest = st.Manifest
 		return sel, nil
 	}
 
@@ -443,8 +345,4 @@ func Load(path string) (*Document, error) {
 			doc.Version, path, Version)
 	}
 	return &doc, nil
-}
-
-func isCatalogJSON(name string) bool {
-	return strings.HasPrefix(name, FilenamePrefix) && strings.HasSuffix(name, ".json")
 }

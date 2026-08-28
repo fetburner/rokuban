@@ -260,14 +260,6 @@ type QualityEvent struct {
 	Reason json.RawMessage `json:"reason"`
 }
 
-// QualityEventNeverScheduled は旧世代 catalog の quality_events.event の値。
-// 欠測は issue #318 で never_scheduled_events 表へ移設され、reconciler はもう
-// この値を書かない。issue #318 より前に export されたカタログには欠測が
-// quality_events マーカー付きの failed 行として残っているので、rescue
-// （internal/catalog.hasNeverScheduledMarker）がこの値でそれを検出し、
-// recordings に戻さずスキップするために引き続き使う。
-const QualityEventNeverScheduled = "recording.never-scheduled"
-
 // DefaultSite は設定が単一 mirakc のときのサイト名。
 //
 // site は本来設定ファイルで定義するサイト名（[docs/schema.md] §1-5）だが、M1 の設定は

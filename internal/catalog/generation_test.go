@@ -1,7 +1,6 @@
 package catalog
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,8 +9,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 // errStopped は「ここでプロセスが落ちた」を模した書き込み停止。
@@ -124,9 +121,6 @@ func TestSelectLatest_StopAtAnyOffsetNeverSelectsTornGeneration(t *testing.T) {
 		sel, err := SelectLatest(dir)
 		if err != nil {
 			t.Fatalf("stop=%d: SelectLatest: %v", stop, err)
-		}
-		if sel.Legacy {
-			t.Fatalf("stop=%d: selected an unverified legacy file", stop)
 		}
 		doc, err := Load(sel.DocumentPath)
 		if err != nil {
@@ -252,14 +246,7 @@ func TestListSnapshots_FirstCompleteMatchesSelectLatest(t *testing.T) {
 	dir := t.TempDir()
 	writeCompleteGeneration(t, dir, time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC), "old")
 	newest := writeCompleteGeneration(t, dir, time.Date(2026, 7, 2, 0, 0, 0, 0, time.UTC), "new")
-	// 旧形式のフラットファイル（世代より新しい時刻）と、壊した最新世代。
-	legacyRaw, err := json.Marshal(testDoc(time.Date(2026, 9, 9, 0, 0, 0, 0, time.UTC), "legacy"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(Dir(dir), "catalog-20260909T000000Z.json"), legacyRaw, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	// 最新世代の manifest を壊す。
 	if err := os.Remove(filepath.Join(newest, ManifestFilename)); err != nil {
 		t.Fatal(err)
 	}
@@ -268,12 +255,11 @@ func TestListSnapshots_FirstCompleteMatchesSelectLatest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListSnapshots: %v", err)
 	}
-	// 世代が先（新しい順）、旧形式が後。
 	var gotNames []string
 	for _, st := range statuses {
 		gotNames = append(gotNames, st.Name)
 	}
-	want := []string{"catalog-20260702T000000Z", "catalog-20260701T000000Z", "catalog-20260909T000000Z.json"}
+	want := []string{"catalog-20260702T000000Z", "catalog-20260701T000000Z"}
 	if len(gotNames) != len(want) {
 		t.Fatalf("statuses = %v, want %v", gotNames, want)
 	}
@@ -297,9 +283,9 @@ func TestListSnapshots_FirstCompleteMatchesSelectLatest(t *testing.T) {
 		t.Errorf("SelectLatest picked %q, but the first complete status is %q",
 			sel.Generation, statuses[1].Name)
 	}
-	// 飛ばしたものは世代として報告される（旧形式ファイルと区別できる）。
-	if len(sel.Rejected) != 1 || !sel.Rejected[0].Generation {
-		t.Errorf("rejected = %+v, want the incomplete generation flagged as a generation", sel.Rejected)
+	// 飛ばした世代は黙って落とさず報告される。
+	if len(sel.Rejected) != 1 || sel.Rejected[0].Name != "catalog-20260702T000000Z" {
+		t.Errorf("rejected = %+v, want the incomplete newest generation", sel.Rejected)
 	}
 }
 
@@ -443,76 +429,6 @@ func TestSelectLatest_FallsBackToPreviousComplete(t *testing.T) {
 	}
 	if doc.Recordings[0].Title != "old" {
 		t.Errorf("title = %q, want %q", doc.Recordings[0].Title, "old")
-	}
-}
-
-// manifest を持たない旧形式のフラットファイルは、完成世代が 1 つも無いときだけ
-// 最後の手段として使われること（完成世代があるならそちらが優先）。
-func TestSelectLatest_LegacyFlatFileIsLastResort(t *testing.T) {
-	dir := t.TempDir()
-	catalogDir := Dir(dir)
-	if err := os.MkdirAll(catalogDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	// 世代ディレクトリより**新しい**時刻の旧形式ファイル。
-	legacyPath := filepath.Join(catalogDir, "catalog-20260909T000000Z.json")
-	legacyDoc, err := json.Marshal(testDoc(time.Date(2026, 9, 9, 0, 0, 0, 0, time.UTC), "legacy"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(legacyPath, legacyDoc, 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	sel, err := SelectLatest(dir)
-	if err != nil {
-		t.Fatalf("SelectLatest: %v", err)
-	}
-	if !sel.Legacy || sel.DocumentPath != legacyPath {
-		t.Fatalf("selection = %+v, want the legacy flat file", sel)
-	}
-
-	// 完成世代を足すと、旧形式より古くてもそちらが選ばれる（検証できる方を採る）。
-	writeCompleteGeneration(t, dir, time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC), "verified")
-	sel, err = SelectLatest(dir)
-	if err != nil {
-		t.Fatalf("SelectLatest after adding a generation: %v", err)
-	}
-	if sel.Legacy || sel.Generation != "catalog-20260701T000000Z" {
-		t.Fatalf("selection = %+v, want the verified generation", sel)
-	}
-}
-
-// 世代ディレクトリ導入前に書かれた（manifest を持たない）catalog からも復元
-// できること。ただし「検証できていない」ことが結果に出る。
-func TestRescueLatest_LegacyFlatFileStillRestores(t *testing.T) {
-	pool := testutil.SetupDB(t)
-	mediaDir := t.TempDir()
-	catalogDir := Dir(mediaDir)
-	if err := os.MkdirAll(catalogDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	doc := testDoc(time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC), "legacy title")
-	raw, err := json.Marshal(doc)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(catalogDir, "catalog-20260701T000000Z.json"), raw, 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	result, err := RescueLatest(context.Background(), pool, mediaDir, "default")
-	if err != nil {
-		t.Fatalf("RescueLatest: %v", err)
-	}
-	if !result.LegacyCatalog {
-		t.Error("LegacyCatalog should be true (the caller must be able to report that completeness was not verified)")
-	}
-	if result.Generation != "" {
-		t.Errorf("Generation = %q, want empty for a legacy flat file", result.Generation)
-	}
-	if result.Recordings != 1 {
-		t.Errorf("rescued recordings = %d, want 1", result.Recordings)
 	}
 }
 

@@ -223,7 +223,7 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RescueLatest: %v", err)
 	}
-	if result.Generation == "" || result.LegacyCatalog {
+	if result.Generation == "" {
 		t.Fatalf("rescued from %+v, want a verified generation", result)
 	}
 	if result.Rules != 1 || result.Recordings != 2 || result.MediaAssets != 1 || result.DropStats != 1 {
@@ -236,6 +236,26 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 	}
 	if result.ProgramIntents != 1 || result.ProgramSnapshots != 1 {
 		t.Fatalf("rescue intents=%d snaps=%d", result.ProgramIntents, result.ProgramSnapshots)
+	}
+
+	// **件数ではなく値を見る。** チャンネル・イベント識別 6 列は catalog の
+	// 往復で入れ替わっても件数は 1 のままなので、カウントだけでは
+	// export 側で NetworkID と ServiceID を取り違えても緑になる。
+	// 期待値は seed と同じリテラル（実装から引き直さない）。
+	var (
+		gotNet, gotSvc, gotEvent  int32
+		gotChType, gotCh, gotName string
+	)
+	if err := pool.QueryRow(ctx, `
+		SELECT network_id, service_id, channel_type, channel, event_id, service_name
+		FROM program_snapshots WHERE site = 'default' AND program_id = 999001
+	`).Scan(&gotNet, &gotSvc, &gotChType, &gotCh, &gotEvent, &gotName); err != nil {
+		t.Fatalf("reading restored program_snapshot: %v", err)
+	}
+	if gotNet != 32736 || gotSvc != 1025 || gotChType != "GR" ||
+		gotCh != "28" || gotEvent != 200 || gotName != "NHK総合" {
+		t.Errorf("restored snapshot identity = (%d, %d, %q, %q, %d, %q); want (32736, 1025, \"GR\", \"28\", 200, \"NHK総合\")",
+			gotNet, gotSvc, gotChType, gotCh, gotEvent, gotName)
 	}
 
 	// IDs preserved.

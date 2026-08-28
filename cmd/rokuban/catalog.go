@@ -56,28 +56,18 @@ func runCatalogVerify(mediaDir string, out io.Writer) error {
 	var selected string
 	var newestGeneration *catalog.SnapshotStatus
 	for i, st := range statuses {
-		switch {
-		case st.Generation && st.Complete:
+		if st.Complete {
 			_, _ = fmt.Fprintf(out, "  [complete]   %s (schema v%d, exported %s)\n",
 				st.Name, st.Manifest.SchemaVersion, st.Manifest.ExportedAt.Format("2006-01-02T15:04:05Z"))
-		case st.Generation:
-			_, _ = fmt.Fprintf(out, "  [incomplete] %s: %s\n", st.Name, st.Reason)
-		case st.Complete:
-			// 旧形式のフラットファイルは manifest を持たないので、読めたことは
-			// 完成の証明にならない（docs/storage.md §8）。
-			_, _ = fmt.Fprintf(out, "  [unverified] %s (legacy file without a manifest)\n", st.Name)
-		default:
-			_, _ = fmt.Fprintf(out, "  [unreadable] %s: %s\n", st.Name, st.Reason)
-		}
-
-		if st.Generation && newestGeneration == nil {
-			newestGeneration = &statuses[i]
-		}
-		if st.Generation && st.Complete {
 			complete++
+			if selected == "" {
+				selected = st.Name
+			}
+		} else {
+			_, _ = fmt.Fprintf(out, "  [incomplete] %s: %s\n", st.Name, st.Reason)
 		}
-		if st.Complete && selected == "" {
-			selected = st.Name
+		if newestGeneration == nil {
+			newestGeneration = &statuses[i]
 		}
 	}
 
