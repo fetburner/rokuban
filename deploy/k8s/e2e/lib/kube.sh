@@ -592,13 +592,12 @@ pausedByHarnessAnnotation="rokuban-e2e/paused-by-harness"
 
 # e2e_non_fixture_names <資源種別> [追加のセレクタ] --- 身代わりラベルを持たない
 # オブジェクトの名前を返す。
+#
+# **除外は kubectl のセレクタでやる**（`!<ラベル>` = そのラベルを持たない）。
+# 自前で全件を JSON に落として絞り込むと、同じことを 5 行かけて書き直すことになる。
 e2e_non_fixture_names() {
-  k get "$1" ${2:+-l "$2"} -o json 2>/dev/null | python3 -c '
-import json, sys
-doc = json.load(sys.stdin)
-print(" ".join(i["metadata"]["name"] for i in doc.get("items", [])
-                if i["metadata"].get("labels", {}).get("rokuban-e2e/fixture") != "true"))
-'
+  k get "$1" -l "!rokuban-e2e/fixture${2:+,$2}" \
+    -o jsonpath='{.items[*].metadata.name}' 2>/dev/null
 }
 
 pause_product_workloads() {

@@ -60,8 +60,8 @@ E2E_ENCODE_PRODUCER="${E2E_ENCODE_PRODUCER:-produce_real_encode_job}"
 # プロファイルは `deploy/k8s/overlays/e2e/config.yml` の `encode.profiles` に
 # 定義してある（**狙って遅くしてある** --- 判定 3 は 2 つの窓ぶん走り続けて
 # いることを要求する）。
-E2E_ENCODE_REL_PATH="${E2E_ENCODE_REL_PATH:-e2e/encode-probe.m2ts}"
-E2E_ENCODE_PROFILE="${E2E_ENCODE_PROFILE:-e2e-slow}"
+E2E_ENCODE_REL_PATH="e2e/encode-probe.m2ts"
+E2E_ENCODE_PROFILE="e2e-slow"
 # 仕込んだ recording を後から見分けるための印。周回ごとに掃除する。
 E2E_ENCODE_TITLE="e2e encode probe"
 

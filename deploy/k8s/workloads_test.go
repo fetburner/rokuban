@@ -21,11 +21,11 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/goccy/go-yaml"
 
@@ -228,39 +228,58 @@ func TestScaledJobsCoverEveryQueue(t *testing.T) {
 //
 // 走査の形が変わって何も見つからなくなる（＝この検査が黙って死ぬ）ことを防ぐ
 // ため、**`Queue:` の指定そのものが 1 つも見つからなければ落とす。**
+//
+// **Go のソースを読む検査はこのファイルで 2 つあり、どちらも go/ast で読む**
+// （もう 1 つは enqueueJobsFromSource）。行の文字列一致で書くと、コメントや
+// 文字列リテラルの中の同じ語を数えてしまう。
 func someJobUsesTheDefaultQueue(t *testing.T) bool {
 	t.Helper()
-	paths, err := filepath.Glob("../../internal/worker/*.go")
-	if err != nil || len(paths) == 0 {
-		t.Fatalf("globbing internal/worker: %v", err)
-	}
 	assignments, defaults := 0, 0
+	for _, f := range parseGoFiles(t, "../../internal/worker/*.go") {
+		ast.Inspect(f, func(n ast.Node) bool {
+			kv, ok := n.(*ast.KeyValueExpr)
+			if !ok {
+				return true
+			}
+			if key, ok := kv.Key.(*ast.Ident); !ok || key.Name != "Queue" {
+				return true
+			}
+			assignments++
+			if sel, ok := kv.Value.(*ast.SelectorExpr); ok && sel.Sel.Name == "QueueDefault" {
+				defaults++
+			}
+			return true
+		})
+	}
+	if assignments == 0 {
+		t.Fatal("no `Queue:` field is set anywhere in internal/worker (the scan no longer sees the InsertOpts; this check is blind)")
+	}
+	return defaults > 0
+}
+
+// parseGoFiles は glob に一致する非テストの Go ファイルを構文木にして返す。
+func parseGoFiles(t *testing.T, glob string) []*ast.File {
+	t.Helper()
+	paths, err := filepath.Glob(glob)
+	if err != nil || len(paths) == 0 {
+		t.Fatalf("globbing %s: %v", glob, err)
+	}
+	fset := token.NewFileSet()
+	var out []*ast.File
 	for _, p := range paths {
 		if strings.HasSuffix(p, "_test.go") {
 			continue
 		}
-		raw, err := os.ReadFile(p)
+		f, err := parser.ParseFile(fset, p, nil, 0)
 		if err != nil {
-			t.Fatalf("reading %s: %v", p, err)
+			t.Fatalf("parsing %s: %v", p, err)
 		}
-		for _, line := range strings.Split(string(raw), "\n") {
-			// コメント行は数えない（`// Queue: ...` の説明が混ざる）。
-			if strings.HasPrefix(strings.TrimSpace(line), "//") {
-				continue
-			}
-			if !strings.Contains(line, "Queue:") {
-				continue
-			}
-			assignments++
-			if strings.Contains(line, "river.QueueDefault") {
-				defaults++
-			}
-		}
+		out = append(out, f)
 	}
-	if assignments == 0 {
-		t.Fatal("no `Queue:` assignment found in internal/worker (the scan no longer sees the InsertOpts; this check is blind)")
+	if len(out) == 0 {
+		t.Fatalf("%s matched only test files", glob)
 	}
-	return defaults > 0
+	return out
 }
 
 // triggerQuery は ScaledJob の 1 本目のトリガのクエリを、空白を 1 つに畳んで返す。
@@ -361,29 +380,17 @@ func TestScaledJobsRunOnceWorkers(t *testing.T) {
 	}
 }
 
-var durationRe = regexp.MustCompile(`^(\d+)(s|m|h)$`)
-
-// parseSimpleDuration は `5s` / `30m` / `1h` を秒に直す。
+// softStopSeconds は `--soft-stop-timeout` に書いた値を秒で返す。
 //
-// **`time.ParseDuration` を使わない。** マニフェストに書いてよい形をここで
-// 狭めている（`1h30m` のような複合形は、下の足し算を読む人が暗算できない）。
-func parseSimpleDuration(t *testing.T, s string) int {
+// **cobra が読むのと同じパーサを使う**（`time.ParseDuration`）。独自の書式に
+// 狭めると、**このテストは通るのにプロセスが起動しない値**を見逃しうる。
+func softStopSeconds(t *testing.T, s string) int {
 	t.Helper()
-	m := durationRe.FindStringSubmatch(s)
-	if m == nil {
-		t.Fatalf("--soft-stop-timeout %q is not one of <n>s / <n>m / <n>h", s)
-	}
-	n, err := strconv.Atoi(m[1])
+	d, err := time.ParseDuration(s)
 	if err != nil {
-		t.Fatalf("parsing %q: %v", s, err)
+		t.Fatalf("--soft-stop-timeout %q: %v", s, err)
 	}
-	switch m[2] {
-	case "m":
-		return n * 60
-	case "h":
-		return n * 3600
-	}
-	return n
+	return int(d.Seconds())
 }
 
 // worker ロールの Pod の `terminationGracePeriodSeconds` が drain を包むこと。
@@ -427,7 +434,7 @@ func TestWorkerGraceCoversTheSoftStop(t *testing.T) {
 		// 10 は cmd/rokuban/server.go の `httpShutdownTimeout`（停止待ち）と、
 		// 猶予が切れたあと畳み終えるぶん。**実装の定数を参照せずリテラルで書く**。
 		const stopWait, teardown = 10, 10
-		want := preStop + stopWait + parseSimpleDuration(t, soft) + teardown
+		want := preStop + stopWait + softStopSeconds(t, soft) + teardown
 		if grace <= want {
 			t.Errorf("%s terminationGracePeriodSeconds = %d, want > %d "+
 				"(preStop %ds + stop wait %ds + --soft-stop-timeout %s + teardown %ds)",
@@ -458,14 +465,8 @@ type enqueueJobSpec struct {
 // ため（`go run ./cmd/rokuban enqueue --help` でも同じことはできる）。
 func enqueueJobsFromSource(t *testing.T) []enqueueJobSpec {
 	t.Helper()
-	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, enqueueSourcePath, nil, 0)
-	if err != nil {
-		t.Fatalf("parsing %s: %v", enqueueSourcePath, err)
-	}
-
 	var lit *ast.CompositeLit
-	ast.Inspect(f, func(n ast.Node) bool {
+	ast.Inspect(parseGoFiles(t, enqueueSourcePath)[0], func(n ast.Node) bool {
 		vs, ok := n.(*ast.ValueSpec)
 		if !ok || len(vs.Names) != 1 || vs.Names[0].Name != "enqueueJobs" || len(vs.Values) != 1 {
 			return true
