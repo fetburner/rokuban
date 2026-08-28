@@ -36,10 +36,23 @@ import (
 )
 
 const (
-	baseDir        = "base"
-	overlaysDir    = "overlays"
-	configFileName = "config.yml"
-	apiDeployment  = "Deployment/rokuban-api"
+	baseDir     = "base"
+	siteDir     = "site"
+	overlaysDir = "overlays"
+	// enqueueSourcePath は `rokuban enqueue` が受け付けるジョブの表。CronJob の
+	// 網羅を見る検査（TestCronJobsCoverEveryEnqueueJob）がここを読む。
+	enqueueSourcePath = "../../cmd/rokuban/enqueue.go"
+	configFileName    = "config.yml"
+	apiDeployment     = "Deployment/rokuban-api"
+
+	// baseSiteName は `deploy/k8s/site` が名乗るサイト名。
+	//
+	// `mirakc:`（単一形式）で site 名を書かなかったときに internal/config が
+	// 入れる名前がこれなので、単一サイト構成の overlay は patch 無しで
+	// `deploy/k8s/site` をそのまま使える（`overlays/kind`）。
+	// **リテラルで書く**（internal/config の定数を参照すると、両方を同時に
+	// 変えたときに何も主張しなくなる）。
+	baseSiteName = "default"
 )
 
 // object は 1 つの k8s オブジェクト（YAML ドキュメント 1 つ）。
@@ -71,6 +84,7 @@ type image struct {
 }
 
 type kustomization struct {
+	Configurations        []string         `yaml:"configurations"`
 	Resources             []string         `yaml:"resources"`
 	ConfigMapGenerator    []generator      `yaml:"configMapGenerator"`
 	SecretGenerator       []generator      `yaml:"secretGenerator"`
@@ -93,16 +107,26 @@ var externalSecrets = map[string]string{
 
 func loadKustomization(t *testing.T) kustomization {
 	t.Helper()
-	raw, err := os.ReadFile(filepath.Join(baseDir, "kustomization.yaml"))
+	return loadKustomizationIn(t, baseDir)
+}
+
+// loadKustomizationIn は dir の kustomization.yaml を読む。
+//
+// **base と site の 2 つがある。** base は中央（site 非依存）、site はサイト
+// 1 組ぶんで、overlay が site のほうをサイトの数だけ生やす
+// （deploy/k8s/site/kustomization.yaml）。
+func loadKustomizationIn(t *testing.T, dir string) kustomization {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(dir, "kustomization.yaml"))
 	if err != nil {
-		t.Fatalf("reading kustomization.yaml: %v", err)
+		t.Fatalf("reading %s/kustomization.yaml: %v", dir, err)
 	}
 	var k kustomization
 	if err := yaml.Unmarshal(raw, &k); err != nil {
-		t.Fatalf("decoding kustomization.yaml: %v", err)
+		t.Fatalf("decoding %s/kustomization.yaml: %v", dir, err)
 	}
 	if len(k.Resources) == 0 {
-		t.Fatal("kustomization.yaml lists no resources")
+		t.Fatalf("%s/kustomization.yaml lists no resources", dir)
 	}
 	return k
 }
@@ -116,11 +140,34 @@ func loadKustomization(t *testing.T) kustomization {
 // TestKustomizationCoversEveryFile が別に見る。
 func loadBase(t *testing.T) []object {
 	t.Helper()
+	return loadDir(t, baseDir)
+}
+
+// loadSite はサイト 1 組ぶん（`deploy/k8s/site`）を読む。
+func loadSite(t *testing.T) []object {
+	t.Helper()
+	return loadDir(t, siteDir)
+}
+
+// loadAll は base と site の両方を読む。
+//
+// **「全 Pod に効く」検査はこちらを使う**（締め方・service links・参照解決）。
+// base だけを見ていると、site 束縛のワークロード（watcher / site 束縛キューの
+// ScaledJob / site 束縛ジョブの CronJob）が検査を丸ごと素通りする ---
+// このファイルが避けようとしている「クラスタに載せるまで分からない」形が、
+// 対象の半分について復活する。
+func loadAll(t *testing.T) []object {
+	t.Helper()
+	return append(loadBase(t), loadSite(t)...)
+}
+
+func loadDir(t *testing.T, dir string) []object {
+	t.Helper()
 	var objs []object
-	for _, name := range loadKustomization(t).Resources {
-		f, err := os.Open(filepath.Join(baseDir, name))
+	for _, name := range loadKustomizationIn(t, dir).Resources {
+		f, err := os.Open(filepath.Join(dir, name))
 		if err != nil {
-			t.Fatalf("opening %s (listed in kustomization.yaml): %v", name, err)
+			t.Fatalf("opening %s (listed in %s/kustomization.yaml): %v", name, dir, err)
 		}
 		dec := yaml.NewDecoder(f)
 		for {
@@ -140,7 +187,7 @@ func loadBase(t *testing.T) []object {
 		_ = f.Close()
 	}
 	if len(objs) == 0 {
-		t.Fatal("no manifests found via kustomization.yaml resources")
+		t.Fatalf("no manifests found via %s/kustomization.yaml resources", dir)
 	}
 	return objs
 }
@@ -272,7 +319,7 @@ func findPodTemplates(v any) []map[string]any {
 // 素通りする（実測）。**新しい kind を足す人に必要なのは、テストが落ちて
 // podTemplate に 1 行足すこと**であって、静かに検査対象ゼロで緑になることではない。
 func TestEveryWorkloadIsInspected(t *testing.T) {
-	for _, o := range loadBase(t) {
+	for _, o := range loadAll(t) {
 		found := findPodTemplates(o.doc)
 		if len(found) == 0 {
 			continue
@@ -328,7 +375,7 @@ func container(t *testing.T, specs map[string]map[string]any, workload, name str
 // ConfigMap / Secret への参照（envFrom / env.valueFrom / volumes）が、
 // base に実在するオブジェクト（generator 由来を含む）を指していること。
 func TestManifestReferencesResolve(t *testing.T) {
-	objs := loadBase(t)
+	objs := loadAll(t)
 	keysOf := dataKeys(t, objs)
 
 	// 検査した参照の数。**下限を主張する。** ループの入口が空（`spec.template` の
@@ -408,9 +455,13 @@ func TestManifestReferencesResolve(t *testing.T) {
 		}
 	}
 
-	// 現状 4 件（api / migrate それぞれの config volume と envFrom）。
+	// base + site の全ワークロードぶん（config volume / envFrom /
+	// `POSTGRES_CONNECTION_STRING` の secretKeyRef）で 55 件ある。
 	// ワークロードを足すなら増える一方なので、下回ったら検査が空回りしている。
-	const wantAtLeast = 4
+	// **下限は少し緩く取ってある** --- 1 つの Pod の参照が減っただけで落ちる
+	// 値にすると、正当な整理のたびに数を書き換えることになり、そのうち
+	// 誰も意味を確かめずに書き換えるようになる。
+	const wantAtLeast = 50
 	if checked < wantAtLeast {
 		t.Errorf("only %d references were checked, want >= %d (a reference was removed, or the traversal is not reaching the pod specs)",
 			checked, wantAtLeast)
@@ -754,7 +805,7 @@ var configVarRe = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)(:-[^}]*)?\}`)
 func TestConfigVarsAreSupplied(t *testing.T) {
 	required := requiredConfigVars(t)
 
-	objs := loadBase(t)
+	objs := loadAll(t)
 	keysOf := dataKeys(t, objs)
 	mounters := 0
 	for id, podSpec := range podSpecs(objs) {
@@ -822,7 +873,7 @@ func TestConfigVarsAreSupplied(t *testing.T) {
 // 当たっていない Service は Endpoints が空のまま「正常に」存在するので、
 // スキーマ検証では絶対に出ない。
 func TestServiceSelectorsMatchAPod(t *testing.T) {
-	objs := loadBase(t)
+	objs := loadAll(t)
 
 	labels := map[string]map[string]string{}
 	for _, o := range objs {
@@ -875,7 +926,7 @@ func TestServiceSelectorsMatchAPod(t *testing.T) {
 // （不一致だと apply 自体が拒否されるが、それが分かるのはクラスタに載せてから）。
 func TestDeploymentSelectorMatchesOwnTemplate(t *testing.T) {
 	deployments := 0
-	for _, o := range loadBase(t) {
+	for _, o := range loadAll(t) {
 		if o.kind() != "Deployment" {
 			continue
 		}
@@ -905,48 +956,57 @@ func TestDeploymentSelectorMatchesOwnTemplate(t *testing.T) {
 // （kubeconform は build の出力しか見ない）。`.yml` / `.yaml` の両方を見るのは、
 // 拡張子を変えただけで検査から消える穴を作らないため。
 func TestKustomizationCoversEveryFile(t *testing.T) {
-	k := loadKustomization(t)
+	// **site/ も同じ規律で見る。** site 束縛のワークロードを 1 ファイル
+	// 足して resources に書き忘れると、そのサイトは watcher も ingest も
+	// 持たないまま「apply は成功」する。
+	for _, dir := range []string{baseDir, siteDir} {
+		t.Run(dir, func(t *testing.T) {
+			k := loadKustomizationIn(t, dir)
 
-	covered := map[string]bool{"kustomization.yaml": true}
-	for _, r := range k.Resources {
-		covered[r] = true
-	}
-	// 意図的に apply しないファイル（外部供給 Secret の形）。
-	for _, example := range externalSecrets {
-		covered[example] = true
-	}
-	for _, gens := range [][]generator{k.ConfigMapGenerator, k.SecretGenerator} {
-		for _, g := range gens {
-			for _, f := range g.Files {
-				if i := strings.Index(f, "="); i >= 0 {
-					f = f[i+1:]
+			covered := map[string]bool{"kustomization.yaml": true}
+			for _, r := range append(append([]string{}, k.Resources...), k.Configurations...) {
+				covered[r] = true
+			}
+			// 意図的に apply しないファイル（外部供給 Secret の形）。base だけ。
+			if dir == baseDir {
+				for _, example := range externalSecrets {
+					covered[example] = true
 				}
-				covered[f] = true
 			}
-			for _, e := range g.Envs {
-				covered[e] = true
+			for _, gens := range [][]generator{k.ConfigMapGenerator, k.SecretGenerator} {
+				for _, g := range gens {
+					for _, f := range g.Files {
+						if i := strings.Index(f, "="); i >= 0 {
+							f = f[i+1:]
+						}
+						covered[f] = true
+					}
+					for _, e := range g.Envs {
+						covered[e] = true
+					}
+				}
 			}
-		}
-	}
 
-	entries, err := os.ReadDir(baseDir)
-	if err != nil {
-		t.Fatalf("reading %s: %v", baseDir, err)
-	}
-	for _, e := range entries {
-		name := e.Name()
-		if e.IsDir() || !slices.Contains([]string{".yaml", ".yml"}, filepath.Ext(name)) {
-			continue
-		}
-		if !covered[name] {
-			t.Errorf("%s/%s exists but kustomization.yaml lists it neither in resources nor as a generator input",
-				baseDir, name)
-		}
-	}
-	for _, r := range k.Resources {
-		if _, err := os.Stat(filepath.Join(baseDir, r)); err != nil {
-			t.Errorf("kustomization.yaml lists resources entry %q, which does not exist: %v", r, err)
-		}
+			entries, err := os.ReadDir(dir)
+			if err != nil {
+				t.Fatalf("reading %s: %v", dir, err)
+			}
+			for _, e := range entries {
+				name := e.Name()
+				if e.IsDir() || !slices.Contains([]string{".yaml", ".yml"}, filepath.Ext(name)) {
+					continue
+				}
+				if !covered[name] {
+					t.Errorf("%s/%s exists but kustomization.yaml lists it neither in resources nor as a generator input",
+						dir, name)
+				}
+			}
+			for _, r := range k.Resources {
+				if _, err := os.Stat(filepath.Join(dir, r)); err != nil {
+					t.Errorf("%s/kustomization.yaml lists resources entry %q, which does not exist: %v", dir, r, err)
+				}
+			}
+		})
 	}
 }
 
@@ -988,7 +1048,7 @@ func TestAPIProbesUseTheRightEndpoints(t *testing.T) {
 // `http` から変えるだけで、probe は解決先を失って **Pod は永久に Ready にならず**、
 // Service の Endpoints も機能しない。それでも build も schema 検証も緑になる（実測）。
 func TestNamedPortsResolve(t *testing.T) {
-	objs := loadBase(t)
+	objs := loadAll(t)
 	specs := podSpecs(objs)
 
 	// Pod テンプレートごとの、コンテナが宣言したポート名。
@@ -1087,7 +1147,7 @@ func TestNamedPortsResolve(t *testing.T) {
 // どれ 1 つでも api は config を開けず CrashLoopBackOff になるが、3 つが噛み合って
 // いるかを見るものが他に無い（実測: mountPath を変えても全テスト緑だった）。
 func TestConfigFlagPointsAtTheMountedFile(t *testing.T) {
-	objs := loadBase(t)
+	objs := loadAll(t)
 	keysOf := dataKeys(t, objs)
 
 	checked := 0
@@ -1142,8 +1202,10 @@ func TestConfigFlagPointsAtTheMountedFile(t *testing.T) {
 			}
 		}
 	}
-	if checked < 2 { // api と migrate
-		t.Errorf("only %d --config flags were checked, want >= 2", checked)
+	// base + site の全コンテナが `--config` を持つ（22 件）。下限を緩く取る
+	// 理由は TestManifestReferencesResolve の wantAtLeast と同じ。
+	if checked < 20 {
+		t.Errorf("only %d --config flags were checked, want >= 20", checked)
 	}
 }
 
@@ -1297,7 +1359,7 @@ func TestAPIHasRedundancyAndAPDB(t *testing.T) {
 // 個々のマニフェストのコメントが根拠を書いている設定は、新しいワークロードを
 // 足すときに書き忘れる形で消える。ここで一律に見る。
 func TestPodsAreHardened(t *testing.T) {
-	specs := podSpecs(loadBase(t))
+	specs := podSpecs(loadAll(t))
 	if len(specs) == 0 {
 		t.Fatal("no pod specs found")
 	}
@@ -1354,7 +1416,7 @@ func TestMigrateJobRunsUp(t *testing.T) {
 //
 // 既定が true なので、新しいワークロードを足すときに書き忘れる形で再発する。
 func TestPodsDisableServiceLinks(t *testing.T) {
-	specs := podSpecs(loadBase(t))
+	specs := podSpecs(loadAll(t))
 	if len(specs) == 0 {
 		t.Fatal("no pod specs found")
 	}
@@ -1429,7 +1491,7 @@ func stringValues(v any) []string {
 // 測ることになる。
 func TestOverlaysAreConsistent(t *testing.T) {
 	baseImages := map[string]bool{}
-	for _, spec := range podSpecs(loadBase(t)) {
+	for _, spec := range podSpecs(loadAll(t)) {
 		for _, c := range containers(spec) {
 			img := strAt(c, "image")
 			if i := strings.LastIndex(img, ":"); i >= 0 {

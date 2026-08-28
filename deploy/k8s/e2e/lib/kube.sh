@@ -421,6 +421,89 @@ insert_probe_job() {
           FROM generate_series(1, $count)" >/dev/null
 }
 
+# ---- 判定 3 の producer（実物の encode を 1 件走らせる）--------------------
+#
+# **既定の `insert_probe_job` は実物のワークロードには使えない。** `e2e_probe` は
+# rokuban に登録された kind ではないので、掴んだ worker は 1 回失敗して数秒で
+# 終わる --- 判定 3 は「窓の中で完走した」として TODO で抜け、`summary` は
+# exit 2 を返す（受け入れの「全部緑」を満たさない）。
+#
+# 実物の encode を 1 件作るのに要るものは 4 つある。
+#
+#   1. media ボリュームの上の原本（`cluster/media-seed-job.yaml` が書く）
+#   2. その原本を指す `recordings` + `media_assets` の行
+#   3. 解決できる encode プロファイル（`overlays/e2e/config.yml` の `e2e-slow`）
+#   4. `encode` キューへの投入 --- **`rokuban enqueue` に `encode` は無い**
+#      （あるのは DB を読んで投入する `encode-reconcile`）ので直 INSERT する
+#
+# 判定側（生存の観測と positive control）は身代わりで検証済みなので、
+# 差し替えるのはここ（実行中の Job を 1 つ作るところ）だけでよい。
+
+# e2e_seed_media_file は原本を書く Job を回し、そのバイト数を stdout に返す。
+e2e_seed_media_file() {
+  # **先に消す。** Job の spec は immutable なので、前の周回のものが残っていると
+  # apply が `field is immutable` で落ちる（deploy/k8s/README.md と同じ罠）。
+  k delete job e2e-media-seed --ignore-not-found >/dev/null 2>&1 || true
+  apply_template "$E2E_DIR/cluster/media-seed-job.yaml" || return 1
+  if ! k wait --for=condition=complete job/e2e-media-seed --timeout=300s >/dev/null 2>&1; then
+    log_step "media seed job did not complete: $(k logs job/e2e-media-seed 2>&1 | tail -3 | tr '\n' ' ')"
+    return 1
+  fi
+  local size
+  size="$(k logs job/e2e-media-seed 2>/dev/null | sed -n 's/^SIZE=//p' | tr -d '[:space:]')"
+  # **0 を許さない。** ffmpeg が何も書かなくても Job は成功しうる形にはして
+  # いないが、ここで潰すと「原本が空でもエンコードは一瞬で終わる」形になり、
+  # 判定 3 が TODO に化けて原因が出力から読めなくなる。
+  if [ -z "$size" ] || [ "$size" = "0" ]; then
+    log_step "media seed job wrote no bytes"
+    return 1
+  fi
+  printf '%s' "$size"
+}
+
+produce_real_encode_job() {
+  # 前の周回の残骸を落とす。**media_assets を先に消す**（recordings への FK は
+  # ON DELETE CASCADE ではない）。
+  psql_q "DELETE FROM river_job WHERE queue = 'encode'" >/dev/null || return 1
+  psql_q "DELETE FROM media_assets WHERE recording_id IN
+            (SELECT id FROM recordings WHERE title = '${E2E_ENCODE_TITLE}')" >/dev/null || return 1
+  psql_q "DELETE FROM recordings WHERE title = '${E2E_ENCODE_TITLE}'" >/dev/null || return 1
+
+  local size
+  size="$(e2e_seed_media_file)" || return 1
+
+  # **`RETURNING id` の値だけを取る。** `psql -tAc` は行に続けてコマンドの
+  # 状態タグ（`INSERT 0 1`）も出すので、`tr -d '[:space:]'` だけで畳むと
+  # `1INSERT01` という「数値でも id でもない何か」が出来上がり、次の INSERT が
+  # `trailing junk after numeric literal` で落ちる（実測）。
+  local rec_id
+  rec_id="$(psql_q "INSERT INTO recordings
+      (source, site, network_id, service_id, event_id, service_name,
+       channel_type, channel, title, program_start_at, program_duration_ms, status)
+    VALUES
+      ('manual', '${E2E_SITE_A}', 32736, 1, 1, 'e2e',
+       'GR', '27', '${E2E_ENCODE_TITLE}', now(), 60000, 'finished')
+    RETURNING id" | head -1 | tr -d '[:space:]')" || return 1
+  # 数値であることまで見る（空でないだけだと、上の壊れ方をもう一度通す）。
+  case "$rec_id" in
+    ''|*[!0-9]*)
+      log_step "could not read the probe recording id (got '${rec_id}')"
+      return 1 ;;
+  esac
+
+  psql_q "INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes, state)
+          VALUES (${rec_id}, 'original', '${E2E_ENCODE_REL_PATH}', ${size}, 'active')" >/dev/null || return 1
+
+  # **`max_attempts` は 1。** 失敗したら `discarded` になって滞留が消える ---
+  # 再試行で新しい Job が起き続けると、判定 3 が「どの Job を見ているのか」を
+  # 見失う。
+  psql_q "INSERT INTO river_job (state, queue, kind, args, max_attempts, priority, scheduled_at)
+          VALUES ('available', 'encode', 'encode',
+                  jsonb_build_object('recording_id', ${rec_id}::bigint, 'profile', '${E2E_ENCODE_PROFILE}'),
+                  1, 1, now())" >/dev/null || return 1
+  log_step "queued a real encode job (recording_id=${rec_id}, profile=${E2E_ENCODE_PROFILE}, source ${size} bytes)"
+}
+
 # drain_queue <queue> --- そのキューの**待ち**を completed にして消す。
 #
 # running は触らない。触ると判定 3（実行中の Job が殺されないこと）で、
@@ -485,6 +568,80 @@ print(" ".join(i["metadata"]["name"] for i in doc.get("items", [])
   done
 }
 
+# pause_product_workloads / resume_product_workloads
+#
+# **オラクル自己検査の間だけ、製品のワークロードを止める。**
+#
+# 身代わりは製品と同じキュー・同じ mirakc モックを共有する。探索を身代わりに
+# 絞る（`E2E_FIXTURE_SCOPE`）だけでは足りない --- **絞っているのは「どの
+# オブジェクトを判定対象にするか」だけ**で、River のキューも mirakc の接続数も
+# 共有のままだからである。実測で 2 つ踏んだ:
+#
+#   - **O3.mut-rollout が FAIL**（判定 3.3 が期待の FAIL ではなく TODO）。
+#     製品の `encode` の ScaledJob が、身代わりのために積んだ encode ジョブを
+#     先に掴んだ。身代わりの ScaledJob からは Job が起きないので、判定は
+#     「壊れている」ではなく「実行中の Job が無い」に化ける
+#   - **O4.good が製品の watcher でも緑になる。** 判定 4 は mirakc モックの
+#     `/events` の同時接続数を数えるが、製品の watcher が 1 本張っているので、
+#     身代わりが 0 本でも「1 本」に見える（身代わりが壊れていても緑）
+#
+# 止めたものだけを戻すために、**クラスタ側の annotation** に印を置く
+# （シェル変数だと中断時に戻らない。restore_cronjobs と同じ理由）。watcher は
+# 元のレプリカ数を印の値として持つ。
+pausedByHarnessAnnotation="rokuban-e2e/paused-by-harness"
+
+# e2e_non_fixture_names <資源種別> [追加のセレクタ] --- 身代わりラベルを持たない
+# オブジェクトの名前を返す。
+e2e_non_fixture_names() {
+  k get "$1" ${2:+-l "$2"} -o json 2>/dev/null | python3 -c '
+import json, sys
+doc = json.load(sys.stdin)
+print(" ".join(i["metadata"]["name"] for i in doc.get("items", [])
+                if i["metadata"].get("labels", {}).get("rokuban-e2e/fixture") != "true"))
+'
+}
+
+pause_product_workloads() {
+  local name replicas
+  for name in $(e2e_non_fixture_names scaledjobs); do
+    k annotate scaledjob "$name" "${pausedByHarnessAnnotation}=true" --overwrite >/dev/null 2>&1 || continue
+    scaledjob_pause "$name" true
+  done
+  for name in $(e2e_non_fixture_names cronjobs); do
+    k annotate cronjob "$name" "${pausedByHarnessAnnotation}=true" --overwrite >/dev/null 2>&1 || continue
+    k patch cronjob "$name" -p '{"spec":{"suspend":true}}' >/dev/null 2>&1 || true
+  done
+  # watcher だけは Deployment も落とす（上記 O4.good）。**読めなかったら
+  # 触らない** --- 元のレプリカ数が分からないまま 0 にすると戻せない。
+  for name in $(e2e_non_fixture_names deployments 'app.kubernetes.io/name=rokuban,app.kubernetes.io/component=watcher'); do
+    replicas="$(k get deployment "$name" -o jsonpath='{.spec.replicas}' 2>/dev/null)" || continue
+    [ -n "$replicas" ] || continue
+    k annotate deployment "$name" "${pausedByHarnessAnnotation}=${replicas}" --overwrite >/dev/null 2>&1 || continue
+    k scale deployment "$name" --replicas=0 >/dev/null 2>&1 || true
+  done
+}
+
+resume_product_workloads() {
+  local entry name value
+  for entry in $(k get scaledjobs,cronjobs,deployments -o json 2>/dev/null | python3 -c '
+import json, sys
+doc = json.load(sys.stdin)
+for i in doc.get("items", []):
+    mark = i["metadata"].get("annotations", {}).get(sys.argv[1])
+    if mark:
+        print(i["kind"].lower() + "/" + i["metadata"]["name"] + "=" + mark)
+' "$pausedByHarnessAnnotation"); do
+    name="${entry%%=*}"
+    value="${entry#*=}"
+    case "$name" in
+      scaledjob/*) scaledjob_pause "${name#scaledjob/}" false ;;
+      cronjob/*)   k patch cronjob "${name#cronjob/}" -p '{"spec":{"suspend":false}}' >/dev/null 2>&1 || true ;;
+      deployment/*) k scale deployment "${name#deployment/}" --replicas="$value" >/dev/null 2>&1 || true ;;
+    esac
+    k annotate "$name" "${pausedByHarnessAnnotation}-" >/dev/null 2>&1 || true
+  done
+}
+
 # scaledjob_pause <name> <true|false> --- KEDA のスケーリングを止める / 戻す。
 scaledjob_pause() {
   if [ "$2" = "true" ]; then
@@ -496,7 +653,8 @@ scaledjob_pause() {
 
 # apply_template <file> [extra sed expr...]
 #
-# `__SITE_A__` / `__SITE_B__` / `__IMAGE__` / `__MOCK_IMAGE__` を lib/env.sh の値に
+# `__SITE_A__` / `__SITE_B__` / `__IMAGE__` / `__FULL_IMAGE__` /
+# `__ENCODE_REL_PATH__` / `__MOCK_IMAGE__` を lib/env.sh の値に
 # 置き換えて apply
 # する。fixture / mutant にサイト名を直書きすると、env.sh を変えたときに
 # fixture 側だけが古いサイト名を指し、判定が「対象が無い」（TODO）に化ける。
@@ -506,6 +664,8 @@ apply_template() {
   sed -e "s/__SITE_A__/${E2E_SITE_A}/g" \
       -e "s/__SITE_B__/${E2E_SITE_B}/g" \
       -e "s|__IMAGE__|${E2E_IMAGE}|g" \
+      -e "s|__FULL_IMAGE__|${E2E_FULL_IMAGE}|g" \
+      -e "s|__ENCODE_REL_PATH__|${E2E_ENCODE_REL_PATH}|g" \
       -e "s|__MOCK_IMAGE__|${E2E_MOCK_IMAGE}|g" \
       -e "s|__BUILD_ID__|${E2E_BUILD_ID:-reused}|g" "$@" "$file" | k apply -f - >/dev/null
 }
@@ -517,6 +677,8 @@ delete_template() {
   sed -e "s/__SITE_A__/${E2E_SITE_A}/g" \
       -e "s/__SITE_B__/${E2E_SITE_B}/g" \
       -e "s|__IMAGE__|${E2E_IMAGE}|g" \
+      -e "s|__FULL_IMAGE__|${E2E_FULL_IMAGE}|g" \
+      -e "s|__ENCODE_REL_PATH__|${E2E_ENCODE_REL_PATH}|g" \
       -e "s|__MOCK_IMAGE__|${E2E_MOCK_IMAGE}|g" \
       -e "s|__BUILD_ID__|${E2E_BUILD_ID:-reused}|g" "$@" "$file" \
     | k delete --ignore-not-found -f - >/dev/null 2>&1 || true

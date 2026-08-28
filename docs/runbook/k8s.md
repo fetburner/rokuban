@@ -2,10 +2,15 @@
 
 ## k8s（中央 1 式）の確認手順
 
-`deploy/k8s` の最小 1 式（config / Secret / migration Job / api Deployment +
-Service）が kind で上がり、api に到達できることを見る。判断の根拠は
+`deploy/k8s` の 1 式が kind で上がり、api に到達できることを見る。判断の根拠は
 [operations.md](../operations.md) §5、マニフェスト側の注意は
 [deploy/k8s/README.md](../../deploy/k8s/README.md)。
+
+**この節が見るのは中央（api / notifier / streamer / migration Job / ConfigMap）
+までである。** worker は KEDA の `ScaledJob` なので、CRD の無いクラスタでは
+その部分だけが `no matches for kind "ScaledJob"` で失敗する（Deployment 側の
+apply は成功するので、**ジョブを誰も消化しない構成が黙って立つ**）。
+KEDA 込みの確認は下の§受け入れ判定ハーネスが自動で行う。
 
 **ロール分割デプロイ全体の受け入れ（KEDA / watcher の二重起動 / サイト間の
 独立）はここでは見ない。** 下の§受け入れ判定ハーネスが機械判定する。
@@ -34,10 +39,14 @@ kubectl rollout status deployment/postgres --timeout=180s
 
 # 2. イメージをビルドして kind に載せる（overlays/kind が指すタグに合わせる。
 #    :latest にすると imagePullPolicy が Always になり、ghcr の公式イメージを引く）
+#    **2 本ある**: encode / thumbnail の worker は ffmpeg 入りを指す
+#    （公式イメージは ffmpeg 非同梱で、その worker は起動時に fail-fast する）
 docker build -t rokuban:kind-test .
-kind load docker-image rokuban:kind-test --name rokuban-test
+docker build -f Dockerfile.full --build-arg BASE=rokuban:kind-test -t rokuban-full:kind-test .
+kind load docker-image rokuban:kind-test rokuban-full:kind-test --name rokuban-test
 
 # 3. 適用（image の差し替えは overlay の images: が行う）
+#    KEDA を入れていないクラスタでは ScaledJob だけが失敗する（上記）。
 kustomize build deploy/k8s/overlays/kind | kubectl apply -f -
 kubectl wait --for=condition=complete job/rokuban-migrate --timeout=180s
 
@@ -171,54 +180,65 @@ kubectl get pod -l app.kubernetes.io/component=api -o name   # Pod 名が入れ�
 `64` と `70` は判定を 1 つも記録せずに落ちる。「終了コードが上がっていないこと」
 で見るときは、この 2 つを「1 より悪い」と読まないこと。
 
-**このコマンドが 0 を返すのが、残りのワークロードを足す作業の出口**である。
-それまでは対象が無い判定が TODO で残り、2 が返る。ただし 0 は「受け入れ 5 項目を
-判定できた」であって「ワークロードが網羅されている」ではない（0 が保証しない
-ものは [deploy/k8s/e2e/README.md](../../deploy/k8s/e2e/README.md) に列挙してある）。
-項目ごとの現況は
+**0 は「受け入れ 5 項目を判定できた」であって「ワークロードが網羅されている」
+ではない**（0 が保証しないものは
+[deploy/k8s/e2e/README.md](../../deploy/k8s/e2e/README.md) に列挙してある）。
+項目ごとの対象は
 [deploy/k8s/e2e/README.md](../../deploy/k8s/e2e/README.md) の表が持つ
 （ここには書かない --- 判定を足す人が触るのはあちらなので、ここに写すと
 黙って古くなる）。
 
 mirakc は実機ではなくモックで確認している（同 README）。
 最後に通した環境は kind v0.32.0 / k8s v1.36.1 / KEDA v2.20.2（colima 2 CPU /
-4 GB、2026-08-27）。そのときの結果は次のとおり。
+3.8 GB、2026-08-28）。そのときの結果は次のとおり。
 
-| コマンド | 結果 | 終了コード |
-|---|---|---|
-| `run.sh` | `PASS 7 / FAIL 0 / TODO 18` | 2 |
-| `run.sh --oracles` | `PASS 19 / FAIL 0` | 0 |
+| コマンド | 結果 | 終了コード | 所要（実測） |
+|---|---|---|---|
+| `run.sh` | `PASS 25 / FAIL 0 / TODO 0` | 0 | 約 10 分（`--no-build`） |
+| `run.sh --oracles` | `PASS 19 / FAIL 0` | 0 | 約 40 分（同上） |
+
+**`--oracles` は長い。** 判定 2 は CronJob の自然な発火（分単位）を待ち、
+判定 3 / 5 は「起きないこと」を窓で見る。変異のたびにその待ちを通るので、
+短縮が効かない。**製品のワークロードが入ってからさらに伸びた** --- O1 の変異
+（api の Service セレクタを外す）で判定 1.6 / 1.7 が実際に走るようになり、
+到達できない api を 240 秒ずつ待つ経路が増えたため（それ以前は対象が無くて
+即 TODO で抜けていた）。一部だけ見たいときは `E2E_ORACLES_ONLY=3`。
+
+**イメージのビルドを含めると初回はさらに数分かかる。** ffmpeg 入り
+（`Dockerfile.full`）を焼いて `kind load` する時間で、`--no-build` を付けた
+2 回目以降は上の値になる。
 
 ### CI では回さない
 
 **決定: 回さない。** `web/e2e/` と同じくローカル受け入れ確認の位置づけにする。
 
-- **いま捕まえられる退行が、判定 1 の api 部分しかない。** その範囲は既存の
-  CI（`manifests` ジョブと `go test ./deploy/k8s/`）が静的に見ている範囲と
-  ほぼ重なる。判定 2〜5 が意味を持つのは残りのワークロードが入ってからである
-- そして意味を持ち始めた時点で**遅くなる**。判定 2 は CronJob の**自然な発火**
-  （分単位）を待ち、判定 3 / 5 は「起きないこと」を窓で見る。どちらも短縮が
-  効かない種類の待ちである。オラクル自己検査 `--oracles` はその待ちを含む判定を
-  何度もまわすので、体感で十数分かかる（正確には測っていない）
-- CI イメージに kind / KEDA / Postgres という新しい依存が増える
+- **遅い。** 判定 2 は CronJob の**自然な発火**（分単位）を待ち、判定 3 / 5 は
+  「起きないこと」を窓で見る。どちらも短縮が効かない種類の待ちである。実測で
+  `run.sh` が約 10 分、`--oracles` が約 40 分（上の表）
+- **CI イメージに kind / KEDA / Postgres という新しい依存が増える。** さらに
+  判定 3 は実際に ffmpeg でエンコードを回すので、CPU も要る
+- **静的に見られるぶんは既に CI にある。** キューと ScaledJob の対応・
+  `rokuban enqueue` の全ジョブに CronJob があること・トリガのクエリが物理
+  キュー名であること・overlay の patch が site 名を指していることは
+  `go test ./deploy/k8s/`（`workloads_test.go`）が見る。ここが赤くなる類の
+  退行は、クラスタを立てなくても CI で止まる
 
 **回さないなら「いつ誰が回すのか」を決めておく**（誰も回さない判定手段は無いのと
 同じ）。
 
 | いつ | 誰 | 何を見る |
 |---|---|---|
-| `deploy/k8s/` 配下を触る PR を出す前 | その PR の作者 | `run.sh` の終了コードが上がっていないこと（2 → 1 にしていない） |
-| ワークロード（Deployment / ScaledJob / CronJob）を足す PR ごと | その PR の作者 | `run.sh` で TODO が減り FAIL が出ていないこと |
-| ワークロードが出揃ったとき | その PR の作者 | `run.sh` が **0** を返すこと |
+| `deploy/k8s/` 配下を触る PR を出す前 | その PR の作者 | `run.sh` が **0** を返すこと（5 項目が緑のまま） |
 | 判定・身代わり（`fixtures/`）を足す / 変えるとき | 変更した人 | `run.sh --oracles` が全部緑（判定が効いていること） |
 
 CI が見るのはクラスタが要らない範囲の 3 つ。
 
-- `manifests`: ハーネスのマニフェストが `kustomize build` + kubeconform を通る
+- `manifests`: マニフェストが `kustomize build` + kubeconform（KEDA の CRD を
+  含む。スキーマは `deploy/k8s/schemas/`）を通る
 - `manifests`: `deploy/k8s/e2e/lib/selftest.sh` と shellcheck
 - `test`: `go test ./deploy/k8s/` が overlay の `config.yml` を `config.Load` に
-  通す。ConfigMap の中身は kustomize にも kubeconform にも不透明なので、
-  ここでしか見られない
+  通し、**argv とキュー名の噛み合わせ**（`workloads_test.go`）を見る。どちらも
+  kustomize にも kubeconform にも見えない
 
 **回さないものが腐るのを、せめてそこで止める。**
 
@@ -233,4 +253,12 @@ CI が見るのはクラスタが要らない範囲の 3 つ。
   KEDA ScaledJob」。ログは
   `kubectl -n keda logs deploy/keda-operator | grep -i error` で見る。
   直しても spec が変わらないと再 reconcile されない。ScaledJob を作り直すのが早い
+- **`--oracles` を中断した後、製品の Job が起きない / CronJob が止まっている**:
+  オラクル 2〜5 は製品のワークロードを止めてから回す（身代わりと同じキュー・
+  同じ mirakc モックを共有しているため。[deploy/k8s/e2e/README.md](../../deploy/k8s/e2e/README.md)）。
+  止めた印はクラスタ側の annotation（`rokuban-e2e/paused-by-harness`）にあり、
+  **次の `run.sh` が起動時に戻す**。手で戻すなら
+  `kubectl -n rokuban-e2e get scaledjobs,cronjobs,deployments -o json | grep paused-by-harness`
+  で対象を出してから、`autoscaling.keda.sh/paused` の annotation と
+  `spec.suspend` / `spec.replicas` を戻す
 - **クラスタを作り直したい**: `run.sh --fresh`（`--down` してから立て直す）

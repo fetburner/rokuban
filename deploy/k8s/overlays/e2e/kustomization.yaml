@@ -8,6 +8,10 @@ kind: Kustomization
 # ので、ハーネスは常に 2 サイトで立てる。判定 2〜4 も同じクラスタで回すため、
 # サイト数を判定ごとに変えない（クラスタを立て直す時間の方が高い）。
 #
+# **多サイトの差分は「レジストリに 2 要素目（config.yml）+ Pod セット 1 組
+# （sites/siteb）」だけである。** ワークロードの定義は `deploy/k8s/site` に 1 つ
+# しかない。
+#
 # **Secret はここでも出荷しない。** ハーネスは同じパスワードを postgres 側にも
 # 渡す必要があるので、出どころを 1 つ（deploy/k8s/e2e/lib/env.sh の
 # E2E_PGPASSWORD）にして run.sh が `kubectl create secret` で供給する。
@@ -15,12 +19,19 @@ kind: Kustomization
 
 resources:
   - ../../base
+  - sites/sitea
+  - sites/siteb
 
 namespace: rokuban-e2e
 
 images:
   - name: ghcr.io/fetburner/rokuban
     newName: rokuban
+    newTag: e2e
+  # ffmpeg 入り（`Dockerfile.full`）。encode / thumbnail の ScaledJob だけが使う。
+  # **ハーネスが焼いて `kind load` する**（deploy/k8s/e2e/lib/cluster.sh）。
+  - name: ghcr.io/fetburner/rokuban-full
+    newName: rokuban-full
     newTag: e2e
 
 # base の config.yml を 2 サイト構成で置き換える。**`behavior: replace`**
@@ -31,3 +42,111 @@ configMapGenerator:
     behavior: replace
     files:
       - config.yml
+
+patches:
+  # ---- 判定を待たせないための時間短縮 ----------------------------------
+  #
+  # **判定 2.3 は CronJob が「自分の schedule で」180 秒以内に発火することを
+  # 要求する**（`kubectl create job --from=cronjob` で代用すると、schedule が
+  # 止まっていても緑になるため）。base の epg-sync は実運用の 10 分なので、
+  # ここで毎分に落とす。
+  #
+  # **したがって判定 2 が測るのは出荷される schedule ではない**
+  # （deploy/k8s/e2e/README.md の「0 が保証しないもの」に書いてある）。
+  # base 側が判定の都合で短くならないことは
+  # `deploy/k8s/manifests_test.go` の TestBaseCronSchedulesAreProductionValues と
+  # TestE2EOverlayShortensTheCronScheduleItMeasures が対で固定している。
+  - target:
+      kind: CronJob
+      name: rokuban-enqueue-epg-sync
+    patch: |-
+      - op: replace
+        path: /spec/schedule
+        value: "* * * * *"
+      - op: replace
+        path: /spec/startingDeadlineSeconds
+        value: 45
+  # 判定 3 / 5 は `spec.pollingInterval` から観測窓を決める（判定 3 は 2 倍、
+  # 判定 5 は 3 倍）。base の 30 秒だと 1 周に何分もかかるので 10 秒にする。
+  # **判定側の窓もこれに追随する**ので、短くしても判定の強さは変わらない。
+  - target:
+      kind: ScaledJob
+    patch: |-
+      - op: replace
+        path: /spec/pollingInterval
+        value: 10
+  # ---- kind の 1 ノードに収めるためのレプリカ数 --------------------------
+  #
+  # **判定 1 はレプリカ数をリテラルで固定していない**（「宣言した数だけ Ready」
+  # だけを見る）ので、ここを削っても判定の意味は変わらない。api は
+  # `TestAPIHasRedundancyAndAPDB` が 2 以上を要求しているので触らない。
+  #
+  # **1 レプリカ + PDB(`minAvailable: 1`) は drain が永久にブロックする組み合わせ
+  # である**（base/pdb.yaml のコメント）。ハーネスはノードを drain しないので
+  # ここでは問題にならないが、**この patch を実運用の overlay に写さないこと。**
+  - target:
+      kind: Deployment
+      name: rokuban-notifier
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 1
+  - target:
+      kind: Deployment
+      name: rokuban-streamer
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 1
+  # ---- 1 ノードの CPU に収めるための requests ---------------------------
+  #
+  # **これが無いと判定が「Insufficient cpu」で止まる。** ScaledJob は滞留 1 件
+  # ごとに Job を起こすので、CronJob が毎分投入する構成では**同時に十数個の
+  # Pod が要求される**。base の requests（worker 50m / api 100m）だと 2 CPU の
+  # kind ノードで足りず、Pending のまま窓を使い切って FAIL する（実測:
+  # `0/1 nodes are available: 1 Insufficient cpu`。allocated 1960m/2000m）。
+  #
+  # **判定の意味は変わらない。** requests はスケジューリングの都合であって、
+  # このハーネスが見ている KEDA の挙動・キューの site 修飾・advisory lock の
+  # いずれにも効かない。**出荷される値は base のほうである。**
+  - target:
+      kind: Deployment
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/cpu
+        value: 25m
+  - target:
+      kind: Job
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/cpu
+        value: 25m
+  - target:
+      kind: CronJob
+    patch: |-
+      - op: replace
+        path: /spec/jobTemplate/spec/template/spec/containers/0/resources/requests/cpu
+        value: 10m
+  - target:
+      kind: ScaledJob
+    patch: |-
+      - op: replace
+        path: /spec/jobTargetRef/template/spec/containers/0/resources/requests/cpu
+        value: 10m
+  # ---- kind の既定 StorageClass に合わせる ------------------------------
+  #
+  # 単一ノードの kind の既定は rancher.io/local-path で、`ReadWriteMany` を
+  # 拒否はしないが**満たしてもいない**（同じノード上のディレクトリを複数の Pod が
+  # 開いているだけ）。要求を RWO に落として「このハーネスは RWX を検証して
+  # いない」を形にしておく --- base のまま通すと、判定が緑であることが
+  # 「RWX が効いた」の証拠に見えてしまう。
+  - target:
+      kind: PersistentVolumeClaim
+      name: rokuban-media
+    patch: |-
+      - op: replace
+        path: /spec/accessModes
+        value: ["ReadWriteOnce"]
+      - op: replace
+        path: /spec/resources/requests/storage
+        value: 2Gi

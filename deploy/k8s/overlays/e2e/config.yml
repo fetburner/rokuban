@@ -32,6 +32,29 @@ storage:
   media_dir: /mnt/media
   scratch_dir: /var/tmp/rokuban
 
+# **判定 3（実行中の encode Job がスケールインで殺されない）のためだけにある。**
+# base の config.yml には `encode:` が無い（プロファイルはデプロイごとの選択で、
+# 参照実装が既定を決める話ではない）ので、ここで 1 つだけ定義する。
+#
+# **狙って遅くしてある。** 判定 3 は 3.2 と 3.3 でそれぞれ
+# `2 × pollingInterval` の窓を取るので、エンコードはその合計より長く走り続けて
+# いる必要がある（短いと「殺されなかった」ではなく「窓の中で完走した」になり、
+# 判定は TODO で抜ける）。`veryslow` + 1080p への拡大 + crf 18 の組み合わせは、
+# 数十秒の入力に対して kind の 1 ノードで分単位になる。
+encode:
+  ffmpeg: ffmpeg
+  ffprobe: ffprobe
+  concurrency: 1
+  thumbnail_concurrency: 1
+  profiles:
+    - name: e2e-slow
+      container: mp4
+      video_codec: libx264
+      audio_codec: aac
+      height: 1080
+      crf: 18
+      preset: veryslow
+
 worker:
   # **k8s では false にする**（config.example.yml が名指ししている）。River の
   # PeriodicJobs はリーダーに選出されたクライアントだけが投入するので、KEDA で

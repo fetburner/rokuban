@@ -1,0 +1,87 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# サイト B ぶんの Pod セット。**`deploy/k8s/site` を 1 回生やして site 名を
+# 差し替えるだけ**で、ワークロードの定義はここに 1 行も書かない
+# （書くと、サイトを増やすたびに定義が枝分かれする）。
+#
+# 中間ディレクトリを挟んでいるのは、1 つの kustomization が同じ base を 2 回
+# `resources` に入れられないためである（サイトの数だけこのディレクトリを作る）。
+#
+# **patch の path は `deploy/k8s/site` の argv の位置を指している。** 引数を
+# 並べ替えると、ここが黙って別の値を書き換える --- `deploy/k8s/manifests_test.go`
+# の TestSitePatchesTargetTheSiteName が「その path に実際に site 名（default）が
+# 居ること」を固定しているので、並べ替えはテストで落ちる。
+
+resources:
+  - ../../../../site
+
+nameSuffix: -siteb
+
+labels:
+  - pairs:
+      rokuban.fetburner.net/site: siteb
+    # **selector には入れない。** 入れると Deployment の
+    # `spec.selector.matchLabels` が変わり、既存の ReplicaSet と噛み合わなくなる。
+    includeSelectors: false
+
+patches:
+  # watcher Deployment（argv の index 4 が site 名）。
+  - target:
+      kind: Deployment
+      labelSelector: rokuban.fetburner.net/site-scoped=true
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/args/4
+        value: siteb
+  # site 束縛の CronJob 群（argv の index 3 が site 名）。5 本まとめて当たる。
+  - target:
+      kind: CronJob
+      labelSelector: rokuban.fetburner.net/site-scoped=true
+    patch: |-
+      - op: replace
+        path: /spec/jobTemplate/spec/template/spec/containers/0/args/3
+        value: siteb
+  # ScaledJob は argv（index 7）に加えて**トリガのクエリ**も site 修飾する。
+  # ここを忘れると、サイト B のスケーラが `<queue>_default` という誰も使わない
+  # キューを見続けて永久にスケールしない（症状は「KEDA が壊れた」ではない）。
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-ingest
+    patch: |-
+      - op: replace
+        path: /spec/jobTargetRef/template/spec/containers/0/args/7
+        value: siteb
+      - op: replace
+        path: /spec/triggers/0/metadata/query
+        value: SELECT count(*) FROM river_job WHERE queue = 'ingest_siteb' AND state IN ('available','retryable')
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-epg
+    patch: |-
+      - op: replace
+        path: /spec/jobTargetRef/template/spec/containers/0/args/7
+        value: siteb
+      - op: replace
+        path: /spec/triggers/0/metadata/query
+        value: SELECT count(*) FROM river_job WHERE queue = 'epg_siteb' AND state IN ('available','retryable')
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-reconciler
+    patch: |-
+      - op: replace
+        path: /spec/jobTargetRef/template/spec/containers/0/args/7
+        value: siteb
+      - op: replace
+        path: /spec/triggers/0/metadata/query
+        value: SELECT count(*) FROM river_job WHERE queue = 'reconciler_siteb' AND state IN ('available','retryable')
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-record-sweep
+    patch: |-
+      - op: replace
+        path: /spec/jobTargetRef/template/spec/containers/0/args/7
+        value: siteb
+      - op: replace
+        path: /spec/triggers/0/metadata/query
+        value: SELECT count(*) FROM river_job WHERE queue = 'watcher_siteb' AND state IN ('available','retryable')

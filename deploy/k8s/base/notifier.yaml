@@ -1,0 +1,141 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rokuban-notifier
+  labels:
+    app.kubernetes.io/name: rokuban
+    app.kubernetes.io/component: notifier
+spec:
+  # notifier はシングルトンではない。各レプリカが自分で LISTEN して、自分に
+  # ぶら下がる SSE クライアントへ配るだけなので、レプリカ間で調停するものが
+  # 無い（cmd/rokuban/server.go の notifier ロール、docs/data.md §3）。
+  # api と同じく水平に増やせる。
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rokuban
+      app.kubernetes.io/component: notifier
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rokuban
+        app.kubernetes.io/component: notifier
+      annotations:
+        # ロールに関わらず全プロセスが /metrics を出す（HTTP リスナーはロールに
+        # 関わらず 1 本立つ。cmd/rokuban/server.go）。scrape の設定を Pod
+        # annotation で持つのは Prometheus 側の慣用（PodMonitor を使う構成なら
+        # そちらへ移す）。
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "40773"
+        prometheus.io/path: /metrics
+    spec:
+      # 理由は api.yaml の同じキー（service links / SA トークン）。
+      enableServiceLinks: false
+      automountServiceAccountToken: false
+      # **SSE を掴んだクライアントが居ると HTTP の停止は上限を使い切る。**
+      # `http.Server.Shutdown` は実行中のリクエストの ctx を cancel せず、SSE の
+      # ハンドラは接続が切れるまで抜けない（docs/operations.md §5「Deployment
+      # 併用時」の足し算。機構からの導出で、実測はしていない）。したがって
+      # notifier では preStop 5s + HTTP 停止 10s を包む値が要る。River の drain は
+      # 乗らない（River クライアントを Start するのは worker ロールだけ）。
+      terminationGracePeriodSeconds: 30
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: rokuban
+              app.kubernetes.io/component: notifier
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: notifier
+          # notifier は NOTIFY を配るだけ（mirakc にもファイルシステムにも
+          # 触らない）ので公式イメージのまま。
+          image: ghcr.io/fetburner/rokuban:latest
+          # `--sites=`（明示的な空）の理由は api.yaml と同じ。notifier は
+          # Postgres の NOTIFY を配るだけで mirakc に到達しない（docs/overview.md
+          # §ハイブリッド構成）ので、束縛する対象が無い。
+          args: ["server", "--roles", "notifier", "--sites=", "--config", "/etc/rokuban/config.yml"]
+          ports:
+            - name: http
+              containerPort: 40773
+          envFrom:
+            - secretRef:
+                name: rokuban-secrets
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            timeoutSeconds: 4
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "5"]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/rokuban
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+      volumes:
+        - name: config
+          configMap:
+            name: rokuban-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rokuban-notifier
+  labels:
+    app.kubernetes.io/name: rokuban
+    app.kubernetes.io/component: notifier
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: rokuban
+    app.kubernetes.io/component: notifier
+  ports:
+    - name: http
+      port: 40773
+      targetPort: http
+---
+# api と同じ理由（PDB が無い Pod は drain が無条件に退去させる）。
+# `minAvailable: 1` で書く理由も api と同じ（pdb.yaml のコメント）。
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: rokuban-notifier
+  labels:
+    app.kubernetes.io/name: rokuban
+    app.kubernetes.io/component: notifier
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rokuban
+      app.kubernetes.io/component: notifier

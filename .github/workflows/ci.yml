@@ -190,24 +190,33 @@ jobs:
       - name: Build manifests
         run: |
           kustomize build deploy/k8s/base > /tmp/base.yaml
+          # **サイト 1 組ぶんも単体で組む。** overlay 経由でしか組まないと、
+          # site/ だけが壊れているのか overlay の patch が壊れているのかを
+          # 出力から切り分けられない。
+          kustomize build deploy/k8s/site > /tmp/site.yaml
           kustomize build deploy/k8s/overlays/kind > /tmp/overlay-kind.yaml
           kustomize build deploy/k8s/overlays/e2e > /tmp/overlay-e2e.yaml
       # **スキーマの版も固定する。** 既定は master なので、リポジトリ側の変更ゼロで
       # 上流 k8s のリリースだけで検査内容が動く。値は docs/runbook/k8s.md で
       # 実機確認した版のマイナー（実機は v1.36.1。スキーマはマイナー単位で公開
       # されている）。上げるときは両方を同じ PR で動かす。
-      # **CRD（KEDA の ScaledJob 等）はこの検査の外。** リポジトリには
-      # `deploy/k8s/e2e/fixtures/` に ScaledJob があるが、そちらは kustomize の
-      # 出力にも下の検査対象にも入れていない（`-strict` が未知の kind で落ちる）。
-      # CRD を検査に入れるときは `-schema-location` でスキーマを渡すか
-      # `-ignore-missing-schemas` を付ける決定が要る（後者は未知の kind を
-      # 黙って飛ばすので、typo も一緒に飛ばす）。
+      # **CRD（KEDA の ScaledJob）はリポジトリに置いたスキーマで検査する。**
+      # `-ignore-missing-schemas` は採らない --- 未知の kind を黙って飛ばすので
+      # `kind: ScaledJobb` のような typo も一緒に飛ばす。スキーマの出どころと、
+      # `-strict` を効かせるための加工（`additionalProperties: false`）は
+      # deploy/k8s/schemas/README.md。**ファイル名が小文字なのは
+      # `{{.ResourceKind}}` が小文字化した名前を埋めるため**で、大文字にすると
+      # macOS では通って Linux の CI だけが落ちる。
+      #
+      # スキーマがあるので、fixture の ScaledJob もここで検査対象に入る。
       - name: Validate against the Kubernetes schema
         run: |
           kubeconform -strict -summary -kubernetes-version 1.36.0 \
-            /tmp/base.yaml /tmp/overlay-kind.yaml /tmp/overlay-e2e.yaml \
+            -schema-location default \
+            -schema-location 'deploy/k8s/schemas/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+            /tmp/base.yaml /tmp/site.yaml /tmp/overlay-kind.yaml /tmp/overlay-e2e.yaml \
             deploy/k8s/e2e/cluster/scaffold.yaml \
-            deploy/k8s/e2e/fixtures/watcher.yaml deploy/k8s/e2e/fixtures/cron-epg-sync.yaml
+            deploy/k8s/e2e/fixtures/*.yaml
       # ハーネスの純粋な部分（対象の探索と watch ログの読み取り）はクラスタを
       # 要らないのでここで回す。**1 巡目のレビュー修正がここにテストを持たず、
       # 「複数一致は FAIL」の経路が大域変数の代入が子シェルに閉じるせいで

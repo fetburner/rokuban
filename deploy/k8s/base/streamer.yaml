@@ -1,0 +1,159 @@
+# 録画配信（VOD・サムネイル）の streamer。
+#
+# **ライブ視聴の streamer はここに無い。** 同じロール・同じバイナリで
+# デプロイのパラメータだけが違う（docs/operations.md §5「streamer のスケール」）
+# はずだが、`live.enabled: true` は **streamer ロールの全 Pod にちょうど 1
+# サイトの束縛を要求する**（cmd/rokuban/server.go）。config は全 Pod で 1 個
+# 共有なので、ライブを有効にした瞬間にこの中央 Deployment（`--sites=`）が
+# 起動しなくなる。**この 1 式ではライブを出荷しない**（deploy/k8s/README.md
+# §まだ無いもの）。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rokuban-streamer
+  labels:
+    app.kubernetes.io/name: rokuban
+    app.kubernetes.io/component: streamer
+spec:
+  # **録画配信はセッション親和性を必要としない**（DB からアセットを解決して
+  # `http.ServeContent` で配るだけ。docs/operations.md §5）。したがって水平に
+  # 増やせる。**sticky（cookie affinity）は Service にも Ingress にも書かない**
+  # --- 数 GB の Range 読みという最も分散させたい経路で分散が効かなくなる。
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rokuban
+      app.kubernetes.io/component: streamer
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rokuban
+        app.kubernetes.io/component: streamer
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "40773"
+        prometheus.io/path: /metrics
+    spec:
+      enableServiceLinks: false
+      automountServiceAccountToken: false
+      # **進行中の転送を打ち切らない長さにする**（docs/operations.md §5
+      # 「録画配信はセッション親和性を必要としない」の最後）。再生中に Pod が
+      # 落ちてもクライアントは Range で再接続するので、ここは可用性ではなく
+      # 「進行中の 1 リクエストを切らない」ためだけの値である。`Shutdown` は
+      # 実行中のリクエストの ctx を cancel しないので、上限は
+      # `http.Server.Shutdown` の 10s（cmd/rokuban/server.go）になる。
+      terminationGracePeriodSeconds: 30
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: rokuban
+              app.kubernetes.io/component: streamer
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        # PVC には Docker の named volume のような copy-up が無いので、
+        # イメージ側でディレクトリを 65534 所有にしてあっても効かない
+        # （media-pvc.yaml の「未解決」）。
+        fsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: streamer
+          # 録画配信だけを担う streamer は ffmpeg を要求しない（`live.enabled` が
+          # false のとき LookPath 検査をしない。cmd/rokuban/server.go）ので
+          # 公式イメージのまま。
+          image: ghcr.io/fetburner/rokuban:latest
+          # **アーカイブは単一なので録画配信は site 非依存**（docs/operations.md
+          # §5）。`recordings.id` は surrogate でサイト間で曖昧にならないので、
+          # どの Pod でもどの録画を配れる。
+          args: ["server", "--roles", "streamer", "--sites=", "--config", "/etc/rokuban/config.yml"]
+          ports:
+            - name: http
+              containerPort: 40773
+          envFrom:
+            - secretRef:
+                name: rokuban-secrets
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            timeoutSeconds: 4
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "5"]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/rokuban
+              readOnly: true
+            # 読むだけ（`http.ServeContent`）。書き込みは worker の担当なので
+            # readOnly でマウントする。
+            - name: media
+              mountPath: /mnt/media
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 96Mi
+            limits:
+              memory: 512Mi
+      volumes:
+        - name: config
+          configMap:
+            name: rokuban-config
+        - name: media
+          persistentVolumeClaim:
+            claimName: rokuban-media
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rokuban-streamer
+  labels:
+    app.kubernetes.io/name: rokuban
+    app.kubernetes.io/component: streamer
+spec:
+  type: ClusterIP
+  # **sessionAffinity を書かない**（既定の None のまま）。docs/operations.md §5
+  # 「録画配信はセッション親和性を必要としない」。ここに ClientIP を足すと、
+  # 数 GB の Range 読みが 1 Pod に貼り付く。
+  selector:
+    app.kubernetes.io/name: rokuban
+    app.kubernetes.io/component: streamer
+  ports:
+    - name: http
+      port: 40773
+      targetPort: http
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: rokuban-streamer
+  labels:
+    app.kubernetes.io/name: rokuban
+    app.kubernetes.io/component: streamer
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rokuban
+      app.kubernetes.io/component: streamer

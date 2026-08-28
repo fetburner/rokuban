@@ -3,9 +3,16 @@ kind: Kustomization
 
 # 配布形式は素の kustomize（Helm chart は持たない）。理由は deploy/k8s/README.md。
 #
-# ここに置くのは「中央 1 式」のうち api だけ。notifier / watcher / streamer /
-# worker の ScaledJob / CronJob 群 / PVC / Prometheus は、受け入れを機械判定する
-# ハーネスが立ってから足す。判定手段が無いまま形を焼き込まないため。
+# **ここに置くのは「中央 1 式」＝ site に依存しないものだけである。**
+# site 束縛のワークロード（watcher / `ingest` `epg` `reconciler` `watcher` の
+# ScaledJob / site 束縛ジョブの CronJob）は `deploy/k8s/site/` にサイト 1 組ぶんと
+# して置いてあり、overlay がサイトの数だけ生やす。
+#
+# **base に site 名が一度も出てこないことに意味がある。** 単一サイト構成の
+# overlay は `../../base` と `../../site` を並べるだけで済み（`overlays/kind`）、
+# サイトを増やす差分は「レジストリに 1 要素 + Pod セット 1 組」になる
+# （`overlays/e2e`）。判定は `deploy/k8s/manifests_test.go` の
+# TestBaseIsSiteIndependent。
 
 # **Secret は出荷しない**（`secret.example.yaml` は resources に入れない）。
 # プレースホルダを apply すると、外で作った本物のパスワードを上書きしてしまう。
@@ -14,12 +21,24 @@ resources:
   - migrate-job.yaml
   - api.yaml
   - pdb.yaml
+  - notifier.yaml
+  - streamer.yaml
+  - media-pvc.yaml
+  - worker-scaledjobs.yaml
+  - cronjobs.yaml
 
 # **config 本体は generator で作る（素の ConfigMap にしない）。**
 # 名前に内容ハッシュが付くことが「config を変えたら rollout が起きる」の唯一の
 # 引き金になる（rokuban は config を起動時に 1 回しか読まない）。判断は
 # docs/operations.md §5「マニフェストの配布形式」、手順の副作用（Job の spec が
 # immutable なので delete が要る）は deploy/k8s/README.md。
+# **CRD の中の ConfigMap / Secret 参照を kustomize に教える。** これが無いと
+# ScaledJob の Pod テンプレートだけがハッシュ名に追随せず、Job の Pod が永久に
+# `ContainerCreating`（`configmap "rokuban-config" not found`）になる。
+# 実測と網羅は kustomizeconfig.yaml のコメント。
+configurations:
+  - kustomizeconfig.yaml
+
 configMapGenerator:
   - name: rokuban-config
     files:
@@ -36,4 +55,10 @@ configMapGenerator:
 # 名前を分けておかないと「ffmpeg 入りに差し替えたら api も一緒に変わる」になる。
 images:
   - name: ghcr.io/fetburner/rokuban
+    newTag: latest
+  # ffmpeg を要する役（encode / thumbnail の worker、ライブ視聴を使う streamer）が
+  # 使う image 名。**公式イメージは ffmpeg を同梱しない**ので、この名前は
+  # `Dockerfile.full` でセルフビルドしたものを指す（`ghcr.io` に同名の公開
+  # イメージがあるわけではない --- overlay で必ず差し替える）。
+  - name: ghcr.io/fetburner/rokuban-full
     newTag: latest

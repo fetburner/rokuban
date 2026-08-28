@@ -117,11 +117,15 @@ ruler / reconciler / record_sweep（watcher の 3 段構えのうち (c) 定期�
 
 | 見るもの | 意味 |
 |---|---|
-| `rokuban_*_last_pass_timestamp_seconds`（`reconcile` / `ruler` / `sweep`） | `time() - この値` が周期を大きく超えたら止まっている |
+| `rokuban_*_last_pass_timestamp_seconds`（`reconcile` / `ruler` / `sweep`） | `time() - この値` が周期を大きく超えたら止まっている。**KEDA ScaledJob の構成では使えない**（下記） |
 | `river_job` の `state='available'` が滞留 | 投入はされているが誰も引いていない（worker が 0 か、キューを引いていない） |
 | `river_job` が増えない | **投入自体が止まっている**。`worker.periodic_jobs: false` なのに CronJob が動いていない、あるいはリーダーが不在 |
 
 3 番目が k8s 特有の落とし穴。`PeriodicJobs` はリーダーだけが投入するので、worker が 0 にスケールすると誰も投入しない（[データ層](../data.md) §2）。`rokuban enqueue` を叩く CronJob が設定されているかを最初に疑う。
+
+**未解決: 1 番目はロール分割（KEDA ScaledJob）の構成では機能しない。** `rokuban_*_last_pass_timestamp_seconds` は**プロセス内のゲージ**である。ジョブを走らせたプロセスは 1 件消化して終了する（`--once`）ので、その値を scrape できる窓が実質的に無い。常駐している Pod（api / notifier / watcher / streamer）はそのジョブを一度も走らせないので、**常に 0 を返す**。kind で実測: 判定 1〜5 を通した後の api Pod で `rokuban_reconcile_last_pass_timestamp_seconds 0` / `rokuban_ruler_last_pass_timestamp_seconds 0` / `rokuban_sweep_last_pass_timestamp_seconds 0`。
+
+したがってこの構成では、**鮮度の監視は 2 番目・3 番目（DB を引く側）でしか成り立たない**。`river_job` の `state` と `finalized_at` は残るので、そちらから鮮度を出すことはできる（DB を引くゲージにすればどのロールが scrape されても同じ値になる。§エンドポイントの「2 種類の使い分け」）。**プロセス内ゲージを DB ゲージに移すかどうかは設計判断なので、ここでは形を決めていない。**
 
 手動で走らせたいときは `rokuban enqueue <job>`。既に待機中なら投入せず終了コード 0 を返すので、cron から重ねて叩いても安全。
 

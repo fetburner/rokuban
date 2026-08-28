@@ -85,7 +85,17 @@ if ! command -v "${producer%% *}" >/dev/null 2>&1 && ! declare -F "${producer%% 
   exit 0
 fi
 log_step "producing an encode job with: ${producer}"
-$producer
+# **producer の失敗を握らない。** 握ると、次の `retry_until 240` が満了してから
+# 「encode Job が起きない」で赤くなる --- 原因（原本を仕込めなかった / SQL が
+# 落ちた）は出力の 240 秒前に流れており、赤の理由と結び付かない。実測でこの形を
+# 踏んだ（`RETURNING id` の読み取りが壊れていた周回）。
+if ! $producer; then
+  fail "3.1" "encode Job を作れない（producer '${producer}' が失敗した）"
+  todo "3.2" "producer が失敗したので生存を観測していない"
+  todo "3.3" "同上"
+  todo "3.4" "同上"
+  exit 0
+fi
 
 # **追いかけるのは Job であって Pod ではない。** Pod 名で追うと、
 # `backoffLimit > 0` の Job が Pod を作り直しただけ（あるいはノードの eviction）

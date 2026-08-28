@@ -1,0 +1,34 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# **サイト 1 つぶんの Pod セット。** `deploy/k8s/base`（中央 = site 非依存）と
+# 対になっていて、サイトを増やすことは「レジストリに 1 要素足して、この 1 組を
+# もう 1 つ生やす」ことである。
+#
+# **ここに書いてあるサイト名は `default` である。** `mirakc:`（単一形式）で
+# site 名を書かなかったときに `internal/config` が入れる名前がこれなので、
+# **単一サイト構成の overlay は patch を 1 つも書かずにこのまま使える**
+# （`overlays/kind` が実例）。プレースホルダではなく実際に動く既定値にして
+# あるのは、置換し忘れが「動くが名前が変」ではなく「起動しない」に化けるのを
+# 避けるため。
+#
+# 多サイト構成の overlay は、このディレクトリを**サイトの数だけ**
+# `resources` に入れ（1 つの kustomization は同じ base を 2 回持てないので、
+# サイトごとに小さな中間ディレクトリを作る）、`nameSuffix` と
+# 「site 名を差し替える patch」を当てる。実例は `overlays/e2e/sites/`。
+#
+# patch の当て先を固定するために、この 1 組のオブジェクトは全部
+# `rokuban.fetburner.net/site-scoped: "true"` を名乗る。**このラベルに site 名を
+# 入れない** --- 入れると、patch の `target` が「patch する前のラベル」に
+# 依存することになり、kustomize の変換順に主張がぶら下がる。
+#
+# **argv の site の位置は 3 つのグループで揃えてある**（Deployment /
+# ScaledJob / CronJob）。JSON6902 patch の path がその位置を指すので、
+# 引数を並べ替えると overlay が黙って別の値を書き換える ---
+# `deploy/k8s/manifests_test.go` の TestSitePatchesTargetTheSiteName が、
+# overlay の patch の path が実際に site 名を指していることを固定している。
+
+resources:
+  - watcher.yaml
+  - worker-scaledjobs.yaml
+  - cronjobs.yaml

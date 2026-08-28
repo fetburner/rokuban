@@ -1,0 +1,111 @@
+# watcher（サイトごとに 1 つ）。
+#
+# **`replicas: 1` は既定であって正しさの要件ではない。** watcher の singleton 性が
+# 主張しているのは「mirakc に N 本の SSE を張らない」という接続数の配慮だけで、
+# `processRecord` は冪等化済みである（docs/operations.md §5「シングルトンロール」、
+# internal/role/leader.go）。**2 レプリカにしても壊れない** --- `pg_try_advisory_lock`
+# のリーダー選出があるので、負けた側は待機したまま mirakc に繋がない。
+# これは受け入れ判定ハーネスの判定 4 が kind で実測している
+# （`deploy/k8s/e2e/checks/04-watcher-singleton.sh`）。
+#
+# **advisory lock のキーはサイトで修飾される**（`watcher:<site>`）。修飾が無いと、
+# 多サイト構成で 2 つの watcher が同じロックを取り合い、**負けた側のサイトの
+# mirakc の SSE を誰も購読しなくなる**（ログ上は正常に見える）。したがって
+# サイトごとに 1 つ立てるこの形が正しい。
+#
+# **PDB は無い。** Service の後ろに居らず、落ちてもリーダー選出でフェイル
+# オーバーする（最大 15 秒 + jitter）。`minAvailable: 1` を付けると、
+# `replicas: 1` の既定構成で drain が永久にブロックする。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rokuban-watcher
+  labels:
+    app.kubernetes.io/name: rokuban
+    app.kubernetes.io/component: watcher
+    rokuban.fetburner.net/site-scoped: "true"
+spec:
+  replicas: 1
+  # **Recreate にしない。** RollingUpdate で新旧が重なっても、advisory lock が
+  # あるので二重には動かない（新しい Pod は旧 Pod がロックを離すまで待機する）。
+  # Recreate にすると、更新のたびに「誰も SSE を張っていない窓」が確実に開く。
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rokuban
+      app.kubernetes.io/component: watcher
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rokuban
+        app.kubernetes.io/component: watcher
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "40773"
+        prometheus.io/path: /metrics
+    spec:
+      enableServiceLinks: false
+      automountServiceAccountToken: false
+      # watcher は River クライアントを Start しない（insert 専用。
+      # docs/operations.md §5「ロールとキュー購読の関係」）ので、drain の項は
+      # 乗らない。**`--soft-stop-timeout` を argv に書くと起動エラーになる**
+      # （worker ロールが無いプロセスでの指定は効かないので弾かれる）。
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: watcher
+          # watcher は mirakc の SSE を購読して ingest ジョブを投入するだけで、
+          # ffmpeg もアーカイブへの書き込みも要らない（書くのは ingest の worker）。
+          image: ghcr.io/fetburner/rokuban:latest
+          # **argv の 5 番目（index 4）が site 名。** overlay の patch がここを
+          # 指す（site/kustomization.yaml のコメント）。
+          args: ["server", "--roles", "watcher", "--sites", "default", "--config", "/etc/rokuban/config.yml"]
+          ports:
+            - name: http
+              containerPort: 40773
+          envFrom:
+            - secretRef:
+                name: rokuban-secrets
+          # **readiness は Service のためではない**（watcher に Service は無い）。
+          # rollout が「新しい Pod が DB に繋がった」ところまで進むようにするため
+          # だけに付けてある。
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            timeoutSeconds: 4
+            failureThreshold: 6
+          # liveness は依存を見ない（/healthz）。ここで mirakc への到達性を見ると、
+          # mirakc の再起動で watcher が再起動ループに入る。
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          volumeMounts:
+            - name: config
+              mountPath: /etc/rokuban
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+      volumes:
+        - name: config
+          configMap:
+            name: rokuban-config

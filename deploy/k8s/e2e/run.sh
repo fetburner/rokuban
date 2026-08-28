@@ -94,6 +94,10 @@ deploy_scaffold || exit 70
 # 前回の中断で止まったままの CronJob をここで戻す（restore_cronjobs の
 # コメント。annotation で「ハーネスが止めたもの」だけを見分ける）。
 restore_cronjobs
+# 同じ理由で、オラクル自己検査が止めた製品のワークロード（ScaledJob / CronJob /
+# watcher）も戻す。**戻さないと、次の `run.sh` は「KEDA が Job を起こさない」を
+# 永久に FAIL し続ける。**
+resume_product_workloads
 deploy_rokuban || exit 70
 
 if [ "$mode" = "oracles" ]; then
