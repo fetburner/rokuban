@@ -184,12 +184,15 @@ encode:
 	}
 }
 
-// mirakc.url は struct タグの required を持たない（mirakcs: を使う構成では
-// mirakc: を書かないため。issue #183 の「罠」）ので、ここで数えるのは
+// mirakc.url は missingRequired に載せない（mirakcs: を使う構成では mirakc: を
+// 書かないため。issue #183 の「罠」）ので、ここで数えるのは
 // db.* (4) + storage.media_dir (1) の 5 件。mirakc/mirakcs のどちらも
 // 無い場合の検出は validateMirakcRegistry が別のエラーとして行う
 // （TestLoad_MirakcRegistry の "neither mirakc nor mirakcs set is an error"
 // が確認する）。
+//
+// **1 件目で止まらず全件返すこと**が規約 4 の要点なので、件数だけでなく
+// キー名も突き合わせる（期待値はリテラル。実装の順序を読んで比べない）。
 func TestLoad_MissingRequiredKeys(t *testing.T) {
 	path := writeConfig(t, `
 log:
@@ -204,9 +207,16 @@ log:
 	if !errors.As(err, &ve) {
 		t.Fatalf("expected ValidationError, got %T: %v", err, err)
 	}
-	fe := ve.FieldErrors()
-	if len(fe) != 5 {
-		t.Fatalf("expected 5 validation errors, got %d: %v", len(fe), err)
+	want := []string{"db.host", "db.user", "db.password", "db.database", "storage.media_dir"}
+	got := ve.MissingKeys()
+	if !slices.Equal(got, want) {
+		t.Fatalf("MissingKeys() = %v, want %v", got, want)
+	}
+	// メッセージにも全件出ること（Error() が 1 件目だけ出す実装に退行しない）。
+	for _, key := range want {
+		if !strings.Contains(err.Error(), key+" is required") {
+			t.Errorf("error message %q is missing %q", err.Error(), key+" is required")
+		}
 	}
 }
 
@@ -459,6 +469,114 @@ mirakcs:
 		}
 		if !strings.Contains(err.Error(), "url") {
 			t.Errorf("error = %v, want mention of url", err)
+		}
+	})
+
+	// url は非空でも「HTTP クライアントに渡せる形」でなければならない
+	// （isAbsoluteURL）。scheme が無いと mirakc.NewClient は相対パスとして
+	// 解釈して接続先を失い、host が無いとどこにも繋がらない。空文字は上の
+	// サブテストが別の分岐（"url is required"）で覆っている。
+	t.Run("url without a scheme or host is an error", func(t *testing.T) {
+		for _, bad := range []string{"mirakc.local:40772", "/api/tuners", "http://", "::not a url"} {
+			t.Run(bad, func(t *testing.T) {
+				path := writeConfig(t, mirakcsBase+`
+mirakcs:
+  - site: tokyo
+    url: "`+bad+`"
+`)
+				_, err := Load(path)
+				if err == nil {
+					t.Fatalf("expected error for url %q, got nil", bad)
+				}
+				if !strings.Contains(err.Error(), "is not a valid URL") {
+					t.Errorf("error = %v, want mention of an invalid URL", err)
+				}
+			})
+		}
+	})
+
+	// 逆方向。正しい URL がこの検査で落ちないこと（isAbsoluteURL を
+	// 「常に false」に壊すとここが落ちる）。
+	t.Run("absolute http and https urls pass", func(t *testing.T) {
+		for _, ok := range []string{"http://mirakc.local:40772", "https://mirakc.example.com", "http://10.0.0.1:40772/"} {
+			t.Run(ok, func(t *testing.T) {
+				path := writeConfig(t, mirakcsBase+`
+mirakcs:
+  - site: tokyo
+    url: "`+ok+`"
+`)
+				if _, err := Load(path); err != nil {
+					t.Errorf("Load with url %q: unexpected error: %v", ok, err)
+				}
+			})
+		}
+	})
+}
+
+// log.level / log.format は既定値以外を書ける唯一の列挙で、かつ defaults() が
+// 埋めるので「未設定」は起こらない。validator の oneof タグを LogConfig.validate
+// に置き換えたので、両方向（不正値は落ちる / 既知の値は通る）を固定する。
+func TestLoad_LogEnums(t *testing.T) {
+	t.Run("unknown level is an error", func(t *testing.T) {
+		path := writeConfig(t, minimalConfig+`
+log:
+  level: verbose
+`)
+		_, err := Load(path)
+		if err == nil {
+			t.Fatal("expected error for log.level=verbose, got nil")
+		}
+		if !strings.Contains(err.Error(), "log.level") {
+			t.Errorf("error = %v, want mention of log.level", err)
+		}
+	})
+
+	// 両方が不正なら両方を報告する（規約 4）。片方で return する実装だと落ちる。
+	t.Run("both bad values are reported together", func(t *testing.T) {
+		path := writeConfig(t, minimalConfig+`
+log:
+  level: verbose
+  format: logfmt
+`)
+		_, err := Load(path)
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		for _, want := range []string{"log.level", "log.format"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error = %v, want it to mention %s", err, want)
+			}
+		}
+	})
+
+	t.Run("unknown format is an error", func(t *testing.T) {
+		path := writeConfig(t, minimalConfig+`
+log:
+  format: logfmt
+`)
+		_, err := Load(path)
+		if err == nil {
+			t.Fatal("expected error for log.format=logfmt, got nil")
+		}
+		if !strings.Contains(err.Error(), "log.format") {
+			t.Errorf("error = %v, want mention of log.format", err)
+		}
+	})
+
+	// **期待値はリテラルで書く。** logLevels / logFormats を実装から読んで
+	// 回すと、値を 1 つ落としても緑のまま（実測: "warn" を消して通った）。
+	t.Run("every declared value is accepted", func(t *testing.T) {
+		for _, level := range []string{"debug", "info", "warn", "error"} {
+			for _, format := range []string{"json", "text"} {
+				path := writeConfig(t, minimalConfig+`
+log:
+  level: `+level+`
+  format: `+format+`
+`)
+				if _, err := Load(path); err != nil {
+					t.Errorf("Load with level=%s format=%s: unexpected error: %v", level, format, err)
+				}
+			}
 		}
 	})
 }
@@ -1663,5 +1781,44 @@ storage:
 				t.Errorf("db.password = %q, want %q (前後の空白は落ちる)", cfg.DB.Password, "padded")
 			}
 		})
+	}
+}
+
+// live の値域は enabled に関わらず検査する。`enabled: false` のまま値だけ先に
+// 書く構成（config.compose.yml がその形で出荷している）で書き間違えた負値が、
+// ライブを有効にした日まで隠れないようにする。
+func TestLoad_LiveRangesCheckedEvenWhenDisabled(t *testing.T) {
+	for _, tt := range []struct{ key, value, want string }{
+		{"max_sessions", "-5", "live.max_sessions"},
+		{"tuner_priority", "-1", "live.tuner_priority"},
+	} {
+		t.Run(tt.key, func(t *testing.T) {
+			path := writeConfig(t, minimalConfig+`
+live:
+  enabled: false
+  `+tt.key+`: `+tt.value+`
+`)
+			_, err := Load(path)
+			if err == nil {
+				t.Fatalf("expected error for live.%s=%s with enabled:false, got nil", tt.key, tt.value)
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("error = %v, want it to mention %s", err, tt.want)
+			}
+		})
+	}
+}
+
+// 空文字の log.level / log.format は「未設定」として通す。defaults() が埋めるのは
+// キーが無いときだけなので、`level: ${VAR}`（`:-` 無し）の展開で空文字が入る
+// 構成は実在する。ここで落とすとその構成が起動しなくなる。
+func TestLoad_EmptyLogValuesAreTreatedAsUnset(t *testing.T) {
+	path := writeConfig(t, minimalConfig+`
+log:
+  level: ""
+  format: ""
+`)
+	if _, err := Load(path); err != nil {
+		t.Fatalf("empty log values should load, got %v", err)
 	}
 }

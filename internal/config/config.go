@@ -1,16 +1,16 @@
 package config
 
 import (
-	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/drone/envsubst"
-	"github.com/go-playground/validator/v10"
 	"github.com/goccy/go-yaml"
 
 	"github.com/fetburner/rokuban/internal/ffargs"
@@ -50,11 +50,11 @@ type ServerConfig struct {
 
 // DBConfig は PostgreSQL 接続設定。
 type DBConfig struct {
-	Host     string `yaml:"host"     validate:"required"`
+	Host     string `yaml:"host"`
 	Port     int    `yaml:"port"`
-	User     string `yaml:"user"     validate:"required"`
-	Password string `yaml:"password" validate:"required"`
-	Database string `yaml:"database" validate:"required"`
+	User     string `yaml:"user"`
+	Password string `yaml:"password"`
+	Database string `yaml:"database"`
 	SSLMode  string `yaml:"sslmode"`
 
 	// MaxConns はこのプロセスが持つ唯一のコネクションプールの上限（issue #90）。
@@ -64,7 +64,7 @@ type DBConfig struct {
 	// 0（未指定）なら db.NewPool がプロセスの roles 集合から自動算出する。
 	// roles を渡さない単発 CLI コマンド（rescue/enqueue/shadow-diff）では
 	// pgxpool の既定値（max(4, NumCPU)）がそのまま使われる。
-	MaxConns int `yaml:"max_conns" validate:"gte=0"`
+	MaxConns int `yaml:"max_conns"`
 
 	// APIStatementTimeout は api ロールを含むプロセスのプールにだけ適用する
 	// statement_timeout（docs/operations.md §3「API 系クエリに statement_timeout」）。
@@ -83,6 +83,15 @@ type DBConfig struct {
 	// セッション状態に依存するため transaction pooling 越しでは構造的に壊れる。
 	// db.NewPool はこれらのロールと PoolerCompat=true の組み合わせを起動時エラーにする。
 	PoolerCompat bool `yaml:"pooler_compat"`
+}
+
+// validate は DB 設定のうち、値の範囲で決まるものを検査する（Load 時）。
+// 必須キーの欠落は missingRequired が別に全件列挙する。
+func (c DBConfig) validate() error {
+	if c.MaxConns < 0 {
+		return fmt.Errorf("db.max_conns must be >= 0, got %d", c.MaxConns)
+	}
+	return nil
 }
 
 // DSN は libpq 形式の接続文字列を返す。
@@ -114,10 +123,10 @@ func quoteDSNValue(v string) string {
 // 「同時指定」はキーを書いたかで判定する（detectMirakcKeyWritten）。Site は
 // defaults() が埋めるため、値の非ゼロ性では書いたかどうかを判定できない。
 //
-// **URL に `required` は付けない。** `mirakcs:` を使う構成では `mirakc:` を
-// 書かないため、struct タグの required は無条件に走ってしまい、正しい構成を
-// 起動失敗させる（issue #183 の「罠」）。required 相当の検査は
-// validateMirakcRegistry が「どちらか一方は必須」という形で行う。
+// **URL を missingRequired に載せてはならない。** `mirakcs:` を使う構成では
+// `mirakc:` を書かないため、無条件の必須検査は正しい構成を起動失敗させる
+// （issue #183 の「罠」）。required 相当の検査は validateMirakcRegistry が
+// 「どちらか一方は必須」という形で行う。
 type MirakcConfig struct {
 	URL string `yaml:"url"`
 
@@ -260,11 +269,7 @@ func (c Config) validateMirakcRegistry(mirakcWritten bool) error {
 			switch {
 			case s.URL == "":
 				errs = append(errs, fmt.Sprintf("%s.url is required", label))
-			case vld.Var(s.URL, "url") != nil:
-				// vld.Var の戻り値（validator.ValidationErrors）をそのまま %v で
-				// 出すと "Key: '' Error:Field validation for '' failed on the
-				// 'url' tag" のような読めない生出力になる（issue #183 のレビュー
-				// 指摘）。ここでは合否だけ使い、メッセージは自前で組む。
+			case !isAbsoluteURL(s.URL):
 				errs = append(errs, fmt.Sprintf("%s.url %q is not a valid URL", label, s.URL))
 			}
 		}
@@ -276,9 +281,25 @@ func (c Config) validateMirakcRegistry(mirakcWritten bool) error {
 	return fmt.Errorf("mirakc registry validation failed:\n  - %s", strings.Join(errs, "\n  - "))
 }
 
+// isAbsoluteURL は mirakc の url として使える形か（scheme と host を持つ絶対 URL）
+// を返す。**HTTP クライアントに渡せるか**だけを見る。
+//
+// scheme や host を欠いても mirakc.NewClient は文字列を保持するだけで失敗せず、
+// `http.NewRequest` も通る。最初に失敗するのは `Client.Do`（RoundTrip）で、
+// 実測ではメッセージも入力ごとに違う（`/api/tuners` は
+// `unsupported protocol scheme ""`、`http://` は `http: no Host in request URL`）。
+// つまり起動は通り、録画のたびに違う理由で失敗する。設定の誤りは起動時に出す。
+//
+// 到達性は検査しない（起動時に mirakc が落ちていても起動は通す。レベル
+// トリガーで後から収束する）。
+func isAbsoluteURL(s string) bool {
+	u, err := url.Parse(s)
+	return err == nil && u.Scheme != "" && u.Host != ""
+}
+
 // StorageConfig はメディアファイルの保存先設定。
 type StorageConfig struct {
-	MediaDir   string `yaml:"media_dir"   validate:"required"`
+	MediaDir   string `yaml:"media_dir"`
 	ScratchDir string `yaml:"scratch_dir"`
 
 	// AccelLocation を設定すると録画ファイルの配信を X-Accel-Redirect で
@@ -589,7 +610,7 @@ type LiveConfig struct {
 	// **プロセスローカルな上限であり、グローバルな天井ではない。** グローバルな天井は
 	// チューナー数で、裁定者は mirakc（docs/operations.md §5「既定を 1 にする根拠と、
 	// 増やす判定基準」）。レプリカを増やしてもこの値は上がらない。0 なら既定値（4）。
-	MaxSessions int `yaml:"max_sessions" validate:"gte=0"`
+	MaxSessions int `yaml:"max_sessions"`
 
 	// IdleTimeout はサービス単位の idle GC の猶予。そのサービスへのセグメント要求が
 	// この時間来なければ ffmpeg を止める（docs/api.md §ライブ視聴の HLS。「クライアント
@@ -607,7 +628,7 @@ type LiveConfig struct {
 	// 検証する権威がどちらの層にも無い。ルールの priority を既定 10 未満に下げる
 	// 運用では、この既定値のままだとライブが録画に勝つ（docs/api.md §ライブ視聴の
 	// HLS §実装 参照）。
-	TunerPriority int `yaml:"tuner_priority" validate:"gte=0"`
+	TunerPriority int `yaml:"tuner_priority"`
 
 	// HWAccel は -i より前に出す唯一のブロック（任意。nil なら何も出さない）。
 	//
@@ -710,6 +731,18 @@ var liveProfileNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
 // validate は live 設定の妥当性を検査する（Load 時、applyDefaults の後）。
 func (c LiveConfig) validate() error {
+	// **値域は enabled に関わらず見る。** `enabled: false` のまま値だけ先に
+	// 書いておく構成は実在し（`config.compose.yml` が「後で true にする」形で
+	// 出荷している）、そこに書き間違えた負値が入ると、ライブを有効にした日に
+	// 初めて起動しなくなる。設定ファイルの誤りは書いた時点で出す。
+	if c.MaxSessions < 1 {
+		return fmt.Errorf("live.max_sessions must be >= 1, got %d", c.MaxSessions)
+	}
+	if c.TunerPriority < 0 {
+		return fmt.Errorf("live.tuner_priority must be >= 0, got %d", c.TunerPriority)
+	}
+	// プロファイル・セグメント先の必須性は enabled のときだけ（未設定の
+	// プロファイルを検査対象にしない）。
 	if !c.Enabled {
 		return nil
 	}
@@ -719,14 +752,8 @@ func (c LiveConfig) validate() error {
 	if c.SegmentDir == "" {
 		return fmt.Errorf("live.segment_dir is required when live.enabled is true")
 	}
-	if c.MaxSessions < 1 {
-		return fmt.Errorf("live.max_sessions must be >= 1, got %d", c.MaxSessions)
-	}
 	if c.IdleTimeout <= 0 {
 		return fmt.Errorf("live.idle_timeout must be > 0, got %v", c.IdleTimeout)
-	}
-	if c.TunerPriority < 0 {
-		return fmt.Errorf("live.tuner_priority must be >= 0, got %d", c.TunerPriority)
 	}
 	if err := c.HWAccel.Validate(); err != nil {
 		return fmt.Errorf("live.hwaccel: %w", err)
@@ -831,8 +858,38 @@ type CleanupConfig struct {
 
 // LogConfig はログ出力の設定。
 type LogConfig struct {
-	Level  string `yaml:"level"  validate:"omitempty,oneof=debug info warn error"`
-	Format string `yaml:"format" validate:"omitempty,oneof=json text"`
+	Level  string `yaml:"level"`
+	Format string `yaml:"format"`
+}
+
+// logLevels / logFormats は受け付ける値。defaults() が空を埋めるので、
+// validate に来る時点で空にはならない。
+var (
+	logLevels  = []string{"debug", "info", "warn", "error"}
+	logFormats = []string{"json", "text"}
+)
+
+// validate はログ設定の値が既知の集合に入っているかを検査する（Load 時）。
+// 見つかった問題は全件返す（規約 4: エラーは全件列挙。level と format の
+// 両方が不正なとき、直して再起動して次のエラーを見る往復を強いない）。
+//
+// **空文字は「未設定」として通す。** `defaults()` が埋めるのは**キーが無い**
+// ときだけなので、`level: ${ROKUBAN_LOG_LEVEL}`（`:-` 無し）のような展開で
+// 空文字が入る構成が実在する。ここで落とすと、その構成は起動しなくなる。
+func (c LogConfig) validate() error {
+	var errs []string
+	if c.Level != "" && !slices.Contains(logLevels, c.Level) {
+		errs = append(errs, fmt.Sprintf("log.level must be one of %s, got %q",
+			strings.Join(logLevels, "/"), c.Level))
+	}
+	if c.Format != "" && !slices.Contains(logFormats, c.Format) {
+		errs = append(errs, fmt.Sprintf("log.format must be one of %s, got %q",
+			strings.Join(logFormats, "/"), c.Format))
+	}
+	if len(errs) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%s", strings.Join(errs, "; "))
 }
 
 func defaults() Config {
@@ -880,7 +937,28 @@ func defaults() Config {
 	}
 }
 
-var vld = validator.New(validator.WithRequiredStructEnabled())
+// missingRequired は「無ければ起動できない」設定キーのうち空のものを、YAML の
+// パス表記で全件返す（規約 4: エラーは全件列挙）。
+//
+// **struct タグではなくここに並べる。** タグは「その型が読まれたら必ず走る」ので、
+// 構成によっては書かないキー（`mirakcs:` を使う構成の `mirakc.url`）に付けると
+// 正しい構成を起動失敗させる（issue #183 の「罠」）。必須かどうかが他のキーの
+// 有無で決まる検査は、それを知っている場所（validateMirakcRegistry）に置く。
+func (c Config) missingRequired() []string {
+	var missing []string
+	for _, k := range []struct{ path, value string }{
+		{"db.host", c.DB.Host},
+		{"db.user", c.DB.User},
+		{"db.password", c.DB.Password},
+		{"db.database", c.DB.Database},
+		{"storage.media_dir", c.Storage.MediaDir},
+	} {
+		if k.value == "" {
+			missing = append(missing, k.path)
+		}
+	}
+	return missing
+}
 
 // detectMirakcKeyWritten は展開済み YAML に `mirakc:` キーが書かれていたかを返す。
 //
@@ -929,17 +1007,20 @@ func loadFromString(raw string) (*Config, error) {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
 
-	if err := vld.Struct(&cfg); err != nil {
-		var ve validator.ValidationErrors
-		if errors.As(err, &ve) {
-			return nil, &ValidationError{fieldErrors: ve}
-		}
+	if missing := cfg.missingRequired(); len(missing) > 0 {
+		return nil, &ValidationError{missing: missing}
+	}
+
+	if err := cfg.DB.validate(); err != nil {
+		return nil, fmt.Errorf("validating config: %w", err)
+	}
+	if err := cfg.Log.validate(); err != nil {
 		return nil, fmt.Errorf("validating config: %w", err)
 	}
 
 	// mirakc:/mirakcs: の相互排他・site 名の構文制約・予約名・重複・url を検査する
-	// （MirakcConfig.URL には validate:"required" タグを付けていないため、ここで
-	// 明示的に検査する。issue #183 の「罠」）。
+	// （mirakc.url は missingRequired に載せられない。missingRequired の
+	// コメントと issue #183 の「罠」参照）。
 	mirakcWritten, err := detectMirakcKeyWritten(expanded)
 	if err != nil {
 		return nil, err
@@ -966,30 +1047,21 @@ func loadFromString(raw string) (*Config, error) {
 	return &cfg, nil
 }
 
-// ValidationError は設定バリデーション失敗時のエラー。
+// ValidationError は必須キーが欠けているときのエラー。
 type ValidationError struct {
-	fieldErrors validator.ValidationErrors
+	missing []string
 }
 
-// Error は検証エラーのメッセージを返す。
+// Error は欠けているキーを全件並べたメッセージを返す。
 func (e *ValidationError) Error() string {
-	msgs := make([]string, len(e.fieldErrors))
-	for i, fe := range e.fieldErrors {
-		msgs[i] = fmt.Sprintf("%s is required", yamlFieldPath(fe))
+	msgs := make([]string, len(e.missing))
+	for i, path := range e.missing {
+		msgs[i] = path + " is required"
 	}
 	return fmt.Sprintf("config validation failed:\n  - %s", strings.Join(msgs, "\n  - "))
 }
 
-// FieldErrors は個別のフィールドエラーを返す。
-func (e *ValidationError) FieldErrors() validator.ValidationErrors {
-	return e.fieldErrors
-}
-
-func yamlFieldPath(fe validator.FieldError) string {
-	ns := fe.Namespace()
-	parts := strings.SplitN(ns, ".", 2)
-	if len(parts) < 2 {
-		return strings.ToLower(ns)
-	}
-	return strings.ToLower(parts[1])
+// MissingKeys は欠けている設定キーを YAML のパス表記で返す。
+func (e *ValidationError) MissingKeys() []string {
+	return e.missing
 }
