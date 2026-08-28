@@ -25,7 +25,7 @@ kind: Kustomization
 # **argv の site の位置は 3 つのグループで揃えてある**（Deployment /
 # ScaledJob / CronJob）。JSON6902 patch の path がその位置を指すので、
 # 引数を並べ替えると overlay が黙って別の値を書き換える ---
-# `deploy/k8s/manifests_test.go` の TestSitePatchesTargetTheSiteName が、
+# `deploy/k8s/workloads_test.go` の TestSitePatchesTargetTheSiteName が、
 # overlay の patch の path が実際に site 名を指していることを固定している。
 
 resources:

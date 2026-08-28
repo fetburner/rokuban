@@ -63,7 +63,12 @@ E2E_ORACLES_ONLY=3 ./deploy/k8s/e2e/run.sh --oracles   # オラクルも一部�
   requests は worker 10m / 常駐 25m）。**削らないと判定が
   `Insufficient cpu` で止まる**（実測。ScaledJob は滞留 1 件ごとに Job を
   起こすので、CronJob が毎分投入する構成では同時に十数個の Pod が要求される）。
-  出荷値は base 側で、`deploy/k8s/manifests_test.go` が見ている
+  出荷値は base 側で、`deploy/k8s/workloads_test.go` が見ている
+- **`encode` の同時実行本数は出荷値ではない。** base は 2（`encode_reconcile` /
+  `encode_enqueue_hint` が同じキューに載るので、長いエンコードの裏で詰まらせ
+  ないため）だが、`overlays/e2e` は 1 に絞っている --- 判定 3 は active な Job の
+  1 つ目を追いかけるので、2 本目が起きると**短い方を観測して**「窓の中で
+  完走した」= TODO に化ける
 - **RWX は検証していない。** media の PVC は base では `ReadWriteMany` だが、
   `overlays/e2e` は kind の既定 StorageClass（rancher.io/local-path）に合わせて
   `ReadWriteOnce` に落としている。判定が緑でも「RWX が効いた」証拠にはならない
@@ -95,12 +100,9 @@ E2E_ORACLES_ONLY=3 ./deploy/k8s/e2e/run.sh --oracles   # オラクルも一部�
 | 4 | watcher を 2 レプリカにしても二重に動かない（advisory lock の実効） | site A の watcher Deployment |
 | 5 | サイト B の滞留でサイト A の Job が起きない | `epg_A` / `epg_B` の ScaledJob |
 
-この表は判定を足したり対象を変えたりする人が更新する。
-
-**この表はもう更新されている。** 製品のワークロード（`deploy/k8s/base` /
-`deploy/k8s/site`）が入り、5 項目とも判定できる状態になった。実測の結果は
-[docs/runbook/k8s.md](../../../docs/runbook/k8s.md) §受け入れ判定ハーネス に
-環境と対にして置いてある（ここには書かない --- 両方に書くと片方だけ古くなる）。
+この表は判定を足したり対象を変えたりする人が更新する。**実測の結果はここに
+書かない** --- 環境と対にして [docs/runbook/k8s.md](../../../docs/runbook/k8s.md)
+§受け入れ判定ハーネス に置いてある（両方に書くと片方だけ古くなる）。
 
 判定 1.6 は `epg_<site>` を、判定 1.7 は `reconciler_<site>` を消化する側を
 それぞれ別に探す。1 つの鍵で両方を代表させると、epg の ScaledJob だけ先に
@@ -124,8 +126,12 @@ kind クラスタ rokuban-e2e / 名前空間 rokuban-e2e
 │   ├── mirakc-sitea    mirakc モック（mirakcmock/）
 │   ├── mirakc-siteb    同上。判定 5 は 1 サイトでは測れない
 │   └── e2e-toolbox     判定が curl と `rokuban enqueue` を打つ場所
-└── 製品（deploy/k8s/overlays/e2e）
-    migration Job / ConfigMap / api Deployment + Service + PDB
+└── 製品（deploy/k8s/overlays/e2e = base + site 2 組）
+    migration Job / ConfigMap / media の PVC
+    api・notifier・streamer の Deployment + Service + PDB
+    watcher の Deployment ×2（サイトごと）
+    worker の ScaledJob ×13（site 非依存 5 + site 束縛 4 ×2）
+    投入側の CronJob ×14（site 非依存 4 + site 束縛 5 ×2）
 ```
 
 **mirakc は実機ではなくモックで確認した。** 実機はチューナー資源を要求し、

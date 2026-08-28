@@ -853,6 +853,47 @@ func TestSitePatchesTargetTheSiteName(t *testing.T) {
 	}
 }
 
+// --- Prometheus --------------------------------------------------------------
+
+// 常駐する役（Deployment）の Pod テンプレートが scrape の annotation を持つこと。
+//
+// **ロールに関わらず全プロセスが `/metrics` を出す**（HTTP リスナーはロールに
+// 関わらず 1 本立つ。docs/operations.md §1）。にもかかわらず annotation を
+// 書き忘れると、**その役でしか進まないメトリクスだけが誰にも scrape されない**
+// --- 出力は「ダッシュボードにその系列が無い」で、Pod は正常に見える。
+// 新しい役を足すときに落ちる形にしておく。
+//
+// **ScaledJob が起こす Job の Pod は対象外。** 数秒で消えるので scrape が
+// 間に合わない（ジョブ側の観測は DB を引くゲージで行う。同 §1）。
+func TestLongLivedPodsAreScrapable(t *testing.T) {
+	want := map[string]string{
+		"prometheus.io/scrape": "true",
+		// config.yml の `server.listen` と同じポート。**リテラルで書く**
+		// （TestConfigListenPortMatchesContainerPort が config 側と
+		// containerPort の一致を見ているので、ここは 3 つ目の写しになる）。
+		"prometheus.io/port": "40773",
+		"prometheus.io/path": "/metrics",
+	}
+	checked := 0
+	for _, o := range loadAll(t) {
+		if o.kind() != "Deployment" {
+			continue
+		}
+		checked++
+		annotations := mapAt(podTemplate(o), "metadata", "annotations")
+		for k, v := range want {
+			if got := fmt.Sprint(annotations[k]); got != v {
+				t.Errorf("%s pod template annotation %s = %q, want %q "+
+					"(every long-lived role serves /metrics; a missing annotation silently drops that role's series)",
+					o.id(), k, got, v)
+			}
+		}
+	}
+	if checked == 0 {
+		t.Error("no Deployment was checked")
+	}
+}
+
 // --- CRD の中の名前参照 ------------------------------------------------------
 
 // podTemplatePath は podTemplate() が掘る場所を kustomize の fieldSpec の

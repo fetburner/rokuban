@@ -204,7 +204,7 @@ spec:
   # **in-process の既定は 30 秒だが、CronJob の分解能は 1 分である。**
   # ここだけ「実運用の間隔 = 毎分」になるので、`overlays/e2e` の毎分 patch と
   # 見分けが付かない。**判定 2 が測る CronJob は epg-sync のほうである**
-  # （`deploy/k8s/manifests_test.go` の TestBaseCronSchedulesAreProductionValues が
+  # （`deploy/k8s/workloads_test.go` の TestCronSchedulesAreProductionValues が
   # 見ているのもそちら）。
   #
   # レベルトリガー設計なので、投入が遅れても取りこぼしは次のパスが拾う

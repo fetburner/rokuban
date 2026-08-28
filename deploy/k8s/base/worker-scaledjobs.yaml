@@ -155,9 +155,23 @@ metadata:
     rokuban.fetburner.net/queue: encode
 spec:
   pollingInterval: 30
-  # **1 本ずつ。** encode は CPU を使い切る仕事で、`encode.concurrency` の既定も
-  # 1 である（config.example.yml）。並べたければここと config の両方を上げる。
-  maxReplicaCount: 1
+  # **`encode` キューには 3 種類のジョブが載る。** 実エンコード（`encode`）に
+  # 加えて、`encode_reconcile`（ヒントを落とした録画を拾う 15 分ごとの
+  # バックストップ）と `encode_enqueue_hint`（録画が終わった直後の投入）である
+  # （internal/worker の各 InsertOpts）。
+  #
+  # **`1` にすると後ろの 2 つが実エンコードの裏で待たされる。** 1 件消化モード
+  # では 1 Job = 1 アイテムなので、数時間のエンコードが走っている間、KEDA は
+  # `maxReplicaCount - 実行中 = 0` と数えて新しい Job を起こさない ---
+  # ヒントを落とした録画を拾うための経路が、まさにその「時間のかかる
+  # エンコード」に塞がれる。レベルトリガーなので取りこぼしはしない（エンコードが
+  # 終われば次のパスが拾う）が、遅れはエンコードの長さぶんになる。
+  #
+  # **2 にしてある。** 代償は「実エンコードが 2 本同時に走りうる」こと ---
+  # CPU を 1 本に抑えたいなら 1 に落とし、上の遅れを受け入れること
+  # （`encode.concurrency` は 1 プロセス内の MaxWorkers なので、1 件消化モードでは
+  # 常に 1 であり、クラスタ全体の本数を決めるのはこちらである）。
+  maxReplicaCount: 2
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
   scalingStrategy:
@@ -186,6 +200,10 @@ spec:
           runAsUser: 65534
           runAsGroup: 65534
           fsGroup: 65534
+          # **ScaledJob はキューアイテムごとに新しい Pod を作る。** 既定の
+          # `Always` だと、ジョブが起きるたびにアーカイブ全体の再帰 chown を
+          # 待つことになる（理由の全文は deploy/k8s/base/streamer.yaml）。
+          fsGroupChangePolicy: OnRootMismatch
           seccompProfile:
             type: RuntimeDefault
         containers:
@@ -295,6 +313,10 @@ spec:
           runAsUser: 65534
           runAsGroup: 65534
           fsGroup: 65534
+          # **ScaledJob はキューアイテムごとに新しい Pod を作る。** 既定の
+          # `Always` だと、ジョブが起きるたびにアーカイブ全体の再帰 chown を
+          # 待つことになる（理由の全文は deploy/k8s/base/streamer.yaml）。
+          fsGroupChangePolicy: OnRootMismatch
           seccompProfile:
             type: RuntimeDefault
         containers:
@@ -397,6 +419,10 @@ spec:
           runAsUser: 65534
           runAsGroup: 65534
           fsGroup: 65534
+          # **ScaledJob はキューアイテムごとに新しい Pod を作る。** 既定の
+          # `Always` だと、ジョブが起きるたびにアーカイブ全体の再帰 chown を
+          # 待つことになる（理由の全文は deploy/k8s/base/streamer.yaml）。
+          fsGroupChangePolicy: OnRootMismatch
           seccompProfile:
             type: RuntimeDefault
         containers:
@@ -492,6 +518,10 @@ spec:
           runAsUser: 65534
           runAsGroup: 65534
           fsGroup: 65534
+          # **ScaledJob はキューアイテムごとに新しい Pod を作る。** 既定の
+          # `Always` だと、ジョブが起きるたびにアーカイブ全体の再帰 chown を
+          # 待つことになる（理由の全文は deploy/k8s/base/streamer.yaml）。
+          fsGroupChangePolicy: OnRootMismatch
           seccompProfile:
             type: RuntimeDefault
         containers:

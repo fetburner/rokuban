@@ -18,6 +18,16 @@ spec:
       labels:
         app.kubernetes.io/name: rokuban
         app.kubernetes.io/component: api
+      annotations:
+        # **ロールに関わらず全プロセスが /metrics を出す**（HTTP リスナーは
+        # ロールに関わらず 1 本立つ。cmd/rokuban/server.go）。**常駐する役には
+        # 全部これを付ける** --- 付いていない役があると、その役でしか進まない
+        # メトリクスが誰にも scrape されない。ScaledJob が起こす Job の Pod には
+        # 付けていない（数秒で消えるので scrape が間に合わない。
+        # deploy/k8s/README.md §まだ無いもの）。
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "40773"
+        prometheus.io/path: /metrics
     spec:
       # **同一 namespace の Service から env を注入させない**（service links）。
       # rokuban の config は `${VAR}` を自分で展開するので、注入された env と

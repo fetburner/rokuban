@@ -59,6 +59,10 @@ spec:
           runAsUser: 65534
           runAsGroup: 65534
           fsGroup: 65534
+          # **ScaledJob はキューアイテムごとに新しい Pod を作る。** 既定の
+          # `Always` だと、ジョブが起きるたびにアーカイブ全体の再帰 chown を
+          # 待つことになる（理由の全文は deploy/k8s/base/streamer.yaml）。
+          fsGroupChangePolicy: OnRootMismatch
           seccompProfile:
             type: RuntimeDefault
         containers:

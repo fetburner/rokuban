@@ -9,7 +9,7 @@ kind: Kustomization
 # `resources` に入れられないためである（サイトの数だけこのディレクトリを作る）。
 #
 # **patch の path は `deploy/k8s/site` の argv の位置を指している。** 引数を
-# 並べ替えると、ここが黙って別の値を書き換える --- `deploy/k8s/manifests_test.go`
+# 並べ替えると、ここが黙って別の値を書き換える --- `deploy/k8s/workloads_test.go`
 # の TestSitePatchesTargetTheSiteName が「その path に実際に site 名（default）が
 # 居ること」を固定しているので、並べ替えはテストで落ちる。
 
@@ -21,9 +21,24 @@ nameSuffix: -siteb
 labels:
   - pairs:
       rokuban.fetburner.net/site: siteb
-    # **selector には入れない。** 入れると Deployment の
-    # `spec.selector.matchLabels` が変わり、既存の ReplicaSet と噛み合わなくなる。
-    includeSelectors: false
+    # **selector にもテンプレートにも入れる。** 落とすと、サイトが 2 つある
+    # 構成で **2 つの watcher Deployment の selector と Pod ラベルが 1 バイトも
+    # 違わなくなる** --- selector が重なった Deployment は k8s が「未サポート」と
+    # 明記している状態で、孤児になった Pod を別サイトの controller が拾いうる。
+    # 加えて `kubectl logs -l app.kubernetes.io/component=watcher` が両サイト
+    # 混ざり、サイト単位の NetworkPolicy / PodMonitor も書けない（判定ハーネスが
+    # 平気なのは探索を argv でやっているからで、それは運用の代わりにならない）。
+    #
+    # **`spec.selector` は Deployment では immutable なので、後から立てられない。**
+    # 既にデプロイした後にここを true へ変えると apply が
+    # `field is immutable` で落ち、Deployment を作り直すことになる。
+    includeSelectors: true
+    includeTemplates: true
+    #
+    # **ScaledJob が起こす Job の Pod には乗らない。** kustomize は CRD の
+    # テンプレートの位置を知らず、`configurations:` でも教えられなかった
+    # （実測は deploy/k8s/base/kustomizeconfig.yaml）。そちらをサイトで引くには
+    # KEDA が付ける `scaledjob.keda.sh/name` を使う。
 
 patches:
   # watcher Deployment（argv の index 4 が site 名）。

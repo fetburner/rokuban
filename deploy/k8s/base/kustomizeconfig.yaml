@@ -20,6 +20,15 @@
 # 参照の網羅は kustomize の既定 `nameReference` 設定の Deployment 版と
 # 同じ形にしてある。**Pod テンプレートに新しい参照の書き方を足したら、ここにも
 # 足すこと。**
+# **ラベルの側は同じ手では塞げない。** `configurations:` が効くのは
+# `nameReference` などの一部の変換だけで、overlay の `labels:`（LabelTransformer）
+# は自分が知っている Pod テンプレートの位置しか見ない。`commonLabels` にも
+# `templateLabels` にも `spec/jobTargetRef/template/metadata/labels` を足して
+# みたが、どちらも出力は変わらなかった（kustomize v5.8.1 で実測）。
+#
+# 帰結: **ScaledJob が起こす Job の Pod には overlay のラベルが乗らない。**
+# サイトごとに Pod を引きたいときは、KEDA が付ける
+# `scaledjob.keda.sh/name=<ScaledJob 名>` を使う（名前はサイトで分かれている）。
 nameReference:
   - kind: ConfigMap
     version: v1

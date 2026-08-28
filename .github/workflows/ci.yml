@@ -209,13 +209,15 @@ jobs:
       # macOS では通って Linux の CI だけが落ちる。
       #
       # スキーマがあるので、fixture の ScaledJob もここで検査対象に入る。
+      # **足場も fixture も glob で拾う。** 名前で列挙すると、ハーネスに
+      # マニフェストを 1 つ足した日にそれだけが検査から漏れる。
       - name: Validate against the Kubernetes schema
         run: |
           kubeconform -strict -summary -kubernetes-version 1.36.0 \
             -schema-location default \
             -schema-location 'deploy/k8s/schemas/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
             /tmp/base.yaml /tmp/site.yaml /tmp/overlay-kind.yaml /tmp/overlay-e2e.yaml \
-            deploy/k8s/e2e/cluster/scaffold.yaml \
+            deploy/k8s/e2e/cluster/*.yaml \
             deploy/k8s/e2e/fixtures/*.yaml
       # ハーネスの純粋な部分（対象の探索と watch ログの読み取り）はクラスタを
       # 要らないのでここで回す。**1 巡目のレビュー修正がここにテストを持たず、

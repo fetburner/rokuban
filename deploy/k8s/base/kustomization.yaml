@@ -11,7 +11,7 @@ kind: Kustomization
 # **base に site 名が一度も出てこないことに意味がある。** 単一サイト構成の
 # overlay は `../../base` と `../../site` を並べるだけで済み（`overlays/kind`）、
 # サイトを増やす差分は「レジストリに 1 要素 + Pod セット 1 組」になる
-# （`overlays/e2e`）。判定は `deploy/k8s/manifests_test.go` の
+# （`overlays/e2e`）。判定は `deploy/k8s/workloads_test.go` の
 # TestBaseIsSiteIndependent。
 
 # **Secret は出荷しない**（`secret.example.yaml` は resources に入れない）。
@@ -27,18 +27,18 @@ resources:
   - worker-scaledjobs.yaml
   - cronjobs.yaml
 
+# **CRD の中の ConfigMap / Secret 参照を kustomize に教える。** これが無いと
+# ScaledJob の Pod テンプレートだけが下のハッシュ名に追随せず、Job の Pod が
+# 永久に `ContainerCreating`（`configmap "rokuban-config" not found`）になる。
+# 実測と網羅は kustomizeconfig.yaml のコメント。
+configurations:
+  - kustomizeconfig.yaml
+
 # **config 本体は generator で作る（素の ConfigMap にしない）。**
 # 名前に内容ハッシュが付くことが「config を変えたら rollout が起きる」の唯一の
 # 引き金になる（rokuban は config を起動時に 1 回しか読まない）。判断は
 # docs/operations.md §5「マニフェストの配布形式」、手順の副作用（Job の spec が
 # immutable なので delete が要る）は deploy/k8s/README.md。
-# **CRD の中の ConfigMap / Secret 参照を kustomize に教える。** これが無いと
-# ScaledJob の Pod テンプレートだけがハッシュ名に追随せず、Job の Pod が永久に
-# `ContainerCreating`（`configmap "rokuban-config" not found`）になる。
-# 実測と網羅は kustomizeconfig.yaml のコメント。
-configurations:
-  - kustomizeconfig.yaml
-
 configMapGenerator:
   - name: rokuban-config
     files:

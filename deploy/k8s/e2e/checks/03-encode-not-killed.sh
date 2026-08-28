@@ -116,6 +116,29 @@ if ! retry_until 240 "an encode job to start running" find_running_job; then
 fi
 pass "3.1" "encode Job が起きて実行中になった（${running_job}）"
 
+# **掴まれるまで待つ。** `status.active` は **Pod が出来た時点**で 1 になるが、
+# その中の worker が River の行を claim するのはさらに数秒後である（DB 接続と
+# River の起動を挟む）。その窓で下の `drain_queue` を撃つと、**まだ
+# `available` な行を「完了」にしてしまい**、起きた Job は仕事を掴めないまま
+# `--once-idle-timeout` で終わる --- 3.2 / 3.3 は「殺された」でも「生きていた」
+# でもなく **「窓の中で完走した」= TODO** に化ける。
+#
+# 実測でこの形を踏んだ: 観測した Job の duration がちょうど 32 秒（= 既定の
+# idle timeout 30 秒 + 起動）で、River の行は `attempt=0` のまま
+# `completed`（= ハーネス自身が消した）だった。**身代わり（psql 1 行）では
+# 起動が速いので滅多に出ず、実物の worker で出る**。
+claimed() {
+  local n
+  n="$(psql_q "SELECT count(*) FROM river_job WHERE queue = '$queue' AND state = 'running'" | tr -d '[:space:]')" || return 1
+  [ -n "$n" ] && [ "$n" -ge 1 ]
+}
+if ! retry_until 120 "the encode job to be claimed by the worker" claimed; then
+  fail "3.2" "測定できない: Job は起きたが ${queue} の行が 120s 経っても running にならない --- $(k logs "job/${running_job}" 2>&1 | tail -3 | tr '\n' ' ')"
+  todo "3.3" "3.2 が測定できていないので観測していない"
+  todo "3.4" "同上"
+  exit 0
+fi
+
 # job_state_now は「生きている / 完走した / 消された」の 3 値を返す。
 #
 # **完走を「殺された」と報告しない。** 2 値（生きている / それ以外）にすると、

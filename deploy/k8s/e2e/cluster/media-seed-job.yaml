@@ -36,6 +36,8 @@ spec:
         # PVC には copy-up が無いので、イメージ側の所有権は効かない
         # （deploy/k8s/base/media-pvc.yaml の「未解決」）。
         fsGroup: 65534
+        # 製品側と同じ形にしておく（理由は deploy/k8s/base/streamer.yaml）。
+        fsGroupChangePolicy: OnRootMismatch
       containers:
         - name: seed
           # ffmpeg 入り（`Dockerfile.full`）。ENTRYPOINT は rokuban なので上書きする。

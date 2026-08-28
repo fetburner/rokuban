@@ -59,6 +59,13 @@ spec:
         # イメージ側でディレクトリを 65534 所有にしてあっても効かない
         # （media-pvc.yaml の「未解決」）。
         fsGroup: 65534
+        # **`OnRootMismatch` を書き忘れない。** 既定は `Always` で、kubelet は
+        # Pod を起こす前に**ボリューム全体を再帰的に chown する**。アーカイブは
+        # 数 TB・数十万ファイルになりうるので、Pod が入れ替わるたびに
+        # `ContainerCreating` で分単位止まる。**kind では出ない** ---
+        # 判定ハーネスのボリュームは空なので一瞬で終わる（つまりこの 1 行は
+        # 「実測で確かめた」側ではなく「実測では出ない」側である）。
+        fsGroupChangePolicy: OnRootMismatch
         seccompProfile:
           type: RuntimeDefault
       containers:

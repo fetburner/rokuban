@@ -16,8 +16,8 @@
 #     `concurrencyPolicy` と schedule を厳密に噛み合わせる必要はない
 #   - **schedule は実運用の間隔を書く。** 受け入れ判定は 180 秒以内の自然発火を
 #     要求するが、そのために base を短くしない --- 判定用の間隔は
-#     `overlays/e2e` が patch で当てる（`deploy/k8s/manifests_test.go` の
-#     TestBaseCronSchedulesAreProductionValues が両方を固定している）
+#     `overlays/e2e` が patch で当てる（`deploy/k8s/workloads_test.go` の
+#     TestCronSchedulesAreProductionValues が両方を固定している）
 #
 # 間隔は in-process の定期ジョブ（`worker.periodic_jobs: true` の monolith）の
 # 既定値に合わせてある。**ここを変えるときは monolith 側の既定と揃えるか、

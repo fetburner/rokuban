@@ -19,7 +19,7 @@ schemas/         kubeconform に渡す CRD スキーマ（KEDA の ScaledJob）
 
 **base に site 名が一度も出てこない。** サイトを増やす差分は「`mirakcs:` に
 1 要素 + `site/` を 1 組生やす」だけになる（`overlays/e2e` が実例。判定は
-`manifests_test.go` の `TestBaseIsSiteIndependent`）。`site/` は site 名
+`workloads_test.go` の `TestBaseIsSiteIndependent`）。`site/` は site 名
 `default`（`mirakc:` 単一形式で site を書かなかったときの既定）で書いてあるので、
 **単一サイトの overlay は patch を 1 つも書かない**。
 
@@ -121,7 +121,7 @@ CRD が無いクラスタに apply すると、その部分だけが
 - **worker の `terminationGracePeriodSeconds` は drain を包む。**
   `preStop の sleep + 10s + --soft-stop-timeout + 10s` より長くする
   （[docs/operations.md](../../docs/operations.md) §5「Deployment 併用時」。
-  判定は `manifests_test.go` の `TestWorkerGraceCoversTheSoftStop`）。**api の
+  判定は `workloads_test.go` の `TestWorkerGraceCoversTheSoftStop`）。**api の
   値をそのまま写さないこと** --- api は River クライアントを Start しないので、
   足し算の後ろ 2 項が落ちている
 - **KEDA のトリガのクエリは物理キュー名で書く。** site 束縛キューは

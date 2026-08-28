@@ -54,7 +54,7 @@ patches:
   # **したがって判定 2 が測るのは出荷される schedule ではない**
   # （deploy/k8s/e2e/README.md の「0 が保証しないもの」に書いてある）。
   # base 側が判定の都合で短くならないことは
-  # `deploy/k8s/manifests_test.go` の TestBaseCronSchedulesAreProductionValues と
+  # `deploy/k8s/workloads_test.go` の TestCronSchedulesAreProductionValues と
   # TestE2EOverlayShortensTheCronScheduleItMeasures が対で固定している。
   - target:
       kind: CronJob
@@ -75,6 +75,18 @@ patches:
       - op: replace
         path: /spec/pollingInterval
         value: 10
+  # **判定 3 は「実行中の Job」を 1 つに絞れることを前提にしている**
+  # （`checks/03` は active な Job の 1 つ目を追いかける）。base の encode は
+  # `encode_reconcile` / `encode_enqueue_hint` が同じキューに載るぶんの余裕として
+  # 2 本まで許しているので、その 2 本目が窓の中で起きると、判定が**短い方の
+  # Job を追いかけて**「窓の中で完走した」= TODO に化ける。ここでは 1 本に絞る。
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-encode
+    patch: |-
+      - op: replace
+        path: /spec/maxReplicaCount
+        value: 1
   # ---- kind の 1 ノードに収めるためのレプリカ数 --------------------------
   #
   # **判定 1 はレプリカ数をリテラルで固定していない**（「宣言した数だけ Ready」
