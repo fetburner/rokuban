@@ -708,7 +708,7 @@ func intPtr(v int) *int { return &v }
 //
 // encode.profiles / live.profiles は 2 要素にし、crf と qp（互いに排他）を
 // 1 要素ずつに分けて両方の yaml タグを踏む。hwaccel ブロックの中身
-// （kind/device/output_format、internal/ffargs のタグで config.go の 91 個には
+// （kind/device/output_format、internal/ffargs のタグで config.go の 90 個には
 // 含まれない）は TestLoad_EncodeProfileHWAccel / TestLoad_LiveHWAccel が別途
 // 固定しているので、ここではブロックが非 nil で通ることだけを確認する。
 const allFieldsOverriddenConfig = `
@@ -801,8 +801,8 @@ live:
       audio_codec: aac
       height: 360
       qp: 30
-      segment_seconds: 2
-      playlist_size: 6
+      segment_seconds: 3
+      playlist_size: 7
 webhook:
   url: https://hooks.example.com/rokuban
   secret: s3cret
@@ -821,9 +821,10 @@ log:
   format: text
 `
 
-// TestLoad_AllFieldsOverridden は Config の yaml タグ（config.go に 91 個。
-// `mirakcs:`/MirakcSite の 3 個は上記の理由で対象外）を全部上書きした設定を
-// 読み、セクションごとに実際の値と期待値をテーブルで突き合わせる。
+// TestLoad_AllFieldsOverridden は Config の yaml タグ（config.go に 90 個。
+// `mirakcs:`/MirakcSite の 3 個は上記の理由で対象外、残り 87 個を上書き）を
+// 全部上書きした設定を読み、セクションごとに実際の値と期待値をテーブルで
+// 突き合わせる。
 //
 // セクション単位（struct 丸ごと）の比較にしているのは、そのセクション内の
 // どの yaml タグの上書きを 1 つ外しても（既定値に戻って期待値と食い違うので）
@@ -932,7 +933,7 @@ func TestLoad_AllFieldsOverridden(t *testing.T) {
 					},
 					{
 						Name: "low", VideoCodec: "libx264", AudioCodec: "aac", Height: 360,
-						QP: intPtr(30), SegmentSeconds: 2, PlaylistSize: 6,
+						QP: intPtr(30), SegmentSeconds: 3, PlaylistSize: 7,
 					},
 				},
 			},
