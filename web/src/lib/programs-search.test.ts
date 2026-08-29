@@ -120,6 +120,46 @@ describe('parseProgramsSearch', () => {
       at: undefined,
     })
   })
+
+  // issue #437: `view` は画面ローカルの表示形式（グリッド / リスト）。容量不足
+  // バッジが `search={{ view: 'grid', at }}` を発行するので、往復（バッジが
+  // 積んだ値がそのまま検証を通る）を確認する。
+  it('view は grid / list をそのまま受け取る', () => {
+    expect(parseProgramsSearch({ view: 'grid' })).toEqual({
+      service: undefined,
+      at: undefined,
+      view: 'grid',
+    })
+    expect(parseProgramsSearch({ view: 'list' })).toEqual({
+      service: undefined,
+      at: undefined,
+      view: 'list',
+    })
+  })
+
+  it('view が grid / list 以外なら undefined に落とす', () => {
+    expect(parseProgramsSearch({ view: 'bogus' })).toEqual({
+      service: undefined,
+      at: undefined,
+      view: undefined,
+    })
+    expect(parseProgramsSearch({ view: 123 })).toEqual({
+      service: undefined,
+      at: undefined,
+      view: undefined,
+    })
+    expect(parseProgramsSearch({ view: ['grid'] })).toEqual({
+      service: undefined,
+      at: undefined,
+      view: undefined,
+    })
+  })
+
+  it('view が無ければ明示的に undefined になる', () => {
+    const result = parseProgramsSearch({})
+    expect(result).toEqual({ service: undefined, at: undefined, view: undefined })
+    expect('view' in result).toBe(true)
+  })
 })
 
 

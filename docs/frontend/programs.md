@@ -134,7 +134,9 @@ Android のジェスチャーナビは左右端からの横スワイプが「戻
   （`src/api/zod.ts`）に委ね、値域や正規表現を手で書き写さない**
   （`lib/url-search.ts` が URL 固有の都合 --- 文字列で届く / 単一値と配列が
   混ざる / 不正な要素だけ落とす --- だけを繋ぐ）。id 配列は昇順に正準化し、
-  選択履歴で URL / queryKey を揺らさない。`dayOffset`（ジャンプ先の日）・`view`（表示形式）は URL 化しない。
+  選択履歴で URL / queryKey を揺らさない。`dayOffset`（ジャンプ先の日）は URL 化しない。
+  `view`（表示形式）は URL 状態にしてある --- 容量不足バッジが `search={{ view: 'grid', at }}`
+  でグリッドを明示するため。
   ピッカー操作は `replace` で navigate し、1 局ずつ選ぶたびに history を汚さない
 - **絞り込みはサーバー側でかける。** 選択した `Service.id` の配列を
   `programs.tsx` から渡し、返るのは選択したサービスの番組だけになる。
@@ -256,15 +258,22 @@ tick タイマーは持たない。このリンクは番組 ID を運ばず `net
 容量不足バッジ（予約一覧。[reservations.md](reservations.md) §容量不足バッジから
 番組表へ）は番組表ルート（`/programs`。ホーム新設（[home.md](home.md)。M8-3）前は
 `/` だった）へ、不足区間の開始時刻を `at`（epoch ms。
-`lib/programs-search.ts` の `ProgramsPageSearch.at`）に積んだ `Link` で飛ぶ。
+`lib/programs-search.ts` の `ProgramsPageSearch.at`）と `view: 'grid'`
+（同 `ProgramsPageSearch.view`）を積んだ `Link` で飛ぶ。
 
 着地後の反映先は画面幅・表示形式で 3 つに分かれる。**グリッドが唯一「その時間帯」を
-帯で直接見せられる形なので、それが選べる画面幅では自動で選ぶ**。
+帯で直接見せられる形なので、それが選べる画面幅ではバッジが `view: 'grid'` を明示する**。
 
-- **`lg` 以上**: リスト表示中でも自動でグリッド表示に切り替え、`at` をグリッドの初期
-  スクロール位置に使う（`ProgramGrid` の `scrollToMs`）。**自動切替は `at` ごとに 1 回
-  だけ**（`pages/programs.tsx` の `forcedGridForAtRef`）--- 切替後にユーザーが手動で
-  リストへ戻した選択を、画面幅の再評価（resize）だけで戻さない
+- **`lg` 以上**: URL の `view=grid` がそのままグリッド表示になり、`at` をグリッドの
+  初期スクロール位置に使う（`ProgramGrid` の `scrollToMs`）。表示形式が URL 状態なので、
+  `at` の有無と画面幅から「グリッドにしたい」を**推論する必要が無くなった**
+  （`showGrid` 自体は `wideScreen`（`useMediaQuery`）の判定を待つので、グリッドの
+  マウントが初回レンダーより 1 レンダー遅れる点は変わらない）。ユーザーが手動で
+  リストへ戻すと URL の `view` も `list` に replace されるので、画面幅の再評価
+  （resize）だけではグリッドに戻らない --- 以前は resize のたびに再評価して
+  自動切替するかどうかを判定していたが、`view` を URL に持たせたことで
+  「resize で切替を再検討する」という概念自体が無くなり、代わりにリンクを
+  踏むたびグリッドが永続するようになった
 - **`lg` 未満・リスト表示中**: グリッドが無い/選ばれていないので帯を出す手段が無い。
   次善として「`at` が属する日」への日付ジャンプ（`DayStrip` のジャンプ先）に留める
   （`lib/day-offset.ts` の `dayOffsetForMs`）。一覧の該当行自体には容量不足バッジ
@@ -274,8 +283,13 @@ tick タイマーは持たない。このリンクは番組 ID を運ばず `net
 **`at` は URL から消費・削除しない。** 「1 回使ったら `navigate` で消す」実装を試したが、
 `navigate` の非同期解決がグリッドの初回スクロール確定より先に終わってしまい、肝心の
 初回スクロールが「今」にしか効かなくなる退行を e2e で検出した（`useMediaQuery` が
-`false → true` になり `view` が `'grid'` になるまで最低 2 レンダーかかる一方、`navigate`
-はそれより早く解決しうる）。代わりに **`scrollToMs`（グリッドへ渡す実際の値）を
+`false → true` になるのに最低 1 レンダーかかる一方、`navigate` はそれより早く
+解決しうる）。**`view` を URL に持たせたことはこの競合を解消していない** ---
+`showGrid` は今も `wideScreen`（`useMediaQuery`）の判定を待つ。グリッドが実際に
+マウントされるのは初回レンダーから 1 レンダー遅れたままであり、その間に `at` を
+`navigate` で消すと同じ退行が起きる。`view` の URL 化で無くなったのは「`at` の有無から
+グリッドにしたいかを推論する」処理だけで、この初回レンダーの遅れそのものは変わって
+いない。代わりに **`scrollToMs`（グリッドへ渡す実際の値）を
 「いま見ている日が `at` の指す日と一致している間だけ」に条件付ける**
 （`pages/programs.tsx` の `scrollToMs`）。`at` 自体は URL に残ったままだが、「今日」
 ボタンや日付ストリップで別の日へ移った瞬間に `scrollToMs` は自動的に `undefined` へ戻り、

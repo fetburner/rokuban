@@ -3,14 +3,15 @@
  * （URL の `search`）の型と純関数（issue #231）。
  *
  * チャンネル選択は `service=<Service.id>` の数値配列で運ぶ。URL 化するのは
- * チャンネル選択と `at` だけで、`dayOffset` 等の表示状態は component state のまま。
+ * チャンネル選択・`at`・`view`（表示形式）で、`dayOffset` 等それ以外の
+ * 表示状態は component state のまま。
  *
  * React に依存しないのはテストのため（`lib/recording-search.ts` と同じ理由）。
  */
 
 import { ServiceChannelType, type Service } from '@/api/generated'
 import { ListProgramsQueryParams } from '@/api/zod'
-import { ascending, asInteger, validArray } from '@/lib/url-search'
+import { ascending, asInteger, parseEnum, validArray } from '@/lib/url-search'
 
 /**
  * serviceIdSchema は `?service=` の 1 要素。**openapi.yaml から生成した
@@ -31,7 +32,18 @@ export type ProgramsPageSearch = {
    * 経由せず時刻を直接運ぶ。
    */
   at?: number
+  /**
+   * 表示形式（グリッド / リスト）。画面ローカルの状態だが、容量不足バッジが
+   * 「グリッドで見せたい」を明示するために URL へ載せる（issue #437）。
+   * openapi.yaml 由来の zod スキーマには無い画面ローカルの列挙なので、
+   * `recording-search.ts` の `order` と同じ `lib/url-search.ts` の `parseEnum`
+   * で検証する。
+   */
+  view?: 'grid' | 'list'
 }
+
+/** programsViewValues は `view` の取りうる値。 */
+const programsViewValues = ['grid', 'list'] as const
 
 /**
  * ECMAScript の time value の定義域（[Time Values and Time Range]
@@ -100,6 +112,7 @@ export function parseProgramsSearch(search: Record<string, unknown>): ProgramsPa
       sort: ascending,
     }),
     at: parseAt(search.at),
+    view: parseEnum(search.view, programsViewValues),
   }
 }
 

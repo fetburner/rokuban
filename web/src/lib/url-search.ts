@@ -105,3 +105,12 @@ export function validValue<T>(item: ZodTypeAny, raw: unknown, opts: Options<T> =
 
 /** ascending は数値の昇順（`validArray` の `sort` に渡す既定）。 */
 export const ascending = (a: number, b: number): number => a - b
+
+/**
+ * parseEnum は openapi.yaml 由来の zod スキーマを持たない画面ローカルの列挙
+ * （`recording-search.ts` の `order`、`programs-search.ts` の `view` 等）を
+ * 検証する。許可された文字列のいずれかでなければ `undefined`。
+ */
+export function parseEnum<T extends string>(raw: unknown, allowed: readonly T[]): T | undefined {
+  return typeof raw === 'string' && (allowed as readonly string[]).includes(raw) ? (raw as T) : undefined
+}

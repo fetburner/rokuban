@@ -5,18 +5,19 @@
 //   ⓪ 前提条件 --- 配っている bundle が dist/ の現物と一致するか（他の判定は
 //      これが崩れているだけで無意味になるので最初に見る。下記のコメント参照）
 //   ① 予約一覧の容量不足バッジをクリックすると、行本体の詳細リンク（宛先
-//      `/reservations/$site/$programId`）ではなく番組表（`/programs?at=...`。
-//      ホーム新設（M8-3）前は `/?at=...` だった）へ飛ぶこと
-//      --- バッジが行本体の `<a>` の中に入れ子の `<a>` として置かれていると、
-//      クリックの宛先が不定になり、多くのブラウザ実装では外側（詳細ページ）が
-//      勝つ。この構造上の欠陥は jsdom の DOM 構造チェック（`querySelectorAll('a a')`）
-//      で拾えるが、**実際にクリックしたときの遷移先**は実ブラウザでしか確認できない
-//      （jsdom は Link のクリックで実際のブラウザナビゲーションを起こさない）
-//   ② 遷移後、`lg` 以上の画面幅ではグリッド表示に自動で切り替わり、かつ
-//      不足区間の帯（`[data-testid="capacity-band"]`）の上辺が実際に画面内
-//      （スクロール済みの可視範囲）に入っていること --- スクロール位置は jsdom が
-//      原理的に測れない領域（`getBoundingClientRect()` が常に 0 を返す）ので、
-//      これが唯一の判定手段になる
+//      `/reservations/$site/$programId`）ではなく番組表（`/programs?view=grid&at=...`。
+//      ホーム新設（M8-3）前は `/?at=...` だった）へ飛ぶこと --- バッジが行本体の
+//      `<a>` の中に入れ子の `<a>` として置かれていると、クリックの宛先が不定になり、
+//      多くのブラウザ実装では外側（詳細ページ）が勝つ。この構造上の欠陥は jsdom の
+//      DOM 構造チェック（`querySelectorAll('a a')`）で拾えるが、**実際にクリック
+//      したときの遷移先**は実ブラウザでしか確認できない（jsdom は Link のクリックで
+//      実際のブラウザナビゲーションを起こさない）
+//   ② `lg` 以上の画面幅では URL の `view=grid` どおりグリッド表示になり、不足区間の
+//      帯（`[data-testid="capacity-band"]`）の上辺が実際に画面内（スクロール済みの
+//      可視範囲）に入っていること --- スクロール位置は jsdom が原理的に測れない領域
+//      （`getBoundingClientRect()` が常に 0 を返す）ので、これが唯一の判定手段になる。
+//      あわせて `view=list` では（`at` があっても）グリッドにならないことも見る ---
+//      でなければ「`lg` で常にグリッドが出る」旧・自動切替実装と区別できない
 //   ③ `lg` 未満（グリッドが出ずリスト表示のまま）でもクリックが機能し、
 //      エラーにならないこと --- ①②は 1280px でしか開いておらず、この経路を
 //      一度も通さないと実装のバグがそこに隠れていても検出できない
@@ -230,7 +231,8 @@ if (!bundleCheck.matches) {
 log('  一致（このサーバーは自分のビルドを配っている）')
 
 const browser = await chromium.launch()
-// lg（64rem = 1024px）以上の幅で開く --- 判定②はグリッドの自動切替が前提
+// lg（64rem = 1024px）以上の幅で開く --- 判定②は URL の view=grid どおり
+// グリッド表示になることが前提
 const context = await browser.newContext({
   viewport: { width: 1280, height: 900 },
   locale: 'ja-JP',
@@ -271,11 +273,20 @@ if ((await badge.count()) > 0) {
       )
     } else if (url.pathname !== '/programs') {
       ng.push(`① 番組表（/programs）ではなく ${url.pathname}${url.search} へ飛んだ`)
+    } else if (url.searchParams.get('view') !== 'grid') {
+      // バッジは `view: 'grid'` を明示して積む。`at` だけで `useMediaQuery` から
+      // 推論する旧実装ではないので、`view=grid` そのものが無ければこの導線が
+      // 壊れている（`view` キーの有無だけでは、バッジが誤って `view: 'list'` を
+      // 積むバグを見逃す）。
+      ng.push(
+        `① 番組表へ遷移したが view=grid になっていない（view=${url.searchParams.get('view')}）`,
+      )
     } else {
       // `at` は URL から消費・削除しない方針にした（`pages/programs.tsx` の
       // コメント参照。素朴に消す実装は初回スクロールとの競合で退行した）ので、
-      // `?at=...` が残ったままなのが正しい。「at が現在地を離れたら効かなく
-      // なる」ことは②'（「今日」へ戻すと now へスクロールし直す）で確認する。
+      // `?view=grid&at=...` が残ったままなのが正しい。「at が現在地を離れたら
+      // 効かなくなる」ことは②'（「今日」へ戻すと now へスクロールし直す）で
+      // 確認する。
       log('  番組表へ遷移した（期待どおり）')
     }
   } catch (err) {
@@ -288,11 +299,30 @@ if ((await badge.count()) > 0) {
   ng.push('① バッジが無いため②の判定に進めない')
 }
 
-// --- ② lg 以上ではグリッドへ自動で切り替わり、不足区間の帯が可視範囲に入る ---
-log('\n=== ② グリッドの自動切替 + 帯のスクロール位置 ===')
+// --- ①': 同じ 1280px（lg 以上）でも view=list なら（at があっても）グリッドに
+// ならない --- ②が「lg でグリッドが出る」ことしか見ないと、`view` を無視して
+// `lg` なら常にグリッドにする旧・自動切替実装と区別が付かない。
+log("\n=== ①' view=list では lg 以上でもグリッドにならない ===")
+const gridUrl = page.url()
+await page.goto(`${URL_BASE}/programs?view=list&at=${overageStart}`, {
+  waitUntil: 'domcontentloaded',
+})
+await page.waitForTimeout(600)
+const listViewGrid = page.locator('[data-testid="program-grid"]')
+if ((await listViewGrid.count()) > 0) {
+  ng.push("①' view=list なのに lg 以上でグリッドが出ている（view を無視している疑い）")
+} else {
+  log('  view=list ではグリッドが出ていない（期待どおり）')
+}
+// ②以降はバッジ経由で開いた view=grid の URL に戻ってから続ける
+await page.goto(gridUrl, { waitUntil: 'domcontentloaded' })
+await page.waitForTimeout(600)
+
+// --- ② lg 以上では URL の view=grid どおりグリッド表示になり、帯が可視範囲に入る ---
+log('\n=== ② グリッド表示（view=grid） + 帯のスクロール位置 ===')
 const grid = page.locator('[data-testid="program-grid"]')
 await grid.waitFor({ timeout: 15000 }).catch(() => {
-  ng.push('② lg 以上なのにグリッドへ自動で切り替わらない')
+  ng.push('② lg 以上なのに view=grid でグリッドが出ない')
 })
 
 if ((await grid.count()) > 0) {
