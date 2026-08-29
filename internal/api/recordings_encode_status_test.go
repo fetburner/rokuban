@@ -174,6 +174,11 @@ func TestListRecordingsEncodeStatus_TrashOmitsEncodeStatus(t *testing.T) {
 	seedIngested(t, pool, id, 1000, nil)
 	setEncodeProfiles(t, pool, id, []string{"h264", "h265"})
 	seedEncodeAttempt(t, pool, id, "h265", "running", nil)
+	// h264 は削除前に完了していた（active な encoded asset）。一覧・単体の
+	// どちらも trash では availableEncodedAssets を Go 側で落とすので
+	// （recordings_query.go の recordingsAvailableEncodedAssetsSelect の
+	// コメント参照）、削除後もこの資産が出てこないことを併せて固定する。
+	seedEncodedAsset(t, pool, id, "h264", 500)
 
 	if resp := doRecordingMethod(t, http.MethodDelete, fmt.Sprintf("%s/api/recordings/%d", srv.URL, id)); resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete status = %d, want 204", resp.StatusCode)
@@ -189,6 +194,9 @@ func TestListRecordingsEncodeStatus_TrashOmitsEncodeStatus(t *testing.T) {
 	if trash[0].EncodeStatus != nil {
 		t.Errorf("trash: encodeStatus = %+v, want omitted (nil)", *trash[0].EncodeStatus)
 	}
+	if trash[0].EncodedAssets != nil {
+		t.Errorf("trash: encodedAssets = %+v, want omitted (nil)", *trash[0].EncodedAssets)
+	}
 
 	var single Recording
 	if resp := getJSON(t, srv.URL+"/api/recordings/"+itoa(id), &single); resp.StatusCode != http.StatusOK {
@@ -196,6 +204,9 @@ func TestListRecordingsEncodeStatus_TrashOmitsEncodeStatus(t *testing.T) {
 	}
 	if single.EncodeStatus != nil {
 		t.Errorf("single (trash): encodeStatus = %+v, want omitted (nil)", *single.EncodeStatus)
+	}
+	if single.EncodedAssets != nil {
+		t.Errorf("single (trash): encodedAssets = %+v, want omitted (nil)", *single.EncodedAssets)
 	}
 }
 
