@@ -19,6 +19,11 @@ type stringWriter interface {
 // から dst.String() を返す」関数 --- 呼び出し側はログを読むとき必ずこれ越しに
 // 読むこと（dst.String() を直接呼ばない）。
 //
+// **一度読むと以降のログは捕まえられない。** 戻り値の関数はパイプの書き込み側を
+// 閉じてから読む（下記）ので、以降 os.Stderr への書き込みは黙って捨てられる
+// （slog は Handler のエラーを無視するため無音で失われる）。読むのはテストの
+// 最後に 1 回だけにすること。
+//
 // **`slog.SetDefault` を先回りで差し替える方式は使えない。** loadConfig が
 // config の log.level / log.format から新しいロガーを構成して
 // slog.SetDefault で上書きするので（cmd/rokuban/logger.go）、テスト側が
