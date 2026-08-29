@@ -1128,14 +1128,17 @@ describe('ProgramsPage の日付ジャンプ（先頭の窓に重なる前日の
  * `lg` 以上かどうかを `useMediaQuery` から推論してグリッドへ自動切替していたが、
  * `view` を URL に持つようになったのでバッジ自身が明示する）。
  *
- * グリッドの実際のスクロール位置（px）は jsdom で測れないので e2e の担当
- * （`web/e2e/`）。ここで見るのは jsdom でも判定できる部分だけ ---
- * (1) `lg` 未満では `view=grid` があってもグリッドを出さず、「その時刻が属する
- * 日」への日付ジャンプにフォールバックすること、(2) `lg` 以上では `view=grid`
- * どおり初回レンダーからグリッド表示になること、(3) `at` だけで `view=grid` が
- * 無ければ `lg` 以上でもグリッドにならないこと（推論をやめたことの回帰確認）、
- * (4) グリッドからユーザーが手動でリストへ戻すと URL の `view` も `list` に
- * 更新され、画面幅の再評価（resize）だけでは戻らないこと。
+ * グリッドの実際のスクロール位置（px）・グリッドが実際に何レンダー目でマウント
+ * されるか（`useMediaQuery` は初回レンダーでは必ず false を返すので、`showGrid`
+ * が true になるのは早くても 1 レンダー遅れる。`docs/frontend/programs.md`
+ * 「番組表への `at` 導線」参照）は jsdom で測れないので e2e の担当（`web/e2e/`）。
+ * ここで見るのは jsdom でも判定できる部分だけ --- (1) `lg` 未満では `view=grid`
+ * があってもグリッドを出さず、「その時刻が属する日」への日付ジャンプに
+ * フォールバックすること、(2) `lg` 以上では `view=grid` どおりグリッド表示に
+ * なること、(3) `at` だけで `view=grid` が無ければ `lg` 以上でもグリッドに
+ * ならないこと（推論をやめたことの回帰確認）、(4) グリッドからユーザーが
+ * 手動でリストへ戻すと URL の `view` も `list` に更新され、画面幅の再評価
+ * （resize）だけでは戻らないこと。
  */
 describe('ProgramsPage の at パラメータ（容量バッジからの導線。issue #233 M6-5）', () => {
   // dayOffset 2（明後日）に属する時刻。他の日付ジャンプテストと同じ理由で
@@ -1147,10 +1150,10 @@ describe('ProgramsPage の at パラメータ（容量バッジからの導線�
   const targetMs = dayOrigin(2).getTime() + 3 * 3_600_000
   const dayTwoProgram = programAtAbsolute(220, 1024, targetMs, '容量バッジ導線の番組')
 
-  it('lg 未満では、グリッドを出さずに at が属する日へ日付ジャンプする', async () => {
+  it('lg 未満では、view=grid があってもグリッドを出さずに at が属する日へ日付ジャンプする', async () => {
     stubApi([], [], [...allPrograms, dayTwoProgram])
     stubMatchMedia(false)
-    renderPage(`/programs?at=${targetMs}`)
+    renderPage(`/programs?view=grid&at=${targetMs}`)
 
     // 「ニュース7」（今日の番組）ではなく、day 2 の番組が出る ---
     // 日付ジャンプが実際に効いていることの証拠（効いていなければ今日のまま
@@ -1164,13 +1167,14 @@ describe('ProgramsPage の at パラメータ（容量バッジからの導線�
     expect(within(dayGroup).getAllByRole('button')[2]).toHaveAttribute('aria-current', 'date')
   })
 
-  it('view=grid が URL にあれば、lg 以上では初回レンダーからグリッド表示になる', async () => {
+  it('view=grid が URL にあれば、lg 以上ではグリッド表示になる', async () => {
     stubApi([], [], [...allPrograms, dayTwoProgram])
     stubMatchMedia(true)
     renderPage(`/programs?view=grid&at=${targetMs}`)
 
-    // 推論（旧 `forcedGridForAtRef`）を経由せず `view=grid` がそのままグリッドに
-    // なる。グリッドの中に day 2 の番組が実際に見えることまで確認する ---
+    // `at` の有無や画面幅からの推論を経由せず `view=grid` がそのままグリッドに
+    // なる（何レンダー目でマウントされるかは jsdom では測れないので e2e の担当）。
+    // グリッドの中に day 2 の番組が実際に見えることまで確認する ---
     // 単に testid が存在するだけでは「軸が day 2 に合っている」保証にならない
     // （軸がずれていても `programs.length` が非 0 なら testid 自体は出る）。
     await screen.findByTestId('program-grid')

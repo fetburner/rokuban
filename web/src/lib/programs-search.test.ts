@@ -6,7 +6,7 @@ import { parseProgramsSearch, pickerServiceDomain } from '@/lib/programs-search'
 describe('parseProgramsSearch', () => {
   it('何も無ければ絞り込みなし（service は明示的に undefined）になる', () => {
     const result = parseProgramsSearch({})
-    expect(result).toEqual({ service: undefined, at: undefined, view: undefined })
+    expect(result).toEqual({ service: undefined, at: undefined })
     // 「キーが無い」ではなく「キーがあって値が undefined」であることそのものを見る
     // （omit-on-invalid の罠。CLAUDE.md「validateSearch の omit-on-invalid」）
     expect('service' in result).toBe(true)
@@ -16,14 +16,13 @@ describe('parseProgramsSearch', () => {
     expect(parseProgramsSearch({ service: [600101, 400101, 600101, 400102] })).toEqual({
       service: [400101, 400102, 600101],
       at: undefined,
-      view: undefined,
     })
   })
 
   it('service の不正値・0・負値・非整数を要素ごとに落とす', () => {
     expect(
       parseProgramsSearch({ service: ['bad', 0, -1, 1.5, '400101', 600101] }),
-    ).toEqual({ service: [400101, 600101], at: undefined, view: undefined })
+    ).toEqual({ service: [400101, 600101], at: undefined })
   })
 
   // issue #345: Number.MAX_SAFE_INTEGER を超える値は Number() の時点で既に
@@ -35,18 +34,16 @@ describe('parseProgramsSearch', () => {
     expect(parseProgramsSearch({ service: [unsafeId, 400101] })).toEqual({
       service: [400101],
       at: undefined,
-      view: undefined,
     })
     expect(parseProgramsSearch({ service: [unsafeId] })).toEqual({
       service: undefined,
       at: undefined,
-      view: undefined,
     })
   })
 
   it('at が無ければ明示的に undefined になる', () => {
     const result = parseProgramsSearch({})
-    expect(result).toEqual({ service: undefined, at: undefined, view: undefined })
+    expect(result).toEqual({ service: undefined, at: undefined })
     expect('at' in result).toBe(true)
   })
 
@@ -54,32 +51,30 @@ describe('parseProgramsSearch', () => {
     expect(parseProgramsSearch({ at: 1_700_000_000_000 })).toEqual({
       service: undefined,
       at: 1_700_000_000_000,
-      view: undefined,
     })
     expect(parseProgramsSearch({ at: '1700000000000' })).toEqual({
       service: undefined,
       at: 1700000000000,
-      view: undefined,
     })
   })
 
   it('at は service と違い、0 以下・過去の値も落とさない', () => {
-    expect(parseProgramsSearch({ at: -1 })).toEqual({ service: undefined, at: -1, view: undefined })
-    expect(parseProgramsSearch({ at: 0 })).toEqual({ service: undefined, at: 0, view: undefined })
+    expect(parseProgramsSearch({ at: -1 })).toEqual({ service: undefined, at: -1 })
+    expect(parseProgramsSearch({ at: 0 })).toEqual({ service: undefined, at: 0 })
   })
 
   it('at が数値化できない・非整数なら undefined に落とす', () => {
-    expect(parseProgramsSearch({ at: 'abc' })).toEqual({ service: undefined, at: undefined, view: undefined })
-    expect(parseProgramsSearch({ at: 1.5 })).toEqual({ service: undefined, at: undefined, view: undefined })
-    expect(parseProgramsSearch({ at: [1, 2] })).toEqual({ service: undefined, at: undefined, view: undefined })
+    expect(parseProgramsSearch({ at: 'abc' })).toEqual({ service: undefined, at: undefined })
+    expect(parseProgramsSearch({ at: 1.5 })).toEqual({ service: undefined, at: undefined })
+    expect(parseProgramsSearch({ at: [1, 2] })).toEqual({ service: undefined, at: undefined })
   })
 
   // nit 3（レビュー）: 空文字は Number('') === 0 で「0 時ちょうど」という
   // 具体的な値に化ける。`?at=` という壊れたリンクを「0 時にジャンプ」ではなく
   // 「欠落（絞り込みなし）」と読む。
   it('at の空文字は 0 に変換せず undefined に落とす', () => {
-    expect(parseProgramsSearch({ at: '' })).toEqual({ service: undefined, at: undefined, view: undefined })
-    expect(parseProgramsSearch({ at: '   ' })).toEqual({ service: undefined, at: undefined, view: undefined })
+    expect(parseProgramsSearch({ at: '' })).toEqual({ service: undefined, at: undefined })
+    expect(parseProgramsSearch({ at: '   ' })).toEqual({ service: undefined, at: undefined })
   })
 
   // レビューの must-fix 1: `Date` の time value の定義域（±8,640,000,000,000,000ms）
@@ -93,24 +88,20 @@ describe('parseProgramsSearch', () => {
     expect(parseProgramsSearch({ at: 9_000_000_000_000_000 })).toEqual({
       service: undefined,
       at: undefined,
-      view: undefined,
     })
     expect(parseProgramsSearch({ at: '9000000000000000' })).toEqual({
       service: undefined,
       at: undefined,
-      view: undefined,
     })
-    expect(parseProgramsSearch({ at: 1e30 })).toEqual({ service: undefined, at: undefined, view: undefined })
+    expect(parseProgramsSearch({ at: 1e30 })).toEqual({ service: undefined, at: undefined })
     expect(parseProgramsSearch({ at: '99999999999999999999' })).toEqual({
       service: undefined,
       at: undefined,
-      view: undefined,
     })
     // 負の側の定義域外も同じく落とす
     expect(parseProgramsSearch({ at: -9_000_000_000_000_000 })).toEqual({
       service: undefined,
       at: undefined,
-      view: undefined,
     })
   })
 
@@ -118,18 +109,15 @@ describe('parseProgramsSearch', () => {
     expect(parseProgramsSearch({ at: 8_640_000_000_000_000 })).toEqual({
       service: undefined,
       at: 8_640_000_000_000_000,
-      view: undefined,
     })
     expect(parseProgramsSearch({ at: -8_640_000_000_000_000 })).toEqual({
       service: undefined,
       at: -8_640_000_000_000_000,
-      view: undefined,
     })
     // 境界の 1ms 外は落ちる
     expect(parseProgramsSearch({ at: 8_640_000_000_000_001 })).toEqual({
       service: undefined,
       at: undefined,
-      view: undefined,
     })
   })
 

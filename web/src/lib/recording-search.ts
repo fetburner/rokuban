@@ -24,7 +24,7 @@ import { formatDateTime } from '@/lib/format'
 import { parsePositiveIntId } from '@/lib/positive-id'
 import { ListRecordingsQueryParams } from '@/api/zod'
 import { genreCodeLabel } from '@/lib/program-search'
-import { ascending, asInteger, validArray, validValue } from '@/lib/url-search'
+import { ascending, asInteger, parseEnum, validArray, validValue } from '@/lib/url-search'
 
 /**
  * q は openapi.yaml から生成した `GET /api/recordings` のクエリスキーマ。
@@ -86,10 +86,6 @@ export const sourceLabels: Record<ListRecordingsSource, string> = {
 /** emptyRecordingsSearch は条件を何も指定していない状態。 */
 export function emptyRecordingsSearch(): RecordingsPageSearch {
   return {}
-}
-
-function parseEnum<T extends string>(raw: unknown, allowed: readonly T[]): T | undefined {
-  return typeof raw === 'string' && (allowed as readonly string[]).includes(raw) ? (raw as T) : undefined
 }
 
 /**

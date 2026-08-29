@@ -127,9 +127,12 @@ export function ProgramsPage() {
   // 通知する）。DayStrip のハイライトはこちらを見る。ジャンプ直後は dayOffset と
   // 一致するが、その後リストをスクロールすればこちらだけが動く。
   const [visibleDay, setVisibleDay] = useState(0)
-  // view は表示形式（グリッド / リスト）。URL 化してある（`search.view`。
-  // issue #437）。既定はリスト --- 容量不足バッジが `view: 'grid'` を明示した
-  // ときだけ初回レンダーからグリッドになる。
+  // view は表示形式（グリッド / リスト）。URL 化してある（`search.view`）。
+  // 既定はリスト --- 容量不足バッジが `view: 'grid'` を明示したときはこの値が
+  // 直ちに 'grid' になるが、実際にグリッドが出るかは `showGrid`（下記）が
+  // 決める。`showGrid` は `wideScreen`（`useMediaQuery`）の判定を待つため、
+  // グリッドのマウント自体は初回レンダーより 1 レンダー遅れる
+  // （docs/frontend/programs.md「番組表への `at` 導線」参照）。
   const view: ProgramView = search.view ?? 'list'
 
   // ProgramList への命令的 API（`components/program-list.tsx` の
