@@ -15,9 +15,7 @@
 //
 // SSE の再接続時 invalidate はここでは見ない（実ブラウザで切断を決定的に
 // 起こす手段が無い）。単体テスト「再接続したら切断中の変更を全グループ取り直す」の担当。
-import { readdirSync } from 'node:fs'
-import path from 'node:path'
-import { chromium } from 'playwright'
+import { finish, launchBrowser, log, sseKeepAlive, verifyBundleMatchesOrExit } from './lib.mjs'
 
 const BASE = process.env.E2E_URL ?? 'http://localhost:4173'
 /** 運用状態の周期（src/lib/events.ts の operationalRefreshIntervalMs と同じ値をリテラルで書く）。 */
@@ -28,7 +26,6 @@ const epgMs = 600_000
 /** 現在測っているページのリクエスト数。ページを変えるたびに差し替える。 */
 let counts = new Map()
 const ng = []
-const log = (...a) => console.log(...a)
 const count = (path) => counts.get(path) ?? 0
 /** check は期待値と実測を突き合わせる。落ちても続行して全部の NG を出す。 */
 const check = (label, actual, expected) => {
@@ -39,25 +36,8 @@ const check = (label, actual, expected) => {
   }
 }
 
-// ⓪ 配っている bundle が自分の dist かを先に確かめる（badge-links.mjs と同じ理由。
-// 別 worktree の preview が同じポートに居座っていると、無関係な古いビルドを
-// 測ったまま判定が進む）。
-const rootHtml = await fetch(BASE + '/').then((r) => r.text())
-const served = /assets\/(index-[^"]+\.js)/.exec(rootHtml)?.[1]
-let local
-try {
-  local = readdirSync(path.join(process.cwd(), 'dist', 'assets')).find((f) =>
-    /^index-.*\.js$/.test(f),
-  )
-} catch {
-  local = undefined
-}
-if (served === undefined || served !== local) {
-  log(`NG  ⓪ 配っている bundle（${served ?? '不明'}）が dist/assets/（${local ?? '不明'}）と違う`)
-  log('    別プロセス・古いビルドを測っている。以降の判定に意味が無いので打ち切る')
-  process.exit(1)
-}
-log(`OK  ⓪ 配っている bundle は自分の dist（${served}）`)
+// ⓪ 配っている bundle が dist/ の現物と一致するか（e2e/lib.mjs 参照）。
+await verifyBundleMatchesOrExit(BASE, ng)
 
 const reservation = {
   id: 111,
@@ -73,7 +53,7 @@ const reservation = {
   skip: false,
 }
 
-const browser = await chromium.launch()
+const browser = await launchBrowser()
 
 /**
  * openStubbed は `/api/**` を丸ごと差し替えたページを開く。カウンタ（`counts`）は
@@ -92,16 +72,8 @@ async function openStubbed(pathname, label, overrides = {}) {
   await p.route('**/api/**', async (route) => {
     const requested = new URL(route.request().url()).pathname
     counts.set(requested, count(requested) + 1)
-    if (requested === '/api/events') {
-      // 接続は張るが通知は 1 通も送らない（notifier がバッファ満杯で捨てた状態）。
-      // retry を 1 日にして、時計を進めても再接続 invalidate が混ざらないようにする
-      await route.fulfill({
-        status: 200,
-        headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' },
-        body: 'retry: 86400000\n\n: ping\n\n',
-      })
-      return
-    }
+    // 接続は張るが通知は 1 通も送らない（notifier がバッファ満杯で捨てた状態）。
+    if (requested === '/api/events') return sseKeepAlive(route)
     const body =
       overrides[requested] ??
       (requested === '/api/capabilities'
@@ -171,8 +143,7 @@ check('初回: 予約', count('/api/reservations'), 1)
 check('初回: 番組リスト', count(programs), 1)
 if (ng.length > 0) {
   log('初回ロードで既に期待とずれている。以降の増分は判定できない')
-  await browser.close()
-  process.exit(1)
+  await finish(ng, browser)
 }
 
 // 運用状態は 60 秒で取り直す。1 周期進めて着弾を待つ。EPG はまだ動かない
@@ -235,9 +206,4 @@ await storagePage.clock.runFor(storageMs)
 await storagePage.waitForTimeout(500)
 check('10 分後: ストレージ', count('/api/storage'), 3)
 
-await browser.close()
-if (ng.length > 0) {
-  log(`\nNG ${ng.length} 件: ${ng.join(' / ')}`)
-  process.exit(1)
-}
-log('\nすべて OK')
+await finish(ng, browser)

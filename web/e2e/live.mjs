@@ -24,7 +24,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { chromium, webkit } from 'playwright'
+import { launchBrowser, log, verifyBundleMatchesOrExit } from './lib.mjs'
 
 const BASE_URL = process.env.E2E_URL ?? 'http://localhost:40773'
 const SITE = process.env.E2E_LIVE_SITE ?? 'default'
@@ -34,6 +34,14 @@ const SITE = process.env.E2E_LIVE_SITE ?? 'default'
 const SERVICE_A = process.env.E2E_LIVE_SERVICE_A ?? '9001'
 const SERVICE_B = process.env.E2E_LIVE_SERVICE_B ?? '9002'
 const NETWORK_ID = process.env.E2E_LIVE_NETWORK_ID ?? '1'
+
+const ng = []
+const skipped = []
+
+// ⓪ 配っている bundle が dist/ の現物と一致するか（web/e2e/README.md 参照）。
+// resolveServiceId 等より先に見る --- 前提が崩れているとそちらが先に例外で
+// 落ち、⓪ に一度も到達しないまま無関係なエラーだけが出てしまう。
+await verifyBundleMatchesOrExit(BASE_URL, ng)
 
 /**
  * resolveServiceId は SI の (networkId, serviceId) から `?service=` に載せる
@@ -78,10 +86,6 @@ const SERVICE_ID_B = await resolveServiceId(NETWORK_ID, SERVICE_B)
 const FIXTURE_DIR = path.join(os.tmpdir(), 'rokuban-e2e-live-fixture')
 const SEGMENTS_DIR = path.join(FIXTURE_DIR, 'segments')
 const PLAYLIST_PATH = path.join(FIXTURE_DIR, 'playlist.m3u8')
-
-const ng = []
-const skipped = []
-const log = (...a) => console.log(...a)
 
 /**
  * liveSegmentsPathOf は serviceId のセグメント要求を照合するためのパス断片を返す。
@@ -307,7 +311,7 @@ async function clickPlay(page) {
  * 戻すと ⓪〜⑧ すべて緑（exit 0）。
  */
 async function runConsentCheck() {
-  const browser = await chromium.launch()
+  const browser = await launchBrowser()
   try {
     const page = await browser.newPage({ viewport: { width: 960, height: 640 } })
     const requestLog = []
@@ -468,7 +472,7 @@ if (!hasFixture) {
 }
 
 if (hasFixture) {
-  const browser = await chromium.launch()
+  const browser = await launchBrowser()
   // ①②④⑤⑧ の途中で何が例外を投げても NG として報告し、後続の ③（別ブラウザ）を
   // 続行する（クラッシュさせない）。実際に「壊してみる」検証で、native HLS
   // 判定を誤らせると `waitForFunction` が例外で落ちることを確認した経緯があるため
@@ -681,7 +685,7 @@ if (hasFixture) {
   log('\n=== ③ 実再生（video.currentTime が進む） ===')
   let chromeBrowser
   try {
-    chromeBrowser = await chromium.launch({ channel: 'chrome' })
+    chromeBrowser = await launchBrowser('chromium', { channel: 'chrome' })
   } catch {
     chromeBrowser = null
   }
@@ -736,7 +740,7 @@ if (hasFixture) {
   // WebKit は `<video>` が MPEG-2 TS を demux できる唯一のエンジンなので、
   // フィクスチャ（H.264/AAC in TS）をそのまま再生できる --- 実再生まで見る。
   log('\n=== ⑥ WebKit（Safari 相当）のネイティブ HLS 経路 ===')
-  const webkitBrowser = await webkit.launch()
+  const webkitBrowser = await launchBrowser('webkit')
   try {
     const page = await webkitBrowser.newPage({ viewport: { width: 960, height: 640 } })
     const requestLog = []
@@ -833,7 +837,7 @@ if (hasFixture) {
     ['セグメントが 404', '404', 20000],
     ['セグメントが応答しない', 'hang', 30000],
   ]) {
-    const browser = await webkit.launch()
+    const browser = await launchBrowser('webkit')
     try {
       const page = await browser.newPage({ viewport: { width: 960, height: 640 } })
       await mockLiveRoutes(page, { playlist: 'ok', segments })

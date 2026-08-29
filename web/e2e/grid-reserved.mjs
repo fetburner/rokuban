@@ -20,15 +20,12 @@
 //   E2E_URL=http://localhost:4173 pnpm e2e:grid-reserved
 //
 // 合格なら exit 0、1 つでも NG なら exit 1。
-import { readdirSync } from 'node:fs'
-import path from 'node:path'
-import { chromium } from 'playwright'
+import { finish, installApiStubs, launchBrowser, log, verifyBundleMatchesOrExit } from './lib.mjs'
 
 const BASE = process.env.E2E_URL ?? 'http://localhost:4173'
 const SITE = 'default'
 
 const ng = []
-const log = (...a) => console.log(...a)
 
 const FIXED_NOW = new Date('2026-08-12T21:34:00+09:00')
 const nowMs = FIXED_NOW.getTime()
@@ -105,25 +102,18 @@ const reservation = (program) => ({
   skip: false,
 })
 
-/** installApiStubs は /programs の描画に要る `/api/**` を丸ごと差し替える。 */
-async function installApiStubs(page) {
-  await page.route('**/api/**', async (route) => {
-    const p = new URL(route.request().url()).pathname
-    const json = (body) =>
-      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) })
-
-    if (p === '/api/events') return route.fulfill({ status: 204 })
-    if (p === '/api/sites') return json([SITE])
-    if (p === '/api/capabilities') return json({ live: false })
-    if (p === '/api/reservations') return json([reservation(reserved), reservation(shortReserved)])
-    if (p === '/api/capacity/overages') return json([])
-    if (p === '/api/encode-profiles') return json([])
-    if (p === `/api/sites/${SITE}/services`) return json([service])
-    if (p === `/api/sites/${SITE}/programs`) return json([reserved, unreserved, shortReserved])
-    if (/\/overlaps$/.test(p)) return json({ count: 0, reservations: [] })
-    if (/\/programs\/\d+$/.test(p)) return json({ extended: {}, audios: [] })
-    return json([])
-  })
+/** apiHandler は /programs の描画に要る `/api/**` の応答を作る。 */
+async function apiHandler({ path: p, json }) {
+  if (p === '/api/sites') return json([SITE])
+  if (p === '/api/capabilities') return json({ live: false })
+  if (p === '/api/reservations') return json([reservation(reserved), reservation(shortReserved)])
+  if (p === '/api/capacity/overages') return json([])
+  if (p === '/api/encode-profiles') return json([])
+  if (p === `/api/sites/${SITE}/services`) return json([service])
+  if (p === `/api/sites/${SITE}/programs`) return json([reserved, unreserved, shortReserved])
+  if (/\/overlaps$/.test(p)) return json({ count: 0, reservations: [] })
+  if (/\/programs\/\d+$/.test(p)) return json({ extended: {}, audios: [] })
+  return json([])
 }
 
 /**
@@ -204,30 +194,13 @@ const inspectCell = (el) => {
   }
 }
 
-{
-  const rootHtml = await fetch(BASE + '/').then((r) => r.text())
-  const served = /assets\/(index-[^"]+\.js)/.exec(rootHtml)?.[1]
-  let local
-  try {
-    local = readdirSync(path.join(process.cwd(), 'dist', 'assets')).find((f) =>
-      /^index-.*\.js$/.test(f),
-    )
-  } catch {
-    local = undefined
-  }
-  if (served === undefined || served !== local) {
-    log(`NG  ⓪ 配っている bundle（${served ?? '不明'}）が dist/assets/（${local ?? '不明'}）と違う`)
-    log('    別プロセス・古いビルドを測っている。以降の判定に意味が無いので打ち切る')
-    process.exit(1)
-  }
-  log(`OK  ⓪ 配っている bundle は自分の dist（${served}）`)
-}
+await verifyBundleMatchesOrExit(BASE, ng)
 
-const browser = await chromium.launch()
+const browser = await launchBrowser()
 const context = await browser.newContext({ viewport: { width: 1280, height: 900 } })
 const page = await context.newPage()
 await page.clock.setFixedTime(FIXED_NOW)
-await installApiStubs(page)
+await installApiStubs(page, apiHandler)
 await page.goto(BASE + '/programs', { waitUntil: 'domcontentloaded' })
 
 await page.getByRole('button', { name: '番組表' }).click()
@@ -340,10 +313,5 @@ if (!markSource) {
 }
 
 await context.close()
-await browser.close()
 
-log('\n=== 結果 ===')
-if (ng.length === 0) log('  すべて期待どおり')
-else ng.forEach((f) => log('  NG: ' + f))
-
-process.exit(ng.length === 0 ? 0 : 1)
+await finish(ng, browser)

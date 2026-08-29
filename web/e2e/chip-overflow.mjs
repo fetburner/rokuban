@@ -13,16 +13,13 @@
 //
 //   cd web && pnpm build && pnpm exec vite preview --port 4173 --strictPort &
 //   E2E_URL=http://localhost:4173 pnpm e2e:chip-overflow
-import { readdirSync } from 'node:fs'
-import path from 'node:path'
-import { chromium } from 'playwright'
+import { finish, launchBrowser, log, sseKeepAlive, verifyBundleMatchesOrExit } from './lib.mjs'
 
 const BASE = process.env.E2E_URL ?? 'http://localhost:4173'
 /** 判定するビューポート幅。実機で最も狭い層（iPhone SE = 320px）に合わせる。 */
 const width = 320
 
 const ng = []
-const log = (...a) => console.log(...a)
 /** ok は真偽の判定を 1 件記録する。落ちても続行して全部の NG を出す。 */
 const ok = (label, pass, detail) => {
   if (pass) log(`OK  ${label}${detail === undefined ? '' : `: ${detail}`}`)
@@ -32,25 +29,8 @@ const ok = (label, pass, detail) => {
   }
 }
 
-// ⓪ 配っている bundle が自分の dist かを先に確かめる（badge-links.mjs と同じ理由。
-// 別 worktree の preview が同じポートに居座っていると、無関係な古いビルドを
-// 測ったまま判定が進む）。
-const rootHtml = await fetch(BASE + '/').then((r) => r.text())
-const served = /assets\/(index-[^"]+\.js)/.exec(rootHtml)?.[1]
-let local
-try {
-  local = readdirSync(path.join(process.cwd(), 'dist', 'assets')).find((f) =>
-    /^index-.*\.js$/.test(f),
-  )
-} catch {
-  local = undefined
-}
-if (served === undefined || served !== local) {
-  log(`NG  ⓪ 配っている bundle（${served ?? '不明'}）が dist/assets/（${local ?? '不明'}）と違う`)
-  log('    別プロセス・古いビルドを測っている。以降の判定に意味が無いので打ち切る')
-  process.exit(1)
-}
-log(`OK  ⓪ 配っている bundle は自分の dist（${served}）`)
+// ⓪ 配っている bundle が dist/ の現物と一致するか（e2e/lib.mjs 参照）。
+await verifyBundleMatchesOrExit(BASE, ng)
 
 /**
  * 同じ長い名前を持つ 2 件。名前が重複するので `serviceDisambiguator` が補助ラベル
@@ -82,7 +62,7 @@ const services = [
   },
 ]
 
-const browser = await chromium.launch()
+const browser = await launchBrowser()
 
 /** openStubbed は `/api/**` を丸ごと差し替えたページを狭いビューポートで開く。 */
 async function openStubbed(pathname, label) {
@@ -93,14 +73,7 @@ async function openStubbed(pathname, label) {
   })
   await p.route('**/api/**', async (route) => {
     const requested = new URL(route.request().url()).pathname
-    if (requested === '/api/events') {
-      await route.fulfill({
-        status: 200,
-        headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' },
-        body: 'retry: 86400000\n\n: ping\n\n',
-      })
-      return
-    }
+    if (requested === '/api/events') return sseKeepAlive(route)
     const body =
       requested === '/api/capabilities'
         ? '{"encode":false,"live":false,"storage":false}'
@@ -219,9 +192,4 @@ ok(
   `left ${popupBox.left.toFixed(1)} / right ${popupBox.right.toFixed(1)} / viewport ${width}`,
 )
 
-await browser.close()
-if (ng.length > 0) {
-  log(`\nNG ${ng.length} 件: ${ng.join(' / ')}`)
-  process.exit(1)
-}
-log('\nすべて OK')
+await finish(ng, browser)

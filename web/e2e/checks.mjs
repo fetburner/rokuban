@@ -1,6 +1,6 @@
 // 番組リストの受け入れ判定。jsdom では測れないものだけをここで見る（e2e/README.md）。
 // 合格なら exit 0、1 つでも NG なら exit 1。
-import { chromium } from 'playwright'
+import { finish, launchBrowser, log, verifyBundleMatchesOrExit } from './lib.mjs'
 
 const URL = process.env.E2E_URL ?? 'http://localhost:40773'
 /** 日付ストリップの何番目を押すか（0 = 今日）。 */
@@ -9,9 +9,12 @@ const DAY_INDEX = Number(process.env.E2E_DAY_INDEX ?? 6)
 const maxForwardScrollSteps = 8
 
 const ng = []
-const log = (...a) => console.log(...a)
 
-const browser = await chromium.launch()
+// ⓪ 配っている bundle が dist/ の現物と一致するか（web/e2e/README.md 参照）。
+log('\n=== ⓪ 配っている bundle と dist/ の一致 ===')
+await verifyBundleMatchesOrExit(URL, ng)
+
+const browser = await launchBrowser()
 const page = await browser.newPage({ viewport: { width: 1280, height: 800 } })
 // 番組表は M8-3 でホーム（`/`）に `/` を譲り `/programs` へ移設した。
 await page.goto(URL + '/programs', { waitUntil: 'networkidle' })
@@ -119,9 +122,4 @@ if (strayed === target) {
   if (restored !== target) ng.push(`② 「${target}」を押したのにハイライトが「${restored}」のまま`)
 }
 
-log('\n=== 結果 ===')
-if (ng.length === 0) log('  すべて期待どおり')
-else ng.forEach((f) => log('  NG: ' + f))
-
-await browser.close()
-process.exit(ng.length === 0 ? 0 : 1)
+await finish(ng, browser)

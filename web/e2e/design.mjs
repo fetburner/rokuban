@@ -46,7 +46,7 @@
 import { mkdirSync, rmSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { chromium } from 'playwright'
+import { finish, installApiStubs, launchBrowser, log, verifyBundleMatchesOrExit } from './lib.mjs'
 
 const URL_BASE = process.env.E2E_URL ?? 'http://localhost:40773'
 const OUT_DIR =
@@ -62,7 +62,6 @@ const OUT_DIR =
 const FIXED_NOW = new Date('2026-08-12T21:34:00+09:00')
 
 const ng = []
-const log = (...a) => console.log(...a)
 
 // --- スタブ（API の応答） ---------------------------------------------------
 
@@ -215,29 +214,23 @@ const breakers = [
  * スチャはどちらも満たさないので、これらを付けたときだけ `transferringRecording`
  * （2 つ目の site）を一覧に混ぜる。既定の全画面ショット/判定は影響を受けない。
  */
-async function installApiStubs(
-  page,
-  {
-    withBreaker = false,
-    delayPath = null,
-    delayMs = 0,
-    emptyHome = false,
-    multiSite = false,
-    extraRecording = false,
-  } = {},
-) {
-  await page.route('**/api/**', async (route) => {
-    const url = new URL(route.request().url())
-    const p = url.pathname
-    const json = (body) =>
-      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) })
-
+/**
+ * apiHandler は design.mjs の各シナリオに応じた `/api/**` の応答を作る
+ * ハンドラを返す（`installApiStubs`（e2e/lib.mjs）の配線に渡す）。
+ */
+function apiHandler({
+  withBreaker = false,
+  delayPath = null,
+  delayMs = 0,
+  emptyHome = false,
+  multiSite = false,
+  extraRecording = false,
+} = {}) {
+  return async ({ path: p, url, json, route }) => {
     if (delayPath !== null && p === delayPath) {
       await new Promise((r) => setTimeout(r, delayMs))
     }
-    // SSE は 204 で「つなぎ直さずに諦めさせる」。text/event-stream を返すと
-    // 接続が開いたままになり networkidle に到達しない
-    if (p === '/api/events') return route.fulfill({ status: 204 })
+    // SSE（/api/events）は明示のスタブを持たず catch-all（200 json []）に落ちる。
     if (p === '/api/sites') return json(multiSite ? [SITE, SITE2] : [SITE])
     // ライブへの導線（主ナビの「ライブ」・/live 画面）はサーバーの live.enabled に
     // 連動する（issue #209）。ここは「有効なデプロイ」の見た目を撮るための判定なので
@@ -295,7 +288,7 @@ async function installApiStubs(
     if (/\/programs\/\d+$/.test(p)) return json({ extended: {}, audios: [] })
     if (/\/reservation$/.test(p)) return route.fulfill({ status: 404, contentType: 'application/json', body: '{"error":"not found"}' })
     return json([])
-  })
+  }
 }
 
 // --- 色の読み取り -----------------------------------------------------------
@@ -484,7 +477,11 @@ const desktop = viewports[0]
 rmSync(OUT_DIR, { recursive: true, force: true })
 mkdirSync(OUT_DIR, { recursive: true })
 
-const browser = await chromium.launch()
+// ⓪ 配っている bundle が dist/ の現物と一致するか（web/e2e/README.md 参照）。
+log('\n=== ⓪ 配っている bundle と dist/ の一致 ===')
+await verifyBundleMatchesOrExit(URL_BASE, ng)
+
+const browser = await launchBrowser()
 
 /** open は 1 ページを開いてスタブ・時刻・テーマを整えるところまでやる。 */
 async function open(viewport, theme, screen, opts = {}) {
@@ -497,7 +494,7 @@ async function open(viewport, theme, screen, opts = {}) {
   })
   const page = await context.newPage()
   await page.clock.setFixedTime(FIXED_NOW)
-  await installApiStubs(page, opts)
+  await installApiStubs(page, apiHandler(opts))
   await page.goto(URL_BASE + screen.path, { waitUntil: 'domcontentloaded' })
   // ダークは `.dark` クラスで切り替わる（index.css の @custom-variant）。
   // アプリ自身に切り替え手段が無いので、ここで直接付ける（README §デザイン）。
@@ -568,7 +565,7 @@ for (const theme of themes) {
     })
     const page = await context.newPage()
     await page.clock.setFixedTime(FIXED_NOW)
-    await installApiStubs(page, { delayPath: '/api/recordings', delayMs: 5000 })
+    await installApiStubs(page, apiHandler({ delayPath: '/api/recordings', delayMs: 5000 }))
     await page.goto(URL_BASE + '/recordings', { waitUntil: 'domcontentloaded' })
     if (theme === 'dark') await page.evaluate(() => document.documentElement.classList.add('dark'))
     await page
@@ -613,7 +610,7 @@ for (const theme of themes) {
     })
     const page = await context.newPage()
     await page.clock.setFixedTime(FIXED_NOW)
-    await installApiStubs(page, { emptyHome: true })
+    await installApiStubs(page, apiHandler({ emptyHome: true }))
     await page.goto(URL_BASE + '/', { waitUntil: 'domcontentloaded' })
     if (theme === 'dark') await page.evaluate(() => document.documentElement.classList.add('dark'))
     await page
@@ -671,7 +668,7 @@ log("\n=== ①' ホームの空セクション判定 ===")
   })
   const page = await context.newPage()
   await page.clock.setFixedTime(FIXED_NOW)
-  await installApiStubs(page, { emptyHome: true })
+  await installApiStubs(page, apiHandler({ emptyHome: true }))
   await page.goto(URL_BASE + '/', { waitUntil: 'domcontentloaded' })
   await page
     .getByText('表示できる項目がありません')
@@ -771,7 +768,7 @@ log("\n=== ①''' ホーム: 実時計でのクエリキー安定性（無限再
     const url = new URL(req.url())
     if (url.pathname === '/api/capacity/overages') overagesRequests.push(url.toString())
   })
-  await installApiStubs(page)
+  await installApiStubs(page, apiHandler())
   await page.goto(URL_BASE + '/', { waitUntil: 'domcontentloaded' })
   let homeUp = true
   await page
@@ -1325,7 +1322,7 @@ for (const theme of themes) {
     })
     const page = await context.newPage()
     await page.clock.setFixedTime(FIXED_NOW)
-    await installApiStubs(page, { delayPath: '/api/recordings', delayMs: 5000 })
+    await installApiStubs(page, apiHandler({ delayPath: '/api/recordings', delayMs: 5000 }))
     await page.goto(URL_BASE + '/recordings', { waitUntil: 'domcontentloaded' })
     if (theme === 'dark') await page.evaluate(() => document.documentElement.classList.add('dark'))
     const skeleton = page.locator('.scanlines').first()
@@ -1866,7 +1863,7 @@ for (const reducedMotion of ['reduce', 'no-preference']) {
   // --- Skeleton の animate-pulse（読み込み中） ---
   {
     const { context, page } = await newMotionContext(desktop, reducedMotion)
-    await installApiStubs(page, { delayPath: '/api/recordings', delayMs: 5000 })
+    await installApiStubs(page, apiHandler({ delayPath: '/api/recordings', delayMs: 5000 }))
     await page.goto(URL_BASE + '/recordings', { waitUntil: 'domcontentloaded' })
     const skeleton = page.locator('.animate-pulse').first()
     await skeleton.waitFor({ timeout: 5000 }).catch(() => {
@@ -1908,7 +1905,7 @@ for (const reducedMotion of ['reduce', 'no-preference']) {
   // --- モバイル「その他」ポップオーバーの slide-in-from-* / zoom-in-95 ---
   {
     const { context, page } = await newMotionContext(mobile, reducedMotion)
-    await installApiStubs(page)
+    await installApiStubs(page, apiHandler())
     await page.goto(URL_BASE + '/programs', { waitUntil: 'domcontentloaded' })
     const nav = page.locator('nav[aria-label="主ナビゲーション"]').last()
     const trigger = nav.getByRole('button', { name: 'その他' })
@@ -1948,7 +1945,7 @@ for (const reducedMotion of ['reduce', 'no-preference']) {
   // --- 共通 Button の押下フィードバック（translate）の transition ---
   {
     const { context, page } = await newMotionContext(desktop, reducedMotion)
-    await installApiStubs(page)
+    await installApiStubs(page, apiHandler())
     await page.goto(URL_BASE + '/search', { waitUntil: 'domcontentloaded' })
     const button = page.getByRole('button', { name: '検索' })
     await button.waitFor({ timeout: 10000 }).catch(() => {})
@@ -1996,9 +1993,4 @@ for (const { theme, label, ratio } of stale) {
   log('    → knownGaps から消せる')
 }
 
-log('\n=== 結果 ===')
-if (ng.length === 0) log('  すべて期待どおり')
-else ng.forEach((f) => log('  NG: ' + f))
-
-await browser.close()
-process.exit(ng.length === 0 ? 0 : 1)
+await finish(ng, browser)
