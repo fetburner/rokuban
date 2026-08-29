@@ -69,16 +69,15 @@ func SanitizeContentPath(p string) string {
 	return result
 }
 
-// GenerateContentPath は filenameTemplate が未指定・空文字のときに使う従来の
-// 固定形式（YYYYMMDD/HHMMSS_タイトル_サービスID.m2ts）を組み立てる。
-// text/template 移行後も後方互換のため挙動は変えない
-// （startAt のタイムゾーン変換は行わない。呼び出し側が渡した値をそのまま使う）。
-func GenerateContentPath(title string, startAt time.Time, serviceID int) string {
-	date := startAt.Format("20060102")
-	timeStr := startAt.Format("150405")
-	safeTitle := sanitizeComponent(title, 80)
-	return fmt.Sprintf("%s/%s_%s_%d.m2ts", date, timeStr, safeTitle, serviceID)
-}
+// DefaultTemplate は filenameTemplate が未指定・空文字のときに使う既定の
+// ファイル名テンプレート。見た目は text/template 移行前の固定形式
+// （YYYYMMDD/HHMMSS_タイトル_サービスID.m2ts）と同じだが、他の template と
+// 同じ経路（NewData 経由）で展開されるため、時刻は必ず JST で解決される。
+//
+// 既定を専用関数ではなく template 文字列にするのは、専用関数だと
+// `.In(jst)` を通さずサーバーのタイムゾーンに依存する書き方に戻る誘惑が
+// 常にあるため。
+const DefaultTemplate = "{{.Year}}{{.Month}}{{.Day}}/{{.Hour}}{{.Min}}{{.Sec}}_{{.Title}}_{{.ServiceID}}"
 
 // Data はファイル名テンプレートに渡す値。
 //

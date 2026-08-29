@@ -507,9 +507,12 @@ func explicitContentPath(opts db.ReservationOptions) (string, bool) {
 
 // buildContentPath は録画ファイルの content_path を組み立てる。
 //
-// template が空文字なら従来の固定形式（contentpath.GenerateContentPath。
-// 後方互換で挙動を変えない）を返す。非空なら text/template として
-// contentpath.Build で展開する。渡す contentpath.Data は program_snapshots の
+// template が空文字なら contentpath.DefaultTemplate（テンプレート未指定時の
+// 従来の見た目 YYYYMMDD/HHMMSS_タイトル_サービスID.m2ts と同じ結果になる
+// template 文字列。番組名が空文字の場合だけ "_" 昇格の有無で 1 文字ずれるが、
+// EPG 射影が空名の番組を落とすため到達しない —— internal/worker/epg.go の
+// projectable）を使う。いずれも text/template として contentpath.Build
+// で展開する。渡す contentpath.Data は program_snapshots の
 // title/channel/channelType から contentpath.NewData で組む — この時点で各
 // フィールドがパス成分としてサニタイズされるため、EPG データ（番組名等）に
 // "/" や ".." が混ざっても意図しない階層やパストラバーサルを構造的に作れない。
@@ -518,11 +521,11 @@ func explicitContentPath(opts db.ReservationOptions) (string, bool) {
 // テンプレートは実行時にもエラーになりうる（未知フィールドの参照等。ありえ
 // ないはずだが）。推測せずそのままエラーを返す。
 func buildContentPath(snap sqlcgen.ProgramSnapshot, template string) (string, error) {
-	serviceID := int(snap.ServiceID)
 	if template == "" {
-		return contentpath.GenerateContentPath(snap.Title, snap.StartAt, serviceID), nil
+		template = contentpath.DefaultTemplate
 	}
 
+	serviceID := int(snap.ServiceID)
 	data := contentpath.NewData(snap.Title, snap.StartAt, snap.Channel, serviceID, snap.ChannelType)
 
 	path, err := contentpath.Build(template, data)

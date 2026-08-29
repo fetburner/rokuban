@@ -48,25 +48,35 @@ func TestSanitizeOrEmpty(t *testing.T) {
 	}
 }
 
-func TestGenerateContentPath(t *testing.T) {
-	start := time.Date(2026, 7, 24, 21, 0, 0, 0, time.FixedZone("JST", 9*3600))
-	path := GenerateContentPath("NHKニュース7", start, 5136)
+// mustBuild は Build を呼び、エラーなら Fatal する（DefaultTemplate は常に
+// 有効なテンプレートなのでテストの補助にしか使わない）。
+func mustBuild(t *testing.T, tmpl string, d Data) string {
+	t.Helper()
+	got, err := Build(tmpl, d)
+	if err != nil {
+		t.Fatalf("Build(%q): %v", tmpl, err)
+	}
+	return got
+}
 
-	if !strings.HasPrefix(path, "20260724/") {
-		t.Errorf("expected date prefix, got %q", path)
-	}
-	if !strings.HasSuffix(path, ".m2ts") {
-		t.Errorf("expected .m2ts suffix, got %q", path)
-	}
-	if !strings.Contains(path, "5136") {
-		t.Errorf("expected serviceID in path, got %q", path)
-	}
-	if strings.Contains(path, "/..") || strings.Contains(path, "../") {
-		t.Errorf("path traversal detected: %q", path)
+// TestDefaultTemplate_MatchesLegacyFixedFormat は DefaultTemplate が、
+// text/template 移行前の固定形式（YYYYMMDD/HHMMSS_タイトル_サービスID.m2ts）
+// と同じ結果を生むことを確認する。startAt に JST の Location を明示的に
+// 持たせているため、旧実装（startAt をそのまま Format していた）と
+// 新実装（NewData が JST に変換する）が一致する。
+func TestDefaultTemplate_MatchesLegacyFixedFormat(t *testing.T) {
+	start := time.Date(2026, 7, 24, 21, 0, 0, 0, time.FixedZone("JST", 9*3600))
+	d := NewData("NHKニュース7", start, "", 5136, "")
+
+	path := mustBuild(t, DefaultTemplate, d)
+
+	want := "20260724/210000_NHKニュース7_5136.m2ts"
+	if path != want {
+		t.Errorf("Build(DefaultTemplate) = %q, want %q", path, want)
 	}
 }
 
-func TestGenerateContentPath_NoTraversal(t *testing.T) {
+func TestDefaultTemplate_NoTraversal(t *testing.T) {
 	malicious := []string{
 		"../../etc/passwd",
 		"/root/.ssh/authorized_keys",
@@ -77,7 +87,8 @@ func TestGenerateContentPath_NoTraversal(t *testing.T) {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
 	for _, title := range malicious {
-		path := GenerateContentPath(title, start, 1)
+		d := NewData(title, start, "", 1, "")
+		path := mustBuild(t, DefaultTemplate, d)
 		if strings.Contains(path, "..") {
 			t.Errorf("path traversal in %q: %q", title, path)
 		}
@@ -88,6 +99,25 @@ func TestGenerateContentPath_NoTraversal(t *testing.T) {
 		if len(parts) != 2 {
 			t.Errorf("expected exactly 2 path segments from %q: %q", title, path)
 		}
+	}
+}
+
+// TestDefaultTemplate_ResolvesJSTRegardlessOfServerTZ は DefaultTemplate が
+// startAt を必ず JST に変換して展開することを確認する。startAt は明示的に
+// time.UTC（プロセスの TZ 環境変数に左右されない固定 Location）。20:00 UTC
+// は JST（+9h）で日付が変わるので、変換を通さない実装ならここでずれる。
+// want はリテラルであり、jst 変数から計算しない —— jst 自体の値が
+// （例えば 9h → 8h に）間違っても、want 側が一緒に動いて見逃すことがない
+// ようにするため。
+func TestDefaultTemplate_ResolvesJSTRegardlessOfServerTZ(t *testing.T) {
+	startAt := time.Date(2026, 7, 24, 20, 0, 0, 0, time.UTC)
+	d := NewData("t", startAt, "27", 1024, "GR")
+
+	got := mustBuild(t, DefaultTemplate, d)
+
+	want := "20260725/050000_t_1024.m2ts"
+	if got != want {
+		t.Errorf("Build(DefaultTemplate) = %q, want %q (JST date/time)", got, want)
 	}
 }
 
