@@ -12,8 +12,7 @@ SELECT * FROM rules WHERE enabled = true ORDER BY priority DESC, id ASC;
 SELECT program_id, action FROM program_intents WHERE site = $1;
 
 -- 「この番組にユーザーの投資があるか」（program_intents の action='record' 行 ∪
--- program_overrides の行）は program_investments view（#162。
--- internal/db/migrations/00027_program_investments_view.sql）に一本化した。
+-- program_overrides の行）は program_investments view（#162）に一本化した。
 -- ruler は record 意図の中身も overrides の中身も一切読まない（不透明な
 -- ペイロード）ため programId だけを引く（docs/recording.md §4.2「ruler から
 -- 見た load-bearing な行」: desired = (マッチ − skip) ∪ record ∪

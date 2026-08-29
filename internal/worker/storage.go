@@ -58,7 +58,7 @@ func (StorageSyncArgs) InsertOpts() river.InsertOpts {
 }
 
 // allStorageRootNames は Rokuban が観測しうる root 名の全体集合。
-// マイグレーション 00035 の CHECK (root IN ('media', 'scratch')) と 1:1 で、
+// storage_sync.root 列の CHECK (root IN ('media', 'scratch')) と 1:1 で、
 // Go 側ではここが唯一の出所（roots() の対象も、外れた root のラベル掃除の
 // 走査範囲も、両方これから導出する。TestStorageSyncWorker_Roots が
 // rootPath() の case 漏れを検出する）。

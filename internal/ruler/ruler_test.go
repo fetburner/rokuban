@@ -1461,7 +1461,7 @@ func TestRunPass_FullEpgOutageFreezeStopsDeletesWithoutTrippingBreaker(t *testin
 // の受け入れ基準 5: ruler の全量パスを回しても、手動予約が「ルール由来」に
 // 化けないことを固定する。
 //
-// reservations.source 列は 00012_drop_reservations_source.sql で削除済みなので、
+// reservations.source 列は issue #26 で削除済みなので、
 // 修正前のバグ（手動予約にルールがマッチすると source が不可逆に 'rule' へ
 // 書き換わる）は列ごと構造的に起こりようがない。このテストは 2 つを固定する:
 //

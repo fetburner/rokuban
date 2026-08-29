@@ -64,8 +64,8 @@ const (
 )
 
 // genreLv1Min / genreLv1Max は genre_lv1 のドメイン（rule_genres.genre_lv1 の
-// CHECK と同じ、00006_rules.sql / 00034_recordings_search.sql の genre_lv1_of
-// 参照）。範囲外の genre クエリパラメータは黙って 0 件に落とさず 400 にする
+// CHECK と同じ、recordings.genre_lv1 を作る生成列関数 genre_lv1_of の
+// 範囲チェック参照）。範囲外の genre クエリパラメータは黙って 0 件に落とさず 400 にする
 // （PR #187 レビュー O4）。
 const (
 	genreLv1Min = 0
@@ -354,7 +354,7 @@ func buildRecordingsQuery(f recordingsFilter) (string, []any, error) {
 
 	// q は条件が実際にあるときだけ節を足す（"$n IS NULL OR ..." 形にしない）。
 	// これにより Postgres が最初に立てるプランは常に具体的になり、trgm 式 GIN
-	// （recordings_title_trgm / recordings_description_trgm、00034）が
+	// （recordings_title_trgm / recordings_description_trgm）が
 	// 汎用プランに落ちて使われなくなることを避ける（issue #136 の「罠」）。
 	//
 	// これだけでは不十分（PR #187 レビュー O1）: pgx の既定
@@ -454,7 +454,7 @@ LIMIT ` + limitPlaceholder
 //
 // sqlc の静的クエリ（Queries.ListRecordings 等）にしないのは、絞り込み軸ごとに
 // `($n IS NULL OR ...)` 形で条件を足すと汎用プランになり、trgm 式 GIN
-// （recordings_title_trgm 等、00034）を使わないことがあるため（issue #136 の
+// （recordings_title_trgm 等）を使わないことがあるため（issue #136 の
 // 「罠」）。buildRecordingsQuery は条件が実際にあるときだけ節を足すので、そもそも
 // 1 つの静的クエリ文字列に収まらない。
 //

@@ -38,8 +38,8 @@ type GetRecordSyncIngestTargetRow struct {
 }
 
 // ingest 転送の途中経過（issue #212）。書き手は IngestWorker だけ。
-// 表そのものの設計判断は internal/db/migrations/00036_recording_ingest_progress.sql
-// の doc コメント参照。
+// 表そのものの設計判断は internal/db/migrations の
+// recording_ingest_progress テーブル定義の doc コメント参照。
 // ingest ジョブが転送を始める前に読む、(site, record_id) の観測。
 // recording_id は転送結果のコミット先、content_length は進捗の分母。
 // record_sync.sql の GetRecordSyncRecordingID と重複するように見えるが、
@@ -73,7 +73,7 @@ type UpsertRecordingIngestProgressParams struct {
 //
 // written_bytes は GREATEST を取らない --- ジョブ再試行（層 2）は部分ファイルを
 // truncate してゼロから作り直すため、戻りが事実である
-// （00036_recording_ingest_progress.sql の「written_bytes は単調増加しない」）。
+// （recording_ingest_progress テーブル定義の「written_bytes は単調増加しない」）。
 func (q *Queries) UpsertRecordingIngestProgress(ctx context.Context, arg UpsertRecordingIngestProgressParams) error {
 	_, err := q.db.Exec(ctx, upsertRecordingIngestProgress, arg.RecordingID, arg.WrittenBytes, arg.ExpectedBytes)
 	return err

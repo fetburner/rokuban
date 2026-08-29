@@ -1,6 +1,6 @@
 -- ingest 転送の途中経過（issue #212）。書き手は IngestWorker だけ。
--- 表そのものの設計判断は internal/db/migrations/00036_recording_ingest_progress.sql
--- の doc コメント参照。
+-- 表そのものの設計判断は internal/db/migrations の
+-- recording_ingest_progress テーブル定義の doc コメント参照。
 
 -- name: GetRecordSyncIngestTarget :one
 -- ingest ジョブが転送を始める前に読む、(site, record_id) の観測。
@@ -17,7 +17,7 @@ WHERE site = $1 AND record_id = $2;
 --
 -- written_bytes は GREATEST を取らない --- ジョブ再試行（層 2）は部分ファイルを
 -- truncate してゼロから作り直すため、戻りが事実である
--- （00036_recording_ingest_progress.sql の「written_bytes は単調増加しない」）。
+-- （recording_ingest_progress テーブル定義の「written_bytes は単調増加しない」）。
 INSERT INTO recording_ingest_progress (
     recording_id, written_bytes, expected_bytes, observed_at
 ) VALUES ($1, $2, $3, now())

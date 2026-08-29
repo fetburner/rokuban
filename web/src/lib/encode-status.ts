@@ -19,7 +19,7 @@ import type { EncodeJobStatusState } from '@/api/generated'
  * `failed` は「二度と来ない」の断定ではない --- River の既定リトライと
  * `EncodeReconcileWorker` の再投入のたびに `running` へ戻る（`queued` には
  * 戻らない。試行行は成功するまで消えないので `queued` は初回試行の前だけ）。
- * 詳細は internal/db/migrations/00041_recording_encode_attempts.sql 参照。
+ * 詳細は internal/db/migrations の recording_encode_attempts テーブル定義参照。
  */
 export function encodeJobStatusLabel(
   state: EncodeJobStatusState,

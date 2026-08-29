@@ -18,7 +18,7 @@ import (
 // insertCircuitBreakerFixture は circuit_breakers 行を直接 INSERT する（ruler /
 // reconciler の発動ロジックを経由しない）。行の存在そのものが「発動中」を表す
 // テーブルなので、発動状態はこの直接 INSERT だけで再現できる
-// （internal/db/migrations/00011_circuit_breakers.sql のコメント参照）。
+// （circuit_breakers テーブル定義のコメント参照）。
 func insertCircuitBreakerFixture(t *testing.T, pool *pgxpool.Pool, ctx context.Context, name string, pending, threshold int, detail string) {
 	t.Helper()
 	if _, err := pool.Exec(ctx, `

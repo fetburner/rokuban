@@ -191,7 +191,7 @@ INSERT INTO rule_sites (rule_id, site)
 VALUES ($1, $2)
 ON CONFLICT (rule_id, site) DO NOTHING;
 
--- event_id / service_name は issue #98 で追加（00025）。never-scheduled 行
+-- event_id / service_name は issue #98 で追加。never-scheduled 行
 -- （recordings）の識別・表示名に使うので、他のチャンネル識別列と同じく
 -- catalog の往復（export/rescue）で失ってはならない。
 -- name: CatalogUpsertProgramSnapshot :exec

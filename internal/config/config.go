@@ -140,7 +140,7 @@ type MirakcConfig struct {
 // MirakcSite は `mirakcs:` レジストリの 1 要素。site 名と URL の 2 つだけを持つ。
 //
 // **storage / worker / ingest 等のチューニング値は要素に入れない。** アーカイブは
-// 単一（`media_assets` に site 列が無い。internal/db/migrations/00002_schema_v1.sql）
+// 単一（`media_assets` テーブルに site 列が無い）
 // であり、`worker.queues` / `worker.periodic_jobs` 等はデプロイ時のパラメータで
 // あって site の属性ではない。site ごとのチューニング値は、それを読むコードが
 // できたときに足す（不変条件 11: 形を固定する前に判定基準を書く。issue #183 M4-11）。

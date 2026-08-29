@@ -187,7 +187,7 @@ func (w *EpgSyncWorker) Work(ctx context.Context, job *river.Job[EpgSyncArgs]) e
 
 	// 番組表が更新されたことをクライアントに知らせる。epg_programs は 1 パスで
 	// 数千行を upsert するためトリガーでは通知が細かすぎるので、
-	// パス完了時に 1 回だけ明示的に送る（migrations/00005_notify.sql のコメント参照）。
+	// パス完了時に 1 回だけ明示的に送る（internal/db/queries/notify.sql のコメント参照）。
 	if err := q.NotifyTopic(ctx, epgNotifyTopic); err != nil {
 		// ヒントの配送失敗は同期の失敗ではない。次のパスか
 		// クライアントの staleTime 経過後の再取得で収束する。

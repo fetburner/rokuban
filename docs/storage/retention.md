@@ -99,7 +99,7 @@ GC 済みのスナップショットの上で ingest が走った場合に何が
 
 「このアセットは消してよいか」は、ごみ箱腕（猶予超過 or 今すぐ purge）と until_encoded 腕（派生物完備）の 2 つで、`internal/db/queries/delete_reconcile.sql` の 5 クエリ（入口 2 つ・前パスの拾い直し・否定形 2 つ）がこれを消費する。以前はこの 2 腕を 5 クエリに手で複製しており、`cardinality(encode_profiles) > 0` のガードが複製の 1 つ（入口）にしか入らずドリフトした。
 
-いずれの腕もスキーマ側に名前を与え、5 クエリはそこへの参照にする（`internal/db/migrations/00029_delete_reconcile_predicates.sql`）:
+いずれの腕もスキーマ側に名前を与え、5 クエリはそこへの参照にする:
 
 - **until_encoded 腕**: パラメータを取らないので view `until_encoded_deletable_originals` にする
 - **ごみ箱腕**: `grace_cutoff` がパラメータなので view には畳めず、set-returning SQL 関数 `trash_deletable_recordings(grace_cutoff)` にする

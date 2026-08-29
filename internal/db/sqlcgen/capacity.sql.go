@@ -62,7 +62,7 @@ type ListCapacityDemandRow struct {
 // 需要の単位は予約件数ではなく**異なる物理チャンネル数**なので、
 // `(channel_type, channel)` を返す。**使い捨ての EPG 射影には JOIN しない** ---
 // 射影が刈られた/欠損した瞬間に容量判定が壊れる（docs/data.md §6.5 末尾）。
-// 予約時に焼き付けたスナップショット列（00009_reservation_channel.sql）を読む。
+// 予約時に焼き付けたスナップショット列（reservations の channel identity 列）を読む。
 //
 // 絞り込みの分担:
 //   - never-scheduled 除外: reconciler が「番組終了かつ schedule 非観測」と
@@ -74,8 +74,8 @@ type ListCapacityDemandRow struct {
 //     フィルタに使ってはならない（docs/schema.md §3。active / detached は
 //     どちらも同期対象）
 //   - `channel_type IS NOT NULL AND channel IS NOT NULL` という絞り込みはかつて
-//     ここにあった（00009 以前の残骸は物理チャンネルが分からないので需要に
-//     数えられない、という安全側の判断）。issue #101（00026）で
+//     ここにあった（reservation_channel 列を追加する前の残骸は物理チャンネルが
+//     分からないので需要に数えられない、という安全側の判断）。issue #101 で
 //     program_snapshots のチャンネル・イベント識別 6 列が NOT NULL 化され、
 //     その状態自体が表現不可能になったため落とした（起きない状態のための
 //     分岐を残さない）

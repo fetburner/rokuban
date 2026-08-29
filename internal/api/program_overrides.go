@@ -167,7 +167,8 @@ func (h *Server) PatchProgramOverrides(ctx context.Context, req PatchProgramOver
 // が空配列で恒真になり、サムネイルが 1 枚あるだけで唯一のコピーである原本が
 // 物理削除される（docs/storage.md §6「唯一のコピーを消すパスがない」への違反、
 // issue #104）。rules（internal/api/rules.go の validateRuleInput）・
-// スキーマ（00006_rules.sql の CHECK）と同じ規律を overrides にも揃える。
+// スキーマ（rules テーブルの CHECK: keep_original <> 'until_encoded' OR
+// cardinality(encode_profiles) > 0）と同じ規律を overrides にも揃える。
 func validateEffectiveKeepOriginal(eff db.ReservationOptions) error {
 	if eff.KeepOriginal == nil || *eff.KeepOriginal != db.KeepOriginalUntilEncoded {
 		return nil

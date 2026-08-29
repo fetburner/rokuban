@@ -80,10 +80,10 @@ export const ruleCostWeekDays = 7
  * `programId` 昇順の先頭 N 件（`internal/rulequery/query.go` の
  * `ORDER BY p.program_id`）で、`programId` はネットワーク・サービス順に固まる
  * （Mirakurun 互換の合成規則 `(networkId*100000 + serviceId)*100000 + eventId`。
- * この式は `internal/db/migrations/00009_reservation_channel.sql` の backfill が
- * 逆算に使っている --- 同マイグレーションのコメントが「この UPDATE 以外の場所
- * （api / reconciler）で同じ式を書いてはならない」と書いている通りここでも分解はせず、
- * 「昇順に並べるとチャンネル順に固まる」ことの根拠として引くだけ）。複数チャンネルに
+ * `internal/mirakc/ids.go` の `ComposeProgramID` / `SplitProgramID` と同じ式で、
+ * mirakc 固有の合成規則への依存は Go 側のこの 1 箇所に閉じている --- ここでは
+ * 分解はせず、「昇順に並べるとチャンネル順に固まる」ことの根拠として引くだけ）。
+ * 複数チャンネルに
  * 跨がるルール（例: 30 分番組の多い GR と 120 分番組の多い BS が両方マッチする）では、
  * 先頭 N 件が特定チャンネルに偏り、平均尺が全体の平均から外れた標本になりうる。
  */

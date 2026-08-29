@@ -543,10 +543,10 @@ func buildContentPath(snap sqlcgen.ProgramSnapshot, template string) (string, er
 // （不変条件: mirakc 固有の概念を永続テーブルの外で復元しない）。
 //
 // service_id が無い（推測せず schedule を作らない）という分岐はかつて
-// ここにあったが、issue #101（00026）で program_snapshots のチャンネル・
+// ここにあったが、issue #101 で program_snapshots のチャンネル・
 // イベント識別 6 列が NOT NULL 化されたことで、この分岐が守っていた
-// 「00009 以前の残骸で service_id が NULL」という状態自体が表現不可能に
-// なったため落とした（起きない状態のための分岐を残さない）。
+// 「reservation_channel 列を追加する前の残骸で service_id が NULL」という
+// 状態自体が表現不可能になったため落とした（起きない状態のための分岐を残さない）。
 func resolveContentPath(res sqlcgen.Reservation, snap sqlcgen.ProgramSnapshot, opts db.ReservationOptions) (string, error) {
 	// contentPath は filenameTemplate（ruler が base に載せたテンプレート、または
 	// ユーザーの明示的な上書き）があればそれを展開し、なければ従来の固定形式
@@ -889,7 +889,7 @@ type startDelayed struct {
 //   - 既に never-scheduled と判定された予約（listDesired の元クエリ
 //     ListReservationsForSyncEvaluation が、番組終了後に schedule が一度も
 //     観測されなかったことを示す never-scheduled recordings 行の NOT EXISTS で
-//     絞っている。旧 orphaned_at 列は issue #98 / マイグレーション 00025 で廃止済み）
+//     絞っている。旧 orphaned_at 列は issue #98 で廃止済み）
 //
 // ここではさらに時間窓で絞る: 「開始時刻 + StartDelayGrace < now() < 終了時刻」。
 // 終了時刻を過ぎた予約は recordNeverScheduled の領分であり、ここで検出し続けると

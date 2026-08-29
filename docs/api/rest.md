@@ -160,8 +160,7 @@ AND」に揃える。
 `internal/api/recordings_query.go` が `internal/rulequery.Compile` と同じ
 `arg` クロージャ方式で WHERE を組む。sqlc の 1 querytext に `($n IS NULL OR ...)`
 形で全軸を詰め込むと、`q` のような選択条件でも汎用プランに落ちて
-`recordings_title_trgm` / `recordings_description_trgm`（式 GIN、
-`internal/db/migrations/00034_recordings_search.sql`）が使われないことがある。
+`recordings_title_trgm` / `recordings_description_trgm`（式 GIN）が使われないことがある。
 条件が実際に指定されたときだけ節を足す形にすることで、Postgres が最初に立てる
 プランは常に具体的になる。
 

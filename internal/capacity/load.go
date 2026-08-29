@@ -115,7 +115,7 @@ func loadDemandAllSites(ctx context.Context, q *sqlcgen.Queries) ([]Demand, erro
 // demandFromRow は ListCapacityDemand(AllSites) の 1 行を Demand に変換する。
 // effective.skip な行は ok=false を返す（呼び出し元は捨てる）。
 //
-// program_snapshots のチャンネル識別列は issue #101（00026）で NOT NULL 化
+// program_snapshots のチャンネル識別列は issue #101 で NOT NULL 化
 // された。NULL を仮定した nil ガードはここにあったが、その状態自体が表現
 // 不可能になったため落とした（起きない状態のための分岐を残さない）。
 func demandFromRow(site, channelType, channel string, startAt, endAt time.Time, base, overrides json.RawMessage, intentAction *string) (Demand, bool, error) {

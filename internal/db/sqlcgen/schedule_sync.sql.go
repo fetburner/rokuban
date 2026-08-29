@@ -60,7 +60,7 @@ type UpsertScheduleSyncParams struct {
 // 予約を指す古い id」を持ちうるようになり、NULL より紛らわしくなる
 // （インシデント対応で直接 SELECT する人を誤らせる）。reservations.id は
 // ruler の導出削除・再実体化で変わる不安定な値（#53/#98/#99）であり、
-// 読み手のいない列にそれを保存し続ける理由が無いため、issue #148（00028）で
+// 読み手のいない列にそれを保存し続ける理由が無いため、issue #148 で
 // 列自体を落とした（CLAUDE.md 不変条件 10「意味を持たない行を作らない」/
 // 11「これを書く / 使うコードは今あるか」）。
 func (q *Queries) UpsertScheduleSync(ctx context.Context, arg UpsertScheduleSyncParams) error {

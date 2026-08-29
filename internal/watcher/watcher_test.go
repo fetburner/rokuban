@@ -107,7 +107,7 @@ func setupTest(t *testing.T) (*Watcher, *pgxpool.Pool) {
 // reservations / program_intents / program_overrides への FK が張られたため、
 // このパッケージのフィクスチャはすべてこれを先に呼ぶ。
 //
-// チャンネル・イベント識別 6 列は issue #101（00026）で NOT NULL 化された。
+// チャンネル・イベント識別 6 列は issue #101 で NOT NULL 化された。
 // このパッケージのテストは recordings.source 等の導出を見るだけでチャンネル
 // 識別自体は検証しないので、固定のダミー値で足りる。
 func insertTestProgramSnapshot(t *testing.T, pool *pgxpool.Pool, programID int64) {
@@ -836,7 +836,8 @@ func TestProcessRecord_ConcurrentIdempotent(t *testing.T) {
 		createTestReservation(t, pool, programID)
 		record := testRecord(recordID, programID, "finished")
 		// recordings には (site, network_id, service_id, event_id) の一意制約
-		// （deleted_at IS NULL、00003_recordings_unique_active_event.sql）があるため、
+		// （部分一意索引 recordings_unique_active_event、述語 deleted_at IS NULL）
+		// があるため、
 		// ラウンドごとに event_id を変えて他ラウンドの録画と衝突しないようにする。
 		// 同じキーをこのアサーションの絞り込みにも使う（recordings.reservation_id
 		// は #158 で列自体を落とした）。
@@ -1596,7 +1597,7 @@ func TestProcessRecord_ReservationGCedBeyondGrace_SourceManual(t *testing.T) {
 // canceled はこのテストが書かれる前は recordings_status_check（旧 3 値）
 // 違反でトランザクション全体がロールバックし、record_sync にも観測が残らない
 // まま毎パス再試行され続けていた（#130 本体のバグ）。このテストは
-// recordings_status_check を 00021 の 4 値から 3 値に戻すと canceled のケースで
+// recordings_status_check を issue #130 の 4 値から 3 値に戻すと canceled のケースで
 // 落ちることを確認済み（報告参照。意図的に実装を壊して確認する、CLAUDE.md
 // テスト規律）。
 //

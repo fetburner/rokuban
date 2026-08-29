@@ -74,7 +74,7 @@ WITH input AS (
         dedup_similarity         real
     )
 ),
--- reservations.source は持たない（issue #26 で削除。00012_drop_reservations_source.sql）。
+-- reservations.source は持たない（issue #26 で削除）。
 -- 「手動予約かどうか」は program_intents.action='record' の有無、「いまルールが
 -- base を供給しているか」は rule_id IS NOT NULL で別々に読めるので、ここで
 -- 1 列に合成して書き戻す必要がない。recordings.source（録画時点の provenance）は

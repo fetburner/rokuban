@@ -261,8 +261,8 @@ type ListMediaAssetsPendingDeleteRow struct {
 // プロセスが落ちても ListMediaAssetsPendingDelete が次パスで拾い直す。
 //
 // 「このアセットは消してよいか」の 2 つの腕（ごみ箱の猶予超過 or 今すぐ
-// purge / until_encoded の派生物完備）は、いずれもスキーマ側の名前付き述語
-// （00029_delete_reconcile_predicates.sql）を参照する。until_encoded 腕は
+// purge / until_encoded の派生物完備）は、いずれもスキーマ側の名前付き述語を
+// 参照する。until_encoded 腕は
 // view `until_encoded_deletable_originals`、ごみ箱腕は set-returning 関数
 // `trash_deletable_recordings(grace_cutoff)`。この 2 つが唯一の定義であり、
 // 以下の 5 クエリはすべてこれらへの参照であって複製ではない（issue #160）。

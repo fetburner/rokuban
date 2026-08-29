@@ -307,8 +307,8 @@ func (w *Watcher) createRecording(ctx context.Context, q *sqlcgen.Queries, recor
 	return id, err
 }
 
-// knownRecordingStatuses は recordings_status_check（internal/db/migrations/
-// 00021_recordings_status_canceled.sql）が許す値集合と一致する。db パッケージの
+// knownRecordingStatuses は CHECK 制約 recordings_status_check が許す値集合と
+// 一致する。db パッケージの
 // 定数を直接 switch に書かず集合として持つのは normalizeRecordingStatus の
 // メンテナ向けに「ここが CHECK と同期している唯一の場所」を明示するため。
 var knownRecordingStatuses = map[string]bool{

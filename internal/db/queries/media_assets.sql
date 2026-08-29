@@ -31,7 +31,7 @@ WHERE recording_id = $1 AND kind = 'original';
 -- 実際の CreateMediaAsset の INSERT の間に 'deleting' → 'deleted' の遷移が
 -- 進む TOCTOU の窓は残る。正しさの根拠は常に
 -- CREATE UNIQUE INDEX ON media_assets (rel_path) WHERE state <> 'deleted'
--- （00002_schema_v1.sql）であり、ここが競合を見逃しても最終的な INSERT が
+-- であり、ここが競合を見逃しても最終的な INSERT が
 -- 23505 で media_assets の行の一意性だけは確実に守る。ここでの
 -- WHERE state <> 'deleted' はその一意索引の述語と同じにする ---
 -- 削除済みの行が使っていた rel_path は正当に再利用できるので、削除済み行と

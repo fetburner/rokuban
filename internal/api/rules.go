@@ -191,7 +191,7 @@ func (h *Server) DeleteRule(ctx context.Context, req DeleteRuleRequestObject) (D
 	}
 
 	// 対象サイトも先に読む（rule_sites は rules への ON DELETE CASCADE。
-	// DeleteRule の後では読めない。00006_rules.sql）。
+	// DeleteRule の後では読めない）。
 	sites, err := ruleTargetSites(ctx, q, req.Id)
 	if err != nil {
 		return nil, err
@@ -266,7 +266,7 @@ func ruleTargetSites(ctx context.Context, q *sqlcgen.Queries, ruleID int64) ([]s
 // insertRulerPassHintsForRuleSites はルールが対象とする各サイトに ruler_pass ヒントを
 // 投入する（issue #184 M4-12「含むもの」3）。sites は rule_sites から読んだ対象一覧で、
 // 空（指定なし = 全サイト）なら h.siteNames（レジストリの全 site）に展開する
-// （00006_rules.sql の rule_sites コメント「指定なし = 全サイト」と同じ規約）。
+// （rule_sites テーブル定義のコメント「指定なし = 全サイト」と同じ規約）。
 //
 // api は site に束縛されない（不変条件 1）ため、1 プロセスがレジストリの全サイトに
 // ヒントを投入できる。呼び出し元（CreateRule/UpdateRule）はルールの子表書き込みと

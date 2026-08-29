@@ -10,7 +10,7 @@ import (
 )
 
 // TestGenreLv1_EdgeCasesDoNotFailInsert は recordings.genre_lv1
-// （00034_recordings_search.sql の生成列、issue #136）の受け入れ基準
+// （genre_lv1_of から作る生成列、issue #136）の受け入れ基準
 // 「genres が null / [] / 配列でない / lv1 が数値でない行でも INSERT が落ちない」を
 // 実 INSERT で固定する。
 //
@@ -20,8 +20,7 @@ import (
 // （watcher の CreateRecording / CreateFailedRecording が失敗 = 録画行が
 // 作られない不可逆な事実の喪失）ことが分かった。genre_lv1_of に
 // `(e->>'lv1')::numeric BETWEEN 0 AND 15`（rule_genres.genre_lv1 の CHECK と同じ
-// ドメイン、00006_rules.sql）の範囲チェックを足して閉じた後もこの回帰が
-// 起きないことをここで固定する。
+// ドメイン）の範囲チェックを足して閉じた後もこの回帰が起きないことをここで固定する。
 func TestGenreLv1_EdgeCasesDoNotFailInsert(t *testing.T) {
 	pool := setupTestDB(t)
 	ctx := context.Background()

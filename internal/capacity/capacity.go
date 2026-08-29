@@ -153,7 +153,7 @@ func Compute(demands []Demand, tuners []Tuner) []Overage {
 //
 // cap(A) は「A のいずれかの種別に対応するチューナー本数」なので、和ではなく
 // **和集合の要素数**。types が空のチューナーはどの A にも数えられない
-// （migrations/00015_tuner_sync.sql: 無害なので CHECK で禁止しない）。
+// （tuner_sync テーブル定義: 無害なので CHECK で禁止しない）。
 func capacities(tuners []Tuner) [1 << typeCount]int {
 	var caps [1 << typeCount]int
 	for _, t := range tuners {
