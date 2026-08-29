@@ -102,9 +102,8 @@ export function sseKeepAlive(route) {
  * installApiStubs は `/api/**` を丸ごとブラウザ側で差し替える配線だけを共通化
  * する。各スクリプト固有の応答（フィクスチャ）は `handler` に残す --- `handler`
  * は `{ path, url, json, route }` を受け取り、**必ず** `json(...)` か
- * `route.fulfill(...)` を呼んで応答する（total な関数であること。既存 7 本の
- * 移行元はすべて末尾に `return json([])` の catch-all を持つので、この条件は
- * 常に満たされている）。
+ * `route.fulfill(...)` を呼んで応答する（total な関数であること。呼び出し元は
+ * いずれも末尾に catch-all を持つので、この条件は常に満たされている）。
  *
  * **フォールバックは持たない。** `route.fulfill(...)` は解決すると `undefined`
  * を返すため、`handler` の戻り値で「応答したかどうか」を判定することはできない
