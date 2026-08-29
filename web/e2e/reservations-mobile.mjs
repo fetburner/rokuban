@@ -28,28 +28,11 @@
 //   E2E_URL=http://localhost:4173 pnpm e2e:reservations-mobile
 //
 // 合格なら exit 0、1 つでも NG なら exit 1。
-import { readdirSync } from 'node:fs'
-import path from 'node:path'
-import { chromium } from 'playwright'
+import { finish, installApiStubs, launchBrowser, log, verifyBundleMatchesOrExit } from './lib.mjs'
 
 const URL_BASE = process.env.E2E_URL ?? 'http://localhost:40773'
 
 const ng = []
-const log = (...a) => console.log(...a)
-
-/** verifyBundleMatches は e2e/badge-links.mjs と同じ ⓪ の確認。 */
-function verifyBundleMatches(servedHtml) {
-  const servedMatch = /assets\/(index-[^"]+\.js)/.exec(servedHtml)
-  const served = servedMatch?.[1]
-  const distDir = path.join(process.cwd(), 'dist', 'assets')
-  let local
-  try {
-    local = readdirSync(distDir).find((f) => /^index-.*\.js$/.test(f))
-  } catch {
-    local = undefined
-  }
-  return { served, local, matches: served !== undefined && served === local }
-}
 
 const SITE = 'default'
 const HOUR = 3_600_000
@@ -103,45 +86,25 @@ const reservations = [
   },
 ]
 
-/** installApiStubs は `/api/**` をすべてブラウザ側で差し替える（design.mjs と同じ手）。 */
-async function installApiStubs(page) {
-  await page.route('**/api/**', async (route) => {
-    const url = new URL(route.request().url())
-    const p = url.pathname
-    const json = (body) =>
-      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) })
-
-    if (p === '/api/events') return route.fulfill({ status: 204 })
-    if (p === '/api/sites') return json([SITE])
-    if (p === '/api/capabilities') return json({ live: true })
-    if (p === '/api/breakers') return json([])
-    if (p === '/api/reservations') return json(reservations)
-    // 超過区間は空でよい（このスクリプトが見る重なりは orphaned バッジ単独でも
-    // 再現する。容量バッジの導線は e2e/badge-links.mjs が別に見ている）。
-    if (p === '/api/capacity/overages') return json([])
-    return json([])
-  })
+/** apiHandler は `/api/**` の応答を作る（design.mjs と同じ手）。 */
+async function apiHandler({ path: p, json }) {
+  if (p === '/api/sites') return json([SITE])
+  if (p === '/api/capabilities') return json({ live: true })
+  if (p === '/api/breakers') return json([])
+  if (p === '/api/reservations') return json(reservations)
+  // 超過区間は空でよい（このスクリプトが見る重なりは orphaned バッジ単独でも
+  // 再現する。容量バッジの導線は e2e/badge-links.mjs が別に見ている）。
+  if (p === '/api/capacity/overages') return json([])
+  return json([])
 }
 
 log(`URL: ${URL_BASE}`)
 
 // --- ⓪ 配っている bundle が dist/ の現物と一致するか ---
 log('\n=== ⓪ 配っている bundle と dist/ の一致 ===')
-const rootHtml = await fetch(URL_BASE + '/').then((r) => r.text())
-const bundleCheck = verifyBundleMatches(rootHtml)
-log(`  配っている bundle: ${bundleCheck.served ?? '(取得できない)'}`)
-log(`  dist/assets/     : ${bundleCheck.local ?? '(見つからない。web/ で実行しているか確認)'}`)
-if (!bundleCheck.matches) {
-  ng.push(
-    `⓪ ${URL_BASE} が配っている bundle（${bundleCheck.served ?? '不明'}）が dist/assets/ の現物（${bundleCheck.local ?? '不明'}）と一致しない --- 別プロセス・古いビルドを測っている可能性が高いので、これ以降の判定を打ち切る`,
-  )
-  log('\n=== 結果 ===')
-  ng.forEach((f) => log('  NG: ' + f))
-  process.exit(1)
-}
-log('  一致（このサーバーは自分のビルドを配っている）')
+await verifyBundleMatchesOrExit(URL_BASE, ng)
 
-const browser = await chromium.launch()
+const browser = await launchBrowser()
 // レビューの実測条件（Chromium 360px）に合わせる。
 const context = await browser.newContext({
   viewport: { width: 360, height: 800 },
@@ -149,7 +112,7 @@ const context = await browser.newContext({
   timezoneId: 'Asia/Tokyo',
 })
 const page = await context.newPage()
-await installApiStubs(page)
+await installApiStubs(page, apiHandler)
 
 await page.goto(URL_BASE + '/reservations', { waitUntil: 'domcontentloaded' })
 
@@ -200,9 +163,4 @@ if (scrollWidth > 360) {
   ng.push(`③ ページ全体が横スクロールする（scrollWidth=${scrollWidth}px）`)
 }
 
-log('\n=== 結果 ===')
-if (ng.length === 0) log('  すべて期待どおり')
-else ng.forEach((f) => log('  NG: ' + f))
-
-await browser.close()
-process.exit(ng.length === 0 ? 0 : 1)
+await finish(ng, browser)

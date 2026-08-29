@@ -3,7 +3,7 @@
 //
 // 見るのは:
 //   ⓪ 前提条件 --- 配っている bundle が dist/ の現物と一致するか（他の判定は
-//      これが崩れているだけで無意味になるので最初に見る。下記のコメント参照）
+//      これが崩れているだけで無意味になるので最初に見る。e2e/lib.mjs 参照）
 //   ① 予約一覧の容量不足バッジをクリックすると、行本体の詳細リンク（宛先
 //      `/reservations/$site/$programId`）ではなく番組表（`/programs?view=grid&at=...`。
 //      ホーム新設（M8-3）前は `/?at=...` だった）へ飛ぶこと --- バッジが行本体の
@@ -29,53 +29,15 @@
 //   cd web && pnpm build && pnpm preview --port 4173 --strictPort &
 //   E2E_URL=http://localhost:4173 pnpm e2e:badge-links
 //
-// **起動したら、配っている bundle が `dist/` の現物と一致するかをこのスクリプト
-// 自身が最初に確認する（`verifyBundleMatches` / NG "0" 番）。** `--strictPort` は
-// 使用中なら起動自体を失敗させるはずだが、複数の worktree を並行して触っている
-// と別の worktree の preview（同じ 4173 等）が先に居座っていることがあり、その
-// 場合は自分の起動が黙って失敗し、`E2E_URL` は無関係な別ビルドを指したまま
-// ①②の判定だけが進んでしまう（実際にこの罠を 1 度踏み、別 worktree の dist を
-// 測って「直る前の実装で落ちる」が常に成立するだけの壊れた判定になっていた）。
-// README の手順は変わらないが、**手で確認する代わりにこのスクリプトが毎回
-// 自動で確認し、不一致なら他の判定をせず即 exit 1 する**（人がチェックを
-// 忘れても事故を再現しない形にする）。
+// ⓪（配っている bundle と dist/ の一致確認）は e2e/lib.mjs の
+// verifyBundleMatchesOrExit に委ねる（不一致の事故の経緯もそちらのコメント）。
 //
 // 合格なら exit 0、1 つでも NG なら exit 1。
-import { readdirSync } from 'node:fs'
-import path from 'node:path'
-import { chromium } from 'playwright'
+import { finish, installApiStubs, launchBrowser, log, verifyBundleMatchesOrExit } from './lib.mjs'
 
 const URL_BASE = process.env.E2E_URL ?? 'http://localhost:40773'
 
 const ng = []
-const log = (...a) => console.log(...a)
-
-/**
- * verifyBundleMatches は `URL_BASE` が実際に配っている JS bundle のファイル名
- * （`index-<hash>.js`）と、ローカルの `dist/assets/` にある現物のファイル名を
- * 比較する。
- *
- * `page.route` で `/api/**` を丸ごと差し替えるこの判定は、古い（無関係な）
- * ビルドを配っているサーバーに対しても静かに動いてしまう ---
- * サーバーが何のバイナリ・dist を配っているかはこの判定の関心外だからこそ、
- * 一致確認をどこかで能動的にやる必要がある。ファイル名にコンテンツハッシュが
- * 入っているため、内容が違えばファイル名も必ず違う（vite のデフォルト）。
- *
- * `dist/assets/` はこのスクリプトを `pnpm e2e:badge-links`（`web/` がカレント
- * ディレクトリ）で実行することを前提に相対パスで読む。
- */
-function verifyBundleMatches(servedHtml) {
-  const servedMatch = /assets\/(index-[^"]+\.js)/.exec(servedHtml)
-  const served = servedMatch?.[1]
-  const distDir = path.join(process.cwd(), 'dist', 'assets')
-  let local
-  try {
-    local = readdirSync(distDir).find((f) => /^index-.*\.js$/.test(f))
-  } catch {
-    local = undefined
-  }
-  return { served, local, matches: served !== undefined && served === local }
-}
 
 const SITE = 'default'
 const HOUR = 3_600_000
@@ -168,15 +130,8 @@ function programsFor(startISO, endISO) {
   return out
 }
 
-/** installApiStubs は `/api/**` をすべてブラウザ側で差し替える（design.mjs と同じ手）。 */
-async function installApiStubs(page) {
-  await page.route('**/api/**', async (route) => {
-    const url = new URL(route.request().url())
-    const p = url.pathname
-    const json = (body) =>
-      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) })
-
-    if (p === '/api/events') return route.fulfill({ status: 204 })
+/** apiHandler は `/api/**` の応答を作る（installApiStubs 経由でブラウザ側から差し替える）。 */
+async function apiHandler({ path: p, url, json, route }) {
     if (p === '/api/sites') return json([SITE])
     if (p === '/api/capabilities') return json({ live: true })
     if (p === '/api/breakers') return json([])
@@ -204,7 +159,6 @@ async function installApiStubs(page) {
     // 表示の経路を通す③を足して初めて表面化した）。
     if (/\/overlaps$/.test(p)) return json({ count: 0, reservations: [] })
     return json([])
-  })
 }
 
 log(`URL      : ${URL_BASE}`)
@@ -216,21 +170,9 @@ log(`不足区間 : ${overage.startAt} 〜 ${overage.endAt}`)
 // preview）が答えていても①②はそれらしく動いてしまう。一致しないなら以降の
 // 判定に意味が無いので、ここで打ち切る。
 log('\n=== ⓪ 配っている bundle と dist/ の一致 ===')
-const rootHtml = await fetch(URL_BASE + '/').then((r) => r.text())
-const bundleCheck = verifyBundleMatches(rootHtml)
-log(`  配っている bundle: ${bundleCheck.served ?? '(取得できない)'}`)
-log(`  dist/assets/     : ${bundleCheck.local ?? '(見つからない。web/ で実行しているか確認)'}`)
-if (!bundleCheck.matches) {
-  ng.push(
-    `⓪ ${URL_BASE} が配っている bundle（${bundleCheck.served ?? '不明'}）が dist/assets/ の現物（${bundleCheck.local ?? '不明'}）と一致しない --- 別プロセス・古いビルドを測っている可能性が高いので、これ以降の判定を打ち切る`,
-  )
-  log('\n=== 結果 ===')
-  ng.forEach((f) => log('  NG: ' + f))
-  process.exit(1)
-}
-log('  一致（このサーバーは自分のビルドを配っている）')
+await verifyBundleMatchesOrExit(URL_BASE, ng)
 
-const browser = await chromium.launch()
+const browser = await launchBrowser()
 // lg（64rem = 1024px）以上の幅で開く --- 判定②は URL の view=grid どおり
 // グリッド表示になることが前提
 const context = await browser.newContext({
@@ -240,7 +182,7 @@ const context = await browser.newContext({
 })
 const page = await context.newPage()
 await page.clock.setFixedTime(FIXED_NOW)
-await installApiStubs(page)
+await installApiStubs(page, apiHandler)
 
 await page.goto(URL_BASE + '/reservations', { waitUntil: 'domcontentloaded' })
 
@@ -401,7 +343,7 @@ const narrowContext = await browser.newContext({
 })
 const narrowPage = await narrowContext.newPage()
 await narrowPage.clock.setFixedTime(FIXED_NOW)
-await installApiStubs(narrowPage)
+await installApiStubs(narrowPage, apiHandler)
 await narrowPage.goto(URL_BASE + '/reservations', { waitUntil: 'domcontentloaded' })
 
 const narrowBadge = narrowPage.getByRole('link', { name: /チューナーが不足しています/ })
@@ -454,9 +396,4 @@ if ((await narrowBadge.count()) > 0) {
 }
 await narrowContext.close()
 
-log('\n=== 結果 ===')
-if (ng.length === 0) log('  すべて期待どおり')
-else ng.forEach((f) => log('  NG: ' + f))
-
-await browser.close()
-process.exit(ng.length === 0 ? 0 : 1)
+await finish(ng, browser)

@@ -42,9 +42,7 @@
 //   E2E_URL=http://localhost:4173 node e2e/cls.mjs
 //
 // 合格なら exit 0、1 つでも NG なら exit 1。
-import { readdirSync } from 'node:fs'
-import path from 'node:path'
-import { chromium } from 'playwright'
+import { finish, launchBrowser, log, verifyBundleMatchesOrExit } from './lib.mjs'
 
 const URL_BASE = process.env.E2E_URL ?? 'http://localhost:4173'
 const SITE = 'default'
@@ -53,7 +51,6 @@ const CLS_THRESHOLD = 0.1
 const NETWORK_DELAY_MS = 400
 
 const ng = []
-const log = (...a) => console.log(...a)
 
 /** services は地上波 + BS + CS 相当の 24 局（実測の再現に要る件数）。 */
 const services = Array.from({ length: 24 }, (_, i) => ({
@@ -106,36 +103,10 @@ async function readCls(page) {
   return page.evaluate(() => window.__clsTotal)
 }
 
-/**
- * verifyBundleMatches は他スクリプトと同じ前提確認（web/e2e/README.md「配って
- * いる bundle が dist/ の現物と一致するか」）。
- */
-function verifyBundleMatches(servedHtml) {
-  const served = /assets\/(index-[^"]+\.js)/.exec(servedHtml)?.[1]
-  let local
-  try {
-    local = readdirSync(path.join(process.cwd(), 'dist', 'assets')).find((f) =>
-      /^index-.*\.js$/.test(f),
-    )
-  } catch {
-    local = undefined
-  }
-  return { served, local, matches: served !== undefined && served === local }
-}
-
 log('\n=== ⓪ 前提条件 ===')
-{
-  const rootHtml = await fetch(URL_BASE + '/').then((r) => r.text())
-  const bundle = verifyBundleMatches(rootHtml)
-  if (!bundle.matches) {
-    log(`NG  ⓪ 配っている bundle（${bundle.served ?? '不明'}）が dist/assets/（${bundle.local ?? '不明'}）と違う`)
-    log('    別プロセス・古いビルドを測っている。以降の判定に意味が無いので打ち切る')
-    process.exit(1)
-  }
-  log(`OK  ⓪ 配っている bundle は自分の dist（${bundle.served}）`)
-}
+await verifyBundleMatchesOrExit(URL_BASE, ng)
 
-const browser = await chromium.launch()
+const browser = await launchBrowser()
 
 /**
  * measureSearch は `/search` を指定のビューポートで開き、サービス一覧の取得だけを
@@ -183,10 +154,4 @@ for (const c of cases) {
   }
 }
 
-await browser.close()
-
-log('\n=== 結果 ===')
-if (ng.length === 0) log('  すべて期待どおり')
-else ng.forEach((f) => log('  NG: ' + f))
-
-process.exit(ng.length === 0 ? 0 : 1)
+await finish(ng, browser)

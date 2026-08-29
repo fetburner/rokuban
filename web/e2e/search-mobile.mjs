@@ -32,15 +32,12 @@
 //   E2E_URL=http://localhost:4173 node e2e/search-mobile.mjs
 //
 // 合格なら exit 0、1 つでも NG なら exit 1。
-import { readdirSync } from 'node:fs'
-import path from 'node:path'
-import { chromium } from 'playwright'
+import { finish, installApiStubs, launchBrowser, log, verifyBundleMatchesOrExit } from './lib.mjs'
 
 const URL_BASE = process.env.E2E_URL ?? 'http://localhost:4173'
 const SITE = 'default'
 
 const ng = []
-const log = (...a) => console.log(...a)
 
 const services = [
   {
@@ -100,66 +97,30 @@ function programDetail(id, index) {
   }
 }
 
-/** installApiStubs は /search の描画に要る `/api/**` を丸ごと差し替える。 */
-async function installApiStubs(page) {
-  await page.route('**/api/**', async (route) => {
-    const p = new URL(route.request().url()).pathname
-    const json = (body) =>
-      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) })
-
-    if (p === '/api/events') return route.fulfill({ status: 204 })
-    if (p === '/api/sites') return json([SITE])
-    if (p === '/api/capabilities') return json({ live: false })
-    if (p === `/api/sites/${SITE}/services`) return json(services)
-    // `/programs/search` は `/programs/{id}` より先に見る（`search` が id に
-    // 見えてしまう順序事故を避ける）。
-    if (p === `/api/sites/${SITE}/programs/search`) return json(matchedProgramIds)
-    const detail = /^\/api\/sites\/[^/]+\/programs\/(\d+)$/.exec(p)
-    if (detail !== null) {
-      const id = Number(detail[1])
-      const index = matchedProgramIds.indexOf(id)
-      if (index < 0) {
-        return route.fulfill({ status: 404, contentType: 'application/json', body: '{}' })
-      }
-      return json(programDetail(id, index))
+/** apiHandler は /search の描画に要る `/api/**` の応答を作る。 */
+async function apiHandler({ path: p, json, route }) {
+  if (p === '/api/sites') return json([SITE])
+  if (p === '/api/capabilities') return json({ live: false })
+  if (p === `/api/sites/${SITE}/services`) return json(services)
+  // `/programs/search` は `/programs/{id}` より先に見る（`search` が id に
+  // 見えてしまう順序事故を避ける）。
+  if (p === `/api/sites/${SITE}/programs/search`) return json(matchedProgramIds)
+  const detail = /^\/api\/sites\/[^/]+\/programs\/(\d+)$/.exec(p)
+  if (detail !== null) {
+    const id = Number(detail[1])
+    const index = matchedProgramIds.indexOf(id)
+    if (index < 0) {
+      return route.fulfill({ status: 404, contentType: 'application/json', body: '{}' })
     }
-    return json([])
-  })
-}
-
-/**
- * verifyBundleMatches は `URL_BASE` が配っている JS bundle のファイル名が
- * ローカルの `dist/assets/` の現物と一致するかを見る（badge-links.mjs /
- * sse-refresh.mjs と同じ理由 --- 複数 worktree を並行して触っていると、
- * 別プロセスの preview が同じポートに先に居座って無関係な古いビルドを
- * 測ったまま判定が進む事故が実際にある）。
- */
-function verifyBundleMatches(servedHtml) {
-  const served = /assets\/(index-[^"]+\.js)/.exec(servedHtml)?.[1]
-  let local
-  try {
-    local = readdirSync(path.join(process.cwd(), 'dist', 'assets')).find((f) =>
-      /^index-.*\.js$/.test(f),
-    )
-  } catch {
-    local = undefined
+    return json(programDetail(id, index))
   }
-  return { served, local, matches: served !== undefined && served === local }
+  return json([])
 }
 
 log('\n=== ⓪ 前提条件 ===')
-{
-  const rootHtml = await fetch(URL_BASE + '/').then((r) => r.text())
-  const bundle = verifyBundleMatches(rootHtml)
-  if (!bundle.matches) {
-    log(`NG  ⓪ 配っている bundle（${bundle.served ?? '不明'}）が dist/assets/（${bundle.local ?? '不明'}）と違う`)
-    log('    別プロセス・古いビルドを測っている。以降の判定に意味が無いので打ち切る')
-    process.exit(1)
-  }
-  log(`OK  ⓪ 配っている bundle は自分の dist（${bundle.served}）`)
-}
+await verifyBundleMatchesOrExit(URL_BASE, ng)
 
-const browser = await chromium.launch()
+const browser = await launchBrowser()
 
 /**
  * bottomNavBox はモバイルのボトムタブの矩形を返す（無ければ null）。
@@ -207,7 +168,7 @@ async function bottomNavBox(page, viewport, mark, label) {
 async function checkViewport(viewport) {
   const context = await browser.newContext({ viewport })
   const page = await context.newPage()
-  await installApiStubs(page)
+  await installApiStubs(page, apiHandler)
   await page.goto(URL_BASE + '/search', { waitUntil: 'domcontentloaded' })
 
   // サービスチップの描画を待つ（`useListServices` の解決後に出る）。ここで
@@ -376,10 +337,4 @@ await checkViewport({ width: 390, height: 844 })
 log('\n=== ③ デスクトップ（1280x900）でも②④を確認 ===')
 await checkViewport({ width: 1280, height: 900 })
 
-await browser.close()
-
-log('\n=== 結果 ===')
-if (ng.length === 0) log('  すべて期待どおり')
-else ng.forEach((f) => log('  NG: ' + f))
-
-process.exit(ng.length === 0 ? 0 : 1)
+await finish(ng, browser)

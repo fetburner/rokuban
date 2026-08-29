@@ -39,28 +39,11 @@
 //   E2E_URL=http://localhost:4173 pnpm e2e:programs-bottom-nav
 //
 // 合格なら exit 0、1 つでも NG なら exit 1。
-import { readdirSync } from 'node:fs'
-import path from 'node:path'
-import { chromium } from 'playwright'
+import { finish, installApiStubs, launchBrowser, log, verifyBundleMatchesOrExit } from './lib.mjs'
 
 const URL_BASE = process.env.E2E_URL ?? 'http://localhost:40773'
 
 const ng = []
-const log = (...a) => console.log(...a)
-
-/** verifyBundleMatches は `e2e/badge-links.mjs` と同じ手（詳細はそちらのコメント参照）。 */
-function verifyBundleMatches(servedHtml) {
-  const servedMatch = /assets\/(index-[^"]+\.js)/.exec(servedHtml)
-  const served = servedMatch?.[1]
-  const distDir = path.join(process.cwd(), 'dist', 'assets')
-  let local
-  try {
-    local = readdirSync(distDir).find((f) => /^index-.*\.js$/.test(f))
-  } catch {
-    local = undefined
-  }
-  return { served, local, matches: served !== undefined && served === local }
-}
 
 const SITE = 'default'
 const HOUR = 3_600_000
@@ -113,32 +96,24 @@ function programsFor(startISO, endISO) {
   return out
 }
 
-/** installApiStubs は `/api/**` をすべてブラウザ側で差し替える（design.mjs と同じ手）。 */
-async function installApiStubs(page) {
-  await page.route('**/api/**', async (route) => {
-    const url = new URL(route.request().url())
-    const p = url.pathname
-    const json = (body) =>
-      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) })
-
-    if (p === '/api/events') return route.fulfill({ status: 204 })
-    if (p === '/api/sites') return json([SITE])
-    if (p === '/api/capabilities') return json({ live: true })
-    if (p === '/api/breakers') return json([])
-    if (p === '/api/reservations') return json([])
-    if (p === '/api/capacity/overages') return json([])
-    if (p === `/api/sites/${SITE}/services`) return json([service])
-    if (p === `/api/sites/${SITE}/programs`) {
-      return json(
-        programsFor(
-          url.searchParams.get('start') ?? iso(nowMs),
-          url.searchParams.get('end') ?? iso(nowMs + 6 * HOUR),
-        ),
-      )
-    }
-    if (/\/overlaps$/.test(p)) return json({ count: 0, reservations: [] })
-    return json([])
-  })
+/** apiHandler は `/api/**` の応答を作る（design.mjs と同じ手）。 */
+async function apiHandler({ path: p, url, json }) {
+  if (p === '/api/sites') return json([SITE])
+  if (p === '/api/capabilities') return json({ live: true })
+  if (p === '/api/breakers') return json([])
+  if (p === '/api/reservations') return json([])
+  if (p === '/api/capacity/overages') return json([])
+  if (p === `/api/sites/${SITE}/services`) return json([service])
+  if (p === `/api/sites/${SITE}/programs`) {
+    return json(
+      programsFor(
+        url.searchParams.get('start') ?? iso(nowMs),
+        url.searchParams.get('end') ?? iso(nowMs + 6 * HOUR),
+      ),
+    )
+  }
+  if (/\/overlaps$/.test(p)) return json({ count: 0, reservations: [] })
+  return json([])
 }
 
 log(`URL      : ${URL_BASE}`)
@@ -146,21 +121,9 @@ log(`固定時刻 : ${FIXED_NOW.toISOString()} (Asia/Tokyo)`)
 
 // --- ⓪ 配っている bundle が dist/ の現物と一致するか ---
 log('\n=== ⓪ 配っている bundle と dist/ の一致 ===')
-const rootHtml = await fetch(URL_BASE + '/').then((r) => r.text())
-const bundleCheck = verifyBundleMatches(rootHtml)
-log(`  配っている bundle: ${bundleCheck.served ?? '(取得できない)'}`)
-log(`  dist/assets/     : ${bundleCheck.local ?? '(見つからない。web/ で実行しているか確認)'}`)
-if (!bundleCheck.matches) {
-  ng.push(
-    `⓪ ${URL_BASE} が配っている bundle（${bundleCheck.served ?? '不明'}）が dist/assets/ の現物（${bundleCheck.local ?? '不明'}）と一致しない --- 別プロセス・古いビルドを測っている可能性が高いので、これ以降の判定を打ち切る`,
-  )
-  log('\n=== 結果 ===')
-  ng.forEach((f) => log('  NG: ' + f))
-  process.exit(1)
-}
-log('  一致（このサーバーは自分のビルドを配っている）')
+await verifyBundleMatchesOrExit(URL_BASE, ng)
 
-const browser = await chromium.launch()
+const browser = await launchBrowser()
 
 /**
  * measure はボトムタブ・`main`・描かれている行の幾何を 1 回のフレームで読む。
@@ -215,7 +178,7 @@ const context = await browser.newContext({
 })
 const page = await context.newPage()
 await page.clock.setFixedTime(FIXED_NOW)
-await installApiStubs(page)
+await installApiStubs(page, apiHandler)
 await page.goto(URL_BASE + '/programs', { waitUntil: 'domcontentloaded' })
 await page.locator('li[data-program-id]').first().waitFor({ timeout: 15000 })
 await page.evaluate(() => document.fonts.ready)
@@ -330,9 +293,4 @@ if (bottom.navPresent && bottom.atBottom) {
 
 await context.close()
 
-log('\n=== 結果 ===')
-if (ng.length === 0) log('  すべて期待どおり')
-else ng.forEach((f) => log('  NG: ' + f))
-
-await browser.close()
-process.exit(ng.length === 0 ? 0 : 1)
+await finish(ng, browser)
