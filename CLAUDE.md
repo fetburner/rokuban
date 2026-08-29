@@ -14,7 +14,7 @@ go test ./...
 golangci-lint run
 ```
 
-**Node のバージョンは `.node-version`（22.x）に固定してある**。nodenv などでその Node に pnpm の shim が無ければ `corepack pnpm ...`（`packageManager` フィールドに従う）で直接呼べる。oxlint の native binding は optional dependency の engines 判定でインストール時にだけ絞り込まれる。そのため古い Node で `pnpm install --frozen-lockfile` すると警告なしにバインディングが欠落する。
+**Node のバージョンは `.node-version`（パッチ版まで固定）に固定してある**。nodenv などでその Node に pnpm の shim が無ければ `corepack pnpm ...`（`packageManager` フィールドに従う）で直接呼べる。oxlint の native binding は optional dependency の engines 判定でインストール時にだけ絞り込まれる。そのため古い Node で `pnpm install --frozen-lockfile` すると警告なしにバインディングが欠落する。CI は `actions/setup-node` の `node-version-file: .node-version` でこの版を読むが、`Dockerfile` の `FROM node:` は読めない。`.node-version` を上げるときは同じ PR で `Dockerfile` も揃える。
 
 ```bash
 cd web
