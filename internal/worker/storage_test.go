@@ -41,43 +41,13 @@ func storageSyncByRoot(t *testing.T, pool *pgxpool.Pool, root string) sqlcgen.St
 	return sqlcgen.StorageSync{}
 }
 
-// roots() は ScratchDir が空文字列のときだけ scratch を対象から外す。
-// worker.Work の統合テスト（TestStorageSyncWorker_ScratchOptional）は
-// 「観測失敗時は既存行に触らない」設計のせいで、誤って毎回 scratch を対象に
-// 入れてしまう変異（対象パスが "" のまま statfs が失敗するだけ）を見逃しうる ---
-// 対象集合そのものをここで直接検査する。
-func TestStorageSyncWorker_Roots(t *testing.T) {
-	w := &StorageSyncWorker{MediaDir: "/media"}
-	if got := w.roots(); len(got) != 1 || got[0].name != "media" {
-		t.Errorf("roots() = %+v, want [{media /media}]", got)
-	}
-
-	w.ScratchDir = "/scratch"
-	got := w.roots()
-	if len(got) != 2 {
-		t.Fatalf("roots() = %+v, want 2 entries", got)
-	}
-	if got[0].name != "media" || got[1].name != "scratch" || got[1].path != "/scratch" {
-		t.Errorf("roots() = %+v, want [{media /media} {scratch /scratch}]", got)
-	}
-
-	// allStorageRootNames は「観測しうる root の全体集合」であり、ラベル掃除の
-	// 走査範囲でもある。ここに名前を足して rootPath() の case を足し忘れると、
-	// その root は永久に観測されないのに DB の CHECK は通る（掃除だけが効いて
-	// 行が消え続ける）ので、全 config を与えたときの roots() が全体集合と
-	// 一致することを検査する。
-	if len(got) != len(allStorageRootNames) {
-		t.Fatalf("roots() with every dir configured = %+v (%d entries), want one per allStorageRootNames (%v)",
-			got, len(got), allStorageRootNames)
-	}
-	for i, name := range allStorageRootNames {
-		if got[i].name != name {
-			t.Errorf("roots()[%d].name = %q, want %q (rootPath() missing a case?)", i, got[i].name, name)
-		}
-	}
-}
-
 // media/scratch の両方を実ディレクトリに向けた 1 パスで、2 行が正しく投影されること。
+//
+// storage.go の観測対象は allRoots（[]storageRoot{{"media", ...}, {"scratch",
+// ...}} の 1 リテラル）から直接導出するので、名前と path の対応がずれる
+// （旧 rootPath() の switch にケースを足し忘れる、といった）バグは構造的に
+// 起こり得ない。この統合テストと ScratchOptional / ConfigChangeSweepsRemovedRoot
+// が、config の増減に応じて対象集合が正しく変わることを検査する。
 func TestStorageSyncWorker_FullSync(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()

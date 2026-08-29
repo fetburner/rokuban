@@ -21,9 +21,6 @@ import (
 const (
 	epgQueue = "epg"
 
-	// defaultEpgRetentionGrace は放送済み番組を刈り取るまでの猶予。
-	defaultEpgRetentionGrace = 24 * time.Hour
-
 	// epgBatchSize は 1 回の pgx.Batch に詰める行数。全量で数万〜十万行になるため
 	// 分割してメモリと 1 バッチあたりの所要を抑える。
 	epgBatchSize = 1000
@@ -81,7 +78,9 @@ type EpgSyncWorker struct {
 	MirakcClient *mirakc.Client
 	Pool         *pgxpool.Pool
 
-	// RetentionGrace は end_at がこの時間より前の番組を刈り取る猶予。0 なら既定値。
+	// RetentionGrace は end_at がこの時間より前の番組を刈り取る猶予
+	// （config.epg.retention_grace。config.defaults() が既定値 24 時間を
+	// 埋めるので、ここでは常に config が渡した値をそのまま使う）。
 	RetentionGrace time.Duration
 
 	// Site はこのワーカープロセス自身の site（config.mirakc.site）。Work は
@@ -174,13 +173,9 @@ func (w *EpgSyncWorker) Work(ctx context.Context, job *river.Job[EpgSyncArgs]) e
 	}
 
 	// ローリングウィンドウ: mirakc が過去番組を保持し続けても、こちらは刈り取る。
-	grace := w.RetentionGrace
-	if grace <= 0 {
-		grace = defaultEpgRetentionGrace
-	}
 	pruned, err := q.PruneEpgPrograms(ctx, sqlcgen.PruneEpgProgramsParams{
 		Site:  site,
-		EndAt: mark.Add(-grace),
+		EndAt: mark.Add(-w.RetentionGrace),
 	})
 	if err != nil {
 		return fmt.Errorf("pruning aired programs: %w", err)

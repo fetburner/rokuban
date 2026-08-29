@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -55,13 +56,6 @@ func (StorageSyncArgs) InsertOpts() river.InsertOpts {
 		},
 	}
 }
-
-// allStorageRootNames は Rokuban が観測しうる root 名の全体集合。
-// storage_sync.root 列の CHECK (root IN ('media', 'scratch')) と 1:1 で、
-// Go 側ではここが唯一の出所（roots() の対象も、外れた root のラベル掃除の
-// 走査範囲も、両方これから導出する。TestStorageSyncWorker_Roots が
-// rootPath() の case 漏れを検出する）。
-var allStorageRootNames = []string{"media", "scratch"}
 
 // storageRoot は 1 つの観測対象（config キーと statfs するパスの対応）。
 type storageRoot struct {
@@ -116,43 +110,36 @@ func (w *StorageSyncWorker) statFunc() func(string) (diskUsage, error) {
 	return statDisk
 }
 
-// rootPath は root 名に対応する config の値を返す。空文字列は「この root は
-// 観測しない」を意味する（scratch_dir を明示的に空にした場合。media_dir が空の
-// ケースは Work が先に弾く）。allStorageRootNames に無い名前も空を返す。
-func (w *StorageSyncWorker) rootPath(name string) string {
-	switch name {
-	case "media":
-		return w.MediaDir
-	case "scratch":
-		return w.ScratchDir
-	default:
-		return ""
-	}
-}
-
-// roots は今回のパスで観測すべき root の一覧を返す（config が値を持つものだけ）。
-func (w *StorageSyncWorker) roots() []storageRoot {
-	roots := make([]storageRoot, 0, len(allStorageRootNames))
-	for _, name := range allStorageRootNames {
-		if path := w.rootPath(name); path != "" {
-			roots = append(roots, storageRoot{name: name, path: path})
-		}
-	}
-	return roots
-}
-
 // Work はストレージ観測の全量同期を 1 パス実行する。
 func (w *StorageSyncWorker) Work(ctx context.Context, _ *river.Job[StorageSyncArgs]) error {
 	if w.MediaDir == "" {
 		return fmt.Errorf("storage sync: media dir is empty")
 	}
 
-	roots := w.roots()
-	desired := make([]string, len(roots))
-	desiredSet := make(map[string]bool, len(roots))
-	for i, r := range roots {
-		desired[i] = r.name
-		desiredSet[r.name] = true
+	// allRoots は Rokuban が観測しうる root の全体集合（config キーと statfs
+	// するパスの対応）。storage_sync.root 列の CHECK (root IN ('media',
+	// 'scratch')) と 1:1 で、Go 側ではここが唯一の出所（観測対象も、外れた
+	// root のラベル掃除の走査範囲も、両方これから導出する。増減するときは
+	// マイグレーションの CHECK も合わせて直す）。
+	allRoots := []storageRoot{
+		{name: "media", path: w.MediaDir},
+		{name: "scratch", path: w.ScratchDir},
+	}
+
+	// desired は今回観測する root 名の一覧。allRoots は高々 2 要素なので、
+	// この後の掃除ループは desiredSet を別途持たず slices.Contains(desired, ...)
+	// で足りる。
+	roots := make([]storageRoot, 0, len(allRoots))
+	desired := make([]string, 0, len(allRoots))
+	for _, r := range allRoots {
+		if r.path == "" {
+			// 空文字列は「この root は観測しない」を意味する（scratch_dir を
+			// 明示的に空にした場合。media_dir が空のケースは上の早期リターンで
+			// 弾いている）。
+			continue
+		}
+		roots = append(roots, r)
+		desired = append(desired, r.name)
 	}
 
 	q := sqlcgen.New(w.Pool)
@@ -174,14 +161,14 @@ func (w *StorageSyncWorker) Work(ctx context.Context, _ *river.Job[StorageSyncAr
 	// 取り残されたラベルは「凍結した鮮度ゲージ」= Pod を再起動するまで消えない
 	// 偽陽性アラートになる（docs/operations/monitoring.md §沈黙は保証ではない が
 	// この鮮度を判断材料に挙げている）。
-	for _, name := range allStorageRootNames {
-		if desiredSet[name] {
+	for _, r := range allRoots {
+		if slices.Contains(desired, r.name) {
 			continue
 		}
-		metrics.StorageRootLastSuccess.DeleteLabelValues(name)
-		metrics.StorageRootTotalBytes.DeleteLabelValues(name)
-		metrics.StorageRootUsedBytes.DeleteLabelValues(name)
-		metrics.StorageRootAvailableBytes.DeleteLabelValues(name)
+		metrics.StorageRootLastSuccess.DeleteLabelValues(r.name)
+		metrics.StorageRootTotalBytes.DeleteLabelValues(r.name)
+		metrics.StorageRootUsedBytes.DeleteLabelValues(r.name)
+		metrics.StorageRootAvailableBytes.DeleteLabelValues(r.name)
 	}
 
 	stat := w.statFunc()

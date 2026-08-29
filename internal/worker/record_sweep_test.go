@@ -30,57 +30,31 @@ func TestRecordSweepWorker_HasGenerousTimeout(t *testing.T) {
 // 登録済みワーカーが watcher キューで拾うこと（配線の確認）。
 func TestRecordSweepPeriodicJob(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	ctx := context.Background()
-
-	if _, err := pool.Exec(ctx, "DELETE FROM river_job"); err != nil {
-		t.Fatalf("cleaning river_job: %v", err)
-	}
 
 	srv := newRecordSweepStub(t, nil)
-	defer srv.Close()
+	// t.Cleanup（defer だとクライアント停止より先に走り、動いている最中にスタブを閉じる）。
+	t.Cleanup(srv.Close)
 
-	workers := NewWorkers(&Deps{Pool: pool, MirakcClient: mirakc.NewClient(srv.URL, nil)})
-	client, err := NewClient(pool, workers, ClientConfig{
+	subscribeCh := startPeriodicJobClient(t, pool, &Deps{MirakcClient: mirakc.NewClient(srv.URL, nil)}, ClientConfig{
 		PeriodicJobs:        true,
 		RecordSweepSite:     testSite,
 		RecordSweepInterval: time.Hour, // RunOnStart で 1 回だけ走らせる
-	})
-	if err != nil {
-		t.Fatalf("creating client: %v", err)
+	}, river.EventKindJobCompleted)
+
+	event := waitPeriodicJobEvent(t, subscribeCh, "record_sweep")
+	if event.Job.Kind != "record_sweep" {
+		t.Errorf("job kind = %q, want %q", event.Job.Kind, "record_sweep")
 	}
-
-	subscribeCh, subscribeCancel := client.Subscribe(river.EventKindJobCompleted)
-	defer subscribeCancel()
-
-	clientCtx, clientCancel := context.WithCancel(ctx)
-	defer clientCancel()
-
-	if err := client.Start(clientCtx); err != nil {
-		t.Fatalf("starting client: %v", err)
+	wantQueue := qualifyQueueName(recordSweepQueue, testSite)
+	if event.Job.Queue != wantQueue {
+		t.Errorf("job queue = %q, want %q", event.Job.Queue, wantQueue)
 	}
-	defer func() {
-		clientCancel()
-		<-client.Stopped()
-	}()
-
-	select {
-	case event := <-subscribeCh:
-		if event.Job.Kind != "record_sweep" {
-			t.Errorf("job kind = %q, want %q", event.Job.Kind, "record_sweep")
-		}
-		wantQueue := qualifyQueueName(recordSweepQueue, testSite)
-		if event.Job.Queue != wantQueue {
-			t.Errorf("job queue = %q, want %q", event.Job.Queue, wantQueue)
-		}
-		var args RecordSweepArgs
-		if err := json.Unmarshal(event.Job.EncodedArgs, &args); err != nil {
-			t.Fatalf("unmarshalling job args: %v", err)
-		}
-		if args.Site != testSite {
-			t.Errorf("job args site = %q, want %q", args.Site, testSite)
-		}
-	case <-time.After(20 * time.Second):
-		t.Fatal("timed out waiting for the periodic record_sweep job")
+	var args RecordSweepArgs
+	if err := json.Unmarshal(event.Job.EncodedArgs, &args); err != nil {
+		t.Fatalf("unmarshalling job args: %v", err)
+	}
+	if args.Site != testSite {
+		t.Errorf("job args site = %q, want %q", args.Site, testSite)
 	}
 }
 

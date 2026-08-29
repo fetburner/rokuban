@@ -25,9 +25,8 @@ import (
 )
 
 const (
-	defaultStallTimeout = 30 * time.Second
-	maxInJobRetries     = 5
-	ingestQueue         = "ingest"
+	maxInJobRetries = 5
+	ingestQueue     = "ingest"
 
 	// connectRetryBaseDelay / connectRetryMaxDelay は StreamRecord への接続が
 	// 失敗したときの指数バックオフの下限・上限。mirakc が即座に refuse する状況
@@ -91,6 +90,10 @@ type IngestWorker struct {
 	MirakcClient *mirakc.Client
 	Pool         *pgxpool.Pool
 	MediaDir     string
+
+	// StallTimeout は転送中の無進捗検知タイムアウト（config.ingest.stall_timeout。
+	// config.defaults() が既定値 30 秒を埋めるので、ここでは常に config が
+	// 渡した値をそのまま使う）。
 	StallTimeout time.Duration
 
 	// ProgressInterval は recording_ingest_progress を書き直す最短間隔
@@ -106,8 +109,9 @@ type IngestWorker struct {
 
 	// RelPathLockTimeout は rel_path advisory lock の取得（pool.Acquire と
 	// pg_try_advisory_lock）に与える上限。0 は「未設定」で
-	// defaultRelPathLockTimeout に解決する（StallTimeout / ProgressInterval と
-	// 同じ規約。resolveRelPathLockTimeout 参照）。
+	// defaultRelPathLockTimeout に解決する（ProgressInterval と同じ規約。
+	// resolveRelPathLockTimeout 参照。config キーが無い --- ProgressInterval の
+	// doc コメント参照）。
 	RelPathLockTimeout time.Duration
 }
 
@@ -123,19 +127,9 @@ func (w *IngestWorker) Timeout(*river.Job[IngestJobArgs]) time.Duration {
 	return -1
 }
 
-// resolveStallTimeout は設定された StallTimeout があればそれを、なければ既定の
-// 30 秒を返す。0 は「未設定」とみなし、ingest.stall_timeout を書かない構成でも
-// 既定で動くようにする。
-func (w *IngestWorker) resolveStallTimeout() time.Duration {
-	if w.StallTimeout == 0 {
-		return defaultStallTimeout
-	}
-	return w.StallTimeout
-}
-
 // resolveProgressInterval は設定された ProgressInterval があればそれを、
-// なければ既定の ingestProgressInterval を返す（resolveStallTimeout と同じ
-// 「0 は未設定」の規約）。
+// なければ既定の ingestProgressInterval を返す（config キーが無いフィールドの
+// 「0 は未設定」規約。ProgressInterval の doc コメント参照）。
 func (w *IngestWorker) resolveProgressInterval() time.Duration {
 	if w.ProgressInterval == 0 {
 		return ingestProgressInterval
@@ -144,8 +138,8 @@ func (w *IngestWorker) resolveProgressInterval() time.Duration {
 }
 
 // resolveRelPathLockTimeout は設定された RelPathLockTimeout があればそれを、
-// なければ既定の defaultRelPathLockTimeout を返す（resolveStallTimeout /
-// resolveProgressInterval と同じ「0 は未設定」の規約）。
+// なければ既定の defaultRelPathLockTimeout を返す（resolveProgressInterval と
+// 同じ「0 は未設定」の規約）。
 func (w *IngestWorker) resolveRelPathLockTimeout() time.Duration {
 	if w.RelPathLockTimeout == 0 {
 		return defaultRelPathLockTimeout
@@ -172,8 +166,6 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[IngestJobArgs]) 
 	if err := verifySite(w.Site, args.Site, ingestQueue); err != nil {
 		return err
 	}
-
-	stallTimeout := w.resolveStallTimeout()
 
 	recordingID, expectedBytes, err := w.lookupIngestTarget(ctx, args)
 	if err != nil {
@@ -311,8 +303,8 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[IngestJobArgs]) 
 			continue
 		}
 
-		timer := time.AfterFunc(stallTimeout, func() { stallCancel() })
-		sr := &stallReader{r: body, timer: timer, d: stallTimeout}
+		timer := time.AfterFunc(w.StallTimeout, func() { stallCancel() })
+		sr := &stallReader{r: body, timer: timer, d: w.StallTimeout}
 		n, copyErr := io.Copy(dst, sr)
 		timer.Stop()
 		stallCancel()

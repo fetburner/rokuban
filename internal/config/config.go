@@ -314,8 +314,26 @@ type IngestConfig struct {
 
 	// StallTimeout は転送中の無進捗検知タイムアウト。進捗がこの時間止まると
 	// 切断扱いにして Range 再開する（River の総時間タイムアウトは無効化している
-	// ため、これが ingest の唯一のタイムアウト）。0 なら worker 側の既定値（30 秒）。
+	// ため、これが ingest の唯一のタイムアウト）。既定値 30 秒は defaults() が
+	// 埋める（worker 側に二重の既定は無い。0 以下は validate が起動時に弾く ---
+	// 0 と負値のどちらも StallReader を即発火させる。validate のコメント参照）。
 	StallTimeout time.Duration `yaml:"stall_timeout"`
+}
+
+// validate は ingest 設定のうち、値の範囲で決まるものを検査する（Load 時）。
+//
+// StallTimeout <= 0 を通すと、worker 側は素通りでそのまま
+// time.AfterFunc(0 または負, stallCancel) に渡す（IngestWorker.Work の
+// StallTimeout 参照）。time.AfterFunc は d <= 0 を「即時実行」として扱う
+// （手元で `time.AfterFunc(-1*time.Second, ...)` を実行して確認済み。panic は
+// しない）ので、0 でも負でも stallCancel が接続直後に即発火し、ingest が
+// 打ち切られて再試行し続ける。worker 側が 0 を既定に読み替えていた（旧
+// resolveStallTimeout）のをやめた分、その検証をここに移す。
+func (c IngestConfig) validate() error {
+	if c.StallTimeout <= 0 {
+		return fmt.Errorf("ingest.stall_timeout must be > 0, got %s", c.StallTimeout)
+	}
+	return nil
 }
 
 // EpgConfig は EPG プロジェクションの設定。
@@ -323,8 +341,26 @@ type EpgConfig struct {
 	// SyncInterval は mirakc から EPG を全量取得する間隔。
 	SyncInterval time.Duration `yaml:"sync_interval"`
 
-	// RetentionGrace は放送終了からこの時間が経った番組をローリングウィンドウから刈り取る。
+	// RetentionGrace は放送終了からこの時間が経った番組をローリングウィンドウから
+	// 刈り取る猶予。既定値 24 時間は defaults() が埋める（worker 側に二重の既定は
+	// 無い。0 以下は validate が起動時に弾く）。
 	RetentionGrace time.Duration `yaml:"retention_grace"`
+}
+
+// validate は EPG 設定のうち、値の範囲で決まるものを検査する（Load 時）。
+//
+// RetentionGrace <= 0 を通すと EpgSyncWorker.Work は mark.Add(-grace) をそのまま
+// 使う（RetentionGrace のコメント参照）。0 は「猶予なし」（放送終了直後の番組を
+// 即座に刈り取る。ローリングウィンドウの意図から外れる）、負値はさらに悪く
+// mark より未来の EndAt を切る（mark.Add(-(-1h)) = mark+1h）ため、**まだ放送中の
+// 番組まで EPG 射影から刈り取られる**。worker 側が <= 0 を既定に読み替えていた
+// （旧 defaultEpgRetentionGrace フォールバック）のをやめた分、その検証をここに
+// 移す。
+func (c EpgConfig) validate() error {
+	if c.RetentionGrace <= 0 {
+		return fmt.Errorf("epg.retention_grace must be > 0, got %s", c.RetentionGrace)
+	}
+	return nil
 }
 
 // RulerConfig は ruler（ルール評価パス）の設定。
@@ -1015,6 +1051,12 @@ func loadFromString(raw string) (*Config, error) {
 		return nil, fmt.Errorf("validating config: %w", err)
 	}
 	if err := cfg.Log.validate(); err != nil {
+		return nil, fmt.Errorf("validating config: %w", err)
+	}
+	if err := cfg.Ingest.validate(); err != nil {
+		return nil, fmt.Errorf("validating config: %w", err)
+	}
+	if err := cfg.Epg.validate(); err != nil {
 		return nil, fmt.Errorf("validating config: %w", err)
 	}
 

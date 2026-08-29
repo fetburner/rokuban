@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
 
@@ -68,65 +69,87 @@ func TestNoOpJob(t *testing.T) {
 	}
 }
 
+// startPeriodicJobClient は *PeriodicJob テスト（TestEpgSyncPeriodicJob /
+// TestRecordSweepPeriodicJob / TestTunerSyncPeriodicJob /
+// TestReconcilePassPeriodicJob）が共有する配線のセットアップだけを担う。
+// ジョブ種別・キュー名・args の主張はテスト側に残す（CLAUDE.md「実装の定数と
+// 比較するテストは何も主張していない」）。
+func startPeriodicJobClient(t *testing.T, pool *pgxpool.Pool, deps *Deps, cfg ClientConfig, eventKind river.EventKind) <-chan *river.Event {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, "DELETE FROM river_job"); err != nil {
+		t.Fatalf("cleaning river_job: %v", err)
+	}
+
+	deps.Pool = pool
+	workers := NewWorkers(deps)
+	client, err := NewClient(pool, workers, cfg)
+	if err != nil {
+		t.Fatalf("creating client: %v", err)
+	}
+
+	subscribeCh, subscribeCancel := client.Subscribe(eventKind)
+	t.Cleanup(subscribeCancel)
+
+	clientCtx, clientCancel := context.WithCancel(ctx)
+	if err := client.Start(clientCtx); err != nil {
+		t.Fatalf("starting client: %v", err)
+	}
+	t.Cleanup(func() {
+		clientCancel()
+		<-client.Stopped()
+	})
+
+	return subscribeCh
+}
+
+// waitPeriodicJobEvent は startPeriodicJobClient と対になる待ち受けの
+// 共通部分（timeout 付き select）だけを担う。kind / queue / args の主張は
+// 呼び出し側に残す。
+func waitPeriodicJobEvent(t *testing.T, subscribeCh <-chan *river.Event, jobKind string) *river.Event {
+	t.Helper()
+	select {
+	case event := <-subscribeCh:
+		return event
+	case <-time.After(20 * time.Second):
+		t.Fatalf("timed out waiting for the periodic %s job", jobKind)
+		return nil
+	}
+}
+
 // EpgSyncSite を指定すると epg_sync が定期ジョブとして投入され、
 // 登録済みワーカーが epg キューで拾うこと（配線の確認）。
 func TestEpgSyncPeriodicJob(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	ctx := context.Background()
-
-	if _, err := pool.Exec(ctx, "DELETE FROM river_job"); err != nil {
-		t.Fatalf("cleaning river_job: %v", err)
-	}
 
 	// mirakc を叩かせずに配線だけ見たいので、/api/services で失敗させる。
 	// ジョブが失敗すれば「投入されてワーカーに届いた」ことは確認できる。
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unavailable", http.StatusServiceUnavailable)
 	}))
-	defer srv.Close()
+	// t.Cleanup（defer だとクライアント停止より先に走り、動いている最中にスタブを閉じる）。
+	t.Cleanup(srv.Close)
 
-	workers := NewWorkers(&Deps{Pool: pool, MirakcClient: mirakc.NewClient(srv.URL, nil)})
-	client, err := NewClient(pool, workers, ClientConfig{
+	subscribeCh := startPeriodicJobClient(t, pool, &Deps{MirakcClient: mirakc.NewClient(srv.URL, nil)}, ClientConfig{
 		PeriodicJobs:    true,
 		EpgSyncSite:     "default",
 		EpgSyncInterval: time.Hour, // RunOnStart で 1 回だけ走らせる
-	})
-	if err != nil {
-		t.Fatalf("creating client: %v", err)
+	}, river.EventKindJobFailed)
+
+	event := waitPeriodicJobEvent(t, subscribeCh, "epg_sync")
+	if event.Job.Kind != "epg_sync" {
+		t.Errorf("job kind = %q, want %q", event.Job.Kind, "epg_sync")
 	}
-
-	subscribeCh, subscribeCancel := client.Subscribe(river.EventKindJobFailed)
-	defer subscribeCancel()
-
-	clientCtx, clientCancel := context.WithCancel(ctx)
-	defer clientCancel()
-
-	if err := client.Start(clientCtx); err != nil {
-		t.Fatalf("starting client: %v", err)
+	wantQueue := qualifyQueueName(epgQueue, "default")
+	if event.Job.Queue != wantQueue {
+		t.Errorf("job queue = %q, want %q", event.Job.Queue, wantQueue)
 	}
-	defer func() {
-		clientCancel()
-		<-client.Stopped()
-	}()
-
-	select {
-	case event := <-subscribeCh:
-		if event.Job.Kind != "epg_sync" {
-			t.Errorf("job kind = %q, want %q", event.Job.Kind, "epg_sync")
-		}
-		wantQueue := qualifyQueueName(epgQueue, "default")
-		if event.Job.Queue != wantQueue {
-			t.Errorf("job queue = %q, want %q", event.Job.Queue, wantQueue)
-		}
-		var args EpgSyncArgs
-		if err := json.Unmarshal(event.Job.EncodedArgs, &args); err != nil {
-			t.Fatalf("unmarshalling job args: %v", err)
-		}
-		if args.Site != "default" {
-			t.Errorf("job args site = %q, want %q", args.Site, "default")
-		}
-	case <-time.After(20 * time.Second):
-		t.Fatal("timed out waiting for the periodic epg_sync job")
+	var args EpgSyncArgs
+	if err := json.Unmarshal(event.Job.EncodedArgs, &args); err != nil {
+		t.Fatalf("unmarshalling job args: %v", err)
+	}
+	if args.Site != "default" {
+		t.Errorf("job args site = %q, want %q", args.Site, "default")
 	}
 }
 
@@ -195,24 +218,6 @@ func TestIngestWorker_HasNoTotalTimeout(t *testing.T) {
 	if got := w.Timeout(nil); got >= 0 {
 		t.Errorf("Timeout() = %v, want negative (River のタイムアウト無効化)", got)
 	}
-}
-
-// resolveStallTimeout は「設定あり → 注入値」「設定なし（0）→ 既定 30 秒」の両方向。
-// ingest.stall_timeout を cmd から注入する経路（issue #57）の受け入れ基準。
-func TestIngestWorker_ResolveStallTimeout(t *testing.T) {
-	t.Run("unset uses default", func(t *testing.T) {
-		w := &IngestWorker{}
-		if got := w.resolveStallTimeout(); got != defaultStallTimeout {
-			t.Errorf("resolveStallTimeout() = %v, want default %v", got, defaultStallTimeout)
-		}
-	})
-	t.Run("configured value is used", func(t *testing.T) {
-		want := 2 * time.Minute
-		w := &IngestWorker{StallTimeout: want}
-		if got := w.resolveStallTimeout(); got != want {
-			t.Errorf("resolveStallTimeout() = %v, want %v", got, want)
-		}
-	})
 }
 
 // EPG 同期は無制限にはせず、既定より長い上限を置く。

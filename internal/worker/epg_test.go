@@ -130,7 +130,7 @@ func TestEpgSyncWorker_FullSync(t *testing.T) {
 	}
 	srv := newEpgServer(t, fx)
 
-	w := &EpgSyncWorker{MirakcClient: mirakc.NewClient(srv.URL, nil), Pool: pool}
+	w := &EpgSyncWorker{MirakcClient: mirakc.NewClient(srv.URL, nil), Pool: pool, RetentionGrace: 24 * time.Hour}
 	runEpgSync(t, w)
 
 	q := sqlcgen.New(pool)
@@ -224,7 +224,7 @@ func TestEpgSyncWorker_IdempotentAndUpdates(t *testing.T) {
 		},
 	}
 	srv := newEpgServer(t, fx)
-	w := &EpgSyncWorker{MirakcClient: mirakc.NewClient(srv.URL, nil), Pool: pool}
+	w := &EpgSyncWorker{MirakcClient: mirakc.NewClient(srv.URL, nil), Pool: pool, RetentionGrace: 24 * time.Hour}
 
 	runEpgSync(t, w)
 
@@ -271,7 +271,7 @@ func TestEpgSyncWorker_RemovesVanishedRows(t *testing.T) {
 		programs: []mirakc.Program{keep, vanish},
 	}
 	srv := newEpgServer(t, fx)
-	w := &EpgSyncWorker{MirakcClient: mirakc.NewClient(srv.URL, nil), Pool: pool}
+	w := &EpgSyncWorker{MirakcClient: mirakc.NewClient(srv.URL, nil), Pool: pool, RetentionGrace: 24 * time.Hour}
 
 	runEpgSync(t, w)
 	if got := len(allPrograms(t, w)); got != 2 {
@@ -315,7 +315,7 @@ func TestEpgSyncWorker_EmptyResponseKeepsProjection(t *testing.T) {
 		},
 	}
 	srv := newEpgServer(t, fx)
-	w := &EpgSyncWorker{MirakcClient: mirakc.NewClient(srv.URL, nil), Pool: pool}
+	w := &EpgSyncWorker{MirakcClient: mirakc.NewClient(srv.URL, nil), Pool: pool, RetentionGrace: 24 * time.Hour}
 
 	runEpgSync(t, w)
 	if got := len(allPrograms(t, w)); got != 2 {
@@ -369,7 +369,7 @@ func TestEpgSyncWorker_SweepIsPerChannel(t *testing.T) {
 		programs: []mirakc.Program{ohkKeep, ohkGone, rskA, rskB},
 	}
 	srv := newEpgServer(t, fx)
-	w := &EpgSyncWorker{MirakcClient: mirakc.NewClient(srv.URL, nil), Pool: pool}
+	w := &EpgSyncWorker{MirakcClient: mirakc.NewClient(srv.URL, nil), Pool: pool, RetentionGrace: 24 * time.Hour}
 
 	runEpgSync(t, w)
 	if got := len(allPrograms(t, w)); got != 4 {
@@ -417,7 +417,7 @@ func TestEpgSyncWorker_SweepsSubServiceWhenChannelObserved(t *testing.T) {
 		programs: []mirakc.Program{main, multi},
 	}
 	srv := newEpgServer(t, fx)
-	w := &EpgSyncWorker{MirakcClient: mirakc.NewClient(srv.URL, nil), Pool: pool}
+	w := &EpgSyncWorker{MirakcClient: mirakc.NewClient(srv.URL, nil), Pool: pool, RetentionGrace: 24 * time.Hour}
 
 	runEpgSync(t, w)
 	if got := len(allPrograms(t, w)); got != 2 {
@@ -445,7 +445,7 @@ func TestEpgSyncWorker_NoProjectableProgramsKeepsProjection(t *testing.T) {
 		programs: []mirakc.Program{testProgram(32736, 1024, 1, "番組A", now.Add(time.Hour), time.Hour)},
 	}
 	srv := newEpgServer(t, fx)
-	w := &EpgSyncWorker{MirakcClient: mirakc.NewClient(srv.URL, nil), Pool: pool}
+	w := &EpgSyncWorker{MirakcClient: mirakc.NewClient(srv.URL, nil), Pool: pool, RetentionGrace: 24 * time.Hour}
 
 	runEpgSync(t, w)
 
@@ -520,7 +520,7 @@ func TestEpgSyncWorker_SkipsUnprojectableRows(t *testing.T) {
 		programs: []mirakc.Program{noStart, noDuration, minimal},
 	}
 	srv := newEpgServer(t, fx)
-	w := &EpgSyncWorker{MirakcClient: mirakc.NewClient(srv.URL, nil), Pool: pool}
+	w := &EpgSyncWorker{MirakcClient: mirakc.NewClient(srv.URL, nil), Pool: pool, RetentionGrace: 24 * time.Hour}
 
 	runEpgSync(t, w)
 
@@ -592,7 +592,7 @@ func TestEpgSyncWorker_SkipsShadowSubServicePrograms(t *testing.T) {
 		programs: []mirakc.Program{main, shadow1, shadow2, multi, emptyName},
 	}
 	srv := newEpgServer(t, fx)
-	w := &EpgSyncWorker{MirakcClient: mirakc.NewClient(srv.URL, nil), Pool: pool}
+	w := &EpgSyncWorker{MirakcClient: mirakc.NewClient(srv.URL, nil), Pool: pool, RetentionGrace: 24 * time.Hour}
 
 	runEpgSync(t, w)
 
@@ -640,7 +640,7 @@ func TestEpgSyncWorker_BatchesLargeSync(t *testing.T) {
 		programs: programs,
 	}
 	srv := newEpgServer(t, fx)
-	w := &EpgSyncWorker{MirakcClient: mirakc.NewClient(srv.URL, nil), Pool: pool}
+	w := &EpgSyncWorker{MirakcClient: mirakc.NewClient(srv.URL, nil), Pool: pool, RetentionGrace: 24 * time.Hour}
 
 	runEpgSync(t, w)
 
