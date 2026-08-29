@@ -231,7 +231,8 @@ if (!bundleCheck.matches) {
 log('  一致（このサーバーは自分のビルドを配っている）')
 
 const browser = await chromium.launch()
-// lg（64rem = 1024px）以上の幅で開く --- 判定②はグリッドの自動切替が前提
+// lg（64rem = 1024px）以上の幅で開く --- 判定②は URL の view=grid どおり
+// グリッド表示になることが前提
 const context = await browser.newContext({
   viewport: { width: 1280, height: 900 },
   locale: 'ja-JP',

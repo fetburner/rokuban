@@ -137,7 +137,7 @@ describe('parseProgramsSearch', () => {
     })
   })
 
-  it('view が grid / list 以外なら明示的に undefined に落とす', () => {
+  it('view が grid / list 以外なら undefined に落とす', () => {
     expect(parseProgramsSearch({ view: 'bogus' })).toEqual({
       service: undefined,
       at: undefined,

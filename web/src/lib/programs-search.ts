@@ -3,7 +3,8 @@
  * （URL の `search`）の型と純関数（issue #231）。
  *
  * チャンネル選択は `service=<Service.id>` の数値配列で運ぶ。URL 化するのは
- * チャンネル選択と `at` だけで、`dayOffset` 等の表示状態は component state のまま。
+ * チャンネル選択・`at`・`view`（表示形式）で、`dayOffset` 等それ以外の
+ * 表示状態は component state のまま。
  *
  * React に依存しないのはテストのため（`lib/recording-search.ts` と同じ理由）。
  */

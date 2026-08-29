@@ -1199,13 +1199,22 @@ describe('ProgramsPage の at パラメータ（容量バッジからの導線�
   it('グリッドからユーザーがリストへ戻すと URL の view も更新され、画面幅の再評価だけではグリッドに戻らない', async () => {
     stubApi([], [], [...allPrograms, dayTwoProgram])
     const media = stubMatchMedia(true)
-    renderPage(`/programs?view=grid&at=${targetMs}`)
+    const { router } = renderPage(`/programs?view=grid&at=${targetMs}`)
 
     await screen.findByTestId('program-grid')
 
     // ユーザーが手動でリストへ戻す（URL の `view` が `list` に replace される）
     await userEvent.click(screen.getByRole('button', { name: 'リスト' }))
     expect(screen.queryByTestId('program-grid')).not.toBeInTheDocument()
+
+    // トグルが実際に URL を書き換えていることを見る --- グリッドの不在だけでは
+    // component state に戻すだけの実装（URL を一切書かない）でも通ってしまう
+    // （実測。ローカル state 変異で 898/898 全通過した）。
+    await waitFor(() => {
+      expect(router.state.location.search.view).toBe('list')
+    })
+    // history を汚さない（replace）。ピッカーの絞り込み更新と同じ規律
+    expect(router.history.length).toBe(1)
 
     // 画面幅が狭くなって（他の画面遷移や resize で）また広くなっても、
     // URL の `view` は `list` のままなのでグリッドへ戻されない --- 推論を挟まず

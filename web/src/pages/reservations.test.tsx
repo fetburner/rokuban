@@ -287,8 +287,9 @@ describe('予約一覧の容量バッジのリンク化（issue #233 M6-5）', (
     const badgeLink = badge.closest('a')
     expect(badgeLink).not.toBeNull()
     const expectedAtMs = new Date(at(19 * 60)).getTime()
-    // `view=grid` を明示することで `lg` 以上では初回レンダーからグリッドで
-    // 開く（issue #437）
+    // `view=grid` を明示することで `at` の有無や画面幅からの推論が要らなくなる
+    // （グリッドが実際にマウントされるかは `showGrid` が `wideScreen` を待って
+    // 決めるので、初回レンダーでのマウントを保証するわけではない）
     expect(badgeLink).toHaveAttribute('href', `/programs?view=grid&at=${expectedAtMs}`)
   })
 

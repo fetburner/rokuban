@@ -79,9 +79,13 @@ export function CapacityShortfallBadge({
       // 絞り込み中のチャンネル（serviceId）はこの導線の文脈に無いので指定しない
       // （「すべて」のまま開く。呼び出し元は予約一覧で、予約ごとにチャンネルが
       // 違うため、単一の serviceId に絞ると他の予約の不足が見えなくなる）。
-      // `view: 'grid'` を明示することで、`lg` 以上では推論を挟まず初回
-      // レンダーからグリッドで開く（issue #437）。`lg` 未満では
-      // `pages/programs.tsx` の `showGrid` が `wideScreen` で落とすので無害。
+      // `view: 'grid'` を明示することで、`at` の有無や画面幅から「グリッドに
+      // したいか」を推論する必要が無くなる（`view` が最初から確定している）。
+      // ただしグリッドが実際にマウントされるかは `pages/programs.tsx` の
+      // `showGrid`（`wideScreen` を待つ）が決めるので、初回レンダーでの
+      // マウントを保証するわけではない（`docs/frontend/programs.md`
+      // 「番組表への `at` 導線」参照）。`lg` 未満では `showGrid` が
+      // `wideScreen` で落とすので無害。
       search={{ view: 'grid', at: overageWindow(worst).startMs }}
       className={cn(
         'flex shrink-0 items-center gap-1 rounded bg-warning/10 px-1.5 py-0.5 text-[0.65rem] text-warning hover:bg-warning/20 focus-visible:outline-2 focus-visible:outline-warning',
