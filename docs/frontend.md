@@ -11,7 +11,7 @@ Vite + React + TypeScript の SPA。go:embed で単一バイナリに同梱し�
 | 共通シェル: ナビゲーション / サイトの扱い（`<SiteGate>`・多サイト時に何が見えるか） / 生成クライアントとエラー運搬 / SSE 通知 / `<html lang>` / PWA | [frontend/shell.md](frontend/shell.md) |
 | ホーム（`/`）: 集約するセクション・窓と上限・空セクションの扱い | [frontend/home.md](frontend/home.md) |
 | 番組リスト・番組表グリッド（`/programs`） / 日付・チャンネル絞り込み / 容量超過の表示 | [frontend/programs.md](frontend/programs.md) |
-| 進行方向の読み込み（時間窓の継ぎ足し） | [frontend/scroll.md](frontend/scroll.md) |
+| 進行方向の読み込み（時間窓の継ぎ足し） / ボトムタブの裏に隠れる行（未解決） | [frontend/scroll.md](frontend/scroll.md) |
 | 予約の操作・予約詳細・録られない理由の表示 | [frontend/reservations.md](frontend/reservations.md) |
 | 検索 `/search` とルール条件の共有 | [frontend/search.md](frontend/search.md) |
 | 録画一覧・録画検索・録画単体の着地先・ブラウザ再生・ドロップ統計 | [frontend/recordings.md](frontend/recordings.md) |

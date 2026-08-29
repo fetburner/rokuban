@@ -237,8 +237,8 @@ export function ProgramsPage() {
   // 選んだ日から先もそのまま読み続けられる。
   const limitMs = dayOrigin(selectableDays, nowMs).getTime()
   // 下限は「now を時で切り捨てた時刻」。放送済み番組の閲覧は今回のスコープ外
-  // なので、それより前の窓は取りに行かない。`listStartMs` の clamp と
-  // `filterProgramsFromListStart` の「今日は絞り込まない」判定に使う。
+  // なので、それより前の窓は取りに行かない。`filterProgramsFromListStart` の
+  // 「今日は絞り込まない」判定に使う。
   const lowerBoundMs = dayOrigin(0, nowMs).getTime()
 
   // API へ渡すサービス絞り込み（`Service.id`。複数は OR）。
@@ -347,10 +347,19 @@ export function ProgramsPage() {
   }, [query.data])
 
   // listStartMs は「読み込み済みの最も手前の窓の開始時刻を下限（now を時で
-  // 切り捨てた時刻）で clamp したもの」。`pages[0]` は常に最初に取得した窓
-  // （= originMs）なので実質 `originMs` を下限で clamp しただけだが、
-  // `filterProgramsFromListStart` が期待する形（読み込み済みの先頭の窓の
-  // 開始時刻）を明示するために `query.data` から引く形のまま残している。
+  // 切り捨てた時刻）で clamp したもの」。**`originMs` をそのまま渡すのは誤り**
+  // ---
+  // `getPreviousPageParam` が無い今、定常状態では `pages[0].startMs` は常に
+  // `originMs` と一致するが、日付ジャンプ直後の `placeholderData`
+  // （`keepPreviousData`）中は `programs`（`query.data.pages` 由来）がまだ
+  // ジャンプ前の日の番組のままなのに `originMs` だけが新しい日へ先に進む。
+  // ここで `originMs` を直接使うと、`filterProgramsFromListStart` が
+  // 「まだ前の日のままの programs」を「新しい日の originMs」で絞り込むことになり、
+  // 前の日の番組が（新しい日の起点よりずっと前に始まっているため）全滅して
+  // 一瞬 `EmptyState` 相当の高さ（800px = viewport）まで潰れる回帰を実機の
+  // `web/e2e/checks.mjs`（①）で確認した。`query.data` 由来の
+  // `pages[0].startMs` を経由すれば、placeholder 中は「まだ前の日を表示している」
+  // という事実と足並みが揃う。
   const listStartMs = useMemo(() => {
     const rawFirstStartMs = query.data?.pages[0]?.startMs ?? originMs
     return Math.max(rawFirstStartMs, lowerBoundMs)
@@ -360,9 +369,9 @@ export function ProgramsPage() {
   // end_at > window_start`）ため、先頭の窓の開始時刻より前に始まった番組
   // （＝前日からの重なり）がリストの先頭に混ざる。これを見せたままだと
   // 日付ヘッダと「いま見ている日」がどちらも前日を指す（実機で確認済みの
-  // 不具合）。`listStartMs` が下限と一致するとき（＝今日を見ている）は
-  // 例外的に絞り込まない --- 放送中の番組を隠さないため。判定は
-  // `lib/program-list.ts` の純関数。
+  // 不具合）。`listStartMs` が下限（`lowerBoundMs`）と一致するとき
+  // （＝今日を見ている）は例外的に絞り込まない --- 放送中の番組を隠さないため。
+  // 判定は `lib/program-list.ts` の純関数。
   const visiblePrograms = useMemo(
     () => filterProgramsFromListStart(programs, listStartMs, lowerBoundMs),
     [programs, listStartMs, lowerBoundMs],
@@ -456,9 +465,11 @@ export function ProgramsPage() {
   // バイパスしているので何もしない（`components/program-list.tsx`）。
   //
   // `window.scrollTo` は `window.scrollY` を同期更新するが、`virtualizer` が
-  // 可視範囲に使う内部スクロール位置は非同期の 'scroll' イベントでしか更新
-  // されない（`docs/frontend/scroll.md`）。直後に 'scroll' を同期発火させて、
-  // ペイント前に `virtualizer` を y=0 へ追いつかせる。
+  // 可視範囲に使う内部スクロール位置はブラウザが発火する 'scroll' イベント
+  // （`window.scrollTo` に対して非同期。早くても次のフレーム）を受けてはじめて
+  // 更新される。直後に 'scroll' を同期発火させることで、イベントリスナー
+  // （`virtualizer` が登録している）をその場で呼び、ペイント前に `virtualizer`
+  // を y=0 へ追いつかせる。
   const previousOriginMsRef = useRef(originMs)
   useLayoutEffect(() => {
     if (previousOriginMsRef.current === originMs) return

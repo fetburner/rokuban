@@ -179,10 +179,12 @@ export const ProgramList = forwardRef<
   // 以前は state にしていた --- 「`useLayoutEffect` 内の `setState` はペイント前に
   // 同じコミットで反映されるので、ユーザーには古い値が一切見えない」という想定
   // だったが、実機ではこの想定が成り立たない場合があった --- 同じコミットで走る
-  // 別の `useLayoutEffect` が、まだ反映されていない `setState` 前の古い値を見て
-  // `virtualizer` を操作してしまうケースがあった。ref + `virtualizer.setOptions()`
-  // なら測定直後の同期的な 1 手で `virtualizer` 内部の値まで揃うため、この種の
-  // 「古い値を見るコミット」がそもそも起きない。
+  // 別の `useLayoutEffect`（遡行のアンカー復元。遡行と一緒に削除済みだが、
+  // この観測自体は実機で確認済みの事実として残す）が、まだ反映されていない
+  // `setState` 前の古い値を見て `virtualizer` を操作してしまうケースがあった。
+  // ref + `virtualizer.setOptions()` なら測定直後の同期的な 1 手で
+  // `virtualizer` 内部の値まで揃うため、この種の「古い値を見るコミット」が
+  // そもそも起きない。
   const scrollMarginRef = useRef(0)
 
   // 日付ヘッダは「直前の番組」との比較で決まる。仮想化で可視範囲だけを
@@ -215,8 +217,12 @@ export const ProgramList = forwardRef<
     scrollMargin: scrollMarginRef.current,
   })
 
-  // `scrollMarginRef` の実測・反映。PageHeader の高さ（フィルタ行の増減等で
-  // 変わりうる）が変わると `<ul>` の `offsetTop` も動くので測り直す。
+  // `scrollMarginRef` の実測・反映。`virtualizer`（`useWindowVirtualizer`
+  // 内部の `useState` が保持する安定参照。マウント後は変わらない）だけを
+  // 依存にしているため、**この effect はマウント時に 1 回しか走らない**。
+  // 未解決: マウント後に `PageHeader` の高さが変わる場合（`wideScreen` の
+  // 切り替えでヘッダの行が増減する等）に測り直す経路がまだ無く、
+  // `scrollMarginRef` が古い値のまま残りうる。実機で確認していない。
   useLayoutEffect(() => {
     const measured = listRef.current?.offsetTop ?? 0
     if (measured === scrollMarginRef.current) return
