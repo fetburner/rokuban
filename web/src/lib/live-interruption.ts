@@ -21,6 +21,19 @@
  * 消費しない（`internal/capacity/load.go` の `demandFromRow` --- `eff.IsSkipped()` が
  * true の行は容量の需要から除外される）。API が返す `Reservation.skip` はまさに
  * この `effective.skip` なので、フロント側もこの値で同じ除外を行う。
+ *
+ * ## チャンネル種別の一致判定（issue #440）
+ *
+ * `Reservation` は program_snapshots 由来の `channelType` を持つため、視聴対象と
+ * 同じ種別の予約を探すのに EPG（`GET /api/sites/{site}/programs`）を経由して
+ * programId を突き合わせる必要はない --- `reservation.channelType` と視聴対象の
+ * `Service.channelType` を直接比較するだけで足りる。以前は `Reservation` が
+ * チャンネル種別を持たなかったため、`pages/live.tsx` が同種別全サービス × 2 時間の
+ * EPG を第 2 クエリで引いて programId 集合を作り、その集合との突き合わせで
+ * 判定していた。この第 2 クエリは `nowPlayingRefetchMs`（30 秒）の tick のたびに
+ * クエリキーが割れて警告が一時的に消える副作用を持ち（実測: jsdom で 30038ms 後・
+ * 実 Chromium で 28258ms 後に消失）、それを抑えるための 10 分グリッド丸めが要った。
+ * 直接比較に変えたことで第 2 クエリ自体が無くなり、この副作用も抑制策も消えた。
  */
 
 import type { Reservation } from '@/api/generated'
@@ -39,51 +52,6 @@ import { formatTime } from '@/lib/format'
 export const interruptionLookaheadMs = 2 * 60 * 60 * 1000
 
 /**
- * interruptionQueryWindowGridMs は EPG 問い合わせ（`GET /api/sites/{site}/programs`）
- * の時間窓を丸めるグリッド幅（10 分）。
- *
- * `pages/live.tsx` は「いま」を `nowPlayingRefetchMs`（30 秒）ごとに更新する tick を
- * 持つ。窓の開始・終了を `nowMs` から素直に組むと、この 30 秒ごとの tick で
- * `useListPrograms` のクエリパラメータ（= クエリキー）が毎回変わり、react-query は
- * それを**新しいキャッシュエントリ**として扱う --- 直前のキャッシュ済み
- * `sameTypeProgramIds` は使えず、新しいキーの `data` は取得完了までの間 `undefined`
- * に戻る。この間 `sameTypeProgramIds` は空集合になり、`upcomingInterruptingReservation`
- * が該当を見つけられず、**表示中の警告が一時的に消える**（実測: jsdom で
- * 30038ms 後・実 Chromium で 28258ms 後に消失。`pages/live.test.tsx`「30 秒の
- * tick を跨いでも警告が消えない」参照。レビューでの指摘）。加えて、同種別全
- * サービス × 2 時間ぶんの EPG を 30 秒ごとに取り直すのは無駄が大きい。
- *
- * 窓の開始点を 10 分単位に切り捨てて丸めることで、この 10 分の間は
- * `interruptionQueryWindow` が返す `{ start, end }` が**値として不変**になり
- * （react-query のクエリキーはハッシュによる値比較なので、同じ値なら同じ
- * キャッシュエントリのまま）、tick のたびに `data` が失われることも、10 分の間に
- * 何度も再取得されることも無くなる。
- */
-export const interruptionQueryWindowGridMs = 10 * 60 * 1000
-
-/**
- * interruptionQueryWindow は `nowMs` から EPG 問い合わせの時間窓を組む。
- *
- * 開始点は `gridMs` 単位に切り捨てる（`interruptionQueryWindowGridMs` 参照）。
- * 終了点は「切り捨てた分のずれ（最大 `gridMs`）」を `lookaheadMs` に足すことで、
- * 常に実際の判定窓 `[nowMs, nowMs + lookaheadMs)` を包含する上位集合になる ---
- * 窓を広げる方向にしか丸めないので、`upcomingInterruptingReservation` が本来
- * 見るべき programId を見落とすことは無い（広い分は同関数側の `startMs` の
- * 範囲チェックで最終的に絞られる）。
- */
-export function interruptionQueryWindow(
-  nowMs: number,
-  lookaheadMs: number = interruptionLookaheadMs,
-  gridMs: number = interruptionQueryWindowGridMs,
-): { start: string; end: string } {
-  const base = Math.floor(nowMs / gridMs) * gridMs
-  return {
-    start: new Date(base).toISOString(),
-    end: new Date(base + lookaheadMs + gridMs).toISOString(),
-  }
-}
-
-/**
  * InterruptingReservationCandidate は判定に必要な予約の部分形。
  *
  * `Reservation` 全体ではなく必要なフィールドだけを要求することで、テストが
@@ -93,7 +61,7 @@ export function interruptionQueryWindow(
  */
 export type InterruptingReservationCandidate = {
   site: string
-  programId: number
+  channelType: string
   skip: boolean
   startAt: string
 }
@@ -107,9 +75,9 @@ export type InterruptingReservationCandidate = {
  * 1. `!skip`（effective.skip が false --- 録画されない予約は需要でない）
  * 2. `site` が視聴対象の site と一致する（`programId` は site スコープの値であり、
  *    別サイトの同じ番号の番組と取り違えない。docs/schema.md §1 の設計原則）
- * 3. `programId` が `sameTypeProgramIds`（呼び出し側が視聴対象と同じチャンネル種別の
- *    サービスに絞って引いた EPG の programId 集合）に含まれる --- チャンネル種別
- *    そのものは予約が持たないため、EPG 側の join を経由する
+ * 3. `channelType` が視聴対象のチャンネル種別と一致する（`reservation.channelType`
+ *    と直接比較する。issue #440 で `Reservation` がこの値を持つようになるまでは
+ *    EPG 経由で programId を突き合わせていた）
  * 4. `startAt` が半開区間 `[nowMs, nowMs + lookaheadMs)` に入る --- すでに始まった
  *    予約（`startAt < nowMs`）は対象にしない。「この後中断されうるか」という
  *    視聴開始前の予告が目的で、すでに始まっている予約についてはその瞬間がもう
@@ -121,7 +89,7 @@ export type InterruptingReservationCandidate = {
 export function upcomingInterruptingReservation<T extends InterruptingReservationCandidate>(
   reservations: readonly T[],
   site: string,
-  sameTypeProgramIds: ReadonlySet<number>,
+  channelType: string,
   nowMs: number,
   lookaheadMs: number = interruptionLookaheadMs,
 ): T | null {
@@ -131,7 +99,7 @@ export function upcomingInterruptingReservation<T extends InterruptingReservatio
   for (const reservation of reservations) {
     if (reservation.skip) continue
     if (reservation.site !== site) continue
-    if (!sameTypeProgramIds.has(reservation.programId)) continue
+    if (reservation.channelType !== channelType) continue
 
     const startMs = new Date(reservation.startAt).getTime()
     if (startMs < nowMs || startMs >= nowMs + lookaheadMs) continue

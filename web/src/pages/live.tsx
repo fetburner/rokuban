@@ -15,7 +15,7 @@ import { LivePlayer } from '@/components/live-player'
 import { Button } from '@/components/ui/button'
 import { useLiveCapability } from '@/lib/capabilities'
 import { currentProgramWindow, pickInitialService } from '@/lib/live'
-import { interruptionQueryWindow, upcomingInterruptingReservation } from '@/lib/live-interruption'
+import { upcomingInterruptingReservation } from '@/lib/live-interruption'
 import { channelTypeLabel, groupByChannelType, orderServices } from '@/lib/epg-grid'
 import { formatTime, isAiring } from '@/lib/format'
 import { useCurrentSite } from '@/lib/site'
@@ -146,50 +146,10 @@ export function LivePage() {
 
   // 録画予約による中断予測（M7-2, issue #235）。
   //
-  // `Reservation` はチャンネル種別を持たないので、視聴対象と同じチャンネル種別の
-  // 予約を引くには EPG（`GET /api/sites/{site}/programs`）を経由して programId を
-  // 突き合わせる必要がある。`serviceId` に同じ種別のサービスだけを渡すことで、
-  // サーバー側に絞り込みを任せる（クライアントで全番組を持って channelType を
-  // 引き直すより軽い）。
-  const sameTypeServices = useMemo(
-    () =>
-      selectedService === undefined
-        ? []
-        : orderedServices.filter((s) => s.channelType === selectedService.channelType),
-    [orderedServices, selectedService],
-  )
-  // `service` は `Service.id` の配列で、サーバーが組で厳密に
-  // 絞る。**組で渡すので応答に別 network の番組は混ざらない** --- `serviceId`
-  // だけで問い合わせていた頃は、同じ id を持つ別 network・別 channelType の
-  // 番組が応答に入り、存在しない中断警告を出しうるので、クライアント側で
-  // 組を再フィルタする必要があった（issue #291 と同じ根）。
+  // `Reservation.channelType`（program_snapshots 由来。issue #440）を視聴対象の
+  // `Service.channelType` と直接比較するだけで判定できるため、EPG を経由した
+  // programId の突き合わせは不要（`lib/live-interruption.ts` の冒頭コメント参照）。
   //
-  // 重複を潰して並びを固定するのは react-query のキーを安定させるため。
-  const sameTypeServiceParams = useMemo(
-    () => [...new Set(sameTypeServices.map((s) => s.id))].sort((a, b) => a - b),
-    [sameTypeServices],
-  )
-  // 窓は 10 分グリッドに丸める（`interruptionQueryWindow` 参照）。**丸めずに
-  // `nowMs` から素直に組むと、`nowPlayingRefetchMs`（30 秒）ごとの tick で
-  // クエリキーが毎回変わり、react-query が新しいキャッシュエントリとして扱う
-  // ため、取得完了までの間 `sameTypeProgramIds` が空集合に戻って警告が一時的に
-  // 消える**（実測: jsdom で 30038ms 後・実 Chromium で 28258ms 後に消失。
-  // レビューでの指摘。`pages/live.test.tsx`「30 秒の tick を跨いでも警告が
-  // 消えない」参照）。丸めることで 10 分間は値が変わらず、キャッシュも保たれる。
-  const interruptionWindow = useMemo(() => interruptionQueryWindow(nowMs), [nowMs])
-  const sameTypeProgramsQuery = useListPrograms(
-    site,
-    { start: interruptionWindow.start, end: interruptionWindow.end, service: sameTypeServiceParams },
-    { query: { enabled: sameTypeServiceParams.length > 0 } },
-  )
-  const sameTypeProgramIds = useMemo(
-    () =>
-      new Set(
-        (unwrap(sameTypeProgramsQuery.data) ?? [])
-          .map((p) => p.programId),
-      ),
-    [sameTypeProgramsQuery.data],
-  )
   // 予約一覧は絞り込みパラメータを持たない（`GET /api/reservations` は全サイトを
   // 返す。docs/api.md）。SSE の `reservations` トピックは既にこのクエリキーの
   // 接頭辞（`/api/reservations`）を invalidate するので、専用トピックは作らない
@@ -200,8 +160,8 @@ export function LivePage() {
     () =>
       selectedService === undefined
         ? null
-        : upcomingInterruptingReservation(reservations, site, sameTypeProgramIds, nowMs),
-    [reservations, site, sameTypeProgramIds, nowMs, selectedService],
+        : upcomingInterruptingReservation(reservations, site, selectedService.channelType, nowMs),
+    [reservations, site, selectedService, nowMs],
   )
 
   return (

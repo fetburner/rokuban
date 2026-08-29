@@ -30,6 +30,7 @@ function reservation(
     state: 'active',
     title,
     serviceName,
+    channelType: 'GR',
     startAt: at(startMinutes),
     durationMs: durationMinutes * 60_000,
     createdAt: at(0),

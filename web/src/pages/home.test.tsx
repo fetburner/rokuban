@@ -80,6 +80,7 @@ function reservation(id: number, title: string, startOffsetMs: number, overrides
     state: 'active',
     title,
     serviceName: 'テスト局',
+    channelType: 'GR',
     startAt: iso(startOffsetMs),
     durationMs: HOUR,
     createdAt: iso(-HOUR),

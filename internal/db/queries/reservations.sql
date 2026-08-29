@@ -47,34 +47,13 @@ RETURNING *;
 -- に戻らなかった。同じ意味を `NOT EXISTS(recordings)` で保つ（#59「録れたのに
 -- orphaned のまま」の再発を防ぐ）。同期除外は recordings の有無を見ず、一度
 -- 欠測と書いたイベントを対象に戻さないので、表示とは意図的に別の述語である。
--- name: GetReservationFull :one
-SELECT sqlc.embed(r), sqlc.embed(s), i.action AS intent_action, o.overrides AS overrides,
-       (EXISTS (
-           SELECT 1 FROM never_scheduled_events nse
-           WHERE nse.site = r.site
-             AND nse.network_id = s.network_id
-             AND nse.service_id = s.service_id
-             AND nse.event_id = s.event_id
-       ) AND NOT EXISTS (
-           SELECT 1 FROM recordings rec
-           WHERE rec.site = r.site
-             AND rec.network_id = s.network_id
-             AND rec.service_id = s.service_id
-             AND rec.event_id = s.event_id
-       ))::boolean AS never_recorded
-FROM reservations r
-JOIN program_snapshots s ON s.site = r.site AND s.program_id = r.program_id
-LEFT JOIN program_intents i ON i.site = r.site AND i.program_id = r.program_id
-LEFT JOIN program_overrides o ON o.site = r.site AND o.program_id = r.program_id
-WHERE r.id = $1;
-
--- GetReservationFull と同じ形だが、宛先を r.id ではなく (site, program_id) にする
--- (issue #99)。書き込み側（program_intents / program_overrides、issue #29）は
--- 既にこのキーに寄っていたが、読み取り（GET /api/reservations/{id}・UI の
--- ディープリンク・クエリキャッシュ）は reservations.id という ruler の導出削除・
--- 再実体化で変わりうる不安定な値のままだった。UNIQUE (site, program_id) が
--- 既にあるのでキーとして成立する（#53 が mirakc の tag を program:{programId} に
--- 変えたのと同じ論法）。never_recorded の導出は GetReservationFull と同じ。
+--
+-- 宛先は r.id ではなく (site, program_id)（issue #99）。書き込み側
+-- （program_intents / program_overrides、issue #29）は既にこのキーに寄っていたが、
+-- 読み取り（UI のディープリンク・クエリキャッシュ）は reservations.id という
+-- ruler の導出削除・再実体化で変わりうる不安定な値のままだった。
+-- UNIQUE (site, program_id) が既にあるのでキーとして成立する（#53 が mirakc の
+-- tag を program:{programId} に変えたのと同じ論法）。
 -- name: GetReservationFullBySiteAndProgramID :one
 SELECT sqlc.embed(r), sqlc.embed(s), i.action AS intent_action, o.overrides AS overrides,
        (EXISTS (
@@ -96,7 +75,7 @@ LEFT JOIN program_intents i ON i.site = r.site AND i.program_id = r.program_id
 LEFT JOIN program_overrides o ON o.site = r.site AND o.program_id = r.program_id
 WHERE r.site = $1 AND r.program_id = $2;
 
--- never_recorded は GetReservationFull と同じ導出（コメント参照）。
+-- never_recorded は GetReservationFullBySiteAndProgramID と同じ導出（コメント参照）。
 --
 -- GET /api/reservations は全サイトを返す（issue #184 M4-12。api は不変条件 1 に
 -- より site に束縛されないため、site 絞り込みは持たない）。並び順は site をまず

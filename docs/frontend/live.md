@@ -36,7 +36,7 @@ Rokuban 自体のライブ視聴は「チャンネル一覧から選んでブラ
 `serviceId` を持つサービスが 2 つ返る構成がありうる。**そこで API が合成 id を
 `Service.id`（`networkId * 100000 + serviceId`）として返し、画面内の同定は
 すべてこの 1 つの値で行う**（選択中のハイライトと `aria-current`・再生中
-チャンネルの記憶・中断予測の EPG 問い合わせ）。**`/live` の URL もこの `Service.id`
+チャンネルの記憶）。**`/live` の URL もこの `Service.id`
 を使う**（`?service=` の値域も `/programs` と同じ生成スキーマで検証する）。
 初期選択は「一覧に `Service.id` が居ればそれ、居なければ既定」だけで決まる
 （`pickInitialService`。`lib/live.ts`）。
@@ -351,20 +351,16 @@ mirakc の優先度調停では録画が勝つため、視聴中に同じチャ�
 EPGStation・KonomiTV には構造的にできない表示。
 
 **判定は純関数 `lib/live-interruption.ts` の `upcomingInterruptingReservation`。**
-視聴対象と同じチャンネル種別のサービスに絞って EPG（`GET /api/sites/{site}/programs`）
-から programId を引き、`GET /api/reservations`（全サイト分。絞り込みパラメータを
-持たない）の予約と `(site, programId)` で突き合わせる --- `Reservation` はチャンネル
-種別を持たないため、この EPG 側の join が要る。予約は `programId` が site スコープの
-値であり、別サイトの同じ番号の番組と取り違えないよう `site` の一致も見る
-（docs/schema.md §1 の設計原則）。
+`GET /api/reservations`（全サイト分。絞り込みパラメータを持たない）が返す
+`Reservation.channelType`（program_snapshots 由来のスナップショット）を、視聴対象の
+`Service.channelType` と直接比較する。予約は `site` が視聴対象の site と一致する
+ものだけを見る（docs/schema.md §1 の設計原則）。
 
-- **EPG 問い合わせは `Service.id` の配列で投げる。** 同じチャンネル種別の
-  サービスは複数 network にまたがりうるが、合成 id なら 1 つのパラメータで
-  複数組を渡せる。サーバーが組で厳密に絞るので、応答をクライアント側で
-  絞り直す必要はない --- `serviceId` の配列だけで投げていた頃は、選択中と
-  別 network・別種別のサービスがたまたま同じ `serviceId` を持つと、その番組が
-  `sameTypeProgramIds` に混入して**存在しない中断警告**を出しうるので、
-  応答側の再フィルタが要った
+以前は `Reservation` がチャンネル種別を持たなかったため、視聴対象と同じ種別の
+サービスに絞って EPG（`GET /api/sites/{site}/programs`）から programId を引き、
+`(site, programId)` で突き合わせる第 2 クエリが要った。`Reservation.channelType`
+が追加されたことでこの EPG 側の join 自体が不要になった。
+
 - **先読みの時間窓は 2 時間。** 視聴を選ぶ／始める瞬間の判断材料として出す表示
   なので、窓は「これから見始める 1 回の視聴」がカバーする範囲に合わせる。1 番組
   （30 分〜1 時間）を見ている間に次の番組の録画が競合し得ることまでは見せたいが、
@@ -396,25 +392,20 @@ EPGStation・KonomiTV には構造的にできない表示。
   `pages/live.tsx` ではチャンネル名・種別バッジ・番組表への導線と同じ情報欄
   （`isPlaying` の分岐の外）に置くことで、1 箇所の実装で両方の受け入れ条件を
   満たしている
-- **EPG 問い合わせ（`GET /api/sites/{site}/programs`）の時間窓は 10 分グリッドに
-  丸める（`lib/live-interruption.ts` の `interruptionQueryWindow`）。** `nowMs`
-  から素直に窓を組むと、「いま」を更新する tick（`nowPlayingRefetchMs`。30 秒）
-  ごとに `useListPrograms` のクエリキーが変わり、react-query がそれを**新しい
-  キャッシュエントリ**として扱う --- 取得完了までの間 `sameTypeProgramIds` が
-  空集合に戻り、**表示中の警告が一時的に消える**（実測: jsdom で 30038ms 後・
-  実 Chromium で 28258ms 後に消失。レビューでの指摘）。丸めることで 10 分間は
-  窓の値が変わらず、キャッシュも保たれる（副作用として、同種別全サービス ×
-  2 時間ぶんの EPG を 30 秒ごとに取り直していた無駄も無くなる）
+- **「いま」を更新する tick（`nowPlayingRefetchMs`。30 秒）を跨いでも警告は
+  消えない。** 判定に使う値（`reservations` と視聴対象の `channelType`）は tick
+  で変わらないクエリ（`GET /api/reservations` は SSE の `reservations` トピックで
+  invalidate されるだけ）にしか依存しない。以前の EPG 第 2 クエリ経由の判定は
+  `nowMs` を含む時間窓をクエリキーに持っていたため、tick のたびにキーが割れて
+  react-query が新しいキャッシュエントリとして扱い、取得完了までの間**表示中の
+  警告が一時的に消えていた**（実測: jsdom で 30038ms 後・実 Chromium で 28258ms
+  後に消失。レビューでの指摘）。直接比較に変えたことでこの経路自体が無くなった
 
 判定手段: `lib/live-interruption.test.ts`（一致するとき返す / skip・別チャンネル
-種別・別サイトの同じ programId・窓外・すでに始まった予約では返さない、の両方向。
-加えて `interruptionQueryWindow` が tick を跨いでも窓の値を保つこと・グリッドを
-跨げば変わること・常に判定窓の上位集合であること）、`pages/live.test.tsx`
+種別・別サイトでは返さない、の両方向）、`pages/live.test.tsx`
 「録画予約による中断予測」（選択状態・視聴中画面の両方に出る / skip・別チャンネル
-種別では出ない、の end-to-end wiring。加えて「別 network の同じ serviceId の番組
-では中断警告を誤って出さない」で上記の応答側の絞り込みを固定する --- 絞り込みを
-外すと落ちる。30 秒の tick を実時間で跨いでも警告が消え続けないこともポーリングで
-確認）、
+種別では出ない、の end-to-end wiring。30 秒の tick を実時間で跨いでも警告が
+消え続けないこともポーリングで確認）、
 `components/live-interruption-warning.test.tsx`（`reservation` が null のとき
 **描画そのものが無いこと**を `toBeEmptyDOMElement()` で見る --- 文言の regex
 一致だけでは、指定した語を含まない別の肯定文言への変異を検出できない。
@@ -432,8 +423,8 @@ EPGStation・KonomiTV には構造的にできない表示。
   --- 文言自体は「不足すると中断されます」という条件付きなので嘘にはならないが、
   値札としての精度は下がる
 - **別チャンネル種別でも同じチューナーを取り合う構成（BS/CS 兼用チューナー等）
-  では沈黙する。** 判定は `sameTypeServiceIds`（チャンネル種別の一致）だけで
-  引いており、`tuner_sync.types`（サーバー側の Hall 条件はこちらで兼用を扱う。
+  では沈黙する。** 判定は `channelType` の一致だけで引いており、
+  `tuner_sync.types`（サーバー側の Hall 条件はこちらで兼用を扱う。
   docs/data/capacity.md）までは見ていない。仕様どおり種別一致で実装しており、
   沈黙側に倒れているので下界主義には反しないが、既知の盲点として上記
   「下界主義」の項の見えない消費者の一覧に挙げてある

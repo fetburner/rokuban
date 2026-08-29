@@ -51,6 +51,7 @@ function reservation(overrides: Partial<Reservation> = {}): Reservation {
     state: 'active',
     title: '予約',
     serviceName: 'テスト局',
+    channelType: 'GR',
     startAt: new Date(Date.now() + 30 * 60_000).toISOString(),
     durationMs: 3600_000,
     createdAt: new Date().toISOString(),
@@ -827,44 +828,28 @@ describe('LivePage / 録画予約による中断予測（issue #235 M7-2）', ()
   })
 
   /**
-   * `nowPlayingRefetchMs`（30 秒）の tick を跨いでも警告が消えないことを見る
-   * （レビューでの指摘。修正前は `interruptionQueryWindow` が丸めずに `nowMs`
-   * から素直に窓を組んでいたため、tick ごとに `useListPrograms` のクエリキーが
-   * 変わって react-query が新しいキャッシュエントリとして扱い、取得完了までの
-   * 間 `sameTypeProgramIds` が空集合に戻って警告が消えていた --- 実測: jsdom で
-   * 30038ms 後・実 Chromium で 28258ms 後に消失。この判定は修正前の実装で
-   * 実際に落ちることを確認済み）。
+   * `nowPlayingRefetchMs`（30 秒）の tick を跨いでも警告が消えないことを見る。
    *
-   * **`GET /api/sites/{site}/programs` の応答にわざと 500ms の遅延を入れる。**
-   * レビュアーの実測でも「EPG 応答を 1200ms 遅らせて観測」とあるとおり、モック
-   * fetch が即時解決すると tick 直後の「新しいクエリキーが解決するまでの間」が
-   * 1ms 未満で終わり、後から 1 回だけ確認する形の assertion では消失が
-   * 観測できない（実際に遅延無しで最初に書いたところ、修正前の実装でも
-   * このテストが誤って緑になった）。遅延を入れたうえで**tick を跨ぐ間ずっと
-   * 100ms 間隔でポーリングし続け、一度も欠けないこと**を見る --- 後から 1 回
-   * 見るだけの assertion は「たまたま復帰していた瞬間を見た」だけになりうる。
+   * 判定は `reservation.channelType` と選択中サービスの `channelType` の直接
+   * 比較（issue #440）で、EPG への第 2 クエリを経由しない。以前は同種別全
+   * サービス × 2 時間の EPG を別クエリで引いて programId 集合を作っており、
+   * tick のたびにこのクエリのキーが割れて警告が一時的に消えていた（実測: jsdom
+   * で 30038ms 後・実 Chromium で 28258ms 後に消失。10 分グリッド丸めで
+   * 抑えていた）。第 2 クエリ自体が無くなったので、tick を跨いでも警告の判定に
+   * 使う値（`reservations` / `selectedService.channelType`）は変わらない。
    *
    * **実時間で待つ**（`setInterval` を fake timers 化すると react-query 内部の
-   * タイマーや testing-library の非同期ポーリングと絡んで不安定になったため、
-   * レビュアーと同じ「実時間で待つ」方式に倣った）。ただ real wall-clock
-   * 時刻をそのまま使うと、テスト実行のタイミングがたまたま 10 分グリッドの
-   * 境界の直前（残り 30 秒未満）だと、待っている間にグリッドが切り替わって
-   * クエリキーが変わり、無関係に flaky になる --- それを避けるため `Date.now`
-   * をグリッドの安全な位置（境界から 2 分後）を起点にした値へ差し替える
-   * （`performance.now()` で実際の経過時間だけ反映させるので、待つこと自体は
-   * 本物の real timer のまま）。
+   * タイマーと絡んで不安定になったため）。100ms 間隔で 32 秒間ポーリングし
+   * 続け、一度も消えないことを見る --- 後から 1 回見るだけの assertion は
+   * 「たまたま復帰していた瞬間を見た」だけになりうる。この判定は
+   * `channelType` 比較を無効化する変異（例: `reservation.channelType !==
+   * channelType` に反転する）を当てると、初回の `findByText` の時点で既に
+   * 落ちることを確認済み。
    */
   it(
-    '30 秒の tick を跨いでも警告が消えない（EPG 問い合わせの窓を 10 分グリッドに丸めているため）',
+    '30 秒の tick を跨いでも警告が消えない',
     async () => {
-      const gridMs = 10 * 60_000
-      const rawBase = new Date('2026-01-01T00:00:00.000Z').getTime()
-      // グリッドの境界から 2 分進めた、境界に近すぎない安全な位置
-      const gridSafeBase = rawBase - (rawBase % gridMs) + 2 * 60_000
-      const perfStart = performance.now()
-      vi.spyOn(Date, 'now').mockImplementation(() => gridSafeBase + (performance.now() - perfStart))
-
-      const startAt = new Date(gridSafeBase + 30 * 60_000).toISOString()
+      const startAt = new Date(Date.now() + 30 * 60_000).toISOString()
       stubFetch({
         services: [service({ serviceId: 10, name: 'チャンネル A', channelType: 'GR' })],
         programsByServiceId: {
@@ -873,27 +858,18 @@ describe('LivePage / 録画予約による中断予測（issue #235 M7-2）', ()
               programId: 5,
               serviceId: 10,
               startAt,
-              endAt: new Date(gridSafeBase + 90 * 60_000).toISOString(),
+              endAt: new Date(Date.now() + 90 * 60_000).toISOString(),
             }),
           ],
         },
-        reservations: [reservation({ programId: 5, site: 'default', startAt, skip: false })],
+        reservations: [
+          reservation({ programId: 5, site: 'default', startAt, skip: false, channelType: 'GR' }),
+        ],
       })
-      // programs 応答にだけ 500ms 遅らせる（上記コメントの理由）
-      const withoutDelay = globalThis.fetch as unknown as (
-        input: string | URL | Request,
-      ) => Promise<Response>
-      globalThis.fetch = vi.fn(async (input: string | URL | Request) => {
-        const url = new URL(String(input), 'http://localhost')
-        if (url.pathname === '/api/sites/default/programs') {
-          await new Promise((resolve) => setTimeout(resolve, 500))
-        }
-        return withoutDelay(input)
-      }) as unknown as typeof fetch
 
       renderLive()
 
-      expect(await screen.findByText(/から録画予約があります/, undefined, { timeout: 5000 })).toBeInTheDocument()
+      expect(await screen.findByText(/から録画予約があります/)).toBeInTheDocument()
 
       // 30 秒の tick を跨いで、ずっと消えないことをポーリングで見る
       // （後から 1 回見るだけでは、消えて戻った瞬間を見逃す）
@@ -947,62 +923,14 @@ describe('LivePage / 録画予約による中断予測（issue #235 M7-2）', ()
         service({ serviceId: 10, name: 'チャンネル A', channelType: 'GR' }),
         service({ serviceId: 20, name: 'チャンネル B', channelType: 'BS' }),
       ],
-      programsByServiceId: {
-        // 選択中（GR）ではなく BS の serviceId 20 にだけ番組がある --- 中断予測の
-        // 問い合わせは選択中と同じチャンネル種別（serviceId=[10]）に絞るので、
-        // この番組・予約は候補集合に入らない
-        20: [
-          program({
-            programId: 6,
-            serviceId: 20,
-            startAt,
-            endAt: new Date(Date.now() + 90 * 60_000).toISOString(),
-          }),
-        ],
-      },
-      reservations: [reservation({ programId: 6, site: 'default', startAt, skip: false })],
+      // 判定は reservation.channelType と選択中サービスの channelType の直接比較
+      // なので（issue #440）、EPG 応答の中身は判定に関与しない --- 予約側の
+      // channelType を選択中（GR）と違える（BS）だけで除外されることを見る
+      reservations: [
+        reservation({ programId: 6, site: 'default', startAt, skip: false, channelType: 'BS' }),
+      ],
     })
     const { queryClient } = renderLive('/live?service=100010')
-
-    await screen.findByRole('button', { name: /再生/ })
-    await interruptionSettled(queryClient)
-    expect(screen.queryByText(/録画予約/)).not.toBeInTheDocument()
-  })
-
-  /**
-   * issue #291 と同じ根: 中断予測の EPG 問い合わせ（`sameTypeProgramsQuery`）は
-   * `serviceId` の配列だけをサーバーに渡す（`networkId` は持たない --- 複数
-   * network の同じ種別のサービスを一度に問い合わせるため）。`serviceId` が
-   * network をまたいで衝突すると、選択中とは別 network・別 channelType の
-   * サービスの番組も応答に混入しうる（サーバーは `serviceId` だけを AND する
-   * ため）。中断予測の EPG 問い合わせを `Service.id` の組ではなく `serviceId`
-   * だけで投げる変異を当てると、この番組（に付いた予約）が候補集合に混入し、
-   * 存在しない中断警告を出してこのテストが落ちる。
-   */
-  it('別 network の同じ serviceId の番組では中断警告を誤って出さない（issue #291 と同じ根）', async () => {
-    const startAt = new Date(Date.now() + 30 * 60_000).toISOString()
-    stubFetch({
-      services: [
-        service({ networkId: 1, serviceId: 100, name: 'GR の局', channelType: 'GR' }),
-        service({ networkId: 2, serviceId: 100, name: 'BS の局', channelType: 'BS' }),
-      ],
-      programsByServiceId: {
-        // GR（network 1）ではなく BS（network 2）の番組にだけ予約が付く。
-        // `serviceId` は両方 100 で衝突しているため、`networkId` を見ずに
-        // `serviceId` だけで突き合わせると GR 選択時にもこの番組が混入する
-        100: [
-          program({
-            programId: 6,
-            networkId: 2,
-            serviceId: 100,
-            startAt,
-            endAt: new Date(Date.now() + 90 * 60_000).toISOString(),
-          }),
-        ],
-      },
-      reservations: [reservation({ programId: 6, site: 'default', startAt, skip: false })],
-    })
-    const { queryClient } = renderLive('/live?service=100100')
 
     await screen.findByRole('button', { name: /再生/ })
     await interruptionSettled(queryClient)

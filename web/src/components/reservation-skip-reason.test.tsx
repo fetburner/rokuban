@@ -24,6 +24,7 @@ function reservation(overrides: Partial<Reservation> = {}): Reservation {
     skip: false,
     title: 'テスト番組',
     serviceName: 'テスト局',
+    channelType: 'GR',
     startAt: '2026-07-30T19:00:00+09:00',
     durationMs: 1800000,
     createdAt: '2026-07-28T00:00:00+09:00',

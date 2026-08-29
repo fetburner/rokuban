@@ -547,6 +547,7 @@ export const ListReservationsResponseItem = zod.object({
 }).passthrough().optional(),
   "title": zod.string(),
   "serviceName": zod.string().describe('番組スナップショット（program_snapshots.service_name）由来のチャンネル\n表示名。同じタイトルが日付・局違いで並ぶと区別できないため（issue #302）、\nrecordings と同じ形でここにも載せる。\n'),
+  "channelType": zod.enum(['GR', 'BS', 'CS', 'SKY']).describe('予約時点のスナップショット（program_snapshots 由来）。\n'),
   "startAt": zod.string().datetime({"offset":true}),
   "durationMs": zod.number(),
   "createdAt": zod.string().datetime({"offset":true}),
@@ -559,52 +560,9 @@ export const ListReservationsResponse = zod.array(ListReservationsResponseItem)
 
 
 /**
- * `reservations.id` は ruler の導出削除・再実体化で変わりうる（寿命が
- * 保証されていない。issue #29）。書き込みの宛先には使わない —— 意図・上書きは
- * `(site, programId)` を自身のキーとする別のエンドポイントに書く。
- *
- * **恒久的な資源同定（ブックマーク・ディープリンク・クライアントのキャッシュ
- * キー）にも使わない。** 予約行が再実体化されると同じ番組でも id が変わり、
- * この id を宛先にした URL・クエリキャッシュは 404 / 無効化される
- * （issue #99）。そのための読み取りは
- * `GET /api/sites/{site}/programs/{programId}/reservation` を使う。
- *
- * この id 経由の読み取りは、呼び出し側が既に一覧などから id を手にしていて
- * 同じ操作の中で使う（`GET /api/reservations` の各要素を直後に詳細取得する
- * 等）用途のために残す —— その用途では id が変わる窓（ruler の 1 パス）を
- * 跨がないため不安定性の影響を受けない。
- * @summary Get a reservation by its (unstable) derived id
- */
-export const GetReservationParams = zod.object({
-  "id": zod.number()
-})
-
-export const GetReservationResponse = zod.object({
-  "id": zod.number(),
-  "site": zod.string().describe('この予約がどのサイト（mirakc インスタンス）のものか。`reservations.site`\nそのままで、設定ファイルで定義されたサイト名（docs\/schema.md §1-5）。\n\nチューナー容量超過の判定はサイトごとに独立しているため\n（docs\/data.md §6.5）、予約一覧のバッジはこの値と超過区間の site を\n突き合わせる。M1\/M2 は単一サイト構成なので実質 `default` 固定だが、\n\*\*クライアントに定数を持たせない\*\*（他サイトの不足を自分の不足として\n出す形で静かに壊れるのを避ける）。\n'),
-  "programId": zod.number(),
-  "source": zod.enum(['rule', 'manual']).describe('導出値であり、reservations テーブルの列ではない（issue #26）。\nユーザーが録れと指定した番組（program_intents に action=record の行が\nある）なら manual、無ければ rule。ルールが今まさにこの予約に\nbase を供給しているか（ruleId の有無）とは無関係で、手動予約に\nルールがマッチしていても manual のまま変わらない。\n'),
-  "ruleId": zod.number().optional(),
-  "state": zod.enum(['active', 'detached', 'orphaned']),
-  "overrides": zod.object({
-
-}).passthrough().optional(),
-  "title": zod.string(),
-  "serviceName": zod.string().describe('番組スナップショット（program_snapshots.service_name）由来のチャンネル\n表示名。同じタイトルが日付・局違いで並ぶと区別できないため（issue #302）、\nrecordings と同じ形でここにも載せる。\n'),
-  "startAt": zod.string().datetime({"offset":true}),
-  "durationMs": zod.number(),
-  "createdAt": zod.string().datetime({"offset":true}),
-  "updatedAt": zod.string().datetime({"offset":true}),
-  "skip": zod.boolean().describe('effective.skip（M2-6, issue #24）。program_intents.action=\'skip\' の\n明示、または意図が無く base.skip（ルールの重複排除判定）が true。\ntrue の間 reconciler は mirakc に同期しないが、予約行自体は\n「なぜ録られていないか」を説明するため残る。\n'),
-  "dedupMatchRecordingId": zod.number().optional().describe('履歴ベース重複排除でマッチした録画の ID（マッチが無ければ省略）'),
-  "dedupSimilarity": zod.number().optional().describe('上記マッチの pg_trgm 類似度（0.0〜1.0、マッチが無ければ省略）')
-})
-
-
-/**
  * `(site, programId)` を宛先に予約を読む（issue #99）。書き込み側
  * （`PUT/DELETE .../intent`、`PATCH/DELETE .../overrides`）は M3-1（issue #29）で
- * 既にこのキーに寄っていたが、読み取り（`GET /api/reservations/{id}`・UI の
+ * 既にこのキーに寄っていたが、読み取り（旧 `GET /api/reservations/{id}`・UI の
  * ディープリンク・クエリキャッシュ）は `reservations.id` という ruler の
  * 導出削除・再実体化で変わりうる不安定な値のままだった。
  *
@@ -636,6 +594,7 @@ export const GetProgramReservationResponse = zod.object({
 }).passthrough().optional(),
   "title": zod.string(),
   "serviceName": zod.string().describe('番組スナップショット（program_snapshots.service_name）由来のチャンネル\n表示名。同じタイトルが日付・局違いで並ぶと区別できないため（issue #302）、\nrecordings と同じ形でここにも載せる。\n'),
+  "channelType": zod.enum(['GR', 'BS', 'CS', 'SKY']).describe('予約時点のスナップショット（program_snapshots 由来）。\n'),
   "startAt": zod.string().datetime({"offset":true}),
   "durationMs": zod.number(),
   "createdAt": zod.string().datetime({"offset":true}),

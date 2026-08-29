@@ -277,6 +277,30 @@ func (e RecordingStatus) Valid() bool {
 	}
 }
 
+// Defines values for ReservationChannelType.
+const (
+	ReservationChannelTypeBS  ReservationChannelType = "BS"
+	ReservationChannelTypeCS  ReservationChannelType = "CS"
+	ReservationChannelTypeGR  ReservationChannelType = "GR"
+	ReservationChannelTypeSKY ReservationChannelType = "SKY"
+)
+
+// Valid indicates whether the value is a known member of the ReservationChannelType enum.
+func (e ReservationChannelType) Valid() bool {
+	switch e {
+	case ReservationChannelTypeBS:
+		return true
+	case ReservationChannelTypeCS:
+		return true
+	case ReservationChannelTypeGR:
+		return true
+	case ReservationChannelTypeSKY:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ReservationSource.
 const (
 	ReservationSourceManual ReservationSource = "manual"
@@ -1194,7 +1218,9 @@ type RecordingStatus string
 
 // Reservation defines model for Reservation.
 type Reservation struct {
-	CreatedAt time.Time `json:"createdAt"`
+	// ChannelType 予約時点のスナップショット（program_snapshots 由来）。
+	ChannelType ReservationChannelType `json:"channelType"`
+	CreatedAt   time.Time              `json:"createdAt"`
 
 	// DedupMatchRecordingId 履歴ベース重複排除でマッチした録画の ID（マッチが無ければ省略）
 	DedupMatchRecordingId *int64 `json:"dedupMatchRecordingId,omitempty"`
@@ -1239,6 +1265,9 @@ type Reservation struct {
 	Title     string            `json:"title"`
 	UpdatedAt time.Time         `json:"updatedAt"`
 }
+
+// ReservationChannelType 予約時点のスナップショット（program_snapshots 由来）。
+type ReservationChannelType string
 
 // ReservationSource 導出値であり、reservations テーブルの列ではない（issue #26）。
 // ユーザーが録れと指定した番組（program_intents に action=record の行が
@@ -1616,9 +1645,6 @@ type ServerInterface interface {
 	// ListReservations List reservations
 	// (GET /api/reservations)
 	ListReservations(w http.ResponseWriter, r *http.Request)
-	// GetReservation Get a reservation by its (unstable) derived id
-	// (GET /api/reservations/{id})
-	GetReservation(w http.ResponseWriter, r *http.Request, id int64)
 	// ListRules List recording rules
 	// (GET /api/rules)
 	ListRules(w http.ResponseWriter, r *http.Request)
@@ -1757,12 +1783,6 @@ func (_ Unimplemented) RestoreRecording(w http.ResponseWriter, r *http.Request, 
 // ListReservations List reservations
 // (GET /api/reservations)
 func (_ Unimplemented) ListReservations(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusNotImplemented)
-}
-
-// GetReservation Get a reservation by its (unstable) derived id
-// (GET /api/reservations/{id})
-func (_ Unimplemented) GetReservation(w http.ResponseWriter, r *http.Request, id int64) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -2378,32 +2398,6 @@ func (siw *ServerInterfaceWrapper) ListReservations(w http.ResponseWriter, r *ht
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ListReservations(w, r)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
-// GetReservation operation middleware
-func (siw *ServerInterfaceWrapper) GetReservation(w http.ResponseWriter, r *http.Request) {
-
-	var err error
-	_ = err
-
-	// ------------- Path parameter "id" -------------
-	var id int64
-
-	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: r.URL.RawPath == ""})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
-		return
-	}
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.GetReservation(w, r, id)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3139,9 +3133,6 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Get(options.BaseURL+"/api/reservations", wrapper.ListReservations)
 	})
 	r.Group(func(r chi.Router) {
-		r.Get(options.BaseURL+"/api/reservations/{id}", wrapper.GetReservation)
-	})
-	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/api/sites/{site}/programs/{programId}/reservation", wrapper.GetProgramReservation)
 	})
 	r.Group(func(r chi.Router) {
@@ -3581,42 +3572,6 @@ func (response ListReservations200JSONResponse) VisitListReservationsResponse(w 
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(200)
-	_, err := buf.WriteTo(w)
-	return err
-}
-
-type GetReservationRequestObject struct {
-	Id int64 `json:"id"`
-}
-
-type GetReservationResponseObject interface {
-	VisitGetReservationResponse(w http.ResponseWriter) error
-}
-
-type GetReservation200JSONResponse Reservation
-
-func (response GetReservation200JSONResponse) VisitGetReservationResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(200)
-	_, err := buf.WriteTo(w)
-	return err
-}
-
-type GetReservation404JSONResponse ErrorResponse
-
-func (response GetReservation404JSONResponse) VisitGetReservationResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(404)
 	_, err := buf.WriteTo(w)
 	return err
 }
@@ -4378,9 +4333,6 @@ type StrictServerInterface interface {
 	// ListReservations List reservations
 	// (GET /api/reservations)
 	ListReservations(ctx context.Context, request ListReservationsRequestObject) (ListReservationsResponseObject, error)
-	// GetReservation Get a reservation by its (unstable) derived id
-	// (GET /api/reservations/{id})
-	GetReservation(ctx context.Context, request GetReservationRequestObject) (GetReservationResponseObject, error)
 	// ListRules List recording rules
 	// (GET /api/rules)
 	ListRules(ctx context.Context, request ListRulesRequestObject) (ListRulesResponseObject, error)
@@ -4789,32 +4741,6 @@ func (sh *strictHandler) ListReservations(w http.ResponseWriter, r *http.Request
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(ListReservationsResponseObject); ok {
 		if err := validResponse.VisitListReservationsResponse(w); err != nil {
-			sh.options.ResponseErrorHandlerFunc(w, r, err)
-		}
-	} else if response != nil {
-		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
-	}
-}
-
-// GetReservation operation middleware
-func (sh *strictHandler) GetReservation(w http.ResponseWriter, r *http.Request, id int64) {
-	var request GetReservationRequestObject
-
-	request.Id = id
-
-	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
-		return sh.ssi.GetReservation(ctx, request.(GetReservationRequestObject))
-	}
-	for _, middleware := range sh.middlewares {
-		handler = middleware(handler, "GetReservation")
-	}
-
-	response, err := handler(r.Context(), w, r, request)
-
-	if err != nil {
-		sh.options.ResponseErrorHandlerFunc(w, r, err)
-	} else if validResponse, ok := response.(GetReservationResponseObject); ok {
-		if err := validResponse.VisitGetReservationResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

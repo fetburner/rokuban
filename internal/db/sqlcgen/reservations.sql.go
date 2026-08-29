@@ -146,83 +146,6 @@ func (q *Queries) GetReservationBySiteAndProgramID(ctx context.Context, arg GetR
 	return i, err
 }
 
-const getReservationFull = `-- name: GetReservationFull :one
-SELECT r.id, r.site, r.program_id, r.rule_id, r.base, r.created_at, r.updated_at, r.dedup_match_recording_id, r.dedup_similarity, s.site, s.program_id, s.title, s.start_at, s.duration_ms, s.network_id, s.service_id, s.channel_type, s.channel, s.updated_at, s.event_id, s.service_name, i.action AS intent_action, o.overrides AS overrides,
-       (EXISTS (
-           SELECT 1 FROM never_scheduled_events nse
-           WHERE nse.site = r.site
-             AND nse.network_id = s.network_id
-             AND nse.service_id = s.service_id
-             AND nse.event_id = s.event_id
-       ) AND NOT EXISTS (
-           SELECT 1 FROM recordings rec
-           WHERE rec.site = r.site
-             AND rec.network_id = s.network_id
-             AND rec.service_id = s.service_id
-             AND rec.event_id = s.event_id
-       ))::boolean AS never_recorded
-FROM reservations r
-JOIN program_snapshots s ON s.site = r.site AND s.program_id = r.program_id
-LEFT JOIN program_intents i ON i.site = r.site AND i.program_id = r.program_id
-LEFT JOIN program_overrides o ON o.site = r.site AND o.program_id = r.program_id
-WHERE r.id = $1
-`
-
-type GetReservationFullRow struct {
-	Reservation     Reservation
-	ProgramSnapshot ProgramSnapshot
-	IntentAction    *string
-	Overrides       json.RawMessage
-	NeverRecorded   bool
-}
-
-// 予約とユーザー意図・上書き・番組スナップショットを 1 行に合わせて返す。
-// action は program_intents、overrides は program_overrides（M2-4 で分離）
-// にあり、予約が存在しても意図・上書きのどちらかしかない（あるいはどちらも
-// 無い）ことがあるので両方 LEFT JOIN する。番組スナップショットは FK が
-// あるので必ず存在する（INNER JOIN）。
-//
-// never_recorded は orphaned_at の代わりに読むたび導出する列（CLAUDE.md
-// 不変条件 9）。放送イベントキーで never_scheduled_events 表を引き、欠測行が
-// あり、かつそのイベントに本物の recordings 行が 1 つも無いときだけ true。
-//
-// recordings の照合は live 限定にしない。旧実装では後から本物の record が来ると
-// never-scheduled 擬似行を永久に supersede していたため、ごみ箱操作後も orphaned
-// に戻らなかった。同じ意味を `NOT EXISTS(recordings)` で保つ（#59「録れたのに
-// orphaned のまま」の再発を防ぐ）。同期除外は recordings の有無を見ず、一度
-// 欠測と書いたイベントを対象に戻さないので、表示とは意図的に別の述語である。
-func (q *Queries) GetReservationFull(ctx context.Context, id int64) (GetReservationFullRow, error) {
-	row := q.db.QueryRow(ctx, getReservationFull, id)
-	var i GetReservationFullRow
-	err := row.Scan(
-		&i.Reservation.ID,
-		&i.Reservation.Site,
-		&i.Reservation.ProgramID,
-		&i.Reservation.RuleID,
-		&i.Reservation.Base,
-		&i.Reservation.CreatedAt,
-		&i.Reservation.UpdatedAt,
-		&i.Reservation.DedupMatchRecordingID,
-		&i.Reservation.DedupSimilarity,
-		&i.ProgramSnapshot.Site,
-		&i.ProgramSnapshot.ProgramID,
-		&i.ProgramSnapshot.Title,
-		&i.ProgramSnapshot.StartAt,
-		&i.ProgramSnapshot.DurationMs,
-		&i.ProgramSnapshot.NetworkID,
-		&i.ProgramSnapshot.ServiceID,
-		&i.ProgramSnapshot.ChannelType,
-		&i.ProgramSnapshot.Channel,
-		&i.ProgramSnapshot.UpdatedAt,
-		&i.ProgramSnapshot.EventID,
-		&i.ProgramSnapshot.ServiceName,
-		&i.IntentAction,
-		&i.Overrides,
-		&i.NeverRecorded,
-	)
-	return i, err
-}
-
 const getReservationFullBySiteAndProgramID = `-- name: GetReservationFullBySiteAndProgramID :one
 SELECT r.id, r.site, r.program_id, r.rule_id, r.base, r.created_at, r.updated_at, r.dedup_match_recording_id, r.dedup_similarity, s.site, s.program_id, s.title, s.start_at, s.duration_ms, s.network_id, s.service_id, s.channel_type, s.channel, s.updated_at, s.event_id, s.service_name, i.action AS intent_action, o.overrides AS overrides,
        (EXISTS (
@@ -258,13 +181,28 @@ type GetReservationFullBySiteAndProgramIDRow struct {
 	NeverRecorded   bool
 }
 
-// GetReservationFull と同じ形だが、宛先を r.id ではなく (site, program_id) にする
-// (issue #99)。書き込み側（program_intents / program_overrides、issue #29）は
-// 既にこのキーに寄っていたが、読み取り（GET /api/reservations/{id}・UI の
-// ディープリンク・クエリキャッシュ）は reservations.id という ruler の導出削除・
-// 再実体化で変わりうる不安定な値のままだった。UNIQUE (site, program_id) が
-// 既にあるのでキーとして成立する（#53 が mirakc の tag を program:{programId} に
-// 変えたのと同じ論法）。never_recorded の導出は GetReservationFull と同じ。
+// 予約とユーザー意図・上書き・番組スナップショットを 1 行に合わせて返す。
+// action は program_intents、overrides は program_overrides（M2-4 で分離）
+// にあり、予約が存在しても意図・上書きのどちらかしかない（あるいはどちらも
+// 無い）ことがあるので両方 LEFT JOIN する。番組スナップショットは FK が
+// あるので必ず存在する（INNER JOIN）。
+//
+// never_recorded は orphaned_at の代わりに読むたび導出する列（CLAUDE.md
+// 不変条件 9）。放送イベントキーで never_scheduled_events 表を引き、欠測行が
+// あり、かつそのイベントに本物の recordings 行が 1 つも無いときだけ true。
+//
+// recordings の照合は live 限定にしない。旧実装では後から本物の record が来ると
+// never-scheduled 擬似行を永久に supersede していたため、ごみ箱操作後も orphaned
+// に戻らなかった。同じ意味を `NOT EXISTS(recordings)` で保つ（#59「録れたのに
+// orphaned のまま」の再発を防ぐ）。同期除外は recordings の有無を見ず、一度
+// 欠測と書いたイベントを対象に戻さないので、表示とは意図的に別の述語である。
+//
+// 宛先は r.id ではなく (site, program_id)（issue #99）。書き込み側
+// （program_intents / program_overrides、issue #29）は既にこのキーに寄っていたが、
+// 読み取り（UI のディープリンク・クエリキャッシュ）は reservations.id という
+// ruler の導出削除・再実体化で変わりうる不安定な値のままだった。
+// UNIQUE (site, program_id) が既にあるのでキーとして成立する（#53 が mirakc の
+// tag を program:{programId} に変えたのと同じ論法）。
 func (q *Queries) GetReservationFullBySiteAndProgramID(ctx context.Context, arg GetReservationFullBySiteAndProgramIDParams) (GetReservationFullBySiteAndProgramIDRow, error) {
 	row := q.db.QueryRow(ctx, getReservationFullBySiteAndProgramID, arg.Site, arg.ProgramID)
 	var i GetReservationFullBySiteAndProgramIDRow
@@ -450,7 +388,7 @@ type ListReservationsFullRow struct {
 	NeverRecorded   bool
 }
 
-// never_recorded は GetReservationFull と同じ導出（コメント参照）。
+// never_recorded は GetReservationFullBySiteAndProgramID と同じ導出（コメント参照）。
 //
 // GET /api/reservations は全サイトを返す（issue #184 M4-12。api は不変条件 1 に
 // より site に束縛されないため、site 絞り込みは持たない）。並び順は site をまず

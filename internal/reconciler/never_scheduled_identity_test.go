@@ -71,7 +71,9 @@ func TestReconciler_NeverScheduledExclusionSurvivesRematerialization(t *testing.
 		t.Errorf("再実体化後の desired = %d, want 0 —— 欠測の除外が予約 id に依存している（放送イベントで引くべき）", len(rows))
 	}
 
-	full, err := q.GetReservationFull(ctx, res2.ID)
+	full, err := q.GetReservationFullBySiteAndProgramID(ctx, sqlcgen.GetReservationFullBySiteAndProgramIDParams{
+		Site: res2.Site, ProgramID: res2.ProgramID,
+	})
 	if err != nil {
 		t.Fatalf("GetReservationFull: %v", err)
 	}
@@ -107,7 +109,9 @@ func TestReservation_MidRecordingFailureIsNotOrphanedDisplay(t *testing.T) {
 		t.Fatalf("inserting mid-recording failure: %v", err)
 	}
 
-	full, err := q.GetReservationFull(ctx, res.ID)
+	full, err := q.GetReservationFullBySiteAndProgramID(ctx, sqlcgen.GetReservationFullBySiteAndProgramIDParams{
+		Site: res.Site, ProgramID: res.ProgramID,
+	})
 	if err != nil {
 		t.Fatalf("GetReservationFull: %v", err)
 	}
@@ -155,7 +159,9 @@ func TestReservation_RealRecordClearsOrphanedButKeepsMissingEvent(t *testing.T) 
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
-	full, err := q.GetReservationFull(ctx, res.ID)
+	full, err := q.GetReservationFullBySiteAndProgramID(ctx, sqlcgen.GetReservationFullBySiteAndProgramIDParams{
+		Site: res.Site, ProgramID: res.ProgramID,
+	})
 	if err != nil {
 		t.Fatalf("GetReservationFull: %v", err)
 	}
@@ -186,7 +192,9 @@ func TestReservation_RealRecordClearsOrphanedButKeepsMissingEvent(t *testing.T) 
 		t.Fatalf("inserting real record: %v", err)
 	}
 
-	full, err = q.GetReservationFull(ctx, res.ID)
+	full, err = q.GetReservationFullBySiteAndProgramID(ctx, sqlcgen.GetReservationFullBySiteAndProgramIDParams{
+		Site: res.Site, ProgramID: res.ProgramID,
+	})
 	if err != nil {
 		t.Fatalf("GetReservationFull (after real record): %v", err)
 	}
@@ -247,7 +255,9 @@ func TestReservation_TrashedRealRecordDoesNotReenterOrphaned(t *testing.T) {
 		t.Fatalf("inserting real record: %v", err)
 	}
 
-	full, err := q.GetReservationFull(ctx, res.ID)
+	full, err := q.GetReservationFullBySiteAndProgramID(ctx, sqlcgen.GetReservationFullBySiteAndProgramIDParams{
+		Site: res.Site, ProgramID: res.ProgramID,
+	})
 	if err != nil {
 		t.Fatalf("GetReservationFull: %v", err)
 	}
@@ -264,7 +274,9 @@ func TestReservation_TrashedRealRecordDoesNotReenterOrphaned(t *testing.T) {
 		t.Fatalf("soft-deleting real record: %v", err)
 	}
 
-	full, err = q.GetReservationFull(ctx, res.ID)
+	full, err = q.GetReservationFullBySiteAndProgramID(ctx, sqlcgen.GetReservationFullBySiteAndProgramIDParams{
+		Site: res.Site, ProgramID: res.ProgramID,
+	})
 	if err != nil {
 		t.Fatalf("GetReservationFull (after trash): %v", err)
 	}

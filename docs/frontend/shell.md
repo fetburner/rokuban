@@ -155,10 +155,10 @@ UI に一切現れない」という意味ではない。**切れ目は「その
 
 **現在サイトを持つ画面が上段の一覧（全サイト）を重ねるときは、その画面の側で
 `site` を突き合わせる。** 例はライブの中断予測 --- 全サイトの予約を受け取ってから
-`reservation.site` が現在サイトと一致するものだけを見る
-（`lib/live-interruption.ts`。`programId` は site スコープの値だが、同じ放送を
-2 サイトで受ければ値は一致するので、`programId` の突き合わせだけでは足りない）。
-番組表も同じ突き合わせを持つ --- 「予約済み」判定は `reservation.site` で、容量超過の
+`reservation.site` が現在サイトと一致するものだけを見る（`lib/live-interruption.ts`。
+`channelType`（GR/BS/CS/SKY）は site をまたいで共通の語彙なので、一致だけでは
+どの site の予約かを区別できない）。番組表も同じ突き合わせを持つ ---
+「予約済み」判定は `reservation.site` で、容量超過の
 帯は `overage.site` で現在サイトに絞ってから重ねる（`pages/programs.tsx`）。
 
 **サイト切り替え UI は持たない。** 多サイトの運用実績が無い状態で切り替えの形

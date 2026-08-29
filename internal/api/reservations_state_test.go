@@ -17,15 +17,15 @@ type reservationStateResp struct {
 	State string `json:"state"`
 }
 
-func getReservationStateJSON(t *testing.T, srv *httptest.Server, id int64) reservationStateResp {
+func getReservationStateJSON(t *testing.T, srv *httptest.Server, programID int64) reservationStateResp {
 	t.Helper()
-	resp, err := http.Get(srv.URL + "/api/reservations/" + itoa(id))
+	resp, err := http.Get(srv.URL + reservationPath(programID))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET /api/reservations/%d status = %d, want 200", id, resp.StatusCode)
+		t.Fatalf("GET %s status = %d, want 200", reservationPath(programID), resp.StatusCode)
 	}
 	var got reservationStateResp
 	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
@@ -77,7 +77,7 @@ func TestGetReservation_DetachedViaRuleEditOrRuleDelete(t *testing.T) {
 		}
 
 		// 反対方向: rule_id がまだ生きている間は detached ではない（対照）。
-		if got := getReservationStateJSON(t, srv, resID); got.State == "detached" {
+		if got := getReservationStateJSON(t, srv, programID); got.State == "detached" {
 			t.Fatalf("precondition: state should not be detached while rule_id is still set, got %q", got.State)
 		}
 
@@ -90,7 +90,7 @@ func TestGetReservation_DetachedViaRuleEditOrRuleDelete(t *testing.T) {
 			t.Fatalf("simulating rule unmatch: %v", err)
 		}
 
-		got := getReservationStateJSON(t, srv, resID)
+		got := getReservationStateJSON(t, srv, programID)
 		if got.State != "detached" {
 			t.Errorf("state = %q, want %q (rule edited/unmatched path)", got.State, "detached")
 		}
@@ -122,7 +122,7 @@ func TestGetReservation_DetachedViaRuleEditOrRuleDelete(t *testing.T) {
 		_ = patchResp.Body.Close()
 
 		// 反対方向: ルール削除前は detached ではない（対照）。
-		if got := getReservationStateJSON(t, srv, resID); got.State == "detached" {
+		if got := getReservationStateJSON(t, srv, programID); got.State == "detached" {
 			t.Fatalf("precondition: state should not be detached before the rule is deleted, got %q", got.State)
 		}
 
@@ -135,7 +135,7 @@ func TestGetReservation_DetachedViaRuleEditOrRuleDelete(t *testing.T) {
 		}
 		_ = delResp.Body.Close()
 
-		got := getReservationStateJSON(t, srv, resID)
+		got := getReservationStateJSON(t, srv, programID)
 		if got.State != "detached" {
 			t.Errorf("state = %q, want %q "+
 				"(rule DELETE must also produce detached — this was the #30 symptom-1 bug: "+
