@@ -289,6 +289,37 @@ func TestListSnapshots_FirstCompleteMatchesSelectLatest(t *testing.T) {
 	}
 }
 
+// DocumentPath は manifest.Document の値ではなく DocumentFilename（定数）から
+// 組み立てること。VerifyGeneration の等値検査（判定 5）は「document は
+// DocumentFilename と一致しなければ不完全」を保証するので、SelectLatest 経由
+// では manifest.Document がディレクトリの外を指す値になることはそもそも
+// 無い。selectFromStatuses を直接呼んで、その検査を経由せずに手作りした
+// Complete: true の SnapshotStatus を渡すことで、DocumentPath の組み立て
+// 自体が manifest.Document を使っていないことを独立に確認する
+// （issue #441 レビュー指摘: この検査だけに頼ると、判定 5 を将来緩めたときに
+// path traversal が起きる）。
+func TestSelectFromStatuses_DocumentPathIgnoresManifestDocument(t *testing.T) {
+	statuses := []SnapshotStatus{{
+		Name:     "catalog-20260701T000000Z",
+		Complete: true,
+		Manifest: &Manifest{
+			Generation: "catalog-20260701T000000Z",
+			Document:   "../escape.json",
+			SizeBytes:  1,
+			SHA256:     "00",
+		},
+	}}
+
+	sel, err := selectFromStatuses(filepath.Join("mediadir", "catalog"), statuses)
+	if err != nil {
+		t.Fatalf("selectFromStatuses: %v", err)
+	}
+	want := filepath.Join("mediadir", "catalog", "catalog-20260701T000000Z", "catalog.json")
+	if sel.DocumentPath != want {
+		t.Fatalf("DocumentPath = %q, want %q (must not be built from manifest.Document)", sel.DocumentPath, want)
+	}
+}
+
 // manifest はあっても本体ファイルが無ければ完成世代にならないこと。
 func TestVerifyGeneration_RejectsMissingDocumentFile(t *testing.T) {
 	dir := t.TempDir()

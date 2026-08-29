@@ -15,12 +15,17 @@ import (
 // （catalog document の版 = Version とは別に持つ）。
 //
 // issue #441 で `files[]`（配列）を単一の `sizeBytes` / `sha256` に畳んだのは
-// 「manifest の読み方を壊す変更」そのものなので 1 → 2 に上げた。schemaVersion の
-// 「安全側に倒れる引っ越しなら上げない」方針（docs/storage/rescue.md §世代の
-// 完成判定）はここには適用しない —— あちらは catalog document が運ぶ**事実**の
-// 引っ越し（旧バイナリが知らないキーを無視しても録画データの復元は壊れない）
-// の話であって、こちらは manifest 自身の**検証手続きの形**の変更。運用開始前で
-// 旧形式の manifest が本番に存在しないため、上げても back-compat の代償はない。
+// schemaVersion の「安全側に倒れる引っ越しなら上げない」方針
+// （docs/storage/rescue.md §世代の完成判定）を**適用した結果として**上げる。
+// この引っ越しは安全側に倒れない —— 旧バイナリが新形式の manifest を読むと
+// `files` キーが無いので `len(m.Files) == 0` で世代ごと不完全判定になり、
+// 完成世代がまるごと 1 本消える（recordingPurgeRequests のような「要求が
+// 落ちても猶予超過で拾われる」側とは違い、この世代の catalog が丸ごと読めなく
+// なる）。version を上げれば、この不完全判定が「manifestVersion が新しすぎる」
+// という理由の付いた明示的な拒否になる。痛むのは常に「新しい manifest を古い
+// バイナリが読む」方向で、逆（旧 manifest を新バイナリが読む）ではない ——
+// 運用開始前で旧形式の manifest が本番に存在しないのは「上げる代償が無い」
+// 根拠であって「上げなくてよい」根拠ではない。
 const ManifestVersion = 2
 
 const (
@@ -76,9 +81,13 @@ type Manifest struct {
 //
 // rename のアトミック性には依存しない。判定の材料は世代ディレクトリの中身だけ。
 //
-// 本体のパスは常に DocumentFilename（定数）から組み立てる。manifest.Document
-// フィールドの値を使ってパスを組み立てることはしない —— 手で編集された
-// manifest がディレクトリの外を指す経路がそもそも存在しない。
+// 本体のパスはここでも SelectLatest（write.go）でも常に DocumentFilename
+// （定数）から組み立てる。manifest.Document フィールドの値を使ってパスを
+// 組み立てることはしない。この安全性は**型で強制されてはいない** ——
+// 上の等値検査（判定 5）が「document は DocumentFilename と一致しなければ
+// 不完全」を保証しているので、今の実装では両者は常に同じ値になるが、将来
+// どちらかの構築箇所が変わっても他方が manifest.Document を使わない限り
+// パス走査は起きない、という 2 か所独立の防御として書いている。
 func VerifyGeneration(genDir string) (*Manifest, error) {
 	name := filepath.Base(filepath.Clean(genDir))
 
@@ -122,26 +131,31 @@ func VerifyGeneration(genDir string) (*Manifest, error) {
 	return &m, nil
 }
 
+// verifyFile は path の内容をサイズと sha256 で照合する。エラー文字列は
+// path の basename だけを出す —— path は media_dir 配下の絶対パスであり、
+// この文字列は SnapshotStatus.Reason 経由で `rokuban catalog verify` の
+// 出力にそのまま出るので、運用者の目に絶対パスを漏らさない。
 func verifyFile(path string, wantSize int64, wantSHA256 string) error {
+	name := filepath.Base(path)
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return fmt.Errorf("missing document file %q", filepath.Base(path))
+			return fmt.Errorf("missing document file %q", name)
 		}
-		return fmt.Errorf("opening %q: %w", path, err)
+		return fmt.Errorf("opening %q: %w", name, err)
 	}
 	defer func() { _ = f.Close() }()
 
 	h := sha256.New()
 	n, err := io.Copy(h, f)
 	if err != nil {
-		return fmt.Errorf("hashing %q: %w", path, err)
+		return fmt.Errorf("hashing %q: %w", name, err)
 	}
 	if n != wantSize {
-		return fmt.Errorf("size mismatch for %q: on disk %d, manifest %d", path, n, wantSize)
+		return fmt.Errorf("size mismatch for %q: on disk %d, manifest %d", name, n, wantSize)
 	}
 	if sum := hex.EncodeToString(h.Sum(nil)); sum != wantSHA256 {
-		return fmt.Errorf("sha256 mismatch for %q: on disk %s, manifest %s", path, sum, wantSHA256)
+		return fmt.Errorf("sha256 mismatch for %q: on disk %s, manifest %s", name, sum, wantSHA256)
 	}
 	return nil
 }

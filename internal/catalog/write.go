@@ -304,15 +304,23 @@ func SelectLatest(mediaDir string) (*Selection, error) {
 	if err != nil {
 		return nil, err
 	}
+	return selectFromStatuses(Dir(mediaDir), statuses)
+}
 
-	dir := Dir(mediaDir)
+// selectFromStatuses は完成判定済みの statuses から最初の完成世代を選ぶ。
+// SelectLatest から分離してあるのは、本体パスが常に DocumentFilename（定数）
+// から組み立てられ、manifest.Document の値を使わないことを、
+// VerifyGeneration の等値検査（判定 5）を経由せずに直接テストできるように
+// するため（TestSelectFromStatuses_DocumentPathIgnoresManifestDocument
+// 参照。判定 5 が守っている限り両者は同じ値になるが、ここは独立した防御）。
+func selectFromStatuses(dir string, statuses []SnapshotStatus) (*Selection, error) {
 	sel := &Selection{}
 	for _, st := range statuses {
 		if !st.Complete {
 			sel.Rejected = append(sel.Rejected, RejectedSnapshot{Name: st.Name, Reason: st.Reason})
 			continue
 		}
-		sel.DocumentPath = filepath.Join(dir, st.Name, st.Manifest.Document)
+		sel.DocumentPath = filepath.Join(dir, st.Name, DocumentFilename)
 		sel.Generation = st.Name
 		sel.Manifest = st.Manifest
 		return sel, nil
