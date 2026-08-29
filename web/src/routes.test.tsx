@@ -131,7 +131,7 @@ describe('routeTree', () => {
     // **`validateSearch` を直接呼ぶだけでは検出できない。** TanStack Router は
     // 非 strict モードで `{ ...生の location.search, ...validateSearch の戻り値 }`
     // の順に合成するので、`validateSearch` が**キーを省略**すると生の値
-    // （文字列 "abc"）がそのまま残る（`/live` の serviceId と同じ罠。issue #194）。
+    // （文字列 "abc"）がそのまま残る（`/live` の service と同じ罠。issue #194）。
     // 落とす次元にも undefined を明示代入して初めて消える
     const router = createRouter({
       routeTree,
@@ -212,107 +212,84 @@ describe('routeTree', () => {
     expect((ok.state.matches.at(-1)!.search as { ruleId?: unknown }).ruleId).toBe(1000)
   })
 
-  it('/live?serviceId=abc は useSearch の戻り値に文字列を残さない', async () => {
+  it('/live?service=abc は useSearch の戻り値に文字列を残さない', async () => {
     // **`validateSearch` を直接呼ぶだけでは検出できない。** TanStack Router は
     // 非 strict モードで `{ ...生の location.search, ...validateSearch の戻り値 }`
     // の順に合成するので、`validateSearch` が**キーを省略**すると生の値
-    // （文字列 "abc"）がそのまま残る。`LivePageSearch` は `serviceId?: number` と
+    // （文字列 "abc"）がそのまま残る。`LivePageSearch` は `service?: number` と
     // 宣言しているので、これは型が実行時に嘘をついている状態になる（issue #194）。
     // 落とす次元にも undefined を明示代入して初めて消える
     const router = createRouter({
       routeTree,
-      history: createMemoryHistory({ initialEntries: ['/live?serviceId=abc'] }),
+      history: createMemoryHistory({ initialEntries: ['/live?service=abc'] }),
     })
     await router.load()
 
-    const search = router.state.matches.at(-1)!.search as { serviceId?: unknown }
-    expect(search.serviceId).toBeUndefined()
+    const search = router.state.matches.at(-1)!.search as { service?: unknown }
+    expect(search.service).toBeUndefined()
     // 正しい値は通る（両方向を見る）
     const ok = createRouter({
       routeTree,
-      history: createMemoryHistory({ initialEntries: ['/live?serviceId=1024'] }),
+      history: createMemoryHistory({ initialEntries: ['/live?service=100020'] }),
     })
     await ok.load()
-    expect((ok.state.matches.at(-1)!.search as { serviceId?: unknown }).serviceId).toBe(1024)
+    expect((ok.state.matches.at(-1)!.search as { service?: unknown }).service).toBe(100020)
   })
 
-  it('/live の serviceId は非整数・0 以下・安全整数の外も落とす', async () => {
-    // issue #275: `/live` の serviceId パーサを `parsePositiveIntId`
+  it('/live の service は非整数・0 以下・安全整数の外も落とす', async () => {
+    // issue #275: `/live` の service パーサを `parsePositiveIntId`
     // （`lib/positive-id.ts`）へ寄せた。以前は `Number.isInteger(n) && n > 0` だけを
     // 見ており、`Number.MAX_SAFE_INTEGER` を超える値が黙って別の値に丸まる経路
     // （`9007199254740993` → `9007199254740992`）を塞いでいなかった。
     for (const raw of ['1.5', '0', '-1', 'Infinity', '1e30', '9007199254740993']) {
       const router = createRouter({
         routeTree,
-        history: createMemoryHistory({ initialEntries: [`/live?serviceId=${raw}`] }),
+        history: createMemoryHistory({ initialEntries: [`/live?service=${raw}`] }),
       })
       await router.load()
-      expect((router.state.matches.at(-1)!.search as { serviceId?: unknown }).serviceId).toBe(
+      expect((router.state.matches.at(-1)!.search as { service?: unknown }).service).toBe(
         undefined,
       )
     }
   })
 
   /**
-   * issue #291: SI の `serviceId` は network をまたぐと一意でないため、選択の
-   * 同定に `networkId` を追加した。`serviceId` と同じ流儀
-   * （`parsePositiveIntId` を経由し、落とす次元にも `undefined` を明示代入）で
-   * パースされることを固定する --- キーを省略する変異だと、`/live?networkId=abc`
-   * の文字列 "abc" が `useSearch` の戻り値に残ってしまい、このテストが落ちる
-   * （issue #194 型。上記 `/live?serviceId=abc` のテストと同じ罠）。
+   * `/live` の `?service=` は `/programs` の同名パラメータと同じ id 空間なので、
+   * 上限も同じ生成スキーマ（openapi の `maximum`）で見る --- 同じ名前の
+   * パラメータが画面ごとに違う値域を持つと、片方だけが通る id ができる。
+   * 期待値は openapi の `maximum`（`networkId` / `serviceId` とも 65535 の
+   * ときの合成値）をリテラルで書く --- 生成定数を参照すると上限を動かしても
+   * 通り続ける。
    */
-  it('/live?networkId=&serviceId= は両方を検証済みの number にする', async () => {
+  it('/live の service は Service.id の上限（openapi の maximum）を超えると落ちる', async () => {
+    for (const [raw, expected] of [
+      ['6553565536', undefined],
+      ['6553565535', 6553565535],
+    ] as const) {
+      const router = createRouter({
+        routeTree,
+        history: createMemoryHistory({ initialEntries: [`/live?service=${raw}`] }),
+      })
+      await router.load()
+      expect((router.state.matches.at(-1)!.search as { service?: unknown }).service).toBe(expected)
+    }
+  })
+
+  /**
+   * issue #438: `/live` の URL は他画面と同じ `?service=<Service.id>` に統一し、
+   * SI の 2 値をそのまま運ぶ旧クエリ形式の後方互換は持たない（`5ab06f8` と同じ
+   * 判断）。`LivePageSearch` はその 2 値のキーを持たないので、旧形式のリンクを
+   * 踏んでも `service` は常に undefined になる。
+   */
+  it('SI の 2 値をそのまま運ぶ旧クエリ形式は無視され、service は undefined になる', async () => {
     const router = createRouter({
       routeTree,
       history: createMemoryHistory({ initialEntries: ['/live?networkId=32736&serviceId=1024'] }),
     })
     await router.load()
 
-    const search = router.state.matches.at(-1)!.search as {
-      networkId?: unknown
-      serviceId?: unknown
-    }
-    expect(search.networkId).toBe(32736)
-    expect(search.serviceId).toBe(1024)
-  })
-
-  it('/live?networkId=abc は useSearch の戻り値に文字列を残さない', async () => {
-    const router = createRouter({
-      routeTree,
-      history: createMemoryHistory({ initialEntries: ['/live?networkId=abc&serviceId=1024'] }),
-    })
-    await router.load()
-
-    const search = router.state.matches.at(-1)!.search as { networkId?: unknown }
-    expect(search.networkId).toBeUndefined()
-  })
-
-  it('/live の networkId は非整数・0 以下・安全整数の外も落とす', async () => {
-    for (const raw of ['1.5', '0', '-1', 'Infinity', '1e30', '9007199254740993']) {
-      const router = createRouter({
-        routeTree,
-        history: createMemoryHistory({ initialEntries: [`/live?networkId=${raw}&serviceId=1024`] }),
-      })
-      await router.load()
-      expect((router.state.matches.at(-1)!.search as { networkId?: unknown }).networkId).toBe(
-        undefined,
-      )
-    }
-  })
-
-  it('/live?serviceId= 単独（networkId 無し）でも validateSearch は値を通す（同定は pickInitialService の担当）', async () => {
-    const router = createRouter({
-      routeTree,
-      history: createMemoryHistory({ initialEntries: ['/live?serviceId=1024'] }),
-    })
-    await router.load()
-
-    const search = router.state.matches.at(-1)!.search as {
-      networkId?: unknown
-      serviceId?: unknown
-    }
-    expect(search.networkId).toBeUndefined()
-    expect(search.serviceId).toBe(1024)
+    const search = router.state.matches.at(-1)!.search as { service?: unknown }
+    expect(search.service).toBeUndefined()
   })
 
   describe('ホーム新設（M8-3, issue #242）', () => {

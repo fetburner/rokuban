@@ -205,11 +205,10 @@ Android のジェスチャーナビは左右端からの横スワイプが「戻
 展開パネルに次の 2 本を持つ:
 
 - **放送中**（`startAt <= now < endAt`）の番組: 「ライブで見る」 →
-  `/live?networkId=&serviceId=`。渡すのは番組が持つ **SI の `networkId` /
-  `serviceId`**（サービス一覧・番組・ライブの URL と同じ id 空間）。`serviceId`
-  単独では network をまたぐと一意でないため両方渡す
-  （[live.md](live.md)「フロントエンド実装」）。Mirakurun 合成 id への変換は
-  streamer だけが行う。
+  `/live?service=<Service.id>`。番組表・録画の絞り込みと同じ `Service.id`
+  （合成 id）を渡す --- `ProgramListItem` は SI の `networkId` / `serviceId`
+  しか持たないため、`composeServiceId`（`lib/service-id.ts`）で合成してから渡す
+  （[live.md](live.md)「フロントエンド実装」）。
   `live.enabled` が無効なデプロイでは主ナビと同じ判断（`lib/capabilities.ts` の
   `useLiveEnabled()`）で出さない
 - **予約済み**の番組: 「予約の詳細」 → `/reservations/$site/$programId`。overrides

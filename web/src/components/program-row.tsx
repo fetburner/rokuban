@@ -16,6 +16,7 @@ import {
   type EncodeSettingsValue,
 } from '@/lib/encode-settings'
 import { formatDuration, formatTime, isAiring } from '@/lib/format'
+import { composeServiceId } from '@/lib/service-id'
 import { useCurrentSite } from '@/lib/site'
 import { cn } from '@/lib/utils'
 
@@ -245,10 +246,10 @@ export function ProgramRow({
               {showLiveLink && (
                 <Link
                   to="/live"
-                  // `networkId` も渡す --- SI の `serviceId` は network をまたぐと
-                  // 一意でないため（issue #291）、`serviceId` 単独では選んだのと
-                  // 違う network のチャンネルを指しうる。
-                  search={{ networkId: program.networkId, serviceId: program.serviceId }}
+                  // `program` は SI の `networkId` / `serviceId` しか持たないため
+                  // `Service.id` を合成する（issue #438。`/live` の `?service=` も
+                  // 他画面と同じ合成 id を使う）。
+                  search={{ service: composeServiceId(program.networkId, program.serviceId) }}
                   className="text-primary underline-offset-2 hover:underline"
                 >
                   ライブで見る

@@ -98,8 +98,8 @@ export function emptyRecordingsSearch(): RecordingsPageSearch {
  * ため、狭い方に倒して落とす。
  *
  * `routes.tsx` の `/search` の `ruleId`（`?ruleId=N` でルールの条件を検索画面へ
- * 写す導線。issue #24 M2-11、issue #194 で明示 `undefined` に揃えた）と `/live` の
- * `serviceId` も同じ `parsePositiveIntId` を使うので、パースの流儀が分岐しない。
+ * 写す導線。issue #24 M2-11、issue #194 で明示 `undefined` に揃えた）も同じ
+ * `parsePositiveIntId` を使うので、パースの流儀が分岐しない。
  */
 export function parseRuleId(raw: unknown): number | undefined {
   return parsePositiveIntId(raw)

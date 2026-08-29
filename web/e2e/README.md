@@ -87,8 +87,14 @@ jsdom で原理的に測れず、`vi.mock` によるフェイクの配線検査�
 E2E_LIVE_SERVICE_A=9001 E2E_LIVE_SERVICE_B=9002 pnpm e2e:live
 ```
 
-渡すのは **SI の `serviceId`**（ライブの URL に載るのも SI の値そのもの。
-issue #217）。`GET /api/capabilities` も
+`E2E_LIVE_SERVICE_A` / `_B` に渡すのは **SI の `serviceId`**（`E2E_LIVE_NETWORK_ID`
+と組で、DB へ投入した行の `(network_id, service_id)` そのもの。既定は `network_id=1`）。
+`/live` のページ URL は他画面と同じ `?service=<Service.id>`（合成 id）で、
+スクリプトは起動時に `GET /api/sites/{site}/services` から対応する `Service.id` を
+引く（`resolveServiceId`）--- 合成規則をスクリプト側に複製しない。セグメント/
+プレイリスト/離脱ヒントの URL には従来どおり SI の `serviceId` がそのまま載る
+（issue #217。streamer 側の資源同定は変えていない）ので、env の投入例
+（DB の `network_id` / `service_id` 列）は変わらない。`GET /api/capabilities` も
 `page.route` で `{live: true}` に差し替えるので、サーバー側の `live.enabled` は
 false（既定）のままでよい --- 差し替えないと画面が「無効です」になって
 ①〜⑦が全滅する（issue #209）。①〜⑦は「再生」ボタンを押した後の挙動を見るもの

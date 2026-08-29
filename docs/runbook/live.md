@@ -73,7 +73,7 @@ docker compose exec rokuban rokuban server --all --config /config.yml
    `too many concurrent live sessions on this process` が、チューナー自体が
    枯渇した場合は 503 `live stream unavailable` が返る（画面には
    「チューナー不足または同時視聴数の上限」+ 30 秒待つ案内が出る）。**チャンネル
-   選択自体（`?networkId=&serviceId=` を切り替えるだけ）はセッションを起こさない**
+   選択自体（`?service=<Service.id>` を切り替えるだけ）はセッションを起こさない**
    （issue #234 M7-1）ため、ここで積まれるのは実際に「再生」を押した本数だけで、
    通り過ぎただけのチャンネルは対象外 --- 以前あった 400ms のデバウンス
    （ザッピングでセッションが積まれないようにする緩和）は選択自体がコスト 0 に
@@ -101,16 +101,21 @@ docker compose exec rokuban rokuban server --all --config /config.yml
 画面が「無効です」になって①〜⑦が全滅するため（issue #209）。
 
 `E2E_LIVE_SERVICE_A` / `_B` に渡すのは **SI の `serviceId`**（下の投入例なら
-9001 / 9002）。ライブの URL に載るのも SI の `(network_id, service_id)` そのもの
-なので、合成 id への読み替えは要らない。
+9001 / 9002）。セグメント/プレイリスト/離脱ヒントの URL に載るのも SI の
+`(network_id, service_id)` そのものである。そちら側の読み替えは要らない。一方
+`/live` のページ URL は他画面と同じ `?service=<Service.id>`（合成 id）を
+使う。スクリプトは起動時に `GET /api/sites/{site}/services` から対応する
+`Service.id` を引く（`resolveServiceId`）。
 
 **`E2E_LIVE_NETWORK_ID`（既定 `1`）は投入した行の `network_id` と揃える**。
-⓪ が `/live?networkId=&serviceId=` の新形式で直開きするため、ここが食い違うと
-一致するサービスが無く「番組を持つ先頭」へフォールバックする。⓪ はそれを
-検出できるよう**選ばれたチャンネルそのものを assert する**（チャンネル一覧の
-`aria-current="page"` がちょうど 1 件で、その `href` に要求した組が載っている
-こと）。この assert が無いと、要求件数の判定だけは通り続けて「新形式を
-実ブラウザで踏んだ」という主張だけが嘘になる。
+ここが食い違うと `resolveServiceId` が一致するサービスをサービス一覧に
+見つけられず、`page.goto` の前に例外で落ちる想定である（実機での再現は未検証）。
+⓪ はさらに
+**選ばれたチャンネルそのものを assert する**。チャンネル一覧の
+`aria-current="page"` がちょうど 1 件で、その `href` に要求した `Service.id`
+が載っていることを見る。`resolveServiceId` は「投入した行が見つかるか」までしか
+見ない。この assert が無いと、要求件数の判定だけは通り続けて「要求した id が
+実際に選ばれた」という主張が抜け落ちる。
 
 準備（初回のみ）:
 
@@ -145,19 +150,17 @@ pnpm exec playwright install chromium webkit
 
 判定する点（詳細はスクリプト冒頭のコメント）:
 
-0. **選択と視聴開始の分離（issue #234 M7-1）**: `/live?networkId=&serviceId=` を
+0. **選択と視聴開始の分離（issue #234 M7-1）**: `/live?service=<Service.id>` を
    開いた直後はプレイリスト/セグメント要求が 0 件（`page.route` で観測）。
-   「再生」ボタンを押して初めて要求が飛ぶ。**併せて、その `(networkId, serviceId)`
-   の組が実際に選ばれたことも見る**。チャンネル一覧の `aria-current="page"` が
-   ちょうど 1 件で、その `href` に要求した組が載っていることを確かめる。
-   新形式を実ブラウザで踏む唯一の判定なので、`E2E_LIVE_NETWORK_ID` の不一致で
-   黙ってフォールバックしていないことはここでしか出ない。1 件でなく 2 件付くのは
-   `serviceId` 単独で同定していたときの壊れ方（`pages/live.test.tsx` で固定）。
+   「再生」ボタンを押して初めて要求が飛ぶ。**併せて、要求した `Service.id` が
+   実際に選ばれたことも見る**。チャンネル一覧の `aria-current="page"` が
+   ちょうど 1 件で、その `href` に要求した id が載っていることを確かめる。
+   1 件でなく 2 件付くのは `serviceId` 単独で同定していたときの壊れ方
+   （`pages/live.test.tsx` で固定）。
    ffmpeg 不要（フィクスチャを使わない）で bundled Chromium だけで測れるため、
    ①〜⑦と異なりゲートしていない。
    ①〜⑦は「再生」ボタンを押した後の挙動を見るものなので、`page.goto` の後に
-   このボタンを押す手順を挟んでいる（①〜⑦の `page.goto` は旧 `?serviceId=`
-   単独のままで、フォールバック経路を通る）
+   このボタンを押す手順を挟んでいる
 1. hls.js の動的 import チャンク（`assets/hls-*.js`）が実際に要求される
 2. MSE がアタッチされる。`video.currentSrc` が `blob:` になる。`src` は
    hls.js が `sourceopen` 後に object URL を revoke するので短命である。

@@ -23,7 +23,7 @@ Rokuban 自体のライブ視聴は「チャンネル一覧から選んでブラ
 その上に足す」）ため、モバイルからの入口を別に用意する必要が生じ結局 2 箇所になる。
 `/live` はチャンネル一覧（`GET /api/sites/{site}/services`）+ プレイヤー + いま放送中の番組
 （既存 EPG API の時間窓クエリ。専用 API は足していない）という 1 画面で構成する
-（`pages/live.tsx`）。選択中のチャンネルは `?networkId=&serviceId=` に持つ（`routes.tsx` の
+（`pages/live.tsx`）。選択中のチャンネルは `?service=<Service.id>` に持つ（`routes.tsx` の
 `validateSearch` が不正な値に `undefined` を**明示代入**して落とす。省略では
 消えない --- [recordings.md](recordings.md)「TanStack Router の `validateSearch` は
 無効な値を『省略』しても消えない」）。
@@ -36,11 +36,13 @@ Rokuban 自体のライブ視聴は「チャンネル一覧から選んでブラ
 `serviceId` を持つサービスが 2 つ返る構成がありうる。**そこで API が合成 id を
 `Service.id`（`networkId * 100000 + serviceId`）として返し、画面内の同定は
 すべてこの 1 つの値で行う**（選択中のハイライトと `aria-current`・再生中
-チャンネルの記憶・中断予測の EPG 問い合わせ）。**`/live` の URL だけは
-`?networkId=&serviceId=` のまま**で、`pickInitialService` は両方揃ったときだけ
-厳密に一致させる（片方しか無い入力は network を同定できないので、既定
-＝番組を持つ先頭へ落とす）。番組リスト（`components/program-row.tsx`）の
-「ライブで見る」リンクも両方を渡す。
+チャンネルの記憶・中断予測の EPG 問い合わせ）。**`/live` の URL もこの `Service.id`
+を使う**（`?service=` の値域も `/programs` と同じ生成スキーマで検証する）。
+初期選択は「一覧に `Service.id` が居ればそれ、居なければ既定」だけで決まる
+（`pickInitialService`。`lib/live.ts`）。
+番組リスト（`components/program-row.tsx`）の「ライブで見る」リンクは
+`ProgramListItem` が SI の `networkId` / `serviceId` しか持たないため、
+`composeServiceId`（`lib/service-id.ts`）で合成してから渡す。
 
 **番組表と録画の絞り込みも network を含む厳密形式を持つ。** 高松の地上波だけを
 受信する実運用 mirakc では 19 サービス中の重複は 0 件だったが、この測定は GR の
@@ -52,7 +54,7 @@ Rokuban 自体のライブ視聴は「チャンネル一覧から選んでブラ
 `?service=<Service.id>` の配列で運ぶ（1 局なら 1 要素）。録画では site が
 別軸（`?site=`）で、軸内は OR・軸間は AND。
 
-**「選ぶ」（`?networkId=&serviceId=` を変える）と「流す」（`LivePlayer` をマウントする）を
+**「選ぶ」（`?service=` を変える）と「流す」（`LivePlayer` をマウントする）を
 別のタップに分ける。** チャンネルを選ぶこと自体は probe も
 セッション（チューナー確保 + ffmpeg 起動）も起こさない --- チャンネル一覧・
 いま放送中の番組・チャンネル種別（GR/BS/CS）の表示だけで、`LivePlayer` は
@@ -86,7 +88,7 @@ reset effect が走って unmount してももう遅い（`internal/streamer/liv
 異なる serviceId で透過的にマウントされる中間コミット自体が存在しない
 （詳細は `pages/live.tsx` の `playingKey` 定義部のコメント）。
 
-**直リンク・ブックマーク（`/live?networkId=&serviceId=` の直開き）も選択状態で止まる。**
+**直リンク・ブックマーク（`/live?service=<Service.id>` の直開き）も選択状態で止まる。**
 再生開始の同意を取る構造は、通常のチャンネル一覧からの選択と直リンクで区別しない
 --- 直開きだけ自動再生にすると「タップで選んだときは同意が要るが URL 経由なら
 要らない」という一貫しない規則になり、番組行の「ライブで見る」等の外部導線
@@ -100,7 +102,7 @@ reset effect が走って unmount してももう遅い（`internal/streamer/liv
 
 **視聴中チャンネルの情報欄に「この局の番組表」リンクを置く。**
 `/programs`（番組表）の `?service=` へ、視聴中の 1 局を配列 1 要素で渡す
-（[programs.md](programs.md)「番組リスト」の絞り込みと同じ形。`serviceId?: number[]`）。
+（[programs.md](programs.md)「番組リスト」の絞り込みと同じ形。`service?: number[]`）。
 このリンクは通常の push ナビゲーション（`replace` にしない） --- チャンネル一覧の
 ザッピングとは違い 1 回だけの遷移なので、戻るボタンで視聴中チャンネルへ戻れる
 方が自然。逆方向（番組表 → ライブ）はページ単位の導線を置かない（理由は
@@ -291,7 +293,7 @@ in-flight `fetch` を `AbortController` で中断、hls.js の `destroy()` /
 
 **選択と視聴開始を分離したことで、「ザッピングのたびにセッションが積まれる」と
 いう事態自体が起きなくなった。**
-`?networkId=&serviceId=` を切り替えるだけでは probe もセッション開始も走らないため、
+`?service=` を切り替えるだけでは probe もセッション開始も走らないため、
 チャンネル一覧を何度触っても掴まれるチューナーは 0 のまま増えない --- ただし
 これは `playingKey` と `selectedKey` の一致判定をレンダー中に行う
 実装でのみ真になる（上記「フロントエンド実装」の同じ節参照）。`useEffect` で

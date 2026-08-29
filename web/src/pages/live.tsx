@@ -49,13 +49,12 @@ const nowPlayingRefetchMs = 30_000
  * 出すと「機能しないコントロール」になるため、既定プロファイル（先頭）に
  * 固定する。
  *
- * 選択中のチャンネルは `?networkId=&serviceId=` に持つ。SI の `serviceId` は
- * network をまたぐと一意でないため（`lib/live.ts` の `pickInitialService` の
- * doc コメント参照。issue #291）、同定には両方を使う。`networkId` を持たない
- * 旧 `?serviceId=` 単独のリンクは「その `serviceId` を持つ最初のサービス」へ
- * フォールバックする。これにより特定チャンネルへの直リンクが作れる。チャンネルを
- * 切り替えるナビゲーションは `replace` にし、ザッピングでブラウザ履歴が
- * 積み上がらないようにする。
+ * 選択中のチャンネルは `?service=<Service.id>` に持つ（`/programs` /
+ * `/recordings` の絞り込みと同じ id 空間。issue #438）。一覧に無い id は
+ * `pickInitialService`（`lib/live.ts`）が番組を持つ先頭のサービスへ落とす。
+ * これにより特定チャンネルへの直リンクが作れる。チャンネルを切り替える
+ * ナビゲーションは `replace` にし、ザッピングでブラウザ履歴が積み上がらない
+ * ようにする。
  *
  * **「選ぶ」と「流す」を別のタップに分ける（issue #234 M7-1）。** チャンネルを
  * 選ぶこと自体は probe もセッション（チューナー確保 + ffmpeg 起動）も起こさない
@@ -80,19 +79,10 @@ export function LivePage() {
   const orderedServices = useMemo(() => orderServices(unwrap(services.data) ?? []), [services.data])
   const groups = useMemo(() => groupByChannelType(orderedServices), [orderedServices])
 
-  // **`serviceId` 単独では network をまたぐ同名 id を区別できない**ため、選択の
-  // 同定は `Service` オブジェクトそのもの（`networkId` + `serviceId` の組）で行う
-  // （`lib/live.ts` の `pickInitialService` の doc コメント。issue #291）。
-  // `orderedServices.find((s) => s.serviceId === selectedServiceId)` のように
-  // `serviceId` だけで一覧から再検索すると、同じ `serviceId` を持つ別 network の
-  // サービスが先に一致し、選んだのと違う network のチャンネルを指してしまう
-  // （aria-current のハイライトも 2 行に付く。`pages/live.test.tsx`
-  // 「networkId + serviceId を指定すると、その network のチャンネルだけが
-  // 選ばれる」で固定した。実運用の EPG で衝突が起きているかは未検証）。
-  const selectedService = pickInitialService(orderedServices, {
-    networkId: routeSearch.networkId,
-    serviceId: routeSearch.serviceId,
-  })
+  // 選択の同定は `Service.id`（合成 id）そのもので行う（`lib/live.ts` の
+  // `pickInitialService`）。SI の `serviceId` 単独では network をまたぐと
+  // 一意でない（issue #291）が、`Service.id` は合成の時点で解消されている。
+  const selectedService = pickInitialService(orderedServices, routeSearch.service)
   const selectedKey = selectedService?.id
 
   // playingKey は「再生」ボタンで明示的に視聴を始めたチャンネルの `Service.id`
@@ -320,16 +310,11 @@ export function LivePage() {
                             ようにするため。 */}
                         <Link
                           to="/live"
-                          search={{ networkId: s.networkId, serviceId: s.serviceId }}
+                          search={{ service: s.id }}
                           replace
-                          // ハイライト・aria-current の同定も `networkId` +
-                          // `serviceId` の組で行う --- `serviceId` 単独では、同じ
-                          // `serviceId` を持つ別 network のサービスにも付いてしまう
-                          // （issue #291。同じ `serviceId` を 2 network が持つ
-                          // 構成では 2 行に aria-current が付く ---
-                          // `pages/live.test.tsx`「networkId + serviceId を
-                          // 指定すると、その network のチャンネルだけが選ばれる」
-                          // で固定した。実運用の EPG で衝突が起きているかは未検証）。
+                          // ハイライト・aria-current の同定も `Service.id`（合成
+                          // id）で行う --- SI の `serviceId` 単独では、同じ id を
+                          // 持つ別 network のサービスにも付いてしまう（issue #291）。
                           aria-current={
                             s.id === selectedKey
                               ? 'page'

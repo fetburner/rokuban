@@ -1,7 +1,7 @@
 /**
  * parsePositiveIntId は URL などの生の値を「正の安全整数の識別子」としてパースする
- * 共有ヘルパー（issue #275）。`rules.id`（`bigint` PK、Go 側 `int64`）や `/live` の
- * `serviceId` のように、シーケンス/SI 由来で 1 以上しか存在しない識別子に共通する形。
+ * 共有ヘルパー（issue #275）。`rules.id`（`bigint` PK、Go 側 `int64`）のように、シーケンス由来で 1 以上しか
+ * 存在しない識別子に共通する形。
  *
  * 空文字列・空白のみの文字列は先に弾く --- `Number('') === 0` で「id 0」という
  * 具体的な値に化ける。欠落は「無し」であるべき（`lib/programs-search.ts` の

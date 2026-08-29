@@ -3,13 +3,17 @@ import { createRootRoute, createRoute, HeadContent, Outlet } from '@tanstack/rea
 import { AppShell } from './components/app-shell'
 import { SiteGate } from './components/site-gate'
 import { pageTitle } from './lib/document-title'
-import { parsePositiveIntId } from './lib/positive-id'
-import { parseProgramsSearch, type ProgramsPageSearch } from './lib/programs-search'
+import {
+  parseProgramsSearch,
+  serviceIdSchema,
+  type ProgramsPageSearch,
+} from './lib/programs-search'
 import {
   parseRecordingsSearch,
   parseRuleId,
   type RecordingsPageSearch,
 } from './lib/recording-search'
+import { asInteger, validValue } from './lib/url-search'
 import { HomePage } from './pages/home'
 import { LivePage } from './pages/live'
 import { ProgramsPage } from './pages/programs'
@@ -111,7 +115,7 @@ const searchRoute = createRoute({
   // 「ruleId 指定なし」の通常の検索フォームとして開ける。
   //
   // **落とす次元にも `undefined` を明示代入する**（`parseRecordingsSearch` /
-  // `/live` の `serviceId` と同じ形。issue #194）。TanStack Router は非 strict
+  // `/live` の `service` と同じ形。issue #194）。TanStack Router は非 strict
   // モードで `{ ...生の location.search, ...validateSearch の戻り値 }` の順に
   // 合成するので、キーを省略すると生の値（`/search?ruleId=abc` なら文字列
   // `"abc"`）がそのまま残り、`pages/search.tsx` が `ruleId !== undefined` を
@@ -207,14 +211,11 @@ const recordingDetailRoute = createRoute({
 /** LivePageSearch は `/live` のクエリパラメータ。 */
 export type LivePageSearch = {
   /**
-   * 視聴中チャンネルの network（省略時は `serviceId` 単独で最初に一致した
-   * サービスへフォールバックする。SI の `serviceId` は network をまたぐと
-   * 一意でないため、本来はこの `networkId` との組で同定する。`lib/live.ts` の
-   * `pickInitialService`）。
+   * 視聴中のチャンネル（`Service.id`。省略時・一覧に無い id は番組を持つ先頭の
+   * サービスに落ちる。`lib/live.ts` の `pickInitialService`）。`/programs` /
+   * `/recordings` の `?service=` と同じ id 空間。
    */
-  networkId?: number
-  /** 視聴中のチャンネル（省略時は番組を持つ先頭のサービスに落ちる。`lib/live.ts` の `pickInitialService`）。 */
-  serviceId?: number
+  service?: number
 }
 
 /**
@@ -226,30 +227,29 @@ const liveRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/live',
   // 壊れた/古いリンクを踏んでも「チャンネル指定なし」の通常表示（先頭チャンネル）
-  // に落ちる。
+  // に落ちる。**SI の 2 値をそのまま運んでいた旧クエリ形式の後方互換は持たない**
+  // （issue #438。`5ab06f8` と同じ判断）--- `LivePageSearch` はそのキーを持たない
+  // ので、旧リンクは「チャンネル指定なし」と同じ扱いになる。
   //
   // **落とす次元にも `undefined` を明示代入する**（`parseRecordingsSearch` と
   // 同じ形。issue #194）。TanStack Router は非 strict モードで
   // `{ ...生の location.search, ...validateSearch の戻り値 }` の順に合成するので、
-  // キーを省略すると生の値（`/live?serviceId=abc` なら文字列 `"abc"`）がそのまま
-  // 残り、`LivePageSearch` の `serviceId?: number` という型が実行時に嘘になる。
-  // いまの唯一の読者（`pickInitialService`）は厳密比較なので実害は無いが、
-  // `serviceId` を `livePlaylistURL` に直接渡す読者が 1 人増えた瞬間に
-  // `/api/.../services/abc/live/playlist.m3u8` が飛ぶ
+  // キーを省略すると生の値（`/live?service=abc` なら文字列 `"abc"`）がそのまま
+  // 残り、`LivePageSearch` の `service?: number` という型が実行時に嘘になる。
+  // 旧形式の `networkId` / `serviceId` は型から消えたので上書きされず、
+  // 旧ブックマークではアドレスバーに残ったままになる（読者が 1 人も居ないので
+  // 実害は無く、チャンネルを 1 回選べばオブジェクト指定の `search` が丸ごと
+  // 置き換えて消える。実測）。消すために型へ「持たないキー」を書き足すのは、
+  // 落としたはずの旧形式の知識を持ち続けることになるのでしない。
   //
-  // `parsePositiveIntId`（`lib/positive-id.ts`）を使う（issue #275）。以前は
-  // `Number.isInteger(n) && n > 0` だけを見ており、`Number.MAX_SAFE_INTEGER` を
-  // 超える値が黙って別の値に丸まる経路（`Number('9007199254740993')` が既に
-  // `9007199254740992` になる）を塞いでいなかった。`ruleId`（`lib/recording-search.ts`
-  // の `parseRuleId`）と同じ「シーケンス/SI 由来で 1 以上しか存在しない識別子」の
-  // 流儀なので、この PR で共有ヘルパーへ寄せた。
-  //
-  // `networkId` も同じ流儀でパースする（SI の `networkId` も 1 以上しか存在しない。
-  // issue #291）。壊れた値は `undefined` に落ち、`pickInitialService` の既定
-  // （番組を持つ先頭のサービス）に乗る。
+  // **`?service=` は `/programs` / `/recordings` と同じ生成スキーマ
+  // （`serviceIdSchema`）と同じアダプタ（`validValue` + `asInteger`）で検証する。**
+  // 同じ名前・同じ id 空間のパラメータを別の流儀で検証すると値域が食い違う
+  // （`Service.id` の上限は openapi の `maximum` が権威。
+  // `internal/api/spec_bounds_test.go`）。整数性・安全整数の判定は `asInteger`
+  // が持つ（生成スキーマに `.int()` は出ない。`lib/url-search.ts`）。
   validateSearch: (search: Record<string, unknown>): LivePageSearch => ({
-    networkId: parsePositiveIntId(search.networkId),
-    serviceId: parsePositiveIntId(search.serviceId),
+    service: validValue(serviceIdSchema, search.service, { coerce: asInteger }),
   }),
   // `pages/live.tsx` の `<PageHeader title="ライブ">` と同じ表記。issue #304 は
   // Playwright で確認した 6 ルートを挙げているが、`/live` だけ `head` を

@@ -16,8 +16,11 @@ import { ascending, asInteger, parseEnum, validArray } from '@/lib/url-search'
 /**
  * serviceIdSchema は `?service=` の 1 要素。**openapi.yaml から生成した
  * スキーマをそのまま使う**（`minimum` / `maximum` を手で書き写さない）。
+ *
+ * `/live` の `?service=`（`routes.tsx` の `LivePageSearch`）も同じ id 空間なので
+ * この 1 本を共有する --- 別々に書くと同じパラメータ名で値域が食い違う。
  */
-const serviceIdSchema = ListProgramsQueryParams.shape.service.unwrap().element
+export const serviceIdSchema = ListProgramsQueryParams.shape.service.unwrap().element
 
 /** ProgramsPageSearch は `/programs` の URL クエリパラメータ（検証済み）。 */
 export type ProgramsPageSearch = {
@@ -100,7 +103,7 @@ function parseAt(raw: unknown): number | undefined {
  * `location.search` の上に重ねる」形で合成する。戻り値からキーを省略すると、
  * そのキーは上書きされず生の不正な値（`?serviceId=abc` の文字列そのもの等）が
  * 「検証済みのつもり」の結果へそのまま残って漏れる（`lib/recording-search.ts`
- * の `parseRecordingsSearch` / `routes.tsx` の `/live` の `serviceId` と同型。
+ * の `parseRecordingsSearch` / `routes.tsx` の `/live` の `service` と同型。
  * issue #194）。`{ ...x, k: undefined }` はどちらの合成方式で見ても実際に
  * 上書きになるため、これで確実に消える --- ここでは常に全キーを持つ
  * オブジェクトリテラルを返すことでそれを満たす。
