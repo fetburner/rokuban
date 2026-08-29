@@ -5,10 +5,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/fetburner/rokuban/internal/ffargs"
 )
 
 func writeConfig(t *testing.T, content string) string {
@@ -694,8 +697,21 @@ func TestLoad_FileNotFound(t *testing.T) {
 	}
 }
 
-func TestLoad_AllFieldsOverridden(t *testing.T) {
-	path := writeConfig(t, `
+// intPtr はテスト用に *int リテラルを組み立てる。
+func intPtr(v int) *int { return &v }
+
+// allFieldsOverriddenConfig は Config の yaml タグをほぼ全部（`mirakcs:` と
+// その要素 `MirakcSite.site`/`.url` を除く）非既定値で上書きした設定。
+// `mirakcs:` は `mirakc:` と相互排他（validateMirakcRegistry）なので同じ
+// ドキュメントに同居できず、その形は TestLoad_MirakcRegistry が別途固定して
+// いるため、ここでは対象外にする。
+//
+// encode.profiles / live.profiles は 2 要素にし、crf と qp（互いに排他）を
+// 1 要素ずつに分けて両方の yaml タグを踏む。hwaccel ブロックの中身
+// （kind/device/output_format、internal/ffargs のタグで config.go の 91 個には
+// 含まれない）は TestLoad_EncodeProfileHWAccel / TestLoad_LiveHWAccel が別途
+// 固定しているので、ここではブロックが非 nil で通ることだけを確認する。
+const allFieldsOverriddenConfig = `
 server:
   listen: ":8080"
   allowed_hosts: [example.com, rokuban.local]
@@ -707,8 +723,12 @@ db:
   password: hunter2
   database: rokuban_prod
   sslmode: require
+  max_conns: 20
+  api_statement_timeout: 45s
+  pooler_compat: true
 mirakc:
   url: http://10.0.0.1:40772
+  site: tokyo
 storage:
   media_dir: /data/media
   scratch_dir: /data/scratch
@@ -719,6 +739,10 @@ ingest:
 epg:
   sync_interval: 30m
   retention_grace: 48h
+ruler:
+  max_deletes_per_pass: 77
+reconciler:
+  start_delay_grace: 5m
 worker:
   periodic_jobs: false
   queues: [ruler, epg]
@@ -733,12 +757,52 @@ encode:
       video_codec: libx264
       audio_codec: aac
       height: 1080
+      scaler: software
       crf: 23
       preset: medium
-    - name: h265
+      input_extra_args: ["-analyzeduration", "10M"]
+      extra_args: ["-movflags", "+faststart"]
+    - name: h265_vaapi
       container: mkv
-      video_codec: libx265
+      video_codec: hevc_vaapi
       audio_codec: aac
+      height: 720
+      scaler: vaapi
+      qp: 28
+      hwaccel:
+        kind: vaapi
+        device: /dev/dri/renderD128
+        output_format: vaapi
+live:
+  enabled: true
+  ffmpeg: /usr/local/bin/ffmpeg-live
+  segment_dir: /tmp/hls
+  max_sessions: 8
+  idle_timeout: 45s
+  tuner_priority: 5
+  hwaccel:
+    kind: vaapi
+    device: /dev/dri/renderD128
+    output_format: vaapi
+  input_extra_args: ["-re"]
+  profiles:
+    - name: high
+      video_codec: libx264
+      audio_codec: aac
+      height: 720
+      scaler: software
+      crf: 24
+      preset: veryfast
+      segment_seconds: 4
+      playlist_size: 8
+      extra_args: ["-movflags", "+faststart"]
+    - name: low
+      video_codec: libx264
+      audio_codec: aac
+      height: 360
+      qp: 30
+      segment_seconds: 2
+      playlist_size: 6
 webhook:
   url: https://hooks.example.com/rokuban
   secret: s3cret
@@ -746,100 +810,160 @@ webhook:
   events:
     - recording.finished
     - recording.failed
+cleanup:
+  trash_retention: 240h
+  orphan_mtime_grace: 100h
+  orphan_age: 300h
+  max_deletes_per_pass: 55
+  missing_asset_age: 12h
 log:
   level: debug
   format: text
-`)
+`
+
+// TestLoad_AllFieldsOverridden は Config の yaml タグ（config.go に 91 個。
+// `mirakcs:`/MirakcSite の 3 個は上記の理由で対象外）を全部上書きした設定を
+// 読み、セクションごとに実際の値と期待値をテーブルで突き合わせる。
+//
+// セクション単位（struct 丸ごと）の比較にしているのは、そのセクション内の
+// どの yaml タグの上書きを 1 つ外しても（既定値に戻って期待値と食い違うので）
+// 対応する行が落ちるため --- フィールドごとに行を分けなくても検出力は
+// 変わらない。
+func TestLoad_AllFieldsOverridden(t *testing.T) {
+	path := writeConfig(t, allFieldsOverriddenConfig)
 	cfg, err := Load(path)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if cfg.Server.Listen != ":8080" {
-		t.Errorf("server.listen = %q, want %q", cfg.Server.Listen, ":8080")
+	cases := []struct {
+		name string
+		got  any
+		want any
+	}{
+		{
+			"server",
+			cfg.Server,
+			ServerConfig{
+				Listen:             ":8080",
+				AllowedHosts:       []string{"example.com", "rokuban.local"},
+				TrustForwardedHost: true,
+			},
+		},
+		{
+			"db",
+			cfg.DB,
+			DBConfig{
+				Host: "db.example.com", Port: 5433, User: "admin", Password: "hunter2",
+				Database: "rokuban_prod", SSLMode: "require",
+				MaxConns: 20, APIStatementTimeout: 45 * time.Second, PoolerCompat: true,
+			},
+		},
+		{
+			"mirakc",
+			cfg.Mirakc,
+			MirakcConfig{URL: "http://10.0.0.1:40772", Site: "tokyo"},
+		},
+		{
+			"storage",
+			cfg.Storage,
+			StorageConfig{MediaDir: "/data/media", ScratchDir: "/data/scratch", AccelLocation: "/_media/"},
+		},
+		{
+			"ingest",
+			cfg.Ingest,
+			IngestConfig{Concurrency: 4, StallTimeout: 2 * time.Minute},
+		},
+		{
+			"epg",
+			cfg.Epg,
+			EpgConfig{SyncInterval: 30 * time.Minute, RetentionGrace: 48 * time.Hour},
+		},
+		{
+			"ruler",
+			cfg.Ruler,
+			RulerConfig{MaxDeletesPerPass: 77},
+		},
+		{
+			"reconciler",
+			cfg.Reconciler,
+			ReconcilerConfig{StartDelayGrace: 5 * time.Minute},
+		},
+		{
+			"worker",
+			cfg.Worker,
+			WorkerConfig{PeriodicJobs: false, Queues: []string{"ruler", "epg"}},
+		},
+		{
+			"encode",
+			cfg.Encode,
+			EncodeConfig{
+				FFmpeg: "/usr/local/bin/ffmpeg", FFprobe: "/usr/local/bin/ffprobe",
+				Concurrency: 3, ThumbnailConcurrency: 2,
+				Profiles: []EncodeProfile{
+					{
+						Name: "h264", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac",
+						Height: 1080, Scaler: ffargs.ScalerSoftware, CRF: intPtr(23), Preset: "medium",
+						InputExtraArgs: []string{"-analyzeduration", "10M"},
+						ExtraArgs:      []string{"-movflags", "+faststart"},
+					},
+					{
+						Name: "h265_vaapi", Container: "mkv", VideoCodec: "hevc_vaapi", AudioCodec: "aac",
+						Height: 720, Scaler: ffargs.ScalerVAAPI, QP: intPtr(28),
+						HWAccel: &ffargs.HWAccel{Kind: "vaapi", Device: "/dev/dri/renderD128", OutputFormat: "vaapi"},
+					},
+				},
+			},
+		},
+		{
+			"live",
+			cfg.Live,
+			LiveConfig{
+				Enabled: true, FFmpeg: "/usr/local/bin/ffmpeg-live", SegmentDir: "/tmp/hls",
+				MaxSessions: 8, IdleTimeout: 45 * time.Second, TunerPriority: 5,
+				HWAccel:        &ffargs.HWAccel{Kind: "vaapi", Device: "/dev/dri/renderD128", OutputFormat: "vaapi"},
+				InputExtraArgs: []string{"-re"},
+				Profiles: []LiveProfile{
+					{
+						Name: "high", VideoCodec: "libx264", AudioCodec: "aac", Height: 720,
+						Scaler: ffargs.ScalerSoftware, CRF: intPtr(24), Preset: "veryfast",
+						SegmentSeconds: 4, PlaylistSize: 8,
+						ExtraArgs: []string{"-movflags", "+faststart"},
+					},
+					{
+						Name: "low", VideoCodec: "libx264", AudioCodec: "aac", Height: 360,
+						QP: intPtr(30), SegmentSeconds: 2, PlaylistSize: 6,
+					},
+				},
+			},
+		},
+		{
+			"webhook",
+			cfg.Webhook,
+			WebhookConfig{
+				URL: "https://hooks.example.com/rokuban", Secret: "s3cret", Timeout: 10 * time.Second,
+				Events: []string{"recording.finished", "recording.failed"},
+			},
+		},
+		{
+			"cleanup",
+			cfg.Cleanup,
+			CleanupConfig{
+				TrashRetention: 240 * time.Hour, OrphanMTimeGrace: 100 * time.Hour, OrphanAge: 300 * time.Hour,
+				MaxDeletesPerPass: 55, MissingAssetAge: 12 * time.Hour,
+			},
+		},
+		{
+			"log",
+			cfg.Log,
+			LogConfig{Level: "debug", Format: "text"},
+		},
 	}
-	if len(cfg.Server.AllowedHosts) != 2 {
-		t.Errorf("server.allowed_hosts len = %d, want 2", len(cfg.Server.AllowedHosts))
-	}
-	if !cfg.Server.TrustForwardedHost {
-		t.Error("server.trust_forwarded_host = false, want true")
-	}
-	if cfg.DB.Host != "db.example.com" {
-		t.Errorf("db.host = %q, want %q", cfg.DB.Host, "db.example.com")
-	}
-	if cfg.DB.Port != 5433 {
-		t.Errorf("db.port = %d, want %d", cfg.DB.Port, 5433)
-	}
-	if cfg.DB.SSLMode != "require" {
-		t.Errorf("db.sslmode = %q, want %q", cfg.DB.SSLMode, "require")
-	}
-	if cfg.Mirakc.URL != "http://10.0.0.1:40772" {
-		t.Errorf("mirakc.url = %q, want %q", cfg.Mirakc.URL, "http://10.0.0.1:40772")
-	}
-	if cfg.Storage.MediaDir != "/data/media" {
-		t.Errorf("storage.media_dir = %q, want %q", cfg.Storage.MediaDir, "/data/media")
-	}
-	if cfg.Storage.ScratchDir != "/data/scratch" {
-		t.Errorf("storage.scratch_dir = %q, want %q", cfg.Storage.ScratchDir, "/data/scratch")
-	}
-	if cfg.Storage.AccelLocation != "/_media/" {
-		t.Errorf("storage.accel_location = %q, want %q", cfg.Storage.AccelLocation, "/_media/")
-	}
-	if cfg.Ingest.Concurrency != 4 {
-		t.Errorf("ingest.concurrency = %d, want %d", cfg.Ingest.Concurrency, 4)
-	}
-	if cfg.Ingest.StallTimeout != 2*time.Minute {
-		t.Errorf("ingest.stall_timeout = %v, want %v", cfg.Ingest.StallTimeout, 2*time.Minute)
-	}
-	if cfg.Epg.SyncInterval != 30*time.Minute {
-		t.Errorf("epg.sync_interval = %v, want %v", cfg.Epg.SyncInterval, 30*time.Minute)
-	}
-	if cfg.Epg.RetentionGrace != 48*time.Hour {
-		t.Errorf("epg.retention_grace = %v, want %v", cfg.Epg.RetentionGrace, 48*time.Hour)
-	}
-	if cfg.Worker.PeriodicJobs {
-		t.Error("worker.periodic_jobs = true, want false")
-	}
-	if want := []string{"ruler", "epg"}; !slices.Equal(cfg.Worker.Queues, want) {
-		t.Errorf("worker.queues = %v, want %v", cfg.Worker.Queues, want)
-	}
-	if cfg.Encode.FFmpeg != "/usr/local/bin/ffmpeg" {
-		t.Errorf("encode.ffmpeg = %q, want %q", cfg.Encode.FFmpeg, "/usr/local/bin/ffmpeg")
-	}
-	if cfg.Encode.Concurrency != 3 {
-		t.Errorf("encode.concurrency = %d, want 3", cfg.Encode.Concurrency)
-	}
-	if cfg.Encode.ThumbnailConcurrency != 2 {
-		t.Errorf("encode.thumbnail_concurrency = %d, want 2", cfg.Encode.ThumbnailConcurrency)
-	}
-	if len(cfg.Encode.Profiles) != 2 {
-		t.Errorf("encode.profiles len = %d, want 2", len(cfg.Encode.Profiles))
-	}
-	p0 := cfg.Encode.Profiles[0]
-	if p0.Name != "h264" || p0.Container != "mp4" || p0.VideoCodec != "libx264" ||
-		p0.AudioCodec != "aac" || p0.Height != 1080 || p0.Preset != "medium" {
-		t.Errorf("profiles[0] = %+v", p0)
-	}
-	if p0.CRF == nil || *p0.CRF != 23 {
-		t.Errorf("profiles[0].crf = %v, want 23", p0.CRF)
-	}
-	if cfg.Webhook.URL != "https://hooks.example.com/rokuban" {
-		t.Errorf("webhook.url = %q, want %q", cfg.Webhook.URL, "https://hooks.example.com/rokuban")
-	}
-	if cfg.Webhook.Secret != "s3cret" {
-		t.Errorf("webhook.secret = %q, want %q", cfg.Webhook.Secret, "s3cret")
-	}
-	if cfg.Webhook.Timeout != 10*time.Second {
-		t.Errorf("webhook.timeout = %v, want %v", cfg.Webhook.Timeout, 10*time.Second)
-	}
-	if want := []string{"recording.finished", "recording.failed"}; !slices.Equal(cfg.Webhook.Events, want) {
-		t.Errorf("webhook.events = %v, want %v", cfg.Webhook.Events, want)
-	}
-	if cfg.Log.Level != "debug" {
-		t.Errorf("log.level = %q, want %q", cfg.Log.Level, "debug")
-	}
-	if cfg.Log.Format != "text" {
-		t.Errorf("log.format = %q, want %q", cfg.Log.Format, "text")
+
+	for _, c := range cases {
+		if !reflect.DeepEqual(c.got, c.want) {
+			t.Errorf("%s = %+v, want %+v", c.name, c.got, c.want)
+		}
 	}
 }
 
