@@ -12,7 +12,6 @@ import (
 	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
-	"github.com/fetburner/rokuban/internal/diskusage"
 	"github.com/fetburner/rokuban/internal/metrics"
 )
 
@@ -227,11 +226,11 @@ func TestStorageSyncWorker_PartialStatFailureKeepsStaleRow(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 
 	// 2 回目: scratch だけ statfs が失敗する状況を注入する。
-	w.Stat = func(path string) (diskusage.Usage, error) {
+	w.Stat = func(path string) (diskUsage, error) {
 		if path == scratchDir {
-			return diskusage.Usage{}, fmt.Errorf("simulated statfs failure")
+			return diskUsage{}, fmt.Errorf("simulated statfs failure")
 		}
-		return diskusage.Stat(path)
+		return statDisk(path)
 	}
 	if err := runStorageSync(t, w); err != nil {
 		t.Fatalf("second Work() error: %v (partial failure must not fail the whole pass)", err)
@@ -264,8 +263,8 @@ func TestStorageSyncWorker_AllRootsFailReturnsError(t *testing.T) {
 	w := &StorageSyncWorker{
 		Pool:     pool,
 		MediaDir: mediaDir,
-		Stat: func(string) (diskusage.Usage, error) {
-			return diskusage.Usage{}, fmt.Errorf("simulated statfs failure")
+		Stat: func(string) (diskUsage, error) {
+			return diskUsage{}, fmt.Errorf("simulated statfs failure")
 		},
 	}
 
@@ -279,16 +278,16 @@ func TestStorageSyncWorker_AllRootsFailReturnsError(t *testing.T) {
 	}
 }
 
-// fakeStat は root ごとに固定の diskusage.Usage を返す（実ディスクの数字に依存せず
+// fakeStat は root ごとに固定の diskUsage を返す（実ディスクの数字に依存せず
 // ゲージの値を厳密に検証するため）。
-func fakeStat(usageByPath map[string]diskusage.Usage, failPaths map[string]bool) func(string) (diskusage.Usage, error) {
-	return func(path string) (diskusage.Usage, error) {
+func fakeStat(usageByPath map[string]diskUsage, failPaths map[string]bool) func(string) (diskUsage, error) {
+	return func(path string) (diskUsage, error) {
 		if failPaths[path] {
-			return diskusage.Usage{}, fmt.Errorf("simulated statfs failure for %s", path)
+			return diskUsage{}, fmt.Errorf("simulated statfs failure for %s", path)
 		}
 		u, ok := usageByPath[path]
 		if !ok {
-			return diskusage.Usage{}, fmt.Errorf("fakeStat: no usage configured for %s", path)
+			return diskUsage{}, fmt.Errorf("fakeStat: no usage configured for %s", path)
 		}
 		return u, nil
 	}
@@ -309,7 +308,7 @@ func TestStorageSyncWorker_JobLevelLastSuccessOnlyOnFullSuccess(t *testing.T) {
 	w := &StorageSyncWorker{
 		Pool: pool, MediaDir: mediaDir, ScratchDir: scratchDir,
 		Stat: fakeStat(
-			map[string]diskusage.Usage{mediaDir: {TotalBytes: 100, UsedBytes: 10, AvailableBytes: 90}},
+			map[string]diskUsage{mediaDir: {totalBytes: 100, usedBytes: 10, availableBytes: 90}},
 			map[string]bool{scratchDir: true},
 		),
 	}
@@ -321,9 +320,9 @@ func TestStorageSyncWorker_JobLevelLastSuccessOnlyOnFullSuccess(t *testing.T) {
 	}
 
 	// 全 root 成功で進む。
-	w.Stat = fakeStat(map[string]diskusage.Usage{
-		mediaDir:   {TotalBytes: 100, UsedBytes: 10, AvailableBytes: 90},
-		scratchDir: {TotalBytes: 200, UsedBytes: 20, AvailableBytes: 180},
+	w.Stat = fakeStat(map[string]diskUsage{
+		mediaDir:   {totalBytes: 100, usedBytes: 10, availableBytes: 90},
+		scratchDir: {totalBytes: 200, usedBytes: 20, availableBytes: 180},
 	}, nil)
 	if err := runStorageSync(t, w); err != nil {
 		t.Fatalf("Work() error: %v", err)
@@ -345,9 +344,9 @@ func TestStorageSyncWorker_PerRootMetricsFreezeOnFailure(t *testing.T) {
 
 	w := &StorageSyncWorker{
 		Pool: pool, MediaDir: mediaDir, ScratchDir: scratchDir,
-		Stat: fakeStat(map[string]diskusage.Usage{
-			mediaDir:   {TotalBytes: 100, UsedBytes: 10, AvailableBytes: 90},
-			scratchDir: {TotalBytes: 500, UsedBytes: 50, AvailableBytes: 450},
+		Stat: fakeStat(map[string]diskUsage{
+			mediaDir:   {totalBytes: 100, usedBytes: 10, availableBytes: 90},
+			scratchDir: {totalBytes: 500, usedBytes: 50, availableBytes: 450},
 		}, nil),
 	}
 	if err := runStorageSync(t, w); err != nil {
@@ -361,8 +360,8 @@ func TestStorageSyncWorker_PerRootMetricsFreezeOnFailure(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 
 	// 2 回目: scratch の statfs が失敗、media は新しい値で成功する。
-	w.Stat = fakeStat(map[string]diskusage.Usage{
-		mediaDir: {TotalBytes: 999, UsedBytes: 111, AvailableBytes: 888},
+	w.Stat = fakeStat(map[string]diskUsage{
+		mediaDir: {totalBytes: 999, usedBytes: 111, availableBytes: 888},
 	}, map[string]bool{scratchDir: true})
 	if err := runStorageSync(t, w); err != nil {
 		t.Fatalf("second Work() error: %v", err)
@@ -399,9 +398,9 @@ func TestStorageSyncWorker_MetricsClearedWhenRootRemoved(t *testing.T) {
 
 	w := &StorageSyncWorker{
 		Pool: pool, MediaDir: mediaDir, ScratchDir: scratchDir,
-		Stat: fakeStat(map[string]diskusage.Usage{
-			mediaDir:   {TotalBytes: 100, UsedBytes: 10, AvailableBytes: 90},
-			scratchDir: {TotalBytes: 500, UsedBytes: 50, AvailableBytes: 450},
+		Stat: fakeStat(map[string]diskUsage{
+			mediaDir:   {totalBytes: 100, usedBytes: 10, availableBytes: 90},
+			scratchDir: {totalBytes: 500, usedBytes: 50, availableBytes: 450},
 		}, nil),
 	}
 	if err := runStorageSync(t, w); err != nil {
@@ -413,8 +412,8 @@ func TestStorageSyncWorker_MetricsClearedWhenRootRemoved(t *testing.T) {
 
 	// scratch_dir を空にした運用者の再設定 + プロセス再起動を模す。
 	w.ScratchDir = ""
-	w.Stat = fakeStat(map[string]diskusage.Usage{
-		mediaDir: {TotalBytes: 100, UsedBytes: 10, AvailableBytes: 90},
+	w.Stat = fakeStat(map[string]diskUsage{
+		mediaDir: {totalBytes: 100, usedBytes: 10, availableBytes: 90},
 	}, nil)
 	if err := runStorageSync(t, w); err != nil {
 		t.Fatalf("second Work() error: %v", err)
@@ -445,9 +444,9 @@ func TestStorageSyncWorker_MetricsClearedWhenRowRemovedByAnotherReplica(t *testi
 
 	w := &StorageSyncWorker{
 		Pool: pool, MediaDir: mediaDir, ScratchDir: scratchDir,
-		Stat: fakeStat(map[string]diskusage.Usage{
-			mediaDir:   {TotalBytes: 100, UsedBytes: 10, AvailableBytes: 90},
-			scratchDir: {TotalBytes: 777, UsedBytes: 77, AvailableBytes: 700},
+		Stat: fakeStat(map[string]diskUsage{
+			mediaDir:   {totalBytes: 100, usedBytes: 10, availableBytes: 90},
+			scratchDir: {totalBytes: 777, usedBytes: 77, availableBytes: 700},
 		}, nil),
 	}
 	if err := runStorageSync(t, w); err != nil {
@@ -466,8 +465,8 @@ func TestStorageSyncWorker_MetricsClearedWhenRowRemovedByAnotherReplica(t *testi
 
 	// このプロセスも新しい config（scratch_dir 空）で 1 パス走る。
 	w.ScratchDir = ""
-	w.Stat = fakeStat(map[string]diskusage.Usage{
-		mediaDir: {TotalBytes: 100, UsedBytes: 10, AvailableBytes: 90},
+	w.Stat = fakeStat(map[string]diskUsage{
+		mediaDir: {totalBytes: 100, usedBytes: 10, availableBytes: 90},
 	}, nil)
 	if err := runStorageSync(t, w); err != nil {
 		t.Fatalf("second Work() error: %v", err)
