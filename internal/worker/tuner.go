@@ -189,7 +189,7 @@ func (w *TunerSyncWorker) Work(ctx context.Context, job *river.Job[TunerSyncArgs
 // **警告を見逃す**方向（docs/data.md §6.5 が禁じている向き）に誤る。
 //
 // types が空配列のチューナーは投影する。どの cap(A) にも数えられないだけで無害
-// （migrations/00015_tuner_sync.sql のコメント参照）。
+// （internal/db/queries/tuner_sync.sql の tuner_sync_types_check の説明を参照）。
 func projectableTunerTypes(t mirakc.Tuner) ([]string, bool) {
 	types := make([]string, 0, len(t.Types))
 	for _, name := range t.Types {

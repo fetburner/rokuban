@@ -6,7 +6,7 @@
 --
 -- # 名前付き述語 until_encoded_deletable_originals との関係
 --
--- 「desired が全部揃っているか」は 00029/00032 の view
+-- 「desired が全部揃っているか」は名前付き述語の view
 -- `until_encoded_deletable_originals` にも入っている（あちらは**揃っている**側、
 -- ここは**欠けている**側）。view をそのまま使えないのは、view の粒度が
 -- 「削除してよい原本アセット 1 行」であり、`keep_original = 'until_encoded'` と
@@ -56,7 +56,7 @@
 --     POST /api/recordings/{id}/encode-profiles）は「今その録画に何かが起きた」
 --     という個別のイベントで発火するが、この定期パスは全録画を毎回なめるので、
 --     ユーザーが捨てた録画のエンコードを延々と再投入し続けることになる。
---     until_encoded_deletable_originals（00032）が同じ述語を持つのと同じ理由
+--     until_encoded_deletable_originals が同じ述語を持つのと同じ理由
 --   * want.profile = ANY(known_profiles) = 現在の設定に存在するプロファイルだけを
 --     欠落判定の対象にする。設定から消えたプロファイルを候補に含めると、投入しても
 --     EncodeWorker が `unknown encode profile` で弾く（encode.go）録画が窓を
@@ -81,7 +81,7 @@
 -- internal/worker の TestEncodeReconcileWorker_EmptyProfileConfigIsVisibleNotSilent
 -- が両側から固定している）。
 --
--- until_encoded_deletable_originals（00032）は known_profiles で絞らない。
+-- until_encoded_deletable_originals は known_profiles で絞らない。
 -- これは意図的な非対称（安全側の仕様。上の「名前付き述語」節と
 -- docs/storage/retention.md §保持ポリシー）であって揃え忘れではない。
 --
@@ -125,7 +125,7 @@ LIMIT sqlc.arg('row_limit');
 -- （`always` の録画も含むので「回収されない原本の件数」そのものではない。
 -- 1 録画が複数の消えたプロファイルを凍結していれば複数のラベルにまたがって
 -- 数えられるため、ラベル間で単純合計すると録画数を超える）。この中の
--- until_encoded 録画は until_encoded_deletable_originals（00032）にとっても
+-- until_encoded 録画は until_encoded_deletable_originals にとっても
 -- 永久に「揃っていない」ため、原本が回収されない
 -- （docs/storage/retention.md §保持ポリシー）。
 --

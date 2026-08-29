@@ -33,7 +33,7 @@ VALUES ($1, $2)
 RETURNING *;
 
 -- 予約とユーザー意図・上書き・番組スナップショットを 1 行に合わせて返す。
--- action は program_intents、overrides は program_overrides（M2-4 / 00010 で分離）
+-- action は program_intents、overrides は program_overrides（M2-4 で分離）
 -- にあり、予約が存在しても意図・上書きのどちらかしかない（あるいはどちらも
 -- 無い）ことがあるので両方 LEFT JOIN する。番組スナップショットは FK が
 -- あるので必ず存在する（INNER JOIN）。
@@ -130,8 +130,7 @@ ORDER BY r.site, s.start_at;
 -- という不可逆な観測を reservations.orphaned_at という列に直接書いており、
 -- それを次パス以降の除外フィルタに使っていた。#98 の決定でこの観測は
 -- recordings の試行行（status='failed' + quality_events に
--- recording.never-scheduled）に移設され、orphaned_at 列自体が無くなった
--- （00025）。
+-- recording.never-scheduled）に移設され、orphaned_at 列自体が無くなった。
 --
 -- 除外条件を「その放送イベントに既に never-scheduled の recordings 行がある」に
 -- 置き換える。never-scheduled という特定の quality_events マーカーだけを

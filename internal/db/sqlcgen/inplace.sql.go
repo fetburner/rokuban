@@ -125,8 +125,8 @@ type UpsertInPlaceRecordingParams struct {
 	EndedAt           *time.Time
 }
 
-// ON CONFLICT の述語は recordings_unique_active_event（00023 で
-// `AND superseded_at IS NULL` を追加済み。issue #129 症状 2）と一字一句一致させる
+// ON CONFLICT の述語は recordings_unique_active_event（issue #129 症状 2 で
+// `AND superseded_at IS NULL` を追加済み）と一字一句一致させる
 // 必要がある。in-place 登録が superseded_at を立てることはない（それは watcher の
 // 録画 supersede 専用の概念）が、索引の述語が変わった以上、対象インデックスの
 // 照合のためにここも揃える。

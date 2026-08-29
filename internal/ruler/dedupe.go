@@ -69,7 +69,8 @@ type dedupeMatch struct {
 // 更新 API がないため reconciler が schedule を DELETE + POST で作り直し続ける
 // フラッピングになる（同 §3.1 の priority 同率タイと同じクラスの問題）。
 //
-// recordings.title への trgm GIN インデックスは張っていない（00013 で削除済み）。
+// similarity() を加速する索引は張っていない。検索用に recordings_title_trgm
+// （normalize_search_text(title) への trgm GIN。M2-6 の設計判断）はあるが、
 // gin_trgm_ops が加速するのは % / <% / LIKE / 正規表現で、similarity() の関数呼び出しは
 // インデックスに乗らない。乗せるなら % を前段フィルタにする形になるが、% は閾値を
 // ルール単位ではなく GUC pg_trgm.similarity_threshold から読むため、

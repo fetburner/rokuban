@@ -112,8 +112,8 @@ func TestLoad_MidRecordingFailureNotExcluded(t *testing.T) {
 	}
 }
 
-// seedReservationWithoutChannel（00009 以前の残骸＝チャンネル未設定を模す
-// ヘルパー）は issue #101（00026）で program_snapshots のチャンネル・イベント
+// seedReservationWithoutChannel（reservation_channel 列を追加する前の残骸＝
+// チャンネル未設定を模すヘルパー）は issue #101 で program_snapshots のチャンネル・イベント
 // 識別 6 列が NOT NULL 化されたことで削除した。この状態自体が DB レベルで
 // 表現不可能になったため（INSERT が 23502 で落ちる）。NOT NULL が実際に
 // 効いていることの回帰テストは internal/db/models_test.go の
@@ -210,8 +210,8 @@ func TestLoad_ExcludesReservationsThatProduceNoSchedule(t *testing.T) {
 				}
 			},
 		},
-		// 「チャンネルスナップショットが無い（00009 以前の残骸）」というケースは
-		// issue #101（00026）で program_snapshots のチャンネル識別列が NOT NULL
+		// 「チャンネルスナップショットが無い（reservation_channel 列を追加する前の
+		// 残骸）」というケースは issue #101 で program_snapshots のチャンネル識別列が NOT NULL
 		// 化されたことで削除した。この状態自体が表現不可能になったため
 		// （INSERT が 23502 で落ちる。NOT NULL の回帰テストは
 		// internal/db/models_test.go の

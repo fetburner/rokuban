@@ -839,7 +839,7 @@ function RuleEditForm({
 
   const saveAsNew = () => {
     if (blocked) return
-    // `rules.name` に一意制約は無い（migrations/00006_rules.sql）ので、名前を
+    // `rules.name` に一意制約は無い（rules テーブル定義）ので、名前を
     // そのまま引き継ぐと一覧に同名の 2 本が並び、条件の要約でしか見分けられ
     // なくなる。押した時点で名前が元のルールと同じままなら `〜 のコピー` を
     // 付ける。名前欄そのものは書き換えない（上書き保存に戻ったときに元の名前

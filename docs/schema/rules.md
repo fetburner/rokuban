@@ -1,4 +1,4 @@
-> [docs/schema.md](../schema.md)（索引）の分割本文。`rules` 一式（`rules` + 条件の子テーブル 6 つ）。DDL の権威は `internal/db/migrations/00006_rules.sql`（dedupe の値域 CHECK は `00016_dedupe_range_check.sql`）。エンジン側の意味論（評価・重複排除・サイトの扱い）は [録画エンジン](../recording.md) §3・§3.1。
+> [docs/schema.md](../schema.md)（索引）の分割本文。`rules` 一式（`rules` + 条件の子テーブル 6 つ）。DDL の権威は `internal/db/migrations`（`rules` テーブル定義。dedupe の値域 CHECK も同定義内）。エンジン側の意味論（評価・重複排除・サイトの扱い）は [録画エンジン](../recording.md) §3・§3.1。
 
 ## rules — 録画ルール（永続資産）
 
@@ -34,7 +34,7 @@ CREATE TABLE rules (
            OR duration_min_ms <= duration_max_ms),
     CHECK (dedupe_enabled = false OR dedupe_threshold IS NOT NULL),
     CHECK (keep_original <> 'until_encoded' OR cardinality(encode_profiles) > 0),
-    -- 00016 で追加（値域の最後の砦。一次防御は API 層の validateRuleInput）
+    -- 値域の最後の砦として後から追加（一次防御は API 層の validateRuleInput）
     CONSTRAINT rules_dedupe_threshold_range
         CHECK (dedupe_threshold IS NULL
                OR (dedupe_threshold > 0 AND dedupe_threshold <= 1)),
@@ -45,12 +45,12 @@ CREATE TABLE rules (
 
 - **`rules` に site 列は無い。** ルールはサイトに従属しないグローバルな永続資産で、サイトは条件の一次元（下記 `rule_sites`）
 - **単一値の条件は NULL = 問わない。** 行の列で表すのは単一値の条件だけで、複数値の条件（テキスト・サービス・チャンネル種別・ジャンル・時間帯・サイト）はすべて子テーブル
-- **`dedupe_threshold` の値域は `(0, 1]`、`dedupe_window` は `> 0`**（`00016`）。`similarity()` の値域が [0, 1] なので、0 は恒真（マッチする全番組の録画が黙って止まる）・1 超は恒偽（重複排除が黙って無効化）になる。`dedupe_window <= 0` も恒偽。**0 は「時間窓なし」ではない** —— 窓なしは NULL（条件そのものを外す）。理想は表現不可能にすること（不変条件 10）だが、real / interval という一般の列型では専用ドメイン型を導入しない限り無理なので、CHECK を最後の砦として置く。一次防御は API 層（`internal/api/rules.go` の `validateRuleInput`）の人間可読なエラー
+- **`dedupe_threshold` の値域は `(0, 1]`、`dedupe_window` は `> 0`**。`similarity()` の値域が [0, 1] なので、0 は恒真（マッチする全番組の録画が黙って止まる）・1 超は恒偽（重複排除が黙って無効化）になる。`dedupe_window <= 0` も恒偽。**0 は「時間窓なし」ではない** —— 窓なしは NULL（条件そのものを外す）。理想は表現不可能にすること（不変条件 10）だが、real / interval という一般の列型では専用ドメイン型を導入しない限り無理なので、CHECK を最後の砦として置く。一次防御は API 層（`internal/api/rules.go` の `validateRuleInput`）の人間可読なエラー
 - **`keep_original = 'until_encoded'` は空の `encode_profiles` と両立しない**（CHECK）。エンコードされないまま原本が消える組み合わせを表現不可能にする
 - `dedupe_window` が NULL のときの意味（無制限）や評価順は [録画エンジン](../recording.md) §3.1
 - SSE ヒント: `rules` の行トリガー `rules_notify` がトピック `rules` で通知する
 
-### array_is_canonical_set — 正規集合チェック（`00006`）
+### array_is_canonical_set — 正規集合チェック
 
 ```sql
 CREATE FUNCTION array_is_canonical_set(a text[]) RETURNS boolean
@@ -132,7 +132,7 @@ CREATE TABLE rule_sites (
   逆引きが必要になれば、enabled ルールを `rulequery.MatchProgramIDsForRule` で
   回せば同じ集合が作り直せる（ruler が毎パスやっている計算そのもの）
 
-## 他テーブルへの FK（`00006` で追加）
+## 他テーブルへの FK
 
 ```sql
 ALTER TABLE reservations ADD CONSTRAINT reservations_rule_id_fkey
@@ -145,11 +145,11 @@ ALTER TABLE recordings ADD CONSTRAINT recordings_rule_id_fkey
 
 ## 経緯と失敗事例
 
-- `rules` 一式は M2-1（issue #3 / #24）の成果物（`00006`）
-- **dedupe の値域 CHECK（`00016`）はコードレビューで発覚した欠落。** `00006` の CHECK は
+- `rules` 一式は M2-1（issue #3 / #24）の成果物
+- **dedupe の値域 CHECK はコードレビューで発覚した欠落。** 当初の CHECK は
   `dedupe_enabled = false OR dedupe_threshold IS NOT NULL` しか見ておらず、値そのものの
   範囲は API 層にも DB 層にも無かった。恒真トラップ（閾値 0）は M2-5 のサーキット
   ブレーカー（削除しか守らない）にも止められない経路だった。既存の違反行は値を推測して
   丸めず、`dedupe_enabled = false` に倒して無効化した（意図不明の値で重複排除を有効の
-  まま残すと「黙って録画が止まる / 黙って無効化される」症状が継続するため。詳細は
-  `00016_dedupe_range_check.sql` のコメント）
+  まま残すと「黙って録画が止まる / 黙って無効化される」症状が継続するため。値域は
+  `rules_dedupe_threshold_range` CHECK（`dedupe_threshold` は `(0, 1]` の範囲）が守る）

@@ -1,4 +1,4 @@
--- 番組の事実のスナップショット（#27。00017_program_snapshots.sql）。
+-- 番組の事実のスナップショット（#27。docs/schema/reservations.md §3.7「program_snapshots」参照）。
 --
 -- reservations / program_intents / program_overrides に 3 重化していた
 -- 「書き込み時点の epg_programs ⋈ epg_services」を 1 表に集約したもの。
@@ -16,7 +16,7 @@
 -- なる（移行前は ruler が reservations 側だけを更新しており、intents / overrides
 -- 側が作成時のまま固まってドリフトしていた --- それが #27 の中身）。
 --
--- event_id / service_name は issue #98 で追加（00025）。recordNeverScheduled が
+-- event_id / service_name は issue #98 で追加。recordNeverScheduled が
 -- never_scheduled_events に欠測を書くときの放送イベント識別、および watcher が
 -- recordings を作るときの表示名に使う。他のチャンネル識別列と同じく EPG
 -- 射影から引き、mirakc の programId 内部構造は割り算しない。

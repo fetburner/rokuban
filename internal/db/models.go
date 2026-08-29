@@ -14,7 +14,7 @@ import (
 // schedule が観測されなかった」という不可逆な観測は一時 orphaned_at 列を経て
 // （Phase 1）、issue #98 で recordings の試行行（status='failed' +
 // quality_events に recording.never-scheduled）に移設され、orphaned_at 列
-// 自体も落ちた（00025）。sqlcgen.Reservation が canonical な生成型で、この型は
+// 自体も落ちた。sqlcgen.Reservation が canonical な生成型で、この型は
 // テストの可読性のためだけに残っている（CLAUDE.md 不変条件 12「表は行の寿命で
 // 割る」: この行に残るのは ruler の 1 パスの出力だけになった）。
 type Reservation struct {
@@ -295,8 +295,8 @@ const (
 )
 
 // 録画ステータス。mirakc の RecordInfo.Status（GET /api/recording/records の
-// recording.status）をそのまま持つ 4 値で、recordings_status_check
-// （00002_schema_v1.sql → 00021_recordings_status_canceled.sql で 4 値化）と一致する。
+// recording.status）をそのまま持つ 4 値で、CHECK 制約 recordings_status_check
+// （issue #130 で 4 値化）と一致する。
 //
 // **これは mirakc 固有の語彙だが、不変条件 7「mirakc 固有の概念を永続テーブルに
 // 入れない」の違反ではない。** 既存 3 値（recording/finished/failed）は元から

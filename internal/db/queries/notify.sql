@@ -1,5 +1,17 @@
 -- 一括書き込みのようにトリガーでは粒度が粗すぎる（または細かすぎる）場合に、
--- 書き手が明示的にヒントを送るためのもの。トピック名の一覧は
--- migrations/00005_notify.sql のコメントを参照。
+-- 書き手が明示的にヒントを送るためのもの。
+--
+-- 通知はすべて Postgres の 'rokuban' チャネル 1 本に集約される
+-- (internal/notifier/notifier.go の notifyChannel)。$1 の中身は 2 種類:
+--   - トピック名（bare 文字列）。rokuban_notify() トリガーが送るのは
+--     circuit_breakers → "breakers" / media_assets・recordings → "recordings" /
+--     program_intents・program_overrides・reservations → "reservations" /
+--     rules → "rules"（internal/db/migrations/00001_baseline.sql の
+--     *_notify トリガー定義）。アプリ側からも epg 同期パス完了時に
+--     "epg"（internal/worker/epg.go の epgNotifyTopic）を明示的に送る。
+--   - encode 進捗の JSON（serverevent.EncodeProgressEvent）。
+--     internal/worker/encode_progress.go が $1 にそのまま JSON を積む。
+-- notifier 側の振り分けは internal/notifier/notifier.go の decodeNotification
+-- が JSON として parse できるかどうかで行う。
 -- name: NotifyTopic :exec
 SELECT pg_notify('rokuban', $1);

@@ -117,7 +117,8 @@ type snapshotKey struct {
 // insertableSnapshot は snapshot 行が DB の制約を通るかを返す。
 //
 // **見るのは DB が実際に拒否するものだけ**（`program_snapshots` に掛かっている
-// CHECK は 00026 の `channel_type IN ('GR','BS','CS','SKY')` 1 つだけ。他の列は
+// CHECK は program_snapshots_channel_type_check の
+// `channel_type IN ('GR','BS','CS','SKY')` 1 つだけ。他の列は
 // NOT NULL があるだけで、非空も正数も要求していない）。
 //
 // **「放送を同定できないから」で落としてはならない。** 行を落とすと FK 先を

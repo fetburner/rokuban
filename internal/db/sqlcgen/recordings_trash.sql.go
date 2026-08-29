@@ -185,7 +185,7 @@ type MarkRecordingPurgeRequestedRow struct {
 //
 // **CTE の `trashed`（recordings の UPDATE）は soft-delete を兼ねるだけでなく、
 // 「要求行を入れる前に対象の recordings 行をロックする」という要件も兼ねている**
-// （上の WithdrawRecordingPurgeRequest 前のブロックと 00039 のコメント参照）。
+// （上の WithdrawRecordingPurgeRequest 前のブロックのコメント参照）。
 // INSERT だけの経路に単純化すると、復元の窓が開き直る。
 func (q *Queries) MarkRecordingPurgeRequested(ctx context.Context, id int64) (MarkRecordingPurgeRequestedRow, error) {
 	row := q.db.QueryRow(ctx, markRecordingPurgeRequested, id)

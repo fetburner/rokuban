@@ -1763,9 +1763,9 @@ func TestIngestWorker_LogsWarnWhenRuleSourceReservationUnresolvable(t *testing.T
 	//
 	// encodePolicyRowExists で行そのものの有無を確認する --- encodePolicyOfRecording
 	// は ErrNoRows を既定値に潰すため、旧実装（ErrNoRows で return nil して凍結を
-	// スキップする）に戻しても値の比較だけでは検出できない。行が無いと migration
-	// 00032 backfill の判定基準（原本 media_asset の有無）と issue #133 の事後追加
-	// （AppendRecordingEncodeProfiles が「行が既にある」前提で書けること）が破れる。
+	// スキップする）に戻しても値の比較だけでは検出できない。行が無いと
+	// 「原本 media_asset を持つ録画は凍結済み」という判定基準と issue #133 の
+	// 事後追加（AppendRecordingEncodeProfiles が「行が既にある」前提で書けること）が破れる。
 	if !encodePolicyRowExists(t, pool, recordingID) {
 		t.Fatalf("recording_encode_policy row missing for recording %d; resolveAndSnapshotEncodePolicy must freeze defaults even when the lookup fails", recordingID)
 	}

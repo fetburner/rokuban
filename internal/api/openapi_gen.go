@@ -820,8 +820,8 @@ type EncodedAsset struct {
 
 	// SizeBytes encoded 派生物の実サイズ。`media_assets.size_bytes` は NOT NULL
 	// なので active な行が存在する限り常に付く（未検証の断言にしないため:
-	// `internal/db/migrations/00002_schema_v1.sql` の `size_bytes` 列の
-	// `NOT NULL` 制約が根拠、実行時計測ではない。同テーブルの CHECK は
+	// `media_assets.size_bytes` 列の `NOT NULL` 制約が根拠、実行時計測
+	// ではない。同テーブルの CHECK は
 	// `kind` / `profile` / `state` に掛かるものだけで `size_bytes` には
 	// 無い）。省略可能にしているのは、サイズが取れない資産があっても
 	// 選択肢そのものは隠さない（ドロップ統計の「分類できなかった PID」と
@@ -1502,7 +1502,7 @@ type ListRecordingsParams struct {
 	// 「tokyo の BS 101」を意味する。
 	Service *[]int64 `form:"service,omitempty" json:"service,omitempty"`
 
-	// Status recordings.status の CHECK と一致させた 4 値（'canceled' は 00021 で
+	// Status recordings.status の CHECK と一致させた 4 値（'canceled' は issue #130 で
 	// CHECK に追加済み）。
 	//
 	// `status=failed` は通常一覧（`trash=false`）に限り supersede 済みの

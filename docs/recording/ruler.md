@@ -95,7 +95,7 @@ tie-break を決定的にするのは必須で、任意ではない。同じ類�
 
 比較対象を `rule_id` で絞るということは、**比較のスコープは生きている `rules` の行が定義している**ということである。ルールを削除すると 2 段階で履歴が効かなくなる。
 
-1. `recordings.rule_id` は `rules` への FK が `ON DELETE SET NULL`（`00006_rules.sql`）なので、そのルールで録れた履歴の `rule_id` が NULL に落ちる。以後どのルールの比較対象にもならない
+1. `recordings.rule_id` は `rules` への FK `recordings_rule_id_fkey` が `ON DELETE SET NULL` なので、そのルールで録れた履歴の `rule_id` が NULL に落ちる。以後どのルールの比較対象にもならない
 2. 同じ条件でルールを**作り直しても** id は新しくなるので、過去の録画は 1 件もマッチしない。直後のパスでは重複としてスキップされなくなる（実際に余分に録れる量は下記のとおり一過性）
 
 **これは仕様である**（`internal/ruler/dedupe_test.go` の `TestRunPass_DedupeHistoryLeavesScopeOnRuleDelete` が 3 段階で固定している: ルールが生きていれば skip / 削除→作り直し直後は skip しない / 新ルールで 1 本録れるとまた skip する）。条件を大きく変えたいだけなら**削除して作り直すのではなく編集する** —— `PATCH /api/rules/{id}`（UI の「編集」「検索しながら編集」）は id を保つので履歴も保たれる。

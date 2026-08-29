@@ -148,7 +148,7 @@ type UpsertProgramIntentParams struct {
 
 // 番組単位のユーザー意図（issue #18 の案 A）。api だけが書き、ruler は読むだけ。
 //
-// overrides（パラメータの上書き）は M2-4（00010）で program_overrides に分離
+// overrides（パラメータの上書き）は M2-4 で program_overrides に分離
 // 済み。この表が持つのは action（record/skip）のみ（docs/schema.md §3.5）。
 // program_start_at / program_duration_ms は #27 で program_snapshots に抽出され、
 // program_intents からは落ちた。FK (site, program_id) REFERENCES program_snapshots

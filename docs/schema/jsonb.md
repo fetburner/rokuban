@@ -4,7 +4,7 @@
 
 ### 予約オプション（reservations.base / program_overrides.overrides、同形）
 
-キーは camelCase（Go の JSON 規約と揃える）。overrides は「ユーザーが上書きしたキーのみ」を持つ疎なドキュメントで、`program_intents` ではなく `program_overrides` 表にある（00010 で分離。§3.5）。
+キーは camelCase（Go の JSON 規約と揃える）。overrides は「ユーザーが上書きしたキーのみ」を持つ疎なドキュメントで、`program_intents` ではなく `program_overrides` 表にある（§3.5）。
 
 ```jsonc
 {

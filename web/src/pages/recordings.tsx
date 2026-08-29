@@ -711,8 +711,8 @@ export function RecordingDetail({
  * （`/api/rules`）の 1 本のクエリで、`ruleId` ごとの取得は発行しない。
  *
  * **`rules.find` が見つからない場合は `#N` 表記に落とす。** これは「ルールが
- * 削除された」ケースではない --- `recordings.rule_id` は `rules` への FK が
- * `ON DELETE SET NULL`（`00006_rules.sql`）なので、ルールを削除すると
+ * 削除された」ケースではない --- `recordings.rule_id` は `rules` への FK
+ * `recordings_rule_id_fkey` が `ON DELETE SET NULL` なので、ルールを削除すると
  * `recordings.rule_id` が NULL になり `Recording.ruleId` 自体が省略され、この
  * セクションごと消える（`#N` へは落ちない）。`#N` に落ちるのは `rules.find`
  * が空を返す間、つまり一覧クエリが未解決 / 失敗（どちらも `query.data` が

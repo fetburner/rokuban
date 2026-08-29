@@ -155,7 +155,7 @@ func TestListRecordings_KeywordSearch(t *testing.T) {
 	}
 }
 
-// genre（genre_lv1 の重なり）で絞り込める。00034 で追加した生成列。
+// genre（genre_lv1 の重なり）で絞り込める。recordings.genre_lv1 は生成列。
 func TestListRecordings_GenreFilter(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	srv := newAPIServer(t, pool)

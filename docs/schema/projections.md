@@ -2,7 +2,7 @@
 
 ## 9. epg_services / epg_programs — EPG プロジェクション（使い捨てキャッシュ）
 
-DDL の権威はマイグレーション `00004_epg.sql`。**真実は常に mirakc**であり、これは
+DDL の権威は `internal/db/migrations`（`epg_services` / `epg_programs` テーブル定義）。**真実は常に mirakc**であり、これは
 レベルトリガーでいつでも全量再構築できる使い捨てキャッシュ。永続資産（reservations /
 recordings / media_assets）とは寿命が違うためスキーマ v1 から分離している。
 
@@ -130,7 +130,7 @@ EPGStation は `relatedItems` を見る `isMainProgram()` と name チェック�
 
 ## 9.5 tuner_sync — チューナー射影（使い捨てキャッシュ）
 
-DDL の権威は `00015_tuner_sync.sql`。mirakc の `GET /api/tuners` の観測結果で、
+DDL の権威は `internal/db/migrations`（`tuner_sync` テーブル定義）。mirakc の `GET /api/tuners` の観測結果で、
 `epg_services` / `epg_programs` と同じ**使い捨てプロジェクション**。真実は常に mirakc 側にあり、
 レベルトリガーでいつでも全量再構築できる。容量超過の判定（[データ層](../data.md) §6.5）が使う。
 
@@ -169,7 +169,7 @@ CREATE TABLE tuner_sync (
 
 ## 経緯と失敗事例
 
-- EPG プロジェクションは M1-6（`00004`）、`tuner_sync` は M2-10（`00015`）の成果物。
+- EPG プロジェクションは M1-6、`tuner_sync` は M2-10 の成果物。
   存在理由の元 issue は #3、サブサービスの扱いは issue #17、大量削除で立ち止まる規律は issue #11
 - **`tuner_sync` の PK**: issue #21 は投影列に `index` を挙げているのに DDL 案が持たず
   PK が `name` になっていた。この不整合を `index` を採る側で解消した（本文 §9.5 の理由）

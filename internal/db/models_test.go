@@ -2,9 +2,7 @@ package db
 
 import (
 	"context"
-	"database/sql"
 	"errors"
-	"io/fs"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -12,7 +10,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/pressly/goose/v3"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 )
@@ -82,7 +79,7 @@ func TestSchemaV1_Tables(t *testing.T) {
 // insertTestProgramSnapshot は reservations / program_intents / program_overrides
 // が参照する program_snapshots 行を作る（#27 で追加された FK の前提）。
 //
-// チャンネル・イベント識別 6 列は issue #101（00026）で NOT NULL 化された。
+// チャンネル・イベント識別 6 列は issue #101 で NOT NULL 化された。
 // このパッケージのテストは reservations/program_intents/program_overrides の
 // FK・GC を見るだけでチャンネル識別自体は検証しないので、固定のダミー値で足りる。
 func insertTestProgramSnapshot(t *testing.T, pool *pgxpool.Pool, site string, programID int64, startAt time.Time) {
@@ -213,14 +210,14 @@ func TestSchemaV1_RecordingChannelTypeCheck(t *testing.T) {
 	assertPgError(t, err, "23514")
 }
 
-// TestSchemaV1_ProgramSnapshotChannelIdentityNotNull は issue #101（00026）の
+// TestSchemaV1_ProgramSnapshotChannelIdentityNotNull は issue #101 の
 // 回帰テスト。program_snapshots のチャンネル・イベント識別 6 列
 // （network_id/service_id/channel_type/channel/event_id/service_name）は
-// 「00009 以前の残骸を救えず nullable のままの行がありうる」という理由で
-// nullable だったが、行の寿命（放送 + retention_grace）と書き込み経路が
-// どちらも INNER JOIN であることから、この理由は失効している（issue 本文）。
-// 00026 でこの 6 列を NOT NULL 化した後、各列を個別に NULL にした INSERT が
-// すべて 23502 で落ち、6 列すべて揃えた INSERT は成功することを確認する。
+// 「reservation_channel 列を追加する前の残骸を救えず nullable のままの行が
+// ありうる」という理由で nullable だったが、行の寿命（放送 + retention_grace）と
+// 書き込み経路がどちらも INNER JOIN であることから、この理由は失効している
+// （issue 本文）。この 6 列を NOT NULL 化した後、各列を個別に NULL にした
+// INSERT がすべて 23502 で落ち、6 列すべて揃えた INSERT は成功することを確認する。
 func TestSchemaV1_ProgramSnapshotChannelIdentityNotNull(t *testing.T) {
 	pool := setupTestDB(t)
 	ctx := context.Background()
@@ -268,7 +265,8 @@ func TestSchemaV1_ProgramSnapshotChannelIdentityNotNull(t *testing.T) {
 	})
 }
 
-// TestSchemaV1_ProgramSnapshotChannelTypeCheckSimplified は 00026 が
+// TestSchemaV1_ProgramSnapshotChannelTypeCheckSimplified は CHECK 制約
+// program_snapshots_channel_type_check が
 // CHECK (channel_type IS NULL OR channel_type IN (...)) を
 // CHECK (channel_type IN (...)) に単純化したことの回帰テスト。NOT NULL 化で
 // NULL 分岐はもう表現できないので、許可されない値（例: 'CATV'）は引き続き
@@ -284,100 +282,6 @@ func TestSchemaV1_ProgramSnapshotChannelTypeCheckSimplified(t *testing.T) {
 			network_id, service_id, channel_type, channel, event_id, service_name
 		) VALUES ('home', 1, 't', now(), 1800000, 1, 1, 'CATV', '1', 1, 'x')`)
 	assertPgError(t, err, "23514")
-}
-
-// TestMigration00026_DeletesNullChannelRowsAndCascades は issue #101 の
-// 「注意」節が指摘する経路（program_snapshots への FK が ON DELETE CASCADE
-// なので、NULL 行の DELETE は理論上 reservations を巻き添えにする）を
-// マイグレーション自体で確認する。実運用ではこの経路の対象は 0 行のはずだが
-// （書き込み 2 経路はどちらも INNER JOIN で NULL を書けない。issue 本文の
-// 裏取り）、00025 までの状態で直接 SQL を使えば NULL 行は作れるので、
-// 00026 がそれを DELETE し、CASCADE で参照している reservations 行も
-// 一緒に消えることを固定する。
-func TestMigration00026_DeletesNullChannelRowsAndCascades(t *testing.T) {
-	dbURL := testDatabaseURL(t)
-	ctx := context.Background()
-
-	if err := MigrateReset(ctx, dbURL); err != nil {
-		t.Fatalf("migrate reset: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := MigrateReset(ctx, dbURL); err != nil {
-			t.Errorf("cleanup migrate reset: %v", err)
-		}
-	})
-
-	subFS, err := fs.Sub(migrations, "migrations")
-	if err != nil {
-		t.Fatalf("getting migrations sub-FS: %v", err)
-	}
-	sqlDB, err := sql.Open("pgx", dbURL)
-	if err != nil {
-		t.Fatalf("opening database: %v", err)
-	}
-	defer func() { _ = sqlDB.Close() }()
-
-	provider, err := goose.NewProvider(goose.DialectPostgres, sqlDB, subFS)
-	if err != nil {
-		t.Fatalf("creating goose provider: %v", err)
-	}
-
-	// 00025 まで適用（00026 適用前、チャンネル識別 6 列がまだ nullable な状態）。
-	if _, err := provider.UpTo(ctx, 25); err != nil {
-		t.Fatalf("migrating up to 00025: %v", err)
-	}
-
-	pool, err := pgxpool.New(ctx, dbURL)
-	if err != nil {
-		t.Fatalf("connecting pool: %v", err)
-	}
-	defer pool.Close()
-
-	// 00009/00025 以前の残骸を模す: channel identity が全部 NULL の
-	// program_snapshots 行と、それを参照する reservations 行。
-	const programID int64 = 918273645
-	if _, err := pool.Exec(ctx, `
-		INSERT INTO program_snapshots (site, program_id, title, start_at, duration_ms)
-		VALUES ('home', $1, '残骸', now(), 1800000)`, programID); err != nil {
-		t.Fatalf("inserting legacy null-channel snapshot: %v", err)
-	}
-	if _, err := pool.Exec(ctx, `
-		INSERT INTO reservations (site, program_id) VALUES ('home', $1)`, programID); err != nil {
-		t.Fatalf("inserting reservation referencing legacy snapshot: %v", err)
-	}
-
-	// 00026 を適用: NULL 行が DELETE され、FK CASCADE で reservations も
-	// 巻き添えで消える。
-	if _, err := provider.UpTo(ctx, 26); err != nil {
-		t.Fatalf("migrating up to 00026: %v", err)
-	}
-
-	var snapshotExists bool
-	if err := pool.QueryRow(ctx,
-		`SELECT EXISTS (SELECT 1 FROM program_snapshots WHERE site = 'home' AND program_id = $1)`,
-		programID).Scan(&snapshotExists); err != nil {
-		t.Fatalf("checking program_snapshots: %v", err)
-	}
-	if snapshotExists {
-		t.Error("legacy null-channel program_snapshots row should have been deleted by 00026")
-	}
-
-	var reservationExists bool
-	if err := pool.QueryRow(ctx,
-		`SELECT EXISTS (SELECT 1 FROM reservations WHERE site = 'home' AND program_id = $1)`,
-		programID).Scan(&reservationExists); err != nil {
-		t.Fatalf("checking reservations: %v", err)
-	}
-	if reservationExists {
-		t.Error("reservation referencing the deleted snapshot should have been cascaded away (FK ON DELETE CASCADE)")
-	}
-
-	// NOT NULL が実際に効いていること: 以後は NULL のチャンネル識別で
-	// program_snapshots を作れない。
-	_, err = pool.Exec(ctx, `
-		INSERT INTO program_snapshots (site, program_id, title, start_at, duration_ms)
-		VALUES ('home', $1, '新規残骸', now(), 1800000)`, programID+1)
-	assertPgError(t, err, "23502")
 }
 
 func TestSchemaV1_MediaAssetProfileKindCheck(t *testing.T) {
@@ -634,520 +538,6 @@ func TestSchemaV1_ProgramSnapshotGCCascadesToReservationIntentAndOverrides(t *te
 	}
 }
 
-// TestMigration00028_DropsScheduleSyncReservationID は issue #148: 書き手は
-// いるが読み手が本番コードに 1 つも無かった schedule_sync.reservation_id
-// （と、その FK・索引）が 00028 で確実に落ちることを見る。
-func TestMigration00028_DropsScheduleSyncReservationID(t *testing.T) {
-	dbURL := testDatabaseURL(t)
-	ctx := context.Background()
-
-	if err := MigrateReset(ctx, dbURL); err != nil {
-		t.Fatalf("migrate reset: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := MigrateReset(ctx, dbURL); err != nil {
-			t.Errorf("cleanup migrate reset: %v", err)
-		}
-	})
-
-	subFS, err := fs.Sub(migrations, "migrations")
-	if err != nil {
-		t.Fatalf("getting migrations sub-FS: %v", err)
-	}
-	sqlDB, err := sql.Open("pgx", dbURL)
-	if err != nil {
-		t.Fatalf("opening database: %v", err)
-	}
-	defer func() { _ = sqlDB.Close() }()
-
-	provider, err := goose.NewProvider(goose.DialectPostgres, sqlDB, subFS)
-	if err != nil {
-		t.Fatalf("creating goose provider: %v", err)
-	}
-
-	// 00026 まで適用（00028 適用前、reservation_id 列がまだある状態）。
-	if _, err := provider.UpTo(ctx, 26); err != nil {
-		t.Fatalf("migrating up to 00026: %v", err)
-	}
-
-	pool, err := pgxpool.New(ctx, dbURL)
-	if err != nil {
-		t.Fatalf("connecting pool: %v", err)
-	}
-	defer pool.Close()
-
-	const site = "home"
-	const programID int64 = 271828182
-	if _, err := pool.Exec(ctx, `
-		INSERT INTO program_snapshots (
-			site, program_id, title, start_at, duration_ms,
-			network_id, service_id, channel_type, channel, event_id, service_name
-		)
-		VALUES ($1, $2, '', now(), 1800000, 32736, 1024, 'GR', '27', 1, 'テスト局')`,
-		site, programID); err != nil {
-		t.Fatalf("inserting program_snapshot: %v", err)
-	}
-	if _, err := pool.Exec(ctx, `
-		INSERT INTO reservations (site, program_id) VALUES ($1, $2)`, site, programID); err != nil {
-		t.Fatalf("inserting reservation: %v", err)
-	}
-	if _, err := pool.Exec(ctx, `
-		INSERT INTO schedule_sync (site, program_id, reservation_id, state, options)
-		SELECT $1, $2, id, 'scheduled', '{}'::jsonb FROM reservations WHERE site = $1 AND program_id = $2`,
-		site, programID); err != nil {
-		t.Fatalf("inserting schedule_sync row with reservation_id set: %v", err)
-	}
-
-	var columnExistsBefore bool
-	if err := pool.QueryRow(ctx,
-		`SELECT EXISTS (SELECT 1 FROM information_schema.columns
-		 WHERE table_name = 'schedule_sync' AND column_name = 'reservation_id')`,
-	).Scan(&columnExistsBefore); err != nil {
-		t.Fatalf("checking column exists before 00028: %v", err)
-	}
-	if !columnExistsBefore {
-		t.Fatal("precondition: schedule_sync.reservation_id should exist before 00028")
-	}
-
-	// 00028 を適用: 列（と FK・索引）が落ちる。行自体は他の列を保ったまま残る。
-	if _, err := provider.UpTo(ctx, 28); err != nil {
-		t.Fatalf("migrating up to 00028: %v", err)
-	}
-
-	var columnExistsAfter bool
-	if err := pool.QueryRow(ctx,
-		`SELECT EXISTS (SELECT 1 FROM information_schema.columns
-		 WHERE table_name = 'schedule_sync' AND column_name = 'reservation_id')`,
-	).Scan(&columnExistsAfter); err != nil {
-		t.Fatalf("checking column exists after 00028: %v", err)
-	}
-	if columnExistsAfter {
-		t.Error("schedule_sync.reservation_id should have been dropped by 00028")
-	}
-
-	var stateAfter string
-	if err := pool.QueryRow(ctx,
-		`SELECT state FROM schedule_sync WHERE site = $1 AND program_id = $2`, site, programID,
-	).Scan(&stateAfter); err != nil {
-		t.Fatalf("schedule_sync row should survive the column drop: %v", err)
-	}
-	if stateAfter != "scheduled" {
-		t.Errorf("schedule_sync.state = %q, want %q", stateAfter, "scheduled")
-	}
-
-	// 反対方向の確認: 列と一緒に FK・索引そのものも落ちていることを
-	// pg_constraint / pg_indexes で直接見る（DELETE 後に行が残ることは
-	// ON DELETE SET NULL の FK があっても成立するので、それ自体は FK 消滅の
-	// 証拠にならない）。
-	var fkExistsAfter bool
-	if err := pool.QueryRow(ctx,
-		`SELECT EXISTS (SELECT 1 FROM pg_constraint
-		 WHERE conrelid = 'schedule_sync'::regclass AND contype = 'f')`,
-	).Scan(&fkExistsAfter); err != nil {
-		t.Fatalf("checking FK exists after 00028: %v", err)
-	}
-	if fkExistsAfter {
-		t.Error("schedule_sync should have no FK constraints after 00028")
-	}
-
-	var indexExistsAfter bool
-	if err := pool.QueryRow(ctx,
-		`SELECT EXISTS (SELECT 1 FROM pg_indexes
-		 WHERE indexname = 'schedule_sync_reservation_id_idx')`,
-	).Scan(&indexExistsAfter); err != nil {
-		t.Fatalf("checking index exists after 00028: %v", err)
-	}
-	if indexExistsAfter {
-		t.Error("schedule_sync_reservation_id_idx should have been dropped by 00028")
-	}
-}
-
-// TestMigration00031_DropsRecordingsReservationID は issue #158: reservations.id
-// を宛先にした結合キーである recordings.reservation_id（と、その FK・索引）が
-// 00031 で確実に落ちること、かつ既存の recordings 行が他の列を保ったまま残る
-// ことを見る（CLAUDE.md 不変条件 9「identity」・10「意味を持たない行を作らない」
-// の実例。#29/#53/#98/#99/#149/#152 と同じ族の根絶）。
-//
-// TestMigration00028_DropsScheduleSyncReservationID と同じ形（migrate up to
-// N-1 → 生 SQL で列を埋めた行を作る → 前提を確認 → up to N → 列・FK・索引が
-// 消えて行は残ることを確認）。
-func TestMigration00031_DropsRecordingsReservationID(t *testing.T) {
-	dbURL := testDatabaseURL(t)
-	ctx := context.Background()
-
-	if err := MigrateReset(ctx, dbURL); err != nil {
-		t.Fatalf("migrate reset: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := MigrateReset(ctx, dbURL); err != nil {
-			t.Errorf("cleanup migrate reset: %v", err)
-		}
-	})
-
-	subFS, err := fs.Sub(migrations, "migrations")
-	if err != nil {
-		t.Fatalf("getting migrations sub-FS: %v", err)
-	}
-	sqlDB, err := sql.Open("pgx", dbURL)
-	if err != nil {
-		t.Fatalf("opening database: %v", err)
-	}
-	defer func() { _ = sqlDB.Close() }()
-
-	provider, err := goose.NewProvider(goose.DialectPostgres, sqlDB, subFS)
-	if err != nil {
-		t.Fatalf("creating goose provider: %v", err)
-	}
-
-	// 00030 まで適用（00031 適用前、reservation_id 列がまだある状態）。
-	if _, err := provider.UpTo(ctx, 30); err != nil {
-		t.Fatalf("migrating up to 00030: %v", err)
-	}
-
-	pool, err := pgxpool.New(ctx, dbURL)
-	if err != nil {
-		t.Fatalf("connecting pool: %v", err)
-	}
-	defer pool.Close()
-
-	const site = "home"
-	const programID int64 = 314159265
-	if _, err := pool.Exec(ctx, `
-		INSERT INTO program_snapshots (
-			site, program_id, title, start_at, duration_ms,
-			network_id, service_id, channel_type, channel, event_id, service_name
-		)
-		VALUES ($1, $2, '', now(), 1800000, 32736, 1024, 'GR', '27', 1, 'テスト局')`,
-		site, programID); err != nil {
-		t.Fatalf("inserting program_snapshot: %v", err)
-	}
-	if _, err := pool.Exec(ctx, `
-		INSERT INTO reservations (site, program_id) VALUES ($1, $2)`, site, programID); err != nil {
-		t.Fatalf("inserting reservation: %v", err)
-	}
-	var recordingID int64
-	if err := pool.QueryRow(ctx, `
-		INSERT INTO recordings (
-			reservation_id, source, site, network_id, service_id, event_id, service_name,
-			channel_type, channel, title, program_start_at, program_duration_ms, status
-		)
-		SELECT r.id, 'manual', $1, 32736, 1024, 1, 'テスト局', 'GR', '27', '', now(), 1800000, 'finished'
-		FROM reservations r WHERE r.site = $1 AND r.program_id = $2
-		RETURNING id`,
-		site, programID).Scan(&recordingID); err != nil {
-		t.Fatalf("inserting recording row with reservation_id set: %v", err)
-	}
-
-	var columnExistsBefore bool
-	if err := pool.QueryRow(ctx,
-		`SELECT EXISTS (SELECT 1 FROM information_schema.columns
-		 WHERE table_name = 'recordings' AND column_name = 'reservation_id')`,
-	).Scan(&columnExistsBefore); err != nil {
-		t.Fatalf("checking column exists before 00031: %v", err)
-	}
-	if !columnExistsBefore {
-		t.Fatal("precondition: recordings.reservation_id should exist before 00031")
-	}
-
-	// 00031 を適用: 列（と FK・索引）が落ちる。行自体は他の列を保ったまま残る。
-	if _, err := provider.UpTo(ctx, 31); err != nil {
-		t.Fatalf("migrating up to 00031: %v", err)
-	}
-
-	var columnExistsAfter bool
-	if err := pool.QueryRow(ctx,
-		`SELECT EXISTS (SELECT 1 FROM information_schema.columns
-		 WHERE table_name = 'recordings' AND column_name = 'reservation_id')`,
-	).Scan(&columnExistsAfter); err != nil {
-		t.Fatalf("checking column exists after 00031: %v", err)
-	}
-	if columnExistsAfter {
-		t.Error("recordings.reservation_id should have been dropped by 00031")
-	}
-
-	var statusAfter string
-	if err := pool.QueryRow(ctx,
-		`SELECT status FROM recordings WHERE id = $1`, recordingID,
-	).Scan(&statusAfter); err != nil {
-		t.Fatalf("recording row should survive the column drop: %v", err)
-	}
-	if statusAfter != "finished" {
-		t.Errorf("recordings.status = %q, want %q", statusAfter, "finished")
-	}
-
-	// 反対方向の確認: 列と一緒に reservation_id 側の FK・索引そのものも
-	// 落ちていることを pg_constraint / pg_indexes で直接見る。recordings は
-	// rule_id → rules への FK（00006）を別に持つので、「FK が 1 つも無い」では
-	// なく reservation_id を参照する FK が無いことを見る。
-	var reservationFKExistsAfter bool
-	if err := pool.QueryRow(ctx,
-		`SELECT EXISTS (
-			SELECT 1 FROM pg_constraint
-			WHERE conrelid = 'recordings'::regclass AND contype = 'f'
-			  AND pg_get_constraintdef(oid) LIKE '%reservation_id%'
-		)`,
-	).Scan(&reservationFKExistsAfter); err != nil {
-		t.Fatalf("checking reservation_id FK exists after 00031: %v", err)
-	}
-	if reservationFKExistsAfter {
-		t.Error("recordings should have no reservation_id FK constraint after 00031")
-	}
-
-	var indexExistsAfter bool
-	if err := pool.QueryRow(ctx,
-		`SELECT EXISTS (SELECT 1 FROM pg_indexes
-		 WHERE indexname = 'recordings_reservation_id_idx')`,
-	).Scan(&indexExistsAfter); err != nil {
-		t.Fatalf("checking index exists after 00031: %v", err)
-	}
-	if indexExistsAfter {
-		t.Error("recordings_reservation_id_idx should have been dropped by 00031")
-	}
-}
-
-// TestMigration00033_BackfillsNeverScheduledFromQualityEventsMarker は issue #161
-// の決定（案 A: never-scheduled 行の識別を quality_events の jsonb マーカーから
-// 型付き列 recordings.never_scheduled に昇格する）の backfill を確認する。
-//
-// 00030 まで（never_scheduled 列が無く、never_scheduled_events VIEW が
-// jsonb_array_elements で判定していた状態）で、旧 reconciler がまさに書いていた
-// 形の recordings 行（マーカー付き failed 行）と、mirakc 由来の途中失敗
-// （マーカー無し failed 行。同期の再試行経路を壊さないよう除外対象にしては
-// ならない）の 2 つを仕込み、00033 適用後に前者だけ never_scheduled = true に
-// なり、両者とも never_scheduled_events VIEW の判定が変わらないことを確認する
-// （両方向: マーカー付きは変換される / マーカー無しは変換されない）。
-func TestMigration00033_BackfillsNeverScheduledFromQualityEventsMarker(t *testing.T) {
-	dbURL := testDatabaseURL(t)
-	ctx := context.Background()
-
-	if err := MigrateReset(ctx, dbURL); err != nil {
-		t.Fatalf("migrate reset: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := MigrateReset(ctx, dbURL); err != nil {
-			t.Errorf("cleanup migrate reset: %v", err)
-		}
-	})
-
-	subFS, err := fs.Sub(migrations, "migrations")
-	if err != nil {
-		t.Fatalf("getting migrations sub-FS: %v", err)
-	}
-	sqlDB, err := sql.Open("pgx", dbURL)
-	if err != nil {
-		t.Fatalf("opening database: %v", err)
-	}
-	defer func() { _ = sqlDB.Close() }()
-
-	provider, err := goose.NewProvider(goose.DialectPostgres, sqlDB, subFS)
-	if err != nil {
-		t.Fatalf("creating goose provider: %v", err)
-	}
-
-	// 00030 まで適用（00033 適用前、never_scheduled 列がまだ無い状態）。
-	if _, err := provider.UpTo(ctx, 30); err != nil {
-		t.Fatalf("migrating up to 00030: %v", err)
-	}
-
-	pool, err := pgxpool.New(ctx, dbURL)
-	if err != nil {
-		t.Fatalf("connecting pool: %v", err)
-	}
-	defer pool.Close()
-
-	const site = "home"
-	const neverScheduledEventID int32 = 501
-	const midFailureEventID int32 = 502
-
-	// reconciler.recordNeverScheduled（issue #98）がかつて書いていた形そのもの:
-	// status='failed' + quality_events に recording.never-scheduled マーカー。
-	if _, err := pool.Exec(ctx, `
-		INSERT INTO recordings (
-			source, site, network_id, service_id, event_id, service_name,
-			channel_type, channel, title, program_start_at, program_duration_ms,
-			status, quality_events
-		) VALUES (
-			'manual', $1, 32736, 1024, $2, 'テスト局',
-			'GR', '27', 'never-scheduled になった番組', now(), 1800000,
-			'failed', '[{"at":"2026-01-01T00:00:00Z","event":"recording.never-scheduled","reason":{}}]'::jsonb
-		)`, site, neverScheduledEventID); err != nil {
-		t.Fatalf("inserting legacy never-scheduled marker row: %v", err)
-	}
-
-	// handleRecordingFailed（internal/watcher）が作る、mirakc 由来の途中失敗。
-	// マーカーは無い --- これが変換されると再試行経路を壊す（#98 のコメント参照）。
-	if _, err := pool.Exec(ctx, `
-		INSERT INTO recordings (
-			source, site, network_id, service_id, event_id, service_name,
-			channel_type, channel, title, program_start_at, program_duration_ms,
-			status, quality_events
-		) VALUES (
-			'manual', $1, 32736, 1024, $2, 'テスト局',
-			'GR', '27', '途中失敗した番組', now(), 1800000,
-			'failed', '[{"at":"2026-01-01T00:00:00Z","event":"recording.failed","reason":{}}]'::jsonb
-		)`, site, midFailureEventID); err != nil {
-		t.Fatalf("inserting mid-recording-failure row: %v", err)
-	}
-
-	// 00031 / 00032 を経由して 00033 を適用: 列追加 + backfill + VIEW の
-	// 列ベースへの置き換え。途中の 2 本は recordings.reservation_id の削除と
-	// recording_encode_policy 衛星表の作成で、この fixture の意味には影響しない。
-	if _, err := provider.UpTo(ctx, 33); err != nil {
-		t.Fatalf("migrating up to 00033: %v", err)
-	}
-
-	var neverScheduledFlag, midFailureFlag bool
-	if err := pool.QueryRow(ctx,
-		`SELECT never_scheduled FROM recordings WHERE site = $1 AND event_id = $2`,
-		site, neverScheduledEventID,
-	).Scan(&neverScheduledFlag); err != nil {
-		t.Fatalf("querying never_scheduled for marker row: %v", err)
-	}
-	if !neverScheduledFlag {
-		t.Error("backfill should have set never_scheduled = true for the row with the recording.never-scheduled marker")
-	}
-	if err := pool.QueryRow(ctx,
-		`SELECT never_scheduled FROM recordings WHERE site = $1 AND event_id = $2`,
-		site, midFailureEventID,
-	).Scan(&midFailureFlag); err != nil {
-		t.Fatalf("querying never_scheduled for mid-failure row: %v", err)
-	}
-	if midFailureFlag {
-		t.Error("backfill must not set never_scheduled = true for a mid-recording failure without the marker (would break the mirakc retry path)")
-	}
-
-	// never_scheduled_events VIEW は列ベースに置き換わった後も同じ判定結果を
-	// 返す（消費側の 3 クエリ・表示用 never_recorded に影響が波及しないこと）。
-	var neverScheduledMatches, midFailureMatches bool
-	if err := pool.QueryRow(ctx,
-		`SELECT EXISTS (SELECT 1 FROM never_scheduled_events WHERE site = $1 AND network_id = 32736 AND service_id = 1024 AND event_id = $2)`,
-		site, neverScheduledEventID,
-	).Scan(&neverScheduledMatches); err != nil {
-		t.Fatalf("checking never_scheduled_events for marker row: %v", err)
-	}
-	if !neverScheduledMatches {
-		t.Error("never_scheduled_events should match the backfilled never-scheduled row")
-	}
-	if err := pool.QueryRow(ctx,
-		`SELECT EXISTS (SELECT 1 FROM never_scheduled_events WHERE site = $1 AND network_id = 32736 AND service_id = 1024 AND event_id = $2)`,
-		site, midFailureEventID,
-	).Scan(&midFailureMatches); err != nil {
-		t.Fatalf("checking never_scheduled_events for mid-failure row: %v", err)
-	}
-	if midFailureMatches {
-		t.Error("never_scheduled_events must not match a mid-recording failure without the marker")
-	}
-}
-
-// TestMigration00038_MovesNeverScheduledRowsToDedicatedTable は、旧 recordings の
-// never_scheduled 擬似行だけを欠測表へ移し、mirakc 由来の failed 試行は
-// recordings に残す両方向を固定する。移行後は never_scheduled 列も擬似行も無く、
-// never_scheduled_events は VIEW ではなく snapshots と無関係な永続表になる。
-func TestMigration00038_MovesNeverScheduledRowsToDedicatedTable(t *testing.T) {
-	dbURL := testDatabaseURL(t)
-	ctx := context.Background()
-
-	if err := MigrateReset(ctx, dbURL); err != nil {
-		t.Fatalf("migrate reset: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := MigrateReset(ctx, dbURL); err != nil {
-			t.Errorf("cleanup migrate reset: %v", err)
-		}
-	})
-
-	subFS, err := fs.Sub(migrations, "migrations")
-	if err != nil {
-		t.Fatalf("getting migrations sub-FS: %v", err)
-	}
-	sqlDB, err := sql.Open("pgx", dbURL)
-	if err != nil {
-		t.Fatalf("opening database: %v", err)
-	}
-	defer func() { _ = sqlDB.Close() }()
-
-	provider, err := goose.NewProvider(goose.DialectPostgres, sqlDB, subFS)
-	if err != nil {
-		t.Fatalf("creating goose provider: %v", err)
-	}
-	if _, err := provider.UpTo(ctx, 37); err != nil {
-		t.Fatalf("migrating up to 00037: %v", err)
-	}
-
-	pool, err := pgxpool.New(ctx, dbURL)
-	if err != nil {
-		t.Fatalf("connecting pool: %v", err)
-	}
-	defer pool.Close()
-
-	const site = "migration-38"
-	const missingEventID int32 = 601
-	const failedAttemptEventID int32 = 602
-	if _, err := pool.Exec(ctx, `
-INSERT INTO recordings (
-    source, site, network_id, service_id, event_id, service_name,
-    channel_type, channel, title, program_start_at, program_duration_ms,
-    status, quality_events, never_scheduled
-) VALUES
-    ('manual', $1, 32736, 1024, $2, 'テスト局', 'GR', '27', '欠測擬似行', now(), 1800000,
-     'failed', '[{"event":"recording.never-scheduled","reason":{}}]'::jsonb, true),
-    ('manual', $1, 32736, 1024, $3, 'テスト局', 'GR', '27', 'mirakc 由来の失敗', now(), 1800000,
-     'failed', '[{"event":"recording.failed","reason":{}}]'::jsonb, false)`,
-		site, missingEventID, failedAttemptEventID); err != nil {
-		t.Fatalf("seeding pre-00038 recordings: %v", err)
-	}
-
-	if _, err := provider.UpTo(ctx, 38); err != nil {
-		t.Fatalf("migrating up to 00038: %v", err)
-	}
-
-	var relationKind string
-	if err := pool.QueryRow(ctx, `SELECT relkind::text FROM pg_class WHERE oid = 'never_scheduled_events'::regclass`).Scan(&relationKind); err != nil {
-		t.Fatalf("querying never_scheduled_events relation kind: %v", err)
-	}
-	if relationKind != "r" {
-		t.Errorf("never_scheduled_events relkind = %q, want %q (ordinary table)", relationKind, "r")
-	}
-
-	var missingExists bool
-	if err := pool.QueryRow(ctx, `
-SELECT EXISTS (
-    SELECT 1 FROM never_scheduled_events
-    WHERE site=$1 AND network_id=32736 AND service_id=1024 AND event_id=$2
-)`, site, missingEventID).Scan(&missingExists); err != nil {
-		t.Fatalf("checking migrated missing event: %v", err)
-	}
-	if !missingExists {
-		t.Error("legacy never-scheduled row was not moved to never_scheduled_events")
-	}
-
-	var pseudoCount, failedAttemptCount int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM recordings WHERE site=$1 AND event_id=$2`, site, missingEventID).Scan(&pseudoCount); err != nil {
-		t.Fatalf("counting legacy pseudo-row: %v", err)
-	}
-	if pseudoCount != 0 {
-		t.Errorf("legacy pseudo-row count = %d, want 0", pseudoCount)
-	}
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM recordings WHERE site=$1 AND event_id=$2`, site, failedAttemptEventID).Scan(&failedAttemptCount); err != nil {
-		t.Fatalf("counting real failed attempt: %v", err)
-	}
-	if failedAttemptCount != 1 {
-		t.Errorf("mirakc failed-attempt count = %d, want 1", failedAttemptCount)
-	}
-
-	var columnExists bool
-	if err := pool.QueryRow(ctx, `
-SELECT EXISTS (
-    SELECT 1 FROM information_schema.columns
-    WHERE table_schema='public' AND table_name='recordings' AND column_name='never_scheduled'
-)`).Scan(&columnExists); err != nil {
-		t.Fatalf("checking never_scheduled column: %v", err)
-	}
-	if columnExists {
-		t.Error("recordings.never_scheduled still exists after migration")
-	}
-}
-
 func TestReservationOptions_Effective(t *testing.T) {
 	priority1 := 1
 	priority2 := 2
@@ -1239,6 +629,109 @@ func TestEffectiveOptions_IntentActionOverridesBaseSkip(t *testing.T) {
 				t.Errorf("effective skip = %v (Skip=%v), want %v", got, eff.Skip, tt.wantSkip)
 			}
 		})
+	}
+}
+
+// TestSchemaV1_DroppedColumnsAndIndexesStayDropped は squash 前の 7 本の
+// backfill マイグレーション（旧 00028/00031/00033/00035 ほか）が持っていた
+// 「最終形に対しても真であり続ける」主張のうち、squash で削除された 7 本の
+// テスト本体からは失われたが baseline スキーマ自体には今も効いている 6 点を
+// 固定する（issue #435 の「含むもの 4」）。過去に一度存在した列・索引・VIEW が
+// baseline（旧 00041 相当の最終形）には存在しないことを、それぞれの旧マイグレー
+// ション回帰テストが使っていたのと同じ information_schema / pg_catalog の
+// 引き方で確認する。
+func TestSchemaV1_DroppedColumnsAndIndexesStayDropped(t *testing.T) {
+	pool := setupTestDB(t)
+	ctx := context.Background()
+
+	// 1. schedule_sync.reservation_id 列は存在しない（旧 00028 で DROP）。
+	var exists bool
+	if err := pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM information_schema.columns
+		 WHERE table_name = 'schedule_sync' AND column_name = 'reservation_id')`,
+	).Scan(&exists); err != nil {
+		t.Fatalf("checking schedule_sync.reservation_id: %v", err)
+	}
+	if exists {
+		t.Error("schedule_sync.reservation_id should not exist in baseline")
+	}
+
+	// 2. schedule_sync に FK は 1 つも無い（reservation_id と一緒に落ちた）。
+	if err := pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM pg_constraint
+		 WHERE conrelid = 'schedule_sync'::regclass AND contype = 'f')`,
+	).Scan(&exists); err != nil {
+		t.Fatalf("checking schedule_sync FK constraints: %v", err)
+	}
+	if exists {
+		t.Error("schedule_sync should have no FK constraints in baseline")
+	}
+
+	// 3. 索引 schedule_sync_reservation_id_idx は存在しない。
+	if err := pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM pg_indexes
+		 WHERE indexname = 'schedule_sync_reservation_id_idx')`,
+	).Scan(&exists); err != nil {
+		t.Fatalf("checking schedule_sync_reservation_id_idx: %v", err)
+	}
+	if exists {
+		t.Error("schedule_sync_reservation_id_idx should not exist in baseline")
+	}
+
+	// 4. recordings.reservation_id 列・その FK・索引 recordings_reservation_id_idx
+	// は存在しない（旧 00031 で DROP）。
+	if err := pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM information_schema.columns
+		 WHERE table_name = 'recordings' AND column_name = 'reservation_id')`,
+	).Scan(&exists); err != nil {
+		t.Fatalf("checking recordings.reservation_id: %v", err)
+	}
+	if exists {
+		t.Error("recordings.reservation_id should not exist in baseline")
+	}
+	if err := pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = 'recordings'::regclass
+			  AND pg_get_constraintdef(oid) LIKE '%reservation_id%'
+		)`,
+	).Scan(&exists); err != nil {
+		t.Fatalf("checking recordings reservation_id FK: %v", err)
+	}
+	if exists {
+		t.Error("recordings should have no reservation_id FK constraint in baseline")
+	}
+	if err := pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM pg_indexes
+		 WHERE indexname = 'recordings_reservation_id_idx')`,
+	).Scan(&exists); err != nil {
+		t.Fatalf("checking recordings_reservation_id_idx: %v", err)
+	}
+	if exists {
+		t.Error("recordings_reservation_id_idx should not exist in baseline")
+	}
+
+	// 5. recordings.never_scheduled 列は存在しない（旧 00033/00035 で列ベースの
+	// 中間形から never_scheduled_events 表ベースへ置き換わった）。
+	if err := pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM information_schema.columns
+		 WHERE table_schema = 'public' AND table_name = 'recordings' AND column_name = 'never_scheduled')`,
+	).Scan(&exists); err != nil {
+		t.Fatalf("checking recordings.never_scheduled: %v", err)
+	}
+	if exists {
+		t.Error("recordings.never_scheduled should not exist in baseline")
+	}
+
+	// 6. never_scheduled_events は VIEW ではなく永続表（relkind = 'r'）。
+	var relationKind string
+	if err := pool.QueryRow(ctx,
+		`SELECT relkind::text FROM pg_class WHERE oid = 'never_scheduled_events'::regclass`,
+	).Scan(&relationKind); err != nil {
+		t.Fatalf("querying never_scheduled_events relation kind: %v", err)
+	}
+	if relationKind != "r" {
+		t.Errorf("never_scheduled_events relkind = %q, want %q (ordinary table)", relationKind, "r")
 	}
 }
 

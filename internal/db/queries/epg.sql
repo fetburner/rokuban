@@ -133,7 +133,7 @@ WHERE site = $1 AND program_id = $2;
 -- 比較対象（program_snapshots.start_at + duration_ms）がクライアントの古い番組表に
 -- 引きずられ得た（api.ensureProgramSnapshot から使う）。
 -- event_id / s.name (service_name) は issue #98 で追加した参照 --- program_snapshots
--- 側の event_id / service_name 列（00025）を埋めるのに使う。他のチャンネル識別列と
+-- 側の event_id / service_name 列を埋めるのに使う。他のチャンネル識別列と
 -- 同じ経路（射影から直接引く。mirakc の programId 分解には頼らない）。
 -- name: GetProgramSnapshotSource :one
 SELECT p.name AS title, p.start_at, p.duration_ms,

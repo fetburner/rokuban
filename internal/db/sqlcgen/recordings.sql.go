@@ -114,7 +114,7 @@ type CreateFailedRecordingParams struct {
 	QualityEvents     json.RawMessage
 }
 
-// ON CONFLICT の述語は recordings_unique_active_event（00023 で
+// ON CONFLICT の述語は recordings_unique_active_event（issue #129 症状 2 で
 // `AND superseded_at IS NULL` を追加済み）と一字一句一致させる必要がある
 // （Postgres は ON CONFLICT の対象インデックスを述語込みで照合するため、
 // ずれると「there is no unique or exclusion constraint matching」で落ちる）。
@@ -482,7 +482,7 @@ type SupersedeFailedRecordingParams struct {
 // 「本物の record が推論に必ず勝つ」（issue #98 の決定、issue #129 症状 2 が最初の
 // 適用）の前段: 同一 active-event (site, network_id, service_id, event_id) に
 // status='failed' の行が「生きて」（deleted_at IS NULL AND superseded_at IS NULL、
-// 00023 で追加した recordings_unique_active_event の述語）残っていれば、
+// recordings_unique_active_event の述語）残っていれば、
 // superseded_at を立てて枠を明け渡させる。呼び出し側（internal/watcher の
 // createRecording）はこのクエリを CreateRecording の直前に同じトランザクション内で
 // 呼ぶ。

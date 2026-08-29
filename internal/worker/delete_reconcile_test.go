@@ -772,8 +772,9 @@ func TestDeleteReconcileWorker_UntilEncoded_Complete_Deletes(t *testing.T) {
 	}
 }
 
-// dropUntilEncodedRequiresProfilesCheck は recording_encode_policy（issue #159。
-// 00020 から移設した CHECK 制約）の CHECK 制約を一時的に外す。encode_profiles が
+// dropUntilEncodedRequiresProfilesCheck は recording_encode_policy の CHECK 制約
+// recording_encode_policy_check（issue #159 で recordings 側の CHECK から
+// 移設）を一時的に外す。encode_profiles が
 // 空の until_encoded 行は通常この CHECK に阻まれて作れないが、issue #104 の
 // 削除クエリ側ガード（until_encoded_deletable_originals view の
 // cardinality(encode_profiles) > 0）は「CHECK に頼らない」独立した防御として
@@ -792,8 +793,9 @@ func dropUntilEncodedRequiresProfilesCheck(t *testing.T, pool *pgxpool.Pool) {
 		// テスト本体が作った違反行（keep_original='until_encoded' かつ
 		// encode_profiles が空）が残ったままだと ADD CONSTRAINT 自体が失敗する。
 		// 次のテストは TRUNCATE で行ごと消えるが、この関数はその前に走るので
-		// 先に直しておく（00020 マイグレーションの Up が既存行にしているのと
-		// 同じ「安全側に倒す」処理）。
+		// 先に直しておく（recording_encode_policy_check の前身である recordings
+		// 側の同種 CHECK を足したときの Up が既存行にしているのと同じ
+		// 「安全側に倒す」処理）。
 		if _, err := pool.Exec(cleanupCtx,
 			"UPDATE recording_encode_policy SET keep_original = 'always' "+
 				"WHERE keep_original = 'until_encoded' AND cardinality(encode_profiles) = 0"); err != nil {
@@ -841,8 +843,8 @@ func TestDeleteReconcileWorker_UntilEncoded_EmptyProfiles_NotDeleted(t *testing.
 }
 
 // recording_encode_policy の CHECK 自体が効いていることの確認（issue #104 の
-// 含むもの 3、CLAUDE.md 不変条件 10「表現不可能にする」。00020 から issue #159 で
-// この衛星表へ移設）。until_encoded に切り替えるときだけプロファイルを要求する
+// 含むもの 3、CLAUDE.md 不変条件 10「表現不可能にする」。recordings 側の CHECK
+// から issue #159 でこの衛星表へ移設）。until_encoded に切り替えるときだけプロファイルを要求する
 // 形になっているはず。両方向を確認する: 空プロファイルは拒否され、プロファイルを
 // 添えれば通る。
 func TestRecordingEncodePolicy_UntilEncodedRequiresProfilesCheck(t *testing.T) {
@@ -1058,8 +1060,9 @@ func TestDeleteReconcileWorker_UntilEncodedUnqualifiedWhileDeleting_RevertsToAct
 }
 
 // delete_reconcile.sql の 5 クエリが、削除可否の 2 腕（ごみ箱 / until_encoded）
-// を名前付き述語（00029_delete_reconcile_predicates.sql の view / 関数）への
-// 参照に統一していることの静的チェック（issue #160）。生の predicate テキスト
+// を名前付き述語（until_encoded_deletable_originals view /
+// trash_deletable_recordings 関数）への参照に統一していることの静的チェック
+// （issue #160）。生の predicate テキスト
 // （キー列や cardinality ガード）がクエリファイルに再度インライン化されると、
 // このテストが機械的に検出する —— 「〜と同条件」というコメントで揃える
 // 義務が復活していないかどうかも合わせて見る。
@@ -1078,7 +1081,7 @@ func TestDeleteReconcileQueries_ReferenceNamedPredicatesNotDuplicatedText(t *tes
 		"r.deleted_at IS NOT NULL",
 	} {
 		if strings.Contains(text, needle) {
-			t.Errorf("delete_reconcile.sql contains %q; the predicate should live only in the named view/function (00027 migration), not be re-inlined into a consumer query", needle)
+			t.Errorf("delete_reconcile.sql contains %q; the predicate should live only in the named view/function (until_encoded_deletable_originals / trash_deletable_recordings), not be re-inlined into a consumer query", needle)
 		}
 	}
 

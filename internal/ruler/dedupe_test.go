@@ -723,7 +723,7 @@ func TestRunPass_DedupeHistoryLeavesScopeOnRuleDelete(t *testing.T) {
 		t.Fatalf("deleting rule: %v", err)
 	}
 
-	// 段階 1: FK が ON DELETE SET NULL なので履歴の帰属が落ちる（00006_rules.sql）。
+	// 段階 1: FK recordings_rule_id_fkey が ON DELETE SET NULL なので履歴の帰属が落ちる。
 	var histRuleID *int64
 	if err := pool.QueryRow(ctx,
 		`SELECT rule_id FROM recordings WHERE id = $1`, f.recordingID,

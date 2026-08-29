@@ -935,7 +935,7 @@ type CatalogUpsertProgramSnapshotParams struct {
 	UpdatedAt   time.Time
 }
 
-// event_id / service_name は issue #98 で追加（00025）。never-scheduled 行
+// event_id / service_name は issue #98 で追加。never-scheduled 行
 // （recordings）の識別・表示名に使うので、他のチャンネル識別列と同じく
 // catalog の往復（export/rescue）で失ってはならない。
 func (q *Queries) CatalogUpsertProgramSnapshot(ctx context.Context, arg CatalogUpsertProgramSnapshotParams) error {

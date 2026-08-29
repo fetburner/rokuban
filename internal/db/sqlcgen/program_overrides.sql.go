@@ -37,7 +37,7 @@ type GetProgramOverridesParams struct {
 	ProgramID int64
 }
 
-// 番組単位のパラメータ上書き（M2-4 / 00010 で program_intents から分離。issue #18
+// 番組単位のパラメータ上書き（M2-4 で program_intents から分離。issue #18
 // の案 A の続き）。api だけが書き、ruler は読むだけ（program_intents と同じ規律）。
 //
 // overrides の中身は internal/api がマージする（db.ReservationOptions の型付き

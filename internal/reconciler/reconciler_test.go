@@ -152,8 +152,8 @@ func ptrString(v string) *string { return &v }
 // reservations への FK があるため、予約行より先に program_snapshots を upsert
 // する（api.CreateReservation と同じ順序。internal/api/handler.go 参照）。
 //
-// event_id / service_name は issue #98 で program_snapshots に追加された列
-// （00025）。recordNeverScheduled が recordings 行を作るのに必須なので、
+// event_id / service_name は issue #98 で program_snapshots に追加された列。
+// recordNeverScheduled が recordings 行を作るのに必須なので、
 // この共通ヘルパで必ず埋める。event_id は programID の下 5 桁から機械的に
 // 割り当てる --- 本番コードでの programId 分解（不変条件: mirakc の
 // programId 内部構造を割り算しない）とは別物で、テストフィクスチャが
@@ -389,7 +389,7 @@ func TestReconciler_SkippedReservationNotScheduled(t *testing.T) {
 }
 
 // TestReconciler_NullServiceIDNotScheduled（service_id が NULL の予約を
-// 推測せずスキップする回帰テスト）は issue #101（00026）で
+// 推測せずスキップする回帰テスト）は issue #101 で
 // program_snapshots のチャンネル・イベント識別 6 列が NOT NULL 化されたことで
 // 削除した。この状態（UpsertProgramSnapshot に channel snapshot を渡さず
 // network_id 等が NULL のまま作る）自体が DB レベルで表現不可能になったため

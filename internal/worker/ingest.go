@@ -441,7 +441,7 @@ func (w *IngestWorker) hasOriginalMediaAsset(ctx context.Context, recordingID in
 // この SELECT と実際の CreateMediaAsset の INSERT の間に delete_reconcile が
 // 'deleting' → 'deleted' の遷移を進める TOCTOU の窓は残る。正しさの根拠は
 // 常に media_assets の一意索引（CREATE UNIQUE INDEX ON media_assets
-// (rel_path) WHERE state <> 'deleted'、00002_schema_v1.sql）であり、
+// (rel_path) WHERE state <> 'deleted'）であり、
 // レベルトリガー（CLAUDE.md 不変条件 5）の原則どおり、この関数を「一意索引を
 // 通す前の安価なゲート」以上の役割にしない。一意索引を緩めたり INSERT の
 // エラー処理を弱めたりする理由には使わない。
@@ -755,8 +755,8 @@ func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath st
 // return していたが、それでも列は CREATE TABLE の既定値のまま残っていたので
 // 実質的には「常に凍結されている」のと同じだった。衛星表 recording_encode_policy
 // は行が無ければ既定値をどこにも持たないので、ここで書かないと 2 つの契約が
-// 破れる: (1) migration 00032 の backfill は「原本 media_asset を持つ録画は
-// 凍結済み」を基準にしており、ingest 完了後もこの基準を保つ必要がある、
+// 破れる: (1) 「原本 media_asset を持つ録画は凍結済み」という不変条件を
+// ingest 完了後も保つ必要がある、
 // (2) issue #133 の事後追加（AppendRecordingEncodeProfiles）は「行が既にある」
 // ことを前提に書けるようになった（doc コメント冒頭参照）ので、予約が無い
 // 録画（手動で mirakc に起こされた録画等、日常的なケース）にも行が無ければ
@@ -793,8 +793,10 @@ func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath st
 // マージ結果の整合は誰も検査していない。
 //
 // recording_encode_policy にも同じ組み合わせを禁止する CHECK（issue #104、
-// `until_encoded` は encode_profiles が非空であることを要求する。issue #159 で
-// 00020 から移設）があり、そのまま実効値を書くとこの tx が CHECK 違反で
+// `until_encoded` は encode_profiles が非空であることを要求する。かつて recordings
+// 側にあった同種の CHECK を issue #159 で recording_encode_policy_check として
+// 移設したもの）があり、そのまま
+// 実効値を書くとこの tx が CHECK 違反で
 // ロールバックする --- このメソッドは原本 media_asset の INSERT と同一 tx で
 // 呼ばれるため、ロールバックは「録画そのものが消失する」に直結する（不変条件 3
 // 「コミット = DB 行」）。原本を失うリスクを負ってまで守る価値のある不変では
@@ -818,7 +820,7 @@ func (w *IngestWorker) resolveAndSnapshotEncodePolicy(ctx context.Context, q *sq
 	// 解決に失敗しても凍結自体はスキップしない（issue #159。doc コメント
 	// 「解決失敗時も凍結する」参照）。既定値（'always' / '{}'）で凍結する ---
 	// 何も INSERT しないと、原本 media_asset の有無で「凍結済みか」を判定する
-	// 不変条件（migration 00032 の backfill と同じ基準）が破れ、かつ issue #133
+	// 不変条件が破れ、かつ issue #133
 	// の事後追加（AppendRecordingEncodeProfiles）が「行が既にある」ことを前提に
 	// できなくなる。
 	keepOriginal := "always"
