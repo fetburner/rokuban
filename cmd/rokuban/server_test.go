@@ -280,16 +280,14 @@ func TestServerCmd_OnceRejectsExtraRoles(t *testing.T) {
 // config.DBConfig が両方を required にしているため。CI の URL は
 // `postgres://rokuban:rokuban@...` なのでこの分岐は通らない。
 //
-// **`log.format: text` を明示する。** 呼び出し元（TestServerCmd_OnceModeTerminates /
-// TestServerCmd_OnceModeExitsOnUnhandledJobKind）は captureServerLogs +
-// assertOnceOutcome で `outcome=...`（key=value の text 書式）を見る。
-// log.format の既定は json（configureLogging）なのでここで明示しないと
-// `"outcome":"..."` になって一致しなくなる。
+// **log.format はここで上書きしない。** 運用者が実際に読むのは既定の json
+// （config.example.yml / k8s の overlay がどちらも format: json）。ここで
+// text に固定すると、assertOnceOutcome の契約検査が製品が出さない符号化に
+// 対してしか成立しなくなる。
 func writeOnceModeConfig(t *testing.T, extra ...string) string {
 	t.Helper()
 	// 到達不能な mirakc（127.0.0.1:1）。1 件消化モードのテストは mirakc に
 	// 触らないジョブを使うか、触って失敗することを主張するかのどちらかである。
-	extra = append([]string{"log:\n  format: text"}, extra...)
 	return writeWorkerTestConfig(t, "http://127.0.0.1:1", extra...)
 }
 
@@ -352,29 +350,27 @@ func (b *syncBuffer) String() string {
 // が config の log.* から slog.SetDefault するので、先回りで SetDefault しても
 // runServer 側に上書きされてしまう。cmd/rokuban/stderr_capture_test.go 参照）。
 //
-// **呼び出し側は config に `log: {format: text}` を書くこと。** ここは
-// キャプチャの仕組みだけを持ち、出力形式は決めない --- assertOnceOutcome が
-// 見る `outcome=` は text 形式（key=value）の書式なので、json 形式のままだと
-// `"outcome":"..."` になり一致しない。
-//
 // **outcome のラベルは docs / e2e README / runbook が名指ししている契約**
-// （`outcome=idle_timeout` と `outcome=job_done` と `outcome=job_unhandled` を
+// （outcome 属性が `idle_timeout` / `job_done` / `job_unhandled` になることを
 // 運用側が読み分ける）。ラベルを見ないと、「終了した」だけを見るテストは
 // **でっち上げの理由で終了した**場合も緑になる --- 実際に `unsubscribe` の
 // 呼び出し位置を 1 行ずらす変異では、3 本のうち 2 本が緑のまま
 // `outcome=job_unhandled` を出していた。
-func captureServerLogs(t *testing.T) *syncBuffer {
+func captureServerLogs(t *testing.T) func() string {
 	t.Helper()
-	buf := &syncBuffer{}
-	captureStderr(t, buf)
-	return buf
+	return captureStderr(t, &syncBuffer{})
 }
 
 // assertOnceOutcome は 1 件消化モードの終了理由がログに出ていることを見る。
-func assertOnceOutcome(t *testing.T, logs *syncBuffer, want string) {
+// logs は captureServerLogs が返す読み出し関数（drain してから読む。
+// stderr_capture_test.go 参照）。
+//
+// **json（既定の log.format）の書式で見る。** writeOnceModeConfig / captureServerLogs
+// の doc コメント参照 --- 運用者が実際に読む形式に対して契約を検査する。
+func assertOnceOutcome(t *testing.T, logs func() string, want string) {
 	t.Helper()
-	if got := logs.String(); !strings.Contains(got, "outcome="+want) {
-		t.Errorf("ログに outcome=%s が無い。ログ:\n%s", want, got)
+	if got := logs(); !strings.Contains(got, `"outcome":"`+want+`"`) {
+		t.Errorf("ログに \"outcome\":\"%s\" が無い。ログ:\n%s", want, got)
 	}
 }
 

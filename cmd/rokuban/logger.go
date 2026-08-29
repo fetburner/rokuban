@@ -5,8 +5,30 @@ import (
 	"log/slog"
 	"os"
 
+	"github.com/spf13/cobra"
+
 	"github.com/fetburner/rokuban/internal/config"
 )
+
+// loadConfig は --config で指定された設定ファイルを読み、成功したらそこから
+// ロガーを構成する（configureLogging）。全サブコマンド（server / migrate /
+// rescue / enqueue / catalog / shadow-diff / config validate）がここを通る
+// ので、ロガーの設定場所もここに 1 箇所だけ置く。
+//
+// **Load 自体が失敗したときのログは既定のまま出る。** 設定を読めていないので
+// 適用しようがない。呼び出し元は返ったエラーを自分でログ / 標準エラーに出す。
+func loadConfig(cmd *cobra.Command) (*config.Config, error) {
+	path, err := cmd.Flags().GetString("config")
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		return nil, err
+	}
+	configureLogging(cfg.Log)
+	return cfg, nil
+}
 
 // configureLogging は log.level / log.format から slog.Handler を構成し、
 // パッケージ既定ロガー（slog.Default）に据える。loadConfig（全サブコマンド
@@ -21,20 +43,19 @@ func configureLogging(cfg config.LogConfig) {
 //
 // **空文字は defaults() と同じ扱いにする。** LogConfig.validate は空文字を
 // 「未設定」として通す（`level: ${VAR}` の展開で空文字が入る構成があるため。
-// internal/config の TestLoad_EmptyLogValuesAreTreatedAsUnset）。ここで
-// フォールバックしないと、その構成だけ既定と異なるロガーになる。
+// internal/config の TestLoad_EmptyLogValuesAreTreatedAsUnset）。
+//
+// **`config.defaults()` の info/json と意図的に二重に持っている。** 空文字の
+// 構成は defaults() の代入（YAML にキーが無いときだけ効く）を経由せずここへ
+// 届くので、defaults() を読むだけでは揃わない。値がずれていないかは
+// TestNewLogHandler_EmptyIsDefault がリテラルで固定する。
 func newLogHandler(cfg config.LogConfig, w io.Writer) slog.Handler {
+	// slog.Level の zero value は LevelInfo なので、UnmarshalText が空文字や
+	// 未知の値で失敗しても level は Info のまま残る。level はロード時に
+	// LogConfig.validate 済み（logLevels の 4 値か空文字のみ）なので、
+	// ここでのエラーは実質「空文字 = 未設定」の一択。
 	var level slog.Level
-	switch cfg.Level {
-	case "debug":
-		level = slog.LevelDebug
-	case "warn":
-		level = slog.LevelWarn
-	case "error":
-		level = slog.LevelError
-	default: // "info" と "" はどちらも既定の Info 相当
-		level = slog.LevelInfo
-	}
+	_ = level.UnmarshalText([]byte(cfg.Level))
 
 	opts := &slog.HandlerOptions{Level: level}
 	if cfg.Format == "text" {

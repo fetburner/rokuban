@@ -277,7 +277,7 @@ ScaledJob 自体の書き方（トリガの接続先・`rollout.strategy`・切�
 - **`insert_probe_job` が入れる `e2e_probe` は、実物の worker には
   「登録されていない kind」である。** 掴んだ worker は 1 回失敗させて試行回数を
   1 つ潰す（実データには触れない）。`--once` の worker はそこで終了する
-  （ログの `outcome=job_unhandled`）。単体では
+  （ログの `outcome` 属性が `job_unhandled`）。単体では
   `TestServerCmd_OnceModeExitsOnUnhandledJobKind` が同じ形を固定している。
   つまり **`e2e_probe` は「長時間 Job」にはならない**ので、判定 3 の
   既定 producer は実物の encode ワークロードに対しては使えない

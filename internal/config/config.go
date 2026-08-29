@@ -862,8 +862,10 @@ type LogConfig struct {
 	Format string `yaml:"format"`
 }
 
-// logLevels / logFormats は受け付ける値。defaults() が空を埋めるので、
-// validate に来る時点で空にはならない。
+// logLevels / logFormats は受け付ける値。**空文字はここに含めない。**
+// `level: ${VAR}` の展開結果が空文字になる構成があり、それは validate が
+// 別途「未設定」として通す（validate の doc コメント参照）。defaults() が
+// 埋めるのはキーが無いときだけなので、空文字はここまで残って来る。
 var (
 	logLevels  = []string{"debug", "info", "warn", "error"}
 	logFormats = []string{"json", "text"}
