@@ -17,6 +17,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/ptr"
 	"github.com/fetburner/rokuban/internal/webhook"
 )
 
@@ -213,7 +214,7 @@ func (w *Watcher) processRecord(ctx context.Context, record mirakc.Record) error
 			return fmt.Errorf("creating recording: %w", createErr)
 		}
 		recordingID = &id
-		title = derefStr(record.Program.Name)
+		title = ptr.Deref(record.Program.Name)
 	}
 
 	if err := w.upsertRecordSync(ctx, q, record, recordingID); err != nil {
@@ -293,13 +294,13 @@ func (w *Watcher) createRecording(ctx context.Context, q *sqlcgen.Queries, recor
 		ServiceName:       record.Service.Name,
 		ChannelType:       record.Service.Channel.Type,
 		Channel:           record.Service.Channel.Channel,
-		Title:             derefStr(record.Program.Name),
+		Title:             ptr.Deref(record.Program.Name),
 		Description:       record.Program.Description,
 		Extended:          marshalJSONOrNull(record.Program.Extended),
 		Genres:            marshalJSONOrNull(record.Program.Genres),
 		IsFree:            record.Program.IsFree,
 		ProgramStartAt:    millisToTime(record.Program.StartAt),
-		ProgramDurationMs: derefInt64(record.Program.Duration),
+		ProgramDurationMs: ptr.Deref(record.Program.Duration),
 		Status:            normalizeRecordingStatus(record.ID, record.Recording.Status),
 		StartedAt:         millisToTimeNonNil(record.Recording.StartTime),
 		EndedAt:           millisToTimePtr(record.Recording.EndTime),
@@ -440,7 +441,7 @@ func (w *Watcher) handleRecordingFailed(ctx context.Context, data mirakc.Recordi
 		return err
 	}
 
-	title := derefStr(schedule.Program.Name)
+	title := ptr.Deref(schedule.Program.Name)
 	networkID := int32(schedule.Program.NetworkID)
 	serviceID := int32(schedule.Program.ServiceID)
 	eventID := int32(schedule.Program.EventID)
@@ -461,7 +462,7 @@ func (w *Watcher) handleRecordingFailed(ctx context.Context, data mirakc.Recordi
 		Genres:            marshalJSONOrNull(schedule.Program.Genres),
 		IsFree:            schedule.Program.IsFree,
 		ProgramStartAt:    millisToTime(schedule.Program.StartAt),
-		ProgramDurationMs: derefInt64(schedule.Program.Duration),
+		ProgramDurationMs: ptr.Deref(schedule.Program.Duration),
 		QualityEvents:     qeJSON,
 	}); err != nil {
 		return err
@@ -562,20 +563,6 @@ func (w *Watcher) findService(ctx context.Context, networkID, serviceID int) (*m
 		}
 	}
 	return nil, fmt.Errorf("service not found: network=%d service=%d", networkID, serviceID)
-}
-
-func derefStr(s *string) string {
-	if s == nil {
-		return ""
-	}
-	return *s
-}
-
-func derefInt64(i *int64) int64 {
-	if i == nil {
-		return 0
-	}
-	return *i
 }
 
 func millisToTime(m *mirakc.Milliseconds) time.Time {

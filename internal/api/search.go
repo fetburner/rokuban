@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/ptr"
 	"github.com/fetburner/rokuban/internal/rulequery"
 )
 
@@ -49,8 +50,8 @@ func conditionsFromSearch(in ProgramSearchRequest) rulequery.Conditions {
 				Target:        string(m.Target),
 				Mode:          string(m.Mode),
 				Value:         m.Value,
-				CaseSensitive: derefBool(m.CaseSensitive),
-				Negate:        derefBool(m.Negate),
+				CaseSensitive: ptr.Deref(m.CaseSensitive),
+				Negate:        ptr.Deref(m.Negate),
 			})
 		}
 	}

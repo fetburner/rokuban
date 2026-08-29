@@ -14,6 +14,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/contentpath"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/ptr"
 	"github.com/fetburner/rokuban/internal/worker"
 )
 
@@ -436,7 +437,7 @@ func insertRule(ctx context.Context, q *sqlcgen.Queries, in RuleInput) (sqlcgen.
 func ruleCreateParams(in RuleInput) (sqlcgen.CreateRuleParams, error) {
 	p := sqlcgen.CreateRuleParams{
 		Name:             strings.TrimSpace(in.Name),
-		Description:      derefStr(in.Description),
+		Description:      ptr.Deref(in.Description),
 		Enabled:          true,
 		Priority:         10,
 		KeepOriginal:     "always",
@@ -545,8 +546,8 @@ func replaceRuleChildren(ctx context.Context, q *sqlcgen.Queries, ruleID int64, 
 				Target:        string(m.Target),
 				Mode:          string(m.Mode),
 				Value:         m.Value,
-				CaseSensitive: derefBool(m.CaseSensitive),
-				Negate:        derefBool(m.Negate),
+				CaseSensitive: ptr.Deref(m.CaseSensitive),
+				Negate:        ptr.Deref(m.Negate),
 			}); err != nil {
 				return fmt.Errorf("inserting text match %d: %w", i, err)
 			}
@@ -778,18 +779,4 @@ func canonicalizeStrings(in []string) []string {
 	}
 	sort.Strings(out)
 	return out
-}
-
-func derefStr(s *string) string {
-	if s == nil {
-		return ""
-	}
-	return *s
-}
-
-func derefBool(b *bool) bool {
-	if b == nil {
-		return false
-	}
-	return *b
 }
