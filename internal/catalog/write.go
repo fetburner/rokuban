@@ -79,7 +79,7 @@ func Write(mediaDir string, doc *Document, keep int) (string, error) {
 		return "", fmt.Errorf("creating generation dir: %w", err)
 	}
 
-	docFile, err := writeGenerationFile(filepath.Join(genDir, DocumentFilename), DocumentFilename, doc)
+	docSize, docSHA256, err := writeGenerationFile(filepath.Join(genDir, DocumentFilename), DocumentFilename, doc)
 	if err != nil {
 		return genDir, err
 	}
@@ -90,9 +90,10 @@ func Write(mediaDir string, doc *Document, keep int) (string, error) {
 		SchemaVersion:   doc.Version,
 		ExportedAt:      doc.ExportedAt.UTC(),
 		Document:        DocumentFilename,
-		Files:           []ManifestFile{docFile},
+		SizeBytes:       docSize,
+		SHA256:          docSHA256,
 	}
-	if _, err := writeGenerationFile(filepath.Join(genDir, ManifestFilename), ManifestFilename, manifest); err != nil {
+	if _, _, err := writeGenerationFile(filepath.Join(genDir, ManifestFilename), ManifestFilename, manifest); err != nil {
 		return genDir, err
 	}
 
@@ -103,10 +104,10 @@ func Write(mediaDir string, doc *Document, keep int) (string, error) {
 }
 
 // writeGenerationFile は v を JSON で path へ一発書きし、サイズと sha256 を返す。
-func writeGenerationFile(path, name string, v any) (ManifestFile, error) {
+func writeGenerationFile(path, name string, v any) (sizeBytes int64, sha256Hex string, err error) {
 	f, err := openCatalogFile(path)
 	if err != nil {
-		return ManifestFile{}, fmt.Errorf("creating %s: %w", name, err)
+		return 0, "", fmt.Errorf("creating %s: %w", name, err)
 	}
 	h := sha256.New()
 	counter := &countingWriter{}
@@ -114,20 +115,16 @@ func writeGenerationFile(path, name string, v any) (ManifestFile, error) {
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(v); err != nil {
 		_ = f.Close()
-		return ManifestFile{}, fmt.Errorf("encoding %s: %w", name, err)
+		return 0, "", fmt.Errorf("encoding %s: %w", name, err)
 	}
 	if err := f.Sync(); err != nil {
 		_ = f.Close()
-		return ManifestFile{}, fmt.Errorf("syncing %s: %w", name, err)
+		return 0, "", fmt.Errorf("syncing %s: %w", name, err)
 	}
 	if err := f.Close(); err != nil {
-		return ManifestFile{}, fmt.Errorf("closing %s: %w", name, err)
+		return 0, "", fmt.Errorf("closing %s: %w", name, err)
 	}
-	return ManifestFile{
-		Name:      name,
-		SizeBytes: counter.n,
-		SHA256:    hex.EncodeToString(h.Sum(nil)),
-	}, nil
+	return counter.n, hex.EncodeToString(h.Sum(nil)), nil
 }
 
 type countingWriter struct{ n int64 }
@@ -307,15 +304,23 @@ func SelectLatest(mediaDir string) (*Selection, error) {
 	if err != nil {
 		return nil, err
 	}
+	return selectFromStatuses(Dir(mediaDir), statuses)
+}
 
-	dir := Dir(mediaDir)
+// selectFromStatuses は完成判定済みの statuses から最初の完成世代を選ぶ。
+// SelectLatest から分離してあるのは、本体パスが常に DocumentFilename（定数）
+// から組み立てられ、manifest.Document の値を使わないことを、
+// VerifyGeneration の等値検査（判定 5）を経由せずに直接テストできるように
+// するため（TestSelectFromStatuses_DocumentPathIgnoresManifestDocument
+// 参照。判定 5 が守っている限り両者は同じ値になるが、ここは独立した防御）。
+func selectFromStatuses(dir string, statuses []SnapshotStatus) (*Selection, error) {
 	sel := &Selection{}
 	for _, st := range statuses {
 		if !st.Complete {
 			sel.Rejected = append(sel.Rejected, RejectedSnapshot{Name: st.Name, Reason: st.Reason})
 			continue
 		}
-		sel.DocumentPath = filepath.Join(dir, st.Name, st.Manifest.Document)
+		sel.DocumentPath = filepath.Join(dir, st.Name, DocumentFilename)
 		sel.Generation = st.Name
 		sel.Manifest = st.Manifest
 		return sel, nil

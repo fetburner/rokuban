@@ -48,8 +48,6 @@ const FilenamePrefix = "catalog-"
 type Document struct {
 	Version    int       `json:"version"`
 	ExportedAt time.Time `json:"exportedAt"`
-	// Site は export 時に絞り込んだサイト。空 / omit なら全サイト。
-	Site *string `json:"site,omitempty"`
 
 	Rules                   []Rule                  `json:"rules"`
 	Recordings              []Recording             `json:"recordings"`

@@ -145,7 +145,7 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 	}
 
 	// --- export ---
-	doc, err := Export(ctx, pool, "")
+	doc, err := Export(ctx, pool)
 	if err != nil {
 		t.Fatalf("Export: %v", err)
 	}
@@ -377,37 +377,6 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 	}
 }
 
-// site 絞り込みが site 列を持つ表に効くこと。
-func TestExport_SiteFilter(t *testing.T) {
-	pool := testutil.SetupDB(t)
-	ctx := context.Background()
-	q := sqlcgen.New(pool)
-
-	for _, site := range []string{"default", "other"} {
-		if _, err := q.CreateRecording(ctx, sqlcgen.CreateRecordingParams{
-			Source: "manual", Site: site,
-			NetworkID: 1, ServiceID: 1, EventID: int32(len(site)),
-			ServiceName: "s", ChannelType: "GR", Channel: "1",
-			Title: site, IsFree: true,
-			ProgramStartAt:    time.Date(2026, 7, 29, 0, 0, 0, 0, time.UTC),
-			ProgramDurationMs: 60000, Status: "finished",
-		}); err != nil {
-			t.Fatalf("CreateRecording site=%s: %v", site, err)
-		}
-	}
-
-	doc, err := Export(ctx, pool, "default")
-	if err != nil {
-		t.Fatalf("Export: %v", err)
-	}
-	if len(doc.Recordings) != 1 || doc.Recordings[0].Site != "default" {
-		t.Fatalf("filtered recordings = %+v, want 1 default", doc.Recordings)
-	}
-	if doc.Site == nil || *doc.Site != "default" {
-		t.Errorf("doc.Site = %v, want default", doc.Site)
-	}
-}
-
 func ptrTime(t time.Time) *time.Time { return &t }
 
 // TestExport_ConcurrentIngestStaysConsistent は、Export の実行中に他のトランザク
@@ -494,7 +463,7 @@ func TestExport_ConcurrentIngestStaysConsistent(t *testing.T) {
 		if i >= iterations && insertErr.Load() != nil {
 			break
 		}
-		doc, err := Export(ctx, pool, "")
+		doc, err := Export(ctx, pool)
 		if err != nil {
 			close(stop)
 			wg.Wait()

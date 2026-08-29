@@ -75,6 +75,45 @@ func TestWriteAndSelectLatest(t *testing.T) {
 	}
 }
 
+// manifest.json の on-disk 形をリテラルで固定する。Write と VerifyGeneration が
+// 同じ Manifest 構造体を使い回すので、struct を読み書きするだけの往復テストは
+// フィールド名や manifestVersion の値を綴り間違えても通ってしまう
+// （CLAUDE.md「実装の定数と比較するテストは何も主張していない」）。issue #441 の
+// レビューで指摘された穴を塞ぐため、JSON を map[string]any で読み直してキー名と
+// manifestVersion をリテラルで検証する。
+func TestWrite_ManifestOnDiskShape(t *testing.T) {
+	dir := t.TempDir()
+	genDir, err := Write(dir, testDoc(time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC), "shape"), 7)
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(genDir, "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatal(err)
+	}
+
+	// リテラル 2: files[] → 単一 sizeBytes/sha256 への形式変更で 1 から上げた版。
+	if got, want := m["manifestVersion"], float64(2); got != want {
+		t.Errorf("manifestVersion = %v, want %v", got, want)
+	}
+	if got, want := m["document"], "catalog.json"; got != want {
+		t.Errorf("document = %v, want %q", got, want)
+	}
+	for _, key := range []string{"sizeBytes", "sha256", "generation", "schemaVersion", "exportedAt"} {
+		if _, ok := m[key]; !ok {
+			t.Errorf("manifest.json is missing key %q: %v", key, m)
+		}
+	}
+	if _, present := m["files"]; present {
+		t.Errorf("manifest.json still has the old files[] key: %v", m)
+	}
+}
+
 // 同じ ExportedAt で 2 回書いても既存世代を上書きせず、別の世代になること
 // （世代名を再利用しない。docs/storage.md §8）。
 func TestWrite_DoesNotReuseGenerationName(t *testing.T) {

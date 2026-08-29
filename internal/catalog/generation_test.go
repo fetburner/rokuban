@@ -289,6 +289,49 @@ func TestListSnapshots_FirstCompleteMatchesSelectLatest(t *testing.T) {
 	}
 }
 
+// DocumentPath は manifest.Document の値ではなく DocumentFilename（定数）から
+// 組み立てること。VerifyGeneration の等値検査（判定 5）は「document は
+// DocumentFilename と一致しなければ不完全」を保証するので、SelectLatest 経由
+// では manifest.Document がディレクトリの外を指す値になることはそもそも
+// 無い。selectFromStatuses を直接呼んで、その検査を経由せずに手作りした
+// Complete: true の SnapshotStatus を渡すことで、DocumentPath の組み立て
+// 自体が manifest.Document を使っていないことを独立に確認する
+// （issue #441 レビュー指摘: この検査だけに頼ると、判定 5 を将来緩めたときに
+// path traversal が起きる）。
+func TestSelectFromStatuses_DocumentPathIgnoresManifestDocument(t *testing.T) {
+	statuses := []SnapshotStatus{{
+		Name:     "catalog-20260701T000000Z",
+		Complete: true,
+		Manifest: &Manifest{
+			Generation: "catalog-20260701T000000Z",
+			Document:   "../escape.json",
+			SizeBytes:  1,
+			SHA256:     "00",
+		},
+	}}
+
+	sel, err := selectFromStatuses(filepath.Join("mediadir", "catalog"), statuses)
+	if err != nil {
+		t.Fatalf("selectFromStatuses: %v", err)
+	}
+	want := filepath.Join("mediadir", "catalog", "catalog-20260701T000000Z", "catalog.json")
+	if sel.DocumentPath != want {
+		t.Fatalf("DocumentPath = %q, want %q (must not be built from manifest.Document)", sel.DocumentPath, want)
+	}
+}
+
+// manifest はあっても本体ファイルが無ければ完成世代にならないこと。
+func TestVerifyGeneration_RejectsMissingDocumentFile(t *testing.T) {
+	dir := t.TempDir()
+	genDir := writeCompleteGeneration(t, dir, time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC), "gen")
+	if err := os.Remove(filepath.Join(genDir, DocumentFilename)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := VerifyGeneration(genDir); err == nil {
+		t.Fatal("VerifyGeneration accepted a generation with a missing document file")
+	}
+}
+
 // 本体が完成しても manifest が無ければ完成世代にならないこと（公開点は manifest）。
 func TestVerifyGeneration_RequiresManifest(t *testing.T) {
 	dir := t.TempDir()
@@ -346,17 +389,9 @@ func TestVerifyGeneration_RejectsBrokenManifests(t *testing.T) {
 		{"schemaVersion missing", func(m *Manifest) { m.SchemaVersion = 0 }},
 		{"schemaVersion from the future", func(m *Manifest) { m.SchemaVersion = Version + 1 }},
 		{"generation name mismatch", func(m *Manifest) { m.Generation = "catalog-19700101T000000Z" }},
-		{"document not listed", func(m *Manifest) { m.Document = "elsewhere.json" }},
-		{"no files", func(m *Manifest) { m.Files = nil }},
-		{"file missing from disk", func(m *Manifest) {
-			m.Files = append(m.Files, ManifestFile{Name: "extra.json", SizeBytes: 1, SHA256: "00"})
-		}},
-		{"size mismatch", func(m *Manifest) { m.Files[0].SizeBytes++ }},
-		{"sha256 mismatch", func(m *Manifest) { m.Files[0].SHA256 = strings.Repeat("0", 64) }},
-		{"path escape in file name", func(m *Manifest) { m.Files[0].Name = "../catalog.json" }},
-		{"manifest lists itself", func(m *Manifest) {
-			m.Files = append(m.Files, ManifestFile{Name: ManifestFilename, SizeBytes: 1, SHA256: "00"})
-		}},
+		{"document name mismatch", func(m *Manifest) { m.Document = "elsewhere.json" }},
+		{"size mismatch", func(m *Manifest) { m.SizeBytes++ }},
+		{"sha256 mismatch", func(m *Manifest) { m.SHA256 = strings.Repeat("0", 64) }},
 	}
 
 	at := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)

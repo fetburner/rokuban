@@ -12,8 +12,9 @@ import (
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 )
 
-// Export は DB からコアメタデータを集めて Document を組み立てる。
-// site が空なら全サイト。rules はサイト非依存なので常に全件。
+// Export は DB からコアメタデータを集めて Document を組み立てる。常に全サイト
+// （catalog は災害復旧用のアーカイブ全体を対象にする。site 絞り込みは書き手も
+// 呼び手も持たなかったため issue #441 で落とした）。
 //
 // これは単一スナップショットからの読み取りである。recordings を読んだ後に
 // media_assets / drop_stats を読むため、トランザクション無しで発行すると
@@ -24,7 +25,7 @@ import (
 // REPEATABLE READ / READ ONLY のトランザクションを張る形に固定してある。
 // 呼び出し側が任意の *sqlcgen.Queries を渡せる形にすると tx なしで呼べてしまう
 // ので、シグネチャは緩めない。
-func Export(ctx context.Context, pool *pgxpool.Pool, site string) (*Document, error) {
+func Export(ctx context.Context, pool *pgxpool.Pool) (*Document, error) {
 	tx, err := pool.BeginTx(ctx, pgx.TxOptions{
 		IsoLevel:   pgx.RepeatableRead,
 		AccessMode: pgx.ReadOnly,
@@ -36,15 +37,9 @@ func Export(ctx context.Context, pool *pgxpool.Pool, site string) (*Document, er
 
 	q := sqlcgen.New(tx)
 
-	var siteFilter *string
-	if site != "" {
-		siteFilter = &site
-	}
-
 	doc := &Document{
 		Version:    Version,
 		ExportedAt: time.Now().UTC(),
-		Site:       siteFilter,
 	}
 
 	rules, err := q.CatalogListRules(ctx)
@@ -78,7 +73,7 @@ func Export(ctx context.Context, pool *pgxpool.Pool, site string) (*Document, er
 
 	doc.Rules = assembleRules(rules, textMatches, services, channelTypes, genres, times, ruleSites)
 
-	recordings, err := q.CatalogListRecordings(ctx, siteFilter)
+	recordings, err := q.CatalogListRecordings(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("listing recordings: %w", err)
 	}
@@ -87,7 +82,7 @@ func Export(ctx context.Context, pool *pgxpool.Pool, site string) (*Document, er
 		doc.Recordings = append(doc.Recordings, recordingFromRow(r))
 	}
 
-	encodePolicies, err := q.CatalogListRecordingEncodePolicies(ctx, siteFilter)
+	encodePolicies, err := q.CatalogListRecordingEncodePolicies(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("listing recording_encode_policy: %w", err)
 	}
@@ -102,7 +97,7 @@ func Export(ctx context.Context, pool *pgxpool.Pool, site string) (*Document, er
 		})
 	}
 
-	purgeRequests, err := q.CatalogListRecordingPurgeRequests(ctx, siteFilter)
+	purgeRequests, err := q.CatalogListRecordingPurgeRequests(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("listing recording_purge_requests: %w", err)
 	}
@@ -114,7 +109,7 @@ func Export(ctx context.Context, pool *pgxpool.Pool, site string) (*Document, er
 		})
 	}
 
-	assets, err := q.CatalogListMediaAssets(ctx, siteFilter)
+	assets, err := q.CatalogListMediaAssets(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("listing media_assets: %w", err)
 	}
@@ -123,7 +118,7 @@ func Export(ctx context.Context, pool *pgxpool.Pool, site string) (*Document, er
 		doc.MediaAssets = append(doc.MediaAssets, mediaAssetFromRow(a))
 	}
 
-	drops, err := q.CatalogListDropStats(ctx, siteFilter)
+	drops, err := q.CatalogListDropStats(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("listing drop_stats: %w", err)
 	}
@@ -140,7 +135,7 @@ func Export(ctx context.Context, pool *pgxpool.Pool, site string) (*Document, er
 		})
 	}
 
-	snaps, err := q.CatalogListProgramSnapshots(ctx, siteFilter)
+	snaps, err := q.CatalogListProgramSnapshots(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("listing program_snapshots: %w", err)
 	}
@@ -162,7 +157,7 @@ func Export(ctx context.Context, pool *pgxpool.Pool, site string) (*Document, er
 		})
 	}
 
-	intents, err := q.CatalogListProgramIntents(ctx, siteFilter)
+	intents, err := q.CatalogListProgramIntents(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("listing program_intents: %w", err)
 	}
@@ -177,7 +172,7 @@ func Export(ctx context.Context, pool *pgxpool.Pool, site string) (*Document, er
 		})
 	}
 
-	overrides, err := q.CatalogListProgramOverrides(ctx, siteFilter)
+	overrides, err := q.CatalogListProgramOverrides(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("listing program_overrides: %w", err)
 	}

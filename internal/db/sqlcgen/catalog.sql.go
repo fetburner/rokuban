@@ -195,16 +195,11 @@ func (q *Queries) CatalogInsertRuleTime(ctx context.Context, arg CatalogInsertRu
 }
 
 const catalogListDropStats = `-- name: CatalogListDropStats :many
-SELECT d.media_asset_id, d.pid, d.packets, d.drops, d.errors, d.scrambled, d.pid_type
-FROM drop_stats d
-JOIN media_assets a ON a.id = d.media_asset_id
-JOIN recordings r ON r.id = a.recording_id
-WHERE $1::text IS NULL OR r.site = $1
-ORDER BY d.media_asset_id, d.pid
+SELECT media_asset_id, pid, packets, drops, errors, scrambled, pid_type FROM drop_stats ORDER BY media_asset_id, pid
 `
 
-func (q *Queries) CatalogListDropStats(ctx context.Context, site *string) ([]DropStat, error) {
-	rows, err := q.db.Query(ctx, catalogListDropStats, site)
+func (q *Queries) CatalogListDropStats(ctx context.Context) ([]DropStat, error) {
+	rows, err := q.db.Query(ctx, catalogListDropStats)
 	if err != nil {
 		return nil, err
 	}
@@ -232,15 +227,11 @@ func (q *Queries) CatalogListDropStats(ctx context.Context, site *string) ([]Dro
 }
 
 const catalogListMediaAssets = `-- name: CatalogListMediaAssets :many
-SELECT a.id, a.recording_id, a.kind, a.profile, a.rel_path, a.size_bytes, a.state, a.deleted_at, a.created_at, a.updated_at
-FROM media_assets a
-JOIN recordings r ON r.id = a.recording_id
-WHERE $1::text IS NULL OR r.site = $1
-ORDER BY a.id
+SELECT id, recording_id, kind, profile, rel_path, size_bytes, state, deleted_at, created_at, updated_at FROM media_assets ORDER BY id
 `
 
-func (q *Queries) CatalogListMediaAssets(ctx context.Context, site *string) ([]MediaAsset, error) {
-	rows, err := q.db.Query(ctx, catalogListMediaAssets, site)
+func (q *Queries) CatalogListMediaAssets(ctx context.Context) ([]MediaAsset, error) {
+	rows, err := q.db.Query(ctx, catalogListMediaAssets)
 	if err != nil {
 		return nil, err
 	}
@@ -271,13 +262,11 @@ func (q *Queries) CatalogListMediaAssets(ctx context.Context, site *string) ([]M
 }
 
 const catalogListProgramIntents = `-- name: CatalogListProgramIntents :many
-SELECT site, program_id, action, created_at, updated_at FROM program_intents
-WHERE $1::text IS NULL OR site = $1
-ORDER BY site, program_id
+SELECT site, program_id, action, created_at, updated_at FROM program_intents ORDER BY site, program_id
 `
 
-func (q *Queries) CatalogListProgramIntents(ctx context.Context, site *string) ([]ProgramIntent, error) {
-	rows, err := q.db.Query(ctx, catalogListProgramIntents, site)
+func (q *Queries) CatalogListProgramIntents(ctx context.Context) ([]ProgramIntent, error) {
+	rows, err := q.db.Query(ctx, catalogListProgramIntents)
 	if err != nil {
 		return nil, err
 	}
@@ -303,13 +292,11 @@ func (q *Queries) CatalogListProgramIntents(ctx context.Context, site *string) (
 }
 
 const catalogListProgramOverrides = `-- name: CatalogListProgramOverrides :many
-SELECT site, program_id, overrides, created_at, updated_at FROM program_overrides
-WHERE $1::text IS NULL OR site = $1
-ORDER BY site, program_id
+SELECT site, program_id, overrides, created_at, updated_at FROM program_overrides ORDER BY site, program_id
 `
 
-func (q *Queries) CatalogListProgramOverrides(ctx context.Context, site *string) ([]ProgramOverride, error) {
-	rows, err := q.db.Query(ctx, catalogListProgramOverrides, site)
+func (q *Queries) CatalogListProgramOverrides(ctx context.Context) ([]ProgramOverride, error) {
+	rows, err := q.db.Query(ctx, catalogListProgramOverrides)
 	if err != nil {
 		return nil, err
 	}
@@ -337,9 +324,7 @@ func (q *Queries) CatalogListProgramOverrides(ctx context.Context, site *string)
 const catalogListProgramSnapshots = `-- name: CatalogListProgramSnapshots :many
 SELECT s.site, s.program_id, s.title, s.start_at, s.duration_ms, s.network_id, s.service_id, s.channel_type, s.channel, s.updated_at, s.event_id, s.service_name
 FROM program_snapshots s
-WHERE ($1::text IS NULL OR s.site = $1)
-  AND (
-      EXISTS (
+WHERE EXISTS (
           SELECT 1 FROM program_intents i
           WHERE i.site = s.site AND i.program_id = s.program_id
       )
@@ -347,13 +332,12 @@ WHERE ($1::text IS NULL OR s.site = $1)
           SELECT 1 FROM program_overrides o
           WHERE o.site = s.site AND o.program_id = s.program_id
       )
-  )
 ORDER BY s.site, s.program_id
 `
 
-// 意図・上書きの FK 先。export 対象の (site, program_id) に限定する。
-func (q *Queries) CatalogListProgramSnapshots(ctx context.Context, site *string) ([]ProgramSnapshot, error) {
-	rows, err := q.db.Query(ctx, catalogListProgramSnapshots, site)
+// 意図・上書きの FK 先。
+func (q *Queries) CatalogListProgramSnapshots(ctx context.Context) ([]ProgramSnapshot, error) {
+	rows, err := q.db.Query(ctx, catalogListProgramSnapshots)
 	if err != nil {
 		return nil, err
 	}
@@ -386,18 +370,14 @@ func (q *Queries) CatalogListProgramSnapshots(ctx context.Context, site *string)
 }
 
 const catalogListRecordingEncodePolicies = `-- name: CatalogListRecordingEncodePolicies :many
-SELECT p.recording_id, p.keep_original, p.encode_profiles, p.created_at, p.updated_at
-FROM recording_encode_policy p
-JOIN recordings r ON r.id = p.recording_id
-WHERE $1::text IS NULL OR r.site = $1
-ORDER BY p.recording_id
+SELECT recording_id, keep_original, encode_profiles, created_at, updated_at FROM recording_encode_policy ORDER BY recording_id
 `
 
 // recording_encode_policy 衛星表（issue #159）。行が無い録画は未凍結（省略）で
 // 正しい --- rescue 側もこのリストに現れなかった recordings.id には何も書かない
 // ので、「凍結済み」と「未凍結」の区別がそのまま往復する。
-func (q *Queries) CatalogListRecordingEncodePolicies(ctx context.Context, site *string) ([]RecordingEncodePolicy, error) {
-	rows, err := q.db.Query(ctx, catalogListRecordingEncodePolicies, site)
+func (q *Queries) CatalogListRecordingEncodePolicies(ctx context.Context) ([]RecordingEncodePolicy, error) {
+	rows, err := q.db.Query(ctx, catalogListRecordingEncodePolicies)
 	if err != nil {
 		return nil, err
 	}
@@ -423,18 +403,14 @@ func (q *Queries) CatalogListRecordingEncodePolicies(ctx context.Context, site *
 }
 
 const catalogListRecordingPurgeRequests = `-- name: CatalogListRecordingPurgeRequests :many
-SELECT q.recording_id, q.requested_at
-FROM recording_purge_requests q
-JOIN recordings r ON r.id = q.recording_id
-WHERE $1::text IS NULL OR r.site = $1
-ORDER BY q.recording_id
+SELECT recording_id, requested_at FROM recording_purge_requests ORDER BY recording_id
 `
 
 // recording_purge_requests 衛星表（旧 recordings.purge_after）。行が無い録画は
 // 「即時削除を要求していない」で正しい --- rescue 側もこのリストに現れなかった
 // recordings.id には何も書かないので、要求の有無がそのまま往復する。
-func (q *Queries) CatalogListRecordingPurgeRequests(ctx context.Context, site *string) ([]RecordingPurgeRequest, error) {
-	rows, err := q.db.Query(ctx, catalogListRecordingPurgeRequests, site)
+func (q *Queries) CatalogListRecordingPurgeRequests(ctx context.Context) ([]RecordingPurgeRequest, error) {
+	rows, err := q.db.Query(ctx, catalogListRecordingPurgeRequests)
 	if err != nil {
 		return nil, err
 	}
@@ -454,14 +430,12 @@ func (q *Queries) CatalogListRecordingPurgeRequests(ctx context.Context, site *s
 }
 
 const catalogListRecordings = `-- name: CatalogListRecordings :many
-SELECT id, rule_id, source, site, network_id, service_id, event_id, service_name, channel_type, channel, title, description, extended, genres, is_free, program_start_at, program_duration_ms, status, started_at, ended_at, quality_events, deleted_at, created_at, updated_at, superseded_at, purged_at, genre_lv1 FROM recordings
-WHERE $1::text IS NULL OR site = $1
-ORDER BY id
+SELECT id, rule_id, source, site, network_id, service_id, event_id, service_name, channel_type, channel, title, description, extended, genres, is_free, program_start_at, program_duration_ms, status, started_at, ended_at, quality_events, deleted_at, created_at, updated_at, superseded_at, purged_at, genre_lv1 FROM recordings ORDER BY id
 `
 
-// site が NULL なら全件。tombstone（deleted_at IS NOT NULL）も含む。
-func (q *Queries) CatalogListRecordings(ctx context.Context, site *string) ([]Recording, error) {
-	rows, err := q.db.Query(ctx, catalogListRecordings, site)
+// 全件。tombstone（deleted_at IS NOT NULL）も含む。
+func (q *Queries) CatalogListRecordings(ctx context.Context) ([]Recording, error) {
+	rows, err := q.db.Query(ctx, catalogListRecordings)
 	if err != nil {
 		return nil, err
 	}

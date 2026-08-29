@@ -49,7 +49,7 @@ func TestExportRescue_PreservesPurgedAt(t *testing.T) {
 		t.Fatalf("marking trashed: %v", err)
 	}
 
-	doc, err := Export(ctx, pool, "")
+	doc, err := Export(ctx, pool)
 	if err != nil {
 		t.Fatalf("Export: %v", err)
 	}

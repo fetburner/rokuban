@@ -46,7 +46,7 @@ func TestExportRescue_PreservesSupersededAt(t *testing.T) {
 	}
 	okID := newRec(200, "finished") // 枠が空いたので入る
 
-	doc, err := Export(ctx, pool, "")
+	doc, err := Export(ctx, pool)
 	if err != nil {
 		t.Fatalf("Export: %v", err)
 	}
