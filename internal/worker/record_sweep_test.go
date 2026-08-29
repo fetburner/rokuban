@@ -32,9 +32,7 @@ func TestRecordSweepPeriodicJob(t *testing.T) {
 	pool := testutil.SetupDB(t)
 
 	srv := newRecordSweepStub(t, nil)
-	// t.Cleanup（LIFO で startPeriodicJobClient のクライアント停止より後に走る）。
-	// defer だと関数の return 直後に走り、River client がまだ動いている最中に
-	// mirakc スタブを閉じてしまう。
+	// t.Cleanup（defer だとクライアント停止より先に走り、動いている最中にスタブを閉じる）。
 	t.Cleanup(srv.Close)
 
 	subscribeCh := startPeriodicJobClient(t, pool, &Deps{MirakcClient: mirakc.NewClient(srv.URL, nil)}, ClientConfig{
