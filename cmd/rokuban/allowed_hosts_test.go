@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -14,12 +13,13 @@ import (
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
-// syncLogBuffer は slog の出力を捕まえるための、mutex で保護した io.Writer。
+// syncLogBuffer は captureStderr が集めるログのための、mutex で保護した
+// io.Writer。
 //
 // 書き手と読み手が別 goroutine にある構造なので guard する: 書くのは
-// startServerForAllowedHosts が slog.SetDefault で既定の出力に差し替えた先の
-// サーバー goroutine、読むのはテスト goroutine（String）で、両者の順序を保証する
-// 同期は harness の中に無い。
+// captureStderr が os.Stderr の代わりに差し込むパイプを読む goroutine、
+// 読むのはテスト goroutine（String）で、両者の順序を保証する同期は harness の
+// 中に無い。
 //
 // ただし現状の `--roles api` 経路では race を観測できていない（未検証）。実測:
 // Write / String の Lock を外して `go test -race ./cmd/rokuban/ -run AllowedHosts
@@ -48,7 +48,7 @@ func (b *syncLogBuffer) String() string {
 
 // startServerForAllowedHosts は `rokuban server --roles api` を実プロセスと同じ経路
 // （root コマンド → newServerCmd の RunE）で起動し、疎通した base URL と、起動中に
-// slog.Default() へ書かれたログを返す。hosts は server.allowed_hosts に書く値
+// os.Stderr へ書かれたログを返す。hosts は server.allowed_hosts に書く値
 // （nil / 空なら allowed_hosts のキーごと書かない = 空の既定構成）。serverExtra は
 // server: ブロックへそのまま挿入する追加行（`  trust_forwarded_host: true` のように
 // インデント込み・改行なしで渡す。不要なら空文字列）。
@@ -107,9 +107,7 @@ storage:
 `, port, strings.Join(serverLines, "\n"), connCfg.Host, connCfg.Port, connCfg.User, password, connCfg.Database))
 
 	logs := &syncLogBuffer{}
-	prevLogger := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(logs, nil)))
-	t.Cleanup(func() { slog.SetDefault(prevLogger) })
+	captureStderr(t, logs)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	// exited は「コマンドが返った」ことを表す。起動待ちの側と Cleanup の側の 2 箇所

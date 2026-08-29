@@ -47,10 +47,22 @@ func newMigrateDownCmd() *cobra.Command {
 	}
 }
 
+// loadConfig は --config で指定された設定ファイルを読み、成功したらそこから
+// ロガーを構成する（configureLogging）。全サブコマンド（server / migrate /
+// rescue / enqueue / catalog / shadow-diff / config validate）がここを通る
+// ので、ロガーの設定場所もここに 1 箇所だけ置く。
+//
+// **Load 自体が失敗したときのログは既定のまま出る。** 設定を読めていないので
+// 適用しようがない。呼び出し元は返ったエラーを自分でログ / 標準エラーに出す。
 func loadConfig(cmd *cobra.Command) (*config.Config, error) {
 	path, err := cmd.Flags().GetString("config")
 	if err != nil {
 		return nil, err
 	}
-	return config.Load(path)
+	cfg, err := config.Load(path)
+	if err != nil {
+		return nil, err
+	}
+	configureLogging(cfg.Log)
+	return cfg, nil
 }

@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -280,10 +279,17 @@ func TestServerCmd_OnceRejectsExtraRoles(t *testing.T) {
 // ROKUBAN_TEST_DATABASE_URL が資格情報を持たない（trust 認証）ことがある一方で
 // config.DBConfig が両方を required にしているため。CI の URL は
 // `postgres://rokuban:rokuban@...` なのでこの分岐は通らない。
+//
+// **`log.format: text` を明示する。** 呼び出し元（TestServerCmd_OnceModeTerminates /
+// TestServerCmd_OnceModeExitsOnUnhandledJobKind）は captureServerLogs +
+// assertOnceOutcome で `outcome=...`（key=value の text 書式）を見る。
+// log.format の既定は json（configureLogging）なのでここで明示しないと
+// `"outcome":"..."` になって一致しなくなる。
 func writeOnceModeConfig(t *testing.T, extra ...string) string {
 	t.Helper()
 	// 到達不能な mirakc（127.0.0.1:1）。1 件消化モードのテストは mirakc に
 	// 触らないジョブを使うか、触って失敗することを主張するかのどちらかである。
+	extra = append([]string{"log:\n  format: text"}, extra...)
 	return writeWorkerTestConfig(t, "http://127.0.0.1:1", extra...)
 }
 
@@ -342,7 +348,14 @@ func (b *syncBuffer) String() string {
 	return b.buf.String()
 }
 
-// captureServerLogs は slog のデフォルトを差し替えてサーバーのログを集める。
+// captureServerLogs は os.Stderr を差し替えてサーバーのログを集める（loadConfig
+// が config の log.* から slog.SetDefault するので、先回りで SetDefault しても
+// runServer 側に上書きされてしまう。cmd/rokuban/stderr_capture_test.go 参照）。
+//
+// **呼び出し側は config に `log: {format: text}` を書くこと。** ここは
+// キャプチャの仕組みだけを持ち、出力形式は決めない --- assertOnceOutcome が
+// 見る `outcome=` は text 形式（key=value）の書式なので、json 形式のままだと
+// `"outcome":"..."` になり一致しない。
 //
 // **outcome のラベルは docs / e2e README / runbook が名指ししている契約**
 // （`outcome=idle_timeout` と `outcome=job_done` と `outcome=job_unhandled` を
@@ -353,9 +366,7 @@ func (b *syncBuffer) String() string {
 func captureServerLogs(t *testing.T) *syncBuffer {
 	t.Helper()
 	buf := &syncBuffer{}
-	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(buf, nil)))
-	t.Cleanup(func() { slog.SetDefault(prev) })
+	captureStderr(t, buf)
 	return buf
 }
 
