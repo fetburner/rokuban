@@ -290,7 +290,7 @@ validateSearch(...))`）、`validateSearch` の戻り値を「生の（未検証
 代入する**（キーを省略しない）。`{ ...x, k: undefined }` はどちらの合成方式で見ても
 実際に上書きになるため、これで確実に消える。
 
-`/live` の `serviceId` と `/search` の `ruleId` はどちらもこの形に揃えてある
+`/live` の `service` と `/search` の `ruleId` はどちらもこの形に揃えてある
 （`routes.tsx`。`routes.test.tsx` が `router.state.matches` の `search` を直接見て
 固定している）。
 

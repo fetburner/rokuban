@@ -84,9 +84,12 @@ export function RecordingsPage() {
     // debounce（キーワード）・チップの個別解除のどちらも history を汚さないよう
     // 常に replace で書く（docs/frontend.md「debounce と URL 同期で履歴を汚さない」）。
     //
+    // updater の引数を絞る理由は `pages/programs.tsx` の `updateSearch` と同じ
+    // （`/live` が同じ名前の `service` を単数で持つため合成型が `number |
+    // number[]` になる）。
     void navigate({
       to: '/recordings',
-      search: (prev) => updater(prev),
+      search: (prev) => updater(prev as RecordingsPageSearch),
       replace: true,
     })
   }

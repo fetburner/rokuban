@@ -12,8 +12,9 @@
 //     epg_services に存在する（DB へ直接 INSERT すれば足りる。mirakc からの
 //     実 EPG 同期は不要）
 //   - E2E_LIVE_NETWORK_ID がその 2 行の `network_id` と一致している（既定 1）。
-//     ⓪ が `?networkId=&serviceId=` で直開きし、**選ばれたチャンネルが要求
-//     どおりか**を assert するので、食い違うとそこで落ちる
+//     `?service=<Service.id>` に載せる合成 id を実際の
+//     `GET /api/sites/{site}/services` から引く（下記 `resolveServiceId`）ため、
+//     食い違うとサービス一覧に見つからずここで落ちる
 //   - ffmpeg が PATH にある（固定 HLS フィクスチャの生成に使う。生成は
 //     初回だけで、以降は `os.tmpdir()` にキャッシュされる）
 //
@@ -27,17 +28,52 @@ import { chromium, webkit } from 'playwright'
 
 const BASE_URL = process.env.E2E_URL ?? 'http://localhost:40773'
 const SITE = process.env.E2E_LIVE_SITE ?? 'default'
+// SERVICE_A / SERVICE_B / NETWORK_ID は SI の値（docs/runbook/live.md §② の
+// SQL 投入例と同じ id 空間）のまま持つ --- DB へ投入する行そのものの id なので、
+// 準備手順を変えずに済む。
 const SERVICE_A = process.env.E2E_LIVE_SERVICE_A ?? '9001'
 const SERVICE_B = process.env.E2E_LIVE_SERVICE_B ?? '9002'
-// docs/runbook/live.md §② の投入例は A/B とも network_id=1（runbook 側にも
-// この env が既定 1 として書いてある）。`?networkId=&serviceId=`
-// （issue #291）を実ブラウザで一度も踏んでいなかった穴を塞ぐため、⓪ はこの
-// 形式で開く（レビューでの指摘）。**フィクスチャの network_id と食い違ったまま
-// 黙って通らないよう、⓪ は「選ばれたチャンネルが要求どおりか」も assert する**
-// --- 要求件数だけを見ていると、不一致で `pickInitialService` の「番組を持つ
-// 先頭」フォールバックに落ちても緑になり、「新形式を実ブラウザで踏んだ」という
-// 主張だけが嘘になる
 const NETWORK_ID = process.env.E2E_LIVE_NETWORK_ID ?? '1'
+
+/**
+ * resolveServiceId は SI の (networkId, serviceId) から `?service=` に載せる
+ * `Service.id` を求める。
+ *
+ * issue #438: `/live` の URL は他画面と同じ `?service=<Service.id>` に統一した。
+ * 合成規則（`networkId * 100000 + serviceId`）をここで複製せず、実際に
+ * `GET /api/sites/{site}/services` を引いて対応する行の `id` を使う ---
+ * mirakc の合成規則をフロント/e2e 側に複製しない（issue #208/#217 と同じ判断）。
+ * 一致する行が無ければ、DB への投入内容と env の食い違いを名指しして落とす
+ * （`?service=` を組み立てられないまま goto しても、既定の「番組を持つ先頭」に
+ * フォールバックしてしまい、以降の判定が別のチャンネルを見てしまう）。
+ */
+async function resolveServiceId(networkId, serviceId) {
+  const url = `${BASE_URL}/api/sites/${SITE}/services`
+  // ステータスを先に見る --- 見ないと site 名を間違えたときの 404
+  // （`ErrorResponse` オブジェクト）が `services.find is not a function` に化けて
+  // 原因を名指ししない。接続不能（`fetch failed`）も URL 込みで言い直す。
+  const res = await fetch(url).catch((cause) => {
+    throw new Error(`${url} に接続できない（サーバーを起動しているか確認する）`, { cause })
+  })
+  if (!res.ok) {
+    throw new Error(`${url} が ${res.status} を返した（E2E_LIVE_SITE=${SITE} を確認する）`)
+  }
+  const services = await res.json()
+  const match = services.find(
+    (s) => String(s.networkId) === String(networkId) && String(s.serviceId) === String(serviceId),
+  )
+  if (match === undefined) {
+    throw new Error(
+      `E2E_LIVE_NETWORK_ID=${networkId} / serviceId=${serviceId} が ` +
+        `GET /api/sites/${SITE}/services に見つからない` +
+        '（docs/runbook/live.md §② の投入例と E2E_LIVE_NETWORK_ID を確認する）',
+    )
+  }
+  return match.id
+}
+
+const SERVICE_ID_A = await resolveServiceId(NETWORK_ID, SERVICE_A)
+const SERVICE_ID_B = await resolveServiceId(NETWORK_ID, SERVICE_B)
 
 const FIXTURE_DIR = path.join(os.tmpdir(), 'rokuban-e2e-live-fixture')
 const SEGMENTS_DIR = path.join(FIXTURE_DIR, 'segments')
@@ -251,25 +287,24 @@ async function clickPlay(page) {
 
 /**
  * runConsentCheck は⓪（選択と視聴開始の分離。issue #234 M7-1）を検証する。
- * 併せて `?networkId=&serviceId=` の新形式（issue #291）で直開きし、**その組が
+ * 併せて `?service=<Service.id>`（issue #438）で直開きし、**要求した id が
  * 実際に選ばれたこと**を選択中の印（`aria-current="page"`）で確認する ---
- * ⓪ の残りは要求件数しか見ないので、この assert が無いと env とフィクスチャの
- * `network_id` が食い違ったまま緑になる（NETWORK_ID の宣言部のコメント）。
+ * ⓪ の残りは要求件数しか見ないので、この assert が無いと `SERVICE_ID_A` の
+ * 解決先とフィクスチャの実際の選択が食い違ったまま緑になりうる。
+ * `E2E_LIVE_NETWORK_ID` がフィクスチャの `network_id` と食い違う場合は、
+ * この assert より前に `resolveServiceId`（宣言部）がサービス一覧に見つからず
+ * 落ちる。
  *
  * この判定が本来見たいのは「タップだけではプレイリスト/セグメント要求が飛ばない」
  * こと自体であり、実データ（H.264/AAC）や実再生は要らない --- ①〜⑦と違って
  * ffmpeg フィクスチャに依存せず、bundled Chromium だけで常に測れる。
  *
- * `web/e2e/README.md`「判定を足すときの規律」に沿って、2 つの assert をそれぞれ
- * 実際に落として確認してある:
- *   - 要求件数のほう（0 件であること）は、この判定を足す前の実装（チャンネルを
- *     タップした瞬間に probe する版）で落ちる
- *   - 選択中の印のほうは、`E2E_LIVE_NETWORK_ID=2`（フィクスチャは network_id=1）
- *     で実サーバー + 実 Chromium に当てると
- *     `⓪ 選択されたチャンネルが要求（networkId=2 serviceId=9001）と違う` で
- *     exit 1 になる。一致させた `E2E_LIVE_NETWORK_ID=1` では
- *     `選択中の印（aria-current="page"）: 1 件 href=/live?networkId=1&serviceId=9001`
- *     が出て通る（要求件数の判定は両方で通るので、落ちたのはこの assert だけ）
+ * `web/e2e/README.md`「判定を足すときの規律」に沿って、要求件数の assert
+ * （0 件であること）は、この判定を足す前の実装（チャンネルをタップした瞬間に
+ * probe する版）で落ちることを確認済み。選択中の印の assert は、実サーバー +
+ * 実 chromium に対して `pickInitialService` を `s.serviceId === requestedId` に
+ * 変異させると落ちる（印が 2 件になり href も要求先と違う。exit 1）。変異を
+ * 戻すと ⓪〜⑧ すべて緑（exit 0）。
  */
 async function runConsentCheck() {
   const browser = await chromium.launch()
@@ -297,9 +332,17 @@ async function runConsentCheck() {
       route.fulfill({ status: 200, contentType: 'video/mp2t', body: Buffer.from([0x47]) }),
     )
 
-    // 同じ serviceId を持つ別 network が居る構成で、指定した組が選ばれること
-    // （issue #291）を実ブラウザで踏む
-    await page.goto(`${BASE_URL}/live?networkId=${NETWORK_ID}&serviceId=${SERVICE_A}`, {
+    // 同じ serviceId を持つ別 network が居る構成でも `Service.id`（合成 id）
+    // なら正しい方が選ばれること（issue #291 の根。#438 で `?service=` に統一）を
+    // 実ブラウザで踏む。
+    //
+    // **開くのは B。** 既定のフォールバック先（`pickInitialService` の「番組を
+    // 持つ先頭」）と要求先が同じチャンネルだと、下の「選択中の印」の assert は
+    // 「要求した id が効いた」と「一致に失敗して既定に落ちた」を区別できない ---
+    // runbook の投入例（A: remoteControlKeyId 1 / B: 2）では `orderServices` の
+    // 先頭が必ず A になるので、A で判定していたときは `pickInitialService` を
+    // `s.serviceId === requestedId` に変異させても ⓪ が緑のまま通った（実測）。
+    await page.goto(`${BASE_URL}/live?service=${SERVICE_ID_B}`, {
       waitUntil: 'networkidle',
     })
 
@@ -314,7 +357,7 @@ async function runConsentCheck() {
       )
     }
 
-    // **要求した組（networkId + serviceId）が実際に選ばれたことを assert する。**
+    // **要求した `Service.id` が実際に選ばれたことを assert する。**
     // 一覧が描画されるのを待ってから数える --- 描画前に数えると「まだ描かれて
     // いない」を「印が付いていない」と取り違える（非同期の空虚な成功の逆）
     try {
@@ -336,17 +379,12 @@ async function runConsentCheck() {
       // （同じ serviceId を持つ別 network の行にも印が付く。issue #291）
       ng.push(`⓪ 選択中の印が ${currentCount} 件ある（1 件でなければ複合キーでの同定が効いていない）`)
     }
-    if (
-      !(
-        currentHref.includes(`networkId=${NETWORK_ID}`) &&
-        currentHref.includes(`serviceId=${SERVICE_A}`)
-      )
-    ) {
+    if (!currentHref.includes(`service=${SERVICE_ID_B}`)) {
       ng.push(
-        `⓪ 選択されたチャンネルが要求（networkId=${NETWORK_ID} serviceId=${SERVICE_A}）と` +
-          `違う（選択中リンクの href: ${currentHref || '（無し）'}）。` +
-          'E2E_LIVE_NETWORK_ID が epg_services の network_id と一致しているか確認する' +
-          '（一致しないと「番組を持つ先頭」フォールバックに落ちる）',
+        `⓪ 選択されたチャンネルが要求（service=${SERVICE_ID_B}）と違う` +
+          `（選択中リンクの href: ${currentHref || '（無し）'}）。` +
+          '`resolveServiceId` は id を引けているので、env とフィクスチャの' +
+          '食い違いではなく `pickInitialService`（web/src/lib/live.ts）の一致条件を疑う',
       )
     }
 
@@ -389,24 +427,24 @@ async function runConsentCheck() {
     if (fired) {
       requestLog.length = 0
       await page
-        .locator(`nav[aria-label="チャンネル一覧"] a[href*="serviceId=${SERVICE_B}"]`)
+        .locator(`nav[aria-label="チャンネル一覧"] a[href*="service=${SERVICE_ID_A}"]`)
         .click()
-      // 「再生」ボタンが B 向けに再表示される（= 選択状態に戻った）のを待つことで、
+      // 「再生」ボタンが A 向けに再表示される（= 選択状態に戻った）のを待つことで、
       // 一連の再レンダー（切替の 1 回目のコミット・再生状態のリセット）が
       // 落ち着いたことを確認する。ここで待たずに数えると「まだ再レンダーが
       // 済んでいないだけ」を「透過マウントが起きなかった」と誤って合格にする
       await page.getByRole('button', { name: /再生/ }).waitFor({ timeout: 10000 })
-      const bRequestsWithoutPlay = requestLog.filter((u) =>
-        u.includes(`/services/${SERVICE_B}/live/`),
+      const switchedRequestsWithoutPlay = requestLog.filter((u) =>
+        u.includes(`/services/${SERVICE_A}/live/`),
       )
       log(
-        `  B のリンクを押しただけ（再生は押さない）での B 向け要求数: ` +
-          `${bRequestsWithoutPlay.length}`,
+        `  A のリンクを押しただけ（再生は押さない）での A 向け要求数: ` +
+          `${switchedRequestsWithoutPlay.length}`,
       )
-      if (bRequestsWithoutPlay.length > 0) {
+      if (switchedRequestsWithoutPlay.length > 0) {
         ng.push(
-          `⓪' 再生中に別チャンネルへ切り替えると、押していない B へ` +
-            `${bRequestsWithoutPlay.length} 件の要求が飛んだ（選択と視聴開始の分離が` +
+          `⓪' 再生中に別チャンネルへ切り替えると、押していない A へ` +
+            `${switchedRequestsWithoutPlay.length} 件の要求が飛んだ（選択と視聴開始の分離が` +
             '切替の瞬間には成立していない）',
         )
       }
@@ -478,7 +516,7 @@ async function runChromiumChecks(browser) {
   const mode = { playlist: 'ok' }
   await mockLiveRoutes(page, mode)
 
-  await page.goto(`${BASE_URL}/live?networkId=${NETWORK_ID}&serviceId=${SERVICE_A}`, { waitUntil: 'networkidle' })
+  await page.goto(`${BASE_URL}/live?service=${SERVICE_ID_A}`, { waitUntil: 'networkidle' })
   // 選択と視聴開始の分離（issue #234 M7-1）。「再生」を押すまで <video> は
   // 存在しない --- ⓪ がこの分離自体を検証し、①〜⑤ は押した後の挙動を見る
   await clickPlay(page)
@@ -543,7 +581,7 @@ async function runChromiumChecks(browser) {
   const leavesBeforeSwitch = { a: countLeaves(SERVICE_A), b: countLeaves(SERVICE_B) }
 
   await page
-    .locator(`nav[aria-label="チャンネル一覧"] a[href*="serviceId=${SERVICE_B}"]`)
+    .locator(`nav[aria-label="チャンネル一覧"] a[href*="service=${SERVICE_ID_B}"]`)
     .click()
   // 選択と視聴開始の分離（issue #234 M7-1）。チャンネルを切り替えると選択状態
   // （再生ボタン）に戻る --- 同意はチャンネルごとに必要なので、B の
@@ -606,7 +644,7 @@ async function runChromiumChecks(browser) {
   log('\n=== ⑤ 503 エラー表示 → 再読み込みで復帰 ===')
   mode.playlist = 'error'
   mode.playlistErrorBody = 'too many concurrent live sessions on this process'
-  await page.goto(`${BASE_URL}/live?networkId=${NETWORK_ID}&serviceId=${SERVICE_A}`, { waitUntil: 'networkidle' })
+  await page.goto(`${BASE_URL}/live?service=${SERVICE_ID_A}`, { waitUntil: 'networkidle' })
   await clickPlay(page)
   let errorShown = false
   try {
@@ -657,7 +695,7 @@ if (hasFixture) {
     try {
       const chromePage = await chromeBrowser.newPage({ viewport: { width: 960, height: 640 } })
       await mockLiveRoutes(chromePage, { playlist: 'ok' })
-      await chromePage.goto(`${BASE_URL}/live?networkId=${NETWORK_ID}&serviceId=${SERVICE_A}`, { waitUntil: 'networkidle' })
+      await chromePage.goto(`${BASE_URL}/live?service=${SERVICE_ID_A}`, { waitUntil: 'networkidle' })
       await clickPlay(chromePage)
       await chromePage.waitForFunction(mseAttached, undefined, { timeout: 15000 })
       await chromePage.evaluate(() => document.querySelector('video').play())
@@ -704,7 +742,7 @@ if (hasFixture) {
     const requestLog = []
     page.on('request', (req) => requestLog.push(req.url()))
     await mockLiveRoutes(page, { playlist: 'ok' })
-    await page.goto(`${BASE_URL}/live?networkId=${NETWORK_ID}&serviceId=${SERVICE_A}`, { waitUntil: 'networkidle' })
+    await page.goto(`${BASE_URL}/live?service=${SERVICE_ID_A}`, { waitUntil: 'networkidle' })
     await clickPlay(page)
 
     // 経路が決まる（どちらかの分岐が `<video>` に何かを渡す）まで待つ。
@@ -799,7 +837,7 @@ if (hasFixture) {
     try {
       const page = await browser.newPage({ viewport: { width: 960, height: 640 } })
       await mockLiveRoutes(page, { playlist: 'ok', segments })
-      await page.goto(`${BASE_URL}/live?networkId=${NETWORK_ID}&serviceId=${SERVICE_A}`, { waitUntil: 'domcontentloaded' })
+      await page.goto(`${BASE_URL}/live?service=${SERVICE_ID_A}`, { waitUntil: 'domcontentloaded' })
       await clickPlay(page)
 
       let shown = false

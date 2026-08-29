@@ -107,12 +107,13 @@ export function ProgramsPage() {
     // `lib/recording-search.ts` の絞り込み更新と同じ規律）。
     //
     // **updater の引数は「全ルートの search を合成した型」で来る**
-    // （TanStack Router の `ParamsReducerFn`）。`/live` が同じ名前の `serviceId`
-    // を単数（`number`）で持つため、合成後は型上 `number | number[]` になり
-    // `ProgramsPageSearch` にそのままは代入できない。この関数が呼ばれるのは
-    // `/programs`（番組表）に居るときだけで、そのとき実際に入っているのは
-    // `parseProgramsSearch` が検証した形なので、ここで絞ってから updater に渡す
-    // （`pages/recordings.tsx` の `updateSearch` と同じ形）。
+    // （TanStack Router の `ParamsReducerFn`）。`/live` が同じ名前の `service`
+    // を単数（`number`）で持つため（issue #438）、合成後は型上
+    // `number | number[]` になり `ProgramsPageSearch` にそのままは代入できない。
+    // この関数が呼ばれるのは `/programs`（番組表）に居るときだけで、そのとき
+    // 実際に入っているのは `parseProgramsSearch` が検証した形なので、ここで
+    // 絞ってから updater に渡す（`pages/recordings.tsx` の `updateSearch` と
+    // 同じ形）。
     void navigate({
       to: '/programs',
       search: (prev) => updater(prev as ProgramsPageSearch),

@@ -184,89 +184,48 @@ function makeService(overrides: Partial<Service>): Service {
 
 
 describe('pickInitialService', () => {
-  it('networkId + serviceId が両方一致するサービスを使う', () => {
+  it('service（Service.id）が一致するサービスを使う', () => {
     const services = [
       makeService({ networkId: 1, serviceId: 100 }),
       makeService({ networkId: 2, serviceId: 200 }),
     ]
-    expect(pickInitialService(services, { networkId: 2, serviceId: 200 })).toBe(services[1])
+    expect(pickInitialService(services, services[1].id)).toBe(services[1])
   })
 
   /**
    * issue #291: SI の `serviceId` は network をまたぐと一意でない
-   * （Mirakurun が合成 id を発明した理由そのもの）。同じ `serviceId` を 2 つの
-   * network が持つ構成で、`networkId` まで指定すればその network のサービスが
-   * 選ばれることを固定する --- `services.find((s) => s.serviceId === ...)` に
-   * 戻す変異（`networkId` を無視する）だとこのテストは落ちる（先頭の network 1
-   * が選ばれてしまう）。
+   * （Mirakurun が合成 id を発明した理由そのもの）。`Service.id` は
+   * `networkId * 100000 + serviceId` の合成なので、同じ `serviceId` を 2 つの
+   * network が持つ構成でも id 自体が別の値になり、正しい方を区別できることを
+   * 固定する。
    */
-  it('同じ serviceId を 2 network が持つとき、networkId で正しい方を選ぶ', () => {
+  it('同じ serviceId を 2 network が持っていても Service.id で正しい方を選ぶ', () => {
     const services = [
       makeService({ networkId: 1, serviceId: 100, name: 'network 1 の局' }),
       makeService({ networkId: 2, serviceId: 100, name: 'network 2 の局' }),
     ]
-    expect(pickInitialService(services, { networkId: 2, serviceId: 100 })?.name).toBe(
-      'network 2 の局',
-    )
-    expect(pickInitialService(services, { networkId: 1, serviceId: 100 })?.name).toBe(
-      'network 1 の局',
-    )
-  })
-
-  it('networkId が一致しない組では番組を持つ先頭にフォールバックする（無効な指定と同じ扱い）', () => {
-    const services = [
-      makeService({ networkId: 1, serviceId: 100, hasPrograms: false }),
-      makeService({ networkId: 2, serviceId: 200, hasPrograms: true }),
-    ]
-    // network 9 に serviceId 100 は存在しない（network 1 のものと取り違えない）
-    expect(pickInitialService(services, { networkId: 9, serviceId: 100 })).toBe(services[1])
-  })
-
-  // **networkId 単独では同定できないので serviceId ごと無視する。**
-  // 「その serviceId を持つ最初のサービス」を返す実装だと、同じ id を持つ
-  // 別 network のチャンネルを黙って選ぶ（issue #291 の根）。番組を持つ
-  // 先頭という既定へ落ちることを、その serviceId の持ち主が先頭ではない
-  // 並びで固定する。
-  it('networkId 未指定なら serviceId は使わず、番組を持つ先頭へ落ちる', () => {
-    const services = [
-      makeService({ networkId: 1, serviceId: 100, name: 'serviceId 100 の持ち主', hasPrograms: false }),
-      makeService({ networkId: 2, serviceId: 200, name: '番組を持つ先頭', hasPrograms: true }),
-    ]
-    expect(
-      pickInitialService(services, { networkId: undefined, serviceId: 100 })?.name,
-    ).toBe('番組を持つ先頭')
+    expect(pickInitialService(services, services[1].id)?.name).toBe('network 2 の局')
+    expect(pickInitialService(services, services[0].id)?.name).toBe('network 1 の局')
   })
 
   /**
-   * `?networkId=` 単独（`serviceId` 無し）は `networkId` を無視する。この挙動を
-   * 固定しておくと、将来「その network 内で選ぶ」に変えるのが意識的な変更になる
-   * （レビューでの指摘）。実装が `services.find((s) => s.networkId === networkId)`
-   * を先に試す形に変わればこのテストは落ちる。
+   * `service` が一覧のどの `Service.id` とも一致しないとき（無効な id・
+   * 未取得・EPG から消えた局を指す古いリンク）は番組を持つ先頭にフォールバック
+   * する。
+   *
+   * **要求値は「一覧の `serviceId` と一致するが `Service.id` とは一致しない」
+   * `1` にする**（`serviceId: 1` の局は `id: 100001`）--- ここを `999_999` の
+   * ような「どちらにも一致しない値」にすると、`s.id === requestedId` を
+   * `s.serviceId === requestedId` に緩める変異でも同じフォールバックに落ちて
+   * 通ってしまう（実測でこのテストだけ通り続けた）。`1` なら変異は
+   * `hasPrograms: false` の先頭を返して落ちる。
    */
-  it('networkId だけの指定は無視して番組を持つ先頭にフォールバックする', () => {
-    const services = [
-      makeService({ networkId: 1, serviceId: 100, hasPrograms: false, name: 'network 1 の局' }),
-      makeService({ networkId: 2, serviceId: 200, hasPrograms: true, name: 'network 2 の局' }),
-    ]
-    // network 2 を指定しても「番組を持つ先頭」で決まる（たまたま network 2 が
-    // 選ばれるのを合格と誤認しないよう、network 1 を指定した場合も同じ結果に
-    // なることを見る）
-    expect(pickInitialService(services, { networkId: 2, serviceId: undefined })?.name).toBe(
-      'network 2 の局',
-    )
-    expect(pickInitialService(services, { networkId: 1, serviceId: undefined })?.name).toBe(
-      'network 2 の局',
-    )
-  })
-
-  it('要求した id が存在しなければ番組を持つ先頭にフォールバックする', () => {
+  it('要求した id が一覧のどの Service.id とも一致しなければ番組を持つ先頭にフォールバックする', () => {
     const services = [
       makeService({ serviceId: 1, hasPrograms: false }),
       makeService({ serviceId: 2, hasPrograms: true }),
     ]
-    expect(
-      pickInitialService(services, { networkId: undefined, serviceId: 999 }),
-    ).toBe(services[1])
+    expect(pickInitialService(services, 1)).toBe(services[1])
   })
 
   it('未指定でも番組を持つ先頭にフォールバックする', () => {
@@ -274,9 +233,7 @@ describe('pickInitialService', () => {
       makeService({ serviceId: 1, hasPrograms: false }),
       makeService({ serviceId: 2, hasPrograms: true }),
     ]
-    expect(
-      pickInitialService(services, { networkId: undefined, serviceId: undefined }),
-    ).toBe(services[1])
+    expect(pickInitialService(services, undefined)).toBe(services[1])
   })
 
   it('番組を持つサービスが無ければ先頭を使う', () => {
@@ -284,13 +241,11 @@ describe('pickInitialService', () => {
       makeService({ serviceId: 5, hasPrograms: false }),
       makeService({ serviceId: 6, hasPrograms: false }),
     ]
-    expect(
-      pickInitialService(services, { networkId: undefined, serviceId: undefined }),
-    ).toBe(services[0])
+    expect(pickInitialService(services, undefined)).toBe(services[0])
   })
 
   it('サービスが 1 件も無ければ undefined', () => {
-    expect(pickInitialService([], { networkId: undefined, serviceId: 1 })).toBeUndefined()
+    expect(pickInitialService([], 1)).toBeUndefined()
   })
 })
 

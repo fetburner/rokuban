@@ -346,7 +346,7 @@ describe('LivePage', () => {
     expect(currentLinks[0]).toHaveTextContent('メインサービス')
   })
 
-  it('?networkId=&serviceId= で指定したチャンネルを選ぶ', async () => {
+  it('?service=<Service.id> で指定したチャンネルを選ぶ', async () => {
     stubFetch({
       services: [
         service({ serviceId: 10, name: 'チャンネル A' }),
@@ -356,7 +356,7 @@ describe('LivePage', () => {
         20: [program({ serviceId: 20, name: 'B の番組' })],
       },
     })
-    renderLive('/live?networkId=1&serviceId=20')
+    renderLive('/live?service=100020')
 
     expect(await screen.findByText('B の番組')).toBeInTheDocument()
   })
@@ -371,7 +371,7 @@ describe('LivePage', () => {
         20: [program({ serviceId: 20, name: 'B の番組' })],
       },
     })
-    renderLive('/live?networkId=1&serviceId=20')
+    renderLive('/live?service=100020')
 
     expect(await screen.findByText('B の番組')).toBeInTheDocument()
 
@@ -381,7 +381,7 @@ describe('LivePage', () => {
     expect(link).toHaveAttribute('href', '/programs?service=%5B100020%5D')
   })
 
-  it('存在しない serviceId を指定すると番組を持つ先頭にフォールバックする', async () => {
+  it('一覧に無い service（未知の id）を指定すると番組を持つ先頭にフォールバックする', async () => {
     stubFetch({
       services: [
         service({ serviceId: 10, name: 'チャンネル A' }),
@@ -391,20 +391,43 @@ describe('LivePage', () => {
         10: [program({ serviceId: 10, name: 'A の番組' })],
       },
     })
-    renderLive('/live?serviceId=999')
+    renderLive('/live?service=999999')
 
     expect(await screen.findByText('A の番組')).toBeInTheDocument()
+  })
+
+  /**
+   * issue #438: 旧 `?networkId=&serviceId=`（SI 2 値）の後方互換は持たない
+   * （`5ab06f8` と同じ判断）。`LivePageSearch` はそのキーを持たないので
+   * `service` は常に undefined になり、`pickInitialService` の既定（番組を
+   * 持つ先頭）へ落ちる --- 旧リンクが指していたチャンネル（A）ではなく、
+   * 番組を持つ先頭（B）が選ばれることで無視されたことを固定する。
+   */
+  it('旧 ?networkId=&serviceId= の直開きは無視され、既定（番組を持つ先頭）サービスが選ばれる', async () => {
+    stubFetch({
+      services: [
+        service({ serviceId: 10, name: 'チャンネル A', hasPrograms: false }),
+        service({ serviceId: 20, name: 'チャンネル B', hasPrograms: true }),
+      ],
+      programsByServiceId: {
+        10: [program({ serviceId: 10, name: 'A の番組' })],
+        20: [program({ serviceId: 20, name: 'B の番組' })],
+      },
+    })
+    renderLive('/live?networkId=1&serviceId=10')
+
+    expect(await screen.findByText('B の番組')).toBeInTheDocument()
+    expect(screen.queryByText('A の番組')).not.toBeInTheDocument()
   })
 
   /**
    * issue #291: SI の `serviceId` は network をまたぐと一意でない（Mirakurun が
    * `networkId * 100000 + serviceId` の合成 id を発明した理由そのもの）。
    * `GET /api/sites/{site}/services` が GR/BS 混在で同じ `serviceId` を持つ
-   * サービスを 2 つ返す構成のフィクスチャで、`?networkId=&serviceId=` の両方が
-   * 揃っているときに正しい network のチャンネルが選ばれることを固定する ---
-   * `orderedServices.find((s) => s.serviceId === selectedServiceId)`
-   * （networkId を無視して先頭一致を返す）へ戻す変異だと、常に network 1 の
-   * 「GR の局」が選ばれてこのテストは落ちる。
+   * サービスを 2 つ返す構成のフィクスチャで、`?service=<Service.id>` を指定した
+   * ときに正しい network のチャンネルが選ばれることを固定する（issue #438 で
+   * `?networkId=&serviceId=` から統一した後も、合成 id 自体が network をまたいで
+   * 一意なのでこの区別は自動的に効く）。
    */
   describe('同じ serviceId を持つサービスが複数 network に存在するとき（issue #291）', () => {
     function crossNetworkServices() {
@@ -422,9 +445,10 @@ describe('LivePage', () => {
       }
     }
 
-    it('networkId + serviceId を指定すると、その network のチャンネルだけが選ばれる（network 1 側）', async () => {
-      stubFetch({ services: crossNetworkServices(), programsByServiceId: crossNetworkPrograms() })
-      renderLive('/live?networkId=1&serviceId=100')
+    it('?service=<Service.id> を指定すると、その network のチャンネルだけが選ばれる（network 1 側）', async () => {
+      const services = crossNetworkServices()
+      stubFetch({ services, programsByServiceId: crossNetworkPrograms() })
+      renderLive(`/live?service=${services[0].id}`)
 
       expect(await screen.findByText('GR の番組')).toBeInTheDocument()
       expect(screen.queryByText('BS の番組')).not.toBeInTheDocument()
@@ -436,9 +460,10 @@ describe('LivePage', () => {
       expect(current[0]).toHaveTextContent('GR の局')
     })
 
-    it('networkId + serviceId を指定すると、その network のチャンネルだけが選ばれる（network 2 側）', async () => {
-      stubFetch({ services: crossNetworkServices(), programsByServiceId: crossNetworkPrograms() })
-      renderLive('/live?networkId=2&serviceId=100')
+    it('?service=<Service.id> を指定すると、その network のチャンネルだけが選ばれる（network 2 側）', async () => {
+      const services = crossNetworkServices()
+      stubFetch({ services, programsByServiceId: crossNetworkPrograms() })
+      renderLive(`/live?service=${services[1].id}`)
 
       expect(await screen.findByText('BS の番組')).toBeInTheDocument()
       expect(screen.queryByText('GR の番組')).not.toBeInTheDocument()
@@ -448,27 +473,19 @@ describe('LivePage', () => {
         .filter((el) => el.getAttribute('aria-current') === 'page')
       expect(current).toHaveLength(1)
       expect(current[0]).toHaveTextContent('BS の局')
-      // `web/e2e/live.mjs` ⓪ は「選択中リンクの href に要求した組が載っている」
-      // ことで新形式が実ブラウザで効いたと判定する。その前提（href に networkId
-      // が載る）をここでも固定しておく --- 載らなくなれば e2e は落ちるが、
-      // それはブラウザとサーバーを用意しないと分からない
+      // `web/e2e/live.mjs` ⓪ は「選択中リンクの href に要求した id が載っている」
+      // ことで実ブラウザで効いたと判定する。その前提をここでも固定しておく ---
+      // 載らなくなれば e2e は落ちるが、それはブラウザとサーバーを用意しないと
+      // 分からない
       const href = current[0].getAttribute('href') ?? ''
-      expect(href).toContain('networkId=2')
-      expect(href).toContain('serviceId=100')
-    })
-
-    it('networkId 無しの旧 ?serviceId= 単独リンクは、その serviceId を持つ最初のサービス（network 1）へフォールバックする', async () => {
-      stubFetch({ services: crossNetworkServices(), programsByServiceId: crossNetworkPrograms() })
-      renderLive('/live?serviceId=100')
-
-      expect(await screen.findByText('GR の番組')).toBeInTheDocument()
-      expect(screen.queryByText('BS の番組')).not.toBeInTheDocument()
+      expect(href).toContain(`service=${services[1].id}`)
     })
 
     it('「再生」を押すと、選んだ network の (networkId, serviceId) でプレイリストを取りに行く', async () => {
       const user = userEvent.setup()
-      stubFetch({ services: crossNetworkServices(), programsByServiceId: crossNetworkPrograms() })
-      renderLive('/live?networkId=2&serviceId=100')
+      const services = crossNetworkServices()
+      stubFetch({ services, programsByServiceId: crossNetworkPrograms() })
+      renderLive(`/live?service=${services[1].id}`)
       await screen.findByText('BS の番組')
 
       await user.click(screen.getByRole('button', { name: /再生/ }))
@@ -490,8 +507,9 @@ describe('LivePage', () => {
      */
     it('再生中に同じ serviceId の別 network へ切り替えると選択状態に戻る', async () => {
       const user = userEvent.setup()
-      stubFetch({ services: crossNetworkServices(), programsByServiceId: crossNetworkPrograms() })
-      renderLive('/live?networkId=1&serviceId=100')
+      const services = crossNetworkServices()
+      stubFetch({ services, programsByServiceId: crossNetworkPrograms() })
+      renderLive(`/live?service=${services[0].id}`)
       await screen.findByText('GR の番組')
 
       await user.click(screen.getByRole('button', { name: /再生/ }))
@@ -653,12 +671,12 @@ describe('LivePage', () => {
     },
   )
 
-  it('?serviceId= の直開きでも選択状態で止まり、再生ボタンを押すまでプレイリストを取りに行かない（issue #234 の含むもの 3）', async () => {
+  it('?service= の直開きでも選択状態で止まり、再生ボタンを押すまでプレイリストを取りに行かない（issue #234 の含むもの 3）', async () => {
     stubFetch({
       services: [service({ serviceId: 10, name: 'チャンネル A' })],
       programsByServiceId: { 10: [program({ serviceId: 10, name: 'A の番組' })] },
     })
-    renderLive('/live?serviceId=10')
+    renderLive('/live?service=100010')
 
     expect(await screen.findByText('A の番組')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /再生/ })).toBeInTheDocument()
@@ -677,7 +695,7 @@ describe('LivePage', () => {
         20: [program({ serviceId: 20, name: 'B の番組' })],
       },
     })
-    renderLive('/live?serviceId=10')
+    renderLive('/live?service=100010')
     await screen.findByText('A の番組')
 
     await user.click(screen.getByRole('button', { name: /再生/ }))
@@ -723,7 +741,7 @@ describe('LivePage', () => {
         20: [program({ serviceId: 20, name: 'B の番組' })],
       },
     })
-    renderLive('/live?serviceId=10')
+    renderLive('/live?service=100010')
     await screen.findByText('A の番組')
 
     await user.click(screen.getByRole('button', { name: /再生/ }))
@@ -756,7 +774,7 @@ describe('LivePage', () => {
           20: [program({ serviceId: 20, name: 'B の番組' })],
         },
       })
-      renderLive('/live?serviceId=10')
+      renderLive('/live?service=100010')
       await screen.findByText('A の番組')
 
       await user.click(screen.getByRole('button', { name: /再生/ }))
@@ -944,7 +962,7 @@ describe('LivePage / 録画予約による中断予測（issue #235 M7-2）', ()
       },
       reservations: [reservation({ programId: 6, site: 'default', startAt, skip: false })],
     })
-    const { queryClient } = renderLive('/live?serviceId=10')
+    const { queryClient } = renderLive('/live?service=100010')
 
     await screen.findByRole('button', { name: /再生/ })
     await interruptionSettled(queryClient)
@@ -984,7 +1002,7 @@ describe('LivePage / 録画予約による中断予測（issue #235 M7-2）', ()
       },
       reservations: [reservation({ programId: 6, site: 'default', startAt, skip: false })],
     })
-    const { queryClient } = renderLive('/live?networkId=1&serviceId=100')
+    const { queryClient } = renderLive('/live?service=100100')
 
     await screen.findByRole('button', { name: /再生/ })
     await interruptionSettled(queryClient)

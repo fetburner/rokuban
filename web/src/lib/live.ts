@@ -141,40 +141,22 @@ export function claimsHlsPlaylistSupport(canPlayType: (type: string) => string):
 }
 
 /**
- * pickInitialService は `?networkId=&serviceId=` 検索パラメータから初期選択チャンネル
- * （`Service`）を決める。
+ * pickInitialService は `?service=<Service.id>` から初期選択チャンネル（`Service`）を
+ * 決める。
  *
- * **`serviceId` 単独では network をまたぐ同名 id を区別できない**ため、
- * `networkId` も指定されていればその組で厳密一致するサービスを探す。一致すれば
- * それを使う。
- *
- * **`networkId` と `serviceId` は両方揃ったときだけ使う。** `serviceId` 単独では
- * 1 局に定まらない（同じ id を別 network が持ちうる。issue #291）ので、
- * 「その serviceId を持つ最初のサービス」を選ぶと一覧の順序次第で別の局に
- * なる。片方しか無い入力は同定できない入力なので、既定（番組を持つ先頭）へ
- * 落とす。`lib/live.test.ts`「networkId 未指定なら serviceId は使わず、番組を
- * 持つ先頭へ落ちる」で固定。
- *
- * **`serviceId` の無い `?networkId=` 単独も同様に無視する**
- * （その network 内で選び直すことはしない --- `networkId` だけでは 1 局に
- * 定まらないので、選ぶ規則が「その network の番組を持つ先頭」という別の規則に
- * なる。`?networkId=` 単独を作る導線は無い）。`lib/live.test.ts`
- * 「networkId だけの指定は無視して番組を持つ先頭にフォールバックする」で固定。
- *
- * 上記のいずれでも一致するサービスが見つからない（無効な指定・未指定・
- * 一致しない組）ときは、番組を持つ先頭のサービスへフォールバックする ---
- * マルチ編成のないサブサービス（`hasPrograms: false`）を既定にしても、今放送中の
+ * `requestedId` に一致するサービスがあればそれを使う。一致しない（未指定・
+ * 無効な id・一覧に無い id）ときは番組を持つ先頭のサービスへフォールバックする
+ * --- マルチ編成のないサブサービス（`hasPrograms: false`）を既定にしても、今放送中の
  * 番組を出せず「いま放送中」欄が常に空になる。番組を持つサービスが 1 つも無ければ
  * 先頭のサービスを使う。サービス自体が 1 件も無ければ undefined（まだ取得できて
  * いない、または EPG プロジェクションが空）。
  */
 export function pickInitialService(
   services: readonly Service[],
-  requested: { networkId: number | undefined; serviceId: number | undefined },
+  requestedId: number | undefined,
 ): Service | undefined {
-  const { networkId, serviceId } = requested
-  if (networkId !== undefined && serviceId !== undefined) {
-    const exact = services.find((s) => s.networkId === networkId && s.serviceId === serviceId)
+  if (requestedId !== undefined) {
+    const exact = services.find((s) => s.id === requestedId)
     if (exact !== undefined) return exact
   }
   return services.find((s) => s.hasPrograms) ?? services[0]
