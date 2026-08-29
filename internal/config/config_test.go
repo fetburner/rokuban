@@ -647,6 +647,54 @@ storage:
 	}
 }
 
+// ingest.stall_timeout を明示的に 0 / 負にすると起動時エラーになることを確認する。
+// worker 側は既定値へのフォールバックを持たない（IngestConfig.validate 参照）ので、
+// ここで弾かないと 0 は StallReader を即発火させ、負値はさらに壊れる。
+func TestLoad_IngestStallTimeoutNotPositive(t *testing.T) {
+	for _, v := range []string{"0s", "-1s"} {
+		path := writeConfig(t, fmt.Sprintf(`
+db:
+  host: localhost
+  user: rokuban
+  password: secret
+  database: rokuban
+mirakc:
+  url: http://mirakc.local:40772
+storage:
+  media_dir: /mnt/media
+ingest:
+  stall_timeout: %s
+`, v))
+		if _, err := Load(path); err == nil {
+			t.Errorf("ingest.stall_timeout: %s: expected error, got nil", v)
+		}
+	}
+}
+
+// epg.retention_grace を明示的に 0 / 負にすると起動時エラーになることを確認する。
+// 負値は mark.Add(-grace) が mark より未来を指してしまい、まだ放送中の番組まで
+// 刈り取られる（EpgConfig.validate 参照）。
+func TestLoad_EpgRetentionGraceNotPositive(t *testing.T) {
+	for _, v := range []string{"0s", "-1h"} {
+		path := writeConfig(t, fmt.Sprintf(`
+db:
+  host: localhost
+  user: rokuban
+  password: secret
+  database: rokuban
+mirakc:
+  url: http://mirakc.local:40772
+storage:
+  media_dir: /mnt/media
+epg:
+  retention_grace: %s
+`, v))
+		if _, err := Load(path); err == nil {
+			t.Errorf("epg.retention_grace: %s: expected error, got nil", v)
+		}
+	}
+}
+
 // db セクション内の typo も strict パースで検出できることを確認する
 // （既存の TestLoad_UnknownKey はトップレベルの typo しか見ていない）。
 func TestLoad_UnknownKey_NestedInDBSection(t *testing.T) {

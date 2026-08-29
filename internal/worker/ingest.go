@@ -167,8 +167,6 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[IngestJobArgs]) 
 		return err
 	}
 
-	stallTimeout := w.StallTimeout
-
 	recordingID, expectedBytes, err := w.lookupIngestTarget(ctx, args)
 	if err != nil {
 		return fmt.Errorf("looking up recording_id: %w", err)
@@ -305,8 +303,8 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[IngestJobArgs]) 
 			continue
 		}
 
-		timer := time.AfterFunc(stallTimeout, func() { stallCancel() })
-		sr := &stallReader{r: body, timer: timer, d: stallTimeout}
+		timer := time.AfterFunc(w.StallTimeout, func() { stallCancel() })
+		sr := &stallReader{r: body, timer: timer, d: w.StallTimeout}
 		n, copyErr := io.Copy(dst, sr)
 		timer.Stop()
 		stallCancel()

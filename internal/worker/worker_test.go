@@ -127,7 +127,10 @@ func TestEpgSyncPeriodicJob(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unavailable", http.StatusServiceUnavailable)
 	}))
-	defer srv.Close()
+	// t.Cleanup (LIFO と同じ順で、startPeriodicJobClient が登録するクライアント
+	// 停止より後に走る) --- defer だと関数の return 直後に即座に走り、River
+	// client がまだ動いている最中に mirakc スタブを閉じてしまう。
+	t.Cleanup(srv.Close)
 
 	subscribeCh := startPeriodicJobClient(t, pool, &Deps{MirakcClient: mirakc.NewClient(srv.URL, nil)}, ClientConfig{
 		PeriodicJobs:    true,

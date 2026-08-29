@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -126,8 +127,11 @@ func (w *StorageSyncWorker) Work(ctx context.Context, _ *river.Job[StorageSyncAr
 		{name: "scratch", path: w.ScratchDir},
 	}
 
+	// desired は今回観測する root 名の一覧。allRoots は高々 2 要素なので、
+	// この後の掃除ループは desiredSet を別途持たず slices.Contains(desired, ...)
+	// で足りる。
 	roots := make([]storageRoot, 0, len(allRoots))
-	desiredSet := make(map[string]bool, len(allRoots))
+	desired := make([]string, 0, len(allRoots))
 	for _, r := range allRoots {
 		if r.path == "" {
 			// 空文字列は「この root は観測しない」を意味する（scratch_dir を
@@ -136,11 +140,7 @@ func (w *StorageSyncWorker) Work(ctx context.Context, _ *river.Job[StorageSyncAr
 			continue
 		}
 		roots = append(roots, r)
-		desiredSet[r.name] = true
-	}
-	desired := make([]string, len(roots))
-	for i, r := range roots {
-		desired[i] = r.name
+		desired = append(desired, r.name)
 	}
 
 	q := sqlcgen.New(w.Pool)
@@ -163,7 +163,7 @@ func (w *StorageSyncWorker) Work(ctx context.Context, _ *river.Job[StorageSyncAr
 	// 偽陽性アラートになる（docs/operations/monitoring.md §沈黙は保証ではない が
 	// この鮮度を判断材料に挙げている）。
 	for _, r := range allRoots {
-		if desiredSet[r.name] {
+		if slices.Contains(desired, r.name) {
 			continue
 		}
 		metrics.StorageRootLastSuccess.DeleteLabelValues(r.name)

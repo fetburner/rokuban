@@ -21,6 +21,28 @@ import (
 )
 
 const (
+	// defaultIngestConcurrency / defaultEpgSyncInterval は config.Ingest.Concurrency
+	// / config.Epg.SyncInterval と同値の二重既定（config.defaults() 参照）だが、
+	// 消さずに残す。ClientConfig は cmd/rokuban 経由の本番配線だけでなく、この
+	// パッケージの多数のテストが `ClientConfig{...}` を直接組み立てて渡す
+	// ライブラリ境界でもある（config.Load を経由しない）。
+	//
+	// IngestConcurrency=0 を渡すと allQueues の
+	// `river.QueueConfig{MaxWorkers: 0}` になり、river.NewClient がこれを
+	// 明示的な起動時エラーで拒否する（river@v0.40.0/client.go:661 の
+	// `c.MaxWorkers < 1` チェック。読んで確認済み）。
+	// EpgSyncInterval=0 は `river.PeriodicInterval(0)` になり、こちらは panic
+	// しない（PeriodicInterval.Next は単に `t.Add(0) = t` を返すだけ）が、
+	// 定期ジョブの nextRunAt が前に進まなくなるため、river 内部の
+	// PeriodicJobEnqueuer がタイマーを毎回ほぼ 0 でリセットするビジーループに
+	// 陥る（river@v0.40.0/internal/maintenance/periodic_job_enqueuer.go の
+	// timeUntilNextRun / timerUntilNextRun.Reset を読んで確認。実際に client を
+	// 起動してこのループを観測してはいない）。
+	//
+	// 責務を config に移すのは config.Config の話であって、config を経由しない
+	// 呼び出し元（このパッケージのテスト）まで持つ ClientConfig の 0-fallback を
+	// 消す話ではない（issue #445 のファイル列挙が ingest.go/epg.go/storage.go に
+	// 留めていたのもこの境界の違いから）。
 	defaultIngestConcurrency = 2
 	defaultEpgSyncInterval   = 10 * time.Minute
 

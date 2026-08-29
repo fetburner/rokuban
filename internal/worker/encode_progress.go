@@ -27,11 +27,21 @@ type encodeProgressReporter struct {
 }
 
 // start は progress 更新を受け取る report 関数と、レポーターを止める
-// context.CancelFunc を返す。キャンセルすると、次の ticker を待たずに
-// （report された最後の値が前回送信済みの値と違えば）1 回だけ flush してから
-// goroutine が終了する --- ジョブ終了直前の値を取りこぼさない。flush の
-// notify には常に start に渡された ctx を使う（キャンセルは goroutine を
-// 止めるための内部シグナルにすぎず、notify 自体を打ち切る理由にしない）。
+// context.CancelFunc を返す。cancel は他の CancelFunc と同じく非同期・
+// fire-and-forget（goroutine の終了を待たない）。cancel すると、次の ticker を
+// 待たずに（report された最後の値が前回送信済みの値と違えば）goroutine が
+// 1 回だけ flush してから終了する（TestEncodeProgressReporter_FlushesFinalValueOnStop）。
+//
+// **保証はここまで、ベストエフォート。** 唯一の実運用呼び出し元
+// （encode.go の `defer stopProgress()`）は Work が return した後に走る
+// 切り離された goroutine なので、この flush が encode.finished 通知（同じ
+// encode.go の w.notify）より後に届く順序は排除していない（未検証: 実際に
+// 遅延する頻度は測っていない）。また flush の notify には start に渡された
+// ctx をそのまま使うため、親 ctx が cancel と同時にキャンセルされる経路
+// （worker 停止・ジョブタイムアウト）では notify 自体が失敗し、flush は
+// 実質何もしない（notifyCtx.Err() != nil のときは警告ログも出さない ---
+// 「notify を打ち切らない」が成り立つのは、呼び出し元が親 ctx を生かした
+// まま stop() だけを呼ぶ場合に限る）。
 func (r *encodeProgressReporter) start(ctx context.Context) (func(time.Duration), context.CancelFunc) {
 	stopCtx, cancel := context.WithCancel(ctx)
 
@@ -50,13 +60,17 @@ func (r *encodeProgressReporter) run(notifyCtx, stopCtx context.Context, latest 
 	ticker := time.NewTicker(r.interval)
 	defer ticker.Stop()
 
+	// lastSent は「まだ report されていない」（latest の初期値と同じ番兵 -1）と
+	// 「前回送信済みの値」を同じ 1 つの比較で表す。report() は非負の Duration
+	// しか latest に書かないので、一度でも送った後は v が -1 に戻ることはなく、
+	// 番兵チェックを別条件にする必要が無い。
 	lastSent := int64(-1)
 	flush := func() {
 		v := latest.Load()
-		if v < 0 || v == lastSent {
-			// v < 0: report() を一度も受け取っていない。v == lastSent: 前回送信した
-			// 値から変わっていない。どちらも送らない（「区間内の最新値を 1 回だけ
-			// 送る」という pending 相当の判定）。
+		if v == lastSent {
+			// 区間内に新しいサンプルが来ていない（初回送信前も含む）か、前回
+			// 送信した値から変わっていない。どちらも送らない（「区間内の最新値を
+			// 1 回だけ送る」という pending 相当の判定）。
 			return
 		}
 		lastSent = v
