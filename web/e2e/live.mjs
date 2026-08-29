@@ -35,6 +35,14 @@ const SERVICE_A = process.env.E2E_LIVE_SERVICE_A ?? '9001'
 const SERVICE_B = process.env.E2E_LIVE_SERVICE_B ?? '9002'
 const NETWORK_ID = process.env.E2E_LIVE_NETWORK_ID ?? '1'
 
+const ng = []
+const skipped = []
+
+// ⓪ 配っている bundle が dist/ の現物と一致するか（web/e2e/README.md 参照）。
+// resolveServiceId 等より先に見る --- 前提が崩れているとそちらが先に例外で
+// 落ち、⓪ に一度も到達しないまま無関係なエラーだけが出てしまう。
+await verifyBundleMatchesOrExit(BASE_URL, ng)
+
 /**
  * resolveServiceId は SI の (networkId, serviceId) から `?service=` に載せる
  * `Service.id` を求める。
@@ -78,12 +86,6 @@ const SERVICE_ID_B = await resolveServiceId(NETWORK_ID, SERVICE_B)
 const FIXTURE_DIR = path.join(os.tmpdir(), 'rokuban-e2e-live-fixture')
 const SEGMENTS_DIR = path.join(FIXTURE_DIR, 'segments')
 const PLAYLIST_PATH = path.join(FIXTURE_DIR, 'playlist.m3u8')
-
-const ng = []
-const skipped = []
-
-// ⓪ 配っている bundle が dist/ の現物と一致するか（web/e2e/README.md 参照）。
-await verifyBundleMatchesOrExit(BASE_URL, ng)
 
 /**
  * liveSegmentsPathOf は serviceId のセグメント要求を照合するためのパス断片を返す。

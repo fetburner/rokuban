@@ -122,9 +122,7 @@ async function readReserveWidth(locator) {
 const isOpen = (w) => typeof w === 'number' && w > 40
 const isCollapsed = (w) => typeof w === 'number' && w < 1
 
-// ⓪ 配っている bundle が自分の dist かを先に確かめる（sse-refresh.mjs / badge-links.mjs
-// と同じ理由。他 worktree の preview が同じポートに居座っていると無関係な古い
-// ビルドを測ったまま判定が進む）。
+// ⓪ 配っている bundle が dist/ の現物と一致するか（e2e/lib.mjs 参照）。
 await verifyBundleMatchesOrExit(BASE, ng)
 
 const browser = await launchBrowser()

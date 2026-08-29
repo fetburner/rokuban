@@ -52,7 +52,7 @@ export async function finish(ng, browser) {
  * `dist/assets/` はこのスクリプトを `web/` をカレントディレクトリにして実行する
  * ことを前提に相対パスで読む。
  */
-export async function verifyBundleMatches(urlBase) {
+async function verifyBundleMatches(urlBase) {
   const rootHtml = await fetch(urlBase + '/').then((r) => r.text())
   const served = /assets\/(index-[^"]+\.js)/.exec(rootHtml)?.[1]
   const distDir = path.join(process.cwd(), 'dist', 'assets')
@@ -85,36 +85,43 @@ export async function verifyBundleMatchesOrExit(urlBase, ng, browser) {
 }
 
 /**
+ * sseKeepAlive は `/api/events` への SSE 接続を張ったまま通知を 1 通も送らず、
+ * `retry: 86400000`（1 日）で「つなぎ直さずに諦めさせる」。`chip-overflow.mjs` /
+ * `sse-refresh.mjs` の `openStubbed` がそれぞれ持っていた同一のフルフィルを
+ * まとめたもの（`openStubbed` 自体はスクリプトごとのフィクスチャなので残す）。
+ */
+export function sseKeepAlive(route) {
+  return route.fulfill({
+    status: 200,
+    headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' },
+    body: 'retry: 86400000\n\n: ping\n\n',
+  })
+}
+
+/**
  * installApiStubs は `/api/**` を丸ごとブラウザ側で差し替える配線だけを共通化
  * する。各スクリプト固有の応答（フィクスチャ）は `handler` に残す --- `handler`
- * は `{ path, url, json, route }` を受け取り、`json(...)` か `route.fulfill(...)`
- * を呼んで応答する。どちらも呼ばなければ（該当パスが無ければ）、SSE
- * （`/api/events`）は 204（つなぎ直さずに諦めさせ、`networkidle` へ到達させる。
- * 各スクリプトが共通で書いていた既定）、それ以外は `json([])` にフォールバック
- * する（各スクリプトの catch-all と同じ既定）。
+ * は `{ path, url, json, route }` を受け取り、**必ず** `json(...)` か
+ * `route.fulfill(...)` を呼んで応答する（total な関数であること。既存 7 本の
+ * 移行元はすべて末尾に `return json([])` の catch-all を持つので、この条件は
+ * 常に満たされている）。
  *
- * **`handler` の戻り値では判定しない。** `route.fulfill(...)` は解決すると
- * `undefined` を返すため、`return route.fulfill(...)` は「何も返さなかった」と
- * 区別が付かない --- `route.fulfill` 自体を「呼ばれたら印を立てる」版に差し替え、
- * その印だけで判定する（実際にこの取り違えで「Route is already handled」を
- * 踏んだ）。`route` はそれ以外そのまま渡すので、`route.request()` 等を使う
- * handler（design.mjs の GET 判定など）もそのまま動く。
+ * **フォールバックは持たない。** `route.fulfill(...)` は解決すると `undefined`
+ * を返すため、`handler` の戻り値で「応答したかどうか」を判定することはできない
+ * （`return route.fulfill(...)` と「何も返さなかった」が区別できない）。以前は
+ * `/api/events` への 204 既定をここに置いていたが、catch-all を持つ 7 本の
+ * handler では常にその catch-all が先に応答して 204 に到達しなかった（実測:
+ * `page.on('response')` で `/api/events` は常に `200 application/json`。
+ * CLAUDE.md「一度も真でなかった記述」）。既定を足す代わりに handler を total に
+ * する契約にした --- 204 が必要なスクリプトは自分の handler に明記する
+ * （`cls.mjs` 参照）。
  */
 export async function installApiStubs(page, handler) {
   await page.route('**/api/**', async (route) => {
     const url = new URL(route.request().url())
     const p = url.pathname
-    let handled = false
-    const originalFulfill = route.fulfill.bind(route)
-    route.fulfill = (...args) => {
-      handled = true
-      return originalFulfill(...args)
-    }
     const json = (body) =>
       route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) })
     await handler({ path: p, url, json, route })
-    if (handled) return
-    if (p === '/api/events') return route.fulfill({ status: 204 })
-    return json([])
   })
 }

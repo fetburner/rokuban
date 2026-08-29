@@ -230,7 +230,7 @@ function apiHandler({
     if (delayPath !== null && p === delayPath) {
       await new Promise((r) => setTimeout(r, delayMs))
     }
-    // SSE（/api/events）は installApiStubs の既定（204）に任せる。
+    // SSE（/api/events）は明示のスタブを持たず catch-all（200 json []）に落ちる。
     if (p === '/api/sites') return json(multiSite ? [SITE, SITE2] : [SITE])
     // ライブへの導線（主ナビの「ライブ」・/live 画面）はサーバーの live.enabled に
     // 連動する（issue #209）。ここは「有効なデプロイ」の見た目を撮るための判定なので

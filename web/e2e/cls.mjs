@@ -42,7 +42,7 @@
 //   E2E_URL=http://localhost:4173 node e2e/cls.mjs
 //
 // 合格なら exit 0、1 つでも NG なら exit 1。
-import { finish, launchBrowser, log, verifyBundleMatchesOrExit } from './lib.mjs'
+import { finish, installApiStubs, launchBrowser, log, verifyBundleMatchesOrExit } from './lib.mjs'
 
 const URL_BASE = process.env.E2E_URL ?? 'http://localhost:4173'
 const SITE = 'default'
@@ -64,10 +64,6 @@ const services = Array.from({ length: 24 }, (_, i) => ({
   hasLogoData: false,
   hasPrograms: true,
 }))
-
-function json(route, body) {
-  return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) })
-}
 
 async function delay(ms) {
   await new Promise((resolve) => setTimeout(resolve, ms))
@@ -116,16 +112,15 @@ async function measureSearch(viewport) {
   const context = await browser.newContext({ viewport })
   const page = await context.newPage()
   await installClsObserver(page)
-  await page.route('**/api/**', async (route) => {
-    const p = new URL(route.request().url()).pathname
+  await installApiStubs(page, async ({ path: p, json, route }) => {
     if (p === '/api/events') return route.fulfill({ status: 204 })
-    if (p === '/api/sites') return json(route, [SITE])
-    if (p === '/api/capabilities') return json(route, { live: false })
+    if (p === '/api/sites') return json([SITE])
+    if (p === '/api/capabilities') return json({ live: false })
     if (p === `/api/sites/${SITE}/services`) {
       await delay(NETWORK_DELAY_MS)
-      return json(route, services)
+      return json(services)
     }
-    return json(route, [])
+    return json([])
   })
 
   await page.goto(URL_BASE + '/search', { waitUntil: 'domcontentloaded' })

@@ -165,10 +165,7 @@ log(`URL      : ${URL_BASE}`)
 log(`固定時刻 : ${FIXED_NOW.toISOString()} (Asia/Tokyo)`)
 log(`不足区間 : ${overage.startAt} 〜 ${overage.endAt}`)
 
-// --- ⓪ 配っている bundle が dist/ の現物と一致するか（他の判定より先に見る） ---
-// `/api/**` は丸ごと差し替えるので、無関係なサーバー（古いビルド・別 worktree の
-// preview）が答えていても①②はそれらしく動いてしまう。一致しないなら以降の
-// 判定に意味が無いので、ここで打ち切る。
+// ⓪ 配っている bundle が dist/ の現物と一致するか（e2e/lib.mjs 参照）。
 log('\n=== ⓪ 配っている bundle と dist/ の一致 ===')
 await verifyBundleMatchesOrExit(URL_BASE, ng)
 
