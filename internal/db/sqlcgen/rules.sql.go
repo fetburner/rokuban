@@ -13,19 +13,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const countReservationsByRuleID = `-- name: CountReservationsByRuleID :one
-SELECT count(*)::bigint AS count
-FROM reservations
-WHERE rule_id = $1
-`
-
-func (q *Queries) CountReservationsByRuleID(ctx context.Context, ruleID *int64) (int64, error) {
-	row := q.db.QueryRow(ctx, countReservationsByRuleID, ruleID)
-	var count int64
-	err := row.Scan(&count)
-	return count, err
-}
-
 const countReservationsByRuleWithIntent = `-- name: CountReservationsByRuleWithIntent :one
 SELECT count(*) FROM reservations r
 WHERE r.rule_id = $1
