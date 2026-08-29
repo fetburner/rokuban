@@ -116,11 +116,6 @@ VALUES ($1, $2);
 -- name: DeleteRuleSites :exec
 DELETE FROM rule_sites WHERE rule_id = $1;
 
--- name: CountReservationsByRuleID :one
-SELECT count(*)::bigint AS count
-FROM reservations
-WHERE rule_id = sqlc.arg(rule_id);
-
 -- name: DeleteReservationsByRuleWithoutIntent :execrows
 -- ルール削除時: ユーザーの投資（program_investments view。program_intents の
 -- action='record' 行 ∪ program_overrides の行）がない導出予約を物理削除する。

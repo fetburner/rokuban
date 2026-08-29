@@ -10,7 +10,6 @@ import (
 	"github.com/riverqueue/river"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
-	"github.com/fetburner/rokuban/internal/diskusage"
 	"github.com/fetburner/rokuban/internal/metrics"
 )
 
@@ -99,10 +98,10 @@ type StorageSyncWorker struct {
 	// ここに空文字列が届く。
 	ScratchDir string
 
-	// Stat は 1 root を観測する関数。nil なら diskusage.Stat を使う。
+	// Stat は 1 root を観測する関数。nil なら statDisk を使う。
 	// テストが実ディスクの数字に依存せず組み立てられるよう差し替え可能にしている
-	// （internal/diskusage のコメント参照）。
-	Stat func(path string) (diskusage.Usage, error)
+	// （internal/worker/diskusage.go のコメント参照）。
+	Stat func(path string) (diskUsage, error)
 }
 
 // Timeout は River の既定（1 分）と同じ上限を明示する。
@@ -110,11 +109,11 @@ func (w *StorageSyncWorker) Timeout(*river.Job[StorageSyncArgs]) time.Duration {
 	return storageSyncTimeout
 }
 
-func (w *StorageSyncWorker) statFunc() func(string) (diskusage.Usage, error) {
+func (w *StorageSyncWorker) statFunc() func(string) (diskUsage, error) {
 	if w.Stat != nil {
 		return w.Stat
 	}
-	return diskusage.Stat
+	return statDisk
 }
 
 // rootPath は root 名に対応する config の値を返す。空文字列は「この root は
@@ -205,9 +204,9 @@ func (w *StorageSyncWorker) Work(ctx context.Context, _ *river.Job[StorageSyncAr
 		if err := q.UpsertStorageSync(ctx, sqlcgen.UpsertStorageSyncParams{
 			Root:           r.name,
 			Path:           r.path,
-			TotalBytes:     u.TotalBytes,
-			UsedBytes:      u.UsedBytes,
-			AvailableBytes: u.AvailableBytes,
+			TotalBytes:     u.totalBytes,
+			UsedBytes:      u.usedBytes,
+			AvailableBytes: u.availableBytes,
 		}); err != nil {
 			return fmt.Errorf("storage sync: upserting root %s: %w", r.name, err)
 		}
@@ -217,9 +216,9 @@ func (w *StorageSyncWorker) Work(ctx context.Context, _ *river.Job[StorageSyncAr
 		// （StorageSyncLastSuccess の対になる、root 単位の鮮度シグナル。
 		// internal/metrics.StorageRootLastSuccess のコメント参照）。
 		metrics.StorageRootLastSuccess.WithLabelValues(r.name).SetToCurrentTime()
-		metrics.StorageRootTotalBytes.WithLabelValues(r.name).Set(float64(u.TotalBytes))
-		metrics.StorageRootUsedBytes.WithLabelValues(r.name).Set(float64(u.UsedBytes))
-		metrics.StorageRootAvailableBytes.WithLabelValues(r.name).Set(float64(u.AvailableBytes))
+		metrics.StorageRootTotalBytes.WithLabelValues(r.name).Set(float64(u.totalBytes))
+		metrics.StorageRootUsedBytes.WithLabelValues(r.name).Set(float64(u.usedBytes))
+		metrics.StorageRootAvailableBytes.WithLabelValues(r.name).Set(float64(u.availableBytes))
 	}
 
 	if observed == 0 {

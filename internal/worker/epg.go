@@ -15,6 +15,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/ptr"
 )
 
 const (
@@ -415,8 +416,8 @@ func (w *EpgSyncWorker) syncPrograms(
 				DurationMs:  durationMs,
 				EndAt:       startAt.Add(time.Duration(durationMs) * time.Millisecond),
 				IsFree:      p.IsFree,
-				Name:        derefStr(p.Name),
-				Description: derefStr(p.Description),
+				Name:        ptr.Deref(p.Name),
+				Description: ptr.Deref(p.Description),
 				GenreLv1:    genreLv1(p.Genres),
 				Extended:    marshalOrNil(p.Extended),
 				Genres:      marshalOrNil(p.Genres),
@@ -488,13 +489,6 @@ func chunks[T any](s []T, size int) func(func([]T) bool) {
 			}
 		}
 	}
-}
-
-func derefStr(s *string) string {
-	if s == nil {
-		return ""
-	}
-	return *s
 }
 
 // marshalOrNil は v を jsonb 用にエンコードする。

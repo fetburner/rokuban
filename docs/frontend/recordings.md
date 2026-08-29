@@ -52,7 +52,7 @@ prop で 1 段ずつ配線する形（`onMutated` のような穴）は採らな
 - **ごみ箱ビューではサムネイル・プレイヤー・原本リンクを一切出さない。**
   配信側（`GetOriginalMediaAssetForServing` 等）は `recordings.deleted_at IS NOT NULL`
   を 404 にする契約（[api.md](../api.md) §メディア配信）なので、出しても必ず 404 になる。
-  復元してから見る運用にする。ごみ箱一覧が `encodedAssets` を射影しないままなのも
+  復元してから見る運用にする。ごみ箱では `encodedAssets` を返さないのも
   同じ理由（プレイヤーを出さないので揃える必要がない）
 
 ### 操作点にサイズを常置する（値札）

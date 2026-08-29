@@ -260,13 +260,12 @@ const (
 	// encoded のみ）。先頭にカンマを持つので recordingsSelectColumns の直後に
 	// そのまま連結できる。
 	//
-	// buildRecordingsQuery は trash=true のときこれを連結しない（一覧側の
-	// 意図的な省略。docs/api/rest.md「録画一覧」）。queryRecordingByID は常に
-	// 連結し、代わりに Go 側でごみ箱の行だけ結果を捨てる（そちらのコメント
-	// 参照）--- 「ごみ箱では出さない」という同じ結論に、SQL 側で省くか
-	// Go 側で捨てるかという別の手段で辿り着いている。手段が違う理由は
-	// 一覧側は trash という絞り込み軸を静的に知っているため SQL 自体を
-	// 分岐できるが、単体 GET は行を読むまで trash かどうかが分からないため。
+	// buildRecordingsQuery / queryRecordingByID のどちらも常にこれを連結する。
+	// 「ごみ箱では出さない」（プレイヤーを出さないので値を揃えても使われない。
+	// 3d56f92 の理由。性能実測は無い）は Go 側 1 か所（recordingFromListFields が
+	// r.DeletedAt != nil だけを見て AvailableEncodedAssets を落とす）だけで決める。
+	// 以前は一覧が SQL 側で列自体を省き、単体 GET が Go 側で nil 化するという
+	// 2 手段だったが、判定条件を 1 か所に揃えた。
 	//
 	// jsonb_agg で profile と size_bytes を同じ行に載せる（issue #236 M7-3。
 	// プロファイル名の配列 + サイズの並行配列という 2 本の index 揺れやすい
@@ -312,9 +311,9 @@ LEFT JOIN LATERAL (
 // 射影は ListRecordings / ListTrashRecordings（internal/db/queries/recordings.sql・
 // recordings_trash.sql）と同じ列を明示的に並べる（r.* ではなく列名を書くのは、
 // この SELECT リストが queryRecordings の Scan 呼び出しの順序をそのまま決める
-// ため）。available_encoded_assets は trash のときだけ省く ---
-// ListTrashRecordings がそれを意図的に射影しない（ごみ箱では配信 3 クエリが
-// deleted_at IS NOT NULL を理由に必ず 404 になるため）のと同じ区別。
+// ため）。available_encoded_assets は trash かどうかによらず常に射影する ---
+// 「ごみ箱では出さない」という規則は recordingFromListFields（Go 側 1 か所）が
+// r.DeletedAt で判定する（recordingsAvailableEncodedAssetsSelect のコメント参照）。
 //
 // **既定は全サイト**（api は不変条件 1 により site に束縛されない）。`?site=`
 // はその上の絞り込みで、「束縛」ではない --- 束縛はプロセスがどの mirakc に
@@ -430,18 +429,10 @@ func buildRecordingsQuery(f recordingsFilter) (string, []any, error) {
 		orderDir = "DESC"
 	}
 
-	availableAssetsSelect := ""
-	if !f.Trash {
-		// ListRecordings（internal/db/queries/recordings.sql）と同じ形。
-		// ブラウザ再生用の観測（active な encoded のみ）。trash のときだけ省く
-		// 理由は recordingsAvailableEncodedAssetsSelect のコメント参照。
-		availableAssetsSelect = recordingsAvailableEncodedAssetsSelect
-	}
-
 	limitPlaceholder := arg(f.Limit)
 
 	sql := `
-SELECT` + recordingsSelectColumns + availableAssetsSelect + recordingsFromJoins + `
+SELECT` + recordingsSelectColumns + recordingsAvailableEncodedAssetsSelect + recordingsFromJoins + `
 WHERE ` + where.String() + `
 ORDER BY r.program_start_at ` + orderDir + `, r.id ` + orderDir + `
 LIMIT ` + limitPlaceholder
@@ -522,13 +513,6 @@ WHERE r.id = $1 AND r.purged_at IS NULL`
 		return Recording{}, false, fmt.Errorf("querying recording %d: %w", id, err)
 	}
 
-	// ごみ箱の行では一覧の trash=true と同じく encodedAssets を出さない
-	// （プレイヤーを出さないので揃える必要が無い。openapi.yaml の
-	// getRecording description、docs/frontend/recordings.md）。
-	if fields.DeletedAt != nil {
-		fields.AvailableEncodedAssets = nil
-	}
-
 	rec, err := recordingFromListFields(fields, true, knownProfiles)
 	if err != nil {
 		return Recording{}, false, err
@@ -551,7 +535,7 @@ func queryRecordings(ctx context.Context, pool *pgxpool.Pool, f recordingsFilter
 	result := make([]Recording, 0, f.Limit)
 	for rows.Next() {
 		var fields recordingListFields
-		var scanArgs = []any{
+		if err := rows.Scan(
 			&fields.ID, &fields.Site, &fields.RuleID, &fields.Source, &fields.ServiceName, &fields.ChannelType, &fields.Channel,
 			&fields.NetworkID, &fields.ServiceID, &fields.EventID, &fields.Title, &fields.Description,
 			&fields.ProgramStartAt, &fields.ProgramDurationMs, &fields.Status,
@@ -562,11 +546,8 @@ func queryRecordings(ctx context.Context, pool *pgxpool.Pool, f recordingsFilter
 			&fields.EncodeAttempts,
 			&fields.HasOriginalAsset, &fields.HasIngestableRecord,
 			&fields.IngestWrittenBytes, &fields.IngestExpectedBytes, &fields.IngestObservedAt,
-		}
-		if !f.Trash {
-			scanArgs = append(scanArgs, &fields.AvailableEncodedAssets)
-		}
-		if err := rows.Scan(scanArgs...); err != nil {
+			&fields.AvailableEncodedAssets,
+		); err != nil {
 			return nil, fmt.Errorf("scanning recording row: %w", err)
 		}
 		rec, err := recordingFromListFields(fields, f.Trash, knownProfiles)

@@ -4129,8 +4129,8 @@ export const getGetRecordingUrl = (id: number,) => {
  * 現れない行なので、単体 GET だけ見える形にしない。
  *
  * ごみ箱の行では一覧と同じく `encodedAssets` を省略する
- * （`available_encoded_assets` を射影しない一覧の規律と揃える。
- * プレイヤーを出さないので揃える必要が無い）。
+ * （一覧・単体とも常に射影し、Go 側で落とす。プレイヤーを出さないので
+ * 揃える必要が無い）。
  * @summary Get a single recording by id
  */
 export const getRecording = async (id: number, options?: RequestInit): Promise<getRecordingResponse> => {
