@@ -805,64 +805,29 @@ func TestPhysicalQueueName(t *testing.T) {
 	}
 }
 
-// ValidateSiteForQueueNames は、site 修飾後のキュー名が River の 64 文字上限
-// （riverQueueNameMaxLen）を超えると起動時エラーにする。config.MirakcSiteNameMaxLen
-// はこの上限を見込んで既に 53 に締められている（TestSiteBoundQueueNames_
-// FitWithinMirakcSiteNameMaxLen 参照）が、ValidateSiteForQueueNames は site 名が
-// config 以外の経路から来る場合の最後の砦として独立に検査する。
-func TestValidateSiteForQueueNames(t *testing.T) {
-	t.Run("short site name is fine", func(t *testing.T) {
-		if err := ValidateSiteForQueueNames("tokyo"); err != nil {
-			t.Errorf("unexpected error: %v", err)
-		}
-	})
-
-	t.Run("53-char site name (the boundary for the longest prefix, reconciler_) is fine", func(t *testing.T) {
-		// River の上限は 64 文字（issue #185 が固定する値そのもの。riverQueueNameMaxLen
-		// を参照するとこの値自体の変化を検出できなくなるため、ここは意図的にリテラルで
-		// 書く）。"reconciler_" は 11 文字なので、64 - 11 = 53 文字まではちょうど収まる。
-		site := strings.Repeat("a", 53)
-		if err := ValidateSiteForQueueNames(site); err != nil {
-			t.Errorf("unexpected error for %d-char site name: %v", len(site), err)
-		}
-	})
-
-	t.Run("54-char site name (one over the boundary) is an error", func(t *testing.T) {
-		site := strings.Repeat("a", 54)
-		err := ValidateSiteForQueueNames(site)
-		if err == nil {
-			t.Fatal("expected error, got nil")
-		}
-		if !strings.Contains(err.Error(), "reconciler_") {
-			t.Errorf("error = %v, want mention of the offending queue name", err)
-		}
-	})
-
-	t.Run("a 64-char site name is rejected once qualified (config no longer permits it; this is the non-config last line of defence)", func(t *testing.T) {
-		site := strings.Repeat("a", 64)
-		if err := ValidateSiteForQueueNames(site); err == nil {
-			t.Fatal("expected error for a 64-char site name once queue-qualified, got nil")
-		}
-	})
-}
-
 // TestSiteBoundQueueNames_FitWithinMirakcSiteNameMaxLen は、
-// config.MirakcSiteNameMaxLen が ValidateSiteForQueueNames の上位集合であることを
-// 機械的に固定する。config は worker を import できない（逆方向のみ許される）ので、
-// 両方が見える worker 側にこの関係のテストを置く。
+// config.MirakcSiteNameMaxLen まで許した site 名を qualifyQueueName で修飾しても
+// riverQueueNameMaxLen を超えないことを機械的に固定する。config は worker を
+// import できない（逆方向のみ許される）ので、両方が見える worker 側にこの関係の
+// テストを置く。site 名の長さ検査は config.validateSiteName の 1 本だけなので
+// （worker 側の重複検査は無くした）、この関係が壊れると config のロード時検査を
+// 通った site 名が qualifyQueueName で 64 文字を超える。それを渡した先は
+// worker ロールを持つプロセスなら起動時（river.NewClient → Config.validate →
+// QueueConfig.validate、river@v0.40.0/client.go:577-578,664 が
+// validateQueueName を呼ぶ）に落ち、insert-only クライアント（`rokuban
+// enqueue` 等）では Insert 時（client.go:1729）に初めて落ちる。
 //
 // siteBoundQueueNames のどの論理名についても、site 名を
 // config.MirakcSiteNameMaxLen まで許してキュー修飾しても riverQueueNameMaxLen を
-// 超えないことを検査する。破ると（siteBoundQueueNames に `reconciler` より
-// 長い論理名を足す、または config.MirakcSiteNameMaxLen を大きくする）、config の
-// ロード時検査を通った site 名が ValidateSiteForQueueNames で落ちる、つまり
-// 「起動できるはずの設定が、束縛した瞬間に初めて起動エラーになる」状態に戻る。
+// 超えないことを検査する。破る典型は siteBoundQueueNames に `reconciler` より
+// 長い論理名を足す、または config.MirakcSiteNameMaxLen を大きくすること。
 func TestSiteBoundQueueNames_FitWithinMirakcSiteNameMaxLen(t *testing.T) {
+	maxLenSite := strings.Repeat("a", config.MirakcSiteNameMaxLen)
 	for _, base := range siteBoundQueueNames {
-		qualifiedLen := len(base) + 1 + config.MirakcSiteNameMaxLen
-		if qualifiedLen > riverQueueNameMaxLen {
-			t.Errorf("queue %q: len(%q)=%d + 1(separator) + config.MirakcSiteNameMaxLen(%d) = %d exceeds riverQueueNameMaxLen(%d)",
-				base, base, len(base), config.MirakcSiteNameMaxLen, qualifiedLen, riverQueueNameMaxLen)
+		name := qualifyQueueName(base, maxLenSite)
+		if len(name) > riverQueueNameMaxLen {
+			t.Errorf("qualifyQueueName(%q, <%d-char site>) = %q (%d chars) exceeds riverQueueNameMaxLen(%d)",
+				base, len(maxLenSite), name, len(name), riverQueueNameMaxLen)
 		}
 	}
 }

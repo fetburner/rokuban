@@ -125,14 +125,6 @@ scheduled）の場合は新規に投入されず合流する。その場合も�
 			if err != nil {
 				return err
 			}
-			// site 束縛ジョブだけ、修飾後キュー名が River 上限を超えないか検証する
-			// （site 非依存はキューを修飾しないので検査対象外。issue #185 の「罠」）。
-			if site != "" {
-				if err := worker.ValidateSiteForQueueNames(site); err != nil {
-					return err
-				}
-			}
-
 			ctx := cmd.Context()
 			// 単発 CLI コマンドは特定のロールを担わないので roles は渡さない
 			// （pgxpool の既定の MaxConns がそのまま使われる。issue #90）。

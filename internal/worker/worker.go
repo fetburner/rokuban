@@ -416,31 +416,6 @@ func physicalQueueName(logical, boundSite string) string {
 	return qualifyQueueName(logical, boundSite)
 }
 
-// ValidateSiteForQueueNames は、site を site 単位のキューに修飾したときに
-// River のキュー名の上限（riverQueueNameMaxLen、64 文字）を超えないことを検査する。
-//
-// internal/config はレジストリに書かれた site 名をロード時にこの上限の範囲で
-// 検査している（config.MirakcSiteNameMaxLen。TestSiteBoundQueueNames_
-// FitWithinMirakcSiteNameMaxLen が、config 側の上限が ValidateSiteForQueueNames の
-// 上位集合であることを固定している）。ValidateSiteForQueueNames はそれとは独立に、
-// site 名が config 以外の経路（コマンドライン引数・環境変数等）から来る場合に
-// 備えた最後の砦として残す。
-//
-// cmd/rokuban が --sites で束縛した各サイト、および `rokuban enqueue --site` で
-// 指定されたサイトについて、起動時 / 投入前に呼ぶ。
-func ValidateSiteForQueueNames(site string) error {
-	for _, base := range siteBoundQueueNames {
-		name := qualifyQueueName(base, site)
-		if len(name) > riverQueueNameMaxLen {
-			return fmt.Errorf(
-				"site %q: queue name %q (%d chars) would exceed River's %d character limit "+
-					"once site-qualified; shorten the site name",
-				site, name, len(name), riverQueueNameMaxLen)
-		}
-	}
-	return nil
-}
-
 // allQueues はこのプロセスが知っている全キューの**論理**（unqualified）名とその
 // 設定。worker.queues（ClientConfig.Queues）で絞り込む際の許可リストになり、
 // AllQueueNames / RequiresEncodeTools / RequiresSiteBinding もこの論理名の
