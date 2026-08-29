@@ -43,7 +43,7 @@ function overage(
  * `pages/reservations.test.tsx` が担当するので、ここでは重複させない。
  */
 describe('CapacityShortfallBadge', () => {
-  it('交差する区間があれば、番組表ルートへ不足区間の開始時刻を at に積んだリンクになる', async () => {
+  it('交差する区間があれば、番組表ルートへ view=grid と不足区間の開始時刻（at）を積んだリンクになる', async () => {
     renderInRouter(
       <CapacityShortfallBadge
         overages={[overage(19 * 60, 20 * 60)]}
@@ -54,7 +54,9 @@ describe('CapacityShortfallBadge', () => {
     )
 
     const link = await screen.findByRole('link')
-    expect(link).toHaveAttribute('href', `/programs?at=${atMs(19 * 60)}`)
+    // `view=grid` を明示することで、`lg` 以上では推論を挟まず初回レンダーから
+    // グリッドで開く（issue #437。`pages/programs.tsx` の `showGrid` 参照）
+    expect(link).toHaveAttribute('href', `/programs?view=grid&at=${atMs(19 * 60)}`)
   })
 
   it('交差する区間が無ければ何も描画しない（リンクも作らない）', async () => {

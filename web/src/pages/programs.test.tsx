@@ -1123,15 +1123,19 @@ describe('ProgramsPage の日付ジャンプ（先頭の窓に重なる前日の
 
 /**
  * 容量不足バッジ（`components/capacity-shortfall-badge.tsx`）からの導線
- * （issue #233 M6-5）。バッジは番組表ルート（`/`）に `?at=<epoch ms>` を積んで
- * リンクする。
+ * （issue #233 M6-5）。バッジは番組表ルートに `?view=grid&at=<epoch ms>` を
+ * 積んでリンクする（`view` の URL 化は issue #437。以前は `at` だけを積み、
+ * `lg` 以上かどうかを `useMediaQuery` から推論してグリッドへ自動切替していたが、
+ * `view` を URL に持つようになったのでバッジ自身が明示する）。
  *
  * グリッドの実際のスクロール位置（px）は jsdom で測れないので e2e の担当
  * （`web/e2e/`）。ここで見るのは jsdom でも判定できる部分だけ ---
- * (1) `lg` 未満・リスト表示中は「その時刻が属する日」への日付ジャンプに
- * フォールバックすること、(2) `lg` 以上では自動でグリッド表示に切り替わること、
- * (3) 切替後にユーザーが手動でリストへ戻した選択を、画面幅の再評価で上書きしない
- * こと。
+ * (1) `lg` 未満では `view=grid` があってもグリッドを出さず、「その時刻が属する
+ * 日」への日付ジャンプにフォールバックすること、(2) `lg` 以上では `view=grid`
+ * どおり初回レンダーからグリッド表示になること、(3) `at` だけで `view=grid` が
+ * 無ければ `lg` 以上でもグリッドにならないこと（推論をやめたことの回帰確認）、
+ * (4) グリッドからユーザーが手動でリストへ戻すと URL の `view` も `list` に
+ * 更新され、画面幅の再評価（resize）だけでは戻らないこと。
  */
 describe('ProgramsPage の at パラメータ（容量バッジからの導線。issue #233 M6-5）', () => {
   // dayOffset 2（明後日）に属する時刻。他の日付ジャンプテストと同じ理由で
@@ -1160,13 +1164,13 @@ describe('ProgramsPage の at パラメータ（容量バッジからの導線�
     expect(within(dayGroup).getAllByRole('button')[2]).toHaveAttribute('aria-current', 'date')
   })
 
-  it('lg 以上では、リストのままにせず自動でグリッド表示に切り替わる', async () => {
+  it('view=grid が URL にあれば、lg 以上では初回レンダーからグリッド表示になる', async () => {
     stubApi([], [], [...allPrograms, dayTwoProgram])
     stubMatchMedia(true)
-    renderPage(`/programs?at=${targetMs}`)
+    renderPage(`/programs?view=grid&at=${targetMs}`)
 
-    // クリックせずにグリッドが出る（`表示形式` チップを押す通常の経路と違う）。
-    // グリッドの中に day 2 の番組が実際に見えることまで確認する ---
+    // 推論（旧 `forcedGridForAtRef`）を経由せず `view=grid` がそのままグリッドに
+    // なる。グリッドの中に day 2 の番組が実際に見えることまで確認する ---
     // 単に testid が存在するだけでは「軸が day 2 に合っている」保証にならない
     // （軸がずれていても `programs.length` が非 0 なら testid 自体は出る）。
     await screen.findByTestId('program-grid')
@@ -1176,21 +1180,32 @@ describe('ProgramsPage の at パラメータ（容量バッジからの導線�
     expect(within(dayGroup).getAllByRole('button')[2]).toHaveAttribute('aria-current', 'date')
   })
 
-  it('自動切替後にユーザーがリストへ戻すと、画面幅の再評価だけではグリッドに戻さない', async () => {
+  it('at だけでは（view=grid が無ければ）lg 以上でもグリッドにならない', async () => {
+    // 以前は `at` の存在と `useMediaQuery` から「グリッドで見せたい」を推論
+    // していたが、`view` を URL に持つようになったので推論はしない
+    // （issue #437）。`at` 単独ではリストのまま。
+    stubApi([], [], [...allPrograms, dayTwoProgram])
+    stubMatchMedia(true)
+    renderPage(`/programs?at=${targetMs}`)
+
+    expect(await screen.findByText('容量バッジ導線の番組')).toBeInTheDocument()
+    expect(screen.queryByTestId('program-grid')).not.toBeInTheDocument()
+  })
+
+  it('グリッドからユーザーがリストへ戻すと URL の view も更新され、画面幅の再評価だけではグリッドに戻らない', async () => {
     stubApi([], [], [...allPrograms, dayTwoProgram])
     const media = stubMatchMedia(true)
-    renderPage(`/programs?at=${targetMs}`)
+    renderPage(`/programs?view=grid&at=${targetMs}`)
 
     await screen.findByTestId('program-grid')
 
-    // ユーザーが手動でリストへ戻す
+    // ユーザーが手動でリストへ戻す（URL の `view` が `list` に replace される）
     await userEvent.click(screen.getByRole('button', { name: 'リスト' }))
     expect(screen.queryByTestId('program-grid')).not.toBeInTheDocument()
 
     // 画面幅が狭くなって（他の画面遷移や resize で）また広くなっても、
-    // 同じ at のままではグリッドへ戻されない（`forcedGridForAtRef` の役目。
-    // at 自体は URL に残ったままだが、「1 回切り替えたら終わり」を覚えるのは
-    // この ref であって at の有無ではない）
+    // URL の `view` は `list` のままなのでグリッドへ戻されない --- 推論を挟まず
+    // URL だけで表示形式が決まるようになったので、専用の ref はもう要らない
     media.set(false)
     media.set(true)
     expect(screen.queryByTestId('program-grid')).not.toBeInTheDocument()
@@ -1208,7 +1223,7 @@ describe('ProgramsPage の at パラメータ（容量バッジからの導線�
   it('at がある状態でも別の日を選べば、その日の内容に切り替わる（at が現在地を固定しない）', async () => {
     stubApi([], [], [...allPrograms, dayTwoProgram])
     stubMatchMedia(true)
-    renderPage(`/programs?at=${targetMs}`)
+    renderPage(`/programs?view=grid&at=${targetMs}`)
 
     await screen.findByTestId('program-grid')
     expect(screen.getByText('容量バッジ導線の番組')).toBeInTheDocument()

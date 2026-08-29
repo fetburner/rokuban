@@ -31,6 +31,20 @@ export type ProgramsPageSearch = {
    * 経由せず時刻を直接運ぶ。
    */
   at?: number
+  /**
+   * 表示形式（グリッド / リスト）。画面ローカルの状態だが、容量不足バッジが
+   * 「グリッドで見せたい」を明示するために URL へ載せる（issue #437）。
+   * openapi.yaml 由来の zod スキーマには無い画面ローカルの列挙なので、
+   * `recording-search.ts` の `order` と同じく手書き `parseEnum` で検証する。
+   */
+  view?: 'grid' | 'list'
+}
+
+/** programsViewValues は `view` の取りうる値。 */
+const programsViewValues = ['grid', 'list'] as const
+
+function parseEnum<T extends string>(raw: unknown, allowed: readonly T[]): T | undefined {
+  return typeof raw === 'string' && (allowed as readonly string[]).includes(raw) ? (raw as T) : undefined
 }
 
 /**
@@ -100,6 +114,7 @@ export function parseProgramsSearch(search: Record<string, unknown>): ProgramsPa
       sort: ascending,
     }),
     at: parseAt(search.at),
+    view: parseEnum(search.view, programsViewValues),
   }
 }
 

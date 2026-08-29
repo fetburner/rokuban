@@ -280,14 +280,16 @@ describe('予約一覧の容量バッジのリンク化（issue #233 M6-5）', (
     expect(links).toHaveLength(2)
   })
 
-  it('番組表ルートへ、不足区間の開始時刻を at として積んだリンクになる', async () => {
+  it('番組表ルートへ、view=grid と不足区間の開始時刻（at）を積んだリンクになる', async () => {
     renderWith([reservation(1, '交差する番組', 19 * 60, 60)], [overage(19 * 60, 20 * 60)])
 
     const badge = await screen.findByText('チューナー不足（BS が 1 本）')
     const badgeLink = badge.closest('a')
     expect(badgeLink).not.toBeNull()
     const expectedAtMs = new Date(at(19 * 60)).getTime()
-    expect(badgeLink).toHaveAttribute('href', `/programs?at=${expectedAtMs}`)
+    // `view=grid` を明示することで `lg` 以上では初回レンダーからグリッドで
+    // 開く（issue #437）
+    expect(badgeLink).toHaveAttribute('href', `/programs?view=grid&at=${expectedAtMs}`)
   })
 
   it('容量バッジが無い行では追加のリンクは増えない', async () => {

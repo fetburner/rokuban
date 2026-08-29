@@ -134,7 +134,9 @@ Android のジェスチャーナビは左右端からの横スワイプが「戻
   （`src/api/zod.ts`）に委ね、値域や正規表現を手で書き写さない**
   （`lib/url-search.ts` が URL 固有の都合 --- 文字列で届く / 単一値と配列が
   混ざる / 不正な要素だけ落とす --- だけを繋ぐ）。id 配列は昇順に正準化し、
-  選択履歴で URL / queryKey を揺らさない。`dayOffset`（ジャンプ先の日）・`view`（表示形式）は URL 化しない。
+  選択履歴で URL / queryKey を揺らさない。`dayOffset`（ジャンプ先の日）は URL 化しない。
+  `view`（表示形式）は URL 状態にしてある --- 容量不足バッジが `search={{ view: 'grid', at }}`
+  でグリッドを明示するため（issue #437）。
   ピッカー操作は `replace` で navigate し、1 局ずつ選ぶたびに history を汚さない
 - **絞り込みはサーバー側でかける。** 選択した `Service.id` の配列を
   `programs.tsx` から渡し、返るのは選択したサービスの番組だけになる。
@@ -256,15 +258,19 @@ tick タイマーは持たない。このリンクは番組 ID を運ばず `net
 容量不足バッジ（予約一覧。[reservations.md](reservations.md) §容量不足バッジから
 番組表へ）は番組表ルート（`/programs`。ホーム新設（[home.md](home.md)。M8-3）前は
 `/` だった）へ、不足区間の開始時刻を `at`（epoch ms。
-`lib/programs-search.ts` の `ProgramsPageSearch.at`）に積んだ `Link` で飛ぶ。
+`lib/programs-search.ts` の `ProgramsPageSearch.at`）と `view: 'grid'`
+（同 `ProgramsPageSearch.view`。issue #437）を積んだ `Link` で飛ぶ。
 
 着地後の反映先は画面幅・表示形式で 3 つに分かれる。**グリッドが唯一「その時間帯」を
-帯で直接見せられる形なので、それが選べる画面幅では自動で選ぶ**。
+帯で直接見せられる形なので、それが選べる画面幅ではバッジが `view: 'grid'` を明示する**。
 
-- **`lg` 以上**: リスト表示中でも自動でグリッド表示に切り替え、`at` をグリッドの初期
-  スクロール位置に使う（`ProgramGrid` の `scrollToMs`）。**自動切替は `at` ごとに 1 回
-  だけ**（`pages/programs.tsx` の `forcedGridForAtRef`）--- 切替後にユーザーが手動で
-  リストへ戻した選択を、画面幅の再評価（resize）だけで戻さない
+- **`lg` 以上**: URL の `view=grid` がそのままグリッド表示になり、`at` をグリッドの
+  初期スクロール位置に使う（`ProgramGrid` の `scrollToMs`）。表示形式が URL 状態なので
+  推論は要らない --- 初回レンダーから確定する。ユーザーが手動でリストへ戻すと URL の
+  `view` も `list` に replace されるので、画面幅の再評価（resize）だけではグリッドに
+  戻らない（以前は `at` ごとに 1 回だけ自動切替する `forcedGridForAtRef` という ref で
+  同じ保証を作っていたが、`view` を URL に持たせたことで resize での再強制という概念
+  自体が無くなった。代わりにリンクを踏むたびグリッドが永続する）
 - **`lg` 未満・リスト表示中**: グリッドが無い/選ばれていないので帯を出す手段が無い。
   次善として「`at` が属する日」への日付ジャンプ（`DayStrip` のジャンプ先）に留める
   （`lib/day-offset.ts` の `dayOffsetForMs`）。一覧の該当行自体には容量不足バッジ
@@ -273,9 +279,10 @@ tick タイマーは持たない。このリンクは番組 ID を運ばず `net
 
 **`at` は URL から消費・削除しない。** 「1 回使ったら `navigate` で消す」実装を試したが、
 `navigate` の非同期解決がグリッドの初回スクロール確定より先に終わってしまい、肝心の
-初回スクロールが「今」にしか効かなくなる退行を e2e で検出した（`useMediaQuery` が
-`false → true` になり `view` が `'grid'` になるまで最低 2 レンダーかかる一方、`navigate`
-はそれより早く解決しうる）。代わりに **`scrollToMs`（グリッドへ渡す実際の値）を
+初回スクロールが「今」にしか効かなくなる退行を e2e で検出した。`view` を URL へ**載せる**
+方向はこの競合を作らない --- 初回レンダーから `'grid'` が確定するので、表示形式の切替を
+待つ間に `navigate` が先に解決してしまう余地が無い。だが `at` を消す方向にはこの経緯が
+あるため戻していない。代わりに **`scrollToMs`（グリッドへ渡す実際の値）を
 「いま見ている日が `at` の指す日と一致している間だけ」に条件付ける**
 （`pages/programs.tsx` の `scrollToMs`）。`at` 自体は URL に残ったままだが、「今日」
 ボタンや日付ストリップで別の日へ移った瞬間に `scrollToMs` は自動的に `undefined` へ戻り、

@@ -29,14 +29,15 @@ import { cn } from '@/lib/utils'
  * 判定の盲点はすべて「警告を見逃す」方向に偏っているので、沈黙を保証として
  * 読ませてはならない（docs/data.md §6.5）。
  *
- * ## 番組表への導線（issue #233 M6-5）
+ * ## 番組表への導線（issue #233 M6-5、`view` の URL 化は issue #437）
  *
  * バッジは「この時間帯」と言うだけで、その時間帯を見る手段が無かった。番組表
  * ルート（`/programs`。ホーム新設（M8-3）前は `/` だった）の `at`（epoch ms。
- * `lib/programs-search.ts`）に不足区間の開始時刻を
- * 積んで `Link` にする --- グリッド（`lg` 以上）ではこれを初期スクロール位置に、
- * それ以外（リスト・`lg` 未満）では日付ジャンプのフォールバックに使う
- * （`pages/programs.tsx` 参照）。
+ * `lib/programs-search.ts`）に不足区間の開始時刻を積み、`view: 'grid'` も
+ * 明示して `Link` にする --- `lg` 以上ではこの `view` がそのままグリッド表示に
+ * なり `at` を初期スクロール位置に使う。それ以外（`lg` 未満）ではグリッドが
+ * 出ないので `at` は日付ジャンプのフォールバックに使う（`pages/programs.tsx`
+ * 参照）。
  *
  * **読み上げの規律（見える側 `aria-hidden`・読み上げ文は `sr-only`）は変えていない。**
  * `<a>` の accessible name はアクセシビリティツリーから除外された記述子
@@ -78,7 +79,10 @@ export function CapacityShortfallBadge({
       // 絞り込み中のチャンネル（serviceId）はこの導線の文脈に無いので指定しない
       // （「すべて」のまま開く。呼び出し元は予約一覧で、予約ごとにチャンネルが
       // 違うため、単一の serviceId に絞ると他の予約の不足が見えなくなる）。
-      search={{ at: overageWindow(worst).startMs }}
+      // `view: 'grid'` を明示することで、`lg` 以上では推論を挟まず初回
+      // レンダーからグリッドで開く（issue #437）。`lg` 未満では
+      // `pages/programs.tsx` の `showGrid` が `wideScreen` で落とすので無害。
+      search={{ view: 'grid', at: overageWindow(worst).startMs }}
       className={cn(
         'flex shrink-0 items-center gap-1 rounded bg-warning/10 px-1.5 py-0.5 text-[0.65rem] text-warning hover:bg-warning/20 focus-visible:outline-2 focus-visible:outline-warning',
         className,
