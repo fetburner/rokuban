@@ -20,7 +20,7 @@ golangci-lint run
 cd web
 pnpm install
 pnpm test      # Vitest
-pnpm lint      # oxlint。既存の warning が 3 件あるので増えていないかで見る
+pnpm lint      # oxlint。既存の warning が 2 件あるので増えていないかで見る
 pnpm build     # tsc -b && vite build。型エラーはここで出る
 pnpm exec orval  # openapi.yaml → web/src/api/generated.ts
 ```
