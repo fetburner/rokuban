@@ -74,10 +74,9 @@ func SanitizeContentPath(p string) string {
 // （YYYYMMDD/HHMMSS_タイトル_サービスID.m2ts）と同じだが、他の template と
 // 同じ経路（NewData 経由）で展開されるため、時刻は必ず JST で解決される。
 //
-// かつては専用の関数（GenerateContentPath）が startAt を変換せずそのまま
-// Format していたため、既定パスだけサーバーのタイムゾーンに依存していた。
-// 等価な template 文字列にすることで、この関数・分岐・TZ 非対称がまとめて
-// 消える。
+// 既定を専用関数ではなく template 文字列にするのは、専用関数だと
+// `.In(jst)` を通さずサーバーのタイムゾーンに依存する書き方に戻る誘惑が
+// 常にあるため。
 const DefaultTemplate = "{{.Year}}{{.Month}}{{.Day}}/{{.Hour}}{{.Min}}{{.Sec}}_{{.Title}}_{{.ServiceID}}"
 
 // Data はファイル名テンプレートに渡す値。

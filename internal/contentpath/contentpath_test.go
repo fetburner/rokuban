@@ -103,22 +103,19 @@ func TestDefaultTemplate_NoTraversal(t *testing.T) {
 }
 
 // TestDefaultTemplate_ResolvesJSTRegardlessOfServerTZ は DefaultTemplate が
-// startAt を必ず JST に変換して展開することを確認する。startAt の Location
-// に time.Local を使う（pgx が timestamptz を decode するときと同様、
-// プロセスの TZ 環境変数に左右される）。20:00 は UTC/JST の日付境界を
-// またぐよう選んである。
-//
-// want は startAt.In(jst) を直接計算した値（NewData を経由しない）なので、
-// NewData の `.In(jst)` を外すと TZ=UTC で実行したときにだけこのテストが
-// 落ちる（TZ=Asia/Tokyo では time.Local 自体が JST と一致するため
-// ずれない。旧関数と一致するのが JST 環境だけだったのと同じ非対称性）。
+// startAt を必ず JST に変換して展開することを確認する。startAt は明示的に
+// time.UTC（プロセスの TZ 環境変数に左右されない固定 Location）。20:00 UTC
+// は JST（+9h）で日付が変わるので、変換を通さない実装ならここでずれる。
+// want はリテラルであり、jst 変数から計算しない —— jst 自体の値が
+// （例えば 9h → 8h に）間違っても、want 側が一緒に動いて見逃すことがない
+// ようにするため。
 func TestDefaultTemplate_ResolvesJSTRegardlessOfServerTZ(t *testing.T) {
-	startAt := time.Date(2026, 7, 24, 20, 0, 0, 0, time.Local)
+	startAt := time.Date(2026, 7, 24, 20, 0, 0, 0, time.UTC)
 	d := NewData("t", startAt, "27", 1024, "GR")
 
 	got := mustBuild(t, DefaultTemplate, d)
 
-	want := startAt.In(jst).Format("20060102/150405") + "_t_1024.m2ts"
+	want := "20260725/050000_t_1024.m2ts"
 	if got != want {
 		t.Errorf("Build(DefaultTemplate) = %q, want %q (JST date/time)", got, want)
 	}

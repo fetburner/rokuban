@@ -509,7 +509,9 @@ func explicitContentPath(opts db.ReservationOptions) (string, bool) {
 //
 // template が空文字なら contentpath.DefaultTemplate（テンプレート未指定時の
 // 従来の見た目 YYYYMMDD/HHMMSS_タイトル_サービスID.m2ts と同じ結果になる
-// template 文字列）を使う。いずれも text/template として contentpath.Build
+// template 文字列。番組名が空文字の場合だけ "_" 昇格の有無で 1 文字ずれるが、
+// EPG 射影が空名の番組を落とすため到達しない —— internal/worker/epg.go の
+// projectable）を使う。いずれも text/template として contentpath.Build
 // で展開する。渡す contentpath.Data は program_snapshots の
 // title/channel/channelType から contentpath.NewData で組む — この時点で各
 // フィールドがパス成分としてサニタイズされるため、EPG データ（番組名等）に
