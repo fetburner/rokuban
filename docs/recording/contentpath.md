@@ -2,7 +2,7 @@
 
 #### ファイル名テンプレート
 
-`filenameTemplate`（予約オプション。[reservation-model.md](reservation-model.md) §4.2 の一覧表参照）は Go の [`text/template`](https://pkg.go.dev/text/template) 記法。reconciler が予約行のスナップショットだけを使って展開し（`internal/contentpath` パッケージ。`internal/reconciler` の `buildContentPath` から呼ばれる）、拡張子は含まない前提で常に `.m2ts` を付す。未指定・空文字なら従来どおりの固定形式（`YYYYMMDD/HHMMSS_タイトル_サービスID.m2ts`）のまま（後方互換）。
+`filenameTemplate`（予約オプション。[reservation-model.md](reservation-model.md) §4.2 の一覧表参照）は Go の [`text/template`](https://pkg.go.dev/text/template) 記法。reconciler が予約行のスナップショットだけを使って展開し（`internal/contentpath` パッケージ。`internal/reconciler` の `buildContentPath` から呼ばれる）、拡張子は含まない前提で常に `.m2ts` を付す。未指定・空文字なら既定の `DefaultTemplate`（見た目は `YYYYMMDD/HHMMSS_タイトル_サービスID.m2ts` と同じ）を使う。既定も他の template と同じく JST で解決するため、サーバー TZ が JST 以外の環境では既定パスが変わる。
 
 `text/template` を採る理由は、**ルール作成/更新時にテンプレートを検証して 400 で弾ける**こと（`internal/api/rules.go` の `validateRuleInput` が `internal/contentpath.Validate` を呼ぶ。既存の正規表現検証と同じ場所・同じ形）。変数名の誤りが黙って空文字になる記法だと、ユーザーは数週間後にファイル名が崩れて初めて気づく（末尾「経緯と失敗事例」参照）。
 

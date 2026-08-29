@@ -28,9 +28,10 @@ func TestServiceIDExtraction(t *testing.T) {
 	}
 }
 
-// TestBuildContentPath_EmptyTemplateUsesFixedFormat は filenameTemplate が
-// 未指定のとき従来の固定形式のままであること（後方互換）を確認する。
-func TestBuildContentPath_EmptyTemplateUsesFixedFormat(t *testing.T) {
+// TestBuildContentPath_EmptyTemplateUsesDefaultTemplate は filenameTemplate
+// が未指定のとき contentpath.DefaultTemplate を使うこと（見た目は
+// 従来の固定形式のまま）を確認する。
+func TestBuildContentPath_EmptyTemplateUsesDefaultTemplate(t *testing.T) {
 	startAt := time.Date(2026, 7, 24, 21, 0, 0, 0, time.FixedZone("JST", 9*3600))
 	serviceID := int32(5136)
 	snap := sqlcgen.ProgramSnapshot{Title: "NHKニュース7", StartAt: startAt, ServiceID: serviceID}
@@ -39,9 +40,16 @@ func TestBuildContentPath_EmptyTemplateUsesFixedFormat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildContentPath: %v", err)
 	}
-	want := contentpath.GenerateContentPath(snap.Title, snap.StartAt, int(serviceID))
+	data := contentpath.NewData(snap.Title, snap.StartAt, snap.Channel, int(serviceID), snap.ChannelType)
+	want, err := contentpath.Build(contentpath.DefaultTemplate, data)
+	if err != nil {
+		t.Fatalf("contentpath.Build: %v", err)
+	}
 	if got != want {
-		t.Errorf("buildContentPath with empty template = %q, want %q (fixed format)", got, want)
+		t.Errorf("buildContentPath with empty template = %q, want %q (DefaultTemplate)", got, want)
+	}
+	if got != "20260724/210000_NHKニュース7_5136.m2ts" {
+		t.Errorf("buildContentPath with empty template = %q, want fixed-format literal", got)
 	}
 	if !strings.HasSuffix(got, ".m2ts") {
 		t.Errorf("expected .m2ts suffix, got %q", got)
