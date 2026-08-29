@@ -21,7 +21,7 @@ db:
 # **2 サイト。** 判定 5（サイト B の滞留でサイト A の Job が起きない）は
 # 1 サイトでは測れない。site 名は短くしてある --- site 単位のキュー名は
 # `<base>_<site>` に展開され、River のキュー名上限 64 文字を共有するため
-# （internal/worker.ValidateSiteForQueueNames）。
+# （internal/config.MirakcSiteNameMaxLen = 53）。
 mirakcs:
   - site: sitea
     url: http://mirakc-sitea:40772
