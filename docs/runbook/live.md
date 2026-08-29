@@ -118,7 +118,7 @@ docker compose exec rokuban rokuban server --all --config /config.yml
 実際に選ばれた」という主張が抜け落ちる。
 
 **⓪ が直開きするのは B（`E2E_LIVE_SERVICE_B`）である。** 既定のフォールバック先
-（番組を持つ先頭。この投入例では A）と要求先が同じだと、この assert は
+（番組を持つ先頭）はこの投入例では A になる。要求先が既定と同じだと、この assert は
 「要求が効いた」と「一致に失敗して既定に落ちた」を区別できない。A で判定して
 いたときの実測では、`pickInitialService` を `serviceId` 一致に変異させても
 ⓪ が緑のまま通った。B に変えると同じ変異で落ちる（印が 2 件になり href も違う）。
