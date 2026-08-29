@@ -35,9 +35,11 @@ const (
 	// しない（PeriodicInterval.Next は単に `t.Add(0) = t` を返すだけ）が、
 	// 定期ジョブの nextRunAt が前に進まなくなるため、river 内部の
 	// PeriodicJobEnqueuer がタイマーを毎回ほぼ 0 でリセットするビジーループに
-	// 陥る（river@v0.40.0/internal/maintenance/periodic_job_enqueuer.go の
-	// timeUntilNextRun / timerUntilNextRun.Reset を読んで確認。実際に client を
-	// 起動してこのループを観測してはいない）。
+	// 陥り、ループ 1 周ごとに insertParamsFromConstructor + insertBatch で
+	// Postgres への insert を試み続ける（river@v0.40.0/internal/maintenance/
+	// periodic_job_enqueuer.go の timeUntilNextRun / timerUntilNextRun.Reset /
+	// 471,479,491 行目を読んで確認。実際に client を起動してこのループを
+	// 観測してはいない）。
 	//
 	// 責務を config に移すのは config.Config の話であって、config を経由しない
 	// 呼び出し元（このパッケージのテスト）まで持つ ClientConfig の 0-fallback を

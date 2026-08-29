@@ -316,7 +316,7 @@ type IngestConfig struct {
 	// 切断扱いにして Range 再開する（River の総時間タイムアウトは無効化している
 	// ため、これが ingest の唯一のタイムアウト）。既定値 30 秒は defaults() が
 	// 埋める（worker 側に二重の既定は無い。0 以下は validate が起動時に弾く ---
-	// 0 は StallReader を即発火させ、負値は AfterFunc に負の Duration を渡す）。
+	// 0 と負値のどちらも StallReader を即発火させる。validate のコメント参照）。
 	StallTimeout time.Duration `yaml:"stall_timeout"`
 }
 
