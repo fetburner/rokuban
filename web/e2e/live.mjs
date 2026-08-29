@@ -302,7 +302,9 @@ async function clickPlay(page) {
  * `web/e2e/README.md`「判定を足すときの規律」に沿って、要求件数の assert
  * （0 件であること）は、この判定を足す前の実装（チャンネルをタップした瞬間に
  * probe する版）で落ちることを確認済み。選択中の印の assert も issue #291 当時に
- * 同様に確認済み（`?service=` への統一後の再確認は未実施）。
+ * 同様に確認済み。`?service=` への統一後は実サーバー + 実 chromium / webkit で
+ * ⓪〜⑧ が緑になることまでを確認した（`href=/live?service=109001` が 1 件）が、
+ * この形での「壊すと落ちる」の再確認はしていない。
  */
 async function runConsentCheck() {
   const browser = await chromium.launch()
