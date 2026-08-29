@@ -83,11 +83,14 @@ type Manifest struct {
 //
 // 本体のパスはここでも SelectLatest（write.go）でも常に DocumentFilename
 // （定数）から組み立てる。manifest.Document フィールドの値を使ってパスを
-// 組み立てることはしない。この安全性は**型で強制されてはいない** ——
-// 上の等値検査（判定 5）が「document は DocumentFilename と一致しなければ
-// 不完全」を保証しているので、今の実装では両者は常に同じ値になるが、将来
-// どちらかの構築箇所が変わっても他方が manifest.Document を使わない限り
-// パス走査は起きない、という 2 か所独立の防御として書いている。
+// 組み立てることはしない。この安全性は**型で強制されてはいない**が、独立した
+// 2 層で守っている: (1) 上の等値検査（判定 5）が「document は
+// DocumentFilename と一致しなければ不完全」を保証する、(2) パスを組み立てる
+// 側が manifest.Document を一切参照せず常に定数から組み立てる。判定 5 を
+// 経由しない呼び出し（selectFromStatuses に直接 Manifest を渡す
+// TestSelectFromStatuses_DocumentPathIgnoresManifestDocument）でも (2) だけで
+// パス走査を防げること、逆に将来 (2) が崩れても正規の経路では (1) が
+// manifest.Document を定数に固定していること、の両方が効く。
 func VerifyGeneration(genDir string) (*Manifest, error) {
 	name := filepath.Base(filepath.Clean(genDir))
 
@@ -131,10 +134,16 @@ func VerifyGeneration(genDir string) (*Manifest, error) {
 	return &m, nil
 }
 
-// verifyFile は path の内容をサイズと sha256 で照合する。エラー文字列は
-// path の basename だけを出す —— path は media_dir 配下の絶対パスであり、
-// この文字列は SnapshotStatus.Reason 経由で `rokuban catalog verify` の
-// 出力にそのまま出るので、運用者の目に絶対パスを漏らさない。
+// verifyFile は path の内容をサイズと sha256 で照合する。この文字列は
+// SnapshotStatus.Reason 経由で `rokuban catalog verify` の出力にそのまま出る。
+//
+// missing / size mismatch / sha256 mismatch の 3 分岐は path の basename
+// だけを出す（path は media_dir 配下の絶対パスであり、運用者の目に漏らさない
+// ため）。**opening / hashing の 2 分岐はそうなっていない** —— `%w` で
+// *fs.PathError をそのまま wrap しており、その Error() が path を丸ごと含む
+// ので絶対パスが出る。os.Open や io.Copy の失敗は稀な I/O エラーで、
+// 診断のため元エラーの情報を落とさない方を優先している（%q で name を
+// 重ねて出すのは *fs.PathError と重複するだけなので、そちらは付けない）。
 func verifyFile(path string, wantSize int64, wantSHA256 string) error {
 	name := filepath.Base(path)
 	f, err := os.Open(path)
@@ -142,14 +151,14 @@ func verifyFile(path string, wantSize int64, wantSHA256 string) error {
 		if os.IsNotExist(err) {
 			return fmt.Errorf("missing document file %q", name)
 		}
-		return fmt.Errorf("opening %q: %w", name, err)
+		return fmt.Errorf("opening document: %w", err)
 	}
 	defer func() { _ = f.Close() }()
 
 	h := sha256.New()
 	n, err := io.Copy(h, f)
 	if err != nil {
-		return fmt.Errorf("hashing %q: %w", name, err)
+		return fmt.Errorf("hashing document: %w", err)
 	}
 	if n != wantSize {
 		return fmt.Errorf("size mismatch for %q: on disk %d, manifest %d", name, n, wantSize)
