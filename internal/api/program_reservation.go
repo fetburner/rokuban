@@ -12,13 +12,12 @@ import (
 // GetProgramReservation は指定番組の予約を (site, programId) を宛先に返す
 // (GET /api/sites/{site}/programs/{programId}/reservation、issue #99)。
 //
-// 旧 GET /api/reservations/{id}（廃止済み）は reservations.id という ruler の
-// 導出削除・再実体化で変わりうる不安定な値を宛先にしていた。書き込み側
-// （program_intents / program_overrides）は M3-1（issue #29）で既に
-// (site, programId) に寄せていたが、読み取りは #53 が mirakc の tag に適用した
-// のと同じ論法をまだ適用していなかった。このハンドラでその読み取り側を埋める:
-// UNIQUE (site, program_id) がキーとして成立するので、予約行が再実体化されて
-// id が変わってもこのエンドポイントの URL は変わらない
+// `reservations.id` は ruler の導出削除・再実体化で変わりうる不安定な値なので
+// 宛先にしない。書き込み側（program_intents / program_overrides）は M3-1
+// （issue #29）で既に (site, programId) に寄せていたが、読み取りは #53 が
+// mirakc の tag に適用したのと同じ論法をまだ適用していなかった。このハンドラで
+// その読み取り側を埋める: UNIQUE (site, program_id) がキーとして成立するので、
+// 予約行が再実体化されて id が変わってもこのエンドポイントの URL は変わらない
 // （CLAUDE.md 不変条件 9「導出器が作るキーを宛先にしない」）。
 func (h *Server) GetProgramReservation(ctx context.Context, req GetProgramReservationRequestObject) (GetProgramReservationResponseObject, error) {
 	if !h.knownSite(req.Site) {

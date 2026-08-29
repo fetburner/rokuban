@@ -215,7 +215,8 @@ docker compose exec postgres psql -U rokuban -d rokuban -c \
 ### 予約はあるのに mirakc に schedule が作られない
 
 ```sh
-curl -s http://localhost:40773/api/reservations/12 | jq '{state, skip, dedupMatchRecordingId}'
+curl -s http://localhost:40773/api/reservations | \
+  jq '.[] | select(.title == "<番組名>") | {state, skip, dedupMatchRecordingId}'
 ```
 
 - `skip: true` — 除外か重複排除。`dedupMatchRecordingId` / `dedupSimilarity` が

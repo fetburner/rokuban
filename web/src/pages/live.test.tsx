@@ -835,52 +835,40 @@ describe('LivePage / 録画予約による中断予測（issue #235 M7-2）', ()
    * サービス × 2 時間の EPG を別クエリで引いて programId 集合を作っており、
    * tick のたびにこのクエリのキーが割れて警告が一時的に消えていた（実測: jsdom
    * で 30038ms 後・実 Chromium で 28258ms 後に消失。10 分グリッド丸めで
-   * 抑えていた）。第 2 クエリ自体が無くなったので、tick を跨いでも警告の判定に
-   * 使う値（`reservations` / `selectedService.channelType`）は変わらない。
+   * 抑えていた）。第 2 クエリ自体が無くなったので、判定に使う値
+   * （`reservations` / `selectedService.channelType`）は tick で変わらない
+   * --- 実時間で 32 秒ポーリングし続けて確かめる必要はもう無い（レビューでの
+   * 指摘。消えた失敗モードのために時間を買わない）。
    *
-   * **実時間で待つ**（`setInterval` を fake timers 化すると react-query 内部の
-   * タイマーと絡んで不安定になったため）。100ms 間隔で 32 秒間ポーリングし
-   * 続け、一度も消えないことを見る --- 後から 1 回見るだけの assertion は
-   * 「たまたま復帰していた瞬間を見た」だけになりうる。この判定は
-   * `channelType` 比較を無効化する変異（例: `reservation.channelType !==
-   * channelType` に反転する）を当てると、初回の `findByText` の時点で既に
-   * 落ちることを確認済み。
+   * `channelType` 比較を無効化する変異（`reservation.channelType !==
+   * channelType` に反転する）を当てると `findByText` の時点で落ちることを
+   * 確認済み。
    */
-  it(
-    '30 秒の tick を跨いでも警告が消えない',
-    async () => {
-      const startAt = new Date(Date.now() + 30 * 60_000).toISOString()
-      stubFetch({
-        services: [service({ serviceId: 10, name: 'チャンネル A', channelType: 'GR' })],
-        programsByServiceId: {
-          10: [
-            program({
-              programId: 5,
-              serviceId: 10,
-              startAt,
-              endAt: new Date(Date.now() + 90 * 60_000).toISOString(),
-            }),
-          ],
-        },
-        reservations: [
-          reservation({ programId: 5, site: 'default', startAt, skip: false, channelType: 'GR' }),
+  it('30 秒の tick を跨いでも警告が消えない', async () => {
+    const startAt = new Date(Date.now() + 30 * 60_000).toISOString()
+    stubFetch({
+      services: [service({ serviceId: 10, name: 'チャンネル A', channelType: 'GR' })],
+      programsByServiceId: {
+        10: [
+          program({
+            programId: 5,
+            serviceId: 10,
+            startAt,
+            endAt: new Date(Date.now() + 90 * 60_000).toISOString(),
+          }),
         ],
-      })
+      },
+      reservations: [
+        reservation({ programId: 5, site: 'default', startAt, skip: false, channelType: 'GR' }),
+      ],
+    })
 
-      renderLive()
+    const { queryClient } = renderLive()
 
-      expect(await screen.findByText(/から録画予約があります/)).toBeInTheDocument()
-
-      // 30 秒の tick を跨いで、ずっと消えないことをポーリングで見る
-      // （後から 1 回見るだけでは、消えて戻った瞬間を見逃す）
-      const pollUntil = performance.now() + 32_000
-      while (performance.now() < pollUntil) {
-        expect(screen.queryByText(/から録画予約があります/)).toBeInTheDocument()
-        await new Promise((resolve) => setTimeout(resolve, 100))
-      }
-    },
-    45_000,
-  )
+    expect(await screen.findByText(/から録画予約があります/)).toBeInTheDocument()
+    await interruptionSettled(queryClient)
+    expect(screen.getByText(/から録画予約があります/)).toBeInTheDocument()
+  })
 
   it('近い録画予約が無いときは何も出さない（沈黙。「安全に見られます」等の肯定文言は無い）', async () => {
     stubFetch({ services: [service({ serviceId: 1, name: 'チャンネル A', channelType: 'GR' })] })

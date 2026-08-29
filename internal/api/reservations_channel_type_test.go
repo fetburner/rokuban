@@ -49,8 +49,10 @@ VALUES ('default', $1, '{}'::jsonb)`, programID); err != nil {
 // 単体（(site, programId) キー）・一覧の両経路を見る（reservationFromRow が
 // 1 箇所に集約されていることの確認。site / serviceName の既存テストと同じ
 // 流儀）。既定値として他所のフィクスチャで使われがちな 'GR' ではなく 'BS' を
-// 使う --- 'GR' だと reservationFromRow が ChannelType を落として空文字を
-// 返してもテストの期待値と一致しない保証がないため、ゼロ値と紛れない値を選ぶ。
+// 使う --- 'GR' だと、`ReservationChannelTypeGR` を決め打ちで返す変異や、
+// 同じテスト内の他のフィクスチャ（'GR' 固定）の値を取り違えて読む変異を
+// 見逃す。'BS' はこのテストでしか使わない値なので、そうした変異は確実に
+// 失敗する。
 func TestReservation_ChannelTypeExposed(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()

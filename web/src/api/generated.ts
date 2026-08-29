@@ -2609,11 +2609,9 @@ export const getGetProgramReservationUrl = (site: string,
 }
 
 /**
- * `(site, programId)` を宛先に予約を読む（issue #99）。書き込み側
- * （`PUT/DELETE .../intent`、`PATCH/DELETE .../overrides`）は M3-1（issue #29）で
- * 既にこのキーに寄っていたが、読み取り（旧 `GET /api/reservations/{id}`・UI の
- * ディープリンク・クエリキャッシュ）は `reservations.id` という ruler の
- * 導出削除・再実体化で変わりうる不安定な値のままだった。
+ * `(site, programId)` を宛先に予約を読む（issue #99）。`reservations.id` は
+ * ruler の導出削除・再実体化で変わりうる不安定な値なので、UI の
+ * ディープリンク・クエリキャッシュのような恒久的な資源同定には使わない。
  *
  * `UNIQUE (site, program_id)` が既に張られているため、このキーで一意に
  * 予約が定まる。予約行が再実体化されて `id` が変わっても、この URL・
