@@ -301,10 +301,10 @@ async function clickPlay(page) {
  *
  * `web/e2e/README.md`「判定を足すときの規律」に沿って、要求件数の assert
  * （0 件であること）は、この判定を足す前の実装（チャンネルをタップした瞬間に
- * probe する版）で落ちることを確認済み。選択中の印の assert も issue #291 当時に
- * 同様に確認済み。`?service=` への統一後は実サーバー + 実 chromium / webkit で
- * ⓪〜⑧ が緑になることまでを確認した（`href=/live?service=109001` が 1 件）が、
- * この形での「壊すと落ちる」の再確認はしていない。
+ * probe する版）で落ちることを確認済み。選択中の印の assert は、実サーバー +
+ * 実 chromium に対して `pickInitialService` を `s.serviceId === requestedId` に
+ * 変異させると落ちる（印が 2 件になり href も要求先と違う。exit 1）。変異を
+ * 戻すと ⓪〜⑧ すべて緑（exit 0）。
  */
 async function runConsentCheck() {
   const browser = await chromium.launch()
@@ -334,8 +334,15 @@ async function runConsentCheck() {
 
     // 同じ serviceId を持つ別 network が居る構成でも `Service.id`（合成 id）
     // なら正しい方が選ばれること（issue #291 の根。#438 で `?service=` に統一）を
-    // 実ブラウザで踏む
-    await page.goto(`${BASE_URL}/live?service=${SERVICE_ID_A}`, {
+    // 実ブラウザで踏む。
+    //
+    // **開くのは B。** 既定のフォールバック先（`pickInitialService` の「番組を
+    // 持つ先頭」）と要求先が同じチャンネルだと、下の「選択中の印」の assert は
+    // 「要求した id が効いた」と「一致に失敗して既定に落ちた」を区別できない ---
+    // runbook の投入例（A: remoteControlKeyId 1 / B: 2）では `orderServices` の
+    // 先頭が必ず A になるので、A で判定していたときは `pickInitialService` を
+    // `s.serviceId === requestedId` に変異させても ⓪ が緑のまま通った（実測）。
+    await page.goto(`${BASE_URL}/live?service=${SERVICE_ID_B}`, {
       waitUntil: 'networkidle',
     })
 
@@ -372,9 +379,9 @@ async function runConsentCheck() {
       // （同じ serviceId を持つ別 network の行にも印が付く。issue #291）
       ng.push(`⓪ 選択中の印が ${currentCount} 件ある（1 件でなければ複合キーでの同定が効いていない）`)
     }
-    if (!currentHref.includes(`service=${SERVICE_ID_A}`)) {
+    if (!currentHref.includes(`service=${SERVICE_ID_B}`)) {
       ng.push(
-        `⓪ 選択されたチャンネルが要求（service=${SERVICE_ID_A}）と違う` +
+        `⓪ 選択されたチャンネルが要求（service=${SERVICE_ID_B}）と違う` +
           `（選択中リンクの href: ${currentHref || '（無し）'}）。` +
           '`resolveServiceId` は id を引けているので、env とフィクスチャの' +
           '食い違いではなく `pickInitialService`（web/src/lib/live.ts）の一致条件を疑う',
@@ -420,24 +427,24 @@ async function runConsentCheck() {
     if (fired) {
       requestLog.length = 0
       await page
-        .locator(`nav[aria-label="チャンネル一覧"] a[href*="service=${SERVICE_ID_B}"]`)
+        .locator(`nav[aria-label="チャンネル一覧"] a[href*="service=${SERVICE_ID_A}"]`)
         .click()
-      // 「再生」ボタンが B 向けに再表示される（= 選択状態に戻った）のを待つことで、
+      // 「再生」ボタンが A 向けに再表示される（= 選択状態に戻った）のを待つことで、
       // 一連の再レンダー（切替の 1 回目のコミット・再生状態のリセット）が
       // 落ち着いたことを確認する。ここで待たずに数えると「まだ再レンダーが
       // 済んでいないだけ」を「透過マウントが起きなかった」と誤って合格にする
       await page.getByRole('button', { name: /再生/ }).waitFor({ timeout: 10000 })
-      const bRequestsWithoutPlay = requestLog.filter((u) =>
-        u.includes(`/services/${SERVICE_B}/live/`),
+      const switchedRequestsWithoutPlay = requestLog.filter((u) =>
+        u.includes(`/services/${SERVICE_A}/live/`),
       )
       log(
-        `  B のリンクを押しただけ（再生は押さない）での B 向け要求数: ` +
-          `${bRequestsWithoutPlay.length}`,
+        `  A のリンクを押しただけ（再生は押さない）での A 向け要求数: ` +
+          `${switchedRequestsWithoutPlay.length}`,
       )
-      if (bRequestsWithoutPlay.length > 0) {
+      if (switchedRequestsWithoutPlay.length > 0) {
         ng.push(
-          `⓪' 再生中に別チャンネルへ切り替えると、押していない B へ` +
-            `${bRequestsWithoutPlay.length} 件の要求が飛んだ（選択と視聴開始の分離が` +
+          `⓪' 再生中に別チャンネルへ切り替えると、押していない A へ` +
+            `${switchedRequestsWithoutPlay.length} 件の要求が飛んだ（選択と視聴開始の分離が` +
             '切替の瞬間には成立していない）',
         )
       }

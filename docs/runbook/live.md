@@ -108,14 +108,20 @@ docker compose exec rokuban rokuban server --all --config /config.yml
 `Service.id` を引く（`resolveServiceId`）。
 
 **`E2E_LIVE_NETWORK_ID`（既定 `1`）は投入した行の `network_id` と揃える**。
-ここが食い違うと `resolveServiceId` が一致するサービスをサービス一覧に
-見つけられず、`page.goto` の前に例外で落ちる想定である（実機での再現は未検証）。
-⓪ はさらに
+ここが食い違うと `resolveServiceId` が一致するサービスを見つけられず、
+`page.goto` の前に例外で落ちる（`E2E_LIVE_NETWORK_ID=2` で実測。exit 1）。
+`E2E_LIVE_SITE` を間違えた場合も同じ関数が 404 を名指しして落ちる。⓪ はさらに
 **選ばれたチャンネルそのものを assert する**。チャンネル一覧の
 `aria-current="page"` がちょうど 1 件で、その `href` に要求した `Service.id`
 が載っていることを見る。`resolveServiceId` は「投入した行が見つかるか」までしか
 見ない。この assert が無いと、要求件数の判定だけは通り続けて「要求した id が
 実際に選ばれた」という主張が抜け落ちる。
+
+**⓪ が直開きするのは B（`E2E_LIVE_SERVICE_B`）である。** 既定のフォールバック先
+（番組を持つ先頭。この投入例では A）と要求先が同じだと、この assert は
+「要求が効いた」と「一致に失敗して既定に落ちた」を区別できない。A で判定して
+いたときの実測では、`pickInitialService` を `serviceId` 一致に変異させても
+⓪ が緑のまま通った。B に変えると同じ変異で落ちる（印が 2 件になり href も違う）。
 
 準備（初回のみ）:
 
