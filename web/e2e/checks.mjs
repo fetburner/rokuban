@@ -5,12 +5,8 @@ import { chromium } from 'playwright'
 const URL = process.env.E2E_URL ?? 'http://localhost:40773'
 /** 日付ストリップの何番目を押すか（0 = 今日）。 */
 const DAY_INDEX = Number(process.env.E2E_DAY_INDEX ?? 6)
-/** 「前を読み込む」を何回押して確かめるか。 */
-const REWINDS = Number(process.env.E2E_REWINDS ?? 3)
-/** 押下直後のフレーム跳ねの許容値。これを超えると視覚的な飛びとして認識される。 */
-const maxFrameJumpPx = 60
-/** 遡行の前後で、見ている行がずれてよい量。1 行ぶん未満に収める。 */
-const maxDriftPx = 40
+/** ②で日をまたがせるために、順方向スクロールを試みる最大回数。 */
+const maxForwardScrollSteps = 8
 
 const ng = []
 const log = (...a) => console.log(...a)
@@ -29,40 +25,6 @@ const currentDay = () =>
     .first()
     .getAttribute('aria-label')
     .catch(() => null)
-
-/**
- * ユーザーが実際に見ている先頭行。sticky な PageHeader と「前を読み込む」ボタンの
- * 下端より下に最初に現れる行を指す（`bottom > 0` で採ると sticky の裏に隠れた行を
- * 掴んでしまい、人が見ているものと食い違う）。
- */
-const visibleTopRow = () =>
-  page.evaluate(() => {
-    const header = document.querySelector('header')?.getBoundingClientRect()
-    let cutPx = header ? header.bottom : 0
-    // 遡行ボタンが画面上部の帯を占めているときだけ、その下端まで下げる。
-    // 通常フローに置かれて画面外（上）へ流れた場合は数えない ——
-    // 高さを無条件に足すと、実際には見えているのに隠れている扱いの行が出る。
-    const button = [...document.querySelectorAll('button')].find((b) =>
-      /前を読み込む|を読み込む/.test(b.textContent || ''),
-    )
-    if (button) {
-      const r = button.getBoundingClientRect()
-      if (r.bottom > cutPx && r.top < cutPx + 8) cutPx = r.bottom
-    }
-    for (const el of document.querySelectorAll('li[data-program-id]')) {
-      const rect = el.getBoundingClientRect()
-      if (rect.top >= cutPx - 4) {
-        return {
-          id: el.getAttribute('data-program-id'),
-          top: Math.round(rect.top),
-          text: el.innerText.replace(/\s+/g, ' ').slice(0, 32),
-        }
-      }
-    }
-    return null
-  })
-
-const loadPreviousButton = () => page.getByRole('button', { name: /前を読み込む|を読み込む/ })
 
 // --- ① 未キャッシュの日を押したら、その日へ跳ぶ ---
 // スケルトンに挿し替わって文書高さが潰れない（issue #299）/ ハイライトが移る /
@@ -115,76 +77,29 @@ if (minHeight <= 850) ng.push(`① ジャンプ中に文書高さが ${minHeight
 // 選んだ日の先頭行に着地する（前の日の scrollY=1200 付近を引き継がない）。
 if (landedScrollY > 200) ng.push(`① 着地 scrollY=${landedScrollY}px（前の日のスクロールを引き継いだ）`)
 
-// --- ② 遡行しても、見ている行が保たれる / フレーム跳ねが無い ---
-log(`\n=== ② 遡行（${REWINDS} 回） ===`)
-await page.mouse.wheel(0, 1200)
-await page.waitForTimeout(800)
-
-for (let i = 1; i <= REWINDS; i++) {
-  // 実際の操作に合わせて、押す前にリストの上端まで戻る。遡行ボタンは
-  // 「読み込み済みの先頭まで戻ってきて、その前日も見たくなった」ときにだけ
-  // 使うものなので、画面外のボタンを押しに行く経路は判定しない。
-  await page.evaluate(() => window.scrollTo(0, 0))
-  await page.waitForTimeout(600)
-  const before = await visibleTopRow()
-  if (before === null) {
-    // sticky の裏より下に見えている行が 1 つも無い ---
-    // 多くは E2E_DAY_INDEX が指す日に番組データが無く、リストが空であること。
-    // 実装の不具合ではなく判定の前提が満たされていないので、素の TypeError
-    // （`before.id` 参照）で落とすのではなく判定不能として明示的に終える。
-    log(`  ${i} 回目: 判定不能（見えている行が無い。E2E_DAY_INDEX=${DAY_INDEX} の日に番組データが無いかもしれません）`)
-    ng.push(`② ${i} 回目は判定不能（見えている行が無い。E2E_DAY_INDEX の日に番組データが無いかもしれません）`)
-    break
-  }
-  if ((await loadPreviousButton().count()) === 0) {
-    log(`  ${i} 回目: ボタンが無い（下限に到達）`)
-    break
-  }
-  // 押した直後をフレーム単位で記録する。差し込んだ DOM が補正より先に描画されると
-  // ここに 1 フレームだけ大きな跳ねが出る。
-  await page.evaluate((id) => {
-    window.__frames = []
-    const tick = () => {
-      const el = document.querySelector(`li[data-program-id="${id}"]`)
-      window.__frames.push(el ? Math.round(el.getBoundingClientRect().top) : null)
-      if (window.__frames.length < 60) requestAnimationFrame(tick)
-    }
-    requestAnimationFrame(tick)
-  }, before.id)
-
-  await loadPreviousButton().first().click()
-  await page.waitForTimeout(2500)
-
-  const frames = (await page.evaluate(() => window.__frames)).filter((t) => t !== null)
-  const settled = frames.at(-1)
-  const jump = frames.length ? Math.max(...frames.map((t) => Math.abs(t - settled))) : 0
-  const after = await visibleTopRow()
-  const same = before && after && before.id === after.id
-  const drift = before && after ? after.top - before.top : null
-
-  log(`  ${i} 回目: "${before.text}" (top=${before.top})`)
-  log(`          → "${after?.text}" (top=${after?.top})`)
-  log(`          同じ行=${same ? 'YES' : 'NO'} ズレ=${drift}px フレーム跳ね=${jump}px`)
-  if (!same) ng.push(`② ${i} 回目で見ている行が変わった（${before?.text} → ${after?.text}）`)
-  else if (Math.abs(drift) > maxDriftPx) ng.push(`② ${i} 回目で ${drift}px ずれた`)
-  if (jump > maxFrameJumpPx) ng.push(`② ${i} 回目の押下直後に ${jump}px のフレーム跳ね`)
+// --- ② 順方向にスクロールして日をまたいだ状態から、同じ日付を押し直せる ---
+// 番組リストの遡行（前の時間窓の先頭挿入）は廃止した。「ジャンプ先の日から
+// スクロールで離れた状態で同じ日付を再タップすると、その日の先頭へ戻る」
+// （`ProgramListHandle.scrollToDayOffset`）は遡行と無関係に存在する経路なので、
+// 到達手段を遡行から「進行方向へスクロールして日をまたぐ」に変えて判定する。
+log(`\n=== ② 同じ日付の押し直し ===`)
+let strayed = target
+for (let i = 0; i < maxForwardScrollSteps; i++) {
+  await page.mouse.wheel(0, 4000)
+  await page.waitForTimeout(1000)
+  strayed = await currentDay()
+  if (strayed !== target) break
 }
-
-// --- ③ 遡行して別の日を見た状態から、元の日付を押し直せる ---
-log(`\n=== ③ 同じ日付の押し直し ===`)
-await page.mouse.wheel(0, -6000)
-await page.waitForTimeout(1200)
-const strayed = await currentDay()
-log(`  遡行 + 上へスクロール後のハイライト: ${strayed}`)
+log(`  順方向にスクロールした後のハイライト: ${strayed}`)
 await dayCells.nth(DAY_INDEX).click()
 await page.waitForTimeout(2500)
 const restored = await currentDay()
 log(`  「${target}」を押し直した後            : ${restored}`)
 if (strayed === target) {
-  log(`  （別の日へ移れていないため、この判定は成立していない）`)
-  ng.push('③ 遡行しても別の日に移らず、押し直しの判定が成立しなかった')
+  log(`  （日をまたげていないため、この判定は成立していない）`)
+  ng.push('② 順方向にスクロールしても日をまたがず、押し直しの判定が成立しなかった')
 } else if (restored !== target) {
-  ng.push(`③ 「${target}」を押したのにハイライトが「${restored}」のまま`)
+  ng.push(`② 「${target}」を押したのにハイライトが「${restored}」のまま`)
 }
 
 log('\n=== 結果 ===')

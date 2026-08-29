@@ -33,14 +33,13 @@ import { apiErrorMessage, unwrap } from '@/api/unwrap'
 import { shouldAutoLoadNextPage, shouldShowLoadMoreButton } from '@/lib/auto-load'
 import { dayOffsetForMs, dayOrigin } from '@/lib/day-offset'
 import { orderServices, type TimeAxis } from '@/lib/epg-grid'
-import { formatDate } from '@/lib/format'
 import { domLayoutMeasurable } from '@/lib/list-virtualization'
 import {
   pickerServiceDomain,
   type ProgramsPageSearch,
 } from '@/lib/programs-search'
 import { composeServiceId } from '@/lib/service-id'
-import { filterProgramsFromListStart, previousDayWindow } from '@/lib/program-list'
+import { filterProgramsFromListStart } from '@/lib/program-list'
 import { useCurrentSite } from '@/lib/site'
 import { lgMediaQuery, useMediaQuery } from '@/lib/use-media-query'
 
@@ -50,13 +49,6 @@ import { lgMediaQuery, useMediaQuery } from '@/lib/use-media-query'
  *
  * API はページネーショントークンを持たず、時間窓そのものがカーソルになる。
  * 「次のページ」= 前回の end を start にした次の窓。
- *
- * **遡行（「前を読み込む」）はこの定数を使わない** ---
- * 1 暦日（前日 0 時〜当日 0 時）単位で読む（`lib/program-list.ts` の
- * `previousDayWindow`）。理由は同ファイルの doc コメント参照（日付ヘッダの
- * 帯の増減による位置ずれを、境界を暦日に揃えることで構造的に防ぐため）。
- * 進行方向は増分読み込みとして機能しているだけで日付ヘッダの帯とは無関係
- * なので、6 時間のまま変えていない。
  */
 const windowHours = 6
 
@@ -244,9 +236,9 @@ export function ProgramsPage() {
   // （8 日先の 0 時）。日付を選んでも 24 時で打ち切らない —— 連続フィードなので、
   // 選んだ日から先もそのまま読み続けられる。
   const limitMs = dayOrigin(selectableDays, nowMs).getTime()
-  // 下限は「now を時で切り捨てた時刻」。遡行（前の時間窓の読み込み）はここまで。
-  // サーバーの EPG 保持期間の設定には依存させない —— 放送済み番組の閲覧は
-  // 今回のスコープ外なので、クライアント側で now を不変条件として持つだけで足りる。
+  // 下限は「now を時で切り捨てた時刻」。放送済み番組の閲覧は今回のスコープ外
+  // なので、それより前の窓は取りに行かない。`listStartMs` の clamp と
+  // `filterProgramsFromListStart` の「今日は絞り込まない」判定に使う。
   const lowerBoundMs = dayOrigin(0, nowMs).getTime()
 
   // API へ渡すサービス絞り込み（`Service.id`。複数は OR）。
@@ -257,10 +249,7 @@ export function ProgramsPage() {
   // 同じ「結果を左右するパラメータ」になったため）。
   //
   // pageParam / ページの形は「取得した半開区間 [startMs, endMs)」そのもの
-  // （`step` のような抽象的なカーソルにしない）。進行方向（`getNextPageParam`）は
-  // 常に `windowHours` 幅、遡行（`getPreviousPageParam`）は 1 暦日幅と、
-  // 2 方向で窓の刻み方が異なる（`windowHours` の doc コメント参照）ため、
-  // 共通の「窓の個数」では表現できない。
+  // （`step` のような抽象的なカーソルにしない）。
   const query = useInfiniteQuery({
     queryKey: [
       '/api/programs',
@@ -301,12 +290,6 @@ export function ProgramsPage() {
       const startMs = last.endMs
       return { startMs, endMs: Math.min(startMs + windowHours * 3600_000, limitMs) }
     },
-    // 遡行は明示的なボタンでのみ行う（ジェスチャにしない。理由は下の
-    // 「前を読み込む」ボタンのコメント参照）。1 暦日（前日 0 時〜当日 0 時）
-    // ぶんを 1 回で読む（`lib/program-list.ts`）。下限（now を時で
-    // 切り捨てた時刻）に達していたら `undefined`（`previousDayWindow` が
-    // `null` を返す）でボタンごと消える。
-    getPreviousPageParam: (first) => previousDayWindow(first.startMs, lowerBoundMs) ?? undefined,
   })
 
   // グリッドは 24 時間ぶんを 1 回で取る。リストのような窓の積み上げにしないのは、
@@ -364,37 +347,22 @@ export function ProgramsPage() {
   }, [query.data])
 
   // listStartMs は「読み込み済みの最も手前の窓の開始時刻を下限（now を時で
-  // 切り捨てた時刻）で clamp したもの」。`query.data.pages` は
-  // fetchPreviousPage で先頭に追加されるので、常に pages[0] が最も手前
-  // （最小の startMs）の窓になる。`pages[0].startMs` は `queryFn` が返す
-  // 時点で既に下限で clamp 済み（`previousDayWindow` 参照）だが、まだ
-  // 一度も遡行していない（`pages` が無い）ときの `originMs` フォールバックは
-  // clamp されていないことがある（`dayOffset` が 0 のとき `originMs` は
-  // 既に下限と一致するので実質無害だが、意図を明示するため残す）。
+  // 切り捨てた時刻）で clamp したもの」。`pages[0]` は常に最初に取得した窓
+  // （= originMs）なので実質 `originMs` を下限で clamp しただけだが、
+  // `filterProgramsFromListStart` が期待する形（読み込み済みの先頭の窓の
+  // 開始時刻）を明示するために `query.data` から引く形のまま残している。
   const listStartMs = useMemo(() => {
     const rawFirstStartMs = query.data?.pages[0]?.startMs ?? originMs
     return Math.max(rawFirstStartMs, lowerBoundMs)
   }, [query.data, originMs, lowerBoundMs])
 
-  // 「前を読み込む」を押すと次に取得される窓（ボタンのラベルに日付を出す
-  // ため。`query.hasPreviousPage`/`isFetchingPreviousPage` と同じ
-  // `previousDayWindow` を入力に使うので、両者が指す「次の窓があるか」は
-  // 常に一致する）。
-  const previousWindow = useMemo(
-    () => previousDayWindow(listStartMs, lowerBoundMs),
-    [listStartMs, lowerBoundMs],
-  )
-  const previousDateLabel = previousWindow
-    ? formatDate(new Date(previousWindow.startMs).toISOString())
-    : null
-
   // API は問い合わせた時間窓に重なる番組を返す（`start_at < window_end AND
   // end_at > window_start`）ため、先頭の窓の開始時刻より前に始まった番組
-  // （＝まだ読み込んでいない前の窓との重なり）がリストの先頭に混ざる。これを
-  // 見せたままだと日付ヘッダと「いま見ている日」がどちらも前日を指す（実機で
-  // 確認済みの不具合）。`listStartMs` が下限と一致するとき（＝今日を見ている、
-  // または遡行が下限まで達したとき）は例外的に絞り込まない ---
-  // 放送中の番組を隠さないため。判定は `lib/program-list.ts` の純関数。
+  // （＝前日からの重なり）がリストの先頭に混ざる。これを見せたままだと
+  // 日付ヘッダと「いま見ている日」がどちらも前日を指す（実機で確認済みの
+  // 不具合）。`listStartMs` が下限と一致するとき（＝今日を見ている）は
+  // 例外的に絞り込まない --- 放送中の番組を隠さないため。判定は
+  // `lib/program-list.ts` の純関数。
   const visiblePrograms = useMemo(
     () => filterProgramsFromListStart(programs, listStartMs, lowerBoundMs),
     [programs, listStartMs, lowerBoundMs],
@@ -489,9 +457,8 @@ export function ProgramsPage() {
   //
   // `window.scrollTo` は `window.scrollY` を同期更新するが、`virtualizer` が
   // 可視範囲に使う内部スクロール位置は非同期の 'scroll' イベントでしか更新
-  // されない（遡行のアンカー復元と同じ間隙。`docs/frontend/scroll.md`）。
-  // 直後に 'scroll' を同期発火させて、ペイント前に `virtualizer` を y=0 へ
-  // 追いつかせる。
+  // されない（`docs/frontend/scroll.md`）。直後に 'scroll' を同期発火させて、
+  // ペイント前に `virtualizer` を y=0 へ追いつかせる。
   const previousOriginMsRef = useRef(originMs)
   useLayoutEffect(() => {
     if (previousOriginMsRef.current === originMs) return
@@ -563,19 +530,6 @@ export function ProgramsPage() {
     return () => observer.disconnect()
   }, [sentinelMounted])
 
-  // 遡行（前の窓の読み込み）は `query.fetchPreviousPage()` を呼ぶだけ。
-  // 先頭への挿入でスクロール位置がずれないようにする補正（アンカーの位置
-  // 合わせ）は `ProgramList`（`components/program-list.tsx`）側が
-  // `hasPreviousPage` / `onLoadPrevious` 経由で持つ ---
-  // 復元に必要な情報（仮想化の添字・計測値・`virtualizer`）が全部そちらに
-  // あるため。以前はここ（`pages/programs.tsx`）に DOM アンカーを
-  // `document.querySelector` で挿入後に再取得する方式を置いていたが、
-  // 仮想化の可視範囲の再計算でアンカー要素が DOM から消えてしまい機能しな
-  // かった（`lib/scroll-preservation.ts` のコメント参照）。
-  const loadPrevious = () => {
-    void query.fetchPreviousPage()
-  }
-
   return (
     <>
       <PageHeader
@@ -635,25 +589,9 @@ export function ProgramsPage() {
             <ListSkeleton />
           ) : (
             <>
-              {/* 遡行の失敗表示。ボタン自体は ProgramList 側（下記）が持つが、
-                  失敗の有無は query から直接分かるのでここに残す。 */}
-              {query.isFetchPreviousPageError && (
-                <p className="px-4 pt-4 text-center text-sm text-destructive">
-                  前の読み込みに失敗しました
-                </p>
-              )}
               {visiblePrograms.length === 0 && (
                 <EmptyState>この時間帯の番組がありません</EmptyState>
               )}
-              {/* 遡行はボタンでのみ行う（上スワイプなどのジェスチャにしない）。
-                  理由は 2 つ: (1) Android Chrome の pull-to-refresh がページ最上端
-                  でのオーバースクロールを占有しており衝突する（前述「M2 のグリッドで
-                  横スワイプによるナビゲーションを使わない」と同じ種類の衝突）、
-                  (2) 上方向の自動読み込みは、先頭に差し込んだ直後も番兵が上端付近に
-                  残るため境界（now）まで連鎖してしまう。下限に達すると
-                  `hasPreviousPage` が false になりボタンごと消える。
-                  ボタン自体とその押下時のスクロール位置復元は `ProgramList`
-                  （仮想化を持っているコンポーネント）に移してある。 */}
               <ProgramList
                 ref={programListRef}
                 programs={visiblePrograms}
@@ -667,10 +605,6 @@ export function ProgramsPage() {
                 // 反映済みで、新しい日が届けば通知が再開して一致する。
                 onVisibleDayChange={query.isPlaceholderData ? undefined : setVisibleDay}
                 now={nowMs}
-                hasPreviousPage={query.hasPreviousPage}
-                isFetchingPreviousPage={query.isFetchingPreviousPage}
-                previousDateLabel={previousDateLabel}
-                onLoadPrevious={loadPrevious}
               />
             </>
           )}

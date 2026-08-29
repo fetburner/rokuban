@@ -82,10 +82,6 @@ function renderList(
   extra: {
     onVisibleDayChange?: (dayOffset: number) => void
     now?: number
-    hasPreviousPage?: boolean
-    isFetchingPreviousPage?: boolean
-    previousDateLabel?: string | null
-    onLoadPrevious?: () => void
     ref?: React.RefObject<ProgramListHandle | null>
   } = {},
 ) {
@@ -101,10 +97,6 @@ function renderList(
           actions={reservationActions}
           onVisibleDayChange={extra.onVisibleDayChange}
           now={extra.now}
-          hasPreviousPage={extra.hasPreviousPage ?? false}
-          isFetchingPreviousPage={extra.isFetchingPreviousPage ?? false}
-          previousDateLabel={extra.previousDateLabel ?? null}
-          onLoadPrevious={extra.onLoadPrevious ?? vi.fn()}
         />
       </SiteContext>
     </QueryClientProvider>,
@@ -126,7 +118,7 @@ describe('ProgramList', () => {
     expect(screen.getByText('番組 499')).toBeInTheDocument()
   })
 
-  it('各行が data-program-id を持つ（遡行のアンカー位置合わせが DOM から行を再取得するための目印）', async () => {
+  it('各行が data-program-id を持つ（programId で行を識別する e2e 判定の目印）', async () => {
     const programs = [program(11, 1, '一つ目'), program(22, 2, '二つ目')]
     renderList(programs)
 
@@ -146,9 +138,6 @@ describe('ProgramList', () => {
     const headers = screen.getAllByRole('heading', { level: 2 })
     expect(headers.length).toBeGreaterThanOrEqual(2)
     for (const header of headers) {
-      // 「前を読み込む」ボタンは通常フローに戻したので（5 回目の修正）、
-      // sticky な要素は PageHeader だけ --- ボタンぶんの高さを足し込む
-      // `--load-previous-height` はもう無い。
       expect(header.className).toMatch(/top-\[var\(--page-header-height,0px\)\]/)
     }
     expect(screen.getByText(formatDate(day1.startAt))).toBeInTheDocument()
@@ -215,80 +204,7 @@ describe('ProgramList', () => {
     })
   })
 
-  describe('遡行（「前を読み込む」ボタン。3 回目の修正で ProgramList 自身が持つ）', () => {
-    it('hasPreviousPage が false ならボタンを出さない', async () => {
-      renderList([program(1, 1, '対象番組')], actions(), { hasPreviousPage: false })
-
-      await screen.findByText('対象番組')
-      expect(screen.queryByRole('button', { name: '前を読み込む' })).not.toBeInTheDocument()
-    })
-
-    it('hasPreviousPage が true ならボタンを出し、押すと onLoadPrevious が呼ばれる', async () => {
-      const onLoadPrevious = vi.fn()
-      const user = userEvent.setup()
-      renderList([program(1, 1, '対象番組')], actions(), {
-        hasPreviousPage: true,
-        onLoadPrevious,
-      })
-
-      await screen.findByText('対象番組')
-      const button = screen.getByRole('button', { name: '前を読み込む' })
-      await user.click(button)
-
-      expect(onLoadPrevious).toHaveBeenCalledTimes(1)
-    })
-
-    it('ボタンの外枠は通常フローに置かれ、sticky ではない（5 回目の修正で sticky から戻した）', async () => {
-      renderList([program(1, 1, '対象番組')], actions(), { hasPreviousPage: true })
-
-      await screen.findByText('対象番組')
-      const button = screen.getByRole('button', { name: '前を読み込む' })
-      const wrapper = button.parentElement
-      expect(wrapper).not.toBeNull()
-      // sticky・z-index・top はいずれも sticky だったときにだけ増えた指定 ---
-      // 通常フローに戻した現在は無い
-      expect(wrapper?.className).not.toMatch(/sticky/)
-      expect(wrapper?.className).not.toMatch(/z-10/)
-      expect(wrapper?.className).not.toMatch(/top-\[/)
-    })
-
-    it('isFetchingPreviousPage が true の間はボタンが無効化され、ラベルが「読み込み中…」になる', async () => {
-      renderList([program(1, 1, '対象番組')], actions(), {
-        hasPreviousPage: true,
-        isFetchingPreviousPage: true,
-      })
-
-      await screen.findByText('対象番組')
-      const button = await screen.findByRole('button', { name: '読み込み中…' })
-      expect(button).toBeDisabled()
-      // 通常時のラベルには戻っていない（対照）
-      expect(screen.queryByRole('button', { name: '前を読み込む' })).not.toBeInTheDocument()
-    })
-
-    it('previousDateLabel が渡されているとき、ボタンのラベルにその日付を出す（押す前に何が起きるか分かるように）', async () => {
-      renderList([program(1, 1, '対象番組')], actions(), {
-        hasPreviousPage: true,
-        previousDateLabel: '8/5(水)',
-      })
-
-      await screen.findByText('対象番組')
-      expect(screen.getByRole('button', { name: '前を読み込む（8/5(水)）' })).toBeInTheDocument()
-      // 日付なしの汎用ラベルには戻っていない（対照）
-      expect(screen.queryByRole('button', { name: '前を読み込む' })).not.toBeInTheDocument()
-    })
-
-    it('previousDateLabel が null のとき（本来は hasPreviousPage と同時に決まるはずだが、念のため）、日付なしの汎用ラベルにフォールバックする', async () => {
-      renderList([program(1, 1, '対象番組')], actions(), {
-        hasPreviousPage: true,
-        previousDateLabel: null,
-      })
-
-      await screen.findByText('対象番組')
-      expect(screen.getByRole('button', { name: '前を読み込む' })).toBeInTheDocument()
-    })
-  })
-
-  describe('ProgramListHandle（3 回目の修正: 既にジャンプ先の日を再タップしたときの復帰）', () => {
+  describe('ProgramListHandle（既にジャンプ先の日を再タップしたときの復帰）', () => {
     it('ref から scrollToDayOffset を呼べる（見つかる／見つからない、どちらも例外を投げない）', async () => {
       const ref = createRef<ProgramListHandle>()
       const programs = [program(1, 1, '今日の番組'), program(2, 25, '翌日の番組')]

@@ -76,8 +76,8 @@ Android のジェスチャーナビは左右端からの横スワイプが「戻
   リストの先頭の番組から日を決める）が両方とも前日を指してしまう不具合を実機で
   確認した。`lib/program-list.ts` の `filterProgramsFromListStart`
   で `pages/programs.tsx` 側が絞ってから `ProgramList` へ渡す。ただし
-  `listStartMs` が遡行の下限（now を時で切り捨てた時刻）と一致するとき
-  （＝今日を見ている、または遡行が下限まで達したとき）は絞り込まない ---
+  `listStartMs` が下限（now を時で切り捨てた時刻）と一致するとき（＝今日を
+  見ているとき）は絞り込まない ---
   単純に切ると放送中の番組（起点は時刻境界なので、開始が起点より前になりうる）
   まで消えてしまうため
 - **仮想化は TanStack Virtual（`useWindowVirtualizer`）を使う**
@@ -163,8 +163,7 @@ Android のジェスチャーナビは左右端からの横スワイプが「戻
   どこへ飛ぶかを決める基準が無く、個々の番組から飛べる導線と役割が重複する
   （issue #231 の決定）
 
-時間窓の継ぎ足し（進行方向の自動読み込み・遡行）とスクロール位置の復元は
-[scroll.md](scroll.md)。
+時間窓の継ぎ足し（進行方向の自動読み込み）は [scroll.md](scroll.md)。
 
 ## 「既にジャンプ先になっている日」の再タップ
 
@@ -172,16 +171,15 @@ Android のジェスチャーナビは左右端からの横スワイプが「戻
 いたが、**タップした日が既に `dayOffset` と同じ場合**が抜けていた
 （実機で確認した不具合）。`setDayOffset(同じ値)` は React が
 再レンダーの理由にしないため、クエリもスクロールも一切動かない。ユーザーは
-遡行後にスクロールで「いま見ている日」（`visibleDay`）がジャンプ先から離れて
-いることがあり、その状態での再タップは「その日の先頭へ戻る」ことを期待して
-いるので、`dayOffset` が変わらなくても何かしら起きる必要がある。
+スクロールで「いま見ている日」（`visibleDay`）がジャンプ先から離れていることが
+あり、その状態での再タップは「その日の先頭へ戻る」ことを期待しているので、
+`dayOffset` が変わらなくても何かしら起きる必要がある。
 
 - **タップは常にその日へ移動する意味を持つ。** `dayOffset` と一致する場合は
   クエリの起点を付け替えず、**読み込み済みの `programs` の中からその日の
   先頭へ `scrollToIndex` する**（`components/program-list.tsx` の
-  `ProgramListHandle.scrollToDayOffset`。遡行のアンカー復元
-  （[scroll.md](scroll.md)）と同じ `virtualizer.scrollToIndex` の機構）。
-  対象の添字は `lib/program-list.ts` の
+  `ProgramListHandle.scrollToDayOffset`。`virtualizer.scrollToIndex` を直接
+  呼ぶ）。対象の添字は `lib/program-list.ts` の
   `firstIndexForDayOffset`（「可視範囲の先頭 → dayOffset」を導く
   `visibleDayOffset` と対になる、逆向きの純関数）で引く。見つからなければ
   （まだ読み込んでいない日）何もしない
@@ -316,5 +314,4 @@ tick タイマーは持たない。このリンクは番組 ID を運ばず `net
   置いていた。#24 のレビューで API に足した
 - 「リスト先頭に前の窓との重なりで返ってきた番組が混ざり、日付ヘッダと
   『いま見ている日』が前日を指す」「既にジャンプ先の日を再タップしても何も
-  起きない」は、いずれも遡行の実機確認で見つけて直した
-  （遡行の現行仕様は [scroll.md](scroll.md)）
+  起きない」は、いずれも実機確認で見つけて直した

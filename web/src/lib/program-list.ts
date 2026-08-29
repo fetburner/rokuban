@@ -1,12 +1,9 @@
 /**
  * 番組リスト（`components/program-list.tsx` と `pages/programs.tsx`）の純関数。
  *
- * 「いま見ている日」の導出・仮想化のキー・遡行の時間窓は、いずれも表示と
- * 独立にテストできる形にしてある —— jsdom はレイアウトもスクロール位置も
+ * 「いま見ている日」の導出・仮想化のキー・先頭のはみ出し番組の除去は、いずれも
+ * 表示と独立にテストできる形にしてある —— jsdom はレイアウトもスクロール位置も
  * 測れないので、ここで固定できる部分は全部ここに寄せる（`web/e2e/README.md`）。
- * 4 つの関心が 1 ファイルなのは、どれも「リストの先頭がどの番組か」から
- * 派生していて、片方だけ直すと壊れる関係にあるため（下記 `previousDayWindow` と
- * `filterProgramsFromListStart` のコメント参照）。
  */
 
 import type { ProgramListItem } from '@/api/generated'
@@ -87,13 +84,12 @@ export function firstIndexForDayOffset(
 /**
  * programKeyAt は仮想化（`components/program-list.tsx` の `useWindowVirtualizer`）の
  * `getItemKey` に渡す関数の中身。`programs[index]` の `programId` をキーにすることで、
- * 先頭への挿入で添字がずれても、行の実体（programId）に結びついた計測値
+ * 先頭の内容がずれても、行の実体（programId）に結びついた計測値
  * （TanStack Virtual の `itemSizeCache`）がそのまま引き継がれる。
  *
- * `getItemKey` の既定は `(index) => index` で、遡行（前の時間窓の読み込み）で
- * リスト先頭に行を差し込むと既存の全行の添字が N ずれ、記録済みの実測値が
- * 別の番組のものとして使われてしまう（遡行のスクロール位置が飛ぶ不具合の原因
- * だった）。
+ * `getItemKey` の既定は `(index) => index` で、絞り込みの変更等でリストの
+ * 先頭の番組が変わると既存の行の添字がずれ、記録済みの実測値が別の番組の
+ * ものとして使われてしまう。
  *
  * コンポーネントファイルではなくここに置くのは、コンポーネントファイルが
  * 純関数の値エクスポートを持つと Fast Refresh の対象外になる警告
@@ -104,72 +100,23 @@ export function programKeyAt(programs: readonly ProgramListItem[], index: number
   return programs[index].programId
 }
 
-/**
- * findProgramIndex は、指定した `programId` の現在の添字を返す。
- *
- * 遡行のアンカー位置合わせ（`components/program-list.tsx`）が使う ---
- * 「前を読み込む」を押す前に控えた programId から、先頭への挿入で行われた
- * 番組配列に対する現在の添字を引き直し、`virtualizer.scrollToIndex` に渡す。
- * 見つからなければ `null`（呼び出し側は何もしない）。
- */
-export function findProgramIndex(
-  programs: readonly ProgramListItem[],
-  programId: number,
-): number | null {
-  const index = programs.findIndex((program) => program.programId === programId)
-  return index === -1 ? null : index
-}
-
-// --- 遡行の時間窓 ----------------------------------------------------------
-
-/** ミリ秒単位の半開区間 [startMs, endMs)。 */
-export type TimeWindow = {
-  startMs: number
-  endMs: number
-}
-
-/**
- * previousDayWindow は、現在読み込み済みの最も手前の窓の開始時刻
- * （`earliestLoadedMs`。既に `lowerBoundMs` で clamp 済みの値 ---
- * `pages/programs.tsx` の `listStartMs` を渡す想定）から、次に遡って読むべき
- * 「前日 00:00〜当日 00:00」の窓を返す。
- *
- * `earliestLoadedMs` が `lowerBoundMs`（now を時で切り捨てた時刻。遡行の下限。
- * `pages/programs.tsx` 参照）以下ならこれ以上遡る内容が無いので `null`
- * （「前を読み込む」ボタン自体を出さない判断に使う）。
- *
- * 前日の 0 時が `lowerBoundMs` より前になる場合は `lowerBoundMs` で打ち切る
- * ---
- * それより前は放送済みで今回のスコープ外（下記 `filterProgramsFromListStart` と
- * 同じ前提）。この場合に返る窓は 24 時間に満たないことがある。次に
- * `previousDayWindow` を呼ぶと（`startMs === lowerBoundMs` になっているはずなので）
- * `null` が返り、「前を読み込む」ボタンはそこで消える。
- */
-export function previousDayWindow(
-  earliestLoadedMs: number,
-  lowerBoundMs: number,
-): TimeWindow | null {
-  if (earliestLoadedMs <= lowerBoundMs) return null
-  const dayStart = new Date(earliestLoadedMs)
-  dayStart.setDate(dayStart.getDate() - 1)
-  dayStart.setHours(0, 0, 0, 0)
-  const startMs = Math.max(dayStart.getTime(), lowerBoundMs)
-  return { startMs, endMs: earliestLoadedMs }
-}
-
 // --- 先頭のはみ出し番組の除去 ----------------------------------------------
 
 /**
- * filterProgramsFromListStart は、`listStartMs`（読み込み済みの最も手前の
- * 窓の開始時刻。下限で clamp 済み）より前に始まった番組を取り除く。
+ * filterProgramsFromListStart は、`listStartMs`（読み込み済みの先頭の窓の
+ * 開始時刻。下限で clamp 済み）より前に始まった番組を取り除く。
  *
- * ただし `listStartMs` が `lowerBoundMs`（遡行の下限。now を時で切り捨てた
- * 時刻）と一致するときは絞り込まない。単純に「先頭の窓の開始時刻より前は
- * 切る」だけにすると、いま放送中の番組が消えてしまう ---
+ * API は問い合わせた時間窓に**重なる**番組を返す（`start_at < window_end AND
+ * end_at > window_start`）ため、`listStartMs` より前に始まった番組（窓の外との
+ * 重なりで一緒に返ってきた番組）がリストの先頭に混ざることがある。
+ *
+ * ただし `listStartMs` が `lowerBoundMs`（now を時で切り捨てた時刻）と一致する
+ * とき（＝今日を見ているとき）は絞り込まない。単純に「先頭の窓の開始時刻より
+ * 前は切る」だけにすると、いま放送中の番組が消えてしまう ---
  * 「今日」（起点が時刻境界）を 20:15 に見ると、19:30 開始の番組が
- * `startAt < listStartMs` に該当して落ちる。この番組は「前の窓との重なり」
- * ではなく「いま見えているべき番組」なので、下限に達しているときは
- * 例外的に開始が前の番組も出す。
+ * `startAt < listStartMs` に該当して落ちる。この番組は「窓の外との重なり」
+ * ではなく「いま見えているべき番組」なので、今日を見ているときは例外的に
+ * 開始が前の番組も出す。
  */
 export function filterProgramsFromListStart<T extends { startAt: string }>(
   programs: readonly T[],

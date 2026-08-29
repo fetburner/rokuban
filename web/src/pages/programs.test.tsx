@@ -126,7 +126,7 @@ const later = program(3, 1024, 8, '深夜ドラマ')
 
 const allPrograms = [soon, alsoSoon, later]
 
-/** programAtAbsolute は絶対時刻を起点にした 1 時間番組を作る（日付ジャンプ・遡行のテスト用）。 */
+/** programAtAbsolute は絶対時刻を起点にした 1 時間番組を作る（日付ジャンプのテスト用）。 */
 function programAtAbsolute(
   programId: number,
   serviceId: number,
@@ -219,8 +219,8 @@ const encodeProfiles = [{ name: 'h264', container: 'mp4' as const }]
  * 予約 / 取消は `PUT /api/sites/default/programs/{id}/intent` を叩く
  * （issue #29。reservations 行は同期的に作らない）。テストは常に成功させる。
  *
- * `programs` は絞り込み対象の番組集合（既定は `allPrograms`）。日付ジャンプ・
- * 遡行のテストは絶対時刻で配置した専用の番組を渡す。`onProgramsCall` は
+ * `programs` は絞り込み対象の番組集合（既定は `allPrograms`）。日付ジャンプの
+ * テストは絶対時刻で配置した専用の番組を渡す。`onProgramsCall` は
  * `/api/sites/default/programs` への何回目の呼び出しかを受け取り、Response を
  * 返せばそれで応答を差し替える（続きの読み込み失敗のテスト用）。
  *
@@ -1087,125 +1087,10 @@ describe('ProgramsPage の進行方向の無限スクロール', () => {
   })
 })
 
-describe('ProgramsPage の遡行（前の時間窓の読み込み）', () => {
-  it('今日（offset 0）のままでは「前を読み込む」ボタンが出ない（起点が既に下限）', async () => {
-    stubApi()
-    renderPage()
-
-    expect(await screen.findByText('ニュース7')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: '前を読み込む' })).not.toBeInTheDocument()
-  })
-
-  it('先の日付へジャンプすると「前を読み込む」ボタンが出て、押すと前の窓の番組が増える', async () => {
-    // offset 1（明日）ではなく 2（明後日）にする: `allPrograms` の `soon` /
-    // `alsoSoon`（現在時刻 + 1 時間）が、実行時刻によっては明日 0 時と一致し
-    // うる（現在が 23 時台だとちょうど一致する）。offset 2 ならどの実行時刻でも
-    // 重ならない。
-    const targetOriginMs = dayOrigin(2).getTime()
-    // 前日深夜（targetOrigin の 1 時間前）は必ず「1 回押す」だけで届く位置に
-    // 置く（遡行は 1 暦日＝前日 0 時〜当日 0 時ぶんを 1 回で読むので、24 時間
-    // 以内なら 1 回で届く。`lib/program-list.ts`）。
-    const lateTonight = programAtAbsolute(201, 1024, targetOriginMs - 3_600_000, '前日深夜の番組')
-    stubApi([], [], [...allPrograms, lateTonight])
-    renderPage()
-
-    expect(await screen.findByText('ニュース7')).toBeInTheDocument()
-
-    const dayGroup = screen.getByRole('group', { name: '日付' })
-    await userEvent.click(within(dayGroup).getAllByRole('button')[2]) // offset 2 = 明後日
-
-    // ジャンプ直後は明後日 0 時からの窓なので、前日深夜の番組はまだ見えない
-    await waitFor(() => expect(screen.queryByText('ニュース7')).not.toBeInTheDocument())
-    expect(screen.queryByText('前日深夜の番組')).not.toBeInTheDocument()
-
-    // ボタンのラベルには読み込む日付が入る（`lib/program-list.ts` +
-    // `lib/format.ts` の `formatDate`）ので、日付部分は問わない正規表現で探す。
-    // 正確な日付ラベルの形式そのものは `program-list.test.tsx` 側で確認済み。
-    const loadPrevious = await screen.findByRole('button', { name: /^前を読み込む（.+）$/ })
-    await userEvent.click(loadPrevious)
-
-    expect(await screen.findByText('前日深夜の番組')).toBeInTheDocument()
-  })
-
-  it('下限（now）まで遡ると「前を読み込む」ボタンが消える', async () => {
-    // offset 1 ではなく 2 にする理由は上のテストと同じ（`allPrograms` の
-    // 固定オフセットとの窓の重なりを実行時刻によらず避けるため）。
-    stubApi()
-    renderPage()
-
-    expect(await screen.findByText('ニュース7')).toBeInTheDocument()
-
-    const dayGroup = screen.getByRole('group', { name: '日付' })
-    await userEvent.click(within(dayGroup).getAllByRole('button')[2]) // offset 2 = 明後日
-    await waitFor(() => expect(screen.queryByText('ニュース7')).not.toBeInTheDocument())
-
-    // 遡行は 1 回につき 1 暦日ぶん進む（`previousDayWindow`）。明後日 0 時から
-    // 下限（now）に達するまでは、選んだ日数ぶん（ここでは 2 = 明後日）押せば
-    // 必ず届く --- 1 回目で明日 0 時、2 回目で当日 0 時（下限より前になるので
-    // 下限で clamp）に達し、下限ちょうどになった時点で次の前page は無くなる
-    // （両方向のテスト: 下限に届く前はボタンがあり、届いたら消える）。
-    const stepsToLowerBound = 2
-
-    for (let i = 0; i < stepsToLowerBound; i++) {
-      const button = await screen.findByRole('button', { name: /^前を読み込む（.+）$/ })
-      await userEvent.click(button)
-      // このクリックの取得が終わってから次のクリックへ進む
-      await waitFor(() => {
-        const stillLoading = screen.queryAllByRole('button', { name: '読み込み中…' })
-        expect(stillLoading).toHaveLength(0)
-      })
-    }
-
-    await waitFor(() =>
-      expect(screen.queryByRole('button', { name: /^前を読み込む（.+）$/ })).not.toBeInTheDocument(),
-    )
-  })
-
-  /**
-   * 3 回目の修正で、遡行のスクロール位置復元は DOM アンカー（`document.querySelector`
-   * で挿入後に同じ行を探し直す方式）から、`ProgramList`（仮想化を持つコンポーネント）
-   * 内部の `virtualizer.scrollToIndex` に置き換えた（`components/program-list.tsx`
-   * のコメント参照）。DOM アンカー方式は、先頭への挿入直後にアンカーだった行が
-   * 仮想化のオーバースキャン外へ弾き出されて DOM から消えるため機能しなかった
-   * （実機で確認済み）。
-   *
-   * `scrollToIndex` の実効果（実際にスクロール位置が揃うか）は jsdom では検証
-   * できない（レイアウトエンジンを持たないため、可視範囲バイパス
-   * （`domLayoutMeasurable()` が false）の分岐に入り、`ProgramList` はこの環境では
-   * そもそも `scrollToIndex` を呼ばない）。ここでは統合テストとして安全に確認できる
-   * 範囲 --- 挿入前のリストが空（アンカーが 1 件も取れない）場合でもクラッシュせず
-   * 前の窓の番組が増えること --- だけを見る。「控えた programId から新しい添字を
-   * 引く」部分自体は `lib/program-list.test.ts` の `findProgramIndex` で
-   * 純関数として両方向（見つかる／見つからない）をテスト済み。
-   */
-  it('挿入前のリストが空（アンカーが取れない）状態で「前を読み込む」を押しても、前の窓の番組が増える', async () => {
-    // offset 1 ではなく 2（明後日）にするのは、上のテストと同じ理由
-    // （`allPrograms` の固定オフセットとの窓の重なりを実行時刻によらず避けるため）。
-    const dayAfter2Ms = dayOrigin(2).getTime()
-    const lateTonight = programAtAbsolute(203, 1024, dayAfter2Ms - 3_600_000, '前日深夜の番組3')
-    stubApi([], [], [...allPrograms, lateTonight])
-    renderPage()
-
-    expect(await screen.findByText('ニュース7')).toBeInTheDocument()
-    const dayGroup = screen.getByRole('group', { name: '日付' })
-    await userEvent.click(within(dayGroup).getAllByRole('button')[2]) // offset 2 = 明後日
-    await waitFor(() => expect(screen.queryByText('ニュース7')).not.toBeInTheDocument())
-    // アンカーになりうる行が無いこと（空のリスト）を確認したうえで進める
-    expect(document.querySelector('[data-program-id]')).not.toBeInTheDocument()
-    // 空でも「この時間帯の番組がありません」とボタンが両方出る
-    expect(screen.getByText('この時間帯の番組がありません')).toBeInTheDocument()
-
-    const loadPrevious = await screen.findByRole('button', { name: /^前を読み込む（.+）$/ })
-    await userEvent.click(loadPrevious)
-
-    expect(await screen.findByText('前日深夜の番組3')).toBeInTheDocument()
-  })
-})
-
 describe('ProgramsPage の日付ジャンプ（先頭の窓に重なる前日の番組を出さない。3 回目の修正）', () => {
   it('ジャンプ先の窓と重なって返ってきた前日の番組をリストの先頭に出さず、ハイライトもジャンプ先の日のまま', async () => {
-    // offset 1 ではなく 2（明後日）にする理由は他の遡行テストと同じ
-    // （`allPrograms` の固定オフセットとの窓の重なりを実行時刻によらず避けるため）。
+    // offset 1 ではなく 2（明後日）にする: `allPrograms` の固定オフセットとの
+    // 窓の重なりを実行時刻によらず避けるため。
     const targetOriginMs = dayOrigin(2).getTime()
     // API は問い合わせた時間窓に重なる番組を返す。この番組は前日 23:30 開始・
     // ジャンプ先 0:30 終了で、ジャンプ直後の最初の窓（明後日 0 時〜6 時）にも
