@@ -844,7 +844,7 @@ describe('LivePage / 録画予約による中断予測（issue #235 M7-2）', ()
    * channelType` に反転する）を当てると `findByText` の時点で落ちることを
    * 確認済み。
    */
-  it('30 秒の tick を跨いでも警告が消えない', async () => {
+  it('予約クエリが解決し切った後も警告が残る（tick で消えない）', async () => {
     const startAt = new Date(Date.now() + 30 * 60_000).toISOString()
     stubFetch({
       services: [service({ serviceId: 10, name: 'チャンネル A', channelType: 'GR' })],
