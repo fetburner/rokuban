@@ -306,16 +306,6 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	if err := validateSiteBinding(roles, bound, queues); err != nil {
 		return err
 	}
-	// site 名を site 単位のキューに修飾したときに River の 64 文字上限を
-	// 超えないことを検証する。internal/config はレジストリの site 名を
-	// ロード時に既にこの上限の範囲（config.MirakcSiteNameMaxLen）で検査
-	// しているので、ここは site 名が config 以外の経路から来る場合に
-	// 備えた最後の砦（worker.ValidateSiteForQueueNames の doc コメント参照）。
-	for _, s := range bound {
-		if err := worker.ValidateSiteForQueueNames(s.Site); err != nil {
-			return err
-		}
-	}
 	// boundSite は「ちょうど 1 サイトに束縛されている」場合だけ非ゼロ値になる。
 	// 0 サイト（中央プロセス）では空のまま渡し、worker/watcher 側の既定の
 	// site 未設定規約（空文字列 = db.DefaultSite に解決 / 定期ジョブ未登録）に
