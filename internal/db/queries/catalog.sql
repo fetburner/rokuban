@@ -28,54 +28,33 @@ SELECT * FROM rule_times ORDER BY rule_id, seq;
 -- name: CatalogListRuleSites :many
 SELECT * FROM rule_sites ORDER BY rule_id, site;
 
--- site が NULL なら全件。tombstone（deleted_at IS NOT NULL）も含む。
+-- 全件。tombstone（deleted_at IS NOT NULL）も含む。
 -- name: CatalogListRecordings :many
-SELECT * FROM recordings
-WHERE sqlc.narg('site')::text IS NULL OR site = sqlc.narg('site')
-ORDER BY id;
+SELECT * FROM recordings ORDER BY id;
 
 -- recording_encode_policy 衛星表（issue #159）。行が無い録画は未凍結（省略）で
 -- 正しい --- rescue 側もこのリストに現れなかった recordings.id には何も書かない
 -- ので、「凍結済み」と「未凍結」の区別がそのまま往復する。
 -- name: CatalogListRecordingEncodePolicies :many
-SELECT p.*
-FROM recording_encode_policy p
-JOIN recordings r ON r.id = p.recording_id
-WHERE sqlc.narg('site')::text IS NULL OR r.site = sqlc.narg('site')
-ORDER BY p.recording_id;
+SELECT * FROM recording_encode_policy ORDER BY recording_id;
 
 -- recording_purge_requests 衛星表（旧 recordings.purge_after）。行が無い録画は
 -- 「即時削除を要求していない」で正しい --- rescue 側もこのリストに現れなかった
 -- recordings.id には何も書かないので、要求の有無がそのまま往復する。
 -- name: CatalogListRecordingPurgeRequests :many
-SELECT q.*
-FROM recording_purge_requests q
-JOIN recordings r ON r.id = q.recording_id
-WHERE sqlc.narg('site')::text IS NULL OR r.site = sqlc.narg('site')
-ORDER BY q.recording_id;
+SELECT * FROM recording_purge_requests ORDER BY recording_id;
 
 -- name: CatalogListMediaAssets :many
-SELECT a.*
-FROM media_assets a
-JOIN recordings r ON r.id = a.recording_id
-WHERE sqlc.narg('site')::text IS NULL OR r.site = sqlc.narg('site')
-ORDER BY a.id;
+SELECT * FROM media_assets ORDER BY id;
 
 -- name: CatalogListDropStats :many
-SELECT d.*
-FROM drop_stats d
-JOIN media_assets a ON a.id = d.media_asset_id
-JOIN recordings r ON r.id = a.recording_id
-WHERE sqlc.narg('site')::text IS NULL OR r.site = sqlc.narg('site')
-ORDER BY d.media_asset_id, d.pid;
+SELECT * FROM drop_stats ORDER BY media_asset_id, pid;
 
--- 意図・上書きの FK 先。export 対象の (site, program_id) に限定する。
+-- 意図・上書きの FK 先。
 -- name: CatalogListProgramSnapshots :many
 SELECT s.*
 FROM program_snapshots s
-WHERE (sqlc.narg('site')::text IS NULL OR s.site = sqlc.narg('site'))
-  AND (
-      EXISTS (
+WHERE EXISTS (
           SELECT 1 FROM program_intents i
           WHERE i.site = s.site AND i.program_id = s.program_id
       )
@@ -83,18 +62,13 @@ WHERE (sqlc.narg('site')::text IS NULL OR s.site = sqlc.narg('site'))
           SELECT 1 FROM program_overrides o
           WHERE o.site = s.site AND o.program_id = s.program_id
       )
-  )
 ORDER BY s.site, s.program_id;
 
 -- name: CatalogListProgramIntents :many
-SELECT * FROM program_intents
-WHERE sqlc.narg('site')::text IS NULL OR site = sqlc.narg('site')
-ORDER BY site, program_id;
+SELECT * FROM program_intents ORDER BY site, program_id;
 
 -- name: CatalogListProgramOverrides :many
-SELECT * FROM program_overrides
-WHERE sqlc.narg('site')::text IS NULL OR site = sqlc.narg('site')
-ORDER BY site, program_id;
+SELECT * FROM program_overrides ORDER BY site, program_id;
 
 -- ---------------------------------------------------------------------------
 -- Upsert（rescue）。id を保持するため OVERRIDING SYSTEM VALUE を使う。

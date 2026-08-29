@@ -289,6 +289,18 @@ func TestListSnapshots_FirstCompleteMatchesSelectLatest(t *testing.T) {
 	}
 }
 
+// manifest はあっても本体ファイルが無ければ完成世代にならないこと。
+func TestVerifyGeneration_RejectsMissingDocumentFile(t *testing.T) {
+	dir := t.TempDir()
+	genDir := writeCompleteGeneration(t, dir, time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC), "gen")
+	if err := os.Remove(filepath.Join(genDir, DocumentFilename)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := VerifyGeneration(genDir); err == nil {
+		t.Fatal("VerifyGeneration accepted a generation with a missing document file")
+	}
+}
+
 // 本体が完成しても manifest が無ければ完成世代にならないこと（公開点は manifest）。
 func TestVerifyGeneration_RequiresManifest(t *testing.T) {
 	dir := t.TempDir()
@@ -346,17 +358,9 @@ func TestVerifyGeneration_RejectsBrokenManifests(t *testing.T) {
 		{"schemaVersion missing", func(m *Manifest) { m.SchemaVersion = 0 }},
 		{"schemaVersion from the future", func(m *Manifest) { m.SchemaVersion = Version + 1 }},
 		{"generation name mismatch", func(m *Manifest) { m.Generation = "catalog-19700101T000000Z" }},
-		{"document not listed", func(m *Manifest) { m.Document = "elsewhere.json" }},
-		{"no files", func(m *Manifest) { m.Files = nil }},
-		{"file missing from disk", func(m *Manifest) {
-			m.Files = append(m.Files, ManifestFile{Name: "extra.json", SizeBytes: 1, SHA256: "00"})
-		}},
-		{"size mismatch", func(m *Manifest) { m.Files[0].SizeBytes++ }},
-		{"sha256 mismatch", func(m *Manifest) { m.Files[0].SHA256 = strings.Repeat("0", 64) }},
-		{"path escape in file name", func(m *Manifest) { m.Files[0].Name = "../catalog.json" }},
-		{"manifest lists itself", func(m *Manifest) {
-			m.Files = append(m.Files, ManifestFile{Name: ManifestFilename, SizeBytes: 1, SHA256: "00"})
-		}},
+		{"document name mismatch", func(m *Manifest) { m.Document = "elsewhere.json" }},
+		{"size mismatch", func(m *Manifest) { m.SizeBytes++ }},
+		{"sha256 mismatch", func(m *Manifest) { m.SHA256 = strings.Repeat("0", 64) }},
 	}
 
 	at := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)

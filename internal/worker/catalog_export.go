@@ -24,11 +24,11 @@ const (
 
 // CatalogExportArgs は catalog エクスポートジョブの引数。
 //
-// Site が空なら全サイト。Keep が 0 以下なら catalog.DefaultKeep（7）。
-// サイト横断の災害復旧が主用途なので、site 省略が既定の運用形。
+// Keep が 0 以下なら catalog.DefaultKeep（7）。catalog は常に全サイトを
+// エクスポートする（site 絞り込みは書き手・呼び手が最後まで現れなかったため
+// issue #441 で落とした）。
 type CatalogExportArgs struct {
-	Site string `json:"site,omitempty"`
-	Keep int    `json:"keep,omitempty"`
+	Keep int `json:"keep,omitempty"`
 }
 
 // Kind は River ジョブの種別名を返す。
@@ -59,13 +59,10 @@ func (CatalogExportArgs) InsertOpts() river.InsertOpts {
 // River ワーカー（docs/storage.md §8、issue #71）。
 //
 // site 照合ガード（issue #139）は不要と判断: mirakc には触れない（DB 読み取りと
-// FS 書き出しのみ）。CatalogExportArgs.Site は「どのサイトの行をエクスポート
-// するか」という DB クエリの絞り込みであって、mirakc インスタンスの選択ではない
-// ため、他サイトの worker がこのジョブを掴んでも「他インスタンスの id を投げる」
-// 形の壊れ方が起きない。物理ストレージも DeleteReconcileWorker と同じく site に
-// 従属しない単一の MediaDir（CatalogExportArgs のコメント参照）。ただし
-// catalog.Export(ctx, pool, site) 自身が site 引数を検証しないエントリポイントで
-// あることは、CLAUDE.md の横断調査（internal/catalog）が別途扱う。
+// FS 書き出しのみ）。catalog は常に全サイトをエクスポートするので、他サイトの
+// worker がこのジョブを掴んでも「他インスタンスの id を投げる」形の壊れ方が
+// 起きない。物理ストレージも DeleteReconcileWorker と同じく site に従属しない
+// 単一の MediaDir。
 type CatalogExportWorker struct {
 	river.WorkerDefaults[CatalogExportArgs]
 	Pool     *pgxpool.Pool
@@ -83,7 +80,7 @@ func (w *CatalogExportWorker) Work(ctx context.Context, job *river.Job[CatalogEx
 		return fmt.Errorf("media dir is empty")
 	}
 
-	doc, err := catalog.Export(ctx, w.Pool, job.Args.Site)
+	doc, err := catalog.Export(ctx, w.Pool)
 	if err != nil {
 		return err
 	}
@@ -95,7 +92,6 @@ func (w *CatalogExportWorker) Work(ctx context.Context, job *river.Job[CatalogEx
 
 	slog.Info("catalog exported",
 		"generation_dir", genDir,
-		"site", job.Args.Site,
 		"rules", len(doc.Rules),
 		"recordings", len(doc.Recordings),
 		"media_assets", len(doc.MediaAssets),

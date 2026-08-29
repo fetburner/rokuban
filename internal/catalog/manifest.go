@@ -8,13 +8,20 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 )
 
 // ManifestVersion は manifest 自体の形式版。manifest の読み方を壊す変更で上げる
 // （catalog document の版 = Version とは別に持つ）。
-const ManifestVersion = 1
+//
+// issue #441 で `files[]`（配列）を単一の `sizeBytes` / `sha256` に畳んだのは
+// 「manifest の読み方を壊す変更」そのものなので 1 → 2 に上げた。schemaVersion の
+// 「安全側に倒れる引っ越しなら上げない」方針（docs/storage/rescue.md §世代の
+// 完成判定）はここには適用しない —— あちらは catalog document が運ぶ**事実**の
+// 引っ越し（旧バイナリが知らないキーを無視しても録画データの復元は壊れない）
+// の話であって、こちらは manifest 自身の**検証手続きの形**の変更。運用開始前で
+// 旧形式の manifest が本番に存在しないため、上げても back-compat の代償はない。
+const ManifestVersion = 2
 
 const (
 	// DocumentFilename は世代ディレクトリ内の catalog 本体のファイル名。
@@ -28,8 +35,14 @@ const (
 
 // Manifest は 1 世代の完成宣言。世代ディレクトリの `manifest.json` に置く。
 //
-// 存在するだけでは完成を意味しない: VerifyGeneration が files の全項目を
-// サイズと sha256 で照合して初めて完成世代になる（docs/storage.md §8）。
+// 存在するだけでは完成を意味しない: VerifyGeneration が本体をサイズと sha256 で
+// 照合して初めて完成世代になる（docs/storage.md §8）。
+//
+// **1 世代 = 本体 1 ファイルだけ**（catalog.json）。かつては複数ファイル世代を
+// 見越して Files []ManifestFile を持っていたが、書き手・呼び手が最後まで
+// 1 要素しか積まなかったので issue #441 で単一の SizeBytes/SHA256 に畳んだ。
+// 複数ファイル世代が要るようになったら、そのときの書き手と同じ PR で
+// 形を決め直す（不変条件 11）。
 type Manifest struct {
 	// ManifestVersion はこのファイル自体の形式版。
 	ManifestVersion int `json:"manifestVersion"`
@@ -42,17 +55,12 @@ type Manifest struct {
 	SchemaVersion int `json:"schemaVersion"`
 	// ExportedAt は Document.ExportedAt と同じ時刻。
 	ExportedAt time.Time `json:"exportedAt"`
-	// Document は本体ファイル名。Files に載っていなければ不完全。
+	// Document は本体ファイル名。DocumentFilename と一致しなければ不完全に倒す。
 	Document string `json:"document"`
-	// Files は世代を構成するファイルの一覧（manifest 自身は含まない）。
-	Files []ManifestFile `json:"files"`
-}
-
-// ManifestFile は世代を構成する 1 ファイルの完成条件。
-type ManifestFile struct {
-	Name      string `json:"name"`
-	SizeBytes int64  `json:"sizeBytes"`
-	SHA256    string `json:"sha256"`
+	// SizeBytes は本体ファイルのサイズ。
+	SizeBytes int64 `json:"sizeBytes"`
+	// SHA256 は本体ファイルの sha256（16 進）。
+	SHA256 string `json:"sha256"`
 }
 
 // VerifyGeneration は世代ディレクトリが完成世代かを判定し、manifest を返す。
@@ -63,10 +71,14 @@ type ManifestFile struct {
 //  2. manifestVersion がこのバイナリの理解する版以下
 //  3. schemaVersion がこのバイナリの読める catalog 版以下
 //  4. generation が世代ディレクトリ名と一致する
-//  5. document が files[] に載っている
-//  6. files[] の全項目が存在し、サイズと sha256 が両方一致する
+//  5. document が DocumentFilename と一致し、本体ファイルが存在してサイズと
+//     sha256 が両方一致する
 //
 // rename のアトミック性には依存しない。判定の材料は世代ディレクトリの中身だけ。
+//
+// 本体のパスは常に DocumentFilename（定数）から組み立てる。manifest.Document
+// フィールドの値を使ってパスを組み立てることはしない —— 手で編集された
+// manifest がディレクトリの外を指す経路がそもそも存在しない。
 func VerifyGeneration(genDir string) (*Manifest, error) {
 	name := filepath.Base(filepath.Clean(genDir))
 
@@ -101,68 +113,35 @@ func VerifyGeneration(genDir string) (*Manifest, error) {
 	if m.Generation != name {
 		return nil, fmt.Errorf("manifest generation %q does not match directory %q", m.Generation, name)
 	}
-	if m.Document == "" {
-		return nil, fmt.Errorf("manifest has no document")
+	if m.Document != DocumentFilename {
+		return nil, fmt.Errorf("manifest document %q does not match expected %q", m.Document, DocumentFilename)
 	}
-	if len(m.Files) == 0 {
-		return nil, fmt.Errorf("manifest lists no files")
-	}
-
-	var documentListed bool
-	for _, f := range m.Files {
-		if err := validManifestFilename(f.Name); err != nil {
-			return nil, err
-		}
-		if f.Name == m.Document {
-			documentListed = true
-		}
-		if err := verifyFile(filepath.Join(genDir, f.Name), f); err != nil {
-			return nil, err
-		}
-	}
-	if !documentListed {
-		return nil, fmt.Errorf("document %q is not listed in files", m.Document)
+	if err := verifyFile(filepath.Join(genDir, DocumentFilename), m.SizeBytes, m.SHA256); err != nil {
+		return nil, err
 	}
 	return &m, nil
 }
 
-// validManifestFilename は manifest に載るファイル名が世代ディレクトリ直下の
-// 単純名であることを確認する。ディレクトリを跨ぐ名前を検証対象にしない
-// （壊れた / 細工された manifest に世代の外のファイルを指させない）。
-func validManifestFilename(name string) error {
-	if name == "" {
-		return fmt.Errorf("manifest lists a file with empty name")
-	}
-	if name == ManifestFilename {
-		// manifest 自身の checksum は自己参照になるので載せられない。
-		return fmt.Errorf("manifest must not list itself")
-	}
-	if name == "." || name == ".." || strings.ContainsRune(name, '/') || strings.ContainsRune(name, filepath.Separator) {
-		return fmt.Errorf("manifest lists a non-plain file name %q", name)
-	}
-	return nil
-}
-
-func verifyFile(path string, want ManifestFile) error {
+func verifyFile(path string, wantSize int64, wantSHA256 string) error {
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return fmt.Errorf("missing file %q listed in manifest", want.Name)
+			return fmt.Errorf("missing document file %q", filepath.Base(path))
 		}
-		return fmt.Errorf("opening %q: %w", want.Name, err)
+		return fmt.Errorf("opening %q: %w", path, err)
 	}
 	defer func() { _ = f.Close() }()
 
 	h := sha256.New()
 	n, err := io.Copy(h, f)
 	if err != nil {
-		return fmt.Errorf("hashing %q: %w", want.Name, err)
+		return fmt.Errorf("hashing %q: %w", path, err)
 	}
-	if n != want.SizeBytes {
-		return fmt.Errorf("size mismatch for %q: on disk %d, manifest %d", want.Name, n, want.SizeBytes)
+	if n != wantSize {
+		return fmt.Errorf("size mismatch for %q: on disk %d, manifest %d", path, n, wantSize)
 	}
-	if sum := hex.EncodeToString(h.Sum(nil)); sum != want.SHA256 {
-		return fmt.Errorf("sha256 mismatch for %q: on disk %s, manifest %s", want.Name, sum, want.SHA256)
+	if sum := hex.EncodeToString(h.Sum(nil)); sum != wantSHA256 {
+		return fmt.Errorf("sha256 mismatch for %q: on disk %s, manifest %s", path, sum, wantSHA256)
 	}
 	return nil
 }
