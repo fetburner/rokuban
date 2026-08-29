@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 
@@ -38,13 +39,40 @@ func TestProbeEncodeDuration_TimesOutWithoutDelayingEncode(t *testing.T) {
 	}
 }
 
-func TestDrainLatestProgress_PrefersBufferedSampleAtTickBoundary(t *testing.T) {
-	samples := make(chan time.Duration, 1)
-	samples <- 3 * time.Second
+// stop（context.CancelFunc）はジョブ終了時（次の ticker を待たず）に最後に
+// report された値を必ず 1 回 flush する。interval を長くしてティッカーが
+// テスト中は絶対に発火しない条件を作り、flush が stop 由来であることを
+// 確認する。stop 自体は（cancel と同じく）非同期にシグナルを送るだけなので、
+// flush の完了は timeout 付きで待つ。
+func TestEncodeProgressReporter_FlushesFinalValueOnStop(t *testing.T) {
+	sent := make(chan serverevent.EncodeProgressEvent, 1)
+	reporter := encodeProgressReporter{
+		recordingID: 42,
+		profile:     "mobile",
+		duration:    4 * time.Second,
+		interval:    time.Hour,
+		notify: func(_ context.Context, payload string) error {
+			var event serverevent.EncodeProgressEvent
+			if err := json.Unmarshal([]byte(payload), &event); err != nil {
+				t.Errorf("unmarshal progress: %v", err)
+			}
+			sent <- event
+			return nil
+		},
+		log: slog.Default(),
+	}
 
-	got, found := drainLatestProgress(samples, time.Second)
-	if !found || got != 3*time.Second {
-		t.Fatalf("latest = %s, found = %t; want buffered 3s", got, found)
+	report, stop := reporter.start(context.Background())
+	report(4 * time.Second)
+	stop()
+
+	select {
+	case got := <-sent:
+		if got.Progress != 1 {
+			t.Fatalf("event = %+v, want Progress = 1 (final value flushed on stop)", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("stop() did not flush the final report()ed value")
 	}
 }
 
@@ -88,6 +116,7 @@ func TestEncodeProgressReporter_PublishesLatestValue(t *testing.T) {
 }
 
 func TestEncodeProgressReporter_DoesNotBlockFFmpegReader(t *testing.T) {
+	var notifyStartedOnce sync.Once
 	notifyStarted := make(chan struct{})
 	releaseNotify := make(chan struct{})
 	reporter := encodeProgressReporter{
@@ -96,7 +125,12 @@ func TestEncodeProgressReporter_DoesNotBlockFFmpegReader(t *testing.T) {
 		duration:    4 * time.Second,
 		interval:    time.Millisecond,
 		notify: func(_ context.Context, _ string) error {
-			close(notifyStarted)
+			// stop() は最後に report() された値が変わっていれば flush し直す
+			// （TestEncodeProgressReporter_FlushesFinalValueOnStop）ので、この
+			// テストの終盤（report が 10,000 回呼ばれた後の stop()）でも
+			// notify がもう一度呼ばれうる。notifyStarted の close は 1 回だけに
+			// 留める（2 回目の close はパニックする）。
+			notifyStartedOnce.Do(func() { close(notifyStarted) })
 			<-releaseNotify
 			return nil
 		},

@@ -87,58 +87,31 @@ func TestReconcilePassWorker_HasGenerousTimeout(t *testing.T) {
 // 登録済みワーカーが reconciler キューで拾うこと（配線の確認）。
 func TestReconcilePassPeriodicJob(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	ctx := context.Background()
-
-	if _, err := pool.Exec(ctx, "DELETE FROM river_job"); err != nil {
-		t.Fatalf("cleaning river_job: %v", err)
-	}
 
 	stub := newScheduleStub()
 	srv := httptest.NewServer(stub)
 	defer srv.Close()
 
-	workers := NewWorkers(&Deps{Pool: pool, MirakcClient: mirakc.NewClient(srv.URL, nil)})
-	client, err := NewClient(pool, workers, ClientConfig{
+	subscribeCh := startPeriodicJobClient(t, pool, &Deps{MirakcClient: mirakc.NewClient(srv.URL, nil)}, ClientConfig{
 		PeriodicJobs:          true,
 		ReconcilePassSite:     testSite,
 		ReconcilePassInterval: time.Hour, // RunOnStart で 1 回だけ走らせる
-	})
-	if err != nil {
-		t.Fatalf("creating client: %v", err)
+	}, river.EventKindJobCompleted)
+
+	event := waitPeriodicJobEvent(t, subscribeCh, "reconcile_pass")
+	if event.Job.Kind != "reconcile_pass" {
+		t.Errorf("job kind = %q, want %q", event.Job.Kind, "reconcile_pass")
 	}
-
-	subscribeCh, subscribeCancel := client.Subscribe(river.EventKindJobCompleted)
-	defer subscribeCancel()
-
-	clientCtx, clientCancel := context.WithCancel(ctx)
-	defer clientCancel()
-
-	if err := client.Start(clientCtx); err != nil {
-		t.Fatalf("starting client: %v", err)
+	wantQueue := qualifyQueueName(reconcilerQueue, testSite)
+	if event.Job.Queue != wantQueue {
+		t.Errorf("job queue = %q, want %q", event.Job.Queue, wantQueue)
 	}
-	defer func() {
-		clientCancel()
-		<-client.Stopped()
-	}()
-
-	select {
-	case event := <-subscribeCh:
-		if event.Job.Kind != "reconcile_pass" {
-			t.Errorf("job kind = %q, want %q", event.Job.Kind, "reconcile_pass")
-		}
-		wantQueue := qualifyQueueName(reconcilerQueue, testSite)
-		if event.Job.Queue != wantQueue {
-			t.Errorf("job queue = %q, want %q", event.Job.Queue, wantQueue)
-		}
-		var args ReconcilePassArgs
-		if err := json.Unmarshal(event.Job.EncodedArgs, &args); err != nil {
-			t.Fatalf("unmarshalling job args: %v", err)
-		}
-		if args.Site != testSite {
-			t.Errorf("job args site = %q, want %q", args.Site, testSite)
-		}
-	case <-time.After(20 * time.Second):
-		t.Fatal("timed out waiting for the periodic reconcile_pass job")
+	var args ReconcilePassArgs
+	if err := json.Unmarshal(event.Job.EncodedArgs, &args); err != nil {
+		t.Fatalf("unmarshalling job args: %v", err)
+	}
+	if args.Site != testSite {
+		t.Errorf("job args site = %q, want %q", args.Site, testSite)
 	}
 }
 

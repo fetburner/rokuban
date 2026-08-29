@@ -19,7 +19,8 @@ import (
 // されている（docs/recording/ingest.md §5.4）ので、この頻度でも DB への書き込みは
 // 高々 1 秒あたり 1 行程度にしかならない。
 //
-// 上限は既定のストール検知（defaultStallTimeout = 30 秒）より十分短くする ---
+// 上限は既定のストール検知（config.ingest.stall_timeout の既定値 30 秒）より
+// 十分短くする ---
 // ストール検知が働いて接続を切り直すより前に「進んでいない」が観測できないと、
 // UI は停滞をストール検知の後追いでしか知れない。
 const ingestProgressInterval = 2 * time.Second

@@ -186,7 +186,8 @@ type Deps struct {
 	// worker ロール起動時に ValidateTools 済み（不変条件 4）。
 	Encode config.EncodeConfig
 
-	// EpgRetentionGrace は放送済み番組を刈り取るまでの猶予。0 なら既定値。
+	// EpgRetentionGrace は放送済み番組を刈り取るまでの猶予
+	// （config.epg.retention_grace。config.defaults() が既定値 24 時間を埋める）。
 	EpgRetentionGrace time.Duration
 
 	// RulerRetentionGrace は ruler が reservations / program_intents を GC するまでの
@@ -205,7 +206,7 @@ type Deps struct {
 	ReconcileStartDelayGrace time.Duration
 
 	// IngestStallTimeout は ingest の無進捗検知タイムアウト
-	// （ingest.stall_timeout）。0 なら IngestWorker 側の既定値（30 秒）を使う。
+	// （ingest.stall_timeout。config.defaults() が既定値 30 秒を埋める）。
 	// River の総時間タイムアウトは無効化しているため、これが ingest の唯一の
 	// タイムアウトである（docs/recording.md §5.3「層 1」）。
 	IngestStallTimeout time.Duration
