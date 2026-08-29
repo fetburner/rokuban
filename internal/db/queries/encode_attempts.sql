@@ -1,6 +1,6 @@
 -- encode ジョブの直近の試行状態（issue #316）。書き手は EncodeWorker だけ。
--- 表そのものの設計判断は internal/db/migrations の
--- recording_encode_attempts テーブル定義の doc コメント参照。
+-- 表そのものの設計判断は docs/schema/recordings.md
+-- 「recording_encode_attempts --- encode ジョブの直近の試行状態（衛星表）」を参照。
 
 -- name: UpsertRecordingEncodeAttemptRunning :exec
 -- 試行の開始を記録する。行の存在そのものが「running か failed のどちらかを

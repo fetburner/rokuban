@@ -793,8 +793,9 @@ func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath st
 // マージ結果の整合は誰も検査していない。
 //
 // recording_encode_policy にも同じ組み合わせを禁止する CHECK（issue #104、
-// `until_encoded` は encode_profiles が非空であることを要求する。issue #159 で
-// recordings_until_encoded_requires_profiles から移設）があり、そのまま
+// `until_encoded` は encode_profiles が非空であることを要求する。かつて recordings
+// 側にあった同種の CHECK を issue #159 で recording_encode_policy_check として
+// 移設したもの）があり、そのまま
 // 実効値を書くとこの tx が CHECK 違反で
 // ロールバックする --- このメソッドは原本 media_asset の INSERT と同一 tx で
 // 呼ばれるため、ロールバックは「録画そのものが消失する」に直結する（不変条件 3

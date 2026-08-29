@@ -41,7 +41,7 @@ CREATE TABLE drop_stats (
     drops          bigint  NOT NULL,   -- continuity counter 不連続
     errors         bigint  NOT NULL,   -- transport_error_indicator
     scrambled      bigint  NOT NULL,   -- scrambling_control ≠ 0（> 0 は B-CAS 系異常の別枠アラート）
-    pid_type       text,               -- PID 種別（M2-13 で追加）。分類できなければ NULL
+    pid_type       text,               -- PID 種別。分類できなければ NULL
     PRIMARY KEY (media_asset_id, pid)
 );
 ```

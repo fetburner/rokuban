@@ -114,7 +114,12 @@ SELECT now()::timestamptz AS mark
 //
 // tuner_sync は epg_services / epg_programs と同じ**使い捨てプロジェクション**で、
 // 真実は常に mirakc 側にある。よって差分同期はせず、毎パス全量 upsert + スイープで
-// レベルトリガーに収束させる（tuner_sync テーブル定義のコメント参照）。
+// レベルトリガーに収束させる。
+//
+// types が空配列の行は投影してよい。tuner_sync_types_check は
+// `types <@ ARRAY['GR','BS','CS','SKY']` （値を 4 種別の部分集合に制限する
+// だけの CHECK）で、空配列はどんな配列の部分集合でもあるため許容される。
+// 空 types のチューナーはどの cap(A) にも数えられないだけで、害はない。
 // 全量同期のスイープ基準時刻。observed_at は DB の now() で書かれるため、
 // 基準時刻もアプリのクロックではなく DB から取る（クロックスキューで
 // プロジェクション全体を消して再投入する事故を防ぐ）。EpgSweepMark と同じ理由・

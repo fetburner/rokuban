@@ -151,5 +151,5 @@ ALTER TABLE recordings ADD CONSTRAINT recordings_rule_id_fkey
   範囲は API 層にも DB 層にも無かった。恒真トラップ（閾値 0）は M2-5 のサーキット
   ブレーカー（削除しか守らない）にも止められない経路だった。既存の違反行は値を推測して
   丸めず、`dedupe_enabled = false` に倒して無効化した（意図不明の値で重複排除を有効の
-  まま残すと「黙って録画が止まる / 黙って無効化される」症状が継続するため。詳細は
-  `rules` テーブル定義の dedupe 値域 CHECK のコメント）
+  まま残すと「黙って録画が止まる / 黙って無効化される」症状が継続するため。値域は
+  `rules_dedupe_threshold_range` CHECK（`dedupe_threshold` は `(0, 1]` の範囲）が守る）

@@ -104,7 +104,7 @@ type UpsertProgramSnapshotParams struct {
 	ServiceName string
 }
 
-// 番組の事実のスナップショット（#27。program_snapshots テーブル定義参照）。
+// 番組の事実のスナップショット（#27。docs/schema/reservations.md §3.7「program_snapshots」参照）。
 //
 // reservations / program_intents / program_overrides に 3 重化していた
 // 「書き込み時点の epg_programs ⋈ epg_services」を 1 表に集約したもの。

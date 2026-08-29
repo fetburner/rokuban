@@ -836,8 +836,8 @@ func TestProcessRecord_ConcurrentIdempotent(t *testing.T) {
 		createTestReservation(t, pool, programID)
 		record := testRecord(recordID, programID, "finished")
 		// recordings には (site, network_id, service_id, event_id) の一意制約
-		// （部分一意索引 recordings_unique_active_event、述語 deleted_at IS NULL）
-		// があるため、
+		// （部分一意索引 recordings_unique_active_event、述語
+		// deleted_at IS NULL AND superseded_at IS NULL）があるため、
 		// ラウンドごとに event_id を変えて他ラウンドの録画と衝突しないようにする。
 		// 同じキーをこのアサーションの絞り込みにも使う（recordings.reservation_id
 		// は #158 で列自体を落とした）。

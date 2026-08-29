@@ -632,6 +632,109 @@ func TestEffectiveOptions_IntentActionOverridesBaseSkip(t *testing.T) {
 	}
 }
 
+// TestSchemaV1_DroppedColumnsAndIndexesStayDropped は squash 前の 7 本の
+// backfill マイグレーション（旧 00028/00031/00033/00035 ほか）が持っていた
+// 「最終形に対しても真であり続ける」主張のうち、squash で削除された 7 本の
+// テスト本体からは失われたが baseline スキーマ自体には今も効いている 6 点を
+// 固定する（issue #435 の「含むもの 4」）。過去に一度存在した列・索引・VIEW が
+// baseline（旧 00041 相当の最終形）には存在しないことを、それぞれの旧マイグレー
+// ション回帰テストが使っていたのと同じ information_schema / pg_catalog の
+// 引き方で確認する。
+func TestSchemaV1_DroppedColumnsAndIndexesStayDropped(t *testing.T) {
+	pool := setupTestDB(t)
+	ctx := context.Background()
+
+	// 1. schedule_sync.reservation_id 列は存在しない（旧 00028 で DROP）。
+	var exists bool
+	if err := pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM information_schema.columns
+		 WHERE table_name = 'schedule_sync' AND column_name = 'reservation_id')`,
+	).Scan(&exists); err != nil {
+		t.Fatalf("checking schedule_sync.reservation_id: %v", err)
+	}
+	if exists {
+		t.Error("schedule_sync.reservation_id should not exist in baseline")
+	}
+
+	// 2. schedule_sync に FK は 1 つも無い（reservation_id と一緒に落ちた）。
+	if err := pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM pg_constraint
+		 WHERE conrelid = 'schedule_sync'::regclass AND contype = 'f')`,
+	).Scan(&exists); err != nil {
+		t.Fatalf("checking schedule_sync FK constraints: %v", err)
+	}
+	if exists {
+		t.Error("schedule_sync should have no FK constraints in baseline")
+	}
+
+	// 3. 索引 schedule_sync_reservation_id_idx は存在しない。
+	if err := pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM pg_indexes
+		 WHERE indexname = 'schedule_sync_reservation_id_idx')`,
+	).Scan(&exists); err != nil {
+		t.Fatalf("checking schedule_sync_reservation_id_idx: %v", err)
+	}
+	if exists {
+		t.Error("schedule_sync_reservation_id_idx should not exist in baseline")
+	}
+
+	// 4. recordings.reservation_id 列・その FK・索引 recordings_reservation_id_idx
+	// は存在しない（旧 00031 で DROP）。
+	if err := pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM information_schema.columns
+		 WHERE table_name = 'recordings' AND column_name = 'reservation_id')`,
+	).Scan(&exists); err != nil {
+		t.Fatalf("checking recordings.reservation_id: %v", err)
+	}
+	if exists {
+		t.Error("recordings.reservation_id should not exist in baseline")
+	}
+	if err := pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = 'recordings'::regclass
+			  AND pg_get_constraintdef(oid) LIKE '%reservation_id%'
+		)`,
+	).Scan(&exists); err != nil {
+		t.Fatalf("checking recordings reservation_id FK: %v", err)
+	}
+	if exists {
+		t.Error("recordings should have no reservation_id FK constraint in baseline")
+	}
+	if err := pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM pg_indexes
+		 WHERE indexname = 'recordings_reservation_id_idx')`,
+	).Scan(&exists); err != nil {
+		t.Fatalf("checking recordings_reservation_id_idx: %v", err)
+	}
+	if exists {
+		t.Error("recordings_reservation_id_idx should not exist in baseline")
+	}
+
+	// 5. recordings.never_scheduled 列は存在しない（旧 00033/00035 で列ベースの
+	// 中間形から never_scheduled_events 表ベースへ置き換わった）。
+	if err := pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM information_schema.columns
+		 WHERE table_schema = 'public' AND table_name = 'recordings' AND column_name = 'never_scheduled')`,
+	).Scan(&exists); err != nil {
+		t.Fatalf("checking recordings.never_scheduled: %v", err)
+	}
+	if exists {
+		t.Error("recordings.never_scheduled should not exist in baseline")
+	}
+
+	// 6. never_scheduled_events は VIEW ではなく永続表（relkind = 'r'）。
+	var relationKind string
+	if err := pool.QueryRow(ctx,
+		`SELECT relkind::text FROM pg_class WHERE oid = 'never_scheduled_events'::regclass`,
+	).Scan(&relationKind); err != nil {
+		t.Fatalf("querying never_scheduled_events relation kind: %v", err)
+	}
+	if relationKind != "r" {
+		t.Errorf("never_scheduled_events relkind = %q, want %q (ordinary table)", relationKind, "r")
+	}
+}
+
 // insertTestRecording は各テスト間で event_id を変えて一意な recording を作る。
 var testEventCounter atomic.Int32
 

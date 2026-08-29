@@ -13,16 +13,9 @@
 -- pg_dump の既定どおり、関数本体は作成時に検証しない（trash_deletable_recordings
 -- が参照する recordings 等はこの後の CREATE TABLE で作られるため、検証を有効の
 -- ままにすると生成順序の都合で存在しないテーブルへの参照として弾かれる）。
-SET check_function_bodies = false;
+SET LOCAL check_function_bodies = false;
 
 CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA public;
-
-
---
--- Name: EXTENSION pg_trgm; Type: COMMENT; Schema: -; Owner: -
---
-
-COMMENT ON EXTENSION pg_trgm IS 'text similarity measurement and index searching based on trigrams';
 
 
 --
@@ -1321,4 +1314,4 @@ DROP FUNCTION IF EXISTS rokuban_notify();
 DROP FUNCTION IF EXISTS normalize_search_text(text);
 DROP FUNCTION IF EXISTS genre_lv1_of(jsonb);
 DROP FUNCTION IF EXISTS array_is_canonical_set(text[]);
-DROP EXTENSION IF EXISTS pg_trgm;
+-- pg_trgm は他用途でも使う可能性があるので Down でも残す。

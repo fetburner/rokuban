@@ -793,8 +793,9 @@ func dropUntilEncodedRequiresProfilesCheck(t *testing.T, pool *pgxpool.Pool) {
 		// テスト本体が作った違反行（keep_original='until_encoded' かつ
 		// encode_profiles が空）が残ったままだと ADD CONSTRAINT 自体が失敗する。
 		// 次のテストは TRUNCATE で行ごと消えるが、この関数はその前に走るので
-		// 先に直しておく（recordings_until_encoded_requires_profiles の CHECK を
-		// 足したときの Up が既存行にしているのと同じ「安全側に倒す」処理）。
+		// 先に直しておく（recording_encode_policy_check の前身である recordings
+		// 側の同種 CHECK を足したときの Up が既存行にしているのと同じ
+		// 「安全側に倒す」処理）。
 		if _, err := pool.Exec(cleanupCtx,
 			"UPDATE recording_encode_policy SET keep_original = 'always' "+
 				"WHERE keep_original = 'until_encoded' AND cardinality(encode_profiles) = 0"); err != nil {

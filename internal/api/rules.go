@@ -266,7 +266,7 @@ func ruleTargetSites(ctx context.Context, q *sqlcgen.Queries, ruleID int64) ([]s
 // insertRulerPassHintsForRuleSites はルールが対象とする各サイトに ruler_pass ヒントを
 // 投入する（issue #184 M4-12「含むもの」3）。sites は rule_sites から読んだ対象一覧で、
 // 空（指定なし = 全サイト）なら h.siteNames（レジストリの全 site）に展開する
-// （rule_sites テーブル定義のコメント「指定なし = 全サイト」と同じ規約）。
+// （docs/schema/rules.md「rule_sites 未指定 = 全サイト」と同じ規約）。
 //
 // api は site に束縛されない（不変条件 1）ため、1 プロセスがレジストリの全サイトに
 // ヒントを投入できる。呼び出し元（CreateRule/UpdateRule）はルールの子表書き込みと
