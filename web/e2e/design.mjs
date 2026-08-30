@@ -191,7 +191,8 @@ const overages = [
   // 10 分帯（高さ 20px）だと押し下げた先が自分の帯の下端 = 直後の帯の上端と
   // 一致し、直後の帯のラベル（押し下げられない）と完全に重なっていた
   // （直す前の実装ではここで `labelOverlaps` が発火する）。4 本目（CS）は
-  // 見えるラベルを意図的に持たない（`overagesWithoutVisibleLabel` 参照）。
+  // 見えるラベルを意図的に持たない（`expectedVisibleLabelTexts` 参照。
+  // `capacity-band.tsx` の `CapacityBandLabel`）。
   {
     site: SITE,
     startAt: iso(nextHourBoundaryMs(nowMs + 7 * HOUR)),
@@ -209,14 +210,15 @@ const overages = [
 ]
 
 /**
- * 見えるラベルを意図的に持たない帯の本数（issue #460 再レビュー）。正時起点で
- * 9〜18 分の帯は、目盛り回避（avoidTickRow）で押し下げた先が自分の帯の外
- * （= 直後の帯の領域）にはみ出すため、位置の嘘をつくより描かない
- * （`capacity-band.tsx` の `CapacityBandLabel`）。上の `overages` のうち 1 本
- * （10 分の CS 帯）がこれに当たる --- 差し引かずに本数チェックすると、この
- * 意図的な欠落を「消えたバグ」と区別できない。
+ * 見えるはずのラベルの文字（`shortageLabelCompact` の形。順不同で照合する）。
+ *
+ * **件数ではなく集合で照合する。** 件数だけだと、意図的に隠しているはずの
+ * 10 分の CS 帯が（回帰で）描かれるようになり、同時に他のどれか 1 本のラベルが
+ * （別の回帰で）消えても、合計件数は変わらず通ってしまう --- 件数は identity
+ * を見ていない（issue #460 再々レビュー）。CS 帯（10 分、`overages` の 4 本目）
+ * だけがここに含まれない。
  */
-const overagesWithoutVisibleLabel = 1
+const expectedVisibleLabelTexts = ['BS-1', 'GR-1', 'CS-3', 'GR-2']
 
 const recordings = [
   { id: 11, site: SITE, source: 'rule', serviceName: 'NHK総合', channelType: 'GR', channel: '27', networkId: 32736, serviceId: 1024, eventId: 11, title: 'ニュース７', startAt: iso(nowMs - 600_000), durationMs: 1_800_000, status: 'recording', createdAt: iso(nowMs - 600_000), startedAt: iso(nowMs - 600_000) },
@@ -1468,12 +1470,16 @@ for (const theme of themes) {
       // 保証されている（`internal/capacity/capacity.go` の `Compute`）ので
       // 「同時刻に重なる帯」はフィクスチャとしても不適切 --- ここで見るのは
       // 「隣接する帯のラベルがそれぞれ独立に見えるか」だけ。
-      // `overagesWithoutVisibleLabel` 本は意図的にラベルを持たないので差し引く
-      // （差し引かないと、この意図的な欠落を「消えたバグ」と区別できない）。
-      if (labelBoxes.length < overages.length - overagesWithoutVisibleLabel) {
+      //
+      // 件数ではなく集合（`expectedVisibleLabelTexts`）で照合する。件数だけだと
+      // 「隠しているはずの CS 帯が描かれ、同時に別の帯のラベルが消える」変異が
+      // 合計件数の一致で素通りする（issue #460 再々レビュー）。
+      const actualLabelTexts = [...labelBoxes.map((l) => l.text)].sort()
+      const wantLabelTexts = [...expectedVisibleLabelTexts].sort()
+      if (JSON.stringify(actualLabelTexts) !== JSON.stringify(wantLabelTexts)) {
         ng.push(
-          `[${theme}] 帯が ${overages.length} 本あるのに見えるラベルが ${labelBoxes.length} 件しかない` +
-            `（意図的に描かない ${overagesWithoutVisibleLabel} 件を差し引いても足りない）`,
+          `[${theme}] 見えるラベルの集合が期待と異なる` +
+            `（期待 ${JSON.stringify(wantLabelTexts)} / 実際 ${JSON.stringify(actualLabelTexts)}）`,
         )
       }
       const labelOverlaps = []
