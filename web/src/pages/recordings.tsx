@@ -511,9 +511,9 @@ function ingestDetailText(display: IngestDisplay): string {
  */
 function DropBadges({ summary }: { summary: DropSummary }) {
   const badges = [
-    { label: 'drop', value: summary.drops },
-    { label: 'error', value: summary.errors },
-    { label: 'scrambled', value: summary.scrambled },
+    { label: 'ドロップ', value: summary.drops },
+    { label: 'エラー', value: summary.errors },
+    { label: 'スクランブル', value: summary.scrambled },
   ].filter((b) => b.value > 0)
 
   if (badges.length === 0) return null
@@ -886,7 +886,7 @@ export function RecordingActions({ recording, trash }: { recording: Recording; t
           <AlertDialogHeader>
             <AlertDialogTitle>今すぐ完全削除しますか？</AlertDialogTitle>
             <AlertDialogDescription>
-              削除 reconcile がこの録画の原本・派生物・サムネイルを削除します。取り消せません。
+              この録画の原本・変換後のファイル・サムネイルを削除します。取り消せません。
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -1084,9 +1084,9 @@ export function DropStatsTable({ recordingId }: { recordingId: number }) {
         <span className="text-muted-foreground">PID</span>
         <span className="text-muted-foreground">種別</span>
         <span className="text-right text-muted-foreground">packets</span>
-        <span className="text-right text-muted-foreground">drop</span>
-        <span className="text-right text-muted-foreground">error</span>
-        <span className="text-right text-muted-foreground">scrambled</span>
+        <span className="text-right text-muted-foreground">ドロップ</span>
+        <span className="text-right text-muted-foreground">エラー</span>
+        <span className="text-right text-muted-foreground">スクランブル</span>
         {stats.map((s) => (
           <div key={s.pid} className="col-span-6 grid grid-cols-subgrid">
             <span>0x{s.pid.toString(16).padStart(4, '0')}</span>

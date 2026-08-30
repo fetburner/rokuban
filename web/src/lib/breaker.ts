@@ -18,7 +18,7 @@ import { CircuitBreakerName } from '@/api/generated'
  */
 const breakerLabels: Record<CircuitBreakerName, string> = {
   [CircuitBreakerName.ruler_deletes]: 'ルール評価による予約の削除',
-  [CircuitBreakerName.reconcile_total_loss]: 'mirakc の録画予定の削除',
+  [CircuitBreakerName.reconcile_total_loss]: '録画予定の削除',
   [CircuitBreakerName.delete_reconcile]: 'ごみ箱・エンコード原本・孤児ファイルの物理削除',
 }
 
@@ -32,7 +32,7 @@ const breakerReasons: Record<CircuitBreakerName, string> = {
   [CircuitBreakerName.reconcile_total_loss]:
     '予約が 1 件も無いのに録画予定が残っています。予約が失われていないか確認してください',
   [CircuitBreakerName.delete_reconcile]:
-    '1 回のパスで物理削除される件数が多すぎます。大量削除の意図が正しいか確認してください（対象の内訳は API の detail に出ないため、DB を直接確認する必要があります）',
+    '1 回のパスで物理削除される件数が多すぎます。大量削除の意図が正しいか確認してください（対象の内訳はこの画面では確認できません）',
 }
 
 /** describeBreakerName はブレーカー識別子を「何が止まっているか」の日本語にする。 */

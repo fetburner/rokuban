@@ -331,15 +331,15 @@ function ServiceFields({
   const disambiguate = useMemo(() => serviceDisambiguator(services), [services])
 
   return (
-    <Section title="サービス">
+    <Section title="チャンネル">
       {isError ? (
-        <p className="text-xs text-destructive">サービスの取得に失敗しました</p>
+        <p className="text-xs text-destructive">チャンネルの取得に失敗しました</p>
       ) : isPending ? (
         <p className="text-xs text-muted-foreground">読み込み中…</p>
       ) : services.length === 0 ? (
-        <p className="text-xs text-muted-foreground">サービスがありません</p>
+        <p className="text-xs text-muted-foreground">チャンネルがありません</p>
       ) : (
-        <div role="group" aria-label="サービス" className="flex flex-wrap gap-2">
+        <div role="group" aria-label="チャンネル" className="flex flex-wrap gap-2">
           {services.map((service) => {
             const secondary = disambiguate(service)
             return (

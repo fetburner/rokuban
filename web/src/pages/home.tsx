@@ -498,10 +498,14 @@ function buildWarnings({
   }
 
   for (const recording of failedRecordings) {
+    const reason = failureReasonText(recording)
+    // 材料が無い「理由不明」は理由そのものが言えていないので、「理由:」という
+    // ラベルを付けない（付けると「理由: 理由不明」という二重表現になる）。
+    const reasonSegment = reason === '理由不明' ? reason : `理由: ${reason}`
     items.push({
       key: `failed:${recording.id}`,
       kind: 'failed',
-      message: `${recording.title || '（番組名なし）'}: 録画失敗（${failedDurationText(recording)} / 理由: ${failureReasonText(recording)}）`,
+      message: `${recording.title || '（番組名なし）'}: 録画失敗（${failedDurationText(recording)} / ${reasonSegment}）`,
       link: { to: '/recordings/$id', id: recording.id },
     })
   }
@@ -520,9 +524,9 @@ function buildWarnings({
     if (summary === undefined) continue
     if (summary.drops === 0 && summary.errors === 0 && summary.scrambled === 0) continue
     const parts = [
-      { label: 'drop', value: summary.drops },
-      { label: 'error', value: summary.errors },
-      { label: 'scrambled', value: summary.scrambled },
+      { label: 'ドロップ', value: summary.drops },
+      { label: 'エラー', value: summary.errors },
+      { label: 'スクランブル', value: summary.scrambled },
     ]
       .filter((b) => b.value > 0)
       .map((b) => `${b.label} ${b.value.toLocaleString()}`)
