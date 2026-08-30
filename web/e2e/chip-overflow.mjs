@@ -102,7 +102,7 @@ const documentScroll = (p) =>
 //    横スクロールしない。`Chip` から `max-w-full` を外すと落ちる（測定値は README）。
 log(`\n=== ① /search（${width}px・長い局名 + 補助ラベル）===`)
 const searchPage = await openStubbed('/search', '検索')
-const chips = searchPage.locator('div[role="group"][aria-label="サービス"] button')
+const chips = searchPage.locator('div[role="group"][aria-label="チャンネル"] button')
 await chips.first().waitFor()
 const chipCount = await chips.count()
 ok('① チップが 2 件描かれている', chipCount === 2, `${chipCount} 件`)
