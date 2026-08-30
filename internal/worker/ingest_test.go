@@ -1631,8 +1631,8 @@ func TestIngestWorker_SnapshotsEncodePolicy_SurvivesReservationRematerialization
 	recordingID := insertTestRecordingForReservation(t, pool, programID)
 	insertTestRecordSyncForSite(t, pool, "default", recordingID, "rec-policy-rematerialized", programID)
 
-	// ruler の導出削除 → 再実体化を模す（同じ番組・新しい id）。この DELETE で
-	// reservations.id が変わることを確認する（doc コメント参照）。
+	// ruler の導出削除 → 再実体化を模す（同じ番組・新しい id。理由はこの関数の
+	// doc コメント）。
 	if _, err := pool.Exec(ctx, `DELETE FROM reservations WHERE id = $1`, res.ID); err != nil {
 		t.Fatalf("deleting reservation: %v", err)
 	}
@@ -1642,6 +1642,7 @@ func TestIngestWorker_SnapshotsEncodePolicy_SurvivesReservationRematerialization
 	if err != nil {
 		t.Fatalf("re-materializing reservation: %v", err)
 	}
+	// id が変わることを明示的に確認する（テストの前提。doc コメント参照）。
 	if res2.ID == res.ID {
 		t.Fatalf("再実体化で id が変わっていない（テストの前提が崩れている）")
 	}
