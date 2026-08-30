@@ -128,8 +128,8 @@ export function ProgramRow({
             </div>
           </div>
           <div className="min-w-0 flex-1">
-            <div className="truncate text-sm">{program.name}</div>
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <div className="truncate text-base">{program.name}</div>
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
               {serviceName && <span className="truncate">{serviceName}</span>}
               <span className="shrink-0">{formatDuration(program.durationMs)}</span>
               {!program.isFree && <span className="shrink-0">有料</span>}

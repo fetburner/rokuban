@@ -88,7 +88,7 @@ export function CapacityShortfallBadge({
       // `wideScreen` で落とすので無害。
       search={{ view: 'grid', at: overageWindow(worst).startMs }}
       className={cn(
-        'flex shrink-0 items-center gap-1 rounded bg-warning/10 px-1.5 py-0.5 text-[0.65rem] text-warning hover:bg-warning/20 focus-visible:outline-2 focus-visible:outline-warning',
+        'flex shrink-0 items-center gap-1 rounded bg-warning/10 px-1.5 py-0.5 text-xs text-warning hover:bg-warning/20 focus-visible:outline-2 focus-visible:outline-warning',
         className,
       )}
     >

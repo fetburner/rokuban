@@ -201,7 +201,7 @@ function CapacityBandLabel({ axis, overage }: { axis: TimeAxis; overage: Capacit
           通常は切れずに収まる --- 全文は帯側の sr-only（CapacityBand）が持つ。 */}
       <span
         data-testid="capacity-band-label-text"
-        className="min-w-0 truncate text-[10px] leading-4 font-medium"
+        className="min-w-0 truncate text-xs leading-4 font-medium"
       >
         {shortageLabelCompact(overage)}
       </span>

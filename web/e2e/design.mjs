@@ -561,8 +561,9 @@ const screens = [
 ]
 
 const viewports = [
-  { name: 'desktop', width: 1280, height: 900 },
-  { name: 'mobile', width: 390, height: 844 },
+  // 一覧の行長上限は広幅で初めて効くので、デスクトップショットは 2560px で撮る。
+  { name: 'desktop', width: 2560, height: 1440 },
+  { name: 'mobile', width: 360, height: 844 },
 ]
 
 const themes = ['light', 'dark']
@@ -722,11 +723,9 @@ for (const theme of themes) {
     await context.close()
   }
   {
-    // 空状態（EmptyState）の文言が実際に読める位置のショット。デスクトップ
-    // 1280×900 では検索フォームが長く、既定のビューポートの下端で切れて
-    // 文言まで届かない --- `search-*-desktop.png` は走査線の帯の上端しか
-    // 写っていない。この PR の主題（走査線の上の文字が読めるか）を実際に
-    // 見て判断できるショットを別途 1 組足す
+    // 空状態（EmptyState）の文言が実際に読める位置のショット。検索フォームの下に
+    // あるため、既定ショットだけではビューポートの下端で文言が切れることがある。
+    // 走査線の上の文字が読めるかを判断できるよう、対象までスクロールした 1 組を足す
     const { context, page } = await open(desktop, theme, screenOf('search'))
     const empty = page
       .locator('div.scanlines', { hasText: '条件を指定して検索してください' })
@@ -768,6 +767,134 @@ for (const theme of themes) {
     await checkMissingStrings(page, `home-empty/${theme}`)
     await context.close()
   }
+}
+
+// --- ①-A 広幅の行長上限と一覧の文字サイズ ---
+//
+// jsdom は幅も継承後の実フォントサイズも測れない。2560px の実ブラウザで、一覧本文が
+// max-w-5xl の範囲に収まり、サイドバー直後へ左寄せされることを全対象画面で見る。
+// 題名と副情報は各画面の既定フィクスチャから実要素を掴み、計算済み px 値を測る。
+log('\n=== ①-A 広幅の行長上限と一覧の文字サイズ ===')
+const boundedListScreens = [
+  { screen: 'home', title: 'ニュース７', secondary: 'NHK総合' },
+  { screen: 'recordings', title: 'ニュース７', secondary: 'NHK総合' },
+  { screen: 'reservations', title: '連続テレビ小説', secondary: 'NHKEテレ' },
+  { screen: 'rules', title: '朝ドラ', secondary: '番組名に「連続テレビ小説」を含む' },
+  { screen: 'programs', title: 'ニュース７', secondary: 'NHK総合' },
+]
+for (const spec of boundedListScreens) {
+  const { context, page } = await open(desktop, 'light', screenOf(spec.screen))
+  const content = page.locator('[data-testid="bounded-page-content"]')
+  const contentBox = (await content.count()) === 0 ? null : await content.boundingBox()
+  const mainBox = await page.locator('main').boundingBox()
+  if (contentBox === null || mainBox === null) {
+    ng.push(`${spec.screen}: 行長を制限する本文コンテナが見つからない`)
+    await context.close()
+    continue
+  } else {
+    log(`  ${spec.screen}: x=${contentBox.x}, width=${contentBox.width}`)
+    if (contentBox.width > 1024.5) {
+      ng.push(`${spec.screen}: 本文幅 ${contentBox.width}px が max-w-5xl（1024px）を超えている`)
+    }
+    if (Math.abs(contentBox.x - mainBox.x) > 0.5) {
+      ng.push(`${spec.screen}: 本文が左寄せでない（main x=${mainBox.x}, 本文 x=${contentBox.x}）`)
+    }
+  }
+
+  const title = content.getByText(spec.title, { exact: true }).first()
+  const secondary = content.getByText(spec.secondary, { exact: true }).first()
+  const [titleSize, secondarySize] = await Promise.all([
+    title.evaluate((el) => getComputedStyle(el).fontSize).catch(() => null),
+    secondary.evaluate((el) => getComputedStyle(el).fontSize).catch(() => null),
+  ])
+  log(`  ${spec.screen}: 題名=${titleSize ?? '未取得'}, 副情報=${secondarySize ?? '未取得'}`)
+  if (titleSize !== '16px') ng.push(`${spec.screen}: 一覧の題名が text-base でない（${titleSize}）`)
+  if (secondarySize !== '14px') {
+    ng.push(`${spec.screen}: 一覧の副情報が text-sm でない（${secondarySize}）`)
+  }
+  await context.close()
+}
+
+// 同じ /programs でも番組表グリッドは横幅が情報量なので、本文上限を適用しない。
+{
+  const { context, page } = await open(desktop, 'light', screenOf('programs'))
+  const gridTrigger = page.getByRole('button', { name: '番組表' })
+  if ((await gridTrigger.count()) === 0) {
+    ng.push('programs-grid: 表示形式の切り替えが無い')
+  } else {
+    await gridTrigger.click()
+    const grid = page.locator('[data-testid="program-grid"]')
+    await grid.waitFor({ timeout: 10000 }).catch(() => {})
+    const gridBox = (await grid.count()) === 0 ? null : await grid.boundingBox()
+    if ((await page.locator('[data-testid="bounded-page-content"]').count()) > 0) {
+      ng.push('programs-grid: 番組表グリッドに一覧本文の幅上限が適用されている')
+    }
+    if (gridBox === null || gridBox.width <= 1024.5) {
+      ng.push(`programs-grid: 番組表グリッドが 1024px 以下に制限されている（${gridBox?.width ?? '未取得'}px）`)
+    }
+  }
+  await context.close()
+}
+
+// ルール作成はモバイルだけ本文全幅、lg 以上では PageHeader の右端に置く。
+{
+  const { context, page } = await open(desktop, 'light', screenOf('rules'))
+  const create = page.locator('header').getByRole('button', { name: 'ルールを作成' })
+  const createBox = (await create.count()) === 0 ? null : await create.boundingBox()
+  if (createBox === null) {
+    ng.push('rules/desktop: PageHeader に「ルールを作成」が無い')
+  } else if (createBox.width > 200) {
+    ng.push(`rules/desktop: 「ルールを作成」が内容幅でない（${createBox.width}px）`)
+  }
+
+  const editBg = await computedOf(page.getByRole('button', { name: '編集' }).first(), 'background-color')
+  const createBg = await computedOf(create, 'background-color')
+  if (
+    editBg === null ||
+    createBg === null ||
+    !editBg.rgba.every((value, index) => value === createBg.rgba[index])
+  ) {
+    ng.push('rules/desktop: 主操作「編集」が primary ボタンでない')
+  }
+  await context.close()
+}
+{
+  const { context, page } = await open(viewports[1], 'light', screenOf('rules'))
+  const headerCreate = page.locator('header').getByRole('button', { name: 'ルールを作成' })
+  if ((await headerCreate.count()) > 0) {
+    ng.push('rules/mobile: PageHeader に「ルールを作成」が出ている')
+  }
+  const mobileContent = page.locator('[data-testid="bounded-page-content"]')
+  const mobileCreate = mobileContent.getByRole('button', { name: 'ルールを作成' })
+  const contentBox =
+    (await mobileContent.count()) === 0 ? null : await mobileContent.boundingBox()
+  const createBox =
+    (await mobileContent.count()) === 0 || (await mobileCreate.count()) === 0
+      ? null
+      : await mobileCreate.boundingBox()
+  const padding =
+    (await mobileContent.count()) === 0
+      ? null
+      : await mobileContent.evaluate((el) => {
+          const style = getComputedStyle(el)
+          return {
+            left: Number.parseFloat(style.paddingLeft),
+            right: Number.parseFloat(style.paddingRight),
+          }
+        })
+  if (contentBox === null || createBox === null || padding === null) {
+    ng.push('rules/mobile: 「ルールを作成」の全幅を測れない')
+  } else {
+    const expectedX = contentBox.x + padding.left
+    const expectedWidth = contentBox.width - padding.left - padding.right
+    if (Math.abs(createBox.x - expectedX) > 0.5 || Math.abs(createBox.width - expectedWidth) > 0.5) {
+      ng.push(
+        `rules/mobile: 「ルールを作成」が本文の全幅でない` +
+          `（x=${createBox.x}, width=${createBox.width}, 期待 x=${expectedX}, width=${expectedWidth}）`,
+      )
+    }
+  }
+  await context.close()
 }
 
 // --- ①' ホーム（M8-3）: 空セクションが出ない/出るの機械判定 ---

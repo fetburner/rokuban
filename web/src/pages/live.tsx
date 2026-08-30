@@ -222,7 +222,7 @@ export function LivePage() {
                     消費者がいる（docs/data.md §6.5 と同じ下界主義。CLAUDE.md「罠」）。
                     文字色は text-foreground（bg-muted 小バッジの合成後コントラスト
                     対策。docs/frontend/design.md「コントラストは毎回測る」）。 */}
-                <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[0.65rem] font-medium text-foreground">
+                <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs font-medium text-foreground">
                   {channelTypeLabel(selectedService.channelType)}
                 </span>
                 {nowPlaying && <OnAirBadge />}
@@ -290,7 +290,7 @@ export function LivePage() {
                             /* 文字色は text-foreground（bg-muted 小バッジの合成後
                                コントラスト対策。docs/frontend/design.md
                                「コントラストは毎回測る」）。 */
-                            <span className="shrink-0 rounded bg-muted px-1 text-[10px] text-foreground">
+                            <span className="shrink-0 rounded bg-muted px-1 text-xs text-foreground">
                               {s.remoteControlKeyId}
                             </span>
                           )}
@@ -349,7 +349,7 @@ function LiveSelectionPreview({
  */
 function OnAirBadge() {
   return (
-    <span className="tally-scanlines shrink-0 rounded px-1.5 py-0.5 text-[0.65rem] font-medium text-tally-foreground">
+    <span className="tally-scanlines shrink-0 rounded px-1.5 py-0.5 text-xs font-medium text-tally-foreground">
       ON AIR
     </span>
   )

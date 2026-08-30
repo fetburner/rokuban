@@ -13,7 +13,7 @@ import {
   type Reservation,
 } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
-import { EmptyState, ListSkeleton, PageHeader } from '@/components/page'
+import { EmptyState, ListSkeleton, PageContent, PageHeader } from '@/components/page'
 import { ReservationSkipBadge } from '@/components/reservation-skip-reason'
 import { describeBreakerName } from '@/lib/breaker'
 import { shortageRangeMessage } from '@/lib/capacity'
@@ -278,7 +278,9 @@ export function HomePage() {
     return (
       <>
         <PageHeader title="ホーム" />
-        <ListSkeleton />
+        <PageContent>
+          <ListSkeleton />
+        </PageContent>
       </>
     )
   }
@@ -289,7 +291,8 @@ export function HomePage() {
     <>
       <PageHeader title="ホーム" />
 
-      {allEmpty ? (
+      <PageContent>
+        {allEmpty ? (
         // 「異常なし」「予約がありません」のような肯定/報告の文言にしない ---
         // これは検索結果の 0 件ではなく、4 セクションすべてが沈黙した結果の
         // 集約なので、何も主張しない言い方に留める。
@@ -375,6 +378,7 @@ export function HomePage() {
           )}
         </div>
       )}
+      </PageContent>
     </>
   )
 }
@@ -399,8 +403,8 @@ function RecordingRow({ recording }: { recording: Recording }) {
         params={{ id: String(recording.id) }}
         className="flex min-h-14 flex-col justify-center gap-0.5 px-4 py-2.5 hover:bg-muted/50"
       >
-        <span className="truncate text-sm">{recording.title || '（番組名なし）'}</span>
-        <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+        <span className="truncate text-base">{recording.title || '（番組名なし）'}</span>
+        <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
           <span className="shrink-0">{recording.serviceName}</span>
           <span className="shrink-0">{formatDateTime(recording.startAt)}</span>
           <span className="shrink-0">{formatDuration(recording.durationMs)}</span>
@@ -428,8 +432,8 @@ function ReservationRow({ reservation }: { reservation: Reservation }) {
         params={{ site: reservation.site, programId: String(reservation.programId) }}
         className="flex min-h-14 flex-col justify-center gap-0.5 px-4 py-2.5 hover:bg-muted/50"
       >
-        <span className="truncate text-sm">{reservation.title || '（番組名なし）'}</span>
-        <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+        <span className="truncate text-base">{reservation.title || '（番組名なし）'}</span>
+        <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
           <span className="shrink-0">{reservation.serviceName}</span>
           <span className="shrink-0">{formatDateTime(reservation.startAt)}</span>
           <span className="shrink-0">{formatDuration(reservation.durationMs)}</span>
