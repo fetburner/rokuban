@@ -2,7 +2,7 @@ package api
 
 import "context"
 
-// ListSites は config.mirakc/mirakcs レジストリの site 名一覧を返す
+// ListSites は config.mirakcs レジストリの site 名一覧を返す
 // (GET /api/sites、issue #184 M4-12)。
 //
 // api は不変条件 1 によりどの site にも束縛されないため、フロントが

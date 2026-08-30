@@ -306,7 +306,7 @@ func (h *Server) validateEncodeProfiles(names []string) error {
 	return nil
 }
 
-// validateRuleSites は sites の各要素が site レジストリ（config.mirakc/mirakcs、
+// validateRuleSites は sites の各要素が site レジストリ（config.mirakcs、
 // h.sites）に存在することを検査する。api は不変条件 1 によりどの site にも束縛されないので、
 // 権威は h.knownSite が参照するレジストリ全件であり、mirakc への問い合わせも FS 依存もしない。
 // 空文字列も未知の site 名と同じ扱いで 400 にする --- 「絞り込みたい」意図を持つ要素が黙って

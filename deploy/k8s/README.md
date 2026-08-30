@@ -17,8 +17,8 @@ overlays/e2e/    受け入れ判定ハーネス用（base + site 2 組）
 schemas/         kubeconform に渡す CRD スキーマ（KEDA の ScaledJob）
 ```
 
-**base は複数サイトを知らない。** レジストリは常に 1 要素で、どの Pod にも
-`--sites` / `--site` を渡さない。サイトを増やす差分は「`mirakcs:` に
+**base は複数サイトを知らない。** レジストリは常に 1 要素で、どの Pod も site に
+束縛しない（`--sites=` の明示的な空を渡す）。サイトを増やす差分は「`mirakcs:` に
 1 要素 + `site/` を 1 組生やす」だけになる（`overlays/e2e` が実例）。
 判定は `workloads_test.go` の `TestBaseIsSiteIndependent`。
 

@@ -157,7 +157,7 @@ scratch を分ける指針（[§3](database.md)）と同じ系列の規則。
 - **`base/` は中央（site 非依存）1 式。** api / notifier / 録画配信 streamer / media の PVC / migration Job / ConfigMap が入る。site 非依存キューの ScaledJob と、site 非依存ジョブの CronJob もこちら
 - **`site/` はサイト 1 組ぶん**（watcher / site 束縛キューの ScaledJob / site 束縛ジョブの CronJob）。overlay がサイトの数だけ生やす
 
-**base は複数サイトを知らない。** レジストリは常に 1 要素、Pod にも `--sites` / `--site` を渡さない。サイトを増やす差分は「`mirakcs:` に 1 要素 + Pod セット 1 組」に保つ。`site/` は site 名 `default`（`base/config.yml` の `mirakcs:` 1 要素目と同じ名前）で書いてあり、単一サイトの overlay はそのまま使える。
+**base は複数サイトを知らない。** レジストリは常に 1 要素、どの Pod も site に束縛しない（`--sites=` の明示的な空を渡す）。サイトを増やす差分は「`mirakcs:` に 1 要素 + Pod セット 1 組」に保つ。`site/` は site 名 `default`（`base/config.yml` の `mirakcs:` 1 要素目と同じ名前）で書いてあり、単一サイトの overlay はそのまま使える。
 
 **Helm chart は持たない。** `values.yaml` は後から狭められない公開 API で、どの値を露出するかを決める前に形を固定することになる（不変条件 11）。加えてサイトごとの差分は argv（`--roles` / `--sites`）だけなので、overlay がサイト単位で薄く書ける。Helm が要るなら kustomize の出力を写す形で後から足す。
 

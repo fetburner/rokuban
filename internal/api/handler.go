@@ -24,7 +24,7 @@ type Server struct {
 
 	// sites はこのプロセスが応答してよい mirakc サイト名の集合（メンバーシップ判定用。
 	// knownSite 参照）。api は不変条件 1（mirakc にもファイルシステムにも依存しない）
-	// によりどの site にも束縛されないので、権威は「config.mirakc/mirakcs レジストリに
+	// によりどの site にも束縛されないので、権威は「config.mirakcs レジストリに
 	// 存在するか」であり、1 プロセスがレジストリの全 site を処理できる
 	// （issue #184 M4-12）。
 	sites map[string]struct{}
