@@ -1603,6 +1603,75 @@ describe('ProgramsPage の取消 Undo（issue #453）', () => {
     expect(await screen.findByRole('button', { name: '予約' })).toBeInTheDocument()
   })
 
+  // レビュー指摘: `revive` が `.mutate(vars, {onSuccess, onError})` のままだと、
+  // トーストは 6 秒生きる一方 busy/optimistic state はこのページ（ProgramsPage）
+  // の component state でしかない。「取消 → 別ページへ移動 → まだ出ている
+  // トーストの『元に戻す』を押す」で ProgramsPage がアンマウントされたあとに
+  // Undo を押すと、`MutationObserver`（`@tanstack/query-core`）の
+  // `hasListeners()` 判定により `onSuccess`/`onError` が一度も呼ばれず、
+  // 成功も失敗も無音になる（実測で確認済み）。**この経路は遷移を挟まない
+  // テストでは検出できない** --- 実際、上の 3 本は遷移を挟んでおらず、
+  // `.mutate` のままでも緑のまま通っていた。ここでは実際にページを
+  // アンマウントしてから Undo を押す。
+  it('取消後に別ページへ遷移しても、トーストの「元に戻す」で予約が復帰する（ページをまたいだ Undo）', async () => {
+    const fetchMock = stubApi([reservation(77, soon.programId, 'ニュース7')], [], [soon])
+    const { router } = renderPage()
+
+    await userEvent.click(await screen.findByRole('button', { name: '取消' }))
+    expect(await screen.findByText('予約を取消しました')).toBeInTheDocument()
+
+    // 別ページへ遷移する。ProgramsPage（と useReservationActions の
+    // putIntent/deleteIntent フック）はここでアンマウントされる。
+    await act(() => router.navigate({ to: '/reservations' }))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/reservations'))
+
+    // トースト自体は ToastProvider（RouterProvider の外側）が持つので、
+    // 遷移後も「元に戻す」は押せる。
+    await userEvent.click(await screen.findByRole('button', { name: '元に戻す' }))
+    expect(await screen.findByText('予約を元に戻しました')).toBeInTheDocument()
+
+    const reviveCall = fetchMock.mock.calls.find((call) => {
+      const url = new URL(String(call[0]), 'http://localhost')
+      const init = call[1] as RequestInit | undefined
+      return (
+        url.pathname === `/api/sites/default/programs/${soon.programId}/intent` &&
+        init?.method === 'PUT' &&
+        JSON.parse(String(init.body)).action === 'record'
+      )
+    })
+    expect(reviveCall).toBeDefined()
+  })
+
+  // 予約成功トーストの「取消」action（`reserve` → `cancel`）も同じ
+  // `MutationObserver` を共有しており、同じ無音故障を起こしうる
+  // （Undo の対称性がこの issue の目的なので、片側だけ塞いで残すと
+  // 「取消 → 別ページへ移動 → やっぱり戻す」だけが直って「予約 → 別ページへ
+  // 移動 → やっぱり取消す」は無音のまま、という非対称が残ってしまう）。
+  it('予約後に別ページへ遷移しても、トーストの「取消」で予約が取り消される（ページをまたいだ取消）', async () => {
+    const fetchMock = stubApi([], [], [soon])
+    const { router } = renderPage()
+
+    await userEvent.click(await screen.findByRole('button', { name: '予約' }))
+    expect(await screen.findByText(`予約しました: ${soon.name}`)).toBeInTheDocument()
+
+    await act(() => router.navigate({ to: '/reservations' }))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/reservations'))
+
+    await userEvent.click(await screen.findByRole('button', { name: '取消' }))
+    expect(await screen.findByText('予約を取消しました')).toBeInTheDocument()
+
+    const cancelCall = fetchMock.mock.calls.find((call) => {
+      const url = new URL(String(call[0]), 'http://localhost')
+      const init = call[1] as RequestInit | undefined
+      return (
+        url.pathname === `/api/sites/default/programs/${soon.programId}/intent` &&
+        init?.method === 'PUT' &&
+        JSON.parse(String(init.body)).action === 'skip'
+      )
+    })
+    expect(cancelCall).toBeDefined()
+  })
+
   // ルール由来の予約は `PUT intent{record}` で戻すと「明示的に record を
   // 主張した予約」に変わり、以後ルールがマッチしなくなっても居座ってしまう
   // （`internal/api/handler.go` の source 導出）。厳密な逆操作は

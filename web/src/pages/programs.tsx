@@ -752,8 +752,21 @@ function useReservationActions(
   }
 
   // revive は取消トーストの「元に戻す」から呼ぶ（issue #453）。`reserve` と
-  // 同じ楽観更新の経路（setOptimisticReserved → onError で undefined に戻す）
+  // 同じ楽観更新の経路（setOptimisticReserved → catch で undefined に戻す）
   // を通す。
+  //
+  // **`mutateAsync` + try/catch にする（`.mutate(vars, {onSuccess, onError})`
+  // は使わない）。** トーストは 6 秒生きる一方、番組表は行 1 件ぶんの
+  // busy/optimistic state しか持たない別ページの component state なので、
+  // 「取消 → 別ページへ移動 → まだ出ているトーストの『元に戻す』を押す」の
+  // 間にこのページ自体がアンマウントされうる。`.mutate` の第 2 引数
+  // コールバックは `MutationObserver`（`@tanstack/query-core`）に購読者
+  // （＝マウント中のコンポーネント）が居るときしか呼ばれない
+  // （`#notify()` の `hasListeners()` 判定。実測: アンマウント後は PUT/DELETE
+  // 自体は飛ぶが `onSuccess`/`onError` が一度も呼ばれず、成功も失敗も無音に
+  // なる）。`mutateAsync` は `Mutation#execute` の Promise をそのまま返すので
+  // この判定を経由しない（`pages/reservation-detail.tsx` の `revive` と同じ
+  // 理由。詳細はそちらのコメント）。
   //
   // `source` で分岐する: 手動予約の逆操作は `PUT intent{record}` でよいが、
   // ルール由来の予約に同じ PUT を送ると `program_intents` に record 行が残り、
@@ -764,26 +777,26 @@ function useReservationActions(
   const revive = (programId: number, source: Reservation['source'] | undefined) => {
     setBusy(programId, true)
     setOptimisticReserved(programId, true)
-    const onSuccess = () => {
-      invalidateReservations()
-      toast({ message: '予約を元に戻しました' })
-    }
-    const onError = (err: unknown) => {
-      toast({ message: mutationErrorMessage('予約への復帰に失敗しました', err) })
-      setOptimisticReserved(programId, undefined)
-    }
-    const onSettled = () => setBusy(programId, false)
-
-    if (source === 'rule') {
-      deleteIntent.mutate({ site, programId }, { onSuccess, onError, onSettled })
-    } else {
-      putIntent.mutate(
-        { site, programId, data: { action: 'record' } },
-        { onSuccess, onError, onSettled },
-      )
-    }
+    void (async () => {
+      try {
+        if (source === 'rule') {
+          await deleteIntent.mutateAsync({ site, programId })
+        } else {
+          await putIntent.mutateAsync({ site, programId, data: { action: 'record' } })
+        }
+        invalidateReservations()
+        toast({ message: '予約を元に戻しました' })
+      } catch (err) {
+        toast({ message: mutationErrorMessage('予約への復帰に失敗しました', err) })
+        setOptimisticReserved(programId, undefined)
+      } finally {
+        setBusy(programId, false)
+      }
+    })()
   }
 
+  // cancel も同じ理由（トーストの「取消」action・`revive` からの「元に戻す」
+  // action、双方が遷移をまたぎうる）で `mutateAsync` + try/catch にする。
   const cancel = (programId: number) => {
     // Undo の分岐に使う。取消の瞬間の source を捕まえておく --- 取消後は
     // サーバー値（`sourceByProgramId` の元になる `reservations.data`）が
@@ -791,26 +804,24 @@ function useReservationActions(
     const source = sourceByProgramId.get(programId)
     setBusy(programId, true)
     setOptimisticReserved(programId, false)
-    putIntent.mutate(
-      { site, programId, data: { action: 'skip' } },
-      {
-        onSuccess: () => {
-          invalidateReservations()
-          // 予約のワンタップ + トースト「取消」と対称にする（issue #453）。
-          // 誤タップの被害は「録れない」側に出るので、取消にも同じ取り返し
-          // 手段を置く。
-          toast({
-            message: '予約を取消しました',
-            action: { label: '元に戻す', onClick: () => revive(programId, source) },
-          })
-        },
-        onError: (err) => {
-          toast({ message: mutationErrorMessage('予約の取消に失敗しました', err) })
-          setOptimisticReserved(programId, undefined)
-        },
-        onSettled: () => setBusy(programId, false),
-      },
-    )
+    void (async () => {
+      try {
+        await putIntent.mutateAsync({ site, programId, data: { action: 'skip' } })
+        invalidateReservations()
+        // 予約のワンタップ + トースト「取消」と対称にする（issue #453）。
+        // 誤タップの被害は「録れない」側に出るので、取消にも同じ取り返し
+        // 手段を置く。
+        toast({
+          message: '予約を取消しました',
+          action: { label: '元に戻す', onClick: () => revive(programId, source) },
+        })
+      } catch (err) {
+        toast({ message: mutationErrorMessage('予約の取消に失敗しました', err) })
+        setOptimisticReserved(programId, undefined)
+      } finally {
+        setBusy(programId, false)
+      }
+    })()
   }
 
   // 予約作成（PUT .../intent）自体は action のみのまま変更しない（issue #29 の
