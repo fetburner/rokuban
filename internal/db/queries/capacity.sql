@@ -14,12 +14,10 @@
 --     recordings にだけ現れるので除外されず、再試行経路を壊さない。これ以上の
 --     フィルタに使ってはならない（docs/schema.md §3。active / detached は
 --     どちらも同期対象）
---   - `channel_type IS NOT NULL AND channel IS NOT NULL` という絞り込みはかつて
---     ここにあった（reservation_channel 列を追加する前の残骸は物理チャンネルが
---     分からないので需要に数えられない、という安全側の判断）。issue #101 で
---     program_snapshots のチャンネル・イベント識別 6 列が NOT NULL 化され、
---     その状態自体が表現不可能になったため落とした（起きない状態のための
---     分岐を残さない）
+--   - `channel_type IS NOT NULL AND channel IS NOT NULL` という絞り込みは持たない
+--     --- issue #101 で program_snapshots のチャンネル・イベント識別 6 列が
+--     NOT NULL 化され、NULL になる状態自体が表現不可能になったため（起きない
+--     状態のための分岐を残さない）
 --   - `effective.skip` は jsonb のマージが要るので Go 側（db.EffectiveOptions）で
 --     判定する。ListOverlappingReservations / ListReservationsForSyncEvaluation と同じ分担
 --

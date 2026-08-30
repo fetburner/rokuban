@@ -639,7 +639,7 @@ describe('LivePage', () => {
 
     await user.click(screen.getByRole('link', { name: /チャンネル B/ }))
 
-    // デバウンス（かつて 400ms）を待たずに、URL 側の選択が既に B へ切り替わっている
+    // デバウンスを待たずに、URL 側の選択が既に B へ切り替わっている
     expect(screen.getByRole('link', { name: /チャンネル B/ })).toHaveAttribute(
       'aria-current',
       'page',

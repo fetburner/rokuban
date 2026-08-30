@@ -128,7 +128,7 @@ func TestGetReservation_DetachedViaRuleEditOrRuleDelete(t *testing.T) {
 
 		// 核心: 実際に DELETE /api/rules/{id} を叩く。ruler を一切経由せず、
 		// reservations.rule_id の FK（ON DELETE SET NULL）だけで rule_id が
-		// 外れる。旧実装はここで detached にならなかった（#30 症状 1 本体）。
+		// 外れる（#30 症状 1 本体）。
 		delResp := doDelete(t, srv, "/api/rules/"+itoa(ruleID))
 		if delResp.StatusCode != http.StatusOK {
 			t.Fatalf("delete rule status = %d, want 200", delResp.StatusCode)

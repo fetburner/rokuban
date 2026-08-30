@@ -10,10 +10,10 @@ import (
 // 実効オプションと skip 判定に組み合わせたもの。
 //
 // クエリ名が約束するのは「同期対象の候補」までで、effective.skip による
-// 絞り込みは含まない。以前はこの 2 段目を呼び出し元が自前で
-// db.EffectiveOptions を呼んで書いており、shadow-diff がその移植を忘れたことで、
-// Rokuban が録らない予約を EPGStation と「一致」と誤報告する見逃しが起きた
-// （issue #54）。この型と EvaluateSyncCandidates が 2 段目を 1 か所にまとめる。
+// 絞り込みは含まない。呼び出し元が自前でこの 2 段目（db.EffectiveOptions）を
+// 呼ぶ形だと移植漏れが起きうる（shadow-diff がその移植を忘れ、Rokuban が
+// 録らない予約を EPGStation と「一致」と誤報告した実例が issue #54）。
+// この型と EvaluateSyncCandidates が 2 段目を 1 か所にまとめる。
 //
 // Reservation と Snapshot を分けて持つのは #27 で番組の事実のスナップショット
 // （title / 開始時刻 / 尺 / チャンネル識別）が reservations から program_snapshots

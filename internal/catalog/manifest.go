@@ -43,11 +43,10 @@ const (
 // 存在するだけでは完成を意味しない: VerifyGeneration が本体をサイズと sha256 で
 // 照合して初めて完成世代になる（docs/storage.md §8）。
 //
-// **1 世代 = 本体 1 ファイルだけ**（catalog.json）。かつては複数ファイル世代を
-// 見越して Files []ManifestFile を持っていたが、書き手・呼び手が最後まで
-// 1 要素しか積まなかったので issue #441 で単一の SizeBytes/SHA256 に畳んだ。
-// 複数ファイル世代が要るようになったら、そのときの書き手と同じ PR で
-// 形を決め直す（不変条件 11）。
+// **1 世代 = 本体 1 ファイルだけ**（catalog.json）。複数ファイル世代を見越した
+// `Files []ManifestFile` は、書き手・呼び手が最後まで 1 要素しか積まなかったので
+// issue #441 で単一の SizeBytes/SHA256 に畳んだ。複数ファイル世代が要るように
+// なったら、そのときの書き手と同じ PR で形を決め直す（不変条件 11）。
 type Manifest struct {
 	// ManifestVersion はこのファイル自体の形式版。
 	ManifestVersion int `json:"manifestVersion"`

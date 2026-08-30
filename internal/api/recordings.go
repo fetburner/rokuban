@@ -307,8 +307,7 @@ func recordingFromListFields(r recordingListFields, includeDeletedAt bool, known
 	// 出さない --- ごみ箱ではプレイヤーを出さないので値を揃えても使われない
 	// （3d56f92 の理由。性能実測は無い）。一覧（queryRecordings）・単体
 	// （queryRecordingByID）のどちらも常に SQL でこの列を連結し、この関数を
-	// 経由するので、判定はここ 1 か所だけで足りる（以前は一覧が SQL 側で
-	// 列自体を省き、単体 GET が呼び出し元で nil 化する 2 手段だった）。
+	// 経由するので、判定はここ 1 か所だけで足りる。
 	if r.DeletedAt != nil {
 		r.AvailableEncodedAssets = nil
 	}

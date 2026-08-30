@@ -338,8 +338,8 @@ const (
 	// cleanupQueue は物理削除系ジョブ（delete_reconcile / catalog_export）専用の
 	// キュー名（issue #185 M4-13）。両方ともアーカイブ（単一の MediaDir）にしか
 	// 触れず site には依存しないため、修飾しない（siteBoundQueueNames に入れない。
-	// allQueues のコメント参照）。以前は river.QueueDefault に同居していた。
-	// docs/overview.md のキュー配置表が M3 の時点で既にこの名前を約束していた。
+	// allQueues のコメント参照）。docs/overview.md のキュー配置表が M3 の
+	// 時点で既にこの名前を約束していた。
 	//
 	// **`worker.queues` を明示的に絞れば cleanup だけを除外できるようになった
 	// という意味であり、既定（`worker.queues` 未指定 = 全キュー購読）のサイト側

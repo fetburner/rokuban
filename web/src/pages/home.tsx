@@ -159,8 +159,7 @@ export function HomePage() {
   const recordingQuery = useListRecordings({ status: 'recording' })
   // 「直近の完了」の表示とドロップ警告の検出を兼ねる 1 本。取る範囲は広い方
   // （`DROP_WARNING_SCAN_LIMIT`）に合わせ、表示だけを先頭 `RECENT_FINISHED_LIMIT`
-  // 件に切る（`DROP_WARNING_SCAN_LIMIT` の doc コメント参照。以前は表示用と
-  // 検出用で 2 本叩いていた）。
+  // 件に切る（`DROP_WARNING_SCAN_LIMIT` の doc コメント参照）。
   const finishedQuery = useListRecordings({
     status: 'finished',
     limit: DROP_WARNING_SCAN_LIMIT,

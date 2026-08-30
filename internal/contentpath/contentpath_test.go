@@ -62,8 +62,8 @@ func mustBuild(t *testing.T, tmpl string, d Data) string {
 // TestDefaultTemplate_MatchesLegacyFixedFormat は DefaultTemplate が、
 // text/template 移行前の固定形式（YYYYMMDD/HHMMSS_タイトル_サービスID.m2ts）
 // と同じ結果を生むことを確認する。startAt に JST の Location を明示的に
-// 持たせているため、旧実装（startAt をそのまま Format していた）と
-// 新実装（NewData が JST に変換する）が一致する。
+// 持たせているため、NewData が JST に変換しても Format 結果は移行前の
+// 固定形式と一致する。
 func TestDefaultTemplate_MatchesLegacyFixedFormat(t *testing.T) {
 	start := time.Date(2026, 7, 24, 21, 0, 0, 0, time.FixedZone("JST", 9*3600))
 	d := NewData("NHKニュース7", start, "", 5136, "")
