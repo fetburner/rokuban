@@ -223,7 +223,7 @@ await storagePage.clock.runFor(storageMs)
 await storagePage.waitForTimeout(500)
 check('10 分後: ストレージ', count('/api/storage'), 3)
 
-// 接続断バナー（components/connection-banner.tsx、issue: U-4）。
+// 接続断バナー（components/connection-banner.tsx、issue #456）。
 // `/api/events` を `page.route` で abort → 帯が出る → 復旧 → 帯が消える。
 //
 // 帯を出すまでの disconnectedBannerDelayMs 待ちは `page.clock` の仮想時計で
@@ -246,6 +246,19 @@ log('\n=== 接続断バナー（/recordings）===')
   // では帯もヘッダも「まだ sticky が効いていない静的な流し込み位置」にいるだけで、
   // top のずらしを外しても重ならずに通ってしまう（実際そうなることを確認した）。
   // ここでは録画を多めに積んでスクロール可能にする。
+  //
+  // /api/breakers は常に 1 件返す --- CircuitBreakerBanner も同時に出した状態で
+  // PageHeader との非交差を見る（StickyBanners が両方の合計高さを publish して
+  // いることの確認。接続断バナーだけでは、CircuitBreakerBanner 側だけが sticky を
+  // 持つ退行を検出できない）。
+  const breaker = {
+    site: 'tokyo',
+    name: 'ruler_deletes',
+    trippedAt: new Date(Date.now() - 3_600_000).toISOString(),
+    pending: 3,
+    threshold: 20,
+    detail: { total: 3, programs: [] },
+  }
   const manyRecordings = Array.from({ length: 60 }, (_, i) => ({
     id: i + 1,
     site: 'tokyo',
@@ -277,7 +290,9 @@ log('\n=== 接続断バナー（/recordings）===')
             ? '["tokyo"]'
             : requested === '/api/recordings'
               ? JSON.stringify(manyRecordings)
-              : '[]'
+              : requested === '/api/breakers'
+                ? JSON.stringify([breaker])
+                : '[]'
     await route.fulfill({ status: 200, headers: { 'content-type': 'application/json' }, body })
   })
   // タイマーを握ってから開く（disconnectedBannerDelayMs を実時間で待たない）
@@ -287,8 +302,10 @@ log('\n=== 接続断バナー（/recordings）===')
   await bannerPage.mouse.wheel(0, 2000)
   await bannerPage.waitForTimeout(100)
 
-  const banner = bannerPage.locator('[role="status"]', { hasText: '自動更新が止まっています' })
+  const banner = bannerPage.locator('[role="status"]', { hasText: '更新通知が止まっています' })
+  const breakerBanner = bannerPage.locator('[role="alert"]')
   check('切断直後: 帯はまだ出ない', await banner.count(), 0)
+  check('ブレーカー帯は最初から出ている', await breakerBanner.count(), 1)
 
   await bannerPage.clock.runFor(disconnectedBannerDelayMs)
   // setTimeout のコールバック（React の状態更新）が反映されるのを待つ
@@ -298,19 +315,26 @@ log('\n=== 接続断バナー（/recordings）===')
     log(`OK  ${disconnectedBannerDelayMs}ms 後: 帯が出た`)
 
     // 帯が出ている間、PageHeader（components/page.tsx）と重ならないこと。
-    // PageHeader は帯の合計高さ（--breaker-banner-height）ぶん top をずらして
+    // PageHeader は帯の合計高さ（--sticky-banners-height）ぶん top をずらして
     // いるはずなので、矩形が交差しなければそのずらしが効いている証拠になる。
+    // ConnectionBanner / CircuitBreakerBanner の両方について見る --- 前者だけ
+    // 見ると、後者だけが sticky を持つ退行（StickyBanners の合計高さに乗らない）
+    // を見逃す。
     const header = bannerPage.locator('header').first()
-    const [bannerBox, headerBox] = await Promise.all([banner.boundingBox(), header.boundingBox()])
-    if (bannerBox === null || headerBox === null) {
-      log('NG  帯 / PageHeader の矩形が測れない')
-      ng.push('接続断バナー: 帯 / PageHeader の矩形が測れない')
-    } else {
-      const disjoint = bannerBox.y + bannerBox.height <= headerBox.y || headerBox.y + headerBox.height <= bannerBox.y
-      if (disjoint) log('OK  帯と PageHeader は重ならない')
-      else {
-        log(`NG  帯と PageHeader が重なる（帯 ${JSON.stringify(bannerBox)} / header ${JSON.stringify(headerBox)}）`)
-        ng.push('接続断バナー: PageHeader と重なる')
+    const disjoint = (a, b) => a.y + a.height <= b.y || b.y + b.height <= a.y
+    for (const [label, target] of [
+      ['帯', banner],
+      ['ブレーカー帯', breakerBanner],
+    ]) {
+      const [box, headerBox] = await Promise.all([target.boundingBox(), header.boundingBox()])
+      if (box === null || headerBox === null) {
+        log(`NG  ${label} / PageHeader の矩形が測れない`)
+        ng.push(`接続断バナー: ${label} / PageHeader の矩形が測れない`)
+      } else if (disjoint(box, headerBox)) {
+        log(`OK  ${label}と PageHeader は重ならない`)
+      } else {
+        log(`NG  ${label}と PageHeader が重なる（${label} ${JSON.stringify(box)} / header ${JSON.stringify(headerBox)}）`)
+        ng.push(`接続断バナー: ${label} が PageHeader と重なる`)
       }
     }
   } catch {

@@ -242,6 +242,10 @@ mirakc と同じ「接続時に現在状態を再送し、以降差分」とい�
   `disconnectedBannerDelayMs`（10 秒）続いたときだけ帯を出す。`EventSource` は瞬断でも自分で
   再接続するので、遅延なしで出すと瞬断のたびに点滅する。追加の `error` が来てもタイマーは
   再セットしない（最初の `error` からの経過だけを見る）
+- **文言は「更新通知が止まっています」であって「更新が止まっています」ではない。**
+  グループごとの定期 invalidate（上記）は接続状態を見ず `visibilityState` だけで回り続ける。
+  SSE が切れていても、前面タブなら各クエリの周期（運用状態 60 秒 など）で収束し続ける。
+  「最終接続」も同じ理由で最後に SSE が繋がっていた時刻であり、画面の鮮度そのものではない
 - `navigator.onLine` は使わない --- `false` のときだけ確実で、`true` は保証にならない（プロキシ側の
   障害を見逃す）
 - 色は `bg-muted` + `text-foreground`（信号色を使わない。壊れたのではなく止まっているだけ）。
@@ -249,9 +253,8 @@ mirakc と同じ「接続時に現在状態を再送し、以降差分」とい�
 - `app-shell.tsx` の `StickyBanners` が `ConnectionBanner` と `CircuitBreakerBanner`
   （サーキットブレーカーの居座り帯）を 1 つの sticky コンテナにまとめる。両方を個別に
   `sticky top-0` にすると同じ位置のきょうだいとして重なる（sticky は兄弟の高さを自動で
-  避けない）ためで、この 1 つのコンテナが合計の描画高さを `--breaker-banner-height` に
+  避けない）ためで、この 1 つのコンテナが合計の描画高さを `--sticky-banners-height` に
   publish する。`PageHeader` や各ページの独自ヘッダはこの 1 つの変数だけを見ればよい
-  （変数名は据え置き。消費側は触っていない）
 
 ## `<html lang>` は ja
 

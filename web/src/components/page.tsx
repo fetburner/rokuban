@@ -49,7 +49,7 @@ export function PageHeader({
       // 居座り表示で、これも sticky top-0 なので、ずらさないと両者が同じ位置で
       // 重なる（バナー未発動時は 0px）。
       className="sticky z-10 border-b border-border bg-background/95 backdrop-blur"
-      style={{ top: 'var(--breaker-banner-height, 0px)' }}
+      style={{ top: 'var(--sticky-banners-height, 0px)' }}
     >
       <div className="flex items-center gap-3 px-4 py-3">
         <h1 className="shrink-0 text-base font-semibold tracking-tight">{title}</h1>

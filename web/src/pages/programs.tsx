@@ -885,7 +885,7 @@ function ProgramGridView({
       // ヘッダ（sticky）が画面外へ出てしまう。
       style={{
         height:
-          'calc(100dvh - var(--page-header-height, 0px) - var(--breaker-banner-height, 0px))',
+          'calc(100dvh - var(--page-header-height, 0px) - var(--sticky-banners-height, 0px))',
       }}
     >
       {selected && (

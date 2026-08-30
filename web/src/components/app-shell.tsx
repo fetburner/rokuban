@@ -359,7 +359,7 @@ function Sidebar() {
  * どちらも「発動中のときだけ描画され、高さが変わりうる」居座り通知。個別に
  * `sticky top-0` にすると同じ top:0 のきょうだいが重なる（sticky は兄弟の
  * 高さを自動で避けない）ので、外側のこのコンテナだけを sticky にし、合計の
- * 描画高さを `--breaker-banner-height` に publish する。`PageHeader`
+ * 描画高さを `--sticky-banners-height` に publish する。`PageHeader`
  * （components/page.tsx）や各ページの独自ヘッダはこの 1 つの変数だけを見れば
  * よい（変数名は据え置き --- 消費側を触らずに済む）。
  */
@@ -370,14 +370,14 @@ function StickyBanners() {
     const el = ref.current
     if (!el) return
     const publish = () => {
-      document.documentElement.style.setProperty('--breaker-banner-height', `${el.offsetHeight}px`)
+      document.documentElement.style.setProperty('--sticky-banners-height', `${el.offsetHeight}px`)
     }
     publish()
     const observer = new ResizeObserver(publish)
     observer.observe(el)
     return () => {
       observer.disconnect()
-      document.documentElement.style.setProperty('--breaker-banner-height', '0px')
+      document.documentElement.style.setProperty('--sticky-banners-height', '0px')
     }
   }, [])
 

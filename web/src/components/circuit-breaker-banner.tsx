@@ -42,7 +42,7 @@ import { mutationErrorMessage } from '@/lib/mutation-error-message'
  * 既定動作）にのみ依存し、SSE の取りこぼしを前提にしない
  * （不変条件 5: イベントはヒント、真実は再取得）。
  *
- * sticky 化と高さの publish（`--breaker-banner-height`）は自身では持たず、
+ * sticky 化と高さの publish（`--sticky-banners-height`）は自身では持たず、
  * `app-shell.tsx` の `StickyBanners` に任せる --- `ConnectionBanner` と並んで
  * 出るとき、どちらも `sticky top-0` の兄弟のままでは重なる（sticky は兄弟の
  * 高さを自動で避けない）ため、1 つの sticky コンテナに両方をまとめて 1 箇所で

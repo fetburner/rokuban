@@ -225,6 +225,10 @@ Node の ESM スクリプトから `../src/api/zod.ts` を直接 import でき�
   hover の背景色の遷移は従来どおり起きること、`active:...:translate-y-px`
   の押下フィードバック（Tailwind v4 では `translate` プロパティにコンパイル
   される）は遷移し**続ける**こと
+- 接続断バナー（`components/connection-banner.tsx`、issue #456）の地が無彩か。
+  `/api/events` は明示のスタブを持たず catch-all（200 json）に落ちるので、
+  Content-Type 不一致で SSE が即座に失敗し、追加の配線なしで「切断中」を作れる。
+  `disconnectedBannerDelayMs`（10 秒）分は実時間で待つ
 - 測ったコントラストの表。**数値の権威はこの出力**で、docs には転記しない
 - モバイルの「その他」ポップオーバー（`components/app-shell.tsx` の `MoreMenu`）
   を開いた状態の判定。固定されたボトムバーの上に浮くオーバーレイなので、
@@ -268,7 +272,7 @@ pnpm check:colors
 検査が見ていない書き方（動的なクラス名の合成・CSS の名前付き色・3 桁の 16 進・
 `public/` の資産）は `scripts/check-colors.mjs` に書き出してあり、実行のたびに出力する。
 
-### SSE 抜きでの定期再取得（`sse-refresh.mjs`）
+### SSE 抜きでの定期再取得・接続断バナー（`sse-refresh.mjs`）
 
 SSE の通知を 1 通も届けないまま接続だけ維持したとき、**定めた周期で REST 再取得が
 実際に起きるか**を、リクエスト数を数えて判定する（運用状態 60 秒 / ストレージ残高
@@ -276,6 +280,16 @@ SSE の通知を 1 通も届けないまま接続だけ維持したとき、**�
 §レベルトリガーの対称性）。時計は `page.clock.runFor` で進めるので 10 分待たない。
 `design.mjs` と同じく `/api/**` を丸ごと差し替えるため、mirakc も DB も Go サーバーも
 要らない。
+
+**接続断バナー（`components/connection-banner.tsx`、issue #456）もここで見る。**
+`/api/events` を `page.route` で abort し、`disconnectedBannerDelayMs`（10 秒。
+`page.clock` の仮想時計で進める）後に帯が出る → route を復旧させる → 帯が消える、
+までを実ブラウザで確認する。復旧の再接続はブラウザ実装側のタイマー（実時間、
+`page.clock` は進めない）に依るため実時間でポーリングする。加えて、帯と
+`CircuitBreakerBanner`（`/api/breakers` を 1 件返して同時に出す）が `PageHeader`
+と `getBoundingClientRect` で交差しないことも見る --- スクロールして両方を
+sticky の「張り付いた」状態にしてから測る（未スクロールでは top のずらしを
+外しても重ならずに通ってしまう）。
 
 **単体テスト（`src/lib/events.test.tsx`）と重なっていない部分がここの存在理由。**
 単体テストはフックとテスト用のクエリキーしか通らないので、**画面が実際に使っている

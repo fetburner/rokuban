@@ -4,41 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { ConnectionBanner } from '@/components/connection-banner'
 import { disconnectedBannerDelayMs, useServerEvents } from '@/lib/events'
-
-/**
- * EventSourceStub は jsdom に無い EventSource を埋める。lib/events.test.tsx の
- * ものと同じ最小実装（`open` / `error` の発火だけを扱う）。
- */
-class EventSourceStub {
-  static last: EventSourceStub | null = null
-  private listeners = new Map<string, Set<(event: Event) => void>>()
-  closed = false
-  url: string
-
-  constructor(url: string) {
-    this.url = url
-    EventSourceStub.last = this
-  }
-
-  addEventListener(type: string, listener: (event: Event) => void): void {
-    const set = this.listeners.get(type) ?? new Set()
-    set.add(listener)
-    this.listeners.set(type, set)
-  }
-
-  removeEventListener(type: string, listener: (event: Event) => void): void {
-    this.listeners.get(type)?.delete(listener)
-  }
-
-  close(): void {
-    this.closed = true
-  }
-
-  emit(type: string): void {
-    const event = new Event(type)
-    for (const listener of this.listeners.get(type) ?? []) listener(event)
-  }
-}
+import { EventSourceStub } from '@/test/event-source-stub'
 
 function Subscriber() {
   useServerEvents()
@@ -94,7 +60,7 @@ describe('ConnectionBanner', () => {
     expect(screen.queryByRole('status')).not.toBeInTheDocument()
 
     await advance(1)
-    expect(screen.getByRole('status')).toHaveTextContent('自動更新が止まっています。再接続中…')
+    expect(screen.getByRole('status')).toHaveTextContent('更新通知が止まっています。再接続中…')
     // 値は定数ではなくリテラルで押さえる（定数を変えても通るテストにしない）
     expect(disconnectedBannerDelayMs).toBe(10_000)
   })
@@ -135,7 +101,7 @@ describe('ConnectionBanner', () => {
     expect(screen.queryByRole('status')).not.toBeInTheDocument()
   })
 
-  it('最終更新時刻（HH:MM 形式）を表示する', async () => {
+  it('最終接続時刻（HH:MM 形式）を表示する', async () => {
     vi.useFakeTimers()
     globalThis.EventSource = EventSourceStub as unknown as typeof EventSource
     renderBanner()
@@ -149,6 +115,6 @@ describe('ConnectionBanner', () => {
     })
     await advance(disconnectedBannerDelayMs)
 
-    expect(screen.getByRole('status')).toHaveTextContent(/最終更新 \d{1,2}:\d{2}/)
+    expect(screen.getByRole('status')).toHaveTextContent(/最終接続 \d{1,2}:\d{2}/)
   })
 })
