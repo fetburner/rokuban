@@ -285,8 +285,8 @@ const (
 // （CLAUDE.md 不変条件 9）。orphaned はさらに issue #98 で orphaned_at 列
 // （Phase 1 で state から分離した不可逆な観測）自体が無くなり、「この予約に
 // status='failed' の recordings 行が存在するか」の EXISTS 判定に置き換わった
-// （internal/db/queries/reservations.sql の GetReservationFull / api.handler.go
-// の reservationState）。この 3 つの文字列定数はテスト・ログでの表記を
+// （internal/db/queries/reservations.sql の GetReservationFullBySiteAndProgramID /
+// api.handler.go の reservationState）。この 3 つの文字列定数はテスト・ログでの表記を
 // 揃えるためだけに残す（internal/api.ReservationState の値と同じ語彙）。
 const (
 	ReservationStateActive   = "active"

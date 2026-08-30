@@ -38,10 +38,10 @@ func TestReservation_SiteExposed(t *testing.T) {
 	defer srv.Close()
 
 	const programID int64 = 1150000115041234
-	resID := insertReservationDirect(t, pool, ctx, programID, nil, 11500, 1150)
+	insertReservationDirect(t, pool, ctx, programID, nil, 11500, 1150)
 
 	t.Run("単体取得", func(t *testing.T) {
-		resp, err := http.Get(srv.URL + "/api/reservations/" + itoa(resID))
+		resp, err := http.Get(srv.URL + reservationPath(programID))
 		if err != nil {
 			t.Fatal(err)
 		}

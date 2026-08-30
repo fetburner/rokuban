@@ -21,15 +21,15 @@ type reservationSourceResp struct {
 	Source string `json:"source"`
 }
 
-func getReservationJSON(t *testing.T, srv *httptest.Server, id int64) reservationSourceResp {
+func getReservationJSON(t *testing.T, srv *httptest.Server, programID int64) reservationSourceResp {
 	t.Helper()
-	resp, err := http.Get(srv.URL + "/api/reservations/" + itoa(id))
+	resp, err := http.Get(srv.URL + reservationPath(programID))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET /api/reservations/%d status = %d, want 200", id, resp.StatusCode)
+		t.Fatalf("GET %s status = %d, want 200", reservationPath(programID), resp.StatusCode)
 	}
 	var got reservationSourceResp
 	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
@@ -58,7 +58,7 @@ func TestGetReservation_SourceManualDespiteRuleMatch(t *testing.T) {
 	const programID int64 = 1150000115021234
 	ruleID := insertRuleFixture(t, pool, ctx)
 	// rule_id 付きの予約行 = 「ルールが今マッチしている」状態を模す。
-	resID := insertReservationDirect(t, pool, ctx, programID, &ruleID, 11500, 1150)
+	insertReservationDirect(t, pool, ctx, programID, &ruleID, 11500, 1150)
 
 	// 手動予約であることを表す program_intents{record} を足す
 	// （このテストの核心: rule_id があっても intent が「手動」を主張する）。
@@ -68,7 +68,7 @@ func TestGetReservation_SourceManualDespiteRuleMatch(t *testing.T) {
 		t.Fatalf("seeding intent: %v", err)
 	}
 
-	got := getReservationJSON(t, srv, resID)
+	got := getReservationJSON(t, srv, programID)
 	if got.Source != "manual" {
 		t.Errorf("source = %q, want %q "+
 			"(手動予約にルールがマッチしていても表示は manual のままのはず。issue #26)", got.Source, "manual")
@@ -87,9 +87,9 @@ func TestGetReservation_SourceRuleWithoutIntent(t *testing.T) {
 
 	const programID int64 = 1150000115031234
 	ruleID := insertRuleFixture(t, pool, ctx)
-	resID := insertReservationDirect(t, pool, ctx, programID, &ruleID, 11500, 1150)
+	insertReservationDirect(t, pool, ctx, programID, &ruleID, 11500, 1150)
 
-	got := getReservationJSON(t, srv, resID)
+	got := getReservationJSON(t, srv, programID)
 	if got.Source != "rule" {
 		t.Errorf("source = %q, want %q", got.Source, "rule")
 	}

@@ -845,6 +845,19 @@ export const ReservationState = {
 
 export type ReservationOverrides = { [key: string]: unknown };
 
+/**
+ * 予約時点のスナップショット（program_snapshots 由来）。
+ */
+export type ReservationChannelType = typeof ReservationChannelType[keyof typeof ReservationChannelType];
+
+
+export const ReservationChannelType = {
+  GR: 'GR',
+  BS: 'BS',
+  CS: 'CS',
+  SKY: 'SKY',
+} as const;
+
 export interface Reservation {
   id: number;
   /**
@@ -877,6 +890,8 @@ export interface Reservation {
      * recordings と同じ形でここにも載せる。
      */
   serviceName: string;
+  /** 予約時点のスナップショット（program_snapshots 由来）。 */
+  channelType: ReservationChannelType;
   startAt: string;
   durationMs: number;
   createdAt: string;
@@ -2565,140 +2580,6 @@ export function useListReservations<TData = Awaited<ReturnType<typeof listReserv
 
 
 
-export type getReservationResponse200 = {
-  data: Reservation
-  status: 200
-}
-
-export type getReservationResponse404 = {
-  data: ErrorResponse
-  status: 404
-}
-
-export type getReservationResponseSuccess = (getReservationResponse200) & {
-  headers: Headers;
-};
-export type getReservationResponseError = (getReservationResponse404) & {
-  headers: Headers;
-};
-
-export type getReservationResponse = (getReservationResponseSuccess | getReservationResponseError)
-
-export const getGetReservationUrl = (id: number,) => {
-
-
-
-
-  return `/api/reservations/${id}`
-}
-
-/**
- * `reservations.id` は ruler の導出削除・再実体化で変わりうる（寿命が
- * 保証されていない。issue #29）。書き込みの宛先には使わない —— 意図・上書きは
- * `(site, programId)` を自身のキーとする別のエンドポイントに書く。
- *
- * **恒久的な資源同定（ブックマーク・ディープリンク・クライアントのキャッシュ
- * キー）にも使わない。** 予約行が再実体化されると同じ番組でも id が変わり、
- * この id を宛先にした URL・クエリキャッシュは 404 / 無効化される
- * （issue #99）。そのための読み取りは
- * `GET /api/sites/{site}/programs/{programId}/reservation` を使う。
- *
- * この id 経由の読み取りは、呼び出し側が既に一覧などから id を手にしていて
- * 同じ操作の中で使う（`GET /api/reservations` の各要素を直後に詳細取得する
- * 等）用途のために残す —— その用途では id が変わる窓（ruler の 1 パス）を
- * 跨がないため不安定性の影響を受けない。
- * @summary Get a reservation by its (unstable) derived id
- */
-export const getReservation = async (id: number, options?: RequestInit): Promise<getReservationResponse> => {
-
-  return customInstance<getReservationResponse>(getGetReservationUrl(id),
-  {
-    ...options,
-    method: 'GET'
-
-
-  }
-);}
-
-
-
-
-
-export const getGetReservationQueryKey = (id: number,) => {
-    return [
-    `/api/reservations/${id}`
-    ] as const;
-    }
-
-
-export const getGetReservationQueryOptions = <TData = Awaited<ReturnType<typeof getReservation>>, TError = ErrorResponse>(id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getReservation>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
-) => {
-
-const {query: queryOptions, request: requestOptions} = options ?? {};
-
-  const queryKey =  queryOptions?.queryKey ?? getGetReservationQueryKey(id);
-
-
-
-    const queryFn: QueryFunction<Awaited<ReturnType<typeof getReservation>>> = ({ signal }) => getReservation(id, { signal, ...requestOptions });
-
-
-
-
-
-   return  { queryKey, queryFn, enabled: id !== null && id !== undefined, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getReservation>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
-}
-
-export type GetReservationQueryResult = NonNullable<Awaited<ReturnType<typeof getReservation>>>
-export type GetReservationQueryError = ErrorResponse
-
-
-export function useGetReservation<TData = Awaited<ReturnType<typeof getReservation>>, TError = ErrorResponse>(
- id: number, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getReservation>>, TError, TData>> & Pick<
-        DefinedInitialDataOptions<
-          Awaited<ReturnType<typeof getReservation>>,
-          TError,
-          Awaited<ReturnType<typeof getReservation>>
-        > , 'initialData'
-      >, request?: SecondParameter<typeof customInstance>}
- , queryClient?: QueryClient
-  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
-export function useGetReservation<TData = Awaited<ReturnType<typeof getReservation>>, TError = ErrorResponse>(
- id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getReservation>>, TError, TData>> & Pick<
-        UndefinedInitialDataOptions<
-          Awaited<ReturnType<typeof getReservation>>,
-          TError,
-          Awaited<ReturnType<typeof getReservation>>
-        > , 'initialData'
-      >, request?: SecondParameter<typeof customInstance>}
- , queryClient?: QueryClient
-  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
-export function useGetReservation<TData = Awaited<ReturnType<typeof getReservation>>, TError = ErrorResponse>(
- id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getReservation>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
- , queryClient?: QueryClient
-  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
-/**
- * @summary Get a reservation by its (unstable) derived id
- */
-
-export function useGetReservation<TData = Awaited<ReturnType<typeof getReservation>>, TError = ErrorResponse>(
- id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getReservation>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
- , queryClient?: QueryClient
- ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
-
-  const queryOptions = getGetReservationQueryOptions(id,options)
-
-  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
-
-  return withQueryKey(query, queryOptions.queryKey);
-}
-
-
-
-
-
-
-
 export type getProgramReservationResponse200 = {
   data: Reservation
   status: 200
@@ -2728,11 +2609,9 @@ export const getGetProgramReservationUrl = (site: string,
 }
 
 /**
- * `(site, programId)` を宛先に予約を読む（issue #99）。書き込み側
- * （`PUT/DELETE .../intent`、`PATCH/DELETE .../overrides`）は M3-1（issue #29）で
- * 既にこのキーに寄っていたが、読み取り（`GET /api/reservations/{id}`・UI の
- * ディープリンク・クエリキャッシュ）は `reservations.id` という ruler の
- * 導出削除・再実体化で変わりうる不安定な値のままだった。
+ * `(site, programId)` を宛先に予約を読む（issue #99）。`reservations.id` は
+ * ruler の導出削除・再実体化で変わりうる不安定な値なので、UI の
+ * ディープリンク・クエリキャッシュのような恒久的な資源同定には使わない。
  *
  * `UNIQUE (site, program_id)` が既に張られているため、このキーで一意に
  * 予約が定まる。予約行が再実体化されて `id` が変わっても、この URL・

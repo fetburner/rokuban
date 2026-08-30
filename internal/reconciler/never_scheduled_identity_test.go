@@ -71,9 +71,11 @@ func TestReconciler_NeverScheduledExclusionSurvivesRematerialization(t *testing.
 		t.Errorf("再実体化後の desired = %d, want 0 —— 欠測の除外が予約 id に依存している（放送イベントで引くべき）", len(rows))
 	}
 
-	full, err := q.GetReservationFull(ctx, res2.ID)
+	full, err := q.GetReservationFullBySiteAndProgramID(ctx, sqlcgen.GetReservationFullBySiteAndProgramIDParams{
+		Site: res2.Site, ProgramID: res2.ProgramID,
+	})
 	if err != nil {
-		t.Fatalf("GetReservationFull: %v", err)
+		t.Fatalf("GetReservationFullBySiteAndProgramID: %v", err)
 	}
 	if !full.NeverRecorded {
 		t.Errorf("再実体化後の never_recorded = false, want true —— 表示も予約 id に依存している")
@@ -107,9 +109,11 @@ func TestReservation_MidRecordingFailureIsNotOrphanedDisplay(t *testing.T) {
 		t.Fatalf("inserting mid-recording failure: %v", err)
 	}
 
-	full, err := q.GetReservationFull(ctx, res.ID)
+	full, err := q.GetReservationFullBySiteAndProgramID(ctx, sqlcgen.GetReservationFullBySiteAndProgramIDParams{
+		Site: res.Site, ProgramID: res.ProgramID,
+	})
 	if err != nil {
-		t.Fatalf("GetReservationFull: %v", err)
+		t.Fatalf("GetReservationFullBySiteAndProgramID: %v", err)
 	}
 	if full.NeverRecorded {
 		t.Error("never_recorded = true, want false —— 放送中の失敗で「録れなかった」と表示している（mirakc の再試行待ち）")
@@ -155,9 +159,11 @@ func TestReservation_RealRecordClearsOrphanedButKeepsMissingEvent(t *testing.T) 
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
-	full, err := q.GetReservationFull(ctx, res.ID)
+	full, err := q.GetReservationFullBySiteAndProgramID(ctx, sqlcgen.GetReservationFullBySiteAndProgramIDParams{
+		Site: res.Site, ProgramID: res.ProgramID,
+	})
 	if err != nil {
-		t.Fatalf("GetReservationFull: %v", err)
+		t.Fatalf("GetReservationFullBySiteAndProgramID: %v", err)
 	}
 	if !full.NeverRecorded {
 		t.Fatalf("precondition: never_recorded = false, want true（欠測行ができているはず）")
@@ -186,9 +192,11 @@ func TestReservation_RealRecordClearsOrphanedButKeepsMissingEvent(t *testing.T) 
 		t.Fatalf("inserting real record: %v", err)
 	}
 
-	full, err = q.GetReservationFull(ctx, res.ID)
+	full, err = q.GetReservationFullBySiteAndProgramID(ctx, sqlcgen.GetReservationFullBySiteAndProgramIDParams{
+		Site: res.Site, ProgramID: res.ProgramID,
+	})
 	if err != nil {
-		t.Fatalf("GetReservationFull (after real record): %v", err)
+		t.Fatalf("GetReservationFullBySiteAndProgramID (after real record): %v", err)
 	}
 	if full.NeverRecorded {
 		t.Error("never_recorded = true, want false —— 本物の record が来たのに「録れなかった」と表示し続けている（#59 の再発）")
@@ -247,9 +255,11 @@ func TestReservation_TrashedRealRecordDoesNotReenterOrphaned(t *testing.T) {
 		t.Fatalf("inserting real record: %v", err)
 	}
 
-	full, err := q.GetReservationFull(ctx, res.ID)
+	full, err := q.GetReservationFullBySiteAndProgramID(ctx, sqlcgen.GetReservationFullBySiteAndProgramIDParams{
+		Site: res.Site, ProgramID: res.ProgramID,
+	})
 	if err != nil {
-		t.Fatalf("GetReservationFull: %v", err)
+		t.Fatalf("GetReservationFullBySiteAndProgramID: %v", err)
 	}
 	if full.NeverRecorded {
 		t.Fatalf("precondition: never_recorded = true, want false（本物の record で消えているはず）")
@@ -264,9 +274,11 @@ func TestReservation_TrashedRealRecordDoesNotReenterOrphaned(t *testing.T) {
 		t.Fatalf("soft-deleting real record: %v", err)
 	}
 
-	full, err = q.GetReservationFull(ctx, res.ID)
+	full, err = q.GetReservationFullBySiteAndProgramID(ctx, sqlcgen.GetReservationFullBySiteAndProgramIDParams{
+		Site: res.Site, ProgramID: res.ProgramID,
+	})
 	if err != nil {
-		t.Fatalf("GetReservationFull (after trash): %v", err)
+		t.Fatalf("GetReservationFullBySiteAndProgramID (after trash): %v", err)
 	}
 	if full.NeverRecorded {
 		t.Error("never_recorded = true, want false —— ごみ箱操作で orphaned 表示に戻った（live 限定を掛けてしまっている。issue #318 の「any 行」導出）")

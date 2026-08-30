@@ -18,6 +18,7 @@ function baseReservation(overrides: Partial<Reservation> = {}): Reservation {
     state: 'active',
     title: 'テスト番組',
     serviceName: 'テスト局',
+    channelType: 'GR',
     startAt: dayStart.toISOString(),
     durationMs: 30 * 60_000,
     createdAt: dayStart.toISOString(),

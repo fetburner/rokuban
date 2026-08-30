@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -170,23 +169,6 @@ func (h *Server) ListReservations(ctx context.Context, _ ListReservationsRequest
 	return ListReservations200JSONResponse(result), nil
 }
 
-// GetReservation は指定 ID の予約を返す。
-func (h *Server) GetReservation(ctx context.Context, req GetReservationRequestObject) (GetReservationResponseObject, error) {
-	q := sqlcgen.New(h.pool)
-	row, err := q.GetReservationFull(ctx, req.Id)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return GetReservation404JSONResponse{Error: "reservation not found"}, nil
-		}
-		return nil, err
-	}
-	res, err := reservationFromRow(row.Reservation, row.ProgramSnapshot, row.Overrides, row.IntentAction, row.NeverRecorded)
-	if err != nil {
-		return nil, err
-	}
-	return GetReservation200JSONResponse(res), nil
-}
-
 // reservationState は Reservation.state を (rule_id, base, neverRecorded) から
 // 導出する。
 //
@@ -237,9 +219,9 @@ func reservationState(ruleID *int64, base json.RawMessage, neverRecorded bool) R
 // dedupMatchRecordingId / dedupSimilarity はその skip の根拠（M2-6）で、
 // ruler が毎パス作り直す導出列をそのまま出す。
 //
-// neverRecorded は呼び出し元のクエリ（GetReservationFull / ListReservationsFull）
-// が EXISTS で計算した「この予約に status='failed' の recordings 行があるか」
-// （issue #98。reservationState のコメント参照）。
+// neverRecorded は呼び出し元のクエリ（GetReservationFullBySiteAndProgramID /
+// ListReservationsFull）が EXISTS で計算した「この予約に status='failed' の
+// recordings 行があるか」（issue #98。reservationState のコメント参照）。
 func reservationFromRow(r sqlcgen.Reservation, snap sqlcgen.ProgramSnapshot, overrides []byte, intentAction *string, neverRecorded bool) (Reservation, error) {
 	source := ReservationSourceRule
 	if intentAction != nil && *intentAction == db.IntentRecord {
@@ -261,6 +243,10 @@ func reservationFromRow(r sqlcgen.Reservation, snap sqlcgen.ProgramSnapshot, ove
 		Skip:        opts.IsSkipped(),
 		Title:       snap.Title,
 		ServiceName: snap.ServiceName,
+		// program_snapshots 由来の予約時点のスナップショット（issue #440）。
+		// ライブ画面が「同じチャンネル種別の予約か」を EPG 経由の programId
+		// 突き合わせなしに直接判定できるようにするため（web/src/lib/live-interruption.ts）。
+		ChannelType: ReservationChannelType(snap.ChannelType),
 		StartAt:     snap.StartAt,
 		DurationMs:  snap.DurationMs,
 		CreatedAt:   r.CreatedAt,

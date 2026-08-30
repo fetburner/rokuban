@@ -31,15 +31,15 @@ type reservationDedupeResp struct {
 	DedupSimilarity       *float32 `json:"dedupSimilarity"`
 }
 
-func getReservationDedupeJSON(t *testing.T, srv *httptest.Server, id int64) reservationDedupeResp {
+func getReservationDedupeJSON(t *testing.T, srv *httptest.Server, programID int64) reservationDedupeResp {
 	t.Helper()
-	resp, err := http.Get(srv.URL + "/api/reservations/" + itoa(id))
+	resp, err := http.Get(srv.URL + reservationPath(programID))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET /api/reservations/%d status = %d, want 200", id, resp.StatusCode)
+		t.Fatalf("GET %s status = %d, want 200", reservationPath(programID), resp.StatusCode)
 	}
 	var got reservationDedupeResp
 	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
@@ -73,7 +73,7 @@ func listReservationsDedupeJSON(t *testing.T, srv *httptest.Server) []reservatio
 func insertDedupeSkippedReservation(
 	t *testing.T, pool *pgxpool.Pool, ctx context.Context,
 	programID int64, ruleID, recordingID int64, similarity float32,
-) int64 {
+) {
 	t.Helper()
 	start := time.Now().Add(24 * time.Hour)
 	if _, err := pool.Exec(ctx, `
@@ -85,18 +85,15 @@ VALUES ('default', $1, 'テスト番組', $2, 1800000, 11500, 1150, 'GR', '27', 
 		programID, start, int32(programID%100000)); err != nil {
 		t.Fatalf("inserting program_snapshot fixture: %v", err)
 	}
-	var id int64
-	err := pool.QueryRow(ctx, `
+	if _, err := pool.Exec(ctx, `
 INSERT INTO reservations (
   site, program_id, rule_id, base,
   dedup_match_recording_id, dedup_similarity
 ) VALUES (
   'default', $1, $2, '{"skip":true,"priority":10}'::jsonb, $3, $4
-) RETURNING id`, programID, ruleID, recordingID, similarity).Scan(&id)
-	if err != nil {
+)`, programID, ruleID, recordingID, similarity); err != nil {
 		t.Fatalf("inserting dedupe-skipped reservation fixture: %v", err)
 	}
-	return id
 }
 
 // insertRecordingFixture は根拠として参照する録画履歴を 1 行作る。
@@ -131,9 +128,9 @@ func TestGetReservation_DedupeSkipExposed(t *testing.T) {
 	const programID int64 = 1150000115041234
 	ruleID := insertRuleFixture(t, pool, ctx)
 	recordingID := insertRecordingFixture(t, pool, ctx, ruleID)
-	resID := insertDedupeSkippedReservation(t, pool, ctx, programID, ruleID, recordingID, 0.875)
+	insertDedupeSkippedReservation(t, pool, ctx, programID, ruleID, recordingID, 0.875)
 
-	got := getReservationDedupeJSON(t, srv, resID)
+	got := getReservationDedupeJSON(t, srv, programID)
 	if !got.Skip {
 		t.Error("skip = false, want true (base.skip が立っている予約)")
 	}
@@ -173,10 +170,10 @@ func TestGetReservation_RecordIntentClearsDedupeSkip(t *testing.T) {
 	const programID int64 = 1150000115051234
 	ruleID := insertRuleFixture(t, pool, ctx)
 	recordingID := insertRecordingFixture(t, pool, ctx, ruleID)
-	resID := insertDedupeSkippedReservation(t, pool, ctx, programID, ruleID, recordingID, 0.9)
+	insertDedupeSkippedReservation(t, pool, ctx, programID, ruleID, recordingID, 0.9)
 
 	// 意図が無い時点では skip = true（対照）。
-	if got := getReservationDedupeJSON(t, srv, resID); !got.Skip {
+	if got := getReservationDedupeJSON(t, srv, programID); !got.Skip {
 		t.Fatal("precondition: skip should be true before the record intent")
 	}
 
@@ -186,7 +183,7 @@ func TestGetReservation_RecordIntentClearsDedupeSkip(t *testing.T) {
 		t.Fatalf("seeding intent: %v", err)
 	}
 
-	got := getReservationDedupeJSON(t, srv, resID)
+	got := getReservationDedupeJSON(t, srv, programID)
 	if got.Skip {
 		t.Error("skip = true; the user's record intent must beat the dedupe skip (EPGStation#473)")
 	}
@@ -207,9 +204,9 @@ func TestGetReservation_NoDedupeEvidenceOmitsFields(t *testing.T) {
 
 	const programID int64 = 1150000115061234
 	ruleID := insertRuleFixture(t, pool, ctx)
-	resID := insertReservationDirect(t, pool, ctx, programID, &ruleID, 11500, 1150)
+	insertReservationDirect(t, pool, ctx, programID, &ruleID, 11500, 1150)
 
-	got := getReservationDedupeJSON(t, srv, resID)
+	got := getReservationDedupeJSON(t, srv, programID)
 	if got.Skip {
 		t.Error("skip = true for a reservation without base.skip")
 	}
@@ -235,7 +232,7 @@ func TestGetReservation_SkipIntentSetsSkip(t *testing.T) {
 
 	const programID int64 = 1150000115071234
 	ruleID := insertRuleFixture(t, pool, ctx)
-	resID := insertReservationDirect(t, pool, ctx, programID, &ruleID, 11500, 1150)
+	insertReservationDirect(t, pool, ctx, programID, &ruleID, 11500, 1150)
 
 	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
 		Site: "default", ProgramID: programID, Action: db.IntentSkip,
@@ -243,7 +240,7 @@ func TestGetReservation_SkipIntentSetsSkip(t *testing.T) {
 		t.Fatalf("seeding intent: %v", err)
 	}
 
-	if got := getReservationDedupeJSON(t, srv, resID); !got.Skip {
+	if got := getReservationDedupeJSON(t, srv, programID); !got.Skip {
 		t.Error("skip = false with program_intents.action = 'skip'")
 	}
 }
@@ -269,7 +266,7 @@ func TestGetReservation_BrokenBaseJSONFails(t *testing.T) {
 		t.Fatalf("corrupting base: %v", err)
 	}
 
-	resp, err := http.Get(srv.URL + "/api/reservations/" + itoa(resID))
+	resp, err := http.Get(srv.URL + reservationPath(programID))
 	if err != nil {
 		t.Fatal(err)
 	}

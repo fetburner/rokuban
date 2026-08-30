@@ -68,6 +68,14 @@ func overridesPath(programID int64) string {
 	return "/api/sites/default/programs/" + itoa(programID) + "/overrides"
 }
 
+// reservationPath は (site, programId) を宛先にした予約単体取得の URL
+// （GET /api/sites/{site}/programs/{programId}/reservation、issue #99）。
+// 旧 GET /api/reservations/{id} は不安定な reservations.id を宛先にしていたため
+// 廃止された（issue #440）。テストの読み取りプローブはこちらに寄せる。
+func reservationPath(programID int64) string {
+	return "/api/sites/default/programs/" + itoa(programID) + "/reservation"
+}
+
 func doPatch(t *testing.T, srv *httptest.Server, path, body string) *http.Response {
 	t.Helper()
 	req, err := http.NewRequest(http.MethodPatch, srv.URL+path, strings.NewReader(body))
@@ -678,7 +686,9 @@ func TestPatchProgramOverrides_EffectiveOptionsRoundTrip(t *testing.T) {
 	}
 	_ = resp.Body.Close()
 
-	row, err := q.GetReservationFull(ctx, resID)
+	row, err := q.GetReservationFullBySiteAndProgramID(ctx, sqlcgen.GetReservationFullBySiteAndProgramIDParams{
+		Site: "default", ProgramID: programID,
+	})
 	if err != nil {
 		t.Fatalf("reloading reservation: %v", err)
 	}
@@ -803,7 +813,9 @@ func TestPatchProgramOverrides_UntilEncodedWithProfilesFromBase_Succeeds(t *test
 		t.Fatalf("keepOriginal alone with profiles from base: status = %d, want 204", resp.StatusCode)
 	}
 
-	row, err := q.GetReservationFull(ctx, resID)
+	row, err := q.GetReservationFullBySiteAndProgramID(ctx, sqlcgen.GetReservationFullBySiteAndProgramIDParams{
+		Site: "default", ProgramID: programID,
+	})
 	if err != nil {
 		t.Fatalf("reloading reservation: %v", err)
 	}

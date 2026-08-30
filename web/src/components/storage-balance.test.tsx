@@ -82,6 +82,7 @@ function reservation(overrides: Partial<Reservation> = {}): Reservation {
     state: 'active',
     title: 'test',
     serviceName: 'test',
+    channelType: 'GR',
     startAt: iso(60 * 60 * 1000), // 1時間後
     durationMs: 1_800_000,
     createdAt: '2026-08-01T00:00:00Z',

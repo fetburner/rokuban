@@ -34,7 +34,7 @@ func insertReservationWithSnapshot(
 	programID int64,
 	title, serviceName string,
 	networkID, serviceID int32,
-) int64 {
+) {
 	t.Helper()
 	start := time.Now().Add(24 * time.Hour)
 	if _, err := pool.Exec(ctx, `
@@ -46,15 +46,11 @@ VALUES ('default', $1, $2, $3, 1800000, $4, $5, 'GR', '27', $6, $7)`,
 		programID, title, start, networkID, serviceID, int32(programID%100000), serviceName); err != nil {
 		t.Fatalf("inserting program_snapshot fixture: %v", err)
 	}
-	var id int64
-	err := pool.QueryRow(ctx, `
+	if _, err := pool.Exec(ctx, `
 INSERT INTO reservations (site, program_id, base)
-VALUES ('default', $1, '{}'::jsonb)
-RETURNING id`, programID).Scan(&id)
-	if err != nil {
+VALUES ('default', $1, '{}'::jsonb)`, programID); err != nil {
 		t.Fatalf("inserting reservation fixture: %v", err)
 	}
-	return id
 }
 
 // TestReservation_ServiceNameExposed は API が予約に program_snapshots.service_name
@@ -75,10 +71,10 @@ func TestReservation_ServiceNameExposed(t *testing.T) {
 	defer srv.Close()
 
 	const programID int64 = 1150000115041234
-	resID := insertReservationWithSnapshot(t, pool, ctx, programID, "テスト番組", "NHK総合", 1, 1)
+	insertReservationWithSnapshot(t, pool, ctx, programID, "テスト番組", "NHK総合", 1, 1)
 
 	t.Run("単体取得", func(t *testing.T) {
-		resp, err := http.Get(srv.URL + "/api/reservations/" + itoa(resID))
+		resp, err := http.Get(srv.URL + reservationPath(programID))
 		if err != nil {
 			t.Fatal(err)
 		}
