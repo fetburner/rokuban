@@ -1362,6 +1362,47 @@ for (const theme of themes) {
         log(`  [${theme}] 帯が重なる面 ${surfaces.length} 種のうち最も不利なもの = ${worst}`)
         checkContrast(theme, '容量超過の帯の罫線 / 最も不利な面', bandBorder.rgba, { backdrop: worst }, minUiContrast)
       }
+
+      // 帯ラベルとセルの時刻文字の重なり（issue #460）。帯の上端がセルの上端に
+      // 近いと、見た目のラベル（「⚠ チューナー不足…」）とセルの時刻文字
+      // （「23:30」）が同じ px に描かれてどちらも読めなくなる（ライトの
+      // `programs-grid-light-desktop.png` で実際に確認済み）。jsdom はレイアウトを
+      // 計算しないのでここでしか測れない --- rect の非交差を機械判定する。
+      const labelBoxes = (
+        await Promise.all(
+          (await page.locator('[data-testid="capacity-band-label"]').all()).map((l) =>
+            l.boundingBox(),
+          ),
+        )
+      ).filter((b) => b !== null)
+      const cellTimeBoxes = (
+        await Promise.all(
+          (await page.locator('[data-testid="program-grid-cell-time"]').all()).map((c) =>
+            c.boundingBox(),
+          ),
+        )
+      ).filter((b) => b !== null)
+      log(`  [${theme}] 帯ラベル ${labelBoxes.length} 件 / セル時刻 ${cellTimeBoxes.length} 件`)
+      if (labelBoxes.length === 0) {
+        ng.push(`[${theme}] 容量超過の帯ラベルが見つからない`)
+      }
+      const rectsIntersect = (a, b) =>
+        a.x < b.x + b.width &&
+        a.x + a.width > b.x &&
+        a.y < b.y + b.height &&
+        a.y + a.height > b.y
+      const overlaps = []
+      for (const l of labelBoxes) {
+        for (const c of cellTimeBoxes) {
+          if (rectsIntersect(l, c)) overlaps.push({ label: l, cell: c })
+        }
+      }
+      if (overlaps.length > 0) {
+        log(`  [${theme}] 重なり ${JSON.stringify(overlaps[0])}`)
+        ng.push(
+          `[${theme}] 帯ラベルとセルの時刻文字の rect が ${overlaps.length} 件重なっている`,
+        )
+      }
     }
     await context.close()
   }

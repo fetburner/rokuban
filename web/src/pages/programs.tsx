@@ -2,7 +2,7 @@ import { keepPreviousData, useInfiniteQuery, useQueryClient } from '@tanstack/re
 import { useNavigate, useSearch as useRouteSearch } from '@tanstack/react-router'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
-import { CapacityBands } from '@/components/capacity-band'
+import { CapacityBandLabels, CapacityBands } from '@/components/capacity-band'
 import { ChannelPicker } from '@/components/channel-picker'
 import { DayStrip } from '@/components/day-strip'
 import { EmptyState, ErrorState, ListSkeleton, PageHeader } from '@/components/page'
@@ -990,6 +990,9 @@ function ProgramGridView({
           // 帯はセルより上・ヘッダより下の層に入る。軸を受け取って同じ
           // spanToPx を通すので、帯と番組セルは同じ時刻で必ず同じ位置に来る
           overlay={(gridAxis) => <CapacityBands axis={gridAxis} overages={overages} />}
+          // 帯の見えるラベルは時間軸列に出す（局の列の番組セルと重ならない。
+          // issue #460。docs/frontend/programs.md「容量超過の帯とバッジ」）
+          gutterOverlay={(gridAxis) => <CapacityBandLabels axis={gridAxis} overages={overages} />}
         />
       </div>
     </div>

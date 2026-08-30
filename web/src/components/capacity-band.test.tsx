@@ -2,7 +2,7 @@ import { render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { CapacityOverage, ProgramListItem, Service } from '@/api/generated'
-import { CapacityBands } from '@/components/capacity-band'
+import { CapacityBandLabels, CapacityBands } from '@/components/capacity-band'
 import { ProgramGrid } from '@/components/program-grid'
 import { epgColumnWidthPx, type TimeAxis } from '@/lib/epg-grid'
 
@@ -85,6 +85,9 @@ function renderGrid(overages: CapacityOverage[], programs: ProgramListItem[]) {
       onSelect={vi.fn()}
       now={at(19 * 60)}
       overlay={(gridAxis) => <CapacityBands axis={gridAxis} overages={overages} />}
+      // 見えるラベルは時間軸列（gutterOverlay）に出る（issue #460）。
+      // 単体テストでも実際に使う配線と同じ組み方にする。
+      gutterOverlay={(gridAxis) => <CapacityBandLabels axis={gridAxis} overages={overages} />}
     />,
   )
 }

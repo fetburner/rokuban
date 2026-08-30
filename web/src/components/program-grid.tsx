@@ -72,6 +72,11 @@ const unmeasuredViewport: Viewport = { top: 0, left: 0, width: 0, height: 0 }
  * 縦断する帯を置くための層を `overlay` として開けてあり、そこに渡される軸で
  * `spanToPx` を呼べば番組セルと同じ座標系に乗る。現在時刻インジケータが
  * その最初の利用者。
+ *
+ * 帯の**見えるラベル**だけは別の層 `gutterOverlay` に置く。時間軸列（左端の
+ * `21:00` 等が並ぶ列）は局の列とは別の DOM 部分木なので、帯の見えるラベルを
+ * ここに出せば番組セルの時刻文字と重なりようがない（issue #460。局の列の中に
+ * 出すと帯の上端が番組セルの上端と重なったときに衝突する）。
  */
 export function ProgramGrid({
   services,
@@ -83,6 +88,7 @@ export function ProgramGrid({
   now,
   scrollToMs,
   overlay,
+  gutterOverlay,
 }: {
   /** 列。渡された順に左から並べる（並び順は lib/epg-grid.ts の orderServices）。 */
   services: Service[]
@@ -103,6 +109,12 @@ export function ProgramGrid({
   scrollToMs?: number
   /** 全チャンネル縦断の帯を重ねる層。軸を受け取って絶対配置の要素を返す。 */
   overlay?: (axis: TimeAxis) => React.ReactNode
+  /**
+   * 時間軸列（gutter）に重ねる層。帯の見えるラベルなど、局の列の番組セルと
+   * 衝突させたくない要素をここに置く（issue #460）。軸を受け取って絶対配置の
+   * 要素を返す点は `overlay` と同じ --- 座標系（`spanToPx` の top）も共有する。
+   */
+  gutterOverlay?: (axis: TimeAxis) => React.ReactNode
 }) {
   const scrollerRef = useRef<HTMLDivElement>(null)
   const [viewport, setViewport] = useState<Viewport>(unmeasuredViewport)
@@ -253,6 +265,12 @@ export function ProgramGrid({
                   </span>
                 </div>
               )}
+              {/* 帯の見えるラベル層（issue #460）。局の列の overlay と対になる
+                  時間軸列側の層 --- 番組セルが無い列なので、帯の上端が目盛りの
+                  行と重なっても番組の文字と衝突しない。不透明な地を持たせて
+                  いるので、目盛り（21:00 等）と縦位置が重なってもラベルが上に
+                  乗って隠す（「現在時刻の札」が目盛りに乗るのと同じ扱い）。 */}
+              {gutterOverlay?.(axis)}
             </div>
           </div>
 
@@ -408,7 +426,10 @@ function ProgramCell({
           </span>
         </>
       )}
-      <span className="block text-[10px] leading-tight text-muted-foreground">
+      <span
+        data-testid="program-grid-cell-time"
+        className="block text-[10px] leading-tight text-muted-foreground"
+      >
         {formatTime(program.startAt)}
       </span>
       <span className="block text-xs leading-tight">{program.name}</span>
