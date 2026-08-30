@@ -791,7 +791,7 @@ log("\n=== ①'' ホーム: 警告の種別ごとの色（琥珀 vs destructive�
   }
 
   // ドロップ = destructive。色はリンクに付く。
-  const dropRow = page.locator('li', { hasText: 'クラシック音楽館: drop' }).first()
+  const dropRow = page.locator('li', { hasText: 'クラシック音楽館: ドロップ' }).first()
   const dropColor = await computedOf(dropRow.locator('a').first(), 'color')
   if (dropColor === null) {
     ng.push('ホーム: ドロップの警告項目の文字色が取得できない')
