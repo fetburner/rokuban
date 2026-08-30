@@ -303,18 +303,29 @@ log('\n=== 接続断バナー（/recordings）===')
   await bannerPage.waitForTimeout(100)
 
   const banner = bannerPage.locator('[role="status"]', { hasText: '更新通知が止まっています' })
-  const breakerBanner = bannerPage.locator('[role="alert"]')
+  // hasText で本文に紐づける --- 素の `[role="alert"]` だと将来別のアラートが
+  // 増えたときに count / boundingBox が strict mode 違反で無関係な NG になる
+  const breakerBanner = bannerPage.locator('[role="alert"]', { hasText: '削除が保留されています' })
   check('切断直後: 帯はまだ出ない', await banner.count(), 0)
   check('ブレーカー帯は最初から出ている', await breakerBanner.count(), 1)
 
   await bannerPage.clock.runFor(disconnectedBannerDelayMs)
   // setTimeout のコールバック（React の状態更新）が反映されるのを待つ
   await bannerPage.waitForTimeout(100)
+  let bannerAppeared = true
   try {
     await banner.waitFor({ timeout: 2000 })
     log(`OK  ${disconnectedBannerDelayMs}ms 後: 帯が出た`)
+  } catch {
+    bannerAppeared = false
+    log(`NG  ${disconnectedBannerDelayMs}ms 後: 帯が出ない`)
+    ng.push('接続断バナー: 遅延後に出ない')
+  }
 
-    // 帯が出ている間、PageHeader（components/page.tsx）と重ならないこと。
+  // 帯が出ている間、PageHeader（components/page.tsx）と重ならないこと。ここは
+  // waitFor の try とは分ける --- 同じ try に入れると boundingBox() が投げた
+  // ときの NG が「帯が出ない」という食い違ったメッセージになる。
+  if (bannerAppeared) {
     // PageHeader は帯の合計高さ（--sticky-banners-height）ぶん top をずらして
     // いるはずなので、矩形が交差しなければそのずらしが効いている証拠になる。
     // ConnectionBanner / CircuitBreakerBanner の両方について見る --- 前者だけ
@@ -337,9 +348,6 @@ log('\n=== 接続断バナー（/recordings）===')
         ng.push(`接続断バナー: ${label} が PageHeader と重なる`)
       }
     }
-  } catch {
-    log(`NG  ${disconnectedBannerDelayMs}ms 後: 帯が出ない`)
-    ng.push('接続断バナー: 遅延後に出ない')
   }
 
   sseUp = true

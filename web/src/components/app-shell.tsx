@@ -361,7 +361,7 @@ function Sidebar() {
  * 高さを自動で避けない）ので、外側のこのコンテナだけを sticky にし、合計の
  * 描画高さを `--sticky-banners-height` に publish する。`PageHeader`
  * （components/page.tsx）や各ページの独自ヘッダはこの 1 つの変数だけを見れば
- * よい（変数名は据え置き --- 消費側を触らずに済む）。
+ * よい。
  */
 function StickyBanners() {
   const ref = useRef<HTMLDivElement>(null)
