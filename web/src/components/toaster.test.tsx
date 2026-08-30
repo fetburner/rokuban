@@ -162,20 +162,47 @@ describe('ToastProvider', () => {
     expect(classes).toContain('line-clamp-3')
   })
 
-  it('上限は 3 件。溢れた古い方から黙って落ちる（タイマーも畳む）', async () => {
-    vi.useFakeTimers()
+  /**
+   * 件数上限（slice(-3)）で古い方から落とす実装は、寿命の古さで判断するため
+   * 未読の失敗トーストを後続の成功トーストが押し出してしまっていた
+   * （kind: 'error' を足した動機そのものを打ち消す）。上限をやめてデデュープに
+   * 変えたので、何件積んでも失敗トーストは残る。
+   */
+  it('未読の失敗トーストは、後続の成功トーストに押し出されない', () => {
     renderHarness()
-    fireEvent.click(screen.getByText('error を出す')) // 1: 自動で消えない目印
-    fireEvent.click(screen.getByText('info を出す')) // 2
-    fireEvent.click(screen.getByText('2 通目の info を出す')) // 3
-    fireEvent.click(screen.getByText('action 付きを出す')) // 4 --- 1 を押し出す
+    fireEvent.click(screen.getByText('error を出す'))
+    fireEvent.click(screen.getByText('info を出す'))
+    fireEvent.click(screen.getByText('2 通目の info を出す'))
+    fireEvent.click(screen.getByText('action 付きを出す'))
 
-    // 4 件目を積んだ時点で最も古い（error）が落ちている
-    expect(screen.queryByText('失敗しました')).not.toBeInTheDocument()
+    expect(screen.getByText('失敗しました')).toBeInTheDocument()
     expect(screen.getByText('保存しました')).toBeInTheDocument()
     expect(screen.getByText('2 通目')).toBeInTheDocument()
     expect(screen.getByText('予約しました')).toBeInTheDocument()
-    expect(screen.getAllByRole('button', { name: '閉じる' })).toHaveLength(3)
+  })
+
+  /**
+   * デデュープ: 同じ文言で積み増さない代わりに、既存の分のタイマーを延長する。
+   * 古いタイマーを消さずに延長すると、古いタイマーが先に発火して早く消えて
+   * しまう（6500ms 時点のアサーションがそれを検出する）。
+   */
+  it('同じ文言の info は積み増さず、タイマーを延長する（デデュープ）', async () => {
+    vi.useFakeTimers()
+    renderHarness()
+    fireEvent.click(screen.getByText('info を出す')) // t=0
+    expect(screen.getAllByText('保存しました')).toHaveLength(1)
+
+    await advance(5_000) // t=5000
+    fireEvent.click(screen.getByText('info を出す')) // 同じ文言 → 積み増さず延長
+    expect(screen.getAllByText('保存しました')).toHaveLength(1)
+
+    // 最初の呼び出しからは 6000ms を超えたが、延長したのでまだ消えない
+    await advance(1_500) // t=6500
+    expect(screen.getByText('保存しました')).toBeInTheDocument()
+
+    // 2 回目の呼び出しから 6000ms（t=11000）で消える
+    await advance(4_500) // t=11000
+    expect(screen.queryByText('保存しました')).not.toBeInTheDocument()
   })
 
   /**

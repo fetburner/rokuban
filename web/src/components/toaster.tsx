@@ -25,12 +25,6 @@ const infoDurationMs = 6000
  */
 const actionDurationMs = 10000
 
-/**
- * 同時に積む上限。失敗（`kind: 'error'`）は自動で消えないので、上限が無いと
- * 同じ操作を繰り返し失敗させたときに画面下端が同じ文言で埋まる。
- */
-const maxToasts = 3
-
 /** タイマーの一時停止・再開のための、進行中トースト 1 件ぶんの状態。 */
 type PendingTimer = {
   remainingMs: number
@@ -58,6 +52,14 @@ type PauseReason = 'hover' | 'focus'
 export function ToastProvider({ children }: { children: React.ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([])
 
+  // toasts state のミラー。`show` がデデュープのため「今の一覧」を同期的に
+  // 読む必要があるが、setState の updater 関数は React の再描画のタイミングで
+  // 走るので、直後に読んでも反映済みとは限らない（自動バッチング）。
+  // このバグを実際に踏んだ --- ref を介さず setState の updater 内でだけ
+  // 重複先の id を変数に書いていたら、直後に読む armTimer がまだ書かれて
+  // いない古い値を読んでテストが落ちた。
+  const toastsRef = useRef<Toast[]>([])
+
   // タイマーは state ではなく ref に持つ。toasts 配列を依存に含む useEffect で
   // 再スケジュールする形にすると、1 件足すたびに全トーストのタイマーが
   // 巻き戻ってしまう（罠を参照）。
@@ -72,7 +74,8 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
     const timer = timers.current.get(id)
     if (timer?.timeoutId !== undefined) window.clearTimeout(timer.timeoutId)
     timers.current.delete(id)
-    setToasts((current) => current.filter((t) => t.id !== id))
+    toastsRef.current = toastsRef.current.filter((t) => t.id !== id)
+    setToasts(toastsRef.current)
   }, [])
 
   const schedule = useCallback(
@@ -107,9 +110,8 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
 
   const pause = useCallback(
     (reason: PauseReason) => {
-      const wasPaused = isPaused()
       paused.current[reason] = true
-      if (!wasPaused) pauseTimers()
+      pauseTimers()
     },
     [pauseTimers],
   )
@@ -122,34 +124,40 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
     [resumeTimers],
   )
 
-  const show = useCallback(
-    (toast: ToastInput) => {
-      const id = Date.now() + Math.random()
-      const kind = toast.kind ?? 'info'
-
-      setToasts((current) => {
-        const next = [...current, { ...toast, kind, id }]
-        // 上限を超えたぶんは黙って落とす（古い方から）。タイマーも一緒に畳む。
-        for (const dropped of next.slice(0, Math.max(next.length - maxToasts, 0))) {
-          const timer = timers.current.get(dropped.id)
-          if (timer?.timeoutId !== undefined) window.clearTimeout(timer.timeoutId)
-          timers.current.delete(dropped.id)
-        }
-        return next.slice(-maxToasts)
-      })
-
-      if (kind !== 'error') {
-        const durationMs = toast.action ? actionDurationMs : infoDurationMs
-        if (isPaused()) {
-          // 届いた時点で既に hover / focus 中なら、動かさずに一時停止した
-          // 状態で登録する（schedule すると即座に走り出してしまう）。
-          timers.current.set(id, { remainingMs: durationMs, timeoutId: undefined, startedAt: Date.now() })
-        } else {
-          schedule(id, durationMs)
-        }
+  /** 進行中のタイマーを（あれば古いものを消してから）張り直す。 */
+  const armTimer = useCallback(
+    (id: number, durationMs: number) => {
+      const timer = timers.current.get(id)
+      if (timer?.timeoutId !== undefined) window.clearTimeout(timer.timeoutId)
+      if (isPaused()) {
+        // 届いた時点で既に hover / focus 中なら、動かさずに一時停止した
+        // 状態で登録する（schedule すると即座に走り出してしまう）。
+        timers.current.set(id, { remainingMs: durationMs, timeoutId: undefined, startedAt: Date.now() })
+      } else {
+        schedule(id, durationMs)
       }
     },
     [schedule],
+  )
+
+  const show = useCallback(
+    (toast: ToastInput) => {
+      const kind = toast.kind ?? 'info'
+      // 同じ文言のトーストが既に出ていれば積み増さない。この id（新規 or
+      // 既存の重複先）にだけタイマーを張る。
+      const existing = toastsRef.current.find((t) => t.message === toast.message)
+      const armId = existing ? existing.id : Date.now() + Math.random()
+
+      if (!existing) {
+        toastsRef.current = [...toastsRef.current, { ...toast, kind, id: armId }]
+        setToasts(toastsRef.current)
+      }
+
+      if (kind !== 'error') {
+        armTimer(armId, toast.action ? actionDurationMs : infoDurationMs)
+      }
+    },
+    [armTimer],
   )
 
   const value = useMemo(() => show, [show])
