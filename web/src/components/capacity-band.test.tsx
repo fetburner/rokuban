@@ -303,6 +303,31 @@ describe('CapacityBandLabels の配置', () => {
     expect(label.style.top).toBe('2670px')
   })
 
+  it('正時起点で 9〜18 分の帯は、目盛り回避で押し下げた先が直後の帯と重なるので見えるラベルを描かない', () => {
+    // 22:00-22:10（10 分、高さ 20px）が正時に始まり、直後に 22:10-23:00
+    // （高さ 100px）が続く --- サーバーが実際に返しうる形（issue #460
+    // 再レビュー実測: [03:00, 03:10) の CS と [03:10, 04:00) の GR）。
+    // 22:00 の帯は avoidTickRow が top 2660 まで押し下げるが、帯自身の下端も
+    // top 2660 なのでラベルが帯の外（= 直後の帯の領域）へはみ出す --- 直す前の
+    // 実装はここで描いてしまい、直後の帯のラベル（押し下げられず top 2660）と
+    // 完全に重なっていた。
+    renderGrid(
+      [
+        overage(22 * 60, 22 * 60 + 10, { jammedTypes: ['CS'], shortfall: 1 }),
+        overage(22 * 60 + 10, 23 * 60, { jammedTypes: ['GR'], shortfall: 1 }),
+      ],
+      [],
+    )
+
+    // 正時起点の短い帯（CS）は見えるラベルを持たない
+    expect(screen.queryByText('CS-1')).not.toBeInTheDocument()
+    // 直後の帯（GR）のラベルは通常どおり自分の帯の上端に出る
+    const labels = screen.getAllByTestId('capacity-band-label')
+    expect(labels).toHaveLength(1)
+    expect(screen.getByText('GR-1')).toBeInTheDocument()
+    expect(labels[0]?.style.top).toBe('2660px')
+  })
+
   it('アイコンを見た目の手がかりとして持つ（色だけに頼らない。issue #460 レビュー should 2）', () => {
     renderGrid([overage(20 * 60 + 15, 21 * 60)], [])
 
@@ -310,5 +335,16 @@ describe('CapacityBandLabels の配置', () => {
     expect(label.querySelector('svg')).not.toBeNull()
     // 短縮ラベルの文字自体は別の要素（省略記号の対象を分けるため）
     expect(screen.getByTestId('capacity-band-label-text')).toHaveTextContent('BS-1')
+  })
+
+  it('種別が 2 つ以上詰まって本数だけの短縮形（例: 「-2」）になっても、title に全文を持つ', () => {
+    // jammedTypes が 2 つ以上あると shortageLabelCompact は種別を列挙せず
+    // 「-2」のような本数だけの形になり、種別も単位も読めない（issue #460
+    // 再レビュー nit 1）。native title でマウス操作者に全文を補う。
+    renderGrid([overage(20 * 60 + 15, 21 * 60, { shortfall: 2, jammedTypes: ['GR', 'BS'] })], [])
+
+    expect(screen.getByText('-2')).toBeInTheDocument()
+    const label = screen.getByTestId('capacity-band-label')
+    expect(label).toHaveAttribute('title', 'チューナー不足（GR・BS が 2 本）')
   })
 })

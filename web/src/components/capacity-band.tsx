@@ -1,7 +1,7 @@
 import { TriangleAlert } from 'lucide-react'
 
 import type { CapacityOverage } from '@/api/generated'
-import { overageWindow, shortageLabelCompact, shortageRangeMessage } from '@/lib/capacity'
+import { overageWindow, shortageLabel, shortageLabelCompact, shortageRangeMessage } from '@/lib/capacity'
 import { hourTicks, spanToPx, type TimeAxis } from '@/lib/epg-grid'
 
 /**
@@ -137,7 +137,11 @@ function avoidTickRow(axis: TimeAxis, topPx: number): number {
  * （`pages/programs.tsx`）ので、ラベル同士が同じ位置に来て積む必要は無い ---
  * 積む処理は一度書いたが、実際には決して発火しないコードだったので削った
  * （issue #460 レビュー）。ラベルが避ける必要があるのは目盛りの行だけ
- * （`avoidTickRow`）。
+ * （`avoidTickRow`）。**ただし `avoidTickRow` の押し下げは帯の高さを見ない。**
+ * 正時に始まる短い帯（9〜18 分）を押し下げると、直後に隣接する帯（サーバーが
+ * 正当に返せる形）のラベルと同じ位置に来て衝突が復活する --- `CapacityBandLabel`
+ * は押し下げた先が自分の帯からはみ出すときはラベルを描かないことでこれを防ぐ
+ * （issue #460 再レビュー）。
  */
 export function CapacityBandLabels({
   axis,
@@ -160,11 +164,26 @@ function CapacityBandLabel({ axis, overage }: { axis: TimeAxis; overage: Capacit
   const rect = spanToPx(axis, span.startMs, span.endMs)
   if (!rect || rect.heightPx < labelMinHeightPx) return null
   const topPx = avoidTickRow(axis, rect.topPx)
+  // 押し下げた先が自分の帯の下端を超えるなら描かない。正時に始まる帯は
+  // avoidTickRow が tickAvoidHeightPx ぶん押し下げるので、帯の高さが
+  // tickAvoidHeightPx + labelHeightPx（36px、9〜18 分の帯で起こりうる）未満だと
+  // ラベルが自分の帯の外（＝直後に隣接する帯の領域）へはみ出す。はみ出した先で
+  // 直後の帯のラベルは押し下げられずに同じ top へ来るので、2 つのラベルが完全に
+  // 重なる（issue #460 再レビュー実測: [03:00, 03:10) の CS と [03:10, 04:00) の
+  // GR で両方 top 890）。位置の嘘をつくより描かない方が正しい --- 帯の色と
+  // 予約バッジ（一覧側）が警告の伝達を担う。
+  if (topPx + labelHeightPx > rect.topPx + rect.heightPx) return null
 
   return (
     <div
       data-testid="capacity-band-label"
       aria-hidden="true"
+      // 短縮ラベル（「BS-1」「-2」等）だけでは種別も単位も読めない場合がある
+      // （複数種別が詰まると `shortageLabelCompact` は本数だけの `-2` を返し、
+      // 実測の余白では他の略記が入らない）。マウス操作者には native title
+      // （ネイティブツールチップ）で全文を補う --- div は aria-hidden なので
+      // 支援技術には影響しない。
+      title={shortageLabel(overage)}
       // bg-background で不透明にする --- 時間軸列には毎時の目盛り（21:00 等）
       // が別途描かれており、`avoidTickRow` で通常は避けるが、それでも隣接する
       // 場合の可読性のために地を割る（透過だと文字同士が混ざる）。

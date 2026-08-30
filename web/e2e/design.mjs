@@ -176,6 +176,8 @@ const overages = [
   // ちょうど正時に始まる 3 本目（issue #460 レビュー blocker）。ラベルが帯の
   // 上端にアンカーされるので、この区間だと時間軸の目盛り（例: 「05:00」）と
   // 同じ y に来る --- avoidTickRow が効いているかをここで機械判定する。
+  // 高さは 1 時間（120px）あるので、押し下げてもラベルは自分の帯の内側に
+  // 収まる（4 本目の対比: 9〜18 分の短い帯だと収まらない）。
   {
     site: SITE,
     startAt: iso(nextHourBoundaryMs(nowMs + 5 * HOUR)),
@@ -183,7 +185,38 @@ const overages = [
     shortfall: 3,
     jammedTypes: ['CS'],
   },
+  // 正時に始まる短い帯（10 分 = 9〜18 分の範囲）+ 直後に隣接する帯（issue #460
+  // 再レビュー実測と同じ形: [03:00, 03:10) の CS と [03:10, 04:00) の GR）。
+  // `avoidTickRow` は帯の高さを見ずに tickAvoidHeightPx（20px）押し下げるので、
+  // 10 分帯（高さ 20px）だと押し下げた先が自分の帯の下端 = 直後の帯の上端と
+  // 一致し、直後の帯のラベル（押し下げられない）と完全に重なっていた
+  // （直す前の実装ではここで `labelOverlaps` が発火する）。4 本目（CS）は
+  // 見えるラベルを意図的に持たない（`overagesWithoutVisibleLabel` 参照）。
+  {
+    site: SITE,
+    startAt: iso(nextHourBoundaryMs(nowMs + 7 * HOUR)),
+    endAt: iso(nextHourBoundaryMs(nowMs + 7 * HOUR) + 10 * 60_000),
+    shortfall: 1,
+    jammedTypes: ['CS'],
+  },
+  {
+    site: SITE,
+    startAt: iso(nextHourBoundaryMs(nowMs + 7 * HOUR) + 10 * 60_000),
+    endAt: iso(nextHourBoundaryMs(nowMs + 7 * HOUR) + HOUR),
+    shortfall: 2,
+    jammedTypes: ['GR'],
+  },
 ]
+
+/**
+ * 見えるラベルを意図的に持たない帯の本数（issue #460 再レビュー）。正時起点で
+ * 9〜18 分の帯は、目盛り回避（avoidTickRow）で押し下げた先が自分の帯の外
+ * （= 直後の帯の領域）にはみ出すため、位置の嘘をつくより描かない
+ * （`capacity-band.tsx` の `CapacityBandLabel`）。上の `overages` のうち 1 本
+ * （10 分の CS 帯）がこれに当たる --- 差し引かずに本数チェックすると、この
+ * 意図的な欠落を「消えたバグ」と区別できない。
+ */
+const overagesWithoutVisibleLabel = 1
 
 const recordings = [
   { id: 11, site: SITE, source: 'rule', serviceName: 'NHK総合', channelType: 'GR', channel: '27', networkId: 32736, serviceId: 1024, eventId: 11, title: 'ニュース７', startAt: iso(nowMs - 600_000), durationMs: 1_800_000, status: 'recording', createdAt: iso(nowMs - 600_000), startedAt: iso(nowMs - 600_000) },
@@ -1435,9 +1468,12 @@ for (const theme of themes) {
       // 保証されている（`internal/capacity/capacity.go` の `Compute`）ので
       // 「同時刻に重なる帯」はフィクスチャとしても不適切 --- ここで見るのは
       // 「隣接する帯のラベルがそれぞれ独立に見えるか」だけ。
-      if (labelBoxes.length < overages.length) {
+      // `overagesWithoutVisibleLabel` 本は意図的にラベルを持たないので差し引く
+      // （差し引かないと、この意図的な欠落を「消えたバグ」と区別できない）。
+      if (labelBoxes.length < overages.length - overagesWithoutVisibleLabel) {
         ng.push(
-          `[${theme}] 帯が ${overages.length} 本あるのに見えるラベルが ${labelBoxes.length} 件しかない`,
+          `[${theme}] 帯が ${overages.length} 本あるのに見えるラベルが ${labelBoxes.length} 件しかない` +
+            `（意図的に描かない ${overagesWithoutVisibleLabel} 件を差し引いても足りない）`,
         )
       }
       const labelOverlaps = []
