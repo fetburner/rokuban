@@ -212,10 +212,40 @@ describe('CircuitBreakerBanner', () => {
     await user.click(await screen.findByRole('button', { name: '再開' }))
     await user.click(await screen.findByRole('button', { name: '再開する' }))
 
-    expect(await screen.findByText(/再開に失敗しました/)).toBeInTheDocument()
+    // issue #457: サーバー本文（'発動していません'）を汎用文言に付け加える。
+    expect(
+      await screen.findByText('ルール評価による予約の削除の再開に失敗しました: 発動していません'),
+    ).toBeInTheDocument()
     // 失敗しても発動中の表示自体は消えない(黙って成功したように見せない)
     expect(screen.getByText('ルール評価による予約の削除が停止中')).toBeInTheDocument()
     expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  // issue #457: 本文の無い失敗（ネットワーク断相当）では末尾に「: 」を残さない
+  // （両方向の確認）。
+  it('本文の無い再開失敗では末尾に「: 」を残さない', async () => {
+    globalThis.fetch = vi.fn((input: string | URL | Request) => {
+      const url = String(input)
+      if (url.includes('/resume')) return Promise.resolve(new Response(null, { status: 500 }))
+      return Promise.resolve(
+        new Response(JSON.stringify([trippedBreaker]), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      )
+    }) as unknown as typeof fetch
+    const user = userEvent.setup()
+    renderBanner()
+
+    await user.click(await screen.findByRole('button', { name: '再開' }))
+    await user.click(await screen.findByRole('button', { name: '再開する' }))
+
+    expect(
+      await screen.findByText('ルール評価による予約の削除の再開に失敗しました'),
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByText(/ルール評価による予約の削除の再開に失敗しました: /),
+    ).not.toBeInTheDocument()
   })
 
   it('同名ブレーカーが 2 サイトで発動しているとき、行の展開状態が site ごとに独立している（issue #293）', async () => {

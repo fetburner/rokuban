@@ -232,6 +232,10 @@ const encodeProfiles = [{ name: 'h264', container: 'mp4' as const }]
  * `extraServices` は `services`（固定 2 局）に追加で載せるサービス（既定は
  * 追加無し）。ピッカーの定義域テスト（issue #231 のレビュー must-fix）だけが
  * `hasPrograms: false` の局を注入するために使う。
+ *
+ * `intentPutResponse` は `PUT /api/sites/default/programs/{id}/intent`
+ * （予約 / 予約取消）の応答を差し替える（issue #457 のサーバー本文つき失敗テスト用）。
+ * 未指定なら常に 204。
  */
 function stubApi(
   reservations: Reservation[] = [],
@@ -240,6 +244,7 @@ function stubApi(
   onProgramsCall?: (callIndex: number) => Response | undefined,
   overridesPatchResponse?: () => Response,
   extraServices: Service[] = [],
+  intentPutResponse?: () => Response,
 ) {
   let programsCallIndex = 0
   const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
@@ -281,7 +286,7 @@ function stubApi(
       )
     }
     if (/^\/api\/sites\/default\/programs\/\d+\/intent$/.test(url.pathname) && init?.method === 'PUT') {
-      return Promise.resolve(noContentResponse())
+      return Promise.resolve(intentPutResponse?.() ?? noContentResponse())
     }
     if (
       /^\/api\/sites\/default\/programs\/\d+\/overrides$/.test(url.pathname) &&
@@ -1464,5 +1469,48 @@ describe('ProgramsPage から予約時にエンコード設定を指定できる
         ),
       ).toBe(true)
     })
+  })
+})
+
+// issue #457: 予約 / 予約取消（intent の PUT）が失敗したとき、サーバーの本文
+// （`apiErrorMessage`）を汎用文言に付け加える。7 箇所ぶんの揃え先のうち
+// `programs.tsx` の `reserve` / `cancel` を固定する。
+describe('ProgramsPage の予約 / 取消失敗時のエラー本文（issue #457）', () => {
+  it('予約が失敗すると、汎用文言にサーバー本文を付けたトーストが出る', async () => {
+    stubApi([], [], allPrograms, undefined, undefined, [], () =>
+      errorResponse(409, 'overlaps with another reservation'),
+    )
+    renderPage()
+
+    await userEvent.click((await screen.findAllByRole('button', { name: '予約' }))[0])
+
+    expect(
+      await screen.findByText('予約に失敗しました: overlaps with another reservation'),
+    ).toBeInTheDocument()
+  })
+
+  it('予約取消が失敗すると、汎用文言にサーバー本文を付けたトーストが出る', async () => {
+    stubApi([reservation(77, soon.programId, 'ニュース7')], [], allPrograms, undefined, undefined, [], () =>
+      errorResponse(409, 'reservation already cleared'),
+    )
+    renderPage()
+
+    await userEvent.click(await screen.findByRole('button', { name: '取消' }))
+
+    expect(
+      await screen.findByText('予約の取消に失敗しました: reservation already cleared'),
+    ).toBeInTheDocument()
+  })
+
+  it('本文の無い失敗（ネットワーク断相当）では末尾に「: 」を残さない', async () => {
+    stubApi([reservation(77, soon.programId, 'ニュース7')], [], allPrograms, undefined, undefined, [], () =>
+      new Response(null, { status: 500 }),
+    )
+    renderPage()
+
+    await userEvent.click(await screen.findByRole('button', { name: '取消' }))
+
+    expect(await screen.findByText('予約の取消に失敗しました')).toBeInTheDocument()
+    expect(screen.queryByText(/予約の取消に失敗しました: /)).not.toBeInTheDocument()
   })
 })

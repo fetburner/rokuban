@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RouterProvider, createMemoryHistory, createRouter } from '@tanstack/react-router'
 import { render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { Reservation, Rule } from '@/api/generated'
@@ -48,6 +49,10 @@ function jsonResponse(body: unknown, status = 200): Response {
   })
 }
 
+function errorResponse(status: number, message: string): Response {
+  return jsonResponse({ error: message }, status)
+}
+
 /**
  * stubFetch は AppShell（`/api/breakers`）・詳細画面本体・重なり警告
  * （`GET /api/sites/{site}/programs/{programId}/overlaps`）・ルール一覧
@@ -59,14 +64,16 @@ function jsonResponse(body: unknown, status = 200): Response {
  * `$site` と異なる値を渡せるようにしている（下記「ゲート済み site と URL の
  * site が違う」テスト参照）。`rules`（既定 `[]`）はルール名の解決先
  * （issue #300、`pages/recordings.tsx` の `RuleSection` と同じ `useListRules`
- * キャッシュを引く）。
+ * キャッシュを引く）。`intentPutResponse` は `PUT .../intent`（予約取消）の
+ * 応答を差し替える（既定は 204 成功。issue #457 のサーバー本文つき失敗テスト用）。
  */
 function stubFetch(
   reservationOf: (site: string, programId: number) => Reservation | null,
   sites: string[] = ['default'],
   rules: Rule[] = [],
+  intentPutResponse?: () => Response,
 ) {
-  const fetchMock = vi.fn((input: string | URL | Request) => {
+  const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input), 'http://localhost')
     if (url.pathname === '/api/breakers') return Promise.resolve(jsonResponse([]))
     // SiteGate（routes.tsx）が全ルートの手前で待つ（issue #184 M4-12）。
@@ -75,6 +82,17 @@ function stubFetch(
     // EncodeOverridesEditor（エンコードと保持セクション）が必ず引く。
     // 中身はこのファイルのテストの関心事ではないので既定は空配列。
     if (url.pathname === '/api/encode-profiles') return Promise.resolve(jsonResponse([]))
+    // 取消成功時に navigate する先（ReservationsPage）が引く。中身はこの
+    // ファイルの関心事ではないので既定は空配列（issue #457 の取消成功テスト用）。
+    if (url.pathname === '/api/reservations') return Promise.resolve(jsonResponse([]))
+    if (url.pathname === '/api/capacity/overages') return Promise.resolve(jsonResponse([]))
+
+    if (
+      /^\/api\/sites\/[^/]+\/programs\/\d+\/intent$/.test(url.pathname) &&
+      init?.method === 'PUT'
+    ) {
+      return Promise.resolve(intentPutResponse?.() ?? new Response(null, { status: 204 }))
+    }
 
     const reservationMatch = /^\/api\/sites\/([^/]+)\/programs\/(\d+)\/reservation$/.exec(
       url.pathname,
@@ -350,5 +368,42 @@ describe('ReservationDetailPage', () => {
 
     expect(screen.queryByText(/#19/)).not.toBeInTheDocument()
     expect(screen.queryByText(/config\.encode\.profiles/)).not.toBeInTheDocument()
+  })
+
+  // issue #457: intent PUT のスタブに成功既定（204）の分岐を足した以上、
+  // それを通る経路も固定する（死んだ分岐のまま残さない）。
+  it('予約取消が成功すると、トーストが出て /reservations へ遷移する', async () => {
+    const user = userEvent.setup()
+    stubFetch((site, programId) =>
+      site === 'default' && programId === 300000 ? baseReservation() : null,
+    )
+
+    const { router } = renderAt('/reservations/default/300000')
+
+    await user.click(await screen.findByRole('button', { name: '予約を取消' }))
+
+    expect(await screen.findByText('予約を取消しました')).toBeInTheDocument()
+    await waitFor(() => expect(router.state.location.pathname).toBe('/reservations'))
+  })
+
+  // issue #457: 予約取消（intent の PUT）が失敗したとき、サーバーの本文
+  // （`apiErrorMessage`）を汎用文言に付け加える。
+  it('予約取消が失敗すると、汎用文言にサーバー本文を付けたトーストが出る', async () => {
+    const user = userEvent.setup()
+    stubFetch(
+      (site, programId) =>
+        site === 'default' && programId === 300000 ? baseReservation() : null,
+      ['default'],
+      [],
+      () => errorResponse(409, 'reservation already cleared'),
+    )
+
+    renderAt('/reservations/default/300000')
+
+    await user.click(await screen.findByRole('button', { name: '予約を取消' }))
+
+    expect(
+      await screen.findByText('予約の取消に失敗しました: reservation already cleared'),
+    ).toBeInTheDocument()
   })
 })

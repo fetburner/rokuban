@@ -18,6 +18,7 @@ import { ReservationSkipReason } from '@/components/reservation-skip-reason'
 import { useToast } from '@/components/toaster'
 import { Button } from '@/components/ui/button'
 import { formatDateTime, formatDuration } from '@/lib/format'
+import { mutationErrorMessage } from '@/lib/mutation-error-message'
 import { stateLabels } from '@/lib/reservation-labels'
 
 /**
@@ -87,7 +88,7 @@ export function ReservationDetailPage() {
           toast({ message: '予約を取消しました' })
           void navigate({ to: '/reservations' })
         },
-        onError: () => toast({ message: '予約の取消に失敗しました' }),
+        onError: (err) => toast({ message: mutationErrorMessage('予約の取消に失敗しました', err) }),
       },
     )
   }

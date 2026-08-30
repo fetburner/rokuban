@@ -98,7 +98,7 @@ export function StorageBalance() {
         forecast.projectedConsumptionBytes !== undefined &&
         forecast.projectedConsumptionBytes > 0 && (
           <span
-            title={`直近 ${forecast.sampleSize} 件の録画実績（原本 TS の実測ビットレート。エンコード派生物は含まない）から算出した見込み`}
+            title={`直近 ${forecast.sampleSize} 件の録画実績（原本 TS の実測ビットレート。変換後のファイルは含まない）から算出した見込み`}
           >
             今後{forecastWindowDays}日の予約で約 +
             {formatBytes(forecast.projectedConsumptionBytes)} の見込み

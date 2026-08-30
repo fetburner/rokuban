@@ -1,7 +1,8 @@
 import type { ReactNode } from 'react'
 
 import { useListSites } from '@/api/generated'
-import { apiErrorMessage, unwrap } from '@/api/unwrap'
+import { unwrap } from '@/api/unwrap'
+import { mutationErrorMessage } from '@/lib/mutation-error-message'
 import { SiteContext } from '@/lib/site'
 
 /**
@@ -31,7 +32,7 @@ export function SiteGate({ children }: { children: ReactNode }) {
     if (query.status === 'error') {
       return (
         <div className="p-6 text-sm text-destructive">
-          サイト一覧の取得に失敗しました{apiErrorMessage(query.error) ? `: ${apiErrorMessage(query.error)}` : ''}
+          {mutationErrorMessage('サイト一覧の取得に失敗しました', query.error)}
         </div>
       )
     }
@@ -44,7 +45,7 @@ export function SiteGate({ children }: { children: ReactNode }) {
     // 起きた場合に空配列を site として使ってクラッシュするより説明を出す。
     return (
       <div className="p-6 text-sm text-destructive">
-        利用可能なサイトがありません（サーバーの mirakc 設定を確認してください）
+        利用可能なサイトがありません（サーバーの設定を確認してください）
       </div>
     )
   }

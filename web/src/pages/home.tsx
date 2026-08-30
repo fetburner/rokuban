@@ -498,10 +498,14 @@ function buildWarnings({
   }
 
   for (const recording of failedRecordings) {
+    const reason = failureReasonText(recording)
+    // 材料が無い（undefined）ときは理由そのものが言えていないので、「理由:」
+    // というラベルを付けない（付けると「理由: 理由不明」という二重表現になる）。
+    const reasonSegment = reason === undefined ? '理由不明' : `理由: ${reason}`
     items.push({
       key: `failed:${recording.id}`,
       kind: 'failed',
-      message: `${recording.title || '（番組名なし）'}: 録画失敗（${failedDurationText(recording)} / 理由: ${failureReasonText(recording)}）`,
+      message: `${recording.title || '（番組名なし）'}: 録画失敗（${failedDurationText(recording)} / ${reasonSegment}）`,
       link: { to: '/recordings/$id', id: recording.id },
     })
   }
@@ -520,9 +524,9 @@ function buildWarnings({
     if (summary === undefined) continue
     if (summary.drops === 0 && summary.errors === 0 && summary.scrambled === 0) continue
     const parts = [
-      { label: 'drop', value: summary.drops },
-      { label: 'error', value: summary.errors },
-      { label: 'scrambled', value: summary.scrambled },
+      { label: 'ドロップ', value: summary.drops },
+      { label: 'エラー', value: summary.errors },
+      { label: 'スクランブル', value: summary.scrambled },
     ]
       .filter((b) => b.value > 0)
       .map((b) => `${b.label} ${b.value.toLocaleString()}`)
@@ -584,7 +588,10 @@ function failedDurationText(recording: Recording): string {
 /**
  * failureReasonText は失敗録画の理由を `qualityEvents` から取り出す。
  *
- * **材料が無ければ「理由不明」と明示し、沈黙とは区別する**（issue #301）。
+ * **材料が無ければ `undefined` を返し、沈黙（理由が言えない）と実際の理由文を
+ * 型で区別する**（issue #301 / #454）。呼び出し側はこれを見て「理由:」という
+ * ラベルを付けるかどうかを決める --- 文字列の中身（`'理由不明'`）で判定すると、
+ * 将来この語を言い換えたときに呼び出し側の分岐が黙って外れる。
  * `qualityEvents` は追記専用の履歴（`recordings.quality_events`。
  * `docs/schema/recordings.md` §5）で `recording.failed` /
  * `recording.record-broken` / `bcas_anomaly` が混ざるので、**最後の要素では
@@ -607,20 +614,20 @@ function failedDurationText(recording: Recording): string {
  * が無い）は `pages/recordings.tsx` の「品質イベント」欄と同じ流儀
  * （`JSON.stringify`）で読める形にフォールバックする。
  *
- * **読んだフィールドが空文字なら「理由不明」に寄せる**（レビュー指摘）。
+ * **読んだフィールドが空文字なら `undefined` に寄せる**（レビュー指摘）。
  * `mirakc.FailedReason.Type` に `omitempty` は無いので `{"type":""}` は
  * あり得る形だが、それを `JSON.stringify` でそのまま出すと「理由: {"type":""}」に
  * なり、材料が無い（沈黙）ことと区別できる文言にならない。
  */
-function failureReasonText(recording: Recording): string {
+function failureReasonText(recording: Recording): string | undefined {
   const events = recording.qualityEvents
-  if (events === undefined || events.length === 0) return '理由不明'
+  if (events === undefined || events.length === 0) return undefined
   const failureEvent = events.findLast(
     (e) => e['event'] === 'recording.failed' || e['event'] === 'recording.record-broken',
   )
-  if (failureEvent === undefined) return '理由不明'
+  if (failureEvent === undefined) return undefined
   const reason = failureEvent['reason']
-  if (reason === undefined || reason === null) return '理由不明'
+  if (reason === undefined || reason === null) return undefined
 
   if (typeof reason === 'object' && !Array.isArray(reason)) {
     const record = reason as Record<string, unknown>
@@ -628,7 +635,7 @@ function failureReasonText(recording: Recording): string {
     // でなければ `recording.record-broken`。
     const field = failureEvent['event'] === 'recording.failed' ? 'type' : 'reason'
     const value = record[field]
-    if (typeof value === 'string') return value === '' ? '理由不明' : value
+    if (typeof value === 'string') return value === '' ? undefined : value
   }
   return JSON.stringify(reason)
 }

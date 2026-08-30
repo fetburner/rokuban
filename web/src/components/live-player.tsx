@@ -360,7 +360,7 @@ function LiveErrorMessage({ error }: { error: LiveLoadError }) {
   if (error.kind === 'unreachable') {
     return (
       <p className="text-sm text-muted-foreground">
-        録画サーバーの自宅側（streamer）に接続できません。自宅サーバーが起動しているか、
+        録画サーバーの自宅側に接続できません。自宅サーバーが起動しているか、
         ネットワークが繋がっているかを確認してください。
       </p>
     )

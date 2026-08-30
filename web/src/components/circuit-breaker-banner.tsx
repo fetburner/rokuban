@@ -23,6 +23,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { describeBreakerName, describeBreakerReason } from '@/lib/breaker'
 import { formatDateTime } from '@/lib/format'
+import { mutationErrorMessage } from '@/lib/mutation-error-message'
 
 /**
  * CircuitBreakerBanner は発動中の大量削除サーキットブレーカーを全画面に出す
@@ -111,8 +112,8 @@ function BreakerRow({ breaker }: { breaker: CircuitBreaker }) {
           toast({ message: `${label}を再開しました` })
           void queryClient.invalidateQueries({ queryKey: getListCircuitBreakersQueryKey() })
         },
-        onError: () => {
-          toast({ message: `${label}の再開に失敗しました` })
+        onError: (err) => {
+          toast({ message: mutationErrorMessage(`${label}の再開に失敗しました`, err) })
         },
       },
     )

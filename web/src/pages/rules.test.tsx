@@ -173,6 +173,19 @@ describe('summarizeRuleConditions', () => {
     expect(summary).toContain('月〜金 21:00–23:00')
     expect(summary).toContain('30分以上')
   })
+
+  // 検索・ルール条件の「サービス」は利用者向けには「チャンネル」で統一する
+  // （API の `services` フィールド名自体は変えない）。
+  it('サービス条件はチャンネル件数の要約になる', () => {
+    const rule: Rule = {
+      ...sampleRule,
+      services: [
+        { networkId: 1, serviceId: 1 },
+        { networkId: 1, serviceId: 2 },
+      ],
+    }
+    expect(summarizeRuleConditions(rule)).toContain('チャンネル 2 件')
+  })
 })
 
 describe('RulesPage encode settings', () => {

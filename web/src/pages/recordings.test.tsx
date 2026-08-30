@@ -806,3 +806,26 @@ describe('録画状態の信号色', () => {
     expect(badge.className).not.toMatch(/tally|warning|destructive/)
   })
 })
+
+describe('ドロップ統計バッジは日本語ラベル（issue #454）', () => {
+  it('drop / error / scrambled の英語生値ではなく日本語のラベルで出る', async () => {
+    createFakeRecordingsServer({
+      library: [
+        sampleRecording({
+          id: 24,
+          title: 'ドロップのある録画',
+          dropSummary: { packets: 1000, drops: 12, errors: 1, scrambled: 3 },
+        }),
+      ],
+    })
+
+    renderPage()
+    await screen.findByText('ドロップのある録画')
+
+    expect(screen.getByText('ドロップ 12')).toBeInTheDocument()
+    expect(screen.getByText('エラー 1')).toBeInTheDocument()
+    expect(screen.getByText('スクランブル 3')).toBeInTheDocument()
+    expect(screen.queryByText(/^drop /)).not.toBeInTheDocument()
+    expect(screen.queryByText(/^scrambled /)).not.toBeInTheDocument()
+  })
+})

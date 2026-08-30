@@ -117,7 +117,7 @@ describe('ConditionFields のサービスチップ', () => {
     stubServicesFetch()
     renderInRouter(<ConditionFields draft={emptyDraft()} onChange={() => {}} />)
 
-    const group = await screen.findByRole('group', { name: 'サービス' })
+    const group = await screen.findByRole('group', { name: 'チャンネル' })
     expect(within(group).getByRole('button', { name: 'NTV' })).toBeInTheDocument()
   })
 
@@ -125,7 +125,7 @@ describe('ConditionFields のサービスチップ', () => {
     stubServicesFetch()
     renderInRouter(<ConditionFields draft={emptyDraft()} onChange={() => {}} />)
 
-    const group = await screen.findByRole('group', { name: 'サービス' })
+    const group = await screen.findByRole('group', { name: 'チャンネル' })
     // 同名の「瀬戸内海放送」チップそれぞれの表示テキストがすべて異なることを
     // 確認する。名前だけでは全部同じ文字列になり、どれを押しているか
     // 分からなかった、という issue の観測そのものの再現。
@@ -147,7 +147,7 @@ describe('ConditionFields のサービスチップ', () => {
     const onChange = vi.fn()
     renderInRouter(<ConditionFields draft={emptyDraft()} onChange={onChange} />)
 
-    const group = await screen.findByRole('group', { name: 'サービス' })
+    const group = await screen.findByRole('group', { name: 'チャンネル' })
     fireEvent.click(findChipByText(group, label.b))
 
     expect(onChange).toHaveBeenCalledTimes(1)
@@ -169,7 +169,7 @@ describe('ConditionFields のサービスチップ', () => {
     }
     renderInRouter(<ConditionFields draft={draft} onChange={onChange} />)
 
-    const group = await screen.findByRole('group', { name: 'サービス' })
+    const group = await screen.findByRole('group', { name: 'チャンネル' })
     fireEvent.click(findChipByText(group, label.b))
 
     expect(onChange).toHaveBeenCalledTimes(1)
@@ -187,7 +187,7 @@ describe('ConditionFields のサービスチップ', () => {
     }
     renderInRouter(<ConditionFields draft={draft} onChange={onChange} />)
 
-    const group = await screen.findByRole('group', { name: 'サービス' })
+    const group = await screen.findByRole('group', { name: 'チャンネル' })
     fireEvent.click(findChipByText(group, label.a))
 
     expect(onChange).toHaveBeenCalledTimes(1)
@@ -220,7 +220,7 @@ describe('ConditionFields のサービスチップ', () => {
     }
     renderInRouter(<ConditionFields draft={draft} onChange={onChange} />)
 
-    const group = await screen.findByRole('group', { name: 'サービス' })
+    const group = await screen.findByRole('group', { name: 'チャンネル' })
     fireEvent.click(findChipByText(group, label.b))
 
     expect(onChange).toHaveBeenCalledTimes(1)
@@ -244,7 +244,7 @@ describe('ConditionFields のサービスチップ', () => {
     }
     renderInRouter(<ConditionFields draft={draft} onChange={onChange} />)
 
-    const group = await screen.findByRole('group', { name: 'サービス' })
+    const group = await screen.findByRole('group', { name: 'チャンネル' })
     expect(findChipByText(group, label.b)).toHaveAttribute('aria-pressed', 'true')
     expect(findChipByText(group, label.d)).toHaveAttribute('aria-pressed', 'false')
 
@@ -298,7 +298,7 @@ describe('ConditionFields のサービスチップ', () => {
     ) as unknown as typeof fetch
     renderInRouter(<ConditionFields draft={emptyDraft()} onChange={() => {}} />)
 
-    const group = await screen.findByRole('group', { name: 'サービス' })
+    const group = await screen.findByRole('group', { name: 'チャンネル' })
     // textContent で比較する（アクセシブルネームはノード間の空白の入り方が
     // 計算エンジン依存で jsdom が実ブラウザと一致する保証はないため。
     // 上の `label` 定数と同じ規律）。

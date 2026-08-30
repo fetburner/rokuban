@@ -358,7 +358,7 @@ describe('SearchPage', () => {
     stubApi()
     renderPage()
 
-    const serviceGroup = await screen.findByRole('group', { name: 'サービス' })
+    const serviceGroup = await screen.findByRole('group', { name: 'チャンネル' })
     // 同期節の最初と最後。サービスはこの両方より後ろでなければならない。
     const channelTypeHeading = screen.getByRole('heading', { name: 'チャンネル種別' })
     const periodHeading = screen.getByRole('heading', { name: '期間' })
