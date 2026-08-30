@@ -1,6 +1,8 @@
+import { TriangleAlert } from 'lucide-react'
+
 import type { CapacityOverage } from '@/api/generated'
 import { overageWindow, shortageLabelCompact, shortageRangeMessage } from '@/lib/capacity'
-import { spanToPx, type TimeAxis } from '@/lib/epg-grid'
+import { hourTicks, spanToPx, type TimeAxis } from '@/lib/epg-grid'
 
 /**
  * 帯の中にラベルを出す下限の高さ。これを下回る帯は着色だけになる。
@@ -93,6 +95,34 @@ function CapacityBand({ axis, overage }: { axis: TimeAxis; overage: CapacityOver
 const labelHeightPx = 16
 
 /**
+ * 目盛りを避けるために見る高さの目安（px）。実測（e2e/design.mjs）で目盛り
+ * 1 行はおよそ 18.5px --- 端数を避けるためここでは少し余裕を持たせて丸める。
+ * 「本当に避けられているか」はこの定数の精度ではなく e2e が実ブラウザで測る
+ * （目盛りの rect とラベルの rect が交差しないこと）。
+ */
+const tickAvoidHeightPx = 20
+
+/**
+ * avoidTickRow はラベルの上端が毎時の目盛りの行と重ならない位置まで押し下げる。
+ *
+ * 不足区間の境界は :00 / :30 に落ちることが番組と同じくらい多く（サーバー側の
+ * 判定も番組境界を単位にする）、ラベルは帯の上端にアンカーするので、区間が
+ * ちょうど正時に始まると目盛り（「00:00」等）と同じ y に来る。目盛り列の地は
+ * 透明なので、ここで不透明なラベルを重ねるとその目盛りが読めなくなる
+ * （issue #460 レビュー実測: `coveredTicks: ["00:00"]`）。時間軸列には番組セル
+ * が無いので、目盛りとの位置調整だけがここでの唯一の避け先になる。
+ */
+function avoidTickRow(axis: TimeAxis, topPx: number): number {
+  for (const tick of hourTicks(axis)) {
+    const tickBottomPx = tick.topPx + tickAvoidHeightPx
+    if (topPx < tickBottomPx && topPx + labelHeightPx > tick.topPx) {
+      return tickBottomPx
+    }
+  }
+  return topPx
+}
+
+/**
  * CapacityBandLabels は帯の見えるラベルを時間軸列（左端の `21:00` 等が並ぶ列）に
  * 描く（`ProgramGrid` の `gutterOverlay` に渡す）。
  *
@@ -102,9 +132,12 @@ const labelHeightPx = 16
  * 文字と衝突しない。座標は `CapacityBands` と同じ `spanToPx` を通すので、帯と縦位置
  * の基準は揃う（ラベル自身は下記のとおり自分の高さぶんだけ持つ）。
  *
- * **同時刻に複数の帯があるとき、開始時刻順に押し下げて積む。** 全部を帯の上端に
- * 置くと同じ y に重なって片方が不透明な地の下に隠れる。ラベルは短い固定高さ
- * なので、直前のラベルの下端より上には置かない、という単純な詰め方で足りる。
+ * **同一サイト内の不足区間は重ならない。** サーバー（`internal/capacity`）が
+ * 返す区間はそもそも重ならず、このグリッドは 1 サイトに絞って渡す
+ * （`pages/programs.tsx`）ので、ラベル同士が同じ位置に来て積む必要は無い ---
+ * 積む処理は一度書いたが、実際には決して発火しないコードだったので削った
+ * （issue #460 レビュー）。ラベルが避ける必要があるのは目盛りの行だけ
+ * （`avoidTickRow`）。
  */
 export function CapacityBandLabels({
   axis,
@@ -113,42 +146,46 @@ export function CapacityBandLabels({
   axis: TimeAxis
   overages: readonly CapacityOverage[]
 }) {
-  const placed: { overage: CapacityOverage; topPx: number }[] = []
-  let nextTopPx = -Infinity
-  const sorted = [...overages].sort(
-    (a, b) => new Date(a.startAt).getTime() - new Date(b.startAt).getTime(),
-  )
-  for (const overage of sorted) {
-    const span = overageWindow(overage)
-    const rect = spanToPx(axis, span.startMs, span.endMs)
-    if (!rect || rect.heightPx < labelMinHeightPx) continue
-    const topPx = Math.max(rect.topPx, nextTopPx)
-    placed.push({ overage, topPx })
-    nextTopPx = topPx + labelHeightPx
-  }
-
   return (
     <>
-      {placed.map(({ overage, topPx }) => (
-        <div
-          key={`${overage.site}-${overage.startAt}`}
-          data-testid="capacity-band-label"
-          aria-hidden="true"
-          // 時間軸列の幅（56px）に収まらない分は省略記号で切る（truncate =
-          // overflow:hidden + text-overflow:ellipsis + whitespace:nowrap）。
-          // `shortageLabelCompact` がその幅を狙った短い形を返すので、通常は
-          // 切れずに収まる --- 全文は帯側の sr-only（CapacityBand）が持つ。
-          // bg-background で不透明にする --- 時間軸列には毎時の目盛り（21:00
-          // 等）が別途描かれており、帯の上端がちょうど時刻境界と一致すると
-          // 縦位置が重なりうる。ラベルは自分の高さ（16px）ぶんしか占めないので、
-          // 重なっても目盛り 1 行を覆うだけ（現在時刻チップが目盛りに乗るのと
-          // 同じ規模の重なりで、目盛り列全体を消しはしない）。
-          className="absolute inset-x-0 truncate bg-background px-1 text-[10px] leading-4 font-medium text-warning"
-          style={{ top: topPx }}
-        >
-          {shortageLabelCompact(overage)}
-        </div>
+      {overages.map((overage) => (
+        <CapacityBandLabel key={`${overage.site}-${overage.startAt}`} axis={axis} overage={overage} />
       ))}
     </>
+  )
+}
+
+function CapacityBandLabel({ axis, overage }: { axis: TimeAxis; overage: CapacityOverage }) {
+  const span = overageWindow(overage)
+  const rect = spanToPx(axis, span.startMs, span.endMs)
+  if (!rect || rect.heightPx < labelMinHeightPx) return null
+  const topPx = avoidTickRow(axis, rect.topPx)
+
+  return (
+    <div
+      data-testid="capacity-band-label"
+      aria-hidden="true"
+      // bg-background で不透明にする --- 時間軸列には毎時の目盛り（21:00 等）
+      // が別途描かれており、`avoidTickRow` で通常は避けるが、それでも隣接する
+      // 場合の可読性のために地を割る（透過だと文字同士が混ざる）。
+      className="absolute inset-x-0 flex items-center gap-1 bg-background px-1 text-warning"
+      style={{ top: topPx }}
+    >
+      {/* アイコンは色だけに頼らない警告の手がかり。琥珀の短い英数字
+          （「BS-1」「CS-3」等）は日本語 EPG の時間軸列に置かれると実在の
+          チャンネル名（NHK BS1 等）と読み違えられうる（issue #460 レビュー）。 */}
+      <TriangleAlert className="size-3 shrink-0" aria-hidden="true" />
+      {/* 時間軸列の幅に収まらない分だけ省略記号で切る（truncate =
+          overflow:hidden + text-overflow:ellipsis + whitespace:nowrap）。
+          `min-w-0` が無いと flex item は自分の内容ぶんまでしか縮まず truncate
+          が効かない。`shortageLabelCompact` がこの幅を狙った短い形を返すので、
+          通常は切れずに収まる --- 全文は帯側の sr-only（CapacityBand）が持つ。 */}
+      <span
+        data-testid="capacity-band-label-text"
+        className="min-w-0 truncate text-[10px] leading-4 font-medium"
+      >
+        {shortageLabelCompact(overage)}
+      </span>
+    </div>
   )
 }

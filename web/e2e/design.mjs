@@ -151,14 +151,38 @@ const reservations = [
 ]
 
 /** 予約 2 の時間帯に重ねる。琥珀の警告バッジ・帯を必ず 1 つ出すため。 */
+/**
+ * nextHourBoundaryMs は与えられた時刻より後の直近の毎時 0 分（ローカル）を返す。
+ * 番組境界は :00 / :30 に落ちることが圧倒的に多く、不足区間の境界も同じ単位
+ * （サーバー側の判定）なので、「ちょうど正時に始まる不足区間」フィクスチャを
+ * ここで作る（issue #460 レビュー blocker。:34 起点の固定時刻だけでは
+ * この最頻ケースを避けてしまっていた）。
+ */
+function nextHourBoundaryMs(ms) {
+  const d = new Date(ms)
+  d.setMinutes(0, 0, 0)
+  if (d.getTime() <= ms) d.setHours(d.getHours() + 1)
+  return d.getTime()
+}
+
 const overages = [
   { site: SITE, startAt: iso(nowMs + 2 * HOUR), endAt: iso(nowMs + 3 * HOUR), shortfall: 1, jammedTypes: ['BS'] },
-  // 同じサイトに重なる 2 本目（issue #460 レビュー should 1）。同時刻に 2 本の
-  // 不足区間があるとき、見えるラベルが両方読めることを機械判定する
-  // （帯自体は既存の描画テストで別途「重ならない」ことは見ていない --- 帯同士は
-  // 重なって描かれても着色の主張として矛盾しないが、ラベルは両方読めないと
-  // 片方の警告が消えたのと同じになる）。
-  { site: SITE, startAt: iso(nowMs + 2.25 * HOUR), endAt: iso(nowMs + 2.75 * HOUR), shortfall: 1, jammedTypes: ['GR'] },
+  // 隣接するが重ならない 2 本目。`internal/capacity/capacity.go` の `Compute`
+  // は同一サイト内の区間を重ねて返さない（`pages/programs.tsx` はグリッドを
+  // 1 サイトに絞って渡す）ので、「同時刻に重なる 2 本」はサーバーが返せない
+  // 状態 --- ここは「隣接する 2 本の見えるラベルが両方読める」ことだけを
+  // 機械判定する（issue #460 レビュー should 1）。
+  { site: SITE, startAt: iso(nowMs + 3 * HOUR), endAt: iso(nowMs + 3.5 * HOUR), shortfall: 1, jammedTypes: ['GR'] },
+  // ちょうど正時に始まる 3 本目（issue #460 レビュー blocker）。ラベルが帯の
+  // 上端にアンカーされるので、この区間だと時間軸の目盛り（例: 「05:00」）と
+  // 同じ y に来る --- avoidTickRow が効いているかをここで機械判定する。
+  {
+    site: SITE,
+    startAt: iso(nextHourBoundaryMs(nowMs + 5 * HOUR)),
+    endAt: iso(nextHourBoundaryMs(nowMs + 5 * HOUR) + HOUR),
+    shortfall: 3,
+    jammedTypes: ['CS'],
+  },
 ]
 
 const recordings = [
@@ -1379,11 +1403,13 @@ for (const theme of themes) {
       for (const l of labelHandles) {
         const box = await l.boundingBox()
         if (box === null) continue
-        const overflow = await l.evaluate((el) => ({
-          clientWidth: el.clientWidth,
-          scrollWidth: el.scrollWidth,
-          text: el.textContent,
-        }))
+        // 幅の切れは実際に truncate が効く内側の要素（アイコン分の幅を除いた
+        // テキスト span）で測る --- 外側の箱はアイコン込みで常に時間軸列いっぱい
+        // に張るので、外側だけを見ると切れを見落とす。
+        const overflow = await l.evaluate((el) => {
+          const textEl = el.querySelector('[data-testid="capacity-band-label-text"]') ?? el
+          return { clientWidth: textEl.clientWidth, scrollWidth: textEl.scrollWidth, text: el.textContent }
+        })
         labelBoxes.push({ ...box, ...overflow })
       }
       const cellTimeBoxes = (
@@ -1404,14 +1430,14 @@ for (const theme of themes) {
         a.y < b.y + b.height &&
         a.y + a.height > b.y
 
-      // レビュー should 1: フィクスチャ（`overages`）に同時刻に重なる帯を 2 本
-      // 入れてある。DOM 上は 2 件描かれていても、同じ y に重なって片方が
-      // 不透明な地の下に隠れると「見えるラベルは 1 つだけ」になる ---
-      // これは要素数だけでは検出できない（レビューで見つかった実例そのもの）
-      // ので、ラベル同士の rect が交差しないことも見る。
-      if (labelBoxes.length < 2) {
+      // レビュー should 1: フィクスチャ（`overages`）に隣接する（重ならない）
+      // 帯を複数入れてある。同一サイト内の不足区間はサーバー側で重ならないと
+      // 保証されている（`internal/capacity/capacity.go` の `Compute`）ので
+      // 「同時刻に重なる帯」はフィクスチャとしても不適切 --- ここで見るのは
+      // 「隣接する帯のラベルがそれぞれ独立に見えるか」だけ。
+      if (labelBoxes.length < overages.length) {
         ng.push(
-          `[${theme}] 同時刻に重なる帯が 2 本あるのに見えるラベルが ${labelBoxes.length} 件しかない`,
+          `[${theme}] 帯が ${overages.length} 本あるのに見えるラベルが ${labelBoxes.length} 件しかない`,
         )
       }
       const labelOverlaps = []
@@ -1457,7 +1483,10 @@ for (const theme of themes) {
         }
       }
       // 上の高さ判定を回避しても実際に目盛りが隠れていないかは直接見る ---
-      // レビューの実測（`coveredTicks: ["00:00"]`）と同じものをここで測る
+      // レビューの実測（`coveredTicks: ["00:00"]`）と同じものをここで測る。
+      // 判定は rect の交差（`rectsIntersect`）にする --- 「全高を包含する
+      // か」だと、ラベル（16px）が目盛り（実測 18.5px）より低い限り算術的に
+      // 真になり得ず、判定として永久に発火しない（レビューで指摘）。
       const tickBoxes = (
         await Promise.all(
           (await page.locator('[data-testid="program-grid-tick"]').all()).map((t) =>
@@ -1468,15 +1497,12 @@ for (const theme of themes) {
       const coveredTicks = []
       for (const t of tickBoxes) {
         for (const l of labelBoxes) {
-          // 「全高を覆う」＝ラベルがその目盛りの上端から下端まで縦に包含する
-          // （現在時刻チップのような目盛り 1 行の一部との重なりまでは禁じない
-          // --- それは main に既にある許容された重なり方）
-          if (l.y <= t.y && l.y + l.height >= t.y + t.height) coveredTicks.push(t)
+          if (rectsIntersect(l, t)) coveredTicks.push(t)
         }
       }
       if (coveredTicks.length > 0) {
         log(`  [${theme}] coveredTicks: ${coveredTicks.length} 件`)
-        ng.push(`[${theme}] 帯ラベルが時間軸の目盛りを ${coveredTicks.length} 件覆っている`)
+        ng.push(`[${theme}] 帯ラベルが時間軸の目盛りと ${coveredTicks.length} 件重なっている`)
       }
 
       // レビュー should 2: 前提条件そのものを表明する。帯の上端付近にセルの

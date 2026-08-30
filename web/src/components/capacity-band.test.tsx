@@ -235,7 +235,8 @@ describe('CapacityBands の色', () => {
   it('ラベルも同じ琥珀トークンを使う（帯のためだけの色を作らない）', () => {
     renderGrid([overage(20 * 60, 21 * 60)], [])
 
-    const label = screen.getByText('BS-1')
+    // 色は外側の箱に置き、アイコン・文字とも currentColor で引き継ぐ
+    const label = screen.getByTestId('capacity-band-label')
     expect(label).toHaveClass('text-warning')
     expect(label.className).not.toMatch(/amber|yellow|orange/)
   })
@@ -245,30 +246,69 @@ describe('CapacityBands の色', () => {
  * 時間軸列のラベル配置。jsdom はレイアウトを計算しないので、実際に読めるかは
  * web/e2e/design.mjs が測る（scrollWidth <= clientWidth / 目盛りを隠さない）。
  * ここで固定するのは「どの overage にどの top を割り当てるか」という純粋な
- * ロジックだけ --- CapacityBandLabels の並べ替え・押し下げの分岐。
+ * ロジックだけ --- avoidTickRow の分岐。
+ *
+ * **同一サイト内の不足区間は重ならない**（`internal/capacity/capacity.go` の
+ * `Compute` が保証し、`pages/programs.tsx` はグリッドを 1 サイトに絞って渡す）
+ * ので、ラベル同士の位置調整（積む処理）は無い --- 一度書いたが実際には
+ * 決して発火しないコードだったので削った（issue #460 レビュー should 1）。
  */
 describe('CapacityBandLabels の配置', () => {
-  it('帯の上端ではなく自分の高さぶんだけを占める（帯の全高を塗らない）', () => {
-    // 3 時間の帯でもラベルの高さは固定（帯の高さに引き伸ばさない）
-    renderGrid([overage(20 * 60, 23 * 60)], [])
+  it('帯の上端にアンカーし、高さは自分の内容ぶんだけ（帯の全高を塗らない）', () => {
+    // 2 時間 45 分の帯（330px）でもラベルに高さを明示的に指定しない
+    // （旧実装は帯の高さ＝ rect.heightPx をそのまま style.height に渡していた）。
+    // 21:00 は目盛りの行なので avoidTickRow の対象外にするため 20:15 始まりにする
+    renderGrid([overage(20 * 60 + 15, 23 * 60)], [])
 
-    const label = screen.getByText('BS-1')
-    // 帯本体（3 時間 = 360px）より明らかに小さい固定高さ
-    expect(label.style.height).not.toBe('360px')
+    const band = document.querySelector<HTMLElement>(`[data-start-at="${iso(20 * 60 + 15)}"]`)
+    expect(band?.style.height).toBe('330px')
+    const label = screen.getByTestId('capacity-band-label')
+    // 高さは CSS（line-height）任せで、inline style には持たせない
+    expect(label.style.height).toBe('')
+    expect(screen.getByText('BS-1')).toBeInTheDocument()
   })
 
-  it('同時刻に重なる 2 本の帯があるとき、両方のラベルが別の位置に出る', () => {
-    // 20:00-21:00（BS）と 20:15-20:45（GR）--- 同じ時間帯に重なる
+  it('隣接する（重ならない）2 本の帯があるとき、両方のラベルが別の位置に出る', () => {
+    // 20:00-20:30（BS）と 20:30-21:00（GR）--- 隣接するが重ならない
+    // （サーバーが実際に返しうる形。issue #460 レビュー should 1）
     renderGrid(
-      [overage(20 * 60, 21 * 60, { jammedTypes: ['BS'] }), overage(20 * 60 + 15, 20 * 60 + 45, { jammedTypes: ['GR'] })],
+      [
+        overage(20 * 60, 20 * 60 + 30, { jammedTypes: ['BS'] }),
+        overage(20 * 60 + 30, 21 * 60, { jammedTypes: ['GR'] }),
+      ],
       [],
     )
 
     const labels = screen.getAllByTestId('capacity-band-label')
     expect(labels).toHaveLength(2)
-    // 両方読める --- 同じ top に重なって片方が不透明な地の下に隠れていない
     expect(labels[0]?.style.top).not.toBe(labels[1]?.style.top)
     expect(screen.getByText('BS-1')).toBeInTheDocument()
     expect(screen.getByText('GR-1')).toBeInTheDocument()
+  })
+
+  it('ちょうど正時に始まる区間は、目盛りの行を避けて下にずれる', () => {
+    // 軸は 0 時基準・120px/h なので 22:00 の目盛りは top 2640px
+    renderGrid([overage(22 * 60, 23 * 60)], [])
+
+    const label = screen.getByTestId('capacity-band-label')
+    // 目盛りの行（20px 分の目安）を避けて下端まで押し下げる
+    expect(label.style.top).toBe('2660px')
+  })
+
+  it('正時からずれた区間は目盛りを避けない（誤って常にずらさない）', () => {
+    // 22:15 は目盛りから離れているので avoidTickRow は何もしない
+    renderGrid([overage(22 * 60 + 15, 23 * 60)], [])
+
+    const label = screen.getByTestId('capacity-band-label')
+    expect(label.style.top).toBe('2670px')
+  })
+
+  it('アイコンを見た目の手がかりとして持つ（色だけに頼らない。issue #460 レビュー should 2）', () => {
+    renderGrid([overage(20 * 60 + 15, 21 * 60)], [])
+
+    const label = screen.getByTestId('capacity-band-label')
+    expect(label.querySelector('svg')).not.toBeNull()
+    // 短縮ラベルの文字自体は別の要素（省略記号の対象を分けるため）
+    expect(screen.getByTestId('capacity-band-label-text')).toHaveTextContent('BS-1')
   })
 })
