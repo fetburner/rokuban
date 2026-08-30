@@ -168,7 +168,8 @@ AND」に揃える。
 は SQL テキストごとに named prepared statement を作ってキャッシュし、
 Postgres 自身がその statement を 6 回目以降 custom plan から generic plan に
 切り替えることがある（PostgreSQL の PREPARE のプラン選択規則。generic plan は
-bind 値を見ないため trgm 式 GIN が選ばれない可能性がある）。これは動的 WHERE
+bind 値を見ないため trgm 式 GIN が選ばれない可能性がある。実測: 6 回目の実行で
+0.7ms → 290ms）。これは動的 WHERE
 ビルダが解決する「汎用述語（`$n IS NULL OR ...`）による劣化」とは別の劣化経路
 なので、`queryRecordings` はこの経路だけ `pgx.QueryExecModeExec`
 （unnamed statement で毎回明示的に再計画）を指定して別途塞いでいる。この経路は

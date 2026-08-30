@@ -352,15 +352,11 @@ func buildRecordingsQuery(f recordingsFilter) (string, []any, error) {
 	}
 
 	// q は条件が実際にあるときだけ節を足す（"$n IS NULL OR ..." 形にしない）。
-	// 動的 WHERE ビルダそのものの判断は docs/api/rest.md §動的 WHERE ビルダ
+	// 判断・pgx の既定 QueryExecModeCacheStatement が SQL テキストを named
+	// prepared statement にするため Postgres が 6 回目以降 generic plan に
+	// 切り替えうること（実測 0.7ms → 290ms）・queryRecordings が
+	// QueryExecModeExec を強制する理由は docs/api/rest.md §動的 WHERE ビルダ
 	// （sqlc の静的クエリにしない）にある。
-	//
-	// これだけでは不十分: pgx の既定 QueryExecModeCacheStatement は同じ SQL
-	// テキストの 6 回目の実行から generic plan に切り替わりうる（実測
-	// 0.7ms → 290ms。CLAUDE.md「測っていない挙動を断言しない」参照）。
-	// queryRecordings はこれを避けるため QueryExecModeExec を強制する
-	// （docs/operations/database.md §pooler 越しに置けるのは api ロールと
-	// streamer ロールだけ）。
 	if f.Q != "" {
 		switch f.QTarget {
 		case Title:

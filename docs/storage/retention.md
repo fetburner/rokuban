@@ -48,12 +48,6 @@ GC 済みのスナップショットの上で ingest が走った場合に何が
 
 同じ理由で**凍結を録画開始時へ前倒す案も採らない**（`recordings` 行の生成も watcher の観測に依存するので、断の最中に始まった録画ではクラウドから見た「録画開始時」が「復帰時」になる）。加えて[録画エンジン](../recording.md) §4.5 の「録画開始後の変更でも ingest 完了までは効く」を失う。`epg.retention_grace` を上げることは、この 2 案が塞げる範囲と塞げない未観測ぶんの両方を 1 つの数で覆う。
 
-### 書き込みの冪等性・型変換・安全側クランプ
-
-- **冪等性**: `FreezeRecordingEncodePolicy` は `ON CONFLICT` を持たない素の INSERT で、既存の派生物の有無を見て分岐しない。これは「この tx は録画ごとに 1 回しか実行されない」という別の不変（`internal/worker/ingest.go` の `Work` が転送開始前に原本 media_asset の有無で冪等性チェックする）に依っている。一部のエンコードが既に完了しているからといって desired を空に戻す分岐を作らない
-- **`EncodeProfiles` の nil**: `db.ReservationOptions.EncodeProfiles`（`*[]string`）は nil=未指定 / `&[]string{}`=明示的な「エンコードなし」を区別する。しかし `recording_encode_policy.encode_profiles` は NOT NULL text[] で「未指定」という第三の状態を表現できないため、凍結時は両者を等しく `'{}'` に潰す。区別が必要な場面（override の差分表示等）は `program_overrides.overrides` 自身に当たればよく、このスナップショットの役目ではない
-- **クランプ**: ルールと override はそれぞれ自分の表の中では `keepOriginal='until_encoded'` に `encodeProfiles` が空という組み合わせを禁止する CHECK を満たしている。それでも `EffectiveOptions` のマージ結果としてこのドリフトが生成されうる。`recording_encode_policy` にも同じ組み合わせを禁止する CHECK（上記「条件 2 の『全プロファイル完備』」参照）がある。実効値をそのまま書くとこの INSERT は原本 media_asset の INSERT と同一 tx である以上、CHECK 違反のロールバックは**録画そのものの消失**に直結する（不変条件 3「コミット = DB 行」）。原本を失うリスクを負ってまで守る価値のある不変ではないので、書く直前に安全側へ倒す。実効的な `encodeProfiles` が空で `keepOriginal` が `until_encoded` なら `always` に倒してから書く。ユーザーの意図（override の値そのもの）は `program_overrides` 側に残るので失われない。失われるのはこの録画のスナップショットにおける効力だけで、次にルールがプロファイルを持てば別の録画では正しく `until_encoded` になる
-
 **ただし「上げれば済む」ではない。既定は上げない** —— コストは滞留を N 日許す構成にだけ課す:
 
 - `reservations` / `program_snapshots` / `program_intents` / `program_overrides` の行が「予約された番組数 × N 日」ぶん長く残る。時間窓で絞らずこれらを読む経路がある（`ListCapacityDemand` / `ListCapacityDemandAllSites`）
@@ -62,6 +56,12 @@ GC 済みのスナップショットの上で ingest が走った場合に何が
 滞留を見張るメトリクスと閾値は[運用](../operations.md) §4 にある。
 
 **「クラウド側障害」と「回線断」を同じ結論で括らない。** 上の帰結が決定論的に成り立つのは「GC は動き続けたが ingest が猶予を跨いで遅れた」場合であって、ruler ごと止まる障害（worker 全停止・DB 到達不能）では**断のあいだ GC も進まない**。復帰時は sweep + ingest と `ruler_pass` の競争になり、ingest が先に走れば意図は守られる。どちらになるかはジョブの実行順に依存する（未検証）。
+
+### 書き込みの冪等性・型変換・安全側クランプ
+
+- **冪等性**: `FreezeRecordingEncodePolicy` は `ON CONFLICT` を持たない素の INSERT で、既存の派生物の有無を見て分岐しない。これは「この tx は録画ごとに 1 回しか実行されない」という別の不変（`internal/worker/ingest.go` の `Work` が転送開始前に原本 media_asset の有無で冪等性チェックする）に依っている。一部のエンコードが既に完了しているからといって desired を空に戻す分岐を作らない
+- **`EncodeProfiles` の nil**: `db.ReservationOptions.EncodeProfiles`（`*[]string`）は nil=未指定 / `&[]string{}`=明示的な「エンコードなし」を区別する。しかし `recording_encode_policy.encode_profiles` は NOT NULL text[] で「未指定」という第三の状態を表現できないため、凍結時は両者を等しく `'{}'` に潰す。区別が必要な場面（override の差分表示等）は `program_overrides.overrides` 自身に当たればよく、このスナップショットの役目ではない
+- **クランプ**: ルールと override はそれぞれ自分の表の中では `keepOriginal='until_encoded'` に `encodeProfiles` が空という組み合わせを禁止する CHECK を満たしている。それでも `EffectiveOptions` のマージ結果としてこのドリフトが生成されうる。`recording_encode_policy` にも同じ組み合わせを禁止する CHECK（下記「条件 2 の『全プロファイル完備』」参照）がある。実効値をそのまま書くとこの INSERT は CHECK 違反でロールバックする。原本 media_asset の INSERT と同一 tx なので、そのロールバックは**録画そのものの消失**に直結する（不変条件 3「コミット = DB 行」）。原本を失うリスクを負ってまで守る価値のある不変ではないので、書く直前に安全側へ倒す。実効的な `encodeProfiles` が空で `keepOriginal` が `until_encoded` なら `always` に倒してから書く。ユーザーの意図（override の値そのもの）は `program_overrides` 側に残るので失われない。失われるのはこの録画のスナップショットにおける効力だけで、次にルールがプロファイルを持てば別の録画では正しく `until_encoded` になる
 
 ### 安全性
 
