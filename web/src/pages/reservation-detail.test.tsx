@@ -372,7 +372,11 @@ describe('ReservationDetailPage', () => {
 
   // issue #457: intent PUT のスタブに成功既定（204）の分岐を足した以上、
   // それを通る経路も固定する（死んだ分岐のまま残さない）。
-  it('予約取消が成功すると、トーストが出て /reservations へ遷移する', async () => {
+  //
+  // issue #453: 取消は一覧へ遷移しなくなった --- 一覧・グリッドの取消と対称に
+  // Undo（トーストの「元に戻す」）で守る形にしたため、遷移せずこの画面に
+  // 留まる。
+  it('予約取消が成功すると、トーストが出るが遷移せずこの画面に留まる', async () => {
     const user = userEvent.setup()
     stubFetch((site, programId) =>
       site === 'default' && programId === 300000 ? baseReservation() : null,
@@ -383,7 +387,9 @@ describe('ReservationDetailPage', () => {
     await user.click(await screen.findByRole('button', { name: '予約を取消' }))
 
     expect(await screen.findByText('予約を取消しました')).toBeInTheDocument()
-    await waitFor(() => expect(router.state.location.pathname).toBe('/reservations'))
+    expect(router.state.location.pathname).toBe('/reservations/default/300000')
+    // タイトルなど詳細の内容がまだ見えている（一覧へ追い出されていない）
+    expect(screen.getByText('テスト番組')).toBeInTheDocument()
   })
 
   // issue #457: 予約取消（intent の PUT）が失敗したとき、サーバーの本文
@@ -405,5 +411,61 @@ describe('ReservationDetailPage', () => {
     expect(
       await screen.findByText('予約の取消に失敗しました: reservation already cleared'),
     ).toBeInTheDocument()
+  })
+
+  // issue #453: 詳細の取消は Undo で守る（一覧へ即遷移する旧実装は「取り消した
+  // 対象が視界から消える」ので、確認ダイアログではなく一覧・グリッドと同じ
+  // Undo に揃えた）。実体は `action: 'record'`（skip の打ち消し）。
+  it('取消のトーストに「元に戻す」が出て、押すと action: record で PUT が飛ぶ', async () => {
+    const user = userEvent.setup()
+    const fetchMock = stubFetch((site, programId) =>
+      site === 'default' && programId === 300000 ? baseReservation() : null,
+    )
+
+    renderAt('/reservations/default/300000')
+
+    await user.click(await screen.findByRole('button', { name: '予約を取消' }))
+    expect(await screen.findByText('予約を取消しました')).toBeInTheDocument()
+
+    await user.click(await screen.findByRole('button', { name: '元に戻す' }))
+    expect(await screen.findByText('予約を元に戻しました')).toBeInTheDocument()
+
+    const reviveCall = fetchMock.mock.calls.find((call) => {
+      const url = new URL(String(call[0]), 'http://localhost')
+      const init = call[1] as RequestInit | undefined
+      return (
+        url.pathname === '/api/sites/default/programs/300000/intent' &&
+        init?.method === 'PUT' &&
+        JSON.parse(String(init.body)).action === 'record'
+      )
+    })
+    expect(reviveCall).toBeDefined()
+  })
+
+  // Undo の失敗（両方向の確認。CLAUDE.md テスト規律）: 成功トーストではなく
+  // 復帰失敗のトーストが出る。
+  it('Undo が失敗すると、予約への復帰に失敗した旨のトーストが出る（成功トーストは出ない）', async () => {
+    const user = userEvent.setup()
+    let putCalls = 0
+    stubFetch(
+      (site, programId) =>
+        site === 'default' && programId === 300000 ? baseReservation() : null,
+      ['default'],
+      [],
+      () => {
+        putCalls++
+        // 1 回目（取消）は成功、2 回目（Undo）だけ失敗させる
+        return putCalls === 2 ? errorResponse(500, '') : new Response(null, { status: 204 })
+      },
+    )
+
+    renderAt('/reservations/default/300000')
+
+    await user.click(await screen.findByRole('button', { name: '予約を取消' }))
+    await screen.findByRole('button', { name: '元に戻す' })
+    await user.click(screen.getByRole('button', { name: '元に戻す' }))
+
+    expect(await screen.findByText('予約への復帰に失敗しました')).toBeInTheDocument()
+    expect(screen.queryByText('予約を元に戻しました')).not.toBeInTheDocument()
   })
 })

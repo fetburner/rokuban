@@ -733,6 +733,30 @@ function useReservationActions(serverReservedIds: ReadonlySet<number>): Reservat
     void queryClient.invalidateQueries({ queryKey: ['/api/capacity/overages'] })
   }
 
+  // revive は取消トーストの「元に戻す」から呼ぶ（issue #453）。intent の
+  // PUT を `action: 'record'` で打ち直すだけで、`reserve` と同じ楽観更新の
+  // 経路（setOptimisticReserved → onError で undefined に戻す）を通す。
+  // ルール由来の予約も手動予約も、`base` / `overrides` を触らず skip の
+  // 打ち消しだけで戻るので、この 1 つの経路で両方をカバーできる。
+  const revive = (programId: number) => {
+    setBusy(programId, true)
+    setOptimisticReserved(programId, true)
+    putIntent.mutate(
+      { site, programId, data: { action: 'record' } },
+      {
+        onSuccess: () => {
+          invalidateReservations()
+          toast({ message: '予約を元に戻しました' })
+        },
+        onError: (err) => {
+          toast({ message: mutationErrorMessage('予約への復帰に失敗しました', err) })
+          setOptimisticReserved(programId, undefined)
+        },
+        onSettled: () => setBusy(programId, false),
+      },
+    )
+  }
+
   const cancel = (programId: number) => {
     setBusy(programId, true)
     setOptimisticReserved(programId, false)
@@ -741,7 +765,13 @@ function useReservationActions(serverReservedIds: ReadonlySet<number>): Reservat
       {
         onSuccess: () => {
           invalidateReservations()
-          toast({ message: '予約を取消しました' })
+          // 予約のワンタップ + トースト「取消」と対称にする（issue #453）。
+          // 誤タップの被害は「録れない」側に出るので、取消にも同じ取り返し
+          // 手段を置く。
+          toast({
+            message: '予約を取消しました',
+            action: { label: '元に戻す', onClick: () => revive(programId) },
+          })
         },
         onError: (err) => {
           toast({ message: mutationErrorMessage('予約の取消に失敗しました', err) })

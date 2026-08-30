@@ -1,5 +1,5 @@
 import { useQueryClient } from '@tanstack/react-query'
-import { Link, useNavigate, useParams } from '@tanstack/react-router'
+import { Link, useParams } from '@tanstack/react-router'
 import { ArrowLeft } from 'lucide-react'
 
 import {
@@ -62,7 +62,6 @@ function reservationDetailQueryKey(site: string, programId: number) {
  */
 export function ReservationDetailPage() {
   const { site, programId } = useParams({ from: '/reservations/$site/$programId' })
-  const navigate = useNavigate()
   const toast = useToast()
   const queryClient = useQueryClient()
 
@@ -75,20 +74,52 @@ export function ReservationDetailPage() {
 
   const reservation = unwrap(query.data)
 
+  const invalidateReservationQueries = () => {
+    void queryClient.invalidateQueries({ queryKey: reservationDetailQueryKey(site, programIdNum) })
+    void queryClient.invalidateQueries({ queryKey: ['/api/reservations'] })
+  }
+
   // 取消は (site, programId) を宛先に intent{skip} を書くだけ（issue #29）。
-  // reservations 行には触れない。ruler が次パスで行を落とすまでの間、
-  // 一覧側は楽観更新で見た目を反映する（この画面はナビゲーションで離れるので
-  // 楽観表示は不要）。
+  // reservations 行には触れない。
+  //
+  // 以前は成功時に一覧へ遷移していたが、それだと「取り消した対象が視界から
+  // 消える」---一覧・グリッド（`pages/programs.tsx`）は取消をワンタップ +
+  // トースト「元に戻す」で取り返せるのに、詳細だけ確認もやり直し手段も
+  // 無いまま画面を追い出していた。詳細でも同じ取り返し手段（Undo）を持たせ、
+  // 遷移しない（issue #453）。ページに留まる分、取消・Undo とも
+  // このページ自身のクエリキーと一覧の両方を invalidate する
+  // （`pages/programs.tsx` の `invalidateReservations` と同じ理由）。
   const cancel = () => {
     if (!reservation) return
     putIntent.mutate(
       { site: reservation.site, programId: reservation.programId, data: { action: 'skip' } },
       {
         onSuccess: () => {
-          toast({ message: '予約を取消しました' })
-          void navigate({ to: '/reservations' })
+          invalidateReservationQueries()
+          toast({
+            message: '予約を取消しました',
+            action: { label: '元に戻す', onClick: revive },
+          })
         },
         onError: (err) => toast({ message: mutationErrorMessage('予約の取消に失敗しました', err) }),
+      },
+    )
+  }
+
+  // revive はトーストの「元に戻す」から呼ぶ。site / programId は URL の
+  // パラメータ（route の宛先そのもの）を使う --- `reservation` は取消後の
+  // 再取得で undefined になりうる（ruler が行を落とした場合）ため、それに
+  // 依存すると押せなくなる窓ができる。
+  const revive = () => {
+    putIntent.mutate(
+      { site, programId: programIdNum, data: { action: 'record' } },
+      {
+        onSuccess: () => {
+          invalidateReservationQueries()
+          toast({ message: '予約を元に戻しました' })
+        },
+        onError: (err) =>
+          toast({ message: mutationErrorMessage('予約への復帰に失敗しました', err) }),
       },
     )
   }

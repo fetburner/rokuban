@@ -1514,3 +1514,65 @@ describe('ProgramsPage の予約 / 取消失敗時のエラー本文（issue #45
     expect(screen.queryByText(/予約の取消に失敗しました: /)).not.toBeInTheDocument()
   })
 })
+
+// issue #453: 取消トーストに「元に戻す」を付け、予約のワンタップ + トースト
+// 「取消」と対称にする。実体は `action: 'record'`（skip の打ち消し）で、
+// `reserve` と同じ楽観更新の経路を通る。
+describe('ProgramsPage の取消 Undo（issue #453）', () => {
+  it('取消のトーストに「元に戻す」が出て、押すと action: record で PUT が飛び、行が「取消」ボタンに復帰する', async () => {
+    // 番組を soon 1 件に絞る --- allPrograms のままだと他の番組の「予約」
+    // ボタンと衝突し、取消直後の「予約」ボタンを一意に指せない
+    const fetchMock = stubApi([reservation(77, soon.programId, 'ニュース7')], [], [soon])
+    renderPage()
+
+    await userEvent.click(await screen.findByRole('button', { name: '取消' }))
+    expect(await screen.findByText('予約を取消しました')).toBeInTheDocument()
+    // 取消は楽観的に反映されるので、直後は「予約」ボタンに戻っている
+    expect(await screen.findByRole('button', { name: '予約' })).toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('button', { name: '元に戻す' }))
+
+    // Undo は楽観的更新（`setOptimisticReserved`）を通るので、応答を待たずに
+    // 「取消」ボタンへ即座に戻る（`reserve` と同じ経路）
+    expect(await screen.findByRole('button', { name: '取消' })).toBeInTheDocument()
+    expect(await screen.findByText('予約を元に戻しました')).toBeInTheDocument()
+
+    await waitFor(() => {
+      const reviveCall = fetchMock.mock.calls.find((call) => {
+        const url = new URL(String(call[0]), 'http://localhost')
+        const init = call[1] as RequestInit | undefined
+        return (
+          url.pathname === `/api/sites/default/programs/${soon.programId}/intent` &&
+          init?.method === 'PUT' &&
+          JSON.parse(String(init.body)).action === 'record'
+        )
+      })
+      expect(reviveCall).toBeDefined()
+    })
+  })
+
+  it('Undo が失敗すると、予約への復帰に失敗した旨のトーストが出る（成功トーストは出ない）', async () => {
+    let putCalls = 0
+    stubApi(
+      [reservation(77, soon.programId, 'ニュース7')],
+      [],
+      allPrograms,
+      undefined,
+      undefined,
+      [],
+      () => {
+        putCalls++
+        // 1 回目（取消）は成功させ、2 回目（Undo）だけ失敗させる
+        return putCalls === 2 ? new Response(null, { status: 500 }) : noContentResponse()
+      },
+    )
+    renderPage()
+
+    await userEvent.click(await screen.findByRole('button', { name: '取消' }))
+    await screen.findByRole('button', { name: '元に戻す' })
+    await userEvent.click(screen.getByRole('button', { name: '元に戻す' }))
+
+    expect(await screen.findByText('予約への復帰に失敗しました')).toBeInTheDocument()
+    expect(screen.queryByText('予約を元に戻しました')).not.toBeInTheDocument()
+  })
+})
