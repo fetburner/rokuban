@@ -82,6 +82,10 @@ function stubFetch(
     // EncodeOverridesEditor（エンコードと保持セクション）が必ず引く。
     // 中身はこのファイルのテストの関心事ではないので既定は空配列。
     if (url.pathname === '/api/encode-profiles') return Promise.resolve(jsonResponse([]))
+    // 取消成功時に navigate する先（ReservationsPage）が引く。中身はこの
+    // ファイルの関心事ではないので既定は空配列（issue #457 の取消成功テスト用）。
+    if (url.pathname === '/api/reservations') return Promise.resolve(jsonResponse([]))
+    if (url.pathname === '/api/capacity/overages') return Promise.resolve(jsonResponse([]))
 
     if (
       /^\/api\/sites\/[^/]+\/programs\/\d+\/intent$/.test(url.pathname) &&
@@ -364,6 +368,22 @@ describe('ReservationDetailPage', () => {
 
     expect(screen.queryByText(/#19/)).not.toBeInTheDocument()
     expect(screen.queryByText(/config\.encode\.profiles/)).not.toBeInTheDocument()
+  })
+
+  // issue #457: intent PUT のスタブに成功既定（204）の分岐を足した以上、
+  // それを通る経路も固定する（死んだ分岐のまま残さない）。
+  it('予約取消が成功すると、トーストが出て /reservations へ遷移する', async () => {
+    const user = userEvent.setup()
+    stubFetch((site, programId) =>
+      site === 'default' && programId === 300000 ? baseReservation() : null,
+    )
+
+    const { router } = renderAt('/reservations/default/300000')
+
+    await user.click(await screen.findByRole('button', { name: '予約を取消' }))
+
+    expect(await screen.findByText('予約を取消しました')).toBeInTheDocument()
+    await waitFor(() => expect(router.state.location.pathname).toBe('/reservations'))
   })
 
   // issue #457: 予約取消（intent の PUT）が失敗したとき、サーバーの本文

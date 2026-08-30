@@ -1,7 +1,8 @@
 import type { ReactNode } from 'react'
 
 import { useListSites } from '@/api/generated'
-import { apiErrorMessage, unwrap } from '@/api/unwrap'
+import { unwrap } from '@/api/unwrap'
+import { mutationErrorMessage } from '@/lib/mutation-error-message'
 import { SiteContext } from '@/lib/site'
 
 /**
@@ -31,7 +32,7 @@ export function SiteGate({ children }: { children: ReactNode }) {
     if (query.status === 'error') {
       return (
         <div className="p-6 text-sm text-destructive">
-          サイト一覧の取得に失敗しました{apiErrorMessage(query.error) ? `: ${apiErrorMessage(query.error)}` : ''}
+          {mutationErrorMessage('サイト一覧の取得に失敗しました', query.error)}
         </div>
       )
     }
