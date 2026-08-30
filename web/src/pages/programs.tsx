@@ -5,7 +5,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { CapacityBandLabels, CapacityBands } from '@/components/capacity-band'
 import { ChannelPicker } from '@/components/channel-picker'
 import { DayStrip } from '@/components/day-strip'
-import { EmptyState, ErrorState, ListSkeleton, PageHeader } from '@/components/page'
+import { EmptyState, ErrorState, ListSkeleton, PageContent, PageHeader } from '@/components/page'
 import { ProgramGrid } from '@/components/program-grid'
 import {
   ProgramList,
@@ -602,7 +602,7 @@ export function ProgramsPage() {
           isError={gridQuery.isError || services.isError}
         />
       ) : (
-        <>
+        <PageContent>
           {query.isError ? (
             <ErrorState>番組の取得に失敗しました</ErrorState>
           ) : query.isPending ? (
@@ -658,7 +658,7 @@ export function ProgramsPage() {
               </Button>
             </div>
           )}
-        </>
+        </PageContent>
       )}
     </>
   )

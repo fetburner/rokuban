@@ -5,7 +5,7 @@ import { useMemo } from 'react'
 import { useListCapacityOverages, useListReservations, type Reservation } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
 import { CapacityShortfallBadge } from '@/components/capacity-shortfall-badge'
-import { EmptyState, ErrorState, ListSkeleton, PageHeader } from '@/components/page'
+import { EmptyState, ErrorState, ListSkeleton, PageContent, PageHeader } from '@/components/page'
 import { ReservationSkipBadge } from '@/components/reservation-skip-reason'
 import { coveringWindow } from '@/lib/capacity'
 import { formatDateTime, formatDuration } from '@/lib/format'
@@ -35,7 +35,8 @@ export function ReservationsPage() {
     <>
       <PageHeader title="予約" />
 
-      {query.isError ? (
+      <PageContent>
+        {query.isError ? (
         <ErrorState>予約の取得に失敗しました</ErrorState>
       ) : query.isPending ? (
         <ListSkeleton />
@@ -88,10 +89,10 @@ export function ReservationsPage() {
                   className="absolute inset-0"
                 />
                 <div className="min-w-0 flex-1">
-                  <div className="truncate text-sm">{r.title || '（番組名なし）'}</div>
+                  <div className="truncate text-base">{r.title || '（番組名なし）'}</div>
                   <div
                     data-testid="reservation-secondary"
-                    className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground"
+                    className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground"
                   >
                     <span className="shrink-0">{r.serviceName}</span>
                     <span className="shrink-0">{formatDateTime(r.startAt)}</span>
@@ -124,6 +125,7 @@ export function ReservationsPage() {
           })}
         </ul>
       )}
+      </PageContent>
     </>
   )
 }
@@ -137,7 +139,7 @@ function StateBadge({ state }: { state: Reservation['state'] }) {
   return (
     <span
       className={cn(
-        'shrink-0 rounded px-1.5 py-0.5 text-[0.65rem]',
+        'shrink-0 rounded px-1.5 py-0.5 text-xs',
         state === 'orphaned' ? 'bg-destructive/10 text-destructive' : 'bg-muted text-foreground',
       )}
     >

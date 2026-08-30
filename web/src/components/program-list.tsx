@@ -66,11 +66,13 @@ export type ProgramListHandle = {
 }
 
 /**
- * 行の高さの見積もり（px）。`ProgramRow` は `min-h-14`（56px）+ 上下パディングで
- * 未展開時はおよそこの高さになる。展開時や日付ヘッダの行は実測（`measureElement`）
- * で上書きされるので、ここでの精度は初期スクロール位置の見た目にしか効かない。
+ * 行の高さの見積もり（px）。`ProgramRow` は題名が `text-base`、副情報が `text-sm` で、
+ * `min-h-14`（56px）+ 上下パディングを含め未展開時はおよそこの高さになる。展開時や
+ * 日付ヘッダの行は実測（`measureElement`）で上書きされるので、ここでの精度は初期
+ * スクロール位置の見た目にしか効かない。`e2e:programs-bottom-nav` が実ブラウザで
+ * 仮想化後の行とボトムナビの位置を判定する。
  */
-const estimatedRowHeightPx = 72
+const estimatedRowHeightPx = 80
 
 /** 画面外にも描いておく行数。スクロール中に空白が見えないための余白。 */
 const overscanRows = 8

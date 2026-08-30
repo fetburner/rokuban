@@ -22,7 +22,7 @@ import { apiErrorMessage, unwrap } from '@/api/unwrap'
 import { RecordingFilters } from '@/components/recording-filters'
 import { RecordingPlayer } from '@/components/recording-player'
 import { StorageBalance } from '@/components/storage-balance'
-import { EmptyState, ErrorState, ListSkeleton, PageHeader } from '@/components/page'
+import { EmptyState, ErrorState, ListSkeleton, PageContent, PageHeader } from '@/components/page'
 import { useToast } from '@/components/toaster'
 import {
   AlertDialog,
@@ -219,7 +219,8 @@ export function RecordingsPage() {
         <StorageBalance />
       </PageHeader>
 
-      {query.isError ? (
+      <PageContent>
+        {query.isError ? (
         <ErrorState>
           {apiErrorMessage(query.error) ??
             (trash ? 'ごみ箱の取得に失敗しました' : '録画の取得に失敗しました')}
@@ -289,6 +290,7 @@ export function RecordingsPage() {
           )}
         </>
       )}
+      </PageContent>
     </>
   )
 }
@@ -374,8 +376,8 @@ function RecordingRow({
         )}
       </div>
       <div className="min-w-0 flex-1">
-        <div className="truncate text-sm">{recording.title || '（番組名なし）'}</div>
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+        <div className="truncate text-base">{recording.title || '（番組名なし）'}</div>
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
           <StatusBadge status={recording.status} />
           <IngestBadge recording={recording} />
           {/* エンコード失敗は StatusBadge / IngestBadge と同じ「この録画の
@@ -387,7 +389,7 @@ function RecordingRow({
           {showSite && (
             /* 文字色は text-foreground を明示（bg-muted 小バッジの合成後コントラスト
                対策。docs/frontend/design.md「コントラストは毎回測る」）。 */
-            <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[0.65rem] text-foreground">
+            <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs text-foreground">
               {recording.site}
             </span>
           )}
@@ -425,7 +427,7 @@ export function StatusBadge({ status }: { status: Recording['status'] }) {
   return (
     <span
       className={cn(
-        'shrink-0 rounded px-1.5 py-0.5 text-[0.65rem]',
+        'shrink-0 rounded px-1.5 py-0.5 text-xs',
         status === 'failed' && 'bg-destructive/10 text-destructive',
         status === 'recording' && 'bg-tally font-medium text-tally-foreground',
         status === 'finished' && 'bg-muted text-foreground',
@@ -472,7 +474,7 @@ export function IngestBadge({ recording }: { recording: Recording }) {
         : `取り込み中 ${formatBytes(display.writtenBytes)}`
 
   return (
-    <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[0.65rem] text-foreground">
+    <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs text-foreground">
       {display.kind === 'transferring' && display.stale ? `${label}（停滞）` : label}
     </span>
   )
@@ -526,7 +528,7 @@ function DropBadges({ summary }: { summary: DropSummary }) {
       {badges.map((b) => (
         <span
           key={b.label}
-          className="shrink-0 rounded bg-destructive/10 px-1.5 py-0.5 text-[0.65rem] text-destructive"
+          className="shrink-0 rounded bg-destructive/10 px-1.5 py-0.5 text-xs text-destructive"
         >
           {b.label} {b.value.toLocaleString()}
         </span>
@@ -570,7 +572,7 @@ export function EncodeStatusBadges({ recording }: { recording: Recording }) {
         <span
           key={s.profile}
           className={cn(
-            'shrink-0 rounded px-1.5 py-0.5 text-[0.65rem]',
+            'shrink-0 rounded px-1.5 py-0.5 text-xs',
             s.state === 'failed'
               ? 'bg-destructive/10 text-destructive'
               : 'bg-muted text-foreground',

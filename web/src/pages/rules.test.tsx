@@ -157,6 +157,11 @@ function renderPage() {
   return renderInRouter(<RulesPage />)
 }
 
+async function findCreateRuleButton() {
+  const content = await screen.findByTestId('bounded-page-content')
+  return within(content).findByRole('button', { name: 'ルールを作成' })
+}
+
 afterEach(() => {
   vi.restoreAllMocks()
 })
@@ -238,7 +243,7 @@ describe('RulesPage 条件編集', () => {
 
     // ルールが 0 件でも作成フォームは開ける。ルーターの初回描画は非同期なので
     // 最初の操作対象は findBy* で待つ
-    await user.click(await screen.findByRole('button', { name: 'ルールを作成' }))
+    await user.click(await findCreateRuleButton())
 
     await user.type(screen.getByLabelText('名前'), 'テストルール')
 
@@ -281,7 +286,7 @@ describe('RulesPage 条件編集', () => {
     const user = userEvent.setup()
     renderPage()
 
-    await user.click(await screen.findByRole('button', { name: 'ルールを作成' }))
+    await user.click(await findCreateRuleButton())
 
     // テキスト条件・時間帯のどちらも「指定なし（すべての…が対象）」の形で、
     // 画面ごとの動詞（検索する / 保存する）を含まない
@@ -295,7 +300,7 @@ describe('RulesPage 条件編集', () => {
     const user = userEvent.setup()
     renderPage()
 
-    await user.click(await screen.findByRole('button', { name: 'ルールを作成' }))
+    await user.click(await findCreateRuleButton())
     await user.type(screen.getByLabelText('名前'), '条件なしルール')
     const textInput = screen.getByLabelText('テキスト条件 1 の値')
     await user.type(textInput, 'ニュース')
@@ -613,7 +618,7 @@ describe('RulesPage 成功トーストの無音化 (issue #297)', () => {
     const user = userEvent.setup()
     renderPage()
 
-    await user.click(await screen.findByRole('button', { name: 'ルールを作成' }))
+    await user.click(await findCreateRuleButton())
     await user.type(screen.getByLabelText('名前'), 'できたルール')
     await user.type(screen.getByLabelText('テキスト条件 1 の値'), 'キーワード')
 
@@ -624,7 +629,7 @@ describe('RulesPage 成功トーストの無音化 (issue #297)', () => {
     // こと自体は確認しつつ、その効果が画面外になりうる（優先度順で下の方に
     // 入る）ため成功トーストは残ることを確認する。
     expect(await screen.findByText('できたルール')).toBeInTheDocument()
-    expect(await screen.findByRole('button', { name: 'ルールを作成' })).toBeInTheDocument()
+    expect(await findCreateRuleButton()).toBeInTheDocument()
     expect(await screen.findByText('ルールを作成しました')).toBeInTheDocument()
   })
 
@@ -653,7 +658,7 @@ describe('RulesPage 成功トーストの無音化 (issue #297)', () => {
     const user = userEvent.setup()
     renderPage()
 
-    await user.click(await screen.findByRole('button', { name: 'ルールを作成' }))
+    await user.click(await findCreateRuleButton())
     await user.type(screen.getByLabelText('名前'), '失敗するルール')
     await user.type(screen.getByLabelText('テキスト条件 1 の値'), 'キーワード')
     await user.click(screen.getByRole('button', { name: '保存' }))

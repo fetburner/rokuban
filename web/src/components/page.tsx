@@ -60,6 +60,17 @@ export function PageHeader({
   )
 }
 
+/** PageContent は一覧ページの本文幅を制限し、サイドバー側へ左寄せする。 */
+export function PageContent({ className, ...props }: React.ComponentProps<'div'>) {
+  return (
+    <div
+      data-testid="bounded-page-content"
+      className={cn('w-full max-w-5xl', className)}
+      {...props}
+    />
+  )
+}
+
 /**
  * EmptyState はデータが 0 件のときの表示。
  *

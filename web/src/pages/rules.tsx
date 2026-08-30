@@ -18,7 +18,7 @@ import {
   EncodeSettingsFields,
   type EncodeSettingsValue,
 } from '@/components/encode-settings-fields'
-import { EmptyState, ErrorState, ListSkeleton, PageHeader } from '@/components/page'
+import { EmptyState, ErrorState, ListSkeleton, PageContent, PageHeader } from '@/components/page'
 import { summarizeRuleConditions } from '@/components/rule-condition-summary'
 import { useToast } from '@/components/toaster'
 import {
@@ -79,9 +79,23 @@ export function RulesPage() {
 
   return (
     <>
-      <PageHeader title="ルール" />
+      <PageHeader
+        title="ルール"
+        actions={
+          editingId !== 'new' && (
+            <Button
+              type="button"
+              size="lg"
+              className="hidden lg:inline-flex"
+              onClick={() => setEditingId('new')}
+            >
+              ルールを作成
+            </Button>
+          )
+        }
+      />
 
-      <div className="flex flex-col gap-4 px-4 py-4">
+      <PageContent className="flex flex-col gap-4 px-4 py-4">
         {editingId === 'new' ? (
           <RuleForm
             mode="create"
@@ -92,7 +106,7 @@ export function RulesPage() {
           <Button
             type="button"
             size="lg"
-            className="w-full"
+            className="w-full lg:hidden"
             onClick={() => setEditingId('new')}
           >
             ルールを作成
@@ -123,7 +137,7 @@ export function RulesPage() {
             ))}
           </ul>
         )}
-      </div>
+      </PageContent>
     </>
   )
 }
@@ -241,11 +255,11 @@ function RuleRow({ rule, onEdit }: { rule: Rule; onEdit: () => void }) {
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="truncate text-sm font-medium">{rule.name}</span>
+            <span className="truncate text-base font-medium">{rule.name}</span>
             {!rule.enabled && (
               /* 文字色は text-foreground（bg-muted 小バッジの合成後コントラスト
                  対策。docs/frontend/design.md「コントラストは毎回測る」）。 */
-              <span className="rounded bg-muted px-1.5 py-0.5 text-[0.65rem] text-foreground">
+              <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-foreground">
                 無効
               </span>
             )}
@@ -253,7 +267,7 @@ function RuleRow({ rule, onEdit }: { rule: Rule; onEdit: () => void }) {
 
           {/* 条件が空 = 全番組にマッチする、という危険な状態を一覧でも
               見えるようにする（設定を開かないと気付けない事故を防ぐ）。 */}
-          <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-xs">
+          <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-sm">
             {conditions.length === 0 ? (
               <span className="font-medium text-warning">
                 条件なし（すべての番組にマッチ）
@@ -267,7 +281,7 @@ function RuleRow({ rule, onEdit }: { rule: Rule; onEdit: () => void }) {
             )}
           </div>
 
-          <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
+          <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-sm text-muted-foreground">
             <span>優先度 {rule.priority}</span>
             <span>{keepOriginalLabel(keep)}</span>
             <span>
@@ -277,7 +291,7 @@ function RuleRow({ rule, onEdit }: { rule: Rule; onEdit: () => void }) {
         </div>
         <div className="flex shrink-0 items-start gap-1">
           <div className="flex flex-col items-end gap-2">
-            <Button type="button" variant="outline" size="sm" onClick={onEdit}>
+            <Button type="button" size="sm" onClick={onEdit}>
               編集
             </Button>
             <Button

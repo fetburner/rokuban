@@ -36,7 +36,7 @@ export function ReservationSkipBadge({ reservation }: { reservation: Reservation
   return (
     <span
       className={cn(
-        'flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[0.65rem]',
+        'flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-xs',
         'bg-muted text-foreground',
       )}
     >
