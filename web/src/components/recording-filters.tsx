@@ -265,7 +265,9 @@ function FilterPanel({
               {servicesError ? (
                 <p className="text-xs text-destructive">チャンネルの取得に失敗しました</p>
               ) : servicesPending ? (
-                <p className="text-xs text-muted-foreground">読み込み中…</p>
+                <p role="status" className="text-xs text-muted-foreground">
+                  読み込み中…
+                </p>
               ) : (
                 <ChannelPicker
                   services={services}

@@ -67,4 +67,25 @@ describe('ListSkeleton', () => {
     const skeletons = container.querySelectorAll('.scanlines')
     expect(skeletons).toHaveLength(3)
   })
+
+  /**
+   * WCAG 4.1.3（ステータスメッセージ）: 読み込み中という状態変化を、
+   * フォーカスを移さずに支援技術へ伝える。`role="status"` を外すと落ちる
+   * ことを確認済み（報告参照）。
+   */
+  it('role="status" と sr-only の「読み込み中」を 1 つだけ持つ', () => {
+    render(<ListSkeleton rows={3} />)
+    const status = screen.getByRole('status')
+    expect(status).toHaveTextContent('読み込み中')
+    // 各行の Skeleton には重ねない（重ねると行数ぶん読み上げてしまう）
+    expect(screen.getAllByRole('status')).toHaveLength(1)
+  })
+
+  it('内側の Skeleton は装飾のみ（aria-hidden）', () => {
+    const { container } = render(<ListSkeleton rows={2} />)
+    const skeletons = container.querySelectorAll('.scanlines')
+    for (const el of skeletons) {
+      expect(el).toHaveAttribute('aria-hidden', 'true')
+    }
+  })
 })

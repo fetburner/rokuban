@@ -304,7 +304,11 @@ function ProgramDetail({ program }: { program: ProgramListItem }) {
         <p className="whitespace-pre-wrap text-muted-foreground">{program.description}</p>
       )}
 
-      {detail.isPending && <p className="text-muted-foreground">詳細を読み込み中…</p>}
+      {detail.isPending && (
+        <p role="status" className="text-muted-foreground">
+          詳細を読み込み中…
+        </p>
+      )}
       {detail.isError && <p className="text-destructive">詳細の取得に失敗しました</p>}
 
       {d?.extended && Object.keys(d.extended).length > 0 && (

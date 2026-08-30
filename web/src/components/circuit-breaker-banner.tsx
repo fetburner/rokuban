@@ -93,7 +93,10 @@ function BreakerRow({ breaker }: { breaker: CircuitBreaker }) {
           void queryClient.invalidateQueries({ queryKey: getListCircuitBreakersQueryKey() })
         },
         onError: (err) => {
-          toast({ message: mutationErrorMessage(`${label}の再開に失敗しました`, err) })
+          toast({
+            message: mutationErrorMessage(`${label}の再開に失敗しました`, err),
+            kind: 'error',
+          })
         },
       },
     )
