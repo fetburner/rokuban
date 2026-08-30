@@ -2,7 +2,7 @@ import { render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { CapacityOverage, ProgramListItem, Service } from '@/api/generated'
-import { CapacityBands } from '@/components/capacity-band'
+import { CapacityBandLabels, CapacityBands } from '@/components/capacity-band'
 import { ProgramGrid } from '@/components/program-grid'
 import { epgColumnWidthPx, type TimeAxis } from '@/lib/epg-grid'
 
@@ -85,6 +85,9 @@ function renderGrid(overages: CapacityOverage[], programs: ProgramListItem[]) {
       onSelect={vi.fn()}
       now={at(19 * 60)}
       overlay={(gridAxis) => <CapacityBands axis={gridAxis} overages={overages} />}
+      // 見えるラベルは時間軸列（gutterOverlay）に出る（issue #460）。
+      // 単体テストでも実際に使う配線と同じ組み方にする。
+      gutterOverlay={(gridAxis) => <CapacityBandLabels axis={gridAxis} overages={overages} />}
     />,
   )
 }
@@ -136,14 +139,15 @@ describe('CapacityBands', () => {
     )
   })
 
-  it('不足本数と詰まった種別を出す', () => {
+  it('不足本数と詰まった種別を出す（読み上げ用の全文。見た目は時間軸列側の短い形）', () => {
     renderGrid([overage(20 * 60, 21 * 60, { shortfall: 2, jammedTypes: ['GR', 'BS'] })], [])
 
-    expect(screen.getByText('チューナー不足（GR・BS が 2 本）')).toBeInTheDocument()
-    // 読み上げ用には時刻付きの文（帯が短くて見えるラベルが出ないこともある）
+    // 読み上げ用には時刻付きの全文（帯が短くて見えるラベルが出ないこともある）
     expect(
       screen.getByText('20:00〜21:00 はチューナーが不足しています（GR・BS が 2 本不足）'),
     ).toBeInTheDocument()
+    // 見た目（時間軸列）は shortageLabelCompact の短い形。種別 2 つは列挙せず本数だけ
+    expect(screen.getByText('-2')).toBeInTheDocument()
   })
 
   it('区間が結合済みでも複数あればすべて描く', () => {
@@ -181,6 +185,38 @@ describe('CapacityBands', () => {
 })
 
 /**
+ * `CapacityBands`（overlay）と `CapacityBandLabels`（gutterOverlay）は対で
+ * configure する規律をここで固定する。`ProgramGrid` は 2 つの独立した prop
+ * を持つので（局の列と時間軸列は別の DOM 部分木で、これ以上結合させると
+ * 密結合が増えるだけという判定。issue #460 レビュー「対応不要」）、
+ * `overlay` だけ渡す呼び出しは型では防げない --- 実際にレビューで見つかった
+ * 「片方だけ渡すと見える警告が黙って消える」を退行させないためのテスト。
+ */
+describe('CapacityBands と CapacityBandLabels は対で configure する', () => {
+  it('overlay だけ渡すと、帯の色と sr-only は出るが見える警告が一切出ない', () => {
+    render(
+      <ProgramGrid
+        services={[service]}
+        programs={[]}
+        axis={axis}
+        reservationByProgramId={new Set()}
+        selectedProgramId={null}
+        onSelect={vi.fn()}
+        now={at(19 * 60)}
+        overlay={(gridAxis) => <CapacityBands axis={gridAxis} overages={[overage(20 * 60, 21 * 60)]} />}
+        // gutterOverlay を渡していない --- ここが対を崩した呼び出し
+      />,
+    )
+
+    expect(band(20 * 60)).toBeInTheDocument()
+    expect(screen.getByText(/はチューナーが不足しています/)).toBeInTheDocument()
+    // 見える警告（時間軸列のラベル）は無い --- 呼び出し側が両方配線しないと
+    // 沈黙して壊れる、という危険を明示するテスト
+    expect(screen.queryByTestId('capacity-band-label')).not.toBeInTheDocument()
+  })
+})
+
+/**
  * 帯の色。jsdom は色を計算しないのでクラス名を見る（実画素とコントラストの判定は
  * web/e2e/design.mjs。docs/frontend/design.md）。
  */
@@ -199,8 +235,116 @@ describe('CapacityBands の色', () => {
   it('ラベルも同じ琥珀トークンを使う（帯のためだけの色を作らない）', () => {
     renderGrid([overage(20 * 60, 21 * 60)], [])
 
-    const label = screen.getByText('チューナー不足（BS が 1 本）')
+    // 色は外側の箱に置き、アイコン・文字とも currentColor で引き継ぐ
+    const label = screen.getByTestId('capacity-band-label')
     expect(label).toHaveClass('text-warning')
     expect(label.className).not.toMatch(/amber|yellow|orange/)
+  })
+})
+
+/**
+ * 時間軸列のラベル配置。jsdom はレイアウトを計算しないので、実際に読めるかは
+ * web/e2e/design.mjs が測る（scrollWidth <= clientWidth / 目盛りを隠さない）。
+ * ここで固定するのは「どの overage にどの top を割り当てるか」という純粋な
+ * ロジックだけ --- avoidTickRow の分岐。
+ *
+ * **同一サイト内の不足区間は重ならない**（`internal/capacity/capacity.go` の
+ * `Compute` が保証し、`pages/programs.tsx` はグリッドを 1 サイトに絞って渡す）
+ * ので、ラベル同士の位置調整（積む処理）は無い --- 一度書いたが実際には
+ * 決して発火しないコードだったので削った（issue #460 レビュー should 1）。
+ */
+describe('CapacityBandLabels の配置', () => {
+  it('帯の上端にアンカーし、高さは自分の内容ぶんだけ（帯の全高を塗らない）', () => {
+    // 2 時間 45 分の帯（330px）でもラベルに高さを明示的に指定しない
+    // （旧実装は帯の高さ＝ rect.heightPx をそのまま style.height に渡していた）。
+    // 21:00 は目盛りの行なので avoidTickRow の対象外にするため 20:15 始まりにする
+    renderGrid([overage(20 * 60 + 15, 23 * 60)], [])
+
+    const band = document.querySelector<HTMLElement>(`[data-start-at="${iso(20 * 60 + 15)}"]`)
+    expect(band?.style.height).toBe('330px')
+    const label = screen.getByTestId('capacity-band-label')
+    // 高さは CSS（line-height）任せで、inline style には持たせない
+    expect(label.style.height).toBe('')
+    expect(screen.getByText('BS-1')).toBeInTheDocument()
+  })
+
+  it('隣接する（重ならない）2 本の帯があるとき、両方のラベルが別の位置に出る', () => {
+    // 20:00-20:30（BS）と 20:30-21:00（GR）--- 隣接するが重ならない
+    // （サーバーが実際に返しうる形。issue #460 レビュー should 1）
+    renderGrid(
+      [
+        overage(20 * 60, 20 * 60 + 30, { jammedTypes: ['BS'] }),
+        overage(20 * 60 + 30, 21 * 60, { jammedTypes: ['GR'] }),
+      ],
+      [],
+    )
+
+    const labels = screen.getAllByTestId('capacity-band-label')
+    expect(labels).toHaveLength(2)
+    expect(labels[0]?.style.top).not.toBe(labels[1]?.style.top)
+    expect(screen.getByText('BS-1')).toBeInTheDocument()
+    expect(screen.getByText('GR-1')).toBeInTheDocument()
+  })
+
+  it('ちょうど正時に始まる区間は、目盛りの行を避けて下にずれる', () => {
+    // 軸は 0 時基準・120px/h なので 22:00 の目盛りは top 2640px
+    renderGrid([overage(22 * 60, 23 * 60)], [])
+
+    const label = screen.getByTestId('capacity-band-label')
+    // 目盛りの行（20px 分の目安）を避けて下端まで押し下げる
+    expect(label.style.top).toBe('2660px')
+  })
+
+  it('正時からずれた区間は目盛りを避けない（誤って常にずらさない）', () => {
+    // 22:15 は目盛りから離れているので avoidTickRow は何もしない
+    renderGrid([overage(22 * 60 + 15, 23 * 60)], [])
+
+    const label = screen.getByTestId('capacity-band-label')
+    expect(label.style.top).toBe('2670px')
+  })
+
+  it('正時起点で 9〜18 分の帯は、目盛り回避で押し下げた先が直後の帯と重なるので見えるラベルを描かない', () => {
+    // 22:00-22:10（10 分、高さ 20px）が正時に始まり、直後に 22:10-23:00
+    // （高さ 100px）が続く --- サーバーが実際に返しうる形（issue #460
+    // 再レビュー実測: [03:00, 03:10) の CS と [03:10, 04:00) の GR）。
+    // 22:00 の帯は avoidTickRow が top 2660 まで押し下げるが、帯自身の下端も
+    // top 2660 なのでラベルが帯の外（= 直後の帯の領域）へはみ出す --- 直す前の
+    // 実装はここで描いてしまい、直後の帯のラベル（押し下げられず top 2660）と
+    // 完全に重なっていた。
+    renderGrid(
+      [
+        overage(22 * 60, 22 * 60 + 10, { jammedTypes: ['CS'], shortfall: 1 }),
+        overage(22 * 60 + 10, 23 * 60, { jammedTypes: ['GR'], shortfall: 1 }),
+      ],
+      [],
+    )
+
+    // 正時起点の短い帯（CS）は見えるラベルを持たない
+    expect(screen.queryByText('CS-1')).not.toBeInTheDocument()
+    // 直後の帯（GR）のラベルは通常どおり自分の帯の上端に出る
+    const labels = screen.getAllByTestId('capacity-band-label')
+    expect(labels).toHaveLength(1)
+    expect(screen.getByText('GR-1')).toBeInTheDocument()
+    expect(labels[0]?.style.top).toBe('2660px')
+  })
+
+  it('アイコンを見た目の手がかりとして持つ（色だけに頼らない。issue #460 レビュー should 2）', () => {
+    renderGrid([overage(20 * 60 + 15, 21 * 60)], [])
+
+    const label = screen.getByTestId('capacity-band-label')
+    expect(label.querySelector('svg')).not.toBeNull()
+    // 短縮ラベルの文字自体は別の要素（省略記号の対象を分けるため）
+    expect(screen.getByTestId('capacity-band-label-text')).toHaveTextContent('BS-1')
+  })
+
+  it('種別が 2 つ以上詰まって本数だけの短縮形（例: 「-2」）になっても、title に全文を持つ', () => {
+    // jammedTypes が 2 つ以上あると shortageLabelCompact は種別を列挙せず
+    // 「-2」のような本数だけの形になり、種別も単位も読めない（issue #460
+    // 再レビュー nit 1）。native title でマウス操作者に全文を補う。
+    renderGrid([overage(20 * 60 + 15, 21 * 60, { shortfall: 2, jammedTypes: ['GR', 'BS'] })], [])
+
+    expect(screen.getByText('-2')).toBeInTheDocument()
+    const label = screen.getByTestId('capacity-band-label')
+    expect(label).toHaveAttribute('title', 'チューナー不足（GR・BS が 2 本）')
   })
 })

@@ -151,9 +151,74 @@ const reservations = [
 ]
 
 /** 予約 2 の時間帯に重ねる。琥珀の警告バッジ・帯を必ず 1 つ出すため。 */
+/**
+ * nextHourBoundaryMs は与えられた時刻より後の直近の毎時 0 分（ローカル）を返す。
+ * 番組境界は :00 / :30 に落ちることが圧倒的に多く、不足区間の境界も同じ単位
+ * （サーバー側の判定）なので、「ちょうど正時に始まる不足区間」フィクスチャを
+ * ここで作る（issue #460 レビュー blocker。:34 起点の固定時刻だけでは
+ * この最頻ケースを避けてしまっていた）。
+ */
+function nextHourBoundaryMs(ms) {
+  const d = new Date(ms)
+  d.setMinutes(0, 0, 0)
+  if (d.getTime() <= ms) d.setHours(d.getHours() + 1)
+  return d.getTime()
+}
+
 const overages = [
   { site: SITE, startAt: iso(nowMs + 2 * HOUR), endAt: iso(nowMs + 3 * HOUR), shortfall: 1, jammedTypes: ['BS'] },
+  // 隣接するが重ならない 2 本目。`internal/capacity/capacity.go` の `Compute`
+  // は同一サイト内の区間を重ねて返さない（`pages/programs.tsx` はグリッドを
+  // 1 サイトに絞って渡す）ので、「同時刻に重なる 2 本」はサーバーが返せない
+  // 状態 --- ここは「隣接する 2 本の見えるラベルが両方読める」ことだけを
+  // 機械判定する（issue #460 レビュー should 1）。
+  { site: SITE, startAt: iso(nowMs + 3 * HOUR), endAt: iso(nowMs + 3.5 * HOUR), shortfall: 1, jammedTypes: ['GR'] },
+  // ちょうど正時に始まる 3 本目（issue #460 レビュー blocker）。ラベルが帯の
+  // 上端にアンカーされるので、この区間だと時間軸の目盛り（例: 「05:00」）と
+  // 同じ y に来る --- avoidTickRow が効いているかをここで機械判定する。
+  // 高さは 1 時間（120px）あるので、押し下げてもラベルは自分の帯の内側に
+  // 収まる（4 本目の対比: 9〜18 分の短い帯だと収まらない）。
+  {
+    site: SITE,
+    startAt: iso(nextHourBoundaryMs(nowMs + 5 * HOUR)),
+    endAt: iso(nextHourBoundaryMs(nowMs + 5 * HOUR) + HOUR),
+    shortfall: 3,
+    jammedTypes: ['CS'],
+  },
+  // 正時に始まる短い帯（10 分 = 9〜18 分の範囲）+ 直後に隣接する帯（issue #460
+  // 再レビュー実測と同じ形: [03:00, 03:10) の CS と [03:10, 04:00) の GR）。
+  // `avoidTickRow` は帯の高さを見ずに tickAvoidHeightPx（20px）押し下げるので、
+  // 10 分帯（高さ 20px）だと押し下げた先が自分の帯の下端 = 直後の帯の上端と
+  // 一致し、直後の帯のラベル（押し下げられない）と完全に重なっていた
+  // （直す前の実装ではここで `labelOverlaps` が発火する）。4 本目（CS）は
+  // 見えるラベルを意図的に持たない（`expectedVisibleLabelTexts` 参照。
+  // `capacity-band.tsx` の `CapacityBandLabel`）。
+  {
+    site: SITE,
+    startAt: iso(nextHourBoundaryMs(nowMs + 7 * HOUR)),
+    endAt: iso(nextHourBoundaryMs(nowMs + 7 * HOUR) + 10 * 60_000),
+    shortfall: 1,
+    jammedTypes: ['CS'],
+  },
+  {
+    site: SITE,
+    startAt: iso(nextHourBoundaryMs(nowMs + 7 * HOUR) + 10 * 60_000),
+    endAt: iso(nextHourBoundaryMs(nowMs + 7 * HOUR) + HOUR),
+    shortfall: 2,
+    jammedTypes: ['GR'],
+  },
 ]
+
+/**
+ * 見えるはずのラベルの文字（`shortageLabelCompact` の形。順不同で照合する）。
+ *
+ * **件数ではなく集合で照合する。** 件数だけだと、意図的に隠しているはずの
+ * 10 分の CS 帯が（回帰で）描かれるようになり、同時に他のどれか 1 本のラベルが
+ * （別の回帰で）消えても、合計件数は変わらず通ってしまう --- 件数は identity
+ * を見ていない（issue #460 再々レビュー）。CS 帯（10 分、`overages` の 4 本目）
+ * だけがここに含まれない。
+ */
+const expectedVisibleLabelTexts = ['BS-1', 'GR-1', 'CS-3', 'GR-2']
 
 const recordings = [
   { id: 11, site: SITE, source: 'rule', serviceName: 'NHK総合', channelType: 'GR', channel: '27', networkId: 32736, serviceId: 1024, eventId: 11, title: 'ニュース７', startAt: iso(nowMs - 600_000), durationMs: 1_800_000, status: 'recording', createdAt: iso(nowMs - 600_000), startedAt: iso(nowMs - 600_000) },
@@ -1361,6 +1426,153 @@ for (const theme of themes) {
         )
         log(`  [${theme}] 帯が重なる面 ${surfaces.length} 種のうち最も不利なもの = ${worst}`)
         checkContrast(theme, '容量超過の帯の罫線 / 最も不利な面', bandBorder.rgba, { backdrop: worst }, minUiContrast)
+      }
+
+      // 帯ラベルとセルの時刻文字の重なり（issue #460）。帯の上端がセルの上端に
+      // 近いと、見た目のラベル（「BS-1」等）とセルの時刻文字（「23:30」）が
+      // 同じ px に描かれてどちらも読めなくなる（ライトの
+      // `programs-grid-light-desktop.png` で実際に確認済み）。jsdom はレイアウトを
+      // 計算しないのでここでしか測れない --- rect の非交差を機械判定する。
+      const labelHandles = await page.locator('[data-testid="capacity-band-label"]').all()
+      const labelBoxes = []
+      for (const l of labelHandles) {
+        const box = await l.boundingBox()
+        if (box === null) continue
+        // 幅の切れは実際に truncate が効く内側の要素（アイコン分の幅を除いた
+        // テキスト span）で測る --- 外側の箱はアイコン込みで常に時間軸列いっぱい
+        // に張るので、外側だけを見ると切れを見落とす。
+        const overflow = await l.evaluate((el) => {
+          const textEl = el.querySelector('[data-testid="capacity-band-label-text"]') ?? el
+          return { clientWidth: textEl.clientWidth, scrollWidth: textEl.scrollWidth, text: el.textContent }
+        })
+        labelBoxes.push({ ...box, ...overflow })
+      }
+      const cellTimeBoxes = (
+        await Promise.all(
+          (await page.locator('[data-testid="program-grid-cell-time"]').all()).map((c) =>
+            c.boundingBox(),
+          ),
+        )
+      ).filter((b) => b !== null)
+      log(`  [${theme}] 帯ラベル ${labelBoxes.length} 件 / セル時刻 ${cellTimeBoxes.length} 件`)
+      if (labelBoxes.length === 0) {
+        ng.push(`[${theme}] 容量超過の帯ラベルが見つからない`)
+      }
+
+      const rectsIntersect = (a, b) =>
+        a.x < b.x + b.width &&
+        a.x + a.width > b.x &&
+        a.y < b.y + b.height &&
+        a.y + a.height > b.y
+
+      // レビュー should 1: フィクスチャ（`overages`）に隣接する（重ならない）
+      // 帯を複数入れてある。同一サイト内の不足区間はサーバー側で重ならないと
+      // 保証されている（`internal/capacity/capacity.go` の `Compute`）ので
+      // 「同時刻に重なる帯」はフィクスチャとしても不適切 --- ここで見るのは
+      // 「隣接する帯のラベルがそれぞれ独立に見えるか」だけ。
+      //
+      // 件数ではなく集合（`expectedVisibleLabelTexts`）で照合する。件数だけだと
+      // 「隠しているはずの CS 帯が描かれ、同時に別の帯のラベルが消える」変異が
+      // 合計件数の一致で素通りする（issue #460 再々レビュー）。
+      const actualLabelTexts = [...labelBoxes.map((l) => l.text)].sort()
+      const wantLabelTexts = [...expectedVisibleLabelTexts].sort()
+      if (JSON.stringify(actualLabelTexts) !== JSON.stringify(wantLabelTexts)) {
+        ng.push(
+          `[${theme}] 見えるラベルの集合が期待と異なる` +
+            `（期待 ${JSON.stringify(wantLabelTexts)} / 実際 ${JSON.stringify(actualLabelTexts)}）`,
+        )
+      }
+      const labelOverlaps = []
+      for (let i = 0; i < labelBoxes.length; i++) {
+        for (let j = i + 1; j < labelBoxes.length; j++) {
+          if (rectsIntersect(labelBoxes[i], labelBoxes[j])) {
+            labelOverlaps.push([labelBoxes[i], labelBoxes[j]])
+          }
+        }
+      }
+      if (labelOverlaps.length > 0) {
+        log(`  [${theme}] ラベル同士の重なり ${JSON.stringify(labelOverlaps[0])}`)
+        ng.push(
+          `[${theme}] 帯ラベル同士の rect が ${labelOverlaps.length} 件重なっている` +
+            '（同時刻の帯が積まれず、片方が隠れている）',
+        )
+      }
+
+      // レビュー blocker 1: 時間軸列（56px）に収まらず省略記号の外に文字が
+      // 切れていないか。scrollWidth が clientWidth を超えていれば、見えている
+      // 分の外に切れた文字がある（「BS-1」のような短い形のはずが「チューナ…」
+      // まで切れて種別も本数も読めなくなった実例がレビューで見つかった）。
+      for (const l of labelBoxes) {
+        if (l.scrollWidth > l.clientWidth) {
+          ng.push(
+            `[${theme}] 帯ラベル「${l.text}」が時間軸列の幅で切れている` +
+              `（clientWidth ${l.clientWidth} / scrollWidth ${l.scrollWidth}）`,
+          )
+        }
+      }
+
+      // レビュー blocker 2: ラベルが帯の全高を塗って時間軸の目盛りや現在時刻
+      // チップを消していないか。ラベルは自分の内容ぶんの小さい高さしか
+      // 持たないはず（旧実装は帯の高さぶん引き伸ばしていた --- 3 時間の帯なら
+      // ラベルの高さも 3 時間ぶんの px になっていた）。
+      const maxReasonableLabelHeightPx = 24
+      for (const l of labelBoxes) {
+        if (l.height > maxReasonableLabelHeightPx) {
+          ng.push(
+            `[${theme}] 帯ラベルの高さが ${l.height}px --- 帯の全高を塗って` +
+              `目盛りを消している疑い（上限の目安 ${maxReasonableLabelHeightPx}px）`,
+          )
+        }
+      }
+      // 上の高さ判定を回避しても実際に目盛りが隠れていないかは直接見る ---
+      // レビューの実測（`coveredTicks: ["00:00"]`）と同じものをここで測る。
+      // 判定は rect の交差（`rectsIntersect`）にする --- 「全高を包含する
+      // か」だと、ラベル（16px）が目盛り（実測 18.5px）より低い限り算術的に
+      // 真になり得ず、判定として永久に発火しない（レビューで指摘）。
+      const tickBoxes = (
+        await Promise.all(
+          (await page.locator('[data-testid="program-grid-tick"]').all()).map((t) =>
+            t.boundingBox(),
+          ),
+        )
+      ).filter((b) => b !== null)
+      const coveredTicks = []
+      for (const t of tickBoxes) {
+        for (const l of labelBoxes) {
+          if (rectsIntersect(l, t)) coveredTicks.push(t)
+        }
+      }
+      if (coveredTicks.length > 0) {
+        log(`  [${theme}] coveredTicks: ${coveredTicks.length} 件`)
+        ng.push(`[${theme}] 帯ラベルが時間軸の目盛りと ${coveredTicks.length} 件重なっている`)
+      }
+
+      // レビュー should 2: 前提条件そのものを表明する。帯の上端付近にセルの
+      // 時刻要素が無ければ、下の非交差判定は「そもそも重なりようがない」
+      // だけで通ってしまい、`FIXED_NOW` や `gridPxPerHour` を変えただけで
+      // 気付かず空虚に通るようになる。
+      const nearPx = 20
+      const hasAdjacentCell = labelBoxes.some((l) =>
+        cellTimeBoxes.some((c) => Math.abs(c.y - l.y) <= nearPx),
+      )
+      if (!hasAdjacentCell) {
+        ng.push(
+          `[${theme}] 前提条件が崩れている: 帯ラベルの上端付近（${nearPx}px 以内）に` +
+            'セルの時刻要素が無い。以降の非交差判定はこの回では何も検証していない',
+        )
+      }
+
+      const overlaps = []
+      for (const l of labelBoxes) {
+        for (const c of cellTimeBoxes) {
+          if (rectsIntersect(l, c)) overlaps.push({ label: l, cell: c })
+        }
+      }
+      if (overlaps.length > 0) {
+        log(`  [${theme}] 重なり ${JSON.stringify(overlaps[0])}`)
+        ng.push(
+          `[${theme}] 帯ラベルとセルの時刻文字の rect が ${overlaps.length} 件重なっている`,
+        )
       }
     }
     await context.close()

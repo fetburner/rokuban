@@ -599,8 +599,8 @@ describe('ProgramsPage の容量超過の帯', () => {
     // 帯とセルが同じ spanToPx を通っていることの唯一の観測可能な帰結
     expect(band.style.top).toBe(cell?.style.top)
     expect(band.style.height).toBe(cell?.style.height)
-    // 不足本数と詰まった種別まで出す
-    expect(screen.getByText('チューナー不足（BS が 1 本）')).toBeInTheDocument()
+    // 不足本数と詰まった種別まで出す（時間軸列の短い形。全文は sr-only 側）
+    expect(screen.getByText('BS-1')).toBeInTheDocument()
   })
 
   it('別サイトの超過区間は帯として描かない（issue #324）', async () => {
