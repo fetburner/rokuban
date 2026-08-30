@@ -20,7 +20,19 @@
 //   E2E_URL=http://localhost:4173 pnpm e2e:grid-reserved
 //
 // 合格なら exit 0、1 つでも NG なら exit 1。
-import { finish, installApiStubs, launchBrowser, log, verifyBundleMatchesOrExit } from './lib.mjs'
+import {
+  ListProgramsResponseItem,
+  ListReservationsResponseItem,
+  ListServicesResponseItem,
+} from '../src/api/zod.ts'
+import {
+  finish,
+  installApiStubs,
+  launchBrowser,
+  log,
+  validateFixturesOrExit,
+  verifyBundleMatchesOrExit,
+} from './lib.mjs'
 
 const BASE = process.env.E2E_URL ?? 'http://localhost:4173'
 const SITE = 'default'
@@ -95,6 +107,8 @@ const reservation = (program) => ({
   source: 'manual',
   state: 'active',
   title: program.name,
+  serviceName: service.name,
+  channelType: service.channelType,
   startAt: program.startAt,
   durationMs: program.durationMs,
   createdAt: iso(nowMs - 3_600_000),
@@ -193,6 +207,21 @@ const inspectCell = (el) => {
     bars,
   }
 }
+
+// 契約検証: フィクスチャが orval 生成の zod スキーマと一致するか
+// （`validateFixturesOrExit`。design.mjs / e2e/README.md §デザイン 参照）。
+log('\n=== 契約検証: フィクスチャの zod parse ===')
+await validateFixturesOrExit(
+  [
+    ['service', ListServicesResponseItem, service],
+    ['reserved', ListProgramsResponseItem, reserved],
+    ['unreserved', ListProgramsResponseItem, unreserved],
+    ['shortReserved', ListProgramsResponseItem, shortReserved],
+    ['reservation(reserved)', ListReservationsResponseItem, reservation(reserved)],
+    ['reservation(shortReserved)', ListReservationsResponseItem, reservation(shortReserved)],
+  ],
+  ng,
+)
 
 await verifyBundleMatchesOrExit(BASE, ng)
 

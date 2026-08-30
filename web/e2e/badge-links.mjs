@@ -33,7 +33,19 @@
 // verifyBundleMatchesOrExit に委ねる（不一致の事故の経緯もそちらのコメント）。
 //
 // 合格なら exit 0、1 つでも NG なら exit 1。
-import { finish, installApiStubs, launchBrowser, log, verifyBundleMatchesOrExit } from './lib.mjs'
+import {
+  ListProgramsResponseItem,
+  ListReservationsResponseItem,
+  ListServicesResponseItem,
+} from '../src/api/zod.ts'
+import {
+  finish,
+  installApiStubs,
+  launchBrowser,
+  log,
+  validateFixturesOrExit,
+  verifyBundleMatchesOrExit,
+} from './lib.mjs'
 
 const URL_BASE = process.env.E2E_URL ?? 'http://localhost:40773'
 
@@ -91,6 +103,8 @@ const reservation = {
   source: 'manual',
   state: 'active',
   title: '容量バッジ導線の確認用予約',
+  serviceName: service.name,
+  channelType: service.channelType,
   startAt: iso(overageStart),
   durationMs: HOUR,
   createdAt: iso(nowMs),
@@ -164,6 +178,18 @@ async function apiHandler({ path: p, url, json, route }) {
 log(`URL      : ${URL_BASE}`)
 log(`固定時刻 : ${FIXED_NOW.toISOString()} (Asia/Tokyo)`)
 log(`不足区間 : ${overage.startAt} 〜 ${overage.endAt}`)
+
+// 契約検証: フィクスチャが orval 生成の zod スキーマと一致するか
+// （`validateFixturesOrExit`。design.mjs / e2e/README.md §デザイン 参照）。
+log('\n=== 契約検証: フィクスチャの zod parse ===')
+await validateFixturesOrExit(
+  [
+    ['service', ListServicesResponseItem, service],
+    ...programsFor(iso(nowMs), iso(nowMs + 24 * HOUR)).map((p, i) => [`programs[${i}]`, ListProgramsResponseItem, p]),
+    ['reservation', ListReservationsResponseItem, reservation],
+  ],
+  ng,
+)
 
 // ⓪ 配っている bundle が dist/ の現物と一致するか（e2e/lib.mjs 参照）。
 log('\n=== ⓪ 配っている bundle と dist/ の一致 ===')

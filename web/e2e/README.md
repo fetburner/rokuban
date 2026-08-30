@@ -20,8 +20,13 @@
 いずれも jsdom では**原理的に検出できない**。ここに置いた判定はそのためのもの。
 
 `lib.mjs` は各スクリプトの前置き（ブラウザの起動・終了、`/api/**` の配線、配って
-いる bundle が `dist/` の現物と一致するかの確認、結果の集計と終了コード）を共有する。
-各スクリプト固有の判定（何が OK/NG かの基準）はここには置かず各 *.mjs 本体にとどめる。
+いる bundle が `dist/` の現物と一致するかの確認、フィクスチャが orval 生成の
+zod スキーマと一致するかの確認（`validateFixturesOrExit`。詳細は下記
+§デザイン）、結果の集計と終了コード）を共有する。各スクリプト固有の判定
+（何が OK/NG かの基準）はここには置かず各 *.mjs 本体にとどめる ---
+フィクスチャ自体（どの値を使うか）はスクリプトごとに違うので、
+`validateFixturesOrExit` は「フィクスチャ配列 → 呼び出し側が組む」形にして
+判定ロジックだけを共有する。
 
 ## 使い方
 
@@ -154,23 +159,26 @@ E2E_URL=http://localhost:4173 pnpm e2e:design
 撮れていても、契約（`openapi.yaml`）が動くたびに誰も気付かない、という壊れ方が
 実際にあった（ルールの `textMatches` が旧形 `{ field, kind }` のまま
 `{ target, mode }` に追従しておらず、ルール一覧に「undefinedに…を含む」が
-描かれたまま exit 0 していた）。`design.mjs` は冒頭（ブラウザを起動する前）で
-`services`/`programs`/`reservations`/`recordings`/`rules`/`breakers` の各
-フィクスチャを orval 生成の zod スキーマ（`web/src/api/zod.ts` の
-`List*ResponseItem`）で `parse` し、1 件でも不一致なら他の判定を一切せず
-exit 1 する（⓪ の `verifyBundleMatchesOrExit` と同じ「前提が崩れていたら
-打ち切る」扱い）。**契約を変えたら `design.mjs` のフィクスチャも同じ PR で直す。**
+描かれたまま exit 0 していた）。判定本体は `validateFixturesOrExit`
+（`e2e/lib.mjs`）--- `verifyBundleMatchesOrExit` と同じ**前提条件**チェックで、
+スクリプト固有の OK/NG 判定ではないため共有ハーネス側に置いてある。フィクスチャを
+orval 生成の zod スキーマ（`web/src/api/zod.ts` の `List*ResponseItem`）で
+`parse` し、1 件でも不一致なら他の判定を一切せず exit 1 する（⓪ の
+`verifyBundleMatchesOrExit` と同じ「前提が崩れていたら打ち切る」扱い）。
+`design.mjs` に加えて `badge-links.mjs` / `sse-refresh.mjs` /
+`grid-reserved.mjs` / `reservations-mobile.mjs` も自分のフィクスチャで呼ぶ。
+**契約を変えたら、フィクスチャを持つ各スクリプトも同じ PR で直す。**
 
 `zod.ts` は `import.meta.env` 等 Vite 依存を持たない素の TypeScript なので、
-`design.mjs`（Node の ESM スクリプト）から `../src/api/zod.ts` を直接 import
-できる --- 追加のローダー（tsx・vite-node）は要らない。Node 22 は型注釈だけを
-消す型ストリッピングを既定で持ち（`.node-version` の 22.23.1 で実際に import
+Node の ESM スクリプトから `../src/api/zod.ts` を直接 import できる ---
+追加のローダー（tsx・vite-node）は要らない。Node 22 は型注釈だけを消す型
+ストリッピングを既定で持ち（`.node-version` の 22.23.1 で実際に import
 できることを確認済み）、`zod.ts` は enum・namespace・parameter properties の
 ような変換が要る構文を持たないため、これだけで通る。`package.json` の
-`e2e:design`（`node e2e/design.mjs`）もそのままで変更していない。
+`e2e:design` 等の各スクリプトもそのままで変更していない。
 
-画面のテキストに欠損文字列が混ざっていないかも全 40 画面（40 枚のショットすべて）
-に掛ける ---「安いので全画面に掛ける」。見るのは `undefined` / `NaN`
+`design.mjs` は画面のテキストに欠損文字列が混ざっていないかも全 40 ショットに
+掛ける ---「安いので全画面に掛ける」。見るのは `undefined` / `NaN`
 （単語境界 `\b`）と `[object`（前方一致）。**`null` は対象にしない** ---
 番組名・ルール名に偶然「null」を含む文字列が来ると単語境界だけでは区別できず
 偽陽性になりうるため。

@@ -54,7 +54,14 @@ import {
   ListRulesResponseItem,
   ListServicesResponseItem,
 } from '../src/api/zod.ts'
-import { finish, installApiStubs, launchBrowser, log, verifyBundleMatchesOrExit } from './lib.mjs'
+import {
+  finish,
+  installApiStubs,
+  launchBrowser,
+  log,
+  validateFixturesOrExit,
+  verifyBundleMatchesOrExit,
+} from './lib.mjs'
 
 const URL_BASE = process.env.E2E_URL ?? 'http://localhost:40773'
 const OUT_DIR =
@@ -205,41 +212,22 @@ const breakers = [
 // 遅れていても、これまでは誰も気付かなかった（issue #468。ルールの
 // `textMatches` が旧形 `{ field, kind }` のまま `target/mode` に追従して
 // おらず、ルール一覧に「undefinedに…を含む」が描かれたまま exit 0 していた）。
-// `installApiStubs` の前、フィクスチャを定義した直後（ブラウザを起動する前）
-// に置き、1 件でも不一致なら他の判定を一切せず exit 1 する（⓪ の
-// `verifyBundleMatchesOrExit` と同じ「前提が崩れていたら以降を打ち切る」扱い）。
-//
-// **配列そのものではなく要素のスキーマで parse する。** orval は
-// `ListRulesResponse`（配列）と `ListRulesResponseItem`（要素）を別名で
-// 出す。配列スキーマを 1 件ずつの要素に対して呼んでも解釈できてしまう
-// （zod の配列スキーマは配列を要求するので、要素を渡すと即座に別の
-// エラーで落ちるだけで「効いている」ようには見えるが、意図した要素の
-// 形の検証にはなっていない）ため、要素側を明示して使う。
+// 判定本体は `validateFixturesOrExit`（e2e/lib.mjs）--- `verifyBundleMatchesOrExit`
+// と同じ前提条件チェックなので、badge-links.mjs 等の兄弟スクリプトとも共有する。
 log('\n=== 契約検証: フィクスチャの zod parse ===')
-{
-  const contractNg = []
-  const validate = (label, schema, item) => {
-    const result = schema.safeParse(item)
-    if (!result.success) {
-      const detail = result.error.issues.map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`).join('; ')
-      contractNg.push(`${label} が契約と一致しない --- ${detail}`)
-    }
-  }
-  services.forEach((s, i) => validate(`services[${i}]`, ListServicesResponseItem, s))
-  programsFor(iso(nowMs), iso(nowMs + 6 * HOUR)).forEach((p, i) =>
-    validate(`programs[${i}]`, ListProgramsResponseItem, p),
-  )
-  reservations.forEach((r, i) => validate(`reservations[${i}]`, ListReservationsResponseItem, r))
-  recordings.forEach((r, i) => validate(`recordings[${i}]`, ListRecordingsResponseItem, r))
-  rules.forEach((r, i) => validate(`rules[${i}]`, ListRulesResponseItem, r))
-  breakers.forEach((b, i) => validate(`breakers[${i}]`, ListCircuitBreakersResponseItem, b))
-  if (contractNg.length > 0) {
-    contractNg.forEach((f) => log(`  NG: ${f}`))
-    contractNg.forEach((f) => ng.push(`契約検証: ${f}`))
-    await finish(ng)
-  }
-  log('  すべてのフィクスチャが契約と一致（services/programs/reservations/recordings/rules/breakers）')
-}
+await validateFixturesOrExit(
+  [
+    ...services.map((s, i) => [`services[${i}]`, ListServicesResponseItem, s]),
+    ...programsFor(iso(nowMs), iso(nowMs + 6 * HOUR)).map((p, i) => [`programs[${i}]`, ListProgramsResponseItem, p]),
+    ...reservations.map((r, i) => [`reservations[${i}]`, ListReservationsResponseItem, r]),
+    // transferringRecording も既定オプション（multiSite + extraRecording）で
+    // 実際にブラウザへ配る（:308 参照）ので検証対象に含める。
+    ...[...recordings, transferringRecording].map((r, i) => [`recordings[${i}]`, ListRecordingsResponseItem, r]),
+    ...rules.map((r, i) => [`rules[${i}]`, ListRulesResponseItem, r]),
+    ...breakers.map((b, i) => [`breakers[${i}]`, ListCircuitBreakersResponseItem, b]),
+  ],
+  ng,
+)
 
 /**
  * installApiStubs は `/api/**` をすべてブラウザ側で差し替える。
@@ -1145,6 +1133,18 @@ for (const theme of themes) {
   {
     const detailScreen = { name: 'recording-detail', path: '/recordings/12', wait: 'text=チャンネル' }
     const { context, page } = await open(desktop, theme, detailScreen)
+    // `screens`（① のループ）に無い画面なので、明示的に掛けないと欠損文字列
+    // 判定から漏れる。ここは DropBadges（drops/errors/scrambled）を描画する
+    // 唯一の画面でもある。
+    //
+    // **`s.packets.toLocaleString()`（recordings.tsx の DropStatsTable）は
+    // ここでは撮れていない** --- それは別エンドポイント
+    // （`/api/recordings/{id}/drop-stats`。`ListRecordingDropStatsResponseItem`）
+    // が返す per-PID の値で、`dropSummary.packets` とは無関係。design.mjs は
+    // このエンドポイントを常に `[]` にスタブしているため（:312）、
+    // `DropStatsTable` の行は 1 件も描画されない（未検証の断言をしない。
+    // CLAUDE.md「一度も真でなかった記述」）。
+    await checkMissingStrings(page, `recording-detail/${theme}`)
     const dt = page.locator('dt', { hasText: /^チャンネル$/ }).first()
     const fg = await computedOf(dt, 'color')
     log(`  [${theme}] 録画詳細のパネルの文字=${fg?.value} ${fg?.rgba} / 乗っている面=${fg?.backdrop}`)

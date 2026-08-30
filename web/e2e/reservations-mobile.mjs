@@ -28,7 +28,15 @@
 //   E2E_URL=http://localhost:4173 pnpm e2e:reservations-mobile
 //
 // 合格なら exit 0、1 つでも NG なら exit 1。
-import { finish, installApiStubs, launchBrowser, log, verifyBundleMatchesOrExit } from './lib.mjs'
+import { ListReservationsResponseItem } from '../src/api/zod.ts'
+import {
+  finish,
+  installApiStubs,
+  launchBrowser,
+  log,
+  validateFixturesOrExit,
+  verifyBundleMatchesOrExit,
+} from './lib.mjs'
 
 const URL_BASE = process.env.E2E_URL ?? 'http://localhost:40773'
 
@@ -50,6 +58,7 @@ const reservations = [
     state: 'orphaned',
     title: '４Ｋ実況中継スペシャル',
     serviceName: 'ＮＨＫＢＳプレミアム４Ｋ',
+    channelType: 'BS',
     startAt: iso(nowMs + HOUR),
     durationMs: HOUR,
     createdAt: iso(nowMs),
@@ -64,6 +73,7 @@ const reservations = [
     state: 'orphaned',
     title: '映画特集',
     serviceName: 'ディズニー・チャンネル',
+    channelType: 'CS',
     startAt: iso(nowMs + 2 * HOUR),
     durationMs: HOUR,
     createdAt: iso(nowMs),
@@ -78,6 +88,7 @@ const reservations = [
     state: 'active',
     title: 'ニュース',
     serviceName: 'ＮＨＫ総合１・東京',
+    channelType: 'GR',
     startAt: iso(nowMs + 3 * HOUR),
     durationMs: HOUR,
     createdAt: iso(nowMs),
@@ -99,6 +110,14 @@ async function apiHandler({ path: p, json }) {
 }
 
 log(`URL: ${URL_BASE}`)
+
+// 契約検証: フィクスチャが orval 生成の zod スキーマと一致するか
+// （`validateFixturesOrExit`。design.mjs / e2e/README.md §デザイン 参照）。
+log('\n=== 契約検証: フィクスチャの zod parse ===')
+await validateFixturesOrExit(
+  reservations.map((r, i) => [`reservations[${i}]`, ListReservationsResponseItem, r]),
+  ng,
+)
 
 // --- ⓪ 配っている bundle が dist/ の現物と一致するか ---
 log('\n=== ⓪ 配っている bundle と dist/ の一致 ===')
