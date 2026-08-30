@@ -484,32 +484,9 @@ func (w *IngestWorker) lookupIngestTarget(ctx context.Context, args IngestJobArg
 
 // determineRelPath は保存先の相対パスと、それを解決した絶対パスを返す。
 // relPath は mirakc の contentPath 由来なので、メディアディレクトリの外を
-// 指していないことを検証する。
-//
-// 返す relPath には `sites/{site}/` を前置する（issue #186 M4-14）。アーカイブ
-// （media_assets）は site 列を持たず単一だが、contentPath は mirakc インスタンス
-// スコープの名前なので、2 サイトが同じ contentPath で録ると同じ実ファイルを
-// 取り合う（DB は一意索引で片方の commit を落とすが、実ファイルは先に書いた方が
-// 上書きされて壊れる）。ingest は原本 rel_path の唯一の書き手なので、ここで
-// 前置すれば入力（contentPath の有無や形）に関わらず名前空間が保たれる —
-// reconciler の contentPath 生成（mirakc 側の録画バッファ）や運用者の
-// filename_template（ユーザーが書ける）に前置を委ねると、Rokuban 以外が作った
-// record や旧いテンプレートの record で名前空間が破れる。
-//
-// **前置の 1 段目は固定の `sites/` で、その下に site 名を置く。** 当初案の
-// 「site 名をそのまま先頭成分にする」（`{site}/...`）は、既存行（前置前に
-// ingest 済みの rel_path）の先頭成分と site 名が偶然一致した場合に衝突する
-// --- 例えば filename_template が `"tokyo/..."` のような静的接頭辞を書いていて、
-// かつ site 名が `tokyo` だと、新規 ingest の `tokyo/shared/rec.m2ts` が既存行と
-// 同じ rel_path になり、DB の一意索引が通る前に実ファイルが上書きされる
-// （PR #196 のレビューで実測。site 名の構文 `^[a-z0-9]([_-]?[a-z0-9])*$` は
-// 日付ディレクトリ名や静的な語（`anime` 等）も許すため、理論上だけの懸念では
-// ない）。`sites/` を固定の 1 段目に挟むことで、新規 ingest の rel_path は
-// 常に `sites/` から始まり、それ以前の任意の contentPath / filename_template
-// が `sites/` から始まっていない限り構造的に衝突しない（`catalog/` /
-// `thumbnails/` と同じ「トップレベル予約ディレクトリ」の追加であり、
-// この 3 つのいずれから始まる既存行が無いことが前提。詳細は docs/storage.md
-// §5「rel_path の名前空間」）。
+// 指していないことを検証する。`sites/{site}/` を前置する判断（前置する理由・
+// 固定の 1 段目を挟む理由・前置前の既存行を移行しない判断）は
+// docs/storage/contract.md §rel_path の名前空間にある。
 //
 // 前置に使うのは args.Site（w.Site ではない）。Work は determineRelPath を呼ぶ
 // 前に verifySite（internal/worker/worker.go）で args.Site が w.Site（空なら
@@ -520,25 +497,12 @@ func (w *IngestWorker) lookupIngestTarget(ctx context.Context, args IngestJobArg
 // （w.Site 未設定）で同じ正規化をここで再実装する必要がある。
 //
 // contentPath / Content.Path がどちらも空だと relPath が "."（カレント
-// ディレクトリ）になる。前置前はこの relPath="." がそのまま mediapath.Resolve
-// に渡り "path escapes the media directory" で明示的に弾かれていた。前置後は
-// "sites/{site}/." が Join/Clean で "." が消えて "sites/{site}" という一見
-// 正当なパスになり Resolve を通ってしまう。すると os.Create が
-// "{media_dir}/sites/{site}" を*通常ファイル*として作ってしまい、以後その
-// site 配下に別の contentPath を書こうとする ingest が全て MkdirAll で
-// "not a directory" になる（前置によって初めて顕在化する壊れ方。前置前は
-// Resolve の明示的なエラーで止まっていたので発生しなかった）。前置前に弾く
-// （下記）。
-//
-// `sites/{site}/` は site 名の構文制約（internal/config.validateSiteName、
-// issue #183 M4-11）に依存する安全前提の上に成立している --- site 名に "/" が
-// 含まれないことを保証しているので単純な文字列結合で足りる。
-//
-// 前置前に ingest 済みの既存行は移行しない（マイグレーションを書かない）。
-// 新規 ingest 分だけ `sites/{site}/` が付き、ディスク上は前置あり/なしが
-// 混在する。rel_path をパースする読者はいない（rescueAssetKind は拡張子しか
-// 見ない）ので混在は無害 --- ただし上記の通り、混在する既存行が `sites/` から
-// 始まっていないことが前提。
+// ディレクトリ）になる。前置後は "sites/{site}/." が Join/Clean で "." が
+// 消えて "sites/{site}" という一見正当なパスになり mediapath.Resolve を
+// 通ってしまい、os.Create が "{media_dir}/sites/{site}" を通常ファイルとして
+// 作ってしまう（以後その site 配下の ingest が全て MkdirAll で
+// "not a directory" になる。docs/storage/contract.md §rel_path の名前空間
+// 参照）。前置前に弾く（下記）。
 func (w *IngestWorker) determineRelPath(ctx context.Context, args IngestJobArgs) (relPath, fullPath string, err error) {
 	record, err := w.MirakcClient.GetRecord(ctx, args.RecordID)
 	if err != nil {
@@ -651,152 +615,18 @@ func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath st
 	return nil
 }
 
-// resolveAndSnapshotEncodePolicy は「この録画の望ましい最終状態」を凍結する
-// （issue #103）。issue #159 で recordings.keep_original / encode_profiles から
-// 衛星表 recording_encode_policy に切り出されたため、凍結 = この関数が呼ぶ
-// FreezeRecordingEncodePolicy による当該表への行 INSERT である（不変条件 3
-// 「コミット = DB 行」・不変条件 10「意味を持たない行を作らない」: 行が無い =
-// 未凍結、行がある = 凍結済み）。呼び出し元の commit が原本 media_asset の
-// INSERT と同じ tx で呼ぶ。
+// resolveAndSnapshotEncodePolicy は「この録画の望ましい最終状態」を
+// recording_encode_policy へ凍結する（行の存在そのものが「凍結済み」を
+// 意味する。不変条件 3「コミット = DB 行」・不変条件 10「意味を持たない行を
+// 作らない」）。呼び出し元の commit が原本 media_asset の INSERT と同じ tx で、
+// かつ encode ジョブの投入（EnqueueMissingEncodes）より必ず先に呼ぶ（順序が
+// 逆だと初回パスで desired が空のまま enqueue される）。
 //
-// # 凍結か、毎パス再導出（reservations 経由の参照）か
-//
-// 再導出は選べない。導出元（reservations / program_overrides / program_intents）は
-// 放送終了 + 猶予後に GC される寿命の短い表だが、recordings（と衛星表
-// recording_encode_policy）は永続資産（CLAUDE.md 不変条件 12「表は行の寿命で
-// 割る」）。導出に依存させると、番組が EPG から消えて GC された時点で desired が
-// 空になり、エンコード未完了の録画で原本削除が止まる／再エンコードが投入
-// できなくなる。導出元が先に死ぬ表の desired を、値のコピーではなく「参照」で
-// 持つことはできない。
-//
-// 凍結した値は「この録画の望ましい最終状態」であり、recording_encode_policy 行は
-// recordings 行と同時に生まれて同時に死ぬ（PRIMARY KEY = recordings への FK）ので
-// 不変条件 12 には反しない（ruler の 1 パスの出力である reservations.base とは
-// 寿命が別）。ただし凍結する以上、凍結より後の override 変更はこの録画には
-// 反映されないという境界が生まれる。
-//
-// # 凍結する瞬間
-//
-// recordings 行自体は watcher が録画開始時に作るが、この関数はそこでは呼ばれない。
-// docs/recording/reservation-model.md §4.5 は「encodeProfiles / keepOriginal は
-// 録画開始後の変更でも効く」と約束しており、これを満たせるのは ingest が原本を
-// コミットする瞬間だけ（録画は放送終了後に確定し、ingest はその直後に走る）。
-// 呼び出し元 commit は encode ジョブの投入（EnqueueMissingEncodes）より必ず先に
-// この関数を呼ぶ — 順序が逆だと初回パスで desired が空のまま enqueue され、
-// 実際に投入されるのは次の ingest 再試行（起きるとは限らない）まで遅延する。
-//
-// # 予約をどのキーで引くか（issue #149）
-//
-// recordings.reservation_id（bigint FK、ON DELETE SET NULL。issue #158 で
-// 列自体を削除済み）は宛先にしない。ruler は EPG フリッカー・ルール編集・dedup
-// で予約を導出削除・再実体化し、
-// そのたびに reservations.id が変わる（#53 / #98 / #99 が繰り返し踏んでいる
-// 族。CLAUDE.md 不変条件 9「identity」の 5 例目）。録画開始から ingest 完了
-// までの窓（番組の尺ぶん、数時間）でこれが 1 回でも起きると FK が NULL に
-// 落ち、「予約が無い」と誤認して encode policy を凍結し損なう —— ログにも
-// 出ないので気付かれない。
-//
-// 代わりに放送イベントキー (site, network_id, service_id, event_id) で引く。
-// recordings はこの 4 列を録画開始時から凍結して持つ（導出器が作るキーでは
-// ない）ので、予約の再実体化を跨いでも変わらない。GetReservationEncodePolicyByEvent
-// は program_snapshots で (network_id, service_id, event_id) → program_id を
-// 引いてから reservations を program_id で結合する
-// （internal/db/queries/recording_policy.sql）。
-//
-// program_snapshots は放送後 epg.retention_grace（既定 24h）で GC される寿命の
-// 短い表（docs/storage.md §6）で、ingest は通常なら録画終了直後 --- GC の猶予
-// より十分前 --- に走る。**ただし「通常なら」であって、エッジのリングバッファは
-// これを超える滞留（回線断・クラウド側障害で N 日）を前提にサイジングする**
-// （docs/operations.md §4）。猶予を跨いで遅れた ingest はここで予約を引けず、
-// 既定値で凍結される —— この交点と、GC 側を滞留と連動させない理由は
-// docs/storage.md §6「凍結が依存する寿命と、エッジの滞留の交点」にある
-// （issue #214。この一文が「通常経路では効かない」と断言していたことが
-// #214 の発端そのものなので、断言に戻さない）。
-//
-// recordings.source（internal/db/recording_source.go の DeriveRecordingSource）
-// は「引けなかった」の異常度を判定する軸として使えない: 'rule' は「作成時点で
-// 予約があり、かつ program_intents.action='record' の行が無かった」を意味する
-// ので、'rule' で JOIN が失敗するのは常に「予約はあったのに引けなくなった」を
-// 意味する。原因は 3 つあり、網羅はしていない前提で列挙する: (a) GC が想定より
-// 早く走った、(b) 予約が恒久的に削除された、(c) GC は設計どおり走ったが
-// ingest が猶予を跨いで遅れた（上記の交点。issue #214 で仕様として受け入れた
-// 劣化でありバグではない --- が、エンコードが投入されない点は同じなので
-// 人間が見るべき事象であることは変わらない）。しかし 'manual' は「intent が
-// action='record' だった（予約の有無に関わらず）」と「そもそも予約が最初から
-// 無かった（手動で mirakc に起こされた録画等、日常的）」の 2 つの独立した
-// 経路を 1 つの値に潰している（同ファイルのコメント参照）ため、'manual' の
-// JOIN 失敗が異常かどうかはこの列だけからは判別できない —— 前者（ユーザーが
-// 手動予約して encodeProfiles を指定した録画）で解決に失敗すると、まさに
-// issue #149 が問題にした「静かにエンコードされない」が残る。区別できない
-// 以上、どちらの source でも黙って return せず識別子
-// （site/network_id/service_id/event_id）と recordingID をログに残す。
-// 'rule' は slog.Warn（常に「予約はあったのに引けなくなった」）、'manual' は
-// slog.Info（日常的なケースと異常なケースが混在するため騒がしくしない）に
-// 分ける。なお #214 の交点のうち回線断で復帰したぶんは、復帰時に recordings 行を
-// 作る watcher の createRecording も同じ GC 済みの予約を引くので source が
-// 'manual' に倒れる --- つまり **Warn が出るのは「録画開始時には予約が生きて
-// いて、ingest だけが猶予を跨いで遅れた」場合**であり、回線断のぶんは Info 側に
-// 落ちる（docs/storage.md §6）。
-//
-// # 解決に失敗しても凍結する（issue #159）
-//
-// GetReservationEncodePolicyByEvent が pgx.ErrNoRows を返した場合でも、
-// FreezeRecordingEncodePolicy は既定値（keepOriginal='always',
-// encodeProfiles=[]）で必ず呼ぶ --- 凍結そのものをスキップしない。旧実装
-// （recordings.keep_original / encode_profiles が列だった頃）はここで書かずに
-// return していたが、それでも列は CREATE TABLE の既定値のまま残っていたので
-// 実質的には「常に凍結されている」のと同じだった。衛星表 recording_encode_policy
-// は行が無ければ既定値をどこにも持たないので、ここで書かないと 2 つの契約が
-// 破れる: (1) 「原本 media_asset を持つ録画は凍結済み」という不変条件を
-// ingest 完了後も保つ必要がある、
-// (2) issue #133 の事後追加（AppendRecordingEncodeProfiles）は「行が既にある」
-// ことを前提に書けるようになった（doc コメント冒頭参照）ので、予約が無い
-// 録画（手動で mirakc に起こされた録画等、日常的なケース）にも行が無ければ
-// 追加できなくなってしまう。
-//
-// # 冪等性
-//
-// ingest は再試行される。この関数は毎回同じ入力から同じ値を書くだけの INSERT
-// で、既存の encoded media_assets の有無を見て分岐しない —— 既に一部の
-// エンコードが完了しているからといって desired を空に戻すような分岐は作らない
-// （issue #103 の「罠」）。FreezeRecordingEncodePolicy は ON CONFLICT を持たない
-// 素の INSERT だが、これは「1 度しか呼ばれない」という別の不変（Work が転送
-// 開始前に GetOriginalMediaAssetID で冪等性チェックするため、この tx 自体が
-// 録画ごとに 1 回しか実行されない）に依っている。CreateMediaAsset（原本の
-// INSERT）と同じ前提を共有する。
-//
-// # EncodeProfiles の nil
-//
-// db.ReservationOptions.EncodeProfiles は *[]string で nil=未指定 /
-// &[]string{}=「エンコードなし」という明示的な override を区別する
-// （internal/db/models.go の ReservationOptions のコメント）。しかし
-// recording_encode_policy.encode_profiles は NOT NULL text[] で「未指定」という
-// 第三の状態を表現できないので、ここでは両者を等しく '{}' に潰すと決める。
-// 区別が必要な場面（override の差分表示等）は program_overrides.overrides
-// 自身に当たればよく、このスナップショットの役目ではない。
-//
-// # keepOriginal='until_encoded' × encodeProfiles=[] のクランプ（issue #104 との整合）
-//
-// rules.keep_original / rules.encode_profiles にはこの組み合わせを禁止する CHECK が
-// あるが、実効値はルール単独では決まらない --- override が `keepOriginal:
-// until_encoded` だけを立て、ルール側の `encodeProfiles` が空（またはルール自体が
-// `keep_original='always'`）というドリフトが EffectiveOptions のマージ結果として
-// 生成されうる。ルールと override はそれぞれ自分の表の中では整合していても、
-// マージ結果の整合は誰も検査していない。
-//
-// recording_encode_policy にも同じ組み合わせを禁止する CHECK（issue #104、
-// `until_encoded` は encode_profiles が非空であることを要求する。かつて recordings
-// 側にあった同種の CHECK を issue #159 で recording_encode_policy_check として
-// 移設したもの）があり、そのまま
-// 実効値を書くとこの tx が CHECK 違反で
-// ロールバックする --- このメソッドは原本 media_asset の INSERT と同一 tx で
-// 呼ばれるため、ロールバックは「録画そのものが消失する」に直結する（不変条件 3
-// 「コミット = DB 行」）。原本を失うリスクを負ってまで守る価値のある不変では
-// ないので、書く直前に安全側へ倒す: 実効的な encode_profiles が空で
-// keepOriginal が 'until_encoded' なら、'always' に倒してから書く。ユーザーの
-// 意図（override の値そのもの）は program_overrides 側に残るので失われない ---
-// 失われるのはこの録画のスナップショットにおける効力だけで、次にルールが
-// プロファイルを持てば別の録画では正しく until_encoded になる。
+// 凍結か毎パス再導出か・凍結する瞬間・予約を放送イベントキーで引く理由・
+// 解決に失敗しても凍結する理由・source 別のログレベル・凍結が依存する寿命と
+// エッジの滞留の交点・冪等性・EncodeProfiles の nil の扱い・until_encoded
+// クランプの判断は docs/storage/retention.md §6「原本 TS の保持ポリシー」に
+// ある。
 func (w *IngestWorker) resolveAndSnapshotEncodePolicy(ctx context.Context, q *sqlcgen.Queries, recordingID int64) error {
 	rec, err := q.GetRecordingByID(ctx, recordingID)
 	if err != nil {
