@@ -437,6 +437,12 @@ describe('RecordingDetailPage 削除・復元のトースト (issue #297)', () =
     await user.click(await screen.findByRole('button', { name: '今すぐ完全削除' }))
     // ボタンを押しただけでは purge は飛ばない（確認を挟む）
     expect(purgeCalls()).toHaveLength(0)
+    // 確認ダイアログの説明文は「reconcile」等の内部実装用語を出さず、
+    // 利用者が見るものの名前（原本・変換後のファイル・サムネイル）で言う
+    // （issue #454）。
+    expect(
+      screen.getByText('この録画の原本・変換後のファイル・サムネイルを削除します。取り消せません。'),
+    ).toBeInTheDocument()
 
     // ダイアログの確定ボタンで初めて purge が飛ぶ
     await user.click(await screen.findByRole('button', { name: '完全削除を予約する' }))

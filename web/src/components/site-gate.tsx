@@ -45,7 +45,7 @@ export function SiteGate({ children }: { children: ReactNode }) {
     // 起きた場合に空配列を site として使ってクラッシュするより説明を出す。
     return (
       <div className="p-6 text-sm text-destructive">
-        利用可能なサイトがありません（サーバーの mirakc 設定を確認してください）
+        利用可能なサイトがありません（サーバーの設定を確認してください）
       </div>
     )
   }

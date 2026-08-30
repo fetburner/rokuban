@@ -347,11 +347,11 @@ describe('ホーム: 「いま録画中」「直近の完了」の行は警告�
     expect(await screen.findByRole('heading', { name: '直近の完了' })).toBeInTheDocument()
     expect(await screen.findByRole('heading', { name: '警告' })).toBeInTheDocument()
     // 警告セクションのテキストとしては出るが、行自体には drop バッジ（DropBadges
-    // 由来の "drop" ラベル）を重ねない
-    expect(screen.getByText(/ドロップのある録画: drop 12 \/ scrambled 3/)).toBeInTheDocument()
+    // 由来の「ドロップ」ラベル）を重ねない
+    expect(screen.getByText(/ドロップのある録画: ドロップ 12 \/ スクランブル 3/)).toBeInTheDocument()
     const row = screen.getByText('ドロップのある録画', { selector: 'span' }).closest('li')
     expect(row).not.toBeNull()
-    expect(row!.textContent).not.toMatch(/drop 12/)
+    expect(row!.textContent).not.toMatch(/ドロップ 12/)
   })
 })
 
@@ -371,7 +371,7 @@ describe('ホーム: 警告セクション', () => {
     expect(await screen.findByRole('heading', { name: '警告' })).toBeInTheDocument()
     expect(screen.getByText(/ルール評価による予約の削除が停止中/)).toBeInTheDocument()
     expect(screen.getByText(/チューナーが不足しています/)).toBeInTheDocument()
-    expect(screen.getByText(/ドロップのある録画: drop 12 \/ scrambled 3/)).toBeInTheDocument()
+    expect(screen.getByText(/ドロップのある録画: ドロップ 12 \/ スクランブル 3/)).toBeInTheDocument()
   })
 
   it('チューナー不足の項目は番組表のその時間帯への導線を持つ', async () => {
@@ -460,7 +460,7 @@ describe('ホーム: 警告セクション', () => {
 
     const overageRow = (await screen.findByText(/チューナーが不足しています/)).closest('li')
     const breakerRow = screen.getByText(/ルール評価による予約の削除が停止中/).closest('li')
-    const dropRow = screen.getByText(/ドロップのある録画: drop 12/).closest('li')
+    const dropRow = screen.getByText(/ドロップのある録画: ドロップ 12/).closest('li')
     const failedRow = screen.getByText(/失敗した録画: 録画失敗/).closest('li')
 
     // 色クラスは、リンクを持つ行（チューナー不足）では中の `<a>` に、
@@ -638,7 +638,10 @@ describe('ホーム: 失敗録画が警告に出る（issue #301）', () => {
     })
     renderHome()
 
-    expect(await screen.findByText(/理由: 理由不明/)).toBeInTheDocument()
+    // 「理由不明」は理由そのものが言えていないので「理由:」のラベルを付けない
+    // （二重表現「理由: 理由不明」にしない）。
+    expect(await screen.findByText(/理由不明/)).toBeInTheDocument()
+    expect(screen.queryByText(/理由: 理由不明/)).not.toBeInTheDocument()
   })
 
   it('失敗理由のフィールドが空文字なら JSON へ落とさず「理由不明」に寄せる', async () => {
@@ -656,7 +659,8 @@ describe('ホーム: 失敗録画が警告に出る（issue #301）', () => {
     renderHome()
 
     const row = await screen.findByText(/空の理由の失敗: 録画失敗/)
-    expect(row.textContent).toMatch(/理由: 理由不明/)
+    expect(row.textContent).toMatch(/理由不明/)
+    expect(row.textContent).not.toMatch(/理由: 理由不明/)
     expect(row.textContent).not.toMatch(/\{/)
   })
 
@@ -702,7 +706,7 @@ describe('ホーム: ドロップ警告の検出範囲は「直近の完了」�
     // 表示（直近の完了）には出ない
     expect(screen.queryByText('録画 7')).not.toBeInTheDocument()
     // が、警告には出る（検出範囲が表示件数から独立していることの証拠）
-    expect(await screen.findByText(/録画 7: drop 5/)).toBeInTheDocument()
+    expect(await screen.findByText(/録画 7: ドロップ 5/)).toBeInTheDocument()
   })
 })
 

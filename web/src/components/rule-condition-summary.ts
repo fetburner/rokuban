@@ -68,7 +68,7 @@ export function summarizeRuleConditions(rule: Rule): string[] {
   for (const m of rule.textMatches ?? []) parts.push(textMatchSummary(m))
 
   if (rule.services && rule.services.length > 0) {
-    parts.push(`サービス ${rule.services.length} 件`)
+    parts.push(`チャンネル ${rule.services.length} 件`)
   }
 
   if (rule.channelTypes && rule.channelTypes.length > 0) {
