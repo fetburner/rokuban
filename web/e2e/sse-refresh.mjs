@@ -15,7 +15,15 @@
 //
 // SSE の再接続時 invalidate はここでは見ない（実ブラウザで切断を決定的に
 // 起こす手段が無い）。単体テスト「再接続したら切断中の変更を全グループ取り直す」の担当。
-import { finish, launchBrowser, log, sseKeepAlive, verifyBundleMatchesOrExit } from './lib.mjs'
+import { ListReservationsResponseItem } from '../src/api/zod.ts'
+import {
+  finish,
+  launchBrowser,
+  log,
+  sseKeepAlive,
+  validateFixturesOrExit,
+  verifyBundleMatchesOrExit,
+} from './lib.mjs'
 
 const BASE = process.env.E2E_URL ?? 'http://localhost:4173'
 /** 運用状態の周期（src/lib/events.ts の operationalRefreshIntervalMs と同じ値をリテラルで書く）。 */
@@ -46,12 +54,19 @@ const reservation = {
   source: 'manual',
   state: 'active',
   title: 'e2e 予約',
+  serviceName: 'テスト局',
+  channelType: 'GR',
   startAt: '2026-08-14T00:00:00.000Z',
   durationMs: 1_800_000,
   createdAt: '2026-08-13T00:00:00.000Z',
   updatedAt: '2026-08-13T00:00:00.000Z',
   skip: false,
 }
+
+// 契約検証: フィクスチャが orval 生成の zod スキーマと一致するか
+// （`validateFixturesOrExit`。design.mjs / e2e/README.md §デザイン 参照）。
+log('\n=== 契約検証: フィクスチャの zod parse ===')
+await validateFixturesOrExit([['reservation', ListReservationsResponseItem, reservation]], ng)
 
 const browser = await launchBrowser()
 

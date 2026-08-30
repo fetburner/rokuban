@@ -85,6 +85,34 @@ export async function verifyBundleMatchesOrExit(urlBase, ng, browser) {
 }
 
 /**
+ * validateFixturesOrExit は `verifyBundleMatchesOrExit` と構造的に同じ**前提条件**
+ * チェック --- スクリプト固有の OK/NG 判定ではなく、以降の全判定が依拠する土台
+ * そのもの（issue #468 のレビューで design.mjs から昇格。フィクスチャが契約
+ * から遅れていても「唯一の視覚オラクル」が欠損データのまま撮れて誰も気付かない、
+ * という壊れ方が実際にあった）。`pairs` は `[label, schema, item]` の配列
+ * （呼び出し側が `フィクスチャ配列.map(...)` で組む）。1 件でも不一致なら
+ * 他の判定を一切せず `finish` で打ち切る（`browser` を渡せば終了前に close する）。
+ *
+ * **配列そのものではなく要素のスキーマで parse する。** orval は配列スキーマ
+ * （`List*Response`）と要素スキーマ（`List*ResponseItem`）を別名で出すため、
+ * 呼び出し側は要素スキーマを明示して渡すこと。
+ */
+export async function validateFixturesOrExit(pairs, ng, browser) {
+  const before = ng.length
+  for (const [label, schema, item] of pairs) {
+    const result = schema.safeParse(item)
+    if (!result.success) {
+      const detail = result.error.issues.map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`).join('; ')
+      ng.push(`契約検証: ${label} が契約と一致しない --- ${detail}`)
+    }
+  }
+  if (ng.length > before) {
+    await finish(ng, browser)
+  }
+  log('  すべてのフィクスチャが契約と一致')
+}
+
+/**
  * sseKeepAlive は `/api/events` への SSE 接続を張ったまま通知を 1 通も送らず、
  * `retry: 86400000`（1 日）で「つなぎ直さずに諦めさせる」。`chip-overflow.mjs` /
  * `sse-refresh.mjs` の `openStubbed` がそれぞれ持っていた同一のフルフィルを
