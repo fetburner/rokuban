@@ -18,8 +18,12 @@ describe('describeBreakerName', () => {
 
 describe('describeBreakerReason', () => {
   // 利用者向けの理由文に「DB を直接確認」のような内部実装の語を出さない
-  // （issue #454）。
-  it('delete_reconcile の理由文は DB という語を含まない', () => {
-    expect(describeBreakerReason('delete_reconcile')).not.toMatch(/DB/)
+  // （issue #454）。否定だけの assertion だと理由文が空文字に壊れても
+  // 検出できない（レビュー指摘: 実際に空文字へ差し替えて緑のままだった）ので、
+  // 新しい理由文をリテラルで固定する。
+  it('delete_reconcile の理由文', () => {
+    expect(describeBreakerReason('delete_reconcile')).toBe(
+      '1 回のパスで物理削除される件数が多すぎます。大量削除の意図が正しいか確認してください（対象の内訳はこの画面では確認できません）',
+    )
   })
 })

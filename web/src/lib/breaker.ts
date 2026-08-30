@@ -30,7 +30,7 @@ const breakerReasons: Record<CircuitBreakerName, string> = {
   [CircuitBreakerName.ruler_deletes]:
     '1 回の評価で消える予約が多すぎます。EPG の一時的な欠損を疑ってください',
   [CircuitBreakerName.reconcile_total_loss]:
-    '予約が 1 件も無いのに録画予定が残っています。予約が失われていないか確認してください',
+    '予約が 1 件も無いのに録画予定（録画サーバーの mirakc に登録した予定）が残っています。予約が失われていないか確認してください',
   [CircuitBreakerName.delete_reconcile]:
     '1 回のパスで物理削除される件数が多すぎます。大量削除の意図が正しいか確認してください（対象の内訳はこの画面では確認できません）',
 }
