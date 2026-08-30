@@ -1,5 +1,5 @@
 import type { CapacityOverage } from '@/api/generated'
-import { overageWindow, shortageLabel, shortageRangeMessage } from '@/lib/capacity'
+import { overageWindow, shortageLabelCompact, shortageRangeMessage } from '@/lib/capacity'
 import { spanToPx, type TimeAxis } from '@/lib/epg-grid'
 
 /**
@@ -84,14 +84,27 @@ function CapacityBand({ axis, overage }: { axis: TimeAxis; overage: CapacityOver
 }
 
 /**
+ * ラベル自身の高さ（px）。帯の高さには連動させない --- 帯の高さぶん引き伸ばすと
+ * （旧実装）ラベルが不透明な箱として帯の全高を覆い、範囲内の時間軸の目盛りや
+ * 現在時刻チップまで消してしまった（issue #460 レビュー）。ラベルは 1 行の
+ * 短い形なので中身の高さは固定できる。CSS 側（`leading-4` = 16px）と値を
+ * 合わせてある（変えたら両方直す）。
+ */
+const labelHeightPx = 16
+
+/**
  * CapacityBandLabels は帯の見えるラベルを時間軸列（左端の `21:00` 等が並ぶ列）に
  * 描く（`ProgramGrid` の `gutterOverlay` に渡す）。
  *
  * **帯は区間の主張なので、局の列ではなく時間軸列に属する。** 局の列（帯の内側）に
  * 出すと、帯の上端が番組セルの上端と重なったときセルの時刻文字と同じ px に描かれて
- * 両方読めなくなる（issue #460）。時間軸列は番組セルを一切置かないので、この列に
- * 出す限り番組の文字と衝突しない。座標は `CapacityBands` と同じ `spanToPx` を通す
- * ので、帯と縦位置は必ず揃う。
+ * 両方読めなくなる。時間軸列は番組セルを一切置かないので、この列に出す限り番組の
+ * 文字と衝突しない。座標は `CapacityBands` と同じ `spanToPx` を通すので、帯と縦位置
+ * の基準は揃う（ラベル自身は下記のとおり自分の高さぶんだけ持つ）。
+ *
+ * **同時刻に複数の帯があるとき、開始時刻順に押し下げて積む。** 全部を帯の上端に
+ * 置くと同じ y に重なって片方が不透明な地の下に隠れる。ラベルは短い固定高さ
+ * なので、直前のラベルの下端より上には置かない、という単純な詰め方で足りる。
  */
 export function CapacityBandLabels({
   axis,
@@ -100,40 +113,42 @@ export function CapacityBandLabels({
   axis: TimeAxis
   overages: readonly CapacityOverage[]
 }) {
+  const placed: { overage: CapacityOverage; topPx: number }[] = []
+  let nextTopPx = -Infinity
+  const sorted = [...overages].sort(
+    (a, b) => new Date(a.startAt).getTime() - new Date(b.startAt).getTime(),
+  )
+  for (const overage of sorted) {
+    const span = overageWindow(overage)
+    const rect = spanToPx(axis, span.startMs, span.endMs)
+    if (!rect || rect.heightPx < labelMinHeightPx) continue
+    const topPx = Math.max(rect.topPx, nextTopPx)
+    placed.push({ overage, topPx })
+    nextTopPx = topPx + labelHeightPx
+  }
+
   return (
     <>
-      {overages.map((overage) => (
-        <CapacityBandLabel
+      {placed.map(({ overage, topPx }) => (
+        <div
           key={`${overage.site}-${overage.startAt}`}
-          axis={axis}
-          overage={overage}
-        />
+          data-testid="capacity-band-label"
+          aria-hidden="true"
+          // 時間軸列の幅（56px）に収まらない分は省略記号で切る（truncate =
+          // overflow:hidden + text-overflow:ellipsis + whitespace:nowrap）。
+          // `shortageLabelCompact` がその幅を狙った短い形を返すので、通常は
+          // 切れずに収まる --- 全文は帯側の sr-only（CapacityBand）が持つ。
+          // bg-background で不透明にする --- 時間軸列には毎時の目盛り（21:00
+          // 等）が別途描かれており、帯の上端がちょうど時刻境界と一致すると
+          // 縦位置が重なりうる。ラベルは自分の高さ（16px）ぶんしか占めないので、
+          // 重なっても目盛り 1 行を覆うだけ（現在時刻チップが目盛りに乗るのと
+          // 同じ規模の重なりで、目盛り列全体を消しはしない）。
+          className="absolute inset-x-0 truncate bg-background px-1 text-[10px] leading-4 font-medium text-warning"
+          style={{ top: topPx }}
+        >
+          {shortageLabelCompact(overage)}
+        </div>
       ))}
     </>
-  )
-}
-
-function CapacityBandLabel({ axis, overage }: { axis: TimeAxis; overage: CapacityOverage }) {
-  const span = overageWindow(overage)
-  const rect = spanToPx(axis, span.startMs, span.endMs)
-  if (!rect || rect.heightPx < labelMinHeightPx) return null
-
-  return (
-    <div
-      data-testid="capacity-band-label"
-      aria-hidden="true"
-      // 時間軸列の幅（56px）に収まらない分は省略記号で切る（truncate =
-      // overflow:hidden + text-overflow:ellipsis + whitespace:nowrap）。
-      // 折り返すと帯の高さが低いとき次の帯のラベルへはみ出す --- 読み上げ用の
-      // 全文は帯側の sr-only（CapacityBand）が持つので、ここは見た目だけ削ってよい。
-      // bg-background で不透明にする --- 時間軸列には毎時の目盛り（21:00 等）が
-      // 別途描かれており、帯がちょうど時刻境界から始まると縦位置が一致しうる。
-      // 透過のままだと文字同士が混ざるので、ラベル側を不透明にして上に乗せる
-      // （「現在時刻の札」が目盛りに乗るときの扱いと同じ）。
-      className="absolute inset-x-0 truncate bg-background px-1 text-[10px] font-medium text-warning"
-      style={{ top: rect.topPx, height: rect.heightPx, lineHeight: `${rect.heightPx}px` }}
-    >
-      {shortageLabel(overage)}
-    </div>
   )
 }

@@ -139,14 +139,15 @@ describe('CapacityBands', () => {
     )
   })
 
-  it('不足本数と詰まった種別を出す', () => {
+  it('不足本数と詰まった種別を出す（読み上げ用の全文。見た目は時間軸列側の短い形）', () => {
     renderGrid([overage(20 * 60, 21 * 60, { shortfall: 2, jammedTypes: ['GR', 'BS'] })], [])
 
-    expect(screen.getByText('チューナー不足（GR・BS が 2 本）')).toBeInTheDocument()
-    // 読み上げ用には時刻付きの文（帯が短くて見えるラベルが出ないこともある）
+    // 読み上げ用には時刻付きの全文（帯が短くて見えるラベルが出ないこともある）
     expect(
       screen.getByText('20:00〜21:00 はチューナーが不足しています（GR・BS が 2 本不足）'),
     ).toBeInTheDocument()
+    // 見た目（時間軸列）は shortageLabelCompact の短い形。種別 2 つは列挙せず本数だけ
+    expect(screen.getByText('-2')).toBeInTheDocument()
   })
 
   it('区間が結合済みでも複数あればすべて描く', () => {
@@ -184,6 +185,38 @@ describe('CapacityBands', () => {
 })
 
 /**
+ * `CapacityBands`（overlay）と `CapacityBandLabels`（gutterOverlay）は対で
+ * configure する規律をここで固定する。`ProgramGrid` は 2 つの独立した prop
+ * を持つので（局の列と時間軸列は別の DOM 部分木で、これ以上結合させると
+ * 密結合が増えるだけという判定。issue #460 レビュー「対応不要」）、
+ * `overlay` だけ渡す呼び出しは型では防げない --- 実際にレビューで見つかった
+ * 「片方だけ渡すと見える警告が黙って消える」を退行させないためのテスト。
+ */
+describe('CapacityBands と CapacityBandLabels は対で configure する', () => {
+  it('overlay だけ渡すと、帯の色と sr-only は出るが見える警告が一切出ない', () => {
+    render(
+      <ProgramGrid
+        services={[service]}
+        programs={[]}
+        axis={axis}
+        reservationByProgramId={new Set()}
+        selectedProgramId={null}
+        onSelect={vi.fn()}
+        now={at(19 * 60)}
+        overlay={(gridAxis) => <CapacityBands axis={gridAxis} overages={[overage(20 * 60, 21 * 60)]} />}
+        // gutterOverlay を渡していない --- ここが対を崩した呼び出し
+      />,
+    )
+
+    expect(band(20 * 60)).toBeInTheDocument()
+    expect(screen.getByText(/はチューナーが不足しています/)).toBeInTheDocument()
+    // 見える警告（時間軸列のラベル）は無い --- 呼び出し側が両方配線しないと
+    // 沈黙して壊れる、という危険を明示するテスト
+    expect(screen.queryByTestId('capacity-band-label')).not.toBeInTheDocument()
+  })
+})
+
+/**
  * 帯の色。jsdom は色を計算しないのでクラス名を見る（実画素とコントラストの判定は
  * web/e2e/design.mjs。docs/frontend/design.md）。
  */
@@ -202,8 +235,40 @@ describe('CapacityBands の色', () => {
   it('ラベルも同じ琥珀トークンを使う（帯のためだけの色を作らない）', () => {
     renderGrid([overage(20 * 60, 21 * 60)], [])
 
-    const label = screen.getByText('チューナー不足（BS が 1 本）')
+    const label = screen.getByText('BS-1')
     expect(label).toHaveClass('text-warning')
     expect(label.className).not.toMatch(/amber|yellow|orange/)
+  })
+})
+
+/**
+ * 時間軸列のラベル配置。jsdom はレイアウトを計算しないので、実際に読めるかは
+ * web/e2e/design.mjs が測る（scrollWidth <= clientWidth / 目盛りを隠さない）。
+ * ここで固定するのは「どの overage にどの top を割り当てるか」という純粋な
+ * ロジックだけ --- CapacityBandLabels の並べ替え・押し下げの分岐。
+ */
+describe('CapacityBandLabels の配置', () => {
+  it('帯の上端ではなく自分の高さぶんだけを占める（帯の全高を塗らない）', () => {
+    // 3 時間の帯でもラベルの高さは固定（帯の高さに引き伸ばさない）
+    renderGrid([overage(20 * 60, 23 * 60)], [])
+
+    const label = screen.getByText('BS-1')
+    // 帯本体（3 時間 = 360px）より明らかに小さい固定高さ
+    expect(label.style.height).not.toBe('360px')
+  })
+
+  it('同時刻に重なる 2 本の帯があるとき、両方のラベルが別の位置に出る', () => {
+    // 20:00-21:00（BS）と 20:15-20:45（GR）--- 同じ時間帯に重なる
+    renderGrid(
+      [overage(20 * 60, 21 * 60, { jammedTypes: ['BS'] }), overage(20 * 60 + 15, 20 * 60 + 45, { jammedTypes: ['GR'] })],
+      [],
+    )
+
+    const labels = screen.getAllByTestId('capacity-band-label')
+    expect(labels).toHaveLength(2)
+    // 両方読める --- 同じ top に重なって片方が不透明な地の下に隠れていない
+    expect(labels[0]?.style.top).not.toBe(labels[1]?.style.top)
+    expect(screen.getByText('BS-1')).toBeInTheDocument()
+    expect(screen.getByText('GR-1')).toBeInTheDocument()
   })
 })

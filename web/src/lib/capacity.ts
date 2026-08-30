@@ -91,9 +91,23 @@ export function shortfallDetail(overage: CapacityOverage): string {
   return types === '' ? `${overage.shortfall} 本` : `${types} が ${overage.shortfall} 本`
 }
 
-/** shortageLabel はバッジ・帯に出す短い表示（「チューナー不足（BS が 1 本）」）。 */
+/** shortageLabel は予約一覧のバッジに出す短い表示（「チューナー不足（BS が 1 本）」）。 */
 export function shortageLabel(overage: CapacityOverage): string {
   return `チューナー不足（${shortfallDetail(overage)}）`
+}
+
+/**
+ * shortageLabelCompact はグリッドの時間軸列（56px）に収まる形（「BS-1」）。
+ *
+ * `shortageLabel` の全文は幅が要る（実測で `scrollWidth` が `clientWidth` の
+ * 2 倍を超え、省略記号で切ると種別も本数も読めなくなる）。時間軸列は番組セルの
+ * 幅に比べて狭いので、ここだけ専用の短い形を持つ。詰まった種別が 2 つ以上ある
+ * ときは種別の列挙自体が幅を食うので本数だけにする --- 全文は帯の `sr-only`
+ * （`shortageRangeMessage`）が持つので、ここで削ってよい。
+ */
+export function shortageLabelCompact(overage: CapacityOverage): string {
+  const [type, ...rest] = overage.jammedTypes
+  return type !== undefined && rest.length === 0 ? `${type}-${overage.shortfall}` : `-${overage.shortfall}`
 }
 
 /**

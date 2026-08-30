@@ -5,6 +5,7 @@ import {
   coveringWindow,
   intersectingOverages,
   shortageLabel,
+  shortageLabelCompact,
   shortageMessage,
   shortageRangeMessage,
   shortfallDetail,
@@ -116,11 +117,21 @@ describe('文言', () => {
     expect(message).not.toContain('この予約')
   })
 
-  it('帯のラベルは短く、読み上げ用の文には時刻が入る', () => {
+  it('バッジのラベルは短く、読み上げ用の文には時刻が入る', () => {
     expect(shortageLabel(overage(19 * 60, 20 * 60))).toBe('チューナー不足（BS が 1 本）')
     expect(shortageRangeMessage(overage(19 * 60, 20 * 60))).toBe(
       '19:00〜20:00 はチューナーが不足しています（BS が 1 本不足）',
     )
+  })
+
+  it('グリッドの時間軸列用はさらに短い形（種別 1 つなら種別も残す）', () => {
+    expect(shortageLabelCompact(overage(19 * 60, 20 * 60, { jammedTypes: ['BS'] }))).toBe('BS-1')
+    // 種別が 2 つ以上は列挙すると幅を食うので本数だけにする
+    expect(
+      shortageLabelCompact(overage(19 * 60, 20 * 60, { shortfall: 2, jammedTypes: ['GR', 'BS'] })),
+    ).toBe('-2')
+    // 種別が無くても本数は出す
+    expect(shortageLabelCompact(overage(19 * 60, 20 * 60, { jammedTypes: [] }))).toBe('-1')
   })
 })
 

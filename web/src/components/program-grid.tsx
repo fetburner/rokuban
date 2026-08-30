@@ -242,6 +242,7 @@ export function ProgramGrid({
               {ticks.map((tick) => (
                 <div
                   key={tick.ms}
+                  data-testid="program-grid-tick"
                   // 目盛り線の下に置く（19:00 のラベルは 19 時台の帯を指す）。
                   // 線の中央に載せると、先頭の目盛りが sticky なヘッダに隠れる
                   className="absolute inset-x-0 pt-0.5 pr-1.5 text-right text-[11px] text-muted-foreground"
