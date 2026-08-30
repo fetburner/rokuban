@@ -37,22 +37,18 @@ db:
                                  # （LISTEN/NOTIFY と advisory lock がセッション状態に
                                  # 依存するため。docs/operations.md §3）
 
-# mirakc エンドポイント。`mirakcs:` との排他（下）でどちらか一方が必須
-mirakc:
-  url: http://mirakc.local:40772
-  # site: default                # 省略時 "default"。DB 全テーブルと API パスの
-                                 # /api/sites/{site}/... をスコープする
-
-# 複数 mirakc。`mirakc:` の代わりにこちらを使う。
-# `mirakc:` は `mirakcs:` の 1 要素と等価に解決される糖衣なので、両方を同時に
-# 書くと起動エラーになる。site 名は ^[a-z0-9]([_-]?[a-z0-9])*$ / 53 文字以内、
-# catalog / thumbnails は予約名で使えない。プロセスがどのサイトに束縛されるかは
-# `rokuban server --sites <site>` で指定する（config キーではない）。
-# mirakcs:
-#   - site: tokyo
-#     url: http://mirakc-tokyo:40772
-#   - site: takamatsu
-#     url: http://mirakc-takamatsu:40772
+# mirakc エンドポイントのレジストリ（必須。1 要素なら単一サイト構成）。
+# site 名は ^[a-z0-9]([_-]?[a-z0-9])*$ / 53 文字以内、catalog / thumbnails は
+# 予約名で使えない。DB 全テーブルと API パスの /api/sites/{site}/... をこの名前で
+# スコープする。プロセスがどのサイトに束縛されるかは `rokuban server --sites <site>`
+# で指定する（config キーではない）。
+mirakcs:
+  - site: default
+    url: http://mirakc.local:40772
+  # - site: tokyo
+  #   url: http://mirakc-tokyo:40772
+  # - site: takamatsu
+  #   url: http://mirakc-takamatsu:40772
 
 # ストレージ（media_dir は必須）
 storage:

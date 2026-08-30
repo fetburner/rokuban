@@ -3,8 +3,9 @@ db:
   user: rokuban
   password: rokuban
   database: rokuban
-mirakc:
-  url: http://localhost:40772
+mirakcs:
+  - site: default
+    url: http://localhost:40772
 storage:
   # 既定値と同じパスにする。docker-compose.test.yml がここにフレッシュな
   # named volume をマウントし、起動直後の catalog_export が実バイナリとして

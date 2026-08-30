@@ -138,8 +138,8 @@ func ValidateVideo(scaler Scaler, height int, crf, qp *int) error {
 // 意味を持たない行を作らない、と同じ形）。フラットな 3 本だと「device だけ書いた」
 // 状態が「何も書いていない」と区別できず、掃除する規則が要る。ポインタなので
 // `hwaccel:`（値なし）は nil、`hwaccel: {}` は「書いた」ことになり Validate が
-// `kind is required` で落とす（config.detectMirakcKeyWritten が固定している
-// goccy/go-yaml の挙動と同じ）。
+// `kind is required` で落とす（goccy/go-yaml が null をポインタの nil に
+// デコードすることに乗った挙動。config.TestLoad_EncodeProfileHWAccel が固定している）。
 //
 // **device の存在は Validate で検査しない。** 公式イメージや device の無い CI が
 // 落ちる。無い device を書いたプロファイルはジョブ / セッションの失敗として現れる

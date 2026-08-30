@@ -726,7 +726,7 @@ func TestLiveStreamer_UpstreamRejectionBecomes503(t *testing.T) {
 	}
 }
 
-// site が config.mirakc.site と一致しない要求は 404（DB を引かずパスだけで判定する）。
+// site がこのプロセスの束縛サイトと一致しない要求は 404（DB を引かずパスだけで判定する）。
 func TestLiveStreamer_SiteMismatch(t *testing.T) {
 	mirakcSrv, state := newFakeMirakcLiveServer(t)
 	_, srv := newTestLiveStreamer(t, mirakcSrv.URL, baseLiveConfig(t))

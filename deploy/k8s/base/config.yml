@@ -54,11 +54,12 @@ db:
   password: >-
     ${POSTGRES_PASSWORD}
 
-# 単一サイト構成。サイトを増やすときはここを `mirakcs:` の配列にして、site 束縛
-# Pod のセットを 1 組足す（`--sites <site>`）。api は site に束縛されないので、
-# api Deployment 側は書き換えなくてよい。
-mirakc:
-  url: http://mirakc:40772
+# 単一サイト構成（`mirakcs:` 1 要素）。サイトを増やすときはここに要素を足し、
+# site 束縛 Pod のセットを 1 組足す（`--sites <site>`）。api は site に束縛
+# されないので、api Deployment 側は書き換えなくてよい。
+mirakcs:
+  - site: default
+    url: http://mirakc:40772
 
 # **定期ジョブは in-process では投入しない。** River の PeriodicJobs は
 # リーダーに選出されたクライアントだけが投入するので、worker を KEDA で 0 に

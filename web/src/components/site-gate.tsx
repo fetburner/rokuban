@@ -39,7 +39,7 @@ export function SiteGate({ children }: { children: ReactNode }) {
   }
 
   if (sites.length === 0) {
-    // config.mirakc/mirakcs レジストリが空の起動はサーバー側で弾かれる
+    // config.mirakcs レジストリが空の起動はサーバー側で弾かれる
     // （internal/config.validateMirakcRegistry）ので実運用では起きないが、
     // 起きた場合に空配列を site として使ってクラッシュするより説明を出す。
     return (

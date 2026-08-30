@@ -29,7 +29,7 @@ type RouterConfig struct {
 	Pool *pgxpool.Pool
 
 	// Sites はこのプロセスが応答してよい mirakc サイト名の一覧
-	// （config.mirakc/mirakcs レジストリが権威）。空なら db.DefaultSite の
+	// （config.mirakcs レジストリが権威）。空なら db.DefaultSite の
 	// 1 要素とみなす（テストの部分構成を許す）。api は不変条件 1 によりどの
 	// site にも束縛されないため、1 プロセスがレジストリの全 site を処理できる
 	// （issue #184 M4-12）。

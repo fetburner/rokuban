@@ -523,7 +523,7 @@ func (ls *LiveStreamer) Leave(w http.ResponseWriter, r *http.Request) {
 }
 
 // resolveRequest はパスから (site, networkId, serviceId) を取り出し、site が
-// このプロセスの担当（config.mirakc.site）と一致することを確かめたうえで、
+// このプロセスの担当（`--sites` で束縛された site）と一致することを確かめたうえで、
 // mirakc に渡す合成 service id を返す。DB は引かない（issue #91 の決定 3）---
 // 合成は mirakc.ServiceID の純関数。
 //

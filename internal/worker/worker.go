@@ -152,7 +152,7 @@ const uniqueByQueue = true
 
 // verifySite は、mirakc かファイルシステムに触るワーカーが処理しようとしている
 // ジョブの site（jobSite）が、そのワーカープロセス自身の site（workerSite、
-// config.mirakc.site）と一致するかを検査する fail-fast ガード（issue #139）。
+// `--sites` で束縛された site）と一致するかを検査する fail-fast ガード（issue #139）。
 //
 // mirakc の record id / programId はインスタンススコープであり、DB の site 列は
 // そのスコープの境界を表現するために存在する（issue #31、docs/schema.md
@@ -196,7 +196,7 @@ type Deps struct {
 	MediaDir     string
 	ScratchDir   string
 
-	// Site は config.mirakc.site（issue #31）。用途は 2 つ:
+	// Site は `--sites` で束縛された site 名（issue #31）。用途は 2 つ:
 	//  1. mirakc/FS に触るワーカー（Ingest / EpgSync / TunerSync / ReconcilePass /
 	//     RecordSweep）が、自分が処理するジョブの args.Site と自分自身の site を
 	//     照合する fail-fast ガード（issue #139、verifySite）。

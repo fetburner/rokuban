@@ -47,9 +47,9 @@ const (
 
 	// baseSiteName は `deploy/k8s/site` が名乗るサイト名。
 	//
-	// `mirakc:`（単一形式）で site 名を書かなかったときに internal/config が
-	// 入れる名前がこれなので、単一サイト構成の overlay は patch 無しで
-	// `deploy/k8s/site` をそのまま使える（`overlays/kind`）。
+	// `base/config.yml` の `mirakcs:` 1 要素目の site がこの名前なので、
+	// 単一サイト構成の overlay は patch 無しで `deploy/k8s/site` をそのまま
+	// 使える（`overlays/kind`）。
 	// **リテラルで書く**（internal/config の定数を参照すると、両方を同時に
 	// 変えたときに何も主張しなくなる）。
 	baseSiteName = "default"

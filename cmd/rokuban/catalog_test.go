@@ -128,8 +128,9 @@ db:
   user: rokuban
   password: secret
   database: rokuban
-mirakc:
-  url: http://mirakc.local:40772
+mirakcs:
+  - site: default
+    url: http://mirakc.local:40772
 storage:
   media_dir: `+mediaDir+`
 `), 0o644); err != nil {

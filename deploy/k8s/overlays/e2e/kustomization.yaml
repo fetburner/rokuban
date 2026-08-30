@@ -35,8 +35,9 @@ images:
     newTag: e2e
 
 # base の config.yml を 2 サイト構成で置き換える。**`behavior: replace`**
-# （merge ではない）--- merge だと base の `mirakc:`（単一サイト）が残り、
-# `mirakcs:` との排他で起動エラーになる。
+# （merge ではない）--- configMapGenerator の merge は既存の ConfigMap に
+# ファイルを追加するだけで、同名ファイル（config.yml）の中身までは合成しない。
+# base の `mirakcs:` 1 要素をこの 2 要素の内容で丸ごと差し替えるには replace が要る。
 configMapGenerator:
   - name: rokuban-config
     behavior: replace

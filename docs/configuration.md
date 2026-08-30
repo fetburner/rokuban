@@ -43,9 +43,7 @@ Grafana Loki / Tempo の `-config.expand-env` と同じ、**YAML パース前の
 | `db.max_conns` | `0`（roles から自動算出） | プロセスが持つ唯一のプールの上限（下記「db の運用ノブ」） |
 | `db.api_statement_timeout` | `0`（= 30s） | api ロールを含むプロセスにだけ適用（同上） |
 | `db.pooler_compat` | `false` | transaction pooling 互換モード（同上） |
-| `mirakc.url` | —（`mirakcs` との排他でどちらか必須） | 単一サイトの mirakc エンドポイント |
-| `mirakc.site` | `default` | サイト名（下記「mirakc は単一オブジェクト」） |
-| `mirakcs` | — | `{site, url}` の配列（下記「複数サイト」） |
+| `mirakcs` | —（必須。既定なし） | mirakc エンドポイントの `{site, url}` 配列。`site` も既定なしで各要素必須（下記「mirakc レジストリ」） |
 | `storage.media_dir` | —（必須） | アーカイブ層（S3-via-CSI 可） |
 | `storage.scratch_dir` | `/var/tmp/rokuban` | ローカルスクラッチ |
 | `storage.accel_location` | `""`（Go が直接配る） | X-Accel-Redirect の internal location |
@@ -88,7 +86,7 @@ config の読み込みより前に出るログだけは既定（text 形式・In
 
 ### 必須キー
 
-最小 3 つ: `db`（資格情報）・`mirakc.url` または `mirakcs`（どちらか一方。下記「複数サイト」参照）・`storage.media_dir`。残りは全部デフォルトを持ち、最小構成は 10 行程度に収まる。
+最小 3 つ: `db`（資格情報）・`mirakcs`（下記「mirakc レジストリ」参照）・`storage.media_dir`。残りは全部デフォルトを持ち、最小構成は 10 行程度に収まる。
 
 ### db の運用ノブ（max_conns / api_statement_timeout / pooler_compat）
 
@@ -167,22 +165,21 @@ argv の順序（live）は同じ規則を入力 1 本・出力 N 本の形に�
 
 **範囲外**: device ノードのマウントはデプロイ側（k8s `resources.limits` / Docker `--device`）。**`hwaccel.device` の存在は起動時に検査しない** --- 公式イメージや device の無い CI を壊す。無い device を書いたプロファイルはジョブ / セッションの失敗として現れる。`-global_quality` / `-cq` / `-q:v` のような、コーデック指定より後ろに出せる（= `extra_args` で届く）品質オプションはキー化しない。
 
-### mirakc は単一オブジェクト
+### mirakc レジストリ: `mirakcs:`
 
-`mirakc` は（複数サイト用の `mirakcs:` を使わない限り）単一オブジェクトとする。複数 mirakc を許すと programId のスコープが mirakc 単位になり、予約・EPG 射影・ingest の全スキーマに「どの mirakc か」が波及する。チューナー集約は mirakc 自身のリモートチューナー機能で賄えるため、単一サイトなら Rokuban 側は 1 エンドポイントで足りる。ハブ mirakc への集約は採らない（WAN リアルタイム依存 = 録画中の回線瞬断が録画欠損に直結するため）。
+`mirakcs:`（`{site, url}` の配列）に mirakc エンドポイントを登録する。単一サイト構成でも 1 要素の配列で書く（単一オブジェクトの糖衣は無い）。複数 mirakc を許すと programId のスコープが mirakc 単位になり、予約・EPG 射影・ingest の全スキーマに「どの mirakc か」が波及するため、要素ごとに `site` でスコープする。チューナー集約は mirakc 自身のリモートチューナー機能で賄えるため、単一サイトなら Rokuban 側は 1 エンドポイントで足りる。ハブ mirakc への集約は採らない（WAN リアルタイム依存 = 録画中の回線瞬断が録画欠損に直結するため）。
 
-`mirakc.site` は DB の全テーブルの `site` 列の値になる。API の資源同定（`/api/sites/{site}/...`）の権威は `config.mirakc`/`mirakcs` レジストリに site が存在するかであり、api 自身は不変条件 1 によりどの site にも束縛されない。単一 `mirakc:` 構成ではレジストリがこの 1 要素だけになるので、実質 `mirakc.site` と一致する。**省略時の既定値は `"default"` だが、`site: ""` と明示すると起動エラーになる**（下記の site 名の構文制約が空文字列を許さないため）。
+**旧 `mirakc:`（単数）キーを書いたまま起動すると `unknown field "mirakc"` で fail-fast する。** アップグレード時は `mirakcs:` の 1 要素（`site` と `url` を書いた形）に書き換える。
 
-#### 複数サイト: `mirakcs:` レジストリ
+`site` は DB の全テーブルの `site` 列の値になる。API の資源同定（`/api/sites/{site}/...`）の権威は `config.mirakcs` レジストリに site が存在するかであり、api 自身は不変条件 1 によりどの site にも束縛されない。
 
-多拠点構成では `mirakc:` の代わりに `mirakcs:` （`{site, url}` の配列）を書く。`mirakc: {url, site}` は `mirakcs: [{site, url}]` の 1 要素と等価に解決される糖衣で、**両方を同時に書くと起動エラー**になる（どちらが勝つかを覚えさせない）。
-
-- **相互排他は「`mirakc:` キーを書いたか」で判定する**。**「`mirakc.url` が非空か」ではない**。url を欠いた `mirakc: {site: tokyo}` は「書いていない」ではなく「url が足りない `mirakc:`」として扱われる。`mirakcs:` と併記すれば相互排他エラー、単独なら `mirakc.url is required` になる。**既定値を先に埋める設計では、「書かれたか」は値から復元できない**。既定値が入る `mirakc.site` は「書かれていない」と区別できない。値で判定すると `mirakc: {site: tokyo}` + `mirakcs:` の併記が検査を素通りして**書いた `mirakc.site` が黙って捨てられる**。判定はキーの有無で行う（`detectMirakcKeyWritten` が probe で復元する）
-
-- **`mirakcs:` の要素は `site` と `url` の 2 つだけ**。`storage` / `worker` / `ingest` 等のチューニング値は要素に入れない。アーカイブは単一（`media_assets` に site 列が無い）であり、`worker.queues` 等はデプロイ時のパラメータであって site の属性ではない。site ごとのチューニング値は、それを読むコードができたときに足す（不変条件 11）
+- **`mirakcs:` は非空が必須**。空（未指定含む）は起動エラー
+- **各要素の `site` は省略できない**。`mirakc:`（単一形式）の時代のような "default" への既定値フォールバックは無い --- `site` を書かない要素は空文字列のまま下記の構文制約に落ちて起動エラーになる
+- **要素は `site` と `url` の 2 つだけ**。`storage` / `worker` / `ingest` 等のチューニング値は要素に入れない。アーカイブは単一（`media_assets` に site 列が無い）であり、`worker.queues` 等はデプロイ時のパラメータであって site の属性ではない。site ごとのチューニング値は、それを読むコードができたときに足す（不変条件 11）
 - **site 名の構文制約**: `^[a-z0-9]([_-]?[a-z0-9])*$`、53 文字以内。**文字種は River のキュー名の制約と同一で、緩めない** --- キュー名を site で修飾するため、緩めると site 名がキュー名として弾かれる。**上限の 53 は、River のキュー名上限 64 から、site 修飾される論理キューのうち最長の prefix（`reconciler_`、11 文字）を引いた値**（64 − 11 = 53）。この検査は**設定のロード時**に行うので、`--sites` で束縛していないレジストリ上の site 名も対象になる。束縛した瞬間に初めて起動エラーになる、ということは無い
 - **予約名**: `catalog` と `thumbnails` は site 名にできない。**この禁止はもう load-bearing ではない** --- `rel_path` の前置が `sites/{site}/` になったので、site 名がトップレベルの `catalog/` / `thumbnails/` と直接衝突することはない。緩めても得られる自由度（この 2 語を site 名にしたい運用要求は無い）が緩めるコスト（`internal/config` のバリデーション・テストの変更）に見合わないため、禁止だけ残してある。トップレベルディレクトリ名の予約（`catalog/` / `thumbnails/` / `sites/` の 3 つ。今も load-bearing）とは別の話で、[docs/storage.md](storage.md) §5 で分けて説明している
 - レジストリ内の site 名の重複も不可。違反はすべて起動エラーとして全件列挙される（規約 4）
+- **削除 reconcile のサーキットブレーカー（`breaker.DeleteReconcile`）だけは常に `default` を site キーにする**（`internal/worker/delete_reconcile.go`）。他の 2 種のブレーカー名は実際の束縛 site をキーにする。`mirakcs:` に `default` という site が無い構成では、このブレーカーは `GET /api/breakers` には現れる。だが `POST /api/sites/{site}/breakers/{name}/resume` は解除できない。**`default` を渡すとレジストリに無いので 400 になる**。**レジストリにある site を渡しても、その site には行が無いので 404 になる**。単一サイトの `site` に `default` 以外を付けた構成（`docs/runbook/testing.md` の `home` が実例）はこの穴を踏む。根本修正は別途起票する
 
 **多サイトでどのロールがどのプロセスに乗るかは [docs/overview.md](overview.md) の役割分類に決定済み**。site に縛られるのは「mirakc に到達する必要がある仕事」（watcher / ingest / reconciler / epg / record_sweep / ライブ streamer）だけである。DB もアーカイブも単一なので、api / notifier / 録画配信 streamer / ruler / encode / thumbnail / 削除 reconcile は site 非依存の中央プロセスになる。
 

@@ -76,8 +76,9 @@ db:
   password: %s
   database: %s
   sslmode: disable
-mirakc:
-  url: http://mirakc.invalid:40772
+mirakcs:
+  - site: default
+    url: http://mirakc.invalid:40772
 storage:
   media_dir: /tmp/rokuban-capabilities-test-media
 %s`, port, connCfg.Host, connCfg.Port, connCfg.User, password, connCfg.Database, live))

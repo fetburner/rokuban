@@ -1026,14 +1026,20 @@ func TestCRDNameReferencesAreDeclared(t *testing.T) {
 	}
 }
 
-// --- base に site の記述が無いこと ------------------------------------------
+// --- base が単一サイトのままであること --------------------------------------
 
-// base が site を一言も知らないこと。
+// base が Pod に site を束縛しておらず、レジストリも 1 サイトのままであること。
 //
 // **これは受け入れ基準そのものである**（「多サイト overlay が『レジストリに
-// 2 要素目 + Pod セット 1 組』の差分で書けている。単一サイトの base に site の
-// 記述が無い」）。base に site 名が漏れると、サイトを増やす差分が
-// 「base を書き換える」に化けて、単一サイト構成の見た目が保てなくなる。
+// 2 要素目 + Pod セット 1 組』の差分で書けている。単一サイトの base はレジストリ
+// 1 要素のまま」）。base のレジストリが 2 要素以上に膨らむと、サイトを増やす
+// 差分が「base を書き換える」に化けて、単一サイト構成の見た目が保てなくなる。
+//
+// **`mirakcs:` が site 名を書かない形は無い**（issue #444 で `mirakc:` 単一
+// オブジェクトの糖衣を廃止したため）。そのため base/config.yml も `mirakcs:` 1 要素として
+// site 名 `default`（baseSiteName）を明示する。base が「site を一言も知らない」
+// わけではなく、「複数サイトを知らない・Pod に site を束縛しない」ことがここでの
+// 保証。
 func TestBaseIsSiteIndependent(t *testing.T) {
 	for _, o := range loadBase(t) {
 		spec := mapAt(podTemplate(o), "spec")
@@ -1053,18 +1059,30 @@ func TestBaseIsSiteIndependent(t *testing.T) {
 		}
 	}
 
-	// config 側も見る。base は単一形式（`mirakc:`）で出荷し、`mirakcs:` の
-	// レジストリを持たない --- 2 要素目を足すのは overlay の仕事である。
+	// config 側も見る。base は `mirakcs:` を 1 要素だけ持つ --- 2 要素目を
+	// 足すのは overlay の仕事である。
 	raw, err := os.ReadFile(filepath.Join(baseDir, configFileName))
 	if err != nil {
 		t.Fatalf("reading %s: %v", configFileName, err)
 	}
-	var doc map[string]any
+	var doc struct {
+		Mirakcs []map[string]any `yaml:"mirakcs"`
+	}
 	if err := yaml.Unmarshal(raw, &doc); err != nil {
 		t.Fatalf("decoding %s: %v", configFileName, err)
 	}
-	if _, ok := doc["mirakcs"]; ok {
-		t.Errorf("%s/%s declares a mirakcs: registry; the single-site base uses the mirakc: form so that "+
-			"nothing in base/ has to name a site", baseDir, configFileName)
+	if got := len(doc.Mirakcs); got != 1 {
+		t.Fatalf("%s/%s declares %d mirakcs site(s), want exactly 1; adding a second site "+
+			"is overlay's job, not base's", baseDir, configFileName, got)
+	}
+	// deploy/k8s/site は `--sites default` を書いた Pod セットである
+	// （site/kustomization.yaml のコメント参照）。この 1 要素の site 名が
+	// baseSiteName と一致していなければ、マニフェストは build/kubeconform を
+	// 通ったまま起動時に `--sites: unknown site(s) default (registry has: ...)`
+	// （cmd/rokuban/sites.go）で落ちる --- kustomize は 2 つの独立したリテラルの
+	// 一致までは見ないので、ここで機械的に固定する。
+	if got := fmt.Sprint(doc.Mirakcs[0]["site"]); got != baseSiteName {
+		t.Errorf("%s/%s names site %q, want %q (deploy/k8s/site binds --sites %s)",
+			baseDir, configFileName, got, baseSiteName, baseSiteName)
 	}
 }

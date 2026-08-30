@@ -83,7 +83,7 @@ type EpgSyncWorker struct {
 	// 埋めるので、ここでは常に config が渡した値をそのまま使う）。
 	RetentionGrace time.Duration
 
-	// Site はこのワーカープロセス自身の site（config.mirakc.site）。Work は
+	// Site はこのワーカープロセス自身の site（`--sites` で束縛された site）。Work は
 	// これと job.Args.Site を verifySite で照合してから mirakc に触る
 	// （issue #139）。空なら db.DefaultSite に解決する（verifySite 参照）。
 	Site string

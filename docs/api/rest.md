@@ -20,7 +20,7 @@
 
 - API パスは常に**ルート相対パス `/api/*`**（ドメインを含まない絶対パス）を使用する。CDN / リバースプロキシ構成で CORS 不要・実行時コンフィグ注入不要とするため
 - **絶対 URL ビルダーは作らない。** Rokuban には絶対 URL を生成している箇所が現状ゼロ（API・webhook ペイロードともルート相対パスのみ）。無い箇所にビルダーを先回りで作らない（不変条件 11）。必要になった時点で単一ビルダーへ一元化する方針は維持する（棚卸しの経緯は末尾「経緯と失敗事例」）
-- **site は資源同定に含める。** `programId` は site スコープ（[スキーマ](../schema.md) §1-5）なので、番組・意図・上書きを指すパスはすべて `/api/sites/{site}/programs/{programId}...` の形を取る。**api プロセス自身はどの site にも束縛されない**（不変条件 1: mirakc にもファイルシステムにも依存しない）。権威は `config.mirakc`/`mirakcs` レジストリに site が存在するかで、1 プロセスがレジストリの全 site を処理できる。レジストリに無い site を指定すると、読み取り系（GET）は 404、書き込み系（POST/PUT/PATCH/DELETE）は 400 を返す。存在する site の一覧は `GET /api/sites`（mirakc の URL は含まない）で取得できる
+- **site は資源同定に含める。** `programId` は site スコープ（[スキーマ](../schema.md) §1-5）なので、番組・意図・上書きを指すパスはすべて `/api/sites/{site}/programs/{programId}...` の形を取る。**api プロセス自身はどの site にも束縛されない**（不変条件 1: mirakc にもファイルシステムにも依存しない）。権威は `config.mirakcs` レジストリに site が存在するかで、1 プロセスがレジストリの全 site を処理できる。レジストリに無い site を指定すると、読み取り系（GET）は 404、書き込み系（POST/PUT/PATCH/DELETE）は 400 を返す。存在する site の一覧は `GET /api/sites`（mirakc の URL は含まない）で取得できる
 
 ### 機能の有効/無効は能力 API で観測する
 

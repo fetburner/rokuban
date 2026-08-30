@@ -16,8 +16,9 @@ db:
   database: ${POSTGRES_DB:-rokuban}
   sslmode: disable
 
-mirakc:
-  url: ${MIRAKC_URL}
+mirakcs:
+  - site: default
+    url: ${MIRAKC_URL}
 
 storage:
   media_dir: /mnt/media
