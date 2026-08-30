@@ -222,7 +222,7 @@ await validateFixturesOrExit(
     ...reservations.map((r, i) => [`reservations[${i}]`, ListReservationsResponseItem, r]),
     // transferringRecording も既定オプション（multiSite + extraRecording）で
     // 実際にブラウザへ配る（:308 参照）ので検証対象に含める。
-    ...[...recordings, transferringRecording].map((r, i) => [`recordings[${i}]`, ListRecordingsResponseItem, r]),
+    ...[...recordings, transferringRecording].map((r) => [`recordings#${r.id}`, ListRecordingsResponseItem, r]),
     ...rules.map((r, i) => [`rules[${i}]`, ListRulesResponseItem, r]),
     ...breakers.map((b, i) => [`breakers[${i}]`, ListCircuitBreakersResponseItem, b]),
   ],
@@ -1134,8 +1134,7 @@ for (const theme of themes) {
     const detailScreen = { name: 'recording-detail', path: '/recordings/12', wait: 'text=チャンネル' }
     const { context, page } = await open(desktop, theme, detailScreen)
     // `screens`（① のループ）に無い画面なので、明示的に掛けないと欠損文字列
-    // 判定から漏れる。ここは DropBadges（drops/errors/scrambled）を描画する
-    // 唯一の画面でもある。
+    // 判定から漏れる。
     //
     // **`s.packets.toLocaleString()`（recordings.tsx の DropStatsTable）は
     // ここでは撮れていない** --- それは別エンドポイント

@@ -98,6 +98,7 @@ export async function verifyBundleMatchesOrExit(urlBase, ng, browser) {
  * 呼び出し側は要素スキーマを明示して渡すこと。
  */
 export async function validateFixturesOrExit(pairs, ng, browser) {
+  const before = ng.length
   for (const [label, schema, item] of pairs) {
     const result = schema.safeParse(item)
     if (!result.success) {
@@ -105,7 +106,7 @@ export async function validateFixturesOrExit(pairs, ng, browser) {
       ng.push(`契約検証: ${label} が契約と一致しない --- ${detail}`)
     }
   }
-  if (ng.length > 0) {
+  if (ng.length > before) {
     await finish(ng, browser)
   }
   log('  すべてのフィクスチャが契約と一致')
