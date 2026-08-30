@@ -48,12 +48,11 @@ type UpsertScheduleSyncParams struct {
 	FailedReason json.RawMessage
 }
 
-// schedule_sync はかつて reservation_id 列（この observed schedule がどの
-// reservations 行に対応するかの便宜的なポインタ）を持っていたが、読む本番
-// コードが 1 つも無かった（この列を含む唯一の SELECT だった
-// ListScheduleSyncsBySite も呼び出し元ゼロだったため、この issue で併せて
-// 落とした）。reconciler の「自分が作った schedule か」の判定は常に
-// tags = mirakc.IsOurs で行う。
+// schedule_sync は reservation_id 列（observed schedule がどの reservations
+// 行に対応するかの便宜的なポインタ）を持たない --- 読む本番コードが 1 つも
+// 無かった（この列を含む唯一の SELECT だった ListScheduleSyncsBySite も
+// 呼び出し元ゼロだったため、この issue で併せて落とした）。reconciler の
+// 「自分が作った schedule か」の判定は常に tags = mirakc.IsOurs で行う。
 //
 // issue #99 は reservation_id の FK（ON DELETE SET NULL）だけを外す案を
 // 挙げたが、PR #147 のレビューで取り下げられた --- 外すとこの列は「削除済み

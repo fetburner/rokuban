@@ -26,7 +26,7 @@ type Server struct {
 	// knownSite 参照）。api は不変条件 1（mirakc にもファイルシステムにも依存しない）
 	// によりどの site にも束縛されないので、権威は「config.mirakc/mirakcs レジストリに
 	// 存在するか」であり、1 プロセスがレジストリの全 site を処理できる
-	// （issue #184 M4-12。旧実装は起動時の config.mirakc.site 1 つに固定していた）。
+	// （issue #184 M4-12）。
 	sites map[string]struct{}
 
 	// siteNames は sites の定義順一覧（GET /api/sites の応答、ルールが対象 site を
@@ -182,10 +182,9 @@ func (h *Server) ListReservations(ctx context.Context, _ ListReservationsRequest
 // 返す（CLAUDE.md 不変条件 9「導出値と不可逆な事実を同じ列に載せない」・
 // 「導出は読むたびに評価する」）。
 //
-// #30 症状 1（ルールを削除した経路では detached にならなかった）は、旧実装が
-// この式を SQL の CASE で「前パスの rule_id」を見て遷移として保存していたため
-// に起きた。ここで毎パス評価し直すことで、ルールの削除（FK の ON DELETE
-// SET NULL が rule_id を先に NULL にする経路）でも編集と同じく detached になる。
+// ここで毎パス評価し直すことで、ルールの削除（FK の ON DELETE SET NULL が
+// rule_id を先に NULL にする経路）でも編集と同じく detached になる
+// （#30 症状 1 の修正: 遷移を SQL の CASE で保存する形では拾えなかった）。
 func reservationState(ruleID *int64, base json.RawMessage, neverRecorded bool) ReservationState {
 	switch {
 	case neverRecorded:

@@ -1186,9 +1186,8 @@ describe('ProgramsPage の at パラメータ（容量バッジからの導線�
   })
 
   it('at だけでは（view=grid が無ければ）lg 以上でもグリッドにならない', async () => {
-    // 以前は `at` の存在と `useMediaQuery` から「グリッドで見せたい」を推論
-    // していたが、`view` を URL に持つようになったので推論はしない
-    // （issue #437）。`at` 単独ではリストのまま。
+    // `view` を URL に持つ（issue #437）ので `at` の存在からグリッド表示を
+    // 推論することはしない。`at` 単独ではリストのまま。
     stubApi([], [], [...allPrograms, dayTwoProgram])
     stubMatchMedia(true)
     renderPage(`/programs?at=${targetMs}`)

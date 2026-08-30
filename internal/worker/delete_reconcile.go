@@ -98,9 +98,9 @@ func (DeleteReconcileArgs) Kind() string { return "delete_reconcile" }
 // 同一引数の同時実行を UniqueOpts で防ぐ。ByState は pendingJobStates に絞る
 // （completed を含めると定期ジョブが実質ワンショットになる）。
 //
-// Queue は cleanupQueue（issue #185 M4-13。以前は river.QueueDefault だった。
-// `worker.queues` を明示的に絞れば除外できるようになった、というだけで既定
-// 購読からは除外されない。cleanupQueue のコメント参照）。
+// Queue は cleanupQueue（issue #185 M4-13。`worker.queues` を明示的に絞れば
+// 除外できるようになった、というだけで既定購読からは除外されない。
+// cleanupQueue のコメント参照）。
 //
 // ByQueue: uniqueByQueue の理由は pendingJobStates 直後の doc コメント参照
 // （river.QueueDefault → cleanup への移設自体がキュー名変更なので、同じ問題を踏む）。
@@ -132,9 +132,8 @@ func (DeleteReconcileArgs) InsertOpts() river.InsertOpts {
 //
 // # サーキットブレーカーのキーは常に db.DefaultSite（Site フィールドを持たない理由）
 //
-// このワーカーは `Site` フィールドを持たない（issue #185 M4-13 のレビューで削除。
-// 以前は `Deps.Site`（束縛サイト）を受け取り、空文字列なら db.DefaultSite に
-// フォールバックしていた）。cleanup キューは site 非依存の仕事を運ぶが、
+// このワーカーは `Site` フィールドを持たない（issue #185 M4-13 のレビューで削除）。
+// cleanup キューは site 非依存の仕事を運ぶが、
 // **どの worker がジョブを掴むかは site 束縛の有無に関わらない** ---
 // `mirakcs: [tokyo, takamatsu]` の既定構成（0 束縛の中央プロセスを使わない
 // 構成）でも、tokyo に束縛された worker と takamatsu に束縛された worker の
@@ -212,8 +211,7 @@ func (w *DeleteReconcileWorker) Work(ctx context.Context, _ *river.Job[DeleteRec
 	}
 
 	// trash / until_encoded 双方の判定に使う grace_cutoff を先に確定する。
-	// pending 経路の再評価（後述）もこの値を使うので、以前は trashRows の
-	// 取得直前で計算していたものをここへ引き上げた。
+	// pending 経路の再評価（後述）もこの値を使う。
 	trashCutoff := time.Now().Add(-trashRetention)
 
 	// deleting のまま止まっていたが、その後の復元などで trash / until_encoded
@@ -467,11 +465,10 @@ func (w *DeleteReconcileWorker) resolveUnqualifiedDeletingAsset(ctx context.Cont
 // （本処理を止めない）。
 //
 // 発火対象は purged（引数の purged）そのものであり、ここで改めて「録画が
-// 消えたか」を計算し直すことはしない。その計算は MarkPurgedRecordings の
-// WHERE で 1 回だけ行われ、結果は purged_at として永続化済みである
-// （旧実装は同じ計算を通知の一瞬だけ行って結果を捨てていたため、アセットを
-// 1 行も持たない録画では「消した」と「元から無い」を区別できず、一度も
-// 発火しなかった）。
+// 消えたか」を計算し直すことはしない --- 通知の一瞬だけ計算して結果を
+// 捨てる形だと、アセットを 1 行も持たない録画で「消した」と「元から無い」を
+// 区別できず発火し損なう。その計算は MarkPurgedRecordings の WHERE で
+// 1 回だけ行われ、結果は purged_at として永続化済みである。
 //
 // purged は MarkPurgedRecordings が WHERE purged_at IS NULL で選んだ集合
 // なので、同じ録画で二度発火することはない（次パスでは同じ行が候補に

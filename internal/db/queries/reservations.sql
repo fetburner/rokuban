@@ -42,11 +42,12 @@ RETURNING *;
 -- 不変条件 9）。放送イベントキーで never_scheduled_events 表を引き、欠測行が
 -- あり、かつそのイベントに本物の recordings 行が 1 つも無いときだけ true。
 --
--- recordings の照合は live 限定にしない。旧実装では後から本物の record が来ると
--- never-scheduled 擬似行を永久に supersede していたため、ごみ箱操作後も orphaned
--- に戻らなかった。同じ意味を `NOT EXISTS(recordings)` で保つ（#59「録れたのに
--- orphaned のまま」の再発を防ぐ）。同期除外は recordings の有無を見ず、一度
--- 欠測と書いたイベントを対象に戻さないので、表示とは意図的に別の述語である。
+-- recordings の照合は live 限定にしない --- 限定すると、後から本物の record が
+-- 来たときに never-scheduled 擬似行を永久に supersede してしまい、ごみ箱操作後も
+-- orphaned に戻らなくなる。同じ意味を `NOT EXISTS(recordings)` で保つ（#59
+-- 「録れたのに orphaned のまま」の再発を防ぐ）。同期除外は recordings の有無を
+-- 見ず、一度欠測と書いたイベントを対象に戻さないので、表示とは意図的に別の述語
+-- である。
 --
 -- 宛先は r.id ではなく (site, program_id)（issue #99）。書き込み側
 -- （program_intents / program_overrides、issue #29）は既にこのキーに寄っていたが、
@@ -104,12 +105,11 @@ ORDER BY r.site, s.start_at;
 
 -- 同期対象の「候補」を返すクエリ（issue #54）。
 --
--- **除外条件は issue #98 で orphaned_at IS NULL から書き換えた。** 旧実装は
--- reconciler.markOrphaned が「番組終了後に schedule が観測されなかった」
--- という不可逆な観測を reservations.orphaned_at という列に直接書いており、
--- それを次パス以降の除外フィルタに使っていた。#98 の決定でこの観測は
--- recordings の試行行（status='failed' + quality_events に
--- recording.never-scheduled）に移設され、orphaned_at 列自体が無くなった。
+-- **除外条件は issue #98 で orphaned_at IS NULL から書き換えた。**
+-- reconciler.markOrphaned が書いていた不可逆な観測（「番組終了後に schedule が
+-- 観測されなかった」）は、#98 の決定で recordings の試行行（status='failed' +
+-- quality_events に recording.never-scheduled）に移設され、orphaned_at 列
+-- 自体が無くなった。
 --
 -- 除外条件を「その放送イベントに既に never-scheduled の recordings 行がある」に
 -- 置き換える。never-scheduled という特定の quality_events マーカーだけを

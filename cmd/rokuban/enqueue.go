@@ -36,12 +36,11 @@ type enqueueJob struct {
 // 組み立てる索引。ジョブの Kind()（"epg_sync" / "ruler_pass" 等）とは別に、
 // CLI では読みやすい名前を使う。
 //
-// **cleanup 系（catalog-export / delete-reconcile）も載せる。** かつて
-// delete_reconcile だけを外していたが、その根拠（PeriodicJobs が投入するので
-// 手動 enqueue は要らない）は `worker.periodic_jobs: false` のデプロイでは
-// 成り立たない --- k8s はこれを出荷値にしており、CronJob からの投入が唯一の
-// 経路になるので、載せないとごみ箱・孤児回収のパスが一度も走らない構成が
-// できる（encode-reconcile を載せたのと同じ論法。issue #163 / #200）。
+// **cleanup 系（catalog-export / delete-reconcile）も載せる。** 「PeriodicJobs が
+// 投入するので手動 enqueue は要らない」という根拠は `worker.periodic_jobs: false`
+// のデプロイでは成り立たない --- k8s はこれを出荷値にしており、CronJob からの
+// 投入が唯一の経路になるので、載せないとごみ箱・孤児回収のパスが一度も走らない
+// 構成ができる（encode-reconcile を載せたのと同じ論法。issue #163 / #200）。
 var enqueueJobs = map[string]enqueueJob{
 	"epg-sync": {
 		RequiresSite: true,

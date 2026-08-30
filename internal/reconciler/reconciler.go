@@ -430,9 +430,8 @@ type desiredReservation struct {
 //
 // effective.skip の絞り込みは db.EvaluateSyncCandidates に通す
 // （internal/db/sync.go）。この関数はここ（reconciler.listDesired）と
-// cmd/rokuban/shadowdiff.go の 2 箇所から呼ばれる共通処理で、以前は 2 箇所が
-// 別々に db.EffectiveOptions を呼んでおり、shadow-diff 側が絞り込みの移植を
-// 忘れたことが issue #54 の見逃しの原因だった。
+// cmd/rokuban/shadowdiff.go の 2 箇所から呼ばれる共通処理 --- 2 箇所が別々に
+// db.EffectiveOptions を呼ぶ形だと移植漏れが起きうる（issue #54 の見逃しの原因）。
 func (r *Reconciler) listDesired(ctx context.Context) ([]desiredReservation, error) {
 	rows, err := sqlcgen.New(r.pool).ListReservationsForSyncEvaluation(ctx, r.site)
 	if err != nil {
@@ -545,11 +544,10 @@ func buildContentPath(snap sqlcgen.ProgramSnapshot, template string) (string, er
 // （Mirakurun 互換の ID 合成規則）を割り算して推測することはしない
 // （不変条件: mirakc 固有の概念を永続テーブルの外で復元しない）。
 //
-// service_id が無い（推測せず schedule を作らない）という分岐はかつて
-// ここにあったが、issue #101 で program_snapshots のチャンネル・
-// イベント識別 6 列が NOT NULL 化されたことで、この分岐が守っていた
-// 「reservation_channel 列を追加する前の残骸で service_id が NULL」という
-// 状態自体が表現不可能になったため落とした（起きない状態のための分岐を残さない）。
+// service_id が無い（推測せず schedule を作らない）という分岐は持たない ---
+// issue #101 で program_snapshots のチャンネル・イベント識別 6 列が
+// NOT NULL 化され、service_id が NULL になる状態自体が表現不可能になった
+// （起きない状態のための分岐を残さない）。
 func resolveContentPath(res sqlcgen.Reservation, snap sqlcgen.ProgramSnapshot, opts db.ReservationOptions) (string, error) {
 	// contentPath は filenameTemplate（ruler が base に載せたテンプレート、または
 	// ユーザーの明示的な上書き）があればそれを展開し、なければ従来の固定形式

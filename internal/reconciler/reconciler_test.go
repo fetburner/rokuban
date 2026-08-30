@@ -1679,8 +1679,8 @@ RETURNING id`,
 // （FK の ON DELETE SET NULL を経由せず、api.DeleteReservationsByRuleWithoutIntent
 // のような物理削除を経路として想定）、never-scheduled の recordings 行は
 // 残る --- recordings は reservations への FK を一切持たない（issue #158 で
-// reservation_id 列自体を削除済み。それ以前は ON DELETE SET NULL だった）ので
-// recordings 行自体は消えない（docs/schema.md §3.7「recordings はこの FK の
+// reservation_id 列自体を削除済み）ので recordings 行自体は消えない
+// （docs/schema.md §3.7「recordings はこの FK の
 // 対象外」）。ここでは reservations 行を直接 DELETE して同じ経路を再現する
 // （rule 削除の API を経由しなくても、reservations の削除経路はすべてこの
 // FK の挙動に帰着するため）。

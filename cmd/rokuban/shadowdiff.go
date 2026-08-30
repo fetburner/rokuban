@@ -111,9 +111,9 @@ func runShadowDiff(ctx context.Context, q *sqlcgen.Queries, epgClient *epgstatio
 	// 各行の skip 判定を得る --- reconciler は skip された予約を除外するが、
 	// shadow-diff は除外せず Skipped フラグとして残す必要がある
 	// （EPGStation 側に対応する予約があるとき Expected に落とすため）。
-	// 以前はこの行のループが Skipped: false を決め打ちしており、M2-6 の
-	// 重複排除が base.skip=true を立てた予約を「EPGStation と一致（Both）」と
-	// 誤報告する見逃しがあった（issue #54）。
+	// Skipped を決め打ちにしない --- 決め打ちすると、M2-6 の重複排除が
+	// base.skip=true を立てた予約を「EPGStation と一致（Both）」と誤報告する
+	// （issue #54）。
 	rows, err := q.ListReservationsForSyncEvaluation(ctx, site)
 	if err != nil {
 		return shadowdiff.Report{}, fmt.Errorf("listing rokuban reservations: %w", err)

@@ -288,8 +288,7 @@ describe('StorageBalance', () => {
 
   // skip=true の予約は消費に数えない（reconciler が mirakc に同期しないため）。
   // 全予約が skip=true なら見込み消費は 0 になり、指摘 2 の修正により
-  // 「+0 B」は描かれない（以前は「見込み自体は出る」を期待していたが、0 は
-  // 出さない方針にしたため期待値を反転した）。
+  // 「+0 B」は描かれない（見込み消費が 0 のときは見込み自体を出さない方針）。
   it('skip=true の予約は消費見込みに数えない（全 skip なら見込み消費 0 で見込み欄は出ない）', async () => {
     mockApis({
       storage: [mediaRoot({ availableBytes: 100_000_000 })], // 100MB

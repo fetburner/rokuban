@@ -264,8 +264,6 @@ const (
 	// 「ごみ箱では出さない」（プレイヤーを出さないので値を揃えても使われない。
 	// 3d56f92 の理由。性能実測は無い）は Go 側 1 か所（recordingFromListFields が
 	// r.DeletedAt != nil だけを見て AvailableEncodedAssets を落とす）だけで決める。
-	// 以前は一覧が SQL 側で列自体を省き、単体 GET が Go 側で nil 化するという
-	// 2 手段だったが、判定条件を 1 か所に揃えた。
 	//
 	// jsonb_agg で profile と size_bytes を同じ行に載せる（issue #236 M7-3。
 	// プロファイル名の配列 + サイズの並行配列という 2 本の index 揺れやすい

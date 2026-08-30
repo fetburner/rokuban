@@ -151,10 +151,10 @@ type GetProgramSnapshotSourceRow struct {
 // （title / 開始時刻 / 尺 / チャンネル識別）を EPG プロジェクションから引く。
 // mirakc の programId 内部構造への算術（NID*10^10 + SID*10^5 + EID）に頼らないのは
 // 元々の理由のままだが、title / start_at / duration_ms も返すのは #27 の決定
-// （「値の出所を EPG 射影ただ 1 つに固定する」）による: 以前はチャンネル識別だけ
-// 射影から引き、title / 開始時刻 / 尺はクライアント申告を信じていたため、GC の
-// 比較対象（program_snapshots.start_at + duration_ms）がクライアントの古い番組表に
-// 引きずられ得た（api.ensureProgramSnapshot から使う）。
+// （「値の出所を EPG 射影ただ 1 つに固定する」）による: クライアント申告の
+// title / 開始時刻 / 尺を信じると、GC の比較対象（program_snapshots.start_at +
+// duration_ms）がクライアントの古い番組表に引きずられ得るため
+// （api.ensureProgramSnapshot から使う）。
 // event_id / s.name (service_name) は issue #98 で追加した参照 --- program_snapshots
 // 側の event_id / service_name 列を埋めるのに使う。他のチャンネル識別列と
 // 同じ経路（射影から直接引く。mirakc の programId 分解には頼らない）。

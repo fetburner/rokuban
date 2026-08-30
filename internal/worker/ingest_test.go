@@ -1631,10 +1631,8 @@ func TestIngestWorker_SnapshotsEncodePolicy_SurvivesReservationRematerialization
 	recordingID := insertTestRecordingForReservation(t, pool, programID)
 	insertTestRecordSyncForSite(t, pool, "default", recordingID, "rec-policy-rematerialized", programID)
 
-	// ruler の導出削除 → 再実体化を模す（同じ番組・新しい id）。旧実装は
-	// recordings.reservation_id（当時 FK の ON DELETE SET NULL。issue #158 で
-	// 列自体を削除済み）を宛先にしていたため、この DELETE で NULL に落ちて
-	// 「予約が無い」と誤認する穴があった。
+	// ruler の導出削除 → 再実体化を模す（同じ番組・新しい id）。この DELETE で
+	// reservations.id が変わることを確認する（doc コメント参照）。
 	if _, err := pool.Exec(ctx, `DELETE FROM reservations WHERE id = $1`, res.ID); err != nil {
 		t.Fatalf("deleting reservation: %v", err)
 	}

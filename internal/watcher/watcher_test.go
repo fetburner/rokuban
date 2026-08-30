@@ -1247,8 +1247,7 @@ func TestSweepAndHandleEvent_ConcurrentIdempotent(t *testing.T) {
 }
 
 // TestRun_NoAutomaticSweep は watcher が SSE 購読と handleEvent だけの常駐になった
-// こと（M2-18）を確認する。以前は Run 開始時に初回 reconcile を走らせ、以後も
-// タイマーで定期 reconcile していたが、(c) を record_sweep ジョブへ切り出したことで
+// こと（M2-18）を確認する。(c) を record_sweep ジョブへ切り出したことで
 // Watcher 自身は `GET /api/recording/records` を一切呼ばなくなったはず。
 func TestRun_NoAutomaticSweep(t *testing.T) {
 	pool := testutil.SetupDB(t)
@@ -1377,10 +1376,8 @@ func TestProcessRecord_RuleReservation_SourceRule(t *testing.T) {
 // 受け入れ基準 3: ルール由来の予約に priority だけを上書きした（program_overrides
 // はあるが program_intents は無い）場合も recordings.source は 'rule' のまま。
 //
-// M2-4（program_overrides 分離）以前は「上書きした」と「手動で録れと言った」を
-// 区別する材料が reservations.rule_id しかなく、この 2 つを取り違えると
-// 上書きしただけの予約が manual に化けてしまう。分離後は program_intents の
-// 有無だけを見るので、上書きの有無に影響されない。
+// M2-4（program_overrides 分離）後は program_intents の有無だけを見るので、
+// program_overrides（上書き）の有無に判定が影響されない。
 func TestProcessRecord_RuleReservationWithOverrideOnly_SourceRule(t *testing.T) {
 	w, pool := setupTest(t)
 	ctx := context.Background()

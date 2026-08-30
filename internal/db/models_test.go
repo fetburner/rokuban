@@ -437,13 +437,11 @@ func TestSchemaV1_RecordSyncFK(t *testing.T) {
 }
 
 // TestSchemaV1_ProgramSnapshotGCCascadesToReservationIntentAndOverrides は #27 の
-// GC 集約の回帰テスト。旧実装は reservations / program_intents / program_overrides
-// それぞれに DeleteEndedReservations / DeleteEndedProgramIntents /
-// DeleteEndedProgramOverrides という 3 本の GC クエリがあり、しかも 3 表が
-// それぞれ自分のスナップショット列（program_start_at 等）を持っていて既にドリフト
-// していたため、表ごとに違う時刻で GC されうる状態だった。#27 でスナップショット
-// 列を program_snapshots に一本化し、3 本の GC を DeleteEndedProgramSnapshots
-// 1 本（program_snapshots への FK が ON DELETE CASCADE）に統合した。
+// GC 集約の回帰テスト。reservations / program_intents / program_overrides が
+// それぞれ自分のスナップショット列を持っていると、表ごとに違う時刻で GC
+// されうる。#27 でスナップショット列を program_snapshots に一本化し、GC を
+// DeleteEndedProgramSnapshots 1 本（program_snapshots への FK が
+// ON DELETE CASCADE）に統合した。
 //
 // このテストは 1 回の DeleteEndedProgramSnapshots 呼び出しで、終了 + 猶予を
 // 過ぎた番組の reservations / program_intents / program_overrides が同時に
