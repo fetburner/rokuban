@@ -320,7 +320,7 @@ func TestOnceOutcome_String(t *testing.T) {
 		{OnceOutcomeJobDone, "job_done"},
 		{OnceOutcomeIdleTimeout, "idle_timeout"},
 		{OnceOutcomeCanceled, "canceled"},
-		// docs と README が名指ししている文字列（`outcome=job_unhandled`）。
+		// docs と README が名指ししている値（outcome 属性が job_unhandled）。
 		{OnceOutcomeJobUnhandled, "job_unhandled"},
 		{OnceOutcome(99), "unknown"},
 	} {

@@ -53,8 +53,8 @@ func TestWarnIfAllowedHostsEmpty_NonEmptyLogsNothing(t *testing.T) {
 func TestServerAllowedHostsEmpty_WarnsAtStartup(t *testing.T) {
 	_, logs := startServerForAllowedHosts(t, nil, "")
 
-	if !strings.Contains(logs.String(), "server.allowed_hosts is empty") {
-		t.Errorf("startup log = %q, want a WARN mentioning empty server.allowed_hosts", logs.String())
+	if got := logs(); !strings.Contains(got, "server.allowed_hosts is empty") {
+		t.Errorf("startup log = %q, want a WARN mentioning empty server.allowed_hosts", got)
 	}
 }
 
@@ -73,7 +73,7 @@ func TestServerAllowedHostsEmpty_WarnsAtStartup(t *testing.T) {
 func TestServerAllowedHostsNonEmpty_NoWarnAtStartup(t *testing.T) {
 	_, logs := startServerForAllowedHosts(t, []string{"rokuban.local"}, "")
 
-	if strings.Contains(logs.String(), "server.allowed_hosts is empty") {
-		t.Errorf("startup log = %q, want no WARN mentioning empty server.allowed_hosts when allowed_hosts is set", logs.String())
+	if got := logs(); strings.Contains(got, "server.allowed_hosts is empty") {
+		t.Errorf("startup log = %q, want no WARN mentioning empty server.allowed_hosts when allowed_hosts is set", got)
 	}
 }

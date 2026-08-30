@@ -209,7 +209,7 @@ River の at-least-once / 冪等性は「殺されても正しい」を保証済
 
 失敗するジョブ（到達不能な mirakc への `epg_sync`）でも **exit 0** になる。ジョブは River 側で未完了のまま（`attempt=1`）残る（`TestServerCmd_OnceModeExitsZeroOnJobFailure`）。**次の Job がそれを引き直すところまでは測っていない。**
 
-**登録されていない kind のジョブを掴んだ場合は 1 回失敗させて終了する**（ログの `outcome=job_unhandled`）。River の executor はこの場合ワーカーのミドルウェアを通らない。そのため購読した終了イベントで観測している（`worker.SubscribeOnceEvents`）。版ずれで踏む --- 新しいイメージの CronJob / api が、古い worker の知らない kind を投入する形である。`TestServerCmd_OnceModeExitsOnUnhandledJobKind` が固定している。
+**登録されていない kind のジョブを掴んだ場合は 1 回失敗させて終了する**（ログの `outcome` 属性が `job_unhandled`）。River の executor はこの場合ワーカーのミドルウェアを通らない。そのため購読した終了イベントで観測している（`worker.SubscribeOnceEvents`）。版ずれで踏む --- 新しいイメージの CronJob / api が、古い worker の知らない kind を投入する形である。`TestServerCmd_OnceModeExitsOnUnhandledJobKind` が固定している。
 
 **スケーラのクエリは `available` だけでなく `retryable` も数える。** 失敗したジョブを `retryable` から `available` に戻すのは River の `JobScheduler` である。これはリーダーに選出されたクライアントだけが動かす保守サービスである。ロール分割構成では常駐する River クライアントが 1 つも無い（api / watcher / `enqueue` はいずれも insert 専用で `Start` しない）。そのため `available` だけを数えると **失敗したジョブが永久に止まる** --- Job が起きないので誰も昇格させず、昇格しないので Job も起きない。
 

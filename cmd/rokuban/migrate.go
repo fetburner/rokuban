@@ -3,7 +3,6 @@ package main
 import (
 	"github.com/spf13/cobra"
 
-	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db"
 )
 
@@ -45,12 +44,4 @@ func newMigrateDownCmd() *cobra.Command {
 			return db.MigrateDown(cmd.Context(), cfg.DB.DSN())
 		},
 	}
-}
-
-func loadConfig(cmd *cobra.Command) (*config.Config, error) {
-	path, err := cmd.Flags().GetString("config")
-	if err != nil {
-		return nil, err
-	}
-	return config.Load(path)
 }

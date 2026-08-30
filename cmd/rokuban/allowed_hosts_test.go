@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -14,21 +13,13 @@ import (
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
-// syncLogBuffer は slog の出力を捕まえるための、mutex で保護した io.Writer。
+// syncLogBuffer は captureStderr が集めるログのための、mutex で保護した
+// io.Writer。書き手は captureStderr が os.Stderr の代わりに差し込むパイプを
+// 読む goroutine、読み手はテスト goroutine（String）。
 //
-// 書き手と読み手が別 goroutine にある構造なので guard する: 書くのは
-// startServerForAllowedHosts が slog.SetDefault で既定の出力に差し替えた先の
-// サーバー goroutine、読むのはテスト goroutine（String）で、両者の順序を保証する
-// 同期は harness の中に無い。
-//
-// ただし現状の `--roles api` 経路では race を観測できていない（未検証）。実測:
-// Write / String の Lock を外して `go test -race ./cmd/rokuban/ -run AllowedHosts
-// -count=3` を回しても報告は 0 件だった。この経路で出るログが起動 2 行と shutdown
-// だけで、前者は /healthz の応答を、後者は Cleanup の LIFO 順（slog 復元より先に
-// 停止待ち）を挟むためと思われるが、そこは測っていない。ログ行が増える・別ロールを
-// 足すと成立しうるので guard は残す。internal/worker と internal/reconciler の同型
-// ログキャプチャはいずれも同期呼び出しのログしか見ておらず、無 guard の前例には
-// ならない。
+// **`String` を直接呼ばないこと。** captureStderr が返す関数（drain してから
+// 読む）越しに読む --- この型自体は書き手と読み手の順序を保証しない
+// （mutex は同時書き込みからの保護のみ）。
 type syncLogBuffer struct {
 	mu  sync.Mutex
 	buf bytes.Buffer
@@ -48,7 +39,9 @@ func (b *syncLogBuffer) String() string {
 
 // startServerForAllowedHosts は `rokuban server --roles api` を実プロセスと同じ経路
 // （root コマンド → newServerCmd の RunE）で起動し、疎通した base URL と、起動中に
-// slog.Default() へ書かれたログを返す。hosts は server.allowed_hosts に書く値
+// os.Stderr へ書かれたログを読む関数（captureStderr が返すもの。呼ぶたびに
+// drain してから読むので、その時点までに実際に書かれた分を確実に読める）を
+// 返す。hosts は server.allowed_hosts に書く値
 // （nil / 空なら allowed_hosts のキーごと書かない = 空の既定構成）。serverExtra は
 // server: ブロックへそのまま挿入する追加行（`  trust_forwarded_host: true` のように
 // インデント込み・改行なしで渡す。不要なら空文字列）。
@@ -64,7 +57,7 @@ func (b *syncLogBuffer) String() string {
 // allowed_hosts の警告漏れ・過剰発火が復活しうる（issue #209 の `LiveEnabled`
 // 配線ミスと同型。`capabilities_test.go` の `runServerForCapabilities` のコメント
 // 参照）。
-func startServerForAllowedHosts(t *testing.T, hosts []string, serverExtra string) (string, *syncLogBuffer) {
+func startServerForAllowedHosts(t *testing.T, hosts []string, serverExtra string) (string, func() string) {
 	t.Helper()
 
 	pool := testutil.SetupDB(t)
@@ -106,10 +99,7 @@ storage:
   media_dir: /tmp/rokuban-allowed-hosts-test-media
 `, port, strings.Join(serverLines, "\n"), connCfg.Host, connCfg.Port, connCfg.User, password, connCfg.Database))
 
-	logs := &syncLogBuffer{}
-	prevLogger := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(logs, nil)))
-	t.Cleanup(func() { slog.SetDefault(prevLogger) })
+	readLogs := captureStderr(t, &syncLogBuffer{})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	// exited は「コマンドが返った」ことを表す。起動待ちの側と Cleanup の側の 2 箇所
@@ -140,7 +130,7 @@ storage:
 		if err == nil {
 			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
-				return base, logs
+				return base, readLogs
 			}
 			t.Fatalf("GET /healthz = %d, want 200", resp.StatusCode)
 		}

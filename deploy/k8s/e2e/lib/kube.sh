@@ -407,7 +407,7 @@ river_backlog() {
 # worker が掴んだ場合は River の executor が「未登録 kind」として 1 回失敗させる
 # だけで、実データには触れない（`WorkUnit == nil` の早期 return。
 # 単体では cmd/rokuban の TestServerCmd_OnceModeExitsOnUnhandledJobKind が同じ形を固定）。
-# `--once` の worker はそこで終了する（outcome=job_unhandled）。
+# `--once` の worker はそこで終了する（ログの outcome 属性が job_unhandled）。
 #
 # 帰結が 2 つある。**このジョブは長時間 Job にならない**ので、判定 3 の既定
 # producer は実物の encode ワークロードには使えない（E2E_ENCODE_PRODUCER の
