@@ -294,19 +294,14 @@ in-flight `fetch` を `AbortController` で中断、hls.js の `destroy()` /
 **選択と視聴開始を分離したことで、「ザッピングのたびにセッションが積まれる」と
 いう事態自体が起きなくなった。**
 `?service=` を切り替えるだけでは probe もセッション開始も走らないため、
-チャンネル一覧を何度触っても掴まれるチューナーは 0 のまま増えない --- ただし
-これは `playingKey` と `selectedKey` の一致判定をレンダー中に行う
-実装でのみ真になる（上記「フロントエンド実装」の同じ節参照）。`useEffect` で
-「選択が変わったら false に戻す」形にすると、切替直後の 1 コミットだけ押していない
-チャンネルへ透過的に probe が飛ぶ（実測は同節）。ザッピング緩和のためのデバウンス
-（400ms。`channelSwitchDebounceMs`）はこの理由により持たない
-（`pages/live.tsx` に存在しない）。掴まれるのは
-利用者が明示的に「再生」を押したチャンネルだけであり、その本数分だけ
-**離脱ヒントが届けば十数秒、届かなければ最終アクセスから 30 秒強**残る
-（実測値は下記。既定 `max_sessions` の 4 を明示的な再生の
-連打で超えると、5 回目が 503 `too many concurrent live sessions on this
-process`、チューナー本数がそれより少ない環境ではさらに手前で mirakc 側の枯渇に
-より 503 `live stream unavailable` になる。この経路自体は変わっていない）。
+チャンネル一覧を何度触っても掴まれるチューナーは 0 のまま増えない
+（前提は上記「フロントエンド実装」の `playingKey`/`selectedKey` の判定）。
+掴まれるのは利用者が明示的に「再生」を押したチャンネルだけであり、その本数分
+だけ**離脱ヒントが届けば十数秒、届かなければ最終アクセスから 30 秒強**残る
+（実測値は下記）。既定 `max_sessions` の 4 を明示的な再生の連打で超えると、
+5 回目が 503 `too many concurrent live sessions on this process`、
+チューナー本数がそれより少ない環境ではさらに手前で mirakc 側の枯渇により
+503 `live stream unavailable` になる。
 判定手段: `pages/live.test.tsx`「再生中に別チャンネルへ切り替えると選択状態に戻る
 （同意はチャンネルごとに必要）」（`playlistFetchCallCount()` で件数を見る）と
 `web/e2e/live.mjs` ⓪'（実ブラウザでの要求ログ観測）。
@@ -432,12 +427,9 @@ EPGStation・KonomiTV には構造的にできない表示。
 ### 実機確認について
 
 **実機確認の手段・判定項目・回帰の記録は [runbook.md](../runbook.md)（ライブ視聴の
-節）と `web/e2e/`（`web/e2e/README.md`）を見る。** ここには設計に跳ね返る 2 点だけ
+節）と `web/e2e/`（`web/e2e/README.md`）を見る。** ここには設計に跳ね返る 1 点だけ
 残す。
 
-- **再生経路の 3 段の梯子（上記）は、実ブラウザ（WebKit / Chromium / Chrome /
-  Firefox）で実測した `canPlayType` の値の表で固定した。** 判定を変えるときは
-  同じ実測をやり直す（`lib/live.test.ts` は実測値の表を入力にしている）
 - **iOS 実機（iPhone Safari）は誰も確認していない。** 判定は macOS の 4 エンジン
   で実測して固定したが、iOS の `canPlayType('video/mp2t')` が macOS の WebKit と
   同じ `'maybe'` を返す保証は無い。違っていた場合、iOS は hls.js 経路へ落ちる

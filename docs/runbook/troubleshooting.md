@@ -284,9 +284,3 @@ curl -s "$MIRAKC_URL/api/tuners" | jq '.[] | {name, isAvailable, users}'
 ```
 
 EPGStation のライブ視聴・EPG 収集・別チャンネルの録画が掴んでいないか確認する。
-
-
-## 経緯と失敗事例
-
-- 「デプロイ直後、旧キューの残骸が `river_job` に残っている」の挙動と掃除コマンドは、
-  issue #185（M4-13）の検証で実バイナリを使って実測した
