@@ -46,6 +46,14 @@
 import { mkdirSync, rmSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import {
+  ListCircuitBreakersResponseItem,
+  ListProgramsResponseItem,
+  ListRecordingsResponseItem,
+  ListReservationsResponseItem,
+  ListRulesResponseItem,
+  ListServicesResponseItem,
+} from '../src/api/zod.ts'
 import { finish, installApiStubs, launchBrowser, log, verifyBundleMatchesOrExit } from './lib.mjs'
 
 const URL_BASE = process.env.E2E_URL ?? 'http://localhost:40773'
@@ -129,10 +137,10 @@ const nowMs = FIXED_NOW.getTime()
 const iso = (ms) => new Date(ms).toISOString()
 
 const reservations = [
-  { id: 1, site: SITE, programId: 9001, source: 'rule', state: 'active', title: '連続テレビ小説', startAt: iso(nowMs + HOUR), durationMs: 900_000, createdAt: iso(nowMs - HOUR), updatedAt: iso(nowMs - HOUR), skip: false },
-  { id: 2, site: SITE, programId: 9002, source: 'manual', state: 'active', title: '大相撲中継', startAt: iso(nowMs + 2 * HOUR), durationMs: 5_400_000, createdAt: iso(nowMs - HOUR), updatedAt: iso(nowMs - HOUR), skip: false },
-  { id: 3, site: SITE, programId: 9003, source: 'rule', state: 'detached', title: 'クラシック音楽館', startAt: iso(nowMs + 5 * HOUR), durationMs: 3_600_000, createdAt: iso(nowMs - HOUR), updatedAt: iso(nowMs - HOUR), skip: false },
-  { id: 4, site: SITE, programId: 9004, source: 'rule', state: 'orphaned', title: '日曜洋画劇場', startAt: iso(nowMs + 26 * HOUR), durationMs: 7_200_000, createdAt: iso(nowMs - HOUR), updatedAt: iso(nowMs - HOUR), skip: false },
+  { id: 1, site: SITE, programId: 9001, source: 'rule', state: 'active', title: '連続テレビ小説', serviceName: 'NHKEテレ', channelType: 'GR', startAt: iso(nowMs + HOUR), durationMs: 900_000, createdAt: iso(nowMs - HOUR), updatedAt: iso(nowMs - HOUR), skip: false },
+  { id: 2, site: SITE, programId: 9002, source: 'manual', state: 'active', title: '大相撲中継', serviceName: 'NHK総合', channelType: 'GR', startAt: iso(nowMs + 2 * HOUR), durationMs: 5_400_000, createdAt: iso(nowMs - HOUR), updatedAt: iso(nowMs - HOUR), skip: false },
+  { id: 3, site: SITE, programId: 9003, source: 'rule', state: 'detached', title: 'クラシック音楽館', serviceName: 'ＮＨＫＢＳ', channelType: 'BS', startAt: iso(nowMs + 5 * HOUR), durationMs: 3_600_000, createdAt: iso(nowMs - HOUR), updatedAt: iso(nowMs - HOUR), skip: false },
+  { id: 4, site: SITE, programId: 9004, source: 'rule', state: 'orphaned', title: '日曜洋画劇場', serviceName: 'テレビ大阪', channelType: 'GR', startAt: iso(nowMs + 26 * HOUR), durationMs: 7_200_000, createdAt: iso(nowMs - HOUR), updatedAt: iso(nowMs - HOUR), skip: false },
 ]
 
 /** 予約 2 の時間帯に重ねる。琥珀の警告バッジ・帯を必ず 1 つ出すため。 */
@@ -146,7 +154,7 @@ const recordings = [
   // 出ることを撮る（キーボード到達性の判定 ⑤）。`encodedProfiles`（非推奨の後方
   // 互換フィールド）だけでは `RecordingPlayer` が <video> を出さない
   // （`encodedAssets` を見るため）ので両方持たせる。
-  { id: 12, site: SITE, source: 'manual', serviceName: 'ＮＨＫＢＳ', channelType: 'BS', channel: 'BS15_0', networkId: 4, serviceId: 101, eventId: 12, title: 'クラシック音楽館', startAt: iso(nowMs - 26 * HOUR), durationMs: 5_400_000, status: 'finished', sizeBytes: 8_123_456_789, createdAt: iso(nowMs - 26 * HOUR), dropSummary: { drops: 12, errors: 0, scrambled: 3 }, encodedAssets: [{ profile: 'hevc-1080p', sizeBytes: 2_345_678_901 }] },
+  { id: 12, site: SITE, source: 'manual', serviceName: 'ＮＨＫＢＳ', channelType: 'BS', channel: 'BS15_0', networkId: 4, serviceId: 101, eventId: 12, title: 'クラシック音楽館', startAt: iso(nowMs - 26 * HOUR), durationMs: 5_400_000, status: 'finished', sizeBytes: 8_123_456_789, createdAt: iso(nowMs - 26 * HOUR), dropSummary: { packets: 1_500_000, drops: 12, errors: 0, scrambled: 3 }, encodedAssets: [{ profile: 'hevc-1080p', sizeBytes: 2_345_678_901 }] },
   { id: 13, site: SITE, source: 'rule', serviceName: 'テレビ大阪', channelType: 'GR', channel: '18', networkId: 32738, serviceId: 1040, eventId: 13, title: 'アニメ劇場', startAt: iso(nowMs - 50 * HOUR), durationMs: 1_800_000, status: 'failed', createdAt: iso(nowMs - 50 * HOUR) },
   { id: 14, site: SITE, source: 'rule', serviceName: 'NHKEテレ', channelType: 'GR', channel: '26', networkId: 32737, serviceId: 1032, eventId: 14, title: '連続テレビ小説', startAt: iso(nowMs - 74 * HOUR), durationMs: 900_000, status: 'finished', sizeBytes: 1_234_567_890, createdAt: iso(nowMs - 74 * HOUR) },
 ]
@@ -183,13 +191,55 @@ const transferringRecording = {
 }
 
 const rules = [
-  { id: 1, name: '朝ドラ', enabled: true, priority: 10, keepOriginal: 'always', textMatches: [{ field: 'name', kind: 'contains', value: '連続テレビ小説' }], createdAt: iso(nowMs - 100 * HOUR), updatedAt: iso(nowMs - 100 * HOUR) },
+  { id: 1, name: '朝ドラ', enabled: true, priority: 10, keepOriginal: 'always', textMatches: [{ target: 'name', mode: 'keyword', value: '連続テレビ小説' }], createdAt: iso(nowMs - 100 * HOUR), updatedAt: iso(nowMs - 100 * HOUR) },
   { id: 2, name: '（条件なし）', enabled: false, priority: 20, keepOriginal: 'until_encoded', createdAt: iso(nowMs - 100 * HOUR), updatedAt: iso(nowMs - 100 * HOUR) },
 ]
 
 const breakers = [
   { site: SITE, name: 'ruler_deletes', trippedAt: iso(nowMs - 3 * HOUR), pending: 42, threshold: 20, detail: { total: 42, programs: [{ programId: 9101, title: '大相撲中継' }, { programId: 9102, title: 'ブラタモリ' }] } },
 ]
+
+// --- 契約検証: フィクスチャが orval 生成の zod スキーマと一致するか ---
+//
+// 「唯一の視覚オラクル」であるこのスクリプトのフィクスチャが API 契約から
+// 遅れていても、これまでは誰も気付かなかった（issue #468。ルールの
+// `textMatches` が旧形 `{ field, kind }` のまま `target/mode` に追従して
+// おらず、ルール一覧に「undefinedに…を含む」が描かれたまま exit 0 していた）。
+// `installApiStubs` の前、フィクスチャを定義した直後（ブラウザを起動する前）
+// に置き、1 件でも不一致なら他の判定を一切せず exit 1 する（⓪ の
+// `verifyBundleMatchesOrExit` と同じ「前提が崩れていたら以降を打ち切る」扱い）。
+//
+// **配列そのものではなく要素のスキーマで parse する。** orval は
+// `ListRulesResponse`（配列）と `ListRulesResponseItem`（要素）を別名で
+// 出す。配列スキーマを 1 件ずつの要素に対して呼んでも解釈できてしまう
+// （zod の配列スキーマは配列を要求するので、要素を渡すと即座に別の
+// エラーで落ちるだけで「効いている」ようには見えるが、意図した要素の
+// 形の検証にはなっていない）ため、要素側を明示して使う。
+log('\n=== 契約検証: フィクスチャの zod parse ===')
+{
+  const contractNg = []
+  const validate = (label, schema, item) => {
+    const result = schema.safeParse(item)
+    if (!result.success) {
+      const detail = result.error.issues.map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`).join('; ')
+      contractNg.push(`${label} が契約と一致しない --- ${detail}`)
+    }
+  }
+  services.forEach((s, i) => validate(`services[${i}]`, ListServicesResponseItem, s))
+  programsFor(iso(nowMs), iso(nowMs + 6 * HOUR)).forEach((p, i) =>
+    validate(`programs[${i}]`, ListProgramsResponseItem, p),
+  )
+  reservations.forEach((r, i) => validate(`reservations[${i}]`, ListReservationsResponseItem, r))
+  recordings.forEach((r, i) => validate(`recordings[${i}]`, ListRecordingsResponseItem, r))
+  rules.forEach((r, i) => validate(`rules[${i}]`, ListRulesResponseItem, r))
+  breakers.forEach((b, i) => validate(`breakers[${i}]`, ListCircuitBreakersResponseItem, b))
+  if (contractNg.length > 0) {
+    contractNg.forEach((f) => log(`  NG: ${f}`))
+    contractNg.forEach((f) => ng.push(`契約検証: ${f}`))
+    await finish(ng)
+  }
+  log('  すべてのフィクスチャが契約と一致（services/programs/reservations/recordings/rules/breakers）')
+}
 
 /**
  * installApiStubs は `/api/**` をすべてブラウザ側で差し替える。
@@ -510,6 +560,40 @@ async function open(viewport, theme, screen, opts = {}) {
   return { context, page }
 }
 
+/**
+ * MISSING_STRING_PATTERN は「唯一の視覚オラクル」が欠損データのまま撮れて
+ * いないかを見る（issue #468）。`undefined` / `NaN` はレンダーの欠損値が
+ * そのまま文字列化されたときに出る典型で、`[object` はオブジェクトを
+ * 文字列テンプレートに直接埋め込んだときに出る（`[object Object]` 等）。
+ *
+ * **`null` は対象にしない。** 番組名・ルール名に偶然「null」を含む文字列が
+ * 来ても単語境界だけでは区別できず、実際に偽陽性になりうる（README §デザイン
+ * 「判定を足すときの規律」参照）。`undefined` / `NaN` は単語境界
+ * （`\b`）で、`[object` は `[` の前が単語文字になり得ない（直前は空白か
+ * 文字列先頭）ため前方一致で見る。
+ */
+const MISSING_STRING_PATTERN = /\b(undefined|NaN)\b|\[object\b/
+
+/**
+ * checkMissingStrings は `page.textContent('body')` に欠損文字列が
+ * 混ざっていないかを見る。安い判定なので全画面に掛ける
+ * （ルールの `textMatches` から `target` が抜けると
+ * `rule-condition-summary.ts` の `textTargetSummaryLabels[m.target]` が
+ * `undefined` を返し、「undefinedに「連続テレビ小説」を含む」がそのまま
+ * ルール一覧に描かれる --- これが issue #468 で実際に見逃されていた壊れ方）。
+ */
+async function checkMissingStrings(page, label) {
+  const text = await page.textContent('body').catch(() => null)
+  if (text === null) {
+    ng.push(`${label}: body のテキストが取得できず欠損文字列を判定できていない`)
+    return
+  }
+  const found = MISSING_STRING_PATTERN.exec(text)
+  if (found) {
+    ng.push(`${label}: 画面に欠損文字列「${found[0]}」が混ざっている`)
+  }
+}
+
 log(`URL      : ${URL_BASE}`)
 log(`出力先   : ${OUT_DIR}`)
 log(`固定時刻 : ${FIXED_NOW.toISOString()} (Asia/Tokyo)`)
@@ -523,6 +607,7 @@ for (const viewport of viewports) {
       const file = path.join(OUT_DIR, `${screen.name}-${theme}-${viewport.name}.png`)
       await page.screenshot({ path: file })
       log(`  ${path.basename(file)}`)
+      await checkMissingStrings(page, `${screen.name}/${theme}/${viewport.name}`)
       await context.close()
     }
   }
@@ -539,6 +624,7 @@ for (const theme of themes) {
       const file = path.join(OUT_DIR, `programs-grid-${theme}-desktop.png`)
       await page.screenshot({ path: file })
       log(`  ${path.basename(file)}`)
+      await checkMissingStrings(page, `programs-grid/${theme}`)
     } else {
       log(`  （programs-grid-${theme}: 表示形式の切り替えが出ていないので撮らない）`)
     }
@@ -549,6 +635,7 @@ for (const theme of themes) {
     const file = path.join(OUT_DIR, `breaker-${theme}-desktop.png`)
     await page.screenshot({ path: file })
     log(`  ${path.basename(file)}`)
+    await checkMissingStrings(page, `breaker/${theme}`)
     await context.close()
   }
   {
@@ -578,6 +665,7 @@ for (const theme of themes) {
     const file = path.join(OUT_DIR, `loading-${theme}-desktop.png`)
     await page.screenshot({ path: file })
     log(`  ${path.basename(file)}`)
+    await checkMissingStrings(page, `loading/${theme}`)
     await context.close()
   }
   {
@@ -595,6 +683,7 @@ for (const theme of themes) {
     const file = path.join(OUT_DIR, `empty-${theme}-desktop.png`)
     await page.screenshot({ path: file })
     log(`  ${path.basename(file)}`)
+    await checkMissingStrings(page, `empty/${theme}`)
     await context.close()
   }
   {
@@ -623,6 +712,7 @@ for (const theme of themes) {
     const file = path.join(OUT_DIR, `home-empty-${theme}-desktop.png`)
     await page.screenshot({ path: file })
     log(`  ${path.basename(file)}`)
+    await checkMissingStrings(page, `home-empty/${theme}`)
     await context.close()
   }
 }
@@ -1576,6 +1666,7 @@ for (const theme of themes) {
       const file = path.join(OUT_DIR, `more-menu-open-${theme}-mobile.png`)
       await page.screenshot({ path: file })
       log(`  ${path.basename(file)}`)
+      await checkMissingStrings(page, `more-menu-open/${theme}`)
 
       const triggerBox = await trigger.boundingBox()
       const menuBox = await menu.boundingBox()

@@ -150,6 +150,31 @@ E2E_URL=http://localhost:4173 pnpm e2e:design
 丸ごと差し替える（`live.mjs` が HLS でやっているのと同じ手）。時刻も
 `page.clock.setFixedTime` で固定してあるので、ショットの差分は実装の差分だけになる。
 
+**フィクスチャは契約で検証される。** 「唯一の視覚オラクル」が欠損データのまま
+撮れていても、契約（`openapi.yaml`）が動くたびに誰も気付かない、という壊れ方が
+実際にあった（ルールの `textMatches` が旧形 `{ field, kind }` のまま
+`{ target, mode }` に追従しておらず、ルール一覧に「undefinedに…を含む」が
+描かれたまま exit 0 していた）。`design.mjs` は冒頭（ブラウザを起動する前）で
+`services`/`programs`/`reservations`/`recordings`/`rules`/`breakers` の各
+フィクスチャを orval 生成の zod スキーマ（`web/src/api/zod.ts` の
+`List*ResponseItem`）で `parse` し、1 件でも不一致なら他の判定を一切せず
+exit 1 する（⓪ の `verifyBundleMatchesOrExit` と同じ「前提が崩れていたら
+打ち切る」扱い）。**契約を変えたら `design.mjs` のフィクスチャも同じ PR で直す。**
+
+`zod.ts` は `import.meta.env` 等 Vite 依存を持たない素の TypeScript なので、
+`design.mjs`（Node の ESM スクリプト）から `../src/api/zod.ts` を直接 import
+できる --- 追加のローダー（tsx・vite-node）は要らない。Node 22 は型注釈だけを
+消す型ストリッピングを既定で持ち（`.node-version` の 22.23.1 で実際に import
+できることを確認済み）、`zod.ts` は enum・namespace・parameter properties の
+ような変換が要る構文を持たないため、これだけで通る。`package.json` の
+`e2e:design`（`node e2e/design.mjs`）もそのままで変更していない。
+
+画面のテキストに欠損文字列が混ざっていないかも全 40 画面（40 枚のショットすべて）
+に掛ける ---「安いので全画面に掛ける」。見るのは `undefined` / `NaN`
+（単語境界 `\b`）と `[object`（前方一致）。**`null` は対象にしない** ---
+番組名・ルール名に偶然「null」を含む文字列が来ると単語境界だけでは区別できず
+偽陽性になりうるため。
+
 出るもの:
 
 - `e2e/screenshots/*.png`（追跡しない）。主要 7 画面（M8-3 でホームを追加）×
