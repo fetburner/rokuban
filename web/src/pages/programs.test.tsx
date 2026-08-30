@@ -1535,16 +1535,32 @@ describe('ProgramsPage の予約 / 取消失敗時のエラー本文（issue #45
 // 「取消」と対称にする。実体は `action: 'record'`（skip の打ち消し）で、
 // `reserve` と同じ楽観更新の経路を通る。
 describe('ProgramsPage の取消 Undo（issue #453）', () => {
-  it('取消のトーストに「元に戻す」が出て、押すと action: record で PUT が飛び、行が「取消」ボタンに復帰する', async () => {
+  it('取消のトーストに「元に戻す」が出て、押すと action: record で PUT が飛び、行が「取消」ボタンに復帰する（楽観状態由来）', async () => {
     // 番組を soon 1 件に絞る --- allPrograms のままだと他の番組の「予約」
-    // ボタンと衝突し、取消直後の「予約」ボタンを一意に指せない
-    const fetchMock = stubApi([reservation(77, soon.programId, 'ニュース7')], [], [soon])
+    // ボタンと衝突し、取消直後の「予約」ボタンを一意に指せない。
+    //
+    // reservations は可変にしておく --- 取消（1 回目の PUT）成功時にサーバー
+    // 側も本当に未予約になったとみなし、以降の /api/reservations を空にする。
+    // Undo（2 回目の PUT）はサーバーを戻さない --- 実際にも Undo 成功後の
+    // 予約行は次の ruler パスまで再生成されない（レビューで実測済み）。
+    // 静的スタブ（常に予約済みを返す）のままだと、Undo 後の「取消」ボタンが
+    // 楽観状態由来なのかサーバー値由来なのか区別できず、「Undo 成功時にも
+    // 楽観状態を消す」退行（catch ではなく finally で消す等）を検出できない。
+    const reservations = [reservation(77, soon.programId, 'ニュース7')]
+    const fetchMock = stubApi(reservations, [], [soon], undefined, undefined, [], () => {
+      reservations.length = 0
+      return noContentResponse()
+    })
     renderPage()
 
     await userEvent.click(await screen.findByRole('button', { name: '取消' }))
     expect(await screen.findByText('予約を取消しました')).toBeInTheDocument()
     // 取消は楽観的に反映されるので、直後は「予約」ボタンに戻っている
     expect(await screen.findByRole('button', { name: '予約' })).toBeInTheDocument()
+
+    const reservationsCallsBeforeUndo = fetchMock.mock.calls.filter(
+      (call) => new URL(String(call[0]), 'http://localhost').pathname === '/api/reservations',
+    ).length
 
     await userEvent.click(screen.getByRole('button', { name: '元に戻す' }))
 
@@ -1565,6 +1581,19 @@ describe('ProgramsPage の取消 Undo（issue #453）', () => {
       })
       expect(reviveCall).toBeDefined()
     })
+
+    // Undo 成功の invalidate による再取得（サーバーは未予約のまま）が実際に
+    // 終わったあとも「取消」のままであることを見る --- ここが本題。
+    // `setOptimisticReserved(programId, undefined)` を catch ではなく
+    // finally（成功時にも消す）に動かすと、再取得後に一旦「予約」へ
+    // ちらつき戻る退行をこの待ち合わせが捉える
+    await waitFor(() => {
+      const after = fetchMock.mock.calls.filter(
+        (call) => new URL(String(call[0]), 'http://localhost').pathname === '/api/reservations',
+      ).length
+      expect(after).toBeGreaterThan(reservationsCallsBeforeUndo)
+    })
+    expect(screen.getByRole('button', { name: '取消' })).toBeInTheDocument()
   })
 
   it('Undo が失敗すると、予約への復帰に失敗した旨のトーストが出て、行は「予約」ボタンに戻る（楽観状態の巻き戻し）', async () => {
