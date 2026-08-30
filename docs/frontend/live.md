@@ -184,7 +184,8 @@ Chromium / Firefox はできない（hls.js が TS を fMP4 へ remux してか�
 **この表をテストの入力にする。実在しない戻り値で主張しない。**
 `expect(supportsNativeHls(() => 'probably')).toBe(true)` は通るが、
 **`'probably'` を返す実ブラウザは存在しない**ので、実在しない入力についての
-主張であり何も守っていない（`lib/live.test.ts` はこの実測値の表を入力にしている）。
+主張であり何も守っていない（`lib/live.test.ts` はこの実測値の表を入力にしている。
+判定を変えるときは同じ実測をやり直す）。
 
 **再生前に `probeLivePlaylist`（`lib/live.ts`）でプレイリストを 1 回 `fetch` する。**
 `<video>` の `error` イベント・hls.js のエラーイベントはいずれも HTTP ステータスや
@@ -294,12 +295,12 @@ in-flight `fetch` を `AbortController` で中断、hls.js の `destroy()` /
 **選択と視聴開始を分離したことで、「ザッピングのたびにセッションが積まれる」と
 いう事態自体が起きなくなった。**
 `?service=` を切り替えるだけでは probe もセッション開始も走らないため、
-チャンネル一覧を何度触っても掴まれるチューナーは 0 のまま増えない
-（前提は上記「フロントエンド実装」の `playingKey`/`selectedKey` の判定）。
+チャンネル一覧を何度触っても掴まれるチューナーは 0 のまま増えない。前提は
+上記「フロントエンド実装」の `playingKey`/`selectedKey` の判定である。
 掴まれるのは利用者が明示的に「再生」を押したチャンネルだけであり、その本数分
 だけ**離脱ヒントが届けば十数秒、届かなければ最終アクセスから 30 秒強**残る
 （実測値は下記）。既定 `max_sessions` の 4 を明示的な再生の連打で超えると、
-5 回目が 503 `too many concurrent live sessions on this process`、
+5 回目が 503 `too many concurrent live sessions on this process`になる。
 チューナー本数がそれより少ない環境ではさらに手前で mirakc 側の枯渇により
 503 `live stream unavailable` になる。
 判定手段: `pages/live.test.tsx`「再生中に別チャンネルへ切り替えると選択状態に戻る
