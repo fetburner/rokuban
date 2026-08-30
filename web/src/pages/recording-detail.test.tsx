@@ -62,10 +62,11 @@ function createFakeServer(options: {
   rules?: Rule[]
   /** rulesResponse はルール一覧の解決を遅延させるテスト用。 */
   rulesResponse?: () => Promise<Response>
-  // deleteResponse / restoreResponse / encodePostResponse は各操作の応答を
-  // 差し替える（既定は成功）。失敗トーストや 409 翻訳の確認用。
+  // deleteResponse / restoreResponse / purgeResponse / encodePostResponse は
+  // 各操作の応答を差し替える（既定は成功）。失敗トーストや 409 翻訳の確認用。
   deleteResponse?: () => Response
   restoreResponse?: () => Response
+  purgeResponse?: () => Response
   encodePostResponse?: () => Response
 }) {
   let recording = options.recording
@@ -75,6 +76,7 @@ function createFakeServer(options: {
   const rulesResponse = options.rulesResponse
   const deleteResponse = options.deleteResponse
   const restoreResponse = options.restoreResponse
+  const purgeResponse = options.purgeResponse
   const encodePostResponse = options.encodePostResponse
 
   const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
@@ -123,6 +125,7 @@ function createFakeServer(options: {
 
     const purgeMatch = /^\/api\/recordings\/(\d+)\/purge$/.exec(url.pathname)
     if (purgeMatch && method === 'POST') {
+      if (purgeResponse) return Promise.resolve(purgeResponse())
       const id = Number(purgeMatch[1])
       if (!recording || recording.id !== id) {
         return Promise.resolve(jsonResponse({ error: 'not found' }, 404))
@@ -351,7 +354,11 @@ describe('RecordingDetailPage 削除・復元のトースト (issue #297)', () =
     expect(screen.queryByText('復元しました')).not.toBeInTheDocument()
   })
 
-  it('ごみ箱へ移す操作が失敗すれば失敗トーストは出る', async () => {
+  // issue #457: 失敗時にサーバー本文（`apiErrorMessage`）を汎用文言に付ける。
+  // 本文を含まない `{ error: 'server error' }` を返すと「削除に失敗しました」
+  // だけに戻ってしまい、この揃えを壊しても検知できない ---
+  // 期待値の本文（'server error'）は実際に応答へ載せているものと同じにする。
+  it('ごみ箱へ移す操作が失敗すれば、サーバー本文つきの失敗トーストが出る', async () => {
     const user = userEvent.setup()
     createFakeServer({
       recording: sampleRecording(),
@@ -361,12 +368,12 @@ describe('RecordingDetailPage 削除・復元のトースト (issue #297)', () =
     renderAt('/recordings/3')
     await user.click(await screen.findByRole('button', { name: 'ごみ箱へ' }))
 
-    expect(await screen.findByText('削除に失敗しました')).toBeInTheDocument()
+    expect(await screen.findByText('削除に失敗しました: server error')).toBeInTheDocument()
     // 失敗したので表示は変わらない
     expect(screen.getByRole('button', { name: 'ごみ箱へ' })).toBeInTheDocument()
   })
 
-  it('復元操作が失敗すれば失敗トーストは出る', async () => {
+  it('復元操作が失敗すれば、サーバー本文つきの失敗トーストが出る', async () => {
     const user = userEvent.setup()
     createFakeServer({
       recording: sampleRecording({ deletedAt: '2026-01-02T00:00:00Z' }),
@@ -376,8 +383,42 @@ describe('RecordingDetailPage 削除・復元のトースト (issue #297)', () =
     renderAt('/recordings/3')
     await user.click(await screen.findByRole('button', { name: '復元' }))
 
-    expect(await screen.findByText('復元に失敗しました')).toBeInTheDocument()
+    expect(await screen.findByText('復元に失敗しました: server error')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '復元' })).toBeInTheDocument()
+  })
+
+  // 本文が無い失敗（ネットワーク断・JSON でない応答）では末尾に「: 」を
+  // 残さない（両方向の確認。issue #457 の受け入れ基準）。
+  it('本文の無い失敗では末尾に「: 」を残さない', async () => {
+    const user = userEvent.setup()
+    createFakeServer({
+      recording: sampleRecording(),
+      deleteResponse: () => new Response(null, { status: 500 }),
+    })
+
+    renderAt('/recordings/3')
+    await user.click(await screen.findByRole('button', { name: 'ごみ箱へ' }))
+
+    expect(await screen.findByText('削除に失敗しました')).toBeInTheDocument()
+    expect(screen.queryByText(/削除に失敗しました: /)).not.toBeInTheDocument()
+  })
+
+  // 完全削除（purge）は他の 2 操作と違い確認ダイアログの確定操作から
+  // 呼ばれる。issue #457 の揃え先 7 箇所のうち残る 1 箇所。
+  it('完全削除の予約が失敗すれば、サーバー本文つきの失敗トーストが出る', async () => {
+    const user = userEvent.setup()
+    createFakeServer({
+      recording: sampleRecording({ deletedAt: '2026-01-02T00:00:00Z' }),
+      purgeResponse: () => jsonResponse({ error: 'server error' }, 500),
+    })
+
+    renderAt('/recordings/3')
+    await user.click(await screen.findByRole('button', { name: '今すぐ完全削除' }))
+    await user.click(await screen.findByRole('button', { name: '完全削除を予約する' }))
+
+    expect(
+      await screen.findByText('完全削除の予約に失敗しました: server error'),
+    ).toBeInTheDocument()
   })
 
   // 完全削除（purge）は破壊的で、issue #311 以降は詳細ページからしか到達できない。

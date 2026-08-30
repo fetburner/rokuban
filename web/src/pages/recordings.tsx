@@ -47,6 +47,7 @@ import {
   type IngestDisplay,
 } from '@/lib/ingest'
 import { domLayoutMeasurable } from '@/lib/list-virtualization'
+import { mutationErrorMessage } from '@/lib/mutation-error-message'
 import {
   buildListRecordingsParams,
   clearRecordingsFilters,
@@ -810,7 +811,7 @@ export function RecordingActions({ recording, trash }: { recording: Recording; t
     setRestoring(true)
     restoreRecordingRequest(recordingId)
       .then(() => invalidate())
-      .catch(() => toast({ message: '復元に失敗しました' }))
+      .catch((err: unknown) => toast({ message: mutationErrorMessage('復元に失敗しました', err) }))
       .finally(() => setRestoring(false))
   }
 
@@ -843,7 +844,7 @@ export function RecordingActions({ recording, trash }: { recording: Recording; t
                       action: { label: '元に戻す', onClick: () => restore() },
                     })
                   },
-                  onError: () => toast({ message: '削除に失敗しました' }),
+                  onError: (err) => toast({ message: mutationErrorMessage('削除に失敗しました', err) }),
                 },
               )
             }}
@@ -901,7 +902,8 @@ export function RecordingActions({ recording, trash }: { recording: Recording; t
                       invalidate()
                       toast({ message: '完全削除を予約しました' })
                     },
-                    onError: () => toast({ message: '完全削除の予約に失敗しました' }),
+                    onError: (err) =>
+                      toast({ message: mutationErrorMessage('完全削除の予約に失敗しました', err) }),
                   },
                 )
               }}

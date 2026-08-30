@@ -34,6 +34,7 @@ import { shouldAutoLoadNextPage, shouldShowLoadMoreButton } from '@/lib/auto-loa
 import { dayOffsetForMs, dayOrigin } from '@/lib/day-offset'
 import { orderServices, type TimeAxis } from '@/lib/epg-grid'
 import { domLayoutMeasurable } from '@/lib/list-virtualization'
+import { mutationErrorMessage } from '@/lib/mutation-error-message'
 import {
   pickerServiceDomain,
   type ProgramsPageSearch,
@@ -742,8 +743,8 @@ function useReservationActions(serverReservedIds: ReadonlySet<number>): Reservat
           invalidateReservations()
           toast({ message: '予約を取消しました' })
         },
-        onError: () => {
-          toast({ message: '予約の取消に失敗しました' })
+        onError: (err) => {
+          toast({ message: mutationErrorMessage('予約の取消に失敗しました', err) })
           setOptimisticReserved(programId, undefined)
         },
         onSettled: () => setBusy(programId, false),
@@ -800,8 +801,8 @@ function useReservationActions(serverReservedIds: ReadonlySet<number>): Reservat
             }`,
           })
         }
-      } catch {
-        toast({ message: '予約に失敗しました' })
+      } catch (err) {
+        toast({ message: mutationErrorMessage('予約に失敗しました', err) })
         setOptimisticReserved(program.programId, undefined)
       } finally {
         setBusy(program.programId, false)
