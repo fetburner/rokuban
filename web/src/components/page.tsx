@@ -44,9 +44,10 @@ export function PageHeader({
   return (
     <header
       ref={ref}
-      // top はサーキットブレーカーの通知バナー（components/circuit-breaker-banner.tsx）
-      // の高さぶんずらす。バナーは全ページ共通の居座り表示で、これも sticky top-0
-      // なので、ずらさないと両者が同じ位置で重なる（バナー未発動時は 0px）。
+      // top は居座り通知バナーの合計高さぶんずらす（接続断 + サーキットブレーカー。
+      // app-shell.tsx の StickyBanners が publish する）。バナーは全ページ共通の
+      // 居座り表示で、これも sticky top-0 なので、ずらさないと両者が同じ位置で
+      // 重なる（バナー未発動時は 0px）。
       className="sticky z-10 border-b border-border bg-background/95 backdrop-blur"
       style={{ top: 'var(--breaker-banner-height, 0px)' }}
     >

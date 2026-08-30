@@ -30,6 +30,8 @@ const BASE = process.env.E2E_URL ?? 'http://localhost:4173'
 const operationalMs = 60_000
 /** EPG の周期（同 epgRefreshIntervalMs）。 */
 const epgMs = 600_000
+/** 接続断バナーが出るまでの遅延（同 disconnectedBannerDelayMs）。 */
+const disconnectedBannerDelayMs = 10_000
 
 /** 現在測っているページのリクエスト数。ページを変えるたびに差し替える。 */
 let counts = new Map()
@@ -220,5 +222,111 @@ check('5 分後: ストレージ', count('/api/storage'), 2)
 await storagePage.clock.runFor(storageMs)
 await storagePage.waitForTimeout(500)
 check('10 分後: ストレージ', count('/api/storage'), 3)
+
+// 接続断バナー（components/connection-banner.tsx、issue: U-4）。
+// `/api/events` を `page.route` で abort → 帯が出る → 復旧 → 帯が消える。
+//
+// 帯を出すまでの disconnectedBannerDelayMs 待ちは `page.clock` の仮想時計で
+// 進める（EventSource の error は abort 直後に実時間でほぼ即座に来るので、
+// この待ちだけ進めれば足りる）。一方、復旧（次の再接続）は EventSource 自身の
+// 内部的な再試行タイマーに依る --- これはブラウザ実装側のタイマーで、
+// `page.clock` はページの JS から見えるタイマー（Date / setTimeout 等）しか
+// 進めないので、こちらは実時間で待つしかない。**既定の再試行間隔そのものは
+// 未検証**なので、具体的な秒数は断定せず、十分に余裕を持たせた実時間の
+// ポーリングで待つ。
+log('\n=== 接続断バナー（/recordings）===')
+{
+  let sseUp = false
+  const bannerPage = await browser.newPage({ viewport: { width: 1280, height: 800 } })
+  bannerPage.on('pageerror', (e) => {
+    log('NG  ページ例外（接続断バナー）:', e.message)
+    ng.push('pageerror（接続断バナー）')
+  })
+  // 非交差の判定はページがスクロール可能でないと意味を持たない --- 未スクロール
+  // では帯もヘッダも「まだ sticky が効いていない静的な流し込み位置」にいるだけで、
+  // top のずらしを外しても重ならずに通ってしまう（実際そうなることを確認した）。
+  // ここでは録画を多めに積んでスクロール可能にする。
+  const manyRecordings = Array.from({ length: 60 }, (_, i) => ({
+    id: i + 1,
+    site: 'tokyo',
+    source: 'manual',
+    serviceName: 'NHK総合',
+    channelType: 'GR',
+    channel: '27',
+    networkId: 32736,
+    serviceId: 1024,
+    eventId: i + 1,
+    title: `録画 ${i + 1}`,
+    startAt: new Date(Date.now() - (i + 1) * 3_600_000).toISOString(),
+    durationMs: 1_800_000,
+    status: 'finished',
+    createdAt: new Date(Date.now() - (i + 1) * 3_600_000).toISOString(),
+  }))
+  await bannerPage.route('**/api/**', async (route) => {
+    const requested = new URL(route.request().url()).pathname
+    if (requested === '/api/events') {
+      if (!sseUp) return route.abort()
+      return sseKeepAlive(route)
+    }
+    const body =
+      requested === '/api/capabilities'
+        ? '{"encode":false,"live":false,"storage":false}'
+        : requested === '/api/version'
+          ? '{"version":"e2e"}'
+          : requested === '/api/sites'
+            ? '["tokyo"]'
+            : requested === '/api/recordings'
+              ? JSON.stringify(manyRecordings)
+              : '[]'
+    await route.fulfill({ status: 200, headers: { 'content-type': 'application/json' }, body })
+  })
+  // タイマーを握ってから開く（disconnectedBannerDelayMs を実時間で待たない）
+  await bannerPage.clock.install()
+  await bannerPage.goto(BASE + '/recordings', { waitUntil: 'networkidle' })
+  // スクロールして両方を sticky の「張り付いた」状態にする
+  await bannerPage.mouse.wheel(0, 2000)
+  await bannerPage.waitForTimeout(100)
+
+  const banner = bannerPage.locator('[role="status"]', { hasText: '自動更新が止まっています' })
+  check('切断直後: 帯はまだ出ない', await banner.count(), 0)
+
+  await bannerPage.clock.runFor(disconnectedBannerDelayMs)
+  // setTimeout のコールバック（React の状態更新）が反映されるのを待つ
+  await bannerPage.waitForTimeout(100)
+  try {
+    await banner.waitFor({ timeout: 2000 })
+    log(`OK  ${disconnectedBannerDelayMs}ms 後: 帯が出た`)
+
+    // 帯が出ている間、PageHeader（components/page.tsx）と重ならないこと。
+    // PageHeader は帯の合計高さ（--breaker-banner-height）ぶん top をずらして
+    // いるはずなので、矩形が交差しなければそのずらしが効いている証拠になる。
+    const header = bannerPage.locator('header').first()
+    const [bannerBox, headerBox] = await Promise.all([banner.boundingBox(), header.boundingBox()])
+    if (bannerBox === null || headerBox === null) {
+      log('NG  帯 / PageHeader の矩形が測れない')
+      ng.push('接続断バナー: 帯 / PageHeader の矩形が測れない')
+    } else {
+      const disjoint = bannerBox.y + bannerBox.height <= headerBox.y || headerBox.y + headerBox.height <= bannerBox.y
+      if (disjoint) log('OK  帯と PageHeader は重ならない')
+      else {
+        log(`NG  帯と PageHeader が重なる（帯 ${JSON.stringify(bannerBox)} / header ${JSON.stringify(headerBox)}）`)
+        ng.push('接続断バナー: PageHeader と重なる')
+      }
+    }
+  } catch {
+    log(`NG  ${disconnectedBannerDelayMs}ms 後: 帯が出ない`)
+    ng.push('接続断バナー: 遅延後に出ない')
+  }
+
+  sseUp = true
+  try {
+    await banner.waitFor({ state: 'hidden', timeout: 15_000 })
+    log('OK  復旧後: 帯が消えた')
+  } catch {
+    log('NG  復旧後: 帯が消えない（実時間 15 秒待っても再接続できなかった）')
+    ng.push('接続断バナー: 復旧しても消えない')
+  }
+  await bannerPage.close()
+}
 
 await finish(ng, browser)

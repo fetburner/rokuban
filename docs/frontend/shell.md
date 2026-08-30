@@ -228,6 +228,31 @@ mirakc と同じ「接続時に現在状態を再送し、以降差分」とい�
 
 通信設計の詳細は [api.md](../api.md) を参照。
 
+### 切断中を画面に出す --- `ConnectionBanner`
+
+上記の定期 invalidate・再接続時 invalidate は「切断していても画面は追いつく」ための経路であって、
+「切断していること自体を利用者に知らせる」経路ではない。api ロールのダウン・プロキシのタイムアウト・
+ネットワーク断のどれでも、画面は「最後に見た状態」を出し続けたまま新しく見えてしまう。
+
+- `lib/events.ts` の `useServerEvents` が接続状態（`connecting` / `open` / `disconnected`）を
+  モジュール状態として持ち、`useConnectionState` で読める。遷移は `EventSource` の `open` /
+  `error` イベントだけで決める --- `readyState` は再接続中もずっと `CONNECTING` を返すので使えない。
+  「切断中」は `error` の後・次の `open` の前で定義する
+- `components/connection-banner.tsx` の `ConnectionBanner` が、`disconnected` が
+  `disconnectedBannerDelayMs`（10 秒）続いたときだけ帯を出す。`EventSource` は瞬断でも自分で
+  再接続するので、遅延なしで出すと瞬断のたびに点滅する。追加の `error` が来てもタイマーは
+  再セットしない（最初の `error` からの経過だけを見る）
+- `navigator.onLine` は使わない --- `false` のときだけ確実で、`true` は保証にならない（プロキシ側の
+  障害を見逃す）
+- 色は `bg-muted` + `text-foreground`（信号色を使わない。壊れたのではなく止まっているだけ）。
+  `role="status"`
+- `app-shell.tsx` の `StickyBanners` が `ConnectionBanner` と `CircuitBreakerBanner`
+  （サーキットブレーカーの居座り帯）を 1 つの sticky コンテナにまとめる。両方を個別に
+  `sticky top-0` にすると同じ位置のきょうだいとして重なる（sticky は兄弟の高さを自動で
+  避けない）ためで、この 1 つのコンテナが合計の描画高さを `--breaker-banner-height` に
+  publish する。`PageHeader` や各ページの独自ヘッダはこの 1 つの変数だけを見ればよい
+  （変数名は据え置き。消費側は触っていない）
+
 ## `<html lang>` は ja
 
 UI が日本語なので `lang="en"` のままにしない。ブラウザのフォント選択と

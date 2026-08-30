@@ -1027,6 +1027,27 @@ for (const theme of themes) {
         ng.push(`[${theme}] ${name} の地が無彩でない（チャンネル差 ${chroma(worst)}。${worst}）`)
       }
     }
+
+    // --- 接続断バナー（ConnectionBanner、issue: U-4）: 地は無彩 ---
+    //
+    // apiHandler は /api/events に明示のスタブを持たず catch-all（200 json []）
+    // に落ちる（apiHandler の doc コメント参照）。Content-Type が
+    // text/event-stream でないので EventSource は即座に失敗し、追加のスタブ
+    // なしで「切断中」を作れる。disconnectedBannerDelayMs（lib/events.ts と
+    // 同じ値をリテラルで書く。10 秒）が経てば帯が出るので、実時間で待ってから
+    // 地を測る（`page.clock` はここでは使わない --- `setTimeout` は本物の
+    // タイマーのまま動く。open() の `clock.setFixedTime` は Date だけを固定する）。
+    {
+      const banner = page.locator('[role="status"]', { hasText: '自動更新が止まっています' })
+      await banner.waitFor({ timeout: 10_000 + 5_000 })
+      const bg = await computedOf(banner, 'background-color')
+      log(`  [${theme}] 接続断バナーの地 = ${bg?.value} ${bg?.backdrop}`)
+      if (bg === null) {
+        ng.push(`[${theme}] 接続断バナーが見つからない`)
+      } else if (chroma(bg.backdrop) > 8) {
+        ng.push(`[${theme}] 接続断バナーの地が無彩でない（チャンネル差 ${chroma(bg.backdrop)}。${bg.backdrop}）`)
+      }
+    }
     await context.close()
   }
 
