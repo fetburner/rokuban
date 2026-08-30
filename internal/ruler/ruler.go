@@ -78,7 +78,7 @@ type Ruler struct {
 // sites はルールを評価する対象サイトの一覧。ルールはサイトに従属しないグローバルな
 // 資産で（docs/recording.md §3.1「サイトの扱い」）、rule_sites が空なら全サイト、
 // 非空ならそのサイトのみが対象になる（rulequery.Conditions.Sites 経由）。
-// 現状の設定（config.mirakc.site）は単一サイトなのでその 1 つで動くが、複数サイト
+// 現状の設定（config.mirakcs）は単一サイト構成が多いのでその 1 つで動くが、複数サイト
 // 構成に備えて引数はスライスにしてある。呼び出し元の
 // internal/worker.RulerPassWorker はジョブ引数のサイト 1 つだけを渡す
 // （ジョブの排他がサイト単位のため）。

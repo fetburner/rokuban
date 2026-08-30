@@ -66,7 +66,7 @@ type TunerSyncWorker struct {
 	MirakcClient *mirakc.Client
 	Pool         *pgxpool.Pool
 
-	// Site はこのワーカープロセス自身の site（config.mirakc.site）。Work は
+	// Site はこのワーカープロセス自身の site（`--sites` で束縛された site）。Work は
 	// これと job.Args.Site を verifySite で照合してから mirakc に触る
 	// （issue #139）。TunerSyncArgs は EpgSyncArgs と同じ epg キューを使う
 	// 「使い捨てプロジェクションの全量同期」で、mirakc への ListTuners を伴う

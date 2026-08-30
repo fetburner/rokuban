@@ -191,12 +191,11 @@ encode:
 	}
 }
 
-// mirakc.url は missingRequired に載せない（mirakcs: を使う構成では mirakc: を
-// 書かないため。issue #183 の「罠」）ので、ここで数えるのは
-// db.* (4) + storage.media_dir (1) の 5 件。mirakc/mirakcs のどちらも
-// 無い場合の検出は validateMirakcRegistry が別のエラーとして行う
-// （TestLoad_MirakcRegistry の "neither mirakc nor mirakcs set is an error"
-// が確認する）。
+// mirakcs は missingRequired に載せない（空配列を許容する型なので struct タグの
+// required 相当では表現できないため。missingRequired のコメント参照）ので、
+// ここで数えるのは db.* (4) + storage.media_dir (1) の 5 件。mirakcs が空の
+// 場合の検出は validateMirakcRegistry が別のエラーとして行う
+// （TestLoad_MirakcRegistry の "empty mirakcs is an error" が確認する）。
 //
 // **1 件目で止まらず全件返すこと**が規約 4 の要点なので、件数だけでなく
 // キー名も突き合わせる（期待値はリテラル。実装の順序を読んで比べない）。
@@ -250,7 +249,7 @@ func TestLoad_MirakcRegistry(t *testing.T) {
 		}
 	})
 
-	// mirakc:（単数）は R-10 で廃止した糖衣。旧キーを書いた config は struct に
+	// mirakc:（単数）は issue #444 で廃止した糖衣。旧キーを書いた config は struct に
 	// 対応するフィールドが無いため、strict パースの未知キー検出で落ちる
 	// （黙って無視されない）。
 	// 壊し方: loadFromString から yaml.Strict() を外す（この分岐が無いと

@@ -13,7 +13,7 @@
 3. **コミット = DB 行**（不変条件 3）: ファイルの公開は `media_assets` 行の INSERT。rename のアトミック性に依存しない
 4. **tombstone**: 物理削除後もメタデータ行は残す。ドロップ統計・録画履歴・重複排除は削除後も機能する
 5. **サイトスコープ**: mirakc の programId / record id はインスタンス単位のスコープしか持たない。[設定](../configuration.md)は「多拠点が現実化したら `mirakcs:` リストで互換拡張」と定めており、その際のスキーマ波及を避けるため **mirakc を指すすべてのテーブルに `site` 列を最初から持つ**
-   - `site` は設定ファイルで定義するサイト名（`config.mirakc.site`。空なら既定値 `"default"`）。サイトのレジストリは設定であり、DB に sites テーブルは作らない
+   - `site` は設定ファイルで定義するサイト名（`config.mirakcs[].site`。各要素必須で既定値は無い）。サイトのレジストリは設定であり、DB に sites テーブルは作らない
    - site を持つのは reservations / schedule_sync / record_sync / recordings（+ EPG プロジェクション）。media_assets / drop_stats は中央ストレージの台帳なので持たない
    - **API の資源同定にも site を持つ**（[api/rest.md](../api/rest.md) §エンドポイント設計の規約）。`programId` は site スコープなので、`/api/sites/{site}/programs/{programId}` の形で site をパスに含める（TanStack Query のクエリキー・SSE の invalidate 単位もサイトごとに階層化される）。導出行（`reservations`）は書き込みの宛先にしない —— 意図（`program_intents`）・上書き（`program_overrides`）は `(site, programId)` を自身のキーとして書く。`reservations` の導出の書き手は ruler だけ（例外はルール削除 API の同期削除 1 本。[reservations.md](reservations.md) §3 冒頭）
 6. **導出値と不可逆な事実を分ける**（CLAUDE.md 不変条件 9）

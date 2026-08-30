@@ -152,7 +152,7 @@ func TestIngestWorker_FullTransfer(t *testing.T) {
 }
 
 // TestIngestWorker_SiteMismatch は、args.Site がワーカー自身の site
-// （w.Site、config.mirakc.site 相当）と一致しないジョブを、mirakc に一切
+// （w.Site、`--sites` で束縛された site）と一致しないジョブを、mirakc に一切
 // 触れずに fail-fast することを確認する（issue #139）。
 //
 // モックは何を投げても 200 を返す --- 「args.Site を無視する実装でも mirakc が
