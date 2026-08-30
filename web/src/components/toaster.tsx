@@ -52,14 +52,6 @@ type PauseReason = 'hover' | 'focus'
 export function ToastProvider({ children }: { children: React.ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([])
 
-  // toasts state のミラー。`show` がデデュープのため「今の一覧」を同期的に
-  // 読む必要があるが、setState の updater 関数は React の再描画のタイミングで
-  // 走るので、直後に読んでも反映済みとは限らない（自動バッチング）。
-  // このバグを実際に踏んだ --- ref を介さず setState の updater 内でだけ
-  // 重複先の id を変数に書いていたら、直後に読む armTimer がまだ書かれて
-  // いない古い値を読んでテストが落ちた。
-  const toastsRef = useRef<Toast[]>([])
-
   // タイマーは state ではなく ref に持つ。toasts 配列を依存に含む useEffect で
   // 再スケジュールする形にすると、1 件足すたびに全トーストのタイマーが
   // 巻き戻ってしまう（罠を参照）。
@@ -74,8 +66,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
     const timer = timers.current.get(id)
     if (timer?.timeoutId !== undefined) window.clearTimeout(timer.timeoutId)
     timers.current.delete(id)
-    toastsRef.current = toastsRef.current.filter((t) => t.id !== id)
-    setToasts(toastsRef.current)
+    setToasts((current) => current.filter((t) => t.id !== id))
   }, [])
 
   const schedule = useCallback(
@@ -143,18 +134,21 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
   const show = useCallback(
     (toast: ToastInput) => {
       const kind = toast.kind ?? 'info'
-      // 同じ文言のトーストが既に出ていれば積み増さない。この id（新規 or
-      // 既存の重複先）にだけタイマーを張る。
-      const existing = toastsRef.current.find((t) => t.message === toast.message)
-      const armId = existing ? existing.id : Date.now() + Math.random()
+      const id = Date.now() + Math.random()
 
-      if (!existing) {
-        toastsRef.current = [...toastsRef.current, { ...toast, kind, id: armId }]
-        setToasts(toastsRef.current)
-      }
+      // デデュープするのは error だけ（積み上がるのは自動で消えない error だけ
+      // なので）。action は個体ごとにクロージャが違うので、action 付きは
+      // デデュープしない --- 同じ文言でも別の対象を指すことがある
+      // （例: 「予約しました: 番組名」+ 取消。EPG では再放送等で名前が
+      // 一致するのは日常）。
+      setToasts((current) =>
+        kind === 'error' && current.some((t) => t.kind === 'error' && t.message === toast.message)
+          ? current
+          : [...current, { ...toast, kind, id }],
+      )
 
       if (kind !== 'error') {
-        armTimer(armId, toast.action ? actionDurationMs : infoDurationMs)
+        armTimer(id, toast.action ? actionDurationMs : infoDurationMs)
       }
     },
     [armTimer],
