@@ -263,9 +263,10 @@ export function RecordingsPage() {
           <div ref={sentinelRef} aria-hidden className="h-px" />
 
           {query.isFetchingNextPage && (
-            <p role="status" className="px-4 py-3 text-center text-xs text-muted-foreground">
-              読み込み中…
-            </p>
+            // role="status" は付けない。IntersectionObserver でスクロールの
+            // たびに mount/unmount するため、role="status" だと連続スクロール
+            // 中に読み上げが繰り返される（起動時 1 回だけの他 7 箇所とは頻度が違う）
+            <p className="px-4 py-3 text-center text-xs text-muted-foreground">読み込み中…</p>
           )}
 
           {showLoadMoreButton && (

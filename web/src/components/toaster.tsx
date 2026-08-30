@@ -16,12 +16,7 @@ type ToastInput = Omit<Toast, 'id' | 'kind'> & { kind?: ToastKind }
 
 const ToastContext = createContext<((toast: ToastInput) => void) | null>(null)
 
-/**
- * 成功・情報トーストの表示時間。
- *
- * hover / focus-within の間は一時停止するので、WCAG 2.2.1（タイミング調整可能）の
- * 「自動で消える通知は利用者が延長・停止できる」を満たす。
- */
+/** 成功・情報トーストの表示時間。 */
 const infoDurationMs = 6000
 
 /**
@@ -30,12 +25,21 @@ const infoDurationMs = 6000
  */
 const actionDurationMs = 10000
 
+/**
+ * 同時に積む上限。失敗（`kind: 'error'`）は自動で消えないので、上限が無いと
+ * 同じ操作を繰り返し失敗させたときに画面下端が同じ文言で埋まる。
+ */
+const maxToasts = 3
+
 /** タイマーの一時停止・再開のための、進行中トースト 1 件ぶんの状態。 */
 type PendingTimer = {
   remainingMs: number
   timeoutId: ReturnType<typeof window.setTimeout> | undefined
   startedAt: number
 }
+
+/** 一時停止の要求元。hover と focus-within は独立に離れうるので OR で判定する。 */
+type PauseReason = 'hover' | 'focus'
 
 /**
  * ToastProvider は画面下部に短命の通知を出す。
@@ -45,6 +49,11 @@ type PendingTimer = {
  *
  * **失敗（`kind: 'error'`）は自動で消えない。** 読み終える前に消えるべきで
  * ないため、閉じるボタンを押すまで残る。成功・情報だけがタイマーで消える。
+ *
+ * **機構のみ**: hover 中または focus-within の間はタイマーを止め、両方から
+ * 離れたら残り時間で再開する。WCAG 2.2.1 の充足手段（Turn off / Adjust /
+ * Extend）のいずれかを満たすと断定はしない（未検証。閉じるボタンへ 6 秒以内に
+ * Tab で到達する経路が無く、キーボードのみでの充足は現時点で成立していない）。
  */
 export function ToastProvider({ children }: { children: React.ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([])
@@ -53,6 +62,11 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
   // 再スケジュールする形にすると、1 件足すたびに全トーストのタイマーが
   // 巻き戻ってしまう（罠を参照）。
   const timers = useRef(new Map<number, PendingTimer>())
+
+  // hover / focus-within は独立に on/off するので、どちらか一方が終わっても
+  // もう一方が続いていれば一時停止のままにする（OR）。
+  const paused = useRef<{ hover: boolean; focus: boolean }>({ hover: false, focus: false })
+  const isPaused = () => paused.current.hover || paused.current.focus
 
   const dismiss = useCallback((id: number) => {
     const timer = timers.current.get(id)
@@ -69,8 +83,8 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
     [dismiss],
   )
 
-  /** hover / focus-within の間、進行中の全タイマーを残り時間を覚えたまま止める。 */
-  const pause = useCallback(() => {
+  /** 進行中の全タイマーを、残り時間を覚えたまま止める。 */
+  const pauseTimers = useCallback(() => {
     for (const [id, timer] of timers.current) {
       if (timer.timeoutId === undefined) continue
       window.clearTimeout(timer.timeoutId)
@@ -83,21 +97,56 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
     }
   }, [])
 
-  /** hover / focus-within を離れたら、残り時間で再開する。 */
-  const resume = useCallback(() => {
+  /** 一時停止中のまま残っているタイマー（＝止まっている全部）を残り時間で再開する。 */
+  const resumeTimers = useCallback(() => {
     for (const [id, timer] of timers.current) {
       if (timer.timeoutId !== undefined) continue
       schedule(id, timer.remainingMs)
     }
   }, [schedule])
 
+  const pause = useCallback(
+    (reason: PauseReason) => {
+      const wasPaused = isPaused()
+      paused.current[reason] = true
+      if (!wasPaused) pauseTimers()
+    },
+    [pauseTimers],
+  )
+
+  const resume = useCallback(
+    (reason: PauseReason) => {
+      paused.current[reason] = false
+      if (!isPaused()) resumeTimers()
+    },
+    [resumeTimers],
+  )
+
   const show = useCallback(
     (toast: ToastInput) => {
       const id = Date.now() + Math.random()
       const kind = toast.kind ?? 'info'
-      setToasts((current) => [...current, { ...toast, kind, id }])
+
+      setToasts((current) => {
+        const next = [...current, { ...toast, kind, id }]
+        // 上限を超えたぶんは黙って落とす（古い方から）。タイマーも一緒に畳む。
+        for (const dropped of next.slice(0, Math.max(next.length - maxToasts, 0))) {
+          const timer = timers.current.get(dropped.id)
+          if (timer?.timeoutId !== undefined) window.clearTimeout(timer.timeoutId)
+          timers.current.delete(dropped.id)
+        }
+        return next.slice(-maxToasts)
+      })
+
       if (kind !== 'error') {
-        schedule(id, toast.action ? actionDurationMs : infoDurationMs)
+        const durationMs = toast.action ? actionDurationMs : infoDurationMs
+        if (isPaused()) {
+          // 届いた時点で既に hover / focus 中なら、動かさずに一時停止した
+          // 状態で登録する（schedule すると即座に走り出してしまう）。
+          timers.current.set(id, { remainingMs: durationMs, timeoutId: undefined, startedAt: Date.now() })
+        } else {
+          schedule(id, durationMs)
+        }
       }
     },
     [schedule],
@@ -112,10 +161,10 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
           --bottom-nav-height ぶん持ち上げる */}
       <div
         aria-live="polite"
-        onMouseEnter={pause}
-        onMouseLeave={resume}
-        onFocus={pause}
-        onBlur={resume}
+        onMouseEnter={() => pause('hover')}
+        onMouseLeave={() => resume('hover')}
+        onFocus={() => pause('focus')}
+        onBlur={() => resume('focus')}
         className="pointer-events-none fixed inset-x-0 bottom-0 z-30 flex flex-col items-center gap-2 px-4 pb-[calc(var(--bottom-nav-height)+0.5rem)] md:pb-4"
       >
         {toasts.map((toast) => (
@@ -137,14 +186,14 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
                   {toast.action.label}
                 </Button>
               )}
-              <button
-                type="button"
+              <Button
+                variant="ghost"
+                size="icon-sm"
                 aria-label="閉じる"
                 onClick={() => dismiss(toast.id)}
-                className="rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
               >
-                <X className="size-4" aria-hidden="true" />
-              </button>
+                <X />
+              </Button>
             </div>
           </div>
         ))}

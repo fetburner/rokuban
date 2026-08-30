@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RouterProvider, createMemoryHistory, createRouter } from '@tanstack/react-router'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -371,6 +371,36 @@ describe('RecordingDetailPage 削除・復元のトースト (issue #297)', () =
     expect(await screen.findByText('削除に失敗しました: server error')).toBeInTheDocument()
     // 失敗したので表示は変わらない
     expect(screen.getByRole('button', { name: 'ごみ箱へ' })).toBeInTheDocument()
+  })
+
+  /**
+   * 呼び出し側の `kind: 'error'` を固定するテスト（U-5 とのマージで
+   * `toaster.tsx` の機構だけが残り呼び出し側の `kind: 'error'` が静かに
+   * 消えても、`pnpm test` は緑のままになりうるため）。`kind` を落とす
+   * 変異（`toast({ message })` に戻す）で実際に落ちることを確認済み
+   * （報告参照）。
+   */
+  it('ごみ箱へ移す失敗トーストは時間が経っても自動で消えない（kind: "error" の固定）', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+      createFakeServer({
+        recording: sampleRecording(),
+        deleteResponse: () => jsonResponse({ error: 'server error' }, 500),
+      })
+
+      renderAt('/recordings/3')
+      await user.click(await screen.findByRole('button', { name: 'ごみ箱へ' }))
+      expect(await screen.findByText('削除に失敗しました: server error')).toBeInTheDocument()
+
+      // info/成功の表示時間（6 秒）を大きく超えても消えない
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000)
+      })
+      expect(screen.getByText('削除に失敗しました: server error')).toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('復元操作が失敗すれば、サーバー本文つきの失敗トーストが出る', async () => {

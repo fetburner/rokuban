@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -246,6 +246,34 @@ describe('CircuitBreakerBanner', () => {
     expect(
       screen.queryByText(/ルール評価による予約の削除の再開に失敗しました: /),
     ).not.toBeInTheDocument()
+  })
+
+  /**
+   * 呼び出し側の `kind: 'error'` を固定するテスト（U-5 とのマージで
+   * `toaster.tsx` の機構だけが残り呼び出し側の `kind: 'error'` が静かに
+   * 消えても、`pnpm test` は緑のままになりうるため）。`kind` を落とす
+   * 変異（`toast({ message })` に戻す）で実際に落ちることを確認済み
+   * （報告参照）。
+   */
+  it('再開の失敗トーストは時間が経っても自動で消えない（kind: "error" の固定）', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      stubFetch({ list: [trippedBreaker], resume: 'error' })
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+      renderBanner()
+
+      await user.click(await screen.findByRole('button', { name: '再開' }))
+      await user.click(await screen.findByRole('button', { name: '再開する' }))
+      expect(await screen.findByText(/再開に失敗しました/)).toBeInTheDocument()
+
+      // info/成功の表示時間（6 秒）を大きく超えても消えない
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000)
+      })
+      expect(screen.getByText(/再開に失敗しました/)).toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('同名ブレーカーが 2 サイトで発動しているとき、行の展開状態が site ごとに独立している（issue #293）', async () => {
