@@ -18,6 +18,7 @@ import { Button } from '@/components/ui/button'
 import { Chip } from '@/components/ui/chip'
 import {
   listPrograms,
+  useDeleteProgramIntent,
   useListCapacityOverages,
   useListPrograms,
   useListReservations,
@@ -27,6 +28,7 @@ import {
   type CapacityOverage,
   type ProgramListItem,
   type ProgramOverridesInput,
+  type Reservation,
   type Service,
 } from '@/api/generated'
 import { apiErrorMessage, unwrap } from '@/api/unwrap'
@@ -398,6 +400,18 @@ export function ProgramsPage() {
     return set
   }, [reservations.data, site])
 
+  // Undo（取消の打ち消し）がルール由来か手動かで送る intent を変える必要が
+  // あるため（`useReservationActions` の `revive` 参照）、programId から
+  // `reservation.source` を引けるようにしておく。同じ `reservations.data` から
+  // 作るので、`serverReservedProgramIds` と同じ site の絞り込みを揃える。
+  const reservationSourceByProgramId = useMemo(() => {
+    const map = new Map<number, Reservation['source']>()
+    for (const r of unwrap(reservations.data) ?? []) {
+      if (r.site === site) map.set(r.programId, r.source)
+    }
+    return map
+  }, [reservations.data, site])
+
   // 番組が 1 件でもあるサービスだけをチップに出す（issue #17 の S3）。
   // マルチ編成のないサブサービスは番組を持たないので自動的に消える。
   // 判断の材料は `hasPrograms`（EPG プロジェクション全体で 1 件でも番組を
@@ -431,7 +445,7 @@ export function ProgramsPage() {
     )
   }, [allServices, gridPrograms])
 
-  const actions = useReservationActions(serverReservedProgramIds)
+  const actions = useReservationActions(serverReservedProgramIds, reservationSourceByProgramId)
 
   // autoLoadFailed: 直近の自動読み込み（進行方向）が失敗したか。失敗したら
   // ボタン + エラー表示に落とし、番兵が可視のままでも自動では再試行しない
@@ -669,11 +683,15 @@ export function ProgramsPage() {
  * ただし UI からは「予約」ボタン 1 回の操作に見える。overrides の PATCH が
  * 失敗しても予約自体（intent）は成立しているので、その旨を分けてトーストで示す。
  */
-function useReservationActions(serverReservedIds: ReadonlySet<number>): ReservationActions {
+function useReservationActions(
+  serverReservedIds: ReadonlySet<number>,
+  sourceByProgramId: ReadonlyMap<number, Reservation['source']>,
+): ReservationActions {
   const site = useCurrentSite()
   const queryClient = useQueryClient()
   const toast = useToast()
   const putIntent = usePutProgramIntent()
+  const deleteIntent = useDeleteProgramIntent()
   const patchOverrides = usePatchProgramOverrides()
 
   // mutation の isPending は全行で共有されるため、操作中の番組だけを覚えておく。
@@ -733,23 +751,77 @@ function useReservationActions(serverReservedIds: ReadonlySet<number>): Reservat
     void queryClient.invalidateQueries({ queryKey: ['/api/capacity/overages'] })
   }
 
+  // revive は取消トーストの「元に戻す」から呼ぶ（issue #453）。`reserve` と
+  // 同じ楽観更新の経路（setOptimisticReserved → catch で undefined に戻す）
+  // を通す。
+  //
+  // **`mutateAsync` + try/catch にする（`.mutate(vars, {onSuccess, onError})`
+  // は使わない）。** トーストは 6 秒生きる一方、番組表は行 1 件ぶんの
+  // busy/optimistic state しか持たない別ページの component state なので、
+  // 「取消 → 別ページへ移動 → まだ出ているトーストの『元に戻す』を押す」の
+  // 間にこのページ自体がアンマウントされうる。`.mutate` の第 2 引数
+  // コールバックは `MutationObserver`（`@tanstack/query-core`）に購読者
+  // （＝マウント中のコンポーネント）が居るときしか呼ばれない
+  // （`#notify()` の `hasListeners()` 判定。実測: アンマウント後は PUT/DELETE
+  // 自体は飛ぶが `onSuccess`/`onError` が一度も呼ばれず、成功も失敗も無音に
+  // なる）。`mutateAsync` は `Mutation#execute` の Promise をそのまま返すので
+  // この判定を経由しない（`pages/reservation-detail.tsx` の `revive` と同じ
+  // 理由。詳細はそちらのコメント）。
+  //
+  // `source` で分岐する: 手動予約の逆操作は `PUT intent{record}` でよいが、
+  // ルール由来の予約に同じ PUT を送ると `program_intents` に record 行が残り、
+  // 以後ルールがマッチしなくなっても予約が残る「種別: 手動」の予約に恒久的に
+  // 変わってしまう（`internal/api/handler.go` の source 導出、
+  // `TestGetReservation_SourceManualDespiteRuleMatch`）。ルール由来の厳密な
+  // 逆操作は `DELETE .../intent`（明示的な意見を取り下げ、ルール評価に戻す）。
+  const revive = (programId: number, source: Reservation['source'] | undefined) => {
+    setBusy(programId, true)
+    setOptimisticReserved(programId, true)
+    void (async () => {
+      try {
+        if (source === 'rule') {
+          await deleteIntent.mutateAsync({ site, programId })
+        } else {
+          await putIntent.mutateAsync({ site, programId, data: { action: 'record' } })
+        }
+        invalidateReservations()
+        toast({ message: '予約を元に戻しました' })
+      } catch (err) {
+        toast({ message: mutationErrorMessage('予約への復帰に失敗しました', err) })
+        setOptimisticReserved(programId, undefined)
+      } finally {
+        setBusy(programId, false)
+      }
+    })()
+  }
+
+  // cancel も同じ理由（トーストの「取消」action・`revive` からの「元に戻す」
+  // action、双方が遷移をまたぎうる）で `mutateAsync` + try/catch にする。
   const cancel = (programId: number) => {
+    // Undo の分岐に使う。取消の瞬間の source を捕まえておく --- 取消後は
+    // サーバー値（`sourceByProgramId` の元になる `reservations.data`）が
+    // 変わりうるため、クリック時点の値を閉じ込める。
+    const source = sourceByProgramId.get(programId)
     setBusy(programId, true)
     setOptimisticReserved(programId, false)
-    putIntent.mutate(
-      { site, programId, data: { action: 'skip' } },
-      {
-        onSuccess: () => {
-          invalidateReservations()
-          toast({ message: '予約を取消しました' })
-        },
-        onError: (err) => {
-          toast({ message: mutationErrorMessage('予約の取消に失敗しました', err) })
-          setOptimisticReserved(programId, undefined)
-        },
-        onSettled: () => setBusy(programId, false),
-      },
-    )
+    void (async () => {
+      try {
+        await putIntent.mutateAsync({ site, programId, data: { action: 'skip' } })
+        invalidateReservations()
+        // 予約のワンタップ + トースト「取消」と対称にする（issue #453）。
+        // 誤タップの被害は「録れない」側に出るので、取消にも同じ取り返し
+        // 手段を置く。
+        toast({
+          message: '予約を取消しました',
+          action: { label: '元に戻す', onClick: () => revive(programId, source) },
+        })
+      } catch (err) {
+        toast({ message: mutationErrorMessage('予約の取消に失敗しました', err) })
+        setOptimisticReserved(programId, undefined)
+      } finally {
+        setBusy(programId, false)
+      }
+    })()
   }
 
   // 予約作成（PUT .../intent）自体は action のみのまま変更しない（issue #29 の

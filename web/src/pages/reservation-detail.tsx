@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from '@tanstack/react-router'
 import { ArrowLeft } from 'lucide-react'
 
 import {
+  useDeleteProgramIntent,
   useGetProgramReservation,
   useListRules,
   usePatchProgramOverrides,
@@ -71,26 +72,77 @@ export function ReservationDetailPage() {
     query: { queryKey: reservationDetailQueryKey(site, programIdNum) },
   })
   const putIntent = usePutProgramIntent()
+  const deleteIntent = useDeleteProgramIntent()
   const patchOverrides = usePatchProgramOverrides()
 
   const reservation = unwrap(query.data)
 
   // 取消は (site, programId) を宛先に intent{skip} を書くだけ（issue #29）。
-  // reservations 行には触れない。ruler が次パスで行を落とすまでの間、
-  // 一覧側は楽観更新で見た目を反映する（この画面はナビゲーションで離れるので
-  // 楽観表示は不要）。
+  // reservations 行には触れない --- ただし ruler は次パスで **行そのものを
+  // 削除する**（`insertRulerPassHint` が積むヒントを受けて評価し直し、
+  // 予約の根拠が「明示 skip」だけになった行を落とす）。上書き（overrides）が
+  // 残っていて detached として残るケースを除き、この画面の GET は 404 に
+  // 変わる。だからこの画面に留まる形は取れない --- 404 を待たず、一覧
+  // （`/reservations`）へ遷移する。`ToastProvider` は `main.tsx` で
+  // `RouterProvider` の外側にあるため、遷移後もトースト自体と Undo の
+  // クロージャは生き続ける。一覧・グリッド（`pages/programs.tsx`）と同じ
+  // 「ワンタップ + トーストの Undo」を詳細にも対称に持たせる（issue #453）。
   const cancel = () => {
     if (!reservation) return
+    const source = reservation.source
     putIntent.mutate(
       { site: reservation.site, programId: reservation.programId, data: { action: 'skip' } },
       {
         onSuccess: () => {
-          toast({ message: '予約を取消しました' })
+          toast({
+            message: '予約を取消しました',
+            action: { label: '元に戻す', onClick: () => revive(source) },
+          })
           void navigate({ to: '/reservations' })
         },
         onError: (err) => toast({ message: mutationErrorMessage('予約の取消に失敗しました', err) }),
       },
     )
+  }
+
+  // revive はトーストの「元に戻す」から呼ぶ。`cancel` が遷移するため、
+  // クリック時点でこの画面（と `putIntent`/`deleteIntent` の観測者）は
+  // 既にアンマウント済みのことが前提になる --- `.mutate(vars, {onSuccess,
+  // onError})` の第 2 引数コールバックは `MutationObserver` に購読者
+  // （＝マウント中のコンポーネント）が居るときしか呼ばれない
+  // （`@tanstack/query-core` の `MutationObserver#mutate` → `#notify` の
+  // `hasListeners()` 判定。実測: アンマウント後に `.mutate` を呼ぶと
+  // リクエスト自体は飛ぶが `onSuccess`/`onError` は一度も呼ばれない）。
+  // `mutateAsync` は `Mutation#execute` の Promise をそのまま返すのでこの
+  // 判定を経由せず、遷移後でも解決・reject する。だから遷移をまたぐ Undo は
+  // `mutateAsync` + 自前の try/catch にする（`.mutate` のコールバックには
+  // 依存しない）。site / programId は URL のパラメータ（route の宛先
+  // そのもの）を使う。
+  //
+  // `source` で分岐する: 手動予約の逆操作は `PUT intent{record}` でよいが、
+  // ルール由来の予約に対して同じ PUT を送ると `program_intents` に record 行が
+  // 残り、以後ルールがマッチしなくなっても予約が残る「種別: 手動」の予約に
+  // 恒久的に変わってしまう（`internal/api/handler.go` の source 導出、
+  // `TestGetReservation_SourceManualDespiteRuleMatch`）。ルール由来の厳密な
+  // 逆操作は `DELETE .../intent`（明示的な意見を取り下げ、ルール評価に戻す）。
+  const revive = (source: Reservation['source']) => {
+    void (async () => {
+      try {
+        if (source === 'rule') {
+          await deleteIntent.mutateAsync({ site, programId: programIdNum })
+        } else {
+          await putIntent.mutateAsync({
+            site,
+            programId: programIdNum,
+            data: { action: 'record' },
+          })
+        }
+        void queryClient.invalidateQueries({ queryKey: ['/api/reservations'] })
+        toast({ message: '予約を元に戻しました' })
+      } catch (err) {
+        toast({ message: mutationErrorMessage('予約への復帰に失敗しました', err) })
+      }
+    })()
   }
 
   const saveEncode = (body: ProgramOverridesInput) => {
