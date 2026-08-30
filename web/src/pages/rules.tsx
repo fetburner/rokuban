@@ -228,7 +228,10 @@ function RuleRow({ rule, onEdit }: { rule: Rule; onEdit: () => void }) {
           void queryClient.invalidateQueries({ queryKey: getListRulesQueryKey() })
         },
         onError: (err) =>
-          toast({ message: apiErrorMessage(err) ?? 'ルールの削除に失敗しました' }),
+          toast({
+            message: apiErrorMessage(err) ?? 'ルールの削除に失敗しました',
+            kind: 'error',
+          }),
       },
     )
   }
@@ -411,7 +414,10 @@ function RuleForm(props: RuleFormProps) {
             props.onSaved()
           },
           onError: (err) =>
-            toast({ message: apiErrorMessage(err) ?? 'ルールの作成に失敗しました' }),
+            toast({
+              message: apiErrorMessage(err) ?? 'ルールの作成に失敗しました',
+              kind: 'error',
+            }),
         },
       )
     } else {
@@ -423,7 +429,10 @@ function RuleForm(props: RuleFormProps) {
             props.onSaved()
           },
           onError: (err) =>
-            toast({ message: apiErrorMessage(err) ?? 'ルールの更新に失敗しました' }),
+            toast({
+              message: apiErrorMessage(err) ?? 'ルールの更新に失敗しました',
+              kind: 'error',
+            }),
         },
       )
     }

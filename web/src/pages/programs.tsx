@@ -816,7 +816,7 @@ function useReservationActions(
           action: { label: '元に戻す', onClick: () => revive(programId, source) },
         })
       } catch (err) {
-        toast({ message: mutationErrorMessage('予約の取消に失敗しました', err) })
+        toast({ message: mutationErrorMessage('予約の取消に失敗しました', err), kind: 'error' })
         setOptimisticReserved(programId, undefined)
       } finally {
         setBusy(programId, false)
@@ -871,10 +871,11 @@ function useReservationActions(
             message: `予約はできましたが、エンコード設定の保存に失敗しました: ${
               apiErrorMessage(err) ?? '不明なエラー'
             }`,
+            kind: 'error',
           })
         }
       } catch (err) {
-        toast({ message: mutationErrorMessage('予約に失敗しました', err) })
+        toast({ message: mutationErrorMessage('予約に失敗しました', err), kind: 'error' })
         setOptimisticReserved(program.programId, undefined)
       } finally {
         setBusy(program.programId, false)

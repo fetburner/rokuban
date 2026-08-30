@@ -100,7 +100,8 @@ export function ReservationDetailPage() {
           })
           void navigate({ to: '/reservations' })
         },
-        onError: (err) => toast({ message: mutationErrorMessage('予約の取消に失敗しました', err) }),
+        onError: (err) =>
+          toast({ message: mutationErrorMessage('予約の取消に失敗しました', err), kind: 'error' }),
       },
     )
   }
@@ -157,7 +158,10 @@ export function ReservationDetailPage() {
           })
         },
         onError: (err) =>
-          toast({ message: apiErrorMessage(err) ?? 'エンコード設定の更新に失敗しました' }),
+          toast({
+            message: apiErrorMessage(err) ?? 'エンコード設定の更新に失敗しました',
+            kind: 'error',
+          }),
       },
     )
   }

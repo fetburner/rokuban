@@ -509,7 +509,10 @@ function RuleSourceBanner({
 }) {
   if (isPending) {
     return (
-      <div className="border-b border-border bg-muted/40 px-4 py-2 text-xs text-muted-foreground">
+      <div
+        role="status"
+        className="border-b border-border bg-muted/40 px-4 py-2 text-xs text-muted-foreground"
+      >
         ルール #{ruleId} の条件を読み込み中…
       </div>
     )
@@ -641,7 +644,11 @@ function CreateRuleForm({
           onDone()
           void navigate({ to: '/rules' })
         },
-        onError: (err) => toast({ message: apiErrorMessage(err) ?? 'ルールの作成に失敗しました' }),
+        onError: (err) =>
+          toast({
+            message: apiErrorMessage(err) ?? 'ルールの作成に失敗しました',
+            kind: 'error',
+          }),
       },
     )
   }
@@ -832,7 +839,11 @@ function RuleEditForm({
           // /rules へは遷移しない。条件を詰め直す作業の途中なので、画面が
           // 飛ぶと作業が切れる。
         },
-        onError: (err) => toast({ message: apiErrorMessage(err) ?? 'ルールの更新に失敗しました' }),
+        onError: (err) =>
+          toast({
+            message: apiErrorMessage(err) ?? 'ルールの更新に失敗しました',
+            kind: 'error',
+          }),
       },
     )
   }
@@ -861,7 +872,11 @@ function RuleEditForm({
           toast({ message: `「${name}」として新しいルールを保存しました` })
           void queryClient.invalidateQueries({ queryKey: getListRulesQueryKey() })
         },
-        onError: (err) => toast({ message: apiErrorMessage(err) ?? 'ルールの作成に失敗しました' }),
+        onError: (err) =>
+          toast({
+            message: apiErrorMessage(err) ?? 'ルールの作成に失敗しました',
+            kind: 'error',
+          }),
       },
     )
   }

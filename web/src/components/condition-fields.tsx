@@ -335,7 +335,9 @@ function ServiceFields({
       {isError ? (
         <p className="text-xs text-destructive">チャンネルの取得に失敗しました</p>
       ) : isPending ? (
-        <p className="text-xs text-muted-foreground">読み込み中…</p>
+        <p role="status" className="text-xs text-muted-foreground">
+          読み込み中…
+        </p>
       ) : services.length === 0 ? (
         <p className="text-xs text-muted-foreground">チャンネルがありません</p>
       ) : (

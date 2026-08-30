@@ -92,15 +92,24 @@ export function ErrorState({ children }: { children: React.ReactNode }) {
  * **走査線は 3 箇所限定の使用箇所の 1 つ**（読み込み中。docs/frontend/design.md
  * 「走査線は 3 箇所限定」）。地の塗り（旧 `bg-muted`）を `scanlines` に差し替えて
  * あるが、形は変えていない（呼び出し側は高さ・角丸を `className` で指定する）。
+ *
+ * 装飾のみで支援技術には何も伝えない（`aria-hidden`）。読み上げは `ListSkeleton`
+ * が 1 リージョンにつき 1 度だけ持つ（各行に重ねると同じ内容を行数ぶん読み上げる）。
  */
 export function Skeleton({ className }: { className?: string }) {
-  return <div className={cn('scanlines animate-pulse rounded', className)} />
+  return <div aria-hidden className={cn('scanlines animate-pulse rounded', className)} />
 }
 
-/** ListSkeleton は一覧の読み込み中プレースホルダ。 */
+/**
+ * ListSkeleton は一覧の読み込み中プレースホルダ。
+ *
+ * `role="status"` + sr-only の文言を 1 つだけ持つ（WCAG 4.1.3 ステータス
+ * メッセージ）。中身の `Skeleton` は装飾のみなので個々には付けない。
+ */
 export function ListSkeleton({ rows = 6 }: { rows?: number }) {
   return (
-    <div className="flex flex-col gap-3 px-4 py-4">
+    <div role="status" className="flex flex-col gap-3 px-4 py-4">
+      <span className="sr-only">読み込み中</span>
       {Array.from({ length: rows }, (_, i) => (
         <Skeleton key={i} className="h-14" />
       ))}

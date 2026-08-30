@@ -327,7 +327,10 @@ export function LivePlayer({ site, networkId, serviceId, className }: LivePlayer
       />
 
       {loading && !error && (
-        <div className="absolute inset-0 flex items-center justify-center text-sm text-muted-foreground">
+        <div
+          role="status"
+          className="absolute inset-0 flex items-center justify-center text-sm text-muted-foreground"
+        >
           読み込み中…
         </div>
       )}

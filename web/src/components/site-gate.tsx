@@ -36,7 +36,11 @@ export function SiteGate({ children }: { children: ReactNode }) {
         </div>
       )
     }
-    return <div className="p-6 text-sm text-muted-foreground">読み込み中…</div>
+    return (
+      <div role="status" className="p-6 text-sm text-muted-foreground">
+        読み込み中…
+      </div>
+    )
   }
 
   if (sites.length === 0) {

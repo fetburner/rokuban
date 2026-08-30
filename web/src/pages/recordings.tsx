@@ -263,6 +263,9 @@ export function RecordingsPage() {
           <div ref={sentinelRef} aria-hidden className="h-px" />
 
           {query.isFetchingNextPage && (
+            // role="status" は付けない。IntersectionObserver でスクロールの
+            // たびに mount/unmount するため、role="status" だと連続スクロール
+            // 中に読み上げが繰り返される（起動時 1 回だけの他 7 箇所とは頻度が違う）
             <p className="px-4 py-3 text-center text-xs text-muted-foreground">読み込み中…</p>
           )}
 
@@ -811,7 +814,9 @@ export function RecordingActions({ recording, trash }: { recording: Recording; t
     setRestoring(true)
     restoreRecordingRequest(recordingId)
       .then(() => invalidate())
-      .catch((err: unknown) => toast({ message: mutationErrorMessage('復元に失敗しました', err) }))
+      .catch((err: unknown) =>
+        toast({ message: mutationErrorMessage('復元に失敗しました', err), kind: 'error' }),
+      )
       .finally(() => setRestoring(false))
   }
 
@@ -844,7 +849,8 @@ export function RecordingActions({ recording, trash }: { recording: Recording; t
                       action: { label: '元に戻す', onClick: () => restore() },
                     })
                   },
-                  onError: (err) => toast({ message: mutationErrorMessage('削除に失敗しました', err) }),
+                  onError: (err) =>
+                    toast({ message: mutationErrorMessage('削除に失敗しました', err), kind: 'error' }),
                 },
               )
             }}
@@ -903,7 +909,10 @@ export function RecordingActions({ recording, trash }: { recording: Recording; t
                       toast({ message: '完全削除を予約しました' })
                     },
                     onError: (err) =>
-                      toast({ message: mutationErrorMessage('完全削除の予約に失敗しました', err) }),
+                      toast({
+                        message: mutationErrorMessage('完全削除の予約に失敗しました', err),
+                        kind: 'error',
+                      }),
                   },
                 )
               }}
@@ -1036,6 +1045,7 @@ function AddEncodeProfilesAction({ recording }: { recording: Recording }) {
                         err instanceof ApiError && err.status === 409
                           ? '原本の状態が変わったため追加できませんでした（削除済み・削除処理中・未取り込みのいずれか）。画面を更新してから再度お試しください。'
                           : (apiErrorMessage(err) ?? 'エンコードの依頼に失敗しました'),
+                      kind: 'error',
                     }),
                 },
               )
@@ -1070,7 +1080,11 @@ export function DropStatsTable({ recordingId }: { recordingId: number }) {
   const stats = unwrap(query.data) ?? []
 
   if (query.isPending) {
-    return <p className="text-muted-foreground">ドロップ統計を読み込み中…</p>
+    return (
+      <p role="status" className="text-muted-foreground">
+        ドロップ統計を読み込み中…
+      </p>
+    )
   }
   if (query.isError) {
     return <p className="text-destructive">ドロップ統計の取得に失敗しました</p>
