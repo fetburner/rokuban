@@ -148,7 +148,13 @@ function programAtAbsolute(
   }
 }
 
-function reservation(id: number, programId: number, title: string, site = 'default'): Reservation {
+function reservation(
+  id: number,
+  programId: number,
+  title: string,
+  site = 'default',
+  overrides: Partial<Reservation> = {},
+): Reservation {
   return {
     id,
     site,
@@ -163,6 +169,7 @@ function reservation(id: number, programId: number, title: string, site = 'defau
     createdAt: new Date(origin).toISOString(),
     updatedAt: new Date(origin).toISOString(),
     skip: false,
+    ...overrides,
   }
 }
 
@@ -287,6 +294,15 @@ function stubApi(
     }
     if (/^\/api\/sites\/default\/programs\/\d+\/intent$/.test(url.pathname) && init?.method === 'PUT') {
       return Promise.resolve(intentPutResponse?.() ?? noContentResponse())
+    }
+    // ルール由来の Undo（DELETE .../intent。「意見を取り下げてルール評価に
+    // 戻す」）は常に成功させる --- 失敗経路は PUT 側（手動予約の Undo）で
+    // 確認済みで、同じ onError を共有する。
+    if (
+      /^\/api\/sites\/default\/programs\/\d+\/intent$/.test(url.pathname) &&
+      init?.method === 'DELETE'
+    ) {
+      return Promise.resolve(noContentResponse())
     }
     if (
       /^\/api\/sites\/default\/programs\/\d+\/overrides$/.test(url.pathname) &&
@@ -1551,17 +1567,24 @@ describe('ProgramsPage の取消 Undo（issue #453）', () => {
     })
   })
 
-  it('Undo が失敗すると、予約への復帰に失敗した旨のトーストが出る（成功トーストは出ない）', async () => {
+  it('Undo が失敗すると、予約への復帰に失敗した旨のトーストが出て、行は「予約」ボタンに戻る（楽観状態の巻き戻し）', async () => {
+    // reservations は可変にしておく --- 1 回目（取消）の成功を「サーバー側は
+    // 本当に未予約になった」とみなし、以降の /api/reservations を空にする。
+    // こうしないと（常に予約済みを返す静的スタブのままだと）Undo 失敗時に
+    // `setOptimisticReserved(programId, undefined)` を消しても消しても
+    // 同じ「取消」ボタンが出てしまい、巻き戻しの有無をテストが区別できない。
+    const reservations = [reservation(77, soon.programId, 'ニュース7')]
     let putCalls = 0
     stubApi(
-      [reservation(77, soon.programId, 'ニュース7')],
+      reservations,
       [],
-      allPrograms,
+      [soon],
       undefined,
       undefined,
       [],
       () => {
         putCalls++
+        if (putCalls === 1) reservations.length = 0
         // 1 回目（取消）は成功させ、2 回目（Undo）だけ失敗させる
         return putCalls === 2 ? new Response(null, { status: 500 }) : noContentResponse()
       },
@@ -1574,5 +1597,41 @@ describe('ProgramsPage の取消 Undo（issue #453）', () => {
 
     expect(await screen.findByText('予約への復帰に失敗しました')).toBeInTheDocument()
     expect(screen.queryByText('予約を元に戻しました')).not.toBeInTheDocument()
+    // サーバーは skip のまま（未予約）なので、楽観状態を戻さないと「取消」
+    // ボタンのまま固まる（issue #453 の罠）。`setOptimisticReserved(programId,
+    // undefined)` を削ると、ここが「取消」のまま残って落ちる。
+    expect(await screen.findByRole('button', { name: '予約' })).toBeInTheDocument()
+  })
+
+  // ルール由来の予約は `PUT intent{record}` で戻すと「明示的に record を
+  // 主張した予約」に変わり、以後ルールがマッチしなくなっても居座ってしまう
+  // （`internal/api/handler.go` の source 導出）。厳密な逆操作は
+  // `DELETE .../intent`（意見を取り下げてルール評価に戻す）。
+  it('ルール由来の予約の Undo は DELETE .../intent を送る（PUT ではない）', async () => {
+    const fetchMock = stubApi(
+      [reservation(77, soon.programId, 'ニュース7', 'default', { source: 'rule', ruleId: 7 })],
+      [],
+      [soon],
+    )
+    renderPage()
+
+    await userEvent.click(await screen.findByRole('button', { name: '取消' }))
+    await userEvent.click(await screen.findByRole('button', { name: '元に戻す' }))
+    expect(await screen.findByText('予約を元に戻しました')).toBeInTheDocument()
+
+    await waitFor(() => {
+      const intentCalls = fetchMock.mock.calls.filter(
+        (call) =>
+          new URL(String(call[0]), 'http://localhost').pathname ===
+          `/api/sites/default/programs/${soon.programId}/intent`,
+      )
+      const reviveCall = intentCalls.find(
+        (call) => (call[1] as RequestInit | undefined)?.method === 'DELETE',
+      )
+      expect(reviveCall).toBeDefined()
+      expect(
+        intentCalls.filter((call) => (call[1] as RequestInit | undefined)?.method === 'PUT'),
+      ).toHaveLength(1)
+    })
   })
 })
