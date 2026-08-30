@@ -93,8 +93,9 @@ db:
   password: %s
   database: %s
   sslmode: disable
-mirakc:
-  url: http://mirakc.invalid:40772
+mirakcs:
+  - site: default
+    url: http://mirakc.invalid:40772
 storage:
   media_dir: /tmp/rokuban-allowed-hosts-test-media
 `, port, strings.Join(serverLines, "\n"), connCfg.Host, connCfg.Port, connCfg.User, password, connCfg.Database))

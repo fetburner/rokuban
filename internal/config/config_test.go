@@ -30,8 +30,9 @@ db:
   user: rokuban
   password: secret
   database: rokuban
-mirakc:
-  url: http://mirakc.local:40772
+mirakcs:
+  - site: default
+    url: http://mirakc.local:40772
 storage:
   media_dir: /mnt/media
 `
@@ -118,8 +119,9 @@ db:
   user: ${TEST_DB_USER}
   password: ${TEST_DB_PASS}
   database: rokuban
-mirakc:
-  url: http://mirakc.local:40772
+mirakcs:
+  - site: default
+    url: http://mirakc.local:40772
 storage:
   media_dir: /mnt/media
 `)
@@ -142,8 +144,9 @@ db:
   user: ${UNSET_VAR:-fallback_user}
   password: secret
   database: rokuban
-mirakc:
-  url: http://mirakc.local:40772
+mirakcs:
+  - site: default
+    url: http://mirakc.local:40772
 storage:
   media_dir: /mnt/media
 `)
@@ -165,8 +168,9 @@ db:
   user: rokuban
   password: ${TEST_DB_PASS}
   database: rokuban
-mirakc:
-  url: http://mirakc.local:40772
+mirakcs:
+  - site: default
+    url: http://mirakc.local:40772
 storage:
   media_dir: /mnt/media
 encode:
@@ -223,7 +227,7 @@ log:
 	}
 }
 
-// mirakcsBase は db/storage だけ満たし、mirakc/mirakcs はテストごとに足す。
+// mirakcsBase は db/storage だけ満たし、mirakcs はテストごとに足す。
 const mirakcsBase = `
 db:
   host: localhost
@@ -235,18 +239,23 @@ storage:
 `
 
 func TestLoad_MirakcRegistry(t *testing.T) {
-	t.Run("neither mirakc nor mirakcs set is an error", func(t *testing.T) {
+	t.Run("empty mirakcs is an error", func(t *testing.T) {
 		path := writeConfig(t, mirakcsBase)
 		_, err := Load(path)
 		if err == nil {
 			t.Fatal("expected error, got nil")
 		}
-		if !strings.Contains(err.Error(), "one of mirakc.url or mirakcs is required") {
-			t.Errorf("error = %v, want mention of mirakc/mirakcs required", err)
+		if !strings.Contains(err.Error(), "mirakcs is required") {
+			t.Errorf("error = %v, want mention of mirakcs required", err)
 		}
 	})
 
-	t.Run("both mirakc and mirakcs set is an error", func(t *testing.T) {
+	// mirakc:（単数）は R-10 で廃止した糖衣。旧キーを書いた config は struct に
+	// 対応するフィールドが無いため、strict パースの未知キー検出で落ちる
+	// （黙って無視されない）。
+	// 壊し方: loadFromString から yaml.Strict() を外す（この分岐が無いと
+	// cfg.Mirakcs は素通りし、mirakc.url は静かに無視される）。
+	t.Run("legacy mirakc: key is an unknown field error", func(t *testing.T) {
 		path := writeConfig(t, mirakcsBase+`
 mirakc:
   url: http://mirakc.local:40772
@@ -256,102 +265,10 @@ mirakcs:
 `)
 		_, err := Load(path)
 		if err == nil {
-			t.Fatal("expected error, got nil")
+			t.Fatal("expected error for legacy mirakc: key, got nil")
 		}
-		if !strings.Contains(err.Error(), "must not both be set") {
-			t.Errorf("error = %v, want mention of mutual exclusion", err)
-		}
-	})
-
-	// url を欠いた `mirakc:` は「書かれていない」と見なされていたため、`mirakcs:`
-	// との併記が相互排他の検査を素通りし、書いた `mirakc.site` が黙って無視されて
-	// いた（issue #184 に M4-11 のレビューから送られた申し送り 1 件目）。
-	// 相互排他はキーが書かれたかで判定する（detectMirakcKeyWritten）。
-	t.Run("mirakc without url plus mirakcs is an error, not a silent ignore", func(t *testing.T) {
-		path := writeConfig(t, mirakcsBase+`
-mirakc:
-  site: tokyo
-mirakcs:
-  - site: takamatsu
-    url: http://mirakc-takamatsu:40772
-`)
-		_, err := Load(path)
-		if err == nil {
-			t.Fatal("expected error, got nil (mirakc.site would be silently ignored)")
-		}
-		if !strings.Contains(err.Error(), "must not both be set") {
-			t.Errorf("error = %v, want mention of mutual exclusion", err)
-		}
-	})
-
-	// 単独で書かれた url 無しの `mirakc:` は「どちらも未設定」ではなく
-	// 「mirakc.url が無い」として報告する（何を書き足せばよいかが分かる）。
-	t.Run("mirakc without url alone reports the missing url", func(t *testing.T) {
-		path := writeConfig(t, mirakcsBase+`
-mirakc:
-  site: tokyo
-`)
-		_, err := Load(path)
-		if err == nil {
-			t.Fatal("expected error, got nil")
-		}
-		if !strings.Contains(err.Error(), "mirakc.url is required") {
-			t.Errorf("error = %v, want mention of mirakc.url is required", err)
-		}
-	})
-
-	// 「キーが書かれたか」の境界。detectMirakcKeyWritten は goccy/go-yaml が
-	// null をポインタの nil にデコードすることに乗っているので、依存している
-	// 分岐をリポジトリ側で固定する（この 2 件が無いと、goccy の挙動が変わった
-	// ときに `mirakcs:` 構成が一斉に相互排他エラーになる形で初めて気付く）。
-	t.Run("bare mirakc: key with no value counts as unwritten", func(t *testing.T) {
-		path := writeConfig(t, mirakcsBase+`
-mirakc:
-mirakcs:
-  - site: tokyo
-    url: http://mirakc-tokyo:40772
-`)
-		cfg, err := Load(path)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if len(cfg.Registry()) != 1 || cfg.Registry()[0].Site != "tokyo" {
-			t.Errorf("Registry() = %v, want the one-element mirakcs registry", cfg.Registry())
-		}
-	})
-
-	t.Run("empty mirakc: {} counts as written", func(t *testing.T) {
-		path := writeConfig(t, mirakcsBase+`
-mirakc: {}
-mirakcs:
-  - site: tokyo
-    url: http://mirakc-tokyo:40772
-`)
-		_, err := Load(path)
-		if err == nil {
-			t.Fatal("expected error, got nil")
-		}
-		if !strings.Contains(err.Error(), "must not both be set") {
-			t.Errorf("error = %v, want mention of mutual exclusion", err)
-		}
-	})
-
-	t.Run("mirakc single-object sugar resolves to a one-element registry", func(t *testing.T) {
-		path := writeConfig(t, mirakcsBase+`
-mirakc:
-  url: http://mirakc.local:40772
-  site: tokyo
-`)
-		cfg, err := Load(path)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		reg := cfg.Registry()
-		if len(reg) != 1 {
-			t.Fatalf("Registry() len = %d, want 1", len(reg))
-		}
-		if reg[0].Site != "tokyo" || reg[0].URL != "http://mirakc.local:40772" {
-			t.Errorf("Registry()[0] = %+v, want {tokyo http://mirakc.local:40772}", reg[0])
+		if !strings.Contains(err.Error(), "unknown field") || !strings.Contains(err.Error(), `"mirakc"`) {
+			t.Errorf("error = %v, want mention of unknown field \"mirakc\"", err)
 		}
 	})
 
@@ -472,6 +389,24 @@ mirakcs:
 		}
 		if !strings.Contains(err.Error(), "url") {
 			t.Errorf("error = %v, want mention of url", err)
+		}
+	})
+
+	// mirakc:（単数）の時代は site 省略が "default" にフォールバックしたが、
+	// mirakcs: の要素にその既定値補完は無い（defaults() は Config 全体に 1 回
+	// しか走らず、スライス要素は補完しない）。省略すると空文字列のまま
+	// validateSiteName の構文制約に落ちる。
+	t.Run("missing site in a mirakcs entry is an error, not a default fallback", func(t *testing.T) {
+		path := writeConfig(t, mirakcsBase+`
+mirakcs:
+  - url: http://mirakc.local:40772
+`)
+		_, err := Load(path)
+		if err == nil {
+			t.Fatal("expected error, got nil (site should not silently default)")
+		}
+		if !strings.Contains(err.Error(), "must match") {
+			t.Errorf("error = %v, want mention of the site name syntax constraint", err)
 		}
 	})
 
@@ -611,8 +546,9 @@ db:
   max_conns: 20
   api_statement_timeout: 15s
   pooler_compat: true
-mirakc:
-  url: http://mirakc.local:40772
+mirakcs:
+  - site: default
+    url: http://mirakc.local:40772
 storage:
   media_dir: /mnt/media
 `)
@@ -639,8 +575,9 @@ db:
   password: secret
   database: rokuban
   max_conns: -1
-mirakc:
-  url: http://mirakc.local:40772
+mirakcs:
+  - site: default
+    url: http://mirakc.local:40772
 storage:
   media_dir: /mnt/media
 `)
@@ -661,8 +598,9 @@ db:
   user: rokuban
   password: secret
   database: rokuban
-mirakc:
-  url: http://mirakc.local:40772
+mirakcs:
+  - site: default
+    url: http://mirakc.local:40772
 storage:
   media_dir: /mnt/media
 ingest:
@@ -685,8 +623,9 @@ db:
   user: rokuban
   password: secret
   database: rokuban
-mirakc:
-  url: http://mirakc.local:40772
+mirakcs:
+  - site: default
+    url: http://mirakc.local:40772
 storage:
   media_dir: /mnt/media
 epg:
@@ -708,8 +647,9 @@ db:
   password: secret
   database: rokuban
   max_cons: 20
-mirakc:
-  url: http://mirakc.local:40772
+mirakcs:
+  - site: default
+    url: http://mirakc.local:40772
 storage:
   media_dir: /mnt/media
 `)
@@ -726,8 +666,9 @@ db:
   user: rokuban
   password: secret
   database: rokuban
-mirakc:
-  url: http://mirakc.local:40772
+mirakcs:
+  - site: default
+    url: http://mirakc.local:40772
 storage:
   media_dir: /mnt/media
 typo_key: oops
@@ -748,15 +689,12 @@ func TestLoad_FileNotFound(t *testing.T) {
 // intPtr はテスト用に *int リテラルを組み立てる。
 func intPtr(v int) *int { return &v }
 
-// allFieldsOverriddenConfig は Config の yaml タグをほぼ全部（`mirakcs:` と
-// その要素 `MirakcSite.site`/`.url` を除く）非既定値で上書きした設定。
-// `mirakcs:` は `mirakc:` と相互排他（validateMirakcRegistry）なので同じ
-// ドキュメントに同居できず、その形は TestLoad_MirakcRegistry が別途固定して
-// いるため、ここでは対象外にする。
+// allFieldsOverriddenConfig は Config の yaml タグをほぼ全部非既定値で上書きした
+// 設定。
 //
 // encode.profiles / live.profiles は 2 要素にし、crf と qp（互いに排他）を
 // 1 要素ずつに分けて両方の yaml タグを踏む。hwaccel ブロックの中身
-// （kind/device/output_format、internal/ffargs のタグで config.go の 90 個には
+// （kind/device/output_format、internal/ffargs のタグで config.go の 87 個には
 // 含まれない）は TestLoad_EncodeProfileHWAccel / TestLoad_LiveHWAccel が別途
 // 固定しているので、ここではブロックが非 nil で通ることだけを確認する。
 const allFieldsOverriddenConfig = `
@@ -774,9 +712,9 @@ db:
   max_conns: 20
   api_statement_timeout: 45s
   pooler_compat: true
-mirakc:
-  url: http://10.0.0.1:40772
-  site: tokyo
+mirakcs:
+  - site: tokyo
+    url: http://10.0.0.1:40772
 storage:
   media_dir: /data/media
   scratch_dir: /data/scratch
@@ -869,8 +807,7 @@ log:
   format: text
 `
 
-// TestLoad_AllFieldsOverridden は Config の yaml タグ（config.go に 90 個。
-// `mirakcs:`/MirakcSite の 3 個は上記の理由で対象外、残り 87 個を上書き）を
+// TestLoad_AllFieldsOverridden は Config の yaml タグ（config.go に 87 個）を
 // 全部上書きした設定を読み、セクションごとに実際の値と期待値をテーブルで
 // 突き合わせる。
 //
@@ -909,9 +846,9 @@ func TestLoad_AllFieldsOverridden(t *testing.T) {
 			},
 		},
 		{
-			"mirakc",
-			cfg.Mirakc,
-			MirakcConfig{URL: "http://10.0.0.1:40772", Site: "tokyo"},
+			"mirakcs",
+			cfg.Mirakcs,
+			[]MirakcSite{{Site: "tokyo", URL: "http://10.0.0.1:40772"}},
 		},
 		{
 			"storage",
@@ -1023,8 +960,9 @@ db:
   user: rokuban
   password: secret
   database: rokuban
-mirakc:
-  url: http://mirakc.local:40772
+mirakcs:
+  - site: default
+    url: http://mirakc.local:40772
 storage:
   media_dir: /mnt/media
 encode:
@@ -1125,8 +1063,9 @@ db:
   user: rokuban
   password: secret
   database: rokuban
-mirakc:
-  url: http://mirakc.local:40772
+mirakcs:
+  - site: default
+    url: http://mirakc.local:40772
 storage:
   media_dir: /mnt/media
 encode:
@@ -1148,8 +1087,9 @@ db:
   user: rokuban
   password: secret
   database: rokuban
-mirakc:
-  url: http://mirakc.local:40772
+mirakcs:
+  - site: default
+    url: http://mirakc.local:40772
 storage:
   media_dir: /mnt/media
 encode:
@@ -1170,8 +1110,9 @@ db:
   user: rokuban
   password: secret
   database: rokuban
-mirakc:
-  url: http://mirakc.local:40772
+mirakcs:
+  - site: default
+    url: http://mirakc.local:40772
 storage:
   media_dir: /mnt/media
 live:
@@ -1312,8 +1253,8 @@ func TestLoad_EncodeProfileHWAccel(t *testing.T) {
 		},
 		{
 			// bare `hwaccel:` (no value) はブロックを「書いていない」扱いになる
-			// （*ffargs.HWAccel が nil のまま。config.detectMirakcKeyWritten が
-			// 固定している goccy/go-yaml の挙動と同じ）。
+			// （*ffargs.HWAccel が nil のまま。goccy/go-yaml が null をポインタの
+			// nil にデコードすることに乗った挙動）。
 			name:    "bare hwaccel key with no value is not written",
 			extra:   "      hwaccel:\n",
 			wantErr: false,
@@ -1345,8 +1286,9 @@ db:
   user: rokuban
   password: secret
   database: rokuban
-mirakc:
-  url: http://mirakc.local:40772
+mirakcs:
+  - site: default
+    url: http://mirakc.local:40772
 storage:
   media_dir: /mnt/media
 live:
@@ -1578,8 +1520,9 @@ db:
   user: rokuban
   password: secret
   database: rokuban
-mirakc:
-  url: http://mirakc.local:40772
+mirakcs:
+  - site: default
+    url: http://mirakc.local:40772
 storage:
   media_dir: /mnt/media
 encode:
@@ -1626,8 +1569,9 @@ db:
   user: rokuban
   password: secret
   database: rokuban
-mirakc:
-  url: http://mirakc.local:40772
+mirakcs:
+  - site: default
+    url: http://mirakc.local:40772
 storage:
   media_dir: /mnt/media
 `
@@ -1887,8 +1831,9 @@ db:
   user: rokuban
   database: rokuban
   password: %s
-mirakc:
-  url: http://mirakc:40772
+mirakcs:
+  - site: default
+    url: http://mirakc:40772
 storage:
   media_dir: /mnt/media
 `

@@ -145,15 +145,10 @@ func (DeleteReconcileArgs) InsertOpts() river.InsertOpts {
 // 「たまたま処理した worker の束縛サイト」ではない）。
 //
 // したがって `Deps.Site` を一切参照せず、常に db.DefaultSite
-// （"default"）をキーにする。これにより対になる api ロールの
-// `POST /api/sites/{site}/breakers/{name}/resume`（internal/api/breakers.go）の
-// `h.site`（`cfg.Mirakc.Site`。`mirakcs:` レジストリ経由の束縛サイトではなく、
-// 単一 `mirakc:` オブジェクトの値）と常に一致する: `config.defaults()` が
-// `cfg.Mirakc.Site` を常に "default" に既定し、`mirakc:` / `mirakcs:` の同時
-// 指定は起動エラーなので、`mirakcs:` を使う構成でも `mirakc.site` は書かれず
-// 既定値のまま残る。api ロールの site 非依存化（issue #184 M4-12）が終わったら
-// この決定を読み直すこと --- そのときは「site 非依存の仕事のブレーカーをどう
-// 見せるか」を api 側で決め直せる。
+// （"default"）をキーにする。対になる api ロールの
+// `POST /api/sites/{site}/breakers/{name}/resume`（internal/api/breakers.go）を
+// この site 非依存の仕事のブレーカーに対して叩く運用者は、パスに `default` を
+// 指定する（`mirakcs:` レジストリに `default` という site が実在する必要がある）。
 type DeleteReconcileWorker struct {
 	river.WorkerDefaults[DeleteReconcileArgs]
 	Pool     *pgxpool.Pool

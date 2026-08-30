@@ -20,7 +20,6 @@ import (
 type Config struct {
 	Server     ServerConfig     `yaml:"server"`
 	DB         DBConfig         `yaml:"db"`
-	Mirakc     MirakcConfig     `yaml:"mirakc"`
 	Mirakcs    []MirakcSite     `yaml:"mirakcs"`
 	Storage    StorageConfig    `yaml:"storage"`
 	Ingest     IngestConfig     `yaml:"ingest"`
@@ -115,28 +114,6 @@ func quoteDSNValue(v string) string {
 	return "'" + escaped + "'"
 }
 
-// MirakcConfig は mirakc 接続設定（単一サイト構成の糖衣）。
-//
-// `mirakc: {url, site}` は `mirakcs: [{site, url}]` の 1 要素と等価に解決される
-// （Config.Registry）。**`mirakc:` と `mirakcs:` の同時指定は起動エラー**
-// （Config.validateMirakcRegistry、どちらが勝つかを覚えさせない。issue #183 M4-11）。
-// 「同時指定」はキーを書いたかで判定する（detectMirakcKeyWritten）。Site は
-// defaults() が埋めるため、値の非ゼロ性では書いたかどうかを判定できない。
-//
-// **URL を missingRequired に載せてはならない。** `mirakcs:` を使う構成では
-// `mirakc:` を書かないため、無条件の必須検査は正しい構成を起動失敗させる
-// （issue #183 の「罠」）。required 相当の検査は validateMirakcRegistry が
-// 「どちらか一方は必須」という形で行う。
-type MirakcConfig struct {
-	URL string `yaml:"url"`
-
-	// Site はこの mirakc インスタンスのサイト名。programId / record id は
-	// mirakc インスタンス単位のスコープしか持たないため、DB の全テーブルと
-	// API のパスがこの名前でスコープされる（docs/schema.md §1-5、issue #31）。
-	// 空なら既定値（"default"）を使う。
-	Site string `yaml:"site"`
-}
-
 // MirakcSite は `mirakcs:` レジストリの 1 要素。site 名と URL の 2 つだけを持つ。
 //
 // **storage / worker / ingest 等のチューニング値は要素に入れない。** アーカイブは
@@ -145,29 +122,19 @@ type MirakcConfig struct {
 // あって site の属性ではない。site ごとのチューニング値は、それを読むコードが
 // できたときに足す（不変条件 11: 形を固定する前に判定基準を書く。issue #183 M4-11）。
 type MirakcSite struct {
+	// Site はこの mirakc インスタンスのサイト名。programId / record id は mirakc
+	// インスタンス単位のスコープしか持たないため、DB の全テーブルと API のパスが
+	// この名前でスコープされる（docs/schema.md §1-5、issue #31）。
 	Site string `yaml:"site"`
 	URL  string `yaml:"url"`
 }
 
 // Registry はこの Config が指す mirakc サイトの一覧を返す。
 //
-// `mirakcs:` が非空ならそれをそのまま返す。空なら `mirakc:` を 1 要素のレジストリ
-// として解決する（`mirakc.url` が空なら Mirakc も未設定と見なし、空のレジストリを
-// 返す）。両方が同時に非空になるケースは Load が起動エラーにするので、Load を
-// 経た Config では実質どちらか一方だけが反映される。
-//
-// **Load を経た Config では空にならない**（どちらも未設定・url を欠いた `mirakc:`
-// はいずれも Load が起動エラーにする）。逆に validateMirakcRegistry は検査対象を
-// ここから取らない —— url が空の Mirakc を捨てる挙動が、まさに検査したい
-// 「url を欠いた `mirakc:`」を検査対象から外してしまうため。
+// **Load を経た Config では空にならない**（`mirakcs:` が空なら Load が起動エラー
+// にする）。
 func (c Config) Registry() []MirakcSite {
-	if len(c.Mirakcs) > 0 {
-		return c.Mirakcs
-	}
-	if c.Mirakc.URL == "" {
-		return nil
-	}
-	return []MirakcSite{{Site: c.Mirakc.Site, URL: c.Mirakc.URL}}
+	return c.Mirakcs
 }
 
 // mirakcSiteNamePattern は site 名の構文制約。
@@ -223,55 +190,30 @@ func validateSiteName(name string) []string {
 	return errs
 }
 
-// validateMirakcRegistry は `mirakc:`/`mirakcs:` の相互排他、site 名の構文制約・
-// 予約名・重複、各要素の url を検査する。見つかった問題を全件列挙して返す
-// （規約 4）。問題が無ければ nil を返す。
-//
-// mirakcWritten は設定ファイルに `mirakc:` キーが書かれていたか
-// （detectMirakcKeyWritten）。**Config の値からは判定できない**ので呼び出し元が
-// 渡す —— defaults() が Mirakc.Site に "default" を入れるため、Unmarshal 後の
-// Config では「書かれていない `mirakc:`」と「site だけ書かれた `mirakc:`」が
-// 同じ値になる。かつて相互排他を `c.Mirakc.URL != ""` で判定していたときは、
-// url を欠いた `mirakc: {site: tokyo}` と `mirakcs:` の併記が検査を素通りし、
-// 書いた `mirakc.site` が黙って無視されていた（TestLoad_MirakcRegistry の
-// "mirakc without url plus mirakcs is an error, not a silent ignore"）。
-func (c Config) validateMirakcRegistry(mirakcWritten bool) error {
-	mirakcsSet := len(c.Mirakcs) > 0
-
+// validateMirakcRegistry は `mirakcs:` の非空性、site 名の構文制約・予約名・
+// 重複、各要素の url を検査する。見つかった問題を全件列挙して返す（規約 4）。
+// 問題が無ければ nil を返す。
+func (c Config) validateMirakcRegistry() error {
 	var errs []string
-	switch {
-	case mirakcWritten && mirakcsSet:
-		errs = append(errs, "mirakc and mirakcs must not both be set (mirakc is sugar for a one-element mirakcs)")
-	case !mirakcWritten && !mirakcsSet:
-		errs = append(errs, "one of mirakc.url or mirakcs is required")
-	default:
-		// `mirakc:` 側は Registry() を経由しない。Registry() は url が空の
-		// Mirakc を「未設定」として捨てるので、url を欠いた `mirakc: {site: ...}`
-		// が検査対象ゼロ件になり、下の "url is required" に到達しない。
-		registry := c.Mirakcs
-		if !mirakcsSet {
-			registry = []MirakcSite{{Site: c.Mirakc.Site, URL: c.Mirakc.URL}}
+	if len(c.Mirakcs) == 0 {
+		errs = append(errs, "mirakcs is required")
+	}
+	seen := make(map[string]bool, len(c.Mirakcs))
+	for i, s := range c.Mirakcs {
+		label := fmt.Sprintf("mirakcs[%d]", i)
+		for _, e := range validateSiteName(s.Site) {
+			errs = append(errs, fmt.Sprintf("%s: %s", label, e))
 		}
-		seen := make(map[string]bool, len(registry))
-		for i, s := range registry {
-			label := "mirakc"
-			if mirakcsSet {
-				label = fmt.Sprintf("mirakcs[%d]", i)
-			}
-			for _, e := range validateSiteName(s.Site) {
-				errs = append(errs, fmt.Sprintf("%s: %s", label, e))
-			}
-			if s.Site != "" && seen[s.Site] {
-				errs = append(errs, fmt.Sprintf("%s: duplicate site %q", label, s.Site))
-			}
-			seen[s.Site] = true
+		if s.Site != "" && seen[s.Site] {
+			errs = append(errs, fmt.Sprintf("%s: duplicate site %q", label, s.Site))
+		}
+		seen[s.Site] = true
 
-			switch {
-			case s.URL == "":
-				errs = append(errs, fmt.Sprintf("%s.url is required", label))
-			case !isAbsoluteURL(s.URL):
-				errs = append(errs, fmt.Sprintf("%s.url %q is not a valid URL", label, s.URL))
-			}
+		switch {
+		case s.URL == "":
+			errs = append(errs, fmt.Sprintf("%s.url is required", label))
+		case !isAbsoluteURL(s.URL):
+			errs = append(errs, fmt.Sprintf("%s.url %q is not a valid URL", label, s.URL))
 		}
 	}
 
@@ -431,7 +373,8 @@ type EncodeConfig struct {
 //     いう主張になる（不変条件 10）。フラットだと「device だけ書いた」状態が
 //     「何も出さない」と区別できず、掃除する規則が要る。ポインタなので
 //     `hwaccel:`（値なし）は nil、`hwaccel: {}` は「書いた」で kind is required
-//     になる（detectMirakcKeyWritten が固定している goccy/go-yaml の挙動と同じ）。
+//     になる（goccy/go-yaml が null をポインタの nil にデコードすることに乗った
+//     挙動。TestLoad_EncodeProfileHWAccel が固定している）。
 //  2. scaler は「系統の名前」であって filter 文字列ではない。`-vf` /
 //     `video_filter` というキーは永久に作らない。filtergraph は第 2 の
 //     コマンド言語で、`scale_vaapi=...,drawtext=...` と書けた時点で cmd を
@@ -939,9 +882,6 @@ func defaults() Config {
 			Port:    5432,
 			SSLMode: "disable",
 		},
-		Mirakc: MirakcConfig{
-			Site: "default",
-		},
 		Storage: StorageConfig{
 			ScratchDir: "/var/tmp/rokuban",
 		},
@@ -978,10 +918,9 @@ func defaults() Config {
 // missingRequired は「無ければ起動できない」設定キーのうち空のものを、YAML の
 // パス表記で全件返す（規約 4: エラーは全件列挙）。
 //
-// **struct タグではなくここに並べる。** タグは「その型が読まれたら必ず走る」ので、
-// 構成によっては書かないキー（`mirakcs:` を使う構成の `mirakc.url`）に付けると
-// 正しい構成を起動失敗させる（issue #183 の「罠」）。必須かどうかが他のキーの
-// 有無で決まる検査は、それを知っている場所（validateMirakcRegistry）に置く。
+// **struct タグではなくここに並べる。** `mirakcs:` は空配列を許容する型なので
+// struct タグの required 相当では表現できない。必須かどうかが要素数で決まる
+// 検査は、それを知っている場所（validateMirakcRegistry）に置く。
 func (c Config) missingRequired() []string {
 	var missing []string
 	for _, k := range []struct{ path, value string }{
@@ -996,30 +935,6 @@ func (c Config) missingRequired() []string {
 		}
 	}
 	return missing
-}
-
-// detectMirakcKeyWritten は展開済み YAML に `mirakc:` キーが書かれていたかを返す。
-//
-// **キーだけ書いて値が無い `mirakc:`（null）は「書かれていない」、空マップの
-// `mirakc: {}` は「書かれた」になる。** goccy/go-yaml が null をポインタの nil に
-// デコードするかどうかに乗った挙動なので、リポジトリ側で固定しておく
-// （TestLoad_MirakcRegistry の "bare mirakc: key with no value counts as unwritten"
-// / "empty mirakc: {} counts as written"）。
-//
-// defaults() が Mirakc.Site を埋めてしまうため、相互排他の判定に必要な「書いたか
-// どうか」は Unmarshal 後の Config からは復元できない。ここだけキーの有無を見る。
-//
-// **Strict は使わない。** 未知キーの検出は本体の Unmarshal が済ませており、
-// ここで再度落とすと同じ typo が二重に報告される。またこの probe は `mirakc:`
-// しか持たないので、Strict にすると他のキーを書いた正しい設定が全部落ちる。
-func detectMirakcKeyWritten(expanded string) (bool, error) {
-	var probe struct {
-		Mirakc *MirakcConfig `yaml:"mirakc"`
-	}
-	if err := yaml.Unmarshal([]byte(expanded), &probe); err != nil {
-		return false, fmt.Errorf("parsing config: %w", err)
-	}
-	return probe.Mirakc != nil, nil
 }
 
 // Load reads a config file, expands ${VAR} references using environment
@@ -1062,14 +977,10 @@ func loadFromString(raw string) (*Config, error) {
 		return nil, fmt.Errorf("validating config: %w", err)
 	}
 
-	// mirakc:/mirakcs: の相互排他・site 名の構文制約・予約名・重複・url を検査する
-	// （mirakc.url は missingRequired に載せられない。missingRequired の
-	// コメントと issue #183 の「罠」参照）。
-	mirakcWritten, err := detectMirakcKeyWritten(expanded)
-	if err != nil {
-		return nil, err
-	}
-	if err := cfg.validateMirakcRegistry(mirakcWritten); err != nil {
+	// mirakcs: の非空性・site 名の構文制約・予約名・重複・url を検査する
+	// （mirakcs は空配列を許すため missingRequired に載せられない。
+	// missingRequired のコメント参照）。
+	if err := cfg.validateMirakcRegistry(); err != nil {
 		return nil, err
 	}
 

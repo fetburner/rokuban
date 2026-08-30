@@ -31,18 +31,19 @@ func writeServerTestConfig(t *testing.T, content string) string {
 	return path
 }
 
-// 既存の `mirakc: {url, site}` だけの config は 1 文字も変えずに動き、--sites
-// 省略でそのサイトに束縛される（issue #183 の受け入れ基準 1）。
-func TestServerSiteBinding_ExistingSingleMirakcConfig_Unchanged(t *testing.T) {
+// mirakcs: 1 要素の config は --sites 省略でそのサイトに束縛される
+// （issue #183 の受け入れ基準 1。R-10 で `mirakc:`（単数）糖衣を廃止したため、
+// 単一サイト構成も `mirakcs:` 配列 1 要素で書く）。
+func TestServerSiteBinding_SingleElementMirakcsRegistry_SitesOmitted(t *testing.T) {
 	path := writeServerTestConfig(t, `
 db:
   host: localhost
   user: rokuban
   password: secret
   database: rokuban
-mirakc:
-  url: http://mirakc.local:40772
-  site: home
+mirakcs:
+  - site: home
+    url: http://mirakc.local:40772
 storage:
   media_dir: /mnt/media
 `)
@@ -123,9 +124,11 @@ storage:
 	}
 }
 
-// mirakc: と mirakcs: の同時指定は Load 自体が起動エラーにする
-// （issue #183 の受け入れ基準 4）。
-func TestServerSiteBinding_MirakcAndMirakcsBothSet_LoadFails(t *testing.T) {
+// `mirakc:`（単数）は R-10 で廃止した糖衣。旧キーを書いた config は struct に
+// 対応するフィールドが無いため、strict パースの未知キー検出で Load 自体が
+// 起動エラーにする（issue #183 の受け入れ基準 4 の後継。当時の理由は相互排他
+// だったが、糖衣の廃止後は unknown field が理由になる）。
+func TestServerSiteBinding_LegacyMirakcKey_LoadFails(t *testing.T) {
 	path := writeServerTestConfig(t, `
 db:
   host: localhost
@@ -315,9 +318,9 @@ db:
   password: %q
   database: %q
   sslmode: %q
-mirakc:
-  url: %q
-  site: home
+mirakcs:
+  - site: home
+    url: %q
 storage:
   media_dir: %q
 worker:

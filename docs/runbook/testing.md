@@ -89,9 +89,9 @@ db:
   password: unused
   database: $DB
   sslmode: disable
-mirakc:
-  url: http://127.0.0.1:40799
-  site: home
+mirakcs:
+  - site: home
+    url: http://127.0.0.1:40799
 storage:
   media_dir: /tmp/softstop-media
 worker:
