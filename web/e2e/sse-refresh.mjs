@@ -15,7 +15,11 @@
 //
 // SSE の再接続時 invalidate はここでは見ない（実ブラウザで切断を決定的に
 // 起こす手段が無い）。単体テスト「再接続したら切断中の変更を全グループ取り直す」の担当。
-import { ListReservationsResponseItem } from '../src/api/zod.ts'
+import {
+  ListCircuitBreakersResponseItem,
+  ListRecordingsResponseItem,
+  ListReservationsResponseItem,
+} from '../src/api/zod.ts'
 import {
   finish,
   launchBrowser,
@@ -275,6 +279,16 @@ log('\n=== 接続断バナー（/recordings）===')
     status: 'finished',
     createdAt: new Date(Date.now() - (i + 1) * 3_600_000).toISOString(),
   }))
+  // 契約検証（validateFixturesOrExit。冒頭の reservation と同じ理由）。
+  // browser は既に起動済みなので、不一致なら閉じてから打ち切る
+  await validateFixturesOrExit(
+    [
+      ['breaker', ListCircuitBreakersResponseItem, breaker],
+      ...manyRecordings.map((r) => [`recordings#${r.id}`, ListRecordingsResponseItem, r]),
+    ],
+    ng,
+    browser,
+  )
   await bannerPage.route('**/api/**', async (route) => {
     const requested = new URL(route.request().url()).pathname
     if (requested === '/api/events') {
