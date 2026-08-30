@@ -342,7 +342,7 @@ export function SearchPage() {
         className="outline-none"
         style={{
           scrollMarginTop:
-            'calc(var(--breaker-banner-height, 0px) + var(--page-header-height, 0px))',
+            'calc(var(--sticky-banners-height, 0px) + var(--page-header-height, 0px))',
         }}
       >
         {search.isIdle ? (

@@ -11,9 +11,10 @@ import {
   Tv,
 } from 'lucide-react'
 import type { ComponentType } from 'react'
-import { useEffect, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 import { CircuitBreakerBanner } from '@/components/circuit-breaker-banner'
+import { ConnectionBanner } from '@/components/connection-banner'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { useLiveEnabled } from '@/lib/capabilities'
 import { cn } from '@/lib/utils'
@@ -352,6 +353,43 @@ function Sidebar() {
 }
 
 /**
+ * StickyBanners は接続断バナー（`ConnectionBanner`）とサーキットブレーカー
+ * バナー（`CircuitBreakerBanner`）を 1 つの sticky スタックにまとめる。
+ *
+ * どちらも「発動中のときだけ描画され、高さが変わりうる」居座り通知。個別に
+ * `sticky top-0` にすると同じ top:0 のきょうだいが重なる（sticky は兄弟の
+ * 高さを自動で避けない）ので、外側のこのコンテナだけを sticky にし、合計の
+ * 描画高さを `--sticky-banners-height` に publish する。`PageHeader`
+ * （components/page.tsx）や各ページの独自ヘッダはこの 1 つの変数だけを見れば
+ * よい。
+ */
+function StickyBanners() {
+  const ref = useRef<HTMLDivElement>(null)
+
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const publish = () => {
+      document.documentElement.style.setProperty('--sticky-banners-height', `${el.offsetHeight}px`)
+    }
+    publish()
+    const observer = new ResizeObserver(publish)
+    observer.observe(el)
+    return () => {
+      observer.disconnect()
+      document.documentElement.style.setProperty('--sticky-banners-height', '0px')
+    }
+  }, [])
+
+  return (
+    <div ref={ref} className="sticky top-0 z-20">
+      <ConnectionBanner />
+      <CircuitBreakerBanner />
+    </div>
+  )
+}
+
+/**
  * AppShell は全ページ共通の外枠。
  * モバイルはボトムタブ、`md` 以上はサイドバーに切り替わる。
  */
@@ -360,9 +398,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     <div className="flex min-h-screen bg-background text-foreground">
       <Sidebar />
       <div className="flex min-w-0 flex-1 flex-col">
-        {/* サーキットブレーカー発動中はどのページでも見えるよう、
+        {/* 接続断・サーキットブレーカーの居座り通知は、どのページでも見えるよう
             ルーティングされる children の外・全ページ共通の位置に置く */}
-        <CircuitBreakerBanner />
+        <StickyBanners />
         {/* モバイルではボトムタブの実寸ぶんを下に確保する。**これが重なりを
             防ぐのはドキュメント最下端までスクロールしたときだけ**で、それ以外の
             スクロール位置での重なりは別の問題（未解決。

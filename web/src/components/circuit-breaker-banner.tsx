@@ -1,5 +1,5 @@
 import { useQueryClient } from '@tanstack/react-query'
-import { useLayoutEffect, useRef, useState } from 'react'
+import { useState } from 'react'
 
 import {
   getListCircuitBreakersQueryKey,
@@ -31,8 +31,8 @@ import { mutationErrorMessage } from '@/lib/mutation-error-message'
  *
  * トーストにしない理由: ブレーカーは人間が再開するまで止まり続けるラッチであり、
  * 一定時間で消えるトーストと組み合わせると「気付かないまま放置される」という
- * 最悪の結末になりうる。app-shell.tsx から呼び、ルートに関わらず常に見える
- * 位置に置く。
+ * 最悪の結末になりうる。app-shell.tsx の `StickyBanners` から呼び、ルートに
+ * 関わらず常に見える位置に置く。
  *
  * `GET /api/breakers` は発動中のものだけを返す（空配列が正常系）ので、
  * このコンポーネントは 0 件のとき何も描画しない（余計な枠を出さない）。
@@ -41,41 +41,21 @@ import { mutationErrorMessage } from '@/lib/mutation-error-message'
  * されると自動で再取得される。ここではマウント時の取得（TanStack Query の
  * 既定動作）にのみ依存し、SSE の取りこぼしを前提にしない
  * （不変条件 5: イベントはヒント、真実は再取得）。
+ *
+ * sticky 化と高さの publish（`--sticky-banners-height`）は自身では持たず、
+ * `app-shell.tsx` の `StickyBanners` に任せる --- `ConnectionBanner` と並んで
+ * 出るとき、どちらも `sticky top-0` の兄弟のままでは重なる（sticky は兄弟の
+ * 高さを自動で避けない）ため、1 つの sticky コンテナに両方をまとめて 1 箇所で
+ * 合計高さを publish する。
  */
 export function CircuitBreakerBanner() {
   const query = useListCircuitBreakers()
   const breakers = unwrap(query.data) ?? []
-  const ref = useRef<HTMLDivElement>(null)
-
-  // PageHeader（components/page.tsx）はこのバナーの高さぶん sticky の
-  // top をずらす必要があるので、実測して --breaker-banner-height に書き出す。
-  // 発動件数や内訳の展開/折りたたみで高さが変わるため ResizeObserver で追従する。
-  useLayoutEffect(() => {
-    const el = ref.current
-    if (!el) {
-      document.documentElement.style.setProperty('--breaker-banner-height', '0px')
-      return
-    }
-    const publish = () => {
-      document.documentElement.style.setProperty('--breaker-banner-height', `${el.offsetHeight}px`)
-    }
-    publish()
-    const observer = new ResizeObserver(publish)
-    observer.observe(el)
-    return () => {
-      observer.disconnect()
-      document.documentElement.style.setProperty('--breaker-banner-height', '0px')
-    }
-  }, [breakers.length])
 
   if (breakers.length === 0) return null
 
   return (
-    <div
-      ref={ref}
-      role="alert"
-      className="sticky top-0 z-20 border-b border-destructive/30 bg-destructive/10 text-destructive"
-    >
+    <div role="alert" className="border-b border-destructive/30 bg-destructive/10 text-destructive">
       <p className="px-4 pt-2 text-xs">
         削除が保留されています。予約の作成と録画は続いています。
       </p>

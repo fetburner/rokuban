@@ -7,49 +7,21 @@ import {
   epgRefreshIntervalMs,
   operationalRefreshIntervalMs,
   storageRefreshIntervalMs,
+  useConnectionState,
   useEncodeProgress,
   useServerEvents,
 } from '@/lib/events'
-
-/**
- * EventSourceStub は jsdom に無い EventSource を埋める。最後に作られたインスタンスを
- * 覚えておき、テストからサーバー側のイベントを発火できるようにする。
- */
-class EventSourceStub {
-  static last: EventSourceStub | null = null
-  private listeners = new Map<string, Set<(event: Event) => void>>()
-  closed = false
-  url: string
-
-  // 引数プロパティ（`constructor(public url)`）は erasableSyntaxOnly で使えない
-  constructor(url: string) {
-    this.url = url
-    EventSourceStub.last = this
-  }
-
-  addEventListener(type: string, listener: (event: Event) => void): void {
-    const set = this.listeners.get(type) ?? new Set()
-    set.add(listener)
-    this.listeners.set(type, set)
-  }
-
-  removeEventListener(type: string, listener: (event: Event) => void): void {
-    this.listeners.get(type)?.delete(listener)
-  }
-
-  close(): void {
-    this.closed = true
-  }
-
-  emit(type: string, data?: string): void {
-    const event = data === undefined ? new Event(type) : new MessageEvent(type, { data })
-    for (const listener of this.listeners.get(type) ?? []) listener(event)
-  }
-}
+import { EventSourceStub } from '@/test/event-source-stub'
 
 function Subscriber() {
   useServerEvents()
   return null
+}
+
+/** ConnectionStatusProbe は useConnectionState の戻り値を DOM に出すだけの観測用コンポーネント。 */
+function ConnectionStatusProbe() {
+  const { status, lastConnectedAt } = useConnectionState()
+  return <div data-testid="connection-status">{`${status}:${lastConnectedAt ?? 'null'}`}</div>
 }
 
 const progressProfiles = {
@@ -507,5 +479,86 @@ describe('useServerEvents', () => {
       programList: 2,
       storage: 2,
     })
+  })
+})
+
+describe('useConnectionState', () => {
+  it('connecting で始まり、open / error で遷移する', () => {
+    globalThis.EventSource = EventSourceStub as unknown as typeof EventSource
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const view = render(
+      <QueryClientProvider client={queryClient}>
+        <Subscriber />
+        <ConnectionStatusProbe />
+      </QueryClientProvider>,
+    )
+
+    // マウント直後、まだ open を受けていない
+    expect(view.getByTestId('connection-status')).toHaveTextContent(/^connecting:/)
+
+    act(() => {
+      EventSourceStub.last?.emit('open')
+    })
+    expect(view.getByTestId('connection-status')).toHaveTextContent(/^open:/)
+
+    // 「切断中」は readyState ではなく error イベントで定義する
+    act(() => {
+      EventSourceStub.last?.emit('error')
+    })
+    expect(view.getByTestId('connection-status')).toHaveTextContent(/^disconnected:/)
+
+    // 再接続（次の open）で復帰する
+    act(() => {
+      EventSourceStub.last?.emit('open')
+    })
+    expect(view.getByTestId('connection-status')).toHaveTextContent(/^open:/)
+  })
+
+  it('open すると lastConnectedAt（ISO 文字列）を持つ', () => {
+    // lastConnectedAt はモジュール状態なので、このテストの前に他のテストが
+    // open していれば mount 時点で既に非 null なことがある（アンマウントで
+    // リセットするのは status だけ --- lastConnectedAt は「最後に繋がっていた
+    // 時刻」なので、再マウントしても失ってはいけない値である）。
+    // ここでは「open 後は必ず妥当な ISO 文字列になっている」ことだけを見る。
+    globalThis.EventSource = EventSourceStub as unknown as typeof EventSource
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const view = render(
+      <QueryClientProvider client={queryClient}>
+        <Subscriber />
+        <ConnectionStatusProbe />
+      </QueryClientProvider>,
+    )
+
+    act(() => {
+      EventSourceStub.last?.emit('open')
+    })
+    const text = view.getByTestId('connection-status').textContent ?? ''
+    expect(text).toMatch(/^open:/)
+    const lastConnectedAt = text.slice(text.indexOf(':') + 1)
+    // ISO 文字列であること（形式が壊れたら Date が Invalid Date になり toISOString が例外を投げる）
+    expect(new Date(lastConnectedAt).toISOString()).toBe(lastConnectedAt)
+  })
+
+  it('アンマウントすると connecting に戻る（モジュール状態のテスト間の持ち越しを防ぐ）', () => {
+    globalThis.EventSource = EventSourceStub as unknown as typeof EventSource
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const view = render(
+      <QueryClientProvider client={queryClient}>
+        <Subscriber />
+        <ConnectionStatusProbe />
+      </QueryClientProvider>,
+    )
+    act(() => {
+      EventSourceStub.last?.emit('open')
+    })
+    expect(view.getByTestId('connection-status')).toHaveTextContent(/^open:/)
+    view.unmount()
+
+    const view2 = render(
+      <QueryClientProvider client={queryClient}>
+        <ConnectionStatusProbe />
+      </QueryClientProvider>,
+    )
+    expect(view2.getByTestId('connection-status')).toHaveTextContent(/^connecting:/)
   })
 })

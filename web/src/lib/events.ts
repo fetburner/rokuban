@@ -233,6 +233,67 @@ function receiveEncodeProgress(event: Event): void {
   }
 }
 
+/** ConnectionStatus は /api/events（SSE）の接続状態。 */
+export type ConnectionStatus =
+  /** まだ一度も open していない（初回接続中、または再接続の待機中）。 */
+  | 'connecting'
+  /** 接続が開いている。 */
+  | 'open'
+  /** `error` を受けてから次の `open` までの間（EventSource は自分で再接続するが、
+   * 再接続が成功するまでこの状態が続く）。 */
+  | 'disconnected'
+
+/** ConnectionState は {@link useConnectionState} が返す値。 */
+export type ConnectionState = {
+  status: ConnectionStatus
+  /** 直近で `open` した時刻（ISO）。一度も繋がっていなければ null。 */
+  lastConnectedAt: string | null
+}
+
+let connectionState: ConnectionState = { status: 'connecting', lastConnectedAt: null }
+const connectionListeners = new Set<() => void>()
+
+/**
+ * setConnectionState は状態が実際に変わったときだけ購読者に通知する。
+ *
+ * `error` は切断が続く限り何度も飛んでくるが、ここで実質的な変化（status /
+ * lastConnectedAt）が無ければ何もしない --- 帯を出す遅延タイマー
+ * （{@link disconnectedBannerDelayMs}）を持つ側は「同じ status 値のままなら
+ * 再レンダーされない」ことを前提に、error のたびにタイマーを再セットしない
+ * 作りにできる。
+ */
+function setConnectionState(next: ConnectionState): void {
+  if (
+    next.status === connectionState.status &&
+    next.lastConnectedAt === connectionState.lastConnectedAt
+  ) {
+    return
+  }
+  connectionState = next
+  for (const listener of connectionListeners) listener()
+}
+
+function subscribeConnectionState(listener: () => void): () => void {
+  connectionListeners.add(listener)
+  return () => connectionListeners.delete(listener)
+}
+
+/** useConnectionState は /api/events（{@link useServerEvents}）の接続状態を返す。 */
+export function useConnectionState(): ConnectionState {
+  return useSyncExternalStore(subscribeConnectionState, () => connectionState)
+}
+
+/**
+ * disconnectedBannerDelayMs は「切断中」になってから帯（`ConnectionBanner`）を
+ * 出すまでの遅延（ミリ秒）。
+ *
+ * EventSource は瞬断でも自分で再接続するので、遅延なしで出すと瞬断のたびに
+ * 帯が点滅する。10 秒は運用状態の定期 invalidate（60 秒）より十分短く
+ * （帯無しで放置される時間を長くしない）、かつ大半の瞬断がここに達する前に
+ * 自己回復する値として選んだ（実測ではなく判断）。
+ */
+export const disconnectedBannerDelayMs = 10_000
+
 /**
  * useServerEvents は /api/events を購読し、届いたトピックに対応するクエリを
  * invalidate する。加えて、SSE に依存しない 2 つのレベル経路を張る。
@@ -273,8 +334,12 @@ export function useServerEvents() {
     listen('error', () => {
       disconnected = true
       clearAllEncodeProgress()
+      // 「切断中」は error 後 open 前で定義する（readyState は再接続中も
+      // CONNECTING を返し続けるので使わない）
+      setConnectionState({ status: 'disconnected', lastConnectedAt: connectionState.lastConnectedAt })
     })
     listen('open', () => {
+      setConnectionState({ status: 'open', lastConnectedAt: new Date().toISOString() })
       if (!disconnected) return
       disconnected = false
       for (const group of queryGroups) invalidateGroup(queryClient, group)
@@ -284,6 +349,7 @@ export function useServerEvents() {
       for (const { type, handler } of listeners) source.removeEventListener(type, handler)
       source.close()
       clearAllEncodeProgress()
+      setConnectionState({ status: 'connecting', lastConnectedAt: connectionState.lastConnectedAt })
     }
   }, [queryClient])
 
