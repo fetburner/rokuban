@@ -285,6 +285,63 @@ describe('ToastProvider', () => {
   })
 
   /**
+   * デデュープは message + kind === 'error' だけで判定すると、action 付きの
+   * error も対象に入ってしまう（「action は個体ごとにクロージャが違うので
+   * デデュープしない」というコメントが嘘になる --- action が違う error に
+   * 「再試行」を足した瞬間、同じ「古いクロージャが再利用される」バグが戻る）。
+   * action 付きは error でも常にデデュープ対象外にする。
+   */
+  it('同じ文言の error でも action が違えば 2 件出て、2 件目の action は 2 件目の対象に効く', () => {
+    const retried: string[] = []
+    function RetryHarness() {
+      const toast = useToast()
+      return (
+        <>
+          <button
+            onClick={() =>
+              toast({
+                message: '失敗しました',
+                kind: 'error',
+                action: { label: '再試行', onClick: () => retried.push('A') },
+              })
+            }
+          >
+            A を失敗させる
+          </button>
+          <button
+            onClick={() =>
+              toast({
+                message: '失敗しました',
+                kind: 'error',
+                action: { label: '再試行', onClick: () => retried.push('B') },
+              })
+            }
+          >
+            B を失敗させる
+          </button>
+        </>
+      )
+    }
+
+    render(
+      <ToastProvider>
+        <RetryHarness />
+      </ToastProvider>,
+    )
+
+    fireEvent.click(screen.getByText('A を失敗させる'))
+    fireEvent.click(screen.getByText('B を失敗させる'))
+
+    expect(screen.getAllByText('失敗しました')).toHaveLength(2)
+
+    const retryButtons = screen.getAllByRole('button', { name: '再試行' })
+    expect(retryButtons).toHaveLength(2)
+    fireEvent.click(retryButtons[1]) // 2 件目（B）の再試行を押す
+
+    expect(retried).toEqual(['B'])
+  })
+
+  /**
    * blocker 1 の再現: ポインタが既にトースト領域上にある状態で届いた info は
    * 一時停止されず 6 秒で消えてはいけない。`show` が無条件に `schedule` する
    * 実装（修正前）だと、hover 中に届いた 2 通目だけが 6 秒後に消えて落ちる。

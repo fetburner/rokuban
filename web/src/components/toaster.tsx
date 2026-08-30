@@ -142,7 +142,9 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
       // （例: 「予約しました: 番組名」+ 取消。EPG では再放送等で名前が
       // 一致するのは日常）。
       setToasts((current) =>
-        kind === 'error' && current.some((t) => t.kind === 'error' && t.message === toast.message)
+        kind === 'error' &&
+        !toast.action &&
+        current.some((t) => t.kind === 'error' && t.message === toast.message)
           ? current
           : [...current, { ...toast, kind, id }],
       )
