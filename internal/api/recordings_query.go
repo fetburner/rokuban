@@ -352,17 +352,15 @@ func buildRecordingsQuery(f recordingsFilter) (string, []any, error) {
 	}
 
 	// q は条件が実際にあるときだけ節を足す（"$n IS NULL OR ..." 形にしない）。
-	// これにより Postgres が最初に立てるプランは常に具体的になり、trgm 式 GIN
-	// （recordings_title_trgm / recordings_description_trgm）が
-	// 汎用プランに落ちて使われなくなることを避ける（issue #136 の「罠」）。
+	// 動的 WHERE ビルダそのものの判断は docs/api/rest.md §動的 WHERE ビルダ
+	// （sqlc の静的クエリにしない）にある。
 	//
-	// これだけでは不十分（PR #187 レビュー O1）: pgx の既定
-	// QueryExecModeCacheStatement は SQL テキストを prepared statement として
-	// キャッシュし、Postgres 自身が「同じ statement を 6 回目以降 custom plan
-	// でなく generic plan で評価する」（PREPARE/EXECUTE の既定挙動）。同じ
-	// フィルタ組み合わせ（= 同じ SQL テキスト）に異なる値の `q` が 6 回以上
-	// 来ると、trgm 式 GIN が効かない generic plan に落ちうる
-	// （queryRecordings が QueryExecModeExec を強制する理由）。
+	// これだけでは不十分: pgx の既定 QueryExecModeCacheStatement は同じ SQL
+	// テキストの 6 回目の実行から generic plan に切り替わりうる（実測
+	// 0.7ms → 290ms。CLAUDE.md「測っていない挙動を断言しない」参照）。
+	// queryRecordings はこれを避けるため QueryExecModeExec を強制する
+	// （docs/operations/database.md §pooler 越しに置けるのは api ロールと
+	// streamer ロールだけ）。
 	if f.Q != "" {
 		switch f.QTarget {
 		case Title:

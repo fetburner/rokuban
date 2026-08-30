@@ -33,21 +33,9 @@ import (
 // Config は Reconciler の設定。
 type Config struct {
 	// MaxRecreatesPerPass は 1 パスで行う予約オプション差分反映の再作成
-	// （DELETE→POST）の上限。ルールの priority を編集するとマッチしている
-	// 全予約が再作成対象になり得るため（N=200 なら 1 パスで 400 回の mirakc
-	// 呼び出し）、上限を設けてレベルトリガーで数パスに分けて収束させる。
-	//
-	// かつて存在した MaxDeletesPerPass（件数ベースの大量削除ブレーカー）とは
-	// 別物で、あちらは撤去した: reconciler が「desired に無い schedule がある」
-	// と判定する経路を reconciler 自身は区別できず、ruler のブレーカー対象外の
-	// 2 経路（ルール削除 API による直接 DELETE／番組終了後の GC）で誤発火する
-	// だけだったため（breaker.ReconcileTotalLoss の doc コメント、
-	// docs/recording.md §3.2「止められる場所は ruler だけ」、issue #2 の M2-5
-	// 決定コメント）。desired から外れる形の明示操作（intent skip 等）は ruler
-	// の toDelete 経由で既にブレーカー対象。代わりに「desired が空なのに自分の
-	// schedule が観測される」という全損シグネチャを breaker.ReconcileTotalLoss
-	// で守る。MaxRecreatesPerPass は削除の話ではなく単なるレート制限で、上限
-	// まではやって残りを次パスに送るだけ。
+	// （DELETE→POST）の上限。判断は docs/recording/reconciler.md §1 パスの
+	// 再作成数に上限を設ける、ruler 側の大量削除ブレーカーとの別物性は
+	// docs/recording/breaker.md §止められる場所は ruler だけ にある。
 	MaxRecreatesPerPass int
 
 	DefaultPriority int
