@@ -300,7 +300,7 @@ in-flight `fetch` を `AbortController` で中断、hls.js の `destroy()` /
 掴まれるのは利用者が明示的に「再生」を押したチャンネルだけであり、その本数分
 だけ**離脱ヒントが届けば十数秒、届かなければ最終アクセスから 30 秒強**残る
 （実測値は下記）。既定 `max_sessions` の 4 を明示的な再生の連打で超えると、
-5 回目が 503 `too many concurrent live sessions on this process`になる。
+5 回目が 503 `too many concurrent live sessions on this process` になる。
 チューナー本数がそれより少ない環境ではさらに手前で mirakc 側の枯渇により
 503 `live stream unavailable` になる。
 判定手段: `pages/live.test.tsx`「再生中に別チャンネルへ切り替えると選択状態に戻る
