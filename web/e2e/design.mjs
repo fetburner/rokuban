@@ -599,6 +599,7 @@ log('\n=== ⓪ 配っている bundle と dist/ の一致 ===')
 await verifyBundleMatchesOrExit(URL_BASE, ng)
 
 const browser = await launchBrowser()
+let checkedColorSchemeChange = false
 
 /** open は 1 ページを開いてスタブ・時刻・テーマを整えるところまでやる。 */
 async function open(viewport, theme, screen, opts = {}) {
@@ -614,8 +615,36 @@ async function open(viewport, theme, screen, opts = {}) {
   await installApiStubs(page, apiHandler(opts))
   await page.goto(URL_BASE + screen.path, { waitUntil: 'domcontentloaded' })
   // ダークは `.dark` クラスで切り替わる（index.css の @custom-variant）。
-  // アプリ自身に切り替え手段が無いので、ここで直接付ける（README §デザイン）。
-  if (theme === 'dark') await page.evaluate(() => document.documentElement.classList.add('dark'))
+  // アプリ自身が `prefers-color-scheme` を初回描画前に `html.dark` へ反映する
+  // （index.html の inline script）。ここで直接付けず、context の colorScheme が
+  // 起こした到達経路そのものを判定に載せる --- inline script を壊すと全ダーク
+  // ショットがここで落ちる。
+  const hasDark = await page.evaluate(() => document.documentElement.classList.contains('dark'))
+  if ((theme === 'dark') !== hasDark) {
+    ng.push(
+      `${screen.name}/${theme}/${viewport.name}: html.dark が prefers-color-scheme=${theme} に追従していない（到達経路が壊れている）`,
+    )
+  }
+  if (!checkedColorSchemeChange) {
+    const opposite = theme === 'dark' ? 'light' : 'dark'
+    await page.emulateMedia({ colorScheme: opposite })
+    await page
+      .waitForFunction(
+        (dark) => document.documentElement.classList.contains('dark') === dark,
+        opposite === 'dark',
+        { timeout: 1500 },
+      )
+      .catch(() => ng.push(`prefers-color-scheme の ${theme} → ${opposite} 変更に html.dark が追従しない`))
+    await page.emulateMedia({ colorScheme: theme })
+    await page
+      .waitForFunction(
+        (dark) => document.documentElement.classList.contains('dark') === dark,
+        theme === 'dark',
+        { timeout: 1500 },
+      )
+      .catch(() => ng.push(`prefers-color-scheme の ${opposite} → ${theme} 変更に html.dark が追従しない`))
+    checkedColorSchemeChange = true
+  }
   if (screen.wait) {
     await page.locator(screen.wait).first().waitFor({ timeout: 15000 }).catch(() => {
       ng.push(`${screen.name}/${theme}/${viewport.name}: 目印「${screen.wait}」が出ない`)
@@ -721,7 +750,6 @@ for (const theme of themes) {
     await page.clock.setFixedTime(FIXED_NOW)
     await installApiStubs(page, apiHandler({ delayPath: '/api/recordings', delayMs: 5000 }))
     await page.goto(URL_BASE + '/recordings', { waitUntil: 'domcontentloaded' })
-    if (theme === 'dark') await page.evaluate(() => document.documentElement.classList.add('dark'))
     await page
       .locator('.scanlines')
       .first()
@@ -766,7 +794,6 @@ for (const theme of themes) {
     await page.clock.setFixedTime(FIXED_NOW)
     await installApiStubs(page, apiHandler({ emptyHome: true }))
     await page.goto(URL_BASE + '/', { waitUntil: 'domcontentloaded' })
-    if (theme === 'dark') await page.evaluate(() => document.documentElement.classList.add('dark'))
     await page
       .locator('div.scanlines', { hasText: '表示できる項目がありません' })
       .first()
@@ -1852,7 +1879,6 @@ for (const theme of themes) {
     await page.clock.setFixedTime(FIXED_NOW)
     await installApiStubs(page, apiHandler({ delayPath: '/api/recordings', delayMs: 5000 }))
     await page.goto(URL_BASE + '/recordings', { waitUntil: 'domcontentloaded' })
-    if (theme === 'dark') await page.evaluate(() => document.documentElement.classList.add('dark'))
     const skeleton = page.locator('.scanlines').first()
     await skeleton.waitFor({ timeout: 5000 }).catch(() => {
       ng.push(`[${theme}] 読み込み中の走査線（.scanlines）が出ない`)
