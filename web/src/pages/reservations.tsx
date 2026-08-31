@@ -1,4 +1,4 @@
-import { Link } from '@tanstack/react-router'
+import { Link, useNavigate, useSearch as useRouteSearch } from '@tanstack/react-router'
 import { ChevronRight } from 'lucide-react'
 import { useMemo } from 'react'
 
@@ -7,12 +7,19 @@ import { unwrap } from '@/api/unwrap'
 import { CapacityShortfallBadge } from '@/components/capacity-shortfall-badge'
 import { EmptyState, ErrorState, ListSkeleton, PageContent, PageHeader } from '@/components/page'
 import { ReservationSkipBadge } from '@/components/reservation-skip-reason'
+import { Chip } from '@/components/ui/chip'
 import { coveringWindow } from '@/lib/capacity'
 import { formatDateTime, formatDuration } from '@/lib/format'
-import { stateLabels } from '@/lib/reservation-labels'
+import {
+  reservationNeedsAttention,
+  stateLabels,
+  type ReservationsPageSearch,
+} from '@/lib/reservation-labels'
 import { cn } from '@/lib/utils'
 
 export function ReservationsPage() {
+  const search = useRouteSearch({ from: '/reservations' })
+  const navigate = useNavigate()
   const query = useListReservations()
   const reservations = useMemo(() => unwrap(query.data) ?? [], [query.data])
 
@@ -30,21 +37,46 @@ export function ReservationsPage() {
   // 取得の失敗・未完了は「バッジが出ない」に落ちる。元から沈黙は「収まる」ことの
   // 保証ではないので（docs/data.md §6.5）、予約一覧そのものをエラーにはしない
   const overages = useMemo(() => unwrap(overagesQuery.data) ?? [], [overagesQuery.data])
+  const attentionReady = listedWindow === null || !overagesQuery.isPending
+  const attentionReservations = useMemo(
+    () => reservations.filter((reservation) => reservationNeedsAttention(reservation, overages)),
+    [overages, reservations],
+  )
+  const visibleReservations =
+    search.only === 'attention' ? attentionReservations : reservations
+  const selectOnly = (only: ReservationsPageSearch['only']) => {
+    void navigate({ to: '/reservations', search: { only }, replace: true })
+  }
 
   return (
     <>
-      <PageHeader title="予約" />
+      <PageHeader title="予約">
+        {!query.isPending && !query.isError && attentionReady && (
+          <div role="group" aria-label="予約の絞り込み" className="flex flex-wrap gap-2 px-4 pb-3">
+            <Chip active={search.only === undefined} onClick={() => selectOnly(undefined)}>
+              すべて（{reservations.length}）
+            </Chip>
+            {attentionReservations.length > 0 && (
+              <Chip active={search.only === 'attention'} onClick={() => selectOnly('attention')}>
+                要確認（{attentionReservations.length}）
+              </Chip>
+            )}
+          </div>
+        )}
+      </PageHeader>
 
       <PageContent>
         {query.isError ? (
         <ErrorState>予約の取得に失敗しました</ErrorState>
-      ) : query.isPending ? (
+      ) : query.isPending || (search.only === 'attention' && !attentionReady) ? (
         <ListSkeleton />
-      ) : reservations.length === 0 ? (
-        <EmptyState>予約がありません</EmptyState>
+      ) : visibleReservations.length === 0 ? (
+        <EmptyState>
+          {search.only === 'attention' ? '確認が要る予約はありません' : '予約がありません'}
+        </EmptyState>
       ) : (
         <ul>
-          {reservations.map((r) => {
+          {visibleReservations.map((r) => {
             // 行本体のリンクの accessible name。子要素を持たない絶対配置の
             // リンク（下記）にするため、children から自動で組めない分を明示する。
             // 採否の基準は「行を一意に識別できるか」--- 局名は同タイトル・別局

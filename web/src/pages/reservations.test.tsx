@@ -1,5 +1,6 @@
 import type { QueryClient } from '@tanstack/react-query'
-import { screen, waitFor, within } from '@testing-library/react'
+import { act, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { CapacityOverage, Reservation } from '@/api/generated'
@@ -67,7 +68,10 @@ function jsonResponse(body: unknown): Response {
  * 超過区間は時間窓で実際に絞る。窓を無視して全件返すスタブにすると、「一覧の予約を
  * 覆う窓で訊く」という実装の主張をテストが検証できない。
  */
-function stubApi(reservations: Reservation[], overages: CapacityOverage[]) {
+function stubApi(
+  reservations: Reservation[],
+  overages: CapacityOverage[] | Promise<CapacityOverage[]>,
+) {
   const fetchMock = vi.fn((input: string | URL | Request) => {
     const url = new URL(String(input), 'http://localhost')
     if (url.pathname === '/api/reservations') return Promise.resolve(jsonResponse(reservations))
@@ -75,10 +79,13 @@ function stubApi(reservations: Reservation[], overages: CapacityOverage[]) {
     if (url.pathname === '/api/capacity/overages') {
       const start = new Date(url.searchParams.get('start') ?? 0).getTime()
       const end = new Date(url.searchParams.get('end') ?? 0).getTime()
-      const matched = overages.filter(
-        (o) => new Date(o.endAt).getTime() > start && new Date(o.startAt).getTime() < end,
+      return Promise.resolve(overages).then((items) =>
+        jsonResponse(
+          items.filter(
+            (o) => new Date(o.endAt).getTime() > start && new Date(o.startAt).getTime() < end,
+          ),
+        ),
       )
-      return Promise.resolve(jsonResponse(matched))
     }
     throw new Error(`unexpected fetch: ${url.pathname}`)
   })
@@ -94,13 +101,17 @@ function stubApi(reservations: Reservation[], overages: CapacityOverage[]) {
  * ことの待ち合わせに使う（バッジが出ないことを確かめるテストが、解決前に
  * 通るのを防ぐ）。
  */
-function renderPage() {
-  return renderInRouter(<ReservationsPage />, { path: '/reservations' })
+function renderPage(initialEntries?: string[]) {
+  return renderInRouter(<ReservationsPage />, { path: '/reservations', initialEntries })
 }
 
-function renderWith(reservations: Reservation[], overages: CapacityOverage[]) {
+function renderWith(
+  reservations: Reservation[],
+  overages: CapacityOverage[] | Promise<CapacityOverage[]>,
+  initialEntries?: string[],
+) {
   const fetchMock = stubApi(reservations, overages)
-  return { ...renderPage(), fetchMock }
+  return { ...renderPage(initialEntries), fetchMock }
 }
 
 /** row はタイトルからその予約の行を引く。 */
@@ -249,10 +260,92 @@ describe('予約一覧のチューナー不足バッジ', () => {
     const { fetchMock } = renderWith([], [])
 
     expect(await screen.findByText('予約がありません')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'すべて（0）' })).toBeInTheDocument()
     // 予約一覧の問い合わせは起きている（スタブが効いていることの確認）
     await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThan(0))
 
     expect(capacityRequests(fetchMock)).toHaveLength(0)
+  })
+})
+
+describe('予約一覧の要確認フィルタ', () => {
+  it('?only=attention では state が active でない行と容量不足の行だけを残す', async () => {
+    const { queryClient } = renderWith(
+      [
+        reservation(1, '通常の予約', 18 * 60, 60),
+        { ...reservation(2, 'ルール外の予約', 19 * 60, 60), state: 'detached' as const },
+        reservation(3, '容量不足の予約', 20 * 60, 60),
+      ],
+      [overage(20 * 60, 21 * 60)],
+      ['/reservations?only=attention'],
+    )
+
+    expect(await screen.findByText('チューナー不足（BS が 1 本）')).toBeInTheDocument()
+    await overagesSettled(queryClient)
+
+    expect(screen.getByRole('button', { name: '要確認（2）' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+    expect(screen.getByText('ルール外の予約')).toBeInTheDocument()
+    expect(screen.getByText('容量不足の予約')).toBeInTheDocument()
+    expect(screen.queryByText('通常の予約')).toBeNull()
+  })
+
+  it('容量の初回取得中は要確認 0 件の空状態を確定しない', async () => {
+    let resolveOverages!: (value: CapacityOverage[]) => void
+    const overages = new Promise<CapacityOverage[]>((resolve) => {
+      resolveOverages = resolve
+    })
+    const { fetchMock } = renderWith(
+      [reservation(1, '通常の予約', 18 * 60, 60)],
+      overages,
+      ['/reservations?only=attention'],
+    )
+
+    await waitFor(() => expect(capacityRequests(fetchMock)).toHaveLength(1))
+    expect(screen.getByRole('status')).toHaveTextContent('読み込み中')
+    expect(screen.queryByText('確認が要る予約はありません')).toBeNull()
+
+    await act(async () => resolveOverages([]))
+    expect(await screen.findByText('確認が要る予約はありません')).toBeInTheDocument()
+  })
+
+  it('要確認が 0 件なら要確認チップを置かず、URL 指定時は専用の空状態を出す', async () => {
+    const { queryClient } = renderWith(
+      [reservation(1, '通常の予約', 18 * 60, 60)],
+      [],
+      ['/reservations?only=attention'],
+    )
+
+    expect(await screen.findByRole('button', { name: 'すべて（1）' })).toBeInTheDocument()
+    await overagesSettled(queryClient)
+
+    expect(screen.queryByRole('button', { name: /要確認/ })).toBeNull()
+    expect(screen.getByText('確認が要る予約はありません')).toBeInTheDocument()
+    expect(screen.queryByText('通常の予約')).toBeNull()
+  })
+
+  it('チップ操作を URL に書き、すべては only を省略する', async () => {
+    const user = userEvent.setup()
+    const { queryClient, router } = renderWith(
+      [
+        reservation(1, '通常の予約', 18 * 60, 60),
+        { ...reservation(2, '消失した予約', 19 * 60, 60), state: 'orphaned' as const },
+      ],
+      [],
+    )
+
+    expect(await screen.findByText('通常の予約')).toBeInTheDocument()
+    await overagesSettled(queryClient)
+
+    await user.click(screen.getByRole('button', { name: '要確認（1）' }))
+    await waitFor(() => expect(router.state.location.search).toEqual({ only: 'attention' }))
+    expect(screen.queryByText('通常の予約')).toBeNull()
+
+    await user.click(screen.getByRole('button', { name: 'すべて（2）' }))
+    await waitFor(() => expect(router.state.location.search).toEqual({}))
+    expect(screen.getByText('通常の予約')).toBeInTheDocument()
   })
 })
 

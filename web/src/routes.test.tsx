@@ -213,6 +213,21 @@ describe('routeTree', () => {
     expect((ok.state.matches.at(-1)!.search as { ruleId?: unknown }).ruleId).toBe(1000)
   })
 
+  it('/reservations の only は attention だけを通し、不正値を落とす', async () => {
+    for (const [raw, expected] of [
+      ['attention', 'attention'],
+      ['all', undefined],
+      ['bogus', undefined],
+    ] as const) {
+      const router = createRouter({
+        routeTree,
+        history: createMemoryHistory({ initialEntries: [`/reservations?only=${raw}`] }),
+      })
+      await router.load()
+      expect((router.state.matches.at(-1)!.search as { only?: unknown }).only).toBe(expected)
+    }
+  })
+
   it('/live?service=abc は useSearch の戻り値に文字列を残さない', async () => {
     // **`validateSearch` を直接呼ぶだけでは検出できない。** TanStack Router は
     // 非 strict モードで `{ ...生の location.search, ...validateSearch の戻り値 }`

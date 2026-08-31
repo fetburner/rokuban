@@ -8,6 +8,7 @@ import {
   serviceIdSchema,
   type ProgramsPageSearch,
 } from './lib/programs-search'
+import { parseReservationsSearch, type ReservationsPageSearch } from './lib/reservation-labels'
 import {
   parseRecordingsSearch,
   parseRuleId,
@@ -142,6 +143,8 @@ const rulesRoute = createRoute({
 const reservationsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/reservations',
+  validateSearch: (search: Record<string, unknown>): ReservationsPageSearch =>
+    parseReservationsSearch(search),
   // `pages/reservations.tsx` の `<PageHeader title="予約">` と同じ表記。
   head: () => ({ meta: [{ title: pageTitle('予約') }] }),
   component: ReservationsPage,
