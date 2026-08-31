@@ -4,12 +4,15 @@ import { MoreVertical, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 
 import {
+  getListReservationsQueryKey,
+  getListReservationsQueryOptions,
   getListRulesQueryKey,
   useCreateRule,
   useDeleteRule,
   useListRules,
   useUpdateRule,
   type DeleteRuleResponse,
+  type ListRulesQueryResult,
   type Rule,
 } from '@/api/generated'
 import { apiErrorMessage, unwrap } from '@/api/unwrap'
@@ -76,6 +79,7 @@ export function RulesPage() {
   const query = useListRules()
   const rules = unwrap(query.data) ?? []
   const [editingId, setEditingId] = useState<number | 'new' | null>(null)
+  const [isCountingReservations, setIsCountingReservations] = useState(false)
 
   return (
     <>
@@ -131,7 +135,12 @@ export function RulesPage() {
                     onSaved={() => setEditingId(null)}
                   />
                 ) : (
-                  <RuleRow rule={rule} onEdit={() => setEditingId(rule.id)} />
+                  <RuleRow
+                    rule={rule}
+                    isCountingReservations={isCountingReservations}
+                    onCountingReservationsChange={setIsCountingReservations}
+                    onEdit={() => setEditingId(rule.id)}
+                  />
                 )}
               </li>
             ))}
@@ -220,15 +229,108 @@ function deleteRuleResultMessage(res: DeleteRuleResponse | undefined): string | 
  * `destructive` ボタンとして置いていたが、それだと編集を開くたびに
  * 破壊的操作が主操作と並んでしまう。行を離れた overflow に置くことで、
  * 一覧を眺めているだけでは目に入らない位置にする。
+ * 「無効」バッジと有効スイッチは意図的に併存させる。バッジは一覧を読み流す
+ * ときの状態表示、スイッチは操作対象であり、片方だけではもう片方の役割を
+ * 満たさない。
  */
-function RuleRow({ rule, onEdit }: { rule: Rule; onEdit: () => void }) {
+function RuleRow({
+  rule,
+  isCountingReservations,
+  onCountingReservationsChange,
+  onEdit,
+}: {
+  rule: Rule
+  isCountingReservations: boolean
+  onCountingReservationsChange: (counting: boolean) => void
+  onEdit: () => void
+}) {
   const profiles = rule.encodeProfiles ?? []
   const keep = (rule.keepOriginal ?? 'always') as KeepOriginal
   const conditions = summarizeRuleConditions(rule)
   const toast = useToast()
   const queryClient = useQueryClient()
+  const updateRule = useUpdateRule()
   const deleteRule = useDeleteRule()
+  const [activeReservationCount, setActiveReservationCount] = useState(0)
+  const [disableConfirmOpen, setDisableConfirmOpen] = useState(false)
   const [confirmOpen, setConfirmOpen] = useState(false)
+
+  const setEnabled = (enabled: boolean) => {
+    const key = getListRulesQueryKey()
+    const previousEnabled = rule.enabled
+    queryClient.setQueryData<ListRulesQueryResult>(key, (current) =>
+      current === undefined
+        ? current
+        : {
+            ...current,
+            data: current.data.map((item) =>
+              item.id === rule.id ? { ...item, enabled } : item,
+            ),
+          },
+    )
+
+    updateRule.mutate(
+      {
+        id: rule.id,
+        data: buildRuleInput(
+          ruleToDraft(rule),
+          { ...ruleToMeta(rule), enabled },
+          rule,
+        ),
+      },
+      {
+        onSuccess: () => {
+          void queryClient.invalidateQueries({ queryKey: key })
+          // ruler はレベルトリガーなので、再取得しても次回評価までは予約が残る。
+          void queryClient.invalidateQueries({ queryKey: getListReservationsQueryKey() })
+        },
+        onError: (err) => {
+          queryClient.setQueryData<ListRulesQueryResult>(key, (current) =>
+            current === undefined
+              ? current
+              : {
+                  ...current,
+                  data: current.data.map((item) =>
+                    item.id === rule.id ? { ...item, enabled: previousEnabled } : item,
+                  ),
+                },
+          )
+          toast({
+            message: apiErrorMessage(err) ?? 'ルールの更新に失敗しました',
+            kind: 'error',
+          })
+        },
+      },
+    )
+  }
+
+  const toggleEnabled = async () => {
+    if (!rule.enabled) {
+      setEnabled(true)
+      return
+    }
+
+    if (isCountingReservations) return
+    onCountingReservationsChange(true)
+    try {
+      const response = await queryClient.fetchQuery(getListReservationsQueryOptions())
+      const count = (unwrap(response) ?? []).filter(
+        (reservation) =>
+          reservation.ruleId === rule.id &&
+          reservation.source === 'rule' &&
+          reservation.state === 'active',
+      ).length
+      setActiveReservationCount(count)
+      setDisableConfirmOpen(true)
+    } catch (err) {
+      toast({
+        message: apiErrorMessage(err) ?? '予約数の取得に失敗しました',
+        kind: 'error',
+      })
+    } finally {
+      onCountingReservationsChange(false)
+    }
+  }
 
   const remove = () => {
     // ダイアログは AlertDialogAction（AlertDialogPrimitive.Close ラップ）が
@@ -294,6 +396,29 @@ function RuleRow({ rule, onEdit }: { rule: Rule; onEdit: () => void }) {
             <Button type="button" size="sm" onClick={onEdit}>
               編集
             </Button>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={rule.enabled}
+              aria-label={`ルール「${rule.name}」を有効にする`}
+              disabled={updateRule.isPending || isCountingReservations}
+              className="inline-flex min-h-8 items-center rounded-full px-1 outline-none disabled:opacity-50 focus-visible:ring-3 focus-visible:ring-ring/50"
+              onClick={() => void toggleEnabled()}
+            >
+              <span
+                className={cn(
+                  'relative h-5 w-9 rounded-full transition-colors',
+                  rule.enabled ? 'bg-primary' : 'bg-muted-foreground',
+                )}
+              >
+                <span
+                  className={cn(
+                    'absolute top-0.5 left-0.5 size-4 rounded-full bg-background transition-transform',
+                    rule.enabled && 'translate-x-4',
+                  )}
+                />
+              </span>
+            </button>
             <Button
               variant="ghost"
               size="sm"
@@ -339,6 +464,21 @@ function RuleRow({ rule, onEdit }: { rule: Rule; onEdit: () => void }) {
           </DropdownMenu>
         </div>
       </div>
+
+      <AlertDialog open={disableConfirmOpen} onOpenChange={setDisableConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>ルール「{rule.name}」を無効にしますか？</AlertDialogTitle>
+            <AlertDialogDescription>
+              {`「${rule.name}」を無効にすると、このルールによる予約 ${activeReservationCount} 件が取り消されます。手動で予約したものは残ります。`}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>キャンセル</AlertDialogCancel>
+            <AlertDialogAction onClick={() => setEnabled(false)}>無効にする</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* AlertDialogTrigger ではなく open を直接制御する: トリガーは
           overflow メニューの中の menuitem であり、選択するとメニュー自体は
