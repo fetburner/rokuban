@@ -2,7 +2,8 @@ import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { EncodeProfileSummary, Rule, RuleInput, Service } from '@/api/generated'
+import { getListReservationsQueryKey } from '@/api/generated'
+import type { EncodeProfileSummary, Reservation, Rule, RuleInput, Service } from '@/api/generated'
 import { summarizeRuleConditions } from '@/components/rule-condition-summary'
 import { RulesPage } from '@/pages/rules'
 import { renderInRouter } from '@/test/router'
@@ -23,6 +24,29 @@ const sampleRule: Rule = {
   encodeProfiles: [],
   createdAt: '2026-07-01T00:00:00Z',
   updatedAt: '2026-07-01T00:00:00Z',
+}
+
+function sampleReservation(
+  id: number,
+  ruleId: number,
+  state: Reservation['state'] = 'active',
+): Reservation {
+  return {
+    id,
+    site: 'default',
+    programId: 1000 + id,
+    source: 'rule',
+    ruleId,
+    state,
+    title: `番組 ${id}`,
+    serviceName: 'NHK総合',
+    channelType: 'GR',
+    startAt: '2026-09-01T00:00:00Z',
+    durationMs: 1_800_000,
+    createdAt: '2026-08-01T00:00:00Z',
+    updatedAt: '2026-08-01T00:00:00Z',
+    skip: false,
+  }
 }
 
 /**
@@ -77,7 +101,10 @@ function stubApi(
   // 作成・更新・削除を意図的に失敗させる（issue #297: 無音化した成功トーストの
   // 反対側 --- 失敗トーストは従来どおり出ることを確認するため）。既定では
   // 失敗させない。
-  failures: { create?: number; update?: number; delete?: number } = {},
+  failures: { create?: number; update?: number; delete?: number; reservations?: number } = {},
+  // 行のスイッチ（無効化）が確認に出す件数の母集団。RulesPage は予約一覧と
+  // 同じクエリキーで GET /api/reservations を読む。既定は空。
+  reservations: Reservation[] = [],
 ) {
   const putBodies: { id: number; body: RuleInput }[] = []
   const postBodies: RuleInput[] = []
@@ -93,6 +120,14 @@ function stubApi(
 
     if (url.pathname === '/api/rules' && method === 'GET') {
       return Promise.resolve(jsonResponse(state.filter((r) => !deletedIds.includes(r.id))))
+    }
+    if (url.pathname === '/api/reservations' && method === 'GET') {
+      if (failures.reservations !== undefined) {
+        return Promise.resolve(
+          jsonResponse({ error: '予約数を取得できませんでした' }, failures.reservations),
+        )
+      }
+      return Promise.resolve(jsonResponse(reservations))
     }
     if (url.pathname === '/api/rules' && method === 'POST') {
       if (failures.create !== undefined) {
@@ -438,6 +473,227 @@ describe('RulesPage 条件編集', () => {
     await screen.findByText('平日ニュース')
     const link = screen.getByRole('link', { name: 'このルールの録画' })
     expect(link).toHaveAttribute('href', '/recordings?ruleId=2')
+  })
+})
+
+describe('RulesPage ルールの有効スイッチ', () => {
+  it('状態を aria-checked に出し、無効化だけ active 予約数付きの確認を挟む', async () => {
+    const reservations: Reservation[] = [
+      sampleReservation(1, 1),
+      sampleReservation(2, 1),
+      sampleReservation(3, 1, 'detached'),
+      sampleReservation(4, 2),
+      { ...sampleReservation(5, 1), source: 'manual' },
+    ]
+    const { putBodies } = stubApi([sampleRule], undefined, {}, reservations)
+    const user = userEvent.setup()
+    const { queryClient } = renderPage()
+
+    const toggle = await screen.findByRole('switch', { name: 'ルール「ニュース」を有効にする' })
+    expect(toggle).toHaveAttribute('aria-checked', 'true')
+    await user.click(toggle)
+
+    expect(
+      await screen.findByText(
+        '「ニュース」を無効にすると、このルールによる予約 2 件が取り消されます。手動で予約したものは残ります。',
+      ),
+    ).toBeInTheDocument()
+    expect(putBodies).toHaveLength(0)
+
+    await user.click(screen.getByRole('button', { name: '無効にする' }))
+    await waitFor(() => expect(putBodies).toHaveLength(1))
+    // PATCH は RuleInput.name が必須で全置換する契約なので、編集フォームと同じ
+    // 入力を送りつつ enabled だけを変更する。
+    expect(putBodies[0]).toMatchObject({ id: 1, body: { name: 'ニュース', enabled: false } })
+    expect(toggle).toHaveAttribute('aria-checked', 'false')
+
+    // 無効化は予約一覧を invalidate するが、ruler の次回評価までは同じ予約が
+    // キャッシュに残る。即座に行が消えることは期待しない。
+    await waitFor(() =>
+      expect(
+        queryClient.getQueryState(getListReservationsQueryKey())?.isInvalidated,
+      ).toBe(true),
+    )
+    expect(
+      queryClient.getQueryData<{ data: Reservation[] }>(getListReservationsQueryKey())?.data,
+    ).toEqual(reservations)
+  })
+
+  it('予約一覧は無効化を押すまで取得せず、取得完了前に 0 件の確認を出さない', async () => {
+    stubApi([sampleRule])
+    const baseFetch = globalThis.fetch
+    globalThis.fetch = vi.fn((input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input), 'http://localhost')
+      if (url.pathname === '/api/reservations') {
+        return new Promise<Response>((resolve) => {
+          setTimeout(() => resolve(jsonResponse([])), 50)
+        })
+      }
+      return baseFetch(input, init)
+    }) as unknown as typeof fetch
+
+    const user = userEvent.setup()
+    renderPage()
+    const toggle = await screen.findByRole('switch', { name: 'ルール「ニュース」を有効にする' })
+
+    const reservationCalls = () =>
+      (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.filter(
+        (call: unknown[]) =>
+          new URL(String(call[0]), 'http://localhost').pathname === '/api/reservations',
+      )
+    expect(reservationCalls()).toHaveLength(0)
+
+    await user.click(toggle)
+    expect(reservationCalls()).toHaveLength(1)
+    expect(screen.queryByText(/を無効にすると/)).not.toBeInTheDocument()
+
+    expect(await screen.findByText(/を無効にすると/)).toBeInTheDocument()
+  })
+
+  it('予約一覧の取得に失敗したら件数確認を開かず、API 本文をトーストに出す', async () => {
+    stubApi([sampleRule], undefined, { reservations: 500 })
+    const user = userEvent.setup()
+    renderPage()
+
+    await user.click(
+      await screen.findByRole('switch', { name: 'ルール「ニュース」を有効にする' }),
+    )
+
+    expect(await screen.findByText('予約数を取得できませんでした')).toBeInTheDocument()
+    expect(screen.queryByText(/を無効にすると/)).not.toBeInTheDocument()
+  })
+
+  it('有効化は確認を挟まず、PATCH の応答前に状態を楽観更新する', async () => {
+    stubApi([{ ...sampleRule, enabled: false }])
+    const baseFetch = globalThis.fetch
+    let updated = false
+    let resolveUpdate: (() => void) | undefined
+    globalThis.fetch = vi.fn((input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input), 'http://localhost')
+      if (url.pathname === '/api/rules' && (init?.method ?? 'GET') === 'GET' && updated) {
+        return Promise.resolve(jsonResponse([{ ...sampleRule, enabled: true }]))
+      }
+      if (url.pathname === '/api/rules/1' && init?.method === 'PATCH') {
+        return new Promise<Response>((resolve) => {
+          resolveUpdate = () => {
+            updated = true
+            resolve(jsonResponse({ ...sampleRule, enabled: true }))
+          }
+        })
+      }
+      return baseFetch(input, init)
+    }) as unknown as typeof fetch
+
+    const user = userEvent.setup()
+    renderPage()
+
+    const toggle = await screen.findByRole('switch', { name: 'ルール「ニュース」を有効にする' })
+    expect(toggle).toHaveAttribute('aria-checked', 'false')
+    await user.click(toggle)
+
+    await waitFor(() => expect(resolveUpdate).toBeDefined())
+    expect(screen.queryByText(/を無効にすると/)).not.toBeInTheDocument()
+    expect(toggle).toHaveAttribute('aria-checked', 'true')
+
+    const updateCall = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.find(
+      (call: unknown[]) => (call[1] as RequestInit | undefined)?.method === 'PATCH',
+    )
+    if (updateCall === undefined) throw new Error('PATCH was not recorded')
+    expect(JSON.parse(String((updateCall[1] as RequestInit).body))).toMatchObject({
+      name: 'ニュース',
+      enabled: true,
+    })
+    if (resolveUpdate === undefined) throw new Error('PATCH was not started')
+    resolveUpdate()
+    await waitFor(() => {
+      const ruleGets = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.filter(
+        (call: unknown[]) =>
+          new URL(String(call[0]), 'http://localhost').pathname === '/api/rules' &&
+          ((call[1] as RequestInit | undefined)?.method ?? 'GET') === 'GET',
+      )
+      expect(ruleGets.length).toBeGreaterThanOrEqual(2)
+    })
+  })
+
+  it('別ルールの更新成功後に先の更新が失敗しても、成功した行を巻き戻さない', async () => {
+    const otherRule: Rule = { ...sampleRule, id: 2, name: 'スポーツ', enabled: false }
+    stubApi([{ ...sampleRule, enabled: false }, otherRule])
+    const baseFetch = globalThis.fetch
+    let failFirstUpdate: ((response: Response) => void) | undefined
+    globalThis.fetch = vi.fn((input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input), 'http://localhost')
+      if (url.pathname === '/api/rules/1' && init?.method === 'PATCH') {
+        return new Promise<Response>((resolve) => {
+          failFirstUpdate = resolve
+        })
+      }
+      return baseFetch(input, init)
+    }) as unknown as typeof fetch
+
+    const user = userEvent.setup()
+    renderPage()
+    const first = await screen.findByRole('switch', { name: 'ルール「ニュース」を有効にする' })
+    const second = screen.getByRole('switch', { name: 'ルール「スポーツ」を有効にする' })
+
+    await user.click(first)
+    await waitFor(() => expect(failFirstUpdate).toBeDefined())
+    await user.click(second)
+    await waitFor(() => {
+      const ruleGets = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.filter(
+        (call: unknown[]) =>
+          new URL(String(call[0]), 'http://localhost').pathname === '/api/rules' &&
+          ((call[1] as RequestInit | undefined)?.method ?? 'GET') === 'GET',
+      )
+      expect(ruleGets.length).toBeGreaterThanOrEqual(2)
+    })
+
+    if (failFirstUpdate === undefined) throw new Error('first PATCH was not started')
+    failFirstUpdate(jsonResponse({ error: '先の更新に失敗しました' }, 500))
+
+    expect(await screen.findByText('先の更新に失敗しました')).toBeInTheDocument()
+    await waitFor(() => expect(first).toHaveAttribute('aria-checked', 'false'))
+    expect(second).toHaveAttribute('aria-checked', 'true')
+  })
+
+  it('予約数の取得中は全ルールのスイッチを無効にして、確認を重ねて開かせない', async () => {
+    const otherRule: Rule = { ...sampleRule, id: 2, name: 'スポーツ' }
+    stubApi([sampleRule, otherRule])
+    const baseFetch = globalThis.fetch
+    let resolveReservations: ((response: Response) => void) | undefined
+    globalThis.fetch = vi.fn((input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input), 'http://localhost')
+      if (url.pathname === '/api/reservations') {
+        return new Promise<Response>((resolve) => {
+          resolveReservations = resolve
+        })
+      }
+      return baseFetch(input, init)
+    }) as unknown as typeof fetch
+
+    const user = userEvent.setup()
+    renderPage()
+    const switches = await screen.findAllByRole('switch')
+    await user.click(switches[0])
+    await waitFor(() => expect(resolveReservations).toBeDefined())
+
+    expect(switches[0]).toBeDisabled()
+    expect(switches[1]).toBeDisabled()
+
+    if (resolveReservations === undefined) throw new Error('reservation fetch was not started')
+    resolveReservations(jsonResponse([]))
+    expect(await screen.findByText(/を無効にすると/)).toBeInTheDocument()
+  })
+
+  it('更新失敗時は楽観更新を戻し、API 本文をトーストに出す', async () => {
+    stubApi([{ ...sampleRule, enabled: false }], undefined, { update: 500 })
+    const user = userEvent.setup()
+    renderPage()
+
+    const toggle = await screen.findByRole('switch', { name: 'ルール「ニュース」を有効にする' })
+    await user.click(toggle)
+
+    expect(await screen.findByText('サーバーが更新を拒否しました')).toBeInTheDocument()
+    await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'false'))
   })
 })
 
