@@ -172,6 +172,10 @@ export function ChannelPicker({
   )
 }
 
+/**
+ * ChannelOption は複数選択の 1 候補。
+ * フォーカスは `Button` と同じ明示リングを使い、ブラウザ既定の outline は消す。
+ */
 function ChannelOption({
   label,
   secondary,
@@ -193,7 +197,7 @@ function ChannelOption({
       aria-pressed={active}
       onClick={onClick}
       className={cn(
-        'flex min-h-11 w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm transition-colors hover:bg-muted',
+        'flex min-h-11 w-full items-center gap-2 rounded-md border border-transparent px-2 py-2 text-left text-sm transition-[color,background-color] outline-none hover:bg-muted focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50',
       )}
     >
       {/* 四角い枠 + チェックで複数選択であることを形で示す。Check アイコンだけだと

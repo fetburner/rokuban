@@ -50,6 +50,9 @@ import { cn } from '@/lib/utils'
  * 詳細への導線）の中に置かない。** `<a>` の中に `<a>`（が実質的な `<button>` 等の
  * 対話コンテンツも同様）はコンテンツモデル上不正で、クリックの宛先が不定になる
  * --- 行の badge 群は詳細への `Link` の外に出し、同じ `<li>` の中の兄弟要素にする。
+ *
+ * 見えるバッジの寸法は変えず、絶対配置した `::before` だけを高さ 24px にする。
+ * `z-10` は広げた当たり判定を行全面のカバーリンクより手前に保つ。
  */
 export function CapacityShortfallBadge({
   overages,
@@ -88,7 +91,7 @@ export function CapacityShortfallBadge({
       // `wideScreen` で落とすので無害。
       search={{ view: 'grid', at: overageWindow(worst).startMs }}
       className={cn(
-        'flex shrink-0 items-center gap-1 rounded bg-warning/10 px-1.5 py-0.5 text-xs text-warning hover:bg-warning/20 focus-visible:outline-2 focus-visible:outline-warning',
+        'relative z-10 flex shrink-0 items-center gap-1 rounded bg-warning/10 px-1.5 py-0.5 text-xs text-warning hover:bg-warning/20 focus-visible:outline-2 focus-visible:outline-warning before:absolute before:top-1/2 before:h-6 before:inset-x-0 before:-translate-y-1/2',
         className,
       )}
     >

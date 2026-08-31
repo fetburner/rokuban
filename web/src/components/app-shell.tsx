@@ -15,7 +15,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 import { CircuitBreakerBanner } from '@/components/circuit-breaker-banner'
 import { ConnectionBanner } from '@/components/connection-banner'
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { Popover, PopoverClose, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { useLiveEnabled } from '@/lib/capabilities'
 import { cn } from '@/lib/utils'
 
@@ -147,13 +147,17 @@ function isActive(pathname: string, to: string): boolean {
  *
  * 中身は `useNavItems` が決める（`live.enabled: false` なら「ライブ」は
  * 落ちて予約・検索・ルールの 3 個になる。issue #209）。
+ *
+ * `modal="trap-focus"` は背後を inert にせず、開いている間だけ Tab を中で循環させる。
+ * Base UI がトラップを有効にするため `PopoverClose` も置くが、見えない Tab stop に
+ * しないよう `tabIndex={-1}` にし、タッチスクリーンリーダーからの終了手段だけ残す。
  */
 function MoreMenu({ pathname, items }: { pathname: string; items: NavItem[] }) {
   const [open, setOpen] = useState(false)
   const active = items.some((item) => isActive(pathname, item.to))
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover modal="trap-focus" open={open} onOpenChange={setOpen}>
       <PopoverTrigger
         aria-current={active ? 'true' : undefined}
         // min-h-14 で最小タップ領域（44px 以上）を確保する。他タブと高さを揃える
@@ -195,6 +199,9 @@ function MoreMenu({ pathname, items }: { pathname: string; items: NavItem[] }) {
             )
           })}
         </ul>
+        <PopoverClose tabIndex={-1} className="sr-only">
+          メニューを閉じる
+        </PopoverClose>
       </PopoverContent>
     </Popover>
   )
@@ -396,6 +403,12 @@ function StickyBanners() {
 export function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex min-h-screen bg-background text-foreground">
+      <a
+        href="#main"
+        className="sr-only z-50 rounded-md bg-background text-sm font-medium text-foreground shadow-md focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:px-3 focus:py-2 focus:outline-none focus:ring-3 focus:ring-ring/50"
+      >
+        本文へ移動
+      </a>
       <Sidebar />
       <div className="flex min-w-0 flex-1 flex-col">
         {/* 接続断・サーキットブレーカーの居座り通知は、どのページでも見えるよう
@@ -405,7 +418,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             防ぐのはドキュメント最下端までスクロールしたときだけ**で、それ以外の
             スクロール位置での重なりは別の問題（未解決。
             docs/frontend/scroll.md「ボトムタブの裏に隠れる行」） */}
-        <main className="min-w-0 flex-1 pb-[var(--bottom-nav-height)] md:pb-0">
+        <main
+          id="main"
+          tabIndex={-1}
+          className="min-w-0 flex-1 pb-[var(--bottom-nav-height)] md:pb-0"
+        >
           {children}
         </main>
       </div>

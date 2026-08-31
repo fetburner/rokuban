@@ -46,6 +46,31 @@ type Viewport = {
 /** 未計測の viewport。幅・高さが 0 のとき仮想化は「全部描く」に倒れる（lib/epg-grid.ts）。 */
 const unmeasuredViewport: Viewport = { top: 0, left: 0, width: 0, height: 0 }
 
+/** 凡例に出す、淡色を持つ ARIB 大分類。予備・拡張・その他は無彩色なので含めない。 */
+const tintedGenreCodes = Array.from({ length: 12 }, (_, code) => code)
+
+/** GenreLegend は番組セルの淡色とジャンル名の対応を示す。 */
+export function GenreLegend(): React.ReactElement {
+  return (
+    <ul
+      aria-label="ジャンル凡例"
+      className="flex shrink-0 flex-wrap gap-1 border-b border-border px-4 py-2"
+    >
+      {tintedGenreCodes.map((code) => (
+        <li
+          key={code}
+          className={cn(
+            'rounded-full border px-2 py-1 text-[11px] leading-none',
+            genreTint(code),
+          )}
+        >
+          {genreLabel(code)}
+        </li>
+      ))}
+    </ul>
+  )
+}
+
 /**
  * ProgramGrid はサービス x 時間の 2 次元番組表。
  *

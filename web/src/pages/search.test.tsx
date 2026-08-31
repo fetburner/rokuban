@@ -611,6 +611,16 @@ describe('SearchPage', () => {
     ])
   })
 
+  it('検索結果の件数を status として通知する', async () => {
+    stubApi()
+    renderPage()
+
+    await addKeyword('ニュース')
+    await userEvent.click(screen.getByRole('button', { name: '検索' }))
+
+    expect(await screen.findByRole('status')).toHaveTextContent('1 件（番組 ID 順）')
+  })
+
   it('チップで選んだ条件がリクエストに乗る', async () => {
     const { searchBodies } = stubApi()
     renderPage()

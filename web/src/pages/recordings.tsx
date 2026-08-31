@@ -291,6 +291,10 @@ export function RecordingsPage() {
   )
 }
 
+/**
+ * ViewTab はライブラリとごみ箱を切り替えるタブ。
+ * フォーカスは `Button` と同じ明示リングを使い、ブラウザ既定の outline は消す。
+ */
 function ViewTab({
   active,
   onClick,
@@ -305,7 +309,7 @@ function ViewTab({
       type="button"
       onClick={onClick}
       className={cn(
-        'rounded-md px-3 py-1.5 text-xs transition-colors',
+        'rounded-md border border-transparent px-3 py-1.5 text-xs transition-[color,background-color] outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50',
         active
           ? 'bg-muted font-medium text-foreground'
           : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground',

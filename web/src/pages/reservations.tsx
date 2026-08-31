@@ -100,15 +100,11 @@ export function ReservationsPage() {
                     <StateBadge state={r.state} />
                     <ReservationSkipBadge reservation={r} />
                     {/* 容量バッジは番組表への別の Link（issue #233 M6-5）。
-                        `relative`（z-index は指定しない）を足すことで、CSS の
-                        重ね順（positioned な要素は non-positioned な要素より
-                        常に上、同じ z-index auto なら DOM 順）に乗り、行本体の
-                        `absolute inset-0` リンクより手前に来る --- これでクリックが
-                        バッジ自身の Link に届く。判定はサイトごとに独立している
-                        （docs/data.md §6.5）ので予約自身の site を渡す。定数を
-                        持たない。 */}
+                        バッジ自身が `relative z-10` を持ち、行全面の
+                        `absolute inset-0` リンクより手前で 24px の当たり判定を保つ。
+                        判定はサイトごとに独立している（docs/data.md §6.5）ので
+                        予約自身の site を渡す。定数を持たない。 */}
                     <CapacityShortfallBadge
-                      className="relative"
                       overages={overages}
                       site={r.site}
                       startMs={new Date(r.startAt).getTime()}
