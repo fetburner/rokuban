@@ -691,6 +691,7 @@ function useReservationActions(
   sourceByProgramId: ReadonlyMap<number, Reservation['source']>,
 ): ReservationActions {
   const site = useCurrentSite()
+  const navigate = useNavigate()
   const queryClient = useQueryClient()
   const toast = useToast()
   const putIntent = usePutProgramIntent()
@@ -816,7 +817,7 @@ function useReservationActions(
         // 手段を置く。
         toast({
           message: '予約を取消しました',
-          action: { label: '元に戻す', onClick: () => revive(programId, source) },
+          actions: [{ label: '元に戻す', onClick: () => revive(programId, source) }],
         })
       } catch (err) {
         toast({ message: mutationErrorMessage('予約の取消に失敗しました', err), kind: 'error' })
@@ -826,6 +827,18 @@ function useReservationActions(
       }
     })()
   }
+
+  const reservationToastActions = (programId: number) => [
+    { label: '取消', onClick: () => cancel(programId) },
+    {
+      label: '設定',
+      onClick: () =>
+        void navigate({
+          to: '/reservations/$site/$programId',
+          params: { site, programId: String(programId) },
+        }),
+    },
+  ]
 
   // 予約作成（PUT .../intent）自体は action のみのまま変更しない（issue #29 の
   // 決定）。overrides は別 PATCH のまま呼ぶが、ProgramRow の展開パネルで
@@ -849,7 +862,7 @@ function useReservationActions(
           // 確認ダイアログを挟まない代わりに、直後に取り返せるようにする
           toast({
             message: `予約しました: ${program.name}`,
-            action: { label: '取消', onClick: () => cancel(program.programId) },
+            actions: reservationToastActions(program.programId),
           })
           return
         }
@@ -867,7 +880,7 @@ function useReservationActions(
           })
           toast({
             message: `予約しました（エンコード設定つき）: ${program.name}`,
-            action: { label: '取消', onClick: () => cancel(program.programId) },
+            actions: reservationToastActions(program.programId),
           })
         } catch (err) {
           toast({

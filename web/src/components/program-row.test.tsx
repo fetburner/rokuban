@@ -197,7 +197,7 @@ describe('ProgramRow の外向き導線（issue #229）', () => {
     expect(screen.queryByRole('link', { name: 'ライブで見る' })).not.toBeInTheDocument()
   })
 
-  it('予約済みの番組を展開すると「予約の詳細」が出て /reservations/$site/$programId へのリンクになる', async () => {
+  it('予約済みの番組を展開すると「予約の設定」が出て /reservations/$site/$programId へのリンクになる', async () => {
     stubFetch()
     renderInRouter(
       <ProgramRow
@@ -211,11 +211,11 @@ describe('ProgramRow の外向き導線（issue #229）', () => {
 
     await expandRow()
 
-    const link = await screen.findByRole('link', { name: '予約の詳細' })
+    const link = await screen.findByRole('link', { name: '予約の設定' })
     expect(link).toHaveAttribute('href', `/reservations/${testSite}/42`)
   })
 
-  it('未予約の番組を展開しても「予約の詳細」は出ない', async () => {
+  it('未予約の番組を展開しても「予約の設定」は出ない', async () => {
     stubFetch()
     renderInRouter(
       <ProgramRow
@@ -230,7 +230,7 @@ describe('ProgramRow の外向き導線（issue #229）', () => {
     await expandRow()
     await waitFor(() => expect(screen.queryByText('詳細を読み込み中…')).not.toBeInTheDocument())
 
-    expect(screen.queryByRole('link', { name: '予約の詳細' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: '予約の設定' })).not.toBeInTheDocument()
   })
 })
 

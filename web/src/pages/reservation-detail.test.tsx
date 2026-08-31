@@ -69,7 +69,7 @@ function errorResponse(status: number, message: string): Response {
  * 失敗テスト用）。DELETE（ルール由来の Undo）は常に 204 で応答する。
  */
 function stubFetch(
-  reservationOf: (site: string, programId: number) => Reservation | null,
+  reservationOf: (site: string, programId: number) => Reservation | Response | null,
   sites: string[] = ['default'],
   rules: Rule[] = [],
   intentPutResponse?: () => Response,
@@ -108,6 +108,7 @@ function stubFetch(
     if (reservationMatch) {
       const [, site, programId] = reservationMatch
       const reservation = reservationOf(site, Number(programId))
+      if (reservation instanceof Response) return Promise.resolve(reservation)
       if (!reservation) return Promise.resolve(jsonResponse({ error: 'not found' }, 404))
       return Promise.resolve(jsonResponse(reservation))
     }
@@ -244,12 +245,25 @@ describe('ReservationDetailPage', () => {
     await waitFor(() => expect(screen.getByText('更新後のタイトル')).toBeInTheDocument())
   })
 
-  it('存在しない (site, programId) は「見つかりません」を表示する', async () => {
+  it('予約直後に詳細が 404 なら、予約を作成中として再読み込みを案内する', async () => {
     stubFetch(() => null)
 
     renderAt('/reservations/default/999999')
 
-    expect(await screen.findByText('予約が見つかりません')).toBeInTheDocument()
+    expect(
+      await screen.findByText('予約を作成中です。数秒後に再読み込みしてください'),
+    ).toBeInTheDocument()
+  })
+
+  it('404 以外の失敗は予約作成中と誤案内しない', async () => {
+    stubFetch(() => errorResponse(500, 'database unavailable'))
+
+    renderAt('/reservations/default/300000')
+
+    expect(await screen.findByText('予約の取得に失敗しました')).toBeInTheDocument()
+    expect(
+      screen.queryByText('予約を作成中です。数秒後に再読み込みしてください'),
+    ).not.toBeInTheDocument()
   })
 
   // `ProgramOverlapWarning` に `useCurrentSite()`（<SiteGate> が配る「現在の

@@ -263,7 +263,7 @@ export function ProgramRow({
                   params={{ site, programId: String(program.programId) }}
                   className="text-primary underline-offset-2 hover:underline"
                 >
-                  予約の詳細
+                  予約の設定
                 </Link>
               )}
             </div>

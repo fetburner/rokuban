@@ -26,7 +26,7 @@ function Harness() {
       </button>
       <button
         onClick={() =>
-          toast({ message: '予約しました', action: { label: '取消', onClick: () => {} } })
+          toast({ message: '予約しました', actions: [{ label: '取消', onClick: () => {} }] })
         }
       >
         action 付きを出す
@@ -135,6 +135,40 @@ describe('ToastProvider', () => {
     expect(screen.queryByText('予約しました')).not.toBeInTheDocument()
   })
 
+  it('複数の action を並べ、押された action だけを実行してトーストを閉じる', () => {
+    const selected: string[] = []
+    function MultipleActionsHarness() {
+      const toast = useToast()
+      return (
+        <button
+          onClick={() =>
+            toast({
+              message: '予約しました',
+              actions: [
+                { label: '取消', onClick: () => selected.push('cancel') },
+                { label: '設定', onClick: () => selected.push('settings') },
+              ],
+            })
+          }
+        >
+          予約する
+        </button>
+      )
+    }
+
+    render(
+      <ToastProvider>
+        <MultipleActionsHarness />
+      </ToastProvider>,
+    )
+
+    fireEvent.click(screen.getByText('予約する'))
+    expect(screen.getByRole('button', { name: '取消' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '設定' }))
+    expect(selected).toEqual(['settings'])
+    expect(screen.queryByText('予約しました')).not.toBeInTheDocument()
+  })
+
   it('kind: error は自動で消えない。閉じるボタンでのみ消える', async () => {
     vi.useFakeTimers()
     renderHarness()
@@ -200,7 +234,7 @@ describe('ToastProvider', () => {
             onClick={() =>
               toast({
                 message: 'ごみ箱に移しました',
-                action: { label: '元に戻す', onClick: () => undone.push('A') },
+                actions: [{ label: '元に戻す', onClick: () => undone.push('A') }],
               })
             }
           >
@@ -210,7 +244,7 @@ describe('ToastProvider', () => {
             onClick={() =>
               toast({
                 message: 'ごみ箱に移しました',
-                action: { label: '元に戻す', onClick: () => undone.push('B') },
+                actions: [{ label: '元に戻す', onClick: () => undone.push('B') }],
               })
             }
           >
@@ -302,7 +336,7 @@ describe('ToastProvider', () => {
               toast({
                 message: '失敗しました',
                 kind: 'error',
-                action: { label: '再試行', onClick: () => retried.push('A') },
+                actions: [{ label: '再試行', onClick: () => retried.push('A') }],
               })
             }
           >
@@ -313,7 +347,7 @@ describe('ToastProvider', () => {
               toast({
                 message: '失敗しました',
                 kind: 'error',
-                action: { label: '再試行', onClick: () => retried.push('B') },
+                actions: [{ label: '再試行', onClick: () => retried.push('B') }],
               })
             }
           >

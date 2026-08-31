@@ -5,11 +5,13 @@ import { Button } from '@/components/ui/button'
 
 type ToastKind = 'info' | 'error'
 
+type ToastAction = { label: string; onClick: () => void }
+
 type Toast = {
   id: number
   message: string
   kind: ToastKind
-  action?: { label: string; onClick: () => void }
+  actions?: ToastAction[]
 }
 
 type ToastInput = Omit<Toast, 'id' | 'kind'> & { kind?: ToastKind }
@@ -20,7 +22,7 @@ const ToastContext = createContext<((toast: ToastInput) => void) | null>(null)
 const infoDurationMs = 6000
 
 /**
- * action 付きトーストの表示時間。ボタンを読んで押す判断の分だけ、素の通知より
+ * actions 付きトーストの表示時間。ボタンを読んで押す判断の分だけ、素の通知より
  * 長く残す（denpa の Toasts.svelte の設計を踏襲）。
  */
 const actionDurationMs = 10000
@@ -137,20 +139,20 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
       const id = Date.now() + Math.random()
 
       // デデュープするのは error だけ（積み上がるのは自動で消えない error だけ
-      // なので）。action は個体ごとにクロージャが違うので、action 付きは
+      // なので）。actions は個体ごとにクロージャが違うので、actions 付きは
       // デデュープしない --- 同じ文言でも別の対象を指すことがある
       // （例: 「予約しました: 番組名」+ 取消。EPG では再放送等で名前が
       // 一致するのは日常）。
       setToasts((current) =>
         kind === 'error' &&
-        !toast.action &&
+        !toast.actions?.length &&
         current.some((t) => t.kind === 'error' && t.message === toast.message)
           ? current
           : [...current, { ...toast, kind, id }],
       )
 
       if (kind !== 'error') {
-        armTimer(id, toast.action ? actionDurationMs : infoDurationMs)
+        armTimer(id, toast.actions?.length ? actionDurationMs : infoDurationMs)
       }
     },
     [armTimer],
@@ -178,18 +180,19 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
           >
             <span className="min-w-0 line-clamp-3">{toast.message}</span>
             <div className="flex shrink-0 items-center gap-1">
-              {toast.action && (
+              {toast.actions?.map((action) => (
                 <Button
+                  key={action.label}
                   variant="ghost"
                   size="sm"
                   onClick={() => {
-                    toast.action?.onClick()
+                    action.onClick()
                     dismiss(toast.id)
                   }}
                 >
-                  {toast.action.label}
+                  {action.label}
                 </Button>
-              )}
+              ))}
               <Button
                 variant="ghost"
                 size="icon-sm"

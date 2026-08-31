@@ -2,6 +2,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useParams } from '@tanstack/react-router'
 import { ArrowLeft } from 'lucide-react'
 
+import { ApiError } from '@/api/client'
 import {
   useDeleteProgramIntent,
   useGetProgramReservation,
@@ -60,6 +61,11 @@ function reservationDetailQueryKey(site: string, programId: number) {
  * それを URL・クエリキーに使うとブックマーク・共有した URL やキャッシュが
  * 予約の再実体化で無効になる。`GET /api/sites/{site}/programs/{programId}/reservation`
  * は `UNIQUE (site, program_id)` をキーにするので、id が変わっても同じ URL で引ける。
+ *
+ * 予約 intent の成功直後は ruler が reservations 行を作るまで GET が 404 に
+ * なりうる。そのため 404 だけは「予約を作成中」と案内し、それ以外の失敗とは
+ * 区別する。トースト側で行の生成を待たないので、直接この URL を開いた場合にも
+ * 同じ回復手段を示せる。
  */
 export function ReservationDetailPage() {
   const { site, programId } = useParams({ from: '/reservations/$site/$programId' })
@@ -76,6 +82,7 @@ export function ReservationDetailPage() {
   const patchOverrides = usePatchProgramOverrides()
 
   const reservation = unwrap(query.data)
+  const reservationNotReady = query.error instanceof ApiError && query.error.status === 404
 
   // 取消は (site, programId) を宛先に intent{skip} を書くだけ（issue #29）。
   // reservations 行には触れない --- ただし ruler は次パスで **行そのものを
@@ -96,7 +103,7 @@ export function ReservationDetailPage() {
         onSuccess: () => {
           toast({
             message: '予約を取消しました',
-            action: { label: '元に戻す', onClick: () => revive(source) },
+            actions: [{ label: '元に戻す', onClick: () => revive(source) }],
           })
           void navigate({ to: '/reservations' })
         },
@@ -179,7 +186,11 @@ export function ReservationDetailPage() {
       </header>
 
       {query.isError ? (
-        <ErrorState>予約が見つかりません</ErrorState>
+        <ErrorState>
+          {reservationNotReady
+            ? '予約を作成中です。数秒後に再読み込みしてください'
+            : '予約の取得に失敗しました'}
+        </ErrorState>
       ) : query.isPending || !reservation ? (
         <ListSkeleton rows={4} />
       ) : (

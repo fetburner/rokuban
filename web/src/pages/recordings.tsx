@@ -209,17 +209,19 @@ export function RecordingsPage() {
         const undoIds = result.ok
         toast({
           message: `${undoIds.length} 件をごみ箱へ移動`,
-          action: {
-            label: '元に戻す',
-            onClick: () => {
-              void restoreIds(undoIds).then((undo) =>
-                reportBulkFailures(
-                  `${undo.failed.length} 件を元に戻せませんでした`,
-                  undo.failed,
-                ),
-              )
+          actions: [
+            {
+              label: '元に戻す',
+              onClick: () => {
+                void restoreIds(undoIds).then((undo) =>
+                  reportBulkFailures(
+                    `${undo.failed.length} 件を元に戻せませんでした`,
+                    undo.failed,
+                  ),
+                )
+              },
             },
-          },
+          ],
         })
       }
       reportBulkFailures(
@@ -1146,7 +1148,7 @@ export function RecordingActions({ recording, trash }: { recording: Recording; t
                     // 提供する側なので silence だけでは終わらせない。
                     toast({
                       message: 'ごみ箱に移しました',
-                      action: { label: '元に戻す', onClick: () => restore() },
+                      actions: [{ label: '元に戻す', onClick: () => restore() }],
                     })
                   },
                   onError: (err) =>
