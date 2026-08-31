@@ -6,7 +6,7 @@ import { CapacityBandLabels, CapacityBands } from '@/components/capacity-band'
 import { ChannelPicker } from '@/components/channel-picker'
 import { DayStrip } from '@/components/day-strip'
 import { EmptyState, ErrorState, ListSkeleton, PageContent, PageHeader } from '@/components/page'
-import { ProgramGrid } from '@/components/program-grid'
+import { GenreLegend, ProgramGrid } from '@/components/program-grid'
 import {
   ProgramList,
   type ProgramListHandle,
@@ -964,6 +964,7 @@ function ProgramGridView({
           'calc(100dvh - var(--page-header-height, 0px) - var(--sticky-banners-height, 0px))',
       }}
     >
+      <GenreLegend />
       {selected && (
         <div className="shrink-0 border-b border-border bg-card">
           {/* key を選択中の programId にする --- 番組を選び直しても同じ木の

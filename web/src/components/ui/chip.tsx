@@ -6,6 +6,9 @@ import { cn } from '@/lib/utils'
  * `aria-pressed` を持つトグルボタンであってリンクではない（選択は URL に出ない）。
  * 番組表（M2-9）と検索（M2-11）が並行実装で同じものを各ページに持ってしまったため、
  * マージ後にここへ引き上げた。
+ *
+ * フォーカスは `Button` と同じ明示リングを使い、`outline-none` でブラウザ既定の
+ * outline と二重にならないようにする。
  */
 export function Chip({
   active,
@@ -33,7 +36,7 @@ export function Chip({
         // scrollWidth 320 / clientWidth 320、外すと 448 / 320）。
         // break-words は入れていない --- 同じ実測で有無の差が出なかった（和文は
         // 文字間で折り返せるため）。長い ASCII 1 語での挙動は未検証。
-        'max-w-full shrink-0 rounded-full border px-3 py-1.5 text-xs transition-colors disabled:pointer-events-none disabled:opacity-50',
+        'max-w-full shrink-0 rounded-full border px-3 py-1.5 text-xs transition-[color,background-color] outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50',
         active
           ? 'border-primary bg-primary text-primary-foreground'
           // hover:text-foreground は hover:bg-muted と対（合成後コントラスト対策。

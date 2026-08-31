@@ -457,6 +457,26 @@ describe('ProgramsPage の表示形式', () => {
     expect(screen.queryByRole('button', { name: 'さらに読み込む' })).not.toBeInTheDocument()
   })
 
+  it('ジャンル凡例はグリッドだけに出て、リストへ戻すと消える', async () => {
+    stubApi()
+    stubMatchMedia(true)
+    renderPage()
+
+    expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+    expect(screen.queryByRole('list', { name: 'ジャンル凡例' })).not.toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('button', { name: '番組表' }))
+
+    const legend = await screen.findByRole('list', { name: 'ジャンル凡例' })
+    expect(within(legend).getAllByRole('listitem')).toHaveLength(12)
+    expect(within(legend).getByText('ニュース・報道')).toBeInTheDocument()
+    expect(within(legend).getByText('福祉')).toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('button', { name: 'リスト' }))
+
+    expect(screen.queryByRole('list', { name: 'ジャンル凡例' })).not.toBeInTheDocument()
+  })
+
   it('番組表を選んだあとに画面が狭くなるとリストへ戻る', async () => {
     stubApi()
     const media = stubMatchMedia(true)

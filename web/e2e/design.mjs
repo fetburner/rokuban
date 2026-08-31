@@ -24,6 +24,12 @@
 //      - ボトムタブが常に 4 個か
 //      - 開いたポップオーバーがビューポート内に収まるか
 //      - ポップオーバーがトリガーの上端より上に出るか（バーの下に隠れていないか）
+//      - Tab / Shift+Tab がポップオーバー内を循環するか
+//   ④-A キーボード操作と標的サイズ:
+//      - Tab 1 回でスキップリンクが見え、Enter で main にフォーカスが移るか
+//      - Chip / 録画タブ / チャンネル候補 / 日付セルの focus-visible リングが
+//        Button と同じ --ring の実画素で出るか
+//      - Button size="sm" と容量不足バッジの当たり判定が 24px 以上か
 //   ⑤ 録画一覧の行リンクを Enter で開いて詳細（/recordings/$id）へ遷移し、
 //      詳細でキーボードの Tab だけで `<video>` に到達できるか（`tabIndex={-1}` を
 //      付けると jsdom の focus spy は通り続けるが実ブラウザの Tab 走査から外れる）
@@ -2071,9 +2077,250 @@ for (const theme of themes) {
             `w=${menuBox.width.toFixed(1)} h=${menuBox.height.toFixed(1)} / トリガー top=${triggerBox.y.toFixed(1)}`,
         )
       }
+
+      // role="dialog" の間は Tab が背後のページへ抜けないこと。最後→最初と
+      // 最初→最後の両方向を実ブラウザで確認する。
+      const menuLinks = menu.getByRole('link')
+      const closeButton = menu.getByRole('button', { name: 'メニューを閉じる' })
+      const menuLinkCount = await menuLinks.count()
+      if (menuLinkCount < 2 || (await closeButton.count()) === 0) {
+        ng.push(`[${theme}] 「その他」のフォーカストラップを判定できる操作要素が足りない`)
+      } else {
+        const closeTabIndex = await closeButton.evaluate((el) => el.tabIndex)
+        if (closeTabIndex >= 0) {
+          ng.push(`[${theme}] 「その他」の見えない閉じるボタンが Tab 順に入っている`)
+        }
+
+        await menuLinks.last().focus()
+        await page.keyboard.press('Tab')
+        await page
+          .waitForFunction(
+            () =>
+              document.activeElement?.tagName === 'A' &&
+              document.activeElement.closest('[aria-label="その他のナビゲーション"]') !== null,
+            undefined,
+            { timeout: 1000 },
+          )
+          .catch(() => {})
+        const forwardTrapped = await menuLinks
+          .first()
+          .evaluate((el) => document.activeElement === el)
+        await menuLinks.first().focus()
+        await page.keyboard.press('Shift+Tab')
+        await page
+          .waitForFunction(
+            () =>
+              document.activeElement?.tagName === 'A' &&
+              document.activeElement.closest('[aria-label="その他のナビゲーション"]') !== null,
+            undefined,
+            { timeout: 1000 },
+          )
+          .catch(() => {})
+        const backwardTrapped = await menuLinks
+          .last()
+          .evaluate((el) => document.activeElement === el)
+        log(`  [${theme}] フォーカストラップ: 前=${forwardTrapped} / 後=${backwardTrapped}`)
+        if (!forwardTrapped || !backwardTrapped) {
+          ng.push(
+            `[${theme}] 「その他」で Tab がポップオーバー外へ抜ける` +
+              `（前=${forwardTrapped} / 後=${backwardTrapped}）`,
+          )
+        }
+      }
     }
   }
 
+  await context.close()
+}
+
+// --- ④-A キーボード操作と標的サイズ ---
+
+/** sameRgb は alpha を除く実画素 3 値が一致するかを見る。 */
+function sameRgb(a, b) {
+  return a.slice(0, 3).every((value, index) => value === b[index])
+}
+
+/**
+ * checkExplicitFocusRing は対象を focus-visible にし、明示リングと --ring の色を測る。
+ * box-shadow の存在だけでは透明色でも通るので、内側の border を canvas で画素化して
+ * --ring と比較する。outline は none でなければブラウザ既定との二重表示として落とす。
+ */
+async function checkExplicitFocusRing(page, locator, label, theme) {
+  if ((await locator.count()) === 0) {
+    ng.push(`[${theme}] ${label} が見つからず focus-visible を判定できない`)
+    return
+  }
+
+  const target = locator.first()
+  const beforeShadow = await target.evaluate((el) => getComputedStyle(el).boxShadow)
+  await target.focus()
+  const focusVisible = await target.evaluate((el) => el.matches(':focus-visible'))
+  const focusStyle = await target.evaluate((el) => {
+    const style = getComputedStyle(el)
+    return { boxShadow: style.boxShadow, outlineStyle: style.outlineStyle }
+  })
+  const border = await computedOf(target, 'border-top-color')
+  const ring = await computedVar(page.locator('html'), '--ring')
+  log(
+    `  [${theme}] ${label}: focus-visible=${focusVisible} border=${border?.rgba} ` +
+      `shadow=${focusStyle.boxShadow}`,
+  )
+
+  if (!focusVisible) {
+    ng.push(`[${theme}] ${label} に :focus-visible が付かない`)
+  }
+  if (focusStyle.boxShadow === 'none' || focusStyle.boxShadow === beforeShadow) {
+    ng.push(`[${theme}] ${label} の focus-visible で明示リングが出ない`)
+  }
+  if (focusStyle.outlineStyle !== 'none') {
+    ng.push(`[${theme}] ${label} に明示リングとブラウザ outline が二重に出る`)
+  }
+  if (border === null || ring === null || !sameRgb(border.rgba, ring.rgba)) {
+    ng.push(
+      `[${theme}] ${label} のフォーカス縁が --ring の実画素でない` +
+        `（border=${border?.rgba} / ring=${ring?.rgba}）`,
+    )
+  }
+}
+
+// スキップリンクは DOM の先頭にあるだけでなく、Tab 1 回で実際に見える寸法へ戻り、
+// Enter 後は URL の fragment だけでなく main 自身へフォーカスが移ることを見る。
+{
+  const { context, page } = await open(desktop, 'light', screenOf('programs'))
+  await page.evaluate(() => document.activeElement instanceof HTMLElement && document.activeElement.blur())
+  await page.keyboard.press('Tab')
+  const skip = page.getByRole('link', { name: '本文へ移動' })
+  if ((await skip.count()) === 0) {
+    ng.push('スキップリンク: 「本文へ移動」が見つからない')
+  } else {
+    const focused = await skip.evaluate((el) => document.activeElement === el)
+    const skipMetrics = await skip.evaluate((el) => {
+      const rect = el.getBoundingClientRect()
+      const style = getComputedStyle(el)
+      return {
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+        position: style.position,
+        zIndex: Number(style.zIndex),
+      }
+    })
+    log(
+      `  スキップリンク: focused=${focused} box=${skipMetrics.width}x${skipMetrics.height} ` +
+        `position=${skipMetrics.position} z-index=${skipMetrics.zIndex}`,
+    )
+    if (!focused) ng.push('スキップリンク: Tab 1 回でフォーカスされない')
+    if (skipMetrics.width < 24 || skipMetrics.height < 24) {
+      ng.push('スキップリンク: フォーカスされても 24px 以上の可視寸法に戻らない')
+    }
+    if (
+      skipMetrics.position !== 'fixed' ||
+      skipMetrics.x < 0 ||
+      skipMetrics.y < 0 ||
+      skipMetrics.zIndex < 50
+    ) {
+      ng.push('スキップリンク: 固定位置または前面の重なり順になっていない')
+    }
+    await page.keyboard.press('Enter')
+    await page.waitForFunction(() => document.activeElement?.id === 'main').catch(() => {})
+    const mainFocused = await page.evaluate(() => document.activeElement?.id === 'main')
+    if (!mainFocused) ng.push('スキップリンク: Enter 後に main へフォーカスが移らない')
+  }
+  await context.close()
+}
+
+// 明示リングは DayStrip の濃い選択地を含め、ライト / ダークの両方で測る。
+for (const theme of themes) {
+  {
+    const { context, page } = await open(desktop, theme, screenOf('programs'))
+    await checkExplicitFocusRing(
+      page,
+      page.getByRole('button', { name: 'リスト', exact: true }),
+      'Chip',
+      theme,
+    )
+    await checkExplicitFocusRing(
+      page,
+      page.getByRole('group', { name: '日付' }).getByRole('button').first(),
+      'DayStrip',
+      theme,
+    )
+
+    const picker = page.getByRole('button', { name: /^チャンネル:/ })
+    if ((await picker.count()) === 0) {
+      ng.push(`[${theme}] チャンネルピッカーが見つからない`)
+    } else {
+      await picker.focus()
+      await page.keyboard.press('Enter')
+      const popup = page.getByRole('dialog', { name: 'チャンネル' })
+      await popup.waitFor({ timeout: 5000 }).catch(() => {})
+      await checkExplicitFocusRing(
+        page,
+        popup.getByRole('button', { name: 'すべて', exact: true }),
+        'ChannelOption',
+        theme,
+      )
+    }
+    await context.close()
+  }
+
+  {
+    const { context, page } = await open(desktop, theme, screenOf('recordings'))
+    await checkExplicitFocusRing(
+      page,
+      page.getByRole('button', { name: 'ライブラリ', exact: true }),
+      'ViewTab',
+      theme,
+    )
+    await context.close()
+  }
+}
+
+// 共通 Button の sm は 32px、見た目を広げない容量不足バッジは ::before だけを
+// 24px にする。バッジの z-index も見て、行全面リンクの上で当たり判定が生きることを固定する。
+{
+  const { context, page } = await open(desktop, 'light', screenOf('rules'))
+  const smallButton = page.getByRole('button', { name: '編集', exact: true }).first()
+  const box = (await smallButton.count()) === 0 ? null : await smallButton.boundingBox()
+  log(`  Button size=sm: height=${box?.height}`)
+  if (box === null || box.height < 32) {
+    ng.push(`Button size="sm" の高さが 32px 未満（${box?.height ?? '取得不能'}px）`)
+  }
+  await context.close()
+}
+
+{
+  const { context, page } = await open(desktop, 'light', screenOf('reservations'))
+  const badge = page.getByRole('link', { name: /チューナーが不足しています/ }).first()
+  if ((await badge.count()) === 0) {
+    ng.push('容量不足バッジが見つからず当たり判定を測れない')
+  } else {
+    const target = await badge.evaluate((el) => {
+      const rect = el.getBoundingClientRect()
+      const before = getComputedStyle(el, '::before')
+      const pseudoHeight = Number.parseFloat(before.height)
+      return {
+        visualHeight: rect.height,
+        hitHeight: Number.isFinite(pseudoHeight) ? pseudoHeight : 0,
+        position: before.position,
+        zIndex: getComputedStyle(el).zIndex,
+      }
+    })
+    log(
+      `  容量不足バッジ: visual=${target.visualHeight}px hit=${target.hitHeight}px ` +
+        `z-index=${target.zIndex}`,
+    )
+    if (target.position !== 'absolute' || target.hitHeight < 24) {
+      ng.push(`容量不足バッジの当たり判定が 24px 未満（${target.hitHeight}px）`)
+    }
+    if (target.hitHeight <= target.visualHeight) {
+      ng.push('容量不足バッジの見た目ごと拡大され、::before で当たりだけを広げていない')
+    }
+    if (target.zIndex === 'auto' || Number(target.zIndex) <= 0) {
+      ng.push('容量不足バッジが行全面リンクより上の重なり順を持たない')
+    }
+  }
   await context.close()
 }
 

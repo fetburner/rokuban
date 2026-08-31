@@ -357,7 +357,7 @@ export function SearchPage() {
           <EmptyState>条件に一致する番組がありません</EmptyState>
         ) : (
           <>
-            <p className="px-4 py-2 text-xs text-muted-foreground">
+            <p role="status" className="px-4 py-2 text-xs text-muted-foreground">
               {/* 件数は 1 つの文字列にする（JSX で連結するとテキストノードが分かれ、
                   読み上げも「37」「件」と切れる） */}
               {visibleCount < ids.length
