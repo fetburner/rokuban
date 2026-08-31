@@ -69,7 +69,7 @@ function errorResponse(status: number, message: string): Response {
  * 失敗テスト用）。DELETE（ルール由来の Undo）は常に 204 で応答する。
  */
 function stubFetch(
-  reservationOf: (site: string, programId: number) => Reservation | null,
+  reservationOf: (site: string, programId: number) => Reservation | Response | null,
   sites: string[] = ['default'],
   rules: Rule[] = [],
   intentPutResponse?: () => Response,
@@ -108,6 +108,7 @@ function stubFetch(
     if (reservationMatch) {
       const [, site, programId] = reservationMatch
       const reservation = reservationOf(site, Number(programId))
+      if (reservation instanceof Response) return Promise.resolve(reservation)
       if (!reservation) return Promise.resolve(jsonResponse({ error: 'not found' }, 404))
       return Promise.resolve(jsonResponse(reservation))
     }
@@ -244,12 +245,54 @@ describe('ReservationDetailPage', () => {
     await waitFor(() => expect(screen.getByText('更新後のタイトル')).toBeInTheDocument())
   })
 
-  it('存在しない (site, programId) は「見つかりません」を表示する', async () => {
+  it('予約直後に詳細が 404 なら、まだ無いともう無いの両方で真になる文言を出す', async () => {
     stubFetch(() => null)
 
     renderAt('/reservations/default/999999')
 
-    expect(await screen.findByText('予約が見つかりません')).toBeInTheDocument()
+    expect(
+      await screen.findByText('予約が見つかりません（予約した直後なら、作成され次第ここに出ます）'),
+    ).toBeInTheDocument()
+  })
+
+  it('404 以外の失敗は予約が見つからないと誤案内しない', async () => {
+    stubFetch(() => errorResponse(500, 'database unavailable'))
+
+    renderAt('/reservations/default/300000')
+
+    expect(await screen.findByText('予約の取得に失敗しました')).toBeInTheDocument()
+    expect(
+      screen.queryByText('予約が見つかりません（予約した直後なら、作成され次第ここに出ます）'),
+    ).not.toBeInTheDocument()
+  })
+
+  // 予約 intent の直後で ruler がまだ行を作っていない → 404 になっても、
+  // `reservations` への INSERT が SSE トピック `reservations` を発火し、この
+  // ページのクエリキー（先頭要素 `/api/reservations`）がそのグループに
+  // 入っているので、再マウントなしに自動で詳細が出る（手動リロード不要）。
+  // `lib/events.ts` の `invalidateGroup` と同じ形の predicate をここから
+  // 直接撃って SSE 受信を模す（stubFetch は最初 404、途中から予約を返す）。
+  it('404 のあと予約行ができたら、再マウントなしに詳細が出る', async () => {
+    let ready = false
+    stubFetch((site, programId) =>
+      ready && site === 'default' && programId === 300000 ? baseReservation() : null,
+    )
+
+    const { queryClient } = renderAt('/reservations/default/300000')
+
+    expect(
+      await screen.findByText('予約が見つかりません（予約した直後なら、作成され次第ここに出ます）'),
+    ).toBeInTheDocument()
+
+    ready = true
+    await queryClient.invalidateQueries({
+      predicate: (query) => {
+        const first = query.queryKey[0]
+        return typeof first === 'string' && first.startsWith('/api/reservations')
+      },
+    })
+
+    expect(await screen.findByText('テスト番組')).toBeInTheDocument()
   })
 
   // `ProgramOverlapWarning` に `useCurrentSite()`（<SiteGate> が配る「現在の

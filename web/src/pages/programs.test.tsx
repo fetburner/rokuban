@@ -1751,6 +1751,25 @@ describe('ProgramsPage の取消 Undo（issue #453）', () => {
     expect(reviveCall).toBeDefined()
   })
 
+  it('予約成功トーストに「取消」と「設定」が並び、「設定」で予約詳細へ遷移する', async () => {
+    stubApi([], [], [soon])
+    const { router } = renderPage()
+
+    await userEvent.click(await screen.findByRole('button', { name: '予約' }))
+    const message = await screen.findByText(`予約しました: ${soon.name}`)
+    const toast = message.parentElement
+    if (!toast) throw new Error('予約成功トーストが見つからない')
+
+    expect(within(toast).getByRole('button', { name: '取消' })).toBeInTheDocument()
+    await userEvent.click(within(toast).getByRole('button', { name: '設定' }))
+
+    await waitFor(() =>
+      expect(router.state.location.pathname).toBe(
+        `/reservations/default/${soon.programId}`,
+      ),
+    )
+  })
+
   // 予約成功トーストの「取消」action（`reserve` → `cancel`）も同じ
   // `MutationObserver` を共有しており、同じ無音故障を起こしうる
   // （Undo の対称性がこの issue の目的なので、片側だけ塞いで残すと

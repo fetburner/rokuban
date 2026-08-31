@@ -2,6 +2,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useParams } from '@tanstack/react-router'
 import { ArrowLeft } from 'lucide-react'
 
+import { ApiError } from '@/api/client'
 import {
   useDeleteProgramIntent,
   useGetProgramReservation,
@@ -60,6 +61,19 @@ function reservationDetailQueryKey(site: string, programId: number) {
  * それを URL・クエリキーに使うとブックマーク・共有した URL やキャッシュが
  * 予約の再実体化で無効になる。`GET /api/sites/{site}/programs/{programId}/reservation`
  * は `UNIQUE (site, program_id)` をキーにするので、id が変わっても同じ URL で引ける。
+ *
+ * 予約 intent の成功直後は ruler が reservations 行を作るまで GET が 404 に
+ * なりうる。だが 404 は「まだ無い」と「もう無い / そもそも無い」を区別
+ * できないので、どちらでも真になる 1 文（「予約が見つかりません（予約した
+ * 直後なら、作成され次第ここに出ます）」）にし、404 以外の取得失敗とだけ
+ * 区別する。
+ *
+ * 手動リロードは案内しない。`reservations` への INSERT は SSE トピック
+ * `reservations`（`lib/events.ts` の `queryGroups`）を発火し、このページの
+ * クエリキー（{@link reservationDetailQueryKey}）は先頭要素 `/api/reservations`
+ * でそのグループに入っているので、行ができ次第自動で再取得される
+ * （テスト: reservation-detail.test.tsx「404 のあと予約行ができたら、
+ * 再マウントなしに詳細が出る」）。
  */
 export function ReservationDetailPage() {
   const { site, programId } = useParams({ from: '/reservations/$site/$programId' })
@@ -76,6 +90,7 @@ export function ReservationDetailPage() {
   const patchOverrides = usePatchProgramOverrides()
 
   const reservation = unwrap(query.data)
+  const notFound = query.error instanceof ApiError && query.error.status === 404
 
   // 取消は (site, programId) を宛先に intent{skip} を書くだけ（issue #29）。
   // reservations 行には触れない --- ただし ruler は次パスで **行そのものを
@@ -96,7 +111,7 @@ export function ReservationDetailPage() {
         onSuccess: () => {
           toast({
             message: '予約を取消しました',
-            action: { label: '元に戻す', onClick: () => revive(source) },
+            actions: [{ label: '元に戻す', onClick: () => revive(source) }],
           })
           void navigate({ to: '/reservations' })
         },
@@ -179,7 +194,11 @@ export function ReservationDetailPage() {
       </header>
 
       {query.isError ? (
-        <ErrorState>予約が見つかりません</ErrorState>
+        <ErrorState>
+          {notFound
+            ? '予約が見つかりません（予約した直後なら、作成され次第ここに出ます）'
+            : '予約の取得に失敗しました'}
+        </ErrorState>
       ) : query.isPending || !reservation ? (
         <ListSkeleton rows={4} />
       ) : (
