@@ -36,10 +36,11 @@ type recordingsFilter struct {
 	// site は別軸で、軸間は AND（openapi.yaml の `service` の description）。
 	Services []serviceRef
 
-	Status      ListRecordingsParamsStatus
-	EncodeState ListRecordingsParamsEncodeState
-	Source      ListRecordingsParamsSource
-	RuleID      *int64
+	Status             ListRecordingsParamsStatus
+	EncodeState        ListRecordingsParamsEncodeState
+	EncodeRecordingIDs *[]int64
+	Source             ListRecordingsParamsSource
+	RuleID             *int64
 
 	From *time.Time
 	To   *time.Time
@@ -398,17 +399,8 @@ func buildRecordingsQuery(f recordingsFilter) (string, []any, error) {
 			and("r.superseded_at IS NULL")
 		}
 	}
-	if f.EncodeState != "" {
-		states := "'running'"
-		if f.EncodeState == ListRecordingsParamsEncodeStateQueued {
-			states = "'available', 'pending', 'scheduled', 'retryable'"
-		}
-		and(`EXISTS (
-			SELECT 1 FROM river_job ej
-			WHERE ej.kind = 'encode'
-			  AND ej.state IN (` + states + `)
-			  AND (ej.args ->> 'recording_id')::bigint = r.id
-		)`)
+	if f.EncodeRecordingIDs != nil {
+		and("r.id = ANY(" + arg(*f.EncodeRecordingIDs) + "::bigint[])")
 	}
 	if f.Source != "" {
 		and("r.source = " + arg(string(f.Source)))

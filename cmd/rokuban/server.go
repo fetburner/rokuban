@@ -398,10 +398,9 @@ func runServer(cmd *cobra.Command, _ []string) error {
 			}
 			routerCfg.DistFS = distFS
 
-			// ルール作成/更新/削除のヒントで ruler_pass を投入するための
-			// insert-only クライアント。api は mirakc に問い合わせず ffmpeg も
-			// 実行しない（不変条件）ため、worker.NewWorkers のフルのワーカー群は
-			// 登録しない（InsertTx だけできれば足りる。docs/recording.md §3.1）。
+			// ヒント投入とエンコード待機列の JobList に使う、ワーカー無しの
+			// River クライアント。api は mirakc に問い合わせず ffmpeg も実行しない
+			// （不変条件）ため、worker.NewWorkers のフルのワーカー群は登録しない。
 			apiRiverClient, apiRiverErr := worker.NewInsertOnlyClient(pool)
 			if apiRiverErr != nil {
 				return apiRiverErr

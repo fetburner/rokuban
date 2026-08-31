@@ -930,11 +930,12 @@ func NewClient(pool *pgxpool.Pool, workers *river.Workers, cfg ClientConfig) (*r
 	return client, nil
 }
 
-// NewInsertOnlyClient は投入専用の River クライアントを返す。
+// NewInsertOnlyClient はワーカーを持たない River クライアントを返す。
 //
 // Queues を省略し Workers も登録しないため、Start は呼べない（呼ばないことが
-// 前提。river@v0.40.0 の client.go:90 のコメントの通り、Queues を省略すれば
-// insert-only なクライアントになる）。
+// 前提。river@v0.40.0 の client.go:90 が呼ぶ insert-only mode）。名前の
+// insert-only は「ジョブを実行しない」という構成名で、公開された読み取り API の
+// JobList は利用できる。api ロールはヒント投入に加えてエンコード待機列の参照にも使う。
 //
 // api ロールと `rokuban enqueue` サブコマンドはジョブを実行しない
 // （不変条件: api は mirakc に問い合わせず、ffmpeg も実行しない）。

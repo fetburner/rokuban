@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"testing"
 	"time"
@@ -47,7 +48,8 @@ func TestGetEncodeQueueSummaryCountsJobsNotRecordings(t *testing.T) {
 	insert(runningRecordingID, "h264", "running")
 	insert(completedRecordingID, "h264", "completed")
 
-	srv := newAPIServer(t, pool)
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, RiverClient: client}))
+	t.Cleanup(srv.Close)
 	var got struct {
 		Queued  int64 `json:"queued"`
 		Running int64 `json:"running"`
@@ -86,7 +88,8 @@ func TestListRecordingsEncodeStateFilterUsesRiverJobs(t *testing.T) {
 	}
 	_ = queued
 
-	srv := newAPIServer(t, pool)
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, RiverClient: client}))
+	t.Cleanup(srv.Close)
 	queuedTitles := getRecordingsTitles(t, srv.URL, url.Values{"encodeState": {"queued"}})
 	if len(queuedTitles) != 1 || queuedTitles[0] != "待機中" {
 		t.Errorf("encodeState=queued got %v, want [待機中]", queuedTitles)
