@@ -193,10 +193,14 @@ export function ProgramGrid({
   const ticks = useMemo(() => hourTicks(axis), [axis])
 
   const totalHeightPx = axisHeightPx(axis)
-  const columnsWidthPx = services.length * epgColumnWidthPx
+  const columnWidthPx = epgColumnWidthPx(
+    Math.max(0, viewport.width - gutterWidthPx),
+    services.length,
+  )
+  const columnsWidthPx = services.length * columnWidthPx
   const columnRange = visibleColumnRange(
     services.length,
-    epgColumnWidthPx,
+    columnWidthPx,
     viewport.left,
     viewport.width,
     overscanColumns,
@@ -241,8 +245,8 @@ export function ProgramGrid({
                 key={`${service.networkId}-${service.serviceId}`}
                 className="absolute top-0 flex h-full items-center gap-1.5 overflow-hidden border-r border-border px-2"
                 style={{
-                  left: (columnRange.start + index) * epgColumnWidthPx,
-                  width: epgColumnWidthPx,
+                  left: (columnRange.start + index) * columnWidthPx,
+                  width: columnWidthPx,
                 }}
               >
                 {service.channelType === 'GR' && service.remoteControlKeyId > 0 && (
@@ -316,7 +320,8 @@ export function ProgramGrid({
               <ServiceColumn
                 key={`${service.networkId}-${service.serviceId}`}
                 service={service}
-                leftPx={(columnRange.start + index) * epgColumnWidthPx}
+                leftPx={(columnRange.start + index) * columnWidthPx}
+                widthPx={columnWidthPx}
                 placed={placedByService.get(composeServiceId(service.networkId, service.serviceId)) ?? []}
                 axis={axis}
                 timeWindow={timeWindow}
@@ -350,6 +355,7 @@ export function ProgramGrid({
 function ServiceColumn({
   service,
   leftPx,
+  widthPx,
   placed,
   axis,
   timeWindow,
@@ -359,6 +365,7 @@ function ServiceColumn({
 }: {
   service: Service
   leftPx: number
+  widthPx: number
   placed: PlacedProgram<ProgramListItem>[]
   axis: TimeAxis
   timeWindow: { startMs: number; endMs: number }
@@ -371,7 +378,7 @@ function ServiceColumn({
       data-testid="program-grid-column"
       data-service-id={service.serviceId}
       className="absolute top-0 border-r border-border"
-      style={{ left: leftPx, width: epgColumnWidthPx, height: '100%' }}
+      style={{ left: leftPx, width: widthPx, height: '100%' }}
     >
       {placed
         .filter((p) => p.endMs > timeWindow.startMs && p.startMs < timeWindow.endMs)

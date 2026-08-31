@@ -4,6 +4,7 @@ import type { Service } from '@/api/generated'
 import {
   axisHeightPx,
   channelTypeLabel,
+  epgColumnWidthPx,
   groupByChannelType,
   groupProgramsByService,
   hourTicks,
@@ -32,6 +33,18 @@ const axis: TimeAxis = {
 function at(minutes: number): number {
   return axis.startMs + minutes * 60_000
 }
+
+describe('epgColumnWidthPx', () => {
+  it('列数で割った幅を 176px から 260px の範囲に収める', () => {
+    expect(epgColumnWidthPx(800, 4)).toBe(200)
+    expect(epgColumnWidthPx(600, 4)).toBe(176)
+    expect(epgColumnWidthPx(1200, 4)).toBe(260)
+  })
+
+  it('20 列が収まらなければ最小幅を保つ', () => {
+    expect(epgColumnWidthPx(2560, 20)).toBe(176)
+  })
+})
 
 describe('時間軸の写像', () => {
   it('軸の高さは 1 時間あたりの高さ x 時間数', () => {
