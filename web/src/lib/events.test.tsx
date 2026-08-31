@@ -281,6 +281,22 @@ describe('useServerEvents', () => {
     expect(isStale(queryClient, ['/api/recordings'])).toBe(false)
   })
 
+  it('recordings のイベントでエンコード待機列も取り直す', () => {
+    globalThis.EventSource = EventSourceStub as unknown as typeof EventSource
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: Infinity } },
+    })
+    const key = ['/api/encode-queue']
+    queryClient.setQueryData(key, { queued: 2, running: 1 })
+    renderSubscriber(queryClient)
+
+    expect(isStale(queryClient, key)).toBe(false)
+
+    EventSourceStub.last?.emit('recordings')
+
+    expect(isStale(queryClient, key)).toBe(true)
+  })
+
   // トピック名と代表キーはリテラルで書く（実装の queryGroups を import すると
   // 「トピックの書き忘れ・書き間違い」を一緒に見逃す）。撃ったトピックのキーだけが
   // stale になることを見るので、トピックの取り違えも検出できる

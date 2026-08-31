@@ -36,9 +36,10 @@ type recordingsFilter struct {
 	// site は別軸で、軸間は AND（openapi.yaml の `service` の description）。
 	Services []serviceRef
 
-	Status ListRecordingsParamsStatus
-	Source ListRecordingsParamsSource
-	RuleID *int64
+	Status      ListRecordingsParamsStatus
+	EncodeState ListRecordingsParamsEncodeState
+	Source      ListRecordingsParamsSource
+	RuleID      *int64
 
 	From *time.Time
 	To   *time.Time
@@ -74,7 +75,7 @@ const (
 
 // recordingsFilterFromParams は ListRecordingsParams（openapi_gen.go の生成型）を
 // recordingsFilter に変換する。不正な入力（before/beforeId が片方だけ、limit が
-// 範囲外、enum に一致しない qTarget/channelType/status/source/order、
+// 範囲外、enum に一致しない qTarget/channelType/status/encodeState/source/order、
 // ドメイン外の genre）はエラーメッセージを返す（空文字なら妥当）。
 //
 // enum は無視して黙って既定値や 0 件に落とさない（issue #136 の罠「黙って 0 件
@@ -142,6 +143,12 @@ func recordingsFilterFromParams(p ListRecordingsParams) (recordingsFilter, strin
 			return recordingsFilter{}, fmt.Sprintf("invalid status %q", *p.Status)
 		}
 		f.Status = *p.Status
+	}
+	if p.EncodeState != nil {
+		if !p.EncodeState.Valid() {
+			return recordingsFilter{}, fmt.Sprintf("invalid encodeState %q (want queued or running)", *p.EncodeState)
+		}
+		f.EncodeState = *p.EncodeState
 	}
 	if p.Source != nil {
 		if !p.Source.Valid() {
@@ -390,6 +397,18 @@ func buildRecordingsQuery(f recordingsFilter) (string, []any, error) {
 		if !f.Trash && f.Status == ListRecordingsParamsStatusFailed {
 			and("r.superseded_at IS NULL")
 		}
+	}
+	if f.EncodeState != "" {
+		states := "'running'"
+		if f.EncodeState == ListRecordingsParamsEncodeStateQueued {
+			states = "'available', 'pending', 'scheduled', 'retryable'"
+		}
+		and(`EXISTS (
+			SELECT 1 FROM river_job ej
+			WHERE ej.kind = 'encode'
+			  AND ej.state IN (` + states + `)
+			  AND (ej.args ->> 'recording_id')::bigint = r.id
+		)`)
 	}
 	if f.Source != "" {
 		and("r.source = " + arg(string(f.Source)))

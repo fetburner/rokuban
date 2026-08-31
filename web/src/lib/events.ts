@@ -93,7 +93,7 @@ const queryGroups: QueryGroup[] = [
   },
   {
     topic: 'recordings',
-    prefixes: ['/api/recordings'],
+    prefixes: ['/api/recordings', '/api/encode-queue'],
     refreshIntervalMs: operationalRefreshIntervalMs,
   },
   {

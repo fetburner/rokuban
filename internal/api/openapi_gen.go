@@ -571,6 +571,24 @@ func (e ListRecordingsParamsStatus) Valid() bool {
 	}
 }
 
+// Defines values for ListRecordingsParamsEncodeState.
+const (
+	ListRecordingsParamsEncodeStateQueued  ListRecordingsParamsEncodeState = "queued"
+	ListRecordingsParamsEncodeStateRunning ListRecordingsParamsEncodeState = "running"
+)
+
+// Valid indicates whether the value is a known member of the ListRecordingsParamsEncodeState enum.
+func (e ListRecordingsParamsEncodeState) Valid() bool {
+	switch e {
+	case ListRecordingsParamsEncodeStateQueued:
+		return true
+	case ListRecordingsParamsEncodeStateRunning:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ListRecordingsParamsSource.
 const (
 	ListRecordingsParamsSourceManual ListRecordingsParamsSource = "manual"
@@ -837,6 +855,15 @@ type EncodeProfileSummary struct {
 
 // EncodeProfileSummaryContainer 出力コンテナ（表示用。未注入なら省略）。
 type EncodeProfileSummaryContainer string
+
+// EncodeQueueSummary active なエンコードジョブの件数（録画 × プロファイル単位）。
+type EncodeQueueSummary struct {
+	// Queued 待機中（available / pending / scheduled / retryable）のジョブ数。
+	Queued int64 `json:"queued"`
+
+	// Running 実行中のジョブ数。
+	Running int64 `json:"running"`
+}
 
 // EncodedAsset defines model for EncodedAsset.
 type EncodedAsset struct {
@@ -1539,7 +1566,12 @@ type ListRecordingsParams struct {
 	// failed 行を「録画失敗」として返さないため（ホームの警告が偽陽性を
 	// 出し続けるのを防ぐ）。無条件一覧・`trash=true` は履歴として両行を残す。
 	Status *ListRecordingsParamsStatus `form:"status,omitempty" json:"status,omitempty"`
-	Source *ListRecordingsParamsSource `form:"source,omitempty" json:"source,omitempty"`
+
+	// EncodeState active な River encode ジョブの状態。`queued` は `available` /
+	// `pending` / `scheduled` / `retryable`、`running` は実行中を表す。
+	// 件数は録画数ではなく録画 × プロファイルのジョブ数になる。
+	EncodeState *ListRecordingsParamsEncodeState `form:"encodeState,omitempty" json:"encodeState,omitempty"`
+	Source      *ListRecordingsParamsSource      `form:"source,omitempty" json:"source,omitempty"`
 
 	// RuleId 特定ルール由来の録画に絞る
 	RuleId *int64 `form:"ruleId,omitempty" json:"ruleId,omitempty"`
@@ -1570,6 +1602,9 @@ type ListRecordingsParamsChannelType string
 
 // ListRecordingsParamsStatus defines parameters for ListRecordings.
 type ListRecordingsParamsStatus string
+
+// ListRecordingsParamsEncodeState defines parameters for ListRecordings.
+type ListRecordingsParamsEncodeState string
 
 // ListRecordingsParamsSource defines parameters for ListRecordings.
 type ListRecordingsParamsSource string
@@ -1621,6 +1656,9 @@ type ServerInterface interface {
 	// ListEncodeProfiles List configured encode profile names
 	// (GET /api/encode-profiles)
 	ListEncodeProfiles(w http.ResponseWriter, r *http.Request)
+	// GetEncodeQueue Get active encode job counts
+	// (GET /api/encode-queue)
+	GetEncodeQueue(w http.ResponseWriter, r *http.Request)
 	// ListRecordings List recordings
 	// (GET /api/recordings)
 	ListRecordings(w http.ResponseWriter, r *http.Request, params ListRecordingsParams)
@@ -1735,6 +1773,12 @@ func (_ Unimplemented) ListCapacityOverages(w http.ResponseWriter, r *http.Reque
 // ListEncodeProfiles List configured encode profile names
 // (GET /api/encode-profiles)
 func (_ Unimplemented) ListEncodeProfiles(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// GetEncodeQueue Get active encode job counts
+// (GET /api/encode-queue)
+func (_ Unimplemented) GetEncodeQueue(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -2009,6 +2053,20 @@ func (siw *ServerInterfaceWrapper) ListEncodeProfiles(w http.ResponseWriter, r *
 	handler.ServeHTTP(w, r)
 }
 
+// GetEncodeQueue operation middleware
+func (siw *ServerInterfaceWrapper) GetEncodeQueue(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetEncodeQueue(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ListRecordings operation middleware
 func (siw *ServerInterfaceWrapper) ListRecordings(w http.ResponseWriter, r *http.Request) {
 
@@ -2105,6 +2163,19 @@ func (siw *ServerInterfaceWrapper) ListRecordings(w http.ResponseWriter, r *http
 			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "status"})
 		} else {
 			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "status", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "encodeState" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "encodeState", r.URL.Query(), &params.EncodeState, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "encodeState"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "encodeState", Err: err})
 		}
 		return
 	}
@@ -3187,6 +3258,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Get(options.BaseURL+"/api/capacity/overages", wrapper.ListCapacityOverages)
 	})
 	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/encode-queue", wrapper.GetEncodeQueue)
+	})
+	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/api/storage", wrapper.GetStorage)
 	})
 	r.Group(func(r chi.Router) {
@@ -3287,6 +3361,27 @@ type ListEncodeProfilesResponseObject interface {
 type ListEncodeProfiles200JSONResponse []EncodeProfileSummary
 
 func (response ListEncodeProfiles200JSONResponse) VisitListEncodeProfilesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetEncodeQueueRequestObject struct {
+}
+
+type GetEncodeQueueResponseObject interface {
+	VisitGetEncodeQueueResponse(w http.ResponseWriter) error
+}
+
+type GetEncodeQueue200JSONResponse EncodeQueueSummary
+
+func (response GetEncodeQueue200JSONResponse) VisitGetEncodeQueueResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response); err != nil {
@@ -4309,6 +4404,9 @@ type StrictServerInterface interface {
 	// ListEncodeProfiles List configured encode profile names
 	// (GET /api/encode-profiles)
 	ListEncodeProfiles(ctx context.Context, request ListEncodeProfilesRequestObject) (ListEncodeProfilesResponseObject, error)
+	// GetEncodeQueue Get active encode job counts
+	// (GET /api/encode-queue)
+	GetEncodeQueue(ctx context.Context, request GetEncodeQueueRequestObject) (GetEncodeQueueResponseObject, error)
 	// ListRecordings List recordings
 	// (GET /api/recordings)
 	ListRecordings(ctx context.Context, request ListRecordingsRequestObject) (ListRecordingsResponseObject, error)
@@ -4528,6 +4626,30 @@ func (sh *strictHandler) ListEncodeProfiles(w http.ResponseWriter, r *http.Reque
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(ListEncodeProfilesResponseObject); ok {
 		if err := validResponse.VisitListEncodeProfilesResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetEncodeQueue operation middleware
+func (sh *strictHandler) GetEncodeQueue(w http.ResponseWriter, r *http.Request) {
+	var request GetEncodeQueueRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetEncodeQueue(ctx, request.(GetEncodeQueueRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetEncodeQueue")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetEncodeQueueResponseObject); ok {
+		if err := validResponse.VisitGetEncodeQueueResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
