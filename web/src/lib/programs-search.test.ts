@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ServiceChannelType, type Service } from '@/api/generated'
 import { parseProgramsSearch, pickerServiceDomain } from '@/lib/programs-search'
@@ -159,6 +159,39 @@ describe('parseProgramsSearch', () => {
     const result = parseProgramsSearch({})
     expect(result).toEqual({ service: undefined, at: undefined, view: undefined })
     expect('view' in result).toBe(true)
+  })
+})
+
+describe('parseProgramsSearch の day', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-08-14T12:00:00+09:00'))
+  })
+
+  afterEach(() => vi.useRealTimers())
+
+  it('今日から 8 日間の YYYY-MM-DD を受け取り、既定の今日は省略する', () => {
+    expect(parseProgramsSearch({ day: '2026-08-16' }).day).toBe('2026-08-16')
+    expect(parseProgramsSearch({ day: '2026-08-14' }).day).toBeUndefined()
+    expect(parseProgramsSearch({ day: '2026-08-21' }).day).toBe('2026-08-21')
+  })
+
+  it.each([
+    '2026-08-13',
+    '2026-08-22',
+    '2026-02-30',
+    '2026-8-16',
+    'not-a-day',
+  ])('%s は選択範囲外または不正なので既定の今日に落とす', (day) => {
+    expect(parseProgramsSearch({ day }).day).toBeUndefined()
+  })
+
+  it('parse → URL 直列化 → parse の往復で day を保つ', () => {
+    const parsed = parseProgramsSearch({ day: '2026-08-16' })
+    const params = new URLSearchParams()
+    if (parsed.day !== undefined) params.set('day', parsed.day)
+
+    expect(parseProgramsSearch(Object.fromEntries(params)).day).toBe('2026-08-16')
   })
 })
 

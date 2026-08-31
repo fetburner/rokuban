@@ -63,24 +63,20 @@ const pageSize = 50
 
 type RecordingsPageParam = { before?: string; beforeId?: number }
 
-type ViewMode = 'library' | 'trash'
-
 export function RecordingsPage() {
-  const [mode, setMode] = useState<ViewMode>('library')
-  const trash = mode === 'trash'
+  // 検索条件・表示タブはどちらも URL に載せる（リロード・共有・戻るで同じ結果に
+  // なる。docs/frontend.md「録画検索は /recordings に同居する」/「ごみ箱タブと
+  // 検索条件は直交させる」）。タブは条件と直交する別の軸なので `tab` として
+  // 別に持ち、既定のライブラリは URL に書かない（履歴を汚さない・共有 URL を短く）。
+  const search = useRouteSearch({ from: '/recordings' })
+  const navigate = useNavigate()
+  const trash = search.tab === 'trash'
 
   // 多サイトのときだけ行に site を出す（同じ (networkId, serviceId) を 2 サイトで
   // 受けたとき行を見分ける材料が site しか無い。issue #283）。単一サイトでは
   // 「default」がノイズになるだけなので出さない。レジストリは SiteGate が既に
   // 取得済み（同じクエリキー）。
   const showSite = (unwrap(useListSites().data) ?? []).length > 1
-
-  // 検索条件は URL に載せる（リロード・共有・戻るで同じ結果になる。
-  // docs/frontend.md「録画検索は /recordings に同居する」）。タブ（ライブラリ /
-  // ごみ箱）は条件と直交する別の軸なので URL には載せず、ここでは component
-  // state のまま持つ。
-  const search = useRouteSearch({ from: '/recordings' })
-  const navigate = useNavigate()
   const updateSearch = (updater: (prev: RecordingsPageSearch) => RecordingsPageSearch) => {
     // debounce（キーワード）・チップの個別解除のどちらも history を汚さないよう
     // 常に replace で書く（docs/frontend.md「debounce と URL 同期で履歴を汚さない」）。
@@ -205,13 +201,13 @@ export function RecordingsPage() {
       <PageHeader title="録画">
         <div className="flex gap-1 border-t border-border px-4 py-2">
           <ViewTab
-            active={mode === 'library'}
-            onClick={() => setMode('library')}
+            active={!trash}
+            onClick={() => updateSearch((s) => ({ ...s, tab: undefined }))}
             label="ライブラリ"
           />
           <ViewTab
-            active={mode === 'trash'}
-            onClick={() => setMode('trash')}
+            active={trash}
+            onClick={() => updateSearch((s) => ({ ...s, tab: 'trash' }))}
             label="ごみ箱"
           />
         </div>

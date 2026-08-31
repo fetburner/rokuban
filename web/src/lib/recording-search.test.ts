@@ -18,6 +18,23 @@ describe('parseRecordingsSearch', () => {
     expect(parseRecordingsSearch({})).toEqual({})
   })
 
+  it('tab=trash はごみ箱として受け取り、既定・不正値はライブラリに落とす', () => {
+    expect(parseRecordingsSearch({ tab: 'trash' }).tab).toBe('trash')
+    expect(parseRecordingsSearch({ tab: 'library' }).tab).toBeUndefined()
+    const invalid = parseRecordingsSearch({ tab: 'bogus' })
+    expect(invalid.tab).toBeUndefined()
+    expect('tab' in invalid).toBe(true)
+  })
+
+  it('parse → URL 直列化 → parse の往復で tab を保つ', () => {
+    const parsed = parseRecordingsSearch({ tab: 'trash', q: 'ニュース' })
+    const params = new URLSearchParams({ tab: parsed.tab ?? '', q: parsed.q ?? '' })
+    const reparsed = parseRecordingsSearch(Object.fromEntries(params))
+
+    expect(reparsed.tab).toBe('trash')
+    expect(reparsed.q).toBe('ニュース')
+  })
+
   it('有効な値をそのまま受け取る', () => {
     expect(
       parseRecordingsSearch({
@@ -247,9 +264,15 @@ describe('buildListRecordingsParams', () => {
 })
 
 describe('clearRecordingsFilters', () => {
-  it('order 以外の条件を全部外す', () => {
-    const search: RecordingsPageSearch = { q: 'x', genre: [1], status: 'failed', order: 'asc' }
-    expect(clearRecordingsFilters(search)).toEqual({ order: 'asc' })
+  it('tab と order を保ったまま絞り込み条件を全部外す', () => {
+    const search: RecordingsPageSearch = {
+      tab: 'trash',
+      q: 'x',
+      genre: [1],
+      status: 'failed',
+      order: 'asc',
+    }
+    expect(clearRecordingsFilters(search)).toEqual({ tab: 'trash', order: 'asc' })
   })
 
   it('order が無ければ空の条件になる', () => {

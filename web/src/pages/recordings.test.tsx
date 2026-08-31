@@ -315,6 +315,18 @@ function recordingsRequests(fetchMock: ReturnType<typeof vi.fn>): URL[] {
 }
 
 describe('RecordingsPage タブ', () => {
+  it('/recordings?tab=trash で開くとごみ箱を表示する', async () => {
+    createFakeRecordingsServer({
+      library: [sampleRecording()],
+      trash: [sampleRecording({ id: 2, title: '捨てた録画', deletedAt: '2026-01-02T00:00:00Z' })],
+    })
+
+    renderPage('/recordings?tab=trash')
+
+    expect(await screen.findByText('捨てた録画')).toBeInTheDocument()
+    expect(screen.queryByText('ライブラリの録画')).not.toBeInTheDocument()
+  })
+
   it('ライブラリとごみ箱を切り替え、ごみ箱一覧を trash=true で取る', async () => {
     const user = userEvent.setup()
     const server = createFakeRecordingsServer({
@@ -336,6 +348,31 @@ describe('RecordingsPage タブ', () => {
       (url) => url.searchParams.get('trash') === 'true',
     )
     expect(trashCalls.length).toBeGreaterThan(0)
+  })
+
+  it('タブ切替を URL に replace し、検索条件を保ったまま既定のライブラリは省略する', async () => {
+    const user = userEvent.setup()
+    createFakeRecordingsServer({
+      library: [sampleRecording({ title: 'マッチする録画' })],
+      trash: [sampleRecording({ id: 9, title: 'マッチする録画', deletedAt: '2026-01-02T00:00:00Z' })],
+    })
+
+    const { router } = renderPage('/recordings?q=マッチ')
+    await screen.findByText('マッチする録画')
+    const initialHistoryLength = router.history.length
+
+    await user.click(screen.getByRole('button', { name: 'ごみ箱' }))
+    await waitFor(() => {
+      expect(router.state.location.search).toMatchObject({ q: 'マッチ', tab: 'trash' })
+    })
+    expect(router.history.length).toBe(initialHistoryLength)
+
+    await user.click(screen.getByRole('button', { name: 'ライブラリ' }))
+    await waitFor(() => {
+      expect(router.state.location.search.q).toBe('マッチ')
+      expect(router.state.location.search.tab).toBeUndefined()
+    })
+    expect(router.history.length).toBe(initialHistoryLength)
   })
 
   // M3-25（#137）で useInfiniteQuery に置き換えた。繋ぎの固定 limit（200、
