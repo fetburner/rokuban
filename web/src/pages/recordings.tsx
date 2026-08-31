@@ -4,8 +4,10 @@ import { ChevronRight, Trash2 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import {
+  deleteRecording as deleteRecordingRequest,
   getListRecordingsQueryKey,
   listRecordings,
+  purgeRecording as purgeRecordingRequest,
   restoreRecording as restoreRecordingRequest,
   useAddRecordingEncodeProfiles,
   useDeleteRecording,
@@ -62,6 +64,30 @@ import { cn } from '@/lib/utils'
 const pageSize = 50
 
 type RecordingsPageParam = { before?: string; beforeId?: number }
+
+type BulkFailure = { id: number; error: unknown }
+
+/** runBulk は既存の 1 件 API を全 ID へ並列送信し、部分成功を分けて返す。 */
+async function runBulk(
+  ids: number[],
+  op: (id: number) => Promise<unknown>,
+): Promise<{ ok: number[]; failed: BulkFailure[] }> {
+  const settled = await Promise.allSettled(ids.map((id) => op(id)))
+  const ok: number[] = []
+  const failed: BulkFailure[] = []
+  settled.forEach((result, i) => {
+    if (result.status === 'fulfilled') ok.push(ids[i])
+    else failed.push({ id: ids[i], error: result.reason })
+  })
+  return { ok, failed }
+}
+
+function bulkFailureMessage(label: string, failed: BulkFailure[]): string {
+  const details = [
+    ...new Set(failed.map(({ error }) => apiErrorMessage(error)).filter((detail) => detail !== undefined)),
+  ]
+  return details.length > 0 ? `${label}: ${details.join(' / ')}` : label
+}
 
 export function RecordingsPage() {
   // 検索条件・表示タブはどちらも URL に載せる（リロード・共有・戻るで同じ結果に
@@ -132,6 +158,108 @@ export function RecordingsPage() {
     [query.data],
   )
 
+  const queryClient = useQueryClient()
+  const toast = useToast()
+  const [selecting, setSelecting] = useState(false)
+  const [selected, setSelected] = useState<Set<number>>(() => new Set())
+  const [bulkBusy, setBulkBusy] = useState(false)
+  const [purgeConfirmOpen, setPurgeConfirmOpen] = useState(false)
+  const selectedIds = [...selected]
+  const allLoadedSelected = recordings.length > 0 && recordings.every((r) => selected.has(r.id))
+
+  const toggleSelected = (id: number) => {
+    setSelected((current) => {
+      const next = new Set(current)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const invalidateRecordings = () =>
+    queryClient.invalidateQueries({ queryKey: ['/api/recordings'] })
+
+  const reportBulkFailures = (label: string, failed: BulkFailure[]) => {
+    if (failed.length === 0) return
+    toast({ message: bulkFailureMessage(label, failed), kind: 'error' })
+  }
+
+  const restoreIds = async (ids: number[]) => {
+    const result = await runBulk(ids, (id) => restoreRecordingRequest(id))
+    await invalidateRecordings()
+    return result
+  }
+
+  const finishSelection = (failed: BulkFailure[]) => {
+    setSelected(new Set(failed.map(({ id }) => id)))
+    if (failed.length === 0) setSelecting(false)
+  }
+
+  const moveSelectedToTrash = async () => {
+    setBulkBusy(true)
+    try {
+      const result = await runBulk(selectedIds, (id) => deleteRecordingRequest(id))
+      await invalidateRecordings()
+      finishSelection(result.failed)
+      if (result.ok.length > 0) {
+        const undoIds = result.ok
+        toast({
+          message: `${undoIds.length} 件をごみ箱へ移動`,
+          action: {
+            label: '元に戻す',
+            onClick: () => {
+              void restoreIds(undoIds).then((undo) =>
+                reportBulkFailures(
+                  `${undo.failed.length} 件を元に戻せませんでした`,
+                  undo.failed,
+                ),
+              )
+            },
+          },
+        })
+      }
+      reportBulkFailures(
+        `${result.failed.length} 件をごみ箱へ移動できませんでした`,
+        result.failed,
+      )
+    } finally {
+      setBulkBusy(false)
+    }
+  }
+
+  const restoreSelected = async () => {
+    setBulkBusy(true)
+    try {
+      const result = await restoreIds(selectedIds)
+      finishSelection(result.failed)
+      reportBulkFailures(`${result.failed.length} 件を復元できませんでした`, result.failed)
+    } finally {
+      setBulkBusy(false)
+    }
+  }
+
+  const purgeSelected = async () => {
+    setBulkBusy(true)
+    try {
+      const result = await runBulk(selectedIds, (id) => purgeRecordingRequest(id))
+      await invalidateRecordings()
+      finishSelection(result.failed)
+      if (result.ok.length > 0) toast({ message: `${result.ok.length} 件の完全削除を予約しました` })
+      reportBulkFailures(
+        `${result.failed.length} 件の完全削除を予約できませんでした`,
+        result.failed,
+      )
+    } finally {
+      setBulkBusy(false)
+    }
+  }
+
+  const cancelSelection = () => {
+    setSelecting(false)
+    setSelected(new Set())
+    setPurgeConfirmOpen(false)
+  }
+
   // autoLoadFailed: 直近の自動読み込みが失敗したか。失敗したらボタン + エラー
   // 表示に落とし、番兵が可視のままでも自動では再試行しない（さもないと失敗した
   // まま無限にリクエストを投げ続ける。pages/programs.tsx と同じ規律）。
@@ -139,6 +267,9 @@ export function RecordingsPage() {
   const paramsKey = JSON.stringify(listParams)
   useEffect(() => {
     setAutoLoadFailed(false)
+    setSelecting(false)
+    setSelected(new Set())
+    setPurgeConfirmOpen(false)
   }, [paramsKey])
   useEffect(() => {
     if (query.isFetchNextPageError) setAutoLoadFailed(true)
@@ -198,7 +329,16 @@ export function RecordingsPage() {
 
   return (
     <>
-      <PageHeader title="録画">
+      <PageHeader
+        title="録画"
+        actions={
+          !selecting && recordings.length > 0 ? (
+            <Button type="button" variant="ghost" size="sm" onClick={() => setSelecting(true)}>
+              選択
+            </Button>
+          ) : undefined
+        }
+      >
         <div className="flex gap-1 border-t border-border px-4 py-2">
           <ViewTab
             active={!trash}
@@ -215,7 +355,9 @@ export function RecordingsPage() {
         <StorageBalance />
       </PageHeader>
 
-      <PageContent>
+      {/* 固定の選択バーで末尾行を覆わないだけのスクロール余白を、編集モード中だけ
+          予約する。モバイルの 2 段折り返しは e2e/recordings-selection.mjs で実測する。 */}
+      <PageContent className={selecting ? 'pb-32 md:pb-20' : undefined}>
         {query.isError ? (
         <ErrorState>
           {apiErrorMessage(query.error) ??
@@ -247,10 +389,21 @@ export function RecordingsPage() {
         </EmptyState>
       ) : (
         <>
-          <ul>
+          <ul
+            role={selecting ? 'listbox' : undefined}
+            aria-multiselectable={selecting || undefined}
+            aria-label={selecting ? '録画を選択' : undefined}
+          >
             {recordings.map((r) => (
               <li key={r.id}>
-                <RecordingRow recording={r} trash={trash} showSite={showSite} />
+                <RecordingRow
+                  recording={r}
+                  trash={trash}
+                  showSite={showSite}
+                  selecting={selecting}
+                  selected={selected.has(r.id)}
+                  onToggle={() => toggleSelected(r.id)}
+                />
               </li>
             ))}
           </ul>
@@ -287,6 +440,88 @@ export function RecordingsPage() {
         </>
       )}
       </PageContent>
+
+      {selecting && (
+        <div className="fixed inset-x-0 bottom-[var(--bottom-nav-height)] z-20 flex justify-center px-4 pb-2 md:bottom-0 md:pb-4">
+          <div
+            role="toolbar"
+            aria-label="選択した録画の操作"
+            className="flex w-full max-w-3xl flex-wrap items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 shadow-lg"
+          >
+            <span className="mr-auto text-sm font-medium">{selected.size} 件を選択中</span>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={bulkBusy}
+              onClick={() =>
+                setSelected(
+                  allLoadedSelected ? new Set() : new Set(recordings.map(({ id }) => id)),
+                )
+              }
+            >
+              {allLoadedSelected
+                ? `読み込み済みの ${recordings.length} 件の選択を解除`
+                : `読み込み済みの ${recordings.length} 件を選択`}
+            </Button>
+            {trash ? (
+              <>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  disabled={bulkBusy || selected.size === 0}
+                  onClick={() => void restoreSelected()}
+                >
+                  復元
+                </Button>
+                <AlertDialog open={purgeConfirmOpen} onOpenChange={setPurgeConfirmOpen}>
+                  <AlertDialogTrigger
+                    render={
+                      <Button
+                        type="button"
+                        variant="destructive"
+                        size="sm"
+                        disabled={bulkBusy || selected.size === 0}
+                      >
+                        完全削除
+                      </Button>
+                    }
+                  />
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>{selected.size} 件を完全削除しますか？</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        選択した録画の原本・変換後のファイル・サムネイルを削除します。取り消せません。
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>キャンセル</AlertDialogCancel>
+                      <AlertDialogAction onClick={() => void purgeSelected()}>
+                        完全削除を予約する
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              </>
+            ) : (
+              <Button
+                type="button"
+                variant="destructive"
+                size="sm"
+                disabled={bulkBusy || selected.size === 0}
+                onClick={() => void moveSelectedToTrash()}
+              >
+                <Trash2 data-icon="inline-start" />
+                ごみ箱へ
+              </Button>
+            )}
+            <Button type="button" variant="ghost" size="sm" disabled={bulkBusy} onClick={cancelSelection}>
+              キャンセル
+            </Button>
+          </div>
+        </div>
+      )}
     </>
   )
 }
@@ -334,27 +569,50 @@ function RecordingRow({
   recording,
   trash,
   showSite,
+  selecting,
+  selected,
+  onToggle,
 }: {
   recording: Recording
   trash: boolean
   /** 多サイトのときだけ site を出す（issue #283）。 */
   showSite: boolean
+  selecting: boolean
+  selected: boolean
+  onToggle: () => void
 }) {
   const [thumbFailed, setThumbFailed] = useState(false)
 
   return (
-    <div className="relative flex min-h-14 items-center gap-3 border-b border-border px-4 py-2.5 hover:bg-muted/50">
-      {/* 行本体は詳細（/recordings/$id）への全面カバーリンク（予約一覧
-          `reservations.tsx` と同じ配置文法）。`position: relative` の親を
-          containing block にして、リンクだけを見えない全面の層に退避させる ---
-          サムネイル・バッジ列・chevron は通常フローに残す。子を持たないので
-          accessible name は aria-label で渡す（children から計算できない）。 */}
-      <Link
-        to="/recordings/$id"
-        params={{ id: String(recording.id) }}
-        aria-label={recording.title || '（番組名なし）'}
-        className="absolute inset-0"
-      />
+    <div
+      role={selecting ? 'option' : undefined}
+      aria-selected={selecting ? selected : undefined}
+      onClick={selecting ? onToggle : undefined}
+      className={cn(
+        'relative flex min-h-14 items-center gap-3 border-b border-border px-4 py-2.5 hover:bg-muted/50',
+        selecting && 'cursor-pointer',
+        selected && 'bg-muted/50',
+      )}
+    >
+      {/* 編集モード中は全面リンクを外す。残すと checkbox と行クリックを奪う。 */}
+      {!selecting && (
+        <Link
+          to="/recordings/$id"
+          params={{ id: String(recording.id) }}
+          aria-label={recording.title || '（番組名なし）'}
+          className="absolute inset-0"
+        />
+      )}
+      {selecting && (
+        <input
+          type="checkbox"
+          aria-label={`${recording.title || '（番組名なし）'}を選択`}
+          className="size-4 shrink-0 accent-primary"
+          checked={selected}
+          onClick={(event) => event.stopPropagation()}
+          onChange={onToggle}
+        />
+      )}
       {/*
         サムネイルは openapi 外の streamer 経路（/api/recordings/{id}/thumbnail）。
         未生成時は 404 → onError でプレースホルダ。hasThumbnail 列は持たない（M3-4）。
@@ -405,7 +663,7 @@ function RecordingRow({
           {recording.dropSummary && <DropBadges summary={recording.dropSummary} />}
         </div>
       </div>
-      <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
+      {!selecting && <ChevronRight className="size-4 shrink-0 text-muted-foreground" />}
     </div>
   )
 }
