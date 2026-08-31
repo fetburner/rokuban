@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -650,5 +650,55 @@ describe('LivePlayer の状態遷移', () => {
 
       expect(sent).toHaveLength(1)
     })
+  })
+})
+
+describe('LivePlayer のキー操作', () => {
+  it('M でミュートし、F でフルスクリーンにする', () => {
+    deferredFetch()
+    const { container } = render(<LivePlayer site="default" networkId={0} serviceId={1024} />)
+    const video = container.querySelector('video')!
+    const requestFullscreen = vi.fn(() => Promise.resolve())
+    Object.defineProperty(video, 'requestFullscreen', { value: requestFullscreen })
+
+    fireEvent.keyDown(window, { key: 'm' })
+    fireEvent.keyDown(window, { key: 'F' })
+
+    expect(video.muted).toBe(true)
+    expect(requestFullscreen).toHaveBeenCalledOnce()
+  })
+
+  it('修飾キー付きのブラウザ・OS ショートカットを横取りしない', () => {
+    deferredFetch()
+    const { container } = render(<LivePlayer site="default" networkId={0} serviceId={1024} />)
+    const video = container.querySelector('video')!
+    const requestFullscreen = vi.fn(() => Promise.resolve())
+    Object.defineProperty(video, 'requestFullscreen', { value: requestFullscreen })
+
+    fireEvent.keyDown(window, { key: 'f', metaKey: true })
+    fireEvent.keyDown(window, { key: 'm', ctrlKey: true })
+    fireEvent.keyDown(window, { key: 'f', altKey: true })
+
+    expect(requestFullscreen).not.toHaveBeenCalled()
+    expect(video.muted).toBe(false)
+  })
+
+  it('入力欄からの M とライブ対象外のシークキーは無視する', () => {
+    deferredFetch()
+    const { container } = render(
+      <div>
+        <input aria-label="検索" />
+        <LivePlayer site="default" networkId={0} serviceId={1024} />
+      </div>,
+    )
+    const video = container.querySelector('video')!
+    const input = container.querySelector('input')!
+    Object.defineProperty(video, 'currentTime', { value: 50, writable: true })
+
+    fireEvent.keyDown(input, { key: 'm' })
+    fireEvent.keyDown(window, { key: 'ArrowRight' })
+
+    expect(video.muted).toBe(false)
+    expect(video.currentTime).toBe(50)
   })
 })

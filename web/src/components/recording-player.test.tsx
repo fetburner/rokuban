@@ -6,6 +6,7 @@ import { RecordingPlayer } from '@/components/recording-player'
 afterEach(() => {
   localStorage.clear()
   vi.restoreAllMocks()
+  Reflect.deleteProperty(document, 'pictureInPictureEnabled')
 })
 
 /** jsdom の video 要素は currentTime/duration の実再生をしないので、テスト側から直接設定する。 */
@@ -144,7 +145,7 @@ describe('RecordingPlayer のサイズ常置（値札、issue #236）', () => {
         ]}
       />,
     )
-    const options = Array.from(container.querySelectorAll('option'))
+    const options = Array.from(container.querySelector('select')!.querySelectorAll('option'))
     expect(options.map((o) => o.textContent)).toEqual(['h264 (476.8 MB)', 'h265'])
   })
 
@@ -175,5 +176,141 @@ describe('RecordingPlayer のサイズ常置（値札、issue #236）', () => {
     )
     const link = container.querySelector('a')!
     expect(link.textContent).toContain('ダウンロード / VLC (4.2 GB)')
+  })
+})
+
+describe('RecordingPlayer の再生操作', () => {
+  const asset = [{ profile: 'h264', sizeBytes: 123 }]
+
+  it('速度セレクトを video.playbackRate に反映する', () => {
+    const { container, getByLabelText } = render(
+      <RecordingPlayer recordingId={30} encodedAssets={asset} />,
+    )
+    const video = container.querySelector('video')!
+
+    fireEvent.change(getByLabelText('再生速度'), { target: { value: '1.5' } })
+
+    expect(video.playbackRate).toBe(1.5)
+  })
+
+  it('別の録画では再生速度を 1.0 に戻す', () => {
+    const { getByLabelText, rerender } = render(
+      <RecordingPlayer recordingId={30} encodedAssets={asset} />,
+    )
+    const select = getByLabelText('再生速度') as HTMLSelectElement
+    fireEvent.change(select, { target: { value: '1.5' } })
+
+    rerender(<RecordingPlayer recordingId={31} encodedAssets={asset} />)
+
+    expect(select.value).toBe('1')
+  })
+
+  it('矢印キーで 10 秒、J/L で 30 秒移動する', () => {
+    const { container } = render(<RecordingPlayer recordingId={31} encodedAssets={asset} />)
+    const video = container.querySelector('video')!
+    setMediaProps(video, { currentTime: 60, duration: 100 })
+
+    fireEvent.keyDown(window, { key: 'ArrowLeft' })
+    expect(video.currentTime).toBe(50)
+    fireEvent.keyDown(window, { key: 'ArrowRight' })
+    expect(video.currentTime).toBe(60)
+    fireEvent.keyDown(window, { key: 'j' })
+    expect(video.currentTime).toBe(30)
+    fireEvent.keyDown(window, { key: 'L' })
+    expect(video.currentTime).toBe(60)
+  })
+
+  it('メタデータ読み込み前の前進キーで currentTime を壊さない', () => {
+    const { container } = render(<RecordingPlayer recordingId={32} encodedAssets={asset} />)
+    const video = container.querySelector('video')!
+    setMediaProps(video, { currentTime: 10, duration: Number.NaN })
+
+    fireEvent.keyDown(window, { key: 'ArrowRight' })
+
+    expect(video.currentTime).toBe(20)
+  })
+
+  it('0〜9 キーで再生時間の 10% 単位へ移動する', () => {
+    const { container } = render(<RecordingPlayer recordingId={32} encodedAssets={asset} />)
+    const video = container.querySelector('video')!
+    setMediaProps(video, { currentTime: 10, duration: 200 })
+
+    fireEvent.keyDown(window, { key: '7' })
+
+    expect(video.currentTime).toBe(140)
+  })
+
+  it('入力欄と video からのキー操作は無視し、それ以外では処理する', () => {
+    const { container } = render(
+      <div>
+        <input aria-label="検索" />
+        <RecordingPlayer recordingId={33} encodedAssets={asset} />
+      </div>,
+    )
+    const video = container.querySelector('video')!
+    const input = container.querySelector('input')!
+    setMediaProps(video, { currentTime: 50, duration: 100 })
+
+    fireEvent.keyDown(input, { key: 'ArrowRight' })
+    expect(video.currentTime).toBe(50)
+    fireEvent.keyDown(video, { key: 'ArrowRight' })
+    expect(video.currentTime).toBe(50)
+    fireEvent.keyDown(window, { key: 'ArrowRight' })
+    expect(video.currentTime).toBe(60)
+  })
+
+  it('Space で再生し、M でミュートし、F でフルスクリーンにする', () => {
+    const { container } = render(<RecordingPlayer recordingId={34} encodedAssets={asset} />)
+    const video = container.querySelector('video')!
+    const play = vi.spyOn(video, 'play').mockResolvedValue()
+    const requestFullscreen = vi.fn(() => Promise.resolve())
+    Object.defineProperty(video, 'requestFullscreen', { value: requestFullscreen })
+
+    fireEvent.keyDown(window, { key: ' ' })
+    fireEvent.keyDown(window, { key: 'm' })
+    fireEvent.keyDown(window, { key: 'F' })
+
+    expect(play).toHaveBeenCalledOnce()
+    expect(video.muted).toBe(true)
+    expect(requestFullscreen).toHaveBeenCalledOnce()
+  })
+
+  it('修飾キー付きのブラウザ・OS ショートカットを横取りしない', () => {
+    const { container } = render(<RecordingPlayer recordingId={35} encodedAssets={asset} />)
+    const video = container.querySelector('video')!
+    const requestFullscreen = vi.fn(() => Promise.resolve())
+    Object.defineProperty(video, 'requestFullscreen', { value: requestFullscreen })
+    setMediaProps(video, { currentTime: 50, duration: 100 })
+
+    fireEvent.keyDown(window, { key: 'f', metaKey: true })
+    fireEvent.keyDown(window, { key: 'ArrowRight', ctrlKey: true })
+    fireEvent.keyDown(window, { key: 'm', altKey: true })
+
+    expect(requestFullscreen).not.toHaveBeenCalled()
+    expect(video.currentTime).toBe(50)
+    expect(video.muted).toBe(false)
+  })
+
+  it('PiP 非対応ならボタンを出さない', () => {
+    const { queryByRole } = render(<RecordingPlayer recordingId={35} encodedAssets={asset} />)
+
+    expect(queryByRole('button', { name: 'ピクチャーインピクチャー' })).not.toBeInTheDocument()
+  })
+
+  it('PiP 対応ならボタンから開始する', () => {
+    Object.defineProperty(document, 'pictureInPictureEnabled', {
+      value: true,
+      configurable: true,
+    })
+    const { container, getByRole } = render(
+      <RecordingPlayer recordingId={36} encodedAssets={asset} />,
+    )
+    const video = container.querySelector('video')!
+    const requestPictureInPicture = vi.fn(() => Promise.resolve())
+    Object.defineProperty(video, 'requestPictureInPicture', { value: requestPictureInPicture })
+
+    fireEvent.click(getByRole('button', { name: 'ピクチャーインピクチャー' }))
+
+    expect(requestPictureInPicture).toHaveBeenCalledOnce()
   })
 })

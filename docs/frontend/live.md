@@ -146,6 +146,12 @@ JSON 404 にしてある（`internal/api/spa.go` の `spaOrAPINotFound`）。**�
 コントロール」になる。既定プロファイル（サーバー側の `live.profiles` 先頭）に
 固定し、画質切り替えは将来 `live.profiles` の一覧 API ができてから足す。
 
+**ライブのページキー操作は M（ミュート）と F（フルスクリーン）だけにする。**
+録画向けの速度変更とシークは出さない。入力欄・選択欄・リンク・ボタン・編集可能領域と
+`<video>` にフォーカスがあるときは処理せず、ネイティブ controls と二重に効かせない。
+ネイティブ HLS の `playbackRate` が実 Safari で有効かは未検証なので、速度変更を
+ライブへ広げる根拠にはしない。
+
 **hls.js はライブ視聴画面だけ動的 import する（`components/live-player.tsx`）。**
 `pnpm build` の出力で hls.js が `assets/hls-*.js`（約 520 KB）として独立チャンクに
 分かれ、他画面のバンドル（`assets/index-*.js`）には乗らないことを確認済み。

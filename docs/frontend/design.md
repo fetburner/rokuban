@@ -307,10 +307,7 @@ grep -rln --include='*.ts' --include='*.tsx' --include='*.css' 'scanlines' web/s
 `animate-pulse`（`Skeleton`）・
 ポップオーバー/ダイアログの `slide-in-from-*` / `zoom-in-95` / `fade-in-0`・
 `Button` の押下フィードバック（`translate`）が動きの発生源（他にも
-あり得るが、洗い出しは網羅していない --- 例えば `recording-player.tsx` の
-`scrollIntoView({ behavior: 'smooth' })` は JS 指定の `behavior` が
-`scroll-behavior` の CSS 指定より優先されるため、下記の一括対応では
-縮退しない。未対応）。個別のクラスへ毎回縮退を書き足すのではなく、
+あり得るが、洗い出しは網羅していない）。個別のクラスへ毎回縮退を書き足すのではなく、
 `html` の `tabular-nums` と同じ方針で `web/src/index.css` の 1 ブロック
 （`@media (prefers-reduced-motion: reduce)`）に集約し、
 `animation-duration` / `transition-duration` をほぼ 0 に切り詰める

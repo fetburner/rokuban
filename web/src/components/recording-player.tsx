@@ -43,6 +43,8 @@ export function RecordingPlayer({
   // 限りループにはならないが、無駄な再実行を避ける）。
   const profiles = useMemo(() => encodedAssets.map((a) => a.profile), [encodedAssets])
   const [profile, setProfile] = useState(profiles[0] ?? '')
+  const [playbackRate, setPlaybackRate] = useState(1)
+  const videoRef = useRef<HTMLVideoElement>(null)
   // プロファイル切替時に load したあとだけ currentTime を復元する
   const restorePending = useRef(true)
   // timeupdate 間引き用: 直近に保存した Math.floor(currentTime)。null は未保存
@@ -59,6 +61,68 @@ export function RecordingPlayer({
     restorePending.current = true
     lastSavedSecond.current = null
   }, [recordingId, profile])
+
+  useEffect(() => setPlaybackRate(1), [recordingId])
+
+  useEffect(() => {
+    if (videoRef.current) videoRef.current.playbackRate = playbackRate
+  }, [profile, playbackRate])
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const video = videoRef.current
+      if (!video || event.ctrlKey || event.metaKey || event.altKey) return
+      if (
+        event.target instanceof Element &&
+        event.target.closest('input, textarea, select, button, a, video, [contenteditable]')
+      ) {
+        return
+      }
+
+      const key = event.key.toLowerCase()
+      const seekBy = (seconds: number) => {
+        const target = Math.max(0, video.currentTime + seconds)
+        video.currentTime = Number.isFinite(video.duration)
+          ? Math.min(video.duration, target)
+          : target
+      }
+      let handled = true
+      switch (key) {
+        case ' ':
+          if (video.paused) void video.play()
+          else video.pause()
+          break
+        case 'arrowleft':
+          seekBy(-10)
+          break
+        case 'arrowright':
+          seekBy(10)
+          break
+        case 'j':
+          seekBy(-30)
+          break
+        case 'l':
+          seekBy(30)
+          break
+        case 'm':
+          video.muted = !video.muted
+          break
+        case 'f':
+          void video.requestFullscreen?.()
+          break
+        default:
+          if (/^[0-9]$/.test(key) && Number.isFinite(video.duration)) {
+            video.currentTime = (video.duration * Number(key)) / 10
+          } else {
+            handled = false
+          }
+      }
+      if (handled) event.preventDefault()
+    }
+
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [])
 
   if (profiles.length === 0) {
     return (
@@ -114,7 +178,39 @@ export function RecordingPlayer({
         )
       )}
 
+      <div className="flex flex-wrap items-center gap-2">
+        <label htmlFor={`playback-rate-${recordingId}`} className="text-muted-foreground">
+          再生速度
+        </label>
+        <select
+          id={`playback-rate-${recordingId}`}
+          value={playbackRate}
+          onChange={(event) => setPlaybackRate(Number(event.target.value))}
+          className="rounded border border-border bg-background px-2 py-1 text-xs"
+        >
+          {[1, 1.25, 1.5, 1.75, 2].map((rate) => (
+            <option key={rate} value={rate}>
+              {Number.isInteger(rate) ? rate.toFixed(1) : rate}×
+            </option>
+          ))}
+        </select>
+        {document.pictureInPictureEnabled === true && (
+          <button
+            type="button"
+            onClick={() => {
+              const video = videoRef.current
+              if (!video) return
+              void video.requestPictureInPicture()
+            }}
+            className="rounded border border-border px-2 py-1 text-xs hover:bg-muted"
+          >
+            ピクチャーインピクチャー
+          </button>
+        )}
+      </div>
+
       <video
+        ref={videoRef}
         key={`${recordingId}:${profile}`}
         controls
         playsInline
