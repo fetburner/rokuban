@@ -838,6 +838,29 @@ for (const spec of boundedListScreens) {
     if (gridBox === null || gridBox.width <= 1024.5) {
       ng.push(`programs-grid: 番組表グリッドが 1024px 以下に制限されている（${gridBox?.width ?? '未取得'}px）`)
     }
+
+    const columnMetrics = await grid.evaluate((element) => {
+      const columns = [...element.querySelectorAll('[data-testid="program-grid-column"]')]
+      const gridRect = element.getBoundingClientRect()
+      const firstRect = columns[0]?.getBoundingClientRect()
+      return {
+        count: columns.length,
+        width: firstRect?.width ?? 0,
+        availableWidth: firstRect ? element.clientWidth - (firstRect.left - gridRect.left) : 0,
+      }
+    })
+    const expectedColumnWidth = Math.min(
+      260,
+      Math.max(176, columnMetrics.availableWidth / services.length),
+    )
+    if (
+      columnMetrics.count !== services.length ||
+      Math.abs(columnMetrics.width - expectedColumnWidth) > 0.5
+    ) {
+      ng.push(
+        `programs-grid: 4 局の列幅が画面幅に追従していない（実測 ${columnMetrics.width}px、期待 ${expectedColumnWidth}px）`,
+      )
+    }
   }
   await context.close()
 }

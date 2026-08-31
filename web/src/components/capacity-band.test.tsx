@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { CapacityOverage, ProgramListItem, Service } from '@/api/generated'
 import { CapacityBandLabels, CapacityBands } from '@/components/capacity-band'
 import { ProgramGrid } from '@/components/program-grid'
-import { epgColumnWidthPx, type TimeAxis } from '@/lib/epg-grid'
+import { type TimeAxis } from '@/lib/epg-grid'
 
 /** 軸はローカル時刻の 0 時基準（program-grid.test.tsx と同じ組み方）。 */
 const dayStart = new Date(2026, 6, 25, 0, 0, 0, 0)
@@ -134,9 +134,7 @@ describe('CapacityBands', () => {
     )
 
     // 帯の層は列の総幅を張る。列ごとに描くと「この番組が負ける」の主張になる
-    expect(band(20 * 60)?.parentElement?.parentElement?.style.width).toBe(
-      `${services.length * epgColumnWidthPx}px`,
-    )
+    expect(band(20 * 60)?.parentElement?.parentElement?.style.width).toBe('352px')
   })
 
   it('不足本数と詰まった種別を出す（読み上げ用の全文。見た目は時間軸列側の短い形）', () => {

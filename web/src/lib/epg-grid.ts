@@ -16,8 +16,20 @@ import { composeServiceId } from '@/lib/service-id'
 
 const msPerHour = 3_600_000
 
-/** epgColumnWidthPx は 1 サービス（1 列）の幅。列の仮想化がこの固定幅に依存する。 */
-export const epgColumnWidthPx = 176
+/** 最小列幅。番組名を 2 行で読める現行の幅を下回らせない。 */
+const epgMinColumnWidthPx = 176
+
+/** 最大列幅。広すぎる行長を避けつつ、4 局なら広幅画面の余白を減らす。 */
+const epgMaxColumnWidthPx = 260
+
+/** epgColumnWidthPx はコンテナに収まる 1 サービス（1 列）の幅を返す。 */
+export function epgColumnWidthPx(containerWidthPx: number, columnCount: number): number {
+  if (columnCount <= 0) return epgMinColumnWidthPx
+  return Math.min(
+    epgMaxColumnWidthPx,
+    Math.max(epgMinColumnWidthPx, containerWidthPx / columnCount),
+  )
+}
 
 /** TimeAxis はグリッドの縦軸。`startMs` から `endMs` までを 1 時間 `pxPerHour` で線形に写す。 */
 export type TimeAxis = {
@@ -119,7 +131,7 @@ export function visibleTimeWindow(
 /**
  * visibleColumnRange は横スクロール位置から、描画すべき列の添字範囲 [start, end) を返す。
  *
- * 列は固定幅なので、可視範囲は除算 1 回で出る。`viewportPx` が 0 以下のときは
+ * 列は等幅なので、可視範囲は除算 1 回で出る。`viewportPx` が 0 以下のときは
  * 全列を返す（visibleTimeWindow と同じ理由）。
  */
 export function visibleColumnRange(

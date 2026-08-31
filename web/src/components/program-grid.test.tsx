@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import type { ProgramListItem, Service } from '@/api/generated'
 import { ProgramGrid } from '@/components/program-grid'
-import { epgColumnWidthPx, spanToPx, type TimeAxis } from '@/lib/epg-grid'
+import { spanToPx, type TimeAxis } from '@/lib/epg-grid'
 import { formatTime } from '@/lib/format'
 
 /** 軸はローカル時刻の 0 時基準（hourTicks がローカルの毎時 0 分を返すため）。 */
@@ -161,7 +161,7 @@ describe('ProgramGrid', () => {
     expect(cell(1).style.height).not.toBe(cell(2).style.height)
     // 列は横位置で分かれる
     expect(column(1024)?.style.left).toBe('0px')
-    expect(column(1032)?.style.left).toBe(`${epgColumnWidthPx}px`)
+    expect(column(1032)?.style.left).toBe('176px')
   })
 
   it('軸をまたぐ番組は軸の中だけを描く', () => {
@@ -237,7 +237,7 @@ describe('ProgramGrid', () => {
     const line = screen.getByTestId('program-grid-now-line')
     expect(line.style.top).toBe('2340px')
     // 帯と同じ層に置かれ、幅は全列ぶん（inset-0 の親が列の総幅を持つ）
-    expect(line.parentElement?.parentElement?.style.width).toBe(`${epgColumnWidthPx}px`)
+    expect(line.parentElement?.parentElement?.style.width).toBe('176px')
     expect(screen.getByTestId('program-grid-now-label')).toBeInTheDocument()
   })
 
@@ -275,9 +275,7 @@ describe('ProgramGrid', () => {
     expect(band.style.top).toBe('2400px')
     expect(band.style.height).toBe('120px')
     // 帯の層は列の総幅を張る（番組ではなく区間に描く = チャンネルを縦断する）
-    expect(band.parentElement?.parentElement?.style.width).toBe(
-      `${services.length * epgColumnWidthPx}px`,
-    )
+    expect(band.parentElement?.parentElement?.style.width).toBe('352px')
   })
 
   it('計測できていないうちは間引かない（空のグリッドを出さない）', () => {
@@ -305,6 +303,29 @@ describe('ProgramGrid', () => {
     expect(queryCell(1)).toBeNull()
     expect(queryCell(2)).not.toBeNull()
     expect(queryCell(3)).not.toBeNull()
+  })
+
+  it('計測した列幅を配置と横の仮想化に使う', () => {
+    const services = [
+      service(1024, 'ch1'),
+      service(1032, 'ch2'),
+      service(1040, 'ch3'),
+      service(1048, 'ch4'),
+    ]
+    renderGrid({
+      services,
+      programs: services.map((s, i) => program(i + 1, s.serviceId, 19 * 60, 60)),
+    })
+
+    // gutter 56px を除く 1000px を 4 列で割るので、実列幅は 250px。
+    // left=440px でも overscan 1 列により先頭列が残る。仮想化だけ固定幅
+    // 176px のままだと先頭列が落ちるため、配置と可視判定の不一致を検出できる。
+    stubViewport(screen.getByTestId('program-grid'), { left: 440, width: 1056, height: 4000 })
+
+    expect(column(1024)).not.toBeNull()
+    expect(column(1032)?.style.left).toBe('250px')
+    expect(column(1032)?.style.width).toBe('250px')
+    expect(column(1032)?.parentElement?.style.width).toBe('1000px')
   })
 
   it('可視範囲から外れた列を DOM から落とす（横の仮想化）', () => {
