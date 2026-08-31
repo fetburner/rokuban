@@ -21,6 +21,7 @@
     "e2e:grid-reserved": "node e2e/grid-reserved.mjs",
     "e2e:search-mobile": "node e2e/search-mobile.mjs",
     "e2e:reservations-mobile": "node e2e/reservations-mobile.mjs",
+    "e2e:recordings-selection": "node e2e/recordings-selection.mjs",
     "e2e:cls": "node e2e/cls.mjs",
     "e2e:chip-overflow": "node e2e/chip-overflow.mjs"
   },

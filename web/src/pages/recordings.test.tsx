@@ -146,12 +146,11 @@ function createFakeRecordingsServer(options: {
   // 差し替える（既定は 204 成功）。409 のときサーバーの英語文字列を UI が
   // そのまま出さないことを確認するテスト用。
   encodePostResponse?: () => Response
-  // deleteResponse / restoreResponse は DELETE /api/recordings/{id} と
-  // POST /api/recordings/{id}/restore の応答を差し替える（既定はどちらも
-  // 成功）。失敗トーストが従来どおり出ることを確認するテスト用
-  // （issue #297: 成功トーストを無音化しても失敗トーストは残る）。
-  deleteResponse?: () => Response
-  restoreResponse?: () => Response
+  // deleteResponse / restoreResponse / purgeResponse は各 mutation の応答を ID ごとに
+  // 差し替える（既定は成功）。一括操作の部分成功を確認するため ID を渡す。
+  deleteResponse?: (id: number) => Response | undefined
+  restoreResponse?: (id: number) => Response | undefined
+  purgeResponse?: (id: number) => Response | undefined
 }) {
   let library = [...(options.library ?? [])]
   let trash = [...(options.trash ?? [])]
@@ -162,6 +161,7 @@ function createFakeRecordingsServer(options: {
   const encodePostResponse = options.encodePostResponse
   const deleteResponse = options.deleteResponse
   const restoreResponse = options.restoreResponse
+  const purgeResponse = options.purgeResponse
 
   function paginate(url: URL, all: Recording[]): Recording[] {
     const q = url.searchParams.get('q')
@@ -222,8 +222,9 @@ function createFakeRecordingsServer(options: {
 
     const deleteMatch = /^\/api\/recordings\/(\d+)$/.exec(url.pathname)
     if (deleteMatch && method === 'DELETE') {
-      if (deleteResponse) return Promise.resolve(deleteResponse())
       const id = Number(deleteMatch[1])
+      const overridden = deleteResponse?.(id)
+      if (overridden) return Promise.resolve(overridden)
       const idx = library.findIndex((r) => r.id === id)
       if (idx === -1) return Promise.resolve(jsonResponse({ error: 'not found' }, 404))
       const [moved] = library.splice(idx, 1)
@@ -233,8 +234,9 @@ function createFakeRecordingsServer(options: {
 
     const restoreMatch = /^\/api\/recordings\/(\d+)\/restore$/.exec(url.pathname)
     if (restoreMatch && method === 'POST') {
-      if (restoreResponse) return Promise.resolve(restoreResponse())
       const id = Number(restoreMatch[1])
+      const overridden = restoreResponse?.(id)
+      if (overridden) return Promise.resolve(overridden)
       const idx = trash.findIndex((r) => r.id === id)
       if (idx === -1) return Promise.resolve(jsonResponse({ error: 'not found' }, 404))
       const [moved] = trash.splice(idx, 1)
@@ -246,6 +248,8 @@ function createFakeRecordingsServer(options: {
     const purgeMatch = /^\/api\/recordings\/(\d+)\/purge$/.exec(url.pathname)
     if (purgeMatch && method === 'POST') {
       const id = Number(purgeMatch[1])
+      const overridden = purgeResponse?.(id)
+      if (overridden) return Promise.resolve(overridden)
       trash = trash.filter((r) => r.id !== id)
       return Promise.resolve(jsonResponse(null, 204))
     }
@@ -312,6 +316,15 @@ function recordingsRequests(fetchMock: ReturnType<typeof vi.fn>): URL[] {
   return fetchMock.mock.calls
     .map((call) => new URL(String(call[0]), 'http://localhost'))
     .filter((url) => url.pathname === '/api/recordings')
+}
+
+function mutationIds(fetchMock: ReturnType<typeof vi.fn>, suffix = '', method = 'POST'): number[] {
+  const pattern = new RegExp(`^/api/recordings/(\\d+)${suffix}$`)
+  return fetchMock.mock.calls.flatMap((call) => {
+    const match = pattern.exec(new URL(String(call[0]), 'http://localhost').pathname)
+    const init = call[1] as RequestInit | undefined
+    return match && (init?.method ?? 'GET') === method ? [Number(match[1])] : []
+  })
 }
 
 describe('RecordingsPage タブ', () => {
@@ -480,6 +493,135 @@ describe('RecordingsPage 行は詳細へのリンク (issue #311)', () => {
 
     const link = await screen.findByRole('link', { name: 'エンコード無し録画' })
     expect(link).toHaveAttribute('href', '/recordings/32')
+  })
+})
+
+describe('RecordingsPage 複数選択と一括操作', () => {
+  it('編集モード中だけ checkbox を出し、行と checkbox で 1 回ずつ選択を切り替える', async () => {
+    const user = userEvent.setup()
+    createFakeRecordingsServer({
+      library: [sampleRecording(), sampleRecording({ id: 2, title: '二つ目の録画' })],
+    })
+
+    renderPage()
+    await screen.findByText('ライブラリの録画')
+
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '選択' }))
+
+    const checkbox = screen.getByRole('checkbox', { name: 'ライブラリの録画を選択' })
+    const row = checkbox.closest('[role="option"]')
+    expect(row).toHaveAttribute('aria-selected', 'false')
+    expect(screen.queryByRole('link', { name: 'ライブラリの録画' })).not.toBeInTheDocument()
+
+    await user.click(row as HTMLElement)
+    expect(checkbox).toBeChecked()
+    expect(row).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByText('1 件を選択中')).toBeInTheDocument()
+
+    await user.click(checkbox)
+    expect(checkbox).not.toBeChecked()
+    expect(row).toHaveAttribute('aria-selected', 'false')
+    expect(screen.getByText('0 件を選択中')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'キャンセル' }))
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'ライブラリの録画' })).toBeInTheDocument()
+  })
+
+  it('読み込み済みと明記した全選択で現在の行だけを選ぶ', async () => {
+    const user = userEvent.setup()
+    createFakeRecordingsServer({
+      library: [sampleRecording(), sampleRecording({ id: 2, title: '二つ目の録画' })],
+    })
+
+    renderPage()
+    await screen.findByText('二つ目の録画')
+    await user.click(screen.getByRole('button', { name: '選択' }))
+    await user.click(screen.getByRole('button', { name: '読み込み済みの 2 件を選択' }))
+
+    expect(screen.getByText('2 件を選択中')).toBeInTheDocument()
+    expect(screen.getAllByRole('checkbox')).toHaveLength(2)
+    expect(screen.getAllByRole('checkbox').every((checkbox) => (checkbox as HTMLInputElement).checked)).toBe(true)
+  })
+
+  it('ごみ箱送りは全件を試し、成功分だけ Undo して失敗本文を別に出す', async () => {
+    const user = userEvent.setup()
+    const server = createFakeRecordingsServer({
+      library: [
+        sampleRecording(),
+        sampleRecording({ id: 2, title: '失敗する録画' }),
+        sampleRecording({ id: 3, title: '三つ目の録画' }),
+      ],
+      deleteResponse: (id) =>
+        id === 2 ? jsonResponse({ error: 'disk busy' }, 500) : undefined,
+      restoreResponse: (id) =>
+        id === 3 ? jsonResponse({ error: 'recording conflict' }, 409) : undefined,
+    })
+
+    renderPage()
+    await screen.findByText('三つ目の録画')
+    await user.click(screen.getByRole('button', { name: '選択' }))
+    await user.click(screen.getByRole('button', { name: '読み込み済みの 3 件を選択' }))
+    await user.click(screen.getByRole('button', { name: 'ごみ箱へ' }))
+
+    await waitFor(() => expect(mutationIds(server.fetchMock, '', 'DELETE').sort()).toEqual([1, 2, 3]))
+    await waitFor(() => expect(screen.queryByText('ライブラリの録画')).not.toBeInTheDocument())
+    expect(screen.queryByText('三つ目の録画')).not.toBeInTheDocument()
+    expect(screen.getByText('失敗する録画')).toBeInTheDocument()
+    expect(screen.getByText('2 件をごみ箱へ移動')).toBeInTheDocument()
+    expect(screen.getByText(/1 件をごみ箱へ移動できませんでした: disk busy/)).toBeInTheDocument()
+    expect(screen.getByText('1 件を選択中')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: '元に戻す' }))
+
+    await waitFor(() => expect(mutationIds(server.fetchMock, '/restore').sort()).toEqual([1, 3]))
+    expect(await screen.findByText('ライブラリの録画')).toBeInTheDocument()
+    expect(screen.queryByText('三つ目の録画')).not.toBeInTheDocument()
+    expect(screen.getByText(/1 件を元に戻せませんでした: recording conflict/)).toBeInTheDocument()
+  })
+
+  it('ごみ箱の選択分をまとめて復元する', async () => {
+    const user = userEvent.setup()
+    const server = createFakeRecordingsServer({
+      trash: [
+        sampleRecording({ deletedAt: '2026-01-02T00:00:00Z' }),
+        sampleRecording({ id: 2, title: '二つ目の録画', deletedAt: '2026-01-02T00:00:00Z' }),
+      ],
+    })
+
+    renderPage('/recordings?tab=trash')
+    await screen.findByText('二つ目の録画')
+    await user.click(screen.getByRole('button', { name: '選択' }))
+    await user.click(screen.getByRole('button', { name: '読み込み済みの 2 件を選択' }))
+    await user.click(screen.getByRole('button', { name: '復元' }))
+
+    await waitFor(() => expect(mutationIds(server.fetchMock, '/restore').sort()).toEqual([1, 2]))
+    expect(await screen.findByText('ごみ箱は空です')).toBeInTheDocument()
+  })
+
+  it('完全削除は件数付き dialog で確認してから全件へ送る', async () => {
+    const user = userEvent.setup()
+    const server = createFakeRecordingsServer({
+      trash: [
+        sampleRecording({ deletedAt: '2026-01-02T00:00:00Z' }),
+        sampleRecording({ id: 2, title: '二つ目の録画', deletedAt: '2026-01-02T00:00:00Z' }),
+      ],
+    })
+
+    renderPage('/recordings?tab=trash')
+    await screen.findByText('二つ目の録画')
+    await user.click(screen.getByRole('button', { name: '選択' }))
+    await user.click(screen.getByRole('button', { name: '読み込み済みの 2 件を選択' }))
+    await user.click(screen.getByRole('button', { name: '完全削除' }))
+
+    expect(await screen.findByRole('alertdialog', { name: '2 件を完全削除しますか？' })).toBeInTheDocument()
+    expect(mutationIds(server.fetchMock, '/purge')).toEqual([])
+
+    await user.click(screen.getByRole('button', { name: '完全削除を予約する' }))
+
+    await waitFor(() => expect(mutationIds(server.fetchMock, '/purge').sort()).toEqual([1, 2]))
+    expect(await screen.findByText('ごみ箱は空です')).toBeInTheDocument()
   })
 })
 
