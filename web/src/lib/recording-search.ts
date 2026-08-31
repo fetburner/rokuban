@@ -37,6 +37,8 @@ const q = ListRecordingsQueryParams.shape
 
 /** RecordingsPageSearch は `/recordings` の URL クエリパラメータ（検証済み）。 */
 export type RecordingsPageSearch = {
+  /** 表示タブ。既定のライブラリは URL に書かず、`undefined` で表す。 */
+  tab?: 'library' | 'trash'
   q?: string
   /** ARIB ジャンル大分類（lv1、0〜15）。複数可、OR。 */
   genre?: number[]
@@ -133,9 +135,13 @@ function parseIsoDate(raw: unknown): string | undefined {
  * 漏れて残る（実機で確認済み。省略する形だと壊れた URL の不正な値がチップにそのまま
  * 出た）。`{ ...x, k: undefined }` はどちらの合成方式で見ても実際に上書きになる
  * ので、無効な値を確実に消すには明示的な `undefined` 代入が要る。
+ *
+ * `tab` の既定はライブラリで、`tab=library` も `undefined` に正準化する。既定値を
+ * URL に書かないのは、タブ操作で履歴を汚さず共有 URL を短く保つため。
  */
 export function parseRecordingsSearch(search: Record<string, unknown>): RecordingsPageSearch {
   return {
+    tab: search.tab === 'trash' ? 'trash' : undefined,
     q: typeof search.q === 'string' && search.q.trim() !== '' ? search.q : undefined,
     genre: validArray<number>(q.genre.unwrap().element, search.genre, {
       coerce: asInteger,
@@ -346,10 +352,10 @@ export function describeRecordingsFilters(
 }
 
 /**
- * clearRecordingsFilters は絞り込みを全部外す。`order`（並び順）は絞り込みでは
- * ないので保持する --- 「条件をクリア」を押した直後にソートまで初期化される
- * のはユーザーが期待しない副作用になる。
+ * clearRecordingsFilters は絞り込みを全部外す。`tab`（表示先）と `order`（並び順）は
+ * 絞り込みではないので保持する --- 「条件をクリア」を押した直後に表示先やソートまで
+ * 初期化されるのはユーザーが期待しない副作用になる。
  */
 export function clearRecordingsFilters(search: RecordingsPageSearch): RecordingsPageSearch {
-  return { order: search.order }
+  return { tab: search.tab, order: search.order }
 }

@@ -39,6 +39,9 @@ import { domLayoutMeasurable } from '@/lib/list-virtualization'
 import { mutationErrorMessage } from '@/lib/mutation-error-message'
 import {
   pickerServiceDomain,
+  programsDayForOffset,
+  programsDayOffset,
+  programsSelectableDays as selectableDays,
   type ProgramsPageSearch,
 } from '@/lib/programs-search'
 import { composeServiceId } from '@/lib/service-id'
@@ -54,9 +57,6 @@ import { lgMediaQuery, useMediaQuery } from '@/lib/use-media-query'
  * 「次のページ」= 前回の end を start にした次の窓。
  */
 const windowHours = 6
-
-/** EPG のローリングウィンドウ（8 日）に合わせた、日付選択の選択肢の数。 */
-const selectableDays = 8
 
 /** グリッドが一度に描く時間の幅。M2-9 の受け入れ条件が「全サービス x 24 時間」。 */
 const gridWindowHours = 24
@@ -97,12 +97,10 @@ type ProgramView = 'list' | 'grid'
  */
 export function ProgramsPage() {
   const site = useCurrentSite()
-  // チャンネル絞り込みは URL の `?service=<Service.id>` に持つ。
-  // 表示形式（`view`）も URL に持つ（issue #437）。ジャンプ先の日付
-  // （`dayOffset`）等は component state のまま。
-  // 検証（不正な値・0 以下の除去・重複除去・昇順ソート）は
-  // `routes.tsx` の `validateSearch`（`lib/programs-search.ts` の
-  // `parseProgramsSearch`）で済んでいるので、ここでは信頼して使う。
+  // チャンネル絞り込み・表示形式・ジャンプ先の日付は URL に持つ。
+  // 検証（不正値・範囲外の除去・配列の重複除去・昇順ソート）は `routes.tsx` の
+  // `validateSearch`（`lib/programs-search.ts` の `parseProgramsSearch`）で済んで
+  // いるので、ここでは信頼して使う。
   const search = useRouteSearch({ from: '/programs' })
   const navigate = useNavigate()
   const updateSearch = (updater: (prev: ProgramsPageSearch) => ProgramsPageSearch) => {
@@ -125,12 +123,13 @@ export function ProgramsPage() {
   }
   // dayOffset は「ジャンプ先」（DayStrip をタップして跳ぶ先）。0 以上
   // selectableDays 未満。0 は今日で、リストは常にここから連続フィードとして
-  // 始まる（`今` という別枠の選択肢は無い）。
-  const [dayOffset, setDayOffset] = useState(0)
+  // 始まる（`今` という別枠の選択肢は無い）。URL の `day` から初期化し、
+  // `at` があれば下の effect がその日で上書きする。
+  const [dayOffset, setDayOffset] = useState(() => programsDayOffset(search.day, Date.now()))
   // visibleDay は「いま見ている日」（ProgramList がスクロール位置から導出して
   // 通知する）。DayStrip のハイライトはこちらを見る。ジャンプ直後は dayOffset と
   // 一致するが、その後リストをスクロールすればこちらだけが動く。
-  const [visibleDay, setVisibleDay] = useState(0)
+  const [visibleDay, setVisibleDay] = useState(dayOffset)
   // view は表示形式（グリッド / リスト）。URL 化してある（`search.view`）。
   // 既定はリスト --- 容量不足バッジが `view: 'grid'` を明示したときはこの値が
   // 直ちに 'grid' になるが、実際にグリッドが出るかは `showGrid`（下記）が
@@ -158,6 +157,7 @@ export function ProgramsPage() {
   // `scrollToDayOffset`（ref 経由）に委ねる ---
   // 見つからなければ ProgramList 側が何もしない。
   const selectDay = (offset: number) => {
+    updateSearch((s) => ({ ...s, day: programsDayForOffset(offset, Date.now()) }))
     if (offset === dayOffset) {
       setVisibleDay(offset)
       programListRef.current?.scrollToDayOffset(offset)
@@ -182,6 +182,9 @@ export function ProgramsPage() {
   // 関わらず効かせる --- リスト表示中・`lg` 未満（グリッドが出ない）画面では
   // 帯で「その時間帯」を直接見せる手段が無いため、次善として日だけ合わせる
   // のがこの導線の唯一の反映先になる。
+  // at が指す日へ「いま見ている日」を合わせる。`day` より at を優先する
+  // （容量不足バッジは「この時間帯を見たい」という要求そのものなので、共有 URL の
+  // `day` と矛盾しても at の日を勝たせる。`day` は URL からは消さない）。
   useEffect(() => {
     if (atDayOffset === undefined) return
     setDayOffset(atDayOffset)

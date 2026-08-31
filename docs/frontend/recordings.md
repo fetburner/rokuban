@@ -260,11 +260,12 @@ EPGStation にある「録画済みの検索」に対応する機能だが、`/s
 
 ### ごみ箱タブと検索条件は直交させる
 
-タブ（ライブラリ / ごみ箱）は条件と直交する別の軸なので URL に載せない。
-`pages/recordings.tsx` の component state のまま持ち、`buildListRecordingsParams`
-も `trash` を検索条件（`RecordingsPageSearch`）とは別の引数で受ける
-（`lib/recording-search.ts`）。タブを切り替えても `RecordingsPageSearch` は
-そのまま渡るので、条件は自動的に保持される。
+タブ（ライブラリ / ごみ箱）は条件と直交する別の軸だが、リロード・共有で同じ表示を
+復元するため URL の `?tab=trash` に持つ。既定のライブラリは URL に書かない。
+履歴を汚さず共有 URL を短く保つためである。
+
+`pages/recordings.tsx` は `tab` から `trash` を導き、`buildListRecordingsParams` には
+検索条件とは別の引数で渡す。タブ切替は検索条件を保持したまま `replace` で navigate する。
 
 ### debounce と URL 同期で履歴を汚さない
 

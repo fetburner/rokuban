@@ -3,14 +3,15 @@
  * （URL の `search`）の型と純関数（issue #231）。
  *
  * チャンネル選択は `service=<Service.id>` の数値配列で運ぶ。URL 化するのは
- * チャンネル選択・`at`・`view`（表示形式）で、`dayOffset` 等それ以外の
- * 表示状態は component state のまま。
+ * チャンネル選択・選択日・`at`・`view`（表示形式）。スクロールから導出する
+ * 「いま見ている日」等、それ以外の表示状態は component state のまま。
  *
  * React に依存しないのはテストのため（`lib/recording-search.ts` と同じ理由）。
  */
 
 import { ServiceChannelType, type Service } from '@/api/generated'
 import { ListProgramsQueryParams } from '@/api/zod'
+import { dayOrigin } from '@/lib/day-offset'
 import { ascending, asInteger, parseEnum, validArray } from '@/lib/url-search'
 
 /**
@@ -24,6 +25,8 @@ export const serviceIdSchema = ListProgramsQueryParams.shape.service.unwrap().el
 
 /** ProgramsPageSearch は `/programs` の URL クエリパラメータ（検証済み）。 */
 export type ProgramsPageSearch = {
+  /** 選択日（ローカル暦日の `YYYY-MM-DD`）。既定の今日は `undefined`。 */
+  day?: string
   /** `Service.id`。複数可、OR。 */
   service?: number[]
   /**
@@ -89,6 +92,30 @@ function parseAt(raw: unknown): number | undefined {
   return n
 }
 
+/** programsSelectableDays は `DayStrip` が今日を起点に表示する日数。 */
+export const programsSelectableDays = 8
+
+/** dayKeyForOffset は日付 offset をローカル暦日の `YYYY-MM-DD` にする。 */
+function dayKeyForOffset(dayOffset: number, now: number): string {
+  const date = dayOrigin(dayOffset, now)
+  const pad = (value: number) => String(value).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+}
+
+/** programsDayForOffset は URL に書く選択日を返す。既定の今日は省略する。 */
+export function programsDayForOffset(dayOffset: number, now: number): string | undefined {
+  return dayOffset === 0 ? undefined : dayKeyForOffset(dayOffset, now)
+}
+
+/** programsDayOffset は URL の選択日を offset にする。不正値と既定の今日は 0。 */
+export function programsDayOffset(raw: unknown, now: number): number {
+  if (typeof raw !== 'string') return 0
+  for (let offset = 0; offset < programsSelectableDays; offset++) {
+    if (dayKeyForOffset(offset, now) === raw) return offset
+  }
+  return 0
+}
+
 /**
  * parseProgramsSearch は URL の生の値を検証済みの検索条件にする
  * （`routes.tsx` の `validateSearch`）。
@@ -107,9 +134,18 @@ function parseAt(raw: unknown): number | undefined {
  * issue #194）。`{ ...x, k: undefined }` はどちらの合成方式で見ても実際に
  * 上書きになるため、これで確実に消える --- ここでは常に全キーを持つ
  * オブジェクトリテラルを返すことでそれを満たす。
+ *
+ * `day` は `DayStrip` が表示する今日から 8 日間のローカル暦日だけを受け取る。
+ * 既定の今日は `undefined` に正準化して URL に書かない。日付操作で履歴を汚さず、
+ * 共有 URL を短く保つため。
  */
-export function parseProgramsSearch(search: Record<string, unknown>): ProgramsPageSearch {
+export function parseProgramsSearch(
+  search: Record<string, unknown>,
+  now = Date.now(),
+): ProgramsPageSearch {
+  const dayOffset = programsDayOffset(search.day, now)
   return {
+    day: programsDayForOffset(dayOffset, now),
     service: validArray<number>(serviceIdSchema, search.service, {
       coerce: asInteger,
       sort: ascending,

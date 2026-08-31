@@ -1109,6 +1109,66 @@ describe('ProgramsPage の進行方向の無限スクロール', () => {
   })
 })
 
+describe('ProgramsPage の選択日の URL 化', () => {
+  const dayTwoOriginMs = dayOrigin(2).getTime()
+  const dayTwoProgram = programAtAbsolute(
+    401,
+    1024,
+    dayTwoOriginMs + 3_600_000,
+    'URL で選んだ日の番組',
+  )
+
+  it('/programs?day=2026-08-16 で選択日と取得窓を復元する', async () => {
+    stubApi([], [], [...allPrograms, dayTwoProgram])
+    renderPage('/programs?day=2026-08-16')
+
+    expect(await screen.findByText('URL で選んだ日の番組')).toBeInTheDocument()
+    expect(screen.queryByText('ニュース7')).not.toBeInTheDocument()
+
+    const dayGroup = screen.getByRole('group', { name: '日付' })
+    expect(within(dayGroup).getAllByRole('button')[2]).toHaveAttribute('aria-current', 'date')
+  })
+
+  it('DayStrip の選択を URL に replace し、今日へ戻すと day を省略する', async () => {
+    stubApi([], [], [...allPrograms, dayTwoProgram])
+    const { router } = renderPage('/programs?service=3273601024')
+
+    expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+    const initialHistoryLength = router.history.length
+    const dayGroup = screen.getByRole('group', { name: '日付' })
+
+    await userEvent.click(within(dayGroup).getAllByRole('button')[2])
+    await waitFor(() => {
+      expect(router.state.location.search.day).toBe('2026-08-16')
+      expect(router.state.location.search.service).toEqual([3273601024])
+    })
+    expect(await screen.findByText('URL で選んだ日の番組')).toBeInTheDocument()
+    expect(router.history.length).toBe(initialHistoryLength)
+
+    await userEvent.click(within(dayGroup).getAllByRole('button')[0])
+    await waitFor(() => {
+      expect(router.state.location.search.day).toBeUndefined()
+      expect(router.state.location.search.service).toEqual([3273601024])
+    })
+    expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+    expect(router.history.length).toBe(initialHistoryLength)
+  })
+
+  it('day と at が矛盾するときは at の日を表示し、どちらも URL から消さない', async () => {
+    const at = dayTwoOriginMs + 3_600_000
+    stubApi([], [], [...allPrograms, dayTwoProgram])
+    const { router } = renderPage(`/programs?day=2026-08-15&at=${at}`)
+
+    expect(await screen.findByText('URL で選んだ日の番組')).toBeInTheDocument()
+    expect(screen.queryByText('ニュース7')).not.toBeInTheDocument()
+
+    const dayGroup = screen.getByRole('group', { name: '日付' })
+    expect(within(dayGroup).getAllByRole('button')[2]).toHaveAttribute('aria-current', 'date')
+    expect(router.state.location.search.day).toBe('2026-08-15')
+    expect(router.state.location.search.at).toBe(at)
+  })
+})
+
 describe('ProgramsPage の日付ジャンプ（先頭の窓に重なる前日の番組を出さない。3 回目の修正）', () => {
   it('ジャンプ先の窓と重なって返ってきた前日の番組をリストの先頭に出さず、ハイライトもジャンプ先の日のまま', async () => {
     // offset 1 ではなく 2（明後日）にする: `allPrograms` の固定オフセットとの
