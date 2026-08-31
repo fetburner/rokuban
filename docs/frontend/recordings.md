@@ -222,6 +222,25 @@ prop で 1 段ずつ配線する形（`onMutated` のような穴）は採らな
   `refetchOnWindowFocus` が拾う。進捗イベントを取りこぼしても durable 状態の完了・
   失敗判定はこの再取得で正しく収束する
 
+### 待機列の全体像は録画一覧に置く
+
+専用ページは作らず、録画一覧のヘッダーに「待機中 N 件 / 実行中 N 件」を置く。
+単一世帯では件数を常時監視する頻度が低く、既存の録画行へ絞り込めれば全体像と
+個別の状態を同じ画面で確認できるためである。見る頻度やジョブ数が増え、履歴や
+所要時間の予測が必要になった時点で専用ページを検討する。
+
+件数は `GET /api/encode-queue` が River の active な encode ジョブを数える。
+待機中は `available` / `pending` / `scheduled` / `retryable`、実行中は `running`。
+単位は録画数ではなく録画 × プロファイルなので、1 本に 2 プロファイルあれば 2 件になる。
+集計はごみ箱の録画に残る active ジョブも含む。ボタンは現在のライブラリタブを
+絞り込むため、複数プロファイルやごみ箱のジョブがあれば件数と表示行数は一致しない。
+件数を押すと `GET /api/recordings?encodeState=queued|running` で該当録画へ絞り込む。
+
+この件数に `encode-progress` SSE は使わない。SSE は接続中の ffmpeg 進捗率を
+録画行と録画詳細のバッジへ重ねるためだけの揮発テレメトリで、待機列の真実ではない。
+ホームにも同じ件数を複製しない。録画一覧が全体像の置き場であり、0 件でも
+「待機中 0 件 / 実行中 0 件」と確認できる。
+
 ## ドロップ統計はバッジ + 展開
 
 録画一覧にドロップ / エラー / スクランブルを色付きバッジで出す。**0 のものは出さない**ので
@@ -391,15 +410,20 @@ limit)`（カーソル `before` / `beforeId` を含めない）にする --- 同
 ## ストレージ残高と満杯見込み
 
 `/recordings` のヘッダー領域（`RecordingFilters` の下）に「空き X GB / 今後 7 日の
-予約で約 +Y GB の見込み」を出す（`components/storage-balance.tsx`）。導出は
-`lib/storage-forecast.ts` に純関数として集約し、`StorageBalance` 自身は 3 つの API
-（`GET /api/storage` / `GET /api/recordings` / `GET /api/reservations`）の取得と
-表示の出し分けだけを持つ --- 「録画一覧・録画検索」と機能的な関係は薄いが、`/recordings`
-がストレージを最も直接に消費する画面であるため最初の設置先にした。設置先を
-替えられるよう `components/` に独立させてある。
+予約で約 +Y GB の見込み」を出す（`components/storage-balance.tsx`）。この要約行は
+`<details>` で展開でき、`media`（アーカイブ）と、設定されている場合の `scratch`
+（ローカルスクラッチ）を名前・総容量・使用済み・空きに分けて表示する。
+単一世帯では録画一覧から容量を確認できれば足りるため、専用ページは作らない。
+見る頻度やストレージ root の種類が増えた時点で専用ページを検討する。
 
-**参照する root は `media`（`storage.media_dir`。アーカイブ）だけ。** `scratch`
-（ローカルスクラッチ）は録画の最終的な保存先ではないので残高の対象にしない
+見込みの導出は `lib/storage-forecast.ts` に純関数として集約する。
+`StorageBalance` 自身は 3 つの API（`GET /api/storage` / `GET /api/recordings` /
+`GET /api/reservations`）の取得と表示の出し分けだけを持つ。`/recordings` は
+ストレージを最も直接に消費する画面であるため、全体像の設置先にした。
+
+**見込みが参照する root は `media`（`storage.media_dir`。アーカイブ）だけ。**
+`scratch` は取り込みの一時領域で、録画の最終的な保存先ではないため、
+残量の表示には含めるが今後の予約による消費見込みには使わない
 （[storage/contract.md](../storage/contract.md) §残量の観測、同ファイル §5
 「2 階層: 録画バッファとアーカイブ」）。
 

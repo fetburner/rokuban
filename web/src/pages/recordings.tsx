@@ -6,11 +6,13 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   deleteRecording as deleteRecordingRequest,
   getListRecordingsQueryKey,
+  ListRecordingsEncodeState,
   listRecordings,
   purgeRecording as purgeRecordingRequest,
   restoreRecording as restoreRecordingRequest,
   useAddRecordingEncodeProfiles,
   useDeleteRecording,
+  useGetEncodeQueue,
   useListEncodeProfiles,
   useListRecordingDropStats,
   useListRules,
@@ -38,6 +40,7 @@ import {
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
+import { Chip } from '@/components/ui/chip'
 import { shouldAutoLoadNextPage, shouldShowLoadMoreButton } from '@/lib/auto-load'
 import { encodeJobStatusLabel } from '@/lib/encode-status'
 import { useEncodeProgress } from '@/lib/events'
@@ -103,6 +106,7 @@ export function RecordingsPage() {
   // 「default」がノイズになるだけなので出さない。レジストリは SiteGate が既に
   // 取得済み（同じクエリキー）。
   const showSite = (unwrap(useListSites().data) ?? []).length > 1
+  const encodeQueue = unwrap(useGetEncodeQueue().data)
   const updateSearch = (updater: (prev: RecordingsPageSearch) => RecordingsPageSearch) => {
     // debounce（キーワード）・チップの個別解除のどちらも history を汚さないよう
     // 常に replace で書く（docs/frontend.md「debounce と URL 同期で履歴を汚さない」）。
@@ -352,6 +356,42 @@ export function RecordingsPage() {
           />
         </div>
         <RecordingFilters search={search} onChange={updateSearch} />
+        {!trash && encodeQueue !== undefined && (
+          <div
+            aria-label="エンコード待機列"
+            className="flex flex-wrap items-center gap-2 border-t border-border px-4 py-2 text-xs text-muted-foreground"
+          >
+            <span>エンコード</span>
+            <Chip
+              active={search.encodeState === ListRecordingsEncodeState.queued}
+              onClick={() =>
+                updateSearch((s) => ({
+                  ...s,
+                  encodeState:
+                    s.encodeState === ListRecordingsEncodeState.queued
+                      ? undefined
+                      : ListRecordingsEncodeState.queued,
+                }))
+              }
+            >
+              待機中 {encodeQueue.queued}件
+            </Chip>
+            <Chip
+              active={search.encodeState === ListRecordingsEncodeState.running}
+              onClick={() =>
+                updateSearch((s) => ({
+                  ...s,
+                  encodeState:
+                    s.encodeState === ListRecordingsEncodeState.running
+                      ? undefined
+                      : ListRecordingsEncodeState.running,
+                }))
+              }
+            >
+              実行中 {encodeQueue.running}件
+            </Chip>
+          </div>
+        )}
         <StorageBalance />
       </PageHeader>
 

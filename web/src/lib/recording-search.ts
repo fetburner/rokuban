@@ -15,9 +15,11 @@
  */
 
 import {
+  ListRecordingsEncodeState,
   ListRecordingsOrder,
   ListRecordingsSource,
   ListRecordingsStatus,
+  type ListRecordingsEncodeState as ListRecordingsEncodeStateValue,
   type ListRecordingsParams,
 } from '@/api/generated'
 import { formatDateTime } from '@/lib/format'
@@ -47,6 +49,7 @@ export type RecordingsPageSearch = {
   /** `Service.id`。複数可、OR。site とは別軸（軸間は AND）。 */
   service?: number[]
   status?: ListRecordingsStatus
+  encodeState?: ListRecordingsEncodeStateValue
   source?: ListRecordingsSource
   /** 特定ルール由来の録画に絞る（ルール一覧の「このルールの録画」導線から） */
   ruleId?: number
@@ -165,6 +168,7 @@ export function parseRecordingsSearch(search: Record<string, unknown>): Recordin
       sort: ascending,
     }),
     status: validValue<ListRecordingsStatus>(q.status.unwrap(), search.status),
+    encodeState: validValue<ListRecordingsEncodeStateValue>(q.encodeState.unwrap(), search.encodeState),
     source: validValue<ListRecordingsSource>(q.source.unwrap(), search.source),
     ruleId: parseRuleId(search.ruleId),
     from: parseIsoDate(search.from),
@@ -188,6 +192,7 @@ export function hasAnyRecordingsCondition(search: RecordingsPageSearch): boolean
     (search.site?.length ?? 0) > 0 ||
     (search.service?.length ?? 0) > 0 ||
     search.status !== undefined ||
+    search.encodeState !== undefined ||
     search.source !== undefined ||
     search.ruleId !== undefined ||
     search.from !== undefined ||
@@ -214,6 +219,7 @@ export function buildListRecordingsParams(
     params.service = search.service
   }
   if (search.status !== undefined) params.status = search.status
+  if (search.encodeState !== undefined) params.encodeState = search.encodeState
   if (search.source !== undefined) params.source = search.source
   if (search.ruleId !== undefined) params.ruleId = search.ruleId
   if (search.from !== undefined) params.from = search.from
@@ -321,6 +327,14 @@ export function describeRecordingsFilters(
       key: 'status',
       label: `状態: ${statusLabels[search.status]}`,
       clear: (s) => ({ ...s, status: undefined }),
+    })
+  }
+
+  if (search.encodeState !== undefined) {
+    chips.push({
+      key: 'encodeState',
+      label: `エンコード: ${search.encodeState === ListRecordingsEncodeState.queued ? '待機中' : '実行中'}`,
+      clear: (s) => ({ ...s, encodeState: undefined }),
     })
   }
 

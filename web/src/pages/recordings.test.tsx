@@ -141,6 +141,7 @@ function createFakeRecordingsServer(options: {
   sites?: string[]
   services?: Service[]
   encodeProfiles?: EncodeProfileSummary[]
+  encodeQueue?: { queued: number; running: number }
   rules?: Rule[]
   // encodePostResponse は POST /api/recordings/{id}/encode-profiles の応答を
   // 差し替える（既定は 204 成功）。409 のときサーバーの英語文字列を UI が
@@ -157,6 +158,7 @@ function createFakeRecordingsServer(options: {
   const sites = options.sites ?? ['default']
   const services = options.services ?? [sampleService()]
   const encodeProfiles = options.encodeProfiles ?? []
+  const encodeQueue = options.encodeQueue ?? { queued: 0, running: 0 }
   const rules = options.rules ?? []
   const encodePostResponse = options.encodePostResponse
   const deleteResponse = options.deleteResponse
@@ -212,6 +214,7 @@ function createFakeRecordingsServer(options: {
       return Promise.resolve(jsonResponse(services))
     }
     if (url.pathname === '/api/encode-profiles') return Promise.resolve(jsonResponse(encodeProfiles))
+    if (url.pathname === '/api/encode-queue') return Promise.resolve(jsonResponse(encodeQueue))
     if (url.pathname === '/api/rules' && method === 'GET') return Promise.resolve(jsonResponse(rules))
 
     if (url.pathname === '/api/recordings' && method === 'GET') {
@@ -651,6 +654,32 @@ describe('RecordingsPage 行の site 表示 (issue #283)', () => {
 
     await screen.findByRole('link', { name: '単一サイトの録画' })
     expect(screen.queryByText('default')).not.toBeInTheDocument()
+  })
+})
+
+describe('RecordingsPage エンコード待機列', () => {
+  it('ジョブ件数を表示し、待機中・実行中で録画一覧を絞り込める', async () => {
+    const user = userEvent.setup()
+    const server = createFakeRecordingsServer({
+      library: [sampleRecording()],
+      encodeQueue: { queued: 3, running: 1 },
+    })
+    const { router } = renderPage()
+
+    await screen.findByText('ライブラリの録画')
+    const queued = await screen.findByRole('button', { name: '待機中 3件' })
+    expect(screen.getByRole('button', { name: '実行中 1件' })).toBeInTheDocument()
+
+    await user.click(queued)
+
+    await waitFor(() => expect(router.state.location.search).toMatchObject({ encodeState: 'queued' }))
+    await waitFor(() => {
+      expect(
+        recordingsRequests(server.fetchMock).some(
+          (url) => url.searchParams.get('encodeState') === 'queued',
+        ),
+      ).toBe(true)
+    })
   })
 })
 

@@ -1,6 +1,11 @@
 import { TriangleAlert } from 'lucide-react'
 
-import { useListRecordings, useListReservations, useGetStorage } from '@/api/generated'
+import {
+  useListRecordings,
+  useListReservations,
+  useGetStorage,
+  type StorageRoot,
+} from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
 import { formatBytes, formatDate, formatDateTime } from '@/lib/format'
 import {
@@ -15,10 +20,39 @@ import {
 } from '@/lib/storage-forecast'
 import { cn } from '@/lib/utils'
 
+function StorageRootCapacity({ root, nowMs }: { root: StorageRoot; nowMs: number }) {
+  const stale = isObservationStale(root.observedAt, nowMs)
+  return (
+    <section className="rounded-md border border-border p-3">
+      <h3 className="mb-2 text-sm font-medium text-foreground">
+        {root.root === 'media' ? 'アーカイブ' : 'スクラッチ'}
+      </h3>
+      <dl className="grid grid-cols-3 gap-3 text-xs">
+        <div>
+          <dt className="text-muted-foreground">総容量</dt>
+          <dd className="font-medium text-foreground">{formatBytes(root.totalBytes)}</dd>
+        </div>
+        <div>
+          <dt className="text-muted-foreground">使用済み</dt>
+          <dd className="font-medium text-foreground">{formatBytes(root.usedBytes)}</dd>
+        </div>
+        <div>
+          <dt className="text-muted-foreground">空き</dt>
+          <dd className="font-medium text-foreground">{formatBytes(root.availableBytes)}</dd>
+        </div>
+      </dl>
+      <p className={cn('mt-2 flex items-center gap-1 text-xs text-muted-foreground', stale && 'text-warning')}>
+        {stale && <TriangleAlert className="size-3 shrink-0" aria-hidden="true" />}
+        観測: {formatDateTime(root.observedAt)}
+        {stale && '（古い可能性）'}
+      </p>
+    </section>
+  )
+}
+
 /**
- * StorageBalance は「空き X GB / 今後 N 日の予約で約 +Y GB の見込み」を表示する
- * ヘッダー部品（issue #239 M7-6）。`components/` に独立させているのは M8 でホームへ
- * 移設予定のため（`pages/recordings.tsx` はこの部品の最初の設置先に過ぎない）。
+ * StorageBalance は「空き X GB / 今後 N 日の予約で約 +Y GB の見込み」を要約に出し、
+ * 展開時はアーカイブとスクラッチの総容量・使用済み・空きを表示する。
  *
  * 導出（母数の取り方・満杯見込み日の算出）は `lib/storage-forecast.ts` にすべて
  * 集約する。ここは 3 つの API（`GET /api/storage` / `GET /api/recordings` /
@@ -49,6 +83,7 @@ export function StorageBalance() {
 
   const roots = unwrap(storageQuery.data)
   const media = roots === undefined ? undefined : findMediaRoot(roots)
+  const scratch = roots?.find((root) => root.root === 'scratch')
 
   // 観測なしで黙る（罠「観測時刻が古いときの表示を決める」の前段 --- 行そのものが
   // 無いときは古さの判定すら成立しない）。
@@ -87,39 +122,46 @@ export function StorageBalance() {
   })
 
   return (
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border px-4 py-2 text-xs text-muted-foreground">
-      <span>
-        空き <span className="font-medium text-foreground">{formatBytes(media.availableBytes)}</span>
-      </span>
+    <details className="border-t border-border text-xs text-muted-foreground">
+      <summary className="flex cursor-pointer list-none flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2">
+        <span>
+          空き <span className="font-medium text-foreground">{formatBytes(media.availableBytes)}</span>
+        </span>
 
-      {/* projectedConsumptionBytes > 0 を条件にする（0 のものは出さない。
-          予約が正当に 0 件のときも「+0 B の見込み」を描かない）。 */}
-      {forecast.hasEstimate &&
-        forecast.projectedConsumptionBytes !== undefined &&
-        forecast.projectedConsumptionBytes > 0 && (
-          <span
-            title={`直近 ${forecast.sampleSize} 件の録画実績（原本 TS の実測ビットレート。変換後のファイルは含まない）から算出した見込み`}
-          >
-            今後{forecastWindowDays}日の予約で約 +
-            {formatBytes(forecast.projectedConsumptionBytes)} の見込み
+        {/* projectedConsumptionBytes > 0 を条件にする（0 のものは出さない。
+            予約が正当に 0 件のときも「+0 B の見込み」を描かない）。 */}
+        {forecast.hasEstimate &&
+          forecast.projectedConsumptionBytes !== undefined &&
+          forecast.projectedConsumptionBytes > 0 && (
+            <span
+              title={`直近 ${forecast.sampleSize} 件の録画実績（原本 TS の実測ビットレート。変換後のファイルは含まない）から算出した見込み`}
+            >
+              今後{forecastWindowDays}日の予約で約 +
+              {formatBytes(forecast.projectedConsumptionBytes)} の見込み
+            </span>
+          )}
+
+        {forecast.exceedsAvailable && forecast.fullAtMs !== undefined && (
+          <span className="flex items-center gap-1 text-warning">
+            <TriangleAlert className="size-3 shrink-0" aria-hidden="true" />
+            満杯見込み: {formatDate(new Date(forecast.fullAtMs).toISOString())}頃
           </span>
         )}
 
-      {forecast.exceedsAvailable && forecast.fullAtMs !== undefined && (
-        <span className="flex items-center gap-1 text-warning">
-          <TriangleAlert className="size-3 shrink-0" aria-hidden="true" />
-          満杯見込み: {formatDate(new Date(forecast.fullAtMs).toISOString())}頃
+        <span
+          className={cn('flex items-center gap-1', stale && 'text-warning')}
+          title={stale ? '観測ループが止まっている可能性があります' : undefined}
+        >
+          {stale && <TriangleAlert className="size-3 shrink-0" aria-hidden="true" />}
+          観測: {formatDateTime(media.observedAt)}
+          {stale && '（古い可能性）'}
         </span>
-      )}
-
-      <span
-        className={cn('flex items-center gap-1', stale && 'text-warning')}
-        title={stale ? '観測ループが止まっている可能性があります' : undefined}
-      >
-        {stale && <TriangleAlert className="size-3 shrink-0" aria-hidden="true" />}
-        観測: {formatDateTime(media.observedAt)}
-        {stale && '（古い可能性）'}
-      </span>
-    </div>
+        <span className="ml-auto underline-offset-2 hover:underline">ストレージ詳細</span>
+      </summary>
+      <div className="grid gap-2 px-4 pb-3 sm:grid-cols-2">
+        <StorageRootCapacity root={media} nowMs={nowMs} />
+        {scratch !== undefined && <StorageRootCapacity root={scratch} nowMs={nowMs} />}
+      </div>
+    </details>
   )
 }

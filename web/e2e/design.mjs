@@ -53,6 +53,8 @@ import { mkdirSync, rmSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
+  GetEncodeQueueResponse,
+  GetStorageResponseItem,
   ListCircuitBreakersResponseItem,
   ListProgramsResponseItem,
   ListRecordingsResponseItem,
@@ -148,6 +150,25 @@ function programsFor(startISO, endISO, serviceIds) {
 
 const nowMs = FIXED_NOW.getTime()
 const iso = (ms) => new Date(ms).toISOString()
+const encodeQueue = { queued: 2, running: 1 }
+const storageRoots = [
+  {
+    root: 'media',
+    path: '/media',
+    totalBytes: 1_000_000_000_000,
+    usedBytes: 300_000_000_000,
+    availableBytes: 700_000_000_000,
+    observedAt: iso(nowMs),
+  },
+  {
+    root: 'scratch',
+    path: '/scratch',
+    totalBytes: 500_000_000_000,
+    usedBytes: 100_000_000_000,
+    availableBytes: 400_000_000_000,
+    observedAt: iso(nowMs),
+  },
+]
 
 const reservations = [
   { id: 1, site: SITE, programId: 9001, source: 'rule', state: 'active', title: '連続テレビ小説', serviceName: 'NHKEテレ', channelType: 'GR', startAt: iso(nowMs + HOUR), durationMs: 900_000, createdAt: iso(nowMs - HOUR), updatedAt: iso(nowMs - HOUR), skip: false },
@@ -296,6 +317,8 @@ await validateFixturesOrExit(
     ...[...recordings, transferringRecording].map((r) => [`recordings#${r.id}`, ListRecordingsResponseItem, r]),
     ...rules.map((r, i) => [`rules[${i}]`, ListRulesResponseItem, r]),
     ...breakers.map((b, i) => [`breakers[${i}]`, ListCircuitBreakersResponseItem, b]),
+    ['encodeQueue', GetEncodeQueueResponse, encodeQueue],
+    ...storageRoots.map((root, i) => [`storage[${i}]`, GetStorageResponseItem, root]),
   ],
   ng,
 )
@@ -347,6 +370,8 @@ function apiHandler({
     // 「無効です」の空状態になる
     if (p === '/api/capabilities') return json({ live: true })
     if (p === '/api/breakers') return json(withBreaker ? breakers : [])
+    if (p === '/api/encode-queue') return json(encodeQueue)
+    if (p === '/api/storage') return json(storageRoots)
     if (p === '/api/encode-profiles') return json([{ name: 'hevc-1080p', container: 'mp4' }])
     if (p === '/api/rules') return json(rules)
     if (p === '/api/reservations') return json(emptyHome ? [] : reservations)
@@ -706,6 +731,18 @@ for (const viewport of viewports) {
       await checkMissingStrings(page, `${screen.name}/${theme}/${viewport.name}`)
       await context.close()
     }
+  }
+}
+// ストレージ階層は既定で畳むため、展開状態も画面幅・テーマごとに別途撮る。
+for (const viewport of viewports) {
+  for (const theme of themes) {
+    const { context, page } = await open(viewport, theme, screenOf('recordings'))
+    await page.getByText('ストレージ詳細', { exact: true }).click()
+    const file = path.join(OUT_DIR, `recordings-storage-${theme}-${viewport.name}.png`)
+    await page.screenshot({ path: file })
+    log(`  ${path.basename(file)}`)
+    await checkMissingStrings(page, `recordings-storage/${theme}/${viewport.name}`)
+    await context.close()
   }
 }
 // 番組表グリッド（`lg` 以上でしか出ない。現在時刻線・容量超過の帯・ジャンル淡色が

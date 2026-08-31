@@ -371,6 +371,18 @@ func (h *Server) ListRecordings(ctx context.Context, req ListRecordingsRequestOb
 		return ListRecordings400JSONResponse{Error: errMsg}, nil
 	}
 
+	if f.EncodeState != "" {
+		snapshot, err := h.loadEncodeQueue(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("loading encode queue: %w", err)
+		}
+		ids := snapshot.runningRecordingIDs
+		if f.EncodeState == ListRecordingsParamsEncodeStateQueued {
+			ids = snapshot.queuedRecordingIDs
+		}
+		f.EncodeRecordingIDs = &ids
+	}
+
 	result, err := queryRecordings(ctx, h.pool, f, h.encodeProfiles)
 	if err != nil {
 		return nil, fmt.Errorf("listing recordings: %w", err)

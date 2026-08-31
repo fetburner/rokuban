@@ -1,4 +1,5 @@
 import { screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
 import {
@@ -47,6 +48,18 @@ function mediaRoot(overrides: Partial<StorageRoot> = {}): StorageRoot {
     totalBytes: 1_000_000_000_000,
     usedBytes: 0,
     availableBytes: 1_000_000_000_000,
+    observedAt: iso(0),
+    ...overrides,
+  }
+}
+
+function scratchRoot(overrides: Partial<StorageRoot> = {}): StorageRoot {
+  return {
+    root: 'scratch',
+    path: '/scratch',
+    totalBytes: 500_000_000_000,
+    usedBytes: 300_000_000_000,
+    availableBytes: 200_000_000_000,
     observedAt: iso(0),
     ...overrides,
   }
@@ -180,12 +193,30 @@ describe('StorageBalance', () => {
     expect(screen.queryByText(/満杯見込み/)).not.toBeInTheDocument()
   })
 
+  it('展開するとアーカイブとスクラッチの容量を階層ごとに表示する', async () => {
+    const user = userEvent.setup()
+    mockApis({ storage: [mediaRoot(), scratchRoot()] })
+
+    await renderSettled('success success success')
+
+    const summary = screen.getByText('ストレージ詳細')
+    const details = summary.closest('details')
+    expect(details).not.toHaveAttribute('open')
+
+    await user.click(summary)
+
+    expect(details).toHaveAttribute('open')
+    expect(screen.getByText('アーカイブ')).toBeInTheDocument()
+    expect(screen.getByText('スクラッチ')).toBeInTheDocument()
+    expect(screen.getByText('186.3 GB')).toBeInTheDocument()
+  })
+
   it('録画実績が 0 件のときは空きだけ出し、見込みは出さない', async () => {
     mockApis({ recordings: [], reservations: [reservation()] })
 
     await renderSettled('success success success')
 
-    expect(screen.getByText(/空き/)).toBeInTheDocument()
+    expect(screen.getAllByText(/空き/).length).toBeGreaterThan(0)
     expect(screen.queryByText(/の見込み/)).not.toBeInTheDocument()
     expect(screen.queryByText(/満杯見込み/)).not.toBeInTheDocument()
   })
@@ -203,7 +234,7 @@ describe('StorageBalance', () => {
 
     await renderSettled('success success error')
 
-    expect(screen.getByText(/空き/)).toBeInTheDocument()
+    expect(screen.getAllByText(/空き/).length).toBeGreaterThan(0)
     expect(screen.queryByText(/の見込み/)).not.toBeInTheDocument()
     expect(screen.queryByText(/満杯見込み/)).not.toBeInTheDocument()
     // 「+0 B」という文字列そのものが出ていないことも明示的に確認する
@@ -225,7 +256,7 @@ describe('StorageBalance', () => {
 
     await renderSettled('success success success')
 
-    expect(screen.getByText(/空き/)).toBeInTheDocument()
+    expect(screen.getAllByText(/空き/).length).toBeGreaterThan(0)
     expect(screen.queryByText(/の見込み/)).not.toBeInTheDocument()
     expect(screen.queryByText(/満杯見込み/)).not.toBeInTheDocument()
     expect(screen.queryByText(/\+0 B/)).not.toBeInTheDocument()
@@ -272,7 +303,7 @@ describe('StorageBalance', () => {
 
     await renderSettled('success success success')
 
-    expect(screen.getByText(/古い可能性/)).toBeInTheDocument()
+    expect(screen.getAllByText(/古い可能性/).length).toBeGreaterThan(0)
   })
 
   it('観測が新しい（1 時間以内）ときは古い可能性を表示しない', async () => {
@@ -282,7 +313,7 @@ describe('StorageBalance', () => {
 
     await renderSettled('success success success')
 
-    expect(screen.getByText(/空き/)).toBeInTheDocument()
+    expect(screen.getAllByText(/空き/).length).toBeGreaterThan(0)
     expect(screen.queryByText(/古い可能性/)).not.toBeInTheDocument()
   })
 
@@ -305,7 +336,7 @@ describe('StorageBalance', () => {
 
     await renderSettled('success success success')
 
-    expect(screen.getByText(/空き/)).toBeInTheDocument()
+    expect(screen.getAllByText(/空き/).length).toBeGreaterThan(0)
     expect(screen.queryByText(/の見込み/)).not.toBeInTheDocument()
     expect(screen.queryByText(/満杯見込み/)).not.toBeInTheDocument()
   })

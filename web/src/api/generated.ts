@@ -1005,6 +1005,22 @@ export interface CircuitBreaker {
 }
 
 /**
+ * active なエンコードジョブの件数（録画 × プロファイル単位）。
+ */
+export interface EncodeQueueSummary {
+  /**
+     * 待機中（available / pending / scheduled / retryable）のジョブ数。
+     * @minimum 0
+     */
+  queued: number;
+  /**
+     * 実行中のジョブ数。
+     * @minimum 0
+     */
+  running: number;
+}
+
+/**
  * config キー（`storage.media_dir` / `storage.scratch_dir`）と 1:1。
  */
 export type StorageRootRoot = typeof StorageRootRoot[keyof typeof StorageRootRoot];
@@ -1111,6 +1127,12 @@ service?: number[];
  * 出し続けるのを防ぐ）。無条件一覧・`trash=true` は履歴として両行を残す。
  */
 status?: ListRecordingsStatus;
+/**
+ * active な River encode ジョブの状態。`queued` は `available` /
+ * `pending` / `scheduled` / `retryable`、`running` は実行中を表す。
+ * 件数は録画数ではなく録画 × プロファイルのジョブ数になる。
+ */
+encodeState?: ListRecordingsEncodeState;
 source?: ListRecordingsSource;
 /**
  * 特定ルール由来の録画に絞る
@@ -1170,6 +1192,14 @@ export const ListRecordingsStatus = {
   finished: 'finished',
   canceled: 'canceled',
   failed: 'failed',
+} as const;
+
+export type ListRecordingsEncodeState = typeof ListRecordingsEncodeState[keyof typeof ListRecordingsEncodeState];
+
+
+export const ListRecordingsEncodeState = {
+  queued: 'queued',
+  running: 'running',
 } as const;
 
 export type ListRecordingsSource = typeof ListRecordingsSource[keyof typeof ListRecordingsSource];
@@ -3848,9 +3878,10 @@ export const getListRecordingsUrl = (params?: ListRecordingsParams,) => {
  *   explode: true`）。`service` は `Service.id`（例: `?service=400101`）。
  *   **すべての軸は「軸内は OR、軸間は AND」**
  * - `status` / `source` / `ruleId` は録画自身の観測・出自での絞り込み
+ * - `encodeState` は River の active な encode ジョブを待機中 / 実行中で絞る。
  * - `from` / `to` は `program_start_at` の範囲（`from` 以上 `to` 未満）
  *
- * 不正な値（enum に一致しない `status`/`source`/`qTarget`/`channelType`/
+ * 不正な値（enum に一致しない `status`/`source`/`encodeState`/`qTarget`/`channelType`/
  * `order`、ドメイン外の `genre`）は無視・切り詰めせず 400 にする。
  *
  * ## ページング（キーセット）
@@ -4756,6 +4787,126 @@ export function useListCapacityOverages<TData = Awaited<ReturnType<typeof listCa
  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
 
   const queryOptions = getListCapacityOveragesQueryOptions(params,options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export type getEncodeQueueResponse200 = {
+  data: EncodeQueueSummary
+  status: 200
+}
+
+export type getEncodeQueueResponseSuccess = (getEncodeQueueResponse200) & {
+  headers: Headers;
+};
+;
+
+export type getEncodeQueueResponse = (getEncodeQueueResponseSuccess)
+
+export const getGetEncodeQueueUrl = () => {
+
+
+
+
+  return `/api/encode-queue`
+}
+
+/**
+ * River の active な encode ジョブを待機中と実行中に分けて数える。
+ * `queued` は `available` / `pending` / `scheduled` / `retryable`、
+ * `running` は実行中。録画 1 本に複数プロファイルがあれば複数件になる。
+ *
+ * ffmpeg の進捗率を運ぶ `encode-progress` SSE は揮発テレメトリであり、
+ * 待機件数には使わない。River の内部状態名はこの API の外へ出さず、
+ * UI が必要とする 2 分類だけを返す。
+ * @summary Get active encode job counts
+ */
+export const getEncodeQueue = async ( options?: RequestInit): Promise<getEncodeQueueResponse> => {
+
+  return customInstance<getEncodeQueueResponse>(getGetEncodeQueueUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetEncodeQueueQueryKey = () => {
+    return [
+    `/api/encode-queue`
+    ] as const;
+    }
+
+
+export const getGetEncodeQueueQueryOptions = <TData = Awaited<ReturnType<typeof getEncodeQueue>>, TError = unknown>( options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getEncodeQueue>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetEncodeQueueQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getEncodeQueue>>> = ({ signal }) => getEncodeQueue({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getEncodeQueue>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type GetEncodeQueueQueryResult = NonNullable<Awaited<ReturnType<typeof getEncodeQueue>>>
+export type GetEncodeQueueQueryError = unknown
+
+
+export function useGetEncodeQueue<TData = Awaited<ReturnType<typeof getEncodeQueue>>, TError = unknown>(
+  options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getEncodeQueue>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getEncodeQueue>>,
+          TError,
+          Awaited<ReturnType<typeof getEncodeQueue>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetEncodeQueue<TData = Awaited<ReturnType<typeof getEncodeQueue>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getEncodeQueue>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getEncodeQueue>>,
+          TError,
+          Awaited<ReturnType<typeof getEncodeQueue>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetEncodeQueue<TData = Awaited<ReturnType<typeof getEncodeQueue>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getEncodeQueue>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary Get active encode job counts
+ */
+
+export function useGetEncodeQueue<TData = Awaited<ReturnType<typeof getEncodeQueue>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getEncodeQueue>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getGetEncodeQueueQueryOptions(options)
 
   const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
 

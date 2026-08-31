@@ -35,12 +35,11 @@ type RouterConfig struct {
 	// （issue #184 M4-12）。
 	Sites []string
 
-	// RiverClient が非 nil なら、ルール作成/更新/削除のヒントで RulerPassArgs を
-	// 同一トランザクションで投入する（InsertTx。dual-write を避けるため。
-	// docs/recording.md §3.1「ヒント」）。insert-only で足り、api が worker の
-	// ワーカー群を登録することはない（不変条件: api は mirakc に問い合わせず
-	// ffmpeg も実行しない）。nil なら投入しない（テストや将来のサーバーレス構成で
-	// River を持たない api を許容するため）。
+	// RiverClient が非 nil なら、ルール作成/更新/削除のヒント投入と、
+	// JobList によるエンコード待機列の参照に使う。ワーカー群を登録しない
+	// River クライアントで足り、api がジョブを実行することはない
+	// （不変条件: api は mirakc に問い合わせず ffmpeg も実行しない）。
+	// nil は River を使わない API テストの部分構成だけで許容する。
 	RiverClient *river.Client[pgx5.Tx]
 
 	// DistFS が非 nil なら SPA を配信する。
