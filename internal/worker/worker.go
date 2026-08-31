@@ -940,8 +940,7 @@ func NewClient(pool *pgxpool.Pool, workers *river.Workers, cfg ClientConfig) (*r
 // api ロールと `rokuban enqueue` サブコマンドはジョブを実行しない
 // （不変条件: api は mirakc に問い合わせず、ffmpeg も実行しない）。
 // NewWorkers が返すフルのワーカー群を登録すると ingest/encode 等まで
-// そのプロセスに紐付いてしまうため、ヒント投入・CronJob 投入に必要な
-// InsertTx / Insert だけができる最小構成にする。
+// そのプロセスに紐付いてしまうため、ジョブを実行しない最小構成にする。
 //
 // watcher ロール単独のプロセスも同じ理由でこれを使う（issue #113）。watcher が
 // River を使うのは ingest ジョブの投入（InsertTx）だけで、worker ロールが無い
