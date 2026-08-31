@@ -215,11 +215,16 @@ describe('ProgramRow の外向き導線（issue #229）', () => {
     expect(link).toHaveAttribute('href', `/reservations/${testSite}/42`)
   })
 
-  it('未予約の番組を展開しても「予約の設定」は出ない', async () => {
+  it('放送中で未予約の番組を展開すると「ライブで見る」だけが出て「予約の設定」は出ない', async () => {
+    // 展開パネルのリンク行は `(showLiveLink || reserved)` の外側ゲートで
+    // 覆われている。`program()`（放送中でない）を使うと外側ゲートごと
+    // 閉じてしまい、内側の `reserved &&` を反転させても検出できない
+    // （空虚な成功）。`airingProgram()` で `showLiveLink` を true にして
+    // 外側ゲートを開けたまま、内側の `reserved` 分岐だけを検証する。
     stubFetch()
     renderInRouter(
       <ProgramRow
-        program={program()}
+        program={airingProgram()}
         reserved={false}
         pending={false}
         onReserve={vi.fn()}
@@ -230,6 +235,9 @@ describe('ProgramRow の外向き導線（issue #229）', () => {
     await expandRow()
     await waitFor(() => expect(screen.queryByText('詳細を読み込み中…')).not.toBeInTheDocument())
 
+    // 外側ゲートが開いていて、リンク行自体は実際に描画されていることを先に
+    // 確認する（これが無いと、リンク行ごと出ていないだけの空虚な成功に戻る）。
+    expect(await screen.findByRole('link', { name: 'ライブで見る' })).toBeInTheDocument()
     expect(screen.queryByRole('link', { name: '予約の設定' })).not.toBeInTheDocument()
   })
 })

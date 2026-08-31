@@ -245,25 +245,54 @@ describe('ReservationDetailPage', () => {
     await waitFor(() => expect(screen.getByText('更新後のタイトル')).toBeInTheDocument())
   })
 
-  it('予約直後に詳細が 404 なら、予約を作成中として再読み込みを案内する', async () => {
+  it('予約直後に詳細が 404 なら、まだ無いともう無いの両方で真になる文言を出す', async () => {
     stubFetch(() => null)
 
     renderAt('/reservations/default/999999')
 
     expect(
-      await screen.findByText('予約を作成中です。数秒後に再読み込みしてください'),
+      await screen.findByText('予約が見つかりません（予約した直後なら、作成され次第ここに出ます）'),
     ).toBeInTheDocument()
   })
 
-  it('404 以外の失敗は予約作成中と誤案内しない', async () => {
+  it('404 以外の失敗は予約が見つからないと誤案内しない', async () => {
     stubFetch(() => errorResponse(500, 'database unavailable'))
 
     renderAt('/reservations/default/300000')
 
     expect(await screen.findByText('予約の取得に失敗しました')).toBeInTheDocument()
     expect(
-      screen.queryByText('予約を作成中です。数秒後に再読み込みしてください'),
+      screen.queryByText('予約が見つかりません（予約した直後なら、作成され次第ここに出ます）'),
     ).not.toBeInTheDocument()
+  })
+
+  // 予約 intent の直後で ruler がまだ行を作っていない → 404 になっても、
+  // `reservations` への INSERT が SSE トピック `reservations` を発火し、この
+  // ページのクエリキー（先頭要素 `/api/reservations`）がそのグループに
+  // 入っているので、再マウントなしに自動で詳細が出る（手動リロード不要）。
+  // `lib/events.ts` の `invalidateGroup` と同じ形の predicate をここから
+  // 直接撃って SSE 受信を模す（stubFetch は最初 404、途中から予約を返す）。
+  it('404 のあと予約行ができたら、再マウントなしに詳細が出る', async () => {
+    let ready = false
+    stubFetch((site, programId) =>
+      ready && site === 'default' && programId === 300000 ? baseReservation() : null,
+    )
+
+    const { queryClient } = renderAt('/reservations/default/300000')
+
+    expect(
+      await screen.findByText('予約が見つかりません（予約した直後なら、作成され次第ここに出ます）'),
+    ).toBeInTheDocument()
+
+    ready = true
+    await queryClient.invalidateQueries({
+      predicate: (query) => {
+        const first = query.queryKey[0]
+        return typeof first === 'string' && first.startsWith('/api/reservations')
+      },
+    })
+
+    expect(await screen.findByText('テスト番組')).toBeInTheDocument()
   })
 
   // `ProgramOverlapWarning` に `useCurrentSite()`（<SiteGate> が配る「現在の
