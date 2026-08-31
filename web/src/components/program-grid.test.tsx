@@ -174,6 +174,58 @@ describe('ProgramGrid', () => {
     expect(cell(1).style.height).toBe('120px')
   })
 
+  it('セルの高さに応じて概要とジャンルを段階的に表示する', () => {
+    renderGrid({
+      programs: [
+        program(1, 1024, 17 * 60, 53, { description: '短いセルの概要' }),
+        program(2, 1024, 17 * 60 + 53, 54, { description: '二行ぶんの概要' }),
+        program(3, 1024, 17 * 60 + 107, 75, { description: '高いセルの概要' }),
+      ],
+    })
+
+    // 120px/h なので 53 分 = 106px、54 分 = 108px、75 分 = 150px。
+    // 閾値を 0 にすると短いセルにも概要が出て、この期待が落ちる。
+    expect(cell(1)).not.toHaveTextContent('短いセルの概要')
+    expect(cell(2)).toHaveTextContent('二行ぶんの概要')
+    expect(cell(2)).not.toHaveTextContent('ドラマ')
+    expect(cell(3)).toHaveTextContent('高いセルの概要')
+    expect(cell(3)).toHaveTextContent('ドラマ')
+  })
+
+  it('放送終了セルだけを読み上げで区別し、選択可能なままにする', () => {
+    renderGrid({
+      programs: [program(1, 1024, 19 * 60, 30), program(2, 1024, 19 * 60 + 30, 30)],
+      now: at(19 * 60 + 45),
+    })
+
+    expect(cell(1)).toHaveAttribute('data-ended', 'true')
+    expect(cell(1).getAttribute('aria-label')).toMatch(/放送終了$/)
+    expect(cell(1)).not.toBeDisabled()
+    expect(cell(2)).not.toHaveAttribute('data-ended')
+    expect(cell(2).getAttribute('aria-label')).not.toContain('放送終了')
+  })
+
+  it('5 分の放送終了セルは読み上げだけで伝え、見た目を変えない', () => {
+    renderGrid({
+      programs: [program(1, 1024, 19 * 60, 5), program(2, 1024, 19 * 60 + 5, 6)],
+      now: at(20 * 60),
+    })
+
+    expect(cell(1).getAttribute('aria-label')).toMatch(/放送終了$/)
+    expect(cell(1).className).not.toContain('before:bg-muted/30')
+    expect(cell(2).className).toContain('before:bg-muted/30')
+  })
+
+  it('終了時刻と現在時刻が同じセルは放送終了にしない', () => {
+    renderGrid({
+      programs: [program(1, 1024, 19 * 60, 30)],
+      now: at(19 * 60 + 30),
+    })
+
+    expect(cell(1)).not.toHaveAttribute('data-ended')
+    expect(cell(1).getAttribute('aria-label')).not.toContain('放送終了')
+  })
+
   it('予約済みの番組にだけ予約のマークが出る', () => {
     renderGrid({
       programs: [program(1, 1024, 19 * 60, 60), program(2, 1024, 20 * 60, 60)],

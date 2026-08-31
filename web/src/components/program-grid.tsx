@@ -36,6 +36,18 @@ const overscanColumns = 1
 /** 現在時刻インジケータを動かす間隔。1 分未満のずれは 2px 未満なので 30 秒で足りる。 */
 const clockIntervalMs = 30_000
 
+/**
+ * 概要を出せる最小セル高。時刻 12px + 題名 16px × 2 行 + 概要 16px × 2 行に、
+ * padding・行間と予約札を避ける余白を加えた 108px。
+ */
+const descriptionMinHeightPx = 108
+
+/**
+ * ジャンルを出せる最小セル高。概要までの 108px にジャンル 16px と行間、
+ * 下端で切れない余白を加えた 150px。
+ */
+const genreMinHeightPx = 150
+
 type Viewport = {
   top: number
   left: number
@@ -327,6 +339,7 @@ export function ProgramGrid({
                 timeWindow={timeWindow}
                 reservationByProgramId={reservationByProgramId}
                 selectedProgramId={selectedProgramId}
+                currentMs={currentMs}
                 onSelect={onSelect}
               />
             ))}
@@ -361,6 +374,7 @@ function ServiceColumn({
   timeWindow,
   reservationByProgramId,
   selectedProgramId,
+  currentMs,
   onSelect,
 }: {
   service: Service
@@ -371,6 +385,7 @@ function ServiceColumn({
   timeWindow: { startMs: number; endMs: number }
   reservationByProgramId: Set<number>
   selectedProgramId: number | null
+  currentMs: number
   onSelect: (program: ProgramListItem) => void
 }) {
   return (
@@ -389,6 +404,7 @@ function ServiceColumn({
             axis={axis}
             reserved={reservationByProgramId.has(p.program.programId)}
             selected={selectedProgramId === p.program.programId}
+            currentMs={currentMs}
             onSelect={onSelect}
           />
         ))}
@@ -401,18 +417,23 @@ function ProgramCell({
   axis,
   reserved,
   selected,
+  currentMs,
   onSelect,
 }: {
   placed: PlacedProgram<ProgramListItem>
   axis: TimeAxis
   reserved: boolean
   selected: boolean
+  currentMs: number
   onSelect: (program: ProgramListItem) => void
 }) {
   const rect = spanToPx(axis, placed.startMs, placed.endMs)
   if (!rect) return null
 
   const { program } = placed
+  const ended = placed.endMs < currentMs
+  // 5 分セルは 10px しかなく、終了の見た目を足さず読み上げだけで伝える。
+  const visiblyEnded = ended && rect.heightPx > axis.pxPerHour / 12
   const genre = genreLabel(program.genres[0])
   // 予約済みであることは色ではなく名前でも伝える（色だけの情報にしない）。
   // 読み上げ用だけでなく、セルの中にも見える「予約」を置く。
@@ -421,6 +442,7 @@ function ProgramCell({
     program.name,
     genre,
     reserved ? '予約済み' : undefined,
+    ended ? '放送終了' : undefined,
   ]
     .filter(Boolean)
     .join(' · ')
@@ -431,6 +453,7 @@ function ProgramCell({
       data-testid="program-grid-cell"
       data-program-id={program.programId}
       data-reserved={reserved ? 'true' : undefined}
+      data-ended={ended ? 'true' : undefined}
       aria-pressed={selected}
       aria-label={label}
       onClick={() => onSelect(program)}
@@ -438,6 +461,8 @@ function ProgramCell({
       className={cn(
         'absolute inset-x-0 overflow-hidden border-b border-l-2 border-b-border px-1.5 py-0.5 text-left hover:brightness-95 dark:hover:brightness-125',
         genreTint(program.genres[0]),
+        visiblyEnded &&
+          'text-foreground/75 before:pointer-events-none before:absolute before:inset-0 before:bg-muted/30',
         // 輪は選択中だけ。予約済みに同じ ring-primary を足すと、差が太さだけに
         // なりジャンルの左罫と選択中の両方に紛れる。
         selected && 'ring-2 ring-primary ring-inset',
@@ -449,7 +474,7 @@ function ProgramCell({
           {/* 5 分セル（10px）でも残る印。点は高さ 6px でグリッド全体ではほぼ消える */}
           <span
             aria-hidden
-            className="pointer-events-none absolute inset-y-0 right-0 w-1 bg-foreground"
+            className="pointer-events-none absolute inset-y-0 right-0 z-[1] w-1 bg-foreground"
           />
           <span
             aria-hidden
@@ -461,11 +486,22 @@ function ProgramCell({
       )}
       <span
         data-testid="program-grid-cell-time"
-        className="block text-[10px] leading-tight text-muted-foreground"
+        className={cn(
+          'relative z-[1] block text-[10px] leading-tight',
+          visiblyEnded ? 'text-foreground/75' : 'text-muted-foreground',
+        )}
       >
         {formatTime(program.startAt)}
       </span>
-      <span className="block text-xs leading-tight">{program.name}</span>
+      <span className="relative z-[1] block line-clamp-2 text-xs leading-4">{program.name}</span>
+      {rect.heightPx >= descriptionMinHeightPx && program.description && (
+        <span className="relative z-[1] mt-1 block line-clamp-2 text-[11px] leading-4">
+          {program.description}
+        </span>
+      )}
+      {rect.heightPx >= genreMinHeightPx && genre && (
+        <span className="relative z-[1] mt-1 block text-[11px] leading-4">{genre}</span>
+      )}
     </button>
   )
 }

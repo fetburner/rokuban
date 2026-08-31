@@ -411,7 +411,8 @@ function apiHandler({
  * 「色が読めない = null」で素通りした）。canvas の `fillStyle` も同じ文字列を
  * 返すので、1px 塗って `getImageData` で実際の画素を採る。
  */
-const readColor = (el, prop) => {
+const readColor = (el, input) => {
+  const { prop, pseudo = null } = typeof input === 'string' ? { prop: input } : input
   const canvas = document.createElement('canvas')
   canvas.width = 1
   canvas.height = 1
@@ -456,7 +457,7 @@ const readColor = (el, prop) => {
     ]
   }
 
-  const value = getComputedStyle(el).getPropertyValue(prop)
+  const value = getComputedStyle(el, pseudo).getPropertyValue(prop)
   return { value, rgba: toRgba(value), backdrop, reachedOpaque }
 }
 
@@ -510,6 +511,12 @@ function contrast(fg, bg) {
 async function computedOf(locator, prop) {
   if ((await locator.count()) === 0) return null
   return locator.first().evaluate(readColor, prop)
+}
+
+/** computedPseudoOf は指定要素の疑似要素から色を読む（無ければ null）。 */
+async function computedPseudoOf(locator, prop, pseudo) {
+  if ((await locator.count()) === 0) return null
+  return locator.first().evaluate(readColor, { prop, pseudo })
 }
 
 /**
@@ -1553,6 +1560,35 @@ for (const theme of themes) {
         } else {
           checkContrast(theme, '現在時刻の札の文字 / タリーの塗り', chipFg.rgba, chipFg, minTextContrast)
         }
+      }
+
+      // 放送終了セル。ジャンル淡色の上に muted/30 を重ね、foreground を半透明にする。
+      // `::before` は通常の backdrop 探索では拾えないので、疑似要素の色をセルの
+      // 実効面へ合成してから文字との比を測る。
+      const endedCell = page.locator('[data-testid="program-grid-cell"][data-ended="true"]').first()
+      const endedFg = await computedOf(endedCell, 'color')
+      const endedOverlay = await computedPseudoOf(endedCell, 'background-color', '::before')
+      if (endedFg === null || endedOverlay === null) {
+        ng.push(`[${theme}] 放送終了セルが見つからずコントラストを判定できない`)
+      } else if (endedOverlay.rgba[3] === 0) {
+        ng.push(`[${theme}] 放送終了セルの減光面が透明`)
+      } else {
+        const alpha = endedOverlay.rgba[3] / 255
+        const endedBackdrop = endedOverlay.rgba
+          .slice(0, 3)
+          .map((c, i) => c * alpha + endedOverlay.backdrop[i] * (1 - alpha))
+        endedBackdrop.push(255)
+        log(
+          `  [${theme}] 放送終了セル 文字=${endedFg.value} ${endedFg.rgba}` +
+            ` / 減光後の面=${endedBackdrop}`,
+        )
+        checkContrast(
+          theme,
+          '放送終了セルの文字 / ジャンル淡色と muted の合成面',
+          endedFg.rgba,
+          { ...endedFg, backdrop: endedBackdrop },
+          minTextContrast,
+        )
       }
 
       // 容量超過の帯。罫線が区間の境界を伝えるので、線が琥珀であることを見る。
