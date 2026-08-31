@@ -65,6 +65,34 @@ export function LivePlayer({ site, networkId, serviceId, className }: LivePlayer
   // retryNonce を変えると effect が再実行される（依存配列に入れる）
   const [retryNonce, setRetryNonce] = useState(0)
 
+  // ライブのページキー操作は M / F だけ。録画向けの速度変更は出さない。
+  // ネイティブ HLS の playbackRate が実 Safari で有効かは未検証。
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const video = videoRef.current
+      if (!video || event.ctrlKey || event.metaKey || event.altKey) return
+      if (
+        event.target instanceof Element &&
+        event.target.closest('input, textarea, select, button, a, video, [contenteditable]')
+      ) {
+        return
+      }
+
+      switch (event.key.toLowerCase()) {
+        case 'm':
+          video.muted = !video.muted
+          event.preventDefault()
+          break
+        case 'f':
+          void video.requestFullscreen?.()
+          event.preventDefault()
+      }
+    }
+
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [])
+
   useEffect(() => {
     let cancelled = false
     // 切り替え・破棄が起きたら probe の fetch 自体を中断する。
