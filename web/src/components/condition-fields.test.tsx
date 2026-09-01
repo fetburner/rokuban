@@ -79,15 +79,32 @@ const services: Service[] = [
   },
 ]
 
-function stubServicesFetch() {
-  const fetchMock = vi.fn(() =>
-    Promise.resolve(
-      new Response(JSON.stringify(services), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      }),
-    ),
-  )
+function jsonResponse(body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
+
+/**
+ * stubServicesFetch は `GET /api/sites` と `GET /api/sites/{site}/services` を
+ * スタブする。既定は単一サイト（`default`）だけの構成 --- 呼び出し側を増やさずに
+ * 既存の全テストが「単一サイト構成で挙動が変わらない」ことの回帰網を兼ねる。
+ * 2 サイト構成を確認するテストは `servicesBySite` を渡す
+ * （`recording-filters.test.tsx` の `renderFilters` と同じ形）。
+ */
+function stubServicesFetch(servicesBySite: Record<string, Service[]> = { default: services }) {
+  const fetchMock = vi.fn((input: string | URL | Request) => {
+    const url = new URL(String(input), 'http://localhost')
+    if (url.pathname === '/api/sites') {
+      return Promise.resolve(jsonResponse(Object.keys(servicesBySite)))
+    }
+    const match = /^\/api\/sites\/([^/]+)\/services$/.exec(url.pathname)
+    if (match && match[1] in servicesBySite) {
+      return Promise.resolve(jsonResponse(servicesBySite[match[1] as keyof typeof servicesBySite]))
+    }
+    return Promise.resolve(new Response('not found', { status: 404 }))
+  })
   globalThis.fetch = fetchMock as unknown as typeof fetch
   return fetchMock
 }
@@ -288,14 +305,7 @@ describe('ConditionFields のサービスチップ', () => {
         hasPrograms: false,
       },
     ]
-    globalThis.fetch = vi.fn(() =>
-      Promise.resolve(
-        new Response(JSON.stringify(servicesWithSub), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        }),
-      ),
-    ) as unknown as typeof fetch
+    stubServicesFetch({ default: servicesWithSub })
     renderInRouter(<ConditionFields draft={emptyDraft()} onChange={() => {}} />)
 
     const group = await screen.findByRole('group', { name: 'チャンネル' })
@@ -308,5 +318,54 @@ describe('ConditionFields のサービスチップ', () => {
     expect(
       findChipByText(group, '瀬戸内海放送（地上波 5 ・ 27 ・ #3273601032 ・ 番組なし）'),
     ).toBeInTheDocument()
+  })
+})
+
+/**
+ * issue #290: サービス選択肢は先頭サイト固定（`useCurrentSite()`）ではなく、
+ * `GET /api/sites` の全 site から `Service.id` で畳んで作る（保存されたルールが
+ * 全 site で評価されるため）。**この 2 サイトのテストは、直す前の実装
+ * （`useCurrentSite()` + `useListServices(site)`）では失敗することを確認済み**
+ * ---「default にしかスタブが無いから通ってしまう」ではなく、第 2 サイトだけが
+ * 持つサービスが実際に選択肢へ出ることを見ている。
+ */
+describe('ConditionFields のサービス選択肢（複数サイト、issue #290）', () => {
+  const site2Only: Service = {
+    id: 400101,
+    networkId: 4,
+    serviceId: 101,
+    name: 'site2 だけのチャンネル',
+    channelType: 'BS',
+    channel: 'BS1',
+    remoteControlKeyId: 0,
+    hasLogoData: false,
+    hasPrograms: true,
+  }
+
+  it('第 2 サイトだけが受けるサービスも選択肢に出る', async () => {
+    stubServicesFetch({ default: [services[0]], site2: [services[0], site2Only] })
+    renderInRouter(<ConditionFields draft={emptyDraft()} onChange={() => {}} />)
+
+    const group = await screen.findByRole('group', { name: 'チャンネル' })
+    // 両サイトにある NTV は合成 id が同じなので候補は 1 つに畳まれる。
+    expect(within(group).getAllByRole('button', { name: 'NTV' })).toHaveLength(1)
+    // site2 にしか無いサービスも候補に出る（先頭サイト固定のままなら出ない）。
+    expect(
+      await within(group).findByRole('button', { name: 'site2 だけのチャンネル' }),
+    ).toBeInTheDocument()
+  })
+
+  it('選んだ site2 限定サービスは (networkId, serviceId) で下書きに載る', async () => {
+    const onChange = vi.fn()
+    stubServicesFetch({ default: [services[0]], site2: [services[0], site2Only] })
+    renderInRouter(<ConditionFields draft={emptyDraft()} onChange={onChange} />)
+
+    const group = await screen.findByRole('group', { name: 'チャンネル' })
+    fireEvent.click(await within(group).findByRole('button', { name: 'site2 だけのチャンネル' }))
+
+    expect(onChange).toHaveBeenCalledTimes(1)
+    const updater = onChange.mock.calls[0][0] as (d: SearchDraft) => SearchDraft
+    const next = updater(emptyDraft())
+    expect(next.services).toEqual([{ networkId: 4, serviceId: 101 }])
   })
 })

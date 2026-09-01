@@ -103,6 +103,25 @@ export function SearchPage() {
     return last === undefined ? emptyDraft() : conditionsToDraft(last)
   })
   const [visibleCount, setVisibleCount] = useState(pageSize)
+  /**
+   * services は結果行（`SearchResultRow`）のサービス名解決専用で、
+   * `<ConditionFields>` のサービス選択肢（`lib/all-sites-services.ts` が全 site
+   * から `Service.id` で畳んだもの）とはあえて揃えない（issue #290 受け入れ
+   * 「結果行のサービス名解決をどうしたかを理由つきで書く」）。
+   *
+   * 選択肢が答える問いは「条件として何を名指しできるか」という**識別子**の
+   * 問いなので、1 site の観測に留めず全 site の union にする必要があった。
+   * 一方この `services` が答える問いは「実際に引いた検索結果に写っている
+   * サービスは何か」という**観測**の問いで、その検索自体が
+   * `search.mutate({ site, ... })`（`useCurrentSite()` 固定。
+   * `docs/frontend/search.md`「サイトの選択肢は置かない」）で常に単一 site
+   * にしか投げていない。結果（`ids`）はその同じ site の番組しか含まないので、
+   * 名前解決も同じ site のサービス一覧だけで閉じる方が正しい --- union にすると
+   * 他 site 由来のサービスが答えに混ざりうる余地を作るだけで、実際の結果には
+   * 一度も現れない。「選択肢は union / 結果は先頭 site」の非対称は、
+   * 識別子（選択肢）と観測（結果）という別の問いに答えている帰結であって、
+   * 未対応のまま残した食い違いではない。
+   */
   const services = useListServices(site)
   const search = useSearchPrograms()
   // ruleId が無いときは問い合わせを止める。useGetRule は id を必須の number で

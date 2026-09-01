@@ -137,8 +137,8 @@ UI に一切現れない」という意味ではない。**切れ目は「その
 |---|---|---|
 | **行が運ぶ**（`GET /api/reservations` / `/api/recordings` / `/api/capacity/overages` / `/api/breakers`） | ホーム・予約一覧・録画一覧・ブレーカーバナー | **全サイトの行が混ざって出る**（api は site に束縛されない --- 不変条件 1、[api.md](../api.md)「既定は全サイトを返す」）。行から始まる操作は行の `site` を使う: 予約詳細への遷移（`/reservations/$site/$programId`）・容量バッジの交差判定・ブレーカー再開 |
 | **URL が運ぶ** | 予約詳細（`/reservations/$site/$programId`） | 行から持ってきた site をそのまま資源同定に使う。取消・上書き・重複警告もその site |
-| **出所が無い**（mirakc に「何があるか」を訊く入口） | 番組表・検索・ライブ / 検索とルールの条件フォームのサービス選択肢 | ここだけ `useCurrentSite()` = **先頭サイト固定**。ここから始まる操作（番組表からの予約・スキップ・番組詳細）も現在サイトを引き継ぐ |
-| **レジストリが運ぶ** | 録画検索のチャンネル選択肢 | `GET /api/sites` の全 site からサービス一覧を引き、`Service.id` を選択の identity にする。**同じ `Service.id` は site をまたいでも 1 つの選択肢**（site は別軸の `?site=`）。録画一覧の述語は site を `ANY`、チャンネルを `(network_id, service_id)` の行値 `IN` で引く |
+| **出所が無い**（mirakc に「何があるか」を訊く入口） | 番組表・検索・ライブ | ここだけ `useCurrentSite()` = **先頭サイト固定**。ここから始まる操作（番組表からの予約・スキップ・番組詳細）も現在サイトを引き継ぐ |
+| **レジストリが運ぶ** | 録画検索のチャンネル選択肢 / 検索・ルールの条件フォームのサービス選択肢 | `GET /api/sites` の全 site からサービス一覧を引き、`Service.id` を選択の identity にする。**同じ `Service.id` は site をまたいでも 1 つの選択肢**（site は別軸の `?site=`）。録画一覧の述語は site を `ANY`、チャンネルを `(network_id, service_id)` の行値 `IN` で引く。条件フォームは適用（ruler の評価）自体が全 site を跨ぐので、選択肢も同じ全 site の union にする（`lib/all-sites-services.ts`） |
 | **site を持たない資源** | ルール一覧・エンコードプロファイル・ストレージ残高・能力・録画詳細 | `/api/rules` / `/api/encode-profiles` / `/api/storage` / `/api/capabilities` に site は無い（アーカイブ用ストレージが単一なのは [api.md](../api.md)）。録画詳細（`/recordings/$id`）も id が site 非依存だが、観測対象の録画が運ぶ `site` は多サイト構成で表示する。ストレージ残高はこの単一の観測に、上段の全サイト分の録画・予約から作った見込みを重ねる（`components/storage-balance.tsx`。site で絞らない） |
 
 **`/api/sites/{site}/...` という URL の形は判別子にならない。** ブレーカー再開
@@ -149,9 +149,10 @@ UI に一切現れない」という意味ではない。**切れ目は「その
 名乗ったか」で見る。**
 
 1 つの画面が複数の段にまたがることもある。`/rules` はルール行そのものは site を
-持たない（`GET /api/rules`）が、条件フォームのサービス選択肢は先頭サイト
-（`components/condition-fields.tsx`）。`/recordings` は一覧もチャンネル選択肢も
-全サイトを対象にし、新しく作る選択肢と述語を `(site, networkId, serviceId)` で結ぶ。
+持たない（`GET /api/rules`）が、条件フォームのサービス選択肢はレジストリの
+全 site から作る（`components/condition-fields.tsx`）。`/recordings` は一覧も
+チャンネル選択肢も全サイトを対象にし、選択肢と述語を `(site, networkId, serviceId)`
+で結ぶ。
 
 **現在サイトを持つ画面が上段の一覧（全サイト）を重ねるときは、その画面の側で
 `site` を突き合わせる。** 例はライブの中断予測 --- 全サイトの予約を受け取ってから
@@ -182,8 +183,6 @@ UI に一切現れない」という意味ではない。**切れ目は「その
 
 - **予約一覧の行に `site` を出していない。** 同じ放送を 2 サイトで受けていると行を
   見分けられない
-- **ルール条件のサービス選択肢は先頭サイト / 適用は全サイトを跨ぐ。** ルールは
-  `sites` を送らない = 全サイトで評価される（issue #290）
 - **容量超過の導線は判定を行の `site` で行うのに、遷移先が site を落とす**
   （issue #292）
 - **番組表のグリッドは多サイトを畳めない。** 「予約済み」判定と容量超過の帯は
