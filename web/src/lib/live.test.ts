@@ -5,6 +5,7 @@ import {
   claimsHlsPlaylistSupport,
   classifyLiveLoadError,
   currentProgramWindow,
+  formatLiveDiagnostics,
   liveLeaveURL,
   livePlaylistURL,
   pickInitialService,
@@ -338,5 +339,49 @@ describe('probeLivePlaylist', () => {
     )
     // fetch 自身にも signal が渡っている（呼び出し側だけが中断を握っているのではない）
     expect(fetchMock).toHaveBeenCalledWith('/x', { signal: controller.signal })
+  })
+})
+
+describe('formatLiveDiagnostics', () => {
+  it('hls 経路は「放送から」と「先読み」の両方を出す', () => {
+    expect(formatLiveDiagnostics({ source: 'hls', latencySec: 3, bufferSec: 5 })).toBe(
+      '放送から約3秒 / 先読み5秒',
+    )
+  })
+
+  it('null は欠損表示（—）', () => {
+    expect(formatLiveDiagnostics({ source: 'hls', latencySec: null, bufferSec: null })).toBe(
+      '放送から— / 先読み—',
+    )
+  })
+
+  // hls.latency は自身では NaN を返さない（node_modules/hls.js 1.6.17 の
+  // LatencyController.get latency() は `this._latency || 0`）が、呼び出し側
+  // （readHlsDiagnostics）の正規化をすり抜けた場合の保険として NaN も欠損に
+  // 丸める --- 画面に「NaN」という文字列を出さないための直接の保証
+  it('NaN も欠損として扱う（NaN を描かない）', () => {
+    const label = formatLiveDiagnostics({ source: 'hls', latencySec: NaN, bufferSec: NaN })
+    expect(label).toBe('放送から— / 先読み—')
+    expect(label).not.toMatch(/\bNaN\b/)
+  })
+
+  it('数値は四捨五入する', () => {
+    expect(formatLiveDiagnostics({ source: 'hls', latencySec: 3.4, bufferSec: 5.6 })).toBe(
+      '放送から約3秒 / 先読み6秒',
+    )
+  })
+
+  // ネイティブ HLS はライブ同期点を持たないので latency を取得できない
+  // （測れないものを出さない。issue #476 の含むもの 2）
+  it('native 経路は「先読み」だけを出す（「放送から」自体を出さない）', () => {
+    const label = formatLiveDiagnostics({ source: 'native', latencySec: null, bufferSec: 5 })
+    expect(label).toBe('先読み5秒')
+    expect(label).not.toContain('放送から')
+  })
+
+  it('欠損 + native でも NaN を描かない', () => {
+    const label = formatLiveDiagnostics({ source: 'native', latencySec: null, bufferSec: null })
+    expect(label).toBe('先読み—')
+    expect(label).not.toMatch(/\bNaN\b/)
   })
 })

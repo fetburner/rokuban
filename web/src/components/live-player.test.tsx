@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { LivePlayer, nativeStallTimeoutMs } from '@/components/live-player'
+import type { LiveDiagnostics } from '@/lib/live'
 
 /**
  * hls.js 経路（Safari 以外のネイティブ HLS 非対応ブラウザ）の内部呼び出しを
@@ -32,6 +33,12 @@ type FakeHls = {
   loadSource: ReturnType<typeof vi.fn>
   attachMedia: ReturnType<typeof vi.fn>
   destroy: ReturnType<typeof vi.fn>
+  // 計器（issue #476）。既定値はライブ同期点が決まる前の実 hls.js の状態
+  // ---`LatencyController.get latency()` は `this._latency || 0` を返すため
+  // `NaN` ではなく `0`（`node_modules/hls.js` 1.6.17 で確認済み。レビュー
+  // 指摘）。mainForwardBufferInfo はアタッチ直後は null
+  latency: number
+  mainForwardBufferInfo: { len: number } | null
 }
 
 vi.mock('hls.js', () => {
@@ -41,7 +48,35 @@ vi.mock('hls.js', () => {
     on = vi.fn()
     loadSource = vi.fn()
     attachMedia = vi.fn()
-    destroy = vi.fn()
+    // 破棄後は `latency` / `mainForwardBufferInfo` を読むと例外にする ---
+    // **実物より厳しい観測点**。実 hls.js は destroy 後に読んでも例外を
+    // 投げない（`LatencyController.destroy()` は内部の `hls` 参照を `null`
+    // にするだけで `_latency` は直前値のまま残る。`node_modules/hls.js`
+    // 1.6.17 で確認済み）。ここでは canary として実物より厳しく throw させ、
+    // 「破棄後は読み続けない」衛生を止め忘れたら `vi.advanceTimersByTime` から
+    // 例外が漏れて落ちるようにしてある（issue #476 レビュー指摘）
+    #destroyed = false
+    #latency = 0
+    #mainForwardBufferInfo: { len: number } | null = null
+    destroy = vi.fn(() => {
+      this.#destroyed = true
+    })
+    get latency() {
+      if (this.#destroyed) throw new Error('destroy 後の hls インスタンスの latency を読んだ')
+      return this.#latency
+    }
+    set latency(value: number) {
+      this.#latency = value
+    }
+    get mainForwardBufferInfo() {
+      if (this.#destroyed) {
+        throw new Error('destroy 後の hls インスタンスの mainForwardBufferInfo を読んだ')
+      }
+      return this.#mainForwardBufferInfo
+    }
+    set mainForwardBufferInfo(value: { len: number } | null) {
+      this.#mainForwardBufferInfo = value
+    }
     constructor() {
       hlsMockState.instances.push(this as unknown as FakeHls)
     }
@@ -184,9 +219,11 @@ describe('LivePlayer の状態遷移', () => {
    * **probe は 200 で通る。壊れているのはメディア層だけ**という状況を作るための
    * 足場（`web/e2e/live.mjs` ⑦が実 WebKit で見ているのと同じ状況）。
    */
-  async function renderNativePath() {
+  async function renderNativePath(onDiagnostics?: (diagnostics: LiveDiagnostics | null) => void) {
     const { resolve } = deferredFetch()
-    render(<LivePlayer site="default" networkId={0} serviceId={1024} />)
+    render(
+      <LivePlayer site="default" networkId={0} serviceId={1024} onDiagnostics={onDiagnostics} />,
+    )
     const video = document.querySelector('video')!
     vi.spyOn(video, 'canPlayType').mockImplementation((type) =>
       type === 'application/vnd.apple.mpegurl' || type === 'video/mp2t' ? 'maybe' : '',
@@ -536,6 +573,240 @@ describe('LivePlayer の状態遷移', () => {
       expect(hlsMockState.instances[1]!.loadSource).toHaveBeenCalledWith(
         expect.stringContaining('/services/2048/'),
       )
+    })
+  })
+
+  /**
+   * 計器（issue #476）。「放送から n 秒 / 先読み n 秒」の値を 1 秒ごとに
+   * `onDiagnostics` コールバック prop で親へ渡す。表示（テキストの組み立て・
+   * DOM への描画）は `pages/live.tsx` 側が担うので、ここでは渡す値そのものを
+   * 検査する。
+   */
+  describe('計器（issue #476）', () => {
+    it('表示開始直後は「まだ計測していない」（latencySec / bufferSec が null）', async () => {
+      const onDiagnostics = vi.fn()
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
+      render(
+        <LivePlayer site="default" networkId={0} serviceId={1024} onDiagnostics={onDiagnostics} />,
+      )
+
+      await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+      expect(onDiagnostics).toHaveBeenCalledWith({ source: 'hls', latencySec: null, bufferSec: null })
+    })
+
+    /**
+     * **`hls.latency` は同期点が決まる前も `NaN` ではなく `0` を返す**
+     * （`LatencyController.get latency()` が `this._latency || 0`。
+     * `node_modules/hls.js` 1.6.17 で確認済み。レビュー指摘）。`0` を
+     * そのまま「計測済みの遅延ゼロ」として渡すと、実ブラウザでは再生ボタンを
+     * 押すまで「放送から約0秒」という偽の値が出続ける（修正前の実装の欠陥）。
+     * フェイクの既定値は実物と同じ `0` のままにしてあるので、
+     * `readHlsDiagnostics` の `hls.latency > 0` ガードを
+     * `Number.isFinite(hls.latency)` に戻す変異でこのテストが落ちることを
+     * 確認済み（`0` は finite なので通ってしまい、`latencySec` が `0` のまま
+     * 報告される）。
+     */
+    it('latency が 0 のまま（同期点未確定）でも latencySec は null のまま報告する', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      const onDiagnostics = vi.fn()
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
+      render(
+        <LivePlayer site="default" networkId={0} serviceId={1024} onDiagnostics={onDiagnostics} />,
+      )
+
+      await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+      await act(async () => {
+        vi.advanceTimersByTime(3000)
+      })
+
+      // 1 回目は effect リセットの `onDiagnostics(null)`。以降は 1 秒ごとの
+      // 計測値なので、それらすべてで latencySec が null であることを見る
+      const measured = onDiagnostics.mock.calls.map(([d]) => d).filter((d) => d !== null)
+      expect(measured.length).toBeGreaterThan(0)
+      for (const diagnostics of measured) {
+        expect(diagnostics.latencySec).toBeNull()
+      }
+    })
+
+    it('1 秒ごとに hls.latency / mainForwardBufferInfo.len を読み、正の値を報告する', async () => {
+      // 変異: watchLiveDiagnostics の setInterval を呼ばない（1 回しか読まない）
+      // ようにするとこのテストが落ちる（呼び出しが 1 回のまま、正の値が来ない）
+      // ことを確認済み
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      const onDiagnostics = vi.fn()
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
+      render(
+        <LivePlayer site="default" networkId={0} serviceId={1024} onDiagnostics={onDiagnostics} />,
+      )
+
+      await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+      const hls = hlsMockState.instances[0]!
+      hls.latency = 3.4
+      hls.mainForwardBufferInfo = { len: 5.6 }
+
+      await act(async () => {
+        vi.advanceTimersByTime(1000)
+      })
+
+      expect(onDiagnostics).toHaveBeenLastCalledWith({
+        source: 'hls',
+        latencySec: 3.4,
+        bufferSec: 5.6,
+      })
+    })
+
+    it('fatal エラーで hls を破棄した後は destroy 済みインスタンスの latency を読み続けない', async () => {
+      // フェイクの latency / mainForwardBufferInfo は destroy 後に読むと例外を
+      // 投げる --- **実物より厳しい観測点**（実 hls.js は destroy 後も例外を
+      // 投げず直前値を返し続ける。上の FakeHlsImpl のコメント参照）。ここでの
+      // 目的は例外対策の検証ではなく、意味の無くなった値を毎秒読み続けない
+      // 衛生（stopDiagnostics の呼び出し）を canary で固定すること ---
+      // 変異: `stopDiagnostics()` の呼び出しを削除するとこのテストが実際に
+      // 落ちることを確認済み
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      const onDiagnostics = vi.fn()
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
+      render(
+        <LivePlayer site="default" networkId={0} serviceId={1024} onDiagnostics={onDiagnostics} />,
+      )
+
+      await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+      const hls = hlsMockState.instances[0]!
+      hls.latency = 3
+      hls.mainForwardBufferInfo = { len: 5 }
+      await act(async () => {
+        vi.advanceTimersByTime(1000)
+      })
+      expect(onDiagnostics).toHaveBeenLastCalledWith({ source: 'hls', latencySec: 3, bufferSec: 5 })
+
+      const errorCall = hls.on.mock.calls.find(([event]) => event === 'hlsError')
+      const errorHandler = errorCall![1] as (event: string, data: { fatal: boolean }) => void
+      await act(async () => {
+        errorHandler('hlsError', { fatal: true })
+      })
+      expect(hls.destroy).toHaveBeenCalledTimes(1)
+
+      // 破棄後に 3 秒分（3 回）タイマーを進めても例外にならない
+      await expect(
+        act(async () => {
+          vi.advanceTimersByTime(3000)
+        }),
+      ).resolves.not.toThrow()
+    })
+
+    /**
+     * 表示位置を `pages/live.tsx`（ON AIR バッジの隣）へ戻した際に入り込んだ
+     * 回帰（レビュー指摘）。呼び出し側は `isPlaying && diagnostics` でしか
+     * 出し分けておらず、エラー表示自体は知らない。`stopDiagnostics` が
+     * ポーリングを止めるだけで最後の値を残したままだと、fatal エラーで
+     * プレイヤーが「エラーが発生しました」を出している間も、ON AIR バッジの
+     * 隣に直前の測定値（「放送から約3秒」等）が凍ったまま出続ける。
+     *
+     * 既存の「fatal エラーで hls を破棄した後は...latency を読み続けない」
+     * テストは destroy 後に**例外が出ないか**しか見ていないため、この回帰は
+     * 検出できない（`onDiagnostics` の最後の呼び出し引数までは見ていない）。
+     *
+     * 変異: `stop` から `onDiagnosticsRef.current?.(null)` を削除すると
+     * このテストが実際に落ちることを確認済み（最後の呼び出しが
+     * `{ source: 'hls', latencySec: 3, bufferSec: 5 }` のままになる）。
+     */
+    it('fatal エラーで hls を破棄すると計器を null で報告する（凍ったまま残さない）', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      const onDiagnostics = vi.fn()
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
+      render(
+        <LivePlayer site="default" networkId={0} serviceId={1024} onDiagnostics={onDiagnostics} />,
+      )
+
+      await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+      const hls = hlsMockState.instances[0]!
+      hls.latency = 3
+      hls.mainForwardBufferInfo = { len: 5 }
+      await act(async () => {
+        vi.advanceTimersByTime(1000)
+      })
+      expect(onDiagnostics).toHaveBeenLastCalledWith({ source: 'hls', latencySec: 3, bufferSec: 5 })
+
+      const errorCall = hls.on.mock.calls.find(([event]) => event === 'hlsError')
+      const errorHandler = errorCall![1] as (event: string, data: { fatal: boolean }) => void
+      await act(async () => {
+        errorHandler('hlsError', { fatal: true })
+      })
+
+      expect(onDiagnostics).toHaveBeenLastCalledWith(null)
+    })
+
+    it('ネイティブ経路では latencySec が常に null（latency は取得できない）', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      const onDiagnostics = vi.fn()
+      const video = await renderNativePath(onDiagnostics)
+      Object.defineProperty(video, 'buffered', {
+        value: { length: 1, end: () => 10 },
+        configurable: true,
+      })
+      video.currentTime = 4
+
+      await act(async () => {
+        vi.advanceTimersByTime(1000)
+      })
+
+      expect(onDiagnostics).toHaveBeenLastCalledWith({
+        source: 'native',
+        latencySec: null,
+        bufferSec: 6,
+      })
+    })
+
+    /**
+     * ネイティブ経路の `failed()` も同じ回帰を持つ（レビュー指摘）。
+     * 変異: `stop` から `onDiagnosticsRef.current?.(null)` を削除すると
+     * このテストが実際に落ちることを確認済み。
+     */
+    it('ネイティブ経路のメディア失敗（error）に落ちると計器を null で報告する（凍ったまま残さない）', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      const onDiagnostics = vi.fn()
+      const video = await renderNativePath(onDiagnostics)
+      Object.defineProperty(video, 'buffered', {
+        value: { length: 1, end: () => 8 },
+        configurable: true,
+      })
+      video.currentTime = 0
+      await act(async () => {
+        vi.advanceTimersByTime(1000)
+      })
+      expect(onDiagnostics).toHaveBeenLastCalledWith({
+        source: 'native',
+        latencySec: null,
+        bufferSec: 8,
+      })
+
+      await act(async () => {
+        video.dispatchEvent(new Event('error'))
+      })
+      expect(await screen.findByText(/映像データを読み込めません/)).toBeInTheDocument()
+
+      expect(onDiagnostics).toHaveBeenLastCalledWith(null)
+    })
+
+    it('ネイティブ経路のメディア失敗（error）に落ちると計器のポーリングが止まる', async () => {
+      // nit: watchNativeMedia の failed() からも stopDiagnostics を呼ぶ
+      // （issue #476 レビュー指摘）。呼ばなくてもリークはしないが、エラー中も
+      // 毎秒報告し続ける理由が無い --- 変異: failed() の stopDiagnostics()
+      // 呼び出しを削除するとこのテストが実際に落ちることを確認済み
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      const onDiagnostics = vi.fn()
+      const video = await renderNativePath(onDiagnostics)
+
+      await act(async () => {
+        video.dispatchEvent(new Event('error'))
+      })
+      expect(await screen.findByText(/映像データを読み込めません/)).toBeInTheDocument()
+
+      onDiagnostics.mockClear()
+      await act(async () => {
+        vi.advanceTimersByTime(5000)
+      })
+      expect(onDiagnostics).not.toHaveBeenCalled()
     })
   })
 

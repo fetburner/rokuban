@@ -207,6 +207,54 @@ export function classifyLiveLoadError(
   return { kind: 'other', status: result.status, message: result.body.trim() }
 }
 
+/**
+ * LiveDiagnostics は再生経路から読み取った遅延・バッファの計器値（issue #476）。
+ *
+ * `latencySec` は hls.js 経由（`source: 'hls'`）でのみ埋まる。ネイティブ HLS
+ * （Safari）はライブ同期点（`liveSyncPosition`）を持たないため、hls.js の
+ * `latency` に相当する値を取得できない --- `source: 'native'` のときは
+ * 呼び出し側（`components/live-player.tsx`）が常に `null` を渡す
+ * （「測れないものを出さない」。`docs/frontend/live.md` §フロントエンド実装）。
+ */
+export type LiveDiagnostics = {
+  source: 'hls' | 'native'
+  latencySec: number | null
+  bufferSec: number | null
+}
+
+/** liveDiagnosticsMissingLabel はまだ値が定まっていないときの表示。 */
+const liveDiagnosticsMissingLabel = '—'
+
+/**
+ * missingOr は欠損値（`null` / `NaN`）なら `liveDiagnosticsMissingLabel` を、
+ * そうでなければ `format` の結果を返す。
+ *
+ * 呼び出し側（`components/live-player.tsx` の `readHlsDiagnostics` /
+ * `readNativeDiagnostics`）が既に欠損を `null` に正規化して渡す前提だが、
+ * `NaN` もここで弾く --- `hls.latency` はライブ同期点が決まる前は `NaN` では
+ * なく `0` を返す（`LatencyController.get latency()` が `this._latency || 0`。
+ * `node_modules/hls.js` 1.6.17 で確認済み）ため呼び出し側が `0` を欠損として
+ * 弾いているが、ここでの `NaN` チェックはそれをすり抜けた場合の保険。
+ */
+function missingOr(value: number | null, format: (n: number) => string): string {
+  return value === null || !Number.isFinite(value) ? liveDiagnosticsMissingLabel : format(value)
+}
+
+/**
+ * formatLiveDiagnostics は計器 1 行ぶんの表示文字列。
+ *
+ * ネイティブ経路（`source: 'native'`）は「先読み」だけを返す ---
+ * 「放送から」を欠損表示（`—`）で出すことすらしない。measured でない値の
+ * プレースホルダを置くこと自体が「そのうち測れる」という誤った期待を作るため
+ * （issue #476 の含むもの 2「測れないものを出さない」）。
+ */
+export function formatLiveDiagnostics(diagnostics: LiveDiagnostics): string {
+  const buffer = `先読み${missingOr(diagnostics.bufferSec, (n) => `${Math.round(n)}秒`)}`
+  if (diagnostics.source === 'native') return buffer
+  const latency = `放送から${missingOr(diagnostics.latencySec, (n) => `約${Math.round(n)}秒`)}`
+  return `${latency} / ${buffer}`
+}
+
 /** LivePlaylistProbeResult は probeLivePlaylist の結果。 */
 export type LivePlaylistProbeResult = { ok: true } | { ok: false; error: LiveLoadError }
 

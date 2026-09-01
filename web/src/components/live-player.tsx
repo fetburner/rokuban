@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 
-import type { LiveLoadError } from '@/lib/live'
+import type { LiveDiagnostics, LiveLoadError } from '@/lib/live'
 import {
   claimsHlsPlaylistSupport,
   livePlaylistURL,
@@ -16,6 +16,55 @@ type HlsLike = {
   loadSource(url: string): void
   attachMedia(media: HTMLMediaElement): void
   on(event: string, callback: (event: string, data: { fatal: boolean }) => void): void
+  /**
+   * hls.latency（秒）。`LatencyController.get latency()` の実装
+   * （`node_modules/hls.js` 1.6.17）は `this._latency || 0` を返すため、
+   * ライブ同期点が決まる前は `NaN` ではなく **`0`** になる（issue #476
+   * レビュー指摘。当初の実装は `NaN` を前提にしており実ブラウザで
+   * 「放送から約0秒」という偽の測定値を出していた）。
+   */
+  latency: number
+  /** hls.mainForwardBufferInfo（アタッチ直後・バッファが無い間は `null`）。 */
+  mainForwardBufferInfo: { len: number } | null
+}
+
+/**
+ * readHlsDiagnostics は hls.js 経路の計器値を読む（issue #476）。
+ *
+ * **`hls.latency` は同期点が決まる前も `0` を返す（`NaN` にはならない）。**
+ * `LatencyController.get latency()` が `this._latency || 0` を実装しており、
+ * `_latency` は同期点が決まるまで `null` のまま（`node_modules/hls.js` 1.6.17
+ * を実際に読んで確認済み。レビュー指摘）。`0` は「まだ計測できていない」と
+ * 「実際に遅延ゼロ」を区別できないため、`0` 以下は欠損として扱う ---
+ * このアプリの構成（2 秒セグメント、既定の `hold_back`）で実際の遅延が
+ * 1 秒未満になることは実質無い。
+ */
+function readHlsDiagnostics(hls: HlsLike): LiveDiagnostics {
+  return {
+    source: 'hls',
+    latencySec: hls.latency > 0 ? hls.latency : null,
+    bufferSec:
+      hls.mainForwardBufferInfo && Number.isFinite(hls.mainForwardBufferInfo.len)
+        ? hls.mainForwardBufferInfo.len
+        : null,
+  }
+}
+
+/**
+ * readNativeDiagnostics はネイティブ HLS 経路（Safari）の計器値を読む。
+ *
+ * ネイティブ経路には hls.js の `latency` に相当するものが無いので
+ * `latencySec` は常に `null`（**測れないものを出さない**。issue #476）。
+ * 「先読み」は `video.buffered` の末尾 - `currentTime` で近似する。
+ */
+function readNativeDiagnostics(media: HTMLVideoElement): LiveDiagnostics {
+  const buffered = media.buffered
+  return {
+    source: 'native',
+    latencySec: null,
+    bufferSec:
+      buffered.length > 0 ? Math.max(0, buffered.end(buffered.length - 1) - media.currentTime) : null,
+  }
 }
 
 type LivePlayerProps = {
@@ -25,6 +74,12 @@ type LivePlayerProps = {
   /** SI の serviceId。パスに載る前に networkId と合成する（issue #208）。 */
   serviceId: number
   className?: string
+  /**
+   * onDiagnostics は遅延・バッファの計器（issue #476）の値を 1 秒ごとに
+   * 呼び出し側へ渡す。表示位置は ON AIR バッジと同じ情報欄（`pages/live.tsx`）
+   * なので、値そのものは `LivePlayer` の内部に閉じず親へ渡す。
+   */
+  onDiagnostics?: (diagnostics: LiveDiagnostics | null) => void
 }
 
 /**
@@ -57,13 +112,28 @@ export const nativeStallTimeoutMs = 12_000
  * 止めるのではなく idle 期限を短い猶予まで詰めるだけなので、同じチャンネルを見て
  * いる別の視聴者がいれば何も起きない（`lib/live.ts` の `sendLiveLeaveHint`）。
  */
-export function LivePlayer({ site, networkId, serviceId, className }: LivePlayerProps) {
+export function LivePlayer({
+  site,
+  networkId,
+  serviceId,
+  className,
+  onDiagnostics,
+}: LivePlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const hlsRef = useRef<HlsLike | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<LiveLoadError | null>(null)
   // retryNonce を変えると effect が再実行される（依存配列に入れる）
   const [retryNonce, setRetryNonce] = useState(0)
+  // onDiagnostics は ref 越しに読む。probe / hls.js のセットアップを担う
+  // メイン effect の依存配列に関数 prop をそのまま入れると、呼び出し側が
+  // 毎レンダー新しい関数を渡した場合にプレイリストの再取得・hls インスタンスの
+  // 再生成が起きてしまう --- ref なら常に最新の関数を呼びつつ、メイン effect の
+  // 再実行条件からは切り離せる。
+  const onDiagnosticsRef = useRef(onDiagnostics)
+  useEffect(() => {
+    onDiagnosticsRef.current = onDiagnostics
+  }, [onDiagnostics])
 
   // ライブのページキー操作は M / F だけ。録画向けの速度変更は出さない。
   // ネイティブ HLS の playbackRate が実 Safari で有効かは未検証。
@@ -106,6 +176,7 @@ export function LivePlayer({ site, networkId, serviceId, className }: LivePlayer
     const video = videoRef.current
     setLoading(true)
     setError(null)
+    onDiagnosticsRef.current?.(null)
 
     const url = livePlaylistURL(site, networkId, serviceId)
 
@@ -140,7 +211,7 @@ export function LivePlayer({ site, networkId, serviceId, className }: LivePlayer
      * MSE のバッファ制御で `waiting` が正常に何度も出るので、ここで拾うと
      * 誤検知になる。
      */
-    function watchNativeMedia(media: HTMLVideoElement) {
+    function watchNativeMedia(media: HTMLVideoElement, stopDiagnostics: () => void) {
       let stallTimer: ReturnType<typeof setTimeout> | null = null
       // 一度でも再生が始まったか。**`paused` だけを抑止条件にすると「まだ再生を
       // 押していない」状態まで飲み込む** --- `<video>` に `autoPlay` は無いので
@@ -160,6 +231,11 @@ export function LivePlayer({ site, networkId, serviceId, className }: LivePlayer
       const failed = (message: string) => {
         if (cancelled) return
         clearStallTimer()
+        // エラー表示に落ちたら計器のポーリングも止める（issue #476 レビュー
+        // 指摘）。止めなくてもリークはしない（アンマウント・チャンネル切替の
+        // cleanup で最終的に止まる）が、エラー中も毎秒 onDiagnostics を
+        // 呼び続ける理由が無い
+        stopDiagnostics()
         setError({ kind: 'other', status: 0, message })
         setLoading(false)
       }
@@ -211,6 +287,47 @@ export function LivePlayer({ site, networkId, serviceId, className }: LivePlayer
       })
     }
 
+    /**
+     * watchLiveDiagnostics は「放送から n 秒 / 先読み n 秒」の計器を 1 秒ごとに
+     * 更新する（issue #476。「副調整室の計器盤」--- ON AIR・録画中バッジと同じ
+     * 「いま電波に乗っているものとの距離」を言う表示）。
+     *
+     * **「測り直す」ボタンは置かない。** 値はこのポーリングで毎秒最新に
+     * 更新されるため、手動での再計測に意味を持たせられない（denpa の
+     * 「測り直す」は WHEP 側の再ネゴシエーションの都合であり、hls.js の
+     * ポーリングにはそれに対応する操作が無い）。
+     *
+     * 停止関数を返すのは、fatal エラー・メディア失敗で読む理由が無くなった
+     * 直後にも呼び出し側から止められるようにするため。**実 hls.js は
+     * `destroy()` 後に `latency` / `mainForwardBufferInfo` を読んでも例外は
+     * 投げない**（`Hls.prototype.destroy` は `LatencyController.destroy()` で
+     * 内部の `hls` 参照を `null` にするだけで、`_latency` はそのまま残る ---
+     * `get latency()` は直前値を返し続ける。`node_modules/hls.js` 1.6.17 を
+     * 読んで確認済み）。ここで止めるのは例外対策ではなく、意味の無くなった
+     * 値を毎秒読み続けない衛生。
+     *
+     * **停止と同時に `onDiagnostics(null)` を出す。** 呼び出し側
+     * （`pages/live.tsx`）はエラー表示自体を知らず `isPlaying && diagnostics`
+     * だけで出し分けているため、値を消さずに止めるだけだと最後の測定値が
+     * 凍ったまま ON AIR バッジの隣に残り続ける --- fatal エラーでプレイヤーが
+     * 「エラーが発生しました」を出している間も「放送から約5秒」等の偽の
+     * 値が居座る（レビュー指摘。表示位置を `pages/live.tsx` へ戻した際に
+     * 入り込んだ回帰）。
+     */
+    function watchLiveDiagnostics(read: () => LiveDiagnostics): () => void {
+      onDiagnosticsRef.current?.(read())
+      const timer = setInterval(() => {
+        if (cancelled) return
+        onDiagnosticsRef.current?.(read())
+      }, 1000)
+      const stop = () => {
+        clearInterval(timer)
+        onDiagnosticsRef.current?.(null)
+      }
+      teardown.push(stop)
+      return stop
+    }
+
     async function start() {
       let probe: Awaited<ReturnType<typeof probeLivePlaylist>>
       try {
@@ -243,7 +360,8 @@ export function LivePlayer({ site, networkId, serviceId, className }: LivePlayer
       //      最後の望みを託す（`lib/live.ts` の `claimsHlsPlaylistSupport`）
       if (supportsNativeHls(canPlayType)) {
         // src を入れる前に張る（入れた後だと、失敗が速いときに取り逃がす）
-        watchNativeMedia(video)
+        const stopDiagnostics = watchLiveDiagnostics(() => readNativeDiagnostics(video))
+        watchNativeMedia(video, stopDiagnostics)
         video.src = url
       } else {
         const { default: Hls } = await import('hls.js')
@@ -257,7 +375,8 @@ export function LivePlayer({ site, networkId, serviceId, className }: LivePlayer
           // （`live-player.test.tsx` の「ネイティブ経路のメディア失敗」3 件 /
           // `web/e2e/live.mjs` ⑦）--- ここは 1 段目と同じ表面を持つ
           if (claimsHlsPlaylistSupport(canPlayType)) {
-            watchNativeMedia(video)
+            const stopDiagnostics = watchLiveDiagnostics(() => readNativeDiagnostics(video))
+            watchNativeMedia(video, stopDiagnostics)
             video.src = url
             setLoading(false)
             return
@@ -272,6 +391,7 @@ export function LivePlayer({ site, networkId, serviceId, className }: LivePlayer
         }
         const hls = new Hls() as unknown as HlsLike
         hlsRef.current = hls
+        const stopDiagnostics = watchLiveDiagnostics(() => readHlsDiagnostics(hls))
         hls.on(Hls.Events.ERROR, (_event, data) => {
           if (!data.fatal || cancelled) return
           // fatal のまま放置すると hls.js が内部でリトライを続け、エラー画面の
@@ -279,6 +399,9 @@ export function LivePlayer({ site, networkId, serviceId, className }: LivePlayer
           // 指摘）。表示するエラーは「壊れて止まった」なので、実際に止める
           hls.destroy()
           hlsRef.current = null
+          // 実 hls.js は destroy 後に読んでも例外は投げないが（watchLiveDiagnostics
+          // のコメント参照）、意味の無くなった値を毎秒読み続けない衛生として止める
+          stopDiagnostics()
           setError({ kind: 'other', status: 0, message: 'ライブ再生中にエラーが発生しました' })
         })
         hls.loadSource(url)

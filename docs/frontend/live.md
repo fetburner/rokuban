@@ -431,6 +431,55 @@ EPGStation・KonomiTV には構造的にできない表示。
   沈黙側に倒れているので下界主義には反しないが、既知の盲点として上記
   「下界主義」の項の見えない消費者の一覧に挙げてある
 
+### 遅延・バッファの計器
+
+denpa の遅延・バッファ表示に相当するものを持つ。中断予測が
+「見始める前の判断材料」なら、こちらは「いま見ている映像が電波とどれだけ
+離れているか」という**視聴中の**計器で、ON AIR バッジ・録画中バッジと同じ
+「いま電波に乗っているものとの距離」を言う表示という位置づけは共通する。
+値の取得は `LivePlayer`（`components/live-player.tsx`）が担うが、表示自体は
+ON AIR バッジと同じ情報欄（`pages/live.tsx`）に置く --- `LivePlayer` は
+`onDiagnostics` コールバック prop で値を親へ渡すだけで、自分では描画しない。
+
+**経路によって出せるものが違う。**
+
+- hls.js 経路（Chrome / Firefox 等）: 1 秒ごとに `hls.latency`（放送から）と
+  `hls.mainForwardBufferInfo.len`（先読み）を読む
+- ネイティブ HLS 経路（Safari）: hls.js を経由しないため `latency` に相当する
+  値を取得できない。「先読み」だけを `video.buffered` の末尾 - `currentTime`
+  で近似し、「放送から」は**表示自体を出さない**（測れないものを出さない ---
+  欠損表示（`—`）で埋めることすらしない）
+
+**`hls.latency` は同期点が決まる前も `NaN` ではなく `0` を返す。**
+`node_modules/hls.js`（1.6.17）の `LatencyController.get latency()` は
+`this._latency || 0` を実装しており、`_latency` は同期点が決まるまで `null`
+のまま --- つまり `NaN` を前提にすると実ブラウザでは「放送から約0秒」という
+偽の測定値が出続ける。読む側
+（`readHlsDiagnostics`。`components/live-player.tsx`）は `0` 以下を欠損として
+弾く。表示は最初「放送から— / 先読み—」で始め、値が確定してから数値に変わる。
+
+**「測り直す」ボタンは無い。** 値は 1 秒ごとのポーリングで常に最新へ更新
+されるため、手動の再計測に操作としての意味がない（denpa の「測り直す」は
+WHEP 側の再ネゴシエーションの都合であり、hls.js のポーリングにはそれに
+対応する操作が無い）。**`aria-live` も付けない** --- 毎秒変わる数字を
+支援技術に読み上げさせる理由が無い。
+
+**hls.js の fatal エラーで `hls.destroy()` した後は計器のポーリングを止める。**
+実 hls.js は `destroy()` 後に `latency` / `mainForwardBufferInfo` を読んでも
+例外は投げない（`LatencyController.destroy()` は内部の `hls` 参照を `null`
+にするだけで `_latency` は直前値のまま残る）。それでも止めるのは、意味の
+無くなった値を毎秒読み続けない衛生のためであって例外対策ではない。
+
+判定手段: `lib/live.test.ts`（欠損値・`NaN` の丸め・経路ごとの表示差の純関数
+テスト）、`live-player.test.tsx`「計器」（`onDiagnostics` が 1 秒ごとに実際に
+読み直した値で呼ばれること・ネイティブ経路では `latencySec` が常に `null` で
+あること・`hls.latency` が `0` のままでも欠損として扱うこと・fatal エラー後に
+ポーリングを止めることをフェイクの hls.js で検証）、`pages/live.tsx` 側の
+表示配線テスト、`web/e2e/live.mjs` ③（実 Chrome + 実 hls.js で「放送から約
+n 秒 / 先読み n 秒」が実際に 0 でない数値になることを確認 --- bundled
+Chromium は H.264/AAC の実デコードが進まず `hls.latency` が更新されないため、
+ここでしか測れない）。
+
 ### 実機確認について
 
 **実機確認の手段・判定項目・回帰の記録は [runbook.md](../runbook.md)（ライブ視聴の

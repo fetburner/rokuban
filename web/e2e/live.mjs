@@ -206,6 +206,25 @@ const playerDecided = () => {
 }
 
 /**
+ * liveDiagnosticsBecameNumeric はブラウザ側で評価する述語（issue #476）。
+ *
+ * 遅延・バッファの計器（`[data-testid="live-diagnostics"]`）は、hls.js の
+ * ライブ同期点が決まるまで「放送から— / 先読み—」のままなので、実際に
+ * 「放送から約 n 秒」「先読み n 秒」の両方が数値になったことを見る。
+ *
+ * **`0` は弾く（`[1-9]\d*`）。** `hls.latency` は同期点が決まる前も `NaN` では
+ * なく `0` を返す（`node_modules/hls.js` 1.6.17 の
+ * `LatencyController.get latency()` が `this._latency || 0`）。`\d+` だと
+ * 「放送から約0秒」にもマッチしてしまい、同期点が一生決まらない回帰を
+ * 見逃す（レビュー指摘）。
+ */
+const liveDiagnosticsBecameNumeric = () => {
+  const el = document.querySelector('[data-testid="live-diagnostics"]')
+  const text = el?.textContent ?? ''
+  return /放送から約[1-9]\d*秒/.test(text) && /先読み\d+秒/.test(text)
+}
+
+/**
  * mockLiveRoutes は `.../live/playlist.m3u8` と `.../live/segments/*` を
  * フィクスチャ（またはテストが指定する応答）で丸ごと差し替える。
  *
@@ -720,6 +739,26 @@ if (hasFixture) {
       if (!(after.w > 0)) ng.push('③ videoWidth が 0（映像が実際にデコードされていない）')
       if (!(after.r >= 3)) {
         ng.push(`③ readyState が ${after.r}（3 未満。再生可能な量のデータが届いていない）`)
+      }
+
+      // --- 遅延・バッファの計器（issue #476）。hls.js の `latency` /
+      // `mainForwardBufferInfo` はライブ同期点が決まるまで値を返さないので、
+      // bundled Chromium（H.264/AAC 非対応で実デコードが進まない）では
+      // 検証できない --- ここ（実 Chrome）でしか測れない
+      try {
+        await chromePage.waitForFunction(liveDiagnosticsBecameNumeric, undefined, { timeout: 10000 })
+        const diagnosticsText = await chromePage.evaluate(
+          () => document.querySelector('[data-testid="live-diagnostics"]')?.textContent ?? '',
+        )
+        log(`  計器: ${diagnosticsText}`)
+        if (diagnosticsText.includes('NaN')) {
+          ng.push(`③ 計器に NaN が描画された（${diagnosticsText}）`)
+        }
+      } catch {
+        ng.push(
+          '③ 「放送から約 n 秒 / 先読み n 秒」が数値にならない（hls.latency / ' +
+            'mainForwardBufferInfo.len を読んでいない可能性がある）',
+        )
       }
     } catch (err) {
       ng.push(`③ 実再生の検証中に例外が発生した: ${err.message}`)
