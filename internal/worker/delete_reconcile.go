@@ -291,11 +291,11 @@ func (w *DeleteReconcileWorker) Work(ctx context.Context, _ *river.Job[DeleteRec
 	}
 
 	// 原本を入力とする active な encode/thumbnail ジョブの有無はここでは見ない
-	// （旧条件 3。docs/storage/retention.md「削除可否の述語に名前を与える」
-	// 直後の判断根拠参照）。until_encoded_deletable_originals（条件 2）が
-	// desired な派生物の完備を要求するため、出力未コミットのジョブは既に
-	// 条件 2 が止め、出力コミット済みのジョブは各ワーカーの冒頭の冪等チェックが
-	// 原本を開かずに skip する。
+	// （旧条件 3。docs/storage/retention.md「retention reconcile ループ」の
+	// 削除条件 1・2 の一覧直後の判断根拠参照）。until_encoded_deletable_originals
+	// （条件 2）が desired な派生物の完備を要求するため、出力未コミットの
+	// ジョブは既に条件 2 が止め、出力コミット済みのジョブは各ワーカーの冒頭の
+	// 冪等チェックが原本を開かずに skip する。
 	untilEncodedRows, err := q.ListUntilEncodedOriginalsToDelete(ctx, deleteReconcileRowLimit)
 	if err != nil {
 		return fmt.Errorf("listing until_encoded originals: %w", err)
