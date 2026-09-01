@@ -651,7 +651,7 @@ export const ListTunersResponseItem = zod.object({
   "name": zod.string(),
   "types": zod.array(zod.enum(['GR', 'BS', 'CS', 'SKY'])),
   "isAvailable": zod.boolean(),
-  "isFault": zod.boolean().describe('mirakc の `\/api\/tuners` が返す値をそのまま射影している。どの条件で\ntrue になるかは未検証。\n'),
+  "isFault": zod.boolean().describe('mirakc の `\/api\/tuners` が返す値をそのまま射影している。\nMirakurun 互換 API のフィールドで、Mirakurun 本体ではチューナー\nプロセスの error を 3 回数えたら立つラッチだが、\*\*mirakc は\n実装しておらずリテラルの false を返す\*\*（models.rs が\n`Always false.` と明記）。`isAvailable` も同様に常に true。\n'),
   "observedAt": zod.string().datetime({"offset":true}).describe('この行を最後に投影した時刻。射影ループが止まっていても行は消えない\nため、鮮度の手がかりとして必ずこれを使う（`GET \/api\/storage` の\n`observedAt` と同じ契約）。\n')
 }).describe('`tuner_sync` の行をそのまま返す（導出しない）。列の意味の権威は\ndocs\/data\/capacity.md §6.5「チューナー射影と容量超過の判定」。\n')
 export const ListTunersResponse = zod.array(ListTunersResponseItem)

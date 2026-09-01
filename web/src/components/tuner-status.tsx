@@ -23,11 +23,13 @@ import { isObservationStale } from '@/lib/storage-forecast'
  *
  * **n は射影の全行数ではなく `isAvailable && !isFault` の本数にする**
  * （`internal/capacity` の `countable` と揃える。docs/data/capacity.md §6.5）。
- * 生の射影本数のままだと、設定で無効化した本数まで「使える本数」に見えてしまい、
- * この行が消したかった「警告が無い = 大丈夫」の誤読が n 自体で復活する
- * （レビュー指摘）。故障の本数（m）は n に含めない別枠の警告として添える ---
- * n は「いま使える本数」、m は「そのうち壊れている本数」ではなく「n に入って
- * いない故障」という独立した警告。
+ * 故障の本数（m）は n に含めない別枠の警告として添える --- n は「いま使える
+ * 本数」、m は「n に入っていない故障」という独立した警告。
+ *
+ * **現行の mirakc に対してこの絞り込みは恒真**（`isAvailable` は常に true、
+ * `isFault` は常に false。設定で無効化したチューナーはそもそも一覧に現れない）。
+ * Mirakurun 互換 API の契約に揃えて書いてあり、mirakc が実装したら効く。
+ * 詳細と根拠は docs/data/capacity.md §6.5。
  *
  * **射影が 0 行のサイトは何も主張しない**
  * （docs/data/capacity.md §6.5「射影が 1 行も無いサイトは何も主張しない」と一貫

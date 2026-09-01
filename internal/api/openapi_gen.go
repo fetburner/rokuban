@@ -1537,8 +1537,11 @@ type Tuner struct {
 	Index       int  `json:"index"`
 	IsAvailable bool `json:"isAvailable"`
 
-	// IsFault mirakc の `/api/tuners` が返す値をそのまま射影している。どの条件で
-	// true になるかは未検証。
+	// IsFault mirakc の `/api/tuners` が返す値をそのまま射影している。
+	// Mirakurun 互換 API のフィールドで、Mirakurun 本体ではチューナー
+	// プロセスの error を 3 回数えたら立つラッチだが、**mirakc は
+	// 実装しておらずリテラルの false を返す**（models.rs が
+	// `Always false.` と明記）。`isAvailable` も同様に常に true。
 	IsFault bool   `json:"isFault"`
 	Name    string `json:"name"`
 
