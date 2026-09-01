@@ -19,6 +19,7 @@ import { ProgramOverlapWarning } from '@/components/program-overlap-warning'
 import { ReservationSkipReason } from '@/components/reservation-skip-reason'
 import { useToast } from '@/components/toaster'
 import { Button } from '@/components/ui/button'
+import { reservationsQueryKeyPrefix } from '@/lib/events'
 import { formatDateTime, formatDuration } from '@/lib/format'
 import { mutationErrorMessage } from '@/lib/mutation-error-message'
 import { stateLabels } from '@/lib/reservation-labels'
@@ -38,11 +39,12 @@ import { stateLabels } from '@/lib/reservation-labels'
  *
  * という状態だった。宛先が `(site, programId)` であること（`reservations.id` を
  * URL・キーに使わない）は変えずに、**先頭要素だけを一覧と揃える**
- * （`pages/recording-detail.tsx` の `recordingDetailQueryKey` と同じ手）。
- * site と programId をキーの要素として持つので、資源の同定は生成キーと等価。
+ * （`pages/recording-detail.tsx` の `recordingDetailQueryKey` と同じ手。先頭要素は
+ * `reservationsQueryKeyPrefix` を通す）。site と programId をキーの要素として
+ * 持つので、資源の同定は生成キーと等価。
  */
 function reservationDetailQueryKey(site: string, programId: number) {
-  return ['/api/reservations', 'detail', site, programId] as const
+  return [reservationsQueryKeyPrefix, 'detail', site, programId] as const
 }
 
 /**
@@ -153,7 +155,7 @@ export function ReservationDetailPage() {
             data: { action: 'record' },
           })
         }
-        void queryClient.invalidateQueries({ queryKey: ['/api/reservations'] })
+        void queryClient.invalidateQueries({ queryKey: [reservationsQueryKeyPrefix] })
         toast({ message: '予約を元に戻しました' })
       } catch (err) {
         toast({ message: mutationErrorMessage('予約への復帰に失敗しました', err) })

@@ -6,6 +6,7 @@ import { useGetRecording } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
 import { ErrorState, ListSkeleton, PageHeader } from '@/components/page'
 import { Button } from '@/components/ui/button'
+import { recordingsQueryKeyPrefix } from '@/lib/events'
 import { formatBytes, formatDateTime, formatDuration } from '@/lib/format'
 import { hasLiveIngestProgress, ingestRefetchIntervalMs } from '@/lib/ingest'
 import { EncodeStatusBadges, IngestBadge, RecordingDetail, StatusBadge } from '@/pages/recordings'
@@ -17,24 +18,25 @@ import { EncodeStatusBadges, IngestBadge, RecordingDetail, StatusBadge } from '@
  * 埋め込んだ 1 要素の文字列）は使わない。一覧側の mutater（`RecordingActions` の
  * `invalidate` / `AddEncodeProfilesAction` の `onSuccess`、両方
  * `pages/recordings.tsx`）はどちらも `queryClient.invalidateQueries({ queryKey:
- * ['/api/recordings'] })` で捨てる --- TanStack Query の既定の前方一致
+ * [recordingsQueryKeyPrefix] })` で捨てる --- TanStack Query の既定の前方一致
  * （`partialMatchKey`）はフィルタキーに書いた要素を**前から順に**比較する
- * ため（ここではフィルタが `['/api/recordings']` という 1 要素なので、
- * 実質「先頭要素が等しいか」になる）、生成された 1 要素キー
- * （'/api/recordings/{id}' という別の文字列）はそこに前方一致しない。
+ * ため（ここではフィルタが 1 要素なので、実質「先頭要素が等しいか」になる）、
+ * 生成された 1 要素キー（'/api/recordings/{id}' という別の文字列）はそこに
+ * 前方一致しない。
  *
  * `RecordingDetail` の下に mutater を足すたびに単体ページへの配線
  * （`onMutated` のような prop）を手で通す形は、通し忘れても型エラーにも
  * ならず黒く抜ける（実際に `AddEncodeProfilesAction` がこの穴を最初に踏んだ
  * --- issue #232 のレビューで実機再現された）。**「覚えておく」を要求する
- * 代わりに、単体ページ自身のキーの先頭要素を一覧と同じ `'/api/recordings'` に
- * 揃えておけば、一覧側のどの mutater（今あるものも将来足されるものも）の
- * invalidate がこのページのキャッシュも自動的に巻き込む**（前方一致は
- * `getListRecordingsQueryKey` が返す `['/api/recordings', {...}]` にも同じ
- * 理屈で効いている）。`RecordingDetail` 配下に prop を新設する必要が無くなる。
+ * 代わりに、単体ページ自身のキーの先頭要素を一覧と同じ `recordingsQueryKeyPrefix`
+ * （`'/api/recordings'`）に揃えておけば、一覧側のどの mutater（今あるものも将来
+ * 足されるものも）の invalidate がこのページのキャッシュも自動的に巻き込む**
+ * （前方一致は `getListRecordingsQueryKey` が返す `['/api/recordings', {...}]`
+ * にも同じ理屈で効いている）。`RecordingDetail` 配下に prop を新設する必要が
+ * 無くなる。
  */
 function recordingDetailQueryKey(id: number) {
-  return ['/api/recordings', 'detail', id] as const
+  return [recordingsQueryKeyPrefix, 'detail', id] as const
 }
 
 /**
