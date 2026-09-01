@@ -1,0 +1,12 @@
+-- rokuban import epgstation（issue #72）専用のクエリ。
+-- ルールの冪等キーは rules.metadata の jsonb containment（
+-- {"epgstation":{"ruleId": N}}）。rules に EPGStation 固有の列は足さない
+-- （不変条件 7: mirakc/EPGStation 固有の概念を永続テーブルの列に持ち込まない。
+-- metadata は既存の汎用 jsonb 列を使うだけで新しい形を固定しない。
+-- 予約するキーは docs/schema/rules.md に 1 行残す）。
+--
+-- ORDER BY + LIMIT 1: 同じ epgstation ruleId を持つ行が万一 2 つ以上でき
+-- ても（手で metadata を編集した等）結果が実行のたびに変わらないように
+-- しておく。id 昇順（最初に作られた行）を選ぶ。
+-- name: FindRuleByMetadata :one
+SELECT * FROM rules WHERE metadata @> sqlc.arg(metadata)::jsonb ORDER BY id LIMIT 1;

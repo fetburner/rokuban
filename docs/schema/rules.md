@@ -49,6 +49,7 @@ CREATE TABLE rules (
 - **`keep_original = 'until_encoded'` は空の `encode_profiles` と両立しない**（CHECK）。エンコードされないまま原本が消える組み合わせを表現不可能にする
 - `dedupe_window` が NULL のときの意味（無制限）や評価順は [録画エンジン](../recording.md) §3.1
 - SSE ヒント: `rules` の行トリガー `rules_notify` がトピック `rules` で通知する
+- **予約済みキー**: `metadata.epgstation.ruleId`（`rokuban import epgstation --rules` の冪等キー）。EPGStation 側のルール id を保持し、`metadata @> '{"epgstation":{"ruleId": N}}'` で引く。内容でクエリする以上「型付き列にする」の原則からは外れるが、1 用途だけの一過性キーに列を割くほどではないという判断。他の用途でこのキーを上書きしないこと
 
 ### array_is_canonical_set — 正規集合チェック
 
