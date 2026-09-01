@@ -158,6 +158,21 @@ describe('ReservationDetailPage', () => {
     expect(await screen.findByText('テスト番組')).toBeInTheDocument()
   })
 
+  // issue #467: PageHeader の leading スロットに乗せても「戻る」は
+  // 一覧へのリンクのまま変えない。
+  it('「戻る」は /reservations へのリンク', async () => {
+    stubFetch((site, programId) =>
+      site === 'default' && programId === 300000 ? baseReservation() : null,
+    )
+
+    renderAt('/reservations/default/300000')
+
+    expect(await screen.findByRole('link', { name: '戻る' })).toHaveAttribute(
+      'href',
+      '/reservations',
+    )
+  })
+
   // issue #302: 予約詳細に局名を出す。同じタイトルが日付・局違いで並ぶと
   // 予約一覧・ホームでは区別できても、詳細画面単体では局名が無いと
   // どの局の予約かが分からない。
@@ -253,6 +268,9 @@ describe('ReservationDetailPage', () => {
     expect(
       await screen.findByText('予約が見つかりません（予約した直後なら、作成され次第ここに出ます）'),
     ).toBeInTheDocument()
+    // 404 は SSE の invalidate で自動的に出るので再試行ボタンは冗長
+    // （issue #467 レビュー。onRetry を無条件に付けると落ちる）。
+    expect(screen.queryByRole('button', { name: '再試行' })).not.toBeInTheDocument()
   })
 
   it('404 以外の失敗は予約が見つからないと誤案内しない', async () => {
@@ -264,6 +282,9 @@ describe('ReservationDetailPage', () => {
     expect(
       screen.queryByText('予約が見つかりません（予約した直後なら、作成され次第ここに出ます）'),
     ).not.toBeInTheDocument()
+    // 純粋な取得失敗には再試行ボタンを出す（issue #467 レビュー。onRetry を
+    // 外すと落ちる）。
+    expect(screen.getByRole('button', { name: '再試行' })).toBeInTheDocument()
   })
 
   // 予約 intent の直後で ruler がまだ行を作っていない → 404 になっても、

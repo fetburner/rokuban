@@ -2,7 +2,7 @@ import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
-import { EmptyState, ErrorState, ListSkeleton, Skeleton } from '@/components/page'
+import { EmptyState, ErrorState, ListSkeleton, PageHeader, Skeleton } from '@/components/page'
 
 /**
  * 走査線の適用箇所を固定するテスト（不変条件 8）。
@@ -36,6 +36,22 @@ describe('EmptyState', () => {
     render(<EmptyState>空です</EmptyState>)
     const el = screen.getByText('空です')
     expect(el.tagName).toBe('DIV')
+  })
+})
+
+// issue #467: 詳細 2 ページ（録画・予約）の「戻る」ボタンを乗せる leading
+// スロット。省略すると 1 本目が、省いても他の子だけで通ってしまわないよう
+// title と同時に描画されることも見る。
+describe('PageHeader', () => {
+  it('leading を渡すと title の隣に描画される', () => {
+    render(<PageHeader title="録画の詳細" leading={<button>戻る</button>} />)
+    expect(screen.getByRole('button', { name: '戻る' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: '録画の詳細' })).toBeInTheDocument()
+  })
+
+  it('leading を渡さなければ何も描画しない', () => {
+    render(<PageHeader title="録画の詳細" />)
+    expect(screen.queryByRole('button')).not.toBeInTheDocument()
   })
 })
 

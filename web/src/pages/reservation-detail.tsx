@@ -193,7 +193,13 @@ export function ReservationDetailPage() {
       />
 
       {query.isError ? (
-        <ErrorState>
+        <ErrorState
+          // 404（notFound）には onRetry を付けない: 上の doc comment のとおり
+          // SSE の invalidate で行ができ次第自動的に更新されるので、手動再試行は
+          // 冗長 --- 文言もその前提（自動で出ます）で書いてある。404 以外の
+          // 純粋な取得失敗にだけ再試行を出す（issue #467 レビューで判断を記録）。
+          onRetry={notFound ? undefined : () => void query.refetch()}
+        >
           {notFound
             ? '予約が見つかりません（予約した直後なら、作成され次第ここに出ます）'
             : '予約の取得に失敗しました'}

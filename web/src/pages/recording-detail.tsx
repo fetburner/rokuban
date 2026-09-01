@@ -93,6 +93,10 @@ export function RecordingDetailPage() {
       />
 
       {query.isError ? (
+        // onRetry は付けない: この文言は 404 と他の取得失敗を区別していない
+        // （既存の仕様、この PR の対象外）ので、「見つかりません」と言い切った
+        // 直後に再試行を勧めると、本当に無い場合の確信を弱めてしまう。
+        // 区別を足すこと自体は別タスク（issue #467 レビューで判断を記録）。
         <ErrorState>録画が見つかりません</ErrorState>
       ) : query.isPending || !recording ? (
         <ListSkeleton rows={4} />

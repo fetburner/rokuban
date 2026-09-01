@@ -194,7 +194,22 @@ describe('RecordingDetailPage', () => {
     expect(document.querySelector('img[src="/api/recordings/3/thumbnail"]')).toBeInTheDocument()
     // issue #236（M7-3）: ダウンロード / VLC リンクは押す前にサイズを常置する
     expect(screen.getByRole('link', { name: /ダウンロード \/ VLC \(976\.6 KB\)/ })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'ごみ箱へ' })).toBeInTheDocument()
+    // 取り返せる操作（Undo あり）なので secondary --- 取り返しがつかない完全削除
+    // （⋮ の中）との強さが逆転していないこと（issue #467 レビュー。
+    // variant を destructive に戻すと落ちる）。
+    const trashButton = screen.getByRole('button', { name: 'ごみ箱へ' })
+    expect(trashButton).toBeInTheDocument()
+    expect(trashButton).not.toHaveClass('text-destructive')
+  })
+
+  // issue #467: PageHeader の leading スロットに乗せても「戻る」は
+  // history.back ではなくリンク（一覧へ）のまま変えない。
+  it('「戻る」は /recordings へのリンク（history.back ではない）', async () => {
+    createFakeServer({ recording: sampleRecording() })
+
+    renderAt('/recordings/3')
+
+    expect(await screen.findByRole('link', { name: '戻る' })).toHaveAttribute('href', '/recordings')
   })
 
   it('詳細を開いただけでは video の再生を開始しない（.play() を呼ばない）', async () => {

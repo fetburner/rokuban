@@ -1136,9 +1136,11 @@ export function RecordingActions({ recording, trash }: { recording: Recording; t
     return (
       <div className="flex flex-col gap-2">
         <div className="flex flex-wrap gap-2">
+          {/* 取り返せる操作（Undo あり）なので secondary --- 取り返しがつかない
+              完全削除（⋮ の中）との強さの逆転を作らない（issue #467 レビュー）。 */}
           <Button
             type="button"
-            variant="destructive"
+            variant="secondary"
             size="sm"
             disabled={busy}
             onClick={() => {
