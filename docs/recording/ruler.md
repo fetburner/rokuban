@@ -83,7 +83,7 @@ EPG 更新完了で `reservationManage.updateAll()` を呼び、全手動予約�
 | 時間窓 | `rules.dedupe_window` が NULL なら**無制限**（`rules` の CHECK は `dedupe_enabled` のとき `dedupe_threshold` だけを要求し window は任意） |
 | 勝者 | `DISTINCT ON (program_id)` で類似度最大の 1 件。tie-break は `recordings.id ASC` |
 
-**自分自身の録画は除外する**（`(network_id, service_id, event_id)` の不一致）。放送済み番組の予約は GC（終了 + `retention_grace`）まで残り、EPG 射影も同じ地平まで番組を保持するので、録画が `finished` になった次のパスで **similarity = 1.0 の自己一致が必ず起きる**。実装中に除外述語を外して再現済み。害は表示だけではない: `effective.skip = true` になると `reconciler.listDesired` から落ち、`recordNeverScheduled` / `detectStartDelays` の入力からも外れるため、**重複排除が無関係な状態機械の DB 状態を変えてしまう**。site は比較に入れない（同一放送は全サイトで同じ programId を持ち、マッチした全サイトで予約を作る N 予約が既定なので、サイト間の共食いも同時に防ぐ必要がある）。
+**自分自身の録画は除外する**（`(network_id, service_id, event_id)` の不一致）。放送済み番組の予約は GC（終了 + `retention_grace`）まで残り、EPG 射影も同じ地平まで番組を保持するので、録画が `finished` になった次のパスで **similarity = 1.0 の自己一致が必ず起きる**。実装中に除外述語を外して再現済み。害は表示だけではない: `effective.skip = true` になると `reconciler.listDesired` から落ち、`recordNeverScheduled` / `detectStartDelays` の入力からも外れるため、**重複排除が無関係な状態機械の DB 状態を変えてしまう**。site は比較に入れない（同一放送は全サイトで同じ programId を持つという前提。Mirakurun の ID 合成規則からの演繹で未検証。[スキーマ](../schema.md) §1-5）。マッチした全サイトで予約を作る N 予約が既定なので、サイト間の共食いも同時に防ぐ必要がある。
 
 tie-break を決定的にするのは必須で、任意ではない。同じ類似度の録画が複数あるときに勝者が毎パス入れ替わると、base の差分書き込みが発火し続けて NOTIFY が鳴り止まず、mirakc に更新 API がないため reconciler が schedule を DELETE + POST で作り直し続けるフラッピングになる（本節「複数ルール解決」の priority 同率タイと同じクラスの問題）。
 
@@ -112,7 +112,7 @@ tie-break を決定的にするのは必須で、任意ではない。同じ類�
 
 **ルールはサイトに従属しない**グローバルな永続資産で、rules に site 列はない。サイトは条件の一次元であり、`rule_sites` 子テーブル（指定なし = 全サイト。他の条件テーブルと同じ規約）で絞り込む。FK は張らず、代わりに書き込み時にレジストリと照合して未知の site 名を 400 にする（タイポを保存して「どのサイトにも一致しない条件」として無音で失敗させない）。照合の範囲と、レジストリから site が消えたときの扱いは [スキーマ](../schema.md) の `rule_sites` 節に置いてある。
 
-**実体化はマッチした全サイトで予約を作る（N 予約が既定）**。同一放送は全サイトで同一 programId を持つ（Mirakurun の ID 合成）ため `(site, program_id)` ごとに予約行ができ、全部録る。これは意図された既定値: 複数録画してドロップ統計で選別するワークフローを一級として扱い、サイト選好・自動フェイルオーバーという機構を持たない。チューナー競合は mirakc の調停に任せ、負けは `need-rescheduling` として観測される（競合の可視化と開始遅延検出器がこの運用を支える）。絞りたければ `rule_sites` が唯一の機構。
+**実体化はマッチした全サイトで予約を作る（N 予約が既定）**。同一放送は全サイトで同一 programId を持つ（Mirakurun の ID 合成規則からの演繹。未検証）ため `(site, program_id)` ごとに予約行ができ、全部録る。これは意図された既定値: 複数録画してドロップ統計で選別するワークフローを一級として扱い、サイト選好・自動フェイルオーバーという機構を持たない。チューナー競合は mirakc の調停に任せ、負けは `need-rescheduling` として観測される（競合の可視化と開始遅延検出器がこの運用を支える）。絞りたければ `rule_sites` が唯一の機構。
 
 NID/SID は放送規格のスコープでサイトに依存しないため、地上波の条件は地域が違えば構造的にマッチしない（NID が違う）。全サイトマッチが実際に効くのは BS/CS と同一地域の複数サイトのみ。
 

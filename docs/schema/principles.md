@@ -13,11 +13,11 @@
 3. **コミット = DB 行**（不変条件 3）: ファイルの公開は `media_assets` 行の INSERT。rename のアトミック性に依存しない
 4. **tombstone**: 物理削除後もメタデータ行は残す。ドロップ統計・録画履歴・重複排除は削除後も機能する
 5. **識別子 / 存在のスコープ**: mirakc が指すものは 2 種類ある。**record id はインスタンス単位で採番される識別子**で、取り違えると別の録画を指してしまう。**programId（`Service.id` も同型）は放送そのものから合成される値**で、識別子ではなく存在のスコープしか持たない。取り違えても別の番組にはならず、その site の EPG に無ければ 404 になるだけである（[ruler](../recording/ruler.md)「サイトの扱い」）
-   - 「同一放送なら全 site で同一 programId になる」は、NID/SID/eventId から合成する Mirakurun の ID 合成規則からの**演繹**であり、複数サイトの実機で測定した結果ではない（**未検証**）。ruler の N 予約・重複排除（`internal/ruler/dedupe.go`）はこの前提の上に成り立つ
+   - 「同一放送なら全 site で同一 programId になる」は、NID/SID/eventId から合成する Mirakurun の ID 合成規則からの**演繹**であり、複数サイトの実機で測定した結果ではない（**未検証**）。式は [reservations.md](reservations.md)「チャンネル識別はスナップショットする」。ruler の N 予約・重複排除（`internal/ruler/dedupe.go`）はこの前提の上に成り立つ
    - [設定](../configuration.md)は「多拠点が現実化したら `mirakcs:` リストで互換拡張」と定めており、その際のスキーマ波及を避けるため **mirakc を指すすべてのテーブルに `site` 列を最初から持つ**。理由は識別子が曖昧だからではなく、**行の存在と状態が site ごとの観測だから**である（同じ放送でも A では録画中、B では未予約になりうる）
    - `site` は設定ファイルで定義するサイト名（`config.mirakcs[].site`。各要素必須で既定値は無い）。サイトのレジストリは設定であり、DB に sites テーブルは作らない
    - site を持つのは reservations / schedule_sync / record_sync / recordings（+ EPG プロジェクション）。media_assets / drop_stats は中央ストレージの台帳なので持たない
-   - **API の資源同定は判定基準で決める**（[api/rest.md](../api/rest.md) §エンドポイント設計の規約）。識別子（record・番組のように 1 件を指し、取得・意図・上書きの宛先にする操作）はパスに site を含める。番組・意図・上書きを指すパスは `/api/sites/{site}/programs/{programId}` の形を取る（TanStack Query のクエリキー・SSE の invalidate 単位もサイトごとに階層化される）。観測の集合（検索結果・一覧のように複数件をまとめて返す操作）は site をパスに固定せず、絞り込み条件として指定するか結果本体が運ぶ。導出行（`reservations`）は書き込みの宛先にしない —— 意図（`program_intents`）・上書き（`program_overrides`）は `(site, programId)` を自身のキーとして書く。`reservations` の導出の書き手は ruler だけ（例外はルール削除 API の同期削除 1 本。[reservations.md](reservations.md) §3 冒頭）
+   - **API の資源同定は判定基準で決める**（[api/rest.md](../api/rest.md) §エンドポイント設計の規約）。site をパスに置くかどうかは、件数（単体か一覧か）でも資源の種類名でもなく、**その資源の存在・状態が特定 1 つの site（mirakc インスタンス）の観測に閉じているか**で決める。mirakc の record や、その site の EPG に存在するかで決まる programId はこれに該当し、単体でも一覧でも site をパスに含める。番組・意図・上書きを指すパスは `/api/sites/{site}/programs/{programId}` の形を取る（TanStack Query のクエリキー・SSE の invalidate 単位もサイトごとに階層化される）。同じ種類の資源でも、実体が site に閉じない場合（site 非依存で動くワーカーが書く行など）は種類名では判定せず、その資源だけを site 無しにする。site に束縛されない資源（rokuban 採番の `recordings.id` 等）や、複数 site にまたがりうる観測の集合は、単体か一覧かによらず site をパスに固定せず、絞り込み条件として指定するか結果本体が運ぶ。導出行（`reservations`）は書き込みの宛先にしない —— 意図（`program_intents`）・上書き（`program_overrides`）は `(site, programId)` を自身のキーとして書く。`reservations` の導出の書き手は ruler だけ（例外はルール削除 API の同期削除 1 本。[reservations.md](reservations.md) §3 冒頭）
 6. **導出値と不可逆な事実を分ける**（CLAUDE.md 不変条件 9）
    - 毎パス再計算される値と、二度と再取得できない事実を 1 つの列に同居させない。混同は列だけでなく identity・式・適用の瞬間にも起きる。実例と失敗事例は [invariants.md](../invariants.md) §9
    - 例外は **`circuit_breakers`**（§3.6）。「誰かが確認した」は再取得できないので、このスキーマで唯一の意図的な非導出状態
@@ -39,5 +39,5 @@
    - **この寿命チェックは永続表に対して盲目**（[CLAUDE.md](../../CLAUDE.md) 不変条件 13）。**recordings 本体は「試行の帰結の観測」だけを持つ脊椎で、脊椎（watcher / reconciler）以外のループが書く状態は `recording_id` を FK に持つ衛星表（`media_assets` がその形）に置く。** 境界（`deleted_at` / `superseded_at` は衛星に出せない等）は [invariants.md](../invariants.md) §13
 10. **形を固定する前に、その形を決める判定基準を書く**（[CLAUDE.md](../../CLAUDE.md) 不変条件 11）
     - 導出テーブルの列は**書き手のコードと同じ PR で決める**。新しい列を足すときは「これを書くコードは今あるか」を問う。判定基準が後から来て `reservations` の列が 5 回変更された経緯は [invariants.md](../invariants.md) §11
-    - 将来への先払いは**高い方から**。`site` 列（安い方、DB）は v1 から先払いしていたが、API の資源同定（高い方）は後から API のパスとクライアントのクエリキーに site を通して払い切った（[api/rest.md](../api/rest.md) §エンドポイント設計の規約）
+    - 将来への先払いは**高い方から**。`site` 列（安い方、DB）は v1 から先払いしていたが、API の資源同定（高い方）は後から判定基準を書いた（[api/rest.md](../api/rest.md) §エンドポイント設計の規約）。現行のパスが全エンドポイントでこの基準に適合しているとは限らない（同節の未解決を参照）
 
