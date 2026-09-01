@@ -305,6 +305,14 @@ export function LivePlayer({
      * `get latency()` は直前値を返し続ける。`node_modules/hls.js` 1.6.17 を
      * 読んで確認済み）。ここで止めるのは例外対策ではなく、意味の無くなった
      * 値を毎秒読み続けない衛生。
+     *
+     * **停止と同時に `onDiagnostics(null)` を出す。** 呼び出し側
+     * （`pages/live.tsx`）はエラー表示自体を知らず `isPlaying && diagnostics`
+     * だけで出し分けているため、値を消さずに止めるだけだと最後の測定値が
+     * 凍ったまま ON AIR バッジの隣に残り続ける --- fatal エラーでプレイヤーが
+     * 「エラーが発生しました」を出している間も「放送から約5秒」等の偽の
+     * 値が居座る（レビュー指摘。表示位置を `pages/live.tsx` へ戻した際に
+     * 入り込んだ回帰）。
      */
     function watchLiveDiagnostics(read: () => LiveDiagnostics): () => void {
       onDiagnosticsRef.current?.(read())
@@ -312,7 +320,10 @@ export function LivePlayer({
         if (cancelled) return
         onDiagnosticsRef.current?.(read())
       }, 1000)
-      const stop = () => clearInterval(timer)
+      const stop = () => {
+        clearInterval(timer)
+        onDiagnosticsRef.current?.(null)
+      }
       teardown.push(stop)
       return stop
     }

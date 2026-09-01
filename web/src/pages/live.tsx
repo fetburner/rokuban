@@ -248,7 +248,10 @@ export function LivePage() {
                     なので信号色は使わず text-muted-foreground に固定する。
                     aria-live は付けない --- 毎秒変わる数字を読み上げさせない。 */}
                 {isPlaying && diagnostics && (
-                  <span data-testid="live-diagnostics" className="text-xs text-muted-foreground">
+                  <span
+                    data-testid="live-diagnostics"
+                    className="shrink-0 whitespace-nowrap text-xs text-muted-foreground"
+                  >
                     {formatLiveDiagnostics(diagnostics)}
                   </span>
                 )}

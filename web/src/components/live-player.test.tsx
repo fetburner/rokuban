@@ -694,6 +694,48 @@ describe('LivePlayer の状態遷移', () => {
       ).resolves.not.toThrow()
     })
 
+    /**
+     * 表示位置を `pages/live.tsx`（ON AIR バッジの隣）へ戻した際に入り込んだ
+     * 回帰（レビュー指摘）。呼び出し側は `isPlaying && diagnostics` でしか
+     * 出し分けておらず、エラー表示自体は知らない。`stopDiagnostics` が
+     * ポーリングを止めるだけで最後の値を残したままだと、fatal エラーで
+     * プレイヤーが「エラーが発生しました」を出している間も、ON AIR バッジの
+     * 隣に直前の測定値（「放送から約3秒」等）が凍ったまま出続ける。
+     *
+     * 既存の「fatal エラーで hls を破棄した後は...latency を読み続けない」
+     * テストは destroy 後に**例外が出ないか**しか見ていないため、この回帰は
+     * 検出できない（`onDiagnostics` の最後の呼び出し引数までは見ていない）。
+     *
+     * 変異: `stop` から `onDiagnosticsRef.current?.(null)` を削除すると
+     * このテストが実際に落ちることを確認済み（最後の呼び出しが
+     * `{ source: 'hls', latencySec: 3, bufferSec: 5 }` のままになる）。
+     */
+    it('fatal エラーで hls を破棄すると計器を null で報告する（凍ったまま残さない）', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      const onDiagnostics = vi.fn()
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
+      render(
+        <LivePlayer site="default" networkId={0} serviceId={1024} onDiagnostics={onDiagnostics} />,
+      )
+
+      await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+      const hls = hlsMockState.instances[0]!
+      hls.latency = 3
+      hls.mainForwardBufferInfo = { len: 5 }
+      await act(async () => {
+        vi.advanceTimersByTime(1000)
+      })
+      expect(onDiagnostics).toHaveBeenLastCalledWith({ source: 'hls', latencySec: 3, bufferSec: 5 })
+
+      const errorCall = hls.on.mock.calls.find(([event]) => event === 'hlsError')
+      const errorHandler = errorCall![1] as (event: string, data: { fatal: boolean }) => void
+      await act(async () => {
+        errorHandler('hlsError', { fatal: true })
+      })
+
+      expect(onDiagnostics).toHaveBeenLastCalledWith(null)
+    })
+
     it('ネイティブ経路では latencySec が常に null（latency は取得できない）', async () => {
       vi.useFakeTimers({ shouldAdvanceTime: true })
       const onDiagnostics = vi.fn()
@@ -713,6 +755,37 @@ describe('LivePlayer の状態遷移', () => {
         latencySec: null,
         bufferSec: 6,
       })
+    })
+
+    /**
+     * ネイティブ経路の `failed()` も同じ回帰を持つ（レビュー指摘）。
+     * 変異: `stop` から `onDiagnosticsRef.current?.(null)` を削除すると
+     * このテストが実際に落ちることを確認済み。
+     */
+    it('ネイティブ経路のメディア失敗（error）に落ちると計器を null で報告する（凍ったまま残さない）', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      const onDiagnostics = vi.fn()
+      const video = await renderNativePath(onDiagnostics)
+      Object.defineProperty(video, 'buffered', {
+        value: { length: 1, end: () => 8 },
+        configurable: true,
+      })
+      video.currentTime = 0
+      await act(async () => {
+        vi.advanceTimersByTime(1000)
+      })
+      expect(onDiagnostics).toHaveBeenLastCalledWith({
+        source: 'native',
+        latencySec: null,
+        bufferSec: 8,
+      })
+
+      await act(async () => {
+        video.dispatchEvent(new Event('error'))
+      })
+      expect(await screen.findByText(/映像データを読み込めません/)).toBeInTheDocument()
+
+      expect(onDiagnostics).toHaveBeenLastCalledWith(null)
     })
 
     it('ネイティブ経路のメディア失敗（error）に落ちると計器のポーリングが止まる', async () => {
