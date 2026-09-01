@@ -207,16 +207,44 @@ func (g *OnceGate) waitDone(ctx context.Context, events <-chan *river.Event) Onc
 // （river@v0.40.0/internal/jobexecutor/job_executor.go の `if e.WorkUnit == nil`
 // が `execution.MiddlewareChain` より前にある）。したがって OnceGate の
 // middleware は一度も呼ばれず、Job は「1 件も claim していない」と誤認したまま
-// idleTimeout まで掴み続ける。**実測**: 未登録 kind のジョブ 3 件を置いて
-// idleTimeout=3s で起動すると、3 秒間で 6 回の試行を潰したうえで
-// idle_timeout として終了した（Subscribe を足す前の実装）。
+// idleTimeout まで掴み続ける。
 //
 // 逆に Subscribe だけでも足りない。終端イベントは「終わった」しか伝えないので、
 // 「まだ掴んでいない」と「掴んで実行中」を区別できず、実行中のジョブを
 // idleTimeout で打ち切ることになる。2 つの観測点が両方要る。
+//
+// **ただし本番の配線（buildRiverConfig。cfg.Once != nil なら常に
+// OnceGate.Middleware() も一緒に登録する）では、4 つの購読のうち実際に
+// 効いているのは EventKindJobFailed だけである。** 未登録 kind のジョブは
+// Work を一度も呼ばれないので、起こしようがあるのは job_failed だけ
+// （completed/cancelled/snoozed は Work が明示的に選ぶ終わり方であり、
+// 呼ばれてすらいないジョブには起きない）。一方、登録済み kind は
+// WorkUnit != nil なので早期 return せず必ず execution.MiddlewareChain を
+// 組み立てる ---
+// つまりどの終端でも WorkerMiddleware は必ず呼ばれ、g.done が先に閉じて
+// Job を終わらせる。completed はこれを実測済み --- EventKindJobCompleted を
+// 購読から落としても TestServerCmd_OnceModeTerminates の「1 件あれば消化して
+// 終了する」は 0.19s で変わらず緑だった。cancelled/snoozed はこの実測を
+// 持たない（本番配線で snooze/cancel を起こす --once のテストが無い）。
+// job_executor.go の読解（上記）からはこの 2 つも同じ結論になるはずだが、
+// **未検証**。completed/cancelled/snoozed の 3 つは「将来 River が
+// middleware チェーンの組み立てタイミングを変える」場合への保険であって、
+// 今の River (v0.40.0) ではこの 3 kind を落としても本番の挙動は壊れない
+// と考えられる（根拠の強さは上記の通り一様ではない）。
+//
+// 未登録 kind の検出（本番で唯一効いている経路）は
+// cmd/rokuban.TestServerCmd_OnceModeExitsOnUnhandledJobKind が本番と同じ
+// 配線（RunE 経由）で固定している --- idleTimeout を待たずに終わることに
+// 加え、試行回数を 1 回しか潰していないことも見ている。
+// once_river_test.go の TestSubscribeOnceEvents_AllTerminalKindsEndWaitViaEventsWithoutMiddleware
+// は、middleware をあえて外した非本番の配線で 4 kind それぞれが events
+// だけで Wait を終わらせられることを確認する（上記の保険側の裏付け。
+// go.mod の river の版が上がってここが崩れても go build/go vet では
+// 検出できない）。
 func SubscribeOnceEvents(client *river.Client[pgx5.Tx]) (<-chan *river.Event, func()) {
-	// 4 種すべてを取る。River は「呼び出し側が明示した種類だけ」を送るので、
-	// 取り漏らすとその終わり方をしたジョブで Job が終了しなくなる。
+	// 4 種すべてを取る。本番で唯一効くのは job_failed（未登録 kind の
+	// 唯一の終わり方）で、残り 3 つは将来 River が middleware の組み立て
+	// タイミングを変えた場合への保険（このコメントの上の説明参照）。
 	// snooze は「進捗ゼロで Job が終わる」形になるが、行は available を
 	// 離れるので KEDA が同じジョブで Job を起こし続けることはない。
 	return client.Subscribe(
