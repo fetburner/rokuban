@@ -141,9 +141,26 @@ SIGKILL されない」ことを根拠に選んである。Docker の既定猶�
 （実測: 2 発目の直後に exit 143）。1 発目のあとシグナルの登録を外していないと、
 猶予のあいだ Ctrl-C も `kill -TERM` も効かなくなる。
 
-**mock では検出できない前提が未検証のまま残ることがある**。例えば reconciler の
-`overrides.contentPath` の既存 schedule への反映を考える。これは mirakc が `GET /api/recording/schedules`
-で `options.contentPath` を POST した値のまま返すことに依存する。テストの mock は
-入力をそのまま返すのでこの前提が破れていても検出できない。この種の依存を触ったときは
-`GET /api/recording/schedules` の実応答を実 mirakc に対して直接確認する
-（症状と観測手段は [troubleshooting.md](troubleshooting.md) の該当項目）。
+**mock では検出できない前提は `internal/mirakc/conformance` が判定する。**
+実物の mirakc コンテナに対して回す（Docker が要る）。
+コマンドは `go test -tags conformance ./internal/mirakc/conformance/...`。
+reconciler の `overrides.contentPath` の既存 schedule への反映も対象である。
+これは mirakc が `GET /api/recording/schedules` で `options.contentPath` を
+POST した値のまま返すことに依存する。
+`/events` の再送・録画中の Range 挙動も同様で、テストの mock ではなくこちらが権威になる。
+症状と観測手段は [troubleshooting.md](troubleshooting.md) の該当項目。
+
+## mirakc の版を上げる手順
+
+1. `internal/mirakc/conformance/helpers_test.go` の `mirakcImage` / `mirakcVersion` を
+   新しい版に変える
+2. `go test -tags conformance ./internal/mirakc/conformance/...` を回す
+3. 落ちた項目があれば、まず **mirakc 側の変更**か**rokuban の前提の誤り**かを切り分ける。
+   `docker run --entrypoint mirakc-arib <image> <subcommand> --help` で該当ツールの
+   オプション・出力形式が変わっていないか見る、`docker logs` でコンテナ内の
+   `mirakc` 自体のエラーを見る、の 2 つがまず効く
+4. mirakc 側の変更なら、対応する docs（delegation.md / reconciler.md / ingest.md /
+   watcher.md）の記述を実際の挙動に合わせて直す。rokuban 側の前提が誤っていたなら
+   実装を直す
+5. `internal/mirakc/conformance/` 配下のテストが引用している mirakc の版の文言
+   （`mirakc 4.0.0-dev.0 相当` 等）も同じ PR で書き換える

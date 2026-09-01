@@ -81,11 +81,9 @@ clean なファイルでは「誤検知がないこと」しか確かめられ�
 
 ### 5.3 リトライ設計（3 層）
 
-ソース確認（`mirakc-core/src/web/api/recording/records/stream.rs`）:
-
-- `GET /records/{id}/stream` は **Range ヘッダー対応**（`compute_content_range`）→ `Range: bytes=N-` で途中再開可能
-- **フィルタ併用時は Range が 400**。ingest は素の TS が欲しいのでフィルタなしで pull → 常に Range 可
-- **HEAD エンドポイントあり**（`checkRecordStream`）→ 転送せず正確な Content-Length を取得できる
+- `GET /records/{id}/stream` は **Range ヘッダー対応** → `Range: bytes=N-` で途中再開可能。`internal/mirakc/conformance` の `TestConformance/CompletedRecordStreamAndDelete`（完了後）・`TestConformance/RecordingInProgress`（録画中）が mirakc 4.0.0-dev.0 相当に対して判定している
+- **フィルタ併用時は Range が 400**。ingest は素の TS が欲しいのでフィルタなしで pull → 常に Range 可（ソース確認。`mirakc-core/src/web/api/recording/records/stream.rs`。conformance テストはフィルタを併用しないので未判定）
+- **HEAD エンドポイントあり** → 転送せず正確な Content-Length を取得できる。ただし録画中は Content-Length を返さないので、HEAD を打つのは下記「層 3」のとおり録画完了後に限る。`TestConformance/CompletedRecordStreamAndDelete` が完了後の Content-Length 一致を判定している
 
 #### 層 1: 接続断の再開（ジョブ内リトライループ）
 

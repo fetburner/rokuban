@@ -357,6 +357,13 @@ mutants/               変異（イメージを焼き直す種類のもの）
 mirakcmock/            mirakc モック（Go。`go test ./deploy/k8s/e2e/...` が見る）
 ```
 
+**このモックと `internal/mirakc/conformance/`（mirakc 実物への conformance テスト）は両方持つ。**
+ここが判定したいのは KEDA / ロール分割で、軽量・高速に何度も回したい。
+mirakc 実物を要求するとそれが重くなる。
+mirakc の実挙動そのものの契約は conformance 側の役目である。
+ここのモックはその判定結果に合わせて直す
+（[docs/runbook/testing.md](../../../docs/runbook/testing.md)）。
+
 変更したら次の 2 つを回す:
 
 ```sh

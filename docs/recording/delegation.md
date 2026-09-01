@@ -54,5 +54,7 @@ EPG 上の時刻ではなく TS 内の PSI/SI（イベント ID）を監視し�
 
 `/events` SSE は接続時に既存全 record の `recording.record-saved` を再送する。watcher が落ちていた間のイベントを取りこぼしても、再接続すれば現状と突き合わせて回復できる（実質 at-least-once + 状態同期）。
 
+この再送と、同一 record への `record-saved` の複数回配信は、`internal/mirakc/conformance` の `TestConformance/RecordSavedResentOnConnect` / `TestConformance/RecordSavedFiresMultipleTimes` が mirakc 4.0.0-dev.0 相当に対して判定している。
+
 ---
 
