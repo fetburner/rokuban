@@ -222,9 +222,15 @@ func (g *OnceGate) waitDone(ctx context.Context, events <-chan *river.Event) Onc
 // WorkUnit != nil なので早期 return せず必ず execution.MiddlewareChain を
 // 組み立てる ---
 // つまりどの終端でも WorkerMiddleware は必ず呼ばれ、g.done が先に閉じて
-// Job を終わらせる。completed/cancelled/snoozed の 3 つは「将来 River が
+// Job を終わらせる。completed はこれを実測済み --- EventKindJobCompleted を
+// 購読から落としても TestServerCmd_OnceModeTerminates の「1 件あれば消化して
+// 終了する」は 0.19s で変わらず緑だった。cancelled/snoozed はこの実測を
+// 持たない（本番配線で snooze/cancel を起こす --once のテストが無い）。
+// job_executor.go の読解（上記）からはこの 2 つも同じ結論になるはずだが、
+// **未検証**。completed/cancelled/snoozed の 3 つは「将来 River が
 // middleware チェーンの組み立てタイミングを変える」場合への保険であって、
-// **今の River (v0.40.0) ではこの 3 kind を落としても本番の挙動は壊れない**。
+// 今の River (v0.40.0) ではこの 3 kind を落としても本番の挙動は壊れない
+// と考えられる（根拠の強さは上記の通り一様ではない）。
 //
 // 未登録 kind の検出（本番で唯一効いている経路）は
 // cmd/rokuban.TestServerCmd_OnceModeExitsOnUnhandledJobKind が本番と同じ

@@ -125,9 +125,13 @@ func (w *onceEventControlWorker) Work(_ context.Context, job *river.Job[onceEven
 // このテストが検出すべき変異: SubscribeOnceEvents から 4 kind のいずれか
 // 1 つを落とす。その kind に対応する subtest だけが idle_timeout まで
 // 戻らなくなり、outcome が job_unhandled ではなく idle_timeout になる
-// （他の 3 subtest は緑のまま。dropping EventKindJobCompleted /
-// EventKindJobFailed / EventKindJobCancelled / EventKindJobSnoozed を
-// それぞれ試し、対応する subtest だけが落ちることを確認済み）。
+// （このファイル内では他の 3 subtest は緑のまま。dropping
+// EventKindJobCompleted / EventKindJobFailed / EventKindJobCancelled /
+// EventKindJobSnoozed をそれぞれ試し、対応する subtest だけが落ちることを
+// 確認済み。ただし EventKindJobFailed を落とすと
+// cmd/rokuban.TestServerCmd_OnceModeExitsOnUnhandledJobKind も一緒に赤くなる
+// --- それが本番で唯一効いている購読だから。SubscribeOnceEvents のコメント
+// 参照）。
 func TestSubscribeOnceEvents_AllTerminalKindsEndWaitViaEventsWithoutMiddleware(t *testing.T) {
 	for _, tt := range []struct {
 		outcomeArg string
