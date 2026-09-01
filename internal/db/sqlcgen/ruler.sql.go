@@ -429,18 +429,28 @@ type ListRetractGraceProtectedProgramIDsBySiteAndProgramIDsParams struct {
 	GraceUntil time.Time
 }
 
-// 猶予（ruler.retract_grace, issue #428）で削除を見送る programId を、削除候補
-// （toDelete。program_investments が無く、EPG プロジェクションにまだ番組がある行
-// のうち desired から外れたもの）の中から絞り込む。denpa の
+// 猶予（ruler.retract_grace, issue #428）で削除を見送る programId を、
+// derivedDeletes（toDelete から released --- ユーザーの明示操作でしか説明できない
+// 削除、intent skip / intent クリア / 最後の investment だった overrides の削除
+// --- を引いた後の、ブレーカー対象の削除候補）の中から絞り込む。denpa の
 // 「開始 N 時間前以降はルールから外れても引っ込めない。ただしルールごと削除・停止
 // されたぶんは直前でも引っ込める」に倣う（docs/recording/ruler.md §3.1）。
 //
-// r.rule_id は呼び出し時点でまだ「前パス」の値である --- toDelete の programId は
-// どれも今パスの desired に無いため、internal/ruler/sql.go の
-// upsertReservationsFromPass の入力行（rows）には含まれず、この SELECT が呼ばれる
-// 時点ではまだ upsert によって書き換えられていない。**この列を「今パスの評価結果」
-// で読んではならない**（今パスで NULL に落ちた後に見ても、既に unmatch した事実を
-// 見ているだけで前パスの勝者が分からない。罠の一つ）。
+// **released を引いた後に適用する。** toDelete 全体（released を含む）に適用す
+// ると、rule_id が前パスから NOT NULL のままユーザーが intent{skip} を立てた行
+// まで猶予が守ってしまい、「これは録らない」という明示操作が直前の猶予に呑まれ
+// て一生解放されない（released の DELETE 文はこの猶予より先に、この猶予とは無
+// 関係に実行済み）。derivedDeletes まで絞ってから猶予を掛けることで、猶予が保護
+// する対象はブレーカー対象の集合そのものになる（呼び出し側 internal/ruler/ruler.go
+// のコメント参照）。
+//
+// r.rule_id は呼び出し時点でまだ「前パス」の値である --- derivedDeletes の
+// programId はどれも今パスの desired に無いため、internal/ruler/sql.go の
+// upsertReservationsFromPass の入力行（rows）にも
+// DeleteReleasedReservationsBySiteAndProgramIDs の対象にも含まれず、この SELECT
+// が呼ばれる時点ではまだ何にも書き換えられていない。**この列を「今パスの評価結
+// 果」で読んではならない**（今パスで NULL に落ちた後に見ても、既に unmatch した
+// 事実を見ているだけで前パスの勝者が分からない。罠の一つ）。
 //
 // 条件:
 //
@@ -460,9 +470,9 @@ type ListRetractGraceProtectedProgramIDsBySiteAndProgramIDsParams struct {
 //	  こちらは猶予の対象のまま --- 録り過ぎ側に倒す非対称。
 //
 // program_investments の除外はここでは再確認しない: 呼び出し側が渡す candidates
-// （toDelete）は既に stillProjectedSubset を通した削除候補で、investment を持つ
-// programId は desired に含まれ toDelete に入らないため、この関数の入力に
-// そもそも現れない。
+// （derivedDeletes）は toDelete（既に stillProjectedSubset を通した削除候補）から
+// released を引いた集合で、investment を持つ programId は desired に含まれ
+// toDelete に入らないため、この関数の入力にそもそも現れない。
 func (q *Queries) ListRetractGraceProtectedProgramIDsBySiteAndProgramIDs(ctx context.Context, arg ListRetractGraceProtectedProgramIDsBySiteAndProgramIDsParams) ([]int64, error) {
 	rows, err := q.db.Query(ctx, listRetractGraceProtectedProgramIDsBySiteAndProgramIDs,
 		arg.Site,
