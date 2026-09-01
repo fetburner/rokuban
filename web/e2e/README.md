@@ -569,6 +569,44 @@ pnpm build && pnpm preview --port 4173 --strictPort &
 E2E_URL=http://localhost:4173 pnpm e2e:chip-overflow
 ```
 
+### 個人化の持続（`personalization.mjs`）
+
+個人設定の置き場所（[docs/frontend/design.md](../../docs/frontend/design.md)
+§個人化）が実ブラウザで効いていることを見る。**jsdom では原理的に測れないもの
+だけ**を対象にする --- Vitest の「再マウント」はリロードではないので、
+`localStorage` が本当にページの読み込みをまたいで効くかは測れない。
+
+見るのは 5 点:
+
+- ① 録画一覧をカード表示に切り替えてリロードしても、カード表示のまま
+  （`aria-pressed=true`）で、URL には何も載っていない
+- ② カード表示が本当に段組みになり（1 行目に 2 枚以上）、サムネイルの枠が
+  行表示より広い。**列数もサムネイルの実寸も jsdom では 0 のまま**なので、
+  グリッドのクラスが当たっていない退行はここでしか出ない
+- ③ 検索を押すと条件が `?cond=` に載り、リロードで条件と結果の両方が戻る。
+  リロード後に走る検索が **1 回だけ**であること（URL のハイドレーションと
+  フォームの初期化で二重に叩く退行の検出）
+- ④ 条件なしで `/search` を開くと、前回の条件はフォームに戻るが**検索は
+  走らない**（未検索の案内が出たまま）
+- ⑤ 録画詳細で再生速度を 1.5× にし、一覧を経由して別の録画の詳細へ移っても、
+  select と実 `<video>.playbackRate` の両方が 1.5 のまま。**測っているのは
+  「選んだ速度が実 `<video>` に載り、録画をまたいで端末に残る」こと**で、
+  `savePlaybackRate` を no-op にする変異で 2 行とも落ちることを確認してある。
+  **同一インスタンスのまま録画だけ差し替わる経路（`playbackRate` を当てる
+  effect の依存漏れ）はここでは踏めない** --- 現在の UI では必ず一覧を経由し、
+  `RecordingPlayer` が新規マウントして localStorage から読み直すため。その
+  退行を捕まえているのは `src/components/recording-player.test.tsx` の
+  `rerender` を使う jsdom テスト（実測で確認済み）
+
+一覧の `<ul>` は行のテキストから `ancestor::ul[1]` で辿る。素の `ul li` は
+サイドバーのナビゲーションにも当たり、「1 行目に 1 枚」という無関係な値を
+測ってしまう（実際に踏んだ）。
+
+```sh
+pnpm build && pnpm preview --port 4173 --strictPort &
+E2E_URL=http://localhost:4173 pnpm e2e:personalization
+```
+
 ## CI では回さない
 
 実サーバーと実 mirakc のデータに依存するため、CI には載せない。**ローカルでの受け入れ確認**の

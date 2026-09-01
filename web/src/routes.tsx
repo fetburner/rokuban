@@ -1,8 +1,11 @@
 import { createRootRoute, createRoute, HeadContent, Outlet } from '@tanstack/react-router'
 
+import type { ProgramSearchRequest } from './api/generated'
+import { SearchProgramsBody } from './api/zod'
 import { AppShell } from './components/app-shell'
 import { SiteGate } from './components/site-gate'
 import { pageTitle } from './lib/document-title'
+import { canonicalSearchConditions } from './lib/program-search'
 import {
   parseProgramsSearch,
   serviceIdSchema,
@@ -101,6 +104,23 @@ export type SearchPageSearch = {
      * より前にこの型だけ決めておく。
      */
   ruleId?: number
+  /**
+   * 検索条件そのもの（`ProgramSearchRequest`）。押した検索の結果を URL で
+   * 共有・ブックマークでき、リロードと戻るで同じ結果に戻るようにするための
+   * 宛先（`/recordings` の絞り込みと同じ判断）。
+   *
+   * **キーは `cond`。`/recordings` の `q`（キーワード 1 本）とは別物**なので
+   * 同じ名前にしない。値は条件全体の JSON で、TanStack Router の既定の
+   * parse / stringify がそのまま JSON として扱う。
+   *
+   * **`useSearch()` が返すのは URL の生の値ではない。** 下の `validateSearch` が
+   * 検索画面の送る形へ畳んでから返す（`canonicalSearchConditions`）ので、
+   * スキーマの既定値やフォームに無い次元は落ちている。
+   *
+   * 端末に残る「最後の条件」（`lib/search-storage.ts`）より**こちらが優先**
+   * （docs/frontend/design.md §個人化）。
+   */
+  cond?: ProgramSearchRequest
 }
 
 /**
@@ -124,9 +144,27 @@ const searchRoute = createRoute({
   //
   // `parseRuleId` は `/recordings` の `ruleId`（`lib/recording-search.ts`）と
   // 同じ `rules.id` を扱うキーなので、パースの流儀をそちらと共有する。
-  validateSearch: (search: Record<string, unknown>): SearchPageSearch => ({
-    ruleId: parseRuleId(search.ruleId),
-  }),
+  //
+  // `cond` は openapi 由来のスキーマ（`api/zod.ts` の `SearchProgramsBody`）で
+  // まるごと検証する。壊れた条件（古い共有リンク・手で書き換えた URL）は
+  // `undefined` に落として、条件なしの検索フォームとして開く。
+  validateSearch: (search: Record<string, unknown>): SearchPageSearch => {
+    const parsed = validValue<ProgramSearchRequest>(SearchProgramsBody, search.cond)
+    // 検証を通ったら、検索画面が実際に送る形へ畳む（`canonicalSearchConditions`）。
+    // そのうえで**キーが 0 個なら `undefined`**。畳まないと 3 通りの「中身の無い
+    // 条件」が素通りして、`?cond=` を開いた瞬間に条件なしの全件検索が走り、
+    // かつ localStorage の前回条件の復元がスキップされる（`SearchPage` の
+    // ハイドレーションは `cond !== undefined` を「URL が条件を持つ」と読む）:
+    // `?cond={}` / 未知キーだけの `?cond={"foo":1}`（zod が黙って剥がす）/
+    // フォームに無い次元だけの `?cond={"sites":["x"]}`（畳むと消える）。
+    // `pages/search.tsx` の `submit` 側は `cond:{}` を書かない判断をしている
+    // （不変条件 10）ので、読む側もそれに揃える。
+    const cond = parsed === undefined ? undefined : canonicalSearchConditions(parsed)
+    return {
+      ruleId: parseRuleId(search.ruleId),
+      cond: cond !== undefined && Object.keys(cond).length > 0 ? cond : undefined,
+    }
+  },
   // `pages/search.tsx` の `<PageHeader title="検索">` と同じ表記。
   head: () => ({ meta: [{ title: pageTitle('検索') }] }),
   component: SearchPage,

@@ -183,6 +183,53 @@ describe('routeTree', () => {
     expect((ok.state.matches.at(-1)!.search as { ruleId?: unknown }).ruleId).toBe(1000)
   })
 
+  it('/search の cond は条件を（検索画面が送る形に畳んで）運ぶ', async () => {
+    const cond = { genres: [7], textMatches: [{ target: 'name', mode: 'keyword', value: 'ニュース' }] }
+    const router = createRouter({
+      routeTree,
+      history: createMemoryHistory({
+        initialEntries: [`/search?cond=${encodeURIComponent(JSON.stringify(cond))}`],
+      }),
+    })
+    await router.load()
+
+    const search = router.state.matches.at(-1)!.search as { cond?: unknown }
+    // **検索画面が実際に送る形に畳まれて届く**（`canonicalSearchConditions`）。
+    // openapi のスキーマは検証の過程で既定値（`caseSensitive` / `negate`）を
+    // 埋めるが、畳むと `buildSearchRequest` が既定と同じ値を落とすので、
+    // URL から読んだ条件と押して送る条件が同じ形になる。
+    expect(search.cond).toEqual({
+      genres: [7],
+      textMatches: [{ target: 'name', mode: 'keyword', value: 'ニュース' }],
+    })
+  })
+
+  it('/search の cond は openapi の制約を外れた値・壊れた値を落とす', async () => {
+    // ジャンルは 0..15（openapi）。JSON ですらない値も、生のまま残してはいけない
+    // （`ruleId=abc` と同じ罠 --- validateSearch がキーを省略すると素通りする）。
+    // `{}` と未知キーだけの `{"foo":1}` は検証を通るが、検証後のキーが 0 個なので
+    // 「条件なし」と同じ扱い（`undefined`）に畳む（レビュー指摘。不変条件 10 ---
+    // `pages/search.tsx` の `submit` が `cond:{}` を書かない判断と対称にする）。
+    for (const raw of [
+      '{"genres":[99]}',
+      '{"textMatches":[{"target":"summary"}]}',
+      'abc',
+      '',
+      '{}',
+      '{"foo":1}',
+      // openapi にはあるが検索フォームに無い次元だけの条件。素通りさせると
+      // 「画面には何も出ていないのに全件検索が走る」（`canonicalSearchConditions`）
+      '{"sites":["default"]}',
+    ]) {
+      const router = createRouter({
+        routeTree,
+        history: createMemoryHistory({ initialEntries: [`/search?cond=${encodeURIComponent(raw)}`] }),
+      })
+      await router.load()
+      expect((router.state.matches.at(-1)!.search as { cond?: unknown }).cond).toBeUndefined()
+    }
+  })
+
   it('/search を ruleId 無しで開くと undefined のまま', async () => {
     const router = createRouter({
       routeTree,

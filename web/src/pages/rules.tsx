@@ -50,7 +50,7 @@ import {
   emptyDraft,
   emptyRuleMeta,
   ruleMetaError,
-  ruleToDraft,
+  conditionsToDraft,
   ruleToMeta,
   type RuleMetaDraft,
   type SearchDraft,
@@ -273,7 +273,7 @@ function RuleRow({
       {
         id: rule.id,
         data: buildRuleInput(
-          ruleToDraft(rule),
+          conditionsToDraft(rule),
           { ...ruleToMeta(rule), enabled },
           rule,
         ),
@@ -514,7 +514,7 @@ function RuleForm(props: RuleFormProps) {
   const updateRule = useUpdateRule()
 
   const [draft, setDraft] = useState<SearchDraft>(() =>
-    props.mode === 'edit' ? ruleToDraft(props.rule) : emptyDraft(),
+    props.mode === 'edit' ? conditionsToDraft(props.rule) : emptyDraft(),
   )
   const [meta, setMeta] = useState<RuleMetaDraft>(() =>
     props.mode === 'edit' ? ruleToMeta(props.rule) : emptyRuleMeta(),

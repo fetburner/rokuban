@@ -1,10 +1,12 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   loadPlaybackPosition,
+  loadPlaybackRate,
   playbackStorageKey,
   recordingFileURL,
   savePlaybackPosition,
+  savePlaybackRate,
   shouldSavePlaybackPosition,
 } from '@/lib/playback-position'
 
@@ -17,6 +19,33 @@ describe('playbackStorageKey', () => {
     expect(playbackStorageKey(1, 'h264')).toBe('rokuban:playback:1:h264')
     expect(playbackStorageKey(1, 'h265')).not.toBe(playbackStorageKey(1, 'h264'))
     expect(playbackStorageKey(2, 'h264')).not.toBe(playbackStorageKey(1, 'h264'))
+  })
+})
+
+describe('load/savePlaybackRate', () => {
+  it('保存した速度を復元する（録画をまたいで 1 つ）', () => {
+    savePlaybackRate(1.5)
+    expect(loadPlaybackRate()).toBe(1.5)
+    // キーに録画 ID を含めない（含めた実装ならこの 1 つのキーには入らない）
+    expect(localStorage.getItem('rokuban:playback-rate')).toBe('1.5')
+  })
+
+  it('保存が無ければ 1 倍', () => {
+    expect(loadPlaybackRate()).toBe(1)
+  })
+
+  it('1 倍はキーごと消す（既定値の行を作らない）', () => {
+    savePlaybackRate(2)
+    savePlaybackRate(1)
+    expect(localStorage.getItem('rokuban:playback-rate')).toBeNull()
+    expect(loadPlaybackRate()).toBe(1)
+  })
+
+  it('選択肢に無い値・壊れた値は 1 倍に落とす', () => {
+    for (const raw of ['3', '1.1', '0', '-1', 'fast', '']) {
+      localStorage.setItem('rokuban:playback-rate', raw)
+      expect(loadPlaybackRate()).toBe(1)
+    }
   })
 })
 
@@ -65,6 +94,32 @@ describe('shouldSavePlaybackPosition', () => {
   it('秒が変わったら保存する', () => {
     expect(shouldSavePlaybackPosition(10, 11.0)).toBe(true)
     expect(shouldSavePlaybackPosition(10, 9.9)).toBe(true)
+  })
+})
+
+describe('private mode 等で localStorage が例外を投げる場合', () => {
+  it('getItem/setItem/removeItem が例外を投げても、読みは既定値・書きは無音で落ちる', () => {
+    const getItemSpy = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new Error('denied')
+    })
+    const setItemSpy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('denied')
+    })
+    const removeItemSpy = vi.spyOn(Storage.prototype, 'removeItem').mockImplementation(() => {
+      throw new Error('denied')
+    })
+    try {
+      expect(loadPlaybackRate()).toBe(1)
+      expect(() => savePlaybackRate(1.5)).not.toThrow()
+      expect(loadPlaybackPosition(7, 'h264')).toBeNull()
+      expect(() => savePlaybackPosition(7, 'h264', 123)).not.toThrow()
+      // 終端付近（removeItem を叩く分岐）も例外を外に漏らさない
+      expect(() => savePlaybackPosition(7, 'h264', 296, 300)).not.toThrow()
+    } finally {
+      getItemSpy.mockRestore()
+      setItemSpy.mockRestore()
+      removeItemSpy.mockRestore()
+    }
   })
 })
 

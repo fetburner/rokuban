@@ -1,6 +1,7 @@
 /**
  * ブラウザ再生の再開位置を localStorage に保存する（#14 7c / M3-5）。
  * サーバー側視聴履歴は持たない。キーは録画 ID + プロファイル。
+ * 再生速度（端末ごとに 1 つ、録画をまたいで保つ）も同じく localStorage に持つ。
  */
 
 const PREFIX = 'rokuban:playback:'
@@ -56,6 +57,42 @@ export function savePlaybackPosition(
       return
     }
     localStorage.setItem(playbackStorageKey(recordingId, profile), String(Math.floor(seconds)))
+  } catch {
+    // ignore
+  }
+}
+
+/** playbackRates は再生速度セレクタの選択肢。保存値の検証もこの配列で行う。 */
+export const playbackRates = [1, 1.25, 1.5, 1.75, 2] as const
+
+const RATE_KEY = 'rokuban:playback-rate'
+
+/**
+ * loadPlaybackRate は保存済みの再生速度を返す。無い・壊れているなら 1。
+ *
+ * **録画ごとではなく端末ごとに 1 つ**（キーに録画 ID を含めない）。速度は
+ * 「この録画をどう見るか」ではなく「自分がどう見るか」の好みなので、録画を
+ * 変えるたびに 1 倍へ戻ると毎回選び直しになる（docs/frontend/design.md §個人化）。
+ */
+export function loadPlaybackRate(): number {
+  try {
+    const raw = localStorage.getItem(RATE_KEY)
+    if (raw === null) return 1
+    const n = Number(raw)
+    // 選択肢に無い値（手で書き換えた・選択肢を減らした後の古い値）は既定へ落とす。
+    // <select> に無い値を渡すと、どの option も選ばれていない空の見た目になる。
+    return (playbackRates as readonly number[]).includes(n) ? n : 1
+  } catch {
+    // private mode 等で localStorage が使えない場合は既定
+    return 1
+  }
+}
+
+/** savePlaybackRate は再生速度を保存する。既定（1 倍）はキーごと消す。 */
+export function savePlaybackRate(rate: number): void {
+  try {
+    if (rate === 1) localStorage.removeItem(RATE_KEY)
+    else localStorage.setItem(RATE_KEY, String(rate))
   } catch {
     // ignore
   }

@@ -193,8 +193,10 @@ describe('RecordingPlayer の再生操作', () => {
     expect(video.playbackRate).toBe(1.5)
   })
 
-  it('別の録画では再生速度を 1.0 に戻す', () => {
-    const { getByLabelText, rerender } = render(
+  // 速度は「この録画をどう見るか」ではなく「自分がどう見るか」の好みなので、
+  // 録画をまたいでも保つ（docs/frontend/design.md §個人化）。
+  it('別の録画に移っても再生速度を保ち、localStorage に残す', () => {
+    const { container, getByLabelText, rerender } = render(
       <RecordingPlayer recordingId={30} encodedAssets={asset} />,
     )
     const select = getByLabelText('再生速度') as HTMLSelectElement
@@ -202,7 +204,23 @@ describe('RecordingPlayer の再生操作', () => {
 
     rerender(<RecordingPlayer recordingId={31} encodedAssets={asset} />)
 
-    expect(select.value).toBe('1')
+    expect(select.value).toBe('1.5')
+    expect(localStorage.getItem('rokuban:playback-rate')).toBe('1.5')
+    // select の表示だけでなく実際の <video> を見る（レビュー指摘: `<video>` は
+    // key={`${recordingId}:${profile}`} で作り直されるため、select の値が
+    // 1.5× のままでも新しい要素の実 playbackRate が 1 に戻る退行が select の
+    // 値だけを見るアサーションでは検出できなかった）。
+    expect(container.querySelector('video')!.playbackRate).toBe(1.5)
+  })
+
+  it('保存済みの速度は開いた直後から video に効く', () => {
+    localStorage.setItem('rokuban:playback-rate', '2')
+    const { container, getByLabelText } = render(
+      <RecordingPlayer recordingId={32} encodedAssets={asset} />,
+    )
+
+    expect((getByLabelText('再生速度') as HTMLSelectElement).value).toBe('2')
+    expect(container.querySelector('video')!.playbackRate).toBe(2)
   })
 
   it('矢印キーで 10 秒、J/L で 30 秒移動する', () => {

@@ -1,10 +1,12 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import type { Rule } from '@/api/generated'
+import { SearchProgramsBody } from '@/api/zod'
 import {
   allWeekdays,
   buildRuleInput,
   buildSearchRequest,
+  canonicalSearchConditions,
   draftError,
   emptyDraft,
   emptyRuleMeta,
@@ -12,7 +14,7 @@ import {
   hasWeekday,
   newTimeWindow,
   ruleMetaError,
-  ruleToDraft,
+  conditionsToDraft,
   ruleToMeta,
   type RuleMetaDraft,
   type SearchDraft,
@@ -254,7 +256,7 @@ function fullRule(overrides: Partial<Rule> = {}): Rule {
   }
 }
 
-describe('ruleToDraft と buildRuleInput の往復', () => {
+describe('conditionsToDraft と buildRuleInput の往復', () => {
   // **タイムゾーンを固定する。** このマシン（と CI）が UTC だと、末尾に Z を
   // 足すだけの実装でもローカル時刻の往復が通ってしまう
   // （program-search.test.ts の既存の「期間」テストと同じ理由）。
@@ -267,7 +269,7 @@ describe('ruleToDraft と buildRuleInput の往復', () => {
 
   it('全次元（テキスト条件・サービス・チャンネル種別・ジャンル・時間帯・放送時間・期間）を保つ', () => {
     const rule = fullRule()
-    const draft = ruleToDraft(rule)
+    const draft = conditionsToDraft(rule)
     const meta = ruleToMeta(rule)
     const input = buildRuleInput(draft, meta, rule)
 
@@ -308,7 +310,7 @@ describe('ruleToDraft と buildRuleInput の往復', () => {
       [undefined, undefined],
     ] as const) {
       const rule = fullRule({ isFree })
-      const input = buildRuleInput(ruleToDraft(rule), ruleToMeta(rule))
+      const input = buildRuleInput(conditionsToDraft(rule), ruleToMeta(rule))
       expect(input.isFree).toBe(expected)
     }
   })
@@ -320,7 +322,7 @@ describe('ruleToDraft と buildRuleInput の往復', () => {
       periodStartAt: undefined,
       periodEndAt: undefined,
     })
-    const draft = ruleToDraft(rule)
+    const draft = conditionsToDraft(rule)
     expect(draft.durationMinMinutes).toBe('')
     expect(draft.durationMaxMinutes).toBe('')
     expect(draft.periodStartAt).toBe('')
@@ -334,21 +336,21 @@ describe('ruleToDraft と buildRuleInput の往復', () => {
   })
 })
 
-describe('分 ⇄ ms の変換（ruleToDraft）', () => {
+describe('分 ⇄ ms の変換（conditionsToDraft）', () => {
   it('durationMs を分の文字列にする', () => {
     const rule = fullRule({ durationMinMs: 1_800_000, durationMaxMs: 7_200_000 })
-    const draft = ruleToDraft(rule)
+    const draft = conditionsToDraft(rule)
     expect(draft.durationMinMinutes).toBe('30')
     expect(draft.durationMaxMinutes).toBe('120')
   })
 
   it('0 ms は「指定なし」と区別する（空欄にしない）', () => {
     const rule = fullRule({ durationMinMs: 0 })
-    expect(ruleToDraft(rule).durationMinMinutes).toBe('0')
+    expect(conditionsToDraft(rule).durationMinMinutes).toBe('0')
   })
 })
 
-describe('ローカル時刻 ⇄ UTC ISO の変換（ruleToDraft）', () => {
+describe('ローカル時刻 ⇄ UTC ISO の変換（conditionsToDraft）', () => {
   beforeAll(() => {
     vi.stubEnv('TZ', 'Asia/Tokyo')
   })
@@ -361,7 +363,7 @@ describe('ローカル時刻 ⇄ UTC ISO の変換（ruleToDraft）', () => {
       periodStartAt: '2026-07-29T12:30:00.000Z',
       periodEndAt: '2026-08-04T15:00:00.000Z',
     })
-    const draft = ruleToDraft(rule)
+    const draft = conditionsToDraft(rule)
     // JST は UTC+9。日付が繰り上がる終了日時（15:00 UTC → 翌 00:00 JST）を
     // 含めることで、時刻だけでなく日付の繰り上がりも見る
     expect(draft.periodStartAt).toBe('2026-07-29T21:30')
@@ -445,5 +447,43 @@ describe('ruleMetaError', () => {
 
   it('always なら常に止めない', () => {
     expect(ruleMetaError(meta({ keepOriginal: 'always', encodeProfiles: [] }))).toBeUndefined()
+  })
+})
+
+/**
+ * URL（`?cond=`）と localStorage に載せた条件は openapi 由来の zod スキーマを
+ * 通して読む。**そのスキーマは既定値を埋める**ので、送ったリクエストと読み戻した
+ * 条件は文字列として一致しない --- `pages/search.tsx` が「適用済みか」を生の JSON で
+ * 判定すると、自分で書いた URL を別の条件と誤認して同じ検索を 2 回叩く。
+ *
+ * 「既定値なんて埋まらないでしょ」とガードを単純化する手前で止めるため、
+ * **埋まること**と**畳めば元に戻ること**の両方をここで固定する（実ブラウザでの
+ * 「押下 1 回 = 検索 1 回」は `e2e/personalization.mjs` ③）。
+ */
+describe('canonicalSearchConditions（URL・localStorage から読んだ条件の畳み込み）', () => {
+  const request = buildSearchRequest({
+    ...emptyDraft(),
+    textMatches: [
+      { target: 'name', mode: 'keyword', value: 'ニュース', caseSensitive: false, negate: false },
+    ],
+  })
+
+  it('openapi のスキーマを通すと既定値が埋まり、送った形と一致しなくなる', () => {
+    const parsed = SearchProgramsBody.parse(request)
+    expect(request).toEqual({ textMatches: [{ target: 'name', mode: 'keyword', value: 'ニュース' }] })
+    expect(parsed).toEqual({
+      textMatches: [
+        { target: 'name', mode: 'keyword', value: 'ニュース', caseSensitive: false, negate: false },
+      ],
+    })
+  })
+
+  it('畳むと送った形に戻る', () => {
+    expect(canonicalSearchConditions(SearchProgramsBody.parse(request))).toEqual(request)
+  })
+
+  it('フォームに無い次元（sites）だけの条件は空に畳む', () => {
+    // 畳まないと「画面には何も出ていないのに全件検索が走る」（routes.tsx の cond）
+    expect(canonicalSearchConditions({ sites: ['default'] })).toEqual({})
   })
 })

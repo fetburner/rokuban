@@ -50,6 +50,7 @@ beforeEach(() => {
 })
 afterEach(() => {
   vi.useRealTimers()
+  localStorage.clear()
 })
 
 function program(programId: number, serviceId: number, name: string): Program {
@@ -1460,5 +1461,107 @@ describe('SearchPage', () => {
 
       expect(screen.getByLabelText('テキスト条件 1 の値')).toHaveValue('深夜')
     })
+  })
+})
+
+/**
+ * 検索条件の置き場所は **URL > localStorage > 空**（docs/frontend/design.md §個人化）。
+ *
+ * URL は共有・ブックマークの宛先、localStorage は端末ごとの「前回の条件」。
+ * どちらも下書きへ写す経路が同じ（`conditionsToDraft`）なので、取り違えると
+ * 「共有リンクを開いたのに自分の前回の条件が出る」形で静かに壊れる。
+ */
+describe('SearchPage の条件の復元', () => {
+  const lastKey = 'rokuban:search:last'
+  const newsCondition = {
+    textMatches: [{ target: 'name', mode: 'keyword', value: 'ニュース' }],
+  }
+  const condEntry = (cond: unknown) => [`/search?cond=${encodeURIComponent(JSON.stringify(cond))}`]
+
+  it('?cond= で開くと条件が下書きに入り、そのまま検索される', async () => {
+    const { searchBodies } = stubApi()
+    renderPage(condEntry(newsCondition))
+
+    expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+    expect(screen.getByLabelText('テキスト条件 1 の値')).toHaveValue('ニュース')
+    // 開いた URL の条件がそのまま 1 回だけ送られる（同じ条件で二重に叩かない）
+    expect(searchBodies).toEqual([newsCondition])
+  })
+
+  it('検索を押すと条件が URL と localStorage の両方に載る', async () => {
+    const { searchBodies } = stubApi()
+    const { router } = renderPage()
+
+    await addKeyword('ニュース')
+    await userEvent.click(await screen.findByRole('button', { name: '検索' }))
+    expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+
+    await waitFor(() => {
+      expect((router.state.location.search as { cond?: unknown }).cond).toEqual(newsCondition)
+    })
+    expect(JSON.parse(localStorage.getItem(lastKey)!)).toEqual(newsCondition)
+    // **押した回数だけ叩く。** `submit` が `appliedCondRef` に印を付け忘れると、
+    // 自分で書き換えた URL をハイドレーション effect が拾って同じ条件を 2 回
+    // 叩く（その変異でこの行が落ちることを確認済み）。
+    //
+    // **このハーネスで測れない部分がある。** `renderInRouter`（`test/router.tsx`）は
+    // `validateSearch` を持たない最小ルートなので、`?cond=` が openapi のスキーマを
+    // 通らない。「スキーマを通ると形が変わるせいで、生の JSON 比較では同じ条件を
+    // 2 回叩く」という壊れ方は、ここではなく `routes.test.tsx`（validateSearch の
+    // 出力の形）と `e2e/personalization.mjs` ③（実ブラウザで押下 1 回 = 1 回）が
+    // 見ている。形が変わること自体は `lib/program-search.test.ts` が固定している。
+    expect(searchBodies).toEqual([newsCondition])
+  })
+
+  it('URL に条件が無ければ前回の条件を下書きに戻すが、検索はしない', async () => {
+    localStorage.setItem(lastKey, JSON.stringify(newsCondition))
+    const { searchBodies } = stubApi()
+    renderPage()
+
+    expect(await screen.findByLabelText('テキスト条件 1 の値')).toHaveValue('ニュース')
+    // 「まだ検索していない」を非同期の空虚な成功にしないため、実際に飛ぶ
+    // 問い合わせ（サービス一覧）が解決するまで待ってから 0 件を主張する。
+    expect(await screen.findByRole('button', { name: 'NHK総合' })).toBeInTheDocument()
+    expect(searchBodies).toEqual([])
+    expect(screen.queryByText('ニュース7')).not.toBeInTheDocument()
+  })
+
+  it('URL の条件は localStorage の前回の条件より優先される', async () => {
+    localStorage.setItem(
+      lastKey,
+      JSON.stringify({ textMatches: [{ target: 'name', mode: 'keyword', value: '深夜' }] }),
+    )
+    stubApi()
+    renderPage(condEntry(newsCondition))
+
+    expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+    expect(screen.getByLabelText('テキスト条件 1 の値')).toHaveValue('ニュース')
+  })
+
+  it('壊れた前回の条件は無視して空の下書きで開く', async () => {
+    localStorage.setItem(lastKey, '{textMatches:')
+    stubApi()
+    renderPage()
+
+    expect(await screen.findByLabelText('テキスト条件 1 の値')).toHaveValue('')
+  })
+
+  /**
+   * `?ruleId=` はルール編集として開く経路で、条件の正本はルールにある。ここで
+   * `cond` も書くと、次に開いたときどちらを写したのかが読めなくなる。
+   */
+  it('?ruleId= で開いた画面の検索は URL に cond を載せない', async () => {
+    stubApi({ rules: [ruleFixture] })
+    const { router } = renderPage(['/search?ruleId=7'])
+
+    expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: '検索' }))
+
+    await waitFor(() => {
+      expect(JSON.parse(localStorage.getItem(lastKey)!)).toEqual({
+        textMatches: [{ target: 'name', mode: 'keyword', value: 'ニュース' }],
+      })
+    })
+    expect((router.state.location.search as { cond?: unknown }).cond).toBeUndefined()
   })
 })
