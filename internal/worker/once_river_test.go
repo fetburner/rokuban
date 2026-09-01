@@ -34,15 +34,20 @@ import (
 // Kind を外に返さないので、「期待した EventKind が実際に届いたか」
 // （例: river.JobCancel が退化して JobFailed になっていないか）を見るには、
 // Wait に渡す前に 1 度だけ中継してその値を控える必要がある。
+//
+// 控えた Kind は変数ではなくバッファ付きチャネルで返す。Wait が
+// idleTimeout 側で戻ると tee は読まれないまま中継 goroutine だけが走り続け、
+// 共有変数だと戻り値の読み出しと競合する（go test -race で落ちる）。
 func onceRiverOutcome(t *testing.T, gate *OnceGate, idleTimeout time.Duration, events <-chan *river.Event) (OnceOutcome, river.EventKind) {
 	t.Helper()
 
 	tee := make(chan *river.Event, 1)
-	var gotKind river.EventKind
+	kinds := make(chan river.EventKind, 1)
 	go func() {
 		defer close(tee)
+		defer close(kinds)
 		if ev, ok := <-events; ok {
-			gotKind = ev.Kind
+			kinds <- ev.Kind
 			tee <- ev
 		}
 	}()
@@ -52,10 +57,19 @@ func onceRiverOutcome(t *testing.T, gate *OnceGate, idleTimeout time.Duration, e
 	limit := idleTimeout + 5*time.Second
 	select {
 	case o := <-out:
-		return o, gotKind
+		// 中継 goroutine は Wait が events 分岐で戻ったときには必ず
+		// kinds へ送り終えている（tee より先に送るため）。idleTimeout で
+		// 戻った場合はまだ <-events で止まっているので、ここは塞がずに
+		// ゼロ値を返す（Kind の assertion 側が期待値との差で落ちる）。
+		select {
+		case k := <-kinds:
+			return o, k
+		default:
+			return o, ""
+		}
 	case <-time.After(limit):
 		t.Fatalf("Wait が %s 以内に戻らない（1 件消化モードの Job が終了しない形）", limit)
-		return OnceOutcomeCanceled, gotKind
+		return OnceOutcomeCanceled, ""
 	}
 }
 
