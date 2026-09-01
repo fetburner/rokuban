@@ -30,10 +30,15 @@ func (h *Server) SearchPrograms(ctx context.Context, req SearchProgramsRequestOb
 	if err != nil {
 		return nil, err
 	}
-	if ids == nil {
-		ids = []int64{}
+	// ponytail: 型合わせのためだけの仮実装。まだ旧来どおりパスの site を評価 site
+	// として固定しており（sites 省略 = 全サイトを埋める api 層の対応も、パスの
+	// {site} の撤去も未実装）、契約が定めた新しい sites 意味論を満たしていない。
+	// 後続の Go タスク（#529 の含むもの 3・罠を参照）で置き換える。
+	matches := make([]ProgramSearchMatch, len(ids))
+	for i, id := range ids {
+		matches[i] = ProgramSearchMatch{Site: req.Site, ProgramId: id}
 	}
-	return SearchPrograms200JSONResponse(ids), nil
+	return SearchPrograms200JSONResponse(matches), nil
 }
 
 func conditionsFromSearch(in ProgramSearchRequest) rulequery.Conditions {

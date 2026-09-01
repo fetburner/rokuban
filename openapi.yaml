@@ -372,8 +372,28 @@ paths:
       description: |
         ルール条件と同じコンパイラ（internal/rulequery）で epg_programs を検索する。
         ruler 評価と同一の SQL 経路を通る（M2-2）。UI 検索（M2-11）の土台。
-        検索対象のサイトはパスの {site}（評価 site）。`sites` フィールドは
-        ルールの `rule_sites` 相当の条件（マッチ対象の絞り込み）で、これとは別軸。
+
+        **`sites`（絞り込み条件、空または省略 = 全サイト）が検索対象のサイト軸を決める。**
+        レスポンスは `{site, programId}` のフラットな配列で、同一放送が複数サイトで
+        マッチすれば行が複数出る（畳まない）。ruler はマッチした全サイトで予約を作る
+        （N 予約が既定。docs/recording/ruler.md「サイトの扱い」）ため、行数がそのまま
+        実体化される予約数になる。
+
+        **非互換の変更**: 旧仕様は `sites` を `rule_sites` 相当の絞り込み（空 = パスの
+        {site} のみを評価対象にする）と説明していたが、実際の SQL は `$site = ANY($sites)`
+        という両辺が定数でテーブル列を参照しない述語だったため、事実上パスの {site} だけが
+        全か無かのゲートとして機能し `sites` は無効だった。新仕様では `sites` が
+        `epg_programs.site` に対する実際の絞り込み述語になる。
+
+        **パスの `{site}` は撤去を決定済みだが、この変更では実行しない**（#526 の
+        判定基準に照らすと、検索結果は観測の集合でありパスに site を固定する理由がない
+        —— 識別子ではなく存在のスコープとして `sites` が担うべき軸のため）。撤去は
+        `internal/rulequery.Compile` が空 `Sites` を「述語なし」と解釈すると
+        `internal/ruler` の既定（`rule_sites` 省略 = 空）経由で全サイトを読む
+        correctness バグになりうるため、api 層が `sites` 省略時にレジストリ全件を埋めて
+        `Compile` へ渡す Go 側の修正と同時にしか実行できない。この契約が `sites` の既定を
+        「空 = 全サイト」と先に定義しているのは、その Go 修正の前提を満たすため。撤去と
+        その Go 修正は後続タスクでまとめて行う。
       requestBody:
         required: true
         content:
@@ -382,14 +402,13 @@ paths:
               $ref: "#/components/schemas/ProgramSearchRequest"
       responses:
         "200":
-          description: OK（programId の昇順）
+          description: OK（programId, site の昇順。同一放送が複数サイトでマッチすると複数行）
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  type: integer
-                  format: int64
+                  $ref: "#/components/schemas/ProgramSearchMatch"
         "400":
           description: Invalid conditions
           content:
@@ -2000,7 +2019,7 @@ components:
       type: object
       description: |
         ルール条件の条件部分と同じ形。rulequery.Conditions に写像される。
-        検索対象のサイトはパスの {site}（POST /api/sites/{site}/programs/search）。
+        検索対象のサイトは `sites`（空または省略 = 全サイト）が決める。
       properties:
         isFree:
           type: boolean
@@ -2048,7 +2067,23 @@ components:
           type: array
           items:
             type: string
-          description: ルールの rule_sites 相当。空 = 評価 site のみ
+          description: >-
+            絞り込み条件。空または省略 = 全サイト（`GET /api/recordings` の `?site=` と
+            同じ軸の規約: 軸内は OR、他の絞り込み軸とは AND）。**非互換の変更**: 旧仕様は
+            `sites` を `rule_sites` 相当の条件として扱い、空 = パスの {site}（評価 site）
+            のみだった。
+
+    ProgramSearchMatch:
+      type: object
+      required: [site, programId]
+      description: 検索がマッチした 1 件（1 サイトの 1 放送）
+      properties:
+        site:
+          type: string
+          description: マッチした放送のサイト
+        programId:
+          type: integer
+          format: int64
 
     # --- Rules (M2-1) ---
 
@@ -2170,7 +2205,10 @@ components:
             を載せ直す更新が、レジストリから site が消えた後も通るように）。免除は更新対象のルール単位なので
             **作成では効かない** ——
             既存ルールの sites をそのまま載せて別のルールを作る（フォーク）場合、レジストリから消えた site
-            名は 400 になる。
+            名は 400 になる。`POST /api/sites/{site}/programs/search` の `sites`
+            も同じ「空または省略 = 全サイト」の軸規約を使うが、一回限りの問い合わせで
+            保存された行を持たないため、既知名検証と更新時の免除はルールの保存にのみ
+            適用される。
         dedupeEnabled:
           type: boolean
           default: false
