@@ -1,6 +1,6 @@
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useSearch as useRouteSearch, useNavigate } from '@tanstack/react-router'
-import { ChevronRight, Trash2 } from 'lucide-react'
+import { ChevronRight, MoreVertical, Trash2 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import {
@@ -41,6 +41,12 @@ import {
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import { Chip } from '@/components/ui/chip'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { shouldAutoLoadNextPage, shouldShowLoadMoreButton } from '@/lib/auto-load'
 import { encodeJobStatusLabel } from '@/lib/encode-status'
 import { useEncodeProgress } from '@/lib/events'
@@ -401,7 +407,7 @@ export function RecordingsPage() {
           予約する。モバイルの 2 段折り返しは e2e/recordings-selection.mjs で実測する。 */}
       <PageContent className={selecting ? 'pb-32 md:pb-20' : undefined}>
         {query.isError ? (
-        <ErrorState>
+        <ErrorState onRetry={() => void query.refetch()}>
           {apiErrorMessage(query.error) ??
             (trash ? 'ごみ箱の取得に失敗しました' : '録画の取得に失敗しました')}
         </ErrorState>
@@ -539,7 +545,9 @@ export function RecordingsPage() {
                     </AlertDialogHeader>
                     <AlertDialogFooter>
                       <AlertDialogCancel>キャンセル</AlertDialogCancel>
-                      <AlertDialogAction onClick={() => void purgeSelected()}>
+                      {/* 取り返しがつかない操作の確定は destructive（issue #467、
+                          alert-dialog.tsx の規約）。 */}
+                      <AlertDialogAction variant="destructive" onClick={() => void purgeSelected()}>
                         完全削除を予約する
                       </AlertDialogAction>
                     </AlertDialogFooter>
@@ -1128,9 +1136,11 @@ export function RecordingActions({ recording, trash }: { recording: Recording; t
     return (
       <div className="flex flex-col gap-2">
         <div className="flex flex-wrap gap-2">
+          {/* 取り返せる操作（Undo あり）なので secondary --- 取り返しがつかない
+              完全削除（⋮ の中）との強さの逆転を作らない（issue #467 レビュー）。 */}
           <Button
             type="button"
-            variant="destructive"
+            variant="secondary"
             size="sm"
             disabled={busy}
             onClick={() => {
@@ -1172,7 +1182,8 @@ export function RecordingActions({ recording, trash }: { recording: Recording; t
   }
 
   return (
-    <div className="flex flex-wrap gap-2">
+    <div className="flex flex-wrap items-center gap-2">
+      {/* 復元はごみ箱にいるときの主操作なので露出（issue #467 の 3 段）。 */}
       <Button
         type="button"
         variant="secondary"
@@ -1182,14 +1193,26 @@ export function RecordingActions({ recording, trash }: { recording: Recording; t
       >
         復元
       </Button>
+      {/* 完全削除は稀・破壊的な操作なので overflow へ（issue #467、rules.tsx と
+          同じ dropdown-menu）。overflow に入れても確認 AlertDialog は残す
+          （メニューに入れたから確認を省く、はしない）。 */}
+      <DropdownMenu>
+        <DropdownMenuTrigger
+          render={<Button type="button" variant="ghost" size="icon" aria-label="録画のその他の操作" />}
+        >
+          <MoreVertical />
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          <DropdownMenuItem
+            variant="destructive"
+            disabled={busy}
+            onClick={() => setPurgeConfirmOpen(true)}
+          >
+            今すぐ完全削除
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
       <AlertDialog open={purgeConfirmOpen} onOpenChange={setPurgeConfirmOpen}>
-        <AlertDialogTrigger
-          render={
-            <Button type="button" variant="destructive" size="sm" disabled={busy}>
-              今すぐ完全削除
-            </Button>
-          }
-        />
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>今すぐ完全削除しますか？</AlertDialogTitle>
@@ -1200,6 +1223,7 @@ export function RecordingActions({ recording, trash }: { recording: Recording; t
           <AlertDialogFooter>
             <AlertDialogCancel>キャンセル</AlertDialogCancel>
             <AlertDialogAction
+              variant="destructive"
               onClick={() => {
                 // ダイアログは AlertDialogAction（AlertDialogPrimitive.Close ラップ）が
                 // クリックで自動的に閉じるので、ここでは実行の確定のみ行う。

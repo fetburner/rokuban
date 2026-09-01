@@ -598,6 +598,14 @@ const screens = [
   { name: 'live', path: '/live', wait: 'text=NHK総合' },
 ]
 
+/**
+ * recordingDetailScreen は録画単体ページ（`/recordings/$id`）。`screens` には
+ * 足さない --- 足すと① の全画面ショットが 1 画面ぶん増える。判定に必要なのは
+ * path と目印だけなので、この 1 つを複数箇所（②の色判定・withBreaker の
+ * ショット）から共有する。
+ */
+const recordingDetailScreen = { name: 'recording-detail', path: '/recordings/12', wait: 'text=チャンネル' }
+
 const viewports = [
   // 一覧の行長上限は広幅で初めて効くので、デスクトップショットは 2560px で撮る。
   { name: 'desktop', width: 2560, height: 1440 },
@@ -769,6 +777,17 @@ for (const theme of themes) {
     await page.screenshot({ path: file })
     log(`  ${path.basename(file)}`)
     await checkMissingStrings(page, `breaker/${theme}`)
+    await context.close()
+  }
+  {
+    // issue #467 の罠: 詳細ページを PageHeader（sticky + `--sticky-banners-height`
+    // の top）に乗せたので、ブレーカーバナー表示中のレイアウトが崩れていないかを
+    // ここで見る（一覧と違う独自ヘッダを持っていたころは撮っていなかった）。
+    const { context, page } = await open(desktop, theme, recordingDetailScreen, { withBreaker: true })
+    const file = path.join(OUT_DIR, `breaker-recording-detail-${theme}-desktop.png`)
+    await page.screenshot({ path: file })
+    log(`  ${path.basename(file)}`)
+    await checkMissingStrings(page, `breaker-recording-detail/${theme}`)
     await context.close()
   }
   {
@@ -1455,11 +1474,9 @@ for (const theme of themes) {
   // 一覧はインライン展開を持たないので、この面が出るのは詳細ページだけ）。hover と
   // 違って**常時見えるので Lighthouse の監査対象**に入る。代表として `<dt>`
   // 「チャンネル」を測る（同じパネル・同じトークン対なので説明文・品質イベントも
-  // 同値になる）。`screens` には足さない --- 足すと全画面ショットが 1 画面ぶん
-  // 増える。判定に必要なのは path と目印だけなので、ここで組んで渡す。
+  // 同値になる）。`recordingDetailScreen`（`screens` 定義の下）を使う。
   {
-    const detailScreen = { name: 'recording-detail', path: '/recordings/12', wait: 'text=チャンネル' }
-    const { context, page } = await open(desktop, theme, detailScreen)
+    const { context, page } = await open(desktop, theme, recordingDetailScreen)
     // `screens`（① のループ）に無い画面なので、明示的に掛けないと欠損文字列
     // 判定から漏れる。
     //

@@ -144,8 +144,13 @@ describe('CircuitBreakerBanner', () => {
 
     // ダイアログを開くだけでは叩かれない
     await user.click(await screen.findByRole('button', { name: '再開' }))
-    expect(await screen.findByRole('button', { name: '再開する' })).toBeInTheDocument()
+    const confirmButton = await screen.findByRole('button', { name: '再開する' })
+    expect(confirmButton).toBeInTheDocument()
     expect(fetchMock).toHaveBeenCalledTimes(1)
+    // 再開は取り返せる操作（削除の再開）なので確定ボタンは既定 variant
+    // （issue #467、alert-dialog.tsx の規約。destructive に入れ替えると落ちる）。
+    expect(confirmButton).toHaveClass('bg-primary')
+    expect(confirmButton).not.toHaveClass('text-destructive')
 
     // キャンセルしても叩かれない
     await user.click(screen.getByRole('button', { name: 'キャンセル' }))

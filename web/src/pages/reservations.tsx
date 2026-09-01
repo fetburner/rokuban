@@ -67,7 +67,7 @@ export function ReservationsPage() {
 
       <PageContent>
         {query.isError ? (
-        <ErrorState>予約の取得に失敗しました</ErrorState>
+        <ErrorState onRetry={() => void query.refetch()}>予約の取得に失敗しました</ErrorState>
       ) : query.isPending || (search.only === 'attention' && !attentionReady) ? (
         <ListSkeleton />
       ) : visibleReservations.length === 0 ? (

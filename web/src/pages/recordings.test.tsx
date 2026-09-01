@@ -621,7 +621,12 @@ describe('RecordingsPage 複数選択と一括操作', () => {
     expect(await screen.findByRole('alertdialog', { name: '2 件を完全削除しますか？' })).toBeInTheDocument()
     expect(mutationIds(server.fetchMock, '/purge')).toEqual([])
 
-    await user.click(screen.getByRole('button', { name: '完全削除を予約する' }))
+    // 取り返しがつかない操作の確定は destructive（issue #467、
+    // alert-dialog.tsx の規約。variant を外すと落ちる）。
+    const confirmButton = screen.getByRole('button', { name: '完全削除を予約する' })
+    expect(confirmButton).toHaveClass('text-destructive')
+
+    await user.click(confirmButton)
 
     await waitFor(() => expect(mutationIds(server.fetchMock, '/purge').sort()).toEqual([1, 2]))
     expect(await screen.findByText('ごみ箱は空です')).toBeInTheDocument()

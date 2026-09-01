@@ -352,7 +352,12 @@ export function SearchPage() {
         ) : search.isPending ? (
           <ListSkeleton />
         ) : search.isError ? (
-          <SearchError error={search.error} />
+          <SearchError
+            error={search.error}
+            onRetry={() => {
+              if (search.variables) search.mutate(search.variables)
+            }}
+          />
         ) : ids.length === 0 ? (
           <EmptyState>条件に一致する番組がありません</EmptyState>
         ) : (
@@ -997,10 +1002,10 @@ function RuleEditForm({
  * 隠して汎用の文言に落とすと「書き方が悪い」のか「該当なし」なのかを
  * ユーザーが区別できない。
  */
-function SearchError({ error }: { error: unknown }) {
+function SearchError({ error, onRetry }: { error: unknown; onRetry: () => void }) {
   const message = apiErrorMessage(error)
   return (
-    <ErrorState>
+    <ErrorState onRetry={onRetry}>
       <span className="block">検索に失敗しました</span>
       {message !== undefined && (
         <span className="mt-1 block break-all font-mono text-xs">{message}</span>

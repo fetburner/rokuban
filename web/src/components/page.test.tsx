@@ -1,7 +1,8 @@
 import { render, screen } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import userEvent from '@testing-library/user-event'
+import { describe, expect, it, vi } from 'vitest'
 
-import { EmptyState, ErrorState, ListSkeleton, Skeleton } from '@/components/page'
+import { EmptyState, ErrorState, ListSkeleton, PageHeader, Skeleton } from '@/components/page'
 
 /**
  * 走査線の適用箇所を固定するテスト（不変条件 8）。
@@ -38,11 +39,51 @@ describe('EmptyState', () => {
   })
 })
 
+// issue #467: 詳細 2 ページ（録画・予約）の「戻る」ボタンを乗せる leading
+// スロット。省略すると 1 本目が、省いても他の子だけで通ってしまわないよう
+// title と同時に描画されることも見る。
+describe('PageHeader', () => {
+  it('leading を渡すと title の隣に描画される', () => {
+    render(<PageHeader title="録画の詳細" leading={<button>戻る</button>} />)
+    expect(screen.getByRole('button', { name: '戻る' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: '録画の詳細' })).toBeInTheDocument()
+  })
+
+  it('leading を渡さなければ何も描画しない', () => {
+    render(<PageHeader title="録画の詳細" />)
+    expect(screen.queryByRole('button')).not.toBeInTheDocument()
+  })
+})
+
 describe('ErrorState', () => {
   it('走査線を持たない（3 箇所限定の対象外）', () => {
     render(<ErrorState>失敗しました</ErrorState>)
     const el = screen.getByText('失敗しました')
     expect(el.className.split(' ')).not.toContain('scanlines')
+  })
+
+  // WCAG 4.1.3（ステータスメッセージ）: 読み込み失敗を、フォーカスを移さずに
+  // 支援技術へ伝える。role を "status" に落とすと落ちることを確認済み。
+  it('role="alert" を持つ', () => {
+    render(<ErrorState>失敗しました</ErrorState>)
+    expect(screen.getByRole('alert')).toHaveTextContent('失敗しました')
+  })
+
+  // issue #467 のレビューコメント: 共通 ErrorState に再試行ボタンを足し、
+  // 一覧の初回読み込み失敗をここへ寄せる。onRetry を消す・ボタンを
+  // 常時出す（onRetry 未指定でも出す）のどちらの変異でも落ちることを確認済み。
+  it('onRetry を渡すと再試行ボタンを出し、押すと呼ばれる', async () => {
+    const onRetry = vi.fn()
+    const user = userEvent.setup()
+    render(<ErrorState onRetry={onRetry}>失敗しました</ErrorState>)
+
+    await user.click(screen.getByRole('button', { name: '再試行' }))
+    expect(onRetry).toHaveBeenCalledTimes(1)
+  })
+
+  it('onRetry を渡さなければ再試行ボタンを出さない', () => {
+    render(<ErrorState>失敗しました</ErrorState>)
+    expect(screen.queryByRole('button', { name: '再試行' })).not.toBeInTheDocument()
   })
 })
 

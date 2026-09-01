@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef } from 'react'
 
+import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 
 /**
@@ -8,13 +9,19 @@ import { cn } from '@/lib/utils'
  * 自身の高さを `--page-header-height` に書き出す。リスト内の sticky な小見出し
  * （番組リストの日付ヘッダ等）はこれを `top` に使う。フィルタ行の有無・行数や
  * フォント・文字サイズでヘッダ高さは変わるので、実測しないとずれる。
+ *
+ * 詳細 2 ページ（録画・予約）もこれに乗る（issue #467）。「戻る」ボタンは
+ * `leading` に置く --- `actions` は右端固定なので左端のスロットを別に持つ。
  */
 export function PageHeader({
   title,
+  leading,
   actions,
   children,
 }: {
   title: string
+  /** タイトル左に置く「戻る」ボタン等。 */
+  leading?: React.ReactNode
   /** タイトル行の右端に置くコントロール。 */
   actions?: React.ReactNode
   children?: React.ReactNode
@@ -52,6 +59,7 @@ export function PageHeader({
       style={{ top: 'var(--sticky-banners-height, 0px)' }}
     >
       <div className="flex items-center gap-3 px-4 py-3">
+        {leading}
         <h1 className="shrink-0 text-base font-semibold tracking-tight">{title}</h1>
         {actions && <div className="ml-auto flex min-w-0 items-center gap-2">{actions}</div>}
       </div>
@@ -90,10 +98,39 @@ export function EmptyState({ children }: { children: React.ReactNode }) {
   )
 }
 
-/** ErrorState は取得に失敗したときの表示。 */
-export function ErrorState({ children }: { children: React.ReactNode }) {
+/**
+ * ErrorState は取得に失敗したときの表示。
+ *
+ * `role="alert"`（WCAG 4.1.3）で読み上げに割り込む。`onRetry` を渡すと
+ * 再試行ボタンを添える --- 一覧の初回読み込み失敗はこれに寄せる
+ * （TNLAStation-frontend の共通 ErrorState 相当、issue #467）。
+ *
+ * **続き取得の失敗（`pages/recordings.tsx` / `pages/programs.tsx` の
+ * 「さらに読み込む」フォールバック）はこれを使わない。** 初回とは違い
+ * 「さらに読み込む」ボタン自身が既に再試行の手段であり、二重にボタンを
+ * 出すことになる。**ライブのエラー文（`pages/live.tsx` の 2 種
+ * ---能力 API の未確定 / チャンネル一覧の取得失敗--- と、
+ * `components/live-player.tsx` の `LiveErrorMessage`（`LiveLoadError` を
+ * 表示する、hls.js/ネイティブ経路の再生エラー）の計 3 種）も寄せない**
+ * --- 経路ごとに原因説明が異なり、単純な再試行では原因の違いが伝わらない。
+ */
+export function ErrorState({
+  children,
+  onRetry,
+}: {
+  children: React.ReactNode
+  /** 渡すと再試行ボタンを添える。省略すると文言だけを出す。 */
+  onRetry?: () => void
+}) {
   return (
-    <p className="px-4 py-12 text-center text-sm text-destructive">{children}</p>
+    <div role="alert" className="flex flex-col items-center gap-3 px-4 py-12 text-center text-sm text-destructive">
+      <p>{children}</p>
+      {onRetry && (
+        <Button type="button" variant="outline" size="sm" onClick={onRetry}>
+          再試行
+        </Button>
+      )}
+    </div>
   )
 }
 
