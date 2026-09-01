@@ -1158,6 +1158,7 @@ type ProgramOverridesInputReset string
 
 // ProgramSearchMatch 検索がマッチした 1 件（1 サイトの 1 放送）
 type ProgramSearchMatch struct {
+	// ProgramId マッチした放送の programId（`GET /api/sites/{site}/programs/{programId}` などで使う ID）。同一放送は全サイトで同じ値を持つ（Mirakurun の ID 合成）
 	ProgramId int64 `json:"programId"`
 
 	// Site マッチした放送のサイト

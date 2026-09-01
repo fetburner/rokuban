@@ -30,10 +30,10 @@ func (h *Server) SearchPrograms(ctx context.Context, req SearchProgramsRequestOb
 	if err != nil {
 		return nil, err
 	}
-	// ponytail: 型合わせのためだけの仮実装。まだ旧来どおりパスの site を評価 site
-	// として固定しており（sites 省略 = 全サイトを埋める api 層の対応も、パスの
-	// {site} の撤去も未実装）、契約が定めた新しい sites 意味論を満たしていない。
-	// 後続の Go タスク（#529 の含むもの 3・罠を参照）で置き換える。
+	// ponytail: site はパスからの複写であって、マッチした行から観測した値では
+	// ない。sites に評価 site 以外を指定しても常にパスの site が返るため、
+	// #530 が入るまでこの値を信じるクライアントは誤った値を受け取る（黙って、
+	// スキーマ的には正当に見える形で）。#530 で sites 駆動の述語に置き換える。
 	matches := make([]ProgramSearchMatch, len(ids))
 	for i, id := range ids {
 		matches[i] = ProgramSearchMatch{Site: req.Site, ProgramId: id}

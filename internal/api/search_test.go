@@ -66,9 +66,16 @@ ON CONFLICT (site, program_id) DO NOTHING`,
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("search status = %d", resp.StatusCode)
 	}
-	var apiIDs []int64
-	if err := json.NewDecoder(resp.Body).Decode(&apiIDs); err != nil {
+	var apiMatches []struct {
+		Site      string `json:"site"`
+		ProgramId int64  `json:"programId"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&apiMatches); err != nil {
 		t.Fatal(err)
+	}
+	apiIDs := make([]int64, len(apiMatches))
+	for i, m := range apiMatches {
+		apiIDs[i] = m.ProgramId
 	}
 
 	// ruler と同じ MatchProgramIDs
@@ -103,9 +110,16 @@ ON CONFLICT (site, program_id) DO NOTHING`,
 		t.Fatal(err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	var fwAPI []int64
-	if err := json.NewDecoder(resp.Body).Decode(&fwAPI); err != nil {
+	var fwMatches []struct {
+		Site      string `json:"site"`
+		ProgramId int64  `json:"programId"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&fwMatches); err != nil {
 		t.Fatal(err)
+	}
+	fwAPI := make([]int64, len(fwMatches))
+	for i, m := range fwMatches {
+		fwAPI[i] = m.ProgramId
 	}
 	fwRuler, err := rulequery.MatchProgramIDs(ctx, pool, "default", rulequery.Conditions{
 		TextMatches: []rulequery.TextMatch{{Target: "name", Mode: "keyword", Value: "ＮＨＫ"}},

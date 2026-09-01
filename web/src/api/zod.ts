@@ -673,15 +673,8 @@ export const ListTunersResponse = zod.array(ListTunersResponseItem)
  * 全か無かのゲートとして機能し `sites` は無効だった。新仕様では `sites` が
  * `epg_programs.site` に対する実際の絞り込み述語になる。
  *
- * **パスの `{site}` は撤去を決定済みだが、この変更では実行しない**（#526 の
- * 判定基準に照らすと、検索結果は観測の集合でありパスに site を固定する理由がない
- * —— 識別子ではなく存在のスコープとして `sites` が担うべき軸のため）。撤去は
- * `internal/rulequery.Compile` が空 `Sites` を「述語なし」と解釈すると
- * `internal/ruler` の既定（`rule_sites` 省略 = 空）経由で全サイトを読む
- * correctness バグになりうるため、api 層が `sites` 省略時にレジストリ全件を埋めて
- * `Compile` へ渡す Go 側の修正と同時にしか実行できない。この契約が `sites` の既定を
- * 「空 = 全サイト」と先に定義しているのは、その Go 修正の前提を満たすため。撤去と
- * その Go 修正は後続タスクでまとめて行う。
+ * `sites` の既定を「空 = 全サイト」と定義するのは、Go 側がレジストリ全件を埋めて
+ * `Compile` に渡す前提のため。
  * @summary Search EPG programs by rule-style conditions
  */
 export const SearchProgramsParams = zod.object({
@@ -732,7 +725,7 @@ export const SearchProgramsBody = zod.object({
 
 export const SearchProgramsResponseItem = zod.object({
   "site": zod.string().describe('マッチした放送のサイト'),
-  "programId": zod.number()
+  "programId": zod.number().describe('マッチした放送の programId（`GET \/api\/sites\/{site}\/programs\/{programId}` などで使う ID）。同一放送は全サイトで同じ値を持つ（Mirakurun の ID 合成）')
 }).describe('検索がマッチした 1 件（1 サイトの 1 放送）')
 export const SearchProgramsResponse = zod.array(SearchProgramsResponseItem)
 

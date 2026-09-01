@@ -280,7 +280,8 @@ function stubApi(options?: {
         }
         // EPG のローリングウィンドウから抜けた番組が結果に残る状況の再現。
         // 検索は当たるが詳細（GET /api/programs/{id}）が 404 になる
-        if (match.value === '幽霊') return Promise.resolve(jsonResponse([999]))
+        if (match.value === '幽霊')
+          return Promise.resolve(jsonResponse([{ site: 'default', programId: 999 }]))
       }
 
       const matched = programs.filter((p) => {
@@ -307,7 +308,14 @@ function stubApi(options?: {
         return true
       })
 
-      return Promise.resolve(jsonResponse(matched.map((p) => p.programId).sort((a, b) => a - b)))
+      return Promise.resolve(
+        jsonResponse(
+          matched
+            .map((p) => p.programId)
+            .sort((a, b) => a - b)
+            .map((programId) => ({ site: 'default', programId })),
+        ),
+      )
     }
 
     throw new Error(`unexpected fetch: ${url.pathname}`)
