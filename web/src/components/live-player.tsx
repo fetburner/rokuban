@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 
-import type { LiveLoadError } from '@/lib/live'
+import type { LiveDiagnostics, LiveLoadError } from '@/lib/live'
 import {
   claimsHlsPlaylistSupport,
+  formatLiveDiagnostics,
   livePlaylistURL,
   probeLivePlaylist,
   sendLiveLeaveHint,
@@ -16,6 +17,48 @@ type HlsLike = {
   loadSource(url: string): void
   attachMedia(media: HTMLMediaElement): void
   on(event: string, callback: (event: string, data: { fatal: boolean }) => void): void
+  /**
+   * hls.latency（秒。ライブ同期点 = `liveSyncPosition` が決まるまで `NaN`。
+   * issue #476「罠」）。
+   */
+  latency: number
+  /** hls.mainForwardBufferInfo（アタッチ直後・バッファが無い間は `null`）。 */
+  mainForwardBufferInfo: { len: number } | null
+}
+
+/**
+ * readHlsDiagnostics は hls.js 経路の計器値を読む（issue #476）。
+ *
+ * `hls.latency` はライブ同期点が決まるまで `NaN` を返す。**`NaN` をそのまま
+ * `state` に入れない** --- 描画側で毎回 `Number.isFinite` を問い直す形にすると
+ * 呼び出し忘れが起きうるので、読む時点で `null`（欠損）に正規化する。
+ */
+function readHlsDiagnostics(hls: HlsLike): LiveDiagnostics {
+  return {
+    source: 'hls',
+    latencySec: Number.isFinite(hls.latency) ? hls.latency : null,
+    bufferSec:
+      hls.mainForwardBufferInfo && Number.isFinite(hls.mainForwardBufferInfo.len)
+        ? hls.mainForwardBufferInfo.len
+        : null,
+  }
+}
+
+/**
+ * readNativeDiagnostics はネイティブ HLS 経路（Safari）の計器値を読む。
+ *
+ * ネイティブ経路には hls.js の `latency` に相当するものが無いので
+ * `latencySec` は常に `null`（**測れないものを出さない**。issue #476）。
+ * 「貯まり」は `video.buffered` の末尾 - `currentTime` で近似する。
+ */
+function readNativeDiagnostics(media: HTMLVideoElement): LiveDiagnostics {
+  const buffered = media.buffered
+  return {
+    source: 'native',
+    latencySec: null,
+    bufferSec:
+      buffered.length > 0 ? Math.max(0, buffered.end(buffered.length - 1) - media.currentTime) : null,
+  }
 }
 
 type LivePlayerProps = {
@@ -64,6 +107,9 @@ export function LivePlayer({ site, networkId, serviceId, className }: LivePlayer
   const [error, setError] = useState<LiveLoadError | null>(null)
   // retryNonce を変えると effect が再実行される（依存配列に入れる）
   const [retryNonce, setRetryNonce] = useState(0)
+  // diagnostics は「放送から n 秒 / 貯まり n 秒」の計器（issue #476）。
+  // null は「まだ計測していない」（読み込み中・エラー中）を表す。
+  const [diagnostics, setDiagnostics] = useState<LiveDiagnostics | null>(null)
 
   // ライブのページキー操作は M / F だけ。録画向けの速度変更は出さない。
   // ネイティブ HLS の playbackRate が実 Safari で有効かは未検証。
@@ -106,6 +152,7 @@ export function LivePlayer({ site, networkId, serviceId, className }: LivePlayer
     const video = videoRef.current
     setLoading(true)
     setError(null)
+    setDiagnostics(null)
 
     const url = livePlaylistURL(site, networkId, serviceId)
 
@@ -211,6 +258,31 @@ export function LivePlayer({ site, networkId, serviceId, className }: LivePlayer
       })
     }
 
+    /**
+     * watchLiveDiagnostics は「放送から n 秒 / 貯まり n 秒」の計器を 1 秒ごとに
+     * 更新する（issue #476。「副調整室の計器盤」--- ON AIR・録画中バッジと同じ
+     * 「いま電波に乗っているものとの距離」を言う表示）。
+     *
+     * **「測り直す」ボタンは置かない。** 値はこのポーリングで毎秒最新に
+     * 更新されるため、手動での再計測に意味を持たせられない（denpa の
+     * 「測り直す」は WHEP 側の再ネゴシエーションの都合であり、hls.js の
+     * ポーリングにはそれに対応する操作が無い）。
+     *
+     * 停止関数を返すのは、hls.js 経路の fatal エラーで `hls.destroy()` した
+     * 直後にも呼び出し側から止められるようにするため --- destroy 後の
+     * インスタンスに `latency` を問い続けると壊れた値・例外の原因になりうる。
+     */
+    function watchLiveDiagnostics(read: () => LiveDiagnostics): () => void {
+      setDiagnostics(read())
+      const timer = setInterval(() => {
+        if (cancelled) return
+        setDiagnostics(read())
+      }, 1000)
+      const stop = () => clearInterval(timer)
+      teardown.push(stop)
+      return stop
+    }
+
     async function start() {
       let probe: Awaited<ReturnType<typeof probeLivePlaylist>>
       try {
@@ -244,6 +316,7 @@ export function LivePlayer({ site, networkId, serviceId, className }: LivePlayer
       if (supportsNativeHls(canPlayType)) {
         // src を入れる前に張る（入れた後だと、失敗が速いときに取り逃がす）
         watchNativeMedia(video)
+        watchLiveDiagnostics(() => readNativeDiagnostics(video))
         video.src = url
       } else {
         const { default: Hls } = await import('hls.js')
@@ -258,6 +331,7 @@ export function LivePlayer({ site, networkId, serviceId, className }: LivePlayer
           // `web/e2e/live.mjs` ⑦）--- ここは 1 段目と同じ表面を持つ
           if (claimsHlsPlaylistSupport(canPlayType)) {
             watchNativeMedia(video)
+            watchLiveDiagnostics(() => readNativeDiagnostics(video))
             video.src = url
             setLoading(false)
             return
@@ -272,6 +346,7 @@ export function LivePlayer({ site, networkId, serviceId, className }: LivePlayer
         }
         const hls = new Hls() as unknown as HlsLike
         hlsRef.current = hls
+        const stopDiagnostics = watchLiveDiagnostics(() => readHlsDiagnostics(hls))
         hls.on(Hls.Events.ERROR, (_event, data) => {
           if (!data.fatal || cancelled) return
           // fatal のまま放置すると hls.js が内部でリトライを続け、エラー画面の
@@ -279,6 +354,8 @@ export function LivePlayer({ site, networkId, serviceId, className }: LivePlayer
           // 指摘）。表示するエラーは「壊れて止まった」なので、実際に止める
           hls.destroy()
           hlsRef.current = null
+          // destroy 後の hls インスタンスに latency を問い続けない（issue #476）
+          stopDiagnostics()
           setError({ kind: 'other', status: 0, message: 'ライブ再生中にエラーが発生しました' })
         })
         hls.loadSource(url)
@@ -353,6 +430,31 @@ export function LivePlayer({ site, networkId, serviceId, className }: LivePlayer
         playsInline
         className={cn('size-full rounded', (loading || error) && 'invisible')}
       />
+
+      {/*
+       * 遅延・バッファの計器（issue #476）。「副調整室の計器盤」--- ON AIR・
+       * 録画中バッジと同じく**いま電波に乗っているものとの距離**を言う中立表示
+       * なので信号色は使わず `text-muted-foreground` に固定する。
+       *
+       * `aria-live` は付けない --- 毎秒変わる数字を読み上げさせない。数字の幅は
+       * `html` に一度だけ当てた等幅数字指定（全域適用。`tests/font-tokens.test.ts`
+       * 「コンポーネント側に個別指定が残っていない」）で既に固定されているので
+       * ここで個別に付けない。`<video>` の親（この `aspect-video` の箱）の
+       * サイズには影響しない位置（`absolute`）に置くので、毎秒の再描画で親が
+       * 再レイアウトされることはない。
+       *
+       * 「測り直す」ボタンは無い。値はこの表示の元になる状態
+       * （`watchLiveDiagnostics`）が 1 秒ごとに読み直すので、手動の再計測に
+       * 意味を持たせられない。
+       */}
+      {!loading && !error && diagnostics && (
+        <p
+          data-testid="live-diagnostics"
+          className="absolute bottom-2 right-2 text-xs text-muted-foreground"
+        >
+          {formatLiveDiagnostics(diagnostics)}
+        </p>
+      )}
 
       {loading && !error && (
         <div

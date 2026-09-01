@@ -5,6 +5,9 @@ import {
   claimsHlsPlaylistSupport,
   classifyLiveLoadError,
   currentProgramWindow,
+  formatLiveBufferLabel,
+  formatLiveDiagnostics,
+  formatLiveLatencyLabel,
   liveLeaveURL,
   livePlaylistURL,
   pickInitialService,
@@ -338,5 +341,60 @@ describe('probeLivePlaylist', () => {
     )
     // fetch 自身にも signal が渡っている（呼び出し側だけが中断を握っているのではない）
     expect(fetchMock).toHaveBeenCalledWith('/x', { signal: controller.signal })
+  })
+})
+
+describe('formatLiveLatencyLabel', () => {
+  it('null は欠損表示', () => {
+    expect(formatLiveLatencyLabel(null)).toBe('放送から—')
+  })
+
+  // hls.latency はライブ同期点が決まるまで NaN を返す（issue #476「罠」）。
+  // NaN をそのまま描画すると web/e2e/design.mjs の欠損文字列判定に引っかかる
+  it('NaN も欠損として扱う（NaN を描かない）', () => {
+    expect(formatLiveLatencyLabel(NaN)).toBe('放送から—')
+    expect(formatLiveLatencyLabel(NaN)).not.toMatch(/\bNaN\b/)
+  })
+
+  it('数値は四捨五入して「約n秒」', () => {
+    expect(formatLiveLatencyLabel(3.4)).toBe('放送から約3秒')
+    expect(formatLiveLatencyLabel(3.6)).toBe('放送から約4秒')
+  })
+})
+
+describe('formatLiveBufferLabel', () => {
+  it('null は欠損表示', () => {
+    expect(formatLiveBufferLabel(null)).toBe('貯まり—')
+  })
+
+  it('NaN も欠損として扱う', () => {
+    expect(formatLiveBufferLabel(NaN)).toBe('貯まり—')
+    expect(formatLiveBufferLabel(NaN)).not.toMatch(/\bNaN\b/)
+  })
+
+  it('数値は四捨五入して「n秒」', () => {
+    expect(formatLiveBufferLabel(5.6)).toBe('貯まり6秒')
+  })
+})
+
+describe('formatLiveDiagnostics', () => {
+  it('hls 経路は「放送から」と「貯まり」の両方を出す', () => {
+    expect(formatLiveDiagnostics({ source: 'hls', latencySec: 3, bufferSec: 5 })).toBe(
+      '放送から約3秒 / 貯まり5秒',
+    )
+  })
+
+  // ネイティブ HLS はライブ同期点を持たないので latency を取得できない
+  // （測れないものを出さない。issue #476 の含むもの 2）
+  it('native 経路は「貯まり」だけを出す（「放送から」自体を出さない）', () => {
+    const label = formatLiveDiagnostics({ source: 'native', latencySec: null, bufferSec: 5 })
+    expect(label).toBe('貯まり5秒')
+    expect(label).not.toContain('放送から')
+  })
+
+  it('欠損 + native でも NaN を描かない', () => {
+    const label = formatLiveDiagnostics({ source: 'native', latencySec: null, bufferSec: null })
+    expect(label).toBe('貯まり—')
+    expect(label).not.toMatch(/\bNaN\b/)
   })
 })

@@ -172,7 +172,10 @@ pnpm exec playwright install chromium webkit
    hls.js が `sourceopen` 後に object URL を revoke するので短命である。
    これだけを見ると取り逃がす
 3. **実 Chrome のみ**（`channel: 'chrome'`。bundled Chromium は H.264/AAC 非対応）:
-   `video.play()` 後に `currentTime` が進み、`videoWidth > 0`
+   `video.play()` 後に `currentTime` が進み、`videoWidth > 0`。あわせて
+   遅延・バッファの計器（「放送から約 n 秒 / 貯まり n 秒」）が実際に数値になり、
+   `NaN` を描画していないことも見る（`docs/frontend/live.md`
+   §遅延・バッファの計器）
 4. チャンネル切替後、旧チャンネルへのセグメント要求が 0 件になる
    （`LivePlayer` の effect cleanup が実際に効いていることの検証）
 5. 503（本文つき）でエラー文言が出て、再読み込みで復帰する
