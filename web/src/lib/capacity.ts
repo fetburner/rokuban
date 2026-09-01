@@ -136,6 +136,13 @@ export function shortageRangeMessage(overage: CapacityOverage): string {
  * するだけ。したがって 0 件は「今は重なる不足区間が無い」であって「保存しても
  * 不足しない」ではない（docs/data.md §6.5「主張は下界に限る」）。呼び出し側は
  * 0 件のとき何も描画しない規律を守ること（`CapacityShortfallBadge` と同じ）。
+ *
+ * **終了未定番組（`durationMs = 0`。mirakc の `duration: null` が
+ * `internal/worker/epg.go` の投影でこうなる）は幅 0 の区間 `[s, s)` として数える。**
+ * つまり不足区間が開始の瞬間 s を厳密にまたぐときだけ拾い、20:00 開始・終了未定の
+ * 番組の最中に 21:00〜21:30 の不足がある形は拾わない（既定尺を当てる判断はしていない）。
+ * 数え落とす向きなので主張は下界のまま。判定は `capacity.test.ts`
+ * 「終了未定番組（幅 0 の区間）」。
  */
 export function countProgramsInShortfall(
   overages: readonly CapacityOverage[],

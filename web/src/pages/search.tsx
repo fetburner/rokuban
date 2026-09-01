@@ -79,8 +79,7 @@ const pageSize = 30
 export function SearchPage() {
   const site = useCurrentSite()
   // nowMs はこのレンダーの間で一貫させる（`pages/home.tsx`・`pages/programs.tsx`
-  // と同じ規律）。容量ノートの問い合わせ窓（下の `shortfallWindowStartMs`）だけが
-  // 使う。
+  // と同じ規律）。容量ノートの問い合わせ窓（下の `shortfallWindowStartMs`）だけが使う。
   const nowMs = Date.now()
   const [draft, setDraft] = useState<SearchDraft>(emptyDraft)
   const [visibleCount, setVisibleCount] = useState(pageSize)
@@ -219,37 +218,23 @@ export function SearchPage() {
     .filter((ms): ms is number => ms !== undefined)
 
   /**
-   * costEstimate は値札（件数・時間の見込み）の計算結果。**1 箇所で計算して
-   * `RuleCostSummary`（値札本体）と `ShortfallOverlapNote`（容量ノート）の
-   * 両方に渡す** --- 呼び出し側ごとに `loadedPrograms.length < ids.length` の
-   * ような式を書き直すと、同じ「先頭 N 件」を指しているはずの 2 つの判定が
-   * 将来ずれうる（レビュー指摘）。
+   * costEstimate は値札（件数・時間の見込み）。`RuleCostSummary` と
+   * `ShortfallOverlapNote` の両方に同じ 1 つを渡す --- 呼び出し側ごとに
+   * 母集団の式を書き直すと、同じ「先頭 N 件」がずれうる（レビュー指摘）。
    */
   const costEstimate = estimateRuleCost({ totalCount: ids.length, loadedDurationsMs })
 
   /**
-   * shortfallWindowStartMs / shortfallWindowEndMs は容量ノート
-   * （`ShortfallOverlapNote`）用の `GET /api/capacity/overages` の問い合わせ窓。
+   * 容量ノート（`ShortfallOverlapNote`）用の `GET /api/capacity/overages` の窓は
+   * `nowMs` の時境界（`pages/home.tsx` と同じ量子化）+ `epgWindowDays`。サンプル
+   * 番組の時刻から作ると、詳細が 1 件ずつ届くたびに窓＝クエリキーが変わって点滅し、
+   * 終了未定番組（`durationMs = 0`）だけのサンプルでは `start === end` に退化して
+   * 400 で沈黙する（回帰判定は `search.test.tsx` の 3 件と `design.mjs` ①''''）。
    *
-   * **窓をサンプル番組の時刻（`coveringWindow(loadedPrograms)`）から作らない。**
-   * `costDetails`（番組詳細）は実ネットワークで 1 件ずつ非同期に届くため、
-   * 届くたびに窓＝クエリキーが変わり、新しいキーには `data` が無いので
-   * `unwrap(...) ?? []` で 0 件に見える瞬間ができる --- 1 検索でサンプル件数分
-   * （レビュー実測 30 本）の要求が飛び、ノートが出たり消えたりした。加えて
-   * 終了未定番組（mirakc の `duration: null` 相当。`internal/worker/epg.go` の
-   * 投影で `durationMs = 0` になる）だけがサンプルに含まれると窓が
-   * `start === end` に退化し、サーバーが 400（`end must be after start`。
-   * `internal/api/capacity.go`）を返して「不足区間があるのに沈黙」という
-   * issue が最も避けたかった形に落ちた（レビュー実測）。
-   *
-   * 代わりに **`nowMs` を時境界へ量子化してから EPG の前方保持ぶん
-   * （`epgWindowDays`）を足すだけの固定窓**にする（`pages/home.tsx` の
-   * `overagesStartMs` と同じ量子化）。検索結果はどれも EPG プロジェクションの
-   * 前方保持ぶんにしか存在しえないので、この窓は常にサンプルの放送時間帯を
-   * 覆う。個々の番組の `durationMs` にはもう依存しないため、終了未定番組が
-   * 混ざっても窓は退化しない。窓は毎時 0 分にしか変わらないが、それでも
-   * 跨いだ瞬間にノートが 1 RTT 消えないよう `placeholderData: keepPreviousData`
-   * を付ける（`pages/home.tsx` の同じ対策のコメント参照）。
+   * **この窓は検索結果の放送時間帯を覆いきらない。** 検索に `now()` 述語は無く、
+   * `epg_programs` は放送済みを `epg.retention_grace`（既定 24h）ぶん残す
+   * （`lib/rule-cost.ts` の `epgWindowDays`）ので、放送済みの結果と地平線末尾の
+   * 最大 59 分ぶんは窓の外で数え落とす（向きは下界側なので許容する）。
    */
   const shortfallWindowStartMs = dayOrigin(0, nowMs).getTime()
   const shortfallWindowEndMs = shortfallWindowStartMs + epgWindowDays * 86_400_000
@@ -262,6 +247,8 @@ export function SearchPage() {
       query: {
         // 検索結果が無い間は問い合わせない（容量への影響を確かめる対象が無い）。
         enabled: ids.length > 0,
+        // 時境界を越えてキーが進んだ瞬間にノートが 1 RTT 消えないため
+        // （判定は `search.test.tsx`「時境界を越えても…」。`pages/home.tsx` に同じ対策）。
         placeholderData: keepPreviousData,
       },
     },
@@ -274,13 +261,10 @@ export function SearchPage() {
   const overages = unwrap(overagesQuery.data) ?? []
 
   /**
-   * shortfallCount は「保存前の値札」に足す容量への影響の近似（判定 (b)）。
-   * 詳細（新たな不足を予測しない理由・0 件の意味）は
-   * `lib/capacity.ts` の `countProgramsInShortfall` のコメントを参照。
-   *
-   * 母集団は `costEstimate` と同じサンプル（`loadedPrograms`）にする ---
-   * 別の母集団を使うと、同じ値札の中で「先頭 N 件」の意味が場所によって
-   * 変わってしまう。
+   * shortfallCount は容量への影響の近似（判定 (b)）。新たな不足を予測しない理由・
+   * 0 件の意味・終了未定番組の扱いは `lib/capacity.ts` の
+   * `countProgramsInShortfall`。母集団は `costEstimate` と同じサンプルに揃える
+   * （別の母集団だと同じ値札の中で「先頭 N 件」の意味が場所によって変わる）。
    */
   const loadedPrograms = costDetails
     .map((d) => unwrap(d.data))
@@ -511,10 +495,8 @@ export function SearchPage() {
  * （呼び出し側の `searchedHasPeriod` を参照）。数値と根拠の由来が食い違うと、
  * 消したはずの偽の根拠が「フォームを触っただけ」で復活する。
  *
- * `estimate` は呼び出し側（`SearchPage`）が `estimateRuleCost` で 1 回だけ
- * 計算したものを受け取る --- `ShortfallOverlapNote`（容量ノート）も同じ
- * `estimate` の `sampleSize` / `isSampled` を使うため、ここで独自に計算し
- * 直さない。
+ * `estimate` は呼び出し側が 1 回計算したものを受け取る（`ShortfallOverlapNote`
+ * も同じものを使うので、ここで計算し直さない）。
  */
 function RuleCostSummary({
   status,
@@ -577,17 +559,11 @@ function RuleCostSummary({
 }
 
 /**
- * ShortfallOverlapNote は検索結果のうち、放送時間帯が既存のチューナー不足区間
- * （`GET /api/capacity/overages`）と交差する番組の件数を値札の隣に出す
- * （判定 (b)。docs/frontend/search.md「保存前の値札」）。何を数えるか・
- * 0 件が何を意味しないかは `lib/capacity.ts` の `countProgramsInShortfall` の
- * コメントを参照 --- `count` はそこで計算済みのものをそのまま受け取る。
- *
- * 0 件のときは**何も描画しない**（`CapacityShortfallBadge` と同じ「沈黙は
- * 保証ではない」規律。緑色にしたり「収まります」と言い換えたりしない）。
- * `sampleSize` / `isSampled` は値札本体（`RuleCostSummary`）と同じ
- * `estimateRuleCost` の結果から渡す。上限で切れている場合は「先頭 N 件のうち」
- * と明記する --- 値札の他の注記（時間の外挿）と同じ形。
+ * ShortfallOverlapNote は検索結果のうち放送時間帯が既存のチューナー不足区間と
+ * 交差する番組の件数を値札の隣に出す（判定 (b)。docs/frontend/search.md
+ * 「保存前の値札」）。**0 件のときは何も描画しない**（`CapacityShortfallBadge`
+ * と同じ「沈黙は保証ではない」規律。緑にも「収まります」にもしない）。上限で
+ * 切れているときは値札の他の注記と同じ形で「先頭 N 件のうち」と明記する。
  */
 function ShortfallOverlapNote({
   count,

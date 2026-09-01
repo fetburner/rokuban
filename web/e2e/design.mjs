@@ -250,62 +250,46 @@ const overages = [
 const expectedVisibleLabelTexts = ['BS-1', 'GR-1', 'CS-3', 'GR-2']
 
 /**
- * buildSearchNoteFixtures は search 画面の容量ノート（`ShortfallOverlapNote`。
- * `pages/search.tsx`）用の専用フィクスチャを作る。既存の `programsFor` /
- * `overages` とは独立にする --- 混ぜると、この判定だけのための調整（終了未定
- * 番組・非同期の到着順）が他の画面のショットに波及する。
+ * search 画面の容量ノート（`ShortfallOverlapNote`。`pages/search.tsx`）専用の
+ * フィクスチャ。既存の `programsFor` / `overages` とは独立にする --- 混ぜると、
+ * この判定だけのための調整（終了未定番組・到着順）が他の画面のショットに波及する。
  *
- * **`baseMs` を引数で取る（`nowMs` / `FIXED_NOW` に決め打ちしない）。** この
- * フィクスチャを使う判定（下の①''''）は実ネットワークでの非同期到着に起因する
- * 欠陥を見るため `page.clock.setFixedTime` を呼ばない実時計の判定
- * （①''' と同じ理由）。フィクスチャの時刻を `FIXED_NOW` に固定すると、実行時の
- * 実際の `Date.now()`（`pages/search.tsx` の容量ノートの問い合わせ窓が使う）
- * と食い違い、窓がフィクスチャの時刻を含まず判定が常に「ノートが出ない」で
- * 落ちる（実装時に実際に踏んだ）。契約検証（zod parse）用は `nowMs` を渡し、
- * 実時計の判定では呼び出し側で毎回 `Date.now()` を渡す。
+ * **基準は `FIXED_NOW` ではなく実時計。** 下の①'''' は時計を止めない判定
+ * （①''' と同じ理由）なので、`pages/search.tsx` の窓（実際の `Date.now()` の
+ * 時境界 + 8 日）がこの時刻を含む必要がある（`FIXED_NOW` 基準にすると判定が
+ * 常に「ノートが出ない」で落ちる。実装時に踏んだ）。窓は 8 日幅なのでプロセス
+ * 開始と判定実行の数十秒差は無害。
  *
- * `programs` の 3 番目（index 2）だけ終了未定番組（mirakc の `duration: null`
- * 相当。`internal/worker/epg.go` の投影で `durationMs = 0` になる）。窓を
- * サンプル番組の時刻から作っていた実装（レビュー差し戻し指摘 2）はこれだけが
- * サンプルに混ざると窓が退化して 400 になっていた。
+ * `searchNotePrograms[2]` だけ終了未定番組（mirakc の `duration: null` 相当。
+ * `internal/worker/epg.go` の投影で `durationMs = 0`）。
  */
-function buildSearchNoteFixtures(baseMs) {
-  const programs = Array.from({ length: 8 }, (_, i) => {
-    const startMs = baseMs + (i + 1) * HOUR
-    const durationMs = i === 2 ? 0 : 1_800_000
-    return {
-      programId: 500_000 + i,
-      networkId: 32736,
-      serviceId: 1024,
-      eventId: 500 + i,
-      startAt: iso(startMs),
-      endAt: iso(startMs + durationMs),
-      durationMs,
-      name: `検索フィクスチャ${i + 1}`,
-      description: '',
-      genres: [0],
-      isFree: true,
-    }
-  })
-  // overage は終了未定番組（programs[2]、放送開始が baseMs + 3 * HOUR）の開始の
-  // 瞬間をまたぐ不足区間。`durationMs = 0` の番組は `[start, start)` という幅 0
-  // の区間になるため、瞬間を厳密にまたぐ区間でないと交差しない
-  // （`intersectingOverages` の半開区間判定と同じ）。
-  const overage = {
-    site: SITE,
-    startAt: iso(baseMs + 3 * HOUR - 5 * 60_000),
-    endAt: iso(baseMs + 3 * HOUR + 5 * 60_000),
-    shortfall: 1,
-    jammedTypes: ['GR'],
+const searchNoteBaseMs = Date.now()
+const searchNotePrograms = Array.from({ length: 8 }, (_, i) => {
+  const startMs = searchNoteBaseMs + (i + 1) * HOUR
+  const durationMs = i === 2 ? 0 : 1_800_000
+  return {
+    programId: 500_000 + i,
+    networkId: 32736,
+    serviceId: 1024,
+    eventId: 500 + i,
+    startAt: iso(startMs),
+    endAt: iso(startMs + durationMs),
+    durationMs,
+    name: `検索フィクスチャ${i + 1}`,
+    description: '',
+    genres: [0],
+    isFree: true,
   }
-  return { programs, overage }
+})
+// 終了未定番組（`searchNotePrograms[2]`）の開始の瞬間を厳密にまたぐ不足区間 ---
+// 幅 0 の区間 `[s, s)` が交差する唯一の形（`countProgramsInShortfall` の doc）。
+const searchNoteOverage = {
+  site: SITE,
+  startAt: iso(searchNoteBaseMs + 3 * HOUR - 5 * 60_000),
+  endAt: iso(searchNoteBaseMs + 3 * HOUR + 5 * 60_000),
+  shortfall: 1,
+  jammedTypes: ['GR'],
 }
-
-// 契約検証（zod parse）用。時刻の値そのものは形の検証に関わらないので
-// `FIXED_NOW`（`nowMs`）で足りる --- 実時計の判定（下の①''''）は
-// `buildSearchNoteFixtures(Date.now())` を都度呼ぶ。
-const { programs: searchNotePrograms, overage: searchNoteOverage } =
-  buildSearchNoteFixtures(nowMs)
 
 const recordings = [
   { id: 11, site: SITE, source: 'rule', serviceName: 'NHK総合', channelType: 'GR', channel: '27', networkId: 32736, serviceId: 1024, eventId: 11, title: 'ニュース７', startAt: iso(nowMs - 600_000), durationMs: 1_800_000, status: 'recording', createdAt: iso(nowMs - 600_000), startedAt: iso(nowMs - 600_000) },
@@ -1253,14 +1237,14 @@ log("\n=== ①''' ホーム: 実時計でのクエリキー安定性（無限再
 
 // --- ①'''' search: 容量ノート（`ShortfallOverlapNote`）の安定性 ---
 //
-// レビュー差し戻し（issue #475 実装 PR）指摘 1・2 の回帰判定。**時計を止めない**
-// （①''' と同じ理由 --- 実ネットワークでの非同期到着に起因する欠陥は時計を
-// 止めた判定では検出できない）。`GET /api/sites/default/programs/{id}` に
-// 番組ごとに違う遅延を掛け、実ネットワークでの非同期到着（1 件ずつ、順不同）を
-// 模す。`searchNotePrograms[2]` は終了未定番組（`durationMs = 0`）で、直す前の
-// 実装ではこれだけがサンプルに混ざると容量ノートの問い合わせ窓が退化して 400 に
-// なり、「不足区間があるのにノートが沈黙する」に落ちていた。
-log("\n=== ①'''' search: 容量ノートの安定性（不足区間との交差、レビュー差し戻し 1・2 の回帰） ===")
+// 容量ノートの問い合わせ窓をサンプル番組の時刻から作る実装への回帰判定
+// （要求回数・400・点滅の 3 本 + 最終件数）。**時計を止めない**（①''' と同じ
+// 理由 --- 実ネットワークでの非同期到着に起因する欠陥は時計を止めた判定では
+// 検出できない）。番組詳細と `/api/capacity/overages` に遅延を掛けて非同期到着を
+// 模し、**終了未定番組（`searchNotePrograms[2]`、`durationMs = 0`）を最初に
+// 解決させる** --- 非 0 の番組が先に届くと窓が退化しえず、旧実装でも 400 が
+// 出ない（レビュー実測）。数えるのは開始の瞬間をまたぐ不足区間との交差 1 件。
+log("\n=== ①'''' search: 容量ノートの安定性（窓の点滅・退化と不足区間との交差） ===")
 {
   const context = await browser.newContext({
     viewport: { width: desktop.width, height: desktop.height },
@@ -1274,11 +1258,6 @@ log("\n=== ①'''' search: 容量ノートの安定性（不足区間との交�
     const u = new URL(req.url())
     if (u.pathname === '/api/capacity/overages') overagesRequests.push(u.toString())
   })
-  // 時計を止めない実時計の判定なので、フィクスチャも実際の `Date.now()` を
-  // 基準に作る（`buildSearchNoteFixtures` の doc コメント参照。`FIXED_NOW` を
-  // 基準にすると、`pages/search.tsx` が使う実際の `Date.now()` と食い違い、
-  // 容量ノートの問い合わせ窓がフィクスチャの時刻を含まなくなる）。
-  const { programs: notePrograms, overage: noteOverage } = buildSearchNoteFixtures(Date.now())
   await installApiStubs(page, async ({ path: p, url, json, route }) => {
     const method = route.request().method()
     if (p === '/api/sites') return json([SITE])
@@ -1288,22 +1267,25 @@ log("\n=== ①'''' search: 容量ノートの安定性（不足区間との交�
     if (p === '/api/encode-profiles') return json([])
 
     if (p === `/api/sites/${SITE}/programs/search` && method === 'POST') {
-      return json(notePrograms.map((pr) => pr.programId))
+      return json(searchNotePrograms.map((pr) => pr.programId))
     }
     const detail = new RegExp(`^/api/sites/${SITE}/programs/(\\d+)$`).exec(p)
     if (detail) {
-      const idx = notePrograms.findIndex((pr) => pr.programId === Number(detail[1]))
+      const idx = searchNotePrograms.findIndex((pr) => pr.programId === Number(detail[1]))
       if (idx !== -1) {
-        // 番組ごとに違う遅延（0〜420ms）で、実ネットワークの非同期到着（1 件ずつ、
-        // 順不同）を模す。リクエスト順（id 昇順）と解決順を意図的にずらす。
-        await new Promise((r) => setTimeout(r, (notePrograms.length - 1 - idx) * 60))
-        return json(notePrograms[idx])
+        // 終了未定番組（idx 2）だけ遅延 0 で最初に解決させ、残りは 120〜540ms で
+        // ばらす（リクエスト順 = id 昇順と解決順をずらす）。
+        await new Promise((r) => setTimeout(r, idx === 2 ? 0 : 120 + idx * 60))
+        return json(searchNotePrograms[idx])
       }
     }
     if (p === '/api/capacity/overages' && method === 'GET') {
+      // 応答も遅延させる。即答させるとキーが進んだあとの「消えている隙間」が
+      // 短すぎて下の点滅ポーリングが掴めない（レビュー実測）。
+      await new Promise((r) => setTimeout(r, 150))
       // 実サーバー（`internal/api/capacity.go`）と同じ挙動: 半開区間の交差で
       // 絞り、`end` が `start` より後でなければ 400。ここを素通りさせると
-      // 指摘 2（窓の退化）の回帰にこの判定が無防備になる。
+      // 窓の退化の回帰にこの判定が無防備になる。
       const startMs = Date.parse(url.searchParams.get('start') ?? '')
       const endMs = Date.parse(url.searchParams.get('end') ?? '')
       if (!(endMs > startMs)) {
@@ -1314,7 +1296,7 @@ log("\n=== ①'''' search: 容量ノートの安定性（不足区間との交�
           body: JSON.stringify({ error: 'end must be after start' }),
         })
       }
-      const inWindow = [noteOverage].filter((o) => {
+      const inWindow = [searchNoteOverage].filter((o) => {
         return Date.parse(o.endAt) > startMs && Date.parse(o.startAt) < endMs
       })
       return json(inWindow)
@@ -1329,14 +1311,14 @@ log("\n=== ①'''' search: 容量ノートの安定性（不足区間との交�
   await noteLocator.waitFor({ timeout: 5000 }).catch(() => {
     ng.push(
       'search: 容量ノートが実ネットワーク遅延下で出ない' +
-        '（指摘 1・2 の回帰の疑い。終了未定番組による窓の退化、または点滅の末に非表示で確定）',
+        '（終了未定番組による窓の退化、または点滅の末に非表示で確定した疑い）',
     )
   })
 
   // 出現後も点滅しない（消えない）ことをポーリングで確認する。最長の遅延
-  // （420ms）を超えるまで見る。
+  // （番組 540ms + overages 150ms）を十分に超えるまで見る。
   let flickered = false
-  for (let waited = 0; waited < 1200; waited += 100) {
+  for (let waited = 0; waited < 1500; waited += 100) {
     // eslint-disable-next-line no-await-in-loop
     await page.waitForTimeout(100)
     // eslint-disable-next-line no-await-in-loop
@@ -1345,14 +1327,17 @@ log("\n=== ①'''' search: 容量ノートの安定性（不足区間との交�
   }
   if (flickered) {
     ng.push(
-      'search: 容量ノートが結果読み込み中に消える瞬間がある（点滅。指摘 1 の回帰）',
+      'search: 容量ノートが結果読み込み中に消える瞬間がある（点滅。窓がサンプル番組の時刻から作られている疑い）',
     )
   }
 
   const finalText = await noteLocator.textContent().catch(() => null)
   log(`  容量ノートの最終文言: ${finalText}`)
   if (finalText === null || !finalText.includes('1 件')) {
-    ng.push(`search: 容量ノートの最終件数が期待（1 件。終了未定番組との交差）と異なる: ${finalText}`)
+    ng.push(
+      'search: 容量ノートの最終件数が期待（1 件。終了未定番組の開始の瞬間を' +
+        `またぐ不足区間との交差）と異なる: ${finalText}`,
+    )
   }
 
   log(
@@ -1364,13 +1349,13 @@ log("\n=== ①'''' search: 容量ノートの安定性（不足区間との交�
   if (overagesRequests.length > 4) {
     ng.push(
       `search: /api/capacity/overages への要求が ${overagesRequests.length} 回` +
-        '（指摘 1 の回帰の疑い。レビュー実測は 30 回だった）',
+        '（窓がサンプル番組の時刻から作られている疑い。レビュー実測は 30 回だった）',
     )
   }
   if (overages400Count > 0) {
     ng.push(
       `search: /api/capacity/overages が ${overages400Count} 回 400 を返した` +
-        '（終了未定番組による窓の退化。指摘 2 の回帰）',
+        '（終了未定番組による窓の退化）',
     )
   }
 
