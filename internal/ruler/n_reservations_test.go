@@ -2,6 +2,7 @@ package ruler_test
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
@@ -116,30 +117,30 @@ func reservationSitesForProgram(t *testing.T, pool *pgxpool.Pool, ctx context.Co
 	return sites
 }
 
-func equalStringSlices(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
 // 解くべき問題そのもの: rule_sites を一切指定しない（= 全サイト、CLAUDE.md
 // 不変条件 10 により空集合を表す行は作らない）ルールが、同一放送を受けている
 // 2 サイトの両方で予約行を作る（N 予約が既定。docs/recording/ruler.md
 // 「サイトの扱い」）。
 //
 // 変異確認（issue #528 の罠、両方が実際に落ちることを確認済み。詳細は PR 説明）:
+//
 //   - ruler.go の RunPass のサイトループ（`for _, site := range r.sites`）を
 //     先頭 1 件で打ち切ると、siteB の予約が作られず本テストが失敗する。
+//
 //   - internal/rulequery/compile.go のサービス述語
-//     `(p.network_id, p.service_id) IN (...)` に `p.site` を混ぜると、
-//     サービス条件が site 引数に暗黙に紐づいてしまい、siteB 側の評価で
-//     マッチしなくなり本テストが失敗する。
+//     `(p.network_id, p.service_id) IN (...)` を
+//     `(p.network_id, p.service_id, p.site) IN ((nid, sid, 'site-a'))` に変える
+//     （固定した実在サイトを混ぜる）と、siteA は変わらずマッチし続けるが siteB
+//     側の評価では一致しなくなり、本テストだけが失敗して
+//     TestRunPass_RuleSitesRestrictsToListedSiteOnly は通り続ける ---
+//     「サイトが 1 つに絞られていないと落ちる」ことをこの対の差で示す。
+//
+//     **混ぜる値は評価対象サイト（`site` 引数）そのものであってはならない。**
+//     Compile は既に `p.site = $1`（compile.go:91、arg(site)）を無条件で AND
+//     しているため、そこにさらに `arg(site)` を足しても常に真になり意味論を
+//     一切変えない（両テストとも変化なく通り、何も検証しない変異になる）。
+//     評価対象サイトとは異なる固定サイト値を使ってはじめて、
+//     「サービス条件が特定サイトに紐づいてしまう」バグを再現できる。
 func TestRunPass_MultiSiteMatchCreatesReservationPerSite(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
@@ -160,7 +161,7 @@ func TestRunPass_MultiSiteMatchCreatesReservationPerSite(t *testing.T) {
 
 	got := reservationSitesForProgram(t, pool, ctx, nresProgramID)
 	want := []string{nresSiteAName, nresSiteBName}
-	if !equalStringSlices(got, want) {
+	if !slices.Equal(got, want) {
 		t.Fatalf("reservation sites for program %d = %v, want %v (matched rule must materialize a reservation on every matching site — N reservations is the default)",
 			nresProgramID, got, want)
 	}
@@ -192,7 +193,7 @@ func TestRunPass_RuleSitesRestrictsToListedSiteOnly(t *testing.T) {
 
 	got := reservationSitesForProgram(t, pool, ctx, nresProgramID)
 	want := []string{nresSiteAName}
-	if !equalStringSlices(got, want) {
+	if !slices.Equal(got, want) {
 		t.Fatalf("reservation sites for program %d = %v, want %v (rule_sites listing only %s must restrict materialization to that site)",
 			nresProgramID, got, want, nresSiteAName)
 	}
