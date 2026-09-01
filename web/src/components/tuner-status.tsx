@@ -37,13 +37,18 @@ import { isObservationStale } from '@/lib/storage-forecast'
  * しきい値は作らない --- `tuner_sync` は worker の定期全量同期でしか値が
  * 変わらない使い捨てプロジェクションで、ストレージ観測（`GET /api/storage`）と
  * 性質が同じであり、クライアント側の取り直しも同じ周期（`lib/events.ts` の
- * `tuners` グループが `storageRefreshIntervalMs` を流用する）に揃えてある。
+ * `tuners` グループが `storageRefreshIntervalMs` を流用する。クエリキーは
+ * そのグループに入るよう手書きにしてある --- 下記）に揃えてある。
  * 同じ性質のものに別の数字を発明する理由が無いので、既存のしきい値をそのまま
  * 再利用する。
  */
 export function TunerStatus() {
   const site = useCurrentSite()
-  const query = useListTuners(site)
+  // 生成キー（`/api/sites/${site}/tuners`）ではなく手書きにする --- URL のままだと
+  // epg グループの接頭辞（`/api/sites/`）にも一致し、周期の違う 2 グループに同じ
+  // キーが入る（`lib/events.ts` の `tuners` グループのコメント参照）。手書きキーの
+  // 前例は番組リストの `['/api/programs', 'infinite', ...]`（`pages/programs.tsx`）。
+  const query = useListTuners(site, { query: { queryKey: ['/api/tuners', site] } })
   const tuners = unwrap(query.data)
   if (tuners === undefined || tuners.length === 0) return null
 

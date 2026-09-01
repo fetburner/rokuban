@@ -291,7 +291,7 @@ describe('ReservationDetailPage', () => {
   // `reservations` への INSERT が SSE トピック `reservations` を発火し、この
   // ページのクエリキー（先頭要素 `/api/reservations`）がそのグループに
   // 入っているので、再マウントなしに自動で詳細が出る（手動リロード不要）。
-  // `lib/events.ts` の `invalidateGroups` と同じ形の predicate をここから
+  // `lib/events.ts` の `invalidateGroup` と同じ形の predicate をここから
   // 直接撃って SSE 受信を模す（stubFetch は最初 404、途中から予約を返す）。
   it('404 のあと予約行ができたら、再マウントなしに詳細が出る', async () => {
     let ready = false

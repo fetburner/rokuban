@@ -122,8 +122,9 @@ async function interruptionSettled(queryClient: QueryClient): Promise<void> {
 
 /**
  * tunerStatusSettled は `TunerStatus`（issue #474）が使う `/api/sites` と
- * `/api/sites/{site}/tuners` の解決を待つ（`interruptionSettled` と同じ
- * 「空虚な成功」対策 --- クエリが始まる前にアサーションが走って通るのを防ぐ）。
+ * チューナー射影の解決を待つ（`interruptionSettled` と同じ「空虚な成功」対策
+ * --- クエリが始まる前にアサーションが走って通るのを防ぐ）。クエリキーは URL
+ * ではなく手書き（`['/api/tuners', site]`。`components/tuner-status.tsx`）。
  */
 async function tunerStatusSettled(queryClient: QueryClient): Promise<void> {
   await waitFor(() => {
@@ -135,7 +136,7 @@ async function tunerStatusSettled(queryClient: QueryClient): Promise<void> {
     expect(sitesStatuses).toContain('success')
     const tunerStatuses = queryClient
       .getQueryCache()
-      .findAll({ predicate: (query) => /^\/api\/sites\/.+\/tuners$/.test(String(query.queryKey[0])) })
+      .findAll({ queryKey: ['/api/tuners'] })
       .map((query) => query.state.status)
     expect(tunerStatuses.length).toBeGreaterThan(0)
     expect(tunerStatuses.every((s) => s === 'success')).toBe(true)
@@ -175,8 +176,9 @@ function stubFetch(options: {
 
     // SiteGate（routes.tsx）が全ルートの手前で待つ（issue #184 M4-12）。
     // `sites` に複数渡すテストは「他サイトの状態を混ぜない」の再演用 ---
-    // TunerStatus は useCurrentSite()（= sites[0]）1 サイトしか問い合わせない
-    // ので、2 番目以降のサイトの /tuners への fetch が起きないことを見る。
+    // TunerStatus は useCurrentSite()（= sites[0]）1 サイトしか見ないので、
+    // 2 番目以降のサイトの故障が画面に描かれないことを見る（fetch の回数は
+    // 数えない）。
     if (url.pathname === '/api/sites') {
       return Promise.resolve(new Response(JSON.stringify(sites), { status: 200 }))
     }
