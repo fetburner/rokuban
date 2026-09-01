@@ -4,7 +4,7 @@ import { useState } from 'react'
 
 import { useGetRecording } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
-import { ErrorState, ListSkeleton } from '@/components/page'
+import { ErrorState, ListSkeleton, PageHeader } from '@/components/page'
 import { Button } from '@/components/ui/button'
 import { formatBytes, formatDateTime, formatDuration } from '@/lib/format'
 import { hasLiveIngestProgress, ingestRefetchIntervalMs } from '@/lib/ingest'
@@ -81,15 +81,16 @@ export function RecordingDetailPage() {
 
   return (
     <>
-      <header
-        className="sticky z-10 flex items-center gap-2 border-b border-border bg-background/95 px-2 py-2 backdrop-blur"
-        style={{ top: 'var(--sticky-banners-height, 0px)' }}
-      >
-        <Button variant="ghost" size="icon" aria-label="戻る" render={<Link to="/recordings" />}>
-          <ArrowLeft />
-        </Button>
-        <h1 className="text-base font-semibold tracking-tight">録画の詳細</h1>
-      </header>
+      <PageHeader
+        title="録画の詳細"
+        leading={
+          // history.back ではなくリンク（一覧へ）。issue #467 で PageHeader に
+          // 乗せてもこの挙動は変えない。
+          <Button variant="ghost" size="icon" aria-label="戻る" render={<Link to="/recordings" />}>
+            <ArrowLeft />
+          </Button>
+        }
+      />
 
       {query.isError ? (
         <ErrorState>録画が見つかりません</ErrorState>

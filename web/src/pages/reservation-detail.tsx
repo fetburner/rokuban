@@ -14,7 +14,7 @@ import {
 } from '@/api/generated'
 import { apiErrorMessage, unwrap } from '@/api/unwrap'
 import { EncodeOverridesEditor } from '@/components/encode-settings-fields'
-import { ErrorState, ListSkeleton } from '@/components/page'
+import { ErrorState, ListSkeleton, PageHeader } from '@/components/page'
 import { ProgramOverlapWarning } from '@/components/program-overlap-warning'
 import { ReservationSkipReason } from '@/components/reservation-skip-reason'
 import { useToast } from '@/components/toaster'
@@ -183,15 +183,14 @@ export function ReservationDetailPage() {
 
   return (
     <>
-      <header
-        className="sticky z-10 flex items-center gap-2 border-b border-border bg-background/95 px-2 py-2 backdrop-blur"
-        style={{ top: 'var(--sticky-banners-height, 0px)' }}
-      >
-        <Button variant="ghost" size="icon" aria-label="戻る" render={<Link to="/reservations" />}>
-          <ArrowLeft />
-        </Button>
-        <h1 className="text-base font-semibold tracking-tight">予約の詳細</h1>
-      </header>
+      <PageHeader
+        title="予約の詳細"
+        leading={
+          <Button variant="ghost" size="icon" aria-label="戻る" render={<Link to="/reservations" />}>
+            <ArrowLeft />
+          </Button>
+        }
+      />
 
       {query.isError ? (
         <ErrorState>

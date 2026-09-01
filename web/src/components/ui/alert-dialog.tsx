@@ -146,6 +146,11 @@ function AlertDialogDescription({
   )
 }
 
+// NOTE(rokuban): 確定ボタンの variant の規約（issue #467）--- 取り返しが
+// つかない操作（完全削除・ルール削除）は `variant="destructive"`、取り返せる
+// 操作（ブレーカー再開 = 削除の再開・無効化・保存の確認など）は既定
+// （`variant` を省略、= "default"）。取り返せる操作を destructive にすると、
+// 本当に取り返せない操作との見分けが確定ボタンの色だけでは付かなくなる。
 function AlertDialogAction({
   className,
   variant,

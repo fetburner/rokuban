@@ -729,7 +729,12 @@ describe('RulesPage 削除は overflow メニュー', () => {
     ).mock.calls.filter((call: unknown[]) => (call[1] as RequestInit | undefined)?.method === 'DELETE')
     expect(deleteCallsBeforeConfirm.length).toBe(0)
 
-    await user.click(screen.getByRole('button', { name: '削除する' }))
+    // 取り返しがつかない操作の確定は destructive（issue #467、
+    // alert-dialog.tsx の規約。variant を外すと落ちる）。
+    const confirmButton = screen.getByRole('button', { name: '削除する' })
+    expect(confirmButton).toHaveClass('text-destructive')
+
+    await user.click(confirmButton)
 
     // 削除された行が一覧から消えることそのものが常に画面に見える
     // （RulesPage はフィルタもページングも持たない）ので、内訳が 0/0 の

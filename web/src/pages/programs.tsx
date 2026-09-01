@@ -603,11 +603,15 @@ export function ProgramsPage() {
           // グリッドは「番組がない」と見分けがつかないので、取得状態を合わせる
           isPending={gridQuery.isPending || services.isPending}
           isError={gridQuery.isError || services.isError}
+          onRetry={() => {
+            void gridQuery.refetch()
+            void services.refetch()
+          }}
         />
       ) : (
         <PageContent>
           {query.isError ? (
-            <ErrorState>番組の取得に失敗しました</ErrorState>
+            <ErrorState onRetry={() => void query.refetch()}>番組の取得に失敗しました</ErrorState>
           ) : query.isPending ? (
             <ListSkeleton />
           ) : (
@@ -943,6 +947,7 @@ function ProgramGridView({
   actions,
   isPending,
   isError,
+  onRetry,
   scrollToMs,
 }: {
   axis: TimeAxis
@@ -954,6 +959,8 @@ function ProgramGridView({
   actions: ReservationActions
   isPending: boolean
   isError: boolean
+  /** isError のときの再試行（番組・チャンネルの両方の取得を取り直す）。 */
+  onRetry: () => void
   /** グリッドの初期スクロール先（issue #233 M6-5）。`ProgramGrid` にそのまま渡す。 */
   scrollToMs?: number
 }) {
@@ -963,7 +970,7 @@ function ProgramGridView({
   // 実体を引き直して、消えていれば選択も無かったことにする。
   const selected = programs.find((p) => p.programId === selectedProgramId)
 
-  if (isError) return <ErrorState>番組の取得に失敗しました</ErrorState>
+  if (isError) return <ErrorState onRetry={onRetry}>番組の取得に失敗しました</ErrorState>
   if (isPending) return <ListSkeleton />
   if (programs.length === 0) return <EmptyState>この時間帯の番組がありません</EmptyState>
 

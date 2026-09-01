@@ -443,7 +443,8 @@ describe('RecordingDetailPage 削除・復元のトースト (issue #297)', () =
     })
 
     renderAt('/recordings/3')
-    await user.click(await screen.findByRole('button', { name: '今すぐ完全削除' }))
+    await user.click(await screen.findByRole('button', { name: '録画のその他の操作' }))
+    await user.click(await screen.findByRole('menuitem', { name: '今すぐ完全削除' }))
     await user.click(await screen.findByRole('button', { name: '完全削除を予約する' }))
 
     expect(
@@ -452,8 +453,10 @@ describe('RecordingDetailPage 削除・復元のトースト (issue #297)', () =
   })
 
   // 完全削除（purge）は破壊的で、issue #311 以降は詳細ページからしか到達できない。
-  // 確認ダイアログを挟み、確定するまで purge を呼ばないことを固定する。
-  it('「今すぐ完全削除」は確認ダイアログを挟み、確定するまで purge を呼ばない', async () => {
+  // issue #467 で稀・破壊的な操作として overflow メニュー（⋮）へ寄せた ---
+  // メニューに入れても確認 AlertDialog は残ることと、確定するまで purge を
+  // 呼ばないことを固定する。
+  it('「今すぐ完全削除」は overflow メニュー経由・確認ダイアログを挟み、確定するまで purge を呼ばない', async () => {
     const user = userEvent.setup()
     const { fetchMock } = createFakeServer({
       recording: sampleRecording({ deletedAt: '2026-01-02T00:00:00Z' }),
@@ -464,7 +467,15 @@ describe('RecordingDetailPage 削除・復元のトースト (issue #297)', () =
     const purgeCalls = () =>
       fetchMock.mock.calls.filter((c) => String(c[0]).includes('/purge'))
 
-    await user.click(await screen.findByRole('button', { name: '今すぐ完全削除' }))
+    // 露出ボタンとしては出ない（overflow の中）。読み込みが解決してから
+    // 「無い」ことを確認する（非同期の空虚な成功を避ける --- 未解決のうちは
+    // ListSkeleton でどのボタンも出ておらず、この assertion が常に通ってしまう）。
+    await screen.findByRole('button', { name: '復元' })
+    expect(screen.queryByRole('button', { name: '今すぐ完全削除' })).not.toBeInTheDocument()
+
+    await user.click(await screen.findByRole('button', { name: '録画のその他の操作' }))
+    const purgeItem = await screen.findByRole('menuitem', { name: '今すぐ完全削除' })
+    await user.click(purgeItem)
     // ボタンを押しただけでは purge は飛ばない（確認を挟む）
     expect(purgeCalls()).toHaveLength(0)
     // 確認ダイアログの説明文は「reconcile」等の内部実装用語を出さず、
@@ -474,8 +485,13 @@ describe('RecordingDetailPage 削除・復元のトースト (issue #297)', () =
       screen.getByText('この録画の原本・変換後のファイル・サムネイルを削除します。取り消せません。'),
     ).toBeInTheDocument()
 
+    // 確定ボタンは取り返しがつかない操作の規約どおり destructive
+    // （issue #467、alert-dialog.tsx の規約。variant を外すと落ちる）。
+    const confirmButton = screen.getByRole('button', { name: '完全削除を予約する' })
+    expect(confirmButton).toHaveClass('text-destructive')
+
     // ダイアログの確定ボタンで初めて purge が飛ぶ
-    await user.click(await screen.findByRole('button', { name: '完全削除を予約する' }))
+    await user.click(confirmButton)
     await waitFor(() => expect(purgeCalls()).toHaveLength(1))
     expect(await screen.findByText('完全削除を予約しました')).toBeInTheDocument()
     // invalidate 後の単体 GET が 404 になり、詳細表示も消える

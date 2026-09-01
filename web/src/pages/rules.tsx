@@ -118,7 +118,7 @@ export function RulesPage() {
         )}
 
         {query.isError ? (
-          <ErrorState>ルールの取得に失敗しました</ErrorState>
+          <ErrorState onRetry={() => void query.refetch()}>ルールの取得に失敗しました</ErrorState>
         ) : query.isPending ? (
           <ListSkeleton />
         ) : rules.length === 0 && editingId !== 'new' ? (

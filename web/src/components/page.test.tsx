@@ -1,5 +1,6 @@
 import { render, screen } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import userEvent from '@testing-library/user-event'
+import { describe, expect, it, vi } from 'vitest'
 
 import { EmptyState, ErrorState, ListSkeleton, Skeleton } from '@/components/page'
 
@@ -43,6 +44,30 @@ describe('ErrorState', () => {
     render(<ErrorState>失敗しました</ErrorState>)
     const el = screen.getByText('失敗しました')
     expect(el.className.split(' ')).not.toContain('scanlines')
+  })
+
+  // WCAG 4.1.3（ステータスメッセージ）: 読み込み失敗を、フォーカスを移さずに
+  // 支援技術へ伝える。role を "status" に落とすと落ちることを確認済み。
+  it('role="alert" を持つ', () => {
+    render(<ErrorState>失敗しました</ErrorState>)
+    expect(screen.getByRole('alert')).toHaveTextContent('失敗しました')
+  })
+
+  // issue #467 のレビューコメント: 共通 ErrorState に再試行ボタンを足し、
+  // 一覧の初回読み込み失敗をここへ寄せる。onRetry を消す・ボタンを
+  // 常時出す（onRetry 未指定でも出す）のどちらの変異でも落ちることを確認済み。
+  it('onRetry を渡すと再試行ボタンを出し、押すと呼ばれる', async () => {
+    const onRetry = vi.fn()
+    const user = userEvent.setup()
+    render(<ErrorState onRetry={onRetry}>失敗しました</ErrorState>)
+
+    await user.click(screen.getByRole('button', { name: '再試行' }))
+    expect(onRetry).toHaveBeenCalledTimes(1)
+  })
+
+  it('onRetry を渡さなければ再試行ボタンを出さない', () => {
+    render(<ErrorState>失敗しました</ErrorState>)
+    expect(screen.queryByRole('button', { name: '再試行' })).not.toBeInTheDocument()
   })
 })
 

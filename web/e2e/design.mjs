@@ -772,6 +772,18 @@ for (const theme of themes) {
     await context.close()
   }
   {
+    // issue #467 の罠: 詳細ページを PageHeader（sticky + `--sticky-banners-height`
+    // の top）に乗せたので、ブレーカーバナー表示中のレイアウトが崩れていないかを
+    // ここで見る（一覧と違う独自ヘッダを持っていたころは撮っていなかった）。
+    const detailScreen = { name: 'recording-detail', path: '/recordings/12', wait: 'text=チャンネル' }
+    const { context, page } = await open(desktop, theme, detailScreen, { withBreaker: true })
+    const file = path.join(OUT_DIR, `breaker-recording-detail-${theme}-desktop.png`)
+    await page.screenshot({ path: file })
+    log(`  ${path.basename(file)}`)
+    await checkMissingStrings(page, `breaker-recording-detail/${theme}`)
+    await context.close()
+  }
+  {
     // 読み込み中（Skeleton / ListSkeleton の走査線）を撮る。API が即座に
     // 返る作りだと画面遷移からスクリーンショットの間に必ず解決してしまうので、
     // `/api/recordings` だけ遅延させる。`open()` の `wait` ロケータは
