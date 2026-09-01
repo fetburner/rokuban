@@ -71,6 +71,16 @@ export const storageRefreshIntervalMs = 5 * 60_000
  * `sitesQueryKeyPrefix` だけ末尾にスラッシュを足す --- `/api/sites` 自体
  * （サイト一覧）ではなく `/api/sites/{site}/...` 配下だけを epg グループで
  * 前方一致させたいため。
+ *
+ * ただしこの導出元（`getListSitesQueryKey`、サイト**一覧**の openapi パス）は、
+ * epg グループが実際に前方一致させたい対象（`/api/sites/{site}/programs` /
+ * `services` / `overlaps` という**別々の**サブリソースの openapi パス）とは
+ * 別物。サブリソース側の生成関数はどれも `site` を引数に取るので、そこから
+ * 接頭辞だけを安全に切り出せる生成関数は無い（これが唯一の安く手に入る導出元）。
+ * そのため `/api/sites`（一覧）だけがリネームされても、このパスから見た
+ * サブリソース側との対応が崩れているわけではないのに接頭辞は自動で追随して
+ * しまい、epg グループが黙って前方一致を失うリスクは残る。手書き literal には
+ * 無かったこの経路のリスクを、この導出は引き受けている。
  */
 export const reservationsQueryKeyPrefix = getListReservationsQueryKey()[0]
 export const recordingsQueryKeyPrefix = getListRecordingsQueryKey()[0]
@@ -101,9 +111,8 @@ export const programsQueryKeyPrefix = '/api/programs'
  *
  * **キーを組み立てる側（`components/tuner-status.tsx`）とグループの接頭辞が
  * 同じ定数を参照することで、片方だけ改名して取り直しが止まる drift を型で
- * 防ぐ**（同じ手書きキーである番組リストの `['/api/programs', 'infinite', ...]`
- * は literal が散っているのでこの防御が無い）。テスト側はこの定数を参照せず
- * literal を持つので、定数を改名すれば events.test.tsx と live.test.tsx が落ちる。
+ * 防ぐ**。テスト側はこの定数を参照せず literal を持つので、定数を改名すれば
+ * events.test.tsx と live.test.tsx が落ちる。
  */
 export const tunersQueryKeyPrefix = '/api/tuners'
 

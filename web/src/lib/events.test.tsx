@@ -517,6 +517,10 @@ describe('useServerEvents', () => {
     queryClient.setQueryData(programListKey, [])
     queryClient.setQueryData(epgKey, [])
     queryClient.setQueryData(['/api/recordings'], [])
+    // サイト一覧（`/api/sites`）は epg の接頭辞（`/api/sites/`）にスラッシュ 1 文字の
+    // 差で前方一致しない --- サイト一覧は EPG 同期でも録画の同期でも変わらない
+    // 別の資源なので、epg の定期 invalidate に巻き込まれてはいけない
+    queryClient.setQueryData(['/api/sites'], [])
     renderSubscriber(queryClient)
 
     expect(isStale(queryClient, programListKey)).toBe(false)
@@ -526,6 +530,7 @@ describe('useServerEvents', () => {
     expect(isStale(queryClient, programListKey)).toBe(true)
     expect(isStale(queryClient, epgKey)).toBe(true)
     expect(isStale(queryClient, ['/api/recordings'])).toBe(false)
+    expect(isStale(queryClient, ['/api/sites'])).toBe(false)
   })
 
   it('背面タブでは定期取得を投げず、前面に戻ると再開する', async () => {
