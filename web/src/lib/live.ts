@@ -226,27 +226,18 @@ export type LiveDiagnostics = {
 const liveDiagnosticsMissingLabel = '—'
 
 /**
- * formatLiveLatencyLabel は「放送から」の計器文言。
+ * missingOr は欠損値（`null` / `NaN`）なら `liveDiagnosticsMissingLabel` を、
+ * そうでなければ `format` の結果を返す。
  *
- * hls.js の `latency` はライブ同期点が決まるまで `NaN` を返す
- * （`node_modules/hls.js` の `LatencyController` が `liveSyncPosition` を
- * 持つまで `edge - currentTime` を計算できないため）。**`NaN` をそのまま
- * 描画しない** --- `web/e2e/design.mjs` の欠損文字列判定（単語境界の
- * `\bNaN\b`）に引っかかる（issue #476「罠」）。
+ * 呼び出し側（`components/live-player.tsx` の `readHlsDiagnostics` /
+ * `readNativeDiagnostics`）が既に欠損を `null` に正規化して渡す前提だが、
+ * `NaN` もここで弾く --- `hls.latency` はライブ同期点が決まる前は `NaN` では
+ * なく `0` を返す（`LatencyController.get latency()` が `this._latency || 0`。
+ * `node_modules/hls.js` 1.6.17 で確認済み）ため呼び出し側が `0` を欠損として
+ * 弾いているが、ここでの `NaN` チェックはそれをすり抜けた場合の保険。
  */
-export function formatLiveLatencyLabel(latencySec: number | null): string {
-  if (latencySec === null || !Number.isFinite(latencySec)) {
-    return `放送から${liveDiagnosticsMissingLabel}`
-  }
-  return `放送から約${Math.round(latencySec)}秒`
-}
-
-/** formatLiveBufferLabel は「貯まり」の計器文言。formatLiveLatencyLabel と同じ理由で NaN を弾く。 */
-export function formatLiveBufferLabel(bufferSec: number | null): string {
-  if (bufferSec === null || !Number.isFinite(bufferSec)) {
-    return `貯まり${liveDiagnosticsMissingLabel}`
-  }
-  return `貯まり${Math.round(bufferSec)}秒`
+function missingOr(value: number | null, format: (n: number) => string): string {
+  return value === null || !Number.isFinite(value) ? liveDiagnosticsMissingLabel : format(value)
 }
 
 /**
@@ -258,10 +249,10 @@ export function formatLiveBufferLabel(bufferSec: number | null): string {
  * （issue #476 の含むもの 2「測れないものを出さない」）。
  */
 export function formatLiveDiagnostics(diagnostics: LiveDiagnostics): string {
-  const buffer = formatLiveBufferLabel(diagnostics.bufferSec)
-  return diagnostics.source === 'native'
-    ? buffer
-    : `${formatLiveLatencyLabel(diagnostics.latencySec)} / ${buffer}`
+  const buffer = `貯まり${missingOr(diagnostics.bufferSec, (n) => `${Math.round(n)}秒`)}`
+  if (diagnostics.source === 'native') return buffer
+  const latency = `放送から${missingOr(diagnostics.latencySec, (n) => `約${Math.round(n)}秒`)}`
+  return `${latency} / ${buffer}`
 }
 
 /** LivePlaylistProbeResult は probeLivePlaylist の結果。 */

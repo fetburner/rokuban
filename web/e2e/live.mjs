@@ -211,11 +211,17 @@ const playerDecided = () => {
  * 遅延・バッファの計器（`[data-testid="live-diagnostics"]`）は、hls.js の
  * ライブ同期点が決まるまで「放送から— / 貯まり—」のままなので、実際に
  * 「放送から約 n 秒」「貯まり n 秒」の両方が数値になったことを見る。
+ *
+ * **`0` は弾く（`[1-9]\d*`）。** `hls.latency` は同期点が決まる前も `NaN` では
+ * なく `0` を返す（`node_modules/hls.js` 1.6.17 の
+ * `LatencyController.get latency()` が `this._latency || 0`）。`\d+` だと
+ * 「放送から約0秒」にもマッチしてしまい、同期点が一生決まらない回帰を
+ * 見逃す（レビュー指摘）。
  */
 const liveDiagnosticsBecameNumeric = () => {
   const el = document.querySelector('[data-testid="live-diagnostics"]')
   const text = el?.textContent ?? ''
-  return /放送から約\d+秒/.test(text) && /貯まり\d+秒/.test(text)
+  return /放送から約[1-9]\d*秒/.test(text) && /貯まり\d+秒/.test(text)
 }
 
 /**

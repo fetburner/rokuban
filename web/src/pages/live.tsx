@@ -14,7 +14,12 @@ import { LiveInterruptionWarning } from '@/components/live-interruption-warning'
 import { LivePlayer } from '@/components/live-player'
 import { Button } from '@/components/ui/button'
 import { useLiveCapability } from '@/lib/capabilities'
-import { currentProgramWindow, pickInitialService } from '@/lib/live'
+import {
+  currentProgramWindow,
+  formatLiveDiagnostics,
+  pickInitialService,
+  type LiveDiagnostics,
+} from '@/lib/live'
 import { upcomingInterruptingReservation } from '@/lib/live-interruption'
 import { channelTypeLabel, groupByChannelType, orderServices } from '@/lib/epg-grid'
 import { formatTime, isAiring } from '@/lib/format'
@@ -120,6 +125,17 @@ export function LivePage() {
   }
   const isPlaying = playingKey !== null && playingKey === selectedKey
 
+  // diagnostics は遅延・バッファの計器（issue #476）。値の取得は `LivePlayer`
+  // が担うが、表示は ON AIR バッジと同じ情報欄に置くのでこちらで持つ
+  // （`LivePlayer` の `onDiagnostics` コールバック prop から受け取る）。
+  // `isPlaying` が false になった瞬間にレンダー中で捨てる --- playingKey と
+  // 同じ理由（上のコメント参照）で、effect の cleanup 待ちにすると
+  // チャンネル切り替えの 1 コミットぶん古い値が表示されうる。
+  const [diagnostics, setDiagnostics] = useState<LiveDiagnostics | null>(null)
+  if (!isPlaying && diagnostics !== null) {
+    setDiagnostics(null)
+  }
+
   // nowMs は「いま」を一定間隔で更新するティック。Date.now() を毎レンダー呼ぶだけでは
   // 再レンダーの理由にならず、番組が終わっても表示が切り替わらない。
   const [nowMs, setNowMs] = useState(() => Date.now())
@@ -204,6 +220,7 @@ export function LivePage() {
                 site={site}
                 networkId={selectedService.networkId}
                 serviceId={selectedService.serviceId}
+                onDiagnostics={setDiagnostics}
               />
             ) : (
               <LiveSelectionPreview
@@ -226,6 +243,15 @@ export function LivePage() {
                   {channelTypeLabel(selectedService.channelType)}
                 </span>
                 {nowPlaying && <OnAirBadge />}
+                {/* 遅延・バッファの計器（issue #476）。ON AIR・録画中バッジと
+                    同じ「いま電波に乗っているものとの距離」を言う中立表示
+                    なので信号色は使わず text-muted-foreground に固定する。
+                    aria-live は付けない --- 毎秒変わる数字を読み上げさせない。 */}
+                {isPlaying && diagnostics && (
+                  <span data-testid="live-diagnostics" className="text-xs text-muted-foreground">
+                    {formatLiveDiagnostics(diagnostics)}
+                  </span>
+                )}
               </div>
               {nowPlaying ? (
                 <p className="text-sm text-muted-foreground">

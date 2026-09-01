@@ -551,6 +551,66 @@ describe('LivePage', () => {
     expect(badge.className.split(' ')).toContain('tally-scanlines')
   })
 
+  /**
+   * 遅延・バッファの計器（issue #476）は `LivePlayer` の `onDiagnostics`
+   * コールバックから値を受け取り、ON AIR バッジと同じ情報欄に表示する
+   * （`LivePlayer` 自身は描画しない）。この画面のテストは通常プレイリストを
+   * unreachable に落として hls.js の動的 import を誘発しない（`stubFetch` の
+   * コメント参照）ため、ここだけプレイリストを 200 にしたうえで `canPlayType`
+   * をネイティブ HLS 対応に差し替え、`components/live-player.test.tsx` の
+   * `renderNativePath` と同じ手でネイティブ経路（hls.js 動的 import 不要）に
+   * 入れる。
+   */
+  it('計器（issue #476）: 再生中は ON AIR バッジと同じ情報欄に出る', async () => {
+    const user = userEvent.setup()
+    // プレイリスト応答を保留にし、「再生」を押した後・<video> が probe の
+    // 結果を読む前に canPlayType を差し替える窓を作る（`live-player.test.tsx`
+    // の `deferredFetch` と同じ手 --- 即座に解決する Promise だと、この
+    // テストが差し替えるより先に既定の canPlayType（jsdom は常に ''）で
+    // 経路が決まってしまう）。
+    let resolvePlaylist!: (response: Response) => void
+    const playlistResponse = new Promise<Response>((r) => {
+      resolvePlaylist = r
+    })
+    globalThis.fetch = vi.fn((input: string | URL | Request) => {
+      const url = new URL(String(input), 'http://localhost')
+      if (url.pathname === '/api/capabilities') {
+        return Promise.resolve(new Response(JSON.stringify({ live: true }), { status: 200 }))
+      }
+      if (url.pathname === '/api/sites') {
+        return Promise.resolve(new Response(JSON.stringify(['default']), { status: 200 }))
+      }
+      if (url.pathname === '/api/sites/default/services') {
+        return Promise.resolve(
+          new Response(JSON.stringify([service({ serviceId: 1, name: 'チャンネル A' })]), {
+            status: 200,
+          }),
+        )
+      }
+      if (url.pathname.includes('/live/playlist.m3u8')) {
+        return playlistResponse
+      }
+      return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }))
+    }) as unknown as typeof fetch
+    renderLive()
+
+    await user.click(await screen.findByRole('button', { name: /チャンネル Aを再生/ }))
+    const videoEl = document.querySelector('video')!
+    vi.spyOn(videoEl, 'canPlayType').mockImplementation((type) =>
+      type === 'application/vnd.apple.mpegurl' || type === 'video/mp2t' ? 'maybe' : '',
+    )
+    resolvePlaylist(new Response('', { status: 200 }))
+
+    const gauge = await screen.findByTestId('live-diagnostics')
+    // ネイティブ経路は「貯まり」だけ（latency は取得できない）。jsdom の
+    // `video.buffered` は常に空なので「貯まり—」のまま --- ここで見たいのは
+    // 数値そのものではなく、経路の区別（「放送から」を出さない）と
+    // ON AIR バッジと同じ情報欄に描画されることそのもの
+    expect(gauge).toHaveTextContent('貯まり—')
+    expect(gauge.textContent).not.toContain('放送から')
+    expect(gauge.textContent).not.toMatch(/\bNaN\b/)
+  })
+
   it('選択中チャンネルのチャンネル種別（GR/BS/CS）を表示する（issue #234 の含むもの 1）', async () => {
     stubFetch({
       services: [service({ serviceId: 1, name: 'チャンネル A', channelType: 'BS' })],

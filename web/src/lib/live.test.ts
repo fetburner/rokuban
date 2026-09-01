@@ -5,9 +5,7 @@ import {
   claimsHlsPlaylistSupport,
   classifyLiveLoadError,
   currentProgramWindow,
-  formatLiveBufferLabel,
   formatLiveDiagnostics,
-  formatLiveLatencyLabel,
   liveLeaveURL,
   livePlaylistURL,
   pickInitialService,
@@ -344,43 +342,32 @@ describe('probeLivePlaylist', () => {
   })
 })
 
-describe('formatLiveLatencyLabel', () => {
-  it('null は欠損表示', () => {
-    expect(formatLiveLatencyLabel(null)).toBe('放送から—')
-  })
-
-  // hls.latency はライブ同期点が決まるまで NaN を返す（issue #476「罠」）。
-  // NaN をそのまま描画すると web/e2e/design.mjs の欠損文字列判定に引っかかる
-  it('NaN も欠損として扱う（NaN を描かない）', () => {
-    expect(formatLiveLatencyLabel(NaN)).toBe('放送から—')
-    expect(formatLiveLatencyLabel(NaN)).not.toMatch(/\bNaN\b/)
-  })
-
-  it('数値は四捨五入して「約n秒」', () => {
-    expect(formatLiveLatencyLabel(3.4)).toBe('放送から約3秒')
-    expect(formatLiveLatencyLabel(3.6)).toBe('放送から約4秒')
-  })
-})
-
-describe('formatLiveBufferLabel', () => {
-  it('null は欠損表示', () => {
-    expect(formatLiveBufferLabel(null)).toBe('貯まり—')
-  })
-
-  it('NaN も欠損として扱う', () => {
-    expect(formatLiveBufferLabel(NaN)).toBe('貯まり—')
-    expect(formatLiveBufferLabel(NaN)).not.toMatch(/\bNaN\b/)
-  })
-
-  it('数値は四捨五入して「n秒」', () => {
-    expect(formatLiveBufferLabel(5.6)).toBe('貯まり6秒')
-  })
-})
-
 describe('formatLiveDiagnostics', () => {
   it('hls 経路は「放送から」と「貯まり」の両方を出す', () => {
     expect(formatLiveDiagnostics({ source: 'hls', latencySec: 3, bufferSec: 5 })).toBe(
       '放送から約3秒 / 貯まり5秒',
+    )
+  })
+
+  it('null は欠損表示（—）', () => {
+    expect(formatLiveDiagnostics({ source: 'hls', latencySec: null, bufferSec: null })).toBe(
+      '放送から— / 貯まり—',
+    )
+  })
+
+  // hls.latency は自身では NaN を返さない（node_modules/hls.js 1.6.17 の
+  // LatencyController.get latency() は `this._latency || 0`）が、呼び出し側
+  // （readHlsDiagnostics）の正規化をすり抜けた場合の保険として NaN も欠損に
+  // 丸める --- 画面に「NaN」という文字列を出さないための直接の保証
+  it('NaN も欠損として扱う（NaN を描かない）', () => {
+    const label = formatLiveDiagnostics({ source: 'hls', latencySec: NaN, bufferSec: NaN })
+    expect(label).toBe('放送から— / 貯まり—')
+    expect(label).not.toMatch(/\bNaN\b/)
+  })
+
+  it('数値は四捨五入する', () => {
+    expect(formatLiveDiagnostics({ source: 'hls', latencySec: 3.4, bufferSec: 5.6 })).toBe(
+      '放送から約3秒 / 貯まり6秒',
     )
   })
 

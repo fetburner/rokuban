@@ -433,14 +433,13 @@ EPGStation・KonomiTV には構造的にできない表示。
 
 ### 遅延・バッファの計器
 
-denpa の「放送から n 秒 / 貯まり n 秒」表示に相当するものを `LivePlayer`
-（`components/live-player.tsx`）に持つ。中断予測が「見始める前の判断材料」なら、
-こちらは「いま見ている映像が電波とどれだけ離れているか」という**視聴中の**
-計器で、ON AIR バッジ・録画中バッジと同じ「いま電波に乗っているものとの距離」を
-言う表示という位置づけは共通する。表示自体は再生中の映像の隅（`<video>` の
-親を再レイアウトしない絶対配置）に置く --- 計器の値は `LivePlayer` の内部
-（hls.js インスタンス・`<video>` の `buffered`）にしかないため、`pages/live.tsx`
-側（ON AIR バッジの並び）へ値を持ち上げる形は取らなかった。
+denpa の「放送から n 秒 / 貯まり n 秒」表示に相当するものを持つ。中断予測が
+「見始める前の判断材料」なら、こちらは「いま見ている映像が電波とどれだけ
+離れているか」という**視聴中の**計器で、ON AIR バッジ・録画中バッジと同じ
+「いま電波に乗っているものとの距離」を言う表示という位置づけは共通する。
+値の取得は `LivePlayer`（`components/live-player.tsx`）が担うが、表示自体は
+ON AIR バッジと同じ情報欄（`pages/live.tsx`）に置く --- `LivePlayer` は
+`onDiagnostics` コールバック prop で値を親へ渡すだけで、自分では描画しない。
 
 **経路によって出せるものが違う。**
 
@@ -451,11 +450,13 @@ denpa の「放送から n 秒 / 貯まり n 秒」表示に相当するもの�
   で近似し、「放送から」は**表示自体を出さない**（測れないものを出さない ---
   欠損表示（`—`）で埋めることすらしない）
 
-**`hls.latency` はライブ同期点が決まるまで `NaN` を返す。** 表示は最初
-「放送から— / 貯まり—」で始め、値が確定してから数値に変わる。`NaN` を
-そのまま描画すると `web/e2e/design.mjs` の欠損文字列判定（単語境界の
-`\bNaN\b`）に引っかかるため、読む側（`formatLiveLatencyLabel` /
-`formatLiveBufferLabel`。`lib/live.ts`）で必ず欠損に丸める。
+**`hls.latency` は同期点が決まる前も `NaN` ではなく `0` を返す。**
+`node_modules/hls.js`（1.6.17）の `LatencyController.get latency()` は
+`this._latency || 0` を実装しており、`_latency` は同期点が決まるまで `null`
+のまま --- つまり `NaN` を前提にすると実ブラウザでは「放送から約0秒」という
+偽の測定値が出続ける（レビューで発覚。当初の実装の欠陥）。読む側
+（`readHlsDiagnostics`。`components/live-player.tsx`）は `0` 以下を欠損として
+弾く。表示は最初「放送から— / 貯まり—」で始め、値が確定してから数値に変わる。
 
 **「測り直す」ボタンは無い。** 値は 1 秒ごとのポーリングで常に最新へ更新
 されるため、手動の再計測に操作としての意味がない（denpa の「測り直す」は
@@ -464,18 +465,20 @@ WHEP 側の再ネゴシエーションの都合であり、hls.js のポーリ�
 支援技術に読み上げさせる理由が無い。
 
 **hls.js の fatal エラーで `hls.destroy()` した後は計器のポーリングを止める。**
-破棄後のインスタンスの `latency` / `mainForwardBufferInfo` を読み続けると
-壊れた値・例外の原因になりうるため、`destroy()` と同じタイミングでポーリングの
-`setInterval` も止める。
+実 hls.js は `destroy()` 後に `latency` / `mainForwardBufferInfo` を読んでも
+例外は投げない（`LatencyController.destroy()` は内部の `hls` 参照を `null`
+にするだけで `_latency` は直前値のまま残る）。それでも止めるのは、意味の
+無くなった値を毎秒読み続けない衛生のためであって例外対策ではない。
 
 判定手段: `lib/live.test.ts`（欠損値・`NaN` の丸め・経路ごとの表示差の純関数
-テスト）、`live-player.test.tsx`「計器」（1 秒ごとに実際に読み直すこと・
-ネイティブ経路では「貯まり」しか出ないこと・`NaN` を一度も描画しないこと・
-fatal エラー後に破棄済みインスタンスを読み続けないことをフェイクの hls.js で
-検証）、`web/e2e/live.mjs` ③（実 Chrome + 実 hls.js で「放送から約 n 秒 /
-貯まり n 秒」が実際に数値になることを確認 --- bundled Chromium は
-H.264/AAC の実デコードが進まず `hls.latency` が確定しないため、ここでしか
-測れない）。
+テスト）、`live-player.test.tsx`「計器」（`onDiagnostics` が 1 秒ごとに実際に
+読み直した値で呼ばれること・ネイティブ経路では `latencySec` が常に `null` で
+あること・`hls.latency` が `0` のままでも欠損として扱うこと・fatal エラー後に
+ポーリングを止めることをフェイクの hls.js で検証）、`pages/live.tsx` 側の
+表示配線テスト、`web/e2e/live.mjs` ③（実 Chrome + 実 hls.js で「放送から約
+n 秒 / 貯まり n 秒」が実際に 0 でない数値になることを確認 --- bundled
+Chromium は H.264/AAC の実デコードが進まず `hls.latency` が更新されないため、
+ここでしか測れない）。
 
 ### 実機確認について
 
