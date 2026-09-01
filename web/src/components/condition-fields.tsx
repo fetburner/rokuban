@@ -1,5 +1,5 @@
 import { X } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useState } from 'react'
 
 import {
   ProgramSearchRequestChannelTypesItem,
@@ -336,7 +336,11 @@ function ServiceFields({
 
   // 同じ名前のサービス（ワンセグ / サブサービス等）が並ぶとき、リモコン番号・
   // 物理チャンネル・serviceId から補助ラベルを作る（issue #306）。
-  const disambiguate = useMemo(() => serviceDisambiguator(services), [services])
+  // `services` は `useAllSitesServices()` が毎レンダー新しい配列を返す
+  // （identity は保証しない）ため `useMemo` は毎回不一致になり無意味だった
+  // ---計算コストの実測に基づく最適化ではない（未測定）ので、素の呼び出しに
+  // 戻す。再び安定させたくなったらまず実測してから戻すこと。
+  const disambiguate = serviceDisambiguator(services)
 
   return (
     <Section title="チャンネル">

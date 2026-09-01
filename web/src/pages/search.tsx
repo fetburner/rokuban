@@ -118,9 +118,20 @@ export function SearchPage() {
    * にしか投げていない。結果（`ids`）はその同じ site の番組しか含まないので、
    * 名前解決も同じ site のサービス一覧だけで閉じる方が正しい --- union にすると
    * 他 site 由来のサービスが答えに混ざりうる余地を作るだけで、実際の結果には
-   * 一度も現れない。「選択肢は union / 結果は先頭 site」の非対称は、
-   * 識別子（選択肢）と観測（結果）という別の問いに答えている帰結であって、
-   * 未対応のまま残した食い違いではない。
+   * 一度も現れない。
+   *
+   * **さらに、下の `serviceById` は `s.serviceId` だけをキーにしており
+   * `Service.id` ではない。** serviceId は network をまたぐと一意でない
+   * （`lib/service-id.ts`）ため、1 site の中だけでも複数 network が同じ
+   * serviceId を持てば既に衝突しうる（`condition-fields.test.tsx` の
+   * フィクスチャに実例がある: 32676/1033 と 32677/1033 --- どちらも
+   * 「瀬戸内海放送」で serviceId 1033 が重複する）。union を渡すと network の
+   * 種類が増えるぶん衝突の機会も増えるだけなので、ここは先頭 site のままにする
+   * 方が正しい。
+   *
+   * **この結論は「検索が単一 site にしか投げず、結果が `programId` の配列で
+   * ある」という現行契約に依存する。** 結果が site を運ぶ形に変わればこの
+   * 前提ごと崩れる。
    */
   const services = useListServices(site)
   const search = useSearchPrograms()
