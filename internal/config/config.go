@@ -313,6 +313,29 @@ type RulerConfig struct {
 	// 手動で再開するまで止まり続ける（ラッチ。issue #24 M2-5）。
 	// 0 なら ruler 側の既定値（50）を使う。
 	MaxDeletesPerPass int `yaml:"max_deletes_per_pass"`
+
+	// RetractGrace は放送開始直前にルールから外れた予約を、このパスでは削除しない
+	// 猶予（internal/ruler.Config.RetractGrace、docs/recording/ruler.md §3.1「直前
+	// unmatch の猶予」）。番組表は放送直前まで書き換わるため、猶予が無いと題名の
+	// 1 文字修正のような無害な変更で録り逃す経路が開く（denpa の `RULE_RETRACT_GRACE`
+	// と同じ動機。「手違いで消す方が余分に録るより高い」）。
+	//
+	// **ポインタ**: 未設定（yaml にキーが無い）と明示的な 0 を区別する必要がある。
+	// 未設定は既定 1h（defaults() が埋める）、明示的な 0 は猶予そのものを無効化する
+	// （EncodeProfile.HWAccel と同じ goccy/go-yaml の nil ポインタ規約。上記コメント
+	// 参照）。値型 time.Duration だと 0 が「未設定」と「無効化」のどちらにも読めて
+	// 区別できない。ruler パッケージ自身は受け取った値をそのまま使うだけで、1h と
+	// いう既定値は知らない（internal/ruler.defaultConfig のコメント参照）
+	// --- 既定値の主体はこの config 層にある。
+	RetractGrace *time.Duration `yaml:"retract_grace"`
+}
+
+// validate は ruler 設定のうち、値の範囲で決まるものを検査する（Load 時）。
+func (c RulerConfig) validate() error {
+	if c.RetractGrace != nil && *c.RetractGrace < 0 {
+		return fmt.Errorf("ruler.retract_grace must be >= 0, got %s", *c.RetractGrace)
+	}
+	return nil
 }
 
 // ReconcilerConfig は reconciler（宣言的同期パス）の設定。
@@ -960,6 +983,18 @@ func loadFromString(raw string) (*Config, error) {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
 
+	// ruler.retract_grace は「未設定」（既定 1h）と明示的な 0（無効化）を区別する
+	// 必要があるため、他のフィールドのように defaults() の値をそのまま Unmarshal に
+	// 上書きさせるのではなく、Unmarshal 後に nil のときだけここで埋める
+	// （RulerConfig.RetractGrace のコメント参照。defaults() 側にポインタの既定値を
+	// 置くと、goccy/go-yaml がポインタの参照先を書き換えた場合に defaults() が
+	// 呼ばれるたびに使い回される同一の変数を意図せず共有しうるため、Load するたびに
+	// 新しいポインタをここで割り当てる）。
+	if cfg.Ruler.RetractGrace == nil {
+		d := time.Hour
+		cfg.Ruler.RetractGrace = &d
+	}
+
 	if missing := cfg.missingRequired(); len(missing) > 0 {
 		return nil, &ValidationError{missing: missing}
 	}
@@ -974,6 +1009,9 @@ func loadFromString(raw string) (*Config, error) {
 		return nil, fmt.Errorf("validating config: %w", err)
 	}
 	if err := cfg.Epg.validate(); err != nil {
+		return nil, fmt.Errorf("validating config: %w", err)
+	}
+	if err := cfg.Ruler.validate(); err != nil {
 		return nil, fmt.Errorf("validating config: %w", err)
 	}
 

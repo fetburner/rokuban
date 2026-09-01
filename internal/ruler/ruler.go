@@ -57,12 +57,26 @@ type Config struct {
 	// GC はこのブレーカー（MaxDeletesPerPass）の対象にならない
 	// （runGC のコメント参照）。
 	RetentionGrace time.Duration
+
+	// RetractGrace は放送開始直前にルールから外れた予約を、このパスでは削除しない
+	// 猶予（denpa の `RULE_RETRACT_GRACE` に倣う。docs/recording/ruler.md §3.1
+	// 「直前 unmatch の猶予」）。**MaxDeletesPerPass / RetentionGrace と違い、この
+	// パッケージ自身は既定値を持たない** --- 0（ゼロ値）はそのまま「無効」を意味し、
+	// New はこれを 0 より大きい値に読み替えない。本番の既定 1h は呼び出し側
+	// （internal/config.RulerConfig.RetractGrace）が埋める。ここで package 既定値
+	// （例: 1h）を持たせると、この値を一切気にしない既存の全テスト・呼び出し元
+	// （ruler.New(sites, pool, nil) や cfg.RetractGrace を設定しない Config{}）が
+	// 黙って猶予ありの挙動に変わり、削除を確認するテストが不安定にサイレント破壊
+	// される。0 を「無効」の後方互換な既定にすることで、猶予は明示的に opt-in する
+	// 機能になる。
+	RetractGrace time.Duration
 }
 
 func defaultConfig() Config {
 	return Config{
 		MaxDeletesPerPass: 50,
 		RetentionGrace:    24 * time.Hour,
+		// RetractGrace の既定は 0（無効）。RetractGrace のフィールドコメント参照。
 	}
 }
 
@@ -91,6 +105,9 @@ func New(sites []string, pool *pgxpool.Pool, cfg *Config) *Ruler {
 		if cfg.RetentionGrace > 0 {
 			c.RetentionGrace = cfg.RetentionGrace
 		}
+		// RetractGrace は 0 も意味のある値（無効化）なので、他の 2 つと違い
+		// ">0 のときだけ上書き" にしない。cfg が渡された時点でその値をそのまま使う。
+		c.RetractGrace = cfg.RetractGrace
 	}
 	return &Ruler{sites: sites, pool: pool, cfg: c}
 }
@@ -389,6 +406,56 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 	// なった行）だけ。EPG の欠損・フリッカーが作れるのはこちらの集合に限られる。
 	derivedDeletes := subtract(toDelete, released)
 
+	// 猶予（ruler.retract_grace, issue #428）: 開始直前にルールから外れた予約は
+	// このパスでは引っ込めない。「猶予中」を列には焼かず、削除候補から都度除く導出
+	// 規則にする（CLAUDE.md 不変条件 9）。
+	//
+	// **released（明示操作: intent skip / intent クリア / 最後の investment だった
+	// overrides の削除）を引いた後の derivedDeletes に適用する** --- toDelete
+	// 全体に適用すると、rule_id が前パスから非 NULL のままユーザーが
+	// intent{skip} を立てた行まで猶予が守ってしまい、「これは録らない」という
+	// 明示操作が直前の猶予に呑まれて DeleteReleasedReservationsBySiteAndProgramIDs
+	// が一生見ない行になる（released はこの少し上で先に実行済み。猶予はそこには
+	// 一切関与しない）。derivedDeletes まで絞ってから猶予を掛けることで、
+	// 猶予が保護する対象はブレーカー対象の集合そのものになる
+	// （docs/recording/breaker.md「大量削除サーキットブレーカー」の猶予との関係）。
+	//
+	// このクエリは tx 内（tq）で読む。derivedDeletes の programId はどれも
+	// 今パスの desired に無い＝upsertReservationsFromPass の入力行（rows）にも
+	// DeleteReleasedReservationsBySiteAndProgramIDs の対象にも含まれないので、
+	// ここまでの tx 内の書き込みで触られていない --- reservations.rule_id は
+	// 前パスの値のまま読める（罠: 今パスの評価結果で NULL に落ちた後に見ても遅い）。
+	// tx 内で読むことは「読み取りと適用の間の窓を消す」ためではない（`r.pool.Begin`
+	// は既定の READ COMMITTED で、文ごとに新しいスナップショットを取るため、この
+	// SELECT とこの後の DELETE の間に他コミットが割り込む窓は同じ tx 内でも残る
+	// --- SERIALIZABLE / REPEATABLE READ でなければ消えない）。
+	//
+	// 安全性が成り立つのは窓が無いからではなく、**猶予が削除集合からの減算にしか
+	// 効かない**からである。判定が古すぎて過大（stale-too-large）でも、次のパスが
+	// 全量再評価するので 1 パス遅れるだけで収束する（レベルトリガー、自己修復）。
+	// 判定が古すぎて過小（stale-too-small = 本当は保護すべき行を見落とす）は起き得ない:
+	//   - ルールが再度 enabled になった → 次のパスで desired が作り直す
+	//   - 投資（record 意図 ∪ overrides）が新たに付いた → DELETE 文自身の
+	//     `NOT EXISTS program_investments` が適用の瞬間に再評価する（#29 型の窓を
+	//     作らない設計は DeleteReservationsBySiteAndProgramIDs 側が既に担っている）
+	//   - start_at が猶予の窓に入ってきた → program_snapshots の書き込みは
+	//     desiredIDs にしか起きず、derivedDeletes とは素集合
+	//
+	// r.cfg.RetractGrace <= 0 は「無効」（RetractGrace のフィールドコメント参照）。
+	//
+	// graceProtectedCount は下のログのためだけに持ち越す。猶予で残った行は
+	// ブレーカーのラッチと同じ見え方（delete_candidates はあるのに
+	// deleted/released が 0）になるため、ログで区別できるようにする。
+	var graceProtectedCount int
+	if r.cfg.RetractGrace > 0 && len(derivedDeletes) > 0 {
+		graceProtected, err := r.retractGraceProtectedSubset(ctx, tq, site, derivedDeletes)
+		if err != nil {
+			return fmt.Errorf("checking retract grace: %w", err)
+		}
+		graceProtectedCount = len(graceProtected)
+		derivedDeletes = subtract(derivedDeletes, graceProtected)
+	}
+
 	var deleted int64
 	// newlyTripped: このパスで初めて発動した（tripped が false だった）ことを示す
 	// フラグ。metrics.RulerCircuitBreakerTrips.Inc() は tx.Commit の成否が
@@ -455,6 +522,11 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 	// 混ぜると「閾値を下回る導出削除が素通りしていないか」を deleted の増え方で
 	// 見る運用（docs/operations.md §2）が、明示操作の分で汚れる。
 	metrics.RulerReservations.WithLabelValues("released").Add(float64(len(released)))
+	// grace_protected はカウンタにしない: 他の 5 値は「行が 1 回寄与するエッジ」
+	// だが、猶予で残った行は毎パス（既定 10 分）再計上される「水準」なので、
+	// increase() で見ると値がパス頻度に比例してしまい、録れた予約の数を意味しない
+	// （1 件の猶予が 10 分間隔 x 1h 窓で ~6 に膨らむ）。ログの grace_protected
+	// フィールドだけで、ブレーカーのラッチと見分ける目的は十分に果たせる。
 
 	slog.Info("ruler: pass complete",
 		"site", site,
@@ -464,6 +536,7 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 		"updated", updated,
 		"deleted", deleted,
 		"released", len(released),
+		"grace_protected", graceProtectedCount,
 		"delete_candidates", len(deleteCandidates),
 	)
 	return nil
@@ -577,6 +650,31 @@ func (r *Ruler) stillProjectedSubset(ctx context.Context, q *sqlcgen.Queries, si
 	return q.ListEpgProgramIDsBySiteAndProgramIDs(ctx, sqlcgen.ListEpgProgramIDsBySiteAndProgramIDsParams{
 		Site:       site,
 		ProgramIds: candidates,
+	})
+}
+
+// retractGraceProtectedSubset は candidates（derivedDeletes --- released を
+// 引いた後の、ブレーカー対象の削除候補）のうち、猶予（ruler.retract_grace,
+// issue #428）でこのパスでは削除を見送るべき programId を返す。呼び出し側
+// （runPassForSite）が r.cfg.RetractGrace > 0 のときだけ、released を引いた
+// 後に呼ぶ --- toDelete 全体に適用すると、ユーザーの明示操作（intent skip 等）
+// まで猶予が呑み込んでしまう（runPassForSite のコメント参照）。
+//
+// 対象は「(1) 前パスでルールが base を供給していた（reservations.rule_id が
+// NOT NULL）、(2) その番組の放送開始が [now, now+grace) の範囲、(3) そのルールが
+// 今も enabled」の 3 条件をすべて満たす行。SQL 側
+// （ListRetractGraceProtectedProgramIDsBySiteAndProgramIDs、
+// internal/db/queries/ruler.sql）が権威。
+func (r *Ruler) retractGraceProtectedSubset(ctx context.Context, q *sqlcgen.Queries, site string, candidates []int64) ([]int64, error) {
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+	now := time.Now()
+	return q.ListRetractGraceProtectedProgramIDsBySiteAndProgramIDs(ctx, sqlcgen.ListRetractGraceProtectedProgramIDsBySiteAndProgramIDsParams{
+		Site:       site,
+		ProgramIds: candidates,
+		Now:        now,
+		GraceUntil: now.Add(r.cfg.RetractGrace),
 	})
 }
 

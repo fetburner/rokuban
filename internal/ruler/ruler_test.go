@@ -1941,3 +1941,300 @@ func TestRunPass_ReleasedDeleteGuard_RuleBackedRowIsNotReleased(t *testing.T) {
 		t.Error("a rule-backed reservation must not be deleted by the explicit-operation delete")
 	}
 }
+
+// 猶予（ruler.retract_grace, issue #428）のテスト群。
+//
+// 番組表は放送直前まで書き換わる（「[新]」が付く、サブタイトルが入る、誤字が直る）。
+// その拍子にルールの条件から外れた予約は、猶予が無いと次のパスで desired から
+// 落ちて削除される --- 開始 30 分前に題名が 1 文字直っただけで録り逃す経路が開く。
+// 猶予はこの経路を、放送開始が近い予約に限って塞ぐ（denpa の RULE_RETRACT_GRACE に
+// 倣う）。
+//
+// retractGraceUnmatch はルールにマッチしていた番組のタイトルを書き換えて、
+// 「ルールから外れた」状況（EPG は生きているが条件を満たさなくなった）を作る。
+// ルールの無効化（TestRunPass_RetractGrace_DisabledRuleIsNotProtected が別に見る）
+// とは異なる経路であることに注意 --- こちらは番組自体は射影に残ったままなので
+// stillProjectedSubset の凍結は働かず、猶予の述語だけが効く。
+func retractGraceUnmatch(t *testing.T, pool *pgxpool.Pool, ctx context.Context, programID int64, newTitle string, start time.Time) {
+	t.Helper()
+	insertProgram(t, pool, ctx, programID, newTitle, start)
+}
+
+// (a) 開始 30 分前に条件から外れた予約は、猶予が有効なら次パスでも残る。
+// 罠の確認: 猶予の述語（ListRetractGraceProtectedProgramIDsBySiteAndProgramIDs の
+// WHERE 句）を丸ごと外す（`AND false` を足す）とこのテストは落ちる。
+func TestRunPass_RetractGrace_KeepsImminentUnmatch(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	insertService(t, pool, ctx)
+	start := time.Now().Add(30 * time.Minute).Truncate(time.Second)
+	const programID = 40001
+	insertProgram(t, pool, ctx, programID, "対象番組", start)
+
+	ruleID := insertRule(t, pool, ctx, "grace-imminent", 10)
+	insertRuleKeyword(t, pool, ctx, ruleID, "対象番組")
+
+	r := ruler.New([]string{testSite}, pool, &ruler.Config{RetractGrace: time.Hour})
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("initial RunPass: %v", err)
+	}
+	before, ok := getReservation(t, pool, ctx, programID)
+	if !ok {
+		t.Fatal("reservation should be created initially (rule matches)")
+	}
+	if before.RuleID == nil {
+		t.Fatal("reservation should carry a rule_id (otherwise this test asserts nothing)")
+	}
+
+	// 番組表の書き換えでルールから外れる（タイトルからキーワードが消える）。
+	retractGraceUnmatch(t, pool, ctx, programID, "非マッチ番組", start)
+
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass after unmatch: %v", err)
+	}
+
+	after, ok := getReservation(t, pool, ctx, programID)
+	if !ok {
+		t.Fatal("reservation should survive the grace period, not be deleted")
+	}
+	if after.ID != before.ID {
+		t.Errorf("reservation id changed: %d -> %d (grace must freeze the row, not recreate it)", before.ID, after.ID)
+	}
+	if after.RuleID == nil || *after.RuleID != *before.RuleID {
+		t.Errorf("rule_id = %v, want unchanged %v (grace leaves the row untouched)", after.RuleID, before.RuleID)
+	}
+}
+
+// (b) 開始 2 時間前（猶予 1h の外）なら通常どおり削除される。
+func TestRunPass_RetractGrace_DoesNotProtectFarFutureUnmatch(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	insertService(t, pool, ctx)
+	start := time.Now().Add(2 * time.Hour).Truncate(time.Second)
+	const programID = 40002
+	insertProgram(t, pool, ctx, programID, "対象番組2", start)
+
+	ruleID := insertRule(t, pool, ctx, "grace-far-future", 10)
+	insertRuleKeyword(t, pool, ctx, ruleID, "対象番組2")
+
+	r := ruler.New([]string{testSite}, pool, &ruler.Config{RetractGrace: time.Hour})
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("initial RunPass: %v", err)
+	}
+	if _, ok := getReservation(t, pool, ctx, programID); !ok {
+		t.Fatal("reservation should be created initially (rule matches)")
+	}
+
+	retractGraceUnmatch(t, pool, ctx, programID, "非マッチ番組2", start)
+
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass after unmatch: %v", err)
+	}
+	if reservationExists(t, pool, ctx, programID) {
+		t.Error("reservation starting outside the grace window should have been deleted")
+	}
+}
+
+// (c) 開始 30 分前でも、ルールを enabled=false にすると猶予の対象外で削除される
+// （denpa と同じく「ルールごと削除・停止されたぶんは直前でも引っ込める」。人が
+// 押した結果だから）。
+func TestRunPass_RetractGrace_DisabledRuleIsNotProtected(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	insertService(t, pool, ctx)
+	start := time.Now().Add(30 * time.Minute).Truncate(time.Second)
+	const programID = 40003
+	insertProgram(t, pool, ctx, programID, "対象番組3", start)
+
+	ruleID := insertRule(t, pool, ctx, "grace-disabled-rule", 10)
+	insertRuleKeyword(t, pool, ctx, ruleID, "対象番組3")
+
+	r := ruler.New([]string{testSite}, pool, &ruler.Config{RetractGrace: time.Hour})
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("initial RunPass: %v", err)
+	}
+	if _, ok := getReservation(t, pool, ctx, programID); !ok {
+		t.Fatal("reservation should be created initially (rule matches)")
+	}
+
+	// タイトルは変えず、ルールそのものを無効化する。
+	if _, err := pool.Exec(ctx, `UPDATE rules SET enabled = false WHERE id = $1`, ruleID); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass after disabling rule: %v", err)
+	}
+	if reservationExists(t, pool, ctx, programID) {
+		t.Error("reservation backed by a disabled rule must be deleted even within the grace window")
+	}
+}
+
+// (d) retract_grace: 0（無効）なら、(a) と同じ「開始直前の unmatch」でも通常どおり
+// 削除される。
+func TestRunPass_RetractGrace_ZeroDisablesProtection(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	insertService(t, pool, ctx)
+	start := time.Now().Add(30 * time.Minute).Truncate(time.Second)
+	const programID = 40004
+	insertProgram(t, pool, ctx, programID, "対象番組4", start)
+
+	ruleID := insertRule(t, pool, ctx, "grace-zero", 10)
+	insertRuleKeyword(t, pool, ctx, ruleID, "対象番組4")
+
+	// RetractGrace を明示的に指定しない（ゼロ値 = 無効。ruler.Config.RetractGrace の
+	// フィールドコメント参照）。ruler.New(sites, pool, nil) と等価だが、意図を明示
+	// するため &ruler.Config{} を渡す。
+	r := ruler.New([]string{testSite}, pool, &ruler.Config{})
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("initial RunPass: %v", err)
+	}
+	if _, ok := getReservation(t, pool, ctx, programID); !ok {
+		t.Fatal("reservation should be created initially (rule matches)")
+	}
+
+	retractGraceUnmatch(t, pool, ctx, programID, "非マッチ番組4", start)
+
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass after unmatch: %v", err)
+	}
+	if reservationExists(t, pool, ctx, programID) {
+		t.Error("with retract_grace disabled (0), an imminent unmatch should be deleted as before")
+	}
+}
+
+// (e) 猶予で残った行は大量削除サーキットブレーカーの削除カウントに入らない。
+// MaxDeletesPerPass を全候補数未満に設定し、猶予が無ければ確実に発動する状況を
+// 作ったうえで、猶予によって derivedDeletes がゼロになりブレーカーが発動しないこと
+// を確認する。
+func TestRunPass_RetractGrace_ProtectedRowsDoNotCountTowardBreaker(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	insertService(t, pool, ctx)
+	start := time.Now().Add(30 * time.Minute).Truncate(time.Second)
+
+	ruleID := insertRule(t, pool, ctx, "grace-breaker", 10)
+	insertRuleKeyword(t, pool, ctx, ruleID, "対象")
+
+	const n = 3
+	for i := range n {
+		insertProgram(t, pool, ctx, int64(40100+i), fmt.Sprintf("対象%d", i), start)
+	}
+
+	// 閾値 1: 猶予が無ければ n=3 > 1 で確実に発動する。
+	r := ruler.New([]string{testSite}, pool, &ruler.Config{RetractGrace: time.Hour, MaxDeletesPerPass: 1})
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("initial RunPass: %v", err)
+	}
+	for i := range n {
+		if _, ok := getReservation(t, pool, ctx, int64(40100+i)); !ok {
+			t.Fatalf("program %d should have a reservation before the unmatch", i)
+		}
+	}
+
+	for i := range n {
+		retractGraceUnmatch(t, pool, ctx, int64(40100+i), fmt.Sprintf("非マッチ%d", i), start)
+	}
+
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass after unmatch: %v", err)
+	}
+
+	if _, tripped := getRulerDeletesBreaker(t, pool, ctx); tripped {
+		t.Error("circuit breaker should NOT trip: all candidates were protected by the grace period, so derivedDeletes must be 0")
+	}
+	for i := range n {
+		if _, ok := getReservation(t, pool, ctx, int64(40100+i)); !ok {
+			t.Errorf("program %d should survive the grace period", i)
+		}
+	}
+}
+
+// (f) 罠の確認: 開始時刻を過ぎた予約は猶予の対象にしない。過ぎた行は reconciler の
+// allowlist と GC の領分（ruler.md「開始遅延検出器」の `detectStartDelays` と同じ
+// 理由）。放送開始済み（start_at が過去）の番組がルールから外れた場合、猶予が
+// 有効でも通常どおり削除されることを確認する。
+func TestRunPass_RetractGrace_DoesNotProtectPastStart(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	insertService(t, pool, ctx)
+	// 既に放送が始まっている（終了はまだ。testDurationMs = 30 分）。
+	start := time.Now().Add(-10 * time.Minute).Truncate(time.Second)
+	const programID = 40006
+	insertProgram(t, pool, ctx, programID, "対象番組6", start)
+
+	ruleID := insertRule(t, pool, ctx, "grace-past-start", 10)
+	insertRuleKeyword(t, pool, ctx, ruleID, "対象番組6")
+
+	r := ruler.New([]string{testSite}, pool, &ruler.Config{RetractGrace: time.Hour})
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("initial RunPass: %v", err)
+	}
+	if _, ok := getReservation(t, pool, ctx, programID); !ok {
+		t.Fatal("reservation should be created initially (rule matches)")
+	}
+
+	retractGraceUnmatch(t, pool, ctx, programID, "非マッチ番組6", start)
+
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass after unmatch: %v", err)
+	}
+	if reservationExists(t, pool, ctx, programID) {
+		t.Error("a reservation whose broadcast has already started must not be protected by the grace period")
+	}
+}
+
+// (g) ユーザーの明示的な skip 意図は、猶予の対象内（放送開始直前・ルール有効）でも
+// 必ず解放される。ルールはまだマッチしたままなので rule_id は前パスから NOT NULL
+// のままだが、それは「ルールから外れた」のではなく「ユーザーが録るなと押した」の
+// で、猶予が守るべき対象ではない（denpa の非対称「ルールごと削除・停止されたぶん
+// は直前でも引っ込める」の、予約単位版）。
+//
+// 罠の確認: 猶予を DeleteReleasedReservationsBySiteAndProgramIDs より前
+// （toDelete 全体）に適用すると、rule_id が非 NULL のままのこの行まで猶予が守って
+// しまい、このテストは落ちる。
+func TestRunPass_RetractGrace_SkipIntentStillReleases(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	insertService(t, pool, ctx)
+	start := time.Now().Add(30 * time.Minute).Truncate(time.Second)
+	const programID = 40007
+	insertProgram(t, pool, ctx, programID, "対象番組7", start)
+
+	ruleID := insertRule(t, pool, ctx, "grace-skip-intent", 10)
+	insertRuleKeyword(t, pool, ctx, ruleID, "対象番組7")
+
+	r := ruler.New([]string{testSite}, pool, &ruler.Config{RetractGrace: time.Hour})
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("initial RunPass: %v", err)
+	}
+	res, ok := getReservation(t, pool, ctx, programID)
+	if !ok {
+		t.Fatal("reservation should be created initially (rule matches)")
+	}
+	if res.RuleID == nil {
+		t.Fatal("reservation should carry a rule_id (otherwise this test asserts nothing)")
+	}
+
+	// タイトルは変えない（ルールはまだマッチする）。ユーザーが直前でも明示的に
+	// 「これは録らない」と押す。
+	q := sqlcgen.New(pool)
+	if _, err := q.SkipProgram(ctx, sqlcgen.SkipProgramParams{Site: testSite, ProgramID: programID}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass after skip intent: %v", err)
+	}
+	if reservationExists(t, pool, ctx, programID) {
+		t.Error("an explicit user skip must still release the reservation, even within the retract grace window")
+	}
+}

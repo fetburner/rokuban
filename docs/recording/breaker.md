@@ -20,6 +20,7 @@
   - (c) **EPG 欠損中は投資を持つ行の `rule_id` が一斉に NULL に落ちる**ので、その最中にユーザーが投資を消すと、健全な EPG ならルール由来で残ったはずの予約がブレーカーの外で消える。EPG 復旧後の次パスでルールが作り直すので自己修復するが、この削除は「明示操作**からしか**説明できない」ものではない（`TestRunPass_EpgUnmatchNullsRuleIDButInvestmentBlocksRelease` が (c) の前半 = `rule_id` の NULL 化と、投資がある間は消えないことの両方を測っている）
 - **不変条件: 録画済みデータ（media_assets）に至る自動削除経路は retention reconcile のみ**。EPG・予約側の状態変化から録画物の削除に到達するパスを作らない
 - programId が EPG から消えた予約は即削除せず猶予を置く（mirakc 自身も removed-from-epg を理由付き failed として通知してくる）。なお導出値 `orphaned` はこの用途ではなく「番組終了後に schedule が観測されなかった欠測があり、本物の録画試行が無い」を意味し、`never_scheduled_events` と `recordings` から読むたびに導出する（[schema.md](../schema.md) §3）
+- **放送開始直前の unmatch は `ruler.retract_grace`（[ruler.md](ruler.md)「直前 unmatch の猶予」）がこのブレーカーより先に受け止める。** 猶予で `toDelete` から外れた行はブレーカーの分子にも分母にも入らない。EPG 欠損時、開始直前の予約は猶予で残り、開始が遠い予約はこのブレーカーで止まる、という二段の防御になる
 
 ##### 止められる場所は ruler だけ
 

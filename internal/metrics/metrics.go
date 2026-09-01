@@ -238,6 +238,13 @@ var (
 	// 起きないもの。docs/recording.md §3.2）で、混ぜると「閾値を下回る導出削除が
 	// 素通りしていないか」を deleted の増え方で見る運用が汚れる。gc は番組終了後の
 	// GC（ブレーカーの対象外）。
+	//
+	// `ruler.retract_grace`（issue #428）で削除を見送った件数はここに含めない ---
+	// 他の 5 値と違い「行が 1 回寄与するエッジ」ではなく、猶予で残っている間は
+	// 毎パス（既定 10 分）再計上される「水準」なので、カウンタの increase() に
+	// 乗せると値がパス頻度に比例してしまい録れた予約の数を意味しない。ブレーカーの
+	// ラッチと見分ける目的は internal/ruler の `ruler: pass complete` ログの
+	// grace_protected フィールドが果たす。
 	RulerReservations = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "rokuban_ruler_reservations_total",
 		Help: "Reservations created, updated, or deleted by the ruler. " +

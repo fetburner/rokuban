@@ -107,6 +107,11 @@ func TestLoad_Minimal(t *testing.T) {
 	if cfg.Log.Format != "json" {
 		t.Errorf("log.format = %q, want %q", cfg.Log.Format, "json")
 	}
+	// ruler.retract_grace 未設定の既定は 1h（0 の「無効」とは区別される。
+	// RulerConfig.RetractGrace のコメント参照）。
+	if cfg.Ruler.RetractGrace == nil || *cfg.Ruler.RetractGrace != time.Hour {
+		t.Errorf("ruler.retract_grace = %v, want %v", cfg.Ruler.RetractGrace, time.Hour)
+	}
 }
 
 func TestLoad_EnvExpansion(t *testing.T) {
@@ -636,6 +641,57 @@ epg:
 	}
 }
 
+// ruler.retract_grace を明示的に 0 にすると、未設定時の既定 1h にフォールバック
+// せず「無効」として保持されることを確認する（RulerConfig.RetractGrace のコメント
+// が定める、未設定と明示的 0 の区別）。
+func TestLoad_RulerRetractGraceExplicitZeroDisables(t *testing.T) {
+	path := writeConfig(t, `
+db:
+  host: localhost
+  user: rokuban
+  password: secret
+  database: rokuban
+mirakcs:
+  - site: default
+    url: http://mirakc.local:40772
+storage:
+  media_dir: /mnt/media
+ruler:
+  retract_grace: 0s
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Ruler.RetractGrace == nil {
+		t.Fatal("ruler.retract_grace = nil, want a non-nil pointer to 0 (explicit disable)")
+	}
+	if *cfg.Ruler.RetractGrace != 0 {
+		t.Errorf("ruler.retract_grace = %v, want 0", *cfg.Ruler.RetractGrace)
+	}
+}
+
+// ruler.retract_grace に負値を与えると起動時エラーになることを確認する。
+func TestLoad_RulerRetractGraceNegative(t *testing.T) {
+	path := writeConfig(t, `
+db:
+  host: localhost
+  user: rokuban
+  password: secret
+  database: rokuban
+mirakcs:
+  - site: default
+    url: http://mirakc.local:40772
+storage:
+  media_dir: /mnt/media
+ruler:
+  retract_grace: -1h
+`)
+	if _, err := Load(path); err == nil {
+		t.Error("ruler.retract_grace: -1h: expected error, got nil")
+	}
+}
+
 // db セクション内の typo も strict パースで検出できることを確認する
 // （既存の TestLoad_UnknownKey はトップレベルの typo しか見ていない）。
 func TestLoad_UnknownKey_NestedInDBSection(t *testing.T) {
@@ -688,6 +744,9 @@ func TestLoad_FileNotFound(t *testing.T) {
 // intPtr はテスト用に *int リテラルを組み立てる。
 func intPtr(v int) *int { return &v }
 
+// durPtr はテスト用に *time.Duration リテラルを組み立てる。
+func durPtr(v time.Duration) *time.Duration { return &v }
+
 // allFieldsOverriddenConfig は Config の yaml タグをほぼ全部非既定値で上書きした
 // 設定。
 //
@@ -726,6 +785,7 @@ epg:
   retention_grace: 48h
 ruler:
   max_deletes_per_pass: 77
+  retract_grace: 90m
 reconciler:
   start_delay_grace: 5m
 worker:
@@ -867,7 +927,7 @@ func TestLoad_AllFieldsOverridden(t *testing.T) {
 		{
 			"ruler",
 			cfg.Ruler,
-			RulerConfig{MaxDeletesPerPass: 77},
+			RulerConfig{MaxDeletesPerPass: 77, RetractGrace: durPtr(90 * time.Minute)},
 		},
 		{
 			"reconciler",
