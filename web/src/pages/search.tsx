@@ -8,6 +8,7 @@ import {
   getListRulesQueryKey,
   useCreateRule,
   useGetRule,
+  useListCapacityOverages,
   useListServices,
   useSearchPrograms,
   useUpdateRule,
@@ -23,6 +24,7 @@ import { EmptyState, ErrorState, ListSkeleton, PageHeader, Skeleton } from '@/co
 import { useToast } from '@/components/toaster'
 import { Button } from '@/components/ui/button'
 import { Field, Input } from '@/components/ui/field'
+import { countProgramsInShortfall, coveringWindow } from '@/lib/capacity'
 import { formatDateTime, formatDuration } from '@/lib/format'
 import { useCurrentSite } from '@/lib/site'
 import { cn } from '@/lib/utils'
@@ -207,6 +209,32 @@ export function SearchPage() {
     .filter((ms): ms is number => ms !== undefined)
 
   /**
+   * shortfallCount は「保存前の値札」に足す容量への影響の近似（issue #475 の
+   * 判定 (b)）。候補集合を足した Hall 条件の what-if 再評価（判定 (c)）はしない
+   * --- `costSampleIds` と同じサンプル（`loadedPrograms`）を、既に確定している
+   * 不足区間（`GET /api/capacity/overages`）と交差判定するだけに留める
+   * （`lib/capacity.ts` の `countProgramsInShortfall`）。0 件は「今は重なる
+   * 不足区間が無い」であって「保存しても不足しない」ではないため、呼び出し側
+   * （`ShortfallOverlapNote`）は 0 件のとき何も描画しない。
+   *
+   * 母集団は時間の見込みと同じサンプル（先頭 N 件）にする --- 別の母集団を
+   * 使うと、同じ値札の中で「先頭 N 件」の意味が場所によって変わってしまう。
+   */
+  const loadedPrograms = costDetails
+    .map((d) => unwrap(d.data))
+    .filter((p): p is ProgramListItem => p !== undefined)
+  const shortfallWindow = coveringWindow(loadedPrograms)
+  const overagesQuery = useListCapacityOverages(
+    {
+      start: new Date(shortfallWindow?.startMs ?? 0).toISOString(),
+      end: new Date(shortfallWindow?.endMs ?? 0).toISOString(),
+    },
+    { query: { enabled: shortfallWindow !== null } },
+  )
+  const overages = unwrap(overagesQuery.data) ?? []
+  const shortfallCount = countProgramsInShortfall(overages, site, loadedPrograms)
+
+  /**
    * searchedHasPeriod は値札に「8 日分を 7 日換算」という根拠を出してよいかの判定。
    * `periodStartAt` / `periodEndAt` で期間を絞った検索は観測スパンが 8 日ではなく
    * その期間そのものになるため、8 日を根拠にすると偽の説明になる。
@@ -305,6 +333,11 @@ export function SearchPage() {
         totalCount={ids.length}
         loadedDurationsMs={loadedDurationsMs}
         hasPeriod={searchedHasPeriod}
+      />
+      <ShortfallOverlapNote
+        count={shortfallCount}
+        sampleSize={loadedPrograms.length}
+        isSampled={loadedPrograms.length < ids.length}
       />
 
       {ruleId !== undefined ? (
@@ -491,6 +524,40 @@ function RuleCostSummary({
     sampledNote
 
   return <p className="px-4 py-2 text-xs text-muted-foreground">{text}</p>
+}
+
+/**
+ * ShortfallOverlapNote は検索結果のうち、放送時間帯が既存のチューナー不足区間
+ * （`GET /api/capacity/overages`）と交差する番組の件数を値札の隣に出す
+ * （issue #475。判定 (b)。docs/frontend/search.md「保存前の値札」）。
+ *
+ * **新たな不足を予測しない。** 候補集合を足した what-if 評価（Hall 条件の
+ * 再評価、判定 (c)）はしない --- 既にある不足区間に乗っている番組を数えるだけ。
+ * 0 件は「今は重なる不足区間が無い」であって「保存しても不足しない」ではない
+ * ため、0 件のときは**何も描画しない**（`CapacityShortfallBadge` と同じ
+ * 「沈黙は保証ではない」規律。緑色にしたり「収まります」と言い換えたりしない）。
+ *
+ * `sampleSize` / `isSampled` は時間の見込み（`RuleCostSummary` の
+ * `loadedDurationsMs`）と同じサンプルから渡す。上限で切れている場合は
+ * 「先頭 N 件のうち」と明記する --- 値札の他の注記（時間の外挿）と同じ形。
+ */
+function ShortfallOverlapNote({
+  count,
+  sampleSize,
+  isSampled,
+}: {
+  count: number
+  sampleSize: number
+  isSampled: boolean
+}) {
+  if (count === 0) return null
+
+  const scope = isSampled ? `先頭 ${sampleSize} 件のうち、` : ''
+  return (
+    <p className="px-4 py-2 text-xs text-muted-foreground">
+      {scope}既にチューナー不足の区間と重なる番組が {count} 件あります
+    </p>
+  )
 }
 
 /**

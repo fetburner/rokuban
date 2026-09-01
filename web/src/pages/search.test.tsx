@@ -2,7 +2,14 @@ import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
-import type { Program, ProgramSearchRequest, Rule, RuleInput, Service } from '@/api/generated'
+import type {
+  CapacityOverage,
+  Program,
+  ProgramSearchRequest,
+  Rule,
+  RuleInput,
+  Service,
+} from '@/api/generated'
 import { SearchPage } from '@/pages/search'
 import { renderInRouter } from '@/test/router'
 
@@ -112,7 +119,11 @@ function jsonResponse(body: unknown, status = 200): Response {
  * リクエスト本体そのものも検証できる）。`PATCH` は `rules` 配列も更新するので、
  * 同じテスト内で連続保存したときの挙動（例: 上書き後に再取得した内容）も追える。
  */
-function stubApi(options?: { rules?: Rule[]; holdProgramDetails?: boolean }) {
+function stubApi(options?: {
+  rules?: Rule[]
+  holdProgramDetails?: boolean
+  overages?: CapacityOverage[]
+}) {
   const searchBodies: ProgramSearchRequest[] = []
   const createRuleBodies: RuleInput[] = []
   const updateRuleBodies: { id: number; data: RuleInput }[] = []
@@ -143,6 +154,10 @@ function stubApi(options?: { rules?: Rule[]; holdProgramDetails?: boolean }) {
 
     if (url.pathname === '/api/encode-profiles') {
       return Promise.resolve(jsonResponse([]))
+    }
+
+    if (url.pathname === '/api/capacity/overages') {
+      return Promise.resolve(jsonResponse(options?.overages ?? []))
     }
 
     const ruleDetail = /^\/api\/rules\/(\d+)$/.exec(url.pathname)
@@ -952,6 +967,86 @@ describe('SearchPage', () => {
       const afterType = screen.getByText(/この条件で保存すると/)
       expect(afterType.textContent).toContain('8 日分を 7 日換算')
       expect(afterType.textContent).not.toContain('期間条件で絞っている')
+    })
+  })
+
+  describe('容量への影響（不足区間との交差、issue #475）', () => {
+    /**
+     * `news`（programId 100）は origin + 100h に開始、30 分番組
+     * （`allPrograms` 生成規則、上部参照）。この区間と交差する不足区間を作る。
+     */
+    function overlappingOverage(): CapacityOverage {
+      const startMs = origin + 100 * 3_600_000
+      return {
+        site: 'default',
+        startAt: new Date(startMs + 5 * 60_000).toISOString(),
+        endAt: new Date(startMs + 25 * 60_000).toISOString(),
+        shortfall: 1,
+        jammedTypes: ['GR'],
+      }
+    }
+
+    it('交差する不足区間があれば件数を 1 行出す', async () => {
+      stubApi({ overages: [overlappingOverage()] })
+      renderPage()
+
+      await addKeyword('ニュース')
+      await userEvent.click(screen.getByRole('button', { name: '検索' }))
+
+      expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+      expect(
+        await screen.findByText('既にチューナー不足の区間と重なる番組が 1 件あります'),
+      ).toBeInTheDocument()
+    })
+
+    it('交差する不足区間が無ければ何も描画しない（「収まります」とは言わない）', async () => {
+      // 不足区間はあるが、`news` の放送時間帯（origin + 100h 〜 100.5h）とは
+      // 交差しない遠い時刻に置く。
+      const farAway: CapacityOverage = {
+        site: 'default',
+        startAt: new Date(origin).toISOString(),
+        endAt: new Date(origin + 60_000).toISOString(),
+        shortfall: 1,
+        jammedTypes: ['BS'],
+      }
+      stubApi({ overages: [farAway] })
+      renderPage()
+
+      await addKeyword('ニュース')
+      await userEvent.click(screen.getByRole('button', { name: '検索' }))
+
+      expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+      // 値札の他の行が描画されるのを待ってから、この行だけが無いことを確かめる
+      // （非同期の空虚な成功を避けるため、先に「他は描画済み」を確認する）
+      await screen.findByText(/この条件で保存すると、週あたり見込みで約 1 件・約 26分/)
+      expect(
+        screen.queryByText(/既にチューナー不足の区間と重なる番組が/),
+      ).not.toBeInTheDocument()
+    })
+
+    it('サンプルが上限で切れているときは「先頭 N 件のうち」と明記する', async () => {
+      // programId 5（filler の 1 つ、programId 昇順の先頭 30 件に含まれる）の
+      // 放送時間帯とだけ交差する不足区間。
+      const startMs = origin + 5 * 3_600_000
+      const overage: CapacityOverage = {
+        site: 'default',
+        startAt: new Date(startMs + 5 * 60_000).toISOString(),
+        endAt: new Date(startMs + 25 * 60_000).toISOString(),
+        shortfall: 1,
+        jammedTypes: ['GR'],
+      }
+      stubApi({ overages: [overage] })
+      renderPage()
+
+      expect(await screen.findByRole('button', { name: 'NHK総合' })).toBeInTheDocument()
+      // 条件なしの検索で 37 件（pageSize=30 を超える）に当てる
+      await userEvent.click(screen.getByRole('button', { name: '検索' }))
+
+      expect(
+        await screen.findByText(
+          '先頭 30 件のうち、既にチューナー不足の区間と重なる番組が 1 件あります',
+        ),
+      ).toBeInTheDocument()
     })
   })
 
