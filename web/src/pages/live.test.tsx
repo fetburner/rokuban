@@ -174,7 +174,9 @@ function stubFetch(options: {
     }
 
     // SiteGate（routes.tsx）が全ルートの手前で待つ（issue #184 M4-12）。
-    // TunerStatus（issue #474）もこれを使ってサイトごとに /tuners を問い合わせる。
+    // `sites` に複数渡すテストは「他サイトの状態を混ぜない」の再演用 ---
+    // TunerStatus は useCurrentSite()（= sites[0]）1 サイトしか問い合わせない
+    // ので、2 番目以降のサイトの /tuners への fetch が起きないことを見る。
     if (url.pathname === '/api/sites') {
       return Promise.resolve(new Response(JSON.stringify(sites), { status: 200 }))
     }
@@ -207,10 +209,14 @@ function stubFetch(options: {
     if (url.pathname === '/api/breakers') {
       return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }))
     }
-    if (url.pathname === '/api/sites/default/services') {
+    // LivePage は useCurrentSite()（SiteGate が流す先頭サイト）でチャンネル
+    // 一覧・番組を引く（issue #474 レビュー: サイト切り替え UI が無いので常に
+    // sites[0]）。複数サイトを渡すテスト（他サイト混入の再演）でも先頭サイトの
+    // 応答が返るようにする。
+    if (url.pathname === `/api/sites/${sites[0]}/services`) {
       return Promise.resolve(new Response(JSON.stringify(services), { status: 200 }))
     }
-    if (url.pathname === '/api/sites/default/programs') {
+    if (url.pathname === `/api/sites/${sites[0]}/programs`) {
       // `?service=<Service.id>` は複数指定可（orval のクエリシリアライズは
       // 同名パラメータの繰り返し）。サーバーは合成 id で厳密に絞るので、
       // ここでも同じ規則で絞る --- serviceId だけで拾うと、同じ id を持つ
@@ -1042,10 +1048,18 @@ describe('LivePage / 録画予約による中断予測（issue #235 M7-2）', ()
  */
 describe('チューナー状態（issue #474）', () => {
   it('故障チューナーがあるとき「（故障 n）」が destructive の淡い地 + 文字で見える', async () => {
+    // 3 本中 1 本だけ故障（2 対 1 の非対称）にする --- 2 対 1 だと `!isFault`
+    // へ反転する変異でも表示件数が対称に入れ替わらず、変異が実際に落ちる
+    // （2 対 0 だと反転しても両側とも同じ「1」を表示してしまい変異が素通りする。
+    // レビュー指摘）。
     stubFetch({
       services: [service({ serviceId: 1, name: 'チャンネル A' })],
       tunersBySite: {
-        default: [tuner({ index: 0, isFault: false }), tuner({ index: 1, isFault: true })],
+        default: [
+          tuner({ index: 0, isFault: false }),
+          tuner({ index: 1, isFault: false }),
+          tuner({ index: 2, isFault: true }),
+        ],
       },
     })
     const { queryClient } = renderLive()
@@ -1053,6 +1067,8 @@ describe('チューナー状態（issue #474）', () => {
     await screen.findByRole('button', { name: /再生/ })
     await tunerStatusSettled(queryClient)
 
+    // n は「利用可能な本数」（isAvailable && !isFault）で、故障ぶんは含めない
+    // （internal/capacity の countable と揃える。issue #474 レビュー指摘）。
     expect(screen.getByText('チューナー2本')).toBeInTheDocument()
     const badge = screen.getByText('（故障1）')
     expect(badge).toBeInTheDocument()
@@ -1076,7 +1092,28 @@ describe('チューナー状態（issue #474）', () => {
     expect(screen.queryByText(/故障/)).not.toBeInTheDocument()
   })
 
-  it('観測（全チューナーのうち最も古いもの）が 30 分より新しいときは「観測が止まっています」を出さない', async () => {
+  it('設定で無効化（isAvailable: false）したチューナーは n から除く', async () => {
+    // capacity の countable（isAvailable && !isFault）と n を揃える regression
+    // テスト --- 揃えないと、無効化した本数まで「使える本数」に見え、この行が
+    // 消したかった「警告が無い = 大丈夫」の誤読が n 自体で復活する（レビュー指摘）。
+    stubFetch({
+      services: [service({ serviceId: 1, name: 'チャンネル A' })],
+      tunersBySite: {
+        default: [
+          tuner({ index: 0, isAvailable: true, isFault: false }),
+          tuner({ index: 1, isAvailable: false, isFault: false }),
+        ],
+      },
+    })
+    const { queryClient } = renderLive()
+
+    await screen.findByRole('button', { name: /再生/ })
+    await tunerStatusSettled(queryClient)
+
+    expect(screen.getByText('チューナー1本')).toBeInTheDocument()
+  })
+
+  it('観測（全チューナーのうち最も古いもの）が 1 時間より新しいときは「観測が止まっています」を出さない', async () => {
     stubFetch({
       services: [service({ serviceId: 1, name: 'チャンネル A' })],
       tunersBySite: {
@@ -1092,7 +1129,7 @@ describe('チューナー状態（issue #474）', () => {
     expect(screen.queryByText('観測が止まっています')).not.toBeInTheDocument()
   })
 
-  it('観測（全チューナーのうち最も古いもの）が 30 分より古いときは「観測が止まっています」を出す', async () => {
+  it('観測（全チューナーのうち最も古いもの）が 1 時間より古いときは「観測が止まっています」を出す', async () => {
     stubFetch({
       services: [service({ serviceId: 1, name: 'チャンネル A' })],
       tunersBySite: {
@@ -1100,7 +1137,7 @@ describe('チューナー状態（issue #474）', () => {
           // 最も古い方が判定に使われることも確かめる --- 新しい行が混ざっていても
           // 古い行 1 本があれば「止まっています」を出す
           tuner({ index: 0, observedAt: new Date(Date.now() - 5 * 60_000).toISOString() }),
-          tuner({ index: 1, observedAt: new Date(Date.now() - 40 * 60_000).toISOString() }),
+          tuner({ index: 1, observedAt: new Date(Date.now() - 70 * 60_000).toISOString() }),
         ],
       },
     })
@@ -1111,5 +1148,27 @@ describe('チューナー状態（issue #474）', () => {
 
     expect(screen.getByText('チューナー2本')).toBeInTheDocument()
     expect(screen.getByText('観測が止まっています')).toBeInTheDocument()
+  })
+
+  it('他サイトの状態は混ぜない（この画面から選べないサイトの故障を出さない）', async () => {
+    // レビューでの実測: 全サイトを描画すると、選択できない他サイトの故障
+    // バッジまで並んでしまう再演テスト。SiteGate は先頭サイト（tokyo）を流すので、
+    // 2 番目のサイト（takamatsu、故障あり）の状態はこの画面に出てはならない。
+    stubFetch({
+      services: [service({ serviceId: 1, name: 'チャンネル A' })],
+      sites: ['tokyo', 'takamatsu'],
+      tunersBySite: {
+        tokyo: [tuner({ index: 0, isFault: false })],
+        takamatsu: [tuner({ index: 0, isFault: true }), tuner({ index: 1, isFault: true })],
+      },
+    })
+    const { queryClient } = renderLive()
+
+    await screen.findByRole('button', { name: /再生/ })
+    await tunerStatusSettled(queryClient)
+
+    expect(screen.getByText('チューナー1本')).toBeInTheDocument()
+    expect(screen.queryByText(/故障/)).not.toBeInTheDocument()
+    expect(screen.queryByText('takamatsu')).not.toBeInTheDocument()
   })
 })

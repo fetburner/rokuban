@@ -66,13 +66,20 @@ type QueryGroup = {
   topic: string | null
   /** invalidate 対象のクエリキーの接頭辞（orval のキーは `[url, params]`）。 */
   prefixes: string[]
+  /**
+   * invalidate 対象のクエリキーの接尾辞。site がパスに埋め込まれるキー
+   * （`/api/sites/{site}/tuners` 等）は site の値が環境ごとに違うため接頭辞では
+   * 絞れない --- `tuners` グループがこちらを使う。他のグループは空配列にする
+   * （`prefixes` と同じく「書き忘れ」を型で防ぐため optional にしない）。
+   */
+  suffixes: string[]
   /** SSE が 1 通も届かなくても、この周期で invalidate する。 */
   refreshIntervalMs: number
 }
 
 /**
  * queryGroups は SSE のトピックと、それによって無効化するクエリキーの接頭辞の対応。
- * トピックを持たないグループ（`storage`）は SSE を購読せず、定期 invalidate
+ * トピックを持たないグループ（`storage` / `tuners`）は SSE を購読せず、定期 invalidate
  * （加えて再接続時の全グループ invalidate）だけで収束させる。
  *
  * サーバーが配るのは「どのデータが変わったか」のヒントだけで、変更内容は載っていない。
@@ -89,16 +96,19 @@ const queryGroups: QueryGroup[] = [
     // 一緒に取り直す（docs/data.md §6.5）。専用のトピックは無い --- 導出値に
     // 独自の通知を持たせると、元データと導出値が別々の鮮度で並ぶことになる
     prefixes: ['/api/reservations', '/api/capacity/overages'],
+    suffixes: [],
     refreshIntervalMs: operationalRefreshIntervalMs,
   },
   {
     topic: 'recordings',
     prefixes: ['/api/recordings', '/api/encode-queue'],
+    suffixes: [],
     refreshIntervalMs: operationalRefreshIntervalMs,
   },
   {
     topic: 'breakers',
     prefixes: ['/api/breakers'],
+    suffixes: [],
     refreshIntervalMs: operationalRefreshIntervalMs,
   },
   {
@@ -108,28 +118,64 @@ const queryGroups: QueryGroup[] = [
     // できず（ページの形が「取得した半開区間」なので）手書きの
     // ['/api/programs', 'infinite', ...] を使う。ここに書かないと、番組リストは
     // SSE の epg イベントでも定期 invalidate でも取り直されない
+    //
+    // /api/sites/ の広い接頭辞は tuners（下記）のキーにも前方一致するが、
+    // tuners は専用グループを別に持つので実害は無い（EPG の 10 分より短い
+    // 専用周期側が先に効く。ここでの守備範囲は programs / services / overlaps）。
     prefixes: ['/api/sites/', '/api/programs'],
+    suffixes: [],
     refreshIntervalMs: epgRefreshIntervalMs,
   },
   {
     // トピックを持たない --- storageRefreshIntervalMs の doc コメント参照。
     topic: null,
     prefixes: ['/api/storage'],
+    suffixes: [],
+    refreshIntervalMs: storageRefreshIntervalMs,
+  },
+  {
+    // トピックを持たない。tuner_sync の変更を知らせる SSE トピックは無く、
+    // storage と同じ「使い捨てプロジェクションを定期 invalidate だけで
+    // 収束させる」形（storageRefreshIntervalMs の doc コメント参照）。
+    //
+    // `GET /api/sites/{site}/tuners` の site はパスに埋め込まれ、値は環境ごとに
+    // 違う（`SiteGate` が流す先頭サイト）ので前方一致では絞れない。
+    // 接尾辞 `/tuners` で拾う --- QueryGroup.suffixes 参照。
+    topic: null,
+    prefixes: [],
+    suffixes: ['/tuners'],
+    // storage と同じ周期を流用する（新しい数値は発明しない）。tuner_sync も
+    // storage_sync と同じ「worker の定期全量同期でしか値が変わらない射影」
+    // なので、性質が同じグループには同じ周期を割り当てる。
     refreshIntervalMs: storageRefreshIntervalMs,
   },
 ]
 
-/** invalidateGroup は 1 グループ分のクエリキー接頭辞をまとめて invalidate する。 */
-function invalidateGroup(queryClient: QueryClient, group: QueryGroup): void {
-  for (const prefix of group.prefixes) {
-    // orval のクエリキーは [url, params] の形なので、URL 接頭辞で照合する
-    void queryClient.invalidateQueries({
-      predicate: (query) => {
-        const first = query.queryKey[0]
-        return typeof first === 'string' && first.startsWith(prefix)
-      },
-    })
-  }
+/**
+ * invalidateGroups は複数グループぶんのクエリキー接頭辞・接尾辞を**1 回の
+ * `invalidateQueries` 呼び出しにまとめて** invalidate する。
+ *
+ * グループごとに別々に `invalidateQueries` を呼ぶと、あるクエリキーが 2 つの
+ * グループの条件（例: epg の接頭辞 `/api/sites/` と tuners の接尾辞
+ * `/tuners`）に両方一致したとき、同じクエリに対して invalidate → refetch が
+ * 2 回連続で走ってしまう（実測: 再接続時の全グループ invalidate で tuners の
+ * fetch が 1 回のはずが 2 回余分に走った。events.test.tsx で固定してある）。
+ * 呼び出しをまとめて述語の側で OR を取れば、一致がいくつのグループにまたがって
+ * いてもクエリごとに高々 1 回しか invalidate されない。
+ */
+function invalidateGroups(queryClient: QueryClient, groups: readonly QueryGroup[]): void {
+  // orval のクエリキーは [url, params] の形なので、URL 接頭辞・接尾辞で照合する
+  void queryClient.invalidateQueries({
+    predicate: (query) => {
+      const first = query.queryKey[0]
+      if (typeof first !== 'string') return false
+      return groups.some(
+        (group) =>
+          group.prefixes.some((prefix) => first.startsWith(prefix)) ||
+          group.suffixes.some((suffix) => first.endsWith(suffix)),
+      )
+    },
+  })
 }
 
 type EncodeProgressSnapshot = ReadonlyMap<number, ReadonlyMap<string, number>>
@@ -318,10 +364,11 @@ export function useServerEvents() {
     }
 
     for (const group of queryGroups) {
-      // topic が null のグループ（storage）は SSE を購読しない --- 定期 invalidate
-      // だけで収束させる（storageRefreshIntervalMs の doc コメント参照）
+      // topic が null のグループ（storage / tuners）は SSE を購読しない ---
+      // 定期 invalidate だけで収束させる（storageRefreshIntervalMs の doc
+      // コメント参照）
       if (group.topic === null) continue
-      listen(group.topic, () => invalidateGroup(queryClient, group))
+      listen(group.topic, () => invalidateGroups(queryClient, [group]))
     }
     // encode-progress だけは次の値で上書きされる揮発テレメトリなので、REST を
     // invalidate せず payload を直接表示する。
@@ -342,7 +389,7 @@ export function useServerEvents() {
       setConnectionState({ status: 'open', lastConnectedAt: new Date().toISOString() })
       if (!disconnected) return
       disconnected = false
-      for (const group of queryGroups) invalidateGroup(queryClient, group)
+      invalidateGroups(queryClient, queryGroups)
     })
 
     return () => {
@@ -360,9 +407,10 @@ export function useServerEvents() {
         // 背面タブでは投げない。復帰時は refetchOnWindowFocus が拾う
         // （main.tsx の QueryClient 既定）
         if (document.visibilityState === 'hidden') return
-        for (const group of queryGroups) {
-          if (group.refreshIntervalMs === intervalMs) invalidateGroup(queryClient, group)
-        }
+        invalidateGroups(
+          queryClient,
+          queryGroups.filter((group) => group.refreshIntervalMs === intervalMs),
+        )
       }, intervalMs),
     )
 

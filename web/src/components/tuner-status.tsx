@@ -1,85 +1,64 @@
-import { useQueries } from '@tanstack/react-query'
 import { TriangleAlert } from 'lucide-react'
 
-import { getListTunersQueryOptions, useListSites, type Tuner } from '@/api/generated'
+import { useListTuners } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
+import { useCurrentSite } from '@/lib/site'
 import { isObservationStale } from '@/lib/storage-forecast'
-
-/**
- * tunerStatusStaleAfterMs は `observedAt`（サイト内の最古の観測）をこれより古いと
- * 「観測が止まっています」と表示するしきい値。
- *
- * worker のチューナー射影ループの間隔は既定 10 分
- * （`internal/worker/worker.go` の `defaultTunerSyncInterval`）。ここではその 3 倍
- * （30 分）を安全マージンにする --- `lib/storage-forecast.ts` の
- * `observationStaleAfterMs`（ストレージ観測 5 分間隔の 12 倍）と同じ考え方で、
- * 1 回の失敗パス・再起動直後の遅延程度では誤って「古い」と出ない一方、
- * 観測ループが本当に止まっていれば早めに検知できる値を選んだ。
- */
-export const tunerStatusStaleAfterMs = 3 * 10 * 60 * 1000
 
 /**
  * TunerStatus はライブ画面のチャンネル一覧の脇に「チューナー n 本（故障 m）」の
  * 1 行を出す（issue #474 の判定 (b)）。
  *
- * 「いまどの局を掴んでいるか」「ライブ視聴が何本か」は `tuner_sync` に無いため
- * 出さない（別の判断。issue のコメント参照）。故障を知る手段が今は無いので、
- * 「警告が無い = 大丈夫」という誤読を避けるためにここへ出す。
+ * **1 サイト（`useCurrentSite()`）だけを見る。** `LivePage` はサイト切り替え UI
+ * を持たず、`SiteGate`（`components/site-gate.tsx`）が流す先頭サイト固定の
+ * チャンネル一覧しか出さない画面なので、この行も同じ 1 サイトに揃える。他サイトの
+ * 状態を混ぜると、この画面からは選べないサイトの故障バッジまで並んで誤読を招く
+ * （実測: レビューで `tokyo` 選択中に `takamatsu` の故障バッジが表示された）。
+ * `docs/frontend/shell.md`「サイトの扱い」でもライブは「出所が無い = 先頭サイト
+ * 固定」の行に置かれているので、この行もその表のまま整合する。
  *
- * `GET /api/sites/{site}/tuners` は site スコープ（`GET /api/capacity/overages` の
- * ような全サイト版は無い）なので、サイトごとに `useQueries` で問い合わせる
- * （`pages/search.tsx` の値札と同じ形）。
+ * 「いまどの局を掴んでいるか」「ライブ視聴が何本か」は `tuner_sync` に無いため
+ * 出さない（別の判断）。
+ *
+ * **n は射影の全行数ではなく `isAvailable && !isFault` の本数にする**
+ * （`internal/capacity` の `countable` と揃える。docs/data/capacity.md §6.5）。
+ * 生の射影本数のままだと、設定で無効化した本数まで「使える本数」に見えてしまい、
+ * この行が消したかった「警告が無い = 大丈夫」の誤読が n 自体で復活する
+ * （レビュー指摘）。故障の本数（m）は n に含めない別枠の警告として添える ---
+ * n は「いま使える本数」、m は「そのうち壊れている本数」ではなく「n に入って
+ * いない故障」という独立した警告。
  *
  * **射影が 0 行のサイトは何も主張しない**
  * （docs/data/capacity.md §6.5「射影が 1 行も無いサイトは何も主張しない」と一貫
- * させる）。取得が未解決/失敗のサイトも同じ扱い（`unwrap` が `undefined` を返す）。
+ * させる）。取得が未解決/失敗のときも同じ（`unwrap` が `undefined` を返す）。
+ *
+ * **鮮度は `observedAt`（射影内で最も古いもの）が `isObservationStale` の既定
+ * しきい値（`observationStaleAfterMs`。1 時間）より古いかで見る。** 専用の
+ * しきい値は作らない --- `tuner_sync` は worker の定期全量同期でしか値が
+ * 変わらない使い捨てプロジェクションで、ストレージ観測（`GET /api/storage`）と
+ * 性質が同じであり、クライアント側の取り直しも同じ周期（`lib/events.ts` の
+ * `tuners` グループが `storageRefreshIntervalMs` を流用する）に揃えてある。
+ * 同じ性質のものに別の数字を発明する理由が無いので、既存のしきい値をそのまま
+ * 再利用する。
  */
 export function TunerStatus() {
-  const sitesQuery = useListSites()
-  const sites = unwrap(sitesQuery.data) ?? []
-  const showSite = sites.length > 1
+  const site = useCurrentSite()
+  const query = useListTuners(site)
+  const tuners = unwrap(query.data)
+  if (tuners === undefined || tuners.length === 0) return null
 
-  const tunerQueries = useQueries({
-    queries: sites.map((site) => getListTunersQueryOptions(site)),
-  })
-
-  const nowMs = Date.now()
-  const lines = sites
-    .map((site, i) => {
-      const tuners = unwrap(tunerQueries[i]?.data)
-      if (tuners === undefined || tuners.length === 0) return undefined
-      return <TunerStatusLine key={site} site={site} showSite={showSite} tuners={tuners} nowMs={nowMs} />
-    })
-    .filter((line) => line !== undefined)
-
-  if (lines.length === 0) return null
-
-  return <div className="flex flex-col gap-1">{lines}</div>
-}
-
-function TunerStatusLine({
-  site,
-  showSite,
-  tuners,
-  nowMs,
-}: {
-  site: string
-  showSite: boolean
-  tuners: Tuner[]
-  nowMs: number
-}) {
+  const availableCount = tuners.filter((t) => t.isAvailable && !t.isFault).length
   const faultCount = tuners.filter((t) => t.isFault).length
   const oldestObservedAt = tuners.reduce(
-    (oldest, t) => (t.observedAt < oldest ? t.observedAt : oldest),
+    (oldest, t) => (Date.parse(t.observedAt) < Date.parse(oldest) ? t.observedAt : oldest),
     tuners[0]!.observedAt,
   )
-  const stale = isObservationStale(oldestObservedAt, nowMs, tunerStatusStaleAfterMs)
+  const stale = isObservationStale(oldestObservedAt, Date.now())
 
   return (
     <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-      {showSite && <span className="font-medium text-foreground">{site}</span>}
       <span>
-        チューナー{tuners.length}本
+        チューナー{availableCount}本
         {faultCount > 0 && (
           <span className="ml-1 rounded bg-destructive/10 px-1.5 py-0.5 text-xs font-medium text-destructive">
             （故障{faultCount}）

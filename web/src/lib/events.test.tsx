@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-quer
 import { act, render } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { getGetStorageQueryKey } from '@/api/generated'
+import { getGetStorageQueryKey, getListTunersQueryKey } from '@/api/generated'
 import {
   epgRefreshIntervalMs,
   operationalRefreshIntervalMs,
@@ -84,6 +84,14 @@ const reservationDetailKey = ['/api/reservations', 'detail', 'tokyo', 300000]
  * ずれを検出できない（`web/e2e/sse-refresh.mjs` の「実ブラウザ」参照）。
  */
 const storageKey = getGetStorageQueryKey()
+/**
+ * チューナー状態（`components/tuner-status.tsx`。issue #474）のキー。
+ * site は `tokyo` を使う --- `default` にすると epg グループの広い接頭辞
+ * （`/api/sites/`）にも一致してしまい、tuners 専用グループが実際に効いている
+ * ことを主張できなくなるわけではない（接尾辞一致なのでどの site 名でも同じ）が、
+ * site 名が変わっても壊れないことも一緒に示すためあえて変えてある。
+ */
+const tunersKey = getListTunersQueryKey('tokyo')
 
 /** fetchCounts は監視中のクエリが実際に何回 fetch されたかを数える。 */
 type FetchCounts = {
@@ -93,6 +101,7 @@ type FetchCounts = {
   epg: number
   programList: number
   storage: number
+  tuners: number
 }
 
 /**
@@ -143,6 +152,13 @@ function ActiveQueries({ counts }: { counts: FetchCounts }) {
       return Promise.resolve([])
     },
   })
+  useQuery({
+    queryKey: tunersKey,
+    queryFn: () => {
+      counts.tuners += 1
+      return Promise.resolve([])
+    },
+  })
   return null
 }
 
@@ -177,6 +193,7 @@ async function renderLevelPaths() {
     epg: 0,
     programList: 0,
     storage: 0,
+    tuners: 0,
   }
   const view = render(
     <QueryClientProvider client={queryClient}>
@@ -194,6 +211,7 @@ async function renderLevelPaths() {
     epg: 1,
     programList: 1,
     storage: 1,
+    tuners: 1,
   })
   return { queryClient, counts, view }
 }
@@ -405,6 +423,30 @@ describe('useServerEvents', () => {
     expect(storageRefreshIntervalMs).toBe(300_000)
   })
 
+  /**
+   * チューナー状態（issue #474）は専用グループとして登録してある --- 以前は
+   * epg グループの広い接頭辞（`/api/sites/`）にたまたま前方一致していただけで、
+   * epg の 10 分周期に「たまたま」乗っていた（レビュー指摘。実測: 定期
+   * invalidate が動かない状態で 40 分進めても `/tuners` への再取得が 0 件）。
+   * ここでは storage と同じ周期（`storageRefreshIntervalMs`）で確実に
+   * 取り直されることを直接確認する。
+   */
+  it('SSE が来なくてもチューナー状態は専用の周期で取り直す', async () => {
+    vi.useFakeTimers()
+    const { counts } = await renderLevelPaths()
+
+    // 299 秒では動かない（周期より短い時間で通ってしまうテストにしない）
+    await advance(299_000)
+    expect(counts.tuners).toBe(1)
+    // 同じ時点で epg（10 分周期）はまだ 1 回も取り直していない --- tuners が
+    // epg の広い接頭辞への前方一致（意図した無害な副作用）だけに乗っている
+    // のではなく、専用グループの周期だけでも確実に取り直ることの確認
+    expect(counts.epg).toBe(1)
+
+    await advance(1_000)
+    expect(counts.tuners).toBe(2)
+  })
+
   it('storage にはトピックが無く、SSE イベントでは取り直されない', () => {
     globalThis.EventSource = EventSourceStub as unknown as typeof EventSource
     const queryClient = new QueryClient({
@@ -423,6 +465,30 @@ describe('useServerEvents', () => {
     EventSourceStub.last?.emit('epg')
 
     expect(isStale(queryClient, storageKey)).toBe(false)
+  })
+
+  it('tuners にはトピックが無く、reservations/recordings/breakers のイベントでは取り直されない', () => {
+    globalThis.EventSource = EventSourceStub as unknown as typeof EventSource
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: Infinity } },
+    })
+    queryClient.setQueryData(tunersKey, [])
+    renderSubscriber(queryClient)
+
+    expect(isStale(queryClient, tunersKey)).toBe(false)
+
+    EventSourceStub.last?.emit('reservations')
+    EventSourceStub.last?.emit('recordings')
+    EventSourceStub.last?.emit('breakers')
+
+    expect(isStale(queryClient, tunersKey)).toBe(false)
+
+    // epg だけは例外 --- その接頭辞（/api/sites/）が tuners のキーにも前方
+    // 一致するため、意図せず巻き込まれる（無害な副作用。queryGroups の epg
+    // エントリのコメント参照）。tuners 自身がトピックを持たないことは上の
+    // 3 つの無関係トピックで無効化されないことで確認済み
+    EventSourceStub.last?.emit('epg')
+    expect(isStale(queryClient, tunersKey)).toBe(true)
   })
 
   it('epg のイベントで番組リスト（手書きのクエリキー）も取り直す', () => {
@@ -478,11 +544,12 @@ describe('useServerEvents', () => {
       epg: 1,
       programList: 1,
       storage: 1,
+      tuners: 1,
     })
 
     // 切断 → 再接続。切断中に飛んだ通知は再送されないので、周期を待たずに取り直す。
-    // storage は SSE トピックを持たないが、再接続時の全グループ invalidate は
-    // topic の有無を見ずに queryGroups 全体を回すのでここも取り直される
+    // storage / tuners は SSE トピックを持たないが、再接続時の全グループ
+    // invalidate は topic の有無を見ずに queryGroups 全体を回すのでここも取り直される
     EventSourceStub.last?.emit('error')
     EventSourceStub.last?.emit('open')
     await advance(0)
@@ -494,6 +561,7 @@ describe('useServerEvents', () => {
       epg: 2,
       programList: 2,
       storage: 2,
+      tuners: 2,
     })
   })
 })

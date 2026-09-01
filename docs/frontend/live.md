@@ -442,27 +442,55 @@ docs/operations/monitoring.md §監視「チューナー故障はライブ画面
 - **`GET /api/sites/{site}/tuners` は `tuner_sync` の行をそのまま返す。** 導出はしない。
   「いまどの局を掴んでいるか」「ライブ視聴が何本か」はこの射影に無い。したがって
   このエンドポイントもそれを持たない --- watcher の観測対象を広げる別の判断になる
+- **1 サイト（`useCurrentSite()`）だけを見る。** `LivePage` はサイト切り替え UI を
+  持たず、`SiteGate` が流す先頭サイト固定のチャンネル一覧しか出さない画面。
+  `docs/frontend/shell.md`「サイトの扱い」の表の「出所が無い」段にライブは既にある。
+  全サイトを描くと、この画面からは選べないサイトの故障バッジまで並んでしまい
+  誤読を招く（レビューで見つかった実装ミス --- 当初は `GET /api/sites` を引き直して
+  全サイトぶんの行を出していた）
+- **n は射影の全行数ではなく `isAvailable && !isFault` の本数にする**
+  （`internal/capacity` の `countable` と揃える。docs/data/capacity.md §6.5）。
+  射影の生本数のままだと、設定で無効化した本数まで「使える本数」に見えてしまい、
+  この行が消したかった「警告が無い = 大丈夫」の誤読が n 自体で復活する
+  （レビュー指摘）。故障の本数は n に含めない別枠の警告として添える
 - **故障 0 本のときは「（故障 m）」を出さない。** 故障は `destructive` の淡い地 +
   文字（docs/frontend/design.md「色は信号のみ」）。利用可であることに色は使わない
   --- 緑を持たない
-- **多サイトなら site ごとの行にする。** `showSite` の判定（`GET /api/sites` が
-  2 件以上）を流用する。サイトごとに `GET /api/sites/{site}/tuners` を問い合わせる
-  （`useQueries`。`pages/search.tsx` の値札と同じ形）
-- **射影が 1 行も無いサイトは何も主張しない。** 応答が空配列のサイトは行自体を
-  描かない（docs/data/capacity.md §6.5 と同じ規律）
-- **鮮度は `observedAt`（サイト内で最も古いもの）で見る。** しきい値は 30 分
-  （worker のチューナー射影ループの既定間隔 10 分の 3 倍）。`lib/storage-forecast.ts`
-  の `observationStaleAfterMs` と同じ安全マージンの取り方で、しきい値を超えたら
-  「観測が止まっています」を出す。判定は既存の `isObservationStale`
-  （`lib/storage-forecast.ts`）を再利用する --- しきい値だけをこの用途向けに渡し、
-  新しい判定関数は作らない
+- **射影が 0 行のサイトは何も主張しない。** 応答が空配列なら行自体を描かない
+  （docs/data/capacity.md §6.5 と同じ規律）
+- **鮮度は `observedAt`（射影内で最も古いもの）で見る。** 専用のしきい値は作らず、
+  `isObservationStale`（`lib/storage-forecast.ts`）の既定しきい値
+  （`observationStaleAfterMs`。1 時間）をそのまま再利用する。`tuner_sync` は
+  worker の定期全量同期でしか値が変わらない使い捨てプロジェクションで、
+  ストレージ観測（`GET /api/storage`）と性質が同じだから同じしきい値を使う ---
+  独自の数字を発明しない
+- **クライアント側の取り直しは `lib/events.ts` の専用グループ（`tuners`）に
+  登録してある。** 当初は専用グループを作らず、`epg` グループの広い接頭辞
+  （`/api/sites/`）にたまたま前方一致させていた。その結果 10 分周期に
+  「たまたま」乗っていただけだった（レビューで発見）。実測: 定期 invalidate を
+  止めた状態で 40 分進めても、`/tuners` への再取得は 0 件だった。`tuners`
+  グループは `storage` と同じ「トピックを持たず専用の周期だけで収束させる」形にし、
+  周期も storage と同じ値（`storageRefreshIntervalMs`）を流用する。site がパスに
+  埋め込まれ前方一致では絞れないため、`QueryGroup` に接尾辞（`suffixes`）の一致を
+  追加した（`/api/sites/{site}/tuners` は接尾辞 `/tuners` で拾う）。1 つのクエリが
+  複数のグループ条件（例: epg の接頭辞と tuners の接尾辞）に同時一致することが
+  ある。そのときに invalidate が二重に走らないよう、`invalidateGroups` は複数
+  グループぶんの条件を 1 回の `invalidateQueries` 呼び出しにまとめている。
+  レビューで実際に二重 fetch を検出して修正した --- `events.test.tsx` で固定して
+  ある
 - **mirakc が `isFault` を true にする条件は測っていない。** 実運用で一度も
   true にならない可能性がある。そのため鮮度の表示を同じ行に併置してあり、故障の
   表示が当てにならない場合でも watcher 停止のほうは必ず読める
 
 判定手段: `pages/live.test.tsx`「チューナー状態」。故障ありで destructive の淡い地 +
-文字が見えること・無ければ出ないことを両方向で確認する。`observedAt` が古いときに
-「観測が止まっています」が出ることと、新しいときは出ないことも両方向で確認する。
+文字が見えること・無ければ出ないことを両方向で確認する。3 本中 1 本故障という
+非対称な内訳にしてあるのは、`isFault` の判定を反転させる変異でも表示件数が対称に
+入れ替わらず実際に落ちるようにするためである。設定で無効化した行が n から除かれる
+ことと、他サイトの状態を混ぜないことも確認する。`observedAt` が古いときに「観測が
+止まっています」が出ることと、新しいときは出ないことも両方向で確認する。
+`lib/events.ts` の `tuners` グループは `events.test.tsx` が確認する --- 専用の周期で
+取り直すこと・SSE トピックを持たないこと・複数グループの一致による二重
+invalidate が起きないこと。
 
 ### 遅延・バッファの計器
 
