@@ -1,6 +1,6 @@
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type {
   CapacityOverage,
@@ -39,6 +39,22 @@ const services: Service[] = [
 ]
 
 const origin = new Date('2026-07-29T12:00:00Z').getTime()
+
+/**
+ * `pages/search.tsx` は容量ノートの問い合わせ窓（`shortfallWindowStartMs`）に
+ * `Date.now()` を使う（レビュー指摘 1・2 の修正で追加）。フィクスチャの番組は
+ * すべて `origin` からの相対オフセットで組んでいるため、実際の壁時計と
+ * `origin` がかけ離れていると窓がフィクスチャの時刻を含まず、この画面の
+ * 容量ノート系のテストがテスト実行日に依存して揺れる。`pages/home.test.tsx`
+ * と同じ規律で `vi.setSystemTime` だけを使う（`vi.useFakeTimers()` は呼ばない
+ * --- `waitFor` / `userEvent` が使う実タイマーはそのまま動かす必要がある）。
+ */
+beforeEach(() => {
+  vi.setSystemTime(origin)
+})
+afterEach(() => {
+  vi.useRealTimers()
+})
 
 function program(programId: number, serviceId: number, name: string): Program {
   const startAt = origin + programId * 3_600_000
@@ -123,10 +139,18 @@ function stubApi(options?: {
   rules?: Rule[]
   holdProgramDetails?: boolean
   overages?: CapacityOverage[]
+  /**
+   * `allPrograms` に無い番組を検索・詳細取得の対象に足す（レビュー指摘 2 の
+   * 回帰用: 終了未定番組 `durationMs = 0` を混ぜるテストなど）。`allPrograms`
+   * 自体を変えると既存テストの件数の期待値（37 件・32 件等）が全部ずれるため、
+   * 影響を局所化する。
+   */
+  extraPrograms?: Program[]
 }) {
   const searchBodies: ProgramSearchRequest[] = []
   const createRuleBodies: RuleInput[] = []
   const updateRuleBodies: { id: number; data: RuleInput }[] = []
+  const programs = [...allPrograms, ...(options?.extraPrograms ?? [])]
   // 値札（RuleCostSummary）用の useQueries が `SearchResultList` と同じクエリキー
   // を再利用しても追加のリクエストが発生しないことを実測するための記録
   // （`pages/search.tsx` のコメント「値札のために追加の HTTP リクエストは
@@ -136,13 +160,25 @@ function stubApi(options?: {
   // 即座に解決せず保留する。「検索は解決したが durationMs は 1 件も届いていない」
   // 瞬間（`loadedDurationsMs` が空のまま `totalCount > 0`）を確実に再現するための
   // 仕掛け --- 実タイマーに依存すると環境差でその瞬間を取りこぼしうる。
-  // `releaseProgramDetails()` で保留分をまとめて解決する。
+  // `releaseProgramDetails()` で保留分をまとめて解決する。`releaseOneProgramDetail()`
+  // は先頭の 1 件だけを解決する --- レビュー指摘 1（番組詳細が実ネットワークで
+  // 1 件ずつ非同期に届くと窓＝クエリキーが毎回変わっていた）の回帰を、届くたびに
+  // 別のレンダーへ分けて確認するのに使う。
   const pendingProgramDetails: (() => void)[] = []
   function releaseProgramDetails() {
     const toRelease = pendingProgramDetails.splice(0, pendingProgramDetails.length)
     for (const resolve of toRelease) resolve()
   }
+  function releaseOneProgramDetail() {
+    const resolve = pendingProgramDetails.shift()
+    resolve?.()
+  }
   const rules = options?.rules ? [...options.rules] : []
+  // 容量ノート（`ShortfallOverlapNote`）用のリクエスト記録。レビュー指摘 1
+  // （窓がサンプル番組の時刻から作られ、番組詳細が届くたびに新しいクエリキーへ
+  // 化けて 1 検索で最大サンプル件数ぶんの要求が飛んでいた）の回帰を、
+  // このリクエスト回数で固定する。
+  const overagesRequests: string[] = []
 
   const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input), 'http://localhost')
@@ -157,7 +193,24 @@ function stubApi(options?: {
     }
 
     if (url.pathname === '/api/capacity/overages') {
-      return Promise.resolve(jsonResponse(options?.overages ?? []))
+      overagesRequests.push(url.toString())
+      // 実サーバー（`internal/api/capacity.go`）と同じ挙動にする（レビュー指摘 3）。
+      // 半開区間の交差で絞り、`end` が `start` より後でなければ 400 にする ---
+      // これを素通りさせると、`pages/search.tsx` の窓が退化する回帰
+      // （レビュー指摘 2）にテストが無防備になる。
+      const startParam = url.searchParams.get('start')
+      const endParam = url.searchParams.get('end')
+      const startMs = startParam === null ? NaN : Date.parse(startParam)
+      const endMs = endParam === null ? NaN : Date.parse(endParam)
+      if (!(endMs > startMs)) {
+        return Promise.resolve(jsonResponse({ error: 'end must be after start' }, 400))
+      }
+      const inWindow = (options?.overages ?? []).filter((o) => {
+        const oStart = Date.parse(o.startAt)
+        const oEnd = Date.parse(o.endAt)
+        return oEnd > startMs && oStart < endMs
+      })
+      return Promise.resolve(jsonResponse(inWindow))
     }
 
     const ruleDetail = /^\/api\/rules\/(\d+)$/.exec(url.pathname)
@@ -203,7 +256,7 @@ function stubApi(options?: {
     const detail = /^\/api\/sites\/default\/programs\/(\d+)$/.exec(url.pathname)
     if (detail) {
       programDetailRequests.push(Number(detail[1]))
-      const found = allPrograms.find((p) => p.programId === Number(detail[1]))
+      const found = programs.find((p) => p.programId === Number(detail[1]))
       const response = found ? jsonResponse(found) : jsonResponse({ error: 'not found' }, 404)
       if (options?.holdProgramDetails) {
         return new Promise<Response>((resolve) => {
@@ -226,7 +279,7 @@ function stubApi(options?: {
         if (match.value === '幽霊') return Promise.resolve(jsonResponse([999]))
       }
 
-      const matched = allPrograms.filter((p) => {
+      const matched = programs.filter((p) => {
         for (const match of body.textMatches ?? []) {
           const haystack = match.target === 'name' ? p.name : p.description
           const hit =
@@ -265,6 +318,8 @@ function stubApi(options?: {
     rules,
     programDetailRequests,
     releaseProgramDetails,
+    releaseOneProgramDetail,
+    overagesRequests,
   }
 }
 
@@ -1047,6 +1102,99 @@ describe('SearchPage', () => {
           '先頭 30 件のうち、既にチューナー不足の区間と重なる番組が 1 件あります',
         ),
       ).toBeInTheDocument()
+    })
+
+    /**
+     * レビュー差し戻し指摘 1: 容量ノートの問い合わせ窓をサンプル番組
+     * （`loadedPrograms`）の時刻から作ると、番組詳細（`GET
+     * /api/programs/{id}`）が実ネットワークで 1 件ずつ非同期に届くたびに
+     * 窓＝クエリキーが変わり、1 回の検索で最大サンプル件数ぶん（レビュー実測
+     * 30 本）の要求が飛んで、その間ノートが出たり消えたりした。
+     * `holdProgramDetails` + `releaseOneProgramDetail` で 1 件ずつ別のレンダーへ
+     * 分けて解決し、実ネットワークの非同期到着を模す。
+     */
+    it('番組詳細が 1 件ずつ非同期に届いても、容量ノートの問い合わせは増え続けない', async () => {
+      const { overagesRequests, releaseOneProgramDetail, programDetailRequests } = stubApi({
+        holdProgramDetails: true,
+      })
+      renderPage()
+
+      expect(await screen.findByRole('button', { name: 'NHK総合' })).toBeInTheDocument()
+      // 条件なしの検索で 37 件（pageSize=30 を超える）に当てる。詳細は保留
+      // されるので、この時点ではまだ 1 件も届いていない。
+      await userEvent.click(screen.getByRole('button', { name: '検索' }))
+      await waitFor(() => expect(programDetailRequests.length).toBe(30))
+
+      // 30 件の番組詳細を 1 件ずつ解決する。`filler` は programId 昇順
+      // （1..30）でリクエストされ、`releaseOneProgramDetail` は先頭（＝最初に
+      // リクエストされた番組）から解決するので、番組名の出現順で解決を追える。
+      for (let id = 1; id <= 30; id++) {
+        releaseOneProgramDetail()
+        // eslint-disable-next-line no-await-in-loop
+        await waitFor(() => expect(screen.getByText(`番組 ${id}`)).toBeInTheDocument())
+      }
+
+      // 窓が `Date.now()` だけに依存する固定窓であれば、30 回の個別解決を
+      // 経ても `/api/capacity/overages` への要求は高々 1 回で足りる（React の
+      // 再レンダーの割れ方に依存させないよう、上限には少し余裕を持たせる）。
+      expect(overagesRequests.length).toBeGreaterThanOrEqual(1)
+      expect(overagesRequests.length).toBeLessThanOrEqual(3)
+    })
+
+    /**
+     * レビュー差し戻し指摘 2: 窓をサンプル番組の `durationMs` から作ると、
+     * 終了未定番組（mirakc の `duration: null` 相当。`internal/worker/epg.go`
+     * の投影で `durationMs = 0` になる）だけがサンプルに含まれたとき窓が
+     * `start === end` に退化し、サーバーが 400（`internal/api/capacity.go`
+     * 「end must be after start」）を返して `unwrap(...) ?? []` で「不足区間が
+     * あるのに沈黙」に落ちた。この番組だけに当たる検索で、ノートが沈黙せず
+     * 窓も退化しないことを確認する。
+     */
+    it('終了未定番組（durationMs = 0）だけがサンプルでも窓が退化せず、ノートが沈黙しない', async () => {
+      const undetermined: Program = {
+        programId: 900,
+        networkId: 32736,
+        serviceId: 1024,
+        eventId: 900,
+        startAt: new Date(origin + 3 * 3_600_000).toISOString(),
+        endAt: new Date(origin + 3 * 3_600_000).toISOString(),
+        durationMs: 0,
+        name: '終了未定番組',
+        description: '',
+        genres: [0],
+        isFree: true,
+      }
+      // 番組の放送「開始」の瞬間をまたぐ不足区間。durationMs = 0 の番組は
+      // [start, start) という幅 0 の区間になるため、瞬間を厳密にまたぐ区間
+      // でなければ交差しない（`intersectingOverages` は半開区間の交差判定）。
+      const overage: CapacityOverage = {
+        site: 'default',
+        startAt: new Date(origin + 3 * 3_600_000 - 5 * 60_000).toISOString(),
+        endAt: new Date(origin + 3 * 3_600_000 + 5 * 60_000).toISOString(),
+        shortfall: 1,
+        jammedTypes: ['GR'],
+      }
+      const { overagesRequests } = stubApi({ extraPrograms: [undetermined], overages: [overage] })
+      renderPage()
+
+      await addKeyword('終了未定番組')
+      await userEvent.click(screen.getByRole('button', { name: '検索' }))
+
+      expect(await screen.findByText('終了未定番組')).toBeInTheDocument()
+      // 「不足区間があるのに沈黙」に落ちていないこと（ノートが実際に出る）。
+      expect(
+        await screen.findByText('既にチューナー不足の区間と重なる番組が 1 件あります'),
+      ).toBeInTheDocument()
+
+      // 窓が退化していれば `/api/capacity/overages` の `end` が `start` 以下に
+      // なる（直す前の実装ではここが `start === end` になり 400 だった）。
+      expect(overagesRequests.length).toBeGreaterThanOrEqual(1)
+      for (const url of overagesRequests) {
+        const params = new URL(url).searchParams
+        const startMs = Date.parse(params.get('start') ?? '')
+        const endMs = Date.parse(params.get('end') ?? '')
+        expect(endMs).toBeGreaterThan(startMs)
+      }
     })
   })
 
