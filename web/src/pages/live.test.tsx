@@ -4,7 +4,7 @@ import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { ProgramListItem, Reservation, Service } from '@/api/generated'
+import type { ProgramListItem, Reservation, Service, Tuner } from '@/api/generated'
 import { ToastProvider } from '@/components/toaster'
 import { routeTree } from '@/routes'
 
@@ -61,6 +61,18 @@ function reservation(overrides: Partial<Reservation> = {}): Reservation {
   }
 }
 
+function tuner(overrides: Partial<Tuner> = {}): Tuner {
+  return {
+    index: 0,
+    name: 'chardev0',
+    types: ['GR'],
+    isAvailable: true,
+    isFault: false,
+    observedAt: new Date().toISOString(),
+    ...overrides,
+  }
+}
+
 /**
  * renderLive は実際の routeTree（`@/routes`）を使って `/live` を開く。
  *
@@ -108,6 +120,28 @@ async function interruptionSettled(queryClient: QueryClient): Promise<void> {
   })
 }
 
+/**
+ * tunerStatusSettled は `TunerStatus`（issue #474）が使う `/api/sites` と
+ * `/api/sites/{site}/tuners` の解決を待つ（`interruptionSettled` と同じ
+ * 「空虚な成功」対策 --- クエリが始まる前にアサーションが走って通るのを防ぐ）。
+ */
+async function tunerStatusSettled(queryClient: QueryClient): Promise<void> {
+  await waitFor(() => {
+    expect(queryClient.isFetching()).toBe(0)
+    const sitesStatuses = queryClient
+      .getQueryCache()
+      .findAll({ queryKey: ['/api/sites'] })
+      .map((query) => query.state.status)
+    expect(sitesStatuses).toContain('success')
+    const tunerStatuses = queryClient
+      .getQueryCache()
+      .findAll({ predicate: (query) => /^\/api\/sites\/.+\/tuners$/.test(String(query.queryKey[0])) })
+      .map((query) => query.state.status)
+    expect(tunerStatuses.length).toBeGreaterThan(0)
+    expect(tunerStatuses.every((s) => s === 'success')).toBe(true)
+  })
+}
+
 /** stubFetch は pathname ごとに応答を振り分ける（routes.test.tsx と同じ形）。 */
 function stubFetch(options: {
   services?: Service[]
@@ -118,6 +152,10 @@ function stubFetch(options: {
   capabilitiesStatus?: number
   /** `GET /api/reservations`（全サイト分）。既定は空 --- 中断予測（issue #235）用。 */
   reservations?: Reservation[]
+  /** サイト名一覧（`GET /api/sites`）。既定は `['default']` の単一サイト。 */
+  sites?: string[]
+  /** `GET /api/sites/{site}/tuners`。site ごとに指定しない限り空配列（issue #474）。 */
+  tunersBySite?: Record<string, Tuner[]>
 }) {
   const {
     services = [],
@@ -125,12 +163,26 @@ function stubFetch(options: {
     live = true,
     capabilitiesStatus = 200,
     reservations = [],
+    sites = ['default'],
+    tunersBySite = {},
   } = options
   globalThis.fetch = vi.fn((input: string | URL | Request) => {
     const url = new URL(String(input), 'http://localhost')
 
     if (url.pathname === '/api/reservations') {
       return Promise.resolve(new Response(JSON.stringify(reservations), { status: 200 }))
+    }
+
+    // SiteGate（routes.tsx）が全ルートの手前で待つ（issue #184 M4-12）。
+    // TunerStatus（issue #474）もこれを使ってサイトごとに /tuners を問い合わせる。
+    if (url.pathname === '/api/sites') {
+      return Promise.resolve(new Response(JSON.stringify(sites), { status: 200 }))
+    }
+
+    const tunersMatch = /^\/api\/sites\/([^/]+)\/tuners$/.exec(url.pathname)
+    if (tunersMatch) {
+      const site = tunersMatch[1]!
+      return Promise.resolve(new Response(JSON.stringify(tunersBySite[site] ?? []), { status: 200 }))
     }
 
     // ライブへの導線・画面はサーバー側の live.enabled に連動する（issue #209）。
@@ -154,10 +206,6 @@ function stubFetch(options: {
 
     if (url.pathname === '/api/breakers') {
       return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }))
-    }
-    // SiteGate（routes.tsx）が全ルートの手前で待つ（issue #184 M4-12）。
-    if (url.pathname === '/api/sites') {
-      return Promise.resolve(new Response(JSON.stringify(['default']), { status: 200 }))
     }
     if (url.pathname === '/api/sites/default/services') {
       return Promise.resolve(new Response(JSON.stringify(services), { status: 200 }))
@@ -983,5 +1031,85 @@ describe('LivePage / 録画予約による中断予測（issue #235 M7-2）', ()
     await screen.findByRole('button', { name: /再生/ })
     await interruptionSettled(queryClient)
     expect(screen.queryByText(/録画予約/)).not.toBeInTheDocument()
+  })
+})
+
+/**
+ * チューナー状態の 1 行（issue #474 判定 (b)）。`components/tuner-status.tsx` の
+ * 表示ロジックのうち、ここでは「実際の画面に出るか」を jsdom で確かめる
+ * （導出の単体レベルの分岐は `tuner-status.tsx` 自体に置かず、この画面テストで
+ * 直接見る --- 表示先が 1 箇所しかないため）。
+ */
+describe('チューナー状態（issue #474）', () => {
+  it('故障チューナーがあるとき「（故障 n）」が destructive の淡い地 + 文字で見える', async () => {
+    stubFetch({
+      services: [service({ serviceId: 1, name: 'チャンネル A' })],
+      tunersBySite: {
+        default: [tuner({ index: 0, isFault: false }), tuner({ index: 1, isFault: true })],
+      },
+    })
+    const { queryClient } = renderLive()
+
+    await screen.findByRole('button', { name: /再生/ })
+    await tunerStatusSettled(queryClient)
+
+    expect(screen.getByText('チューナー2本')).toBeInTheDocument()
+    const badge = screen.getByText('（故障1）')
+    expect(badge).toBeInTheDocument()
+    expect(badge.className).toContain('text-destructive')
+    expect(badge.className).toContain('bg-destructive/10')
+  })
+
+  it('故障チューナーが無いときは「（故障 n）」を出さない', async () => {
+    stubFetch({
+      services: [service({ serviceId: 1, name: 'チャンネル A' })],
+      tunersBySite: {
+        default: [tuner({ index: 0, isFault: false }), tuner({ index: 1, isFault: false })],
+      },
+    })
+    const { queryClient } = renderLive()
+
+    await screen.findByRole('button', { name: /再生/ })
+    await tunerStatusSettled(queryClient)
+
+    expect(screen.getByText('チューナー2本')).toBeInTheDocument()
+    expect(screen.queryByText(/故障/)).not.toBeInTheDocument()
+  })
+
+  it('観測（全チューナーのうち最も古いもの）が 30 分より新しいときは「観測が止まっています」を出さない', async () => {
+    stubFetch({
+      services: [service({ serviceId: 1, name: 'チャンネル A' })],
+      tunersBySite: {
+        default: [tuner({ index: 0, observedAt: new Date(Date.now() - 5 * 60_000).toISOString() })],
+      },
+    })
+    const { queryClient } = renderLive()
+
+    await screen.findByRole('button', { name: /再生/ })
+    await tunerStatusSettled(queryClient)
+
+    expect(screen.getByText('チューナー1本')).toBeInTheDocument()
+    expect(screen.queryByText('観測が止まっています')).not.toBeInTheDocument()
+  })
+
+  it('観測（全チューナーのうち最も古いもの）が 30 分より古いときは「観測が止まっています」を出す', async () => {
+    stubFetch({
+      services: [service({ serviceId: 1, name: 'チャンネル A' })],
+      tunersBySite: {
+        default: [
+          // 最も古い方が判定に使われることも確かめる --- 新しい行が混ざっていても
+          // 古い行 1 本があれば「止まっています」を出す
+          tuner({ index: 0, observedAt: new Date(Date.now() - 5 * 60_000).toISOString() }),
+          tuner({ index: 1, observedAt: new Date(Date.now() - 40 * 60_000).toISOString() }),
+        ],
+      },
+    })
+    const { queryClient } = renderLive()
+
+    await screen.findByRole('button', { name: /再生/ })
+    await tunerStatusSettled(queryClient)
+
+    expect(screen.getByText('チューナー2本')).toBeInTheDocument()
+    expect(screen.getByText('観測が止まっています')).toBeInTheDocument()
   })
 })

@@ -12,6 +12,7 @@ import { unwrap } from '@/api/unwrap'
 import { EmptyState, ErrorState, ListSkeleton, PageHeader } from '@/components/page'
 import { LiveInterruptionWarning } from '@/components/live-interruption-warning'
 import { LivePlayer } from '@/components/live-player'
+import { TunerStatus } from '@/components/tuner-status'
 import { Button } from '@/components/ui/button'
 import { useLiveCapability } from '@/lib/capabilities'
 import {
@@ -283,6 +284,14 @@ export function LivePage() {
           </div>
 
           <nav aria-label="チャンネル一覧" className="w-full shrink-0 lg:w-72">
+            {/* チューナーそのものの状態を見る場所が UI に無く、故障
+                （tuner_sync.is_fault）は容量判定の下界主義（docs/data/capacity.md
+                §6.5）から外れて「警告が無い = 大丈夫」と誤読されうるため、
+                チャンネル一覧の脇にこの 1 行を出す（issue #474 判定 (b)。
+                docs/operations/monitoring.md §監視）。 */}
+            <div className="mb-2 px-1">
+              <TunerStatus />
+            </div>
             <ul className="flex flex-col gap-3">
               {groups.map((group) => (
                 <li key={group.channelType}>

@@ -330,6 +330,39 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /api/sites/{site}/tuners:
+    parameters:
+      - $ref: "#/components/parameters/Site"
+    get:
+      operationId: listTuners
+      summary: List projected tuners
+      description: |
+        `tuner_sync`（worker が周期で mirakc の `/api/tuners` を投影する使い捨て
+        プロジェクション）の行をそのまま返す。導出はしない（不変条件 9・11）。
+        列の意味の権威は docs/data/capacity.md §6.5。
+
+        「いまどの局を掴んでいるか」「ライブ視聴が何本か」は `tuner_sync` に
+        無いため、このエンドポイントも持たない（watcher の観測対象を広げる
+        別の判断）。
+
+        射影が 1 行も無いサイトは空配列を返す（「射影が 1 行も無いサイトは
+        何も主張しない」docs/data/capacity.md §6.5）。
+      responses:
+        "200":
+          description: OK（tuner_index 順）
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Tuner"
+        "404":
+          description: Unknown site
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /api/sites/{site}/programs/search:
     parameters:
       - $ref: "#/components/parameters/Site"
@@ -1367,6 +1400,38 @@ components:
             このエンドポイント自体はこのフラグで絞り込まない —— ルールはまだ番組を持たない
             サービスも参照できる必要があり、絞り込むと「EPG プロジェクションのサービス
             一覧」という定義に反する構成員を落とすことになる。
+
+    Tuner:
+      type: object
+      required: [index, name, types, isAvailable, isFault, observedAt]
+      description: |
+        `tuner_sync` の行をそのまま返す（導出しない）。列の意味の権威は
+        docs/data/capacity.md §6.5「チューナー射影と容量超過の判定」。
+      properties:
+        index:
+          type: integer
+          description: mirakc の `/api/tuners` レスポンス内の配列インデックス。
+        name:
+          type: string
+        types:
+          type: array
+          items:
+            type: string
+            enum: [GR, BS, CS, SKY]
+        isAvailable:
+          type: boolean
+        isFault:
+          type: boolean
+          description: |
+            mirakc の `/api/tuners` が返す値をそのまま射影している。どの条件で
+            true になるかは未検証。
+        observedAt:
+          type: string
+          format: date-time
+          description: |
+            この行を最後に投影した時刻。射影ループが止まっていても行は消えない
+            ため、鮮度の手がかりとして必ずこれを使う（`GET /api/storage` の
+            `observedAt` と同じ契約）。
 
     # 一覧向けの軽い形。extended / video / audios は含まない（転送量のため）。
     ProgramListItem:
