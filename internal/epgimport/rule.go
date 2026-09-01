@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/contentpath"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
@@ -44,6 +45,23 @@ type ruleFields struct {
 	times            []sqlcgen.InsertRuleTimeParams
 }
 
+// hasNarrowingCondition は、このルールが EPG を絞り込む条件を 1 つでも
+// 持っているかを返す。rule_sites は数えない —— EPGStation 自体には無い
+// 次元で、import が付け足す「対象サイトのスコープ」であり、ユーザーが
+// 選んだ絞り込みではないため。
+func (f ruleFields) hasNarrowingCondition() bool {
+	return len(f.textMatches) > 0 ||
+		len(f.services) > 0 ||
+		len(f.channelTypes) > 0 ||
+		len(f.genres) > 0 ||
+		len(f.times) > 0 ||
+		f.isFree != nil ||
+		f.durationMinMs != nil ||
+		f.durationMaxMs != nil ||
+		f.periodStartAt != nil ||
+		f.periodEndAt != nil
+}
+
 // ImportRules は EPGStation のルールを rokuban の rules（+ 子テーブル）へ
 // 冪等に取り込む。
 //
@@ -52,10 +70,17 @@ type ruleFields struct {
 // FindRuleByMetadata で既存行を引き、子テーブルは一度消してから入れ直す
 // （internal/catalog/rescue.go の upsertRule と同じ流儀）ので行は増えない。
 //
+// 1 ルールにつき 1 トランザクション（pool.Begin）で「ルール本体 + 子
+// テーブル全部」をまとめてコミットする。子テーブルの 1 つの INSERT だけが
+// 失敗する状況（例: rule_sites の CHECK 違反）で、ルール本体と他の子
+// テーブルだけ書き込まれた「一部だけ narrow なルール」が残る事故を防ぐ
+// （途中失敗すれば丸ごと消える。TestImportRules_ChildInsertFailureRollsBack
+// が実測で固定している）。
+//
 // site は rule_sites に 1 行だけ入れる対象サイト（EPGStation は単一の
 // mirakc/チューナー源を前提にした単一サイト運用なので、全サイトではなく
 // このサイトへスコープする）。
-func ImportRules(ctx context.Context, q *sqlcgen.Queries, site string, rules []epgstation.Rule) (RuleImportResult, error) {
+func ImportRules(ctx context.Context, pool *pgxpool.Pool, site string, rules []epgstation.Rule) (RuleImportResult, error) {
 	var res RuleImportResult
 	for _, r := range rules {
 		if r.IsTimeSpecification {
@@ -65,93 +90,13 @@ func ImportRules(ctx context.Context, q *sqlcgen.Queries, site string, rules []e
 			continue
 		}
 
-		fields, warnings := buildRuleFields(r)
+		created, warnings, err := importOneRule(ctx, pool, site, r)
+		if err != nil {
+			return res, fmt.Errorf("importing epgstation rule %d: %w", r.ID, err)
+		}
 		for _, w := range warnings {
 			res.Warnings = append(res.Warnings, RuleWarning{r.ID, w})
 		}
-
-		// ARE 非互換の正規表現は「警告して、その text match だけ落とす」。
-		// そのまま insert すると、以降このルールの評価（rulequery が組む
-		// `col ~ pattern` 節）が毎パス失敗し続ける恒久的な壊れ方になるため、
-		// 「警告に出す」（受け入れ基準）は満たしつつ実害（評価不能なルール）は
-		// 避ける。
-		kept := fields.textMatches[:0]
-		for _, m := range fields.textMatches {
-			if m.Mode != "regex" {
-				kept = append(kept, m)
-				continue
-			}
-			if err := q.ValidateRegexPattern(ctx, m.Value); err != nil {
-				res.Warnings = append(res.Warnings, RuleWarning{r.ID,
-					fmt.Sprintf("regex %q is not POSIX ARE compatible (%v) — text match skipped, fix and add it back manually", m.Value, err)})
-				continue
-			}
-			kept = append(kept, m)
-		}
-		fields.textMatches = kept
-
-		metadata, err := json.Marshal(map[string]any{"epgstation": map[string]any{"ruleId": r.ID}})
-		if err != nil {
-			return res, fmt.Errorf("marshalling metadata for epgstation rule %d: %w", r.ID, err)
-		}
-
-		existing, err := q.FindRuleByMetadata(ctx, metadata)
-		created := false
-		var ruleID int64
-		switch {
-		case err == nil:
-			ruleID = existing.ID
-			if _, err := q.UpdateRule(ctx, sqlcgen.UpdateRuleParams{
-				ID:               ruleID,
-				Name:             fields.name,
-				Description:      existing.Description,
-				Enabled:          fields.enabled,
-				Priority:         existing.Priority,
-				IsFree:           boolToPg(fields.isFree),
-				DurationMinMs:    fields.durationMinMs,
-				DurationMaxMs:    fields.durationMaxMs,
-				PeriodStartAt:    msToTimePtr(fields.periodStartAt),
-				PeriodEndAt:      msToTimePtr(fields.periodEndAt),
-				DedupeEnabled:    existing.DedupeEnabled,
-				DedupeThreshold:  existing.DedupeThreshold,
-				DedupeWindow:     existing.DedupeWindow,
-				KeepOriginal:     existing.KeepOriginal,
-				EncodeProfiles:   existing.EncodeProfiles,
-				FilenameTemplate: fields.filenameTemplate,
-				Metadata:         metadata,
-			}); err != nil {
-				return res, fmt.Errorf("updating rule for epgstation rule %d: %w", r.ID, err)
-			}
-		case isNoRows(err):
-			created = true
-			row, err := q.CreateRule(ctx, sqlcgen.CreateRuleParams{
-				Name:             fields.name,
-				Description:      "",
-				Enabled:          fields.enabled,
-				Priority:         10,
-				IsFree:           boolToPg(fields.isFree),
-				DurationMinMs:    fields.durationMinMs,
-				DurationMaxMs:    fields.durationMaxMs,
-				PeriodStartAt:    msToTimePtr(fields.periodStartAt),
-				PeriodEndAt:      msToTimePtr(fields.periodEndAt),
-				DedupeEnabled:    false,
-				KeepOriginal:     "always",
-				EncodeProfiles:   []string{},
-				FilenameTemplate: fields.filenameTemplate,
-				Metadata:         metadata,
-			})
-			if err != nil {
-				return res, fmt.Errorf("creating rule for epgstation rule %d: %w", r.ID, err)
-			}
-			ruleID = row.ID
-		default:
-			return res, fmt.Errorf("looking up rule for epgstation rule %d: %w", r.ID, err)
-		}
-
-		if err := writeRuleChildren(ctx, q, ruleID, site, fields); err != nil {
-			return res, fmt.Errorf("writing children for epgstation rule %d: %w", r.ID, err)
-		}
-
 		if created {
 			res.Created++
 		} else {
@@ -161,8 +106,133 @@ func ImportRules(ctx context.Context, q *sqlcgen.Queries, site string, rules []e
 	return res, nil
 }
 
+// importOneRule は 1 ルール分の変換 + DB 書き込みを行う。ARE 検証は
+// トランザクション開始前に pool へ直接投げ（読み取り専用の判定であり、かつ
+// Postgres 側のエラーで tx を abort させないため）、ルール本体 + 子テーブル
+// の書き込みだけを 1 トランザクションにまとめる。
+func importOneRule(ctx context.Context, pool *pgxpool.Pool, site string, r epgstation.Rule) (created bool, warnings []string, err error) {
+	fields, warnings := buildRuleFields(r)
+
+	// ARE 非互換の正規表現は「警告して、その text match だけ落とす」。
+	// そのまま insert すると、以降このルールの評価（rulequery が組む
+	// `col ~ pattern` 節）が毎パス失敗し続ける恒久的な壊れ方になるため、
+	// 「警告に出す」（受け入れ基準）は満たしつつ実害（評価不能なルール）は
+	// 避ける。
+	//
+	// 検証は pool 直付けの Queries（トランザクション開始前）で行う。
+	// 不正な正規表現は Postgres 側で SQL エラーになる制御フローの一部
+	// （珍しくもバグでもない）なので、下で開くトランザクションの中で
+	// 呼ぶとそのままトランザクションを abort 状態にしてしまい、以降の
+	// FindRuleByMetadata 等がすべて「current transaction is aborted」で
+	// 落ちる（実測して見つけた）。読み取り専用の検証なのでトランザクション
+	// に含める理由もない。
+	validateQ := sqlcgen.New(pool)
+	kept := fields.textMatches[:0]
+	for _, m := range fields.textMatches {
+		if m.Mode != "regex" {
+			kept = append(kept, m)
+			continue
+		}
+		if err := validateQ.ValidateRegexPattern(ctx, m.Value); err != nil {
+			warnings = append(warnings, fmt.Sprintf(
+				"regex %q is not POSIX ARE compatible (%v) — text match skipped, fix and add it back manually", m.Value, err))
+			continue
+		}
+		kept = append(kept, m)
+	}
+	fields.textMatches = kept
+
+	// 変換の結果、絞り込み条件が 1 つも残らなかったルールを enabled のまま
+	// 作らない。rulequery.Compile は条件が空なら "TRUE"（サイト一致のみ）に
+	// 縮退するため、有効なままだと EPG 全番組を録画する巨大ルールになる
+	// （ARE 非互換で唯一の text match が落ちた場合や、EPGStation 側の
+	// ルールがもともと無条件だった場合の両方で起こりうる）。
+	if !fields.hasNarrowingCondition() {
+		fields.enabled = false
+		warnings = append(warnings,
+			"rule has no narrowing conditions after conversion (would match every program in the EPG) — imported disabled; review conditions and enable manually")
+	}
+
+	metadata, err := json.Marshal(map[string]any{"epgstation": map[string]any{"ruleId": r.ID}})
+	if err != nil {
+		return false, warnings, fmt.Errorf("marshalling metadata for epgstation rule %d: %w", r.ID, err)
+	}
+
+	// ルール本体 + 子テーブル全部を 1 トランザクションにまとめる。途中の
+	// INSERT が 1 つでも失敗すれば丸ごとロールバックされ、「一部の条件だけ
+	// 反映されたルール」を残さない（TestImportRules_ChildInsertFailureRollsBack）。
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return false, warnings, fmt.Errorf("beginning transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := sqlcgen.New(tx)
+
+	existing, err := q.FindRuleByMetadata(ctx, metadata)
+	var ruleID int64
+	switch {
+	case err == nil:
+		ruleID = existing.ID
+		if _, err := q.UpdateRule(ctx, sqlcgen.UpdateRuleParams{
+			ID:               ruleID,
+			Name:             fields.name,
+			Description:      existing.Description,
+			Enabled:          fields.enabled,
+			Priority:         existing.Priority,
+			IsFree:           boolToPg(fields.isFree),
+			DurationMinMs:    fields.durationMinMs,
+			DurationMaxMs:    fields.durationMaxMs,
+			PeriodStartAt:    msToTimePtr(fields.periodStartAt),
+			PeriodEndAt:      msToTimePtr(fields.periodEndAt),
+			DedupeEnabled:    existing.DedupeEnabled,
+			DedupeThreshold:  existing.DedupeThreshold,
+			DedupeWindow:     existing.DedupeWindow,
+			KeepOriginal:     existing.KeepOriginal,
+			EncodeProfiles:   existing.EncodeProfiles,
+			FilenameTemplate: fields.filenameTemplate,
+			Metadata:         metadata,
+		}); err != nil {
+			return false, warnings, fmt.Errorf("updating rule: %w", err)
+		}
+	case isNoRows(err):
+		created = true
+		row, err := q.CreateRule(ctx, sqlcgen.CreateRuleParams{
+			Name:             fields.name,
+			Description:      "",
+			Enabled:          fields.enabled,
+			Priority:         10,
+			IsFree:           boolToPg(fields.isFree),
+			DurationMinMs:    fields.durationMinMs,
+			DurationMaxMs:    fields.durationMaxMs,
+			PeriodStartAt:    msToTimePtr(fields.periodStartAt),
+			PeriodEndAt:      msToTimePtr(fields.periodEndAt),
+			DedupeEnabled:    false,
+			KeepOriginal:     "always",
+			EncodeProfiles:   []string{},
+			FilenameTemplate: fields.filenameTemplate,
+			Metadata:         metadata,
+		})
+		if err != nil {
+			return false, warnings, fmt.Errorf("creating rule: %w", err)
+		}
+		ruleID = row.ID
+	default:
+		return false, warnings, fmt.Errorf("looking up rule: %w", err)
+	}
+
+	if err := writeRuleChildren(ctx, q, ruleID, site, fields); err != nil {
+		return false, warnings, fmt.Errorf("writing children: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return false, warnings, fmt.Errorf("committing: %w", err)
+	}
+	return created, warnings, nil
+}
+
 // writeRuleChildren は子テーブルを「一度消してから入れ直す」で冪等に反映する
-// （internal/catalog/rescue.go の upsertRule と同じ流儀）。
+// （internal/catalog/rescue.go の upsertRule と同じ流儀）。呼び出し側
+// （importOneRule）がトランザクションに包む。
 func writeRuleChildren(ctx context.Context, q *sqlcgen.Queries, ruleID int64, site string, f ruleFields) error {
 	if err := q.DeleteRuleTextMatches(ctx, ruleID); err != nil {
 		return fmt.Errorf("deleting text matches: %w", err)
@@ -213,6 +283,10 @@ func writeRuleChildren(ctx context.Context, q *sqlcgen.Queries, ruleID int64, si
 			return fmt.Errorf("inserting time seq=%d: %w", i, err)
 		}
 	}
+	// site は EPGStation に無い次元なので必ず 1 件（対象サイトそのもの）。
+	// CHECK (site <> '') に違反すると呼び出し側のトランザクションが
+	// ロールバックされ、ここまでの INSERT も含めて丸ごと消える
+	// （TestImportRules_ChildInsertFailureRollsBack）。
 	if err := q.InsertRuleSite(ctx, sqlcgen.InsertRuleSiteParams{RuleID: ruleID, Site: site}); err != nil {
 		return fmt.Errorf("inserting site: %w", err)
 	}
@@ -220,7 +294,7 @@ func writeRuleChildren(ctx context.Context, q *sqlcgen.Queries, ruleID int64, si
 }
 
 // buildRuleFields は 1 つの EPGStation ルールを rokuban の形へ変換する。
-// DB へは触れない純関数（ARE 検証・DB 往復は ImportRules 側の責務）。
+// DB へは触れない純関数（ARE 検証・DB 往復は importOneRule 側の責務）。
 func buildRuleFields(r epgstation.Rule) (ruleFields, []string) {
 	var warnings []string
 	f := ruleFields{enabled: r.ReserveOption.Enable}
@@ -237,8 +311,10 @@ func buildRuleFields(r epgstation.Rule) (ruleFields, []string) {
 
 	f.isFree = r.SearchOption.IsFree
 
-	// durationMin/Max の単位は未検証（epgstation.RuleSearchOption のコメント
-	// 参照）。SearchTime.range と同じ「秒」という前提で ms に変換する。
+	// durationMin/Max は秒単位（EPGStation の src/model/db/ProgramDB.ts の
+	// setDurationMinQuery/setDurationMaxQuery が `option.durationMin * 1000`
+	// を ms 単位の duration 列と比較しているので確認済み。SearchTime.range
+	// も同じ単位系）。
 	if r.SearchOption.DurationMin != nil {
 		v := *r.SearchOption.DurationMin * 1000
 		f.durationMinMs = &v
@@ -261,8 +337,20 @@ func buildRuleFields(r epgstation.Rule) (ruleFields, []string) {
 
 	f.textMatches = buildTextMatches(r.SearchOption, &warnings)
 
+	// SubGenre（ジャンルの下位区分）は rokuban の rule_genres が持たない
+	// （genre_lv1 まで）。EncodeProfiles/AvoidDuplicate 同様「絞り込みが
+	// 緩む側に倒れる」損失なので警告する —— AllowEndLack のような録画後
+	// 挙動の設定（マッチする番組の集合を変えない）とは違うクラス。
+	droppedSubGenre := false
 	for _, g := range r.SearchOption.Genres {
 		f.genres = append(f.genres, g.Genre)
+		if g.SubGenre != nil {
+			droppedSubGenre = true
+		}
+	}
+	if droppedSubGenre {
+		warnings = append(warnings,
+			"genre subGenre (finer-grained genre filter) has no rokuban equivalent (rule_genres only has the top-level genre) — dropped, which broadens what matches; review manually")
 	}
 
 	if r.SearchOption.GR {
@@ -306,9 +394,10 @@ func buildRuleFields(r epgstation.Rule) (ruleFields, []string) {
 		})
 	}
 
-	if r.SearchOption.DurationMin != nil || r.SearchOption.DurationMax != nil {
-		warnings = append(warnings, "durationMin/durationMax were converted assuming seconds (EPGStation source does not document the unit) — verify against the original rule")
-	}
+	// AllowEndLack（末尾切れを許可するか）は録画完了の許容度であって EPG の
+	// 絞り込み条件ではない（マッチする番組の集合を変えない）。rokuban の
+	// rules に対応する列が無く、無くても「録れる番組の集合」は変わらない
+	// ので、他の絞り込み条件の損失（droppedSubGenre 等）と違って警告しない。
 
 	if r.ReserveOption.AvoidDuplicate {
 		warnings = append(warnings, "avoidDuplicate was enabled in EPGStation but rokuban's dedupe needs a similarity threshold EPGStation doesn't have — imported with dedupe disabled; enable rules.dedupe_enabled/dedupe_threshold manually if wanted")

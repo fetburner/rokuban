@@ -98,7 +98,7 @@ func searchRegexError(ctx context.Context, h *Server, c rulequery.Conditions) st
 			continue
 		}
 		if err := q.ValidateRegexPattern(ctx, m.Value); err != nil {
-			return fmt.Sprintf("invalid regex %q (POSIX ARE; lookbehind is not supported): %v", m.Value, err)
+			return fmt.Sprintf("invalid regex %q (must be POSIX ARE compatible, not full PCRE/JavaScript regex — e.g. named capture groups like (?<name>...) are rejected; lookahead and lookbehind are supported): %v", m.Value, err)
 		}
 	}
 	return ""

@@ -11,7 +11,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/fetburner/rokuban/internal/db"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/epgimport"
 	"github.com/fetburner/rokuban/internal/epgstation"
 )
@@ -30,28 +29,35 @@ func newImportCmd() *cobra.Command {
 
 // newImportEPGStationCmd は `rokuban import epgstation` サブコマンドを作る。
 //
-// EPGStation のルール・ライブラリ・履歴を rokuban の永続資産（rules /
+// EPGStation のルール・ライブラリを rokuban の永続資産（rules /
 // recordings / media_assets）へ取り込む恒久コマンド（移行専用の使い捨て
-// スクリプトにしない）。--rules / --library-json / --history-json は
-// 独立に指定でき、複数同時も可能。冪等・途中再開可能（各インポート関数の
-// doc コメント参照）。
+// スクリプトにしない）。--rules / --library-json は独立に指定でき、
+// 両方同時も可能。冪等・途中再開可能（各インポート関数の doc コメント参照）。
+//
+// RecordedHistory（EPGStation 側の再放送重複排除の種）の取り込みは
+// このコマンドに含まない: rokuban の重複排除（internal/ruler/dedupe.go）は
+// recordings.rule_id が一致する行だけを比較対象にするが、in-place 登録
+// （internal/inplace.Register）は rule_id を書く列を持たず、
+// RecordedHistory 自体にも ruleId が無いため、取り込んでも重複排除には
+// 一切効かない。internal/ruler 側の対応と合わせて別途取り込む
+// （issue #72 のコメント参照）。
 func newImportEPGStationCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "epgstation",
-		Short: "EPGStation からルール・ライブラリ・履歴を取り込む",
-		Long: `EPGStation のルール（--rules）・ライブラリ（--library-json）・
-履歴（--history-json）を rokuban に取り込む。冪等: 再実行しても行は増えない。
+		Short: "EPGStation からルール・ライブラリを取り込む",
+		Long: `EPGStation のルール（--rules）・ライブラリ（--library-json）を
+rokuban に取り込む。冪等: 再実行しても行は増えない。
 
 --rules は EPGStation の REST API（GET /api/rules）を叩く。
---library-json / --history-json は EPGStation の DB
-（Recorded/VideoFile/Thumbnail、RecordedHistory）から運用者が事前に
-書き出した JSON を読む —— EPGStation の REST API は実ファイルの相対パスも
-RecordedHistory も公開していないため（internal/epgimport の doc コメント
-参照）。JSON の形は internal/epgimport.LibraryItem / HistoryItem。
+--library-json は EPGStation の DB（Recorded/VideoFile/Thumbnail）から
+運用者が事前に書き出した JSON を読む —— EPGStation の REST API は実ファイルの
+相対パスを公開していないため（internal/epgimport/library.go の doc コメント
+参照）。JSON の形・書き出し方は docs/runbook/import-epgstation.md 参照。
 
 ARE（Postgres 正規表現）非互換の正規表現、%CHNAME% 等の未対応テンプレート
-変数、時刻指定ルールはいずれも警告として出力し、安全側にスキップ/縮退する
-（黙って空文字や壊れたルールにはしない）。`,
+変数、時刻指定ルール、条件が 1 つも残らなかったルールはいずれも警告として
+出力し、安全側にスキップ/縮退する（黙って空文字にしたり EPG 全体を録る
+ルールを有効なまま作ったりしない）。`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			doRules, err := cmd.Flags().GetBool("rules")
 			if err != nil {
@@ -61,16 +67,12 @@ ARE（Postgres 正規表現）非互換の正規表現、%CHNAME% 等の未対�
 			if err != nil {
 				return err
 			}
-			historyPath, err := cmd.Flags().GetString("history-json")
-			if err != nil {
-				return err
-			}
 			epgstationURL, err := cmd.Flags().GetString("epgstation-url")
 			if err != nil {
 				return err
 			}
-			if !doRules && libraryPath == "" && historyPath == "" {
-				return fmt.Errorf("at least one of --rules, --library-json, --history-json is required")
+			if !doRules && libraryPath == "" {
+				return fmt.Errorf("at least one of --rules, --library-json is required")
 			}
 			if doRules && epgstationURL == "" {
 				return fmt.Errorf("--epgstation-url is required with --rules")
@@ -118,26 +120,13 @@ ARE（Postgres 正規表現）非互換の正規表現、%CHNAME% 等の未対�
 				printLibraryImportResult(out, result)
 			}
 
-			if historyPath != "" {
-				items, err := readJSONFile[epgimport.HistoryItem](historyPath)
-				if err != nil {
-					return fmt.Errorf("reading --history-json: %w", err)
-				}
-				result, err := epgimport.ImportHistory(ctx, sqlcgen.New(pool), site.Site, items)
-				if err != nil {
-					return fmt.Errorf("importing history: %w", err)
-				}
-				printHistoryImportResult(out, result)
-			}
-
 			return nil
 		},
 	}
 
 	cmd.Flags().Bool("rules", false, "EPGStation のルールを取り込む（--epgstation-url が必要）")
 	cmd.Flags().String("epgstation-url", "", "EPGStation の base URL（例: http://localhost:8888。--rules 用）")
-	cmd.Flags().String("library-json", "", "EPGStation のライブラリを表す JSON ファイルのパス（internal/epgimport.LibraryItem の配列）")
-	cmd.Flags().String("history-json", "", "EPGStation の RecordedHistory を表す JSON ファイルのパス（internal/epgimport.HistoryItem の配列）")
+	cmd.Flags().String("library-json", "", "EPGStation のライブラリを表す JSON ファイルのパス（形は docs/runbook/import-epgstation.md 参照）")
 
 	return cmd
 }
@@ -149,7 +138,7 @@ func runImportRules(ctx context.Context, pool *pgxpool.Pool, client *epgstation.
 	if err != nil {
 		return epgimport.RuleImportResult{}, fmt.Errorf("listing EPGStation rules: %w", err)
 	}
-	return epgimport.ImportRules(ctx, sqlcgen.New(pool), site, rules)
+	return epgimport.ImportRules(ctx, pool, site, rules)
 }
 
 // readJSONFile はトップレベルが配列の JSON ファイルを読む小さなヘルパー。
@@ -181,14 +170,6 @@ func printLibraryImportResult(out io.Writer, r epgimport.LibraryImportResult) {
 	_, _ = fmt.Fprintln(out, "-- library --")
 	_, _ = fmt.Fprintf(out, "  registered: %d\n", r.Registered)
 	_, _ = fmt.Fprintf(out, "  skipped:    %d\n", r.Skipped)
-	for _, w := range r.Warnings {
-		_, _ = fmt.Fprintf(out, "  warning: %s\n", w)
-	}
-}
-
-func printHistoryImportResult(out io.Writer, r epgimport.HistoryImportResult) {
-	_, _ = fmt.Fprintln(out, "-- history --")
-	_, _ = fmt.Fprintf(out, "  registered: %d\n", r.Registered)
 	for _, w := range r.Warnings {
 		_, _ = fmt.Fprintf(out, "  warning: %s\n", w)
 	}

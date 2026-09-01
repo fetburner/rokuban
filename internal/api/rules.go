@@ -407,7 +407,7 @@ func (h *Server) validateRuleInput(ctx context.Context, in RuleInput, savedSites
 		for _, m := range *in.TextMatches {
 			if m.Mode == Regex && m.Value != "" {
 				if err := q.ValidateRegexPattern(ctx, m.Value); err != nil {
-					return fmt.Errorf("invalid regex %q (POSIX ARE; lookbehind is not supported): %w", m.Value, err)
+					return fmt.Errorf("invalid regex %q (must be POSIX ARE compatible, not full PCRE/JavaScript regex — e.g. named capture groups like (?<name>...) are rejected; lookahead and lookbehind are supported): %w", m.Value, err)
 				}
 			}
 		}

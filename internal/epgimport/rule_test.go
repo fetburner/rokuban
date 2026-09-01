@@ -2,9 +2,9 @@ package epgimport
 
 import (
 	"context"
+	"strings"
 	"testing"
 
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/epgstation"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -27,12 +27,11 @@ func basicRule(id int64, keyword string) epgstation.Rule {
 // same import (same EPGStation rule id) must not add rows.
 func TestImportRules_IdempotentRerun(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	q := sqlcgen.New(pool)
 	ctx := context.Background()
 
 	rules := []epgstation.Rule{basicRule(1, "ニュース")}
 
-	first, err := ImportRules(ctx, q, "default", rules)
+	first, err := ImportRules(ctx, pool, "default", rules)
 	if err != nil {
 		t.Fatalf("first ImportRules: %v", err)
 	}
@@ -40,7 +39,7 @@ func TestImportRules_IdempotentRerun(t *testing.T) {
 		t.Fatalf("first result = %+v, want Created=1 Updated=0", first)
 	}
 
-	second, err := ImportRules(ctx, q, "default", rules)
+	second, err := ImportRules(ctx, pool, "default", rules)
 	if err != nil {
 		t.Fatalf("second ImportRules: %v", err)
 	}
@@ -71,7 +70,10 @@ func TestImportRules_IdempotentRerun(t *testing.T) {
 
 // TestImportRules_AREIncompatibleRegexWarns is the acceptance criterion: an
 // ARE-incompatible regex surfaces as a warning, and the offending text match
-// is not inserted (so the rule stays evaluable).
+// is not inserted (so the rule stays evaluable). It also covers blocking
+// finding 1 from review: dropping the rule's only condition must not leave
+// it enabled (rulequery.Compile degenerates to a bare site filter, which
+// would record the entire EPG).
 //
 // Pattern choice note (measured, not assumed): docs/data/search.md claims
 // Postgres ARE supports lookahead but not lookbehind ("先読み `(?=)` 可・
@@ -79,14 +81,12 @@ func TestImportRules_IdempotentRerun(t *testing.T) {
 // empty-string match against pattern (?<=foo)bar does NOT error, and
 // matching "xyzabc" and "zzzabc" against (?<=xyz)abc return true/false
 // respectively — i.e. lookbehind actually works here, contradicting that
-// doc sentence. A pattern this Postgres genuinely rejects (measured) is
-// JS-style named capture groups, (?<name>...): matching an empty string
-// against that pattern raises "quantifier operand invalid". Flagged in the
-// PR report; not fixed here (out of this task's scope and only measured
-// against one PG version).
+// doc sentence (fixed in this PR — see docs/data/search.md). A pattern this
+// Postgres genuinely rejects (measured) is JS-style named capture groups,
+// (?<name>...): matching an empty string against that pattern raises
+// "quantifier operand invalid".
 func TestImportRules_AREIncompatibleRegexWarns(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	q := sqlcgen.New(pool)
 	ctx := context.Background()
 
 	rules := []epgstation.Rule{{
@@ -99,29 +99,95 @@ func TestImportRules_AREIncompatibleRegexWarns(t *testing.T) {
 		ReserveOption: epgstation.RuleReserveOption{Enable: true, AllowEndLack: true},
 	}}
 
-	result, err := ImportRules(ctx, q, "default", rules)
+	result, err := ImportRules(ctx, pool, "default", rules)
+	if err != nil {
+		t.Fatalf("ImportRules: %v", err)
+	}
+	if len(result.Warnings) < 2 {
+		t.Fatalf("warnings = %+v, want at least 2 (ARE-incompatible regex + no-conditions-left)", result.Warnings)
+	}
+	for _, w := range result.Warnings {
+		if w.EpgstationRuleID != 2 {
+			t.Errorf("warning %+v: EpgstationRuleID != 2", w)
+		}
+	}
+
+	var textMatchCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM rule_text_matches`).Scan(&textMatchCount); err != nil {
+		t.Fatal(err)
+	}
+	if textMatchCount != 0 {
+		t.Fatalf("rule_text_matches count = %d, want 0 (incompatible regex must not be persisted)", textMatchCount)
+	}
+
+	// The acceptance criterion says "surfaces as a warning" — it does not say
+	// "and the rule is silently imported as a catch-all". A rule with zero
+	// narrowing conditions left must not be enabled.
+	var enabled bool
+	if err := pool.QueryRow(ctx, `SELECT enabled FROM rules WHERE metadata @> '{"epgstation":{"ruleId":2}}'`).Scan(&enabled); err != nil {
+		t.Fatal(err)
+	}
+	if enabled {
+		t.Error("enabled = true, want false (rule has no narrowing conditions after the ARE-incompatible match was dropped — must not silently record the entire EPG)")
+	}
+}
+
+// TestImportRules_NoConditionsFromEPGStation_ImportsDisabled: the same
+// no-conditions guard also has to catch rules that never had a narrowing
+// condition to begin with (not just ones emptied by conversion loss).
+func TestImportRules_NoConditionsFromEPGStation_ImportsDisabled(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	rules := []epgstation.Rule{{
+		ID:            5,
+		SearchOption:  epgstation.RuleSearchOption{}, // no keyword, no services, nothing
+		ReserveOption: epgstation.RuleReserveOption{Enable: true},
+	}}
+
+	result, err := ImportRules(ctx, pool, "default", rules)
 	if err != nil {
 		t.Fatalf("ImportRules: %v", err)
 	}
 	if len(result.Warnings) == 0 {
-		t.Fatal("want a warning for ARE-incompatible regex, got none")
-	}
-	found := false
-	for _, w := range result.Warnings {
-		if w.EpgstationRuleID == 2 {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("warnings = %+v, want one for epgstation rule 2", result.Warnings)
+		t.Fatal("want a warning about the rule having no narrowing conditions, got none")
 	}
 
-	var count int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM rule_text_matches`).Scan(&count); err != nil {
+	var enabled bool
+	if err := pool.QueryRow(ctx, `SELECT enabled FROM rules WHERE metadata @> '{"epgstation":{"ruleId":5}}'`).Scan(&enabled); err != nil {
 		t.Fatal(err)
 	}
-	if count != 0 {
-		t.Fatalf("rule_text_matches count = %d, want 0 (incompatible regex must not be persisted)", count)
+	if enabled {
+		t.Error("enabled = true, want false (rule has no narrowing conditions at all)")
+	}
+}
+
+// TestImportRules_ChildInsertFailureRollsBack is the acceptance criterion
+// behind blocking finding 2: writing the rule row and its child tables must
+// be all-or-nothing. A blank site fails rule_sites' non-empty-site CHECK
+// on the very last insert in writeRuleChildren, after the rule row and every
+// other child table already succeeded — without a transaction, those earlier
+// writes would stick around as a "some conditions, but not all" rule.
+func TestImportRules_ChildInsertFailureRollsBack(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	rules := []epgstation.Rule{basicRule(6, "keyword")}
+
+	if _, err := ImportRules(ctx, pool, "", rules); err == nil {
+		t.Fatal("want an error from the empty site (rule_sites CHECK violation), got nil")
+	}
+
+	var ruleCount, textMatchCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM rules`).Scan(&ruleCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM rule_text_matches`).Scan(&textMatchCount); err != nil {
+		t.Fatal(err)
+	}
+	if ruleCount != 0 || textMatchCount != 0 {
+		t.Fatalf("rules=%d rule_text_matches=%d after a failed import, want 0/0 (partial writes must roll back)",
+			ruleCount, textMatchCount)
 	}
 }
 
@@ -131,7 +197,6 @@ func TestImportRules_AREIncompatibleRegexWarns(t *testing.T) {
 // back to the rokuban default template (empty filename_template column).
 func TestImportRules_UnsupportedTemplateVariableWarns(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	q := sqlcgen.New(pool)
 	ctx := context.Background()
 
 	rules := []epgstation.Rule{{
@@ -141,7 +206,7 @@ func TestImportRules_UnsupportedTemplateVariableWarns(t *testing.T) {
 		SaveOption:    &epgstation.ReserveSaveOption{RecordedFormat: "%CHNAME%_%TITLE%"},
 	}}
 
-	result, err := ImportRules(ctx, q, "default", rules)
+	result, err := ImportRules(ctx, pool, "default", rules)
 	if err != nil {
 		t.Fatalf("ImportRules: %v", err)
 	}
@@ -164,7 +229,6 @@ func TestImportRules_UnsupportedTemplateVariableWarns(t *testing.T) {
 // rather than fabricate a programId-less reservation shape.
 func TestImportRules_TimeSpecifiedSkipped(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	q := sqlcgen.New(pool)
 	ctx := context.Background()
 
 	rules := []epgstation.Rule{{
@@ -173,7 +237,7 @@ func TestImportRules_TimeSpecifiedSkipped(t *testing.T) {
 		ReserveOption:       epgstation.RuleReserveOption{Enable: true},
 	}}
 
-	result, err := ImportRules(ctx, q, "default", rules)
+	result, err := ImportRules(ctx, pool, "default", rules)
 	if err != nil {
 		t.Fatalf("ImportRules: %v", err)
 	}
@@ -238,5 +302,33 @@ func TestBuildTextMatches_IgnoreKeywordMultipleTargetsAllKept(t *testing.T) {
 		if !m.Negate {
 			t.Errorf("match %+v: Negate = false, want true", m)
 		}
+	}
+}
+
+// TestBuildRuleFields_DroppedSubGenreWarns: SubGenre narrows what EPGStation
+// records; rokuban's rule_genres has no equivalent column, so dropping it
+// broadens the match set (same class of loss as an ARE-dropped text match)
+// and must warn, unlike AllowEndLack which doesn't affect what gets matched.
+func TestBuildRuleFields_DroppedSubGenreWarns(t *testing.T) {
+	subGenre := int16(1)
+	r := epgstation.Rule{
+		ID: 7,
+		SearchOption: epgstation.RuleSearchOption{
+			Genres: []epgstation.RuleGenre{{Genre: 2, SubGenre: &subGenre}},
+		},
+		ReserveOption: epgstation.RuleReserveOption{Enable: true, AllowEndLack: true},
+	}
+	fields, warnings := buildRuleFields(r)
+	if len(fields.genres) != 1 || fields.genres[0] != 2 {
+		t.Fatalf("genres = %v, want [2]", fields.genres)
+	}
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w, "subGenre") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("warnings = %v, want one mentioning subGenre", warnings)
 	}
 }

@@ -44,10 +44,13 @@ type LibraryItem struct {
 // LibraryVideoFile は VideoFile 1 件。RelPath は media_dir をマウントした
 // あとの相対パス（EPGStation の filePath を運用者が変換したもの）。
 // Type は EPGStation の VideoFileType（"ts" | "encoded"）。
+//
+// サイズは持たない: inplace.Register が実ファイルを stat してサイズを
+// 求める（internal/inplace/register.go の checkAsset）ので、ここで
+// 運用者に計算させて JSON に書かせるフィールドを持つのは二重管理になる。
 type LibraryVideoFile struct {
 	Type    string `json:"type"`
 	RelPath string `json:"relPath"`
-	Size    int64  `json:"size"`
 }
 
 // LibraryThumbnail は Thumbnail 1 件。
@@ -95,8 +98,21 @@ func ImportLibrary(ctx context.Context, pool *pgxpool.Pool, mediaDir, site strin
 					"recorded %q: videoFile %q has unknown type %q — skipped", item.Name, vf.RelPath, vf.Type))
 			}
 		}
-		for _, th := range item.Thumbnails {
-			assets = append(assets, inplace.Asset{Kind: db.AssetKindThumbnail, RelPath: th.RelPath})
+		// media_assets is UNIQUE NULLS NOT DISTINCT (recording_id, kind,
+		// profile), so a recording can only have one row with
+		// kind='thumbnail' (profile is always NULL for thumbnails). EPGStation's
+		// Thumbnail is 1:N on Recorded (one per video file, so encoded
+		// recordings routinely have several) — importing more than the first
+		// collides on that constraint and aborts the whole item's
+		// registration, so only the first is kept and the rest are warned
+		// about instead of silently dropped.
+		if len(item.Thumbnails) > 0 {
+			assets = append(assets, inplace.Asset{Kind: db.AssetKindThumbnail, RelPath: item.Thumbnails[0].RelPath})
+		}
+		if len(item.Thumbnails) > 1 {
+			res.Warnings = append(res.Warnings, fmt.Sprintf(
+				"recorded %q: only the first of %d thumbnails is imported (media_assets allows one thumbnail per recording) — the rest were skipped",
+				item.Name, len(item.Thumbnails)))
 		}
 
 		if len(assets) == 0 {
@@ -155,11 +171,11 @@ func resolveEventIdentity(programID *int64, channelID int64, name string, endAt 
 	return int32(n), int32(s), syntheticEventID(name, endAt)
 }
 
-// syntheticEventID は放送由来の event_id を持たない行（EPGStation の
-// RecordedHistory、programId の無い Recorded）向けに、name/endAt から
-// 決定的に合成する負の擬似 event_id を作る。同じ入力を再インポートしても
-// 同じ値になる（recordings_unique_active_event に乗って冪等になる）ための
-// 仕掛け。本物の mirakc event_id と衝突しないよう常に負値にする。
+// syntheticEventID は放送由来の event_id を持たない行（programId の無い
+// EPGStation Recorded）向けに、name/endAt から決定的に合成する負の擬似
+// event_id を作る。同じ入力を再インポートしても同じ値になる
+// （recordings_unique_active_event に乗って冪等になる）ための仕掛け。
+// 本物の mirakc event_id と衝突しないよう常に負値にする。
 func syntheticEventID(name string, endAt int64) int32 {
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(name))

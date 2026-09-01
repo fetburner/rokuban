@@ -48,7 +48,7 @@
 
 ##### EPGStation からの変換（`rokuban import epgstation`）
 
-EPGStation の `recordedFormat`（`%変数%` 記法）を移行するための変換（`rokuban import epgstation`。未実装）は、以下の変換表に従って `text/template` 記法へ機械的に行う。
+`rokuban import epgstation --rules` は EPGStation の `recordedFormat`（`%変数%` 記法）を移行する。変換は以下の表に従って `text/template` 記法へ機械的に行う。
 
 | EPGStation | Rokuban |
 |---|---|

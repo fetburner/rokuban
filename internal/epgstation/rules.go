@@ -49,10 +49,9 @@ type RuleSearchOption struct {
 	Genres     []RuleGenre      `json:"genres,omitempty"`
 	Times      []RuleSearchTime `json:"times,omitempty"`
 	IsFree     *bool            `json:"isFree,omitempty"`
-	// DurationMin/Max の単位は EPGStation ソース上に明記が無い。
-	// SearchTime.range（同じ RuleSearchOption 内の兄弟フィールド）が「秒」と
-	// 明記されているため、同じ単位系（秒）だろうという推測に基づき変換する
-	// （internal/epgimport.buildRuleFields のコメント参照。未検証）。
+	// DurationMin/Max は秒単位（EPGStation の src/model/db/ProgramDB.ts の
+	// setDurationMinQuery/setDurationMaxQuery が `option.durationMin * 1000`
+	// を ms 単位の duration 列と比較しているので確認済み）。
 	DurationMin *int64 `json:"durationMin,omitempty"`
 	DurationMax *int64 `json:"durationMax,omitempty"`
 	// SearchPeriods は複数期間を許すが、rokuban の rules は単一の

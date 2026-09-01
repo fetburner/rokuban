@@ -1,7 +1,10 @@
 // Package epgimport は `rokuban import epgstation` の変換ロジックをまとめる
-// （issue #72 / M3-10）。EPGStation のルール・ライブラリ・履歴を rokuban の
+// （issue #72 / M3-10）。EPGStation のルール・ライブラリを rokuban の
 // 永続資産（rules / recordings / media_assets）へ機械変換する恒久コマンドの
 // 本体で、cmd/rokuban/import.go はこのパッケージを薄く呼ぶだけにする。
+//
+// RecordedHistory（履歴）の取り込みはこのパッケージに含まない
+// （cmd/rokuban/import.go の newImportEPGStationCmd の doc コメント参照）。
 package epgimport
 
 import "regexp"

@@ -28,7 +28,7 @@ func TestImportLibrary_IdempotentRerun(t *testing.T) {
 		StartAt:     1785000000000,
 		EndAt:       1785001800000,
 		Name:        "番組A",
-		VideoFiles:  []LibraryVideoFile{{Type: "ts", RelPath: "imported/show.ts", Size: 5}},
+		VideoFiles:  []LibraryVideoFile{{Type: "ts", RelPath: "imported/show.ts"}},
 	}}
 
 	first, err := ImportLibrary(context.Background(), pool, mediaDir, "default", items)
@@ -75,7 +75,7 @@ func TestImportLibrary_EncodedTypeSkippedWithWarning(t *testing.T) {
 		StartAt:     1785000000000,
 		EndAt:       1785001800000,
 		Name:        "番組B",
-		VideoFiles:  []LibraryVideoFile{{Type: "encoded", RelPath: "show.mp4", Size: 5}},
+		VideoFiles:  []LibraryVideoFile{{Type: "encoded", RelPath: "show.mp4"}},
 	}}
 
 	result, err := ImportLibrary(context.Background(), pool, mediaDir, "default", items)
@@ -87,5 +87,65 @@ func TestImportLibrary_EncodedTypeSkippedWithWarning(t *testing.T) {
 	}
 	if len(result.Warnings) < 2 {
 		t.Fatalf("warnings = %v, want at least 2 (encoded-skip + no-asset-skip)", result.Warnings)
+	}
+}
+
+// TestImportLibrary_MultipleThumbnails_ImportsFirstAndWarns is the
+// acceptance criterion behind blocking finding 3: media_assets is
+// UNIQUE NULLS NOT DISTINCT (recording_id, kind, profile), so a recording
+// can only ever have one 'thumbnail' row. EPGStation's Thumbnail is 1:N on
+// Recorded (one per video file), so this is not an exotic input — any
+// library with encoded files trips it. The second thumbnail must not abort
+// the whole item (and, with it, every later item in the batch).
+func TestImportLibrary_MultipleThumbnails_ImportsFirstAndWarns(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	mediaDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(mediaDir, "thumb1.jpg"), []byte("a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mediaDir, "thumb2.jpg"), []byte("b"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	items := []LibraryItem{{
+		ChannelID:   3273601024,
+		ChannelType: "GR",
+		StartAt:     1785000000000,
+		EndAt:       1785001800000,
+		Name:        "番組A",
+		Thumbnails: []LibraryThumbnail{
+			{RelPath: "thumb1.jpg"},
+			{RelPath: "thumb2.jpg"},
+		},
+	}}
+
+	result, err := ImportLibrary(context.Background(), pool, mediaDir, "default", items)
+	if err != nil {
+		t.Fatalf("ImportLibrary: %v", err)
+	}
+	if result.Registered != 1 {
+		t.Fatalf("result = %+v, want Registered=1 (the item must still import with its first thumbnail)", result)
+	}
+	if len(result.Warnings) == 0 {
+		t.Fatal("want a warning about the dropped second thumbnail, got none")
+	}
+
+	var recordings, assets int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM recordings`).Scan(&recordings); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM media_assets`).Scan(&assets); err != nil {
+		t.Fatal(err)
+	}
+	if recordings != 1 || assets != 1 {
+		t.Fatalf("recordings=%d assets=%d, want 1/1 (only the first thumbnail should be registered)", recordings, assets)
+	}
+
+	var relPath string
+	if err := pool.QueryRow(context.Background(), `SELECT rel_path FROM media_assets`).Scan(&relPath); err != nil {
+		t.Fatal(err)
+	}
+	if relPath != "thumb1.jpg" {
+		t.Errorf("rel_path = %q, want thumb1.jpg (the first thumbnail)", relPath)
 	}
 }

@@ -17,7 +17,7 @@
 - 正規表現方言は **POSIX ARE** の 1 つに統一
 - pg_trgm の GIN インデックスは LIKE だけでなく**正規表現マッチ（`~`）も加速**するので、regex ルールもインデックスに乗る
 - Postgres の regex は UTF-8 を文字単位で扱うため、EPGStation#562（サロゲートペア等）は再現しない
-- ARE は先読み `(?=)` 可・**後読み不可**。`rokuban import epgstation` 時に各ルールの正規表現を Postgres で検証し、非互換は警告してユーザーに修正を促す（差分テストの allowlist にも追加）
+- **ARE は先読み `(?=)` も後読み `(?<=)` も使える**（PostgreSQL 16.2 で測定・確認）。非互換になるのは JS の名前付きキャプチャ `(?<name>...)` のような POSIX ARE に無い拡張構文（測定: `SELECT '' ~ '(?<name>foo)'` は構文エラー）。`rokuban import epgstation` 時に各ルールの正規表現を Postgres で検証し、非互換は警告してユーザーに修正を促す（差分テストの allowlist にも追加）
 
 ### 全角/半角の揺れは immutable 関数 + 式インデックスで吸収する
 
