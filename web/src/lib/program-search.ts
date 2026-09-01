@@ -307,10 +307,14 @@ function isoToLocalDateTime(iso: string): string {
 }
 
 /**
- * ruleToDraft は既存ルールの条件をフォームの下書きにする（`buildSearchRequest`
- * の逆）。
+ * conditionsToDraft は条件（ルール・検索リクエスト）をフォームの下書きにする
+ * （`buildSearchRequest` の逆）。
+ *
+ * 引数の型は `ProgramSearchRequest`（URL・localStorage に載せた検索条件と同形）。
+ * `Rule` は `RuleInput`（条件の次元を含む）を拡張した形なので、そのまま渡せる ---
+ * 条件の次元だけを取り出す専用の型を別に持つ必要が無い。
  */
-export function ruleToDraft(rule: Rule): SearchDraft {
+export function conditionsToDraft(rule: ProgramSearchRequest): SearchDraft {
   return {
     isFree: rule.isFree === true ? 'yes' : rule.isFree === false ? 'no' : 'any',
     durationMinMinutes:
@@ -340,7 +344,7 @@ export function ruleToDraft(rule: Rule): SearchDraft {
       networkId: s.networkId,
       serviceId: s.serviceId,
     })),
-    channelTypes: (rule.channelTypes ?? []).slice() as ProgramSearchRequestChannelTypesItem[],
+    channelTypes: (rule.channelTypes ?? []).slice(),
     genres: rule.genres ? [...rule.genres] : [],
     times: (rule.times ?? []).map((t) => ({
       weekdays: t.weekdays,
@@ -348,6 +352,24 @@ export function ruleToDraft(rule: Rule): SearchDraft {
       endSec: t.endSec,
     })),
   }
+}
+
+/**
+ * canonicalSearchConditions は外から来た条件を「この画面が実際に送る形」に畳む
+ * （下書きを経由して往復させる）。
+ *
+ * URL（`?cond=`）や localStorage から来た条件は、フォームが持たない次元を含みうる
+ * --- openapi の `sites`（`rule_sites` 相当）がそれで、`conditionsToDraft` は
+ * その次元を持たない。畳まずに「条件がある」と扱うと、**画面には何も表示されない
+ * まま全件検索が走る**（`sites` だけの条件は下書きでは空になる）。畳んだ結果が
+ * 空なら「条件なし」として扱えばよい、という判定に使う。
+ *
+ * 秒以下・ミリ秒の精度も下書きの粒度（分・分単位の壁時計）に落ちるが、それは
+ * 実際に送られるリクエストと同じ落ち方なので、畳んだ形の方が「押したら何が
+ * 起きるか」に忠実になる。
+ */
+export function canonicalSearchConditions(conditions: ProgramSearchRequest): ProgramSearchRequest {
+  return buildSearchRequest(conditionsToDraft(conditions))
 }
 
 /**

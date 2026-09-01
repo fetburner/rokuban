@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createMemoryHistory, createRouter, RouterProvider } from '@tanstack/react-router'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   useListRecordingDropStats,
@@ -1040,5 +1040,117 @@ describe('ドロップ統計バッジは日本語ラベル（issue #454）', () 
     expect(screen.getByText('スクランブル 3')).toBeInTheDocument()
     expect(screen.queryByText(/^drop /)).not.toBeInTheDocument()
     expect(screen.queryByText(/^scrambled /)).not.toBeInTheDocument()
+  })
+})
+
+/**
+ * 表示形式（リスト / カード）は端末ごとの好みなので localStorage に置く
+ * （docs/frontend/design.md §個人化）。URL には載せない --- 共有リンクの
+ * 宛先は「どの録画の一覧か」であって「どう並べるか」ではない。
+ *
+ * jsdom はレイアウト（列数・サムネイルの実寸）を測れないので、ここで見るのは
+ * DOM の主張（トグルの押下状態・保存値・グリッドを組んでいること）だけに留める。
+ */
+describe('RecordingsPage の表示形式', () => {
+  const viewKey = 'rokuban:recordings:view'
+
+  afterEach(() => {
+    localStorage.clear()
+  })
+
+  it('カード表示に切り替えると localStorage に残り、URL は変わらない', async () => {
+    const user = userEvent.setup()
+    createFakeRecordingsServer({ library: [sampleRecording()] })
+    const { router } = renderPage()
+
+    expect(await screen.findByText('ライブラリの録画')).toBeInTheDocument()
+    const toggle = screen.getByRole('button', { name: 'カード表示' })
+    expect(toggle).toHaveAttribute('aria-pressed', 'false')
+
+    await user.click(toggle)
+
+    expect(toggle).toHaveAttribute('aria-pressed', 'true')
+    expect(localStorage.getItem(viewKey)).toBe('card')
+    expect(router.state.location.search).toEqual({})
+
+    // 戻せる（片側だけ見ると反転しても気付かない）
+    await user.click(toggle)
+    expect(toggle).toHaveAttribute('aria-pressed', 'false')
+    expect(localStorage.getItem(viewKey)).toBe('list')
+  })
+
+  it('保存済みのカード表示で開くと、一覧をグリッドで組む', async () => {
+    localStorage.setItem(viewKey, 'card')
+    createFakeRecordingsServer({ library: [sampleRecording()] })
+    renderPage()
+
+    expect(await screen.findByText('ライブラリの録画')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'カード表示' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+    const list = screen.getByText('ライブラリの録画').closest('ul')!
+    expect(list.className).toContain('grid')
+  })
+
+  it('保存が無ければリスト（グリッドを組まない）', async () => {
+    createFakeRecordingsServer({ library: [sampleRecording()] })
+    renderPage()
+
+    expect(await screen.findByText('ライブラリの録画')).toBeInTheDocument()
+    const list = screen.getByText('ライブラリの録画').closest('ul')!
+    expect(list.className).not.toContain('grid')
+  })
+
+  it('private mode 等で getItem/setItem が例外を投げても、表示形式は既定（リスト）のまま切り替えは効く', async () => {
+    const getItemSpy = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new Error('denied')
+    })
+    const setItemSpy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('denied')
+    })
+    try {
+      const user = userEvent.setup()
+      createFakeRecordingsServer({ library: [sampleRecording()] })
+      renderPage()
+
+      // loadRecordingsView（getItem 例外）は既定のリストへ落ちる
+      expect(await screen.findByText('ライブラリの録画')).toBeInTheDocument()
+      const toggle = screen.getByRole('button', { name: 'カード表示' })
+      expect(toggle).toHaveAttribute('aria-pressed', 'false')
+
+      // toggleView（setItem 例外）も画面上の切り替え自体は落とさない
+      await user.click(toggle)
+      expect(toggle).toHaveAttribute('aria-pressed', 'true')
+    } finally {
+      getItemSpy.mockRestore()
+      setItemSpy.mockRestore()
+    }
+  })
+
+  /**
+   * 0 件でも出すのは表示形式のトグルだけ（カード表示のまま 0 件のタブに来ると
+   * 戻す手段が無くなるため）。「選択」まで一緒に出すと、選ぶものが無い編集モードに
+   * 入れてしまう --- トグルを 0 件でも出す修正で実際に混入した退行。
+   */
+  it('カード表示のまま 0 件のタブに来ても、出るのはトグルだけで「選択」は出さない', async () => {
+    localStorage.setItem(viewKey, 'card')
+    createFakeRecordingsServer({ library: [] })
+    renderPage()
+
+    expect(await screen.findByText('録画がありません')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'カード表示' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '選択' })).not.toBeInTheDocument()
+  })
+
+  it('カード表示でも同じ事実を出す（状態・チャンネル・時刻・長さ）', async () => {
+    localStorage.setItem(viewKey, 'card')
+    createFakeRecordingsServer({ library: [sampleRecording()] })
+    renderPage()
+
+    expect(await screen.findByText('ライブラリの録画')).toBeInTheDocument()
+    expect(screen.getByText('完了')).toBeInTheDocument()
+    expect(screen.getByText('ＯＨＫ')).toBeInTheDocument()
+    expect(screen.getByText('30分')).toBeInTheDocument()
   })
 })

@@ -1,6 +1,6 @@
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useSearch as useRouteSearch, useNavigate } from '@tanstack/react-router'
-import { ChevronRight, MoreVertical, Trash2 } from 'lucide-react'
+import { ChevronRight, LayoutGrid, MoreVertical, Trash2 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import {
@@ -71,6 +71,28 @@ import { cn } from '@/lib/utils'
 
 /** pageSize は 1 回のフェッチで取る件数（API の既定と同じ）。 */
 const pageSize = 50
+
+/** RecordingsView は一覧の表示形式。`card` はサムネイルを大きく並べる。 */
+type RecordingsView = 'list' | 'card'
+
+/**
+ * VIEW_KEY は表示形式を持続させる localStorage キー。
+ *
+ * **URL ではなく端末に持つ**（`tab` や絞り込みと違う扱い）。表示形式は共有
+ * リンクの宛先ではなく、その端末で見やすい形の好みだから
+ * （docs/frontend/design.md §個人化）。`components/app-shell.tsx` の
+ * サイドバー畳みと同じ `rokuban:<関心事>:...` の命名。
+ */
+const VIEW_KEY = 'rokuban:recordings:view'
+
+function loadRecordingsView(): RecordingsView {
+  try {
+    return localStorage.getItem(VIEW_KEY) === 'card' ? 'card' : 'list'
+  } catch {
+    // private mode 等で localStorage が使えない場合はリスト
+    return 'list'
+  }
+}
 
 type RecordingsPageParam = { before?: string; beforeId?: number }
 
@@ -170,12 +192,23 @@ export function RecordingsPage() {
 
   const queryClient = useQueryClient()
   const toast = useToast()
+  const [view, setView] = useState<RecordingsView>(loadRecordingsView)
   const [selecting, setSelecting] = useState(false)
   const [selected, setSelected] = useState<Set<number>>(() => new Set())
   const [bulkBusy, setBulkBusy] = useState(false)
   const [purgeConfirmOpen, setPurgeConfirmOpen] = useState(false)
   const selectedIds = [...selected]
   const allLoadedSelected = recordings.length > 0 && recordings.every((r) => selected.has(r.id))
+
+  const toggleView = () => {
+    const next: RecordingsView = view === 'card' ? 'list' : 'card'
+    setView(next)
+    try {
+      localStorage.setItem(VIEW_KEY, next)
+    } catch {
+      // 保存できなくても表示は切り替わる（次に開くとリストに戻るだけ）
+    }
+  }
 
   const toggleSelected = (id: number) => {
     setSelected((current) => {
@@ -344,10 +377,35 @@ export function RecordingsPage() {
       <PageHeader
         title="録画"
         actions={
-          !selecting && recordings.length > 0 ? (
-            <Button type="button" variant="ghost" size="sm" onClick={() => setSelecting(true)}>
-              選択
-            </Button>
+          // カード表示のトグル自体は 0 件でも出す --- 出さないと、ごみ箱や
+          // 絞り込みで 0 件になったタブではリスト表示に戻す手段が無くなる
+          // （カード表示のまま次にヒットする画面までトグルへ到達できない）。
+          !selecting && (recordings.length > 0 || view === 'card') ? (
+            <div className="flex items-center gap-1">
+              {/* 状態を持つトグル。読み上げは aria-pressed が担う（ラベルを
+                  「リスト表示」に付け替えると、読み上げでは今どちらなのかが
+                  分からなくなる）。**見た目の押下状態は variant で出す** ---
+                  ghost の文字色は継承した既定の foreground と同じなので、
+                  アイコンの className だけを text-foreground に変える旧実装は
+                  画素が変わらず目には効かなかった（レビュー指摘）。 */}
+              <Button
+                type="button"
+                variant={view === 'card' ? 'secondary' : 'ghost'}
+                size="sm"
+                aria-pressed={view === 'card'}
+                aria-label="カード表示"
+                onClick={toggleView}
+              >
+                <LayoutGrid className="size-4" />
+              </Button>
+              {/* 「選択」は 0 件のときは出さない --- 選ぶものが無い編集モードに
+                  入れてしまう。0 件でも出すのはトグルだけ（上のコメント）。 */}
+              {recordings.length > 0 && (
+                <Button type="button" variant="ghost" size="sm" onClick={() => setSelecting(true)}>
+                  選択
+                </Button>
+              )}
+            </div>
           ) : undefined
         }
       >
@@ -441,6 +499,9 @@ export function RecordingsPage() {
             role={selecting ? 'listbox' : undefined}
             aria-multiselectable={selecting || undefined}
             aria-label={selecting ? '録画を選択' : undefined}
+            className={
+              view === 'card' ? 'grid grid-cols-2 gap-3 p-4 sm:grid-cols-3 lg:grid-cols-4' : undefined
+            }
           >
             {recordings.map((r) => (
               <li key={r.id}>
@@ -448,6 +509,7 @@ export function RecordingsPage() {
                   recording={r}
                   trash={trash}
                   showSite={showSite}
+                  view={view}
                   selecting={selecting}
                   selected={selected.has(r.id)}
                   onToggle={() => toggleSelected(r.id)}
@@ -619,6 +681,7 @@ function RecordingRow({
   recording,
   trash,
   showSite,
+  view,
   selecting,
   selected,
   onToggle,
@@ -627,11 +690,18 @@ function RecordingRow({
   trash: boolean
   /** 多サイトのときだけ site を出す（issue #283）。 */
   showSite: boolean
+  /**
+   * `card` はサムネイルを大きく縦に積む。**出す情報は list と同じ**で、
+   * 変えるのは並べ方だけ --- 表示形式ごとに出す事実を変えると、切り替えた
+   * ときに「見えていたはずのもの」が黙って消える。
+   */
+  view: RecordingsView
   selecting: boolean
   selected: boolean
   onToggle: () => void
 }) {
   const [thumbFailed, setThumbFailed] = useState(false)
+  const card = view === 'card'
 
   return (
     <div
@@ -639,7 +709,13 @@ function RecordingRow({
       aria-selected={selecting ? selected : undefined}
       onClick={selecting ? onToggle : undefined}
       className={cn(
-        'relative flex min-h-14 items-center gap-3 border-b border-border px-4 py-2.5 hover:bg-muted/50',
+        // base の gap は list 分岐に持たせる。card 分岐の gap-2 と両方 base に
+        // 置くと twMerge が常に後勝ち（gap-2）で解決し、base の gap-3 は
+        // list でも死にクラスになる（レビュー指摘）。
+        'relative hover:bg-muted/50',
+        card
+          ? 'flex h-full flex-col gap-2 rounded border border-border p-2'
+          : 'flex min-h-14 items-center gap-3 border-b border-border px-4 py-2.5',
         selecting && 'cursor-pointer',
         selected && 'bg-muted/50',
       )}
@@ -670,7 +746,12 @@ function RecordingRow({
         §メディア配信）なので、そもそもリクエストを出さずプレースホルダ固定にする
         （M3-18: 未生成と 404 で区別が付かない曖昧さもこれで消える）。
       */}
-      <div className="aspect-video h-12 shrink-0 overflow-hidden rounded bg-muted">
+      <div
+        className={cn(
+          'aspect-video shrink-0 overflow-hidden rounded bg-muted',
+          card ? 'w-full' : 'h-12',
+        )}
+      >
         {!trash && !thumbFailed ? (
           <img
             src={`/api/recordings/${recording.id}/thumbnail`}
@@ -684,7 +765,9 @@ function RecordingRow({
         )}
       </div>
       <div className="min-w-0 flex-1">
-        <div className="truncate text-base">{recording.title || '（番組名なし）'}</div>
+        <div className={cn('text-base', card ? 'line-clamp-2' : 'truncate')}>
+          {recording.title || '（番組名なし）'}
+        </div>
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
           <StatusBadge status={recording.status} />
           <IngestBadge recording={recording} />
@@ -713,7 +796,8 @@ function RecordingRow({
           {recording.dropSummary && <DropBadges summary={recording.dropSummary} />}
         </div>
       </div>
-      {!selecting && <ChevronRight className="size-4 shrink-0 text-muted-foreground" />}
+      {/* カードは行ではないので、行末の「開く」記号は出さない（面全体がリンク）。 */}
+      {!selecting && !card && <ChevronRight className="size-4 shrink-0 text-muted-foreground" />}
     </div>
   )
 }

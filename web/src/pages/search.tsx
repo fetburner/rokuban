@@ -36,11 +36,12 @@ import {
   emptyDraft,
   emptyRuleMeta,
   ruleMetaError,
-  ruleToDraft,
+  conditionsToDraft,
   ruleToMeta,
   type RuleMetaDraft,
   type SearchDraft,
 } from '@/lib/program-search'
+import { loadLastSearchConditions, saveLastSearchConditions } from '@/lib/search-storage'
 import {
   epgWindowDays,
   estimateRuleCost,
@@ -81,13 +82,29 @@ export function SearchPage() {
   // nowMs はこのレンダーの間で一貫させる（`pages/home.tsx`・`pages/programs.tsx`
   // と同じ規律）。容量ノートの問い合わせ窓（下の `shortfallWindowStartMs`）だけが使う。
   const nowMs = Date.now()
-  const [draft, setDraft] = useState<SearchDraft>(emptyDraft)
+  const routeSearch = useRouteSearch({ from: '/search' })
+  const ruleId = routeSearch.ruleId
+  const navigate = useNavigate()
+
+  /**
+   * 下書きの初期値は **URL > localStorage > 空**（docs/frontend/design.md §個人化）。
+   *
+   * URL（`?cond=` / `?ruleId=`）が条件を持つときは下のハイドレーション effect が
+   * 写すので、ここでは空から始める。どちらも無いときだけ、前回押した条件を端末から
+   * 復元する --- 検索は「思い出して打ち直す」より「見て直す」方が速い画面で、
+   * 条件は毎回ほぼ同じものを少しずつ変えて使う。
+   *
+   * **復元するのはフォームだけで、検索は実行しない。** 開いた瞬間に前回の
+   * 問い合わせが飛ぶのは、押していない操作が起きたのと同じになる。
+   */
+  const [draft, setDraft] = useState<SearchDraft>(() => {
+    if (routeSearch.ruleId !== undefined || routeSearch.cond !== undefined) return emptyDraft()
+    const last = loadLastSearchConditions()
+    return last === undefined ? emptyDraft() : conditionsToDraft(last)
+  })
   const [visibleCount, setVisibleCount] = useState(pageSize)
   const services = useListServices(site)
   const search = useSearchPrograms()
-
-  const routeSearch = useRouteSearch({ from: '/search' })
-  const ruleId = routeSearch.ruleId
   // ruleId が無いときは問い合わせを止める。useGetRule は id を必須の number で
   // 取るため、無効化中はダミー値を渡す（program-overlap-warning.tsx と同じ流儀）。
   const ruleQuery = useGetRule(ruleId ?? -1, { query: { enabled: ruleId !== undefined } })
@@ -119,7 +136,7 @@ export function SearchPage() {
     if (hydratedRuleIdRef.current === ruleId) return
     hydratedRuleIdRef.current = ruleId
 
-    const nextDraft = ruleToDraft(sourceRule)
+    const nextDraft = conditionsToDraft(sourceRule)
     setDraft(nextDraft)
     setVisibleCount(pageSize)
     searchRef.current.mutate({ site, data: buildSearchRequest(nextDraft) })
@@ -128,6 +145,45 @@ export function SearchPage() {
     // ESLint 警告を消すためだけに include するのは避ける。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ruleId, sourceRule])
+
+  /**
+   * `?cond=` のハイドレーション。共有・ブックマークされた URL を開いたときに、
+   * 条件をフォームへ写してそのまま検索する（結果が出ていない共有リンクは
+   * 「同じ結果を見せる」という目的を果たさない）。
+   *
+   * **`?ruleId=` があるときは何もしない。** ルール編集として開いた画面の正本は
+   * ルールの条件で、そちらのハイドレーションと二重に下書きを書くと、どちらが
+   * 勝ったかがタイミング次第になる。
+   *
+   * ガードは ruleId 版と同じ理屈（適用済みの条件を ref に持ち、同じ値なら
+   * 何もしない）だが、比較する値がオブジェクトなので JSON 文字列で持つ。
+   * 自分で `navigate` して URL を書き換えたときも、この ref のおかげで
+   * 再検索にはならない（下の `submit`）。
+   *
+   * **比べるのは URL の生の値ではなく、そこから作ったリクエスト。** URL の値は
+   * `validateSearch` の zod スキーマを通って戻ってくるので、既定値
+   * （`caseSensitive` / `negate`）が埋まった形になり、`submit` が送った
+   * リクエストとは文字列として一致しない。生の JSON を比べると、自分で書いた
+   * URL が「別の条件」に見えて**押すたびに同じ検索を 2 回叩く**
+   * （`e2e/personalization.mjs` の③がこれを見ている）。
+   */
+  const appliedCondRef = useRef<string | undefined>(undefined)
+  useEffect(() => {
+    if (ruleId !== undefined) return
+    const cond = routeSearch.cond
+    const nextDraft = cond === undefined ? undefined : conditionsToDraft(cond)
+    const encoded =
+      nextDraft === undefined ? undefined : JSON.stringify(buildSearchRequest(nextDraft))
+    if (appliedCondRef.current === encoded) return
+    appliedCondRef.current = encoded
+    if (nextDraft === undefined) return
+
+    setDraft(nextDraft)
+    setVisibleCount(pageSize)
+    searchRef.current.mutate({ site, data: buildSearchRequest(nextDraft) })
+    // site を依存に入れない理由は上のハイドレーション effect と同じ。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ruleId, routeSearch.cond])
 
   const error = draftError(draft)
 
@@ -159,9 +215,32 @@ export function SearchPage() {
   // 暗黙の送信（既定ボタンが無効でも submit が届きうる）が素通りする。
   const submit = () => {
     if (error !== undefined) return
+    const request = buildSearchRequest(draft)
     setVisibleCount(pageSize)
     pendingResultScrollRef.current = true
-    search.mutate({ site, data: buildSearchRequest(draft) })
+    search.mutate({ site, data: request })
+    // 押した条件だけを「最後の条件」として残す。打っている途中の下書きを保存すると、
+    // 次に開いたとき送れない下書き（値が空のテキスト条件など）が復元されうる。
+    saveLastSearchConditions(request)
+
+    // 押した条件を URL にも載せる（共有・ブックマーク・リロードで同じ結果）。
+    // 履歴は汚さない（`replace`）--- 条件を 3 回直して押したあとの「戻る」で
+    // 検索画面を 3 回通るのは、押した回数を覚えていない側の負担になる。
+    //
+    // **`?ruleId=` で開いているときは載せない。** その画面の条件の正本はルールで、
+    // 両方が URL にあると、次に開いたときどちらを写したのかが読めなくなる。
+    if (ruleId === undefined) {
+      appliedCondRef.current = JSON.stringify(request)
+      void navigate({
+        to: '/search',
+        search: (prev) => ({
+          ...prev,
+          // 条件なしの検索（全件）で `?cond={}` を残さない（不変条件 10）
+          cond: Object.keys(request).length > 0 ? request : undefined,
+        }),
+        replace: true,
+      })
+    }
   }
 
   // 検索が決着した（成功・失敗のどちらでも）フレームで移す。0 件・失敗も

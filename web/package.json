@@ -23,7 +23,8 @@
     "e2e:reservations-mobile": "node e2e/reservations-mobile.mjs",
     "e2e:recordings-selection": "node e2e/recordings-selection.mjs",
     "e2e:cls": "node e2e/cls.mjs",
-    "e2e:chip-overflow": "node e2e/chip-overflow.mjs"
+    "e2e:chip-overflow": "node e2e/chip-overflow.mjs",
+    "e2e:personalization": "node e2e/personalization.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.6.0",

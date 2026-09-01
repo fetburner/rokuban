@@ -4,8 +4,11 @@ import type { EncodedAsset } from '@/api/generated'
 import { formatBytes } from '@/lib/format'
 import {
   loadPlaybackPosition,
+  loadPlaybackRate,
+  playbackRates,
   recordingFileURL,
   savePlaybackPosition,
+  savePlaybackRate,
   shouldSavePlaybackPosition,
 } from '@/lib/playback-position'
 import { cn } from '@/lib/utils'
@@ -43,7 +46,7 @@ export function RecordingPlayer({
   // 限りループにはならないが、無駄な再実行を避ける）。
   const profiles = useMemo(() => encodedAssets.map((a) => a.profile), [encodedAssets])
   const [profile, setProfile] = useState(profiles[0] ?? '')
-  const [playbackRate, setPlaybackRate] = useState(1)
+  const [playbackRate, setPlaybackRate] = useState(loadPlaybackRate)
   const videoRef = useRef<HTMLVideoElement>(null)
   // プロファイル切替時に load したあとだけ currentTime を復元する
   const restorePending = useRef(true)
@@ -62,11 +65,24 @@ export function RecordingPlayer({
     lastSavedSecond.current = null
   }, [recordingId, profile])
 
-  useEffect(() => setPlaybackRate(1), [recordingId])
-
+  // 録画を変えても速度は保つ（以前はここで 1 倍に戻していた）。速度は端末ごとの
+  // 好みであって録画ごとの状態ではない（`lib/playback-position.ts`）。
+  //
+  // **`recordingId` を依存に含める。** `<video>` は `key={`${recordingId}:${profile}`}`
+  // なので、別の録画に移ると DOM 要素ごと作り直される。`recordingId` が依存に無いと
+  // 「`profile` は変わらず `playbackRate` も既に 1.5 のまま」という場合に依存配列が
+  // 前回と同じと判定されて effect が再実行されず、新しい要素の既定値（1 倍）の
+  // ままになる --- select の表示は 1.5× でも実際の再生は 1 倍に戻る、という
+  // 見た目と実体のずれ（レビュー指摘）。**`defaultPlaybackRate` にも同じ値を
+  // 入れる。** `src` を差し替える media element load algorithm は `playbackRate` を
+  // `defaultPlaybackRate` へ戻すため、`playbackRate` だけ設定しても再生が始まった
+  // 瞬間に 1 倍へ巻き戻りうる。
   useEffect(() => {
-    if (videoRef.current) videoRef.current.playbackRate = playbackRate
-  }, [profile, playbackRate])
+    const video = videoRef.current
+    if (!video) return
+    video.defaultPlaybackRate = playbackRate
+    video.playbackRate = playbackRate
+  }, [recordingId, profile, playbackRate])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -185,10 +201,14 @@ export function RecordingPlayer({
         <select
           id={`playback-rate-${recordingId}`}
           value={playbackRate}
-          onChange={(event) => setPlaybackRate(Number(event.target.value))}
+          onChange={(event) => {
+            const rate = Number(event.target.value)
+            setPlaybackRate(rate)
+            savePlaybackRate(rate)
+          }}
           className="rounded border border-border bg-background px-2 py-1 text-xs"
         >
-          {[1, 1.25, 1.5, 1.75, 2].map((rate) => (
+          {playbackRates.map((rate) => (
             <option key={rate} value={rate}>
               {Number.isInteger(rate) ? rate.toFixed(1) : rate}×
             </option>
