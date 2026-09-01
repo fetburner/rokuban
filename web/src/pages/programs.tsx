@@ -35,6 +35,11 @@ import { apiErrorMessage, unwrap } from '@/api/unwrap'
 import { shouldAutoLoadNextPage, shouldShowLoadMoreButton } from '@/lib/auto-load'
 import { dayOffsetForMs, dayOrigin } from '@/lib/day-offset'
 import { orderServices, type TimeAxis } from '@/lib/epg-grid'
+import {
+  capacityOveragesQueryKeyPrefix,
+  programsQueryKeyPrefix,
+  reservationsQueryKeyPrefix,
+} from '@/lib/events'
 import { domLayoutMeasurable } from '@/lib/list-virtualization'
 import { mutationErrorMessage } from '@/lib/mutation-error-message'
 import {
@@ -247,7 +252,7 @@ export function ProgramsPage() {
   // （`step` のような抽象的なカーソルにしない）。
   const query = useInfiniteQuery({
     queryKey: [
-      '/api/programs',
+      programsQueryKeyPrefix,
       'infinite',
       originMs,
       limitMs,
@@ -753,10 +758,10 @@ function useReservationActions(
   }
 
   const invalidateReservations = () => {
-    void queryClient.invalidateQueries({ queryKey: ['/api/reservations'] })
+    void queryClient.invalidateQueries({ queryKey: [reservationsQueryKeyPrefix] })
     // 容量超過は予約集合からの導出値なので、予約が増減すれば作り直させる。
     // 帯を古いまま残すと「予約したのに不足が消えない / 出ない」になる
-    void queryClient.invalidateQueries({ queryKey: ['/api/capacity/overages'] })
+    void queryClient.invalidateQueries({ queryKey: [capacityOveragesQueryKeyPrefix] })
   }
 
   // revive は取消トーストの「元に戻す」から呼ぶ（issue #453）。`reserve` と

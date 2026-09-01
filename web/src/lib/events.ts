@@ -1,6 +1,16 @@
 import { useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useSyncExternalStore } from 'react'
 
+import {
+  getGetEncodeQueueQueryKey,
+  getGetStorageQueryKey,
+  getListCapacityOveragesQueryKey,
+  getListCircuitBreakersQueryKey,
+  getListRecordingsQueryKey,
+  getListReservationsQueryKey,
+  getListSitesQueryKey,
+} from '@/api/generated'
+
 /**
  * operationalRefreshIntervalMs は運用状態（予約・録画・ブレーカー・容量超過）を
  * SSE 抜きで取り直す周期（ミリ秒）。
@@ -50,6 +60,49 @@ export const epgRefreshIntervalMs = 600_000
 export const storageRefreshIntervalMs = 5 * 60_000
 
 /**
+ * reservationsQueryKeyPrefix / recordingsQueryKeyPrefix / capacityOveragesQueryKeyPrefix /
+ * breakersQueryKeyPrefix / encodeQueueQueryKeyPrefix / storageQueryKeyPrefix /
+ * sitesQueryKeyPrefix は orval 生成のクエリキー関数（先頭要素が URL）から
+ * 導出した接頭辞。invalidate 用のリテラルをここと各ページで手書きに複製する
+ * と、openapi.yaml のパスリネームにここだけが追随せず「操作後に一覧が
+ * 更新されない」形で静かに壊れる。生成関数から引くことで自動追随させる
+ * （先頭要素が URL 文字列である形式は orval の実装詳細への依存として残る）。
+ *
+ * `sitesQueryKeyPrefix` だけ末尾にスラッシュを足す --- `/api/sites` 自体
+ * （サイト一覧）ではなく `/api/sites/{site}/...` 配下だけを epg グループで
+ * 前方一致させたいため。
+ *
+ * ただしこの導出元（`getListSitesQueryKey`、サイト**一覧**の openapi パス）は、
+ * epg グループが実際に前方一致させたい対象（`/api/sites/{site}/programs` /
+ * `services` / `overlaps` という**別々の**サブリソースの openapi パス）とは
+ * 別物。サブリソース側の生成関数はどれも `site` を引数に取るので、そこから
+ * 接頭辞だけを安全に切り出せる生成関数は無い（これが唯一の安く手に入る導出元）。
+ * そのため `/api/sites`（一覧）だけがリネームされても、このパスから見た
+ * サブリソース側との対応が崩れているわけではないのに接頭辞は自動で追随して
+ * しまい、epg グループが黙って前方一致を失うリスクは残る。手書き literal には
+ * 無かったこの経路のリスクを、この導出は引き受けている。
+ */
+export const reservationsQueryKeyPrefix = getListReservationsQueryKey()[0]
+export const recordingsQueryKeyPrefix = getListRecordingsQueryKey()[0]
+export const capacityOveragesQueryKeyPrefix = getListCapacityOveragesQueryKey()[0]
+export const breakersQueryKeyPrefix = getListCircuitBreakersQueryKey()[0]
+export const encodeQueueQueryKeyPrefix = getGetEncodeQueueQueryKey()[0]
+export const storageQueryKeyPrefix = getGetStorageQueryKey()[0]
+export const sitesQueryKeyPrefix = `${getListSitesQueryKey()[0]}/`
+
+/**
+ * programsQueryKeyPrefix は番組リスト（`pages/programs.tsx` の
+ * useInfiniteQuery）が使う手書きキーの先頭要素。
+ *
+ * 一覧が `/api/sites/{site}/programs`（site ごと）なのに対し、無限リストは
+ * 複数 site を跨いだ 1 つの時間窓として取得するため、orval 生成キーをその
+ * まま使えない（`docs` 化していない、pages/programs.tsx 側の doc コメント
+ * 参照）。導出元が無いのでリテラルのまま残すが、events.ts と
+ * pages/programs.tsx の複製をこの 1 箇所に集約する。
+ */
+export const programsQueryKeyPrefix = '/api/programs'
+
+/**
  * tunersQueryKeyPrefix は `GET /api/sites/{site}/tuners` のクエリキーの接頭辞。
  *
  * このエンドポイントだけ URL をキーにできない。URL は epg グループの接頭辞
@@ -58,9 +111,8 @@ export const storageRefreshIntervalMs = 5 * 60_000
  *
  * **キーを組み立てる側（`components/tuner-status.tsx`）とグループの接頭辞が
  * 同じ定数を参照することで、片方だけ改名して取り直しが止まる drift を型で
- * 防ぐ**（同じ手書きキーである番組リストの `['/api/programs', 'infinite', ...]`
- * は literal が散っているのでこの防御が無い）。テスト側はこの定数を参照せず
- * literal を持つので、定数を改名すれば events.test.tsx と live.test.tsx が落ちる。
+ * 防ぐ**。テスト側はこの定数を参照せず literal を持つので、定数を改名すれば
+ * events.test.tsx と live.test.tsx が落ちる。
  */
 export const tunersQueryKeyPrefix = '/api/tuners'
 
@@ -103,17 +155,17 @@ const queryGroups: QueryGroup[] = [
     // 容量超過（チューナー不足）は予約集合からの導出値なので、予約が変わったら
     // 一緒に取り直す（docs/data.md §6.5）。専用のトピックは無い --- 導出値に
     // 独自の通知を持たせると、元データと導出値が別々の鮮度で並ぶことになる
-    prefixes: ['/api/reservations', '/api/capacity/overages'],
+    prefixes: [reservationsQueryKeyPrefix, capacityOveragesQueryKeyPrefix],
     refreshIntervalMs: operationalRefreshIntervalMs,
   },
   {
     topic: 'recordings',
-    prefixes: ['/api/recordings', '/api/encode-queue'],
+    prefixes: [recordingsQueryKeyPrefix, encodeQueueQueryKeyPrefix],
     refreshIntervalMs: operationalRefreshIntervalMs,
   },
   {
     topic: 'breakers',
-    prefixes: ['/api/breakers'],
+    prefixes: [breakersQueryKeyPrefix],
     refreshIntervalMs: operationalRefreshIntervalMs,
   },
   {
@@ -121,15 +173,15 @@ const queryGroups: QueryGroup[] = [
     // programs / services / overlaps はすべて /api/sites/{site}/... 配下。
     // 番組リスト（pages/programs.tsx の useInfiniteQuery）だけは URL をキーに
     // できず（ページの形が「取得した半開区間」なので）手書きの
-    // ['/api/programs', 'infinite', ...] を使う。ここに書かないと、番組リストは
-    // SSE の epg イベントでも定期 invalidate でも取り直されない
-    prefixes: ['/api/sites/', '/api/programs'],
+    // [programsQueryKeyPrefix, 'infinite', ...] を使う。ここに書かないと、
+    // 番組リストは SSE の epg イベントでも定期 invalidate でも取り直されない
+    prefixes: [sitesQueryKeyPrefix, programsQueryKeyPrefix],
     refreshIntervalMs: epgRefreshIntervalMs,
   },
   {
     // トピックを持たない --- storageRefreshIntervalMs の doc コメント参照。
     topic: null,
-    prefixes: ['/api/storage'],
+    prefixes: [storageQueryKeyPrefix],
     refreshIntervalMs: storageRefreshIntervalMs,
   },
   {

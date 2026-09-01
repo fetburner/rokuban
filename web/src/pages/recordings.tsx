@@ -49,7 +49,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { shouldAutoLoadNextPage, shouldShowLoadMoreButton } from '@/lib/auto-load'
 import { encodeJobStatusLabel } from '@/lib/encode-status'
-import { useEncodeProgress } from '@/lib/events'
+import { recordingsQueryKeyPrefix, useEncodeProgress } from '@/lib/events'
 import { formatBytes, formatDateTime, formatDuration } from '@/lib/format'
 import {
   hasLiveIngestProgress,
@@ -156,9 +156,10 @@ export function RecordingsPage() {
   const hasConditions = hasAnyRecordingsCondition(search)
 
   const query = useInfiniteQuery({
-    // getListRecordingsQueryKey は先頭要素が '/api/recordings' になるキーを返すので、
-    // RecordingActions の invalidateQueries({ queryKey: ['/api/recordings'] })
-    // （前方一致）がここにも効く。カーソル（before/beforeId）はキーに含めない ---
+    // getListRecordingsQueryKey は先頭要素が recordingsQueryKeyPrefix になる
+    // キーを返すので、RecordingActions の invalidateQueries({ queryKey:
+    // [recordingsQueryKeyPrefix] })（前方一致）がここにも効く。カーソル
+    // （before/beforeId）はキーに含めない ---
     // 同じ絞り込みの中でページを積んでいくのが useInfiniteQuery の前提であり、
     // カーソルをキーに入れるとページごとに別クエリになってしまう。
     queryKey: getListRecordingsQueryKey(listParams),
@@ -220,7 +221,7 @@ export function RecordingsPage() {
   }
 
   const invalidateRecordings = () =>
-    queryClient.invalidateQueries({ queryKey: ['/api/recordings'] })
+    queryClient.invalidateQueries({ queryKey: [recordingsQueryKeyPrefix] })
 
   const reportBulkFailures = (label: string, failed: BulkFailure[]) => {
     if (failed.length === 0) return
@@ -997,7 +998,7 @@ export function EncodeStatusBadges({ recording }: { recording: Recording }) {
  * 直し方は prop を増やすことではなく、**単体ページ自身のクエリキーを一覧の
  * invalidate に前方一致させる**（`pages/recording-detail.tsx` の
  * `recordingDetailQueryKey` 参照）。ここに mutater を何人足しても、
- * 各自が今のまま `['/api/recordings']` を invalidate するだけで単体ページも
+ * 各自が今のまま `[recordingsQueryKeyPrefix]` を invalidate するだけで単体ページも
  * 自動的に巻き込まれるので、`RecordingDetail` 自身に配線用の prop は要らない。
  */
 export function RecordingDetail({
@@ -1175,7 +1176,7 @@ export function RecordingActions({ recording, trash }: { recording: Recording; t
     // クエリキー（recordingDetailQueryKey）を自ら使っているので、単体ページ
     // だけを別途再検証する配線はここには要らない（テスト:
     // recording-detail.test.tsx「ごみ箱へ移すと、ナビゲーションなしで…」）。
-    void queryClient.invalidateQueries({ queryKey: ['/api/recordings'] })
+    void queryClient.invalidateQueries({ queryKey: [recordingsQueryKeyPrefix] })
   }
 
   // restore は「復元」ボタン本体と、ごみ箱送りトーストの Undo（下記）の
@@ -1439,7 +1440,7 @@ function AddEncodeProfilesAction({ recording }: { recording: Recording }) {
                 {
                   onSuccess: () => {
                     setSelected([])
-                    void queryClient.invalidateQueries({ queryKey: ['/api/recordings'] })
+                    void queryClient.invalidateQueries({ queryKey: [recordingsQueryKeyPrefix] })
                     toast({ message: 'エンコードを依頼しました' })
                   },
                   onError: (err) =>
