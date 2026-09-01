@@ -2,6 +2,7 @@ import { TriangleAlert } from 'lucide-react'
 
 import { useListTuners } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
+import { tunersQueryKeyPrefix } from '@/lib/events'
 import { useCurrentSite } from '@/lib/site'
 import { isObservationStale } from '@/lib/storage-forecast'
 
@@ -46,9 +47,11 @@ export function TunerStatus() {
   const site = useCurrentSite()
   // 生成キー（`/api/sites/${site}/tuners`）ではなく手書きにする --- URL のままだと
   // epg グループの接頭辞（`/api/sites/`）にも一致し、周期の違う 2 グループに同じ
-  // キーが入る（`lib/events.ts` の `tuners` グループのコメント参照）。手書きキーの
-  // 前例は番組リストの `['/api/programs', 'infinite', ...]`（`pages/programs.tsx`）。
-  const query = useListTuners(site, { query: { queryKey: ['/api/tuners', site] } })
+  // キーが入る（理由は {@link tunersQueryKeyPrefix}）。接頭辞は `lib/events.ts` の
+  // グループ定義と同じ定数を参照する --- 片方だけ改名して取り直しが止まる drift を
+  // 防ぐため。手書きキーの前例は番組リストの
+  // `['/api/programs', 'infinite', ...]`（`pages/programs.tsx`）。
+  const query = useListTuners(site, { query: { queryKey: [tunersQueryKeyPrefix, site] } })
   const tuners = unwrap(query.data)
   if (tuners === undefined || tuners.length === 0) return null
 
