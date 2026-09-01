@@ -295,7 +295,8 @@ func (w *DeleteReconcileWorker) Work(ctx context.Context, _ *river.Job[DeleteRec
 	// 削除条件 1・2 の一覧直後の判断根拠参照）。until_encoded_deletable_originals
 	// （条件 2）が desired な派生物の完備を要求するため、出力未コミットの
 	// ジョブは既に条件 2 が止め、出力コミット済みのジョブは各ワーカーの冒頭の
-	// 冪等チェックが原本を開かずに skip する。
+	// 冪等チェックが原本を開かずに skip する（順序そのものは未検証。
+	// docs/storage/retention.md 同箇所参照）。
 	untilEncodedRows, err := q.ListUntilEncodedOriginalsToDelete(ctx, deleteReconcileRowLimit)
 	if err != nil {
 		return fmt.Errorf("listing until_encoded originals: %w", err)
