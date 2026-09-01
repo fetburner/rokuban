@@ -909,35 +909,70 @@ func TestDeleteReconcileWorker_UntilEncoded_MissingThumbnail_NotDeleted(t *testi
 	}
 }
 
-// 原本を入力とする encode ジョブが実行待ちの間は、派生物が揃って見えても消さない
-// （storage.md §6 の条件 3）。
-func TestDeleteReconcileWorker_UntilEncoded_PendingEncodeJob_NotDeleted(t *testing.T) {
+// until_encoded 候補が複数（別々の録画）ある場合、条件 2（desired な派生物の
+// 完備）を満たさない録画だけを除外し、満たす録画はすべて正しく削除すること。
+//
+// 旧条件 3（キューの pending 状態を直接見るガード）は issue #516 で削除した ---
+// この安全性は until_encoded_deletable_originals（条件 2）が代わりに担保する。
+// recordingA は desired なプロファイル h264 が未コミットのまま encode ジョブが
+// 実行中（ジョブの有無そのものは判定に効かない --- 添えるのは「たまたま」で
+// はなく実際に active な試行が走っている状況を再現するため）。条件 2 は SQL
+// 側（view）で判定するので A は untilEncodedRows に一度も現れない --- した
+// がって条件 2 側の完備候補を recordingB 1 件にすると、until_encoded ループが
+// 複数件のうち先頭 1 件だけを処理して残りを無視する変異を注入しても
+// untilEncodedRows の要素数が 1 のままで検出できない。recordingC も条件 2 を
+// 満たす 2 件目の完備候補として加え、ループが両方を処理することまで固定する。
+func TestDeleteReconcileWorker_UntilEncoded_PartialCandidates_OnlyDeletesComplete(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
-	recordingID := insertTestRecording(t, pool)
-
-	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "orig/pending-job.m2ts", []byte("data"))
 	profile := "h264"
-	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindEncoded, &profile, "enc/pending-job.mp4", []byte("mp4"))
-	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindThumbnail, nil, "thumb/pending-job.jpg", []byte("jpg"))
 
-	markRecordingUntilEncoded(t, pool, recordingID, []string{"h264"})
+	// recordingA: h264 が未コミット（encode ジョブが実行中）+ サムネイルのみ
+	// コミット済み。条件 2 を満たさないので原本は残る。
+	recordingA := insertTestRecording(t, pool)
+	assetA := seedOriginalAsset(t, pool, mediaDir, recordingA, "orig/partial-a.m2ts", []byte("data"))
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingA, db.AssetKindThumbnail, nil, "thumb/partial-a.jpg", []byte("jpg"))
+	markRecordingUntilEncoded(t, pool, recordingA, []string{profile})
 
 	insertOnly, err := NewInsertOnlyClient(pool)
 	if err != nil {
 		t.Fatalf("creating insert-only client: %v", err)
 	}
-	if _, err := insertOnly.Insert(context.Background(), EncodeJobArgs{RecordingID: recordingID, Profile: "av1"}, nil); err != nil {
-		t.Fatalf("inserting pending encode job: %v", err)
+	if _, err := insertOnly.Insert(context.Background(), EncodeJobArgs{RecordingID: recordingA, Profile: profile}, nil); err != nil {
+		t.Fatalf("inserting active encode job for recording A: %v", err)
 	}
+
+	// recordingB / recordingC: どちらも h264 + サムネイルがコミット済みで
+	// 条件 2 を満たす（削除されるべき）候補が 2 件同時に存在する状態を作る。
+	// event_id を insertTestRecording の既定（1）とずらす --- recordings_unique_active_event
+	// は (site, network_id, service_id, event_id) のアクティブ行に対する一意
+	// 制約なので、同じ event_id で 2 つ目以降のアクティブな録画を
+	// insertTestRecording で作ろうとするとそのまま衝突する。
+	recordingB := insertTestRecordingWithEventID(t, pool, 2)
+	assetB := seedOriginalAsset(t, pool, mediaDir, recordingB, "orig/partial-b.m2ts", []byte("data"))
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingB, db.AssetKindEncoded, &profile, "enc/partial-b.mp4", []byte("mp4"))
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingB, db.AssetKindThumbnail, nil, "thumb/partial-b.jpg", []byte("jpg"))
+	markRecordingUntilEncoded(t, pool, recordingB, []string{profile})
+
+	recordingC := insertTestRecordingWithEventID(t, pool, 3)
+	assetC := seedOriginalAsset(t, pool, mediaDir, recordingC, "orig/partial-c.m2ts", []byte("data"))
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingC, db.AssetKindEncoded, &profile, "enc/partial-c.mp4", []byte("mp4"))
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingC, db.AssetKindThumbnail, nil, "thumb/partial-c.jpg", []byte("jpg"))
+	markRecordingUntilEncoded(t, pool, recordingC, []string{profile})
 
 	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
 	if err := w.Work(context.Background(), nil); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
 
-	if got := assetState(t, pool, assetID); got != "active" {
-		t.Errorf("original state = %q, want active (pending encode job for this recording)", got)
+	if got := assetState(t, pool, assetA); got != "active" {
+		t.Errorf("recording A original state = %q, want active (desired profile h264 not yet committed)", got)
+	}
+	if got := assetState(t, pool, assetB); got != "deleted" {
+		t.Errorf("recording B original state = %q, want deleted (all desired derivatives committed)", got)
+	}
+	if got := assetState(t, pool, assetC); got != "deleted" {
+		t.Errorf("recording C original state = %q, want deleted (all desired derivatives committed)", got)
 	}
 }
 
@@ -1134,57 +1169,6 @@ func insertTestRecordingWithEventID(t *testing.T, pool *pgxpool.Pool, eventID in
 		_, _ = pool.Exec(context.Background(), "DELETE FROM recordings WHERE id = $1", id)
 	})
 	return id
-}
-
-// until_encoded 候補が複数（別々の録画）ある場合、pending なジョブは
-// それを持つ録画だけをブロックし、他の候補の削除を巻き込まないこと
-// （issue #110: pendingDerivativeJobRecordingIDs が候補ごとの recording_id を
-// 正しく対応付けているかの検証。1 件でも pending があれば全候補を一律に
-// ブロックする「broadcast」変異を通してしまうと、1 本の詰まった encode
-// ジョブで無関係な録画の until_encoded 削除まで無言で永久に止まる）。
-func TestDeleteReconcileWorker_UntilEncoded_PendingJobOnOneOfMultipleCandidates_OnlyBlocksThatOne(t *testing.T) {
-	pool := setupTestPool(t)
-	mediaDir := t.TempDir()
-	profile := "h264"
-
-	// recordingA: pending な encode ジョブを持つ。desired なプロファイルは
-	// 揃っているが、別プロファイル（av1）の再エンコードが待機中。
-	recordingA := insertTestRecording(t, pool)
-	assetA := seedOriginalAsset(t, pool, mediaDir, recordingA, "orig/multi-a.m2ts", []byte("data"))
-	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingA, db.AssetKindEncoded, &profile, "enc/multi-a.mp4", []byte("mp4"))
-	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingA, db.AssetKindThumbnail, nil, "thumb/multi-a.jpg", []byte("jpg"))
-	markRecordingUntilEncoded(t, pool, recordingA, []string{"h264"})
-
-	// recordingB: 派生物は揃っており、pending なジョブは無い。event_id を
-	// insertTestRecording の既定（1）とずらす —— recordings_unique_active_event は
-	// (site, network_id, service_id, event_id) のアクティブ行に対する一意制約なので、
-	// 同じ event_id で 2 つ目のアクティブな録画を insertTestRecording で作ろうとすると
-	// そのまま衝突する。
-	recordingB := insertTestRecordingWithEventID(t, pool, 2)
-	assetB := seedOriginalAsset(t, pool, mediaDir, recordingB, "orig/multi-b.m2ts", []byte("data"))
-	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingB, db.AssetKindEncoded, &profile, "enc/multi-b.mp4", []byte("mp4"))
-	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingB, db.AssetKindThumbnail, nil, "thumb/multi-b.jpg", []byte("jpg"))
-	markRecordingUntilEncoded(t, pool, recordingB, []string{"h264"})
-
-	insertOnly, err := NewInsertOnlyClient(pool)
-	if err != nil {
-		t.Fatalf("creating insert-only client: %v", err)
-	}
-	if _, err := insertOnly.Insert(context.Background(), EncodeJobArgs{RecordingID: recordingA, Profile: "av1"}, nil); err != nil {
-		t.Fatalf("inserting pending encode job for recording A: %v", err)
-	}
-
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
-	if err := w.Work(context.Background(), nil); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
-
-	if got := assetState(t, pool, assetA); got != "active" {
-		t.Errorf("recording A original state = %q, want active (pending encode job for recording A)", got)
-	}
-	if got := assetState(t, pool, assetB); got != "deleted" {
-		t.Errorf("recording B original state = %q, want deleted (no pending job for recording B, must not be blocked by A's)", got)
-	}
 }
 
 // TestDeleteReconcileWorker_MixedSitePrefixTree_NoFalseOrphans は、issue #186
