@@ -602,11 +602,11 @@ describe('LivePage', () => {
     resolvePlaylist(new Response('', { status: 200 }))
 
     const gauge = await screen.findByTestId('live-diagnostics')
-    // ネイティブ経路は「貯まり」だけ（latency は取得できない）。jsdom の
-    // `video.buffered` は常に空なので「貯まり—」のまま --- ここで見たいのは
+    // ネイティブ経路は「先読み」だけ（latency は取得できない）。jsdom の
+    // `video.buffered` は常に空なので「先読み—」のまま --- ここで見たいのは
     // 数値そのものではなく、経路の区別（「放送から」を出さない）と
     // ON AIR バッジと同じ情報欄に描画されることそのもの
-    expect(gauge).toHaveTextContent('貯まり—')
+    expect(gauge).toHaveTextContent('先読み—')
     expect(gauge.textContent).not.toContain('放送から')
     expect(gauge.textContent).not.toMatch(/\bNaN\b/)
   })

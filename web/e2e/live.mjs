@@ -209,8 +209,8 @@ const playerDecided = () => {
  * liveDiagnosticsBecameNumeric はブラウザ側で評価する述語（issue #476）。
  *
  * 遅延・バッファの計器（`[data-testid="live-diagnostics"]`）は、hls.js の
- * ライブ同期点が決まるまで「放送から— / 貯まり—」のままなので、実際に
- * 「放送から約 n 秒」「貯まり n 秒」の両方が数値になったことを見る。
+ * ライブ同期点が決まるまで「放送から— / 先読み—」のままなので、実際に
+ * 「放送から約 n 秒」「先読み n 秒」の両方が数値になったことを見る。
  *
  * **`0` は弾く（`[1-9]\d*`）。** `hls.latency` は同期点が決まる前も `NaN` では
  * なく `0` を返す（`node_modules/hls.js` 1.6.17 の
@@ -221,7 +221,7 @@ const playerDecided = () => {
 const liveDiagnosticsBecameNumeric = () => {
   const el = document.querySelector('[data-testid="live-diagnostics"]')
   const text = el?.textContent ?? ''
-  return /放送から約[1-9]\d*秒/.test(text) && /貯まり\d+秒/.test(text)
+  return /放送から約[1-9]\d*秒/.test(text) && /先読み\d+秒/.test(text)
 }
 
 /**
@@ -756,7 +756,7 @@ if (hasFixture) {
         }
       } catch {
         ng.push(
-          '③ 「放送から約 n 秒 / 貯まり n 秒」が数値にならない（hls.latency / ' +
+          '③ 「放送から約 n 秒 / 先読み n 秒」が数値にならない（hls.latency / ' +
             'mainForwardBufferInfo.len を読んでいない可能性がある）',
         )
       }

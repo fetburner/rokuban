@@ -243,13 +243,13 @@ function missingOr(value: number | null, format: (n: number) => string): string 
 /**
  * formatLiveDiagnostics は計器 1 行ぶんの表示文字列。
  *
- * ネイティブ経路（`source: 'native'`）は「貯まり」だけを返す ---
+ * ネイティブ経路（`source: 'native'`）は「先読み」だけを返す ---
  * 「放送から」を欠損表示（`—`）で出すことすらしない。measured でない値の
  * プレースホルダを置くこと自体が「そのうち測れる」という誤った期待を作るため
  * （issue #476 の含むもの 2「測れないものを出さない」）。
  */
 export function formatLiveDiagnostics(diagnostics: LiveDiagnostics): string {
-  const buffer = `貯まり${missingOr(diagnostics.bufferSec, (n) => `${Math.round(n)}秒`)}`
+  const buffer = `先読み${missingOr(diagnostics.bufferSec, (n) => `${Math.round(n)}秒`)}`
   if (diagnostics.source === 'native') return buffer
   const latency = `放送から${missingOr(diagnostics.latencySec, (n) => `約${Math.round(n)}秒`)}`
   return `${latency} / ${buffer}`

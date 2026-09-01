@@ -55,7 +55,7 @@ function readHlsDiagnostics(hls: HlsLike): LiveDiagnostics {
  *
  * ネイティブ経路には hls.js の `latency` に相当するものが無いので
  * `latencySec` は常に `null`（**測れないものを出さない**。issue #476）。
- * 「貯まり」は `video.buffered` の末尾 - `currentTime` で近似する。
+ * 「先読み」は `video.buffered` の末尾 - `currentTime` で近似する。
  */
 function readNativeDiagnostics(media: HTMLVideoElement): LiveDiagnostics {
   const buffered = media.buffered
@@ -288,7 +288,7 @@ export function LivePlayer({
     }
 
     /**
-     * watchLiveDiagnostics は「放送から n 秒 / 貯まり n 秒」の計器を 1 秒ごとに
+     * watchLiveDiagnostics は「放送から n 秒 / 先読み n 秒」の計器を 1 秒ごとに
      * 更新する（issue #476。「副調整室の計器盤」--- ON AIR・録画中バッジと同じ
      * 「いま電波に乗っているものとの距離」を言う表示）。
      *
