@@ -1,4 +1,4 @@
-import { useQueryClient, useQueries } from '@tanstack/react-query'
+import { keepPreviousData, useQueryClient, useQueries } from '@tanstack/react-query'
 import { Link, useNavigate, useSearch as useRouteSearch } from '@tanstack/react-router'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
@@ -8,6 +8,7 @@ import {
   getListRulesQueryKey,
   useCreateRule,
   useGetRule,
+  useListCapacityOverages,
   useListServices,
   useSearchPrograms,
   useUpdateRule,
@@ -23,6 +24,8 @@ import { EmptyState, ErrorState, ListSkeleton, PageHeader, Skeleton } from '@/co
 import { useToast } from '@/components/toaster'
 import { Button } from '@/components/ui/button'
 import { Field, Input } from '@/components/ui/field'
+import { countProgramsInShortfall } from '@/lib/capacity'
+import { dayOrigin } from '@/lib/day-offset'
 import { formatDateTime, formatDuration } from '@/lib/format'
 import { useCurrentSite } from '@/lib/site'
 import { cn } from '@/lib/utils'
@@ -38,7 +41,12 @@ import {
   type RuleMetaDraft,
   type SearchDraft,
 } from '@/lib/program-search'
-import { epgWindowDays, estimateRuleCost, ruleCostWeekDays } from '@/lib/rule-cost'
+import {
+  epgWindowDays,
+  estimateRuleCost,
+  ruleCostWeekDays,
+  type RuleCostEstimate,
+} from '@/lib/rule-cost'
 
 /**
  * pageSize は一度に詳細を取りに行く結果の件数。
@@ -70,6 +78,9 @@ const pageSize = 30
  */
 export function SearchPage() {
   const site = useCurrentSite()
+  // nowMs はこのレンダーの間で一貫させる（`pages/home.tsx`・`pages/programs.tsx`
+  // と同じ規律）。容量ノートの問い合わせ窓（下の `shortfallWindowStartMs`）だけが使う。
+  const nowMs = Date.now()
   const [draft, setDraft] = useState<SearchDraft>(emptyDraft)
   const [visibleCount, setVisibleCount] = useState(pageSize)
   const services = useListServices(site)
@@ -207,6 +218,60 @@ export function SearchPage() {
     .filter((ms): ms is number => ms !== undefined)
 
   /**
+   * costEstimate は値札（件数・時間の見込み）。`RuleCostSummary` と
+   * `ShortfallOverlapNote` の両方に同じ 1 つを渡す --- 呼び出し側ごとに
+   * 母集団の式を書き直すと、同じ「先頭 N 件」がずれうる（レビュー指摘）。
+   */
+  const costEstimate = estimateRuleCost({ totalCount: ids.length, loadedDurationsMs })
+
+  /**
+   * 容量ノート（`ShortfallOverlapNote`）用の `GET /api/capacity/overages` の窓は
+   * `nowMs` の時境界（`pages/home.tsx` と同じ量子化）+ `epgWindowDays`。サンプル
+   * 番組の時刻から作ると、詳細が 1 件ずつ届くたびに窓＝クエリキーが変わって点滅し、
+   * 終了未定番組（`durationMs = 0`）だけのサンプルでは `start === end` に退化して
+   * 400 で沈黙する（回帰判定は `search.test.tsx` の 3 件と `design.mjs` ①''''）。
+   *
+   * **この窓は検索結果の放送時間帯を覆いきらない。** 検索に `now()` 述語は無く、
+   * `epg_programs` は放送済みを `epg.retention_grace`（既定 24h）ぶん残す
+   * （`lib/rule-cost.ts` の `epgWindowDays`）ので、放送済みの結果と地平線末尾の
+   * 最大 59 分ぶんは窓の外で数え落とす（向きは下界側なので許容する）。
+   */
+  const shortfallWindowStartMs = dayOrigin(0, nowMs).getTime()
+  const shortfallWindowEndMs = shortfallWindowStartMs + epgWindowDays * 86_400_000
+  const overagesQuery = useListCapacityOverages(
+    {
+      start: new Date(shortfallWindowStartMs).toISOString(),
+      end: new Date(shortfallWindowEndMs).toISOString(),
+    },
+    {
+      query: {
+        // 検索結果が無い間は問い合わせない（容量への影響を確かめる対象が無い）。
+        enabled: ids.length > 0,
+        // 時境界を越えてキーが進んだ瞬間にノートが 1 RTT 消えないため
+        // （判定は `search.test.tsx`「時境界を越えても…」。`pages/home.tsx` に同じ対策）。
+        placeholderData: keepPreviousData,
+      },
+    },
+  )
+  // 取得の未完了・失敗（pending/error/400）も `unwrap` で `[]` に畳まれる。
+  // したがって `ShortfallOverlapNote` が出ないことは「今は重なる不足区間が
+  // 無い」以外に「まだ取得できていない／失敗した」も意味しうる
+  // （`pages/reservations.tsx` の `overagesQuery` と同じ事情・同じ規律 ---
+  // 取得失敗を隠して「警告なし」側に倒すのは既存の踏襲先と揃えた意図的な選択）。
+  const overages = unwrap(overagesQuery.data) ?? []
+
+  /**
+   * shortfallCount は容量への影響の近似（判定 (b)）。新たな不足を予測しない理由・
+   * 0 件の意味・終了未定番組の扱いは `lib/capacity.ts` の
+   * `countProgramsInShortfall`。母集団は `costEstimate` と同じサンプルに揃える
+   * （別の母集団だと同じ値札の中で「先頭 N 件」の意味が場所によって変わる）。
+   */
+  const loadedPrograms = costDetails
+    .map((d) => unwrap(d.data))
+    .filter((p): p is ProgramListItem => p !== undefined)
+  const shortfallCount = countProgramsInShortfall(overages, site, loadedPrograms)
+
+  /**
    * searchedHasPeriod は値札に「8 日分を 7 日換算」という根拠を出してよいかの判定。
    * `periodStartAt` / `periodEndAt` で期間を絞った検索は観測スパンが 8 日ではなく
    * その期間そのものになるため、8 日を根拠にすると偽の説明になる。
@@ -300,11 +365,11 @@ export function SearchPage() {
         <ConditionFields draft={draft} onChange={setDraft} />
       </form>
 
-      <RuleCostSummary
-        status={costStatus}
-        totalCount={ids.length}
-        loadedDurationsMs={loadedDurationsMs}
-        hasPeriod={searchedHasPeriod}
+      <RuleCostSummary status={costStatus} estimate={costEstimate} hasPeriod={searchedHasPeriod} />
+      <ShortfallOverlapNote
+        count={shortfallCount}
+        sampleSize={costEstimate.sampleSize}
+        isSampled={costEstimate.isSampled}
       />
 
       {ruleId !== undefined ? (
@@ -426,19 +491,20 @@ export function SearchPage() {
  * 根拠になる。issue #237 の罠「黙って過小に見せない」に反する）。代わりに
  * 「期間条件で絞っているため、週あたりの見込みは実際より小さく出ます」と明記する。
  *
- * **`hasPeriod` は `totalCount` / `loadedDurationsMs` と同じ検索の産物でなければ
- * ならない**（呼び出し側の `searchedHasPeriod` を参照）。数値と根拠の由来が
- * 食い違うと、消したはずの偽の根拠が「フォームを触っただけ」で復活する。
+ * **`hasPeriod` は `estimate` と同じ検索の産物でなければならない**
+ * （呼び出し側の `searchedHasPeriod` を参照）。数値と根拠の由来が食い違うと、
+ * 消したはずの偽の根拠が「フォームを触っただけ」で復活する。
+ *
+ * `estimate` は呼び出し側が 1 回計算したものを受け取る（`ShortfallOverlapNote`
+ * も同じものを使うので、ここで計算し直さない）。
  */
 function RuleCostSummary({
   status,
-  totalCount,
-  loadedDurationsMs,
+  estimate,
   hasPeriod,
 }: {
   status: 'idle' | 'pending' | 'error' | 'success'
-  totalCount: number
-  loadedDurationsMs: number[]
+  estimate: RuleCostEstimate
   hasPeriod: boolean
 }) {
   if (status === 'idle') {
@@ -459,7 +525,6 @@ function RuleCostSummary({
     )
   }
 
-  const estimate = estimateRuleCost({ totalCount, loadedDurationsMs })
   const countText = `約 ${Math.round(estimate.countPerWeek)} 件`
   const durationText =
     estimate.durationMsPerWeek === undefined
@@ -491,6 +556,32 @@ function RuleCostSummary({
     sampledNote
 
   return <p className="px-4 py-2 text-xs text-muted-foreground">{text}</p>
+}
+
+/**
+ * ShortfallOverlapNote は検索結果のうち放送時間帯が既存のチューナー不足区間と
+ * 交差する番組の件数を値札の隣に出す（判定 (b)。docs/frontend/search.md
+ * 「保存前の値札」）。**0 件のときは何も描画しない**（`CapacityShortfallBadge`
+ * と同じ「沈黙は保証ではない」規律。緑にも「収まります」にもしない）。上限で
+ * 切れているときは値札の他の注記と同じ形で「先頭 N 件のうち」と明記する。
+ */
+function ShortfallOverlapNote({
+  count,
+  sampleSize,
+  isSampled,
+}: {
+  count: number
+  sampleSize: number
+  isSampled: boolean
+}) {
+  if (count === 0) return null
+
+  const scope = isSampled ? `先頭 ${sampleSize} 件のうち、` : ''
+  return (
+    <p className="px-4 py-2 text-xs text-muted-foreground">
+      {scope}既にチューナー不足の区間と重なる番組が {count} 件あります
+    </p>
+  )
 }
 
 /**

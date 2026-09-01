@@ -128,6 +128,35 @@ export function shortageRangeMessage(overage: CapacityOverage): string {
 }
 
 /**
+ * countProgramsInShortfall は放送時間帯が指定サイトの不足区間と交差する番組の数を
+ * 数える。
+ *
+ * **新たな不足を予測しない。** 候補集合を足した what-if 評価（Hall 条件の再評価）
+ * はしない --- 個々の番組を、既に確定している不足区間（`overages`）と交差判定
+ * するだけ。したがって 0 件は「今は重なる不足区間が無い」であって「保存しても
+ * 不足しない」ではない（docs/data.md §6.5「主張は下界に限る」）。呼び出し側は
+ * 0 件のとき何も描画しない規律を守ること（`CapacityShortfallBadge` と同じ）。
+ *
+ * **終了未定番組（`durationMs = 0`。mirakc の `duration: null` が
+ * `internal/worker/epg.go` の投影でこうなる）は幅 0 の区間 `[s, s)` として数える。**
+ * つまり不足区間が開始の瞬間 s を厳密にまたぐときだけ拾い、20:00 開始・終了未定の
+ * 番組の最中に 21:00〜21:30 の不足がある形は拾わない（既定尺を当てる判断はしていない）。
+ * 数え落とす向きなので主張は下界のまま。判定は `capacity.test.ts`
+ * 「終了未定番組（幅 0 の区間）」。
+ */
+export function countProgramsInShortfall(
+  overages: readonly CapacityOverage[],
+  site: string,
+  programs: readonly { startAt: string; durationMs: number }[],
+): number {
+  return programs.filter((program) => {
+    const startMs = new Date(program.startAt).getTime()
+    const endMs = startMs + program.durationMs
+    return intersectingOverages(overages, site, startMs, endMs).length > 0
+  }).length
+}
+
+/**
  * coveringWindow は与えられた予約すべてを覆う最小の時間窓を返す。空なら null。
  *
  * `GET /api/capacity/overages` は時間窓を必須で取るので、一覧のバッジのために
