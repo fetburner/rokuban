@@ -152,6 +152,12 @@ POST した値のまま返すことに依存する。
 
 ## mirakc の版を上げる手順
 
+**「版を上げる」は常に「`main-debian` のより新しい digest に pin を差し替える」を意味する。**
+rokuban はどの版の mirakc イメージも自身で出荷しない。
+mirakc は運用者が用意するものである。
+だから番号付きリリースへ「戻す」判断は無い。
+`main` を pin し続けるのが恒常の形である。
+
 1. `internal/mirakc/conformance/helpers_test.go` の `mirakcImage` / `mirakcVersion` を
    新しい版に変える
 2. `go test -tags conformance ./internal/mirakc/conformance/...` を回す
@@ -164,3 +170,13 @@ POST した値のまま返すことに依存する。
    実装を直す
 5. `internal/mirakc/conformance/` 配下のテストが引用している mirakc の版の文言
    （`mirakc 4.0.0-dev.0 相当` 等）も同じ PR で書き換える
+
+**この digest はいずれ取れなくなる。**
+出どころの `main-debian` タグはビルドのたびに上書きされる可動タグだからである。
+古い digest は Docker Hub 側でタグ無し（untagged）manifest として prune されうる。
+そうなると CI は「テストが落ちた」ではなく「pull できない」で赤くなる。
+**これは conformance の回帰ではなく pin の失効である。**
+まず `docker pull mirakc/mirakc:main-debian` で最新の digest を取り直す。
+digest は `docker inspect --format '{{index .RepoDigests 0}}' mirakc/mirakc:main-debian`
+で確認できる。
+確認できたら上記の手順で pin を差し替える。

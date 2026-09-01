@@ -30,8 +30,13 @@ const (
 	ServiceID        = 101
 	EventID          = 1001
 	FollowingEventID = 1002
-	ServiceName      = "ROKUBAN-CONFORMANCE"
-	EventName        = "rokuban conformance fixture program"
+	// ServiceName / EventName は生の ASCII のまま short_event_descriptor / service_descriptor
+	// に書く。ARIB の文字符号化（8 単位符号）は既定で英数字を漢字集合として解釈するため、
+	// mirakc はこれを文字化けとして decode する（scan-services / collect-eits の "name" が
+	// 実際に文字化けすることを確認済み）。名前のラウンドトリップは何もアサートしていないので
+	// 実害は無いが、将来これを判定に使うなら ARIB 8 単位符号のエスケープが要る。
+	ServiceName = "ROKUBAN-CONFORMANCE"
+	EventName   = "rokuban conformance fixture program"
 
 	// EventDuration は番組の長さ。録画が自然終了するまでテストが待つ時間の上限でもあるので、
 	// 「録画中」の判定を試すのに十分かつ待ち時間が膨らまない値にする（実測して決めた値。

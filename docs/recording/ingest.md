@@ -83,7 +83,7 @@ clean なファイルでは「誤検知がないこと」しか確かめられ�
 
 - `GET /records/{id}/stream` は **Range ヘッダー対応** → `Range: bytes=N-` で途中再開可能。`internal/mirakc/conformance` の `TestConformance/CompletedRecordStreamAndDelete`（完了後）・`TestConformance/RecordingInProgress`（録画中）が mirakc 4.0.0-dev.0 相当に対して判定している
 - **フィルタ併用時は Range が 400**。ingest は素の TS が欲しいのでフィルタなしで pull → 常に Range 可（ソース確認。`mirakc-core/src/web/api/recording/records/stream.rs`。conformance テストはフィルタを併用しないので未判定）
-- **HEAD エンドポイントあり** → 転送せず正確な Content-Length を取得できる。ただし録画中は Content-Length を返さないので、HEAD を打つのは下記「層 3」のとおり録画完了後に限る。`TestConformance/CompletedRecordStreamAndDelete` が完了後の Content-Length 一致を判定している
+- **HEAD エンドポイントあり** → 転送せず正確な Content-Length を取得できる。ただし録画中は Content-Length を返さない（`HeadRecordStream` は `-1`。黙って `-1` を長さとして使うと ingest がゼロ長ファイルを正しいものとして扱いかねない）ので、HEAD を打つのは下記「層 3」のとおり録画完了後に限る。`TestConformance/RecordingInProgress` が録画中に `-1` を返すこと、`TestConformance/CompletedRecordStreamAndDelete` が完了後の Content-Length 一致を、それぞれ mirakc 4.0.0-dev.0 相当に対して判定している
 
 #### 層 1: 接続断の再開（ジョブ内リトライループ）
 
@@ -171,7 +171,9 @@ pull 完了後に書き込みバイト数を HEAD の Content-Length と照合 �
 照合（層 3）にしか取っておらず転送中には使えない。ファイル stat は api ロールが
 ファイルシステムに触れない（不変条件 1）ので分母にできない。mirakc が length を返さない
 record では分母を NULL のままにし、UI は % を出さずバイト数だけを出す（でっち上げた分母を
-置かない）。
+置かない）。この分母が録画中も非 null で時間とともに増えることは `TestConformance/RecordingInProgress`
+が mirakc 4.0.0-dev.0 相当に対して判定している --- `records/{id}/stream` の `Content-Length`
+ヘッダ（録画中は不明）とは別物であることに注意（上記「HEAD エンドポイントあり」参照）。
 
 **「リトライ中」を「取り込み待ち」と区別する値は API に持たない。** 区別するには
 `river_job` を API 契約に露出させるか、失敗の観測という別寿命の値を進捗行に混ぜる

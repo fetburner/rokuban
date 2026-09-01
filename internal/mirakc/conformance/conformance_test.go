@@ -113,12 +113,34 @@ func TestConformance(t *testing.T) {
 			t.Fatalf("GetRecord: %v", err)
 		}
 		if rec.Recording.Status != "recording" {
-			t.Skipf("録画が想定より速く終わっていた（status=%s）ため、この項目の判定はスキップする", rec.Recording.Status)
+			// EventDuration は 30 秒あり、この時点はまだその序盤のはず。この状態のまま
+			// 「finished だった」を通すと、この項目が何も検査しないまま緑になる
+			// （フィクスチャが壊れて録画が一瞬で終わった、等）。
+			t.Fatalf("この時点で録画中のはずが status=%s だった。フィクスチャが壊れている疑いがある", rec.Recording.Status)
 		}
 
-		// 罠: HEAD は録画完了後にしか打たない（録画中の HeadRecordStream は「長さが無い」の
-		// はずで、それを失敗として扱ってはならない）。ここでは StreamRecord だけを見る。
-		//
+		// 受け入れ項目 4 の前半（divergence a）: `GetRecord` の `content.length` は
+		// 録画中も非 nil で、時間とともに増える（`docs/recording/ingest.md` §5.6 の
+		// 進捗分母 `record_sync.content_length` がこれに依存する）。
+		if rec.Content.Length == nil {
+			t.Fatalf("録画中なのに GetRecord の Content.Length が nil。ingest の進捗分母として非 nil のはず（docs/recording/ingest.md §5.6）")
+		}
+		firstLen := *rec.Content.Length
+		time.Sleep(2 * time.Second)
+		if rec2, err := client.GetRecord(ctx, recordID); err == nil && rec2.Content.Length != nil {
+			if *rec2.Content.Length <= firstLen {
+				t.Errorf("録画中に Content.Length が増えていない: %d -> %d", firstLen, *rec2.Content.Length)
+			}
+		}
+
+		// 罠: HEAD は録画完了後にしか打たないのが普通だが（`checkRecordStream`）、ここでは
+		// あえて録画中に叩いて「長さを返さない」ことそのものを確定する。
+		if headLen, err := client.HeadRecordStream(ctx, recordID); err != nil {
+			t.Errorf("HeadRecordStream（録画中）: %v", err)
+		} else if headLen >= 0 {
+			t.Errorf("録画中の HeadRecordStream の Content-Length = %d、録画中は不明（負値）のはず", headLen)
+		}
+
 		// 罠（`GetRecord` の `content.length` とは別物）: `records/{id}/stream` への
 		// **Range なし** の GET は録画中は Content-Length ヘッダを返さない
 		// （`transfer-encoding: chunked` になる。実 mirakc で確認した --- `compute_content_length`
@@ -133,11 +155,19 @@ func TestConformance(t *testing.T) {
 			t.Errorf("録画中の StreamRecord(offset=0) の Content-Length = %d、録画中は不明（負値）のはず", length)
 		}
 
-		// Range 付き（offset>0）は録画中でも 206 で返る（実 mirakc で確認した）。206 を
-		// 返さない（= Range が届いていない）と Client 内の checkStatus(206) が失敗するので、
-		// StreamRecord の Range ヘッダを落とす変異はここでも検出できる。
-		if _, err := streamContentLengthDuringRecording(t, ctx, client, recordID, 1); err != nil {
+		// Range 付き（offset>0）は録画中でも 206 で返り、**Content-Length ヘッダ自体は
+		// 付く**（値はオフセットから今バッファに溜まっている末尾まで。実 mirakc で確認した:
+		// `content-range: bytes 1-114687/*` のように total は `*` でも
+		// `content-length: 114687` は具体値）。issue の「Range 付きでも Content-Range の
+		// 総サイズが無い」は Content-Range の total フィールドの話であって、
+		// Content-Length が不明になるわけではない --- 上の offset=0 の「不明」と混同しない。
+		// 206 を返さない（= Range が届いていない）と Client 内の checkStatus(206) が
+		// 失敗するので、StreamRecord の Range ヘッダを落とす変異はここでも検出できる。
+		rangedLength, err := streamContentLengthDuringRecording(t, ctx, client, recordID, 1)
+		if err != nil {
 			t.Errorf("StreamRecord(offset=1)（録画中）: %v（Range が届いていない）", err)
+		} else if rangedLength < 0 {
+			t.Errorf("録画中の StreamRecord(offset=1) の Content-Length = %d、Range 付きなら定まるはず", rangedLength)
 		}
 	})
 
@@ -148,6 +178,11 @@ func TestConformance(t *testing.T) {
 	t.Run("RecordSavedFiresMultipleTimes", func(t *testing.T) {
 		saved := drainFor(events, 2*time.Second)
 		count := countRecordSaved(saved, recordID)
+		// この件数はライフサイクル全体（作成〜finished）での合計であって「録画中」に
+		// 限っていない。`Subscribe` は切断時に自動再接続する（sse.go）ので、途中で
+		// 再接続が起きれば接続時の再送 1 件が混ざりうる --- しきい値ちょうどで通ったときは
+		// この可能性を疑う。実測件数は毎回ログしておく。
+		t.Logf("record-saved(id=%s) の観測件数 = %d", recordID, count)
 		if count < 2 {
 			t.Errorf("録画のライフサイクル中に届いた record-saved(id=%s) は %d 件。"+
 				"複数回来る前提（docs/recording/watcher.md §3.3 (a)）が崩れている", recordID, count)
@@ -203,7 +238,9 @@ func TestConformance(t *testing.T) {
 		if n != wantLen {
 			t.Errorf("StreamRecord(offset=0) で読めたバイト数 = %d、want %d", n, wantLen)
 		}
-		if fullLen >= 0 && fullLen != wantLen {
+		// 完了後は録画中と違って Content-Length ヘッダが具体値になる（実 mirakc で確認した）。
+		// 録画中のような「不明でもよい」猶予はない。
+		if fullLen != wantLen {
 			t.Errorf("StreamRecord(offset=0) の Content-Length = %d、want %d", fullLen, wantLen)
 		}
 
@@ -227,7 +264,7 @@ func TestConformance(t *testing.T) {
 		if pn != wantPartial {
 			t.Errorf("StreamRecord(offset=%d) で読めたバイト数 = %d、want %d", offset, pn, wantPartial)
 		}
-		if partialLen >= 0 && partialLen != wantPartial {
+		if partialLen != wantPartial {
 			t.Errorf("StreamRecord(offset=%d) の Content-Length = %d、want %d", offset, partialLen, wantPartial)
 		}
 
@@ -340,9 +377,9 @@ func drainFor(ch <-chan mirakc.Event, d time.Duration) []mirakc.Event {
 }
 
 // streamContentLengthDuringRecording は StreamRecord(recordID, offset) を、content が
-// まだ 0 バイトで 204 が返る間だけ短い間隔でリトライする。204 のまま録画そのものが終わって
-// しまった場合はその旨をログして 204 の APIError を返す（呼び出し側は状態遷移が想定より
-// 速かっただけとして扱ってよい）。
+// まだ 0 バイトで 204 が返る間だけ短い間隔でリトライする。204 のまま 10 秒の猶予が尽きたら
+// その 204 の APIError をそのまま返す（呼び出し側が t.Errorf / t.Fatalf にするかを決める。
+// ここではログもエラーの握り潰しもしない）。
 func streamContentLengthDuringRecording(t *testing.T, ctx context.Context, c *mirakc.Client, recordID string, offset int64) (int64, error) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)

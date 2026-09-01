@@ -17,18 +17,35 @@ import (
 
 // mirakcImage は判定対象の mirakc の版。
 //
-// **タグではなく digest で固定する。** rokuban の ingest / streamer が依存する
-// `/api/recording/records/*`（records.rs）は、最新の番号付きリリース（3.4.83.
-// `docker.io/mirakc/mirakc:3.4.83-debian` として配布）にはまだ存在せず、
-// `main` ブランチにしかない（2026-09-02 時点で確認。upstream の週次リリースに
-// records.rs が入ったら、そちらの番号付きタグへ pin を差し替える。手順は
-// docs/runbook/testing.md 参照）。`main`（`main-debian`）はビルドのたびに
-// 中身が変わる可動タグなので、そのままでは版上げの回帰検知にならない
-// --- pull した digest をここに固定することで再現性を保つ。
+// **`main` ブランチのビルドを digest で固定する。番号付きリリースには戻らない。**
+// rokuban の ingest / streamer が依存する `/api/recording/records/*`（records.rs）は
+// 最新の番号付きリリース（3.4.83）には存在せず `main` にしかない（2026-09-02 時点で
+// `docker run mirakc/mirakc:3.4.83-debian` の config パースが `records-dir` を
+// unknown field として拒否し、`/api/recording/records` が 404 になることで確認した）。
+// **rokuban はどのバージョンの mirakc イメージも自身で出荷しない**（mirakc は運用者が
+// 用意するもの）ので、rokuban 側に「本番の pin」は存在しない --- この conformance の
+// pin こそが唯一の判定対象であり、番号付きリリースが records.rs を含むようになっても
+// 差し替える理由にはならない。
+//
+// `main`（`main-debian`）はビルドのたびに中身が変わる可動タグなので、そのままでは
+// 版上げの回帰検知にならない --- pull した digest をここに固定することで再現性を保つ。
+// **この digest はいずれ Docker Hub 上で prune されうる**（`main-debian` は継続的に
+// 上書きされる可動タグで、古い digest は untagged manifest として残るだけ）。
+// pull 失敗はテストの回帰ではなく pin の失効なので、docs/runbook/testing.md の
+// 「mirakc の版を上げる手順」の手順で最新の digest に取り直す。
 const mirakcImage = "docker.io/mirakc/mirakc@sha256:3fd884b3bb7c5c33f6d9241abf36db81b6fe25e42a869b8f14ecddd482a41c93"
 
 // mirakcVersion は mirakcImage が実際に埋め込んでいる版（GetVersion で照合する。
-// pin の上げ忘れで別物を判定していないことの検査 --- 受け入れ項目 5）。
+// 受け入れ項目 5）。
+//
+// **この照合が捕まえるのは番号付きの版が変わったことだけ。** `main` の Cargo バージョンは
+// 4.0.0 が出るまでどの main ビルドでも "4.0.0-dev.0" のままなので、mirakcImage の
+// digest を差し替えても（＝別のコミットに pin し直しても）ここは変わらない ---
+// `main` ビルド同士を区別する検査ではない（`docker run <image@digest>` を使っている
+// 時点で起動イメージが pin と一致することはそちらで保証済みなので、この照合を
+// digest 検査の代わりにする必要もない）。この定数の実質的な価値は、
+// delegation.md / reconciler.md / ingest.md / troubleshooting.md が引用する
+// 「mirakc 4.0.0-dev.0 相当」という文言を嘘にしないことである。
 const mirakcVersion = "4.0.0-dev.0"
 
 // dockerArch は docker デーモンが実行するコンテナの CPU アーキテクチャを Go の GOARCH 名で返す。
