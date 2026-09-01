@@ -67,6 +67,20 @@ EPG 更新完了で `reservationManage.updateAll()` を呼び、全手動予約�
 - **除外はルール単位ではなく番組単位のオーバーライド**（reservation の skip フラグ）。どのルール経由でマッチしていても一貫して除外される
 - EPGStation#538（複数ルールにマッチした番組を除外できない）は、予約がルール単位で管理されていたために起きた不整合。Rokuban は programId ベースなので構造的に防げる
 
+#### 直前 unmatch の猶予
+
+番組表は放送直前まで書き換わる（「[新]」が付く、サブタイトルが入る、誤字が直る）。その拍子にルールの条件から外れた予約は、猶予が無いと desired から落ちて次のパスで削除される --- 開始 30 分前に題名が 1 文字直っただけで録り逃す経路が開く。既存の防御（大量削除サーキットブレーカーは件数で止める、programId が EPG から消えた予約への猶予は番組が消えた場合のみ）はどちらもこの経路を塞がない。
+
+denpa は同じ問題に「開始 N 時間前以降はルールから外れても引っ込めない。ただしルールごと削除・停止されたぶんは直前でも引っ込める（人が押した結果だから）」で答えており、「手違いで消す方が余分に録るより高い」を根拠にしている（[予約モデル](reservation-model.md) §4.3「迷ったら録る側に倒す」と同じ判断）。Rokuban も `ruler.retract_grace`（既定 1h、0 で無効）で同じ猶予を入れる。
+
+**方針は変えない**: 全量評価・差分書き込み・レベルトリガー。猶予は desired の**導出規則**に足すのであって、予約行に「猶予中」の列は焼かない（不変条件 9）。既存の active 予約（前パスで `rule_id IS NOT NULL`、投資なし）が今パスでどのルールにもマッチしなくなったとき、`program_snapshots.start_at` が `now()` 以降かつ `now() + retract_grace` 以内で、かつそのルールが今も `enabled` なら、`toDelete`（削除候補）に入れない --- 行に触らない（base も `rule_id` も前パスのまま）。開始後は reconciler の allowlist（`tracking` / `recording` は触らない）が守り、終了後は既存の GC が落とす。
+
+**ルールの無効化は猶予の対象外**（`internal/db/queries/ruler.sql` の `ListRetractGraceProtectedProgramIDsBySiteAndProgramIDs` の `EXISTS (rules ru WHERE ru.id = r.rule_id AND ru.enabled)`）。denpa と同じく「ルールごと削除・停止されたぶんは直前でも引っ込める」。「ルールの編集で条件を狭めた」は EPG 由来の unmatch と区別できない（[breaker.md](breaker.md) が同じ整理）ので、こちらは猶予の対象のまま --- 録り過ぎ側に倒す非対称。ルールの削除（`DeleteRule`）は同一 tx で投資なしの行を先に消す既存経路なので、猶予に関係なく影響を受けない。
+
+この設計では `active` の導出（[reservations.md](../schema/reservations.md) §「active / detached / orphaned は API が都度導出する」の `rule_id IS NOT NULL`）は変わらない --- 猶予中の行は見た目 active のままである。「ルール外れ・直前のため維持」という別の見せ方を UI に足すかどうかは検討したが、既存の `active` 表示で足りると判断し見送った（`openapi.yaml` を触る変更になるので、必要になれば別 issue で決める）。
+
+猶予でこのパスの削除から外れた行は、大量削除サーキットブレーカーの分子にも分母にも入らない（[breaker.md](breaker.md)「大量削除サーキットブレーカー」の猶予との関係）。
+
 #### 重複排除（再放送スキップ）
 
 - EPGStation#704 の教訓: 囲み文字（:heavy_multiplication_x::heavy_multiplication_x:等）を一律除去する正規化は「前編/後編」の区別まで消して誤判定する。**記号除去 + 完全一致ではなく、pg_trgm の類似度ベース**で設計する（閾値はルール単位で調整可能に）

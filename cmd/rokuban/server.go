@@ -510,6 +510,15 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		// worker ロールを起動エラーにしているので、ここに来るのは
 		// 0 または 1 サイト束縛のときだけ。
 		mc := mirakc.NewClient(boundSite.URL, nil)
+		// cfg.Ruler.RetractGrace は internal/config.Load が「未設定なら既定 1h」を
+		// 埋めた後の値なので、ここでは常に非 nil のはず。nil のまま来た場合
+		// （config.Load を経由しない構築）は「未設定」ではなく「無効」に倒す ---
+		// ゼロ値の time.Duration がそのまま「猶予なし」になり、ruler.Config.RetractGrace
+		// のフィールドコメントが定める後方互換の既定と一致する。
+		var rulerRetractGrace time.Duration
+		if cfg.Ruler.RetractGrace != nil {
+			rulerRetractGrace = *cfg.Ruler.RetractGrace
+		}
 		workers := worker.NewWorkers(&worker.Deps{
 			MirakcClient:             mc,
 			Pool:                     pool,
@@ -520,6 +529,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 			EpgRetentionGrace:        cfg.Epg.RetentionGrace,
 			RulerRetentionGrace:      cfg.Epg.RetentionGrace,
 			RulerMaxDeletesPerPass:   cfg.Ruler.MaxDeletesPerPass,
+			RulerRetractGrace:        rulerRetractGrace,
 			ReconcileStartDelayGrace: cfg.Reconciler.StartDelayGrace,
 			IngestStallTimeout:       cfg.Ingest.StallTimeout,
 			Webhook:                  webhookClient,

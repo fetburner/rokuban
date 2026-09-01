@@ -163,3 +163,49 @@ WHERE site = $1 AND program_id = ANY(sqlc.arg(program_ids)::bigint[]);
 -- name: ListReservationTitlesBySiteAndProgramIDs :many
 SELECT program_id, title FROM program_snapshots
 WHERE site = $1 AND program_id = ANY(sqlc.arg(program_ids)::bigint[]);
+
+-- name: ListRetractGraceProtectedProgramIDsBySiteAndProgramIDs :many
+-- 猶予（ruler.retract_grace, issue #428）で削除を見送る programId を、削除候補
+-- （toDelete。program_investments が無く、EPG プロジェクションにまだ番組がある行
+-- のうち desired から外れたもの）の中から絞り込む。denpa の
+-- 「開始 N 時間前以降はルールから外れても引っ込めない。ただしルールごと削除・停止
+-- されたぶんは直前でも引っ込める」に倣う（docs/recording/ruler.md §3.1）。
+--
+-- r.rule_id は呼び出し時点でまだ「前パス」の値である --- toDelete の programId は
+-- どれも今パスの desired に無いため、internal/ruler/sql.go の
+-- upsertReservationsFromPass の入力行（rows）には含まれず、この SELECT が呼ばれる
+-- 時点ではまだ upsert によって書き換えられていない。**この列を「今パスの評価結果」
+-- で読んではならない**（今パスで NULL に落ちた後に見ても、既に unmatch した事実を
+-- 見ているだけで前パスの勝者が分からない。罠の一つ）。
+--
+-- 条件:
+--   r.rule_id IS NOT NULL
+--     前パスでルールが base を供給していた行だけが対象。ルールを一度も勝ち取って
+--     いない行（manual 予約が record 意図だけで存在するケース等）はそもそも
+--     「ルールから外れた」に該当しない。
+--   s.start_at >= sqlc.arg(now) AND s.start_at < sqlc.arg(grace_until)
+--     開始時刻を過ぎた予約は対象にしない --- 過ぎた行は reconciler の allowlist と
+--     GC の領分（ruler.md「開始遅延検出器」の `detectStartDelays` と同じ理由）。
+--     grace_until（呼び出し側で now + retract_grace を計算）より先の予約も対象外:
+--     「開始直前」だけを守る猶予であり、遠い予約はサーキットブレーカーが受け持つ。
+--   EXISTS (rules ru WHERE ru.id = r.rule_id AND ru.enabled)
+--     **ルールの無効化は猶予の対象外**。denpa と同じく「ルールごと削除・停止された
+--     ぶんは直前でも引っ込める」（人が押した結果だから）。「ルールの編集で条件を
+--     狭めた」は EPG 由来の unmatch と区別できない（breaker.md が同じ整理）ので、
+--     こちらは猶予の対象のまま --- 録り過ぎ側に倒す非対称。
+--
+-- program_investments の除外はここでは再確認しない: 呼び出し側が渡す candidates
+-- （toDelete）は既に stillProjectedSubset を通した削除候補で、investment を持つ
+-- programId は desired に含まれ toDelete に入らないため、この関数の入力に
+-- そもそも現れない。
+SELECT r.program_id
+FROM reservations r
+JOIN program_snapshots s ON s.site = r.site AND s.program_id = r.program_id
+WHERE r.site = $1
+  AND r.program_id = ANY(sqlc.arg(program_ids)::bigint[])
+  AND r.rule_id IS NOT NULL
+  AND s.start_at >= sqlc.arg(now)::timestamptz
+  AND s.start_at <  sqlc.arg(grace_until)::timestamptz
+  AND EXISTS (
+      SELECT 1 FROM rules ru WHERE ru.id = r.rule_id AND ru.enabled
+  );

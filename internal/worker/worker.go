@@ -224,6 +224,13 @@ type Deps struct {
 	// （docs/recording.md §3.2「大量削除サーキットブレーカー」）。
 	RulerMaxDeletesPerPass int
 
+	// RulerRetractGrace は放送開始直前にルールから外れた予約を削除しない猶予
+	// （ruler.retract_grace, issue #428）。**0 は無効**（他の 2 つと違い ruler 側の
+	// 既定値へのフォールバックはない --- internal/config.RulerConfig.RetractGrace が
+	// 既定 1h を埋めるので、ここに来る時点で「未設定」は既に解決済み。
+	// internal/ruler.Config.RetractGrace のコメント参照）。
+	RulerRetractGrace time.Duration
+
 	// ReconcileStartDelayGrace は開始遅延検出器の猶予
 	// （reconciler.start_delay_grace）。0 なら reconciler 側の既定値を使う
 	// （docs/recording.md §3.3「開始遅延検出器」）。
@@ -288,6 +295,7 @@ func NewWorkers(deps *Deps) *river.Workers {
 		Pool:              deps.Pool,
 		RetentionGrace:    deps.RulerRetentionGrace,
 		MaxDeletesPerPass: deps.RulerMaxDeletesPerPass,
+		RetractGrace:      deps.RulerRetractGrace,
 	})
 	river.AddWorker(workers, &ReconcilePassWorker{
 		MirakcClient:    deps.MirakcClient,

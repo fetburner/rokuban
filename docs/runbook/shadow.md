@@ -91,6 +91,7 @@ programId        title    startAt (JST)            reason
 | EPGStation 側が `isSkip` | EPGStation 側でユーザーが除外した予約 |
 | EPGStation 側が `isOverlap` | EPGStation の重複排除ロジックで除外された予約 |
 | Rokuban 側が skip 意図（`program_intents.action = 'skip'`） | Rokuban で除外した予約。EPGStation 側にだけ有るのは正常 |
+| Rokuban 側が `ruler.retract_grace` の猶予中（放送開始直前にルールから外れたが、まだ削除していない予約） | EPGStation は同等の猶予を持たず先に予約を落とすため、放送開始直前の短い間だけ RokubanOnly に見える |
 
 **`isConflict` は allowlist に入らない**。チューナー競合は両者で起きる条件が同じはずで、
 片方だけの予約に現れているなら `EPGStationOnly` / `RokubanOnly` として報告され、

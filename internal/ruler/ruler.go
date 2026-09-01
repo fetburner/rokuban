@@ -57,12 +57,26 @@ type Config struct {
 	// GC はこのブレーカー（MaxDeletesPerPass）の対象にならない
 	// （runGC のコメント参照）。
 	RetentionGrace time.Duration
+
+	// RetractGrace は放送開始直前にルールから外れた予約を、このパスでは削除しない
+	// 猶予（denpa の `RULE_RETRACT_GRACE` に倣う。docs/recording/ruler.md §3.1
+	// 「直前 unmatch の猶予」）。**MaxDeletesPerPass / RetentionGrace と違い、この
+	// パッケージ自身は既定値を持たない** --- 0（ゼロ値）はそのまま「無効」を意味し、
+	// New はこれを 0 より大きい値に読み替えない。本番の既定 1h は呼び出し側
+	// （internal/config.RulerConfig.RetractGrace）が埋める。ここで package 既定値
+	// （例: 1h）を持たせると、この値を一切気にしない既存の全テスト・呼び出し元
+	// （ruler.New(sites, pool, nil) や cfg.RetractGrace を設定しない Config{}）が
+	// 黙って猶予ありの挙動に変わり、削除を確認するテストが不安定にサイレント破壊
+	// される。0 を「無効」の後方互換な既定にすることで、猶予は明示的に opt-in する
+	// 機能になる。
+	RetractGrace time.Duration
 }
 
 func defaultConfig() Config {
 	return Config{
 		MaxDeletesPerPass: 50,
 		RetentionGrace:    24 * time.Hour,
+		// RetractGrace の既定は 0（無効）。RetractGrace のフィールドコメント参照。
 	}
 }
 
@@ -91,6 +105,9 @@ func New(sites []string, pool *pgxpool.Pool, cfg *Config) *Ruler {
 		if cfg.RetentionGrace > 0 {
 			c.RetentionGrace = cfg.RetentionGrace
 		}
+		// RetractGrace は 0 も意味のある値（無効化）なので、他の 2 つと違い
+		// ">0 のときだけ上書き" にしない。cfg が渡された時点でその値をそのまま使う。
+		c.RetractGrace = cfg.RetractGrace
 	}
 	return &Ruler{sites: sites, pool: pool, cfg: c}
 }
@@ -242,6 +259,23 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 	toDelete, err := r.stillProjectedSubset(ctx, q, site, deleteCandidates)
 	if err != nil {
 		return fmt.Errorf("checking still-projected candidates: %w", err)
+	}
+
+	// 猶予（ruler.retract_grace, issue #428）: 開始直前にルールから外れた予約は
+	// このパスでは引っ込めない。「猶予中」を列には焼かず、削除候補から都度除く導出
+	// 規則にする（CLAUDE.md 不変条件 9）。この時点の reservations.rule_id は前パス
+	// の値そのもの --- toDelete の programId はどれも desired に無い＝今回の
+	// upsertReservationsFromPass の入力行（rows）に含まれないので、まだ書き換わって
+	// いない（罠: 今パスの評価結果で NULL に落ちた後に見ても遅い）。この読み取り自体
+	// が retractGraceProtectedSubset 内の SQL にある。
+	//
+	// r.cfg.RetractGrace <= 0 は「無効」（RetractGrace のフィールドコメント参照）。
+	if r.cfg.RetractGrace > 0 && len(toDelete) > 0 {
+		protected, err := r.retractGraceProtectedSubset(ctx, q, site, toDelete)
+		if err != nil {
+			return fmt.Errorf("checking retract grace: %w", err)
+		}
+		toDelete = subtract(toDelete, protected)
 	}
 
 	desiredIDs := make([]int64, 0, len(desired))
@@ -577,6 +611,28 @@ func (r *Ruler) stillProjectedSubset(ctx context.Context, q *sqlcgen.Queries, si
 	return q.ListEpgProgramIDsBySiteAndProgramIDs(ctx, sqlcgen.ListEpgProgramIDsBySiteAndProgramIDsParams{
 		Site:       site,
 		ProgramIds: candidates,
+	})
+}
+
+// retractGraceProtectedSubset は candidates（toDelete）のうち、猶予
+// （ruler.retract_grace, issue #428）でこのパスでは削除を見送るべき programId を
+// 返す。呼び出し側（runPassForSite）が r.cfg.RetractGrace > 0 のときだけ呼ぶ。
+//
+// 対象は「(1) 前パスでルールが base を供給していた（reservations.rule_id が
+// NOT NULL）、(2) その番組の放送開始が [now, now+grace) の範囲、(3) そのルールが
+// 今も enabled」の 3 条件をすべて満たす行。SQL 側
+// （ListRetractGraceProtectedProgramIDsBySiteAndProgramIDs、
+// internal/db/queries/ruler.sql）が権威。
+func (r *Ruler) retractGraceProtectedSubset(ctx context.Context, q *sqlcgen.Queries, site string, candidates []int64) ([]int64, error) {
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+	now := time.Now()
+	return q.ListRetractGraceProtectedProgramIDsBySiteAndProgramIDs(ctx, sqlcgen.ListRetractGraceProtectedProgramIDsBySiteAndProgramIDsParams{
+		Site:       site,
+		ProgramIds: candidates,
+		Now:        now,
+		GraceUntil: now.Add(r.cfg.RetractGrace),
 	})
 }
 

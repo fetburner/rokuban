@@ -99,6 +99,12 @@ type RulerPassWorker struct {
 	// 既定値を使う（config.yml の ruler.max_deletes_per_pass から注入される。
 	// ruler.Config.MaxDeletesPerPass のコメント参照）。
 	MaxDeletesPerPass int
+
+	// RetractGrace は放送開始直前にルールから外れた予約を削除しない猶予。0 は無効
+	// （config.yml の ruler.retract_grace から注入される。既定 1h は config 層が
+	// 埋めるので、ここでの 0 は「明示的に無効化された」を意味する。
+	// ruler.Config.RetractGrace のコメント参照）。
+	RetractGrace time.Duration
 }
 
 // Timeout は River の既定（1 分）より長い上限を与える。理由は rulerPassTimeout の
@@ -114,6 +120,7 @@ func (w *RulerPassWorker) Work(ctx context.Context, job *river.Job[RulerPassArgs
 	r := ruler.New([]string{job.Args.Site}, w.Pool, &ruler.Config{
 		RetentionGrace:    w.RetentionGrace,
 		MaxDeletesPerPass: w.MaxDeletesPerPass,
+		RetractGrace:      w.RetractGrace,
 	})
 	if err := r.RunPass(ctx); err != nil {
 		return err
