@@ -145,7 +145,7 @@ ruler / reconciler / record_sweep（watcher の 3 段構えのうち (c) 定期�
 | メトリクス | 説明 |
 |---|---|
 | `rokuban_ruler_pass_duration_seconds` | 1 パス（全ルール x 全射影番組）の所要時間。射影が有界なので伸び続けることはない |
-| `rokuban_ruler_reservations_total{action}` | `created` / `updated` / `deleted` / `released` / `grace_protected` / `gc`。**`updated` が毎パス予約数と同じ値で増え続けるなら差分書き込みが効いていない**（[録画エンジン](../recording.md) §3.1）。`released` は**ブレーカーを通っていない削除**（ユーザーが投資を手放す書き込みをしない限り起きないもの。同 §3.2）で、`deleted`（EPG 由来の導出削除）と混ぜない。`grace_protected` は `ruler.retract_grace` が見送った件数で、ブレーカーのラッチと見え方が同じ（`deleted` / `released` がゼロのまま候補だけ残る）ため区別に使う |
+| `rokuban_ruler_reservations_total{action}` | `created` / `updated` / `deleted` / `released` / `gc`。**`updated` が毎パス予約数と同じ値で増え続けるなら差分書き込みが効いていない**（[録画エンジン](../recording.md) §3.1）。`released` は**ブレーカーを通っていない削除**（ユーザーが投資を手放す書き込みをしない限り起きないもの。同 §3.2）で、`deleted`（EPG 由来の導出削除）と混ぜない。`ruler.retract_grace` で見送った件数はこのメトリクスに無い（パスごとに再計上される水準なのでカウンタに乗せると増加率の意味が壊れる）--- ブレーカーのラッチと見分けたいときは `ruler: pass complete` ログの `grace_protected` フィールドを見る |
 | `rokuban_ruler_circuit_breaker_trips_total` | 大量削除で停止した回数。EPG の一時欠損を疑う入口 |
 | `rokuban_circuit_breaker_tripped{breaker="ruler_deletes"}` | **1 の間は導出削除が一切走らない**（手動再開まで止まるラッチ）。カウンタと違い「いま止まっているか」に答える |
 | `rokuban_ruler_last_pass_timestamp_seconds` | 最終パス時刻。`time() - この値` でパスが止まっていることを検出する（gauge が凍る問題への対策） |

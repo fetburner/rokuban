@@ -425,15 +425,27 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 	// DeleteReleasedReservationsBySiteAndProgramIDs の対象にも含まれないので、
 	// ここまでの tx 内の書き込みで触られていない --- reservations.rule_id は
 	// 前パスの値のまま読める（罠: 今パスの評価結果で NULL に落ちた後に見ても遅い）。
-	// tx 内で読むことで、SELECT からこの後の DELETE までの間に他の書き込みが
-	// 割り込む窓もそもそも無くなる（読み取りと適用が同じトランザクションで
-	// 完結する）。
+	// tx 内で読むことは「読み取りと適用の間の窓を消す」ためではない（`r.pool.Begin`
+	// は既定の READ COMMITTED で、文ごとに新しいスナップショットを取るため、この
+	// SELECT とこの後の DELETE の間に他コミットが割り込む窓は同じ tx 内でも残る
+	// --- SERIALIZABLE / REPEATABLE READ でなければ消えない）。
+	//
+	// 安全性が成り立つのは窓が無いからではなく、**猶予が削除集合からの減算にしか
+	// 効かない**からである。判定が古すぎて過大（stale-too-large）でも、次のパスが
+	// 全量再評価するので 1 パス遅れるだけで収束する（レベルトリガー、自己修復）。
+	// 判定が古すぎて過小（stale-too-small = 本当は保護すべき行を見落とす）は起き得ない:
+	//   - ルールが再度 enabled になった → 次のパスで desired が作り直す
+	//   - 投資（record 意図 ∪ overrides）が新たに付いた → DELETE 文自身の
+	//     `NOT EXISTS program_investments` が適用の瞬間に再評価する（#29 型の窓を
+	//     作らない設計は DeleteReservationsBySiteAndProgramIDs 側が既に担っている）
+	//   - start_at が猶予の窓に入ってきた → program_snapshots の書き込みは
+	//     desiredIDs にしか起きず、derivedDeletes とは素集合
 	//
 	// r.cfg.RetractGrace <= 0 は「無効」（RetractGrace のフィールドコメント参照）。
 	//
-	// graceProtectedCount は下のログ・メトリクスのためだけに持ち越す。猶予で
-	// 残った行はブレーカーのラッチと同じ見え方（delete_candidates はあるのに
-	// deleted/released が 0）になるため、区別できるようにする。
+	// graceProtectedCount は下のログのためだけに持ち越す。猶予で残った行は
+	// ブレーカーのラッチと同じ見え方（delete_candidates はあるのに
+	// deleted/released が 0）になるため、ログで区別できるようにする。
 	var graceProtectedCount int
 	if r.cfg.RetractGrace > 0 && len(derivedDeletes) > 0 {
 		graceProtected, err := r.retractGraceProtectedSubset(ctx, tq, site, derivedDeletes)
@@ -510,11 +522,11 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 	// 混ぜると「閾値を下回る導出削除が素通りしていないか」を deleted の増え方で
 	// 見る運用（docs/operations.md §2）が、明示操作の分で汚れる。
 	metrics.RulerReservations.WithLabelValues("released").Add(float64(len(released)))
-	// grace_protected も同じ理由で分ける。猶予で残った行はブレーカーのラッチと
-	// 同じ見え方（delete_candidates はあるのに deleted/released が 0）になるため、
-	// この値が無いと「猶予が守っているのか、ブレーカーが止めているのか」を
-	// ログ・メトリクスだけからは区別できない。
-	metrics.RulerReservations.WithLabelValues("grace_protected").Add(float64(graceProtectedCount))
+	// grace_protected はカウンタにしない: 他の 5 値は「行が 1 回寄与するエッジ」
+	// だが、猶予で残った行は毎パス（既定 10 分）再計上される「水準」なので、
+	// increase() で見ると値がパス頻度に比例してしまい、録れた予約の数を意味しない
+	// （1 件の猶予が 10 分間隔 x 1h 窓で ~6 に膨らむ）。ログの grace_protected
+	// フィールドだけで、ブレーカーのラッチと見分ける目的は十分に果たせる。
 
 	slog.Info("ruler: pass complete",
 		"site", site,

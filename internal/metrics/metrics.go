@@ -230,22 +230,26 @@ var (
 	})
 
 	// RulerReservations は ruler が作成/更新/削除した予約の件数。
-	// action は created / updated / deleted / released / grace_protected / gc の
-	// 6 値。created/updated は差分書き込みで実際に行が変わった件数のみを数える
+	// action は created / updated / deleted / released / gc の 5 値。
+	// created/updated は差分書き込みで実際に行が変わった件数のみを数える
 	// （変化のない行は IS DISTINCT FROM に弾かれ、ここにも計上されない）。
 	// deleted は大量削除サーキットブレーカーを通った導出削除、released は
 	// ブレーカーを通っていない削除（ユーザーが投資を手放す書き込みをしない限り
 	// 起きないもの。docs/recording.md §3.2）で、混ぜると「閾値を下回る導出削除が
-	// 素通りしていないか」を deleted の増え方で見る運用が汚れる。grace_protected は
-	// `ruler.retract_grace` で削除を見送った件数（issue #428）--- ブレーカーの
-	// ラッチと見え方が同じ（deleted/released が 0 のまま delete_candidates だけ
-	// ある）ため分けて数える。gc は番組終了後の GC（ブレーカーの対象外）。
+	// 素通りしていないか」を deleted の増え方で見る運用が汚れる。gc は番組終了後の
+	// GC（ブレーカーの対象外）。
+	//
+	// `ruler.retract_grace`（issue #428）で削除を見送った件数はここに含めない ---
+	// 他の 5 値と違い「行が 1 回寄与するエッジ」ではなく、猶予で残っている間は
+	// 毎パス（既定 10 分）再計上される「水準」なので、カウンタの increase() に
+	// 乗せると値がパス頻度に比例してしまい録れた予約の数を意味しない。ブレーカーの
+	// ラッチと見分ける目的は internal/ruler の `ruler: pass complete` ログの
+	// grace_protected フィールドが果たす。
 	RulerReservations = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "rokuban_ruler_reservations_total",
 		Help: "Reservations created, updated, or deleted by the ruler. " +
 			"action: created / updated / deleted (derived deletes that passed the bulk-delete circuit breaker) / " +
-			"released (deletes outside the breaker; they require an explicit write that drops the user's investment) / " +
-			"grace_protected (deletes withheld by ruler.retract_grace) / gc.",
+			"released (deletes outside the breaker; they require an explicit write that drops the user's investment) / gc.",
 	}, []string{"action"})
 
 	// RulerCircuitBreakerTrips は大量削除サーキットブレーカーが**発動に遷移した**
