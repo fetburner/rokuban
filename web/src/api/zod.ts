@@ -630,6 +630,34 @@ export const ListServicesResponse = zod.array(ListServicesResponseItem)
 
 
 /**
+ * `tuner_sync`（worker が周期で mirakc の `/api/tuners` を投影する使い捨て
+ * プロジェクション）の行をそのまま返す。導出はしない（不変条件 9・11）。
+ * 列の意味の権威は docs/data/capacity.md §6.5。
+ *
+ * 「いまどの局を掴んでいるか」「ライブ視聴が何本か」は `tuner_sync` に
+ * 無いため、このエンドポイントも持たない（watcher の観測対象を広げる
+ * 別の判断）。
+ *
+ * 射影が 1 行も無いサイトは空配列を返す（「射影が 1 行も無いサイトは
+ * 何も主張しない」docs/data/capacity.md §6.5）。
+ * @summary List projected tuners
+ */
+export const ListTunersParams = zod.object({
+  "site": zod.string().describe('mirakc インスタンスのサイト名。programId はインスタンス単位のスコープ\nしか持たないため、この site と組にしないと資源が一意に定まらない\n（issue #31）。api プロセス自身は特定の site に束縛されない\n（不変条件 1: mirakc にもファイルシステムにも依存しない）ので、権威は\n「`config.mirakc`\/`mirakcs` レジストリに存在するか」であり、1 プロセスが\nレジストリの全 site を処理できる（issue #184 M4-12）。レジストリに無い\nsite のエラーコードはエンドポイントの HTTP メソッドで決まる —— GET 系は\n404、POST\/PUT\/PATCH\/DELETE 系は 400（他の入力検証と同じ扱い。詳細は各\nエンドポイントの description・レスポンス定義を参照）。存在する site の\n一覧は `GET \/api\/sites` で取得できる。\n')
+})
+
+export const ListTunersResponseItem = zod.object({
+  "index": zod.number().describe('mirakc の `\/api\/tuners` レスポンス内の配列インデックス。'),
+  "name": zod.string(),
+  "types": zod.array(zod.enum(['GR', 'BS', 'CS', 'SKY'])),
+  "isAvailable": zod.boolean(),
+  "isFault": zod.boolean().describe('mirakc の `\/api\/tuners` が返す値をそのまま射影している。\nMirakurun 互換 API のフィールドで、Mirakurun 本体ではチューナー\nプロセスの error を 3 回数えたら立つラッチだが、\*\*mirakc は\n実装しておらずリテラルの false を返す\*\*（models.rs が\n`Always false.` と明記）。`isAvailable` も同様に常に true。\n'),
+  "observedAt": zod.string().datetime({"offset":true}).describe('この行を最後に投影した時刻。射影ループが止まっていても行は消えない\nため、鮮度の手がかりとして必ずこれを使う（`GET \/api\/storage` の\n`observedAt` と同じ契約）。\n')
+}).describe('`tuner_sync` の行をそのまま返す（導出しない）。列の意味の権威は\ndocs\/data\/capacity.md §6.5「チューナー射影と容量超過の判定」。\n')
+export const ListTunersResponse = zod.array(ListTunersResponseItem)
+
+
+/**
  * ルール条件と同じコンパイラ（internal/rulequery）で epg_programs を検索する。
  * ruler 評価と同一の SQL 経路を通る（M2-2）。UI 検索（M2-11）の土台。
  * 検索対象のサイトはパスの {site}（評価 site）。`sites` フィールドは

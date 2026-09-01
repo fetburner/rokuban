@@ -50,13 +50,28 @@ export const epgRefreshIntervalMs = 600_000
 export const storageRefreshIntervalMs = 5 * 60_000
 
 /**
+ * tunersQueryKeyPrefix は `GET /api/sites/{site}/tuners` のクエリキーの接頭辞。
+ *
+ * このエンドポイントだけ URL をキーにできない。URL は epg グループの接頭辞
+ * （`/api/sites/`）にも前方一致するので、周期の違う 2 グループに同じキーが入り、
+ * 両方のタイマーが発火する時刻に 2 回 invalidate されてしまう。
+ *
+ * **キーを組み立てる側（`components/tuner-status.tsx`）とグループの接頭辞が
+ * 同じ定数を参照することで、片方だけ改名して取り直しが止まる drift を型で
+ * 防ぐ**（同じ手書きキーである番組リストの `['/api/programs', 'infinite', ...]`
+ * は literal が散っているのでこの防御が無い）。テスト側はこの定数を参照せず
+ * literal を持つので、定数を改名すれば events.test.tsx と live.test.tsx が落ちる。
+ */
+export const tunersQueryKeyPrefix = '/api/tuners'
+
+/**
  * QueryGroup は SSE トピック（無い場合もある）と、それによって無効化するクエリ
  * キーの接頭辞、そして SSE が届かなかったときに取り直す周期の組。
  */
 type QueryGroup = {
   /**
    * SSE のトピック名。`null` は「対応する SSE トピックを持たず、定期 invalidate
-   * だけで収束させる」グループ（`storage` がこれ。理由は
+   * だけで収束させる」グループ（`storage` / `tuners` がこれ。理由は
    * {@link storageRefreshIntervalMs} 参照）。
    *
    * optional にはしない --- optional だと「トピックを書き忘れた」グループが型でも
@@ -72,7 +87,7 @@ type QueryGroup = {
 
 /**
  * queryGroups は SSE のトピックと、それによって無効化するクエリキーの接頭辞の対応。
- * トピックを持たないグループ（`storage`）は SSE を購読せず、定期 invalidate
+ * トピックを持たないグループ（`storage` / `tuners`）は SSE を購読せず、定期 invalidate
  * （加えて再接続時の全グループ invalidate）だけで収束させる。
  *
  * サーバーが配るのは「どのデータが変わったか」のヒントだけで、変更内容は載っていない。
@@ -115,6 +130,24 @@ const queryGroups: QueryGroup[] = [
     // トピックを持たない --- storageRefreshIntervalMs の doc コメント参照。
     topic: null,
     prefixes: ['/api/storage'],
+    refreshIntervalMs: storageRefreshIntervalMs,
+  },
+  {
+    // トピックを持たない。tuner_sync の変更を知らせる SSE トピックは無く、
+    // storage と同じ「使い捨てプロジェクションを定期 invalidate だけで
+    // 収束させる」形（storageRefreshIntervalMs の doc コメント参照）。
+    //
+    // `GET /api/sites/{site}/tuners` の URL は epg の接頭辞（/api/sites/）に
+    // 前方一致するので、キーは URL ではなく手書きにしてある
+    // （{@link tunersQueryKeyPrefix}）。周期の違う 2 グループに同じキーが入ると、
+    // 両方のタイマーが発火する時刻に別々の呼び出しで 2 回 invalidate される
+    // （テスト: events.test.tsx「5 分と 10 分のタイマーが同時に発火しても
+    // tuners は余分に取り直さない」）。
+    topic: null,
+    prefixes: [tunersQueryKeyPrefix],
+    // storage と同じ周期を流用する（新しい数値は発明しない）。tuner_sync も
+    // storage_sync と同じ「worker の定期全量同期でしか値が変わらない射影」
+    // なので、性質が同じグループには同じ周期を割り当てる。
     refreshIntervalMs: storageRefreshIntervalMs,
   },
 ]
@@ -318,8 +351,9 @@ export function useServerEvents() {
     }
 
     for (const group of queryGroups) {
-      // topic が null のグループ（storage）は SSE を購読しない --- 定期 invalidate
-      // だけで収束させる（storageRefreshIntervalMs の doc コメント参照）
+      // topic が null のグループ（storage / tuners）は SSE を購読しない ---
+      // 定期 invalidate だけで収束させる（storageRefreshIntervalMs の doc
+      // コメント参照）
       if (group.topic === null) continue
       listen(group.topic, () => invalidateGroup(queryClient, group))
     }

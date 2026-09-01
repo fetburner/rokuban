@@ -199,6 +199,28 @@ ruler / reconciler / record_sweep（watcher の 3 段構えのうち (c) 定期�
 | `rokuban server` が exit 0 で終わった | drain が成功したとは限らない。`riverClient.Stop` の戻り値は ERROR ログに落としており、**終了コードには出ない**。予算切れで戻った場合、実行中だったジョブの行は `running` のまま残り、ロール分割構成では `JobRescuer` を動かす常駐クライアントが 1 つも無いので誰も回収しない（[§5](k8s.md)「Deployment 併用時」） | ログの `stopping river client`（ERROR）をアラート対象にする |
 | `rokuban_media_assets_missing` が 0（または全 kind の系列が消えている） | 「実体無しの資産が無い」を意味しない。マウントが落ちている・空マウントを疑ったパスは記録自体を見送るため、その間はこのゲージが前回値のまま凍結する。**疑いを経ずに凍結する経路もある** --- 走査エラー・DB エラーでパスが途中 return した場合はゲージに触れないまま終わり、疑いのカウンタも進まない | `rokuban_missing_asset_scan_suspected_storage_failure_total` が増えていないこと **かつ** `rokuban_delete_reconcile_last_pass_timestamp_seconds` が進んでいること（前者は疑い経路、後者はエラー経路の凍結を捕まえる） |
 
+### チューナー故障はライブ画面の 1 行で見せる
+
+`tuner_sync.is_fault` はどこにも出力しておらず、`internal/capacity` が `cap(A)` を
+数えるかどうかの判定に使うだけである。これを見る手段が UI 以外に無いか、専用
+メトリクスがあるかを先に確かめた。上表の `rokuban_tuners_projected` /
+`rokuban_tuner_sync_last_success_timestamp_seconds` はどちらも射影の本数と鮮度の
+ゲージで、`is_fault` を出すゲージは無い。アラート設計にもチューナー故障の節が
+無い。したがって UI に出さない選択は「既存の手段で足りるから省く」ではなく、
+新設そのものを見送ることになる。
+
+出す場所は毎日開く画面かどうかで選んだ。専用の「チューナー」ページを新設する
+案もあったが、疑ってから開く画面では「警告が無い = 大丈夫」という誤読は解けない。
+ライブ画面はチューナーを実際に掴む操作の直前に開く画面なので、故障が意味を持つ
+瞬間に居合わせる。そこでライブ画面のチャンネル一覧の脇に「チューナー n 本
+（故障 m）」の 1 行を出す形にした。故障 0 本のときは「（故障 m）」を出さない。
+
+ただし **mirakc は `isFault` を実装しておらず常に false を返す**（根拠は
+[データ層](../data/capacity.md) §6.5）。現行の mirakc では故障の表示は出ない。
+同じ 1 行に `observedAt` の鮮度（射影ループが止まっていないか）を併置して
+あるので、**実用上の値はそちらにある** --- 射影ループの停止は実際に捉えられる。
+故障のほうは Mirakurun 互換 API の契約として読む形だけ残してある。
+
 ### 経緯と失敗事例
 
 - `/metrics` エンドポイントは M1-9、開始遅延検出器は M2-7、record_sweep のジョブ化は M2-18。チューナー射影と `rokuban_capacity_overages` は M2-10、`catalog-export` が `--site` を取らない決定は issue #200。

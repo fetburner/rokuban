@@ -505,6 +505,30 @@ func (e StorageRootRoot) Valid() bool {
 	}
 }
 
+// Defines values for TunerTypes.
+const (
+	TunerTypesBS  TunerTypes = "BS"
+	TunerTypesCS  TunerTypes = "CS"
+	TunerTypesGR  TunerTypes = "GR"
+	TunerTypesSKY TunerTypes = "SKY"
+)
+
+// Valid indicates whether the value is a known member of the TunerTypes enum.
+func (e TunerTypes) Valid() bool {
+	switch e {
+	case TunerTypesBS:
+		return true
+	case TunerTypesCS:
+		return true
+	case TunerTypesGR:
+		return true
+	case TunerTypesSKY:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ListRecordingsParamsQTarget.
 const (
 	Title            ListRecordingsParamsQTarget = "title"
@@ -1506,6 +1530,31 @@ type StorageRoot struct {
 // StorageRootRoot config キー（`storage.media_dir` / `storage.scratch_dir`）と 1:1。
 type StorageRootRoot string
 
+// Tuner `tuner_sync` の行をそのまま返す（導出しない）。列の意味の権威は
+// docs/data/capacity.md §6.5「チューナー射影と容量超過の判定」。
+type Tuner struct {
+	// Index mirakc の `/api/tuners` レスポンス内の配列インデックス。
+	Index       int  `json:"index"`
+	IsAvailable bool `json:"isAvailable"`
+
+	// IsFault mirakc の `/api/tuners` が返す値をそのまま射影している。
+	// Mirakurun 互換 API のフィールドで、Mirakurun 本体ではチューナー
+	// プロセスの error を 3 回数えたら立つラッチだが、**mirakc は
+	// 実装しておらずリテラルの false を返す**（models.rs が
+	// `Always false.` と明記）。`isAvailable` も同様に常に true。
+	IsFault bool   `json:"isFault"`
+	Name    string `json:"name"`
+
+	// ObservedAt この行を最後に投影した時刻。射影ループが止まっていても行は消えない
+	// ため、鮮度の手がかりとして必ずこれを使う（`GET /api/storage` の
+	// `observedAt` と同じ契約）。
+	ObservedAt time.Time    `json:"observedAt"`
+	Types      []TunerTypes `json:"types"`
+}
+
+// TunerTypes defines model for Tuner.Types.
+type TunerTypes string
+
 // VersionResponse defines model for VersionResponse.
 type VersionResponse struct {
 	Version string `json:"version"`
@@ -1734,6 +1783,9 @@ type ServerInterface interface {
 	// ListServices List EPG services (channels)
 	// (GET /api/sites/{site}/services)
 	ListServices(w http.ResponseWriter, r *http.Request, site Site)
+	// ListTuners List projected tuners
+	// (GET /api/sites/{site}/tuners)
+	ListTuners(w http.ResponseWriter, r *http.Request, site Site)
 	// GetStorage Get observed storage usage
 	// (GET /api/storage)
 	GetStorage(w http.ResponseWriter, r *http.Request)
@@ -1929,6 +1981,12 @@ func (_ Unimplemented) GetProgramReservation(w http.ResponseWriter, r *http.Requ
 // ListServices List EPG services (channels)
 // (GET /api/sites/{site}/services)
 func (_ Unimplemented) ListServices(w http.ResponseWriter, r *http.Request, site Site) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// ListTuners List projected tuners
+// (GET /api/sites/{site}/tuners)
+func (_ Unimplemented) ListTuners(w http.ResponseWriter, r *http.Request, site Site) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -2998,6 +3056,32 @@ func (siw *ServerInterfaceWrapper) ListServices(w http.ResponseWriter, r *http.R
 	handler.ServeHTTP(w, r)
 }
 
+// ListTuners operation middleware
+func (siw *ServerInterfaceWrapper) ListTuners(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "site" -------------
+	var site Site
+
+	err = runtime.BindStyledParameterWithOptions("simple", "site", chi.URLParam(r, "site"), &site, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "site", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListTuners(w, r, site)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // GetStorage operation middleware
 func (siw *ServerInterfaceWrapper) GetStorage(w http.ResponseWriter, r *http.Request) {
 
@@ -3208,6 +3292,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/api/sites/{site}/services", wrapper.ListServices)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/sites/{site}/tuners", wrapper.ListTuners)
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/api/sites/{site}/programs/search", wrapper.SearchPrograms)
@@ -4292,6 +4379,42 @@ func (response ListServices404JSONResponse) VisitListServicesResponse(w http.Res
 	return err
 }
 
+type ListTunersRequestObject struct {
+	Site Site `json:"site"`
+}
+
+type ListTunersResponseObject interface {
+	VisitListTunersResponse(w http.ResponseWriter) error
+}
+
+type ListTuners200JSONResponse []Tuner
+
+func (response ListTuners200JSONResponse) VisitListTunersResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListTuners404JSONResponse ErrorResponse
+
+func (response ListTuners404JSONResponse) VisitListTunersResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type GetStorageRequestObject struct {
 }
 
@@ -4482,6 +4605,9 @@ type StrictServerInterface interface {
 	// ListServices List EPG services (channels)
 	// (GET /api/sites/{site}/services)
 	ListServices(ctx context.Context, request ListServicesRequestObject) (ListServicesResponseObject, error)
+	// ListTuners List projected tuners
+	// (GET /api/sites/{site}/tuners)
+	ListTuners(ctx context.Context, request ListTunersRequestObject) (ListTunersResponseObject, error)
 	// GetStorage Get observed storage usage
 	// (GET /api/storage)
 	GetStorage(ctx context.Context, request GetStorageRequestObject) (GetStorageResponseObject, error)
@@ -5343,6 +5469,32 @@ func (sh *strictHandler) ListServices(w http.ResponseWriter, r *http.Request, si
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(ListServicesResponseObject); ok {
 		if err := validResponse.VisitListServicesResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListTuners operation middleware
+func (sh *strictHandler) ListTuners(w http.ResponseWriter, r *http.Request, site Site) {
+	var request ListTunersRequestObject
+
+	request.Site = site
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListTuners(ctx, request.(ListTunersRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListTuners")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListTunersResponseObject); ok {
+		if err := validResponse.VisitListTunersResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

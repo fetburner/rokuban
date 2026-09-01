@@ -124,6 +124,42 @@ export interface Service {
   hasPrograms: boolean;
 }
 
+export type TunerTypesItem = typeof TunerTypesItem[keyof typeof TunerTypesItem];
+
+
+export const TunerTypesItem = {
+  GR: 'GR',
+  BS: 'BS',
+  CS: 'CS',
+  SKY: 'SKY',
+} as const;
+
+/**
+ * `tuner_sync` の行をそのまま返す（導出しない）。列の意味の権威は
+ * docs/data/capacity.md §6.5「チューナー射影と容量超過の判定」。
+ */
+export interface Tuner {
+  /** mirakc の `/api/tuners` レスポンス内の配列インデックス。 */
+  index: number;
+  name: string;
+  types: TunerTypesItem[];
+  isAvailable: boolean;
+  /**
+     * mirakc の `/api/tuners` が返す値をそのまま射影している。
+     * Mirakurun 互換 API のフィールドで、Mirakurun 本体ではチューナー
+     * プロセスの error を 3 回数えたら立つラッチだが、**mirakc は
+     * 実装しておらずリテラルの false を返す**（models.rs が
+     * `Always false.` と明記）。`isAvailable` も同様に常に true。
+     */
+  isFault: boolean;
+  /**
+     * この行を最後に投影した時刻。射影ループが止まっていても行は消えない
+     * ため、鮮度の手がかりとして必ずこれを使う（`GET /api/storage` の
+     * `observedAt` と同じ契約）。
+     */
+  observedAt: string;
+}
+
 export interface ProgramListItem {
   programId: number;
   networkId: number;
@@ -2864,6 +2900,136 @@ export function useListServices<TData = Awaited<ReturnType<typeof listServices>>
  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
 
   const queryOptions = getListServicesQueryOptions(site,options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export type listTunersResponse200 = {
+  data: Tuner[]
+  status: 200
+}
+
+export type listTunersResponse404 = {
+  data: ErrorResponse
+  status: 404
+}
+
+export type listTunersResponseSuccess = (listTunersResponse200) & {
+  headers: Headers;
+};
+export type listTunersResponseError = (listTunersResponse404) & {
+  headers: Headers;
+};
+
+export type listTunersResponse = (listTunersResponseSuccess | listTunersResponseError)
+
+export const getListTunersUrl = (site: string,) => {
+
+
+
+
+  return `/api/sites/${site}/tuners`
+}
+
+/**
+ * `tuner_sync`（worker が周期で mirakc の `/api/tuners` を投影する使い捨て
+ * プロジェクション）の行をそのまま返す。導出はしない（不変条件 9・11）。
+ * 列の意味の権威は docs/data/capacity.md §6.5。
+ *
+ * 「いまどの局を掴んでいるか」「ライブ視聴が何本か」は `tuner_sync` に
+ * 無いため、このエンドポイントも持たない（watcher の観測対象を広げる
+ * 別の判断）。
+ *
+ * 射影が 1 行も無いサイトは空配列を返す（「射影が 1 行も無いサイトは
+ * 何も主張しない」docs/data/capacity.md §6.5）。
+ * @summary List projected tuners
+ */
+export const listTuners = async (site: string, options?: RequestInit): Promise<listTunersResponse> => {
+
+  return customInstance<listTunersResponse>(getListTunersUrl(site),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getListTunersQueryKey = (site: string,) => {
+    return [
+    `/api/sites/${site}/tuners`
+    ] as const;
+    }
+
+
+export const getListTunersQueryOptions = <TData = Awaited<ReturnType<typeof listTuners>>, TError = ErrorResponse>(site: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listTuners>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getListTunersQueryKey(site);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listTuners>>> = ({ signal }) => listTuners(site, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: site !== null && site !== undefined, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listTuners>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type ListTunersQueryResult = NonNullable<Awaited<ReturnType<typeof listTuners>>>
+export type ListTunersQueryError = ErrorResponse
+
+
+export function useListTuners<TData = Awaited<ReturnType<typeof listTuners>>, TError = ErrorResponse>(
+ site: string, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof listTuners>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof listTuners>>,
+          TError,
+          Awaited<ReturnType<typeof listTuners>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useListTuners<TData = Awaited<ReturnType<typeof listTuners>>, TError = ErrorResponse>(
+ site: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listTuners>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof listTuners>>,
+          TError,
+          Awaited<ReturnType<typeof listTuners>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useListTuners<TData = Awaited<ReturnType<typeof listTuners>>, TError = ErrorResponse>(
+ site: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listTuners>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary List projected tuners
+ */
+
+export function useListTuners<TData = Awaited<ReturnType<typeof listTuners>>, TError = ErrorResponse>(
+ site: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listTuners>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getListTunersQueryOptions(site,options)
 
   const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
 
