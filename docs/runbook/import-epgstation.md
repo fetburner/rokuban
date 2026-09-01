@@ -50,8 +50,11 @@ snake_case（`recorded` / `video_file` / `thumbnail` / `channel`）。
 ```sh
 sqlite3 /path/to/epgstation/data/database.db <<'SQL' > library.json
 SELECT json_group_array(json_object(
+  'programId', r.programId,
   'channelId', r.channelId,
   'channelType', c.channelType,
+  'serviceName', c.name,
+  'channel', c.channel,
   'startAt', r.startAt,
   'endAt', r.endAt,
   'name', r.name,
@@ -69,14 +72,21 @@ LEFT JOIN channel c ON c.id = r.channelId;
 SQL
 ```
 
+`programId` を積むのは、これが real な放送 identity（`internal/mirakc.
+SplitProgramID` で分解できる）で、合成した擬似 id より衝突しないため。
+rokuban 自身が同じ放送を録っていれば同一の録画として扱われる。
+
 **MySQL**（`JSON_ARRAYAGG` は MySQL 5.7.22+ / 8.0。MariaDB は 10.5+ が要る。
 古い MariaDB では動かないので事前に確認する — 未検証）:
 
 ```sh
-mysql -N -B epgstation_db <<'SQL' > library.json
+mysql -N -B -r epgstation_db <<'SQL' > library.json
 SELECT JSON_ARRAYAGG(JSON_OBJECT(
+  'programId', r.programId,
   'channelId', r.channelId,
   'channelType', c.channelType,
+  'serviceName', c.name,
+  'channel', c.channel,
   'startAt', r.startAt,
   'endAt', r.endAt,
   'name', r.name,
@@ -94,6 +104,11 @@ LEFT JOIN channel c ON c.id = r.channelId;
 SQL
 ```
 
+**`-r`/`--raw` は省略しないこと。** `mysql -B` の既定（batch）出力は
+`\`・タブ・改行をエスケープする。`JSON_OBJECT` が出す `\"` がさらに `\\"`
+になり、番組名にダブルクオートを含む行が 1 つでもあると JSON が壊れる。
+`--raw` はこのエスケープを止める（SQLite の CLI にはこの問題がない）。
+
 `v.filePath` / `t.filePath` は EPGStation が実際に書き込んだパス（設定と
 バージョンによって絶対パスのことも、`parentDirectoryName` からの相対
 パスのこともある）。**手順 1 でマウントした先から見た相対パスに必ず
@@ -106,8 +121,11 @@ SQL
 ```json
 [
   {
+    "programId": 327360102415397,
     "channelId": 3273601024,
     "channelType": "GR",
+    "serviceName": "○○テレビ",
+    "channel": "27",
     "startAt": 1785000000000,
     "endAt": 1785001800000,
     "name": "番組名",
@@ -125,8 +143,11 @@ SQL
   encode profile 名前空間と対応が取れないため警告してスキップする
 - `thumbnails` は 1 件目だけ取り込む（`media_assets` は録画 1 件につき
   thumbnail 1 行までしか持てない）。2 件目以降は警告してスキップする
-- `channelType` を省略すると `GR` にフォールバックして警告する。落とさず
-  埋めておくのが安全
+- `programId` が無ければ `channelId` + `name` + `endAt` から合成識別子を
+  作る（実 identity より衝突しやすい。上の SQL の通り積んでおくのが安全）
+- `channelType` / `serviceName` / `channel` を省略すると、それぞれ
+  `GR` / `"unknown"` / `"unknown"` にフォールバックして警告する。落とさず
+  埋めておくのが安全（`serviceName`/`channel` はライブラリ UI にそのまま出る）
 
 #### 3. 取り込む
 

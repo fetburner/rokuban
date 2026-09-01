@@ -149,3 +149,24 @@ func TestImportLibrary_MultipleThumbnails_ImportsFirstAndWarns(t *testing.T) {
 		t.Errorf("rel_path = %q, want thumb1.jpg (the first thumbnail)", relPath)
 	}
 }
+
+// TestSyntheticEventID_DeterministicAndDistinct: re-importing the same
+// (name, endAt) must produce the same synthetic event id (the idempotency
+// key for rows with no real broadcast event id), and different inputs must
+// not collide trivially. This is what lets a re-import survive after the
+// operator has moved or renamed files — rel_path-based idempotency
+// (TestImportLibrary_IdempotentRerun) doesn't exercise this path at all.
+func TestSyntheticEventID_DeterministicAndDistinct(t *testing.T) {
+	a1 := syntheticEventID("番組A", 1785001800000)
+	a2 := syntheticEventID("番組A", 1785001800000)
+	if a1 != a2 {
+		t.Fatalf("syntheticEventID not deterministic: %d != %d", a1, a2)
+	}
+	if a1 >= 0 {
+		t.Errorf("syntheticEventID = %d, want negative (must not collide with real mirakc event ids)", a1)
+	}
+	b := syntheticEventID("番組B", 1785001800000)
+	if a1 == b {
+		t.Errorf("different names produced the same synthetic event id: %d", a1)
+	}
+}

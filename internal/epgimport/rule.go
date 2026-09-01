@@ -91,11 +91,15 @@ func ImportRules(ctx context.Context, pool *pgxpool.Pool, site string, rules []e
 		}
 
 		created, warnings, err := importOneRule(ctx, pool, site, r)
-		if err != nil {
-			return res, fmt.Errorf("importing epgstation rule %d: %w", r.ID, err)
-		}
+		// warnings が集まった後にエラーで落ちることもある（例: ARE 警告を
+		// 出した直後に子テーブルの INSERT が失敗）。エラーだからといって
+		// 警告を捨てると、操作者はエラーメッセージしか見えず、同じ warning
+		// が出ていた事実を失う。
 		for _, w := range warnings {
 			res.Warnings = append(res.Warnings, RuleWarning{r.ID, w})
+		}
+		if err != nil {
+			return res, fmt.Errorf("importing epgstation rule %d: %w", r.ID, err)
 		}
 		if created {
 			res.Created++
@@ -309,7 +313,18 @@ func buildRuleFields(r epgstation.Rule) (ruleFields, []string) {
 		f.name = fmt.Sprintf("EPGStation rule %d", r.ID)
 	}
 
-	f.isFree = r.SearchOption.IsFree
+	// isFree は EPGStation では tristate ではない: DB 列は
+	// `"isFree" boolean NOT NULL DEFAULT (0)` で、RuleDB.ts が
+	// `!!rule.searchOption.isFree` を無条件に書き戻すため、GET /api/rules
+	// はチェックしていないルールにも常に `"isFree": false` を返す（省略され
+	// ない。ProgramDB.ts の setFreeQuery も `isFree === false` を「絞り込み
+	// なし」として扱い、true のときだけ WHERE 句を足す）。ここで *bool を
+	// そのまま通すと、無料放送を絞っていないほとんどのルールが「有料放送
+	// だけ」を意味する `is_free = false` に化けて実質何も録れなくなる
+	// （false を「絞り込みなし」と区別できないのが原因）。
+	if r.SearchOption.IsFree != nil && *r.SearchOption.IsFree {
+		f.isFree = r.SearchOption.IsFree
+	}
 
 	// durationMin/Max は秒単位（EPGStation の src/model/db/ProgramDB.ts の
 	// setDurationMinQuery/setDurationMaxQuery が `option.durationMin * 1000`

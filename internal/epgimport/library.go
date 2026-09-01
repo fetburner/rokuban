@@ -30,10 +30,14 @@ type LibraryItem struct {
 	ProgramID *int64 `json:"programId,omitempty"`
 	// ChannelID は Mirakurun 互換の service id（= networkId*100000+serviceId）。
 	ChannelID int64 `json:"channelId"`
-	// ChannelType は GR/BS/CS/SKY。EPGStation の RecordedItem 自体は持たず
-	// Channel（放送局）リソース側の属性なので、運用者が SELECT 時に
-	// join して埋める前提（recordings.channel_type は NOT NULL）。
+	// ChannelType/ServiceName/Channel はいずれも EPGStation の
+	// RecordedItem 自体は持たず Channel（放送局）リソース側の属性なので、
+	// 運用者が SELECT 時に join して埋める前提（recordings 側はいずれも
+	// NOT NULL）。省略すると "unknown"/GR にフォールバックして警告する
+	// （落とさず埋めるのが安全。docs/runbook/import-epgstation.md 参照）。
 	ChannelType string             `json:"channelType"`
+	ServiceName string             `json:"serviceName"`
+	Channel     string             `json:"channel"`
 	StartAt     int64              `json:"startAt"` // UnixtimeMS
 	EndAt       int64              `json:"endAt"`   // UnixtimeMS
 	Name        string             `json:"name"`
@@ -130,6 +134,18 @@ func ImportLibrary(ctx context.Context, pool *pgxpool.Pool, mediaDir, site strin
 			res.Warnings = append(res.Warnings, fmt.Sprintf(
 				"recorded %q has no channelType — defaulted to GR", item.Name))
 		}
+		serviceName := item.ServiceName
+		if serviceName == "" {
+			serviceName = "unknown"
+			res.Warnings = append(res.Warnings, fmt.Sprintf(
+				"recorded %q has no serviceName — defaulted to \"unknown\"", item.Name))
+		}
+		channel := item.Channel
+		if channel == "" {
+			channel = "unknown"
+			res.Warnings = append(res.Warnings, fmt.Sprintf(
+				"recorded %q has no channel — defaulted to \"unknown\"", item.Name))
+		}
 
 		in := inplace.Input{
 			Recording: inplace.Recording{
@@ -138,9 +154,9 @@ func ImportLibrary(ctx context.Context, pool *pgxpool.Pool, mediaDir, site strin
 				NetworkID:         networkID,
 				ServiceID:         serviceID,
 				EventID:           eventID,
-				ServiceName:       "unknown",
+				ServiceName:       serviceName,
 				ChannelType:       channelType,
-				Channel:           "unknown",
+				Channel:           channel,
 				Title:             item.Name,
 				ProgramStartAt:    time.UnixMilli(item.StartAt),
 				ProgramDurationMs: item.EndAt - item.StartAt,

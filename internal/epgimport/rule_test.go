@@ -75,16 +75,12 @@ func TestImportRules_IdempotentRerun(t *testing.T) {
 // it enabled (rulequery.Compile degenerates to a bare site filter, which
 // would record the entire EPG).
 //
-// Pattern choice note (measured, not assumed): docs/data/search.md claims
-// Postgres ARE supports lookahead but not lookbehind ("先読み `(?=)` 可・
-// 後読み不可"). Measured directly against this task's Postgres 16.2: an
-// empty-string match against pattern (?<=foo)bar does NOT error, and
-// matching "xyzabc" and "zzzabc" against (?<=xyz)abc return true/false
-// respectively — i.e. lookbehind actually works here, contradicting that
-// doc sentence (fixed in this PR — see docs/data/search.md). A pattern this
-// Postgres genuinely rejects (measured) is JS-style named capture groups,
-// (?<name>...): matching an empty string against that pattern raises
-// "quantifier operand invalid".
+// Pattern choice note: this uses JS-style named capture groups,
+// (?<name>...), rather than lookbehind — measured directly against this
+// task's Postgres 16.2, lookbehind actually works (docs/data/search.md
+// documents this), so it would not exercise the ARE-incompatible path.
+// Matching an empty string against (?<name>...) raises "quantifier operand
+// invalid" instead.
 func TestImportRules_AREIncompatibleRegexWarns(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
@@ -188,6 +184,38 @@ func TestImportRules_ChildInsertFailureRollsBack(t *testing.T) {
 	if ruleCount != 0 || textMatchCount != 0 {
 		t.Fatalf("rules=%d rule_text_matches=%d after a failed import, want 0/0 (partial writes must roll back)",
 			ruleCount, textMatchCount)
+	}
+}
+
+// TestImportRules_IsFreeFalseIsNotAFilter: EPGStation's isFree is a checkbox,
+// not a tristate — the DB column is NOT NULL DEFAULT false and RuleDB.ts
+// writes back `!!isFree` unconditionally, so GET /api/rules always returns
+// "isFree": false for a rule that never ticked the box (it is never
+// omitted). Importing that false as a real filter turns an unfiltered rule
+// into one that matches only pay/scrambled programs, silently recording
+// nothing for the common terrestrial case.
+func TestImportRules_IsFreeFalseIsNotAFilter(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	rules := []epgstation.Rule{{
+		ID: 8,
+		SearchOption: epgstation.RuleSearchOption{
+			Keyword: "ニュース", Name: true, IsFree: boolPtr(false),
+		},
+		ReserveOption: epgstation.RuleReserveOption{Enable: true},
+	}}
+
+	if _, err := ImportRules(ctx, pool, "default", rules); err != nil {
+		t.Fatalf("ImportRules: %v", err)
+	}
+
+	var isFree *bool
+	if err := pool.QueryRow(ctx, `SELECT is_free FROM rules WHERE metadata @> '{"epgstation":{"ruleId":8}}'`).Scan(&isFree); err != nil {
+		t.Fatal(err)
+	}
+	if isFree != nil {
+		t.Errorf("is_free = %v, want NULL (EPGStation's unticked isFree checkbox must not become a pay-TV-only filter)", *isFree)
 	}
 }
 
