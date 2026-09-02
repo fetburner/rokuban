@@ -1,14 +1,12 @@
 import { X } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useState } from 'react'
 
 import {
   ProgramSearchRequestChannelTypesItem,
   RuleTextMatchMode,
   RuleTextMatchTarget,
-  useListSites,
   type Service,
 } from '@/api/generated'
-import { unwrap } from '@/api/unwrap'
 import { Button } from '@/components/ui/button'
 import { Chip } from '@/components/ui/chip'
 import { Field, Input, Select } from '@/components/ui/field'
@@ -95,10 +93,11 @@ type FieldsProps = {
  * 位置と、それより前が同期的に描かれること---は変えていないため、これ以前の
  * 実測値と同じ桁に収まっている）。issue #531 で `SiteFields`（サイトチップ）を
  * `ServiceFields` の手前に足した後も `web/e2e/cls.mjs`（390x844 / 1280x900）を
- * 測り直したが値は変わらない --- `SiteFields` は `GET /api/sites` を
- * `<SiteGate>` と同じキーで再利用する同期的な節（`useListSites()` は
- * 既に解決済みのキャッシュを返す）で、かつ site が 2 つ以上のときしか
- * 描画しない（`cls.mjs` のフィクスチャは単一サイトなので DOM に一切増えない）。
+ * 測り直したが値は変わらない --- `SiteFields` の表示可否は `useAllSitesServices()`
+ * が返す `sites`（`<SiteGate>` と同じクエリキーのキャッシュを再利用するだけで
+ * 追加のリクエストは発生しない）から**同期的**に決まり、site が 2 つ以上の
+ * ときしか描画しない（`cls.mjs` のフィクスチャは単一サイトなので DOM に
+ * 一切増えない）。
  * **フォームが短くなる変更（節の折りたたみ・サービスより下の要素を上へ移す）は
  * この前提を崩す**ので `web/e2e/cls.mjs` を測り直す。他の節との間に依存は無い
  * ので、並びを変えても意味は変わらない --- 判定は `web/e2e/cls.mjs`①（直す前の
@@ -106,14 +105,7 @@ type FieldsProps = {
  * 受け入れた判断は `docs/frontend/search.md`。
  */
 export function ConditionFields({ draft, onChange, disabled }: FieldsProps): React.ReactElement {
-  const { services: serviceList, isPending, isError } = useAllSitesServices()
-  // `<SiteGate>` が既に `GET /api/sites` を解決しているので、ここでの
-  // `useListSites()` は同じクエリキーのキャッシュを再利用するだけで追加の
-  // リクエストは発生しない（`lib/all-sites-services.ts` の `useAllSitesServices`
-  // と同じ理屈）。したがって `SiteFields` は `ServiceFields` と違って非同期の
-  // レイアウトシフトを持ち込まず、`ServiceFields` より前に置いてよい。
-  const sitesQuery = useListSites()
-  const registrySites = unwrap(sitesQuery.data) ?? []
+  const { services: serviceList, sites, isPending, isError } = useAllSitesServices()
 
   return (
     <>
@@ -122,7 +114,7 @@ export function ConditionFields({ draft, onChange, disabled }: FieldsProps): Rea
       <GenreFields draft={draft} onChange={onChange} disabled={disabled} />
       <TimeWindowFields draft={draft} onChange={onChange} disabled={disabled} />
       <ScalarFields draft={draft} onChange={onChange} disabled={disabled} />
-      <SiteFields draft={draft} sites={registrySites} onChange={onChange} disabled={disabled} />
+      <SiteFields draft={draft} sites={sites} onChange={onChange} disabled={disabled} />
       <ServiceFields
         draft={draft}
         services={serviceList}
@@ -344,16 +336,20 @@ function TextMatchFields({ draft, onChange, disabled }: FieldsProps) {
  * （先頭サイト）だけを対象にし、保存されるルールの `sites` は UI から編集
  * できなかった。
  *
- * **site が 2 つ以上のときだけ表示する**（`components/recording-filters.tsx` が
- * `siteNames.length > 1` で同じ規律を持っている --- 選択肢が 1 つしかない
- * コントロールを置いても絞る意味が無い）。
- *
  * **チップの選択肢は「レジストリの site」と「下書きが既に持つ site」の和集合**
  * にする。`?ruleId=` で開いたルールの `rule_sites` にレジストリから消えた
  * site 名が残っていた場合でも、和集合に含めることでチップとして見え、
  * 明示的に外せる --- レジストリの一覧だけを選択肢にすると、消えた site は
  * チップごと消えて画面内で外す手段が無くなる（以前の「未解決」はこれが
  * 原因だった。`docs/frontend/search.md` 参照）。
+ *
+ * **表示可否もこの和集合（`options`）で判定する。** レジストリだけを見て
+ * `sites.length <= 1` で隠すと、レジストリが 1 site に縮んだ環境で下書きが
+ * 別の（消えた）site を持つケースが再び「見えない」に戻り、上の未解決が復活する
+ * --- 単一サイト運用で下書きも空 / レジストリと同じ 1 件のときは `options` も
+ * 1 件のままなので、素直な単一サイト構成では何も変わらない
+ * （`components/recording-filters.tsx` の `siteNames.length > 1` と違い、
+ * こちらは「編集中の下書きが持つ値」を選択肢に含める必要があるための差）。
  */
 function SiteFields({
   draft,
@@ -361,12 +357,9 @@ function SiteFields({
   onChange,
   disabled,
 }: FieldsProps & { sites: string[] }) {
-  const options = useMemo(
-    () => [...new Set([...sites, ...draft.sites])].sort(),
-    [sites, draft.sites],
-  )
+  const options = [...new Set([...sites, ...draft.sites])].sort()
 
-  if (sites.length <= 1) return null
+  if (options.length <= 1) return null
 
   return (
     <Section title="サイト">

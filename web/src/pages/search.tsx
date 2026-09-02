@@ -36,6 +36,7 @@ import {
   draftError,
   emptyDraft,
   emptyRuleMeta,
+  hasNoConditions,
   ruleMetaError,
   conditionsToDraft,
   ruleToMeta,
@@ -116,7 +117,7 @@ export function SearchPage() {
    * で畳んだ union）に揃える）。
    *
    * **キーは `Service.id` そのものではなく `${networkId}:${serviceId}`。**
-   * `GET /api/programs/{id}` のレスポンス（`ProgramListItem`）は
+   * `GET /api/sites/{site}/programs/{programId}` のレスポンス（`ProgramListItem`）は
    * `networkId` / `serviceId` を別フィールドで持ち、合成済みの `Service.id`
    * は持たないため、番組側からは同じ式でキーを組み直す必要がある。かつては
    * `serviceId` 単独をキーにしていたが、それは network をまたぐと一意でない
@@ -839,8 +840,7 @@ function CreateRuleForm({
   const [confirmedEmpty, setConfirmedEmpty] = useState(false)
 
   const metaError = ruleMetaError(meta)
-  const request = buildSearchRequest(draft)
-  const noConditions = Object.keys(request).length === 0
+  const noConditions = hasNoConditions(draft)
   const hasPeriod = draft.periodStartAt !== '' || draft.periodEndAt !== ''
   const pending = createRule.isPending
 
@@ -1031,8 +1031,7 @@ function RuleEditForm({
   const [confirmedEmpty, setConfirmedEmpty] = useState(false)
 
   const metaError = ruleMetaError(meta)
-  const request = buildSearchRequest(draft)
-  const noConditions = Object.keys(request).length === 0
+  const noConditions = hasNoConditions(draft)
   const hasPeriod = draft.periodStartAt !== '' || draft.periodEndAt !== ''
   const pending = updateRule.isPending || createRule.isPending
 

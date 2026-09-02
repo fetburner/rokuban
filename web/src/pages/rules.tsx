@@ -45,10 +45,10 @@ import { Field, Input } from '@/components/ui/field'
 import { keepOriginalLabel, type KeepOriginal } from '@/lib/encode-settings'
 import {
   buildRuleInput,
-  buildSearchRequest,
   draftError,
   emptyDraft,
   emptyRuleMeta,
+  hasNoConditions,
   ruleMetaError,
   conditionsToDraft,
   ruleToMeta,
@@ -607,7 +607,7 @@ function RuleForm(props: RuleFormProps) {
   const save = () => {
     if (formError !== undefined) return
 
-    if (Object.keys(buildSearchRequest(draft)).length === 0) {
+    if (hasNoConditions(draft)) {
       setMatchAllConfirmOpen(true)
       return
     }

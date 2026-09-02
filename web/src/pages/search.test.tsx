@@ -1361,6 +1361,37 @@ describe('SearchPage', () => {
         encodeProfiles: [],
       })
     })
+
+    /**
+     * issue #531 レビュー指摘: `sites` はスコープ軸であって条件ではないので、
+     * サイトのチップだけを選んだ下書きも「全番組が対象になる」確認を
+     * スキップしてはならない（`hasNoConditions` が `buildSearchRequest` の
+     * キーをそのまま数えていた実装では、`sites` キーが 1 つ増えるだけで
+     * 確認が無音でスキップされていた）。
+     */
+    it('サイトのチップだけを選んだ状態での保存も確認チェックを挟む', async () => {
+      const { createRuleBodies } = stubApi({ sites: ['default', 'site2'] })
+      renderPage()
+
+      expect(await screen.findByRole('button', { name: 'NHK総合' })).toBeInTheDocument()
+      const group = screen.getByRole('group', { name: 'サイト' })
+      await userEvent.click(within(group).getByRole('button', { name: 'site2' }))
+
+      await userEvent.click(screen.getByRole('button', { name: 'この条件でルールを作成' }))
+      await userEvent.type(screen.getByLabelText('名前'), 'サイト限定')
+
+      // sites しか選んでいないので、依然「条件なし」の確認が要る。
+      expect(screen.getByText(/条件を 1 つも指定していません/)).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'ルールを作成' })).toBeDisabled()
+
+      await userEvent.click(
+        screen.getByRole('checkbox', { name: /すべての番組が対象になることを理解した上で作成します/ }),
+      )
+      await userEvent.click(screen.getByRole('button', { name: 'ルールを作成' }))
+
+      await waitFor(() => expect(createRuleBodies).toHaveLength(1))
+      expect(createRuleBodies[0]?.sites).toEqual(['site2'])
+    })
   })
 
   describe('?ruleId=N で既存ルールの条件を開く', () => {

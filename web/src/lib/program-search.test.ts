@@ -11,6 +11,7 @@ import {
   emptyDraft,
   emptyRuleMeta,
   genreCodeLabel,
+  hasNoConditions,
   hasWeekday,
   newTimeWindow,
   ruleMetaError,
@@ -185,6 +186,27 @@ describe('draftError', () => {
     expect(
       draftError(draft({ durationMinMinutes: '120', durationMaxMinutes: '30' })),
     ).toBeUndefined()
+  })
+})
+
+/**
+ * issue #531 レビュー指摘: `sites` はスコープ軸であって条件ではない。
+ * `summarizeRuleConditions`（一覧の「条件なし」警告）と揃わないと、一覧では
+ * 警告が出るのに保存時の確認だけスキップされる、という食い違いが起きる。
+ */
+describe('hasNoConditions', () => {
+  it('何も指定していない下書きは条件ゼロ', () => {
+    expect(hasNoConditions(emptyDraft())).toBe(true)
+  })
+
+  it('sites だけを選んだ下書きも条件ゼロのまま（sites は条件ではない）', () => {
+    expect(hasNoConditions(draft({ sites: ['tokyo'] }))).toBe(true)
+  })
+
+  it('他の次元を 1 つでも指定すれば条件ありになる', () => {
+    expect(hasNoConditions(draft({ genres: [1] }))).toBe(false)
+    // sites と組み合わせても、sites 以外の次元があれば条件あり
+    expect(hasNoConditions(draft({ sites: ['tokyo'], genres: [1] }))).toBe(false)
   })
 })
 

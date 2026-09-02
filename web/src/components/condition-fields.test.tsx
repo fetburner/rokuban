@@ -436,4 +436,33 @@ describe('ConditionFields のサイトチップ（issue #531）', () => {
     const updater = onChange.mock.calls[0][0] as (d: SearchDraft) => SearchDraft
     expect(updater(draft).sites).toEqual([])
   })
+
+  /**
+   * レビュー指摘: 表示の gate をレジストリ単独（`sites.length <= 1`）に
+   * 取ると、レジストリが 1 site に縮んだ環境で下書きが別の site を持つ
+   * ケースが「見えない」に戻り、上のテストが解消したはずの未解決が復活する。
+   * gate は和集合（`options`）で取らなければならない。
+   */
+  it('レジストリが 1 site に縮んでいても、下書きが別の site を持てばチップを出す（gate は和集合で取る）', async () => {
+    const onChange = vi.fn()
+    // レジストリは default だけ（単一サイト構成）だが、下書きは別の
+    // takamatsu を持つ（レジストリドリフトで 2 サイトから 1 サイトに
+    // 縮んだ後、rule_sites がまだ古い値を持っている状況の再現）。
+    stubServicesFetch({ default: services })
+    const draft: SearchDraft = { ...emptyDraft(), sites: ['takamatsu'] }
+    renderInRouter(<ConditionFields draft={draft} onChange={onChange} />)
+
+    await screen.findByRole('group', { name: 'チャンネル' })
+    const group = await screen.findByRole('group', { name: 'サイト' })
+    const defaultChip = within(group).getByRole('button', { name: 'default' })
+    const takamatsuChip = within(group).getByRole('button', { name: 'takamatsu' })
+    expect(defaultChip).toHaveAttribute('aria-pressed', 'false')
+    expect(takamatsuChip).toHaveAttribute('aria-pressed', 'true')
+
+    // 画面内で外せる（フォークが 400 になっても救済手段がある）。
+    fireEvent.click(takamatsuChip)
+    expect(onChange).toHaveBeenCalledTimes(1)
+    const updater = onChange.mock.calls[0][0] as (d: SearchDraft) => SearchDraft
+    expect(updater(draft).sites).toEqual([])
+  })
 })

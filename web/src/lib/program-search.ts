@@ -227,6 +227,25 @@ export function buildSearchRequest(draft: SearchDraft): ProgramSearchRequest {
 }
 
 /**
+ * hasNoConditions は下書きが「条件ゼロ」（保存すると全番組が対象になる）かどうかを返す。
+ *
+ * **`sites` はスコープ軸であって条件ではない。** サイトのチップだけを選んだ
+ * 下書きは、他の次元を何も指定していない以上「全番組が対象」のまま変わらない
+ * ので、`buildSearchRequest` のキーに `sites` が含まれるという理由だけで
+ * 「条件あり」と判定してはならない。`components/rule-condition-summary.ts` の
+ * `summarizeRuleConditions` も `sites` を要約に出さない（= 条件として数えない）
+ * ので、ここで揃えないと「一覧では条件なしの警告バッジが出るのに、保存時の
+ * 『全番組が対象になります』確認だけスキップされる」という食い違いが起きる
+ * （issue #531 のレビュー指摘。`request.sites` は他の次元と違い draft の
+ * 選択そのままではなく `buildSearchRequest` がソートするので、`draft.sites`
+ * ではなくここで判定する）。
+ */
+export function hasNoConditions(draft: SearchDraft): boolean {
+  const request = buildSearchRequest(draft)
+  return Object.keys(request).filter((key) => key !== 'sites').length === 0
+}
+
+/**
  * draftError は送ってはいけない下書きの理由を返す（問題なければ undefined）。
  *
  * ここで見るのは「サーバーに送ると壊れる / 黙って嘘の絞り込みになる」ものだけ。
