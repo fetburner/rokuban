@@ -30,10 +30,15 @@ func (h *Server) SearchPrograms(ctx context.Context, req SearchProgramsRequestOb
 	if err != nil {
 		return nil, err
 	}
-	if ids == nil {
-		ids = []int64{}
+	// ponytail: site はパスからの複写であって、マッチした行から観測した値では
+	// ない。sites に評価 site 以外を指定しても常にパスの site が返るため、
+	// #530 が入るまでこの値を信じるクライアントは誤った値を受け取る（黙って、
+	// スキーマ的には正当に見える形で）。#530 で sites 駆動の述語に置き換える。
+	matches := make([]ProgramSearchMatch, len(ids))
+	for i, id := range ids {
+		matches[i] = ProgramSearchMatch{Site: req.Site, ProgramId: id}
 	}
-	return SearchPrograms200JSONResponse(ids), nil
+	return SearchPrograms200JSONResponse(matches), nil
 }
 
 func conditionsFromSearch(in ProgramSearchRequest) rulequery.Conditions {

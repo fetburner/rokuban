@@ -222,7 +222,10 @@ func TestMultiSiteRegistry_HandlesAllRegisteredSites(t *testing.T) {
 
 			// POST .../programs/search（条件なし = 全件マッチ）も自サイトの
 			// programId だけを返す。
-			var searchIDs []int64
+			var searchMatches []struct {
+				Site      string `json:"site"`
+				ProgramId int64  `json:"programId"`
+			}
 			sresp, err := http.Post(srv.URL+"/api/sites/"+r.site+"/programs/search", "application/json", strings.NewReader(`{}`))
 			if err != nil {
 				t.Fatal(err)
@@ -231,12 +234,12 @@ func TestMultiSiteRegistry_HandlesAllRegisteredSites(t *testing.T) {
 			if sresp.StatusCode != http.StatusOK {
 				t.Fatalf("POST .../programs/search (site=%s) status = %d, want 200", r.site, sresp.StatusCode)
 			}
-			if err := json.NewDecoder(sresp.Body).Decode(&searchIDs); err != nil {
+			if err := json.NewDecoder(sresp.Body).Decode(&searchMatches); err != nil {
 				t.Fatal(err)
 			}
-			searchIDStrs := make([]string, 0, len(searchIDs))
-			for _, id := range searchIDs {
-				searchIDStrs = append(searchIDStrs, itoa(id))
+			searchIDStrs := make([]string, 0, len(searchMatches))
+			for _, m := range searchMatches {
+				searchIDStrs = append(searchIDStrs, itoa(m.ProgramId))
 			}
 			if !slices.Contains(searchIDStrs, r.programID) {
 				t.Errorf("POST .../programs/search (site=%s) = %v, want to contain %s", r.site, searchIDStrs, r.programID)

@@ -320,7 +320,7 @@ export function SearchPage() {
    */
   const costSampleIds = ids.slice(0, visibleCount)
   const costDetails = useQueries({
-    queries: costSampleIds.map((id) => getGetProgramQueryOptions(site, id)),
+    queries: costSampleIds.map((match) => getGetProgramQueryOptions(site, match.programId)),
   })
   const loadedDurationsMs = costDetails
     .map((d) => unwrap(d.data)?.durationMs)
@@ -543,7 +543,10 @@ export function SearchPage() {
                 ? `${ids.length} 件（番組 ID 順）— ${visibleCount} 件を表示`
                 : `${ids.length} 件（番組 ID 順）`}
             </p>
-            <SearchResultList ids={ids.slice(0, visibleCount)} serviceById={serviceById} />
+            <SearchResultList
+              ids={ids.slice(0, visibleCount).map((match) => match.programId)}
+              serviceById={serviceById}
+            />
             {visibleCount < ids.length && (
               <div className="px-4 py-6">
                 <Button
