@@ -77,11 +77,11 @@ site 単位のキューを一切購読できない（`worker.RequiresSiteBinding
 | | 置き場所 | レプリカ | 前段 | イメージ |
 |---|---|---|---|---|
 | 録画配信 / サムネイル | メディアストレージの隣 | 水平（N） | 素の round-robin | 公式（ffmpeg 不要） |
-| ライブ視聴 | mirakc の隣（サイトごと） | 既定 1 | `(site, networkId, serviceId)` の consistent hash | `Dockerfile.full` |
+| ライブ視聴 | mirakc に到達できる場所（WAN 越しの pull を許す） | 既定 1 | `(site, networkId, serviceId)` の consistent hash | `Dockerfile.full` |
 
-**未解決: この表のとおりには 1 式に書けない。** `live.enabled: true` は **streamer ロールの全 Pod にちょうど 1 サイトの束縛を要求する**（`cmd/rokuban/server.go`）。ライブは `boundSite` を使うので、束縛が 0 個でも 2 個でも成り立たない。
+**判定基準: WAN に乗せてよいのは失っても再取得できるストリーム（ingest の pull、ライブの pull）だけで、録画ストリームは乗せない**（各サイトの mirakc がローカルに書くため）。[recording/reference.md](../recording/reference.md) §mirakc の多段集約と同じ軸である。
 
-config は全 Pod で 1 個共有なので、ライブを有効にした瞬間に**中央の録画配信 Deployment（`--sites=`）が起動しなくなる**。中央側にも `--sites <site>` を書けば動く（アーカイブは単一なので、どのサイトを書いても配れるものは変わらない）。ただしそれは「録画配信は site 非依存」という上の決定の暗黙の変更である。`deploy/k8s/` はライブの streamer を出荷していない。
+素の TS の帯域目安は地上波 約 17 Mbps / BS 約 24 Mbps（1 セッションあたり、規格値）。streamer は 1 プロセスが N サイトを束縛できる（`cmd/rokuban/server.go`）。`live.enabled: true` に束縛サイト数の制約は無く、0 サイト束縛（中央の録画配信 Deployment）はライブのルートを持たないだけで他のロールは通常どおり動く。ライブを実際にどう配置する（overlay の切り方）かはここでは決めない。`deploy/k8s/` はライブの streamer を出荷していない。
 
 #### 録画配信はセッション親和性を必要としない
 

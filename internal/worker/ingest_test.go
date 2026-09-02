@@ -112,9 +112,9 @@ func TestIngestWorker_FullTransfer(t *testing.T) {
 	mc := mirakc.NewClient(srv.URL, nil)
 
 	w := &IngestWorker{
-		MirakcClient: mc,
-		MediaDir:     mediaDir,
-		StallTimeout: 5 * time.Second,
+		MirakcClients: singleSiteClients("", mc),
+		MediaDir:      mediaDir,
+		StallTimeout:  5 * time.Second,
 	}
 
 	pool := setupTestPool(t)
@@ -194,10 +194,9 @@ func TestIngestWorker_SiteMismatch(t *testing.T) {
 
 	// このワーカープロセスは site-a の mirakc を向いている。
 	w := &IngestWorker{
-		MirakcClient: mc,
-		MediaDir:     mediaDir,
-		StallTimeout: 5 * time.Second,
-		Site:         "site-a",
+		MirakcClients: singleSiteClients("site-a", mc),
+		MediaDir:      mediaDir,
+		StallTimeout:  5 * time.Second,
 	}
 
 	pool := setupTestPool(t)
@@ -263,10 +262,9 @@ func TestIngestWorker_SiteMatch(t *testing.T) {
 	mc := mirakc.NewClient(srv.URL, nil)
 
 	w := &IngestWorker{
-		MirakcClient: mc,
-		MediaDir:     mediaDir,
-		StallTimeout: 5 * time.Second,
-		Site:         "site-a",
+		MirakcClients: singleSiteClients("site-a", mc),
+		MediaDir:      mediaDir,
+		StallTimeout:  5 * time.Second,
 	}
 
 	pool := setupTestPool(t)
@@ -359,9 +357,9 @@ func TestIngestWorker_MidTransferDisconnect(t *testing.T) {
 	mc := mirakc.NewClient(srv.URL, nil)
 
 	w := &IngestWorker{
-		MirakcClient: mc,
-		MediaDir:     mediaDir,
-		StallTimeout: 5 * time.Second,
+		MirakcClients: singleSiteClients("", mc),
+		MediaDir:      mediaDir,
+		StallTimeout:  5 * time.Second,
 	}
 
 	pool := setupTestPool(t)
@@ -434,9 +432,9 @@ func TestIngestWorker_SizeMismatch(t *testing.T) {
 	mc := mirakc.NewClient(srv.URL, nil)
 
 	w := &IngestWorker{
-		MirakcClient: mc,
-		MediaDir:     mediaDir,
-		StallTimeout: 5 * time.Second,
+		MirakcClients: singleSiteClients("", mc),
+		MediaDir:      mediaDir,
+		StallTimeout:  5 * time.Second,
 	}
 
 	pool := setupTestPool(t)
@@ -523,9 +521,9 @@ func TestIngestWorker_StallDetection(t *testing.T) {
 	mc := mirakc.NewClient(srv.URL, nil)
 
 	w := &IngestWorker{
-		MirakcClient: mc,
-		MediaDir:     mediaDir,
-		StallTimeout: 200 * time.Millisecond,
+		MirakcClients: singleSiteClients("", mc),
+		MediaDir:      mediaDir,
+		StallTimeout:  200 * time.Millisecond,
 	}
 
 	pool := setupTestPool(t)
@@ -816,10 +814,10 @@ func TestIngestWorker_JobReexecution(t *testing.T) {
 	}
 
 	w := &IngestWorker{
-		MirakcClient: mc,
-		Pool:         pool,
-		MediaDir:     mediaDir,
-		StallTimeout: 5 * time.Second,
+		MirakcClients: singleSiteClients("", mc),
+		Pool:          pool,
+		MediaDir:      mediaDir,
+		StallTimeout:  5 * time.Second,
 	}
 
 	job := &river.Job[IngestJobArgs]{
@@ -903,9 +901,9 @@ func TestIngestWorker_SkipsTransferWhenAlreadyCommitted(t *testing.T) {
 	mc := mirakc.NewClient(srv.URL, nil)
 
 	w := &IngestWorker{
-		MirakcClient: mc,
-		MediaDir:     mediaDir,
-		StallTimeout: 5 * time.Second,
+		MirakcClients: singleSiteClients("", mc),
+		MediaDir:      mediaDir,
+		StallTimeout:  5 * time.Second,
 	}
 
 	pool := setupTestPool(t)
@@ -1242,10 +1240,10 @@ func TestIngestWorker_SnapshotsEncodePolicyFromRuleBase(t *testing.T) {
 	mc := mirakc.NewClient(srv.URL, nil)
 
 	w := &IngestWorker{
-		MirakcClient: mc,
-		MediaDir:     t.TempDir(),
-		Pool:         pool,
-		StallTimeout: 5 * time.Second,
+		MirakcClients: singleSiteClients("", mc),
+		MediaDir:      t.TempDir(),
+		Pool:          pool,
+		StallTimeout:  5 * time.Second,
 	}
 
 	job := &river.Job[IngestJobArgs]{
@@ -1315,10 +1313,10 @@ func TestIngestWorker_SnapshotsEncodePolicyFromOverride(t *testing.T) {
 	mc := mirakc.NewClient(srv.URL, nil)
 
 	w := &IngestWorker{
-		MirakcClient: mc,
-		MediaDir:     t.TempDir(),
-		Pool:         pool,
-		StallTimeout: 5 * time.Second,
+		MirakcClients: singleSiteClients("", mc),
+		MediaDir:      t.TempDir(),
+		Pool:          pool,
+		StallTimeout:  5 * time.Second,
 	}
 
 	job := &river.Job[IngestJobArgs]{
@@ -1395,10 +1393,10 @@ func TestIngestWorker_ClampsUntilEncodedWithEmptyProfiles(t *testing.T) {
 	mc := mirakc.NewClient(srv.URL, nil)
 
 	w := &IngestWorker{
-		MirakcClient: mc,
-		MediaDir:     t.TempDir(),
-		Pool:         pool,
-		StallTimeout: 5 * time.Second,
+		MirakcClients: singleSiteClients("", mc),
+		MediaDir:      t.TempDir(),
+		Pool:          pool,
+		StallTimeout:  5 * time.Second,
 	}
 
 	job := &river.Job[IngestJobArgs]{
@@ -1450,10 +1448,10 @@ func TestIngestWorker_NoReservation_LeavesEncodePolicyDefault(t *testing.T) {
 	mc := mirakc.NewClient(srv.URL, nil)
 
 	w := &IngestWorker{
-		MirakcClient: mc,
-		MediaDir:     t.TempDir(),
-		Pool:         pool,
-		StallTimeout: 5 * time.Second,
+		MirakcClients: singleSiteClients("", mc),
+		MediaDir:      t.TempDir(),
+		Pool:          pool,
+		StallTimeout:  5 * time.Second,
 	}
 
 	job := &river.Job[IngestJobArgs]{
@@ -1566,10 +1564,10 @@ func TestIngestWorker_SnapshotGCedBeyondGrace_FreezesDefaults(t *testing.T) {
 	mc := mirakc.NewClient(srv.URL, nil)
 
 	w := &IngestWorker{
-		MirakcClient: mc,
-		MediaDir:     t.TempDir(),
-		Pool:         pool,
-		StallTimeout: 5 * time.Second,
+		MirakcClients: singleSiteClients("", mc),
+		MediaDir:      t.TempDir(),
+		Pool:          pool,
+		StallTimeout:  5 * time.Second,
 	}
 
 	job := &river.Job[IngestJobArgs]{
@@ -1655,10 +1653,10 @@ func TestIngestWorker_SnapshotsEncodePolicy_SurvivesReservationRematerialization
 	mc := mirakc.NewClient(srv.URL, nil)
 
 	w := &IngestWorker{
-		MirakcClient: mc,
-		MediaDir:     t.TempDir(),
-		Pool:         pool,
-		StallTimeout: 5 * time.Second,
+		MirakcClients: singleSiteClients("", mc),
+		MediaDir:      t.TempDir(),
+		Pool:          pool,
+		StallTimeout:  5 * time.Second,
 	}
 
 	job := &river.Job[IngestJobArgs]{
@@ -1717,10 +1715,10 @@ func TestIngestWorker_LogsWarnWhenRuleSourceReservationUnresolvable(t *testing.T
 	mc := mirakc.NewClient(srv.URL, nil)
 
 	w := &IngestWorker{
-		MirakcClient: mc,
-		MediaDir:     t.TempDir(),
-		Pool:         pool,
-		StallTimeout: 5 * time.Second,
+		MirakcClients: singleSiteClients("", mc),
+		MediaDir:      t.TempDir(),
+		Pool:          pool,
+		StallTimeout:  5 * time.Second,
 	}
 
 	job := &river.Job[IngestJobArgs]{
@@ -1804,10 +1802,10 @@ func TestIngestWorker_LogsInfoWhenManualSourceReservationUnresolvable(t *testing
 	mc := mirakc.NewClient(srv.URL, nil)
 
 	w := &IngestWorker{
-		MirakcClient: mc,
-		MediaDir:     t.TempDir(),
-		Pool:         pool,
-		StallTimeout: 5 * time.Second,
+		MirakcClients: singleSiteClients("", mc),
+		MediaDir:      t.TempDir(),
+		Pool:          pool,
+		StallTimeout:  5 * time.Second,
 	}
 
 	job := &river.Job[IngestJobArgs]{
@@ -1901,10 +1899,9 @@ func TestIngestWorker_RelPathPrefixedWithSite(t *testing.T) {
 	mc := mirakc.NewClient(srv.URL, nil)
 
 	w := &IngestWorker{
-		MirakcClient: mc,
-		MediaDir:     mediaDir,
-		StallTimeout: 5 * time.Second,
-		Site:         "tokyo",
+		MirakcClients: singleSiteClients("tokyo", mc),
+		MediaDir:      mediaDir,
+		StallTimeout:  5 * time.Second,
 	}
 
 	pool := setupTestPool(t)
@@ -1952,10 +1949,9 @@ func TestIngestWorker_RelPathPrefixedWithSite_FallbackContentPath(t *testing.T) 
 	mc := mirakc.NewClient(srv.URL, nil)
 
 	w := &IngestWorker{
-		MirakcClient: mc,
-		MediaDir:     mediaDir,
-		StallTimeout: 5 * time.Second,
-		Site:         "tokyo",
+		MirakcClients: singleSiteClients("tokyo", mc),
+		MediaDir:      mediaDir,
+		StallTimeout:  5 * time.Second,
 	}
 
 	pool := setupTestPool(t)
@@ -2007,10 +2003,9 @@ func TestIngestWorker_DegenerateContentPath_Rejected(t *testing.T) {
 	mc := mirakc.NewClient(srv.URL, nil)
 
 	w := &IngestWorker{
-		MirakcClient: mc,
-		MediaDir:     mediaDir,
-		StallTimeout: 5 * time.Second,
-		Site:         "tokyo",
+		MirakcClients: singleSiteClients("tokyo", mc),
+		MediaDir:      mediaDir,
+		StallTimeout:  5 * time.Second,
 	}
 
 	pool := setupTestPool(t)
@@ -2074,18 +2069,16 @@ func TestIngestWorker_TwoSitesSameContentPath_DoNotCollide(t *testing.T) {
 	insertTestRecordSyncForSite(t, pool, "site-b", recordingIDB, "rec-collide-b", 327361024000202)
 
 	wA := &IngestWorker{
-		MirakcClient: mirakc.NewClient(srvA.URL, nil),
-		Pool:         pool,
-		MediaDir:     mediaDir,
-		StallTimeout: 5 * time.Second,
-		Site:         "site-a",
+		MirakcClients: singleSiteClients("site-a", mirakc.NewClient(srvA.URL, nil)),
+		Pool:          pool,
+		MediaDir:      mediaDir,
+		StallTimeout:  5 * time.Second,
 	}
 	wB := &IngestWorker{
-		MirakcClient: mirakc.NewClient(srvB.URL, nil),
-		Pool:         pool,
-		MediaDir:     mediaDir,
-		StallTimeout: 5 * time.Second,
-		Site:         "site-b",
+		MirakcClients: singleSiteClients("site-b", mirakc.NewClient(srvB.URL, nil)),
+		Pool:          pool,
+		MediaDir:      mediaDir,
+		StallTimeout:  5 * time.Second,
 	}
 
 	jobA := &river.Job[IngestJobArgs]{
@@ -2264,10 +2257,10 @@ func testRelPathConflictRefusesWithoutCorruptingExistingFile(t *testing.T, exist
 	defer srv.Close()
 
 	w := &IngestWorker{
-		MirakcClient: mirakc.NewClient(srv.URL, nil),
-		Pool:         pool,
-		MediaDir:     mediaDir,
-		StallTimeout: 5 * time.Second,
+		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		Pool:          pool,
+		MediaDir:      mediaDir,
+		StallTimeout:  5 * time.Second,
 	}
 
 	job := &river.Job[IngestJobArgs]{
@@ -2366,10 +2359,10 @@ func TestIngestWorker_RelPathConflict_AllowsReuseAfterDeleted(t *testing.T) {
 	srv := mirakcRecordServer(t, tsData, strPtr("shared/reused.m2ts"), "/recording/shared/reused.m2ts")
 
 	w := &IngestWorker{
-		MirakcClient: mirakc.NewClient(srv.URL, nil),
-		Pool:         pool,
-		MediaDir:     mediaDir,
-		StallTimeout: 5 * time.Second,
+		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		Pool:          pool,
+		MediaDir:      mediaDir,
+		StallTimeout:  5 * time.Second,
 	}
 
 	job := &river.Job[IngestJobArgs]{
@@ -2525,8 +2518,8 @@ func TestIngestWorker_ConcurrentSameRelPath_LoserNeverOpensStream(t *testing.T) 
 	recB := insertTestRecordingForSite(t, pool, "default", 502)
 	insertTestRecordSyncForSite(t, pool, "default", recB, "rec-race-b", 327361024000502)
 
-	wA := &IngestWorker{MirakcClient: mirakc.NewClient(srvA.URL, nil), Pool: pool, MediaDir: mediaDir, StallTimeout: 5 * time.Second}
-	wB := &IngestWorker{MirakcClient: mirakc.NewClient(srvB.URL, nil), Pool: pool, MediaDir: mediaDir, StallTimeout: 5 * time.Second}
+	wA := &IngestWorker{MirakcClients: singleSiteClients("", mirakc.NewClient(srvA.URL, nil)), Pool: pool, MediaDir: mediaDir, StallTimeout: 5 * time.Second}
+	wB := &IngestWorker{MirakcClients: singleSiteClients("", mirakc.NewClient(srvB.URL, nil)), Pool: pool, MediaDir: mediaDir, StallTimeout: 5 * time.Second}
 
 	jobA := &river.Job[IngestJobArgs]{JobRow: &rivertype.JobRow{}, Args: IngestJobArgs{Site: "default", RecordID: "rec-race-a"}}
 	jobB := &river.Job[IngestJobArgs]{JobRow: &rivertype.JobRow{}, Args: IngestJobArgs{Site: "default", RecordID: "rec-race-b"}}
@@ -2601,7 +2594,7 @@ func TestIngestWorker_ReleasesRelPathLockAfterCommit(t *testing.T) {
 	mc := mirakc.NewClient(srv.URL, nil)
 
 	mediaDir := t.TempDir()
-	w := &IngestWorker{MirakcClient: mc, Pool: pool, MediaDir: mediaDir, StallTimeout: 5 * time.Second}
+	w := &IngestWorker{MirakcClients: singleSiteClients("", mc), Pool: pool, MediaDir: mediaDir, StallTimeout: 5 * time.Second}
 
 	recordingID := insertTestRecording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-lock-release")

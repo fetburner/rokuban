@@ -335,7 +335,7 @@ func TestOnceOutcome_String(t *testing.T) {
 // middleware が 1 本入ることもここで見る（入らないと終了の契機が無い）。
 func TestBuildRiverConfig_OnceModeForcesSingleWorker(t *testing.T) {
 	riverCfg, err := buildRiverConfig(NewWorkers(&Deps{}), ClientConfig{
-		BoundSite:         "tokyo",
+		BoundSites:        []string{"tokyo"},
 		Queues:            []string{ingestQueue},
 		IngestConcurrency: 4,
 		Once:              NewOnceGate(),
@@ -359,7 +359,7 @@ func TestBuildRiverConfig_OnceModeForcesSingleWorker(t *testing.T) {
 // 入らないこと（once モードの強制が常時 1 に潰していないことの確認）。
 func TestBuildRiverConfig_WithoutOnceMode_KeepsConcurrency(t *testing.T) {
 	riverCfg, err := buildRiverConfig(NewWorkers(&Deps{}), ClientConfig{
-		BoundSite:         "tokyo",
+		BoundSites:        []string{"tokyo"},
 		Queues:            []string{ingestQueue},
 		IngestConcurrency: 4,
 	})
@@ -389,9 +389,9 @@ func TestBuildRiverConfig_OnceModeRejectsNonSingleQueue(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := buildRiverConfig(NewWorkers(&Deps{}), ClientConfig{
-				BoundSite: "tokyo",
-				Queues:    tt.queues,
-				Once:      NewOnceGate(),
+				BoundSites: []string{"tokyo"},
+				Queues:     tt.queues,
+				Once:       NewOnceGate(),
 			})
 			if err == nil {
 				t.Fatal("error を期待したが nil だった")
@@ -408,10 +408,9 @@ func TestBuildRiverConfig_OnceModeRejectsNonSingleQueue(t *testing.T) {
 // （Job の起動回数）で決まってしまう。
 func TestBuildRiverConfig_OnceModeRejectsPeriodicJobs(t *testing.T) {
 	_, err := buildRiverConfig(NewWorkers(&Deps{}), ClientConfig{
-		BoundSite:    "tokyo",
+		BoundSites:   []string{"tokyo"},
 		Queues:       []string{ingestQueue},
 		PeriodicJobs: true,
-		EpgSyncSite:  "tokyo",
 		Once:         NewOnceGate(),
 	})
 	if err == nil {

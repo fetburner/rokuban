@@ -116,8 +116,12 @@ func TestValidateSiteBinding(t *testing.T) {
 		wantErr bool
 	}{
 		{"watcher with exactly one site is fine", []string{"watcher"}, []config.MirakcSite{tokyo}, nil, false},
-		{"watcher with zero sites is an error", []string{"watcher"}, nil, nil, true},
-		{"watcher with two sites is an error", []string{"watcher"}, []config.MirakcSite{tokyo, takamatsu}, nil, true},
+		// issue #532: 1 プロセスが N site の watcher goroutine を回せるようになった
+		// ので、watcher ロールの束縛サイト数に対する検査そのものが無い（0 サイトは
+		// 「何も watch しない」という無害な構成、2 サイト以上は site ごとに
+		// goroutine + advisory lock を持つので安全）。
+		{"watcher with zero sites is fine (watches nothing)", []string{"watcher"}, nil, nil, false},
+		{"watcher with two sites is fine (one goroutine per site)", []string{"watcher"}, []config.MirakcSite{tokyo, takamatsu}, nil, false},
 		{
 			"worker with zero sites and default (all) queues is an error " +
 				"(ingest/epg/ruler/reconciler/watcher would get an unresolvable empty site)",
@@ -132,7 +136,9 @@ func TestValidateSiteBinding(t *testing.T) {
 			[]string{"worker"}, nil, []string{"encode", "thumbnail"}, false,
 		},
 		{"worker with one site and default queues is fine", []string{"worker"}, []config.MirakcSite{tokyo}, nil, false},
-		{"worker with two sites is an error", []string{"worker"}, []config.MirakcSite{tokyo, takamatsu}, nil, true},
+		// issue #532: worker.Deps.MirakcClients / worker.ClientConfig.BoundSites が
+		// site → 値の map / 集合になったので、2 サイト以上への束縛も起動できる。
+		{"worker with two sites is fine (N-site binding)", []string{"worker"}, []config.MirakcSite{tokyo, takamatsu}, nil, false},
 		{
 			"worker with zero sites and queues restricted to ruler (site-independent, issue #185) is fine",
 			[]string{"worker"}, nil, []string{"ruler"}, false,

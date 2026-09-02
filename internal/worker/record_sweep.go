@@ -89,15 +89,15 @@ func (a RecordSweepArgs) InsertOpts() river.InsertOpts {
 // ingest ジョブ引数は NewIngestArgs を watcher.IngestArgsFunc として注入する。
 type RecordSweepWorker struct {
 	river.WorkerDefaults[RecordSweepArgs]
-	MirakcClient *mirakc.Client
-	Pool         *pgxpool.Pool
+
+	// MirakcClients は site → mirakc クライアントの map（issue #532）。この
+	// 1 インスタンスが複数 site の watcher_<site> キューを同時に購読しうる。Work は
+	// verifySite で job.Args.Site に対応するクライアントを取り出してから
+	// watcher.New に渡す（issue #139）。
+	MirakcClients map[string]*mirakc.Client
+	Pool          *pgxpool.Pool
 	// Webhook は processRecord 経由の finished 遷移通知に使う（M3-11）。nil 可。
 	Webhook *webhook.Client
-
-	// Site はこのワーカープロセス自身の site（`--sites` で束縛された site）。Work は
-	// これと job.Args.Site を verifySite で照合してから mirakc に触る
-	// （issue #139）。空なら db.DefaultSite に解決する（verifySite 参照）。
-	Site string
 }
 
 // Timeout は River の既定（1 分）より長い上限を与える。理由は recordSweepTimeout の
@@ -120,7 +120,8 @@ func (w *RecordSweepWorker) Work(ctx context.Context, job *river.Job[RecordSweep
 	// mirakc に投げると、`GET /api/recording/records` の全量取得から他インスタンスの
 	// record をこのサイトの recording として processRecord が取り込みうる
 	// （issue #139）。watcher.New/Sweep より前に照合する。
-	if err := verifySite(w.Site, job.Args.Site, recordSweepQueue); err != nil {
+	client, err := verifySite(w.MirakcClients, job.Args.Site, recordSweepQueue)
+	if err != nil {
 		return err
 	}
 
@@ -129,6 +130,6 @@ func (w *RecordSweepWorker) Work(ctx context.Context, job *river.Job[RecordSweep
 		return fmt.Errorf("getting river client from job context: %w", err)
 	}
 
-	wt := watcher.New(job.Args.Site, w.MirakcClient, w.Pool, riverClient, NewIngestArgs, w.Webhook)
+	wt := watcher.New(job.Args.Site, client, w.Pool, riverClient, NewIngestArgs, w.Webhook)
 	return wt.Sweep(ctx)
 }

@@ -26,8 +26,10 @@ func TestRecordSweepWorker_HasGenerousTimeout(t *testing.T) {
 	}
 }
 
-// RecordSweepSite を指定すると record_sweep が定期ジョブとして投入され、
-// 登録済みワーカーが watcher キューで拾うこと（配線の確認）。
+// BoundSites を指定すると record_sweep が定期ジョブとして投入され、
+// 登録済みワーカーが watcher キューで拾うこと（配線の確認。BoundSites は
+// record_sweep 以外の 4 種も同時に登録するが、waitPeriodicJobEvent が
+// kind で選り分ける）。
 func TestRecordSweepPeriodicJob(t *testing.T) {
 	pool := testutil.SetupDB(t)
 
@@ -35,9 +37,9 @@ func TestRecordSweepPeriodicJob(t *testing.T) {
 	// t.Cleanup（defer だとクライアント停止より先に走り、動いている最中にスタブを閉じる）。
 	t.Cleanup(srv.Close)
 
-	subscribeCh := startPeriodicJobClient(t, pool, &Deps{MirakcClient: mirakc.NewClient(srv.URL, nil)}, ClientConfig{
+	subscribeCh := startPeriodicJobClient(t, pool, &Deps{MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil))}, ClientConfig{
 		PeriodicJobs:        true,
-		RecordSweepSite:     testSite,
+		BoundSites:          []string{testSite},
 		RecordSweepInterval: time.Hour, // RunOnStart で 1 回だけ走らせる
 	}, river.EventKindJobCompleted)
 
@@ -118,7 +120,7 @@ func TestRecordSweepWorker_ProcessesUnsweptRecord(t *testing.T) {
 	srv := newRecordSweepStub(t, []mirakc.Record{record})
 	defer srv.Close()
 
-	workers := NewWorkers(&Deps{Pool: pool, MirakcClient: mirakc.NewClient(srv.URL, nil)})
+	workers := NewWorkers(&Deps{Pool: pool, MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil))})
 	client, err := NewClient(pool, workers, ClientConfig{})
 	if err != nil {
 		t.Fatalf("creating client: %v", err)
@@ -231,9 +233,10 @@ func newRecordSweepStub(t *testing.T, records []mirakc.Record) *httptest.Server 
 	return httptest.NewServer(mux)
 }
 
-// TestRecordSweepWorker_SiteMismatch は、job.Args.Site がワーカー自身の site
-// （Deps.Site 経由の w.Site）と一致しないジョブが mirakc に一切触れずに
-// fail-fast することを確認する（issue #139）。スタブは 200 を返す（弱い
+// TestRecordSweepWorker_SiteMismatch は、job.Args.Site がワーカーの束縛
+// サイト集合（Deps.MirakcClients 経由の w.MirakcClients）に含まれないジョブが
+// mirakc に一切触れずに fail-fast することを確認する（issue #139）。
+// スタブは 200 を返す（弱い
 // テストにしないため。issue #139 のテスト規律）。RecordSweepWorker.Work は
 // river.ClientFromContextSafely でジョブ実行コンテキストから River クライアント
 // を取り出すため、他のワーカーのように w.Work を直接呼べず、実際に
@@ -269,8 +272,8 @@ func TestRecordSweepWorker_SiteMismatch_NeverDequeued(t *testing.T) {
 	defer countingSrv.Close()
 
 	// このプロセスは site-a に束縛されている: watcher_site-a しか購読しない。
-	workers := NewWorkers(&Deps{Pool: pool, MirakcClient: mirakc.NewClient(countingSrv.URL, nil), Site: "site-a"})
-	client, err := NewClient(pool, workers, ClientConfig{BoundSite: "site-a"})
+	workers := NewWorkers(&Deps{Pool: pool, MirakcClients: singleSiteClients("site-a", mirakc.NewClient(countingSrv.URL, nil))})
+	client, err := NewClient(pool, workers, ClientConfig{BoundSites: []string{"site-a"}})
 	if err != nil {
 		t.Fatalf("creating client: %v", err)
 	}
@@ -331,9 +334,8 @@ func TestRecordSweepWorker_VerifySiteDirect(t *testing.T) {
 	defer countingSrv.Close()
 
 	w := &RecordSweepWorker{
-		MirakcClient: mirakc.NewClient(countingSrv.URL, nil),
-		Pool:         pool,
-		Site:         "site-a",
+		MirakcClients: singleSiteClients("site-a", mirakc.NewClient(countingSrv.URL, nil)),
+		Pool:          pool,
 	}
 
 	job := &river.Job[RecordSweepArgs]{JobRow: &rivertype.JobRow{}, Args: RecordSweepArgs{Site: "site-b"}}
@@ -360,8 +362,8 @@ func TestRecordSweepWorker_SiteMatch(t *testing.T) {
 	srv := newRecordSweepStub(t, nil)
 	defer srv.Close()
 
-	workers := NewWorkers(&Deps{Pool: pool, MirakcClient: mirakc.NewClient(srv.URL, nil), Site: "site-a"})
-	client, err := NewClient(pool, workers, ClientConfig{BoundSite: "site-a"})
+	workers := NewWorkers(&Deps{Pool: pool, MirakcClients: singleSiteClients("site-a", mirakc.NewClient(srv.URL, nil))})
+	client, err := NewClient(pool, workers, ClientConfig{BoundSites: []string{"site-a"}})
 	if err != nil {
 		t.Fatalf("creating client: %v", err)
 	}

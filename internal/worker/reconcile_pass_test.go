@@ -83,8 +83,10 @@ func TestReconcilePassWorker_HasGenerousTimeout(t *testing.T) {
 	}
 }
 
-// ReconcilePassSite を指定すると reconcile_pass が定期ジョブとして投入され、
-// 登録済みワーカーが reconciler キューで拾うこと（配線の確認）。
+// BoundSites を指定すると reconcile_pass が定期ジョブとして投入され、
+// 登録済みワーカーが reconciler キューで拾うこと（配線の確認。BoundSites は
+// reconcile_pass 以外の 4 種も同時に登録するが、waitPeriodicJobEvent が
+// kind で選り分ける）。
 func TestReconcilePassPeriodicJob(t *testing.T) {
 	pool := testutil.SetupDB(t)
 
@@ -93,9 +95,9 @@ func TestReconcilePassPeriodicJob(t *testing.T) {
 	// t.Cleanup（defer だとクライアント停止より先に走り、動いている最中にスタブを閉じる）。
 	t.Cleanup(srv.Close)
 
-	subscribeCh := startPeriodicJobClient(t, pool, &Deps{MirakcClient: mirakc.NewClient(srv.URL, nil)}, ClientConfig{
+	subscribeCh := startPeriodicJobClient(t, pool, &Deps{MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil))}, ClientConfig{
 		PeriodicJobs:          true,
-		ReconcilePassSite:     testSite,
+		BoundSites:            []string{testSite},
 		ReconcilePassInterval: time.Hour, // RunOnStart で 1 回だけ走らせる
 	}, river.EventKindJobCompleted)
 
@@ -157,7 +159,7 @@ func TestReconcilePassWorker_CreatesSchedule(t *testing.T) {
 		t.Fatalf("creating reservation fixture: %v", err)
 	}
 
-	workers := NewWorkers(&Deps{Pool: pool, MirakcClient: mirakc.NewClient(srv.URL, nil)})
+	workers := NewWorkers(&Deps{Pool: pool, MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil))})
 	client, err := NewClient(pool, workers, ClientConfig{})
 	if err != nil {
 		t.Fatalf("creating client: %v", err)
@@ -251,7 +253,7 @@ func TestRulerPassWorker_EnqueuesReconcilePassHint(t *testing.T) {
 	srv := httptest.NewServer(stub)
 	defer srv.Close()
 
-	workers := NewWorkers(&Deps{Pool: pool, MirakcClient: mirakc.NewClient(srv.URL, nil)})
+	workers := NewWorkers(&Deps{Pool: pool, MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil))})
 	client, err := NewClient(pool, workers, ClientConfig{})
 	if err != nil {
 		t.Fatalf("creating client: %v", err)
@@ -315,9 +317,8 @@ func TestReconcilePassWorker_SiteMismatch(t *testing.T) {
 
 	// このワーカープロセスは site-a の mirakc を向いている。
 	w := &ReconcilePassWorker{
-		MirakcClient: mirakc.NewClient(countingSrv.URL, nil),
-		Pool:         pool,
-		Site:         "site-a",
+		MirakcClients: singleSiteClients("site-a", mirakc.NewClient(countingSrv.URL, nil)),
+		Pool:          pool,
 	}
 
 	job := &river.Job[ReconcilePassArgs]{JobRow: &rivertype.JobRow{}, Args: ReconcilePassArgs{Site: "site-b"}}
@@ -341,9 +342,8 @@ func TestReconcilePassWorker_SiteMatch(t *testing.T) {
 	defer srv.Close()
 
 	w := &ReconcilePassWorker{
-		MirakcClient: mirakc.NewClient(srv.URL, nil),
-		Pool:         pool,
-		Site:         "site-a",
+		MirakcClients: singleSiteClients("site-a", mirakc.NewClient(srv.URL, nil)),
+		Pool:          pool,
 	}
 
 	job := &river.Job[ReconcilePassArgs]{JobRow: &rivertype.JobRow{}, Args: ReconcilePassArgs{Site: "site-a"}}

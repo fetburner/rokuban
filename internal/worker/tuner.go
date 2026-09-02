@@ -63,16 +63,15 @@ func (a TunerSyncArgs) InsertOpts() river.InsertOpts {
 // 容量判定（internal/capacity）はこの射影だけを読む。
 type TunerSyncWorker struct {
 	river.WorkerDefaults[TunerSyncArgs]
-	MirakcClient *mirakc.Client
-	Pool         *pgxpool.Pool
 
-	// Site はこのワーカープロセス自身の site（`--sites` で束縛された site）。Work は
-	// これと job.Args.Site を verifySite で照合してから mirakc に触る
-	// （issue #139）。TunerSyncArgs は EpgSyncArgs と同じ epg キューを使う
-	// 「使い捨てプロジェクションの全量同期」で、mirakc への ListTuners を伴う
-	// ため EpgSyncWorker と同じ理由でガードが要る。空なら db.DefaultSite に
-	// 解決する（verifySite 参照）。
-	Site string
+	// MirakcClients は site → mirakc クライアントの map（issue #532）。この
+	// 1 インスタンスが複数 site の epg_<site> キューを同時に購読しうる。Work は
+	// verifySite で job.Args.Site に対応するクライアントを取り出してから
+	// ListTuners を呼ぶ（issue #139。TunerSyncArgs は EpgSyncArgs と同じ epg
+	// キューを使う「使い捨てプロジェクションの全量同期」で、mirakc への
+	// アクセスを伴うため EpgSyncWorker と同じ理由でガードが要る）。
+	MirakcClients map[string]*mirakc.Client
+	Pool          *pgxpool.Pool
 }
 
 // Timeout は River の既定（1 分）と同じ上限を明示する。
@@ -89,7 +88,8 @@ func (w *TunerSyncWorker) Work(ctx context.Context, job *river.Job[TunerSyncArgs
 	// mirakc インスタンスはサイトスコープ。他サイトのジョブをこのプロセスの
 	// mirakc に投げると、別インスタンスのチューナー構成をこのサイトの投影として
 	// 書きうる（issue #139）。ListTuners より前に照合する。
-	if err := verifySite(w.Site, site, epgQueue); err != nil {
+	client, err := verifySite(w.MirakcClients, site, epgQueue)
+	if err != nil {
 		return err
 	}
 
@@ -102,7 +102,7 @@ func (w *TunerSyncWorker) Work(ctx context.Context, job *river.Job[TunerSyncArgs
 		return fmt.Errorf("getting sweep mark: %w", err)
 	}
 
-	tuners, err := w.MirakcClient.ListTuners(ctx)
+	tuners, err := client.ListTuners(ctx)
 	if err != nil {
 		return fmt.Errorf("listing tuners: %w", err)
 	}

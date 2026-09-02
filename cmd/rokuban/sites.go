@@ -102,44 +102,29 @@ func registryNames(registry []config.MirakcSite) []string {
 // validateSiteBinding は束縛サイト数・ロール集合・worker.queues の組み合わせを
 // 検査する。
 //
-// **watcher** は mirakc への長期接続を 1 つだけ持つループで、record id /
-// schedule が mirakc インスタンス単位のスコープしか持たないため、0 サイト
-// （中央プロセスでは動かす対象が無い）でも 2 サイト以上（1 プロセスが N サイトの
-// watcher を回す形の書き手がまだいない。不変条件 11）でも起動エラーにする ---
-// ちょうど 1 サイトへの束縛だけを許す。
+// **watcher** と **worker** はどちらも 1 プロセスが N site を束縛できる
+// （issue #532。watcher は site ごとに goroutine + advisory lock を持ち
+// （server.go、watcherLockName）、worker は Deps.MirakcClients /
+// ClientConfig.BoundSites が site → 値の map / 集合になったため）。
+// そのため、束縛サイト数そのものに対する上限・下限の検査はここには無い ---
+// 残るのは次の 1 つだけ:
 //
-// **worker** は今のところ site 単位の仕事（ingest/epg/reconciler/record_sweep）
-// と site 非依存の仕事（ruler/encode/thumbnail/cleanup/storage。cleanup は
-// delete_reconcile/catalog_export、storage は storage_sync のキュー、issue #185
-// M4-13 / #238 M7-5）が同一ロールに同居しており、worker.Deps.Site /
-// worker.ClientConfig の各 *Site フィールドがいずれも単一の文字列であるため、
-// 2 サイト以上には束縛できない。
-//
-// 0 サイト（中央プロセス）は無条件には許さない --- `worker.RequiresSiteBinding`
-// が true（`worker.queues` が空、または ingest/epg/reconciler/watcher の
-// いずれかを含む）なら、届く site 単位のジョブが Deps.Site="" と一致せず
-// 全滅して再試行し続けるだけの構成になるので起動エラーにする。0 サイトの worker を
-// 許すのは `worker.queues` を ruler/encode/thumbnail/cleanup/storage 等の site
-// 非依存キューに絞ったときだけ（各 *ClientConfig.*Site フィールドは空文字列の
-// ままになり、site 単位の定期ジョブ登録は自然に無効化される。worker.ClientConfig
-// のフィールドコメント参照）。
+// **worker が 0 サイト（中央プロセス）で site 束縛キューを要求する構成は
+// 起動エラーのまま**。`worker.RequiresSiteBinding` が true（`worker.queues` が
+// 空、または ingest/epg/reconciler/watcher のいずれかを含む）なら、届く
+// site 単位のジョブは Deps.MirakcClients が空 map のため verifySite が必ず
+// 拒み、全滅して再試行し続けるだけの構成になる。0 サイトの worker を許すのは
+// `worker.queues` を ruler/encode/thumbnail/cleanup/storage 等の site 非依存
+// キューに絞ったときだけ（BoundSites が空のままでも、これらのキューの
+// ジョブは site 単位の照合を必要としない。worker.ClientConfig の
+// フィールドコメント参照）。
 func validateSiteBinding(roles []string, bound []config.MirakcSite, queues []string) error {
-	if slices.Contains(roles, "watcher") && len(bound) != 1 {
-		return fmt.Errorf("--sites: watcher role requires exactly one bound site, got %d "+
-			"(running N-site watcher loops in a single process is not implemented; issue #183)", len(bound))
-	}
-	if slices.Contains(roles, "worker") {
-		if len(bound) >= 2 {
-			return fmt.Errorf("--sites: %d sites bound, but worker role supports at most one bound site "+
-				"(worker.Deps.Site and worker.ClientConfig's *Site fields are single strings; issue #183)", len(bound))
-		}
-		if len(bound) == 0 && worker.RequiresSiteBinding(queues) {
-			return fmt.Errorf("--sites: worker role is unbound (central process) but worker.queues %v "+
-				"still includes site-bound queues (or is empty, meaning all queues); "+
-				"restrict worker.queues to site-independent queues (ruler/encode/thumbnail/cleanup/storage/default --- "+
-				"catalog_export and delete_reconcile ride the cleanup queue, storage_sync rides the storage queue) "+
-				"or bind to exactly one site with --sites (issue #185)", queues)
-		}
+	if slices.Contains(roles, "worker") && len(bound) == 0 && worker.RequiresSiteBinding(queues) {
+		return fmt.Errorf("--sites: worker role is unbound (central process) but worker.queues %v "+
+			"still includes site-bound queues (or is empty, meaning all queues); "+
+			"restrict worker.queues to site-independent queues (ruler/encode/thumbnail/cleanup/storage/default --- "+
+			"catalog_export and delete_reconcile ride the cleanup queue, storage_sync rides the storage queue) "+
+			"or bind to at least one site with --sites (issue #185)", queues)
 	}
 	return nil
 }
