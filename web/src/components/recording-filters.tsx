@@ -218,6 +218,7 @@ function FilterPanel({
   const [open, setOpen] = useState(false)
   const selectedServices = useMemo(() => new Set(search.service ?? []), [search.service])
   const selectedGenres = useMemo(() => new Set(search.genre ?? []), [search.genre])
+  const siteOptions = useMemo(() => [...new Set([...siteNames, ...(search.site ?? [])])].sort(), [siteNames, search.site])
   const selectedSites = useMemo(() => new Set(search.site ?? []), [search.site])
   // site は別軸（`?site=`）なので、チャンネルの補足ラベルには入れない。
   // **同じチャンネルを 2 サイトで受けていても選択肢は 1 つ**（identity は
@@ -273,13 +274,13 @@ function FilterPanel({
               )}
             </section>
 
-            {/* site は 2 サイト以上のときだけ出す。1 サイト構成では選択肢が
-                1 つしかなく、絞る意味がない（機能しないコントロールは置かない）。 */}
-            {siteNames.length > 1 && (
+            {/* site はレジストリと現在の絞り込みの和集合が 2 サイト以上のときだけ
+                出す。レジストリから消えた site も見えて外せるようにする。 */}
+            {siteOptions.length > 1 && (
               <section className="flex flex-col gap-1.5">
                 <h3 className="text-xs font-medium text-muted-foreground">サイト</h3>
                 <div role="group" aria-label="サイト" className="flex flex-wrap gap-1.5">
-                  {siteNames.map((site) => (
+                  {siteOptions.map((site) => (
                     <Chip
                       key={site}
                       active={selectedSites.has(site)}

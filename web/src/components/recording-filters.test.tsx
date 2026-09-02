@@ -172,6 +172,29 @@ describe('RecordingFilters チップ', () => {
 })
 
 describe('RecordingFilters 絞り込みパネル', () => {
+  it('レジストリに無い site もチップで見えて、押すと絞り込みを外せる', async () => {
+    const user = userEvent.setup()
+    const { onChangeCalls } = renderFilters({ site: ['retired'] })
+
+    await user.click(screen.getByRole('button', { name: /絞り込み/ }))
+    const panel = await screen.findByRole('dialog', { name: '絞り込み' })
+    const siteGroup = within(panel).getByRole('group', { name: 'サイト' })
+
+    expect(within(siteGroup).getByRole('button', { name: 'retired' })).toHaveAttribute('aria-pressed', 'true')
+
+    await user.click(within(siteGroup).getByRole('button', { name: 'retired' }))
+    expect(onChangeCalls.at(-1)?.site).toBeUndefined()
+  })
+
+  it('単一 site で絞り込みが無ければサイトの節を出さない', async () => {
+    const user = userEvent.setup()
+    renderFilters()
+
+    await user.click(screen.getByRole('button', { name: /絞り込み/ }))
+    const panel = await screen.findByRole('dialog', { name: '絞り込み' })
+    expect(within(panel).queryByRole('group', { name: 'サイト' })).not.toBeInTheDocument()
+  })
+
   it('状態チップを選ぶと status が立ち、「問わない」を選ぶと外れる', async () => {
     const user = userEvent.setup()
     const { onChangeCalls } = renderFilters()

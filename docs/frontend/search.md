@@ -26,7 +26,8 @@
   （`GET /api/recordings` の `?site=` と同じ規約: 軸内は OR、空 = 全サイト）に
   移した。`<ConditionFields>` のサイトチップ（レジストリと下書きの和集合が
   2 つ以上のときだけ出す --- 下記「サイトチップの選択肢は…」参照。
-  `recording-filters.tsx` の `siteNames.length > 1` とは表示判定の取り方が違う）が
+  録画一覧の絞り込みと同じく、レジストリと現在の条件値の和集合が 2 つ以上のときだけ
+  表示する）が
   `SearchDraft.sites` を編集し、`buildSearchRequest` / `conditionsToDraft` /
   `buildRuleInput` がそのまま運ぶ。**検索結果は `[{site, programId}]` の
   フラットな行**（畳まない。行数 = 予約数。下記「保存前の値札」）になるため、

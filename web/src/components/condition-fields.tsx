@@ -348,8 +348,8 @@ function TextMatchFields({ draft, onChange, disabled }: FieldsProps) {
  * 別の（消えた）site を持つケースが再び「見えない」に戻り、上の未解決が復活する
  * --- 単一サイト運用で下書きも空 / レジストリと同じ 1 件のときは `options` も
  * 1 件のままなので、素直な単一サイト構成では何も変わらない
- * （`components/recording-filters.tsx` の `siteNames.length > 1` と違い、
- * こちらは「編集中の下書きが持つ値」を選択肢に含める必要があるための差）。
+ * 録画一覧の絞り込みと同じく、レジストリと現在の条件値の和集合で表示可否を
+ * 判定する。
  */
 function SiteFields({
   draft,

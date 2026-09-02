@@ -200,6 +200,32 @@ ok(
   `scrollWidth ${docRecordings.scrollWidth} / clientWidth ${docRecordings.clientWidth}`,
 )
 
+const recordingSiteGroup = recordingsPage.locator('div[role="group"][aria-label="サイト"]')
+await recordingSiteGroup.waitFor()
+const recordingSiteChips = recordingSiteGroup.locator('button')
+ok(
+  '③ 録画一覧のサイトチップが 2 件描かれている',
+  (await recordingSiteChips.count()) === 2,
+  `${await recordingSiteChips.count()} 件`,
+)
+
+const recordingSiteBoxes = await recordingSiteChips.evaluateAll((els) =>
+  els.map((el) => {
+    const rect = el.getBoundingClientRect()
+    return { right: rect.right, scrollWidth: el.scrollWidth, clientWidth: el.clientWidth }
+  }),
+)
+ok(
+  '③ 録画一覧のサイトチップが viewport 内に収まる',
+  recordingSiteBoxes.length > 0 && recordingSiteBoxes.every((box) => box.right <= width),
+  JSON.stringify(recordingSiteBoxes),
+)
+ok(
+  '③ 録画一覧のサイトチップ内で内容があふれない',
+  recordingSiteBoxes.length > 0 && recordingSiteBoxes.every((box) => box.scrollWidth <= box.clientWidth),
+  JSON.stringify(recordingSiteBoxes),
+)
+
 const popupBox = await popup.evaluate((el) => {
   const r = el.getBoundingClientRect()
   return { left: r.left, right: r.right }
