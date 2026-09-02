@@ -1153,7 +1153,7 @@ genre?: number[];
 channelType?: ListRecordingsChannelTypeItem[];
 /**
  * mirakc サイト名。複数指定は OR。site 名の構文は
- * `config.mirakc`/`mirakcs` レジストリと同じ（`internal/config` の
+ * `config.mirakcs` レジストリと同じ（`internal/config` の
  * `mirakcSiteNamePattern`）。レジストリに無い名前を渡してもエラーには
  * せず 0 件になる --- 絞り込みは「あるものから選ぶ」操作なので、
  * 存在しない値の指定は空の結果として素直に読める。
@@ -1814,7 +1814,7 @@ export const getListSitesUrl = () => {
 }
 
 /**
- * `config.mirakc`/`mirakcs` レジストリの公開面（issue #184 M4-12）。api は
+ * `config.mirakcs` レジストリの公開面（issue #184 M4-12）。api は
  * site に束縛されない（不変条件 1）ため、フロントが正しい `{site}` を
  * パスに埋めるにはこの一覧が要る（旧 `web/src/lib/site.ts` の
  * `DEFAULT_SITE` 決め打ちを撤去する対応）。

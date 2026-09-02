@@ -1609,7 +1609,7 @@ type ListRecordingsParams struct {
 	ChannelType *[]ListRecordingsParamsChannelType `form:"channelType,omitempty" json:"channelType,omitempty"`
 
 	// Site mirakc サイト名。複数指定は OR。site 名の構文は
-	// `config.mirakc`/`mirakcs` レジストリと同じ（`internal/config` の
+	// `config.mirakcs` レジストリと同じ（`internal/config` の
 	// `mirakcSiteNamePattern`）。レジストリに無い名前を渡してもエラーには
 	// せず 0 件になる --- 絞り込みは「あるものから選ぶ」操作なので、
 	// 存在しない値の指定は空の結果として素直に読める。

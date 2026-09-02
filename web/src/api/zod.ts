@@ -73,7 +73,7 @@ export const GetCapabilitiesResponse = zod.object({
 
 
 /**
- * `config.mirakc`/`mirakcs` レジストリの公開面（issue #184 M4-12）。api は
+ * `config.mirakcs` レジストリの公開面（issue #184 M4-12）。api は
  * site に束縛されない（不変条件 1）ため、フロントが正しい `{site}` を
  * パスに埋めるにはこの一覧が要る（旧 `web/src/lib/site.ts` の
  * `DEFAULT_SITE` 決め打ちを撤去する対応）。
@@ -576,7 +576,7 @@ export const ListReservationsResponse = zod.array(ListReservationsResponseItem)
  * @summary Get the reservation for a program, keyed by (site, programId)
  */
 export const GetProgramReservationParams = zod.object({
-  "site": zod.string().describe('mirakc インスタンスのサイト名。programId はインスタンス単位のスコープ\nしか持たないため、この site と組にしないと資源が一意に定まらない\n（issue #31）。api プロセス自身は特定の site に束縛されない\n（不変条件 1: mirakc にもファイルシステムにも依存しない）ので、権威は\n「`config.mirakc`\/`mirakcs` レジストリに存在するか」であり、1 プロセスが\nレジストリの全 site を処理できる（issue #184 M4-12）。レジストリに無い\nsite のエラーコードはエンドポイントの HTTP メソッドで決まる —— GET 系は\n404、POST\/PUT\/PATCH\/DELETE 系は 400（他の入力検証と同じ扱い。詳細は各\nエンドポイントの description・レスポンス定義を参照）。存在する site の\n一覧は `GET \/api\/sites` で取得できる。\n'),
+  "site": zod.string().describe('mirakc インスタンスのサイト名。programId はインスタンス単位のスコープ\nしか持たないため、この site と組にしないと資源が一意に定まらない\n（issue #31）。api プロセス自身は特定の site に束縛されない\n（不変条件 1: mirakc にもファイルシステムにも依存しない）ので、権威は\n「`config.mirakcs` レジストリに存在するか」であり、1 プロセスが\nレジストリの全 site を処理できる（issue #184 M4-12）。レジストリに無い\nsite のエラーコードはエンドポイントの HTTP メソッドで決まる —— GET 系は\n404、POST\/PUT\/PATCH\/DELETE 系は 400（他の入力検証と同じ扱い。詳細は各\nエンドポイントの description・レスポンス定義を参照）。存在する site の\n一覧は `GET \/api\/sites` で取得できる。\n'),
   "programId": zod.number()
 })
 
@@ -612,7 +612,7 @@ export const GetProgramReservationResponse = zod.object({
  * @summary List EPG services (channels)
  */
 export const ListServicesParams = zod.object({
-  "site": zod.string().describe('mirakc インスタンスのサイト名。programId はインスタンス単位のスコープ\nしか持たないため、この site と組にしないと資源が一意に定まらない\n（issue #31）。api プロセス自身は特定の site に束縛されない\n（不変条件 1: mirakc にもファイルシステムにも依存しない）ので、権威は\n「`config.mirakc`\/`mirakcs` レジストリに存在するか」であり、1 プロセスが\nレジストリの全 site を処理できる（issue #184 M4-12）。レジストリに無い\nsite のエラーコードはエンドポイントの HTTP メソッドで決まる —— GET 系は\n404、POST\/PUT\/PATCH\/DELETE 系は 400（他の入力検証と同じ扱い。詳細は各\nエンドポイントの description・レスポンス定義を参照）。存在する site の\n一覧は `GET \/api\/sites` で取得できる。\n')
+  "site": zod.string().describe('mirakc インスタンスのサイト名。programId はインスタンス単位のスコープ\nしか持たないため、この site と組にしないと資源が一意に定まらない\n（issue #31）。api プロセス自身は特定の site に束縛されない\n（不変条件 1: mirakc にもファイルシステムにも依存しない）ので、権威は\n「`config.mirakcs` レジストリに存在するか」であり、1 プロセスが\nレジストリの全 site を処理できる（issue #184 M4-12）。レジストリに無い\nsite のエラーコードはエンドポイントの HTTP メソッドで決まる —— GET 系は\n404、POST\/PUT\/PATCH\/DELETE 系は 400（他の入力検証と同じ扱い。詳細は各\nエンドポイントの description・レスポンス定義を参照）。存在する site の\n一覧は `GET \/api\/sites` で取得できる。\n')
 })
 
 export const ListServicesResponseItem = zod.object({
@@ -643,7 +643,7 @@ export const ListServicesResponse = zod.array(ListServicesResponseItem)
  * @summary List projected tuners
  */
 export const ListTunersParams = zod.object({
-  "site": zod.string().describe('mirakc インスタンスのサイト名。programId はインスタンス単位のスコープ\nしか持たないため、この site と組にしないと資源が一意に定まらない\n（issue #31）。api プロセス自身は特定の site に束縛されない\n（不変条件 1: mirakc にもファイルシステムにも依存しない）ので、権威は\n「`config.mirakc`\/`mirakcs` レジストリに存在するか」であり、1 プロセスが\nレジストリの全 site を処理できる（issue #184 M4-12）。レジストリに無い\nsite のエラーコードはエンドポイントの HTTP メソッドで決まる —— GET 系は\n404、POST\/PUT\/PATCH\/DELETE 系は 400（他の入力検証と同じ扱い。詳細は各\nエンドポイントの description・レスポンス定義を参照）。存在する site の\n一覧は `GET \/api\/sites` で取得できる。\n')
+  "site": zod.string().describe('mirakc インスタンスのサイト名。programId はインスタンス単位のスコープ\nしか持たないため、この site と組にしないと資源が一意に定まらない\n（issue #31）。api プロセス自身は特定の site に束縛されない\n（不変条件 1: mirakc にもファイルシステムにも依存しない）ので、権威は\n「`config.mirakcs` レジストリに存在するか」であり、1 プロセスが\nレジストリの全 site を処理できる（issue #184 M4-12）。レジストリに無い\nsite のエラーコードはエンドポイントの HTTP メソッドで決まる —— GET 系は\n404、POST\/PUT\/PATCH\/DELETE 系は 400（他の入力検証と同じ扱い。詳細は各\nエンドポイントの description・レスポンス定義を参照）。存在する site の\n一覧は `GET \/api\/sites` で取得できる。\n')
 })
 
 export const ListTunersResponseItem = zod.object({
@@ -678,7 +678,7 @@ export const ListTunersResponse = zod.array(ListTunersResponseItem)
  * @summary Search EPG programs by rule-style conditions
  */
 export const SearchProgramsParams = zod.object({
-  "site": zod.string().describe('mirakc インスタンスのサイト名。programId はインスタンス単位のスコープ\nしか持たないため、この site と組にしないと資源が一意に定まらない\n（issue #31）。api プロセス自身は特定の site に束縛されない\n（不変条件 1: mirakc にもファイルシステムにも依存しない）ので、権威は\n「`config.mirakc`\/`mirakcs` レジストリに存在するか」であり、1 プロセスが\nレジストリの全 site を処理できる（issue #184 M4-12）。レジストリに無い\nsite のエラーコードはエンドポイントの HTTP メソッドで決まる —— GET 系は\n404、POST\/PUT\/PATCH\/DELETE 系は 400（他の入力検証と同じ扱い。詳細は各\nエンドポイントの description・レスポンス定義を参照）。存在する site の\n一覧は `GET \/api\/sites` で取得できる。\n')
+  "site": zod.string().describe('mirakc インスタンスのサイト名。programId はインスタンス単位のスコープ\nしか持たないため、この site と組にしないと資源が一意に定まらない\n（issue #31）。api プロセス自身は特定の site に束縛されない\n（不変条件 1: mirakc にもファイルシステムにも依存しない）ので、権威は\n「`config.mirakcs` レジストリに存在するか」であり、1 プロセスが\nレジストリの全 site を処理できる（issue #184 M4-12）。レジストリに無い\nsite のエラーコードはエンドポイントの HTTP メソッドで決まる —— GET 系は\n404、POST\/PUT\/PATCH\/DELETE 系は 400（他の入力検証と同じ扱い。詳細は各\nエンドポイントの description・レスポンス定義を参照）。存在する site の\n一覧は `GET \/api\/sites` で取得できる。\n')
 })
 
 export const searchProgramsBodyTextMatchesItemCaseSensitiveDefault = false;
@@ -745,7 +745,7 @@ export const SearchProgramsResponse = zod.array(SearchProgramsResponseItem)
  * @summary List EPG programs in a time window
  */
 export const ListProgramsParams = zod.object({
-  "site": zod.string().describe('mirakc インスタンスのサイト名。programId はインスタンス単位のスコープ\nしか持たないため、この site と組にしないと資源が一意に定まらない\n（issue #31）。api プロセス自身は特定の site に束縛されない\n（不変条件 1: mirakc にもファイルシステムにも依存しない）ので、権威は\n「`config.mirakc`\/`mirakcs` レジストリに存在するか」であり、1 プロセスが\nレジストリの全 site を処理できる（issue #184 M4-12）。レジストリに無い\nsite のエラーコードはエンドポイントの HTTP メソッドで決まる —— GET 系は\n404、POST\/PUT\/PATCH\/DELETE 系は 400（他の入力検証と同じ扱い。詳細は各\nエンドポイントの description・レスポンス定義を参照）。存在する site の\n一覧は `GET \/api\/sites` で取得できる。\n')
+  "site": zod.string().describe('mirakc インスタンスのサイト名。programId はインスタンス単位のスコープ\nしか持たないため、この site と組にしないと資源が一意に定まらない\n（issue #31）。api プロセス自身は特定の site に束縛されない\n（不変条件 1: mirakc にもファイルシステムにも依存しない）ので、権威は\n「`config.mirakcs` レジストリに存在するか」であり、1 プロセスが\nレジストリの全 site を処理できる（issue #184 M4-12）。レジストリに無い\nsite のエラーコードはエンドポイントの HTTP メソッドで決まる —— GET 系は\n404、POST\/PUT\/PATCH\/DELETE 系は 400（他の入力検証と同じ扱い。詳細は各\nエンドポイントの description・レスポンス定義を参照）。存在する site の\n一覧は `GET \/api\/sites` で取得できる。\n')
 })
 
 export const listProgramsQueryServiceItemMax = 6553565535;
@@ -778,7 +778,7 @@ export const ListProgramsResponse = zod.array(ListProgramsResponseItem)
  * @summary Get a single EPG program with full detail
  */
 export const GetProgramParams = zod.object({
-  "site": zod.string().describe('mirakc インスタンスのサイト名。programId はインスタンス単位のスコープ\nしか持たないため、この site と組にしないと資源が一意に定まらない\n（issue #31）。api プロセス自身は特定の site に束縛されない\n（不変条件 1: mirakc にもファイルシステムにも依存しない）ので、権威は\n「`config.mirakc`\/`mirakcs` レジストリに存在するか」であり、1 プロセスが\nレジストリの全 site を処理できる（issue #184 M4-12）。レジストリに無い\nsite のエラーコードはエンドポイントの HTTP メソッドで決まる —— GET 系は\n404、POST\/PUT\/PATCH\/DELETE 系は 400（他の入力検証と同じ扱い。詳細は各\nエンドポイントの description・レスポンス定義を参照）。存在する site の\n一覧は `GET \/api\/sites` で取得できる。\n'),
+  "site": zod.string().describe('mirakc インスタンスのサイト名。programId はインスタンス単位のスコープ\nしか持たないため、この site と組にしないと資源が一意に定まらない\n（issue #31）。api プロセス自身は特定の site に束縛されない\n（不変条件 1: mirakc にもファイルシステムにも依存しない）ので、権威は\n「`config.mirakcs` レジストリに存在するか」であり、1 プロセスが\nレジストリの全 site を処理できる（issue #184 M4-12）。レジストリに無い\nsite のエラーコードはエンドポイントの HTTP メソッドで決まる —— GET 系は\n404、POST\/PUT\/PATCH\/DELETE 系は 400（他の入力検証と同じ扱い。詳細は各\nエンドポイントの description・レスポンス定義を参照）。存在する site の\n一覧は `GET \/api\/sites` で取得できる。\n'),
   "programId": zod.number()
 })
 
@@ -838,7 +838,7 @@ export const GetProgramResponse = zod.object({
  * @summary Count reservations overlapping this program's broadcast time
  */
 export const GetProgramOverlapsParams = zod.object({
-  "site": zod.string().describe('mirakc インスタンスのサイト名。programId はインスタンス単位のスコープ\nしか持たないため、この site と組にしないと資源が一意に定まらない\n（issue #31）。api プロセス自身は特定の site に束縛されない\n（不変条件 1: mirakc にもファイルシステムにも依存しない）ので、権威は\n「`config.mirakc`\/`mirakcs` レジストリに存在するか」であり、1 プロセスが\nレジストリの全 site を処理できる（issue #184 M4-12）。レジストリに無い\nsite のエラーコードはエンドポイントの HTTP メソッドで決まる —— GET 系は\n404、POST\/PUT\/PATCH\/DELETE 系は 400（他の入力検証と同じ扱い。詳細は各\nエンドポイントの description・レスポンス定義を参照）。存在する site の\n一覧は `GET \/api\/sites` で取得できる。\n'),
+  "site": zod.string().describe('mirakc インスタンスのサイト名。programId はインスタンス単位のスコープ\nしか持たないため、この site と組にしないと資源が一意に定まらない\n（issue #31）。api プロセス自身は特定の site に束縛されない\n（不変条件 1: mirakc にもファイルシステムにも依存しない）ので、権威は\n「`config.mirakcs` レジストリに存在するか」であり、1 プロセスが\nレジストリの全 site を処理できる（issue #184 M4-12）。レジストリに無い\nsite のエラーコードはエンドポイントの HTTP メソッドで決まる —— GET 系は\n404、POST\/PUT\/PATCH\/DELETE 系は 400（他の入力検証と同じ扱い。詳細は各\nエンドポイントの description・レスポンス定義を参照）。存在する site の\n一覧は `GET \/api\/sites` で取得できる。\n'),
   "programId": zod.number()
 })
 
@@ -869,7 +869,7 @@ export const GetProgramOverlapsResponse = zod.object({
  * @summary Assert record/skip intent for a program
  */
 export const PutProgramIntentParams = zod.object({
-  "site": zod.string().describe('mirakc インスタンスのサイト名。programId はインスタンス単位のスコープ\nしか持たないため、この site と組にしないと資源が一意に定まらない\n（issue #31）。api プロセス自身は特定の site に束縛されない\n（不変条件 1: mirakc にもファイルシステムにも依存しない）ので、権威は\n「`config.mirakc`\/`mirakcs` レジストリに存在するか」であり、1 プロセスが\nレジストリの全 site を処理できる（issue #184 M4-12）。レジストリに無い\nsite のエラーコードはエンドポイントの HTTP メソッドで決まる —— GET 系は\n404、POST\/PUT\/PATCH\/DELETE 系は 400（他の入力検証と同じ扱い。詳細は各\nエンドポイントの description・レスポンス定義を参照）。存在する site の\n一覧は `GET \/api\/sites` で取得できる。\n'),
+  "site": zod.string().describe('mirakc インスタンスのサイト名。programId はインスタンス単位のスコープ\nしか持たないため、この site と組にしないと資源が一意に定まらない\n（issue #31）。api プロセス自身は特定の site に束縛されない\n（不変条件 1: mirakc にもファイルシステムにも依存しない）ので、権威は\n「`config.mirakcs` レジストリに存在するか」であり、1 プロセスが\nレジストリの全 site を処理できる（issue #184 M4-12）。レジストリに無い\nsite のエラーコードはエンドポイントの HTTP メソッドで決まる —— GET 系は\n404、POST\/PUT\/PATCH\/DELETE 系は 400（他の入力検証と同じ扱い。詳細は各\nエンドポイントの description・レスポンス定義を参照）。存在する site の\n一覧は `GET \/api\/sites` で取得できる。\n'),
   "programId": zod.number()
 })
 
@@ -888,7 +888,7 @@ export const PutProgramIntentResponse = zod.void()
  * @summary Clear intent for a program (defer to the rule)
  */
 export const DeleteProgramIntentParams = zod.object({
-  "site": zod.string().describe('mirakc インスタンスのサイト名。programId はインスタンス単位のスコープ\nしか持たないため、この site と組にしないと資源が一意に定まらない\n（issue #31）。api プロセス自身は特定の site に束縛されない\n（不変条件 1: mirakc にもファイルシステムにも依存しない）ので、権威は\n「`config.mirakc`\/`mirakcs` レジストリに存在するか」であり、1 プロセスが\nレジストリの全 site を処理できる（issue #184 M4-12）。レジストリに無い\nsite のエラーコードはエンドポイントの HTTP メソッドで決まる —— GET 系は\n404、POST\/PUT\/PATCH\/DELETE 系は 400（他の入力検証と同じ扱い。詳細は各\nエンドポイントの description・レスポンス定義を参照）。存在する site の\n一覧は `GET \/api\/sites` で取得できる。\n'),
+  "site": zod.string().describe('mirakc インスタンスのサイト名。programId はインスタンス単位のスコープ\nしか持たないため、この site と組にしないと資源が一意に定まらない\n（issue #31）。api プロセス自身は特定の site に束縛されない\n（不変条件 1: mirakc にもファイルシステムにも依存しない）ので、権威は\n「`config.mirakcs` レジストリに存在するか」であり、1 プロセスが\nレジストリの全 site を処理できる（issue #184 M4-12）。レジストリに無い\nsite のエラーコードはエンドポイントの HTTP メソッドで決まる —— GET 系は\n404、POST\/PUT\/PATCH\/DELETE 系は 400（他の入力検証と同じ扱い。詳細は各\nエンドポイントの description・レスポンス定義を参照）。存在する site の\n一覧は `GET \/api\/sites` で取得できる。\n'),
   "programId": zod.number()
 })
 
@@ -915,7 +915,7 @@ export const DeleteProgramIntentResponse = zod.void()
  * @summary Update per-program overrides
  */
 export const PatchProgramOverridesParams = zod.object({
-  "site": zod.string().describe('mirakc インスタンスのサイト名。programId はインスタンス単位のスコープ\nしか持たないため、この site と組にしないと資源が一意に定まらない\n（issue #31）。api プロセス自身は特定の site に束縛されない\n（不変条件 1: mirakc にもファイルシステムにも依存しない）ので、権威は\n「`config.mirakc`\/`mirakcs` レジストリに存在するか」であり、1 プロセスが\nレジストリの全 site を処理できる（issue #184 M4-12）。レジストリに無い\nsite のエラーコードはエンドポイントの HTTP メソッドで決まる —— GET 系は\n404、POST\/PUT\/PATCH\/DELETE 系は 400（他の入力検証と同じ扱い。詳細は各\nエンドポイントの description・レスポンス定義を参照）。存在する site の\n一覧は `GET \/api\/sites` で取得できる。\n'),
+  "site": zod.string().describe('mirakc インスタンスのサイト名。programId はインスタンス単位のスコープ\nしか持たないため、この site と組にしないと資源が一意に定まらない\n（issue #31）。api プロセス自身は特定の site に束縛されない\n（不変条件 1: mirakc にもファイルシステムにも依存しない）ので、権威は\n「`config.mirakcs` レジストリに存在するか」であり、1 プロセスが\nレジストリの全 site を処理できる（issue #184 M4-12）。レジストリに無い\nsite のエラーコードはエンドポイントの HTTP メソッドで決まる —— GET 系は\n404、POST\/PUT\/PATCH\/DELETE 系は 400（他の入力検証と同じ扱い。詳細は各\nエンドポイントの description・レスポンス定義を参照）。存在する site の\n一覧は `GET \/api\/sites` で取得できる。\n'),
   "programId": zod.number()
 })
 
@@ -938,7 +938,7 @@ export const PatchProgramOverridesResponse = zod.void()
  * @summary Reset all overrides for a program (revert to rule)
  */
 export const DeleteProgramOverridesParams = zod.object({
-  "site": zod.string().describe('mirakc インスタンスのサイト名。programId はインスタンス単位のスコープ\nしか持たないため、この site と組にしないと資源が一意に定まらない\n（issue #31）。api プロセス自身は特定の site に束縛されない\n（不変条件 1: mirakc にもファイルシステムにも依存しない）ので、権威は\n「`config.mirakc`\/`mirakcs` レジストリに存在するか」であり、1 プロセスが\nレジストリの全 site を処理できる（issue #184 M4-12）。レジストリに無い\nsite のエラーコードはエンドポイントの HTTP メソッドで決まる —— GET 系は\n404、POST\/PUT\/PATCH\/DELETE 系は 400（他の入力検証と同じ扱い。詳細は各\nエンドポイントの description・レスポンス定義を参照）。存在する site の\n一覧は `GET \/api\/sites` で取得できる。\n'),
+  "site": zod.string().describe('mirakc インスタンスのサイト名。programId はインスタンス単位のスコープ\nしか持たないため、この site と組にしないと資源が一意に定まらない\n（issue #31）。api プロセス自身は特定の site に束縛されない\n（不変条件 1: mirakc にもファイルシステムにも依存しない）ので、権威は\n「`config.mirakcs` レジストリに存在するか」であり、1 プロセスが\nレジストリの全 site を処理できる（issue #184 M4-12）。レジストリに無い\nsite のエラーコードはエンドポイントの HTTP メソッドで決まる —— GET 系は\n404、POST\/PUT\/PATCH\/DELETE 系は 400（他の入力検証と同じ扱い。詳細は各\nエンドポイントの description・レスポンス定義を参照）。存在する site の\n一覧は `GET \/api\/sites` で取得できる。\n'),
   "programId": zod.number()
 })
 
@@ -1015,7 +1015,7 @@ export const ListRecordingsQueryParams = zod.object({
   "qTarget": zod.enum(['title', 'titleDescription']).default(listRecordingsQueryQTargetDefault),
   "genre": zod.array(zod.number().min(listRecordingsQueryGenreItemMin).max(listRecordingsQueryGenreItemMax)).optional().describe('genre_lv1（ジャンル大分類）との重なり。複数指定可'),
   "channelType": zod.array(zod.enum(['GR', 'BS', 'CS', 'SKY'])).optional(),
-  "site": zod.array(zod.string().regex(listRecordingsQuerySiteItemRegExp)).optional().describe('mirakc サイト名。複数指定は OR。site 名の構文は\n`config.mirakc`\/`mirakcs` レジストリと同じ（`internal\/config` の\n`mirakcSiteNamePattern`）。レジストリに無い名前を渡してもエラーには\nせず 0 件になる --- 絞り込みは「あるものから選ぶ」操作なので、\n存在しない値の指定は空の結果として素直に読める。\n'),
+  "site": zod.array(zod.string().regex(listRecordingsQuerySiteItemRegExp)).optional().describe('mirakc サイト名。複数指定は OR。site 名の構文は\n`config.mirakcs` レジストリと同じ（`internal\/config` の\n`mirakcSiteNamePattern`）。レジストリに無い名前を渡してもエラーには\nせず 0 件になる --- 絞り込みは「あるものから選ぶ」操作なので、\n存在しない値の指定は空の結果として素直に読める。\n'),
   "service": zod.array(zod.number().min(1).max(listRecordingsQueryServiceItemMax)).optional().describe('`Service.id`（`networkId \* 100000 + serviceId`）。複数指定は OR。\n\n\*\*site は含めない\*\*（`site` パラメータが別軸）。他の絞り込み軸と\n同じく「軸内は OR、軸間は AND」で、`?site=tokyo&service=400101` は\n「tokyo の BS 101」を意味する。\n'),
   "status": zod.enum(['recording', 'finished', 'canceled', 'failed']).optional().describe('recordings.status の CHECK と一致させた 4 値（\'canceled\' は issue #130 で\nCHECK に追加済み）。\n\n`status=failed` は通常一覧（`trash=false`）に限り supersede 済みの\nfailed 行を返さない。本物の record が観測されて置き換わった擬似\nfailed 行を「録画失敗」として返さないため（ホームの警告が偽陽性を\n出し続けるのを防ぐ）。無条件一覧・`trash=true` は履歴として両行を残す。\n'),
   "encodeState": zod.enum(['queued', 'running']).optional().describe('active な River encode ジョブの状態。`queued` は `available` \/\n`pending` \/ `scheduled` \/ `retryable`、`running` は実行中を表す。\n件数は録画数ではなく録画 × プロファイルのジョブ数になる。\n'),
@@ -1388,7 +1388,7 @@ export const ListCircuitBreakersResponse = zod.array(ListCircuitBreakersResponse
  * @summary Resume a tripped circuit breaker that has a site (manual acknowledgement)
  */
 export const ResumeCircuitBreakerParams = zod.object({
-  "site": zod.string().describe('mirakc インスタンスのサイト名。programId はインスタンス単位のスコープ\nしか持たないため、この site と組にしないと資源が一意に定まらない\n（issue #31）。api プロセス自身は特定の site に束縛されない\n（不変条件 1: mirakc にもファイルシステムにも依存しない）ので、権威は\n「`config.mirakc`\/`mirakcs` レジストリに存在するか」であり、1 プロセスが\nレジストリの全 site を処理できる（issue #184 M4-12）。レジストリに無い\nsite のエラーコードはエンドポイントの HTTP メソッドで決まる —— GET 系は\n404、POST\/PUT\/PATCH\/DELETE 系は 400（他の入力検証と同じ扱い。詳細は各\nエンドポイントの description・レスポンス定義を参照）。存在する site の\n一覧は `GET \/api\/sites` で取得できる。\n'),
+  "site": zod.string().describe('mirakc インスタンスのサイト名。programId はインスタンス単位のスコープ\nしか持たないため、この site と組にしないと資源が一意に定まらない\n（issue #31）。api プロセス自身は特定の site に束縛されない\n（不変条件 1: mirakc にもファイルシステムにも依存しない）ので、権威は\n「`config.mirakcs` レジストリに存在するか」であり、1 プロセスが\nレジストリの全 site を処理できる（issue #184 M4-12）。レジストリに無い\nsite のエラーコードはエンドポイントの HTTP メソッドで決まる —— GET 系は\n404、POST\/PUT\/PATCH\/DELETE 系は 400（他の入力検証と同じ扱い。詳細は各\nエンドポイントの description・レスポンス定義を参照）。存在する site の\n一覧は `GET \/api\/sites` で取得できる。\n'),
   "name": zod.string().describe('site を持つブレーカー識別子（`internal\/breaker` の定数のうち\n`internal\/breaker.IsSiteless` が false のもの。`ruler_deletes` \/\n`reconcile_total_loss`）。未知の値、および site を持たない名前\n（`delete_reconcile`）は 400 --- 後者は\n`POST \/api\/breakers\/{name}\/resume` を使う（issue #450）。\n')
 })
 
