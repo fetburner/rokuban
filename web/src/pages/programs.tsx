@@ -1075,13 +1075,23 @@ function ProgramGridView({
           scrollToMs={scrollToMs}
           showSite={showSite}
           // 帯はセルより上・ヘッダより下の層に入る。軸を受け取って同じ
-          // spanToPx を通すので、帯と番組セルは同じ時刻で必ず同じ位置に来る
-          siteOverlay={(gridAxis, site) => (
-            <CapacityBands axis={gridAxis} overages={overages} site={site} />
+          // spanToPx を通すので、帯と番組セルは同じ時刻で必ず同じ位置に来る。
+          // `announce` は site の最初の走だけ true --- GR + BS を両方持つ site は
+          // 走が 2 本に分かれるため、両方 true のままだと sr-only が重複する。
+          siteOverlay={(gridAxis, site, isFirstRunForSite) => (
+            <CapacityBands
+              axis={gridAxis}
+              overages={overages}
+              site={site}
+              showSite={showSite}
+              announce={isFirstRunForSite}
+            />
           )}
           // 帯の見えるラベルは時間軸列に出す（局の列の番組セルと重ならない。
           // issue #460。docs/frontend/programs.md「容量超過の帯とバッジ」）
-          gutterOverlay={(gridAxis) => <CapacityBandLabels axis={gridAxis} overages={overages} />}
+          gutterOverlay={(gridAxis) => (
+            <CapacityBandLabels axis={gridAxis} overages={overages} showSite={showSite} />
+          )}
         />
       </div>
     </div>

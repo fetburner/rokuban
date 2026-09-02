@@ -107,6 +107,49 @@ function cell(programId: number): HTMLElement {
   return el
 }
 
+/**
+ * `orderServices` は種別を最外に持つため、GR + BS を両方持つ site は
+ * `siteColumnRanges` 上で非隣接な複数の走に分かれる（issue #460 再レビュー）。
+ * `ProgramGrid` は走ごとに `siteOverlay` を呼ぶので、`CapacityBands` 側で
+ * 重複を止めないと同じ超過区間の sr-only が走の本数ぶん重複する。
+ */
+describe('CapacityBands の announce（同じ site の 2 本目以降の走で読み上げを重複させない）', () => {
+  const gr = { ...service, channelType: 'GR' as const, serviceId: 1024, remoteControlKeyId: 1 }
+  const bs = { ...service, channelType: 'BS' as const, serviceId: 1032, remoteControlKeyId: 0 }
+
+  it('siteOverlay を走ごとに announce=isFirstRunForSite で呼び、sr-only は 1 回だけ出す', () => {
+    // 同じ site（default）の GR 列と BS 列の間に他 site の列を挟み、
+    // siteColumnRanges 上で 2 本の非隣接な走にする。
+    const other = { ...service, site: 'other', channelType: 'GR' as const, serviceId: 999 }
+    render(
+      <ProgramGrid
+        services={[gr, other, bs]}
+        programs={[]}
+        axis={axis}
+        reservationByProgramId={new Set()}
+        selectedProgramId={null}
+        onSelect={vi.fn()}
+        now={at(19 * 60)}
+        siteOverlay={(gridAxis, site, isFirstRunForSite) => (
+          <CapacityBands
+            axis={gridAxis}
+            overages={[overage(20 * 60, 21 * 60)]}
+            site={site}
+            announce={isFirstRunForSite}
+          />
+        )}
+      />,
+    )
+
+    // 帯自体（見た目）は走ごとに 2 本描かれる（GR 列・BS 列の両方に色を付ける必要がある）。
+    expect(screen.getAllByTestId('capacity-band').filter((el) => el.dataset.site === 'default')).toHaveLength(2)
+    // だが読み上げ文（sr-only）は 1 回だけ。
+    expect(
+      screen.getAllByText('20:00〜21:00 はチューナーが不足しています（BS が 1 本不足）'),
+    ).toHaveLength(1)
+  })
+})
+
 describe('CapacityBands', () => {
   it('帯は同じ時刻の番組セルと同じ位置・高さに来る', () => {
     // 20:00-21:00 の不足と、同じ 20:00-21:00 の番組

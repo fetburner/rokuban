@@ -91,9 +91,17 @@ export function shortfallDetail(overage: CapacityOverage): string {
   return types === '' ? `${overage.shortfall} 本` : `${types} が ${overage.shortfall} 本`
 }
 
-/** shortageLabel は予約一覧のバッジに出す短い表示（「チューナー不足（BS が 1 本）」）。 */
-export function shortageLabel(overage: CapacityOverage): string {
-  return `チューナー不足（${shortfallDetail(overage)}）`
+/**
+ * shortageLabel は予約一覧のバッジに出す短い表示（「チューナー不足（BS が 1 本）」）。
+ *
+ * `showSite` を渡すと site 名を前置する（「高松のチューナー不足（BS が 1 本）」）。
+ * 予約一覧のバッジは行自身が site を示すので既定は false --- グリッドの帯
+ * （`CapacityBandLabel` の `title`）のように、離れた列に積まれて帰属が読めない
+ * 呼び出し側だけが true を渡す。
+ */
+export function shortageLabel(overage: CapacityOverage, options?: { showSite?: boolean }): string {
+  const sitePrefix = options?.showSite ? `${overage.site}の` : ''
+  return `${sitePrefix}チューナー不足（${shortfallDetail(overage)}）`
 }
 
 /**
@@ -121,10 +129,21 @@ export function shortageMessage(overage: CapacityOverage): string {
   return `この時間帯はチューナーが不足しています（${shortfallDetail(overage)}不足）`
 }
 
-/** shortageRangeMessage は時刻を添えた説明。帯は自分がどの区間かを言う必要がある。 */
-export function shortageRangeMessage(overage: CapacityOverage): string {
+/**
+ * shortageRangeMessage は時刻を添えた説明。帯は自分がどの区間かを言う必要がある。
+ *
+ * `showSite` を渡すと site 名を文中に入れる（「20:00〜21:00 は高松のチューナーが
+ * 不足しています」）。グリッドの時間軸列（gutter）は局の列から離れた 1 本の列に
+ * 複数 site の帯・読み上げ文が積まれるため、複数 site のときは呼び出し側
+ * （`CapacityBand`）が true を渡してどちらの site の説明かを聞き分けられるようにする。
+ */
+export function shortageRangeMessage(
+  overage: CapacityOverage,
+  options?: { showSite?: boolean },
+): string {
   const range = `${formatTime(overage.startAt)}〜${formatTime(overage.endAt)}`
-  return `${range} はチューナーが不足しています（${shortfallDetail(overage)}不足）`
+  const sitePrefix = options?.showSite ? `${overage.site}の` : ''
+  return `${range} は${sitePrefix}チューナーが不足しています（${shortfallDetail(overage)}不足）`
 }
 
 /**

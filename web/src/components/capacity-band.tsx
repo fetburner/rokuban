@@ -36,15 +36,29 @@ const labelMinHeightPx = 18
  * なる（issue #460）。見えるラベルは `CapacityBandLabels`（`ProgramGrid` の
  * `gutterOverlay`）が局の列と重ならない時間軸列に出す。読み上げ用の文は帯が短くて
  * 見えるラベルが出ないときも必要なので、帯自身に残す（sr-only の対はここに残る）。
+ *
+ * **`announce` は 1 site につき 1 回だけ true にして呼ぶ。** `orderServices` は
+ * 種別を最外に持つため、GR + BS を両方持つ site は列領域が非隣接な複数の走に
+ * 分かれ、`ProgramGrid` はその走ごとに `siteOverlay` を呼ぶ。走ごとに sr-only を
+ * 出すと同じ超過区間の説明が走の本数ぶん重複して読み上げられる（レビュー指摘）。
+ * 帯の見た目（着色・罫線）は走ごとに必要なので `announce` を分けて呼び出し側
+ * （`ProgramGrid` の `isFirstRunForSite`）に判断させる --- 帯自体を 1 site 1 回に
+ * 減らすと今度は別の走の列に色が付かなくなる。
  */
 export function CapacityBands({
   axis,
   overages,
   site,
+  showSite = false,
+  announce = true,
 }: {
   axis: TimeAxis
   overages: readonly CapacityOverage[]
   site: string
+  /** 複数 site のとき、読み上げ文に site 名を含める（列ヘッダ・一覧行の `showSite` と同じ条件）。 */
+  showSite?: boolean
+  /** false なら sr-only の読み上げ文を出さない（同じ site の 2 本目以降の走）。 */
+  announce?: boolean
 }) {
   return (
     <>
@@ -53,13 +67,25 @@ export function CapacityBands({
           key={`${overage.site}-${overage.startAt}`}
           axis={axis}
           overage={overage}
+          showSite={showSite}
+          announce={announce}
         />
       ))}
     </>
   )
 }
 
-function CapacityBand({ axis, overage }: { axis: TimeAxis; overage: CapacityOverage }) {
+function CapacityBand({
+  axis,
+  overage,
+  showSite,
+  announce,
+}: {
+  axis: TimeAxis
+  overage: CapacityOverage
+  showSite: boolean
+  announce: boolean
+}) {
   const span = overageWindow(overage)
   // 番組セルと同じ写像を通す。これが「帯とセルが同じ時刻で同じ位置に来る」ことの
   // 保証（軸の外は切り落とされ、交差しなければ null が返る）
@@ -84,7 +110,9 @@ function CapacityBand({ axis, overage }: { axis: TimeAxis; overage: CapacityOver
     >
       {/* 読み上げには常に時刻付きの文を出す（帯が短いと見えるラベルが出ないため、
           見た目のラベルとは別に持つ。見た目のラベルは CapacityBandLabels 側） */}
-      <span className="sr-only">{shortageRangeMessage(overage)}</span>
+      {announce && (
+        <span className="sr-only">{shortageRangeMessage(overage, { showSite })}</span>
+      )}
     </div>
   )
 }
@@ -144,13 +172,24 @@ function avoidTickRow(axis: TimeAxis, topPx: number): number {
  * 正当に返せる形）のラベルと同じ位置に来て衝突が復活する --- `CapacityBandLabel`
  * は押し下げた先が自分の帯からはみ出すときはラベルを描かないことでこれを防ぐ
  * （issue #460 再レビュー）。
+ *
+ * **見えるラベル自体（`shortageLabelCompact`）には site 名を入れない。** 時間軸列は
+ * 56px しか無く、種別が 2 つ詰まった時点で `shortageLabelCompact` はすでに本数
+ * だけの形（「-2」）まで削っており、ここに site 名を前置する余地を実測できない
+ * （溢れる側に倒すより、溢れない形を選ぶ）。gutter は局の列から離れているため
+ * 複数 site では帯の帰属が読めなくなるが、マウス操作者には `title`
+ * （`shortageLabel`）、支援技術には帯側の `sr-only`（`shortageRangeMessage`。
+ * `CapacityBand` 参照）で site 名を補う --- どちらも幅制約を受けない。
  */
 export function CapacityBandLabels({
   axis,
   overages,
+  showSite = false,
 }: {
   axis: TimeAxis
   overages: readonly CapacityOverage[]
+  /** 複数 site のとき、title（native tooltip）に site 名を含める。 */
+  showSite?: boolean
 }) {
   const placements: { overage: CapacityOverage; topPx: number }[] = []
   for (const overage of overages) {
@@ -176,13 +215,22 @@ export function CapacityBandLabels({
           key={`${overage.site}-${overage.startAt}`}
           overage={overage}
           topPx={topPx}
+          showSite={showSite}
         />
       ))}
     </>
   )
 }
 
-function CapacityBandLabel({ overage, topPx }: { overage: CapacityOverage; topPx: number }) {
+function CapacityBandLabel({
+  overage,
+  topPx,
+  showSite,
+}: {
+  overage: CapacityOverage
+  topPx: number
+  showSite: boolean
+}) {
   return (
     <div
       data-testid="capacity-band-label"
@@ -192,8 +240,9 @@ function CapacityBandLabel({ overage, topPx }: { overage: CapacityOverage; topPx
       // （複数種別が詰まると `shortageLabelCompact` は本数だけの `-2` を返し、
       // 実測の余白では他の略記が入らない）。マウス操作者には native title
       // （ネイティブツールチップ）で全文を補う --- div は aria-hidden なので
-      // 支援技術には影響しない。
-      title={shortageLabel(overage)}
+      // 支援技術には影響しない。複数 site のときは site 名も title に含める
+      // （見えるラベル自体は幅の余地が無いので入れない。上記コメント参照）。
+      title={shortageLabel(overage, { showSite })}
       // bg-background で不透明にする --- 時間軸列には毎時の目盛り（21:00 等）
       // が別途描かれており、`avoidTickRow` で通常は避けるが、それでも隣接する
       // 場合の可読性のために地を割る（透過だと文字同士が混ざる）。

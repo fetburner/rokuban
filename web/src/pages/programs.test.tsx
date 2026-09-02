@@ -447,6 +447,23 @@ describe('ProgramsPage の表示形式', () => {
     expect(sitesCalls).toBeGreaterThanOrEqual(2)
   })
 
+  it('/api/sites が空配列に解決したとき永久スケルトンにせず説明を出す（レビュー指摘）', async () => {
+    // `enabled: sites.length > 0` でクエリが無効化されたまま `isPending: true`
+    // が続くので、`isError` に畳まないと ListSkeleton が永久に出続ける
+    // （旧 site-gate.tsx が持っていた「空配列を弾く」分岐の再発）。
+    const fetchMock = stubApi()
+    const implementation = fetchMock.getMockImplementation()!
+    fetchMock.mockImplementation((input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input), 'http://localhost')
+      if (url.pathname === '/api/sites') return Promise.resolve(jsonResponse([]))
+      return implementation(input, init)
+    })
+    renderPage()
+
+    expect(await screen.findByText('番組の取得に失敗しました')).toBeInTheDocument()
+    expect(screen.queryByText('ニュース7')).not.toBeInTheDocument()
+  })
+
   it('グリッドの再試行は services の失敗も取り直す', async () => {
     const fetchMock = stubApi()
     const implementation = fetchMock.getMockImplementation()!

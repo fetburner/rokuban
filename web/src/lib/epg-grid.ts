@@ -193,16 +193,24 @@ const channelTypeOrder: Record<Service['channelType'], number> = {
 /**
  * orderServices はグリッドの列順にサービスを並べる。
  *
- * 種別（GR → BS → CS → SKY）→ リモコン番号 → site → serviceId → networkId の全順序。API の返す順
+ * 種別（GR → BS → CS → SKY）→ site → リモコン番号 → serviceId → networkId の全順序。API の返す順
  * （networkId, serviceId）に任せると地上波のリモコン番号順にならず、視聴者の
  * 知っている並びと食い違う。同値のない全順序なので、再描画で列が入れ替わらない。
+ *
+ * **site をリモコン番号より上に置く。** 実在の複数 site（東京・高松）では
+ * NHK 総合(1)・NHK E(2) のように地上波のリモコン番号が site をまたいで一致する
+ * ため、リモコン番号を先に比べると同じ番号の局が site ごとに 1 列おきへ交互に
+ * 並んでしまい、`ProgramGrid` の `siteColumnRanges`（同じ site の連続走を検出する
+ * ロジック）が 1 列ごとの走を大量に作る。site を先に比べれば、種別の中で
+ * 同じ site のチャンネルがひとまとまりになる（1 site あたり種別の数だけの走に
+ * 収まる）。
  */
 export function orderServices<S extends Service>(services: readonly S[]): S[] {
   return [...services].sort(
     (a, b) =>
       channelTypeOrder[a.channelType] - channelTypeOrder[b.channelType] ||
-      a.remoteControlKeyId - b.remoteControlKeyId ||
       ('site' in a && 'site' in b ? String(a.site).localeCompare(String(b.site)) : 0) ||
+      a.remoteControlKeyId - b.remoteControlKeyId ||
       a.serviceId - b.serviceId ||
       a.networkId - b.networkId,
   )

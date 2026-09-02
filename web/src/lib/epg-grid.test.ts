@@ -246,6 +246,26 @@ describe('orderServices', () => {
     expect(ordered.map((item) => item.site)).toEqual(['takamatsu', 'tokyo'])
   })
 
+  it('site をリモコン番号より上位の tie-breaker にする（同じ種別の中で site ごとにまとまる）', () => {
+    // 実在の東京+高松では NHK 総合(1)・NHK E(2) など両 site で同じリモコン番号の
+    // GR 局が並ぶ。リモコン番号を site より先に比べると takamatsu/tokyo が
+    // 1 列おきに交互した順（1032, 1024, 1033, 1025）になり、`ProgramGrid` の
+    // 連続走検出が 1 列ごとの走を作ってしまう（レビュー指摘）。
+    const ordered = orderServices([
+      { ...service(1024, 'GR', 2), site: 'tokyo' },
+      { ...service(1032, 'GR', 1), site: 'takamatsu' },
+      { ...service(1025, 'GR', 2), site: 'takamatsu' },
+      { ...service(1033, 'GR', 1), site: 'tokyo' },
+    ])
+    // site が先に効くので takamatsu の 2 局がまとまり、その後 tokyo の 2 局がまとまる。
+    expect(ordered.map((item) => [item.site, item.serviceId])).toEqual([
+      ['takamatsu', 1032],
+      ['takamatsu', 1025],
+      ['tokyo', 1033],
+      ['tokyo', 1024],
+    ])
+  })
+
   it('並び替え済みのサービスを種別ごとにまとめ、表示名を返す', () => {
     const groups = groupByChannelType(
       orderServices([

@@ -154,8 +154,16 @@ export function ProgramGrid({
   showSite?: boolean
   /** 全チャンネル縦断の帯を重ねる層。軸を受け取って絶対配置の要素を返す。 */
   overlay?: (axis: TimeAxis) => React.ReactNode
-  /** 同じ site の連続した列領域ごとにクリップして重ねる層。 */
-  siteOverlay?: (axis: TimeAxis, site: string) => React.ReactNode
+  /**
+   * 同じ site の連続した列領域ごとにクリップして重ねる層。
+   *
+   * `isFirstRunForSite` は、この走がその site の中で最初に現れる走かどうか。
+   * `orderServices` は種別を最外に持つので、GR + BS を両方持つ site は 2 本の
+   * 走を持つ（issue #460 再レビュー）。読み上げ用の文言（`sr-only`）を走ごとに
+   * 出す実装だと、その本数ぶん重複して読み上げられてしまうため、
+   * 呼び出し側（`CapacityBands`）はこれを見て 1 site につき 1 回だけ出す。
+   */
+  siteOverlay?: (axis: TimeAxis, site: string, isFirstRunForSite: boolean) => React.ReactNode
   /**
    * 時間軸列（gutter）に重ねる層。帯の見えるラベルなど、局の列の番組セルと
    * 衝突させたくない要素をここに置く（issue #460）。軸を受け取って絶対配置の
@@ -276,6 +284,7 @@ export function ProgramGrid({
             {visibleServices.map((service, index) => (
               <div
                 key={siteServiceKey(service.site, service.networkId, service.serviceId)}
+                data-testid="program-grid-header-cell"
                 className="absolute top-0 flex h-full items-center gap-1.5 overflow-hidden border-r border-border px-2"
                 style={{
                   left: (columnRange.start + index) * columnWidthPx,
@@ -390,20 +399,30 @@ export function ProgramGrid({
                 />
               )}
               {overlay?.(axis)}
-              {siteOverlay && siteColumnRanges.map((range) => (
-                <div
-                  key={`${range.site}:${range.startColumn}`}
-                  data-testid="program-grid-site-overlay"
-                  data-site={range.site}
-                  className="absolute inset-y-0 overflow-hidden"
-                  style={{
-                    left: range.startColumn * columnWidthPx,
-                    width: range.columnCount * columnWidthPx,
-                  }}
-                >
-                  {siteOverlay(axis, range.site)}
-                </div>
-              ))}
+              {siteOverlay && (() => {
+                // site ごとに「最初の走か」を判定する。orderServices が種別を
+                // 最外に持つため、GR + BS を両方持つ site は非隣接な複数の走に
+                // 分かれる（siteColumnRanges は隣接判定なので束ねられない）。
+                const seenSites = new Set<string>()
+                return siteColumnRanges.map((range) => {
+                  const isFirstRunForSite = !seenSites.has(range.site)
+                  seenSites.add(range.site)
+                  return (
+                    <div
+                      key={`${range.site}:${range.startColumn}`}
+                      data-testid="program-grid-site-overlay"
+                      data-site={range.site}
+                      className="absolute inset-y-0 overflow-hidden"
+                      style={{
+                        left: range.startColumn * columnWidthPx,
+                        width: range.columnCount * columnWidthPx,
+                      }}
+                    >
+                      {siteOverlay(axis, range.site, isFirstRunForSite)}
+                    </div>
+                  )
+                })
+              })()}
             </div>
           </div>
         </div>

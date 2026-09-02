@@ -62,6 +62,22 @@ React key が衝突しないことを確認する。同時刻の容量超過は�
 これは jsdom では列幅・横方向の配置を測れないため、実装より先に追加した判定である。
 修正前は列が 1 本で red（`描画された列: 1`）になり、修正後は 2 本で green になる。
 
+**GR fixture（両 site で同じリモコン番号を持つが別放送の局。実在の東京・高松の
+NHK 総合・NHK E テレと同じ形）も配る。** `orderServices`（`lib/epg-grid.ts`）が
+リモコン番号を site より先に比べる実装だと、この 4 局は 1 列ごとに site が交互
+する順になる（レビュー指摘）。左端からの並びで「同じ site が連続する走」を数え、
+各 site の走が種別の本数（GR 1 本 + BS 1 本 = 2 本）に収まっていることを実測する
+（①）。GR 局を足すと site の列領域が非隣接な複数の走に分かれるため、`ProgramGrid`
+は走ごとに `siteOverlay` を呼ぶ --- 対策前はその本数ぶん容量帯の読み上げ文
+（sr-only）が重複する。帯（見た目）は走ごとに複数出てよいが、読み上げ文は
+1 site につき 1 つだけであることも実測する（②）。
+
+**列ヘッダーの site 名が `overflow-hidden` で視覚的に切れていないことも実測する
+（①´）。** `allTextContents()` は切れていても文字列自体は取れてしまうため、
+要素の矩形が列ヘッダーの矩形（`program-grid-header-cell`）に収まっているかを
+`getBoundingClientRect()` で確認する。ヘッダーの高さを意図的に詰めた実装
+（`headerHeightPx` を縮める）で実際に落ちることを確認済み。
+
 ```sh
 pnpm build && pnpm preview --port 4173 --strictPort &
 E2E_URL=http://localhost:4173 pnpm e2e:multi-site

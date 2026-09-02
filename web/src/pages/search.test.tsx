@@ -421,6 +421,18 @@ describe('SearchPage', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: '検索' })).toBeEnabled())
   })
 
+  it('site レジストリが空配列に解決したとき、失敗と同じ扱いで検索を無効化する（レビュー指摘）', async () => {
+    // `GET /api/sites` 自体は 200 で解決するが本文が `[]`。`registryPending` /
+    // `registryError` のどちらも false になるので、畳まないと `searchSite` が
+    // `undefined` のまま `submit` が無言で早期 return し続ける（旧
+    // site-gate.tsx が持っていた「空配列を弾く」分岐の再発）。
+    stubApi({ sites: [] })
+    renderPage()
+
+    expect(await screen.findByText('サイト一覧の取得に失敗しました')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '検索' })).toBeDisabled()
+  })
+
   /**
    * issue #305: 初画面で「条件を追加」を押さなくてもテキスト条件が打てて、
    * その入力欄がサービスのチップ列より DOM 順で前に来ることを確認する。
