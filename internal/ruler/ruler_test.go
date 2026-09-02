@@ -2301,22 +2301,22 @@ func TestRunPass_RetractGrace_SkipIntentStillReleases(t *testing.T) {
 }
 
 // (h) issue #540: 猶予の判定は program_snapshots.start_at ではなく
-// epg_programs.start_at（射影の最新値）を直接見る。判定用の SQL
-// （ListRetractGraceProtectedProgramIDsBySiteAndProgramIDs）が
-// program_snapshots を経由しない設計は issue #556 の後も変わらない ---
-// 猶予の正しさを、同じパス内の UpsertProgramSnapshotsFromProjection が
-// どこまでを同期対象にするかや実行順序に結合させないため。
+// epg_programs.start_at（射影の最新値）を直接見る設計になっている。
 //
-// 放送局が同じ EPG 更新で (1) 開始 5 時間後 → 20 分後に繰り上げ、かつ
-// (2) 題名を変えてルールの条件から外す、を同時に行うシナリオを作る。
-// 猶予の判定自体は epg_programs.start_at を直接見るので、旧実装が
-// program_snapshots.start_at（古い 5 時間後）を見て窓の外と誤判定して
-// 削除してしまう経路を塞ぐ --- 繰り上げ後の実際の開始時刻（20 分後）が
-// 窓の中に入るので保護される。
+// **この RunPass 経由のテストはもうその設計判断そのものは検証できない**:
+// issue #556 で UpsertProgramSnapshotsFromProjection の対象が「射影にまだ居る
+// 予約すべて」に広がったため、同じ tx 内で猶予の判定（tq.
+// ListRetractGraceProtectedProgramIDsBySiteAndProgramIDs 呼び出し）より前に
+// program_snapshots も liveStart に追従済みになる。つまり判定が
+// program_snapshots.start_at を見ても epg_programs.start_at を見ても、この
+// シナリオでは同じ結果になる（mutation: 判定を program_snapshots 基準に戻し
+// てもこのテストは落ちない）。epg_programs を直接見る設計そのものの検証は
+// TestListRetractGraceProtectedProgramIDsBySiteAndProgramIDs_UsesLiveEpgStartAt
+// （program_snapshots を意図的に stale なまま保つクエリ単体テスト）が担う。
 //
-// なお issue #556 で program_snapshots 自体も「射影にまだ居る予約すべて」に
-// 追従するようになったため、このテストは同時に snapshot が liveStart に
-// 追従することも確認する（下記アサーション）。
+// このテストが今も確認するのは (1) 繰り上げ + 改題で unmatch になった予約が
+// 猶予で削除されず同じ id のまま残ること、(2) その program_snapshots が
+// liveStart に追従すること（issue #556）の 2 点。
 func TestRunPass_RetractGrace_UsesLiveStartAtNotFrozenSnapshot(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
@@ -2374,6 +2374,54 @@ func TestRunPass_RetractGrace_UsesLiveStartAtNotFrozenSnapshot(t *testing.T) {
 	}
 }
 
+// issue #540 の設計判断（猶予の判定は epg_programs.start_at を直接見る。
+// program_snapshots は見ない）を、RunPass を介さずクエリ単体で検証する。
+// program_snapshots.start_at をわざと stale なまま（epg_programs.start_at とは
+// 別の値に）保つことで、判定が実際にどちらの列を見ているかを区別できる。
+// mutation: SQL の join を program_snapshots に戻すと、stale な値
+// （窓の外の +5h）で判定されて結果が空になり、このテストは落ちる。
+func TestListRetractGraceProtectedProgramIDsBySiteAndProgramIDs_UsesLiveEpgStartAt(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	insertService(t, pool, ctx)
+	const programID = 40011
+	liveStart := time.Now().Add(20 * time.Minute).Truncate(time.Second)
+	insertProgram(t, pool, ctx, programID, "対象番組11", liveStart)
+
+	ruleID := insertRule(t, pool, ctx, "grace-query-level", 10)
+
+	// RunPass を通さず reservations / program_snapshots を直接組み立てる ---
+	// ruler の追従（issue #556）を経由すると program_snapshots も liveStart に
+	// 揃ってしまい、判定がどちらの列を見ているか区別できなくなる。
+	insertReservationDirect(t, pool, ctx, programID, "対象番組11", liveStart)
+	if _, err := pool.Exec(ctx, `UPDATE reservations SET rule_id = $1 WHERE site = $2 AND program_id = $3`,
+		ruleID, testSite, programID); err != nil {
+		t.Fatalf("setting rule_id fixture: %v", err)
+	}
+	staleStart := time.Now().Add(5 * time.Hour).Truncate(time.Second)
+	if _, err := pool.Exec(ctx, `UPDATE program_snapshots SET start_at = $1 WHERE site = $2 AND program_id = $3`,
+		staleStart, testSite, programID); err != nil {
+		t.Fatalf("staling program_snapshots fixture: %v", err)
+	}
+
+	q := sqlcgen.New(pool)
+	now := time.Now()
+	got, err := q.ListRetractGraceProtectedProgramIDsBySiteAndProgramIDs(ctx, sqlcgen.ListRetractGraceProtectedProgramIDsBySiteAndProgramIDsParams{
+		Site:       testSite,
+		ProgramIds: []int64{programID},
+		Now:        now,
+		GraceUntil: now.Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("ListRetractGraceProtectedProgramIDsBySiteAndProgramIDs: %v", err)
+	}
+	if len(got) != 1 || got[0] != programID {
+		t.Errorf("got %v, want [%d] — program_snapshots.start_at is stale at +5h (outside the grace window), "+
+			"but epg_programs.start_at is live at +20m (inside it); the query must use the live value", got, programID)
+	}
+}
+
 // (i) (h) の逆向き: program_snapshots は猶予の窓の中（開始 20 分後で凍結）だが、
 // 同じ EPG 更新で epg_programs 側は窓の外（開始 5 時間後に後ろ倒し）に動く。
 // epg_programs 側が勝つべきで、削除される（program_snapshots に引きずられて
@@ -2402,8 +2450,9 @@ func TestRunPass_RetractGrace_LiveStartAtWinsOverStaleSnapshotWhenDelayed(t *tes
 		t.Fatalf("program_snapshots.start_at = %v, want %v (fixture setup assertion)", before.ProgramStartAt, imminentStart)
 	}
 
-	// 同じ EPG 更新で後ろ倒し + 改題を同時に行う。program_snapshots は凍結され
-	// imminentStart のままだが、epg_programs は delayedStart（窓の外）になる。
+	// 同じ EPG 更新で後ろ倒し + 改題を同時に行う。番組はまだ射影に居るので
+	// program_snapshots も delayedStart に追従する（issue #556）が、このテストが
+	// 見たいのは削除される/されないだけで program_snapshots の値は問わない。
 	delayedStart := time.Now().Add(5 * time.Hour).Truncate(time.Second)
 	retractGraceUnmatch(t, pool, ctx, programID, "非マッチ番組9", delayedStart)
 

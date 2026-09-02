@@ -81,7 +81,7 @@ denpa は同じ問題に「開始 N 時間前以降はルールから外れて�
 
 猶予でこのパスの削除から外れた行は、大量削除サーキットブレーカーの分子にも分母にも入らない（[breaker.md](breaker.md)「大量削除サーキットブレーカー」の猶予との関係）。
 
-猶予やラッチで削除を見送られた行（desired ではないがまだ reservations に居る）の `program_snapshots` も、番組が射影にある限り追従し続ける。ruler は追従対象を desired だけに絞らず、既存の reservations も含めるため（[reservations.md](../schema/reservations.md) §3.7「射影にある間は更新、消えたら凍結」）。凍結が起きるのは番組そのものが射影から消えたときだけである。
+猶予やラッチで削除を見送られた行（desired ではないがまだ reservations に居る）の `program_snapshots` も、番組が射影にある限り追従し続ける。ruler は追従対象を desired だけに絞らず、既存の reservations も含めるため（[reservations.md](../schema/reservations.md) §3.7「射影にある間は更新、消えたら凍結」）。予約行がある限り、凍結が起きるのは番組そのものが射影から消えたときだけである。
 
 #### 重複排除（再放送スキップ）
 

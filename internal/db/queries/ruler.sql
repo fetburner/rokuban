@@ -25,10 +25,10 @@ SELECT program_id FROM reservations WHERE site = $1;
 
 -- 射影から program_snapshots への追従更新（#27）は
 -- internal/db/queries/program_snapshots.sql の UpsertProgramSnapshotsFromProjection
--- 1 本にまとまった。ruler はそれを desiredIDs に対して呼ぶだけで、「射影にある間は
--- 更新、消えたら凍結」を自分で判定しない（射影に無い programId は
--- UpsertProgramSnapshotsFromProjection の JOIN にそもそも出てこないので、
--- 何もせず既存の program_snapshots 行がそのまま凍結される）。
+-- 1 本にまとまった。ruler はそれを desired ∪ 既存の reservations に対して呼ぶ
+-- だけで、「射影にある間は更新、消えたら凍結」を自分で判定しない（射影に無い
+-- programId は UpsertProgramSnapshotsFromProjection の JOIN にそもそも出てこ
+-- ないので、何もせず既存の program_snapshots 行がそのまま凍結される）。
 -- 旧 ListProgramSnapshotsBySiteAndProgramIDs（epg_programs ⋈ epg_services を
 -- 直接引いて reservations 側の CASE で凍結を判定していたもの）は撤去した。
 
@@ -213,15 +213,16 @@ WHERE site = $1 AND program_id = ANY(sqlc.arg(program_ids)::bigint[]);
 -- toDelete に入らないため、この関数の入力にそもそも現れない。
 --
 -- program_snapshots ではなく epg_programs（射影の最新値）を join する。
--- program_snapshots は desired（= ルールが今もマッチしている）番組にしか追従
--- しないため、猶予が効いてほしい unmatch のパスでは前回マッチ時点の値のまま
--- 凍結されている。stillProjectedSubset（internal/ruler/ruler.go）は tx を開く
--- 前に pool 上で走る 1 回の SELECT でしかなく、この SELECT との間に epg_sync
--- が該当行を消す窓はもとからある --- 当たれば「猶予の対象外」（削除）に倒れる。
--- 旧実装は program_snapshots への FK が行の存在を保証していたため、この窓では
--- 気づかれないまま保護できていた。COALESCE で両方見る形は取らない ---
--- program_snapshots は定義上 stale になり得るので、生きた射影を 1 本で見る方が
--- 説明が素直。
+-- program_snapshots は「射影にまだ居る予約すべて」に追従するので unmatch の
+-- パスでも通常は追従済みだが、猶予の正しさをその同期対象の広さや同一パス内の
+-- 実行順序に結合させたくない --- epg_programs を直接見れば、この判定は他の
+-- 書き込みの並びに依存しない。stillProjectedSubset（internal/ruler/ruler.go）
+-- は tx を開く前に pool 上で走る 1 回の SELECT でしかなく、この SELECT との
+-- 間に epg_sync が該当行を消す窓はもとからある --- 当たれば「猶予の対象外」
+-- （削除）に倒れる。旧実装は program_snapshots への FK が行の存在を保証して
+-- いたため、この窓では気づかれないまま保護できていた。COALESCE で両方見る形は
+-- 取らない --- program_snapshots は定義上 stale になり得るので、生きた射影を
+-- 1 本で見る方が説明が素直。
 SELECT r.program_id
 FROM reservations r
 JOIN epg_programs p ON p.site = r.site AND p.program_id = r.program_id
