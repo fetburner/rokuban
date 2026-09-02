@@ -2357,7 +2357,7 @@ func TestRunPass_RetractGrace_UsesLiveStartAtNotFrozenSnapshot(t *testing.T) {
 
 	after, ok := getReservation(t, pool, ctx, programID)
 	if !ok {
-		t.Fatal("reservation should survive: the live (epg_programs) start time is imminent, even though the frozen snapshot says it is 5 hours out")
+		t.Fatal("reservation should survive: the live (epg_programs) start time is imminent, even though program_snapshots still showed 5 hours out before this pass")
 	}
 	if after.ID != before.ID {
 		t.Errorf("reservation id changed: %d -> %d (grace must freeze the row, not recreate it)", before.ID, after.ID)
@@ -2422,10 +2422,10 @@ func TestListRetractGraceProtectedProgramIDsBySiteAndProgramIDs_UsesLiveEpgStart
 	}
 }
 
-// (i) (h) の逆向き: program_snapshots は猶予の窓の中（開始 20 分後で凍結）だが、
-// 同じ EPG 更新で epg_programs 側は窓の外（開始 5 時間後に後ろ倒し）に動く。
-// epg_programs 側が勝つべきで、削除される（program_snapshots に引きずられて
-// 誤って保護してはならない）。
+// (i) 猶予の窓の**上限**を固定する: 番組が開始 5 時間後（窓の外）に後ろ倒しされた
+// 予約は削除される。program_snapshots はこのパスで delayedStart に追従するが
+// （issue #556）、判定は epg_programs.start_at を直接見るので、それに引きずられて
+// 誤って保護されることはない --- 追従の有無に関わらず窓の外なら削除される。
 func TestRunPass_RetractGrace_LiveStartAtWinsOverStaleSnapshotWhenDelayed(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
@@ -2461,6 +2461,6 @@ func TestRunPass_RetractGrace_LiveStartAtWinsOverStaleSnapshotWhenDelayed(t *tes
 	}
 
 	if reservationExists(t, pool, ctx, programID) {
-		t.Error("reservation should have been deleted: the live (epg_programs) start time is 5 hours out, even though the frozen snapshot says it is imminent")
+		t.Error("reservation should have been deleted: the live (epg_programs) start time is 5 hours out, outside the grace window (program_snapshots follows to the same value, but that must not matter)")
 	}
 }
