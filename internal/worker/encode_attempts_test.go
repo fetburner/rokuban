@@ -223,12 +223,19 @@ func TestEncodeWorker_AttemptRow_CtxCanceledLeavesRunning(t *testing.T) {
 	// 原因: encode.go の cmd.Stderr は *os.File ではなく &strings.Builder な
 	// ので、os/exec は stderr を読む中継 goroutine を立て、cmd.Wait（
 	// WaitDelay 未設定）はその goroutine が EOF で終わるまで待つ
-	// （awaitGoroutines）。macOS の /bin/sh はスクリプト末尾のコマンドでも
-	// exec せず fork するため（`pgrep -P` で確認）、kill は sh だけを殺し、
-	// sh の子の sleep は inherited な stderr の書き込み端を握ったまま生き残る
-	// --- Wait() はその sleep が寿命を迎えて stderr が閉じるまで、実質 sleep
-	// の残り時間だけ返らない。5 秒 vs 5 秒だったときに確率的に落ちていたのは
-	// この関係そのもの（issue #552）。この 2 つを同じ値・近い値に戻すと
+	// （awaitGoroutines）。/bin/sh はスクリプトファイルの末尾コマンドでも
+	// exec せず fork する（sh -c の文字列に対する exec 最適化は、スクリプト
+	// ファイルの実行には効かない）ため、kill は sh だけを殺し、sh の子の
+	// sleep は inherited な stderr の書き込み端を握ったまま生き残る。
+	// CI のランナーは全て Linux（.github/workflows/ci.yml、/bin/sh は
+	// dash）なので #552 は Linux 上で起きたフレーク --- macOS 固有の話ではない。
+	// このテストと同じ形（sleep 5、Stderr を &strings.Builder にした場合）の
+	// 最小 repro で両方計測: linux/arm64 dash（golang:1.25 コンテナ）で
+	// cancel→Wait = 4.9999s、darwin/arm64 で 5.0193s、いずれも sleep の
+	// 長さとほぼ一致（Stderr 無しなら linux 301µs / darwin 1.13ms、
+	// 即座に返る）。Wait() はその sleep が寿命を迎えて stderr が閉じるまで、
+	// 実質 sleep の残り時間だけ返らない。5 秒 vs 5 秒だったときに確率的に
+	// 落ちていたのはこの関係そのもの（issue #552）。この 2 つを同じ値・近い値に戻すと
 	// 同じフレークが復活するので、上限側を十分離して保つ。
 	const slowFFmpegSleepSeconds = 2
 	const workReturnTimeout = 10 * time.Second
