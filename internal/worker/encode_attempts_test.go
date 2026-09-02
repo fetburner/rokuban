@@ -163,7 +163,15 @@ func TestEncodeWorker_AttemptRow_CtxCanceledLeavesRunning(t *testing.T) {
 	}
 	mediaDir := t.TempDir()
 	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "x/attempt-cancel.m2ts", nil, []byte("data"))
-	slowFFmpeg := installSlowFakeFFmpeg(t, 5)
+	// フェイク ffmpeg 自身の sleep 長と、下の workReturnTimeout（Work() の返りを
+	// 待つ上限）は論理的に独立--- exec.CommandContext の kill は sleep の終了を
+	// 待たないので、Work() は本来 sleep の長さと無関係に返る。両方が同じ 5 秒
+	// だったため、コア枯渇で kill → reap → cmd.Wait() の尾がわずかに伸びると
+	// sleep の残り時間だけで上限を越えて確率的に落ちていた（issue #552）。
+	// この 2 つを同じ値に戻すと同じフレークが復活するので、離した値を保つ。
+	const slowFFmpegSleepSeconds = 2
+	const workReturnTimeout = 10 * time.Second
+	slowFFmpeg := installSlowFakeFFmpeg(t, slowFFmpegSleepSeconds)
 
 	w := &EncodeWorker{
 		Pool:       pool,
@@ -208,7 +216,7 @@ func TestEncodeWorker_AttemptRow_CtxCanceledLeavesRunning(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected error with canceled ctx")
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(workReturnTimeout):
 		t.Fatal("timed out waiting for Work() to return after cancel")
 	}
 
