@@ -163,6 +163,7 @@ export const ProgramList = forwardRef<
   {
     programs: SiteProgram[]
     serviceById: Map<string, SiteService>
+    showSite?: boolean
     actions: ReservationActions
     /**
      * 可視範囲の先頭の番組が変わるたびに「いま見ている日」の dayOffset を通知する。
@@ -174,7 +175,7 @@ export const ProgramList = forwardRef<
     /** テストから現在時刻を固定するための注入口。省略時は `Date.now()`。 */
     now?: number
   }
->(function ProgramList({ programs, serviceById, actions, onVisibleDayChange, now }, ref) {
+>(function ProgramList({ programs, serviceById, showSite = false, actions, onVisibleDayChange, now }, ref) {
   const listRef = useRef<HTMLUListElement>(null)
 
   // ページ全体がスクロールするので、リストの手前にある PageHeader のオフセットを
@@ -302,8 +303,8 @@ export const ProgramList = forwardRef<
           <li
             key={programIdentity(program.site, program.programId)}
             data-index={index}
-            // 添字ではなく programId にするのは getItemKey と同じ理由 ---
-            // 絞り込みの変更で添字はずれるが programId は行の実体と結びついたまま変わらない。
+            // 添字ではなく site:programId にするのは getItemKey と同じ理由 ---
+            // 絞り込みの変更で添字はずれるが、複数 site でも行の実体と結びついたまま変わらない。
             data-program-id={program.programId}
             data-site={program.site}
             ref={renderAll ? undefined : virtualizer.measureElement}
@@ -326,6 +327,7 @@ export const ProgramList = forwardRef<
             )}
             <ProgramRow
               program={program}
+              siteName={showSite ? program.site : undefined}
               serviceName={
                 serviceById.get(siteServiceKey(program.site, program.networkId, program.serviceId))?.name
               }

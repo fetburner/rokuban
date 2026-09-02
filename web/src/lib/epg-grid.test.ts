@@ -237,6 +237,15 @@ describe('orderServices', () => {
     expect(input.map((s) => s.serviceId)).toEqual([1032, 1024])
   })
 
+  it('同一局が複数 site にあるとき site を tie-breaker にして 0 を返さない', () => {
+    const shared = service(101, 'BS', 0)
+    const ordered = orderServices([
+      { ...shared, site: 'tokyo' },
+      { ...shared, site: 'takamatsu' },
+    ])
+    expect(ordered.map((item) => item.site)).toEqual(['takamatsu', 'tokyo'])
+  })
+
   it('並び替え済みのサービスを種別ごとにまとめ、表示名を返す', () => {
     const groups = groupByChannelType(
       orderServices([

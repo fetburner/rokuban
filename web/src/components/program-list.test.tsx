@@ -84,6 +84,7 @@ function renderList(
     onVisibleDayChange?: (dayOffset: number) => void
     now?: number
     ref?: React.RefObject<ProgramListHandle | null>
+    showSite?: boolean
   } = {},
 ) {
   stubFetch()
@@ -94,6 +95,7 @@ function renderList(
         ref={extra.ref}
         programs={programs}
         serviceById={services}
+        showSite={extra.showSite}
         actions={reservationActions}
         onVisibleDayChange={extra.onVisibleDayChange}
         now={extra.now}
@@ -103,6 +105,18 @@ function renderList(
 }
 
 describe('ProgramList', () => {
+  it('複数 site の一覧行に可視の site 名を出し、単一 site では出さない', () => {
+    const tokyo = program(1, 1, '共有番組')
+    const takamatsu = { ...tokyo, site: 'takamatsu' }
+    const multi = renderList([tokyo, takamatsu], actions(), { showSite: true })
+    expect(screen.getByText('default')).toBeInTheDocument()
+    expect(screen.getByText('takamatsu')).toBeInTheDocument()
+    multi.unmount()
+
+    renderList([tokyo])
+    expect(screen.queryByText('default')).not.toBeInTheDocument()
+  })
+
   it('大量の番組（500 件）を渡しても、最初・中間・最後の行が screen から引ける', async () => {
     // jsdom は DOM のレイアウトを計算できない（web/src/lib/list-virtualization.ts）
     // ので、このテストは「間引かれて消えていないか」を実質的に固定する。仮想化の

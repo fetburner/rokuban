@@ -1,6 +1,11 @@
 import { useQueries } from '@tanstack/react-query'
 
-import { getListServicesQueryOptions, useListSites, type ProgramListItem, type Service } from '@/api/generated'
+import {
+  getListServicesQueryOptions,
+  useListSites,
+  type ProgramListItem,
+  type Service,
+} from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
 
 /** SiteService はサービス射影に、それを取得した site を付与した値。 */
@@ -29,6 +34,8 @@ export type AllSitesServices = {
   /** isPending は取得中と失敗の区別に使う（空を「サービスが無い」と読ませない）。 */
   isPending: boolean
   isError: boolean
+  /** sites と各 site の services を再取得する。 */
+  refetch: () => Promise<void>
 }
 
 /**
@@ -90,5 +97,9 @@ export function useAllSitesServices(): AllSitesServices {
     sites,
     isPending: sitesQuery.isPending || serviceQueries.some((q) => q.isPending),
     isError: sitesQuery.isError || serviceQueries.some((q) => q.isError),
+    refetch: async () => {
+      await sitesQuery.refetch()
+      await Promise.all(serviceQueries.map((query) => query.refetch()))
+    },
   }
 }

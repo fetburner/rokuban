@@ -157,6 +157,8 @@ function stubFetch(options: {
   sites?: string[]
   /** `GET /api/sites/{site}/tuners`。site ごとに指定しない限り空配列（issue #474）。 */
   tunersBySite?: Record<string, Tuner[]>
+  tunerStatusBySite?: Record<string, number>
+  pendingTunerSites?: string[]
 }) {
   const {
     services = [],
@@ -166,6 +168,8 @@ function stubFetch(options: {
     reservations = [],
     sites = ['default'],
     tunersBySite = {},
+    tunerStatusBySite = {},
+    pendingTunerSites = [],
   } = options
   globalThis.fetch = vi.fn((input: string | URL | Request) => {
     const url = new URL(String(input), 'http://localhost')
@@ -186,7 +190,12 @@ function stubFetch(options: {
     const tunersMatch = /^\/api\/sites\/([^/]+)\/tuners$/.exec(url.pathname)
     if (tunersMatch) {
       const site = tunersMatch[1]!
-      return Promise.resolve(new Response(JSON.stringify(tunersBySite[site] ?? []), { status: 200 }))
+      if (pendingTunerSites.includes(site)) return new Promise<Response>(() => {})
+      return Promise.resolve(
+        new Response(JSON.stringify(tunersBySite[site] ?? []), {
+          status: tunerStatusBySite[site] ?? 200,
+        }),
+      )
     }
 
     // ライブへの導線・画面はサーバー側の live.enabled に連動する（issue #209）。
@@ -1187,5 +1196,22 @@ describe('チューナー状態（issue #474）', () => {
     expect(within(takamatsu).queryByText('観測が止まっています')).not.toBeInTheDocument()
     expect(screen.getAllByTestId(/^tuner-status-/)).toHaveLength(2)
     expect(screen.queryByText('チューナー3本')).not.toBeInTheDocument()
+  })
+
+  it.each([
+    ['取得失敗', { tunerStatusBySite: { takamatsu: 500 } }],
+    ['取得中', { pendingTunerSites: ['takamatsu'] }],
+  ])('別 site が%sでも解決済み site の行を表示する', async (_name, failure) => {
+    stubFetch({
+      services: [service({ serviceId: 1, name: 'チャンネル A' })],
+      sites: ['tokyo', 'takamatsu'],
+      tunersBySite: { tokyo: [tuner({ index: 0, isFault: true })] },
+      ...failure,
+    })
+    renderLive()
+
+    const tokyo = await screen.findByTestId('tuner-status-tokyo')
+    expect(within(tokyo).getByText('（故障1）')).toBeInTheDocument()
+    expect(screen.queryByTestId('tuner-status-takamatsu')).not.toBeInTheDocument()
   })
 })

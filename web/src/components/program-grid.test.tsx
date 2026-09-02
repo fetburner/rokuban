@@ -68,6 +68,7 @@ function renderGrid({
   selectedProgramId = null as string | null,
   onSelect = vi.fn(),
   overlay,
+  showSite = false,
 }: {
   services?: SiteService[]
   programs?: SiteProgram[]
@@ -76,6 +77,7 @@ function renderGrid({
   selectedProgramId?: string | null
   onSelect?: (program: SiteProgram) => void
   overlay?: (axis: TimeAxis) => React.ReactNode
+  showSite?: boolean
 } = {}) {
   const view = render(
     <ProgramGrid
@@ -87,6 +89,7 @@ function renderGrid({
       onSelect={onSelect}
       now={now}
       overlay={overlay}
+      showSite={showSite}
     />,
   )
   return { ...view, onSelect }
@@ -130,6 +133,22 @@ function stubViewport(
 }
 
 describe('ProgramGrid', () => {
+  it('複数 site の同名サービス列には可視の site 名を出し、単一 site では出さない', () => {
+    const shared = service(1024, '共有BS')
+    const multi = renderGrid({
+      services: [shared, { ...shared, site: 'takamatsu' }],
+      showSite: true,
+    })
+    expect(screen.getAllByTestId('program-grid-header-site').map((node) => node.textContent)).toEqual([
+      'default',
+      'takamatsu',
+    ])
+    multi.unmount()
+
+    renderGrid({ services: [shared] })
+    expect(screen.queryByTestId('program-grid-header-site')).not.toBeInTheDocument()
+  })
+
   it('GR のリモコン番号タグは text-foreground（issue #308。text-muted-foreground だと bg-muted との合成後コントラストがライトで 4.5 を割る）', () => {
     renderGrid({ services: [service(1024, 'NHK総合')] })
 

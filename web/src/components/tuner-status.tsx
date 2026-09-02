@@ -57,10 +57,11 @@ export function TunerStatus() {
   // グループ定義と同じ定数を参照する --- 片方だけ改名して取り直しが止まる drift を
   // 防ぐため。手書きキーの前例は番組リストの
   // `['/api/programs', 'infinite', ...]`（`pages/programs.tsx`）。
-  if (sitesQuery.isPending || tunerQueries.some((query) => query.isPending)) return null
-  if (sitesQuery.isError || tunerQueries.some((query) => query.isError)) return null
+  if (sitesQuery.isPending || sitesQuery.isError) return null
   const statuses = sites.flatMap((site, index) => {
-    const tuners = unwrap(tunerQueries[index]?.data) ?? []
+    const query = tunerQueries[index]
+    if (query === undefined || query.isPending || query.isError) return []
+    const tuners = unwrap(query.data) ?? []
     return tuners.length > 0 ? [{ site, tuners }] : []
   })
   if (statuses.length === 0) return null

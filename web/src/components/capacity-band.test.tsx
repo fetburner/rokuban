@@ -87,7 +87,9 @@ function renderGrid(overages: CapacityOverage[], programs: SiteProgram[]) {
       selectedProgramId={null}
       onSelect={vi.fn()}
       now={at(19 * 60)}
-      overlay={(gridAxis) => <CapacityBands axis={gridAxis} overages={overages} />}
+      siteOverlay={(gridAxis, site) => (
+        <CapacityBands axis={gridAxis} overages={overages} site={site} />
+      )}
       // 見えるラベルは時間軸列（gutterOverlay）に出る（issue #460）。
       // 単体テストでも実際に使う配線と同じ組み方にする。
       gutterOverlay={(gridAxis) => <CapacityBandLabels axis={gridAxis} overages={overages} />}
@@ -119,7 +121,7 @@ describe('CapacityBands', () => {
     expect(rendered?.style.height).toBe('120px')
   })
 
-  it('区間が全チャンネルを縦断する（番組ではなく区間に描く）', () => {
+  it('区間が同じ site の全チャンネルを縦断する（番組ではなく区間に描く）', () => {
     const services = [service, { ...service, serviceId: 1032, name: 'NHKEテレ' }]
     render(
       <ProgramGrid
@@ -130,14 +132,44 @@ describe('CapacityBands', () => {
         selectedProgramId={null}
         onSelect={vi.fn()}
         now={at(19 * 60)}
-        overlay={(gridAxis) => (
-          <CapacityBands axis={gridAxis} overages={[overage(20 * 60, 21 * 60)]} />
+        siteOverlay={(gridAxis, site) => (
+          <CapacityBands axis={gridAxis} overages={[overage(20 * 60, 21 * 60)]} site={site} />
         )}
       />,
     )
 
-    // 帯の層は列の総幅を張る。列ごとに描くと「この番組が負ける」の主張になる
-    expect(band(20 * 60)?.parentElement?.parentElement?.style.width).toBe('352px')
+    // 単一 site なので帯の層は全列の総幅を張る。
+    expect(band(20 * 60)?.parentElement?.style.width).toBe('352px')
+  })
+
+  it('帯は同じ site の列領域だけに描き、別 site の列へ広がらない', () => {
+    const other = { ...service, site: 'other' }
+    render(
+      <ProgramGrid
+        services={[service, other]}
+        programs={[]}
+        axis={axis}
+        reservationByProgramId={new Set()}
+        selectedProgramId={null}
+        onSelect={vi.fn()}
+        now={at(19 * 60)}
+        siteOverlay={(gridAxis, site) => (
+          <CapacityBands
+            axis={gridAxis}
+            overages={[overage(20 * 60, 21 * 60, { site: 'other' })]}
+            site={site}
+          />
+        )}
+      />,
+    )
+
+    const rendered = screen.getByTestId('capacity-band')
+    expect(rendered).toHaveAttribute('data-site', 'other')
+    expect(rendered.closest('[data-testid="program-grid-site-overlay"]')).toHaveAttribute(
+      'data-site',
+      'other',
+    )
+    expect(screen.getAllByTestId('program-grid-site-overlay')).toHaveLength(2)
   })
 
   it('不足本数と詰まった種別を出す（読み上げ用の全文。見た目は時間軸列側の短い形）', () => {
@@ -204,7 +236,9 @@ describe('CapacityBands と CapacityBandLabels は対で configure する', () =
         selectedProgramId={null}
         onSelect={vi.fn()}
         now={at(19 * 60)}
-        overlay={(gridAxis) => <CapacityBands axis={gridAxis} overages={[overage(20 * 60, 21 * 60)]} />}
+        siteOverlay={(gridAxis, site) => (
+          <CapacityBands axis={gridAxis} overages={[overage(20 * 60, 21 * 60)]} site={site} />
+        )}
         // gutterOverlay を渡していない --- ここが対を崩した呼び出し
       />,
     )
@@ -249,10 +283,8 @@ describe('CapacityBands の色', () => {
  * ここで固定するのは「どの overage にどの top を割り当てるか」という純粋な
  * ロジックだけ --- avoidTickRow の分岐。
  *
- * **同一サイト内の不足区間は重ならない**（`internal/capacity/capacity.go` の
- * `Compute` が保証し、`pages/programs.tsx` はグリッドを 1 サイトに絞って渡す）
- * ので、ラベル同士の位置調整（積む処理）は無い --- 一度書いたが実際には
- * 決して発火しないコードだったので削った（issue #460 レビュー should 1）。
+ * 同一 site 内の不足区間は重ならないが、全 site の和集合では別 site の区間が
+ * 同時刻に来る。後者だけは同じ gutter 内で積み、重なりを避ける。
  */
 describe('CapacityBandLabels の配置', () => {
   it('帯の上端にアンカーし、高さは自分の内容ぶんだけ（帯の全高を塗らない）', () => {
@@ -285,6 +317,22 @@ describe('CapacityBandLabels の配置', () => {
     expect(labels[0]?.style.top).not.toBe(labels[1]?.style.top)
     expect(screen.getByText('BS-1')).toBeInTheDocument()
     expect(screen.getByText('GR-1')).toBeInTheDocument()
+  })
+
+  it('別 site の同時刻のラベルは gutter 内で積み、同じ位置に重ねない', () => {
+    renderGrid(
+      [
+        overage(20 * 60 + 15, 21 * 60, { site: 'tokyo', shortfall: 1 }),
+        overage(20 * 60 + 15, 21 * 60, { site: 'takamatsu', shortfall: 2 }),
+      ],
+      [],
+    )
+
+    const labels = screen.getAllByTestId('capacity-band-label')
+    expect(labels).toHaveLength(2)
+    expect(labels[0]).toHaveAttribute('data-site', 'tokyo')
+    expect(labels[1]).toHaveAttribute('data-site', 'takamatsu')
+    expect(labels[0]?.style.top).not.toBe(labels[1]?.style.top)
   })
 
   it('ちょうど正時に始まる区間は、目盛りの行を避けて下にずれる', () => {

@@ -144,19 +144,23 @@ export function claimsHlsPlaylistSupport(canPlayType: (type: string) => string):
  * pickInitialService は `?service=<Service.id>` から初期選択チャンネル（`Service`）を
  * 決める。
  *
- * `requestedId` に一致するサービスがあればそれを使う。一致しない（未指定・
- * 無効な id・一覧に無い id）ときは番組を持つ先頭のサービスへフォールバックする
+ * `requestedId` と `requestedSite` に一致するサービスがあればそれを使う。
+ * site が未指定なら従来どおり id の一致だけを見る。一致しない（未指定・無効な id・
+ * 一覧に無い id/site）ときは番組を持つ先頭のサービスへフォールバックする
  * --- マルチ編成のないサブサービス（`hasPrograms: false`）を既定にしても、今放送中の
  * 番組を出せず「いま放送中」欄が常に空になる。番組を持つサービスが 1 つも無ければ
  * 先頭のサービスを使う。サービス自体が 1 件も無ければ undefined（まだ取得できて
  * いない、または EPG プロジェクションが空）。
  */
-export function pickInitialService(
-  services: readonly Service[],
+export function pickInitialService<S extends Service & { site?: string }>(
+  services: readonly S[],
   requestedId: number | undefined,
-): Service | undefined {
+  requestedSite?: string,
+): S | undefined {
   if (requestedId !== undefined) {
-    const exact = services.find((s) => s.id === requestedId)
+    const exact = services.find(
+      (s) => s.id === requestedId && (requestedSite === undefined || s.site === requestedSite),
+    )
     if (exact !== undefined) return exact
   }
   return services.find((s) => s.hasPrograms) ?? services[0]

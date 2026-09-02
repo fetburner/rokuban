@@ -47,6 +47,7 @@ import { cn } from '@/lib/utils'
 export function ProgramRow({
   program,
   serviceName,
+  siteName,
   reserved,
   pending,
   onReserve,
@@ -54,6 +55,7 @@ export function ProgramRow({
 }: {
   program: SiteProgram
   serviceName?: string
+  siteName?: string
   reserved: boolean
   pending: boolean
   onReserve: (overrides?: ProgramOverridesInput) => void
@@ -130,6 +132,7 @@ export function ProgramRow({
           <div className="min-w-0 flex-1">
             <div className="truncate text-base">{program.name}</div>
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              {siteName && <span className="shrink-0">{siteName}</span>}
               {serviceName && <span className="truncate">{serviceName}</span>}
               <span className="shrink-0">{formatDuration(program.durationMs)}</span>
               {!program.isFree && <span className="shrink-0">有料</span>}

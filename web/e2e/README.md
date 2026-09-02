@@ -55,8 +55,10 @@ E2E_URL=http://localhost:40775 pnpm e2e
 
 ### 多 site 番組表（`multi-site.mjs`）
 
-Issue #534 の受け入れ判定。`tokyo` と `osaka` の fixture をブラウザへ配り、
-`/programs?view=grid` に両 site の列と各列の番組セルが描画されることを測る。
+`tokyo` と `takamatsu` に同一 `networkId` / `serviceId` / `Service.id` / 局名 /
+`programId` の共有 BS fixture を配る。グリッドとリストで可視の site 名があり、
+React key が衝突しないことを確認する。同時刻の容量超過は帯が各 site の列内に
+収まり、時間軸列のラベル同士が重ならないことを実ブラウザの矩形で測る。
 これは jsdom では列幅・横方向の配置を測れないため、実装より先に追加した判定である。
 修正前は列が 1 本で red（`描画された列: 1`）になり、修正後は 2 本で green になる。
 

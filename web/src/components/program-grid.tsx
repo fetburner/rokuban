@@ -129,7 +129,9 @@ export function ProgramGrid({
   now,
   scrollToMs,
   overlay,
+  siteOverlay,
   gutterOverlay,
+  showSite = false,
 }: {
   /** 列。渡された順に左から並べる（並び順は lib/epg-grid.ts の orderServices）。 */
   services: SiteService[]
@@ -148,8 +150,12 @@ export function ProgramGrid({
    * 同じフォールバック（先頭。`inAxis` が false になる分岐）に落ちる。
    */
   scrollToMs?: number
+  /** 複数 site のとき、ヘッダへ可視の site 名を出す。 */
+  showSite?: boolean
   /** 全チャンネル縦断の帯を重ねる層。軸を受け取って絶対配置の要素を返す。 */
   overlay?: (axis: TimeAxis) => React.ReactNode
+  /** 同じ site の連続した列領域ごとにクリップして重ねる層。 */
+  siteOverlay?: (axis: TimeAxis, site: string) => React.ReactNode
   /**
    * 時間軸列（gutter）に重ねる層。帯の見えるラベルなど、局の列の番組セルと
    * 衝突させたくない要素をここに置く（issue #460）。軸を受け取って絶対配置の
@@ -214,6 +220,17 @@ export function ProgramGrid({
     services.length,
   )
   const columnsWidthPx = services.length * columnWidthPx
+  const siteColumnRanges = services.reduce<
+    { site: string; startColumn: number; columnCount: number }[]
+  >((ranges, service, index) => {
+    const previous = ranges.at(-1)
+    if (previous?.site === service.site) {
+      previous.columnCount++
+    } else {
+      ranges.push({ site: service.site, startColumn: index, columnCount: 1 })
+    }
+    return ranges
+  }, [])
   const columnRange = visibleColumnRange(
     services.length,
     columnWidthPx,
@@ -272,7 +289,19 @@ export function ProgramGrid({
                     {service.remoteControlKeyId}
                   </span>
                 )}
-                <span className="truncate text-xs font-medium">{service.name}</span>
+                {showSite ? (
+                  <span className="flex min-w-0 flex-col">
+                    <span className="truncate text-xs font-medium">{service.name}</span>
+                    <span
+                      data-testid="program-grid-header-site"
+                      className="truncate text-[10px] text-muted-foreground"
+                    >
+                      {service.site}
+                    </span>
+                  </span>
+                ) : (
+                  <span className="truncate text-xs font-medium">{service.name}</span>
+                )}
               </div>
             ))}
           </div>
@@ -361,6 +390,20 @@ export function ProgramGrid({
                 />
               )}
               {overlay?.(axis)}
+              {siteOverlay && siteColumnRanges.map((range) => (
+                <div
+                  key={`${range.site}:${range.startColumn}`}
+                  data-testid="program-grid-site-overlay"
+                  data-site={range.site}
+                  className="absolute inset-y-0 overflow-hidden"
+                  style={{
+                    left: range.startColumn * columnWidthPx,
+                    width: range.columnCount * columnWidthPx,
+                  }}
+                >
+                  {siteOverlay(axis, range.site)}
+                </div>
+              ))}
             </div>
           </div>
         </div>

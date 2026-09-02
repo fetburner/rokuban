@@ -166,6 +166,9 @@ function stubApi(options?: {
    * `/services` は `services` フィクスチャをそのまま返す。
    */
   sites?: string[]
+  /** GET /api/sites を先頭から指定回数だけ失敗させる。 */
+  sitesFailures?: number
+  holdSites?: boolean
 }) {
   const searchBodies: ProgramSearchRequest[] = []
   const createRuleBodies: RuleInput[] = []
@@ -196,6 +199,8 @@ function stubApi(options?: {
   // このリクエスト回数と `start` の種類数で固定する。
   const overagesRequests: string[] = []
   const pendingOverages: (() => void)[] = []
+  const registrySites = options?.sites ?? ['default']
+  let remainingSitesFailures = options?.sitesFailures ?? 0
 
   const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input), 'http://localhost')
@@ -203,8 +208,11 @@ function stubApi(options?: {
 
     // 条件フォームのサービス選択肢は全 site から作る（issue #290）ので、
     // 単一サイト構成でも `GET /api/sites` を経由する。
-    const registrySites = options?.sites ?? ['default']
     if (url.pathname === '/api/sites') {
+      if (options?.holdSites) return new Promise<Response>(() => {})
+      if (remainingSitesFailures-- > 0) {
+        return Promise.resolve(jsonResponse({ error: 'registry down' }, 500))
+      }
       return Promise.resolve(jsonResponse(registrySites))
     }
 
@@ -395,6 +403,24 @@ async function addKeyword(value: string, mode: '正規表現' | 'キーワード
 }
 
 describe('SearchPage', () => {
+  it('site レジストリ取得中は検索を無効化して理由を表示する', async () => {
+    stubApi({ holdSites: true })
+    renderPage()
+
+    expect(await screen.findByText('サイト一覧を取得中…')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '検索' })).toBeDisabled()
+  })
+
+  it('site レジストリ失敗を表示し、再試行後に検索可能になる', async () => {
+    stubApi({ sitesFailures: 1 })
+    renderPage()
+
+    expect(await screen.findByText('サイト一覧の取得に失敗しました')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '検索' })).toBeDisabled()
+    await userEvent.click(screen.getByRole('button', { name: '再試行' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: '検索' })).toBeEnabled())
+  })
+
   /**
    * issue #305: 初画面で「条件を追加」を押さなくてもテキスト条件が打てて、
    * その入力欄がサービスのチップ列より DOM 順で前に来ることを確認する。

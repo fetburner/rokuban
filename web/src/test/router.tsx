@@ -35,7 +35,7 @@ export const testSite = 'default'
  */
 export function renderInRouter(
   ui: React.ReactElement,
-  options?: { path?: string; initialEntries?: string[]; queryClient?: QueryClient; site?: string },
+  options?: { path?: string; initialEntries?: string[]; queryClient?: QueryClient },
 ) {
   const path = options?.path ?? '/'
   const queryClient =

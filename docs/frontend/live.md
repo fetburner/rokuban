@@ -40,7 +40,7 @@ site と組み合わせて行う**（選択中のハイライトと `aria-curren
 チャンネルの記憶）。**`/live` の URL は `?service=<Service.id>&site=<site>` で
 site も運ぶ**（`?service=` の値域も `/programs` と同じ生成スキーマで検証する）。
 初期選択は「site と `Service.id` が一致すればそれ、無ければ番組を持つ先頭」だけで決まる
-（`pickInitialService`。`lib/live.ts`）。
+（`pickInitialService(services, requestedId, requestedSite)`。`lib/live.ts`）。
 番組リスト（`components/program-row.tsx`）の「ライブで見る」リンクは
 `ProgramListItem` が SI の `networkId` / `serviceId` しか持たないため、
 `composeServiceId`（`lib/service-id.ts`）で合成してから渡す。

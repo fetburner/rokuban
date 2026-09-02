@@ -17,6 +17,7 @@ import { useLiveCapability } from '@/lib/capabilities'
 import {
   currentProgramWindow,
   formatLiveDiagnostics,
+  pickInitialService,
   type LiveDiagnostics,
 } from '@/lib/live'
 import { upcomingInterruptingReservation } from '@/lib/live-interruption'
@@ -90,17 +91,7 @@ export function LivePage() {
   // `pickInitialService` と同じフォールバック規則。SI の `serviceId` 単独では network をまたぐと
   // 一意でない（issue #291）が、`Service.id` は合成の時点で解消されている。
   const selectedService = useMemo(
-    () =>
-      (routeSearch.service !== undefined && routeSearch.site !== undefined
-        ? orderedServices.find(
-            (service) =>
-              service.id === routeSearch.service && service.site === routeSearch.site,
-          )
-        : routeSearch.service !== undefined
-          ? orderedServices.find((service) => service.id === routeSearch.service)
-          : undefined) ??
-      orderedServices.find((service) => service.hasPrograms) ??
-      orderedServices[0],
+    () => pickInitialService(orderedServices, routeSearch.service, routeSearch.site),
     [orderedServices, routeSearch.service, routeSearch.site],
   )
   const selectedKey =

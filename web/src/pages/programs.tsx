@@ -108,6 +108,7 @@ export function ProgramsPage() {
     siteServices,
     isPending: servicesPending,
     isError: servicesError,
+    refetch: refetchServices,
   } = useAllSitesServices()
   // チャンネル絞り込み・表示形式・ジャンプ先の日付は URL に持つ。
   // 検証（不正値・範囲外の除去・配列の重複除去・昇順ソート）は `routes.tsx` の
@@ -629,6 +630,7 @@ export function ProgramsPage() {
           overages={overages}
           actions={actions}
           scrollToMs={scrollToMs}
+          showSite={sites.length > 1}
           // グリッドではサービスが列そのもの（構造）なので、リストと違って
           // サービスの取得失敗を「名前が出ないだけ」に落とせない。列が 0 本の
           // グリッドは「番組がない」と見分けがつかないので、取得状態を合わせる
@@ -636,13 +638,21 @@ export function ProgramsPage() {
           isError={gridQuery.isError || servicesError}
           onRetry={() => {
             void gridQuery.refetch()
+            void refetchServices()
           }}
         />
       ) : (
         <PageContent>
-          {query.isError ? (
-            <ErrorState onRetry={() => void query.refetch()}>番組の取得に失敗しました</ErrorState>
-          ) : query.isPending ? (
+          {query.isError || servicesError ? (
+            <ErrorState
+              onRetry={() => {
+                void query.refetch()
+                void refetchServices()
+              }}
+            >
+              番組の取得に失敗しました
+            </ErrorState>
+          ) : query.isPending || servicesPending ? (
             <ListSkeleton />
           ) : (
             <>
@@ -652,7 +662,8 @@ export function ProgramsPage() {
               <ProgramList
                 ref={programListRef}
                 programs={visiblePrograms}
-          serviceById={siteServiceByKey}
+                serviceById={siteServiceByKey}
+                showSite={sites.length > 1}
                 actions={actions}
                 // プレースホルダ表示中（未キャッシュ日へジャンプして新しい日の
                 // データを待っている間）は前の日のデータが出ているので、その
@@ -989,6 +1000,7 @@ function ProgramGridView({
   isError,
   onRetry,
   scrollToMs,
+  showSite,
 }: {
   axis: TimeAxis
   programs: SiteProgram[]
@@ -1003,6 +1015,7 @@ function ProgramGridView({
   onRetry: () => void
   /** グリッドの初期スクロール先（issue #233 M6-5）。`ProgramGrid` にそのまま渡す。 */
   scrollToMs?: number
+  showSite: boolean
 }) {
   const [selectedProgramId, setSelectedProgramId] = useState<string | null>(null)
 
@@ -1032,10 +1045,17 @@ function ProgramGridView({
               持つエンコード設定の下書き（issue #132）が前に選んでいた
               番組のまま残ってしまう。key で強制的に作り直す。 */}
           <ProgramRow
-          key={programIdentity(selected.site, selected.programId)}
-          program={selected}
-            serviceName={serviceById.get(siteServiceKey(selected.site, selected.networkId, selected.serviceId))?.name}
-            reserved={actions.reservedProgramIds.has(programIdentity(selected.site, selected.programId))}
+            key={programIdentity(selected.site, selected.programId)}
+            program={selected}
+            siteName={showSite ? selected.site : undefined}
+            serviceName={
+              serviceById.get(
+                siteServiceKey(selected.site, selected.networkId, selected.serviceId),
+              )?.name
+            }
+            reserved={actions.reservedProgramIds.has(
+              programIdentity(selected.site, selected.programId),
+            )}
             pending={actions.isBusy(selected)}
             onReserve={(overrides) => actions.reserve(selected, overrides)}
             onCancel={() => actions.cancel(selected)}
@@ -1049,11 +1069,16 @@ function ProgramGridView({
           axis={axis}
           reservationByProgramId={actions.reservedProgramIds}
           selectedProgramId={selected ? programIdentity(selected.site, selected.programId) : null}
-          onSelect={(program) => setSelectedProgramId(programIdentity(program.site, program.programId))}
+          onSelect={(program) =>
+            setSelectedProgramId(programIdentity(program.site, program.programId))
+          }
           scrollToMs={scrollToMs}
+          showSite={showSite}
           // 帯はセルより上・ヘッダより下の層に入る。軸を受け取って同じ
           // spanToPx を通すので、帯と番組セルは同じ時刻で必ず同じ位置に来る
-          overlay={(gridAxis) => <CapacityBands axis={gridAxis} overages={overages} />}
+          siteOverlay={(gridAxis, site) => (
+            <CapacityBands axis={gridAxis} overages={overages} site={site} />
+          )}
           // 帯の見えるラベルは時間軸列に出す（局の列の番組セルと重ならない。
           // issue #460。docs/frontend/programs.md「容量超過の帯とバッジ」）
           gutterOverlay={(gridAxis) => <CapacityBandLabels axis={gridAxis} overages={overages} />}

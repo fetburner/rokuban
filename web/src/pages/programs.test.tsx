@@ -428,6 +428,45 @@ async function reservationsSettled(queryClient: QueryClient): Promise<void> {
 }
 
 describe('ProgramsPage の表示形式', () => {
+  it('/api/sites の失敗を永久スケルトンにせず、再試行で一覧を復旧する', async () => {
+    const fetchMock = stubApi()
+    const implementation = fetchMock.getMockImplementation()!
+    let sitesCalls = 0
+    fetchMock.mockImplementation((input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input), 'http://localhost')
+      if (url.pathname === '/api/sites' && ++sitesCalls === 1) {
+        return Promise.resolve(errorResponse(500, 'registry down'))
+      }
+      return implementation(input, init)
+    })
+    renderPage()
+
+    expect(await screen.findByText('番組の取得に失敗しました')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: '再試行' }))
+    expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+    expect(sitesCalls).toBeGreaterThanOrEqual(2)
+  })
+
+  it('グリッドの再試行は services の失敗も取り直す', async () => {
+    const fetchMock = stubApi()
+    const implementation = fetchMock.getMockImplementation()!
+    let serviceCalls = 0
+    fetchMock.mockImplementation((input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input), 'http://localhost')
+      if (url.pathname === '/api/sites/default/services' && ++serviceCalls === 1) {
+        return Promise.resolve(errorResponse(500, 'services down'))
+      }
+      return implementation(input, init)
+    })
+    stubMatchMedia(true)
+    renderPage('/programs?view=grid')
+
+    expect(await screen.findByText('番組の取得に失敗しました')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: '再試行' }))
+    expect(await screen.findByTestId('program-grid')).toBeInTheDocument()
+    expect(serviceCalls).toBeGreaterThanOrEqual(2)
+  })
+
   it('lg 未満ではグリッドを出さず、切り替えも見せない', async () => {
     stubApi()
     stubMatchMedia(false)
@@ -622,16 +661,14 @@ describe('ProgramsPage の容量超過の帯', () => {
     expect(screen.getByText('BS-1')).toBeInTheDocument()
   })
 
-  it('第2 site の超過区間も全 site の番組表に帯として描く', async () => {
-    // 番組表は全 site の列を描くので、容量超過も site を保ったまま対応する列へ
-    // 重ねる。別 site の区間を先頭 site の番組だけへ誤って重ねない。
+  it('表示中の列に存在しない site の超過区間は別 site の列へ描かない', async () => {
     stubApi([], [overage(1, 2, { site: 'other' })])
     stubMatchMedia(true)
     const { queryClient } = renderPage()
     await openGrid()
     await overagesSettled(queryClient)
 
-    expect(screen.getByTestId('capacity-band')).toBeInTheDocument()
+    expect(screen.queryByTestId('capacity-band')).not.toBeInTheDocument()
   })
 
   it('超過区間が無ければ帯を出さない（沈黙を肯定にしない）', async () => {

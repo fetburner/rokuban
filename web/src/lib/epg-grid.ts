@@ -193,7 +193,7 @@ const channelTypeOrder: Record<Service['channelType'], number> = {
 /**
  * orderServices はグリッドの列順にサービスを並べる。
  *
- * 種別（GR → BS → CS → SKY）→ リモコン番号 → serviceId の全順序。API の返す順
+ * 種別（GR → BS → CS → SKY）→ リモコン番号 → site → serviceId → networkId の全順序。API の返す順
  * （networkId, serviceId）に任せると地上波のリモコン番号順にならず、視聴者の
  * 知っている並びと食い違う。同値のない全順序なので、再描画で列が入れ替わらない。
  */
@@ -202,7 +202,9 @@ export function orderServices<S extends Service>(services: readonly S[]): S[] {
     (a, b) =>
       channelTypeOrder[a.channelType] - channelTypeOrder[b.channelType] ||
       a.remoteControlKeyId - b.remoteControlKeyId ||
-      a.serviceId - b.serviceId,
+      ('site' in a && 'site' in b ? String(a.site).localeCompare(String(b.site)) : 0) ||
+      a.serviceId - b.serviceId ||
+      a.networkId - b.networkId,
   )
 }
 

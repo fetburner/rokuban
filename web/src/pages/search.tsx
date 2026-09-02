@@ -124,7 +124,13 @@ export function SearchPage() {
    * union に切り替えると network の種類が増えるぶん衝突の機会も増える。
    * `networkId` を組にすることでこの衝突を避ける。
    */
-  const { sites, services: serviceList } = useAllSitesServices()
+  const {
+    sites,
+    services: serviceList,
+    isPending: registryPending,
+    isError: registryError,
+    refetch: refetchRegistry,
+  } = useAllSitesServices()
   // 検索 API の path parameter は site ごとのルーティングに必要だが、検索対象は
   // body の空 `sites`（全 site）で指定する。レジストリの先頭は routing anchor
   // にだけ使い、結果行の site は検索レスポンスをそのまま運ぶ。
@@ -234,7 +240,7 @@ export function SearchPage() {
   // 送れない下書きは 2 つの層で止める。ボタンの無効化だけだと、Enter による
   // 暗黙の送信（既定ボタンが無効でも submit が届きうる）が素通りする。
   const submit = () => {
-    if (error !== undefined || searchSite === undefined) return
+    if (error !== undefined || registryPending || registryError || searchSite === undefined) return
     const request = buildSearchRequest(draft)
     setVisibleCount(pageSize)
     pendingResultScrollRef.current = true
@@ -429,6 +435,12 @@ export function SearchPage() {
         />
       )}
 
+      {registryError && (
+        <ErrorState onRetry={() => void refetchRegistry()}>
+          サイト一覧の取得に失敗しました
+        </ErrorState>
+      )}
+
       <form
         aria-label="検索条件"
         className="flex flex-col gap-5 border-b border-border px-4 py-4"
@@ -462,8 +474,19 @@ export function SearchPage() {
               {error}
             </p>
           )}
+          {registryPending && (
+            <p role="status" className="text-xs text-muted-foreground">
+              サイト一覧を取得中…
+            </p>
+          )}
           <div className="flex gap-2">
-            <Button type="submit" size="lg" disabled={error !== undefined || search.isPending}>
+            <Button
+              type="submit"
+              size="lg"
+              disabled={
+                error !== undefined || search.isPending || registryPending || registryError
+              }
+            >
               {search.isPending ? '検索中…' : '検索'}
             </Button>
             <Button

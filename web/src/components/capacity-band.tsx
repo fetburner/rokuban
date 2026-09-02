@@ -15,8 +15,9 @@ import { hourTicks, spanToPx, type TimeAxis } from '@/lib/epg-grid'
 const labelMinHeightPx = 18
 
 /**
- * CapacityBands はチューナーが不足している区間を全チャンネル縦断の帯として描く
- * （`ProgramGrid` の `overlay` に渡す。M2-10, issue #24）。
+ * CapacityBands はチューナーが不足している区間を同じ site の全チャンネルを
+ * 縦断する帯として描く
+ * （`ProgramGrid` の `siteOverlay` に渡す。M2-10, issue #24）。
  *
  * **番組ではなく区間に描く。** 番組を着色すると「この番組が負ける」という勝敗の
  * 主張になるが、決めるのは mirakc であり、Rokuban から見えない消費者がいるので
@@ -26,9 +27,9 @@ const labelMinHeightPx = 18
  * 座標は番組セルと同じ `spanToPx` を通す。これが「帯とセルが同じ時刻で同じ位置に
  * 来る」ことの保証で、自前で時刻 → px を書くとその保証が消える。
  *
- * 渡された区間はそのまま全部描く。サイトで絞るかどうかは呼び出し側の判断
- * （多サイト時のグリッド表示は未解決 --- BS / CS は全国共通だが地上波はサイトごとに
- * 別物なので列を畳めず、帯もサイトごとに要る。docs/data.md §6.5）。
+ * 呼び出し側が渡す site と一致する区間だけを描く。ProgramGrid の siteOverlay は
+ * 同じ site の連続した列領域に親要素を限定し、overflow で別 site の列への描画を
+ * クリップする。
  *
  * **見えるラベルはここでは描かない。** 帯の内側（局の列の上）に出すと、帯の上端が
  * 番組セルの上端と重なったとき、セルの時刻文字と同じ px に描かれて両方読めなく
@@ -39,13 +40,15 @@ const labelMinHeightPx = 18
 export function CapacityBands({
   axis,
   overages,
+  site,
 }: {
   axis: TimeAxis
   overages: readonly CapacityOverage[]
+  site: string
 }) {
   return (
     <>
-      {overages.map((overage) => (
+      {overages.filter((overage) => overage.site === site).map((overage) => (
         <CapacityBand
           key={`${overage.site}-${overage.startAt}`}
           axis={axis}
@@ -66,6 +69,7 @@ function CapacityBand({ axis, overage }: { axis: TimeAxis; overage: CapacityOver
   return (
     <div
       data-testid="capacity-band"
+      data-site={overage.site}
       data-start-at={overage.startAt}
       // 淡い着色 + 上下の罫線。塗りを強くすると番組セルのタイトルが読めなくなり、
       // 番組表として使えなくなる（区間の境界は罫線が伝える）。色は警告の信号色
@@ -132,12 +136,10 @@ function avoidTickRow(axis: TimeAxis, topPx: number): number {
  * 文字と衝突しない。座標は `CapacityBands` と同じ `spanToPx` を通すので、帯と縦位置
  * の基準は揃う（ラベル自身は下記のとおり自分の高さぶんだけ持つ）。
  *
- * **同一サイト内の不足区間は重ならない。** サーバー（`internal/capacity`）が
- * 返す区間はそもそも重ならず、このグリッドは 1 サイトに絞って渡す
- * （`pages/programs.tsx`）ので、ラベル同士が同じ位置に来て積む必要は無い ---
- * 積む処理は一度書いたが、実際には決して発火しないコードだったので削った
- * （issue #460 レビュー）。ラベルが避ける必要があるのは目盛りの行だけ
- * （`avoidTickRow`）。**ただし `avoidTickRow` の押し下げは帯の高さを見ない。**
+ * **同一 site 内の不足区間は重ならないが、別 site の区間は重なりうる。**
+ * 全 site のラベルは 1 本の時間軸列に置くため、先に置いたラベルと交差する場合は
+ * 1 行ぶん下へ積む。積んだ先が自分の帯を越える場合は描かない。
+ * **ただし `avoidTickRow` の押し下げは帯の高さを見ない。**
  * 正時に始まる短い帯（9〜18 分）を押し下げると、直後に隣接する帯（サーバーが
  * 正当に返せる形）のラベルと同じ位置に来て衝突が復活する --- `CapacityBandLabel`
  * は押し下げた先が自分の帯からはみ出すときはラベルを描かないことでこれを防ぐ
@@ -150,33 +152,41 @@ export function CapacityBandLabels({
   axis: TimeAxis
   overages: readonly CapacityOverage[]
 }) {
+  const placements: { overage: CapacityOverage; topPx: number }[] = []
+  for (const overage of overages) {
+    const span = overageWindow(overage)
+    const rect = spanToPx(axis, span.startMs, span.endMs)
+    if (!rect || rect.heightPx < labelMinHeightPx) continue
+    let topPx = avoidTickRow(axis, rect.topPx)
+    for (;;) {
+      const collision = placements.find(
+        (placed) => topPx < placed.topPx + labelHeightPx && topPx + labelHeightPx > placed.topPx,
+      )
+      if (collision === undefined) break
+      topPx = collision.topPx + labelHeightPx
+    }
+    if (topPx + labelHeightPx > rect.topPx + rect.heightPx) continue
+    placements.push({ overage, topPx })
+  }
+
   return (
     <>
-      {overages.map((overage) => (
-        <CapacityBandLabel key={`${overage.site}-${overage.startAt}`} axis={axis} overage={overage} />
+      {placements.map(({ overage, topPx }) => (
+        <CapacityBandLabel
+          key={`${overage.site}-${overage.startAt}`}
+          overage={overage}
+          topPx={topPx}
+        />
       ))}
     </>
   )
 }
 
-function CapacityBandLabel({ axis, overage }: { axis: TimeAxis; overage: CapacityOverage }) {
-  const span = overageWindow(overage)
-  const rect = spanToPx(axis, span.startMs, span.endMs)
-  if (!rect || rect.heightPx < labelMinHeightPx) return null
-  const topPx = avoidTickRow(axis, rect.topPx)
-  // 押し下げた先が自分の帯の下端を超えるなら描かない。正時に始まる帯は
-  // avoidTickRow が tickAvoidHeightPx ぶん押し下げるので、帯の高さが
-  // tickAvoidHeightPx + labelHeightPx（36px、9〜18 分の帯で起こりうる）未満だと
-  // ラベルが自分の帯の外（＝直後に隣接する帯の領域）へはみ出す。はみ出した先で
-  // 直後の帯のラベルは押し下げられずに同じ top へ来るので、2 つのラベルが完全に
-  // 重なる（issue #460 再レビュー実測: [03:00, 03:10) の CS と [03:10, 04:00) の
-  // GR で両方 top 890）。位置の嘘をつくより描かない方が正しい --- 帯の色と
-  // 予約バッジ（一覧側）が警告の伝達を担う。
-  if (topPx + labelHeightPx > rect.topPx + rect.heightPx) return null
-
+function CapacityBandLabel({ overage, topPx }: { overage: CapacityOverage; topPx: number }) {
   return (
     <div
       data-testid="capacity-band-label"
+      data-site={overage.site}
       aria-hidden="true"
       // 短縮ラベル（「BS-1」「-2」等）だけでは種別も単位も読めない場合がある
       // （複数種別が詰まると `shortageLabelCompact` は本数だけの `-2` を返し、
