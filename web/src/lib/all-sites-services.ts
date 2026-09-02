@@ -73,10 +73,17 @@ export type AllSitesServices = {
  * `isError` に畳む。** これも `isPending` が false（取得中でも失敗でもない）に
  * なるので、区別しないと呼び出し側の `enabled: sites.length > 0` なクエリが
  * 有効化されないまま `isPending: true` の永久スケルトンに落ちたり、`sites[0]`
- * を前提にした送信が `undefined` のまま無言で早期 return し続けたりする
- * （`internal/config` の `validateMirakcRegistry` がサーバー起動時に空
- * レジストリを弾くので実運用では起きないはずだが、起きた場合にクラッシュや
- * 沈黙より説明を出す --- 旧 `components/site-gate.tsx` の分岐と同じ理由づけ）。
+ * を前提にした送信が `undefined` のまま無言で早期 return し続けたりする。
+ * **専用の文言は持たず、実際の取得失敗と同じ「取得に失敗しました」表示・
+ * 再試行ボタンに倒す。** 200 で空配列が返るこのケースは厳密には「取得は
+ * 成功したが使えない」であって「取得に失敗しました」は正確ではないが、
+ * `internal/config` の `validateMirakcRegistry` がサーバー起動時に空
+ * レジストリを弾くため実運用では到達不能で、再試行を押しても（サーバー設定を
+ * 直さない限り）同じ空配列が返り続ける。到達不能な状態のためだけに専用の
+ * 文言・状態を `AllSitesServices` に増やすコストに見合わないと判断し、
+ * クラッシュや無言の早期 return よりはましな「取得に失敗しました」へ倒す
+ * （旧 `components/site-gate.tsx` は `利用可能なサイトがありません` という
+ * 専用の文言を持っていたが、ここでは持たない）。
  *
  * **単一サイト構成では挙動が変わらない。** site が 1 件なら
  * `useQueries` も要素 1 個になり、以前の `useListServices(site)` 相当の結果に
@@ -105,14 +112,8 @@ export function useAllSitesServices(): AllSitesServices {
     siteServices,
     sites,
     isPending: sitesQuery.isPending || serviceQueries.some((q) => q.isPending),
-    // `GET /api/sites` が解決して空配列を返す場合も error 相当に畳む。
-    // `config.mirakcs` レジストリが空の起動は internal/config の
-    // `validateMirakcRegistry` がサーバー起動時に弾くので実運用では起きないが、
-    // 起きた場合に空配列をそのまま site として使うと呼び出し側（`programs.tsx` /
-    // `search.tsx`）がクエリを `enabled: false` のまま止め続けて永久スケルトンに
-    // なったり、`searchSite` が `undefined` のまま送信を無言で早期 return したり
-    // する。旧 `components/site-gate.tsx`（撤去済み）が持っていた分岐と同じ
-    // 理由づけを、ここに畳んで引き継ぐ。
+    // `GET /api/sites` が解決して空配列を返す場合も error 相当に畳む
+    // （専用の文言は持たず「取得に失敗しました」に倒す。理由は上記 doc コメント）。
     isError:
       sitesQuery.isError ||
       serviceQueries.some((q) => q.isError) ||

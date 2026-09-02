@@ -383,6 +383,12 @@ for (const site of sites) {
   if (announced.length !== 1) {
     ng.push(`② ${site} の容量帯の sr-only（読み上げ文）が 1 つではない（${announced.length} 件）`)
   }
+  // レビュー指摘: `showSite` が実際に `programs.tsx` → `CapacityBands` →
+  // `shortageRangeMessage` まで届いていることを、件数だけでなく文言そのもの
+  // で確認する（`showSite` の配線を外しても件数の判定は通ってしまっていた）。
+  if (announced.length === 1 && !announced[0].announceText.includes(site)) {
+    ng.push(`② ${site} の容量帯の sr-only に site 名（${site}）が含まれていない: ${announced[0].announceText}`)
+  }
 }
 
 const labelBoxes = await page.getByTestId('capacity-band-label').evaluateAll((nodes) =>

@@ -60,7 +60,10 @@ E2E_URL=http://localhost:40775 pnpm e2e
 React key が衝突しないことを確認する。同時刻の容量超過は帯が各 site の列内に
 収まり、時間軸列のラベル同士が重ならないことを実ブラウザの矩形で測る。
 これは jsdom では列幅・横方向の配置を測れないため、実装より先に追加した判定である。
-修正前は列が 1 本で red（`描画された列: 1`）になり、修正後は 2 本で green になる。
+site 固定撤去前（フロントが単一 site 決め打ちだった頃）はこの判定を通すと列が
+1 本で red（`描画された列: 1`）になり、site 和集合化後は green になった。
+下記の GR fixture を足した現在、期待する列数は 6 本（`expectedColumnCount`。
+共有 BS 1 局 + GR 2 局 × 2 site）。
 
 **GR fixture（両 site で同じリモコン番号を持つが別放送の局。実在の東京・高松の
 NHK 総合・NHK E テレと同じ形）も配る。** `orderServices`（`lib/epg-grid.ts`）が

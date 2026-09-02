@@ -77,7 +77,12 @@ function overage(
  * `CapacityBands` を単体で描くと「番組セルと同じ座標に来る」ことを確かめられない
  * （それが `spanToPx` を共有している唯一の観測可能な帰結なので、セルと並べて描く）。
  */
-function renderGrid(overages: CapacityOverage[], programs: SiteProgram[]) {
+function renderGrid(
+  overages: CapacityOverage[],
+  programs: SiteProgram[],
+  options?: { showSite?: boolean },
+) {
+  const showSite = options?.showSite ?? false
   return render(
     <ProgramGrid
       services={[service]}
@@ -88,11 +93,13 @@ function renderGrid(overages: CapacityOverage[], programs: SiteProgram[]) {
       onSelect={vi.fn()}
       now={at(19 * 60)}
       siteOverlay={(gridAxis, site) => (
-        <CapacityBands axis={gridAxis} overages={overages} site={site} />
+        <CapacityBands axis={gridAxis} overages={overages} site={site} showSite={showSite} />
       )}
       // 見えるラベルは時間軸列（gutterOverlay）に出る（issue #460）。
       // 単体テストでも実際に使う配線と同じ組み方にする。
-      gutterOverlay={(gridAxis) => <CapacityBandLabels axis={gridAxis} overages={overages} />}
+      gutterOverlay={(gridAxis) => (
+        <CapacityBandLabels axis={gridAxis} overages={overages} showSite={showSite} />
+      )}
     />,
   )
 }
@@ -438,5 +445,27 @@ describe('CapacityBandLabels の配置', () => {
     expect(screen.getByText('-2')).toBeInTheDocument()
     const label = screen.getByTestId('capacity-band-label')
     expect(label).toHaveAttribute('title', 'チューナー不足（GR・BS が 2 本）')
+  })
+
+  /**
+   * レビュー指摘: `showSite` の純関数側（`capacity.test.ts`）だけを検証すると、
+   * `programs.tsx` の `siteOverlay` / `gutterOverlay` が実際に `showSite` を
+   * 渡し忘れても（`showSite={showSite}` を削っても）このスイート・
+   * `pnpm test` 全体が緑のままになる --- `renderGrid` に `showSite` を通す
+   * 経路が無かったため。`title`（`shortageLabel` を通る唯一の経路）と
+   * `sr-only`（`shortageRangeMessage` を通る経路）の両方で、渡した site 名が
+   * 実際に文言へ届くことを確認する。
+   */
+  it('showSite を渡すと title（gutter）と sr-only（帯）の両方に site 名が入る', () => {
+    // `service`（renderGrid が使う唯一の列）は site: 'default' なので、帯が
+    // 実際に描かれるよう overage も同じ site にする（site が一致しないと
+    // `CapacityBands` は何も描かない）。
+    renderGrid([overage(20 * 60, 21 * 60)], [], { showSite: true })
+
+    const label = screen.getByTestId('capacity-band-label')
+    expect(label).toHaveAttribute('title', 'defaultのチューナー不足（BS が 1 本）')
+    expect(
+      screen.getByText('20:00〜21:00 はdefaultのチューナーが不足しています（BS が 1 本不足）'),
+    ).toBeInTheDocument()
   })
 })
