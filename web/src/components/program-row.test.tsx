@@ -39,7 +39,7 @@ function airingProgram(overrides: Partial<ProgramListItem> = {}): ProgramListIte
  *
  * - `GET /api/capabilities`: 「ライブで見る」の出し分け（issue #209 / #229）
  * - `GET .../overlaps`: 未予約行が常に問い合わせる（`ProgramOverlapWarning`）
- * - `GET .../programs/{id}`: 展開時に `ProgramDetail` が問い合わせる番組詳細
+ * - `GET .../programs/{programId}`: 展開時に `ProgramDetail` が問い合わせる番組詳細
  */
 function stubFetch({ live = true }: { live?: boolean } = {}) {
   const fetchMock = vi.fn((input: string | URL | Request) => {

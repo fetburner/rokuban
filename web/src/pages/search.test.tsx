@@ -87,7 +87,8 @@ const allPrograms = [...filler, news, drama]
  *
  * `sites: ['default']` は単一サイト構成（この fixture のレジストリは
  * `default` だけ）での往復を確かめる --- `<ConditionFields>` のサイトチップは
- * site が 2 つ以上のときだけ出るので、この構成ではチップは出ないが、
+ * レジストリと下書きの和集合が 2 つ以上のときだけ出る。この fixture は下書きも
+ * `['default']` なので和集合は 1 つでチップは出ないが、
  * ハイドレーション（`conditionsToDraft`）と保存（`buildSearchRequest`）は
  * チップの有無に関わらず `sites` をそのまま運ぶ（issue #531）。
  */

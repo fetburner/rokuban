@@ -291,7 +291,7 @@ export function ProgramRow({
  * ProgramDetail は展開時に表示する詳細。
  *
  * 説明・出演者・映像音声属性は一覧レスポンスに含まれないため、
- * 展開したときに GET /api/programs/{id} で取得する（段階的開示）。
+ * 展開したときに GET /api/sites/{site}/programs/{programId} で取得する（段階的開示）。
  */
 function ProgramDetail({ program }: { program: ProgramListItem }) {
   const site = useCurrentSite()

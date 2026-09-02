@@ -373,9 +373,11 @@ describe('ConditionFields のサービス選択肢（複数サイト、issue #29
 /**
  * issue #531: `sites`（`rule_sites` 相当）を条件 UI に出す。
  *
- * **site が 2 つ以上のときだけ表示する**（`recording-filters.tsx` の
- * `siteNames.length > 1` と同じ規律）。単一サイト構成では選択肢が 1 つしか
- * 無く、絞る意味が無いコントロールを置かないため。
+ * **レジストリと下書きの和集合が 2 つ以上のときだけ表示する**
+ * （`recording-filters.tsx` の `siteNames.length > 1` とは違い、レジストリ
+ * だけでは判定しない）。単一サイト構成では選択肢が 1 つしか無く、絞る意味が
+ * 無いコントロールを置かないため。レジストリに無い site が下書きに残って
+ * いる場合は、和集合が 2 つになるので見えて外せる。
  */
 describe('ConditionFields のサイトチップ（issue #531）', () => {
   it('サイトが 1 つの構成では「サイト」の節を出さない', async () => {

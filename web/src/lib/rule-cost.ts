@@ -71,7 +71,8 @@ export const ruleCostWeekDays = 7
  * 行（ruler が作る予約の見込み数）を数えている。
  *
  * `loadedDurationsMs` は番組ごとの `durationMs`。検索 API は `{site, programId}` しか
- * 返さないため、`GET /api/programs/{id}` で個別に取得できた分だけがここに入る
+ * 返さないため、`GET /api/sites/{site}/programs/{programId}` で個別に取得できた
+ * 分だけがここに入る
  * （`pages/search.tsx` が結果一覧の表示のために取得している分をそのまま再利用する
  * ので、値札のために追加のリクエストは発生しない。実測は `pages/search.tsx` の
  * `RuleCostSummary` のコメントを参照）。全件に届いていないとき
