@@ -444,10 +444,29 @@ func TestRulerPassWorker_HasGenerousTimeout(t *testing.T) {
 }
 
 // BoundSites を指定すると ruler_pass が定期ジョブとして投入され、登録済み
-// ワーカーが ruler キューで拾うこと（配線の確認）。Deps.MirakcClients を
-// 設定していないので、同時に登録される mirakc 接触系の 4 種
-// （epg_sync/tuner_sync/reconcile_pass/record_sweep）は verifySite で
-// 即座に失敗する --- ruler_pass だけが JobCompleted を出す。
+// ワーカーが ruler キューで拾うこと（配線の確認）。BoundSites は
+// epg_sync/tuner_sync/ruler_pass/reconcile_pass/record_sweep の 5 種を
+// まとめて登録する（RunOnStart で全部 1 回走る）ので、mirakc スタブ
+// （newScheduleStub、reconcile_pass_test.go）を与えて reconcile_pass だけは
+// 実際に正常完了することも確認する。epg_sync/tuner_sync/record_sweep は
+// このスタブが `/api/recording/schedules` しか実装していないため、依然として
+// 失敗する（以前は Deps.MirakcClients が空で verifySite の「bound sites に
+// 無い」エラーだったが、スタブを与えた今は HTTP 404 に変わっただけで、
+// 3 種とも成功はしない。JobCompleted しか購読していないのでこの失敗は
+// テストに現れない）。
+//
+// **下の 2 つ目の待ち受けは「ruler_pass 完了時に連鎖投入される reconcile_pass
+// ヒント」を待っているとは限らない。** BoundSites + PeriodicJobs は
+// RunOnStart 付きの reconcile_pass も別途 site ごとに 1 本登録する
+// （buildRiverConfig、defaultReconcilePassInterval）。ReconcilePassArgs の
+// UniqueOpts{ByArgs, ByState: pendingJobStates} により、この定期ジョブと
+// ruler_pass 完了時のヒントは同じ (site) の重複としてほぼ必ず合流するため、
+// kind だけで待っても両者を区別できない。ここで実際に検証できているのは
+// 「BoundSites=[default] のこの構成で、何らかの reconcile_pass が正常完了
+// する」ことだけ。**連鎖されたヒント自体が実行されて成功する**という、より
+// 狭い主張は TestRulerPassWorker_EnqueuesReconcilePassHint
+// （reconcile_pass_test.go。PeriodicJobs を登録しないので合流する定期ジョブが
+// 存在せず、区別できる）が固定している。
 func TestRulerPassPeriodicJob(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
@@ -456,7 +475,11 @@ func TestRulerPassPeriodicJob(t *testing.T) {
 		t.Fatalf("cleaning river_job: %v", err)
 	}
 
-	workers := NewWorkers(&Deps{Pool: pool})
+	stub := newScheduleStub()
+	srv := httptest.NewServer(stub)
+	t.Cleanup(srv.Close)
+
+	workers := NewWorkers(&Deps{Pool: pool, MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil))})
 	client, err := NewClient(pool, workers, ClientConfig{
 		PeriodicJobs:      true,
 		BoundSites:        []string{"default"},
@@ -480,23 +503,28 @@ func TestRulerPassPeriodicJob(t *testing.T) {
 		<-client.Stopped()
 	}()
 
-	select {
-	case event := <-subscribeCh:
-		if event.Job.Kind != "ruler_pass" {
-			t.Errorf("job kind = %q, want %q", event.Job.Kind, "ruler_pass")
-		}
-		if event.Job.Queue != rulerQueue {
-			t.Errorf("job queue = %q, want %q", event.Job.Queue, rulerQueue)
-		}
-		var args RulerPassArgs
-		if err := json.Unmarshal(event.Job.EncodedArgs, &args); err != nil {
-			t.Fatalf("unmarshalling job args: %v", err)
-		}
-		if args.Site != "default" {
-			t.Errorf("job args site = %q, want %q", args.Site, "default")
-		}
-	case <-time.After(20 * time.Second):
-		t.Fatal("timed out waiting for the periodic ruler_pass job")
+	rulerEvent := waitPeriodicJobEvent(t, subscribeCh, "ruler_pass")
+	if rulerEvent.Job.Queue != rulerQueue {
+		t.Errorf("job queue = %q, want %q", rulerEvent.Job.Queue, rulerQueue)
+	}
+	var rulerArgs RulerPassArgs
+	if err := json.Unmarshal(rulerEvent.Job.EncodedArgs, &rulerArgs); err != nil {
+		t.Fatalf("unmarshalling job args: %v", err)
+	}
+	if rulerArgs.Site != "default" {
+		t.Errorf("job args site = %q, want %q", rulerArgs.Site, "default")
+	}
+
+	// この構成（BoundSites=[default] + mirakc スタブ）で reconcile_pass が実際に
+	// 正常完了することの確認（どちらが完了したかは上のコメントの通り区別しない）。
+	// 正常完了しないとここが 20 秒でタイムアウトする。
+	reconcileEvent := waitPeriodicJobEvent(t, subscribeCh, "reconcile_pass")
+	var reconcileArgs ReconcilePassArgs
+	if err := json.Unmarshal(reconcileEvent.Job.EncodedArgs, &reconcileArgs); err != nil {
+		t.Fatalf("unmarshalling reconcile_pass args: %v", err)
+	}
+	if reconcileArgs.Site != "default" {
+		t.Errorf("reconcile_pass job args site = %q, want %q", reconcileArgs.Site, "default")
 	}
 }
 
