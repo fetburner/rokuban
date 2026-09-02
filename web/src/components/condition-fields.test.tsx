@@ -369,3 +369,102 @@ describe('ConditionFields のサービス選択肢（複数サイト、issue #29
     expect(next.services).toEqual([{ networkId: 4, serviceId: 101 }])
   })
 })
+
+/**
+ * issue #531: `sites`（`rule_sites` 相当）を条件 UI に出す。
+ *
+ * **レジストリと下書きの和集合が 2 つ以上のときだけ表示する**
+ * （`recording-filters.tsx` の `siteNames.length > 1` とは違い、レジストリ
+ * だけでは判定しない）。単一サイト構成では選択肢が 1 つしか無く、絞る意味が
+ * 無いコントロールを置かないため。レジストリに無い site が下書きに残って
+ * いる場合は、和集合が 2 つになるので見えて外せる。
+ */
+describe('ConditionFields のサイトチップ（issue #531）', () => {
+  it('サイトが 1 つの構成では「サイト」の節を出さない', async () => {
+    stubServicesFetch({ default: services })
+    renderInRouter(<ConditionFields draft={emptyDraft()} onChange={() => {}} />)
+
+    // サービスの節が描画される（＝取得が終わっている）まで待ってから、
+    // サイトの節が無いことを確認する。取得中に「無い」と判定すると、
+    // 「まだ届いていないだけ」を「出していない」と誤認する空虚な成功になる。
+    await screen.findByRole('group', { name: 'チャンネル' })
+    expect(screen.queryByRole('group', { name: 'サイト' })).not.toBeInTheDocument()
+  })
+
+  it('サイトが 2 つ以上の構成では両方をチップで出し、選択・解除が下書きに反映される', async () => {
+    const onChange = vi.fn()
+    stubServicesFetch({ tokyo: services, takamatsu: services })
+    renderInRouter(<ConditionFields draft={emptyDraft()} onChange={onChange} />)
+
+    const group = await screen.findByRole('group', { name: 'サイト' })
+    const tokyoChip = within(group).getByRole('button', { name: 'tokyo' })
+    const takamatsuChip = within(group).getByRole('button', { name: 'takamatsu' })
+    expect(tokyoChip).toHaveAttribute('aria-pressed', 'false')
+    expect(takamatsuChip).toHaveAttribute('aria-pressed', 'false')
+
+    fireEvent.click(tokyoChip)
+    expect(onChange).toHaveBeenCalledTimes(1)
+    let updater = onChange.mock.calls[0][0] as (d: SearchDraft) => SearchDraft
+    let next = updater(emptyDraft())
+    expect(next.sites).toEqual(['tokyo'])
+
+    fireEvent.click(takamatsuChip)
+    updater = onChange.mock.calls[1][0] as (d: SearchDraft) => SearchDraft
+    next = updater(next)
+    expect(next.sites).toEqual(['tokyo', 'takamatsu'])
+
+    // 選択済みのチップをもう一度押すと解除される
+    fireEvent.click(tokyoChip)
+    updater = onChange.mock.calls[2][0] as (d: SearchDraft) => SearchDraft
+    next = updater(next)
+    expect(next.sites).toEqual(['takamatsu'])
+  })
+
+  it('レジストリから消えた site が下書きに残っていても、チップとして出して外せる（旧「未解決」の解消）', async () => {
+    const onChange = vi.fn()
+    // レジストリは tokyo/takamatsu の 2 つだが、下書きは既に無い third を含む
+    // （`?ruleId=` で開いたルールの rule_sites がレジストリドリフト後の値を
+    // 持っていた場合の再現）。
+    stubServicesFetch({ tokyo: services, takamatsu: services })
+    const draft: SearchDraft = { ...emptyDraft(), sites: ['third'] }
+    renderInRouter(<ConditionFields draft={draft} onChange={onChange} />)
+
+    const group = await screen.findByRole('group', { name: 'サイト' })
+    const thirdChip = within(group).getByRole('button', { name: 'third' })
+    expect(thirdChip).toHaveAttribute('aria-pressed', 'true')
+
+    fireEvent.click(thirdChip)
+    expect(onChange).toHaveBeenCalledTimes(1)
+    const updater = onChange.mock.calls[0][0] as (d: SearchDraft) => SearchDraft
+    expect(updater(draft).sites).toEqual([])
+  })
+
+  /**
+   * レビュー指摘: 表示の gate をレジストリ単独（`sites.length <= 1`）に
+   * 取ると、レジストリが 1 site に縮んだ環境で下書きが別の site を持つ
+   * ケースが「見えない」に戻り、上のテストが解消したはずの未解決が復活する。
+   * gate は和集合（`options`）で取らなければならない。
+   */
+  it('レジストリが 1 site に縮んでいても、下書きが別の site を持てばチップを出す（gate は和集合で取る）', async () => {
+    const onChange = vi.fn()
+    // レジストリは default だけ（単一サイト構成）だが、下書きは別の
+    // takamatsu を持つ（レジストリドリフトで 2 サイトから 1 サイトに
+    // 縮んだ後、rule_sites がまだ古い値を持っている状況の再現）。
+    stubServicesFetch({ default: services })
+    const draft: SearchDraft = { ...emptyDraft(), sites: ['takamatsu'] }
+    renderInRouter(<ConditionFields draft={draft} onChange={onChange} />)
+
+    await screen.findByRole('group', { name: 'チャンネル' })
+    const group = await screen.findByRole('group', { name: 'サイト' })
+    const defaultChip = within(group).getByRole('button', { name: 'default' })
+    const takamatsuChip = within(group).getByRole('button', { name: 'takamatsu' })
+    expect(defaultChip).toHaveAttribute('aria-pressed', 'false')
+    expect(takamatsuChip).toHaveAttribute('aria-pressed', 'true')
+
+    // 画面内で外せる（フォークが 400 になっても救済手段がある）。
+    fireEvent.click(takamatsuChip)
+    expect(onChange).toHaveBeenCalledTimes(1)
+    const updater = onChange.mock.calls[0][0] as (d: SearchDraft) => SearchDraft
+    expect(updater(draft).sites).toEqual([])
+  })
+})

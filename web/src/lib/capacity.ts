@@ -128,8 +128,16 @@ export function shortageRangeMessage(overage: CapacityOverage): string {
 }
 
 /**
- * countProgramsInShortfall は放送時間帯が指定サイトの不足区間と交差する番組の数を
- * 数える。
+ * countProgramsInShortfall は放送時間帯が自分の site の不足区間と交差する番組の
+ * 数を数える。
+ *
+ * **サイト軸は「行ごと」を選んだ（issue #531）。** 検索結果は `[{site,
+ * programId}]` のフラットな行で、行数がそのまま予約数になる（不変条件: 畳むと
+ * `estimateRuleCost` の `totalCount` が本数を過小報告する）。この値札の交差判定も
+ * 同じ行の集合を母集団にするので、各番組は自分がマッチした site を運ぶ必要がある
+ * --- 呼び出し側で「site ごとに分けて集計」しても最終的に合算するなら同じ結果に
+ * なるが、行の集合を 1 度も分割しなくて済むぶんこちらが単純（`intersectingOverages`
+ * の呼び出し 1 箇所のままで済み、`search.tsx` 側に site ごとの grouping を要らない）。
  *
  * **新たな不足を予測しない。** 候補集合を足した what-if 評価（Hall 条件の再評価）
  * はしない --- 個々の番組を、既に確定している不足区間（`overages`）と交差判定
@@ -146,13 +154,12 @@ export function shortageRangeMessage(overage: CapacityOverage): string {
  */
 export function countProgramsInShortfall(
   overages: readonly CapacityOverage[],
-  site: string,
-  programs: readonly { startAt: string; durationMs: number }[],
+  programs: readonly { site: string; startAt: string; durationMs: number }[],
 ): number {
   return programs.filter((program) => {
     const startMs = new Date(program.startAt).getTime()
     const endMs = startMs + program.durationMs
-    return intersectingOverages(overages, site, startMs, endMs).length > 0
+    return intersectingOverages(overages, program.site, startMs, endMs).length > 0
   }).length
 }
 

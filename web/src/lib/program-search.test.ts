@@ -11,6 +11,7 @@ import {
   emptyDraft,
   emptyRuleMeta,
   genreCodeLabel,
+  hasNoConditions,
   hasWeekday,
   newTimeWindow,
   ruleMetaError,
@@ -110,6 +111,15 @@ describe('buildSearchRequest', () => {
   it('ジャンルは選んだ順ではなくコード順で送る', () => {
     expect(buildSearchRequest(draft({ genres: [7, 0, 3] })).genres).toEqual([0, 3, 7])
   })
+
+  it('sites は選んだ順ではなく辞書順で送り、空なら送らない（issue #531）', () => {
+    expect(buildSearchRequest(draft({ sites: ['takamatsu', 'default'] })).sites).toEqual([
+      'default',
+      'takamatsu',
+    ])
+    // 空 = 全サイト。他の「問わない」次元と同じくキーごと落とす
+    expect(buildSearchRequest(draft({ sites: [] })).sites).toBeUndefined()
+  })
 })
 
 describe('draftError', () => {
@@ -176,6 +186,27 @@ describe('draftError', () => {
     expect(
       draftError(draft({ durationMinMinutes: '120', durationMaxMinutes: '30' })),
     ).toBeUndefined()
+  })
+})
+
+/**
+ * issue #531 レビュー指摘: `sites` はスコープ軸であって条件ではない。
+ * `summarizeRuleConditions`（一覧の「条件なし」警告）と揃わないと、一覧では
+ * 警告が出るのに保存時の確認だけスキップされる、という食い違いが起きる。
+ */
+describe('hasNoConditions', () => {
+  it('何も指定していない下書きは条件ゼロ', () => {
+    expect(hasNoConditions(emptyDraft())).toBe(true)
+  })
+
+  it('sites だけを選んだ下書きも条件ゼロのまま（sites は条件ではない）', () => {
+    expect(hasNoConditions(draft({ sites: ['tokyo'] }))).toBe(true)
+  })
+
+  it('他の次元を 1 つでも指定すれば条件ありになる', () => {
+    expect(hasNoConditions(draft({ genres: [1] }))).toBe(false)
+    // sites と組み合わせても、sites 以外の次元があれば条件あり
+    expect(hasNoConditions(draft({ sites: ['tokyo'], genres: [1] }))).toBe(false)
   })
 })
 
@@ -372,7 +403,7 @@ describe('ローカル時刻 ⇄ UTC ISO の変換（conditionsToDraft）', () =
 })
 
 describe('buildRuleInput の preserve', () => {
-  it('preserve を渡すと UI を持たない項目（description / dedupe* / filenameTemplate / metadata / sites）を引き継ぐ', () => {
+  it('preserve を渡すと UI を持たない項目（description / dedupe* / filenameTemplate / metadata）を引き継ぐ', () => {
     const rule = fullRule()
     const input = buildRuleInput(emptyDraft(), emptyRuleMeta(), rule)
 
@@ -382,10 +413,13 @@ describe('buildRuleInput の preserve', () => {
     expect(input.dedupeWindowSeconds).toBe(3600)
     expect(input.filenameTemplate).toBe('{title}')
     expect(input.metadata).toEqual({ foo: 'bar' })
-    expect(input.sites).toEqual(['default', 'takamatsu'])
+    // sites は issue #531 で UI（`SearchDraft.sites`）の次元になったため、
+    // preserve では引き継がない --- 空の下書き（全サイト選択なし）を渡せば
+    // 元のルールの sites を持っていても送らない（下の別テスト）。
+    expect(input.sites).toBeUndefined()
   })
 
-  it('preserve を渡さない（新規作成）ときはこれらを一切送らない', () => {
+  it('preserve を渡さない（新規作成）ときは description / dedupe* / filenameTemplate / metadata を一切送らない', () => {
     const input = buildRuleInput(emptyDraft(), emptyRuleMeta())
 
     expect(input.description).toBeUndefined()
@@ -394,9 +428,21 @@ describe('buildRuleInput の preserve', () => {
     expect(input.dedupeWindowSeconds).toBeUndefined()
     expect(input.filenameTemplate).toBeUndefined()
     expect(input.metadata).toBeUndefined()
-    // sites は検索フォームが出していない次元なので、preserve が無ければ
-    // 常に付かない（空 = 全サイト）
-    expect(input.sites).toBeUndefined()
+  })
+
+  it('sites は preserve ではなく下書き（SearchDraft.sites）から決まる', () => {
+    const rule = fullRule()
+    // 下書きが空選択（全サイト）なら、preserve に sites を持つルールを渡しても
+    // 送らない --- sites はもう「UI が出していない次元」ではないので、
+    // 触っていない（＝全サイトのまま保存したい）という下書きの意図を推測で
+    // 上書きしない。
+    expect(buildRuleInput(emptyDraft(), emptyRuleMeta(), rule).sites).toBeUndefined()
+    // conditionsToDraft でハイドレートした下書きをそのまま渡せば、preserve が
+    // 無くても同じ sites が往復する（`?ruleId=` を開いたときの実際の経路）。
+    expect(buildRuleInput(conditionsToDraft(rule), emptyRuleMeta()).sites).toEqual([
+      'default',
+      'takamatsu',
+    ])
   })
 })
 
@@ -482,8 +528,9 @@ describe('canonicalSearchConditions（URL・localStorage から読んだ条件�
     expect(canonicalSearchConditions(SearchProgramsBody.parse(request))).toEqual(request)
   })
 
-  it('フォームに無い次元（sites）だけの条件は空に畳む', () => {
-    // 畳まないと「画面には何も出ていないのに全件検索が走る」（routes.tsx の cond）
-    expect(canonicalSearchConditions({ sites: ['default'] })).toEqual({})
+  it('sites はフォームの次元になったので畳んでも消えない（issue #531）', () => {
+    // #529 までは sites が UI に無い次元だったため空に畳んでいたが、いまは
+    // ConditionFields のサイトチップが編集するので、他の次元と同じく往復する。
+    expect(canonicalSearchConditions({ sites: ['default'] })).toEqual({ sites: ['default'] })
   })
 })

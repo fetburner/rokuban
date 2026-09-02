@@ -151,12 +151,11 @@ const searchRoute = createRoute({
   validateSearch: (search: Record<string, unknown>): SearchPageSearch => {
     const parsed = validValue<ProgramSearchRequest>(SearchProgramsBody, search.cond)
     // 検証を通ったら、検索画面が実際に送る形へ畳む（`canonicalSearchConditions`）。
-    // そのうえで**キーが 0 個なら `undefined`**。畳まないと 3 通りの「中身の無い
+    // そのうえで**キーが 0 個なら `undefined`**。畳まないと 2 通りの「中身の無い
     // 条件」が素通りして、`?cond=` を開いた瞬間に条件なしの全件検索が走り、
     // かつ localStorage の前回条件の復元がスキップされる（`SearchPage` の
     // ハイドレーションは `cond !== undefined` を「URL が条件を持つ」と読む）:
-    // `?cond={}` / 未知キーだけの `?cond={"foo":1}`（zod が黙って剥がす）/
-    // フォームに無い次元だけの `?cond={"sites":["x"]}`（畳むと消える）。
+    // `?cond={}` / 未知キーだけの `?cond={"foo":1}`（zod が黙って剥がす）。
     // `pages/search.tsx` の `submit` 側は `cond:{}` を書かない判断をしている
     // （不変条件 10）ので、読む側もそれに揃える。
     const cond = parsed === undefined ? undefined : canonicalSearchConditions(parsed)

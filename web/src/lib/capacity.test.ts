@@ -141,8 +141,8 @@ describe('不足区間と重なる番組を数える', () => {
 
   it('半開区間の端は数えない（接するだけ / 1ms 食い込めば数える）', () => {
     const count = (startMinutes: number, durationMinutes: number) =>
-      countProgramsInShortfall(overages, 'default', [
-        { startAt: at(startMinutes), durationMs: durationMinutes * 60_000 },
+      countProgramsInShortfall(overages, [
+        { site: 'default', startAt: at(startMinutes), durationMs: durationMinutes * 60_000 },
       ])
 
     expect(count(18 * 60, 60)).toBe(0) // 19:00 に終わる
@@ -150,33 +150,42 @@ describe('不足区間と重なる番組を数える', () => {
     expect(count(19 * 60 + 10, 10)).toBe(1) // 内側
     expect(count(18 * 60, 30)).toBe(0) // 完全に外
     expect(
-      countProgramsInShortfall(overages, 'default', [
-        { startAt: at(18 * 60), durationMs: 60 * 60_000 + 1 },
+      countProgramsInShortfall(overages, [
+        { site: 'default', startAt: at(18 * 60), durationMs: 60 * 60_000 + 1 },
       ]),
     ).toBe(1) // 1ms 食い込む
   })
 
   it('終了未定番組（幅 0 の区間）は開始の瞬間をまたぐ区間しか数えない', () => {
-    const undetermined = [{ startAt: at(19 * 60 + 30), durationMs: 0 }]
+    const undetermined = [{ site: 'default', startAt: at(19 * 60 + 30), durationMs: 0 }]
 
     // 19:30 を厳密にまたぐ不足区間なら数える
-    expect(countProgramsInShortfall(overages, 'default', undetermined)).toBe(1)
+    expect(countProgramsInShortfall(overages, undetermined)).toBe(1)
     // 不足区間の開始が番組開始と同時刻（端点は予約境界由来なので現実に起きうる）
-    expect(countProgramsInShortfall([overage(19 * 60 + 30, 20 * 60)], 'default', undetermined)).toBe(0)
+    expect(countProgramsInShortfall([overage(19 * 60 + 30, 20 * 60)], undetermined)).toBe(0)
     // 20:00 開始・終了未定の最中に 21:00〜21:30 の不足がある形は原理的に数えられない
     expect(
-      countProgramsInShortfall([overage(21 * 60, 21 * 60 + 30)], 'default', [
-        { startAt: at(20 * 60), durationMs: 0 },
+      countProgramsInShortfall([overage(21 * 60, 21 * 60 + 30)], [
+        { site: 'default', startAt: at(20 * 60), durationMs: 0 },
       ]),
     ).toBe(0)
   })
 
-  it('別サイトの不足区間では数えない', () => {
+  it('番組自身が運ぶ site で不足区間を絞る（別サイトの番組は数えない。issue #531）', () => {
+    // 検索結果はフラットな `{site, programId}` の行なので、この関数は行ごとに
+    // 自分の site を持つ。全体で単一の site を引数に取る形（旧シグネチャ）に
+    // 戻すと、複数サイトが混在する結果を集計できない。
     expect(
-      countProgramsInShortfall(overages, 'takamatsu', [
-        { startAt: at(19 * 60 + 10), durationMs: 10 * 60_000 },
+      countProgramsInShortfall(overages, [
+        { site: 'takamatsu', startAt: at(19 * 60 + 10), durationMs: 10 * 60_000 },
       ]),
     ).toBe(0)
+    expect(
+      countProgramsInShortfall(overages, [
+        { site: 'default', startAt: at(19 * 60 + 10), durationMs: 10 * 60_000 },
+        { site: 'takamatsu', startAt: at(19 * 60 + 10), durationMs: 10 * 60_000 },
+      ]),
+    ).toBe(1)
   })
 })
 

@@ -1,5 +1,6 @@
 // 長い局名 + 補助ラベルを載せたサービスチップが、狭い画面でページ全体を横スクロール
-// させないことの受け入れ判定（issue #306）。
+// させないことの受け入れ判定（issue #306）。レジストリを 2 サイトにして、長い
+// site 名の「サイト」チップ（issue #531）も同じ `Chip` を使うことを合わせて見る。
 //
 // jsdom（`pnpm test`）はレイアウトを計算しないので `scrollWidth` / `clientWidth` は
 // 常に 0 で、「はみ出している」は原理的に測れない。`Chip` は flex 直下に置かれる
@@ -37,6 +38,15 @@ await verifyBundleMatchesOrExit(BASE, ng)
  * （`地上波 5 ・ 27` / `地上波 5 ・ 95`）を付ける = 判定したい「名前 + ラベル」の状態。
  */
 const longName = '瀬戸内海放送デジタルテレビジョン臨時サブチャンネル'
+
+/**
+ * レジストリを 2 サイトにする（issue #531: `<ConditionFields>` のサイトチップは
+ * レジストリと下書きの和集合が 2 つ以上のときだけ描画するため、単一サイトかつ
+ * 下書きが空のスタブでは判定対象自体が存在しない）。片方は長い site 名にして、`Chip` が横幅を広げないことを
+ * サービスチップと同じ 320px で確認する。
+ */
+const longSiteName = 'とても長いサイト名のダミーマイラック録画拠点識別子テスト用'
+const siteNames = ['tokyo', longSiteName]
 const services = [
   {
     id: 3273601024,
@@ -80,7 +90,7 @@ async function openStubbed(pathname, label) {
         : requested === '/api/version'
           ? '{"version":"e2e"}'
           : requested === '/api/sites'
-            ? '["tokyo"]'
+            ? JSON.stringify(siteNames)
             : /\/services$/.test(requested)
               ? JSON.stringify(services)
               : '[]'
@@ -113,6 +123,14 @@ ok(
   chipText === `${longName}（地上波 5 ・ 27）`,
   JSON.stringify(chipText),
 )
+
+// サイトチップ（issue #531）。レジストリを 2 サイトにしたことで
+// `<ConditionFields>` に「サイト」の節が出る。長い site 名でも同じ `Chip`
+// （`max-w-full`）を使うので、①のサービスチップと同じ判定を通す。
+const siteGroup = searchPage.locator('div[role="group"][aria-label="サイト"]')
+await siteGroup.waitFor()
+const siteChips = siteGroup.locator('button')
+ok('① サイトのチップが 2 件描かれている', (await siteChips.count()) === 2, `${await siteChips.count()} 件`)
 
 const doc = await documentScroll(searchPage)
 ok(

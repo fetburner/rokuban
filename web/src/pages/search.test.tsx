@@ -80,10 +80,17 @@ const allPrograms = [...filler, news, drama]
  * ruleFixture は `?ruleId=7` で開くルール。条件は `news`（'ニュース7'）だけに
  * 当たるキーワード 1 つ（ハイドレーション後の自動検索が正しく動くことの検証用）。
  *
- * `description` / `dedupe*` / `filenameTemplate` / `metadata` / `sites` は
+ * `description` / `dedupe*` / `filenameTemplate` / `metadata` は
  * どれも `ConditionFields` に UI が無い項目。上書き保存で `buildRuleInput` の
  * `preserve` が効いていることを確認する（＝ `PATCH` の本文からこれらが
  * 落ちていないこと）ため、あえて意味のある値を入れておく。
+ *
+ * `sites: ['default']` は単一サイト構成（この fixture のレジストリは
+ * `default` だけ）での往復を確かめる --- `<ConditionFields>` のサイトチップは
+ * レジストリと下書きの和集合が 2 つ以上のときだけ出る。この fixture は下書きも
+ * `['default']` なので和集合は 1 つでチップは出ないが、
+ * ハイドレーション（`conditionsToDraft`）と保存（`buildSearchRequest`）は
+ * チップの有無に関わらず `sites` をそのまま運ぶ（issue #531）。
  */
 const ruleFixture: Rule = {
   id: 7,
@@ -148,6 +155,17 @@ function stubApi(options?: {
    * テストの件数の期待値が全部ずれるため、影響を局所化する。
    */
   extraPrograms?: Program[]
+  /**
+   * `GET /api/sites` の応答（既定 `['default']`）。**先頭は常に `'default'`
+   * のままにすること** --- `useCurrentSite()` はレジストリの先頭サイト固定
+   * （`<SiteGate>`）で、検索・番組詳細のパス（`/api/sites/default/...`）は
+   * このスタブの他の分岐に既に決め打ちされている。2 つ目以降を足すのは
+   * `<ConditionFields>` のサイトチップ（レジストリと下書きの和集合が
+   * 2 つ以上で出る）と
+   * `sites` の往復を確かめるテスト用（issue #531）。追加した site の
+   * `/services` は `services` フィクスチャをそのまま返す。
+   */
+  sites?: string[]
 }) {
   const searchBodies: ProgramSearchRequest[] = []
   const createRuleBodies: RuleInput[] = []
@@ -158,7 +176,7 @@ function stubApi(options?: {
   // （`pages/search.tsx` のコメント「値札のために追加の HTTP リクエストは
   // 発生しない」の裏付け。下の「値札用の useQueries を足しても...」テストで使う）。
   const programDetailRequests: number[] = []
-  // `holdProgramDetails` が true のとき、番組の詳細（GET /api/programs/{id}）を
+  // `holdProgramDetails` が true のとき、番組の詳細（GET /api/sites/{site}/programs/{programId}）を
   // 即座に解決せず保留する。「検索は解決したが durationMs は 1 件も届いていない」
   // 瞬間（`loadedDurationsMs` が空のまま `totalCount > 0`）を確実に再現するための
   // 仕掛け --- 実タイマーに依存すると環境差でその瞬間を取りこぼしうる。
@@ -185,11 +203,13 @@ function stubApi(options?: {
 
     // 条件フォームのサービス選択肢は全 site から作る（issue #290）ので、
     // 単一サイト構成でも `GET /api/sites` を経由する。
+    const registrySites = options?.sites ?? ['default']
     if (url.pathname === '/api/sites') {
-      return Promise.resolve(jsonResponse(['default']))
+      return Promise.resolve(jsonResponse(registrySites))
     }
 
-    if (url.pathname === '/api/sites/default/services') {
+    const servicesMatch = /^\/api\/sites\/([^/]+)\/services$/.exec(url.pathname)
+    if (servicesMatch && registrySites.includes(servicesMatch[1])) {
       return Promise.resolve(jsonResponse(services))
     }
 
@@ -285,7 +305,7 @@ function stubApi(options?: {
           return Promise.resolve(jsonResponse({ error: invalidRegexMessage }, 400))
         }
         // EPG のローリングウィンドウから抜けた番組が結果に残る状況の再現。
-        // 検索は当たるが詳細（GET /api/programs/{id}）が 404 になる
+        // 検索は当たるが詳細（GET /api/sites/{site}/programs/{programId}）が 404 になる
         if (match.value === '幽霊')
           return Promise.resolve(jsonResponse([{ site: 'default', programId: 999 }]))
       }
@@ -942,7 +962,7 @@ describe('SearchPage', () => {
       await addKeyword('ニュース')
       await userEvent.click(screen.getByRole('button', { name: '検索' }))
 
-      // 検索（POST .../search）は解決したが、番組の詳細（GET /api/programs/{id}）は
+      // 検索（POST .../search）は解決したが、番組の詳細（GET /api/sites/{site}/programs/{programId}）は
       // まだ 1 件も返っていない瞬間を確実に再現する（`holdProgramDetails` で保留）。
       // 件数は totalCount だけで確定するので先に出るが、時間はサンプルが無いので
       // 「算出中…」になる。
@@ -1343,6 +1363,37 @@ describe('SearchPage', () => {
         encodeProfiles: [],
       })
     })
+
+    /**
+     * issue #531 レビュー指摘: `sites` はスコープ軸であって条件ではないので、
+     * サイトのチップだけを選んだ下書きも「全番組が対象になる」確認を
+     * スキップしてはならない（`hasNoConditions` が `buildSearchRequest` の
+     * キーをそのまま数えていた実装では、`sites` キーが 1 つ増えるだけで
+     * 確認が無音でスキップされていた）。
+     */
+    it('サイトのチップだけを選んだ状態での保存も確認チェックを挟む', async () => {
+      const { createRuleBodies } = stubApi({ sites: ['default', 'site2'] })
+      renderPage()
+
+      expect(await screen.findByRole('button', { name: 'NHK総合' })).toBeInTheDocument()
+      const group = screen.getByRole('group', { name: 'サイト' })
+      await userEvent.click(within(group).getByRole('button', { name: 'site2' }))
+
+      await userEvent.click(screen.getByRole('button', { name: 'この条件でルールを作成' }))
+      await userEvent.type(screen.getByLabelText('名前'), 'サイト限定')
+
+      // sites しか選んでいないので、依然「条件なし」の確認が要る。
+      expect(screen.getByText(/条件を 1 つも指定していません/)).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'ルールを作成' })).toBeDisabled()
+
+      await userEvent.click(
+        screen.getByRole('checkbox', { name: /すべての番組が対象になることを理解した上で作成します/ }),
+      )
+      await userEvent.click(screen.getByRole('button', { name: 'ルールを作成' }))
+
+      await waitFor(() => expect(createRuleBodies).toHaveLength(1))
+      expect(createRuleBodies[0]?.sites).toEqual(['site2'])
+    })
   })
 
   describe('?ruleId=N で既存ルールの条件を開く', () => {
@@ -1408,7 +1459,39 @@ describe('SearchPage', () => {
       ).toBeInTheDocument()
     })
 
-    it('上書き保存で UI を持たない項目が落ちない（description / dedupe* / filenameTemplate / metadata / sites）', async () => {
+    /**
+     * issue #531 受け入れ:「`sites` が条件 UI に出ていて（site が 2 つ以上の
+     * ときだけ）、`?ruleId=` で開いたルールの `rule_sites` が下書きに載り、
+     * 保存で往復する」。
+     *
+     * レジストリを 2 サイト（`default` / `site2`）にすることで
+     * `<ConditionFields>` の「サイト」チップを表示させ、`rule_sites` から
+     * ハイドレートされた選択を画面内で編集し、上書き保存が編集後の値を運ぶ
+     * ことを確かめる。
+     */
+    it('サイトチップは下書きに載り、編集して上書き保存すると変更後の sites が運ばれる', async () => {
+      const ruleWithTwoSites: Rule = { ...ruleFixture, sites: ['default', 'site2'] }
+      const { updateRuleBodies } = stubApi({ rules: [ruleWithTwoSites], sites: ['default', 'site2'] })
+      renderPage(['/search?ruleId=7'])
+
+      expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+
+      const group = await screen.findByRole('group', { name: 'サイト' })
+      const defaultChip = within(group).getByRole('button', { name: 'default' })
+      const site2Chip = within(group).getByRole('button', { name: 'site2' })
+      // rule_sites（['default', 'site2']）がそのまま下書きに載り、両方 active。
+      expect(defaultChip).toHaveAttribute('aria-pressed', 'true')
+      expect(site2Chip).toHaveAttribute('aria-pressed', 'true')
+
+      // site2 を外してから上書き保存する。
+      await userEvent.click(site2Chip)
+      await userEvent.click(screen.getByRole('button', { name: 'ルールを上書き保存' }))
+
+      await waitFor(() => expect(updateRuleBodies).toHaveLength(1))
+      expect(updateRuleBodies[0]?.data.sites).toEqual(['default'])
+    })
+
+    it('上書き保存で UI を持たない項目が落ちない（description / dedupe* / filenameTemplate / metadata）', async () => {
       const { updateRuleBodies } = stubApi({ rules: [ruleFixture] })
       renderPage(['/search?ruleId=7'])
 
@@ -1425,8 +1508,11 @@ describe('SearchPage', () => {
         dedupeWindowSeconds: 86_400,
         filenameTemplate: '{title}_{startAt}',
         metadata: { note: 'テスト用メタデータ' },
-        sites: ['default'],
       })
+      // sites はもう `preserve` 経由ではなく、ハイドレートした下書きから
+      // そのまま送られる（issue #531。`buildRuleInput` の `preserve` には
+      // 含まれなくなったので、上と分けて確認する）。
+      expect(updateRuleBodies[0]?.data.sites).toEqual(['default'])
     })
 
     it('別の新しいルールとして保存（副動作）は POST を呼び、元のルールと同名にならない', async () => {
@@ -1475,6 +1561,160 @@ describe('SearchPage', () => {
 
       expect(screen.getByLabelText('テキスト条件 1 の値')).toHaveValue('深夜')
     })
+  })
+})
+
+/**
+ * issue #531 受け入れ:
+ * - 「検索結果が `[{site, programId}]` を描画し、同一放送が 2 サイトでマッチ
+ *   したときに key が重複しない」
+ * - 「番組詳細が結果の運ぶ site で引かれる（第 2 サイトだけの結果が 404 に
+ *   ならない）」
+ * - 「値札の件数が予約数（= 行数）と一致することを主張するテストがある」
+ * - 「結果行だけ先頭サイト解決という非対称を無自覚に残さない」（serviceById）
+ *
+ * `stubApi` は `default` 1 サイト固定の巨大なフィクスチャなので、ここは
+ * 影響を局所化するため独立した最小限のスタブを使う。
+ */
+describe('複数サイトの検索結果（issue #531）', () => {
+  // **siteA は `test/router.tsx` の `testSite`（'default'）に合わせる。**
+  // `renderInRouter`（`renderPage` が使う）は `<SiteGate>` を経由せず
+  // `SiteContext` に固定値を直接注入するので、`useCurrentSite()` は
+  // `GET /api/sites` の応答に関わらずこの値になる（検索の path 引数も
+  // これで決まる）。
+  const siteA = 'default'
+  const siteB = 'takamatsu'
+  // A・B はどちらも「瀬戸内海放送」ではなく別名にして、行の service 名が
+  // 自サイトの登録から来ていることを見分けられるようにする。
+  const serviceA: Service = {
+    id: 100_001,
+    networkId: 1,
+    serviceId: 1,
+    name: '局A',
+    channelType: 'GR',
+    channel: '1',
+    remoteControlKeyId: 1,
+    hasLogoData: false,
+    hasPrograms: true,
+  }
+  const serviceB: Service = {
+    id: 200_002,
+    networkId: 2,
+    serviceId: 2,
+    name: '局B',
+    channelType: 'GR',
+    channel: '2',
+    remoteControlKeyId: 2,
+    hasLogoData: false,
+    hasPrograms: true,
+  }
+
+  function programAt(site: string, service: Service, name: string): Program {
+    return {
+      programId: 500,
+      networkId: service.networkId,
+      serviceId: service.serviceId,
+      eventId: 500,
+      startAt: new Date(origin).toISOString(),
+      endAt: new Date(origin + 1_800_000).toISOString(),
+      durationMs: 1_800_000,
+      name: `${name}（${site}）`,
+      description: '',
+      genres: [0],
+      isFree: true,
+    }
+  }
+  const programA = programAt(siteA, serviceA, 'ニュース')
+  const programB = programAt(siteB, serviceB, 'ニュース')
+
+  /**
+   * stubMultiSiteApi は「同一放送（programId 500）が default と takamatsu の
+   * 両方でマッチした」状況だけを再現する最小のスタブ。`renderPage`
+   * （`renderInRouter`）は `useCurrentSite()` を `testSite`（'default'）に
+   * 固定するので、検索リクエスト自体は `/api/sites/default/programs/search`
+   * に届く --- 実際に複数 site の行を返せるのは、この 1 本の検索が
+   * `sites`（空 = 全サイト）で default と takamatsu の両方の EPG を横断して
+   * 引くため（Go 側の仕事。ここはその応答の形だけを固定する）。
+   */
+  function stubMultiSiteApi() {
+    const fetchMock = vi.fn((input: string | URL | Request) => {
+      const url = new URL(String(input), 'http://localhost')
+      if (url.pathname === '/api/sites') return Promise.resolve(jsonResponse([siteA, siteB]))
+      if (url.pathname === `/api/sites/${siteA}/services`) {
+        return Promise.resolve(jsonResponse([serviceA]))
+      }
+      if (url.pathname === `/api/sites/${siteB}/services`) {
+        return Promise.resolve(jsonResponse([serviceB]))
+      }
+      if (url.pathname === '/api/encode-profiles') return Promise.resolve(jsonResponse([]))
+      if (url.pathname === '/api/capacity/overages') return Promise.resolve(jsonResponse([]))
+      if (url.pathname === `/api/sites/${siteA}/programs/500`) {
+        return Promise.resolve(jsonResponse(programA))
+      }
+      if (url.pathname === `/api/sites/${siteB}/programs/500`) {
+        return Promise.resolve(jsonResponse(programB))
+      }
+      if (url.pathname === `/api/sites/${siteA}/programs/search`) {
+        return Promise.resolve(
+          jsonResponse([
+            { site: siteA, programId: 500 },
+            { site: siteB, programId: 500 },
+          ]),
+        )
+      }
+      throw new Error(`unexpected fetch: ${url.pathname}`)
+    })
+    globalThis.fetch = fetchMock as unknown as typeof fetch
+  }
+
+  it('2 行とも描画され、行ごとに自分の site から詳細とサービス名を引く（key の重複警告も出ない）', async () => {
+    stubMultiSiteApi()
+    // React が重複 key を検出すると console.error に警告を出す。`programId`
+    // だけを key にする実装（直す前）に戻すとここで捕まる。
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    renderPage()
+
+    // ルーターの初回マッチ解決とサービス一覧の取得を待ってから押す
+    // （default だけが持つ「局A」チップが出れば両方済んでいる）。
+    await screen.findByRole('button', { name: '局A' })
+    await userEvent.click(screen.getByRole('button', { name: '検索' }))
+
+    // 2 行とも「自分の site の名前」で届く。currentSite（default）固定で
+    // 引く実装（直す前）だと、2 行目も `/api/sites/default/programs/500` を
+    // 見に行ってしまい、同じ「ニュース（default）」が 2 回出る。
+    expect(await screen.findByText('ニュース（default）')).toBeInTheDocument()
+    expect(await screen.findByText('ニュース（takamatsu）')).toBeInTheDocument()
+
+    // 件数（値札の母数）は畳まず 2 行のまま。
+    expect(screen.getByText('2 件（番組 ID 順）')).toBeInTheDocument()
+
+    // 行ごとのサービス名は自サイトの登録から解決される（union）。
+    // `within` で結果一覧に絞る --- 「局A」はチャンネル条件のチップにも
+    // 同じ文字列で出るため、絞らないと `getByText` が複数ヒットで落ちる。
+    const results = within(screen.getByTestId('search-results'))
+    expect(results.getByText('局A')).toBeInTheDocument()
+    expect(results.getByText('局B')).toBeInTheDocument()
+
+    const duplicateKeyWarning = consoleError.mock.calls.some((args) =>
+      args.some((a) => typeof a === 'string' && /same key/i.test(a)),
+    )
+    expect(duplicateKeyWarning).toBe(false)
+    consoleError.mockRestore()
+  })
+
+  it('値札の件数は行数（= 予約数）で、programId で畳まない', async () => {
+    stubMultiSiteApi()
+    renderPage()
+
+    await screen.findByRole('button', { name: '局A' })
+    await userEvent.click(screen.getByRole('button', { name: '検索' }))
+    await screen.findByText('ニュース（default）')
+
+    // totalCount=2 → countPerWeek = 2 * 7/8 = 1.75 → 「約 2 件」。
+    // programId で畳んで totalCount=1 になる実装では「約 1 件」になり、
+    // このテストは落ちる（実際に確認済み。下の mutation 相当のロジックは
+    // `lib/capacity.ts`/`lib/rule-cost.ts` の対応するユニットテストが担う）。
+    expect(await screen.findByText(/約 2 件/)).toBeInTheDocument()
   })
 })
 
@@ -1574,6 +1814,9 @@ describe('SearchPage の条件の復元', () => {
     await waitFor(() => {
       expect(JSON.parse(localStorage.getItem(lastKey)!)).toEqual({
         textMatches: [{ target: 'name', mode: 'keyword', value: 'ニュース' }],
+        // ruleFixture の sites（issue #531 で下書きの次元になった）がそのまま
+        // ハイドレートされて送られる。
+        sites: ['default'],
       })
     })
     expect((router.state.location.search as { cond?: unknown }).cond).toBeUndefined()

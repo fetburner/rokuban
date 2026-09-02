@@ -64,6 +64,11 @@ export type SearchDraft = {
   channelTypes: ProgramSearchRequestChannelTypesItem[]
   genres: number[]
   times: TimeWindowDraft[]
+  /**
+   * sites は検索対象のサイト軸（`GET /api/recordings` の `?site=` と同じ規約:
+   * 軸内は OR、空 = 全サイト）。`GET /api/sites` の全 site から選ぶ（issue #531）。
+   */
+  sites: string[]
 }
 
 /** weekdayLabels は bit0 から順の曜日ラベル（bit0=月 … bit6=日）。 */
@@ -123,6 +128,7 @@ export function emptyDraft(): SearchDraft {
     channelTypes: [],
     genres: [],
     times: [],
+    sites: [],
   }
 }
 
@@ -213,8 +219,30 @@ export function buildSearchRequest(draft: SearchDraft): ProgramSearchRequest {
       endSec: t.endSec,
     }))
   }
+  // sites も他の集合次元（genres）と同じく並び順を固定する。選択の順序ではなく
+  // 選択の内容だけでリクエストが決まるようにする。
+  if (draft.sites.length > 0) request.sites = [...draft.sites].sort()
 
   return request
+}
+
+/**
+ * hasNoConditions は下書きが「条件ゼロ」（保存すると全番組が対象になる）かどうかを返す。
+ *
+ * **`sites` はスコープ軸であって条件ではない。** サイトのチップだけを選んだ
+ * 下書きは、他の次元を何も指定していない以上「全番組が対象」のまま変わらない
+ * ので、`buildSearchRequest` のキーに `sites` が含まれるという理由だけで
+ * 「条件あり」と判定してはならない。`components/rule-condition-summary.ts` の
+ * `summarizeRuleConditions` も `sites` を要約に出さない（= 条件として数えない）
+ * ので、ここで揃えないと「一覧では条件なしの警告バッジが出るのに、保存時の
+ * 『全番組が対象になります』確認だけスキップされる」という食い違いが起きる
+ * （issue #531 のレビュー指摘。`request.sites` は他の次元と違い draft の
+ * 選択そのままではなく `buildSearchRequest` がソートするので、`draft.sites`
+ * ではなくここで判定する）。
+ */
+export function hasNoConditions(draft: SearchDraft): boolean {
+  const request = buildSearchRequest(draft)
+  return Object.keys(request).filter((key) => key !== 'sites').length === 0
 }
 
 /**
@@ -351,6 +379,7 @@ export function conditionsToDraft(rule: ProgramSearchRequest): SearchDraft {
       startSec: t.startSec,
       endSec: t.endSec,
     })),
+    sites: rule.sites ? [...rule.sites].sort() : [],
   }
 }
 
@@ -358,11 +387,12 @@ export function conditionsToDraft(rule: ProgramSearchRequest): SearchDraft {
  * canonicalSearchConditions は外から来た条件を「この画面が実際に送る形」に畳む
  * （下書きを経由して往復させる）。
  *
- * URL（`?cond=`）や localStorage から来た条件は、フォームが持たない次元を含みうる
- * --- openapi の `sites`（`rule_sites` 相当）がそれで、`conditionsToDraft` は
- * その次元を持たない。畳まずに「条件がある」と扱うと、**画面には何も表示されない
- * まま全件検索が走る**（`sites` だけの条件は下書きでは空になる）。畳んだ結果が
- * 空なら「条件なし」として扱えばよい、という判定に使う。
+ * URL（`?cond=`）や localStorage から来た条件は、フォームが持たない次元（openapi に
+ * あるがこの画面の UI にはまだ無い次元）を含みうる。畳まずに「条件がある」と
+ * 扱うと、**画面には何も表示されないまま、UI に無い次元だけの絞り込みが黙って
+ * 効いた検索が走る**。畳んだ結果が空なら「条件なし」として扱えばよい、という
+ * 判定に使う（`sites` は issue #531 でフォームの次元になったため、いまはこの
+ * 畳み込みで消えない）。
  *
  * 秒以下・ミリ秒の精度も下書きの粒度（分・分単位の壁時計）に落ちるが、それは
  * 実際に送られるリクエストと同じ落ち方なので、畳んだ形の方が「押したら何が
@@ -376,20 +406,15 @@ export function canonicalSearchConditions(conditions: ProgramSearchRequest): Pro
  * buildRuleInput は下書きとメタから `RuleInput` を作る。
  *
  * 条件部分は `buildSearchRequest(draft)` をスプレッドするだけで、変換を
- * 2 箇所に重複させない。
- *
- * **`sites` は送らない（空 = 全サイト）。** `ProgramSearchRequest.sites` は
- * `rule_sites` 相当の別次元で、検索フォーム（`SearchDraft`）は UI にこの次元を
- * 出していない。UI が出していない次元を検索条件から推測して埋めると、
- * 「画面で試した条件」と「実際に保存される条件」が食い違う
- * （試していない次元が黙って決まる）。ただし `preserve` に既存ルールがあり、
- * それが `sites` を持っているなら引き継ぐ —— UI から編集できないフィールドを
- * 保存のたびに消してはならない（下の `preserve` の説明を参照）。
+ * 2 箇所に重複させない。**`sites`（`rule_sites` 相当）もこの条件部分に含まれる**
+ * ---issue #531 で `SearchDraft` の次元になったため、検索と同じ「画面で選んだ
+ * サイトがそのまま送られる」（空 = 全サイト）が保存にもそのまま効く。UI が出して
+ * いない次元を推測して埋めることはしていない。
  *
  * `preserve` に既存ルールを渡すと、UI を持たない項目（`description` /
  * `dedupeEnabled` / `dedupeThreshold` / `dedupeWindowSeconds` /
- * `filenameTemplate` / `metadata` / `sites`）を引き継ぐ。渡さない
- * （新規作成）ときはこれらを一切送らない。
+ * `filenameTemplate` / `metadata`）を引き継ぐ。渡さない（新規作成）ときは
+ * これらを一切送らない。
  */
 export function buildRuleInput(
   draft: SearchDraft,
@@ -415,7 +440,6 @@ export function buildRuleInput(
     }
     if (preserve.filenameTemplate !== undefined) input.filenameTemplate = preserve.filenameTemplate
     if (preserve.metadata !== undefined) input.metadata = preserve.metadata
-    if (preserve.sites !== undefined) input.sites = preserve.sites
   }
 
   return input

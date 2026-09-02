@@ -91,7 +91,13 @@ type FieldsProps = {
  * でサービス選択肢を全 site の union に変えた後に測り直した値。フォームの形
  * ---「読み込み中…」の 1 行からチップの複数行へ入れ替わる `ServiceFields` の
  * 位置と、それより前が同期的に描かれること---は変えていないため、これ以前の
- * 実測値と同じ桁に収まっている）。
+ * 実測値と同じ桁に収まっている）。issue #531 で `SiteFields`（サイトチップ）を
+ * `ServiceFields` の手前に足した後も `web/e2e/cls.mjs`（390x844 / 1280x900）を
+ * 測り直したが値は変わらない --- `SiteFields` の表示可否は `useAllSitesServices()`
+ * が返す `sites`（`<SiteGate>` と同じクエリキーのキャッシュを再利用するだけで
+ * 追加のリクエストは発生しない）と下書きが持つ site の和集合から**同期的**に
+ * 決まり、その和集合が 2 つ以上のときしか描画しない（`cls.mjs` のフィクスチャは
+ * 単一サイトかつ下書きが空なので DOM に一切増えない）。
  * **フォームが短くなる変更（節の折りたたみ・サービスより下の要素を上へ移す）は
  * この前提を崩す**ので `web/e2e/cls.mjs` を測り直す。他の節との間に依存は無い
  * ので、並びを変えても意味は変わらない --- 判定は `web/e2e/cls.mjs`①（直す前の
@@ -99,7 +105,7 @@ type FieldsProps = {
  * 受け入れた判断は `docs/frontend/search.md`。
  */
 export function ConditionFields({ draft, onChange, disabled }: FieldsProps): React.ReactElement {
-  const { services: serviceList, isPending, isError } = useAllSitesServices()
+  const { services: serviceList, sites, isPending, isError } = useAllSitesServices()
 
   return (
     <>
@@ -108,6 +114,7 @@ export function ConditionFields({ draft, onChange, disabled }: FieldsProps): Rea
       <GenreFields draft={draft} onChange={onChange} disabled={disabled} />
       <TimeWindowFields draft={draft} onChange={onChange} disabled={disabled} />
       <ScalarFields draft={draft} onChange={onChange} disabled={disabled} />
+      <SiteFields draft={draft} sites={sites} onChange={onChange} disabled={disabled} />
       <ServiceFields
         draft={draft}
         services={serviceList}
@@ -317,6 +324,64 @@ function TextMatchFields({ draft, onChange, disabled }: FieldsProps) {
           </li>
         ))}
       </ul>
+    </Section>
+  )
+}
+
+/**
+ * SiteFields はサイト軸の入力（issue #531）。
+ *
+ * **`sites` は `GET /api/recordings` の `?site=` と同じ絞り込み軸**（軸内は OR、
+ * 空 = 全サイト）。以前はこの次元がフォームに無く、検索は常に `useCurrentSite()`
+ * （先頭サイト）だけを対象にし、保存されるルールの `sites` は UI から編集
+ * できなかった。
+ *
+ * **チップの選択肢は「レジストリの site」と「下書きが既に持つ site」の和集合**
+ * にする。`?ruleId=` で開いたルールの `rule_sites` にレジストリから消えた
+ * site 名が残っていた場合でも、和集合に含めることでチップとして見え、
+ * 明示的に外せる --- レジストリの一覧だけを選択肢にすると、消えた site は
+ * チップごと消えて画面内で外す手段が無くなる（以前の「未解決」はこれが
+ * 原因だった。`docs/frontend/search.md` 参照）。
+ *
+ * **表示可否もこの和集合（`options`）で判定する。** レジストリだけを見て
+ * `sites.length <= 1` で隠すと、レジストリが 1 site に縮んだ環境で下書きが
+ * 別の（消えた）site を持つケースが再び「見えない」に戻り、上の未解決が復活する
+ * --- 単一サイト運用で下書きも空 / レジストリと同じ 1 件のときは `options` も
+ * 1 件のままなので、素直な単一サイト構成では何も変わらない
+ * （`components/recording-filters.tsx` の `siteNames.length > 1` と違い、
+ * こちらは「編集中の下書きが持つ値」を選択肢に含める必要があるための差）。
+ */
+function SiteFields({
+  draft,
+  sites,
+  onChange,
+  disabled,
+}: FieldsProps & { sites: string[] }) {
+  const options = [...new Set([...sites, ...draft.sites])].sort()
+
+  if (options.length <= 1) return null
+
+  return (
+    <Section title="サイト">
+      <div role="group" aria-label="サイト" className="flex flex-wrap gap-2">
+        {options.map((site) => (
+          <Chip
+            key={site}
+            active={draft.sites.includes(site)}
+            disabled={disabled}
+            onClick={() =>
+              onChange((d) => ({
+                ...d,
+                sites: d.sites.includes(site)
+                  ? d.sites.filter((s) => s !== site)
+                  : [...d.sites, site],
+              }))
+            }
+          >
+            {site}
+          </Chip>
+        ))}
+      </div>
     </Section>
   )
 }

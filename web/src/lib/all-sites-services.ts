@@ -6,6 +6,8 @@ import { unwrap } from '@/api/unwrap'
 export type AllSitesServices = {
   /** services は `Service.id` で畳んだ全 site のサービス一覧。順不同。 */
   services: Service[]
+  /** sites は `GET /api/sites` のレジストリ（順序はサーバー応答のまま）。 */
+  sites: string[]
   /** isPending は取得中と失敗の区別に使う（空を「サービスが無い」と読ませない）。 */
   isPending: boolean
   isError: boolean
@@ -64,6 +66,7 @@ export function useAllSitesServices(): AllSitesServices {
 
   return {
     services: [...serviceById.values()],
+    sites,
     isPending: sitesQuery.isPending || serviceQueries.some((q) => q.isPending),
     isError: sitesQuery.isError || serviceQueries.some((q) => q.isError),
   }
