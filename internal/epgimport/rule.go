@@ -147,8 +147,8 @@ func importOneRule(ctx context.Context, pool *pgxpool.Pool, site string, r epgst
 	fields.textMatches = kept
 
 	// 変換の結果、絞り込み条件が 1 つも残らなかったルールを enabled のまま
-	// 作らない。rulequery.Compile は条件が空なら "TRUE"（サイト一致のみ）に
-	// 縮退するため、有効なままだと EPG 全番組を録画する巨大ルールになる
+	// 作らない。rulequery.Compile は条件が空ならサイト一致のみに縮退するため、
+	// 有効なままだと EPG 全番組を録画する巨大ルールになる
 	// （ARE 非互換で唯一の text match が落ちた場合や、EPGStation 側の
 	// ルールがもともと無条件だった場合の両方で起こりうる）。
 	if !fields.hasNarrowingCondition() {

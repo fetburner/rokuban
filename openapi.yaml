@@ -403,13 +403,13 @@ paths:
                 items:
                   $ref: "#/components/schemas/ProgramSearchMatch"
         "400":
-          description: Invalid conditions
+          description: Invalid conditions, including an unknown site name in `sites`
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
-          description: Unknown site
+          description: Unknown site (path parameter)
           content:
             application/json:
               schema:
@@ -2251,9 +2251,10 @@ components:
             **作成では効かない** ——
             既存ルールの sites をそのまま載せて別のルールを作る（フォーク）場合、レジストリから消えた site
             名は 400 になる。`POST /api/sites/{site}/programs/search` の `sites`
-            も同じ「空または省略 = 全サイト」の軸規約を使うが、一回限りの問い合わせで
-            保存された行を持たないため、既知名検証と更新時の免除はルールの保存にのみ
-            適用される。
+            も同じ「空または省略 = 全サイト」の軸規約に従い、同じ既知名検証を受ける。
+            未知の site 名は同様に 400 になる。ただし検索は一回限りの問い合わせで保存された
+            行を持たないため、更新時の免除（保存済み site 名を通す）だけはルールの
+            保存にのみ適用される。
         dedupeEnabled:
           type: boolean
           default: false

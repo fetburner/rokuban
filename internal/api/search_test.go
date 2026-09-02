@@ -4,24 +4,31 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/fetburner/rokuban/internal/rulequery"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
-// 受け入れ: 同一条件で検索 API と rulequery.MatchProgramIDs（ruler 経路）の集合が一致する。
+// 受け入れ: 同一条件で検索 API と rulequery.MatchPrograms（ruler 経路が呼ぶのと同じ
+// クエリ関数）の集合が一致する。site はレジストリを明示した RouterConfig から取り、
+// レジストリ既定値の "default" に頼らない（含むもの 6）。
 func TestSearchPrograms_MatchesRulerPath(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
+	const site = "siteX"
 
 	_, err := pool.Exec(ctx, `
 INSERT INTO epg_services (site, network_id, service_id, type, logo_id, remote_control_key_id, name, channel_type, channel, has_logo_data)
-VALUES ('default', 32736, 1024, 1, 0, 1, 'テスト局', 'GR', '27', false)
-ON CONFLICT (site, network_id, service_id) DO NOTHING`)
+VALUES ($1, 32736, 1024, 1, 0, 1, 'テスト局', 'GR', '27', false)
+ON CONFLICT (site, network_id, service_id) DO NOTHING`, site)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,50 +47,41 @@ ON CONFLICT (site, network_id, service_id) DO NOTHING`)
 INSERT INTO epg_programs (
   site, program_id, network_id, service_id, event_id,
   start_at, duration_ms, end_at, is_free, name, description, genre_lv1
-) VALUES ('default', $1::bigint, 32736, 1024, $2::integer, $3::timestamptz, 1800000, $4::timestamptz, true, $5::text, '', $6::smallint[])
+) VALUES ($1, $2::bigint, 32736, 1024, $3::integer, $4::timestamptz, 1800000, $5::timestamptz, true, $6::text, '', $7::smallint[])
 ON CONFLICT (site, program_id) DO NOTHING`,
-			row.id, int32(row.id), st, st.Add(30*time.Minute), row.name, row.g)
+			site, row.id, int32(row.id), st, st.Add(30*time.Minute), row.name, row.g)
 		if err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	router := NewRouter(RouterConfig{Pool: pool})
+	router := NewRouter(RouterConfig{Pool: pool, Sites: []string{site}})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
-	body := map[string]any{
+	apiMatches := postSearchPrograms(t, srv, "/api/sites/"+site+"/programs/search", map[string]any{
 		"textMatches": []map[string]any{
 			{"target": "name", "mode": "keyword", "value": "ニュース"},
 		},
-	}
-	raw, _ := json.Marshal(body)
-	resp, err := http.Post(srv.URL+"/api/sites/default/programs/search", "application/json", bytes.NewReader(raw))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("search status = %d", resp.StatusCode)
-	}
-	var apiMatches []struct {
-		Site      string `json:"site"`
-		ProgramId int64  `json:"programId"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&apiMatches); err != nil {
-		t.Fatal(err)
-	}
+	})
 	apiIDs := make([]int64, len(apiMatches))
 	for i, m := range apiMatches {
+		if m.Site != site {
+			t.Fatalf("apiMatches[%d].Site = %q, want %q", i, m.Site, site)
+		}
 		apiIDs[i] = m.ProgramId
 	}
 
-	// ruler と同じ MatchProgramIDs
-	rulerIDs, err := rulequery.MatchProgramIDs(ctx, pool, "default", rulequery.Conditions{
+	rulerMatches, err := rulequery.MatchPrograms(ctx, pool, rulequery.Conditions{
+		Sites:       []string{site},
 		TextMatches: []rulequery.TextMatch{{Target: "name", Mode: "keyword", Value: "ニュース"}},
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	rulerIDs := make([]int64, len(rulerMatches))
+	for i, m := range rulerMatches {
+		rulerIDs[i] = m.ProgramID
 	}
 
 	if len(apiIDs) != len(rulerIDs) {
@@ -99,35 +97,162 @@ ON CONFLICT (site, program_id) DO NOTHING`,
 	}
 
 	// 全角検索でも同じ集合
-	bodyFW := map[string]any{
+	fwMatches := postSearchPrograms(t, srv, "/api/sites/"+site+"/programs/search", map[string]any{
 		"textMatches": []map[string]any{
 			{"target": "name", "mode": "keyword", "value": "ＮＨＫ"},
 		},
-	}
-	raw, _ = json.Marshal(bodyFW)
-	resp, err = http.Post(srv.URL+"/api/sites/default/programs/search", "application/json", bytes.NewReader(raw))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	var fwMatches []struct {
-		Site      string `json:"site"`
-		ProgramId int64  `json:"programId"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&fwMatches); err != nil {
-		t.Fatal(err)
-	}
+	})
 	fwAPI := make([]int64, len(fwMatches))
 	for i, m := range fwMatches {
+		if m.Site != site {
+			t.Fatalf("fwMatches[%d].Site = %q, want %q", i, m.Site, site)
+		}
 		fwAPI[i] = m.ProgramId
 	}
-	fwRuler, err := rulequery.MatchProgramIDs(ctx, pool, "default", rulequery.Conditions{
+	fwRulerMatches, err := rulequery.MatchPrograms(ctx, pool, rulequery.Conditions{
+		Sites:       []string{site},
 		TextMatches: []rulequery.TextMatch{{Target: "name", Mode: "keyword", Value: "ＮＨＫ"}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(fwAPI) != 1 || fwAPI[0] != 2003 || fwAPI[0] != fwRuler[0] {
-		t.Fatalf("fullwidth api=%v ruler=%v", fwAPI, fwRuler)
+	if len(fwAPI) != 1 || fwAPI[0] != 2003 || len(fwRulerMatches) != 1 || fwAPI[0] != fwRulerMatches[0].ProgramID {
+		t.Fatalf("fullwidth api=%v ruler=%v", fwAPI, fwRulerMatches)
+	}
+}
+
+// searchMatchRow は検索 API のレスポンス 1 行（デコード用の複製）。
+// このファイルは package api、sites_multi_test.go は package api_test なので
+// 型を共有できず、この 1 ファイル内だけの複製として持つ。
+type searchMatchRow struct {
+	Site      string `json:"site"`
+	ProgramId int64  `json:"programId"`
+}
+
+// searchFixtureGenre は insertSearchProgramFixture が焼き込むジャンル
+// （テスト側の "genres": [9] 条件と対にして使う。両方の呼び出し元が同じ値を
+// 使うので定数化する）。
+const searchFixtureGenre = 9
+
+// insertSearchProgramFixture は (site, programID) の EPG 行を 1 件挿入する。
+// 同一 programID を複数 site に挿入すれば「同一放送が複数サイトでマッチする」
+// 状況（docs/recording/ruler.md「サイトの扱い」の N 予約）を再現できる。
+func insertSearchProgramFixture(t *testing.T, pool *pgxpool.Pool, ctx context.Context, site string, programID int64) {
+	t.Helper()
+	if _, err := pool.Exec(ctx, `
+INSERT INTO epg_services (site, network_id, service_id, type, logo_id, remote_control_key_id, name, channel_type, channel, has_logo_data)
+VALUES ($1, 32736, 1024, 1, 0, 1, 'テスト局', 'GR', '27', false)
+ON CONFLICT (site, network_id, service_id) DO NOTHING`, site); err != nil {
+		t.Fatalf("inserting epg_services fixture: %v", err)
+	}
+	start := time.Date(2026, 8, 1, 12, 0, 0, 0, time.FixedZone("JST", 9*3600))
+	if _, err := pool.Exec(ctx, `
+INSERT INTO epg_programs (
+  site, program_id, network_id, service_id, event_id,
+  start_at, duration_ms, end_at, is_free, name, description, genre_lv1
+) VALUES ($1, $2::bigint, 32736, 1024, $3::integer, $4::timestamptz, 1800000, $5::timestamptz, true, 'テスト番組', '', $6::smallint[])
+ON CONFLICT (site, program_id) DO NOTHING`,
+		site, programID, int32(programID), start, start.Add(30*time.Minute), fmt.Sprintf("{%d}", searchFixtureGenre)); err != nil {
+		t.Fatalf("inserting epg_programs fixture: %v", err)
+	}
+}
+
+// postSearchPrograms は検索 API を叩き、200 を要求して行にデコードする。
+func postSearchPrograms(t *testing.T, srv *httptest.Server, path string, body map[string]any) []searchMatchRow {
+	t.Helper()
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.Post(srv.URL+path, "application/json", bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("POST %s status = %d, want 200 (body=%s)", path, resp.StatusCode, b)
+	}
+	var matches []searchMatchRow
+	if err := json.NewDecoder(resp.Body).Decode(&matches); err != nil {
+		t.Fatal(err)
+	}
+	return matches
+}
+
+// TestSearchPrograms_SitesOmittedDefaultsToAllRegisteredSites は sites を省略すると
+// レジストリの全 site を対象にすることを確認する（#530 含むもの 3）。同一 programId が
+// 2 サイトでマッチすれば畳まずに 2 行返る（受け入れ「[{site, programId}] を返し、
+// 同一放送が 2 サイトでマッチしたら 2 行出る」）。
+func TestSearchPrograms_SitesOmittedDefaultsToAllRegisteredSites(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	const programID int64 = 6001
+	insertSearchProgramFixture(t, pool, ctx, "siteA", programID)
+	insertSearchProgramFixture(t, pool, ctx, "siteB", programID)
+
+	router := NewRouter(RouterConfig{Pool: pool, Sites: []string{"siteA", "siteB"}})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	matches := postSearchPrograms(t, srv, "/api/sites/siteA/programs/search", map[string]any{
+		"genres": []int{searchFixtureGenre},
+	})
+	gotSites := map[string]bool{}
+	for _, m := range matches {
+		if m.ProgramId != programID {
+			t.Fatalf("unexpected programId in matches: %+v", matches)
+		}
+		gotSites[m.Site] = true
+	}
+	if len(matches) != 2 || !gotSites["siteA"] || !gotSites["siteB"] {
+		t.Fatalf("matches = %+v, want 1 row each for siteA and siteB", matches)
+	}
+}
+
+// TestSearchPrograms_SitesFilterExcludesOtherSites は sites を明示すると、その集合外の
+// site の行を絞ることを確認する。旧実装はパスの {site} を常に使い body の sites を
+// 実質無視していたため（#530 の罠）、この経路が正しく直っていないと壊れる。
+func TestSearchPrograms_SitesFilterExcludesOtherSites(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	const programID int64 = 6002
+	insertSearchProgramFixture(t, pool, ctx, "siteA", programID)
+	insertSearchProgramFixture(t, pool, ctx, "siteB", programID)
+
+	router := NewRouter(RouterConfig{Pool: pool, Sites: []string{"siteA", "siteB"}})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	// パスは siteA だが、sites では siteB だけを指定している --- 結果は siteB の
+	// 1 行だけになるべき（パスの site には依存しない）。
+	matches := postSearchPrograms(t, srv, "/api/sites/siteA/programs/search", map[string]any{
+		"genres": []int{searchFixtureGenre},
+		"sites":  []string{"siteB"},
+	})
+	if len(matches) != 1 || matches[0].Site != "siteB" || matches[0].ProgramId != programID {
+		t.Fatalf("matches = %+v, want [{siteB %d}]", matches, programID)
+	}
+}
+
+// TestSearchPrograms_UnknownSiteReturns400 は sites に未知の site 名を入れると 400 に
+// なることを確認する（validateRuleSites と同じ規律。#530 含むもの 2）。
+func TestSearchPrograms_UnknownSiteReturns400(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	router := NewRouter(RouterConfig{Pool: pool, Sites: []string{"siteA"}})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	raw, err := json.Marshal(map[string]any{"sites": []string{"no-such-site"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.Post(srv.URL+"/api/sites/siteA/programs/search", "application/json", bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
 	}
 }

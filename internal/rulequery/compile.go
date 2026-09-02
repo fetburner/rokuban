@@ -24,8 +24,12 @@ type Conditions struct {
 	ChannelTypes  []string
 	Genres        []int16
 	Times         []TimeWindow
-	// Sites が空なら呼び出し側が渡す site 引数のみで絞る（ルールの「全サイト」）。
-	// 非空なら、そのリストに含まれる site だけが対象（rule_sites）。
+	// Sites は絞り込み対象の site 集合（epg_programs.site に対する OR）。
+	// Compile は非空を要求する（#530）。ruler は評価対象 1 site をそのまま積む
+	// （rule_sites が空でも「全サイト」を渡すのではなく、呼び出し側
+	// MatchProgramIDsForRule が rule_sites との適用可否を解決したうえで
+	// site 1 件に絞って渡す）。API 検索は rule_sites と同じ「空 = 全サイト」規約を
+	// 保つため、リクエストの sites が空ならレジストリ全件で埋めてから渡す。
 	Sites []string
 }
 
@@ -55,7 +59,7 @@ type TimeWindow struct {
 
 // Compiled は epg_programs を主テーブル（エイリアス p）とする WHERE 句。
 type Compiled struct {
-	// Where は "TRUE" または AND 連結。先頭に AND は付けない。
+	// Where は AND 連結（先頭は常に p.site の述語）。先頭に AND は付けない。
 	Where string
 	Args  []any
 	// NeedsServiceJoin が true のとき、呼び出し側は
@@ -65,11 +69,15 @@ type Compiled struct {
 }
 
 // Compile は条件を SQL に落とす。
-// site は評価対象サイト（N 予約の 1 サイト分）。Sites 条件がある場合は
-// site がその集合に含まれることも要求する。
-func Compile(site string, c Conditions) (Compiled, error) {
-	if site == "" {
-		return Compiled{}, fmt.Errorf("site is required")
+//
+// c.Sites の空を「述語なし」にすると全 site を無条件に読んでしまうため、Compile は
+// 非空を要求する（呼び出し側の埋め忘れに対するフェイルセーフ）。p.site = ANY($1) は
+// site 始まりの複合インデックス（`(site, program_id)` 等）に乗る（3 site × 10 万行の
+// スクラッチ DB で 1.14ms、`p.site = $1` の 1.58ms と同等の実測）。要素数の多い
+// sites 配列で prepared statement が generic plan に落ちて劣化するかは未検証。
+func Compile(c Conditions) (Compiled, error) {
+	if len(c.Sites) == 0 {
+		return Compiled{}, fmt.Errorf("sites is required")
 	}
 
 	var b strings.Builder
@@ -88,12 +96,7 @@ func Compile(site string, c Conditions) (Compiled, error) {
 		b.WriteString(clause)
 	}
 
-	and("p.site = " + arg(site))
-
-	if len(c.Sites) > 0 {
-		// rule_sites 指定あり: 評価サイトがその集合に入っていること
-		and(arg(site) + " = ANY(" + arg(c.Sites) + ")")
-	}
+	and("p.site = ANY(" + arg(c.Sites) + ")")
 
 	if c.IsFree != nil {
 		and("p.is_free = " + arg(*c.IsFree))
@@ -152,11 +155,8 @@ func Compile(site string, c Conditions) (Compiled, error) {
 		and("(" + strings.Join(parts, " OR ") + ")")
 	}
 
-	where := b.String()
-	if where == "" {
-		where = "TRUE"
-	}
-	return Compiled{Where: where, Args: args, NeedsServiceJoin: needsJoin}, nil
+	// b は常に非空（先頭の p.site 述語が必ず and() を通るため）。
+	return Compiled{Where: b.String(), Args: args, NeedsServiceJoin: needsJoin}, nil
 }
 
 func compileTextMatch(m TextMatch, arg func(any) string) (string, error) {
