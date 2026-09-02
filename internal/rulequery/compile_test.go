@@ -1,23 +1,27 @@
 package rulequery
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 func TestCompile_KeywordAndGenre(t *testing.T) {
 	c := Conditions{
+		Sites: []string{"default"},
 		TextMatches: []TextMatch{
 			{Target: "name", Mode: "keyword", Value: "ニュース"},
 		},
 		Genres: []int16{0, 1},
 	}
-	out, err := Compile("default", c)
+	out, err := Compile(c)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.Where, "p.site = $1") {
+	if !strings.Contains(out.Where, "p.site = ANY($1)") {
 		t.Errorf("where = %s", out.Where)
 	}
 	if !strings.Contains(out.Where, "normalize_search_text") {
@@ -35,7 +39,7 @@ func TestCompile_KeywordAndGenre(t *testing.T) {
 }
 
 func TestCompile_ChannelTypeNeedsJoin(t *testing.T) {
-	out, err := Compile("default", Conditions{ChannelTypes: []string{"BS"}})
+	out, err := Compile(Conditions{Sites: []string{"default"}, ChannelTypes: []string{"BS"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +52,8 @@ func TestCompile_ChannelTypeNeedsJoin(t *testing.T) {
 }
 
 func TestCompile_NegateRegex(t *testing.T) {
-	out, err := Compile("default", Conditions{
+	out, err := Compile(Conditions{
+		Sites: []string{"default"},
 		TextMatches: []TextMatch{
 			{Target: "name", Mode: "regex", Value: "再放送", Negate: true, CaseSensitive: true},
 		},
@@ -62,7 +67,8 @@ func TestCompile_NegateRegex(t *testing.T) {
 }
 
 func TestCompile_TimeWindowOvernight(t *testing.T) {
-	out, err := Compile("default", Conditions{
+	out, err := Compile(Conditions{
+		Sites: []string{"default"},
 		Times: []TimeWindow{{Weekdays: 0b1111111, StartSec: 23 * 3600, EndSec: 1 * 3600}},
 	})
 	if err != nil {
@@ -76,7 +82,7 @@ func TestCompile_TimeWindowOvernight(t *testing.T) {
 func TestCompile_Period(t *testing.T) {
 	start := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
 	end := start.Add(24 * time.Hour)
-	out, err := Compile("home", Conditions{PeriodStartAt: &start, PeriodEndAt: &end})
+	out, err := Compile(Conditions{Sites: []string{"home"}, PeriodStartAt: &start, PeriodEndAt: &end})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,18 +91,59 @@ func TestCompile_Period(t *testing.T) {
 	}
 }
 
+// TestCompile_SitesFilter は Sites が実際に epg_programs.site で行を絞ることを、
+// 返ってきた行そのもので主張する（#530 の罠: 旧テストは WHERE 文字列に "ANY" が
+// 含まれるかしか見ておらず、列を参照しない定数述語でも同じように通っていた）。
+//
+// 2 site にまたがって同一 programId の行を用意し、Sites に 1 site だけを指定すると
+// その site の行だけが返ることを見る。p.site 述語を落とす壊し方（例えば
+// "TRUE" に縮退させる）をすると、指定していない site の行も混ざって
+// 返ってくるためこのテストが落ちる。
 func TestCompile_SitesFilter(t *testing.T) {
-	out, err := Compile("default", Conditions{Sites: []string{"default", "cabin"}})
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	for _, site := range []string{"default", "cabin"} {
+		if _, err := pool.Exec(ctx, `
+INSERT INTO epg_services (site, network_id, service_id, type, logo_id, remote_control_key_id, name, channel_type, channel, has_logo_data)
+VALUES ($1, 32736, 1024, 1, 0, 1, 'テスト局', 'GR', '27', false)
+ON CONFLICT (site, network_id, service_id) DO NOTHING`, site); err != nil {
+			t.Fatal(err)
+		}
+	}
+	start := time.Date(2026, 8, 10, 12, 0, 0, 0, time.FixedZone("JST", 9*3600))
+	const programID int64 = 8001
+	for _, site := range []string{"default", "cabin"} {
+		if _, err := pool.Exec(ctx, `
+INSERT INTO epg_programs (
+  site, program_id, network_id, service_id, event_id,
+  start_at, duration_ms, end_at, is_free, name, description, genre_lv1
+) VALUES ($1, $2::bigint, 32736, 1024, 1, $3::timestamptz, 1800000, $4::timestamptz, true, 'テスト番組', '', '{}'::smallint[])
+ON CONFLICT (site, program_id) DO NOTHING`, site, programID, start, start.Add(30*time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	matches, err := MatchPrograms(ctx, pool, Conditions{Sites: []string{"default"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.Where, "ANY") {
-		t.Errorf("where = %s", out.Where)
+	if len(matches) != 1 || matches[0].Site != "default" || matches[0].ProgramID != programID {
+		t.Fatalf("matches = %+v, want exactly [{default %d}] (cabin の行が混ざってはいけない)", matches, programID)
+	}
+
+	// 逆方向も見る（両方向で確認する。テスト規律）: Sites に両方を指定すれば両方返る。
+	both, err := MatchPrograms(ctx, pool, Conditions{Sites: []string{"default", "cabin"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(both) != 2 {
+		t.Fatalf("both = %+v, want 2 rows (default + cabin)", both)
 	}
 }
 
-func TestCompile_EmptySite(t *testing.T) {
-	_, err := Compile("", Conditions{})
+func TestCompile_EmptySites(t *testing.T) {
+	_, err := Compile(Conditions{})
 	if err == nil {
 		t.Fatal("expected error")
 	}

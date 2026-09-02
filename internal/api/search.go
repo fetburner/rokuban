@@ -10,7 +10,9 @@ import (
 )
 
 // SearchPrograms はルール条件と同じコンパイラで EPG を検索する（M2-2）。
-// ruler 評価（MatchProgramIDs）と同一経路。
+// ruler 評価（rulequery.Compile/MatchProgramIDsForRule）と WHERE 句のコンパイラを
+// 共有するが、1 クエリで複数 site を横断できる rulequery.MatchPrograms を使う点が
+// ruler（1 site ずつ評価する）と異なる（#530）。
 func (h *Server) SearchPrograms(ctx context.Context, req SearchProgramsRequestObject) (SearchProgramsResponseObject, error) {
 	if !h.knownSite(req.Site) {
 		return SearchPrograms404JSONResponse{Error: "unknown site"}, nil
@@ -21,22 +23,37 @@ func (h *Server) SearchPrograms(ctx context.Context, req SearchProgramsRequestOb
 
 	c := conditionsFromSearch(*req.Body)
 
+	// sites は rule_sites と同じ「空 = 全サイト、非空 = そのリストのみ」の軸規約
+	// （docs/recording/ruler.md「サイトの扱い」）。validateRuleSites と同じ規律で
+	// 未知の site 名を 400 にする（保存済み免除は無い一回限りの問い合わせなので
+	// savedSites は nil）。省略時はレジストリ全件で埋めてから Compile に渡す
+	// （Compile は空の Sites を許さない。#530）。
+	siteErr := h.validateRuleSites(c.Sites, nil)
+	if siteErr != nil {
+		// nolint:nilerr // validateRuleSites の失敗は 400 レスポンスの本文として
+		// 返す（rules.go の validateRuleInput 呼び出しと同じ規律。呼び出し側に
+		// 伝播する失敗ではないので関数の error 戻り値は nil のままでよい）。
+		return SearchPrograms400JSONResponse{Error: siteErr.Error()}, nil
+	}
+	if len(c.Sites) == 0 {
+		c.Sites = h.siteNames
+	}
+
 	// 検索 API でも ARE の不正パターンを 400 にする（ルール作成時と同規約）
 	if msg := searchRegexError(ctx, h, c); msg != "" {
 		return SearchPrograms400JSONResponse{Error: msg}, nil
 	}
 
-	ids, err := rulequery.MatchProgramIDs(ctx, h.pool, req.Site, c)
+	rows, err := rulequery.MatchPrograms(ctx, h.pool, c)
 	if err != nil {
 		return nil, err
 	}
-	// ponytail: site はパスからの複写であって、マッチした行から観測した値では
-	// ない。sites に評価 site 以外を指定しても常にパスの site が返るため、
-	// #530 が入るまでこの値を信じるクライアントは誤った値を受け取る（黙って、
-	// スキーマ的には正当に見える形で）。#530 で sites 駆動の述語に置き換える。
-	matches := make([]ProgramSearchMatch, len(ids))
-	for i, id := range ids {
-		matches[i] = ProgramSearchMatch{Site: req.Site, ProgramId: id}
+	// 行ごとに実際にマッチした site を返す（パスの {site} の複写ではない）。
+	// sites がパスの site 以外を指しても、同一放送が複数 site でマッチしても
+	// 畳まずそのまま行として運ぶ（#530 受け入れ: [{site, programId}] のフラット）。
+	matches := make([]ProgramSearchMatch, len(rows))
+	for i, row := range rows {
+		matches[i] = ProgramSearchMatch{Site: row.Site, ProgramId: row.ProgramID}
 	}
 	return SearchPrograms200JSONResponse(matches), nil
 }

@@ -24,8 +24,12 @@ type Conditions struct {
 	ChannelTypes  []string
 	Genres        []int16
 	Times         []TimeWindow
-	// Sites が空なら呼び出し側が渡す site 引数のみで絞る（ルールの「全サイト」）。
-	// 非空なら、そのリストに含まれる site だけが対象（rule_sites）。
+	// Sites は絞り込み対象の site 集合（epg_programs.site に対する OR）。
+	// Compile は非空を要求する（#530）。ruler は評価対象 1 site をそのまま積む
+	// （rule_sites が空でも「全サイト」を渡すのではなく、呼び出し側
+	// MatchProgramIDsForRule が rule_sites との適用可否を解決したうえで
+	// site 1 件に絞って渡す）。API 検索は rule_sites と同じ「空 = 全サイト」規約を
+	// 保つため、リクエストの sites が空ならレジストリ全件で埋めてから渡す。
 	Sites []string
 }
 
@@ -65,11 +69,23 @@ type Compiled struct {
 }
 
 // Compile は条件を SQL に落とす。
-// site は評価対象サイト（N 予約の 1 サイト分）。Sites 条件がある場合は
-// site がその集合に含まれることも要求する。
-func Compile(site string, c Conditions) (Compiled, error) {
-	if site == "" {
-		return Compiled{}, fmt.Errorf("site is required")
+//
+// 署名は site string を引数に取らない（#530）。旧実装は固定 1 site を常に
+// p.site の等号に使い、c.Sites は「その site がリストに含まれるか」という
+// 両辺パラメータの全か無かのゲートでしかなかった（列 p.site を参照しないので
+// 行を一切絞らない）。この形では 1 クエリで複数 site の行を実際に絞り込む
+// （API 検索が 1 クエリで登録済み全 site を横断する。docs/api/rest.md
+// §エンドポイント設計の規約の「検索はこの例外に該当する」）ことを表現できない。
+// そこで p.site 自体を c.Sites に対する ANY 述語にし、「絞り込みたい site 集合」を
+// Sites 1 本に一本化した。
+//
+// c.Sites は非空を要求する（呼び出し側が埋め忘れると全 site を無条件に読んでしまう
+// ため、旧 site == "" ガードをこちらに一般化して引き継ぐ）。ruler
+// （MatchProgramIDsForRule）は評価対象の 1 site を、API 検索
+// （internal/api/search.go）は省略時にレジストリ全件を、呼び出し前に詰める。
+func Compile(c Conditions) (Compiled, error) {
+	if len(c.Sites) == 0 {
+		return Compiled{}, fmt.Errorf("sites is required")
 	}
 
 	var b strings.Builder
@@ -88,12 +104,7 @@ func Compile(site string, c Conditions) (Compiled, error) {
 		b.WriteString(clause)
 	}
 
-	and("p.site = " + arg(site))
-
-	if len(c.Sites) > 0 {
-		// rule_sites 指定あり: 評価サイトがその集合に入っていること
-		and(arg(site) + " = ANY(" + arg(c.Sites) + ")")
-	}
+	and("p.site = ANY(" + arg(c.Sites) + ")")
 
 	if c.IsFree != nil {
 		and("p.is_free = " + arg(*c.IsFree))

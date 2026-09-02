@@ -19,23 +19,25 @@ func allConditionShapes() map[string]Conditions {
 	end := start.Add(30 * 24 * time.Hour)
 
 	return map[string]Conditions{
-		"empty":              {},
+		// Sites は Compile が非空を要求する（#530）ので、他の条件次元だけを見たい
+		// ケースにも常に埋めておく。
+		"empty":              {Sites: []string{"default"}},
 		"sites":              {Sites: []string{"default", "other"}},
-		"isFree":             {IsFree: &free},
-		"duration":           {DurationMinMs: &minMs, DurationMaxMs: &maxMs},
-		"period":             {PeriodStartAt: &start, PeriodEndAt: &end},
-		"genres":             {Genres: []int16{0, 7, 15}},
-		"services":           {Services: []ServiceRef{{NetworkID: 32736, ServiceID: 1024}, {NetworkID: 4, ServiceID: 101}}},
-		"channelTypes":       {ChannelTypes: []string{"GR", "BS"}},
-		"keyword":            {TextMatches: []TextMatch{{Target: "name", Mode: "keyword", Value: "ニュース"}}},
-		"keywordCS":          {TextMatches: []TextMatch{{Target: "description", Mode: "keyword", Value: "News", CaseSensitive: true}}},
-		"keywordNegate":      {TextMatches: []TextMatch{{Target: "name", Mode: "keyword", Value: "再放送", Negate: true}}},
-		"regex":              {TextMatches: []TextMatch{{Target: "name", Mode: "regex", Value: "^第[0-9]+話"}}},
-		"regexCS":            {TextMatches: []TextMatch{{Target: "extended", Mode: "regex", Value: "NHK", CaseSensitive: true}}},
-		"times":              {Times: []TimeWindow{{Weekdays: 0b0011111, StartSec: 6 * 3600, EndSec: 9 * 3600}}},
-		"timesOvernight":     {Times: []TimeWindow{{Weekdays: 0b1111111, StartSec: 23 * 3600, EndSec: 1 * 3600}}},
-		"timesMultiple":      {Times: []TimeWindow{{Weekdays: 1, StartSec: 0, EndSec: 3600}, {Weekdays: 64, StartSec: 3600, EndSec: 86400}}},
-		"timesFullDayBounds": {Times: []TimeWindow{{Weekdays: 127, StartSec: 0, EndSec: 86400}}},
+		"isFree":             {Sites: []string{"default"}, IsFree: &free},
+		"duration":           {Sites: []string{"default"}, DurationMinMs: &minMs, DurationMaxMs: &maxMs},
+		"period":             {Sites: []string{"default"}, PeriodStartAt: &start, PeriodEndAt: &end},
+		"genres":             {Sites: []string{"default"}, Genres: []int16{0, 7, 15}},
+		"services":           {Sites: []string{"default"}, Services: []ServiceRef{{NetworkID: 32736, ServiceID: 1024}, {NetworkID: 4, ServiceID: 101}}},
+		"channelTypes":       {Sites: []string{"default"}, ChannelTypes: []string{"GR", "BS"}},
+		"keyword":            {Sites: []string{"default"}, TextMatches: []TextMatch{{Target: "name", Mode: "keyword", Value: "ニュース"}}},
+		"keywordCS":          {Sites: []string{"default"}, TextMatches: []TextMatch{{Target: "description", Mode: "keyword", Value: "News", CaseSensitive: true}}},
+		"keywordNegate":      {Sites: []string{"default"}, TextMatches: []TextMatch{{Target: "name", Mode: "keyword", Value: "再放送", Negate: true}}},
+		"regex":              {Sites: []string{"default"}, TextMatches: []TextMatch{{Target: "name", Mode: "regex", Value: "^第[0-9]+話"}}},
+		"regexCS":            {Sites: []string{"default"}, TextMatches: []TextMatch{{Target: "extended", Mode: "regex", Value: "NHK", CaseSensitive: true}}},
+		"times":              {Sites: []string{"default"}, Times: []TimeWindow{{Weekdays: 0b0011111, StartSec: 6 * 3600, EndSec: 9 * 3600}}},
+		"timesOvernight":     {Sites: []string{"default"}, Times: []TimeWindow{{Weekdays: 0b1111111, StartSec: 23 * 3600, EndSec: 1 * 3600}}},
+		"timesMultiple":      {Sites: []string{"default"}, Times: []TimeWindow{{Weekdays: 1, StartSec: 0, EndSec: 3600}, {Weekdays: 64, StartSec: 3600, EndSec: 86400}}},
+		"timesFullDayBounds": {Sites: []string{"default"}, Times: []TimeWindow{{Weekdays: 127, StartSec: 0, EndSec: 86400}}},
 		"everything": {
 			IsFree:        &free,
 			DurationMinMs: &minMs,
@@ -64,7 +66,7 @@ func TestCompile_AllShapesAcceptedByPostgres(t *testing.T) {
 
 	for name, c := range allConditionShapes() {
 		t.Run(name, func(t *testing.T) {
-			out, err := Compile("default", c)
+			out, err := Compile(c)
 			if err != nil {
 				t.Fatalf("Compile: %v", err)
 			}
@@ -95,7 +97,7 @@ func TestCompile_AllShapesAcceptedByPostgres(t *testing.T) {
 func TestCompile_NoUserBytesInSQL(t *testing.T) {
 	const payload = `'; DROP TABLE epg_programs; --`
 
-	out, err := Compile(payload, Conditions{
+	out, err := Compile(Conditions{
 		Sites:        []string{payload},
 		ChannelTypes: []string{payload},
 		TextMatches: []TextMatch{
@@ -115,9 +117,9 @@ func TestCompile_NoUserBytesInSQL(t *testing.T) {
 	}
 
 	// 値の数だけプレースホルダが割り当てられていること
-	// （site 1 + Sites 2 + ChannelTypes 1 + TextMatches 3 = 7）
-	if len(out.Args) != 7 {
-		t.Errorf("len(Args) = %d, want 7 (all values parameterized)", len(out.Args))
+	// （Sites 1（配列 1 個で 1 プレースホルダ）+ ChannelTypes 1 + TextMatches 3 = 5）
+	if len(out.Args) != 5 {
+		t.Errorf("len(Args) = %d, want 5 (all values parameterized)", len(out.Args))
 	}
 	for i := range out.Args {
 		if !strings.Contains(out.Where, "$"+itoa(i+1)) {
@@ -136,7 +138,7 @@ func TestCompile_RejectsUnknownIdentifiers(t *testing.T) {
 		{Target: "name", Mode: "", Value: "x"},
 	}
 	for _, m := range cases {
-		if _, err := Compile("default", Conditions{TextMatches: []TextMatch{m}}); err == nil {
+		if _, err := Compile(Conditions{Sites: []string{"default"}, TextMatches: []TextMatch{m}}); err == nil {
 			t.Errorf("Compile accepted unknown identifier: target=%q mode=%q", m.Target, m.Mode)
 		}
 	}
