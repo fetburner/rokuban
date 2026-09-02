@@ -144,7 +144,8 @@ func requireSingleSite(registry []config.MirakcSite, cmdName string) (config.Mir
 		return registry[0], nil
 	default:
 		return config.MirakcSite{}, fmt.Errorf(
-			"%s: multi-site config (mirakcs has %d entries) is not supported yet; issue #183 leaves this undecided",
+			"%s: multi-site config (mirakcs has %d entries) is not supported yet; "+
+				"the EPGStation-side site mapping has no writer yet",
 			cmdName, len(registry))
 	}
 }

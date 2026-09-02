@@ -39,7 +39,7 @@ catalog が無ければ media_dir を走査し、TS / M2TS / MP4 / MKV / WebM �
 			// 自分の site を持つので --site を使わないが、catalog を 1 世代も
 			// 復元できずストレージ走査に落ちたときは、走査対象ファイルが site を
 			// 持たない（sites/{site}/ 前置の無い、前置導入前の ingest）ケースの
-			// フォールバック先として使う（internal/catalog.siteForRescuedFile）。
+			// フォールバック先として使う（internal/catalog.classifySiteForRescuedFile）。
 			site, err := resolveSiteFlag(cmd, cfg.Registry())
 			if err != nil {
 				return err
@@ -54,7 +54,7 @@ catalog が無ければ media_dir を走査し、TS / M2TS / MP4 / MKV / WebM �
 			}
 			defer pool.Close()
 
-			return runRescue(ctx, pool, cfg.Storage.MediaDir, site, cmd.OutOrStdout())
+			return runRescue(ctx, pool, cfg.Storage.MediaDir, site, registryNames(cfg.Registry()), cmd.OutOrStdout())
 		},
 	}
 	cmd.Flags().String("site", "",
@@ -65,8 +65,12 @@ catalog が無ければ media_dir を走査し、TS / M2TS / MP4 / MKV / WebM �
 
 // runRescue は catalog 復元の本体。cobra の RunE は配線に留め、DB / ファイル
 // 操作はここに閉じ込める（runShadowDiff / runEnqueue と同じ切り出し）。
-func runRescue(ctx context.Context, pool *pgxpool.Pool, mediaDir, site string, out io.Writer) error {
-	result, err := catalog.RescueLatest(ctx, pool, mediaDir, site)
+//
+// registrySites は `mirakcs:` レジストリの site 名一覧
+// （catalog.RescueLatest 参照。ストレージ走査で見つけた sites/{site}/ 前置の
+// site がタイポかどうかの判定に使う）。
+func runRescue(ctx context.Context, pool *pgxpool.Pool, mediaDir, site string, registrySites []string, out io.Writer) error {
+	result, err := catalog.RescueLatest(ctx, pool, mediaDir, site, registrySites)
 	if err != nil {
 		return err
 	}

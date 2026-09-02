@@ -47,7 +47,12 @@ type RescueResult struct {
 // 最新世代が不完全・checksum 不一致なら 1 つ前の完成世代へ落ちる。完成世代が
 // 1 つも無ければ media_dir を走査して認識できる動画ファイルを素の asset として
 // in-place 登録する。どの経路もファイル本体はコピー・変更しない。
-func RescueLatest(ctx context.Context, pool *pgxpool.Pool, mediaDir, site string) (*RescueResult, error) {
+//
+// registrySites は `mirakcs:` レジストリの site 名一覧。ストレージ走査で
+// `sites/{site}/` 前置から site を読んだとき、その site がレジストリに
+// 無ければ typo/ゴミディレクトリの疑いがあるとして Warn で目立たせる
+// （siteForRescuedFile 参照）。catalog JSON からの復元では使わない。
+func RescueLatest(ctx context.Context, pool *pgxpool.Pool, mediaDir, site string, registrySites []string) (*RescueResult, error) {
 	sel, err := SelectLatest(mediaDir)
 	if sel != nil {
 		for _, r := range sel.Rejected {
@@ -59,7 +64,7 @@ func RescueLatest(ctx context.Context, pool *pgxpool.Pool, mediaDir, site string
 		if os.IsNotExist(err) {
 			// 「catalog が 1 つも無い」と「あったが全部不完全だった」を
 			// 混同させない: 飛ばした世代は結果に載せて呼び出し側に報告させる。
-			result, scanErr := rescueStorage(ctx, pool, mediaDir, site)
+			result, scanErr := rescueStorage(ctx, pool, mediaDir, site, registrySites)
 			if scanErr != nil {
 				return nil, scanErr
 			}

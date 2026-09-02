@@ -170,9 +170,12 @@ func TestValidateSiteBinding(t *testing.T) {
 	}
 }
 
+// TestRequireSingleSite の cmdName は "import epgstation" を使う --- issue #533 で
+// rescue / shadow-diff は resolveSiteFlag に置き換わったので、requireSingleSite の
+// 唯一の呼び出し元は import epgstation だけになった。
 func TestRequireSingleSite(t *testing.T) {
 	t.Run("one entry resolves", func(t *testing.T) {
-		s, err := requireSingleSite([]config.MirakcSite{tokyo}, "rescue")
+		s, err := requireSingleSite([]config.MirakcSite{tokyo}, "import epgstation")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -182,11 +185,11 @@ func TestRequireSingleSite(t *testing.T) {
 	})
 
 	t.Run("multi-site registry is an error", func(t *testing.T) {
-		_, err := requireSingleSite([]config.MirakcSite{tokyo, takamatsu}, "rescue")
+		_, err := requireSingleSite([]config.MirakcSite{tokyo, takamatsu}, "import epgstation")
 		if err == nil {
 			t.Fatal("expected error, got nil")
 		}
-		if !strings.Contains(err.Error(), "rescue") {
+		if !strings.Contains(err.Error(), "import epgstation") {
 			t.Errorf("error = %v, want mention of the command name", err)
 		}
 	})

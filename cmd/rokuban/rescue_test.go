@@ -36,7 +36,7 @@ func TestRunRescue_FallsBackAndReportsSkippedGeneration(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	if err := runRescue(context.Background(), pool, mediaDir, "default", &out); err != nil {
+	if err := runRescue(context.Background(), pool, mediaDir, "default", []string{"default"}, &out); err != nil {
 		t.Fatalf("runRescue: %v", err)
 	}
 	got := out.String()
@@ -55,7 +55,7 @@ func TestRunRescue_DistinguishesNoCatalogFromNoCompleteGeneration(t *testing.T) 
 
 	t.Run("no catalog at all", func(t *testing.T) {
 		var out bytes.Buffer
-		if err := runRescue(context.Background(), pool, t.TempDir(), "default", &out); err != nil {
+		if err := runRescue(context.Background(), pool, t.TempDir(), "default", []string{"default"}, &out); err != nil {
 			t.Fatalf("runRescue: %v", err)
 		}
 		if !strings.Contains(out.String(), "catalog not found") {
@@ -71,7 +71,7 @@ func TestRunRescue_DistinguishesNoCatalogFromNoCompleteGeneration(t *testing.T) 
 		}
 
 		var out bytes.Buffer
-		if err := runRescue(context.Background(), pool, mediaDir, "default", &out); err != nil {
+		if err := runRescue(context.Background(), pool, mediaDir, "default", []string{"default"}, &out); err != nil {
 			t.Fatalf("runRescue: %v", err)
 		}
 		if !strings.Contains(out.String(), "no complete catalog generation") {
