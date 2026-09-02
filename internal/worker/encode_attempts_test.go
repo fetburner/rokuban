@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -17,6 +18,25 @@ import (
 
 	"github.com/fetburner/rokuban/internal/config"
 )
+
+// waitFor は cond が true を返すまで最大 timeout 待つ（10ms 間隔でポーリング）。
+// 真にならないまま timeout に達したら buildTimeoutMsg() で Fatal する
+// （site_queue_scoping_test.go の waitForNotAvailable と同じ形。ここでは
+// 待つ条件が呼び出し側ごとに違うので cond を引数に取る）。cond は t.Fatal を
+// 呼んでよい（「時間切れ」とは別の失敗を即座に報告したいケース向け）。
+func waitFor(t *testing.T, timeout time.Duration, cond func() bool, buildTimeoutMsg func() string) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		if cond() {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal(buildTimeoutMsg())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
 
 // encodeAttemptState は recording_encode_attempts から 1 行だけ読む
 // テスト用ヘルパー。行が無ければ ok=false。
@@ -174,14 +194,18 @@ func installSlowFakeFFmpeg(t *testing.T, sleepSeconds int) (ffmpegPath, startedM
 // だけを合図に cancel すると、cmd.Wait() 直前に置いたマーカーへの到達は
 // 0/10（probeEncodeDuration が実 ffprobe を shell out し、その間に ctx が
 // 死ぬ）。probeEncodeDuration を即失敗させても（FFprobe に存在しないパス
-// を渡しても）25/30（cancel が loadOriginal 等の他ステップ中に着地する
-// 残り約 17% は依然として cmd.Start() 前に死ぬ）。
+// を渡しても）このマシンでは 25/30（マシン依存 --- 別マシンでの計測では
+// 29/30。cancel が loadOriginal 等の他ステップ中に着地する残りは依然として
+// cmd.Start() 前に死ぬ。この割合自体を性質として当てにしない）。
 //
 // そこでフェイク ffmpeg 自身に「実際に起動した」印（startedMarker への
 // touch。sleep の前に置く）を持たせ、その出現を待ってから cancel する。
-// touch は子プロセスが exec された後にしか起きないので、cmd.Start() が
-// 成功して戻っていることを意味で保証する（Start() は fork/exec が完了
-// するまで戻らない）。FFprobe を存在しないパスにする変更は残す ---
+// touch は子プロセスが exec された後にしか起きないので、その出現は
+// 「fork/exec は完了した（os/exec の Cmd.Start が開始前にチェックする
+// ctx.Done() は、開始しない分岐にはもう入れない）」ことの証拠になる ---
+// ただし Start() 自身が呼び出し元へ戻っているとまでは保証しない（親が
+// exec ステータス用パイプを読み切るのと子の最初の命令実行は別プロセスの
+// 出来事で、順序は未計測）。FFprobe を存在しないパスにする変更は残す ---
 // これが無いと実 ffprobe の呼び出し（timeout 上限 3 秒）がこの待ちを
 // 不必要に長引かせる。
 func TestEncodeWorker_AttemptRow_CtxCanceledLeavesRunning(t *testing.T) {
@@ -191,12 +215,21 @@ func TestEncodeWorker_AttemptRow_CtxCanceledLeavesRunning(t *testing.T) {
 	}
 	mediaDir := t.TempDir()
 	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "x/attempt-cancel.m2ts", nil, []byte("data"))
-	// フェイク ffmpeg 自身の sleep 長と、下の workReturnTimeout（Work() の返りを
-	// 待つ上限）は論理的に独立--- exec.CommandContext の kill は sleep の終了を
-	// 待たないので、Work() は本来 sleep の長さと無関係に返る。両方が同じ 5 秒
-	// だったため、コア枯渇で kill → reap → cmd.Wait() の尾がわずかに伸びると
-	// sleep の残り時間だけで上限を越えて確率的に落ちていた（issue #552）。
-	// この 2 つを同じ値に戻すと同じフレークが復活するので、離した値を保つ。
+	// workReturnTimeout は slowFFmpegSleepSeconds より十分大きく保つ必要が
+	// **ある**（論理的に独立ではない）--- 計測: cancel() から Work() が返るまで
+	// は sleep の長さとほぼ 1:1 で追従する（sleepSeconds=2 で ~2016ms、
+	// sleepSeconds=6 で ~6015ms、いずれも cancel からの経過。TestEncodeWorker_
+	// AttemptRow_CtxCanceledLeavesRunning に一時的な計測コードを入れて確認）。
+	// 原因: encode.go の cmd.Stderr は *os.File ではなく &strings.Builder な
+	// ので、os/exec は stderr を読む中継 goroutine を立て、cmd.Wait（
+	// WaitDelay 未設定）はその goroutine が EOF で終わるまで待つ
+	// （awaitGoroutines）。macOS の /bin/sh はスクリプト末尾のコマンドでも
+	// exec せず fork するため（`pgrep -P` で確認）、kill は sh だけを殺し、
+	// sh の子の sleep は inherited な stderr の書き込み端を握ったまま生き残る
+	// --- Wait() はその sleep が寿命を迎えて stderr が閉じるまで、実質 sleep
+	// の残り時間だけ返らない。5 秒 vs 5 秒だったときに確率的に落ちていたのは
+	// この関係そのもの（issue #552）。この 2 つを同じ値・近い値に戻すと
+	// 同じフレークが復活するので、上限側を十分離して保つ。
 	const slowFFmpegSleepSeconds = 2
 	const workReturnTimeout = 10 * time.Second
 	slowFFmpeg, ffmpegStarted := installSlowFakeFFmpeg(t, slowFFmpegSleepSeconds)
@@ -230,31 +263,39 @@ func TestEncodeWorker_AttemptRow_CtxCanceledLeavesRunning(t *testing.T) {
 
 	// running 行が書かれる（cmd.Start より前）のを待つ。行自体はテストの
 	// アサーション対象（cancel 前の状態）でもあるので残す。
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if state, ok := encodeAttemptState(t, pool, recordingID, "h264"); ok {
+	waitFor(t, 5*time.Second,
+		func() bool {
+			state, ok := encodeAttemptState(t, pool, recordingID, "h264")
+			if !ok {
+				return false
+			}
 			if state != "running" {
 				t.Fatalf("state before cancel = %q, want running", state)
 			}
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("timed out waiting for running attempt row to appear")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+			return true
+		},
+		func() string { return "timed out waiting for running attempt row to appear" },
+	)
 	// cmd.Start() が実際に成功した（フェイク ffmpeg が起動した）のを待って
 	// から cancel する（上の doc コメント参照）。
-	deadline = time.Now().Add(5 * time.Second)
-	for {
-		if _, err := os.Stat(ffmpegStarted); err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("timed out waiting for fake ffmpeg to start")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitFor(t, 5*time.Second,
+		func() bool {
+			_, err := os.Stat(ffmpegStarted)
+			return err == nil
+		},
+		func() string {
+			// フェイク ffmpeg の script 自体が起動できない場合（noexec /
+			// EACCES / /bin/sh 不在等）、原因は runEncode が返した
+			// "starting ffmpeg: ..." で workErr に既に載っている。
+			// 症状（マーカー未出現）だけでなく原因も一緒に出す。
+			select {
+			case err := <-workErr:
+				return fmt.Sprintf("timed out waiting for fake ffmpeg to start; Work() already returned: %v", err)
+			default:
+				return "timed out waiting for fake ffmpeg to start"
+			}
+		},
+	)
 	cancel()
 
 	select {
