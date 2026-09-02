@@ -17,8 +17,8 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 /**
  * stubSitesFetch は `GET /api/sites` にだけ応答し、他のパスは空配列で返す
- * `globalThis.fetch` のスタブ。`SiteGate`（routes.tsx）が全ルートの手前で
- * サイト解決を待つため、これが無いとどのルートも開けない。
+ * `globalThis.fetch` のスタブ。各ページがサイトレジストリを読むため、
+ * これが無いとサイト依存ページを開けない。
  */
 function stubSitesFetch() {
   globalThis.fetch = vi.fn((input: string | URL | Request) => {
@@ -412,7 +412,7 @@ describe('routeTree', () => {
     // jsdom は window.scrollTo を実装していない。ルーターのスクロール復元が
     // 呼ぶため、置いておかないと関係のない例外がログを埋める
     window.scrollTo = vi.fn()
-    // SiteGate（routes.tsx）が全ルートの手前で GET /api/sites を待つ
+    // ページが GET /api/sites を待つ
     // （issue #184 M4-12）。空配列を返すと「利用可能なサイトがありません」に
     // 落ちて検索フォームまで辿り着けない。
     stubSitesFetch()

@@ -131,8 +131,7 @@ export function RecordingsPage() {
 
   // 多サイトのときだけ行に site を出す（同じ (networkId, serviceId) を 2 サイトで
   // 受けたとき行を見分ける材料が site しか無い。issue #283）。単一サイトでは
-  // 「default」がノイズになるだけなので出さない。レジストリは SiteGate が既に
-  // 取得済み（同じクエリキー）。
+  // 「default」がノイズになるだけなので出さない。レジストリの取得結果を使う。
   const showSite = (unwrap(useListSites().data) ?? []).length > 1
   const encodeQueue = unwrap(useGetEncodeQueue().data)
   const updateSearch = (updater: (prev: RecordingsPageSearch) => RecordingsPageSearch) => {

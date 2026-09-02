@@ -6,7 +6,7 @@
  * 測れないので、ここで固定できる部分は全部ここに寄せる（`web/e2e/README.md`）。
  */
 
-import type { ProgramListItem } from '@/api/generated'
+import { programIdentity, type SiteProgram } from '@/lib/all-sites-services'
 
 // --- いま見ている日 --------------------------------------------------------
 
@@ -96,8 +96,8 @@ export function firstIndexForDayOffset(
  * （oxlint の `react(only-export-components)`）が出るため。テストから直接
  * 呼べるようにする狙いも同じ理由から自然にここに来る。
  */
-export function programKeyAt(programs: readonly ProgramListItem[], index: number): number {
-  return programs[index].programId
+export function programKeyAt(programs: readonly SiteProgram[], index: number): string {
+  return programIdentity(programs[index].site, programs[index].programId)
 }
 
 // --- 先頭のはみ出し番組の除去 ----------------------------------------------

@@ -3,7 +3,6 @@ import { createRootRoute, createRoute, HeadContent, Outlet } from '@tanstack/rea
 import type { ProgramSearchRequest } from './api/generated'
 import { SearchProgramsBody } from './api/zod'
 import { AppShell } from './components/app-shell'
-import { SiteGate } from './components/site-gate'
 import { pageTitle } from './lib/document-title'
 import { canonicalSearchConditions } from './lib/program-search'
 import {
@@ -55,11 +54,7 @@ const rootRoute = createRootRoute({
           いるのはこのため。 */}
       <HeadContent />
       <AppShell>
-        {/* SiteGate は Outlet だけを囲む。ナビゲーション（サイドバー/ボトムタブ）と
-            サーキットブレーカーバナーは site に依存しないので、サイト解決を待たせない。 */}
-        <SiteGate>
-          <Outlet />
-        </SiteGate>
+        <Outlet />
       </AppShell>
     </>
   ),
@@ -256,6 +251,8 @@ export type LivePageSearch = {
    * `/recordings` の `?service=` と同じ id 空間。
    */
   service?: number
+  /** service と組になる site。異なる site の同じ Service.id を区別する。 */
+  site?: string
 }
 
 /**
@@ -290,6 +287,7 @@ const liveRoute = createRoute({
   // が持つ（生成スキーマに `.int()` は出ない。`lib/url-search.ts`）。
   validateSearch: (search: Record<string, unknown>): LivePageSearch => ({
     service: validValue(serviceIdSchema, search.service, { coerce: asInteger }),
+    site: typeof search.site === 'string' && search.site !== '' ? search.site : undefined,
   }),
   // `pages/live.tsx` の `<PageHeader title="ライブ">` と同じ表記。issue #304 は
   // Playwright で確認した 6 ルートを挙げているが、`/live` だけ `head` を

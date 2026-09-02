@@ -125,7 +125,7 @@ async function renderPage(path: string, build: () => Recording[]) {
       </ToastProvider>
     </QueryClientProvider>,
   )
-  // SiteGate → ページ本体 → 初回取得までを流し切る
+  // サイトレジストリ → ページ本体 → 初回取得までを流し切る
   await advance(0)
   await advance(0)
   return { counts, queryClient }

@@ -4,21 +4,21 @@ import userEvent from '@testing-library/user-event'
 import { createRef } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
-import type { ProgramListItem, Service } from '@/api/generated'
 import {
   ProgramList,
   type ProgramListHandle,
   type ReservationActions,
 } from '@/components/program-list'
 import { formatDate } from '@/lib/format'
-import { SiteContext } from '@/lib/site'
+import { siteServiceKey, type SiteProgram, type SiteService } from '@/lib/all-sites-services'
 
 const dayStart = new Date(2026, 6, 25, 0, 0, 0, 0).getTime()
 
-const services = new Map<number, Service>([
-  [3273601024,
+const services = new Map<string, SiteService>([
+  [siteServiceKey('default', 32736, 1024),
     {
       id: 3273601024,
+      site: 'default',
       networkId: 32736,
       serviceId: 1024,
       name: 'NHK総合',
@@ -32,9 +32,10 @@ const services = new Map<number, Service>([
 ])
 
 /** program は `startOffsetHours` 時間後に開始する 30 分番組を作る。 */
-function program(programId: number, startOffsetHours: number, name = `番組 ${programId}`): ProgramListItem {
+function program(programId: number, startOffsetHours: number, name = `番組 ${programId}`): SiteProgram {
   const startAt = dayStart + startOffsetHours * 3_600_000
   return {
+    site: 'default',
     programId,
     networkId: 32736,
     serviceId: 1024,
@@ -77,33 +78,45 @@ function stubFetch() {
 }
 
 function renderList(
-  programs: ProgramListItem[],
+  programs: SiteProgram[],
   reservationActions = actions(),
   extra: {
     onVisibleDayChange?: (dayOffset: number) => void
     now?: number
     ref?: React.RefObject<ProgramListHandle | null>
+    showSite?: boolean
   } = {},
 ) {
   stubFetch()
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={queryClient}>
-      <SiteContext value="default">
-        <ProgramList
-          ref={extra.ref}
-          programs={programs}
-          serviceById={services}
-          actions={reservationActions}
-          onVisibleDayChange={extra.onVisibleDayChange}
-          now={extra.now}
-        />
-      </SiteContext>
+      <ProgramList
+        ref={extra.ref}
+        programs={programs}
+        serviceById={services}
+        showSite={extra.showSite}
+        actions={reservationActions}
+        onVisibleDayChange={extra.onVisibleDayChange}
+        now={extra.now}
+      />
     </QueryClientProvider>,
   )
 }
 
 describe('ProgramList', () => {
+  it('複数 site の一覧行に可視の site 名を出し、単一 site では出さない', () => {
+    const tokyo = program(1, 1, '共有番組')
+    const takamatsu = { ...tokyo, site: 'takamatsu' }
+    const multi = renderList([tokyo, takamatsu], actions(), { showSite: true })
+    expect(screen.getByText('default')).toBeInTheDocument()
+    expect(screen.getByText('takamatsu')).toBeInTheDocument()
+    multi.unmount()
+
+    renderList([tokyo])
+    expect(screen.queryByText('default')).not.toBeInTheDocument()
+  })
+
   it('大量の番組（500 件）を渡しても、最初・中間・最後の行が screen から引ける', async () => {
     // jsdom は DOM のレイアウトを計算できない（web/src/lib/list-virtualization.ts）
     // ので、このテストは「間引かれて消えていないか」を実質的に固定する。仮想化の
@@ -169,13 +182,13 @@ describe('ProgramList', () => {
     const user = userEvent.setup()
     renderList(
       [program(1, 1, '予約済み番組')],
-      actions({ cancel, reservedProgramIds: new Set([1]) }),
+      actions({ cancel, reservedProgramIds: new Set(['default:1']) }),
     )
 
     await screen.findByText('予約済み番組')
     await user.click(screen.getByRole('button', { name: '取消' }))
 
-    expect(cancel).toHaveBeenCalledWith(1)
+    expect(cancel).toHaveBeenCalledWith(expect.objectContaining({ site: 'default', programId: 1 }))
   })
 
   it('番組が 0 件なら行も日付ヘッダも出さない', () => {
@@ -237,7 +250,7 @@ describe('ProgramList', () => {
  */
 describe('ProgramList の放送中', () => {
   /** airing は実時刻をまたぐ番組を作る（`isAiring` は `Date.now()` を見るため）。 */
-  function airing(programId: number, name: string): ProgramListItem {
+  function airing(programId: number, name: string): SiteProgram {
     const startAt = Date.now() - 10 * 60_000
     return {
       ...program(programId, 0, name),

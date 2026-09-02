@@ -256,7 +256,7 @@ function stubApi(
   let programsCallIndex = 0
   const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input), 'http://localhost')
-    // SiteGate（routes.tsx）が全ルートの手前で GET /api/sites を待つ
+    // ページが GET /api/sites を解決する
     // （issue #184 M4-12）。ページを本物の routeTree（`RouterProvider`）越しに
     // 描く（`useSearch`/`useNavigate` を使うため）ようになったので必要になった
     // （`routes.test.tsx` の '/search' テストと同じ理由）。
@@ -376,8 +376,7 @@ afterEach(() => {
  * `useSearch`/`useNavigate` を使うため（issue #231。チャンネル絞り込みの
  * URL 化）、最小限のアドホックなルート木ではなく実際の `/programs` ルート定義
  * （`validateSearch` を含む）を使う必要がある --- `pages/recordings.test.tsx`
- * の `renderPage` と同じ理由・同じ形。`SiteContext` を直接注入する旧方式は
- * `SiteGate`（`GET /api/sites` を待つ）を経由しないためこの構成では使えない。
+ * の `renderPage` と同じ理由・同じ形。
  */
 function renderPage(path = '/programs') {
   const queryClient = new QueryClient({
@@ -429,6 +428,62 @@ async function reservationsSettled(queryClient: QueryClient): Promise<void> {
 }
 
 describe('ProgramsPage の表示形式', () => {
+  it('/api/sites の失敗を永久スケルトンにせず、再試行で一覧を復旧する', async () => {
+    const fetchMock = stubApi()
+    const implementation = fetchMock.getMockImplementation()!
+    let sitesCalls = 0
+    fetchMock.mockImplementation((input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input), 'http://localhost')
+      if (url.pathname === '/api/sites' && ++sitesCalls === 1) {
+        return Promise.resolve(errorResponse(500, 'registry down'))
+      }
+      return implementation(input, init)
+    })
+    renderPage()
+
+    expect(await screen.findByText('番組の取得に失敗しました')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: '再試行' }))
+    expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+    expect(sitesCalls).toBeGreaterThanOrEqual(2)
+  })
+
+  it('/api/sites が空配列に解決したとき永久スケルトンにせず説明を出す（レビュー指摘）', async () => {
+    // `enabled: sites.length > 0` でクエリが無効化されたまま `isPending: true`
+    // が続くので、`isError` に畳まないと ListSkeleton が永久に出続ける
+    // （旧 site-gate.tsx が持っていた「空配列を弾く」分岐の再発）。
+    const fetchMock = stubApi()
+    const implementation = fetchMock.getMockImplementation()!
+    fetchMock.mockImplementation((input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input), 'http://localhost')
+      if (url.pathname === '/api/sites') return Promise.resolve(jsonResponse([]))
+      return implementation(input, init)
+    })
+    renderPage()
+
+    expect(await screen.findByText('番組の取得に失敗しました')).toBeInTheDocument()
+    expect(screen.queryByText('ニュース7')).not.toBeInTheDocument()
+  })
+
+  it('グリッドの再試行は services の失敗も取り直す', async () => {
+    const fetchMock = stubApi()
+    const implementation = fetchMock.getMockImplementation()!
+    let serviceCalls = 0
+    fetchMock.mockImplementation((input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input), 'http://localhost')
+      if (url.pathname === '/api/sites/default/services' && ++serviceCalls === 1) {
+        return Promise.resolve(errorResponse(500, 'services down'))
+      }
+      return implementation(input, init)
+    })
+    stubMatchMedia(true)
+    renderPage('/programs?view=grid')
+
+    expect(await screen.findByText('番組の取得に失敗しました')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: '再試行' }))
+    expect(await screen.findByTestId('program-grid')).toBeInTheDocument()
+    expect(serviceCalls).toBeGreaterThanOrEqual(2)
+  })
+
   it('lg 未満ではグリッドを出さず、切り替えも見せない', async () => {
     stubApi()
     stubMatchMedia(false)
@@ -623,10 +678,7 @@ describe('ProgramsPage の容量超過の帯', () => {
     expect(screen.getByText('BS-1')).toBeInTheDocument()
   })
 
-  it('別サイトの超過区間は帯として描かない（issue #324）', async () => {
-    // 同じ時間帯の超過だが site が現在サイト（default）でない。判定はサイトごとに
-    // 独立している（docs/data.md §6.5）ので、別サイトのチューナー不足を現在サイトの
-    // 番組表に重ねてはいけない。
+  it('表示中の列に存在しない site の超過区間は別 site の列へ描かない', async () => {
     stubApi([], [overage(1, 2, { site: 'other' })])
     stubMatchMedia(true)
     const { queryClient } = renderPage()

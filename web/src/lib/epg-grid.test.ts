@@ -165,6 +165,7 @@ describe('visibleColumnRange', () => {
 
 describe('groupProgramsByService', () => {
   const program = (programId: number, serviceId: number, startMinutes: number, networkId = 32736) => ({
+    site: 'default',
     programId,
     networkId,
     serviceId,
@@ -179,11 +180,11 @@ describe('groupProgramsByService', () => {
       program(3, 2048, 18 * 60),
     ])
 
-    expect([...grouped.keys()].sort((a, b) => a - b)).toEqual([3273601024, 3273602048])
-    expect(grouped.get(3273601024)?.map((p) => p.program.programId)).toEqual([1, 2])
-    expect(grouped.get(3273601024)?.[0].startMs).toBe(at(18 * 60))
-    expect(grouped.get(3273601024)?.[0].endMs).toBe(at(18 * 60 + 30))
-    expect(grouped.get(3273602048)?.map((p) => p.program.programId)).toEqual([3])
+    expect([...grouped.keys()].sort()).toEqual(['default:32736:1024', 'default:32736:2048'])
+    expect(grouped.get('default:32736:1024')?.map((p) => p.program.programId)).toEqual([1, 2])
+    expect(grouped.get('default:32736:1024')?.[0].startMs).toBe(at(18 * 60))
+    expect(grouped.get('default:32736:1024')?.[0].endMs).toBe(at(18 * 60 + 30))
+    expect(grouped.get('default:32736:2048')?.map((p) => p.program.programId)).toEqual([3])
   })
 
   it('network が異なれば同じ serviceId でも別のグループにする', () => {
@@ -192,9 +193,9 @@ describe('groupProgramsByService', () => {
       program(2, 101, 18 * 60, 6),
     ])
 
-    expect([...grouped.keys()].sort((a, b) => a - b)).toEqual([400101, 600101])
-    expect(grouped.get(400101)?.map((p) => p.program.programId)).toEqual([1])
-    expect(grouped.get(600101)?.map((p) => p.program.programId)).toEqual([2])
+    expect([...grouped.keys()].sort()).toEqual(['default:4:101', 'default:6:101'])
+    expect(grouped.get('default:4:101')?.map((p) => p.program.programId)).toEqual([1])
+    expect(grouped.get('default:6:101')?.map((p) => p.program.programId)).toEqual([2])
   })
 })
 
@@ -234,6 +235,35 @@ describe('orderServices', () => {
     const input = [service(1032, 'GR', 4), service(1024, 'GR', 1)]
     orderServices(input)
     expect(input.map((s) => s.serviceId)).toEqual([1032, 1024])
+  })
+
+  it('同一局が複数 site にあるとき site を tie-breaker にして 0 を返さない', () => {
+    const shared = service(101, 'BS', 0)
+    const ordered = orderServices([
+      { ...shared, site: 'tokyo' },
+      { ...shared, site: 'takamatsu' },
+    ])
+    expect(ordered.map((item) => item.site)).toEqual(['takamatsu', 'tokyo'])
+  })
+
+  it('site をリモコン番号より上位の tie-breaker にする（同じ種別の中で site ごとにまとまる）', () => {
+    // 実在の東京+高松では NHK 総合(1)・NHK E(2) など両 site で同じリモコン番号の
+    // GR 局が並ぶ。リモコン番号を site より先に比べると takamatsu/tokyo が
+    // 1 列おきに交互した順（1032, 1024, 1033, 1025）になり、`ProgramGrid` の
+    // 連続走検出が 1 列ごとの走を作ってしまう（レビュー指摘）。
+    const ordered = orderServices([
+      { ...service(1024, 'GR', 2), site: 'tokyo' },
+      { ...service(1032, 'GR', 1), site: 'takamatsu' },
+      { ...service(1025, 'GR', 2), site: 'takamatsu' },
+      { ...service(1033, 'GR', 1), site: 'tokyo' },
+    ])
+    // site が先に効くので takamatsu の 2 局がまとまり、その後 tokyo の 2 局がまとまる。
+    expect(ordered.map((item) => [item.site, item.serviceId])).toEqual([
+      ['takamatsu', 1032],
+      ['takamatsu', 1025],
+      ['tokyo', 1033],
+      ['tokyo', 1024],
+    ])
   })
 
   it('並び替え済みのサービスを種別ごとにまとめ、表示名を返す', () => {

@@ -8,11 +8,16 @@ import {
   useRef,
 } from 'react'
 
-import type { ProgramListItem, ProgramOverridesInput, Service } from '@/api/generated'
+import type { ProgramOverridesInput } from '@/api/generated'
 import { ProgramRow } from '@/components/program-row'
+import {
+  programIdentity,
+  siteServiceKey,
+  type SiteProgram,
+  type SiteService,
+} from '@/lib/all-sites-services'
 import { dayKey, formatDate } from '@/lib/format'
 import { domLayoutMeasurable } from '@/lib/list-virtualization'
-import { composeServiceId } from '@/lib/service-id'
 import { firstIndexForDayOffset, programKeyAt, visibleDayOffset } from '@/lib/program-list'
 
 /**
@@ -33,11 +38,11 @@ import { firstIndexForDayOffset, programKeyAt, visibleDayOffset } from '@/lib/pr
  * 既定のままなら `undefined`（overrides の PATCH は呼ばない）。
  */
 export type ReservationActions = {
-  reserve: (program: ProgramListItem, overrides?: ProgramOverridesInput) => void
-  cancel: (programId: number) => void
-  isBusy: (programId: number) => boolean
+  reserve: (program: SiteProgram, overrides?: ProgramOverridesInput) => void
+  cancel: (program: SiteProgram) => void
+  isBusy: (program: SiteProgram) => boolean
   /** サーバーの値に楽観的な上書きを重ねた「予約済み」集合。 */
-  reservedProgramIds: Set<number>
+  reservedProgramIds: ReadonlySet<string>
 }
 
 /**
@@ -156,8 +161,9 @@ const overscanRows = 8
 export const ProgramList = forwardRef<
   ProgramListHandle,
   {
-    programs: ProgramListItem[]
-    serviceById: Map<number, Service>
+    programs: SiteProgram[]
+    serviceById: Map<string, SiteService>
+    showSite?: boolean
     actions: ReservationActions
     /**
      * 可視範囲の先頭の番組が変わるたびに「いま見ている日」の dayOffset を通知する。
@@ -169,7 +175,7 @@ export const ProgramList = forwardRef<
     /** テストから現在時刻を固定するための注入口。省略時は `Date.now()`。 */
     now?: number
   }
->(function ProgramList({ programs, serviceById, actions, onVisibleDayChange, now }, ref) {
+>(function ProgramList({ programs, serviceById, showSite = false, actions, onVisibleDayChange, now }, ref) {
   const listRef = useRef<HTMLUListElement>(null)
 
   // ページ全体がスクロールするので、リストの手前にある PageHeader のオフセットを
@@ -291,15 +297,16 @@ export const ProgramList = forwardRef<
       {paddingTopPx > 0 && <li aria-hidden style={{ height: paddingTopPx }} />}
       {renderedIndices.map((index) => {
         const program = programs[index]
-        const reserved = actions.reservedProgramIds.has(program.programId)
+        const reserved = actions.reservedProgramIds.has(programIdentity(program.site, program.programId))
 
         return (
           <li
-            key={program.programId}
+            key={programIdentity(program.site, program.programId)}
             data-index={index}
-            // 添字ではなく programId にするのは getItemKey と同じ理由 ---
-            // 絞り込みの変更で添字はずれるが programId は行の実体と結びついたまま変わらない。
+            // 添字ではなく site:programId にするのは getItemKey と同じ理由 ---
+            // 絞り込みの変更で添字はずれるが、複数 site でも行の実体と結びついたまま変わらない。
             data-program-id={program.programId}
+            data-site={program.site}
             ref={renderAll ? undefined : virtualizer.measureElement}
           >
             {/* 日付ヘッダの top は PageHeader が実測して書き出す高さ。
@@ -320,13 +327,14 @@ export const ProgramList = forwardRef<
             )}
             <ProgramRow
               program={program}
+              siteName={showSite ? program.site : undefined}
               serviceName={
-                serviceById.get(composeServiceId(program.networkId, program.serviceId))?.name
+                serviceById.get(siteServiceKey(program.site, program.networkId, program.serviceId))?.name
               }
               reserved={reserved}
-              pending={actions.isBusy(program.programId)}
+              pending={actions.isBusy(program)}
               onReserve={(overrides) => actions.reserve(program, overrides)}
-              onCancel={() => actions.cancel(program.programId)}
+              onCancel={() => actions.cancel(program)}
             />
           </li>
         )

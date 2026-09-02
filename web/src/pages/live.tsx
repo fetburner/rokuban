@@ -5,7 +5,6 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   useListPrograms,
   useListReservations,
-  useListServices,
   type ProgramListItem,
 } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
@@ -24,7 +23,7 @@ import {
 import { upcomingInterruptingReservation } from '@/lib/live-interruption'
 import { channelTypeLabel, groupByChannelType, orderServices } from '@/lib/epg-grid'
 import { formatTime, isAiring } from '@/lib/format'
-import { useCurrentSite } from '@/lib/site'
+import { siteServiceKey, useAllSitesServices } from '@/lib/all-sites-services'
 import { cn } from '@/lib/utils'
 
 /**
@@ -78,18 +77,27 @@ const nowPlayingRefetchMs = 30_000
  */
 export function LivePage() {
   const liveCapability = useLiveCapability()
-  const site = useCurrentSite()
-  const services = useListServices(site)
+  const {
+    siteServices,
+    isPending: servicesPending,
+    isError: servicesError,
+  } = useAllSitesServices()
   const routeSearch = useRouteSearch({ from: '/live' })
 
-  const orderedServices = useMemo(() => orderServices(unwrap(services.data) ?? []), [services.data])
+  const orderedServices = useMemo(() => orderServices(siteServices), [siteServices])
   const groups = useMemo(() => groupByChannelType(orderedServices), [orderedServices])
 
   // 選択の同定は `Service.id`（合成 id）そのもので行う（`lib/live.ts` の
-  // `pickInitialService`）。SI の `serviceId` 単独では network をまたぐと
+  // `pickInitialService` と同じフォールバック規則。SI の `serviceId` 単独では network をまたぐと
   // 一意でない（issue #291）が、`Service.id` は合成の時点で解消されている。
-  const selectedService = pickInitialService(orderedServices, routeSearch.service)
-  const selectedKey = selectedService?.id
+  const selectedService = useMemo(
+    () => pickInitialService(orderedServices, routeSearch.service, routeSearch.site),
+    [orderedServices, routeSearch.service, routeSearch.site],
+  )
+  const selectedKey =
+    selectedService === undefined
+      ? undefined
+      : siteServiceKey(selectedService.site, selectedService.networkId, selectedService.serviceId)
 
   // playingKey は「再生」ボタンで明示的に視聴を始めたチャンネルの `Service.id`
   // （`serviceId` 単独では不足 --- 同じ
@@ -120,7 +128,7 @@ export function LivePage() {
   // レンダー中に判定すれば、`selectedServiceId` が変わった**その場のレンダーで**
   // 「再生中でない」が確定するので、`<LivePlayer>` が異なる serviceId で透過的に
   // マウントされる中間コミット自体が存在しない。
-  const [playingKey, setPlayingKey] = useState<number | null>(null)
+  const [playingKey, setPlayingKey] = useState<string | null>(null)
   if (playingKey !== null && playingKey !== selectedKey) {
     setPlayingKey(null)
   }
@@ -147,7 +155,7 @@ export function LivePage() {
 
   const window_ = currentProgramWindow(nowMs)
   const nowPlayingQuery = useListPrograms(
-    site,
+    selectedService?.site ?? '',
     {
       start: window_.start,
       end: window_.end,
@@ -177,8 +185,13 @@ export function LivePage() {
     () =>
       selectedService === undefined
         ? null
-        : upcomingInterruptingReservation(reservations, site, selectedService.channelType, nowMs),
-    [reservations, site, selectedService, nowMs],
+        : upcomingInterruptingReservation(
+            reservations,
+            selectedService.site,
+            selectedService.channelType,
+            nowMs,
+          ),
+    [reservations, selectedService, nowMs],
   )
 
   return (
@@ -203,9 +216,9 @@ export function LivePage() {
             サーバーの設定（<code>live.enabled</code>）で有効にすると使えます
           </p>
         </EmptyState>
-      ) : services.isError ? (
+      ) : servicesError ? (
         <ErrorState>チャンネル一覧の取得に失敗しました</ErrorState>
-      ) : services.isPending ? (
+      ) : servicesPending ? (
         <ListSkeleton />
       ) : orderedServices.length === 0 ? (
         <EmptyState>チャンネルがありません</EmptyState>
@@ -218,7 +231,7 @@ export function LivePage() {
           <div className="flex min-w-0 flex-1 flex-col gap-2">
             {isPlaying ? (
               <LivePlayer
-                site={site}
+                site={selectedService.site}
                 networkId={selectedService.networkId}
                 serviceId={selectedService.serviceId}
                 onDiagnostics={setDiagnostics}
@@ -227,7 +240,7 @@ export function LivePage() {
               <LiveSelectionPreview
                 serviceName={selectedService.name}
                 onPlay={() =>
-                  setPlayingKey(selectedService.id)
+                  setPlayingKey(selectedKey ?? null)
                 }
               />
             )}
@@ -300,7 +313,7 @@ export function LivePage() {
                   </p>
                   <ul className="flex flex-col gap-1">
                     {group.services.map((s) => (
-                      <li key={`${s.networkId}-${s.serviceId}`}>
+                      <li key={siteServiceKey(s.site, s.networkId, s.serviceId)}>
                         {/* チャンネルを選ぶこと自体はコスト 0（probe もセッションも
                             起こさない）なので、デバウンスも onClick での介入も無い
                             --- 通常のクリックナビゲーションのまま（issue #234）。
@@ -308,19 +321,19 @@ export function LivePage() {
                             ようにするため。 */}
                         <Link
                           to="/live"
-                          search={{ service: s.id }}
+                          search={{ service: s.id, site: s.site }}
                           replace
                           // ハイライト・aria-current の同定も `Service.id`（合成
                           // id）で行う --- SI の `serviceId` 単独では、同じ id を
                           // 持つ別 network のサービスにも付いてしまう（issue #291）。
                           aria-current={
-                            s.id === selectedKey
+                            siteServiceKey(s.site, s.networkId, s.serviceId) === selectedKey
                               ? 'page'
                               : undefined
                           }
                           className={cn(
                             'flex min-h-11 w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm transition-colors hover:bg-muted',
-                            s.id === selectedKey &&
+                            siteServiceKey(s.site, s.networkId, s.serviceId) === selectedKey &&
                               'bg-muted font-medium',
                           )}
                         >

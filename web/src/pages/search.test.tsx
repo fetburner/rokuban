@@ -157,8 +157,8 @@ function stubApi(options?: {
   extraPrograms?: Program[]
   /**
    * `GET /api/sites` の応答（既定 `['default']`）。**先頭は常に `'default'`
-   * のままにすること** --- `useCurrentSite()` はレジストリの先頭サイト固定
-   * （`<SiteGate>`）で、検索・番組詳細のパス（`/api/sites/default/...`）は
+   * のままにすること** --- 検索 API の routing site はレジストリの先頭サイト固定
+   * で、検索・番組詳細のパス（`/api/sites/default/...`）は
    * このスタブの他の分岐に既に決め打ちされている。2 つ目以降を足すのは
    * `<ConditionFields>` のサイトチップ（レジストリと下書きの和集合が
    * 2 つ以上で出る）と
@@ -166,6 +166,9 @@ function stubApi(options?: {
    * `/services` は `services` フィクスチャをそのまま返す。
    */
   sites?: string[]
+  /** GET /api/sites を先頭から指定回数だけ失敗させる。 */
+  sitesFailures?: number
+  holdSites?: boolean
 }) {
   const searchBodies: ProgramSearchRequest[] = []
   const createRuleBodies: RuleInput[] = []
@@ -196,6 +199,8 @@ function stubApi(options?: {
   // このリクエスト回数と `start` の種類数で固定する。
   const overagesRequests: string[] = []
   const pendingOverages: (() => void)[] = []
+  const registrySites = options?.sites ?? ['default']
+  let remainingSitesFailures = options?.sitesFailures ?? 0
 
   const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input), 'http://localhost')
@@ -203,8 +208,11 @@ function stubApi(options?: {
 
     // 条件フォームのサービス選択肢は全 site から作る（issue #290）ので、
     // 単一サイト構成でも `GET /api/sites` を経由する。
-    const registrySites = options?.sites ?? ['default']
     if (url.pathname === '/api/sites') {
+      if (options?.holdSites) return new Promise<Response>(() => {})
+      if (remainingSitesFailures-- > 0) {
+        return Promise.resolve(jsonResponse({ error: 'registry down' }, 500))
+      }
       return Promise.resolve(jsonResponse(registrySites))
     }
 
@@ -395,6 +403,36 @@ async function addKeyword(value: string, mode: '正規表現' | 'キーワード
 }
 
 describe('SearchPage', () => {
+  it('site レジストリ取得中は検索を無効化して理由を表示する', async () => {
+    stubApi({ holdSites: true })
+    renderPage()
+
+    expect(await screen.findByText('サイト一覧を取得中…')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '検索' })).toBeDisabled()
+  })
+
+  it('site レジストリ失敗を表示し、再試行後に検索可能になる', async () => {
+    stubApi({ sitesFailures: 1 })
+    renderPage()
+
+    expect(await screen.findByText('サイト一覧の取得に失敗しました')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '検索' })).toBeDisabled()
+    await userEvent.click(screen.getByRole('button', { name: '再試行' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: '検索' })).toBeEnabled())
+  })
+
+  it('site レジストリが空配列に解決したとき、失敗と同じ扱いで検索を無効化する（レビュー指摘）', async () => {
+    // `GET /api/sites` 自体は 200 で解決するが本文が `[]`。`registryPending` /
+    // `registryError` のどちらも false になるので、畳まないと `searchSite` が
+    // `undefined` のまま `submit` が無言で早期 return し続ける（旧
+    // site-gate.tsx が持っていた「空配列を弾く」分岐の再発）。
+    stubApi({ sites: [] })
+    renderPage()
+
+    expect(await screen.findByText('サイト一覧の取得に失敗しました')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '検索' })).toBeDisabled()
+  })
+
   /**
    * issue #305: 初画面で「条件を追加」を押さなくてもテキスト条件が打てて、
    * その入力欄がサービスのチップ列より DOM 順で前に来ることを確認する。
@@ -1578,8 +1616,7 @@ describe('SearchPage', () => {
  */
 describe('複数サイトの検索結果（issue #531）', () => {
   // **siteA は `test/router.tsx` の `testSite`（'default'）に合わせる。**
-  // `renderInRouter`（`renderPage` が使う）は `<SiteGate>` を経由せず
-  // `SiteContext` に固定値を直接注入するので、`useCurrentSite()` は
+  // `renderInRouter`（`renderPage` が使う）は単一 site fixture を使うので、
   // `GET /api/sites` の応答に関わらずこの値になる（検索の path 引数も
   // これで決まる）。
   const siteA = 'default'
@@ -1630,7 +1667,7 @@ describe('複数サイトの検索結果（issue #531）', () => {
   /**
    * stubMultiSiteApi は「同一放送（programId 500）が default と takamatsu の
    * 両方でマッチした」状況だけを再現する最小のスタブ。`renderPage`
-   * （`renderInRouter`）は `useCurrentSite()` を `testSite`（'default'）に
+   * （`renderInRouter`）は routing site を `testSite`（'default'）に
    * 固定するので、検索リクエスト自体は `/api/sites/default/programs/search`
    * に届く --- 実際に複数 site の行を返せるのは、この 1 本の検索が
    * `sites`（空 = 全サイト）で default と takamatsu の両方の EPG を横断して

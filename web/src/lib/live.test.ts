@@ -209,6 +209,16 @@ describe('pickInitialService', () => {
     expect(pickInitialService(services, services[0].id)?.name).toBe('network 1 の局')
   })
 
+  it('同じ Service.id が複数 site にあるとき requestedSite で正しい方を選ぶ', () => {
+    const shared = makeService({ networkId: 4, serviceId: 101, name: '共有BS' })
+    const services = [
+      { ...shared, site: 'tokyo' },
+      { ...shared, site: 'takamatsu' },
+    ]
+    expect(pickInitialService(services, shared.id, 'takamatsu')).toBe(services[1])
+    expect(pickInitialService(services, shared.id, 'tokyo')).toBe(services[0])
+  })
+
   /**
    * `service` が一覧のどの `Service.id` とも一致しないとき（無効な id・
    * 未取得・EPG から消えた局を指す古いリンク）は番組を持つ先頭にフォールバック

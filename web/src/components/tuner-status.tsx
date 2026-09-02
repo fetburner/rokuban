@@ -1,22 +1,20 @@
 import { TriangleAlert } from 'lucide-react'
 
-import { useListTuners } from '@/api/generated'
+import { useQueries } from '@tanstack/react-query'
+
+import { getListTunersQueryOptions, useListSites, type Tuner } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
 import { tunersQueryKeyPrefix } from '@/lib/events'
-import { useCurrentSite } from '@/lib/site'
 import { isObservationStale } from '@/lib/storage-forecast'
 
 /**
  * TunerStatus はライブ画面のチャンネル一覧の脇に「チューナー n 本（故障 m）」の
- * 1 行を出す（issue #474 の判定 (b)）。
+ * site ごとの行を出す（issue #474 の判定 (b)）。
  *
- * **1 サイト（`useCurrentSite()`）だけを見る。** `LivePage` はサイト切り替え UI
- * を持たず、`SiteGate`（`components/site-gate.tsx`）が流す先頭サイト固定の
- * チャンネル一覧しか出さない画面なので、この行も同じ 1 サイトに揃える。他サイトの
- * 状態を混ぜると、この画面からは選べないサイトの故障バッジまで並んで誤読を招く
- * （実測: レビューで `tokyo` 選択中に `takamatsu` の故障バッジが表示された）。
- * `docs/frontend/shell.md`「サイトの扱い」でもライブは「出所が無い = 先頭サイト
- * 固定」の行に置かれているので、この行もその表のまま整合する。
+ * **site ごとに集計する。** ライブ画面のチャンネル一覧が全サイトの和集合に
+ * なったため、状態表示も選択可能な全サイトの tuner_sync を対象にする。各 site の
+ * 射影行は別々の状態表示にし、未取得/空のサイトは何も主張しない。複数 site の
+ * ときだけ site 名を表示し、単一 site では従来の見た目を維持する。
  *
  * 「いまどの局を掴んでいるか」「ライブ視聴が何本か」は `tuner_sync` に無いため
  * 出さない（別の判断）。
@@ -46,17 +44,51 @@ import { isObservationStale } from '@/lib/storage-forecast'
  * 再利用する。
  */
 export function TunerStatus() {
-  const site = useCurrentSite()
+  const sitesQuery = useListSites()
+  const sites = unwrap(sitesQuery.data) ?? []
+  const tunerQueries = useQueries({
+    queries: sites.map((site) =>
+      getListTunersQueryOptions(site, { query: { queryKey: [tunersQueryKeyPrefix, site] } }),
+    ),
+  })
   // 生成キー（`/api/sites/${site}/tuners`）ではなく手書きにする --- URL のままだと
   // epg グループの接頭辞（`/api/sites/`）にも一致し、周期の違う 2 グループに同じ
   // キーが入る（理由は {@link tunersQueryKeyPrefix}）。接頭辞は `lib/events.ts` の
   // グループ定義と同じ定数を参照する --- 片方だけ改名して取り直しが止まる drift を
   // 防ぐため。手書きキーの前例は番組リストの
   // `['/api/programs', 'infinite', ...]`（`pages/programs.tsx`）。
-  const query = useListTuners(site, { query: { queryKey: [tunersQueryKeyPrefix, site] } })
-  const tuners = unwrap(query.data)
-  if (tuners === undefined || tuners.length === 0) return null
+  if (sitesQuery.isPending || sitesQuery.isError) return null
+  const statuses = sites.flatMap((site, index) => {
+    const query = tunerQueries[index]
+    if (query === undefined || query.isPending || query.isError) return []
+    const tuners = unwrap(query.data) ?? []
+    return tuners.length > 0 ? [{ site, tuners }] : []
+  })
+  if (statuses.length === 0) return null
 
+  const showSite = sites.length > 1
+  if (!showSite) {
+    return <TunerStatusLine site={statuses[0]!.site} tuners={statuses[0]!.tuners} showSite={false} />
+  }
+
+  return (
+    <div className="flex flex-col gap-1">
+      {statuses.map(({ site, tuners }) => (
+        <TunerStatusLine key={site} site={site} tuners={tuners} showSite />
+      ))}
+    </div>
+  )
+}
+
+function TunerStatusLine({
+  site,
+  tuners,
+  showSite,
+}: {
+  site: string
+  tuners: readonly Tuner[]
+  showSite: boolean
+}) {
   const availableCount = tuners.filter((t) => t.isAvailable && !t.isFault).length
   const faultCount = tuners.filter((t) => t.isFault).length
   const oldestObservedAt = tuners.reduce(
@@ -66,7 +98,12 @@ export function TunerStatus() {
   const stale = isObservationStale(oldestObservedAt, Date.now())
 
   return (
-    <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+    <p
+      className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground"
+      data-site={site}
+      data-testid={showSite ? `tuner-status-${site}` : 'tuner-status'}
+    >
+      {showSite && <span className="font-medium">{site}</span>}
       <span>
         チューナー{availableCount}本
         {faultCount > 0 && (

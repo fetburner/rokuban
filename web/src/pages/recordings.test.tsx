@@ -208,7 +208,7 @@ function createFakeRecordingsServer(options: {
     const method = init?.method ?? 'GET'
 
     if (url.pathname === '/api/breakers') return Promise.resolve(jsonResponse([]))
-    // SiteGate（routes.tsx）が全ルートの手前で待つ（issue #184 M4-12）。
+    // サイトレジストリを先に解決する。
     if (url.pathname === '/api/sites') return Promise.resolve(jsonResponse(sites))
     if (/^\/api\/sites\/[^/]+\/services$/.test(url.pathname)) {
       return Promise.resolve(jsonResponse(services))

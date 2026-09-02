@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
-import type { ProgramListItem, Service } from '@/api/generated'
+import {
+  programIdentity,
+  siteServiceKey,
+  type SiteProgram,
+  type SiteService,
+} from '@/lib/all-sites-services'
 import {
   axisHeightPx,
   epgColumnWidthPx,
@@ -15,7 +20,6 @@ import {
 } from '@/lib/epg-grid'
 import { formatTime } from '@/lib/format'
 import { genreLabel, genreTint } from '@/lib/genre'
-import { composeServiceId } from '@/lib/service-id'
 import { cn } from '@/lib/utils'
 
 /** 時間軸（左端の目盛り列）の幅。 */
@@ -125,15 +129,17 @@ export function ProgramGrid({
   now,
   scrollToMs,
   overlay,
+  siteOverlay,
   gutterOverlay,
+  showSite = false,
 }: {
   /** 列。渡された順に左から並べる（並び順は lib/epg-grid.ts の orderServices）。 */
-  services: Service[]
-  programs: ProgramListItem[]
+  services: SiteService[]
+  programs: SiteProgram[]
   axis: TimeAxis
-  reservationByProgramId: Set<number>
-  selectedProgramId: number | null
-  onSelect: (program: ProgramListItem) => void
+  reservationByProgramId: ReadonlySet<string>
+  selectedProgramId: string | null
+  onSelect: (program: SiteProgram) => void
   /** 現在時刻。省略すると内部の時計を使う（テストから固定するための口）。 */
   now?: number
   /**
@@ -144,8 +150,20 @@ export function ProgramGrid({
    * 同じフォールバック（先頭。`inAxis` が false になる分岐）に落ちる。
    */
   scrollToMs?: number
+  /** 複数 site のとき、ヘッダへ可視の site 名を出す。 */
+  showSite?: boolean
   /** 全チャンネル縦断の帯を重ねる層。軸を受け取って絶対配置の要素を返す。 */
   overlay?: (axis: TimeAxis) => React.ReactNode
+  /**
+   * 同じ site の連続した列領域ごとにクリップして重ねる層。
+   *
+   * `isFirstRunForSite` は、この走がその site の中で最初に現れる走かどうか。
+   * `orderServices` は種別を最外に持つので、GR + BS を両方持つ site は 2 本の
+   * 走を持つ（issue #460 再レビュー）。読み上げ用の文言（`sr-only`）を走ごとに
+   * 出す実装だと、その本数ぶん重複して読み上げられてしまうため、
+   * 呼び出し側（`CapacityBands`）はこれを見て 1 site につき 1 回だけ出す。
+   */
+  siteOverlay?: (axis: TimeAxis, site: string, isFirstRunForSite: boolean) => React.ReactNode
   /**
    * 時間軸列（gutter）に重ねる層。帯の見えるラベルなど、局の列の番組セルと
    * 衝突させたくない要素をここに置く（issue #460）。軸を受け取って絶対配置の
@@ -210,6 +228,17 @@ export function ProgramGrid({
     services.length,
   )
   const columnsWidthPx = services.length * columnWidthPx
+  const siteColumnRanges = services.reduce<
+    { site: string; startColumn: number; columnCount: number }[]
+  >((ranges, service, index) => {
+    const previous = ranges.at(-1)
+    if (previous?.site === service.site) {
+      previous.columnCount++
+    } else {
+      ranges.push({ site: service.site, startColumn: index, columnCount: 1 })
+    }
+    return ranges
+  }, [])
   const columnRange = visibleColumnRange(
     services.length,
     columnWidthPx,
@@ -254,7 +283,8 @@ export function ProgramGrid({
           >
             {visibleServices.map((service, index) => (
               <div
-                key={`${service.networkId}-${service.serviceId}`}
+                key={siteServiceKey(service.site, service.networkId, service.serviceId)}
+                data-testid="program-grid-header-cell"
                 className="absolute top-0 flex h-full items-center gap-1.5 overflow-hidden border-r border-border px-2"
                 style={{
                   left: (columnRange.start + index) * columnWidthPx,
@@ -268,7 +298,19 @@ export function ProgramGrid({
                     {service.remoteControlKeyId}
                   </span>
                 )}
-                <span className="truncate text-xs font-medium">{service.name}</span>
+                {showSite ? (
+                  <span className="flex min-w-0 flex-col">
+                    <span className="truncate text-xs font-medium">{service.name}</span>
+                    <span
+                      data-testid="program-grid-header-site"
+                      className="truncate text-[10px] text-muted-foreground"
+                    >
+                      {service.site}
+                    </span>
+                  </span>
+                ) : (
+                  <span className="truncate text-xs font-medium">{service.name}</span>
+                )}
               </div>
             ))}
           </div>
@@ -330,11 +372,11 @@ export function ProgramGrid({
 
             {visibleServices.map((service, index) => (
               <ServiceColumn
-                key={`${service.networkId}-${service.serviceId}`}
+                key={siteServiceKey(service.site, service.networkId, service.serviceId)}
                 service={service}
                 leftPx={(columnRange.start + index) * columnWidthPx}
                 widthPx={columnWidthPx}
-                placed={placedByService.get(composeServiceId(service.networkId, service.serviceId)) ?? []}
+                placed={placedByService.get(siteServiceKey(service.site, service.networkId, service.serviceId)) ?? []}
                 axis={axis}
                 timeWindow={timeWindow}
                 reservationByProgramId={reservationByProgramId}
@@ -357,6 +399,30 @@ export function ProgramGrid({
                 />
               )}
               {overlay?.(axis)}
+              {siteOverlay && (() => {
+                // site ごとに「最初の走か」を判定する。orderServices が種別を
+                // 最外に持つため、GR + BS を両方持つ site は非隣接な複数の走に
+                // 分かれる（siteColumnRanges は隣接判定なので束ねられない）。
+                const seenSites = new Set<string>()
+                return siteColumnRanges.map((range) => {
+                  const isFirstRunForSite = !seenSites.has(range.site)
+                  seenSites.add(range.site)
+                  return (
+                    <div
+                      key={`${range.site}:${range.startColumn}`}
+                      data-testid="program-grid-site-overlay"
+                      data-site={range.site}
+                      className="absolute inset-y-0 overflow-hidden"
+                      style={{
+                        left: range.startColumn * columnWidthPx,
+                        width: range.columnCount * columnWidthPx,
+                      }}
+                    >
+                      {siteOverlay(axis, range.site, isFirstRunForSite)}
+                    </div>
+                  )
+                })
+              })()}
             </div>
           </div>
         </div>
@@ -377,21 +443,22 @@ function ServiceColumn({
   currentMs,
   onSelect,
 }: {
-  service: Service
+  service: SiteService
   leftPx: number
   widthPx: number
-  placed: PlacedProgram<ProgramListItem>[]
+  placed: PlacedProgram<SiteProgram>[]
   axis: TimeAxis
   timeWindow: { startMs: number; endMs: number }
-  reservationByProgramId: Set<number>
-  selectedProgramId: number | null
+  reservationByProgramId: ReadonlySet<string>
+  selectedProgramId: string | null
   currentMs: number
-  onSelect: (program: ProgramListItem) => void
+  onSelect: (program: SiteProgram) => void
 }) {
   return (
     <div
       data-testid="program-grid-column"
       data-service-id={service.serviceId}
+      data-site={service.site}
       className="absolute top-0 border-r border-border"
       style={{ left: leftPx, width: widthPx, height: '100%' }}
     >
@@ -399,11 +466,11 @@ function ServiceColumn({
         .filter((p) => p.endMs > timeWindow.startMs && p.startMs < timeWindow.endMs)
         .map((p) => (
           <ProgramCell
-            key={p.program.programId}
+            key={programIdentity(p.program.site, p.program.programId)}
             placed={p}
             axis={axis}
-            reserved={reservationByProgramId.has(p.program.programId)}
-            selected={selectedProgramId === p.program.programId}
+            reserved={reservationByProgramId.has(programIdentity(p.program.site, p.program.programId))}
+            selected={selectedProgramId === programIdentity(p.program.site, p.program.programId)}
             currentMs={currentMs}
             onSelect={onSelect}
           />
@@ -420,12 +487,12 @@ function ProgramCell({
   currentMs,
   onSelect,
 }: {
-  placed: PlacedProgram<ProgramListItem>
+  placed: PlacedProgram<SiteProgram>
   axis: TimeAxis
   reserved: boolean
   selected: boolean
   currentMs: number
-  onSelect: (program: ProgramListItem) => void
+  onSelect: (program: SiteProgram) => void
 }) {
   const rect = spanToPx(axis, placed.startMs, placed.endMs)
   if (!rect) return null
@@ -452,6 +519,7 @@ function ProgramCell({
       type="button"
       data-testid="program-grid-cell"
       data-program-id={program.programId}
+      data-site={program.site}
       data-reserved={reserved ? 'true' : undefined}
       data-ended={ended ? 'true' : undefined}
       aria-pressed={selected}

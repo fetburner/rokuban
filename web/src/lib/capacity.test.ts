@@ -125,6 +125,19 @@ describe('文言', () => {
     )
   })
 
+  it('showSite を渡すと site 名を前置する（複数 site のグリッドで帯の帰属を伝える）', () => {
+    const target = overage(19 * 60, 20 * 60, { site: 'takamatsu' })
+    expect(shortageLabel(target, { showSite: true })).toBe('takamatsuのチューナー不足（BS が 1 本）')
+    expect(shortageRangeMessage(target, { showSite: true })).toBe(
+      '19:00〜20:00 はtakamatsuのチューナーが不足しています（BS が 1 本不足）',
+    )
+    // 既定（showSite を渡さない）は今までどおり site を含まない
+    expect(shortageLabel(target)).toBe('チューナー不足（BS が 1 本）')
+    expect(shortageRangeMessage(target)).toBe(
+      '19:00〜20:00 はチューナーが不足しています（BS が 1 本不足）',
+    )
+  })
+
   it('グリッドの時間軸列用はさらに短い形（種別 1 つなら種別も残す）', () => {
     expect(shortageLabelCompact(overage(19 * 60, 20 * 60, { jammedTypes: ['BS'] }))).toBe('BS-1')
     // 種別が 2 つ以上は列挙すると幅を食うので本数だけにする

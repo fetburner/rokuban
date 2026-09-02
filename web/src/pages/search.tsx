@@ -28,7 +28,6 @@ import { useAllSitesServices } from '@/lib/all-sites-services'
 import { countProgramsInShortfall } from '@/lib/capacity'
 import { dayOrigin } from '@/lib/day-offset'
 import { formatDateTime, formatDuration } from '@/lib/format'
-import { useCurrentSite } from '@/lib/site'
 import { cn } from '@/lib/utils'
 import {
   buildRuleInput,
@@ -80,7 +79,6 @@ const pageSize = 30
  * 結果は表示のみ（予約操作を持たない）。理由は下の `SearchResultRow` を参照。
  */
 export function SearchPage() {
-  const site = useCurrentSite()
   // nowMs はこのレンダーの間で一貫させる（`pages/home.tsx`・`pages/programs.tsx`
   // と同じ規律）。容量ノートの問い合わせ窓（下の `shortfallWindowStartMs`）だけが使う。
   const nowMs = Date.now()
@@ -109,8 +107,8 @@ export function SearchPage() {
    * serviceById は結果行（`SearchResultRow`）のサービス名解決に使う。
    *
    * **`sites` が条件 UI に出た（issue #531）ので、検索結果は複数 site の行を
-   * 含みうる。** 以前は検索が常に `useCurrentSite()` 固定の単一 site にしか
-   * 投げなかったため、結果行の名前解決も同じ単一 site の一覧（`useListServices`）
+   * 含みうる。** 以前は検索が常に先頭 site 固定の単一 site にしか
+   * 投げなかったため、結果行の名前解決も同じ単一 site の一覧
    * だけで閉じていたが、その前提が崩れた --- 先頭 site の一覧だけでは他 site
    * だけが受けているサービスの名前が引けない（`<ConditionFields>` の選択肢と
    * 同じ非対称の再発なので、`useAllSitesServices()`（全 site から `Service.id`
@@ -126,7 +124,17 @@ export function SearchPage() {
    * union に切り替えると network の種類が増えるぶん衝突の機会も増える。
    * `networkId` を組にすることでこの衝突を避ける。
    */
-  const { services: serviceList } = useAllSitesServices()
+  const {
+    sites,
+    services: serviceList,
+    isPending: registryPending,
+    isError: registryError,
+    refetch: refetchRegistry,
+  } = useAllSitesServices()
+  // 検索 API の path parameter は site ごとのルーティングに必要だが、検索対象は
+  // body の空 `sites`（全 site）で指定する。レジストリの先頭は routing anchor
+  // にだけ使い、結果行の site は検索レスポンスをそのまま運ぶ。
+  const searchSite = sites[0]
   const search = useSearchPrograms()
   // ruleId が無いときは問い合わせを止める。useGetRule は id を必須の number で
   // 取るため、無効化中はダミー値を渡す（program-overlap-warning.tsx と同じ流儀）。
@@ -155,18 +163,15 @@ export function SearchPage() {
   useEffect(() => {
     if (ruleId === undefined) return
     if (sourceRule === undefined) return
+    if (searchSite === undefined) return
     if (hydratedRuleIdRef.current === ruleId) return
     hydratedRuleIdRef.current = ruleId
 
     const nextDraft = conditionsToDraft(sourceRule)
     setDraft(nextDraft)
     setVisibleCount(pageSize)
-    searchRef.current.mutate({ site, data: buildSearchRequest(nextDraft) })
-    // site は SiteGate が解決した後は再マウントまで変わらない。ruleId /
-    // sourceRule だけを見るガード（上記コメント）が効くよう依存には入れず、
-    // ESLint 警告を消すためだけに include するのは避ける。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ruleId, sourceRule])
+    searchRef.current.mutate({ site: searchSite, data: buildSearchRequest(nextDraft) })
+  }, [ruleId, searchSite, sourceRule])
 
   /**
    * `?cond=` のハイドレーション。共有・ブックマークされた URL を開いたときに、
@@ -192,6 +197,7 @@ export function SearchPage() {
   const appliedCondRef = useRef<string | undefined>(undefined)
   useEffect(() => {
     if (ruleId !== undefined) return
+    if (searchSite === undefined) return
     const cond = routeSearch.cond
     const nextDraft = cond === undefined ? undefined : conditionsToDraft(cond)
     const encoded =
@@ -202,10 +208,8 @@ export function SearchPage() {
 
     setDraft(nextDraft)
     setVisibleCount(pageSize)
-    searchRef.current.mutate({ site, data: buildSearchRequest(nextDraft) })
-    // site を依存に入れない理由は上のハイドレーション effect と同じ。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ruleId, routeSearch.cond])
+    searchRef.current.mutate({ site: searchSite, data: buildSearchRequest(nextDraft) })
+  }, [ruleId, routeSearch.cond, searchSite])
 
   const error = draftError(draft)
 
@@ -236,11 +240,11 @@ export function SearchPage() {
   // 送れない下書きは 2 つの層で止める。ボタンの無効化だけだと、Enter による
   // 暗黙の送信（既定ボタンが無効でも submit が届きうる）が素通りする。
   const submit = () => {
-    if (error !== undefined) return
+    if (error !== undefined || registryPending || registryError || searchSite === undefined) return
     const request = buildSearchRequest(draft)
     setVisibleCount(pageSize)
     pendingResultScrollRef.current = true
-    search.mutate({ site, data: request })
+    search.mutate({ site: searchSite, data: request })
     // 押した条件だけを「最後の条件」として残す。打っている途中の下書きを保存すると、
     // 次に開いたとき送れない下書き（値が空のテキスト条件など）が復元されうる。
     saveLastSearchConditions(request)
@@ -313,7 +317,7 @@ export function SearchPage() {
    * が `GET /api/sites/{site}/programs/{programId}` の呼び出し件数を数えて確認している（37 件マッチ
    * で 30 → 37 と増える一方、重複が無いこと）。
    *
-   * **`site` は `useCurrentSite()` ではなく行が運ぶ `match.site` を使う**
+   * **詳細取得の `site` は行が運ぶ `match.site` を使う**
    * （issue #531）。`epg_programs` の主キーは `(site, program_id)` なので、
    * 現在 site 固定で引くと第 2 site だけの結果が 404 になる
    * （`docs/frontend/shell.md`「サイトの扱い」の「行が運ぶ」と同じ規律）。
@@ -431,6 +435,12 @@ export function SearchPage() {
         />
       )}
 
+      {registryError && (
+        <ErrorState onRetry={() => void refetchRegistry()}>
+          サイト一覧の取得に失敗しました
+        </ErrorState>
+      )}
+
       <form
         aria-label="検索条件"
         className="flex flex-col gap-5 border-b border-border px-4 py-4"
@@ -464,8 +474,19 @@ export function SearchPage() {
               {error}
             </p>
           )}
+          {registryPending && (
+            <p role="status" className="text-xs text-muted-foreground">
+              サイト一覧を取得中…
+            </p>
+          )}
           <div className="flex gap-2">
-            <Button type="submit" size="lg" disabled={error !== undefined || search.isPending}>
+            <Button
+              type="submit"
+              size="lg"
+              disabled={
+                error !== undefined || search.isPending || registryPending || registryError
+              }
+            >
               {search.isPending ? '検索中…' : '検索'}
             </Button>
             <Button
@@ -1233,7 +1254,7 @@ function SearchError({ error, onRetry }: { error: unknown; onRetry: () => void }
  * まとめているのは、行コンポーネントに hook を置くと「行が消えるとクエリも
  * 消える」形になり、表示件数を増やしたときの取得状態が追いにくくなるため。
  *
- * **`site` は行が運ぶ `match.site` を使う（`useCurrentSite()` は使わない）**
+ * **`site` は行が運ぶ `match.site` を使う**
  * ---`epg_programs` の主キーは `(site, program_id)` なので、現在 site 固定で
  * 引くと第 2 site だけの結果が 404 になる（issue #531）。
  *

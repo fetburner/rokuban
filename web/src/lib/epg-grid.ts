@@ -12,7 +12,7 @@
  */
 
 import type { Service } from '@/api/generated'
-import { composeServiceId } from '@/lib/service-id'
+import { siteServiceKey } from '@/lib/all-sites-services'
 
 const msPerHour = 3_600_000
 
@@ -164,16 +164,16 @@ export type PlacedProgram<P extends { startAt: string; endAt: string }> = {
  * 可視判定が番組数 x 再描画回数の parse になる。
  */
 export function groupProgramsByService<
-  P extends { networkId: number; serviceId: number; startAt: string; endAt: string },
->(programs: readonly P[]): Map<number, PlacedProgram<P>[]> {
-  const byService = new Map<number, PlacedProgram<P>[]>()
+  P extends { site: string; networkId: number; serviceId: number; startAt: string; endAt: string },
+>(programs: readonly P[]): Map<string, PlacedProgram<P>[]> {
+  const byService = new Map<string, PlacedProgram<P>[]>()
   for (const program of programs) {
     const placed: PlacedProgram<P> = {
       program,
       startMs: new Date(program.startAt).getTime(),
       endMs: new Date(program.endAt).getTime(),
     }
-    const key = composeServiceId(program.networkId, program.serviceId)
+    const key = siteServiceKey(program.site, program.networkId, program.serviceId)
     const list = byService.get(key)
     if (list) list.push(placed)
     else byService.set(key, [placed])
@@ -193,16 +193,26 @@ const channelTypeOrder: Record<Service['channelType'], number> = {
 /**
  * orderServices はグリッドの列順にサービスを並べる。
  *
- * 種別（GR → BS → CS → SKY）→ リモコン番号 → serviceId の全順序。API の返す順
+ * 種別（GR → BS → CS → SKY）→ site → リモコン番号 → serviceId → networkId の全順序。API の返す順
  * （networkId, serviceId）に任せると地上波のリモコン番号順にならず、視聴者の
  * 知っている並びと食い違う。同値のない全順序なので、再描画で列が入れ替わらない。
+ *
+ * **site をリモコン番号より上に置く。** 実在の複数 site（東京・高松）では
+ * NHK 総合(1)・NHK E(2) のように地上波のリモコン番号が site をまたいで一致する
+ * ため、リモコン番号を先に比べると同じ番号の局が site ごとに 1 列おきへ交互に
+ * 並んでしまい、`ProgramGrid` の `siteColumnRanges`（同じ site の連続走を検出する
+ * ロジック）が 1 列ごとの走を大量に作る。site を先に比べれば、種別の中で
+ * 同じ site のチャンネルがひとまとまりになる（1 site あたり種別の数だけの走に
+ * 収まる）。
  */
-export function orderServices(services: readonly Service[]): Service[] {
+export function orderServices<S extends Service>(services: readonly S[]): S[] {
   return [...services].sort(
     (a, b) =>
       channelTypeOrder[a.channelType] - channelTypeOrder[b.channelType] ||
+      ('site' in a && 'site' in b ? String(a.site).localeCompare(String(b.site)) : 0) ||
       a.remoteControlKeyId - b.remoteControlKeyId ||
-      a.serviceId - b.serviceId,
+      a.serviceId - b.serviceId ||
+      a.networkId - b.networkId,
   )
 }
 
@@ -225,9 +235,9 @@ export function channelTypeLabel(channelType: string): string {
 }
 
 /** ChannelGroup は同じ channelType の連続した塊。 */
-export type ChannelGroup = {
+export type ChannelGroup<S extends Service = Service> = {
   channelType: string
-  services: Service[]
+  services: S[]
 }
 
 /**
@@ -237,8 +247,8 @@ export type ChannelGroup = {
  * 独自の並び替えはせず、隣接する要素の channelType が変わったところで区切るだけでよい。
  * これによりグリッドの列順と食い違う 2 つ目の並び順を作らずに済む。
  */
-export function groupByChannelType(ordered: readonly Service[]): ChannelGroup[] {
-  const groups: ChannelGroup[] = []
+export function groupByChannelType<S extends Service>(ordered: readonly S[]): ChannelGroup<S>[] {
+  const groups: ChannelGroup<S>[] = []
   for (const service of ordered) {
     const last = groups[groups.length - 1]
     if (last && last.channelType === service.channelType) {

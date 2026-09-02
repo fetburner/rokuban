@@ -1,9 +1,10 @@
 import { render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
-import type { CapacityOverage, ProgramListItem, Service } from '@/api/generated'
+import type { CapacityOverage } from '@/api/generated'
 import { CapacityBandLabels, CapacityBands } from '@/components/capacity-band'
 import { ProgramGrid } from '@/components/program-grid'
+import type { SiteProgram, SiteService } from '@/lib/all-sites-services'
 import { type TimeAxis } from '@/lib/epg-grid'
 
 /** 軸はローカル時刻の 0 時基準（program-grid.test.tsx と同じ組み方）。 */
@@ -25,8 +26,9 @@ function iso(minutes: number): string {
   return new Date(at(minutes)).toISOString()
 }
 
-const service: Service = {
+const service: SiteService = {
   id: 3273601024,
+  site: 'default',
   networkId: 32736,
   serviceId: 1024,
   name: 'NHK総合',
@@ -37,8 +39,9 @@ const service: Service = {
   hasPrograms: true,
 }
 
-function program(programId: number, startMinutes: number, durationMinutes: number): ProgramListItem {
+function program(programId: number, startMinutes: number, durationMinutes: number): SiteProgram {
   return {
+    site: 'default',
     programId,
     networkId: 32736,
     serviceId: service.serviceId,
@@ -74,7 +77,12 @@ function overage(
  * `CapacityBands` を単体で描くと「番組セルと同じ座標に来る」ことを確かめられない
  * （それが `spanToPx` を共有している唯一の観測可能な帰結なので、セルと並べて描く）。
  */
-function renderGrid(overages: CapacityOverage[], programs: ProgramListItem[]) {
+function renderGrid(
+  overages: CapacityOverage[],
+  programs: SiteProgram[],
+  options?: { showSite?: boolean },
+) {
+  const showSite = options?.showSite ?? false
   return render(
     <ProgramGrid
       services={[service]}
@@ -84,10 +92,14 @@ function renderGrid(overages: CapacityOverage[], programs: ProgramListItem[]) {
       selectedProgramId={null}
       onSelect={vi.fn()}
       now={at(19 * 60)}
-      overlay={(gridAxis) => <CapacityBands axis={gridAxis} overages={overages} />}
+      siteOverlay={(gridAxis, site) => (
+        <CapacityBands axis={gridAxis} overages={overages} site={site} showSite={showSite} />
+      )}
       // 見えるラベルは時間軸列（gutterOverlay）に出る（issue #460）。
       // 単体テストでも実際に使う配線と同じ組み方にする。
-      gutterOverlay={(gridAxis) => <CapacityBandLabels axis={gridAxis} overages={overages} />}
+      gutterOverlay={(gridAxis) => (
+        <CapacityBandLabels axis={gridAxis} overages={overages} showSite={showSite} />
+      )}
     />,
   )
 }
@@ -101,6 +113,49 @@ function cell(programId: number): HTMLElement {
   if (!el) throw new Error(`cell ${programId} not found`)
   return el
 }
+
+/**
+ * `orderServices` は種別を最外に持つため、GR + BS を両方持つ site は
+ * `siteColumnRanges` 上で非隣接な複数の走に分かれる（issue #460 再レビュー）。
+ * `ProgramGrid` は走ごとに `siteOverlay` を呼ぶので、`CapacityBands` 側で
+ * 重複を止めないと同じ超過区間の sr-only が走の本数ぶん重複する。
+ */
+describe('CapacityBands の announce（同じ site の 2 本目以降の走で読み上げを重複させない）', () => {
+  const gr = { ...service, channelType: 'GR' as const, serviceId: 1024, remoteControlKeyId: 1 }
+  const bs = { ...service, channelType: 'BS' as const, serviceId: 1032, remoteControlKeyId: 0 }
+
+  it('siteOverlay を走ごとに announce=isFirstRunForSite で呼び、sr-only は 1 回だけ出す', () => {
+    // 同じ site（default）の GR 列と BS 列の間に他 site の列を挟み、
+    // siteColumnRanges 上で 2 本の非隣接な走にする。
+    const other = { ...service, site: 'other', channelType: 'GR' as const, serviceId: 999 }
+    render(
+      <ProgramGrid
+        services={[gr, other, bs]}
+        programs={[]}
+        axis={axis}
+        reservationByProgramId={new Set()}
+        selectedProgramId={null}
+        onSelect={vi.fn()}
+        now={at(19 * 60)}
+        siteOverlay={(gridAxis, site, isFirstRunForSite) => (
+          <CapacityBands
+            axis={gridAxis}
+            overages={[overage(20 * 60, 21 * 60)]}
+            site={site}
+            announce={isFirstRunForSite}
+          />
+        )}
+      />,
+    )
+
+    // 帯自体（見た目）は走ごとに 2 本描かれる（GR 列・BS 列の両方に色を付ける必要がある）。
+    expect(screen.getAllByTestId('capacity-band').filter((el) => el.dataset.site === 'default')).toHaveLength(2)
+    // だが読み上げ文（sr-only）は 1 回だけ。
+    expect(
+      screen.getAllByText('20:00〜21:00 はチューナーが不足しています（BS が 1 本不足）'),
+    ).toHaveLength(1)
+  })
+})
 
 describe('CapacityBands', () => {
   it('帯は同じ時刻の番組セルと同じ位置・高さに来る', () => {
@@ -116,7 +171,7 @@ describe('CapacityBands', () => {
     expect(rendered?.style.height).toBe('120px')
   })
 
-  it('区間が全チャンネルを縦断する（番組ではなく区間に描く）', () => {
+  it('区間が同じ site の全チャンネルを縦断する（番組ではなく区間に描く）', () => {
     const services = [service, { ...service, serviceId: 1032, name: 'NHKEテレ' }]
     render(
       <ProgramGrid
@@ -127,14 +182,44 @@ describe('CapacityBands', () => {
         selectedProgramId={null}
         onSelect={vi.fn()}
         now={at(19 * 60)}
-        overlay={(gridAxis) => (
-          <CapacityBands axis={gridAxis} overages={[overage(20 * 60, 21 * 60)]} />
+        siteOverlay={(gridAxis, site) => (
+          <CapacityBands axis={gridAxis} overages={[overage(20 * 60, 21 * 60)]} site={site} />
         )}
       />,
     )
 
-    // 帯の層は列の総幅を張る。列ごとに描くと「この番組が負ける」の主張になる
-    expect(band(20 * 60)?.parentElement?.parentElement?.style.width).toBe('352px')
+    // 単一 site なので帯の層は全列の総幅を張る。
+    expect(band(20 * 60)?.parentElement?.style.width).toBe('352px')
+  })
+
+  it('帯は同じ site の列領域だけに描き、別 site の列へ広がらない', () => {
+    const other = { ...service, site: 'other' }
+    render(
+      <ProgramGrid
+        services={[service, other]}
+        programs={[]}
+        axis={axis}
+        reservationByProgramId={new Set()}
+        selectedProgramId={null}
+        onSelect={vi.fn()}
+        now={at(19 * 60)}
+        siteOverlay={(gridAxis, site) => (
+          <CapacityBands
+            axis={gridAxis}
+            overages={[overage(20 * 60, 21 * 60, { site: 'other' })]}
+            site={site}
+          />
+        )}
+      />,
+    )
+
+    const rendered = screen.getByTestId('capacity-band')
+    expect(rendered).toHaveAttribute('data-site', 'other')
+    expect(rendered.closest('[data-testid="program-grid-site-overlay"]')).toHaveAttribute(
+      'data-site',
+      'other',
+    )
+    expect(screen.getAllByTestId('program-grid-site-overlay')).toHaveLength(2)
   })
 
   it('不足本数と詰まった種別を出す（読み上げ用の全文。見た目は時間軸列側の短い形）', () => {
@@ -201,7 +286,9 @@ describe('CapacityBands と CapacityBandLabels は対で configure する', () =
         selectedProgramId={null}
         onSelect={vi.fn()}
         now={at(19 * 60)}
-        overlay={(gridAxis) => <CapacityBands axis={gridAxis} overages={[overage(20 * 60, 21 * 60)]} />}
+        siteOverlay={(gridAxis, site) => (
+          <CapacityBands axis={gridAxis} overages={[overage(20 * 60, 21 * 60)]} site={site} />
+        )}
         // gutterOverlay を渡していない --- ここが対を崩した呼び出し
       />,
     )
@@ -246,10 +333,8 @@ describe('CapacityBands の色', () => {
  * ここで固定するのは「どの overage にどの top を割り当てるか」という純粋な
  * ロジックだけ --- avoidTickRow の分岐。
  *
- * **同一サイト内の不足区間は重ならない**（`internal/capacity/capacity.go` の
- * `Compute` が保証し、`pages/programs.tsx` はグリッドを 1 サイトに絞って渡す）
- * ので、ラベル同士の位置調整（積む処理）は無い --- 一度書いたが実際には
- * 決して発火しないコードだったので削った（issue #460 レビュー should 1）。
+ * 同一 site 内の不足区間は重ならないが、全 site の和集合では別 site の区間が
+ * 同時刻に来る。後者だけは同じ gutter 内で積み、重なりを避ける。
  */
 describe('CapacityBandLabels の配置', () => {
   it('帯の上端にアンカーし、高さは自分の内容ぶんだけ（帯の全高を塗らない）', () => {
@@ -282,6 +367,22 @@ describe('CapacityBandLabels の配置', () => {
     expect(labels[0]?.style.top).not.toBe(labels[1]?.style.top)
     expect(screen.getByText('BS-1')).toBeInTheDocument()
     expect(screen.getByText('GR-1')).toBeInTheDocument()
+  })
+
+  it('別 site の同時刻のラベルは gutter 内で積み、同じ位置に重ねない', () => {
+    renderGrid(
+      [
+        overage(20 * 60 + 15, 21 * 60, { site: 'tokyo', shortfall: 1 }),
+        overage(20 * 60 + 15, 21 * 60, { site: 'takamatsu', shortfall: 2 }),
+      ],
+      [],
+    )
+
+    const labels = screen.getAllByTestId('capacity-band-label')
+    expect(labels).toHaveLength(2)
+    expect(labels[0]).toHaveAttribute('data-site', 'tokyo')
+    expect(labels[1]).toHaveAttribute('data-site', 'takamatsu')
+    expect(labels[0]?.style.top).not.toBe(labels[1]?.style.top)
   })
 
   it('ちょうど正時に始まる区間は、目盛りの行を避けて下にずれる', () => {
@@ -344,5 +445,27 @@ describe('CapacityBandLabels の配置', () => {
     expect(screen.getByText('-2')).toBeInTheDocument()
     const label = screen.getByTestId('capacity-band-label')
     expect(label).toHaveAttribute('title', 'チューナー不足（GR・BS が 2 本）')
+  })
+
+  /**
+   * レビュー指摘: `showSite` の純関数側（`capacity.test.ts`）だけを検証すると、
+   * `programs.tsx` の `siteOverlay` / `gutterOverlay` が実際に `showSite` を
+   * 渡し忘れても（`showSite={showSite}` を削っても）このスイート・
+   * `pnpm test` 全体が緑のままになる --- `renderGrid` に `showSite` を通す
+   * 経路が無かったため。`title`（`shortageLabel` を通る唯一の経路）と
+   * `sr-only`（`shortageRangeMessage` を通る経路）の両方で、渡した site 名が
+   * 実際に文言へ届くことを確認する。
+   */
+  it('showSite を渡すと title（gutter）と sr-only（帯）の両方に site 名が入る', () => {
+    // `service`（renderGrid が使う唯一の列）は site: 'default' なので、帯が
+    // 実際に描かれるよう overage も同じ site にする（site が一致しないと
+    // `CapacityBands` は何も描かない）。
+    renderGrid([overage(20 * 60, 21 * 60)], [], { showSite: true })
+
+    const label = screen.getByTestId('capacity-band-label')
+    expect(label).toHaveAttribute('title', 'defaultのチューナー不足（BS が 1 本）')
+    expect(
+      screen.getByText('20:00〜21:00 はdefaultのチューナーが不足しています（BS が 1 本不足）'),
+    ).toBeInTheDocument()
   })
 })
