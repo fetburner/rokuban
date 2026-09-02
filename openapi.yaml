@@ -1198,8 +1198,12 @@ paths:
         手動確認の材料（`internal/breaker.Sample` と同じ形。最大 20 件）。
 
         site はパスに含めない。全サイトの発動を一望する用途のエンドポイントで、
-        レスポンスの各要素に site フィールドがある（issue #102）。個別の再開は
-        `POST /api/sites/{site}/breakers/{name}/resume`。
+        レスポンスの各要素に site フィールドがある（issue #102）。ただし
+        `internal/breaker.IsSiteless` が true の名前（`delete_reconcile`）の
+        行は、その資源自体が site を持たないため `site` が空文字列になる
+        （issue #450）。個別の再開は、site を持つ名前なら
+        `POST /api/sites/{site}/breakers/{name}/resume`、site を持たない名前
+        なら `POST /api/breakers/{name}/resume`。
       responses:
         "200":
           description: OK
@@ -1217,13 +1221,16 @@ paths:
         in: path
         required: true
         description: |
-          ブレーカー識別子（`internal/breaker` の定数。`ruler_deletes` /
-          `reconcile_total_loss` / `delete_reconcile`）。未知の値は 400。
+          site を持つブレーカー識別子（`internal/breaker` の定数のうち
+          `internal/breaker.IsSiteless` が false のもの。`ruler_deletes` /
+          `reconcile_total_loss`）。未知の値、および site を持たない名前
+          （`delete_reconcile`）は 400 --- 後者は
+          `POST /api/breakers/{name}/resume` を使う（issue #450）。
         schema:
           type: string
     post:
       operationId: resumeCircuitBreaker
-      summary: Resume a tripped circuit breaker (manual acknowledgement)
+      summary: Resume a tripped circuit breaker that has a site (manual acknowledgement)
       description: |
         手動確認後の再開。ブレーカーは人間が確認するまで止まり続けるラッチ
         （docs/recording.md §3.2）なので、確認が済んだことをこの API で明示する。
@@ -1237,11 +1244,63 @@ paths:
         （issue #102）。`GET /api/breakers` はサイト横断の一覧に価値があるので
         グローバルのまま残すが、再開は行 1 件を特定する操作なので PK と
         一致させる。
+
+        site を持たない名前（`delete_reconcile`）を渡すと 400 ---
+        `POST /api/breakers/{name}/resume` を使う（issue #450）。
       responses:
         "204":
           description: Resumed
         "400":
-          description: Unknown site or breaker name
+          description: Unknown site or breaker name, or a name that has no site
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Not tripped (nothing to resume)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/breakers/{name}/resume:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        description: |
+          site を持たないブレーカー識別子（`internal/breaker.IsSiteless` が
+          true のもの。今のところ `delete_reconcile` のみ）。未知の値、および
+          site を持つ名前（`ruler_deletes` / `reconcile_total_loss`）は 400 ---
+          後者は `POST /api/sites/{site}/breakers/{name}/resume` を使う。
+        schema:
+          type: string
+    post:
+      operationId: resumeSitelessCircuitBreaker
+      summary: Resume a tripped circuit breaker that has no site (manual acknowledgement)
+      description: |
+        site を持たないブレーカー専用の再開エンドポイント（issue #450）。
+
+        `delete_reconcile`（削除 reconcile。docs/storage.md §7）はどの束縛 site
+        の worker が拾っても同じ 1 つの懸念を守るジョブなので、
+        `circuit_breakers` 行の site 列は実サイト名ではなく空文字列を持つ
+        （`internal/breaker.IsSiteless`）。`config.mirakcs` レジストリに
+        `default` という名前の site が無い構成（東京・高松の 2 site 化以降は
+        これが既定）では、この行に
+        `POST /api/sites/{site}/breakers/{name}/resume` から到達できなかった
+        ---「`default` はレジストリに無いので 400」「登録済みの site を渡しても
+        その site には行が無いので 404」のどちらの経路でも解除できず、
+        `GET /api/breakers` には見えているのに手が届かない状態になっていた。
+        site をパスに持たない別の資源として公開することでこの穴を塞ぐ
+        （不変条件 11「将来への先払いは高い方（API の資源同定）から」）。
+
+        site を持つ名前（`ruler_deletes` / `reconcile_total_loss`）を渡すと
+        400 --- `POST /api/sites/{site}/breakers/{name}/resume` を使う。
+      responses:
+        "204":
+          description: Resumed
+        "400":
+          description: Unknown breaker name, or a name that has a site
           content:
             application/json:
               schema:
@@ -2426,6 +2485,12 @@ components:
       properties:
         site:
           type: string
+          description: |
+            この行が属する site。`internal/breaker.IsSiteless` が true の名前
+            （`delete_reconcile`）は資源自体が site を持たないため空文字列
+            になる（issue #450）。その場合の再開は
+            `POST /api/breakers/{name}/resume`、それ以外は
+            `POST /api/sites/{site}/breakers/{name}/resume`。
         name:
           type: string
           enum: [ruler_deletes, reconcile_total_loss, delete_reconcile]

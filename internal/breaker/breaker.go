@@ -52,6 +52,33 @@ const (
 	DeleteReconcile = "delete_reconcile"
 )
 
+// siteless は行の site 列を持たない（IsSiteless が true を返す）ブレーカー
+// 識別子の集合。今のところ DeleteReconcile だけ ---
+// DeleteReconcileWorker の doc コメント参照: cleanup キューはどの束縛 site の
+// worker が拾うか不定なので、行の site を実サイト名にすると 1 つの site
+// 非依存の懸念（一括削除数）が複数の site 列に分散してしまう
+// （不変条件 12「表は行の寿命で割る」に反する）。
+//
+// internal/api の 2 つの resume ハンドラ（ResumeCircuitBreaker /
+// ResumeSitelessCircuitBreaker）と internal/worker/delete_reconcile.go の
+// 書き込みはこの分類を共有する（判定を 2 箇所に書かない。issue #450）。
+var siteless = map[string]bool{
+	DeleteReconcile: true,
+}
+
+// IsSiteless は name が site を持たないブレーカーかを返す。true のとき、
+// circuit_breakers 行の site 列は実サイト名ではなく空文字列を持つ。
+//
+// 空文字列を `const SitelessSite = ""` のようなエクスポート済み文字列定数に
+// していないのはあえて: `all_test.go` の TestAll_MatchesDeclaredConstants は
+// このパッケージの exported string const を「All に足し忘れたブレーカー名の
+// 候補」とみなす AST スキャナで、`""` はブレーカー名ではないのに All に無い
+// 文字列として誤検出されてしまう。呼び出し側（internal/api/breakers.go・
+// internal/worker/delete_reconcile.go）はリテラルの `""` をそのまま書く。
+func IsSiteless(name string) bool {
+	return siteless[name]
+}
+
 // All はここで定義している全ブレーカー識別子の一覧。internal/api はここから
 // resume の妥当性検証に使う既知集合を導出する（internal/api/breakers.go の
 // knownCircuitBreakerNames）。API 側に識別子を手で複製すると、片方だけ更新

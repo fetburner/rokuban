@@ -48,6 +48,27 @@ func existsCircuitBreaker(t *testing.T, pool *pgxpool.Pool, ctx context.Context,
 	return n > 0
 }
 
+// insertCircuitBreakerFixtureForSite は insertCircuitBreakerFixture の site
+// 引数付き版（site を持たない名前は site 列が空文字列になる。issue #450）。
+func insertCircuitBreakerFixtureForSite(t *testing.T, pool *pgxpool.Pool, ctx context.Context, site, name string, pending, threshold int, detail string) {
+	t.Helper()
+	if _, err := pool.Exec(ctx, `
+INSERT INTO circuit_breakers (site, name, pending, threshold, detail)
+VALUES ($1, $2, $3, $4, $5::jsonb)`, site, name, pending, threshold, detail); err != nil {
+		t.Fatalf("inserting circuit breaker fixture %q (site=%q): %v", name, site, err)
+	}
+}
+
+// existsCircuitBreakerForSite は existsCircuitBreaker の site 引数付き版。
+func existsCircuitBreakerForSite(t *testing.T, pool *pgxpool.Pool, ctx context.Context, site, name string) bool {
+	t.Helper()
+	var n int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM circuit_breakers WHERE site = $1 AND name = $2`, site, name).Scan(&n); err != nil {
+		t.Fatalf("checking circuit breaker %q (site=%q): %v", name, site, err)
+	}
+	return n > 0
+}
+
 // circuitBreakerResp は GET /api/breakers のレスポンス要素から確認に要る部分だけを持つ。
 type circuitBreakerResp struct {
 	Site      string `json:"site"`
@@ -322,7 +343,18 @@ func TestCircuitBreaker_TripListResumeRoundTripForEveryKnownName(t *testing.T) {
 			srv := httptest.NewServer(router)
 			defer srv.Close()
 
-			insertCircuitBreakerFixture(t, pool, ctx, name, 7, 10, `{"total":7}`)
+			// site を持たない名前（breaker.IsSiteless）は site 列が空文字列
+			// （internal/breaker.IsSiteless のコメント参照）、それ以外は
+			// db.DefaultSite（単一サイト構成の既定）。resume も対応する
+			// エンドポイントを分ける（issue #450 --- 旧ルートは site を持たない
+			// 名前を、新ルートは site を持つ名前を 400 で拒否する）。
+			site := "default"
+			resumeURL := srv.URL + "/api/sites/default/breakers/" + name + "/resume"
+			if breaker.IsSiteless(name) {
+				site = ""
+				resumeURL = srv.URL + "/api/breakers/" + name + "/resume"
+			}
+			insertCircuitBreakerFixtureForSite(t, pool, ctx, site, name, 7, 10, `{"total":7}`)
 
 			// 発動中として一覧に出る。
 			resp, err := http.Get(srv.URL + "/api/breakers")
@@ -349,7 +381,7 @@ func TestCircuitBreaker_TripListResumeRoundTripForEveryKnownName(t *testing.T) {
 			}
 
 			// resume で消える（400 で拒否されない）。
-			req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/sites/default/breakers/"+name+"/resume", nil)
+			req, err := http.NewRequest(http.MethodPost, resumeURL, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -362,7 +394,7 @@ func TestCircuitBreaker_TripListResumeRoundTripForEveryKnownName(t *testing.T) {
 				body, _ := io.ReadAll(resumeResp.Body)
 				t.Fatalf("resume status = %d, want 204 (body: %s)", resumeResp.StatusCode, body)
 			}
-			if existsCircuitBreaker(t, pool, ctx, name) {
+			if existsCircuitBreakerForSite(t, pool, ctx, site, name) {
 				t.Errorf("circuit breaker %q still exists after resume", name)
 			}
 		})

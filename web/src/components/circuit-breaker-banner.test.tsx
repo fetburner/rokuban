@@ -181,6 +181,37 @@ describe('CircuitBreakerBanner', () => {
     )
   })
 
+  it('site を持たないブレーカー（site が空文字列）の再開は site 無しのエンドポイントを叩く（issue #450）', async () => {
+    // internal/breaker.IsSiteless が true のブレーカー（delete_reconcile）は
+    // circuit_breakers 行の site 列が空文字列になる。クライアントは名前を
+    // 再分類せず、行が運んできた site の有無だけで叩き先を選ぶ
+    // （circuit-breaker-banner.tsx の isSiteless 参照）。
+    const sitelessBreaker: CircuitBreaker = {
+      ...trippedBreaker,
+      site: '',
+      name: 'delete_reconcile',
+    }
+    const fetchMock = stubFetch({ list: [sitelessBreaker], resume: 'success' })
+    const user = userEvent.setup()
+    renderBanner()
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+
+    await user.click(await screen.findByRole('button', { name: '再開' }))
+    await user.click(await screen.findByRole('button', { name: '再開する' }))
+
+    await waitFor(() => {
+      const resumeCall = fetchMock.mock.calls.find(([u]) => String(u).includes('/resume'))
+      expect(resumeCall).toBeDefined()
+      // site をパスに含まない新ルート（旧ルート /api/sites/{site}/breakers/...
+      // ではないこと）を叩く。
+      expect(String(resumeCall![0])).toBe('/api/breakers/delete_reconcile/resume')
+      expect(resumeCall![1]).toMatchObject({ method: 'POST' })
+    })
+
+    expect(await screen.findByText(/再開しました/)).toBeInTheDocument()
+  })
+
   it('CircuitBreakerName に無い name が混ざっていても、他の発動中ブレーカーは消えない（issue #199）', async () => {
     // GET /api/breakers の name は openapi.yaml の CircuitBreakerName enum と
     // internal/breaker.All という 2 つの独立した手書きの列挙から作られており、
