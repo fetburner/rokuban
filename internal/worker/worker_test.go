@@ -444,10 +444,28 @@ func TestRulerPassWorker_HasGenerousTimeout(t *testing.T) {
 }
 
 // BoundSites を指定すると ruler_pass が定期ジョブとして投入され、登録済み
-// ワーカーが ruler キューで拾うこと（配線の確認）。Deps.MirakcClients を
-// 設定していないので、同時に登録される mirakc 接触系の 4 種
-// （epg_sync/tuner_sync/reconcile_pass/record_sweep）は verifySite で
-// 即座に失敗する --- ruler_pass だけが JobCompleted を出す。
+// ワーカーが ruler キューで拾うこと（配線の確認）。ruler_pass 完了時に連鎖投入
+// される reconcile_pass ヒント（ruler_pass.go の Work 末尾）が実際に正常完了
+// するところまで確認する。
+//
+// mirakc スタブを与えるのは reconcile_pass_test.go の先例（246-249 行目の
+// コメント）に揃えるため: ReconcilePassWorker.MirakcClients が空のままだと
+// verifySite が「bound sites に無い」エラーで reconcile_pass を fail-fast
+// させ続け、二度と JobCompleted を出さない。
+//
+// # issue #553: 下の 2 つ目の待ち受けが oracle
+//
+// issue #532 で Deps.MirakcClient（単一）が Deps.MirakcClients（map）に
+// なる前は、この Deps（mirakc 未設定）の組み合わせが reconciler.New に
+// nil の *mirakc.Client をそのまま渡し、reconcile_pass ヒントの実行が
+// nil pointer dereference で panic していた（issue #553 本文の call chain）。
+// #532 が verifySite をマップ照合に変えた副作用で panic 自体は消えている
+// （nil map への読み取りは安全 --- go test -count=10 で panic recovery ログ
+// 0 件を確認済み）。だが「ヒントが正常完了する」保証はまだ無かった: スタブを
+// 与えずにこの map を空のままにすると、verifySite のエラーで無限に再試行し
+// 続け、下の reconcile_pass 待ちが 20 秒でタイムアウトして落ちる（このリポの
+// スタブ無し版で実際に確認した失敗: "timed out waiting for the periodic
+// reconcile_pass job"）。panic ログの検出ではなく、この完了そのものを固定する。
 func TestRulerPassPeriodicJob(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
@@ -456,7 +474,11 @@ func TestRulerPassPeriodicJob(t *testing.T) {
 		t.Fatalf("cleaning river_job: %v", err)
 	}
 
-	workers := NewWorkers(&Deps{Pool: pool})
+	stub := newScheduleStub()
+	srv := httptest.NewServer(stub)
+	t.Cleanup(srv.Close)
+
+	workers := NewWorkers(&Deps{Pool: pool, MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil))})
 	client, err := NewClient(pool, workers, ClientConfig{
 		PeriodicJobs:      true,
 		BoundSites:        []string{"default"},
@@ -480,23 +502,27 @@ func TestRulerPassPeriodicJob(t *testing.T) {
 		<-client.Stopped()
 	}()
 
-	select {
-	case event := <-subscribeCh:
-		if event.Job.Kind != "ruler_pass" {
-			t.Errorf("job kind = %q, want %q", event.Job.Kind, "ruler_pass")
-		}
-		if event.Job.Queue != rulerQueue {
-			t.Errorf("job queue = %q, want %q", event.Job.Queue, rulerQueue)
-		}
-		var args RulerPassArgs
-		if err := json.Unmarshal(event.Job.EncodedArgs, &args); err != nil {
-			t.Fatalf("unmarshalling job args: %v", err)
-		}
-		if args.Site != "default" {
-			t.Errorf("job args site = %q, want %q", args.Site, "default")
-		}
-	case <-time.After(20 * time.Second):
-		t.Fatal("timed out waiting for the periodic ruler_pass job")
+	rulerEvent := waitPeriodicJobEvent(t, subscribeCh, "ruler_pass")
+	if rulerEvent.Job.Queue != rulerQueue {
+		t.Errorf("job queue = %q, want %q", rulerEvent.Job.Queue, rulerQueue)
+	}
+	var rulerArgs RulerPassArgs
+	if err := json.Unmarshal(rulerEvent.Job.EncodedArgs, &rulerArgs); err != nil {
+		t.Fatalf("unmarshalling job args: %v", err)
+	}
+	if rulerArgs.Site != "default" {
+		t.Errorf("job args site = %q, want %q", rulerArgs.Site, "default")
+	}
+
+	// oracle: reconcile_pass ヒントが正常完了しないとここが 20 秒でタイムアウト
+	// する（上のコメント参照）。
+	hintEvent := waitPeriodicJobEvent(t, subscribeCh, "reconcile_pass")
+	var hintArgs ReconcilePassArgs
+	if err := json.Unmarshal(hintEvent.Job.EncodedArgs, &hintArgs); err != nil {
+		t.Fatalf("unmarshalling reconcile_pass hint args: %v", err)
+	}
+	if hintArgs.Site != "default" {
+		t.Errorf("reconcile_pass hint job args site = %q, want %q", hintArgs.Site, "default")
 	}
 }
 
