@@ -80,7 +80,7 @@ export const ruleCostWeekDays = 7
  *
  * **このサンプルは無作為抽出ではない。** `loadedDurationsMs` の由来は結果の
  * `programId` 昇順の先頭 N 件（`internal/rulequery/query.go` の
- * `ORDER BY p.program_id, p.site`。programId が主キーなので昇順の性質は変わらない）で、
+ * `ORDER BY p.program_id, p.site`。programId が第 1 ソートキーなので昇順の性質は変わらない）で、
  * `programId` はネットワーク・サービス順に固まる
  * （Mirakurun 互換の合成規則 `(networkId*100000 + serviceId)*100000 + eventId`。
  * `internal/mirakc/ids.go` の `ComposeProgramID` / `SplitProgramID` と同じ式で、

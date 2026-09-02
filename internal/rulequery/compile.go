@@ -72,7 +72,8 @@ type Compiled struct {
 //
 // c.Sites の空を「述語なし」にすると全 site を無条件に読んでしまうため、Compile は
 // 非空を要求する（呼び出し側の埋め忘れに対するフェイルセーフ）。p.site = ANY($1) は
-// site 始まりの複合インデックス（`(site, program_id)` 等）に乗るが、要素数の多い
+// site 始まりの複合インデックス（`(site, program_id)` 等）に乗る（3 site × 10 万行の
+// スクラッチ DB で 1.14ms、`p.site = $1` の 1.58ms と同等の実測）。要素数の多い
 // sites 配列で prepared statement が generic plan に落ちて劣化するかは未検証。
 func Compile(c Conditions) (Compiled, error) {
 	if len(c.Sites) == 0 {

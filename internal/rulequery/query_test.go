@@ -42,7 +42,7 @@ func idsOf(matches []ProgramMatch) []int64 {
 	return ids
 }
 
-func TestMatchProgramIDs_Integration(t *testing.T) {
+func TestMatchPrograms_Integration(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	_ = sqlcgen.New(pool)
