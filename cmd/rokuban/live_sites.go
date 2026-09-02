@@ -49,7 +49,7 @@ func (ls liveSites) Mount(r chi.Router) {
 	if len(ls) == 0 {
 		return
 	}
-	const base = "/api/sites/{site}/networks/{networkId}/services/{serviceId}/live"
+	const base = streamer.LiveRoutePattern
 	r.Get(base+"/playlist.m3u8", ls.dispatch((*streamer.LiveStreamer).Playlist))
 	r.Get(base+"/segments/{name}", ls.dispatch((*streamer.LiveStreamer).Segment))
 	r.Post(base+"/leave", ls.dispatch((*streamer.LiveStreamer).Leave))

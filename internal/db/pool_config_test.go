@@ -78,7 +78,46 @@ func TestBuildPoolConfig_MaxConnsFromRoles(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			poolCfg, err := buildPoolConfig(tc.cfg, tc.roles)
+			poolCfg, err := buildPoolConfig(tc.cfg, tc.roles, 1)
+			if err != nil {
+				t.Fatalf("buildPoolConfig: %v", err)
+			}
+			if poolCfg.MaxConns != tc.want {
+				t.Errorf("MaxConns = %d, want %d", poolCfg.MaxConns, tc.want)
+			}
+		})
+	}
+}
+
+// TestBuildPoolConfig_MaxConnsFromRoles_MultiSite は issue #532 のレビュー指摘を
+// 固定する: 2 サイト以上の束縛では watcher / worker の budget に
+// perSiteConnBudget（2 site 目以降 1 site につき watcherPerSiteConns /
+// workerPerSiteConns）が上乗せされる。1 site の値（上の
+// TestBuildPoolConfig_MaxConnsFromRoles）を変えずに、2 site 目以降だけ増える
+// ことを見る。
+func TestBuildPoolConfig_MaxConnsFromRoles_MultiSite(t *testing.T) {
+	cases := []struct {
+		name     string
+		roles    []string
+		numSites int
+		want     int32
+	}{
+		{name: "watcher, 2 sites: +1 per extra site", roles: []string{"watcher"}, numSites: 2, want: 3 + 1*watcherPerSiteConns},
+		{name: "watcher, 3 sites: +1 per extra site", roles: []string{"watcher"}, numSites: 3, want: 3 + 2*watcherPerSiteConns},
+		{name: "worker, 2 sites: +2 per extra site", roles: []string{"worker"}, numSites: 2, want: 8 + 1*workerPerSiteConns},
+		{
+			name:     "watcher+worker, 2 sites: both budgets get the per-site addition",
+			roles:    []string{"watcher", "worker"},
+			numSites: 2,
+			want:     3 + 8 + 1*watcherPerSiteConns + 1*workerPerSiteConns,
+		},
+		{name: "api alone, 2 sites: unaffected (not a site-scoped role)", roles: []string{"api"}, numSites: 2, want: 10},
+		{name: "watcher, 1 site: no addition (baseline)", roles: []string{"watcher"}, numSites: 1, want: 3},
+		{name: "watcher, 0 sites (unbound): no addition", roles: []string{"watcher"}, numSites: 0, want: 3},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			poolCfg, err := buildPoolConfig(testDBConfig(), tc.roles, tc.numSites)
 			if err != nil {
 				t.Fatalf("buildPoolConfig: %v", err)
 			}
@@ -98,7 +137,7 @@ func TestBuildPoolConfig_NoRoles_UsesPgxDefault(t *testing.T) {
 		t.Fatalf("baseline ParseConfig: %v", err)
 	}
 
-	poolCfg, err := buildPoolConfig(testDBConfig(), nil)
+	poolCfg, err := buildPoolConfig(testDBConfig(), nil, 0)
 	if err != nil {
 		t.Fatalf("buildPoolConfig: %v", err)
 	}
@@ -157,7 +196,7 @@ func TestBuildPoolConfig_ExplicitMaxConnsTooSmall(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := testDBConfig()
 			cfg.MaxConns = tc.maxConns
-			_, err := buildPoolConfig(cfg, tc.roles)
+			_, err := buildPoolConfig(cfg, tc.roles, 1)
 			if tc.wantErr && err == nil {
 				t.Errorf("buildPoolConfig(max_conns=%d, roles=%v): expected error, got nil", tc.maxConns, tc.roles)
 			}
@@ -168,9 +207,68 @@ func TestBuildPoolConfig_ExplicitMaxConnsTooSmall(t *testing.T) {
 	}
 }
 
+// TestBuildPoolConfig_ExplicitMaxConnsTooSmall_MultiSite は issue #532 のレビュー
+// 指摘そのものを固定する: `--roles watcher --sites tokyo,takamatsu --db.max_conns 2`
+// は以前の（site 数を見ない）fail-fast を通り抜けてしまっていた --- 2 site の
+// watcher は advisory lock 用に 2 本を専有するので、2 本しか無いプールでは
+// 他の仕事（record 処理クエリ等）が二度と進めない無症状デッドロックになる。
+func TestBuildPoolConfig_ExplicitMaxConnsTooSmall_MultiSite(t *testing.T) {
+	cases := []struct {
+		name     string
+		maxConns int
+		roles    []string
+		numSites int
+		wantErr  bool
+	}{
+		{
+			name:     "watcher, 2 sites, max_conns=2 is too small (2 sites pin both connections, nothing left for queries)",
+			maxConns: 2,
+			roles:    []string{"watcher"},
+			numSites: 2,
+			wantErr:  true,
+		},
+		{
+			name:     "watcher, 2 sites, max_conns=3 is enough",
+			maxConns: 3,
+			roles:    []string{"watcher"},
+			numSites: 2,
+			wantErr:  false,
+		},
+		{
+			name:     "watcher, 3 sites, max_conns=3 is too small (3 sites pin all 3, nothing left)",
+			maxConns: 3,
+			roles:    []string{"watcher"},
+			numSites: 3,
+			wantErr:  true,
+		},
+		{
+			name:     "watcher, 3 sites, max_conns=4 is enough",
+			maxConns: 4,
+			roles:    []string{"watcher"},
+			numSites: 3,
+			wantErr:  false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testDBConfig()
+			cfg.MaxConns = tc.maxConns
+			_, err := buildPoolConfig(cfg, tc.roles, tc.numSites)
+			if tc.wantErr && err == nil {
+				t.Errorf("buildPoolConfig(max_conns=%d, roles=%v, numSites=%d): expected error, got nil",
+					tc.maxConns, tc.roles, tc.numSites)
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("buildPoolConfig(max_conns=%d, roles=%v, numSites=%d): unexpected error: %v",
+					tc.maxConns, tc.roles, tc.numSites, err)
+			}
+		})
+	}
+}
+
 func TestBuildPoolConfig_APIStatementTimeout(t *testing.T) {
 	t.Run("api role: unset uses the built-in default", func(t *testing.T) {
-		poolCfg, err := buildPoolConfig(testDBConfig(), []string{"api"})
+		poolCfg, err := buildPoolConfig(testDBConfig(), []string{"api"}, 1)
 		if err != nil {
 			t.Fatalf("buildPoolConfig: %v", err)
 		}
@@ -184,7 +282,7 @@ func TestBuildPoolConfig_APIStatementTimeout(t *testing.T) {
 	t.Run("api role: explicit value is honored", func(t *testing.T) {
 		cfg := testDBConfig()
 		cfg.APIStatementTimeout = 5 * time.Second
-		poolCfg, err := buildPoolConfig(cfg, []string{"api"})
+		poolCfg, err := buildPoolConfig(cfg, []string{"api"}, 1)
 		if err != nil {
 			t.Fatalf("buildPoolConfig: %v", err)
 		}
@@ -195,7 +293,7 @@ func TestBuildPoolConfig_APIStatementTimeout(t *testing.T) {
 	})
 
 	t.Run("no api role: statement_timeout is not set", func(t *testing.T) {
-		poolCfg, err := buildPoolConfig(testDBConfig(), []string{"worker"})
+		poolCfg, err := buildPoolConfig(testDBConfig(), []string{"worker"}, 1)
 		if err != nil {
 			t.Fatalf("buildPoolConfig: %v", err)
 		}
@@ -210,7 +308,7 @@ func TestBuildPoolConfig_PoolerCompat(t *testing.T) {
 	t.Run("api role: allowed, disables prepared statement caching", func(t *testing.T) {
 		cfg := testDBConfig()
 		cfg.PoolerCompat = true
-		poolCfg, err := buildPoolConfig(cfg, []string{"api"})
+		poolCfg, err := buildPoolConfig(cfg, []string{"api"}, 1)
 		if err != nil {
 			t.Fatalf("buildPoolConfig: %v", err)
 		}
@@ -222,7 +320,7 @@ func TestBuildPoolConfig_PoolerCompat(t *testing.T) {
 	t.Run("streamer role: allowed", func(t *testing.T) {
 		cfg := testDBConfig()
 		cfg.PoolerCompat = true
-		if _, err := buildPoolConfig(cfg, []string{"streamer"}); err != nil {
+		if _, err := buildPoolConfig(cfg, []string{"streamer"}, 1); err != nil {
 			t.Errorf("buildPoolConfig: unexpected error for streamer + pooler_compat: %v", err)
 		}
 	})
@@ -231,7 +329,7 @@ func TestBuildPoolConfig_PoolerCompat(t *testing.T) {
 		t.Run(role+" role: fail-fast", func(t *testing.T) {
 			cfg := testDBConfig()
 			cfg.PoolerCompat = true
-			_, err := buildPoolConfig(cfg, []string{role})
+			_, err := buildPoolConfig(cfg, []string{role}, 1)
 			if err == nil {
 				t.Fatalf("expected error for pooler_compat + %s, got nil", role)
 			}
@@ -241,14 +339,14 @@ func TestBuildPoolConfig_PoolerCompat(t *testing.T) {
 	t.Run("mixed roles: any incompatible role fails even alongside api", func(t *testing.T) {
 		cfg := testDBConfig()
 		cfg.PoolerCompat = true
-		_, err := buildPoolConfig(cfg, []string{"api", "worker"})
+		_, err := buildPoolConfig(cfg, []string{"api", "worker"}, 1)
 		if err == nil {
 			t.Fatal("expected error for pooler_compat + api,worker, got nil")
 		}
 	})
 
 	t.Run("disabled: DefaultQueryExecMode is untouched", func(t *testing.T) {
-		poolCfg, err := buildPoolConfig(testDBConfig(), []string{"api"})
+		poolCfg, err := buildPoolConfig(testDBConfig(), []string{"api"}, 1)
 		if err != nil {
 			t.Fatalf("buildPoolConfig: %v", err)
 		}

@@ -177,14 +177,13 @@ const uniqueByQueue = true
 // *mirakc.Client を返す（呼び出し側が再度 map を引く必要をなくし、verifySite が
 // 通した site とその後実際に使うクライアントがズレる経路を作らない）。
 //
-// jobSite が空文字列の場合は db.DefaultSite に正規化してから引く --- 単体
-// テストの部分構成（*JobArgs.Site 未設定）や、clients が {db.DefaultSite: ...}
-// 1 件だけの単一サイトテストのための後方互換の規約（qualifyQueueName と同じ
-// 規約）。**空 map（clients が 1 件も無い）は特別扱いしない**（issue #532 の
-// 「含むもの」1 の判断）--- 0 site 束縛の worker が site 単位のキューを購読して
-// このガードに到達すること自体が構成ミスであり（RequiresSiteBinding /
-// validateSiteBinding が起動時に防ぐ）、ここで「空なら通す」ような救済をすると
-// その防御が意味を失う。
+// **jobSite は正規化しない。空文字列は無条件に拒む。** config のバリデーションが
+// site 名の非空を要求するため、clients のキーは常に実際の site 名であり、
+// 空文字列がキーになることはない。jobSite を db.DefaultSite へ読み替えてから
+// 引くと、たまたま "default" という名前の site が束縛されているデプロイでは
+// `Site: ""` の（本来壊れている）ジョブが素通りしてしまう --- 二次防御としての
+// verifySite が拾いたいのはまさにこの「args.Site 自体が壊れている経路」
+// （このコメント冒頭の説明）なので、jobSite を素の値のまま引く。
 //
 // 呼び出し側は mirakc/FS に触れる**前**（最初の HTTP 呼び出し・os.Create 等より
 // 前）に呼ぶこと。合わないジョブは即座に失敗させ、再試行は River に委ねる
@@ -192,11 +191,7 @@ const uniqueByQueue = true
 // いずれ拾う。うるさいが安全 --- issue #139 本文の「id が自サイトに存在しない」
 // ケースと同じ扱いに揃う）。
 func verifySite(clients map[string]*mirakc.Client, jobSite, queue string) (*mirakc.Client, error) {
-	site := jobSite
-	if site == "" {
-		site = db.DefaultSite
-	}
-	client, ok := clients[site]
+	client, ok := clients[jobSite]
 	if !ok {
 		return nil, fmt.Errorf(
 			"%s: job site %q is not among this worker's bound sites %s, refusing before touching mirakc/FS (issue #139)",
@@ -436,8 +431,9 @@ var siteBoundQueueNames = []string{ingestQueue, epgQueue, reconcilerQueue, recor
 
 // qualifyQueueName は site 単位のキューの物理名を組み立てる下請け
 // （issue #185 M4-13）。区切り文字は `_`。site が空文字列なら db.DefaultSite に
-// 解決する --- verifySite と同じ規約で、単体テストの部分構成（Site 未設定の
-// JobArgs や ClientConfig.BoundSites 未設定）でも決定的な名前になる。
+// 解決する --- キュー名だけの規約で（verifySite は jobSite を正規化しない。
+// verifySite のコメント参照）、単体テストの部分構成（Site 未設定の JobArgs や
+// ClientConfig.BoundSites 未設定）でも決定的な名前になる。
 //
 // **直接呼ばない。** base が siteBoundQueueNames に含まれるかどうかの判定を
 // 呼び出し側に委ねると、判定を書き忘れた場所だけ「site で修飾しない」という
@@ -734,12 +730,13 @@ func buildRiverConfig(workers *river.Workers, cfg ClientConfig) (*river.Config, 
 		// テストの部分構成（BoundSites 未設定）だけである。
 		boundSites = []string{""}
 	}
+	// physicalQueueName(name, site) は site-bound でない name を site 引数に
+	// 関わらずそのまま返すので、site-bound かどうかの判定をここで重複させる
+	// 必要はない（qualifyQueueName のコメントが警告する「判定が 2 か所に
+	// 分かれてズレる」経路を作らないため。site-bound でないキューは
+	// boundSites の要素数ぶん同じキーへ書くだけの無害な重複になる）。
 	physicalQueues := make(map[string]river.QueueConfig, len(queues))
 	for name, qc := range queues {
-		if !slices.Contains(siteBoundQueueNames, name) {
-			physicalQueues[physicalQueueName(name, "")] = qc
-			continue
-		}
 		for _, site := range boundSites {
 			physicalQueues[physicalQueueName(name, site)] = qc
 		}

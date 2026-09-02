@@ -15,17 +15,22 @@
 - **ロール別コネクションプール上限を分ける**。api が全コネクションを食い潰して worker / reconciler が待つ事態を防ぐ。
   ただしプロセスは常に 1 個のコネクションプールしか持たない（`cmd/rokuban/server.go` が起動時に 1 回だけ作り、
   そのプロセスが担う全ロールが共有する）。したがって「ロール別」とは複数プールを作ることではなく、
-  **そのプロセスが担う roles 集合から、そのプロセスが持つ唯一のプールの `MaxConns` を決める**ことを指す
-  （`internal/db.NewPool`）。`db.max_conns` を明示すればそれを使い、未指定ならロールごとの
-  budget（api: 10 / worker: 8 / watcher: 3 / notifier: 3 / streamer: 4。根拠は `internal/db.roleConnBudget` の
-  doc コメント）を roles の分だけ合計する。monolith（`--all`）は全ロール分の合計になる。
-  `db.max_conns` を明示指定する場合、watcher/worker/notifier はプロセスの生存期間中コネクションを
-  1 本専有し続ける（advisory lock / River の LISTEN）ため、専有分の合計 + 他の仕事のための余地 1 本を
-  下回ると起動時 fail-fast する（`internal/db.minRequiredConns`）。**worker のこの専有分は固定 1 本
-  ではない** --- River の LISTEN 用の 1 本に加えて、実行中の ingest ジョブ 1 本ごとに rel_path の
-  advisory lock 用コネクションを転送が終わるまで長期保持する（`internal/worker/relpath_lock.go`、
-  docs/recording/ingest.md §5.3）。多サイト構成で site 数 × ingest 並列が効くので、`db.max_conns`
-  を絞る運用ではこの分も見込んで余地を確保すること
+  **そのプロセスが担う roles 集合と束縛サイト数から、そのプロセスが持つ唯一のプールの `MaxConns` を決める**
+  ことを指す（`internal/db.NewPool`）。`db.max_conns` を明示すればそれを使い、未指定ならロールごとの
+  budget（1 サイト束縛時: api: 10 / worker: 8 / watcher: 3 / notifier: 3 / streamer: 4。根拠は
+  `internal/db.roleConnBudget` の doc コメント）を roles の分だけ合計する。monolith（`--all`）は
+  全ロール分の合計になる。**1 プロセスが N サイトを束縛できるため（`--sites`）、watcher は
+  束縛サイトごとに advisory lock 用コネクションを 1 本専有し続ける**（site ごとに
+  `role.RunSingleton` の goroutine を持つ。`cmd/rokuban/server.go` の watcher ループ）。
+  2 サイト目以降は budget にも自動で上乗せされる（`internal/db.perSiteConnBudget`。
+  worker も ingest の rel_path advisory lock ぶんを同様に上乗せする）。
+  `db.max_conns` を明示指定する場合の fail-fast（`internal/db.minRequiredConns`）も束縛サイト数を
+  見る --- watcher の専有分（1 サイトあたり 1 本）の合計 + 他の仕事のための余地 1 本を下回ると
+  起動時エラーになる。**worker の fail-fast はサイト数を見ない**（固定 1 本のまま）:
+  River の LISTEN 用の 1 本だけが「プロセスの生存期間中ずっと専有される」資源で、ingest の
+  rel_path advisory lock は転送中だけの一時専有（転送が終われば解放される）なので、無症状
+  デッドロックの検査（“二度と戻ってこないコネクション”）には含めていない。ソフトな budget
+  側の上乗せ（上記）が実運用の目安である。
 - **API 系クエリに `statement_timeout`** を設定する。クエリ単位の context timeout だと「付け忘れた 1 本」が
   必ず生まれる。接続の `RuntimeParams`（起動パケットの session default）で一括適用する
   （`db.api_statement_timeout`、未指定なら 30s）。**api ロールを含むプロセスのプール全体に適用される**。

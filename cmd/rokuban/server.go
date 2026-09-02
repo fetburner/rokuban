@@ -326,7 +326,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	// 固定する。
 	context.AfterFunc(ctx, stop)
 
-	pool, err := db.NewPool(ctx, cfg.DB, roles)
+	pool, err := db.NewPool(ctx, cfg.DB, roles, len(bound))
 	if err != nil {
 		return err
 	}
@@ -346,7 +346,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	// （worker だけの Pod でも滞留メトリクスを取りたい）。
 	// SPA・SSE・バイト配信は担当ロールのときだけ登録する。
 	{
-		backlog := newBoundBacklogCollector(pool, bound)
+		backlog := newBoundBacklogCollectors(pool, bound)
 		routerCfg := api.RouterConfig{
 			AllowedHosts:       cfg.Server.AllowedHosts,
 			TrustForwardedHost: cfg.Server.TrustForwardedHost,
@@ -356,7 +356,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 			// ことで、1 プロセスがレジストリの全 site を処理できる
 			// （issue #184 M4-12）。
 			Sites:           registryNames(cfg.Registry()),
-			MetricsRegistry: metrics.NewRegistry(backlog),
+			MetricsRegistry: metrics.NewRegistry(backlog...),
 			// GET /api/capabilities に出すオプション機能（issue #209）。
 			// フロントはこれを見てライブへの導線を出すかどうかを決める。
 			//
@@ -617,35 +617,24 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		if !slices.Contains(singletonRoles, r) {
 			continue
 		}
-		roleName := r
-		switch roleName {
-		case "watcher":
-			// 1 プロセスが N site を束縛できるようになった（issue #532）ので、
-			// site ごとに独立した goroutine + advisory lock を持つ ---
-			// watcher.New(site, ...) を site ごとに呼ぶだけで、
-			// internal/watcher 自体は触らない（このタスクの「触るファイルの
-			// 目安」）。lockName は site で修飾する（watcherLockName、issue
-			// #185 M4-13「含むもの」8）。修飾しないと、同じ site を 2 プロセスが
-			// 束縛した場合に 2 つの watcher が同じロックを取り合い、負けた側の
-			// mirakc の SSE を誰も購読しなくなる（issue #183 本文）。1 プロセス
-			// N goroutine でも同じキーを取る作りなので、その既存の排他は壊さない。
-			for _, site := range bound {
-				site := site
-				eg.Go(func() error {
-					mc := mirakc.NewClient(site.URL, nil)
-					w := watcher.New(site.Site, mc, pool, riverClient, worker.NewIngestArgs, webhookClient)
-					return role.RunSingleton(egCtx, pool, watcherLockName(site.Site), w.Run, nil)
-				})
-			}
-		default:
+		// singletonRoles は現在 {"watcher"} だけなので、ここに来る r は常に
+		// "watcher"（switch で分岐する必要はない --- 他ロール用の default 分岐は
+		// 一度も選ばれない死んだコードになる。issue #532 のレビュー指摘で collapse
+		// した）。1 プロセスが N site を束縛できるようになったので、site ごとに
+		// 独立した goroutine + advisory lock を持つ --- watcher.New(site, ...) を
+		// site ごとに呼ぶだけで、internal/watcher 自体は触らない（このタスクの
+		// 「触るファイルの目安」）。lockName は site で修飾する
+		// （watcherLockName、issue #185 M4-13「含むもの」8）。修飾しないと、
+		// 同じ site を 2 プロセスが束縛した場合に 2 つの watcher が同じロックを
+		// 取り合い、負けた側の mirakc の SSE を誰も購読しなくなる（issue #183
+		// 本文）。1 プロセス N goroutine でも同じキーを取る作りなので、その
+		// 既存の排他は壊さない。
+		for _, site := range bound {
+			site := site
 			eg.Go(func() error {
-				roleFunc := func(ctx context.Context) error {
-					slog.Info("role started", "role", roleName)
-					<-ctx.Done()
-					slog.Info("role stopped", "role", roleName)
-					return ctx.Err()
-				}
-				return role.RunSingleton(egCtx, pool, roleName, roleFunc, nil)
+				mc := mirakc.NewClient(site.URL, nil)
+				w := watcher.New(site.Site, mc, pool, riverClient, worker.NewIngestArgs, webhookClient)
+				return role.RunSingleton(egCtx, pool, watcherLockName(site.Site), w.Run, nil)
 			})
 		}
 	}

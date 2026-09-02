@@ -1,6 +1,7 @@
 package main
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -191,112 +192,140 @@ func TestRequireSingleSite(t *testing.T) {
 	})
 }
 
-// --sites=（明示的な空、束縛なし）で起動したプロセスは BacklogCollector を登録
-// しない --- 担当していないサイトの系列を /metrics に出さないため
-// （issue #183 の受け入れ基準）。同じ理由で 2 サイト以上の束縛でも登録しない
-// （どちらの site の系列として出すべきか定まらない）。
+// --sites=（明示的な空、束縛なし）で起動したプロセスは BacklogCollector を
+// 1 つも登録しない --- 担当していないサイトの系列を /metrics に出さないため
+// （issue #183 の受け入れ基準）。N サイト束縛では束縛サイトの数だけ登録する
+// （issue #532: 旧「2 サイト以上は登録しない」判断は誤りだった。系列は
+// site ラベルでそれぞれ区別できるので曖昧にならない）。
 func TestNewBoundBacklogCollector(t *testing.T) {
 	pool := testutil.SetupDB(t)
 
-	t.Run("unbound (central) process registers nothing", func(t *testing.T) {
-		c := newBoundBacklogCollector(pool, nil)
-		if c != nil {
-			t.Fatalf("collector = %v, want nil", c)
-		}
-	})
-
-	t.Run("two bound sites registers nothing (ambiguous which site)", func(t *testing.T) {
-		c := newBoundBacklogCollector(pool, []config.MirakcSite{tokyo, takamatsu})
-		if c != nil {
-			t.Fatalf("collector = %v, want nil", c)
-		}
-	})
-
-	t.Run("exactly one bound site registers a collector reporting under that site's series", func(t *testing.T) {
-		c := newBoundBacklogCollector(pool, []config.MirakcSite{tokyo})
-		if c == nil {
-			t.Fatal("collector = nil, want non-nil")
-		}
-		reg := prometheus.NewRegistry()
-		if err := reg.Register(c); err != nil {
-			t.Fatalf("Register: %v", err)
-		}
-		families, err := reg.Gather()
-		if err != nil {
-			t.Fatalf("Gather: %v", err)
-		}
-		found := false
-		for _, f := range families {
-			if f.GetName() != "rokuban_uningested_records" {
-				continue
-			}
-			found = true
-			for _, m := range f.Metric {
-				for _, l := range m.Label {
-					if l.GetName() == "site" && l.GetValue() != "tokyo" {
-						t.Errorf("site label = %q, want tokyo", l.GetValue())
-					}
-				}
-			}
-		}
-		if !found {
-			t.Error("rokuban_uningested_records not found in gathered metrics")
-		}
-	})
-}
-
-// TestNewBoundBacklogCollector_ThroughNewRegistry は server.go が実際に組む配線
-// （newBoundBacklogCollector の戻り値を直接 metrics.NewRegistry に渡す）を
-// エンドツーエンドで再現する。
-//
-// これは「具体型 nil を interface 引数に渡すと非 nil interface になる」という Go の
-// 罠を回帰させないための独立したテストである。newBoundBacklogCollector が
-// `*metrics.BacklogCollector`（具体型）を返す実装に戻ると、ここで
-// `metrics.NewRegistry` に渡した瞬間に型情報付きの非 nil interface 値になり、
-// `internal/metrics/metrics.go` の `if backlog != nil` が真になって
-// `prometheus.Registry.Register` が nil レシーバーの `Describe` を呼び panic する
-// （`--sites=` で起動した実バイナリで踏んだ実例。issue #183 のレビュー指摘）。
-// 前段の TestNewBoundBacklogCollector は戻り値をローカル変数（すでに
-// prometheus.Collector 型）で `!= nil` 比較するだけなので、関数の戻り値の型
-// そのものが具体型に戻る回帰を捕まえられない。ここは必ず metrics.NewRegistry を
-// 経由させることで、型の選択そのものを検証する。
-func TestNewBoundBacklogCollector_ThroughNewRegistry(t *testing.T) {
-	pool := testutil.SetupDB(t)
-
-	hasBacklogSeries := func(t *testing.T, reg *prometheus.Registry) bool {
+	sitesOf := func(t *testing.T, reg *prometheus.Registry) []string {
 		t.Helper()
 		families, err := reg.Gather()
 		if err != nil {
 			t.Fatalf("Gather: %v", err)
 		}
+		var sites []string
 		for _, f := range families {
-			if f.GetName() == "rokuban_uningested_records" {
-				return true
+			if f.GetName() != "rokuban_uningested_records" {
+				continue
+			}
+			for _, m := range f.Metric {
+				for _, l := range m.Label {
+					if l.GetName() == "site" {
+						sites = append(sites, l.GetValue())
+					}
+				}
 			}
 		}
-		return false
+		return sites
 	}
 
-	t.Run("unbound process: NewRegistry+Gather does not panic and has no backlog series", func(t *testing.T) {
-		backlog := newBoundBacklogCollector(pool, nil)
-		reg := metrics.NewRegistry(backlog) // 具体型 nil が漏れていればここで panic する
-		if hasBacklogSeries(t, reg) {
-			t.Error("unbound process should not expose rokuban_uningested_records")
+	t.Run("unbound (central) process registers nothing", func(t *testing.T) {
+		cs := newBoundBacklogCollectors(pool, nil)
+		if len(cs) != 0 {
+			t.Fatalf("collectors = %v, want none", cs)
 		}
 	})
 
-	t.Run("two bound sites: NewRegistry+Gather does not panic and has no backlog series", func(t *testing.T) {
-		backlog := newBoundBacklogCollector(pool, []config.MirakcSite{tokyo, takamatsu})
-		reg := metrics.NewRegistry(backlog)
-		if hasBacklogSeries(t, reg) {
-			t.Error("ambiguous (2-site) binding should not expose rokuban_uningested_records")
+	t.Run("two bound sites registers one collector per site", func(t *testing.T) {
+		cs := newBoundBacklogCollectors(pool, []config.MirakcSite{tokyo, takamatsu})
+		if len(cs) != 2 {
+			t.Fatalf("collectors = %d, want 2", len(cs))
+		}
+		reg := prometheus.NewRegistry()
+		for _, c := range cs {
+			if err := reg.Register(c); err != nil {
+				t.Fatalf("Register: %v", err)
+			}
+		}
+		sites := sitesOf(t, reg)
+		if !slices.Contains(sites, "tokyo") || !slices.Contains(sites, "takamatsu") {
+			t.Errorf("site labels = %v, want both tokyo and takamatsu", sites)
+		}
+	})
+
+	t.Run("exactly one bound site registers a collector reporting under that site's series", func(t *testing.T) {
+		cs := newBoundBacklogCollectors(pool, []config.MirakcSite{tokyo})
+		if len(cs) != 1 {
+			t.Fatalf("collectors = %d, want 1", len(cs))
+		}
+		reg := prometheus.NewRegistry()
+		if err := reg.Register(cs[0]); err != nil {
+			t.Fatalf("Register: %v", err)
+		}
+		sites := sitesOf(t, reg)
+		if len(sites) == 0 {
+			t.Error("rokuban_uningested_records not found in gathered metrics")
+		}
+		for _, s := range sites {
+			if s != "tokyo" {
+				t.Errorf("site label = %q, want tokyo", s)
+			}
+		}
+	})
+}
+
+// TestNewBoundBacklogCollector_ThroughNewRegistry は server.go が実際に組む配線
+// （newBoundBacklogCollectors の戻り値を直接 metrics.NewRegistry(backlog...) に
+// 渡す）をエンドツーエンドで再現する。
+//
+// これは「具体型 nil を interface 引数に渡すと非 nil interface になる」という Go の
+// 罠を回帰させないための独立したテストである。newBoundBacklogCollectors が
+// 要素に具体型 nil を混ぜる実装に戻ると、ここで `metrics.NewRegistry` に渡した
+// 瞬間に型情報付きの非 nil interface 値になり、`prometheus.Registry.Register` が
+// nil レシーバーの `Describe` を呼び panic する（`--sites=` で起動した実バイナリで
+// 踏んだ実例。issue #183 のレビュー指摘）。前段の TestNewBoundBacklogCollector は
+// 戻り値をローカル変数（すでに prometheus.Collector 型）で見るだけなので、関数の
+// 戻り値の型そのものが具体型に戻る回帰を捕まえられない。ここは必ず
+// metrics.NewRegistry を経由させることで、型の選択そのものを検証する。
+func TestNewBoundBacklogCollector_ThroughNewRegistry(t *testing.T) {
+	pool := testutil.SetupDB(t)
+
+	sitesWithBacklogSeries := func(t *testing.T, reg *prometheus.Registry) []string {
+		t.Helper()
+		families, err := reg.Gather()
+		if err != nil {
+			t.Fatalf("Gather: %v", err)
+		}
+		var sites []string
+		for _, f := range families {
+			if f.GetName() != "rokuban_uningested_records" {
+				continue
+			}
+			for _, m := range f.Metric {
+				for _, l := range m.Label {
+					if l.GetName() == "site" {
+						sites = append(sites, l.GetValue())
+					}
+				}
+			}
+		}
+		return sites
+	}
+
+	t.Run("unbound process: NewRegistry+Gather does not panic and has no backlog series", func(t *testing.T) {
+		backlog := newBoundBacklogCollectors(pool, nil)
+		reg := metrics.NewRegistry(backlog...) // 具体型 nil が漏れていればここで panic する
+		if sites := sitesWithBacklogSeries(t, reg); len(sites) != 0 {
+			t.Errorf("unbound process should not expose rokuban_uningested_records, got sites %v", sites)
+		}
+	})
+
+	t.Run("two bound sites: NewRegistry+Gather exposes both sites' backlog series", func(t *testing.T) {
+		backlog := newBoundBacklogCollectors(pool, []config.MirakcSite{tokyo, takamatsu})
+		reg := metrics.NewRegistry(backlog...) // 具体型 nil が漏れていればここで panic する
+		sites := sitesWithBacklogSeries(t, reg)
+		if !slices.Contains(sites, "tokyo") || !slices.Contains(sites, "takamatsu") {
+			t.Errorf("2-site binding site labels = %v, want both tokyo and takamatsu", sites)
 		}
 	})
 
 	t.Run("exactly one bound site: NewRegistry+Gather exposes the backlog series", func(t *testing.T) {
-		backlog := newBoundBacklogCollector(pool, []config.MirakcSite{tokyo})
-		reg := metrics.NewRegistry(backlog)
-		if !hasBacklogSeries(t, reg) {
+		backlog := newBoundBacklogCollectors(pool, []config.MirakcSite{tokyo})
+		reg := metrics.NewRegistry(backlog...)
+		if sites := sitesWithBacklogSeries(t, reg); len(sites) == 0 {
 			t.Error("single-site binding should expose rokuban_uningested_records")
 		}
 	})

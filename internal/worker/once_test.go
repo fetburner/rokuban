@@ -403,6 +403,27 @@ func TestBuildRiverConfig_OnceModeRejectsNonSingleQueue(t *testing.T) {
 	}
 }
 
+// TestBuildRiverConfig_OnceModeRejectsMultiSitePhysicalExpansion は issue #532
+// のレビュー指摘を固定する: 論理キューが 1 つ（TestBuildRiverConfig_OnceModeRejects
+// NonSingleQueue の検査を通る）でも、それが site 単位のキューかつ BoundSites が
+// 2 サイト以上なら、subscribe 側の展開（buildRiverConfig の物理キュー化）で
+// 物理キューが 2 つになる。KEDA ScaledJob は site 単位（かつキュー単位）に
+// 作るので、`--once --queues ingest --sites tokyo,takamatsu` は「同時 claim は
+// 1 件」の前提を壊す --- 起動エラーにしなければならない。
+func TestBuildRiverConfig_OnceModeRejectsMultiSitePhysicalExpansion(t *testing.T) {
+	_, err := buildRiverConfig(NewWorkers(&Deps{}), ClientConfig{
+		BoundSites: []string{"tokyo", "takamatsu"},
+		Queues:     []string{ingestQueue},
+		Once:       NewOnceGate(),
+	})
+	if err == nil {
+		t.Fatal("error を期待したが nil だった")
+	}
+	if !strings.Contains(err.Error(), "physical queue") {
+		t.Errorf("err = %v, want to mention \"physical queue\"", err)
+	}
+}
+
 // 1 件消化モードで worker.periodic_jobs が true なら起動エラーになること。
 // 1 件で終わる Job がリーダーになると、定期投入の間隔が KEDA のスケール挙動
 // （Job の起動回数）で決まってしまう。

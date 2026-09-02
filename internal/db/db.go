@@ -19,8 +19,10 @@ import (
 // 暴走クエリを打ち切れる値として選んである。
 const defaultAPIStatementTimeout = 30 * time.Second
 
-// roleConnBudget はロールごとにこのプロセスが必要とする最大コネクション数の目安。
-// db.max_conns が未指定のとき、プロセスが担う roles の合計を
+// roleConnBudget はロールごとにこのプロセスが必要とする最大コネクション数の目安
+// （**束縛サイトが 1 つの場合の値**。2 サイト以上では perSiteConnBudget が
+// 上乗せする。issue #532: 1 プロセスが N site を束縛できるようになったため）。
+// db.max_conns が未指定のとき、プロセスが担う roles の合計（+ 上乗せ分）を
 // pgxpool.Config.MaxConns の既定値として使う（issue #90、docs/operations.md §3）。
 //
 // 根拠（世帯スケール。数値は保守的な上限であり、実測に基づくチューニングは運用開始後に行う）:
@@ -35,19 +37,54 @@ const defaultAPIStatementTimeout = 30 * time.Second
 //     十分な余裕がある。**加えて、実行中の ingest 1 本ごとに rel_path advisory lock 用の
 //     コネクションを 1 本、転送が終わるまで長期保持する**（internal/worker/relpath_lock.go、
 //     docs/recording/ingest.md §5.3）。ingest の同時実行は site あたり 1〜2 にキャップ
-//     されているが、多サイト構成では site 数 × ingest 並列がここに乗る点に注意
-//     （`db.max_conns` を絞る運用ではこの分も見込む）
-//   - watcher (3): リーダー選出の advisory lock 用に 1 本を保持し続け、record 処理の
-//     短いクエリが散発する
-//   - notifier (3): LISTEN 用に 1 本を保持し続けるだけ
+//     されており、この 8 は 1 site ぶんを見込んだ値。2 site 目以降は
+//     perSiteConnBudget が worker あたり workerPerSiteConns を上乗せする
+//   - watcher (3): 1 site ぶんのリーダー選出の advisory lock 用に 1 本を保持し
+//     続け、record 処理の短いクエリが散発する。2 site 目以降は site ごとに
+//     goroutine + advisory lock を持つため（cmd/rokuban/server.go の watcher
+//     ループ）、perSiteConnBudget が watcher あたり watcherPerSiteConns を上乗せする
+//   - notifier (3): LISTEN 用に 1 本を保持し続けるだけ（site 数に依存しない）
 //   - streamer (4): バイト転送そのものは DB 接続を保持しない（X-Accel-Redirect か
-//     Go のファイル配信）。リクエストごとのメタデータ照会だけで足りる
+//     Go のファイル配信）。リクエストごとのメタデータ照会だけで足りる（site 数に依存しない）
 var roleConnBudget = map[string]int32{
 	"api":      10,
 	"worker":   8,
 	"watcher":  3,
 	"notifier": 3,
 	"streamer": 4,
+}
+
+// watcherPerSiteConns / workerPerSiteConns は、2 site 目以降の束縛サイトごとに
+// watcher / worker ロールへ追加で見込むコネクション数（perSiteConnBudget /
+// minRequiredConns が使う。roleConnBudget の doc コメント参照）。
+const (
+	// watcherPerSiteConns: 2 site 目以降、site ごとに 1 つの advisory lock 用
+	// コネクションが追加で専有される（cmd/rokuban/server.go の watcher ループが
+	// site ごとに role.RunSingleton を呼ぶ。issue #532）。
+	watcherPerSiteConns = 1
+	// workerPerSiteConns: 2 site 目以降、ingest の同時実行キャップ（既定 2、
+	// internal/worker.defaultIngestConcurrency）ぶんの rel_path advisory lock
+	// コネクションが site ごとに追加で乗りうる（roleConnBudget の worker 8 が
+	// 見込んでいるのは 1 site ぶんだけ）。
+	workerPerSiteConns = 2
+)
+
+// perSiteConnBudget は、束縛サイトが 2 つ以上のとき roleConnBudget に上乗せする
+// コネクション数を返す（1 site 以下は roleConnBudget の値がそのまま 1 site 分の
+// 見込みなので上乗せ 0）。
+func perSiteConnBudget(roles []string, numSites int) int32 {
+	if numSites <= 1 {
+		return 0
+	}
+	extraSites := int32(numSites - 1)
+	var per int32
+	if slices.Contains(roles, "watcher") {
+		per += watcherPerSiteConns
+	}
+	if slices.Contains(roles, "worker") {
+		per += workerPerSiteConns
+	}
+	return per * extraSites
 }
 
 // minAutoMaxConns はロール集合から算出した MaxConns の下限。roleConnBudget に
@@ -99,11 +136,20 @@ var poolerIncompatibleRoles = []string{"worker", "watcher", "notifier"}
 // 優先する。roles が空（rescue/enqueue/shadow-diff 等の単発 CLI コマンド）なら
 // pgxpool の既定値（max(4, NumCPU)）をそのまま使う。
 //
+// numSites はこのプロセスが束縛している mirakc サイト数（cmd/rokuban が --sites
+// から解決した `bound` の長さ。issue #532）。watcher は site ごとに advisory lock
+// 用のコネクションを 1 本専有し続け、worker も site ごとの ingest キューが
+// rel_path advisory lock 用のコネクションを追加で必要としうるため、2 サイト以上の
+// 束縛ではこの数を pool サイジングに反映する（roleConnBudget / minRequiredConns の
+// doc コメント参照）。site 束縛の概念が無い呼び出し元（rescue/enqueue/shadow-diff
+// 等の単発 CLI コマンド、testutil）は 0 を渡す --- roles が空ならどのみち
+// site 数は判定に使われない。
+//
 // cfg.PoolerCompat=true のとき roles に worker/watcher/notifier のいずれかが
 // 含まれる場合はエラーを返す（pooler を通せるのは api ロールと streamer ロールだけ、という
 // デプロイの契約。docs/operations.md §3）。
-func NewPool(ctx context.Context, cfg config.DBConfig, roles []string) (*pgxpool.Pool, error) {
-	poolCfg, err := buildPoolConfig(cfg, roles)
+func NewPool(ctx context.Context, cfg config.DBConfig, roles []string, numSites int) (*pgxpool.Pool, error) {
+	poolCfg, err := buildPoolConfig(cfg, roles, numSites)
 	if err != nil {
 		return nil, err
 	}
@@ -123,7 +169,7 @@ func NewPool(ctx context.Context, cfg config.DBConfig, roles []string) (*pgxpool
 
 // buildPoolConfig は NewPool のロジック本体（MaxConns の算出・pooler 互換設定の適用・
 // statement_timeout の設定・fail-fast 検査）を、実接続を伴わずにテストできる形で切り出す。
-func buildPoolConfig(cfg config.DBConfig, roles []string) (*pgxpool.Config, error) {
+func buildPoolConfig(cfg config.DBConfig, roles []string, numSites int) (*pgxpool.Config, error) {
 	if cfg.PoolerCompat {
 		for _, r := range poolerIncompatibleRoles {
 			if slices.Contains(roles, r) {
@@ -143,17 +189,18 @@ func buildPoolConfig(cfg config.DBConfig, roles []string) (*pgxpool.Config, erro
 
 	switch {
 	case cfg.MaxConns > 0:
-		if min := minRequiredConns(roles); int32(cfg.MaxConns) < min {
+		if min := minRequiredConns(roles, numSites); int32(cfg.MaxConns) < min {
 			return nil, fmt.Errorf(
-				"db.max_conns=%d is too small for roles %v: at least %d connections are "+
-					"required so that roles holding a connection for their entire lifetime "+
-					"(watcher's advisory lock, worker's/notifier's LISTEN) don't starve the "+
-					"rest of the process's work out of the single shared pool (docs/operations.md §3)",
-				cfg.MaxConns, roles, min)
+				"db.max_conns=%d is too small for roles %v bound to %d site(s): at least %d "+
+					"connections are required so that roles holding a connection for their "+
+					"entire lifetime (watcher's advisory lock -- one per bound site, "+
+					"worker's/notifier's LISTEN) don't starve the rest of the process's work "+
+					"out of the single shared pool (docs/operations.md §3)",
+				cfg.MaxConns, roles, numSites, min)
 		}
 		poolCfg.MaxConns = int32(cfg.MaxConns)
 	case len(roles) > 0:
-		poolCfg.MaxConns = maxConnsForRoles(roles)
+		poolCfg.MaxConns = maxConnsForRoles(roles, numSites)
 	}
 
 	if cfg.PoolerCompat {
@@ -176,17 +223,19 @@ func buildPoolConfig(cfg config.DBConfig, roles []string) (*pgxpool.Config, erro
 	return poolCfg, nil
 }
 
-// maxConnsForRoles は roles から roleConnBudget の合計を算出する。
+// maxConnsForRoles は roles から roleConnBudget の合計（+ 2 サイト目以降の
+// perSiteConnBudget の上乗せ）を算出する。
 //
 // roles は重複除去してから合算する。重複除去しないと同じロールの budget を
 // 二重に数えてプール上限が過大になる（issue #90 レビュー）。resolveRoles
 // （cmd/rokuban/server.go）が `--roles api,api` を畳むようになった後も、
 // ここは多重防御として残す --- db.NewPool の呼び出し元は server だけではない。
-func maxConnsForRoles(roles []string) int32 {
+func maxConnsForRoles(roles []string, numSites int) int32 {
 	var total int32
 	for r := range uniqueRoles(roles) {
 		total += roleConnBudget[r]
 	}
+	total += perSiteConnBudget(roles, numSites)
 	if total < minAutoMaxConns {
 		total = minAutoMaxConns
 	}
@@ -202,30 +251,47 @@ func uniqueRoles(roles []string) map[string]struct{} {
 	return set
 }
 
-// dedicatedConnRoles はプロセスの生存期間中コネクションを 1 本専有し続けるロール。
-// roleConnBudget の doc コメントで裏を取った専有元:
+// dedicatedConnRoles はプロセスの生存期間中コネクションを 1 本専有し続けるロール
+// （1 site 束縛の場合の値。watcher は 2 site 目以降 1 site につき 1 本ずつ
+// 追加で専有する。下記 minRequiredConns 参照）。roleConnBudget の doc コメントで
+// 裏を取った専有元:
 //   - watcher: リーダー選出の advisory lock（internal/role.RunSingleton が
-//     pool.Acquire したコネクションをリーダーである間保持し続ける）
+//     pool.Acquire したコネクションをリーダーである間保持し続ける）。issue #532
+//     で site ごとに goroutine を持つようになったため、束縛サイトの数だけ
+//     この専有が増える（cmd/rokuban/server.go の watcher ループ）
 //   - worker: River の内部機構の LISTEN（elector と notifier で共有される 1 本。
-//     riverqueue/river@v0.40.0/client.go で確認済み）
+//     riverqueue/river@v0.40.0/client.go で確認済み）。これは site 数に依存
+//     しないプロセス単位の資源なので、site が増えても専有本数は変わらない
+//     ---ingest の rel_path advisory lock は転送中だけの一時専有であり、
+//     watcher の advisory lock のように「プロセスが生きている間ずっと」では
+//     ないため、この恒久専有のカウントには含めない（roleConnBudget /
+//     perSiteConnBudget の workerPerSiteConns はソフトな見込みとして別に
+//     加算している。無症状デッドロックの検査は「絶対に戻ってこないコネクション」
+//     だけを対象にする）
 //   - notifier: ブラウザへの SSE 配送のための LISTEN
-//     （internal/notifier.EventHub.Run が保持し続ける）
+//     （internal/notifier.EventHub.Run が保持し続ける。site 数に依存しない）
 var dedicatedConnRoles = []string{"watcher", "worker", "notifier"}
 
-// minRequiredConns は、明示された db.max_conns がこのロール集合にとって小さすぎないかを
-// 検査するための下限を返す（issue #90 レビュー指摘）。
+// minRequiredConns は、明示された db.max_conns がこのロール集合・束縛サイト数に
+// とって小さすぎないかを検査するための下限を返す（issue #90 レビュー指摘。
+// issue #532 で numSites を追加）。
 //
-// watcher / worker / notifier はいずれもプロセスの生存期間中コネクションを 1 本専有し
-// 続ける（dedicatedConnRoles）。専有分だけでプールが埋まると、同じプロセスが行う他の
-// 仕事（watcher の record 処理クエリ、worker のジョブ claim、/metrics のバックログ
-// クエリ等）が「二度と解放されないコネクション」を待ち続けて無症状にデッドロックする。
-// そのため専有分の合計に加えて、他の仕事のための余地を最低 1 本要求する。
-func minRequiredConns(roles []string) int32 {
+// watcher / worker / notifier はいずれもプロセスの生存期間中コネクションを
+// 専有し続ける（dedicatedConnRoles）。watcher は束縛サイトごとに 1 本
+// （2 site 目以降 watcherPerSiteConns ずつ追加）。専有分だけでプールが埋まると、
+// 同じプロセスが行う他の仕事（watcher の record 処理クエリ、worker のジョブ
+// claim、/metrics のバックログクエリ等）が「二度と解放されないコネクション」を
+// 待ち続けて無症状にデッドロックする。そのため専有分の合計に加えて、他の仕事の
+// ための余地を最低 1 本要求する。
+func minRequiredConns(roles []string, numSites int) int32 {
 	var dedicated int32
 	for _, r := range dedicatedConnRoles {
 		if slices.Contains(roles, r) {
 			dedicated++
 		}
+	}
+	if slices.Contains(roles, "watcher") && numSites > 1 {
+		dedicated += watcherPerSiteConns * int32(numSites-1)
 	}
 	if dedicated == 0 {
 		return 1

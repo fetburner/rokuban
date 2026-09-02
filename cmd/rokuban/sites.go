@@ -148,29 +148,29 @@ func requireSingleSite(registry []config.MirakcSite, cmdName string) (config.Mir
 	}
 }
 
-// newBoundBacklogCollector は束縛サイト数がちょうど 1 のときだけ
-// metrics.BacklogCollector を作る。
+// newBoundBacklogCollectors は束縛サイトごとに 1 つずつ metrics.BacklogCollector
+// を作る（issue #532: 旧「ちょうど 1 サイト」の制限を N サイトへ一般化した）。
 //
 // BacklogCollector は「このサイトで未 ingest の record がどれだけ滞留しているか」
-// という site 束縛の観測（internal/metrics/backlog.go）。束縛が無い（中央）
-// プロセスや 2 サイト以上に束縛されたプロセスでは「このサイト」が定まらないので
-// 登録しない --- 登録すると担当していないサイトの系列を出してしまう
-// （issue #183 の受け入れ基準）。
+// という site 束縛の観測（internal/metrics/backlog.go）。0 サイト（中央プロセス）
+// では「このサイト」が定まらないので空スライスを返す --- 登録すると担当していない
+// サイトの系列を出してしまう（issue #183 の受け入れ基準）。**2 サイト以上でも
+// 「どちらの site か定まらない」から登録しない、という旧判断は誤りだった**:
+// N サイト束縛のちょうど N 個のコレクタを作れば、系列はそれぞれ自分の site
+// ラベルを持つので曖昧にならない（issue #532 のレビュー指摘。takamatsu の
+// ような WAN 越し site ほど ingest backlog の監視が要る）。
 //
-// **戻り値の型は具体型 `*metrics.BacklogCollector` ではなく
-// `prometheus.Collector`（インターフェース）にする。** 具体型のまま nil を返すと、
-// 呼び出し側でその値をインターフェース引数（`metrics.NewRegistry` の
-// `backlog prometheus.Collector`）に渡した瞬間、型情報付きの非 nil インターフェース
-// 値になってしまう（Go の典型的な「具体型 nil を interface に入れると nil でなくなる」
-// 罠）。`internal/metrics/metrics.go` の `if backlog != nil` はその非 nil
-// インターフェース値を真と判定し、`Register` が nil レシーバの `Describe` を呼んで
-// panic する。ここで真の nil インターフェースを返すことで、呼び出し側の
-// `!= nil` 判定が正しく機能する。
-func newBoundBacklogCollector(pool *pgxpool.Pool, bound []config.MirakcSite) prometheus.Collector {
-	if len(bound) != 1 {
-		return nil
+// **戻り値の要素は常に具体的に構築したコレクタで、nil を混ぜない。** 「具体型 nil
+// を interface に入れると nil でなくなる」という Go の罠（internal/metrics.NewRegistry
+// の doc コメント参照。`--sites=` で起動した実バイナリが起動時 panic した実例）は
+// ここでは「0 個の要素を持つスライスを返す」ことで避ける --- 個々の要素を nil に
+// する分岐を一切持たない。
+func newBoundBacklogCollectors(pool *pgxpool.Pool, bound []config.MirakcSite) []prometheus.Collector {
+	collectors := make([]prometheus.Collector, 0, len(bound))
+	for _, s := range bound {
+		collectors = append(collectors, metrics.NewBacklogCollector(pool, s.Site))
 	}
-	return metrics.NewBacklogCollector(pool, bound[0].Site)
+	return collectors
 }
 
 // resolveEnqueueSite は `enqueue` の `--site` フラグとレジストリから投入先の

@@ -30,14 +30,12 @@ schemas/         kubeconform に渡す CRD スキーマ（KEDA の ScaledJob）
 **まだ無いもの**:
 
 - **入口（Ingress）**。当面は `kubectl port-forward svc/rokuban-api 40773` で触る
-- **ライブ視聴の streamer**。**設計どおりには書けない。**
-  docs/operations.md §5 は「録画配信は中央（site 非依存）、ライブはサイトごと」と
-  決めている。ところが `live.enabled: true` は **streamer ロールの全 Pod に
-  ちょうど 1 サイトの束縛を要求する**（`cmd/rokuban/server.go`）。ConfigMap は 1 個で全 Pod が
-  同じ config.yml を共有するので、ライブを有効にした瞬間に中央の録画配信
-  Deployment（`--sites=`）が起動しなくなる。**中央の録画配信にも
-  `--sites <site>` を書けば動く**が、それは「録画配信は site 非依存」という
-  決定の暗黙の変更なので、ここでは実装せず issue に提起してある
+- **ライブ視聴の streamer。** streamer は 1 プロセスが N サイトを束縛でき、
+  `live.enabled: true` に束縛サイト数の制約は無い（`cmd/rokuban/server.go`）。
+  そのため「録画配信は中央（site 非依存、0 サイト束縛）、ライブはサイトごと」を
+  同じ streamer ロールの別 Pod として書くこと自体はできる。実装していないのは
+  overlay の切り方（`site/` の streamer にライブ用の設定・Service をどう足すか）
+  がまだ無いだけで、issue に提起してある
 - **Prometheus の Operator 連携**（ServiceMonitor / PodMonitor）。常駐の Pod には
   `prometheus.io/scrape` の annotation を付けてあるが、**ScaledJob が起こす Job の
   Pod は数秒で消えるので scrape が間に合わない**。ジョブ側の観測は

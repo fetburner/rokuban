@@ -491,9 +491,10 @@ func (w *IngestWorker) lookupIngestTarget(ctx context.Context, args IngestJobArg
 //
 // 前置に使うのは args.Site。Work は determineRelPath を呼ぶ前に verifySite
 // （internal/worker/worker.go）で args.Site が w.MirakcClients のいずれかの
-// キーと一致することを検査済みで、その検査自体が args.Site を db.DefaultSite に
-// 正規化した上で行われる（jobSite が空文字列なら db.DefaultSite として引く）ため、
-// verifySite を通過した args.Site は常に非空・正規化済みである。
+// キーと一致することを検査済みである。w.MirakcClients のキーは常に実際の
+// （空でない）site 名なので（config のバリデーションが site 名の非空を要求する。
+// verifySite は jobSite を正規化しない）、verifySite を通過した args.Site は
+// 常に非空である。
 //
 // client は verifySite が返したクライアント（Work が呼び出し元で解決済み）を
 // そのまま受け取る --- ここで再度 w.MirakcClients を引くと、verifySite が通した

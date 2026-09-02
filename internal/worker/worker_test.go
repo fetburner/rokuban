@@ -75,14 +75,14 @@ func TestVerifySite(t *testing.T) {
 		}
 	})
 
-	t.Run("empty jobSite normalizes to db.DefaultSite", func(t *testing.T) {
+	// jobSite は正規化しない: 空文字列は無条件に拒む。これは "default" という
+	// 名前の site がたまたま束縛されているデプロイでも同じでなければならない
+	// --- 正規化すると、args.Site 自体が壊れている（本来 verifySite が拾うべき）
+	// ジョブが「default site 宛のジョブ」として素通りしてしまう。
+	t.Run("empty jobSite is refused even when a site named default is bound", func(t *testing.T) {
 		defaultOnly := singleSiteClients("", tokyoClient)
-		got, err := verifySite(defaultOnly, "", "ingest")
-		if err != nil {
-			t.Fatalf("verifySite: %v", err)
-		}
-		if got != tokyoClient {
-			t.Errorf("verifySite returned %v, want the default-site client", got)
+		if _, err := verifySite(defaultOnly, "", "ingest"); err == nil {
+			t.Fatal("verifySite() error = nil, want error for an empty (unnormalized) jobSite")
 		}
 	})
 }

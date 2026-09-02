@@ -591,9 +591,22 @@ var (
 
 // NewRegistry は Rokuban のメトリクスを登録した registry を返す。
 //
-// backlog が非 nil なら、未 ingest record の滞留量を scrape のたびに DB から
-// 取り直すコレクタも登録する。
-func NewRegistry(backlog prometheus.Collector) *prometheus.Registry {
+// backlog は束縛サイトごとの BacklogCollector（未 ingest record の滞留量を
+// scrape のたびに DB から取り直すコレクタ）。1 プロセスが N site を束縛できる
+// ため（issue #532）可変長引数にした --- 0 site（中央プロセス）は
+// `NewRegistry()`、N site 束縛は束縛サイトの数だけ渡す
+// （cmd/rokuban.newBoundBacklogCollectors）。
+//
+// **nil 要素はスキップする。** これは「具体型 nil を interface に入れると
+// 非 nil interface になる」という Go の罠（Register が nil レシーバの
+// Describe を呼んで panic する。issue #183 のレビューで実バイナリが起動時
+// panic した実例）そのものへの防御ではない --- `== nil` はその形の値を
+// 捕まえられない。防御の本体は呼び出し側（newBoundBacklogCollectors）が
+// 具体型 nil を一切構築しないこと（束縛サイトの数だけ本物のコレクタを作る
+// だけで、"無い" を表すのに nil の *BacklogCollector を使わない）。ここでの
+// nil スキップは、テスト等が明示的に `NewRegistry(nil)` を渡す（本物の nil
+// interface 値）呼び出し規約を壊さないための後方互換でしかない。
+func NewRegistry(backlog ...prometheus.Collector) *prometheus.Registry {
 	reg := prometheus.NewRegistry()
 
 	reg.MustRegister(
@@ -663,8 +676,11 @@ func NewRegistry(backlog prometheus.Collector) *prometheus.Registry {
 		LiveIdleGCLastPass,
 	)
 
-	if backlog != nil {
-		reg.MustRegister(backlog)
+	for _, b := range backlog {
+		if b == nil {
+			continue
+		}
+		reg.MustRegister(b)
 	}
 	return reg
 }
