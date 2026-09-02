@@ -54,8 +54,8 @@ import {
 /**
  * pageSize は一度に詳細を取りに行く結果の件数。
  *
- * 検索 API が返すのは programId の配列だけなので、1 件表示するたびに
- * `GET /api/programs/{id}` が必要になる。数百件を一斉に取りに行かないよう区切る
+ * 検索 API が返すのは `{site, programId}` の行だけなので、1 件表示するたびに
+ * `GET /api/sites/{site}/programs/{programId}` が必要になる。数百件を一斉に取りに行かないよう区切る
  * （API に一括取得がないことの申し送りは issue #24 のコメント）。
  */
 const pageSize = 30
@@ -63,7 +63,7 @@ const pageSize = 30
 /**
  * SearchPage は EPG をルールと同じ条件で検索する画面。
  *
- * 検索 API（`POST /api/programs/search`）は ruler 評価と同じコンパイラを通るため、
+ * 検索 API（`POST /api/sites/{site}/programs/search`）は ruler 評価と同じコンパイラを通るため、
  * ここで出る番組はルールにしたときにマッチする番組と一致する（M2-2）。
  * つまりこの画面の役目は「条件をルールとして保存する前に試すこと」であり、
  * 番組表（`/`）と関心事が違うので独立したルートに置いている。
@@ -1229,7 +1229,7 @@ function SearchError({ error, onRetry }: { error: unknown; onRetry: () => void }
  * SearchResultList は検索結果の行（`[{site, programId}]`）を番組の行にする。
  *
  * 検索 API は `site` と `programId` しか返さないため、行ごとに
- * `GET /api/sites/{site}/programs/{id}` を引く。`useQueries` で 1 箇所に
+ * `GET /api/sites/{site}/programs/{programId}` を引く。`useQueries` で 1 箇所に
  * まとめているのは、行コンポーネントに hook を置くと「行が消えるとクエリも
  * 消える」形になり、表示件数を増やしたときの取得状態が追いにくくなるため。
  *

@@ -174,7 +174,7 @@ function stubApi(options?: {
   // （`pages/search.tsx` のコメント「値札のために追加の HTTP リクエストは
   // 発生しない」の裏付け。下の「値札用の useQueries を足しても...」テストで使う）。
   const programDetailRequests: number[] = []
-  // `holdProgramDetails` が true のとき、番組の詳細（GET /api/programs/{id}）を
+  // `holdProgramDetails` が true のとき、番組の詳細（GET /api/sites/{site}/programs/{programId}）を
   // 即座に解決せず保留する。「検索は解決したが durationMs は 1 件も届いていない」
   // 瞬間（`loadedDurationsMs` が空のまま `totalCount > 0`）を確実に再現するための
   // 仕掛け --- 実タイマーに依存すると環境差でその瞬間を取りこぼしうる。
@@ -303,7 +303,7 @@ function stubApi(options?: {
           return Promise.resolve(jsonResponse({ error: invalidRegexMessage }, 400))
         }
         // EPG のローリングウィンドウから抜けた番組が結果に残る状況の再現。
-        // 検索は当たるが詳細（GET /api/programs/{id}）が 404 になる
+        // 検索は当たるが詳細（GET /api/sites/{site}/programs/{programId}）が 404 になる
         if (match.value === '幽霊')
           return Promise.resolve(jsonResponse([{ site: 'default', programId: 999 }]))
       }
@@ -960,7 +960,7 @@ describe('SearchPage', () => {
       await addKeyword('ニュース')
       await userEvent.click(screen.getByRole('button', { name: '検索' }))
 
-      // 検索（POST .../search）は解決したが、番組の詳細（GET /api/programs/{id}）は
+      // 検索（POST .../search）は解決したが、番組の詳細（GET /api/sites/{site}/programs/{programId}）は
       // まだ 1 件も返っていない瞬間を確実に再現する（`holdProgramDetails` で保留）。
       // 件数は totalCount だけで確定するので先に出るが、時間はサンプルが無いので
       // 「算出中…」になる。
