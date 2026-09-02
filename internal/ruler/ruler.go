@@ -295,14 +295,21 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 	tq := sqlcgen.New(tx)
 
 	// program_snapshots への追従更新（#27）。「射影にある間は更新、消えたら凍結」を
-	// 担う唯一の書き手がここ。なぜ existingSet も対象に含めるか: 猶予やラッチで
-	// 残る非 desired な行も「射影にまだ居る」限り追従させるため（issue #556、
-	// docs/schema/reservations.md §3.7）。凍結を保つのは
+	// 担う唯一の書き手がここ。snapshot は番組の事実を保持する表であり、skip 意図の
+	// ような不可逆なユーザー操作を表す列ではないため、skip 意図だけが行を支える場合も
+	// 射影にある限り追従させる（GC の終了判定で意図を CASCADE させないため）。
+	// なぜ existingSet も対象に含めるか: 猶予やラッチで残る非 desired な行も「射影に
+	// まだ居る」限り追従させるため（issue #556、docs/schema/reservations.md §3.7）。凍結を保つのは
 	// UpsertProgramSnapshotsFromProjection 内の epg_programs との JOIN 自体で、
 	// 射影に無い programId をここに含めても何もされない。reservations.program_fkey
 	// が program_snapshots を参照するため、予約行の upsert より先に実行する
 	// 必要がある。
 	snapshotSyncIDs := slices.Clone(desiredIDs)
+	for id := range skipIntent {
+		if _, ok := desired[id]; !ok {
+			snapshotSyncIDs = append(snapshotSyncIDs, id)
+		}
+	}
 	for id := range existingSet {
 		if _, ok := desired[id]; !ok {
 			snapshotSyncIDs = append(snapshotSyncIDs, id)
