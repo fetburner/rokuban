@@ -253,6 +253,7 @@ func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[EncodeJobAr
 	}
 	cmdArgs := BuildFFmpegArgs(profile, inputPath, scratchOut)
 	cmd := exec.CommandContext(ctx, ffmpeg, cmdArgs...)
+	setWorkerExecWaitDelay(cmd)
 	// 進捗は stdout（-progress pipe:1）。stderr はエラー診断のみ（進捗に使わない）。
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

@@ -150,18 +150,27 @@ func TestEncodeWorker_AttemptRow_FailedOnFailure(t *testing.T) {
 // キャンセルすると markEncodeAttemptRunning 自身が ctx に紐付いた DB 書き込みで
 // 失敗し、行が一度も書かれない（このテストが検証したい状態に到達できない）。
 //
-// startedMarker は sleep の前に作られる空ファイルのパス。呼び出し側はこれの
+// startedMarker は sleep の起動後に作られる空ファイルのパス。呼び出し側はこれの
 // 出現を cmd.Start() が実際に成功した証拠として待つ（下のテストのコメント参照）。
-func installSlowFakeFFmpeg(t *testing.T, sleepSeconds int) (ffmpegPath, startedMarker string) {
+// childPIDMarker は、テスト終了時に孤児化した sleep を回収するための PID ファイル。
+func installSlowFakeFFmpeg(t *testing.T, sleepSeconds int) (ffmpegPath, startedMarker, childPIDMarker string) {
 	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "ffmpeg")
 	startedMarker = filepath.Join(dir, "started")
-	script := "#!/bin/sh\n: > " + startedMarker + "\nsleep " + strconv.Itoa(sleepSeconds) + "\n"
+	childPIDMarker = filepath.Join(dir, "child-pid")
+	// バックグラウンドの sleep は親 shell が kill されても stderr の fd を
+	// 継承したまま生き残る。これが WaitDelay の再現対象になる。
+	script := "#!/bin/sh\n" +
+		"sleep " + strconv.Itoa(sleepSeconds) + " &\n" +
+		": > " + childPIDMarker + "\n" +
+		"echo $! > " + childPIDMarker + "\n" +
+		": > " + startedMarker + "\n" +
+		"wait\n"
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	return path, startedMarker
+	return path, startedMarker, childPIDMarker
 }
 
 // TestEncodeWorker_AttemptRow_CtxCanceledLeavesRunning は ctx キャンセル
@@ -215,31 +224,33 @@ func TestEncodeWorker_AttemptRow_CtxCanceledLeavesRunning(t *testing.T) {
 	}
 	mediaDir := t.TempDir()
 	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "x/attempt-cancel.m2ts", nil, []byte("data"))
-	// workReturnTimeout は slowFFmpegSleepSeconds より十分大きく保つ必要が
-	// **ある**（論理的に独立ではない）--- 計測: cancel() から Work() が返るまで
-	// は sleep の長さとほぼ 1:1 で追従する（sleepSeconds=2 で ~2016ms、
-	// sleepSeconds=6 で ~6015ms、いずれも cancel からの経過。TestEncodeWorker_
-	// AttemptRow_CtxCanceledLeavesRunning に一時的な計測コードを入れて確認）。
+	// workReturnTimeout は WaitDelay より十分大きく、WaitDelay を外した場合の
+	// sleep 全長より短く保つ。WaitDelay が無いと cancel() から Work() が返るまで
+	// sleep の全長（ここでは 12 秒）待つため、このテストがタイムアウトする。
 	// 原因: encode.go の cmd.Stderr は *os.File ではなく &strings.Builder な
-	// ので、os/exec は stderr を読む中継 goroutine を立て、cmd.Wait（
-	// WaitDelay 未設定）はその goroutine が EOF で終わるまで待つ
-	// （awaitGoroutines）。/bin/sh はスクリプトファイルの末尾コマンドでも
-	// exec せず fork する（sh -c の文字列に対する exec 最適化は、スクリプト
-	// ファイルの実行には効かない）ため、kill は sh だけを殺し、sh の子の
-	// sleep は inherited な stderr の書き込み端を握ったまま生き残る。
+	// ので、os/exec は stderr を読む中継 goroutine を立て、cmd.Wait はその
+	// goroutine が EOF で終わるまで待つ（awaitGoroutines）。/bin/sh は子の
+	// sleep が inherited な stderr の書き込み端を握ったままでも親だけ kill される。
 	// CI のランナーは全て Linux（.github/workflows/ci.yml、/bin/sh は
 	// dash）なので #552 は Linux 上で起きたフレーク --- macOS 固有の話ではない。
-	// このテストと同じ形（sleep 5、Stderr を &strings.Builder にした場合）の
-	// 最小 repro で両方計測: linux/arm64 dash（golang:1.25 コンテナ）で
-	// cancel→Wait = 4.9999s、darwin/arm64 で 5.0193s、いずれも sleep の
-	// 長さとほぼ一致（Stderr 無しなら linux 301µs / darwin 1.13ms、
-	// 即座に返る）。Wait() はその sleep が寿命を迎えて stderr が閉じるまで、
-	// 実質 sleep の残り時間だけ返らない。5 秒 vs 5 秒だったときに確率的に
-	// 落ちていたのはこの関係そのもの（issue #552）。この 2 つを同じ値・近い値に戻すと
-	// 同じフレークが復活するので、上限側を十分離して保つ。
-	const slowFFmpegSleepSeconds = 2
-	const workReturnTimeout = 10 * time.Second
-	slowFFmpeg, ffmpegStarted := installSlowFakeFFmpeg(t, slowFFmpegSleepSeconds)
+	// sleep は WaitDelay と十分離す。短すぎると WaitDelay が無くてもテストが
+	// 通ってしまい、回帰を検出できない。
+	const slowFFmpegSleepSeconds = 12
+	const workReturnTimeout = 8 * time.Second
+	slowFFmpeg, ffmpegStarted, childPIDMarker := installSlowFakeFFmpeg(t, slowFFmpegSleepSeconds)
+	defer func() {
+		pidBytes, err := os.ReadFile(childPIDMarker)
+		if err != nil {
+			return
+		}
+		pid, err := strconv.Atoi(strings.TrimSpace(string(pidBytes)))
+		if err != nil {
+			return
+		}
+		if process, err := os.FindProcess(pid); err == nil {
+			_ = process.Kill()
+		}
+	}()
 
 	w := &EncodeWorker{
 		Pool:       pool,
@@ -303,10 +314,14 @@ func TestEncodeWorker_AttemptRow_CtxCanceledLeavesRunning(t *testing.T) {
 			}
 		},
 	)
+	cancelAt := time.Now()
 	cancel()
 
 	select {
 	case err := <-workErr:
+		if elapsed := time.Since(cancelAt); elapsed >= workReturnTimeout {
+			t.Fatalf("Work() returned after %s; WaitDelay did not bound the stderr pipe wait", elapsed)
+		}
 		if err == nil {
 			t.Fatal("expected error with canceled ctx")
 		}

@@ -310,6 +310,7 @@ func (w *ThumbnailWorker) commandOutput(ctx context.Context, name string, args .
 
 func commandOutput(ctx context.Context, name string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
+	setWorkerExecWaitDelay(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return out, fmt.Errorf("%s %v: %w\n%s", name, args, err, truncateOutput(out))
