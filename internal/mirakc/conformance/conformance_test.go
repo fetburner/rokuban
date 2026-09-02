@@ -119,33 +119,18 @@ func TestConformance(t *testing.T) {
 			t.Fatalf("この時点で録画中のはずが status=%s だった。フィクスチャが壊れている疑いがある", rec.Recording.Status)
 		}
 
-		// 受け入れ項目 4 の前半（divergence a）: `GetRecord` の `content.length` は
-		// 録画中も非 nil で、時間とともに増える（`docs/recording/ingest.md` §5.6 の
-		// 進捗分母 `record_sync.content_length` がこれに依存する）。
 		if rec.Content.Length == nil {
 			t.Fatalf("録画中なのに GetRecord の Content.Length が nil。ingest の進捗分母として非 nil のはず（docs/recording/ingest.md §5.6）")
 		}
 		firstLen := *rec.Content.Length
-		time.Sleep(2 * time.Second)
-		if rec2, err := client.GetRecord(ctx, recordID); err == nil && rec2.Content.Length != nil {
-			if *rec2.Content.Length <= firstLen {
-				t.Errorf("録画中に Content.Length が増えていない: %d -> %d", firstLen, *rec2.Content.Length)
-			}
-		}
-
-		// 罠: HEAD は録画完了後にしか打たないのが普通だが（`checkRecordStream`）、ここでは
-		// あえて録画中に叩いて「長さを返さない」ことそのものを確定する。
-		if headLen, err := client.HeadRecordStream(ctx, recordID); err != nil {
-			t.Errorf("HeadRecordStream（録画中）: %v", err)
-		} else if headLen >= 0 {
-			t.Errorf("録画中の HeadRecordStream の Content-Length = %d、録画中は不明（負値）のはず", headLen)
-		}
 
 		// 罠（`GetRecord` の `content.length` とは別物）: `records/{id}/stream` への
 		// **Range なし** の GET は録画中は Content-Length ヘッダを返さない
 		// （`transfer-encoding: chunked` になる。実 mirakc で確認した --- `compute_content_length`
 		// が `None` を返す）。content がまだ 0 バイトの間は 204 になりうる（これも実 mirakc で
-		// 確認した挙動）ので、実際にバイトが流れ始めるまで軽くリトライしてから判定する。
+		// 確認した挙動。実測: 204 が 1.96 秒で 19 連続）ので、実際にバイトが流れ始めるまで
+		// 軽くリトライしてから判定する。この 204 の窓はここより後ろに時間のかかる処理を
+		// 置くと通り過ぎてしまうので、この節は「録画中」検出直後に置く。
 		// Go の http.Response.ContentLength は Content-Length ヘッダの有無だけで決まる
 		// （無ければ -1）ので、Client の戻り値だけでこの前提を判定できる（生のヘッダを読まなくてよい）。
 		length, err := streamContentLengthDuringRecording(t, ctx, client, recordID, 0)
@@ -168,6 +153,46 @@ func TestConformance(t *testing.T) {
 			t.Errorf("StreamRecord(offset=1)（録画中）: %v（Range が届いていない）", err)
 		} else if rangedLength < 0 {
 			t.Errorf("録画中の StreamRecord(offset=1) の Content-Length = %d、Range 付きなら定まるはず", rangedLength)
+		}
+
+		// 罠: HEAD は録画完了後にしか打たないのが普通だが（`checkRecordStream`）、ここでは
+		// あえて録画中に叩いて「長さを返さない」ことそのものを確定する。HEAD には
+		// streamContentLengthDuringRecording のような 204 リトライが無いので、content が
+		// 0 バイトの窓を確実に抜けている（= 上の offset=0 の StreamRecord が既に成功した）
+		// あとに置く --- 通常は「録画中」検出直後から数百 ms 以内に埋まる窓だが、
+		// ここで直接叩くと同じ窓に負けて 204 になりうる（実測）。
+		if headLen, err := client.HeadRecordStream(ctx, recordID); err != nil {
+			t.Errorf("HeadRecordStream（録画中）: %v", err)
+		} else if headLen >= 0 {
+			t.Errorf("録画中の HeadRecordStream の Content-Length = %d、録画中は不明（負値）のはず", headLen)
+		}
+
+		// 受け入れ項目 4 の前半（divergence a）: `GetRecord` の `content.length` は
+		// 録画中も非 nil で、時間とともに増える（`docs/recording/ingest.md` §5.6 の
+		// 進捗分母 `record_sync.content_length` がこれに依存する）。
+		//
+		// 実測: mirakc はこの値を 32768 バイト刻み・約 2.28 秒周期でしか進めない。固定
+		// sleep（例えば 2 秒）だと窓を外して増加を見逃すことがある（実測で 12% 相当）ので、
+		// 増えるまでポーリングする（3 周期分の余裕を見て 8 秒。この節はこの節より後ろに
+		// 他の判定を置かないので、待っても他の判定の窓を潰さない）。GetRecord のエラーや
+		// nil への逆戻りは、それ自体が退行なので飲み込まずに即 Fatal にする。
+		deadline := time.Now().Add(8 * time.Second)
+		for {
+			rec2, err := client.GetRecord(ctx, recordID)
+			if err != nil {
+				t.Fatalf("GetRecord（Content.Length の増加待ち）: %v", err)
+			}
+			if rec2.Content.Length == nil {
+				t.Fatalf("録画中に Content.Length が nil に戻った（%d だったはず）", firstLen)
+			}
+			if *rec2.Content.Length > firstLen {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Errorf("録画中に Content.Length が %d から 8 秒経っても増えなかった", firstLen)
+				break
+			}
+			time.Sleep(300 * time.Millisecond)
 		}
 	})
 

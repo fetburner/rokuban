@@ -81,7 +81,7 @@ clean なファイルでは「誤検知がないこと」しか確かめられ�
 
 ### 5.3 リトライ設計（3 層）
 
-- `GET /records/{id}/stream` は **Range ヘッダー対応** → `Range: bytes=N-` で途中再開可能。`internal/mirakc/conformance` の `TestConformance/CompletedRecordStreamAndDelete`（完了後）・`TestConformance/RecordingInProgress`（録画中）が mirakc 4.0.0-dev.0 相当に対して判定している
+- `GET /records/{id}/stream` は **Range ヘッダー対応** → `Range: bytes=N-` で途中再開可能。`internal/mirakc/conformance` の `TestConformance/CompletedRecordStreamAndDelete`（完了後）・`TestConformance/RecordingInProgress`（録画中）が mirakc 4.0.0-dev.0 相当に対して判定している。録画中の Range 応答は `Content-Range: bytes N-M/*` のように総サイズが `*`（不明）になる（実測。Content-Length 自体は具体値を返す）
 - **フィルタ併用時は Range が 400**。ingest は素の TS が欲しいのでフィルタなしで pull → 常に Range 可（ソース確認。`mirakc-core/src/web/api/recording/records/stream.rs`。conformance テストはフィルタを併用しないので未判定）
 - **HEAD エンドポイントあり** → 転送せず正確な Content-Length を取得できる。ただし録画中は Content-Length を返さない（`HeadRecordStream` は `-1`。黙って `-1` を長さとして使うと ingest がゼロ長ファイルを正しいものとして扱いかねない）ので、HEAD を打つのは下記「層 3」のとおり録画完了後に限る。`TestConformance/RecordingInProgress` が録画中に `-1` を返すこと、`TestConformance/CompletedRecordStreamAndDelete` が完了後の Content-Length 一致を、それぞれ mirakc 4.0.0-dev.0 相当に対して判定している
 
@@ -174,6 +174,9 @@ record では分母を NULL のままにし、UI は % を出さずバイト数�
 置かない）。この分母が録画中も非 null で時間とともに増えることは `TestConformance/RecordingInProgress`
 が mirakc 4.0.0-dev.0 相当に対して判定している --- `records/{id}/stream` の `Content-Length`
 ヘッダ（録画中は不明）とは別物であることに注意（上記「HEAD エンドポイントあり」参照）。
+**録画中の最初の観測は 0 でありうる（実測）。** 0 は「mirakc が length を返さない」場合の
+NULL とは違い、非 null な `*int64(0)` として `watcher.go` の `contentLengthPtr` を素通りする
+ので、上記の NULL ガードでは捕まらない。0 を分母にした場合の UI の挙動は本稿の対象外。
 
 **「リトライ中」を「取り込み待ち」と区別する値は API に持たない。** 区別するには
 `river_job` を API 契約に露出させるか、失敗の観測という別寿命の値を進捗行に混ぜる
