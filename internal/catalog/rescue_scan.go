@@ -111,10 +111,10 @@ func rescueStorage(ctx context.Context, pool *pgxpool.Pool, mediaDir, site strin
 		result.MediaAssets++
 		return nil
 	})
-	if err != nil {
-		return nil, fmt.Errorf("scanning media_dir for rescue: %w", err)
-	}
 
+	// site の内訳は walk が最後まで終わらなかった run でこそ運用者が読みたい
+	// （何が起きて途中で止まったかの手がかりになる）ので、エラーで return する
+	// 前に必ず出す。
 	for _, s := range slices.Sorted(maps.Keys(crossSiteCounts)) {
 		slog.Info("rescue: recovered files under a different site's sites/ prefix than --site; using the prefix",
 			"site", s, "count", crossSiteCounts[s], "flag_site", site)
@@ -124,6 +124,9 @@ func rescueStorage(ctx context.Context, pool *pgxpool.Pool, mediaDir, site strin
 			"site", s, "count", unknownSiteCounts[s])
 	}
 
+	if err != nil {
+		return nil, fmt.Errorf("scanning media_dir for rescue: %w", err)
+	}
 	return result, nil
 }
 
@@ -143,7 +146,7 @@ func rescueAssetKind(name string) (kind string, profile *string, ok bool) {
 // SiteRelPathPrefix は原本 rel_path の site 名前空間の固定 1 段目
 // （docs/storage/contract.md §「原本の sites/{site}/ 前置」）。書き手は
 // internal/worker/ingest.go の determineRelPath、読み手はここ
-// （siteForRescuedFile）の 2 つだけなので、リテラルの重複を避けてこの定数で
+// （classifySiteForRescuedFile）の 2 つだけなので、リテラルの重複を避けてこの定数で
 // 揃える。
 const SiteRelPathPrefix = "sites/"
 

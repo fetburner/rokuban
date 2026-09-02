@@ -527,7 +527,7 @@ func (w *IngestWorker) determineRelPath(ctx context.Context, args IngestJobArgs,
 	// rel_path のパス区切りは DB 上で '/' 規約（internal/worker/encode.go の
 	// EncodedRelPath 参照）。args.Site は site 名の構文制約で '/' を含み得ない
 	// ので単純な文字列結合で足りる。catalog.SiteRelPathPrefix は rescue の
-	// ストレージスキャン（internal/catalog の siteForRescuedFile）がこの前置を
+	// ストレージスキャン（internal/catalog の classifySiteForRescuedFile）がこの前置を
 	// 逆に読むので、書き手と読み手でリテラルを重複させずここに揃える。
 	relPath = catalog.SiteRelPathPrefix + args.Site + "/" + relPath
 	fullPath, err = mediapath.Resolve(w.MediaDir, relPath)

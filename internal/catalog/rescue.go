@@ -51,7 +51,7 @@ type RescueResult struct {
 // registrySites は `mirakcs:` レジストリの site 名一覧。ストレージ走査で
 // `sites/{site}/` 前置から site を読んだとき、その site がレジストリに
 // 無ければ typo/ゴミディレクトリの疑いがあるとして Warn で目立たせる
-// （siteForRescuedFile 参照）。catalog JSON からの復元では使わない。
+// （classifySiteForRescuedFile 参照）。catalog JSON からの復元では使わない。
 func RescueLatest(ctx context.Context, pool *pgxpool.Pool, mediaDir, site string, registrySites []string) (*RescueResult, error) {
 	sel, err := SelectLatest(mediaDir)
 	if sel != nil {
