@@ -310,7 +310,7 @@ export function SearchPage() {
    * キャッシュを共有する）。**実測済み**: `search.test.tsx` の
    * 「読み込みが母数に追いついていない間は『先頭 N 件』からの外挿である旨を
    * 明記し、追いつくと消える（値札のために追加の HTTP リクエストは発生しない）」
-   * が `GET /api/programs/{id}` の呼び出し件数を数えて確認している（37 件マッチ
+   * が `GET /api/sites/{site}/programs/{programId}` の呼び出し件数を数えて確認している（37 件マッチ
    * で 30 → 37 と増える一方、重複が無いこと）。
    *
    * **`site` は `useCurrentSite()` ではなく行が運ぶ `match.site` を使う**
