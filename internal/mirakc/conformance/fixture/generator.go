@@ -47,6 +47,13 @@ const (
 	// EventLeadIn は「番組が何秒前に始まったことにするか」。0 だと mirakc が EIT p/f を
 	// 読んだ直後の 1 パケットだけを present と following の境界で取りこぼす可能性がある
 	// ため、余裕を持たせる。
+	//
+	// NewConfig のコメントのとおり EventStart は呼び出しのたびに作り直されるので、EPG
+	// 収集用の呼び出し（scan-services / sync-clocks / update-schedules）で読まれた
+	// startAt は、実際に録画が始まる呼び出しの時点では既にいくらか古い。その古さの分だけ
+	// mirakc が実際に録画する長さは EventDuration より短くなる（実測でこの古さは
+	// 8〜16 秒、録画時間は 16〜24 秒。conformance_test.go の CompletedRecordStreamAndDelete
+	// が観測値をログする）。
 	EventLeadIn = 5 * time.Second
 )
 

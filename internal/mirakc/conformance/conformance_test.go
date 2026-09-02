@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"testing"
@@ -113,10 +114,24 @@ func TestConformance(t *testing.T) {
 			t.Fatalf("GetRecord: %v", err)
 		}
 		if rec.Recording.Status != "recording" {
-			// EventDuration は 30 秒あり、この時点はまだその序盤のはず。この状態のまま
-			// 「finished だった」を通すと、この項目が何も検査しないまま緑になる
-			// （フィクスチャが壊れて録画が一瞬で終わった、等）。
-			t.Fatalf("この時点で録画中のはずが status=%s だった。フィクスチャが壊れている疑いがある", rec.Recording.Status)
+			// EventDuration は 30 秒あり、この時点はまだその序盤のはずだが、2 つの
+			// 別原因で早期に status が進みうる。区別できるよう番組の startAt からの
+			// 経過を添える:
+			//   - フィクスチャが壊れている（EIT p/f が読めない等）→ 経過は EventDuration
+			//     よりずっと小さいはず
+			//   - EPG のスナップショットが古い --- fixture.NewConfig は呼び出しのたびに
+			//     EventStart を作り直すので、同じ 1 本のチューナーを取り合う
+			//     scan-services/sync-clocks/update-schedules が直列化されて更新間隔が
+			//     延びると（実測 7〜10 秒）、CreateSchedule 時点の startAt は数秒〜
+			//     十数秒古いことがある。経過が EventDuration に近ければこちらが濃厚
+			age := "unknown"
+			if rec.Program.StartAt != nil {
+				age = time.Since(rec.Program.StartAt.Time()).String()
+			}
+			t.Fatalf("この時点で録画中のはずが status=%s だった（番組 startAt からの経過=%s、"+
+				"EventDuration=%s）。経過が EventDuration に近ければ EPG スナップショットが古かっただけ、"+
+				"大きく下回るならフィクスチャが壊れている疑いがある",
+				rec.Recording.Status, age, fixture.EventDuration)
 		}
 
 		if rec.Content.Length == nil {
@@ -235,8 +250,15 @@ func TestConformance(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetRecord: %v", err)
 		}
+		// フィクスチャの EventStart は呼び出しのたびに作り直されるので（fixture.NewConfig の
+		// コメント参照）、mirakc が実際に録画した長さは EventDuration そのものではなく
+		// EventDuration からスナップショットの古さを引いたものになる（実測で 16〜24 秒ほど）。
+		// ミステリーにしないためにここで観測値を出しておく。
+		if rec.Recording.Duration != nil {
+			t.Logf("mirakc が観測した録画時間 = %dms（EventDuration = %s）", *rec.Recording.Duration, fixture.EventDuration)
+		}
 		if rec.Content.Length == nil || *rec.Content.Length == 0 {
-			t.Fatalf("完了後の Content.Length = %v、非ゼロのはず", rec.Content.Length)
+			t.Fatalf("完了後の Content.Length = %s、非ゼロのはず", ptrStr(rec.Content.Length))
 		}
 		wantLen := int64(*rec.Content.Length)
 
@@ -305,10 +327,20 @@ func TestConformance(t *testing.T) {
 
 func strPtr(s string) *string { return &s }
 
+// ptrStr は *T を人が読める文字列にする。nil ならそう書く。%v をポインタに直接渡すと
+// （非 nil のスカラー型ポインタの場合）中身ではなく 16 進アドレスが出る
+// （実測: 「完了後の Content.Length = 0x1092447225e0」）ので、失敗メッセージにはこちらを使う。
+func ptrStr[T any](p *T) string {
+	if p == nil {
+		return "nil"
+	}
+	return fmt.Sprintf("%v", *p)
+}
+
 func requireContentPath(t *testing.T, label string, got *string, want string) {
 	t.Helper()
 	if got == nil || *got != want {
-		t.Fatalf("%s の contentPath = %v、want %q（mirakc が正規化して返している可能性がある）", label, got, want)
+		t.Fatalf("%s の contentPath = %s、want %q（mirakc が正規化して返している可能性がある）", label, ptrStr(got), want)
 	}
 }
 
