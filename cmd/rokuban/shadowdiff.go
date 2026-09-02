@@ -45,11 +45,12 @@ func newShadowDiffCmd() *cobra.Command {
 				return err
 			}
 
-			// shadow-diff は単一サイト用のまま（issue #183 の「含むもの」7）。
-			// EPGStation 側も site ごとに分かれるのかを含め、多サイトでの意味論を
-			// 決める書き手がまだいないので、mirakcs が 2 要素以上なら形を決めずに
-			// 明示的なエラーで落とす（不変条件 11）。
-			site, err := requireSingleSite(cfg.Registry(), "shadow-diff")
+			// EPGStation は東京の 1 台なので、比較対象の site を --site で名指し
+			// する（issue #533）。解決規則は enqueue / rescue と共有
+			// （resolveSiteFlag: 未指定かつレジストリ 1 要素ならその 1 つ、
+			// 2 要素以上なら必須。--site の値はレジストリ照合し、タイポを無音で
+			// 成功させない）。
+			site, err := resolveSiteFlag(cmd, cfg.Registry())
 			if err != nil {
 				return err
 			}
@@ -64,7 +65,7 @@ func newShadowDiffCmd() *cobra.Command {
 			}
 			defer pool.Close()
 
-			report, err := runShadowDiff(ctx, sqlcgen.New(pool), epgstation.NewClient(epgstationURL, nil), site.Site)
+			report, err := runShadowDiff(ctx, sqlcgen.New(pool), epgstation.NewClient(epgstationURL, nil), site)
 			if err != nil {
 				return err
 			}
@@ -86,6 +87,8 @@ func newShadowDiffCmd() *cobra.Command {
 		// フラグ名は定数なので、開発時のタイプミス以外では起こらない。
 		panic(err)
 	}
+	cmd.Flags().String("site", "",
+		"比較対象のサイト名（省略時: レジストリが 1 要素ならその 1 つ、2 要素以上なら必須）")
 
 	return cmd
 }

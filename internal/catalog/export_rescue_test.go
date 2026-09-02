@@ -219,7 +219,7 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 
 	// --- rescue ---
 	// 実際の入口（RescueLatest）を通す: 世代の完成判定 → 選択 → 復元まで。
-	result, err := RescueLatest(ctx, pool, mediaDir, "default")
+	result, err := RescueLatest(ctx, pool, mediaDir, "default", []string{"default"})
 	if err != nil {
 		t.Fatalf("RescueLatest: %v", err)
 	}
@@ -344,7 +344,7 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 	}
 
 	// --- idempotent second pass ---
-	result2, err := RescueLatest(ctx, pool, mediaDir, "default")
+	result2, err := RescueLatest(ctx, pool, mediaDir, "default", []string{"default"})
 	if err != nil {
 		t.Fatalf("RescueLatest second: %v", err)
 	}
@@ -502,7 +502,7 @@ func TestExport_ConcurrentIngestStaysConsistent(t *testing.T) {
 	if _, err := Write(mediaDir, lastDoc, 7); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
-	if _, err := RescueLatest(ctx, pool, mediaDir, "default"); err != nil {
+	if _, err := RescueLatest(ctx, pool, mediaDir, "default", []string{"default"}); err != nil {
 		t.Fatalf("RescueLatest after concurrent export: %v", err)
 	}
 }

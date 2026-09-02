@@ -56,8 +56,12 @@ curl -s "$EPGSTATION_URL/api/reserves?type=all&isHalfWidth=false&limit=1&offset=
 突き合わせ、差分を標準出力にレポートするサブコマンド。
 
 ```sh
-rokuban shadow-diff --config config.yml --epgstation-url http://localhost:8888
+rokuban shadow-diff --config config.yml --epgstation-url http://localhost:8888 --site tokyo
 ```
+
+`--site` は比較対象の site を選ぶ。`mirakcs:` が 1 要素なら省略でき、2 要素以上（複数拠点）
+の構成では必須（未知の site 名は起動エラーで弾く。EPGStation は東京の 1 台なので比較対象を
+名指しする）。
 
 出力例（`Both` は件数のみ、`RokubanOnly` / `EPGStationOnly` / `Expected` は明細も出る）:
 

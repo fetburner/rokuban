@@ -34,11 +34,13 @@ catalog が無ければ media_dir を走査し、TS / M2TS / MP4 / MKV / WebM �
 				return err
 			}
 
-			// rescue は単一サイト用のまま（issue #183 の「含むもの」7）。多サイトの
-			// 意味論（複数サイトの catalog をどう束ねるか）を決める書き手がまだ
-			// いないので、mirakcs が 2 要素以上なら形を決めずに明示的なエラーで
-			// 落とす（不変条件 11）。
-			site, err := requireSingleSite(cfg.Registry(), "rescue")
+			// --site の解決規則は enqueue / shadow-diff と共有する
+			// （resolveSiteFlag。issue #533）。catalog JSON からの復元は各行が
+			// 自分の site を持つので --site を使わないが、catalog を 1 世代も
+			// 復元できずストレージ走査に落ちたときは、走査対象ファイルが site を
+			// 持たない（sites/{site}/ 前置の無い、前置導入前の ingest）ケースの
+			// フォールバック先として使う（internal/catalog.classifySiteForRescuedFile）。
+			site, err := resolveSiteFlag(cmd, cfg.Registry())
 			if err != nil {
 				return err
 			}
@@ -52,16 +54,23 @@ catalog が無ければ media_dir を走査し、TS / M2TS / MP4 / MKV / WebM �
 			}
 			defer pool.Close()
 
-			return runRescue(ctx, pool, cfg.Storage.MediaDir, site.Site, cmd.OutOrStdout())
+			return runRescue(ctx, pool, cfg.Storage.MediaDir, site, registryNames(cfg.Registry()), cmd.OutOrStdout())
 		},
 	}
+	cmd.Flags().String("site", "",
+		"対象サイト名（catalog が無くストレージ走査に落ちたとき、site 前置の無いファイルに使う。"+
+			"省略時: レジストリが 1 要素ならその 1 つ、2 要素以上なら必須）")
 	return cmd
 }
 
 // runRescue は catalog 復元の本体。cobra の RunE は配線に留め、DB / ファイル
 // 操作はここに閉じ込める（runShadowDiff / runEnqueue と同じ切り出し）。
-func runRescue(ctx context.Context, pool *pgxpool.Pool, mediaDir, site string, out io.Writer) error {
-	result, err := catalog.RescueLatest(ctx, pool, mediaDir, site)
+//
+// registrySites は `mirakcs:` レジストリの site 名一覧
+// （catalog.RescueLatest 参照。ストレージ走査で見つけた sites/{site}/ 前置の
+// site がタイポかどうかの判定に使う）。
+func runRescue(ctx context.Context, pool *pgxpool.Pool, mediaDir, site string, registrySites []string, out io.Writer) error {
+	result, err := catalog.RescueLatest(ctx, pool, mediaDir, site, registrySites)
 	if err != nil {
 		return err
 	}

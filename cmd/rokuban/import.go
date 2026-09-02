@@ -82,9 +82,10 @@ ARE（Postgres 正規表現）非互換の正規表現、%CHNAME% 等の未対�
 			if err != nil {
 				return err
 			}
-			// 他の単発 CLI コマンド（rescue/shadow-diff）と同じく、多サイトの
-			// 意味論を決める書き手がまだいないので単一サイトに限定する
-			// （不変条件 11）。
+			// rescue / shadow-diff は issue #533 で --site による多サイト対応に
+			// 置き換わったが、import epgstation の移行先の決め方（EPGStation
+			// 側も site ごとに分かれるのか）はまだ書き手がいないので単一サイトに
+			// 限定したまま（不変条件 11）。
 			site, err := requireSingleSite(cfg.Registry(), "import epgstation")
 			if err != nil {
 				return err

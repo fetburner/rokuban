@@ -43,7 +43,7 @@ GC がその番組のスナップショットを刈った後に ingest が走る
 
 ### disaster recovery（catalog + rescue）
 
-`rokuban rescue` は **DB を失った後にだけ使う**。**live DB を catalog の内容で上書きするので健全性の確認には使わない**（確認は `rokuban catalog verify`。[DB 運用](database.md) のバックアップ節）。ストレージを走査し、
+`rokuban rescue` は **DB を失った後にだけ使う**。**live DB を catalog の内容で上書きするので健全性の確認には使わない**（確認は `rokuban catalog verify`。[DB 運用](database.md) のバックアップ節）。`mirakcs:` が 2 要素以上（複数拠点）の構成では `--site` が必須。ストレージを走査し、
 
 - `catalog/` に**完成世代**（manifest まで書き終えた世代ディレクトリ。[storage.md](../storage.md) §8）があれば照合してフルメタデータ（番組情報・ドロップ統計・保持ポリシー）ごと復元。最新世代が不完全なら 1 世代前へ落ち、飛ばした世代を理由付きで出力する
 - catalog にないファイルはディレクトリ規約・ファイル名から推定できる範囲で「素の asset」として登録（UI から見えて再生できる状態に戻す）
