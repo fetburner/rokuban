@@ -972,36 +972,50 @@ for (const spec of boundedListScreens) {
   } else {
     await gridTrigger.click()
     const grid = page.locator('[data-testid="program-grid"]')
-    await grid.waitFor({ timeout: 10000 }).catch(() => {})
-    const gridBox = (await grid.count()) === 0 ? null : await grid.boundingBox()
-    if ((await page.locator('[data-testid="bounded-page-content"]').count()) > 0) {
-      ng.push('programs-grid: 番組表グリッドに一覧本文の幅上限が適用されている')
-    }
-    if (gridBox === null || gridBox.width <= 1024.5) {
-      ng.push(`programs-grid: 番組表グリッドが 1024px 以下に制限されている（${gridBox?.width ?? '未取得'}px）`)
-    }
-
-    const columnMetrics = await grid.evaluate((element) => {
-      const columns = [...element.querySelectorAll('[data-testid="program-grid-column"]')]
-      const gridRect = element.getBoundingClientRect()
-      const firstRect = columns[0]?.getBoundingClientRect()
-      return {
-        count: columns.length,
-        width: firstRect?.width ?? 0,
-        availableWidth: firstRect ? element.clientWidth - (firstRect.left - gridRect.left) : 0,
+    const gridReady = await grid
+      .waitFor({ timeout: 10000 })
+      .then(() => true)
+      .catch(() => false)
+    if (!gridReady) {
+      // 待ちの失敗をここで飲んで先へ進むと、以下の「1024px 以下に制限されている」
+      // という**スタイル回帰の NG と同じ文言**で「そもそも描画されていない」ことが
+      // 報告されてしまう（issue #521 と同じ壊れ方）。加えて要素が 0 件のまま
+      // `grid.evaluate(...)` へ進むと、そちらは `locator.evaluate` 自身の既定の
+      // 30 秒待った末に例外で落ちる（測定: `locator.evaluate threw after 30006 ms:
+      // Timeout 30000ms exceeded`。NG リストに積まれず何も判定していない状態で
+      // 終わる）。ここで打ち切って区別できる文言を出す。
+      ng.push('programs-grid: 番組表グリッドが描画されない（待ちがタイムアウト）')
+    } else {
+      const gridBox = await grid.boundingBox()
+      if ((await page.locator('[data-testid="bounded-page-content"]').count()) > 0) {
+        ng.push('programs-grid: 番組表グリッドに一覧本文の幅上限が適用されている')
       }
-    })
-    const expectedColumnWidth = Math.min(
-      260,
-      Math.max(176, columnMetrics.availableWidth / services.length),
-    )
-    if (
-      columnMetrics.count !== services.length ||
-      Math.abs(columnMetrics.width - expectedColumnWidth) > 0.5
-    ) {
-      ng.push(
-        `programs-grid: 4 局の列幅が画面幅に追従していない（実測 ${columnMetrics.width}px、期待 ${expectedColumnWidth}px）`,
+      if (gridBox === null || gridBox.width <= 1024.5) {
+        ng.push(`programs-grid: 番組表グリッドが 1024px 以下に制限されている（${gridBox?.width ?? '未取得'}px）`)
+      }
+
+      const columnMetrics = await grid.evaluate((element) => {
+        const columns = [...element.querySelectorAll('[data-testid="program-grid-column"]')]
+        const gridRect = element.getBoundingClientRect()
+        const firstRect = columns[0]?.getBoundingClientRect()
+        return {
+          count: columns.length,
+          width: firstRect?.width ?? 0,
+          availableWidth: firstRect ? element.clientWidth - (firstRect.left - gridRect.left) : 0,
+        }
+      })
+      const expectedColumnWidth = Math.min(
+        260,
+        Math.max(176, columnMetrics.availableWidth / services.length),
       )
+      if (
+        columnMetrics.count !== services.length ||
+        Math.abs(columnMetrics.width - expectedColumnWidth) > 0.5
+      ) {
+        ng.push(
+          `programs-grid: 4 局の列幅が画面幅に追従していない（実測 ${columnMetrics.width}px、期待 ${expectedColumnWidth}px）`,
+        )
+      }
     }
   }
   await context.close()
@@ -2413,6 +2427,12 @@ for (const theme of themes) {
           ng.push(`[${theme}] 「その他」の見えない閉じるボタンが Tab 順に入っている`)
         }
 
+        // 待ちが失敗しても、直後に `document.activeElement === el` で実際の状態を
+        // 直接読み直す（forwardTrapped/backwardTrapped）ので、待ちの成否を経由せず
+        // 本当の結果を測っている。待ちはタイムアウトを早める（1000ms）ためだけの
+        // ものなので `.catch(() => {})` で飲んでよい --- 待ちが失敗＝実際に
+        // フォーカスが移っていない、という結果自体が下の NG 文言（「Tab が
+        // ポップオーバー外へ抜ける」）と一致し、スタイル回帰の NG とは混ざらない。
         await menuLinks.last().focus()
         await page.keyboard.press('Tab')
         await page
@@ -2466,6 +2486,18 @@ function sameRgb(a, b) {
  * checkExplicitFocusRing は対象を focus-visible にし、明示リングと --ring の色を測る。
  * box-shadow の存在だけでは透明色でも通るので、内側の border を canvas で画素化して
  * --ring と比較する。outline は none でなければブラウザ既定との二重表示として落とす。
+ *
+ * **before を測る前の `blur()` を外さないこと。** 呼び出し側がポップオーバー/
+ * ダイアログを開いた直後に呼ぶことがあり、その手のコンポーネントは開いた瞬間に
+ * 候補へ既定フォーカスを非同期に当てることがある（#521。base-ui の Popover が実例）。
+ * `blur()` 無しで before を測ると、その既定フォーカスがまだ来ていないか来た後かで
+ * before の値が実行のたびに割れ、before/after の差分判定が偽陽性の NG を出す。
+ * 4 呼び出し元で確認済み: 3 つは毎回フレッシュなページ遷移直後の呼び出しで
+ * `blur()` は no-op（アプリ側に `focusout`/`blur` ハンドラは無く、base-ui の
+ * `useDismiss` も `focusout` を束ねていない）。唯一 before に影響するのが
+ * ChannelOption の既定フォーカスで、そちらは元々 60% の確率で偽陽性を出していた
+ * （つまり実質的に一度も安定して機能していなかった）ので失う実カバレッジは無く、
+ * 常時リング付き（本来の回帰）は before/after が一致するのでむしろ新たに検出できる。
  */
 async function checkExplicitFocusRing(page, locator, label, theme) {
   if ((await locator.count()) === 0) {
@@ -2474,6 +2506,11 @@ async function checkExplicitFocusRing(page, locator, label, theme) {
   }
 
   const target = locator.first()
+  // before を測る前に明示的に blur する。呼び出し側（ChannelPicker のポップアップ）が
+  // 開いた直後に先頭候補へ既定フォーカスを当てることがあり、それを当てにしたまま
+  // before を測ると「既にリング付きの状態」を基準にしてしまい、後段の diff
+  // （before と after が同じなら NG）が常に真になる（issue #521）。
+  await target.evaluate((el) => el.blur())
   const beforeShadow = await target.evaluate((el) => getComputedStyle(el).boxShadow)
   await target.focus()
   const focusVisible = await target.evaluate((el) => el.matches(':focus-visible'))
@@ -2545,6 +2582,9 @@ async function checkExplicitFocusRing(page, locator, label, theme) {
       ng.push('スキップリンク: 固定位置または前面の重なり順になっていない')
     }
     await page.keyboard.press('Enter')
+    // 待ちが失敗しても、直後に同じ条件を `mainFocused` として直接読み直す。
+    // 待ちはタイムアウトを早めるだけのもので、失敗＝実際に main へ移っていない、
+    // という結果自体が下の NG 文言と一致するので `.catch(() => {})` で飲んでよい。
     await page.waitForFunction(() => document.activeElement?.id === 'main').catch(() => {})
     const mainFocused = await page.evaluate(() => document.activeElement?.id === 'main')
     if (!mainFocused) ng.push('スキップリンク: Enter 後に main へフォーカスが移らない')
@@ -2576,13 +2616,37 @@ for (const theme of themes) {
       await picker.focus()
       await page.keyboard.press('Enter')
       const popup = page.getByRole('dialog', { name: 'チャンネル' })
-      await popup.waitFor({ timeout: 5000 }).catch(() => {})
-      await checkExplicitFocusRing(
-        page,
-        popup.getByRole('button', { name: 'すべて', exact: true }),
-        'ChannelOption',
-        theme,
-      )
+      const popupOpened = await popup
+        .waitFor({ timeout: 5000 })
+        .then(() => true)
+        .catch(() => false)
+      if (!popupOpened) {
+        // ポップアップが開かなかったときに、スタイル回帰の NG（`checkExplicitFocusRing`
+        // が出す「明示リングが出ない」等）と同じ文言を出さないための分岐。
+        // なお #521 の実際の原因はこれではない（下記のコメント参照）。
+        ng.push(`[${theme}] チャンネルピッカーのポップアップが開かない（待ちがタイムアウト）`)
+      } else {
+        // #521 の実際の原因: base-ui の Popover は開いた直後、先頭候補（＝この
+        // 「すべて」自身）へ既定フォーカスを非同期に当てる（queueMicrotask →
+        // requestAnimationFrame 1 回。@base-ui/react の
+        // floating-ui-react/utils/enqueueFocus.js）。これを待たずに
+        // `checkExplicitFocusRing` が before を測ると、その既定フォーカスが
+        // 「まだ来ていない」か「もう来た」かで before の box-shadow が実行のたびに
+        // 割れ、before/after の差分判定が偽陽性の NG を出す（実機で確認: 同一コードで
+        // alreadyFocused が true/false どちらにもなり、before !== 'none' と NG が
+        // 8/8 で一致）。この既定フォーカスの発火は queueMicrotask → rAF 1 回の
+        // 一本道で、フレーム数は負荷が増えても変わらない（増えるのは 1 フレームの
+        // 長さ）ため、rAF を 2 回挟めば確実に済んでいる。
+        await page.evaluate(
+          () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))),
+        )
+        await checkExplicitFocusRing(
+          page,
+          popup.getByRole('button', { name: 'すべて', exact: true }),
+          'ChannelOption',
+          theme,
+        )
+      }
     }
     await context.close()
   }
@@ -2669,6 +2733,9 @@ for (const theme of themes) {
     }
     await detailLink.focus()
     await page.keyboard.press('Enter')
+    // どちらの待ちが失敗しても、直後に `<video>` の有無を直接数え直して判定する
+    // （遷移が終わっていなければ <video> も無いので、この 1 つの NG 文言に
+    // 正しく合流する）。待ちはタイムアウトを早めるだけなので飲んでよい。
     await page.waitForURL('**/recordings/12', { timeout: 5000 }).catch(() => {})
     await page.locator('video').first().waitFor({ timeout: 5000 }).catch(() => {})
     if ((await page.locator('video').count()) === 0) {
@@ -2942,8 +3009,16 @@ for (const reducedMotion of ['reduce', 'no-preference']) {
     await page.goto(URL_BASE + '/programs', { waitUntil: 'domcontentloaded' })
     const nav = page.locator('nav[aria-label="主ナビゲーション"]').last()
     const trigger = nav.getByRole('button', { name: 'その他' })
-    await trigger.waitFor({ timeout: 10000 }).catch(() => {})
-    if ((await trigger.count()) === 0) {
+    // `trigger.count()` は DOM に存在するかしか見ず、可視かは見ない。待ちが
+    // 失敗したのに count() だけで先へ進むと、非表示のまま `.click()` して
+    // Playwright 自身のアクショナビリティ待ちで長時間ハングした末に無関係な
+    // 例外で落ちる（NG として報告されない）おそれがある。待ちの成否そのもので
+    // 分岐する。
+    const triggerVisible = await trigger
+      .waitFor({ timeout: 10000 })
+      .then(() => true)
+      .catch(() => false)
+    if (!triggerVisible) {
       ng.push(`[${reducedMotion}] 「その他」トリガーが見つからない（ポップオーバー判定）`)
     } else {
       await trigger.click()
@@ -2981,6 +3056,9 @@ for (const reducedMotion of ['reduce', 'no-preference']) {
     await installApiStubs(page, apiHandler())
     await page.goto(URL_BASE + '/search', { waitUntil: 'domcontentloaded' })
     const button = page.getByRole('button', { name: '検索' })
+    // 待ちが失敗しても `motionOf` が `locator.count()` で見つからなさを直接
+    // 見分けて distinct な NG を出す（`.evaluate` 自体は可視性を要求しないので
+    // ハングもしない）。待ちはタイムアウトを早めるだけなので飲んでよい。
     await button.waitFor({ timeout: 10000 }).catch(() => {})
     const m = await motionOf(button)
     if (m === null) {
