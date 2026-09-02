@@ -160,7 +160,8 @@ function stubApi(options?: {
    * のままにすること** --- `useCurrentSite()` はレジストリの先頭サイト固定
    * （`<SiteGate>`）で、検索・番組詳細のパス（`/api/sites/default/...`）は
    * このスタブの他の分岐に既に決め打ちされている。2 つ目以降を足すのは
-   * `<ConditionFields>` のサイトチップ（`sites.length > 1` で出る）と
+   * `<ConditionFields>` のサイトチップ（レジストリと下書きの和集合が
+   * 2 つ以上で出る）と
    * `sites` の往復を確かめるテスト用（issue #531）。追加した site の
    * `/services` は `services` フィクスチャをそのまま返す。
    */

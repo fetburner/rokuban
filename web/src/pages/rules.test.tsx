@@ -106,8 +106,8 @@ function stubApi(
   // 同じクエリキーで GET /api/reservations を読む。既定は空。
   reservations: Reservation[] = [],
   // `GET /api/sites` の応答（既定 `['default']`）。`<ConditionFields>` の
-  // サイトチップは 2 つ以上のときだけ出るので、それを確かめるテストだけが
-  // 2 つ目以降を足す（issue #531）。
+  // サイトチップはレジストリと下書きの和集合が 2 つ以上のときだけ出るので、
+  // それを確かめるテストだけが 2 つ目以降を足す（issue #531）。
   siteNames: string[] = ['default'],
 ) {
   const putBodies: { id: number; body: RuleInput }[] = []
