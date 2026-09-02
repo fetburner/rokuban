@@ -974,9 +974,10 @@ for (const spec of boundedListScreens) {
       // 待ちの失敗をここで飲んで先へ進むと、以下の「1024px 以下に制限されている」
       // という**スタイル回帰の NG と同じ文言**で「そもそも描画されていない」ことが
       // 報告されてしまう（issue #521 と同じ壊れ方）。加えて要素が 0 件のまま
-      // `grid.evaluate(...)` へ進むと、そちらは待たずに例外で落ちる（NG リストに
-      // 積まれず何も判定していない状態で終わる）。ここで打ち切って区別できる
-      // 文言を出す。
+      // `grid.evaluate(...)` へ進むと、そちらは `locator.evaluate` 自身の既定の
+      // 30 秒待った末に例外で落ちる（測定: `locator.evaluate threw after 30006 ms:
+      // Timeout 30000ms exceeded`。NG リストに積まれず何も判定していない状態で
+      // 終わる）。ここで打ち切って区別できる文言を出す。
       ng.push('programs-grid: 番組表グリッドが描画されない（待ちがタイムアウト）')
     } else {
       const gridBox = await grid.boundingBox()
@@ -2479,6 +2480,18 @@ function sameRgb(a, b) {
  * checkExplicitFocusRing は対象を focus-visible にし、明示リングと --ring の色を測る。
  * box-shadow の存在だけでは透明色でも通るので、内側の border を canvas で画素化して
  * --ring と比較する。outline は none でなければブラウザ既定との二重表示として落とす。
+ *
+ * **before を測る前の `blur()` を外さないこと。** 呼び出し側がポップオーバー/
+ * ダイアログを開いた直後に呼ぶことがあり、その手のコンポーネントは開いた瞬間に
+ * 候補へ既定フォーカスを非同期に当てることがある（#521。base-ui の Popover が実例）。
+ * `blur()` 無しで before を測ると、その既定フォーカスがまだ来ていないか来た後かで
+ * before の値が実行のたびに割れ、before/after の差分判定が偽陽性の NG を出す。
+ * 4 呼び出し元で確認済み: 3 つは毎回フレッシュなページ遷移直後の呼び出しで
+ * `blur()` は no-op（アプリ側に `focusout`/`blur` ハンドラは無く、base-ui の
+ * `useDismiss` も `focusout` を束ねていない）。唯一 before に影響するのが
+ * ChannelOption の既定フォーカスで、そちらは元々 60% の確率で偽陽性を出していた
+ * （つまり実質的に一度も安定して機能していなかった）ので失う実カバレッジは無く、
+ * 常時リング付き（本来の回帰）は before/after が一致するのでむしろ新たに検出できる。
  */
 async function checkExplicitFocusRing(page, locator, label, theme) {
   if ((await locator.count()) === 0) {
@@ -2602,19 +2615,22 @@ for (const theme of themes) {
         .then(() => true)
         .catch(() => false)
       if (!popupOpened) {
-        // スタイル回帰の NG（`checkExplicitFocusRing` が出す「明示リングが出ない」
-        // 等）と文言を混ぜない。issue #521: ここを `.catch(() => {})` で飲むと、
-        // ポップアップが開き切っていない状態のまま次のフォーカスリング判定へ進み、
-        // 「開かなかった」ことが「リングが出ない」という別の意味の NG として
-        // 報告されていた（再実行すると消える偽陽性の原因）。
+        // ポップアップが開かなかったときに、スタイル回帰の NG（`checkExplicitFocusRing`
+        // が出す「明示リングが出ない」等）と同じ文言を出さないための分岐。
+        // なお #521 の実際の原因はこれではない（下記のコメント参照）。
         ng.push(`[${theme}] チャンネルピッカーのポップアップが開かない（待ちがタイムアウト）`)
       } else {
-        // ポップアップは開いた直後、先頭候補（＝この「すべて」自身）へ既定フォーカスを
-        // 非同期に当てる（base-ui の Popover の初期フォーカス）。ここを待たずに
-        // `checkExplicitFocusRing` が before/after を測ると、その既定フォーカスが
-        // 「まだ来ていない」か「もう来た」かで実行のたびに結果が割れる（実機で
-        // 確認: 同一コードで alreadyFocused が true/false どちらにもなった）。
-        // rAF を 2 回挟めば、その非同期フォーカスは確実に済んでいる。
+        // #521 の実際の原因: base-ui の Popover は開いた直後、先頭候補（＝この
+        // 「すべて」自身）へ既定フォーカスを非同期に当てる（queueMicrotask →
+        // requestAnimationFrame 1 回。@base-ui/react の
+        // floating-ui-react/utils/enqueueFocus.js）。これを待たずに
+        // `checkExplicitFocusRing` が before を測ると、その既定フォーカスが
+        // 「まだ来ていない」か「もう来た」かで before の box-shadow が実行のたびに
+        // 割れ、before/after の差分判定が偽陽性の NG を出す（実機で確認: 同一コードで
+        // alreadyFocused が true/false どちらにもなり、before !== 'none' と NG が
+        // 8/8 で一致）。この既定フォーカスの発火は queueMicrotask → rAF 1 回の
+        // 一本道で、フレーム数は負荷が増えても変わらない（増えるのは 1 フレームの
+        // 長さ）ため、rAF を 2 回挟めば確実に済んでいる。
         await page.evaluate(
           () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))),
         )

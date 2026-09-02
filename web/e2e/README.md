@@ -637,7 +637,17 @@ CI に載せられるが、いまは他と同じくローカル実行のまま�
 `document.activeElement === el` を評価し直す）なら、待ちの成否を経由しないので飲んでよい。
 そうでない形（後段が別の要素・別の状態を測る）で飲むと、「待ちが失敗した」ことが
 その別の判定の NG 文言に化けて出る --- スタイル回帰と区別が付かず、しかもタイミング
-依存で再実行すると消える。ポップアップの開閉待ちを飲んで中の要素のスタイルを測ろうと
-して実際にこれを踏んだ（`design.mjs` の ChannelOption。base-ui の Popover が開いた直後に
-先頭候補へ非同期に既定フォーカスを当てるため、`checkExplicitFocusRing` の before/after
-diff が実行のたびに割れていた）。
+依存で再実行すると消える。この規律自体はまだこのリポジトリで踏み抜いたことを実測で
+示せていない（予防的なもの）--- 下記 ChannelOption の一件は、調べる過程でこの形の
+壊れ方ではないと分かった。
+
+**before/after diff を取る共有ヘルパーは、before の基準を自分で制御しないと壊れる。**
+`design.mjs` の `checkExplicitFocusRing`（ChannelOption 呼び出し）で実際に踏んだ:
+base-ui の Popover は開いた直後、先頭候補へ非同期に既定フォーカスを当てる
+（queueMicrotask → requestAnimationFrame 1 回）。この既定フォーカスが「まだ来ていない」
+か「もう来た」かで before の box-shadow が実行のたびに割れ、before/after の差分判定
+（before と after が同じなら NG）が偽陽性を出していた --- ポップアップの開閉待ち自体は
+5000ms の予算に対し 1〜3ms で毎回成功しており、swallow とは無関係だった（4 回計測、
+8/8 で `beforeShadow !== 'none'` と NG が一致）。直すには before を測る前に明示的に
+`blur()` して基準を確定させ、かつ相手の既定フォーカスが済むのを待ってから呼ぶ
+（rAF 2 回。フレーム数は負荷で増えないので固定回数で足りる）。
