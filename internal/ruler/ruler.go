@@ -295,15 +295,23 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 	tq := sqlcgen.New(tx)
 
 	// program_snapshots への追従更新（#27）。「射影にある間は更新、消えたら凍結」を
-	// 担う唯一の書き手がここ。desiredIDs のうち今回射影にまだあるものだけが対象に
-	// なり（UpsertProgramSnapshotsFromProjection 内の epg_programs との JOIN が
-	// 絞る）、射影から消えた programId は何もされず既存の program_snapshots 行が
-	// そのまま凍結される。reservations.program_fkey が program_snapshots を
-	// 参照するため、予約行の upsert より先に実行する必要がある。
-	if len(desiredIDs) > 0 {
+	// 担う唯一の書き手がここ。なぜ existingSet も対象に含めるか: 猶予やラッチで
+	// 残る非 desired な行も「射影にまだ居る」限り追従させるため（issue #556、
+	// docs/schema/reservations.md §3.7）。凍結を保つのは
+	// UpsertProgramSnapshotsFromProjection 内の epg_programs との JOIN 自体で、
+	// 射影に無い programId をここに含めても何もされない。reservations.program_fkey
+	// が program_snapshots を参照するため、予約行の upsert より先に実行する
+	// 必要がある。
+	snapshotSyncIDs := slices.Clone(desiredIDs)
+	for id := range existingSet {
+		if _, ok := desired[id]; !ok {
+			snapshotSyncIDs = append(snapshotSyncIDs, id)
+		}
+	}
+	if len(snapshotSyncIDs) > 0 {
 		if _, err := tq.UpsertProgramSnapshotsFromProjection(ctx, sqlcgen.UpsertProgramSnapshotsFromProjectionParams{
 			Site:       site,
-			ProgramIds: desiredIDs,
+			ProgramIds: snapshotSyncIDs,
 		}); err != nil {
 			return fmt.Errorf("upserting program snapshots from projection: %w", err)
 		}
@@ -663,8 +671,8 @@ func (r *Ruler) stillProjectedSubset(ctx context.Context, q *sqlcgen.Queries, si
 // まで猶予が呑み込んでしまう（runPassForSite のコメント参照）。
 //
 // 対象は「(1) 前パスでルールが base を供給していた（reservations.rule_id が
-// NOT NULL）、(2) その番組の epg_programs.start_at（射影の最新値。desired から
-// 外れた unmatch パスでは追従が止まる program_snapshots.start_at ではない）が
+// NOT NULL）、(2) その番組の epg_programs.start_at（射影の最新値。猶予の正しさ
+// を program_snapshots の同期範囲や実行順序に結合させたくないので直接見る）が
 // [now, now+grace) の範囲、(3) そのルールが今も enabled」の 3 条件をすべて
 // 満たす行。SQL 側
 // （ListRetractGraceProtectedProgramIDsBySiteAndProgramIDs、
