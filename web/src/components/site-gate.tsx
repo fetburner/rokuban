@@ -15,8 +15,9 @@ import { SiteContext } from '@/lib/site'
  * その形が合っているかの判定基準を持たないまま固定することになる
  * （不変条件 11「形を固定する前に、その形を決める判定基準を書く」）。
  *
- * **これが効くのは「site の出所が無い入口」だけ**（番組表・検索・ライブと、
- * サービスの選択肢）。一覧（`/api/reservations` / `/api/recordings` /
+ * **これが効くのは「site の出所が無い入口」だけ**（番組表・検索・ライブ。条件
+ * フォームのサービス選択肢はレジストリの全 site から作るので、ここではなく
+ * `lib/all-sites-services.ts` が `useListSites()` を直接使う）。一覧（`/api/reservations` / `/api/recordings` /
  * `/api/capacity/overages` / `/api/breakers`）は全サイトの行を返し、行から
  * 始まる操作は行の `site` を使う（予約詳細への遷移は `pages/reservations.tsx`、
  * ブレーカー再開は `components/circuit-breaker-banner.tsx`）--- 呼ぶ URL が

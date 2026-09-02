@@ -183,6 +183,12 @@ function stubApi(options?: {
     const url = new URL(String(input), 'http://localhost')
     const method = init?.method ?? 'GET'
 
+    // 条件フォームのサービス選択肢は全 site から作る（issue #290）ので、
+    // 単一サイト構成でも `GET /api/sites` を経由する。
+    if (url.pathname === '/api/sites') {
+      return Promise.resolve(jsonResponse(['default']))
+    }
+
     if (url.pathname === '/api/sites/default/services') {
       return Promise.resolve(jsonResponse(services))
     }

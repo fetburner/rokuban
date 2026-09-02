@@ -1,19 +1,17 @@
 import { X } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useState } from 'react'
 
 import {
-  useListServices,
   ProgramSearchRequestChannelTypesItem,
   RuleTextMatchMode,
   RuleTextMatchTarget,
   type Service,
 } from '@/api/generated'
-import { unwrap } from '@/api/unwrap'
 import { Button } from '@/components/ui/button'
 import { Chip } from '@/components/ui/chip'
 import { Field, Input, Select } from '@/components/ui/field'
+import { useAllSitesServices } from '@/lib/all-sites-services'
 import { serviceDisambiguator } from '@/lib/service-label'
-import { useCurrentSite } from '@/lib/site'
 import {
   allWeekdays,
   genreCodeLabel,
@@ -61,7 +59,15 @@ type FieldsProps = {
  * （`RuleInput`）でフィールド名まで完全に同形なので、両方の画面がこの 1 つの
  * コンポーネントを使う（検索: 条件を試す / ルール: 条件を編集する）。
  * サービス一覧の取得をここに閉じ込めているのは、呼び出し側 2 箇所が同じ
- * `useListServices` を重複して書かなくて済むようにするため。
+ * 取得を重複して書かなくて済むようにするため。
+ *
+ * **サービスの選択肢は `useAllSitesServices()`（`lib/all-sites-services.ts`）が
+ * 全 site から `Service.id` で畳んで返す。** 保存されたルールは全 site で
+ * 評価される（`rule_sites` が空なら全サイト）のに、選択肢を 1 site の観測
+ * だけから作ると、その site が受けていないチャンネルを条件として名指しできない
+ * （issue #290）。site は識別子の一部ではなく存在のスコープでしかないので、
+ * 識別子を問う選択肢は観測ではなく識別子の集合で答える（理由の詳細は
+ * `lib/all-sites-services.ts`）。
  *
  * `disabled` はルール保存中などフォーム全体を止めたいときに使う。全ての
  * input / select / Chip / Button に伝播する。
@@ -81,7 +87,11 @@ type FieldsProps = {
  * 390x844 のチップ列 top=1027）。**押される既描画の兄弟が無くなるわけではない**
  * --- `pages/search.tsx` は `<form>` の後ろに値札・ルール保存・検索結果を同じ
  * 縦カラムで積んでいるので、シフトは 0 にならず小さくなるだけ（実測: 390x844 で
- * 0、1280x900 で 0.00093、縦長の 390x1180 で 0.024。しきい値 0.10 以下）。
+ * 0、1280x900 で 0.00066、縦長の 390x1180 で 0.023。しきい値 0.10 以下。issue #290
+ * でサービス選択肢を全 site の union に変えた後に測り直した値。フォームの形
+ * ---「読み込み中…」の 1 行からチップの複数行へ入れ替わる `ServiceFields` の
+ * 位置と、それより前が同期的に描かれること---は変えていないため、これ以前の
+ * 実測値と同じ桁に収まっている）。
  * **フォームが短くなる変更（節の折りたたみ・サービスより下の要素を上へ移す）は
  * この前提を崩す**ので `web/e2e/cls.mjs` を測り直す。他の節との間に依存は無い
  * ので、並びを変えても意味は変わらない --- 判定は `web/e2e/cls.mjs`①（直す前の
@@ -89,9 +99,7 @@ type FieldsProps = {
  * 受け入れた判断は `docs/frontend/search.md`。
  */
 export function ConditionFields({ draft, onChange, disabled }: FieldsProps): React.ReactElement {
-  const site = useCurrentSite()
-  const services = useListServices(site)
-  const serviceList = useMemo(() => unwrap(services.data) ?? [], [services.data])
+  const { services: serviceList, isPending, isError } = useAllSitesServices()
 
   return (
     <>
@@ -105,8 +113,8 @@ export function ConditionFields({ draft, onChange, disabled }: FieldsProps): Rea
         services={serviceList}
         // 取得中と失敗を区別する。空のチップ列を「サービスが無い」と
         // 読ませない（サービスは条件の一次元なので、無いのと分からないのは違う）
-        isPending={services.isPending}
-        isError={services.isError}
+        isPending={isPending}
+        isError={isError}
         onChange={onChange}
         disabled={disabled}
       />
@@ -328,7 +336,11 @@ function ServiceFields({
 
   // 同じ名前のサービス（ワンセグ / サブサービス等）が並ぶとき、リモコン番号・
   // 物理チャンネル・serviceId から補助ラベルを作る（issue #306）。
-  const disambiguate = useMemo(() => serviceDisambiguator(services), [services])
+  // `services` は `useAllSitesServices()` が毎レンダー新しい配列を返す
+  // （identity は保証しない）ため `useMemo` は毎回不一致になり無意味だった
+  // ---計算コストの実測に基づく最適化ではない（未測定）ので、素の呼び出しに
+  // 戻す。再び安定させたくなったらまず実測してから戻すこと。
+  const disambiguate = serviceDisambiguator(services)
 
   return (
     <Section title="チャンネル">

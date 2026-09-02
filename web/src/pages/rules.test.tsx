@@ -181,6 +181,9 @@ function stubApi(
     }
     if (url.pathname === '/api/encode-profiles') return Promise.resolve(jsonResponse(profiles))
     if (url.pathname === '/api/breakers') return Promise.resolve(jsonResponse([]))
+    // 条件フォームのサービス選択肢は全 site から作る（issue #290）ので、
+    // 単一サイト構成でも `GET /api/sites` を経由する。
+    if (url.pathname === '/api/sites') return Promise.resolve(jsonResponse(['default']))
     if (url.pathname === '/api/sites/default/services') return Promise.resolve(jsonResponse(services))
     throw new Error(`unexpected fetch: ${method} ${url.pathname}`)
   }) as unknown as typeof fetch

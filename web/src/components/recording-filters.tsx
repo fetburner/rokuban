@@ -1,18 +1,13 @@
 import { Popover as PopoverPrimitive } from '@base-ui/react/popover'
-import { useQueries } from '@tanstack/react-query'
 import { ChevronDown, Search as SearchIcon, X } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 
-import {
-  getListServicesQueryOptions,
-  ListRecordingsOrder,
-  useListSites,
-  type Service,
-} from '@/api/generated'
+import { ListRecordingsOrder, useListSites, type Service } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
 import { ChannelPicker } from '@/components/channel-picker'
 import { Chip } from '@/components/ui/chip'
 import { Field, Input } from '@/components/ui/field'
+import { useAllSitesServices } from '@/lib/all-sites-services'
 import { genreCodeLabel, genreCodes } from '@/lib/program-search'
 import { serviceDisambiguator } from '@/lib/service-label'
 import {
@@ -49,21 +44,16 @@ export function RecordingFilters({
 }) {
   const sitesQuery = useListSites()
   const sites = unwrap(sitesQuery.data) ?? []
-  const serviceQueries = useQueries({
-    queries: sites.map((site) => getListServicesQueryOptions(site)),
-  })
-
   // **`Service.id` で重複を潰す。** 同じチャンネルを 2 サイトで受けていても
   // 選択肢は 1 つ（identity は合成 id で、site は別軸の `?site=`）。潰さないと
   // ピッカーに同名の候補が site の数だけ並び、押しても同じ id が入るだけの
-  // 「押し分けられない選択肢」になる。
-  const serviceById = new Map<number, Service>()
-  for (const query of serviceQueries) {
-    for (const service of unwrap(query.data) ?? []) {
-      if (!serviceById.has(service.id)) serviceById.set(service.id, service)
-    }
-  }
-  const serviceList: Service[] = [...serviceById.values()]
+  // 「押し分けられない選択肢」になる。fetch + dedupe は `condition-fields.tsx`
+  // と共有する（`lib/all-sites-services.ts`）。
+  const {
+    services: serviceList,
+    isPending: servicesPending,
+    isError: servicesError,
+  } = useAllSitesServices()
 
   const disambiguate = serviceDisambiguator(serviceList)
   // サービスの identity は `Service.id`。同じチャンネルを 2 サイトで受けていても
@@ -90,8 +80,8 @@ export function RecordingFilters({
           search={search}
           services={serviceList}
           siteNames={sites}
-          servicesPending={sitesQuery.isPending || serviceQueries.some((q) => q.isPending)}
-          servicesError={sitesQuery.isError || serviceQueries.some((q) => q.isError)}
+          servicesPending={servicesPending}
+          servicesError={servicesError}
           onChange={onChange}
         />
         <OrderSelect
