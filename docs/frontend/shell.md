@@ -141,12 +141,15 @@ UI に一切現れない」という意味ではない。**切れ目は「その
 | **レジストリが運ぶ** | 録画検索のチャンネル選択肢 / 検索・ルールの条件フォームのサービス選択肢 | `GET /api/sites` の全 site からサービス一覧を引き、`Service.id` を選択の identity にする。**同じ `Service.id` は site をまたいでも 1 つの選択肢**（site は別軸の `?site=`）。録画一覧の述語は site を `ANY`、チャンネルを `(network_id, service_id)` の行値 `IN` で引く。条件フォームは適用（ruler の評価）自体が全 site を跨ぐので、選択肢も同じ全 site の union にする（`lib/all-sites-services.ts`） |
 | **site を持たない資源** | ルール一覧・エンコードプロファイル・ストレージ残高・能力・録画詳細 | `/api/rules` / `/api/encode-profiles` / `/api/storage` / `/api/capabilities` に site は無い（アーカイブ用ストレージが単一なのは [api.md](../api.md)）。録画詳細（`/recordings/$id`）も id が site 非依存だが、観測対象の録画が運ぶ `site` は多サイト構成で表示する。ストレージ残高はこの単一の観測に、上段の全サイト分の録画・予約から作った見込みを重ねる（`components/storage-balance.tsx`。site で絞らない） |
 
-**`/api/sites/{site}/...` という URL の形は判別子にならない。** ブレーカー再開
-（`POST /api/sites/{site}/breakers/{name}/resume`）と予約詳細
+**`/api/sites/{site}/...` という URL の形は判別子にならない。** site を持つ名前の
+ブレーカー再開（`POST /api/sites/{site}/breakers/{name}/resume`）と予約詳細
 （`GET /api/sites/{site}/programs/{programId}/reservation`）はこの形だが、site は
 行 / URL から来るので先頭サイト固定ではない。逆に、site を含まない URL の一覧が
 全サイトの行を返す。**「どのエンドポイントを呼ぶか」ではなく「その site を誰が
-名乗ったか」で見る。**
+名乗ったか」で見る。** ブレーカー再開はさらに一段複雑で、行が運ぶ `site` が
+空文字列（site を持たない `delete_reconcile`）なら、行から始まる操作でも
+site を含まない `POST /api/breakers/{name}/resume` を叩く
+（`components/circuit-breaker-banner.tsx` の `isSiteless`）。
 
 1 つの画面が複数の段にまたがることもある。`/rules` はルール行そのものは site を
 持たない（`GET /api/rules`）が、条件フォームのサービス選択肢はレジストリの

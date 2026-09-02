@@ -15,7 +15,6 @@ import (
 
 	"github.com/fetburner/rokuban/internal/breaker"
 	"github.com/fetburner/rokuban/internal/catalog"
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/metrics"
@@ -130,7 +129,7 @@ func (DeleteReconcileArgs) InsertOpts() river.InsertOpts {
 // 従属しない単一の MediaDir）。mirakc にも触れないので、他サイトの worker が
 // 拾っても「他インスタンスの id を投げる」形の壊れ方が起きない。
 //
-// # サーキットブレーカーのキーは常に db.DefaultSite（Site フィールドを持たない理由）
+// # サーキットブレーカーのキーは site を持たない（Site フィールドを持たない理由）
 //
 // このワーカーは `Site` フィールドを持たない（issue #185 M4-13 のレビューで削除）。
 // cleanup キューは site 非依存の仕事を運ぶが、
@@ -144,11 +143,28 @@ func (DeleteReconcileArgs) InsertOpts() river.InsertOpts {
 // 精神にも反する（この行の寿命は「delete_reconcile というジョブ種別」であって
 // 「たまたま処理した worker の束縛サイト」ではない）。
 //
-// したがって `Deps.Site` を一切参照せず、常に db.DefaultSite
-// （"default"）をキーにする。対になる api ロールの
-// `POST /api/sites/{site}/breakers/{name}/resume`（internal/api/breakers.go）を
-// この site 非依存の仕事のブレーカーに対して叩く運用者は、パスに `default` を
-// 指定する（`mirakcs:` レジストリに `default` という site が実在する必要がある）。
+// したがって `Deps.Site` を一切参照せず、site 列には空文字列
+// （breaker.IsSiteless のコメント参照。named const にしていない理由も同所）を
+// 書く。かつては db.DefaultSite（"default"）を書いていたが、`mirakcs:`
+// レジストリに `default` という名前の site が実在しない構成（東京・高松の
+// 2 site 化以降はこれが既定）では、site スコープの
+// `POST /api/sites/{site}/breakers/{name}/resume` から `default` を指定しても
+// レジストリに無いので 400、登録済みの site を指定してもその site には行が
+// 無いので 404 になり、`GET /api/breakers` に見えているのに一切解除できなかった
+// （issue #450）。db.DefaultSite は「site 未指定なら設定済みの唯一の site に
+// 解決する」という意味の値であり、「この資源は構造的に site を持たない」とは
+// 別の概念なので、混同しないよう使うのをやめた。site を持たないブレーカーは
+// site 無しの `POST /api/breakers/{name}/resume`
+// （internal/api/breakers.go の ResumeSitelessCircuitBreaker）で再開する。
+//
+// 既存の `(site='default', name='delete_reconcile')` 行は寄せていない ---
+// この時点で運用中の DB がまだ無い（マイグレーションはベースラインへの
+// squash 済みで、#52 の EPGStation 並走もまだ始まっていない）ため、移行対象の
+// 実データが存在しない。**この行が万一残っていれば手で DELETE すること**:
+// worker は site 列が空文字列の行しか見ないので発動中と気付かず、人間の確認
+// を強制するラッチを飛ばして bulk unlink を再開してしまう。しかもその行は
+// どちらの resume エンドポイントからも解除できない
+// （site スコープは IsSiteless で 400、site 無しは対象行が無く 404）。
 type DeleteReconcileWorker struct {
 	river.WorkerDefaults[DeleteReconcileArgs]
 	Pool     *pgxpool.Pool
@@ -171,10 +187,10 @@ func (w *DeleteReconcileWorker) Timeout(*river.Job[DeleteReconcileArgs]) time.Du
 
 // Work は 1 パス分の削除 reconcile を実行する。
 func (w *DeleteReconcileWorker) Work(ctx context.Context, _ *river.Job[DeleteReconcileArgs]) error {
-	// site は常に db.DefaultSite（DeleteReconcileWorker の doc コメント参照 ---
+	// site は常に空文字列（DeleteReconcileWorker の doc コメント参照 ---
 	// このジョブはどの束縛サイトの worker が掴んでも同じ 1 つのブレーカーとして
-	// 扱う）。
-	site := db.DefaultSite
+	// 扱う。breaker.IsSiteless(breaker.DeleteReconcile) が true）。
+	site := ""
 	trashRetention := w.TrashRetention
 	if trashRetention <= 0 {
 		trashRetention = defaultTrashRetention

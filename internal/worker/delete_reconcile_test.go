@@ -1031,8 +1031,10 @@ func TestDeleteReconcileWorker_UntilEncodedDeletingInterrupted_ResumesOnNextPass
 
 	// ブレーカーを発動させ、通常経路（ブレーカー対象）を完全に止める。
 	// pending 経路（ブレーカー対象外）だけがこの行を削除できる状態にする。
+	// delete_reconcile は site を持たないブレーカーなので site 列は空文字列
+	// （breaker.IsSiteless のコメント参照）。
 	q := sqlcgen.New(pool)
-	if err := breaker.Trip(context.Background(), q, db.DefaultSite, breaker.DeleteReconcile, 0, breaker.Sample{Total: 1}); err != nil {
+	if err := breaker.Trip(context.Background(), q, "", breaker.DeleteReconcile, 0, breaker.Sample{Total: 1}); err != nil {
 		t.Fatalf("tripping breaker: %v", err)
 	}
 
@@ -1376,9 +1378,11 @@ func TestDeleteReconcileWorker_CircuitBreaker_TripsOnExcess(t *testing.T) {
 		}
 	}
 
+	// delete_reconcile は site を持たないブレーカーなので site 列は空文字列
+	// （breaker.IsSiteless のコメント参照）。
 	q := sqlcgen.New(pool)
 	cb, err := q.GetCircuitBreaker(context.Background(), sqlcgen.GetCircuitBreakerParams{
-		Site: db.DefaultSite, Name: breaker.DeleteReconcile,
+		Site: "", Name: breaker.DeleteReconcile,
 	})
 	if err != nil {
 		t.Fatalf("expected circuit breaker to be tripped, got error: %v", err)
@@ -1420,8 +1424,10 @@ func TestDeleteReconcileWorker_ResumesStuckDeletingRow(t *testing.T) {
 	}
 
 	// ブレーカーを発動させておく（新規候補はゼロなので影響しないはず）。
+	// delete_reconcile は site を持たないブレーカーなので site 列は空文字列
+	// （breaker.IsSiteless のコメント参照）。
 	q := sqlcgen.New(pool)
-	if err := breaker.Trip(context.Background(), q, db.DefaultSite, breaker.DeleteReconcile, 0, breaker.Sample{Total: 1}); err != nil {
+	if err := breaker.Trip(context.Background(), q, "", breaker.DeleteReconcile, 0, breaker.Sample{Total: 1}); err != nil {
 		t.Fatalf("tripping breaker: %v", err)
 	}
 

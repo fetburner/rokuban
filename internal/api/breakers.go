@@ -92,7 +92,25 @@ func (h *Server) ListCircuitBreakers(ctx context.Context, _ ListCircuitBreakersR
 // 他サイトの発動を再開できなかった（issue #102）。api は不変条件 1 によりどの
 // site にも束縛されないので、レジストリに無い site が来た場合だけ 400 にする
 // （issue #184 M4-12。レジストリの全 site をこのプロセスから操作できる）。
+//
+// breaker.IsSiteless の検査を knownSite より先に置く。site を持たない名前
+// （delete_reconcile）はこのエンドポイントの資源ではなく取り違え
+// （ResumeSitelessCircuitBreaker が受ける。issue #450）で、運用者が最も
+// 打ちがちな旧コマンド `POST /api/sites/default/breakers/delete_reconcile/resume`
+// は `default` がレジストリに無いことが多く、knownSite を先に見ると
+// 「unknown site」としか返らず新ルートへ気付けない。先に見れば site の
+// 正誤に関わらず新ルートを案内できる。理由と経緯は
+// internal/worker/delete_reconcile.go の DeleteReconcileWorker doc コメント参照。
+//
+// 分類を緩めて DELETE をそのまま実行すると `site = req.Site AND name =
+// 'delete_reconcile'` は常に 0 行になり、正しい 400 の代わりに紛らわしい
+// 404（「発動していない」）を返してしまう。
 func (h *Server) ResumeCircuitBreaker(ctx context.Context, req ResumeCircuitBreakerRequestObject) (ResumeCircuitBreakerResponseObject, error) {
+	if breaker.IsSiteless(req.Name) {
+		return ResumeCircuitBreaker400JSONResponse{
+			Error: fmt.Sprintf("circuit breaker %q has no site; use POST /api/breakers/%s/resume instead", req.Name, req.Name),
+		}, nil
+	}
 	if !h.knownSite(req.Site) {
 		return ResumeCircuitBreaker400JSONResponse{Error: fmt.Sprintf("unknown site %q", req.Site)}, nil
 	}
@@ -112,4 +130,41 @@ func (h *Server) ResumeCircuitBreaker(ctx context.Context, req ResumeCircuitBrea
 		return ResumeCircuitBreaker404JSONResponse{Error: fmt.Sprintf("circuit breaker %q is not tripped", req.Name)}, nil
 	}
 	return ResumeCircuitBreaker204Response{}, nil
+}
+
+// ResumeSitelessCircuitBreaker は site を持たないサーキットブレーカーの手動再開
+// (POST /api/breakers/{name}/resume)。breaker.IsSiteless が true の名前
+// （今のところ delete_reconcile だけ）専用のエンドポイント。理由と経緯は
+// internal/worker/delete_reconcile.go の DeleteReconcileWorker doc コメント参照
+// （issue #450）。
+//
+// site を持つ名前（ruler_deletes / reconcile_total_loss）が来たら 400 にする ---
+// ResumeCircuitBreaker と対称に、分類を緩めて DELETE をそのまま実行すると
+// site 列が空文字列で name が `ruler_deletes` の行を探すことになり（常に 0 行）、
+// 正しい 400 の代わりに紛らわしい 404 を返してしまう。
+//
+// site をレジストリと照合する必要はない（不変条件 1: api はどの site にも
+// 束縛されず、この資源は構造的に site を持たない）。
+func (h *Server) ResumeSitelessCircuitBreaker(ctx context.Context, req ResumeSitelessCircuitBreakerRequestObject) (ResumeSitelessCircuitBreakerResponseObject, error) {
+	if !knownCircuitBreakerNames[req.Name] {
+		return ResumeSitelessCircuitBreaker400JSONResponse{Error: fmt.Sprintf("unknown circuit breaker %q", req.Name)}, nil
+	}
+	if !breaker.IsSiteless(req.Name) {
+		return ResumeSitelessCircuitBreaker400JSONResponse{
+			Error: fmt.Sprintf("circuit breaker %q has a site; use POST /api/sites/{site}/breakers/%s/resume instead", req.Name, req.Name),
+		}, nil
+	}
+
+	q := sqlcgen.New(h.pool)
+	n, err := q.ResumeCircuitBreaker(ctx, sqlcgen.ResumeCircuitBreakerParams{
+		Site: "", // breaker.IsSiteless のコメント参照（named const にしていない理由も同所）。
+		Name: req.Name,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("resuming circuit breaker %q: %w", req.Name, err)
+	}
+	if n == 0 {
+		return ResumeSitelessCircuitBreaker404JSONResponse{Error: fmt.Sprintf("circuit breaker %q is not tripped", req.Name)}, nil
+	}
+	return ResumeSitelessCircuitBreaker204Response{}, nil
 }

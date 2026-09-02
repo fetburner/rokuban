@@ -1018,6 +1018,13 @@ export interface CircuitBreakerSample {
  * docs/recording.md §3.2）。
  */
 export interface CircuitBreaker {
+  /**
+     * この行が属する site。`internal/breaker.IsSiteless` が true の名前
+     * （`delete_reconcile`）は資源自体が site を持たないため空文字列
+     * になる（issue #450）。その場合の再開は
+     * `POST /api/breakers/{name}/resume`、それ以外は
+     * `POST /api/sites/{site}/breakers/{name}/resume`。
+     */
   site: string;
   /**
      * internal/breaker の定数（RulerDeletes / ReconcileTotalLoss /
@@ -5264,8 +5271,12 @@ export const getListCircuitBreakersUrl = () => {
  * 手動確認の材料（`internal/breaker.Sample` と同じ形。最大 20 件）。
  *
  * site はパスに含めない。全サイトの発動を一望する用途のエンドポイントで、
- * レスポンスの各要素に site フィールドがある（issue #102）。個別の再開は
- * `POST /api/sites/{site}/breakers/{name}/resume`。
+ * レスポンスの各要素に site フィールドがある（issue #102）。ただし
+ * `internal/breaker.IsSiteless` が true の名前（`delete_reconcile`）の
+ * 行は、その資源自体が site を持たないため `site` が空文字列になる
+ * （issue #450）。個別の再開は、site を持つ名前なら
+ * `POST /api/sites/{site}/breakers/{name}/resume`、site を持たない名前
+ * なら `POST /api/breakers/{name}/resume`。
  * @summary List tripped circuit breakers
  */
 export const listCircuitBreakers = async ( options?: RequestInit): Promise<listCircuitBreakersResponse> => {
@@ -5404,7 +5415,10 @@ export const getResumeCircuitBreakerUrl = (site: string,
  * （issue #102）。`GET /api/breakers` はサイト横断の一覧に価値があるので
  * グローバルのまま残すが、再開は行 1 件を特定する操作なので PK と
  * 一致させる。
- * @summary Resume a tripped circuit breaker (manual acknowledgement)
+ *
+ * site を持たない名前（`delete_reconcile`）を渡すと 400 ---
+ * `POST /api/breakers/{name}/resume` を使う（issue #450）。
+ * @summary Resume a tripped circuit breaker that has a site (manual acknowledgement)
  */
 export const resumeCircuitBreaker = async (site: string,
     name: string, options?: RequestInit): Promise<resumeCircuitBreakerResponse> => {
@@ -5454,7 +5468,7 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
     export type ResumeCircuitBreakerMutationError = ErrorResponse
 
     /**
- * @summary Resume a tripped circuit breaker (manual acknowledgement)
+ * @summary Resume a tripped circuit breaker that has a site (manual acknowledgement)
  */
 export const useResumeCircuitBreaker = <TError = ErrorResponse,
     TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof resumeCircuitBreaker>>, TError,{site: string;name: string}, TContext>, request?: SecondParameter<typeof customInstance>}
@@ -5465,4 +5479,106 @@ export const useResumeCircuitBreaker = <TError = ErrorResponse,
         TContext
       > => {
       return useMutation(getResumeCircuitBreakerMutationOptions(options), queryClient);
+    }
+
+export type resumeSitelessCircuitBreakerResponse204 = {
+  data: void
+  status: 204
+}
+
+export type resumeSitelessCircuitBreakerResponse400 = {
+  data: ErrorResponse
+  status: 400
+}
+
+export type resumeSitelessCircuitBreakerResponse404 = {
+  data: ErrorResponse
+  status: 404
+}
+
+export type resumeSitelessCircuitBreakerResponseSuccess = (resumeSitelessCircuitBreakerResponse204) & {
+  headers: Headers;
+};
+export type resumeSitelessCircuitBreakerResponseError = (resumeSitelessCircuitBreakerResponse400 | resumeSitelessCircuitBreakerResponse404) & {
+  headers: Headers;
+};
+
+export type resumeSitelessCircuitBreakerResponse = (resumeSitelessCircuitBreakerResponseSuccess | resumeSitelessCircuitBreakerResponseError)
+
+export const getResumeSitelessCircuitBreakerUrl = (name: string,) => {
+
+
+
+
+  return `/api/breakers/${name}/resume`
+}
+
+/**
+ * site を持たないブレーカー専用の再開エンドポイント
+ * （`internal/breaker.IsSiteless`。今のところ `delete_reconcile` のみ）。
+ * 理由と経緯は `internal/worker/delete_reconcile.go` の
+ * `DeleteReconcileWorker` doc コメント参照（issue #450）。
+ *
+ * site を持つ名前（`ruler_deletes` / `reconcile_total_loss`）を渡すと
+ * 400 --- `POST /api/sites/{site}/breakers/{name}/resume` を使う。
+ * @summary Resume a tripped circuit breaker that has no site (manual acknowledgement)
+ */
+export const resumeSitelessCircuitBreaker = async (name: string, options?: RequestInit): Promise<resumeSitelessCircuitBreakerResponse> => {
+
+  return customInstance<resumeSitelessCircuitBreakerResponse>(getResumeSitelessCircuitBreakerUrl(name),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+);}
+
+
+
+
+
+export const getResumeSitelessCircuitBreakerMutationOptions = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof resumeSitelessCircuitBreaker>>, TError,{name: string}, TContext>, request?: SecondParameter<typeof customInstance>}
+): UseMutationOptions<Awaited<ReturnType<typeof resumeSitelessCircuitBreaker>>, TError,{name: string}, TContext> => {
+
+const mutationKey = ['resumeSitelessCircuitBreaker'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof resumeSitelessCircuitBreaker>>, {name: string}> = (props) => {
+          const {name} = props ?? {};
+
+          return  resumeSitelessCircuitBreaker(name,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type ResumeSitelessCircuitBreakerMutationResult = NonNullable<Awaited<ReturnType<typeof resumeSitelessCircuitBreaker>>>
+
+    export type ResumeSitelessCircuitBreakerMutationError = ErrorResponse
+
+    /**
+ * @summary Resume a tripped circuit breaker that has no site (manual acknowledgement)
+ */
+export const useResumeSitelessCircuitBreaker = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof resumeSitelessCircuitBreaker>>, TError,{name: string}, TContext>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof resumeSitelessCircuitBreaker>>,
+        TError,
+        {name: string},
+        TContext
+      > => {
+      return useMutation(getResumeSitelessCircuitBreakerMutationOptions(options), queryClient);
     }

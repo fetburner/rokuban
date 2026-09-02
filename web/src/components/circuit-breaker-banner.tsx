@@ -5,6 +5,7 @@ import {
   getListCircuitBreakersQueryKey,
   useListCircuitBreakers,
   useResumeCircuitBreaker,
+  useResumeSitelessCircuitBreaker,
   type CircuitBreaker,
 } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
@@ -74,32 +75,41 @@ function BreakerRow({ breaker }: { breaker: CircuitBreaker }) {
   const toast = useToast()
   const queryClient = useQueryClient()
   const resume = useResumeCircuitBreaker()
+  const resumeSiteless = useResumeSitelessCircuitBreaker()
 
   const label = describeBreakerName(breaker.name)
   const reason = describeBreakerReason(breaker.name)
   const total = breaker.detail.total
   const programs = breaker.detail.programs ?? []
   const isExcerpt = total > programs.length
+  // 行の site が空文字列 = site を持たないブレーカー（internal/breaker.IsSiteless
+  // が true。今のところ delete_reconcile のみ）。サーバー自身が権威なので、
+  // クライアント側で名前を分類し直さず、行が運んできた site の有無だけを見る
+  // （issue #450）。
+  const isSiteless = breaker.site === ''
+  const isPending = isSiteless ? resumeSiteless.isPending : resume.isPending
 
   const handleConfirm = () => {
     // ダイアログは AlertDialogAction（AlertDialogPrimitive.Close ラップ）が
     // クリックで自動的に閉じる。ここでは実行の確定のみ行う。結果はトーストで
     // 伝える（黙って成功したように見せない。失敗時も必ずトーストを出す）。
-    resume.mutate(
-      { site: breaker.site, name: breaker.name },
-      {
-        onSuccess: () => {
-          toast({ message: `${label}を再開しました` })
-          void queryClient.invalidateQueries({ queryKey: getListCircuitBreakersQueryKey() })
-        },
-        onError: (err) => {
-          toast({
-            message: mutationErrorMessage(`${label}の再開に失敗しました`, err),
-            kind: 'error',
-          })
-        },
+    const callbacks = {
+      onSuccess: () => {
+        toast({ message: `${label}を再開しました` })
+        void queryClient.invalidateQueries({ queryKey: getListCircuitBreakersQueryKey() })
       },
-    )
+      onError: (err: unknown) => {
+        toast({
+          message: mutationErrorMessage(`${label}の再開に失敗しました`, err),
+          kind: 'error',
+        })
+      },
+    }
+    if (isSiteless) {
+      resumeSiteless.mutate({ name: breaker.name }, callbacks)
+    } else {
+      resume.mutate({ site: breaker.site, name: breaker.name }, callbacks)
+    }
   }
 
   return (
@@ -128,7 +138,7 @@ function BreakerRow({ breaker }: { breaker: CircuitBreaker }) {
           <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
             <AlertDialogTrigger
               render={
-                <Button variant="destructive" size="sm" disabled={resume.isPending}>
+                <Button variant="destructive" size="sm" disabled={isPending}>
                   再開
                 </Button>
               }

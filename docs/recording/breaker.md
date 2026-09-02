@@ -56,6 +56,7 @@ GC・ユーザー操作では他の予約が残るので誤発火しない。全
 - **GC は発動中でも動く**（下記「GC は対象にしない」の理由がそのまま効く）
 - `detail` に「何が消されようとしていたか」の抜粋（最大 20 件の programId と題名）を焼く。**手動確認には対象が見える必要がある**
 - 再開は `POST /api/sites/{site}/breakers/{name}/resume`（資源の PK が `(site, name)` であることに合わせる）。`DELETE /api/sites/{site}/breakers/{name}` にしないのは、運用者から見た操作が「行を削除する」ではなく「確認したので再開する」だから（行が消えるのは実装詳細）
+- **site を持たないブレーカー（`delete_reconcile`。`internal/breaker.IsSiteless`）だけは `POST /api/breakers/{name}/resume` で再開する。** 理由と経緯は `internal/worker/delete_reconcile.go` の `DeleteReconcileWorker` doc コメント参照
 
 ##### GC は対象にしない
 
