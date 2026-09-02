@@ -260,8 +260,7 @@ func TestSearchPrograms_UnknownSiteReturns400(t *testing.T) {
 // TestSearchPrograms_LegacySitePathIsGone は、site をパスに残す旧ルートを
 // 互換目的で生やさないことを確認する（破壊的変更。issue #558）。
 func TestSearchPrograms_LegacySitePathIsGone(t *testing.T) {
-	pool := testutil.SetupDB(t)
-	router := NewRouter(RouterConfig{Pool: pool, Sites: []string{"siteA"}})
+	router := NewRouter(RouterConfig{Sites: []string{"siteA"}})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -270,7 +269,10 @@ func TestSearchPrograms_LegacySitePathIsGone(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("legacy path status = %d, want 404", resp.StatusCode)
+	// このパスは OpenAPI 上の検索ルートではない。既存の
+	// GET /api/sites/{site}/programs/{programId} と形が重なるため、chi は
+	// 「パスは存在するが POST は許可されない」として 405 を返す。
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("legacy path status = %d, want 405", resp.StatusCode)
 	}
 }
