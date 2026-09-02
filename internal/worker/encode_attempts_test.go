@@ -129,15 +129,19 @@ func TestEncodeWorker_AttemptRow_FailedOnFailure(t *testing.T) {
 // ために使う --- installFakeFFmpeg（即座に完了する）では、ctx を事前に
 // キャンセルすると markEncodeAttemptRunning 自身が ctx に紐付いた DB 書き込みで
 // 失敗し、行が一度も書かれない（このテストが検証したい状態に到達できない）。
-func installSlowFakeFFmpeg(t *testing.T, sleepSeconds int) (ffmpegPath string) {
+//
+// startedMarker は sleep の前に作られる空ファイルのパス。呼び出し側はこれの
+// 出現を cmd.Start() が実際に成功した証拠として待つ（下のテストのコメント参照）。
+func installSlowFakeFFmpeg(t *testing.T, sleepSeconds int) (ffmpegPath, startedMarker string) {
 	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "ffmpeg")
-	script := "#!/bin/sh\nsleep " + strconv.Itoa(sleepSeconds) + "\n"
+	startedMarker = filepath.Join(dir, "started")
+	script := "#!/bin/sh\n: > " + startedMarker + "\nsleep " + strconv.Itoa(sleepSeconds) + "\n"
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	return path
+	return path, startedMarker
 }
 
 // TestEncodeWorker_AttemptRow_CtxCanceledLeavesRunning は ctx キャンセル
@@ -156,6 +160,30 @@ func installSlowFakeFFmpeg(t *testing.T, sleepSeconds int) (ffmpegPath string) {
 // 事前キャンセルだと markEncodeAttemptRunning 自身の DB 書き込みが ctx に
 // 紐付いて失敗し、行が一度も書かれないため検証にならない（上記
 // installSlowFakeFFmpeg のコメント参照）。
+//
+// running 行の出現は cmd.Start() より**前**の出来事でしかない --- 行の
+// commit と cmd.Start() の間には profile 解決・loadOriginal（ctx 付き DB
+// クエリ）・probeEncodeDuration 等、複数の ctx 依存ステップが挟まる
+// （encode.go の runEncode 参照）。行が見えた直後に cancel すると、この
+// 間のどこかで ctx が先に死に、cmd.Start() 自身が「開始せず ctx.Err() を
+// 返す」（os/exec の Cmd.Start は開始前に ctx.Done() をチェックする）。
+// この場合 kill → reap → cmd.Wait() → <-progressDone の尾（このテストが
+// 検証したい経路）を一度も通らない。
+//
+// 計測（このマシン、ffprobe が実 PATH 上にある状態）: running 行の出現
+// だけを合図に cancel すると、cmd.Wait() 直前に置いたマーカーへの到達は
+// 0/10（probeEncodeDuration が実 ffprobe を shell out し、その間に ctx が
+// 死ぬ）。probeEncodeDuration を即失敗させても（FFprobe に存在しないパス
+// を渡しても）25/30（cancel が loadOriginal 等の他ステップ中に着地する
+// 残り約 17% は依然として cmd.Start() 前に死ぬ）。
+//
+// そこでフェイク ffmpeg 自身に「実際に起動した」印（startedMarker への
+// touch。sleep の前に置く）を持たせ、その出現を待ってから cancel する。
+// touch は子プロセスが exec された後にしか起きないので、cmd.Start() が
+// 成功して戻っていることを意味で保証する（Start() は fork/exec が完了
+// するまで戻らない）。FFprobe を存在しないパスにする変更は残す ---
+// これが無いと実 ffprobe の呼び出し（timeout 上限 3 秒）がこの待ちを
+// 不必要に長引かせる。
 func TestEncodeWorker_AttemptRow_CtxCanceledLeavesRunning(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {
@@ -171,13 +199,18 @@ func TestEncodeWorker_AttemptRow_CtxCanceledLeavesRunning(t *testing.T) {
 	// この 2 つを同じ値に戻すと同じフレークが復活するので、離した値を保つ。
 	const slowFFmpegSleepSeconds = 2
 	const workReturnTimeout = 10 * time.Second
-	slowFFmpeg := installSlowFakeFFmpeg(t, slowFFmpegSleepSeconds)
+	slowFFmpeg, ffmpegStarted := installSlowFakeFFmpeg(t, slowFFmpegSleepSeconds)
 
 	w := &EncodeWorker{
 		Pool:       pool,
 		MediaDir:   mediaDir,
 		ScratchDir: t.TempDir(),
 		FFmpeg:     slowFFmpeg,
+		// 実 machine に ffprobe があると probeEncodeDuration が実 ffprobe を
+		// shell out し、cmd.Start() 前の待ちを timeout 上限（3 秒）まで
+		// 引き延ばしうる。存在しないパスにして即失敗させる（上のテスト
+		// doc コメントの計測参照）。
+		FFprobe: "/nonexistent/ffprobe",
 		Profiles: config.EncodeConfig{
 			FFmpeg: slowFFmpeg,
 			Profiles: []config.EncodeProfile{{
@@ -195,7 +228,8 @@ func TestEncodeWorker_AttemptRow_CtxCanceledLeavesRunning(t *testing.T) {
 	workErr := make(chan error, 1)
 	go func() { workErr <- w.Work(ctx, job) }()
 
-	// running 行が書かれる（cmd.Start より前）のを待ってからキャンセルする。
+	// running 行が書かれる（cmd.Start より前）のを待つ。行自体はテストの
+	// アサーション対象（cancel 前の状態）でもあるので残す。
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		if state, ok := encodeAttemptState(t, pool, recordingID, "h264"); ok {
@@ -206,6 +240,18 @@ func TestEncodeWorker_AttemptRow_CtxCanceledLeavesRunning(t *testing.T) {
 		}
 		if time.Now().After(deadline) {
 			t.Fatal("timed out waiting for running attempt row to appear")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// cmd.Start() が実際に成功した（フェイク ffmpeg が起動した）のを待って
+	// から cancel する（上の doc コメント参照）。
+	deadline = time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(ffmpegStarted); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for fake ffmpeg to start")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
