@@ -102,14 +102,14 @@ func TestBuildPoolConfig_MaxConnsFromRoles_MultiSite(t *testing.T) {
 		numSites int
 		want     int32
 	}{
-		{name: "watcher, 2 sites: +1 per extra site", roles: []string{"watcher"}, numSites: 2, want: 3 + 1*watcherPerSiteConns},
-		{name: "watcher, 3 sites: +1 per extra site", roles: []string{"watcher"}, numSites: 3, want: 3 + 2*watcherPerSiteConns},
-		{name: "worker, 2 sites: +2 per extra site", roles: []string{"worker"}, numSites: 2, want: 8 + 1*workerPerSiteConns},
+		{name: "watcher, 2 sites: +1 per extra site", roles: []string{"watcher"}, numSites: 2, want: 4},
+		{name: "watcher, 3 sites: +1 per extra site", roles: []string{"watcher"}, numSites: 3, want: 5},
+		{name: "worker, 2 sites: +2 per extra site", roles: []string{"worker"}, numSites: 2, want: 10},
 		{
 			name:     "watcher+worker, 2 sites: both budgets get the per-site addition",
 			roles:    []string{"watcher", "worker"},
 			numSites: 2,
-			want:     3 + 8 + 1*watcherPerSiteConns + 1*workerPerSiteConns,
+			want:     14,
 		},
 		{name: "api alone, 2 sites: unaffected (not a site-scoped role)", roles: []string{"api"}, numSites: 2, want: 10},
 		{name: "watcher, 1 site: no addition (baseline)", roles: []string{"watcher"}, numSites: 1, want: 3},
