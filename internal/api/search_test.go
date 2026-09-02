@@ -17,15 +17,18 @@ import (
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
-// 受け入れ: 同一条件で検索 API と rulequery.MatchProgramIDs（ruler 経路）の集合が一致する。
+// 受け入れ: 同一条件で検索 API と rulequery.MatchPrograms（ruler 経路が呼ぶのと同じ
+// クエリ関数）の集合が一致する。site はレジストリを明示した RouterConfig から取り、
+// レジストリ既定値の "default" に頼らない（含むもの 6）。
 func TestSearchPrograms_MatchesRulerPath(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
+	const site = "siteX"
 
 	_, err := pool.Exec(ctx, `
 INSERT INTO epg_services (site, network_id, service_id, type, logo_id, remote_control_key_id, name, channel_type, channel, has_logo_data)
-VALUES ('default', 32736, 1024, 1, 0, 1, 'テスト局', 'GR', '27', false)
-ON CONFLICT (site, network_id, service_id) DO NOTHING`)
+VALUES ($1, 32736, 1024, 1, 0, 1, 'テスト局', 'GR', '27', false)
+ON CONFLICT (site, network_id, service_id) DO NOTHING`, site)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,51 +47,41 @@ ON CONFLICT (site, network_id, service_id) DO NOTHING`)
 INSERT INTO epg_programs (
   site, program_id, network_id, service_id, event_id,
   start_at, duration_ms, end_at, is_free, name, description, genre_lv1
-) VALUES ('default', $1::bigint, 32736, 1024, $2::integer, $3::timestamptz, 1800000, $4::timestamptz, true, $5::text, '', $6::smallint[])
+) VALUES ($1, $2::bigint, 32736, 1024, $3::integer, $4::timestamptz, 1800000, $5::timestamptz, true, $6::text, '', $7::smallint[])
 ON CONFLICT (site, program_id) DO NOTHING`,
-			row.id, int32(row.id), st, st.Add(30*time.Minute), row.name, row.g)
+			site, row.id, int32(row.id), st, st.Add(30*time.Minute), row.name, row.g)
 		if err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	router := NewRouter(RouterConfig{Pool: pool})
+	router := NewRouter(RouterConfig{Pool: pool, Sites: []string{site}})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
-	body := map[string]any{
+	apiMatches := postSearchPrograms(t, srv, "/api/sites/"+site+"/programs/search", map[string]any{
 		"textMatches": []map[string]any{
 			{"target": "name", "mode": "keyword", "value": "ニュース"},
 		},
-	}
-	raw, _ := json.Marshal(body)
-	resp, err := http.Post(srv.URL+"/api/sites/default/programs/search", "application/json", bytes.NewReader(raw))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("search status = %d", resp.StatusCode)
-	}
-	var apiMatches []struct {
-		Site      string `json:"site"`
-		ProgramId int64  `json:"programId"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&apiMatches); err != nil {
-		t.Fatal(err)
-	}
+	})
 	apiIDs := make([]int64, len(apiMatches))
 	for i, m := range apiMatches {
+		if m.Site != site {
+			t.Fatalf("apiMatches[%d].Site = %q, want %q", i, m.Site, site)
+		}
 		apiIDs[i] = m.ProgramId
 	}
 
-	// ruler と同じ MatchProgramIDs
-	rulerIDs, err := rulequery.MatchProgramIDs(ctx, pool, rulequery.Conditions{
-		Sites:       []string{"default"},
+	rulerMatches, err := rulequery.MatchPrograms(ctx, pool, rulequery.Conditions{
+		Sites:       []string{site},
 		TextMatches: []rulequery.TextMatch{{Target: "name", Mode: "keyword", Value: "ニュース"}},
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	rulerIDs := make([]int64, len(rulerMatches))
+	for i, m := range rulerMatches {
+		rulerIDs[i] = m.ProgramID
 	}
 
 	if len(apiIDs) != len(rulerIDs) {
@@ -104,43 +97,33 @@ ON CONFLICT (site, program_id) DO NOTHING`,
 	}
 
 	// 全角検索でも同じ集合
-	bodyFW := map[string]any{
+	fwMatches := postSearchPrograms(t, srv, "/api/sites/"+site+"/programs/search", map[string]any{
 		"textMatches": []map[string]any{
 			{"target": "name", "mode": "keyword", "value": "ＮＨＫ"},
 		},
-	}
-	raw, _ = json.Marshal(bodyFW)
-	resp, err = http.Post(srv.URL+"/api/sites/default/programs/search", "application/json", bytes.NewReader(raw))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	var fwMatches []struct {
-		Site      string `json:"site"`
-		ProgramId int64  `json:"programId"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&fwMatches); err != nil {
-		t.Fatal(err)
-	}
+	})
 	fwAPI := make([]int64, len(fwMatches))
 	for i, m := range fwMatches {
+		if m.Site != site {
+			t.Fatalf("fwMatches[%d].Site = %q, want %q", i, m.Site, site)
+		}
 		fwAPI[i] = m.ProgramId
 	}
-	fwRuler, err := rulequery.MatchProgramIDs(ctx, pool, rulequery.Conditions{
-		Sites:       []string{"default"},
+	fwRulerMatches, err := rulequery.MatchPrograms(ctx, pool, rulequery.Conditions{
+		Sites:       []string{site},
 		TextMatches: []rulequery.TextMatch{{Target: "name", Mode: "keyword", Value: "ＮＨＫ"}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(fwAPI) != 1 || fwAPI[0] != 2003 || fwAPI[0] != fwRuler[0] {
-		t.Fatalf("fullwidth api=%v ruler=%v", fwAPI, fwRuler)
+	if len(fwAPI) != 1 || fwAPI[0] != 2003 || len(fwRulerMatches) != 1 || fwAPI[0] != fwRulerMatches[0].ProgramID {
+		t.Fatalf("fullwidth api=%v ruler=%v", fwAPI, fwRulerMatches)
 	}
 }
 
-// searchMatchRow は検索 API のレスポンス 1 行（[]byte デコード用の複製。
-// package api の他のテストファイルとは package が違う場合があるため、
-// この 1 ファイル内だけの複製として持つ）。
+// searchMatchRow は検索 API のレスポンス 1 行（デコード用の複製）。
+// このファイルは package api、sites_multi_test.go は package api_test なので
+// 型を共有できず、この 1 ファイル内だけの複製として持つ。
 type searchMatchRow struct {
 	Site      string `json:"site"`
 	ProgramId int64  `json:"programId"`

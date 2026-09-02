@@ -59,7 +59,7 @@ type TimeWindow struct {
 
 // Compiled は epg_programs を主テーブル（エイリアス p）とする WHERE 句。
 type Compiled struct {
-	// Where は "TRUE" または AND 連結。先頭に AND は付けない。
+	// Where は AND 連結（先頭は常に p.site の述語）。先頭に AND は付けない。
 	Where string
 	Args  []any
 	// NeedsServiceJoin が true のとき、呼び出し側は
@@ -70,19 +70,10 @@ type Compiled struct {
 
 // Compile は条件を SQL に落とす。
 //
-// 署名は site string を引数に取らない（#530）。旧実装は固定 1 site を常に
-// p.site の等号に使い、c.Sites は「その site がリストに含まれるか」という
-// 両辺パラメータの全か無かのゲートでしかなかった（列 p.site を参照しないので
-// 行を一切絞らない）。この形では 1 クエリで複数 site の行を実際に絞り込む
-// （API 検索が 1 クエリで登録済み全 site を横断する。docs/api/rest.md
-// §エンドポイント設計の規約の「検索はこの例外に該当する」）ことを表現できない。
-// そこで p.site 自体を c.Sites に対する ANY 述語にし、「絞り込みたい site 集合」を
-// Sites 1 本に一本化した。
-//
-// c.Sites は非空を要求する（呼び出し側が埋め忘れると全 site を無条件に読んでしまう
-// ため、旧 site == "" ガードをこちらに一般化して引き継ぐ）。ruler
-// （MatchProgramIDsForRule）は評価対象の 1 site を、API 検索
-// （internal/api/search.go）は省略時にレジストリ全件を、呼び出し前に詰める。
+// c.Sites の空を「述語なし」にすると全 site を無条件に読んでしまうため、Compile は
+// 非空を要求する（呼び出し側の埋め忘れに対するフェイルセーフ）。p.site = ANY($1) は
+// site 始まりの複合インデックス（`(site, program_id)` 等）に乗るが、要素数の多い
+// sites 配列で prepared statement が generic plan に落ちて劣化するかは未検証。
 func Compile(c Conditions) (Compiled, error) {
 	if len(c.Sites) == 0 {
 		return Compiled{}, fmt.Errorf("sites is required")
@@ -163,11 +154,8 @@ func Compile(c Conditions) (Compiled, error) {
 		and("(" + strings.Join(parts, " OR ") + ")")
 	}
 
-	where := b.String()
-	if where == "" {
-		where = "TRUE"
-	}
-	return Compiled{Where: where, Args: args, NeedsServiceJoin: needsJoin}, nil
+	// b は常に非空（先頭の p.site 述語が必ず and() を通るため）。
+	return Compiled{Where: b.String(), Args: args, NeedsServiceJoin: needsJoin}, nil
 }
 
 func compileTextMatch(m TextMatch, arg func(any) string) (string, error) {

@@ -62,13 +62,15 @@ export const ruleCostWeekDays = 7
 /**
  * RuleCostSample は値札の入力。
  *
- * `totalCount` は検索結果（`programId` の配列）の全件数 --- 検索 API
+ * `totalCount` は検索結果（`{site, programId}` の配列）の全件数 --- 検索 API
  * （`POST /api/sites/{site}/programs/search`、`internal/api/search.go`）は
- * `rulequery.MatchProgramIDs` の結果を `LIMIT` なしでそのまま返すため、ページングも
+ * `rulequery.MatchPrograms` の結果を `LIMIT` なしでそのまま返すため、ページングも
  * 上位 N 件打ち切りも無く、返る配列の長さがそのまま母数になる（実際にコードを
- * 確認済み。`internal/rulequery/query.go` の SQL に LIMIT は無い）。
+ * 確認済み。`internal/rulequery/query.go` の SQL に LIMIT は無い）。同一放送が
+ * 複数 site でマッチすると複数行になるので、`totalCount` は番組数ではなく
+ * 行（ruler が作る予約の見込み数）を数えている。
  *
- * `loadedDurationsMs` は番組ごとの `durationMs`。検索 API 自体は `programId` しか
+ * `loadedDurationsMs` は番組ごとの `durationMs`。検索 API は `{site, programId}` しか
  * 返さないため、`GET /api/programs/{id}` で個別に取得できた分だけがここに入る
  * （`pages/search.tsx` が結果一覧の表示のために取得している分をそのまま再利用する
  * ので、値札のために追加のリクエストは発生しない。実測は `pages/search.tsx` の
@@ -78,7 +80,8 @@ export const ruleCostWeekDays = 7
  *
  * **このサンプルは無作為抽出ではない。** `loadedDurationsMs` の由来は結果の
  * `programId` 昇順の先頭 N 件（`internal/rulequery/query.go` の
- * `ORDER BY p.program_id`）で、`programId` はネットワーク・サービス順に固まる
+ * `ORDER BY p.program_id, p.site`。programId が主キーなので昇順の性質は変わらない）で、
+ * `programId` はネットワーク・サービス順に固まる
  * （Mirakurun 互換の合成規則 `(networkId*100000 + serviceId)*100000 + eventId`。
  * `internal/mirakc/ids.go` の `ComposeProgramID` / `SplitProgramID` と同じ式で、
  * mirakc 固有の合成規則への依存は Go 側のこの 1 箇所に閉じている --- ここでは

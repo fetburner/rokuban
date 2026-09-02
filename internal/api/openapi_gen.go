@@ -1383,7 +1383,7 @@ type Rule struct {
 	Priority      int                     `json:"priority"`
 	Services      *[]RuleService          `json:"services,omitempty"`
 
-	// Sites 空または省略 = 全サイト。指定する各要素は GET /api/sites が返す既知の site 名でなければならず、レジストリに無い名前（タイポ含む）や空文字列は 400 になる。更新では、そのルールに既に保存されている site 名だけは既知として扱う（GET で得た sites を載せ直す更新が、レジストリから site が消えた後も通るように）。免除は更新対象のルール単位なので **作成では効かない** —— 既存ルールの sites をそのまま載せて別のルールを作る（フォーク）場合、レジストリから消えた site 名は 400 になる。`POST /api/sites/{site}/programs/search` の `sites` も同じ「空または省略 = 全サイト」の軸規約を使うが、一回限りの問い合わせで 保存された行を持たないため、既知名検証と更新時の免除はルールの保存にのみ 適用される。
+	// Sites 空または省略 = 全サイト。指定する各要素は GET /api/sites が返す既知の site 名でなければならず、レジストリに無い名前（タイポ含む）や空文字列は 400 になる。更新では、そのルールに既に保存されている site 名だけは既知として扱う（GET で得た sites を載せ直す更新が、レジストリから site が消えた後も通るように）。免除は更新対象のルール単位なので **作成では効かない** —— 既存ルールの sites をそのまま載せて別のルールを作る（フォーク）場合、レジストリから消えた site 名は 400 になる。`POST /api/sites/{site}/programs/search` の `sites` も同じ「空または省略 = 全サイト」の軸規約と同じ既知名検証を受け、未知の site 名は同様に 400 になる。ただし検索は一回限りの問い合わせで保存された 行を持たないため、更新時の免除（保存済み site 名を通す）だけはルールの 保存にのみ適用される。
 	Sites       *[]string         `json:"sites,omitempty"`
 	TextMatches *[]RuleTextMatch  `json:"textMatches,omitempty"`
 	Times       *[]RuleTimeWindow `json:"times,omitempty"`
@@ -1432,7 +1432,7 @@ type RuleInput struct {
 	Priority      *int                    `json:"priority,omitempty"`
 	Services      *[]RuleService          `json:"services,omitempty"`
 
-	// Sites 空または省略 = 全サイト。指定する各要素は GET /api/sites が返す既知の site 名でなければならず、レジストリに無い名前（タイポ含む）や空文字列は 400 になる。更新では、そのルールに既に保存されている site 名だけは既知として扱う（GET で得た sites を載せ直す更新が、レジストリから site が消えた後も通るように）。免除は更新対象のルール単位なので **作成では効かない** —— 既存ルールの sites をそのまま載せて別のルールを作る（フォーク）場合、レジストリから消えた site 名は 400 になる。`POST /api/sites/{site}/programs/search` の `sites` も同じ「空または省略 = 全サイト」の軸規約を使うが、一回限りの問い合わせで 保存された行を持たないため、既知名検証と更新時の免除はルールの保存にのみ 適用される。
+	// Sites 空または省略 = 全サイト。指定する各要素は GET /api/sites が返す既知の site 名でなければならず、レジストリに無い名前（タイポ含む）や空文字列は 400 になる。更新では、そのルールに既に保存されている site 名だけは既知として扱う（GET で得た sites を載せ直す更新が、レジストリから site が消えた後も通るように）。免除は更新対象のルール単位なので **作成では効かない** —— 既存ルールの sites をそのまま載せて別のルールを作る（フォーク）場合、レジストリから消えた site 名は 400 になる。`POST /api/sites/{site}/programs/search` の `sites` も同じ「空または省略 = 全サイト」の軸規約と同じ既知名検証を受け、未知の site 名は同様に 400 になる。ただし検索は一回限りの問い合わせで保存された 行を持たないため、更新時の免除（保存済み site 名を通す）だけはルールの 保存にのみ適用される。
 	Sites       *[]string         `json:"sites,omitempty"`
 	TextMatches *[]RuleTextMatch  `json:"textMatches,omitempty"`
 	Times       *[]RuleTimeWindow `json:"times,omitempty"`

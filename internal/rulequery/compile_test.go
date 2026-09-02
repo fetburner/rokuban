@@ -103,25 +103,10 @@ func TestCompile_SitesFilter(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	for _, site := range []string{"default", "cabin"} {
-		if _, err := pool.Exec(ctx, `
-INSERT INTO epg_services (site, network_id, service_id, type, logo_id, remote_control_key_id, name, channel_type, channel, has_logo_data)
-VALUES ($1, 32736, 1024, 1, 0, 1, 'テスト局', 'GR', '27', false)
-ON CONFLICT (site, network_id, service_id) DO NOTHING`, site); err != nil {
-			t.Fatal(err)
-		}
-	}
 	start := time.Date(2026, 8, 10, 12, 0, 0, 0, time.FixedZone("JST", 9*3600))
 	const programID int64 = 8001
 	for _, site := range []string{"default", "cabin"} {
-		if _, err := pool.Exec(ctx, `
-INSERT INTO epg_programs (
-  site, program_id, network_id, service_id, event_id,
-  start_at, duration_ms, end_at, is_free, name, description, genre_lv1
-) VALUES ($1, $2::bigint, 32736, 1024, 1, $3::timestamptz, 1800000, $4::timestamptz, true, 'テスト番組', '', '{}'::smallint[])
-ON CONFLICT (site, program_id) DO NOTHING`, site, programID, start, start.Add(30*time.Minute)); err != nil {
-			t.Fatal(err)
-		}
+		insertProgramFixture(t, pool, ctx, site, programID, start)
 	}
 
 	matches, err := MatchPrograms(ctx, pool, Conditions{Sites: []string{"default"}})
