@@ -2238,3 +2238,107 @@ func TestRunPass_RetractGrace_SkipIntentStillReleases(t *testing.T) {
 		t.Error("an explicit user skip must still release the reservation, even within the retract grace window")
 	}
 }
+
+// (h) issue #540: 猶予の判定は program_snapshots.start_at ではなく
+// epg_programs.start_at（射影の最新値）を見る。program_snapshots は desired
+// （= ルールが今もマッチしている）番組にしか追従しない
+// （UpsertProgramSnapshotsFromProjection の対象が desiredIDs のため）ので、
+// まさに猶予が効いてほしい unmatch のパスでは前回マッチ時点の値のまま凍結
+// されている。
+//
+// 放送局が同じ EPG 更新で (1) 開始 5 時間後 → 20 分後に繰り上げ、かつ
+// (2) 題名を変えてルールの条件から外す、を同時に行うシナリオを作る。
+// program_snapshots.start_at は古い 5 時間後のまま凍結されるので、それを
+// 見ていた旧実装は猶予の窓（開始直前）の外だと誤判定して削除してしまう
+// --- 猶予が塞ぎたい経路そのもの。epg_programs.start_at を見れば、繰り上げ後の
+// 実際の開始時刻（20 分後）が窓の中に入るので保護される。
+func TestRunPass_RetractGrace_UsesLiveStartAtNotFrozenSnapshot(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	insertService(t, pool, ctx)
+	staleStart := time.Now().Add(5 * time.Hour).Truncate(time.Second)
+	const programID = 40008
+	insertProgram(t, pool, ctx, programID, "対象番組8", staleStart)
+
+	ruleID := insertRule(t, pool, ctx, "grace-live-start-forward", 10)
+	insertRuleKeyword(t, pool, ctx, ruleID, "対象番組8")
+
+	r := ruler.New([]string{testSite}, pool, &ruler.Config{RetractGrace: time.Hour})
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("initial RunPass: %v", err)
+	}
+	before, ok := getReservation(t, pool, ctx, programID)
+	if !ok {
+		t.Fatal("reservation should be created initially (rule matches)")
+	}
+	if before.RuleID == nil {
+		t.Fatal("reservation should carry a rule_id (otherwise this test asserts nothing)")
+	}
+	if !before.ProgramStartAt.Equal(staleStart) {
+		t.Fatalf("program_snapshots.start_at = %v, want %v (fixture setup assertion)", before.ProgramStartAt, staleStart)
+	}
+
+	// 同じ EPG 更新で繰り上げ + 改題を同時に行う。unmatch なので
+	// program_snapshots はこの後リフレッシュされず staleStart のまま凍結される。
+	liveStart := time.Now().Add(20 * time.Minute).Truncate(time.Second)
+	retractGraceUnmatch(t, pool, ctx, programID, "非マッチ番組8", liveStart)
+
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass after forward-shift unmatch: %v", err)
+	}
+
+	after, ok := getReservation(t, pool, ctx, programID)
+	if !ok {
+		t.Fatal("reservation should survive: the live (epg_programs) start time is imminent, even though the frozen snapshot says it is 5 hours out")
+	}
+	if after.ID != before.ID {
+		t.Errorf("reservation id changed: %d -> %d (grace must freeze the row, not recreate it)", before.ID, after.ID)
+	}
+	// program_snapshots は unmatch パスでは更新されない --- 凍結の確認。
+	if !after.ProgramStartAt.Equal(staleStart) {
+		t.Errorf("program_snapshots.start_at = %v, want unchanged %v (snapshot must stay frozen on the unmatch path)", after.ProgramStartAt, staleStart)
+	}
+}
+
+// (i) (h) の逆向き: program_snapshots は猶予の窓の中（開始 20 分後で凍結）だが、
+// 同じ EPG 更新で epg_programs 側は窓の外（開始 5 時間後に後ろ倒し）に動く。
+// epg_programs 側が勝つべきで、削除される（program_snapshots に引きずられて
+// 誤って保護してはならない）。
+func TestRunPass_RetractGrace_LiveStartAtWinsOverStaleSnapshotWhenDelayed(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	insertService(t, pool, ctx)
+	imminentStart := time.Now().Add(20 * time.Minute).Truncate(time.Second)
+	const programID = 40009
+	insertProgram(t, pool, ctx, programID, "対象番組9", imminentStart)
+
+	ruleID := insertRule(t, pool, ctx, "grace-live-start-delay", 10)
+	insertRuleKeyword(t, pool, ctx, ruleID, "対象番組9")
+
+	r := ruler.New([]string{testSite}, pool, &ruler.Config{RetractGrace: time.Hour})
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("initial RunPass: %v", err)
+	}
+	before, ok := getReservation(t, pool, ctx, programID)
+	if !ok {
+		t.Fatal("reservation should be created initially (rule matches)")
+	}
+	if !before.ProgramStartAt.Equal(imminentStart) {
+		t.Fatalf("program_snapshots.start_at = %v, want %v (fixture setup assertion)", before.ProgramStartAt, imminentStart)
+	}
+
+	// 同じ EPG 更新で後ろ倒し + 改題を同時に行う。program_snapshots は凍結され
+	// imminentStart のままだが、epg_programs は delayedStart（窓の外）になる。
+	delayedStart := time.Now().Add(5 * time.Hour).Truncate(time.Second)
+	retractGraceUnmatch(t, pool, ctx, programID, "非マッチ番組9", delayedStart)
+
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass after delaying unmatch: %v", err)
+	}
+
+	if reservationExists(t, pool, ctx, programID) {
+		t.Error("reservation should have been deleted: the live (epg_programs) start time is 5 hours out, even though the frozen snapshot says it is imminent")
+	}
+}

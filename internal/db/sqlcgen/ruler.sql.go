@@ -411,12 +411,12 @@ func (q *Queries) ListReservationTitlesBySiteAndProgramIDs(ctx context.Context, 
 const listRetractGraceProtectedProgramIDsBySiteAndProgramIDs = `-- name: ListRetractGraceProtectedProgramIDsBySiteAndProgramIDs :many
 SELECT r.program_id
 FROM reservations r
-JOIN program_snapshots s ON s.site = r.site AND s.program_id = r.program_id
+JOIN epg_programs p ON p.site = r.site AND p.program_id = r.program_id
 WHERE r.site = $1
   AND r.program_id = ANY($2::bigint[])
   AND r.rule_id IS NOT NULL
-  AND s.start_at >= $3::timestamptz
-  AND s.start_at <  $4::timestamptz
+  AND p.start_at >= $3::timestamptz
+  AND p.start_at <  $4::timestamptz
   AND EXISTS (
       SELECT 1 FROM rules ru WHERE ru.id = r.rule_id AND ru.enabled
   )
@@ -458,21 +458,44 @@ type ListRetractGraceProtectedProgramIDsBySiteAndProgramIDsParams struct {
 //	  前パスでルールが base を供給していた行だけが対象。ルールを一度も勝ち取って
 //	  いない行（manual 予約が record 意図だけで存在するケース等）はそもそも
 //	  「ルールから外れた」に該当しない。
-//	s.start_at >= sqlc.arg(now) AND s.start_at < sqlc.arg(grace_until)
+//	p.start_at >= sqlc.arg(now) AND p.start_at < sqlc.arg(grace_until)
 //	  開始時刻を過ぎた予約は対象にしない --- 過ぎた行は reconciler の allowlist と
 //	  GC の領分（ruler.md「開始遅延検出器」の `detectStartDelays` と同じ理由）。
 //	  grace_until（呼び出し側で now + retract_grace を計算）より先の予約も対象外:
 //	  「開始直前」だけを守る猶予であり、遠い予約はサーキットブレーカーが受け持つ。
+//	  上限・下限のどちらも同じ表（epg_programs）の start_at を見る --- 片方だけ
+//	  古い表のままにすると、繰り上げで既に開始した番組が「開始前」と誤判定
+//	  されうる（reconciler の allowlist と GC の領分に踏み込む）。
 //	EXISTS (rules ru WHERE ru.id = r.rule_id AND ru.enabled)
 //	  **ルールの無効化は猶予の対象外**。denpa と同じく「ルールごと削除・停止された
 //	  ぶんは直前でも引っ込める」（人が押した結果だから）。「ルールの編集で条件を
 //	  狭めた」は EPG 由来の unmatch と区別できない（breaker.md が同じ整理）ので、
 //	  こちらは猶予の対象のまま --- 録り過ぎ側に倒す非対称。
 //
-// program_investments の除外はここでは再確認しない: 呼び出し側が渡す candidates
-// （derivedDeletes）は toDelete（既に stillProjectedSubset を通した削除候補）から
-// released を引いた集合で、investment を持つ programId は desired に含まれ
-// toDelete に入らないため、この関数の入力にそもそも現れない。
+// program_snapshots ではなく epg_programs（射影の最新値）を join する（issue #540）。
+// program_snapshots.start_at は desired（= ルールが今もマッチしている）番組にしか
+// 追従しない（UpsertProgramSnapshotsFromProjection の対象は desiredIDs）。まさに
+// この猶予が効いてほしい unmatch のパスでは、program_snapshots は「最後にマッチ
+// した時点」の値のまま凍結されている。放送局が同じ EPG 更新で開始時刻を繰り上げ
+// つつ題名も変えると、program_snapshots は古い開始時刻のままなので繰り上げ後の
+// 実際の開始時刻を見誤り、猶予が塞ぎたい経路（開始直前の unmatch）をすり抜けて
+// しまう。epg_programs.start_at は射影の更新に追従するので、この値を見る。
+//
+// INNER JOIN で足りる: 呼び出し側（internal/ruler/ruler.go の
+// retractGraceProtectedSubset）が渡す candidates は stillProjectedSubset を通した
+// 集合で、その SELECT の時点では epg_programs に行がある。ただし
+// **stillProjectedSubset が保証するのはそのパスのその SELECT の瞬間だけ**であり、
+// `r.pool.Begin` は既定の READ COMMITTED なので文ごとに新しいスナップショットを
+// 取る --- stillProjectedSubset とこの SELECT の間に epg_sync が該当行を消す窓は
+// 同じ tx 内でも残る。その窓に当たると INNER JOIN は該当行を返さず「猶予の対象外」
+// （= 削除される）に倒れる。これは録り逃す側の倒れ方だが、猶予より後段の
+// DeleteReservationsBySiteAndProgramIDs 自体も削除の瞬間に epg_programs の存在を
+// 再確認しない（NOT EXISTS で再評価するのは program_investments だけ）ため、
+// 「射影から消えた行を凍結する」保証はもともと stillProjectedSubset の 1 回の
+// SELECT 止まりで、この猶予の追加が新しい種類の穴を開けるわけではない。
+// program_snapshots との COALESCE は取らない --- 2 つの表のどちらが正しいかを
+// 都度選ぶ理由がなく（program_snapshots は定義上 stale になり得る値）、
+// epg_programs 一本で読む方が「猶予は生きた射影を見る」という説明のまま素直。
 func (q *Queries) ListRetractGraceProtectedProgramIDsBySiteAndProgramIDs(ctx context.Context, arg ListRetractGraceProtectedProgramIDsBySiteAndProgramIDsParams) ([]int64, error) {
 	rows, err := q.db.Query(ctx, listRetractGraceProtectedProgramIDsBySiteAndProgramIDs,
 		arg.Site,
