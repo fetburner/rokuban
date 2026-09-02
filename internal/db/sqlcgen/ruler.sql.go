@@ -484,9 +484,9 @@ type ListRetractGraceProtectedProgramIDsBySiteAndProgramIDsParams struct {
 // 前に pool 上で走る 1 回の SELECT でしかなく、この SELECT との間に epg_sync
 // が該当行を消す窓はもとからある --- 当たれば「猶予の対象外」（削除）に倒れる。
 // 旧実装は program_snapshots への FK が行の存在を保証していたため、この窓では
-// （sub-millisecond）気づかれないまま保護できていた。COALESCE で両方見る形は
-// 取らない --- program_snapshots は定義上 stale になり得るので、生きた射影を
-// 1 本で見る方が説明が素直。
+// 気づかれないまま保護できていた。COALESCE で両方見る形は取らない ---
+// program_snapshots は定義上 stale になり得るので、生きた射影を 1 本で見る方が
+// 説明が素直。
 func (q *Queries) ListRetractGraceProtectedProgramIDsBySiteAndProgramIDs(ctx context.Context, arg ListRetractGraceProtectedProgramIDsBySiteAndProgramIDsParams) ([]int64, error) {
 	rows, err := q.db.Query(ctx, listRetractGraceProtectedProgramIDsBySiteAndProgramIDs,
 		arg.Site,
