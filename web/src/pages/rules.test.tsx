@@ -105,6 +105,10 @@ function stubApi(
   // 行のスイッチ（無効化）が確認に出す件数の母集団。RulesPage は予約一覧と
   // 同じクエリキーで GET /api/reservations を読む。既定は空。
   reservations: Reservation[] = [],
+  // `GET /api/sites` の応答（既定 `['default']`）。`<ConditionFields>` の
+  // サイトチップは 2 つ以上のときだけ出るので、それを確かめるテストだけが
+  // 2 つ目以降を足す（issue #531）。
+  siteNames: string[] = ['default'],
 ) {
   const putBodies: { id: number; body: RuleInput }[] = []
   const postBodies: RuleInput[] = []
@@ -183,8 +187,11 @@ function stubApi(
     if (url.pathname === '/api/breakers') return Promise.resolve(jsonResponse([]))
     // 条件フォームのサービス選択肢は全 site から作る（issue #290）ので、
     // 単一サイト構成でも `GET /api/sites` を経由する。
-    if (url.pathname === '/api/sites') return Promise.resolve(jsonResponse(['default']))
-    if (url.pathname === '/api/sites/default/services') return Promise.resolve(jsonResponse(services))
+    if (url.pathname === '/api/sites') return Promise.resolve(jsonResponse(siteNames))
+    const servicesMatch = /^\/api\/sites\/([^/]+)\/services$/.exec(url.pathname)
+    if (servicesMatch && siteNames.includes(servicesMatch[1])) {
+      return Promise.resolve(jsonResponse(services))
+    }
     throw new Error(`unexpected fetch: ${method} ${url.pathname}`)
   }) as unknown as typeof fetch
 
@@ -433,6 +440,37 @@ describe('RulesPage 条件編集', () => {
     expect(body.dedupeWindowSeconds).toBe(3600)
     expect(body.filenameTemplate).toBe('{title}')
     expect(body.metadata).toEqual({ source: 'legacy' })
+  })
+
+  /**
+   * issue #531:「検索・ルールは同じ条件 UI を双方向に共有する」ので、
+   * `/rules` の編集フォームでもサイトチップの復元・編集・往復を確かめる
+   * （`pages/search.test.tsx` の対になるテスト）。
+   */
+  it('サイトチップは rule_sites から復元され、編集して保存すると変更後の sites が運ばれる', async () => {
+    const ruleWithSites: Rule = { ...ruleWithConditions, sites: ['default', 'site2'] }
+    const { putBodies } = stubApi([ruleWithSites], undefined, undefined, undefined, [
+      'default',
+      'site2',
+    ])
+    const user = userEvent.setup()
+    renderPage()
+
+    await screen.findByText('平日ニュース')
+    await user.click(screen.getByRole('button', { name: '編集' }))
+    await screen.findByLabelText('テキスト条件 1 の値')
+
+    const group = screen.getByRole('group', { name: 'サイト' })
+    const defaultChip = within(group).getByRole('button', { name: 'default' })
+    const site2Chip = within(group).getByRole('button', { name: 'site2' })
+    expect(defaultChip).toHaveAttribute('aria-pressed', 'true')
+    expect(site2Chip).toHaveAttribute('aria-pressed', 'true')
+
+    await user.click(site2Chip)
+    await user.click(screen.getByRole('button', { name: '保存' }))
+
+    await waitFor(() => expect(putBodies.length).toBe(1))
+    expect(putBodies[0].body.sites).toEqual(['default'])
   })
 
   it('一覧に条件の要約が出て、空のルールは「すべての番組」と分かる', async () => {

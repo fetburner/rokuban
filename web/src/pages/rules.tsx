@@ -61,14 +61,15 @@ import { cn } from '@/lib/utils'
  * RulesPage は録画ルールの一覧と作成・編集。
  *
  * 条件（テキスト・チャンネル種別・ジャンル・時間帯・無料放送・放送時間・期間・
- * サービス。列挙は DOM 順で、サービスが最後なのは読み込み中のレイアウトシフト
- * 対策 --- `condition-fields.tsx`）は検索画面（`/search`）と同じ
+ * サイト・サービス。列挙は DOM 順で、サービスが最後なのは読み込み中のレイアウト
+ * シフト対策 --- `condition-fields.tsx`）は検索画面（`/search`）と同じ
  * `ConditionFields` / `internal/rulequery` を通るので、ここでも全次元を編集できる
  * （M3-6 の時点では encodeProfiles / keepOriginal だけの編集に留めていたが、
  * `condition-fields.tsx` / `lib/program-search.ts` の切り出しでルール側にも
  * 同じ UI を持ち込めるようになった）。`UpdateRule` は子テーブル全置換なので、
- * UI が持たない項目（description / dedupe* / filenameTemplate / metadata /
- * sites）は `buildRuleInput` の `preserve` 引数で引き継ぐ。
+ * UI が持たない項目（description / dedupe* / filenameTemplate / metadata）は
+ * `buildRuleInput` の `preserve` 引数で引き継ぐ（`sites` は issue #531 で
+ * `ConditionFields` の次元になったため、いまは下書きからそのまま送る）。
  *
  * 各行の「検索しながら編集」（`/search?ruleId=N`）からも同じルールを上書き
  * 保存できる。導出ロジックが割り込む余地は無い純粋な「ユーザーの同期的な

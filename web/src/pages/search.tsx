@@ -9,10 +9,10 @@ import {
   useCreateRule,
   useGetRule,
   useListCapacityOverages,
-  useListServices,
   useSearchPrograms,
   useUpdateRule,
   type ProgramListItem,
+  type ProgramSearchMatch,
   type Rule,
   type Service,
 } from '@/api/generated'
@@ -24,6 +24,7 @@ import { EmptyState, ErrorState, ListSkeleton, PageHeader, Skeleton } from '@/co
 import { useToast } from '@/components/toaster'
 import { Button } from '@/components/ui/button'
 import { Field, Input } from '@/components/ui/field'
+import { useAllSitesServices } from '@/lib/all-sites-services'
 import { countProgramsInShortfall } from '@/lib/capacity'
 import { dayOrigin } from '@/lib/day-offset'
 import { formatDateTime, formatDuration } from '@/lib/format'
@@ -104,46 +105,36 @@ export function SearchPage() {
   })
   const [visibleCount, setVisibleCount] = useState(pageSize)
   /**
-   * services は結果行（`SearchResultRow`）のサービス名解決専用で、
-   * `<ConditionFields>` のサービス選択肢（`lib/all-sites-services.ts` が全 site
-   * から `Service.id` で畳んだもの）とはあえて揃えない（issue #290 受け入れ
-   * 「結果行のサービス名解決をどうしたかを理由つきで書く」）。
+   * serviceById は結果行（`SearchResultRow`）のサービス名解決に使う。
    *
-   * 選択肢が答える問いは「条件として何を名指しできるか」という**識別子**の
-   * 問いなので、1 site の観測に留めず全 site の union にする必要があった。
-   * 一方この `services` が答える問いは「実際に引いた検索結果に写っている
-   * サービスは何か」という**観測**の問いで、その検索自体が
-   * `search.mutate({ site, ... })`（`useCurrentSite()` 固定。
-   * `docs/frontend/search.md`「サイトの選択肢は置かない」）で常に単一 site
-   * にしか投げていない。結果（`ids`）はその同じ site の番組しか含まないので、
-   * 名前解決も同じ site のサービス一覧だけで閉じる方が正しい --- union にすると
-   * 他 site 由来のサービスが答えに混ざりうる余地を作るだけで、実際の結果には
-   * 一度も現れない。
+   * **`sites` が条件 UI に出た（issue #531）ので、検索結果は複数 site の行を
+   * 含みうる。** 以前は検索が常に `useCurrentSite()` 固定の単一 site にしか
+   * 投げなかったため、結果行の名前解決も同じ単一 site の一覧（`useListServices`）
+   * だけで閉じていたが、その前提が崩れた --- 先頭 site の一覧だけでは他 site
+   * だけが受けているサービスの名前が引けない（`<ConditionFields>` の選択肢と
+   * 同じ非対称の再発なので、`useAllSitesServices()`（全 site から `Service.id`
+   * で畳んだ union）に揃える）。
    *
-   * **さらに、下の `serviceById` は `s.serviceId` だけをキーにしており
-   * `Service.id` ではない。** serviceId は network をまたぐと一意でない
-   * （`lib/service-id.ts`）ため、1 site の中だけでも複数 network が同じ
-   * serviceId を持てば既に衝突しうる（`condition-fields.test.tsx` の
-   * フィクスチャに実例がある: 32676/1033 と 32677/1033 --- どちらも
-   * 「瀬戸内海放送」で serviceId 1033 が重複する）。union を渡すと network の
-   * 種類が増えるぶん衝突の機会も増えるだけなので、ここは先頭 site のままにする
-   * 方が正しい。
-   *
-   * **この結論は「検索が単一 site にしか投げず、結果が `programId` の配列で
-   * ある」という現行契約に依存する。** 結果が site を運ぶ形に変わればこの
-   * 前提ごと崩れる。
+   * **キーは `Service.id` そのものではなく `${networkId}:${serviceId}`。**
+   * `GET /api/programs/{id}` のレスポンス（`ProgramListItem`）は
+   * `networkId` / `serviceId` を別フィールドで持ち、合成済みの `Service.id`
+   * は持たないため、番組側からは同じ式でキーを組み直す必要がある。かつては
+   * `serviceId` 単独をキーにしていたが、それは network をまたぐと一意でない
+   * （`condition-fields.test.tsx` のフィクスチャに実例あり: 32676/1033 と
+   * 32677/1033 --- どちらも「瀬戸内海放送」で serviceId 1033 が重複する）ため、
+   * union に切り替えると network の種類が増えるぶん衝突の機会も増える。
+   * `networkId` を組にすることでこの衝突を避ける。
    */
-  const services = useListServices(site)
+  const { services: serviceList } = useAllSitesServices()
   const search = useSearchPrograms()
   // ruleId が無いときは問い合わせを止める。useGetRule は id を必須の number で
   // 取るため、無効化中はダミー値を渡す（program-overlap-warning.tsx と同じ流儀）。
   const ruleQuery = useGetRule(ruleId ?? -1, { query: { enabled: ruleId !== undefined } })
   const sourceRule = unwrap(ruleQuery.data)
 
-  const serviceList = useMemo(() => unwrap(services.data) ?? [], [services.data])
   const serviceById = useMemo(() => {
-    const map = new Map<number, Service>()
-    for (const s of serviceList) map.set(s.serviceId, s)
+    const map = new Map<string, Service>()
+    for (const s of serviceList) map.set(`${s.networkId}:${s.serviceId}`, s)
     return map
   }, [serviceList])
 
@@ -289,11 +280,17 @@ export function SearchPage() {
     el.focus({ preventScroll: true })
   }, [search.status])
 
-  const ids = unwrap(search.data) ?? []
+  /**
+   * matches は検索結果の行そのもの（`[{site, programId}]`。畳まない）。
+   * **行数 = 予約数**（ruler はマッチした全 site で予約を作るため、同一放送が
+   * 2 site でマッチすれば 2 予約になる）なので、件数を数えるところは常に
+   * `matches.length` を使い、`programId` で重複排除しない（issue #531）。
+   */
+  const matches = unwrap(search.data) ?? []
 
   /**
    * costStatus は値札（`RuleCostSummary`）に渡す検索の状態。「未検索」（idle）と
-   * 「検索したが 0 件」はどちらも `ids.length === 0` になり `ids` だけでは
+   * 「検索したが 0 件」はどちらも `matches.length === 0` になり `matches` だけでは
    * 区別できないため、結果一覧（下の `search.isIdle` 分岐）と同じ判定を渡す。
    */
   const costStatus: 'idle' | 'pending' | 'error' | 'success' = search.isIdle
@@ -305,9 +302,9 @@ export function SearchPage() {
         : 'success'
 
   /**
-   * costSampleIds は値札の時間見積もりに使う番組の部分集合。`SearchResultList`
-   * が表示のために取得する `ids.slice(0, visibleCount)`（下の JSX）と同じ集合を
-   * 使う。`useQueries` のクエリキー（`getGetProgramQueryOptions(site, id)`）が
+   * costSample は値札の時間見積もりに使う番組の部分集合。`SearchResultList`
+   * が表示のために取得する `matches.slice(0, visibleCount)`（下の JSX）と同じ
+   * 集合を使う。`useQueries` のクエリキー（`getGetProgramQueryOptions(site, id)`）が
    * 一致するので、値札のために追加の HTTP リクエストは発生しない（React Query が
    * キャッシュを共有する）。**実測済み**: `search.test.tsx` の
    * 「読み込みが母数に追いついていない間は『先頭 N 件』からの外挿である旨を
@@ -315,12 +312,17 @@ export function SearchPage() {
    * が `GET /api/programs/{id}` の呼び出し件数を数えて確認している（37 件マッチ
    * で 30 → 37 と増える一方、重複が無いこと）。
    *
+   * **`site` は `useCurrentSite()` ではなく行が運ぶ `match.site` を使う**
+   * （issue #531）。`epg_programs` の主キーは `(site, program_id)` なので、
+   * 現在 site 固定で引くと第 2 site だけの結果が 404 になる
+   * （`docs/frontend/shell.md`「サイトの扱い」の「行が運ぶ」と同じ規律）。
+   *
    * `loadedDurationsMs` の由来（先頭 N 件で無作為抽出ではない）は
    * `lib/rule-cost.ts` の `RuleCostSample` のコメントを参照。
    */
-  const costSampleIds = ids.slice(0, visibleCount)
+  const costSample = matches.slice(0, visibleCount)
   const costDetails = useQueries({
-    queries: costSampleIds.map((match) => getGetProgramQueryOptions(site, match.programId)),
+    queries: costSample.map((match) => getGetProgramQueryOptions(match.site, match.programId)),
   })
   const loadedDurationsMs = costDetails
     .map((d) => unwrap(d.data)?.durationMs)
@@ -331,7 +333,7 @@ export function SearchPage() {
    * `ShortfallOverlapNote` の両方に同じ 1 つを渡す --- 呼び出し側ごとに
    * 母集団の式を書き直すと、同じ「先頭 N 件」がずれうる（レビュー指摘）。
    */
-  const costEstimate = estimateRuleCost({ totalCount: ids.length, loadedDurationsMs })
+  const costEstimate = estimateRuleCost({ totalCount: matches.length, loadedDurationsMs })
 
   /**
    * 容量ノート（`ShortfallOverlapNote`）用の `GET /api/capacity/overages` の窓は
@@ -355,7 +357,7 @@ export function SearchPage() {
     {
       query: {
         // 検索結果が無い間は問い合わせない（容量への影響を確かめる対象が無い）。
-        enabled: ids.length > 0,
+        enabled: matches.length > 0,
         // 時境界を越えてキーが進んだ瞬間にノートが 1 RTT 消えないため
         // （判定は `search.test.tsx`「時境界を越えても…」。`pages/home.tsx` に同じ対策）。
         placeholderData: keepPreviousData,
@@ -374,11 +376,19 @@ export function SearchPage() {
    * 0 件の意味・終了未定番組の扱いは `lib/capacity.ts` の
    * `countProgramsInShortfall`。母集団は `costEstimate` と同じサンプルに揃える
    * （別の母集団だと同じ値札の中で「先頭 N 件」の意味が場所によって変わる）。
+   *
+   * **サイト軸は行ごと**（issue #531。`lib/capacity.ts` の
+   * `countProgramsInShortfall` のコメント参照）。`costDetails[i]` は
+   * `costSample[i]` と同じ添字（`useQueries` は入力順を保つ）なので、
+   * 番組の詳細に `costSample[i].site` を添えて渡す。
    */
-  const loadedPrograms = costDetails
-    .map((d) => unwrap(d.data))
-    .filter((p): p is ProgramListItem => p !== undefined)
-  const shortfallCount = countProgramsInShortfall(overages, site, loadedPrograms)
+  const loadedPrograms = costSample
+    .map((match, i) => {
+      const program = unwrap(costDetails[i]?.data)
+      return program === undefined ? undefined : { ...program, site: match.site }
+    })
+    .filter((p): p is ProgramListItem & { site: string } => p !== undefined)
+  const shortfallCount = countProgramsInShortfall(overages, loadedPrograms)
 
   /**
    * searchedHasPeriod は値札に「8 日分を 7 日換算」という根拠を出してよいかの判定。
@@ -386,7 +396,7 @@ export function SearchPage() {
    * その期間そのものになるため、8 日を根拠にすると偽の説明になる。
    *
    * **下書き（`draft`）ではなく実行した検索（`search.variables`）から導く。**
-   * 値札の数値（`ids.length` / `loadedDurationsMs`）は実行済みの検索の産物なので、
+   * 値札の数値（`matches.length` / `loadedDurationsMs`）は実行済みの検索の産物なので、
    * 根拠だけをフォームの現在値から取ると再検索するまでの間だけ両者が食い違う ---
    * 期間を入れて検索したあと欄を空にするだけで、期間で絞った数値に
    * 「8 日分を 7 日換算」という偽の根拠が付き直す（逆向きも同様）。検証:
@@ -532,22 +542,19 @@ export function SearchPage() {
               if (search.variables) search.mutate(search.variables)
             }}
           />
-        ) : ids.length === 0 ? (
+        ) : matches.length === 0 ? (
           <EmptyState>条件に一致する番組がありません</EmptyState>
         ) : (
           <>
             <p role="status" className="px-4 py-2 text-xs text-muted-foreground">
               {/* 件数は 1 つの文字列にする（JSX で連結するとテキストノードが分かれ、
                   読み上げも「37」「件」と切れる） */}
-              {visibleCount < ids.length
-                ? `${ids.length} 件（番組 ID 順）— ${visibleCount} 件を表示`
-                : `${ids.length} 件（番組 ID 順）`}
+              {visibleCount < matches.length
+                ? `${matches.length} 件（番組 ID 順）— ${visibleCount} 件を表示`
+                : `${matches.length} 件（番組 ID 順）`}
             </p>
-            <SearchResultList
-              ids={ids.slice(0, visibleCount).map((match) => match.programId)}
-              serviceById={serviceById}
-            />
-            {visibleCount < ids.length && (
+            <SearchResultList matches={matches.slice(0, visibleCount)} serviceById={serviceById} />
+            {visibleCount < matches.length && (
               <div className="px-4 py-6">
                 <Button
                   type="button"
@@ -807,7 +814,7 @@ function CreateRuleSection({
  * 入力して `POST /api/rules` に送る。`?ruleId` を伴わない通常の検索からのみ
  * 使われる（既存ルールのフォークは `RuleEditSection` の「別の新しいルールとして
  * 保存」に一本化した）ので、`preserve` は渡さない — UI を持たない項目
- * （`sites` 等）を推測して埋めることはしない。
+ * （`description` 等）を推測して埋めることはしない。
  */
 function CreateRuleForm({
   draft,
@@ -987,8 +994,9 @@ function RuleEditSection({
  *
  * 主動作は **上書き保存**（`PATCH /api/rules/{id}`）。`UpdateRule` は子テーブル
  * 全置換なので、UI を持たない項目（`description` / `dedupe*` /
- * `filenameTemplate` / `metadata` / `sites`）を `buildRuleInput` の `preserve`
- * で必ず引き継ぐ —— 落とすとユーザーの設定が黙って消える。
+ * `filenameTemplate` / `metadata`）を `buildRuleInput` の `preserve` で必ず
+ * 引き継ぐ —— 落とすとユーザーの設定が黙って消える（`sites` は issue #531 で
+ * `<ConditionFields>` の次元になったため、いまは下書きから普通に送る）。
  *
  * 副動作は「別の新しいルールとして保存」（`POST /api/rules`）。元のルールを
  * 下敷きに別のルールを作れる経路を残す。押し間違いを防ぐため、主動作
@@ -1034,7 +1042,7 @@ function RuleEditForm({
   const overwrite = () => {
     if (blocked) return
     // preserve に sourceRule を渡す。渡し忘れると UI を持たない項目
-    // （description / dedupe* / filenameTemplate / metadata / sites）が
+    // （description / dedupe* / filenameTemplate / metadata）が
     // `UpdateRule` の子テーブル全置換で黙って消える。
     const input = buildRuleInput(draft, meta, sourceRule)
     updateRule.mutate(
@@ -1066,12 +1074,13 @@ function RuleEditForm({
     // その意図（別の名前を選んだ）を尊重してそのまま使う。
     const trimmed = meta.name.trim()
     const name = trimmed === sourceRule.name.trim() ? `${trimmed} のコピー` : trimmed
-    // preserve した `sites` は `POST /api/rules` に載る。API の「保存済み site 名は
-    // レジストリ照合を免除する」はルール単位で PATCH にしか効かないので、レジストリから
-    // site が消えた後はこの経路だけが 400 `unknown site` になり、`sites` は条件 UI に
-    // 無いのでユーザーは画面内で外せない（未解決。docs/frontend/search.md §「UI が
-    // 持たない次元は勝手に埋めない」）。落として送るのは禁止 —— 絞り込みが無音で
-    // 全サイトに反転する。
+    // `draft.sites` は `POST /api/rules` に載る。API の「保存済み site 名は
+    // レジストリ照合を免除する」はルール単位で PATCH にしか効かないので、
+    // レジストリから消えた site を含んだまま POST するとこの経路だけ 400
+    // `unknown site` になりうる --- ただし `sites` は issue #531 で条件 UI の
+    // 次元になったため、`<ConditionFields>` のサイトチップ（レジストリと下書きの
+    // 和集合を選択肢にする）でユーザーが画面内で外せる。落として送るのは禁止
+    // —— 絞り込みが無音で全サイトに反転する。
     const input = buildRuleInput(draft, { ...meta, name }, sourceRule)
     createRule.mutate(
       { data: input },
@@ -1218,42 +1227,49 @@ function SearchError({ error, onRetry }: { error: unknown; onRetry: () => void }
 }
 
 /**
- * SearchResultList は programId の一覧を番組の行にする。
+ * SearchResultList は検索結果の行（`[{site, programId}]`）を番組の行にする。
  *
- * 検索 API は programId しか返さないため、行ごとに
- * `GET /api/programs/{id}` を引く。`useQueries` で 1 箇所にまとめているのは、
- * 行コンポーネントに hook を置くと「行が消えるとクエリも消える」形になり、
- * 表示件数を増やしたときの取得状態が追いにくくなるため。
+ * 検索 API は `site` と `programId` しか返さないため、行ごとに
+ * `GET /api/sites/{site}/programs/{id}` を引く。`useQueries` で 1 箇所に
+ * まとめているのは、行コンポーネントに hook を置くと「行が消えるとクエリも
+ * 消える」形になり、表示件数を増やしたときの取得状態が追いにくくなるため。
+ *
+ * **`site` は行が運ぶ `match.site` を使う（`useCurrentSite()` は使わない）**
+ * ---`epg_programs` の主キーは `(site, program_id)` なので、現在 site 固定で
+ * 引くと第 2 site だけの結果が 404 になる（issue #531）。
+ *
+ * **key は `${site}:${programId}`。** 同一放送（同じ `programId`）が複数 site で
+ * マッチすると行が複数出る（畳まない契約）ため、`programId` だけを key にすると
+ * React が 2 行を同一視して警告し、行の再利用が壊れる。
  */
 function SearchResultList({
-  ids,
+  matches,
   serviceById,
 }: {
-  ids: number[]
-  serviceById: Map<number, Service>
+  matches: ProgramSearchMatch[]
+  serviceById: Map<string, Service>
 }) {
-  const site = useCurrentSite()
   const details = useQueries({
-    queries: ids.map((id) => getGetProgramQueryOptions(site, id)),
+    queries: matches.map((match) => getGetProgramQueryOptions(match.site, match.programId)),
   })
 
   return (
     <ul data-testid="search-results">
-      {ids.map((id, i) => {
+      {matches.map((match, i) => {
         const detail = details[i]
         const program = unwrap(detail?.data)
         return (
-          <li key={id}>
+          <li key={`${match.site}:${match.programId}`}>
             {program !== undefined ? (
               <SearchResultRow
                 program={program}
-                serviceName={serviceById.get(program.serviceId)?.name}
+                serviceName={serviceById.get(`${program.networkId}:${program.serviceId}`)?.name}
               />
             ) : detail?.isError ? (
               // 取得できなかった行を黙って落とさない。EPG のローリング
               // ウィンドウから抜けた番組が検索結果に残ることは実際に起きる
               <p className="border-b border-border px-4 py-3 text-xs text-destructive">
-                番組 #{id} の詳細を取得できませんでした
+                番組 #{match.programId} の詳細を取得できませんでした
               </p>
             ) : (
               <div className="border-b border-border px-4 py-2.5">

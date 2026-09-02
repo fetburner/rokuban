@@ -204,6 +204,21 @@ describe('routeTree', () => {
     })
   })
 
+  it('/search の cond は sites も運ぶ（issue #531 でフォームの次元になった）', async () => {
+    const cond = { sites: ['takamatsu', 'default'] }
+    const router = createRouter({
+      routeTree,
+      history: createMemoryHistory({
+        initialEntries: [`/search?cond=${encodeURIComponent(JSON.stringify(cond))}`],
+      }),
+    })
+    await router.load()
+
+    const search = router.state.matches.at(-1)!.search as { cond?: unknown }
+    // 畳む過程（buildSearchRequest）で辞書順に正規化される。
+    expect(search.cond).toEqual({ sites: ['default', 'takamatsu'] })
+  })
+
   it('/search の cond は openapi の制約を外れた値・壊れた値を落とす', async () => {
     // ジャンルは 0..15（openapi）。JSON ですらない値も、生のまま残してはいけない
     // （`ruleId=abc` と同じ罠 --- validateSearch がキーを省略すると素通りする）。
@@ -217,9 +232,6 @@ describe('routeTree', () => {
       '',
       '{}',
       '{"foo":1}',
-      // openapi にはあるが検索フォームに無い次元だけの条件。素通りさせると
-      // 「画面には何も出ていないのに全件検索が走る」（`canonicalSearchConditions`）
-      '{"sites":["default"]}',
     ]) {
       const router = createRouter({
         routeTree,
