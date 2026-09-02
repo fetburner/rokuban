@@ -136,7 +136,7 @@ base-ui の `Popover`）で実装した。中身がリンク 4 個だけの単�
 | **行が運ぶ**（`GET /api/reservations` / `/api/recordings` / `/api/capacity/overages` / `/api/breakers`） | ホーム・予約一覧・録画一覧・ブレーカーバナー | **全サイトの行が混ざって出る**（api は site に束縛されない --- 不変条件 1、[api.md](../api.md)「既定は全サイトを返す」）。行から始まる操作は行の `site` を使う: 予約詳細への遷移（`/reservations/$site/$programId`）・容量バッジの交差判定・ブレーカー再開 |
 | **URL が運ぶ** | 予約詳細（`/reservations/$site/$programId`） | 行から持ってきた site をそのまま資源同定に使う。取消・上書き・重複警告もその site |
 | **出所が無い**（mirakc に「何があるか」を訊く入口） | 番組表・ライブ | レジストリの全 site へ問い合わせ、番組・サービス・チューナーの値に site を付けて和集合にする。行の操作・宛先もその site を使う |
-| **検索 API の routing anchor** | 検索 | path parameter にはレジストリの先頭 site を使うが、body の空 `sites` が検索対象を全 site にする。結果行の `site` を詳細取得に使う |
+| **検索 API のサイト軸** | 検索 | path parameter は持たず、body の空 `sites` が検索対象を全 site にする。結果行の `site` を詳細取得に使う |
 | **レジストリが運ぶ** | 録画検索のチャンネル選択肢 / 検索・ルールの条件フォームのサービス選択肢 | `GET /api/sites` の全 site からサービス一覧を引き、`Service.id` を選択の identity にする。**同じ `Service.id` は site をまたいでも 1 つの選択肢**（site は別軸の `?site=`）。録画一覧の述語は site を `ANY`、チャンネルを `(network_id, service_id)` の行値 `IN` で引く。条件フォームは適用（ruler の評価）自体が全 site を跨ぐので、選択肢も同じ全 site の union にする（`lib/all-sites-services.ts`） |
 | **site を持たない資源** | ルール一覧・エンコードプロファイル・ストレージ残高・能力・録画詳細 | `/api/rules` / `/api/encode-profiles` / `/api/storage` / `/api/capabilities` に site は無い（アーカイブ用ストレージが単一なのは [api.md](../api.md)）。録画詳細（`/recordings/$id`）も id が site 非依存だが、観測対象の録画が運ぶ `site` は多サイト構成で表示する。ストレージ残高はこの単一の観測に、上段の全サイト分の録画・予約から作った見込みを重ねる（`components/storage-balance.tsx`。site で絞らない） |
 
@@ -154,9 +154,9 @@ site を含まない `POST /api/breakers/{name}/resume` を叩く
 持たない（`GET /api/rules`）が、条件フォームのサービス選択肢はレジストリの
 全 site から作る（`components/condition-fields.tsx`）。`/recordings` は一覧も
 チャンネル選択肢も全サイトを対象にし、選択肢と述語を `(site, networkId, serviceId)`
-で結ぶ。**検索（`/search`）も 3 段にまたがる**: 検索リクエストの path 引数
-（`POST /api/sites/{site}/programs/search` の `{site}`）はレジストリの先頭 site を
-routing anchor に使い、body の空 `sites` で全 site を対象にする。条件フォームの
+で結ぶ。**検索（`/search`）も 3 段にまたがる**: 検索リクエストは
+（`POST /api/programs/search`）サイトをパスに持たず、body の空 `sites` で全 site を
+対象にする。条件フォームの
 サイトチップ・サービス選択肢は `/rules` と同じくレジストリが運ぶ全 site、そして**検索結果は行が運ぶ**
 （`[{site, programId}]` がフラットに返る --- `sites` を空以外にすれば
 現在サイト以外の行も返る）。番組詳細の取得・結果行のサービス名解決は行の

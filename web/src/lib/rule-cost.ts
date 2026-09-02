@@ -63,7 +63,7 @@ export const ruleCostWeekDays = 7
  * RuleCostSample は値札の入力。
  *
  * `totalCount` は検索結果（`{site, programId}` の配列）の全件数 --- 検索 API
- * （`POST /api/sites/{site}/programs/search`、`internal/api/search.go`）は
+ * （`POST /api/programs/search`、`internal/api/search.go`）は
  * `rulequery.MatchPrograms` の結果を `LIMIT` なしでそのまま返すため、ページングも
  * 上位 N 件打ち切りも無く、返る配列の長さがそのまま母数になる（実際にコードを
  * 確認済み。`internal/rulequery/query.go` の SQL に LIMIT は無い）。同一放送が

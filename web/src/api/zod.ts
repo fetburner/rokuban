@@ -155,7 +155,7 @@ export const ListRulesResponseItem = zod.object({
   "startSec": zod.number().min(listRulesResponseOneTimesItemStartSecMin).max(listRulesResponseOneTimesItemStartSecMax),
   "endSec": zod.number().min(listRulesResponseOneTimesItemEndSecMin).max(listRulesResponseOneTimesItemEndSecMax).describe('start より小さい場合は翌日跨ぎ')
 })).optional(),
-  "sites": zod.array(zod.string()).optional().describe('空または省略 = 全サイト。指定する各要素は GET \/api\/sites が返す既知の site 名でなければならず、レジストリに無い名前（タイポ含む）や空文字列は 400 になる。更新では、そのルールに既に保存されている site 名だけは既知として扱う（GET で得た sites を載せ直す更新が、レジストリから site が消えた後も通るように）。免除は更新対象のルール単位なので \*\*作成では効かない\*\* —— 既存ルールの sites をそのまま載せて別のルールを作る（フォーク）場合、レジストリから消えた site 名は 400 になる。`POST \/api\/sites\/{site}\/programs\/search` の `sites` も同じ「空または省略 = 全サイト」の軸規約に従い、同じ既知名検証を受ける。 未知の site 名は同様に 400 になる。ただし検索は一回限りの問い合わせで保存された 行を持たないため、更新時の免除（保存済み site 名を通す）だけはルールの 保存にのみ適用される。'),
+  "sites": zod.array(zod.string()).optional().describe('空または省略 = 全サイト。指定する各要素は GET \/api\/sites が返す既知の site 名でなければならず、レジストリに無い名前（タイポ含む）や空文字列は 400 になる。更新では、そのルールに既に保存されている site 名だけは既知として扱う（GET で得た sites を載せ直す更新が、レジストリから site が消えた後も通るように）。免除は更新対象のルール単位なので \*\*作成では効かない\*\* —— 既存ルールの sites をそのまま載せて別のルールを作る（フォーク）場合、レジストリから消えた site 名は 400 になる。`POST \/api\/programs\/search` の `sites` も同じ 「空または省略 = 全サイト」の軸規約に従い、同じ既知名検証を受ける。 未知の site 名は同様に 400 になる。ただし検索は一回限りの問い合わせで保存された 行を持たないため、更新時の免除（保存済み site 名を通す）だけはルールの 保存にのみ適用される。'),
   "dedupeEnabled": zod.boolean().default(listRulesResponseOneDedupeEnabledDefault),
   "dedupeThreshold": zod.number().gt(listRulesResponseOneDedupeThresholdExclusiveMin).max(listRulesResponseOneDedupeThresholdMax).nullish().describe('pg_trgm の similarity() と比較する閾値。similarity() の値域は [0, 1] なので\nこの範囲外は無意味。0 を許すと similarity() >= 0 が常に真になり、finished の\n録画が 1 本でもあれば以降の全番組が重複扱いで黙ってスキップされる\n（録画が黙って止まる）。1 を超えると常に偽になり、重複排除が黙って無効化される。\n'),
   "dedupeWindowSeconds": zod.number().gt(listRulesResponseOneDedupeWindowSecondsExclusiveMin).nullish().describe('重複排除の時間窓（秒）。interval の API 表現。省略（null）が「時間窓なし」で、\n0 はその意味にはならない。0 以下を許すと\n`program_start_at >= now() - window` が現在以降の開始時刻を要求する形になり、\n比較対象は必ず過去の放送なので常に偽（重複排除が黙って無効化される）。\n'),
@@ -225,7 +225,7 @@ export const CreateRuleBody = zod.object({
   "startSec": zod.number().min(createRuleBodyTimesItemStartSecMin).max(createRuleBodyTimesItemStartSecMax),
   "endSec": zod.number().min(createRuleBodyTimesItemEndSecMin).max(createRuleBodyTimesItemEndSecMax).describe('start より小さい場合は翌日跨ぎ')
 })).optional(),
-  "sites": zod.array(zod.string()).optional().describe('空または省略 = 全サイト。指定する各要素は GET \/api\/sites が返す既知の site 名でなければならず、レジストリに無い名前（タイポ含む）や空文字列は 400 になる。更新では、そのルールに既に保存されている site 名だけは既知として扱う（GET で得た sites を載せ直す更新が、レジストリから site が消えた後も通るように）。免除は更新対象のルール単位なので \*\*作成では効かない\*\* —— 既存ルールの sites をそのまま載せて別のルールを作る（フォーク）場合、レジストリから消えた site 名は 400 になる。`POST \/api\/sites\/{site}\/programs\/search` の `sites` も同じ「空または省略 = 全サイト」の軸規約に従い、同じ既知名検証を受ける。 未知の site 名は同様に 400 になる。ただし検索は一回限りの問い合わせで保存された 行を持たないため、更新時の免除（保存済み site 名を通す）だけはルールの 保存にのみ適用される。'),
+  "sites": zod.array(zod.string()).optional().describe('空または省略 = 全サイト。指定する各要素は GET \/api\/sites が返す既知の site 名でなければならず、レジストリに無い名前（タイポ含む）や空文字列は 400 になる。更新では、そのルールに既に保存されている site 名だけは既知として扱う（GET で得た sites を載せ直す更新が、レジストリから site が消えた後も通るように）。免除は更新対象のルール単位なので \*\*作成では効かない\*\* —— 既存ルールの sites をそのまま載せて別のルールを作る（フォーク）場合、レジストリから消えた site 名は 400 になる。`POST \/api\/programs\/search` の `sites` も同じ 「空または省略 = 全サイト」の軸規約に従い、同じ既知名検証を受ける。 未知の site 名は同様に 400 になる。ただし検索は一回限りの問い合わせで保存された 行を持たないため、更新時の免除（保存済み site 名を通す）だけはルールの 保存にのみ適用される。'),
   "dedupeEnabled": zod.boolean().default(createRuleBodyDedupeEnabledDefault),
   "dedupeThreshold": zod.number().gt(createRuleBodyDedupeThresholdExclusiveMin).max(createRuleBodyDedupeThresholdMax).nullish().describe('pg_trgm の similarity() と比較する閾値。similarity() の値域は [0, 1] なので\nこの範囲外は無意味。0 を許すと similarity() >= 0 が常に真になり、finished の\n録画が 1 本でもあれば以降の全番組が重複扱いで黙ってスキップされる\n（録画が黙って止まる）。1 を超えると常に偽になり、重複排除が黙って無効化される。\n'),
   "dedupeWindowSeconds": zod.number().gt(createRuleBodyDedupeWindowSecondsExclusiveMin).nullish().describe('重複排除の時間窓（秒）。interval の API 表現。省略（null）が「時間窓なし」で、\n0 はその意味にはならない。0 以下を許すと\n`program_start_at >= now() - window` が現在以降の開始時刻を要求する形になり、\n比較対象は必ず過去の放送なので常に偽（重複排除が黙って無効化される）。\n'),
@@ -286,7 +286,7 @@ export const CreateRuleResponse = zod.object({
   "startSec": zod.number().min(createRuleResponseOneTimesItemStartSecMin).max(createRuleResponseOneTimesItemStartSecMax),
   "endSec": zod.number().min(createRuleResponseOneTimesItemEndSecMin).max(createRuleResponseOneTimesItemEndSecMax).describe('start より小さい場合は翌日跨ぎ')
 })).optional(),
-  "sites": zod.array(zod.string()).optional().describe('空または省略 = 全サイト。指定する各要素は GET \/api\/sites が返す既知の site 名でなければならず、レジストリに無い名前（タイポ含む）や空文字列は 400 になる。更新では、そのルールに既に保存されている site 名だけは既知として扱う（GET で得た sites を載せ直す更新が、レジストリから site が消えた後も通るように）。免除は更新対象のルール単位なので \*\*作成では効かない\*\* —— 既存ルールの sites をそのまま載せて別のルールを作る（フォーク）場合、レジストリから消えた site 名は 400 になる。`POST \/api\/sites\/{site}\/programs\/search` の `sites` も同じ「空または省略 = 全サイト」の軸規約に従い、同じ既知名検証を受ける。 未知の site 名は同様に 400 になる。ただし検索は一回限りの問い合わせで保存された 行を持たないため、更新時の免除（保存済み site 名を通す）だけはルールの 保存にのみ適用される。'),
+  "sites": zod.array(zod.string()).optional().describe('空または省略 = 全サイト。指定する各要素は GET \/api\/sites が返す既知の site 名でなければならず、レジストリに無い名前（タイポ含む）や空文字列は 400 になる。更新では、そのルールに既に保存されている site 名だけは既知として扱う（GET で得た sites を載せ直す更新が、レジストリから site が消えた後も通るように）。免除は更新対象のルール単位なので \*\*作成では効かない\*\* —— 既存ルールの sites をそのまま載せて別のルールを作る（フォーク）場合、レジストリから消えた site 名は 400 になる。`POST \/api\/programs\/search` の `sites` も同じ 「空または省略 = 全サイト」の軸規約に従い、同じ既知名検証を受ける。 未知の site 名は同様に 400 になる。ただし検索は一回限りの問い合わせで保存された 行を持たないため、更新時の免除（保存済み site 名を通す）だけはルールの 保存にのみ適用される。'),
   "dedupeEnabled": zod.boolean().default(createRuleResponseOneDedupeEnabledDefault),
   "dedupeThreshold": zod.number().gt(createRuleResponseOneDedupeThresholdExclusiveMin).max(createRuleResponseOneDedupeThresholdMax).nullish().describe('pg_trgm の similarity() と比較する閾値。similarity() の値域は [0, 1] なので\nこの範囲外は無意味。0 を許すと similarity() >= 0 が常に真になり、finished の\n録画が 1 本でもあれば以降の全番組が重複扱いで黙ってスキップされる\n（録画が黙って止まる）。1 を超えると常に偽になり、重複排除が黙って無効化される。\n'),
   "dedupeWindowSeconds": zod.number().gt(createRuleResponseOneDedupeWindowSecondsExclusiveMin).nullish().describe('重複排除の時間窓（秒）。interval の API 表現。省略（null）が「時間窓なし」で、\n0 はその意味にはならない。0 以下を許すと\n`program_start_at >= now() - window` が現在以降の開始時刻を要求する形になり、\n比較対象は必ず過去の放送なので常に偽（重複排除が黙って無効化される）。\n'),
@@ -359,7 +359,7 @@ export const GetRuleResponse = zod.object({
   "startSec": zod.number().min(getRuleResponseOneTimesItemStartSecMin).max(getRuleResponseOneTimesItemStartSecMax),
   "endSec": zod.number().min(getRuleResponseOneTimesItemEndSecMin).max(getRuleResponseOneTimesItemEndSecMax).describe('start より小さい場合は翌日跨ぎ')
 })).optional(),
-  "sites": zod.array(zod.string()).optional().describe('空または省略 = 全サイト。指定する各要素は GET \/api\/sites が返す既知の site 名でなければならず、レジストリに無い名前（タイポ含む）や空文字列は 400 になる。更新では、そのルールに既に保存されている site 名だけは既知として扱う（GET で得た sites を載せ直す更新が、レジストリから site が消えた後も通るように）。免除は更新対象のルール単位なので \*\*作成では効かない\*\* —— 既存ルールの sites をそのまま載せて別のルールを作る（フォーク）場合、レジストリから消えた site 名は 400 になる。`POST \/api\/sites\/{site}\/programs\/search` の `sites` も同じ「空または省略 = 全サイト」の軸規約に従い、同じ既知名検証を受ける。 未知の site 名は同様に 400 になる。ただし検索は一回限りの問い合わせで保存された 行を持たないため、更新時の免除（保存済み site 名を通す）だけはルールの 保存にのみ適用される。'),
+  "sites": zod.array(zod.string()).optional().describe('空または省略 = 全サイト。指定する各要素は GET \/api\/sites が返す既知の site 名でなければならず、レジストリに無い名前（タイポ含む）や空文字列は 400 になる。更新では、そのルールに既に保存されている site 名だけは既知として扱う（GET で得た sites を載せ直す更新が、レジストリから site が消えた後も通るように）。免除は更新対象のルール単位なので \*\*作成では効かない\*\* —— 既存ルールの sites をそのまま載せて別のルールを作る（フォーク）場合、レジストリから消えた site 名は 400 になる。`POST \/api\/programs\/search` の `sites` も同じ 「空または省略 = 全サイト」の軸規約に従い、同じ既知名検証を受ける。 未知の site 名は同様に 400 になる。ただし検索は一回限りの問い合わせで保存された 行を持たないため、更新時の免除（保存済み site 名を通す）だけはルールの 保存にのみ適用される。'),
   "dedupeEnabled": zod.boolean().default(getRuleResponseOneDedupeEnabledDefault),
   "dedupeThreshold": zod.number().gt(getRuleResponseOneDedupeThresholdExclusiveMin).max(getRuleResponseOneDedupeThresholdMax).nullish().describe('pg_trgm の similarity() と比較する閾値。similarity() の値域は [0, 1] なので\nこの範囲外は無意味。0 を許すと similarity() >= 0 が常に真になり、finished の\n録画が 1 本でもあれば以降の全番組が重複扱いで黙ってスキップされる\n（録画が黙って止まる）。1 を超えると常に偽になり、重複排除が黙って無効化される。\n'),
   "dedupeWindowSeconds": zod.number().gt(getRuleResponseOneDedupeWindowSecondsExclusiveMin).nullish().describe('重複排除の時間窓（秒）。interval の API 表現。省略（null）が「時間窓なし」で、\n0 はその意味にはならない。0 以下を許すと\n`program_start_at >= now() - window` が現在以降の開始時刻を要求する形になり、\n比較対象は必ず過去の放送なので常に偽（重複排除が黙って無効化される）。\n'),
@@ -432,7 +432,7 @@ export const UpdateRuleBody = zod.object({
   "startSec": zod.number().min(updateRuleBodyTimesItemStartSecMin).max(updateRuleBodyTimesItemStartSecMax),
   "endSec": zod.number().min(updateRuleBodyTimesItemEndSecMin).max(updateRuleBodyTimesItemEndSecMax).describe('start より小さい場合は翌日跨ぎ')
 })).optional(),
-  "sites": zod.array(zod.string()).optional().describe('空または省略 = 全サイト。指定する各要素は GET \/api\/sites が返す既知の site 名でなければならず、レジストリに無い名前（タイポ含む）や空文字列は 400 になる。更新では、そのルールに既に保存されている site 名だけは既知として扱う（GET で得た sites を載せ直す更新が、レジストリから site が消えた後も通るように）。免除は更新対象のルール単位なので \*\*作成では効かない\*\* —— 既存ルールの sites をそのまま載せて別のルールを作る（フォーク）場合、レジストリから消えた site 名は 400 になる。`POST \/api\/sites\/{site}\/programs\/search` の `sites` も同じ「空または省略 = 全サイト」の軸規約に従い、同じ既知名検証を受ける。 未知の site 名は同様に 400 になる。ただし検索は一回限りの問い合わせで保存された 行を持たないため、更新時の免除（保存済み site 名を通す）だけはルールの 保存にのみ適用される。'),
+  "sites": zod.array(zod.string()).optional().describe('空または省略 = 全サイト。指定する各要素は GET \/api\/sites が返す既知の site 名でなければならず、レジストリに無い名前（タイポ含む）や空文字列は 400 になる。更新では、そのルールに既に保存されている site 名だけは既知として扱う（GET で得た sites を載せ直す更新が、レジストリから site が消えた後も通るように）。免除は更新対象のルール単位なので \*\*作成では効かない\*\* —— 既存ルールの sites をそのまま載せて別のルールを作る（フォーク）場合、レジストリから消えた site 名は 400 になる。`POST \/api\/programs\/search` の `sites` も同じ 「空または省略 = 全サイト」の軸規約に従い、同じ既知名検証を受ける。 未知の site 名は同様に 400 になる。ただし検索は一回限りの問い合わせで保存された 行を持たないため、更新時の免除（保存済み site 名を通す）だけはルールの 保存にのみ適用される。'),
   "dedupeEnabled": zod.boolean().default(updateRuleBodyDedupeEnabledDefault),
   "dedupeThreshold": zod.number().gt(updateRuleBodyDedupeThresholdExclusiveMin).max(updateRuleBodyDedupeThresholdMax).nullish().describe('pg_trgm の similarity() と比較する閾値。similarity() の値域は [0, 1] なので\nこの範囲外は無意味。0 を許すと similarity() >= 0 が常に真になり、finished の\n録画が 1 本でもあれば以降の全番組が重複扱いで黙ってスキップされる\n（録画が黙って止まる）。1 を超えると常に偽になり、重複排除が黙って無効化される。\n'),
   "dedupeWindowSeconds": zod.number().gt(updateRuleBodyDedupeWindowSecondsExclusiveMin).nullish().describe('重複排除の時間窓（秒）。interval の API 表現。省略（null）が「時間窓なし」で、\n0 はその意味にはならない。0 以下を許すと\n`program_start_at >= now() - window` が現在以降の開始時刻を要求する形になり、\n比較対象は必ず過去の放送なので常に偽（重複排除が黙って無効化される）。\n'),
@@ -493,7 +493,7 @@ export const UpdateRuleResponse = zod.object({
   "startSec": zod.number().min(updateRuleResponseOneTimesItemStartSecMin).max(updateRuleResponseOneTimesItemStartSecMax),
   "endSec": zod.number().min(updateRuleResponseOneTimesItemEndSecMin).max(updateRuleResponseOneTimesItemEndSecMax).describe('start より小さい場合は翌日跨ぎ')
 })).optional(),
-  "sites": zod.array(zod.string()).optional().describe('空または省略 = 全サイト。指定する各要素は GET \/api\/sites が返す既知の site 名でなければならず、レジストリに無い名前（タイポ含む）や空文字列は 400 になる。更新では、そのルールに既に保存されている site 名だけは既知として扱う（GET で得た sites を載せ直す更新が、レジストリから site が消えた後も通るように）。免除は更新対象のルール単位なので \*\*作成では効かない\*\* —— 既存ルールの sites をそのまま載せて別のルールを作る（フォーク）場合、レジストリから消えた site 名は 400 になる。`POST \/api\/sites\/{site}\/programs\/search` の `sites` も同じ「空または省略 = 全サイト」の軸規約に従い、同じ既知名検証を受ける。 未知の site 名は同様に 400 になる。ただし検索は一回限りの問い合わせで保存された 行を持たないため、更新時の免除（保存済み site 名を通す）だけはルールの 保存にのみ適用される。'),
+  "sites": zod.array(zod.string()).optional().describe('空または省略 = 全サイト。指定する各要素は GET \/api\/sites が返す既知の site 名でなければならず、レジストリに無い名前（タイポ含む）や空文字列は 400 になる。更新では、そのルールに既に保存されている site 名だけは既知として扱う（GET で得た sites を載せ直す更新が、レジストリから site が消えた後も通るように）。免除は更新対象のルール単位なので \*\*作成では効かない\*\* —— 既存ルールの sites をそのまま載せて別のルールを作る（フォーク）場合、レジストリから消えた site 名は 400 になる。`POST \/api\/programs\/search` の `sites` も同じ 「空または省略 = 全サイト」の軸規約に従い、同じ既知名検証を受ける。 未知の site 名は同様に 400 になる。ただし検索は一回限りの問い合わせで保存された 行を持たないため、更新時の免除（保存済み site 名を通す）だけはルールの 保存にのみ適用される。'),
   "dedupeEnabled": zod.boolean().default(updateRuleResponseOneDedupeEnabledDefault),
   "dedupeThreshold": zod.number().gt(updateRuleResponseOneDedupeThresholdExclusiveMin).max(updateRuleResponseOneDedupeThresholdMax).nullish().describe('pg_trgm の similarity() と比較する閾値。similarity() の値域は [0, 1] なので\nこの範囲外は無意味。0 を許すと similarity() >= 0 が常に真になり、finished の\n録画が 1 本でもあれば以降の全番組が重複扱いで黙ってスキップされる\n（録画が黙って止まる）。1 を超えると常に偽になり、重複排除が黙って無効化される。\n'),
   "dedupeWindowSeconds": zod.number().gt(updateRuleResponseOneDedupeWindowSecondsExclusiveMin).nullish().describe('重複排除の時間窓（秒）。interval の API 表現。省略（null）が「時間窓なし」で、\n0 はその意味にはならない。0 以下を許すと\n`program_start_at >= now() - window` が現在以降の開始時刻を要求する形になり、\n比較対象は必ず過去の放送なので常に偽（重複排除が黙って無効化される）。\n'),
@@ -667,20 +667,12 @@ export const ListTunersResponse = zod.array(ListTunersResponseItem)
  * （N 予約が既定。docs/recording/ruler.md「サイトの扱い」）ため、行数がそのまま
  * 実体化される予約数になる。
  *
- * **非互換の変更**: 旧仕様は `sites` を `rule_sites` 相当の絞り込み（空 = パスの
- * {site} のみを評価対象にする）と説明していたが、実際の SQL は `$site = ANY($sites)`
- * という両辺が定数でテーブル列を参照しない述語だったため、事実上パスの {site} だけが
- * 全か無かのゲートとして機能し `sites` は無効だった。新仕様では `sites` が
- * `epg_programs.site` に対する実際の絞り込み述語になる。
- *
  * `sites` の既定を「空 = 全サイト」と定義するのは、Go 側がレジストリ全件を埋めて
- * `Compile` に渡す前提のため。
+ * `Compile` に渡す前提のため。旧パス `POST /api/sites/{site}/programs/search` は
+ * 廃止し、互換ルートは提供しない（web と API を同時に更新でき、運用開始前の
+ * 破壊的変更であるため）。
  * @summary Search EPG programs by rule-style conditions
  */
-export const SearchProgramsParams = zod.object({
-  "site": zod.string().describe('mirakc インスタンスのサイト名。programId はインスタンス単位のスコープ\nしか持たないため、この site と組にしないと資源が一意に定まらない\n（issue #31）。api プロセス自身は特定の site に束縛されない\n（不変条件 1: mirakc にもファイルシステムにも依存しない）ので、権威は\n「`config.mirakcs` レジストリに存在するか」であり、1 プロセスが\nレジストリの全 site を処理できる（issue #184 M4-12）。レジストリに無い\nsite のエラーコードはエンドポイントの HTTP メソッドで決まる —— GET 系は\n404、POST\/PUT\/PATCH\/DELETE 系は 400（他の入力検証と同じ扱い。詳細は各\nエンドポイントの description・レスポンス定義を参照）。存在する site の\n一覧は `GET \/api\/sites` で取得できる。\n')
-})
-
 export const searchProgramsBodyTextMatchesItemCaseSensitiveDefault = false;
 export const searchProgramsBodyTextMatchesItemNegateDefault = false;
 export const searchProgramsBodyGenresItemMin = 0;
@@ -720,7 +712,7 @@ export const SearchProgramsBody = zod.object({
   "startSec": zod.number().min(searchProgramsBodyTimesItemStartSecMin).max(searchProgramsBodyTimesItemStartSecMax),
   "endSec": zod.number().min(searchProgramsBodyTimesItemEndSecMin).max(searchProgramsBodyTimesItemEndSecMax).describe('start より小さい場合は翌日跨ぎ')
 })).optional(),
-  "sites": zod.array(zod.string()).optional().describe('絞り込み条件。空または省略 = 全サイト（`GET \/api\/recordings` の `?site=` と 同じ軸の規約: 軸内は OR、他の絞り込み軸とは AND）。\*\*非互換の変更\*\*: 旧仕様は `sites` を `rule_sites` 相当の条件として扱い、空 = パスの {site}（評価 site） のみだった。')
+  "sites": zod.array(zod.string()).optional().describe('絞り込み条件。空または省略 = 全サイト（`GET \/api\/recordings` の `?site=` と 同じ軸の規約: 軸内は OR、他の絞り込み軸とは AND）。指定した site 名は レジストリに存在する必要がある。')
 }).describe('ルール条件の条件部分と同じ形。rulequery.Conditions に写像される。\n検索対象のサイトは `sites`（空または省略 = 全サイト）が決める。\n')
 
 export const SearchProgramsResponseItem = zod.object({

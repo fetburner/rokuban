@@ -363,9 +363,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
-  /api/sites/{site}/programs/search:
-    parameters:
-      - $ref: "#/components/parameters/Site"
+  /api/programs/search:
     post:
       operationId: searchPrograms
       summary: Search EPG programs by rule-style conditions
@@ -379,14 +377,10 @@ paths:
         （N 予約が既定。docs/recording/ruler.md「サイトの扱い」）ため、行数がそのまま
         実体化される予約数になる。
 
-        **非互換の変更**: 旧仕様は `sites` を `rule_sites` 相当の絞り込み（空 = パスの
-        {site} のみを評価対象にする）と説明していたが、実際の SQL は `$site = ANY($sites)`
-        という両辺が定数でテーブル列を参照しない述語だったため、事実上パスの {site} だけが
-        全か無かのゲートとして機能し `sites` は無効だった。新仕様では `sites` が
-        `epg_programs.site` に対する実際の絞り込み述語になる。
-
         `sites` の既定を「空 = 全サイト」と定義するのは、Go 側がレジストリ全件を埋めて
-        `Compile` に渡す前提のため。
+        `Compile` に渡す前提のため。旧パス `POST /api/sites/{site}/programs/search` は
+        廃止し、互換ルートは提供しない（web と API を同時に更新でき、運用開始前の
+        破壊的変更であるため）。
       requestBody:
         required: true
         content:
@@ -408,13 +402,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
-        "404":
-          description: Unknown site (path parameter)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-
   /api/sites/{site}/programs:
     parameters:
       - $ref: "#/components/parameters/Site"
@@ -2111,9 +2098,8 @@ components:
             type: string
           description: >-
             絞り込み条件。空または省略 = 全サイト（`GET /api/recordings` の `?site=` と
-            同じ軸の規約: 軸内は OR、他の絞り込み軸とは AND）。**非互換の変更**: 旧仕様は
-            `sites` を `rule_sites` 相当の条件として扱い、空 = パスの {site}（評価 site）
-            のみだった。
+            同じ軸の規約: 軸内は OR、他の絞り込み軸とは AND）。指定した site 名は
+            レジストリに存在する必要がある。
 
     ProgramSearchMatch:
       type: object
@@ -2250,8 +2236,8 @@ components:
             を載せ直す更新が、レジストリから site が消えた後も通るように）。免除は更新対象のルール単位なので
             **作成では効かない** ——
             既存ルールの sites をそのまま載せて別のルールを作る（フォーク）場合、レジストリから消えた site
-            名は 400 になる。`POST /api/sites/{site}/programs/search` の `sites`
-            も同じ「空または省略 = 全サイト」の軸規約に従い、同じ既知名検証を受ける。
+            名は 400 になる。`POST /api/programs/search` の `sites` も同じ
+            「空または省略 = 全サイト」の軸規約に従い、同じ既知名検証を受ける。
             未知の site 名は同様に 400 になる。ただし検索は一回限りの問い合わせで保存された
             行を持たないため、更新時の免除（保存済み site 名を通す）だけはルールの
             保存にのみ適用される。

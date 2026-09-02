@@ -14,9 +14,6 @@ import (
 // 共有するが、1 クエリで複数 site を横断できる rulequery.MatchPrograms を使う点が
 // ruler（1 site ずつ評価する）と異なる（#530）。
 func (h *Server) SearchPrograms(ctx context.Context, req SearchProgramsRequestObject) (SearchProgramsResponseObject, error) {
-	if !h.knownSite(req.Site) {
-		return SearchPrograms404JSONResponse{Error: "unknown site"}, nil
-	}
 	if req.Body == nil {
 		return SearchPrograms400JSONResponse{Error: "request body is required"}, nil
 	}
@@ -46,7 +43,7 @@ func (h *Server) SearchPrograms(ctx context.Context, req SearchProgramsRequestOb
 	if err != nil {
 		return nil, err
 	}
-	// 行ごとに実際にマッチした site を返す（パスの {site} の複写ではない）。畳まない。
+	// 行ごとに実際にマッチした site を返す。畳まない。
 	matches := make([]ProgramSearchMatch, len(rows))
 	for i, row := range rows {
 		matches[i] = ProgramSearchMatch{Site: row.Site, ProgramId: row.ProgramID}

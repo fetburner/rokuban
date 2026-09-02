@@ -67,7 +67,7 @@ const services = [
 /**
  * matchedProgramIds は検索スタブが返す programId の集合（④で使う）。
  *
- * 検索 API（`POST /api/sites/{site}/programs/search`）は `{site, programId}` の
+ * 検索 API（`POST /api/programs/search`）は `{site, programId}` の
  * フラットな配列を返し、画面は 1 件ごとに `GET /api/sites/{site}/programs/{id}` を
  * 叩く（実物と同じ形）。
  *
@@ -104,7 +104,7 @@ async function apiHandler({ path: p, json, route }) {
   if (p === `/api/sites/${SITE}/services`) return json(services)
   // `/programs/search` は `/programs/{id}` より先に見る（`search` が id に
   // 見えてしまう順序事故を避ける）。
-  if (p === `/api/sites/${SITE}/programs/search`)
+  if (p === '/api/programs/search')
     return json(matchedProgramIds.map((programId) => ({ site: SITE, programId })))
   const detail = /^\/api\/sites\/[^/]+\/programs\/(\d+)$/.exec(p)
   if (detail !== null) {

@@ -221,8 +221,8 @@ func TestMultiSiteRegistry_HandlesAllRegisteredSites(t *testing.T) {
 				t.Errorf("GET .../programs/%s (site=%s) returned programId=%d", r.programID, r.site, program.ProgramId)
 			}
 
-			// POST .../programs/search は sites（空 = 全サイト。#530）で絞り込む。
-			// パスの {site} には依存しない。ここでは自サイトだけを sites に指定し、
+			// POST /api/programs/search は sites（空 = 全サイト。#530）で絞り込む。
+			// ここでは自サイトだけを sites に指定し、
 			// 他サイトの行が混ざらないことを見る --- sites を省略した場合は
 			// レジストリ全件が対象になり両サイトの行が返るので（TestSearchPrograms_
 			// SitesOmittedDefaultsToAllRegisteredSites が別途確認する）、この
@@ -231,14 +231,14 @@ func TestMultiSiteRegistry_HandlesAllRegisteredSites(t *testing.T) {
 				Site      string `json:"site"`
 				ProgramId int64  `json:"programId"`
 			}
-			sresp, err := http.Post(srv.URL+"/api/sites/"+r.site+"/programs/search", "application/json",
+			sresp, err := http.Post(srv.URL+"/api/programs/search", "application/json",
 				strings.NewReader(fmt.Sprintf(`{"sites":[%q]}`, r.site)))
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer func() { _ = sresp.Body.Close() }()
 			if sresp.StatusCode != http.StatusOK {
-				t.Fatalf("POST .../programs/search (site=%s) status = %d, want 200", r.site, sresp.StatusCode)
+				t.Fatalf("POST /api/programs/search (site=%s) status = %d, want 200", r.site, sresp.StatusCode)
 			}
 			if err := json.NewDecoder(sresp.Body).Decode(&searchMatches); err != nil {
 				t.Fatal(err)

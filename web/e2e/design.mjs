@@ -1305,7 +1305,7 @@ log("\n=== ①'''' search: 容量ノートの安定性（窓の点滅・退化�
     if (p === `/api/sites/${SITE}/services`) return json(services)
     if (p === '/api/encode-profiles') return json([])
 
-    if (p === `/api/sites/${SITE}/programs/search` && method === 'POST') {
+    if (p === '/api/programs/search' && method === 'POST') {
       return json(searchNotePrograms.map((pr) => ({ site: SITE, programId: pr.programId })))
     }
     const detail = new RegExp(`^/api/sites/${SITE}/programs/(\\d+)$`).exec(p)
