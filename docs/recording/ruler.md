@@ -73,13 +73,15 @@ EPG 更新完了で `reservationManage.updateAll()` を呼び、全手動予約�
 
 denpa は同じ問題に「開始 N 時間前以降はルールから外れても引っ込めない。ただしルールごと削除・停止されたぶんは直前でも引っ込める（人が押した結果だから）」で答えており、「手違いで消す方が余分に録るより高い」を根拠にしている（[予約モデル](reservation-model.md) §4.3「迷ったら録る側に倒す」と同じ判断）。Rokuban も `ruler.retract_grace`（既定 1h、0 で無効）で同じ猶予を入れる。
 
-**方針は変えない**: 全量評価・差分書き込み・レベルトリガー。猶予は desired の**導出規則**に足すのであって、予約行に「猶予中」の列は焼かない（不変条件 9）。既存の active 予約（前パスで `rule_id IS NOT NULL`）が今パスでどのルールにもマッチしなくなったとき、`epg_programs.start_at`（射影の最新値）が `now()` 以降かつ `now() + retract_grace` 以内で、かつそのルールが今も `enabled` なら、削除候補（`derivedDeletes`）に残さない --- 行に触らない（base も `rule_id` も前パスのまま）。**判定は `program_snapshots.start_at` ではなく `epg_programs.start_at` を見る**: `program_snapshots` は desired（= ルールが今もマッチしている）番組にしか追従せず、まさに猶予が効いてほしい unmatch のパスでは前回マッチ時点の値のまま凍結されるため、放送局が開始時刻を大きく繰り上げつつ題名も変えると古い値のまま猶予窓の外と誤判定してしまう。開始後は reconciler の allowlist（`tracking` / `recording` は触らない）が守り、終了後は既存の GC が落とす。**投資（record 意図 ∪ overrides）を持つ行はそもそも猶予の対象にならない** --- desired に残るので削除候補にすら入らない（`program_investments` view が別に守る）。**ユーザーの明示操作（intent skip / intent クリア / 最後の investment だった overrides の削除）で desired から外れた行も対象外**: 猶予は「ユーザー（運用者）が投資を手放す書き込みをしない限り起きない削除」（`DeleteReleasedReservationsBySiteAndProgramIDs`）より後、その削除を素通りした残り（`derivedDeletes`）にだけ掛ける。`rule_id` が前パスから非 NULL のままユーザーが `intent{skip}` を立てた行まで猶予が守ってしまうと、「これは録らない」という直接の明示操作が直前の猶予に呑まれて一生解放されなくなるため。
+**方針は変えない**: 全量評価・差分書き込み・レベルトリガー。猶予は desired の**導出規則**に足すのであって、予約行に「猶予中」の列は焼かない（不変条件 9）。既存の active 予約（前パスで `rule_id IS NOT NULL`）が今パスでどのルールにもマッチしなくなったとき、`epg_programs.start_at`（射影の最新値）が `now()` 以降かつ `now() + retract_grace` 以内で、かつそのルールが今も `enabled` なら、削除候補（`derivedDeletes`）に残さない --- 行に触らない（base も `rule_id` も前パスのまま）。**判定は `program_snapshots.start_at` ではなく `epg_programs.start_at` を見る**: `program_snapshots` は desired（= ルールが今もマッチしている）番組にしか追従せず、まさに猶予が効いてほしい unmatch のパスでは前回マッチ時点の値のまま凍結される。放送局が開始時刻を大きく繰り上げつつ題名も変えると、古い値のまま猶予窓の外と誤判定してしまう。開始後は reconciler の allowlist（`tracking` / `recording` は触らない）が守り、終了後は既存の GC が落とす。**投資（record 意図 ∪ overrides）を持つ行はそもそも猶予の対象にならない** --- desired に残るので削除候補にすら入らない（`program_investments` view が別に守る）。**ユーザーの明示操作（intent skip / intent クリア / 最後の investment だった overrides の削除）で desired から外れた行も対象外**: 猶予は「ユーザー（運用者）が投資を手放す書き込みをしない限り起きない削除」（`DeleteReleasedReservationsBySiteAndProgramIDs`）より後、その削除を素通りした残り（`derivedDeletes`）にだけ掛ける。`rule_id` が前パスから非 NULL のままユーザーが `intent{skip}` を立てた行まで猶予が守ってしまうと、「これは録らない」という直接の明示操作が直前の猶予に呑まれて一生解放されなくなるため。
 
 **ルールの無効化は猶予の対象外**（`internal/db/queries/ruler.sql` の `ListRetractGraceProtectedProgramIDsBySiteAndProgramIDs` の `EXISTS (rules ru WHERE ru.id = r.rule_id AND ru.enabled)`）。denpa と同じく「ルールごと削除・停止されたぶんは直前でも引っ込める」。「ルールの編集で条件を狭めた」は EPG 由来の unmatch と区別できない（[breaker.md](breaker.md) が同じ整理）ので、こちらは猶予の対象のまま --- 録り過ぎ側に倒す非対称。ルールの削除（`DeleteRule`）は同一 tx で投資なしの行を先に消す既存経路なので、猶予に関係なく影響を受けない。
 
 この設計では `active` の導出（[reservations.md](../schema/reservations.md) §「active / detached / orphaned は API が都度導出する」の `rule_id IS NOT NULL`）は変わらない --- 猶予中の行は見た目 active のままである。「ルール外れ・直前のため維持」という別の見せ方を UI に足すかどうかは検討したが、既存の `active` 表示で足りると判断し見送った（`openapi.yaml` を触る変更になるので、必要になれば別 issue で決める）。
 
 猶予でこのパスの削除から外れた行は、大量削除サーキットブレーカーの分子にも分母にも入らない（[breaker.md](breaker.md)「大量削除サーキットブレーカー」の猶予との関係）。
+
+**未解決**: 猶予で残った行は desired ではないため program_snapshots が凍結され、GC 判定・容量超過判定・contentPath は繰り上げ前の時刻を見る。
 
 #### 重複排除（再放送スキップ）
 

@@ -440,17 +440,8 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 	//     `NOT EXISTS program_investments` が適用の瞬間に再評価する（#29 型の窓を
 	//     作らない設計は DeleteReservationsBySiteAndProgramIDs 側が既に担っている）
 	//   - start_at が猶予の窓に入ってきた → 猶予の述語は epg_programs.start_at
-	//     （射影の最新値）を直接見る（issue #540）ので、次に読んだときには
-	//     繰り上げ後の値がそのまま反映される。唯一残る例外は
-	//     internal/db/queries/ruler.sql の
-	//     ListRetractGraceProtectedProgramIDsBySiteAndProgramIDs のコメントに書いた
-	//     窓（stillProjectedSubset の SELECT からこの SELECT までの間に epg_sync が
-	//     該当 epg_programs 行を消す）で、これに当たると INNER JOIN が該当行を返さず
-	//     保護し損ねる（stale-too-small 側に倒れる）。ただし
-	//     DeleteReservationsBySiteAndProgramIDs 自体も削除の瞬間に epg_programs の
-	//     存在を再確認しないため、この猶予を足す前から「射影から消えた行を凍結する」
-	//     保証は stillProjectedSubset の 1 回の SELECT 止まりだった --- 猶予がこの穴を
-	//     新しく開けたわけではない。
+	//     （射影の最新値）を直接見る。残る窓は internal/db/queries/ruler.sql の
+	//     ListRetractGraceProtectedProgramIDsBySiteAndProgramIDs のコメントが権威。
 	//
 	// r.cfg.RetractGrace <= 0 は「無効」（RetractGrace のフィールドコメント参照）。
 	//
@@ -673,9 +664,9 @@ func (r *Ruler) stillProjectedSubset(ctx context.Context, q *sqlcgen.Queries, si
 //
 // 対象は「(1) 前パスでルールが base を供給していた（reservations.rule_id が
 // NOT NULL）、(2) その番組の epg_programs.start_at（射影の最新値。desired から
-// 外れた unmatch パスでは追従が止まる program_snapshots.start_at ではない —
-// issue #540）が [now, now+grace) の範囲、(3) そのルールが今も enabled」の
-// 3 条件をすべて満たす行。SQL 側
+// 外れた unmatch パスでは追従が止まる program_snapshots.start_at ではない）が
+// [now, now+grace) の範囲、(3) そのルールが今も enabled」の 3 条件をすべて
+// 満たす行。SQL 側
 // （ListRetractGraceProtectedProgramIDsBySiteAndProgramIDs、
 // internal/db/queries/ruler.sql）が権威。
 func (r *Ruler) retractGraceProtectedSubset(ctx context.Context, q *sqlcgen.Queries, site string, candidates []int64) ([]int64, error) {
