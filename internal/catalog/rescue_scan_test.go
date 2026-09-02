@@ -110,3 +110,66 @@ func TestRescueLatest_NoCatalogScansBareAssetsIdempotently(t *testing.T) {
 		t.Errorf("rescued file content changed: %q", body)
 	}
 }
+
+// アーカイブは全 site で共有される単一のストレージなので、`sites/{site}/` 前置
+// ファイルは前置を持つ他 site の分も同じスキャンで見つかる。前置ありのファイルは
+// prefix から site を決め、`--site` の値（引数の "tokyo"）と食い違っても
+// （takamatsu のファイル）prefix を正として復元する --- 除外すると災害復旧で
+// その site の録画だけ黙って復元されなくなる。前置の無いファイルは前置導入前
+// （単一 site 時代）の ingest なので `--site` にフォールバックする
+// （issue #533 の「含むもの」3）。
+func TestRescueLatest_ScansSitePrefixedAssetsUsingThePrefixSite(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	mediaDir := t.TempDir()
+	at := time.Date(2026, 7, 30, 3, 4, 5, 0, time.UTC)
+
+	write := func(rel string) {
+		t.Helper()
+		path := filepath.Join(mediaDir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("bytes"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(path, at, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("sites/tokyo/show.m2ts")
+	write("sites/takamatsu/movie.mp4")
+	write("legacy/old.m2ts")
+
+	// `rescue --site tokyo` を模す: 呼び出し側は "tokyo" しか渡さないが、
+	// takamatsu 前置のファイルも takamatsu として復元されなければならない。
+	result, err := RescueLatest(context.Background(), pool, mediaDir, "tokyo")
+	if err != nil {
+		t.Fatalf("RescueLatest: %v", err)
+	}
+	if result.Recordings != 3 || result.MediaAssets != 3 {
+		t.Fatalf("result = %+v, want 3 recordings/assets", result)
+	}
+
+	siteOf := func(t *testing.T, relPath string) string {
+		t.Helper()
+		var site string
+		err := pool.QueryRow(context.Background(), `
+			SELECT r.site FROM recordings r JOIN media_assets a ON a.recording_id = r.id
+			WHERE a.rel_path = $1
+		`, relPath).Scan(&site)
+		if err != nil {
+			t.Fatalf("querying site for %s: %v", relPath, err)
+		}
+		return site
+	}
+
+	if got := siteOf(t, "sites/tokyo/show.m2ts"); got != "tokyo" {
+		t.Errorf("site for sites/tokyo/show.m2ts = %q, want tokyo", got)
+	}
+	if got := siteOf(t, "sites/takamatsu/movie.mp4"); got != "takamatsu" {
+		t.Errorf("site for sites/takamatsu/movie.mp4 = %q, want takamatsu (prefix must win over --site=tokyo)", got)
+	}
+	if got := siteOf(t, "legacy/old.m2ts"); got != "tokyo" {
+		t.Errorf("site for legacy/old.m2ts = %q, want tokyo (no prefix, falls back to --site)", got)
+	}
+}

@@ -331,17 +331,23 @@ func TestNewBoundBacklogCollector_ThroughNewRegistry(t *testing.T) {
 	})
 }
 
-func newEnqueueSiteTestCmd(t *testing.T) *cobra.Command {
+// newSiteFlagTestCmd は resolveSiteFlag のテストが使う、`--site` フラグだけを
+// 持つ最小の cobra.Command を作る（enqueue / rescue / shadow-diff の 3 コマンドが
+// 共有する解決規則なので、コマンド名には依存しない）。
+func newSiteFlagTestCmd(t *testing.T) *cobra.Command {
 	t.Helper()
 	cmd := &cobra.Command{Use: "test"}
 	cmd.Flags().String("site", "", "")
 	return cmd
 }
 
-func TestResolveEnqueueSite(t *testing.T) {
+// TestResolveSiteFlag は enqueue（site 束縛ジョブ）・rescue・shadow-diff が
+// 共有する `--site` 解決規則の単体テスト（issue #183 の「含むもの」6 で導入、
+// issue #533 で rescue / shadow-diff にも一般化した）。
+func TestResolveSiteFlag(t *testing.T) {
 	t.Run("unspecified with single-entry registry", func(t *testing.T) {
-		cmd := newEnqueueSiteTestCmd(t)
-		site, err := resolveEnqueueSite(cmd, []config.MirakcSite{tokyo})
+		cmd := newSiteFlagTestCmd(t)
+		site, err := resolveSiteFlag(cmd, []config.MirakcSite{tokyo})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -351,19 +357,19 @@ func TestResolveEnqueueSite(t *testing.T) {
 	})
 
 	t.Run("unspecified with multi-entry registry is an error", func(t *testing.T) {
-		cmd := newEnqueueSiteTestCmd(t)
-		_, err := resolveEnqueueSite(cmd, []config.MirakcSite{tokyo, takamatsu})
+		cmd := newSiteFlagTestCmd(t)
+		_, err := resolveSiteFlag(cmd, []config.MirakcSite{tokyo, takamatsu})
 		if err == nil {
 			t.Fatal("expected error, got nil")
 		}
 	})
 
 	t.Run("explicit site resolves", func(t *testing.T) {
-		cmd := newEnqueueSiteTestCmd(t)
+		cmd := newSiteFlagTestCmd(t)
 		if err := cmd.Flags().Set("site", "takamatsu"); err != nil {
 			t.Fatalf("Set: %v", err)
 		}
-		site, err := resolveEnqueueSite(cmd, []config.MirakcSite{tokyo, takamatsu})
+		site, err := resolveSiteFlag(cmd, []config.MirakcSite{tokyo, takamatsu})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -372,12 +378,15 @@ func TestResolveEnqueueSite(t *testing.T) {
 		}
 	})
 
+	// --site の値はレジストリ照合する（issue #533 の「罠」: タイポを
+	// 「どの site にも一致しない」として無音で成功させない）。この変異
+	// （照合を外して常に成功させる）はここで落ちる。
 	t.Run("explicit unknown site is an error", func(t *testing.T) {
-		cmd := newEnqueueSiteTestCmd(t)
+		cmd := newSiteFlagTestCmd(t)
 		if err := cmd.Flags().Set("site", "osaka"); err != nil {
 			t.Fatalf("Set: %v", err)
 		}
-		_, err := resolveEnqueueSite(cmd, []config.MirakcSite{tokyo, takamatsu})
+		_, err := resolveSiteFlag(cmd, []config.MirakcSite{tokyo, takamatsu})
 		if err == nil {
 			t.Fatal("expected error, got nil")
 		}

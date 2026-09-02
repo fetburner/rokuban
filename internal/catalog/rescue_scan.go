@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"path/filepath"
 	"strings"
 
@@ -18,7 +19,12 @@ import (
 // rescueStorage は catalog が 1 世代も残っていないときに、認識可能な動画ファイルをスキャンする。
 // 各ファイルは 1 件の recording になり、既知の事実は意図的に相対パス・ファイル名・サイズ・mtime
 // のみに絞られる。`catalog/` は決してスキャンしない: catalog の世代はメタデータであり、
-// media asset ではないため。
+// media asset ではないため。`sites/` は SkipDir にしない（walk 対象。原本の名前空間で、
+// site 付きで走査する対象そのもの。docs/storage/contract.md §「原本の sites/{site}/ 前置」）。
+//
+// site は `--site` の値で、`sites/{site}/` 前置を持たないファイル（前置導入前の
+// 単一 site 時代の ingest）にだけ使う。前置を持つファイルは
+// siteForRescuedFile が prefix から site を決める。
 func rescueStorage(ctx context.Context, pool *pgxpool.Pool, mediaDir, site string) (*RescueResult, error) {
 	result := &RescueResult{}
 	catalogDir := filepath.Clean(Dir(mediaDir))
@@ -63,7 +69,7 @@ func rescueStorage(ctx context.Context, pool *pgxpool.Pool, mediaDir, site strin
 		_, err = inplace.Register(ctx, pool, mediaDir, inplace.Input{
 			Recording: inplace.Recording{
 				Source:    "manual",
-				Site:      site,
+				Site:      siteForRescuedFile(relPath, site),
 				NetworkID: networkID, ServiceID: serviceID, EventID: eventID,
 				ServiceName: "Recovered file (metadata unavailable)",
 				// recordings.channel_type には現状 unknown 値が無い。負の synthetic identity と
@@ -103,6 +109,42 @@ func rescueAssetKind(name string) (kind string, profile *string, ok bool) {
 	default:
 		return "", nil, false
 	}
+}
+
+// siteRelPathPrefix は原本 rel_path の site 名前空間の固定 1 段目
+// （docs/storage/contract.md §「原本の sites/{site}/ 前置」）。
+const siteRelPathPrefix = "sites/"
+
+// siteForRescuedFile は走査で見つかったファイルの site を決める（issue #533）。
+//
+// relPath が `sites/{site}/...` 前置を持てば、その prefix を正として使う ---
+// 前置は ingest（determineRelPath）が実際に書いた site の記録であり、
+// 呼び出し側が渡した flagSite（`rescue --site` の値）より確からしい。前置が
+// 無ければ前置導入（M4-14）より前の ingest なので flagSite にフォールバックする
+// （前置導入前は単一 site 構成でしか運用できなかったので、単一の site 名を
+// `--site` に渡す運用で正しく復元できる）。
+//
+// **prefix と flagSite が食い違っても止めない。** アーカイブは全 site で共有される
+// 単一のストレージ（docs/configuration.md §mirakc レジストリ）なので、1 回の
+// スキャンに複数 site のファイルが混在するのは正常 --- `rescue --site tokyo` を
+// 実行しても、ディスク上に takamatsu の前置ファイルがあればそれも見つかり、
+// takamatsu として復元されるべきである。除外すると災害復旧でその site の録画
+// だけ黙って復元されなくなる（docs/storage.md §8「黙って切り捨てない」に反する）。
+// 食い違いは運用者が結果に驚かないよう Info ログにだけ残す。
+func siteForRescuedFile(relPath, flagSite string) string {
+	rest, ok := strings.CutPrefix(relPath, siteRelPathPrefix)
+	if !ok {
+		return flagSite
+	}
+	prefixSite, _, ok := strings.Cut(rest, "/")
+	if !ok || prefixSite == "" {
+		return flagSite
+	}
+	if prefixSite != flagSite {
+		slog.Info("rescue: recovered file's sites/ prefix differs from --site; using the prefix",
+			"rel_path", relPath, "prefix_site", prefixSite, "flag_site", flagSite)
+	}
+	return prefixSite
 }
 
 // syntheticBroadcastIdentity は相対パスを安定した負の identity タプルへ写像する。実際の

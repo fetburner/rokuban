@@ -131,10 +131,11 @@ func validateSiteBinding(roles []string, bound []config.MirakcSite, queues []str
 
 // requireSingleSite は registry がちょうど 1 要素であることを要求する。
 //
-// rescue / shadow-diff は単一サイト用のまま（issue #183 の「含むもの」7）:
-// 両者とも多サイトでの意味論（複数サイトの catalog をどう束ねるか / EPGStation
-// も site ごとに分かれるのか）を決める書き手がまだいない（不変条件 11）ので、
-// 形を決めずに明示的なエラーで落とす。
+// `import epgstation` が単一サイト用のまま使う（issue #533 で rescue /
+// shadow-diff は resolveSiteFlag に置き換わったので、この関数の利用者は
+// import だけになった）: 多サイトでの意味論（EPGStation からの移行先を
+// どう決めるか）を決める書き手がまだいない（不変条件 11）ので、形を決めずに
+// 明示的なエラーで落とす。
 func requireSingleSite(registry []config.MirakcSite, cmdName string) (config.MirakcSite, error) {
 	switch len(registry) {
 	case 0:
@@ -173,13 +174,16 @@ func newBoundBacklogCollectors(pool *pgxpool.Pool, bound []config.MirakcSite) []
 	return collectors
 }
 
-// resolveEnqueueSite は `enqueue` の `--site` フラグとレジストリから投入先の
-// サイト名を決める。
+// resolveSiteFlag は `--site` フラグとレジストリから対象サイト名を決める。
+// `enqueue`（site 束縛ジョブ）・`rescue`・`shadow-diff` の 3 コマンドが共有する
+// 解決規則（issue #183 の「含むもの」6 で enqueue に導入、issue #533 で
+// rescue / shadow-diff にも一般化した）。
 //
 // 未指定かつレジストリが 1 要素ならその 1 つ、2 要素以上なら `--site` が必須
-// （issue #183 の「含むもの」6。M4-6 の CronJob がサイトごとに投入するため）。
-// 指定された名前がレジストリに存在しない場合はエラーにする（typo の早期検出）。
-func resolveEnqueueSite(cmd *cobra.Command, registry []config.MirakcSite) (string, error) {
+// （M4-6 の CronJob がサイトごとに投入するため）。指定された名前がレジストリに
+// 存在しない場合はエラーにする（typo の早期検出。無音でどの site にも一致しない
+// まま成功させない）。
+func resolveSiteFlag(cmd *cobra.Command, registry []config.MirakcSite) (string, error) {
 	site, err := cmd.Flags().GetString("site")
 	if err != nil {
 		return "", err
