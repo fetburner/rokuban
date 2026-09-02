@@ -129,10 +129,10 @@ func TestIngestWorker_DropStatPIDType(t *testing.T) {
 	}
 
 	w := &IngestWorker{
-		MirakcClient: mirakc.NewClient(srv.URL, nil),
-		MediaDir:     t.TempDir(),
-		StallTimeout: 5 * time.Second,
-		Pool:         pool,
+		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		MediaDir:      t.TempDir(),
+		StallTimeout:  5 * time.Second,
+		Pool:          pool,
 	}
 
 	recordingID := insertTestRecording(t, pool)

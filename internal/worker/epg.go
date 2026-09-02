@@ -75,18 +75,18 @@ func (a EpgSyncArgs) InsertOpts() river.InsertOpts {
 // そのため差分同期はせず、毎回の全量ポーリング + スイープでレベルトリガーに収束させる。
 type EpgSyncWorker struct {
 	river.WorkerDefaults[EpgSyncArgs]
-	MirakcClient *mirakc.Client
-	Pool         *pgxpool.Pool
+
+	// MirakcClients は site → mirakc クライアントの map（issue #532）。この
+	// 1 インスタンスが複数 site の epg_<site> キューを同時に購読しうる。Work は
+	// verifySite で job.Args.Site に対応するクライアントを取り出してから使う
+	// （issue #139）。
+	MirakcClients map[string]*mirakc.Client
+	Pool          *pgxpool.Pool
 
 	// RetentionGrace は end_at がこの時間より前の番組を刈り取る猶予
 	// （config.epg.retention_grace。config.defaults() が既定値 24 時間を
 	// 埋めるので、ここでは常に config が渡した値をそのまま使う）。
 	RetentionGrace time.Duration
-
-	// Site はこのワーカープロセス自身の site（`--sites` で束縛された site）。Work は
-	// これと job.Args.Site を verifySite で照合してから mirakc に触る
-	// （issue #139）。空なら db.DefaultSite に解決する（verifySite 参照）。
-	Site string
 }
 
 // Timeout は River の既定（1 分）より長い上限を与える。
@@ -110,7 +110,8 @@ func (w *EpgSyncWorker) Work(ctx context.Context, job *river.Job[EpgSyncArgs]) e
 	// mirakc インスタンスはサイトスコープ。他サイトのジョブをこのプロセスの
 	// mirakc に投げると、別インスタンスの EPG をこのサイトの投影として書きうる
 	// （issue #139）。ListServices/ListPrograms より前に照合する。
-	if err := verifySite(w.Site, site, epgQueue); err != nil {
+	client, err := verifySite(w.MirakcClients, site, epgQueue)
+	if err != nil {
 		return err
 	}
 
@@ -123,7 +124,7 @@ func (w *EpgSyncWorker) Work(ctx context.Context, job *river.Job[EpgSyncArgs]) e
 		return fmt.Errorf("getting sweep mark: %w", err)
 	}
 
-	services, err := w.MirakcClient.ListServices(ctx)
+	services, err := client.ListServices(ctx)
 	if err != nil {
 		return fmt.Errorf("listing services: %w", err)
 	}
@@ -132,7 +133,7 @@ func (w *EpgSyncWorker) Work(ctx context.Context, job *river.Job[EpgSyncArgs]) e
 		return fmt.Errorf("syncing services: %w", err)
 	}
 
-	programs, err := w.MirakcClient.ListPrograms(ctx)
+	programs, err := client.ListPrograms(ctx)
 	if err != nil {
 		return fmt.Errorf("listing programs: %w", err)
 	}

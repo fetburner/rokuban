@@ -164,9 +164,9 @@ func TestIngestWorker_ProgressVisibleDuringTransfer(t *testing.T) {
 	}
 
 	w := &IngestWorker{
-		MirakcClient: mirakc.NewClient(srv.URL, nil),
-		MediaDir:     t.TempDir(),
-		StallTimeout: 30 * time.Second,
+		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		MediaDir:      t.TempDir(),
+		StallTimeout:  30 * time.Second,
 		// 観測期限より長くし、最初の burst が転送開始直後の間引き期間内に
 		// 必ず収まるようにする。短くすると次の Write の時刻次第で症状を隠す。
 		ProgressInterval: time.Hour,
@@ -294,7 +294,7 @@ func TestIngestWorker_ProgressFlushesInterruptedBurst(t *testing.T) {
 	}
 
 	w := &IngestWorker{
-		MirakcClient:     mirakc.NewClient(srv.URL, nil),
+		MirakcClients:    singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
 		MediaDir:         t.TempDir(),
 		StallTimeout:     30 * time.Second,
 		ProgressInterval: time.Hour,
@@ -385,7 +385,7 @@ func TestIngestWorker_ProgressRemainsAfterFailure(t *testing.T) {
 	}
 
 	w := &IngestWorker{
-		MirakcClient:     mirakc.NewClient(srv.URL, nil),
+		MirakcClients:    singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
 		MediaDir:         t.TempDir(),
 		StallTimeout:     30 * time.Second,
 		ProgressInterval: time.Millisecond,

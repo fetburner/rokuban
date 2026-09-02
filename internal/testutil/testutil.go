@@ -113,7 +113,7 @@ func SetupDBPoolerCompat(t *testing.T) *pgxpool.Pool {
 	// roles は渡さない。ここで検証したいのは pooler_compat（QueryExecModeExec）
 	// 自体の効果であって、api ロールの statement_timeout や worker/watcher/notifier
 	// との fail-fast 判定とは無関係なので混ぜない。
-	pool, err := db.NewPool(ctx, cfg, nil)
+	pool, err := db.NewPool(ctx, cfg, nil, 0)
 	if err != nil {
 		t.Fatalf("creating pooler-compat pool: %v", err)
 	}

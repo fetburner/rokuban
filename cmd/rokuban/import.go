@@ -91,7 +91,7 @@ ARE（Postgres 正規表現）非互換の正規表現、%CHNAME% 等の未対�
 			}
 
 			ctx := cmd.Context()
-			pool, err := db.NewPool(ctx, cfg.DB, nil)
+			pool, err := db.NewPool(ctx, cfg.DB, nil, 0)
 			if err != nil {
 				return err
 			}

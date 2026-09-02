@@ -124,7 +124,7 @@ func TestNewPool(t *testing.T) {
 	// 指してしまって CI でも落ちた。
 	cfg := dbConfigFromURL(t, dbURL)
 
-	pool, err := NewPool(ctx, cfg, nil)
+	pool, err := NewPool(ctx, cfg, nil, 0)
 	if err != nil {
 		t.Fatalf("NewPool: %v", err)
 	}
@@ -151,7 +151,7 @@ func TestNewPool_ConnectionFailure(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	_, err := NewPool(ctx, cfg, nil)
+	_, err := NewPool(ctx, cfg, nil, 0)
 	if err == nil {
 		t.Fatal("expected connection error, got nil")
 	}
@@ -177,7 +177,7 @@ func TestNewPool_PoolerCompatFailFast_DoesNotDial(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	_, err := NewPool(ctx, cfg, []string{"worker"})
+	_, err := NewPool(ctx, cfg, []string{"worker"}, 0)
 	if err == nil {
 		t.Fatal("expected fail-fast error for pooler_compat + worker, got nil")
 	}
@@ -204,7 +204,7 @@ func TestNewPool_APIStatementTimeout_Enforced(t *testing.T) {
 	cfg.APIStatementTimeout = 200 * time.Millisecond
 
 	t.Run("api role: statement_timeout aborts a slow query", func(t *testing.T) {
-		pool, err := NewPool(ctx, cfg, []string{"api"})
+		pool, err := NewPool(ctx, cfg, []string{"api"}, 0)
 		if err != nil {
 			t.Fatalf("NewPool: %v", err)
 		}
@@ -220,7 +220,7 @@ func TestNewPool_APIStatementTimeout_Enforced(t *testing.T) {
 	})
 
 	t.Run("no api role: the same slow query is not aborted", func(t *testing.T) {
-		pool, err := NewPool(ctx, cfg, []string{"worker"})
+		pool, err := NewPool(ctx, cfg, []string{"worker"}, 0)
 		if err != nil {
 			t.Fatalf("NewPool: %v", err)
 		}

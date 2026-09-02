@@ -87,9 +87,14 @@ func (a IngestJobArgs) InsertOpts() river.InsertOpts {
 // IngestWorker は mirakc からの TS ファイル転送を行う River ワーカー。
 type IngestWorker struct {
 	river.WorkerDefaults[IngestJobArgs]
-	MirakcClient *mirakc.Client
-	Pool         *pgxpool.Pool
-	MediaDir     string
+
+	// MirakcClients は site → mirakc クライアントの map（issue #532。1 プロセスが
+	// N site を束縛できるため、この 1 インスタンスが複数 site の ingest_<site>
+	// キューを同時に購読しうる）。Work は verifySite で args.Site に対応する
+	// クライアントを取り出してから使う。
+	MirakcClients map[string]*mirakc.Client
+	Pool          *pgxpool.Pool
+	MediaDir      string
 
 	// StallTimeout は転送中の無進捗検知タイムアウト（config.ingest.stall_timeout。
 	// config.defaults() が既定値 30 秒を埋めるので、ここでは常に config が
@@ -101,11 +106,6 @@ type IngestWorker struct {
 	// （resolveProgressInterval）。テストが転送の途中経過を観測するために
 	// 短くできるようにしてあるだけで、運用上は既定のままでよい。
 	ProgressInterval time.Duration
-
-	// Site はこのワーカープロセス自身の site（`--sites` で束縛された site）。Work は
-	// これと args.Site を verifySite で照合してから mirakc/FS に触る
-	// （issue #139）。空なら db.DefaultSite に解決する（verifySite 参照）。
-	Site string
 
 	// RelPathLockTimeout は rel_path advisory lock の取得（pool.Acquire と
 	// pg_try_advisory_lock）に与える上限。0 は「未設定」で
@@ -163,7 +163,8 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[IngestJobArgs]) 
 	// プロセスの mirakc に投げると、別番組をこの recording としてコミットしうる
 	// （issue #139）。DB 参照（lookupRecordingID）や mirakc/FS への一切の
 	// アクセスより前に照合する。
-	if err := verifySite(w.Site, args.Site, ingestQueue); err != nil {
+	client, err := verifySite(w.MirakcClients, args.Site, ingestQueue)
+	if err != nil {
 		return err
 	}
 
@@ -203,13 +204,13 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[IngestJobArgs]) 
 		// 原本があるなら encode の desired−observed も埋める（ヒント。真実は
 		// EnqueueMissingEncodes のレベルトリガー判定。issue #65）。
 		enqueueMissingEncodesFromContext(ctx, w.Pool, recordingID)
-		if _, err := w.MirakcClient.DeleteRecord(ctx, args.RecordID, true); err != nil {
+		if _, err := client.DeleteRecord(ctx, args.RecordID, true); err != nil {
 			log.Error("ingest: failed to delete edge record (already committed)", "err", err)
 		}
 		return nil
 	}
 
-	relPath, fullPath, err := w.determineRelPath(ctx, args)
+	relPath, fullPath, err := w.determineRelPath(ctx, args, client)
 	if err != nil {
 		return fmt.Errorf("determining rel_path: %w", err)
 	}
@@ -284,7 +285,7 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[IngestJobArgs]) 
 	for attempt := 0; ; attempt++ {
 		stallCtx, stallCancel := context.WithCancel(ctx)
 
-		body, _, err := w.MirakcClient.StreamRecord(stallCtx, args.RecordID, offset)
+		body, _, err := client.StreamRecord(stallCtx, args.RecordID, offset)
 		if err != nil {
 			stallCancel()
 			if ctx.Err() != nil {
@@ -336,7 +337,7 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[IngestJobArgs]) 
 			"offset", offset, "attempt", attempt, "err", copyErr)
 	}
 
-	expectedLen, err := w.MirakcClient.HeadRecordStream(ctx, args.RecordID)
+	expectedLen, err := client.HeadRecordStream(ctx, args.RecordID)
 	if err != nil {
 		return fmt.Errorf("HEAD record stream: %w", err)
 	}
@@ -381,7 +382,7 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[IngestJobArgs]) 
 		}
 	}
 
-	if _, err := w.MirakcClient.DeleteRecord(ctx, args.RecordID, true); err != nil {
+	if _, err := client.DeleteRecord(ctx, args.RecordID, true); err != nil {
 		log.Error("ingest: failed to delete edge record (committed OK)", "err", err)
 	}
 
@@ -488,13 +489,16 @@ func (w *IngestWorker) lookupIngestTarget(ctx context.Context, args IngestJobArg
 // 固定の 1 段目を挟む理由・前置前の既存行を移行しない判断）は
 // docs/storage/contract.md §rel_path の名前空間にある。
 //
-// 前置に使うのは args.Site（w.Site ではない）。Work は determineRelPath を呼ぶ
-// 前に verifySite（internal/worker/worker.go）で args.Site が w.Site（空なら
-// db.DefaultSite）と一致することを検査済みなので値としては同じだが、
-// verifySite は w.Site="" のときに args.Site="" を通さない（正規化後の
-// "default" と比較して弾く）ため、verifySite を通過した args.Site は常に
-// 非空・正規化済みである。w.Site を使うと単体テストの部分構成
-// （w.Site 未設定）で同じ正規化をここで再実装する必要がある。
+// 前置に使うのは args.Site。Work は determineRelPath を呼ぶ前に verifySite
+// （internal/worker/worker.go）で args.Site が w.MirakcClients のいずれかの
+// キーと一致することを検査済みである。w.MirakcClients のキーは常に実際の
+// （空でない）site 名なので（config のバリデーションが site 名の非空を要求する。
+// verifySite は jobSite を正規化しない）、verifySite を通過した args.Site は
+// 常に非空である。
+//
+// client は verifySite が返したクライアント（Work が呼び出し元で解決済み）を
+// そのまま受け取る --- ここで再度 w.MirakcClients を引くと、verifySite が通した
+// site と実際に使うクライアントがズレる経路を作ってしまう。
 //
 // contentPath / Content.Path がどちらも空だと relPath が "."（カレント
 // ディレクトリ）になる。前置後は "sites/{site}/." が Join/Clean で "." が
@@ -503,8 +507,8 @@ func (w *IngestWorker) lookupIngestTarget(ctx context.Context, args IngestJobArg
 // 作ってしまう（以後その site 配下の ingest が全て MkdirAll で
 // "not a directory" になる。docs/storage/contract.md §rel_path の名前空間
 // 参照）。前置前に弾く（下記）。
-func (w *IngestWorker) determineRelPath(ctx context.Context, args IngestJobArgs) (relPath, fullPath string, err error) {
-	record, err := w.MirakcClient.GetRecord(ctx, args.RecordID)
+func (w *IngestWorker) determineRelPath(ctx context.Context, args IngestJobArgs, client *mirakc.Client) (relPath, fullPath string, err error) {
+	record, err := client.GetRecord(ctx, args.RecordID)
 	if err != nil {
 		return "", "", fmt.Errorf("getting mirakc record: %w", err)
 	}

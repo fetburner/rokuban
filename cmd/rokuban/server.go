@@ -19,7 +19,6 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/fetburner/rokuban/internal/api"
-	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
@@ -306,23 +305,6 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	if err := validateSiteBinding(roles, bound, queues); err != nil {
 		return err
 	}
-	// boundSite は「ちょうど 1 サイトに束縛されている」場合だけ非ゼロ値になる。
-	// 0 サイト（中央プロセス）では空のまま渡し、worker/watcher 側の既定の
-	// site 未設定規約（空文字列 = db.DefaultSite に解決 / 定期ジョブ未登録）に
-	// 委ねる。
-	var boundSite config.MirakcSite
-	if len(bound) == 1 {
-		boundSite = bound[0]
-	}
-	// live はライブ視聴セッションごとに mirakc へアクセスするため、streamer
-	// ロールが live.enabled で起動するにはちょうど 1 サイトへの束縛が要る
-	// （watcher と同じ理由。issue #91 のライブ資源同定はこのタスクの対象外だが、
-	// レジストリを導入した以上ここだけは壊さないための最小限の検査）。
-	if cfg.Live.Enabled && slices.Contains(roles, "streamer") && len(bound) != 1 {
-		return fmt.Errorf(
-			"live.enabled requires exactly one bound site for the streamer role, got %d (use --sites <site>)",
-			len(bound))
-	}
 
 	ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -344,7 +326,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	// 固定する。
 	context.AfterFunc(ctx, stop)
 
-	pool, err := db.NewPool(ctx, cfg.DB, roles)
+	pool, err := db.NewPool(ctx, cfg.DB, roles, len(bound))
 	if err != nil {
 		return err
 	}
@@ -364,7 +346,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	// （worker だけの Pod でも滞留メトリクスを取りたい）。
 	// SPA・SSE・バイト配信は担当ロールのときだけ登録する。
 	{
-		backlog := newBoundBacklogCollector(pool, bound)
+		backlog := newBoundBacklogCollectors(pool, bound)
 		routerCfg := api.RouterConfig{
 			AllowedHosts:       cfg.Server.AllowedHosts,
 			TrustForwardedHost: cfg.Server.TrustForwardedHost,
@@ -374,7 +356,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 			// ことで、1 プロセスがレジストリの全 site を処理できる
 			// （issue #184 M4-12）。
 			Sites:           registryNames(cfg.Registry()),
-			MetricsRegistry: metrics.NewRegistry(backlog),
+			MetricsRegistry: metrics.NewRegistry(backlog...),
 			// GET /api/capabilities に出すオプション機能（issue #209）。
 			// フロントはこれを見てライブへの導線を出すかどうかを決める。
 			//
@@ -431,15 +413,15 @@ func runServer(cmd *cobra.Command, _ []string) error {
 					return toolErr
 				}
 
-				// live.enabled かつ streamer ロールならちょうど 1 サイトへの束縛が
-				// 保証済み（上の事前検査）なので boundSite を使ってよい。
-				liveMirakcClient := mirakc.NewClient(boundSite.URL, nil)
-				liveStreamer := streamer.NewLive(liveMirakcClient, boundSite.Site, convertLiveConfig(cfg.Live))
-				mounters = append(mounters, liveStreamer)
+				// 束縛サイトごとに 1 つの LiveStreamer を作り、URL の {site} で
+				// 選ぶ（issue #532 の「含むもの」4。旧「ちょうど 1 サイト」の
+				// 事前検査は消した --- liveSites が 0/1/N サイトいずれも扱う）。
+				liveStreamers := newLiveStreamersBySite(bound, convertLiveConfig(cfg.Live))
+				mounters = append(mounters, liveStreamers)
 				// idle GC ループ。ctx（egCtx）が終わったら全セッションを止めて
 				// mirakc の接続を閉じる（チューナー解放。crash-only の唯一の
 				// 例外の後始末。docs/overview.md §crash-only）。
-				eg.Go(func() error { return liveStreamer.Run(egCtx) })
+				eg.Go(func() error { return liveStreamers.Run(egCtx) })
 			}
 		}
 		if slices.Contains(roles, "notifier") {
@@ -500,16 +482,16 @@ func runServer(cmd *cobra.Command, _ []string) error {
 				return toolErr
 			}
 		}
-		// worker.Deps.Site / worker.ClientConfig の各 *Site フィールドは
-		// boundSite から取る（issue #183 の「含むもの」5）。0 サイト束縛
-		// （中央プロセス）では boundSite がゼロ値になり、Site="" と
-		// *Site="" が既存の慣習通りに解釈される（Deps.Site="" は
-		// verifySite で db.DefaultSite に解決、ClientConfig の *Site="" は
-		// その定期ジョブを登録しない。worker.ClientConfig のフィールド
-		// コメント参照）。2 サイト以上の束縛では validateSiteBinding が
-		// worker ロールを起動エラーにしているので、ここに来るのは
-		// 0 または 1 サイト束縛のときだけ。
-		mc := mirakc.NewClient(boundSite.URL, nil)
+		// worker.Deps.MirakcClients / worker.ClientConfig.BoundSites は
+		// bound から作る（issue #532）。1 プロセスが N site を束縛できるように
+		// なったので、site ごとに 1 つの mirakc.Client を持つ map にする ---
+		// 単一の mc / boundSite.Site を使い回していた旧実装と違い、0/1/N
+		// いずれの束縛数でも同じコードパスで組み立つ。
+		mirakcClients := make(map[string]*mirakc.Client, len(bound))
+		boundSiteNames := registryNames(bound)
+		for _, s := range bound {
+			mirakcClients[s.Site] = mirakc.NewClient(s.URL, nil)
+		}
 		// cfg.Ruler.RetractGrace は internal/config.Load が「未設定なら既定 1h」を
 		// 埋めた後の値なので、ここでは常に非 nil のはず。nil のまま来た場合
 		// （config.Load を経由しない構築）は「未設定」ではなく「無効」に倒す ---
@@ -520,10 +502,9 @@ func runServer(cmd *cobra.Command, _ []string) error {
 			rulerRetractGrace = *cfg.Ruler.RetractGrace
 		}
 		workers := worker.NewWorkers(&worker.Deps{
-			MirakcClient:             mc,
+			MirakcClients:            mirakcClients,
 			Pool:                     pool,
 			MediaDir:                 cfg.Storage.MediaDir,
-			Site:                     boundSite.Site,
 			ScratchDir:               cfg.Storage.ScratchDir,
 			Encode:                   cfg.Encode,
 			EpgRetentionGrace:        cfg.Epg.RetentionGrace,
@@ -536,13 +517,14 @@ func runServer(cmd *cobra.Command, _ []string) error {
 			Cleanup:                  cfg.Cleanup,
 		})
 		clientCfg := worker.ClientConfig{
-			// BoundSite は site 単位のキュー（ingest/epg/reconciler/watcher）を
-			// 物理名（`<base>_<site>`）に展開するのに使う（issue #185 M4-13）。
-			// boundSite.Site は 0 サイト束縛（中央プロセス）では空文字列のままで、
+			// BoundSites は site 単位のキュー（ingest/epg/reconciler/watcher）を
+			// 物理名（`<base>_<site>`）に展開するのに使い（issue #185 M4-13）、
+			// site 単位の定期ジョブ（下記）も要素ごとに 1 本ずつ登録する
+			// （issue #532）。空スライス（0 サイト束縛）では
 			// worker.qualifyQueueName が db.DefaultSite に解決する --- 0 サイト
 			// 束縛の worker がこれらのキューを要求しないことは
 			// validateSiteBinding が起動時に強制している。
-			BoundSite:            boundSite.Site,
+			BoundSites:           boundSiteNames,
 			IngestConcurrency:    cfg.Ingest.Concurrency,
 			EncodeConcurrency:    cfg.Encode.Concurrency,
 			ThumbnailConcurrency: cfg.Encode.ThumbnailConcurrency,
@@ -557,15 +539,10 @@ func runServer(cmd *cobra.Command, _ []string) error {
 			// worker 側が投入する（mirakc に触るのも各ジョブのヒント経路をまとめる
 			// のも worker。riverClientFull は worker ロールがあるときにしか
 			// 選ばれないので、ここは無条件に設定してよい）。
-			EpgSyncSite:       boundSite.Site,
-			TunerSyncSite:     boundSite.Site,
-			RulerPassSite:     boundSite.Site,
-			ReconcilePassSite: boundSite.Site,
-			RecordSweepSite:   boundSite.Site,
-			CatalogExport:     true,
-			DeleteReconcile:   true,
-			EncodeReconcile:   true,
-			StorageSync:       true,
+			CatalogExport:   true,
+			DeleteReconcile: true,
+			EncodeReconcile: true,
+			StorageSync:     true,
 		}
 		var clientErr error
 		riverClient, clientErr = worker.NewClient(pool, workers, clientCfg)
@@ -640,32 +617,26 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		if !slices.Contains(singletonRoles, r) {
 			continue
 		}
-		roleName := r
-		// lockName は advisory lock のキー（role.RunSingleton の第 3 引数）。
-		// watcher だけは site で修飾する（watcherLockName、issue #185 M4-13
-		// 「含むもの」8）。修飾しないと、多サイト構成で 2 つの watcher が
-		// 同じロックを取り合い、負けた側の mirakc の SSE を誰も購読しなくなる
-		// （issue #183 本文。負けた側は "role already held by another process"
-		// を出して 15 秒ごとにポーリングし続けるだけなので、ログ上は正常に見える）。
-		lockName := roleName
-		eg.Go(func() error {
-			roleFunc := func(ctx context.Context) error {
-				slog.Info("role started", "role", roleName)
-				<-ctx.Done()
-				slog.Info("role stopped", "role", roleName)
-				return ctx.Err()
-			}
-			switch roleName {
-			case "watcher":
-				// validateSiteBinding が watcher ロールを常にちょうど 1 サイト
-				// 束縛に限定しているので、ここでは boundSite が必ず埋まっている。
-				mc := mirakc.NewClient(boundSite.URL, nil)
-				w := watcher.New(boundSite.Site, mc, pool, riverClient, worker.NewIngestArgs, webhookClient)
-				roleFunc = w.Run
-				lockName = watcherLockName(boundSite.Site)
-			}
-			return role.RunSingleton(egCtx, pool, lockName, roleFunc, nil)
-		})
+		// singletonRoles は現在 {"watcher"} だけなので、ここに来る r は常に
+		// "watcher"（switch で分岐する必要はない --- 他ロール用の default 分岐は
+		// 一度も選ばれない死んだコードになる。issue #532 のレビュー指摘で collapse
+		// した）。1 プロセスが N site を束縛できるようになったので、site ごとに
+		// 独立した goroutine + advisory lock を持つ --- watcher.New(site, ...) を
+		// site ごとに呼ぶだけで、internal/watcher 自体は触らない（このタスクの
+		// 「触るファイルの目安」）。lockName は site で修飾する
+		// （watcherLockName、issue #185 M4-13「含むもの」8）。修飾しないと、
+		// 同じ site を 2 プロセスが束縛した場合に 2 つの watcher が同じロックを
+		// 取り合い、負けた側の mirakc の SSE を誰も購読しなくなる（issue #183
+		// 本文）。1 プロセス N goroutine でも同じキーを取る作りなので、その
+		// 既存の排他は壊さない。
+		for _, site := range bound {
+			site := site
+			eg.Go(func() error {
+				mc := mirakc.NewClient(site.URL, nil)
+				w := watcher.New(site.Site, mc, pool, riverClient, worker.NewIngestArgs, webhookClient)
+				return role.RunSingleton(egCtx, pool, watcherLockName(site.Site), w.Run, nil)
+			})
+		}
 	}
 
 	eg.Go(func() error {

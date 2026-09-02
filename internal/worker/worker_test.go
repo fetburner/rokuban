@@ -17,9 +17,75 @@ import (
 	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/config"
+	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
+
+// singleSiteClients は 1 site だけを束縛するテスト用の Deps.MirakcClients /
+// *Worker.MirakcClients を組み立てる（issue #532 で単一の *mirakc.Client
+// フィールドが map になったことに伴うテストヘルパー）。site を省略（""）した
+// 呼び出しは db.DefaultSite を使う --- 大半のワーカーテストは複数 site を
+// 気にしないので、単一サイトの map を毎回手で組み立てずに済ませる。
+func singleSiteClients(site string, client *mirakc.Client) map[string]*mirakc.Client {
+	if site == "" {
+		site = db.DefaultSite
+	}
+	return map[string]*mirakc.Client{site: client}
+}
+
+// TestVerifySite は issue #532 の受け入れ基準 3 を固定する: verifySite は
+// clients（束縛サイトの map）に無い jobSite を拒み、ある jobSite は通して
+// そのクライアントを返す。
+//
+// このテストが検出すべき変異: verifySite が clients の中身を見ずに常に通す
+// （map の判定 `clients[site]` を消して常に何らかのクライアントを返す等）。
+// その場合 "unbound site is refused" が誤って通ってしまい、このテストが落ちる。
+func TestVerifySite(t *testing.T) {
+	tokyoClient := mirakc.NewClient("http://tokyo.example", nil)
+	takamatsuClient := mirakc.NewClient("http://takamatsu.example", nil)
+	clients := map[string]*mirakc.Client{
+		"tokyo":     tokyoClient,
+		"takamatsu": takamatsuClient,
+	}
+
+	t.Run("bound site is allowed and returns its own client", func(t *testing.T) {
+		got, err := verifySite(clients, "tokyo", "ingest")
+		if err != nil {
+			t.Fatalf("verifySite: %v", err)
+		}
+		if got != tokyoClient {
+			t.Errorf("verifySite returned %v, want the tokyo client", got)
+		}
+	})
+
+	t.Run("a second bound site is also allowed (N-site binding)", func(t *testing.T) {
+		got, err := verifySite(clients, "takamatsu", "ingest")
+		if err != nil {
+			t.Fatalf("verifySite: %v", err)
+		}
+		if got != takamatsuClient {
+			t.Errorf("verifySite returned %v, want the takamatsu client", got)
+		}
+	})
+
+	t.Run("unbound site is refused", func(t *testing.T) {
+		if _, err := verifySite(clients, "osaka", "ingest"); err == nil {
+			t.Fatal("verifySite() error = nil, want error for a site not in clients")
+		}
+	})
+
+	// jobSite は正規化しない: 空文字列は無条件に拒む。これは "default" という
+	// 名前の site がたまたま束縛されているデプロイでも同じでなければならない
+	// --- 正規化すると、args.Site 自体が壊れている（本来 verifySite が拾うべき）
+	// ジョブが「default site 宛のジョブ」として素通りしてしまう。
+	t.Run("empty jobSite is refused even when a site named default is bound", func(t *testing.T) {
+		defaultOnly := singleSiteClients("", tokyoClient)
+		if _, err := verifySite(defaultOnly, "", "ingest"); err == nil {
+			t.Fatal("verifySite() error = nil, want error for an empty (unnormalized) jobSite")
+		}
+	})
+}
 
 func TestNoOpJob(t *testing.T) {
 	pool := testutil.SetupDB(t)
@@ -106,19 +172,33 @@ func startPeriodicJobClient(t *testing.T, pool *pgxpool.Pool, deps *Deps, cfg Cl
 // waitPeriodicJobEvent は startPeriodicJobClient と対になる待ち受けの
 // 共通部分（timeout 付き select）だけを担う。kind / queue / args の主張は
 // 呼び出し側に残す。
+//
+// **jobKind が一致するイベントが来るまで読み飛ばす。** issue #532 で
+// ClientConfig.BoundSites が epg_sync/tuner_sync/ruler_pass/reconcile_pass/
+// record_sweep の 5 種をまとめて登録するようになったため、1 つの site を
+// 束縛しただけで残り 4 種も RunOnStart で同時に走る。呼び出し側が見たいのは
+// そのうちの 1 種だけなので、最初に届いたイベントを無条件に返すと別の種類の
+// ジョブに化けたときにテストが誤判定する（実際、複数種が同時完了する構成で
+// 順序は保証されない）。
 func waitPeriodicJobEvent(t *testing.T, subscribeCh <-chan *river.Event, jobKind string) *river.Event {
 	t.Helper()
-	select {
-	case event := <-subscribeCh:
-		return event
-	case <-time.After(20 * time.Second):
-		t.Fatalf("timed out waiting for the periodic %s job", jobKind)
-		return nil
+	deadline := time.After(20 * time.Second)
+	for {
+		select {
+		case event := <-subscribeCh:
+			if event.Job.Kind == jobKind {
+				return event
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for the periodic %s job", jobKind)
+			return nil
+		}
 	}
 }
 
-// EpgSyncSite を指定すると epg_sync が定期ジョブとして投入され、
-// 登録済みワーカーが epg キューで拾うこと（配線の確認）。
+// BoundSites を指定すると epg_sync が定期ジョブとして投入され、登録済み
+// ワーカーが epg キューで拾うこと（配線の確認。BoundSites は epg_sync 以外の
+// 4 種も同時に登録するが、waitPeriodicJobEvent が kind で選り分ける）。
 func TestEpgSyncPeriodicJob(t *testing.T) {
 	pool := testutil.SetupDB(t)
 
@@ -130,9 +210,9 @@ func TestEpgSyncPeriodicJob(t *testing.T) {
 	// t.Cleanup（defer だとクライアント停止より先に走り、動いている最中にスタブを閉じる）。
 	t.Cleanup(srv.Close)
 
-	subscribeCh := startPeriodicJobClient(t, pool, &Deps{MirakcClient: mirakc.NewClient(srv.URL, nil)}, ClientConfig{
+	subscribeCh := startPeriodicJobClient(t, pool, &Deps{MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil))}, ClientConfig{
 		PeriodicJobs:    true,
-		EpgSyncSite:     "default",
+		BoundSites:      []string{"default"},
 		EpgSyncInterval: time.Hour, // RunOnStart で 1 回だけ走らせる
 	}, river.EventKindJobFailed)
 
@@ -165,7 +245,7 @@ func TestEpgSyncWorker_EnqueuesRulerPassHint(t *testing.T) {
 
 	srv := newEpgServer(t, &epgFixture{})
 
-	workers := NewWorkers(&Deps{Pool: pool, MirakcClient: mirakc.NewClient(srv.URL, nil)})
+	workers := NewWorkers(&Deps{Pool: pool, MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil))})
 	client, err := NewClient(pool, workers, ClientConfig{})
 	if err != nil {
 		t.Fatalf("creating client: %v", err)
@@ -363,8 +443,11 @@ func TestRulerPassWorker_HasGenerousTimeout(t *testing.T) {
 	}
 }
 
-// RulerPassSite を指定すると ruler_pass が定期ジョブとして投入され、
-// 登録済みワーカーが ruler キューで拾うこと（配線の確認）。
+// BoundSites を指定すると ruler_pass が定期ジョブとして投入され、登録済み
+// ワーカーが ruler キューで拾うこと（配線の確認）。Deps.MirakcClients を
+// 設定していないので、同時に登録される mirakc 接触系の 4 種
+// （epg_sync/tuner_sync/reconcile_pass/record_sweep）は verifySite で
+// 即座に失敗する --- ruler_pass だけが JobCompleted を出す。
 func TestRulerPassPeriodicJob(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
@@ -376,7 +459,7 @@ func TestRulerPassPeriodicJob(t *testing.T) {
 	workers := NewWorkers(&Deps{Pool: pool})
 	client, err := NewClient(pool, workers, ClientConfig{
 		PeriodicJobs:      true,
-		RulerPassSite:     "default",
+		BoundSites:        []string{"default"},
 		RulerPassInterval: time.Hour, // RunOnStart で 1 回だけ走らせる
 	})
 	if err != nil {
@@ -414,6 +497,70 @@ func TestRulerPassPeriodicJob(t *testing.T) {
 		}
 	case <-time.After(20 * time.Second):
 		t.Fatal("timed out waiting for the periodic ruler_pass job")
+	}
+}
+
+// TestRulerPassPeriodicJob_MultiSite は issue #532 の受け入れ基準 2 の site 軸を
+// 固定する: BoundSites に 2 site を渡すと、両方の site に対して ruler_pass の
+// 定期ジョブが実際に投入されて実行される（TestBuildRiverConfig_PeriodicJobsPerSite
+// は件数だけを見る純粋な単体テストなので、こちらは実際に DB へ書かれる site の
+// 値まで見る）。ruler は mirakc に触れないので、site 単位の配線だけを確認する
+// のに向く（Deps に MirakcClients を渡していない）。
+//
+// このテストが検出すべき変異: buildRiverConfig が BoundSites の 1 要素目だけを
+// 使う。その場合 2 つ目の site（下のテストでは "site-b"）向けの ruler_pass が
+// 一度も投入されず、このテストが 20 秒でタイムアウトして落ちる。
+func TestRulerPassPeriodicJob_MultiSite(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	if _, err := pool.Exec(ctx, "DELETE FROM river_job"); err != nil {
+		t.Fatalf("cleaning river_job: %v", err)
+	}
+
+	workers := NewWorkers(&Deps{Pool: pool})
+	client, err := NewClient(pool, workers, ClientConfig{
+		PeriodicJobs:      true,
+		BoundSites:        []string{"site-a", "site-b"},
+		RulerPassInterval: time.Hour, // RunOnStart で 1 回だけ走らせる
+	})
+	if err != nil {
+		t.Fatalf("creating client: %v", err)
+	}
+
+	subscribeCh, subscribeCancel := client.Subscribe(river.EventKindJobCompleted)
+	defer subscribeCancel()
+
+	clientCtx, clientCancel := context.WithCancel(ctx)
+	defer clientCancel()
+
+	if err := client.Start(clientCtx); err != nil {
+		t.Fatalf("starting client: %v", err)
+	}
+	defer func() {
+		clientCancel()
+		<-client.Stopped()
+	}()
+
+	seen := map[string]bool{}
+	deadline := time.After(20 * time.Second)
+	for len(seen) < 2 {
+		select {
+		case event := <-subscribeCh:
+			if event.Job.Kind != "ruler_pass" {
+				continue
+			}
+			var args RulerPassArgs
+			if err := json.Unmarshal(event.Job.EncodedArgs, &args); err != nil {
+				t.Fatalf("unmarshalling job args: %v", err)
+			}
+			seen[args.Site] = true
+		case <-deadline:
+			t.Fatalf("timed out waiting for ruler_pass on both sites; seen=%v", seen)
+		}
+	}
+	if !seen["site-a"] || !seen["site-b"] {
+		t.Errorf("seen sites = %v, want site-a and site-b", seen)
 	}
 }
 
@@ -561,7 +708,7 @@ func TestBuildRiverConfig_LogsSubscribedQueues(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
 	t.Cleanup(func() { slog.SetDefault(prevLogger) })
 
-	if _, err := buildRiverConfig(NewWorkers(&Deps{}), ClientConfig{BoundSite: "tokyo"}); err != nil {
+	if _, err := buildRiverConfig(NewWorkers(&Deps{}), ClientConfig{BoundSites: []string{"tokyo"}}); err != nil {
 		t.Fatalf("buildRiverConfig: %v", err)
 	}
 
@@ -573,8 +720,8 @@ func TestBuildRiverConfig_LogsSubscribedQueues(t *testing.T) {
 	}
 	// site 束縛の値そのものも出ていること（「中央プロセスで既定のまま起動して
 	// 実は何も引いていない」を区別できるようにするため）。
-	if !strings.Contains(logged, "bound_site=tokyo") {
-		t.Errorf("log output does not mention bound_site=tokyo; log:\n%s", logged)
+	if !strings.Contains(logged, "bound_sites=[tokyo]") {
+		t.Errorf("log output does not mention bound_sites=[tokyo]; log:\n%s", logged)
 	}
 }
 
@@ -645,14 +792,12 @@ func TestBuildRiverConfig_EncodeThumbnailConcurrency(t *testing.T) {
 	}
 }
 
-// worker.periodic_jobs: false のとき、EpgSyncSite / RulerPassSite / ReconcilePassSite が
-// 設定されていても PeriodicJobs が登録されないこと。
+// worker.periodic_jobs: false のとき、BoundSites が設定されていても
+// PeriodicJobs が登録されないこと。
 func TestBuildRiverConfig_PeriodicJobsDisabled(t *testing.T) {
 	riverCfg, err := buildRiverConfig(NewWorkers(&Deps{}), ClientConfig{
-		PeriodicJobs:      false,
-		EpgSyncSite:       "default",
-		RulerPassSite:     "default",
-		ReconcilePassSite: "default",
+		PeriodicJobs: false,
+		BoundSites:   []string{"default"},
 	})
 	if err != nil {
 		t.Fatalf("buildRiverConfig: %v", err)
@@ -663,19 +808,74 @@ func TestBuildRiverConfig_PeriodicJobsDisabled(t *testing.T) {
 	}
 }
 
-// worker.periodic_jobs: true なら epg_sync / ruler_pass / reconcile_pass の全部が登録されること。
+// worker.periodic_jobs: true なら site 単位の 5 種（epg_sync/tuner_sync/
+// ruler_pass/reconcile_pass/record_sweep）全部が BoundSites の 1 site ぶん
+// 登録されること。
 func TestBuildRiverConfig_PeriodicJobsEnabled(t *testing.T) {
 	riverCfg, err := buildRiverConfig(NewWorkers(&Deps{}), ClientConfig{
-		PeriodicJobs:      true,
-		EpgSyncSite:       "default",
-		RulerPassSite:     "default",
-		ReconcilePassSite: "default",
+		PeriodicJobs: true,
+		BoundSites:   []string{"default"},
 	})
 	if err != nil {
 		t.Fatalf("buildRiverConfig: %v", err)
 	}
-	if len(riverCfg.PeriodicJobs) != 3 {
-		t.Errorf("PeriodicJobs = %d 件, want 3 (epg_sync + ruler_pass + reconcile_pass)", len(riverCfg.PeriodicJobs))
+	if len(riverCfg.PeriodicJobs) != 5 {
+		t.Errorf("PeriodicJobs = %d 件, want 5 (epg_sync + tuner_sync + ruler_pass + reconcile_pass + record_sweep)",
+			len(riverCfg.PeriodicJobs))
+	}
+}
+
+// TestBuildRiverConfig_PeriodicJobsPerSite は issue #532 の受け入れ基準 2 を
+// 固定する: BoundSites に 2 site を渡すと、site 単位の 5 種
+// （epg_sync/tuner_sync/ruler_pass/reconcile_pass/record_sweep）が **site ごとに
+// 1 本ずつ**登録される（1 度だけではない）。
+//
+// このテストが検出すべき変異: buildRiverConfig が BoundSites の最初の 1 要素
+// だけを使う（旧 BoundSite string の名残りで `cfg.BoundSites[0]` に固定する
+// 等）。その場合 PeriodicJobs は 5 件のまま増えず、このテストが落ちる
+// （TestBuildRiverConfig_PeriodicJobsEnabled の 1-site ケースと数を比較して
+// 初めて検出できるので、2 つのテストは対になっている）。
+func TestBuildRiverConfig_PeriodicJobsPerSite(t *testing.T) {
+	riverCfg, err := buildRiverConfig(NewWorkers(&Deps{}), ClientConfig{
+		PeriodicJobs: true,
+		BoundSites:   []string{"tokyo", "takamatsu"},
+	})
+	if err != nil {
+		t.Fatalf("buildRiverConfig: %v", err)
+	}
+	const perSite = 5 // epg_sync + tuner_sync + ruler_pass + reconcile_pass + record_sweep
+	if want := perSite * 2; len(riverCfg.PeriodicJobs) != want {
+		t.Errorf("PeriodicJobs = %d 件, want %d (%d 種 x 2 site)", len(riverCfg.PeriodicJobs), want, perSite)
+	}
+}
+
+// TestBuildRiverConfig_SubscribesSiteBoundQueuesPerSite は issue #532 の
+// 「含むもの」2 を固定する: BoundSites に 2 site を渡すと、site 単位のキュー
+// （ingest/epg/reconciler/watcher）は物理名（`<base>_<site>`）で site ごとに
+// **両方**購読される --- insert 側（各 JobArgs.InsertOpts）は 1 ジョブの
+// args.Site から物理名が 1 つに決まるので変わらないが、subscribe 側
+// （buildRiverConfig の river.Config.Queues）だけが N 回展開される
+// （qualifyQueueName のコメント「subscribe 側だけ N 回呼ぶ」）。
+//
+// このテストが検出すべき変異: 物理キュー展開のループが BoundSites の最初の
+// 1 要素だけを使う（例: `boundSites[:1]`）。その場合 takamatsu 側の物理キュー
+// （`ingest_takamatsu` 等）が river.Config.Queues に一度も現れず、この
+// テストが落ちる。実際に注入して確認済み（golangci-lint 通過後の変異確認）。
+func TestBuildRiverConfig_SubscribesSiteBoundQueuesPerSite(t *testing.T) {
+	riverCfg, err := buildRiverConfig(NewWorkers(&Deps{}), ClientConfig{
+		BoundSites: []string{"tokyo", "takamatsu"},
+	})
+	if err != nil {
+		t.Fatalf("buildRiverConfig: %v", err)
+	}
+	for _, base := range []string{"ingest", "epg", "reconciler", "watcher"} {
+		for _, site := range []string{"tokyo", "takamatsu"} {
+			want := base + "_" + site
+			if _, ok := riverCfg.Queues[want]; !ok {
+				t.Errorf("river.Config.Queues is missing %q (site-bound queues must be subscribed per bound site); got %v",
+					want, sortedQueueNames(riverCfg.Queues))
+			}
+		}
 	}
 }
 

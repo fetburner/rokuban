@@ -42,7 +42,7 @@ import (
 //     振る舞う、または常に qualifyQueueName を呼ぶ） --- 自分の site の
 //     ジョブが期待したキュー名にならず、Insert 直後のリテラル比較か、
 //     「自分の site のジョブは処理される」チェックが落ちる。
-//  4. buildRiverConfig が cfg.BoundSite を渡さない/無視する --- 自分の
+//  4. buildRiverConfig が cfg.BoundSites を渡さない/無視する --- 自分の
 //     site のジョブが二度と処理されなくなり、「自分の site のジョブは
 //     処理される」チェックが（誤検出防止の canary として）落ちる。
 //
@@ -67,8 +67,8 @@ func TestMultiSiteWorker_OnlyDequeuesOwnSiteQueues(t *testing.T) {
 	defer srv.Close()
 
 	// このプロセスは tokyo に束縛されている。
-	workers := NewWorkers(&Deps{Pool: pool, MirakcClient: mirakc.NewClient(srv.URL, nil), Site: "tokyo"})
-	client, err := NewClient(pool, workers, ClientConfig{BoundSite: "tokyo"})
+	workers := NewWorkers(&Deps{Pool: pool, MirakcClients: singleSiteClients("tokyo", mirakc.NewClient(srv.URL, nil))})
+	client, err := NewClient(pool, workers, ClientConfig{BoundSites: []string{"tokyo"}})
 	if err != nil {
 		t.Fatalf("creating client: %v", err)
 	}

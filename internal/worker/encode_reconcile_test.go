@@ -115,10 +115,10 @@ func TestEncodeReconcile_ReenqueuesAfterLostHintAndDeletedEdgeRecord(t *testing.
 	defer srv.Close()
 
 	iw := &IngestWorker{
-		MirakcClient: mirakc.NewClient(srv.URL, nil),
-		MediaDir:     t.TempDir(),
-		Pool:         pool,
-		StallTimeout: 5 * time.Second,
+		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		MediaDir:      t.TempDir(),
+		Pool:          pool,
+		StallTimeout:  5 * time.Second,
 	}
 	job := &river.Job[IngestJobArgs]{
 		JobRow: &rivertype.JobRow{},

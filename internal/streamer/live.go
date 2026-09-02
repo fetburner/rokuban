@@ -136,9 +136,13 @@ var (
 // LiveStreamer はライブ視聴の HLS ルートを配信する。
 //
 // 1 サービス = 1 セッション = 1 ffmpeg プロセス = mirakc の 1 チューナー。同じ
-// サービスを複数クライアントが見ても共有する（セッションキーが site を含まないのは
-// このプロセスが単一 mirakc インスタンスの site にしか対応しないため。config が
-// 権威）。全プロファイルを 1 回の ffmpeg 起動で同時に出す（issue #91 の決定 1:
+// サービスを複数クライアントが見ても共有する。**セッションキー（`sessions
+// map[int64]*liveSession`）が site を含まないのは、この LiveStreamer 自身が
+// 単一の site（下記 site フィールド）にしか対応しないため** --- 1 プロセスが
+// N site を束縛できるようになった今（issue #532）も、それは cmd/rokuban が
+// site ごとに別々の LiveStreamer インスタンスを作ることで満たしている
+// （cmd/rokuban/live_sites.go の newLiveStreamersBySite）。全プロファイルを
+// 1 回の ffmpeg 起動で同時に出す（issue #91 の決定 1:
 // 「1 つの Pod の中で 1 チューナーから複数プロファイルを出す」を、プロファイルごとに
 // ffmpeg を分けずに満たす。トレードオフ: 見られていないプロファイルの CPU も使う）。
 type LiveStreamer struct {
@@ -162,6 +166,15 @@ type LiveStreamer struct {
 // 安全に消してよい。HTTP リスナーが立つ前（Mount 前）に同期的に行うことで、
 // 起動直後に飛んできたリクエストが作ったセッションのディレクトリを
 // 後から誤って掃除してしまう競合を避ける。
+//
+// ponytail: cfg.SegmentDir は site 間で共有の 1 ディレクトリで（site ごとの
+// 書き込み先は SegmentDir/{site}/ に分かれる）、cmd/rokuban.newLiveStreamersBySite
+// は束縛サイトごとにこの NewLive を呼ぶため、N site 束縛では起動時にこの
+// 掃除が N 回走る（2 回目以降は 1 回目が既に空にした後の中身の無い掃除）。
+// 全呼び出しが HTTP リスナーが立つ前・同期的に終わる今の配線では無害（他の
+// サイトの掃除が割り込む競合は起きない）だが、掃除自体は本来プロセス起動で
+// 1 回でよい仕事。site 数が増えて無視できないコストになったら
+// newLiveStreamersBySite 側で 1 回だけ呼ぶ形に上げる。
 func NewLive(mirakcClient *mirakc.Client, site string, cfg LiveConfig) *LiveStreamer {
 	return newLiveStreamer(mirakcClient, site, cfg)
 }
@@ -207,20 +220,37 @@ func sweepStaleLiveSegments(dir string) {
 	}
 }
 
+// LiveRoutePattern はライブ視聴のルートの固定深さパターン（issue #56 の決定。
+// 1 つの nginx 変数で (site, networkId, serviceId) を取り出せる）。OpenAPI には
+// 載せない（バイナリ + 長寿命という原本 /file と同じ理由）。
+//
+// **1 プロセスが N site を束縛できるようになったため（issue #532）、この定数を
+// 経由するルート登録者は 2 種類ある**: この Mount（1 site 専用、production では
+// 呼ばれない --- cmd/rokuban は複数 LiveStreamer を同じパターンに重ねて Mount
+// すると chi が黙って最後の登録で上書きするため、cmd/rokuban.liveSites.Mount が
+// URL の {site} で正しいインスタンスへ委譲する形でパターンを 1 回だけ登録する）と、
+// その liveSites.Mount 自身。パターン文字列を 2 か所に手書きすると、どちらかだけ
+// 変えて食い違う経路ができる（qualifyQueueName のコメントが警告するのと同じ族の
+// 罠）ので、export してどちらもこの定数を参照する。
+const LiveRoutePattern = "/api/sites/{site}/networks/{networkId}/services/{serviceId}/live"
+
 // Mount はライブ視聴のルートを登録する（cfg.Enabled が true のときだけ）。
 //
-// パスは `/api/sites/{site}/networks/{networkId}/services/{serviceId}/live/...` の
-// 固定深さ（issue #56 の決定。1 つの nginx 変数で
-// (site, networkId, serviceId) を取り出せる）。OpenAPI には載せない
-// （バイナリ + 長寿命という原本 /file と同じ理由）。
+// **production では呼ばれない。** cmd/rokuban は 1 プロセスが束縛する site ごとに
+// 1 つの LiveStreamer を作るが（issue #532）、どれも同じ LiveRoutePattern を
+// 登録するため、この Mount を site の数だけ呼ぶと chi が黙って最後の登録で
+// 上書きしてしまう（cmd/rokuban.liveSites の doc コメント参照）。production の
+// 配線は cmd/rokuban.liveSites.Mount がパターンを 1 回だけ登録し、URL の
+// {site} で正しいインスタンスの Playlist/Segment/Leave に委譲する。この Mount は
+// このパッケージ自身のルートテスト（1 インスタンスだけを相手にする単体テスト）
+// のために残してある。
 func (ls *LiveStreamer) Mount(r chi.Router) {
 	if !ls.cfg.Enabled {
 		return
 	}
-	const base = "/api/sites/{site}/networks/{networkId}/services/{serviceId}/live"
-	r.Get(base+"/playlist.m3u8", ls.Playlist)
-	r.Get(base+"/segments/{name}", ls.Segment)
-	r.Post(base+"/leave", ls.Leave)
+	r.Get(LiveRoutePattern+"/playlist.m3u8", ls.Playlist)
+	r.Get(LiveRoutePattern+"/segments/{name}", ls.Segment)
+	r.Post(LiveRoutePattern+"/leave", ls.Leave)
 }
 
 // Run は idle GC ループを ctx が Done になるまで回す。ctx が Done になったら

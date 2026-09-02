@@ -48,7 +48,7 @@ func newTunerServer(t *testing.T, fx *tunerFixture) *httptest.Server {
 func newTunerSyncWorker(t *testing.T, pool *pgxpool.Pool, fx *tunerFixture) *TunerSyncWorker {
 	t.Helper()
 	srv := newTunerServer(t, fx)
-	return &TunerSyncWorker{MirakcClient: mirakc.NewClient(srv.URL, nil), Pool: pool}
+	return &TunerSyncWorker{MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)), Pool: pool}
 }
 
 func runTunerSync(t *testing.T, w *TunerSyncWorker) {
@@ -265,8 +265,9 @@ INSERT INTO reservations (site, program_id, base) VALUES ($1, $2, '{}')`,
 	}
 }
 
-// TunerSyncSite を指定すると tuner_sync が定期ジョブとして投入され、
-// 登録済みワーカーが epg キューで拾うこと（配線の確認）。
+// BoundSites を指定すると tuner_sync が定期ジョブとして投入され、登録済み
+// ワーカーが epg キューで拾うこと（配線の確認。BoundSites は tuner_sync 以外の
+// 4 種も同時に登録するが、waitPeriodicJobEvent が kind で選り分ける）。
 func TestTunerSyncPeriodicJob(t *testing.T) {
 	pool := setupTestPool(t)
 
@@ -274,9 +275,9 @@ func TestTunerSyncPeriodicJob(t *testing.T) {
 		{Index: 0, Name: "PX-S1UD_T1", Types: []string{"GR"}, IsAvailable: true},
 	}})
 
-	subscribeCh := startPeriodicJobClient(t, pool, &Deps{MirakcClient: mirakc.NewClient(srv.URL, nil)}, ClientConfig{
+	subscribeCh := startPeriodicJobClient(t, pool, &Deps{MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil))}, ClientConfig{
 		PeriodicJobs:      true,
-		TunerSyncSite:     testSite,
+		BoundSites:        []string{testSite},
 		TunerSyncInterval: time.Hour, // RunOnStart で 1 回だけ走らせる
 	}, river.EventKindJobCompleted)
 
@@ -326,7 +327,7 @@ func TestTunerSyncWorker_SiteMismatch(t *testing.T) {
 	defer countingSrv.Close()
 
 	// このワーカープロセスは site-a の mirakc を向いている。
-	w := &TunerSyncWorker{MirakcClient: mirakc.NewClient(countingSrv.URL, nil), Pool: pool, Site: "site-a"}
+	w := &TunerSyncWorker{MirakcClients: singleSiteClients("site-a", mirakc.NewClient(countingSrv.URL, nil)), Pool: pool}
 
 	job := &river.Job[TunerSyncArgs]{JobRow: &rivertype.JobRow{}, Args: TunerSyncArgs{Site: "site-b"}}
 	err := w.Work(context.Background(), job)
@@ -349,7 +350,7 @@ func TestTunerSyncWorker_SiteMatch(t *testing.T) {
 	}}
 	srv := newTunerServer(t, fx)
 
-	w := &TunerSyncWorker{MirakcClient: mirakc.NewClient(srv.URL, nil), Pool: pool, Site: "site-a"}
+	w := &TunerSyncWorker{MirakcClients: singleSiteClients("site-a", mirakc.NewClient(srv.URL, nil)), Pool: pool}
 
 	job := &river.Job[TunerSyncArgs]{JobRow: &rivertype.JobRow{}, Args: TunerSyncArgs{Site: "site-a"}}
 	if err := w.Work(context.Background(), job); err != nil {

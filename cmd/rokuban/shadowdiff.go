@@ -58,7 +58,7 @@ func newShadowDiffCmd() *cobra.Command {
 
 			// 単発 CLI コマンドは特定のロールを担わないので roles は渡さない
 			// （pgxpool の既定の MaxConns がそのまま使われる。issue #90）。
-			pool, err := db.NewPool(ctx, cfg.DB, nil)
+			pool, err := db.NewPool(ctx, cfg.DB, nil, 0)
 			if err != nil {
 				return err
 			}

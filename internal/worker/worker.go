@@ -151,15 +151,17 @@ var pendingJobStates = []rivertype.JobState{
 const uniqueByQueue = true
 
 // verifySite は、mirakc かファイルシステムに触るワーカーが処理しようとしている
-// ジョブの site（jobSite）が、そのワーカープロセス自身の site（workerSite、
-// `--sites` で束縛された site）と一致するかを検査する fail-fast ガード（issue #139）。
+// ジョブの site（jobSite）が、このワーカープロセスが束縛している mirakc
+// クライアントの集合（clients、site → *mirakc.Client。Deps.MirakcClients /
+// `--sites` の束縛）に含まれるかを検査する fail-fast ガード（issue #139。
+// 1 プロセスが N site を束縛できるようになった issue #532 で map 化した）。
 //
 // mirakc の record id / programId はインスタンススコープであり、DB の site 列は
 // そのスコープの境界を表現するために存在する（issue #31、docs/schema.md
 // §1-5）。**一次防御はキュー選択そのもの**: site 単位のキュー（ingest/epg/
 // reconciler/watcher）は物理名を site で修飾する（qualifyQueueName、issue #185
-// M4-13）ため、site A の worker は site B 向けのジョブを購読すら
-// しない（cmd/rokuban.validateSiteBinding が worker.queues とサイト束縛の
+// M4-13）ため、site A 宛のキューを購読していない worker は site B 向けのジョブを
+// 購読すらしない（cmd/rokuban.validateSiteBinding が worker.queues とサイト束縛の
 // 組み合わせも検査する）。verifySite はその後ろに立つ**二次防御**で、キュー選択が
 // 正しくてもジョブの Args.Site 自体が壊れている経路（手で INSERT した / 将来の
 // ヒント投入のバグ / River の一意性判定が旧キューの残骸と合流して args だけが
@@ -167,44 +169,66 @@ const uniqueByQueue = true
 // A の mirakc に B の id を投げて A の別番組を B の recording としてコミットし
 // うる（不変条件 3「コミット = DB 行」への違反。詳細は issue #139 本文）。
 //
-// workerSite が空文字列（Deps.Site 未注入。単体テストの部分構成を含む）の場合は
-// db.DefaultSite に解決してから比較する。単一サイト構成でこのガードを追加しても
-// テスト・運用のどちらも壊れないようにするための規約。
+// **1 プロセスが N site を束縛しうるため、もはや「一致するか」ではなく「clients に
+// jobSite のエントリがあるか」を見る。** 同じ IngestWorker/EpgSyncWorker/... の
+// 1 インスタンスが複数 site の物理キューを同時に購読しうる（buildRiverConfig が
+// site ごとに物理名を組み立てて subscribe する）ため、ワーカーはもう単一の
+// 「自分自身の site」を持たない。見つかれば、呼び出し側がそのまま使う
+// *mirakc.Client を返す（呼び出し側が再度 map を引く必要をなくし、verifySite が
+// 通した site とその後実際に使うクライアントがズレる経路を作らない）。
+//
+// **jobSite は正規化しない。空文字列は無条件に拒む。** config のバリデーションが
+// site 名の非空を要求するため、clients のキーは常に実際の site 名であり、
+// 空文字列がキーになることはない。jobSite を db.DefaultSite へ読み替えてから
+// 引くと、たまたま "default" という名前の site が束縛されているデプロイでは
+// `Site: ""` の（本来壊れている）ジョブが素通りしてしまう --- 二次防御としての
+// verifySite が拾いたいのはまさにこの「args.Site 自体が壊れている経路」
+// （このコメント冒頭の説明）なので、jobSite を素の値のまま引く。
 //
 // 呼び出し側は mirakc/FS に触れる**前**（最初の HTTP 呼び出し・os.Create 等より
 // 前）に呼ぶこと。合わないジョブは即座に失敗させ、再試行は River に委ねる
 // （同じジョブが必ず自サイトの worker に回る保証はないが、他サイトの worker が
 // いずれ拾う。うるさいが安全 --- issue #139 本文の「id が自サイトに存在しない」
 // ケースと同じ扱いに揃う）。
-func verifySite(workerSite, jobSite, queue string) error {
-	site := workerSite
-	if site == "" {
-		site = db.DefaultSite
+func verifySite(clients map[string]*mirakc.Client, jobSite, queue string) (*mirakc.Client, error) {
+	client, ok := clients[jobSite]
+	if !ok {
+		return nil, fmt.Errorf(
+			"%s: job site %q is not among this worker's bound sites %s, refusing before touching mirakc/FS (issue #139)",
+			queue, jobSite, sortedSiteNames(clients))
 	}
-	if jobSite != site {
-		return fmt.Errorf(
-			"%s: job site %q does not match this worker's site %q, refusing before touching mirakc/FS (issue #139)",
-			queue, jobSite, site)
+	return client, nil
+}
+
+// sortedSiteNames は clients のキー（site 名）をソートして返す。verifySite の
+// エラーメッセージ用（sortedQueueNames と同じ理由 --- map の反復順は不定なので、
+// エラーメッセージが実行のたびに揺れないようにする）。
+func sortedSiteNames(clients map[string]*mirakc.Client) []string {
+	sites := make([]string, 0, len(clients))
+	for site := range clients {
+		sites = append(sites, site)
 	}
-	return nil
+	sort.Strings(sites)
+	return sites
 }
 
 // Deps は各ワーカーに注入する依存。
 type Deps struct {
-	MirakcClient *mirakc.Client
-	Pool         *pgxpool.Pool
-	MediaDir     string
-	ScratchDir   string
-
-	// Site は `--sites` で束縛された site 名（issue #31）。用途は 2 つ:
-	//  1. mirakc/FS に触るワーカー（Ingest / EpgSync / TunerSync / ReconcilePass /
-	//     RecordSweep）が、自分が処理するジョブの args.Site と自分自身の site を
-	//     照合する fail-fast ガード（issue #139、verifySite）。
-	//  2. DeleteReconcileWorker のように site 単位のジョブ引数を持たないが
-	//     site をキーにする資源（サーキットブレーカー）を持つワーカーへの注入。
-	// 空なら db.DefaultSite を使う（テストの部分構成を許す。verifySite・
-	// DeleteReconcileWorker.Work のどちらも同じ解決規則）。
-	Site string
+	// MirakcClients は `--sites` で束縛された site 名から mirakc クライアントへの
+	// map（issue #532。1 プロセスが N site を束縛できるようになったため、
+	// 単一の MirakcClient / Site string の対を置き換えた）。mirakc/FS に触る
+	// ワーカー（Ingest / EpgSync / TunerSync / ReconcilePass / RecordSweep）は
+	// これと自分が処理するジョブの args.Site を verifySite で照合してから
+	// 実際に使うクライアントを取り出す（issue #139）。
+	//
+	// 空 map（0 site 束縛の中央プロセス）でも構築時にはエラーにしない ---
+	// site 単位のキューを実際に購読していれば、届いたジョブは verifySite が
+	// 必ず拒む（起動時には validateSiteBinding / worker.RequiresSiteBinding が
+	// この組み合わせ自体を防ぐ）。
+	MirakcClients map[string]*mirakc.Client
+	Pool          *pgxpool.Pool
+	MediaDir      string
+	ScratchDir    string
 
 	// Encode は構造化エンコードプロファイルと ffmpeg パス（issue #64 / #65）。
 	// worker ロール起動時に ValidateTools 済み（不変条件 4）。
@@ -256,11 +280,10 @@ type Deps struct {
 func NewWorkers(deps *Deps) *river.Workers {
 	workers := river.NewWorkers()
 	river.AddWorker(workers, &IngestWorker{
-		MirakcClient: deps.MirakcClient,
-		Pool:         deps.Pool,
-		MediaDir:     deps.MediaDir,
-		StallTimeout: deps.IngestStallTimeout,
-		Site:         deps.Site,
+		MirakcClients: deps.MirakcClients,
+		Pool:          deps.Pool,
+		MediaDir:      deps.MediaDir,
+		StallTimeout:  deps.IngestStallTimeout,
 	})
 	river.AddWorker(workers, &EncodeWorker{
 		Pool:       deps.Pool,
@@ -281,15 +304,13 @@ func NewWorkers(deps *Deps) *river.Workers {
 		Profiles: deps.Encode,
 	})
 	river.AddWorker(workers, &EpgSyncWorker{
-		MirakcClient:   deps.MirakcClient,
+		MirakcClients:  deps.MirakcClients,
 		Pool:           deps.Pool,
 		RetentionGrace: deps.EpgRetentionGrace,
-		Site:           deps.Site,
 	})
 	river.AddWorker(workers, &TunerSyncWorker{
-		MirakcClient: deps.MirakcClient,
-		Pool:         deps.Pool,
-		Site:         deps.Site,
+		MirakcClients: deps.MirakcClients,
+		Pool:          deps.Pool,
 	})
 	river.AddWorker(workers, &RulerPassWorker{
 		Pool:              deps.Pool,
@@ -298,16 +319,14 @@ func NewWorkers(deps *Deps) *river.Workers {
 		RetractGrace:      deps.RulerRetractGrace,
 	})
 	river.AddWorker(workers, &ReconcilePassWorker{
-		MirakcClient:    deps.MirakcClient,
+		MirakcClients:   deps.MirakcClients,
 		Pool:            deps.Pool,
 		StartDelayGrace: deps.ReconcileStartDelayGrace,
-		Site:            deps.Site,
 	})
 	river.AddWorker(workers, &RecordSweepWorker{
-		MirakcClient: deps.MirakcClient,
-		Pool:         deps.Pool,
-		Webhook:      deps.Webhook,
-		Site:         deps.Site,
+		MirakcClients: deps.MirakcClients,
+		Pool:          deps.Pool,
+		Webhook:       deps.Webhook,
 	})
 	river.AddWorker(workers, &CatalogExportWorker{
 		Pool:     deps.Pool,
@@ -412,8 +431,9 @@ var siteBoundQueueNames = []string{ingestQueue, epgQueue, reconcilerQueue, recor
 
 // qualifyQueueName は site 単位のキューの物理名を組み立てる下請け
 // （issue #185 M4-13）。区切り文字は `_`。site が空文字列なら db.DefaultSite に
-// 解決する --- verifySite と同じ規約で、単体テストの部分構成（Site 未設定の
-// JobArgs や ClientConfig.BoundSite 未設定）でも決定的な名前になる。
+// 解決する --- キュー名だけの規約で（verifySite は jobSite を正規化しない。
+// verifySite のコメント参照）、単体テストの部分構成（Site 未設定の JobArgs や
+// ClientConfig.BoundSites 未設定）でも決定的な名前になる。
 //
 // **直接呼ばない。** base が siteBoundQueueNames に含まれるかどうかの判定を
 // 呼び出し側に委ねると、判定を書き忘れた場所だけ「site で修飾しない」という
@@ -485,18 +505,30 @@ func allQueues(ingestConcurrency, encodeConcurrency, thumbnailConcurrency int) m
 
 // ClientConfig は River クライアントの設定。
 type ClientConfig struct {
-	// BoundSite はこのプロセスが束縛されている単一の mirakc サイト名
-	// （cmd/rokuban が --sites から解決する。空文字列は 0 サイト束縛（中央プロセス）
-	// を意味する。issue #183 M4-11 / #185 M4-13）。
+	// BoundSites はこのプロセスが束縛されている mirakc サイト名の集合
+	// （cmd/rokuban が --sites から解決する。空スライスは 0 サイト束縛
+	// （中央プロセス）を意味する。issue #183 M4-11 / #185 M4-13 / #532 で
+	// 単一の BoundSite string から N site の集合に一般化した）。
 	//
-	// siteBoundQueueNames に含まれる論理キュー（ingest/epg/reconciler/watcher）を
-	// 実際に Insert/購読する際の物理名（`<base>_<site>`）を組み立てるのに使う
-	// （physicalQueueName、buildRiverConfig）。空文字列は qualifyQueueName が
-	// db.DefaultSite に解決する --- 0 サイト束縛の worker がこれらのキューを
+	// 2 つの役目を持つ（issue #532 の「含むもの」2・3。同じ値を 2 箇所で使うのは
+	// 「この site 集合をどこまで面倒みるか」が両方とも束縛そのものだから ---
+	// server.go は常にここへ同じ値を渡していた）:
+	//
+	//  1. siteBoundQueueNames に含まれる論理キュー（ingest/epg/reconciler/
+	//     watcher）を実際に Insert/購読する際の物理名（`<base>_<site>`）を、
+	//     この集合の**要素ごとに**組み立てる（physicalQueueName、
+	//     buildRiverConfig。insert 側は 1 ジョブの args.Site から 1 つに決まる
+	//     ので N 化するのは subscribe 側だけ）
+	//  2. site 単位の定期ジョブ（epg_sync/tuner_sync/ruler_pass/
+	//     reconcile_pass/record_sweep。旧 EpgSyncSite 等の 5 フィールド）を、
+	//     この集合の要素ごとに 1 本ずつ登録する
+	//
+	// 空スライスは qualifyQueueName が db.DefaultSite に解決する 1 要素
+	// （[]string{""}）として扱う --- 0 サイト束縛の worker が site-bound キューを
 	// 要求しないことは cmd/rokuban.validateSiteBinding が起動時に強制するので、
-	// ここで実際に "" が site-bound キューの qualify に使われるのは
-	// テストの部分構成（BoundSite 未設定）だけである。
-	BoundSite string
+	// ここで実際にこの解決が使われるのはテストの部分構成（BoundSites 未設定）
+	// だけである。
+	BoundSites []string
 
 	// IngestConcurrency は ingest キューの同時実行数（サイト単位のキャップ）。0 なら既定値。
 	IngestConcurrency int
@@ -509,39 +541,27 @@ type ClientConfig struct {
 	// encode.thumbnail_concurrency から注入する（issue #64）。
 	ThumbnailConcurrency int
 
-	// EpgSyncSite が空でない場合、そのサイトの EPG 全量同期を定期ジョブとして登録する
-	// （PeriodicJobs が true のときのみ）。
-	EpgSyncSite string
-
-	// EpgSyncInterval は EPG 全量同期の間隔。0 なら既定値。
+	// EpgSyncInterval は EPG 全量同期の間隔。0 なら既定値。BoundSites の要素ごとに
+	// 1 本ずつ登録する（PeriodicJobs が true のときのみ。BoundSites のコメント参照）。
 	EpgSyncInterval time.Duration
 
-	// TunerSyncSite が空でない場合、そのサイトのチューナー射影を定期ジョブとして
-	// 登録する（PeriodicJobs が true のときのみ）。
-	TunerSyncSite string
-
-	// TunerSyncInterval はチューナー射影の間隔。0 なら既定値（10 分）。
+	// TunerSyncInterval はチューナー射影の間隔。0 なら既定値（10 分）。BoundSites の
+	// 要素ごとに 1 本ずつ登録する（PeriodicJobs が true のときのみ）。
 	TunerSyncInterval time.Duration
 
-	// RulerPassSite が空でない場合、そのサイトの ruler 1 パス評価を定期ジョブとして
-	// 登録する（PeriodicJobs が true のときのみ）。
-	RulerPassSite string
-
-	// RulerPassInterval は ruler 定期パスの間隔。0 なら既定値。
+	// RulerPassInterval は ruler 定期パスの間隔。0 なら既定値。BoundSites の要素
+	// ごとに 1 本ずつ登録する（PeriodicJobs が true のときのみ。ruler は mirakc に
+	// 触れないが、args.Site が DB 行の絞り込みなので site ごとに 1 本で正しい
+	// --- siteBoundQueueNames のコメント参照）。
 	RulerPassInterval time.Duration
 
-	// ReconcilePassSite が空でない場合、そのサイトの reconciler 1 パス突き合わせを
-	// 定期ジョブとして登録する（PeriodicJobs が true のときのみ）。
-	ReconcilePassSite string
-
 	// ReconcilePassInterval は reconciler 定期パスの間隔。0 なら既定値（30 秒）。
+	// BoundSites の要素ごとに 1 本ずつ登録する（PeriodicJobs が true のときのみ）。
 	ReconcilePassInterval time.Duration
 
-	// RecordSweepSite が空でない場合、そのサイトの watcher 全量突き合わせ（(c)、
-	// docs/recording.md §3.3）を定期ジョブとして登録する（PeriodicJobs が true のときのみ）。
-	RecordSweepSite string
-
-	// RecordSweepInterval は record_sweep 定期パスの間隔。0 なら既定値（5 分）。
+	// RecordSweepInterval は record_sweep 定期パス（watcher 全量突き合わせ (c)、
+	// docs/recording.md §3.3）の間隔。0 なら既定値（5 分）。BoundSites の要素
+	// ごとに 1 本ずつ登録する（PeriodicJobs が true のときのみ）。
 	RecordSweepInterval time.Duration
 
 	// CatalogExport が true なら catalog_export を定期ジョブとして登録する
@@ -577,8 +597,7 @@ type ClientConfig struct {
 	// StorageSyncInterval はストレージ観測の間隔。0 なら既定値（5 分）。
 	StorageSyncInterval time.Duration
 
-	// PeriodicJobs が false なら、EpgSyncSite / TunerSyncSite / RulerPassSite /
-	// ReconcilePassSite / RecordSweepSite / CatalogExport / DeleteReconcile /
+	// PeriodicJobs が false なら、BoundSites / CatalogExport / DeleteReconcile /
 	// EncodeReconcile / StorageSync が設定されていても River の PeriodicJobs を
 	// 一切登録しない。
 	// k8s では false にして、CronJob が
@@ -699,9 +718,43 @@ func buildRiverConfig(workers *river.Workers, cfg ClientConfig) (*river.Config, 
 
 	// river.Config.Queues は実際に SKIP LOCKED で引く物理キュー名でなければならない。
 	// ここで初めて論理名から物理名（`<base>_<site>`）に展開する（physicalQueueName）。
+	// site 単位のキューは BoundSites の要素ごとに 1 つずつ展開する ---
+	// **subscribe 側だけを N 回呼ぶ**（issue #532 の「罠」。insert 側
+	// （各 JobArgs.InsertOpts）は 1 ジョブの args.Site から物理名が 1 つに決まるので
+	// N 化しない）。
+	boundSites := cfg.BoundSites
+	if len(boundSites) == 0 {
+		// 0 サイト束縛（中央プロセス）の後方互換フォールバック（BoundSites の
+		// コメント、qualifyQueueName と同じ規約）。本番は validateSiteBinding が
+		// この状態で site-bound キューを要求すること自体を防ぐので、ここに来るのは
+		// テストの部分構成（BoundSites 未設定）だけである。
+		boundSites = []string{""}
+	}
+	// physicalQueueName(name, site) は site-bound でない name を site 引数に
+	// 関わらずそのまま返すので、site-bound かどうかの判定をここで重複させる
+	// 必要はない（qualifyQueueName のコメントが警告する「判定が 2 か所に
+	// 分かれてズレる」経路を作らないため。site-bound でないキューは
+	// boundSites の要素数ぶん同じキーへ書くだけの無害な重複になる）。
 	physicalQueues := make(map[string]river.QueueConfig, len(queues))
 	for name, qc := range queues {
-		physicalQueues[physicalQueueName(name, cfg.BoundSite)] = qc
+		for _, site := range boundSites {
+			physicalQueues[physicalQueueName(name, site)] = qc
+		}
+	}
+
+	// once モードは KEDA ScaledJob がキュー単位（かつ site 単位。
+	// docs/operations.md §5「キュー × 置き場所 × site 軸」）に作る前提なので、
+	// 展開後もちょうど 1 つの物理キューでなければならない。上の「論理キューは
+	// ちょうど 1 つ」の検査だけでは、その 1 つが site-bound キューで
+	// BoundSites が 2 つ以上のとき、ここで初めて 2 物理キューに割れてしまう
+	// （issue #532 で site を N 化した副作用。この検査が無いと once モードの
+	// 「同時 claim は 1 件」の前提が黙って崩れる）。
+	if cfg.Once != nil && len(physicalQueues) != 1 {
+		return nil, fmt.Errorf(
+			"once mode requires exactly one physical queue after site qualification, got %d (%s): "+
+				"a KEDA ScaledJob binds to exactly one site, so pass exactly one bound site "+
+				"when the once queue is site-bound (ingest/epg/reconciler/watcher)",
+			len(physicalQueues), strings.Join(sortedQueueNames(physicalQueues), ", "))
 	}
 
 	// 実際に SKIP LOCKED で引く物理キュー名の集合をログに出す（issue #185 の
@@ -710,7 +763,7 @@ func buildRiverConfig(workers *river.Workers, cfg ClientConfig) (*river.Config, 
 	// 合わせる運用者と、「ジョブが available のまま動かない」を調べる人が
 	// 最初に見る情報になる）。
 	slog.Info("worker: subscribing to queues",
-		"queues", sortedQueueNames(physicalQueues), "bound_site", cfg.BoundSite)
+		"queues", sortedQueueNames(physicalQueues), "bound_sites", cfg.BoundSites)
 
 	softStopTimeout := cfg.SoftStopTimeout
 	if softStopTimeout <= 0 {
@@ -738,75 +791,75 @@ func buildRiverConfig(workers *river.Workers, cfg ClientConfig) (*river.Config, 
 	}
 
 	if cfg.PeriodicJobs {
-		if cfg.EpgSyncSite != "" {
-			interval := cfg.EpgSyncInterval
-			if interval <= 0 {
-				interval = defaultEpgSyncInterval
+		// site 単位の 5 種（epg_sync/tuner_sync/ruler_pass/reconcile_pass/
+		// record_sweep）は cfg.BoundSites の要素ごとに 1 本ずつ登録する
+		// （issue #532 の「含むもの」3。旧 EpgSyncSite 等 5 つの独立フィールドを
+		// BoundSites 1 つに畳んだ --- server.go は常に同じ site 集合をこの 5 つに
+		// 渡していたので、独立フィールドは冗長でしかなかった）。0 サイト束縛
+		// （BoundSites が空）なら何も登録しない --- 中央プロセスが site 単位の
+		// 定期パスを持つ理由がない。
+		if len(cfg.BoundSites) > 0 {
+			epgSyncInterval := cfg.EpgSyncInterval
+			if epgSyncInterval <= 0 {
+				epgSyncInterval = defaultEpgSyncInterval
 			}
-			site := cfg.EpgSyncSite
-			riverCfg.PeriodicJobs = append(riverCfg.PeriodicJobs, river.NewPeriodicJob(
-				river.PeriodicInterval(interval),
-				func() (river.JobArgs, *river.InsertOpts) {
-					return EpgSyncArgs{Site: site}, nil
-				},
-				&river.PeriodicJobOpts{RunOnStart: true},
-			))
-		}
-		if cfg.TunerSyncSite != "" {
-			interval := cfg.TunerSyncInterval
-			if interval <= 0 {
-				interval = defaultTunerSyncInterval
+			tunerSyncInterval := cfg.TunerSyncInterval
+			if tunerSyncInterval <= 0 {
+				tunerSyncInterval = defaultTunerSyncInterval
 			}
-			site := cfg.TunerSyncSite
-			riverCfg.PeriodicJobs = append(riverCfg.PeriodicJobs, river.NewPeriodicJob(
-				river.PeriodicInterval(interval),
-				func() (river.JobArgs, *river.InsertOpts) {
-					return TunerSyncArgs{Site: site}, nil
-				},
-				&river.PeriodicJobOpts{RunOnStart: true},
-			))
-		}
-		if cfg.RulerPassSite != "" {
-			interval := cfg.RulerPassInterval
-			if interval <= 0 {
-				interval = defaultRulerPassInterval
+			rulerPassInterval := cfg.RulerPassInterval
+			if rulerPassInterval <= 0 {
+				rulerPassInterval = defaultRulerPassInterval
 			}
-			site := cfg.RulerPassSite
-			riverCfg.PeriodicJobs = append(riverCfg.PeriodicJobs, river.NewPeriodicJob(
-				river.PeriodicInterval(interval),
-				func() (river.JobArgs, *river.InsertOpts) {
-					return RulerPassArgs{Site: site}, nil
-				},
-				&river.PeriodicJobOpts{RunOnStart: true},
-			))
-		}
-		if cfg.ReconcilePassSite != "" {
-			interval := cfg.ReconcilePassInterval
-			if interval <= 0 {
-				interval = defaultReconcilePassInterval
+			reconcilePassInterval := cfg.ReconcilePassInterval
+			if reconcilePassInterval <= 0 {
+				reconcilePassInterval = defaultReconcilePassInterval
 			}
-			site := cfg.ReconcilePassSite
-			riverCfg.PeriodicJobs = append(riverCfg.PeriodicJobs, river.NewPeriodicJob(
-				river.PeriodicInterval(interval),
-				func() (river.JobArgs, *river.InsertOpts) {
-					return ReconcilePassArgs{Site: site}, nil
-				},
-				&river.PeriodicJobOpts{RunOnStart: true},
-			))
-		}
-		if cfg.RecordSweepSite != "" {
-			interval := cfg.RecordSweepInterval
-			if interval <= 0 {
-				interval = defaultRecordSweepInterval
+			recordSweepInterval := cfg.RecordSweepInterval
+			if recordSweepInterval <= 0 {
+				recordSweepInterval = defaultRecordSweepInterval
 			}
-			site := cfg.RecordSweepSite
-			riverCfg.PeriodicJobs = append(riverCfg.PeriodicJobs, river.NewPeriodicJob(
-				river.PeriodicInterval(interval),
-				func() (river.JobArgs, *river.InsertOpts) {
-					return RecordSweepArgs{Site: site}, nil
-				},
-				&river.PeriodicJobOpts{RunOnStart: true},
-			))
+
+			for _, site := range cfg.BoundSites {
+				site := site
+				riverCfg.PeriodicJobs = append(riverCfg.PeriodicJobs,
+					river.NewPeriodicJob(
+						river.PeriodicInterval(epgSyncInterval),
+						func() (river.JobArgs, *river.InsertOpts) {
+							return EpgSyncArgs{Site: site}, nil
+						},
+						&river.PeriodicJobOpts{RunOnStart: true},
+					),
+					river.NewPeriodicJob(
+						river.PeriodicInterval(tunerSyncInterval),
+						func() (river.JobArgs, *river.InsertOpts) {
+							return TunerSyncArgs{Site: site}, nil
+						},
+						&river.PeriodicJobOpts{RunOnStart: true},
+					),
+					river.NewPeriodicJob(
+						river.PeriodicInterval(rulerPassInterval),
+						func() (river.JobArgs, *river.InsertOpts) {
+							return RulerPassArgs{Site: site}, nil
+						},
+						&river.PeriodicJobOpts{RunOnStart: true},
+					),
+					river.NewPeriodicJob(
+						river.PeriodicInterval(reconcilePassInterval),
+						func() (river.JobArgs, *river.InsertOpts) {
+							return ReconcilePassArgs{Site: site}, nil
+						},
+						&river.PeriodicJobOpts{RunOnStart: true},
+					),
+					river.NewPeriodicJob(
+						river.PeriodicInterval(recordSweepInterval),
+						func() (river.JobArgs, *river.InsertOpts) {
+							return RecordSweepArgs{Site: site}, nil
+						},
+						&river.PeriodicJobOpts{RunOnStart: true},
+					),
+				)
+			}
 		}
 		if cfg.CatalogExport {
 			interval := cfg.CatalogExportInterval
@@ -896,9 +949,9 @@ func RequiresEncodeTools(queues []string) bool {
 //
 // RequiresEncodeTools と対になる判定で、worker ロールを 0 サイト束縛（中央プロセス、
 // issue #183 M4-11 の `--sites=`）で起動できるかを決める。site 単位のキューを購読する
-// worker は mirakc へのアクセス（Deps.MirakcClient）と site 単位のジョブ照合
+// worker は mirakc へのアクセス（Deps.MirakcClients）と site 単位のジョブ照合
 // （internal/worker/worker.go の verifySite）を必要とし、束縛サイトが無いと
-// 空文字列 site として処理され、届いたジョブの site と一致しないため全滅して
+// clients が空 map になり、届いたジョブの site がどのエントリにも一致せず全滅して
 // 再試行し続ける。ruler/encode/thumbnail/cleanup/default だけに絞った worker
 // （worker.queues でそれ以外を明示的に外した構成）は site 非依存なので
 // 0 サイト束縛でも安全に動く（ruler が site 非依存である理由は
