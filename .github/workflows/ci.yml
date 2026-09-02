@@ -1,9 +1,11 @@
 name: CI
 
 on:
-  # 全ブランチの commit で SHA イメージを publish する。tag は release.yml が持つので除外。
+  # PR と main への push だけを検証する。その他のブランチ push は
+  # publish-sha.yml の publish ジョブだけを起動する（同じ commit の検証を二重にしない）。
   push:
-    branches: ['**']
+    branches:
+      - main
   pull_request:
 
 jobs:
@@ -260,87 +262,9 @@ jobs:
       # kubeconform にも不透明なので、そちらは go test ./deploy/k8s/ が見る
       # （TestOverlayConfigsLoad）。
 
-  # 全ブランチの push で公式イメージ（ffmpeg 非同梱）を SHA タグで ghcr へ公開する。
-  # arm64 は QEMU を避けてネイティブ runner でビルドし、arch ごとに SHA サフィックス付きで
-  # push、publish-manifest でまとめる。タグ付けは docker/metadata-action に委ねる。
-  publish-arch:
-    # pull_request（特に fork）では GITHUB_TOKEN に packages:write が無い。
-    if: github.event_name == 'push'
-    permissions:
-      contents: read
-      packages: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: amd64
-            platform: linux/amd64
-            runner: ubuntu-latest
-          - arch: arm64
-            platform: linux/arm64
-            runner: ubuntu-24.04-arm
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/metadata-action@v5
-        id: meta
-        with:
-          images: ghcr.io/${{ github.repository }}
-          tags: |
-            type=raw,value=${{ github.sha }},suffix=-${{ matrix.arch }}
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: ${{ matrix.platform }}
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: VERSION=${{ github.sha }}
-          cache-from: type=gha,scope=${{ matrix.arch }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
-
-  publish-manifest:
-    if: github.event_name == 'push'
-    needs: publish-arch
-    permissions:
-      contents: read
-      packages: write
-    runs-on: ubuntu-latest
-    steps:
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/metadata-action@v5
-        id: meta
-        with:
-          images: ghcr.io/${{ github.repository }}
-          # main は branch protection で検証済みの前提なので無条件に latest を付ける。
-          tags: |
-            type=raw,value=${{ github.sha }}
-            type=raw,value=latest,enable={{is_default_branch}}
-      # 各 arch イメージを 1 つの multi-arch manifest にまとめ、meta の全タグに付ける。
-      - name: Create multi-arch manifest
-        run: |
-          for tag in $TAGS; do
-            IMAGETOOLS_ARGS+=(-t "$tag")
-          done
-          docker buildx imagetools create "${IMAGETOOLS_ARGS[@]}" \
-            "ghcr.io/${{ github.repository }}:${{ github.sha }}-amd64" \
-            "ghcr.io/${{ github.repository }}:${{ github.sha }}-arm64"
-        env:
-          TAGS: ${{ steps.meta.outputs.tags }}
-
   # イメージをローカルビルドして起動を検査する自己完結ジョブ。publish に依存しないので
   # fork PR（GITHUB_TOKEN に packages:write が無く GHCR へ push できない）でも回る。
-  # amd64 の重い層は publish-arch と gha キャッシュ（scope=amd64）を共有する。
+  # amd64 の重い層は publish-sha.yml と gha キャッシュ（scope=amd64）を共有する。
   docker:
     runs-on: ubuntu-latest
     steps:
