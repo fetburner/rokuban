@@ -1122,6 +1122,67 @@ func TestRunPass_CircuitBreakerLatchBlocksDeleteEvenBelowThreshold(t *testing.T)
 	}
 }
 
+// issue #556: サーキットブレーカーのラッチで削除を見送られている（= desired
+// ではないが existingSet にはまだ居る）行も、猶予と同じ経路で program_snapshots
+// が追従することを確認する。罠（issue #556 本文）: 猶予だけを特別扱いする
+// 直し方をすると、ラッチで残った行のスナップショットは凍結されたままになる。
+func TestRunPass_CircuitBreakerLatch_SnapshotFollowsLiveWhileWithheld(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	insertService(t, pool, ctx)
+	start := time.Now().Add(24 * time.Hour).Truncate(time.Second)
+
+	ruleID := insertRule(t, pool, ctx, "latch-snapshot-follow", 10)
+	insertRuleKeyword(t, pool, ctx, ruleID, "対象")
+
+	const n = 3
+	for i := range n {
+		insertProgram(t, pool, ctx, int64(23000+i), fmt.Sprintf("対象%d", i), start)
+	}
+
+	r := ruler.New([]string{testSite}, pool, &ruler.Config{MaxDeletesPerPass: 2})
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("initial RunPass: %v", err)
+	}
+
+	// ルール無効化 → 3 件が unmatch。閾値 2 を超えるので発動する。
+	if _, err := pool.Exec(ctx, `UPDATE rules SET enabled = false WHERE id = $1`, ruleID); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass (trip): %v", err)
+	}
+	if _, ok := getRulerDeletesBreaker(t, pool, ctx); !ok {
+		t.Fatal("circuit breaker should be tripped")
+	}
+	const programID = 23001
+	if !reservationExists(t, pool, ctx, programID) {
+		t.Fatalf("program %d should be withheld right after tripping", programID)
+	}
+
+	// ラッチで削除を見送られている間に、23001 の EPG 開始時刻を繰り上げる。
+	// この行は desired ではない（ルールは無効なまま）が、まだ reservations に
+	// 居るので program_snapshots は追従するはず。
+	liveStart := time.Now().Add(15 * time.Minute).Truncate(time.Second)
+	insertProgram(t, pool, ctx, programID, "対象1", liveStart)
+
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass (while latched): %v", err)
+	}
+
+	res, ok := getReservation(t, pool, ctx, programID)
+	if !ok {
+		t.Fatalf("program %d should still be withheld while latched (not deleted)", programID)
+	}
+	if !res.ProgramStartAt.Equal(liveStart) {
+		t.Errorf("program_snapshots.start_at = %v, want %v (must follow the live EPG value even while withheld by the latch, not just while desired)", res.ProgramStartAt, liveStart)
+	}
+	if _, ok := getRulerDeletesBreaker(t, pool, ctx); !ok {
+		t.Error("circuit breaker should still be tripped")
+	}
+}
+
 // 受け入れ基準（M2-5 ラッチ 2/2）: 発動中でも削除以外は止まらない。新規予約の
 // 作成・既存予約のスナップショット追従（延長等）は続く（止めるのは導出削除だけ。
 // docs/recording.md §3.2「発動はラッチ」）。
@@ -2240,18 +2301,22 @@ func TestRunPass_RetractGrace_SkipIntentStillReleases(t *testing.T) {
 }
 
 // (h) issue #540: 猶予の判定は program_snapshots.start_at ではなく
-// epg_programs.start_at（射影の最新値）を見る。program_snapshots は desired
-// （= ルールが今もマッチしている）番組にしか追従しない
-// （UpsertProgramSnapshotsFromProjection の対象が desiredIDs のため）ので、
-// まさに猶予が効いてほしい unmatch のパスでは前回マッチ時点の値のまま凍結
-// されている。
+// epg_programs.start_at（射影の最新値）を直接見る。判定用の SQL
+// （ListRetractGraceProtectedProgramIDsBySiteAndProgramIDs）が
+// program_snapshots を経由しない設計は issue #556 の後も変わらない ---
+// 猶予の正しさを、同じパス内の UpsertProgramSnapshotsFromProjection が
+// どこまでを同期対象にするかや実行順序に結合させないため。
 //
 // 放送局が同じ EPG 更新で (1) 開始 5 時間後 → 20 分後に繰り上げ、かつ
 // (2) 題名を変えてルールの条件から外す、を同時に行うシナリオを作る。
-// program_snapshots.start_at は古い 5 時間後のまま凍結されるので、それを
-// 見ていた旧実装は猶予の窓（開始直前）の外だと誤判定して削除してしまう
-// --- 猶予が塞ぎたい経路そのもの。epg_programs.start_at を見れば、繰り上げ後の
-// 実際の開始時刻（20 分後）が窓の中に入るので保護される。
+// 猶予の判定自体は epg_programs.start_at を直接見るので、旧実装が
+// program_snapshots.start_at（古い 5 時間後）を見て窓の外と誤判定して
+// 削除してしまう経路を塞ぐ --- 繰り上げ後の実際の開始時刻（20 分後）が
+// 窓の中に入るので保護される。
+//
+// なお issue #556 で program_snapshots 自体も「射影にまだ居る予約すべて」に
+// 追従するようになったため、このテストは同時に snapshot が liveStart に
+// 追従することも確認する（下記アサーション）。
 func TestRunPass_RetractGrace_UsesLiveStartAtNotFrozenSnapshot(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
@@ -2279,8 +2344,10 @@ func TestRunPass_RetractGrace_UsesLiveStartAtNotFrozenSnapshot(t *testing.T) {
 		t.Fatalf("program_snapshots.start_at = %v, want %v (fixture setup assertion)", before.ProgramStartAt, staleStart)
 	}
 
-	// 同じ EPG 更新で繰り上げ + 改題を同時に行う。unmatch なので
-	// program_snapshots はこの後リフレッシュされず staleStart のまま凍結される。
+	// 同じ EPG 更新で繰り上げ + 改題を同時に行う。unmatch でも番組はまだ射影に
+	// 居る（retractGraceUnmatch は epg_programs を更新するだけで削除しない）ので、
+	// program_snapshots はこのパスで liveStart に追従する（issue #556。行が
+	// まだ existingSet に居る限り desired かどうかを問わず追従させる）。
 	liveStart := time.Now().Add(20 * time.Minute).Truncate(time.Second)
 	retractGraceUnmatch(t, pool, ctx, programID, "非マッチ番組8", liveStart)
 
@@ -2295,9 +2362,15 @@ func TestRunPass_RetractGrace_UsesLiveStartAtNotFrozenSnapshot(t *testing.T) {
 	if after.ID != before.ID {
 		t.Errorf("reservation id changed: %d -> %d (grace must freeze the row, not recreate it)", before.ID, after.ID)
 	}
-	// program_snapshots は unmatch パスでは更新されない --- 凍結の確認。
-	if !after.ProgramStartAt.Equal(staleStart) {
-		t.Errorf("program_snapshots.start_at = %v, want unchanged %v (snapshot must stay frozen on the unmatch path)", after.ProgramStartAt, staleStart)
+	// program_snapshots は「射影にまだ居る予約すべて」の対象になるので、猶予で
+	// 残った unmatch の行でも追従する（issue #556）。凍結が起きるのは射影から
+	// 番組そのものが消えたときだけ（TestRunPass_SnapshotFollowsProjectionThenFreezes
+	// が確認する）。
+	if !after.ProgramStartAt.Equal(liveStart) {
+		t.Errorf("program_snapshots.start_at = %v, want %v (snapshot must follow the live epg_programs value even on the unmatch/grace path)", after.ProgramStartAt, liveStart)
+	}
+	if after.Title != "非マッチ番組8" {
+		t.Errorf("program_snapshots.title = %q, want %q (snapshot must follow the live epg_programs value even on the unmatch/grace path)", after.Title, "非マッチ番組8")
 	}
 }
 

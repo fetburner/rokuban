@@ -295,15 +295,35 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 	tq := sqlcgen.New(tx)
 
 	// program_snapshots への追従更新（#27）。「射影にある間は更新、消えたら凍結」を
-	// 担う唯一の書き手がここ。desiredIDs のうち今回射影にまだあるものだけが対象に
-	// なり（UpsertProgramSnapshotsFromProjection 内の epg_programs との JOIN が
-	// 絞る）、射影から消えた programId は何もされず既存の program_snapshots 行が
-	// そのまま凍結される。reservations.program_fkey が program_snapshots を
-	// 参照するため、予約行の upsert より先に実行する必要がある。
-	if len(desiredIDs) > 0 {
+	// 担う唯一の書き手がここ。対象は desiredIDs だけに絞らず、「射影にまだ居る
+	// 予約すべて」に広げる（desired ∪ 既存の reservations。issue #556）。
+	// desiredIDs だけに絞ると、ルールから外れた（= desired でない）が猶予
+	// （ruler.retract_grace）やサーキットブレーカーのラッチで削除を見送られて
+	// existingSet にまだ居る予約のスナップショットが凍結されたままになり、
+	// それを需要区間として使う GC 判定・容量超過判定・contentPath が繰り上げ前
+	// の時刻を見てしまう（docs/schema/reservations.md §3.7「射影にある間は更新、
+	// 消えたら凍結」）。UpsertProgramSnapshotsFromProjection 内の epg_programs
+	// との JOIN が絞るので、射影から番組そのものが消えた programId はここに
+	// 含めても何もされず既存の program_snapshots 行がそのまま凍結される ---
+	// 対象を広げても「消えたら凍結」の性質自体は変わらない
+	// （TestRunPass_SnapshotFollowsProjectionThenFreezes が確認する）。
+	// reservations.program_fkey が program_snapshots を参照するため、予約行の
+	// upsert より先に実行する必要がある。
+	snapshotSyncSet := make(map[int64]struct{}, len(desired)+len(existingSet))
+	for id := range desired {
+		snapshotSyncSet[id] = struct{}{}
+	}
+	for id := range existingSet {
+		snapshotSyncSet[id] = struct{}{}
+	}
+	snapshotSyncIDs := make([]int64, 0, len(snapshotSyncSet))
+	for id := range snapshotSyncSet {
+		snapshotSyncIDs = append(snapshotSyncIDs, id)
+	}
+	if len(snapshotSyncIDs) > 0 {
 		if _, err := tq.UpsertProgramSnapshotsFromProjection(ctx, sqlcgen.UpsertProgramSnapshotsFromProjectionParams{
 			Site:       site,
-			ProgramIds: desiredIDs,
+			ProgramIds: snapshotSyncIDs,
 		}); err != nil {
 			return fmt.Errorf("upserting program snapshots from projection: %w", err)
 		}
