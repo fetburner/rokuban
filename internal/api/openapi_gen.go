@@ -1156,8 +1156,17 @@ type ProgramOverridesInputKeepOriginal string
 // ProgramOverridesInputReset defines model for ProgramOverridesInput.Reset.
 type ProgramOverridesInputReset string
 
+// ProgramSearchMatch 検索がマッチした 1 件（1 サイトの 1 放送）
+type ProgramSearchMatch struct {
+	// ProgramId マッチした放送の programId（`GET /api/sites/{site}/programs/{programId}` などで使う ID）。同一放送は全サイトで同じ値を持つ（Mirakurun の ID 合成）
+	ProgramId int64 `json:"programId"`
+
+	// Site マッチした放送のサイト
+	Site string `json:"site"`
+}
+
 // ProgramSearchRequest ルール条件の条件部分と同じ形。rulequery.Conditions に写像される。
-// 検索対象のサイトはパスの {site}（POST /api/sites/{site}/programs/search）。
+// 検索対象のサイトは `sites`（空または省略 = 全サイト）が決める。
 type ProgramSearchRequest struct {
 	ChannelTypes  *[]ProgramSearchRequestChannelTypes `json:"channelTypes,omitempty"`
 	DurationMaxMs *int64                              `json:"durationMaxMs,omitempty"`
@@ -1168,7 +1177,7 @@ type ProgramSearchRequest struct {
 	PeriodStartAt *time.Time                          `json:"periodStartAt,omitempty"`
 	Services      *[]RuleService                      `json:"services,omitempty"`
 
-	// Sites ルールの rule_sites 相当。空 = 評価 site のみ
+	// Sites 絞り込み条件。空または省略 = 全サイト（`GET /api/recordings` の `?site=` と 同じ軸の規約: 軸内は OR、他の絞り込み軸とは AND）。**非互換の変更**: 旧仕様は `sites` を `rule_sites` 相当の条件として扱い、空 = パスの {site}（評価 site） のみだった。
 	Sites       *[]string         `json:"sites,omitempty"`
 	TextMatches *[]RuleTextMatch  `json:"textMatches,omitempty"`
 	Times       *[]RuleTimeWindow `json:"times,omitempty"`
@@ -1368,7 +1377,7 @@ type Rule struct {
 	Priority      int                     `json:"priority"`
 	Services      *[]RuleService          `json:"services,omitempty"`
 
-	// Sites 空または省略 = 全サイト。指定する各要素は GET /api/sites が返す既知の site 名でなければならず、レジストリに無い名前（タイポ含む）や空文字列は 400 になる。更新では、そのルールに既に保存されている site 名だけは既知として扱う（GET で得た sites を載せ直す更新が、レジストリから site が消えた後も通るように）。免除は更新対象のルール単位なので **作成では効かない** —— 既存ルールの sites をそのまま載せて別のルールを作る（フォーク）場合、レジストリから消えた site 名は 400 になる。
+	// Sites 空または省略 = 全サイト。指定する各要素は GET /api/sites が返す既知の site 名でなければならず、レジストリに無い名前（タイポ含む）や空文字列は 400 になる。更新では、そのルールに既に保存されている site 名だけは既知として扱う（GET で得た sites を載せ直す更新が、レジストリから site が消えた後も通るように）。免除は更新対象のルール単位なので **作成では効かない** —— 既存ルールの sites をそのまま載せて別のルールを作る（フォーク）場合、レジストリから消えた site 名は 400 になる。`POST /api/sites/{site}/programs/search` の `sites` も同じ「空または省略 = 全サイト」の軸規約を使うが、一回限りの問い合わせで 保存された行を持たないため、既知名検証と更新時の免除はルールの保存にのみ 適用される。
 	Sites       *[]string         `json:"sites,omitempty"`
 	TextMatches *[]RuleTextMatch  `json:"textMatches,omitempty"`
 	Times       *[]RuleTimeWindow `json:"times,omitempty"`
@@ -1417,7 +1426,7 @@ type RuleInput struct {
 	Priority      *int                    `json:"priority,omitempty"`
 	Services      *[]RuleService          `json:"services,omitempty"`
 
-	// Sites 空または省略 = 全サイト。指定する各要素は GET /api/sites が返す既知の site 名でなければならず、レジストリに無い名前（タイポ含む）や空文字列は 400 になる。更新では、そのルールに既に保存されている site 名だけは既知として扱う（GET で得た sites を載せ直す更新が、レジストリから site が消えた後も通るように）。免除は更新対象のルール単位なので **作成では効かない** —— 既存ルールの sites をそのまま載せて別のルールを作る（フォーク）場合、レジストリから消えた site 名は 400 になる。
+	// Sites 空または省略 = 全サイト。指定する各要素は GET /api/sites が返す既知の site 名でなければならず、レジストリに無い名前（タイポ含む）や空文字列は 400 になる。更新では、そのルールに既に保存されている site 名だけは既知として扱う（GET で得た sites を載せ直す更新が、レジストリから site が消えた後も通るように）。免除は更新対象のルール単位なので **作成では効かない** —— 既存ルールの sites をそのまま載せて別のルールを作る（フォーク）場合、レジストリから消えた site 名は 400 になる。`POST /api/sites/{site}/programs/search` の `sites` も同じ「空または省略 = 全サイト」の軸規約を使うが、一回限りの問い合わせで 保存された行を持たないため、既知名検証と更新時の免除はルールの保存にのみ 適用される。
 	Sites       *[]string         `json:"sites,omitempty"`
 	TextMatches *[]RuleTextMatch  `json:"textMatches,omitempty"`
 	Times       *[]RuleTimeWindow `json:"times,omitempty"`
@@ -4064,7 +4073,7 @@ type SearchProgramsResponseObject interface {
 	VisitSearchProgramsResponse(w http.ResponseWriter) error
 }
 
-type SearchPrograms200JSONResponse []int64
+type SearchPrograms200JSONResponse []ProgramSearchMatch
 
 func (response SearchPrograms200JSONResponse) VisitSearchProgramsResponse(w http.ResponseWriter) error {
 

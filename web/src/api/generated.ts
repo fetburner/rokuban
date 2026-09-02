@@ -749,7 +749,7 @@ export interface RuleTimeWindow {
 
 /**
  * ルール条件の条件部分と同じ形。rulequery.Conditions に写像される。
- * 検索対象のサイトはパスの {site}（POST /api/sites/{site}/programs/search）。
+ * 検索対象のサイトは `sites`（空または省略 = 全サイト）が決める。
  */
 export interface ProgramSearchRequest {
   isFree?: boolean | null;
@@ -766,8 +766,18 @@ export interface ProgramSearchRequest {
      */
   genres?: number[];
   times?: RuleTimeWindow[];
-  /** ルールの rule_sites 相当。空 = 評価 site のみ */
+  /** 絞り込み条件。空または省略 = 全サイト（`GET /api/recordings` の `?site=` と 同じ軸の規約: 軸内は OR、他の絞り込み軸とは AND）。**非互換の変更**: 旧仕様は `sites` を `rule_sites` 相当の条件として扱い、空 = パスの {site}（評価 site） のみだった。 */
   sites?: string[];
+}
+
+/**
+ * 検索がマッチした 1 件（1 サイトの 1 放送）
+ */
+export interface ProgramSearchMatch {
+  /** マッチした放送のサイト */
+  site: string;
+  /** マッチした放送の programId（`GET /api/sites/{site}/programs/{programId}` などで使う ID）。同一放送は全サイトで同じ値を持つ（Mirakurun の ID 合成） */
+  programId: number;
 }
 
 export type RuleInputChannelTypesItem = typeof RuleInputChannelTypesItem[keyof typeof RuleInputChannelTypesItem];
@@ -811,7 +821,7 @@ export interface RuleInput {
      */
   genres?: number[];
   times?: RuleTimeWindow[];
-  /** 空または省略 = 全サイト。指定する各要素は GET /api/sites が返す既知の site 名でなければならず、レジストリに無い名前（タイポ含む）や空文字列は 400 になる。更新では、そのルールに既に保存されている site 名だけは既知として扱う（GET で得た sites を載せ直す更新が、レジストリから site が消えた後も通るように）。免除は更新対象のルール単位なので **作成では効かない** —— 既存ルールの sites をそのまま載せて別のルールを作る（フォーク）場合、レジストリから消えた site 名は 400 になる。 */
+  /** 空または省略 = 全サイト。指定する各要素は GET /api/sites が返す既知の site 名でなければならず、レジストリに無い名前（タイポ含む）や空文字列は 400 になる。更新では、そのルールに既に保存されている site 名だけは既知として扱う（GET で得た sites を載せ直す更新が、レジストリから site が消えた後も通るように）。免除は更新対象のルール単位なので **作成では効かない** —— 既存ルールの sites をそのまま載せて別のルールを作る（フォーク）場合、レジストリから消えた site 名は 400 になる。`POST /api/sites/{site}/programs/search` の `sites` も同じ「空または省略 = 全サイト」の軸規約を使うが、一回限りの問い合わせで 保存された行を持たないため、既知名検証と更新時の免除はルールの保存にのみ 適用される。 */
   sites?: string[];
   dedupeEnabled?: boolean;
   /**
@@ -3043,7 +3053,7 @@ export function useListTuners<TData = Awaited<ReturnType<typeof listTuners>>, TE
 
 
 export type searchProgramsResponse200 = {
-  data: number[]
+  data: ProgramSearchMatch[]
   status: 200
 }
 
@@ -3077,8 +3087,21 @@ export const getSearchProgramsUrl = (site: string,) => {
 /**
  * ルール条件と同じコンパイラ（internal/rulequery）で epg_programs を検索する。
  * ruler 評価と同一の SQL 経路を通る（M2-2）。UI 検索（M2-11）の土台。
- * 検索対象のサイトはパスの {site}（評価 site）。`sites` フィールドは
- * ルールの `rule_sites` 相当の条件（マッチ対象の絞り込み）で、これとは別軸。
+ *
+ * **`sites`（絞り込み条件、空または省略 = 全サイト）が検索対象のサイト軸を決める。**
+ * レスポンスは `{site, programId}` のフラットな配列で、同一放送が複数サイトで
+ * マッチすれば行が複数出る（畳まない）。ruler はマッチした全サイトで予約を作る
+ * （N 予約が既定。docs/recording/ruler.md「サイトの扱い」）ため、行数がそのまま
+ * 実体化される予約数になる。
+ *
+ * **非互換の変更**: 旧仕様は `sites` を `rule_sites` 相当の絞り込み（空 = パスの
+ * {site} のみを評価対象にする）と説明していたが、実際の SQL は `$site = ANY($sites)`
+ * という両辺が定数でテーブル列を参照しない述語だったため、事実上パスの {site} だけが
+ * 全か無かのゲートとして機能し `sites` は無効だった。新仕様では `sites` が
+ * `epg_programs.site` に対する実際の絞り込み述語になる。
+ *
+ * `sites` の既定を「空 = 全サイト」と定義するのは、Go 側がレジストリ全件を埋めて
+ * `Compile` に渡す前提のため。
  * @summary Search EPG programs by rule-style conditions
  */
 export const searchPrograms = async (site: string,

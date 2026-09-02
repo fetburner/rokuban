@@ -63,6 +63,7 @@ import {
   ListReservationsResponseItem,
   ListRulesResponseItem,
   ListServicesResponseItem,
+  SearchProgramsResponseItem,
 } from '../src/api/zod.ts'
 import {
   finish,
@@ -364,6 +365,11 @@ await validateFixturesOrExit(
     ['encodeQueue', GetEncodeQueueResponse, encodeQueue],
     ...storageRoots.map((root, i) => [`storage[${i}]`, GetStorageResponseItem, root]),
     ...searchNotePrograms.map((p, i) => [`searchNotePrograms[${i}]`, GetProgramResponse, p]),
+    ...searchNotePrograms.map((p, i) => [
+      `searchResults[${i}]`,
+      SearchProgramsResponseItem,
+      { site: SITE, programId: p.programId },
+    ]),
     ['searchNoteOverage', ListCapacityOveragesResponseItem, searchNoteOverage],
   ],
   ng,
@@ -1267,7 +1273,7 @@ log("\n=== ①'''' search: 容量ノートの安定性（窓の点滅・退化�
     if (p === '/api/encode-profiles') return json([])
 
     if (p === `/api/sites/${SITE}/programs/search` && method === 'POST') {
-      return json(searchNotePrograms.map((pr) => pr.programId))
+      return json(searchNotePrograms.map((pr) => ({ site: SITE, programId: pr.programId })))
     }
     const detail = new RegExp(`^/api/sites/${SITE}/programs/(\\d+)$`).exec(p)
     if (detail) {
