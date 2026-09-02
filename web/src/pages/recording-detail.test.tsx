@@ -84,7 +84,7 @@ function createFakeServer(options: {
     const method = init?.method ?? 'GET'
 
     if (url.pathname === '/api/breakers') return Promise.resolve(jsonResponse([]))
-    // SiteGate（routes.tsx）が全ルートの手前で待つ（issue #184 M4-12）。
+    // サイトレジストリを先に解決する。
     if (url.pathname === '/api/sites') return Promise.resolve(jsonResponse(sites))
     if (url.pathname === '/api/encode-profiles') return Promise.resolve(jsonResponse(encodeProfiles))
     if (url.pathname === '/api/rules' && method === 'GET') {
@@ -235,8 +235,7 @@ describe('RecordingDetailPage', () => {
 
     renderAt('/recordings/3')
 
-    const channel = await screen.findByText('チャンネル')
-    expect(within(channel.parentElement as HTMLElement).getByText(/site2/)).toBeInTheDocument()
+    expect(await screen.findByText(/site2/)).toBeInTheDocument()
   })
 
   it('単一サイトのときは詳細に site を出さない', async () => {

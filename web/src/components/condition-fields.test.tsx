@@ -322,10 +322,10 @@ describe('ConditionFields のサービスチップ', () => {
 })
 
 /**
- * issue #290: サービス選択肢は先頭サイト固定（`useCurrentSite()`）ではなく、
+ * issue #290: サービス選択肢は先頭サイト固定ではなく、
  * `GET /api/sites` の全 site から `Service.id` で畳んで作る（保存されたルールが
  * 全 site で評価されるため）。**この 2 サイトのテストは、直す前の実装
- * （`useCurrentSite()` + `useListServices(site)`）では失敗することを確認済み**
+ * （単一 site 取得）では失敗することを確認済み**
  * ---「default にしかスタブが無いから通ってしまう」ではなく、第 2 サイトだけが
  * 持つサービスが実際に選択肢へ出ることを見ている。
  */

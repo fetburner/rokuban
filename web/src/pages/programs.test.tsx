@@ -256,7 +256,7 @@ function stubApi(
   let programsCallIndex = 0
   const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input), 'http://localhost')
-    // SiteGate（routes.tsx）が全ルートの手前で GET /api/sites を待つ
+    // ページが GET /api/sites を解決する
     // （issue #184 M4-12）。ページを本物の routeTree（`RouterProvider`）越しに
     // 描く（`useSearch`/`useNavigate` を使うため）ようになったので必要になった
     // （`routes.test.tsx` の '/search' テストと同じ理由）。
@@ -376,8 +376,7 @@ afterEach(() => {
  * `useSearch`/`useNavigate` を使うため（issue #231。チャンネル絞り込みの
  * URL 化）、最小限のアドホックなルート木ではなく実際の `/programs` ルート定義
  * （`validateSearch` を含む）を使う必要がある --- `pages/recordings.test.tsx`
- * の `renderPage` と同じ理由・同じ形。`SiteContext` を直接注入する旧方式は
- * `SiteGate`（`GET /api/sites` を待つ）を経由しないためこの構成では使えない。
+ * の `renderPage` と同じ理由・同じ形。
  */
 function renderPage(path = '/programs') {
   const queryClient = new QueryClient({
@@ -623,17 +622,16 @@ describe('ProgramsPage の容量超過の帯', () => {
     expect(screen.getByText('BS-1')).toBeInTheDocument()
   })
 
-  it('別サイトの超過区間は帯として描かない（issue #324）', async () => {
-    // 同じ時間帯の超過だが site が現在サイト（default）でない。判定はサイトごとに
-    // 独立している（docs/data.md §6.5）ので、別サイトのチューナー不足を現在サイトの
-    // 番組表に重ねてはいけない。
+  it('第2 site の超過区間も全 site の番組表に帯として描く', async () => {
+    // 番組表は全 site の列を描くので、容量超過も site を保ったまま対応する列へ
+    // 重ねる。別 site の区間を先頭 site の番組だけへ誤って重ねない。
     stubApi([], [overage(1, 2, { site: 'other' })])
     stubMatchMedia(true)
     const { queryClient } = renderPage()
     await openGrid()
     await overagesSettled(queryClient)
 
-    expect(screen.queryByTestId('capacity-band')).not.toBeInTheDocument()
+    expect(screen.getByTestId('capacity-band')).toBeInTheDocument()
   })
 
   it('超過区間が無ければ帯を出さない（沈黙を肯定にしない）', async () => {

@@ -1,9 +1,10 @@
 import { render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
-import type { CapacityOverage, ProgramListItem, Service } from '@/api/generated'
+import type { CapacityOverage } from '@/api/generated'
 import { CapacityBandLabels, CapacityBands } from '@/components/capacity-band'
 import { ProgramGrid } from '@/components/program-grid'
+import type { SiteProgram, SiteService } from '@/lib/all-sites-services'
 import { type TimeAxis } from '@/lib/epg-grid'
 
 /** 軸はローカル時刻の 0 時基準（program-grid.test.tsx と同じ組み方）。 */
@@ -25,8 +26,9 @@ function iso(minutes: number): string {
   return new Date(at(minutes)).toISOString()
 }
 
-const service: Service = {
+const service: SiteService = {
   id: 3273601024,
+  site: 'default',
   networkId: 32736,
   serviceId: 1024,
   name: 'NHK総合',
@@ -37,8 +39,9 @@ const service: Service = {
   hasPrograms: true,
 }
 
-function program(programId: number, startMinutes: number, durationMinutes: number): ProgramListItem {
+function program(programId: number, startMinutes: number, durationMinutes: number): SiteProgram {
   return {
+    site: 'default',
     programId,
     networkId: 32736,
     serviceId: service.serviceId,
@@ -74,7 +77,7 @@ function overage(
  * `CapacityBands` を単体で描くと「番組セルと同じ座標に来る」ことを確かめられない
  * （それが `spanToPx` を共有している唯一の観測可能な帰結なので、セルと並べて描く）。
  */
-function renderGrid(overages: CapacityOverage[], programs: ProgramListItem[]) {
+function renderGrid(overages: CapacityOverage[], programs: SiteProgram[]) {
   return render(
     <ProgramGrid
       services={[service]}

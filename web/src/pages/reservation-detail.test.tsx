@@ -60,7 +60,7 @@ function errorResponse(status: number, message: string): Response {
  * への問い合わせを振り分ける。`reservationOf` は `(site, programId)` から
  * 返す予約を引く関数で、再実体化（同じ `(site, programId)` でも呼び出しごとに
  * 違う `id` を返す）をシミュレートできるようにする。`sites`（既定
- * `['default']`）は `<SiteGate>` が返す `GET /api/sites` の応答 --- URL の
+ * `['default']`）は `GET /api/sites` の応答 --- URL の
  * `$site` と異なる値を渡せるようにしている（下記「ゲート済み site と URL の
  * site が違う」テスト参照）。`rules`（既定 `[]`）はルール名の解決先
  * （issue #300、`pages/recordings.tsx` の `RuleSection` と同じ `useListRules`
@@ -77,7 +77,7 @@ function stubFetch(
   const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input), 'http://localhost')
     if (url.pathname === '/api/breakers') return Promise.resolve(jsonResponse([]))
-    // SiteGate（routes.tsx）が全ルートの手前で待つ（issue #184 M4-12）。
+    // サイトレジストリを先に解決する。
     if (url.pathname === '/api/sites') return Promise.resolve(jsonResponse(sites))
     if (url.pathname === '/api/rules') return Promise.resolve(jsonResponse(rules))
     // EncodeOverridesEditor（エンコードと保持セクション）が必ず引く。
@@ -316,19 +316,18 @@ describe('ReservationDetailPage', () => {
     expect(await screen.findByText('テスト番組')).toBeInTheDocument()
   })
 
-  // `ProgramOverlapWarning` に `useCurrentSite()`（<SiteGate> が配る「現在の
-  // site」）ではなく URL の `$site` を明示的に渡していることを固定する。
+  // `ProgramOverlapWarning` に画面全体の site ではなく URL の `$site` を
+  // 明示的に渡していることを固定する。
   //
   // このページの route は `/reservations/$site/$programId` で、`$site` は
-  // ディープリンクが指す資源そのものの一部（issue #99）。一方 `<SiteGate>` が
-  // 配る「現在の site」はレジストリの先頭サイトに過ぎない（issue #184
+  // ディープリンクが指す資源そのものの一部（issue #99）。一方、共通の site は
+  // レジストリの先頭サイトに過ぎない
   // M4-12、サイト切り替え UI を持たない決定）。この 2 つはレジストリが 2 サイト
   // 以上のとき一致するとは限らないので、`ReservationDetailPage` が
-  // `ProgramOverlapWarning` に `useCurrentSite()` を渡す実装に戻すと、
-  // 対象と異なる site の重なりを問い合わせてしまう --- ここでは `<SiteGate>`
-  // が返す「現在の site」（tokyo）と URL の `$site`（osaka）を意図的に
+  // 対象と異なる site の重なりを問い合わせてしまう --- ここでは共通の site
+  // （tokyo）と URL の `$site`（osaka）を意図的に
   // 違えて、実際に叩かれる overlaps の URL が osaka であることを見る。
-  it('重なり警告は URL の $site を使う（<SiteGate> の現在の site とは独立）', async () => {
+  it('重なり警告は URL の $site を使う（共通の site とは独立）', async () => {
     const fetchMock = stubFetch(
       (site, programId) =>
         site === 'osaka' && programId === 300000 ? baseReservation({ site: 'osaka' }) : null,

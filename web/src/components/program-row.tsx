@@ -2,7 +2,7 @@ import { Link } from '@tanstack/react-router'
 import { ChevronDown } from 'lucide-react'
 import { useState } from 'react'
 
-import { useGetProgram, type ProgramListItem, type ProgramOverridesInput } from '@/api/generated'
+import { useGetProgram, type ProgramOverridesInput } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
 import { EncodeSettingsFields } from '@/components/encode-settings-fields'
 import { ProgramOverlapWarning } from '@/components/program-overlap-warning'
@@ -16,8 +16,8 @@ import {
   type EncodeSettingsValue,
 } from '@/lib/encode-settings'
 import { formatDuration, formatTime, isAiring } from '@/lib/format'
+import type { SiteProgram } from '@/lib/all-sites-services'
 import { composeServiceId } from '@/lib/service-id'
-import { useCurrentSite } from '@/lib/site'
 import { cn } from '@/lib/utils'
 
 /**
@@ -52,14 +52,14 @@ export function ProgramRow({
   onReserve,
   onCancel,
 }: {
-  program: ProgramListItem
+  program: SiteProgram
   serviceName?: string
   reserved: boolean
   pending: boolean
   onReserve: (overrides?: ProgramOverridesInput) => void
   onCancel: () => void
 }) {
-  const site = useCurrentSite()
+  const site = program.site
   const liveEnabled = useLiveEnabled()
   const [expanded, setExpanded] = useState(false)
   // 展開して初めて出る欄で、開かなければ既定値のまま
@@ -249,7 +249,10 @@ export function ProgramRow({
                   // `program` は SI の `networkId` / `serviceId` しか持たないため
                   // `Service.id` を合成する（issue #438。`/live` の `?service=` も
                   // 他画面と同じ合成 id を使う）。
-                  search={{ service: composeServiceId(program.networkId, program.serviceId) }}
+                  search={{
+                    service: composeServiceId(program.networkId, program.serviceId),
+                    site,
+                  }}
                   className="text-primary underline-offset-2 hover:underline"
                 >
                   ライブで見る
@@ -293,9 +296,8 @@ export function ProgramRow({
  * 説明・出演者・映像音声属性は一覧レスポンスに含まれないため、
  * 展開したときに GET /api/sites/{site}/programs/{programId} で取得する（段階的開示）。
  */
-function ProgramDetail({ program }: { program: ProgramListItem }) {
-  const site = useCurrentSite()
-  const detail = useGetProgram(site, program.programId)
+function ProgramDetail({ program }: { program: SiteProgram }) {
+  const detail = useGetProgram(program.site, program.programId)
   const d = unwrap(detail.data)
 
   return (

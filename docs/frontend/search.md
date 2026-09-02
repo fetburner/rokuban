@@ -31,10 +31,9 @@
   `buildRuleInput` がそのまま運ぶ。**検索結果は `[{site, programId}]` の
   フラットな行**（畳まない。行数 = 予約数。下記「保存前の値札」）になるため、
   番組詳細の取得（`GET /api/sites/{site}/programs/{programId}`）は
-  `useCurrentSite()` ではなく**行が運ぶ `site`** を使う ---
+  **行が運ぶ `site`** を使う ---
   [shell.md](shell.md)「サイトの扱い」の「行が運ぶ」と同じ規律。検索の
-  path 引数の `{site}` 自体は今も `useCurrentSite()` 固定（先頭サイト。
-  出所の無い入口）のままで変えていない
+  path 引数の `{site}` 自体はレジストリの先頭 site を routing anchor に使う
   --- 変わったのは「どの site の EPG を対象にするか」を決める軸が path から
   本文の `sites` に移ったことだけ。
   **条件フォーム（`<ConditionFields>`）のサービス選択肢はこれとは別の理由で

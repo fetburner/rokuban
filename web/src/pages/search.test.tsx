@@ -157,8 +157,8 @@ function stubApi(options?: {
   extraPrograms?: Program[]
   /**
    * `GET /api/sites` の応答（既定 `['default']`）。**先頭は常に `'default'`
-   * のままにすること** --- `useCurrentSite()` はレジストリの先頭サイト固定
-   * （`<SiteGate>`）で、検索・番組詳細のパス（`/api/sites/default/...`）は
+   * のままにすること** --- 検索 API の routing site はレジストリの先頭サイト固定
+   * で、検索・番組詳細のパス（`/api/sites/default/...`）は
    * このスタブの他の分岐に既に決め打ちされている。2 つ目以降を足すのは
    * `<ConditionFields>` のサイトチップ（レジストリと下書きの和集合が
    * 2 つ以上で出る）と
@@ -1578,8 +1578,7 @@ describe('SearchPage', () => {
  */
 describe('複数サイトの検索結果（issue #531）', () => {
   // **siteA は `test/router.tsx` の `testSite`（'default'）に合わせる。**
-  // `renderInRouter`（`renderPage` が使う）は `<SiteGate>` を経由せず
-  // `SiteContext` に固定値を直接注入するので、`useCurrentSite()` は
+  // `renderInRouter`（`renderPage` が使う）は単一 site fixture を使うので、
   // `GET /api/sites` の応答に関わらずこの値になる（検索の path 引数も
   // これで決まる）。
   const siteA = 'default'
@@ -1630,7 +1629,7 @@ describe('複数サイトの検索結果（issue #531）', () => {
   /**
    * stubMultiSiteApi は「同一放送（programId 500）が default と takamatsu の
    * 両方でマッチした」状況だけを再現する最小のスタブ。`renderPage`
-   * （`renderInRouter`）は `useCurrentSite()` を `testSite`（'default'）に
+   * （`renderInRouter`）は routing site を `testSite`（'default'）に
    * 固定するので、検索リクエスト自体は `/api/sites/default/programs/search`
    * に届く --- 実際に複数 site の行を返せるのは、この 1 本の検索が
    * `sites`（空 = 全サイト）で default と takamatsu の両方の EPG を横断して

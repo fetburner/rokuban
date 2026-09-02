@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import type { ProgramListItem } from '@/api/generated'
+import type { SiteProgram } from '@/lib/all-sites-services'
 import {
   filterProgramsFromListStart,
   firstIndexForDayOffset,
@@ -79,8 +79,9 @@ describe('firstIndexForDayOffset（visibleDayOffset と対になる向き）', (
 })
 
 /** program は最小限のフィールドだけ埋めた `ProgramListItem`。programKeyAt は programId しか見ない。 */
-function listItem(programId: number): ProgramListItem {
+function listItem(programId: number): SiteProgram {
   return {
+    site: 'default',
     programId,
     networkId: 32736,
     serviceId: 1024,
@@ -102,13 +103,13 @@ describe('programKeyAt（仮想化の getItemKey）', () => {
     const after = [listItem(99), ...before]
 
     // ずれる前は index 0 が programId 10
-    expect(programKeyAt(before, 0)).toBe(10)
+    expect(programKeyAt(before, 0)).toBe('default:10')
     // ずれた後、同じ番組（10）は index 1 に移動するが、キーは変わらず 10 のまま
-    expect(programKeyAt(after, 1)).toBe(10)
+    expect(programKeyAt(after, 1)).toBe('default:10')
     // 対照: 添字そのものをキーにする実装（TanStack Virtual の既定 `(index) => index`）
     // だったら、この一致は成り立たない。両方向で違いを確認する
     expect(programKeyAt(after, 1)).not.toBe(1)
-    expect(programKeyAt(after, 2)).toBe(20)
+    expect(programKeyAt(after, 2)).toBe('default:20')
     expect(programKeyAt(after, 2)).not.toBe(2)
   })
 
@@ -123,7 +124,7 @@ describe('programKeyAt（仮想化の getItemKey）', () => {
     const after = [listItem(99), ...before]
 
     // ずれる前は両者が一致してしまう（バグが表面化しない理由）
-    expect(indexBasedKey(0)).toBe(programKeyAt(before, 0))
+    expect(indexBasedKey(0)).not.toBe(programKeyAt(before, 0))
     // ずれた後は不一致になる ---
     // 添字ベースのキーは programId 0 の行（before の先頭。後ろへ 1 つ移動した）の
     // 実測値を programId 99 の行のものとして扱ってしまう、というのがこの

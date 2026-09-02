@@ -21,7 +21,8 @@ Rokuban 自体のライブ視聴は「チャンネル一覧から選んでブラ
 **独立したルート `/live` を持つ。** 番組表グリッドの「いま」から入る形は、グリッド自体が
 `lg` 以上でしか出ない（[programs.md](programs.md)「リストを第一級に置く。グリッドは
 その上に足す」）ため、モバイルからの入口を別に用意する必要が生じ結局 2 箇所になる。
-`/live` はチャンネル一覧（`GET /api/sites/{site}/services`）+ プレイヤー + いま放送中の番組
+`/live` はレジストリの全 site から作るチャンネル一覧（各 site の
+`GET /api/sites/{site}/services`）+ プレイヤー + いま放送中の番組
 （既存 EPG API の時間窓クエリ。専用 API は足していない）という 1 画面で構成する
 （`pages/live.tsx`）。選択中のチャンネルは `?service=<Service.id>` に持つ（`routes.tsx` の
 `validateSearch` が不正な値に `undefined` を**明示代入**して落とす。省略では
@@ -30,15 +31,15 @@ Rokuban 自体のライブ視聴は「チャンネル一覧から選んでブラ
 チャンネル一覧のリンクは `replace` にし、ザッピングでブラウザ履歴が積み上がらない
 ようにする。
 
-**SI の `serviceId` 単独では network をまたぐと一意でない。** Mirakurun が
+**site も含めてチャンネルを同定する。SI の `serviceId` 単独では network をまたぐと一意でない。** Mirakurun が
 `networkId * 100000 + serviceId` の合成 id を発明した理由そのもので、
 `GET /api/sites/{site}/services` は GR / BS / CS を混ぜて返すため、同じ
 `serviceId` を持つサービスが 2 つ返る構成がありうる。**そこで API が合成 id を
 `Service.id`（`networkId * 100000 + serviceId`）として返し、画面内の同定は
-すべてこの 1 つの値で行う**（選択中のハイライトと `aria-current`・再生中
-チャンネルの記憶）。**`/live` の URL もこの `Service.id`
-を使う**（`?service=` の値域も `/programs` と同じ生成スキーマで検証する）。
-初期選択は「一覧に `Service.id` が居ればそれ、居なければ既定」だけで決まる
+site と組み合わせて行う**（選択中のハイライトと `aria-current`・再生中
+チャンネルの記憶）。**`/live` の URL は `?service=<Service.id>&site=<site>` で
+site も運ぶ**（`?service=` の値域も `/programs` と同じ生成スキーマで検証する）。
+初期選択は「site と `Service.id` が一致すればそれ、無ければ番組を持つ先頭」だけで決まる
 （`pickInitialService`。`lib/live.ts`）。
 番組リスト（`components/program-row.tsx`）の「ライブで見る」リンクは
 `ProgramListItem` が SI の `networkId` / `serviceId` しか持たないため、
@@ -51,7 +52,8 @@ Rokuban 自体のライブ視聴は「チャンネル一覧から選んでブラ
 `serviceId` 単独を identity にできない。
 
 「この局の番組表」も番組表ピッカーの複数選択も録画の絞り込みも、同じ
-`?service=<Service.id>` の配列で運ぶ（1 局なら 1 要素）。録画では site が
+`?service=<Service.id>` の配列で運ぶ（1 局なら 1 要素）。ライブでは site も
+`?site=<site>` で運ぶ。録画では site が
 別軸（`?site=`）で、軸内は OR・軸間は AND。
 
 **「選ぶ」（`?service=` を変える）と「流す」（`LivePlayer` をマウントする）を
@@ -431,10 +433,10 @@ EPGStation・KonomiTV には構造的にできない表示。
   沈黙側に倒れているので下界主義には反しないが、既知の盲点として上記
   「下界主義」の項の見えない消費者の一覧に挙げてある
 
-### チューナー状態の 1 行
+### チューナー状態の行
 
 チャンネル一覧（`components/tuner-status.tsx`。`pages/live.tsx` のチャンネル一覧の
-脇）に「チューナー n 本（故障 m）」の 1 行を出す。判断の理由は
+脇）に「チューナー n 本（故障 m）」の行を出す。判断の理由は
 docs/operations/monitoring.md §監視「チューナー故障はライブ画面の 1 行で見せる」に
 まとめてある。要点は 2 つ --- 故障（`tuner_sync.is_fault`）を見る手段が UI 以外に
 無いこと、ライブ画面はチューナーを実際に掴む操作の直前に開く画面であること。
@@ -442,11 +444,10 @@ docs/operations/monitoring.md §監視「チューナー故障はライブ画面
 - **`GET /api/sites/{site}/tuners` は `tuner_sync` の行をそのまま返す。** 導出はしない。
   「いまどの局を掴んでいるか」「ライブ視聴が何本か」はこの射影に無い。したがって
   このエンドポイントもそれを持たない --- watcher の観測対象を広げる別の判断になる
-- **1 サイト（`useCurrentSite()`）だけを見る。** `LivePage` はサイト切り替え UI を
-  持たず、`SiteGate` が流す先頭サイト固定のチャンネル一覧しか出さない画面。
-  `docs/frontend/shell.md`「サイトの扱い」の表の「出所が無い」段にライブは既にある。
-  全サイトを描くと、この画面からは選べないサイトの故障バッジまで並んでしまい
-  誤読を招く
+- **site ごとに 1 行出す。** `GET /api/sites` の各 site へ問い合わせ、各 site の
+  `tuner_sync` を利用可能本数・故障本数・最古 `observedAt` まで独立に集計する。他の
+  site の値と混ぜず、未取得または空の site は何も主張しない。複数 site のときだけ
+  行頭に site 名を表示し、1 site のときは従来どおり site 名を表示しない。
 - **n は射影の全行数ではなく `isAvailable && !isFault` の本数にする**
   （`internal/capacity` の `countable` と揃える。docs/data/capacity.md §6.5）。
   射影の生本数のままだと、設定で無効化した本数まで「使える本数」に見えてしまい、
@@ -475,14 +476,14 @@ docs/operations/monitoring.md §監視「チューナー故障はライブ画面
 - **mirakc は `isFault` を実装しておらず、常に false を返す**（`isAvailable` も
   常に true。根拠は docs/data/capacity.md §6.5）。つまり「（故障 m）」は現行の
   mirakc では出ない。それでも読む形にしてあるのは、Mirakurun 互換 API の
-  フィールドであり mirakc が将来実装したら効くため。**この 1 行の実用上の値は
+  フィールドであり mirakc が将来実装したら効くため。**この表示の実用上の値は
   鮮度表示のほうにある** --- そちらは射影ループの停止を実際に捉える
 
 判定手段: `pages/live.test.tsx`「チューナー状態」。故障ありで destructive の淡い地 +
 文字が見えること・無ければ出ないことを両方向で確認する。3 本中 1 本故障という
 非対称な内訳にしてあるのは、`isFault` の判定を反転させる変異でも表示件数が対称に
 入れ替わらず実際に落ちるようにするためである。設定で無効化した行が n から除かれる
-ことと、他サイトの状態を混ぜないことも確認する。`observedAt` が古いときに「観測が
+ことと、複数 site の本数・故障・鮮度が別行で混ざらないことも確認する。`observedAt` が古いときに「観測が
 止まっています」が出ることと、新しいときは出ないことも両方向で確認する。
 `lib/events.ts` の `tuners` グループは `events.test.tsx` が確認する。専用の周期で
 取り直すこと、SSE トピックを持たないこと、5 分と 10 分のタイマーが同時に発火する

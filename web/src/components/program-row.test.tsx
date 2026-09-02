@@ -4,11 +4,13 @@ import { describe, expect, it, vi } from 'vitest'
 
 import type { ProgramListItem } from '@/api/generated'
 import { ProgramRow } from '@/components/program-row'
+import type { SiteProgram } from '@/lib/all-sites-services'
 import { renderInRouter, testSite } from '@/test/router'
 
 /** program は基準の未放送・未予約番組を作る。個々のテストで startAt/endAt を上書きする。 */
-function program(overrides: Partial<ProgramListItem> = {}): ProgramListItem {
+function program(overrides: Partial<ProgramListItem> = {}): SiteProgram {
   return {
+    site: testSite,
     programId: 1,
     networkId: 32736,
     serviceId: 1024,
@@ -25,7 +27,7 @@ function program(overrides: Partial<ProgramListItem> = {}): ProgramListItem {
 }
 
 /** airingProgram は「いま放送中」（`isAiring` が true）になるよう startAt/endAt を組む。 */
-function airingProgram(overrides: Partial<ProgramListItem> = {}): ProgramListItem {
+function airingProgram(overrides: Partial<ProgramListItem> = {}): SiteProgram {
   const startAt = Date.now() - 10 * 60_000
   return program({
     startAt: new Date(startAt).toISOString(),

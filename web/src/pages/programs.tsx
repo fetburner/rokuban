@@ -1,4 +1,4 @@
-import { keepPreviousData, useInfiniteQuery, useQueryClient } from '@tanstack/react-query'
+import { keepPreviousData, useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useSearch as useRouteSearch } from '@tanstack/react-router'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
@@ -20,16 +20,12 @@ import {
   listPrograms,
   useDeleteProgramIntent,
   useListCapacityOverages,
-  useListPrograms,
   useListReservations,
-  useListServices,
   usePatchProgramOverrides,
   usePutProgramIntent,
   type CapacityOverage,
-  type ProgramListItem,
   type ProgramOverridesInput,
   type Reservation,
-  type Service,
 } from '@/api/generated'
 import { apiErrorMessage, unwrap } from '@/api/unwrap'
 import { shouldAutoLoadNextPage, shouldShowLoadMoreButton } from '@/lib/auto-load'
@@ -43,15 +39,20 @@ import {
 import { domLayoutMeasurable } from '@/lib/list-virtualization'
 import { mutationErrorMessage } from '@/lib/mutation-error-message'
 import {
+  programIdentity,
+  siteServiceKey,
+  useAllSitesServices,
+  type SiteProgram,
+  type SiteService,
+} from '@/lib/all-sites-services'
+import {
   pickerServiceDomain,
   programsDayForOffset,
   programsDayOffset,
   programsSelectableDays as selectableDays,
   type ProgramsPageSearch,
 } from '@/lib/programs-search'
-import { composeServiceId } from '@/lib/service-id'
 import { filterProgramsFromListStart } from '@/lib/program-list'
-import { useCurrentSite } from '@/lib/site'
 import { lgMediaQuery, useMediaQuery } from '@/lib/use-media-query'
 
 /**
@@ -101,7 +102,13 @@ type ProgramView = 'list' | 'grid'
  * うえ、個々の番組から飛べる導線と役割が重複する。issue #231 の決定。
  */
 export function ProgramsPage() {
-  const site = useCurrentSite()
+  const {
+    sites,
+    services: serviceList,
+    siteServices,
+    isPending: servicesPending,
+    isError: servicesError,
+  } = useAllSitesServices()
   // チャンネル絞り込み・表示形式・ジャンプ先の日付は URL に持つ。
   // 検証（不正値・範囲外の除去・配列の重複除去・昇順ソート）は `routes.tsx` の
   // `validateSearch`（`lib/programs-search.ts` の `parseProgramsSearch`）で済んで
@@ -221,8 +228,7 @@ export function ProgramsPage() {
   // 間の最初の 1 回」に限られる。
   const scrollToMs = at !== undefined && dayOffset === atDayOffset ? at : undefined
 
-  const services = useListServices(site)
-  const allServices = useMemo(() => unwrap(services.data) ?? [], [services.data])
+  const allServices = serviceList
   const selectedServiceIds = useMemo(() => new Set(search.service ?? []), [search.service])
   const reservations = useListReservations()
 
@@ -254,6 +260,7 @@ export function ProgramsPage() {
     queryKey: [
       programsQueryKeyPrefix,
       'infinite',
+      sites,
       originMs,
       limitMs,
       selectedServiceParam,
@@ -264,7 +271,7 @@ export function ProgramsPage() {
     },
     // グリッド表示中はリストの窓を追いかけない（同じ時間帯を 2 つの形で
     // 同時に取りに行かない）。戻ったときはキャッシュがそのまま出る。
-    enabled: !showGrid,
+    enabled: !showGrid && sites.length > 0,
     // 日付ジャンプで originMs（＝ queryKey）が変わると infinite query が
     // 作り直される。未キャッシュの日だと `isPending` が即 true になり、
     // 下の分岐で `ProgramList` が `ListSkeleton` に挿し替わって文書高さが
@@ -276,12 +283,18 @@ export function ProgramsPage() {
     placeholderData: keepPreviousData,
     queryFn: async ({ pageParam }) => {
       const { startMs, endMs } = pageParam
-      const res = await listPrograms(site, {
-        start: new Date(startMs).toISOString(),
-        end: new Date(endMs).toISOString(),
-        service: selectedServiceParam,
-      })
-      return { startMs, endMs, programs: unwrap(res) ?? [] }
+      const responses = await Promise.all(
+        sites.map((site) =>
+          listPrograms(site, {
+            start: new Date(startMs).toISOString(),
+            end: new Date(endMs).toISOString(),
+            service: selectedServiceParam,
+          }).then((res) =>
+            (unwrap(res) ?? []).map((program): SiteProgram => ({ ...program, site })),
+          ),
+        ),
+      )
+      return { startMs, endMs, programs: responses.flat() }
     },
     // 進行方向は windowHours（6 時間）ぶんずつ。上限（EPG のローリングウィンドウの
     // 終端）に達したら打ち切る。
@@ -296,17 +309,26 @@ export function ProgramsPage() {
   // 縦位置が時刻そのものなので途中まで積んだ状態が「番組がない時間帯」と
   // 見分けられないため。
   const gridEndMs = Math.min(originMs + gridWindowHours * 3600_000, limitMs)
-  const gridQuery = useListPrograms(
-    site,
-    {
-      start: new Date(originMs).toISOString(),
-      end: new Date(gridEndMs).toISOString(),
-      service: selectedServiceParam,
+  const gridQuery = useQuery({
+    queryKey: [programsQueryKeyPrefix, 'grid', sites, originMs, gridEndMs, selectedServiceParam],
+    enabled: showGrid && sites.length > 0,
+    queryFn: async () => {
+      const responses = await Promise.all(
+        sites.map((site) =>
+          listPrograms(site, {
+            start: new Date(originMs).toISOString(),
+            end: new Date(gridEndMs).toISOString(),
+            service: selectedServiceParam,
+          }).then((res) =>
+            (unwrap(res) ?? []).map((program): SiteProgram => ({ ...program, site })),
+          ),
+        ),
+      )
+      return responses.flat()
     },
-    { query: { enabled: showGrid } },
-  )
+  })
   // サーバーが選択済みのサービスで絞るので、これ以上の適用点は要らない。
-  const gridPrograms = useMemo(() => unwrap(gridQuery.data) ?? [], [gridQuery.data])
+  const gridPrograms = useMemo(() => gridQuery.data ?? [], [gridQuery.data])
   const axis = useMemo<TimeAxis>(
     () => ({ startMs: originMs, endMs: gridEndMs, pxPerHour: gridPxPerHour }),
     [originMs, gridEndMs],
@@ -325,20 +347,19 @@ export function ProgramsPage() {
     },
     { query: { enabled: showGrid } },
   )
-  // 一覧 API は全サイトの区間を返すが、帯は現在サイトの EPG に重ねるため
-  // 現在サイトだけに絞る。CapacityBands 自身は渡された区間を描くことに専念する。
-  const overages = useMemo(
-    () => (unwrap(overagesQuery.data) ?? []).filter((overage) => overage.site === site),
-    [overagesQuery.data, site],
-  )
+  // 一覧 API は全サイトの区間を返す。各帯は同じ site の番組列に重ねるので
+  // site を落とさず CapacityBands へ渡す。
+  const overages = useMemo(() => unwrap(overagesQuery.data) ?? [], [overagesQuery.data])
 
   // 窓は開区間なので境界をまたぐ番組が隣接する 2 つの窓に現れる。programId で潰す。
   // サーバーが選択済みのサービスで絞るので、これ以上の適用点は要らない。
   const programs = useMemo(() => {
-    const seen = new Map<number, ProgramListItem>()
+    const seen = new Map<string, SiteProgram>()
     for (const page of query.data?.pages ?? []) {
       for (const p of page.programs) {
-        if (!seen.has(p.programId)) seen.set(p.programId, p)
+        if (!seen.has(programIdentity(p.site, p.programId))) {
+          seen.set(programIdentity(p.site, p.programId), p)
+        }
       }
     }
     return [...seen.values()].sort(
@@ -381,12 +402,19 @@ export function ProgramsPage() {
   // hasPrograms が false の局の番組が来たとき（例えば選択直後にキャッシュが
   // まだ古い）名前が引けなくなる。
   const serviceById = useMemo(() => {
-    const map = new Map<number, Service>()
-    for (const service of allServices) {
-      map.set(service.id, service)
+    const map = new Map<number, SiteService>()
+    for (const service of siteServices) {
+      if (!map.has(service.id)) map.set(service.id, service)
     }
     return map
-  }, [allServices])
+  }, [siteServices])
+  const siteServiceByKey = useMemo(() => {
+    const map = new Map<string, SiteService>()
+    for (const service of siteServices) {
+      map.set(siteServiceKey(service.site, service.networkId, service.serviceId), service)
+    }
+    return map
+  }, [siteServices])
 
   // 予約状態は番組とは別クエリで取り、クライアント側で結合する。
   // 予約は頻繁に変わり番組はほとんど変わらないので、キャッシュの寿命を分ける。
@@ -396,29 +424,27 @@ export function ProgramsPage() {
   // サーバーの値だけを見ると予約直後の一覧に反映が数秒遅れる。actions.isReserved
   // が楽観的な上書きをこの Set の上に重ねる。
   //
-  // 一覧は全サイトの予約を返す（不変条件 1）が、番組表は現在サイトの EPG を
-  // 描くので現在サイトの予約だけを重ねる。programId は放送イベントから決まり
-  // 2 サイトで一致しうるので、site で突き合わせないと別サイトの予約で「予約済み」に
-  // なる（ライブの中断予測と同じ絞り込み。lib/live-interruption.ts。issue #324）。
+  // 一覧は全サイトの予約を返す（不変条件 1）。番組表の行も site を運ぶので、
+  // 予約状態は site:programId で突き合わせる。
   const serverReservedProgramIds = useMemo(() => {
-    const set = new Set<number>()
+    const set = new Set<string>()
     for (const r of unwrap(reservations.data) ?? []) {
-      if (r.site === site) set.add(r.programId)
+      set.add(programIdentity(r.site, r.programId))
     }
     return set
-  }, [reservations.data, site])
+  }, [reservations.data])
 
   // Undo（取消の打ち消し）がルール由来か手動かで送る intent を変える必要が
-  // あるため（`useReservationActions` の `revive` 参照）、programId から
+  // あるため（`useReservationActions` の `revive` 参照）、site:programId から
   // `reservation.source` を引けるようにしておく。同じ `reservations.data` から
-  // 作るので、`serverReservedProgramIds` と同じ site の絞り込みを揃える。
+  // 作るので、`serverReservedProgramIds` と同じ identity の規則を揃える。
   const reservationSourceByProgramId = useMemo(() => {
-    const map = new Map<number, Reservation['source']>()
+    const map = new Map<string, Reservation['source']>()
     for (const r of unwrap(reservations.data) ?? []) {
-      if (r.site === site) map.set(r.programId, r.source)
+      map.set(programIdentity(r.site, r.programId), r.source)
     }
     return map
-  }, [reservations.data, site])
+  }, [reservations.data])
 
   // 番組が 1 件でもあるサービスだけをチップに出す（issue #17 の S3）。
   // マルチ編成のないサブサービスは番組を持たないので自動的に消える。
@@ -444,14 +470,14 @@ export function ProgramsPage() {
   // 再描画で列が入れ替わらない。
   const gridServices = useMemo(() => {
     const withPrograms = new Set(
-      gridPrograms.map((program) => composeServiceId(program.networkId, program.serviceId)),
+      gridPrograms.map((program) => siteServiceKey(program.site, program.networkId, program.serviceId)),
     )
     return orderServices(
-      allServices.filter((service) =>
-        withPrograms.has(service.id),
+      siteServices.filter((service) =>
+        withPrograms.has(siteServiceKey(service.site, service.networkId, service.serviceId)),
       ),
     )
-  }, [allServices, gridPrograms])
+  }, [gridPrograms, siteServices])
 
   const actions = useReservationActions(serverReservedProgramIds, reservationSourceByProgramId)
 
@@ -599,18 +625,17 @@ export function ProgramsPage() {
           axis={axis}
           programs={gridPrograms}
           services={gridServices}
-          serviceById={serviceById}
+          serviceById={siteServiceByKey}
           overages={overages}
           actions={actions}
           scrollToMs={scrollToMs}
           // グリッドではサービスが列そのもの（構造）なので、リストと違って
           // サービスの取得失敗を「名前が出ないだけ」に落とせない。列が 0 本の
           // グリッドは「番組がない」と見分けがつかないので、取得状態を合わせる
-          isPending={gridQuery.isPending || services.isPending}
-          isError={gridQuery.isError || services.isError}
+          isPending={gridQuery.isPending || servicesPending}
+          isError={gridQuery.isError || servicesError}
           onRetry={() => {
             void gridQuery.refetch()
-            void services.refetch()
           }}
         />
       ) : (
@@ -627,7 +652,7 @@ export function ProgramsPage() {
               <ProgramList
                 ref={programListRef}
                 programs={visiblePrograms}
-                serviceById={serviceById}
+          serviceById={siteServiceByKey}
                 actions={actions}
                 // プレースホルダ表示中（未キャッシュ日へジャンプして新しい日の
                 // データを待っている間）は前の日のデータが出ているので、その
@@ -696,10 +721,9 @@ export function ProgramsPage() {
  * 失敗しても予約自体（intent）は成立しているので、その旨を分けてトーストで示す。
  */
 function useReservationActions(
-  serverReservedIds: ReadonlySet<number>,
-  sourceByProgramId: ReadonlyMap<number, Reservation['source']>,
+  serverReservedIds: ReadonlySet<string>,
+  sourceByProgramId: ReadonlyMap<string, Reservation['source']>,
 ): ReservationActions {
-  const site = useCurrentSite()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const toast = useToast()
@@ -709,9 +733,9 @@ function useReservationActions(
 
   // mutation の isPending は全行で共有されるため、操作中の番組だけを覚えておく。
   // これがないと 1 件予約する間にリスト全行のボタンが無効化される。
-  const [busyProgramIds, setBusyProgramIds] = useState<ReadonlySet<number>>(new Set())
-  // programId → 楽観的に見せたい予約状態（true=予約済み / false=未予約）。
-  const [optimistic, setOptimistic] = useState<ReadonlyMap<number, boolean>>(new Map())
+  const [busyProgramIds, setBusyProgramIds] = useState<ReadonlySet<string>>(new Set())
+  // site:programId → 楽観的に見せたい予約状態（true=予約済み / false=未予約）。
+  const [optimistic, setOptimistic] = useState<ReadonlyMap<string, boolean>>(new Map())
 
   // サーバー値が楽観的な予想に追いついたら、その上書きは要らなくなる。
   // 消し忘れると、後でユーザーが手動で戻した変更まで隠れてしまう。
@@ -739,7 +763,7 @@ function useReservationActions(
     return set
   }, [serverReservedIds, optimistic])
 
-  const setBusy = (programId: number, busy: boolean) => {
+  const setBusy = (programId: string, busy: boolean) => {
     setBusyProgramIds((current) => {
       const next = new Set(current)
       if (busy) next.add(programId)
@@ -748,7 +772,7 @@ function useReservationActions(
     })
   }
 
-  const setOptimisticReserved = (programId: number, reserved: boolean | undefined) => {
+  const setOptimisticReserved = (programId: string, reserved: boolean | undefined) => {
     setOptimistic((current) => {
       const next = new Map(current)
       if (reserved === undefined) next.delete(programId)
@@ -787,64 +811,74 @@ function useReservationActions(
   // 変わってしまう（`internal/api/handler.go` の source 導出、
   // `TestGetReservation_SourceManualDespiteRuleMatch`）。ルール由来の厳密な
   // 逆操作は `DELETE .../intent`（明示的な意見を取り下げ、ルール評価に戻す）。
-  const revive = (programId: number, source: Reservation['source'] | undefined) => {
-    setBusy(programId, true)
-    setOptimisticReserved(programId, true)
+  const revive = (program: SiteProgram, source: Reservation['source'] | undefined) => {
+    const key = programIdentity(program.site, program.programId)
+    setBusy(key, true)
+    setOptimisticReserved(key, true)
     void (async () => {
       try {
         if (source === 'rule') {
-          await deleteIntent.mutateAsync({ site, programId })
+          await deleteIntent.mutateAsync({ site: program.site, programId: program.programId })
         } else {
-          await putIntent.mutateAsync({ site, programId, data: { action: 'record' } })
+          await putIntent.mutateAsync({
+            site: program.site,
+            programId: program.programId,
+            data: { action: 'record' },
+          })
         }
         invalidateReservations()
         toast({ message: '予約を元に戻しました' })
       } catch (err) {
         toast({ message: mutationErrorMessage('予約への復帰に失敗しました', err) })
-        setOptimisticReserved(programId, undefined)
+        setOptimisticReserved(key, undefined)
       } finally {
-        setBusy(programId, false)
+        setBusy(key, false)
       }
     })()
   }
 
   // cancel も同じ理由（トーストの「取消」action・`revive` からの「元に戻す」
   // action、双方が遷移をまたぎうる）で `mutateAsync` + try/catch にする。
-  const cancel = (programId: number) => {
+  const cancel = (program: SiteProgram) => {
+    const key = programIdentity(program.site, program.programId)
     // Undo の分岐に使う。取消の瞬間の source を捕まえておく --- 取消後は
     // サーバー値（`sourceByProgramId` の元になる `reservations.data`）が
     // 変わりうるため、クリック時点の値を閉じ込める。
-    const source = sourceByProgramId.get(programId)
-    setBusy(programId, true)
-    setOptimisticReserved(programId, false)
+    const source = sourceByProgramId.get(key)
+    setBusy(key, true)
+    setOptimisticReserved(key, false)
     void (async () => {
       try {
-        await putIntent.mutateAsync({ site, programId, data: { action: 'skip' } })
+        await putIntent.mutateAsync({
+          site: program.site,
+          programId: program.programId,
+          data: { action: 'skip' },
+        })
         invalidateReservations()
         // 予約のワンタップ + トースト「取消」と対称にする（issue #453）。
         // 誤タップの被害は「録れない」側に出るので、取消にも同じ取り返し
         // 手段を置く。
         toast({
           message: '予約を取消しました',
-          actions: [{ label: '元に戻す', onClick: () => revive(programId, source) }],
+          actions: [{ label: '元に戻す', onClick: () => revive(program, source) }],
         })
       } catch (err) {
         toast({ message: mutationErrorMessage('予約の取消に失敗しました', err), kind: 'error' })
-        setOptimisticReserved(programId, undefined)
+        setOptimisticReserved(key, undefined)
       } finally {
-        setBusy(programId, false)
+        setBusy(key, false)
       }
     })()
   }
 
-  const reservationToastActions = (programId: number) => [
-    { label: '取消', onClick: () => cancel(programId) },
+  const reservationToastActions = (program: SiteProgram) => [
+    { label: '取消', onClick: () => cancel(program) },
     {
       label: '設定',
       onClick: () =>
         void navigate({
           to: '/reservations/$site/$programId',
-          params: { site, programId: String(programId) },
+          params: { site: program.site, programId: String(program.programId) },
         }),
     },
   ]
@@ -855,13 +889,14 @@ function useReservationActions(
   // `undefined` で渡ってくるので、この場合は PATCH 自体を呼ばない ---
   // 呼ぶと「既定のまま」という意味の無い override 行を作ってしまう
   // （不変条件 10）。UI 上は「予約」ボタン 1 回の操作に見せる（issue #132）。
-  const reserve = (program: ProgramListItem, overrides?: ProgramOverridesInput) => {
-    setBusy(program.programId, true)
-    setOptimisticReserved(program.programId, true)
+  const reserve = (program: SiteProgram, overrides?: ProgramOverridesInput) => {
+    const key = programIdentity(program.site, program.programId)
+    setBusy(key, true)
+    setOptimisticReserved(key, true)
     void (async () => {
       try {
         await putIntent.mutateAsync({
-          site,
+          site: program.site,
           programId: program.programId,
           data: { action: 'record' },
         })
@@ -871,7 +906,7 @@ function useReservationActions(
           // 確認ダイアログを挟まない代わりに、直後に取り返せるようにする
           toast({
             message: `予約しました: ${program.name}`,
-            actions: reservationToastActions(program.programId),
+            actions: reservationToastActions(program),
           })
           return
         }
@@ -883,13 +918,13 @@ function useReservationActions(
         // 予約は成立しているので「予約に失敗しました」にはしない。
         try {
           await patchOverrides.mutateAsync({
-            site,
+            site: program.site,
             programId: program.programId,
             data: overrides,
           })
           toast({
             message: `予約しました（エンコード設定つき）: ${program.name}`,
-            actions: reservationToastActions(program.programId),
+            actions: reservationToastActions(program),
           })
         } catch (err) {
           toast({
@@ -901,9 +936,9 @@ function useReservationActions(
         }
       } catch (err) {
         toast({ message: mutationErrorMessage('予約に失敗しました', err), kind: 'error' })
-        setOptimisticReserved(program.programId, undefined)
+        setOptimisticReserved(key, undefined)
       } finally {
-        setBusy(program.programId, false)
+        setBusy(key, false)
       }
     })()
   }
@@ -911,7 +946,7 @@ function useReservationActions(
   return {
     reserve,
     cancel,
-    isBusy: (programId) => busyProgramIds.has(programId),
+    isBusy: (program) => busyProgramIds.has(programIdentity(program.site, program.programId)),
     reservedProgramIds,
   }
 }
@@ -956,9 +991,9 @@ function ProgramGridView({
   scrollToMs,
 }: {
   axis: TimeAxis
-  programs: ProgramListItem[]
-  services: Service[]
-  serviceById: Map<number, Service>
+  programs: SiteProgram[]
+  services: SiteService[]
+  serviceById: Map<string, SiteService>
   /** チューナーが不足している区間。番組ではなく区間として帯に描く（M2-10）。 */
   overages: readonly CapacityOverage[]
   actions: ReservationActions
@@ -969,11 +1004,11 @@ function ProgramGridView({
   /** グリッドの初期スクロール先（issue #233 M6-5）。`ProgramGrid` にそのまま渡す。 */
   scrollToMs?: number
 }) {
-  const [selectedProgramId, setSelectedProgramId] = useState<number | null>(null)
+  const [selectedProgramId, setSelectedProgramId] = useState<string | null>(null)
 
   // 日付やサービスを変えると選択中の番組が消えることがある。id ではなく
   // 実体を引き直して、消えていれば選択も無かったことにする。
-  const selected = programs.find((p) => p.programId === selectedProgramId)
+  const selected = programs.find((p) => programIdentity(p.site, p.programId) === selectedProgramId)
 
   if (isError) return <ErrorState onRetry={onRetry}>番組の取得に失敗しました</ErrorState>
   if (isPending) return <ListSkeleton />
@@ -997,13 +1032,13 @@ function ProgramGridView({
               持つエンコード設定の下書き（issue #132）が前に選んでいた
               番組のまま残ってしまう。key で強制的に作り直す。 */}
           <ProgramRow
-            key={selected.programId}
-            program={selected}
-            serviceName={serviceById.get(composeServiceId(selected.networkId, selected.serviceId))?.name}
-            reserved={actions.reservedProgramIds.has(selected.programId)}
-            pending={actions.isBusy(selected.programId)}
+          key={programIdentity(selected.site, selected.programId)}
+          program={selected}
+            serviceName={serviceById.get(siteServiceKey(selected.site, selected.networkId, selected.serviceId))?.name}
+            reserved={actions.reservedProgramIds.has(programIdentity(selected.site, selected.programId))}
+            pending={actions.isBusy(selected)}
             onReserve={(overrides) => actions.reserve(selected, overrides)}
-            onCancel={() => actions.cancel(selected.programId)}
+            onCancel={() => actions.cancel(selected)}
           />
         </div>
       )}
@@ -1013,8 +1048,8 @@ function ProgramGridView({
           programs={programs}
           axis={axis}
           reservationByProgramId={actions.reservedProgramIds}
-          selectedProgramId={selected?.programId ?? null}
-          onSelect={(program) => setSelectedProgramId(program.programId)}
+          selectedProgramId={selected ? programIdentity(selected.site, selected.programId) : null}
+          onSelect={(program) => setSelectedProgramId(programIdentity(program.site, program.programId))}
           scrollToMs={scrollToMs}
           // 帯はセルより上・ヘッダより下の層に入る。軸を受け取って同じ
           // spanToPx を通すので、帯と番組セルは同じ時刻で必ず同じ位置に来る

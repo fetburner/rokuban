@@ -53,6 +53,18 @@ pnpm e2e                              # 既定で http://localhost:40773
 E2E_URL=http://localhost:40775 pnpm e2e
 ```
 
+### 多 site 番組表（`multi-site.mjs`）
+
+Issue #534 の受け入れ判定。`tokyo` と `osaka` の fixture をブラウザへ配り、
+`/programs?view=grid` に両 site の列と各列の番組セルが描画されることを測る。
+これは jsdom では列幅・横方向の配置を測れないため、実装より先に追加した判定である。
+修正前は列が 1 本で red（`描画された列: 1`）になり、修正後は 2 本で green になる。
+
+```sh
+pnpm build && pnpm preview --port 4173 --strictPort &
+E2E_URL=http://localhost:4173 pnpm e2e:multi-site
+```
+
 ### 参照バッジの導線（`badge-links.mjs`）
 
 容量不足バッジ（予約一覧）から番組表への導線（issue #233 M6-5、`view` の URL 化は
@@ -525,7 +537,7 @@ session window の最大値より大きくなることしかないので、こ�
 変えていないため、しきい値 0.10 に対して十分小さいまま。
 
 **検索条件にサイトチップ（`SiteFields`）を足した（issue #531）後も測り直したが
-値は変わらない（①が 0、②が 0.00066）。** `SiteFields` は `<SiteGate>` が既に
+値は変わらない（①が 0、②が 0.00066）。** `SiteFields` はレジストリの
 解決した `GET /api/sites` のキャッシュを再利用する同期的な節で、かつ
 レジストリと下書きの和集合が 2 つ以上のときしか描画しない --- この
 フィクスチャは単一サイトかつ下書きが空なので DOM に一切増えない。

@@ -374,8 +374,11 @@ describe('予約一覧の容量バッジのリンク化（issue #233 M6-5）', (
     expect(links).toHaveLength(2)
   })
 
-  it('番組表ルートへ、view=grid と不足区間の開始時刻（at）を積んだリンクになる', async () => {
-    renderWith([reservation(1, '交差する番組', 19 * 60, 60)], [overage(19 * 60, 20 * 60)])
+  it('第2 site の番組も落とさず、番組表ルートへ view=grid と at を積む', async () => {
+    renderWith(
+      [reservation(1, '高松の交差する番組', 19 * 60, 60, 'takamatsu')],
+      [overage(19 * 60, 20 * 60, { site: 'takamatsu' })],
+    )
 
     const badge = await screen.findByText('チューナー不足（BS が 1 本）')
     const badgeLink = badge.closest('a')
@@ -424,7 +427,7 @@ describe('予約一覧の行本体リンクの accessible name（issue #233 レ�
  * 多サイト時に一覧が何を出すか（`docs/frontend/shell.md`「サイトの扱い」）。
  *
  * `GET /api/reservations` は全サイトの予約を返し（api は site に束縛されない ---
- * 不変条件 1）、UI はそれを `<SiteGate>` が配る「現在の site」で絞らない。
+ * 不変条件 1）、UI はそれを先頭 site のような画面スコープで絞らない。
  * 上の「default 以外のサイトの予約にも自サイトの不足が出る」は容量バッジの
  * `site` の配線を見るテストで、**一覧そのものが絞られていないこと**は主張の
  * 副産物として通っているに過ぎない（バッジが無い構成に変えると消える）ので、
@@ -435,7 +438,7 @@ describe('予約一覧の行本体リンクの accessible name（issue #233 レ�
  */
 describe('多サイトの予約一覧（issue #218）', () => {
   it('現在サイト以外の予約も一覧に出し、宛先はその予約自身の site になる', async () => {
-    // renderInRouter が SiteContext に流すのは 'default'（test/router.tsx の testSite）
+    // renderInRouter の単一 site fixture は 'default'（test/router.tsx の testSite）
     renderWith(
       [
         reservation(1, '既定サイトの番組', 19 * 60, 60),

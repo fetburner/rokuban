@@ -1,8 +1,9 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
-import type { ProgramListItem, Service } from '@/api/generated'
+import type { ProgramListItem } from '@/api/generated'
 import { ProgramGrid } from '@/components/program-grid'
+import { programIdentity, type SiteProgram, type SiteService } from '@/lib/all-sites-services'
 import { spanToPx, type TimeAxis } from '@/lib/epg-grid'
 import { formatTime } from '@/lib/format'
 
@@ -20,9 +21,10 @@ function at(minutes: number): number {
   return axis.startMs + minutes * 60_000
 }
 
-function service(serviceId: number, name: string): Service {
+function service(serviceId: number, name: string): SiteService {
   return {
     id: 32736 * 100_000 + serviceId,
+    site: 'default',
     networkId: 32736,
     serviceId,
     name,
@@ -40,8 +42,9 @@ function program(
   startMinutes: number,
   durationMinutes: number,
   overrides: Partial<ProgramListItem> = {},
-): ProgramListItem {
+): SiteProgram {
   return {
+    site: 'default',
     programId,
     networkId: 32736,
     serviceId,
@@ -59,19 +62,19 @@ function program(
 
 function renderGrid({
   services = [service(1024, 'NHK総合')],
-  programs = [] as ProgramListItem[],
-  reservations = new Set<number>(),
+  programs = [] as SiteProgram[],
+  reservations = new Set<string>(),
   now = at(19 * 60),
-  selectedProgramId = null as number | null,
+  selectedProgramId = null as string | null,
   onSelect = vi.fn(),
   overlay,
 }: {
-  services?: Service[]
-  programs?: ProgramListItem[]
-  reservations?: Set<number>
+  services?: SiteService[]
+  programs?: SiteProgram[]
+  reservations?: Set<string>
   now?: number
-  selectedProgramId?: number | null
-  onSelect?: (program: ProgramListItem) => void
+  selectedProgramId?: string | null
+  onSelect?: (program: SiteProgram) => void
   overlay?: (axis: TimeAxis) => React.ReactNode
 } = {}) {
   const view = render(
@@ -229,7 +232,7 @@ describe('ProgramGrid', () => {
   it('予約済みの番組にだけ予約のマークが出る', () => {
     renderGrid({
       programs: [program(1, 1024, 19 * 60, 60), program(2, 1024, 20 * 60, 60)],
-      reservations: new Set([1]),
+      reservations: new Set([programIdentity('default', 1)]),
     })
 
     expect(cell(1)).toHaveAttribute('data-reserved', 'true')
@@ -245,7 +248,7 @@ describe('ProgramGrid', () => {
   it('5 分の予約済み番組でも見える「予約」が残る', () => {
     renderGrid({
       programs: [program(1, 1024, 19 * 60, 5)],
-      reservations: new Set([1]),
+      reservations: new Set([programIdentity('default', 1)]),
     })
 
     // セルの高さに下限は無い（5 分 = 10px）。overflow で本文が切れても
@@ -276,7 +279,7 @@ describe('ProgramGrid', () => {
   it('選択中の番組は aria-pressed で示す', () => {
     renderGrid({
       programs: [program(1, 1024, 19 * 60, 60), program(2, 1024, 20 * 60, 60)],
-      selectedProgramId: 2,
+      selectedProgramId: programIdentity('default', 2),
     })
 
     expect(cell(1)).toHaveAttribute('aria-pressed', 'false')

@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
-import type { ProgramListItem, Service } from '@/api/generated'
+import {
+  programIdentity,
+  siteServiceKey,
+  type SiteProgram,
+  type SiteService,
+} from '@/lib/all-sites-services'
 import {
   axisHeightPx,
   epgColumnWidthPx,
@@ -15,7 +20,6 @@ import {
 } from '@/lib/epg-grid'
 import { formatTime } from '@/lib/format'
 import { genreLabel, genreTint } from '@/lib/genre'
-import { composeServiceId } from '@/lib/service-id'
 import { cn } from '@/lib/utils'
 
 /** 時間軸（左端の目盛り列）の幅。 */
@@ -128,12 +132,12 @@ export function ProgramGrid({
   gutterOverlay,
 }: {
   /** 列。渡された順に左から並べる（並び順は lib/epg-grid.ts の orderServices）。 */
-  services: Service[]
-  programs: ProgramListItem[]
+  services: SiteService[]
+  programs: SiteProgram[]
   axis: TimeAxis
-  reservationByProgramId: Set<number>
-  selectedProgramId: number | null
-  onSelect: (program: ProgramListItem) => void
+  reservationByProgramId: ReadonlySet<string>
+  selectedProgramId: string | null
+  onSelect: (program: SiteProgram) => void
   /** 現在時刻。省略すると内部の時計を使う（テストから固定するための口）。 */
   now?: number
   /**
@@ -254,7 +258,7 @@ export function ProgramGrid({
           >
             {visibleServices.map((service, index) => (
               <div
-                key={`${service.networkId}-${service.serviceId}`}
+                key={siteServiceKey(service.site, service.networkId, service.serviceId)}
                 className="absolute top-0 flex h-full items-center gap-1.5 overflow-hidden border-r border-border px-2"
                 style={{
                   left: (columnRange.start + index) * columnWidthPx,
@@ -330,11 +334,11 @@ export function ProgramGrid({
 
             {visibleServices.map((service, index) => (
               <ServiceColumn
-                key={`${service.networkId}-${service.serviceId}`}
+                key={siteServiceKey(service.site, service.networkId, service.serviceId)}
                 service={service}
                 leftPx={(columnRange.start + index) * columnWidthPx}
                 widthPx={columnWidthPx}
-                placed={placedByService.get(composeServiceId(service.networkId, service.serviceId)) ?? []}
+                placed={placedByService.get(siteServiceKey(service.site, service.networkId, service.serviceId)) ?? []}
                 axis={axis}
                 timeWindow={timeWindow}
                 reservationByProgramId={reservationByProgramId}
@@ -377,21 +381,22 @@ function ServiceColumn({
   currentMs,
   onSelect,
 }: {
-  service: Service
+  service: SiteService
   leftPx: number
   widthPx: number
-  placed: PlacedProgram<ProgramListItem>[]
+  placed: PlacedProgram<SiteProgram>[]
   axis: TimeAxis
   timeWindow: { startMs: number; endMs: number }
-  reservationByProgramId: Set<number>
-  selectedProgramId: number | null
+  reservationByProgramId: ReadonlySet<string>
+  selectedProgramId: string | null
   currentMs: number
-  onSelect: (program: ProgramListItem) => void
+  onSelect: (program: SiteProgram) => void
 }) {
   return (
     <div
       data-testid="program-grid-column"
       data-service-id={service.serviceId}
+      data-site={service.site}
       className="absolute top-0 border-r border-border"
       style={{ left: leftPx, width: widthPx, height: '100%' }}
     >
@@ -399,11 +404,11 @@ function ServiceColumn({
         .filter((p) => p.endMs > timeWindow.startMs && p.startMs < timeWindow.endMs)
         .map((p) => (
           <ProgramCell
-            key={p.program.programId}
+            key={programIdentity(p.program.site, p.program.programId)}
             placed={p}
             axis={axis}
-            reserved={reservationByProgramId.has(p.program.programId)}
-            selected={selectedProgramId === p.program.programId}
+            reserved={reservationByProgramId.has(programIdentity(p.program.site, p.program.programId))}
+            selected={selectedProgramId === programIdentity(p.program.site, p.program.programId)}
             currentMs={currentMs}
             onSelect={onSelect}
           />
@@ -420,12 +425,12 @@ function ProgramCell({
   currentMs,
   onSelect,
 }: {
-  placed: PlacedProgram<ProgramListItem>
+  placed: PlacedProgram<SiteProgram>
   axis: TimeAxis
   reserved: boolean
   selected: boolean
   currentMs: number
-  onSelect: (program: ProgramListItem) => void
+  onSelect: (program: SiteProgram) => void
 }) {
   const rect = spanToPx(axis, placed.startMs, placed.endMs)
   if (!rect) return null
@@ -452,6 +457,7 @@ function ProgramCell({
       type="button"
       data-testid="program-grid-cell"
       data-program-id={program.programId}
+      data-site={program.site}
       data-reserved={reserved ? 'true' : undefined}
       data-ended={ended ? 'true' : undefined}
       aria-pressed={selected}

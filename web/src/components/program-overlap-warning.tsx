@@ -18,10 +18,9 @@ import { formatTime } from '@/lib/format'
  * 想定（`ProgramRow` / `ReservationDetailPage` から呼ぶ）。0 件のときは何も
  * 描画しない（`CircuitBreakerBanner` と同じ「余計な枠を出さない」流儀）。
  *
- * `site` は呼び出し側に必須で渡させる（内部で `useCurrentSite()` を引かない）。
+ * `site` は呼び出し側に必須で渡させる。
  * `ReservationDetailPage`（`/reservations/$site/$programId`）は URL の `$site`
- * が対象を決める資源同定であり、UI が対象とする「現在の site」（`SiteGate` が
- * 配る値）と一致するとは限らない --- 一致させると、対象サイト以外の予約詳細を
+ * が対象を決める資源同定であり、画面全体の site と一致するとは限らない --- 一致させると、対象サイト以外の予約詳細を
  * 開いたときに常に別サイトの重なりを問い合わせてしまう（issue #184 M4-12）。
  */
 export function ProgramOverlapWarning({

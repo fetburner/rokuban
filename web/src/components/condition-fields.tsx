@@ -94,7 +94,7 @@ type FieldsProps = {
  * 実測値と同じ桁に収まっている）。issue #531 で `SiteFields`（サイトチップ）を
  * `ServiceFields` の手前に足した後も `web/e2e/cls.mjs`（390x844 / 1280x900）を
  * 測り直したが値は変わらない --- `SiteFields` の表示可否は `useAllSitesServices()`
- * が返す `sites`（`<SiteGate>` と同じクエリキーのキャッシュを再利用するだけで
+ * が返す `sites`（サイトレジストリのクエリキャッシュ）
  * 追加のリクエストは発生しない）と下書きが持つ site の和集合から**同期的**に
  * 決まり、その和集合が 2 つ以上のときしか描画しない（`cls.mjs` のフィクスチャは
  * 単一サイトかつ下書きが空なので DOM に一切増えない）。
@@ -332,7 +332,7 @@ function TextMatchFields({ draft, onChange, disabled }: FieldsProps) {
  * SiteFields はサイト軸の入力（issue #531）。
  *
  * **`sites` は `GET /api/recordings` の `?site=` と同じ絞り込み軸**（軸内は OR、
- * 空 = 全サイト）。以前はこの次元がフォームに無く、検索は常に `useCurrentSite()`
+ * 空 = 全サイト）。以前はこの次元がフォームに無く、検索は常に先頭 site 固定で
  * （先頭サイト）だけを対象にし、保存されるルールの `sites` は UI から編集
  * できなかった。
  *
