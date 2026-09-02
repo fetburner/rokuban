@@ -444,28 +444,29 @@ func TestRulerPassWorker_HasGenerousTimeout(t *testing.T) {
 }
 
 // BoundSites を指定すると ruler_pass が定期ジョブとして投入され、登録済み
-// ワーカーが ruler キューで拾うこと（配線の確認）。ruler_pass 完了時に連鎖投入
-// される reconcile_pass ヒント（ruler_pass.go の Work 末尾）が実際に正常完了
-// するところまで確認する。
+// ワーカーが ruler キューで拾うこと（配線の確認）。BoundSites は
+// epg_sync/tuner_sync/ruler_pass/reconcile_pass/record_sweep の 5 種を
+// まとめて登録する（RunOnStart で全部 1 回走る）ので、mirakc スタブ
+// （newScheduleStub、reconcile_pass_test.go）を与えて reconcile_pass だけは
+// 実際に正常完了することも確認する。epg_sync/tuner_sync/record_sweep は
+// このスタブが `/api/recording/schedules` しか実装していないため、依然として
+// 失敗する（以前は Deps.MirakcClients が空で verifySite の「bound sites に
+// 無い」エラーだったが、スタブを与えた今は HTTP 404 に変わっただけで、
+// 3 種とも成功はしない。JobCompleted しか購読していないのでこの失敗は
+// テストに現れない）。
 //
-// mirakc スタブを与えるのは reconcile_pass_test.go の先例（246-249 行目の
-// コメント）に揃えるため: ReconcilePassWorker.MirakcClients が空のままだと
-// verifySite が「bound sites に無い」エラーで reconcile_pass を fail-fast
-// させ続け、二度と JobCompleted を出さない。
-//
-// # issue #553: 下の 2 つ目の待ち受けが oracle
-//
-// issue #532 で Deps.MirakcClient（単一）が Deps.MirakcClients（map）に
-// なる前は、この Deps（mirakc 未設定）の組み合わせが reconciler.New に
-// nil の *mirakc.Client をそのまま渡し、reconcile_pass ヒントの実行が
-// nil pointer dereference で panic していた（issue #553 本文の call chain）。
-// #532 が verifySite をマップ照合に変えた副作用で panic 自体は消えている
-// （nil map への読み取りは安全 --- go test -count=10 で panic recovery ログ
-// 0 件を確認済み）。だが「ヒントが正常完了する」保証はまだ無かった: スタブを
-// 与えずにこの map を空のままにすると、verifySite のエラーで無限に再試行し
-// 続け、下の reconcile_pass 待ちが 20 秒でタイムアウトして落ちる（このリポの
-// スタブ無し版で実際に確認した失敗: "timed out waiting for the periodic
-// reconcile_pass job"）。panic ログの検出ではなく、この完了そのものを固定する。
+// **下の 2 つ目の待ち受けは「ruler_pass 完了時に連鎖投入される reconcile_pass
+// ヒント」を待っているとは限らない。** BoundSites + PeriodicJobs は
+// RunOnStart 付きの reconcile_pass も別途 site ごとに 1 本登録する
+// （buildRiverConfig、defaultReconcilePassInterval）。ReconcilePassArgs の
+// UniqueOpts{ByArgs, ByState: pendingJobStates} により、この定期ジョブと
+// ruler_pass 完了時のヒントは同じ (site) の重複としてほぼ必ず合流するため、
+// kind だけで待っても両者を区別できない。ここで実際に検証できているのは
+// 「BoundSites=[default] のこの構成で、何らかの reconcile_pass が正常完了
+// する」ことだけ。**連鎖されたヒント自体が実行されて成功する**という、より
+// 狭い主張は TestRulerPassWorker_EnqueuesReconcilePassHint
+// （reconcile_pass_test.go。PeriodicJobs を登録しないので合流する定期ジョブが
+// 存在せず、区別できる）が固定している。
 func TestRulerPassPeriodicJob(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
@@ -514,15 +515,16 @@ func TestRulerPassPeriodicJob(t *testing.T) {
 		t.Errorf("job args site = %q, want %q", rulerArgs.Site, "default")
 	}
 
-	// oracle: reconcile_pass ヒントが正常完了しないとここが 20 秒でタイムアウト
-	// する（上のコメント参照）。
-	hintEvent := waitPeriodicJobEvent(t, subscribeCh, "reconcile_pass")
-	var hintArgs ReconcilePassArgs
-	if err := json.Unmarshal(hintEvent.Job.EncodedArgs, &hintArgs); err != nil {
-		t.Fatalf("unmarshalling reconcile_pass hint args: %v", err)
+	// この構成（BoundSites=[default] + mirakc スタブ）で reconcile_pass が実際に
+	// 正常完了することの確認（どちらが完了したかは上のコメントの通り区別しない）。
+	// 正常完了しないとここが 20 秒でタイムアウトする。
+	reconcileEvent := waitPeriodicJobEvent(t, subscribeCh, "reconcile_pass")
+	var reconcileArgs ReconcilePassArgs
+	if err := json.Unmarshal(reconcileEvent.Job.EncodedArgs, &reconcileArgs); err != nil {
+		t.Fatalf("unmarshalling reconcile_pass args: %v", err)
 	}
-	if hintArgs.Site != "default" {
-		t.Errorf("reconcile_pass hint job args site = %q, want %q", hintArgs.Site, "default")
+	if reconcileArgs.Site != "default" {
+		t.Errorf("reconcile_pass job args site = %q, want %q", reconcileArgs.Site, "default")
 	}
 }
 

@@ -246,9 +246,12 @@ func TestRulerPassWorker_EnqueuesReconcilePassHint(t *testing.T) {
 	}
 
 	// ヒントとして投入された reconcile_pass ジョブは同じクライアントが reconciler
-	// キューも引くため実行される。ReconcilePassWorker は MirakcClient に依存するので、
+	// キューも引くため実行される。ReconcilePassWorker は MirakcClients に依存するので、
 	// ruler 単体のテストであってもここでは mirakc スタブを与えておく必要がある
-	// （与えないと reconcile_pass の実行が nil pointer で panic する）。
+	// （与えないと verifySite が bound sites に無いエラーで fail-fast し続け、
+	// 下の 2 つ目の待ち受けが reconcile_pass の JobCompleted を一生受け取れない。
+	// #532 より前は MirakcClient が nil のまま reconciler.New に渡り nil pointer
+	// panic していたが、#532 の verifySite マップ化以降はこの経路では panic しない）。
 	stub := newScheduleStub()
 	srv := httptest.NewServer(stub)
 	defer srv.Close()
@@ -295,6 +298,26 @@ func TestRulerPassWorker_EnqueuesReconcilePassHint(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("reconcile_pass job count after ruler_pass completion = %d, want 1 "+
 			"(ruler_pass 完了時にヒントとして投入されるはず)", count)
+	}
+
+	// 上の count は「行が挿入された」ことしか見ていない。ここではヒント自体が
+	// 実際に正常完了する（issue #553）ところまで確認する。この ClientConfig{}
+	// は PeriodicJobs/BoundSites を登録しないため、存在しうる reconcile_pass は
+	// このヒント 1 つだけ --- worker_test.go の TestRulerPassPeriodicJob と違い、
+	// 定期ジョブの reconcile_pass と合流して区別できなくなる余地が無い。
+	//
+	// oracle: ヒントの投入（riverClient.Insert）を止めると（ruler_pass.go の
+	// Work 末尾）、count のチェックで 0 != 1 として落ちる。ヒントは投入される
+	// が実行が失敗する場合（例えば MirakcClients を外す）は、上の select が
+	// 拾わない限り reconcile_pass の JobCompleted が来ず、下の待ち受けが
+	// 20 秒でタイムアウトして落ちる。
+	hintEvent := waitPeriodicJobEvent(t, subscribeCh, "reconcile_pass")
+	var hintArgs ReconcilePassArgs
+	if err := json.Unmarshal(hintEvent.Job.EncodedArgs, &hintArgs); err != nil {
+		t.Fatalf("unmarshalling reconcile_pass hint args: %v", err)
+	}
+	if hintArgs.Site != testSite {
+		t.Errorf("reconcile_pass hint job args site = %q, want %q", hintArgs.Site, testSite)
 	}
 }
 
