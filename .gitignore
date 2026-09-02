@@ -18,6 +18,11 @@
 # ルートの docs-lint 用ツール（package.json / package-lock.json は追跡する）。
 /node_modules/
 
+# conformance テストの作業ディレクトリ（フィクスチャバイナリ・mirakc 設定・録画先）。
+# t.TempDir() の既定の置き場所（os.TempDir() 配下）は Docker Desktop の bind mount
+# 共有パスに入らないことがあるため、リポジトリ配下に作る（docs/runbook/testing.md）。
+/internal/mirakc/conformance/.tmp/
+
 # Claude Code のローカル状態。settings.local.json は各自の許可設定、
 # worktrees はエージェント実行用の一時ワークツリー（残ると数百 MB になり、
 # grep や `git add -A` を汚す）。

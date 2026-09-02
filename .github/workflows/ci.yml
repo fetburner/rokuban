@@ -70,6 +70,21 @@ jobs:
       # POSTGRES_USER はこのインスタンスの initdb 時に作られる初期ロールなので CREATE DATABASE 権限を持つ。
       - run: go test ./... -timeout 5m
 
+  # rokuban が mirakc に期待する挙動（`internal/mirakc.Client` が叩く API の形）を、
+  # 実物の mirakc コンテナに対して機械判定する（internal/mirakc/conformance）。
+  # kind の受け入れハーネス（deploy/k8s/e2e）とは別 --- あちらは KEDA / ロール分割の
+  # 判定が目的で mirakc モックを使う。こちらは 1 コンテナ・数十秒で軽いので CI で回す
+  # （両方持つ理由は deploy/k8s/e2e/README.md）。Postgres は要らないので独立した job にする。
+  mirakc-conformance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go test -tags conformance ./internal/mirakc/conformance/... -timeout 5m -v
+
   # 生成物（sqlc/oapi-codegen/orval）が openapi.yaml / マイグレーションからの再生成と一致するかを
   # 検証する。生成物はコミット済みなので他 job（build/test）は再生成漏れがあっても普通に緑になる。
   # ツール版は CLAUDE.md §ビルド・テストに固定した版に合わせる（版がずれると偽陽性で赤くなる）。

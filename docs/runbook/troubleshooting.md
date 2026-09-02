@@ -228,7 +228,7 @@ curl -s http://localhost:40773/api/reservations | \
 
 ### `overrides.contentPath` を明示指定したのに既存 schedule のパスが変わらない・毎パス再作成される
 
-`overrides.contentPath` の反映（[reconciler.md](../recording/reconciler.md) §3.2「予約オプションの差分反映」）は、mirakc の挙動に依存する。mirakc が `GET /api/recording/schedules` で `options.contentPath` を POST した値のまま返す（正規化しない）ことが前提である。この依存は**未検証**（テストのモックは POST した値をそのまま返すため、この前提が破れていることをテストでは検出できない）。
+`overrides.contentPath` の反映（[reconciler.md](../recording/reconciler.md) §3.2「予約オプションの差分反映」）は、mirakc の挙動に依存する。mirakc が `GET /api/recording/schedules` で `options.contentPath` を POST した値のまま返す（正規化しない）ことが前提である。この依存は `internal/mirakc/conformance` の `TestConformance/ContentPathRoundTrip` が mirakc 4.0.0-dev.0 相当に対して判定している。本番の mirakc がこの pin と異なる版なら、この前提はその版で改めて確認する（下記の症状はその手がかり）。
 
 ```sh
 curl -s http://localhost:9090/api/v1/query --data-urlencode \

@@ -49,7 +49,7 @@ override の削除（reset）は既存 schedule に反映しない。戻り先�
 
 再作成は `state == "scheduled"` の allowlist の下でだけ起きるので、録画開始後の変更は反映されない（未反映は `rokuban_reconcile_pending_diff{action="update_deferred"}`）。ファイルが 1 バイトも書かれていない schedule だけを張り替えるので、宛先変更で原本が取り残される経路は無い。
 
-比較は mirakc が `options.contentPath` をそのまま返すことに依存する（**未検証**。実 mirakc での確認は [runbook/troubleshooting.md](../runbook/troubleshooting.md) を参照）。正規化して返す実装だと毎パス再作成になるので、`rokuban_reconcile_pending_diff{action="update"}` がゼロに戻らないことと `reason=content_path` の再作成ログの反復で観測する。
+比較は mirakc が `options.contentPath` をそのまま返す（正規化しない）ことに依存する。この前提は `internal/mirakc/conformance` の `TestConformance/ContentPathRoundTrip` が mirakc 4.0.0-dev.0 相当に対して判定している。正規化して返す実装だと毎パス再作成になるので、`rokuban_reconcile_pending_diff{action="update"}` がゼロに戻らないことと `reason=content_path` の再作成ログの反復で観測する。
 
 **再作成の POST は observed の `contentPath` を引き継ぐ**（テンプレートから再生成しない）。「差分と見なさない」だけでは priority 変更で再作成するときに何を入れるかが決まらない。再生成すると EPG の番組名が変わっていれば別のパスになり、**priority を変えただけでファイル名が変わる**という副作用になる。引き継げば「初回生成値に固定し以後変更しない」が文字どおり保たれる。引き継ぐ値は自分が書いたものの往復だが、mirakc 側を直接触られていた場合の保険として `SanitizeContentPath` は通す。明示 override があるときだけそれが observed への引き継ぎに勝ち、その場合もテンプレート再生成には落ちない（決定は `explicitContentPath` の 1 箇所に集約してある）。
 
