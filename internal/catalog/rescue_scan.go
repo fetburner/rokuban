@@ -78,12 +78,6 @@ func rescueStorage(ctx context.Context, pool *pgxpool.Pool, mediaDir, site strin
 		}
 
 		fileSite, crossSite, unknownSite := classifySiteForRescuedFile(relPath, site, registrySites)
-		switch {
-		case unknownSite:
-			unknownSiteCounts[fileSite]++
-		case crossSite:
-			crossSiteCounts[fileSite]++
-		}
 
 		_, err = inplace.Register(ctx, pool, mediaDir, inplace.Input{
 			Recording: inplace.Recording{
@@ -109,6 +103,15 @@ func rescueStorage(ctx context.Context, pool *pgxpool.Pool, mediaDir, site strin
 		}
 		result.Recordings++
 		result.MediaAssets++
+		// 登録が成功した後でだけ数える --- 途中で失敗したファイルまで
+		// summary の count に含めると、実際に復元できた件数と log の
+		// count が食い違う。
+		switch {
+		case unknownSite:
+			unknownSiteCounts[fileSite]++
+		case crossSite:
+			crossSiteCounts[fileSite]++
+		}
 		return nil
 	})
 
