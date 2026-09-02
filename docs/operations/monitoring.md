@@ -44,7 +44,7 @@ HTTP リスナーは常に 1 本立てる。OpenAPI には載せない（text fo
 | `rokuban_reconcile_schedules_total{action}` | Counter | 実際に差分を消した量 |
 | `rokuban_reconcile_schedule_lost_total` | Counter | 再作成で DELETE 成功 → POST 失敗（下記 reconcile。**0 以外はアラート対象**） |
 | `rokuban_reconcile_circuit_breaker_trips_total` | Counter | 全損シグネチャでの発動（件数の閾値ではない。下記「経緯と失敗事例」） |
-| `rokuban_circuit_breaker_tripped{site,breaker}` | Gauge | **いま止まっているか**（1 = 発動中）。ラッチなのでアラートはこちら |
+| `rokuban_circuit_breaker_tripped{site,breaker}` | Gauge | **いま止まっているか**（1 = 発動中）。ラッチなのでアラートはこちら。`breaker="delete_reconcile"` は site が空文字列 |
 | `rokuban_reconcile_last_pass_timestamp_seconds` | Gauge | 最後に完走したパスの時刻 |
 | `rokuban_reconcile_start_delayed{site}` | Gauge | **開始時刻を過ぎたのに録画が始まっていない予約数**。収束すればゼロに戻る |
 | `rokuban_ruler_pass_duration_seconds` | Histogram | ruler 1 パスの所要時間（下記 ruler） |

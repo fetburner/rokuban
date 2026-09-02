@@ -156,6 +156,15 @@ func (DeleteReconcileArgs) InsertOpts() river.InsertOpts {
 // 別の概念なので、混同しないよう使うのをやめた。site を持たないブレーカーは
 // site 無しの `POST /api/breakers/{name}/resume`
 // （internal/api/breakers.go の ResumeSitelessCircuitBreaker）で再開する。
+//
+// 既存の `(site='default', name='delete_reconcile')` 行は寄せていない ---
+// この時点で運用中の DB がまだ無い（マイグレーションはベースラインへの
+// squash 済みで、#52 の EPGStation 並走もまだ始まっていない）ため、移行対象の
+// 実データが存在しない。**この行が万一残っていれば手で DELETE すること**:
+// worker は site 列が空文字列の行しか見ないので発動中と気付かず、人間の確認
+// を強制するラッチを飛ばして bulk unlink を再開してしまう。しかもその行は
+// どちらの resume エンドポイントからも解除できない
+// （site スコープは IsSiteless で 400、site 無しは対象行が無く 404）。
 type DeleteReconcileWorker struct {
 	river.WorkerDefaults[DeleteReconcileArgs]
 	Pool     *pgxpool.Pool

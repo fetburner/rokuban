@@ -1279,20 +1279,10 @@ paths:
       operationId: resumeSitelessCircuitBreaker
       summary: Resume a tripped circuit breaker that has no site (manual acknowledgement)
       description: |
-        site を持たないブレーカー専用の再開エンドポイント（issue #450）。
-
-        `delete_reconcile`（削除 reconcile。docs/storage.md §7）はどの束縛 site
-        の worker が拾っても同じ 1 つの懸念を守るジョブなので、
-        `circuit_breakers` 行の site 列は実サイト名ではなく空文字列を持つ
-        （`internal/breaker.IsSiteless`）。`config.mirakcs` レジストリに
-        `default` という名前の site が無い構成（東京・高松の 2 site 化以降は
-        これが既定）では、この行に
-        `POST /api/sites/{site}/breakers/{name}/resume` から到達できなかった
-        ---「`default` はレジストリに無いので 400」「登録済みの site を渡しても
-        その site には行が無いので 404」のどちらの経路でも解除できず、
-        `GET /api/breakers` には見えているのに手が届かない状態になっていた。
-        site をパスに持たない別の資源として公開することでこの穴を塞ぐ
-        （不変条件 11「将来への先払いは高い方（API の資源同定）から」）。
+        site を持たないブレーカー専用の再開エンドポイント
+        （`internal/breaker.IsSiteless`。今のところ `delete_reconcile` のみ）。
+        理由と経緯は `internal/worker/delete_reconcile.go` の
+        `DeleteReconcileWorker` doc コメント参照（issue #450）。
 
         site を持つ名前（`ruler_deletes` / `reconcile_total_loss`）を渡すと
         400 --- `POST /api/sites/{site}/breakers/{name}/resume` を使う。

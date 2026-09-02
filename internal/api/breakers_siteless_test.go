@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/fetburner/rokuban/internal/api"
@@ -71,15 +72,24 @@ VALUES ('', 'delete_reconcile', 150, 100, '{"total":150}'::jsonb)`); err != nil 
 		t.Fatalf("GET /api/breakers does not contain delete_reconcile: %+v", listed)
 	}
 
-	// (1) レジストリに "default" という site は無いので 400。
+	// (1) レジストリに "default" という site は無いので 400。ResumeCircuitBreaker
+	// は breaker.IsSiteless を knownSite より先に検査するので、site が
+	// レジストリに無くても（運用者が最も打ちがちな旧コマンドがこの形）
+	// 「unknown site」ではなく新ルートへの案内が返る（レビュー指摘: この順序を
+	// 主張するアサーション）。
 	resp1, err := http.Post(srv.URL+"/api/sites/default/breakers/delete_reconcile/resume", "application/json", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = resp1.Body.Close() }()
+	body1, _ := io.ReadAll(resp1.Body)
 	if resp1.StatusCode != http.StatusBadRequest {
-		body, _ := io.ReadAll(resp1.Body)
-		t.Errorf("POST .../sites/default/breakers/delete_reconcile/resume status = %d, want 400 (body=%s)", resp1.StatusCode, body)
+		t.Errorf("POST .../sites/default/breakers/delete_reconcile/resume status = %d, want 400 (body=%s)", resp1.StatusCode, body1)
+	}
+	if !strings.Contains(string(body1), "/api/breakers/delete_reconcile/resume") {
+		t.Errorf("body = %s, want guidance toward POST /api/breakers/delete_reconcile/resume "+
+			"(IsSiteless must be checked before knownSite, or an unregistered-site typo of the old "+
+			"command gives only \"unknown site\" with no pointer to the new route)", body1)
 	}
 
 	// (2) 登録済みの site (tokyo) を渡しても、delete_reconcile は site を
@@ -147,8 +157,14 @@ func TestResumeSitelessCircuitBreaker_400WhenNameHasSite(t *testing.T) {
 }
 
 // TestResumeSitelessCircuitBreaker_400WhenUnknownName は新ルートに未知の名前を
-// 渡すと 400 になることを確認する（タイポを黙って無視しない。既存の
-// TestResumeCircuitBreaker_400WhenUnknownName と対になる）。
+// 渡すと 400 になり、応答が「知らない名前」だと分かることを確認する
+// （タイポを黙って無視しない。既存の TestResumeCircuitBreaker_400WhenUnknownName
+// と対になる）。
+//
+// 変異確認: unknown-name の検査を丸ごと削っても、未知の名前は breaker.IsSiteless
+// でもないので次の分類チェックが 400 を返し、ステータスだけを見るアサーションは
+// 通り続ける（レビュー指摘）。このテストがその検査の唯一の貢献であるメッセージ
+// を見るので、検査を削るとメッセージが分類チェックの文言に変わり落ちる。
 func TestResumeSitelessCircuitBreaker_400WhenUnknownName(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	router := api.NewRouter(api.RouterConfig{Pool: pool})
@@ -160,9 +176,38 @@ func TestResumeSitelessCircuitBreaker_400WhenUnknownName(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusBadRequest {
-		body, _ := io.ReadAll(resp.Body)
 		t.Errorf("status = %d, want 400 (body=%s)", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "unknown circuit breaker") {
+		t.Errorf("body = %s, want it to mention \"unknown circuit breaker\"", body)
+	}
+}
+
+// TestResumeSitelessCircuitBreaker_404WhenNotTripped は発動していない
+// site 非依存ブレーカーへの resume が 404 になることを確認する（罠: 0 行なら
+// 404 にする実装を残す。breakers_test.go の
+// TestResumeCircuitBreaker_404WhenNotTripped と対になる）。
+//
+// 変異確認: ResumeSitelessCircuitBreaker の `if n == 0` を `if n < 0` に
+// 変えると（削除件数は execrows なので常に 0 以上）このガードが絶対に発火
+// しなくなり、0 行 DELETE でも 204 を返してしまう。このテストはその変異で
+// 落ちる（204 != 404）。
+func TestResumeSitelessCircuitBreaker_404WhenNotTripped(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	router := api.NewRouter(api.RouterConfig{Pool: pool})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/api/breakers/delete_reconcile/resume", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNotFound {
+		body, _ := io.ReadAll(resp.Body)
+		t.Errorf("status = %d, want 404 (body=%s)", resp.StatusCode, body)
 	}
 }
 
