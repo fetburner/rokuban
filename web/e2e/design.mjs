@@ -951,13 +951,32 @@ for (const spec of boundedListScreens) {
 
   const title = content.getByText(spec.title, { exact: true }).first()
   const secondary = content.getByText(spec.secondary, { exact: true }).first()
-  const [titleSize, secondarySize] = await Promise.all([
-    title.evaluate((el) => getComputedStyle(el).fontSize).catch(() => null),
-    secondary.evaluate((el) => getComputedStyle(el).fontSize).catch(() => null),
+  // 要素が無い（セレクタが腐った・描画されない）場合を、`.catch(() => null)` で
+  // フォントサイズの読み取り失敗に化けさせない。found を待ちの成否そのもので
+  // 分岐し、見つからないときは found=false の NG を出して終える（issue #550。
+  // 直す前は evaluate() が catch(() => null) を返し、`null !== '16px'` が真になって
+  // 「題名が text-base でない（null）」というスタイル回帰と同じ文言の NG になっていた）。
+  const [titleFound, secondaryFound] = await Promise.all([
+    title
+      .waitFor({ timeout: 5000 })
+      .then(() => true)
+      .catch(() => false),
+    secondary
+      .waitFor({ timeout: 5000 })
+      .then(() => true)
+      .catch(() => false),
   ])
+  if (!titleFound) ng.push(`${spec.screen}: 一覧の題名（${spec.title}）が見つからない`)
+  if (!secondaryFound) ng.push(`${spec.screen}: 一覧の副情報（${spec.secondary}）が見つからない`)
+  const titleSize = titleFound ? await title.evaluate((el) => getComputedStyle(el).fontSize) : null
+  const secondarySize = secondaryFound
+    ? await secondary.evaluate((el) => getComputedStyle(el).fontSize)
+    : null
   log(`  ${spec.screen}: 題名=${titleSize ?? '未取得'}, 副情報=${secondarySize ?? '未取得'}`)
-  if (titleSize !== '16px') ng.push(`${spec.screen}: 一覧の題名が text-base でない（${titleSize}）`)
-  if (secondarySize !== '14px') {
+  if (titleFound && titleSize !== '16px') {
+    ng.push(`${spec.screen}: 一覧の題名が text-base でない（${titleSize}）`)
+  }
+  if (secondaryFound && secondarySize !== '14px') {
     ng.push(`${spec.screen}: 一覧の副情報が text-sm でない（${secondarySize}）`)
   }
   await context.close()
@@ -1351,6 +1370,9 @@ log("\n=== ①'''' search: 容量ノートの安定性（窓の点滅・退化�
     )
   }
 
+  // 直前の `waitFor`（消失/未出現）と点滅チェックが既に区別できる NG を
+  // 出しているうえ、ここが null なら文言に「異なる: null」とそのまま出るので
+  // 実際の食い違いと混ざらない。`.catch(() => null)` で飲んでよい。
   const finalText = await noteLocator.textContent().catch(() => null)
   log(`  容量ノートの最終文言: ${finalText}`)
   if (finalText === null || !finalText.includes('1 件')) {
@@ -2136,6 +2158,9 @@ for (const theme of themes) {
     })
     const gap = await computedOf(skeleton, 'background-color')
     const lit = await computedVar(skeleton, '--scan-lit')
+    // bgImage の NG（下記）は gap/lit が両方とも非 null（＝要素が存在した）の
+    // 分岐でしか出さないので、ここでの null は要素消失ではなくスタイルそのものの
+    // 欠如を指す。`.catch(() => null)` で飲んでよい。
     const bgImage = await skeleton
       .evaluate((el) => getComputedStyle(el).backgroundImage)
       .catch(() => null)
@@ -2214,6 +2239,9 @@ for (const theme of themes) {
       if (lit.rgba[3] >= 200) {
         checkContrast(theme, 'ON AIR バッジの文字 / タリー走査線の輝線', fg.rgba, { backdrop: lit.rgba }, minTextContrast)
       }
+      // この分岐は gap/lit/fg が全て非 null（＝バッジが存在した）ときにしか
+      // 入らないので、ここでの null は要素消失ではなくスタイルの欠如を指す。
+      // `.catch(() => null)` で飲んでよい。
       const bgImage = await badge
         .evaluate((el) => getComputedStyle(el).backgroundImage)
         .catch(() => null)
