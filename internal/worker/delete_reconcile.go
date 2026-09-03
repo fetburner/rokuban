@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/breaker"
 	"github.com/fetburner/rokuban/internal/catalog"
+	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/metrics"
@@ -81,6 +83,7 @@ type deleteTarget struct {
 	RecordingID int64
 	RelPath     string
 	SizeBytes   int64
+	Kind        string
 }
 
 // DeleteReconcileArgs は削除 reconcile ジョブの引数（issue #70、
@@ -270,7 +273,7 @@ func (w *DeleteReconcileWorker) Work(ctx context.Context, _ *river.Job[DeleteRec
 
 	for _, a := range pending {
 		w.deleteMediaAsset(ctx, q, deleteTarget{
-			ID: a.ID, RecordingID: a.RecordingID, RelPath: a.RelPath, SizeBytes: a.SizeBytes,
+			ID: a.ID, RecordingID: a.RecordingID, RelPath: a.RelPath, SizeBytes: a.SizeBytes, Kind: a.Kind,
 		}, "pending")
 	}
 
@@ -343,12 +346,12 @@ func (w *DeleteReconcileWorker) Work(ctx context.Context, _ *river.Job[DeleteRec
 
 	for _, a := range trashRows {
 		w.deleteMediaAsset(ctx, q, deleteTarget{
-			ID: a.ID, RecordingID: a.RecordingID, RelPath: a.RelPath, SizeBytes: a.SizeBytes,
+			ID: a.ID, RecordingID: a.RecordingID, RelPath: a.RelPath, SizeBytes: a.SizeBytes, Kind: a.Kind,
 		}, "trash")
 	}
 	for _, a := range untilEncodedRows {
 		w.deleteMediaAsset(ctx, q, deleteTarget{
-			ID: a.ID, RecordingID: a.RecordingID, RelPath: a.RelPath, SizeBytes: a.SizeBytes,
+			ID: a.ID, RecordingID: a.RecordingID, RelPath: a.RelPath, SizeBytes: a.SizeBytes, Kind: a.Kind,
 		}, "until_encoded")
 	}
 	for _, relPath := range agedOrphans {
@@ -399,6 +402,25 @@ func (w *DeleteReconcileWorker) deleteMediaAsset(ctx context.Context, q *sqlcgen
 		// unlink 失敗。行は deleting のまま残し、次パスで再試行する。
 		log.Error("delete_reconcile: removing file", "err", err)
 		return
+	}
+
+	// VOD の字幕は encoded アセットに隣接する sidecar で、独立した
+	// media_assets 行を持たない。encoded 本体を削除する段階で同時に削除し、
+	// tombstone が残る間に orphan 判定から除外され続けるリークを防ぐ。
+	//
+	// **失敗しても継続する（return しない）。** サイドカーは主資産ではない
+	// --- rel_path に拡張子が無い、権限で消せない等の理由で 3 経路のどれかが
+	// 失敗しても、それを理由に encoded 本体（映像そのもの）を永久に回収不能に
+	// してはならない。失敗は log のみで、サイドカーは孤児として残る（孤児回収が
+	// 別途拾う経路がある前提。ここでは encoded 本体の削除を止めないことだけを守る）。
+	if t.Kind == db.AssetKindEncoded {
+		if subtitleRelPath, pathErr := mediapath.SubtitleSibling(t.RelPath); pathErr != nil {
+			log.Warn("delete_reconcile: building subtitle sidecar path; continuing without removing it", "err", pathErr)
+		} else if subtitlePath, resolveErr := mediapath.Resolve(w.MediaDir, subtitleRelPath); resolveErr != nil {
+			log.Warn("delete_reconcile: resolving subtitle sidecar path; continuing without removing it", "err", resolveErr)
+		} else if removeErr := os.Remove(subtitlePath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			log.Warn("delete_reconcile: removing subtitle sidecar; continuing", "err", removeErr)
+		}
 	}
 
 	if _, err := q.MarkMediaAssetDeleted(ctx, t.ID); err != nil {
@@ -528,6 +550,16 @@ func (w *DeleteReconcileWorker) reconcileOrphanCandidates(ctx context.Context, q
 	knownSet := make(map[string]struct{}, len(known))
 	for _, k := range known {
 		knownSet[k] = struct{}{}
+		// VOD 字幕は media_assets の独立行を持たないため、encoded の隣接
+		// サイドカーも既知パスとして孤児判定から除外する。media_assets の
+		// tombstone は物理削除完了まで残るので、削除途中の .vtt を誤って
+		// 候補にすることもない。
+		switch strings.ToLower(filepath.Ext(k)) {
+		case ".mp4", ".mkv":
+			if sidecar, pathErr := mediapath.SubtitleSibling(k); pathErr == nil {
+				knownSet[sidecar] = struct{}{}
+			}
+		}
 	}
 
 	mtimeCutoff := time.Now().Add(-mtimeGrace)

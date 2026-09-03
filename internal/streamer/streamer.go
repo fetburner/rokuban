@@ -78,6 +78,12 @@ func (s *Streamer) Mount(r chi.Router) {
 type serveAsset struct {
 	relPath   string
 	sizeBytes int64
+	// sidecar は WebVTT 字幕サイドカーかどうか。サイドカーは encoded 行の
+	// 隣接ファイルであり、独立した media_assets 行（size_bytes・存在の保証）を
+	// 持たない --- 字幕を使っていない全 encoded 再生で発生する既定状態なので、
+	// 欠損やサイズ不一致を「コミットがあるのにファイルが無い」不整合の WARN
+	// として記録しない（通常アセットは既定 false のまま配線不要）。
+	sidecar bool
 	// contentType は明示する（ServeContent の拡張子推測に頼らない）。
 	contentType string
 }
@@ -96,6 +102,11 @@ func (s *Streamer) RecordingFile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	profile := strings.TrimSpace(r.URL.Query().Get("profile"))
+	track := strings.TrimSpace(r.URL.Query().Get("track"))
+	if track != "" && (track != "subtitles" || profile == "") {
+		http.Error(w, "invalid track", http.StatusBadRequest)
+		return
+	}
 	asset, err := s.lookupAsset(r, id, profile)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -105,6 +116,18 @@ func (s *Streamer) RecordingFile(w http.ResponseWriter, r *http.Request) {
 		slog.Error("streamer: looking up media asset", "recording_id", id, "profile", profile, "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
+	}
+	if track == "subtitles" {
+		subPath, subErr := mediapath.SubtitleSibling(asset.relPath)
+		if subErr != nil {
+			// encoded の rel_path が拡張子を持たない等、サイドカーパスを
+			// 構成できない。字幕サイドカーは無いのと同じ扱いで 404。
+			http.NotFound(w, r)
+			return
+		}
+		asset.relPath = subPath
+		asset.contentType = "text/vtt; charset=utf-8"
+		asset.sidecar = true
 	}
 
 	s.serveAsset(w, r, id, asset)
@@ -168,9 +191,16 @@ func (s *Streamer) serveAsset(w http.ResponseWriter, r *http.Request, recordingI
 
 	f, err := os.Open(path)
 	if err != nil {
-		// コミット（DB 行）があるのにファイルが無いのは不整合。孤児回収や
-		// 外部からの削除で起こりうるので、記録して 404 にする。
 		if errors.Is(err, os.ErrNotExist) {
+			if asset.sidecar {
+				// WebVTT サイドカーは独立した media_assets 行を持たず、字幕の無い
+				// 番組では最初から作られない（docs/api/media.md）。存在しなくても
+				// 「コミットがあるのにファイルが無い」不整合ではないので WARN しない。
+				http.NotFound(w, r)
+				return
+			}
+			// コミット（DB 行）があるのにファイルが無いのは不整合。孤児回収や
+			// 外部からの削除で起こりうるので、記録して 404 にする。
 			slog.Warn("streamer: media asset row exists but the file is missing",
 				"recording_id", recordingID, "rel_path", asset.relPath)
 			http.NotFound(w, r)
@@ -197,8 +227,9 @@ func (s *Streamer) serveAsset(w http.ResponseWriter, r *http.Request, recordingI
 
 	// size_bytes は commit 時に照合した値。実ファイルと違うならコミット後に
 	// 改変・切り詰めが起きている。配信は続けるが（ユーザーは録画を見たい）
-	// 不整合として記録する。
-	if info.Size() != asset.sizeBytes {
+	// 不整合として記録する。サイドカーは size_bytes を持たない（常に 0）ので
+	// 対象外。
+	if !asset.sidecar && info.Size() != asset.sizeBytes {
 		slog.Warn("streamer: file size differs from the committed size",
 			"recording_id", recordingID, "rel_path", asset.relPath,
 			"committed", asset.sizeBytes, "actual", info.Size())

@@ -14,6 +14,7 @@ Go の `http.ServeContent` は `*os.File` 相手なら sendfile が効き、Rang
 GET  /api/recordings/{id}/file              →  video/MP2T（原本、Range 対応）
 HEAD /api/recordings/{id}/file              →  ヘッダーのみ
 GET  /api/recordings/{id}/file?profile=h264 →  video/mp4 等（encoded、Range 対応）
+GET  /api/recordings/{id}/file?profile=h264&track=subtitles → text/vtt（字幕サイドカー）
 HEAD /api/recordings/{id}/file?profile=h264 →  ヘッダーのみ
 GET  /api/recordings/{id}/thumbnail         →  image/jpeg
 HEAD /api/recordings/{id}/thumbnail         →  ヘッダーのみ
@@ -45,6 +46,19 @@ HEAD /api/recordings/{id}/thumbnail         →  ヘッダーのみ
 （`kind = 'thumbnail'`）。** ブラウザ UI は encoded を優先し、原本 TS は VLC 等
 向けのダウンロードリンクに残す。原本が `until_encoded` で消えた後も派生物だけで
 再生できる（アセット解決は kind ごとに独立）。
+
+エンコードプロファイルに `subtitles: webvtt` を指定した場合、字幕は MP4/MKV に
+内蔵せず、encoded ファイルと同じ basename の `.vtt` として保存する。配信 URL は
+`/file?profile=<name>&track=subtitles`。サイドカーは `media_assets` に独立行を
+持たないため、encoded 行が active であることと隣接ファイルの存在を配信時に確認する。
+字幕が無い番組ではサイドカーは作られず、映像エンコードは成功する。
+
+**一覧 API はプロファイルが字幕サイドカーを持つかを返さない。** `<track>` は
+再生側が無条件に描画し、サイドカーが無ければ 404 を返すだけにする（字幕を隠したい
+要求が出るまで `hasSubtitles` のような能力フィールドは作らない）。この非対称の
+帰結として、字幕を使っていない全 encoded 再生でもサイドカー欠損の 404 が定常的に
+発生するが、コミットと実ファイルの不整合を示す WARN では扱わない（配信側は
+サイドカーかどうかを知っているので、その経路だけログを出さない）。
 
 **`rel_path` は配信側でも独立に検証する。** `internal/mediapath.Resolve` を
 ingest と共有し、メディアディレクトリの外を指す `rel_path` は 404 にする。
@@ -93,6 +107,12 @@ storage:
 - Range の扱いは nginx 側に移る（`Accept-Ranges` も nginx が付ける）
 
 ### ライブ視聴の HLS --- アプリ配信を維持
+
+`live.captions: true` のとき、`playlist.m3u8` は master playlist になり、ffmpeg の
+`libaribcaption` で変換した WebVTT 字幕 rendition を含む。映像 variant、字幕
+playlist、`.ts` / `.vtt` セグメントは従来と同じサービス URL の下で配信する。
+`false`（既定）では従来のプロファイル別 playlist を返す。hls.js は字幕 rendition
+を字幕トグルとして表示する。VOD とライブのどちらも TS/PES を Rokuban が読むことはない。
 
 ライブセッションはインメモリの使い捨て状態（全体アーキテクチャの crash-only 例外）で、「クライアントがいなくなったら ffmpeg を止める」idle GC が要る。セグメント要求がアプリを通れば last-access の更新がタダで手に入るが、nginx が scratch から直接配るとアプリはクライアントの生存を見失う。`auth_request` やログ監視で回収はできるが、セグメントは数 MB で転送負荷が軽く、複雑さに見合わない。**streamer ロールのアプリ配信のまま**とする。
 
@@ -212,6 +232,10 @@ GET  /api/sites/{site}/networks/{networkId}/services/{serviceId}/live/segments/{
 POST /api/sites/{site}/networks/{networkId}/services/{serviceId}/live/leave
        → 204（離脱のヒント。上記「離脱は『ヒント』であって停止命令ではない」）
 ```
+
+字幕付きライブでは master から参照される variant playlist と字幕 playlist も
+`.../live/{name}.m3u8` で配信する。`segments/{name}` は `.ts` に加えて `.vtt` を
+受け付けるが、字幕無効時に `.vtt` や playlist 拡張子を受け付けることはない。
 
 - **DB を引かない。**パスの `(networkId, serviceId)` から mirakc の
   `GET /api/services/{id}/stream?decode=1` の `{id}` を合成するだけ

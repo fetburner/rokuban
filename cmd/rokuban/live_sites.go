@@ -52,6 +52,16 @@ func (ls liveSites) Mount(r chi.Router) {
 	const base = streamer.LiveRoutePattern
 	r.Get(base+"/playlist.m3u8", ls.dispatch((*streamer.LiveStreamer).Playlist))
 	r.Get(base+"/segments/{name}", ls.dispatch((*streamer.LiveStreamer).Segment))
+	// captions 用の variant/字幕 playlist ルート（`/{name}`）は、束縛サイトの
+	// captions 設定に関わらず常に登録する。**ルート登録の可否を特定 site の
+	// 設定に依存させない** --- 以前は「いずれかの site が captions を持つか」で
+	// 決めていたが、これだと captions 無効な site にもこのルートが開いてしまう
+	// （site 単位でルートを分けられないため、複数 site が異なる captions 設定を
+	// 持つ構成では意味を成さない判定だった）。実際の可否は dispatch 先の
+	// LiveStreamer.Segment が `cfg.Captions` を見て自分で判定する（captions
+	// 無効な site 宛なら name が .ts 以外で 400 になる）ので、登録側で site の
+	// 構成を覗く必要が無い。
+	r.Get(base+"/{name}", ls.dispatch((*streamer.LiveStreamer).Segment))
 	r.Post(base+"/leave", ls.dispatch((*streamer.LiveStreamer).Leave))
 }
 

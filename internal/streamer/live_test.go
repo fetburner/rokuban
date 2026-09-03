@@ -1,6 +1,7 @@
 package streamer
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -99,6 +100,39 @@ func newFakeMirakcLiveServer(t *testing.T) (*httptest.Server, *fakeMirakcLiveSta
 	}))
 	t.Cleanup(srv.Close)
 	return srv, state
+}
+
+// newFastFakeMirakcLiveServer は newFakeMirakcLiveServer と同じ GET
+// /api/services/{id}/stream を実装するが、10ms ごとに 188 byte という
+// スロットリングを入れない（tight loop で書く）。captions 経路は起動時に
+// upstream の先頭 liveCaptionProbeBytes（512 KiB）を同期に読み切る
+// （readLiveCaptionPrefix）ため、newFakeMirakcLiveServer のレート
+// （188 byte / 10ms ≈ 18.8 KB/s）だと 512 KiB に達するまで 25 秒以上かかり、
+// playlistStartupTimeout（15s）を超えてテストが確実にタイムアウトする。
+func newFastFakeMirakcLiveServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "video/MP2T")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+
+		buf := bytes188Packet()
+		for {
+			select {
+			case <-r.Context().Done():
+				return
+			default:
+			}
+			if _, err := w.Write(buf); err != nil {
+				return
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
 }
 
 func bytes188Packet() []byte {
@@ -399,6 +433,289 @@ func TestLiveStreamer_SessionLimit(t *testing.T) {
 
 // 未知のプロファイルは 400 で、mirakc へは一切リクエストしない
 // （セッションを起こす前に検証する）。
+// installFakeLiveFFmpegCaptions は captions 経路（buildLiveCaptionFFmpegArgs）の
+// argv を読んで、master / variant / 字幕 playlist と .ts / .vtt セグメントを
+// 一式書き出す偽 ffmpeg。installFakeLiveFFmpeg（非 captions 用）と分けているのは、
+// captions の argv には `-master_pl_name playlist.m3u8`（相対名。ディレクトリを
+// 含まない値）のようにそのままでは書き込み先にならないトークンが混じり、
+// 汎用スクリプトの「`*.m3u8` に一致したら即書き込む」処理では捕まえられない
+// （このバグが安全側 --- カレントディレクトリを汚染する形の失敗にはならず、
+// 静かに `dir` を取り違えて確実にテストが失敗する）ため。
+//
+// 末尾の位置引数（`dir/playlist_%v.m3u8`）から dir を確定させ、1 プロファイル
+// （variant "0"）ぶんの
+//   - dir/segments/0_seg00001.ts（映像セグメント）
+//   - dir/playlist_0.m3u8（variant playlist、#EXTINF を含む）
+//   - dir/playlist.m3u8（master、#EXT-X-STREAM-INF を含む）
+//   - `-hls_subtitle_path` が渡っていれば dir/subtitles_0.m3u8（字幕
+//     playlist、#EXTINF を含む）と dir/seg0.vtt（VTT セグメント）
+//
+// を書く。Content-Type 判定は名前の拡張子だけを見るので、実データの中身は
+// 空でも配信側の検証には十分（waitForPlaylist が見るのは #EXTINF の有無だけ）。
+func installFakeLiveFFmpegCaptions(t *testing.T) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("fake ffmpeg script assumes a POSIX shell")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "fake-ffmpeg-live-captions")
+	script := `#!/bin/sh
+cat >/dev/null &
+
+segfile=""
+subpath=""
+prev=""
+lastarg=""
+for a in "$@"; do
+  if [ "$prev" = "-hls_segment_filename" ]; then
+    segfile="$a"
+  fi
+  if [ "$prev" = "-hls_subtitle_path" ]; then
+    subpath="$a"
+  fi
+  prev="$a"
+  lastarg="$a"
+done
+
+outdir=$(dirname "$lastarg")
+mkdir -p "$outdir/segments"
+
+seg=$(printf '%s' "$segfile" | sed 's/%v/0/; s/%05d/00001/')
+mkdir -p "$(dirname "$seg")" 2>/dev/null
+printf 'fake-ts-segment-data' > "$seg.tmp"
+mv "$seg.tmp" "$seg"
+
+variant="$outdir/playlist_0.m3u8"
+{
+  printf '#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:2\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:2.0,\n'
+  printf 'segments/%s\n' "$(basename "$seg")"
+} > "$variant.tmp"
+mv "$variant.tmp" "$variant"
+
+# 字幕まわり（vtt / 字幕 playlist）を master より先に書く。**master の
+# readiness（#EXT-X-STREAM-INF の出現）を待てば、それより後に書く全ファイルの
+# 存在も保証される**というテスト側の前提（順序に依存した readiness）を成立
+# させるための順序。逆にすると、master を待った直後に字幕ファイルへ直接
+# アクセスするテストが競合しうる。
+if [ -n "$subpath" ]; then
+  vttseg="$outdir/seg0.vtt"
+  printf 'WEBVTT\n\n' > "$vttseg.tmp"
+  mv "$vttseg.tmp" "$vttseg"
+
+  subplaylist="$outdir/subtitles_0.m3u8"
+  {
+    printf '#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:2\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:2.0,\n'
+    printf 'segments/seg0.vtt\n'
+  } > "$subplaylist.tmp"
+  mv "$subplaylist.tmp" "$subplaylist"
+fi
+
+master="$outdir/playlist.m3u8"
+{
+  printf '#EXTM3U\n#EXT-X-VERSION:3\n'
+  if [ -n "$subpath" ]; then
+    printf '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="subtitle_0",DEFAULT=YES,URI="subtitles_0.m3u8"\n'
+  fi
+  printf '#EXT-X-STREAM-INF:BANDWIDTH=1000\nplaylist_0.m3u8\n'
+} > "$master.tmp"
+mv "$master.tmp" "$master"
+
+while true; do
+  sleep 1
+done
+`
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// installFakeFFprobeAlwaysReportsSubtitle は probeLiveCaptionStream が呼ぶ
+// ffprobe（`-select_streams s -show_entries stream=index -of csv=p=0`）を偽装し、
+// 常に字幕ストリーム有りと報告する。実 ffprobe を fake の生パケット列
+// （PAT/PMT を持たない）に向けると失敗する（実測: exit 1）ため、captions の
+// 一連の書き出しを試験するにはこれで置き換える必要がある。
+func installFakeFFprobeAlwaysReportsSubtitle(t *testing.T) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("fake ffprobe script assumes a POSIX shell")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "fake-ffprobe-subtitle")
+	script := "#!/bin/sh\necho 0\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// TestLiveStreamer_Segment_CaptionsEnabled_ServesVTTAndM3U8AndTS は issue #430
+// の受け入れ基準を Segment ハンドラのレベルで固定する（着手前は Segment に
+// 専用のテストが 1 本も無かった）: captions 有効時は .ts / .vtt / .m3u8 の
+// いずれも 200 で、Content-Type がそれぞれ video/mp2t・text/vtt・
+// application/vnd.apple.mpegurl になる。
+func TestLiveStreamer_Segment_CaptionsEnabled_ServesVTTAndM3U8AndTS(t *testing.T) {
+	mirakcSrv := newFastFakeMirakcLiveServer(t)
+	cfg := baseLiveConfig(t)
+	cfg.Captions = true
+	cfg.FFmpeg = installFakeLiveFFmpegCaptions(t)
+	cfg.FFprobe = installFakeFFprobeAlwaysReportsSubtitle(t)
+	_, srv := newTestLiveStreamer(t, mirakcSrv.URL, cfg)
+
+	// master playlist を先に取得し、readiness（#EXT-X-STREAM-INF の出現）を
+	// 待つ。偽 ffmpeg は master を全ファイルの最後に書くので、これが返れば
+	// 以下の個別ファイルは全て存在が保証される（.ts/.vtt は waitForPlaylist の
+	// ような待ち合わせを持たない生の http.ServeFile 経路なので、先に readiness
+	// を確認しないと書き込みとの競合で 404 になりうる --- 実際に最初の実装は
+	// これを端折って ts/vtt が 404 になっていた）。
+	plResp, err := http.Get(playlistURL(srv.URL, 0, 1, ""))
+	if err != nil {
+		t.Fatalf("GET master playlist: %v", err)
+	}
+	_ = plResp.Body.Close()
+	if plResp.StatusCode != http.StatusOK {
+		t.Fatalf("master playlist status = %d, want 200", plResp.StatusCode)
+	}
+
+	cases := []struct {
+		name        string
+		path        string
+		wantType    string
+		description string
+	}{
+		{"ts", "0_seg00001.ts", "video/mp2t", "video segment"},
+		{"vtt", "seg0.vtt", "text/vtt; charset=utf-8", "subtitle segment"},
+		{"variant m3u8", "playlist_0.m3u8", "application/vnd.apple.mpegurl", "variant playlist"},
+		{"subtitle m3u8", "subtitles_0.m3u8", "application/vnd.apple.mpegurl", "subtitle playlist"},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			url := fmt.Sprintf("%s/api/sites/%s/networks/0/services/1/live/segments/%s", srv.URL, testLiveSite, tt.path)
+			resp, err := http.Get(url)
+			if err != nil {
+				t.Fatalf("GET %s (%s): %v", url, tt.description, err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			if resp.StatusCode != http.StatusOK {
+				t.Errorf("status = %d, want 200 (%s)", resp.StatusCode, tt.description)
+			}
+			if got := resp.Header.Get("Content-Type"); got != tt.wantType {
+				t.Errorf("Content-Type = %q, want %q (%s)", got, tt.wantType, tt.description)
+			}
+		})
+	}
+}
+
+// TestLiveStreamer_Segment_WaitsForVariantPlaylistContent は D の決定
+// （variant / 字幕 playlist にも waitForPlaylist の readiness 待ちを通す）を、
+// ファイルの出現をテスト側で意図的に遅らせて直接検証する。
+// TestLiveStreamer_Segment_CaptionsEnabled_ServesVTTAndM3U8AndTS は偽 ffmpeg が
+// 全ファイルを完全に同期的に（1 つのシェルスクリプトの中で順番に）書くため、
+// D が守ろうとしている「書き込み途中に読まれる窓」をそもそも再現できない ---
+// このテストはセッションを直接注入し、ファイル書き込みを 200ms 遅らせることで
+// その窓を確実に作る。
+//
+// 壊し方: Segment の `if ls.cfg.Captions && strings.HasSuffix(name, ".m3u8")`
+// 分岐（readiness 待ち）を削除して素の http.ServeFile に戻す --- まだ存在
+// しないファイルに対して即座に 404 が返り、elapsed が遅延（200ms）よりずっと
+// 短くなることで検出する。
+func TestLiveStreamer_Segment_WaitsForVariantPlaylistContent(t *testing.T) {
+	mirakcSrv, _ := newFakeMirakcLiveServer(t)
+	cfg := baseLiveConfig(t)
+	cfg.Captions = true
+	ls, srv := newTestLiveStreamer(t, mirakcSrv.URL, cfg)
+
+	dir := t.TempDir()
+	serviceID := mirakc.ServiceID(0, 1)
+	s := &liveSession{
+		serviceID:  serviceID,
+		dir:        dir,
+		ready:      make(chan struct{}),
+		done:       make(chan struct{}),
+		lastAccess: time.Now(),
+		cancel:     func() {},
+	}
+	close(s.ready)
+	ls.mu.Lock()
+	ls.sessions[serviceID] = s
+	ls.mu.Unlock()
+	t.Cleanup(func() { close(s.done) })
+
+	playlistPath := filepath.Join(dir, "playlist_0.m3u8")
+	const delay = 200 * time.Millisecond
+	go func() {
+		time.Sleep(delay)
+		// waitForPlaylist が期待する atomic write（temp file + rename）。
+		content := []byte("#EXTM3U\n#EXTINF:2.0,\nsegments/seg.ts\n")
+		tmp := playlistPath + ".tmp"
+		if err := os.WriteFile(tmp, content, 0o644); err != nil {
+			t.Errorf("writing delayed playlist: %v", err)
+			return
+		}
+		if err := os.Rename(tmp, playlistPath); err != nil {
+			t.Errorf("renaming delayed playlist: %v", err)
+		}
+	}()
+
+	start := time.Now()
+	url := fmt.Sprintf("%s/api/sites/%s/networks/0/services/1/live/segments/playlist_0.m3u8", srv.URL, testLiveSite)
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatalf("GET %s: %v", url, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	elapsed := time.Since(start)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (must wait for the delayed write instead of 404ing immediately)", resp.StatusCode)
+	}
+	if elapsed < delay-50*time.Millisecond {
+		t.Errorf("responded after %v, want to have waited close to %v for the delayed write "+
+			"(too fast: did it actually poll, or did something else make this pass by luck?)", elapsed, delay)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("reading body: %v", err)
+	}
+	if !bytes.Contains(body, []byte("#EXTINF")) {
+		t.Errorf("response body = %q, want it to contain #EXTINF", body)
+	}
+}
+
+// TestLiveStreamer_Segment_CaptionsDisabled_RejectsVTTAndM3U8 は captions 無効
+// （既定）のとき、Segment が .vtt / .m3u8 を 400 で拒否し、.ts は従来どおり
+// 200 を返すことを固定する。壊し方: Segment の
+// `!ls.cfg.Captions && !strings.HasSuffix(name, ".ts")` ガードを消す。
+func TestLiveStreamer_Segment_CaptionsDisabled_RejectsVTTAndM3U8(t *testing.T) {
+	mirakcSrv, _ := newFakeMirakcLiveServer(t)
+	_, srv := newTestLiveStreamer(t, mirakcSrv.URL, baseLiveConfig(t))
+
+	for _, name := range []string{"foo.vtt", "foo.m3u8"} {
+		t.Run(name, func(t *testing.T) {
+			url := fmt.Sprintf("%s/api/sites/%s/networks/0/services/1/live/segments/%s", srv.URL, testLiveSite, name)
+			resp, err := http.Get(url)
+			if err != nil {
+				t.Fatalf("GET %s: %v", url, err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Errorf("status = %d, want 400 (captions disabled must reject non-.ts segment names)", resp.StatusCode)
+			}
+		})
+	}
+
+	// .ts は captions の有無に関わらず従来どおり 200。
+	segURL := firstSegmentURL(t, playlistURL(srv.URL, 0, 1, "h264"))
+	resp, err := http.Get(segURL)
+	if err != nil {
+		t.Fatalf("GET %s: %v", segURL, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf(".ts status = %d, want 200", resp.StatusCode)
+	}
+}
+
 func TestLiveStreamer_UnknownProfile(t *testing.T) {
 	mirakcSrv, state := newFakeMirakcLiveServer(t)
 	_, srv := newTestLiveStreamer(t, mirakcSrv.URL, baseLiveConfig(t))
@@ -1805,7 +2122,7 @@ func TestBuildLiveFFmpegArgs(t *testing.T) {
 		{Name: "h264", VideoCodec: "libx264", AudioCodec: "aac", Height: 720, Preset: "veryfast", SegmentSeconds: 2, PlaylistSize: 6, ExtraArgs: []string{"-b:v", "2M"}},
 		{Name: "h264low", VideoCodec: "libx264", AudioCodec: "aac", Height: 360, SegmentSeconds: 4, PlaylistSize: 3},
 	}
-	args := BuildLiveFFmpegArgs(LiveConfig{Profiles: profiles}, "/tmp/live/1")
+	args := BuildLiveFFmpegArgs(LiveConfig{Profiles: profiles}, "/tmp/live/1", false)
 
 	if !slices.Contains(args, "-i") {
 		t.Fatal("missing -i")
@@ -1881,6 +2198,147 @@ func TestBuildLiveFFmpegArgs(t *testing.T) {
 	}
 }
 
+func TestBuildLiveFFmpegArgs_CaptionsUsesMasterAndWebVTT(t *testing.T) {
+	args := BuildLiveFFmpegArgs(LiveConfig{
+		Captions: true,
+		Profiles: []LiveProfile{
+			{Name: "h264", VideoCodec: "libx264", AudioCodec: "aac", SegmentSeconds: 2, PlaylistSize: 6},
+			{Name: "low", VideoCodec: "libx264", AudioCodec: "aac", SegmentSeconds: 4, PlaylistSize: 3},
+		},
+	}, "/tmp/live/1", true)
+	joined := strings.Join(args, " ")
+	for _, want := range []string{
+		"-map 0:s:0?", "-c:s webvtt", "-var_stream_map v:0,a:0,s:0,sgroup:subs v:1,a:1",
+		"-master_pl_name playlist.m3u8", "-hls_time 2", "-hls_list_size 6", "-force_key_frames:v:0",
+		"-hls_subtitle_path /tmp/live/1/subtitles_%v.m3u8", "playlist_%v.m3u8", "/tmp/live/1/segments/%v_seg%05d.ts",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("caption live args missing %q: %v", want, args)
+		}
+	}
+}
+
+// TestBuildLiveFFmpegArgs_CaptionsPerStreamSpecifiersAreTyped は captions 経路の
+// per-stream 指定子（フィルタ・preset）が型付き（`:v:N`）で、2 本目以降の
+// プロファイルにも正しく別々に当たることを固定する。
+//
+// captions 経路の出力ストリーム順は v0, a0, s0, v1, a1。型無しの `-vf:1` /
+// `-preset:1` は variant 1 の映像ではなく variant 0 の音声（出力ストリーム
+// index 1）を指してしまう（レビュー指摘、実 ffmpeg 9.0.1 で測定して固定）。
+//
+// **フィルタは `-filter:v:N`（`-vf` の完全形）を使う。** `-vf:v:N`（`-vf` に
+// 型付き specifier を重ねる書き方）は同じ実測で機能しないことを確認済み
+// （specifier が分離されず、最後に指定したフィルタが両方の video ストリームに
+// 適用されて ffmpeg が警告を出す）。
+//
+// 壊し方: `-filter:v:`+strconv.Itoa(i) を `-vf:`+strconv.Itoa(i) に、
+// `-preset:v:`+strconv.Itoa(i) を `-preset:`+strconv.Itoa(i) に戻すと落ちる。
+func TestBuildLiveFFmpegArgs_CaptionsPerStreamSpecifiersAreTyped(t *testing.T) {
+	args := BuildLiveFFmpegArgs(LiveConfig{
+		Captions: true,
+		Profiles: []LiveProfile{
+			{Name: "h264", VideoCodec: "libx264", AudioCodec: "aac", Height: 720, Preset: "veryfast", SegmentSeconds: 2, PlaylistSize: 6},
+			{Name: "low", VideoCodec: "libx264", AudioCodec: "aac", Height: 360, Preset: "faster", SegmentSeconds: 2, PlaylistSize: 6},
+		},
+	}, "/tmp/live/1", false)
+	joined := strings.Join(args, " ")
+
+	for _, want := range []string{
+		"-filter:v:0 scale=-2:720", "-filter:v:1 scale=-2:360",
+		"-preset:v:0 veryfast", "-preset:v:1 faster",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("missing %q: %v", want, args)
+		}
+	}
+	for _, mustNotContain := range []string{
+		"-vf:0", "-vf:1", "-vf:v:0", "-vf:v:1", "-preset:0", "-preset:1",
+	} {
+		if strings.Contains(joined, mustNotContain) {
+			t.Errorf("must not contain untyped/broken specifier %q: %v", mustNotContain, args)
+		}
+	}
+}
+
+func TestBuildLiveFFmpegArgs_CaptionsWithoutSubtitleStream(t *testing.T) {
+	args := BuildLiveFFmpegArgs(LiveConfig{
+		Captions: true,
+		Profiles: []LiveProfile{{Name: "h264", VideoCodec: "libx264", AudioCodec: "aac", SegmentSeconds: 3, PlaylistSize: 7}},
+	}, "/tmp/live/1", false)
+	joined := strings.Join(args, " ")
+	if strings.Contains(joined, "0:s:0") || strings.Contains(joined, "s:0,sgroup:subs") || strings.Contains(joined, "-c:s webvtt") {
+		t.Fatalf("subtitle mapping must be omitted when input has no subtitle stream: %v", args)
+	}
+	for _, want := range []string{"-var_stream_map v:0,a:0", "-master_pl_name playlist.m3u8", "-hls_time 3", "-hls_list_size 7"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("captionless live args missing %q: %v", want, args)
+		}
+	}
+}
+
+// TestReadLiveCaptionPrefix_PreservesAllBytesInOrder は B の置き換え
+// （liveReplayReader + goroutine 2 本 → readLiveCaptionPrefix の同期読み取り +
+// io.MultiReader）が入力を 1 バイトも落とさず順序どおり ffmpeg 側へ渡すことを
+// 固定する。liveCaptionProbeBytes より短い入力・長い入力の両方を見る。
+//
+// 単純な繰り返しパターン（例: 0x47 だけ）だとオフバイ N のずれや部分的な
+// 重複を見逃すので、位置に依存する非周期パターン（`byte(i % 251)`。251 は
+// liveCaptionProbeBytes と互いに素な素数）を使う --- ずれが 1 バイトでもあれば
+// bytes.Equal が確実に検出する。
+//
+// 壊し方: readLiveCaptionPrefix 内で `prefix = prefix[:n]` を消す（読めなかった
+// 分のゼロ埋めが混入する）、または `io.MultiReader(bytes.NewReader(prefix), body)`
+// の引数順を `body, bytes.NewReader(prefix)` に入れ替える（prefix が後ろに
+// 回り、読み取り順が入れ替わる）。
+func TestReadLiveCaptionPrefix_PreservesAllBytesInOrder(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		total int
+	}{
+		{"shorter than probe prefix (upstream ends early)", liveCaptionProbeBytes / 2},
+		{"longer than probe prefix (body continues after prefix)", liveCaptionProbeBytes*2 + 12345},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			want := make([]byte, tt.total)
+			for i := range want {
+				want[i] = byte(i % 251)
+			}
+			body := io.NopCloser(bytes.NewReader(want))
+
+			input, prefix, err := readLiveCaptionPrefix(body)
+			if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
+				t.Fatalf("readLiveCaptionPrefix: %v", err)
+			}
+			wantPrefixLen := min(tt.total, liveCaptionProbeBytes)
+			if len(prefix) != wantPrefixLen {
+				t.Errorf("prefix length = %d, want %d", len(prefix), wantPrefixLen)
+			}
+
+			got, err := io.ReadAll(input)
+			if err != nil {
+				t.Fatalf("reading combined input: %v", err)
+			}
+			if !bytes.Equal(got, want) {
+				t.Fatalf("combined input length=%d, want length=%d (content differs: bytes dropped, duplicated, or reordered across the prefix/MultiReader hand-off)",
+					len(got), len(want))
+			}
+		})
+	}
+}
+
+func TestWaitForPlaylist_MasterUsesStreamInfMarker(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "playlist.m3u8")
+	content := []byte("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000\nplaylist_0.m3u8\n")
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		t.Fatalf("writing master playlist: %v", err)
+	}
+	s := &liveSession{lastAccess: time.Now()}
+	got, ok := waitForPlaylist(context.Background(), s, path, time.Second, "#EXT-X-STREAM-INF")
+	if !ok || !bytes.Equal(got, content) {
+		t.Fatalf("waitForPlaylist = (%q, %v), want master playlist content", got, ok)
+	}
+}
+
 // TestBuildLiveFFmpegArgs_HWAccelBeforeInput は live.hwaccel が
 // `-f mpegts -i pipe:0` より前に出ることを固定する。
 // 壊し方: 前置ブロックを入力の後ろへ移す。
@@ -1891,7 +2349,7 @@ func TestBuildLiveFFmpegArgs_HWAccelBeforeInput(t *testing.T) {
 			{Name: "h264", VideoCodec: "h264_vaapi", AudioCodec: "aac", Height: 720, Scaler: ffargs.ScalerVAAPI, SegmentSeconds: 2, PlaylistSize: 6},
 		},
 	}
-	args := BuildLiveFFmpegArgs(cfg, "/tmp/live/1")
+	args := BuildLiveFFmpegArgs(cfg, "/tmp/live/1", false)
 
 	hwIdx := slices.Index(args, "-hwaccel")
 	deviceIdx := slices.Index(args, "-hwaccel_device")
@@ -1933,7 +2391,7 @@ func TestBuildLiveFFmpegArgs_PerProfileScalerAndQuality(t *testing.T) {
 			{Name: "sw", VideoCodec: "libx264", AudioCodec: "aac", Height: 360, Scaler: ffargs.ScalerSoftware, CRF: &crf, SegmentSeconds: 2, PlaylistSize: 6},
 		},
 	}
-	args := BuildLiveFFmpegArgs(cfg, "/tmp/live/1")
+	args := BuildLiveFFmpegArgs(cfg, "/tmp/live/1", false)
 
 	if !slices.Contains(args, "scale_vaapi=w=-2:h=720") {
 		t.Errorf("missing hw scale filter: %v", args)
@@ -1974,7 +2432,7 @@ func TestBuildLiveFFmpegArgs_InputAndOutputExtraArgsPositions(t *testing.T) {
 			{Name: "h264", VideoCodec: "libx264", AudioCodec: "aac", SegmentSeconds: 2, PlaylistSize: 6, ExtraArgs: []string{"-b:v", "2M"}},
 		},
 	}
-	args := BuildLiveFFmpegArgs(cfg, "/tmp/live/1")
+	args := BuildLiveFFmpegArgs(cfg, "/tmp/live/1", false)
 
 	reIdx := slices.Index(args, "-re")
 	iIdx := slices.Index(args, "-i")
@@ -2138,5 +2596,57 @@ func TestLiveMount_DisabledDoesNotFallBackToSPA(t *testing.T) {
 	resp, _ := get(t, playlistURL(enabledSrv.URL, 31920, 53248, ""), nil)
 	if resp.StatusCode == http.StatusNotFound {
 		t.Errorf("enabled: GET playlist = 404, want the route to exist")
+	}
+}
+
+// TestBuildLiveFFmpegArgs_CaptionsFixSubDuration は ARIB 字幕の duration 欠如への
+// 対処が argv に入ることを固定する。
+//
+// 実測（自前ビルドの ffmpeg n7.1.1 + libaribcaption、NHK Eテレの実 TS 30 秒）:
+//   - -fix_sub_duration 無し: cue の終了時刻が `1193:03:08.900` になり字幕が消えない
+//   - -fix_sub_duration のみ: 正常な終了時刻になるが cue が 5 本 → 4 本に減る
+//     （次の字幕が来るまで現在の cue を出さないため）
+//   - + -fix_sub_duration_heartbeat:v:0: cue 8 本、セグメント境界で分割される
+//
+// 壊し方: どちらかの append を消す / -fix_sub_duration を -i の後ろへ移す。
+func TestBuildLiveFFmpegArgs_CaptionsFixSubDuration(t *testing.T) {
+	cfg := LiveConfig{
+		Captions: true,
+		Profiles: []LiveProfile{
+			{Name: "h264", VideoCodec: "libx264", AudioCodec: "aac", SegmentSeconds: 2, PlaylistSize: 6},
+			{Name: "low", VideoCodec: "libx264", AudioCodec: "aac", SegmentSeconds: 2, PlaylistSize: 6},
+		},
+	}
+
+	args := BuildLiveFFmpegArgs(cfg, "/tmp/live/1", true)
+	fixIdx, inputIdx, beats := -1, -1, 0
+	for i, a := range args {
+		switch a {
+		case "-fix_sub_duration":
+			fixIdx = i
+		case "-i":
+			if inputIdx < 0 {
+				inputIdx = i
+			}
+		case "-fix_sub_duration_heartbeat:v:0":
+			beats++
+		}
+	}
+	if fixIdx < 0 {
+		t.Fatalf("-fix_sub_duration missing: %v", args)
+	}
+	// 入力側オプションなので -i より前でなければ効かない。
+	if fixIdx > inputIdx {
+		t.Errorf("-fix_sub_duration at %d must precede -i at %d: %v", fixIdx, inputIdx, args)
+	}
+	// heartbeat は映像 variant 0 に 1 回だけ（プロファイル数に比例して増えない）。
+	if beats != 1 {
+		t.Errorf("-fix_sub_duration_heartbeat:v:0 count = %d, want 1: %v", beats, args)
+	}
+
+	// 字幕ストリームが無いと判定された経路では、どちらも付けない。
+	off := strings.Join(BuildLiveFFmpegArgs(cfg, "/tmp/live/1", false), " ")
+	if strings.Contains(off, "-fix_sub_duration") {
+		t.Errorf("captionless args must not carry -fix_sub_duration: %s", off)
 	}
 }

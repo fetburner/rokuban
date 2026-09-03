@@ -251,7 +251,26 @@ func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[EncodeJobAr
 	if ffmpeg == "" {
 		ffmpeg = "ffmpeg"
 	}
-	cmdArgs := BuildFFmpegArgs(profile, inputPath, scratchOut)
+	// ffmpeg は字幕ストリームが無い状態で WebVTT 出力を要求すると終了する。
+	// 先に ffprobe で存在を確認し、字幕がある録画だけサイドカー出力を有効に
+	// することで、局や番組によって字幕 PID が無い録画でもエンコード本体を
+	// 落とさない（issue #430 の optional map の罠）。
+	withSubtitles := false
+	if profile.Subtitles == "webvtt" {
+		withSubtitles, err = probeHasSubtitlesWithTimeout(ctx, w.FFprobe, inputPath, commandOutput)
+		if err != nil {
+			log.Warn("encode: probing subtitle streams failed; continuing without subtitle sidecar", "err", err)
+		}
+	}
+	// サイドカーの出力パスは scratchOut と同じディレクトリ・basename に .vtt を
+	// 付けたもの（BuildFFmpegArgs が内部で導出するのと同じ規則を
+	// mediapath.SubtitleSibling で共有する）。withSubtitles=false のときは
+	// BuildFFmpegArgs がこの引数を使わないので、空文字などの特別扱いは要らない。
+	subtitleOut, err := mediapath.SubtitleSibling(scratchOut)
+	if err != nil {
+		return fmt.Errorf("deriving subtitle sidecar path: %w", err)
+	}
+	cmdArgs := BuildFFmpegArgs(profile, inputPath, scratchOut, withSubtitles)
 	cmd := exec.CommandContext(ctx, ffmpeg, cmdArgs...)
 	setWorkerExecWaitDelay(cmd)
 	// 進捗は stdout（-progress pipe:1）。stderr はエラー診断のみ（進捗に使わない）。
@@ -302,10 +321,32 @@ func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[EncodeJobAr
 	if info.Size() == 0 {
 		return fmt.Errorf("scratch output is empty: %s", scratchOut)
 	}
+	if withSubtitles {
+		vttInfo, statErr := os.Stat(subtitleOut)
+		if statErr != nil {
+			return fmt.Errorf("stat subtitle sidecar: %w", statErr)
+		}
+		if vttInfo.Size() == 0 {
+			return fmt.Errorf("subtitle sidecar is empty: %s", subtitleOut)
+		}
+	}
 
 	size, err := streamCopyFile(scratchOut, finalPath)
 	if err != nil {
 		return fmt.Errorf("copying to media dir: %w", err)
+	}
+	if withSubtitles {
+		subtitleRelPath, pathErr := mediapath.SubtitleSibling(relPath)
+		if pathErr != nil {
+			return fmt.Errorf("building subtitle rel_path: %w", pathErr)
+		}
+		subtitleFinalPath, pathErr := mediapath.Resolve(w.MediaDir, subtitleRelPath)
+		if pathErr != nil {
+			return fmt.Errorf("resolving subtitle path: %w", pathErr)
+		}
+		if _, copyErr := streamCopyFile(subtitleOut, subtitleFinalPath); copyErr != nil {
+			return fmt.Errorf("copying subtitle sidecar: %w", copyErr)
+		}
 	}
 
 	if err := w.commitEncoded(ctx, args.RecordingID, profile.Name, relPath, size); err != nil {
@@ -367,6 +408,11 @@ const encodeAttemptErrorMaxLen = 2000
 // （試行状態の観測）に使うタイムアウト。job の ctx から切り離す
 // （attemptWriteContext）理由を参照。
 const encodeAttemptWriteTimeout = 5 * time.Second
+
+// subtitleProbeTimeout は字幕サイドカーの有無を調べる ffprobe の上限。
+// 進捗分母の probe と同じく best-effort だが、字幕機能を有効にしたことで
+// エンコード全体が無期限に止まることは許さない。
+const subtitleProbeTimeout = 30 * time.Second
 
 // attemptWriteContext は recording_encode_attempts への書き込み用に、job の
 // ctx から切り離した（ただし無期限には待たない）ctx を返す。
@@ -493,6 +539,26 @@ func (w *EncodeWorker) scratchPaths(recordingID int64, profile config.EncodeProf
 	return dir, out, nil
 }
 
+func probeHasSubtitles(ctx context.Context, ffprobe, input string, run func(context.Context, string, ...string) ([]byte, error)) (bool, error) {
+	if ffprobe == "" {
+		ffprobe = "ffprobe"
+	}
+	out, err := run(ctx, ffprobe,
+		"-v", "error", "-select_streams", "s",
+		"-show_entries", "stream=index", "-of", "csv=p=0", input,
+	)
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(string(out)) != "", nil
+}
+
+func probeHasSubtitlesWithTimeout(ctx context.Context, ffprobe, input string, run func(context.Context, string, ...string) ([]byte, error)) (bool, error) {
+	probeCtx, cancel := context.WithTimeout(ctx, subtitleProbeTimeout)
+	defer cancel()
+	return probeHasSubtitles(probeCtx, ffprobe, input, run)
+}
+
 func (w *EncodeWorker) commitEncoded(ctx context.Context, recordingID int64, profile, relPath string, size int64) error {
 	q := sqlcgen.New(w.Pool)
 	profileName := profile
@@ -523,19 +589,35 @@ func (w *EncodeWorker) commitEncoded(ctx context.Context, recordingID int64, pro
 //	[-crf N | -qp N] [-preset P]
 //	[extra_args…]                                  # ユーザー（出力側）
 //	-f CONTAINER -progress pipe:1 -loglevel error OUTPUT  # アプリ所有の末尾
+//	[-map 0:s? -c:s webvtt -f webvtt SUBTITLE_OUTPUT]   # subtitles=webvtt かつ withSubtitles のとき
 //
 // **extra_args は -f の前に置く。** 以前は -f の後ろだった（旧位置に依存する
 // config は無い前提 --- -f は許可済みオプションに含まれないので、ユーザーが
 // 相対順序に依存する余地は無い）。VOD と live で「ユーザーのオプション
 // はコーデック/品質/スケール指定の後・アプリ所有の末尾の前」という 1 つの規則に
 // するための移動（BuildLiveFFmpegArgs と同じ形にする）。
-func BuildFFmpegArgs(profile config.EncodeProfile, input, output string) []string {
+//
+// withSubtitles は起動前の ffprobe 判定結果（呼び出し側が probeHasSubtitles で
+// 得る）。profile.Subtitles == "webvtt" と両方 true のときだけ WebVTT サイドカーの
+// 出力を追加する --- 字幕ストリームが無い状態で ffmpeg に WebVTT 出力を要求すると
+// 終了するため、局や番組によって字幕 PID が無い録画でもエンコード本体を落とさない
+// （issue #430 の optional map の罠）。サイドカーの出力パスは output と同じ
+// ディレクトリ・basename に .vtt を付けたもの（mediapath.SubtitleSibling）で
+// 固定する --- 呼び出し側が任意のパスを選べる余地は無い。
+func BuildFFmpegArgs(profile config.EncodeProfile, input, output string, withSubtitles bool) []string {
 	args := []string{
 		"-hide_banner",
 		"-nostats",
 		"-y",
 	}
 	args = append(args, ffargs.PreInput(profile.HWAccel, profile.InputExtraArgs)...)
+	if profile.Subtitles == "webvtt" && withSubtitles {
+		// **ARIB 字幕は duration を持たない。** これが無いと WebVTT の終了時刻が
+		// 全 cue で約 1193 時間になり、字幕が一度出たら消えず積み重なる（実測:
+		// NHK Eテレの実 TS 30 秒で 11/11 cue が壊れ、付けると 11/11 正常）。
+		// -fix_sub_duration は入力側オプションなので -i より前に置く。
+		args = append(args, "-fix_sub_duration")
+	}
 	args = append(args, "-i", input)
 	args = append(args,
 		"-c:v", profile.VideoCodec,
@@ -554,6 +636,20 @@ func BuildFFmpegArgs(profile config.EncodeProfile, input, output string) []strin
 	args = append(args, "-f", profile.Container)
 	// -progress pipe:1 は stdout に key=value。stderr はログのみ。
 	args = append(args, "-progress", "pipe:1", "-loglevel", "error", output)
+	if profile.Subtitles == "webvtt" && withSubtitles {
+		// output は container（mp4 / mkv）の拡張子を必ず持つ（config 検証済み）。
+		// 万一導出できなければサイドカーの出力を足さない --- 呼び出し側が
+		// 同じ規則で導出した subtitleOut を os.Stat して失敗するので黙って
+		// 字幕だけ消えることはない。
+		if sidecar, err := mediapath.SubtitleSibling(output); err == nil {
+			args = append(args,
+				"-map", "0:s?",
+				"-c:s", "webvtt",
+				"-f", "webvtt",
+				sidecar,
+			)
+		}
+	}
 	return args
 }
 

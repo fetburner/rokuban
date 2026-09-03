@@ -34,3 +34,22 @@ func Resolve(mediaDir, relPath string) (string, error) {
 	}
 	return target, nil
 }
+
+// SubtitleSibling は encoded アセットに隣接する WebVTT サイドカーのパスを返す。
+// 字幕は独立した media_assets 行を持たず、encoded アセットと同じ basename の
+// .vtt として管理する（issue #430 の永続化案 b）。
+//
+// rel_path（worker のコミット・streamer の配信・削除 reconcile の孤児判定）と
+// scratch の絶対パス（encode の ffmpeg 出力先）の両方がこの規則を共有する。
+// 3 箇所で別々に拡張子を付け替えていると、片方だけ変えたときに「生成した
+// ファイルを誰も配れない / 消せない」形でずれる。
+func SubtitleSibling(path string) (string, error) {
+	if path == "" {
+		return "", fmt.Errorf("empty path")
+	}
+	ext := filepath.Ext(path)
+	if ext == "" {
+		return "", fmt.Errorf("path has no extension: %q", path)
+	}
+	return strings.TrimSuffix(path, ext) + ".vtt", nil
+}

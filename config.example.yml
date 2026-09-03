@@ -140,6 +140,7 @@ encode:
   #     container: mp4           # mp4 | mkv
   #     video_codec: libx264
   #     audio_codec: aac
+  #     subtitles: webvtt        # optional。原本の ARIB 字幕を隣接する .vtt に出力
   #     height: 1080             # 0 or omit = スケールしない
   #     crf: 23                  # qp との同時指定は起動エラー
   #     preset: medium           # optional
@@ -168,6 +169,9 @@ live:
                                  # LookPath 検査も行う。公式イメージ（ffmpeg 無し）で
                                  # streamer ロールを起動する構成を壊さないための既定 false
   # ffmpeg: ffmpeg                # 既定は PATH 検索
+  # ffprobe: ffprobe              # captions 用の字幕ストリーム判定。既定は PATH 検索
+  # captions: false               # true で ARIB 字幕を HLS レンディションとして出力。
+                                 # libaribcaption 入り ffmpeg が必要（起動時に検査）
   # segment_dir: /dev/shm/rokuban-live  # HLS セグメント/プレイリストの書き出し先。
                                  # **既定値を持たない --- enabled: true なら必須**
                                  # （空だと起動時エラー）。録画バッファとは別ディスク

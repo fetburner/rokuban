@@ -61,6 +61,8 @@ Grafana Loki / Tempo の `-config.expand-env` と同じ、**YAML パース前の
 | `encode.profiles` | `[]` | 構造化エンコードプロファイル（形は `config.example.yml`。下記「config と DB の境界」「encode/live の HW エンコード」） |
 | `live.enabled` | `false` | ライブ視聴のルートを登録するか（下記「live」） |
 | `live.ffmpeg` | `ffmpeg` | PATH 検索 |
+| `live.ffprobe` | `ffprobe` | `live.captions` 有効時の字幕ストリーム判定。PATH 検索 |
+| `live.captions` | `false` | ARIB 字幕を WebVTT レンディションとして出力。`libaribcaption` 入り FFmpeg が必要 |
 | `live.segment_dir` | —（`enabled: true` なら必須） | HLS セグメントの書き出し先（下記「live」） |
 | `live.max_sessions` | `4` | プロセスローカルの同時セッション上限（同上） |
 | `live.idle_timeout` | `30s` | サービス単位の idle GC 猶予 |
@@ -140,6 +142,8 @@ config の読み込みより前に出るログだけは既定（text 形式・In
 | `live.hwaccel` | **`live.profiles[]` 内ではなく `live:` 直下**。ライブは 1 回の ffmpeg で入力 1 本・出力 N 本なので、プロファイル毎に持たせると「プロファイル 2 つが別の hwaccel を要求する」という表現できない設定が書けてしまう --- セクション直下に置けばそれが表現不可能になる |
 | `encode.profiles[].input_extra_args` / `live.input_extra_args` | `-i`（VOD）/ `-f mpegts -i pipe:0`（live）の直前に追加する引数 |
 | `encode.profiles[].extra_args` / `live.profiles[].extra_args` | 既存キー。改名していない --- ただし VOD 側は位置が 1 点だけ動く（下記） |
+| `encode.profiles[].subtitles` | `webvtt` のみ。原本の ARIB 字幕を encoded ファイル隣の `.vtt` サイドカーに出力する。libaribcaption 入り ffmpeg が必要 |
+| `live.captions` | 既定 `false`。`true` で master playlist と WebVTT 字幕 rendition を出力する。字幕なし番組では映像・音声のみの master を出力する。libaribcaption 入り ffmpeg が無ければ起動エラー。複数プロファイルの `segment_seconds` / `playlist_size` は同一値が必要 |
 
 argv の順序（VOD）:
 
@@ -269,4 +273,3 @@ argv の順序（live）は同じ規則を入力 1 本・出力 N 本の形に�
 - **設定ファイルの分割・include 機構**: 分離の必要があるのは機微情報だけで、それは env で足りる
 - **CLI フラグで設定値を渡すこと**: CLI フラグは `--config` のパスと `--all` / ロール選択などプロセスの起動形態に限定する。例外は「このプロセスが何を担当し、どう畳むか」を表すフラグに限る（`--sites` / `--queues` / `--once` / `--once-idle-timeout` / `--soft-stop-timeout`）。`--queues` は config キー `worker.queues` と同じ値を取るが、その値自体がデプロイ時のパラメータであって環境の設定ではない。**両方指定は起動エラー**にして、値の出所が 2 つに分かれないようにしている。`--once` とその `--once-idle-timeout` も argv 側に置く --- 前者は起動形態そのもので、後者はその形態にしか意味を持たない値なので、config キーにすると常駐プロセスにも見える場所に置くことになる。**`--soft-stop-timeout`（SIGTERM 後に実行中のジョブを打ち切るまでの猶予）も同じ扱い**である。対になるのは config ではなく **k8s の `terminationGracePeriodSeconds`** で、プラットフォーム側の SIGKILL が真の上限になる。その値はワークロードごとに桁で違う（数時間の encode と数秒の ruler）。共有 ConfigMap 1 個ではその違いを表現できず、同じ Pod spec に 2 つの数値を並べて書けることが対応関係を保つ唯一の手段になる。k8s のロール分割では ConfigMap 1 個を全 Pod で共有し、Pod ごとの差分を argv に寄せるため、これらは argv 側に無いと ConfigMap が Pod セットの数だけ増える（[operations.md](operations.md) §5）
 - **SIGHUP 等のホットリロード**: 設定変更は再起動。crash-only + level-triggered 設計なら再起動は無害で、リロードは「どの値がいつから有効か」という追跡困難性を別の形で持ち込むだけ
-

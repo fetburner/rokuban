@@ -34,10 +34,12 @@ func convertLiveConfig(c config.LiveConfig) streamer.LiveConfig {
 	return streamer.LiveConfig{
 		Enabled:        true,
 		FFmpeg:         c.FFmpeg,
+		FFprobe:        c.FFprobe,
 		SegmentDir:     c.SegmentDir,
 		MaxSessions:    c.MaxSessions,
 		IdleTimeout:    c.IdleTimeout,
 		TunerPriority:  c.TunerPriority,
+		Captions:       c.Captions,
 		HWAccel:        c.HWAccel,
 		InputExtraArgs: c.InputExtraArgs,
 		Profiles:       profiles,

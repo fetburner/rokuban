@@ -25,7 +25,8 @@
     "e2e:recordings-selection": "node e2e/recordings-selection.mjs",
     "e2e:cls": "node e2e/cls.mjs",
     "e2e:chip-overflow": "node e2e/chip-overflow.mjs",
-    "e2e:personalization": "node e2e/personalization.mjs"
+    "e2e:personalization": "node e2e/personalization.mjs",
+    "e2e:subtitles": "node e2e/subtitles.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.6.0",

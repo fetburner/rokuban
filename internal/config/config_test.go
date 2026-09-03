@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -964,7 +965,7 @@ func TestLoad_AllFieldsOverridden(t *testing.T) {
 			"live",
 			cfg.Live,
 			LiveConfig{
-				Enabled: true, FFmpeg: "/usr/local/bin/ffmpeg-live", SegmentDir: "/tmp/hls",
+				Enabled: true, FFmpeg: "/usr/local/bin/ffmpeg-live", FFprobe: "ffprobe", SegmentDir: "/tmp/hls",
 				MaxSessions: 8, IdleTimeout: 45 * time.Second, TunerPriority: 5,
 				HWAccel:        &ffargs.HWAccel{Kind: "vaapi", Device: "/dev/dri/renderD128", OutputFormat: "vaapi"},
 				InputExtraArgs: []string{"-re"},
@@ -1774,6 +1775,87 @@ live:
 			t.Fatal("expected error: missing video_codec")
 		}
 	})
+
+	// captions=true のとき、全プロファイルの segment_seconds / playlist_size が
+	// 揃っていないと起動エラーにする（不一致を profile[0] の値に黙って読み替える
+	// 方が悪い。E の決定 F --- 挙動は正しいので変えず、テストだけ足す）。
+	// 壊し方: validate() のこのチェックをまるごと消す（または比較対象を
+	// 誤って自分自身と比べる）と両方とも Load が成功してしまい落ちる。
+	t.Run("captions requires matching segment_seconds and playlist_size across profiles", func(t *testing.T) {
+		path := writeConfig(t, base+`
+live:
+  enabled: true
+  segment_dir: /dev/shm/rokuban-live
+  captions: true
+  profiles:
+    - name: h264
+      video_codec: libx264
+      audio_codec: aac
+      segment_seconds: 2
+      playlist_size: 6
+    - name: low
+      video_codec: libx264
+      audio_codec: aac
+      segment_seconds: 4
+      playlist_size: 6
+`)
+		_, err := Load(path)
+		if err == nil {
+			t.Fatal("expected error: mismatched segment_seconds across profiles under captions")
+		}
+		if !strings.Contains(err.Error(), "segment_seconds") {
+			t.Errorf("error = %v, want mention of segment_seconds", err)
+		}
+	})
+
+	t.Run("captions allows matching segment_seconds and playlist_size across profiles", func(t *testing.T) {
+		path := writeConfig(t, base+`
+live:
+  enabled: true
+  segment_dir: /dev/shm/rokuban-live
+  captions: true
+  profiles:
+    - name: h264
+      video_codec: libx264
+      audio_codec: aac
+      segment_seconds: 2
+      playlist_size: 6
+    - name: low
+      video_codec: libx264
+      audio_codec: aac
+      segment_seconds: 2
+      playlist_size: 6
+`)
+		if _, err := Load(path); err != nil {
+			t.Fatalf("unexpected error with matching segment_seconds/playlist_size: %v", err)
+		}
+	})
+
+	// captions=false（既定）なら不一致でも起動エラーにしない --- チェックは
+	// captions 有効時にしか意味を持たない（master playlist を 1 本の
+	// hls_time/hls_list_size で出すため揃える必要がある。captions 無効なら
+	// プロファイルごとに別出力なので揃える理由が無い）。
+	t.Run("mismatched segment_seconds allowed without captions", func(t *testing.T) {
+		path := writeConfig(t, base+`
+live:
+  enabled: true
+  segment_dir: /dev/shm/rokuban-live
+  profiles:
+    - name: h264
+      video_codec: libx264
+      audio_codec: aac
+      segment_seconds: 2
+      playlist_size: 6
+    - name: low
+      video_codec: libx264
+      audio_codec: aac
+      segment_seconds: 4
+      playlist_size: 3
+`)
+		if _, err := Load(path); err != nil {
+			t.Fatalf("unexpected error without captions: %v", err)
+		}
+	})
 }
 
 func TestEncodeConfig_Profile(t *testing.T) {
@@ -1834,6 +1916,111 @@ func TestLiveConfig_ValidateTools(t *testing.T) {
 	if err := cfg.ValidateTools(); err == nil {
 		t.Fatal("expected error for missing ffmpeg")
 	}
+}
+
+// writeFakeFFmpegDecoders は `ffmpeg -hide_banner -decoders` の代わりに応答する
+// 偽 ffmpeg を用意する（validateLibARIBCaption はこの 1 コマンドの出力しか見ない）。
+// includeARIB が true なら出力に libaribcaption を含める。
+func writeFakeFFmpegDecoders(t *testing.T, includeARIB bool) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("fake ffmpeg script assumes a POSIX shell")
+	}
+	line := " V..... mpeg4                 MPEG-4 part 2"
+	if includeARIB {
+		line = " S..... libaribcaption        ARIB caption decoder"
+	}
+	script := "#!/bin/sh\necho \"" + line + "\"\n"
+	dir := t.TempDir()
+	path := filepath.Join(dir, "fake-ffmpeg")
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("writing fake ffmpeg: %v", err)
+	}
+	return path
+}
+
+// TestEncodeConfig_ValidateTools_LibARIBCaption は subtitles: webvtt を持つ
+// プロファイルがあるとき、実際に使う ffmpeg が libaribcaption デコーダを
+// 持たなければ起動エラーになる（持てばならない）ことを固定する。
+//
+// 壊し方: validateLibARIBCaption 呼び出しをまるごと消す、または
+// strings.Contains の判定を反転する。いずれも「デコーダ無しでもエラーに
+// ならない」側のサブテストが失敗を検出し損ねる、または「デコーダ有りでも
+// エラーになる」側が誤ってエラーを返して落ちる。
+func TestEncodeConfig_ValidateTools_LibARIBCaption(t *testing.T) {
+	t.Run("errors without libaribcaption decoder", func(t *testing.T) {
+		ffmpeg := writeFakeFFmpegDecoders(t, false)
+		cfg := EncodeConfig{
+			FFmpeg:   ffmpeg,
+			FFprobe:  ffmpeg,
+			Profiles: []EncodeProfile{{Name: "web", Subtitles: "webvtt"}},
+		}
+		err := cfg.ValidateTools()
+		if err == nil {
+			t.Fatal("expected error: ffmpeg without libaribcaption decoder")
+		}
+		if !strings.Contains(err.Error(), "libaribcaption") {
+			t.Errorf("error = %v, want mention of libaribcaption", err)
+		}
+	})
+
+	t.Run("passes with libaribcaption decoder", func(t *testing.T) {
+		ffmpeg := writeFakeFFmpegDecoders(t, true)
+		cfg := EncodeConfig{
+			FFmpeg:   ffmpeg,
+			FFprobe:  ffmpeg,
+			Profiles: []EncodeProfile{{Name: "web", Subtitles: "webvtt"}},
+		}
+		if err := cfg.ValidateTools(); err != nil {
+			t.Errorf("unexpected error with libaribcaption decoder: %v", err)
+		}
+	})
+
+	t.Run("no subtitle profile skips the check even without the decoder", func(t *testing.T) {
+		ffmpeg := writeFakeFFmpegDecoders(t, false)
+		cfg := EncodeConfig{
+			FFmpeg:   ffmpeg,
+			FFprobe:  ffmpeg,
+			Profiles: []EncodeProfile{{Name: "h264"}},
+		}
+		if err := cfg.ValidateTools(); err != nil {
+			t.Errorf("unexpected error without any subtitle profile: %v", err)
+		}
+	})
+}
+
+// TestLiveConfig_ValidateTools_LibARIBCaption はライブ側（live.captions）の
+// 同じ検査を固定する。EncodeConfig 側と判定関数（validateLibARIBCaption）を
+// 共有しているが、呼び出し条件（captions フラグ vs プロファイルの
+// subtitles: webvtt）が別物なので独立に検査する。
+func TestLiveConfig_ValidateTools_LibARIBCaption(t *testing.T) {
+	t.Run("errors without libaribcaption decoder", func(t *testing.T) {
+		ffmpeg := writeFakeFFmpegDecoders(t, false)
+		cfg := LiveConfig{FFmpeg: ffmpeg, FFprobe: ffmpeg, Captions: true}
+		err := cfg.ValidateTools()
+		if err == nil {
+			t.Fatal("expected error: ffmpeg without libaribcaption decoder")
+		}
+		if !strings.Contains(err.Error(), "libaribcaption") {
+			t.Errorf("error = %v, want mention of libaribcaption", err)
+		}
+	})
+
+	t.Run("passes with libaribcaption decoder", func(t *testing.T) {
+		ffmpeg := writeFakeFFmpegDecoders(t, true)
+		cfg := LiveConfig{FFmpeg: ffmpeg, FFprobe: ffmpeg, Captions: true}
+		if err := cfg.ValidateTools(); err != nil {
+			t.Errorf("unexpected error with libaribcaption decoder: %v", err)
+		}
+	})
+
+	t.Run("captions disabled skips the check even without the decoder", func(t *testing.T) {
+		ffmpeg := writeFakeFFmpegDecoders(t, false)
+		cfg := LiveConfig{FFmpeg: ffmpeg, FFprobe: ffmpeg, Captions: false}
+		if err := cfg.ValidateTools(); err != nil {
+			t.Errorf("unexpected error with captions disabled: %v", err)
+		}
+	})
 }
 
 // DSN は値を引用しないと空値・空白入りの値で壊れる。

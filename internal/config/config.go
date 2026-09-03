@@ -445,6 +445,10 @@ type EncodeProfile struct {
 	// AudioCodec は -c:a に渡すコーデック名（例: aac）。
 	AudioCodec string `yaml:"audio_codec"`
 
+	// Subtitles は字幕サイドカーの形式。現在は webvtt のみを許可する。
+	// MP4 に内蔵せず、エンコード成果物の隣に .vtt を置く。
+	Subtitles string `yaml:"subtitles"`
+
 	// Height はスケール先の高さ。0 または省略ならスケールしない。
 	Height int `yaml:"height"`
 
@@ -504,6 +508,14 @@ func (c EncodeConfig) ValidateTools() error {
 	if _, err := exec.LookPath(c.FFprobe); err != nil {
 		return fmt.Errorf("encode.ffprobe %q not found in PATH: %w", c.FFprobe, err)
 	}
+	for _, p := range c.Profiles {
+		if p.Subtitles == "webvtt" {
+			if err := validateLibARIBCaption(c.FFmpeg, "encode"); err != nil {
+				return err
+			}
+			break
+		}
+	}
 	return nil
 }
 
@@ -546,6 +558,10 @@ func (c EncodeConfig) validate() error {
 		}
 		if p.AudioCodec == "" {
 			return fmt.Errorf("encode.profiles[%d] (%s): audio_codec is required", i, p.Name)
+		}
+		if p.Subtitles != "" && p.Subtitles != "webvtt" {
+			return fmt.Errorf("encode.profiles[%d] (%s): subtitles must be webvtt, got %q",
+				i, p.Name, p.Subtitles)
 		}
 		if p.Height < 0 {
 			return fmt.Errorf("encode.profiles[%d] (%s): height must be >= 0, got %d",
@@ -600,6 +616,13 @@ type LiveConfig struct {
 	Enabled bool `yaml:"enabled"`
 
 	FFmpeg string `yaml:"ffmpeg"`
+	// FFprobe は字幕ストリームの有無をライブ起動前に判定するために使う。
+	// Captions が false なら実行しない。
+	FFprobe string `yaml:"ffprobe"`
+
+	// Captions は ARIB 字幕を HLS の字幕レンディションとして出力する。
+	// libaribcaption を含む ffmpeg が必要で、既定は false。
+	Captions bool `yaml:"captions"`
 
 	// SegmentDir は HLS セグメント/プレイリストの書き出し先。**録画バッファ
 	// （mirakc recording.basedir）と同じディスクに置かない**（視聴が録画の I/O を
@@ -704,6 +727,29 @@ func (c LiveConfig) ValidateTools() error {
 	if _, err := exec.LookPath(c.FFmpeg); err != nil {
 		return fmt.Errorf("live.ffmpeg %q not found in PATH: %w", c.FFmpeg, err)
 	}
+	if c.Captions {
+		if _, err := exec.LookPath(c.FFprobe); err != nil {
+			return fmt.Errorf("live.ffprobe %q not found in PATH: %w", c.FFprobe, err)
+		}
+		if err := validateLibARIBCaption(c.FFmpeg, "live"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateLibARIBCaption は字幕を有効にした構成で、実際に使う ffmpeg が
+// libaribcaption デコーダを持つことを起動時に検査する。Debian bookworm の
+// apt 版 ffmpeg 5.1 には通常含まれないため、設定したのに字幕だけ黙って消える
+// 状態を許さない。
+func validateLibARIBCaption(ffmpeg, scope string) error {
+	out, err := exec.Command(ffmpeg, "-hide_banner", "-decoders").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s subtitles require ffmpeg libaribcaption decoder: checking %q failed: %w", scope, ffmpeg, err)
+	}
+	if !strings.Contains(string(out), "libaribcaption") {
+		return fmt.Errorf("%s subtitles require an ffmpeg build with libaribcaption decoder", scope)
+	}
 	return nil
 }
 
@@ -800,6 +846,14 @@ func (c LiveConfig) validate() error {
 		}
 		if err := ffargs.ValidateExtraArgs("extra_args", p.ExtraArgs); err != nil {
 			return fmt.Errorf("live.profiles[%d] (%s): %w", i, p.Name, err)
+		}
+	}
+	if c.Captions {
+		first := c.Profiles[0]
+		for i, p := range c.Profiles[1:] {
+			if p.SegmentSeconds != first.SegmentSeconds || p.PlaylistSize != first.PlaylistSize {
+				return fmt.Errorf("live.profiles[%d] (%s): segment_seconds and playlist_size must match the first profile when live.captions is enabled", i+1, p.Name)
+			}
 		}
 	}
 	return nil
@@ -926,7 +980,8 @@ func defaults() Config {
 			ThumbnailConcurrency: 1,
 		},
 		Live: LiveConfig{
-			FFmpeg: "ffmpeg",
+			FFmpeg:  "ffmpeg",
+			FFprobe: "ffprobe",
 		},
 		Webhook: WebhookConfig{
 			Timeout: 5 * time.Second,

@@ -15,6 +15,7 @@ type HlsLike = {
   destroy(): void
   loadSource(url: string): void
   attachMedia(media: HTMLMediaElement): void
+  subtitleDisplay: boolean
   on(event: string, callback: (event: string, data: { fatal: boolean }) => void): void
   /**
    * hls.latency（秒）。`LatencyController.get latency()` の実装
@@ -389,7 +390,28 @@ export function LivePlayer({
           setLoading(false)
           return
         }
+        // master playlist の EXT-X-MEDIA subtitles rendition を**既定で表示**する
+        // （issue #430）。subtitleDisplay は HlsConfig ではなく Hls インスタンスの
+        // プロパティである。
+        //
+        // **これは「トグルを出す」設定ではない。** 字幕の入切は Chrome
+        // ネイティブコントロールの `⋮` → 「Captions」で、textTrack が 1 本でも
+        // あれば rokuban が何もしなくても現れる（実測: 実 Chromium で `⋮` を
+        // 開いて "Captions / Off" の項目を確認）。この行が決めるのは既定の
+        // 状態だけで、true なら `TextTrack.mode === "showing"` で始まる（実測:
+        // 実 mirakc のライブで確認）。
+        //
+        // **VOD 側（recording-player.tsx の `<track>`）とは既定が逆で、それが正しい。**
+        // あちらは `default` 属性を持たないので `mode === "disabled"` で始まり、
+        // ユーザーが `⋮` から入れるまで `.vtt` を fetch すらしない（実測）。
+        // VOD で `default` を付けると、**字幕サイドカーを持たないプロファイルでも
+        // 再生ごとに必ず 1 本 404 が出る** --- クライアントはサイドカーの有無を
+        // 知る手段を持たないので（`docs/api/media.md` の案 (b) の帰結）、
+        // 付ける/付けないを録画ごとに選べない。ライブは ffmpeg が字幕ストリームを
+        // 実際に map できたときだけ rendition が master に載るので、この問題が無い
+        // --- 既定 ON にできるのはライブ側だけ、という非対称である。
         const hls = new Hls() as unknown as HlsLike
+        hls.subtitleDisplay = true
         hlsRef.current = hls
         const stopDiagnostics = watchLiveDiagnostics(() => readHlsDiagnostics(hls))
         hls.on(Hls.Events.ERROR, (_event, data) => {

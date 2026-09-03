@@ -36,7 +36,7 @@ func TestBuildFFmpegArgs(t *testing.T) {
 		Preset:     "medium",
 		ExtraArgs:  []string{"-movflags", "+faststart"},
 	}
-	args := BuildFFmpegArgs(p, "/in.m2ts", "/out.mp4")
+	args := BuildFFmpegArgs(p, "/in.m2ts", "/out.mp4", false)
 
 	// 必須フラグと入出力の位置。
 	if !slices.Contains(args, "-i") {
@@ -89,6 +89,19 @@ func TestBuildFFmpegArgs(t *testing.T) {
 	}
 }
 
+func TestBuildFFmpegArgs_WebVTTSubtitleSidecar(t *testing.T) {
+	p := config.EncodeProfile{
+		Name: "web", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac", Subtitles: "webvtt",
+	}
+	args := BuildFFmpegArgs(p, "/in.ts", "/out.mp4", true)
+	joined := strings.Join(args, " ")
+	for _, want := range []string{"-map 0:s?", "-c:s webvtt", "-f webvtt", "/out.vtt"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("subtitle args missing %q: %v", want, args)
+		}
+	}
+}
+
 // TestBuildFFmpegArgs_HWAccelBeforeInput は hwaccel ブロックが -i より前に来る
 // ことを固定する（issue #321）。壊し方: 前置ブロックの append を -i の対の後ろへ移す。
 func TestBuildFFmpegArgs_HWAccelBeforeInput(t *testing.T) {
@@ -105,7 +118,7 @@ func TestBuildFFmpegArgs_HWAccelBeforeInput(t *testing.T) {
 			OutputFormat: "vaapi",
 		},
 	}
-	args := BuildFFmpegArgs(p, "/in.m2ts", "/out.mp4")
+	args := BuildFFmpegArgs(p, "/in.m2ts", "/out.mp4", false)
 
 	hwIdx := slices.Index(args, "-hwaccel")
 	deviceIdx := slices.Index(args, "-hwaccel_device")
@@ -155,7 +168,7 @@ func TestBuildFFmpegArgs_QP(t *testing.T) {
 		AudioCodec: "aac",
 		QP:         &qp,
 	}
-	args := BuildFFmpegArgs(p, "in", "out")
+	args := BuildFFmpegArgs(p, "in", "out", false)
 	if slices.Contains(args, "-crf") {
 		t.Errorf("-crf must not be emitted when only qp is set: %v", args)
 	}
@@ -180,7 +193,7 @@ func TestBuildFFmpegArgs_InputAndOutputExtraArgsPositions(t *testing.T) {
 		InputExtraArgs: []string{"-re"},
 		ExtraArgs:      []string{"-movflags", "+faststart"},
 	}
-	args := BuildFFmpegArgs(p, "/in.m2ts", "/out.mp4")
+	args := BuildFFmpegArgs(p, "/in.m2ts", "/out.mp4", false)
 
 	reIdx := slices.Index(args, "-re")
 	iIdx := slices.Index(args, "-i")
@@ -221,7 +234,7 @@ func TestBuildFFmpegArgs_AppOwnedTail(t *testing.T) {
 		InputExtraArgs: []string{"-re"},
 		ExtraArgs:      []string{"-movflags", "+faststart", "-an"},
 	}
-	args := BuildFFmpegArgs(p, "/in.m2ts", "/out.mp4")
+	args := BuildFFmpegArgs(p, "/in.m2ts", "/out.mp4", false)
 
 	if args[len(args)-1] != "/out.mp4" {
 		t.Errorf("last arg = %q, want output path", args[len(args)-1])
@@ -257,7 +270,7 @@ func TestBuildFFmpegArgs_NoOptional(t *testing.T) {
 		VideoCodec: "libx265",
 		AudioCodec: "copy",
 	}
-	args := BuildFFmpegArgs(p, "in", "out")
+	args := BuildFFmpegArgs(p, "in", "out", false)
 	if slices.Contains(args, "-crf") {
 		t.Error("crf should be omitted when nil")
 	}
@@ -922,5 +935,46 @@ hintCompleted:
 	}
 	if !slices.Equal(profiles, []string{"h265"}) {
 		t.Errorf("enqueued profiles = %v, want [h265] (h264 は既に active encoded なので投入されない)", profiles)
+	}
+}
+
+// TestBuildFFmpegArgs_SubtitleFixSubDuration は VOD 側でも ARIB 字幕の duration
+// 欠如への対処が -i より前に入ることを固定する。
+//
+// 実測（自前ビルドの ffmpeg n7.1.1 + libaribcaption、NHK Eテレの実 TS 30 秒）:
+// 無しでは 11/11 cue の終了時刻が約 1193 時間になり字幕が消えない。付けると 11/11 正常。
+// 壊し方: append を消す / -i の後ろへ移す。
+func TestBuildFFmpegArgs_SubtitleFixSubDuration(t *testing.T) {
+	p := config.EncodeProfile{
+		Name: "web", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac", Subtitles: "webvtt",
+	}
+
+	args := BuildFFmpegArgs(p, "/in.ts", "/out.mp4", true)
+	fixIdx, inputIdx := -1, -1
+	for i, a := range args {
+		switch a {
+		case "-fix_sub_duration":
+			fixIdx = i
+		case "-i":
+			if inputIdx < 0 {
+				inputIdx = i
+			}
+		}
+	}
+	if fixIdx < 0 {
+		t.Fatalf("-fix_sub_duration missing: %v", args)
+	}
+	if fixIdx > inputIdx {
+		t.Errorf("-fix_sub_duration at %d must precede -i at %d: %v", fixIdx, inputIdx, args)
+	}
+
+	// ffprobe が字幕なしと判定した録画では付けない（VOD 側は heartbeat も使わない
+	// --- セグメントが無いので分割する意味がない）。
+	off := strings.Join(BuildFFmpegArgs(p, "/in.ts", "/out.mp4", false), " ")
+	if strings.Contains(off, "-fix_sub_duration") {
+		t.Errorf("captionless args must not carry -fix_sub_duration: %s", off)
+	}
+	if strings.Contains(strings.Join(args, " "), "heartbeat") {
+		t.Errorf("VOD args must not carry the live heartbeat flag: %v", args)
 	}
 }

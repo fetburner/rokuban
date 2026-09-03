@@ -104,3 +104,8 @@ export function recordingFileURL(recordingId: number, profile?: string): string 
   if (!profile) return base
   return `${base}?profile=${encodeURIComponent(profile)}`
 }
+
+/** recordingSubtitleURL は encoded アセット隣の WebVTT サイドカー URL を組み立てる。 */
+export function recordingSubtitleURL(recordingId: number, profile: string): string {
+  return `${recordingFileURL(recordingId, profile)}&track=subtitles`
+}

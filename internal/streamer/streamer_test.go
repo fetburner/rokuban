@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -561,6 +562,119 @@ func TestRecordingFile_EncodedProfile(t *testing.T) {
 	}
 	if !bytes.Equal(body, content[:10]) {
 		t.Errorf("range body = %q, want %q", body, content[:10])
+	}
+}
+
+// track=subtitles は encoded の隣接 .vtt サイドカーを text/vtt で返す。
+func TestRecordingFile_Subtitles_Served(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	mediaDir := t.TempDir()
+	content := []byte("mp4-bytes")
+	relPath := "sub/recording_h264.mp4"
+	full := filepath.Join(mediaDir, relPath)
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(full, content, 0o644); err != nil {
+		t.Fatalf("write encoded: %v", err)
+	}
+	vtt := []byte("WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nHello\n")
+	if err := os.WriteFile(filepath.Join(mediaDir, "sub/recording_h264.vtt"), vtt, 0o644); err != nil {
+		t.Fatalf("write vtt: %v", err)
+	}
+
+	recordingID := seedRecording(t, pool)
+	seedEncodedAsset(t, pool, recordingID, relPath, int64(len(content)))
+
+	r := chi.NewRouter()
+	New(pool, Config{MediaDir: mediaDir}).Mount(r)
+	srv := httptest.NewServer(r)
+	t.Cleanup(srv.Close)
+
+	url := fmt.Sprintf("%s/api/recordings/%d/file?profile=h264&track=subtitles", srv.URL, recordingID)
+	resp, body := get(t, url, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if !bytes.Equal(body, vtt) {
+		t.Errorf("body = %q, want %q", body, vtt)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "text/vtt; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want text/vtt; charset=utf-8", ct)
+	}
+}
+
+// track=subtitles でサイドカーが無い（字幕の無い番組。正常系）とき、404 は
+// 返すが「コミットがあるのにファイルが無い」不整合の WARN は出さない ---
+// これを出すと、字幕を使っていない全 encoded 再生で常態的に WARN が積もる
+// （レビュー指摘。streamer.serveAsset の sidecar 分岐が本体）。
+//
+// 壊し方: serveAsset の `if asset.sidecar { ... }` 早期 return を消して
+// 通常アセットと同じ WARN 分岐に合流させる。
+func TestRecordingFile_Subtitles_MissingSidecar_NoWarnLog(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	mediaDir := t.TempDir()
+	content := []byte("mp4-bytes")
+	relPath := "nosub/recording_h264.mp4"
+	full := filepath.Join(mediaDir, relPath)
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(full, content, 0o644); err != nil {
+		t.Fatalf("write encoded: %v", err)
+	}
+	// .vtt は意図的に書かない（字幕の無い番組を模す）。
+
+	recordingID := seedRecording(t, pool)
+	seedEncodedAsset(t, pool, recordingID, relPath, int64(len(content)))
+
+	r := chi.NewRouter()
+	New(pool, Config{MediaDir: mediaDir}).Mount(r)
+	srv := httptest.NewServer(r)
+	t.Cleanup(srv.Close)
+
+	var logBuf bytes.Buffer
+	origLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(origLogger) })
+
+	url := fmt.Sprintf("%s/api/recordings/%d/file?profile=h264&track=subtitles", srv.URL, recordingID)
+	resp, _ := get(t, url, nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", resp.StatusCode)
+	}
+	if strings.Contains(logBuf.String(), "media asset row exists but the file is missing") {
+		t.Errorf("log output = %q, want no orphan-file WARN for a missing subtitle sidecar", logBuf.String())
+	}
+}
+
+// encoded の rel_path が拡張子を持たない場合、サイドカーパスを構成できないので
+// track=subtitles は 404（worker.SubtitleRelPath がエラーを返す経路。H の dedup）。
+func TestRecordingFile_Subtitles_ExtensionlessEncodedRelPath_NotFound(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	mediaDir := t.TempDir()
+	content := []byte("mp4-bytes")
+	relPath := "noext/recording_h264" // 拡張子なし
+	full := filepath.Join(mediaDir, relPath)
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(full, content, 0o644); err != nil {
+		t.Fatalf("write encoded: %v", err)
+	}
+
+	recordingID := seedRecording(t, pool)
+	seedEncodedAsset(t, pool, recordingID, relPath, int64(len(content)))
+
+	r := chi.NewRouter()
+	New(pool, Config{MediaDir: mediaDir}).Mount(r)
+	srv := httptest.NewServer(r)
+	t.Cleanup(srv.Close)
+
+	url := fmt.Sprintf("%s/api/recordings/%d/file?profile=h264&track=subtitles", srv.URL, recordingID)
+	resp, _ := get(t, url, nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", resp.StatusCode)
 	}
 }
 
