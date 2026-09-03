@@ -169,8 +169,15 @@ ok('② チップ自身が 2 行以上に折り返している', box.lines >= 2,
 // ③ `Chip` は共有プリミティブなので、録画一覧の絞り込みにある短いピル
 //    （状態・種別）にも同じクラスが波及する。丸ピルの中で折り返らないこと ---
 //    ここは①の対策が他の画面の見た目を変えていないことの逆方向の判定。
+//
+// `?site=retired` はレジストリ（`siteNames`）に無い site。録画一覧のサイト
+// チップはレジストリと現在の `?site=` 絞り込みの和集合で出すため、これを
+// 付けずに開くと修正前の実装（`siteNames.length > 1` だけを見る）でも
+// 同じ 2 件が描かれてしまい、この PR の変更を何も検証しない。和集合が
+// `tokyo` / 長い site 名 / `retired` の 3 件になることを見て初めて、
+// 「絞り込みで増えた分もチップに出る」を実ブラウザで測ったことになる。
 log(`\n=== ③ /recordings の絞り込み（${width}px・短いピル）===`)
-const recordingsPage = await openStubbed('/recordings', '録画一覧')
+const recordingsPage = await openStubbed('/recordings?site=retired', '録画一覧')
 await recordingsPage.getByRole('button', { name: '絞り込み' }).click()
 const popup = recordingsPage.getByRole('dialog', { name: '絞り込み' })
 await popup.waitFor()
@@ -200,12 +207,12 @@ ok(
   `scrollWidth ${docRecordings.scrollWidth} / clientWidth ${docRecordings.clientWidth}`,
 )
 
-const recordingSiteGroup = recordingsPage.locator('div[role="group"][aria-label="サイト"]')
+const recordingSiteGroup = popup.locator('div[role="group"][aria-label="サイト"]')
 await recordingSiteGroup.waitFor()
 const recordingSiteChips = recordingSiteGroup.locator('button')
 ok(
-  '③ 録画一覧のサイトチップが 2 件描かれている',
-  (await recordingSiteChips.count()) === 2,
+  '③ 録画一覧のサイトチップが和集合の 3 件描かれている',
+  (await recordingSiteChips.count()) === 3,
   `${await recordingSiteChips.count()} 件`,
 )
 
