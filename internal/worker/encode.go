@@ -255,16 +255,19 @@ func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[EncodeJobAr
 	// 先に ffprobe で存在を確認し、字幕がある録画だけサイドカー出力を有効に
 	// することで、局や番組によって字幕 PID が無い録画でもエンコード本体を
 	// 落とさない（issue #430 の optional map の罠）。
-	subtitleOut := ""
 	withSubtitles := false
 	if profile.Subtitles == "webvtt" {
-		subtitleOut = filepath.Join(scratchDir, "out.vtt")
 		withSubtitles, err = probeHasSubtitlesWithTimeout(ctx, w.FFprobe, inputPath, commandOutput)
 		if err != nil {
 			log.Warn("encode: probing subtitle streams failed; continuing without subtitle sidecar", "err", err)
 		}
 	}
-	cmdArgs := BuildFFmpegArgsForSubtitle(profile, inputPath, scratchOut, subtitleOut, withSubtitles)
+	// サイドカーの出力パスは scratchOut と同じディレクトリ・basename に .vtt を
+	// 付けたもの（BuildFFmpegArgs が内部で導出するのと同じ規則。subtitleOutputPath）。
+	// withSubtitles=false のときは BuildFFmpegArgs がこの引数を使わないので、
+	// 空文字などの特別扱いは要らない。
+	subtitleOut := subtitleOutputPath(scratchOut)
+	cmdArgs := BuildFFmpegArgs(profile, inputPath, scratchOut, withSubtitles)
 	cmd := exec.CommandContext(ctx, ffmpeg, cmdArgs...)
 	setWorkerExecWaitDelay(cmd)
 	// 進捗は stdout（-progress pipe:1）。stderr はエラー診断のみ（進捗に使わない）。
@@ -583,23 +586,22 @@ func (w *EncodeWorker) commitEncoded(ctx context.Context, recordingID int64, pro
 //	[-crf N | -qp N] [-preset P]
 //	[extra_args…]                                  # ユーザー（出力側）
 //	-f CONTAINER -progress pipe:1 -loglevel error OUTPUT  # アプリ所有の末尾
-//	[-map 0:s? -c:s webvtt -f webvtt SUBTITLE_OUTPUT]   # subtitles=webvtt のとき
+//	[-map 0:s? -c:s webvtt -f webvtt SUBTITLE_OUTPUT]   # subtitles=webvtt かつ withSubtitles のとき
 //
 // **extra_args は -f の前に置く。** 以前は -f の後ろだった（旧位置に依存する
 // config は無い前提 --- -f は許可済みオプションに含まれないので、ユーザーが
 // 相対順序に依存する余地は無い）。VOD と live で「ユーザーのオプション
 // はコーデック/品質/スケール指定の後・アプリ所有の末尾の前」という 1 つの規則に
 // するための移動（BuildLiveFFmpegArgs と同じ形にする）。
-func BuildFFmpegArgs(profile config.EncodeProfile, input, output string) []string {
-	if profile.Subtitles == "webvtt" {
-		return BuildFFmpegArgsForSubtitle(profile, input, output, subtitleOutputPath(output), true)
-	}
-	return BuildFFmpegArgsForSubtitle(profile, input, output, "", false)
-}
-
-// BuildFFmpegArgsForSubtitle は通常の映像出力に加えて、字幕ストリームが確認
-// できた場合だけ WebVTT サイドカーを出力する引数を組み立てる。
-func BuildFFmpegArgsForSubtitle(profile config.EncodeProfile, input, output, subtitleOutput string, withSubtitles bool) []string {
+//
+// withSubtitles は起動前の ffprobe 判定結果（呼び出し側が probeHasSubtitles で
+// 得る）。profile.Subtitles == "webvtt" と両方 true のときだけ WebVTT サイドカーの
+// 出力を追加する --- 字幕ストリームが無い状態で ffmpeg に WebVTT 出力を要求すると
+// 終了するため、局や番組によって字幕 PID が無い録画でもエンコード本体を落とさない
+// （issue #430 の optional map の罠）。サイドカーの出力パスは output と同じ
+// ディレクトリ・basename に .vtt を付けたもの（subtitleOutputPath）で固定する ---
+// 呼び出し側が任意のパスを選べる余地は無い。
+func BuildFFmpegArgs(profile config.EncodeProfile, input, output string, withSubtitles bool) []string {
 	args := []string{
 		"-hide_banner",
 		"-nostats",
@@ -624,12 +626,12 @@ func BuildFFmpegArgsForSubtitle(profile config.EncodeProfile, input, output, sub
 	args = append(args, "-f", profile.Container)
 	// -progress pipe:1 は stdout に key=value。stderr はログのみ。
 	args = append(args, "-progress", "pipe:1", "-loglevel", "error", output)
-	if profile.Subtitles == "webvtt" && withSubtitles && subtitleOutput != "" {
+	if profile.Subtitles == "webvtt" && withSubtitles {
 		args = append(args,
 			"-map", "0:s?",
 			"-c:s", "webvtt",
 			"-f", "webvtt",
-			subtitleOutput,
+			subtitleOutputPath(output),
 		)
 	}
 	return args

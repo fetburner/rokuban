@@ -115,9 +115,6 @@ func (c LiveConfig) profile(name string) (LiveProfile, bool) {
 	return LiveProfile{}, false
 }
 
-// CaptionsEnabled reports whether caption-specific HLS routes are required.
-func (ls *LiveStreamer) CaptionsEnabled() bool { return ls.cfg.Captions }
-
 // mirakcLiveClient はライブ視聴が必要とする mirakc クライアントの最小面。
 // 本番は *mirakc.Client、テストは差し替えて開始失敗・切断のタイミングを制御する。
 type mirakcLiveClient interface {
@@ -143,14 +140,15 @@ var (
 const (
 	// liveCaptionProbeBytes は live MPEG-TS の先頭を ffprobe に渡すサイズ。
 	// PAT/PMT は入力の先頭付近に現れるため、ライブ本体を先に消費しすぎずに
-	// 字幕 PID の有無を判定できる。読み取ったバイトは必ず ffmpeg に戻す。
+	// 字幕 PID の有無を判定できる。読み取ったバイトは必ず ffmpeg に戻す
+	// （runSession が io.MultiReader で prefix を先頭に戻す）。地上波 HD で
+	// 概ね 0.3 秒ぶんの読み取り（未検証。ビットレートに依存する見積もり）。
 	liveCaptionProbeBytes = 512 * 1024
-	// liveCaptionProbeTimeout は upstream が無音のままでも、字幕判定がライブ
-	// セッションの起動を無期限に塞がないための上限。
+	// liveCaptionProbeTimeout は probeLiveCaptionStream（ffprobe 起動）の暴走を
+	// 止める上限。prefix の読み取り自体は runSession が同期に待つため、ここでは
+	// timeout しない --- クライアントは playlistStartupTimeout（15s）でセッション
+	// 起動全体を待つので、prefix 読み取り専用の timeout は不要（B の決定）。
 	liveCaptionProbeTimeout = 5 * time.Second
-	// liveReplayBufferBytes は probe 完了前と FFmpeg の読み取り遅延時に保持する
-	// 入力の上限。上限到達時は producer が待ち、入力を無制限に蓄積しない。
-	liveReplayBufferBytes = 8 * 1024 * 1024
 )
 
 // LiveStreamer はライブ視聴の HLS ルートを配信する。
@@ -522,6 +520,31 @@ func (ls *LiveStreamer) Segment(w http.ResponseWriter, r *http.Request) {
 	if ls.cfg.Captions && (strings.HasSuffix(name, ".m3u8") || strings.HasSuffix(name, ".vtt")) {
 		path = filepath.Join(s.dir, name)
 	}
+
+	if ls.cfg.Captions && strings.HasSuffix(name, ".m3u8") {
+		// **master と同じ readiness 待ちを、1 段下の variant / 字幕 playlist にも
+		// 掛ける。** waitForPlaylist の doc コメント（「書き込み途中の空/不完全な
+		// 内容を配らない」「CI が確率的に flaky になった原因」）は master
+		// （Playlist ハンドラ）にしか効いていなかった --- master に
+		// EXT-X-STREAM-INF があることは、そこが指す variant playlist に
+		// セグメントが書かれていることを保証しない。クライアントは master を
+		// 受け取った直後にこの playlist_0.m3u8 等を取りに来るので、同じ窓が
+		// 1 段下で復活する。既存のヘルパをそのまま再利用する（新しい待機機構は
+		// 作らない）。
+		content, ok := waitForPlaylist(r.Context(), s, path, playlistStartupTimeout, "#EXTINF")
+		if !ok {
+			slog.Error("streamer: live variant playlist did not appear in time",
+				"service_id", serviceID, "name", name, "dir", s.dir)
+			http.Error(w, "live stream did not start in time", http.StatusGatewayTimeout)
+			return
+		}
+		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+		w.Header().Set("Content-Length", strconv.Itoa(len(content)))
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = w.Write(content)
+		return
+	}
+
 	// **この Content-Type にフロントの再生経路判定が依存している。変えるなら
 	// `web/src/lib/live.ts` の `supportsNativeHls` も同時に変える。** あちらは
 	// 「`<video>` がプレイリストとセグメントの両方の MIME を再生できるか」で
@@ -533,8 +556,6 @@ func (ls *LiveStreamer) Segment(w http.ResponseWriter, r *http.Request) {
 	// **Chrome が沈黙して再生できなくなる**（M4-4 のレビューで 2 度踏んだ形）。
 	// `web/e2e/live.mjs` はこのハンドラをモックするため、この非互換を検出できない
 	switch filepath.Ext(name) {
-	case ".m3u8":
-		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
 	case ".vtt":
 		w.Header().Set("Content-Type", "text/vtt; charset=utf-8")
 	default:
@@ -926,7 +947,25 @@ func (ls *LiveStreamer) runSession(ctx context.Context, s *liveSession) {
 	input := io.Reader(body)
 	captionInput := false
 	if ls.cfg.Captions {
-		replay, prefix, readErr := prepareLiveProbeInput(ctx, body)
+		// upstream の先頭を同期に読んで ffprobe に渡す。読んだバイトは
+		// io.MultiReader で ffmpeg に戻すため 1 バイトも失わない。
+		//
+		// **専用の goroutine/バッファは持たない（B の決定）。** runSession は
+		// 既に go で非同期に起動されており（getOrCreateSession）、待っている
+		// クライアントは playlistStartupTimeout（15s）で打ち切られるので、
+		// ここだけ独自の replay バッファ・timeout を持つ理由が無い。512 KiB は
+		// 地上波 HD で概ね 0.3 秒（未検証。ビットレート依存の見積もり）。
+		//
+		// **ctx キャンセル時に body.Read が抜けるか**: StreamService は
+		// http.NewRequestWithContext(ctx, ...) でリクエストを組み立てており、
+		// net/http の契約上 ctx はレスポンスボディの読み取りまで含めて有効
+		// （ctx が Done になると進行中の Read はエラーで返る）。sessionCtx が
+		// stop() で cancel されたときも body.Read はブロックし続けない ---
+		// 追加の goroutine は不要（internal/mirakc/client.go の StreamService
+		// を読んで確認）。
+		var prefix []byte
+		var readErr error
+		input, prefix, readErr = readLiveCaptionPrefix(body)
 		if ctx.Err() != nil {
 			s.startErr = ctx.Err()
 			close(s.ready)
@@ -936,7 +975,6 @@ func (ls *LiveStreamer) runSession(ctx context.Context, s *liveSession) {
 			slog.Warn("streamer: reading live probe prefix failed; continuing without captions",
 				"service_id", s.serviceID, "err", readErr)
 		}
-		input = replay
 		var probeErr error
 		captionInput, probeErr = probeLiveCaptionStream(ctx, ls.cfg.FFprobe, prefix)
 		if probeErr != nil {
@@ -945,7 +983,7 @@ func (ls *LiveStreamer) runSession(ctx context.Context, s *liveSession) {
 			captionInput = false
 		}
 	}
-	args := buildLiveFFmpegArgs(ls.cfg, dir, captionInput)
+	args := BuildLiveFFmpegArgs(ls.cfg, dir, captionInput)
 	cmd := exec.CommandContext(ctx, ls.cfg.FFmpeg, args...)
 	cmd.Stdin = input
 	stderr := newCappedWriter(stderrCap)
@@ -1121,9 +1159,14 @@ func (w *cappedWriter) String() string {
 //	  -force_key_frames expr:…
 //	  [profile.extra_args…]                         # ユーザー（出力側）
 //	  -f hls ... OUT.m3u8                            # アプリ所有の末尾
-func BuildLiveFFmpegArgs(cfg LiveConfig, dir string) []string {
+//
+// **Captions=true のときは 1 つの master playlist（%v 展開）を出す形に分岐する。**
+// withSubtitles は Captions=true のときだけ効き、起動前の ffprobe 判定結果を渡す
+// （false なら字幕 map / rendition を完全に省き、字幕の無い番組でも映像・音声の
+// HLS を継続できる）。Captions=false のときは無視される。
+func BuildLiveFFmpegArgs(cfg LiveConfig, dir string, withSubtitles bool) []string {
 	if cfg.Captions {
-		return buildLiveCaptionFFmpegArgs(cfg, dir, true)
+		return buildLiveCaptionFFmpegArgs(cfg, dir, withSubtitles)
 	}
 	args := []string{
 		"-hide_banner", "-nostats", "-loglevel", "error",
@@ -1186,13 +1229,18 @@ func BuildLiveFFmpegArgs(cfg LiveConfig, dir string) []string {
 // %v はプロファイルごとの video/audio variant を表す。withSubtitles は起動前の
 // ffprobe 判定結果で、false の場合は字幕 map / rendition を完全に省き、字幕なし
 // 番組でも映像・音声の HLS を継続できる。
-func buildLiveFFmpegArgs(cfg LiveConfig, dir string, withSubtitles bool) []string {
-	if cfg.Captions {
-		return buildLiveCaptionFFmpegArgs(cfg, dir, withSubtitles)
-	}
-	return BuildLiveFFmpegArgs(cfg, dir)
-}
-
+//
+// **per-stream 指定子は必ず型付き（`:v:N` / `:a:N`）にする。** この経路の出力
+// ストリーム順は v0, a0, [s0,] v1, a1 で、`-preset:N` / `-vf:N`（型無しの
+// グローバル出力ストリーム index）は 2 本目以降のプロファイルでは音声側を指して
+// しまい、preset もフィルタも掛からない（実 ffmpeg で測定・固定: レビュー指摘）。
+//
+// **フィルタは `-filter:v:N`（`-vf` の完全形）にする。**`-vf:v:N`（`-vf` に型
+// 付き specifier を重ねる書き方）は ffmpeg 9.0.1 で単一出力・複数 video map の
+// 構成において機能しない（specifier が意図通り分離されず、最後に指定した
+// フィルタが両方の video ストリームに適用されて警告が出ることを実測で確認。
+// `-c:v:N` や `-preset:v:N` のような型を伴わない他オプションでの `:v:N` 付与は
+// 問題なく機能する --- `-vf`/`-filter:v` だけの挙動）。
 func buildLiveCaptionFFmpegArgs(cfg LiveConfig, dir string, withSubtitles bool) []string {
 	args := []string{"-hide_banner", "-nostats", "-loglevel", "error"}
 	args = append(args, cfg.HWAccel.Args()...)
@@ -1208,11 +1256,11 @@ func buildLiveCaptionFFmpegArgs(cfg LiveConfig, dir string, withSubtitles bool) 
 		}
 		args = append(args, "-c:v:"+strconv.Itoa(i), p.VideoCodec, "-c:a:"+strconv.Itoa(i), p.AudioCodec)
 		if filter, ok := ffargs.ScaleArgs(p.Scaler, p.Height); ok {
-			args = append(args, "-vf:"+strconv.Itoa(i), filter)
+			args = append(args, "-filter:v:"+strconv.Itoa(i), filter)
 		}
 		args = append(args, ffargs.QualityArgs(p.CRF, p.QP)...)
 		if p.Preset != "" {
-			args = append(args, "-preset:"+strconv.Itoa(i), p.Preset)
+			args = append(args, "-preset:v:"+strconv.Itoa(i), p.Preset)
 		}
 		args = append(args, "-force_key_frames:v:"+strconv.Itoa(i), fmt.Sprintf("expr:gte(t,n_forced*%d)", p.SegmentSeconds))
 		args = append(args, p.ExtraArgs...)
@@ -1222,20 +1270,12 @@ func buildLiveCaptionFFmpegArgs(cfg LiveConfig, dir string, withSubtitles bool) 
 		}
 		variants = append(variants, mapping)
 	}
-	segmentSeconds := cfg.Profiles[0].SegmentSeconds
-	if segmentSeconds < 1 {
-		segmentSeconds = 2
-	}
-	playlistSize := cfg.Profiles[0].PlaylistSize
-	if playlistSize < 1 {
-		playlistSize = 6
-	}
 	args = append(args,
 		"-var_stream_map", strings.Join(variants, " "),
 		"-master_pl_name", "playlist.m3u8",
 		"-f", "hls",
-		"-hls_time", strconv.Itoa(segmentSeconds),
-		"-hls_list_size", strconv.Itoa(playlistSize),
+		"-hls_time", strconv.Itoa(cfg.Profiles[0].SegmentSeconds),
+		"-hls_list_size", strconv.Itoa(cfg.Profiles[0].PlaylistSize),
 		"-hls_flags", "delete_segments+temp_file",
 		"-hls_base_url", "segments/",
 		"-hls_segment_filename", filepath.Join(dir, "segments", "%v_seg%05d.ts"),
@@ -1245,162 +1285,34 @@ func buildLiveCaptionFFmpegArgs(cfg LiveConfig, dir string, withSubtitles bool) 
 		// セグメント自体は muxer が通常の出力ディレクトリ（dir）へ書く。
 		// master からの相対 URI は segments/ を付けるため、配信側では
 		// .m3u8/.vtt を dir 直下から読む。
-		args = append(args, "-c:s", "webvtt", "-hls_subtitle_path", filepath.Join(dir, "subtitles.m3u8"))
+		//
+		// **%v が要る。** variant が 2 本以上あると ffmpeg は
+		// `-hls_subtitle_path` にも %v（またはサブディレクトリでの %v）を
+		// 要求し、無いと `hls` マルチプレクサの初期化自体に失敗して
+		// **HLS 出力を一切書かずに終了する**（実測: `More than 1 variant
+		// streams are present, %v is expected...` で exit 234。字幕付き
+		// ライブは複数プロファイルが既定の構成であり、%v を欠くと captions
+		// 有効化そのものが機能しなくなる致命的な回帰だったため、G の一部として
+		// ここで直す）。字幕 rendition は 1 本しか無い（variant 0 の s:0 だけを
+		// map している）ため、%v ごとに書き出される複数ファイルのうち実際に
+		// 埋まるのは `subtitles_0.m3u8` のみで、他の variant 分は空のまま残るが
+		// クライアントは master playlist の EXT-X-MEDIA が指す 1 本しか参照しない。
+		args = append(args, "-c:s", "webvtt", "-hls_subtitle_path", filepath.Join(dir, "subtitles_%v.m3u8"))
 	}
 	args = append(args, filepath.Join(dir, "playlist_%v.m3u8"))
 	return args
 }
 
-// liveReplayReader は、字幕判定中に upstream から読み取った入力を保持し、
-// 判定後に ffmpeg へ順番どおり再送する。起動前に全量を読む必要がないため、
-// upstream が低ビットレートでも probe が入力待ちで固まらない。
-type liveReplayReader struct {
-	mu            sync.Mutex
-	cond          *sync.Cond
-	chunks        [][]byte
-	bufferedBytes int
-	done          bool
-	err           error
-}
-
-func newLiveReplayReader() *liveReplayReader {
-	r := &liveReplayReader{}
-	r.cond = sync.NewCond(&r.mu)
-	return r
-}
-
-func (r *liveReplayReader) enqueue(p []byte) bool {
-	if len(p) == 0 {
-		return true
-	}
-	for len(p) > 0 {
-		r.mu.Lock()
-		for r.bufferedBytes >= liveReplayBufferBytes && !r.done {
-			r.cond.Wait()
-		}
-		if r.done {
-			r.mu.Unlock()
-			return false
-		}
-		available := liveReplayBufferBytes - r.bufferedBytes
-		if available > len(p) {
-			available = len(p)
-		}
-		copyOfP := append([]byte(nil), p[:available]...)
-		r.chunks = append(r.chunks, copyOfP)
-		r.bufferedBytes += available
-		r.cond.Broadcast()
-		r.mu.Unlock()
-		p = p[available:]
-	}
-	return true
-}
-
-func (r *liveReplayReader) finish(err error) {
-	r.mu.Lock()
-	r.done = true
-	r.err = err
-	r.cond.Broadcast()
-	r.mu.Unlock()
-}
-
-func (r *liveReplayReader) Read(p []byte) (int, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	for len(r.chunks) == 0 && !r.done {
-		r.cond.Wait()
-	}
-	if len(r.chunks) == 0 {
-		if r.err != nil {
-			return 0, r.err
-		}
-		return 0, io.EOF
-	}
-	n := copy(p, r.chunks[0])
-	if n == len(r.chunks[0]) {
-		r.bufferedBytes -= n
-		r.chunks = r.chunks[1:]
-	} else {
-		r.bufferedBytes -= n
-		r.chunks[0] = r.chunks[0][n:]
-	}
-	r.cond.Broadcast()
-	return n, nil
-}
-
-// prepareLiveProbeInput は live 入力を replay reader に流しつつ、先頭部分が
-// たまるか timeout になるまで待つ。timeout 後も producer は継続し、ffmpeg は
-// 既に保持した入力からそのまま読み続ける。
-func prepareLiveProbeInput(ctx context.Context, body io.ReadCloser) (io.Reader, []byte, error) {
-	replay := newLiveReplayReader()
-	ready := make(chan []byte, 1)
-	producerDone := make(chan struct{})
-	var prefixMu sync.Mutex
-	prefix := make([]byte, 0, liveCaptionProbeBytes)
-	var readyOnce sync.Once
-	signalReady := func() {
-		readyOnce.Do(func() {
-			prefixMu.Lock()
-			p := append([]byte(nil), prefix...)
-			prefixMu.Unlock()
-			ready <- p
-		})
-	}
-	go func() {
-		defer close(producerDone)
-		buf := make([]byte, 32*1024)
-		for {
-			n, err := body.Read(buf)
-			if n > 0 {
-				if !replay.enqueue(buf[:n]) {
-					return
-				}
-				prefixMu.Lock()
-				if len(prefix) < liveCaptionProbeBytes {
-					need := liveCaptionProbeBytes - len(prefix)
-					if need > n {
-						need = n
-					}
-					prefix = append(prefix, buf[:need]...)
-				}
-				reachedLimit := len(prefix) >= liveCaptionProbeBytes
-				prefixMu.Unlock()
-				if reachedLimit {
-					signalReady()
-				}
-			}
-			if err != nil {
-				signalReady()
-				if errors.Is(err, io.EOF) {
-					replay.finish(nil)
-				} else {
-					replay.finish(err)
-				}
-				return
-			}
-		}
-	}()
-	go func() {
-		select {
-		case <-ctx.Done():
-			_ = body.Close()
-			replay.finish(ctx.Err())
-		case <-producerDone:
-		}
-	}()
-	timer := time.NewTimer(liveCaptionProbeTimeout)
-	defer timer.Stop()
-	select {
-	case p := <-ready:
-		return replay, p, nil
-	case <-timer.C:
-		prefixMu.Lock()
-		p := append([]byte(nil), prefix...)
-		prefixMu.Unlock()
-		return replay, p, nil
-	case <-ctx.Done():
-		return replay, nil, ctx.Err()
-	}
+// readLiveCaptionPrefix は body の先頭を liveCaptionProbeBytes だけ同期に読み、
+// 読んだバイトを 1 つも失わずに ffmpeg へ戻す io.Reader（読んだ prefix +
+// 残りの body）を組み立てる。upstream が liveCaptionProbeBytes に満たない
+// （io.ReadFull が io.ErrUnexpectedEOF/io.EOF を返す）場合は読めた分だけを
+// prefix にする --- 呼び出し側（runSession）が err を見て継続可否を判定する。
+func readLiveCaptionPrefix(body io.Reader) (input io.Reader, prefix []byte, err error) {
+	prefix = make([]byte, liveCaptionProbeBytes)
+	n, err := io.ReadFull(body, prefix)
+	prefix = prefix[:n]
+	return io.MultiReader(bytes.NewReader(prefix), body), prefix, err
 }
 
 // probeLiveCaptionStream は ffprobe に MPEG-TS の有限な先頭部分だけを渡し、字幕

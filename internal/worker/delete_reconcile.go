@@ -407,16 +407,19 @@ func (w *DeleteReconcileWorker) deleteMediaAsset(ctx context.Context, q *sqlcgen
 	// VOD の字幕は encoded アセットに隣接する sidecar で、独立した
 	// media_assets 行を持たない。encoded 本体を削除する段階で同時に削除し、
 	// tombstone が残る間に orphan 判定から除外され続けるリークを防ぐ。
+	//
+	// **失敗しても継続する（return しない）。** サイドカーは主資産ではない
+	// --- rel_path に拡張子が無い、権限で消せない等の理由で 3 経路のどれかが
+	// 失敗しても、それを理由に encoded 本体（映像そのもの）を永久に回収不能に
+	// してはならない。失敗は log のみで、サイドカーは孤児として残る（孤児回収が
+	// 別途拾う経路がある前提。ここでは encoded 本体の削除を止めないことだけを守る）。
 	if t.Kind == db.AssetKindEncoded {
 		if subtitleRelPath, pathErr := SubtitleRelPath(t.RelPath); pathErr != nil {
-			log.Error("delete_reconcile: building subtitle sidecar path", "err", pathErr)
-			return
+			log.Warn("delete_reconcile: building subtitle sidecar path; continuing without removing it", "err", pathErr)
 		} else if subtitlePath, resolveErr := mediapath.Resolve(w.MediaDir, subtitleRelPath); resolveErr != nil {
-			log.Error("delete_reconcile: resolving subtitle sidecar path", "err", resolveErr)
-			return
+			log.Warn("delete_reconcile: resolving subtitle sidecar path; continuing without removing it", "err", resolveErr)
 		} else if removeErr := os.Remove(subtitlePath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
-			log.Error("delete_reconcile: removing subtitle sidecar", "err", removeErr)
-			return
+			log.Warn("delete_reconcile: removing subtitle sidecar; continuing", "err", removeErr)
 		}
 	}
 

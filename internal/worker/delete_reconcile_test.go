@@ -241,6 +241,91 @@ func TestDeleteReconcileWorker_TrashPastRetention_Deletes(t *testing.T) {
 	}
 }
 
+// サイドカー（.vtt）の削除が失敗しても encoded 本体は削除される。
+//
+// 壊し方: deleteMediaAsset のサイドカー削除 3 分岐を return 付きに戻すと、
+// os.Remove の失敗（サイドカーの実体が空でないディレクトリ）で本体削除に
+// 到達せず落ちる（本 PR で実際に確認したレビュー指摘そのもの）。
+//
+// **サイドカーの実体を空でないディレクトリにする（親ディレクトリの権限は
+// 変えない）。** SubtitleRelPath は encoded と同じディレクトリのパスを返すため、
+// 親ディレクトリを読み取り専用にすると同じディレクトリにある原本・encoded 本体の
+// unlink まで一緒に失敗してしまい、「サイドカーだけが失敗する」状況を再現でき
+// ない。os.Remove はディレクトリに対しては ENOTEMPTY で失敗するので、この形なら
+// サイドカーの削除だけを狙って失敗させられる。
+func TestDeleteReconcileWorker_TrashPastRetention_SidecarDeleteFailure_StillDeletesEncoded(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+	recordingID := insertTestRecording(t, pool)
+
+	seedOriginalAsset(t, pool, mediaDir, recordingID, "sidecarfail/retention.m2ts", []byte("data"))
+	profile := "h264"
+	encodedID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindEncoded, &profile,
+		"sidecarfail/retention_h264.mp4", []byte("encoded"))
+	subtitlePath := filepath.Join(mediaDir, "sidecarfail", "retention_h264.vtt")
+	if err := os.MkdirAll(subtitlePath, 0o755); err != nil {
+		t.Fatalf("creating subtitle sidecar path as a directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(subtitlePath, "keep.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("populating subtitle sidecar directory: %v", err)
+	}
+
+	past := time.Now().Add(-40 * 24 * time.Hour)
+	if _, err := pool.Exec(context.Background(),
+		"UPDATE recordings SET deleted_at = $1 WHERE id = $2", past, recordingID); err != nil {
+		t.Fatalf("marking recording deleted: %v", err)
+	}
+
+	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, TrashRetention: 30 * 24 * time.Hour}
+	if err := w.Work(context.Background(), nil); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+
+	if got := assetState(t, pool, encodedID); got != "deleted" {
+		t.Errorf("encoded asset state = %q, want deleted (sidecar failure must not block it)", got)
+	}
+	if fileExists(filepath.Join(mediaDir, "sidecarfail", "retention_h264.mp4")) {
+		t.Error("encoded file still exists on disk, want removed despite sidecar delete failure")
+	}
+	if _, err := os.Stat(subtitlePath); err != nil {
+		t.Errorf("sidecar directory was removed despite being non-empty (test setup did not reproduce the failure): %v", err)
+	}
+}
+
+// encoded の rel_path が拡張子を持たない（SubtitleRelPath がエラーを返す）場合も
+// 本体削除は進む。
+func TestDeleteReconcileWorker_TrashPastRetention_ExtensionlessEncodedRelPath_StillDeletes(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+	recordingID := insertTestRecording(t, pool)
+
+	seedOriginalAsset(t, pool, mediaDir, recordingID, "noext/retention.m2ts", []byte("data"))
+	profile := "h264"
+	// 拡張子の無い rel_path。SubtitleRelPath は "encoded rel_path has no extension" で
+	// エラーを返す --- かつては deleteMediaAsset がここで return し、本体を
+	// 削除できなかった。
+	encodedID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindEncoded, &profile,
+		"noext/retention_h264", []byte("encoded"))
+
+	past := time.Now().Add(-40 * 24 * time.Hour)
+	if _, err := pool.Exec(context.Background(),
+		"UPDATE recordings SET deleted_at = $1 WHERE id = $2", past, recordingID); err != nil {
+		t.Fatalf("marking recording deleted: %v", err)
+	}
+
+	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, TrashRetention: 30 * 24 * time.Hour}
+	if err := w.Work(context.Background(), nil); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+
+	if got := assetState(t, pool, encodedID); got != "deleted" {
+		t.Errorf("encoded asset state = %q, want deleted (extensionless rel_path must not block it)", got)
+	}
+	if fileExists(filepath.Join(mediaDir, "noext", "retention_h264")) {
+		t.Error("encoded file still exists on disk, want removed despite extensionless rel_path")
+	}
+}
+
 // 猶予期間内のごみ箱録画は削除されない（TrashPastRetention の逆方向）。
 func TestDeleteReconcileWorker_TrashWithinRetention_NotDeleted(t *testing.T) {
 	pool := setupTestPool(t)
@@ -1280,6 +1365,49 @@ func TestDeleteReconcileWorker_MixedSitePrefixTree_NoFalseOrphans(t *testing.T) 
 	}
 	if trueOrphanCount != 1 {
 		t.Errorf("orphan_files count for %q = %d, want 1 (an unregistered file under sites/ must still be detected as an orphan candidate --- otherwise walkMediaFiles is silently excluding sites/, which is exactly the M4-11 failure mode the reserved directories exist to prevent)", trueOrphanRel, trueOrphanCount)
+	}
+}
+
+// encoded の隣接 .vtt サイドカーは孤児候補にならない（独立した media_assets 行を
+// 持たないため、既知パス集合には encoded の rel_path しか無い --- 除外は
+// reconcileOrphanCandidates が SubtitleRelPath で明示的に補う。issue #430）。
+//
+// 壊し方: reconcileOrphanCandidates の sidecar 除外（knownSet への追加）を消すと、
+// .vtt が本当に孤児候補として orphan_files に記録されてしまい落ちる。
+func TestDeleteReconcileWorker_Orphan_EncodedSidecar_NotRegistered(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+	recordingID := insertTestRecording(t, pool)
+
+	profile := "h264"
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindEncoded, &profile,
+		"subs/program_h264.mp4", []byte("encoded"))
+	subtitleRel := "subs/program_h264.vtt"
+	subtitlePath := filepath.Join(mediaDir, filepath.FromSlash(subtitleRel))
+	if err := os.WriteFile(subtitlePath, []byte("WEBVTT\n\n"), 0o644); err != nil {
+		t.Fatalf("writing subtitle sidecar: %v", err)
+	}
+	// 孤児候補の mtime 猶予を確実に超えさせる。
+	old := time.Now().Add(-30 * 24 * time.Hour)
+	if err := os.Chtimes(subtitlePath, old, old); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+
+	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, OrphanMTimeGrace: 7 * 24 * time.Hour}
+	if err := w.Work(context.Background(), nil); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+
+	var count int
+	if err := pool.QueryRow(context.Background(),
+		"SELECT count(*) FROM orphan_files WHERE rel_path = $1", subtitleRel).Scan(&count); err != nil {
+		t.Fatalf("querying orphan_files: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("orphan_files count for sidecar %q = %d, want 0 (adjacent .vtt of an active encoded asset must not be an orphan candidate)", subtitleRel, count)
+	}
+	if !fileExists(subtitlePath) {
+		t.Error("sidecar file was removed, want kept (must not be treated as an orphan)")
 	}
 }
 

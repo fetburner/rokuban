@@ -36,7 +36,7 @@ func TestBuildFFmpegArgs(t *testing.T) {
 		Preset:     "medium",
 		ExtraArgs:  []string{"-movflags", "+faststart"},
 	}
-	args := BuildFFmpegArgs(p, "/in.m2ts", "/out.mp4")
+	args := BuildFFmpegArgs(p, "/in.m2ts", "/out.mp4", false)
 
 	// 必須フラグと入出力の位置。
 	if !slices.Contains(args, "-i") {
@@ -93,7 +93,7 @@ func TestBuildFFmpegArgs_WebVTTSubtitleSidecar(t *testing.T) {
 	p := config.EncodeProfile{
 		Name: "web", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac", Subtitles: "webvtt",
 	}
-	args := BuildFFmpegArgs(p, "/in.ts", "/out.mp4")
+	args := BuildFFmpegArgs(p, "/in.ts", "/out.mp4", true)
 	joined := strings.Join(args, " ")
 	for _, want := range []string{"-map 0:s?", "-c:s webvtt", "-f webvtt", "/out.vtt"} {
 		if !strings.Contains(joined, want) {
@@ -125,7 +125,7 @@ func TestBuildFFmpegArgs_HWAccelBeforeInput(t *testing.T) {
 			OutputFormat: "vaapi",
 		},
 	}
-	args := BuildFFmpegArgs(p, "/in.m2ts", "/out.mp4")
+	args := BuildFFmpegArgs(p, "/in.m2ts", "/out.mp4", false)
 
 	hwIdx := slices.Index(args, "-hwaccel")
 	deviceIdx := slices.Index(args, "-hwaccel_device")
@@ -175,7 +175,7 @@ func TestBuildFFmpegArgs_QP(t *testing.T) {
 		AudioCodec: "aac",
 		QP:         &qp,
 	}
-	args := BuildFFmpegArgs(p, "in", "out")
+	args := BuildFFmpegArgs(p, "in", "out", false)
 	if slices.Contains(args, "-crf") {
 		t.Errorf("-crf must not be emitted when only qp is set: %v", args)
 	}
@@ -200,7 +200,7 @@ func TestBuildFFmpegArgs_InputAndOutputExtraArgsPositions(t *testing.T) {
 		InputExtraArgs: []string{"-re"},
 		ExtraArgs:      []string{"-movflags", "+faststart"},
 	}
-	args := BuildFFmpegArgs(p, "/in.m2ts", "/out.mp4")
+	args := BuildFFmpegArgs(p, "/in.m2ts", "/out.mp4", false)
 
 	reIdx := slices.Index(args, "-re")
 	iIdx := slices.Index(args, "-i")
@@ -241,7 +241,7 @@ func TestBuildFFmpegArgs_AppOwnedTail(t *testing.T) {
 		InputExtraArgs: []string{"-re"},
 		ExtraArgs:      []string{"-movflags", "+faststart", "-an"},
 	}
-	args := BuildFFmpegArgs(p, "/in.m2ts", "/out.mp4")
+	args := BuildFFmpegArgs(p, "/in.m2ts", "/out.mp4", false)
 
 	if args[len(args)-1] != "/out.mp4" {
 		t.Errorf("last arg = %q, want output path", args[len(args)-1])
@@ -277,7 +277,7 @@ func TestBuildFFmpegArgs_NoOptional(t *testing.T) {
 		VideoCodec: "libx265",
 		AudioCodec: "copy",
 	}
-	args := BuildFFmpegArgs(p, "in", "out")
+	args := BuildFFmpegArgs(p, "in", "out", false)
 	if slices.Contains(args, "-crf") {
 		t.Error("crf should be omitted when nil")
 	}

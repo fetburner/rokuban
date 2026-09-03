@@ -28,15 +28,15 @@ function setMediaProps(video: HTMLVideoElement, props: { currentTime?: number; d
 }
 
 describe('RecordingPlayer の字幕サイドカー', () => {
-	it('encoded 動画に WebVTT subtitle track を付ける', () => {
-		const { container } = render(
-			<RecordingPlayer recordingId={7} encodedAssets={[{ profile: 'h264', sizeBytes: 123 }]} />,
-		)
-		const track = container.querySelector('track')
-		expect(track).not.toBeNull()
-		expect(track?.kind).toBe('subtitles')
-		expect(track?.src).toContain('/api/recordings/7/file?profile=h264&track=subtitles')
-	})
+  it('encoded 動画に WebVTT subtitle track を付ける', () => {
+    const { container } = render(
+      <RecordingPlayer recordingId={7} encodedAssets={[{ profile: 'h264', sizeBytes: 123 }]} />,
+    )
+    const track = container.querySelector('track')
+    expect(track).not.toBeNull()
+    expect(track?.kind).toBe('subtitles')
+    expect(track?.src).toContain('/api/recordings/7/file?profile=h264&track=subtitles')
+  })
 })
 
 describe('RecordingPlayer の timeupdate 間引き', () => {
