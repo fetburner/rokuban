@@ -310,8 +310,34 @@ func (w *ThumbnailWorker) commandOutput(ctx context.Context, name string, args .
 
 func commandOutput(ctx context.Context, name string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
+	setWorkerExecWaitDelay(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
+		// ctx キャンセルを WaitDelay-success 分岐より先に見る（encode.go の
+		// runEncode と同型）。watchCtx の Cancel が os.ErrProcessDone を返す
+		// 競合（プロセスは既に exit 0 していた）では err は一旦 nil のままで、
+		// 後から WaitDelay の分岐だけが ErrWaitDelay を立てる。ここで
+		// ctx.Err() を先に見ないと、River のシャットダウンが ffmpeg/ffprobe の
+		// exit 0 直後に当たったケースを黙って成功扱いにしてしまう。
+		if ctx.Err() != nil {
+			return out, ctx.Err()
+		}
+		if errors.Is(err, exec.ErrWaitDelay) && cmd.ProcessState != nil && cmd.ProcessState.Success() {
+			// exit 0 の完走後、孫プロセスが fd を握ったままで WaitDelay が
+			// 先に切れた場合（encode.go の runEncode と同型）。コピー
+			// goroutine はプロセスが書いた分をプロセス生存中に drain し
+			// 続けているので、out がプロセス自身の出力より短く切れることは
+			// ない。到達しうるのは逆方向 --- fd を継承した孫プロセスが
+			// 強制クローズまでの WaitDelay の窓の間に out へ追記しうること。
+			// extractFrame の呼び出しでは out 自体を捨てるので無害。
+			// probeDuration は out を ParseFloat するので、追記があれば
+			// パース自体が失敗する（未観測 --- 実運用の ffprobe 出力はごく
+			// 短時間で読み切れるため、この窓に孫が居合わせた例は無い）。
+			// 再試行ループから見分けられるよう記録は残す。
+			slog.Warn("commandOutput: process exited successfully but WaitDelay expired before I/O completed",
+				"name", name, "wait_delay", workerExecWaitDelay)
+			return out, nil
+		}
 		return out, fmt.Errorf("%s %v: %w\n%s", name, args, err, truncateOutput(out))
 	}
 	return out, nil

@@ -1,9 +1,11 @@
 package worker
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -150,18 +152,28 @@ func TestEncodeWorker_AttemptRow_FailedOnFailure(t *testing.T) {
 // キャンセルすると markEncodeAttemptRunning 自身が ctx に紐付いた DB 書き込みで
 // 失敗し、行が一度も書かれない（このテストが検証したい状態に到達できない）。
 //
-// startedMarker は sleep の前に作られる空ファイルのパス。呼び出し側はこれの
-// 出現を cmd.Start() が実際に成功した証拠として待つ（下のテストのコメント参照）。
-func installSlowFakeFFmpeg(t *testing.T, sleepSeconds int) (ffmpegPath, startedMarker string) {
+// startedMarker は sleep の起動後（PID echo の後）に作られる空ファイルのパス。
+// 呼び出し側はこれの出現を cmd.Start() が実際に成功した証拠として待つ
+// （下のテストのコメント参照）。
+// childPIDMarker は、テスト終了時に孤児化した sleep を回収するための PID ファイル。
+func installSlowFakeFFmpeg(t *testing.T, sleepSeconds int) (ffmpegPath, startedMarker, childPIDMarker string) {
 	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "ffmpeg")
 	startedMarker = filepath.Join(dir, "started")
-	script := "#!/bin/sh\n: > " + startedMarker + "\nsleep " + strconv.Itoa(sleepSeconds) + "\n"
+	childPIDMarker = filepath.Join(dir, "child-pid")
+	// バックグラウンドの sleep は親 shell が kill されても stderr の fd を
+	// 継承したまま生き残る。これが WaitDelay の再現対象になる。
+	script := "#!/bin/sh\n" +
+		"sleep " + strconv.Itoa(sleepSeconds) + " &\n" +
+		": > " + childPIDMarker + "\n" +
+		"echo $! > " + childPIDMarker + "\n" +
+		": > " + startedMarker + "\n" +
+		"wait\n"
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	return path, startedMarker
+	return path, startedMarker, childPIDMarker
 }
 
 // TestEncodeWorker_AttemptRow_CtxCanceledLeavesRunning は ctx キャンセル
@@ -199,7 +211,7 @@ func installSlowFakeFFmpeg(t *testing.T, sleepSeconds int) (ffmpegPath, startedM
 // cmd.Start() 前に死ぬ。この割合自体を性質として当てにしない）。
 //
 // そこでフェイク ffmpeg 自身に「実際に起動した」印（startedMarker への
-// touch。sleep の前に置く）を持たせ、その出現を待ってから cancel する。
+// touch。sleep の起動後に置く）を持たせ、その出現を待ってから cancel する。
 // touch は子プロセスが exec された後にしか起きないので、その出現は
 // 「fork/exec は完了した（os/exec の Cmd.Start が開始前にチェックする
 // ctx.Done() は、開始しない分岐にはもう入れない）」ことの証拠になる ---
@@ -215,31 +227,49 @@ func TestEncodeWorker_AttemptRow_CtxCanceledLeavesRunning(t *testing.T) {
 	}
 	mediaDir := t.TempDir()
 	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "x/attempt-cancel.m2ts", nil, []byte("data"))
-	// workReturnTimeout は slowFFmpegSleepSeconds より十分大きく保つ必要が
-	// **ある**（論理的に独立ではない）--- 計測: cancel() から Work() が返るまで
-	// は sleep の長さとほぼ 1:1 で追従する（sleepSeconds=2 で ~2016ms、
-	// sleepSeconds=6 で ~6015ms、いずれも cancel からの経過。TestEncodeWorker_
-	// AttemptRow_CtxCanceledLeavesRunning に一時的な計測コードを入れて確認）。
+	// workReturnTimeout は WaitDelay より十分大きく、WaitDelay を外した場合の
+	// sleep 全長（slowFFmpegSleepSeconds）より短く保つ。WaitDelay が無いと
+	// cancel() から Work() が返るまで sleep の全長を待つため、このテストが
+	// タイムアウトする。
 	// 原因: encode.go の cmd.Stderr は *os.File ではなく &strings.Builder な
-	// ので、os/exec は stderr を読む中継 goroutine を立て、cmd.Wait（
-	// WaitDelay 未設定）はその goroutine が EOF で終わるまで待つ
-	// （awaitGoroutines）。/bin/sh はスクリプトファイルの末尾コマンドでも
-	// exec せず fork する（sh -c の文字列に対する exec 最適化は、スクリプト
-	// ファイルの実行には効かない）ため、kill は sh だけを殺し、sh の子の
-	// sleep は inherited な stderr の書き込み端を握ったまま生き残る。
+	// ので、os/exec は stderr を読む中継 goroutine を立て、cmd.Wait はその
+	// goroutine が EOF で終わるまで待つ（awaitGoroutines）。/bin/sh は子の
+	// sleep が inherited な stderr の書き込み端を握ったままでも親だけ kill される。
 	// CI のランナーは全て Linux（.github/workflows/ci.yml、/bin/sh は
 	// dash）なので #552 は Linux 上で起きたフレーク --- macOS 固有の話ではない。
-	// このテストと同じ形（sleep 5、Stderr を &strings.Builder にした場合）の
-	// 最小 repro で両方計測: linux/arm64 dash（golang:1.25 コンテナ）で
-	// cancel→Wait = 4.9999s、darwin/arm64 で 5.0193s、いずれも sleep の
-	// 長さとほぼ一致（Stderr 無しなら linux 301µs / darwin 1.13ms、
-	// 即座に返る）。Wait() はその sleep が寿命を迎えて stderr が閉じるまで、
-	// 実質 sleep の残り時間だけ返らない。5 秒 vs 5 秒だったときに確率的に
-	// 落ちていたのはこの関係そのもの（issue #552）。この 2 つを同じ値・近い値に戻すと
-	// 同じフレークが復活するので、上限側を十分離して保つ。
-	const slowFFmpegSleepSeconds = 2
-	const workReturnTimeout = 10 * time.Second
-	slowFFmpeg, ffmpegStarted := installSlowFakeFFmpeg(t, slowFFmpegSleepSeconds)
+	// sleep は WaitDelay と十分離す。短すぎると WaitDelay が無くてもテストが
+	// 通ってしまい、回帰を検出できない。両方を workerExecWaitDelay の同じ
+	// スケールの倍数で導出する（3d > 2d は d をどう変えても成立する。加法の
+	// 余裕（例: d + 3s）を混ぜると、d を十分小さくしたときに sleep <=
+	// workReturnTimeout に潰れ、setWorkerExecWaitDelay を消しても検出できない
+	// 無言の後退が起こり得る）。sleep は秒単位の整数しか取れないので、切り捨て
+	// ではなく切り上げる --- 切り捨てると d が秒の整数倍でないとき（例: 1500ms
+	// なら sleep 3s / workReturnTimeout 3s）に上の不等式が等号に潰れる。
+	const slowFFmpegSleepSeconds = int((workerExecWaitDelay*3 + time.Second - 1) / time.Second)
+	const workReturnTimeout = 2 * workerExecWaitDelay
+	slowFFmpeg, ffmpegStarted, childPIDMarker := installSlowFakeFFmpeg(t, slowFFmpegSleepSeconds)
+	sleepStartedAt := time.Now()
+	defer func() {
+		// sleep 自身の寿命（slowFFmpegSleepSeconds）を過ぎていたら、その PID は
+		// とっくに sleep が自然終了して OS に再利用され得る。/bin/sh を殺した
+		// 時点で sleep は reparent されテストからは生死を確認できないので、
+		// ここで安価に「まだ生きている想定期間内か」だけ見て、超えていたら
+		// 無関係なプロセスを殺さないよう kill をスキップする。
+		if time.Since(sleepStartedAt) > time.Duration(slowFFmpegSleepSeconds)*time.Second {
+			return
+		}
+		pidBytes, err := os.ReadFile(childPIDMarker)
+		if err != nil {
+			return
+		}
+		pid, err := strconv.Atoi(strings.TrimSpace(string(pidBytes)))
+		if err != nil {
+			return
+		}
+		if process, err := os.FindProcess(pid); err == nil {
+			_ = process.Kill()
+		}
+	}()
 
 	w := &EncodeWorker{
 		Pool:       pool,
@@ -303,10 +333,14 @@ func TestEncodeWorker_AttemptRow_CtxCanceledLeavesRunning(t *testing.T) {
 			}
 		},
 	)
+	cancelAt := time.Now()
 	cancel()
 
 	select {
 	case err := <-workErr:
+		if elapsed := time.Since(cancelAt); elapsed >= workReturnTimeout {
+			t.Fatalf("Work() returned after %s; WaitDelay did not bound the stderr pipe wait", elapsed)
+		}
 		if err == nil {
 			t.Fatal("expected error with canceled ctx")
 		}
@@ -436,5 +470,149 @@ func TestEncodeWorker_ClearAttempt_SurvivesCanceledCtx(t *testing.T) {
 
 	if state, ok := encodeAttemptState(t, pool, recordingID, "h264"); ok {
 		t.Errorf("attempt row remains (state = %q) after clearEncodeAttempt with canceled ctx; want deleted", state)
+	}
+}
+
+// installLeakyExitZeroFakeFFmpeg は installFakeFFmpeg と同じく入力を出力へ
+// コピーして exit 0 するが、stderr の書き込み端を継承したまま生き残る孫プロセス
+// （sleep）を残す偽 ffmpeg。TestEncodeWorker_WaitDelayExpiredOnSuccess が、
+// 「ffmpeg 自体は完走したが孫プロセスが fd を握ったままで WaitDelay が先に
+// 切れる」exit 0 版のハングを再現するために使う。
+func installLeakyExitZeroFakeFFmpeg(t *testing.T, sleepSeconds int) (ffmpegPath, childPIDMarker string) {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ffmpeg")
+	childPIDMarker = filepath.Join(dir, "child-pid")
+	script := "#!/bin/sh\n" +
+		"set -e\n" +
+		"input=\"\"\n" +
+		"output=\"\"\n" +
+		"prev=\"\"\n" +
+		"for a in \"$@\"; do\n" +
+		"  if [ \"$prev\" = \"-i\" ]; then input=\"$a\"; fi\n" +
+		"  prev=\"$a\"\n" +
+		"  output=\"$a\"\n" +
+		"done\n" +
+		"if [ -z \"$input\" ] || [ -z \"$output\" ]; then\n" +
+		"  echo \"fake-ffmpeg: missing input/output\" >&2\n" +
+		"  exit 2\n" +
+		"fi\n" +
+		// バックグラウンドの sleep は stderr の fd（cmd.Stderr が &strings.Builder
+		// なので os/exec が張るパイプ）を継承したまま、この shell が exit 0 で
+		// 終わった後も生き残る。
+		"sleep " + strconv.Itoa(sleepSeconds) + " &\n" +
+		"echo $! > " + childPIDMarker + "\n" +
+		"printf 'out_time_ms=1000\\nprogress=continue\\n'\n" +
+		"printf 'out_time_ms=2000\\nprogress=end\\n'\n" +
+		"cp \"$input\" \"$output\"\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path, childPIDMarker
+}
+
+// TestEncodeWorker_WaitDelayExpiredOnSuccess_TreatedAsSuccess は、ffmpeg が
+// exit 0 で完走しても孫プロセスが stderr の fd を握ったままだと Cmd.Wait が
+// exec.ErrWaitDelay を返す（go1.26.6 os/exec の awaitGoroutines。cmd.Stderr は
+// *os.File ではなく &strings.Builder なので、Wait はそれをコピーする goroutine
+// の終了も待つ）ケースを固定する。この分岐が無いと、完走した正常なエンコードが
+// 「ffmpeg failed: exec: WaitDelay expired before I/O complete」として failed
+// 行になり、River が再試行し続ける（MaxAttempts 25）。
+//
+// workerExecWaitDelay（internal/worker/exec.go）が実際に経過するのを待つ必要が
+// あるため、このテストは数秒かかる。
+func TestEncodeWorker_WaitDelayExpiredOnSuccess_TreatedAsSuccess(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	mediaDir := t.TempDir()
+	scratchDir := t.TempDir()
+	rel := "20240101/waitdelay-success.m2ts"
+	content := []byte("fake-ts-payload-for-waitdelay-success-test")
+	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, rel, []string{"h264"}, content)
+
+	// sleep は WaitDelay より十分長く保つ（この shell 自体は即座に exit するので、
+	// installSlowFakeFFmpeg のような cancel との競合はない。PID 再利用を避ける
+	// ため、テスト終了時の cleanup 猶予も込みで長めに取る）。
+	sleepSeconds := int(workerExecWaitDelay/time.Second*3) + 5
+	leakyFFmpeg, childPIDMarker := installLeakyExitZeroFakeFFmpeg(t, sleepSeconds)
+	sleepStartedAt := time.Now()
+	defer func() {
+		if time.Since(sleepStartedAt) > time.Duration(sleepSeconds)*time.Second {
+			return
+		}
+		pidBytes, err := os.ReadFile(childPIDMarker)
+		if err != nil {
+			return
+		}
+		pid, err := strconv.Atoi(strings.TrimSpace(string(pidBytes)))
+		if err != nil {
+			return
+		}
+		if process, err := os.FindProcess(pid); err == nil {
+			_ = process.Kill()
+		}
+	}()
+
+	var logBuf bytes.Buffer
+	origLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(origLogger) })
+
+	w := &EncodeWorker{
+		Pool:       pool,
+		MediaDir:   mediaDir,
+		ScratchDir: scratchDir,
+		FFmpeg:     leakyFFmpeg,
+		// 実 ffprobe を shell out させない（本題である WaitDelay の再現には
+		// 無関係。probeEncodeDuration の失敗は進捗計測を無効にするだけ）。
+		FFprobe: "/nonexistent/ffprobe",
+		Profiles: config.EncodeConfig{
+			FFmpeg: leakyFFmpeg,
+			Profiles: []config.EncodeProfile{{
+				Name:       "h264",
+				Container:  "mp4",
+				VideoCodec: "libx264",
+				AudioCodec: "aac",
+			}},
+		},
+	}
+
+	job := &river.Job[EncodeJobArgs]{
+		JobRow: &rivertype.JobRow{Attempt: 1, MaxAttempts: 25},
+		Args:   EncodeJobArgs{RecordingID: recordingID, Profile: "h264"},
+	}
+
+	start := time.Now()
+	if err := w.Work(context.Background(), job); err != nil {
+		t.Fatalf("Work(): %v (log: %s)", err, logBuf.String())
+	}
+	// WaitDelay の経路を実際に踏んだことの裏付け --- 踏んでいなければ ffmpeg が
+	// 即座に完了して Work() もすぐ返り、この分岐は何も検証していないことになる。
+	if elapsed := time.Since(start); elapsed < workerExecWaitDelay/2 {
+		t.Fatalf("Work() returned after %s; want roughly workerExecWaitDelay (%s), the leaky child fd did not force a WaitDelay wait", elapsed, workerExecWaitDelay)
+	}
+
+	if !strings.Contains(logBuf.String(), "WaitDelay expired before I/O completed") {
+		t.Errorf("log output = %q, want a warning distinguishing the WaitDelay-on-success path", logBuf.String())
+	}
+
+	if state, ok := encodeAttemptState(t, pool, recordingID, "h264"); ok {
+		t.Errorf("recording_encode_attempts row = %q after WaitDelay-on-success; want cleared (treated as success)", state)
+	}
+
+	// 「成功として扱った」ことそのものを検証する --- 上の attempt 行チェックは
+	// 行が一度も書かれなかった回帰も見逃す（TestEncodeWorker_SuccessAndIdempotent
+	// と同じ形の検査）。
+	var encodedCount int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM media_assets WHERE recording_id = $1 AND kind = 'encoded' AND profile = 'h264' AND state = 'active'`,
+		recordingID,
+	).Scan(&encodedCount); err != nil {
+		t.Fatal(err)
+	}
+	if encodedCount != 1 {
+		t.Errorf("active encoded media_assets = %d, want 1 (WaitDelay-on-success must still commit)", encodedCount)
 	}
 }
