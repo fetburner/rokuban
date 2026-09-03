@@ -304,6 +304,12 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 	// 射影に無い programId をここに含めても何もされない。reservations.program_fkey
 	// が program_snapshots を参照するため、予約行の upsert より先に実行する
 	// 必要がある。
+	// 対象を広げるぶん UpsertProgramSnapshotsFromProjection に渡す programId は
+	// 増えるが、実際に書かれる行は同クエリの
+	// ON CONFLICT ... DO UPDATE ... WHERE ... IS DISTINCT FROM ...
+	// （internal/db/queries/program_snapshots.sql）が値の変わらない行を弾くため、
+	// 「skip 意図があり、かつ射影側で値が変わった番組」に限られる。ただしこれは
+	// SQL から読める性質であって、パスあたりの書き込み量そのものは未検証である。
 	snapshotSyncIDs := slices.Clone(desiredIDs)
 	for id := range skipIntent {
 		if _, ok := desired[id]; !ok {

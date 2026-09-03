@@ -617,6 +617,12 @@ func TestRunPass_SkipIntentSnapshotFollowsDelayedProgramAndSurvivesGC(t *testing
 	// 予約が無くなった後に GC なら削除対象になる古い snapshot を作る。この時点では
 	// skip 意図だけが snapshot 行を支えているので、修正前実装では次の RunPass で
 	// snapshot が追従せず、GC の CASCADE で意図も消える。
+	// 直前の RunPass（after delayed skip）では予約行がまだ existingSet に居たため、
+	// 修正前実装でも snapshot は live EPG に追従してしまい、古い start_at のままには
+	// ならない。そのためここで手で古い時刻へ戻して「skip 意図だけが支える凍結した
+	// snapshot」を作り直す必要がある。この UPDATE を消すと、次の RunPass の時点で
+	// snapshot がすでに live の start_at を持っており、回帰テストが修正前実装でも
+	// 通ってしまう（＝何も検証しなくなる）。
 	staleStart := time.Now().Add(-3 * time.Hour).Truncate(time.Second)
 	if _, err := pool.Exec(ctx, `
 UPDATE program_snapshots SET start_at = $1
