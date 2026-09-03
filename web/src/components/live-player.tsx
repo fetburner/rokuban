@@ -390,9 +390,21 @@ export function LivePlayer({
           setLoading(false)
           return
         }
-        // master playlist の EXT-X-MEDIA subtitles rendition を hls.js の
-        // 字幕トグルに表示させる（issue #430）。subtitleDisplay は HlsConfig
-        // ではなく Hls インスタンスのプロパティである。
+        // master playlist の EXT-X-MEDIA subtitles rendition を**既定で表示**する
+        // （issue #430）。subtitleDisplay は HlsConfig ではなく Hls インスタンスの
+        // プロパティである。
+        //
+        // **これは「トグルを出す」設定ではない。** 字幕の入切は Chrome
+        // ネイティブコントロールの `⋮` → 「Captions」で、textTrack が 1 本でも
+        // あれば rokuban が何もしなくても現れる（実測: 実 Chromium で `⋮` を
+        // 開いて "Captions / Off" の項目を確認）。この行が決めるのは既定の
+        // 状態だけで、true なら `TextTrack.mode === "showing"` で始まる（実測:
+        // 実 mirakc のライブで確認）。
+        //
+        // **VOD 側（recording-player.tsx の `<track>`）とは既定が逆になる。**
+        // あちらは `default` 属性を持たないので `mode === "disabled"` で始まり、
+        // ユーザーが `⋮` から入れるまで `.vtt` を fetch すらしない（実測）。
+        // 揃えるなら片方を変えることになるが、どちらを既定にするかは未決。
         const hls = new Hls() as unknown as HlsLike
         hls.subtitleDisplay = true
         hlsRef.current = hls
