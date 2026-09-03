@@ -633,10 +633,11 @@ describe('RecordingsPage 複数選択と一括操作', () => {
   })
 })
 
-// issue #283: 多サイトでは行に site を出す（同じ (networkId, serviceId) を
+// issue #283 / #577: 多サイトでは行に site を出す（同じ (networkId, serviceId) を
 // 2 サイトで受けたとき、行を見分ける材料が site しか無い）。単一サイトでは
-// 「default」がノイズになるだけなので出さない。
-describe('RecordingsPage 行の site 表示 (issue #283)', () => {
+// 「default」がノイズになるだけなので出さない。レジストリから消えた site は
+// 録画行自身の値を使って表示する。
+describe('RecordingsPage 行の site 表示 (issue #283, #577)', () => {
   it('複数サイトのときは各行に site を出す', async () => {
     createFakeRecordingsServer({
       sites: ['default', 'site2'],
@@ -659,6 +660,44 @@ describe('RecordingsPage 行の site 表示 (issue #283)', () => {
 
     await screen.findByRole('link', { name: '単一サイトの録画' })
     expect(screen.queryByText('default')).not.toBeInTheDocument()
+  })
+
+  it('レジストリから消えた site の録画にも site を出す', async () => {
+    createFakeRecordingsServer({
+      sites: ['default'],
+      library: [sampleRecording({ id: 7, title: '旧 site の録画', site: 'site2' })],
+    })
+
+    renderPage()
+    const row = (await screen.findByRole('link', { name: '旧 site の録画' })).closest('div')
+    expect(within(row as HTMLElement).getByText('site2')).toBeInTheDocument()
+  })
+
+  it('2 ページ目で別 site の行が来ると、既に表示中の 1 ページ目の行にも site が生える', async () => {
+    const user = userEvent.setup()
+    // 1 ページ目 50 件は全部 default、2 ページ目（1 件）だけレジストリに無い
+    // site2（id=1 が最古で最後のページに来る）。
+    const many = Array.from({ length: 51 }, (_, i) =>
+      sampleRecording({
+        id: i + 1,
+        title: `録画${i + 1}`,
+        site: i === 0 ? 'site2' : 'default',
+        startAt: new Date(Date.parse('2026-01-01T00:00:00Z') + i * 60_000).toISOString(),
+      }),
+    )
+    createFakeRecordingsServer({ sites: ['default'], library: many })
+
+    renderPage()
+
+    await screen.findByText('録画51')
+    // まだ 1 ページ目しか読んでおらず site の和集合が default のみ（1 件）なので出ない。
+    expect(screen.queryByText('default')).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'さらに読み込む' }))
+
+    await screen.findByText('録画1')
+    const oldRow = (await screen.findByRole('link', { name: '録画51' })).closest('div')
+    expect(within(oldRow as HTMLElement).getByText('default')).toBeInTheDocument()
   })
 })
 
