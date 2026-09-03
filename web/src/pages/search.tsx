@@ -187,6 +187,15 @@ export function SearchPage() {
    * リクエストとは文字列として一致しない。生の JSON を比べると、自分で書いた
    * URL が「別の条件」に見えて**押すたびに同じ検索を 2 回叩く**
    * （`e2e/personalization.mjs` の③がこれを見ている）。
+   *
+   * **`submit` と違い、ここは `registryPending` / `registryError` で止めない。**
+   * `submit` を registry で止めるのは、条件フォームのチップがまだ出ていない
+   * 状態でユーザーに押させないため --- URL が運ぶ条件は既に完成した値なので、
+   * その理由が当たらない。加えて `registryError` はほぼ api ロール自身の不調
+   * （`GET /api/sites` は config、`/services` は同じプロセスの DB 射影。
+   * `lib/all-sites-services.ts` 参照）なので、ここで止めても検索自体が同じ
+   * プロセスで失敗するだけで救えるものが無く、止めると共有リンクが運んできた
+   * 条件がフォームから無言で消える。
    */
   const appliedCondRef = useRef<string | undefined>(undefined)
   useEffect(() => {

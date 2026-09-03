@@ -114,11 +114,15 @@ async function apiHandler({ path, url, json, route }) {
     const recording = recordings.find((r) => r.id === Number(recordingDetail[1]))
     return recording ? json(recording) : route.fulfill({ status: 404 })
   }
-  if (/^\/api\/sites\/[^/]+\/programs\/search$/.test(path) && method === 'POST') {
+  if (path === '/api/programs/search' && method === 'POST') {
     const body = JSON.parse(route.request().postData() ?? '{}')
     searchBodies.push(body)
     const keyword = body.textMatches?.[0]?.value ?? ''
-    return json(programs.filter((p) => p.name.includes(keyword)).map((p) => p.programId))
+    return json(
+      programs
+        .filter((p) => p.name.includes(keyword))
+        .map((p) => ({ site: 'default', programId: p.programId })),
+    )
   }
   const program = /^\/api\/sites\/[^/]+\/programs\/(\d+)$/.exec(path)
   if (program) return json(programs.find((p) => p.programId === Number(program[1])) ?? {})

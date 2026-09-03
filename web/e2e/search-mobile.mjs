@@ -102,8 +102,6 @@ async function apiHandler({ path: p, json, route }) {
   if (p === '/api/sites') return json([SITE])
   if (p === '/api/capabilities') return json({ live: false })
   if (p === `/api/sites/${SITE}/services`) return json(services)
-  // `/programs/search` は `/programs/{id}` より先に見る（`search` が id に
-  // 見えてしまう順序事故を避ける）。
   if (p === '/api/programs/search')
     return json(matchedProgramIds.map((programId) => ({ site: SITE, programId })))
   const detail = /^\/api\/sites\/[^/]+\/programs\/(\d+)$/.exec(p)

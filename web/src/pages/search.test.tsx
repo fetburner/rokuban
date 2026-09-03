@@ -1836,6 +1836,22 @@ describe('SearchPage の条件の復元', () => {
   })
 
   /**
+   * `submit` は `registryPending || registryError` で検索を止めるが、`?cond=`
+   * のハイドレーション effect は同じゲートを持たない（`pages/search.tsx` の
+   * 該当 effect のコメント参照: registry の失敗はほぼ api ロール自身の不調で、
+   * ここで止めても救えるものが無く、止めると共有リンクの条件がフォームから
+   * 無言で消える）。registry が壊れていても URL の条件はフォームに載ることを
+   * 固定する。
+   */
+  it('registry が失敗（空配列）でも ?cond= の条件はフォームに載る（レビュー指摘）', async () => {
+    stubApi({ sites: [] })
+    renderPage(condEntry(newsCondition))
+
+    expect(await screen.findByText('サイト一覧の取得に失敗しました')).toBeInTheDocument()
+    expect(screen.getByLabelText('テキスト条件 1 の値')).toHaveValue('ニュース')
+  })
+
+  /**
    * `?ruleId=` はルール編集として開く経路で、条件の正本はルールにある。ここで
    * `cond` も書くと、次に開いたときどちらを写したのかが読めなくなる。
    */

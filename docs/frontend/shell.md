@@ -154,10 +154,9 @@ site を含まない `POST /api/breakers/{name}/resume` を叩く
 持たない（`GET /api/rules`）が、条件フォームのサービス選択肢はレジストリの
 全 site から作る（`components/condition-fields.tsx`）。`/recordings` は一覧も
 チャンネル選択肢も全サイトを対象にし、選択肢と述語を `(site, networkId, serviceId)`
-で結ぶ。**検索（`/search`）も 3 段にまたがる**: 検索リクエストは
-（`POST /api/programs/search`）サイトをパスに持たず、body の空 `sites` で全 site を
-対象にする。条件フォームの
-サイトチップ・サービス選択肢は `/rules` と同じくレジストリが運ぶ全 site、そして**検索結果は行が運ぶ**
+で結ぶ。**検索（`/search`）も 3 段にまたがる**: 検索リクエスト（`POST /api/programs/search`）は
+サイトをパスに持たず、body の空 `sites` で全 site を対象にする。条件フォームのサイトチップ・
+サービス選択肢は `/rules` と同じくレジストリが運ぶ全 site、そして**検索結果は行が運ぶ**
 （`[{site, programId}]` がフラットに返る --- `sites` を空以外にすれば
 現在サイト以外の行も返る）。番組詳細の取得・結果行のサービス名解決は行の
 `site` を使う（[search.md](search.md)）。
