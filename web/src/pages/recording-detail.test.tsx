@@ -247,6 +247,17 @@ describe('RecordingDetailPage', () => {
     expect(screen.queryByText(/default/)).not.toBeInTheDocument()
   })
 
+  it('レジストリから消えた site の録画も詳細のチャンネル欄に site を出す', async () => {
+    createFakeServer({
+      sites: ['default'],
+      recording: sampleRecording({ site: 'site2' }),
+    })
+
+    renderAt('/recordings/3')
+
+    expect(await screen.findByText(/site2/)).toBeInTheDocument()
+  })
+
   it('存在しない id は「録画が見つかりません」を表示する', async () => {
     createFakeServer({ recording: null })
 

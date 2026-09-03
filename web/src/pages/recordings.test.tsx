@@ -633,10 +633,11 @@ describe('RecordingsPage 複数選択と一括操作', () => {
   })
 })
 
-// issue #283: 多サイトでは行に site を出す（同じ (networkId, serviceId) を
+// issue #283 / #577: 多サイトでは行に site を出す（同じ (networkId, serviceId) を
 // 2 サイトで受けたとき、行を見分ける材料が site しか無い）。単一サイトでは
-// 「default」がノイズになるだけなので出さない。
-describe('RecordingsPage 行の site 表示 (issue #283)', () => {
+// 「default」がノイズになるだけなので出さない。レジストリから消えた site は
+// 録画行自身の値を使って表示する。
+describe('RecordingsPage 行の site 表示 (issue #283, #577)', () => {
   it('複数サイトのときは各行に site を出す', async () => {
     createFakeRecordingsServer({
       sites: ['default', 'site2'],
@@ -659,6 +660,17 @@ describe('RecordingsPage 行の site 表示 (issue #283)', () => {
 
     await screen.findByRole('link', { name: '単一サイトの録画' })
     expect(screen.queryByText('default')).not.toBeInTheDocument()
+  })
+
+  it('レジストリから消えた site の録画にも site を出す', async () => {
+    createFakeRecordingsServer({
+      sites: ['default'],
+      library: [sampleRecording({ id: 7, title: '旧 site の録画', site: 'site2' })],
+    })
+
+    renderPage()
+    const row = (await screen.findByRole('link', { name: '旧 site の録画' })).closest('div')
+    expect(within(row as HTMLElement).getByText('site2')).toBeInTheDocument()
   })
 })
 

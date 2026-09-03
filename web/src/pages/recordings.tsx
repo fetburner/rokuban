@@ -85,6 +85,23 @@ type RecordingsView = 'list' | 'card'
  */
 const VIEW_KEY = 'rokuban:recordings:view'
 
+/**
+ * 録画の site 表示を有効にする集合を決める。
+ *
+ * レジストリだけを権威にすると、レジストリから削除された site の録画で
+ * `Recording.site` が隠れ、どの拠点の録画か分からなくなる。録画行が持つ site
+ * も和集合に含めるのが、過去の録画を表示する一覧での正しい事実の扱いである。
+ * 読み込み済みページが増えて集合が 2 件以上になった場合は、既に表示中の行にも
+ * バッジが生えるが、同じ一覧内で site の有無が食い違うより、拠点を識別できる
+ * ことを優先する。
+ */
+function shouldShowRecordingSite(
+  registeredSites: readonly string[],
+  recordingSites: readonly string[],
+): boolean {
+  return new Set([...registeredSites, ...recordingSites]).size > 1
+}
+
 function loadRecordingsView(): RecordingsView {
   try {
     return localStorage.getItem(VIEW_KEY) === 'card' ? 'card' : 'list'
@@ -129,10 +146,8 @@ export function RecordingsPage() {
   const navigate = useNavigate()
   const trash = search.tab === 'trash'
 
-  // 多サイトのときだけ行に site を出す（同じ (networkId, serviceId) を 2 サイトで
-  // 受けたとき行を見分ける材料が site しか無い。issue #283）。単一サイトでは
-  // 「default」がノイズになるだけなので出さない。レジストリの取得結果を使う。
-  const showSite = (unwrap(useListSites().data) ?? []).length > 1
+  const sitesQuery = useListSites()
+  const registeredSites = useMemo(() => unwrap(sitesQuery.data) ?? [], [sitesQuery.data])
   const encodeQueue = unwrap(useGetEncodeQueue().data)
   const updateSearch = (updater: (prev: RecordingsPageSearch) => RecordingsPageSearch) => {
     // debounce（キーワード）・チップの個別解除のどちらも history を汚さないよう
@@ -188,6 +203,10 @@ export function RecordingsPage() {
   const recordings = useMemo(
     () => query.data?.pages.flatMap((page) => unwrap(page) ?? []) ?? [],
     [query.data],
+  )
+  const showSite = useMemo(
+    () => shouldShowRecordingSite(registeredSites, recordings.map((recording) => recording.site)),
+    [registeredSites, recordings],
   )
 
   const queryClient = useQueryClient()
@@ -688,7 +707,7 @@ function RecordingRow({
 }: {
   recording: Recording
   trash: boolean
-  /** 多サイトのときだけ site を出す（issue #283）。 */
+  /** レジストリと読み込み済み録画の site の和集合が 2 件以上のときに出す。 */
   showSite: boolean
   /**
    * `card` はサムネイルを大きく縦に積む。**出す情報は list と同じ**で、
@@ -1010,7 +1029,8 @@ export function RecordingDetail({
   const encodedAssets = recording.encodedAssets ?? []
   const hasOriginal = recording.sizeBytes !== undefined
   const ingestState = ingestDisplay(recording, Date.now())
-  const showSite = (unwrap(useListSites().data) ?? []).length > 1
+  const registeredSites = unwrap(useListSites().data) ?? []
+  const showSite = shouldShowRecordingSite(registeredSites, [recording.site])
 
   return (
     <div className="flex flex-col gap-4 bg-muted/30 px-4 py-3 text-xs">
