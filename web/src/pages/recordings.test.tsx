@@ -672,6 +672,33 @@ describe('RecordingsPage 行の site 表示 (issue #283, #577)', () => {
     const row = (await screen.findByRole('link', { name: '旧 site の録画' })).closest('div')
     expect(within(row as HTMLElement).getByText('site2')).toBeInTheDocument()
   })
+
+  it('2 ページ目で別 site の行が来ると、既に表示中の 1 ページ目の行にも site が生える', async () => {
+    const user = userEvent.setup()
+    // 1 ページ目 50 件は全部 default、2 ページ目（1 件）だけレジストリに無い
+    // site2（id=1 が最古で最後のページに来る）。
+    const many = Array.from({ length: 51 }, (_, i) =>
+      sampleRecording({
+        id: i + 1,
+        title: `録画${i + 1}`,
+        site: i === 0 ? 'site2' : 'default',
+        startAt: new Date(Date.parse('2026-01-01T00:00:00Z') + i * 60_000).toISOString(),
+      }),
+    )
+    createFakeRecordingsServer({ sites: ['default'], library: many })
+
+    renderPage()
+
+    await screen.findByText('録画51')
+    // まだ 1 ページ目しか読んでおらず site の和集合が default のみ（1 件）なので出ない。
+    expect(screen.queryByText('default')).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'さらに読み込む' }))
+
+    await screen.findByText('録画1')
+    const oldRow = (await screen.findByRole('link', { name: '録画51' })).closest('div')
+    expect(within(oldRow as HTMLElement).getByText('default')).toBeInTheDocument()
+  })
 })
 
 describe('RecordingsPage エンコード待機列', () => {
