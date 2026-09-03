@@ -280,11 +280,19 @@ func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[EncodeJobAr
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		stderr := strings.TrimSpace(stderrBuf.String())
-		if stderr != "" {
-			return fmt.Errorf("ffmpeg failed: %w (stderr: %s)", waitErr, stderr)
+		if errors.Is(waitErr, exec.ErrWaitDelay) && cmd.ProcessState != nil && cmd.ProcessState.Success() {
+			// ffmpeg 自体は exit 0 で完走したが、孫プロセスが stdout/stderr の
+			// fd を握ったままで WaitDelay が先に切れた（この PR が扱う
+			// ハングの exit 0 版）。以降の os.Stat / サイズ検査が出力を守るので
+			// 失敗にはしないが、再試行ループから見分けられるよう記録は残す。
+			log.Warn("encode: ffmpeg exited successfully but WaitDelay expired before I/O completed", "wait_delay", workerExecWaitDelay)
+		} else {
+			stderr := strings.TrimSpace(stderrBuf.String())
+			if stderr != "" {
+				return fmt.Errorf("ffmpeg failed: %w (stderr: %s)", waitErr, stderr)
+			}
+			return fmt.Errorf("ffmpeg failed: %w", waitErr)
 		}
-		return fmt.Errorf("ffmpeg failed: %w", waitErr)
 	}
 
 	info, err := os.Stat(scratchOut)

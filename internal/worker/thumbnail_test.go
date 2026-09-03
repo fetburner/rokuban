@@ -1,11 +1,14 @@
 package worker
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -642,4 +645,72 @@ func bytesEqual(a, b []byte) bool {
 		}
 	}
 	return true
+}
+
+// TestCommandOutput_WaitDelayExpiredOnSuccess_TreatedAsSuccess は、
+// TestEncodeWorker_WaitDelayExpiredOnSuccess_TreatedAsSuccess（encode.go の
+// runEncode）と双子の分岐である commandOutput 側の WaitDelay-on-success 扱いを
+// 固定する。ThumbnailWorker.runCmd はテストフックとして commandOutput 自体を
+// 迂回してしまうので、ここでは実 commandOutput を fd を漏らす偽 ffmpeg で直接
+// 駆動する（installLeakyExitZeroFakeFFmpeg は encode_attempts_test.go と共有）。
+//
+// workerExecWaitDelay が実際に経過するのを待つ必要があるため数秒かかる。
+func TestCommandOutput_WaitDelayExpiredOnSuccess_TreatedAsSuccess(t *testing.T) {
+	sleepSeconds := int(workerExecWaitDelay/time.Second*3) + 5
+	leakyFFmpeg, childPIDMarker := installLeakyExitZeroFakeFFmpeg(t, sleepSeconds)
+	sleepStartedAt := time.Now()
+	defer func() {
+		if time.Since(sleepStartedAt) > time.Duration(sleepSeconds)*time.Second {
+			return
+		}
+		pidBytes, err := os.ReadFile(childPIDMarker)
+		if err != nil {
+			return
+		}
+		pid, err := strconv.Atoi(strings.TrimSpace(string(pidBytes)))
+		if err != nil {
+			return
+		}
+		if process, err := os.FindProcess(pid); err == nil {
+			_ = process.Kill()
+		}
+	}()
+
+	dir := t.TempDir()
+	inputPath := filepath.Join(dir, "input.ts")
+	if err := os.WriteFile(inputPath, []byte("fake-input"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outputPath := filepath.Join(dir, "output.bin")
+
+	var logBuf bytes.Buffer
+	origLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(origLogger) })
+
+	start := time.Now()
+	out, err := commandOutput(context.Background(), leakyFFmpeg, "-i", inputPath, outputPath)
+	if err != nil {
+		t.Fatalf("commandOutput(): %v (log: %s)", err, logBuf.String())
+	}
+	// WaitDelay の経路を実際に踏んだことの裏付け --- 踏んでいなければ即座に
+	// 返り、この分岐は何も検証していないことになる。
+	if elapsed := time.Since(start); elapsed < workerExecWaitDelay/2 {
+		t.Fatalf("commandOutput() returned after %s; want roughly workerExecWaitDelay (%s), the leaky child fd did not force a WaitDelay wait", elapsed, workerExecWaitDelay)
+	}
+	if !strings.Contains(logBuf.String(), "WaitDelay expired before I/O completed") {
+		t.Errorf("log output = %q, want a warning distinguishing the WaitDelay-on-success path", logBuf.String())
+	}
+	// out が捨てられていないこと（installLeakyExitZeroFakeFFmpeg は progress
+	// 行を標準出力へ書く。CombinedOutput はそれを含む）。
+	if !strings.Contains(string(out), "progress=end") {
+		t.Errorf("out = %q, want captured stdout to survive the WaitDelay-success path", out)
+	}
+	got, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("reading output file: %v", err)
+	}
+	if string(got) != "fake-input" {
+		t.Errorf("output file = %q, want copy of input", got)
+	}
 }
