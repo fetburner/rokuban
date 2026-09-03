@@ -1,0 +1,47 @@
+version: 2
+
+updates:
+  - package-ecosystem: gomod
+    directory: "/"
+    schedule:
+      interval: monthly
+    # sqlc と oapi-codegen は go.mod の依存ではなく、generated-diff ジョブで
+    # バージョンを pin したローカルバイナリとして管理しているため対象外。
+    groups:
+      minor-patch:
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: npm
+    directory: "/web"
+    schedule:
+      interval: monthly
+    ignore:
+      # .node-version と Dockerfile の FROM node: は同じ PR で更新するため、自動更新しない。
+      - dependency-name: node
+    groups:
+      minor-patch:
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
+    groups:
+      minor-patch:
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: docker
+    directory: "/"
+    schedule:
+      interval: monthly
+    groups:
+      minor-patch:
+        update-types:
+          - minor
+          - patch
