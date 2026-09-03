@@ -10,7 +10,7 @@ COPY openapi.yaml /build/
 RUN pnpm build
 
 # Stage 2: Go バイナリビルド
-FROM golang:1.26 AS backend
+FROM golang:1.27 AS backend
 WORKDIR /build
 COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod \
