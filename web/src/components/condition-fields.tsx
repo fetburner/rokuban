@@ -347,9 +347,8 @@ function TextMatchFields({ draft, onChange, disabled }: FieldsProps) {
  * `sites.length <= 1` で隠すと、レジストリが 1 site に縮んだ環境で下書きが
  * 別の（消えた）site を持つケースが再び「見えない」に戻り、上の未解決が復活する
  * --- 単一サイト運用で下書きも空 / レジストリと同じ 1 件のときは `options` も
- * 1 件のままなので、素直な単一サイト構成では何も変わらない
- * （`components/recording-filters.tsx` の `siteNames.length > 1` と違い、
- * こちらは「編集中の下書きが持つ値」を選択肢に含める必要があるための差）。
+ * 1 件のままなので、素直な単一サイト構成では何も変わらない。録画一覧の絞り込み
+ * （`components/recording-filters.tsx`）も同じ判定規律。
  */
 function SiteFields({
   draft,
