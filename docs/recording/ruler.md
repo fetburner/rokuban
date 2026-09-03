@@ -81,7 +81,7 @@ denpa は同じ問題に「開始 N 時間前以降はルールから外れて�
 
 猶予でこのパスの削除から外れた行は、大量削除サーキットブレーカーの分子にも分母にも入らない（[breaker.md](breaker.md)「大量削除サーキットブレーカー」の猶予との関係）。
 
-猶予やラッチで削除を見送られた行（desired ではないがまだ reservations に居る）の `program_snapshots` も、番組が射影にある限り追従し続ける。ruler は追従対象を desired だけに絞らず、既存の reservations も含めるため（[reservations.md](../schema/reservations.md) §3.7「射影にある間は更新、消えたら凍結」）。予約行がある限り、凍結が起きるのは番組そのものが射影から消えたときだけである。
+猶予やラッチで削除を見送られた行（desired ではないがまだ reservations に居る）の `program_snapshots` も、番組が射影にある限り追従し続ける。さらに、予約が無く skip 意図だけが残る行も同じ対象に含める。snapshot は番組の事実であり skip 意図という不可逆な事実ではないため、意図を保ったまま最新の終了時刻へ追従させ、GC の CASCADE で意図を道連れにしない（[reservations.md](../schema/reservations.md) §3.7「射影にある間は更新、消えたら凍結」）。凍結が起きるのは、予約または skip 意図が残っていても番組そのものが射影から消えたときだけである。
 
 #### 重複排除（再放送スキップ）
 
@@ -148,4 +148,3 @@ NID/SID は放送規格のスコープでサイトに依存しないため、地
 - `recordings.reservation_id` 列（GC 当時は `ON DELETE SET NULL`）は issue #158 で列自体を削除した
 - 重複排除（`internal/ruler/dedupe.go`）の実装は M2-6
 - 「ルールの削除は履歴のスコープを消す」は issue #215 の決定。`recordings.rule_id` の FK を外して値を残す案（`dedup_match_recording_id` で FK を張らなかった議論と同型）を評価したうえで採らなかった —— 作り直したルールが新 id を持つ以上、値を残しても症状（`dedupe_window` 内の再放送を録り直す）が消えないため。判断の全文は同 issue のコメントにある
-

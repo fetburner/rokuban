@@ -169,6 +169,39 @@ describe('RecordingFilters チップ', () => {
 })
 
 describe('RecordingFilters 絞り込みパネル', () => {
+  it('レジストリに無い site もチップで見えて、押すと絞り込みを外せる', async () => {
+    const user = userEvent.setup()
+    const { onChangeCalls } = renderFilters({ site: ['retired'] })
+
+    await user.click(screen.getByRole('button', { name: /絞り込み/ }))
+    const panel = await screen.findByRole('dialog', { name: '絞り込み' })
+    const siteGroup = await within(panel).findByRole('group', { name: 'サイト' })
+
+    // 和集合の両方が見えている（レジストリの `default` が消えていない）。
+    const siteChips = within(siteGroup).getAllByRole('button')
+    expect(siteChips).toHaveLength(2)
+    expect(within(siteGroup).getByRole('button', { name: 'default' })).toBeInTheDocument()
+    expect(within(siteGroup).getByRole('button', { name: 'retired' })).toHaveAttribute('aria-pressed', 'true')
+
+    await user.click(within(siteGroup).getByRole('button', { name: 'retired' }))
+    expect(onChangeCalls.at(-1)?.site).toBeUndefined()
+  })
+
+  it('単一 site で絞り込みが無ければサイトの節を出さない', async () => {
+    const user = userEvent.setup()
+    renderFilters()
+
+    await user.click(screen.getByRole('button', { name: /絞り込み/ }))
+    const panel = await screen.findByRole('dialog', { name: '絞り込み' })
+    // site 取得の完了を待ってから「無いこと」を測る（読み込み中に測ると
+    // レジストリが空でも通ってしまう。`ChannelPicker` のトリガーは
+    // `servicesPending` が false のときだけ描かれ、`useAllSitesServices()`
+    // の `isPending` は `sitesQuery.isPending` を OR しているので、この
+    // ボタンが出ていれば /api/sites は解決済み）。
+    await within(panel).findByRole('button', { name: /チャンネル/ })
+    expect(within(panel).queryByRole('group', { name: 'サイト' })).not.toBeInTheDocument()
+  })
+
   it('状態チップを選ぶと status が立ち、「問わない」を選ぶと外れる', async () => {
     const user = userEvent.setup()
     const { onChangeCalls } = renderFilters()

@@ -295,14 +295,27 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 	tq := sqlcgen.New(tx)
 
 	// program_snapshots への追従更新（#27）。「射影にある間は更新、消えたら凍結」を
-	// 担う唯一の書き手がここ。なぜ existingSet も対象に含めるか: 猶予やラッチで
-	// 残る非 desired な行も「射影にまだ居る」限り追従させるため（issue #556、
-	// docs/schema/reservations.md §3.7）。凍結を保つのは
+	// 担う唯一の書き手がここ。snapshot は番組の事実を保持する表であり、skip 意図の
+	// ような不可逆なユーザー操作を表す列ではないため、skip 意図だけが行を支える場合も
+	// 射影にある限り追従させる（GC の終了判定で意図を CASCADE させないため）。
+	// なぜ existingSet も対象に含めるか: 猶予やラッチで残る非 desired な行も「射影に
+	// まだ居る」限り追従させるため（issue #556、docs/schema/reservations.md §3.7）。凍結を保つのは
 	// UpsertProgramSnapshotsFromProjection 内の epg_programs との JOIN 自体で、
 	// 射影に無い programId をここに含めても何もされない。reservations.program_fkey
 	// が program_snapshots を参照するため、予約行の upsert より先に実行する
 	// 必要がある。
+	// 対象を広げるぶん UpsertProgramSnapshotsFromProjection に渡す programId は
+	// 増えるが、実際に書かれる行は同クエリの
+	// ON CONFLICT ... DO UPDATE ... WHERE ... IS DISTINCT FROM ...
+	// （internal/db/queries/program_snapshots.sql）が値の変わらない行を弾くため、
+	// 「skip 意図があり、かつ射影側で値が変わった番組」に限られる。ただしこれは
+	// SQL から読める性質であって、パスあたりの書き込み量そのものは未検証である。
 	snapshotSyncIDs := slices.Clone(desiredIDs)
+	for id := range skipIntent {
+		if _, ok := desired[id]; !ok {
+			snapshotSyncIDs = append(snapshotSyncIDs, id)
+		}
+	}
 	for id := range existingSet {
 		if _, ok := desired[id]; !ok {
 			snapshotSyncIDs = append(snapshotSyncIDs, id)

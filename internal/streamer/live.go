@@ -906,10 +906,19 @@ func (ls *LiveStreamer) runSession(ctx context.Context, s *liveSession) {
 
 	waitErr := cmd.Wait()
 	if waitErr != nil && ctx.Err() == nil {
-		// ctx.Err() == nil ということは idle GC / shutdown による意図した kill ではない
-		// ---ffmpeg 自身が落ちた（mirakc 側の切断、コーデックエラー等）。
-		slog.Error("streamer: live ffmpeg exited unexpectedly",
-			"service_id", s.serviceID, "err", waitErr, "stderr", strings.TrimSpace(stderr.String()))
+		if errors.Is(waitErr, exec.ErrWaitDelay) && cmd.ProcessState != nil && cmd.ProcessState.Success() {
+			// ffmpeg 自体は exit 0 で完走したが、孫プロセスが stdin/stderr の
+			// fd を握ったままで WaitDelay が先に切れた（internal/worker の
+			// runEncode / commandOutput と同型のハングの exit 0 版）。正常な
+			// セッション終了なので運用者向けの Error にはしない。
+			slog.Warn("streamer: live ffmpeg exited successfully but WaitDelay expired before I/O completed",
+				"service_id", s.serviceID, "wait_delay", cmd.WaitDelay)
+		} else {
+			// ctx.Err() == nil ということは idle GC / shutdown による意図した kill ではない
+			// ---ffmpeg 自身が落ちた（mirakc 側の切断、コーデックエラー等）。
+			slog.Error("streamer: live ffmpeg exited unexpectedly",
+				"service_id", s.serviceID, "err", waitErr, "stderr", strings.TrimSpace(stderr.String()))
+		}
 	}
 }
 

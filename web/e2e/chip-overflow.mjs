@@ -169,8 +169,13 @@ ok('② チップ自身が 2 行以上に折り返している', box.lines >= 2,
 // ③ `Chip` は共有プリミティブなので、録画一覧の絞り込みにある短いピル
 //    （状態・種別）にも同じクラスが波及する。丸ピルの中で折り返らないこと ---
 //    ここは①の対策が他の画面の見た目を変えていないことの逆方向の判定。
+//
+// `?site=retired` はレジストリ（`siteNames`）に無い site。録画一覧のサイト
+// チップはレジストリと現在の `?site=` 絞り込みの和集合で出すため、これを
+// 付けないと、レジストリだけを見る実装に退行しても `tokyo` + 長い site 名の
+// 2 件のままで気付けない。3 件になることを見て和集合の経路を測る。
 log(`\n=== ③ /recordings の絞り込み（${width}px・短いピル）===`)
-const recordingsPage = await openStubbed('/recordings', '録画一覧')
+const recordingsPage = await openStubbed('/recordings?site=retired', '録画一覧')
 await recordingsPage.getByRole('button', { name: '絞り込み' }).click()
 const popup = recordingsPage.getByRole('dialog', { name: '絞り込み' })
 await popup.waitFor()
@@ -198,6 +203,32 @@ ok(
   '③ 絞り込みを開いてもページ全体が横スクロールしない',
   docRecordings.scrollWidth <= docRecordings.clientWidth,
   `scrollWidth ${docRecordings.scrollWidth} / clientWidth ${docRecordings.clientWidth}`,
+)
+
+const recordingSiteGroup = popup.locator('div[role="group"][aria-label="サイト"]')
+await recordingSiteGroup.waitFor()
+const recordingSiteChips = recordingSiteGroup.locator('button')
+ok(
+  '③ 録画一覧のサイトチップが和集合の 3 件描かれている',
+  (await recordingSiteChips.count()) === 3,
+  `${await recordingSiteChips.count()} 件`,
+)
+
+const recordingSiteBoxes = await recordingSiteChips.evaluateAll((els) =>
+  els.map((el) => {
+    const rect = el.getBoundingClientRect()
+    return { right: rect.right, scrollWidth: el.scrollWidth, clientWidth: el.clientWidth }
+  }),
+)
+ok(
+  '③ 録画一覧のサイトチップが viewport 内に収まる',
+  recordingSiteBoxes.length > 0 && recordingSiteBoxes.every((box) => box.right <= width),
+  JSON.stringify(recordingSiteBoxes),
+)
+ok(
+  '③ 録画一覧のサイトチップ内で内容があふれない',
+  recordingSiteBoxes.length > 0 && recordingSiteBoxes.every((box) => box.scrollWidth <= box.clientWidth),
+  JSON.stringify(recordingSiteBoxes),
 )
 
 const popupBox = await popup.evaluate((el) => {

@@ -26,8 +26,8 @@
   `POST /api/programs/search` で、検索対象を絞る軸は本文の `sites`
   （`GET /api/recordings` の `?site=` と同じ規約: 軸内は OR、空 = 全サイト）である。
   `<ConditionFields>` のサイトチップ（レジストリと下書きの和集合が
-  2 つ以上のときだけ出す --- 下記「サイトチップの選択肢は…」参照。
-  `recording-filters.tsx` の `siteNames.length > 1` とは表示判定の取り方が違う）が
+  2 つ以上のときだけ出す --- 下記「サイトチップの選択肢は…」参照。録画一覧の
+  絞り込みも同じ判定規律）が
   `SearchDraft.sites` を編集し、`buildSearchRequest` / `conditionsToDraft` /
   `buildRuleInput` がそのまま運ぶ。**検索結果は `[{site, programId}]` の
   フラットな行**（畳まない。行数 = 予約数。下記「保存前の値札」）になるため、

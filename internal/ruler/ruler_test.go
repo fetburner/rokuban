@@ -575,6 +575,82 @@ func TestRunPass_SnapshotFollowsProjectionThenFreezes(t *testing.T) {
 	}
 }
 
+// issue #560: 予約が skip 意図だけに支えられる状態でも、射影に番組がある間は
+// snapshot を追従させる。古い終了時刻のままだと GC の CASCADE で skip 意図まで
+// 消えるため、番組を後ろ倒ししたときに意図が生き残ることまで確認する。
+func TestRunPass_SkipIntentSnapshotFollowsDelayedProgramAndSurvivesGC(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	insertService(t, pool, ctx)
+	initialStart := time.Now().Add(24 * time.Hour).Truncate(time.Second)
+	const programID int64 = 56001
+	insertProgram(t, pool, ctx, programID, "後ろ倒し番組", initialStart)
+	ruleID := insertRule(t, pool, ctx, "issue-560", 10)
+	insertRuleKeyword(t, pool, ctx, ruleID, "後ろ倒し番組")
+
+	r := ruler.New([]string{testSite}, pool, &ruler.Config{RetentionGrace: time.Hour})
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass (initial): %v", err)
+	}
+	if !reservationExists(t, pool, ctx, programID) {
+		t.Fatal("reservation should exist before the explicit skip")
+	}
+
+	// 同じ番組を EPG 側だけ後ろ倒しする。
+	liveStart := time.Now().Add(48 * time.Hour).Truncate(time.Second)
+	insertProgram(t, pool, ctx, programID, "後ろ倒し番組", liveStart)
+
+	q := sqlcgen.New(pool)
+	if _, err := q.SkipProgram(ctx, sqlcgen.SkipProgramParams{
+		Site: testSite, ProgramID: programID,
+	}); err != nil {
+		t.Fatalf("skipping program: %v", err)
+	}
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass (after delayed skip): %v", err)
+	}
+	if reservationExists(t, pool, ctx, programID) {
+		t.Fatal("skip-only program reservation should have been released before the GC regression pass")
+	}
+
+	// 予約が無くなった後に GC なら削除対象になる古い snapshot を作る。この時点では
+	// skip 意図だけが snapshot 行を支えているので、修正前実装では次の RunPass で
+	// snapshot が追従せず、GC の CASCADE で意図も消える。
+	// 直前の RunPass（after delayed skip）では予約行がまだ existingSet に居たため、
+	// 修正前実装でも snapshot は live EPG に追従してしまい、古い start_at のままには
+	// ならない。そのためここで手で古い時刻へ戻して「skip 意図だけが支える凍結した
+	// snapshot」を作り直す必要がある。この UPDATE を消すと、次の RunPass の時点で
+	// snapshot がすでに live の start_at を持っており、回帰テストが修正前実装でも
+	// 通ってしまう（＝何も検証しなくなる）。
+	staleStart := time.Now().Add(-3 * time.Hour).Truncate(time.Second)
+	if _, err := pool.Exec(ctx, `
+UPDATE program_snapshots SET start_at = $1
+WHERE site = $2 AND program_id = $3`, staleStart, testSite, programID); err != nil {
+		t.Fatalf("making stale snapshot fixture: %v", err)
+	}
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass (skip-only GC regression): %v", err)
+	}
+
+	if _, err := q.GetProgramIntent(ctx, sqlcgen.GetProgramIntentParams{
+		Site: testSite, ProgramID: programID,
+	}); err != nil {
+		t.Fatalf("skip intent should survive snapshot GC cascade: %v", err)
+	}
+	// snapshot は予約が消えた後も skip 意図の FK に支えられており、live EPG に
+	// 追従しているので、古い終了時刻を条件にした GC の対象にならない。
+	snapshot, err := q.GetProgramSnapshot(ctx, sqlcgen.GetProgramSnapshotParams{
+		Site: testSite, ProgramID: programID,
+	})
+	if err != nil {
+		t.Fatalf("program snapshot should survive for skip intent: %v", err)
+	}
+	if !snapshot.StartAt.Equal(liveStart) {
+		t.Errorf("program snapshot did not follow delayed EPG program: got %v want %v", snapshot.StartAt, liveStart)
+	}
+}
+
 // 受け入れ基準 7: ルールがマッチしなくなったとき、intent が無ければ削除、
 // あれば残って rule_id が NULL になる（detached）。
 func TestRunPass_RuleUnmatch_DeleteVsDetach(t *testing.T) {
