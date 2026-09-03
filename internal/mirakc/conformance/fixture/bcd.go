@@ -41,6 +41,9 @@ func mjdBcdTime(t time.Time) []byte {
 
 // bcdDuration は継続時間を ARIB の 3 バイト BCD（時分秒）にエンコードする。
 func bcdDuration(d time.Duration) []byte {
+	if d == UndefinedDuration {
+		return []byte{0xFF, 0xFF, 0xFF}
+	}
 	total := int(d.Seconds())
 	h := total / 3600
 	m := (total % 3600) / 60

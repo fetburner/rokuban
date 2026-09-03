@@ -37,7 +37,7 @@ const (
 func TestConformance(t *testing.T) {
 	dir := testDir(t)
 	tunerBin := buildFixtureTuner(t, dir)
-	container := startMirakc(t, dir, tunerBin)
+	container := startMirakc(t, dir, tunerBin, "")
 	client := mirakc.NewClient(container.baseURL, nil)
 	ctx := context.Background()
 

@@ -165,7 +165,7 @@ type mirakcContainer struct {
 
 // startMirakc は mirakc 実物のコンテナを起こし、/api/version が応答するまで待つ。
 // t.Cleanup でコンテナの停止・削除を登録する。
-func startMirakc(t *testing.T, hostDir string, tunerBin string) *mirakcContainer {
+func startMirakc(t *testing.T, hostDir string, tunerBin string, fixtureCase string) *mirakcContainer {
 	t.Helper()
 
 	recBase := filepath.Join(hostDir, "recordings")
@@ -188,14 +188,21 @@ func startMirakc(t *testing.T, hostDir string, tunerBin string) *mirakcContainer
 	_ = exec.Command("docker", "rm", "-f", name).Run()
 
 	args := []string{
-		"run", "-d", "--rm",
+		// --rm は起動直後に mirakc が終了した場合の診断ログまで消してしまう。
+		// 成功時も失敗時も t.Cleanup の rm -f で回収する。
+		"run", "-d",
 		"--name", name,
 		"-p", "127.0.0.1:0:40772",
 		"-v", tunerBin + ":/fixtures/fixturetuner:ro",
 		"-v", configPath + ":/etc/mirakc/config.yml:ro",
 		"-v", recBase + ":/recordings",
-		mirakcImage,
 	}
+	if fixtureCase != "" {
+		// tuners[].command は mirakc 自身が有効なコマンドか検証するため、
+		// "VAR=value command" 形式を置けない。ケース切り替えはコンテナ環境へ渡す。
+		args = append(args, "-e", "ROKUBAN_FIXTURE_CASE="+fixtureCase)
+	}
+	args = append(args, mirakcImage)
 	cmd := exec.Command("docker", args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
