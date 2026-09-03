@@ -42,9 +42,31 @@ mirakc の録画機能は分散システムのバックエンドとして非常�
 
 mirakc の優先度機構（`X-Mirakurun-Priority` 相当 + schedule options の `priority`）に一元化する。ライブ視聴・録画・（併用する場合の）KonomiTV 等が同じ mirakc に載っても、いざという時は録画が勝つ。
 
-### PSI/SI 追従
+### PSI/SI 追従 --- 追従するのは終了だけ
 
-EPG 上の時刻ではなく TS 内の PSI/SI（イベント ID）を監視して実際の放送開始・終了に追従する。延長・繰り下げは `recording.rescheduled` で通知され、追従不能時も理由付きの `recording.failed`（`need-rescheduling` / `removed-from-epg` 等）が飛ぶ。
+**終了は TS 内の EIT[p/f] に追従する。** 既定の `filters.program-filter`（`mirakc-arib filter-program`）が録画ストリームの EIT[p/f] からイベント時刻を取る。その終端で切る（`--end-margin=2000`）。
+
+**開始は追従しない。賭けている。** mirakc は EPG 予定時刻の 15 秒前（`PREP_SECS`）にチューナーを開くだけで、その時刻自体は放送波を見ていない。filter-program はそこから EIT[p/f] を見て、対象 `eid` が present なら流し、following なら待つ。**どちらでもなければ待たずに失敗する**（`might have been canceled` を出して `stop_`）。待たせる `--wait-until` は録画経路では一切渡されない。`server.program-stream-max-start-delay` は `/api/programs/{id}/stream` 専用のノブで、予約録画には効かない。
+
+つまり繰り下げに耐えるのは「予定の 15 秒前に対象イベントがまだ following に見えている」範囲だけ。数分押している程度なら following のまま残るので実境界で録れる。p/f の並びが入れ替わるほどの繰り下げは**遅れて録るのではなく `recording.failed` になる**。延長・繰り下げの通知（`recording.rescheduled`）と理由付きの失敗（`need-rescheduling` / `removed-from-epg` 等）はここを観測するためにある。
+
+**`recordings.started_at` を実開始として読んではいけない。** watcher が入れるのは mirakc の `record.Recording.StartTime`、つまりチューナーを開いた時刻そのままである。**構造的に「予定 − 15 秒」になる**（実測: 正常終了した録画は全て `-00:00:14.99`）。`reconciler.start_delay_grace` はこの前提に乗っている --- 予定 + 猶予を過ぎて `started_at` が無ければ mirakc 側の異常とみなす検出器であって、実開始のずれを測る道具ではない。
+
+### onair tracker は採らない --- 観測は継続受信の副産物としてのみ採る
+
+開始まで追従させる（および「今放送中」を放送波から得る）には `onair-program-trackers` が要る。**採らない。** チューナー本数の問題ではなく、同じ単価で厳密に優れた買い物があるため。
+
+「今」の真実（EIT[p/f]）は放送波の中にしかなく、外部の番組表は予定しか配らない。読むには**多重化波 1 本あたりチューナー 1 本を恒久的に**払う必要があり、この単価は総本数に依らない。
+
+`onair-program-trackers.local` はその単価（`uses.tuner` は専用で他と共有されない）を払って、表示ラベルだけをサービス単位の直列ポーリングで返す。実測: tune の TTFB は約 2.1 秒（recdvb + PX-S1UD / GR）なので 1 サービス約 7 秒。実運用の 19 サービス構成では 1 周 135 秒で、mirakc が想定する 60 秒周期に収まらない。
+
+同じ単価の `timeshift.recorders` はチューナーを多重化波に固定し、同一波の全サービスで共有する。実イベント境界（`EventStart` / `EventUpdate` / `EventEnd`）を連続で返した上に、追っかけ再生と全録が付く。**tracker の出力は timeshift の真部分集合で遅延だけ大きい**ので、チューナーが潤沢な構成でも選ぶ理由が無い。
+
+> **観測のために新たに恒久専有チューナーを増やさない。観測は、他の目的（timeshift / 全録）で既にその多重化波を継続受信している構成の副産物としてのみ採る。**
+
+remote tracker も使えない。GR は network_id が地域ごとに別なので、他サイトの観測はこちらのサービスについて何も言わない。全国共通の BS/CS を配れる方向には受信設備が無い。**onair はサイトローカルな概念で、全国で 1 つの正本にはならない。**
+
+将来 timeshift を入れるなら観測は追加コスト 0 で付いてくる。ただし mirakc は timeshift の観測を `/api/onair` に結線していないので、そこは上流に足す話になる。採らない側の帰結（予定を正本にし、それを画面で明示する）は [frontend/live.md](../frontend/live.md)「いま放送中」は予定であって観測ではない。
 
 ### Records API
 
