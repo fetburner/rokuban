@@ -102,13 +102,6 @@ func TestBuildFFmpegArgs_WebVTTSubtitleSidecar(t *testing.T) {
 	}
 }
 
-func TestSubtitleRelPath(t *testing.T) {
-	got, err := SubtitleRelPath("20240101/show_web.mp4")
-	if err != nil || got != "20240101/show_web.vtt" {
-		t.Fatalf("SubtitleRelPath = %q, %v; want 20240101/show_web.vtt", got, err)
-	}
-}
-
 // TestBuildFFmpegArgs_HWAccelBeforeInput は hwaccel ブロックが -i より前に来る
 // ことを固定する（issue #321）。壊し方: 前置ブロックの append を -i の対の後ろへ移す。
 func TestBuildFFmpegArgs_HWAccelBeforeInput(t *testing.T) {

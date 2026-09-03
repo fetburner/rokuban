@@ -22,7 +22,6 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/mediapath"
-	"github.com/fetburner/rokuban/internal/worker"
 )
 
 // contentTypeOriginal は録画原本の Content-Type。mirakc の record stream と揃える。
@@ -119,7 +118,7 @@ func (s *Streamer) RecordingFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if track == "subtitles" {
-		subPath, subErr := worker.SubtitleRelPath(asset.relPath)
+		subPath, subErr := mediapath.SubtitleSibling(asset.relPath)
 		if subErr != nil {
 			// encoded の rel_path が拡張子を持たない等、サイドカーパスを
 			// 構成できない。字幕サイドカーは無いのと同じ扱いで 404。

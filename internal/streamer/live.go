@@ -1294,9 +1294,15 @@ func buildLiveCaptionFFmpegArgs(cfg LiveConfig, dir string, withSubtitles bool) 
 		// ライブは複数プロファイルが既定の構成であり、%v を欠くと captions
 		// 有効化そのものが機能しなくなる致命的な回帰だったため、G の一部として
 		// ここで直す）。字幕 rendition は 1 本しか無い（variant 0 の s:0 だけを
-		// map している）ため、%v ごとに書き出される複数ファイルのうち実際に
-		// 埋まるのは `subtitles_0.m3u8` のみで、他の variant 分は空のまま残るが
-		// クライアントは master playlist の EXT-X-MEDIA が指す 1 本しか参照しない。
+		// map している）ので、実際に作られる字幕 playlist は `subtitles_0.m3u8`
+		// 1 本だけで、他の variant 分のファイルは作られない（実測: 2 プロファイル
+		// で `ls` したところ subtitles_0.m3u8 のみ）。
+		//
+		// **`sgroup:subs` を全 variant に付けてはならない。** ffmpeg 9.0.1 は
+		// SIGSEGV で落ちる（実測: exit 139、master が .tmp のまま残る）。
+		// variant 0 だけに付けても master の EXT-X-STREAM-INF は**全 variant**に
+		// `SUBTITLES="subs"` を付けるので、プロファイルを切り替えても字幕
+		// rendition は失われない（実測: 2/3 プロファイルで確認）。
 		args = append(args, "-c:s", "webvtt", "-hls_subtitle_path", filepath.Join(dir, "subtitles_%v.m3u8"))
 	}
 	args = append(args, filepath.Join(dir, "playlist_%v.m3u8"))

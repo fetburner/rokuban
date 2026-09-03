@@ -414,7 +414,7 @@ func (w *DeleteReconcileWorker) deleteMediaAsset(ctx context.Context, q *sqlcgen
 	// してはならない。失敗は log のみで、サイドカーは孤児として残る（孤児回収が
 	// 別途拾う経路がある前提。ここでは encoded 本体の削除を止めないことだけを守る）。
 	if t.Kind == db.AssetKindEncoded {
-		if subtitleRelPath, pathErr := SubtitleRelPath(t.RelPath); pathErr != nil {
+		if subtitleRelPath, pathErr := mediapath.SubtitleSibling(t.RelPath); pathErr != nil {
 			log.Warn("delete_reconcile: building subtitle sidecar path; continuing without removing it", "err", pathErr)
 		} else if subtitlePath, resolveErr := mediapath.Resolve(w.MediaDir, subtitleRelPath); resolveErr != nil {
 			log.Warn("delete_reconcile: resolving subtitle sidecar path; continuing without removing it", "err", resolveErr)
@@ -556,7 +556,7 @@ func (w *DeleteReconcileWorker) reconcileOrphanCandidates(ctx context.Context, q
 		// 候補にすることもない。
 		switch strings.ToLower(filepath.Ext(k)) {
 		case ".mp4", ".mkv":
-			if sidecar, pathErr := SubtitleRelPath(k); pathErr == nil {
+			if sidecar, pathErr := mediapath.SubtitleSibling(k); pathErr == nil {
 				knownSet[sidecar] = struct{}{}
 			}
 		}
