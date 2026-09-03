@@ -172,10 +172,8 @@ ok('② チップ自身が 2 行以上に折り返している', box.lines >= 2,
 //
 // `?site=retired` はレジストリ（`siteNames`）に無い site。録画一覧のサイト
 // チップはレジストリと現在の `?site=` 絞り込みの和集合で出すため、これを
-// 付けずに開くと修正前の実装（`siteNames.length > 1` だけを見る）でも
-// 同じ 2 件が描かれてしまい、この PR の変更を何も検証しない。和集合が
-// `tokyo` / 長い site 名 / `retired` の 3 件になることを見て初めて、
-// 「絞り込みで増えた分もチップに出る」を実ブラウザで測ったことになる。
+// 付けないと、レジストリだけを見る実装に退行しても `tokyo` + 長い site 名の
+// 2 件のままで気付けない。3 件になることを見て和集合の経路を測る。
 log(`\n=== ③ /recordings の絞り込み（${width}px・短いピル）===`)
 const recordingsPage = await openStubbed('/recordings?site=retired', '録画一覧')
 await recordingsPage.getByRole('button', { name: '絞り込み' }).click()
