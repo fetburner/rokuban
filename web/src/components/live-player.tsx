@@ -401,10 +401,15 @@ export function LivePlayer({
         // 状態だけで、true なら `TextTrack.mode === "showing"` で始まる（実測:
         // 実 mirakc のライブで確認）。
         //
-        // **VOD 側（recording-player.tsx の `<track>`）とは既定が逆になる。**
+        // **VOD 側（recording-player.tsx の `<track>`）とは既定が逆で、それが正しい。**
         // あちらは `default` 属性を持たないので `mode === "disabled"` で始まり、
         // ユーザーが `⋮` から入れるまで `.vtt` を fetch すらしない（実測）。
-        // 揃えるなら片方を変えることになるが、どちらを既定にするかは未決。
+        // VOD で `default` を付けると、**字幕サイドカーを持たないプロファイルでも
+        // 再生ごとに必ず 1 本 404 が出る** --- クライアントはサイドカーの有無を
+        // 知る手段を持たないので（`docs/api/media.md` の案 (b) の帰結）、
+        // 付ける/付けないを録画ごとに選べない。ライブは ffmpeg が字幕ストリームを
+        // 実際に map できたときだけ rendition が master に載るので、この問題が無い
+        // --- 既定 ON にできるのはライブ側だけ、という非対称である。
         const hls = new Hls() as unknown as HlsLike
         hls.subtitleDisplay = true
         hlsRef.current = hls
