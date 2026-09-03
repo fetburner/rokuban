@@ -1246,6 +1246,13 @@ func buildLiveCaptionFFmpegArgs(cfg LiveConfig, dir string, withSubtitles bool) 
 	args = append(args, cfg.HWAccel.Args()...)
 	args = append(args, "-probesize", "5M", "-analyzeduration", "3M")
 	args = append(args, cfg.InputExtraArgs...)
+	if withSubtitles {
+		// **ARIB 字幕は duration を持たない。** これが無いと WebVTT の終了時刻が
+		// 全 cue で約 1193 時間になり、字幕が一度出たら消えず積み重なる（実測:
+		// NHK Eテレの実 TS で `00:21.605 --> 1193:03:08.900`）。
+		// 入力側オプションなので -i より前に置く。
+		args = append(args, "-fix_sub_duration")
+	}
 	args = append(args, "-f", "mpegts", "-i", "pipe:0")
 
 	var variants []string
@@ -1263,6 +1270,15 @@ func buildLiveCaptionFFmpegArgs(cfg LiveConfig, dir string, withSubtitles bool) 
 			args = append(args, "-preset:v:"+strconv.Itoa(i), p.Preset)
 		}
 		args = append(args, "-force_key_frames:v:"+strconv.Itoa(i), fmt.Sprintf("expr:gte(t,n_forced*%d)", p.SegmentSeconds))
+		if i == 0 && withSubtitles {
+			// -fix_sub_duration だけだと「次の字幕が来るまで現在の cue を出さない」
+			// ので、ライブでは画面に出ている字幕がセグメントに載らない（実測:
+			// 同じ 30 秒で cue 5 本 → 4 本に減る）。heartbeat を映像 variant 0 に
+			// 付けると random access point で cue を分割して吐くため、途中参加した
+			// 視聴者にも現在の字幕が届く（実測: 同じ 30 秒で 8 本、セグメント境界で
+			// 分割される）。値を取らないフラグである。
+			args = append(args, "-fix_sub_duration_heartbeat:v:0")
+		}
 		args = append(args, p.ExtraArgs...)
 		mapping := fmt.Sprintf("v:%d,a:%d", i, i)
 		if i == 0 && withSubtitles {

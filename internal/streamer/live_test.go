@@ -2598,3 +2598,55 @@ func TestLiveMount_DisabledDoesNotFallBackToSPA(t *testing.T) {
 		t.Errorf("enabled: GET playlist = 404, want the route to exist")
 	}
 }
+
+// TestBuildLiveFFmpegArgs_CaptionsFixSubDuration は ARIB 字幕の duration 欠如への
+// 対処が argv に入ることを固定する。
+//
+// 実測（自前ビルドの ffmpeg n7.1.1 + libaribcaption、NHK Eテレの実 TS 30 秒）:
+//   - -fix_sub_duration 無し: cue の終了時刻が `1193:03:08.900` になり字幕が消えない
+//   - -fix_sub_duration のみ: 正常な終了時刻になるが cue が 5 本 → 4 本に減る
+//     （次の字幕が来るまで現在の cue を出さないため）
+//   - + -fix_sub_duration_heartbeat:v:0: cue 8 本、セグメント境界で分割される
+//
+// 壊し方: どちらかの append を消す / -fix_sub_duration を -i の後ろへ移す。
+func TestBuildLiveFFmpegArgs_CaptionsFixSubDuration(t *testing.T) {
+	cfg := LiveConfig{
+		Captions: true,
+		Profiles: []LiveProfile{
+			{Name: "h264", VideoCodec: "libx264", AudioCodec: "aac", SegmentSeconds: 2, PlaylistSize: 6},
+			{Name: "low", VideoCodec: "libx264", AudioCodec: "aac", SegmentSeconds: 2, PlaylistSize: 6},
+		},
+	}
+
+	args := BuildLiveFFmpegArgs(cfg, "/tmp/live/1", true)
+	fixIdx, inputIdx, beats := -1, -1, 0
+	for i, a := range args {
+		switch a {
+		case "-fix_sub_duration":
+			fixIdx = i
+		case "-i":
+			if inputIdx < 0 {
+				inputIdx = i
+			}
+		case "-fix_sub_duration_heartbeat:v:0":
+			beats++
+		}
+	}
+	if fixIdx < 0 {
+		t.Fatalf("-fix_sub_duration missing: %v", args)
+	}
+	// 入力側オプションなので -i より前でなければ効かない。
+	if fixIdx > inputIdx {
+		t.Errorf("-fix_sub_duration at %d must precede -i at %d: %v", fixIdx, inputIdx, args)
+	}
+	// heartbeat は映像 variant 0 に 1 回だけ（プロファイル数に比例して増えない）。
+	if beats != 1 {
+		t.Errorf("-fix_sub_duration_heartbeat:v:0 count = %d, want 1: %v", beats, args)
+	}
+
+	// 字幕ストリームが無いと判定された経路では、どちらも付けない。
+	off := strings.Join(BuildLiveFFmpegArgs(cfg, "/tmp/live/1", false), " ")
+	if strings.Contains(off, "-fix_sub_duration") {
+		t.Errorf("captionless args must not carry -fix_sub_duration: %s", off)
+	}
+}

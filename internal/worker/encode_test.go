@@ -937,3 +937,44 @@ hintCompleted:
 		t.Errorf("enqueued profiles = %v, want [h265] (h264 は既に active encoded なので投入されない)", profiles)
 	}
 }
+
+// TestBuildFFmpegArgs_SubtitleFixSubDuration は VOD 側でも ARIB 字幕の duration
+// 欠如への対処が -i より前に入ることを固定する。
+//
+// 実測（自前ビルドの ffmpeg n7.1.1 + libaribcaption、NHK Eテレの実 TS 30 秒）:
+// 無しでは 11/11 cue の終了時刻が約 1193 時間になり字幕が消えない。付けると 11/11 正常。
+// 壊し方: append を消す / -i の後ろへ移す。
+func TestBuildFFmpegArgs_SubtitleFixSubDuration(t *testing.T) {
+	p := config.EncodeProfile{
+		Name: "web", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac", Subtitles: "webvtt",
+	}
+
+	args := BuildFFmpegArgs(p, "/in.ts", "/out.mp4", true)
+	fixIdx, inputIdx := -1, -1
+	for i, a := range args {
+		switch a {
+		case "-fix_sub_duration":
+			fixIdx = i
+		case "-i":
+			if inputIdx < 0 {
+				inputIdx = i
+			}
+		}
+	}
+	if fixIdx < 0 {
+		t.Fatalf("-fix_sub_duration missing: %v", args)
+	}
+	if fixIdx > inputIdx {
+		t.Errorf("-fix_sub_duration at %d must precede -i at %d: %v", fixIdx, inputIdx, args)
+	}
+
+	// ffprobe が字幕なしと判定した録画では付けない（VOD 側は heartbeat も使わない
+	// --- セグメントが無いので分割する意味がない）。
+	off := strings.Join(BuildFFmpegArgs(p, "/in.ts", "/out.mp4", false), " ")
+	if strings.Contains(off, "-fix_sub_duration") {
+		t.Errorf("captionless args must not carry -fix_sub_duration: %s", off)
+	}
+	if strings.Contains(strings.Join(args, " "), "heartbeat") {
+		t.Errorf("VOD args must not carry the live heartbeat flag: %v", args)
+	}
+}

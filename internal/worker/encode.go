@@ -611,6 +611,13 @@ func BuildFFmpegArgs(profile config.EncodeProfile, input, output string, withSub
 		"-y",
 	}
 	args = append(args, ffargs.PreInput(profile.HWAccel, profile.InputExtraArgs)...)
+	if profile.Subtitles == "webvtt" && withSubtitles {
+		// **ARIB 字幕は duration を持たない。** これが無いと WebVTT の終了時刻が
+		// 全 cue で約 1193 時間になり、字幕が一度出たら消えず積み重なる（実測:
+		// NHK Eテレの実 TS 30 秒で 11/11 cue が壊れ、付けると 11/11 正常）。
+		// -fix_sub_duration は入力側オプションなので -i より前に置く。
+		args = append(args, "-fix_sub_duration")
+	}
 	args = append(args, "-i", input)
 	args = append(args,
 		"-c:v", profile.VideoCodec,

@@ -6,10 +6,15 @@
 #
 # HW エンコード（VAAPI / QSV / NVENC）が必要なら、ベースイメージや
 # ffmpeg パッケージを環境に合わせて差し替えること。
-# Debian bookworm-slim の apt 版（FFmpeg 5.1）には通常 libaribcaption が含まれない。
-# 字幕を使う場合は Debian trixie 以降の対応パッケージ、または libaribcaption を
-# 有効にした静的/自前ビルドの ffmpeg に差し替えること。Rokuban は captions / subtitles
-# 有効時に起動時の `ffmpeg -decoders` 検査で不足を明示する。
+# **ARIB 字幕（live.captions / encode profile の subtitles）を使うならこの
+# Dockerfile では足りない。** apt の ffmpeg に libaribcaption は入っていない
+# ---- bookworm の 5.1 だけでなく trixie の 7.1.5 でも入っていない（実測:
+# `ffmpeg -decoders | grep aribcaption` が 0 件）。Debian に他の ARIB
+# デコーダ入りパッケージがあるわけでもない。
+# 字幕を使う場合は Dockerfile.captions（libaribcaption を上流ソースから
+# ビルドする例）を使うこと。Rokuban は captions / subtitles 有効時に
+# 起動時の `ffmpeg -decoders` 検査で不足を明示するので、字幕が黙って
+# 消えることはない。
 
 ARG BASE=ghcr.io/fetburner/rokuban:latest
 FROM ${BASE}
