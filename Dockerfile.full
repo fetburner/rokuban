@@ -11,10 +11,16 @@
 # ---- bookworm の 5.1 だけでなく trixie の 7.1.5 でも入っていない（実測:
 # `ffmpeg -decoders | grep aribcaption` が 0 件）。Debian に他の ARIB
 # デコーダ入りパッケージがあるわけでもない。
-# 字幕を使う場合は Dockerfile.captions（libaribcaption を上流ソースから
-# ビルドする例）を使うこと。Rokuban は captions / subtitles 有効時に
-# 起動時の `ffmpeg -decoders` 検査で不足を明示するので、字幕が黙って
-# 消えることはない。
+# 字幕を使うなら `--enable-libaribcaption` 付きの ffmpeg を自分で用意して
+# この Dockerfile の apt 版と差し替えること（ffmpeg 入りイメージはユーザーが
+# 自分用にビルドする —— docs/overview.md §イメージ戦略と配布物）。
+# **その ffmpeg を apt 版で置き換えると、apt 版が持っているエンコーダを
+# 失う点に注意。** apt 版は libx264 / libx265 / libvpx-vp9 / libaom-av1 /
+# libsvtav1 / h264_vaapi / hevc_vaapi を持つ（実測）ので、HW エンコード
+# （config.example.yml の h264_vaapi 例）を併用するなら configure に
+# `--enable-vaapi` 等も足す必要がある。
+# Rokuban は captions / subtitles 有効時に起動時の `ffmpeg -decoders` 検査で
+# 不足を明示するので、字幕が黙って消えることはない。
 
 ARG BASE=ghcr.io/fetburner/rokuban:latest
 FROM ${BASE}
