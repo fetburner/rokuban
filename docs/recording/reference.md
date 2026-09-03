@@ -21,7 +21,7 @@
 - `preFilters` / `postFilters`: config で定義した名前付きフィルタパイプライン
 - `logFilter`: mirakc-arib のログをコンテンツ横の `<ファイル名>.log` に出力（EPGStation が自前生成していたドロップログの代替。表示用のパース層は必要）
 - `tags`: 自由文字列。Rokuban は programId 埋め込みに使う（`program:{programId}`。詳細は [reconciler.md](reconciler.md)「tags 対応付け」参照）
-- **開始/終了マージンのオプションは存在しない**。PSI/SI 追従方式ではそもそも不要（時刻ベース録画だからこそマージンが必要だった）
+- **予約ごとの開始/終了マージンのオプションは存在しない**。終了側は既定の program-filter が `--end-margin=2000` を、開始側は mirakc が予定の 15 秒前にチューナーを開く固定値（`PREP_SECS`）を持っており、どちらも予約単位では動かせない。**「PSI/SI 追従だからマージンが不要」ではない** --- 追従するのは終了だけで、開始側は [delegation.md](delegation.md)「PSI/SI 追従」の賭けに乗っている
 
 ---
 

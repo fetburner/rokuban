@@ -26,7 +26,7 @@ flowchart LR
 | 節 | 内容 | ファイル |
 |---|---|---|
 | §1 | 方針: mirakc への全面委譲 / **例外の境界**（PSI 読み取りをどこまで許すか） | [recording/delegation.md](recording/delegation.md) |
-| §2 | mirakc に任せること（schedule API / チューナー調停 / PSI 追従 / Records API / SSE 再送） | [recording/delegation.md](recording/delegation.md) |
+| §2 | mirakc に任せること（schedule API / チューナー調停 / **PSI/SI 追従は終了だけ** / **onair tracker を採らない判断** / Records API / SSE 再送） | [recording/delegation.md](recording/delegation.md) |
 | §3 §3.1 | **ruler**（ルール評価 → 予約生成）: 全量評価 + 差分書き込み / 複数ルール解決 / 重複排除 / サイトの扱い | [recording/ruler.md](recording/ruler.md) |
 | §3.2 | **reconciler**（宣言的同期）: tags 対応付け / 予約オプションの差分反映 / 再作成のガード・レート制限 | [recording/reconciler.md](recording/reconciler.md) |
 | §3.2 | **ファイル名テンプレート**（`filenameTemplate` の記法 / 使えるフィールド / サニタイズ / 検証） | [recording/contentpath.md](recording/contentpath.md) |
