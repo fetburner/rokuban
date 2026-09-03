@@ -13,7 +13,7 @@
 - **未検索と 0 件を構造的に別の状態として扱う**（`isIdle` と `success && 空`）。
   文言が入れ替わらないようにする
 - site レジストリの取得中は検索操作を無効にして理由を表示する。取得失敗時は
-  エラーと再試行を表示し、routing anchor が無い検索を無言の no-op にしない
+  エラーと再試行を表示し、対象サイトが無い検索を無言の no-op にしない
 - 結果は **programId 昇順**（契約ではなく現在の実装の挙動。順序自体は API 未規定）
   で時刻順ではないため、番組表のような sticky 日付ヘッダは使わず行に日時を出す
 - **「問わない」次元はリクエストのキーごと落とす**（`null` を明示しない）。
@@ -23,10 +23,9 @@
   曜日ビットが 0 のときだけ止めるのは、`rulequery` が範囲外エラーを返し API が
   400 に変換しないため 500 になるという実装上の理由
 - **サイトは `sites` として条件フォームに出す。** 検索 API は
-  `POST /api/sites/{site}/programs/search` で site が資源同定に入るが、これは
-  「どの資源を叩くか」だけの器で、実際に検索対象を絞る軸は本文の `sites`
-  （`GET /api/recordings` の `?site=` と同じ規約: 軸内は OR、空 = 全サイト）に
-  移した。`<ConditionFields>` のサイトチップ（レジストリと下書きの和集合が
+  `POST /api/programs/search` で、検索対象を絞る軸は本文の `sites`
+  （`GET /api/recordings` の `?site=` と同じ規約: 軸内は OR、空 = 全サイト）である。
+  `<ConditionFields>` のサイトチップ（レジストリと下書きの和集合が
   2 つ以上のときだけ出す --- 下記「サイトチップの選択肢は…」参照。録画一覧の
   絞り込みも同じ判定規律）が
   `SearchDraft.sites` を編集し、`buildSearchRequest` / `conditionsToDraft` /
@@ -34,10 +33,8 @@
   フラットな行**（畳まない。行数 = 予約数。下記「保存前の値札」）になるため、
   番組詳細の取得（`GET /api/sites/{site}/programs/{programId}`）は
   **行が運ぶ `site`** を使う ---
-  [shell.md](shell.md)「サイトの扱い」の「行が運ぶ」と同じ規律。検索の
-  path 引数の `{site}` 自体はレジストリの先頭 site を routing anchor に使う
-  --- 変わったのは「どの site の EPG を対象にするか」を決める軸が path から
-  本文の `sites` に移ったことだけ。
+  [shell.md](shell.md)「サイトの扱い」の「行が運ぶ」と同じ規律。検索はサイトを
+  パスに持たず、「どの site の EPG を対象にするか」を本文の `sites` で決める。
   **条件フォーム（`<ConditionFields>`）のサービス選択肢はこれとは別の理由で
   全 site の union にする。** 保存されたルールは全 site で評価される（`sites`
   が空なら全サイト）ので、選択肢を先頭サイトの観測だけから作ると、その site が
@@ -216,7 +213,7 @@
 - **GB 換算はやらない。** ビットレートの実測の出所が未決で、件数と時間は検索結果
   だけから導出でき未決に依存しないため、そこをスコープの切れ目にしている
 - **母数は厳密で、畳まない行数がそのまま件数になる。** 検索 API
-  （`POST /api/sites/{site}/programs/search`）は `rulequery.MatchPrograms`
+  （`POST /api/programs/search`）は `rulequery.MatchPrograms`
   の結果を `LIMIT` なしでそのまま `[{site, programId}]` の行として返す
   （ページングも上位 N 件打ち切りも無い、`internal/rulequery/query.go` で確認済み）
   ため、件数（`totalCount`）は常に全件の行数から厳密に出せる。**`programId`

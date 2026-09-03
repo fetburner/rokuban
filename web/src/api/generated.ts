@@ -766,7 +766,7 @@ export interface ProgramSearchRequest {
      */
   genres?: number[];
   times?: RuleTimeWindow[];
-  /** 絞り込み条件。空または省略 = 全サイト（`GET /api/recordings` の `?site=` と 同じ軸の規約: 軸内は OR、他の絞り込み軸とは AND）。**非互換の変更**: 旧仕様は `sites` を `rule_sites` 相当の条件として扱い、空 = パスの {site}（評価 site） のみだった。 */
+  /** 絞り込み条件。空または省略 = 全サイト（`GET /api/recordings` の `?site=` と 同じ軸の規約: 軸内は OR、他の絞り込み軸とは AND）。指定した site 名は レジストリに存在する必要がある。 */
   sites?: string[];
 }
 
@@ -821,7 +821,7 @@ export interface RuleInput {
      */
   genres?: number[];
   times?: RuleTimeWindow[];
-  /** 空または省略 = 全サイト。指定する各要素は GET /api/sites が返す既知の site 名でなければならず、レジストリに無い名前（タイポ含む）や空文字列は 400 になる。更新では、そのルールに既に保存されている site 名だけは既知として扱う（GET で得た sites を載せ直す更新が、レジストリから site が消えた後も通るように）。免除は更新対象のルール単位なので **作成では効かない** —— 既存ルールの sites をそのまま載せて別のルールを作る（フォーク）場合、レジストリから消えた site 名は 400 になる。`POST /api/sites/{site}/programs/search` の `sites` も同じ「空または省略 = 全サイト」の軸規約に従い、同じ既知名検証を受ける。 未知の site 名は同様に 400 になる。ただし検索は一回限りの問い合わせで保存された 行を持たないため、更新時の免除（保存済み site 名を通す）だけはルールの 保存にのみ適用される。 */
+  /** 空または省略 = 全サイト。指定する各要素は GET /api/sites が返す既知の site 名でなければならず、レジストリに無い名前（タイポ含む）や空文字列は 400 になる。更新では、そのルールに既に保存されている site 名だけは既知として扱う（GET で得た sites を載せ直す更新が、レジストリから site が消えた後も通るように）。免除は更新対象のルール単位なので **作成では効かない** —— 既存ルールの sites をそのまま載せて別のルールを作る（フォーク）場合、レジストリから消えた site 名は 400 になる。`POST /api/programs/search` の `sites` も同じ 「空または省略 = 全サイト」の軸規約に従い、同じ既知名検証を受ける。 未知の site 名は同様に 400 になる。ただし検索は一回限りの問い合わせで保存された 行を持たないため、更新時の免除（保存済み site 名を通す）だけはルールの 保存にのみ適用される。 */
   sites?: string[];
   dedupeEnabled?: boolean;
   /**
@@ -3069,26 +3069,21 @@ export type searchProgramsResponse400 = {
   status: 400
 }
 
-export type searchProgramsResponse404 = {
-  data: ErrorResponse
-  status: 404
-}
-
 export type searchProgramsResponseSuccess = (searchProgramsResponse200) & {
   headers: Headers;
 };
-export type searchProgramsResponseError = (searchProgramsResponse400 | searchProgramsResponse404) & {
+export type searchProgramsResponseError = (searchProgramsResponse400) & {
   headers: Headers;
 };
 
 export type searchProgramsResponse = (searchProgramsResponseSuccess | searchProgramsResponseError)
 
-export const getSearchProgramsUrl = (site: string,) => {
+export const getSearchProgramsUrl = () => {
 
 
 
 
-  return `/api/sites/${site}/programs/search`
+  return `/api/programs/search`
 }
 
 /**
@@ -3101,20 +3096,15 @@ export const getSearchProgramsUrl = (site: string,) => {
  * （N 予約が既定。docs/recording/ruler.md「サイトの扱い」）ため、行数がそのまま
  * 実体化される予約数になる。
  *
- * **非互換の変更**: 旧仕様は `sites` を `rule_sites` 相当の絞り込み（空 = パスの
- * {site} のみを評価対象にする）と説明していたが、実際の SQL は `$site = ANY($sites)`
- * という両辺が定数でテーブル列を参照しない述語だったため、事実上パスの {site} だけが
- * 全か無かのゲートとして機能し `sites` は無効だった。新仕様では `sites` が
- * `epg_programs.site` に対する実際の絞り込み述語になる。
- *
  * `sites` の既定を「空 = 全サイト」と定義するのは、Go 側がレジストリ全件を埋めて
- * `Compile` に渡す前提のため。
+ * `Compile` に渡す前提のため。旧パス `POST /api/sites/{site}/programs/search` は
+ * 廃止し、互換ルートは提供しない（web と API を同時に更新でき、運用開始前の
+ * 破壊的変更であるため）。
  * @summary Search EPG programs by rule-style conditions
  */
-export const searchPrograms = async (site: string,
-    programSearchRequest: ProgramSearchRequest, options?: RequestInit): Promise<searchProgramsResponse> => {
+export const searchPrograms = async (programSearchRequest: ProgramSearchRequest, options?: RequestInit): Promise<searchProgramsResponse> => {
 
-  return customInstance<searchProgramsResponse>(getSearchProgramsUrl(site),
+  return customInstance<searchProgramsResponse>(getSearchProgramsUrl(),
   {
     ...options,
     method: 'POST',
@@ -3128,8 +3118,8 @@ export const searchPrograms = async (site: string,
 
 
 export const getSearchProgramsMutationOptions = <TError = ErrorResponse,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof searchPrograms>>, TError,{site: string;data: ProgramSearchRequest}, TContext>, request?: SecondParameter<typeof customInstance>}
-): UseMutationOptions<Awaited<ReturnType<typeof searchPrograms>>, TError,{site: string;data: ProgramSearchRequest}, TContext> => {
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof searchPrograms>>, TError,{data: ProgramSearchRequest}, TContext>, request?: SecondParameter<typeof customInstance>}
+): UseMutationOptions<Awaited<ReturnType<typeof searchPrograms>>, TError,{data: ProgramSearchRequest}, TContext> => {
 
 const mutationKey = ['searchPrograms'];
 const {mutation: mutationOptions, request: requestOptions} = options ?
@@ -3141,10 +3131,10 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
 
 
 
-      const mutationFn: MutationFunction<Awaited<ReturnType<typeof searchPrograms>>, {site: string;data: ProgramSearchRequest}> = (props) => {
-          const {site,data} = props ?? {};
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof searchPrograms>>, {data: ProgramSearchRequest}> = (props) => {
+          const {data} = props ?? {};
 
-          return  searchPrograms(site,data,requestOptions)
+          return  searchPrograms(data,requestOptions)
         }
 
 
@@ -3162,11 +3152,11 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
  * @summary Search EPG programs by rule-style conditions
  */
 export const useSearchPrograms = <TError = ErrorResponse,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof searchPrograms>>, TError,{site: string;data: ProgramSearchRequest}, TContext>, request?: SecondParameter<typeof customInstance>}
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof searchPrograms>>, TError,{data: ProgramSearchRequest}, TContext>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient): UseMutationResult<
         Awaited<ReturnType<typeof searchPrograms>>,
         TError,
-        {site: string;data: ProgramSearchRequest},
+        {data: ProgramSearchRequest},
         TContext
       > => {
       return useMutation(getSearchProgramsMutationOptions(options), queryClient);

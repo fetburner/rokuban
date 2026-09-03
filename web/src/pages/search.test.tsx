@@ -157,8 +157,7 @@ function stubApi(options?: {
   extraPrograms?: Program[]
   /**
    * `GET /api/sites` の応答（既定 `['default']`）。**先頭は常に `'default'`
-   * のままにすること** --- 検索 API の routing site はレジストリの先頭サイト固定
-   * で、検索・番組詳細のパス（`/api/sites/default/...`）は
+   * のままにすること** --- 検索結果の詳細取得パス（`/api/sites/default/...`）は
    * このスタブの他の分岐に既に決め打ちされている。2 つ目以降を足すのは
    * `<ConditionFields>` のサイトチップ（レジストリと下書きの和集合が
    * 2 つ以上で出る）と
@@ -304,7 +303,7 @@ function stubApi(options?: {
       return Promise.resolve(response)
     }
 
-    if (url.pathname === '/api/sites/default/programs/search') {
+    if (url.pathname === '/api/programs/search') {
       const body = JSON.parse(String(init?.body ?? '{}')) as ProgramSearchRequest
       searchBodies.push(body)
 
@@ -423,9 +422,8 @@ describe('SearchPage', () => {
 
   it('site レジストリが空配列に解決したとき、失敗と同じ扱いで検索を無効化する（レビュー指摘）', async () => {
     // `GET /api/sites` 自体は 200 で解決するが本文が `[]`。`registryPending` /
-    // `registryError` のどちらも false になるので、畳まないと `searchSite` が
-    // `undefined` のまま `submit` が無言で早期 return し続ける（旧
-    // site-gate.tsx が持っていた「空配列を弾く」分岐の再発）。
+    // `registryError` のどちらも false になるが、空配列を利用可能なレジストリと
+    // 扱ってしまうと検索対象サイトが存在しないため、検索を無効化する。
     stubApi({ sites: [] })
     renderPage()
 
@@ -1617,7 +1615,7 @@ describe('SearchPage', () => {
 describe('複数サイトの検索結果（issue #531）', () => {
   // **siteA は `test/router.tsx` の `testSite`（'default'）に合わせる。**
   // `renderInRouter`（`renderPage` が使う）は単一 site fixture を使うので、
-  // `GET /api/sites` の応答に関わらずこの値になる（検索の path 引数も
+  // `GET /api/sites` の応答に関わらずこの値になる（番組詳細取得のパスが
   // これで決まる）。
   const siteA = 'default'
   const siteB = 'takamatsu'
@@ -1668,7 +1666,7 @@ describe('複数サイトの検索結果（issue #531）', () => {
    * stubMultiSiteApi は「同一放送（programId 500）が default と takamatsu の
    * 両方でマッチした」状況だけを再現する最小のスタブ。`renderPage`
    * （`renderInRouter`）は routing site を `testSite`（'default'）に
-   * 固定するので、検索リクエスト自体は `/api/sites/default/programs/search`
+   * 固定するが、検索リクエスト自体は `/api/programs/search`
    * に届く --- 実際に複数 site の行を返せるのは、この 1 本の検索が
    * `sites`（空 = 全サイト）で default と takamatsu の両方の EPG を横断して
    * 引くため（Go 側の仕事。ここはその応答の形だけを固定する）。
@@ -1691,7 +1689,7 @@ describe('複数サイトの検索結果（issue #531）', () => {
       if (url.pathname === `/api/sites/${siteB}/programs/500`) {
         return Promise.resolve(jsonResponse(programB))
       }
-      if (url.pathname === `/api/sites/${siteA}/programs/search`) {
+      if (url.pathname === '/api/programs/search') {
         return Promise.resolve(
           jsonResponse([
             { site: siteA, programId: 500 },
@@ -1835,6 +1833,22 @@ describe('SearchPage の条件の復元', () => {
     renderPage()
 
     expect(await screen.findByLabelText('テキスト条件 1 の値')).toHaveValue('')
+  })
+
+  /**
+   * `submit` は `registryPending || registryError` で検索を止めるが、`?cond=`
+   * のハイドレーション effect は同じゲートを持たない（`pages/search.tsx` の
+   * 該当 effect のコメント参照: registry の失敗はほぼ api ロール自身の不調で、
+   * ここで止めても救えるものが無く、止めると共有リンクの条件がフォームから
+   * 無言で消える）。registry が壊れていても URL の条件はフォームに載ることを
+   * 固定する。
+   */
+  it('registry が失敗（空配列）でも ?cond= の条件はフォームに載る（レビュー指摘）', async () => {
+    stubApi({ sites: [] })
+    renderPage(condEntry(newsCondition))
+
+    expect(await screen.findByText('サイト一覧の取得に失敗しました')).toBeInTheDocument()
+    expect(screen.getByLabelText('テキスト条件 1 の値')).toHaveValue('ニュース')
   })
 
   /**

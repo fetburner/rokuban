@@ -1183,7 +1183,7 @@ type ProgramSearchRequest struct {
 	PeriodStartAt *time.Time                          `json:"periodStartAt,omitempty"`
 	Services      *[]RuleService                      `json:"services,omitempty"`
 
-	// Sites 絞り込み条件。空または省略 = 全サイト（`GET /api/recordings` の `?site=` と 同じ軸の規約: 軸内は OR、他の絞り込み軸とは AND）。**非互換の変更**: 旧仕様は `sites` を `rule_sites` 相当の条件として扱い、空 = パスの {site}（評価 site） のみだった。
+	// Sites 絞り込み条件。空または省略 = 全サイト（`GET /api/recordings` の `?site=` と 同じ軸の規約: 軸内は OR、他の絞り込み軸とは AND）。指定した site 名は レジストリに存在する必要がある。
 	Sites       *[]string         `json:"sites,omitempty"`
 	TextMatches *[]RuleTextMatch  `json:"textMatches,omitempty"`
 	Times       *[]RuleTimeWindow `json:"times,omitempty"`
@@ -1383,7 +1383,7 @@ type Rule struct {
 	Priority      int                     `json:"priority"`
 	Services      *[]RuleService          `json:"services,omitempty"`
 
-	// Sites 空または省略 = 全サイト。指定する各要素は GET /api/sites が返す既知の site 名でなければならず、レジストリに無い名前（タイポ含む）や空文字列は 400 になる。更新では、そのルールに既に保存されている site 名だけは既知として扱う（GET で得た sites を載せ直す更新が、レジストリから site が消えた後も通るように）。免除は更新対象のルール単位なので **作成では効かない** —— 既存ルールの sites をそのまま載せて別のルールを作る（フォーク）場合、レジストリから消えた site 名は 400 になる。`POST /api/sites/{site}/programs/search` の `sites` も同じ「空または省略 = 全サイト」の軸規約に従い、同じ既知名検証を受ける。 未知の site 名は同様に 400 になる。ただし検索は一回限りの問い合わせで保存された 行を持たないため、更新時の免除（保存済み site 名を通す）だけはルールの 保存にのみ適用される。
+	// Sites 空または省略 = 全サイト。指定する各要素は GET /api/sites が返す既知の site 名でなければならず、レジストリに無い名前（タイポ含む）や空文字列は 400 になる。更新では、そのルールに既に保存されている site 名だけは既知として扱う（GET で得た sites を載せ直す更新が、レジストリから site が消えた後も通るように）。免除は更新対象のルール単位なので **作成では効かない** —— 既存ルールの sites をそのまま載せて別のルールを作る（フォーク）場合、レジストリから消えた site 名は 400 になる。`POST /api/programs/search` の `sites` も同じ 「空または省略 = 全サイト」の軸規約に従い、同じ既知名検証を受ける。 未知の site 名は同様に 400 になる。ただし検索は一回限りの問い合わせで保存された 行を持たないため、更新時の免除（保存済み site 名を通す）だけはルールの 保存にのみ適用される。
 	Sites       *[]string         `json:"sites,omitempty"`
 	TextMatches *[]RuleTextMatch  `json:"textMatches,omitempty"`
 	Times       *[]RuleTimeWindow `json:"times,omitempty"`
@@ -1432,7 +1432,7 @@ type RuleInput struct {
 	Priority      *int                    `json:"priority,omitempty"`
 	Services      *[]RuleService          `json:"services,omitempty"`
 
-	// Sites 空または省略 = 全サイト。指定する各要素は GET /api/sites が返す既知の site 名でなければならず、レジストリに無い名前（タイポ含む）や空文字列は 400 になる。更新では、そのルールに既に保存されている site 名だけは既知として扱う（GET で得た sites を載せ直す更新が、レジストリから site が消えた後も通るように）。免除は更新対象のルール単位なので **作成では効かない** —— 既存ルールの sites をそのまま載せて別のルールを作る（フォーク）場合、レジストリから消えた site 名は 400 になる。`POST /api/sites/{site}/programs/search` の `sites` も同じ「空または省略 = 全サイト」の軸規約に従い、同じ既知名検証を受ける。 未知の site 名は同様に 400 になる。ただし検索は一回限りの問い合わせで保存された 行を持たないため、更新時の免除（保存済み site 名を通す）だけはルールの 保存にのみ適用される。
+	// Sites 空または省略 = 全サイト。指定する各要素は GET /api/sites が返す既知の site 名でなければならず、レジストリに無い名前（タイポ含む）や空文字列は 400 になる。更新では、そのルールに既に保存されている site 名だけは既知として扱う（GET で得た sites を載せ直す更新が、レジストリから site が消えた後も通るように）。免除は更新対象のルール単位なので **作成では効かない** —— 既存ルールの sites をそのまま載せて別のルールを作る（フォーク）場合、レジストリから消えた site 名は 400 になる。`POST /api/programs/search` の `sites` も同じ 「空または省略 = 全サイト」の軸規約に従い、同じ既知名検証を受ける。 未知の site 名は同様に 400 になる。ただし検索は一回限りの問い合わせで保存された 行を持たないため、更新時の免除（保存済み site 名を通す）だけはルールの 保存にのみ適用される。
 	Sites       *[]string         `json:"sites,omitempty"`
 	TextMatches *[]RuleTextMatch  `json:"textMatches,omitempty"`
 	Times       *[]RuleTimeWindow `json:"times,omitempty"`
@@ -1688,6 +1688,9 @@ type ListProgramsParams struct {
 	Service *[]int64 `form:"service,omitempty" json:"service,omitempty"`
 }
 
+// SearchProgramsJSONRequestBody defines body for SearchPrograms for application/json ContentType.
+type SearchProgramsJSONRequestBody = ProgramSearchRequest
+
 // AddRecordingEncodeProfilesJSONRequestBody defines body for AddRecordingEncodeProfiles for application/json ContentType.
 type AddRecordingEncodeProfilesJSONRequestBody = AddEncodeProfilesInput
 
@@ -1696,9 +1699,6 @@ type CreateRuleJSONRequestBody = RuleInput
 
 // UpdateRuleJSONRequestBody defines body for UpdateRule for application/json ContentType.
 type UpdateRuleJSONRequestBody = RuleInput
-
-// SearchProgramsJSONRequestBody defines body for SearchPrograms for application/json ContentType.
-type SearchProgramsJSONRequestBody = ProgramSearchRequest
 
 // PutProgramIntentJSONRequestBody defines body for PutProgramIntent for application/json ContentType.
 type PutProgramIntentJSONRequestBody = ProgramIntentInput
@@ -1726,6 +1726,9 @@ type ServerInterface interface {
 	// GetEncodeQueue Get active encode job counts
 	// (GET /api/encode-queue)
 	GetEncodeQueue(w http.ResponseWriter, r *http.Request)
+	// SearchPrograms Search EPG programs by rule-style conditions
+	// (POST /api/programs/search)
+	SearchPrograms(w http.ResponseWriter, r *http.Request)
 	// ListRecordings List recordings
 	// (GET /api/recordings)
 	ListRecordings(w http.ResponseWriter, r *http.Request, params ListRecordingsParams)
@@ -1774,9 +1777,6 @@ type ServerInterface interface {
 	// ListPrograms List EPG programs in a time window
 	// (GET /api/sites/{site}/programs)
 	ListPrograms(w http.ResponseWriter, r *http.Request, site Site, params ListProgramsParams)
-	// SearchPrograms Search EPG programs by rule-style conditions
-	// (POST /api/sites/{site}/programs/search)
-	SearchPrograms(w http.ResponseWriter, r *http.Request, site Site)
 	// GetProgram Get a single EPG program with full detail
 	// (GET /api/sites/{site}/programs/{programId})
 	GetProgram(w http.ResponseWriter, r *http.Request, site Site, programId ProgramId)
@@ -1855,6 +1855,12 @@ func (_ Unimplemented) ListEncodeProfiles(w http.ResponseWriter, r *http.Request
 // GetEncodeQueue Get active encode job counts
 // (GET /api/encode-queue)
 func (_ Unimplemented) GetEncodeQueue(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// SearchPrograms Search EPG programs by rule-style conditions
+// (POST /api/programs/search)
+func (_ Unimplemented) SearchPrograms(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1951,12 +1957,6 @@ func (_ Unimplemented) ResumeCircuitBreaker(w http.ResponseWriter, r *http.Reque
 // ListPrograms List EPG programs in a time window
 // (GET /api/sites/{site}/programs)
 func (_ Unimplemented) ListPrograms(w http.ResponseWriter, r *http.Request, site Site, params ListProgramsParams) {
-	w.WriteHeader(http.StatusNotImplemented)
-}
-
-// SearchPrograms Search EPG programs by rule-style conditions
-// (POST /api/sites/{site}/programs/search)
-func (_ Unimplemented) SearchPrograms(w http.ResponseWriter, r *http.Request, site Site) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -2166,6 +2166,20 @@ func (siw *ServerInterfaceWrapper) GetEncodeQueue(w http.ResponseWriter, r *http
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetEncodeQueue(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// SearchPrograms operation middleware
+func (siw *ServerInterfaceWrapper) SearchPrograms(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.SearchPrograms(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -2809,32 +2823,6 @@ func (siw *ServerInterfaceWrapper) ListPrograms(w http.ResponseWriter, r *http.R
 	handler.ServeHTTP(w, r)
 }
 
-// SearchPrograms operation middleware
-func (siw *ServerInterfaceWrapper) SearchPrograms(w http.ResponseWriter, r *http.Request) {
-
-	var err error
-	_ = err
-
-	// ------------- Path parameter "site" -------------
-	var site Site
-
-	err = runtime.BindStyledParameterWithOptions("simple", "site", chi.URLParam(r, "site"), &site, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: r.URL.RawPath == ""})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "site", Err: err})
-		return
-	}
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.SearchPrograms(w, r, site)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
 // GetProgram operation middleware
 func (siw *ServerInterfaceWrapper) GetProgram(w http.ResponseWriter, r *http.Request) {
 
@@ -3347,7 +3335,7 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Get(options.BaseURL+"/api/sites/{site}/tuners", wrapper.ListTuners)
 	})
 	r.Group(func(r chi.Router) {
-		r.Post(options.BaseURL+"/api/sites/{site}/programs/search", wrapper.SearchPrograms)
+		r.Post(options.BaseURL+"/api/programs/search", wrapper.SearchPrograms)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/api/sites/{site}/programs", wrapper.ListPrograms)
@@ -3573,6 +3561,42 @@ func (response GetEncodeQueue200JSONResponse) VisitGetEncodeQueueResponse(w http
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SearchProgramsRequestObject struct {
+	Body *SearchProgramsJSONRequestBody
+}
+
+type SearchProgramsResponseObject interface {
+	VisitSearchProgramsResponse(w http.ResponseWriter) error
+}
+
+type SearchPrograms200JSONResponse []ProgramSearchMatch
+
+func (response SearchPrograms200JSONResponse) VisitSearchProgramsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SearchPrograms400JSONResponse ErrorResponse
+
+func (response SearchPrograms400JSONResponse) VisitSearchProgramsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
 	_, err := buf.WriteTo(w)
 	return err
 }
@@ -4152,57 +4176,6 @@ func (response ListPrograms404JSONResponse) VisitListProgramsResponse(w http.Res
 	return err
 }
 
-type SearchProgramsRequestObject struct {
-	Site Site `json:"site"`
-	Body *SearchProgramsJSONRequestBody
-}
-
-type SearchProgramsResponseObject interface {
-	VisitSearchProgramsResponse(w http.ResponseWriter) error
-}
-
-type SearchPrograms200JSONResponse []ProgramSearchMatch
-
-func (response SearchPrograms200JSONResponse) VisitSearchProgramsResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(200)
-	_, err := buf.WriteTo(w)
-	return err
-}
-
-type SearchPrograms400JSONResponse ErrorResponse
-
-func (response SearchPrograms400JSONResponse) VisitSearchProgramsResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(400)
-	_, err := buf.WriteTo(w)
-	return err
-}
-
-type SearchPrograms404JSONResponse ErrorResponse
-
-func (response SearchPrograms404JSONResponse) VisitSearchProgramsResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(404)
-	_, err := buf.WriteTo(w)
-	return err
-}
-
 type GetProgramRequestObject struct {
 	Site      Site      `json:"site"`
 	ProgramId ProgramId `json:"programId"`
@@ -4630,6 +4603,9 @@ type StrictServerInterface interface {
 	// GetEncodeQueue Get active encode job counts
 	// (GET /api/encode-queue)
 	GetEncodeQueue(ctx context.Context, request GetEncodeQueueRequestObject) (GetEncodeQueueResponseObject, error)
+	// SearchPrograms Search EPG programs by rule-style conditions
+	// (POST /api/programs/search)
+	SearchPrograms(ctx context.Context, request SearchProgramsRequestObject) (SearchProgramsResponseObject, error)
 	// ListRecordings List recordings
 	// (GET /api/recordings)
 	ListRecordings(ctx context.Context, request ListRecordingsRequestObject) (ListRecordingsResponseObject, error)
@@ -4678,9 +4654,6 @@ type StrictServerInterface interface {
 	// ListPrograms List EPG programs in a time window
 	// (GET /api/sites/{site}/programs)
 	ListPrograms(ctx context.Context, request ListProgramsRequestObject) (ListProgramsResponseObject, error)
-	// SearchPrograms Search EPG programs by rule-style conditions
-	// (POST /api/sites/{site}/programs/search)
-	SearchPrograms(ctx context.Context, request SearchProgramsRequestObject) (SearchProgramsResponseObject, error)
 	// GetProgram Get a single EPG program with full detail
 	// (GET /api/sites/{site}/programs/{programId})
 	GetProgram(ctx context.Context, request GetProgramRequestObject) (GetProgramResponseObject, error)
@@ -4902,6 +4875,37 @@ func (sh *strictHandler) GetEncodeQueue(w http.ResponseWriter, r *http.Request) 
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(GetEncodeQueueResponseObject); ok {
 		if err := validResponse.VisitGetEncodeQueueResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// SearchPrograms operation middleware
+func (sh *strictHandler) SearchPrograms(w http.ResponseWriter, r *http.Request) {
+	var request SearchProgramsRequestObject
+
+	var body SearchProgramsJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.SearchPrograms(ctx, request.(SearchProgramsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "SearchPrograms")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(SearchProgramsResponseObject); ok {
+		if err := validResponse.VisitSearchProgramsResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
@@ -5333,39 +5337,6 @@ func (sh *strictHandler) ListPrograms(w http.ResponseWriter, r *http.Request, si
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(ListProgramsResponseObject); ok {
 		if err := validResponse.VisitListProgramsResponse(w); err != nil {
-			sh.options.ResponseErrorHandlerFunc(w, r, err)
-		}
-	} else if response != nil {
-		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
-	}
-}
-
-// SearchPrograms operation middleware
-func (sh *strictHandler) SearchPrograms(w http.ResponseWriter, r *http.Request, site Site) {
-	var request SearchProgramsRequestObject
-
-	request.Site = site
-
-	var body SearchProgramsJSONRequestBody
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
-		return
-	}
-	request.Body = &body
-
-	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
-		return sh.ssi.SearchPrograms(ctx, request.(SearchProgramsRequestObject))
-	}
-	for _, middleware := range sh.middlewares {
-		handler = middleware(handler, "SearchPrograms")
-	}
-
-	response, err := handler(r.Context(), w, r, request)
-
-	if err != nil {
-		sh.options.ResponseErrorHandlerFunc(w, r, err)
-	} else if validResponse, ok := response.(SearchProgramsResponseObject); ok {
-		if err := validResponse.VisitSearchProgramsResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

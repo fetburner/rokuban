@@ -192,7 +192,7 @@ curl -s "$MIRAKC_URL/api/programs" | jq 'length'
 
 ```sh
 # 1. 条件はマッチしているか（ruler と同じコンパイラ）
-curl -s -X POST http://localhost:40773/api/sites/default/programs/search \
+curl -s -X POST http://localhost:40773/api/programs/search \
   -H 'Content-Type: application/json' -d '<ルールと同じ条件>' | jq length
 
 # 2. ruler パスは走ったか

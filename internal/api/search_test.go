@@ -59,7 +59,7 @@ ON CONFLICT (site, program_id) DO NOTHING`,
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
-	apiMatches := postSearchPrograms(t, srv, "/api/sites/"+site+"/programs/search", map[string]any{
+	apiMatches := postSearchPrograms(t, srv, map[string]any{
 		"textMatches": []map[string]any{
 			{"target": "name", "mode": "keyword", "value": "ニュース"},
 		},
@@ -97,7 +97,7 @@ ON CONFLICT (site, program_id) DO NOTHING`,
 	}
 
 	// 全角検索でも同じ集合
-	fwMatches := postSearchPrograms(t, srv, "/api/sites/"+site+"/programs/search", map[string]any{
+	fwMatches := postSearchPrograms(t, srv, map[string]any{
 		"textMatches": []map[string]any{
 			{"target": "name", "mode": "keyword", "value": "ＮＨＫ"},
 		},
@@ -157,13 +157,14 @@ ON CONFLICT (site, program_id) DO NOTHING`,
 	}
 }
 
-// postSearchPrograms は検索 API を叩き、200 を要求して行にデコードする。
-func postSearchPrograms(t *testing.T, srv *httptest.Server, path string, body map[string]any) []searchMatchRow {
+// postSearchPrograms は新しい検索 API を叩き、200 を要求して行にデコードする。
+func postSearchPrograms(t *testing.T, srv *httptest.Server, body map[string]any) []searchMatchRow {
 	t.Helper()
 	raw, err := json.Marshal(body)
 	if err != nil {
 		t.Fatal(err)
 	}
+	const path = "/api/programs/search"
 	resp, err := http.Post(srv.URL+path, "application/json", bytes.NewReader(raw))
 	if err != nil {
 		t.Fatal(err)
@@ -195,7 +196,7 @@ func TestSearchPrograms_SitesOmittedDefaultsToAllRegisteredSites(t *testing.T) {
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
-	matches := postSearchPrograms(t, srv, "/api/sites/siteA/programs/search", map[string]any{
+	matches := postSearchPrograms(t, srv, map[string]any{
 		"genres": []int{searchFixtureGenre},
 	})
 	gotSites := map[string]bool{}
@@ -224,9 +225,8 @@ func TestSearchPrograms_SitesFilterExcludesOtherSites(t *testing.T) {
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
-	// パスは siteA だが、sites では siteB だけを指定している --- 結果は siteB の
-	// 1 行だけになるべき（パスの site には依存しない）。
-	matches := postSearchPrograms(t, srv, "/api/sites/siteA/programs/search", map[string]any{
+	// 検索パスは site に依存せず、sites では siteB だけを指定する。
+	matches := postSearchPrograms(t, srv, map[string]any{
 		"genres": []int{searchFixtureGenre},
 		"sites":  []string{"siteB"},
 	})
@@ -247,12 +247,36 @@ func TestSearchPrograms_UnknownSiteReturns400(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp, err := http.Post(srv.URL+"/api/sites/siteA/programs/search", "application/json", bytes.NewReader(raw))
+	resp, err := http.Post(srv.URL+"/api/programs/search", "application/json", bytes.NewReader(raw))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+// TestSearchPrograms_LegacySitePathIsGone は、site をパスに残す旧ルートを
+// 互換目的で生やさないことを確認する（破壊的変更。issue #558）。
+//
+// 具体的なステータスコードには結合しない。「パスに {site} を持つ既存の
+// GET /api/sites/{site}/programs/{programId} と形が重なるので chi が 405 を
+// 返す」という主張は、そのルートを消せば 404 に変わり無関係な結合になる。
+// ここで閉じるのは「旧パスでは検索が実行されない」ことだけ（= 200 で
+// SearchMatchRow の一覧が返ってこない）。
+func TestSearchPrograms_LegacySitePathIsGone(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	router := NewRouter(RouterConfig{Pool: pool, Sites: []string{"siteA"}})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/api/sites/siteA/programs/search", "application/json", bytes.NewReader([]byte(`{}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode == http.StatusOK {
+		t.Fatalf("legacy path status = %d, want not 200 (search must not run on the legacy path)", resp.StatusCode)
 	}
 }

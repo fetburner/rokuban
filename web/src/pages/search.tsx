@@ -62,7 +62,7 @@ const pageSize = 30
 /**
  * SearchPage は EPG をルールと同じ条件で検索する画面。
  *
- * 検索 API（`POST /api/sites/{site}/programs/search`）は ruler 評価と同じコンパイラを通るため、
+ * 検索 API（`POST /api/programs/search`）は ruler 評価と同じコンパイラを通るため、
  * ここで出る番組はルールにしたときにマッチする番組と一致する（M2-2）。
  * つまりこの画面の役目は「条件をルールとして保存する前に試すこと」であり、
  * 番組表（`/`）と関心事が違うので独立したルートに置いている。
@@ -125,16 +125,11 @@ export function SearchPage() {
    * `networkId` を組にすることでこの衝突を避ける。
    */
   const {
-    sites,
     services: serviceList,
     isPending: registryPending,
     isError: registryError,
     refetch: refetchRegistry,
   } = useAllSitesServices()
-  // 検索 API の path parameter は site ごとのルーティングに必要だが、検索対象は
-  // body の空 `sites`（全 site）で指定する。レジストリの先頭は routing anchor
-  // にだけ使い、結果行の site は検索レスポンスをそのまま運ぶ。
-  const searchSite = sites[0]
   const search = useSearchPrograms()
   // ruleId が無いときは問い合わせを止める。useGetRule は id を必須の number で
   // 取るため、無効化中はダミー値を渡す（program-overlap-warning.tsx と同じ流儀）。
@@ -163,15 +158,14 @@ export function SearchPage() {
   useEffect(() => {
     if (ruleId === undefined) return
     if (sourceRule === undefined) return
-    if (searchSite === undefined) return
     if (hydratedRuleIdRef.current === ruleId) return
     hydratedRuleIdRef.current = ruleId
 
     const nextDraft = conditionsToDraft(sourceRule)
     setDraft(nextDraft)
     setVisibleCount(pageSize)
-    searchRef.current.mutate({ site: searchSite, data: buildSearchRequest(nextDraft) })
-  }, [ruleId, searchSite, sourceRule])
+    searchRef.current.mutate({ data: buildSearchRequest(nextDraft) })
+  }, [ruleId, sourceRule])
 
   /**
    * `?cond=` のハイドレーション。共有・ブックマークされた URL を開いたときに、
@@ -193,11 +187,19 @@ export function SearchPage() {
    * リクエストとは文字列として一致しない。生の JSON を比べると、自分で書いた
    * URL が「別の条件」に見えて**押すたびに同じ検索を 2 回叩く**
    * （`e2e/personalization.mjs` の③がこれを見ている）。
+   *
+   * **`submit` と違い、ここは `registryPending` / `registryError` で止めない。**
+   * `submit` を registry で止めるのは、条件フォームのチップがまだ出ていない
+   * 状態でユーザーに押させないため --- URL が運ぶ条件は既に完成した値なので、
+   * その理由が当たらない。加えて `registryError` はほぼ api ロール自身の不調
+   * （`GET /api/sites` は config、`/services` は同じプロセスの DB 射影。
+   * `lib/all-sites-services.ts` 参照）なので、ここで止めても検索自体が同じ
+   * プロセスで失敗するだけで救えるものが無く、止めると共有リンクが運んできた
+   * 条件がフォームから無言で消える。
    */
   const appliedCondRef = useRef<string | undefined>(undefined)
   useEffect(() => {
     if (ruleId !== undefined) return
-    if (searchSite === undefined) return
     const cond = routeSearch.cond
     const nextDraft = cond === undefined ? undefined : conditionsToDraft(cond)
     const encoded =
@@ -208,8 +210,8 @@ export function SearchPage() {
 
     setDraft(nextDraft)
     setVisibleCount(pageSize)
-    searchRef.current.mutate({ site: searchSite, data: buildSearchRequest(nextDraft) })
-  }, [ruleId, routeSearch.cond, searchSite])
+    searchRef.current.mutate({ data: buildSearchRequest(nextDraft) })
+  }, [ruleId, routeSearch.cond])
 
   const error = draftError(draft)
 
@@ -240,11 +242,11 @@ export function SearchPage() {
   // 送れない下書きは 2 つの層で止める。ボタンの無効化だけだと、Enter による
   // 暗黙の送信（既定ボタンが無効でも submit が届きうる）が素通りする。
   const submit = () => {
-    if (error !== undefined || registryPending || registryError || searchSite === undefined) return
+    if (error !== undefined || registryPending || registryError) return
     const request = buildSearchRequest(draft)
     setVisibleCount(pageSize)
     pendingResultScrollRef.current = true
-    search.mutate({ site: searchSite, data: request })
+    search.mutate({ data: request })
     // 押した条件だけを「最後の条件」として残す。打っている途中の下書きを保存すると、
     // 次に開いたとき送れない下書き（値が空のテキスト条件など）が復元されうる。
     saveLastSearchConditions(request)
