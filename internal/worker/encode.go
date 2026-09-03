@@ -251,7 +251,20 @@ func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[EncodeJobAr
 	if ffmpeg == "" {
 		ffmpeg = "ffmpeg"
 	}
-	cmdArgs := BuildFFmpegArgs(profile, inputPath, scratchOut)
+	// ffmpeg は字幕ストリームが無い状態で WebVTT 出力を要求すると終了する。
+	// 先に ffprobe で存在を確認し、字幕がある録画だけサイドカー出力を有効に
+	// することで、局や番組によって字幕 PID が無い録画でもエンコード本体を
+	// 落とさない（issue #430 の optional map の罠）。
+	subtitleOut := ""
+	withSubtitles := false
+	if profile.Subtitles == "webvtt" {
+		subtitleOut = filepath.Join(scratchDir, "out.vtt")
+		withSubtitles, err = probeHasSubtitlesWithTimeout(ctx, w.FFprobe, inputPath, commandOutput)
+		if err != nil {
+			log.Warn("encode: probing subtitle streams failed; continuing without subtitle sidecar", "err", err)
+		}
+	}
+	cmdArgs := BuildFFmpegArgsForSubtitle(profile, inputPath, scratchOut, subtitleOut, withSubtitles)
 	cmd := exec.CommandContext(ctx, ffmpeg, cmdArgs...)
 	setWorkerExecWaitDelay(cmd)
 	// 進捗は stdout（-progress pipe:1）。stderr はエラー診断のみ（進捗に使わない）。
@@ -302,10 +315,32 @@ func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[EncodeJobAr
 	if info.Size() == 0 {
 		return fmt.Errorf("scratch output is empty: %s", scratchOut)
 	}
+	if withSubtitles {
+		vttInfo, statErr := os.Stat(subtitleOut)
+		if statErr != nil {
+			return fmt.Errorf("stat subtitle sidecar: %w", statErr)
+		}
+		if vttInfo.Size() == 0 {
+			return fmt.Errorf("subtitle sidecar is empty: %s", subtitleOut)
+		}
+	}
 
 	size, err := streamCopyFile(scratchOut, finalPath)
 	if err != nil {
 		return fmt.Errorf("copying to media dir: %w", err)
+	}
+	if withSubtitles {
+		subtitleRelPath, pathErr := SubtitleRelPath(relPath)
+		if pathErr != nil {
+			return fmt.Errorf("building subtitle rel_path: %w", pathErr)
+		}
+		subtitleFinalPath, pathErr := mediapath.Resolve(w.MediaDir, subtitleRelPath)
+		if pathErr != nil {
+			return fmt.Errorf("resolving subtitle path: %w", pathErr)
+		}
+		if _, copyErr := streamCopyFile(subtitleOut, subtitleFinalPath); copyErr != nil {
+			return fmt.Errorf("copying subtitle sidecar: %w", copyErr)
+		}
 	}
 
 	if err := w.commitEncoded(ctx, args.RecordingID, profile.Name, relPath, size); err != nil {
@@ -367,6 +402,11 @@ const encodeAttemptErrorMaxLen = 2000
 // （試行状態の観測）に使うタイムアウト。job の ctx から切り離す
 // （attemptWriteContext）理由を参照。
 const encodeAttemptWriteTimeout = 5 * time.Second
+
+// subtitleProbeTimeout は字幕サイドカーの有無を調べる ffprobe の上限。
+// 進捗分母の probe と同じく best-effort だが、字幕機能を有効にしたことで
+// エンコード全体が無期限に止まることは許さない。
+const subtitleProbeTimeout = 30 * time.Second
 
 // attemptWriteContext は recording_encode_attempts への書き込み用に、job の
 // ctx から切り離した（ただし無期限には待たない）ctx を返す。
@@ -493,6 +533,26 @@ func (w *EncodeWorker) scratchPaths(recordingID int64, profile config.EncodeProf
 	return dir, out, nil
 }
 
+func probeHasSubtitles(ctx context.Context, ffprobe, input string, run func(context.Context, string, ...string) ([]byte, error)) (bool, error) {
+	if ffprobe == "" {
+		ffprobe = "ffprobe"
+	}
+	out, err := run(ctx, ffprobe,
+		"-v", "error", "-select_streams", "s",
+		"-show_entries", "stream=index", "-of", "csv=p=0", input,
+	)
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(string(out)) != "", nil
+}
+
+func probeHasSubtitlesWithTimeout(ctx context.Context, ffprobe, input string, run func(context.Context, string, ...string) ([]byte, error)) (bool, error) {
+	probeCtx, cancel := context.WithTimeout(ctx, subtitleProbeTimeout)
+	defer cancel()
+	return probeHasSubtitles(probeCtx, ffprobe, input, run)
+}
+
 func (w *EncodeWorker) commitEncoded(ctx context.Context, recordingID int64, profile, relPath string, size int64) error {
 	q := sqlcgen.New(w.Pool)
 	profileName := profile
@@ -523,6 +583,7 @@ func (w *EncodeWorker) commitEncoded(ctx context.Context, recordingID int64, pro
 //	[-crf N | -qp N] [-preset P]
 //	[extra_args…]                                  # ユーザー（出力側）
 //	-f CONTAINER -progress pipe:1 -loglevel error OUTPUT  # アプリ所有の末尾
+//	[-map 0:s? -c:s webvtt -f webvtt SUBTITLE_OUTPUT]   # subtitles=webvtt のとき
 //
 // **extra_args は -f の前に置く。** 以前は -f の後ろだった（旧位置に依存する
 // config は無い前提 --- -f は許可済みオプションに含まれないので、ユーザーが
@@ -530,6 +591,15 @@ func (w *EncodeWorker) commitEncoded(ctx context.Context, recordingID int64, pro
 // はコーデック/品質/スケール指定の後・アプリ所有の末尾の前」という 1 つの規則に
 // するための移動（BuildLiveFFmpegArgs と同じ形にする）。
 func BuildFFmpegArgs(profile config.EncodeProfile, input, output string) []string {
+	if profile.Subtitles == "webvtt" {
+		return BuildFFmpegArgsForSubtitle(profile, input, output, subtitleOutputPath(output), true)
+	}
+	return BuildFFmpegArgsForSubtitle(profile, input, output, "", false)
+}
+
+// BuildFFmpegArgsForSubtitle は通常の映像出力に加えて、字幕ストリームが確認
+// できた場合だけ WebVTT サイドカーを出力する引数を組み立てる。
+func BuildFFmpegArgsForSubtitle(profile config.EncodeProfile, input, output, subtitleOutput string, withSubtitles bool) []string {
 	args := []string{
 		"-hide_banner",
 		"-nostats",
@@ -554,6 +624,14 @@ func BuildFFmpegArgs(profile config.EncodeProfile, input, output string) []strin
 	args = append(args, "-f", profile.Container)
 	// -progress pipe:1 は stdout に key=value。stderr はログのみ。
 	args = append(args, "-progress", "pipe:1", "-loglevel", "error", output)
+	if profile.Subtitles == "webvtt" && withSubtitles && subtitleOutput != "" {
+		args = append(args,
+			"-map", "0:s?",
+			"-c:s", "webvtt",
+			"-f", "webvtt",
+			subtitleOutput,
+		)
+	}
 	return args
 }
 
@@ -590,6 +668,29 @@ func EncodedRelPath(originalRel, profileName, container string) (string, error) 
 		return contentpath.SanitizeContentPath(name), nil
 	}
 	return contentpath.SanitizeContentPath(dir + "/" + name), nil
+}
+
+// SubtitleRelPath は encoded アセットに隣接する WebVTT サイドカーのパスを返す。
+// 字幕は独立した media_assets 行を持たず、encoded アセットと同じ basename の
+// .vtt として管理する（issue #430 の永続化案 b）。
+func SubtitleRelPath(encodedRel string) (string, error) {
+	if encodedRel == "" {
+		return "", fmt.Errorf("empty encoded rel_path")
+	}
+	encodedRel = filepath.ToSlash(encodedRel)
+	ext := filepath.Ext(encodedRel)
+	if ext == "" {
+		return "", fmt.Errorf("encoded rel_path has no extension: %q", encodedRel)
+	}
+	return strings.TrimSuffix(encodedRel, ext) + ".vtt", nil
+}
+
+func subtitleOutputPath(encodedPath string) string {
+	ext := filepath.Ext(encodedPath)
+	if ext == "" {
+		return encodedPath + ".vtt"
+	}
+	return strings.TrimSuffix(encodedPath, ext) + ".vtt"
 }
 
 func sanitizeProfileForPath(name string) (string, error) {

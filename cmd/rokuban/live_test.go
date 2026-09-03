@@ -23,6 +23,8 @@ func TestConvertLiveConfig_NoFieldLeftBehind(t *testing.T) {
 	src := config.LiveConfig{
 		Enabled:       true,
 		FFmpeg:        "ffmpeg",
+		FFprobe:       "ffprobe",
+		Captions:      true,
 		SegmentDir:    "/dev/shm/rokuban-live",
 		MaxSessions:   4,
 		IdleTimeout:   30 * time.Second,

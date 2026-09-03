@@ -52,6 +52,12 @@ func (ls liveSites) Mount(r chi.Router) {
 	const base = streamer.LiveRoutePattern
 	r.Get(base+"/playlist.m3u8", ls.dispatch((*streamer.LiveStreamer).Playlist))
 	r.Get(base+"/segments/{name}", ls.dispatch((*streamer.LiveStreamer).Segment))
+	for _, s := range ls {
+		if s.CaptionsEnabled() {
+			r.Get(base+"/{name}", ls.dispatch((*streamer.LiveStreamer).Segment))
+			break
+		}
+	}
 	r.Post(base+"/leave", ls.dispatch((*streamer.LiveStreamer).Leave))
 }
 

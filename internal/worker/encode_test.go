@@ -89,6 +89,26 @@ func TestBuildFFmpegArgs(t *testing.T) {
 	}
 }
 
+func TestBuildFFmpegArgs_WebVTTSubtitleSidecar(t *testing.T) {
+	p := config.EncodeProfile{
+		Name: "web", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac", Subtitles: "webvtt",
+	}
+	args := BuildFFmpegArgs(p, "/in.ts", "/out.mp4")
+	joined := strings.Join(args, " ")
+	for _, want := range []string{"-map 0:s?", "-c:s webvtt", "-f webvtt", "/out.vtt"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("subtitle args missing %q: %v", want, args)
+		}
+	}
+}
+
+func TestSubtitleRelPath(t *testing.T) {
+	got, err := SubtitleRelPath("20240101/show_web.mp4")
+	if err != nil || got != "20240101/show_web.vtt" {
+		t.Fatalf("SubtitleRelPath = %q, %v; want 20240101/show_web.vtt", got, err)
+	}
+}
+
 // TestBuildFFmpegArgs_HWAccelBeforeInput は hwaccel ブロックが -i より前に来る
 // ことを固定する（issue #321）。壊し方: 前置ブロックの append を -i の対の後ろへ移す。
 func TestBuildFFmpegArgs_HWAccelBeforeInput(t *testing.T) {

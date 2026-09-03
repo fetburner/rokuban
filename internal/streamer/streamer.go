@@ -78,6 +78,9 @@ func (s *Streamer) Mount(r chi.Router) {
 type serveAsset struct {
 	relPath   string
 	sizeBytes int64
+	// sizeKnown は DB にコミットされたサイズを持つ通常アセットかどうか。
+	// WebVTT サイドカーは encoded 行の隣接ファイルであり、独立した行を持たない。
+	sizeKnown bool
 	// contentType は明示する（ServeContent の拡張子推測に頼らない）。
 	contentType string
 }
@@ -96,7 +99,17 @@ func (s *Streamer) RecordingFile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	profile := strings.TrimSpace(r.URL.Query().Get("profile"))
+	track := strings.TrimSpace(r.URL.Query().Get("track"))
+	if track != "" && (track != "subtitles" || profile == "") {
+		http.Error(w, "invalid track", http.StatusBadRequest)
+		return
+	}
 	asset, err := s.lookupAsset(r, id, profile)
+	if track == "subtitles" && err == nil {
+		asset.relPath = subtitleRelPath(asset.relPath)
+		asset.contentType = "text/vtt; charset=utf-8"
+		asset.sizeKnown = false
+	}
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			http.NotFound(w, r)
@@ -135,6 +148,7 @@ func (s *Streamer) RecordingThumbnail(w http.ResponseWriter, r *http.Request) {
 	s.serveAsset(w, r, id, serveAsset{
 		relPath:     row.RelPath,
 		sizeBytes:   row.SizeBytes,
+		sizeKnown:   true,
 		contentType: thumbnailContentType,
 	})
 }
@@ -198,7 +212,7 @@ func (s *Streamer) serveAsset(w http.ResponseWriter, r *http.Request, recordingI
 	// size_bytes は commit 時に照合した値。実ファイルと違うならコミット後に
 	// 改変・切り詰めが起きている。配信は続けるが（ユーザーは録画を見たい）
 	// 不整合として記録する。
-	if info.Size() != asset.sizeBytes {
+	if asset.sizeKnown && info.Size() != asset.sizeBytes {
 		slog.Warn("streamer: file size differs from the committed size",
 			"recording_id", recordingID, "rel_path", asset.relPath,
 			"committed", asset.sizeBytes, "actual", info.Size())
@@ -225,6 +239,7 @@ func (s *Streamer) lookupAsset(r *http.Request, recordingID int64, profile strin
 		return serveAsset{
 			relPath:     row.RelPath,
 			sizeBytes:   row.SizeBytes,
+			sizeKnown:   true,
 			contentType: contentTypeOriginal,
 		}, nil
 	}
@@ -239,8 +254,17 @@ func (s *Streamer) lookupAsset(r *http.Request, recordingID int64, profile strin
 	return serveAsset{
 		relPath:     row.RelPath,
 		sizeBytes:   row.SizeBytes,
+		sizeKnown:   true,
 		contentType: contentTypeForPath(row.RelPath),
 	}, nil
+}
+
+func subtitleRelPath(encodedRel string) string {
+	ext := filepath.Ext(encodedRel)
+	if ext == "" {
+		return encodedRel + ".vtt"
+	}
+	return strings.TrimSuffix(encodedRel, ext) + ".vtt"
 }
 
 // contentTypeForPath は派生物の拡張子から Content-Type を決める。

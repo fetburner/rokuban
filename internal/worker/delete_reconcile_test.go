@@ -204,6 +204,13 @@ func TestDeleteReconcileWorker_TrashPastRetention_Deletes(t *testing.T) {
 
 	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "past/retention.m2ts", []byte("data"))
 	fullPath := filepath.Join(mediaDir, "past", "retention.m2ts")
+	profile := "h264"
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindEncoded, &profile,
+		"past/retention_h264.mp4", []byte("encoded"))
+	subtitlePath := filepath.Join(mediaDir, "past", "retention_h264.vtt")
+	if err := os.WriteFile(subtitlePath, []byte("WEBVTT\n\n"), 0o644); err != nil {
+		t.Fatalf("writing subtitle sidecar: %v", err)
+	}
 
 	past := time.Now().Add(-40 * 24 * time.Hour)
 	if _, err := pool.Exec(context.Background(),
@@ -221,6 +228,9 @@ func TestDeleteReconcileWorker_TrashPastRetention_Deletes(t *testing.T) {
 	}
 	if fileExists(fullPath) {
 		t.Error("file still exists on disk, want removed")
+	}
+	if fileExists(subtitlePath) {
+		t.Error("subtitle sidecar still exists on disk, want removed with encoded asset")
 	}
 	// issue #135: 完全削除が完了したので purged_at が立ち、ごみ箱一覧から消える。
 	if got := purgedAt(t, pool, recordingID); got == nil {

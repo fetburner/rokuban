@@ -15,6 +15,7 @@ type HlsLike = {
   destroy(): void
   loadSource(url: string): void
   attachMedia(media: HTMLMediaElement): void
+  subtitleDisplay: boolean
   on(event: string, callback: (event: string, data: { fatal: boolean }) => void): void
   /**
    * hls.latency（秒）。`LatencyController.get latency()` の実装
@@ -389,7 +390,11 @@ export function LivePlayer({
           setLoading(false)
           return
         }
+        // master playlist の EXT-X-MEDIA subtitles rendition を hls.js の
+        // 字幕トグルに表示させる（issue #430）。subtitleDisplay は HlsConfig
+        // ではなく Hls インスタンスのプロパティである。
         const hls = new Hls() as unknown as HlsLike
+        hls.subtitleDisplay = true
         hlsRef.current = hls
         const stopDiagnostics = watchLiveDiagnostics(() => readHlsDiagnostics(hls))
         hls.on(Hls.Events.ERROR, (_event, data) => {

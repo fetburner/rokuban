@@ -964,7 +964,7 @@ func TestLoad_AllFieldsOverridden(t *testing.T) {
 			"live",
 			cfg.Live,
 			LiveConfig{
-				Enabled: true, FFmpeg: "/usr/local/bin/ffmpeg-live", SegmentDir: "/tmp/hls",
+				Enabled: true, FFmpeg: "/usr/local/bin/ffmpeg-live", FFprobe: "ffprobe", SegmentDir: "/tmp/hls",
 				MaxSessions: 8, IdleTimeout: 45 * time.Second, TunerPriority: 5,
 				HWAccel:        &ffargs.HWAccel{Kind: "vaapi", Device: "/dev/dri/renderD128", OutputFormat: "vaapi"},
 				InputExtraArgs: []string{"-re"},

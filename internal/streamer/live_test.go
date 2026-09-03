@@ -1,6 +1,7 @@
 package streamer
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -1878,6 +1879,55 @@ func TestBuildLiveFFmpegArgs(t *testing.T) {
 	joined := strings.Join(args, " ")
 	if strings.Contains(joined, "&&") || strings.Contains(joined, "|") {
 		t.Errorf("args look like a shell pipeline: %v", args)
+	}
+}
+
+func TestBuildLiveFFmpegArgs_CaptionsUsesMasterAndWebVTT(t *testing.T) {
+	args := BuildLiveFFmpegArgs(LiveConfig{
+		Captions: true,
+		Profiles: []LiveProfile{
+			{Name: "h264", VideoCodec: "libx264", AudioCodec: "aac", SegmentSeconds: 2, PlaylistSize: 6},
+			{Name: "low", VideoCodec: "libx264", AudioCodec: "aac", SegmentSeconds: 4, PlaylistSize: 3},
+		},
+	}, "/tmp/live/1")
+	joined := strings.Join(args, " ")
+	for _, want := range []string{
+		"-map 0:s:0?", "-c:s webvtt", "-var_stream_map v:0,a:0,s:0,sgroup:subs v:1,a:1",
+		"-master_pl_name playlist.m3u8", "-hls_time 2", "-hls_list_size 6", "-force_key_frames:v:0",
+		"-hls_subtitle_path /tmp/live/1/subtitles.m3u8", "playlist_%v.m3u8", "/tmp/live/1/segments/%v_seg%05d.ts",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("caption live args missing %q: %v", want, args)
+		}
+	}
+}
+
+func TestBuildLiveFFmpegArgs_CaptionsWithoutSubtitleStream(t *testing.T) {
+	args := buildLiveFFmpegArgs(LiveConfig{
+		Captions: true,
+		Profiles: []LiveProfile{{Name: "h264", VideoCodec: "libx264", AudioCodec: "aac", SegmentSeconds: 3, PlaylistSize: 7}},
+	}, "/tmp/live/1", false)
+	joined := strings.Join(args, " ")
+	if strings.Contains(joined, "0:s:0") || strings.Contains(joined, "s:0,sgroup:subs") || strings.Contains(joined, "-c:s webvtt") {
+		t.Fatalf("subtitle mapping must be omitted when input has no subtitle stream: %v", args)
+	}
+	for _, want := range []string{"-var_stream_map v:0,a:0", "-master_pl_name playlist.m3u8", "-hls_time 3", "-hls_list_size 7"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("captionless live args missing %q: %v", want, args)
+		}
+	}
+}
+
+func TestWaitForPlaylist_MasterUsesStreamInfMarker(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "playlist.m3u8")
+	content := []byte("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000\nplaylist_0.m3u8\n")
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		t.Fatalf("writing master playlist: %v", err)
+	}
+	s := &liveSession{lastAccess: time.Now()}
+	got, ok := waitForPlaylist(context.Background(), s, path, time.Second, "#EXT-X-STREAM-INF")
+	if !ok || !bytes.Equal(got, content) {
+		t.Fatalf("waitForPlaylist = (%q, %v), want master playlist content", got, ok)
 	}
 }
 

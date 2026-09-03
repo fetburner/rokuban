@@ -7,6 +7,7 @@ import {
   loadPlaybackRate,
   playbackRates,
   recordingFileURL,
+  recordingSubtitleURL,
   savePlaybackPosition,
   savePlaybackRate,
   shouldSavePlaybackPosition,
@@ -266,7 +267,14 @@ export function RecordingPlayer({
           const v = e.currentTarget
           savePlaybackPosition(recordingId, profile, v.currentTime, v.duration)
         }}
-      />
+      >
+        <track
+          kind="subtitles"
+          srcLang="ja"
+          label="日本語"
+          src={recordingSubtitleURL(recordingId, profile)}
+        />
+      </video>
 
       {hasOriginal && (
         <p className="text-muted-foreground">
