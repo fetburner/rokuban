@@ -218,11 +218,10 @@ function FilterPanel({
   const [open, setOpen] = useState(false)
   const selectedServices = useMemo(() => new Set(search.service ?? []), [search.service])
   const selectedGenres = useMemo(() => new Set(search.genre ?? []), [search.genre])
-  // `siteNames` は親が毎レンダー新しい配列を渡し、`search.site` も URL パース
-  // 由来で identity が安定しないため、`useMemo` は毎回不一致で無意味だった
-  // （`condition-fields.tsx` の `ServiceFields` と同じ先例。未測定の最適化な
-  // ので素の呼び出しに戻す）。
-  const siteOptions = [...new Set([...siteNames, ...(search.site ?? [])])].sort()
+  const siteOptions = useMemo(
+    () => [...new Set([...siteNames, ...(search.site ?? [])])].sort(),
+    [siteNames, search.site],
+  )
   const selectedSites = useMemo(() => new Set(search.site ?? []), [search.site])
   // site は別軸（`?site=`）なので、チャンネルの補足ラベルには入れない。
   // **同じチャンネルを 2 サイトで受けていても選択肢は 1 つ**（identity は
