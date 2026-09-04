@@ -1,5 +1,5 @@
 # Stage 1: フロントエンドビルド
-FROM node:22.23.1 AS frontend
+FROM node:24.20.0 AS frontend
 RUN corepack enable
 WORKDIR /build/web
 COPY web/package.json web/pnpm-lock.yaml ./

@@ -204,8 +204,8 @@ orval 生成の zod スキーマ（`web/src/api/zod.ts` の `List*ResponseItem`�
 
 `zod.ts` は `import.meta.env` 等 Vite 依存を持たない素の TypeScript なので、
 Node の ESM スクリプトから `../src/api/zod.ts` を直接 import できる ---
-追加のローダー（tsx・vite-node）は要らない。Node 22 は型注釈だけを消す型
-ストリッピングを既定で持ち（`.node-version` の 22.23.1 で実際に import
+追加のローダー（tsx・vite-node）は要らない。Node は型注釈だけを消す型
+ストリッピングを既定で持ち（`.node-version` の 24.20.0 で実際に import
 できることを確認済み）、`zod.ts` は enum・namespace・parameter properties の
 ような変換が要る構文を持たないため、これだけで通る。`package.json` の
 `e2e:design` 等の各スクリプトもそのままで変更していない。
