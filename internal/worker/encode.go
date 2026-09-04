@@ -135,6 +135,8 @@ func (w *EncodeWorker) Work(ctx context.Context, job *river.Job[EncodeJobArgs]) 
 //
 // err は名前付き戻り値 --- 直後の defer（試行状態の観測、issue #316）が
 // 全ての return 文の結果を横取りして recording_encode_attempts に反映するため。
+//
+//nolint:funlen // 分割は epic #585 の Q-2（#587）で行う
 func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[EncodeJobArgs]) (err error) {
 	args := job.Args
 	log := slog.With("recording_id", args.RecordingID, "profile", args.Profile)

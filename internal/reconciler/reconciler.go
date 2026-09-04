@@ -106,6 +106,8 @@ func New(site string, mc *mirakc.Client, pool *pgxpool.Pool, cfg *Config) *Recon
 // Reconciler 構造体）は状態を持たないが、パスの先頭で breaker.ObserveState を
 // 呼んで DB の真実に合わせ直し、発動中なら schedule の削除を一切実行しない
 // （作成・再作成は続ける。止めたいのは削除だけ）。
+//
+//nolint:funlen // 分割は epic #585 の Q-1（#586）で行う
 func (r *Reconciler) RunPass(ctx context.Context) error {
 	slog.Debug("reconciler: starting pass")
 

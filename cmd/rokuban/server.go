@@ -255,6 +255,9 @@ func newServerCmd() *cobra.Command {
 
 // runServer は server サブコマンドの本体。
 //
+// newServerCmd から切り出してあるのは、フラグ登録を本体の直後に置くため
+// （RunE の中に本体を直接書くと cmd.Flags() の並びが本体の向こう側になる）。
+//
 // pool.Close、River の drain、once 購読の unsubscribe はこの関数に残す。
 // defer は登録した関数を終了時に逆順で実行するため、これらを構築ヘルパーへ
 // 移すと pool.Close が River の drain より先に走り、running の Job 行を残す。
@@ -270,6 +273,10 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	}
 	warnIfAllowedHostsEmpty(slog.Default(), cfg.Server.AllowedHosts)
 
+	// 以降の判定（validateSiteBinding / RequiresEncodeTools / ClientConfig.Queues）は
+	// すべてこの解決済みの queues を見る --- 片方だけが config を直接見ると、
+	// argv で絞った Pod が「絞ったつもりで検査だけ全キュー基準」になる
+	// （resolveWorkerQueues のコメント参照）。
 	queues, err := resolveWorkerQueues(cmd, cfg.Worker.Queues, roles)
 	if err != nil {
 		return err
@@ -306,7 +313,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 
 	eg, egCtx := errgroup.WithContext(ctx)
 
-	srv, err := buildHTTPServer(cfg, roles, bound, pool, eg, egCtx)
+	srv, err := buildHTTPServer(egCtx, cfg, roles, bound, pool, eg)
 	if err != nil {
 		return err
 	}
@@ -334,6 +341,13 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	}
 
 	if slices.Contains(roles, "worker") {
+		// worker ロールのガードの内側に置く。River の Subscribe は「ジョブを
+		// 実行しないクライアント」に対して panic するので、insert-only の
+		// クライアント（watcher 単独）や nil のクライアントに対して呼ぶと
+		// 起動エラーではなく panic になる。いまは validateOnceMode がロールを
+		// worker 単独に限っているので到達しないが、その検査の理由（常駐する役を
+		// 巻き込まない）はクライアントの種類とは無関係なので、緩めたときに
+		// ここが踏まれる形にしない。
 		var onceEvents <-chan *river.Event
 		if onceGate != nil {
 			var unsubscribe func()
@@ -347,11 +361,11 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		defer func() { stopRiverForShutdown(riverClient.Stop, softStopTimeout) }()
 
 		if onceGate != nil {
-			superviseOnceMode(eg, egCtx, ctx, onceGate, onceIdleTimeout, onceEvents, riverClient.Stop, stop)
+			superviseOnceMode(egCtx, ctx, eg, onceGate, onceIdleTimeout, onceEvents, riverClient.Stop, stop)
 		}
 	}
 
-	superviseSingletons(roles, bound, eg, egCtx, pool, riverClient, webhookClient)
+	superviseSingletons(egCtx, roles, bound, eg, pool, riverClient, webhookClient)
 
 	eg.Go(func() error {
 		<-egCtx.Done()
@@ -365,9 +379,18 @@ func runServer(cmd *cobra.Command, _ []string) error {
 
 // installSignalHandler は SIGINT / SIGTERM を受けるコンテキストを作る。
 //
-// 1 発目のシグナルで登録を外す。外すまでの間に届く 2 発目は既定動作を
-// 抑止されたまま捨てられるため、drain 中でも 2 発目でプロセスを終了できる
-// ようにする。登録解除は畳み終わりではなく、1 発目のシグナルを契機に行う。
+// **1 発目のシグナルで登録を外す。** 外さないと、その間に届く 2 発目は
+// signal パッケージのチャネル（バッファ 1・読み手はもう居ない）に落ちて
+// 捨てられ、既定動作（プロセス終了）が抑止されたままになる。その間ずっと
+// Ctrl-C も `kill -TERM` も効かず、止める手段が SIGKILL だけになる。
+//
+// **外す契機は「1 発目のシグナル」であって「畳み終えたところ」ではない。**
+// 後者にすると、drain を errgroup の中で回す 1 件消化モード
+// （`stopOnceProcess`）では畳み終えるまで外れず、`--soft-stop-timeout` を
+// 長く取る構成ほど逃げ道が無くなる（数時間の猶予を勧めている先が
+// ScaledJob = 1 件消化モードなので、一番効いてほしい構成で効かなくなる）。
+//
+// 両モードとも TestServerCmd_SecondSigtermKillsDrainingProcess が固定する。
 // `runServer` 側の defer は、シグナルを受けずに終了する経路でも登録を解除する。
 func installSignalHandler(parent context.Context) (context.Context, context.CancelFunc) {
 	ctx, stop := signal.NotifyContext(parent, syscall.SIGINT, syscall.SIGTERM)
@@ -375,23 +398,38 @@ func installSignalHandler(parent context.Context) (context.Context, context.Canc
 	return ctx, stop
 }
 
-// buildHTTPServer は HTTP ルーターとサーバーを構築し、HTTP 以外の
-// notifier / live のバックグラウンド処理を errgroup に登録する。
+// buildHTTPServer は HTTP ルーターとサーバーを構築する。
 //
 // HTTP リスナーはロールに関わらず 1 本立てる。ヘルスチェックと /metrics は
 // どのロールでも必要で、SPA・SSE・バイト配信だけを担当ロールに登録する。
-// api の River クライアントは insert-only、watcher の River クライアントは
-// `buildRiverClient` が構築するものを使うため、この関数では worker のワーカー群を
-// 登録しない。
-func buildHTTPServer(cfg *config.Config, roles []string, bound []config.MirakcSite, pool *pgxpool.Pool, eg *errgroup.Group, egCtx context.Context) (*http.Server, error) {
+//
+// **この関数は eg に goroutine を登録するので、登録より後で error を
+// 返してはならない。** `runServer` はこの関数の戻り値をそのまま使うだけで
+// `eg.Wait()` を呼ばずに return するため、ここで返したエラーは登録済みの
+// goroutine を待たずに `runServer` を抜ける経路に乗る --- goroutine 自体は
+// 呼び出し元の `eg.Wait()` が回収するので漏れはしないが、「後から
+// error return を足してよい」形には見えない関数にしておく。
+func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, bound []config.MirakcSite, pool *pgxpool.Pool, eg *errgroup.Group) (*http.Server, error) {
 	backlog := newBoundBacklogCollectors(pool, bound)
 	routerCfg := api.RouterConfig{
 		AllowedHosts:       cfg.Server.AllowedHosts,
 		TrustForwardedHost: cfg.Server.TrustForwardedHost,
 		Pool:               pool,
-		Sites:              registryNames(cfg.Registry()),
-		MetricsRegistry:    metrics.NewRegistry(backlog...),
-		LiveEnabled:        cfg.Live.Enabled,
+		// api は不変条件 1（mirakc にもファイルシステムにも依存しない）により
+		// site に束縛されない。bound ではなくレジストリ全体を渡すことで、
+		// 1 プロセスがレジストリの全 site を処理できる。
+		Sites:           registryNames(cfg.Registry()),
+		MetricsRegistry: metrics.NewRegistry(backlog...),
+		// GET /api/capabilities に出すオプション機能。フロントはこれを見て
+		// ライブへの導線を出すかどうかを決める。
+		//
+		// **ロールで囲わない。** OpenAPI 生成ルート（HandlerWithOptions）は
+		// ロールに関わらず全プロセスに生えるため、api ロールの中だけで
+		// 代入すると、同じ config の別プロセス（notifier 単独など）に
+		// 聞いたときだけ live:false になる --- config → 公開面の値なのに
+		// 答えがプロセスの役割で変わる。Sites / MetricsRegistry を無条件に
+		// 渡しているのと同じ理由でここに置く。
+		LiveEnabled: cfg.Live.Enabled,
 	}
 
 	if slices.Contains(roles, "api") {
@@ -415,11 +453,16 @@ func buildHTTPServer(cfg *config.Config, roles []string, bound []config.MirakcSi
 			AccelLocation: cfg.Storage.AccelLocation,
 		}))
 		if cfg.Live.Enabled {
+			// live.enabled が true のときだけ ffmpeg の LookPath 検査を行う ---
+			// 公式イメージ（ffmpeg 無し）で streamer を起動する構成
+			// （録画配信 / サムネイルのみ）を壊さない（不変条件 4）。
 			if err := cfg.Live.ValidateTools(); err != nil {
 				return nil, err
 			}
 			liveStreamers := newLiveStreamersBySite(bound, convertLiveConfig(cfg.Live))
 			mounters = append(mounters, liveStreamers)
+			// idle GC ループ。egCtx が終わったら全セッションを止めて mirakc の
+			// 接続を閉じる（チューナー解放。crash-only の唯一の例外の後始末）。
 			eg.Go(func() error { return liveStreamers.Run(egCtx) })
 		}
 	}
@@ -466,6 +509,12 @@ func buildFullRiverClient(cfg *config.Config, bound []config.MirakcSite, queues 
 	for _, site := range bound {
 		mirakcClients[site.Site] = mirakc.NewClient(site.URL, nil)
 	}
+	// cfg.Ruler.RetractGrace は internal/config.Load が「未設定なら既定 1h」を
+	// 埋めた後の値なので、ここでは常に非 nil のはず。nil のまま来た場合
+	// （config.Load を経由しない構築）は「未設定」ではなく「無効」に倒す ---
+	// ゼロ値の time.Duration がそのまま「猶予なし」になり、
+	// ruler.Config.RetractGrace のフィールドコメントが定める後方互換の既定と
+	// 一致する。
 	var rulerRetractGrace time.Duration
 	if cfg.Ruler.RetractGrace != nil {
 		rulerRetractGrace = *cfg.Ruler.RetractGrace
@@ -486,6 +535,11 @@ func buildFullRiverClient(cfg *config.Config, bound []config.MirakcSite, queues 
 		Cleanup:                  cfg.Cleanup,
 	})
 	clientCfg := worker.ClientConfig{
+		// BoundSites は site 単位のキュー（ingest/epg/reconciler/watcher）を
+		// 物理名（`<base>_<site>`）に展開するのに使う。空スライス（0 サイト
+		// 束縛）では worker.qualifyQueueName が db.DefaultSite に解決する ---
+		// 0 サイト束縛の worker がこれらのキューを要求しないことは
+		// validateSiteBinding が起動時に強制している。
 		BoundSites:           registryNames(bound),
 		IngestConcurrency:    cfg.Ingest.Concurrency,
 		EncodeConcurrency:    cfg.Encode.Concurrency,
@@ -507,18 +561,31 @@ func buildFullRiverClient(cfg *config.Config, bound []config.MirakcSite, queues 
 // River の graceful stop を先に行い、その後にプロセスを畳む順序は
 // stopOnceProcess に委ねる。ジョブの失敗は River のリトライに任せるため、
 // この監督 goroutine は常に nil を返す。
-func superviseOnceMode(eg *errgroup.Group, egCtx, ctx context.Context, onceGate *worker.OnceGate, onceIdleTimeout time.Duration, onceEvents <-chan *river.Event, stopRiver func(context.Context) error, stop context.CancelFunc) {
+//
+// 既知の窓（実害が空振り Job 1 つぶんなので閉じていない）: Work を抜けてから
+// Stop が producer を止めるまでの間に次のジョブが fetch されると、この Job は
+// 2 件消化して終わる。MaxWorkers=1 なので同時には走らない。打ち切られるのは
+// `--soft-stop-timeout` の猶予を超えたときだけである（実測 0/25 でこの窓には
+// 入らなかった）。
+//
+// egCtx と signalCtx はどちらも context.Context で隣接しており、**取り違えても
+// コンパイルは通る。** stopOnceProcess は signalCtx（installSignalHandler が
+// 作ったキャンセル未了のシグナル ctx）を受け取らなければならない --- ここに
+// egCtx を渡すと、eg.Wait() を待たず既にキャンセル済みの ctx を渡すのと同じに
+// なり、stopOnceProcess 内の stopRiver 呼び出しが即座にキャンセルされた ctx で
+// 走ることになる。
+func superviseOnceMode(egCtx, signalCtx context.Context, eg *errgroup.Group, onceGate *worker.OnceGate, onceIdleTimeout time.Duration, onceEvents <-chan *river.Event, stopRiver func(context.Context) error, stop context.CancelFunc) {
 	eg.Go(func() error {
 		outcome := onceGate.Wait(egCtx, onceIdleTimeout, onceEvents)
 		slog.Info("worker: once mode finished", "outcome", outcome.String())
-		stopOnceProcess(ctx, stopRiver, stop)
+		stopOnceProcess(signalCtx, stopRiver, stop)
 		return nil
 	})
 }
 
 // superviseSingletons はシングルトンロールをサイトごとの監督 goroutine に登録する。
 // 各サイトに独立した mirakc クライアントと advisory lock を割り当てる。
-func superviseSingletons(roles []string, bound []config.MirakcSite, eg *errgroup.Group, egCtx context.Context, pool *pgxpool.Pool, riverClient *river.Client[pgx5.Tx], webhookClient *webhook.Client) {
+func superviseSingletons(egCtx context.Context, roles []string, bound []config.MirakcSite, eg *errgroup.Group, pool *pgxpool.Pool, riverClient *river.Client[pgx5.Tx], webhookClient *webhook.Client) {
 	for _, roleName := range roles {
 		if !slices.Contains(singletonRoles, roleName) {
 			continue

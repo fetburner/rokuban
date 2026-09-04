@@ -654,6 +654,8 @@ type ClientConfig struct {
 //
 // river.NewClient を呼ぶ NewClient から分離してあるのは、DB 接続なしで
 // queues 検証や PeriodicJobs の有無を単体テストできるようにするため。
+//
+//nolint:funlen // 分割は epic #585 の Q-2（#587）で行う
 func buildRiverConfig(workers *river.Workers, cfg ClientConfig) (*river.Config, error) {
 	ingestConcurrency := cfg.IngestConcurrency
 	if ingestConcurrency <= 0 {

@@ -15,6 +15,8 @@ import (
 
 // Export → Write → 空 DB への Rescue で recordings / media_assets / drop_stats /
 // rules が戻ること。再実行しても増殖しないこと。
+//
+//nolint:funlen // Export/Write/Rescue を通しで確認する結合テスト。分割は epic #585 のスコープ外（既存超過分を一括では直さない）
 func TestExportRescue_RoundTrip(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()

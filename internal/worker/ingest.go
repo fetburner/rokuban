@@ -149,6 +149,8 @@ func (w *IngestWorker) resolveRelPathLockTimeout() time.Duration {
 }
 
 // Work は ingest ジョブを実行する。ストリーム取得・TS 統計収集・DB コミット・エッジ削除を行う。
+//
+//nolint:funlen // 分割は epic #585 の Q-2（#587）で行う
 func (w *IngestWorker) Work(ctx context.Context, job *river.Job[IngestJobArgs]) error {
 	args := job.Args
 	log := slog.With("site", args.Site, "record_id", args.RecordID)

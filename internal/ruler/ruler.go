@@ -152,6 +152,8 @@ func (r *Ruler) RunPass(ctx context.Context) error {
 }
 
 // runPassForSite は 1 サイト分の全量評価 + 差分書き込みを行う。
+//
+//nolint:funlen // 分割は epic #585 の Q-1（#586）で行う
 func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 	q := sqlcgen.New(r.pool)
 
