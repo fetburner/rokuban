@@ -22,10 +22,14 @@ golangci-lint run
 cd web
 pnpm install
 pnpm test      # Vitest
-pnpm lint      # oxlint。既存の warning が 2 件あるので増えていないかで見る
+pnpm lint      # oxlint。既存件数を --max-warnings で固定してある（下記）
 pnpm build     # tsc -b && vite build。型エラーはここで出る
 pnpm exec orval  # openapi.yaml → web/src/api/generated.ts
 ```
+
+**`pnpm lint` の warning 件数は `--max-warnings` で固定してある**。素の `oxlint` は warning でも終了コード 0 を返すので、CI は warning が増えても緑のままだった。実際に oxlint 1.75.0 → 1.80.0 で 4 つの react 規則が既定有効になり、2 件から 33 件へ増えたことに誰も気付かなかった。増えたのは `react/purity` / `react/set-state-in-effect` / `react/immutability` / `react/refs`。閾値を超えると `pnpm lint` が落ちるので、**規則が増えた版に上げる PR では、警告を消すか閾値を上げるかをその PR で決める**。33 という数は現状の債務を凍結した値であって、目標値ではない。
+
+**`node_modules` が lockfile より古いと、手元と CI で規則集合がずれる**。上記の見落としは実際にこれで起きた --- 手元は 1.75.0 のまま 2 件を表示し、CI は lockfile の 1.80.0 で 33 件を見ていた。lockfile が動く PR の後は `pnpm install` をやり直す。
 
 **`go test ./...` は Postgres を要求する**。`ROKUBAN_TEST_DATABASE_URL` を設定していないと DB を使うテストが落ちる（`internal/testutil` がパッケージごとに DB を作り、テストごとに TRUNCATE する）。ローカルなら `postgres://localhost:5432/postgres?sslmode=disable` で足りる。
 
