@@ -25,8 +25,6 @@ import (
 // REPEATABLE READ / READ ONLY のトランザクションを張る形に固定してある。
 // 呼び出し側が任意の *sqlcgen.Queries を渡せる形にすると tx なしで呼べてしまう
 // ので、シグネチャは緩めない。
-//
-//nolint:funlen // 表ごとの読み出しを 1 関数にまとめている。分割は epic #585 の Q-4（#589）で行う
 func Export(ctx context.Context, pool *pgxpool.Pool) (*Document, error) {
 	tx, err := pool.BeginTx(ctx, pgx.TxOptions{
 		IsoLevel:   pgx.RepeatableRead,
@@ -44,6 +42,42 @@ func Export(ctx context.Context, pool *pgxpool.Pool) (*Document, error) {
 		ExportedAt: time.Now().UTC(),
 	}
 
+	if doc.Rules, err = exportRules(ctx, q); err != nil {
+		return nil, err
+	}
+	if doc.ProgramSnapshots, err = exportProgramSnapshots(ctx, q); err != nil {
+		return nil, err
+	}
+	if doc.ProgramIntents, err = exportProgramIntents(ctx, q); err != nil {
+		return nil, err
+	}
+	if doc.ProgramOverrides, err = exportProgramOverrides(ctx, q); err != nil {
+		return nil, err
+	}
+	if doc.Recordings, err = exportRecordings(ctx, q); err != nil {
+		return nil, err
+	}
+	if doc.RecordingPurgeRequests, err = exportRecordingPurgeRequests(ctx, q); err != nil {
+		return nil, err
+	}
+	if doc.RecordingEncodePolicies, err = exportRecordingEncodePolicies(ctx, q); err != nil {
+		return nil, err
+	}
+	if doc.MediaAssets, err = exportMediaAssets(ctx, q); err != nil {
+		return nil, err
+	}
+	if doc.DropStats, err = exportDropStats(ctx, q); err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("committing export tx: %w", err)
+	}
+	return doc, nil
+}
+
+// exportRules は rules とその従属表を読み取り、文書の Rule に組み立てる。
+func exportRules(ctx context.Context, q *sqlcgen.Queries) ([]Rule, error) {
 	rules, err := q.CatalogListRules(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("listing rules: %w", err)
@@ -72,78 +106,18 @@ func Export(ctx context.Context, pool *pgxpool.Pool) (*Document, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listing rule_sites: %w", err)
 	}
+	return assembleRules(rules, textMatches, services, channelTypes, genres, times, ruleSites), nil
+}
 
-	doc.Rules = assembleRules(rules, textMatches, services, channelTypes, genres, times, ruleSites)
-
-	recordings, err := q.CatalogListRecordings(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("listing recordings: %w", err)
-	}
-	doc.Recordings = make([]Recording, 0, len(recordings))
-	for _, r := range recordings {
-		doc.Recordings = append(doc.Recordings, recordingFromRow(r))
-	}
-
-	encodePolicies, err := q.CatalogListRecordingEncodePolicies(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("listing recording_encode_policy: %w", err)
-	}
-	doc.RecordingEncodePolicies = make([]RecordingEncodePolicy, 0, len(encodePolicies))
-	for _, p := range encodePolicies {
-		doc.RecordingEncodePolicies = append(doc.RecordingEncodePolicies, RecordingEncodePolicy{
-			RecordingID:    p.RecordingID,
-			KeepOriginal:   p.KeepOriginal,
-			EncodeProfiles: nonNilStrings(p.EncodeProfiles),
-			CreatedAt:      p.CreatedAt,
-			UpdatedAt:      p.UpdatedAt,
-		})
-	}
-
-	purgeRequests, err := q.CatalogListRecordingPurgeRequests(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("listing recording_purge_requests: %w", err)
-	}
-	doc.RecordingPurgeRequests = make([]RecordingPurgeRequest, 0, len(purgeRequests))
-	for _, p := range purgeRequests {
-		doc.RecordingPurgeRequests = append(doc.RecordingPurgeRequests, RecordingPurgeRequest{
-			RecordingID: p.RecordingID,
-			RequestedAt: p.RequestedAt,
-		})
-	}
-
-	assets, err := q.CatalogListMediaAssets(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("listing media_assets: %w", err)
-	}
-	doc.MediaAssets = make([]MediaAsset, 0, len(assets))
-	for _, a := range assets {
-		doc.MediaAssets = append(doc.MediaAssets, mediaAssetFromRow(a))
-	}
-
-	drops, err := q.CatalogListDropStats(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("listing drop_stats: %w", err)
-	}
-	doc.DropStats = make([]DropStat, 0, len(drops))
-	for _, d := range drops {
-		doc.DropStats = append(doc.DropStats, DropStat{
-			MediaAssetID: d.MediaAssetID,
-			Pid:          d.Pid,
-			Packets:      d.Packets,
-			Drops:        d.Drops,
-			Errors:       d.Errors,
-			Scrambled:    d.Scrambled,
-			PidType:      d.PidType,
-		})
-	}
-
-	snaps, err := q.CatalogListProgramSnapshots(ctx)
+// exportProgramSnapshots は program_snapshots を文書の型付き行に変換する。
+func exportProgramSnapshots(ctx context.Context, q *sqlcgen.Queries) ([]ProgramSnapshot, error) {
+	rows, err := q.CatalogListProgramSnapshots(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("listing program_snapshots: %w", err)
 	}
-	doc.ProgramSnapshots = make([]ProgramSnapshot, 0, len(snaps))
-	for _, s := range snaps {
-		doc.ProgramSnapshots = append(doc.ProgramSnapshots, ProgramSnapshot{
+	out := make([]ProgramSnapshot, 0, len(rows))
+	for _, s := range rows {
+		out = append(out, ProgramSnapshot{
 			Site:        s.Site,
 			ProgramID:   s.ProgramID,
 			Title:       s.Title,
@@ -158,14 +132,18 @@ func Export(ctx context.Context, pool *pgxpool.Pool) (*Document, error) {
 			UpdatedAt:   s.UpdatedAt,
 		})
 	}
+	return out, nil
+}
 
-	intents, err := q.CatalogListProgramIntents(ctx)
+// exportProgramIntents は program_intents を文書の型付き行に変換する。
+func exportProgramIntents(ctx context.Context, q *sqlcgen.Queries) ([]ProgramIntent, error) {
+	rows, err := q.CatalogListProgramIntents(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("listing program_intents: %w", err)
 	}
-	doc.ProgramIntents = make([]ProgramIntent, 0, len(intents))
-	for _, i := range intents {
-		doc.ProgramIntents = append(doc.ProgramIntents, ProgramIntent{
+	out := make([]ProgramIntent, 0, len(rows))
+	for _, i := range rows {
+		out = append(out, ProgramIntent{
 			Site:      i.Site,
 			ProgramID: i.ProgramID,
 			Action:    i.Action,
@@ -173,14 +151,18 @@ func Export(ctx context.Context, pool *pgxpool.Pool) (*Document, error) {
 			UpdatedAt: i.UpdatedAt,
 		})
 	}
+	return out, nil
+}
 
-	overrides, err := q.CatalogListProgramOverrides(ctx)
+// exportProgramOverrides は program_overrides を文書の型付き行に変換する。
+func exportProgramOverrides(ctx context.Context, q *sqlcgen.Queries) ([]ProgramOverride, error) {
+	rows, err := q.CatalogListProgramOverrides(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("listing program_overrides: %w", err)
 	}
-	doc.ProgramOverrides = make([]ProgramOverride, 0, len(overrides))
-	for _, o := range overrides {
-		doc.ProgramOverrides = append(doc.ProgramOverrides, ProgramOverride{
+	out := make([]ProgramOverride, 0, len(rows))
+	for _, o := range rows {
+		out = append(out, ProgramOverride{
 			Site:      o.Site,
 			ProgramID: o.ProgramID,
 			Overrides: o.Overrides,
@@ -188,11 +170,89 @@ func Export(ctx context.Context, pool *pgxpool.Pool) (*Document, error) {
 			UpdatedAt: o.UpdatedAt,
 		})
 	}
+	return out, nil
+}
 
-	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("committing export tx: %w", err)
+// exportRecordings は recordings を文書の型付き行に変換する。
+func exportRecordings(ctx context.Context, q *sqlcgen.Queries) ([]Recording, error) {
+	rows, err := q.CatalogListRecordings(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing recordings: %w", err)
 	}
-	return doc, nil
+	out := make([]Recording, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, recordingFromRow(r))
+	}
+	return out, nil
+}
+
+// exportRecordingPurgeRequests は recording_purge_requests を文書の型付き行に変換する。
+func exportRecordingPurgeRequests(ctx context.Context, q *sqlcgen.Queries) ([]RecordingPurgeRequest, error) {
+	rows, err := q.CatalogListRecordingPurgeRequests(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing recording_purge_requests: %w", err)
+	}
+	out := make([]RecordingPurgeRequest, 0, len(rows))
+	for _, p := range rows {
+		out = append(out, RecordingPurgeRequest{
+			RecordingID: p.RecordingID,
+			RequestedAt: p.RequestedAt,
+		})
+	}
+	return out, nil
+}
+
+// exportRecordingEncodePolicies は recording_encode_policy を文書の型付き行に変換する。
+func exportRecordingEncodePolicies(ctx context.Context, q *sqlcgen.Queries) ([]RecordingEncodePolicy, error) {
+	rows, err := q.CatalogListRecordingEncodePolicies(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing recording_encode_policy: %w", err)
+	}
+	out := make([]RecordingEncodePolicy, 0, len(rows))
+	for _, p := range rows {
+		out = append(out, RecordingEncodePolicy{
+			RecordingID:    p.RecordingID,
+			KeepOriginal:   p.KeepOriginal,
+			EncodeProfiles: nonNilStrings(p.EncodeProfiles),
+			CreatedAt:      p.CreatedAt,
+			UpdatedAt:      p.UpdatedAt,
+		})
+	}
+	return out, nil
+}
+
+// exportMediaAssets は media_assets を文書の型付き行に変換する。
+func exportMediaAssets(ctx context.Context, q *sqlcgen.Queries) ([]MediaAsset, error) {
+	rows, err := q.CatalogListMediaAssets(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing media_assets: %w", err)
+	}
+	out := make([]MediaAsset, 0, len(rows))
+	for _, a := range rows {
+		out = append(out, mediaAssetFromRow(a))
+	}
+	return out, nil
+}
+
+// exportDropStats は drop_stats を文書の型付き行に変換する。
+func exportDropStats(ctx context.Context, q *sqlcgen.Queries) ([]DropStat, error) {
+	rows, err := q.CatalogListDropStats(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing drop_stats: %w", err)
+	}
+	out := make([]DropStat, 0, len(rows))
+	for _, d := range rows {
+		out = append(out, DropStat{
+			MediaAssetID: d.MediaAssetID,
+			Pid:          d.Pid,
+			Packets:      d.Packets,
+			Drops:        d.Drops,
+			Errors:       d.Errors,
+			Scrambled:    d.Scrambled,
+			PidType:      d.PidType,
+		})
+	}
+	return out, nil
 }
 
 func assembleRules(
