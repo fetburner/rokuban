@@ -135,8 +135,8 @@ export const ListRulesResponseItem = zod.object({
   "isFree": zod.boolean().nullish().describe('null = 問わない'),
   "durationMinMs": zod.number().nullish(),
   "durationMaxMs": zod.number().nullish(),
-  "periodStartAt": zod.string().datetime({"offset":true}).nullish(),
-  "periodEndAt": zod.string().datetime({"offset":true}).nullish(),
+  "periodStartAt": zod.iso.datetime({"offset":true}).nullish(),
+  "periodEndAt": zod.iso.datetime({"offset":true}).nullish(),
   "textMatches": zod.array(zod.object({
   "target": zod.enum(['name', 'description', 'extended']),
   "mode": zod.enum(['keyword', 'regex']).describe('keyword = 部分一致 \/ regex = POSIX ARE'),
@@ -165,8 +165,8 @@ export const ListRulesResponseItem = zod.object({
   "metadata": zod.record(zod.string(), zod.unknown()).optional()
 }).and(zod.object({
   "id": zod.number(),
-  "createdAt": zod.string().datetime({"offset":true}),
-  "updatedAt": zod.string().datetime({"offset":true})
+  "createdAt": zod.iso.datetime({"offset":true}),
+  "updatedAt": zod.iso.datetime({"offset":true})
 }))
 export const ListRulesResponse = zod.array(ListRulesResponseItem)
 
@@ -205,8 +205,8 @@ export const CreateRuleBody = zod.object({
   "isFree": zod.boolean().nullish().describe('null = 問わない'),
   "durationMinMs": zod.number().nullish(),
   "durationMaxMs": zod.number().nullish(),
-  "periodStartAt": zod.string().datetime({"offset":true}).nullish(),
-  "periodEndAt": zod.string().datetime({"offset":true}).nullish(),
+  "periodStartAt": zod.iso.datetime({"offset":true}).nullish(),
+  "periodEndAt": zod.iso.datetime({"offset":true}).nullish(),
   "textMatches": zod.array(zod.object({
   "target": zod.enum(['name', 'description', 'extended']),
   "mode": zod.enum(['keyword', 'regex']).describe('keyword = 部分一致 \/ regex = POSIX ARE'),
@@ -266,8 +266,8 @@ export const CreateRuleResponse = zod.object({
   "isFree": zod.boolean().nullish().describe('null = 問わない'),
   "durationMinMs": zod.number().nullish(),
   "durationMaxMs": zod.number().nullish(),
-  "periodStartAt": zod.string().datetime({"offset":true}).nullish(),
-  "periodEndAt": zod.string().datetime({"offset":true}).nullish(),
+  "periodStartAt": zod.iso.datetime({"offset":true}).nullish(),
+  "periodEndAt": zod.iso.datetime({"offset":true}).nullish(),
   "textMatches": zod.array(zod.object({
   "target": zod.enum(['name', 'description', 'extended']),
   "mode": zod.enum(['keyword', 'regex']).describe('keyword = 部分一致 \/ regex = POSIX ARE'),
@@ -296,8 +296,8 @@ export const CreateRuleResponse = zod.object({
   "metadata": zod.record(zod.string(), zod.unknown()).optional()
 }).and(zod.object({
   "id": zod.number(),
-  "createdAt": zod.string().datetime({"offset":true}),
-  "updatedAt": zod.string().datetime({"offset":true})
+  "createdAt": zod.iso.datetime({"offset":true}),
+  "updatedAt": zod.iso.datetime({"offset":true})
 }))
 
 
@@ -339,8 +339,8 @@ export const GetRuleResponse = zod.object({
   "isFree": zod.boolean().nullish().describe('null = 問わない'),
   "durationMinMs": zod.number().nullish(),
   "durationMaxMs": zod.number().nullish(),
-  "periodStartAt": zod.string().datetime({"offset":true}).nullish(),
-  "periodEndAt": zod.string().datetime({"offset":true}).nullish(),
+  "periodStartAt": zod.iso.datetime({"offset":true}).nullish(),
+  "periodEndAt": zod.iso.datetime({"offset":true}).nullish(),
   "textMatches": zod.array(zod.object({
   "target": zod.enum(['name', 'description', 'extended']),
   "mode": zod.enum(['keyword', 'regex']).describe('keyword = 部分一致 \/ regex = POSIX ARE'),
@@ -369,8 +369,8 @@ export const GetRuleResponse = zod.object({
   "metadata": zod.record(zod.string(), zod.unknown()).optional()
 }).and(zod.object({
   "id": zod.number(),
-  "createdAt": zod.string().datetime({"offset":true}),
-  "updatedAt": zod.string().datetime({"offset":true})
+  "createdAt": zod.iso.datetime({"offset":true}),
+  "updatedAt": zod.iso.datetime({"offset":true})
 }))
 
 
@@ -412,8 +412,8 @@ export const UpdateRuleBody = zod.object({
   "isFree": zod.boolean().nullish().describe('null = 問わない'),
   "durationMinMs": zod.number().nullish(),
   "durationMaxMs": zod.number().nullish(),
-  "periodStartAt": zod.string().datetime({"offset":true}).nullish(),
-  "periodEndAt": zod.string().datetime({"offset":true}).nullish(),
+  "periodStartAt": zod.iso.datetime({"offset":true}).nullish(),
+  "periodEndAt": zod.iso.datetime({"offset":true}).nullish(),
   "textMatches": zod.array(zod.object({
   "target": zod.enum(['name', 'description', 'extended']),
   "mode": zod.enum(['keyword', 'regex']).describe('keyword = 部分一致 \/ regex = POSIX ARE'),
@@ -473,8 +473,8 @@ export const UpdateRuleResponse = zod.object({
   "isFree": zod.boolean().nullish().describe('null = 問わない'),
   "durationMinMs": zod.number().nullish(),
   "durationMaxMs": zod.number().nullish(),
-  "periodStartAt": zod.string().datetime({"offset":true}).nullish(),
-  "periodEndAt": zod.string().datetime({"offset":true}).nullish(),
+  "periodStartAt": zod.iso.datetime({"offset":true}).nullish(),
+  "periodEndAt": zod.iso.datetime({"offset":true}).nullish(),
   "textMatches": zod.array(zod.object({
   "target": zod.enum(['name', 'description', 'extended']),
   "mode": zod.enum(['keyword', 'regex']).describe('keyword = 部分一致 \/ regex = POSIX ARE'),
@@ -503,8 +503,8 @@ export const UpdateRuleResponse = zod.object({
   "metadata": zod.record(zod.string(), zod.unknown()).optional()
 }).and(zod.object({
   "id": zod.number(),
-  "createdAt": zod.string().datetime({"offset":true}),
-  "updatedAt": zod.string().datetime({"offset":true})
+  "createdAt": zod.iso.datetime({"offset":true}),
+  "updatedAt": zod.iso.datetime({"offset":true})
 }))
 
 
@@ -542,16 +542,16 @@ export const ListReservationsResponseItem = zod.object({
   "source": zod.enum(['rule', 'manual']).describe('導出値であり、reservations テーブルの列ではない（issue #26）。\nユーザーが録れと指定した番組（program_intents に action=record の行が\nある）なら manual、無ければ rule。ルールが今まさにこの予約に\nbase を供給しているか（ruleId の有無）とは無関係で、手動予約に\nルールがマッチしていても manual のまま変わらない。\n'),
   "ruleId": zod.number().optional(),
   "state": zod.enum(['active', 'detached', 'orphaned']),
-  "overrides": zod.object({
+  "overrides": zod.looseObject({
 
-}).passthrough().optional(),
+}).optional(),
   "title": zod.string(),
   "serviceName": zod.string().describe('番組スナップショット（program_snapshots.service_name）由来のチャンネル\n表示名。同じタイトルが日付・局違いで並ぶと区別できないため（issue #302）、\nrecordings と同じ形でここにも載せる。\n'),
   "channelType": zod.enum(['GR', 'BS', 'CS', 'SKY']).describe('予約時点のスナップショット（program_snapshots 由来）。\n'),
-  "startAt": zod.string().datetime({"offset":true}),
+  "startAt": zod.iso.datetime({"offset":true}),
   "durationMs": zod.number(),
-  "createdAt": zod.string().datetime({"offset":true}),
-  "updatedAt": zod.string().datetime({"offset":true}),
+  "createdAt": zod.iso.datetime({"offset":true}),
+  "updatedAt": zod.iso.datetime({"offset":true}),
   "skip": zod.boolean().describe('effective.skip（M2-6, issue #24）。program_intents.action=\'skip\' の\n明示、または意図が無く base.skip（ルールの重複排除判定）が true。\ntrue の間 reconciler は mirakc に同期しないが、予約行自体は\n「なぜ録られていないか」を説明するため残る。\n'),
   "dedupMatchRecordingId": zod.number().optional().describe('履歴ベース重複排除でマッチした録画の ID（マッチが無ければ省略）'),
   "dedupSimilarity": zod.number().optional().describe('上記マッチの pg_trgm 類似度（0.0〜1.0、マッチが無ければ省略）')
@@ -587,16 +587,16 @@ export const GetProgramReservationResponse = zod.object({
   "source": zod.enum(['rule', 'manual']).describe('導出値であり、reservations テーブルの列ではない（issue #26）。\nユーザーが録れと指定した番組（program_intents に action=record の行が\nある）なら manual、無ければ rule。ルールが今まさにこの予約に\nbase を供給しているか（ruleId の有無）とは無関係で、手動予約に\nルールがマッチしていても manual のまま変わらない。\n'),
   "ruleId": zod.number().optional(),
   "state": zod.enum(['active', 'detached', 'orphaned']),
-  "overrides": zod.object({
+  "overrides": zod.looseObject({
 
-}).passthrough().optional(),
+}).optional(),
   "title": zod.string(),
   "serviceName": zod.string().describe('番組スナップショット（program_snapshots.service_name）由来のチャンネル\n表示名。同じタイトルが日付・局違いで並ぶと区別できないため（issue #302）、\nrecordings と同じ形でここにも載せる。\n'),
   "channelType": zod.enum(['GR', 'BS', 'CS', 'SKY']).describe('予約時点のスナップショット（program_snapshots 由来）。\n'),
-  "startAt": zod.string().datetime({"offset":true}),
+  "startAt": zod.iso.datetime({"offset":true}),
   "durationMs": zod.number(),
-  "createdAt": zod.string().datetime({"offset":true}),
-  "updatedAt": zod.string().datetime({"offset":true}),
+  "createdAt": zod.iso.datetime({"offset":true}),
+  "updatedAt": zod.iso.datetime({"offset":true}),
   "skip": zod.boolean().describe('effective.skip（M2-6, issue #24）。program_intents.action=\'skip\' の\n明示、または意図が無く base.skip（ルールの重複排除判定）が true。\ntrue の間 reconciler は mirakc に同期しないが、予約行自体は\n「なぜ録られていないか」を説明するため残る。\n'),
   "dedupMatchRecordingId": zod.number().optional().describe('履歴ベース重複排除でマッチした録画の ID（マッチが無ければ省略）'),
   "dedupSimilarity": zod.number().optional().describe('上記マッチの pg_trgm 類似度（0.0〜1.0、マッチが無ければ省略）')
@@ -652,7 +652,7 @@ export const ListTunersResponseItem = zod.object({
   "types": zod.array(zod.enum(['GR', 'BS', 'CS', 'SKY'])),
   "isAvailable": zod.boolean(),
   "isFault": zod.boolean().describe('mirakc の `\/api\/tuners` が返す値をそのまま射影している。\nMirakurun 互換 API のフィールドで、Mirakurun 本体ではチューナー\nプロセスの error を 3 回数えたら立つラッチだが、\*\*mirakc は\n実装しておらずリテラルの false を返す\*\*（models.rs が\n`Always false.` と明記）。`isAvailable` も同様に常に true。\n'),
-  "observedAt": zod.string().datetime({"offset":true}).describe('この行を最後に投影した時刻。射影ループが止まっていても行は消えない\nため、鮮度の手がかりとして必ずこれを使う（`GET \/api\/storage` の\n`observedAt` と同じ契約）。\n')
+  "observedAt": zod.iso.datetime({"offset":true}).describe('この行を最後に投影した時刻。射影ループが止まっていても行は消えない\nため、鮮度の手がかりとして必ずこれを使う（`GET \/api\/storage` の\n`observedAt` と同じ契約）。\n')
 }).describe('`tuner_sync` の行をそのまま返す（導出しない）。列の意味の権威は\ndocs\/data\/capacity.md §6.5「チューナー射影と容量超過の判定」。\n')
 export const ListTunersResponse = zod.array(ListTunersResponseItem)
 
@@ -692,8 +692,8 @@ export const SearchProgramsBody = zod.object({
   "isFree": zod.boolean().nullish(),
   "durationMinMs": zod.number().nullish(),
   "durationMaxMs": zod.number().nullish(),
-  "periodStartAt": zod.string().datetime({"offset":true}).nullish(),
-  "periodEndAt": zod.string().datetime({"offset":true}).nullish(),
+  "periodStartAt": zod.iso.datetime({"offset":true}).nullish(),
+  "periodEndAt": zod.iso.datetime({"offset":true}).nullish(),
   "textMatches": zod.array(zod.object({
   "target": zod.enum(['name', 'description', 'extended']),
   "mode": zod.enum(['keyword', 'regex']).describe('keyword = 部分一致 \/ regex = POSIX ARE'),
@@ -745,8 +745,8 @@ export const listProgramsQueryServiceItemMax = 6553565535;
 
 
 export const ListProgramsQueryParams = zod.object({
-  "start": zod.string().datetime({"offset":true}).describe('時間窓の開始（この時刻より後に終わる番組が対象）'),
-  "end": zod.string().datetime({"offset":true}).describe('時間窓の終了（この時刻より前に始まる番組が対象）。start からの幅は最大 7 日'),
+  "start": zod.iso.datetime({"offset":true}).describe('時間窓の開始（この時刻より後に終わる番組が対象）'),
+  "end": zod.iso.datetime({"offset":true}).describe('時間窓の終了（この時刻より前に始まる番組が対象）。start からの幅は最大 7 日'),
   "service": zod.array(zod.number().min(1).max(listProgramsQueryServiceItemMax)).optional().describe('`Service.id`（`networkId \* 100000 + serviceId`）。複数指定は OR。\n')
 })
 
@@ -755,8 +755,8 @@ export const ListProgramsResponseItem = zod.object({
   "networkId": zod.number(),
   "serviceId": zod.number(),
   "eventId": zod.number(),
-  "startAt": zod.string().datetime({"offset":true}),
-  "endAt": zod.string().datetime({"offset":true}),
+  "startAt": zod.iso.datetime({"offset":true}),
+  "endAt": zod.iso.datetime({"offset":true}),
   "durationMs": zod.number(),
   "name": zod.string(),
   "description": zod.string(),
@@ -779,8 +779,8 @@ export const GetProgramResponse = zod.object({
   "networkId": zod.number(),
   "serviceId": zod.number(),
   "eventId": zod.number(),
-  "startAt": zod.string().datetime({"offset":true}),
-  "endAt": zod.string().datetime({"offset":true}),
+  "startAt": zod.iso.datetime({"offset":true}),
+  "endAt": zod.iso.datetime({"offset":true}),
   "durationMs": zod.number(),
   "name": zod.string(),
   "description": zod.string(),
@@ -840,7 +840,7 @@ export const GetProgramOverlapsResponse = zod.object({
   "id": zod.number(),
   "programId": zod.number(),
   "title": zod.string(),
-  "startAt": zod.string().datetime({"offset":true}),
+  "startAt": zod.iso.datetime({"offset":true}),
   "durationMs": zod.number()
 })).describe('内訳。件数だけでなく何と重なっているかをユーザーが判断できるようにする')
 })
@@ -1013,12 +1013,12 @@ export const ListRecordingsQueryParams = zod.object({
   "encodeState": zod.enum(['queued', 'running']).optional().describe('active な River encode ジョブの状態。`queued` は `available` \/\n`pending` \/ `scheduled` \/ `retryable`、`running` は実行中を表す。\n件数は録画数ではなく録画 × プロファイルのジョブ数になる。\n'),
   "source": zod.enum(['rule', 'manual']).optional(),
   "ruleId": zod.number().optional().describe('特定ルール由来の録画に絞る'),
-  "from": zod.string().datetime({"offset":true}).optional().describe('program_start_at がこの時刻以上'),
-  "to": zod.string().datetime({"offset":true}).optional().describe('program_start_at がこの時刻未満'),
+  "from": zod.iso.datetime({"offset":true}).optional().describe('program_start_at がこの時刻以上'),
+  "to": zod.iso.datetime({"offset":true}).optional().describe('program_start_at がこの時刻未満'),
   "order": zod.enum(['desc', 'asc']).default(listRecordingsQueryOrderDefault),
   "trash": zod.boolean().default(listRecordingsQueryTrashDefault).describe('true のときごみ箱（論理削除済み）を返す'),
   "limit": zod.number().min(1).max(listRecordingsQueryLimitMax).default(listRecordingsQueryLimitDefault),
-  "before": zod.string().datetime({"offset":true}).optional().describe('キーセットカーソル。前ページ最後の要素の startAt。beforeId と対で使う'),
+  "before": zod.iso.datetime({"offset":true}).optional().describe('キーセットカーソル。前ページ最後の要素の startAt。beforeId と対で使う'),
   "beforeId": zod.number().optional().describe('キーセットカーソル。前ページ最後の要素の id。before と対で使う')
 })
 
@@ -1035,11 +1035,11 @@ export const ListRecordingsResponseItem = zod.object({
   "eventId": zod.number(),
   "title": zod.string(),
   "description": zod.string().optional(),
-  "startAt": zod.string().datetime({"offset":true}).describe('番組の放送開始時刻。常に UTC（\"Z\" 終端の RFC3339）で返す。'),
+  "startAt": zod.iso.datetime({"offset":true}).describe('番組の放送開始時刻。常に UTC（\"Z\" 終端の RFC3339）で返す。'),
   "durationMs": zod.number(),
   "status": zod.enum(['recording', 'finished', 'canceled', 'failed']),
-  "startedAt": zod.string().datetime({"offset":true}).optional().describe('録画の実開始時刻。常に UTC（\"Z\" 終端の RFC3339）で返す。'),
-  "endedAt": zod.string().datetime({"offset":true}).optional().describe('録画の実終了時刻。常に UTC（\"Z\" 終端の RFC3339）で返す。'),
+  "startedAt": zod.iso.datetime({"offset":true}).optional().describe('録画の実開始時刻。常に UTC（\"Z\" 終端の RFC3339）で返す。'),
+  "endedAt": zod.iso.datetime({"offset":true}).optional().describe('録画の実終了時刻。常に UTC（\"Z\" 終端の RFC3339）で返す。'),
   "sizeBytes": zod.number().optional().describe('原本の実サイズ。ingest 済み（media_assets 行あり）の場合のみ。\n省略は「まだ取り込めていない」と「取り込んだ後に削除した」の両方を\n含むので、区別が要るときは `ingest.state` を見る（issue #211 \/\n#212）。\*\*転送中の途中ファイルのサイズはここに混ぜない\*\*（コミット =\nDB 行。不変条件 3）--- 途中経過は `ingest.writtenBytes`。\n'),
   "encodedAssets": zod.array(zod.object({
   "profile": zod.string(),
@@ -1060,13 +1060,13 @@ export const ListRecordingsResponseItem = zod.object({
   "state": zod.enum(['committed', 'transferring', 'pending', 'unknown']).describe('原本の取り込みの粗い状態。\*\*サーバー側で DB 行から毎回導出する\*\*\n（列に焼いた値ではない）。優先順に:\n\n- `committed`: `kind=\'original\'` の `media_assets` 行が存在する。\n  取り込みは少なくとも 1 回完了した。その原本が\*\*いま\*\*あるかどうかは\n  `sizeBytes` の有無で見る（`state=\'deleted\'` の原本でもここは\n  `committed` のまま --- 「取り込めなかった」と「取り込んだ後に\n  消した」を混同しないため。issue #211）\n- `transferring`: 原本行が無く、転送の進捗行がある。`writtenBytes` \/\n  `observedAt` が付く。`observedAt` が古いまま止まっていれば停滞して\n  いる（River のバックオフ待ち・ストール）\n- `pending`: 原本行も進捗行も無く、\*\*ingest ジョブが投入される\n  はずの\*\* mirakc record の観測（`record_sync.status = \'finished\'`。\n  watcher が ingest を投入する条件と同じ述語）がある。取り込み待ち、\n  または失敗して再試行待ち\n- `unknown`: 上のどれでもない。取り込みが始まった観測が無い ---\n  mirakc record が観測されていないか、record が `finished` でない\n  （録画中・`failed`・`canceled`。\*\*この録画に ingest ジョブは\n  投入されない\*\*）\n\n\*\*`pending` は「これから来る」の断定なので、来る根拠が無いものは\n入れない。\*\* `record_sync` 行の存在だけを根拠にすると、`failed` \/\n`canceled` の録画（ingest が一度も投入されず、`record_sync` 行も\n消えない）が永久に「取り込み待ち」を名乗る。\n\n\*\*「リトライ中」を `pending` と区別する値は持たない。\*\* 区別するには\nRiver の `river_job` を API 契約に露出させる（内部実装の露出）か、\n失敗の観測という別寿命の値を進捗行に混ぜる（不変条件 9 \/ 12）\n必要があり、どちらも取らなかった。停滞は `observedAt` の古さで読む。\n'),
   "writtenBytes": zod.number().optional().describe('転送先ファイルに書けたバイト数。`state = transferring` のときだけ付く。\n\n\*\*これは「いまファイルに書けているバイト数」であって累積の転送実績\nではない。\*\* ジョブ再試行（部分ファイルを truncate してゼロから\n作り直す。docs\/recording\/ingest.md §5.3 の層 2）で 0 に戻ることが\nある。戻りを隠さないのは、隠すと「進んでいるのに終わらない」に見えて\n実際に起きているやり直しが観測できなくなるため。\n\n\*\*`sizeBytes`（原本の実サイズ）とは別のフィールドである。\*\* コミット =\nDB 行（不変条件 3）なので、コミット前の途中ファイルのサイズを\n`sizeBytes` に混ぜない。\n'),
   "expectedBytes": zod.number().optional().describe('転送の分母。`record_sync.content_length`（watcher が mirakc record の\n`content.length` として観測した値）を転送開始時に写したもの。mirakc が\nlength を返していなければ\*\*省略する\*\* --- でっち上げた分母を置かない。\n省略時、UI は % を出さず `writtenBytes` だけを出す。\n'),
-  "observedAt": zod.string().datetime({"offset":true}).optional().describe('進捗を最後に観測した時刻。`state = transferring` のときだけ付く。\n現在時刻との差が開いていれば転送は停滞している。常に UTC\n（\"Z\" 終端の RFC3339）で返す。\n')
+  "observedAt": zod.iso.datetime({"offset":true}).optional().describe('進捗を最後に観測した時刻。`state = transferring` のときだけ付く。\n現在時刻との差が開いていれば転送は停滞している。常に UTC\n（\"Z\" 終端の RFC3339）で返す。\n')
 }).optional(),
-  "qualityEvents": zod.array(zod.object({
+  "qualityEvents": zod.array(zod.looseObject({
 
-}).passthrough()).optional().describe('recording.failed \/ record-broken \/ bcas_anomaly の履歴'),
-  "deletedAt": zod.string().datetime({"offset":true}).optional().describe('論理削除時刻。ごみ箱一覧（`trash=true`）と `GET \/api\/recordings\/{id}`\n（ごみ箱の録画も 200 で返す）でのみ出現する。通常一覧・生きている\n行では省略（NULL）。常に UTC（\"Z\" 終端の RFC3339）で返す。\n'),
-  "createdAt": zod.string().datetime({"offset":true}).describe('常に UTC（\"Z\" 終端の RFC3339）で返す。')
+})).optional().describe('recording.failed \/ record-broken \/ bcas_anomaly の履歴'),
+  "deletedAt": zod.iso.datetime({"offset":true}).optional().describe('論理削除時刻。ごみ箱一覧（`trash=true`）と `GET \/api\/recordings\/{id}`\n（ごみ箱の録画も 200 で返す）でのみ出現する。通常一覧・生きている\n行では省略（NULL）。常に UTC（\"Z\" 終端の RFC3339）で返す。\n'),
+  "createdAt": zod.iso.datetime({"offset":true}).describe('常に UTC（\"Z\" 終端の RFC3339）で返す。')
 })
 export const ListRecordingsResponse = zod.array(ListRecordingsResponseItem)
 
@@ -1109,11 +1109,11 @@ export const GetRecordingResponse = zod.object({
   "eventId": zod.number(),
   "title": zod.string(),
   "description": zod.string().optional(),
-  "startAt": zod.string().datetime({"offset":true}).describe('番組の放送開始時刻。常に UTC（\"Z\" 終端の RFC3339）で返す。'),
+  "startAt": zod.iso.datetime({"offset":true}).describe('番組の放送開始時刻。常に UTC（\"Z\" 終端の RFC3339）で返す。'),
   "durationMs": zod.number(),
   "status": zod.enum(['recording', 'finished', 'canceled', 'failed']),
-  "startedAt": zod.string().datetime({"offset":true}).optional().describe('録画の実開始時刻。常に UTC（\"Z\" 終端の RFC3339）で返す。'),
-  "endedAt": zod.string().datetime({"offset":true}).optional().describe('録画の実終了時刻。常に UTC（\"Z\" 終端の RFC3339）で返す。'),
+  "startedAt": zod.iso.datetime({"offset":true}).optional().describe('録画の実開始時刻。常に UTC（\"Z\" 終端の RFC3339）で返す。'),
+  "endedAt": zod.iso.datetime({"offset":true}).optional().describe('録画の実終了時刻。常に UTC（\"Z\" 終端の RFC3339）で返す。'),
   "sizeBytes": zod.number().optional().describe('原本の実サイズ。ingest 済み（media_assets 行あり）の場合のみ。\n省略は「まだ取り込めていない」と「取り込んだ後に削除した」の両方を\n含むので、区別が要るときは `ingest.state` を見る（issue #211 \/\n#212）。\*\*転送中の途中ファイルのサイズはここに混ぜない\*\*（コミット =\nDB 行。不変条件 3）--- 途中経過は `ingest.writtenBytes`。\n'),
   "encodedAssets": zod.array(zod.object({
   "profile": zod.string(),
@@ -1134,13 +1134,13 @@ export const GetRecordingResponse = zod.object({
   "state": zod.enum(['committed', 'transferring', 'pending', 'unknown']).describe('原本の取り込みの粗い状態。\*\*サーバー側で DB 行から毎回導出する\*\*\n（列に焼いた値ではない）。優先順に:\n\n- `committed`: `kind=\'original\'` の `media_assets` 行が存在する。\n  取り込みは少なくとも 1 回完了した。その原本が\*\*いま\*\*あるかどうかは\n  `sizeBytes` の有無で見る（`state=\'deleted\'` の原本でもここは\n  `committed` のまま --- 「取り込めなかった」と「取り込んだ後に\n  消した」を混同しないため。issue #211）\n- `transferring`: 原本行が無く、転送の進捗行がある。`writtenBytes` \/\n  `observedAt` が付く。`observedAt` が古いまま止まっていれば停滞して\n  いる（River のバックオフ待ち・ストール）\n- `pending`: 原本行も進捗行も無く、\*\*ingest ジョブが投入される\n  はずの\*\* mirakc record の観測（`record_sync.status = \'finished\'`。\n  watcher が ingest を投入する条件と同じ述語）がある。取り込み待ち、\n  または失敗して再試行待ち\n- `unknown`: 上のどれでもない。取り込みが始まった観測が無い ---\n  mirakc record が観測されていないか、record が `finished` でない\n  （録画中・`failed`・`canceled`。\*\*この録画に ingest ジョブは\n  投入されない\*\*）\n\n\*\*`pending` は「これから来る」の断定なので、来る根拠が無いものは\n入れない。\*\* `record_sync` 行の存在だけを根拠にすると、`failed` \/\n`canceled` の録画（ingest が一度も投入されず、`record_sync` 行も\n消えない）が永久に「取り込み待ち」を名乗る。\n\n\*\*「リトライ中」を `pending` と区別する値は持たない。\*\* 区別するには\nRiver の `river_job` を API 契約に露出させる（内部実装の露出）か、\n失敗の観測という別寿命の値を進捗行に混ぜる（不変条件 9 \/ 12）\n必要があり、どちらも取らなかった。停滞は `observedAt` の古さで読む。\n'),
   "writtenBytes": zod.number().optional().describe('転送先ファイルに書けたバイト数。`state = transferring` のときだけ付く。\n\n\*\*これは「いまファイルに書けているバイト数」であって累積の転送実績\nではない。\*\* ジョブ再試行（部分ファイルを truncate してゼロから\n作り直す。docs\/recording\/ingest.md §5.3 の層 2）で 0 に戻ることが\nある。戻りを隠さないのは、隠すと「進んでいるのに終わらない」に見えて\n実際に起きているやり直しが観測できなくなるため。\n\n\*\*`sizeBytes`（原本の実サイズ）とは別のフィールドである。\*\* コミット =\nDB 行（不変条件 3）なので、コミット前の途中ファイルのサイズを\n`sizeBytes` に混ぜない。\n'),
   "expectedBytes": zod.number().optional().describe('転送の分母。`record_sync.content_length`（watcher が mirakc record の\n`content.length` として観測した値）を転送開始時に写したもの。mirakc が\nlength を返していなければ\*\*省略する\*\* --- でっち上げた分母を置かない。\n省略時、UI は % を出さず `writtenBytes` だけを出す。\n'),
-  "observedAt": zod.string().datetime({"offset":true}).optional().describe('進捗を最後に観測した時刻。`state = transferring` のときだけ付く。\n現在時刻との差が開いていれば転送は停滞している。常に UTC\n（\"Z\" 終端の RFC3339）で返す。\n')
+  "observedAt": zod.iso.datetime({"offset":true}).optional().describe('進捗を最後に観測した時刻。`state = transferring` のときだけ付く。\n現在時刻との差が開いていれば転送は停滞している。常に UTC\n（\"Z\" 終端の RFC3339）で返す。\n')
 }).optional(),
-  "qualityEvents": zod.array(zod.object({
+  "qualityEvents": zod.array(zod.looseObject({
 
-}).passthrough()).optional().describe('recording.failed \/ record-broken \/ bcas_anomaly の履歴'),
-  "deletedAt": zod.string().datetime({"offset":true}).optional().describe('論理削除時刻。ごみ箱一覧（`trash=true`）と `GET \/api\/recordings\/{id}`\n（ごみ箱の録画も 200 で返す）でのみ出現する。通常一覧・生きている\n行では省略（NULL）。常に UTC（\"Z\" 終端の RFC3339）で返す。\n'),
-  "createdAt": zod.string().datetime({"offset":true}).describe('常に UTC（\"Z\" 終端の RFC3339）で返す。')
+})).optional().describe('recording.failed \/ record-broken \/ bcas_anomaly の履歴'),
+  "deletedAt": zod.iso.datetime({"offset":true}).optional().describe('論理削除時刻。ごみ箱一覧（`trash=true`）と `GET \/api\/recordings\/{id}`\n（ごみ箱の録画も 200 で返す）でのみ出現する。通常一覧・生きている\n行では省略（NULL）。常に UTC（\"Z\" 終端の RFC3339）で返す。\n'),
+  "createdAt": zod.iso.datetime({"offset":true}).describe('常に UTC（\"Z\" 終端の RFC3339）で返す。')
 })
 
 
@@ -1263,14 +1263,14 @@ export const ListRecordingDropStatsResponse = zod.array(ListRecordingDropStatsRe
  * @summary List intervals where tuner capacity is exceeded
  */
 export const ListCapacityOveragesQueryParams = zod.object({
-  "start": zod.string().datetime({"offset":true}).describe('時間窓の開始（この時刻より後に終わる区間が対象）'),
-  "end": zod.string().datetime({"offset":true}).describe('時間窓の終了（この時刻より前に始まる区間が対象）')
+  "start": zod.iso.datetime({"offset":true}).describe('時間窓の開始（この時刻より後に終わる区間が対象）'),
+  "end": zod.iso.datetime({"offset":true}).describe('時間窓の終了（この時刻より前に始まる区間が対象）')
 })
 
 export const ListCapacityOveragesResponseItem = zod.object({
   "site": zod.string().describe('判定はサイトごとに独立して行う。N 予約の決定（docs\/recording.md §3.1）に\nより予約が site に束縛されるため二部グラフがサイトごとに非連結になり、\nHall の条件を成分ごとに確認すれば十分になる。\n'),
-  "startAt": zod.string().datetime({"offset":true}),
-  "endAt": zod.string().datetime({"offset":true}),
+  "startAt": zod.iso.datetime({"offset":true}),
+  "endAt": zod.iso.datetime({"offset":true}),
   "shortfall": zod.number().describe('不足本数。破れた種別部分集合 A の `Σ_{t∈A} d[t] − cap(A)` の最大値。\n1 以上（0 なら超過していないので区間そのものが返らない）\n'),
   "jammedTypes": zod.array(zod.enum(['GR', 'BS', 'CS', 'SKY'])).describe('詰まった種別（Hall 条件を破った部分集合 A）。「BS が 1 本不足」と言うための材料')
 })
@@ -1322,7 +1322,7 @@ export const GetStorageResponseItem = zod.object({
   "totalBytes": zod.number().describe('ファイルシステム全体の容量（`observedAt` 時点のスナップショット。\n`path` の説明を参照）。\n'),
   "usedBytes": zod.number().describe('root 予約領域を使用済み側に数えた使用量（total - free）。\n`observedAt` 時点のスナップショット。\n'),
   "availableBytes": zod.number().describe('非特権プロセスが実際に書き込める残量（statfs の Bavail）。\n「残高」として UI に出すべき数字はこちら。`observedAt` 時点の\nスナップショット。\n'),
-  "observedAt": zod.string().datetime({"offset":true}).describe('この行を最後に観測できた時刻。観測ループが止まっていても行は\n消えないため、この値の鮮度だけが異常の手がかりになる。\n')
+  "observedAt": zod.iso.datetime({"offset":true}).describe('この行を最後に観測できた時刻。観測ループが止まっていても行は\n消えないため、この値の鮮度だけが異常の手がかりになる。\n')
 }).describe('1 つのストレージ root（`storage.media_dir` または `storage.scratch_dir`）の\n容量観測 1 件（`storage_sync` 行そのもの。issue #238 M7-5）。\n')
 export const GetStorageResponse = zod.array(GetStorageResponseItem)
 
@@ -1347,7 +1347,7 @@ export const GetStorageResponse = zod.array(GetStorageResponseItem)
 export const ListCircuitBreakersResponseItem = zod.object({
   "site": zod.string().describe('この行が属する site。`internal\/breaker.IsSiteless` が true の名前\n（`delete_reconcile`）は資源自体が site を持たないため空文字列\nになる（issue #450）。その場合の再開は\n`POST \/api\/breakers\/{name}\/resume`、それ以外は\n`POST \/api\/sites\/{site}\/breakers\/{name}\/resume`。\n'),
   "name": zod.enum(['ruler_deletes', 'reconcile_total_loss', 'delete_reconcile']).describe('internal\/breaker の定数（RulerDeletes \/ ReconcileTotalLoss \/\nDeleteReconcile）。値の権威は internal\/breaker.All\n（internal\/breaker\/breaker.go）で、この enum はそれを手で複製した\nものなので、breaker.All に定数を足したときはここも合わせて直す。\n\nずれの検知は 2 段構え: internal\/breaker パッケージのエクスポート\n済み文字列定数と All 自体の一致は internal\/breaker の AST テスト\n（TestAll_MatchesDeclaredConstants）が見る。All とこの enum の\n一致は internal\/api の純ユニットテスト\n（TestBreakerAllNamesAreValidCircuitBreakerNameEnumMembers。\nCircuitBreakerName.Valid() 経由）が見る。後者を GET \/api\/breakers\nの runtime チェックにはしていない —— 消費者\n（web\/src\/components\/circuit-breaker-banner.tsx・web\/src\/pages\/home.tsx）\nが isError を見ておらず、enum 外の 1 行のせいで一覧全体を 500 に\nすると発動中の他のブレーカーまで隠れてしまうため（issue #199 の\nレビューで指摘）。\n'),
-  "trippedAt": zod.string().datetime({"offset":true}).describe('発動した時刻（最初の発動時刻。再発動で更新されるのは pending \/\nthreshold \/ detail のみ）。\n'),
+  "trippedAt": zod.iso.datetime({"offset":true}).describe('発動した時刻（最初の発動時刻。再発動で更新されるのは pending \/\nthreshold \/ detail のみ）。\n'),
   "pending": zod.number().describe('発動時に止めた削除の件数。'),
   "threshold": zod.number().describe('発動時の閾値。'),
   "detail": zod.object({
