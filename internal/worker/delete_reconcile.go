@@ -214,155 +214,61 @@ func (w *DeleteReconcileWorker) Work(ctx context.Context, _ *river.Job[DeleteRec
 	if missingAssetAge <= 0 {
 		missingAssetAge = defaultMissingAssetAge
 	}
-
 	q := sqlcgen.New(w.Pool)
-
-	// パスの先頭でブレーカーの発動状態を DB の真実に合わせ直す
-	// （ObserveState のコメント参照。プロセス再起動でゲージが失われるため）。
-	tripped, err := breaker.ObserveState(ctx, q, site, breaker.DeleteReconcile)
+	tripped, err := w.observeDeleteReconcile(ctx, q, site)
 	if err != nil {
-		return fmt.Errorf("observing %s circuit breaker: %w", breaker.DeleteReconcile, err)
+		return err
 	}
-
 	// trash / until_encoded 双方の判定に使う grace_cutoff を先に確定する。
 	// pending 経路の再評価（後述）もこの値を使う。
 	trashCutoff := time.Now().Add(-trashRetention)
-
-	// deleting のまま止まっていたが、その後の復元などで trash / until_encoded
-	// どちらの判定にも該当しなくなった行を active に戻す（issue #105）。
-	// ListUnqualifiedDeletingAssets は候補を挙げるだけで書き込まない —— 各行
-	// について resolveUnqualifiedDeletingAsset がファイルの現存を確認してから
-	// active に戻すか deleted を確定するかを選ぶ（ファイルが既に無いのに
-	// active に戻すと「active なのにファイルが無い行」を作ってしまう。これは
-	// 案 B [復元時に deleting を同期的に active へ戻す] を却下した理由と同じ
-	// 罠で、revert 経路自身がこの窓を作らないようにする）。
-	unqualified, err := q.ListUnqualifiedDeletingAssets(ctx, sqlcgen.ListUnqualifiedDeletingAssetsParams{
-		GraceCutoff: trashCutoff,
-		RowLimit:    deleteReconcileRowLimit,
-	})
-	if err != nil {
-		return fmt.Errorf("listing unqualified deleting assets: %w", err)
+	if err := w.restoreUnqualifiedDeletingAssets(ctx, q, trashCutoff); err != nil {
+		return err
 	}
-	for _, a := range unqualified {
-		w.resolveUnqualifiedDeletingAsset(ctx, q, a, trashCutoff)
-	}
-
-	// 前パスで deleting のまま止まった行のうち、まだ trash / until_encoded の
-	// いずれかの判定に該当するものを最優先で再開する。これは「既に決めた
-	// 削除」の再実行であり新規の判断ではないため、サーキットブレーカーの対象外
-	// （docs/storage.md §7「どこで落ちても reconcile が拾い直す」）。上の
-	// resolveUnqualifiedDeletingAsset で該当しなくなった行は既に active か
-	// deleted に決着しているので、ここに現れるのは常に判定を再確認できた
-	// ものだけ。
-	pending, err := q.ListMediaAssetsPendingDelete(ctx, sqlcgen.ListMediaAssetsPendingDeleteParams{
-		GraceCutoff: trashCutoff,
-		RowLimit:    deleteReconcileRowLimit,
-	})
+	// pending の再開はブレーカー対象外（listPendingDeleteAssets のコメント
+	// 参照。既に決めた削除の再実行であり新規の判断ではない）。
+	pending, err := listPendingDeleteAssets(ctx, q, trashCutoff)
 	if err != nil {
-		return fmt.Errorf("listing pending deletes: %w", err)
+		return err
 	}
 	// purgedRecordings は、このパスの末尾で MarkPurgedRecordings が purged_at を
 	// 押した録画の集合（notifyPurgedRecordings が読む。issue #135）。発火は
 	// 削除がすべて終わってから行うので、ブレーカー発動や途中の error で
-	// 早期 return する経路も取りこぼさないよう defer で締める —— ただし
+	// 早期 return する経路も取りこぼさないよう defer で締める --- ただし
 	// early return する経路では purgedRecordings は空のままで、それでよい
 	// （新しく完全削除が完了した録画が無いということなので、発火対象も無く、
 	// 次パスに委ねる）。
 	var purgedRecordings []sqlcgen.MarkPurgedRecordingsRow
 	defer func() { w.notifyPurgedRecordings(ctx, purgedRecordings, deleteReconcileNotifyBudget) }()
-
 	for _, a := range pending {
 		w.deleteMediaAsset(ctx, q, deleteTarget{
 			ID: a.ID, RecordingID: a.RecordingID, RelPath: a.RelPath, SizeBytes: a.SizeBytes, Kind: a.Kind,
 		}, "pending")
 	}
 
-	// 孤児候補の記録/解除はファイルを消さないので、ブレーカーとは無関係に毎回行う。
-	// 同じ 1 回の走査結果（seenOnDisk）を「active なのに実体が無い」検出
-	// （逆方向。issue #343）にも使う --- 2 回目の全量ディレクトリ走査を避ける。
-	seenOnDisk, err := w.reconcileOrphanCandidates(ctx, q, orphanMTimeGrace)
+	if err := w.reconcileDeleteObservations(ctx, q, orphanMTimeGrace, missingAssetAge); err != nil {
+		return err
+	}
+	trashRows, untilEncodedRows, agedOrphans, err := w.collectDeleteCandidates(ctx, q, trashCutoff, orphanAge, orphanMTimeGrace)
 	if err != nil {
-		return fmt.Errorf("reconciling orphan candidates: %w", err)
+		return err
 	}
-	missingAssetsSuspected, err := w.reconcileMissingAssets(ctx, q, seenOnDisk)
-	if err != nil {
-		return fmt.Errorf("reconciling missing assets: %w", err)
-	}
-	// 疑わしいパス（全損シグネチャ）では記録そのものを見送っているので、
-	// 報告（Warn ログ・rokuban_media_assets_missing）も合わせて止める。
-	// ここで無条件に呼ぶと、reconcileMissingAssets が今パスの記録を止めた
-	// 一方で reportAgedMissingAssets が「前回までに確認済みだった候補」を
-	// 毎パス出し続けてしまい、metrics.go / docs/operations/monitoring.md が
-	// 約束する「凍結する」が実装のどこにも実在しない記述になる
-	// （疑わしい間はゲージを含む報告そのものを止める、という設計判断）。
-	if !missingAssetsSuspected {
-		if err := w.reportAgedMissingAssets(ctx, q, missingAssetAge); err != nil {
-			return fmt.Errorf("reporting aged missing assets: %w", err)
-		}
-	}
-
-	trashRows, err := q.ListTrashMediaAssetsToDelete(ctx, sqlcgen.ListTrashMediaAssetsToDeleteParams{
-		GraceCutoff: trashCutoff,
-		RowLimit:    deleteReconcileRowLimit,
-	})
-	if err != nil {
-		return fmt.Errorf("listing trash assets past retention: %w", err)
-	}
-
-	// 原本を入力とする active な encode/thumbnail ジョブの有無はここでは見ない
-	// （旧条件 3。docs/storage/retention.md「retention reconcile ループ」の
-	// 削除条件 1・2 の一覧直後の判断根拠参照）。until_encoded_deletable_originals
-	// （条件 2）が desired な派生物の完備を要求するため、出力未コミットの
-	// ジョブは既に条件 2 が止め、出力コミット済みのジョブは各ワーカーの冒頭の
-	// 冪等チェックが原本を開かずに skip する（順序そのものは未検証。
-	// docs/storage/retention.md 同箇所参照）。
-	untilEncodedRows, err := q.ListUntilEncodedOriginalsToDelete(ctx, deleteReconcileRowLimit)
-	if err != nil {
-		return fmt.Errorf("listing until_encoded originals: %w", err)
-	}
-
-	agedOrphans, err := w.verifiedAgedOrphans(ctx, q, orphanAge, orphanMTimeGrace)
-	if err != nil {
-		return fmt.Errorf("verifying aged orphans: %w", err)
-	}
-
 	total := len(trashRows) + len(untilEncodedRows) + len(agedOrphans)
-	if total > maxPerPass {
-		sample := breaker.Sample{Total: total}
-		if tripErr := breaker.Trip(ctx, q, site, breaker.DeleteReconcile, maxPerPass, sample); tripErr != nil {
-			return fmt.Errorf("tripping circuit breaker: %w", tripErr)
-		}
+	stop, err := w.applyDeleteCircuitBreaker(ctx, q, site, tripped, total, maxPerPass)
+	if err != nil {
+		return err
+	}
+	if stop {
 		metrics.DeleteReconcileLastPass.SetToCurrentTime()
 		return nil
 	}
-	if tripped {
-		if total > 0 {
-			slog.Warn("delete_reconcile: circuit breaker latched — withholding new deletes until manually resumed",
-				"breaker", breaker.DeleteReconcile, "pending_deletes", total)
-		}
-		metrics.DeleteReconcileLastPass.SetToCurrentTime()
-		return nil
-	}
-
-	for _, a := range trashRows {
-		w.deleteMediaAsset(ctx, q, deleteTarget{
-			ID: a.ID, RecordingID: a.RecordingID, RelPath: a.RelPath, SizeBytes: a.SizeBytes, Kind: a.Kind,
-		}, "trash")
-	}
-	for _, a := range untilEncodedRows {
-		w.deleteMediaAsset(ctx, q, deleteTarget{
-			ID: a.ID, RecordingID: a.RecordingID, RelPath: a.RelPath, SizeBytes: a.SizeBytes, Kind: a.Kind,
-		}, "until_encoded")
-	}
-	for _, relPath := range agedOrphans {
-		w.deleteOrphanFile(q, relPath)
-	}
+	w.deleteCandidates(ctx, q, trashRows, untilEncodedRows, agedOrphans)
 
 	// パスの末尾で「完全削除が完了した」という不可逆な事実を確定する
 	// （issue #135、MarkPurgedRecordings のコメント参照）。ここより前の
-	// pending / trash / until_encoded の 3 ループがすべて物理 unlink を終えた
-	// 後でなければならない —— 先頭で押すと同じパスで消したアセットが
-	// 反映されず、判定が 1 パス遅れる。
+	// pending ループと deleteCandidates（trash / until_encoded / 孤児）が
+	// すべて物理 unlink を終えた後でなければならない —— 先頭で押すと
+	// 同じパスで消したアセットが反映されず、判定が 1 パス遅れる。
 	purged, err := q.MarkPurgedRecordings(ctx, trashCutoff)
 	if err != nil {
 		return fmt.Errorf("marking purged recordings: %w", err)
@@ -371,6 +277,148 @@ func (w *DeleteReconcileWorker) Work(ctx context.Context, _ *river.Job[DeleteRec
 
 	metrics.DeleteReconcileLastPass.SetToCurrentTime()
 	return nil
+}
+
+// observeDeleteReconcile は削除 reconcile のブレーカー状態を DB の真実から観測する。
+//
+// パスの先頭でブレーカーの発動状態を DB の真実に合わせ直す（ObserveState の
+// コメント参照。プロセス再起動でゲージが失われるため）。
+func (w *DeleteReconcileWorker) observeDeleteReconcile(ctx context.Context, q *sqlcgen.Queries, site string) (bool, error) {
+	tripped, err := breaker.ObserveState(ctx, q, site, breaker.DeleteReconcile)
+	if err != nil {
+		return false, fmt.Errorf("observing %s circuit breaker: %w", breaker.DeleteReconcile, err)
+	}
+	return tripped, nil
+}
+
+// restoreUnqualifiedDeletingAssets は削除条件から外れた deleting 行を再評価する。
+//
+// deleting のまま止まっていたが、その後の復元などで trash / until_encoded
+// どちらの判定にも該当しなくなった行を active に戻す（issue #105）。
+// ListUnqualifiedDeletingAssets は候補を挙げるだけで書き込まない —— 各行
+// について resolveUnqualifiedDeletingAsset がファイルの現存を確認してから
+// active に戻すか deleted を確定するかを選ぶ（ファイルが既に無いのに
+// active に戻すと「active なのにファイルが無い行」を作ってしまう。これは
+// 案 B [復元時に deleting を同期的に active へ戻す] を却下した理由と同じ
+// 罠で、revert 経路自身がこの窓を作らないようにする）。
+func (w *DeleteReconcileWorker) restoreUnqualifiedDeletingAssets(ctx context.Context, q *sqlcgen.Queries, trashCutoff time.Time) error {
+	rows, err := q.ListUnqualifiedDeletingAssets(ctx, sqlcgen.ListUnqualifiedDeletingAssetsParams{
+		GraceCutoff: trashCutoff, RowLimit: deleteReconcileRowLimit,
+	})
+	if err != nil {
+		return fmt.Errorf("listing unqualified deleting assets: %w", err)
+	}
+	for _, a := range rows {
+		w.resolveUnqualifiedDeletingAsset(ctx, q, a, trashCutoff)
+	}
+	return nil
+}
+
+// listPendingDeleteAssets は前回のパスで deleting のまま残ったアセットを取得する。
+//
+// 前パスで deleting のまま止まった行のうち、まだ trash / until_encoded の
+// いずれかの判定に該当するものを最優先で再開する。これは「既に決めた
+// 削除」の再実行であり新規の判断ではないため、サーキットブレーカーの対象外
+// （docs/storage.md §7「どこで落ちても reconcile が拾い直す」）。
+// restoreUnqualifiedDeletingAssets で該当しなくなった行は既に active か
+// deleted に決着しているので、ここに現れるのは常に判定を再確認できた
+// ものだけ。
+func listPendingDeleteAssets(ctx context.Context, q *sqlcgen.Queries, trashCutoff time.Time) ([]sqlcgen.ListMediaAssetsPendingDeleteRow, error) {
+	rows, err := q.ListMediaAssetsPendingDelete(ctx, sqlcgen.ListMediaAssetsPendingDeleteParams{
+		GraceCutoff: trashCutoff, RowLimit: deleteReconcileRowLimit,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing pending deletes: %w", err)
+	}
+	return rows, nil
+}
+
+// reconcileDeleteObservations は孤児と欠損アセットを同じディスク走査結果で観測する。
+//
+// 孤児候補の記録/解除はファイルを消さないので、ブレーカーとは無関係に毎回行う。
+// 同じ 1 回の走査結果（seenOnDisk）を「active なのに実体が無い」検出
+// （逆方向。issue #343）にも使う --- 2 回目の全量ディレクトリ走査を避ける。
+//
+// 疑わしいパス（全損シグネチャ）では記録そのものを見送っているので、
+// 報告（Warn ログ・rokuban_media_assets_missing）も合わせて止める。
+// ここで無条件に呼ぶと、reconcileMissingAssets が今パスの記録を止めた
+// 一方で reportAgedMissingAssets が「前回までに確認済みだった候補」を
+// 毎パス出し続けてしまい、metrics.go / docs/operations/monitoring.md が
+// 約束する「凍結する」が実装のどこにも実在しない記述になる
+// （疑わしい間はゲージを含む報告そのものを止める、という設計判断）。
+func (w *DeleteReconcileWorker) reconcileDeleteObservations(ctx context.Context, q *sqlcgen.Queries, orphanMTimeGrace, missingAssetAge time.Duration) error {
+	seenOnDisk, err := w.reconcileOrphanCandidates(ctx, q, orphanMTimeGrace)
+	if err != nil {
+		return fmt.Errorf("reconciling orphan candidates: %w", err)
+	}
+	suspected, err := w.reconcileMissingAssets(ctx, q, seenOnDisk)
+	if err != nil {
+		return fmt.Errorf("reconciling missing assets: %w", err)
+	}
+	if !suspected {
+		if err := w.reportAgedMissingAssets(ctx, q, missingAssetAge); err != nil {
+			return fmt.Errorf("reporting aged missing assets: %w", err)
+		}
+	}
+	return nil
+}
+
+// collectDeleteCandidates は新規削除対象を 3 つのソースから取得する。
+//
+// 原本を入力とする active な encode/thumbnail ジョブの有無はここでは見ない
+// （旧条件 3。docs/storage/retention.md「retention reconcile ループ」の
+// 削除条件 1・2 の一覧直後の判断根拠参照）。until_encoded_deletable_originals
+// （条件 2）が desired な派生物の完備を要求するため、出力未コミットの
+// ジョブは既に条件 2 が止め、出力コミット済みのジョブは各ワーカーの冒頭の
+// 冪等チェックが原本を開かずに skip する（順序そのものは未検証。
+// docs/storage/retention.md 同箇所参照）。
+func (w *DeleteReconcileWorker) collectDeleteCandidates(ctx context.Context, q *sqlcgen.Queries, trashCutoff time.Time, orphanAge, orphanMTimeGrace time.Duration) ([]sqlcgen.ListTrashMediaAssetsToDeleteRow, []sqlcgen.ListUntilEncodedOriginalsToDeleteRow, []string, error) {
+	trashRows, err := q.ListTrashMediaAssetsToDelete(ctx, sqlcgen.ListTrashMediaAssetsToDeleteParams{
+		GraceCutoff: trashCutoff, RowLimit: deleteReconcileRowLimit,
+	})
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("listing trash assets past retention: %w", err)
+	}
+	untilEncodedRows, err := q.ListUntilEncodedOriginalsToDelete(ctx, deleteReconcileRowLimit)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("listing until_encoded originals: %w", err)
+	}
+	agedOrphans, err := w.verifiedAgedOrphans(ctx, q, orphanAge, orphanMTimeGrace)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("verifying aged orphans: %w", err)
+	}
+	return trashRows, untilEncodedRows, agedOrphans, nil
+}
+
+// applyDeleteCircuitBreaker は新規削除の上限を超えたとき、または発動中に削除を止める。
+func (w *DeleteReconcileWorker) applyDeleteCircuitBreaker(ctx context.Context, q *sqlcgen.Queries, site string, tripped bool, total, maxPerPass int) (bool, error) {
+	if total > maxPerPass {
+		if err := breaker.Trip(ctx, q, site, breaker.DeleteReconcile, maxPerPass, breaker.Sample{Total: total}); err != nil {
+			return false, fmt.Errorf("tripping circuit breaker: %w", err)
+		}
+		return true, nil
+	}
+	if tripped {
+		if total > 0 {
+			slog.Warn("delete_reconcile: circuit breaker latched — withholding new deletes until manually resumed",
+				"breaker", breaker.DeleteReconcile, "pending_deletes", total)
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
+// deleteCandidates はごみ箱・until_encoded・孤児の候補を物理削除する。
+func (w *DeleteReconcileWorker) deleteCandidates(ctx context.Context, q *sqlcgen.Queries, trashRows []sqlcgen.ListTrashMediaAssetsToDeleteRow, untilEncodedRows []sqlcgen.ListUntilEncodedOriginalsToDeleteRow, agedOrphans []string) {
+	for _, a := range trashRows {
+		w.deleteMediaAsset(ctx, q, deleteTarget{ID: a.ID, RecordingID: a.RecordingID, RelPath: a.RelPath, SizeBytes: a.SizeBytes, Kind: a.Kind}, "trash")
+	}
+	for _, a := range untilEncodedRows {
+		w.deleteMediaAsset(ctx, q, deleteTarget{ID: a.ID, RecordingID: a.RecordingID, RelPath: a.RelPath, SizeBytes: a.SizeBytes, Kind: a.Kind}, "until_encoded")
+	}
+	for _, relPath := range agedOrphans {
+		w.deleteOrphanFile(q, relPath)
+	}
 }
 
 // deleteMediaAsset は 1 アセットを冪等な 3 段階（active → deleting → unlink →
