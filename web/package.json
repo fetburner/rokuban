@@ -29,16 +29,16 @@
     "e2e:subtitles": "node e2e/subtitles.mjs"
   },
   "dependencies": {
-    "@base-ui/react": "^1.6.0",
+    "@base-ui/react": "^1.7.0",
     "@fontsource-variable/geist": "^5.3.0",
     "@fontsource-variable/noto-sans-jp": "^5.3.0",
-    "@tanstack/react-query": "^5.101.4",
-    "@tanstack/react-router": "^1.170.18",
-    "@tanstack/react-virtual": "^3.14.9",
+    "@tanstack/react-query": "^5.102.8",
+    "@tanstack/react-router": "^1.170.32",
+    "@tanstack/react-virtual": "^3.14.10",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
-    "hls.js": "^1.6.17",
-    "lucide-react": "^1.25.0",
+    "hls.js": "^1.7.1",
+    "lucide-react": "^1.38.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "tailwind-merge": "^3.6.0",
@@ -47,29 +47,29 @@
   },
   "pnpm": {
     "overrides": {
-      "js-yaml": ">=4.3.0",
-      "@hono/node-server": ">=2.0.5",
-      "brace-expansion": ">=5.0.8"
+      "js-yaml": ">=4.3.0 <5",
+      "@hono/node-server": ">=2.0.5 <3",
+      "brace-expansion": ">=5.0.8 <6"
     }
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",
-    "@testing-library/jest-dom": "^7.0.0",
-    "@testing-library/react": "^16.3.2",
-    "@testing-library/user-event": "^14.6.1",
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.3",
+    "@testing-library/user-event": "^14.6.6",
     "@types/node": "^26.4.0",
-    "@types/react": "^19.2.17",
-    "@types/react-dom": "^19.2.3",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.5",
     "@vitejs/plugin-react": "^5.2.0",
-    "@vitest/coverage-v8": "^4.1.10",
+    "@vitest/coverage-v8": "^4.1.11",
     "jsdom": "^30.0.1",
-    "orval": "^8.22.0",
-    "oxlint": "^1.71.0",
+    "orval": "^8.27.0",
+    "oxlint": "^1.80.0",
     "playwright": "^1.56.0",
-    "shadcn": "^4.14.0",
+    "shadcn": "^4.19.1",
     "tailwindcss": "^4.3.3",
     "typescript": "~6.0.2",
     "vite": "^7.3.6",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.11"
   }
 }

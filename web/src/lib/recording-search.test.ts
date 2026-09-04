@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
+import { ListRecordingsQueryParams } from '@/api/zod'
 import { formatDateTime } from '@/lib/format'
 import {
   buildListRecordingsParams,
@@ -86,7 +87,9 @@ describe('parseRecordingsSearch', () => {
   })
 
   // 検証は 2 段。値域（1..6553565535）は openapi.yaml 由来の zod スキーマが、
-  // 整数性（`1.5` を落とす）は `lib/url-search.ts` の `asInteger` が担う。
+  // 整数性（`1.5` を落とす）は zod の `.int()` と `lib/url-search.ts` の
+  // `asInteger` の両方が担う（`.int()` は orval 8.27.0 以降。それを固定する
+  // アサーションは下の「生成された zod スキーマ」）。
   // 下の `unsafeId` を実際に落としているのは**値域の側** --- 合成 id の上限は
   // 安全整数よりはるかに小さいので、丸めが起きる値はどのみち max で落ちる。
   it('不正・0・負値・値域外の service は要素ごとに落とす（丸めない）', () => {
@@ -379,6 +382,21 @@ describe('describeRecordingsFilters', () => {
   // キーワードはチップにしない（検索欄自体が値を表示しているため）。
   it('q はチップにならない', () => {
     expect(describeRecordingsFilters({ q: 'ニュース' }, services)).toEqual([])
+  })
+})
+
+// orval が OpenAPI の `type: integer` を整数型に落とすかどうかは版で変わる
+// （8.22.0 は `zod.number()` / 8.27.0 は `zod.int()`）。`lib/url-search.ts` の
+// `asInteger` の doc コメントがこの実測に依存しているので、生成物側を直接固定する。
+// orval が再び非整数を通す型を出したらここが落ちて、コメントの書き換えを促す。
+describe('生成された zod スキーマ', () => {
+  it('type: integer の軸は非整数を落とす', () => {
+    const limit = ListRecordingsQueryParams.shape.limit
+    const service = ListRecordingsQueryParams.shape.service.unwrap().element
+    expect(limit.safeParse(1.5).success).toBe(false)
+    expect(limit.safeParse(50).success).toBe(true)
+    expect(service.safeParse(1.5).success).toBe(false)
+    expect(service.safeParse(400101).success).toBe(true)
   })
 })
 

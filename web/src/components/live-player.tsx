@@ -19,7 +19,7 @@ type HlsLike = {
   on(event: string, callback: (event: string, data: { fatal: boolean }) => void): void
   /**
    * hls.latency（秒）。`LatencyController.get latency()` の実装
-   * （`node_modules/hls.js` 1.6.17）は `this._latency || 0` を返すため、
+   * （`node_modules/hls.js` 1.7.1）は `this._latency || 0` を返すため、
    * ライブ同期点が決まる前は `NaN` ではなく **`0`** になる（issue #476
    * レビュー指摘。当初の実装は `NaN` を前提にしており実ブラウザで
    * 「放送から約0秒」という偽の測定値を出していた）。
@@ -34,7 +34,7 @@ type HlsLike = {
  *
  * **`hls.latency` は同期点が決まる前も `0` を返す（`NaN` にはならない）。**
  * `LatencyController.get latency()` が `this._latency || 0` を実装しており、
- * `_latency` は同期点が決まるまで `null` のまま（`node_modules/hls.js` 1.6.17
+ * `_latency` は同期点が決まるまで `null` のまま（`node_modules/hls.js` 1.7.1
  * を実際に読んで確認済み。レビュー指摘）。`0` は「まだ計測できていない」と
  * 「実際に遅延ゼロ」を区別できないため、`0` 以下は欠損として扱う ---
  * このアプリの構成（2 秒セグメント、既定の `hold_back`）で実際の遅延が
@@ -303,7 +303,9 @@ export function LivePlayer({
      * `destroy()` 後に `latency` / `mainForwardBufferInfo` を読んでも例外は
      * 投げない**（`Hls.prototype.destroy` は `LatencyController.destroy()` で
      * 内部の `hls` 参照を `null` にするだけで、`_latency` はそのまま残る ---
-     * `get latency()` は直前値を返し続ける。`node_modules/hls.js` 1.6.17 を
+     * `get latency()` は直前値を返し続ける。`Hls.prototype.latency` 側も
+     * `latencyController?.latency || 0` で、`Hls.destroy` は
+     * `latencyController` を `null` にしない。`node_modules/hls.js` 1.7.1 を
      * 読んで確認済み）。ここで止めるのは例外対策ではなく、意味の無くなった
      * 値を毎秒読み続けない衛生。
      *

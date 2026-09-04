@@ -365,7 +365,7 @@ describe('formatLiveDiagnostics', () => {
     )
   })
 
-  // hls.latency は自身では NaN を返さない（node_modules/hls.js 1.6.17 の
+  // hls.latency は自身では NaN を返さない（node_modules/hls.js 1.7.1 の
   // LatencyController.get latency() は `this._latency || 0`）が、呼び出し側
   // （readHlsDiagnostics）の正規化をすり抜けた場合の保険として NaN も欠損に
   // 丸める --- 画面に「NaN」という文字列を出さないための直接の保証
