@@ -29,5 +29,10 @@ export default defineConfig({
     // 恣意的な選択ではなく、その回帰テスト（深夜 23:13 の実挙動）が
     // JST を前提に書かれているため。
     env: { TZ: 'Asia/Tokyo' },
+    coverage: {
+      provider: 'v8',
+      include: ['src/lib/**', 'src/components/**'],
+      reporter: ['text'],
+    },
   },
 })

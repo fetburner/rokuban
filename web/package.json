@@ -61,6 +61,7 @@
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^4.7.0",
+    "@vitest/coverage-v8": "^4.1.10",
     "jsdom": "^25.0.1",
     "orval": "^8.22.0",
     "oxlint": "^1.71.0",
