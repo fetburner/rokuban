@@ -47,9 +47,9 @@
   },
   "pnpm": {
     "overrides": {
-      "js-yaml": ">=4.3.0",
-      "@hono/node-server": ">=2.0.5",
-      "brace-expansion": ">=5.0.8"
+      "js-yaml": ">=4.3.0 <5",
+      "@hono/node-server": ">=2.0.5 <3",
+      "brace-expansion": ">=5.0.8 <6"
     }
   },
   "devDependencies": {

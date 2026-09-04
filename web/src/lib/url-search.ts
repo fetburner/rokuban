@@ -55,18 +55,16 @@ function asNumber(raw: unknown): unknown {
 /**
  * asInteger は URL の値を整数として数値化する。整数でなければ `NaN`。
  *
- * **`type: integer` は zod スキーマに現れない。** orval は OpenAPI の
- * `type: integer` を `zod.number()` に落とし、`.int()` を付けない（実測:
- * 生成された `limit` は `zod.number().min(1).max(200)`、`service` は
- * `zod.number().min(1).max(6553565535)`。いずれも `.int()` が無く `1.5` が
- * 通る）。値域は spec が持つので、整数性だけをここで足す。
+ * **整数性は zod 側にもある**（orval 8.27.0 以降）。生成された `limit` /
+ * `service` は `zod.int().min(1).max(...)` で、`1.5` は zod で落ちる（実測:
+ * `limit.safeParse(1.5).success === false`。8.22.0 は `zod.number()` を出して
+ * いてここが唯一の防壁だった）。生成器の版に依存させないため判定は残す。
  *
  * 安全整数の判定も兼ねる。ただし**現在の呼び出し元では単独では効かない** ---
  * `genre`（max 15）も `service`（max 6553565535）も zod 側の上限が
  * `Number.MAX_SAFE_INTEGER` よりはるかに小さいので、丸めが起きる値は
  * どのみち上限で落ちる（issue #345 の入力もそちらで落ちている）。`max` を
- * 持たない数値の軸を足したときに効く保険として残す。整数性の判定
- * （`1.5` を落とす）は zod が `.int()` を出さないぶん、ここが唯一の防壁。
+ * 持たない数値の軸を足したときに効く保険として残す。
  */
 export function asInteger(raw: unknown): unknown {
   const n = asNumber(raw)
