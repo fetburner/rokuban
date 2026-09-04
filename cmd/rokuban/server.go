@@ -404,11 +404,10 @@ func installSignalHandler(parent context.Context) (context.Context, context.Canc
 // どのロールでも必要で、SPA・SSE・バイト配信だけを担当ロールに登録する。
 //
 // **この関数は eg に goroutine を登録するので、登録より後で error を
-// 返してはならない。** `runServer` はこの関数の戻り値をそのまま使うだけで
-// `eg.Wait()` を呼ばずに return するため、ここで返したエラーは登録済みの
-// goroutine を待たずに `runServer` を抜ける経路に乗る --- goroutine 自体は
-// 呼び出し元の `eg.Wait()` が回収するので漏れはしないが、「後から
-// error return を足してよい」形には見えない関数にしておく。
+// 返してはならない。** `runServer` はこの関数がエラーを返すと `eg.Wait()` を
+// 呼ばずに return する。登録済みの goroutine は誰にも回収されないまま、
+// `defer pool.Close()` が閉じた pool を使い続けることになる。現在の実装は
+// error return がすべて `eg.Go` より前にあるのでこの形にはならない。
 func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, bound []config.MirakcSite, pool *pgxpool.Pool, eg *errgroup.Group) (*http.Server, error) {
 	backlog := newBoundBacklogCollectors(pool, bound)
 	routerCfg := api.RouterConfig{
@@ -568,12 +567,12 @@ func buildFullRiverClient(cfg *config.Config, bound []config.MirakcSite, queues 
 // `--soft-stop-timeout` の猶予を超えたときだけである（実測 0/25 でこの窓には
 // 入らなかった）。
 //
-// egCtx と signalCtx はどちらも context.Context で隣接しており、**取り違えても
-// コンパイルは通る。** stopOnceProcess は signalCtx（installSignalHandler が
-// 作ったキャンセル未了のシグナル ctx）を受け取らなければならない --- ここに
-// egCtx を渡すと、eg.Wait() を待たず既にキャンセル済みの ctx を渡すのと同じに
-// なり、stopOnceProcess 内の stopRiver 呼び出しが即座にキャンセルされた ctx で
-// 走ることになる。
+// egCtx は完了待ち（onceGate.Wait）、signalCtx は停止（stopOnceProcess）に使う。
+// どちらも context.Context で隣接しているので取り違えてもコンパイルは通るが、
+// **今のところ挙動は変わらない** --- stopOnceProcess は
+// `stopRiver(context.WithoutCancel(ctx))` で ctx のキャンセルを外しており、
+// 値も見ていないため。stopOnceProcess がキャンセルを外すのをやめたら、
+// signalCtx でなければならない（egCtx は stop() が連鎖して即座に切れる）。
 func superviseOnceMode(egCtx, signalCtx context.Context, eg *errgroup.Group, onceGate *worker.OnceGate, onceIdleTimeout time.Duration, onceEvents <-chan *river.Event, stopRiver func(context.Context) error, stop context.CancelFunc) {
 	eg.Go(func() error {
 		outcome := onceGate.Wait(egCtx, onceIdleTimeout, onceEvents)
