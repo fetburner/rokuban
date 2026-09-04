@@ -184,11 +184,8 @@ func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[EncodeJobAr
 	if err != nil {
 		return err
 	}
-	// reporter.start（goroutine を起動する）はここで呼ぶ（prepareEncodeInput
-	// 側ではない）。prepareEncodeInput は複数の return 文を持つので、start を
-	// その内部に置くと、start より後に error を返す段が増えた瞬間に呼び出し元が
-	// defer し損ねて goroutine が漏れる。start と defer stopProgress() を同じ
-	// 関数内で隣接させ、構造でこの窓を塞ぐ。
+	// reporter.start をここで呼ぶ（prepareEncodeInput 側ではない）理由は
+	// prepareEncodeInput の doc コメント参照。
 	var reportProgress func(time.Duration)
 	if duration > 0 {
 		reporter := encodeProgressReporter{
@@ -270,6 +267,7 @@ func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[EncodeJobAr
 func (w *EncodeWorker) prepareEncodeInput(ctx context.Context, args EncodeJobArgs, log *slog.Logger) (config.EncodeProfile, string, string, time.Duration, error) {
 	profile, ok := w.Profiles.Profile(args.Profile)
 	if !ok {
+		// 設定から消えたプロファイルは再試行しても直らない。
 		return config.EncodeProfile{}, "", "", 0, fmt.Errorf("unknown encode profile %q", args.Profile)
 	}
 	orig, err := w.loadOriginal(ctx, args.RecordingID)

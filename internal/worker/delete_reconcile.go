@@ -266,9 +266,9 @@ func (w *DeleteReconcileWorker) Work(ctx context.Context, _ *river.Job[DeleteRec
 
 	// パスの末尾で「完全削除が完了した」という不可逆な事実を確定する
 	// （issue #135、MarkPurgedRecordings のコメント参照）。ここより前の
-	// pending / trash / until_encoded の 3 ループがすべて物理 unlink を終えた
-	// 後でなければならない —— 先頭で押すと同じパスで消したアセットが
-	// 反映されず、判定が 1 パス遅れる。
+	// pending ループと deleteCandidates（trash / until_encoded / 孤児）が
+	// すべて物理 unlink を終えた後でなければならない —— 先頭で押すと
+	// 同じパスで消したアセットが反映されず、判定が 1 パス遅れる。
 	purged, err := q.MarkPurgedRecordings(ctx, trashCutoff)
 	if err != nil {
 		return fmt.Errorf("marking purged recordings: %w", err)
@@ -363,7 +363,7 @@ func (w *DeleteReconcileWorker) reconcileDeleteObservations(ctx context.Context,
 	return nil
 }
 
-// collectDeleteCandidates は新規削除対象を3つのソースから取得する。
+// collectDeleteCandidates は新規削除対象を 3 つのソースから取得する。
 //
 // 原本を入力とする active な encode/thumbnail ジョブの有無はここでは見ない
 // （旧条件 3。docs/storage/retention.md「retention reconcile ループ」の

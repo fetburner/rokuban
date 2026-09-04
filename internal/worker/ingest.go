@@ -175,7 +175,8 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[IngestJobArgs]) 
 	}
 
 	// 冪等性チェック：この recording_id の original media_asset が既にコミット
-	// 済みなら転送をやり直さない。エッジ record の削除（下の DeleteRecord）は
+	// 済みなら転送をやり直さない。エッジ record の削除
+	// （handleAlreadyCommittedIngest / enqueueIngestFollowups の DeleteRecord）は
 	// 失敗してもログのみで ingest 成功扱いにしている（意図的）ため、mirakc 側に
 	// record が残ったまま 5 分後の record_sweep → watcher.processRecord
 	// （status=finished）経由で同じ record の ingest ジョブが再投入されうる。
@@ -199,8 +200,9 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[IngestJobArgs]) 
 		return fmt.Errorf("determining rel_path: %w", err)
 	}
 
-	// rel_path の advisory lock を、mirakc のストリームを開く（下の
-	// StreamRecord）より前・os.Create より前に取る。media_assets の一意索引
+	// rel_path の advisory lock を、mirakc のストリームを開く
+	// （transferIngestRecord の StreamRecord）より前・下の os.Create より前に
+	// 取る。media_assets の一意索引
 	// （rel_path, WHERE state <> 'deleted'）が効くのは commit の INSERT の
 	// 瞬間だが、宛先へのバイトはそれより前に落ちる（docs/storage/contract.md
 	// §3 ルール 3 の順序そのもの）。順序だけでは実ファイルを守れないので、
