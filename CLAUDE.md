@@ -16,6 +16,8 @@ golangci-lint run
 
 **Node のバージョンは `.node-version`（パッチ版まで固定）に固定してある**。nodenv などでその Node に pnpm の shim が無ければ `corepack pnpm ...`（`packageManager` フィールドに従う）で直接呼べる。oxlint の native binding は optional dependency の engines 判定でインストール時にだけ絞り込まれる。そのため古い Node で `pnpm install --frozen-lockfile` すると警告なしにバインディングが欠落する。CI は `actions/setup-node` の `node-version-file: .node-version` でこの版を読むが、`Dockerfile` の `FROM node:` は読めない。`.node-version` を上げるときは同じ PR で `Dockerfile` も揃える。
 
+**Go のバージョンは `go.mod` の `go` ディレクティブ（パッチ版まで固定）に固定してある**。CI は `actions/setup-go` の `go-version-file: go.mod` でこの版を読むが、`Dockerfile` の `FROM golang:` は読めない。揃えないとテストを通したコンパイラと出荷バイナリのコンパイラがずれる。gomod ecosystem は `go` ディレクティブを触らないので、dependabot の docker ecosystem では `golang` を ignore してある。`golangci-lint` は `go.mod` より古い Go でビルドされた版だと起動を拒むので、`.github/workflows/ci.yml` の `version:` も一緒に上げる。**Go を上げるときは `go.mod` / `Dockerfile` / `golangci-lint` の 3 つを手で同じ PR で揃える**。
+
 ```bash
 cd web
 pnpm install
