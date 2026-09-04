@@ -138,10 +138,7 @@ func (r *Reconciler) RunPass(ctx context.Context) error {
 	created, missing, endGuarded := r.createMissingSchedules(ctx, reservations, observedByProgram, now)
 	toDelete := collectDeleteCandidates(reservations, schedules)
 	totalLoss, tripped := r.observeTotalLoss(ctx, q, reservations, toDelete, tripped)
-	deleted, err := r.deleteSchedules(ctx, toDelete, tripped, totalLoss)
-	if err != nil {
-		return err
-	}
+	deleted := r.deleteSchedules(ctx, toDelete, tripped, totalLoss)
 
 	recreated, updateDiff, stateGuarded, limitCarriedOver := r.recreateChanged(ctx, reservations, observedByProgram)
 
@@ -258,12 +255,12 @@ func (r *Reconciler) observeTotalLoss(ctx context.Context, q *sqlcgen.Queries, r
 // deleteSchedules はラッチ中の schedule 削除を止め、通常時だけ mirakc から削除する。
 // 全損シグネチャは今パスでは検出していないが、ラッチは自動では解けない（手動
 // ResumeCircuitBreaker のみが解除する）ので削除は引き続き止める。
-func (r *Reconciler) deleteSchedules(ctx context.Context, toDelete []mirakc.Schedule, tripped, totalLoss bool) (int, error) {
+func (r *Reconciler) deleteSchedules(ctx context.Context, toDelete []mirakc.Schedule, tripped, totalLoss bool) int {
 	if tripped {
 		if !totalLoss {
 			slog.Error("reconciler: circuit breaker latched — withholding schedule deletes until manually resumed", "breaker", breaker.ReconcileTotalLoss, "pending_deletes", len(toDelete))
 		}
-		return 0, nil
+		return 0
 	}
 	var deleted int
 	for _, s := range toDelete {
@@ -274,7 +271,7 @@ func (r *Reconciler) deleteSchedules(ctx context.Context, toDelete []mirakc.Sche
 		deleted++
 		metrics.ReconcileSchedules.WithLabelValues("deleted").Inc()
 	}
-	return deleted, nil
+	return deleted
 }
 
 // recordNeverScheduledOutcome は作成ループと同じ瞬間を渡す（同じ式だけでなく同じ材料にする）。
