@@ -145,69 +145,49 @@ func insertableSnapshot(s ProgramSnapshot) bool {
 func applyDocument(ctx context.Context, tx pgx.Tx, doc *Document) (*RescueResult, error) {
 	q := sqlcgen.New(tx)
 	res := &RescueResult{}
-	if count, err := applyRules(ctx, q, doc.Rules); err != nil {
+	if err := applyRules(ctx, q, doc.Rules, res); err != nil {
 		return nil, err
-	} else {
-		res.Rules = count
 	}
 
 	// program_intents / program_overrides は program_snapshots を参照する。
 	// 欠損キーは後段の helper に渡して、参照行も連動して復元しない。
-	skippedSnapshots, count, skipped, err := applyProgramSnapshots(ctx, q, doc.ProgramSnapshots)
+	skippedSnapshots, err := applyProgramSnapshots(ctx, q, doc.ProgramSnapshots, res)
 	if err != nil {
 		return nil, err
 	}
-	res.ProgramSnapshots = count
-	res.SkippedProgramSnapshots = skipped
 
-	if count, skipped, err := applyProgramIntents(ctx, q, doc.ProgramIntents, skippedSnapshots); err != nil {
+	if err := applyProgramIntents(ctx, q, doc.ProgramIntents, skippedSnapshots, res); err != nil {
 		return nil, err
-	} else {
-		res.ProgramIntents = count
-		res.SkippedProgramIntents = skipped
 	}
-	if count, skipped, err := applyProgramOverrides(ctx, q, doc.ProgramOverrides, skippedSnapshots); err != nil {
+	if err := applyProgramOverrides(ctx, q, doc.ProgramOverrides, skippedSnapshots, res); err != nil {
 		return nil, err
-	} else {
-		res.ProgramOverrides = count
-		res.SkippedProgramOverrides = skipped
 	}
 
-	if count, err := applyRecordings(ctx, q, doc.Recordings); err != nil {
+	if err := applyRecordings(ctx, q, doc.Recordings, res); err != nil {
 		return nil, err
-	} else {
-		res.Recordings = count
 	}
 
 	// recording_purge_requests は recordings への FK を持つので recordings の
 	// upsert より後に書く。doc.RecordingPurgeRequests に載っていない録画には
 	// 何も書かない --- 「即時削除の要求は無い」は行の不在そのものが意味を持つ
 	// （不変条件 10）。
-	if count, err := applyRecordingPurgeRequests(ctx, q, doc.RecordingPurgeRequests); err != nil {
+	if err := applyRecordingPurgeRequests(ctx, q, doc.RecordingPurgeRequests, res); err != nil {
 		return nil, err
-	} else {
-		res.RecordingPurgeRequests = count
 	}
 
 	// recording_encode_policy は recordings への FK を持つので recordings の
 	// upsert より後に書く。doc.RecordingEncodePolicies に載っていない録画には
 	// 何も書かない --- 「未凍結」は行の不在そのものが意味を持つ（不変条件 10）。
-	if count, err := applyRecordingEncodePolicies(ctx, q, doc.RecordingEncodePolicies); err != nil {
+	if err := applyRecordingEncodePolicies(ctx, q, doc.RecordingEncodePolicies, res); err != nil {
 		return nil, err
-	} else {
-		res.RecordingEncodePolicies = count
 	}
 
-	if count, err := applyMediaAssets(ctx, q, doc.MediaAssets); err != nil {
+	if err := applyMediaAssets(ctx, q, doc.MediaAssets, res); err != nil {
 		return nil, err
-	} else {
-		res.MediaAssets = count
 	}
 
-	if count, err := applyDropStats(ctx, q, doc.DropStats); err != nil {
+	if err := applyDropStats(ctx, q, doc.DropStats, res); err != nil {
 		return nil, err
-	} else {
-		res.DropStats = count
 	}
 
 	if err := q.CatalogResetRulesIDSeq(ctx); err != nil {
@@ -223,18 +203,20 @@ func applyDocument(ctx context.Context, tx pgx.Tx, doc *Document) (*RescueResult
 	return res, nil
 }
 
-// applyRules は rules とその従属表を復元する。
-func applyRules(ctx context.Context, q *sqlcgen.Queries, rules []Rule) (int, error) {
+// applyRules は rules とその従属表を復元し、件数を res.Rules に書く。
+func applyRules(ctx context.Context, q *sqlcgen.Queries, rules []Rule, res *RescueResult) error {
 	for _, rule := range rules {
 		if err := upsertRule(ctx, q, rule); err != nil {
-			return 0, fmt.Errorf("upserting rule %d: %w", rule.ID, err)
+			return fmt.Errorf("upserting rule %d: %w", rule.ID, err)
 		}
 	}
-	return len(rules), nil
+	res.Rules = len(rules)
+	return nil
 }
 
-// applyProgramSnapshots は program_snapshots を復元し、復元できなかったキーを返す。
-func applyProgramSnapshots(ctx context.Context, q *sqlcgen.Queries, snapshots []ProgramSnapshot) (map[snapshotKey]struct{}, int, int, error) {
+// applyProgramSnapshots は program_snapshots を復元し、件数を res.ProgramSnapshots /
+// res.SkippedProgramSnapshots に書いて、復元できなかったキーを返す。
+func applyProgramSnapshots(ctx context.Context, q *sqlcgen.Queries, snapshots []ProgramSnapshot, res *RescueResult) (map[snapshotKey]struct{}, error) {
 	skipped := make(map[snapshotKey]struct{})
 	count := 0
 	skippedCount := 0
@@ -243,7 +225,8 @@ func applyProgramSnapshots(ctx context.Context, q *sqlcgen.Queries, snapshots []
 		// channel_type には CHECK があるため、拒否される行をそのまま INSERT すると
 		// トランザクション全体がロールバックする（TestRescueFile_MalformedSnapshotIsSkippedAndAssetsSurvive）。
 		// 放送と retention_grace で GC される導出データなので、行を落として永続資産の
-		// 復元を続ける。
+		// 復元を続ける。件数を RescueResult に数えて呼び出し側に報告させる
+		// （黙って切り捨てない）。
 		if !insertableSnapshot(s) {
 			slog.Warn("rescue: skipping program_snapshot the database would reject",
 				"site", s.Site, "program_id", s.ProgramID, "channel_type", s.ChannelType)
@@ -265,15 +248,18 @@ func applyProgramSnapshots(ctx context.Context, q *sqlcgen.Queries, snapshots []
 			ServiceName: s.ServiceName,
 			UpdatedAt:   s.UpdatedAt,
 		}); err != nil {
-			return nil, 0, 0, fmt.Errorf("upserting program_snapshot %s/%d: %w", s.Site, s.ProgramID, err)
+			return nil, fmt.Errorf("upserting program_snapshot %s/%d: %w", s.Site, s.ProgramID, err)
 		}
 		count++
 	}
-	return skipped, count, skippedCount, nil
+	res.ProgramSnapshots = count
+	res.SkippedProgramSnapshots = skippedCount
+	return skipped, nil
 }
 
-// applyProgramIntents は program_snapshots を参照する program_intents を復元する。
-func applyProgramIntents(ctx context.Context, q *sqlcgen.Queries, intents []ProgramIntent, skippedSnapshots map[snapshotKey]struct{}) (int, int, error) {
+// applyProgramIntents は program_snapshots を参照する program_intents を復元し、
+// 件数を res.ProgramIntents / res.SkippedProgramIntents に書く。
+func applyProgramIntents(ctx context.Context, q *sqlcgen.Queries, intents []ProgramIntent, skippedSnapshots map[snapshotKey]struct{}, res *RescueResult) error {
 	count := 0
 	skipped := 0
 	for _, i := range intents {
@@ -288,15 +274,18 @@ func applyProgramIntents(ctx context.Context, q *sqlcgen.Queries, intents []Prog
 			CreatedAt: i.CreatedAt,
 			UpdatedAt: i.UpdatedAt,
 		}); err != nil {
-			return 0, 0, fmt.Errorf("upserting program_intent %s/%d: %w", i.Site, i.ProgramID, err)
+			return fmt.Errorf("upserting program_intent %s/%d: %w", i.Site, i.ProgramID, err)
 		}
 		count++
 	}
-	return count, skipped, nil
+	res.ProgramIntents = count
+	res.SkippedProgramIntents = skipped
+	return nil
 }
 
-// applyProgramOverrides は program_snapshots を参照する program_overrides を復元する。
-func applyProgramOverrides(ctx context.Context, q *sqlcgen.Queries, overrides []ProgramOverride, skippedSnapshots map[snapshotKey]struct{}) (int, int, error) {
+// applyProgramOverrides は program_snapshots を参照する program_overrides を復元し、
+// 件数を res.ProgramOverrides / res.SkippedProgramOverrides に書く。
+func applyProgramOverrides(ctx context.Context, q *sqlcgen.Queries, overrides []ProgramOverride, skippedSnapshots map[snapshotKey]struct{}, res *RescueResult) error {
 	count := 0
 	skipped := 0
 	for _, o := range overrides {
@@ -311,15 +300,17 @@ func applyProgramOverrides(ctx context.Context, q *sqlcgen.Queries, overrides []
 			CreatedAt: o.CreatedAt,
 			UpdatedAt: o.UpdatedAt,
 		}); err != nil {
-			return 0, 0, fmt.Errorf("upserting program_override %s/%d: %w", o.Site, o.ProgramID, err)
+			return fmt.Errorf("upserting program_override %s/%d: %w", o.Site, o.ProgramID, err)
 		}
 		count++
 	}
-	return count, skipped, nil
+	res.ProgramOverrides = count
+	res.SkippedProgramOverrides = skipped
+	return nil
 }
 
-// applyRecordings は recordings を復元する。
-func applyRecordings(ctx context.Context, q *sqlcgen.Queries, recordings []Recording) (int, error) {
+// applyRecordings は recordings を復元し、件数を res.Recordings に書く。
+func applyRecordings(ctx context.Context, q *sqlcgen.Queries, recordings []Recording, res *RescueResult) error {
 	for _, r := range recordings {
 		qe := r.QualityEvents
 		if len(qe) == 0 {
@@ -353,27 +344,31 @@ func applyRecordings(ctx context.Context, q *sqlcgen.Queries, recordings []Recor
 			CreatedAt:         r.CreatedAt,
 			UpdatedAt:         r.UpdatedAt,
 		}); err != nil {
-			return 0, fmt.Errorf("upserting recording %d: %w", r.ID, err)
+			return fmt.Errorf("upserting recording %d: %w", r.ID, err)
 		}
 	}
-	return len(recordings), nil
+	res.Recordings = len(recordings)
+	return nil
 }
 
-// applyRecordingPurgeRequests は recording_purge_requests を復元する。
-func applyRecordingPurgeRequests(ctx context.Context, q *sqlcgen.Queries, requests []RecordingPurgeRequest) (int, error) {
+// applyRecordingPurgeRequests は recording_purge_requests を復元し、件数を
+// res.RecordingPurgeRequests に書く。
+func applyRecordingPurgeRequests(ctx context.Context, q *sqlcgen.Queries, requests []RecordingPurgeRequest, res *RescueResult) error {
 	for _, p := range requests {
 		if err := q.CatalogUpsertRecordingPurgeRequest(ctx, sqlcgen.CatalogUpsertRecordingPurgeRequestParams{
 			RecordingID: p.RecordingID,
 			RequestedAt: p.RequestedAt,
 		}); err != nil {
-			return 0, fmt.Errorf("upserting recording_purge_request %d: %w", p.RecordingID, err)
+			return fmt.Errorf("upserting recording_purge_request %d: %w", p.RecordingID, err)
 		}
 	}
-	return len(requests), nil
+	res.RecordingPurgeRequests = len(requests)
+	return nil
 }
 
-// applyRecordingEncodePolicies は recording_encode_policy を復元する。
-func applyRecordingEncodePolicies(ctx context.Context, q *sqlcgen.Queries, policies []RecordingEncodePolicy) (int, error) {
+// applyRecordingEncodePolicies は recording_encode_policy を復元し、件数を
+// res.RecordingEncodePolicies に書く。
+func applyRecordingEncodePolicies(ctx context.Context, q *sqlcgen.Queries, policies []RecordingEncodePolicy, res *RescueResult) error {
 	for _, p := range policies {
 		profiles := p.EncodeProfiles
 		if profiles == nil {
@@ -386,14 +381,15 @@ func applyRecordingEncodePolicies(ctx context.Context, q *sqlcgen.Queries, polic
 			CreatedAt:      p.CreatedAt,
 			UpdatedAt:      p.UpdatedAt,
 		}); err != nil {
-			return 0, fmt.Errorf("upserting recording_encode_policy %d: %w", p.RecordingID, err)
+			return fmt.Errorf("upserting recording_encode_policy %d: %w", p.RecordingID, err)
 		}
 	}
-	return len(policies), nil
+	res.RecordingEncodePolicies = len(policies)
+	return nil
 }
 
-// applyMediaAssets は media_assets を復元する。
-func applyMediaAssets(ctx context.Context, q *sqlcgen.Queries, assets []MediaAsset) (int, error) {
+// applyMediaAssets は media_assets を復元し、件数を res.MediaAssets に書く。
+func applyMediaAssets(ctx context.Context, q *sqlcgen.Queries, assets []MediaAsset, res *RescueResult) error {
 	for _, a := range assets {
 		if err := q.CatalogUpsertMediaAsset(ctx, sqlcgen.CatalogUpsertMediaAssetParams{
 			ID:          a.ID,
@@ -407,14 +403,15 @@ func applyMediaAssets(ctx context.Context, q *sqlcgen.Queries, assets []MediaAss
 			CreatedAt:   a.CreatedAt,
 			UpdatedAt:   a.UpdatedAt,
 		}); err != nil {
-			return 0, fmt.Errorf("upserting media_asset %d: %w", a.ID, err)
+			return fmt.Errorf("upserting media_asset %d: %w", a.ID, err)
 		}
 	}
-	return len(assets), nil
+	res.MediaAssets = len(assets)
+	return nil
 }
 
-// applyDropStats は drop_stats を復元する。
-func applyDropStats(ctx context.Context, q *sqlcgen.Queries, stats []DropStat) (int, error) {
+// applyDropStats は drop_stats を復元し、件数を res.DropStats に書く。
+func applyDropStats(ctx context.Context, q *sqlcgen.Queries, stats []DropStat, res *RescueResult) error {
 	for _, d := range stats {
 		if err := q.CatalogUpsertDropStat(ctx, sqlcgen.CatalogUpsertDropStatParams{
 			MediaAssetID: d.MediaAssetID,
@@ -425,10 +422,11 @@ func applyDropStats(ctx context.Context, q *sqlcgen.Queries, stats []DropStat) (
 			Scrambled:    d.Scrambled,
 			PidType:      d.PidType,
 		}); err != nil {
-			return 0, fmt.Errorf("upserting drop_stat asset=%d pid=%d: %w", d.MediaAssetID, d.Pid, err)
+			return fmt.Errorf("upserting drop_stat asset=%d pid=%d: %w", d.MediaAssetID, d.Pid, err)
 		}
 	}
-	return len(stats), nil
+	res.DropStats = len(stats)
+	return nil
 }
 
 func upsertRule(ctx context.Context, q *sqlcgen.Queries, rule Rule) error {
