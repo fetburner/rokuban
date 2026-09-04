@@ -8,6 +8,21 @@ updates:
     # sqlc と oapi-codegen は go.mod の依存ではなく、generated-diff ジョブで
     # バージョンを pin したローカルバイナリとして管理しているため対象外。
     groups:
+      # river はジョブ実行そのものを担うので、minor でも観測できる挙動が変わる
+      # （0.44.0 で「shutdown 中に ctx を切られたジョブを error として数えない」
+      # に変わり、drain のテストと k8s.md の実測値が同時に古くなった）。
+      # 他の bump と束ねると、テストと docs を直すまでグループ PR 全体が止まる。
+      # exclude ではなく専用グループにするのは、riverqueue が 5 つのモジュール
+      # パスに分かれており、束ねないとモジュールごとに別 PR が来て版がずれる
+      # ため。**minor-patch より前に置くこと** --- dependabot は最初に一致した
+      # グループに入れるので、パターンを持たない minor-patch が先だと全部
+      # そちらに吸われる。
+      river:
+        patterns:
+          - "github.com/riverqueue/*"
+        update-types:
+          - minor
+          - patch
       minor-patch:
         update-types:
           - minor
