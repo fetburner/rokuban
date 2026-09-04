@@ -123,7 +123,8 @@ window focus も別操作も起きない」画面は、`staleTime` だけでは�
   回復できるのは定期 invalidate の方だけ
 - 上の接頭辞に載っていないクエリ（`/api/tuners` `/api/rules` `/api/version` 等）は
   この定期経路に乗っていない。mount と window focus でのみ取り直す。`/api/rules` も
-  同じ形で漏れている（`pages/rules.tsx` / `pages/recordings.tsx` / `pages/search.tsx` が
+  同じ形で漏れている（`pages/rules.tsx` /
+  `components/recording-detail-panel.tsx` / `pages/search.tsx` が
   それぞれ取得する）が、こちらは自画面の mutation でしか変わらない前提で優先度を
   下げている --- 他タブ・ruler 側の変更は届かない未解決点として残る
 

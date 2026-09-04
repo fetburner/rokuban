@@ -615,8 +615,8 @@ function failedDurationText(recording: Recording): string {
  *   を読む。
  *
  * 上記どちらでもない `event`、または期待した形（`type` / `reason` フィールド
- * が無い）は `pages/recordings.tsx` の「品質イベント」欄と同じ流儀
- * （`JSON.stringify`）で読める形にフォールバックする。
+ * が無い）は `components/recording-detail-panel.tsx` の「品質イベント」欄と
+ * 同じ流儀（`JSON.stringify`）で読める形にフォールバックする。
  *
  * **読んだフィールドが空文字なら `undefined` に寄せる**（レビュー指摘）。
  * `mirakc.FailedReason.Type` に `omitempty` は無いので `{"type":""}` は

@@ -68,7 +68,10 @@ export const recordingStatusValues: ListRecordingsStatus[] = [
   ListRecordingsStatus.failed,
 ]
 
-/** statusLabels は録画状態の日本語表記（`pages/recordings.tsx` と共有）。 */
+/**
+ * statusLabels は録画状態の日本語表記（`components/recording-badges.tsx` の
+ * バッジと `components/recording-filters.tsx` の絞り込みが共有する）。
+ */
 export const statusLabels: Record<ListRecordingsStatus, string> = {
   recording: '録画中',
   finished: '完了',
@@ -198,6 +201,28 @@ export function hasAnyRecordingsCondition(search: RecordingsPageSearch): boolean
     search.from !== undefined ||
     search.to !== undefined
   )
+}
+
+/**
+ * shouldShowRecordingSite は録画の site 表示を有効にする集合を決める。
+ *
+ * `pages/recordings.tsx`（一覧の site タグ）と
+ * `components/recording-detail-panel.tsx`（詳細のチャンネル欄）の両方が同じ
+ * 表示方針を使うので、ここに 1 つだけ置く。
+ *
+ * レジストリだけを権威にすると、レジストリから削除された site の録画で
+ * `Recording.site` が隠れ、どの拠点の録画か分からなくなる。録画（一覧では
+ * 読み込み済みの行、詳細では対象の 1 件）が持つ site も和集合に含めるのが、
+ * 過去の録画を表示する画面での正しい事実の扱いである。一覧側は読み込み済み
+ * ページが増えて集合が 2 件以上になった場合、既に表示中の行にもバッジが
+ * 生えるが、同じ一覧内で site の有無が食い違うより、拠点を識別できることを
+ * 優先する。
+ */
+export function shouldShowRecordingSite(
+  registeredSites: readonly string[],
+  recordingSites: readonly string[],
+): boolean {
+  return new Set([...registeredSites, ...recordingSites]).size > 1
 }
 
 /**

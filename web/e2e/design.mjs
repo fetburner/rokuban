@@ -1699,8 +1699,8 @@ for (const theme of themes) {
     // `screens`（① のループ）に無い画面なので、明示的に掛けないと欠損文字列
     // 判定から漏れる。
     //
-    // **`s.packets.toLocaleString()`（recordings.tsx の DropStatsTable）は
-    // ここでは撮れていない** --- それは別エンドポイント
+    // **`s.packets.toLocaleString()`（components/drop-stats-table.tsx の
+    // DropStatsTable）はここでは撮れていない** --- それは別エンドポイント
     // （`/api/recordings/{id}/drop-stats`。`ListRecordingDropStatsResponseItem`）
     // が返す per-PID の値で、`dropSummary.packets` とは無関係。design.mjs は
     // このエンドポイントを常に `[]` にスタブしているため（:312）、

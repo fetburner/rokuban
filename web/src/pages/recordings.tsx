@@ -41,31 +41,41 @@ import {
   buildListRecordingsParams,
   clearRecordingsFilters,
   hasAnyRecordingsCondition,
+  shouldShowRecordingSite,
   type RecordingsPageSearch,
 } from '@/lib/recording-search'
 import { cn } from '@/lib/utils'
 
+/** pageSize は 1 回のフェッチで取る件数（API の既定と同じ）。 */
 const pageSize = 50
 
+/** RecordingsView は一覧の表示形式。`card` はサムネイルを大きく並べる。 */
 type RecordingsView = 'list' | 'card'
 
+/**
+ * VIEW_KEY は表示形式を持続させる localStorage キー。
+ *
+ * **URL ではなく端末に持つ**（`tab` や絞り込みと違う扱い）。表示形式は共有
+ * リンクの宛先ではなく、その端末で見やすい形の好みだから
+ * （docs/frontend/design.md §個人化）。`components/app-shell.tsx` の
+ * サイドバー畳みと同じ `rokuban:<関心事>:...` の命名。
+ */
 const VIEW_KEY = 'rokuban:recordings:view'
 
-function shouldShowRecordingSite(
-  registeredSites: readonly string[],
-  recordingSites: readonly string[],
-): boolean {
-  return new Set([...registeredSites, ...recordingSites]).size > 1
-}
 function loadRecordingsView(): RecordingsView {
   try {
     return localStorage.getItem(VIEW_KEY) === 'card' ? 'card' : 'list'
   } catch {
+    // private mode 等で localStorage が使えない場合はリスト
     return 'list'
   }
 }
+
 type RecordingsPageParam = { before?: string; beforeId?: number }
+
 type BulkFailure = { id: number; error: unknown }
+
+/** runBulk は既存の 1 件 API を全 ID へ並列送信し、部分成功を分けて返す。 */
 async function runBulk(
   ids: number[],
   op: (id: number) => Promise<unknown>,
@@ -79,6 +89,7 @@ async function runBulk(
   })
   return { ok, failed }
 }
+
 function bulkFailureMessage(label: string, failed: BulkFailure[]): string {
   const details = [
     ...new Set(failed.map(({ error }) => apiErrorMessage(error)).filter((detail) => detail !== undefined)),
@@ -88,29 +99,53 @@ function bulkFailureMessage(label: string, failed: BulkFailure[]): string {
 
 /** 録画一覧ページ。表示形式以外の状態は URL とサーバーを正とする。 */
 export function RecordingsPage() {
+  // 検索条件・表示タブはどちらも URL に載せる（リロード・共有・戻るで同じ結果に
+  // なる。docs/frontend.md「録画検索は /recordings に同居する」/「ごみ箱タブと
+  // 検索条件は直交させる」）。タブは条件と直交する別の軸なので `tab` として
+  // 別に持ち、既定のライブラリは URL に書かない（履歴を汚さない・共有 URL を短く）。
   const search = useRouteSearch({ from: '/recordings' })
   const navigate = useNavigate()
   const trash = search.tab === 'trash'
+
   const sitesQuery = useListSites()
   const registeredSites = useMemo(() => unwrap(sitesQuery.data) ?? [], [sitesQuery.data])
   const encodeQueue = unwrap(useGetEncodeQueue().data)
   const updateSearch = (updater: (prev: RecordingsPageSearch) => RecordingsPageSearch) => {
+    // debounce（キーワード）・チップの個別解除のどちらも history を汚さないよう
+    // 常に replace で書く（docs/frontend.md「debounce と URL 同期で履歴を汚さない」）。
+    //
+    // updater の引数を絞る理由は `pages/programs.tsx` の `updateSearch` と同じ
+    // （`/live` が同じ名前の `service` を単数で持つため合成型が `number |
+    // number[]` になる）。
     void navigate({
       to: '/recordings',
       search: (prev) => updater(prev as RecordingsPageSearch),
       replace: true,
     })
   }
+
   const listParams = useMemo(
     () => ({ ...buildListRecordingsParams(search, trash), limit: pageSize }),
     [search, trash],
   )
   const hasConditions = hasAnyRecordingsCondition(search)
+
   const query = useInfiniteQuery({
+    // getListRecordingsQueryKey は先頭要素が recordingsQueryKeyPrefix になる
+    // キーを返すので、RecordingActions の invalidateQueries({ queryKey:
+    // [recordingsQueryKeyPrefix] })（前方一致）がここにも効く。カーソル
+    // （before/beforeId）はキーに含めない ---
+    // 同じ絞り込みの中でページを積んでいくのが useInfiniteQuery の前提であり、
+    // カーソルをキーに入れるとページごとに別クエリになってしまう。
     queryKey: getListRecordingsQueryKey(listParams),
     queryFn: ({ pageParam }: { pageParam: RecordingsPageParam }) =>
       listRecordings({ ...listParams, ...pageParam }),
     initialPageParam: {} as RecordingsPageParam,
+    // **進捗の数字が動いている録画が読み込み済みのページにある間だけ**定期
+    // 再取得する（issue #212）。SSE はヒントで真実ではない（不変条件 5）ので、
+    // 進捗は REST の再取得で収束させる。止まったら止める --- 一覧は無限リストで、
+    // 常時ポーリングすると積んだページ全部を取り直す。止めた後の収束は
+    // lib/events.ts の 60 秒 invalidate が担う（hasLiveIngestProgress 参照）。
     refetchInterval: (q) => {
       const now = Date.now()
       const live = (q.state.data?.pages ?? []).some((page) =>
@@ -148,6 +183,7 @@ export function RecordingsPage() {
     try {
       localStorage.setItem(VIEW_KEY, next)
     } catch {
+      // 保存できなくても表示は切り替わる（次に開くとリストに戻るだけ）
     }
   }
   const toggleSelected = (id: number) => {
@@ -236,6 +272,10 @@ export function RecordingsPage() {
     setSelected(new Set())
     setPurgeConfirmOpen(false)
   }
+
+  // autoLoadFailed: 直近の自動読み込みが失敗したか。失敗したらボタン + エラー
+  // 表示に落とし、番兵が可視のままでも自動では再試行しない（さもないと失敗した
+  // まま無限にリクエストを投げ続ける。pages/programs.tsx と同じ規律）。
   const [autoLoadFailed, setAutoLoadFailed] = useState(false)
   const paramsKey = JSON.stringify(listParams)
   useEffect(() => {
@@ -263,8 +303,12 @@ export function RecordingsPage() {
   })
   const sentinelRef = useRef<HTMLDivElement>(null)
   const sentinelMounted = !query.isPending && recordings.length > 0
+
   useEffect(() => {
     if (!sentinelMounted) return
+    // 計測できない環境（jsdom 等）では番兵が常時可視と判定されるおそれがあるので
+    // IntersectionObserver 自体を作らない。この環境ではボタンだけが受け皿になる
+    // （lib/list-virtualization.ts の domLayoutMeasurable）。
     if (!domLayoutMeasurable()) return
     const node = sentinelRef.current
     if (!node) return
@@ -296,8 +340,17 @@ export function RecordingsPage() {
       <PageHeader
         title="録画"
         actions={
+          // カード表示のトグル自体は 0 件でも出す --- 出さないと、ごみ箱や
+          // 絞り込みで 0 件になったタブではリスト表示に戻す手段が無くなる
+          // （カード表示のまま次にヒットする画面までトグルへ到達できない）。
           !selecting && (recordings.length > 0 || view === 'card') ? (
             <div className="flex items-center gap-1">
+              {/* 状態を持つトグル。読み上げは aria-pressed が担う（ラベルを
+                  「リスト表示」に付け替えると、読み上げでは今どちらなのかが
+                  分からなくなる）。**見た目の押下状態は variant で出す** ---
+                  ghost の文字色は継承した既定の foreground と同じなので、
+                  アイコンの className だけを text-foreground に変える旧実装は
+                  画素が変わらず目には効かなかった（レビュー指摘）。 */}
               <Button
                 type="button"
                 variant={view === 'card' ? 'secondary' : 'ghost'}
@@ -308,6 +361,8 @@ export function RecordingsPage() {
               >
                 <LayoutGrid className="size-4" />
               </Button>
+              {/* 「選択」は 0 件のときは出さない --- 選ぶものが無い編集モードに
+                  入れてしまう。0 件でも出すのはトグルだけ（上のコメント）。 */}
               {recordings.length > 0 && (
                 <Button type="button" variant="ghost" size="sm" onClick={() => setSelecting(true)}>
                   選択
@@ -368,6 +423,9 @@ export function RecordingsPage() {
         )}
         <StorageBalance />
       </PageHeader>
+
+      {/* 固定の選択バーで末尾行を覆わないだけのスクロール余白を、編集モード中だけ
+          予約する。モバイルの 2 段折り返しは e2e/recordings-selection.mjs で実測する。 */}
       <PageContent className={selecting ? 'pb-32 md:pb-20' : undefined}>
         {query.isError ? (
         <ErrorState onRetry={() => void query.refetch()}>
@@ -377,6 +435,8 @@ export function RecordingsPage() {
       ) : query.isPending ? (
         <ListSkeleton />
       ) : recordings.length === 0 ? (
+        // 「条件に一致しない」と「まだ何も録れていない」は別の事実。同じ文言だと
+        // 後者を誤読させる（issue #137 の罠）。
         <EmptyState>
           {hasConditions ? (
             <div className="flex flex-col items-center gap-3">
@@ -420,10 +480,18 @@ export function RecordingsPage() {
               </li>
             ))}
           </ul>
+
+          {/* 番兵。進行方向の自動読み込み（IntersectionObserver）はこれを見る。
+              計測できない環境では観測されず、ボタンだけが受け皿になる。 */}
           <div ref={sentinelRef} aria-hidden className="h-px" />
+
           {query.isFetchingNextPage && (
+            // role="status" は付けない。IntersectionObserver でスクロールの
+            // たびに mount/unmount するため、role="status" だと連続スクロール
+            // 中に読み上げが繰り返される（起動時 1 回だけの他 7 箇所とは頻度が違う）
             <p className="px-4 py-3 text-center text-xs text-muted-foreground">読み込み中…</p>
           )}
+
           {showLoadMoreButton && (
             <div className="px-4 py-4">
               {autoLoadFailed && (
@@ -501,6 +569,8 @@ export function RecordingsPage() {
                     </AlertDialogHeader>
                     <AlertDialogFooter>
                       <AlertDialogCancel>キャンセル</AlertDialogCancel>
+                      {/* 取り返しがつかない操作の確定は destructive（issue #467、
+                          alert-dialog.tsx の規約）。 */}
                       <AlertDialogAction variant="destructive" onClick={() => void purgeSelected()}>
                         完全削除を予約する
                       </AlertDialogAction>
@@ -530,7 +600,10 @@ export function RecordingsPage() {
   )
 }
 
-/** 録画一覧のライブラリ／ごみ箱切り替えタブ。 */
+/**
+ * ViewTab はライブラリとごみ箱を切り替えるタブ。
+ * フォーカスは `Button` と同じ明示リングを使い、ブラウザ既定の outline は消す。
+ */
 function ViewTab({
   active,
   onClick,
@@ -556,7 +629,16 @@ function ViewTab({
   )
 }
 
-/** 録画一覧の 1 行。詳細リンクと選択モードを兼ねる。 */
+/**
+ * RecordingRow は録画一覧の 1 行。
+ *
+ * 行本体は詳細（`/recordings/$id`）への全面カバーリンク（予約一覧
+ * `reservations.tsx` と同じ配置文法）。視聴・削除・エンコードは詳細ページに
+ * 寄せ、一覧はインライン展開も常時「再生」列も持たない（issue #311）--- 詳細と
+ * 展開が同じ `RecordingDetail` を共有していたので、一覧に同じプレイヤーを二重に
+ * 抱える理由が無くなった。ごみ箱・`encodedAssets` が空の行も同じく詳細へリンクし、
+ * 再生系の出し分け（`deleted_at` / encoded の有無）は詳細側の規律に任せる。
+ */
 function RecordingRow({
   recording,
   trash,
@@ -568,7 +650,13 @@ function RecordingRow({
 }: {
   recording: Recording
   trash: boolean
+  /** レジストリと読み込み済み録画の site の和集合が 2 件以上のときに出す。 */
   showSite: boolean
+  /**
+   * `card` はサムネイルを大きく縦に積む。**出す情報は list と同じ**で、
+   * 変えるのは並べ方だけ --- 表示形式ごとに出す事実を変えると、切り替えた
+   * ときに「見えていたはずのもの」が黙って消える。
+   */
   view: RecordingsView
   selecting: boolean
   selected: boolean
@@ -576,12 +664,16 @@ function RecordingRow({
 }) {
   const [thumbFailed, setThumbFailed] = useState(false)
   const card = view === 'card'
+
   return (
     <div
       role={selecting ? 'option' : undefined}
       aria-selected={selecting ? selected : undefined}
       onClick={selecting ? onToggle : undefined}
       className={cn(
+        // base の gap は list 分岐に持たせる。card 分岐の gap-2 と両方 base に
+        // 置くと twMerge が常に後勝ち（gap-2）で解決し、base の gap-3 は
+        // list でも死にクラスになる（レビュー指摘）。
         'relative hover:bg-muted/50',
         card
           ? 'flex h-full flex-col gap-2 rounded border border-border p-2'
@@ -590,6 +682,7 @@ function RecordingRow({
         selected && 'bg-muted/50',
       )}
     >
+      {/* 編集モード中は全面リンクを外す。残すと checkbox と行クリックを奪う。 */}
       {!selecting && (
         <Link
           to="/recordings/$id"
@@ -608,6 +701,13 @@ function RecordingRow({
           onChange={onToggle}
         />
       )}
+      {/*
+        サムネイルは openapi 外の streamer 経路（/api/recordings/{id}/thumbnail）。
+        未生成時は 404 → onError でプレースホルダ。hasThumbnail 列は持たない（M3-4）。
+        ごみ箱の録画は配信側が deleted_at IS NOT NULL を 404 にする契約（docs/api.md
+        §メディア配信）なので、そもそもリクエストを出さずプレースホルダ固定にする
+        （M3-18: 未生成と 404 で区別が付かない曖昧さもこれで消える）。
+      */}
       <div
         className={cn(
           'aspect-video shrink-0 overflow-hidden rounded bg-muted',
@@ -633,8 +733,15 @@ function RecordingRow({
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
           <StatusBadge status={recording.status} />
           <IngestBadge recording={recording} />
+          {/* エンコード失敗は StatusBadge / IngestBadge と同じ「この録画の
+              パイプラインがどこで止まっているか」なので隣に置く。メタデータ列の
+              末尾（DropBadges の後）に置くと、狭い端末で失敗バッジが 2 行目
+              以降に回る（親は flex-wrap なので隠れはしない）。単体ページの
+              ヘッダーも同じ並び。docs/frontend/recordings.md */}
           <EncodeStatusBadges recording={recording} />
           {showSite && (
+            /* 文字色は text-foreground を明示（bg-muted 小バッジの合成後コントラスト
+               対策。docs/frontend/design.md「コントラストは毎回測る」）。 */
             <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs text-foreground">
               {recording.site}
             </span>
@@ -651,6 +758,7 @@ function RecordingRow({
           {recording.dropSummary && <DropBadges summary={recording.dropSummary} />}
         </div>
       </div>
+      {/* カードは行ではないので、行末の「開く」記号は出さない（面全体がリンク）。 */}
       {!selecting && !card && <ChevronRight className="size-4 shrink-0 text-muted-foreground" />}
     </div>
   )

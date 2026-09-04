@@ -18,7 +18,7 @@ import { hasLiveIngestProgress, ingestRefetchIntervalMs } from '@/lib/ingest'
  * orval が生成する `getGetRecordingQueryKey`（`['/api/recordings/{id}']`、id を
  * 埋め込んだ 1 要素の文字列）は使わない。一覧側の mutater（`RecordingActions` の
  * `invalidate` / `AddEncodeProfilesAction` の `onSuccess`、両方
- * `pages/recordings.tsx`）はどちらも `queryClient.invalidateQueries({ queryKey:
+ * `components/recording-actions.tsx`）はどちらも `queryClient.invalidateQueries({ queryKey:
  * [recordingsQueryKeyPrefix] })` で捨てる --- TanStack Query の既定の前方一致
  * （`partialMatchKey`）はフィルタキーに書いた要素を**前から順に**比較する
  * ため（ここではフィルタが 1 要素なので、実質「先頭要素が等しいか」になる）、
@@ -54,8 +54,8 @@ function recordingDetailQueryKey(id: number) {
  * `/reservations/$site/$programId` と違って id をそのまま URL に使ってよい。
  *
  * 本体（プレイヤー・メタデータ・削除系操作）は
- * `pages/recordings.tsx` の `RecordingDetail` を使う。一覧はインライン展開せず、
- * 行本体からこの単体ページへ移動する（issue #311）。
+ * `components/recording-detail-panel.tsx` の `RecordingDetail` を使う。一覧は
+ * インライン展開せず、行本体からこの単体ページへ移動する（issue #311）。
  */
 export function RecordingDetailPage() {
   const { id } = useParams({ from: '/recordings/$id' })

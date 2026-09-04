@@ -63,8 +63,9 @@ function errorResponse(status: number, message: string): Response {
  * `['default']`）は `GET /api/sites` の応答 --- URL の
  * `$site` と異なる値を渡せるようにしている（下記「ゲート済み site と URL の
  * site が違う」テスト参照）。`rules`（既定 `[]`）はルール名の解決先
- * （issue #300、`pages/recordings.tsx` の `RuleSection` と同じ `useListRules`
- * キャッシュを引く）。`intentPutResponse` は `PUT .../intent`（予約取消 /
+ * （issue #300、`components/recording-detail-panel.tsx` の `RuleSection` と
+ * 同じ `useListRules` キャッシュを引く）。`intentPutResponse` は
+ * `PUT .../intent`（予約取消 /
  * 手動予約の Undo）の応答を差し替える（既定は 204 成功。サーバー本文つき
  * 失敗テスト用）。DELETE（ルール由来の Undo）は常に 204 で応答する。
  */
@@ -371,7 +372,8 @@ describe('ReservationDetailPage', () => {
 
   // issue #300: ルールは名前で出す。ルール一覧（`useListRules`）に該当ルール
   // があれば名前をリンクテキストにし、リンク先はルールの実質的な編集画面
-  // `/search?ruleId=N`（`pages/recordings.tsx` の `RuleSection` と同じ着地先）。
+  // `/search?ruleId=N`（`components/recording-detail-panel.tsx` の
+  // `RuleSection` と同じ着地先）。
   it('ルールは名前で出て、名前は /search?ruleId= のルール編集画面へのリンクになる', async () => {
     stubFetch(
       (site, programId) =>

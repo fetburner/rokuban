@@ -14,8 +14,9 @@
 無限リストで対象が読み込み済みとは限らず成立しないため、別ルートにした。
 
 本体（プレイヤー・メタデータ・削除系操作。下記「ブラウザ再生」節と
-「ドロップ統計」節が対象とするもの）は単体ページ
-（`pages/recording-detail.tsx`）の `RecordingDetail` が持つ。一覧はこの本体を
+「ドロップ統計」節が対象とするもの）は `RecordingDetail`
+（`components/recording-detail-panel.tsx`）が持ち、単体ページ
+（`pages/recording-detail.tsx`）がこれを描画する。一覧はこの本体を
 インライン展開せず、行本体から単体ページへ移動する。以下の各節（ブラウザ再生の
 出し分け・ごみ箱の非表示規律）は単体ページに適用される。
 
@@ -25,7 +26,7 @@
 削除 / 復元 / 完全削除 / 追加エンコードはすべて `RecordingDetail` の下から
 `queryClient.invalidateQueries({ queryKey: ['/api/recordings'] })` を呼ぶだけ
 （`RecordingActions.invalidate` / `AddEncodeProfilesAction` の `onSuccess`、
-どちらも `pages/recordings.tsx`）で、単体ページも自動的に再検証される。
+どちらも `components/recording-actions.tsx`）で、単体ページも自動的に再検証される。
 prop で 1 段ずつ配線する形（`onMutated` のような穴）は採らなかった ---
 `RecordingDetail` の下に mutater を足すたびに「単体ページへの配線を通す」
 ことを覚えていないといけない形は、通し忘れても型エラーにならず黒く抜ける

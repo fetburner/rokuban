@@ -282,7 +282,7 @@ function overrideValue(reservation: Reservation, key: string): string | undefine
 /**
  * RuleName はこの予約を生んだルールへの導線（issue #300）。
  *
- * `pages/recordings.tsx` の `RuleSection` と同じ手を使う ---
+ * `components/recording-detail-panel.tsx` の `RuleSection` と同じ手を使う ---
  * `useListRules()`（パラメータなし = 常に全件）のキャッシュから名前を引く。
  * `/rules` に単一ルートは無く、ルールの実質的な編集画面は `/search?ruleId=N`
  * （`RulesPage` の「検索しながら編集」と同じ着地先）なので、リンク先もそこに揃える。

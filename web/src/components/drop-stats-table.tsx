@@ -2,6 +2,9 @@ import { useListRecordingDropStats, type Recording } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
 import { cn } from '@/lib/utils'
 
+// pidTypeLabels は PID 種別（M2-13）の表示名。
+// 値の権威は Go 側（internal/tsstat）にあり、ここに無い値はそのまま表示する。
+// 字幕と文字スーパーは stream_type だけでは区別できないので other にまとまる。
 const pidTypeLabels: Record<string, string> = {
   video: '映像',
   audio: '音声',
@@ -42,6 +45,7 @@ export function DropStatsTable({ recordingId }: { recordingId: Recording['id'] }
         {stats.map((s) => (
           <div key={s.pid} className="col-span-6 grid grid-cols-subgrid">
             <span>0x{s.pid.toString(16).padStart(4, '0')}</span>
+            {/* 分類できなかった PID は種別なし（PID 番号だけで統計は成立する） */}
             <span className="text-muted-foreground">
               {s.pidType ? (pidTypeLabels[s.pidType] ?? s.pidType) : '—'}
             </span>
