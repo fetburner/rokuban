@@ -1,6 +1,6 @@
 module github.com/fetburner/rokuban
 
-go 1.26.5
+go 1.27.1
 
 require (
 	github.com/Comcast/gots/v3 v3.0.0

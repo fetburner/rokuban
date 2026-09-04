@@ -40,6 +40,12 @@ updates:
     directory: "/"
     schedule:
       interval: monthly
+    ignore:
+      # go.mod の go ディレクティブと Dockerfile の FROM golang: は同じ PR で
+      # 更新するため、自動更新しない。gomod ecosystem は go ディレクティブを
+      # 触らないので、ここを自動で上げるとテストを通したコンパイラと出荷
+      # バイナリのコンパイラがずれる。
+      - dependency-name: golang
     groups:
       minor-patch:
         update-types:
