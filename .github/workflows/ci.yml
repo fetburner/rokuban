@@ -193,7 +193,7 @@ jobs:
       # go.mod より古い Go でビルドされた golangci-lint は起動を拒む。v2.12.2 は
       # go1.26 ビルドなので go.mod の go 1.27.1 では動かない。v2.13.2 は go1.27.0
       # ビルド（比較は major.minor なので 1.27.1 を通す）。
-      - uses: golangci/golangci-lint-action@v7
+      - uses: golangci/golangci-lint-action@v9
         with:
           version: v2.13.2
 
