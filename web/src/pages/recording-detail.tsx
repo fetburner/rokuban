@@ -5,11 +5,12 @@ import { useState } from 'react'
 import { useGetRecording } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
 import { ErrorState, ListSkeleton, PageHeader } from '@/components/page'
+import { EncodeStatusBadges, IngestBadge, StatusBadge } from '@/components/recording-badges'
+import { RecordingDetail } from '@/components/recording-detail-panel'
 import { Button } from '@/components/ui/button'
 import { recordingsQueryKeyPrefix } from '@/lib/events'
 import { formatBytes, formatDateTime, formatDuration } from '@/lib/format'
 import { hasLiveIngestProgress, ingestRefetchIntervalMs } from '@/lib/ingest'
-import { EncodeStatusBadges, IngestBadge, RecordingDetail, StatusBadge } from '@/pages/recordings'
 
 /**
  * recordingDetailQueryKey は単体ページ自身のクエリキー。

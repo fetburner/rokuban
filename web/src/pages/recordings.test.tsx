@@ -13,7 +13,7 @@ import {
   type Service,
 } from '@/api/generated'
 import { ToastProvider } from '@/components/toaster'
-import { DropStatsTable } from '@/pages/recordings'
+import { DropStatsTable } from '@/components/drop-stats-table'
 import { routeTree } from '@/routes'
 
 /**
