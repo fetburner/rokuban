@@ -32,7 +32,7 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       include: ['src/lib/**', 'src/components/**'],
-      exclude: ['src/api/generated.ts', 'src/api/zod.ts'],
+      reporter: ['text'],
     },
   },
 })
