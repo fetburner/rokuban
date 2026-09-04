@@ -219,7 +219,7 @@ type DropStat struct {
 // **識別 6 列は非ポインタだが、rescue はそれを信用しない。** ディスク上の
 // バックアップは手で編集されうるし、書き込みが途中で切れることもある。値が
 // 壊れていれば DB の CHECK に当たってトランザクションごと落ちるので、
-// applyDocument は upsert の前に validSnapshotIdentity で弾いて行を落とす
+// applyProgramSnapshots は upsert の前に insertableSnapshot で弾いて行を落とす
 // （internal/catalog/rescue.go 参照）。
 type ProgramSnapshot struct {
 	Site        string    `json:"site"`
