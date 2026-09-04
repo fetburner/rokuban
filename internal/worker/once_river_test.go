@@ -12,9 +12,15 @@ import (
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
-// このファイルは river@v0.40.0 を対象に、SubscribeOnceEvents の doc コメントが
-// 依拠する前提のうち「終端は completed/failed/cancelled/snoozed の 4
-// EventKind で網羅される」を実 River client + 実 DB で固定する（issue #518）。
+// このファイルは river@v0.47.0 を対象に、SubscribeOnceEvents の doc コメントが
+// 依拠する前提のうち「Work が選ぶ終わり方は
+// completed/failed/cancelled/snoozed の 4 EventKind で網羅される」を
+// 実 River client + 実 DB で固定する（issue #518）。
+//
+// **「ジョブの終わり方」全体の網羅ではない。** River v0.44 で
+// EventKindJobInterrupted が増えており、これはクライアントの停止で実行中の
+// ジョブが打ち切られたときにだけ起きる。1 件消化モードで購読しない理由は
+// SubscribeOnceEvents の doc コメントにある。
 //
 // もう一つの前提（未登録 kind では WorkerMiddleware が一度も呼ばれない）は
 // cmd/rokuban.TestServerCmd_OnceModeExitsOnUnhandledJobKind が本番と同じ
