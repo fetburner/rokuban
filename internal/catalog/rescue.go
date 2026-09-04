@@ -225,8 +225,7 @@ func applyProgramSnapshots(ctx context.Context, q *sqlcgen.Queries, snapshots []
 		// channel_type には CHECK があるため、拒否される行をそのまま INSERT すると
 		// トランザクション全体がロールバックする（TestRescueFile_MalformedSnapshotIsSkippedAndAssetsSurvive）。
 		// 放送と retention_grace で GC される導出データなので、行を落として永続資産の
-		// 復元を続ける。件数を RescueResult に数えて呼び出し側に報告させる
-		// （黙って切り捨てない）。
+		// 復元を続ける。
 		if !insertableSnapshot(s) {
 			slog.Warn("rescue: skipping program_snapshot the database would reject",
 				"site", s.Site, "program_id", s.ProgramID, "channel_type", s.ChannelType)

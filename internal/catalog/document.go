@@ -216,11 +216,14 @@ type DropStat struct {
 // 往復で失ってはならない（reconciler が欠測を書くとき、および watcher が録画行を
 // 作るときに snapshot から引く）。
 //
-// **識別 6 列は非ポインタだが、rescue はそれを信用しない。** ディスク上の
-// バックアップは手で編集されうるし、書き込みが途中で切れることもある。値が
-// 壊れていれば DB の CHECK に当たってトランザクションごと落ちるので、
-// applyProgramSnapshots は upsert の前に insertableSnapshot で弾いて行を落とす
-// （internal/catalog/rescue.go 参照）。
+// **識別 6 列は非ポインタだが、値が正しい保証はない。** ディスク上のバックアップは
+// 手で編集されうるし、書き込みが途中で切れることもある。ただし rescue が弾くのは
+// 「DB が実際に拒否する行」だけで、「放送を同定できない行」ではない —— CHECK の
+// 掛かった channel_type が列挙外のときだけ applyProgramSnapshots が
+// insertableSnapshot で落とす。他の 5 列は NOT NULL しか無いので、空でも 0 でも
+// そのまま復元する（FK 先を失うと program_intents / program_overrides —— ユーザーが
+// 明示した意図 —— も連動して落ちる。理由は insertableSnapshot の doc コメント。
+// internal/catalog/rescue.go 参照）。
 type ProgramSnapshot struct {
 	Site        string    `json:"site"`
 	ProgramID   int64     `json:"programId"`
