@@ -165,7 +165,7 @@ type mirakcContainer struct {
 
 // startMirakc は mirakc 実物のコンテナを起こし、/api/version が応答するまで待つ。
 // t.Cleanup でコンテナの停止・削除を登録する。
-func startMirakc(t *testing.T, hostDir string, tunerBin string) *mirakcContainer {
+func startMirakc(t *testing.T, hostDir string, tunerBin string, fixtureCase string) *mirakcContainer {
 	t.Helper()
 
 	recBase := filepath.Join(hostDir, "recordings")
@@ -183,19 +183,31 @@ func startMirakc(t *testing.T, hostDir string, tunerBin string) *mirakcContainer
 		t.Fatalf("write config.yml: %v", err)
 	}
 
-	name := fmt.Sprintf("rokuban-conformance-%d", os.Getpid())
+	// t.Name() を混ぜて呼び出しごとに一意にする --- TestBroadcastPathologies は 1 バイナリ
+	// から 4 回 startMirakc を呼ぶ（+ TestConformance の 1 回）。--rm を使わないので
+	// （下記コメント参照）名前が衝突すると `docker rm -f` が別サブテストのコンテナを
+	// 巻き込んで消す。PID だけが一意性の根拠だとサブテストが直列だから成り立っているに
+	// すぎず、将来 t.Parallel() を足すと壊れる。
+	name := fmt.Sprintf("rokuban-conformance-%s-%d", sanitizeContainerName(t.Name()), os.Getpid())
 	// 既存の同名コンテナが残っていたら先に消す（前回異常終了時の掃除）。
 	_ = exec.Command("docker", "rm", "-f", name).Run()
 
 	args := []string{
-		"run", "-d", "--rm",
+		// --rm は起動直後に mirakc が終了した場合の診断ログまで消してしまう。
+		// 成功時も失敗時も t.Cleanup の rm -f で回収する。
+		"run", "-d",
 		"--name", name,
 		"-p", "127.0.0.1:0:40772",
 		"-v", tunerBin + ":/fixtures/fixturetuner:ro",
 		"-v", configPath + ":/etc/mirakc/config.yml:ro",
 		"-v", recBase + ":/recordings",
-		mirakcImage,
 	}
+	if fixtureCase != "" {
+		// tuners[].command は mirakc 自身が有効なコマンドか検証するため、
+		// "VAR=value command" 形式を置けない。ケース切り替えはコンテナ環境へ渡す。
+		args = append(args, "-e", "ROKUBAN_FIXTURE_CASE="+fixtureCase)
+	}
+	args = append(args, mirakcImage)
 	cmd := exec.Command("docker", args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -213,6 +225,12 @@ func startMirakc(t *testing.T, hostDir string, tunerBin string) *mirakcContainer
 	c.baseURL = fmt.Sprintf("http://127.0.0.1:%s", port)
 	waitForHTTP(t, c.baseURL+"/api/version", 30*time.Second)
 	return c
+}
+
+// sanitizeContainerName は t.Name() を docker のコンテナ名に使える文字列にする
+// （t.Run のサブテスト名は "/" 区切りになる）。
+func sanitizeContainerName(name string) string {
+	return strings.NewReplacer("/", "-", " ", "-").Replace(name)
 }
 
 func dumpContainerLogsOnFailure(t *testing.T, name string) {

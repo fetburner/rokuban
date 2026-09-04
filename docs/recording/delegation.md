@@ -68,6 +68,22 @@ remote tracker も使えない。GR は network_id が地域ごとに別なの�
 
 将来 timeshift を入れるなら観測は追加コスト 0 で付いてくる。ただし mirakc は timeshift の観測を `/api/onair` に結線していないので、そこは上流に足す話になる。採らない側の帰結（予定を正本にし、それを画面で明示する）は [frontend/live.md](../frontend/live.md)「いま放送中」は予定であって観測ではない。
 
+`internal/mirakc/conformance/TestBroadcastPathologies` では、正常系とは別コンテナで次の
+4 病態を測定する（対象は `mirakc 4.0.0-dev.0` 相当の pin）。判定は Rokuban の期待値を
+実装するものではなく、mirakc の実際の record / SSE の結果を機械判定し、テストログにも
+`event_id` と `recording.startTime` / 失敗理由を残す。
+
+| ケース | 測定している挙動 | 判定 |
+|---|---|---|
+| 前番組延長 | present が別 event_id・duration=0xFFFFFF の間 | record の event_id は対象だが、`recording.startTime` は対象 `startAt` より早い（今回の観測は数秒〜十数秒） |
+| `running_status=2` | 予約対象が present だが「数秒後に開始」 | record の event_id は対象だが、`recording.startTime` は対象 `startAt` より早い |
+| present / following | present は前番組、following が予約対象 | record の event_id は対象だが、録画パイプラインは対象 `startAt` より早く始まる（今回の観測は数秒〜十数秒） |
+| event_id 振り直し | 予約対象が消え、同じ時間帯に別 event_id が現れる | `recording.failed` にはならず、予約対象 event_id の record が finished まで残る。置換 event_id は録らない |
+
+ARIB TR-B14 の「開始判定は following の `start_time` を使う」という解釈そのものは、
+このテストの範囲では規格根拠を確認していない。上表はあくまで pin に対する mirakc の
+観測結果であり、規格解釈の根拠としては扱わない。
+
 ### Records API
 
 録画物は `GET /api/recording/records/{id}/stream` で HTTP 取り出し可能。エッジとサーバー間に共有ファイルシステムが不要になる。
@@ -79,4 +95,3 @@ remote tracker も使えない。GR は network_id が地域ごとに別なの�
 この再送と、同一 record への `record-saved` の複数回配信は、`internal/mirakc/conformance` の `TestConformance/RecordSavedResentOnConnect` / `TestConformance/RecordSavedFiresMultipleTimes` が mirakc 4.0.0-dev.0 相当に対して判定している。
 
 ---
-

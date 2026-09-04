@@ -25,11 +25,13 @@ const (
 // ServiceID と同じ合成規則を使う側（conformance_test.go）が programId / service id を
 // 逆算できるよう、値そのものをここで公開する。
 const (
-	NetworkID        = 32736
-	TSID             = 32736
-	ServiceID        = 101
-	EventID          = 1001
-	FollowingEventID = 1002
+	NetworkID          = 32736
+	TSID               = 32736
+	ServiceID          = 101
+	EventID            = 1001
+	FollowingEventID   = 1002
+	PrecedingEventID   = 1000
+	ReplacementEventID = 1003
 	// ServiceName / EventName は生の ASCII のまま short_event_descriptor / service_descriptor
 	// に書く。ARIB の文字符号化（8 単位符号）は既定で英数字を漢字集合として解釈するため、
 	// mirakc はこれを文字化けとして decode する（scan-services / collect-eits の "name" が
@@ -44,6 +46,9 @@ const (
 	// 参照）。
 	EventDuration = 30 * time.Second
 
+	// UndefinedDuration は EIT の duration=0xFFFFFF（未定尺）を表す。
+	UndefinedDuration time.Duration = -1
+
 	// EventLeadIn は「番組が何秒前に始まったことにするか」。0 だと mirakc が EIT p/f を
 	// 読んだ直後の 1 パケットだけを present と following の境界で取りこぼす可能性がある
 	// ため、余裕を持たせる。
@@ -56,6 +61,19 @@ const (
 	// が観測値をログする）。
 	EventLeadIn = 5 * time.Second
 )
+
+const (
+	// CasePrecedingExtension は前番組が未定尺のまま延長しているケース。
+	CasePrecedingExtension = "preceding-extension"
+	// CaseRunningStatus は target が running_status=2 の present にいるケース。
+	CaseRunningStatus = "running-status"
+	// CaseFollowing は present が前番組、following が target のケース。
+	CaseFollowing = "following"
+	// CaseEventIDReset は target の event_id が同じ時間帯で振り直されるケース。
+	CaseEventIDReset = "event-id-reset"
+)
+
+const pathologyDuration = 15 * time.Second
 
 // Config はフィクスチャが表現する放送 1 波ぶんのパラメータ。EventStart / EventStart +
 // EventDuration の時刻は jstNow() と同じ規約（JST の暦値をそのまま保持する time.Time）で
@@ -70,6 +88,8 @@ type Config struct {
 	EventName        string
 	EventStart       time.Time
 	EventDuration    time.Duration
+	// Case が空なら既存の正常系。値がある場合は conformance の放送病態を表す。
+	Case string
 }
 
 // NewConfig は「呼び出された瞬間の EventLeadIn 秒前に始まり EventDuration 秒続く」番組を
@@ -94,6 +114,40 @@ func NewConfig() Config {
 		EventStart:       start,
 		EventDuration:    EventDuration,
 	}
+}
+
+// NewConfigForCase は病態ケース用の Config を作る。
+//
+// 病態ケースは EPG 収集と録画で別々に起動されるチューナープロセスをまたいで
+// 同じ放送を表す必要がある。そのため通常系のように「プロセス起動時からの相対時刻」
+// ではなく、壁時計上の次の固定境界を使う。
+func NewConfigForCase(name string) Config {
+	cfg := NewConfig()
+	cfg.Case = name
+	return cfg
+}
+
+// caseEventStart は JST の暦値で 30 秒周期の xx:10 をイベント開始時刻にする。
+// xx:10 は EPG bootstrap の完了後にも短い準備時間を確保しつつ、ケースごとの待ち時間を
+// bounded にするための値である。入力・出力とも jstNow と同じ「JST 暦を UTC location
+// に載せた time.Time」規約。
+func caseEventStart(now time.Time) time.Time {
+	start := now.Truncate(30 * time.Second).Add(10 * time.Second)
+	if !start.After(now) {
+		start = start.Add(30 * time.Second)
+	}
+	return start
+}
+
+// activeCaseEventStart は現在の放送周期がまだ継続中ならその開始時刻を返し、周期の
+// 境界を過ぎていれば次の開始時刻を返す。EPG 用と録画用のプロセスが同じ周期を選べる
+// ように、プロセス起動時刻ではなく現在時刻から毎回導出する。
+func activeCaseEventStart(now time.Time) time.Time {
+	start := now.Truncate(30 * time.Second).Add(10 * time.Second)
+	if now.Before(start.Add(pathologyDuration)) {
+		return start
+	}
+	return caseEventStart(now)
 }
 
 // tickInterval は PCR を含む多重化ループの刻み。
@@ -179,13 +233,7 @@ func Run(ctx context.Context, w io.Writer, cfg Config) error {
 				}
 			}
 			if nextEITPF.fire(t) {
-				present := eitEvent{EventID: cfg.EventID, Start: cfg.EventStart, Duration: cfg.EventDuration, Name: cfg.EventName}
-				following := eitEvent{
-					EventID:  cfg.FollowingEventID,
-					Start:    cfg.EventStart.Add(cfg.EventDuration),
-					Duration: time.Hour,
-					Name:     cfg.EventName + " (following)",
-				}
+				present, following := currentEvents(cfg, jstNow())
 				sec0 := buildEIT(0x4E, cfg.ServiceID, cfg.TSID, cfg.NetworkID, 0, 1, 1, 0x4E, []eitEvent{present})
 				sec1 := buildEIT(0x4E, cfg.ServiceID, cfg.TSID, cfg.NetworkID, 1, 1, 1, 0x4E, []eitEvent{following})
 				if err := write(packetizeSection(pidEIT, sec0, &ccEIT)); err != nil {
@@ -196,12 +244,91 @@ func Run(ctx context.Context, w io.Writer, cfg Config) error {
 				}
 			}
 			if nextEITSchedule.fire(t) {
-				ev := eitEvent{EventID: cfg.EventID, Start: cfg.EventStart, Duration: cfg.EventDuration, Name: cfg.EventName}
-				sec := buildEIT(0x50, cfg.ServiceID, cfg.TSID, cfg.NetworkID, 0, 0, 0, 0x50, []eitEvent{ev})
+				events := scheduleEvents(cfg, jstNow())
+				sec := buildEIT(0x50, cfg.ServiceID, cfg.TSID, cfg.NetworkID, 0, 0, 0, 0x50, events)
 				if err := write(packetizeSection(pidEIT, sec, &ccEIT)); err != nil {
 					return err
 				}
 			}
 		}
 	}
+}
+
+// currentEvents は病態ケースの EIT[p/f] を返す。正常系は従来の相対時刻フィクスチャを
+// そのまま使う。病態ケースでは、別プロセスとして起動される EPG 収集と録画が同じ壁時計
+// 上のイベントを見られることが重要なので、毎回現在時刻から状態を導出する。
+func currentEvents(cfg Config, now time.Time) (eitEvent, eitEvent) {
+	if cfg.Case == "" {
+		present := eitEvent{EventID: cfg.EventID, Start: cfg.EventStart, Duration: cfg.EventDuration, Name: cfg.EventName}
+		following := eitEvent{
+			EventID:  cfg.FollowingEventID,
+			Start:    cfg.EventStart.Add(cfg.EventDuration),
+			Duration: time.Hour,
+			Name:     cfg.EventName + " (following)",
+		}
+		return present, following
+	}
+
+	start := activeCaseEventStart(now)
+	target := eitEvent{EventID: cfg.EventID, Start: start, Duration: pathologyDuration, Name: cfg.EventName, RunningStatus: 4}
+	next := eitEvent{EventID: cfg.FollowingEventID, Start: start.Add(pathologyDuration), Duration: time.Hour, Name: cfg.EventName + " (following)", RunningStatus: 1}
+	previous := precedingEvent(cfg, start)
+
+	switch cfg.Case {
+	case CasePrecedingExtension:
+		if now.Before(start) {
+			target.RunningStatus = 1
+			return previous, target
+		}
+		return target, next
+	case CaseRunningStatus:
+		if now.Before(start) {
+			target.RunningStatus = 2
+		}
+		return target, next
+	case CaseFollowing:
+		target.RunningStatus = 1
+		return previous, target
+	case CaseEventIDReset:
+		if now.Before(start) {
+			target.RunningStatus = 1
+			return previous, target
+		}
+		replacement := eitEvent{EventID: ReplacementEventID, Start: start, Duration: pathologyDuration, Name: cfg.EventName + " (replacement)", RunningStatus: 4}
+		return replacement, next
+	default:
+		return target, next
+	}
+}
+
+// precedingEvent は病態ケースの「前番組」を表す EIT イベントを返す。EIT p/f
+// （currentEvents）と EIT schedule（scheduleEvents）の両方がここを通ることで、同一
+// event_id（PrecedingEventID）に 2 つの尺を書いてしまう食い違いを構造的に防ぐ
+// --- 尺が食い違うと mirakc の EPG マージでどちらが勝つかは未規定になる。
+func precedingEvent(cfg Config, start time.Time) eitEvent {
+	previous := eitEvent{EventID: PrecedingEventID, Start: start.Add(-30 * time.Second), Duration: 30 * time.Second, Name: cfg.EventName + " (preceding)", RunningStatus: 4}
+	switch cfg.Case {
+	case CasePrecedingExtension:
+		previous.Duration = UndefinedDuration
+	case CaseFollowing:
+		previous.Duration = 60 * time.Second
+	}
+	return previous
+}
+
+// scheduleEvents は EIT schedule に載せるイベントを返す。前番組も一緒に載せることで、
+// mirakc のスケジュール更新が present/following だけに依存していないことも検査できる。
+func scheduleEvents(cfg Config, now time.Time) []eitEvent {
+	if cfg.Case == "" {
+		return []eitEvent{{EventID: cfg.EventID, Start: cfg.EventStart, Duration: cfg.EventDuration, Name: cfg.EventName}}
+	}
+	start := activeCaseEventStart(now)
+	target := eitEvent{EventID: cfg.EventID, Start: start, Duration: pathologyDuration, Name: cfg.EventName, RunningStatus: 4}
+	if cfg.Case == CaseEventIDReset && !now.Before(start) {
+		return []eitEvent{{EventID: ReplacementEventID, Start: start, Duration: pathologyDuration, Name: cfg.EventName + " (replacement)", RunningStatus: 4}}
+	}
+	if cfg.Case == CaseRunningStatus {
+		return []eitEvent{target}
+	}
+	return []eitEvent{precedingEvent(cfg, start), target}
 }

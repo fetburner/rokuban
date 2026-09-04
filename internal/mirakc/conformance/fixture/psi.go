@@ -101,10 +101,14 @@ func buildTOT(t time.Time) []byte {
 
 // eitEvent は EIT に載せる 1 イベント（番組）。
 type eitEvent struct {
-	EventID  uint16
-	Start    time.Time // jstNow() と同じ規約
+	EventID uint16
+	Start   time.Time // jstNow() と同じ規約
+	// Duration が UndefinedDuration のときは未定尺（0xFFFFFF）を表す。
 	Duration time.Duration
-	Name     string
+	// RunningStatus は EIT の running_status。0 は指定なしとして既定値 4
+	// （running）にするので、既存のフィクスチャの挙動は変わらない。
+	RunningStatus byte
+	Name          string
 }
 
 // buildEIT は EIT（table_id は呼び出し側が指定。schedule なら 0x50、p/f actual なら 0x4E）を
@@ -128,7 +132,11 @@ func buildEIT(tableID byte, sid, tsid, nid uint16, sectionNumber, lastSectionNum
 			desc = append(desc, 0x00) // text_length=0
 		}
 		descLen := len(desc)
-		payload = append(payload, 0x80|byte(descLen>>8&0x0F), byte(descLen&0xFF)) // running_status=100, free_CA=0
+		runningStatus := e.RunningStatus
+		if runningStatus == 0 {
+			runningStatus = 4
+		}
+		payload = append(payload, runningStatus<<5|byte(descLen>>8&0x0F), byte(descLen&0xFF))
 		payload = append(payload, desc...)
 	}
 	return buildSection(tableID, sid, sectionNumber, lastSectionNumber, payload)
