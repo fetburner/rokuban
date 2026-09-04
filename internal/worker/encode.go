@@ -180,11 +180,31 @@ func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[EncodeJobAr
 		w.markEncodeAttemptFailed(ctx, args.RecordingID, args.Profile, err)
 	}()
 
-	profile, originalRelPath, inputPath, reportProgress, stopProgress, err := w.prepareEncodeInput(ctx, args, log)
+	profile, originalRelPath, inputPath, duration, err := w.prepareEncodeInput(ctx, args, log)
 	if err != nil {
 		return err
 	}
-	defer stopProgress()
+	// reporter.start（goroutine を起動する）はここで呼ぶ（prepareEncodeInput
+	// 側ではない）。prepareEncodeInput は複数の return 文を持つので、start を
+	// その内部に置くと、start より後に error を返す段が増えた瞬間に呼び出し元が
+	// defer し損ねて goroutine が漏れる。start と defer stopProgress() を同じ
+	// 関数内で隣接させ、構造でこの窓を塞ぐ。
+	var reportProgress func(time.Duration)
+	if duration > 0 {
+		reporter := encodeProgressReporter{
+			recordingID: args.RecordingID,
+			profile:     args.Profile,
+			duration:    duration,
+			interval:    encodeProgressInterval,
+			notify: func(ctx context.Context, payload string) error {
+				return sqlcgen.New(w.Pool).NotifyTopic(ctx, payload)
+			},
+			log: log,
+		}
+		var stopProgress context.CancelFunc
+		reportProgress, stopProgress = reporter.start(ctx)
+		defer stopProgress()
+	}
 
 	relPath, err := EncodedRelPath(originalRelPath, profile.Name, profile.Container)
 	if err != nil {
@@ -239,45 +259,43 @@ func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[EncodeJobAr
 	return nil
 }
 
-// prepareEncodeInput はプロファイル・原本・入力パスを解決し、進捗報告を準備する。
-func (w *EncodeWorker) prepareEncodeInput(ctx context.Context, args EncodeJobArgs, log *slog.Logger) (config.EncodeProfile, string, string, func(time.Duration), context.CancelFunc, error) {
+// prepareEncodeInput はプロファイル・原本・入力パスを解決し、進捗報告に使う
+// 入力長（duration）を返す。duration <= 0 は「取得できなかった」ことを表し、
+// 呼び出し元はこれを進捗報告なし（reporter.start を呼ばない）の合図に使う。
+//
+// reporter.start（goroutine を起動する）はこの関数の外、呼び出し元 runEncode が
+// duration を受け取った後で呼ぶ。ここで呼ばないのは、この関数が複数の
+// return 文を持つため、start より後に error を返す段が増えた瞬間に呼び出し元が
+// defer し損ねて goroutine が漏れる経路を構造的に作らないため。
+func (w *EncodeWorker) prepareEncodeInput(ctx context.Context, args EncodeJobArgs, log *slog.Logger) (config.EncodeProfile, string, string, time.Duration, error) {
 	profile, ok := w.Profiles.Profile(args.Profile)
 	if !ok {
-		return config.EncodeProfile{}, "", "", nil, func() {}, fmt.Errorf("unknown encode profile %q", args.Profile)
+		return config.EncodeProfile{}, "", "", 0, fmt.Errorf("unknown encode profile %q", args.Profile)
 	}
 	orig, err := w.loadOriginal(ctx, args.RecordingID)
 	if err != nil {
-		return config.EncodeProfile{}, "", "", nil, func() {}, err
+		return config.EncodeProfile{}, "", "", 0, err
 	}
 	inputPath, err := mediapath.Resolve(w.MediaDir, orig.RelPath)
 	if err != nil {
-		return config.EncodeProfile{}, "", "", nil, func() {}, fmt.Errorf("resolving original path: %w", err)
+		return config.EncodeProfile{}, "", "", 0, fmt.Errorf("resolving original path: %w", err)
 	}
 	if _, err := os.Stat(inputPath); err != nil {
-		return config.EncodeProfile{}, "", "", nil, func() {}, fmt.Errorf("original file %s: %w", inputPath, err)
+		return config.EncodeProfile{}, "", "", 0, fmt.Errorf("original file %s: %w", inputPath, err)
 	}
 	duration, probeErr := probeEncodeDuration(ctx, w.FFprobe, inputPath, encodeDurationProbeTimeout, commandOutput)
 	if probeErr != nil {
 		log.Warn("encode: probing input duration failed; progress percentage disabled", "err", probeErr)
 	}
-	if duration <= 0 {
-		return profile, orig.RelPath, inputPath, nil, func() {}, nil
-	}
-	reporter := encodeProgressReporter{
-		recordingID: args.RecordingID,
-		profile:     args.Profile,
-		duration:    duration,
-		interval:    encodeProgressInterval,
-		notify: func(ctx context.Context, payload string) error {
-			return sqlcgen.New(w.Pool).NotifyTopic(ctx, payload)
-		},
-		log: log,
-	}
-	reportProgress, stopProgress := reporter.start(ctx)
-	return profile, orig.RelPath, inputPath, reportProgress, stopProgress, nil
+	return profile, orig.RelPath, inputPath, duration, nil
 }
 
 // prepareEncodeSubtitles は字幕ストリームの有無を調べ、サイドカー出力先を返す。
+//
+// ffmpeg は字幕ストリームが無い状態で WebVTT 出力を要求すると終了する。
+// 先に ffprobe で存在を確認し、字幕がある録画だけサイドカー出力を有効に
+// することで、局や番組によって字幕 PID が無い録画でもエンコード本体を
+// 落とさない（issue #430 の optional map の罠）。
 func (w *EncodeWorker) prepareEncodeSubtitles(ctx context.Context, profile config.EncodeProfile, inputPath, scratchOut string, log *slog.Logger) (bool, string, error) {
 	withSubtitles := false
 	var err error
@@ -287,6 +305,10 @@ func (w *EncodeWorker) prepareEncodeSubtitles(ctx context.Context, profile confi
 			log.Warn("encode: probing subtitle streams failed; continuing without subtitle sidecar", "err", err)
 		}
 	}
+	// サイドカーの出力パスは scratchOut と同じディレクトリ・basename に .vtt を
+	// 付けたもの（BuildFFmpegArgs が内部で導出するのと同じ規則を
+	// mediapath.SubtitleSibling で共有する）。withSubtitles=false のときは
+	// BuildFFmpegArgs がこの引数を使わないので、空文字などの特別扱いは要らない。
 	subtitleOut, err := mediapath.SubtitleSibling(scratchOut)
 	if err != nil {
 		return false, "", fmt.Errorf("deriving subtitle sidecar path: %w", err)
@@ -302,6 +324,7 @@ func (w *EncodeWorker) runEncodeCommand(ctx context.Context, profile config.Enco
 	}
 	cmd := exec.CommandContext(ctx, ffmpeg, BuildFFmpegArgs(profile, inputPath, scratchOut, withSubtitles)...)
 	setWorkerExecWaitDelay(cmd)
+	// 進捗は stdout（-progress pipe:1）。stderr はエラー診断のみ（進捗に使わない）。
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return fmt.Errorf("ffmpeg stdout pipe: %w", err)
@@ -342,6 +365,8 @@ func (w *EncodeWorker) runEncodeCommand(ctx context.Context, profile config.Enco
 }
 
 // encodeCommandError は ffmpeg の終了結果をジョブエラーへ変換する。
+//
+// コンテキストキャンセルは River の停止やタイムアウト。
 func encodeCommandError(ctx context.Context, cmd *exec.Cmd, waitErr error, stderr string, log *slog.Logger) error {
 	if waitErr == nil {
 		return nil
@@ -350,6 +375,13 @@ func encodeCommandError(ctx context.Context, cmd *exec.Cmd, waitErr error, stder
 		return ctx.Err()
 	}
 	if errors.Is(waitErr, exec.ErrWaitDelay) && cmd.ProcessState != nil && cmd.ProcessState.Success() {
+		// ffmpeg 自体は exit 0 で完走したが、孫プロセスが stdout/stderr の
+		// fd を握ったままで WaitDelay が先に切れた（この PR が扱う
+		// ハングの exit 0 版）。以降の os.Stat / サイズ検査が出力を守るので
+		// 失敗にはしないが、再試行ループから見分けられるよう記録は残す。その
+		// 検査は呼び出し元 runEncodeCommand が cmd.Wait() の直後（この関数を
+		// 呼んだすぐ後）に行う --- この関数はエラー変換だけを担い、出力の
+		// 検証はしない。
 		log.Warn("encode: ffmpeg exited successfully but WaitDelay expired before I/O completed", "wait_delay", workerExecWaitDelay)
 		return nil
 	}

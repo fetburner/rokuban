@@ -667,7 +667,11 @@ func buildRiverConfig(workers *river.Workers, cfg ClientConfig) (*river.Config, 
 		return nil, err
 	}
 
-	// 実際に SKIP LOCKED で引く物理キュー名の集合をログに出す。
+	// 実際に SKIP LOCKED で引く物理キュー名の集合をログに出す（issue #185 の
+	// 「罠」: 全キュー購読（既定）は「全部購読しているつもりで実は site 束縛
+	// キューを引いていない」を起動時に伝える手段が要る。KEDA のスケーラ定義を
+	// 合わせる運用者と、「ジョブが available のまま動かない」を調べる人が
+	// 最初に見る情報になる）。
 	slog.Info("worker: subscribing to queues",
 		"queues", sortedQueueNames(physicalQueues), "bound_sites", cfg.BoundSites)
 
@@ -699,6 +703,9 @@ func selectRiverQueues(cfg ClientConfig) (map[string]river.QueueConfig, error) {
 	if thumbnailConcurrency <= 0 {
 		thumbnailConcurrency = defaultThumbnailConcurrency
 	}
+	// all / queues は論理（unqualified）名で組み立てる --- worker.queues の設定値・
+	// 未知キューのエラーメッセージのいずれも論理名のままにするため
+	// （issue #185 の「罠」「エラーメッセージも論理名で出す」。allQueues のコメント参照）。
 	all := allQueues(ingestConcurrency, encodeConcurrency, thumbnailConcurrency)
 	if len(cfg.Queues) == 0 {
 		return all, nil
@@ -720,17 +727,29 @@ func configureOnceQueues(cfg ClientConfig, queues map[string]river.QueueConfig) 
 	if cfg.Once == nil {
 		return nil
 	}
+	// **1 キューだけ**を要求する。ScaledJob はキュー単位に作る（寿命 ×
+	// site 束縛で切る。docs/operations.md §5）ので、1 件消化モードの Job が
+	// 複数キューを引く形は KEDA 側に対応する定義が無い。加えて、複数キューを
+	// 許すと MaxWorkers=1 でもキューごとに 1 件ずつ掴めるため「同時 claim は
+	// 1 件」が成立しない（River の MaxWorkers はキュー単位）。
 	if len(queues) != 1 {
 		return fmt.Errorf("once mode requires exactly one queue, got %d (%s): "+
 			"a KEDA ScaledJob is created per queue, so pass exactly one queue "+
 			"(--queues <name> or worker.queues); an empty setting means all queues",
 			len(queues), strings.Join(sortedQueueNames(queues), ", "))
 	}
+	// 定期投入を「Job が何回起きたか」に委ねない。River の PeriodicJobs は
+	// リーダーに選出されたクライアントだけが投入するので、1 件で終わる Job が
+	// リーダーになると投入の間隔が KEDA のスケール挙動で決まってしまう
+	// （RunOnStart のぶんが起動ごとに入る）。docs/data.md §2 が定期実行の
+	// 契機をデプロイ形態に委ねたのは CronJob に委ねるためであって、
+	// Job の起動回数に委ねるためではない。
 	if cfg.PeriodicJobs {
 		return fmt.Errorf("once mode requires periodic jobs to be disabled " +
 			"(set worker.periodic_jobs: false and insert periodic jobs with the " +
 			"`rokuban enqueue` CronJobs instead)")
 	}
+	// 同時 claim を 1 件に抑える（config の *Concurrency より優先する）。
 	for name, qc := range queues {
 		qc.MaxWorkers = 1
 		queues[name] = qc
@@ -739,10 +758,26 @@ func configureOnceQueues(cfg ClientConfig, queues map[string]river.QueueConfig) 
 }
 
 // qualifyRiverQueues は論理キューを BoundSites ごとの物理キューへ展開する。
+//
+// river.Config.Queues は実際に SKIP LOCKED で引く物理キュー名でなければならない。
+// ここで初めて論理名から物理名（`<base>_<site>`）に展開する（physicalQueueName）。
+// site 単位のキューは BoundSites の要素ごとに 1 つずつ展開する ---
+// **subscribe 側だけを N 回呼ぶ**（issue #532 の「罠」。insert 側
+// （各 JobArgs.InsertOpts）は 1 ジョブの args.Site から物理名が 1 つに決まるので
+// N 化しない）。
 func qualifyRiverQueues(queues map[string]river.QueueConfig, boundSites []string) map[string]river.QueueConfig {
 	if len(boundSites) == 0 {
+		// 0 サイト束縛（中央プロセス）の後方互換フォールバック（BoundSites の
+		// コメント、qualifyQueueName と同じ規約）。本番は validateSiteBinding が
+		// この状態で site-bound キューを要求すること自体を防ぐので、ここに来るのは
+		// テストの部分構成（BoundSites 未設定）だけである。
 		boundSites = []string{""}
 	}
+	// physicalQueueName(name, site) は site-bound でない name を site 引数に
+	// 関わらずそのまま返すので、site-bound かどうかの判定をここで重複させる
+	// 必要はない（qualifyQueueName のコメントが警告する「判定が 2 か所に
+	// 分かれてズレる」経路を作らないため。site-bound でないキューは
+	// boundSites の要素数ぶん同じキーへ書くだけの無害な重複になる）。
 	physicalQueues := make(map[string]river.QueueConfig, len(queues))
 	for name, qc := range queues {
 		for _, site := range boundSites {
@@ -753,6 +788,14 @@ func qualifyRiverQueues(queues map[string]river.QueueConfig, boundSites []string
 }
 
 // validateOncePhysicalQueues は site 展開後も once モードが 1 キューになることを検証する。
+//
+// once モードは KEDA ScaledJob がキュー単位（かつ site 単位。
+// docs/operations.md §5「キュー × 置き場所 × site 軸」）に作る前提なので、
+// 展開後もちょうど 1 つの物理キューでなければならない。configureOnceQueues の
+// 「論理キューはちょうど 1 つ」の検査だけでは、その 1 つが site-bound キューで
+// BoundSites が 2 つ以上のとき、ここで初めて 2 物理キューに割れてしまう
+// （issue #532 で site を N 化した副作用。この検査が無いと once モードの
+// 「同時 claim は 1 件」の前提が黙って崩れる）。
 func validateOncePhysicalQueues(cfg ClientConfig, physicalQueues map[string]river.QueueConfig) error {
 	if cfg.Once == nil || len(physicalQueues) == 1 {
 		return nil
@@ -769,7 +812,16 @@ func configureOnceRiver(riverCfg *river.Config, once *OnceGate, physicalQueues m
 	if once == nil {
 		return
 	}
+	// ジョブの開始と終了を観測する唯一の手段として WorkerMiddleware を使う
+	// （River には「ジョブが claim された」イベントが無く、Subscribe で拾える
+	// のは完了後のイベントだけなので、「まだ 1 件も掴んでいない」と
+	// 「掴んで実行中」を区別できない）。
 	riverCfg.Middleware = []rivertype.Middleware{once.Middleware()}
+	// `worker: subscribing to queues` とは別の行にする。あちらは KEDA の
+	// スケーラ定義と購読集合を突き合わせる運用者が見る行なので、形を変えない
+	// （issue #421 の「罠」）。
+	// キューはちょうど 1 つ（configureOnceQueues / validateOncePhysicalQueues の
+	// 検査）なので単数で出す。
 	slog.Info("worker: once mode enabled (exits after one job)",
 		"queue", sortedQueueNames(physicalQueues)[0])
 }
@@ -784,6 +836,14 @@ func configurePeriodicJobs(riverCfg *river.Config, cfg ClientConfig) {
 }
 
 // configureSitePeriodicJobs は BoundSites ごとのサイト単位の定期ジョブを登録する。
+//
+// site 単位の 5 種（epg_sync/tuner_sync/ruler_pass/reconcile_pass/
+// record_sweep）は cfg.BoundSites の要素ごとに 1 本ずつ登録する
+// （issue #532 の「含むもの」3。旧 EpgSyncSite 等 5 つの独立フィールドを
+// BoundSites 1 つに畳んだ --- server.go は常に同じ site 集合をこの 5 つに
+// 渡していたので、独立フィールドは冗長でしかなかった）。0 サイト束縛
+// （BoundSites が空）なら何も登録しない --- 中央プロセスが site 単位の
+// 定期パスを持つ理由がない。
 func configureSitePeriodicJobs(riverCfg *river.Config, cfg ClientConfig) {
 	if len(cfg.BoundSites) == 0 {
 		return
@@ -839,6 +899,10 @@ func configureGlobalPeriodicJobs(riverCfg *river.Config, cfg ClientConfig) {
 		if interval <= 0 {
 			interval = defaultInterval
 		}
+		// 起動直後にも 1 回書いておく。日次なので RunOnStart で初回を確保する
+		// （元は CatalogExport 単独の判断。EncodeReconcile / DeleteReconcile /
+		// StorageSync も同じ RunOnStart: true を共有しているが、それぞれの間隔での
+		// 「起動直後の 1 回」が同程度に有用かは個別に検証していない）。
 		riverCfg.PeriodicJobs = append(riverCfg.PeriodicJobs, river.NewPeriodicJob(
 			river.PeriodicInterval(interval),
 			func() (river.JobArgs, *river.InsertOpts) { return args, nil },
