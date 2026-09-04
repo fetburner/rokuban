@@ -11,6 +11,7 @@ import {
   isoToLocalDateTimeInput,
   localDateTimeInputToIso,
   parseRecordingsSearch,
+  shouldShowRecordingSite,
   type RecordingsPageSearch,
 } from '@/lib/recording-search'
 
@@ -409,5 +410,18 @@ describe('site の並びはチップ側と同じ正準形になる', () => {
     // ICU の既定照合では逆順になる。
     expect(parseRecordingsSearch({ site: ['a_b', 'a0b'] }).site).toEqual(['a0b', 'a_b'])
     expect(['a_b', 'a0b'].sort()).toEqual(['a0b', 'a_b'])
+  })
+})
+
+// pages/recordings.tsx（一覧）と components/recording-detail-panel.tsx（詳細）が
+// 同じ関数を共有するので、レジストリと行の site の和集合という判定を両方向で
+// 固定する（片方だけだと > 1 を > 0 に変える等の変異が通ってしまう）。
+describe('shouldShowRecordingSite', () => {
+  it('レジストリと録画の site を合わせて 2 件以上なら出す', () => {
+    expect(shouldShowRecordingSite(['tokyo'], ['takamatsu'])).toBe(true)
+  })
+
+  it('レジストリにもレジストリ外の録画にも 1 site しかなければ出さない', () => {
+    expect(shouldShowRecordingSite(['tokyo'], ['tokyo'])).toBe(false)
   })
 })

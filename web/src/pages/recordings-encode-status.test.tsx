@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { Recording } from '@/api/generated'
 import { ToastProvider } from '@/components/toaster'
 import { useServerEvents } from '@/lib/events'
-import { EncodeStatusBadges } from '@/pages/recordings'
+import { EncodeStatusBadges } from '@/components/recording-badges'
 import { routeTree } from '@/routes'
 
 /**
