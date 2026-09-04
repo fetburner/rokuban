@@ -237,7 +237,7 @@ const liveDiagnosticsMissingLabel = '—'
  * `readNativeDiagnostics`）が既に欠損を `null` に正規化して渡す前提だが、
  * `NaN` もここで弾く --- `hls.latency` はライブ同期点が決まる前は `NaN` では
  * なく `0` を返す（`LatencyController.get latency()` が `this._latency || 0`。
- * `node_modules/hls.js` 1.6.17 で確認済み）ため呼び出し側が `0` を欠損として
+ * `node_modules/hls.js` 1.7.1 で確認済み）ため呼び出し側が `0` を欠損として
  * 弾いているが、ここでの `NaN` チェックはそれをすり抜けた場合の保険。
  */
 function missingOr(value: number | null, format: (n: number) => string): string {

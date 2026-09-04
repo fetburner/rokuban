@@ -35,7 +35,7 @@ type FakeHls = {
   destroy: ReturnType<typeof vi.fn>
   // 計器（issue #476）。既定値はライブ同期点が決まる前の実 hls.js の状態
   // ---`LatencyController.get latency()` は `this._latency || 0` を返すため
-  // `NaN` ではなく `0`（`node_modules/hls.js` 1.6.17 で確認済み。レビュー
+  // `NaN` ではなく `0`（`node_modules/hls.js` 1.7.1 で確認済み。レビュー
   // 指摘）。mainForwardBufferInfo はアタッチ直後は null
   latency: number
   mainForwardBufferInfo: { len: number } | null
@@ -52,7 +52,7 @@ vi.mock('hls.js', () => {
     // **実物より厳しい観測点**。実 hls.js は destroy 後に読んでも例外を
     // 投げない（`LatencyController.destroy()` は内部の `hls` 参照を `null`
     // にするだけで `_latency` は直前値のまま残る。`node_modules/hls.js`
-    // 1.6.17 で確認済み）。ここでは canary として実物より厳しく throw させ、
+    // 1.7.1 で確認済み）。ここでは canary として実物より厳しく throw させ、
     // 「破棄後は読み続けない」衛生を止め忘れたら `vi.advanceTimersByTime` から
     // 例外が漏れて落ちるようにしてある（issue #476 レビュー指摘）
     #destroyed = false
@@ -597,7 +597,7 @@ describe('LivePlayer の状態遷移', () => {
     /**
      * **`hls.latency` は同期点が決まる前も `NaN` ではなく `0` を返す**
      * （`LatencyController.get latency()` が `this._latency || 0`。
-     * `node_modules/hls.js` 1.6.17 で確認済み。レビュー指摘）。`0` を
+     * `node_modules/hls.js` 1.7.1 で確認済み。レビュー指摘）。`0` を
      * そのまま「計測済みの遅延ゼロ」として渡すと、実ブラウザでは再生ボタンを
      * 押すまで「放送から約0秒」という偽の値が出続ける（修正前の実装の欠陥）。
      * フェイクの既定値は実物と同じ `0` のままにしてあるので、
