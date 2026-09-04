@@ -133,6 +133,8 @@ ON CONFLICT (site, program_id) DO NOTHING`,
 // 各エンドポイントの**レスポンス本体**を site ごとに区別できる形で確認する
 // （programId を site ごとに変えてあるので、取り違えれば 404 か別サイトの
 // programId が返る）。
+//
+//nolint:funlen // 全登録 site を横断する結合テスト。分割は epic #585 のスコープ外（既存超過分を一括では直さない）
 func TestMultiSiteRegistry_HandlesAllRegisteredSites(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()

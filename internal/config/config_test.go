@@ -243,6 +243,7 @@ storage:
   media_dir: /mnt/media
 `
 
+//nolint:funlen // レジストリの解決規則を網羅する表駆動テスト。分割は epic #585 のスコープ外（既存超過分を一括では直さない）
 func TestLoad_MirakcRegistry(t *testing.T) {
 	t.Run("empty mirakcs is an error", func(t *testing.T) {
 		path := writeConfig(t, mirakcsBase)
@@ -1622,6 +1623,7 @@ live:
 	}
 }
 
+//nolint:funlen // live 設定の検証規則を網羅する表駆動テスト。分割は epic #585 のスコープ外（既存超過分を一括では直さない）
 func TestLoad_Live(t *testing.T) {
 	base := `
 db:

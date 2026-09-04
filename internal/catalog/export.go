@@ -25,6 +25,8 @@ import (
 // REPEATABLE READ / READ ONLY のトランザクションを張る形に固定してある。
 // 呼び出し側が任意の *sqlcgen.Queries を渡せる形にすると tx なしで呼べてしまう
 // ので、シグネチャは緩めない。
+//
+//nolint:funlen // 表ごとの読み出しを 1 関数にまとめている。分割は epic #585 の Q-4（#589）で行う
 func Export(ctx context.Context, pool *pgxpool.Pool) (*Document, error) {
 	tx, err := pool.BeginTx(ctx, pgx.TxOptions{
 		IsoLevel:   pgx.RepeatableRead,

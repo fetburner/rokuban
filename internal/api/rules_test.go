@@ -12,6 +12,7 @@ import (
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
+//nolint:funlen // ルール CRUD の一連のシナリオを 1 本の結合テストにしている。分割は epic #585 のスコープ外（既存超過分を一括では直さない）
 func TestRulesCRUD(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	router := NewRouter(RouterConfig{Pool: pool})

@@ -141,6 +141,7 @@ func insertableSnapshot(s ProgramSnapshot) bool {
 	}
 }
 
+//nolint:funlen // 表ごとの書き戻しを 1 関数にまとめている。分割は epic #585 の Q-4（#589）で行う
 func applyDocument(ctx context.Context, tx pgx.Tx, doc *Document) (*RescueResult, error) {
 	q := sqlcgen.New(tx)
 	res := &RescueResult{}

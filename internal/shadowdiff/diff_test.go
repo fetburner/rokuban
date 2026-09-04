@@ -15,6 +15,7 @@ func at(h int) time.Time {
 	return time.Date(2026, 8, 1, h, 0, 0, 0, time.UTC)
 }
 
+//nolint:funlen // 比較規則を網羅する表駆動テスト。分割は epic #585 のスコープ外（既存超過分を一括では直さない）
 func TestCompare(t *testing.T) {
 	tests := []struct {
 		name           string

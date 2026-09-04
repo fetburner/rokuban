@@ -12,12 +12,25 @@ linters:
     - unparam
     - nilerr
     - errorlint
+    - funlen
 
   settings:
     errorlint:
       errorf: true
       asserts: true
       comparison: true
+    funlen:
+      lines: 150
+      statements: -1
+
+issues:
+  new-from-rev: origin/main
+  # funlen は診断位置を func 宣言行に打つ。whole-files が無いと
+  # new-from-rev は「追加された行の上にある issue」しか報告しないため、宣言行に
+  # 触れずに既存関数の本体だけを太らせるケースを永久に見逃す（実例:
+  # runServer が分割前に 387 行まで育った経路）。whole-files: true にすると
+  # ファイルに 1 行でも触れば関数全体を検査するので、この抜け道を塞ぐ。
+  whole-files: true
 
 formatters:
   enable:

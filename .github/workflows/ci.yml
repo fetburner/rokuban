@@ -164,7 +164,11 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
+      # issues.new-from-rev（.golangci.yml）が origin/main との差分を取るので
+      # base ブランチの履歴が要る。
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
