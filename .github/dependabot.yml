@@ -17,9 +17,6 @@ updates:
     directory: "/web"
     schedule:
       interval: monthly
-    ignore:
-      # .node-version と Dockerfile の FROM node: は同じ PR で更新するため、自動更新しない。
-      - dependency-name: node
     groups:
       minor-patch:
         update-types:
@@ -40,6 +37,12 @@ updates:
     directory: "/"
     schedule:
       interval: monthly
+    ignore:
+      # Dockerfile の FROM node: だけを上げる PR は .node-version と食い違うので
+      # 単体ではマージできない（両者を同じ PR で揃える規約。CLAUDE.md）。
+      # npm ecosystem 側に置いていた ignore は node が /web の依存ではないので
+      # 効かず、実際に Dockerfile 単独の bump PR が来た。
+      - dependency-name: node
     groups:
       minor-patch:
         update-types:
