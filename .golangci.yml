@@ -12,12 +12,19 @@ linters:
     - unparam
     - nilerr
     - errorlint
+    - funlen
 
   settings:
     errorlint:
       errorf: true
       asserts: true
       comparison: true
+    funlen:
+      lines: 150
+      statements: -1
+
+issues:
+  new-from-rev: origin/main
 
 formatters:
   enable:
