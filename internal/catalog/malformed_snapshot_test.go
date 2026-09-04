@@ -22,8 +22,10 @@ import (
 // media_assets / drop_stats / rules）なので、導出テーブルの 1 行のためにそれを
 // 失ってはならない。
 //
-// この分岐を消す（validSnapshotIdentity を常に true にする）と、下の
-// 「録画が 1 件復元されている」で落ちる。
+// この分岐を消す（insertableSnapshot を常に true にする）と、壊れた行の INSERT が
+// program_snapshots_channel_type_check に当たってトランザクションごと巻き戻り、
+// 下の RescueFile 自体がエラーを返して落ちる（実測: SQLSTATE 23514）。件数の
+// アサーションはそこまで到達しない。
 func TestRescueFile_MalformedSnapshotIsSkippedAndAssetsSurvive(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	dir := t.TempDir()
