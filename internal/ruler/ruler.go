@@ -20,6 +20,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/breaker"
@@ -152,18 +153,12 @@ func (r *Ruler) RunPass(ctx context.Context) error {
 }
 
 // runPassForSite は 1 サイト分の全量評価 + 差分書き込みを行う。
-//
-//nolint:funlen // 分割は epic #585 の Q-1（#586）で行う
 func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 	q := sqlcgen.New(r.pool)
 
-	// パスの先頭でブレーカーの発動状態を DB の真実に合わせ直す（ゲージはプロセス
-	// 再起動で失われるため。breaker.ObserveState のコメント参照）。true なら
-	// このパスでは導出削除を一切実行しない（下のスイッチの tripped 分岐）。
-	// 作成・更新・base の再計算・GC は止めない — 止めたいのは削除だけ。
-	tripped, err := breaker.ObserveState(ctx, q, site, breaker.RulerDeletes)
+	tripped, err := r.observeDeleteBreaker(ctx, q, site)
 	if err != nil {
-		return fmt.Errorf("observing %s circuit breaker: %w", breaker.RulerDeletes, err)
+		return err
 	}
 
 	rules, err := q.ListEnabledRules(ctx)
@@ -171,96 +166,14 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 		return fmt.Errorf("listing enabled rules: %w", err)
 	}
 
-	// winner: programId ごとの勝者ルール（最初にマッチした = priority DESC, id ASC
-	// の全順序で最初のルール）。ListEnabledRules は既に priority DESC, id ASC で
-	// 来るので、最初に書き込んだルールが常に勝者になる
-	// （docs/recording.md §3.1「複数ルール解決」）。負けたルールは reservations
-	// のどの列にも供給しないので保持しない --- 必要になれば enabled ルールを
-	// rulequery.MatchProgramIDsForRule で回せば同じ集合が作り直せる。
-	ruleByID := make(map[int64]sqlcgen.Rule, len(rules))
-	winner := make(map[int64]int64)
-	for _, rule := range rules {
-		ruleByID[rule.ID] = rule
-		matched, err := rulequery.MatchProgramIDsForRule(ctx, r.pool, site, rule.ID)
-		if err != nil {
-			return fmt.Errorf("matching rule %d: %w", rule.ID, err)
-		}
-		for _, programID := range matched {
-			if _, exists := winner[programID]; !exists {
-				winner[programID] = rule.ID
-			}
-		}
-	}
-
-	// skip 意図だけをここで読む。「record 意図または overrides の行がある」は
-	// program_investments view（#162）に一本化したので、record 側は
-	// ListProgramInvestmentProgramIDsBySite から引く（下記）。
-	intents, err := q.ListProgramIntentActionsBySite(ctx, site)
+	ruleByID, winner, err := r.resolveWinners(ctx, site, rules)
 	if err != nil {
-		return fmt.Errorf("listing program intents: %w", err)
-	}
-	skipIntent := make(map[int64]struct{})
-	for _, in := range intents {
-		if in.Action == db.IntentSkip {
-			skipIntent[in.ProgramID] = struct{}{}
-		}
+		return err
 	}
 
-	// 「この番組にユーザーの投資があるか」（record 意図 ∪ overrides の行）は
-	// program_investments view（#162）から引く。ruler は overrides の中身も
-	// record 意図の中身も一切読まないので programId だけを取る。
-	investmentProgramIDs, err := q.ListProgramInvestmentProgramIDsBySite(ctx, site)
+	desired, skipIntent, err := r.collectDesired(ctx, q, site, winner)
 	if err != nil {
-		return fmt.Errorf("listing program investments: %w", err)
-	}
-
-	// desired = (ルールにマッチした番組 − intent.skip) ∪ program_investments
-	// （docs/recording.md §4.2「ruler から見た load-bearing な行」。
-	// program_intents / program_overrides は絶対に書かない — 読むだけ）。
-	//
-	// investment（record 意図 ∪ overrides）は skip を引いた後の winner に
-	// 無条件で足す。順序を入れ替えても record 側の結果は変わらない ---
-	// `program_intents` は (site, program_id) に 1 行しか持てないため
-	// action='record' と action='skip' は同じ番組で排他であり、winner から
-	// skip を引く操作は record 側の投資に触れない。overrides 側は skip と
-	// 独立に存在できるが、investment に無条件で足すことで「skip 意図があっても
-	// overrides は desired に残す」（§4.3「record 意図または上書きがある →
-	// 削除せず detached で保持」）を満たす。skip 側は intent.action='skip' が
-	// effective.skip として引き続き効くので（db.EffectiveOptions）、reconciler は
-	// この行を同期しない。行の存在が答えるのは「この番組にユーザーの投資が
-	// あるか」で、録画するかどうかとは別の問い。
-	desired := make(map[int64]struct{}, len(winner)+len(investmentProgramIDs))
-	for programID := range winner {
-		if _, skipped := skipIntent[programID]; !skipped {
-			desired[programID] = struct{}{}
-		}
-	}
-	for _, programID := range investmentProgramIDs {
-		desired[programID] = struct{}{}
-	}
-
-	existingProgramIDs, err := q.ListReservationProgramIDsBySite(ctx, site)
-	if err != nil {
-		return fmt.Errorf("listing existing reservation program ids: %w", err)
-	}
-	existingSet := make(map[int64]struct{}, len(existingProgramIDs))
-	for _, id := range existingProgramIDs {
-		existingSet[id] = struct{}{}
-	}
-
-	// 削除候補 = 既存予約のうち desired から外れたもの。ただし EPG プロジェクションから
-	// 番組自体が消えている場合は「ルールがマッチしなくなった」と確信を持って判定できない
-	// （評価する材料がないだけ）ので削除せず凍結する（docs/schema.md「射影にある間は
-	// 更新、消えたら凍結」を削除判定にも適用する）。
-	var deleteCandidates []int64
-	for id := range existingSet {
-		if _, ok := desired[id]; !ok {
-			deleteCandidates = append(deleteCandidates, id)
-		}
-	}
-	toDelete, err := r.stillProjectedSubset(ctx, q, site, deleteCandidates)
-	if err != nil {
-		return fmt.Errorf("checking still-projected candidates: %w", err)
+		return err
 	}
 
 	desiredIDs := make([]int64, 0, len(desired))
@@ -268,25 +181,14 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 		desiredIDs = append(desiredIDs, id)
 	}
 
-	// 重複排除（M2-6）: 勝者ルールが dedupe_enabled な番組について、同じルールで
-	// 既に録れている番組を探す。判定は base の計算より前に済ませる必要がある
-	// （結果が base.skip に載る）。候補は勝者ルールがある番組だけ --- ルールが
-	// base を供給していない予約（手動予約・detached）の base は凍結されるので、
-	// 重複排除の判定対象でもない。
-	var dedupeCandidates []dedupeCandidate
-	for _, programID := range desiredIDs {
-		ruleID, ok := winner[programID]
-		if !ok {
-			continue
-		}
-		if !ruleByID[ruleID].DedupeEnabled {
-			continue
-		}
-		dedupeCandidates = append(dedupeCandidates, dedupeCandidate{ProgramID: programID, RuleID: ruleID})
-	}
-	dedupeMatches, err := evaluateDedupe(ctx, r.pool, site, dedupeCandidates)
+	existingSet, deleteCandidates, toDelete, err := r.collectDeleteCandidates(ctx, q, site, desired)
 	if err != nil {
-		return fmt.Errorf("evaluating dedupe: %w", err)
+		return err
+	}
+
+	dedupeMatches, err := r.applyDedupe(ctx, site, desiredIDs, winner, ruleByID)
+	if err != nil {
+		return err
 	}
 
 	tx, err := r.pool.Begin(ctx)
@@ -296,237 +198,29 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 	defer func() { _ = tx.Rollback(ctx) }()
 	tq := sqlcgen.New(tx)
 
-	// program_snapshots への追従更新（#27）。「射影にある間は更新、消えたら凍結」を
-	// 担う唯一の書き手がここ。snapshot は番組の事実を保持する表であり、skip 意図の
-	// ような不可逆なユーザー操作を表す列ではないため、skip 意図だけが行を支える場合も
-	// 射影にある限り追従させる（GC の終了判定で意図を CASCADE させないため）。
-	// なぜ existingSet も対象に含めるか: 猶予やラッチで残る非 desired な行も「射影に
-	// まだ居る」限り追従させるため（issue #556、docs/schema/reservations.md §3.7）。凍結を保つのは
-	// UpsertProgramSnapshotsFromProjection 内の epg_programs との JOIN 自体で、
-	// 射影に無い programId をここに含めても何もされない。reservations.program_fkey
-	// が program_snapshots を参照するため、予約行の upsert より先に実行する
-	// 必要がある。
-	// 対象を広げるぶん UpsertProgramSnapshotsFromProjection に渡す programId は
-	// 増えるが、実際に書かれる行は同クエリの
-	// ON CONFLICT ... DO UPDATE ... WHERE ... IS DISTINCT FROM ...
-	// （internal/db/queries/program_snapshots.sql）が値の変わらない行を弾くため、
-	// 「skip 意図があり、かつ射影側で値が変わった番組」に限られる。ただしこれは
-	// SQL から読める性質であって、パスあたりの書き込み量そのものは未検証である。
-	snapshotSyncIDs := slices.Clone(desiredIDs)
-	for id := range skipIntent {
-		if _, ok := desired[id]; !ok {
-			snapshotSyncIDs = append(snapshotSyncIDs, id)
-		}
+	if err := followSnapshots(ctx, tq, site, desiredIDs, skipIntent, existingSet); err != nil {
+		return err
 	}
-	for id := range existingSet {
-		if _, ok := desired[id]; !ok {
-			snapshotSyncIDs = append(snapshotSyncIDs, id)
-		}
-	}
-	if len(snapshotSyncIDs) > 0 {
-		if _, err := tq.UpsertProgramSnapshotsFromProjection(ctx, sqlcgen.UpsertProgramSnapshotsFromProjectionParams{
-			Site:       site,
-			ProgramIds: snapshotSyncIDs,
-		}); err != nil {
-			return fmt.Errorf("upserting program snapshots from projection: %w", err)
-		}
-	}
-
-	// 新規に予約行を作れるのは program_snapshots に行がある programId だけ
-	// （FK）。上の Upsert で射影にあるものは今作られたばかり、無いものは
-	// 既存の意図・上書き・予約から過去に作られたものだけが該当する。
-	var materializable map[int64]struct{}
-	if len(desiredIDs) > 0 {
-		ids, err := tq.ListProgramSnapshotProgramIDsBySiteAndProgramIDs(ctx, sqlcgen.ListProgramSnapshotProgramIDsBySiteAndProgramIDsParams{
-			Site:       site,
-			ProgramIds: desiredIDs,
-		})
-		if err != nil {
-			return fmt.Errorf("checking program snapshot existence: %w", err)
-		}
-		materializable = make(map[int64]struct{}, len(ids))
-		for _, id := range ids {
-			materializable[id] = struct{}{}
-		}
-	}
-
-	rows := make([]rulerInputRow, 0, len(desiredIDs))
-	for _, programID := range desiredIDs {
-		if _, ok := materializable[programID]; !ok {
-			// 射影にも program_snapshots にもスナップショットの材料が無い:
-			// program_intents.action=record は単独では番組情報を持たないため、
-			// ここは待つしかない（通常は CreateReservation が予約行と intent を
-			// 同時に作るため起きないはずの経路。次のパスで射影が復活すれば拾える）。
-			slog.Warn("ruler: cannot materialize reservation without a program snapshot",
-				"site", site, "program_id", programID)
-			continue
-		}
-
-		var ruleID *int64
-		var base json.RawMessage
-		var dedupMatchRecordingID *int64
-		var dedupSimilarity *float32
-		if rid, ok := winner[programID]; ok {
-			ridCopy := rid
-			ruleID = &ridCopy
-			// マッチが無ければ（dedupe_enabled=false の場合も含め）両方 nil の
-			// まま = NULL に戻す。前のパスでマッチしていて今回のパスで似た録画が
-			// 無くなったなら、古い根拠を残してはいけない（導出値は毎パス作り直す。
-			// CLAUDE.md 不変条件 9）。
-			match, matched := dedupeMatches[programID]
-			if matched {
-				recordingID := match.RecordingID
-				similarity := match.Similarity
-				dedupMatchRecordingID = &recordingID
-				dedupSimilarity = &similarity
-			}
-			base, err = computeBase(ruleByID[rid], matched)
-			if err != nil {
-				return fmt.Errorf("computing base for rule %d: %w", rid, err)
-			}
-		}
-
-		rows = append(rows, rulerInputRow{
-			ProgramID:             programID,
-			RuleID:                ruleID,
-			Base:                  base,
-			DedupMatchRecordingID: dedupMatchRecordingID,
-			DedupSimilarity:       dedupSimilarity,
-		})
-	}
-
-	results, err := upsertReservationsFromPass(ctx, tx, site, rows)
+	created, updated, err := createReservations(ctx, tx, tq, site, desiredIDs, winner, ruleByID, dedupeMatches)
 	if err != nil {
-		return fmt.Errorf("upserting reservations: %w", err)
-	}
-	var created, updated int
-	for _, res := range results {
-		if res.Created {
-			created++
-		} else {
-			updated++
-		}
+		return err
 	}
 
-	// ユーザー（運用者）が投資を手放す書き込みをしない限り起きない削除を先に、
-	// ブレーカーとは無関係に実行する（docs/recording.md §3.2「大量削除サーキット
-	// ブレーカー」）。toDelete 全体を渡し、どれがそれに当たるかは DELETE 文の
-	// WHERE が適用の瞬間に判定して RETURNING で返す — 分類をトランザクション外の
-	// 古い読み取りに置かないため（#29 型の窓を作らない）。条件と、その条件で
-	// 守備範囲が狭まらない根拠（および狭まる境界）は
-	// internal/db/queries/ruler.sql の同クエリのコメントが権威。
-	var released []int64
-	if len(toDelete) > 0 {
-		released, err = tq.DeleteReleasedReservationsBySiteAndProgramIDs(ctx, sqlcgen.DeleteReleasedReservationsBySiteAndProgramIDsParams{
-			Site:       site,
-			ProgramIds: toDelete,
-		})
-		if err != nil {
-			return fmt.Errorf("deleting user-released reservations: %w", err)
-		}
+	released, err := releaseReservations(ctx, tq, site, toDelete)
+	if err != nil {
+		return err
 	}
 	// ブレーカーが数えるのは残り（= ルールが base を供給していたのにマッチしなく
 	// なった行）だけ。EPG の欠損・フリッカーが作れるのはこちらの集合に限られる。
 	derivedDeletes := subtract(toDelete, released)
 
-	// 猶予（ruler.retract_grace, issue #428）: 開始直前にルールから外れた予約は
-	// このパスでは引っ込めない。「猶予中」を列には焼かず、削除候補から都度除く導出
-	// 規則にする（CLAUDE.md 不変条件 9）。
-	//
-	// **released（明示操作: intent skip / intent クリア / 最後の investment だった
-	// overrides の削除）を引いた後の derivedDeletes に適用する** --- toDelete
-	// 全体に適用すると、rule_id が前パスから非 NULL のままユーザーが
-	// intent{skip} を立てた行まで猶予が守ってしまい、「これは録らない」という
-	// 明示操作が直前の猶予に呑まれて DeleteReleasedReservationsBySiteAndProgramIDs
-	// が一生見ない行になる（released はこの少し上で先に実行済み。猶予はそこには
-	// 一切関与しない）。derivedDeletes まで絞ってから猶予を掛けることで、
-	// 猶予が保護する対象はブレーカー対象の集合そのものになる
-	// （docs/recording/breaker.md「大量削除サーキットブレーカー」の猶予との関係）。
-	//
-	// このクエリは tx 内（tq）で読む。derivedDeletes の programId はどれも
-	// 今パスの desired に無い＝upsertReservationsFromPass の入力行（rows）にも
-	// DeleteReleasedReservationsBySiteAndProgramIDs の対象にも含まれないので、
-	// ここまでの tx 内の書き込みで触られていない --- reservations.rule_id は
-	// 前パスの値のまま読める（罠: 今パスの評価結果で NULL に落ちた後に見ても遅い）。
-	// tx 内で読むことは「読み取りと適用の間の窓を消す」ためではない（`r.pool.Begin`
-	// は既定の READ COMMITTED で、文ごとに新しいスナップショットを取るため、この
-	// SELECT とこの後の DELETE の間に他コミットが割り込む窓は同じ tx 内でも残る
-	// --- SERIALIZABLE / REPEATABLE READ でなければ消えない）。
-	//
-	// 安全性が成り立つのは窓が無いからではなく、**猶予が削除集合からの減算にしか
-	// 効かない**からである。判定が古すぎて過大（stale-too-large）でも、次のパスが
-	// 全量再評価するので 1 パス遅れるだけで収束する（レベルトリガー、自己修復）。
-	// 判定が古すぎて過小（stale-too-small = 本当は保護すべき行を見落とす）はほぼ
-	// 起き得ない:
-	//   - ルールが再度 enabled になった → 次のパスで desired が作り直す
-	//   - 投資（record 意図 ∪ overrides）が新たに付いた → DELETE 文自身の
-	//     `NOT EXISTS program_investments` が適用の瞬間に再評価する（#29 型の窓を
-	//     作らない設計は DeleteReservationsBySiteAndProgramIDs 側が既に担っている）
-	//   - start_at が猶予の窓に入ってきた → 猶予の述語は epg_programs.start_at
-	//     （射影の最新値）を直接見る。残る窓は internal/db/queries/ruler.sql の
-	//     ListRetractGraceProtectedProgramIDsBySiteAndProgramIDs のコメントが権威。
-	//
-	// r.cfg.RetractGrace <= 0 は「無効」（RetractGrace のフィールドコメント参照）。
-	//
-	// graceProtectedCount は下のログのためだけに持ち越す。猶予で残った行は
-	// ブレーカーのラッチと同じ見え方（delete_candidates はあるのに
-	// deleted/released が 0）になるため、ログで区別できるようにする。
-	var graceProtectedCount int
-	if r.cfg.RetractGrace > 0 && len(derivedDeletes) > 0 {
-		graceProtected, err := r.retractGraceProtectedSubset(ctx, tq, site, derivedDeletes)
-		if err != nil {
-			return fmt.Errorf("checking retract grace: %w", err)
-		}
-		graceProtectedCount = len(graceProtected)
-		derivedDeletes = subtract(derivedDeletes, graceProtected)
+	derivedDeletes, graceProtectedCount, err := r.applyRetractGrace(ctx, tq, site, derivedDeletes)
+	if err != nil {
+		return err
 	}
-
-	var deleted int64
-	// newlyTripped: このパスで初めて発動した（tripped が false だった）ことを示す
-	// フラグ。metrics.RulerCircuitBreakerTrips.Inc() は tx.Commit の成否が
-	// まだ分からないこの時点では呼ばない — ここで呼ぶと後段の Commit が失敗した
-	// 場合にカウンタだけ進んでしまう（DB には発動が記録されていないのに
-	// メトリクスだけ発動したことになる）。フラグに持ち越し、Commit 成功後にのみ
-	// Inc する。breaker.Trip 内のゲージ設定は次パスの ObserveState が DB の
-	// 真実に合わせ直すので、ここでは触らなくてよい。
-	var newlyTripped bool
-	switch {
-	case len(derivedDeletes) > r.cfg.MaxDeletesPerPass:
-		// 閾値超過。tripped が既に true でも Trip を呼び直す — 既に発動中なら
-		// tripped_at は据え置かれたまま pending/detail だけが最新の値に更新される
-		// （TripCircuitBreaker の ON CONFLICT。「いつから止まっているか」を保つ一方、
-		// 手動確認の材料は最新に保つ）。どちらの場合もこの分岐では削除しない。
-		sample, sampleErr := r.buildDeleteSample(ctx, tq, site, derivedDeletes)
-		if sampleErr != nil {
-			return fmt.Errorf("building circuit breaker sample: %w", sampleErr)
-		}
-		// Trip がエラーを返した場合もこの分岐からは削除を実行しない
-		// （記録できないまま削除を続けるのが最悪の組み合わせ。breaker.Trip のコメント）。
-		// tx 内で呼ぶことで、発動の記録と「このパスでは削除しない」を一体に保つ。
-		if tripErr := breaker.Trip(ctx, tq, site, breaker.RulerDeletes, r.cfg.MaxDeletesPerPass, sample); tripErr != nil {
-			return fmt.Errorf("tripping circuit breaker: %w", tripErr)
-		}
-		newlyTripped = !tripped
-	case tripped:
-		// ラッチ中: 今回の候補数は閾値以下に戻っているが、自動では解除しない
-		// （breaker パッケージのコメント「自動で解けるようにすると『一瞬止まって
-		// 自動復帰した』がアラートに残らない」）。再開は人間が
-		// POST /api/sites/{site}/breakers/ruler_deletes/resume を叩くまで待つ。
-		if len(derivedDeletes) > 0 {
-			slog.Warn("ruler: circuit breaker latched — withholding derived deletes until manually resumed",
-				"site", site,
-				"breaker", breaker.RulerDeletes,
-				"pending_deletes", len(derivedDeletes),
-			)
-		}
-	case len(derivedDeletes) > 0:
-		deleted, err = tq.DeleteReservationsBySiteAndProgramIDs(ctx, sqlcgen.DeleteReservationsBySiteAndProgramIDsParams{
-			Site:       site,
-			ProgramIds: derivedDeletes,
-		})
-		if err != nil {
-			return fmt.Errorf("deleting stale reservations: %w", err)
-		}
+	deleted, newlyTripped, err := r.observeTrip(ctx, tq, site, derivedDeletes, tripped)
+	if err != nil {
+		return err
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -565,6 +259,358 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 		"delete_candidates", len(deleteCandidates),
 	)
 	return nil
+}
+
+// observeDeleteBreaker はパスの先頭でブレーカーの発動状態を DB の真実に合わせ直す
+// （ゲージはプロセス再起動で失われるため。breaker.ObserveState のコメント参照）。true
+// ならこのパスでは導出削除を一切実行しない。作成・更新・base の再計算・GC は止めない
+// — 止めたいのは削除だけ。
+func (r *Ruler) observeDeleteBreaker(ctx context.Context, q *sqlcgen.Queries, site string) (bool, error) {
+	tripped, err := breaker.ObserveState(ctx, q, site, breaker.RulerDeletes)
+	if err != nil {
+		return false, fmt.Errorf("observing %s circuit breaker: %w", breaker.RulerDeletes, err)
+	}
+	return tripped, nil
+}
+
+// resolveWinners は programId ごとの勝者ルール（最初にマッチした = priority DESC, id ASC
+// の全順序で最初のルール）を解決する。ListEnabledRules は既に priority DESC, id ASC で
+// 来るので、最初に書き込んだルールが常に勝者になる
+// （docs/recording.md §3.1「複数ルール解決」）。負けたルールは reservations のどの列にも
+// 供給しないので保持しない --- 必要になれば enabled ルールを
+// rulequery.MatchProgramIDsForRule で回せば同じ集合が作り直せる。
+func (r *Ruler) resolveWinners(ctx context.Context, site string, rules []sqlcgen.Rule) (map[int64]sqlcgen.Rule, map[int64]int64, error) {
+	ruleByID := make(map[int64]sqlcgen.Rule, len(rules))
+	winner := make(map[int64]int64)
+	for _, rule := range rules {
+		ruleByID[rule.ID] = rule
+		matched, err := rulequery.MatchProgramIDsForRule(ctx, r.pool, site, rule.ID)
+		if err != nil {
+			return nil, nil, fmt.Errorf("matching rule %d: %w", rule.ID, err)
+		}
+		for _, programID := range matched {
+			if _, exists := winner[programID]; !exists {
+				winner[programID] = rule.ID
+			}
+		}
+	}
+	return ruleByID, winner, nil
+}
+
+// collectDesired は skip 意図だけを読み、「record 意図または overrides の行がある」は
+// program_investments view（#162）に一本化したので、record 側は
+// ListProgramInvestmentProgramIDsBySite から引く。
+//
+// 「この番組にユーザーの投資があるか」（record 意図 ∪ overrides の行）は
+// program_investments view（#162）から引く。ruler は overrides の中身も
+// record 意図の中身も一切読まないので programId だけを取る。
+//
+// desired = (ルールにマッチした番組 − intent.skip) ∪ program_investments
+// （docs/recording.md §4.2「ruler から見た load-bearing な行」。
+// program_intents / program_overrides は絶対に書かない — 読むだけ）。
+//
+// investment（record 意図 ∪ overrides）は skip を引いた後の winner に
+// 無条件で足す。順序を入れ替えても record 側の結果は変わらない ---
+// `program_intents` は (site, program_id) に 1 行しか持てないため
+// action='record' と action='skip' は同じ番組で排他であり、winner から
+// skip を引く操作は record 側の投資に触れない。overrides 側は skip と
+// 独立に存在できるが、investment に無条件で足すことで「skip 意図があっても
+// overrides は desired に残す」（§4.3「record 意図または上書きがある →
+// 削除せず detached で保持」）を満たす。skip 側は intent.action='skip' が
+// effective.skip として引き続き効くので（db.EffectiveOptions）、reconciler は
+// この行を同期しない。行の存在が答えるのは「この番組にユーザーの投資が
+// あるか」で、録画するかどうかとは別の問い。
+func (r *Ruler) collectDesired(ctx context.Context, q *sqlcgen.Queries, site string, winner map[int64]int64) (map[int64]struct{}, map[int64]struct{}, error) {
+	intents, err := q.ListProgramIntentActionsBySite(ctx, site)
+	if err != nil {
+		return nil, nil, fmt.Errorf("listing program intents: %w", err)
+	}
+	skipIntent := make(map[int64]struct{})
+	for _, in := range intents {
+		if in.Action == db.IntentSkip {
+			skipIntent[in.ProgramID] = struct{}{}
+		}
+	}
+	investmentProgramIDs, err := q.ListProgramInvestmentProgramIDsBySite(ctx, site)
+	if err != nil {
+		return nil, nil, fmt.Errorf("listing program investments: %w", err)
+	}
+	desired := make(map[int64]struct{}, len(winner)+len(investmentProgramIDs))
+	for programID := range winner {
+		if _, skipped := skipIntent[programID]; !skipped {
+			desired[programID] = struct{}{}
+		}
+	}
+	for _, programID := range investmentProgramIDs {
+		desired[programID] = struct{}{}
+	}
+	return desired, skipIntent, nil
+}
+
+// collectDeleteCandidates は削除候補 = 既存予約のうち desired から外れたものを集める。
+// ただし EPG プロジェクションから番組自体が消えている場合は「ルールがマッチしなく
+// なった」と確信を持って判定できない（評価する材料がないだけ）ので削除せず凍結する
+// （docs/schema.md「射影にある間は更新、消えたら凍結」を削除判定にも適用する）。
+func (r *Ruler) collectDeleteCandidates(ctx context.Context, q *sqlcgen.Queries, site string, desired map[int64]struct{}) (map[int64]struct{}, []int64, []int64, error) {
+	existingProgramIDs, err := q.ListReservationProgramIDsBySite(ctx, site)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("listing existing reservation program ids: %w", err)
+	}
+	existingSet := make(map[int64]struct{}, len(existingProgramIDs))
+	for _, id := range existingProgramIDs {
+		existingSet[id] = struct{}{}
+	}
+	var deleteCandidates []int64
+	for id := range existingSet {
+		if _, ok := desired[id]; !ok {
+			deleteCandidates = append(deleteCandidates, id)
+		}
+	}
+	toDelete, err := r.stillProjectedSubset(ctx, q, site, deleteCandidates)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("checking still-projected candidates: %w", err)
+	}
+	return existingSet, deleteCandidates, toDelete, nil
+}
+
+// applyDedupe は重複排除（M2-6）として、勝者ルールが dedupe_enabled な番組について、
+// 同じルールで既に録れている番組を探す。判定は base の計算より前に済ませる必要がある
+// （結果が base.skip に載る）。候補は勝者ルールがある番組だけ --- ルールが base を供給
+// していない予約（手動予約・detached）の base は凍結されるので、重複排除の判定対象でも
+// ない。
+func (r *Ruler) applyDedupe(ctx context.Context, site string, desiredIDs []int64, winner map[int64]int64, ruleByID map[int64]sqlcgen.Rule) (map[int64]dedupeMatch, error) {
+	var candidates []dedupeCandidate
+	for _, programID := range desiredIDs {
+		ruleID, ok := winner[programID]
+		if !ok || !ruleByID[ruleID].DedupeEnabled {
+			continue
+		}
+		candidates = append(candidates, dedupeCandidate{ProgramID: programID, RuleID: ruleID})
+	}
+	matches, err := evaluateDedupe(ctx, r.pool, site, candidates)
+	if err != nil {
+		return nil, fmt.Errorf("evaluating dedupe: %w", err)
+	}
+	return matches, nil
+}
+
+// followSnapshots は program_snapshots への追従更新（#27）を行う。「射影にある間は更新、
+// 消えたら凍結」を担う唯一の書き手がここ。snapshot は番組の事実を保持する表であり、
+// skip 意図のような不可逆なユーザー操作を表す列ではないため、skip 意図だけが行を支える
+// 場合も射影にある限り追従させる（GC の終了判定で意図を CASCADE させないため）。
+// なぜ existingSet も対象に含めるか: 猶予やラッチで残る非 desired な行も「射影にまだ居る」
+// 限り追従させるため（issue #556、docs/schema/reservations.md §3.7）。凍結を保つのは
+// UpsertProgramSnapshotsFromProjection 内の epg_programs との JOIN 自体で、射影に無い
+// programId をここに含めても何もされない。reservations.program_fkey が program_snapshots
+// を参照するため、予約行の upsert より先に実行する必要がある。
+// 対象を広げるぶん UpsertProgramSnapshotsFromProjection に渡す programId は増えるが、実際に
+// 書かれる行は同クエリの ON CONFLICT ... DO UPDATE ... WHERE ... IS DISTINCT FROM ...
+// （internal/db/queries/program_snapshots.sql）が値の変わらない行を弾くため、「skip 意図が
+// あり、かつ射影側で値が変わった番組」に限られる。ただしこれは SQL から読める性質であって、
+// パスあたりの書き込み量そのものは未検証である。
+func followSnapshots(ctx context.Context, tq *sqlcgen.Queries, site string, desiredIDs []int64, skipIntent, existingSet map[int64]struct{}) error {
+	snapshotSyncIDs := slices.Clone(desiredIDs)
+	desiredSet := desiredIDsSet(desiredIDs)
+	for id := range skipIntent {
+		if _, ok := desiredSet[id]; !ok {
+			snapshotSyncIDs = append(snapshotSyncIDs, id)
+		}
+	}
+	for id := range existingSet {
+		if _, ok := desiredSet[id]; !ok {
+			snapshotSyncIDs = append(snapshotSyncIDs, id)
+		}
+	}
+	if len(snapshotSyncIDs) == 0 {
+		return nil
+	}
+	if _, err := tq.UpsertProgramSnapshotsFromProjection(ctx, sqlcgen.UpsertProgramSnapshotsFromProjectionParams{Site: site, ProgramIds: snapshotSyncIDs}); err != nil {
+		return fmt.Errorf("upserting program snapshots from projection: %w", err)
+	}
+	return nil
+}
+
+// desiredIDsSet は programID のスライスを membership 判定用の集合に変換する。
+func desiredIDsSet(ids []int64) map[int64]struct{} {
+	set := make(map[int64]struct{}, len(ids))
+	for _, id := range ids {
+		set[id] = struct{}{}
+	}
+	return set
+}
+
+// createReservations は新規に予約行を作れるのは program_snapshots に行がある programId
+// だけ（FK）という制約に従い、勝者ルール由来の base と dedupe の導出値を同一
+// トランザクションで upsert する。followSnapshots で射影にあるものは今作られたばかり、
+// 無いものは既存の意図・上書き・予約から過去に作られたものだけが該当する。
+// 射影にも program_snapshots にもスナップショットの材料が無い場合、
+// program_intents.action=record は単独では番組情報を持たないため、ここは待つしかない
+// （通常は CreateReservation が予約行と intent を同時に作るため起きないはずの経路。次の
+// パスで射影が復活すれば拾える）。マッチが無ければ（dedupe_enabled=false の場合も含め）
+// dedupe の導出値を NULL に戻す。前のパスの古い根拠を残してはいけない
+// （導出値は毎パス作り直す。CLAUDE.md 不変条件 9）。
+func createReservations(ctx context.Context, tx pgx.Tx, tq *sqlcgen.Queries, site string, desiredIDs []int64, winner map[int64]int64, ruleByID map[int64]sqlcgen.Rule, dedupeMatches map[int64]dedupeMatch) (int, int, error) {
+	var materializable map[int64]struct{}
+	if len(desiredIDs) > 0 {
+		ids, err := tq.ListProgramSnapshotProgramIDsBySiteAndProgramIDs(ctx, sqlcgen.ListProgramSnapshotProgramIDsBySiteAndProgramIDsParams{Site: site, ProgramIds: desiredIDs})
+		if err != nil {
+			return 0, 0, fmt.Errorf("checking program snapshot existence: %w", err)
+		}
+		materializable = make(map[int64]struct{}, len(ids))
+		for _, id := range ids {
+			materializable[id] = struct{}{}
+		}
+	}
+	rows := make([]rulerInputRow, 0, len(desiredIDs))
+	for _, programID := range desiredIDs {
+		if _, ok := materializable[programID]; !ok {
+			slog.Warn("ruler: cannot materialize reservation without a program snapshot", "site", site, "program_id", programID)
+			continue
+		}
+		var ruleID *int64
+		var base json.RawMessage
+		var dedupMatchRecordingID *int64
+		var dedupSimilarity *float32
+		if rid, ok := winner[programID]; ok {
+			ridCopy := rid
+			ruleID = &ridCopy
+			match, matched := dedupeMatches[programID]
+			if matched {
+				recordingID := match.RecordingID
+				similarity := match.Similarity
+				dedupMatchRecordingID = &recordingID
+				dedupSimilarity = &similarity
+			}
+			computedBase, err := computeBase(ruleByID[rid], matched)
+			if err != nil {
+				return 0, 0, fmt.Errorf("computing base for rule %d: %w", rid, err)
+			}
+			base = computedBase
+		}
+		rows = append(rows, rulerInputRow{ProgramID: programID, RuleID: ruleID, Base: base, DedupMatchRecordingID: dedupMatchRecordingID, DedupSimilarity: dedupSimilarity})
+	}
+	results, err := upsertReservationsFromPass(ctx, tx, site, rows)
+	if err != nil {
+		return 0, 0, fmt.Errorf("upserting reservations: %w", err)
+	}
+	var created, updated int
+	for _, res := range results {
+		if res.Created {
+			created++
+		} else {
+			updated++
+		}
+	}
+	return created, updated, nil
+}
+
+// releaseReservations はユーザー（運用者）が投資を手放す書き込みをしない限り起きない
+// 削除を先に、ブレーカーとは無関係に実行する（docs/recording.md §3.2「大量削除
+// サーキットブレーカー」）。toDelete 全体を渡し、どれがそれに当たるかは DELETE 文の
+// WHERE が適用の瞬間に判定して RETURNING で返す — 分類をトランザクション外の古い読み取り
+// に置かないため（#29 型の窓を作らない）。条件と、その条件で守備範囲が狭まらない根拠
+// （および狭まる境界）は internal/db/queries/ruler.sql の同クエリのコメントが権威。
+func releaseReservations(ctx context.Context, tq *sqlcgen.Queries, site string, toDelete []int64) ([]int64, error) {
+	if len(toDelete) == 0 {
+		return nil, nil
+	}
+	released, err := tq.DeleteReleasedReservationsBySiteAndProgramIDs(ctx, sqlcgen.DeleteReleasedReservationsBySiteAndProgramIDsParams{Site: site, ProgramIds: toDelete})
+	if err != nil {
+		return nil, fmt.Errorf("deleting user-released reservations: %w", err)
+	}
+	return released, nil
+}
+
+// applyRetractGrace は猶予（ruler.retract_grace, issue #428）を開始直前にルールから外れた
+// 予約へ適用する。「猶予中」を列には焼かず、削除候補から都度除く導出規則にする
+// （CLAUDE.md 不変条件 9）。
+//
+// **released（明示操作: intent skip / intent クリア / 最後の investment だった overrides の
+// 削除）を引いた後の derivedDeletes に適用する** --- toDelete 全体に適用すると、rule_id が
+// 前パスから非 NULL のままユーザーが intent{skip} を立てた行まで猶予が守ってしまい、
+// 「これは録らない」という明示操作が直前の猶予に呑まれて DeleteReleasedReservationsBySiteAndProgramIDs
+// が一生見ない行になる（released はこの少し上で先に実行済み。猶予はそこには一切関与しない）。
+// derivedDeletes まで絞ってから猶予を掛けることで、猶予が保護する対象はブレーカー対象の
+// 集合そのものになる（docs/recording/breaker.md「大量削除サーキットブレーカー」の猶予との関係）。
+//
+// このクエリは tx 内（tq）で読む。derivedDeletes の programId はどれも今パスの desired に
+// 無い＝upsertReservationsFromPass の入力行（rows）にも DeleteReleasedReservationsBySiteAndProgramIDs
+// の対象にも含まれないので、ここまでの tx 内の書き込みで触られていない --- reservations.rule_id
+// は前パスの値のまま読める（罠: 今パスの評価結果で NULL に落ちた後に見ても遅い）。tx 内で読む
+// ことは「読み取りと適用の間の窓を消す」ためではない（`r.pool.Begin` は既定の READ COMMITTED
+// で、文ごとに新しいスナップショットを取るため、この SELECT とこの後の DELETE の間に他
+// コミットが割り込む窓は同じ tx 内でも残る --- SERIALIZABLE / REPEATABLE READ でなければ消えない）。
+//
+// 安全性が成り立つのは窓が無いからではなく、**猶予が削除集合からの減算にしか効かない**から
+// である。判定が古すぎて過大（stale-too-large）でも、次のパスが全量再評価するので 1 パス
+// 遅れるだけで収束する（レベルトリガー、自己修復）。判定が古すぎて過小（stale-too-small =
+// 本当は保護すべき行を見落とす）はほぼ起き得ない:
+//   - ルールが再度 enabled になった → 次のパスで desired が作り直す
+//   - 投資（record 意図 ∪ overrides）が新たに付いた → DELETE 文自身の `NOT EXISTS
+//     program_investments` が適用の瞬間に再評価する（#29 型の窓を作らない設計は
+//     DeleteReservationsBySiteAndProgramIDs 側が既に担っている）
+//   - start_at が猶予の窓に入ってきた → 猶予の述語は epg_programs.start_at（射影の最新値）を
+//     直接見る。残る窓は internal/db/queries/ruler.sql の
+//     ListRetractGraceProtectedProgramIDsBySiteAndProgramIDs のコメントが権威。
+//
+// r.cfg.RetractGrace <= 0 は「無効」（RetractGrace のフィールドコメント参照）。
+// graceProtectedCount は下のログのためだけに持ち越す。猶予で残った行はブレーカーのラッチと
+// 同じ見え方（delete_candidates はあるのに deleted/released が 0）になるため、ログで区別
+// できるようにする。
+func (r *Ruler) applyRetractGrace(ctx context.Context, tq *sqlcgen.Queries, site string, derivedDeletes []int64) ([]int64, int, error) {
+	if r.cfg.RetractGrace <= 0 || len(derivedDeletes) == 0 {
+		return derivedDeletes, 0, nil
+	}
+	graceProtected, err := r.retractGraceProtectedSubset(ctx, tq, site, derivedDeletes)
+	if err != nil {
+		return nil, 0, fmt.Errorf("checking retract grace: %w", err)
+	}
+	return subtract(derivedDeletes, graceProtected), len(graceProtected), nil
+}
+
+// observeTrip は newlyTripped の判定と導出削除のブレーカー発動・ラッチ・削除を適用する。
+// newlyTripped はこのパスで初めて発動した（tripped が false だった）ことを示すフラグ。
+// metrics.RulerCircuitBreakerTrips.Inc() は tx.Commit の成否がまだ分からないこの時点では
+// 呼ばない — ここで呼ぶと後段の Commit が失敗した場合にカウンタだけ進んでしまう（DB には
+// 発動が記録されていないのにメトリクスだけ発動したことになる）。フラグに持ち越し、Commit
+// 成功後にのみ Inc する。breaker.Trip 内のゲージ設定は次パスの ObserveState が DB の真実に
+// 合わせ直すので、ここでは触らなくてよい。
+//
+// 閾値超過。tripped が既に true でも Trip を呼び直す — 既に発動中なら tripped_at は据え置か
+// れたまま pending/detail だけが最新の値に更新される（TripCircuitBreaker の ON CONFLICT。
+// 「いつから止まっているか」を保つ一方、手動確認の材料は最新に保つ）。どちらの場合もこの
+// 分岐では削除しない。Trip がエラーを返した場合もこの分岐からは削除を実行しない（記録でき
+// ないまま削除を続けるのが最悪の組み合わせ。breaker.Trip のコメント）。tx 内で呼ぶことで、
+// 発動の記録と「このパスでは削除しない」を一体に保つ。
+//
+// ラッチ中: 今回の候補数は閾値以下に戻っているが、自動では解除しない（breaker パッケージの
+// コメント「自動で解けるようにすると『一瞬止まって自動復帰した』がアラートに残らない」）。
+// 再開は人間が POST /api/sites/{site}/breakers/ruler_deletes/resume を叩くまで待つ。
+func (r *Ruler) observeTrip(ctx context.Context, tq *sqlcgen.Queries, site string, derivedDeletes []int64, tripped bool) (int64, bool, error) {
+	var deleted int64
+	var newlyTripped bool
+	switch {
+	case len(derivedDeletes) > r.cfg.MaxDeletesPerPass:
+		sample, err := r.buildDeleteSample(ctx, tq, site, derivedDeletes)
+		if err != nil {
+			return 0, false, fmt.Errorf("building circuit breaker sample: %w", err)
+		}
+		if err := breaker.Trip(ctx, tq, site, breaker.RulerDeletes, r.cfg.MaxDeletesPerPass, sample); err != nil {
+			return 0, false, fmt.Errorf("tripping circuit breaker: %w", err)
+		}
+		newlyTripped = !tripped
+	case tripped:
+		if len(derivedDeletes) > 0 {
+			slog.Warn("ruler: circuit breaker latched — withholding derived deletes until manually resumed", "site", site, "breaker", breaker.RulerDeletes, "pending_deletes", len(derivedDeletes))
+		}
+	case len(derivedDeletes) > 0:
+		var err error
+		deleted, err = tq.DeleteReservationsBySiteAndProgramIDs(ctx, sqlcgen.DeleteReservationsBySiteAndProgramIDsParams{Site: site, ProgramIds: derivedDeletes})
+		if err != nil {
+			return 0, false, fmt.Errorf("deleting stale reservations: %w", err)
+		}
+	}
+	return deleted, newlyTripped, nil
 }
 
 // runGC は番組終了 + RetentionGrace 経過の reservations / program_intents を

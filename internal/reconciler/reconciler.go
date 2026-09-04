@@ -106,22 +106,12 @@ func New(site string, mc *mirakc.Client, pool *pgxpool.Pool, cfg *Config) *Recon
 // Reconciler 構造体）は状態を持たないが、パスの先頭で breaker.ObserveState を
 // 呼んで DB の真実に合わせ直し、発動中なら schedule の削除を一切実行しない
 // （作成・再作成は続ける。止めたいのは削除だけ）。
-//
-//nolint:funlen // 分割は epic #585 の Q-1（#586）で行う
 func (r *Reconciler) RunPass(ctx context.Context) error {
 	slog.Debug("reconciler: starting pass")
 
 	q := sqlcgen.New(r.pool)
 
-	// 発動状態を DB の真実に合わせ直す。判定できない場合も安全側に倒して
-	// 発動中とみなし削除を止める（記録・確認ができないまま削除を続けるのが
-	// 最悪の組み合わせという breaker.Trip のコメントと同じ理由）。
-	tripped, err := breaker.ObserveState(ctx, q, r.site, breaker.ReconcileTotalLoss)
-	if err != nil {
-		slog.Error("reconciler: observing circuit breaker state; withholding deletes to be safe",
-			"breaker", breaker.ReconcileTotalLoss, "err", err)
-		tripped = true
-	}
+	tripped := r.observeDeleteBreaker(ctx, q)
 
 	schedules, err := r.mirakc.ListSchedules(ctx)
 	if err != nil {
@@ -144,98 +134,11 @@ func (r *Reconciler) RunPass(ctx context.Context) error {
 		observedByProgram[s.Program.ID] = s
 	}
 
-	var created, deleted int
-	var missing int
-	var endGuarded int
-
 	now := time.Now()
-	for _, d := range reservations {
-		if _, exists := observedByProgram[d.res.ProgramID]; exists {
-			continue
-		}
-		if programEnded(d.snap, now) {
-			// 番組はもう終わっている。POST しても mirakc は
-			// need-rescheduling で数秒後に failed にするだけで、recordings に
-			// content_length=0 の failed 行が残るだけ（issue #134 の実測:
-			// record_sync 46 件中 41 件が failed）。この予約は本パスの
-			// recordNeverScheduled が never_scheduled_events に欠測行を作る
-			// （同じ programEnded 判定を使うので食い違わない）ので、次パス
-			// 以降は listDesired（ListReservationsForSyncEvaluation の
-			// 欠測除外）から外れて二度と create ループの対象にならない。
-			//
-			// stateGuarded / limitCarriedOver は複数パスにまたがって残留し
-			// うる持ち越しなので ReconcilePendingDiff で監視する価値があるが、
-			// これは 1 パス限りで自己解消するのでゲージには混ぜない
-			// （ログでの観測で足りると判断した。理由は下の Info ログの
-			// コメント参照）。
-			endGuarded++
-			continue
-		}
-		missing++
-		if err := r.createSchedule(ctx, d); err != nil {
-			slog.Error("reconciler: creating schedule", "reservation_id", d.res.ID, "program_id", d.res.ProgramID, "err", err)
-			continue
-		}
-		created++
-		metrics.ReconcileSchedules.WithLabelValues("created").Inc()
-	}
-
-	desiredPrograms := make(map[int64]struct{}, len(reservations))
-	for _, d := range reservations {
-		desiredPrograms[d.res.ProgramID] = struct{}{}
-	}
-
-	var toDelete []mirakc.Schedule
-	for _, s := range schedules {
-		if !mirakc.IsOurs(s.Tags) {
-			continue
-		}
-		if _, desired := desiredPrograms[s.Program.ID]; desired {
-			continue
-		}
-		toDelete = append(toDelete, s)
-	}
-
-	// 全損シグネチャ: desired（reservations）が 1 件もないのに、自分が作った
-	// schedule が観測されている。件数ではなく形で検知する — listDesired が
-	// バグ・障害で空を返したときに自分が作った全 schedule を削除してしまう
-	// 経路だけを捕まえる。GC・ユーザー操作による正当な一括削除は他の予約が
-	// 残るのでここには当たらない（docs/recording.md §3.2、issue #2 の M2-5
-	// 決定コメント）。
-	totalLoss := len(reservations) == 0 && len(toDelete) > 0
-	if totalLoss {
-		// threshold に 0 を渡すのは値の欠落ではない。このブレーカーは件数の
-		// 閾値を持たない（形で検知する）が、「desired が空のときに許される削除数」
-		// はまさに 0 なので、pending = N と threshold = 0 の組は
-		// 「0 件しか許されない状況で N 件消そうとした」と読めて正確である。
-		if err := breaker.Trip(ctx, q, r.site, breaker.ReconcileTotalLoss, 0, totalLossSample(toDelete)); err != nil {
-			slog.Error("reconciler: recording circuit breaker trip", "breaker", breaker.ReconcileTotalLoss, "err", err)
-		}
-		// 記録が失敗した場合も含め、このパスでは削除を実行しない。
-		tripped = true
-		metrics.ReconcileCircuitBreakerTrips.Inc()
-	}
-
-	if tripped {
-		if !totalLoss {
-			// 全損シグネチャは今パスでは検出していないが、ラッチは自動では
-			// 解けない（手動 ResumeCircuitBreaker のみが解除する）ので削除は
-			// 引き続き止める。
-			slog.Error("reconciler: circuit breaker latched — withholding schedule deletes until manually resumed",
-				"breaker", breaker.ReconcileTotalLoss,
-				"pending_deletes", len(toDelete),
-			)
-		}
-	} else {
-		for _, s := range toDelete {
-			if err := r.mirakc.DeleteSchedule(ctx, s.Program.ID); err != nil {
-				slog.Error("reconciler: deleting schedule", "program_id", s.Program.ID, "err", err)
-				continue
-			}
-			deleted++
-			metrics.ReconcileSchedules.WithLabelValues("deleted").Inc()
-		}
-	}
+	created, missing, endGuarded := r.createMissingSchedules(ctx, reservations, observedByProgram, now)
+	toDelete := collectDeleteCandidates(reservations, schedules)
+	totalLoss, tripped := r.observeTotalLoss(ctx, q, reservations, toDelete, tripped)
+	deleted := r.deleteSchedules(ctx, toDelete, tripped, totalLoss)
 
 	recreated, updateDiff, stateGuarded, limitCarriedOver := r.recreateChanged(ctx, reservations, observedByProgram)
 
@@ -246,72 +149,12 @@ func (r *Reconciler) RunPass(ctx context.Context) error {
 		slog.Error("reconciler: cleaning stale schedule_syncs", "err", err)
 	}
 
-	// now は作成ループと同じ瞬間を渡す（同じ式だけでなく同じ材料にする）。
-	// 別々に time.Now() を取ると、パス実行中に終了時刻を跨いだ番組が
-	// 「作成ループでは未終了 → POST」かつ「recordNeverScheduled では終了 →
-	// never-scheduled 行を作成」になり、収束はするが issue #134 が消したい
-	// failed 行がちょうど 1 件出る。
-	if err := r.recordNeverScheduled(ctx, reservations, schedules, now); err != nil {
+	if err := r.recordNeverScheduledOutcome(ctx, reservations, schedules, now); err != nil {
 		slog.Error("reconciler: recording never-scheduled outcome", "err", err)
 	}
-
-	startDelayed, err := r.detectStartDelays(ctx, reservations)
-	if err != nil {
-		slog.Error("reconciler: detecting start delays", "err", err)
-	}
-	for _, d := range startDelayed {
-		slog.Error("reconciler: recording not started past start time + grace",
-			"reservation_id", d.id,
-			"program_id", d.programID,
-			"title", d.title,
-			"elapsed", d.elapsed,
-		)
-	}
-	// DB に新しい状態は持たせない（不変条件 5: レベルトリガー）。毎パス
-	// recordings.started_at から再計算する導出値なので、ゲージだけで表す。
-	// 収束すれば（recording.started が観測されれば）次のパスでゼロに戻る。
-	metrics.ReconcileStartDelayed.WithLabelValues(r.site).Set(float64(len(startDelayed)))
-
-	// 差分そのものをゲージで出す。健全なら次のパスでゼロになる。
-	// 作成/削除/再作成できずに残った量が知りたいので、実行した件数ではなく
-	// 検出した件数（MaxRecreatesPerPass で持ち越した分も含む）。
-	//
-	// state の allowlist で意図的に触らなかった分は update ではなく
-	// update_deferred に入れる。混ぜると「ゼロに戻らない = 異常」という
-	// このゲージの読み方が壊れる（metrics.ReconcilePendingDiff のコメント参照）。
-	metrics.ReconcileLastPass.SetToCurrentTime()
-	metrics.ReconcilePendingDiff.WithLabelValues("create").Set(float64(missing))
-	metrics.ReconcilePendingDiff.WithLabelValues("delete").Set(float64(len(toDelete)))
-	metrics.ReconcilePendingDiff.WithLabelValues("update").Set(float64(updateDiff))
-	metrics.ReconcilePendingDiff.WithLabelValues("update_deferred").Set(float64(stateGuarded))
-
-	// 持ち越した件数を黙って落とすと「収束しない」原因が見えなくなるので、
-	// state ガード・MaxRecreatesPerPass のどちらで持ち越したかを分けて出す。
-	if stateGuarded > 0 {
-		slog.Info("reconciler: recreate candidates deferred to next pass (schedule state guard)",
-			"count", stateGuarded,
-		)
-	}
-	if limitCarriedOver > 0 {
-		slog.Info("reconciler: recreate candidates deferred to next pass (MaxRecreatesPerPass)",
-			"count", limitCarriedOver,
-			"max_recreates_per_pass", r.cfg.MaxRecreatesPerPass,
-		)
-	}
-	// stateGuarded / limitCarriedOver と同じ扱いで、黙って落とさずログに出す。
-	// メトリクスは増やさない — 上2つは複数パスにまたがって残留しうる持ち越し
-	// （録画中は priority 変更が反映されないまま残る、MaxRecreatesPerPass で
-	// 溢れた分が次パスに送られる）だからゲージで監視する価値があるのに対し、
-	// endGuarded は本パスの recordNeverScheduled（旧 markOrphaned）が同じ
-	// 判定式で recordings に never-scheduled 行を作るので、次パスには同じ
-	// 予約が二度と現れない（1 パスで自己解消する）。
-	// ReconcilePendingDiff の「create」ゲージに混ぜると、埋まらない別の理由
-	// （mirakc 障害等）と区別できなくなる。
-	if endGuarded > 0 {
-		slog.Info("reconciler: create candidates skipped (program already ended)",
-			"count", endGuarded,
-		)
-	}
+	startDelayed := r.observeStartDelays(ctx, reservations)
+	r.observePendingDiff(missing, len(toDelete), updateDiff, stateGuarded)
+	r.logCarriedOver(stateGuarded, limitCarriedOver, endGuarded)
 
 	slog.Info("reconciler: pass complete",
 		"desired", len(reservations),
@@ -325,6 +168,167 @@ func (r *Reconciler) RunPass(ctx context.Context) error {
 		"start_delayed", len(startDelayed),
 	)
 	return nil
+}
+
+// observeDeleteBreaker は発動状態を DB の真実に合わせ直す。判定できない場合も安全側に
+// 倒して発動中とみなし削除を止める（記録・確認ができないまま削除を続けるのが最悪の
+// 組み合わせという breaker.Trip のコメントと同じ理由）。
+func (r *Reconciler) observeDeleteBreaker(ctx context.Context, q *sqlcgen.Queries) bool {
+	tripped, err := breaker.ObserveState(ctx, q, r.site, breaker.ReconcileTotalLoss)
+	if err != nil {
+		slog.Error("reconciler: observing circuit breaker state; withholding deletes to be safe", "breaker", breaker.ReconcileTotalLoss, "err", err)
+		return true
+	}
+	return tripped
+}
+
+// createMissingSchedules は観測されていない desired reservation を POST する。番組は
+// もう終わっている場合、POST しても mirakc は need-rescheduling で数秒後に failed に
+// するだけで、recordings に content_length=0 の failed 行が残るだけ（issue #134 の実測:
+// record_sync 46 件中 41 件が failed）。この予約は本パスの recordNeverScheduled が
+// never_scheduled_events に欠測行を作る（同じ programEnded 判定を使うので食い違わない）
+// ので、次パス以降は listDesired（ListReservationsForSyncEvaluation の欠測除外）から
+// 外れて二度と create ループの対象にならない。
+func (r *Reconciler) createMissingSchedules(ctx context.Context, reservations []desiredReservation, observedByProgram map[int64]mirakc.Schedule, now time.Time) (int, int, int) {
+	var created, missing, endGuarded int
+	for _, d := range reservations {
+		if _, exists := observedByProgram[d.res.ProgramID]; exists {
+			continue
+		}
+		if programEnded(d.snap, now) {
+			endGuarded++
+			continue
+		}
+		missing++
+		if err := r.createSchedule(ctx, d); err != nil {
+			slog.Error("reconciler: creating schedule", "reservation_id", d.res.ID, "program_id", d.res.ProgramID, "err", err)
+			continue
+		}
+		created++
+		metrics.ReconcileSchedules.WithLabelValues("created").Inc()
+	}
+	return created, missing, endGuarded
+}
+
+// collectDeleteCandidates は自分が作った schedule のうち desired にないものを削除候補に
+// 集める。mirakc が所有しない schedule は対象にしない。
+func collectDeleteCandidates(reservations []desiredReservation, schedules []mirakc.Schedule) []mirakc.Schedule {
+	desiredPrograms := make(map[int64]struct{}, len(reservations))
+	for _, d := range reservations {
+		desiredPrograms[d.res.ProgramID] = struct{}{}
+	}
+	var toDelete []mirakc.Schedule
+	for _, s := range schedules {
+		if !mirakc.IsOurs(s.Tags) {
+			continue
+		}
+		if _, desired := desiredPrograms[s.Program.ID]; desired {
+			continue
+		}
+		toDelete = append(toDelete, s)
+	}
+	return toDelete
+}
+
+// observeTotalLoss は全損シグネチャを検知する。desired（reservations）が 1 件もないのに、
+// 自分が作った schedule が観測されている。件数ではなく形で検知する — listDesired が
+// バグ・障害で空を返したときに自分が作った全 schedule を削除してしまう経路だけを捕まえる。
+// GC・ユーザー操作による正当な一括削除は他の予約が残るのでここには当たらない
+// （docs/recording.md §3.2、issue #2 の M2-5 決定コメント）。
+//
+// threshold に 0 を渡すのは値の欠落ではない。このブレーカーは件数の閾値を持たない
+// （形で検知する）が、「desired が空のときに許される削除数」はまさに 0 なので、
+// pending = N と threshold = 0 の組は「0 件しか許されない状況で N 件消そうとした」と
+// 読めて正確である。記録が失敗した場合も含め、このパスでは削除を実行しない。
+func (r *Reconciler) observeTotalLoss(ctx context.Context, q *sqlcgen.Queries, reservations []desiredReservation, toDelete []mirakc.Schedule, tripped bool) (bool, bool) {
+	totalLoss := len(reservations) == 0 && len(toDelete) > 0
+	if !totalLoss {
+		return false, tripped
+	}
+	if err := breaker.Trip(ctx, q, r.site, breaker.ReconcileTotalLoss, 0, totalLossSample(toDelete)); err != nil {
+		slog.Error("reconciler: recording circuit breaker trip", "breaker", breaker.ReconcileTotalLoss, "err", err)
+	}
+	metrics.ReconcileCircuitBreakerTrips.Inc()
+	return true, true
+}
+
+// deleteSchedules はラッチ中の schedule 削除を止め、通常時だけ mirakc から削除する。
+// 全損シグネチャは今パスでは検出していないが、ラッチは自動では解けない（手動
+// ResumeCircuitBreaker のみが解除する）ので削除は引き続き止める。
+func (r *Reconciler) deleteSchedules(ctx context.Context, toDelete []mirakc.Schedule, tripped, totalLoss bool) int {
+	if tripped {
+		if !totalLoss {
+			slog.Error("reconciler: circuit breaker latched — withholding schedule deletes until manually resumed", "breaker", breaker.ReconcileTotalLoss, "pending_deletes", len(toDelete))
+		}
+		return 0
+	}
+	var deleted int
+	for _, s := range toDelete {
+		if err := r.mirakc.DeleteSchedule(ctx, s.Program.ID); err != nil {
+			slog.Error("reconciler: deleting schedule", "program_id", s.Program.ID, "err", err)
+			continue
+		}
+		deleted++
+		metrics.ReconcileSchedules.WithLabelValues("deleted").Inc()
+	}
+	return deleted
+}
+
+// recordNeverScheduledOutcome は作成ループと同じ瞬間を渡す（同じ式だけでなく同じ材料にする）。
+// 別々に time.Now() を取ると、パス実行中に終了時刻を跨いだ番組が「作成ループでは未終了
+// → POST」かつ「recordNeverScheduled では終了 → never-scheduled 行を作成」になり、収束は
+// するが issue #134 が消したい failed 行がちょうど 1 件出る。
+func (r *Reconciler) recordNeverScheduledOutcome(ctx context.Context, reservations []desiredReservation, schedules []mirakc.Schedule, now time.Time) error {
+	return r.recordNeverScheduled(ctx, reservations, schedules, now)
+}
+
+// observeStartDelays は開始遅延をログに出す。DB に新しい状態は持たせない（不変条件 5:
+// レベルトリガー）。毎パス recordings.started_at から再計算する導出値なので、ゲージだけ
+// で表す。収束すれば（recording.started が観測されれば）次のパスでゼロに戻る。
+func (r *Reconciler) observeStartDelays(ctx context.Context, reservations []desiredReservation) []startDelayed {
+	startDelayed, err := r.detectStartDelays(ctx, reservations)
+	if err != nil {
+		slog.Error("reconciler: detecting start delays", "err", err)
+	}
+	for _, d := range startDelayed {
+		slog.Error("reconciler: recording not started past start time + grace", "reservation_id", d.id, "program_id", d.programID, "title", d.title, "elapsed", d.elapsed)
+	}
+	metrics.ReconcileStartDelayed.WithLabelValues(r.site).Set(float64(len(startDelayed)))
+	return startDelayed
+}
+
+// observePendingDiff は差分そのものをゲージで出す。健全なら次のパスでゼロになる。
+// 作成/削除/再作成できずに残った量が知りたいので、実行した件数ではなく検出した件数
+// （MaxRecreatesPerPass で持ち越した分も含む）。state の allowlist で意図的に触らなかった
+// 分は update ではなく update_deferred に入れる。混ぜると「ゼロに戻らない = 異常」という
+// このゲージの読み方が壊れる（metrics.ReconcilePendingDiff のコメント参照）。
+func (r *Reconciler) observePendingDiff(missing, stale, updateDiff, stateGuarded int) {
+	metrics.ReconcileLastPass.SetToCurrentTime()
+	metrics.ReconcilePendingDiff.WithLabelValues("create").Set(float64(missing))
+	metrics.ReconcilePendingDiff.WithLabelValues("delete").Set(float64(stale))
+	metrics.ReconcilePendingDiff.WithLabelValues("update").Set(float64(updateDiff))
+	metrics.ReconcilePendingDiff.WithLabelValues("update_deferred").Set(float64(stateGuarded))
+}
+
+// logCarriedOver は持ち越した件数を黙って落とさず、「収束しない」原因が見えるように
+// state ガード・MaxRecreatesPerPass のどちらで持ち越したかを分けて出す。
+// stateGuarded / limitCarriedOver と同じ扱いで endGuarded もログに出す。
+// メトリクスは増やさない — 上2つは複数パスにまたがって残留しうる持ち越し（録画中は
+// priority 変更が反映されないまま残る、MaxRecreatesPerPass で溢れた分が次パスに送られる）
+// だからゲージで監視する価値があるのに対し、endGuarded は本パスの recordNeverScheduled
+// （旧 markOrphaned）が同じ判定式で recordings に never-scheduled 行を作るので、次パスには
+// 同じ予約が二度と現れない（1 パスで自己解消する）。ReconcilePendingDiff の「create」
+// ゲージに混ぜると、埋まらない別の理由（mirakc 障害等）と区別できなくなる。
+func (r *Reconciler) logCarriedOver(stateGuarded, limitCarriedOver, endGuarded int) {
+	if stateGuarded > 0 {
+		slog.Info("reconciler: recreate candidates deferred to next pass (schedule state guard)", "count", stateGuarded)
+	}
+	if limitCarriedOver > 0 {
+		slog.Info("reconciler: recreate candidates deferred to next pass (MaxRecreatesPerPass)", "count", limitCarriedOver, "max_recreates_per_pass", r.cfg.MaxRecreatesPerPass)
+	}
+	if endGuarded > 0 {
+		slog.Info("reconciler: create candidates skipped (program already ended)", "count", endGuarded)
+	}
 }
 
 // totalLossSample は breaker.ReconcileTotalLoss 発動時の breaker.Sample を組み立てる。
