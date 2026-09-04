@@ -124,36 +124,14 @@ func NewConfig() Config {
 func NewConfigForCase(name string) Config {
 	cfg := NewConfig()
 	cfg.Case = name
-	cfg.EventDuration = pathologyDuration
-	cfg.EventStart = activeCaseEventStart(jstNow(), name)
 	return cfg
-}
-
-// CaseEventID は病態ケースで予約対象になる event_id を返す。
-func CaseEventID(name string) uint16 {
-	return EventID
-}
-
-// CaseStartAt は病態ケースの予約対象イベントの開始時刻を、実際の時刻として返す。
-// fixture が EIT に書く JST の暦値から 9 時間戻した値である。
-func CaseStartAt(now time.Time, name string) time.Time {
-	return caseEventStart(now.UTC().Add(9*time.Hour), name).Add(-9 * time.Hour)
-}
-
-// NextCaseStart は現在時刻より後の病態ケースの開始時刻を返す。
-func NextCaseStart(now time.Time, name string) time.Time {
-	start := CaseStartAt(now, name)
-	if !start.After(now) {
-		start = start.Add(30 * time.Second)
-	}
-	return start
 }
 
 // caseEventStart は JST の暦値で 30 秒周期の xx:10 をイベント開始時刻にする。
 // xx:10 は EPG bootstrap の完了後にも短い準備時間を確保しつつ、ケースごとの待ち時間を
 // bounded にするための値である。入力・出力とも jstNow と同じ「JST 暦を UTC location
 // に載せた time.Time」規約。
-func caseEventStart(now time.Time, _ string) time.Time {
+func caseEventStart(now time.Time) time.Time {
 	start := now.Truncate(30 * time.Second).Add(10 * time.Second)
 	if !start.After(now) {
 		start = start.Add(30 * time.Second)
@@ -164,12 +142,12 @@ func caseEventStart(now time.Time, _ string) time.Time {
 // activeCaseEventStart は現在の放送周期がまだ継続中ならその開始時刻を返し、周期の
 // 境界を過ぎていれば次の開始時刻を返す。EPG 用と録画用のプロセスが同じ周期を選べる
 // ように、プロセス起動時刻ではなく現在時刻から毎回導出する。
-func activeCaseEventStart(now time.Time, name string) time.Time {
+func activeCaseEventStart(now time.Time) time.Time {
 	start := now.Truncate(30 * time.Second).Add(10 * time.Second)
 	if now.Before(start.Add(pathologyDuration)) {
 		return start
 	}
-	return caseEventStart(now, name)
+	return caseEventStart(now)
 }
 
 // tickInterval は PCR を含む多重化ループの刻み。
@@ -291,14 +269,13 @@ func currentEvents(cfg Config, now time.Time) (eitEvent, eitEvent) {
 		return present, following
 	}
 
-	start := activeCaseEventStart(now, cfg.Case)
+	start := activeCaseEventStart(now)
 	target := eitEvent{EventID: cfg.EventID, Start: start, Duration: pathologyDuration, Name: cfg.EventName, RunningStatus: 4}
 	next := eitEvent{EventID: cfg.FollowingEventID, Start: start.Add(pathologyDuration), Duration: time.Hour, Name: cfg.EventName + " (following)", RunningStatus: 1}
-	previous := eitEvent{EventID: PrecedingEventID, Start: start.Add(-30 * time.Second), Duration: 30 * time.Second, Name: cfg.EventName + " (preceding)", RunningStatus: 4}
+	previous := precedingEvent(cfg, start)
 
 	switch cfg.Case {
 	case CasePrecedingExtension:
-		previous.Duration = UndefinedDuration
 		if now.Before(start) {
 			target.RunningStatus = 1
 			return previous, target
@@ -310,8 +287,6 @@ func currentEvents(cfg Config, now time.Time) (eitEvent, eitEvent) {
 		}
 		return target, next
 	case CaseFollowing:
-		previous.Start = start.Add(-30 * time.Second)
-		previous.Duration = 60 * time.Second
 		target.RunningStatus = 1
 		return previous, target
 	case CaseEventIDReset:
@@ -326,20 +301,34 @@ func currentEvents(cfg Config, now time.Time) (eitEvent, eitEvent) {
 	}
 }
 
+// precedingEvent は病態ケースの「前番組」を表す EIT イベントを返す。EIT p/f
+// （currentEvents）と EIT schedule（scheduleEvents）の両方がここを通ることで、同一
+// event_id（PrecedingEventID）に 2 つの尺を書いてしまう食い違いを構造的に防ぐ
+// --- 尺が食い違うと mirakc の EPG マージでどちらが勝つかは未規定になる。
+func precedingEvent(cfg Config, start time.Time) eitEvent {
+	previous := eitEvent{EventID: PrecedingEventID, Start: start.Add(-30 * time.Second), Duration: 30 * time.Second, Name: cfg.EventName + " (preceding)", RunningStatus: 4}
+	switch cfg.Case {
+	case CasePrecedingExtension:
+		previous.Duration = UndefinedDuration
+	case CaseFollowing:
+		previous.Duration = 60 * time.Second
+	}
+	return previous
+}
+
 // scheduleEvents は EIT schedule に載せるイベントを返す。前番組も一緒に載せることで、
 // mirakc のスケジュール更新が present/following だけに依存していないことも検査できる。
 func scheduleEvents(cfg Config, now time.Time) []eitEvent {
 	if cfg.Case == "" {
 		return []eitEvent{{EventID: cfg.EventID, Start: cfg.EventStart, Duration: cfg.EventDuration, Name: cfg.EventName}}
 	}
-	start := activeCaseEventStart(now, cfg.Case)
+	start := activeCaseEventStart(now)
 	target := eitEvent{EventID: cfg.EventID, Start: start, Duration: pathologyDuration, Name: cfg.EventName, RunningStatus: 4}
-	previous := eitEvent{EventID: PrecedingEventID, Start: start.Add(-30 * time.Second), Duration: 30 * time.Second, Name: cfg.EventName + " (preceding)", RunningStatus: 4}
 	if cfg.Case == CaseEventIDReset && !now.Before(start) {
 		return []eitEvent{{EventID: ReplacementEventID, Start: start, Duration: pathologyDuration, Name: cfg.EventName + " (replacement)", RunningStatus: 4}}
 	}
 	if cfg.Case == CaseRunningStatus {
 		return []eitEvent{target}
 	}
-	return []eitEvent{previous, target}
+	return []eitEvent{precedingEvent(cfg, start), target}
 }

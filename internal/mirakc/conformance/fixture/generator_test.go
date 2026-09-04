@@ -51,6 +51,19 @@ func TestPathologyEvents(t *testing.T) {
 			if len(events) == 0 || events[len(events)-1].EventID != tt.scheduleID {
 				t.Fatalf("schedule event ids = %+v, want last event id %d", events, tt.scheduleID)
 			}
+			// EIT p/f の present が前番組（PrecedingEventID）を指すケースは、EIT schedule
+			// にも同じ event_id が載る（events[0]）。同一 event の尺が p/f と schedule で
+			// 食い違うと、どちらを採用するかが mirakc の EPG マージ上未規定になるので、
+			// 両方が同じ start/duration を書いていることを固定する。
+			if present.EventID == PrecedingEventID {
+				if events[0].EventID != PrecedingEventID {
+					t.Fatalf("schedule の先頭 event id = %d, want %d（EIT p/f の present と揃うはず）", events[0].EventID, PrecedingEventID)
+				}
+				if events[0].Start != present.Start || events[0].Duration != present.Duration {
+					t.Fatalf("schedule の preceding = start=%s duration=%s、EIT p/f の present = start=%s duration=%s と食い違う",
+						events[0].Start, events[0].Duration, present.Start, present.Duration)
+				}
+			}
 		})
 	}
 }

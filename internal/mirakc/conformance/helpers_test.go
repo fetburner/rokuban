@@ -183,7 +183,12 @@ func startMirakc(t *testing.T, hostDir string, tunerBin string, fixtureCase stri
 		t.Fatalf("write config.yml: %v", err)
 	}
 
-	name := fmt.Sprintf("rokuban-conformance-%d", os.Getpid())
+	// t.Name() を混ぜて呼び出しごとに一意にする --- TestBroadcastPathologies は 1 バイナリ
+	// から 4 回 startMirakc を呼ぶ（+ TestConformance の 1 回）。--rm を使わないので
+	// （下記コメント参照）名前が衝突すると `docker rm -f` が別サブテストのコンテナを
+	// 巻き込んで消す。PID だけが一意性の根拠だとサブテストが直列だから成り立っているに
+	// すぎず、将来 t.Parallel() を足すと壊れる。
+	name := fmt.Sprintf("rokuban-conformance-%s-%d", sanitizeContainerName(t.Name()), os.Getpid())
 	// 既存の同名コンテナが残っていたら先に消す（前回異常終了時の掃除）。
 	_ = exec.Command("docker", "rm", "-f", name).Run()
 
@@ -220,6 +225,12 @@ func startMirakc(t *testing.T, hostDir string, tunerBin string, fixtureCase stri
 	c.baseURL = fmt.Sprintf("http://127.0.0.1:%s", port)
 	waitForHTTP(t, c.baseURL+"/api/version", 30*time.Second)
 	return c
+}
+
+// sanitizeContainerName は t.Name() を docker のコンテナ名に使える文字列にする
+// （t.Run のサブテスト名は "/" 区切りになる）。
+func sanitizeContainerName(name string) string {
+	return strings.NewReplacer("/", "-", " ", "-").Replace(name)
 }
 
 func dumpContainerLogsOnFailure(t *testing.T, name string) {
