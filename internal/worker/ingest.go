@@ -149,8 +149,6 @@ func (w *IngestWorker) resolveRelPathLockTimeout() time.Duration {
 }
 
 // Work は ingest ジョブを実行する。ストリーム取得・TS 統計収集・DB コミット・エッジ削除を行う。
-//
-//nolint:funlen // 分割は epic #585 の Q-2（#587）で行う
 func (w *IngestWorker) Work(ctx context.Context, job *river.Job[IngestJobArgs]) error {
 	args := job.Args
 	log := slog.With("site", args.Site, "record_id", args.RecordID)
@@ -162,10 +160,6 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[IngestJobArgs]) 
 		metrics.IngestJobs.WithLabelValues(result).Inc()
 	}()
 
-	// mirakc の record id はインスタンススコープ。他サイトのジョブをこの
-	// プロセスの mirakc に投げると、別番組をこの recording としてコミットしうる
-	// （issue #139）。DB 参照（lookupRecordingID）や mirakc/FS への一切の
-	// アクセスより前に照合する。
 	client, err := verifySite(w.MirakcClients, args.Site, ingestQueue)
 	if err != nil {
 		return err
@@ -176,40 +170,13 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[IngestJobArgs]) 
 		return fmt.Errorf("looking up recording_id: %w", err)
 	}
 
-	// 冪等性チェック：この recording_id の original media_asset が既にコミット
-	// 済みなら転送をやり直さない。エッジ record の削除（下の DeleteRecord）は
-	// 失敗してもログのみで ingest 成功扱いにしている（意図的）ため、mirakc 側に
-	// record が残ったまま 5 分後の record_sweep → watcher.processRecord
-	// （status=finished）経由で同じ record の ingest ジョブが再投入されうる。
-	// pendingJobStates の UniqueOpts は completed を除外するのでこの再投入は
-	// 止まらない。ここで止めないと os.Create がコミット済みファイルを 0
-	// バイトに切り詰めて全量を再ダウンロードし、streamer は不変条件 3
-	// （コミット = DB 行）で既にコミット済みの録画に対して欠けたファイルを
-	// 配ることになる。
 	alreadyCommitted, err := w.hasOriginalMediaAsset(ctx, recordingID)
 	if err != nil {
 		return fmt.Errorf("checking existing media_asset: %w", err)
 	}
 	if alreadyCommitted {
-		log.Info("ingest: media_asset already committed, skipping transfer", "recording_id", recordingID)
-		// 転送は行っていないが、DB からは成功と区別が付かない状態なので
-		// メトリクスも成功として数える。ここでの唯一の残り仕事はエッジ
-		// record の削除（下記）の再試行であり、それが完了すれば ingest の
-		// 目的（コミット済み・record 削除済み）は満たされている。
 		result = "success"
-		// 前回の実行が転送の途中で死に、その後別経路（internal/inplace.Register
-		// など）で原本がコミットされた場合、進捗行だけが取り残される。原本行が
-		// ある録画の進捗表示は API 側が無視する（原本の有無が真実。不変条件 5）
-		// ので害は無いが、掃除できる場所で掃除しておく。
-		if delErr := sqlcgen.New(w.Pool).DeleteRecordingIngestProgress(ctx, recordingID); delErr != nil {
-			log.Warn("ingest: failed to clear stale transfer progress", "recording_id", recordingID, "err", delErr)
-		}
-		// 原本があるなら encode の desired−observed も埋める（ヒント。真実は
-		// EnqueueMissingEncodes のレベルトリガー判定。issue #65）。
-		enqueueMissingEncodesFromContext(ctx, w.Pool, recordingID)
-		if _, err := client.DeleteRecord(ctx, args.RecordID, true); err != nil {
-			log.Error("ingest: failed to delete edge record (already committed)", "err", err)
-		}
+		w.handleAlreadyCommittedIngest(ctx, client, args, recordingID, log)
 		return nil
 	}
 
@@ -218,15 +185,6 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[IngestJobArgs]) 
 		return fmt.Errorf("determining rel_path: %w", err)
 	}
 
-	// rel_path の advisory lock を、mirakc のストリームを開く（下の
-	// StreamRecord）より前・os.Create より前に取る。media_assets の一意索引
-	// （rel_path, WHERE state <> 'deleted'）が効くのは commit の INSERT の
-	// 瞬間だが、宛先へのバイトはそれより前に落ちる（docs/storage/contract.md
-	// §3 ルール 3 の順序そのもの）。順序だけでは実ファイルを守れないので、
-	// 排他を索引より前に置く（docs/recording/ingest.md §5.3）。
-	//
-	// 負けた側（acquired=false）はバイトを 1 つも書かずに失敗し、River の
-	// バックオフで再試行する。ロックは commit まで defer で保持し続ける。
 	release, acquired, err := acquireRelPathLock(ctx, w.Pool, relPath, w.resolveRelPathLockTimeout())
 	if err != nil {
 		return fmt.Errorf("acquiring rel_path lock: %w", err)
@@ -237,14 +195,6 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[IngestJobArgs]) 
 	}
 	defer release()
 
-	// checkRelPathConflict はロックの下（＝転送開始前だが排他は既に確定した後）
-	// で引く。ロックを持っている間は他の ingest がこの rel_path を狙って
-	// 転送を始めることはできないので、ここでの SELECT の結果は commit まで
-	// 安定する --- **ingest 対 ingest に関してはもはや先読みではなく決着その
-	// もの**（doc コメント参照）。ここで拾うのは「別の（今 transfer 中では
-	// ない）recording が過去にこの rel_path を使って既にコミットした」という
-	// 恒久的な衝突（contentPath 重複、issue #197）で、これは delete_reconcile
-	// の状態遷移に対しては引き続きヒント（TOCTOU が残る）でしかない。
 	if conflictRecordingID, err := w.checkRelPathConflict(ctx, relPath); err != nil {
 		return fmt.Errorf("checking rel_path conflict: %w", err)
 	} else if conflictRecordingID != 0 {
@@ -264,10 +214,6 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[IngestJobArgs]) 
 
 	counter := tsstat.NewCounter(f)
 
-	// 転送の途中経過を recording_ingest_progress に写す（issue #212）。行の存在
-	// そのものが「転送中」の主張なので（不変条件 10）、1 バイトも流れる前に
-	// 1 行書いてから始める --- 遅い回線で最初の 1 バイトが来るまで数十秒かかる
-	// ことがあり、そこが「何も起きていないように見える」時間帯そのものだから。
 	progress := &ingestProgressReporter{
 		pool:          w.Pool,
 		recordingID:   recordingID,
@@ -276,70 +222,15 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[IngestJobArgs]) 
 		log:           log,
 	}
 	progress.start(ctx)
-	// progressWriter は counter の外側に置く（io.Copy → progressWriter →
-	// counter → f）。TS 統計は counter が数えるので、ここでは書けたバイト数を
-	// 数えるだけ。
 	dst := &progressWriter{
 		w:       counter,
 		onWrite: func(written int64) { progress.report(ctx, written) },
 	}
 
-	var offset int64
-	for attempt := 0; ; attempt++ {
-		stallCtx, stallCancel := context.WithCancel(ctx)
-
-		body, _, err := client.StreamRecord(stallCtx, args.RecordID, offset)
-		if err != nil {
-			stallCancel()
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			if attempt >= maxInJobRetries {
-				return fmt.Errorf("streaming record (attempt %d): %w", attempt, err)
-			}
-			delay := connectRetryDelay(attempt)
-			log.Warn("ingest: stream connect failed, retrying", "attempt", attempt, "err", err, "delay", delay)
-			select {
-			case <-time.After(delay):
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-			continue
-		}
-
-		timer := time.AfterFunc(w.StallTimeout, func() { stallCancel() })
-		sr := &stallReader{r: body, timer: timer, d: w.StallTimeout}
-		n, copyErr := io.Copy(dst, sr)
-		timer.Stop()
-		stallCancel()
-		_ = body.Close()
-
-		offset += n
-
-		// バイトを書けた転送試行が終わるたび、最後の値を間引き無しで焼く。
-		// interval 内の burst 後に接続が切れ、その後の再開も全て失敗すると、
-		// ここで書かなければ最後の間引き前の値のままジョブが終わる。0 バイトの
-		// 試行は進捗ではないので observed_at を新しくしない。
-		if n > 0 {
-			progress.flush(ctx, offset)
-		}
-
-		if copyErr == nil {
-			break
-		}
-
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-
-		if attempt >= maxInJobRetries {
-			return fmt.Errorf("transfer failed after %d retries at offset %d: %w", attempt, offset, copyErr)
-		}
-
-		log.Warn("ingest: transfer interrupted, retrying with Range",
-			"offset", offset, "attempt", attempt, "err", copyErr)
+	offset, err := w.transferIngestRecord(ctx, client, args.RecordID, dst, progress, log)
+	if err != nil {
+		return err
 	}
-
 	expectedLen, err := client.HeadRecordStream(ctx, args.RecordID)
 	if err != nil {
 		return fmt.Errorf("HEAD record stream: %w", err)
@@ -347,23 +238,16 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[IngestJobArgs]) 
 	if expectedLen >= 0 && offset != expectedLen {
 		return fmt.Errorf("size mismatch: written=%d expected=%d", offset, expectedLen)
 	}
-
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("closing file: %w", err)
 	}
 
-	// pid_type_changes > 0 は録画中に PMT が PID を付け替えたということ。
-	// 種別は最後に見たものを採用するので、変化そのものはここにしか残らない
-	// （docs/recording.md §1「例外の境界」）。
 	log.Info("ingest: transfer complete", "bytes", offset,
 		"drops", counter.TotalDrops(), "errors", counter.TotalErrors(),
 		"scrambled", counter.TotalScrambled(),
 		"pid_type_changes", counter.TypeChanges())
 
-	metrics.IngestBytes.Add(float64(offset))
-	metrics.IngestDroppedPackets.Add(float64(counter.TotalDrops()))
-	metrics.IngestErrorPackets.Add(float64(counter.TotalErrors()))
-	metrics.IngestScrambledPackets.Add(float64(counter.TotalScrambled()))
+	recordIngestMetrics(offset, counter)
 
 	if err := w.commit(ctx, recordingID, relPath, offset, counter); err != nil {
 		return fmt.Errorf("committing ingest: %w", err)
@@ -372,24 +256,91 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[IngestJobArgs]) 
 	// エッジ record の削除は失敗しても ingest は成功（コミット済み）。
 	result = "success"
 
-	// encode 投入はヒント。desired（encode_profiles）− observed（encoded assets）
-	// を埋めるレベルトリガー（命令的チェーンではない。issue #65）。
-	enqueueMissingEncodesFromContext(ctx, w.Pool, recordingID)
+	w.enqueueIngestFollowups(ctx, client, args.RecordID, recordingID, log)
 
-	// thumbnail 投入はヒント。desired − observed を EnqueueThumbnailIfNeeded が
-	// 判定する（レベルトリガー。命令的チェーンではない。issue #66）。
-	// River クライアントが無いテスト経路では黙ってスキップする。
+	return nil
+}
+
+// handleAlreadyCommittedIngest は原本が既にある ingest の残務を処理する。
+// 進捗行とエッジ record の削除失敗はログだけにして ingest を成功扱いにする。
+func (w *IngestWorker) handleAlreadyCommittedIngest(ctx context.Context, client *mirakc.Client, args IngestJobArgs, recordingID int64, log *slog.Logger) {
+	log.Info("ingest: media_asset already committed, skipping transfer", "recording_id", recordingID)
+	if err := sqlcgen.New(w.Pool).DeleteRecordingIngestProgress(ctx, recordingID); err != nil {
+		log.Warn("ingest: failed to clear stale transfer progress", "recording_id", recordingID, "err", err)
+	}
+	enqueueMissingEncodesFromContext(ctx, w.Pool, recordingID)
+	if _, err := client.DeleteRecord(ctx, args.RecordID, true); err != nil {
+		log.Error("ingest: failed to delete edge record (already committed)", "err", err)
+	}
+}
+
+// transferIngestRecord は mirakc のストリームを Range 再開しながら宛先へ転送する。
+// rel_path の advisory lock は呼び出し元が取得済みであることを前提にする。
+func (w *IngestWorker) transferIngestRecord(ctx context.Context, client *mirakc.Client, recordID string, dst io.Writer, progress *ingestProgressReporter, log *slog.Logger) (int64, error) {
+	var offset int64
+	for attempt := 0; ; attempt++ {
+		stallCtx, stallCancel := context.WithCancel(ctx)
+		body, _, err := client.StreamRecord(stallCtx, recordID, offset)
+		if err != nil {
+			stallCancel()
+			if ctx.Err() != nil {
+				return 0, ctx.Err()
+			}
+			if attempt >= maxInJobRetries {
+				return 0, fmt.Errorf("streaming record (attempt %d): %w", attempt, err)
+			}
+			delay := connectRetryDelay(attempt)
+			log.Warn("ingest: stream connect failed, retrying", "attempt", attempt, "err", err, "delay", delay)
+			select {
+			case <-time.After(delay):
+			case <-ctx.Done():
+				return 0, ctx.Err()
+			}
+			continue
+		}
+
+		timer := time.AfterFunc(w.StallTimeout, func() { stallCancel() })
+		n, copyErr := io.Copy(dst, &stallReader{r: body, timer: timer, d: w.StallTimeout})
+		timer.Stop()
+		stallCancel()
+		_ = body.Close()
+		offset += n
+		if n > 0 {
+			progress.flush(ctx, offset)
+		}
+		if copyErr == nil {
+			return offset, nil
+		}
+		if ctx.Err() != nil {
+			return 0, ctx.Err()
+		}
+		if attempt >= maxInJobRetries {
+			return 0, fmt.Errorf("transfer failed after %d retries at offset %d: %w", attempt, offset, copyErr)
+		}
+		log.Warn("ingest: transfer interrupted, retrying with Range", "offset", offset, "attempt", attempt, "err", copyErr)
+	}
+}
+
+// recordIngestMetrics は転送結果のバイト数・TS 統計をメトリクスへ記録する。
+func recordIngestMetrics(offset int64, counter *tsstat.Counter) {
+	metrics.IngestBytes.Add(float64(offset))
+	metrics.IngestDroppedPackets.Add(float64(counter.TotalDrops()))
+	metrics.IngestErrorPackets.Add(float64(counter.TotalErrors()))
+	metrics.IngestScrambledPackets.Add(float64(counter.TotalScrambled()))
+}
+
+// enqueueIngestFollowups はコミット済み ingest の encode / thumbnail 投入ヒントと
+// mirakc record の削除を行う。補助処理の失敗はログに記録して本処理を成功扱いにする。
+func (w *IngestWorker) enqueueIngestFollowups(ctx context.Context, client *mirakc.Client, recordID string, recordingID int64, log *slog.Logger) {
+	enqueueMissingEncodesFromContext(ctx, w.Pool, recordingID)
 	if riverClient, clientErr := river.ClientFromContextSafely[pgx5.Tx](ctx); clientErr == nil {
 		if enqueueErr := EnqueueThumbnailIfNeeded(ctx, w.Pool, riverClient, recordingID); enqueueErr != nil {
 			log.Error("ingest: failed to enqueue thumbnail job", "recording_id", recordingID, "err", enqueueErr)
 		}
 	}
-
-	if _, err := client.DeleteRecord(ctx, args.RecordID, true); err != nil {
+	if _, err := client.DeleteRecord(ctx, recordID, true); err != nil {
 		log.Error("ingest: failed to delete edge record (committed OK)", "err", err)
 	}
-
-	return nil
 }
 
 // connectRetryDelay は StreamRecord への接続リトライの待ち時間を指数バックオフで返す。

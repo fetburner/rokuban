@@ -135,8 +135,6 @@ func (w *EncodeWorker) Work(ctx context.Context, job *river.Job[EncodeJobArgs]) 
 //
 // err は名前付き戻り値 --- 直後の defer（試行状態の観測、issue #316）が
 // 全ての return 文の結果を横取りして recording_encode_attempts に反映するため。
-//
-//nolint:funlen // 分割は epic #585 の Q-2（#587）で行う
 func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[EncodeJobArgs]) (err error) {
 	args := job.Args
 	log := slog.With("recording_id", args.RecordingID, "profile", args.Profile)
@@ -182,49 +180,13 @@ func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[EncodeJobAr
 		w.markEncodeAttemptFailed(ctx, args.RecordingID, args.Profile, err)
 	}()
 
-	profile, ok := w.Profiles.Profile(args.Profile)
-	if !ok {
-		// 設定から消えたプロファイルは再試行しても直らない。
-		return fmt.Errorf("unknown encode profile %q", args.Profile)
-	}
-
-	orig, err := w.loadOriginal(ctx, args.RecordingID)
+	profile, originalRelPath, inputPath, reportProgress, stopProgress, err := w.prepareEncodeInput(ctx, args, log)
 	if err != nil {
 		return err
 	}
+	defer stopProgress()
 
-	inputPath, err := mediapath.Resolve(w.MediaDir, orig.RelPath)
-	if err != nil {
-		return fmt.Errorf("resolving original path: %w", err)
-	}
-	if _, err := os.Stat(inputPath); err != nil {
-		return fmt.Errorf("original file %s: %w", inputPath, err)
-	}
-
-	duration, probeErr := probeEncodeDuration(
-		ctx, w.FFprobe, inputPath, encodeDurationProbeTimeout, commandOutput,
-	)
-	if probeErr != nil {
-		log.Warn("encode: probing input duration failed; progress percentage disabled", "err", probeErr)
-	}
-	var reportProgress func(time.Duration)
-	if duration > 0 {
-		reporter := encodeProgressReporter{
-			recordingID: args.RecordingID,
-			profile:     args.Profile,
-			duration:    duration,
-			interval:    encodeProgressInterval,
-			notify: func(ctx context.Context, payload string) error {
-				return sqlcgen.New(w.Pool).NotifyTopic(ctx, payload)
-			},
-			log: log,
-		}
-		var stopProgress context.CancelFunc
-		reportProgress, stopProgress = reporter.start(ctx)
-		defer stopProgress()
-	}
-
-	relPath, err := EncodedRelPath(orig.RelPath, profile.Name, profile.Container)
+	relPath, err := EncodedRelPath(originalRelPath, profile.Name, profile.Container)
 	if err != nil {
 		return fmt.Errorf("building encoded rel_path: %w", err)
 	}
@@ -249,106 +211,16 @@ func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[EncodeJobAr
 		return fmt.Errorf("creating scratch dir: %w", err)
 	}
 
-	ffmpeg := w.FFmpeg
-	if ffmpeg == "" {
-		ffmpeg = "ffmpeg"
-	}
-	// ffmpeg は字幕ストリームが無い状態で WebVTT 出力を要求すると終了する。
-	// 先に ffprobe で存在を確認し、字幕がある録画だけサイドカー出力を有効に
-	// することで、局や番組によって字幕 PID が無い録画でもエンコード本体を
-	// 落とさない（issue #430 の optional map の罠）。
-	withSubtitles := false
-	if profile.Subtitles == "webvtt" {
-		withSubtitles, err = probeHasSubtitlesWithTimeout(ctx, w.FFprobe, inputPath, commandOutput)
-		if err != nil {
-			log.Warn("encode: probing subtitle streams failed; continuing without subtitle sidecar", "err", err)
-		}
-	}
-	// サイドカーの出力パスは scratchOut と同じディレクトリ・basename に .vtt を
-	// 付けたもの（BuildFFmpegArgs が内部で導出するのと同じ規則を
-	// mediapath.SubtitleSibling で共有する）。withSubtitles=false のときは
-	// BuildFFmpegArgs がこの引数を使わないので、空文字などの特別扱いは要らない。
-	subtitleOut, err := mediapath.SubtitleSibling(scratchOut)
+	withSubtitles, subtitleOut, err := w.prepareEncodeSubtitles(ctx, profile, inputPath, scratchOut, log)
 	if err != nil {
-		return fmt.Errorf("deriving subtitle sidecar path: %w", err)
+		return err
 	}
-	cmdArgs := BuildFFmpegArgs(profile, inputPath, scratchOut, withSubtitles)
-	cmd := exec.CommandContext(ctx, ffmpeg, cmdArgs...)
-	setWorkerExecWaitDelay(cmd)
-	// 進捗は stdout（-progress pipe:1）。stderr はエラー診断のみ（進捗に使わない）。
-	stdout, err := cmd.StdoutPipe()
+	if err := w.runEncodeCommand(ctx, profile, inputPath, scratchOut, subtitleOut, withSubtitles, reportProgress, log); err != nil {
+		return err
+	}
+	size, err := w.copyEncodeOutputs(scratchOut, finalPath, relPath, subtitleOut, withSubtitles)
 	if err != nil {
-		return fmt.Errorf("ffmpeg stdout pipe: %w", err)
-	}
-	var stderrBuf strings.Builder
-	cmd.Stderr = &stderrBuf
-
-	log.Info("encode: starting ffmpeg", "input", inputPath, "scratch", scratchOut)
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("starting ffmpeg: %w", err)
-	}
-
-	progressDone := make(chan struct{})
-	go func() {
-		defer close(progressDone)
-		parseFFmpegProgress(stdout, log, reportProgress)
-	}()
-
-	waitErr := cmd.Wait()
-	<-progressDone
-	if waitErr != nil {
-		// コンテキストキャンセルは River の停止やタイムアウト。
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		if errors.Is(waitErr, exec.ErrWaitDelay) && cmd.ProcessState != nil && cmd.ProcessState.Success() {
-			// ffmpeg 自体は exit 0 で完走したが、孫プロセスが stdout/stderr の
-			// fd を握ったままで WaitDelay が先に切れた（この PR が扱う
-			// ハングの exit 0 版）。以降の os.Stat / サイズ検査が出力を守るので
-			// 失敗にはしないが、再試行ループから見分けられるよう記録は残す。
-			log.Warn("encode: ffmpeg exited successfully but WaitDelay expired before I/O completed", "wait_delay", workerExecWaitDelay)
-		} else {
-			stderr := strings.TrimSpace(stderrBuf.String())
-			if stderr != "" {
-				return fmt.Errorf("ffmpeg failed: %w (stderr: %s)", waitErr, stderr)
-			}
-			return fmt.Errorf("ffmpeg failed: %w", waitErr)
-		}
-	}
-
-	info, err := os.Stat(scratchOut)
-	if err != nil {
-		return fmt.Errorf("stat scratch output: %w", err)
-	}
-	if info.Size() == 0 {
-		return fmt.Errorf("scratch output is empty: %s", scratchOut)
-	}
-	if withSubtitles {
-		vttInfo, statErr := os.Stat(subtitleOut)
-		if statErr != nil {
-			return fmt.Errorf("stat subtitle sidecar: %w", statErr)
-		}
-		if vttInfo.Size() == 0 {
-			return fmt.Errorf("subtitle sidecar is empty: %s", subtitleOut)
-		}
-	}
-
-	size, err := streamCopyFile(scratchOut, finalPath)
-	if err != nil {
-		return fmt.Errorf("copying to media dir: %w", err)
-	}
-	if withSubtitles {
-		subtitleRelPath, pathErr := mediapath.SubtitleSibling(relPath)
-		if pathErr != nil {
-			return fmt.Errorf("building subtitle rel_path: %w", pathErr)
-		}
-		subtitleFinalPath, pathErr := mediapath.Resolve(w.MediaDir, subtitleRelPath)
-		if pathErr != nil {
-			return fmt.Errorf("resolving subtitle path: %w", pathErr)
-		}
-		if _, copyErr := streamCopyFile(subtitleOut, subtitleFinalPath); copyErr != nil {
-			return fmt.Errorf("copying subtitle sidecar: %w", copyErr)
-		}
+		return err
 	}
 
 	if err := w.commitEncoded(ctx, args.RecordingID, profile.Name, relPath, size); err != nil {
@@ -365,6 +237,150 @@ func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[EncodeJobAr
 		Profile:     args.Profile,
 	})
 	return nil
+}
+
+// prepareEncodeInput はプロファイル・原本・入力パスを解決し、進捗報告を準備する。
+func (w *EncodeWorker) prepareEncodeInput(ctx context.Context, args EncodeJobArgs, log *slog.Logger) (config.EncodeProfile, string, string, func(time.Duration), context.CancelFunc, error) {
+	profile, ok := w.Profiles.Profile(args.Profile)
+	if !ok {
+		return config.EncodeProfile{}, "", "", nil, func() {}, fmt.Errorf("unknown encode profile %q", args.Profile)
+	}
+	orig, err := w.loadOriginal(ctx, args.RecordingID)
+	if err != nil {
+		return config.EncodeProfile{}, "", "", nil, func() {}, err
+	}
+	inputPath, err := mediapath.Resolve(w.MediaDir, orig.RelPath)
+	if err != nil {
+		return config.EncodeProfile{}, "", "", nil, func() {}, fmt.Errorf("resolving original path: %w", err)
+	}
+	if _, err := os.Stat(inputPath); err != nil {
+		return config.EncodeProfile{}, "", "", nil, func() {}, fmt.Errorf("original file %s: %w", inputPath, err)
+	}
+	duration, probeErr := probeEncodeDuration(ctx, w.FFprobe, inputPath, encodeDurationProbeTimeout, commandOutput)
+	if probeErr != nil {
+		log.Warn("encode: probing input duration failed; progress percentage disabled", "err", probeErr)
+	}
+	if duration <= 0 {
+		return profile, orig.RelPath, inputPath, nil, func() {}, nil
+	}
+	reporter := encodeProgressReporter{
+		recordingID: args.RecordingID,
+		profile:     args.Profile,
+		duration:    duration,
+		interval:    encodeProgressInterval,
+		notify: func(ctx context.Context, payload string) error {
+			return sqlcgen.New(w.Pool).NotifyTopic(ctx, payload)
+		},
+		log: log,
+	}
+	reportProgress, stopProgress := reporter.start(ctx)
+	return profile, orig.RelPath, inputPath, reportProgress, stopProgress, nil
+}
+
+// prepareEncodeSubtitles は字幕ストリームの有無を調べ、サイドカー出力先を返す。
+func (w *EncodeWorker) prepareEncodeSubtitles(ctx context.Context, profile config.EncodeProfile, inputPath, scratchOut string, log *slog.Logger) (bool, string, error) {
+	withSubtitles := false
+	var err error
+	if profile.Subtitles == "webvtt" {
+		withSubtitles, err = probeHasSubtitlesWithTimeout(ctx, w.FFprobe, inputPath, commandOutput)
+		if err != nil {
+			log.Warn("encode: probing subtitle streams failed; continuing without subtitle sidecar", "err", err)
+		}
+	}
+	subtitleOut, err := mediapath.SubtitleSibling(scratchOut)
+	if err != nil {
+		return false, "", fmt.Errorf("deriving subtitle sidecar path: %w", err)
+	}
+	return withSubtitles, subtitleOut, nil
+}
+
+// runEncodeCommand は ffmpeg を実行し、進捗を読み取り、scratch 出力を検証する。
+func (w *EncodeWorker) runEncodeCommand(ctx context.Context, profile config.EncodeProfile, inputPath, scratchOut, subtitleOut string, withSubtitles bool, reportProgress func(time.Duration), log *slog.Logger) error {
+	ffmpeg := w.FFmpeg
+	if ffmpeg == "" {
+		ffmpeg = "ffmpeg"
+	}
+	cmd := exec.CommandContext(ctx, ffmpeg, BuildFFmpegArgs(profile, inputPath, scratchOut, withSubtitles)...)
+	setWorkerExecWaitDelay(cmd)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("ffmpeg stdout pipe: %w", err)
+	}
+	var stderrBuf strings.Builder
+	cmd.Stderr = &stderrBuf
+	log.Info("encode: starting ffmpeg", "input", inputPath, "scratch", scratchOut)
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("starting ffmpeg: %w", err)
+	}
+	progressDone := make(chan struct{})
+	go func() {
+		defer close(progressDone)
+		parseFFmpegProgress(stdout, log, reportProgress)
+	}()
+	waitErr := cmd.Wait()
+	<-progressDone
+	if err := encodeCommandError(ctx, cmd, waitErr, stderrBuf.String(), log); err != nil {
+		return err
+	}
+	info, err := os.Stat(scratchOut)
+	if err != nil {
+		return fmt.Errorf("stat scratch output: %w", err)
+	}
+	if info.Size() == 0 {
+		return fmt.Errorf("scratch output is empty: %s", scratchOut)
+	}
+	if withSubtitles {
+		vttInfo, statErr := os.Stat(subtitleOut)
+		if statErr != nil {
+			return fmt.Errorf("stat subtitle sidecar: %w", statErr)
+		}
+		if vttInfo.Size() == 0 {
+			return fmt.Errorf("subtitle sidecar is empty: %s", subtitleOut)
+		}
+	}
+	return nil
+}
+
+// encodeCommandError は ffmpeg の終了結果をジョブエラーへ変換する。
+func encodeCommandError(ctx context.Context, cmd *exec.Cmd, waitErr error, stderr string, log *slog.Logger) error {
+	if waitErr == nil {
+		return nil
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if errors.Is(waitErr, exec.ErrWaitDelay) && cmd.ProcessState != nil && cmd.ProcessState.Success() {
+		log.Warn("encode: ffmpeg exited successfully but WaitDelay expired before I/O completed", "wait_delay", workerExecWaitDelay)
+		return nil
+	}
+	stderr = strings.TrimSpace(stderr)
+	if stderr != "" {
+		return fmt.Errorf("ffmpeg failed: %w (stderr: %s)", waitErr, stderr)
+	}
+	return fmt.Errorf("ffmpeg failed: %w", waitErr)
+}
+
+// copyEncodeOutputs は検証済みの scratch 出力を media ディレクトリへコピーする。
+func (w *EncodeWorker) copyEncodeOutputs(scratchOut, finalPath, relPath, subtitleOut string, withSubtitles bool) (int64, error) {
+	size, err := streamCopyFile(scratchOut, finalPath)
+	if err != nil {
+		return 0, fmt.Errorf("copying to media dir: %w", err)
+	}
+	if !withSubtitles {
+		return size, nil
+	}
+	subtitleRelPath, err := mediapath.SubtitleSibling(relPath)
+	if err != nil {
+		return 0, fmt.Errorf("building subtitle rel_path: %w", err)
+	}
+	subtitleFinalPath, err := mediapath.Resolve(w.MediaDir, subtitleRelPath)
+	if err != nil {
+		return 0, fmt.Errorf("resolving subtitle path: %w", err)
+	}
+	if _, err := streamCopyFile(subtitleOut, subtitleFinalPath); err != nil {
+		return 0, fmt.Errorf("copying subtitle sidecar: %w", err)
+	}
+	return size, nil
 }
 
 // shouldNotifyEncodeFailure は encode.failed を発火すべきかを返す。ctxErr は
