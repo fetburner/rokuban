@@ -30,7 +30,7 @@ const defaultAPIStatementTimeout = 30 * time.Second
 //     api 自身が保持し続める接続はなく、ブラウザの複数タブ・同時操作を吸収する余裕を見た値
 //   - worker (8): River の内部機構が LISTEN 用に 1 本を長時間保持する（`river.Client` は
 //     `notifier.New` で 1 個の Listener だけを作り、leadership の elector もそれを
-//     共有する。`github.com/riverqueue/river@v0.40.0/client.go` で確認済み。elector と
+//     共有する。`github.com/riverqueue/river@v0.47.0/client.go:916,923` で確認済み。elector と
 //     notifier がそれぞれ別に 1 本ずつではない）。これに加え、設定されたキューの
 //     MaxWorkers（ingest/encode/thumbnail の合計は通常数本、ruler/reconciler/epg_sync/
 //     record_sweep 等の定期ジョブ専用キューは MaxWorkers 1）を合わせても世帯スケールでは
@@ -260,7 +260,7 @@ func uniqueRoles(roles []string) map[string]struct{} {
 //     で site ごとに goroutine を持つようになったため、束縛サイトの数だけ
 //     この専有が増える（cmd/rokuban/server.go の watcher ループ）
 //   - worker: River の内部機構の LISTEN（elector と notifier で共有される 1 本。
-//     riverqueue/river@v0.40.0/client.go で確認済み）。これは site 数に依存
+//     riverqueue/river@v0.47.0/client.go:916,923 で確認済み）。これは site 数に依存
 //     しないプロセス単位の資源なので、site が増えても専有本数は変わらない
 //     ---ingest の rel_path advisory lock は転送中だけの一時専有であり、
 //     watcher の advisory lock のように「プロセスが生きている間ずっと」では

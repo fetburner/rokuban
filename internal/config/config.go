@@ -139,7 +139,7 @@ func (c Config) Registry() []MirakcSite {
 
 // mirakcSiteNamePattern は site 名の構文制約。
 //
-// **River のキュー名の制約（`validateQueueName`、river@v0.40.0/client.go:2335）
+// **River のキュー名の制約（`validateQueueName`、river@v0.47.0/client.go:2343）
 // と同一で、緩めない。** M4-13 がキュー名を `ingest_<site>` の形に site で修飾する
 // ため、ここを緩めると M4-13 が site 名をキュー名として弾くことになる
 // （issue #183 の「罠」）。

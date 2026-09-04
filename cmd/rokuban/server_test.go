@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/config"
@@ -780,8 +782,8 @@ func startWorkerWithRunningJob(t *testing.T, pool *pgxpool.Pool, mock *blockingM
 // エンコード（数時間）を打ち切る。症状は「デプロイしたらエンコードがやり直しに
 // なる」。River は `SoftStopTimeout` が未設定だと work ctx を start ctx から
 // 継ぐので、`signal.NotifyContext` の ctx を `Start` に渡しているこの構成では
-// **SIGTERM がそのまま StopAndCancel 相当になる**（river@v0.40.0/client.go の
-// workParentCtx）。
+// **SIGTERM がそのまま StopAndCancel 相当になる**（river@v0.47.0/client.go:1150-1154
+// の workParentCtx）。
 //
 // RunE を丸ごと走らせるのが要点 --- `--soft-stop-timeout` → `worker.ClientConfig`
 // → `river.Config` の配線は、`buildRiverConfig` を直接見るテストでは検証できない
@@ -795,12 +797,23 @@ func startWorkerWithRunningJob(t *testing.T, pool *pgxpool.Pool, mock *blockingM
 // **両方向を見る。** 猶予の内側なら完走し、猶予を超えたらエスカレートする
 // （＝待ちっぱなしにはならない）。
 //
-// 実測（変異を注入して赤くなることを確認済み）:
+// **猶予切れの打ち切りを River は「ジョブのエラー」として記録しない。** 停止に
+// よる cancel（cause が `rivercommon.ErrStop`）を検出すると、`AttemptError` を
+// 組み立てず `JobSetStateInterrupted`（state=available、attempt は
+// `max(attempt-1, 0)`）で戻す（river@v0.47.0/internal/jobexecutor/job_executor.go
+// の isSoftStopCancelError と `if softStopped` の早期 return）。**v0.44 で
+// 変わった**（それ以前は attempt を潰して `errors` に
+// `listing services: … : stop initiated` が残ったので、このテストの
+// エスカレート側はそれを読んでいた）。**この差は退行ではない**（打ち切りが
+// `max_attempts` を削らなくなった）ので、テストの側を新しい帳簿に合わせる ---
+// 見るのは `state=available` と `attempt=0` である。
+//
+// 実測（変異を注入して赤くなることを確認済み。river@v0.47.0）:
 //   - `river.Config.SoftStopTimeout` を 0 に戻す（この issue 以前の形）: 完走側が
 //     `state=available` / `error="… context canceled"` で赤。エスカレート側も
-//     「SIGTERM から終了まで 2.8ms」で赤
+//     「SIGTERM から終了まで 2.1〜2.6ms」と `attempt = 1` で赤（3 回）
 //   - `ClientConfig.SoftStopTimeout` の代入を消す（フラグの配線落ち）:
-//     エスカレート側が 12 秒（上限判定）で赤
+//     エスカレート側が 5.0 秒（上限判定 3.5 秒）で赤
 func TestServerCmd_SigtermDrainsRunningJob(t *testing.T) {
 	// 実行中のジョブが SIGTERM の後に終わることを主張するので、cancel の
 	// あと**実際に時間を進めてから**完走させる。ハードストップ時の打ち切りは
@@ -867,27 +880,47 @@ func TestServerCmd_SigtermDrainsRunningJob(t *testing.T) {
 				elapsed, softStop+margin, softStopTimeoutFlagName)
 		}
 
+		// **`attempted_at IS NOT NULL` で絞る。** `available` / `attempt=0` は
+		// **一度も claim されていない行と同じ形**なので、これが無いと
+		// 「ジョブが起きなかった」と区別が付かない --- 旧アサーション
+		// （`errors` の中身）が担っていたのはこの区別である。claim 自体は
+		// startWorkerWithRunningJob が mock への到達で待っているが、それは
+		// 「この行を読んだ」ことの保証にはならない（`epg_sync` の行が 2 本に
+		// なった瞬間に別の行を読んで緑になる）。`attempted_at` は claim の
+		// ときだけ書かれ、`JobSetStateInterrupted` は触らないので
+		// （riverdriver@v0.47.0/river_driver_interface.go:654-663 が
+		// AttemptedAt を設定せず、completer が撃つクエリ
+		// riverpgxv5@v0.47.0/internal/dbsqlc/river_job.sql:620-699 の
+		// `JobSetStateIfRunningMany` は job_input にも SET 句にも
+		// `attempted_at` 列を持たない --- 同区間の `cancel_attempted_at` は
+		// metadata のキー名で別物）、**実際に worked された行である**ことの
+		// 肯定形の主張になる。
 		var state string
+		var attempt int
 		var errs string
 		if err := pool.QueryRow(context.Background(),
-			`SELECT state, coalesce(errors::text, '') FROM river_job WHERE kind = 'epg_sync'`,
-		).Scan(&state, &errs); err != nil {
-			t.Fatalf("reading epg_sync job: %v", err)
+			`SELECT state, attempt, coalesce(errors::text, '') FROM river_job
+			 WHERE kind = 'epg_sync' AND attempted_at IS NOT NULL`,
+		).Scan(&state, &attempt, &errs); errors.Is(err, pgx.ErrNoRows) {
+			// 失敗メッセージ単体で読めるようにする（`no rows in result set`
+			// だけだと、上のフィルタの意図を読まないと分からない）。
+			t.Fatal("worked された epg_sync の行が無い（ジョブが起きなかった）")
+		} else if err != nil {
+			t.Fatalf("reading the worked epg_sync job: %v", err)
 		}
-		if state == "completed" {
-			t.Error("state = completed（終わっていないジョブが完了扱いになっている）")
+		// **River が帳簿を書き終えてから畳んでいることも見る。** プロセスが
+		// completer の flush を待たずに抜けると行は `running` のまま残り、
+		// 回収は JobRescuer（既定 1 時間。ロール分割構成では動かす常駐
+		// クライアントが無い）に委ねられる。
+		if state != "available" {
+			t.Errorf("state = %q, want %q（猶予切れの打ち切りが available に戻っていない）。attempt=%d errors=%s",
+				state, "available", attempt, errs)
 		}
-		// mock は release されないので、この要求が終わる道は ctx の cancel
-		// しかない（mirakc クライアントの responseHeaderTimeout は 30 秒で、
-		// softStop より桁が長い）。**エラーの原因も見る** --- 行が残っている
-		// だけなら、ジョブが起きなかった場合と区別が付かない。
-		//
-		// 実測の文言は `listing services: ... : stop initiated`。River が
-		// work ctx を cancel するときの cause（rivercommon.ErrStop）であって
-		// `context canceled` ではない --- start ctx をそのまま継いでいた頃
-		// （この issue の前）とは cause が変わる。
-		if !strings.Contains(errs, "listing services") {
-			t.Errorf("errors = %s, want to contain %q（mirakc 要求の途中で切られていない）", errs, "listing services")
+		// **試行を消費していないことを見る。** ここは River v0.44 で変わった
+		// （この関数の doc コメント）。消費する形に戻ると、猶予切れの打ち切りが
+		// `max_attempts` を削り、ローリング更新のたびに再試行の余地が減る。
+		if attempt != 0 {
+			t.Errorf("attempt = %d, want 0（停止による打ち切りが試行を消費している）。errors=%s", attempt, errs)
 		}
 	})
 }

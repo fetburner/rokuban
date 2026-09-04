@@ -119,20 +119,29 @@ psql -h localhost -d $DB -tAc \
   "select state, attempt, errors::text from river_job where kind = 'epg_sync'"
 ```
 
-実測（2026-08-28。`--soft-stop-timeout` を 60s と 5s で 1 回ずつ）。
+**モックの `DELAY` は mirakc クライアントの全体タイムアウトより短くする。**
+上限は 60 秒（`internal/mirakc.shortRequestTimeout`）である。
+超えると 60s の側が `completed` にならず、`state` は猶予切れと同じ `available`
+になる（導出: `attempt=1` + `errors` あり、で見分けられる）。
+前のセッションが残した `DELAY=90` のモックが 40799 を掴んだままで実際に踏んだ。
+**モックを `&` で背景起動すると、ポートが埋まっていても気付きにくい。**
+`OSError: Address already in use` の traceback を出して即死するだけである。
+撃つ前に `lsof -nP -iTCP:40799` で確かめること。
+
+実測（2026-09-05、river v0.47.0。`--soft-stop-timeout` を 60s と 5s で 1 回ずつ）。
 **既定（フラグ省略 = 5 秒）でも 1 回測ること。** 既定は「何も設定しなかった人が
 SIGKILL されない」ことを根拠に選んである。Docker の既定猶予 10 秒・k8s の
-既定猶予 30 秒に収まっている必要がある（実測 5.09 秒）:
+既定猶予 30 秒に収まっている必要がある（実測 5.06 秒）:
 
 | 猶予 | プロセスの終了 | `river_job` |
 |---|---|---|
-| 60s | SIGTERM の **約 40 秒後**（ジョブの完走を待った）・exit 0 | `completed` |
-| 5s | SIGTERM の **5.0 秒後**（猶予切れでエスカレート）・exit 0 | `available` / `attempt=1` / `error="… stop initiated"` |
+| 60s | SIGTERM の **約 39 秒後**（ジョブの完走を待った）・exit 0 | `completed` |
+| 5s | SIGTERM の **5.0 秒後**（猶予切れでエスカレート）・exit 0 | `available` / `attempt=0` / `errors` は空 |
 
 既定で測るときは `--soft-stop-timeout` を argv から外すだけでよい。
 
 60s の側が「約」なのは、`DELAY` がジョブの要求時刻から測られるのに対し、上の
-待ちが 1 秒刻みのポーリングだからである（その遅れぶん手前で終わる。実測 39.0 秒）。
+待ちが 1 秒刻みのポーリングだからである（その遅れぶん手前で終わる。実測 38.96 秒）。
 この側は**プロセス側の待ちが固定値ではないこと**も同時に見ている（かつての
 `Stop(30 秒)` のままなら 30 秒で先に抜け、ジョブは `running` のまま残る）。
 

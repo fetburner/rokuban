@@ -205,7 +205,7 @@ River の at-least-once / 冪等性は「殺されても正しい」を保証済
 
 逆順にすると、掴んでいたジョブが完走に使える時間が `--soft-stop-timeout` の猶予まで縮む（下記「Deployment 併用時」）。graceful stop を先に撃つほうが、猶予を消費せずに完走できる。
 
-既知の窓: Work を抜けてから producer が止まるまでの間に次のジョブが fetch されると、1 つの Job が 2 件消化して終わりうる。`MaxWorkers` が 1 なので同時には走らない。**打ち切られるのは `--soft-stop-timeout` の猶予を超えたときだけ**で、超えればその 2 件目は試行を 1 つ潰して `available` に戻る。これは上記の順序と River の実装からの導出であって、測定ではない（`Stop` は producer を止めてから実行中の完了を待ち、猶予が切れたら work ctx を cancel する）。実害は KEDA の数が 1 つずれることと、その再試行だけである。実測では 25 回試してこの窓に入らなかった。**窓の中の挙動そのものは未測定**である。
+既知の窓: Work を抜けてから producer が止まるまでの間に次のジョブが fetch されると、1 つの Job が 2 件消化して終わりうる。`MaxWorkers` が 1 なので同時には走らない。**打ち切られるのは `--soft-stop-timeout` の猶予を超えたときだけ**で、超えればその 2 件目は試行を消費せず `available` に戻る。これは上記の順序と River の実装からの導出であって、測定ではない（`Stop` は producer を止めてから実行中の完了を待ち、猶予が切れたら work ctx を cancel する）。実害は KEDA の数が 1 つずれることと、その再試行だけである。実測では 25 回試してこの窓に入らなかった。**窓の中の挙動そのものは未測定**である。
 
 失敗するジョブ（到達不能な mirakc への `epg_sync`）でも **exit 0** になる。ジョブは River 側で未完了のまま（`attempt=1`）残る（`TestServerCmd_OnceModeExitsZeroOnJobFailure`）。**次の Job がそれを引き直すところまでは測っていない。**
 
@@ -253,13 +253,19 @@ Deployment 型で worker を運用する場合（またはその併用）の定�
 - SIGTERM で **drain**（実行中ジョブは完走、新規 claim 停止）+ 長い `terminationGracePeriodSeconds`
 - busy な worker が `controller.kubernetes.io/pod-deletion-cost` を上げてスケールイン犠牲者から外れる
 
-**drain の猶予は `--soft-stop-timeout`（既定 5 秒、`river.Config.SoftStopTimeout`）である。** SIGTERM を受けてから実行中のジョブを打ち切るまでの時間で、その内側に終われば完走する。実バイナリで両方向を確認した。猶予 60 秒に対して、SIGTERM の 40 秒後に終わるジョブは `completed` になった。猶予 5 秒に対して、同じジョブは 5 秒で ctx を切られて `available` に戻った（`attempt=1` / `error="… stop initiated"`）。テストは `TestServerCmd_SigtermDrainsRunningJob`（実 DB + mirakc モック、両方向）。
+**drain の猶予は `--soft-stop-timeout`（既定 5 秒、`river.Config.SoftStopTimeout`）である。** SIGTERM を受けてから実行中のジョブを打ち切るまでの時間で、その内側に終われば完走する。実バイナリで両方向を確認した。猶予 60 秒に対して、SIGTERM の 40 秒後に終わるジョブは `completed` になった。猶予 5 秒に対して、同じジョブは 5 秒で ctx を切られて `available` に戻った（`attempt=0` / `errors` は空）。**停止による打ち切りは River v0.44 以降ジョブのエラーとして記録されず、試行も消費しない。**
+その代償として、**打ち切りは `river_job` に痕跡を残さない**（`errors` は空、`attempt` も進まない）。
+デプロイ由来の打ち切りかどうかはテーブルからは判別できない。
+**ログでも「どのジョブが切られたか」は見えない。** River に `Config.Logger` を渡していないので、
+River 自身の既定ロガー（WARN 止まり）だけが出る。
+見えるのは猶予切れ側の `Client: Soft stop timeout; cancelling remaining job contexts`（WARN）で、
+判別できるのは「猶予が切れた」までである。テストは `TestServerCmd_SigtermDrainsRunningJob`（実 DB + mirakc モック、両方向）。
 
 `--soft-stop-timeout` の検査は 2 つあり、`--once` かどうかに関わらず全 `server` 起動に効く。**0 以下は起動エラー**、そして **worker ロールを持たないプロセスでの指定も起動エラー**である。キューを引くのは worker ロールだけなので、`--roles watcher --soft-stop-timeout 5m` は何も待たずに畳む。効かない argv を黙って無視すると、ScaledJob の argv から写し間違えた Pod が「drain するつもりで drain しない」形になる。
 
 **0 は「無制限」ではなく「待たない」**である。River は `SoftStopTimeout` が 0 のとき work ctx を start ctx から継ぐ。`signal.NotifyContext` の ctx を `Start` に渡しているこの構成では、SIGTERM が `StopAndCancel` 相当になる（この節が長く「未解決」として抱えていた壊れ方そのもの）。
 
-**真の上限は `terminationGracePeriodSeconds` 経過後の SIGKILL であり、それは River の外である。** したがって猶予は k8s 側の猶予の内側に置く。外に出すと、猶予が切れる前に SIGKILL が来て、実行中のジョブの行は `running` のまま残る。回収するのは `JobRescuer`（リーダーだけが動かす保守サービス）である。ロール分割構成では常駐する River クライアントが 1 つも無いので**誰も回収しない**（この節の「スケーラのクエリ」と同じ族の問題）。内側に置けば、プロセスが自分でエスカレートして行を `available` に戻してから終わる。**「試行を 1 つ潰す」と「誰も引き直せない」の差**である。
+**真の上限は `terminationGracePeriodSeconds` 経過後の SIGKILL であり、それは River の外である。** したがって猶予は k8s 側の猶予の内側に置く。外に出すと、猶予が切れる前に SIGKILL が来て、実行中のジョブの行は `running` のまま残る。回収するのは `JobRescuer`（リーダーだけが動かす保守サービス）である。ロール分割構成では常駐する River クライアントが 1 つも無いので**誰も回収しない**（この節の「スケーラのクエリ」と同じ族の問題）。内側に置けば、プロセスが自分でエスカレートして行を `available` に戻してから終わる。**「次の Pod が引き直せる」と「誰も引き直せない」の差**である。
 
 **worker ロールを走らせる Pod**（Deployment でも KEDA ScaledJob が起こす Job Pod でも同じ）のプロセス側の最悪値は次の足し算になる:
 
@@ -275,7 +281,7 @@ preStop の sleep + 10s + --soft-stop-timeout + 10s      ← 既定なら preSto
 - SSE（`/api/events`）を掴んだクライアントが居ると HTTP の停止はこの上限を使い切る。`Shutdown` は実行中のリクエストの ctx を cancel せず、SSE ハンドラは自分の接続が切れるまで抜けないからである（機構からの導出。実測はしていない）
 - 3 項目は**猶予が切れたあと畳み終えるぶん**（ctx を切られたジョブが `Work` から戻り、River の completer が結果を書く）。**所要は測っていない** --- HTTP の停止と同じ大きさに揃えただけである
 - 数時間のエンコード / ingest は既定の 5 秒では完走しない。**`--soft-stop-timeout` と `terminationGracePeriodSeconds` は対で引き上げる**（片方だけ上げても、短い側が先に効く）
-- **既定が短いのは「何も書かなかった人が SIGKILL されない」ためである。** プラットフォーム側の既定の猶予は Docker が 10 秒、k8s が 30 秒しかない。実測: 既定（5 秒）のプロセスは停止に 5.09 秒しか使わない。かつての既定 30 秒では 30.09 秒必要で、k8s の既定猶予に 0.09 秒負けた。負けると行は `running` のまま残る。回収は `JobRescuer`（既定 1 時間。ロール分割構成では動かす常駐クライアントが無いので誰も回収しない）に委ねられる。**長い drain は、猶予を明示的に書いたデプロイだけが手に入れる**
+- **既定が短いのは「何も書かなかった人が SIGKILL されない」ためである。** プラットフォーム側の既定の猶予は Docker が 10 秒、k8s が 30 秒しかない。実測: 既定（5 秒）のプロセスは停止に 5.06 秒しか使わない（2026-09-05、river v0.47.0）。かつての既定 30 秒では 30.09 秒必要で、k8s の既定猶予に 0.09 秒負けた。負けると行は `running` のまま残る。回収は `JobRescuer`（既定 1 時間。ロール分割構成では動かす常駐クライアントが無いので誰も回収しない）に委ねられる。**長い drain は、猶予を明示的に書いたデプロイだけが手に入れる**
 - **ローリング更新の間は worker の DB コネクション budget が二重に乗る**（旧 Pod が drain のあいだプールを握り続ける。[§3](database.md) のロール別 budget）。猶予を数時間に取る構成では、その時間ぶん重なる
 - プロセス側の待ちが猶予から導かれていることは `TestStopRiverForShutdown_DeadlineFollowsSoftStopTimeout` が固定している。猶予より長いことは `TestShutdownBudget_CoversTheSoftStop` が固定している。ここが固定値だと、猶予の内側で完走するはずのジョブを**プロセスが先に抜けることで**打ち切る（このときジョブの ctx は cancel すらされないので、上記の「誰も回収しない」形になる）
 

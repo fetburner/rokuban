@@ -49,7 +49,7 @@ pgx の prepared statement キャッシュを無効化する（`DefaultQueryExec
 これはデプロイの契約であり、**pooler を通せるのは api ロールと streamer ロールだけ**である。
 worker は River の内部機構が LISTEN を使う。`notifier.New` で作る 1 個の Listener を leadership の
 elector と job-available 通知が共有している。elector と notifier がそれぞれ別に 1 本ずつではない
-（`riverqueue/river@v0.40.0/client.go` で確認済み）。watcher は advisory lock によるリーダー選出を使う。
+（`riverqueue/river@v0.47.0/client.go:916,923` で確認済み）。watcher は advisory lock によるリーダー選出を使う。
 notifier はブラウザへの SSE 配送のために LISTEN を使う。いずれもセッション状態に依存する。
 transaction pooling で物理コネクションが要求ごとに入れ替わると構造的に壊れる（[data.md](../data.md) §2 / §3）。
 `internal/db.NewPool` は `pooler_compat: true` と worker/watcher/notifier のいずれかのロールの
