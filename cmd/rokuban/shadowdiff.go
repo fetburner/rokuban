@@ -17,6 +17,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/epgstation"
+	"github.com/fetburner/rokuban/internal/reservation"
 	"github.com/fetburner/rokuban/internal/shadowdiff"
 )
 
@@ -110,7 +111,7 @@ func runShadowDiff(ctx context.Context, q *sqlcgen.Queries, epgClient *epgstatio
 	//
 	// ただしこのクエリは候補を返すだけで、effective.skip による絞り込みは
 	// 含まない（internal/db/queries/reservations.sql のコメント参照）。
-	// db.EvaluateSyncCandidates（reconciler.listDesired と共通）に通して
+	// reservation.EvaluateSyncCandidates（reconciler.listDesired と共通）に通して
 	// 各行の skip 判定を得る --- reconciler は skip された予約を除外するが、
 	// shadow-diff は除外せず Skipped フラグとして残す必要がある
 	// （EPGStation 側に対応する予約があるとき Expected に落とすため）。
@@ -127,7 +128,7 @@ func runShadowDiff(ctx context.Context, q *sqlcgen.Queries, epgClient *epgstatio
 		return shadowdiff.Report{}, fmt.Errorf("listing rokuban skip intents: %w", err)
 	}
 
-	candidates := db.EvaluateSyncCandidates(rows)
+	candidates := reservation.EvaluateSyncCandidates(rows)
 	rokuban := make([]shadowdiff.RokubanReservation, 0, len(candidates)+len(skipped))
 	for _, c := range candidates {
 		if c.Err != nil {

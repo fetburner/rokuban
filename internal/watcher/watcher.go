@@ -19,6 +19,7 @@ import (
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/ptr"
+	"github.com/fetburner/rokuban/internal/reservation"
 	"github.com/fetburner/rokuban/internal/webhook"
 )
 
@@ -250,7 +251,7 @@ func (w *Watcher) createRecording(ctx context.Context, q *sqlcgen.Queries, recor
 		ruleID = res.RuleID
 	}
 
-	source, err := db.DeriveRecordingSource(ctx, q, w.site, record.Program.ID, hasReservation)
+	source, err := reservation.DeriveRecordingSource(ctx, q, w.site, record.Program.ID, hasReservation)
 	if err != nil {
 		return 0, err
 	}
@@ -425,7 +426,7 @@ func (w *Watcher) handleRecordingFailed(ctx context.Context, data mirakc.Recordi
 
 	// handleRecordingFailed は予約が無ければ上で早期 return しているので、
 	// ここに到達した時点で予約は必ず存在する。
-	source, err := db.DeriveRecordingSource(ctx, q, w.site, data.ProgramID, true)
+	source, err := reservation.DeriveRecordingSource(ctx, q, w.site, data.ProgramID, true)
 	if err != nil {
 		return err
 	}

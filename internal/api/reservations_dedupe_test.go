@@ -11,14 +11,14 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/api"
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/reservation"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 // M2-6 重複排除の API 表現（issue #24）。
 //
-// skip は reservations の列ではなく db.EffectiveOptions の結果
+// skip は reservations の列ではなく reservation.EffectiveOptions の結果
 // （base + overrides + program_intents.action）で、根拠 2 列は ruler が毎パス
 // 作り直す導出列をそのまま出す。
 
@@ -177,7 +177,7 @@ func TestGetReservation_RecordIntentClearsDedupeSkip(t *testing.T) {
 	}
 
 	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
-		Site: "default", ProgramID: programID, Action: db.IntentRecord,
+		Site: "default", ProgramID: programID, Action: reservation.IntentRecord,
 	}); err != nil {
 		t.Fatalf("seeding intent: %v", err)
 	}
@@ -234,7 +234,7 @@ func TestGetReservation_SkipIntentSetsSkip(t *testing.T) {
 	insertReservationDirect(t, pool, ctx, programID, &ruleID, 11500, 1150)
 
 	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
-		Site: "default", ProgramID: programID, Action: db.IntentSkip,
+		Site: "default", ProgramID: programID, Action: reservation.IntentSkip,
 	}); err != nil {
 		t.Fatalf("seeding intent: %v", err)
 	}
@@ -259,7 +259,7 @@ func TestGetReservation_BrokenBaseJSONFails(t *testing.T) {
 	const programID int64 = 1150000115081234
 	ruleID := insertRuleFixture(t, pool, ctx)
 	insertReservationDirect(t, pool, ctx, programID, &ruleID, 11500, 1150)
-	// jsonb として妥当だが ReservationOptions にデコードできない値を入れる。
+	// jsonb として妥当だが Options にデコードできない値を入れる。
 	if _, err := pool.Exec(ctx,
 		`UPDATE reservations SET base = '{"skip":"yes"}'::jsonb WHERE site = 'default' AND program_id = $1`, programID); err != nil {
 		t.Fatalf("corrupting base: %v", err)

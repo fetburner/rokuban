@@ -19,6 +19,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/reservation"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -1309,9 +1310,9 @@ func TestProcessRecord_ManualReservationWithRuleMatch_SourceManual(t *testing.T)
 		t.Fatalf("processRecord: %v", err)
 	}
 
-	if got := getRecordingSource(t, pool); got != db.SourceManual {
+	if got := getRecordingSource(t, pool); got != reservation.SourceManual {
 		t.Errorf("recordings.source = %q, want %q "+
-			"(手動予約にルールがマッチしても由来は manual のまま変わらないはず。issue #26)", got, db.SourceManual)
+			"(手動予約にルールがマッチしても由来は manual のまま変わらないはず。issue #26)", got, reservation.SourceManual)
 	}
 }
 
@@ -1331,8 +1332,8 @@ func TestProcessRecord_RuleReservation_SourceRule(t *testing.T) {
 		t.Fatalf("processRecord: %v", err)
 	}
 
-	if got := getRecordingSource(t, pool); got != db.SourceRule {
-		t.Errorf("recordings.source = %q, want %q", got, db.SourceRule)
+	if got := getRecordingSource(t, pool); got != reservation.SourceRule {
+		t.Errorf("recordings.source = %q, want %q", got, reservation.SourceRule)
 	}
 }
 
@@ -1356,9 +1357,9 @@ func TestProcessRecord_RuleReservationWithOverrideOnly_SourceRule(t *testing.T) 
 		t.Fatalf("processRecord: %v", err)
 	}
 
-	if got := getRecordingSource(t, pool); got != db.SourceRule {
+	if got := getRecordingSource(t, pool); got != reservation.SourceRule {
 		t.Errorf("recordings.source = %q, want %q "+
-			"(priority の上書きだけでは「手動予約した」にならないはず。issue #26 / M2-4)", got, db.SourceRule)
+			"(priority の上書きだけでは「手動予約した」にならないはず。issue #26 / M2-4)", got, reservation.SourceRule)
 	}
 }
 
@@ -1423,9 +1424,9 @@ func TestHandleRecordingFailed_SourceDerivedFromIntent(t *testing.T) {
 		t.Fatalf("handleRecordingFailed: %v", err)
 	}
 
-	if got := getRecordingSource(t, pool); got != db.SourceManual {
+	if got := getRecordingSource(t, pool); got != reservation.SourceManual {
 		t.Errorf("recordings.source = %q, want %q "+
-			"(失敗記録でも手動予約の由来は manual のままのはず)", got, db.SourceManual)
+			"(失敗記録でも手動予約の由来は manual のままのはず)", got, reservation.SourceManual)
 	}
 }
 
@@ -1460,10 +1461,10 @@ func TestProcessRecord_MissingReservation_SourceManual(t *testing.T) {
 	).Scan(&source, &ruleID); err != nil {
 		t.Fatalf("querying recordings: %v", err)
 	}
-	if source != db.SourceManual {
+	if source != reservation.SourceManual {
 		t.Errorf("recordings.source = %q, want %q "+
 			"（帰属できるルールが無いのに rule と記録すると rule_id IS NULL と矛盾する。issue #26）",
-			source, db.SourceManual)
+			source, reservation.SourceManual)
 	}
 	if ruleID != nil {
 		t.Errorf("recordings.rule_id = %v, want nil", ruleID)
@@ -1542,9 +1543,9 @@ func TestProcessRecord_ReservationGCedBeyondGrace_SourceManual(t *testing.T) {
 	).Scan(&source, &gotRuleID); err != nil {
 		t.Fatalf("querying recordings: %v", err)
 	}
-	if source != db.SourceManual {
+	if source != reservation.SourceManual {
 		t.Errorf("recordings.source = %q, want %q "+
-			"（GC 済みの予約は引けないので manual に倒れる。issue #214 の交点）", source, db.SourceManual)
+			"（GC 済みの予約は引けないので manual に倒れる。issue #214 の交点）", source, reservation.SourceManual)
 	}
 	if gotRuleID != nil {
 		t.Errorf("recordings.rule_id = %v, want nil （ルール予約は GC で失われている。issue #214）", *gotRuleID)

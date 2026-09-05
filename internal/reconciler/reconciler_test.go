@@ -194,7 +194,7 @@ func createReservation(t *testing.T, ctx context.Context, q *sqlcgen.Queries, pr
 
 // setPriorityOverride は program_overrides.overrides に priority を書き込み、
 // 予約の effective priority を base とは別の値に上書きする
-// （db.EffectiveOptions が base と overrides をマージする経路をそのまま使う。
+// （reservation.EffectiveOptions が base と overrides をマージする経路をそのまま使う。
 // overrides は M2-4 で program_intents から program_overrides に分離済み）。
 func setPriorityOverride(t *testing.T, ctx context.Context, q *sqlcgen.Queries, res sqlcgen.Reservation, priority int) {
 	t.Helper()

@@ -13,6 +13,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/reservation"
 )
 
 var version = "dev"
@@ -212,7 +213,7 @@ func reservationState(ruleID *int64, base json.RawMessage, neverRecorded bool) R
 // ルールがマッチ中」が rule と表示され、同じバグに逆戻りする
 // （docs/recording.md §4.4「manual 行にルールがマッチしても昇格は要らない」）。
 //
-// skip も列ではなく db.EffectiveOptions の結果（base + overrides + action）である。
+// skip も列ではなく reservation.EffectiveOptions の結果（base + overrides + action）である。
 // 壊れた jsonb でエラーを返すのは意図的: skip=false を返して黙って進むと
 // 「mirakc に同期されないのに理由が UI から読めない」という一番説明しにくい状態に
 // なる（docs/schema.md §3「jsonb の Unmarshal 失敗を握りつぶさない」）。
@@ -224,10 +225,10 @@ func reservationState(ruleID *int64, base json.RawMessage, neverRecorded bool) R
 // recordings 行があるか」（issue #98。reservationState のコメント参照）。
 func reservationFromRow(r sqlcgen.Reservation, snap sqlcgen.ProgramSnapshot, overrides []byte, intentAction *string, neverRecorded bool) (Reservation, error) {
 	source := ReservationSourceRule
-	if intentAction != nil && *intentAction == db.IntentRecord {
+	if intentAction != nil && *intentAction == reservation.IntentRecord {
 		source = ReservationSourceManual
 	}
-	opts, err := db.EffectiveOptions(r.Base, overrides, intentAction)
+	opts, err := reservation.EffectiveOptions(r.Base, overrides, intentAction)
 	if err != nil {
 		return Reservation{}, fmt.Errorf("resolving effective options for program %d: %w", r.ProgramID, err)
 	}

@@ -1,4 +1,4 @@
-package db
+package reservation
 
 import (
 	"context"
@@ -9,6 +9,12 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 )
+
+// SourceRule はルール予約から作られた録画の provenance。
+const SourceRule = "rule"
+
+// SourceManual はユーザーの明示操作、または予約を特定できない録画の provenance。
+const SourceManual = "manual"
 
 // DeriveRecordingSource は recordings.source を決める（issue #26）。
 //

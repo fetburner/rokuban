@@ -7,7 +7,7 @@
 -- （program_id = target_program_id）を除き、never-scheduled 済みの予約を
 -- 除外して返す。番組の開始時刻・尺は program_snapshots に移設された（#27）
 -- ので JOIN して引く。半開区間の判定はここ（SQL）で行うが、effective.skip
--- の判定は Go 側で db.EffectiveOptions を通す
+-- の判定は Go 側で reservation.EffectiveOptions を通す
 -- （internal/api/reservations_overlaps.go）。program_intents /
 -- program_overrides との JOIN は ListReservationsFull
 -- (internal/db/queries/reservations.sql) と同じ形。

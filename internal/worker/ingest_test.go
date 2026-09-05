@@ -1272,7 +1272,7 @@ func TestIngestWorker_SnapshotsEncodePolicyFromRuleBase(t *testing.T) {
 // TestIngestWorker_SnapshotsEncodePolicyFromOverride は「PATCH .../overrides で
 // encodeProfiles を上書きした予約が、ingest 後の recordings にその値で焼かれる」を
 // 確認する。base（ルール由来: h264 / always）と overrides（ユーザー上書き: h265 /
-// until_encoded）が競合するとき、db.EffectiveOptions を通して overrides が勝つ
+// until_encoded）が競合するとき、reservation.EffectiveOptions を通して overrides が勝つ
 // ことも合わせて確認する。
 func TestIngestWorker_SnapshotsEncodePolicyFromOverride(t *testing.T) {
 	pool := setupTestPool(t)
@@ -1770,8 +1770,8 @@ func TestIngestWorker_LogsWarnWhenRuleSourceReservationUnresolvable(t *testing.T
 // TestIngestWorker_LogsInfoWhenManualSourceReservationUnresolvable は
 // source='manual' の録画で JOIN が失敗した場合でも「引けなかった」が必ず
 // ログに残ることを確認する（レビュー指摘: DeriveRecordingSource
-// (internal/db/recording_source.go) は intent action='record' があれば予約の
-// 有無に関わらず 'manual' を返すため、rec.Source == db.SourceRule だけを見る
+// (internal/reservation/source.go) は intent action='record' があれば予約の
+// 有無に関わらず 'manual' を返すため、rec.Source == reservation.SourceRule だけを見る
 // 判定では「ユーザーが手動予約して encodeProfiles を指定した録画」で解決に
 // 失敗したときだけログが一切出ず、issue #149 が問題にした症状がそのまま
 // 残っていた）。
@@ -1781,7 +1781,7 @@ func TestIngestWorker_LogsWarnWhenRuleSourceReservationUnresolvable(t *testing.T
 // が既に確認している）を使って再現する —— DeriveRecordingSource は
 // intent 由来の 'manual' と予約皆無の 'manual' を区別できないので、
 // このケースでもログが出ることが「manual を判定軸にしない」ことの直接的な
-// 証拠になる。修正前の実装（rec.Source == db.SourceRule のときだけ警告）では
+// 証拠になる。修正前の実装（rec.Source == reservation.SourceRule のときだけ警告）では
 // このテストは一切ログが出ずに落ちる。
 func TestIngestWorker_LogsInfoWhenManualSourceReservationUnresolvable(t *testing.T) {
 	pool := setupTestPool(t)

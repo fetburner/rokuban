@@ -8,8 +8,8 @@ import (
 	"testing"
 
 	"github.com/fetburner/rokuban/internal/api"
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/reservation"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -63,7 +63,7 @@ func TestGetReservation_SourceManualDespiteRuleMatch(t *testing.T) {
 	// 手動予約であることを表す program_intents{record} を足す
 	// （このテストの核心: rule_id があっても intent が「手動」を主張する）。
 	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
-		Site: "default", ProgramID: programID, Action: db.IntentRecord,
+		Site: "default", ProgramID: programID, Action: reservation.IntentRecord,
 	}); err != nil {
 		t.Fatalf("seeding intent: %v", err)
 	}

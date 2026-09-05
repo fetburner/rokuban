@@ -281,7 +281,7 @@ type ListReservationsForSyncEvaluationRow struct {
 // 基準の測定器に入り込んだ（issue #54）。「同期対象か」を最終的に決めるのは
 // effective.skip（base + overrides + program_intents.action の合成）であり、
 // この行だけでは絞り切れていない。絞り込みは呼び出し元が
-// db.EvaluateSyncCandidates（internal/db/sync.go）に通して行う。
+// reservation.EvaluateSyncCandidates（internal/reservation/sync.go）に通して行う。
 //
 // 番組の開始時刻・尺（reconciler の開始遅延検出に使う）は program_snapshots に
 // 移設された（#27）ので JOIN する。FK があるので必ず存在する。

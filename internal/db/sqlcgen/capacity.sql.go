@@ -77,7 +77,7 @@ type ListCapacityDemandRow struct {
 //     --- issue #101 で program_snapshots のチャンネル・イベント識別 6 列が
 //     NOT NULL 化され、NULL になる状態自体が表現不可能になったため（起きない
 //     状態のための分岐を残さない）
-//   - `effective.skip` は jsonb のマージが要るので Go 側（db.EffectiveOptions）で
+//   - `effective.skip` は jsonb のマージが要るので Go 側（reservation.EffectiveOptions）で
 //     判定する。ListOverlappingReservations / ListReservationsForSyncEvaluation と同じ分担
 //
 // 番組の開始時刻・尺・チャンネル識別は program_snapshots に移設された（#27）ので

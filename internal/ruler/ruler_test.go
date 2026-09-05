@@ -14,6 +14,7 @@ import (
 	"github.com/fetburner/rokuban/internal/breaker"
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/reservation"
 	"github.com/fetburner/rokuban/internal/ruler"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -170,7 +171,7 @@ func basePriority(t *testing.T, raw []byte) *int {
 	if len(raw) == 0 {
 		return nil
 	}
-	var opts db.ReservationOptions
+	var opts reservation.Options
 	if err := json.Unmarshal(raw, &opts); err != nil {
 		t.Fatalf("unmarshalling base %s: %v", raw, err)
 	}
@@ -194,7 +195,7 @@ func TestRunPass_DoesNotWriteProgramIntents(t *testing.T) {
 	insertProgramSnapshotDirect(t, pool, ctx, 1001, "ニュース7", start)
 	q := sqlcgen.New(pool)
 	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
-		Site: testSite, ProgramID: 1001, Action: db.IntentRecord,
+		Site: testSite, ProgramID: 1001, Action: reservation.IntentRecord,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -673,7 +674,7 @@ func TestRunPass_RuleUnmatch_DeleteVsDetach(t *testing.T) {
 	q := sqlcgen.New(pool)
 	// 7002 には record intent が付いている（例: ユーザーが個別に上書き済み）
 	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
-		Site: testSite, ProgramID: 7002, Action: db.IntentRecord,
+		Site: testSite, ProgramID: 7002, Action: reservation.IntentRecord,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -744,7 +745,7 @@ func TestRunPass_DeleteGuard_RecordIntentBlocksStaleDelete(t *testing.T) {
 	// api の CreateReservation が、ruler の読み取りと DELETE 実行の間に割り込んで
 	// 作った手動予約の意図。
 	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
-		Site: testSite, ProgramID: programID, Action: db.IntentRecord,
+		Site: testSite, ProgramID: programID, Action: reservation.IntentRecord,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1045,7 +1046,7 @@ func TestRunPass_GC_DeletesEndedPastGrace(t *testing.T) {
 
 	q := sqlcgen.New(pool)
 	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
-		Site: testSite, ProgramID: 10001, Action: db.IntentRecord,
+		Site: testSite, ProgramID: 10001, Action: reservation.IntentRecord,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1177,7 +1178,7 @@ func TestRunPass_CircuitBreakerLatchBlocksDeleteEvenBelowThreshold(t *testing.T)
 	// 減る。20000 自身は intent により desired に残るので、そもそも削除候補ではない。
 	q := sqlcgen.New(pool)
 	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
-		Site: testSite, ProgramID: 20000, Action: db.IntentRecord,
+		Site: testSite, ProgramID: 20000, Action: reservation.IntentRecord,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1284,7 +1285,7 @@ func TestRunPass_TrippedCircuitBreakerStillCreatesAndUpdatesReservations(t *test
 	insertProgramSnapshotDirect(t, pool, ctx, 21000, "対象0", start)
 	q := sqlcgen.New(pool)
 	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
-		Site: testSite, ProgramID: 21000, Action: db.IntentRecord,
+		Site: testSite, ProgramID: 21000, Action: reservation.IntentRecord,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1446,7 +1447,7 @@ func TestRunPass_ResumeCircuitBreakerConverges(t *testing.T) {
 	// 閾値（2）以下に収まる。
 	q := sqlcgen.New(pool)
 	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
-		Site: testSite, ProgramID: 23000, Action: db.IntentRecord,
+		Site: testSite, ProgramID: 23000, Action: reservation.IntentRecord,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1626,7 +1627,7 @@ func TestRunPass_ManualReservationSurvivesRuleMatchWithoutSourceColumn(t *testin
 	insertReservationDirect(t, pool, ctx, programID, "手動予約サバイバル", start)
 	q := sqlcgen.New(pool)
 	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
-		Site: testSite, ProgramID: programID, Action: db.IntentRecord,
+		Site: testSite, ProgramID: programID, Action: reservation.IntentRecord,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1655,9 +1656,9 @@ func TestRunPass_ManualReservationSurvivesRuleMatchWithoutSourceColumn(t *testin
 	if err != nil {
 		t.Fatalf("program_intents row must survive: %v", err)
 	}
-	if intent.Action != db.IntentRecord {
+	if intent.Action != reservation.IntentRecord {
 		t.Errorf("program_intents.action = %q, want %q "+
-			"(手動である事実はルールマッチでも消えないはず。issue #26)", intent.Action, db.IntentRecord)
+			"(手動である事実はルールマッチでも消えないはず。issue #26)", intent.Action, reservation.IntentRecord)
 	}
 
 	// 核心 (a): source 列は存在しない（将来の焼き直しへの防波堤）。
@@ -1687,7 +1688,7 @@ func insertManualReservation(t *testing.T, pool *pgxpool.Pool, ctx context.Conte
 	insertProgramSnapshotDirect(t, pool, ctx, programID, title, startAt)
 	q := sqlcgen.New(pool)
 	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
-		Site: testSite, ProgramID: programID, Action: db.IntentRecord,
+		Site: testSite, ProgramID: programID, Action: reservation.IntentRecord,
 	}); err != nil {
 		t.Fatalf("upserting record intent for program %d: %v", programID, err)
 	}
@@ -1916,7 +1917,7 @@ func TestRunPass_ReleasedDeleteGuard_RecordIntentBlocksStaleDelete(t *testing.T)
 	q := sqlcgen.New(pool)
 	// ruler の読み取りと DELETE 実行の間に割り込んで着地した record 意図。
 	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
-		Site: testSite, ProgramID: programID, Action: db.IntentRecord,
+		Site: testSite, ProgramID: programID, Action: reservation.IntentRecord,
 	}); err != nil {
 		t.Fatal(err)
 	}

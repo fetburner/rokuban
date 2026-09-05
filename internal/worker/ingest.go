@@ -23,6 +23,7 @@ import (
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/reservation"
 	"github.com/fetburner/rokuban/internal/tsstat"
 )
 
@@ -644,13 +645,13 @@ func (w *IngestWorker) resolveAndSnapshotEncodePolicy(ctx context.Context, q *sq
 			"service_id", rec.ServiceID,
 			"event_id", rec.EventID,
 		}
-		if rec.Source == db.SourceRule {
+		if rec.Source == reservation.SourceRule {
 			slog.Warn("encode policy: reservation not found via broadcast event key; freezing defaults", logArgs...)
 		} else {
 			slog.Info("encode policy: reservation not found via broadcast event key; freezing defaults", logArgs...)
 		}
 	} else {
-		eff, err := db.EffectiveOptions(row.Reservation.Base, row.Overrides, row.IntentAction)
+		eff, err := reservation.EffectiveOptions(row.Reservation.Base, row.Overrides, row.IntentAction)
 		if err != nil {
 			return fmt.Errorf("computing effective options for program %d: %w", row.Reservation.ProgramID, err)
 		}

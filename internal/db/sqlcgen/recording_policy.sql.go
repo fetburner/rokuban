@@ -44,7 +44,7 @@ type GetReservationEncodePolicyByEventRow struct {
 // reservations.sql の GetReservationFull と似ているが、program_snapshots は
 // 「どの予約を引くか」を決める結合キーとしてだけ使う。番組の事実のスナップ
 // ショット自体（title 等）はここでは要らない。この 2 つの jsonb（base /
-// overrides）を扱う箇所は db.EffectiveOptions を通す（CLAUDE.md 不変条件
+// overrides）を扱う箇所は reservation.EffectiveOptions を通す（CLAUDE.md 不変条件
 // 9/12 の教訓）。呼び出し側（internal/worker/ingest.go）の責務。
 //
 // 宛先は recordings.reservation_id（bigint FK、ON DELETE SET NULL だった。

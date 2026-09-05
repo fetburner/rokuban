@@ -7,8 +7,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/reservation"
 )
 
 // GetProgramOverlaps は指定番組の放送時間帯と重なる既存予約の件数と内訳を返す
@@ -56,9 +56,9 @@ func (h *Server) GetProgramOverlaps(ctx context.Context, req GetProgramOverlapsR
 	for _, row := range rows {
 		// never-scheduled 除外（issue #98）と自分自身の除外は SQL 側で済ませてあるが、
 		// effective.skip（program_overrides / program_intents.action='skip' の
-		// 反映）は jsonb のマージが要るため Go 側で db.EffectiveOptions を通す
+		// 反映）は jsonb のマージが要るため Go 側で reservation.EffectiveOptions を通す
 		// （不透明な overrides を SQL で読まない、という既存の規律に合わせる）。
-		eff, err := db.EffectiveOptions(row.Reservation.Base, row.Overrides, row.IntentAction)
+		eff, err := reservation.EffectiveOptions(row.Reservation.Base, row.Overrides, row.IntentAction)
 		if err != nil {
 			return nil, fmt.Errorf("resolving effective options for program %d: %w", row.Reservation.ProgramID, err)
 		}

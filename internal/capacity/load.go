@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/reservation"
 )
 
 // Load は DB から需要とチューナー射影を読み、超過区間の結合済みリストを返す。
@@ -66,7 +66,7 @@ func tunersFromRows(rows []sqlcgen.TunerSync) []Tuner {
 //
 // SQL 側で never-scheduled 除外（issue #98。旧 state <> 'orphaned'）と
 // チャンネルスナップショットの有無を絞り、effective.skip はここ（Go 側）で
-// db.EffectiveOptions を通して判定する ---
+// reservation.EffectiveOptions を通して判定する ---
 // base / overrides の jsonb マージと program_intents.action の解決が要るため
 // （不透明な overrides を SQL で読まない、という既存の規律。
 // internal/api/reservations_overlaps.go と同じ分担）。
@@ -119,7 +119,7 @@ func loadDemandAllSites(ctx context.Context, q *sqlcgen.Queries) ([]Demand, erro
 // された。NULL を仮定した nil ガードはここにあったが、その状態自体が表現
 // 不可能になったため落とした（起きない状態のための分岐を残さない）。
 func demandFromRow(site, channelType, channel string, startAt, endAt time.Time, base, overrides json.RawMessage, intentAction *string) (Demand, bool, error) {
-	eff, err := db.EffectiveOptions(base, overrides, intentAction)
+	eff, err := reservation.EffectiveOptions(base, overrides, intentAction)
 	if err != nil {
 		return Demand{}, false, fmt.Errorf("resolving effective options for a reservation on %s: %w", site, err)
 	}
