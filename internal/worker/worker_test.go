@@ -427,7 +427,7 @@ func TestEpgSync_ReinsertableAfterCompletion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("beginning transaction for completion: %v", err)
 	}
-	defer tx.Rollback(ctx) // harmless after a successful commit
+	defer func() { _ = tx.Rollback(ctx) }() // harmless after a successful commit
 	testWorker := rivertest.NewWorker[EpgSyncArgs, pgx.Tx](
 		t, riverpgxv5.New(pool), &river.Config{}, &epgSyncNoOpWorker{},
 	)

@@ -57,7 +57,7 @@ func workEncodeJob(t *testing.T, pool *pgxpool.Pool, job *rivertype.JobRow, work
 	if err != nil {
 		t.Fatalf("beginning transaction for encode job: %v", err)
 	}
-	defer tx.Rollback(ctx) // harmless after a successful commit
+	defer func() { _ = tx.Rollback(ctx) }() // harmless after a successful commit
 
 	testJobWorker := &encodeQueueTestWorker{err: workErr}
 	if workErr != nil {
