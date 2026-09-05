@@ -23,14 +23,13 @@ import { firstIndexForDayOffset, programKeyAt, visibleDayOffset } from '@/lib/pr
 /**
  * ReservationActions は番組からの予約 / 取消と、番組ごとの実行中状態。
  *
- * 実行そのもの（`useReservationActions`）は `pages/programs.tsx` 側に残っている
+ * 実行そのもの（`useReservationActions`）は `lib/reservation-actions.ts` に置く
  * ---
  * リストとグリッドの両方がこの同じ経路を通る必要があるためで、`ProgramList`
- * 固有の関心ではない。型だけをこちらに置いて `programs.tsx` から import する形に
- * しているのは、`programs.tsx`（複数のタスクが並行して触りうる共有ファイル）の
- * 差分をこの切り出しで最小にするため —— `ProgramList` が要求する形を
- * `programs.tsx` からエクスポートさせると、`ProgramList` を切り出したこの変更が
- * 共有ファイル側にも export の追加という差分を生む。
+ * 固有の関心ではない。型はここに置く --- `ProgramList` が要求する契約は
+ * `ProgramList` 自身が持つべきで、実装側（`lib/reservation-actions.ts`）にも
+ * 呼び出し側（`pages/programs.tsx`）にも寄せない。両方がこの型を import する
+ * （前者は `useReservationActions` の戻り値として、後者は `actions` prop として）。
  *
  * `reserve` の第 2 引数（`overrides`）は issue #132 で足した ---
  * `ProgramRow` の展開パネルで encodeProfiles / keepOriginal を既定から

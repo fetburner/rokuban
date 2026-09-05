@@ -156,7 +156,7 @@ chip（`components/ui/chip.tsx`）・day-strip（`components/day-strip.tsx`）�
   展開を持たないので、この面が出るのは詳細ページだけ）。hover と違って**常時見えるので
   Lighthouse の監査対象**に入るため、`e2e:design` が同じパネルの `<dt>` を測っている
   （同じ面・同じトークン対なので説明文・品質イベントも同値）
-- **測っていない（未検証）**: 検索の `RuleSourceBanner`（`pages/search.tsx`）の
+- **測っていない（未検証）**: 検索の `RuleSourceBanner`（`components/rule-form.tsx`）の
   読み込み中の枝（`bg-muted/40`。ルールが解決した本体は `text-muted-foreground` を
   持たず、エラーの枝は `text-destructive`）と、エンコード対象プロファイルの行の
   hover（`components/encode-settings-fields.tsx` の `hover:bg-muted/60` +

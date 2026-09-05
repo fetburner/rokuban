@@ -202,7 +202,7 @@
 
 ルールは保存した瞬間から録画（チューナー・ストレージ）を消費し続けるが、保存前に
 見えるのはマッチする番組リストだけで量としてのコストが無音だった。「この条件で
-ルールを作成」「上書き保存」の近くに `RuleCostSummary`（`pages/search.tsx`）を
+ルールを作成」「上書き保存」の近くに `RuleCostSummary`（`components/rule-form.tsx`）を
 常置し、`lib/rule-cost.ts` の `estimateRuleCost`（純関数）で 7 日あたりの見込み
 件数・時間を出す。
 
