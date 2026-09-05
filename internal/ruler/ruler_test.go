@@ -1125,8 +1125,11 @@ func TestRunPass_GC_KeepsUnended(t *testing.T) {
 }
 
 // issue #636: never_scheduled_events は program_snapshots の GC と別の寿命を持ち、
-// retention_grace + 30 日を超えた観測だけが削除される。境界より新しい観測は
-// event_id が再利用される可能性を考慮して残す。
+// retention_grace + 30 日を超えた観測だけが削除される。境界より新しい観測は、
+// EPG 再露出時に同じ放送イベントを誤って同期対象へ戻さない同期除外ガードとして
+// まだ現役なので残す。境界を超えた古い観測を消すのは、event_id が再利用された
+// ときに古い欠測行がいつまでも新しい放送のガードとして効き続けないようにする
+// ため（残す理由とは別の理由）。
 func TestRunPass_GC_DeletesStaleNeverScheduledEvents(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
@@ -1146,6 +1149,48 @@ func TestRunPass_GC_DeletesStaleNeverScheduledEvents(t *testing.T) {
 	}{
 		{eventID: 20001, want: false},
 		{eventID: 20002, want: true},
+	} {
+		var exists bool
+		if err := pool.QueryRow(ctx, `
+SELECT EXISTS (
+  SELECT 1 FROM never_scheduled_events
+  WHERE site = $1 AND network_id = $2 AND service_id = $3 AND event_id = $4
+)`, testSite, testNetworkID, testServiceID, test.eventID).Scan(&exists); err != nil {
+			t.Fatalf("checking never-scheduled event %d: %v", test.eventID, err)
+		}
+		if exists != test.want {
+			t.Errorf("never_scheduled_events event_id=%d exists=%v, want %v", test.eventID, exists, test.want)
+		}
+	}
+}
+
+// レビュー修正（PR #658）: horizon は固定 30 日ではなく RetentionGrace + 30 日で
+// あることを、RetentionGrace を日単位に上げた構成で確認する。issue #636 の
+// 罠節が挙げている通り、retention_grace を日単位に上げる運用でも閾値は
+// 足し算で追従しなければならない。TestRunPass_GC_DeletesStaleNeverScheduledEvents
+// は RetentionGrace が 1 時間なので、horizon の RetentionGrace 項を消しても
+// 境界 30d1h に対して寄与が 1 時間しかなく、日単位の観測では違いが出ず通って
+// しまう。ここでは RetentionGrace を 3 日にして境界を 33 日にし、寄与が日単位
+// で効くことを確認する。
+func TestRunPass_GC_NeverScheduledHorizonFollowsRetentionGraceInDays(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	grace := 3 * 24 * time.Hour // horizon = grace + 30d = 33d
+	insertNeverScheduledEvent(t, pool, ctx, 40001, time.Now().Add(-31*24*time.Hour))
+	insertNeverScheduledEvent(t, pool, ctx, 40002, time.Now().Add(-34*24*time.Hour))
+
+	r := ruler.New([]string{testSite}, pool, &ruler.Config{RetentionGrace: grace})
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
+
+	for _, test := range []struct {
+		eventID int32
+		want    bool
+	}{
+		{eventID: 40001, want: true},  // -31d は境界(33d)未満なので残る
+		{eventID: 40002, want: false}, // -34d は境界(33d)を超えるので消える
 	} {
 		var exists bool
 		if err := pool.QueryRow(ctx, `
