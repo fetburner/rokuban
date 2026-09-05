@@ -8,6 +8,8 @@ package sqlcgen
 import (
 	"context"
 	"encoding/json"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const createManualReservation = `-- name: CreateManualReservation :one
@@ -95,6 +97,21 @@ func (q *Queries) CreateNeverScheduledEvent(ctx context.Context, arg CreateNever
 		arg.ServiceID,
 		arg.EventID,
 	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteStaleNeverScheduledEvents = `-- name: DeleteStaleNeverScheduledEvents :execrows
+DELETE FROM never_scheduled_events
+WHERE observed_at < now() - $1::interval
+`
+
+// EPG の放送地平を十分に超えた欠測観測を刈る。program_snapshots への FK を
+// 持たないため、番組スナップショットの GC とは別に寿命を管理する。
+func (q *Queries) DeleteStaleNeverScheduledEvents(ctx context.Context, horizon pgtype.Interval) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteStaleNeverScheduledEvents, horizon)
 	if err != nil {
 		return 0, err
 	}
@@ -227,10 +244,11 @@ WHERE r.site = $1
       -- 宛先のキーは**放送イベント**であって reservations 行ではない。reservations は
       -- program_snapshots への FK が ON DELETE CASCADE なので、スナップショットが
       -- GC された瞬間に一緒に消える。never_scheduled_events は program_snapshots への
-      -- FK を持たないので GC 後も観測が残り続ける（docs/schema/reservations.md の
-      -- 「行の物理削除」）。reservations 行に依存すると、GC された瞬間に
-      -- 「欠測行が無い」ことになり、終了済み予約が毎パス desired に戻り続ける
-      -- （CLAUDE.md 不変条件 9 の identity: 導出器が作るキーを宛先にしない、と同じ族）。
+      -- FK を持たないので program_snapshots の GC と同時には消えない。ただし
+      -- EPG の放送地平を超えた観測は別の GC で刈る。reservations 行に依存すると、
+      -- GC された瞬間に「欠測行が無い」ことになり、終了済み予約が毎パス desired
+      -- に戻り続ける（CLAUDE.md 不変条件 9 の identity: 導出器が作るキーを宛先に
+      -- しない、と同じ族）。
       WHERE nse.site = r.site
         AND nse.network_id = s.network_id
         AND nse.service_id = s.service_id

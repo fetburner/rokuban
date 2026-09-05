@@ -11,7 +11,7 @@
 | §1 | **設計原則**（desired/observed 分離 / mirakc 固有概念の隔離 / tombstone / サイトスコープ / 導出値と事実の分離 / 行の寿命 / 型の規律） | [schema/principles.md](schema/principles.md) |
 | §3 §3.5 §3.6 §3.7 | **desired**: `reservations`（予約）/ `program_intents`・`program_overrides`（ユーザー意図）/ `circuit_breakers`（ブレーカーのラッチ）/ `program_snapshots`（番組の事実のスナップショット。Phase 1） | [schema/reservations.md](schema/reservations.md) |
 | §4 | **observed**: `schedule_sync`（mirakc schedule の観測） | [schema/schedule-sync.md](schema/schedule-sync.md) |
-| §5 §6 | **永続資産**: `recordings`（録画履歴）/ `media_assets`（メディアアセット台帳）。`recording_encode_policy`（原本保持ポリシーの凍結）・`recording_ingest_progress`（転送の途中経過）・`recording_purge_requests`（即時完全削除の要求）・`recording_encode_attempts`（encode ジョブの直近の試行状態）の 4 つの衛星表も§5 内、`missing_media_assets`（実体無しの観測）は§6 内 | [schema/recordings.md](schema/recordings.md) |
+| §5 §6 | **永続資産**: `recordings`（録画履歴）/ `media_assets`（メディアアセット台帳）。`recording_encode_policy`（原本保持ポリシーの凍結）・`recording_ingest_progress`（転送の途中経過）・`recording_purge_requests`（即時完全削除の要求）・`recording_encode_attempts`（encode ジョブの直近の試行状態）の 4 つの衛星表も§5 内、`missing_media_assets`（実体無しの観測）は§6 内。`never_scheduled_events`（放送地平を超えて残す schedule 欠測）は `retention_grace + 30日` で刈る | [schema/recordings.md](schema/recordings.md) |
 | §7 | **observed**: `record_sync`（mirakc record の観測）と `drop_stats` | [schema/record-sync.md](schema/record-sync.md) |
 | §8 | jsonb ドキュメント形式（base / overrides / quality_events の形） | [schema/jsonb.md](schema/jsonb.md) |
 | §9 §9.5 | **使い捨てキャッシュ**: `epg_services` / `epg_programs`（EPG 射影）/ `tuner_sync`（チューナー射影） | [schema/projections.md](schema/projections.md) |

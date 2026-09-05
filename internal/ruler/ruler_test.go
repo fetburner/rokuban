@@ -992,6 +992,19 @@ VALUES ($1, $2)`,
 	}
 }
 
+// insertNeverScheduledEvent は observed_at を狙って欠測観測を作る。通常の
+// reconciler 経路では observed_at に DB の now() が入るため、GC の寿命境界を
+// 固定したいテストだけがこのヘルパーを使う。
+func insertNeverScheduledEvent(t *testing.T, pool *pgxpool.Pool, ctx context.Context, eventID int32, observedAt time.Time) {
+	t.Helper()
+	_, err := pool.Exec(ctx, `
+INSERT INTO never_scheduled_events (site, network_id, service_id, event_id, observed_at)
+VALUES ($1, $2, $3, $4, $5)`, testSite, testNetworkID, testServiceID, eventID, observedAt)
+	if err != nil {
+		t.Fatalf("inserting never-scheduled event fixture: %v", err)
+	}
+}
+
 func reservationExists(t *testing.T, pool *pgxpool.Pool, ctx context.Context, programID int64) bool {
 	t.Helper()
 	_, ok := getReservation(t, pool, ctx, programID)
@@ -1108,6 +1121,78 @@ func TestRunPass_GC_KeepsUnended(t *testing.T) {
 
 	if !reservationExists(t, pool, ctx, 10003) {
 		t.Error("reservation for a program that hasn't ended yet should NOT be GC'd")
+	}
+}
+
+// issue #636: never_scheduled_events は program_snapshots の GC と別の寿命を持ち、
+// retention_grace + 30 日を超えた観測だけが削除される。境界より新しい観測は
+// event_id が再利用される可能性を考慮して残す。
+func TestRunPass_GC_DeletesStaleNeverScheduledEvents(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	grace := time.Hour
+	insertNeverScheduledEvent(t, pool, ctx, 20001, time.Now().Add(-31*24*time.Hour))
+	insertNeverScheduledEvent(t, pool, ctx, 20002, time.Now().Add(-29*24*time.Hour))
+
+	r := ruler.New([]string{testSite}, pool, &ruler.Config{RetentionGrace: grace})
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
+
+	for _, test := range []struct {
+		eventID int32
+		want    bool
+	}{
+		{eventID: 20001, want: false},
+		{eventID: 20002, want: true},
+	} {
+		var exists bool
+		if err := pool.QueryRow(ctx, `
+SELECT EXISTS (
+  SELECT 1 FROM never_scheduled_events
+  WHERE site = $1 AND network_id = $2 AND service_id = $3 AND event_id = $4
+)`, testSite, testNetworkID, testServiceID, test.eventID).Scan(&exists); err != nil {
+			t.Fatalf("checking never-scheduled event %d: %v", test.eventID, err)
+		}
+		if exists != test.want {
+			t.Errorf("never_scheduled_events event_id=%d exists=%v, want %v", test.eventID, exists, test.want)
+		}
+	}
+}
+
+// issue #636: 古い欠測観測を GC した後は、同じ放送イベントの予約が
+// ListReservationsForSyncEvaluation の候補に戻る。program_snapshots は未来の
+// 番組なので、ここでは snapshot 自体の GC ではなく欠測行の GC だけが効く。
+func TestRunPass_GC_AllowsStaleNeverScheduledReservationBackIntoSyncEvaluation(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	const programID = 20003
+	start := time.Now().Add(24 * time.Hour).Truncate(time.Second)
+	insertReservationDirect(t, pool, ctx, programID, "欠測 GC 後に同期候補へ戻る番組", start)
+	insertNeverScheduledEvent(t, pool, ctx, 1, time.Now().Add(-31*24*time.Hour))
+
+	q := sqlcgen.New(pool)
+	before, err := q.ListReservationsForSyncEvaluation(ctx, testSite)
+	if err != nil {
+		t.Fatalf("ListReservationsForSyncEvaluation before GC: %v", err)
+	}
+	if len(before) != 0 {
+		t.Fatalf("reservation should be excluded while its never-scheduled event exists, got %d candidates", len(before))
+	}
+
+	r := ruler.New([]string{testSite}, pool, &ruler.Config{RetentionGrace: time.Hour})
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
+
+	after, err := q.ListReservationsForSyncEvaluation(ctx, testSite)
+	if err != nil {
+		t.Fatalf("ListReservationsForSyncEvaluation after GC: %v", err)
+	}
+	if len(after) != 1 || after[0].ProgramSnapshot.ProgramID != programID {
+		t.Fatalf("after GC candidates = %#v, want only program_id=%d", after, programID)
 	}
 }
 

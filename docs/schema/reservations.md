@@ -66,15 +66,15 @@ CREATE INDEX ON reservations (rule_id);
 | `detached` | ルールがマッチしなくなったが `record` 意図または上書きがある行（= `program_investments` view に行がある）。base は凍結され、実質 manual として動く（`intent{skip}` なら録画しない detached） | `rule_id IS NULL AND base IS NOT NULL` |
 | `orphaned` | **この予約に対応する放送イベントについて、一度も schedule が観測されなかった欠測行があり、本物の録画試行は 1 行も無い**。mirakc 由来の途中失敗は欠測表に入らない（再試行経路を壊さない）。即削除せず残して「録れなかった」を説明可能にする | `never_scheduled_events` 表の EXISTS と、同じ放送イベントの `recordings` 全履歴に対する NOT EXISTS の積（`GetReservationFull` の `never_recorded`）。recordings は live 限定にしないため、本物の録画をごみ箱に入れても orphaned に戻らない。放送イベントキーは `program_snapshots` を経由して引く --- 予約行の導出 id を結合先にしてはならない（[invariants.md](../invariants.md) §9「identity」） |
 
-- **行の物理削除（GC）は「番組の終了時刻を過ぎた後」のみ**。番組の終了時刻は `program_snapshots.start_at + duration_ms` で判定し（§3.7）、`reservations` は `program_snapshots` への FK が `ON DELETE CASCADE` なのでスナップショットが GC された瞬間に一緒に落ちる（active/detached/orphaned のいずれでも問わない）。`never_scheduled_events` は `program_snapshots` への FK を持たないので、GC 後も欠測の観測は残り続ける（[recordings.md](recordings.md) §5）
+- **行の物理削除（GC）は「番組の終了時刻を過ぎた後」のみ**。番組の終了時刻は `program_snapshots.start_at + duration_ms` で判定し（§3.7）、`reservations` は `program_snapshots` への FK が `ON DELETE CASCADE` なのでスナップショットが GC された瞬間に一緒に落ちる（active/detached/orphaned のいずれでも問わない）。`never_scheduled_events` は `program_snapshots` への FK を持たないので、同時には消えないが、放送地平を超える `retention_grace + 30日` で別途刈られる（[recordings.md](recordings.md) §5）
 - 意図も上書きもない active 予約がルール・EPG から消えた場合は通常の宣言的動作として削除（ただし大量削除サーキットブレーカーの対象）。ただし放送開始直前（`ruler.retract_grace` 以内）は猶予で削除しない --- 猶予中の行は `rule_id` が前パスのまま据え置かれるので、この表の `active` の導出（`rule_id IS NOT NULL`）はそのまま成立し続ける。専用の状態は増やさない（[ruler.md](../recording/ruler.md)「直前 unmatch の猶予」）
 - ルール再マッチで base 再計算のうえ `active` に戻る（overrides は無傷）
 
 **同期対象かのフィルタに使ってよいのは「この予約に対応する放送イベントに `never_scheduled_events` の欠測行が無いこと」だけ**（`ListReservationsForSyncEvaluation` が絞る）。
 
 1. **`active` / `detached` をフィルタにしてはならない。** どちらも UI 表示用の派生値であり、同期の可否を決めるのは `effective.skip` である。導出値を同期フィルタに使うと、ルールが外れた**手動予約が黙って録画されなくなる**（[invariants.md](../invariants.md) §9）
-2. **同期除外は欠測表の行の存在だけを見る。** 一度欠測と判定された放送イベントは、本物の record が後から来ても同期対象に戻らない。終了済み予約を再び schedule しないため
-3. **表示（`never_recorded`）は欠測行に加えて、本物の `recordings` 行が無いことも見る。** record が来たら orphaned は消えるが欠測行は残る。recordings の照合は live 限定にしないため、ごみ箱操作で orphaned に戻らない
+2. **同期除外は欠測表の行の存在だけを見る。** 一度欠測と判定された放送イベントは、本物の record が後から来ても、行が寿命内にある限り同期対象に戻らない。終了済み予約を再び schedule しないため。EPG 再露出ガード以外の読者はないので、行は `retention_grace + 30日` で刈る
+3. **表示（`never_recorded`）は欠測行に加えて、本物の `recordings` 行が無いことも見る。** record が来たら orphaned は消えるが、欠測行はその寿命内では残る。recordings の照合は live 限定にしないため、ごみ箱操作で orphaned に戻らない
 4. **どちらも mirakc 由来の途中失敗だけでは成立しない。** failed 試行は `recordings` にだけ入り欠測表には入らないため、再試行経路を壊さない
 
 ### 書き込み所有権
