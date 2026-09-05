@@ -127,8 +127,8 @@ site 単位のキュー名を修飾する変更（`ingest` → `ingest_<site>` �
 `delete_reconcile` / `catalog_export` の `default` → `cleanup` への移設もある。
 どちらも、デプロイ前に投入済みだった旧キューの行を新キューへ自動移行しない。
 
-**現在のコード（`UniqueOpts.ByQueue: true`、`internal/worker/worker.go` の
-`uniqueByQueue`）では、旧キューの残骸があっても新しいジョブの投入自体は
+**現在のコード（`UniqueOpts.ByQueue: true`、`internal/jobs/queue.go` の
+`UniqueByQueue`）では、旧キューの残骸があっても新しいジョブの投入自体は
 ブロックされない**。一意キーがキュー名を含むため、旧キュー（キューを含まない
 鍵）と新キュー（キューを含む鍵）は別のハッシュになり衝突しない。実際に
 確認した挙動:
@@ -149,12 +149,12 @@ SELECT id, kind, queue, state FROM river_job ORDER BY id;
 --   3 | reconcile_pass | reconciler_tokyo | available   ← 新キュー。worker が正しく引く
 ```
 
-**それでも掃除は推奨する**。旧キューの残骸（上の `id=1`）はどの worker も
-購読しないキューに永久に残り、`state='available'` のまま滞留メトリクス
-（River のキュー長ダッシュボード等）を汚し続ける。デプロイ後に 1 回だけ
-次を実行する（`pendingJobStates` と同じ 5 状態すべてを対象にする。
-`available`/`scheduled`/`retryable` だけでは `pending`/`running` の残骸を
-取りこぼす）:
+**それでも掃除は推奨する**。旧キューの残骸（上の `id=1`）はどの worker も購読しないキューに永久に残り、
+`state='available'` のままで滞留メトリクスを汚し続けるため、残さない方がよい。
+デプロイ後に 1 回だけ次を実行する。
+`internal/jobs/queue.go` の `pendingJobStates` と同じ 5 状態を対象にする。
+`available`/`scheduled`/`retryable` だけでは不十分である。
+`pending`/`running` の残骸も取りこぼさない。
 
 ```sh
 docker compose exec postgres psql -U rokuban -d rokuban -c \

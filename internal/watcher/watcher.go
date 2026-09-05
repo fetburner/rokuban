@@ -15,6 +15,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/ptr"
@@ -24,37 +25,25 @@ import (
 // DefaultSite はデフォルトの mirakc サイト名。定義は db.DefaultSite（唯一の出所）。
 const DefaultSite = db.DefaultSite
 
-// IngestArgsFunc は ingest ジョブの引数（River の JobArgs）を組み立てる関数。
-//
-// 具体型は internal/worker.IngestJobArgs だが、internal/watcher はそれを直接
-// import できない。record_sweep ジョブ（internal/worker.RecordSweepWorker）が
-// このパッケージの Watcher.Sweep を呼ぶため、逆方向に internal/watcher →
-// internal/worker の import を残すと循環インポートになる（M2-18）。
-// そのため呼び出し元（cmd/rokuban と RecordSweepWorker）が具体型を注入する。
-type IngestArgsFunc func(site, recordID string) river.JobArgs
-
 // Watcher は mirakc の SSE イベントを購読し、録画の状態変化を DB に反映する。
 type Watcher struct {
-	site          string
-	mirakc        *mirakc.Client
-	pool          *pgxpool.Pool
-	river         *river.Client[pgx5.Tx]
-	newIngestArgs IngestArgsFunc
-	webhook       *webhook.Client
-	services      []mirakc.Service
+	site     string
+	mirakc   *mirakc.Client
+	pool     *pgxpool.Pool
+	river    *river.Client[pgx5.Tx]
+	webhook  *webhook.Client
+	services []mirakc.Service
 }
 
-// New は Watcher を生成する。newIngestArgs は ingest ジョブの引数を組み立てる関数で、
-// 呼び出し元が internal/worker.NewIngestArgs を渡す想定（IngestArgsFunc のコメント参照）。
-// webhook は任意（nil 可）。録画 finished / failed の通知に使う（M3-11）。
-func New(site string, mc *mirakc.Client, pool *pgxpool.Pool, rc *river.Client[pgx5.Tx], newIngestArgs IngestArgsFunc, wh *webhook.Client) *Watcher {
+// New は Watcher を生成する。webhook は任意（nil 可）。録画 finished / failed の通知に
+// 使う（M3-11）。
+func New(site string, mc *mirakc.Client, pool *pgxpool.Pool, rc *river.Client[pgx5.Tx], wh *webhook.Client) *Watcher {
 	return &Watcher{
-		site:          site,
-		mirakc:        mc,
-		pool:          pool,
-		river:         rc,
-		newIngestArgs: newIngestArgs,
-		webhook:       wh,
+		site:    site,
+		mirakc:  mc,
+		pool:    pool,
+		river:   rc,
+		webhook: wh,
 	}
 }
 
@@ -222,7 +211,7 @@ func (w *Watcher) processRecord(ctx context.Context, record mirakc.Record) error
 	}
 
 	if record.Recording.Status == "finished" && recordingID != nil {
-		if _, err := w.river.InsertTx(ctx, tx, w.newIngestArgs(w.site, record.ID), nil); err != nil {
+		if _, err := w.river.InsertTx(ctx, tx, jobs.IngestJobArgs{Site: w.site, RecordID: record.ID}, nil); err != nil {
 			return fmt.Errorf("enqueuing ingest job: %w", err)
 		}
 	}

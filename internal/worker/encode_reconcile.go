@@ -13,6 +13,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
 )
 
@@ -52,89 +53,6 @@ const (
 	// の doc コメント「窓を回す」の C1/C2/C3）は変わらない。
 	encodeReconcileRowLimit = 1000
 )
-
-// EncodeReconcileArgs は encode の desired−observed 定期 reconcile ジョブの引数
-// （issue #163）。
-//
-// # 専用の定期ジョブにした理由（record_sweep に相乗りしなかった理由）
-//
-// record_sweep（watcher の定期全量突き合わせ。docs/recording/watcher.md §3.3 の
-// (c)）は「mirakc のエッジに残っている record」を真実として引き直すパスで、
-// 次の 3 点がこのパスと合わない:
-//
-//  1. **site 束縛**: record_sweep は mirakc への到達性を要するので site 単位の
-//     キュー（`watcher_<site>`）に乗り、verifySite で自 site のジョブしか
-//     処理しない。一方エンコードは site の属性を持たない（アーカイブも
-//     プロファイルも単一。EncodeWorker の doc コメント参照）。相乗りさせると、
-//     site に属さない 1 つの懸念を site ごとに N 回評価することになり、
-//     どの site の worker が拾うかで結果が変わらないのに N 倍の全表走査が走る。
-//  2. **対象集合**: record_sweep が見るのはエッジの record（DB の外の観測）で、
-//     こちらは「原本コミット済みなのに encoded が揃っていない録画」（DB だけで
-//     閉じる）。エッジから record が消えた後こそこのパスの出番なので、
-//     record_sweep の走査対象からはそもそも見えない（issue #163 の「罠」が
-//     クエリを共有するなと言っているのはこのため）。
-//  3. **依存の向き**: record_sweep の本体は internal/watcher にあり、
-//     internal/worker に依存できない（循環インポート。RecordSweepWorker の
-//     doc コメント参照）ため、EnqueueMissingEncodes を呼ぶには注入が要る。
-//
-// 引数は空（site を持たない）。DeleteReconcileArgs / CatalogExportArgs /
-// StorageSyncArgs と同じく、対象が site に従属しない資源だけだからである。
-type EncodeReconcileArgs struct{}
-
-// Kind は River ジョブの種別名を返す。
-func (EncodeReconcileArgs) Kind() string { return "encode_reconcile" }
-
-// InsertOpts は River ジョブの挿入オプションを返す。
-//
-// # キューを encode にした理由と、その代償
-//
-// 仕事の中身が EncodeEnqueueHintWorker と同じ（DB を読んで encode ジョブを
-// Insert するだけ。ffmpeg は起動しない）なので、同じ encode キューに置く。
-// これにより `worker.queues` で encode を外した Pod からは「エンコードを
-// 実行する側」と「エンコードを投入する側」が一緒に外れ、購読集合の意味が
-// 「エンコードに関わるか」の 1 軸で済む。cleanup は「物理削除系ジョブ専用」
-// （cleanupQueue のコメント）、storage は観測用と名付けが決まっているので、
-// どちらにも混ぜない。
-//
-// 副次的だが重要な帰結: このパスを実行するプロセスは、定義上 EncodeWorker を
-// 抱えるプロセス（encode キューの購読者）と同じ設定を読む。したがって
-// 「このプロセスの encode.profiles に無いプロファイル」＝「実際にジョブを
-// 拾う EncodeWorker が弾くプロファイル」であり、EncodeReconcileWorker の
-// known_profiles による絞り込みが実態と食い違わない。
-//
-// 代償: River のキュー単位の MaxWorkers はジョブ種を区別しない
-// （river@v0.47.0 client.go の `MaxWorkers` に付いた doc コメント
-// 「MaxWorkers is the maximum number of workers to
-// run for the queue」）ため、`encode.concurrency: 1`（既定）の構成では実行中の
-// encode ジョブが終わるまでこのパスは走らない。許容する: エンコードが詰まって
-// いる系では今すぐ投入しても実行されないので、検出が遅れても失うものが無い。
-// 待っている間にパスが積み上がることもない（下記 UniqueOpts で pending 中の
-// 1 本に合流する）。
-//
-// # 二重投入の防止
-//
-// UniqueOpts{ByArgs, ByState: pendingJobStates} で「pending 中のパスは 1 本」に
-// する。ByArgs は付けても付けなくてもよい（Args が空なので鍵は kind だけで
-// 決まる）が、他の定期ジョブと同じ形にして「引数が増えたときに一意性が
-// 壊れる」経路を作らない。ByQueue は付けない --- encode キューは site 修飾の
-// 対象外（siteBoundQueueNames に無い）で、キュー名の変更予定も無いため
-// （uniqueByQueue のコメント「対象外のキューまで変更すると説明が必要になる
-// 範囲が広がるだけ」）。
-//
-// パスが投入する encode ジョブ側の二重投入は EncodeJobArgs.InsertOpts の
-// UniqueOpts が防ぐ。実測（TestEncodeReconcile_DoesNotDoubleEnqueue）: 同じ
-// (recording_id, profile) の Insert は 2 回目以降
-// `UniqueSkippedAsDuplicate = true` で同一のジョブ ID を返し、river_job の
-// 行は 1 行のまま増えない。
-func (EncodeReconcileArgs) InsertOpts() river.InsertOpts {
-	return river.InsertOpts{
-		Queue: encodeQueue,
-		UniqueOpts: river.UniqueOpts{
-			ByArgs:  true,
-			ByState: pendingJobStates,
-		},
-	}
-}
 
 // EncodeReconcileWorker は desired（recording_encode_policy.encode_profiles）−
 // observed（active な encoded media_assets）の差分を定期的に埋める River ワーカー
@@ -200,7 +118,7 @@ func (EncodeReconcileArgs) InsertOpts() river.InsertOpts {
 // mirakc にもファイルにも触れない（DB 読み + River Insert のみ）。どの site に
 // 束縛された worker が拾っても結果は同じ。
 type EncodeReconcileWorker struct {
-	river.WorkerDefaults[EncodeReconcileArgs]
+	river.WorkerDefaults[jobs.EncodeReconcileArgs]
 	Pool *pgxpool.Pool
 
 	// Profiles は現在の encode.profiles（config.EncodeConfig）。desired の
@@ -230,7 +148,7 @@ type EncodeReconcileWorker struct {
 
 // Timeout は River の既定（1 分）より長い上限を与える。理由は
 // encodeReconcileTimeout のコメントを参照。
-func (w *EncodeReconcileWorker) Timeout(*river.Job[EncodeReconcileArgs]) time.Duration {
+func (w *EncodeReconcileWorker) Timeout(*river.Job[jobs.EncodeReconcileArgs]) time.Duration {
 	return encodeReconcileTimeout
 }
 
@@ -248,7 +166,7 @@ func (w *EncodeReconcileWorker) Timeout(*river.Job[EncodeReconcileArgs]) time.Du
 // 1 件の失敗でパス全体を止めない（record_sweep の processRecord・
 // delete_reconcile の deleteMediaAsset と同じ判断）。次パスが同じ候補を
 // 拾い直す。
-func (w *EncodeReconcileWorker) Work(ctx context.Context, _ *river.Job[EncodeReconcileArgs]) error {
+func (w *EncodeReconcileWorker) Work(ctx context.Context, _ *river.Job[jobs.EncodeReconcileArgs]) error {
 	client, err := river.ClientFromContextSafely[pgx5.Tx](ctx)
 	if err != nil {
 		// EncodeEnqueueHintWorker と同じ判断: このジョブの主目的が

@@ -18,6 +18,7 @@ import (
 	"github.com/fetburner/rokuban/internal/catalog"
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/webhook"
@@ -92,37 +93,6 @@ type deleteTarget struct {
 	Kind        string
 }
 
-// DeleteReconcileArgs は削除 reconcile ジョブの引数（issue #70、
-// docs/storage.md §7）。物理ストレージは site に従属しない単一の media_dir
-// なので、他の定期ジョブと異なり site 引数を持たない
-// （CatalogExportArgs と同じ位置づけ）。
-type DeleteReconcileArgs struct{}
-
-// Kind は River ジョブの種別名を返す。
-func (DeleteReconcileArgs) Kind() string { return "delete_reconcile" }
-
-// InsertOpts は River ジョブの挿入オプションを返す。
-//
-// 同一引数の同時実行を UniqueOpts で防ぐ。ByState は pendingJobStates に絞る
-// （completed を含めると定期ジョブが実質ワンショットになる）。
-//
-// Queue は cleanupQueue（issue #185 M4-13。`worker.queues` を明示的に絞れば
-// 除外できるようになった、というだけで既定購読からは除外されない。
-// cleanupQueue のコメント参照）。
-//
-// ByQueue: uniqueByQueue の理由は pendingJobStates 直後の doc コメント参照
-// （river.QueueDefault → cleanup への移設自体がキュー名変更なので、同じ問題を踏む）。
-func (DeleteReconcileArgs) InsertOpts() river.InsertOpts {
-	return river.InsertOpts{
-		Queue: cleanupQueue,
-		UniqueOpts: river.UniqueOpts{
-			ByArgs:  true,
-			ByQueue: uniqueByQueue,
-			ByState: pendingJobStates,
-		},
-	}
-}
-
 // DeleteReconcileWorker は物理 unlink に至る 3 ソース（ごみ箱 / until_encoded /
 // 孤児）を 1 本の reconcile ループに統一する River ワーカー（docs/storage.md §7）。
 //
@@ -175,7 +145,7 @@ func (DeleteReconcileArgs) InsertOpts() river.InsertOpts {
 // どちらの resume エンドポイントからも解除できない
 // （site スコープは IsSiteless で 400、site 無しは対象行が無く 404）。
 type DeleteReconcileWorker struct {
-	river.WorkerDefaults[DeleteReconcileArgs]
+	river.WorkerDefaults[jobs.DeleteReconcileArgs]
 	Pool     *pgxpool.Pool
 	MediaDir string
 
@@ -190,12 +160,12 @@ type DeleteReconcileWorker struct {
 }
 
 // Timeout は River の既定（1 分）より長い上限を与える。
-func (w *DeleteReconcileWorker) Timeout(*river.Job[DeleteReconcileArgs]) time.Duration {
+func (w *DeleteReconcileWorker) Timeout(*river.Job[jobs.DeleteReconcileArgs]) time.Duration {
 	return deleteReconcileTimeout
 }
 
 // Work は 1 パス分の削除 reconcile を実行する。
-func (w *DeleteReconcileWorker) Work(ctx context.Context, _ *river.Job[DeleteReconcileArgs]) error {
+func (w *DeleteReconcileWorker) Work(ctx context.Context, _ *river.Job[jobs.DeleteReconcileArgs]) error {
 	// site は常に空文字列（DeleteReconcileWorker の doc コメント参照 ---
 	// このジョブはどの束縛サイトの worker が掴んでも同じ 1 つのブレーカーとして
 	// 扱う。breaker.IsSiteless(breaker.DeleteReconcile) が true）。

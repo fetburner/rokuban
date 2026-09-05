@@ -22,6 +22,7 @@ import (
 	"github.com/fetburner/rokuban/internal/api"
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db"
+	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/notifier"
@@ -498,7 +499,7 @@ func buildRiverClient(cfg *config.Config, roles []string, bound []config.MirakcS
 // buildFullRiverClient は worker ロール用のワーカー群と River クライアントを構築する。
 // サイトごとの mirakc クライアントとキュー設定は、runServer で解決済みの値を使う。
 func buildFullRiverClient(cfg *config.Config, bound []config.MirakcSite, queues []string, onceGate *worker.OnceGate, softStopTimeout time.Duration, pool *pgxpool.Pool, webhookClient *webhook.Client) (*river.Client[pgx5.Tx], error) {
-	if worker.RequiresEncodeTools(queues) {
+	if jobs.RequiresEncodeTools(queues) {
 		if err := cfg.Encode.ValidateTools(); err != nil {
 			return nil, err
 		}
@@ -536,7 +537,7 @@ func buildFullRiverClient(cfg *config.Config, bound []config.MirakcSite, queues 
 	clientCfg := worker.ClientConfig{
 		// BoundSites は site 単位のキュー（ingest/epg/reconciler/watcher）を
 		// 物理名（`<base>_<site>`）に展開するのに使う。空スライス（0 サイト
-		// 束縛）では worker.qualifyQueueName が db.DefaultSite に解決する ---
+		// 束縛）では jobs.PhysicalQueueName が db.DefaultSite に解決する ---
 		// 0 サイト束縛の worker がこれらのキューを要求しないことは
 		// validateSiteBinding が起動時に強制している。
 		BoundSites:           registryNames(bound),
@@ -593,7 +594,7 @@ func superviseSingletons(egCtx context.Context, roles []string, bound []config.M
 			site := site
 			eg.Go(func() error {
 				mc := mirakc.NewClient(site.URL, nil)
-				w := watcher.New(site.Site, mc, pool, riverClient, worker.NewIngestArgs, webhookClient)
+				w := watcher.New(site.Site, mc, pool, riverClient, webhookClient)
 				return role.RunSingleton(egCtx, pool, watcherLockName(site.Site), w.Run, nil)
 			})
 		}

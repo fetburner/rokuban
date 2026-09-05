@@ -147,13 +147,13 @@ var mirakcSiteNamePattern = regexp.MustCompile(`^[a-z0-9]([_-]?[a-z0-9])*$`)
 
 // MirakcSiteNameMaxLen は site 名の最大長。
 //
-// River のキュー名の上限（internal/worker.riverQueueNameMaxLen、64 文字）から、
-// site 単位のキュー（internal/worker.siteBoundQueueNames = ingest/epg/
-// reconciler/watcher）を qualifyQueueName で `<base>_<site>` に修飾したときの
+// River のキュー名の上限（internal/jobs.RiverQueueNameMaxLen、64 文字）から、
+// site 単位のキュー（internal/jobs の siteBoundQueueNames = ingest/epg/
+// reconciler/watcher）を jobs.PhysicalQueueName で `<base>_<site>` に修飾したときの
 // prefix のうち最長のもの（`reconciler_`、11 文字。base の中で `reconciler` が
 // 最長のため）を引いた値: 64 - 11 = 53。**siteBoundQueueNames に `reconciler`
 // より長い論理名が増えたら、この 53 を引き直す必要がある**
-// （internal/worker.TestSiteBoundQueueNames_FitWithinMirakcSiteNameMaxLen が
+// （internal/jobs.TestSiteBoundQueueNames_FitWithinMirakcSiteNameMaxLen が
 // この関係を機械的に固定している）。
 const MirakcSiteNameMaxLen = 53
 

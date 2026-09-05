@@ -19,6 +19,7 @@ import (
 	"github.com/fetburner/rokuban/internal/catalog"
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
@@ -27,7 +28,6 @@ import (
 
 const (
 	maxInJobRetries = 5
-	ingestQueue     = "ingest"
 
 	// connectRetryBaseDelay / connectRetryMaxDelay は StreamRecord への接続が
 	// 失敗したときの指数バックオフの下限・上限。mirakc が即座に refuse する状況
@@ -37,57 +37,9 @@ const (
 	connectRetryMaxDelay  = 5 * time.Second
 )
 
-// IngestJobArgs は ingest ジョブの引数。mirakc サイトと record ID を指定する。
-type IngestJobArgs struct {
-	Site     string `json:"site"`
-	RecordID string `json:"record_id"`
-}
-
-// Kind は River ジョブの種別名を返す。
-func (IngestJobArgs) Kind() string { return "ingest" }
-
-// NewIngestArgs は IngestJobArgs を river.JobArgs として組み立てる。
-//
-// internal/watcher.Watcher に IngestJobArgs の具体型を注入するための関数値
-// （watcher.IngestArgsFunc）として使う。internal/watcher は internal/worker に
-// 依存できない（依存すると record_sweep ジョブ経由で循環インポートになる。
-// watcher.IngestArgsFunc のコメント参照）ため、呼び出し元（cmd/rokuban と
-// RecordSweepWorker）がこの関数を渡す。
-func NewIngestArgs(site, recordID string) river.JobArgs {
-	return IngestJobArgs{Site: site, RecordID: recordID}
-}
-
-// InsertOpts は River ジョブの挿入オプションを返す。
-//
-// watcher は record-saved イベントと定期の全量突き合わせの両方から同じ record を
-// 投入しうるので、ByArgs で一意化して二重取り込みを防ぐ。ByState は
-// pendingJobStates に絞る（既定は completed を含むため、一度取り込んだ record を
-// 手動で取り直せなくなる。取り込み済みかどうかは media_assets 行が真実であり、
-// River のジョブ履歴で表現するものではない）。
-//
-// Queue は a.Site で修飾する（physicalQueueName、issue #185 M4-13）。ingest は
-// mirakc への到達性を要する site 単位の仕事なので、多サイト構成で site A の
-// worker が site B の ingest ジョブを掴まないよう、キュー選択の時点で分離する
-// （verifySite は届いた後の多重防御。qualifyQueueName のコメント参照 --- 必ず
-// physicalQueueName を経由し、直接 qualifyQueueName を呼ばない）。
-//
-// ByQueue: uniqueByQueue を立てる理由は pendingJobStates 直後の doc コメント
-// 参照（キュー名の変更が一意キーに影響しないと、旧キューの残骸が新キューへの
-// insert を黙って塞ぐ）。
-func (a IngestJobArgs) InsertOpts() river.InsertOpts {
-	return river.InsertOpts{
-		Queue: physicalQueueName(ingestQueue, a.Site),
-		UniqueOpts: river.UniqueOpts{
-			ByArgs:  true,
-			ByQueue: uniqueByQueue,
-			ByState: pendingJobStates,
-		},
-	}
-}
-
 // IngestWorker は mirakc からの TS ファイル転送を行う River ワーカー。
 type IngestWorker struct {
-	river.WorkerDefaults[IngestJobArgs]
+	river.WorkerDefaults[jobs.IngestJobArgs]
 
 	// MirakcClients は site → mirakc クライアントの map（issue #532。1 プロセスが
 	// N site を束縛できるため、この 1 インスタンスが複数 site の ingest_<site>
@@ -124,7 +76,7 @@ type IngestWorker struct {
 // 総時間で切らない代わりに、進捗が止まったことを stallReader が検知して打ち切る
 // （StallTimeout）。「タイムアウトは総時間でなくストール検知」という M1-5-2 の
 // 設計はこれが揃って初めて成立する。
-func (w *IngestWorker) Timeout(*river.Job[IngestJobArgs]) time.Duration {
+func (w *IngestWorker) Timeout(*river.Job[jobs.IngestJobArgs]) time.Duration {
 	return -1
 }
 
@@ -149,7 +101,7 @@ func (w *IngestWorker) resolveRelPathLockTimeout() time.Duration {
 }
 
 // Work は ingest ジョブを実行する。ストリーム取得・TS 統計収集・DB コミット・エッジ削除を行う。
-func (w *IngestWorker) Work(ctx context.Context, job *river.Job[IngestJobArgs]) error {
+func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobArgs]) error {
 	args := job.Args
 	log := slog.With("site", args.Site, "record_id", args.RecordID)
 
@@ -164,7 +116,7 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[IngestJobArgs]) 
 	// プロセスの mirakc に投げると、別番組をこの recording としてコミットしうる
 	// （issue #139）。DB 参照（lookupRecordingID）や mirakc/FS への一切の
 	// アクセスより前に照合する。
-	client, err := verifySite(w.MirakcClients, args.Site, ingestQueue)
+	client, err := verifySite(w.MirakcClients, args.Site, jobs.IngestQueue)
 	if err != nil {
 		return err
 	}
@@ -311,7 +263,7 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[IngestJobArgs]) 
 // 成功として数える（呼び出し元が result="success" を設定する）。ここでの
 // 唯一の残り仕事はエッジ record の削除（下記）の再試行であり、それが完了
 // すれば ingest の目的（コミット済み・record 削除済み）は満たされている。
-func (w *IngestWorker) handleAlreadyCommittedIngest(ctx context.Context, client *mirakc.Client, args IngestJobArgs, recordingID int64, log *slog.Logger) {
+func (w *IngestWorker) handleAlreadyCommittedIngest(ctx context.Context, client *mirakc.Client, args jobs.IngestJobArgs, recordingID int64, log *slog.Logger) {
 	log.Info("ingest: media_asset already committed, skipping transfer", "recording_id", recordingID)
 	// 前回の実行が転送の途中で死に、その後別経路（internal/inplace.Register
 	// など）で原本がコミットされた場合、進捗行だけが取り残される。原本行が
@@ -488,7 +440,7 @@ func (w *IngestWorker) checkRelPathConflict(ctx context.Context, relPath string)
 // 材料だから --- HEAD の Content-Length は転送完了後の照合（層 3）にしか取って
 // おらず、ファイル stat は api ロールが読めない（不変条件 1）。nil のときは
 // 進捗をバイト数だけで出し、% は出さない（issue #212）。
-func (w *IngestWorker) lookupIngestTarget(ctx context.Context, args IngestJobArgs) (recordingID int64, expectedBytes *int64, err error) {
+func (w *IngestWorker) lookupIngestTarget(ctx context.Context, args jobs.IngestJobArgs) (recordingID int64, expectedBytes *int64, err error) {
 	q := sqlcgen.New(w.Pool)
 	row, err := q.GetRecordSyncIngestTarget(ctx, sqlcgen.GetRecordSyncIngestTargetParams{
 		Site:     args.Site,
@@ -527,7 +479,7 @@ func (w *IngestWorker) lookupIngestTarget(ctx context.Context, args IngestJobArg
 // 作ってしまう（以後その site 配下の ingest が全て MkdirAll で
 // "not a directory" になる。docs/storage/contract.md §rel_path の名前空間
 // 参照）。前置前に弾く（下記）。
-func (w *IngestWorker) determineRelPath(ctx context.Context, args IngestJobArgs, client *mirakc.Client) (relPath, fullPath string, err error) {
+func (w *IngestWorker) determineRelPath(ctx context.Context, args jobs.IngestJobArgs, client *mirakc.Client) (relPath, fullPath string, err error) {
 	record, err := client.GetRecord(ctx, args.RecordID)
 	if err != nil {
 		return "", "", fmt.Errorf("getting mirakc record: %w", err)

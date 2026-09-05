@@ -5,8 +5,8 @@
 # `deploy/k8s/base/worker-scaledjobs.yaml` にあり、そちらは 1 組しか無い。
 #
 # **スケーラが引くキュー名が site 修飾されていること**が、この 4 本の要点である。
-# 物理キュー名は論理名と違い `<論理名>_<site>` になる（`internal/worker` の
-# `qualifyQueueName`）。共有キューを見ていると、**サイト A のスケーラがサイト B の
+# 物理キュー名は論理名と違い `<論理名>_<site>` になる（`internal/jobs` の
+# `PhysicalQueueName`）。共有キューを見ていると、**サイト A のスケーラがサイト B の
 # 滞留で Job を起こし、起きた Job は自分のサイトの仕事が無いまま `verifySite` で
 # 死んでまた起きる** --- CPU を焼き続けるだけで、症状は「B が遅い」ではなく
 # 「A のノードが埋まる」になる。受け入れ判定ハーネスの判定 5 がこれを見ている。
@@ -308,7 +308,7 @@ spec:
 ---
 # `watcher` キュー（record_sweep）。**watcher ロールとは別物である** ---
 # 論理キュー名が `watcher` なだけで、これを引くのは worker ロールの Job である
-# （`internal/worker` の recordSweepQueue）。同じ名前の Deployment（watcher ロール）
+# （`internal/jobs` の RecordSweepQueue）。同じ名前の Deployment（watcher ロール）
 # は `site/watcher.yaml` にあり、そちらは常駐して mirakc の SSE を張る。
 apiVersion: keda.sh/v1alpha1
 kind: ScaledJob

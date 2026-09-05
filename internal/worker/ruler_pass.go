@@ -9,13 +9,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 
+	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/ruler"
 )
 
 const (
-	// rulerQueue は ruler_pass ジョブ専用のキュー名。
-	rulerQueue = "ruler"
-
 	// defaultRulerPassInterval は定期パスの既定間隔。docs/recording.md §3.1 の
 	// 起動契機の表で「定期（既定 10 分）」としている値と揃える。
 	defaultRulerPassInterval = 10 * time.Minute
@@ -37,42 +35,6 @@ const (
 	rulerPassTimeout = 5 * time.Minute
 )
 
-// RulerPassArgs は ruler の 1 パス評価ジョブの引数。
-//
-// サイト単位でジョブを分けるのは、ruler の排他がジョブロック + UniqueOpts
-// （サイト単位）で行われるため（docs/data.md §2「ルール評価（ruler）はシングルトン
-// ではなくジョブ」）。別サイトの並行実行は正常。
-type RulerPassArgs struct {
-	Site string `json:"site"`
-}
-
-// Kind は River ジョブの種別名を返す。
-func (RulerPassArgs) Kind() string { return "ruler_pass" }
-
-// InsertOpts は River ジョブの挿入オプションを返す。
-//
-// UniqueOpts{ByArgs, ByState} でサイト単位に排他する。これは同時実行の防止だけでなく、
-// 起動契機のヒント（ルール編集・EPG 同期完了）を定期実行に合流させる機構でもある
-// （docs/recording.md §3.1「ヒントは UniqueOpts{ByArgs, ByState} で合流する」）。
-// ByState は pendingJobStates に絞る。既定（completed を含む）のままだと、一度
-// 成功したサイトの引数は二度と投入できず、定期ジョブが実質ワンショットになる
-// （epg_sync と同じ理由。InsertOpts のコメント参照）。
-//
-// **Queue は site で修飾しない**（ingest/epg/reconciler/watcher と異なる。issue #185
-// M4-13 の「含むもの」1 の表）。ruler は mirakc に一切触れない DB のみの仕事
-// （下記コメント参照）で、キューも site 非依存 --- args.Site はクエリの絞り込みに
-// 使うだけで、キュー選択の分離が必要な理由（他サイトの mirakc に誤って触れる）が
-// 存在しない。worker.siteBoundQueueNames にも入れていない。
-func (RulerPassArgs) InsertOpts() river.InsertOpts {
-	return river.InsertOpts{
-		Queue: rulerQueue,
-		UniqueOpts: river.UniqueOpts{
-			ByArgs:  true,
-			ByState: pendingJobStates,
-		},
-	}
-}
-
 // RulerPassWorker は ruler の 1 パス評価を実行する River ワーカー。
 //
 // ロジックは internal/ruler にそのまま置いてあり、ここでは呼び出すだけ
@@ -87,7 +49,7 @@ func (RulerPassArgs) InsertOpts() river.InsertOpts {
 // 起きないので、verifySite は導入していない（「まだ書いていないだけ」ではなく
 // 不要と判断した結果）。
 type RulerPassWorker struct {
-	river.WorkerDefaults[RulerPassArgs]
+	river.WorkerDefaults[jobs.RulerPassArgs]
 	Pool *pgxpool.Pool
 
 	// RetentionGrace は番組終了後、reservations / program_intents を GC するまでの
@@ -109,14 +71,14 @@ type RulerPassWorker struct {
 
 // Timeout は River の既定（1 分）より長い上限を与える。理由は rulerPassTimeout の
 // コメントを参照。
-func (w *RulerPassWorker) Timeout(*river.Job[RulerPassArgs]) time.Duration {
+func (w *RulerPassWorker) Timeout(*river.Job[jobs.RulerPassArgs]) time.Duration {
 	return rulerPassTimeout
 }
 
 // Work は ruler の 1 パス評価を実行する。対象サイトはジョブ引数の 1 サイトのみ
 // （ruler.New はサイトのスライスを受け取れるが、ジョブの排他がサイト単位のため
 // ここでは常に長さ 1 で渡す）。
-func (w *RulerPassWorker) Work(ctx context.Context, job *river.Job[RulerPassArgs]) error {
+func (w *RulerPassWorker) Work(ctx context.Context, job *river.Job[jobs.RulerPassArgs]) error {
 	r := ruler.New([]string{job.Args.Site}, w.Pool, &ruler.Config{
 		RetentionGrace:    w.RetentionGrace,
 		MaxDeletesPerPass: w.MaxDeletesPerPass,
@@ -133,7 +95,7 @@ func (w *RulerPassWorker) Work(ctx context.Context, job *river.Job[RulerPassArgs
 	// river.ClientFromContextSafely でジョブ実行中の Client を取り出すだけで足りる。
 	// Client が取れない場合（単体テストで Work を直接呼ぶ等）は投入せず、次の定期パスに委ねる。
 	if riverClient, clientErr := river.ClientFromContextSafely[pgx5.Tx](ctx); clientErr == nil {
-		if _, insertErr := riverClient.Insert(ctx, ReconcilePassArgs{Site: job.Args.Site}, nil); insertErr != nil {
+		if _, insertErr := riverClient.Insert(ctx, jobs.ReconcilePassArgs{Site: job.Args.Site}, nil); insertErr != nil {
 			slog.Warn("ruler pass: inserting reconcile_pass hint failed", "err", insertErr)
 		}
 	}

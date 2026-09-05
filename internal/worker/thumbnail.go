@@ -18,6 +18,7 @@ import (
 	"github.com/riverqueue/river"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/metrics"
 )
@@ -35,29 +36,6 @@ const (
 	thumbnailTimeout      = 5 * time.Minute
 )
 
-// ThumbnailJobArgs は thumbnail ジョブの引数。録画 1 本につき 1 アセット
-// （kind = 'thumbnail'。UNIQUE (recording_id, kind, profile)）。
-type ThumbnailJobArgs struct {
-	RecordingID int64 `json:"recording_id"`
-}
-
-// Kind は River ジョブの種別名を返す。
-func (ThumbnailJobArgs) Kind() string { return "thumbnail" }
-
-// InsertOpts は thumbnail キューへ投入し、recording_id で一意化する。
-//
-// ByState は pendingJobStates に絞る（既定は completed を含むため、一度成功した
-// recording を再投入できなくなる。コミット済みかどうかは media_assets 行が真実）。
-func (ThumbnailJobArgs) InsertOpts() river.InsertOpts {
-	return river.InsertOpts{
-		Queue: thumbnailQueue,
-		UniqueOpts: river.UniqueOpts{
-			ByArgs:  true,
-			ByState: pendingJobStates,
-		},
-	}
-}
-
 // ThumbnailWorker は原本から代表フレームを JPEG 抽出し、media_assets
 // （kind = 'thumbnail'）としてコミットする。
 //
@@ -69,7 +47,7 @@ func (ThumbnailJobArgs) InsertOpts() river.InsertOpts {
 // mediapath.Resolve 経由の単一 MediaDir、mirakc には触れない）。EncodeWorker
 // の doc コメント参照。
 type ThumbnailWorker struct {
-	river.WorkerDefaults[ThumbnailJobArgs]
+	river.WorkerDefaults[jobs.ThumbnailJobArgs]
 
 	Pool       *pgxpool.Pool
 	MediaDir   string
@@ -83,7 +61,7 @@ type ThumbnailWorker struct {
 }
 
 // Timeout はサムネイル 1 件の上限。大容量 TS への入力シークでも 5 分あれば足りる。
-func (w *ThumbnailWorker) Timeout(*river.Job[ThumbnailJobArgs]) time.Duration {
+func (w *ThumbnailWorker) Timeout(*river.Job[jobs.ThumbnailJobArgs]) time.Duration {
 	return thumbnailTimeout
 }
 
@@ -91,7 +69,7 @@ func (w *ThumbnailWorker) Timeout(*river.Job[ThumbnailJobArgs]) time.Duration {
 //
 // レベルトリガー: original が無くても / active thumbnail が既にあっても成功扱い
 // で終える（desired − observed が空なら何もしない）。
-func (w *ThumbnailWorker) Work(ctx context.Context, job *river.Job[ThumbnailJobArgs]) error {
+func (w *ThumbnailWorker) Work(ctx context.Context, job *river.Job[jobs.ThumbnailJobArgs]) error {
 	recordingID := job.Args.RecordingID
 	log := slog.With("recording_id", recordingID, "job", "thumbnail")
 
@@ -423,7 +401,7 @@ func EnqueueThumbnailIfNeeded(ctx context.Context, pool *pgxpool.Pool, riverClie
 		return nil
 	}
 
-	if _, err := riverClient.Insert(ctx, ThumbnailJobArgs{RecordingID: recordingID}, nil); err != nil {
+	if _, err := riverClient.Insert(ctx, jobs.ThumbnailJobArgs{RecordingID: recordingID}, nil); err != nil {
 		return fmt.Errorf("inserting thumbnail job: %w", err)
 	}
 	return nil
@@ -441,7 +419,7 @@ func EnqueueMissingThumbnails(ctx context.Context, pool *pgxpool.Pool, riverClie
 	}
 	n := 0
 	for _, id := range ids {
-		if _, err := riverClient.Insert(ctx, ThumbnailJobArgs{RecordingID: id}, nil); err != nil {
+		if _, err := riverClient.Insert(ctx, jobs.ThumbnailJobArgs{RecordingID: id}, nil); err != nil {
 			return n, fmt.Errorf("inserting thumbnail job for recording %d: %w", id, err)
 		}
 		n++

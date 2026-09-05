@@ -13,6 +13,7 @@ import (
 	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -47,7 +48,7 @@ func TestRecordSweepPeriodicJob(t *testing.T) {
 	if event.Job.Kind != "record_sweep" {
 		t.Errorf("job kind = %q, want %q", event.Job.Kind, "record_sweep")
 	}
-	wantQueue := qualifyQueueName(recordSweepQueue, testSite)
+	wantQueue := jobs.PhysicalQueueName(recordSweepQueue, testSite)
 	if event.Job.Queue != wantQueue {
 		t.Errorf("job queue = %q, want %q", event.Job.Queue, wantQueue)
 	}
@@ -293,7 +294,7 @@ func TestRecordSweepWorker_SiteMismatch_NeverDequeued(t *testing.T) {
 	if err != nil {
 		t.Fatalf("inserting record_sweep job: %v", err)
 	}
-	wantQueue := qualifyQueueName(recordSweepQueue, "site-b")
+	wantQueue := jobs.PhysicalQueueName(recordSweepQueue, "site-b")
 	if res.Job.Queue != wantQueue {
 		t.Fatalf("job queue = %q, want %q", res.Job.Queue, wantQueue)
 	}

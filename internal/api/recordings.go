@@ -13,7 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
-	"github.com/fetburner/rokuban/internal/worker"
+	"github.com/fetburner/rokuban/internal/jobs"
 )
 
 // recordingListFields は ListRecordings / ListTrashRecordings が共有する射影。
@@ -577,7 +577,7 @@ func (h *Server) insertEncodeEnqueueHint(ctx context.Context, tx pgx.Tx, recordi
 	if h.river == nil {
 		return nil
 	}
-	if _, err := h.river.InsertTx(ctx, tx, worker.EncodeEnqueueHintArgs{RecordingID: recordingID}, nil); err != nil {
+	if _, err := h.river.InsertTx(ctx, tx, jobs.EncodeEnqueueHintArgs{RecordingID: recordingID}, nil); err != nil {
 		return fmt.Errorf("inserting encode_enqueue_hint: %w", err)
 	}
 	return nil

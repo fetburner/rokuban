@@ -8,7 +8,7 @@ import (
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
 
-	"github.com/fetburner/rokuban/internal/worker"
+	"github.com/fetburner/rokuban/internal/jobs"
 )
 
 const encodeJobListPageSize = 10_000
@@ -25,7 +25,7 @@ func (h *Server) loadEncodeQueue(ctx context.Context) (encodeQueueSnapshot, erro
 	}
 
 	params := river.NewJobListParams().
-		Kinds((worker.EncodeJobArgs{}).Kind()).
+		Kinds((jobs.EncodeJobArgs{}).Kind()).
 		States(
 			rivertype.JobStateAvailable,
 			rivertype.JobStatePending,
@@ -42,7 +42,7 @@ func (h *Server) loadEncodeQueue(ctx context.Context) (encodeQueueSnapshot, erro
 			return encodeQueueSnapshot{}, fmt.Errorf("listing encode jobs: %w", err)
 		}
 		for _, job := range result.Jobs {
-			var args worker.EncodeJobArgs
+			var args jobs.EncodeJobArgs
 			if err := json.Unmarshal(job.EncodedArgs, &args); err != nil {
 				return encodeQueueSnapshot{}, fmt.Errorf("decoding encode job %d args: %w", job.ID, err)
 			}

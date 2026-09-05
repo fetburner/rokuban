@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/fetburner/rokuban/internal/db"
-	"github.com/fetburner/rokuban/internal/worker"
+	"github.com/fetburner/rokuban/internal/jobs"
 )
 
 // ロール分類の基準は「ソケットを持ち続けるか」であり、「どの仕事をするか」ではない
@@ -20,9 +20,9 @@ import (
 // それは River のジョブをロールに昇格させてしまったということ。
 func TestAllRoles_ExcludesJobNames(t *testing.T) {
 	// worker が引くキューの名前。ロール名と衝突してはいけない。
-	// worker.AllQueueNames が返す実際のキュー集合から取るので、キューを追加したら
+	// jobs.AllQueueNames が返す実際のキュー集合から取るので、キューを追加したら
 	// 自動的にこのテストの対象に入る（手で並べた定数だと追加時にすり抜ける）。
-	for _, q := range worker.AllQueueNames() {
+	for _, q := range jobs.AllQueueNames() {
 		// watcher キュー（record_sweep）だけは例外。watcher ロールと同名だが、
 		// これは「watcher の 3 段構えのうち (c) 定期全量突き合わせ」を切り出した
 		// ジョブであり、ロール名を流用しているだけで昇格ではない（M2-18）。

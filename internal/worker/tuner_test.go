@@ -16,6 +16,7 @@ import (
 	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
 )
@@ -285,7 +286,7 @@ func TestTunerSyncPeriodicJob(t *testing.T) {
 	if event.Job.Kind != "tuner_sync" {
 		t.Errorf("job kind = %q, want %q", event.Job.Kind, "tuner_sync")
 	}
-	wantQueue := qualifyQueueName(epgQueue, testSite)
+	wantQueue := jobs.PhysicalQueueName(epgQueue, testSite)
 	if event.Job.Queue != wantQueue {
 		t.Errorf("job queue = %q, want %q", event.Job.Queue, wantQueue)
 	}

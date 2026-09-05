@@ -14,8 +14,8 @@ import (
 
 	"github.com/fetburner/rokuban/internal/contentpath"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/ptr"
-	"github.com/fetburner/rokuban/internal/worker"
 )
 
 // ListRules はルール一覧を返す。
@@ -243,7 +243,7 @@ func (h *Server) insertRulerPassHint(ctx context.Context, tx pgx.Tx, site string
 	if h.river == nil {
 		return nil
 	}
-	if _, err := h.river.InsertTx(ctx, tx, worker.RulerPassArgs{Site: site}, nil); err != nil {
+	if _, err := h.river.InsertTx(ctx, tx, jobs.RulerPassArgs{Site: site}, nil); err != nil {
 		return fmt.Errorf("inserting ruler_pass hint for site %s: %w", site, err)
 	}
 	return nil
